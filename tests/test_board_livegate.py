@@ -69,6 +69,8 @@ def live_board(tmp_path, monkeypatch):
     mod = _load_board()
     monkeypatch.setattr(mod, "REPO", proj)
     monkeypatch.setattr(mod, "LOCAL_DIR", local)
+    monkeypatch.setattr(mod, "LOCAL_CONF", proj / ".project_manager" / "local.conf")
+    monkeypatch.setattr(mod, "REGRESSION_FLAG", local / "regression.json")
     monkeypatch.setattr(mod, "LIVEGATE_FLAG", local / "livegate.json")
     monkeypatch.setattr(mod, "LEASES_FILE", local / "worktree-leases.json")
     monkeypatch.setattr(mod, "_git_head_at", lambda cwd: "cafef00dcafef00d0011223344556677")
@@ -146,6 +148,33 @@ def _rec_args(cwd=None, repo=None, slot=None):
 
 def _chk_args(rev=None):
     return argparse.Namespace(action="check", rev=rev, cwd=None)
+
+
+def _platform_conf(live_board, command="run-windows") -> None:
+    live_board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
+    live_board.LOCAL_CONF.write_text(
+        "qa.platforms=windows\n"
+        f"test.windows.cmd={command}\n"
+        "regression.min_collected=2\n",
+        encoding="utf-8",
+    )
+
+
+def _platform_regression_record(live_board, *, status="pass", head=None,
+                                command="run-windows") -> dict:
+    head = head or "cafef00dcafef00d0011223344556677"
+    record = {
+        "head": head, "status": status, "rc": 0, "scope": "full",
+        "collected": 3, "floor": 2, "conf_anchor": str(live_board._proj.resolve()),
+        "ts": "2026-08-28T00:00:00+00:00",
+        "platforms": [{
+            "name": "windows", "command": command, "head": head,
+            "status": status, "rc": 0, "collected": 3,
+            "ts": "2026-08-28T00:00:00+00:00",
+        }],
+    }
+    live_board.REGRESSION_FLAG.write_text(json.dumps(record), encoding="utf-8")
+    return record
 
 
 def _read_flag(live_board) -> dict:
@@ -429,6 +458,10 @@ def test_record_rc0_pin_match_records_pass(live_board, monkeypatch, capsys):
     """rc0 이고 수집 N==pin(22) → status='pass' 기록 + rc0 (정상 릴리즈 green)."""
     fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
+    head_calls = []
+    monkeypatch.setattr(live_board, "_git_head_at", lambda cwd: (
+        head_calls.append(cwd) or "cafef00dcafef00d0011223344556677"
+    ))
     rc = live_board.cmd_livegate(_rec_args())
     assert rc == 0
     data = _read_flag(live_board)
@@ -437,9 +470,77 @@ def test_record_rc0_pin_match_records_pass(live_board, monkeypatch, capsys):
     assert data["rc"] == 0
     assert data["head"] == "cafef00dcafef00d0011223344556677"
     assert "ts" in data
+    assert set(data) == {"head", "status", "n", "rc", "ts"}
+    assert len(head_calls) == 1
     out = capsys.readouterr().out
     assert "pass @ cafef00d" in out
     assert "release 22/22 green" in out
+
+
+def test_declared_platform_missing_regression_evidence_blocks_before_release(
+        live_board, monkeypatch):
+    _platform_conf(live_board)
+    fake = _FakeRun(0, "22 passed in 1.00s")
+    monkeypatch.setattr(live_board.subprocess, "run", fake)
+    assert live_board.cmd_livegate(_rec_args()) == 1
+    assert not any(call["kwargs"].get("shell") for call in fake.calls)
+
+
+@pytest.mark.parametrize("status,head", (
+    ("fail", "cafef00dcafef00d0011223344556677"),
+    ("pass", "different-head"),
+))
+def test_declared_platform_red_or_stale_regression_blocks_before_release(
+        live_board, monkeypatch, status, head):
+    _platform_conf(live_board)
+    _platform_regression_record(live_board, status=status, head=head)
+    fake = _FakeRun(0, "22 passed in 1.00s")
+    monkeypatch.setattr(live_board.subprocess, "run", fake)
+    assert live_board.cmd_livegate(_rec_args()) == 1
+    assert not any(call["kwargs"].get("shell") for call in fake.calls)
+
+
+def test_declared_platform_valid_same_head_evidence_is_snapshotted_without_rerun(
+        live_board, monkeypatch):
+    _platform_conf(live_board)
+    regression = _platform_regression_record(live_board)
+    fake = _FakeRun(0, "22 passed in 1.00s")
+    monkeypatch.setattr(live_board.subprocess, "run", fake)
+    assert live_board.cmd_livegate(_rec_args()) == 0
+    shell_calls = [call for call in fake.calls if call["kwargs"].get("shell")]
+    assert len(shell_calls) == 1
+    assert shell_calls[0]["args"][0] == live_board.LIVEGATE_TEST_CMD
+    data = _read_flag(live_board)
+    assert set(data) == {"head", "status", "n", "rc", "ts", "conf_anchor", "platforms"}
+    assert data["platforms"] == regression["platforms"]
+    assert live_board.cmd_livegate(_chk_args(rev=data["head"])) == 0
+
+
+def test_declared_platform_livegate_check_rejects_current_command_change(
+        live_board, monkeypatch):
+    _platform_conf(live_board)
+    _platform_regression_record(live_board)
+    fake = _FakeRun(0, "22 passed in 1.00s")
+    monkeypatch.setattr(live_board.subprocess, "run", fake)
+    assert live_board.cmd_livegate(_rec_args()) == 0
+    head = _read_flag(live_board)["head"]
+    _platform_conf(live_board, command="changed-wrapper")
+    assert live_board.cmd_livegate(_chk_args(rev=head)) == 1
+
+
+def test_declared_platform_release_head_drift_records_red(live_board, monkeypatch):
+    _platform_conf(live_board)
+    _platform_regression_record(live_board)
+    heads = iter((
+        "cafef00dcafef00d0011223344556677",
+        "moved-head",
+    ))
+    monkeypatch.setattr(live_board, "_git_head_at", lambda _cwd: next(heads))
+    fake = _FakeRun(0, "22 passed in 1.00s")
+    monkeypatch.setattr(live_board.subprocess, "run", fake)
+    assert live_board.cmd_livegate(_rec_args()) == 1
+    data = _read_flag(live_board)
+    assert data["status"] == "fail" and data["rc"] == "head-drift"
 
 
 # ── record ② rc0 ∧ N!=pin → fail (수집 위장 차단) ───────────────────────────

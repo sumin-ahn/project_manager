@@ -220,6 +220,58 @@ def test_known_keys_comments_and_blank_lines_produce_no_finding(board, monkeypat
     assert board.lint_local_conf_keys() == []
 
 
+# ── project-local QA platform declaration ───────────────────────────────────
+
+
+def test_platform_commands_preserve_declared_order_and_are_known():
+    conf = _load_module("local_conf_platform_valid", LOCAL_CONF_PY)
+    values = conf.parse(
+        "qa.platforms=linux-arm,windows\n"
+        "test.linux-arm.cmd=run-arm\n"
+        "test.windows.cmd=run-windows\n"
+    )
+    assert conf.platform_test_commands(values) == (
+        ("linux-arm", "run-arm"), ("windows", "run-windows"),
+    )
+    assert conf.unknown_keys(values) == ()
+
+
+@pytest.mark.parametrize("declaration", (
+    "windows,windows", "core", "Windows", "win.dows", "win/dows", "win\\dows",
+    "win dows", "", "a" * 33,
+))
+def test_platform_declaration_rejects_invalid_or_duplicate_names(declaration):
+    conf = _load_module("local_conf_platform_invalid_" + str(abs(hash(declaration))), LOCAL_CONF_PY)
+    values = {"qa.platforms": declaration, f"test.{declaration}.cmd": "wrapper"}
+    if declaration == "":
+        assert conf.platform_test_commands(values) == ()
+    else:
+        with pytest.raises(ValueError):
+            conf.platform_test_commands(values)
+
+
+@pytest.mark.parametrize("values", (
+    {"qa.platforms": "windows"},
+    {"qa.platforms": "windows", "test.windows.cmd": ""},
+    {"qa.platforms": "windows", "test.windows.cmd": "wrapper", "test.linux.cmd": "other"},
+))
+def test_platform_declaration_rejects_missing_blank_and_orphan_commands(values):
+    conf = _load_module("local_conf_platform_resolution_" + str(id(values)), LOCAL_CONF_PY)
+    with pytest.raises(ValueError):
+        conf.platform_test_commands(values)
+
+
+def test_no_platform_declaration_keeps_legacy_semantics_but_orphan_is_advisory_unknown():
+    conf = _load_module("local_conf_platform_legacy", LOCAL_CONF_PY)
+    assert conf.platform_test_commands({}) == ()
+    assert conf.platform_test_commands({"qa.platforms": ""}) == ()
+    assert conf.unknown_keys({"test.windows.cmd": "wrapper"}) == ("test.windows.cmd",)
+    malformed = {
+        "test.Windows.cmd": "x", "test.windows.extra": "x", "test.win/dows.cmd": "x",
+    }
+    assert conf.unknown_keys(malformed) == tuple(malformed)
+
+
 def test_fresh_init_conf_has_zero_unknown_keys(board, monkeypatch, tmp_path):
     """`board.py init` 산출 fresh conf(주석 시드 포함)를 그대로 lint 하면 unknown 0."""
     pm = tmp_path / ".project_manager"

@@ -7829,6 +7829,176 @@ def _run_regression_cmd(cmd: str, cwd: str,
     return rc, captured.get("stdout", ""), captured.get("stderr", "")
 
 
+PM_QA_RESULT_PREFIX = "PM_QA_RESULT_V1="
+_PLATFORM_CELL_KEYS = {
+    "name", "command", "head", "status", "rc", "collected", "ts",
+}
+
+
+def _platform_test_commands(cwd: str) -> tuple[tuple[str, str], ...]:
+    """그 실행 트리의 선언 platform command를 공용 local.conf seam으로 해소한다."""
+    loader_path = Path(__file__).resolve().parent / "local_conf.py"
+    if not loader_path.is_file():
+        # 구세대 partial-engine 설치(board.py 단독 복사)는 platform 기능을 가질 수 없다.
+        # no-platform adopter는 종전대로 통과시키되, 신키를 먼저 선언한 불완전 업그레이드는
+        # 조용히 core-only로 강등하지 않는다. 이 skew 분기만 qa.platforms 한 키를 last-wins로
+        # 확인하고, 정상 형상은 아래 공용 parser/semantic resolver 한 벌만 쓴다.
+        conf_path = Path(cwd) / ".project_manager" / "local.conf"
+        if not conf_path.is_file():
+            return ()
+        raw = None
+        for line in file_lock.read_text_shared(conf_path, encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, _, value = stripped.partition("=")
+            if key.strip() == "qa.platforms":
+                raw = value.strip()
+        if raw:
+            raise ValueError(
+                "qa.platforms가 선언됐지만 engine sibling local_conf.py가 없어 해소할 수 없다"
+            )
+        return ()
+    values = local_config(Path(cwd))
+    return _load_local_conf().platform_test_commands(values)
+
+
+def _platform_marker(stdout: str) -> tuple[dict | None, str | None]:
+    """stdout의 exact versioned marker 하나를 파싱한다. 없거나 복수/손상이면 사유를 돌린다."""
+    markers = [line for line in (stdout or "").splitlines()
+               if line.startswith(PM_QA_RESULT_PREFIX)]
+    if len(markers) != 1:
+        return None, f"marker count={len(markers)} (exactly 1 required)"
+    try:
+        payload = json.loads(markers[0][len(PM_QA_RESULT_PREFIX):])
+    except json.JSONDecodeError as exc:
+        return None, f"marker JSON invalid: {exc.msg}"
+    if not isinstance(payload, dict):
+        return None, "marker payload is not an object"
+    expected = {"platform", "head", "status", "collected"}
+    if set(payload) != expected:
+        return None, f"marker key set mismatch: {sorted(payload)}"
+    return payload, None
+
+
+def _run_platform_cells(commands: tuple[tuple[str, str], ...], cwd: str,
+                        expected_head: str, floor: int,
+                        env: dict[str, str], *, core_passed: bool,
+                        head_after_core: str) -> tuple[list[dict], bool, int | str]:
+    """선언 platform을 순서대로 실행하고 ordered record cell과 aggregate 판정을 돌린다."""
+    cells: list[dict] = []
+    aggregate_pass = core_passed and bool(expected_head) and head_after_core == expected_head
+    aggregate_rc: int | str = 0
+    if not aggregate_pass:
+        reason = "core-red" if not core_passed else "head-drift"
+        for name, command in commands:
+            cells.append({
+                "name": name, "command": command, "head": expected_head,
+                "status": "not-run", "rc": reason, "collected": None,
+                "ts": now_utc(),
+            })
+            print(f"regression platform[{name}]: not-run (rc={reason})")
+        return cells, False, reason
+
+    for index, (name, command) in enumerate(commands):
+        print(f"regression platform[{name}]: $ {command}  (cwd={cwd})")
+        cell_env = {
+            **env,
+            "PM_QA_PLATFORM": name,
+            "PM_QA_EXPECTED_HEAD": expected_head,
+        }
+        rc, stdout, _stderr = _run_regression_cmd(command, cwd, cell_env)
+        payload, marker_problem = _platform_marker(stdout)
+        host_head = _git_head_at(cwd)
+        collected = payload.get("collected") if payload is not None else None
+        valid_collected = (
+            isinstance(collected, int) and not isinstance(collected, bool)
+            and collected > 0 and collected >= floor
+        )
+        passed = (
+            aggregate_pass and rc == 0 and marker_problem is None
+            and payload.get("platform") == name
+            and payload.get("head") == expected_head
+            and payload.get("status") == "pass"
+            and valid_collected
+            and host_head == expected_head
+        )
+        if passed:
+            recorded_rc: int | str = 0
+            status = "pass"
+            note = ""
+        else:
+            status = "fail"
+            if rc != 0:
+                recorded_rc = rc
+                note = f"command rc={rc}"
+            elif host_head != expected_head:
+                recorded_rc = "head-drift"
+                note = f"host HEAD {host_head[:8] or '?'} != {expected_head[:8]}"
+            elif marker_problem is not None:
+                recorded_rc = "invalid-result"
+                note = marker_problem
+            elif payload.get("platform") != name:
+                recorded_rc = "platform-mismatch"
+                note = f"marker platform={payload.get('platform')!r}"
+            elif payload.get("head") != expected_head:
+                recorded_rc = "head-mismatch"
+                note = f"marker head={payload.get('head')!r}"
+            elif payload.get("status") != "pass":
+                recorded_rc = "status-not-pass"
+                note = f"marker status={payload.get('status')!r}"
+            else:
+                recorded_rc = "collection-invalid"
+                note = f"marker collected={collected!r}, floor={floor}"
+            aggregate_pass = False
+            aggregate_rc = recorded_rc
+        cells.append({
+            "name": name, "command": command,
+            "head": payload.get("head") if payload is not None else "",
+            "status": status, "rc": recorded_rc, "collected": collected,
+            "ts": now_utc(),
+        })
+        print(f"regression platform[{name}]: {status} (rc={recorded_rc})"
+              + (f" — {note}" if note else ""))
+        if not passed:
+            for pending_name, pending_command in commands[index + 1:]:
+                cells.append({
+                    "name": pending_name, "command": pending_command,
+                    "head": expected_head, "status": "not-run",
+                    "rc": "previous-platform-red", "collected": None,
+                    "ts": now_utc(),
+                })
+                print(f"regression platform[{pending_name}]: not-run "
+                      "(rc=previous-platform-red)")
+            break
+    return cells, aggregate_pass, aggregate_rc
+
+
+def _platform_record_problem(data: dict, cwd: str, expected_head: str,
+                             commands: tuple[tuple[str, str], ...]) -> str | None:
+    """현재 선언과 저장 platform evidence의 exact 정합을 검증한다."""
+    if data.get("conf_anchor") != os.path.abspath(cwd):
+        return "conf_anchor mismatch"
+    cells = data.get("platforms")
+    if not isinstance(cells, list) or len(cells) != len(commands):
+        return "platform list missing/count mismatch"
+    floor = _regression_min_collected(cwd)
+    for cell, (name, command) in zip(cells, commands):
+        if not isinstance(cell, dict) or set(cell) != _PLATFORM_CELL_KEYS:
+            return f"platform[{name}] schema mismatch"
+        collected = cell.get("collected")
+        if (
+            cell.get("name") != name or cell.get("command") != command
+            or cell.get("head") != expected_head or cell.get("status") != "pass"
+            or cell.get("rc") != 0
+            or not isinstance(collected, int) or isinstance(collected, bool)
+            or collected <= 0 or collected < floor
+            or not isinstance(cell.get("ts"), str) or not cell.get("ts")
+        ):
+            return f"platform[{name}] evidence mismatch/red"
+    return None
+
+
 def _regression_rc5_note(rc: int, cwd: str, override: str | None) -> str:
     """rc5(pytest 수집 0 · "no tests ran") 진단 힌트를 만든다 (rc≠5 면 '').
 
@@ -7971,7 +8141,17 @@ def _regression_slot_state(session: str, cwd: str) -> _SlotRegressionState:
     if not isinstance(data, dict):
         return _SlotRegressionState("missing", None, None, None)
     collected, floor = _flag_collected(data), data.get("floor")
-    if data.get("head") != _git_head_at(cwd):
+    current_head = _git_head_at(cwd)
+    if data.get("head") != current_head:
+        return _SlotRegressionState("stale", data.get("rc"), collected, floor)
+    try:
+        platform_commands = _platform_test_commands(cwd)
+    except (OSError, UnicodeError, ValueError):
+        return _SlotRegressionState("red", "platform-config", collected, floor)
+    if platform_commands:
+        if _platform_record_problem(data, cwd, current_head, platform_commands) is not None:
+            return _SlotRegressionState("stale", data.get("rc"), collected, floor)
+    elif "platforms" in data:
         return _SlotRegressionState("stale", data.get("rc"), collected, floor)
     if data.get("status") != "pass":
         return _SlotRegressionState("red", data.get("rc"), collected, floor)
@@ -7996,10 +8176,38 @@ def _regression_run_slot(args: argparse.Namespace, session: str, cwd: str) -> in
     구조적으로 나오고(플래그도 그 세션 키), 장부가 슬롯을 옮겼다면 새 위치가 맞다.
     """
     cwd = os.path.abspath(cwd)   # 기록·conf 해소가 프로세스 cwd 에 안 흔들리게(단일-슬롯 동형).
+    try:
+        platform_commands = _platform_test_commands(cwd)
+    except (OSError, UnicodeError, ValueError) as exc:
+        head = _git_head_at(cwd)
+        floor = _regression_min_collected(cwd)
+        LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+        _write_json_atomic(_regression_flag_for(session), {
+            "head": head, "status": "fail", "rc": "platform-config",
+            "scope": "full", "collected": None, "floor": floor,
+            "conf_anchor": cwd, "session": session, "ts": now_utc(),
+            "platforms": [],
+        })
+        print(f"regression[{session}]: platform 설정 오류 — {exc}", file=sys.stderr)
+        return 1
     cmd = " ".join(p for p in (_test_cmd(args.cmd, session=session),
                                _quarantine_args()) if p)
     print(f"regression[{session}]: $ {cmd}  (cwd={cwd})")
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    expected_head = _git_head_at(cwd) if platform_commands else ""
+    if platform_commands and not expected_head:
+        cells, _passed, reason = _run_platform_cells(
+            platform_commands, cwd, expected_head, _regression_min_collected(cwd), env,
+            core_passed=False, head_after_core="",
+        )
+        LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+        _write_json_atomic(_regression_flag_for(session), {
+            "head": expected_head, "status": "fail", "rc": reason,
+            "scope": "full", "collected": None,
+            "floor": _regression_min_collected(cwd), "conf_anchor": cwd,
+            "session": session, "ts": now_utc(), "platforms": cells,
+        })
+        return 1
     rc, out, _err = _run_regression_cmd(cmd, cwd, env)
     status = "pass" if rc == 0 else "fail"
     collected = _collected_count(out)        # 파싱은 stdout 단독(stderr 로그 오염 차단).
@@ -8008,6 +8216,23 @@ def _regression_run_slot(args: argparse.Namespace, session: str, cwd: str) -> in
     head = _git_head_at(cwd)
     note = (" · 수집 0 — 테스트 루트/cwd 확인" if rc == 5 else "") + floor_note
     LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    if platform_commands:
+        cells, platforms_passed, platform_rc = _run_platform_cells(
+            platform_commands, cwd, expected_head, floor, env,
+            core_passed=status == "pass", head_after_core=head,
+        )
+        if not platforms_passed:
+            status = "fail"
+            recorded_rc = platform_rc
+        _write_json_atomic(_regression_flag_for(session), {
+            "head": expected_head, "status": status, "rc": recorded_rc,
+            "scope": "full", "collected": collected, "floor": floor,
+            "conf_anchor": cwd, "session": session, "ts": now_utc(),
+            "platforms": cells,
+        })
+        print(f"regression[{session}]: {status} (rc={recorded_rc}{note}) "
+              f"@ {expected_head[:8] or '?'}")
+        return 0 if status == "pass" else (rc or 1)
     _write_json_atomic(_regression_flag_for(session),
                        {"head": head, "status": status, "rc": recorded_rc, "scope": "full",
                         "collected": collected, "floor": floor, "conf_anchor": cwd,
@@ -8150,12 +8375,29 @@ def cmd_regression(args: argparse.Namespace) -> int:
         # 선언으로 좁히면 그 실행의 rc0 이 아무 것도 검증하지 않은 '가짜 green' 이 된다.
         touches = ((_ticket_touches(args.ticket) or []) if getattr(args, "ticket", None)
                    else (args.touches.split(",") if getattr(args, "touches", None) else []))
+        explicit_cwd = getattr(args, "cwd", None)
+        cwd = os.path.abspath(_regression_cwd(explicit_cwd))
+        platform_commands: tuple[tuple[str, str], ...] = ()
+        if not touches:
+            try:
+                platform_commands = _platform_test_commands(cwd)
+            except (OSError, UnicodeError, ValueError) as exc:
+                head = _git_head_at(cwd)
+                floor = _regression_min_collected(cwd)
+                LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+                _write_json_atomic(REGRESSION_FLAG, {
+                    "head": head, "status": "fail", "rc": "platform-config",
+                    "scope": "full", "collected": None, "floor": floor,
+                    "conf_anchor": cwd, "ts": now_utc(), "platforms": [],
+                })
+                print(f"regression: platform 설정 오류 — {exc}", file=sys.stderr)
+                return 1
         # 회귀 스테이징 — 활성 리뷰 사이클 중의 FULL 요청은 그 티켓 touches 로 강등한다.
         # `--final`(수렴 후)·핸드오프·pre-push 훅만 FULL 을 그대로 돈다(훅은 `--final` 을 싣는다).
         # 강등이 push 게이트를 열지 못하는 근거는 **훅 본문이 현행 세대임이 확정**됐다는 것이다 —
         # 그렇지 않은 훅은 여기 오기 전에 진입에서 차단된다(`_stale_pre_push_hook_refusal`).
         implicit_full = not touches and not getattr(args, "final", False)
-        if implicit_full:
+        if implicit_full and not platform_commands:
             gates, cycle_touches = _review_cycle_downgrade()
             if cycle_touches:
                 touches = cycle_touches
@@ -8163,6 +8405,26 @@ def cmd_regression(args: argparse.Namespace) -> int:
                       f"touches targeted 로 강등합니다 (수렴 후 FULL 은 "
                       f"`regression run --final`).")
         scoped = bool(touches)
+        if scoped and not explicit_cwd:
+            # no-platform implicit downgrade는 종전처럼 차단-record anchor를 상속하지 않는다.
+            cwd = os.path.abspath(_regression_cwd(None))
+        elif not explicit_cwd:
+            inherited_cwd = _inherit_flag_anchor(cwd)
+            if inherited_cwd != cwd:
+                cwd = inherited_cwd
+                try:
+                    platform_commands = _platform_test_commands(cwd)
+                except (OSError, UnicodeError, ValueError) as exc:
+                    head = _git_head_at(cwd)
+                    floor = _regression_min_collected(cwd)
+                    LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+                    _write_json_atomic(REGRESSION_FLAG, {
+                        "head": head, "status": "fail", "rc": "platform-config",
+                        "scope": "full", "collected": None, "floor": floor,
+                        "conf_anchor": cwd, "ts": now_utc(), "platforms": [],
+                    })
+                    print(f"regression: platform 설정 오류 — {exc}", file=sys.stderr)
+                    return 1
         parts = [_test_cmd(args.cmd, session=sess)]
         if scoped:
             parts.append(_scope_args(touches))
@@ -8175,11 +8437,6 @@ def cmd_regression(args: argparse.Namespace) -> int:
         # cwd seam — 회귀는 이 트리(REPO)에서 돈다(슬롯 자동해소 없음·회귀 단위 = push 되는 트리).
         # `--cwd`/`--task` 주입 시 그 경로, 미주입이면 REPO. **절대경로로 정규화**해
         # 실행·기록·이후 conf 해소가 프로세스 cwd 에 흔들리지 않게 한다(상대 `--cwd` 방어).
-        explicit_cwd = getattr(args, "cwd", None)
-        cwd = os.path.abspath(_regression_cwd(explicit_cwd))
-        if not scoped and not explicit_cwd:
-            # 훅 `check || run` 재실행 — 차단 기록이 있으면 그 앵커에서 돈다(위 함수 참조).
-            cwd = _inherit_flag_anchor(cwd)
         # 스위트 없는 트리 = 실행 전 거부. 판정은 **최종 cwd** 기준이고(앵커 승계 뒤), pytest 를
         # 띄우지도 플래그를 쓰지도 않는다 — 헛돈 결과가 게이트 기록으로 남으면 안 된다.
         suiteless = _suiteless_tree_refusal(cmd, cwd, explicit_cwd)
@@ -8188,6 +8445,21 @@ def cmd_regression(args: argparse.Namespace) -> int:
             return 1
         # 실행 안내는 **거부 판정 뒤**다 — 돌지 않은 명령을 `$ …` 로 남기면 로그·핸드오프
         # 인용에서 실행한 것처럼 읽힌다(거부 문구가 스스로 '측정·기록 안 함'을 말하는 것과 같은 축).
+        expected_head = _git_head_at(cwd) if platform_commands else ""
+        if platform_commands and not expected_head:
+            floor = _regression_min_collected(cwd)
+            cells, _passed, reason = _run_platform_cells(
+                platform_commands, cwd, expected_head, floor, env,
+                core_passed=False, head_after_core="",
+            )
+            LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+            _write_json_atomic(REGRESSION_FLAG, {
+                "head": expected_head, "status": "fail", "rc": reason,
+                "scope": "full", "collected": None, "floor": floor,
+                "conf_anchor": cwd, "ts": now_utc(), "platforms": cells,
+            })
+            print("regression: platform FULL 시작 HEAD 해소 실패", file=sys.stderr)
+            return 1
         print(f"regression: $ {cmd}")
         rc, out, _err = _run_regression_cmd(cmd, cwd, env)
         # pass = rc0 한정. pytest rc5(수집 0·"no tests ran")는 fail — 수집 0 은 green 이
@@ -8214,6 +8486,22 @@ def cmd_regression(args: argparse.Namespace) -> int:
             floor_note += " · Git HEAD 해소 실패"
         detail = f"{status} (rc={recorded_rc}{rc5_note}{floor_note})"
         LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+        if platform_commands:
+            cells, platforms_passed, platform_rc = _run_platform_cells(
+                platform_commands, cwd, expected_head, floor, env,
+                core_passed=status == "pass", head_after_core=head,
+            )
+            if not platforms_passed:
+                status = "fail"
+                recorded_rc = platform_rc
+            detail = f"{status} (rc={recorded_rc}{rc5_note}{floor_note})"
+            _write_json_atomic(REGRESSION_FLAG, {
+                "head": expected_head, "status": status, "rc": recorded_rc,
+                "scope": "full", "collected": collected, "floor": floor,
+                "conf_anchor": cwd, "ts": now_utc(), "platforms": cells,
+            })
+            print(f"regression: {detail} @ {expected_head[:8] or '?'}")
+            return 0 if status == "pass" else 1
         REGRESSION_FLAG.write_text(json.dumps(
             {"head": head, "status": status, "rc": recorded_rc, "scope": "full",
              "collected": collected, "floor": floor, "conf_anchor": cwd,
@@ -8251,6 +8539,22 @@ def cmd_regression(args: argparse.Namespace) -> int:
     if data.get("head") != head:
         print(f"regression: stale (기록 {str(data.get('head'))[:8]} ≠ HEAD {head[:8]}) "
               "— 재실행 필요.", file=sys.stderr)
+        return 1
+    try:
+        platform_commands = _platform_test_commands(anchor)
+    except (OSError, UnicodeError, ValueError) as exc:
+        print(f"regression: stale (platform 설정 오류: {exc}) — 재실행 필요.",
+              file=sys.stderr)
+        return 1
+    if platform_commands:
+        platform_problem = _platform_record_problem(data, anchor, head, platform_commands)
+        if platform_problem is not None:
+            print(f"regression: stale ({platform_problem}) — platform FULL 재실행 필요.",
+                  file=sys.stderr)
+            return 1
+    elif "platforms" in data:
+        print("regression: stale (현재는 platform 미선언이나 기록에 platform snapshot 존재) "
+              "— FULL 재실행 필요.", file=sys.stderr)
         return 1
     if data.get("status") != "pass":
         rc = data.get("rc")
@@ -8699,9 +9003,9 @@ def _livegate_record(args: argparse.Namespace) -> int:
     # actor 특정(resolve_actor_slot)을 타서 readonly(leased) 슬롯 추가로 활성 ≥2 가 되는 순간
     # 모호 fail-loud 를 오발화시켰다.
     _explicit_cwd = getattr(args, "cwd", None)
-    cwd = _livegate_cwd(_explicit_cwd,
-                        session=(None if _explicit_cwd
-                                 else session_name(_actor_session_override(args))))
+    live_session = (None if _explicit_cwd
+                    else session_name(_actor_session_override(args)))
+    cwd = _livegate_cwd(_explicit_cwd, session=live_session)
     # 기록 위치를 push 보호훅 read 위치와 정렬(단일 소스) — **실행 전에** 해소한다. 훅과 같은
     # engine-root sidecar 해소를 공유해, worktree board.py·PM 홈 board.py 어느 쪽으로 돌려도 훅이
     # 읽는 한 파일에 기록. engine-root 무효(BROKEN)는 실행 전에 알 수 있으니, 값비싼 `pytest -m
@@ -8734,6 +9038,43 @@ def _livegate_record(args: argparse.Namespace) -> int:
     drift_rc = _refuse_release_for_engine_drift(flag, cwd)
     if drift_rc:
         return drift_rc
+    try:
+        platform_commands = _platform_test_commands(cwd)
+    except (OSError, UnicodeError, ValueError) as exc:
+        print(f"livegate: fail — platform 설정 오류: {exc}. 릴리즈 차단.", file=sys.stderr)
+        return 1
+    if platform_commands:
+        cwd = os.path.abspath(cwd)
+    start_head = _git_head_at(cwd) if platform_commands else ""
+    regression_snapshot: list[dict] | None = None
+    if platform_commands:
+        regression_flag = (_regression_flag_for(live_session)
+                           if live_session and len(identity_args.leased_sessions(LEASES_FILE)) >= 2
+                           else REGRESSION_FLAG)
+        if not regression_flag.exists():
+            print("livegate: fail — 선언 platform regression 기록 없음. "
+                  "같은 HEAD에서 `board.py regression run` 필요. 릴리즈 차단.", file=sys.stderr)
+            return 1
+        try:
+            regression_data = json.loads(file_lock.read_text_shared(
+                regression_flag, encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            print(f"livegate: fail — platform regression 기록 판독 실패: {exc}. 릴리즈 차단.",
+                  file=sys.stderr)
+            return 1
+        problem = None
+        if not isinstance(regression_data, dict):
+            problem = "record is not an object"
+        elif regression_data.get("head") != start_head or regression_data.get("status") != "pass":
+            problem = "aggregate status/head mismatch"
+        else:
+            problem = _platform_record_problem(
+                regression_data, cwd, start_head, platform_commands)
+        if problem is not None:
+            print(f"livegate: fail — platform regression evidence 불일치({problem}). "
+                  "같은 HEAD에서 FULL 재실행 필요. 릴리즈 차단.", file=sys.stderr)
+            return 1
+        regression_snapshot = [dict(cell) for cell in regression_data["platforms"]]
     print(f"livegate: $ {LIVEGATE_TEST_CMD}  (cwd={cwd})")
     # 자식 pytest 인코딩을 코드로 명시(env 워크어라운드 아님) — cp949 콘솔에서도 UTF-8.
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
@@ -8746,16 +9087,24 @@ def _livegate_record(args: argparse.Namespace) -> int:
         print(output if output.endswith("\n") else output + "\n", end="")
     n = _livegate_ran_count(output)
     head = _git_head_at(cwd)
-    passed = rc == 0 and n == LIVEGATE_RELEASE_PIN
+    passed = (rc == 0 and n == LIVEGATE_RELEASE_PIN
+              and (not platform_commands or (bool(start_head) and head == start_head)))
     status = "pass" if passed else "fail"
     flag.parent.mkdir(parents=True, exist_ok=True)
-    _write_json_atomic(flag,
-                       {"head": head, "status": status, "n": n, "rc": rc, "ts": now_utc()})
+    record = {"head": head, "status": status, "n": n, "rc": rc, "ts": now_utc()}
+    if platform_commands:
+        record["conf_anchor"] = cwd
+        record["platforms"] = regression_snapshot
+        if head != start_head:
+            record["rc"] = "head-drift"
+    _write_json_atomic(flag, record)
     if passed:
         print(f"livegate: pass @ {head[:8] or '?'} "
               f"(release {n}/{LIVEGATE_RELEASE_PIN} green) ✓")
         return 0
-    if rc != 0:
+    if platform_commands and head != start_head:
+        reason = f"HEAD drift ({start_head[:8]} → {head[:8] or '?'})"
+    elif rc != 0:
         reason = f"release red (rc={rc})"
     else:
         reason = (f"수집 {n} ≠ pin {LIVEGATE_RELEASE_PIN} — 마커 소실/wrong-cwd 의심"
@@ -8828,6 +9177,28 @@ def _livegate_check(args: argparse.Namespace) -> int:
     if head != rev:
         print(f"livegate: rev 불일치 (기록 {str(head)[:8]} ≠ push {str(rev)[:8]}) "
               "— `livegate record` 재실행 필요 (릴리즈 차단).", file=sys.stderr)
+        return 1
+    anchor = data.get("conf_anchor", cwd)
+    if "conf_anchor" in data and (
+        not isinstance(anchor, str) or not anchor or not os.path.isabs(anchor)
+        or not Path(anchor).is_dir()
+    ):
+        print("livegate: platform conf_anchor 손상 — 릴리즈 차단.", file=sys.stderr)
+        return 1
+    try:
+        platform_commands = _platform_test_commands(anchor)
+    except (OSError, UnicodeError, ValueError) as exc:
+        print(f"livegate: platform 설정 오류({exc}) — 릴리즈 차단.", file=sys.stderr)
+        return 1
+    if platform_commands:
+        problem = _platform_record_problem(data, anchor, rev, platform_commands)
+        if problem is not None:
+            print(f"livegate: platform snapshot 불일치({problem}) — 릴리즈 차단.",
+                  file=sys.stderr)
+            return 1
+    elif "platforms" in data:
+        print("livegate: 현재는 platform 미선언이나 기록에 platform snapshot 존재 — "
+              "record 재실행 필요 (릴리즈 차단).", file=sys.stderr)
         return 1
     print(f"livegate: green @ {str(rev)[:8]} ✓")
     return 0

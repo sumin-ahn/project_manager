@@ -23,6 +23,7 @@ stdlib-only 이며 형제는 `file_lock`(공유 읽기 seam) 하나만 경로-�
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -373,6 +374,7 @@ KNOWN_KEYS: tuple[str, ...] = (
     "ctx.nudge_pct",
     "ctx.stop_pct",
     "ctx.window_tokens",
+    "qa.platforms",
     "regression.min_collected",
     "upstream.path",
     "upstream.rev",
@@ -393,6 +395,7 @@ _ROLE_SUFFIXES: tuple[str, ...] = ("harness", "model", "reasoning")
 _HARNESS_SUFFIXES: tuple[str, ...] = (
     "idle_timeout", "wall_timeout", "ctx_window_tokens", "pro_model",
 )
+_PLATFORM_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}\Z")
 
 
 class ConfResult:
@@ -603,8 +606,16 @@ def assert_values_no_legacy(values: dict[str, str], path: Path | None = None) ->
 def unknown_keys(values: dict[str, str]) -> tuple[str, ...]:
     """레지스트리에 없고 구표기도 아닌 키 (never-block advisory 입력)."""
     known = set(KNOWN_KEYS)
+    declared = {
+        name.strip() for name in values.get("qa.platforms", "").split(",")
+        if name.strip()
+    }
     out: list[str] = []
     for key in values:
+        platform_name = _platform_command_name(key)
+        if platform_name is not None and platform_name not in declared:
+            out.append(key)
+            continue
         if key in known or is_legacy_key(key) or _matches_pattern(key):
             continue
         out.append(key)
@@ -624,7 +635,55 @@ def _matches_pattern(key: str) -> bool:
                 and segments[2] in _HARNESS_SUFFIXES)
     if head == "delegate":
         return _matches_delegate_pattern(segments[1:])
+    if head == "test":
+        return _platform_command_name(key) is not None
     return False
+
+
+def _platform_command_name(key: str) -> str | None:
+    """정확한 `test.<name>.cmd` 키면 name, 아니면 None."""
+    segments = key.split(".")
+    if (
+        len(segments) == 3 and segments[0] == "test" and segments[2] == "cmd"
+        and _PLATFORM_NAME_RE.fullmatch(segments[1]) and segments[1] != "core"
+    ):
+        return segments[1]
+    return None
+
+
+def platform_test_commands(values: dict[str, str]) -> tuple[tuple[str, str], ...]:
+    """`qa.platforms` 선언을 순서 보존 `(name, command)` tuple로 fail-closed 해소한다.
+
+    선언 부재/빈값은 legacy no-platform 형상이라 platform 의미 검사를 전혀 하지 않는다.
+    nonempty 선언부터 이름·중복·command 누락·미선언 orphan을 모두 오류로 올린다.
+    """
+    raw = values.get("qa.platforms")
+    if raw is None or not raw.strip():
+        return ()
+    names = [part.strip() for part in raw.split(",")]
+    for name in names:
+        if not _PLATFORM_NAME_RE.fullmatch(name) or name == "core":
+            raise ValueError(
+                "qa.platforms 이름은 [a-z0-9][a-z0-9_-]{0,31} 이어야 하며 "
+                f"`core`는 예약어다: {name!r}"
+            )
+    if len(set(names)) != len(names):
+        raise ValueError(f"qa.platforms 중복 선언: {raw!r}")
+    declared = set(names)
+    orphaned = [
+        key for key in values
+        if (name := _platform_command_name(key)) is not None and name not in declared
+    ]
+    if orphaned:
+        raise ValueError("qa.platforms 미선언 platform command: " + ", ".join(orphaned))
+    resolved: list[tuple[str, str]] = []
+    for name in names:
+        key = f"test.{name}.cmd"
+        command = values.get(key, "").strip()
+        if not command:
+            raise ValueError(f"qa.platforms 선언에 필요한 `{key}`가 없거나 비어 있다")
+        resolved.append((name, command))
+    return tuple(resolved)
 
 
 def _matches_delegate_pattern(rest: list[str]) -> bool:

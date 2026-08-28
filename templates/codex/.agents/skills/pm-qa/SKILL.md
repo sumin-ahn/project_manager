@@ -26,11 +26,13 @@ wave 시작은 **baseline fix → wave 시작** 순서이며 red baseline 위에
 ### 1. 회귀 측정 (foreground)
 
 ```bash
-# 프로젝트 test 명령은 board regression 이 해소·기록한다 (local.conf test.cmd= · rc0 만 pass)
+# board regression 1회가 core 뒤 qa.platforms 선언 행을 순서대로 실행·기록한다
 python3 .project_manager/tools/board.py regression run
 ```
 
-성공은 `N passed in T.Ts`. red면 즉시 PM에게 보고하고 후속 wave 종료/시작을 중단한다.
+보고에는 `회귀(core)`와 선언된 `platform[<name>]` 행을 모두 포함한다. core 또는 platform 어느
+한 행이라도 red/미실행이면 즉시 PM에게 보고하고 후속 wave 종료/시작을 중단한다. platform 선택
+flag나 별도 platform 명령을 만들지 않으며, VM/SSH 상세는 adopter-owned wrapper가 소유한다.
 
 ### 2. board.py lint (foreground)
 

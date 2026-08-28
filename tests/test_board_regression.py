@@ -216,6 +216,182 @@ def _without_suite(board) -> None:
     assert not (board.REPO / "tests").is_dir()
 
 
+def _set_platforms(board, declaration="windows", **commands) -> None:
+    lines = [f"qa.platforms={declaration}", "regression.min_collected=2"]
+    lines.extend(f"test.{name}.cmd={command}" for name, command in commands.items())
+    board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
+    board.LOCAL_CONF.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _marker(platform: str, head: str, collected=3, status="pass") -> str:
+    return "PM_QA_RESULT_V1=" + json.dumps({
+        "platform": platform, "head": head, "status": status, "collected": collected,
+    }, separators=(",", ":")) + "\n"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# T-0875 — declared platform FULL matrix
+# ════════════════════════════════════════════════════════════════════════
+
+
+def test_no_platform_full_keeps_one_child_and_legacy_flat_record_shape(
+        board, monkeypatch):
+    calls = []
+    monkeypatch.setattr(board, "_run_regression_cmd", lambda cmd, cwd, env: (
+        calls.append((cmd, dict(env))) or (0, "3 passed in 0.01s\n", "")
+    ))
+    assert board.cmd_regression(_run_args(final=True)) == 0
+    assert len(calls) == 1
+    assert set(_flag(board)) == {
+        "head", "status", "rc", "scope", "collected", "floor", "conf_anchor", "ts",
+    }
+
+
+def test_declared_platforms_run_after_core_in_order_with_exact_env_and_record(
+        board, monkeypatch):
+    _set_platforms(board, declaration="linux-arm,windows",
+                   **{"linux-arm": "run-arm", "windows": "run-windows"})
+    head = "deadbeef01234567"
+    calls = []
+
+    def run(cmd, cwd, env):
+        calls.append((cmd, dict(env)))
+        if cmd == "run-arm":
+            return 0, _marker("linux-arm", head), ""
+        if cmd == "run-windows":
+            return 0, _marker("windows", head), ""
+        return 0, "3 passed in 0.01s\n", ""
+
+    monkeypatch.setattr(board, "_run_regression_cmd", run)
+    assert board.cmd_regression(_run_args(final=True)) == 0
+    assert [call[0] for call in calls] == [board._test_cmd(None), "run-arm", "run-windows"]
+    assert "PM_QA_PLATFORM" not in calls[0][1]
+    assert [(call[1]["PM_QA_PLATFORM"], call[1]["PM_QA_EXPECTED_HEAD"])
+            for call in calls[1:]] == [("linux-arm", head), ("windows", head)]
+    evidence = _flag(board)
+    assert set(evidence) == {
+        "head", "status", "rc", "scope", "collected", "floor", "conf_anchor", "ts",
+        "platforms",
+    }
+    assert [cell["name"] for cell in evidence["platforms"]] == ["linux-arm", "windows"]
+    assert evidence["status"] == "pass"
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 0
+
+
+@pytest.mark.parametrize("platform_result", (
+    (0, "wrapper ok\n"),
+    (0, _marker("windows", "deadbeef01234567") * 2),
+    (0, _marker("windows", "different-head")),
+    (0, _marker("other", "deadbeef01234567")),
+    (0, _marker("windows", "deadbeef01234567", collected=0)),
+    (0, _marker("windows", "deadbeef01234567", status="fail")),
+    (7, _marker("windows", "deadbeef01234567")),
+))
+def test_any_platform_result_defect_turns_the_aggregate_red(
+        board, monkeypatch, platform_result):
+    _set_platforms(board, windows="run-windows")
+    calls = []
+
+    def run(cmd, cwd, env):
+        calls.append(cmd)
+        if cmd == "run-windows":
+            return platform_result[0], platform_result[1], ""
+        return 0, "3 passed in 0.01s\n", ""
+
+    monkeypatch.setattr(board, "_run_regression_cmd", run)
+    assert board.cmd_regression(_run_args(final=True)) == 1
+    evidence = _flag(board)
+    assert evidence["status"] == "fail"
+    assert evidence["platforms"][0]["status"] == "fail"
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+
+
+def test_core_red_skips_every_declared_platform_and_records_not_run(board, monkeypatch):
+    _set_platforms(board, declaration="linux,windows", linux="run-linux", windows="run-windows")
+    calls = []
+    monkeypatch.setattr(board, "_run_regression_cmd", lambda cmd, cwd, env: (
+        calls.append(cmd) or (1, "1 failed in 0.01s\n", "")
+    ))
+    assert board.cmd_regression(_run_args(final=True)) == 1
+    assert len(calls) == 1
+    evidence = _flag(board)
+    assert [cell["status"] for cell in evidence["platforms"]] == ["not-run", "not-run"]
+    assert evidence["status"] == "fail"
+
+
+def test_host_head_drift_after_core_skips_platform_and_turns_aggregate_red(
+        board, monkeypatch):
+    _set_platforms(board, windows="run-windows")
+    heads = iter(("deadbeef01234567", "moved-head"))
+    monkeypatch.setattr(board, "_git_head_at", lambda _cwd: next(heads))
+    calls = []
+    monkeypatch.setattr(board, "_run_regression_cmd", lambda cmd, cwd, env: (
+        calls.append(cmd) or (0, "3 passed in 0.01s\n", "")
+    ))
+    assert board.cmd_regression(_run_args(final=True)) == 1
+    assert len(calls) == 1
+    assert _flag(board)["platforms"][0]["rc"] == "head-drift"
+
+
+def test_platform_declaration_preflight_is_fail_closed_before_core(board, monkeypatch):
+    _set_platforms(board, declaration="windows")
+    called = False
+
+    def forbidden(*_args):
+        nonlocal called
+        called = True
+        raise AssertionError("core must not run")
+
+    monkeypatch.setattr(board, "_run_regression_cmd", forbidden)
+    assert board.cmd_regression(_run_args(final=True)) == 1
+    assert not called
+    assert _flag(board)["rc"] == "platform-config"
+
+
+def test_explicit_scoped_run_never_executes_declared_platform(board, monkeypatch):
+    _set_platforms(board, windows="run-windows")
+    calls = []
+    monkeypatch.setattr(board, "_run_regression_cmd", lambda cmd, cwd, env: (
+        calls.append(cmd) or (0, "1 passed in 0.01s\n", "")
+    ))
+    assert board.cmd_regression(_run_args(touches="tests/test_x.py")) == 0
+    assert len(calls) == 1 and calls[0] != "run-windows"
+    assert not board.REGRESSION_FLAG.exists()
+
+
+def test_declaration_forces_implicit_full_instead_of_review_cycle_downgrade(
+        board, monkeypatch):
+    _set_platforms(board, windows="run-windows")
+    monkeypatch.setattr(board, "_review_cycle_downgrade", lambda: (["T-1"], ["tests/test_x.py"]))
+    calls = []
+
+    def run(cmd, cwd, env):
+        calls.append(cmd)
+        return ((0, _marker("windows", "deadbeef01234567"), "")
+                if cmd == "run-windows" else (0, "3 passed in 0.01s\n", ""))
+
+    monkeypatch.setattr(board, "_run_regression_cmd", run)
+    assert board.cmd_regression(_run_args()) == 0
+    assert len(calls) == 2
+    assert board.REGRESSION_FLAG.exists()
+
+
+def test_check_rejects_legacy_record_and_command_drift_after_declaration(board, monkeypatch):
+    _write_flag(board, status="pass", rc=0, collected=3, floor=0,
+                conf_anchor=str(board.REPO))
+    _set_platforms(board, windows="run-windows")
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+
+    def run(cmd, cwd, env):
+        return ((0, _marker("windows", "deadbeef01234567"), "")
+                if cmd == "run-windows" else (0, "3 passed in 0.01s\n", ""))
+
+    monkeypatch.setattr(board, "_run_regression_cmd", run)
+    assert board.cmd_regression(_run_args(final=True)) == 0
+    _set_platforms(board, windows="changed-wrapper")
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+
+
 # ════════════════════════════════════════════════════════════════════════
 # T-0872 — single FULL 실행 cwd/HEAD/conf anchor 좌표 정합
 # ════════════════════════════════════════════════════════════════════════
@@ -842,6 +1018,41 @@ def test_multi_slot_regression_keeps_per_slot_head_seam(multi_board):
 def _set_slot_floor(board, session: str, value) -> None:
     """그 슬롯 worktree 트리에 하한을 선언한다 (슬롯별 앵커 = 그 슬롯이 회귀를 도는 트리)."""
     _set_floor(board, value, tree=Path(_slot_cwd(board, session)))
+
+
+def test_multi_slot_platform_matrix_uses_each_slot_config_and_is_all_or_nothing(
+        multi_board, monkeypatch):
+    board = multi_board
+    for session in ("A_1", "B_1"):
+        tree = Path(_slot_cwd(board, session))
+        conf = tree / ".project_manager" / "local.conf"
+        conf.parent.mkdir(parents=True, exist_ok=True)
+        conf.write_text(
+            "qa.platforms=windows\n"
+            f"test.windows.cmd=run-{session}\n"
+            "regression.min_collected=2\n",
+            encoding="utf-8",
+        )
+    calls = []
+
+    def run(cmd, cwd, env):
+        calls.append((cmd, cwd, dict(env)))
+        if cmd.startswith("run-"):
+            head = env["PM_QA_EXPECTED_HEAD"]
+            if cmd == "run-B_1":
+                head = "stale-guest"
+            return 0, _marker("windows", head), ""
+        return 0, "3 passed in 0.01s\n", ""
+
+    monkeypatch.setattr(board, "_run_regression_cmd", run)
+    assert board.cmd_regression(_run_args()) == 1
+    assert [cmd for cmd, _cwd, _env in calls if cmd.startswith("run-")] == [
+        "run-A_1", "run-B_1",
+    ]
+    a_record = json.loads(board._regression_flag_for("A_1").read_text(encoding="utf-8"))
+    b_record = json.loads(board._regression_flag_for("B_1").read_text(encoding="utf-8"))
+    assert a_record["status"] == "pass"
+    assert b_record["status"] == "fail"
 
 
 def test_multi_run_below_floor_blocks_and_records(multi_board, monkeypatch, capsys):

@@ -12,7 +12,8 @@
 
 ```
 ## PM 통합 검증 report (YYYY-MM-DD HH:MM)
-- 회귀: N / N 통과 (또는 K failed — <첫 fail 1줄>)
+- 회귀(core): N / N 통과 (또는 K failed — <첫 fail 1줄>)
+- platform[<name>]: pass · collected N · HEAD <SHA short> (선언 platform마다 1행)
 - lint: clean (또는 N advisory / 차단 M)
 - git: <clean | N files modified> · branch <name> · HEAD <SHA short>
 - 최근 commit: <SHA> <subject>
@@ -20,13 +21,15 @@
 
 ## 결정 (PM 손)
 - 회귀 통과 + lint 차단 0 + working tree clean → wave 종료/시작 OK.
-- 회귀 red → baseline fix 또는 dev 재작업.
+- 회귀(core) 또는 선언 platform 어느 행이든 red/미실행 → baseline fix 또는 dev 재작업.
 - working tree dirty → wave 종결 commit 누락·재확인.
 ```
 
 ## 불변
 
 - fail-soft가 아니다. red는 즉시 보고하고 후속 단계를 중단한다.
+- `board.py regression run` 한 번이 core와 선언 platform 전부를 직렬 실행한다. 일부 platform만
+  고르는 flag/재실행은 없고, 결과 marker·same-HEAD 판정은 board가 소유한다.
 - 1번 회귀와 3번 git은 독립이므로 multiple Bash 병렬 호출할 수 있다.
 - 비즈니스 로직 없는 thin 합성이며 실제 차단 검증은 push gate(pre-push hook)가 보증한다.
 - evidence는 선택·인스턴스 소유다.

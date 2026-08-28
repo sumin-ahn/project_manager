@@ -564,6 +564,7 @@ dot notation이고 세그먼트 안 철자는 그 식별자의 정본을 따른�
 | `project.tagline` · `project.root` · `project.date` | (없음) | 어댑터 문서 렌더 토큰(한 줄 소개·문서가 가리키는 루트 경로·기준 날짜) |
 | `runtime.py` | 탐지값 | 이 clone의 python 인터프리터(`board.py init`이 실행검증으로 채운다) |
 | `test.cmd` | `pytest -q` | 회귀 게이트가 그대로 실행하는 프로젝트 test 명령 |
+| `qa.platforms` · `test.<name>.cmd` | (없음) | opt-in platform 목록과 각 host-side wrapper 명령. 무인자 FULL이 core 뒤 선언 순서로 직렬 실행하며 같은 HEAD 결과 marker를 요구 |
 | `identity.user` | `git config user.email` | 이 clone에서 나는 누구인가(slot·task 무관) |
 | `upstream.path` | (없음) | `pm-update`가 기본 source로 쓰는 프레임워크 경로/URL |
 | `upstream.rev` · `upstream.seen_rev` | (없음) | drift-lint의 baseline과 현재 관찰값(엔진이 기록) |
