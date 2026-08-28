@@ -7045,17 +7045,14 @@ class TargetLocalConfReadError(RuntimeError):
 def repo_root_from_cwd(cwd: Path | None) -> Path | None:
     """호출 cwd/`--cwd`에서 가장 가까운 제품 repo 루트를 해소한다.
 
-    기존 판정 입력인 cwd를 그대로 쓰되, `--cwd`가 repo 하위 디렉토리여도 루트의 conf를 보도록
-    `.git` + `.project_manager` 마커를 상향 탐색한다. cwd 미지정/비-repo면 None이며 divergence
-    가드는 조용히 skip한다.
+    Git `rev-parse --show-toplevel`을 써 linked worktree의 `.git` 파일과 일반 checkout의
+    `.git` 디렉토리를 같은 근거로 본다. 제품 repo에 `.project_manager`를 요구하지
+    않는다. PM 홈은 호출부가 `resolve_pm_home_for_repo`로 lease 장부에서 별도
+    해소한다. cwd 미지정/비-repo면 None이며 divergence 가드는 조용히 skip한다.
     """
     if cwd is None:
         return None
-    resolved = cwd.resolve()
-    for candidate in (resolved, *resolved.parents):
-        if (candidate / ".git").exists() and (candidate / ".project_manager").is_dir():
-            return candidate
-    return None
+    return _path_repo_root(cwd.resolve())
 
 
 def delegate_profile_config(

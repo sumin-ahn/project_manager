@@ -45,8 +45,8 @@ def _managed_worktree(tmp_path: Path) -> tuple[Path, Path, str]:
     worktree = home / "work" / "slot"
     worktree.parent.mkdir()
     _git(home, "worktree", "add", "-q", "-b", "test-slot", str(worktree))
-    # 실 채택 슬롯처럼 자기 엔진 사본 마커를 둬 repo_root_from_cwd가 슬롯에서 멈추고,
-    # lease 기반 PM-home 재앵커가 실제로 load-bearing이 되게 한다.
+    # Git toplevel이 linked worktree 슬롯에서 멈춘다. 자기 엔진 사본 마커는
+    # PM 홈 강등(lease 손상) 형상에서 슬롯 자기 conf를 해소하는 역할만 한다.
     (worktree / ".project_manager" / "tools").mkdir(parents=True)
     # PM 홈 강등(lease 손상) 형상은 슬롯 자기 conf 로 리뷰어 대상을 해소한다.
     (worktree / ".project_manager" / "local.conf").write_text(
@@ -144,6 +144,49 @@ def _stub_review_send(external, monkeypatch, tmp_path: Path) -> dict[str, int]:
     monkeypatch.setattr(external, "create_reviewer_workspace", _workspace)
     monkeypatch.setattr(external, "run_review", _review)
     return calls
+
+
+def test_repo_root_from_cwd_stops_at_markerless_linked_app_worktree(tmp_path):
+    """3-repo 분리 app slot은 `.git` 파일만 있어도 자기 Git 루트다."""
+    pm_home = tmp_path / "pm-home"
+    pm_home.mkdir()
+    _git(pm_home, "init", "-q")
+    (pm_home / ".project_manager").mkdir()
+    tickets = pm_home / ".project_manager" / "wiki" / "tickets" / "open"
+    tickets.mkdir(parents=True)
+    (tickets / "T-9002-markerless.md").write_text(
+        "---\nid: T-9002\ntitle: markerless owner fixture\nstatus: open\n"
+        "touches:\n- work/app_1/seed.txt\n---\n",
+        encoding="utf-8",
+    )
+
+    app_source = tmp_path / "app-source"
+    app_source.mkdir()
+    _git(app_source, "init", "-q")
+    _git(app_source, "config", "user.email", "test@example.invalid")
+    _git(app_source, "config", "user.name", "test")
+    (app_source / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git(app_source, "add", "seed.txt")
+    _git(app_source, "commit", "-qm", "seed")
+
+    slot = pm_home / "work" / "app_1"
+    slot.parent.mkdir()
+    _git(app_source, "worktree", "add", "-q", "-b", "task/app", str(slot))
+    nested = slot / "src" / "package"
+    nested.mkdir(parents=True)
+    assert (slot / ".git").is_file()
+    assert not (slot / ".project_manager").exists()
+    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        json.dumps({"leases": [{"slot": "work/app_1", "state": "leased"}]}),
+        encoding="utf-8",
+    )
+
+    external = _load("additional_reviewer_markerless_app_root")
+
+    assert external.repo_root_from_cwd(nested) == slot.resolve()
+    assert external.resolve_pm_home_for_repo(slot, required=True) == pm_home.resolve()
 
 
 def test_delegate_config_anchor_follows_registered_worktree_from_both_shell_dirs(
