@@ -195,6 +195,23 @@ def _fill_verify_field(text: str, key: str, raw_json: str, *, count: int = 1) ->
     return new_text
 
 
+def test_fill_verify_field_preserves_windows_command_json_backslashes(pd):
+    """JSON 텍스트 삽입이 Windows command의 escape를 한 겹 벗기지 않는다."""
+    command = r'C:\Users\qa user\Python\python.exe -m pytest "tests\test verify.py" -q'
+    raw_json = json.dumps(command)
+    before = json.loads(raw_json)
+
+    filled = _naive_placeholder_edit(_verify_fence_text(pd), "<true|false>", "true")
+    filled = _fill_verify_field(filled, "command", raw_json)
+    filled = _fill_verify_field(filled, "expected", json.dumps("passed"))
+    filled = _fill_verify_field(filled, "before", json.dumps("failed"))
+    filled = _fill_verify_field(filled, "reason", json.dumps(""))
+    after = json.loads(filled)["verifications"][0]["command"]
+
+    assert before == after == command
+    assert before.count("\\") == after.count("\\") == command.count("\\")
+
+
 def _developer_round_text(pd, verify_rows: list | None = None) -> str:
     body = (
         "## 구현 보충 (developer · 2026-08-21)\n\n"

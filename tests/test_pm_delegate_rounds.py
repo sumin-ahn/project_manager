@@ -71,6 +71,18 @@ def _load_pd():
     return module
 
 
+def test_python_argv_command_preserves_spaced_windows_interpreter_argv(monkeypatch):
+    """POSIX에서도 Windows interpreter의 공백·backslash argv 손상을 재현한다."""
+    interpreter = r"C:\Users\qa user\Python\python.exe"
+    monkeypatch.setattr(sys, "executable", interpreter)
+
+    command = python_argv_command("-m", "pytest", r"tests\test sample.py")
+
+    assert shlex.split(command) == [
+        interpreter, "-m", "pytest", r"tests\test sample.py",
+    ]
+
+
 @pytest.fixture(scope="module")
 def pd():
     module = _load_pd()

@@ -511,7 +511,10 @@ def test_declared_platform_valid_same_head_evidence_is_snapshotted_without_rerun
     assert len(shell_calls) == 1
     assert shell_calls[0]["args"][0] == live_board.LIVEGATE_TEST_CMD
     data = _read_flag(live_board)
-    assert set(data) == {"head", "status", "n", "rc", "ts", "conf_anchor", "platforms"}
+    assert set(data) == {
+        "head", "status", "n", "rc", "ts", "scope", "collected", "floor",
+        "conf_anchor", "platforms",
+    }
     assert data["platforms"] == regression["platforms"]
     assert live_board.cmd_livegate(_chk_args(rev=data["head"])) == 0
 
@@ -526,6 +529,45 @@ def test_declared_platform_livegate_check_rejects_current_command_change(
     head = _read_flag(live_board)["head"]
     _platform_conf(live_board, command="changed-wrapper")
     assert live_board.cmd_livegate(_chk_args(rev=head)) == 1
+
+
+@pytest.mark.parametrize("damage", (
+    "rc", "scope", "collected-bool", "collected-low", "timestamp", "schema",
+))
+def test_declared_platform_corrupt_core_evidence_blocks_record_and_check(
+        live_board, monkeypatch, damage):
+    _platform_conf(live_board)
+    regression = _platform_regression_record(live_board)
+
+    def corrupt(record):
+        if damage == "rc":
+            record["rc"] = 7
+        elif damage == "scope":
+            record["scope"] = "targeted"
+        elif damage == "collected-bool":
+            record["collected"] = True
+        elif damage == "collected-low":
+            record["collected"] = 1
+        elif damage == "timestamp":
+            record["ts"] = ""
+        else:
+            record["unexpected"] = "member"
+
+    corrupt(regression)
+    live_board.REGRESSION_FLAG.write_text(json.dumps(regression), encoding="utf-8")
+    fake = _FakeRun(0, "22 passed in 1.00s")
+    monkeypatch.setattr(live_board.subprocess, "run", fake)
+    assert live_board.cmd_livegate(_rec_args()) == 1
+    assert not any(call["kwargs"].get("shell") for call in fake.calls)
+
+    valid = _platform_regression_record(live_board)
+    assert live_board.cmd_livegate(_rec_args()) == 0
+    snapshot = _read_flag(live_board)
+    for key in ("scope", "collected", "floor"):
+        assert snapshot[key] == valid[key]
+    corrupt(snapshot)
+    live_board.LIVEGATE_FLAG.write_text(json.dumps(snapshot), encoding="utf-8")
+    assert live_board.cmd_livegate(_chk_args(rev=snapshot["head"])) == 1
 
 
 def test_declared_platform_release_head_drift_records_red(live_board, monkeypatch):

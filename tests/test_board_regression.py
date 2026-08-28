@@ -229,6 +229,23 @@ def _marker(platform: str, head: str, collected=3, status="pass") -> str:
     }, separators=(",", ":")) + "\n"
 
 
+def _duplicate_marker(key: str) -> str:
+    good = {
+        "platform": "windows", "head": "deadbeef01234567",
+        "status": "pass", "collected": 3,
+    }
+    bad = {
+        "platform": "other", "head": "stale-head",
+        "status": "fail", "collected": 0,
+    }
+    members = []
+    for name, value in good.items():
+        if name == key:
+            members.append(f"{json.dumps(name)}:{json.dumps(bad[name])}")
+        members.append(f"{json.dumps(name)}:{json.dumps(value)}")
+    return "PM_QA_RESULT_V1={" + ",".join(members) + "}\n"
+
+
 # ════════════════════════════════════════════════════════════════════════
 # T-0875 — declared platform FULL matrix
 # ════════════════════════════════════════════════════════════════════════
@@ -303,6 +320,53 @@ def test_any_platform_result_defect_turns_the_aggregate_red(
     evidence = _flag(board)
     assert evidence["status"] == "fail"
     assert evidence["platforms"][0]["status"] == "fail"
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+
+
+@pytest.mark.parametrize("duplicate_key", ("platform", "head", "status", "collected"))
+def test_duplicate_platform_marker_member_is_invalid_for_run_and_check(
+        board, monkeypatch, duplicate_key):
+    _set_platforms(board, windows="run-windows")
+
+    def run(cmd, cwd, env):
+        if cmd == "run-windows":
+            return 0, _duplicate_marker(duplicate_key), ""
+        return 0, "3 passed in 0.01s\n", ""
+
+    monkeypatch.setattr(board, "_run_regression_cmd", run)
+    assert board.cmd_regression(_run_args(final=True)) == 1
+    assert _flag(board)["platforms"][0]["rc"] == "invalid-result"
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+
+
+@pytest.mark.parametrize("damage", (
+    "rc", "scope", "collected-bool", "collected-low", "timestamp", "schema",
+))
+def test_platform_check_rejects_corrupt_full_core_aggregate(
+        board, monkeypatch, damage):
+    _set_platforms(board, windows="run-windows")
+
+    def run(cmd, cwd, env):
+        return ((0, _marker("windows", "deadbeef01234567"), "")
+                if cmd == "run-windows" else (0, "3 passed in 0.01s\n", ""))
+
+    monkeypatch.setattr(board, "_run_regression_cmd", run)
+    assert board.cmd_regression(_run_args(final=True)) == 0
+    evidence = _flag(board)
+    if damage == "rc":
+        evidence["rc"] = 7
+    elif damage == "scope":
+        evidence["scope"] = "targeted"
+    elif damage == "collected-bool":
+        evidence["collected"] = True
+    elif damage == "collected-low":
+        evidence["collected"] = 1
+    elif damage == "timestamp":
+        evidence["ts"] = ""
+    else:
+        evidence["unexpected"] = "member"
+    board.REGRESSION_FLAG.write_text(json.dumps(evidence), encoding="utf-8")
+
     assert board.cmd_regression(argparse.Namespace(action="check")) == 1
 
 
@@ -1053,6 +1117,45 @@ def test_multi_slot_platform_matrix_uses_each_slot_config_and_is_all_or_nothing(
     b_record = json.loads(board._regression_flag_for("B_1").read_text(encoding="utf-8"))
     assert a_record["status"] == "pass"
     assert b_record["status"] == "fail"
+
+
+@pytest.mark.parametrize("damage,expected", (
+    ("status", "red"),
+    ("scope", "stale"),
+    ("session", "stale"),
+))
+def test_multi_slot_platform_record_rejects_red_or_partial_core_aggregate(
+        multi_board, damage, expected):
+    board = multi_board
+    session = "A_1"
+    tree = Path(_slot_cwd(board, session))
+    conf = tree / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_text(
+        "qa.platforms=windows\n"
+        "test.windows.cmd=run-A_1\n"
+        "regression.min_collected=2\n",
+        encoding="utf-8",
+    )
+    record = {
+        "head": "HEAD_A", "status": "pass", "rc": 0, "scope": "full",
+        "collected": 3, "floor": 2, "conf_anchor": str(tree),
+        "session": session, "ts": "2026-08-28T00:00:00+00:00",
+        "platforms": [{
+            "name": "windows", "command": "run-A_1", "head": "HEAD_A",
+            "status": "pass", "rc": 0, "collected": 3,
+            "ts": "2026-08-28T00:00:00+00:00",
+        }],
+    }
+    if damage == "status":
+        record[damage] = "fail"
+    elif damage == "scope":
+        record[damage] = "targeted"
+    else:
+        record[damage] = "B_1"
+    board._regression_flag_for(session).write_text(json.dumps(record), encoding="utf-8")
+
+    assert board._regression_slot_state(session, str(tree)).state == expected
 
 
 def test_multi_run_below_floor_blocks_and_records(multi_board, monkeypatch, capsys):

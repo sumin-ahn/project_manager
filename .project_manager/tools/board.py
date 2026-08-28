@@ -7833,6 +7833,14 @@ PM_QA_RESULT_PREFIX = "PM_QA_RESULT_V1="
 _PLATFORM_CELL_KEYS = {
     "name", "command", "head", "status", "rc", "collected", "ts",
 }
+_PLATFORM_REGRESSION_KEYS = {
+    "head", "status", "rc", "scope", "collected", "floor", "conf_anchor", "ts",
+    "platforms",
+}
+_PLATFORM_LIVEGATE_KEYS = {
+    "head", "status", "n", "rc", "scope", "collected", "floor", "conf_anchor", "ts",
+    "platforms",
+}
 
 
 def _platform_test_commands(cwd: str) -> tuple[tuple[str, str], ...]:
@@ -7869,10 +7877,22 @@ def _platform_marker(stdout: str) -> tuple[dict | None, str | None]:
                if line.startswith(PM_QA_RESULT_PREFIX)]
     if len(markers) != 1:
         return None, f"marker count={len(markers)} (exactly 1 required)"
+    def reject_duplicate_members(pairs):
+        payload = {}
+        for key, value in pairs:
+            if key in payload:
+                raise ValueError(f"duplicate member: {key}")
+            payload[key] = value
+        return payload
+
     try:
-        payload = json.loads(markers[0][len(PM_QA_RESULT_PREFIX):])
-    except json.JSONDecodeError as exc:
-        return None, f"marker JSON invalid: {exc.msg}"
+        payload = json.loads(
+            markers[0][len(PM_QA_RESULT_PREFIX):],
+            object_pairs_hook=reject_duplicate_members,
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
+        message = exc.msg if isinstance(exc, json.JSONDecodeError) else str(exc)
+        return None, f"marker JSON invalid: {message}"
     if not isinstance(payload, dict):
         return None, "marker payload is not an object"
     expected = {"platform", "head", "status", "collected"}
@@ -7975,14 +7995,49 @@ def _run_platform_cells(commands: tuple[tuple[str, str], ...], cwd: str,
 
 
 def _platform_record_problem(data: dict, cwd: str, expected_head: str,
-                             commands: tuple[tuple[str, str], ...]) -> str | None:
-    """현재 선언과 저장 platform evidence의 exact 정합을 검증한다."""
+                             commands: tuple[tuple[str, str], ...], *,
+                             session: str | None = None,
+                             livegate: bool = False) -> str | None:
+    """현재 선언과 저장된 FULL core/platform aggregate의 exact 정합을 검증한다."""
+    expected_keys = set(_PLATFORM_LIVEGATE_KEYS if livegate else _PLATFORM_REGRESSION_KEYS)
+    if session is not None or (livegate and "session" in data):
+        expected_keys.add("session")
+    if set(data) != expected_keys:
+        return "aggregate schema mismatch"
+    if data.get("head") != expected_head:
+        return "aggregate head mismatch"
+    if data.get("status") != "pass":
+        return "aggregate status red"
+    if (not isinstance(data.get("rc"), int) or isinstance(data.get("rc"), bool)
+            or data.get("rc") != 0):
+        return "aggregate rc mismatch"
+    if data.get("scope") != "full":
+        return "aggregate scope mismatch"
+    floor = _regression_min_collected(cwd)
+    collected = data.get("collected")
+    if (not isinstance(collected, int) or isinstance(collected, bool)
+            or collected < floor):
+        return "aggregate collected mismatch"
+    recorded_floor = data.get("floor")
+    if (not isinstance(recorded_floor, int) or isinstance(recorded_floor, bool)
+            or recorded_floor < 0):
+        return "aggregate floor mismatch"
+    if not isinstance(data.get("ts"), str) or not data.get("ts"):
+        return "aggregate timestamp missing"
+    if session is not None and data.get("session") != session:
+        return "aggregate session mismatch"
+    if livegate and "session" in data and (
+            not isinstance(data.get("session"), str) or not data.get("session")):
+        return "aggregate session mismatch"
+    if livegate and (
+            not isinstance(data.get("n"), int) or isinstance(data.get("n"), bool)
+            or data.get("n") != LIVEGATE_RELEASE_PIN):
+        return "livegate collection mismatch"
     if data.get("conf_anchor") != os.path.abspath(cwd):
         return "conf_anchor mismatch"
     cells = data.get("platforms")
     if not isinstance(cells, list) or len(cells) != len(commands):
         return "platform list missing/count mismatch"
-    floor = _regression_min_collected(cwd)
     for cell, (name, command) in zip(cells, commands):
         if not isinstance(cell, dict) or set(cell) != _PLATFORM_CELL_KEYS:
             return f"platform[{name}] schema mismatch"
@@ -8148,13 +8203,14 @@ def _regression_slot_state(session: str, cwd: str) -> _SlotRegressionState:
         platform_commands = _platform_test_commands(cwd)
     except (OSError, UnicodeError, ValueError):
         return _SlotRegressionState("red", "platform-config", collected, floor)
+    if data.get("status") != "pass":
+        return _SlotRegressionState("red", data.get("rc"), collected, floor)
     if platform_commands:
-        if _platform_record_problem(data, cwd, current_head, platform_commands) is not None:
+        if _platform_record_problem(
+                data, cwd, current_head, platform_commands, session=session) is not None:
             return _SlotRegressionState("stale", data.get("rc"), collected, floor)
     elif "platforms" in data:
         return _SlotRegressionState("stale", data.get("rc"), collected, floor)
-    if data.get("status") != "pass":
-        return _SlotRegressionState("red", data.get("rc"), collected, floor)
     # 현재 하한은 **기록된 conf 앵커**(그 실행이 돈 트리)로 해소한다 — 슬롯 cwd 와 다를 수 있다
     # (`--cwd` 핀 실행). 미기록 플래그는 슬롯 cwd 폴백(후방호환).
     if _green_floor_stale(collected,
@@ -9047,10 +9103,15 @@ def _livegate_record(args: argparse.Namespace) -> int:
         cwd = os.path.abspath(cwd)
     start_head = _git_head_at(cwd) if platform_commands else ""
     regression_snapshot: list[dict] | None = None
+    regression_core_snapshot: dict | None = None
     if platform_commands:
-        regression_flag = (_regression_flag_for(live_session)
-                           if live_session and len(identity_args.leased_sessions(LEASES_FILE)) >= 2
-                           else REGRESSION_FLAG)
+        regression_session = (
+            live_session
+            if live_session and len(identity_args.leased_sessions(LEASES_FILE)) >= 2
+            else None
+        )
+        regression_flag = (_regression_flag_for(regression_session)
+                           if regression_session else REGRESSION_FLAG)
         if not regression_flag.exists():
             print("livegate: fail — 선언 platform regression 기록 없음. "
                   "같은 HEAD에서 `board.py regression run` 필요. 릴리즈 차단.", file=sys.stderr)
@@ -9069,12 +9130,19 @@ def _livegate_record(args: argparse.Namespace) -> int:
             problem = "aggregate status/head mismatch"
         else:
             problem = _platform_record_problem(
-                regression_data, cwd, start_head, platform_commands)
+                regression_data, cwd, start_head, platform_commands,
+                session=regression_session,
+            )
         if problem is not None:
             print(f"livegate: fail — platform regression evidence 불일치({problem}). "
                   "같은 HEAD에서 FULL 재실행 필요. 릴리즈 차단.", file=sys.stderr)
             return 1
         regression_snapshot = [dict(cell) for cell in regression_data["platforms"]]
+        regression_core_snapshot = {
+            key: regression_data[key] for key in ("scope", "collected", "floor")
+        }
+        if regression_session is not None:
+            regression_core_snapshot["session"] = regression_session
     print(f"livegate: $ {LIVEGATE_TEST_CMD}  (cwd={cwd})")
     # 자식 pytest 인코딩을 코드로 명시(env 워크어라운드 아님) — cp949 콘솔에서도 UTF-8.
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
@@ -9095,6 +9163,7 @@ def _livegate_record(args: argparse.Namespace) -> int:
     if platform_commands:
         record["conf_anchor"] = cwd
         record["platforms"] = regression_snapshot
+        record.update(regression_core_snapshot)
         if head != start_head:
             record["rc"] = "head-drift"
     _write_json_atomic(flag, record)
@@ -9191,7 +9260,8 @@ def _livegate_check(args: argparse.Namespace) -> int:
         print(f"livegate: platform 설정 오류({exc}) — 릴리즈 차단.", file=sys.stderr)
         return 1
     if platform_commands:
-        problem = _platform_record_problem(data, anchor, rev, platform_commands)
+        problem = _platform_record_problem(
+            data, anchor, rev, platform_commands, livegate=True)
         if problem is not None:
             print(f"livegate: platform snapshot 불일치({problem}) — 릴리즈 차단.",
                   file=sys.stderr)
