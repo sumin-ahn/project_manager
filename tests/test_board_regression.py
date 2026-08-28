@@ -298,6 +298,27 @@ def test_declared_platforms_run_after_core_in_order_with_exact_env_and_record(
     assert board.cmd_regression(argparse.Namespace(action="check")) == 0
 
 
+def test_platform_record_validator_owns_top_level_status_check(board):
+    """공용 validator 자체가 status=fail을 거부한다 — 호출부 선행순서에 기대지 않는다."""
+    _set_platforms(board, windows="run-windows")
+    commands = board._platform_test_commands(str(board.REPO))
+    record = {
+        "head": "deadbeef01234567", "status": "fail", "rc": 0,
+        "scope": "full", "collected": 3, "floor": 2,
+        "conf_anchor": str(board.REPO.resolve()),
+        "ts": "2026-08-29T00:00:00+00:00",
+        "platforms": [{
+            "name": "windows", "command": "run-windows",
+            "head": "deadbeef01234567", "status": "pass", "rc": 0,
+            "collected": 3, "ts": "2026-08-29T00:00:00+00:00",
+        }],
+    }
+
+    assert board._platform_record_problem(
+        record, str(board.REPO.resolve()), "deadbeef01234567", commands,
+    ) == "aggregate status mismatch"
+
+
 def test_platform_core_without_summary_is_unverified_even_when_floor_is_off(
         board, monkeypatch, capsys):
     board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)

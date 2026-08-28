@@ -145,6 +145,34 @@ def _hook_read_flag(hooks_dir: Path) -> Path:
     return Path(root) / ".project_manager" / ".local" / "livegate.json"
 
 
+def _platform_regression_record(anchor: Path) -> dict:
+    """platform FULL green 증거 — 선언은 실행 코드 트리(anchor)에 둔다."""
+    (anchor / ".project_manager").mkdir(parents=True, exist_ok=True)
+    (anchor / ".project_manager" / "local.conf").write_text(
+        "qa.platforms=windows\n"
+        "test.windows.cmd=run-windows\n",
+        encoding="utf-8",
+    )
+    return {
+        "head": _HEAD_SHA, "status": "pass", "rc": 0, "scope": "full",
+        "collected": 3, "floor": 0, "conf_anchor": str(anchor.resolve()),
+        "ts": "2026-08-29T00:00:00+00:00",
+        "platforms": [{
+            "name": "windows", "command": "run-windows", "head": _HEAD_SHA,
+            "status": "pass", "rc": 0, "collected": 3,
+            "ts": "2026-08-29T00:00:00+00:00",
+        }],
+    }
+
+
+def _readonly_tree(tmp_path: Path, hooks_dir: Path) -> Path:
+    tree = tmp_path / "readonly"
+    tree.mkdir()
+    _git(tree, "init", "-q", "-b", "main")
+    _git(tree, "config", "core.hooksPath", str(hooks_dir))
+    return tree
+
+
 # ── ① 단일 소스 해소: record 위치 == 훅 read 위치 (two-git) ──────────────────
 
 @_git_required
@@ -182,6 +210,49 @@ def test_record_writes_to_hook_read_location_not_called_copy(tmp_path, monkeypat
     # 호출된 사본의 .local(worktree)에는 조용한 기록이 없어야 한다(단일 소스·false-green 차단).
     assert not mod.LIVEGATE_FLAG.exists(), \
         "record 가 훅이 안 읽는 호출-사본 .local 에 조용히 기록했다(PM 60 footgun 재발)"
+
+
+@_git_required
+def test_platform_record_uses_engine_root_evidence_and_recorded_anchor_with_readonly_cwd(
+        tmp_path, monkeypatch):
+    """two-tree 정상: release cwd에 선언이 없어도 engine-root 증거의 conf_anchor로 record/check green."""
+    mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
+    readonly = _readonly_tree(tmp_path, hooks_dir)
+    regression_flag = engine / ".project_manager" / ".local" / "regression.json"
+    regression_flag.parent.mkdir(parents=True, exist_ok=True)
+    regression_flag.write_text(
+        json.dumps(_platform_regression_record(worktree)), encoding="utf-8")
+    real_run = mod.subprocess.run
+    fake = _PytestOnlyFake(
+        real_run, 0, f"{mod.LIVEGATE_RELEASE_PIN} passed, 812 deselected in 1.0s")
+    monkeypatch.setattr(mod.subprocess, "run", fake)
+
+    assert mod.cmd_livegate(_rec_args(cwd=str(readonly))) == 0
+    data = json.loads(_hook_read_flag(hooks_dir).read_text(encoding="utf-8"))
+    assert data["conf_anchor"] == str(worktree.resolve())
+    assert data["platforms"][0]["name"] == "windows"
+    assert mod.cmd_livegate(_chk_args(_HEAD_SHA, cwd=str(readonly))) == 0
+
+
+@_git_required
+def test_platform_evidence_in_called_copy_only_blocks_readonly_record(
+        tmp_path, monkeypatch, capsys):
+    """two-tree 불일치: 구 clone-local 증거를 legacy no-platform green으로 축약하지 않는다."""
+    mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
+    readonly = _readonly_tree(tmp_path, hooks_dir)
+    called_copy_flag = mod.LOCAL_DIR / "regression.json"
+    called_copy_flag.parent.mkdir(parents=True, exist_ok=True)
+    called_copy_flag.write_text(
+        json.dumps(_platform_regression_record(worktree)), encoding="utf-8")
+    real_run = mod.subprocess.run
+    fake = _PytestOnlyFake(
+        real_run, 0, f"{mod.LIVEGATE_RELEASE_PIN} passed, 812 deselected in 1.0s")
+    monkeypatch.setattr(mod.subprocess, "run", fake)
+
+    assert mod.cmd_livegate(_rec_args(cwd=str(readonly))) == 1
+    assert "engine-root 좌표와 불일치" in capsys.readouterr().err
+    assert not fake.pytest_ran
+    assert not _hook_read_flag(hooks_dir).exists()
 
 
 # ── ② 단일-repo/솔로 폴백: 훅 없음 → 현행 REPO/.local (채택자 무변경) ─────────

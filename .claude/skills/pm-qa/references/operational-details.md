@@ -30,6 +30,11 @@
 - fail-soft가 아니다. red는 즉시 보고하고 후속 단계를 중단한다.
 - `board.py regression run` 한 번이 core와 선언 platform 전부를 직렬 실행한다. 일부 platform만
   고르는 flag/재실행은 없고, 결과 marker·same-HEAD 판정은 board가 소유한다.
+- board는 각 wrapper에 `PM_QA_PLATFORM=<name>`·`PM_QA_EXPECTED_HEAD=<Git OID>`를 전달한다.
+  wrapper는 stdout에 정확히 한 줄의
+  `PM_QA_RESULT_V1={"platform":"<name>","head":"<Git OID>","status":"pass","collected":N}`를
+  출력한다. exact 4-key JSON, 전달값과 같은 platform/HEAD, bool 아닌 양의 정수 `collected`, rc0을
+  모두 만족해야 green이며 marker 부재·복수·중복 member는 red다.
 - 1번 회귀와 3번 git은 독립이므로 multiple Bash 병렬 호출할 수 있다.
 - 비즈니스 로직 없는 thin 합성이며 실제 차단 검증은 push gate(pre-push hook)가 보증한다.
 - evidence는 선택·인스턴스 소유다.

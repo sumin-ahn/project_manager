@@ -17,6 +17,7 @@ DETAILS = (
     REPO / "templates/opencode/.claude/skills/pm-qa/references/operational-details.md",
 )
 REGRESSION_COMMAND = "python3 .project_manager/tools/board.py regression run"
+README = REPO / "README.md"
 
 
 def test_every_pm_qa_surface_uses_one_unscoped_backbone_call_and_no_selector_flags():
@@ -37,6 +38,17 @@ def test_every_pm_qa_report_contract_has_core_and_declared_platform_rows():
         assert "platform[<name>]:" in text, path
         assert "어느 행이든 red/미실행" in text, path
         assert "한 번이 core와 선언 platform 전부를 직렬 실행" in text, path
+
+
+def test_shipped_notation_and_details_document_the_wrapper_protocol():
+    for path in (README, *DETAILS):
+        text = path.read_text(encoding="utf-8")
+        assert "PM_QA_RESULT_V1=" in text, path
+        assert "PM_QA_PLATFORM" in text, path
+        assert "PM_QA_EXPECTED_HEAD" in text, path
+        assert all(member in text for member in (
+            '"platform"', '"head"', '"status"', '"collected"',
+        )), path
 
 
 def test_shipped_pm_qa_contract_contains_no_machine_specific_vm_or_ssh_details():

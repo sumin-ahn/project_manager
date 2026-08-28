@@ -549,6 +549,28 @@ def test_declared_platform_livegate_check_rejects_current_command_change(
     assert live_board.cmd_livegate(_chk_args(rev=head)) == 1
 
 
+def test_platform_livegate_check_translates_legacy_conf_key_without_traceback(
+        live_board, monkeypatch, capsys):
+    """platform anchor의 구표기 local.conf는 traceback 대신 한 줄 fail-closed 진단이다."""
+    _platform_conf(live_board)
+    _platform_regression_record(live_board)
+    fake = _FakeRun(0, "22 passed in 1.00s")
+    monkeypatch.setattr(live_board.subprocess, "run", fake)
+    assert live_board.cmd_livegate(_rec_args()) == 0
+    head = _read_flag(live_board)["head"]
+    live_board.LOCAL_CONF.write_text(
+        "delegate_enabled=true\n"
+        "qa.platforms=windows\n"
+        "test.windows.cmd=run-windows\n",
+        encoding="utf-8",
+    )
+
+    assert live_board.cmd_livegate(_chk_args(rev=head)) == 1
+    captured = capsys.readouterr()
+    assert "platform 설정 오류" in captured.err
+    assert "Traceback" not in captured.err
+
+
 @pytest.mark.parametrize("damage", (
     "rc", "scope", "collected-bool", "collected-low", "timestamp", "schema",
 ))
