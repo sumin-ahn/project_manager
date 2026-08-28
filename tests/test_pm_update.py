@@ -2502,6 +2502,84 @@ def test_declared_flavor_validates_only_selected_retirement_manifests(
     assert result["retired_removed"] == [_RETIRE_OLD]
 
 
+def test_retirement_heals_and_moves_old_when_local_manifest_already_has_new(
+        pm_update, tmp_path):
+    """부분 업그레이드의 OLD+NEW 동시 등재도 OLD source-missing 없이 퇴역한다."""
+    source = tmp_path / "source"
+    selected = _write_retirement_flavor(source, "selected", selfprop=True)
+    shared = source / ".shared/a"
+    shared.parent.mkdir(parents=True)
+    shared.write_text("shared\n", encoding="utf-8")
+    dest = tmp_path / "dest"
+    selfprop = (
+        f"{MANIFEST_SELF_REL}    "
+        "@source=templates/selected/.project_manager/engine.manifest"
+    )
+    _write_dest_manifest(dest, [
+        ".shared/a", _RETIRE_OLD, _RETIRE_NEW, selfprop,
+    ])
+    (dest / ".shared/a").parent.mkdir(parents=True, exist_ok=True)
+    (dest / ".shared/a").write_text("shared\n", encoding="utf-8")
+    old = dest / _RETIRE_OLD
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_bytes(b"locally modified old reviewer\n")
+    new = dest / _RETIRE_NEW
+    new.write_bytes((source / _RETIRE_NEW).read_bytes())
+
+    result = pm_update.resolve_manifest_selfheal(dest, source)
+
+    assert result["status"] == "heal"
+    assert result["added"] == []
+    assert result["removed"] == []
+    assert result["retired_removed"] == [_RETIRE_OLD]
+    assert result["manifest"] is not None
+    changes, missing = pm_update.plan(source, result["manifest"], dest_root=dest)
+    assert missing == [], "검증된 OLD가 계획에 남아 source-missing으로 되돌아갔다"
+    assert all(rel != _RETIRE_OLD for rel, *_rest in changes)
+    pm_update.apply(changes)
+    moved = pm_update.retire_manifest_paths(
+        dest, source, result["manifest"], [selected], write=True,
+    )
+    assert not old.exists()
+    assert len(moved) == 1 and moved[0][0] == _RETIRE_OLD
+    assert moved[0][1].read_bytes() == b"locally modified old reviewer\n"
+
+
+def test_no_local_manifest_rejects_malformed_retirement_before_apply(
+        pm_update, tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    manifest = source / ".project_manager/engine.manifest"
+    manifest.parent.mkdir(parents=True)
+    payload_rel = ".project_manager/tools/payload.py"
+    manifest.write_text(
+        f"{payload_rel}\n# pm-retired-path: malformed\n", encoding="utf-8"
+    )
+    payload = source / payload_rel
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes(b"new payload\n")
+    dest = tmp_path / "dest"
+    existing = dest / payload_rel
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(b"old payload\n")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    apply_calls = []
+    baseline_calls = []
+    monkeypatch.setattr(
+        pm_update, "apply",
+        lambda *args, **kwargs: apply_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        pm_update, "converge_upstream_revs",
+        lambda *args, **kwargs: baseline_calls.append((args, kwargs)) or True,
+    )
+
+    assert pm_update.main(["--from", str(source)]) == 1
+    assert apply_calls == [], "malformed directive 검증 전에 engine apply가 실행됐다"
+    assert baseline_calls == []
+    assert existing.read_bytes() == b"old payload\n"
+    assert not (dest / ".project_manager/engine.manifest").exists()
+
+
 @pytest.mark.parametrize("shape,expected", [
     ("unowned", "manifest-owned"),
     ("render", "bare byte-copy"),

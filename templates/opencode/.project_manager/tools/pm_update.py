@@ -3542,6 +3542,7 @@ def resolve_manifest_selfheal(
         # 로컬 manifest 부재(fresh/구 import) — resolve_manifest_for_dest 가 이미 source manifest 를
         #   집으므로 plan 이 upstream 기준(신규 등재 포함)으로 돈다. 승격 불요(무변경·현행). self-prop
         #   이 없어 skew 대조는 root(=resolve 산출과 동일) 로 정합.
+        validated_retired_path_directives(source_root, [root_manifest])
         return {"status": "no_local", "added": [], "removed": [],
                 "retired_removed": [],
                 "manifest": None, "upstream_manifest": root_manifest,
@@ -3647,7 +3648,7 @@ def resolve_manifest_selfheal(
                 "upstream_manifests": upstream_manifests,
                 "manifest_text": upstream_text,
                 "merge_conflicts": merged_upstream["conflicts"]}
-    if not added and not (
+    if not added and not retired_removed and not (
         legacy_without_source_provenance and provenance_divergent
     ):
         # 경로/마커 동일(주석만 차이) — 도달할 신규 등재 경로 0. manifest 자신도 self-prop 엔트리라

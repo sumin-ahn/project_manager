@@ -731,7 +731,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   목록이 아니라 그 밖의 코드·산문을 바꿨고, 이 절의 역적용 delta anchor 네 자리는 전부
 #   그 구간 밖이라 그대로 유일 해소된다. 배달 경계(planning → apply → self-update 순서)와
 #   배달 파일 집합은 여전히 불변이고, 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "deb672530e35dfaee4d63c075bd3857f155e0f65cc4972ef91a0e8433ed9ef7f"
+_T0585_PM_UPDATE_SHA256 = "b21c753db1413ea06855d1780b7261a2a2d1975a9de8bd76ba8c25a1588383bc"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -904,7 +904,8 @@ def _t0585_pm_update_source() -> str:
     선언의 OLD를 self-heal 제거분에서 제외했다. 이 fixture는 현행 codex manifest와 신 reviewer만
     가진 fresh 대상이라 legacy 역상·removed 면제가 모두 비발화하고 기존 in-sync 계획으로 간다.
     adapter config 판정·apply·self-update 순서는 무편집이며 marker 4곳과 anachronism 부재 단언도
-    선통과했으므로, 새 검증 helper/선택 판정 bytes만 합성본 SHA에 반영했다.
+    선통과했으므로, 새 검증 helper/선택 판정 bytes만 합성본 SHA에 반영했다. 후속 수정의 no-local
+    strict 검증과 OLD+NEW retired heal 조건도 이 fixture의 현행 manifest 형상에서는 비발화한다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -1101,6 +1102,11 @@ def _pre_t0876_pm_update_source() -> str:
         "",
         1,
     )
+    source = source.replace(
+        "        validated_retired_path_directives(source_root, [root_manifest])\n",
+        "",
+        1,
+    )
     source = source.replace('                "retired_removed": [],\n', "")
     source = source.replace(
         "        validated_retirements = validated_retired_path_directives(\n"
@@ -1118,6 +1124,11 @@ def _pre_t0876_pm_update_source() -> str:
     )
     source = source.replace("    if effective_removed or marker_divergent:\n",
                             "    if removed or marker_divergent:\n", 1)
+    source = source.replace(
+        "    if not added and not retired_removed and not (\n",
+        "    if not added and not (\n",
+        1,
+    )
     source = source.replace(
         '        return {"status": "diverged", "added": added, "removed": effective_removed,\n'
         '                "retired_removed": retired_removed,\n',
