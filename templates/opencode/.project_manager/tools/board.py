@@ -1923,10 +1923,34 @@ def judge_git_anchor_command(
     strongest = max(judgments, key=lambda item: rank[item["verdict"]])
     if len(judgments) == 1:
         return strongest
-    reasons = " | ".join(
-        f"호출 {index} [{item['cwd_identity']}/{item['verdict']}]: {item['reason']}"
-        for index, item in enumerate(judgments, 1)
-    )
+    rendered: list[str] = []
+    index = 0
+    while index < len(judgments):
+        item = judgments[index]
+        key = (item["cwd_identity"], item["verdict"], item["reason"])
+        end = index + 1
+        while end < len(judgments):
+            candidate = judgments[end]
+            if (
+                candidate["cwd_identity"], candidate["verdict"], candidate["reason"]
+            ) != key:
+                break
+            end += 1
+        start_call = index + 1
+        end_call = end
+        if end - index == 1:
+            rendered.append(
+                f"호출 {start_call} [{item['cwd_identity']}/{item['verdict']}]: "
+                f"{item['reason']}"
+            )
+        else:
+            rendered.append(
+                f"호출 {start_call}–{end_call} "
+                f"[{item['cwd_identity']}/{item['verdict']}] ×{end - index}: "
+                f"{item['reason']}"
+            )
+        index = end
+    reasons = " | ".join(rendered)
     result = {**strongest, "reason": reasons}
     denies = [item for item in judgments if item["verdict"] == "deny"]
     if denies and not all(

@@ -705,6 +705,105 @@ def test_mixed_git_and_engine_calls_promote_missing_tests_deny(
     assert "호출 2 [pm-home/deny]" in got["reason"]
 
 
+def test_adjacent_identical_warns_render_as_one_range(topology):
+    board = _load("git_anchor_adjacent_warn_range", BOARD_PY)
+    home, _slot = topology
+    warning = board.judge_git_anchor(
+        str(home), ["git", "commit", "-m", "repeat"],
+    )["reason"]
+
+    got = board.judge_git_anchor_command(
+        str(home),
+        "git status && git commit -m repeat && git commit -m repeat "
+        "&& git commit -m repeat && git commit -m repeat",
+    )
+
+    assert got["verdict"] == "warn"
+    assert (
+        f"호출 2–5 [pm-home/warn] ×4: {warning}"
+        in got["reason"]
+    )
+    assert got["reason"].count(warning) == 1
+
+
+def test_reason_rendering_does_not_rerun_judgments(monkeypatch, topology):
+    board = _load("git_anchor_render_single_pass", BOARD_PY)
+    home, _slot = topology
+    judged: list[tuple[str, tuple[str, ...]]] = []
+
+    def fake_judge(cwd, argv, *, runner):
+        judged.append((cwd, tuple(argv)))
+        return {"verdict": "warn", "cwd_identity": "pm-home", "reason": "repeat"}
+
+    monkeypatch.setattr(board, "judge_git_anchor", fake_judge)
+    got = board.judge_git_anchor_command(
+        str(home), "git status && git status && git status && git status",
+    )
+
+    assert len(judged) == 4
+    assert got["reason"] == "호출 1–4 [pm-home/warn] ×4: repeat"
+
+
+def test_nonadjacent_or_different_warns_remain_separate(topology):
+    board = _load("git_anchor_warn_run_boundaries", BOARD_PY)
+    home, _slot = topology
+    commit_warning = board.judge_git_anchor(
+        str(home), ["git", "commit", "-m", "repeat"],
+    )["reason"]
+    status = board.judge_git_anchor(str(home), ["git", "status"])["reason"]
+    missing_path_warning = board.judge_git_anchor(
+        str(home), ["git", "add", "tests/not-there.txt"],
+    )["reason"]
+
+    nonadjacent = board.judge_git_anchor_command(
+        str(home), "git commit -m repeat && git status && git commit -m repeat",
+    )
+    assert nonadjacent["reason"] == (
+        f"호출 1 [pm-home/warn]: {commit_warning} | "
+        f"호출 2 [pm-home/ok]: {status} | "
+        f"호출 3 [pm-home/warn]: {commit_warning}"
+    )
+
+    different_reasons = board.judge_git_anchor_command(
+        str(home), "git commit -m repeat && git add tests/not-there.txt",
+    )
+    assert different_reasons["reason"] == (
+        f"호출 1 [pm-home/warn]: {commit_warning} | "
+        f"호출 2 [pm-home/warn]: {missing_path_warning}"
+    )
+
+
+def test_repeated_special_deny_keeps_code_but_mixed_denies_drop_it(
+    topology_without_home_tests,
+):
+    board = _load("git_anchor_deny_range_code", BOARD_PY)
+    home, slot = topology_without_home_tests
+    special = board.judge_engine_invocation(
+        str(home), ["python3", "-m", "pytest", "tests/"],
+    )
+
+    repeated = board.judge_git_anchor_command(
+        str(home), "python3 -m pytest tests/ && python3 -m pytest tests/",
+    )
+    assert repeated["verdict"] == "deny"
+    assert repeated["code"] == "pm-home-relative-pytest-tests-missing"
+    assert repeated["reason"] == (
+        f"호출 1–2 [pm-home/deny] ×2: {special['reason']}"
+    )
+
+    _seed_engine_copy(home, "v1")
+    _seed_engine_copy(slot, "v1")
+    mixed = board.judge_git_anchor_command(
+        str(home),
+        f"python3 {slot / '.project_manager/tools/board.py'} complete T-0001 "
+        "&& python3 -m pytest tests/",
+    )
+    assert mixed["verdict"] == "deny"
+    assert "code" not in mixed
+    assert "호출 1 [pm-home/deny]" in mixed["reason"]
+    assert "호출 2 [pm-home/deny]" in mixed["reason"]
+
+
 @pytest.mark.parametrize(
     ("separator", "separator_id"),
     [(" && ", "and"), ("; ", "semicolon"), ("\n", "newline")],
