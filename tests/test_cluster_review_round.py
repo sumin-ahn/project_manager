@@ -416,6 +416,62 @@ def test_developer_round_harvest_without_the_architect_test_leaves_head_alone(
 
 
 @requires_git
+def test_developer_harvest_uses_markerless_linked_app_worktree_diff(
+        pd, review_env, tmp_path):
+    """ADR-0069 app slot의 `.git` 파일만으로 developer diff 루트를 고정한다."""
+    home, _tickets = review_env
+    ticket = _MEMBERS[0]
+    app_source = tmp_path / "app-source"
+    app_source.mkdir()
+    assert _git(app_source, "init", "-q", "-b", "task/app-base").returncode == 0
+    source_file = app_source / f"{ticket.lower()}.py"
+    contract_test = app_source / "tests" / "test_cluster_review_round.py"
+    contract_test.parent.mkdir()
+    source_file.write_text("value = 1\n", encoding="utf-8", newline="\n")
+    contract_test.write_text(
+        "def test_app_output():\n    assert True\n",
+        encoding="utf-8", newline="\n",
+    )
+    assert _git(app_source, "add", "--", source_file.name, "tests").returncode == 0
+    assert _git(app_source, "commit", "-qm", "app seed").returncode == 0
+
+    slot = home / "work" / "finance_1"
+    slot.parent.mkdir()
+    assert _git(
+        app_source, "worktree", "add", "-q", "-b", _CLUSTER_BRANCH, str(slot),
+    ).returncode == 0
+    assert (slot / ".git").is_file()
+    assert not (slot / ".project_manager").exists()
+
+    base_rev = _git(slot, "rev-parse", "HEAD").stdout.strip()
+    (slot / source_file.name).write_text(
+        "value = 2\n", encoding="utf-8", newline="\n",
+    )
+    (slot / "tests" / contract_test.name).write_text(
+        "def test_app_output():\n    assert 1 + 1 == 2\n",
+        encoding="utf-8", newline="\n",
+    )
+
+    # harvest의 AT 결속 판정이 실제로 연결하는 두 seam을 함께 탄다.
+    repo_root = pd._repo_root_for_cwd(slot)
+    changed = pd._developer_round_changed_paths(repo_root, base_rev=base_rev)
+
+    assert repo_root == slot.resolve()
+    assert changed == frozenset({source_file.name, f"tests/{contract_test.name}"})
+
+
+@requires_git
+def test_developer_changed_paths_reports_unknown_base_revision(pd, tmp_path):
+    """repo/base 해소 실패는 빈 diff로 축약되지 않는다."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    assert _git(repo, "init", "-q").returncode == 0
+
+    with pytest.raises(pd.DelegateError, match=r"git diff .* 실패"):
+        pd._developer_round_changed_paths(repo, base_rev="not-a-real-revision")
+
+
+@requires_git
 def test_delegation_refuses_a_tree_that_is_not_the_cluster_branch(
         pd, review_env, capsys):
     """위임 표면도 같은 결속이다 — 스냅샷도 예약도 만들지 않고 rc 1 이다."""

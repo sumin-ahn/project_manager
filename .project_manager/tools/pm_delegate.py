@@ -13503,7 +13503,11 @@ def _ticket_cli_owner(cwd: Path) -> Path:
 
 
 def _repo_root_for_cwd(cwd: Path, er=None) -> Path:
-    """명시 cwd를 prepare/harvest가 공유하는 git 최상위 좌표로 정규화한다."""
+    """명시 cwd를 prepare/harvest가 공유하는 제품 Git 루트로 정규화한다.
+
+    앱 checkout은 `.project_manager`를 소유하지 않아도 된다. 보드·config의 PM 홈 소유
+    해소는 `_ticket_cli_owner`/lease 경계가 별도로 담당한다.
+    """
     if not cwd.is_absolute():
         raise DelegateError("--cwd 는 절대경로여야 합니다")
     resolved = cwd.resolve()
