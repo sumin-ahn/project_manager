@@ -500,6 +500,24 @@ def test_declared_platform_red_or_stale_regression_blocks_before_release(
     assert not any(call["kwargs"].get("shell") for call in fake.calls)
 
 
+def test_declared_platform_unverified_core_blocks_before_release(
+        live_board, monkeypatch):
+    _platform_conf(live_board)
+    record = _platform_regression_record(live_board, status="fail")
+    record["rc"] = live_board.REGRESSION_RC_UNVERIFIED_COLLECTION
+    record["collected"] = None
+    record["floor"] = 0
+    record["platforms"][0].update({
+        "status": "not-run", "rc": "core-red", "collected": None,
+    })
+    live_board.REGRESSION_FLAG.write_text(json.dumps(record), encoding="utf-8")
+    fake = _FakeRun(0, "22 passed in 1.00s")
+    monkeypatch.setattr(live_board.subprocess, "run", fake)
+
+    assert live_board.cmd_livegate(_rec_args()) == 1
+    assert not any(call["kwargs"].get("shell") for call in fake.calls)
+
+
 def test_declared_platform_valid_same_head_evidence_is_snapshotted_without_rerun(
         live_board, monkeypatch):
     _platform_conf(live_board)

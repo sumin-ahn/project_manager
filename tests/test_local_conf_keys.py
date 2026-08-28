@@ -93,6 +93,16 @@ def test_board_does_not_duplicate_the_known_key_registry():
     assert "LEGACY_KEY_MAP" not in source
 
 
+def test_board_platform_resolution_does_not_duplicate_the_local_conf_parser():
+    source = BOARD_PY.read_text(encoding="utf-8")
+    start = source.index("def _platform_test_commands(")
+    end = source.index("\ndef _platform_marker(", start)
+    resolver = source[start:end]
+    assert "qa.platforms" not in resolver
+    assert ".partition(" not in resolver
+    assert "platform_test_commands" in resolver
+
+
 def test_no_local_conf_file_is_quiet(board, monkeypatch, tmp_path):
     monkeypatch.setattr(board, "LOCAL_CONF", tmp_path / ".project_manager" / "local.conf")
     assert board.lint_local_conf_keys() == []

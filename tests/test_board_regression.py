@@ -265,7 +265,7 @@ def test_no_platform_full_keeps_one_child_and_legacy_flat_record_shape(
 
 
 def test_declared_platforms_run_after_core_in_order_with_exact_env_and_record(
-        board, monkeypatch):
+        board, monkeypatch, capsys):
     _set_platforms(board, declaration="linux-arm,windows",
                    **{"linux-arm": "run-arm", "windows": "run-windows"})
     head = "deadbeef01234567"
@@ -292,7 +292,87 @@ def test_declared_platforms_run_after_core_in_order_with_exact_env_and_record(
     }
     assert [cell["name"] for cell in evidence["platforms"]] == ["linux-arm", "windows"]
     assert evidence["status"] == "pass"
+    out = capsys.readouterr().out
+    assert "regression platform[linux-arm]: pass · collected 3 · HEAD deadbeef" in out
+    assert "regression platform[windows]: pass · collected 3 · HEAD deadbeef" in out
     assert board.cmd_regression(argparse.Namespace(action="check")) == 0
+
+
+def test_platform_core_without_summary_is_unverified_even_when_floor_is_off(
+        board, monkeypatch, capsys):
+    board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
+    board.LOCAL_CONF.write_text(
+        "qa.platforms=windows\n"
+        "test.windows.cmd=run-windows\n",
+        encoding="utf-8",
+    )
+    calls = []
+    monkeypatch.setattr(board, "_run_regression_cmd", lambda cmd, cwd, env: (
+        calls.append(cmd) or (0, "wrapper completed without pytest summary\n", "")
+    ))
+
+    assert board.cmd_regression(_run_args(final=True)) == 1
+    assert calls == [board._test_cmd(None)], "core evidence가 불명확하면 platform을 실행하지 않는다"
+    evidence = _flag(board)
+    assert evidence["status"] == "fail"
+    assert evidence["rc"] == board.REGRESSION_RC_UNVERIFIED_COLLECTION
+    assert evidence["collected"] is None and evidence["floor"] == 0
+    assert evidence["platforms"][0]["status"] == "not-run"
+
+    capsys.readouterr()
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    err = capsys.readouterr().err
+    assert "regression: RED" in err
+    assert "rc=unverified-collection" in err
+    assert "stale" not in err
+
+
+def test_multi_slot_platform_core_without_summary_uses_the_same_unverified_contract(
+        board, monkeypatch):
+    board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
+    board.LOCAL_CONF.write_text(
+        "qa.platforms=windows\n"
+        "test.windows.cmd=run-windows\n",
+        encoding="utf-8",
+    )
+    calls = []
+    monkeypatch.setattr(board, "_run_regression_cmd", lambda cmd, cwd, env: (
+        calls.append(cmd) or (0, "wrapper completed without pytest summary\n", "")
+    ))
+
+    assert board._regression_run_slot(
+        argparse.Namespace(cmd=None), "A_1", str(board.REPO),
+    ) == 1
+    assert len(calls) == 1 and calls[0] != "run-windows"
+    evidence = json.loads(
+        board._regression_flag_for("A_1").read_text(encoding="utf-8")
+    )
+    assert evidence["status"] == "fail"
+    assert evidence["rc"] == board.REGRESSION_RC_UNVERIFIED_COLLECTION
+    assert evidence["platforms"][0]["status"] == "not-run"
+
+
+@pytest.mark.parametrize(("core_rc", "core_stdout", "expected_rc"), (
+    (5, "no tests ran in 0.01s\n", 5),
+    (0, "1 passed in 0.01s\n", "partial-collection"),
+))
+def test_platform_core_red_preserves_core_reason_in_run_and_check(
+        board, monkeypatch, capsys, core_rc, core_stdout, expected_rc):
+    _set_platforms(board, windows="run-windows")
+    calls = []
+    monkeypatch.setattr(board, "_run_regression_cmd", lambda cmd, cwd, env: (
+        calls.append(cmd) or (core_rc, core_stdout, "")
+    ))
+
+    assert board.cmd_regression(_run_args(final=True)) == 1
+    assert calls == [board._test_cmd(None)]
+    assert _flag(board)["rc"] == expected_rc
+
+    capsys.readouterr()
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    err = capsys.readouterr().err
+    assert "regression: RED" in err and f"rc={expected_rc}" in err
+    assert "stale" not in err
 
 
 @pytest.mark.parametrize("platform_result", (
