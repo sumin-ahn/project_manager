@@ -1487,6 +1487,15 @@ _VERSIONED_BLOCK_RULES = """\
   must-fix 절과 같은 건수여야 한다).
 - `authority` 는 티켓 §목표/§결정 또는 `[[T-NNNN]]`·`[[ADR-NNNN]]` 같은 권위 근거를 적는다.
 - 직전 라운드 지적의 해소 확인 라운드는 그 `{prefix}-` ID 를 `confirmations` 에 싣는다.
+- `fix_contract`의 여섯 문자열은 모두 **구체값**이어야 한다. angle-bracket metavariable와
+  parser 금지어({placeholder_words})를 쓰지 마라. 경로는 실제 repo-relative 경로를, 명령은
+  그대로 실행 가능한 단일 명령을 적는다.
+- 구조화 블록의 JSON 문자열 값에는 `<` 또는 `>` 문자를 아예 쓰지 마라. metavariable가
+  필요하면 꺾쇠 없이 `ticket ID`처럼 평문으로 적는다.
+- 유효한 구체값 예: location=`.project_manager/tools/additional_reviewer.py:_VERSIONED_BLOCK_RULES` ·
+  failure=`금지어 안내가 parser 목록과 어긋난다` · design=`parser 상수에서 안내를 렌더한다` ·
+  test=`tests/test_additional_reviewer_ticket_harvest.py` ·
+  command=`python3 -m pytest tests/test_additional_reviewer_ticket_harvest.py -q` · expected=`passed`.
 - 위 티켓 본문에 이미 있는 블록(지난 라운드 산출·시드 골격)을 회신에 **재인용하지 마라** —
   이 회신에는 네가 이번에 낸 블록 하나만 있어야 한다.
 - 블록이 없거나 스키마를 어기면 이 라운드는 회수되지 않는다(라운드 파일 없음 · 종료코드 ≠ 0).
@@ -1509,17 +1518,21 @@ def _versioned_block_requirement(
     delegate = _load_pm_delegate()
     role = delegate.ADDITIONAL_REVIEWER_ROLE
     next_id = next_finding_id or delegate.next_review_finding_id("", role)
-    return (
-        _VERSIONED_BLOCK_HEADER
-        + delegate.render_pm_review_block_skeleton(role, confirmation_ids)
-        + "\n"
-        + _VERSIONED_BLOCK_RULES.format(
-            prefix=delegate.PM_REVIEW_FINDING_ID_PREFIXES[role],
+    rules = _VERSIONED_BLOCK_RULES.format(
+        prefix=delegate.PM_REVIEW_FINDING_ID_PREFIXES[role],
             # 표기는 호출부가 정할 수 있다 — 대상이 티켓 하나면 ID 실값 하나이고, 묶음이면
             # 그 값이 티켓마다 다르다(그 실값은 각 라운드 파일 시드가 이미 들고 있다).
-            next_id=next_id_label or f"`{next_id}`",
-            top_severity=delegate.PM_REVIEW_SEVERITIES[0],
-        )
+        next_id=next_id_label or f"`{next_id}`",
+        top_severity=delegate.PM_REVIEW_SEVERITIES[0],
+        placeholder_words="·".join(
+            delegate.PM_REVIEW_CONTRACT_PLACEHOLDER_WORDS
+        ),
+    )
+    return (
+        _VERSIONED_BLOCK_HEADER
+        + rules
+        + "\n"
+        + delegate.render_pm_review_block_skeleton(role, confirmation_ids)
     )
 
 

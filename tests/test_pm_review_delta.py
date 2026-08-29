@@ -209,6 +209,12 @@ def test_v3_fix_contract_rejects_placeholder_in_every_string_field(pd, field):
     assert caught.value.code == "malformed"
 
 
+def test_declared_contract_placeholder_words_are_all_parser_inputs(pd):
+    """prompt가 렌더할 공개 금지어 집합과 parser의 실제 거부 집합은 하나다."""
+    for word in pd.PM_REVIEW_CONTRACT_PLACEHOLDER_WORDS:
+        assert pd._CONTRACT_PLACEHOLDER_RE.search(word)
+
+
 def test_contract_test_targets_strip_korean_particles_and_punctuation(pd):
     original_f001 = (
         "tests/test_pm_review_delta.py에 v3 자리표시자 거부 케이스를, "

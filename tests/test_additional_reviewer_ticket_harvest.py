@@ -756,6 +756,32 @@ def test_prompt_says_the_round_file_is_the_harvest_target(external):
     assert "역할 절" not in external._VERSIONED_BLOCK_HEADER
 
 
+def test_prompt_requires_concrete_fix_contract_values(external, pd):
+    """설명용 metavariable도 strict parser에는 placeholder다 — 송신 전에 금지를 명시한다."""
+    requirement = external._versioned_block_requirement()
+    assert "여섯 문자열은 모두 **구체값**" in requirement
+    assert "JSON 문자열 값에는 `<` 또는 `>` 문자를 아예 쓰지 마라" in requirement
+    assert requirement.index("parser 금지어(") < requirement.index("```pm-review-v1")
+    forbidden_words = requirement.split("parser 금지어(", 1)[1].split(")", 1)[0]
+    for word in pd.PM_REVIEW_CONTRACT_PLACEHOLDER_WORDS:
+        assert word in forbidden_words
+
+    good_example = requirement.split("- 유효한 구체값 예:", 1)[1].split(
+        "\n- 위 티켓 본문", 1,
+    )[0]
+    target = "tests/test_additional_reviewer_ticket_harvest.py"
+    assert target in good_example and (REPO / target).is_file()
+    assert not re.search(r"<[^>\n]+>", good_example)
+    values = dict(re.findall(
+        r"(location|failure|design|test|command|expected)=`([^`]*)`",
+        good_example,
+    ))
+    assert tuple(values) == pd.PM_REVIEW_FIX_CONTRACT_KEYS
+    for key, value in values.items():
+        assert pd._pm_review_contract_string(value, f"example.{key}") == value
+    pd._pm_review_assert_verify_command_shape(values["command"], "example.command")
+
+
 def test_disposition_template_targets_the_external_channel(
     external, pd, monkeypatch, tmp_path,
 ):

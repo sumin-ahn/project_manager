@@ -1092,6 +1092,7 @@ _ENTRY_TYPE_RE = r"(?:\S+|<!-- feat/fix/verify/… -->)"
 # namespaced `T-<prefix>-NNN`을 함께 소비한다. prefix는 영숫자로 시작하고 이후
 # 영숫자/underscore/hyphen을 허용한다(`T-PAY-001`, `T-service-a-001`).
 _TICKET_ID_BODY = r"T-(?:[A-Za-z0-9][A-Za-z0-9_-]*-\d+|\d+)"
+_TICKET_ENTRY_ID_REF = rf"(?:\[\[{_TICKET_ID_BODY}\]\]|{_TICKET_ID_BODY})"
 _ANY_HANDOFF_RE = re.compile(
     r"^## \[\d{4}-\d{2}-\d{2}\] handoff \| PM \d+차"
     r"(?: \(.+\))? → 다음 PM 세션$"
@@ -1152,7 +1153,7 @@ def _collect_session_entries(
                 r"^## \[\d{4}-\d{2}-\d{2}\] handoff \| PM \d+차 → 다음 PM 세션$"
             )
         ticket_entry_re = re.compile(
-            rf"^## \[\d{{4}}-\d{{2}}-\d{{2}}\] {_ENTRY_TYPE_RE} \| {_TICKET_ID_BODY} — .+ "
+            rf"^## \[\d{{4}}-\d{{2}}-\d{{2}}\] {_ENTRY_TYPE_RE} \| {_TICKET_ENTRY_ID_REF} — .+ "
             rf"\({_TASK_TAG_PREFIX}{escaped_task}\)$"
         )
         checkpoint_re = re.compile(
@@ -1193,7 +1194,7 @@ def _collect_session_entries(
             rf"\({escaped_session}\) → 다음 PM 세션$"
         )
         ticket_entry_re = re.compile(
-            rf"^## \[\d{{4}}-\d{{2}}-\d{{2}}\] {_ENTRY_TYPE_RE} \| {_TICKET_ID_BODY} — .+ "
+            rf"^## \[\d{{4}}-\d{{2}}-\d{{2}}\] {_ENTRY_TYPE_RE} \| {_TICKET_ENTRY_ID_REF} — .+ "
             rf"\({escaped_session}\)$"
         )
         checkpoint_re = re.compile(
@@ -1205,7 +1206,7 @@ def _collect_session_entries(
             r"^## \[\d{4}-\d{2}-\d{2}\] handoff \| PM \d+차 → 다음 PM 세션$"
         )
         ticket_entry_re = re.compile(
-            rf"^## \[\d{{4}}-\d{{2}}-\d{{2}}\] {_ENTRY_TYPE_RE} \| {_TICKET_ID_BODY} — .+$"
+            rf"^## \[\d{{4}}-\d{{2}}-\d{{2}}\] {_ENTRY_TYPE_RE} \| {_TICKET_ENTRY_ID_REF} — .+$"
         )
         # pm_log.build_checkpoint_entry() emits untagged headers as
         # ``checkpoint — <trigger>``; tagged task/slot headers use ``| (...)``.

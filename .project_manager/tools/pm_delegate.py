@@ -444,9 +444,20 @@ ARCHITECT_TEST_ROW_KEYS: tuple[str, ...] = (
     "id", "target", "command", "expected", "negative",
 )
 _ARCHITECT_TEST_ID_RE = re.compile(r"AT-[0-9]{3,}")
+PM_REVIEW_CONTRACT_PLACEHOLDER_WORDS: tuple[str, ...] = (
+    "todo", "tbd", "placeholder", "n/a", "na", "none", "미정", "미기재",
+)
 _CONTRACT_PLACEHOLDER_RE = re.compile(
-    r"<[^>\n]+>|^(?:todo|tbd|placeholder|n/?a|none|미정|미기재)(?:\b|$)",
+    r"<[^>\n]+>|^(?:"
+    + "|".join(re.escape(word) for word in PM_REVIEW_CONTRACT_PLACEHOLDER_WORDS)
+    + r")(?:\b|$)",
     re.IGNORECASE,
+)
+PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE = (
+    "모든 finding의 fix_contract 여섯 문자열은 구체값으로 채운다 — angle-bracket "
+    "metavariable와 parser 금지어("
+    + "·".join(PM_REVIEW_CONTRACT_PLACEHOLDER_WORDS)
+    + ")를 쓰지 않는다."
 )
 _CONTRACT_TEST_TARGET_RE = re.compile(
     r"(?<![A-Za-z0-9_./-])(?P<path>tests/[A-Za-z0-9_./-]+\.py)"
@@ -5313,6 +5324,7 @@ def render_ticket_growth_section_seed(
 def _render_review_round_seed_body(
     role: str, confirmation_ids: Sequence[str], next_finding_id: str | None,
     *, scope_rule: str = CONFIRM_ROUND_SCOPE_RULE,
+    contract_rule: str | None = PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE,
 ) -> str:
     """리뷰 채널 라운드 시드 본문 — 확인 대상 ID·다음 finding ID 말고는 전부 골격 상수다.
 
@@ -5347,8 +5359,10 @@ def _render_review_round_seed_body(
         f"<!-- {NEXT_FINDING_ID_RULE.format(next_id=prefilled_finding_id)} -->\n"
         if prefilled_finding_id is not None else ""
     )
+    contract_notice = f"<!-- {contract_rule} -->\n" if contract_rule is not None else ""
     return (
         scope_notice
+        + contract_notice
         + f"## must-fix\n{finding_id_notice}- <없음 또는 finding ID 나열({placeholder_id})·"
         "증거와 권고는 아래 블록>\n\n"
         "## 판정\n판정: <통과|반려> · finding <N>건(must-fix <N>건)\n\n"
@@ -5494,13 +5508,19 @@ def ticket_round_body_is_pending(role: str, body: str) -> bool:
     # 후보는 현재 골격과 옛 스코프 문구로 렌더한 같은 골격들이다 — 문구를 바꾸기 전에 예약된
     # 라운드가 그 변경만으로 "산출 있음" 이 되면 안 된다. 값이 채워진 라운드는 어느 후보와도
     # 같지 않으므로 이 후보 확장이 pending 판정을 느슨하게 만들지 않는다.
+    candidates = [
+        (scope_rule, contract_rule)
+        for scope_rule in (CONFIRM_ROUND_SCOPE_RULE, *LEGACY_CONFIRM_ROUND_SCOPE_RULES)
+        for contract_rule in (PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE, None)
+    ]
     return any(
         normalized == _normalized_newlines(
             _render_review_round_seed_body(
-                role, confirmation_ids, next_finding_id, scope_rule=rule,
+                role, confirmation_ids, next_finding_id,
+                scope_rule=scope_rule, contract_rule=contract_rule,
             )
         )
-        for rule in (CONFIRM_ROUND_SCOPE_RULE, *LEGACY_CONFIRM_ROUND_SCOPE_RULES)
+        for scope_rule, contract_rule in candidates
     )
 
 

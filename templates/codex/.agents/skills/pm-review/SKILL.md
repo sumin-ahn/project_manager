@@ -27,7 +27,7 @@ opt-in 질문은 **첫 1회**뿐이다. `additional_reviewer.enabled=true` 는 �
 
 - **묶음 code-reviewer 라운드와 같은 시점**에, **실질 코드·설계**(엔진/알고리즘·비파괴 동작·파서·보안·ADR/설계)에 추가 리뷰어 교차검증을 병행한다. 이 채널의 대상 지정은 티켓별(`--ticket`)이며 묶음 인자를 받지 않는다 — 묶음이면 멤버마다 실행하거나 `--paths` 로 묶음 변경 경로를 핀한다.
 - **사소한 docs/prose/자명한 편집에는 실행하지 않는다**. self/내부 리뷰로 끝낸다.
-- 코드 리뷰 라운드는 1회다. reviewer는 must-fix마다 fix가 실행할 수정·테스트 계약을 채운다.
+- 코드 리뷰 라운드는 1회다. reviewer는 severity와 무관하게 모든 finding에 fix가 실행할 수정·테스트 계약을 채운다.
 - 수렴 불변식은 [`pm_principles.md`](../../../.project_manager/wiki/pm_principles.md) §"티켓과 위임"이 단일 진실이고, 실행 절차는 `pm_playbook.md` §"라운드 프로토콜"을 따른다.
 
 ## 실행 규율

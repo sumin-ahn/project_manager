@@ -906,10 +906,11 @@ def test_native_confirmation_round_seed_embeds_scope_rule_as_html_comment(pd):
 
 
 def test_native_initial_review_round_seed_has_no_scope_rule_comment(pd):
-    """역방향 확인 — 최초 리뷰 라운드(자리표시자 ID)는 확인 라운드가 아니라 주석을 심지 않는다."""
+    """최초 리뷰 라운드는 확인 scope 주석 없이 공통 구체값 계약만 받는다."""
     body = pd.render_ticket_growth_section_seed("code-reviewer", "")
     assert pd.CONFIRM_ROUND_SCOPE_RULE not in body
-    assert not body.startswith("<!--")
+    assert not body.startswith(f"<!-- {pd.CONFIRM_ROUND_SCOPE_RULE} -->")
+    assert f"<!-- {pd.PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE} -->" in body
 
 
 def test_scope_rule_states_where_existing_finding_ids_belong(pd):

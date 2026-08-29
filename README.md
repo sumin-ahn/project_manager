@@ -703,7 +703,7 @@ PM 이 메인 세션이고, 일은 네 축의 서브에이전트에 나눠 준�
 | researcher | 여러 파일과 레퍼런스를 훑어 사실만 수집해 온다 (read-only). | 코드·문서 수정 |
 | architect | 구현 경계와 developer 필수 테스트 계약을 확정한다. | 결정·발행 (비준은 PM) |
 | developer | 최초 구현과 마지막 fix에서 단계별 테스트를 실행한다. | 보드 조작, 일지 갱신 |
-| code-reviewer | 변경을 독립 검토하고 must-fix마다 수정·추가 회귀 계약을 낸다. | 코드 수정 |
+| code-reviewer | 변경을 독립 검토하고 severity와 무관하게 모든 finding에 수정·추가 회귀 계약을 낸다. | 코드 수정 |
 
 모델과 권한은 어댑터 정의에서 정한다. Claude Code 는 `.claude/agents/<역할>.md`,
 opencode 는 `.opencode/agents/<역할>.md`, codex 는 `.codex/agents/<역할>.toml` 쪽 정의를 쓴다.

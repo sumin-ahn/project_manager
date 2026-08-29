@@ -327,6 +327,36 @@ def test_seed_round_is_judged_pending_by_the_rounds_seam(pd):
         assert rounds_module.round_is_pending(edited) is False
 
 
+def test_review_seed_renders_parser_owned_concrete_contract_rule(pd):
+    """native reviewer도 external prompt와 같은 parser 금지어 원천을 시드에서 받는다."""
+    body = pd.render_ticket_growth_section_seed("code-reviewer", "")
+    rule = body.split("<!-- ", 1)[1].split(" -->", 1)[0]
+    assert rule == pd.PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE
+    for word in pd.PM_REVIEW_CONTRACT_PLACEHOLDER_WORDS:
+        assert word in rule
+    assert pd.ticket_round_body_is_pending("code-reviewer", body) is True
+
+
+def test_review_seed_without_concrete_contract_notice_remains_legacy_pending(pd):
+    """업그레이드 전에 예약된 무편집 seed는 새 안내 추가만으로 산출 있음이 되지 않는다."""
+    legacy = pd._render_review_round_seed_body(
+        "code-reviewer", ["F-NNN"], "F-001", contract_rule=None,
+    )
+    assert pd.PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE not in legacy
+    assert pd.ticket_round_body_is_pending("code-reviewer", legacy) is True
+
+
+def test_legacy_scope_with_current_contract_notice_remains_pending(pd):
+    """스코프 문구 세대와 계약 안내 세대는 독립 축이라 모든 무편집 조합을 읽는다."""
+    body = pd._render_review_round_seed_body(
+        "code-reviewer", ["F-001"], "F-002",
+        scope_rule=pd.LEGACY_CONFIRM_ROUND_SCOPE_RULES[0],
+    )
+    assert pd.PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE in body
+    assert pd.LEGACY_CONFIRM_ROUND_SCOPE_RULES[0] in body
+    assert pd.ticket_round_body_is_pending("code-reviewer", body) is True
+
+
 def test_pending_judgment_reads_only_the_round_body(pd):
     """판정 입력은 라운드 본문 하나다 — 프리필 ID·날짜·명세는 판정을 바꾸지 않는다."""
     previous = _reviewer_round(pd, _review_payload("F-003", "F-001"))
