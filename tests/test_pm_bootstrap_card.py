@@ -738,25 +738,27 @@ def test_card_wave_claim_warning_stays_adjacent_after_demotion(bootstrap):
 
 
 def test_card_finish_demotes_only_ticket_finish(bootstrap):
-    """must-fix #2: /pm-wave-finish 의 강등 CLI 엔진은 `ticket_finish.py` 하나뿐.
+    """must-fix #2 + X-001: 완료 진입은 /pm-wave-finish 하나이고 카드에 direct complete 줄이 없다.
 
     ticket_finish 가 내부서 complete 를 수행하므로 별도 `board.py complete` 강등 줄을 finish
-    아래 두면 수동 double-complete 를 유도한다 → finish 블록엔 complete 강등 줄이 없다. complete
-    직접줄은 fresh-adopter/concept 경로로 wave 절 *앞*(lifecycle 직접)에 유지(usability 게이트)."""
+    아래 두면 수동 double-complete 를 유도한다 → finish 블록엔 complete 강등 줄이 없다. 발행이
+    모든 티켓을 크기 1 묶음에 귀속시킨 뒤로는 lifecycle 절의 direct complete 줄도 **항상 rc=1**
+    이라, 카드 어느 자리에도 실행 줄로 남지 않는다(주석의 설명 언급만 허용)."""
     card = _card(bootstrap, LEAN_IDENTITY)
     lines = card.splitlines()
-    # 스킬 진입 줄 자체로 앵커한다(complete 직접줄 주석의 "/pm-wave-finish" 언급과 충돌 회피).
+    # 스킬 진입 줄 자체로 앵커한다(카드 문구의 "/pm-wave-finish" 언급과 충돌 회피).
     finish_i = _line_index(card, "/pm-wave-finish T-NNNN")
     qa_i = _line_index(card, "/pm-qa")
     finish_block = lines[finish_i:qa_i]
     assert any("ticket_finish.py" in ln for ln in finish_block)
     # 커맨드 *부분*(주석 `#` 앞)에 board.py complete 가 없어야 한다 — ticket_finish 강등 줄의
     # "내부서 board.py complete 수행" 설명 주석은 실행 줄이 아니라 무관.
-    finish_cmd_parts = [ln.split("#", 1)[0] for ln in finish_block]
-    assert not any("board.py complete" in part for part in finish_cmd_parts), \
-        "board.py complete 가 /pm-wave-finish 강등 엔진 커맨드로 남음(double-complete 유도)"
-    # complete 직접줄은 finish 스킬보다 앞(강등처럼 보이지 않게·lifecycle 직접 경로).
-    assert _line_index(card, "board.py complete") < finish_i
+    for card_variant in (card, _card(bootstrap, None)):
+        offenders = [
+            ln for ln in card_variant.splitlines()
+            if "board.py complete" in ln.split("#", 1)[0]
+        ]
+        assert not offenders, f"카드에 direct board complete 실행 줄 잔존: {offenders}"
 
 
 def test_card_wave_claim_block_has_show_lint_claim(bootstrap):

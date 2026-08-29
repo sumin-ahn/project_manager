@@ -1154,7 +1154,11 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   불일치를 기본값 해소로 숨기지 않는다.
     # 270 = 269 + platform test command의 local.conf 해소 한 경계. 구표기 키만 사용자 입력
     #   오류로 번역하고 marked skew는 다른 local.conf 소비자와 같이 그대로 올린다.
-    assert len(report.boundaries) == 270, "propagation sweep boundary ratchet changed"
+    # 271 = 270 + all-done recovery 티켓 frontmatter 관측 한 경계.
+    #   `ticket_finish.py:ClusterCloser._reconcile_ticket_frontmatter`가 동적 board 사본의
+    #   `find_ticket_exact`·`load_ticket` 판독 실패를 fail-closed 사유로 접되, marked skew는
+    #   그대로 올려 엔진 사본 불일치를 일반적인 "티켓 읽기 실패"로 숨기지 않는다.
+    assert len(report.boundaries) == 271, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

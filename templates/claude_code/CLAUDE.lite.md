@@ -73,7 +73,7 @@ PM 은 코드를 직접 짜지 않는다: `claim → 위임(dev) → 검토(revi
 ## 5. 완료 기록 (PM 손)
 
 ```bash
-{{PY}} .project_manager/tools/board.py complete T-NNNN --tests-pass
+{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<이름> [--repo <repo> --slot <N>]
 ```
 
 `status.md` 모듈 행 갱신 · `log/current.md` entry append · 회귀 `{{TEST_CMD}}` green 확인 · **git commit**은 논리적 체크포인트에서 **경로 명시**:

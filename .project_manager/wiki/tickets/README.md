@@ -30,7 +30,7 @@ python3 .project_manager/tools/board.py claim T-0003 --repo <repo> --slot 1
 # 4) 코드 작업
 
 # 5) 다 끝나면 완료 처리 (회귀 통과 후 --tests-pass)
-python3 .project_manager/tools/board.py complete T-0003 --tests-pass
+python3 .project_manager/tools/ticket_finish.py --cluster C-T-0003
 
 # 또는 막혔으면
 python3 .project_manager/tools/board.py block T-0003 --reason "외부 키 발급 대기"

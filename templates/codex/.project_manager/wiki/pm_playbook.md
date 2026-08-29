@@ -204,7 +204,7 @@ Claude Bash 도구로 아래 장시간 커맨드를 실행할 때는 호출층 `
 부트스트랩: 1) CLAUDE.md  2) .project_manager/wiki/status.md  3) python3 .project_manager/tools/board.py show <T-NNNN>
 작업 시작: python3 .project_manager/tools/board.py claim <T-NNNN> --repo <repo> --slot <N>
 ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
-완료 시: 전체 회귀 → board.py complete --tests-pass → status.md → log/current.md.
+완료 시: 전체 회귀 → `/pm-wave-finish` 묶음 종결 → status.md·log/current.md 서술 점검.
 막히면 block --reason 으로 PM 세션에.
 ```
 
@@ -276,6 +276,12 @@ wave 하나 = 묶음 하나다. 단계 표·커맨드의 단일 진실은 `/pm-d
 board·status·log·로드맵 단일 진실은 PM 1명이 유지하되 잡일을 줄인다:
 
 - **종결 자동화** — 묶음 종결(final-fix 확인 입력 preflight → 기계/PM-owned terminal 확인 생성·게이트 처분 → 티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → 슬롯 반납 → board·포인터 커밋)은 `.project_manager/tools/ticket_finish.py --cluster` / `/pm-wave-finish` skill 이 고정 순서로 실행한다. **손 git 은 0**이고 커밋 문안도 엔진이 낸다. status.md 는 안 건드린다. PM 은 서술(왜·무엇)과 status.md **모듈 행 판정/비고**만 채우며, 묶음 산출 밖 파일(ADR·domain·status.md)은 그 경로만 따로 `git add` 해 별도 커밋으로 싣는다.
+- **상태 분리·복구** — `ticket done`·`cluster closed`·`slot released`를 서로 추론하지 않는다.
+  PM의 direct `board.py complete`는 금지되고 cluster 멤버는 엔진도 첫 write 전에 거부한다. 모든
+  멤버가 done인데 장부만 open인 legacy 반쪽 상태는 `ticket_finish.py --cluster ...
+  --reconcile-integrated`에 제품 `--repo/--slot`, 멤버별 evidence, 없는 `claimed_rev`의 explicit
+  legacy anchor, exact `--user-ack`을 모두 줘 graph 검증 뒤 audit만 기록한다. merge/rebase/slot
+  release는 실행하지 않고 비선택 dirty slot은 보고·보존한다.
 - **세션 시작·종료 자동화** — `/pm-bootstrap` (세션 시작 dump), `/pm-handoff` (세션 종료 7단계).
 - **dev→review 는 background 우선** — 실행 중 PM은 검토 대상 코드와 board를 바꾸지 않고 현재 티켓의 읽기 전용 근거만 정리한다. 검토 대상 코드 파일 편집은 reviewer `git diff`를 오염시킨다.
 - **회귀 tmp 위생 (worktree 다발 실행 시 필수)** — worktree 병렬 회귀는 pytest run·tmp 를 폭증시킨다. **pytest 쓰는 인스턴스는 `pytest.ini` 에 `tmp_path_retention_policy=failed` + `tmp_path_retention_count=3`** 을 둔다(통과 tmp 즉시 teardown·실패만 보존). `pytest.ini` 는 instance 소유라 엔진이 자동 못 고치므로 채택 시 직접 추가. ⚠️ 중단 run 의 stale `.lock` 이 옛 세션 cleanup 을 skip 하는 pytest+xdist 동작은 패치 불가 — `policy=failed` 로 디스크 영향을 무력화한다. **perf**: worktree 다발 실행에서 `-n auto`(코어수) 워커가 경합하면 `-n N` 또는 `PYTEST_XDIST_AUTO_NUM_WORKERS` 로 캡한다.

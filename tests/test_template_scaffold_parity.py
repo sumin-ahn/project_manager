@@ -22,6 +22,7 @@ stdlib + subprocess. lint 는 warning-only(exit 0)라 종료코드가 아니라 
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import re
 import subprocess
 import sys
@@ -651,3 +652,139 @@ def test_shipped_finish_card_carries_engine_close_steps(name: str):
     assert not missing, (
         f"{name}: 종결 단계 이름이 엔진 값과 어긋남 (누락 {missing})"
     )
+
+
+# F-002 — 종결 5·6단계의 브랜치 계약. 엔진은 `base_branch` 미선언을 **차단**하고 묶음
+# 브랜치(`branch`) 미선언만 무대상으로 접는다. 카드가 그 반대(비차단 skip)로 안내하면 같은
+# 상황에서 사람이 하는 행동과 엔진이 내는 결과가 갈린다.
+_CLOSE_SKIP_CLAIM_RE = re.compile(
+    r"(?:통합|기준) 브랜치[^\n]{0,60}미선언[^\n]{0,80}(?:무대상|건너뛴|비차단)"
+)
+
+
+def _close_branch_surfaces() -> list[Path]:
+    """종결 브랜치 계약을 말하는 카드 표면 전부 — canonical + 출하 사본."""
+    paths = [
+        REPO / ".claude" / "skills" / "pm-wave-finish" / "SKILL.md",
+        REPO / ".claude" / "skills" / "pm-wave-finish" / "references" /
+        "operational-details.md",
+        REPO / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md",
+    ]
+    for name in TEMPLATE_NAMES:
+        for stem in ("pm-wave-finish", "pm-dev-delegate"):
+            paths.extend(_shipped_cards(name, stem))
+            paths.extend(sorted(
+                (TEMPLATES / name).glob(
+                    f"*/skills/{stem}/references/operational-details.md"
+                )
+            ))
+    return sorted(set(paths))
+
+
+def test_completion_guidance_matches_close_branch_contract():
+    """F-002: 카드의 5·6단계 안내가 엔진의 차단/건너뛰기 계약과 같은 값을 말한다."""
+    finish = _load_engine_module("ticket_finish")
+    board = _load_engine_module("board")
+    closer = finish.ClusterCloser
+
+    # 엔진 축 — 기준 브랜치 미선언은 두 단계 모두 차단 문구로 정지하고,
+    # 무대상 건너뛰기는 묶음 브랜치(`branch`) 미선언에만 있다.
+    blocking = finish._CLOSE_INTEGRATION_UNDECLARED
+    assert "base_branch" in blocking
+    for step in (closer._step_rebase, closer._step_merge):
+        assert "_CLOSE_INTEGRATION_UNDECLARED" in inspect.getsource(step), (
+            f"{step.__name__} 가 기준 브랜치 미선언을 더는 차단하지 않는다 — 카드 문구의 근거 소멸"
+        )
+    assert "묶음 브랜치 미선언" in inspect.getsource(closer._step_merge)
+    assert "묶음 브랜치 미선언" not in inspect.getsource(closer._step_rebase)
+
+    # 발행 자동 장부 축 — `base_branch` 는 기록되고 묶음 브랜치만 빈다.
+    assert "base_branch=base_branch" in inspect.getsource(board._cluster_auto_attach)
+    auto = board._new_cluster_fm(
+        board.cluster_id_for_name("T-9999"), ["T-9999"], base_branch="task/main")
+    assert auto["base_branch"] == "task/main" and auto["branch"] is None
+
+    # 카드 축 — 옛 "통합 브랜치 미선언 = 무대상" 안내는 어느 사본에도 없고,
+    # 두 카드 계열이 정지 규칙과 자동 장부의 실제 형상을 싣는다.
+    surfaces = _close_branch_surfaces()
+    assert len(surfaces) >= 2 * (1 + len(TEMPLATE_NAMES)), (
+        f"종결 브랜치 계약 카드 표면이 너무 적다: {[str(p) for p in surfaces]}"
+    )
+    # 릴리즈 업그레이드 노트도 같은 계약을 사용자에게 말하는 자리다 — 카드만 고치고 노트에
+    # 옛 문구를 남기면 채택자가 읽는 두 기준이 다시 갈린다(옛 문구 sweep 대상에 포함).
+    stale_sweep = surfaces + [REPO / "CHANGELOG.md"]
+    # 계약 문장을 싣는 자리 — 종결 단계표(운영 상세)와 위임 카드 본문(SKILL·command 팔레트).
+    finish_details = [p for p in surfaces if p.name == "operational-details.md"
+                      and "pm-wave-finish" in p.as_posix()]
+    delegate_cards = [p for p in surfaces if "pm-dev-delegate" in p.as_posix()
+                      and p.name != "operational-details.md"]
+    assert len(finish_details) == 1 + len(TEMPLATE_NAMES), finish_details
+    assert len(delegate_cards) >= 1 + len(TEMPLATE_NAMES), delegate_cards
+    for path in stale_sweep:
+        text = path.read_text(encoding="utf-8")
+        stale = _CLOSE_SKIP_CLAIM_RE.search(text)
+        assert stale is None, (
+            f"{path.relative_to(REPO)}: 기준 브랜치 미선언을 비차단 건너뛰기로 안내 — "
+            f"엔진은 차단한다 ({stale.group(0) if stale else ''})"
+        )
+    for path in finish_details + delegate_cards:
+        text = path.read_text(encoding="utf-8")
+        assert "묶음 브랜치 미선언" in text, (
+            f"{path.relative_to(REPO)}: 실제 무대상 축(묶음 브랜치 미선언) 누락")
+        assert "base_branch" in text and "정지" in text, (
+            f"{path.relative_to(REPO)}: 기준 브랜치 미선언 = 정지 계약 누락")
+
+
+def test_completion_guidance_uses_cluster_finish_not_direct_complete():
+    """AT-005: full/lite·wiki·카드는 direct complete 대신 정상/복구/상태 분리를 안내한다."""
+    entry_guides = [
+        TEMPLATES / "claude_code" / "CLAUDE.md",
+        TEMPLATES / "claude_code" / "CLAUDE.lite.md",
+        TEMPLATES / "codex" / "AGENTS.md",
+        TEMPLATES / "opencode" / "AGENTS.md",
+        TEMPLATES / "opencode" / "AGENTS.lite.md",
+    ]
+    methodology = [
+        REPO / ".project_manager" / "wiki" / "pm_role.md",
+        REPO / ".project_manager" / "wiki" / "pm_playbook.md",
+        REPO / ".project_manager" / "wiki" / "tickets" / "README.md",
+    ]
+    for name in TEMPLATE_NAMES:
+        methodology.extend((
+            _wiki(name) / "pm_role.md",
+            _wiki(name) / "pm_playbook.md",
+        ))
+    direct_command = re.compile(
+        r"(?m)^\s*(?:\{\{PY\}\}\s+|python3\s+)?\.project_manager/tools/board\.py\s+complete\b"
+    )
+    for path in entry_guides + methodology:
+        text = path.read_text(encoding="utf-8")
+        assert direct_command.search(text) is None, (
+            f"{path.relative_to(REPO)}: 사용자-facing direct board complete 처방 잔존"
+        )
+        assert "ticket_finish.py" in text or "/pm-wave-finish" in text, (
+            f"{path.relative_to(REPO)}: 묶음 종결 진입 누락"
+        )
+
+    finish_surfaces = [
+        REPO / ".claude" / "skills" / "pm-wave-finish" / "SKILL.md",
+        REPO / ".claude" / "skills" / "pm-wave-finish" / "references" /
+        "operational-details.md",
+        TEMPLATES / "opencode" / ".opencode" / "command" / "pm-wave-finish.md",
+    ]
+    for name in TEMPLATE_NAMES:
+        finish_surfaces.extend(_shipped_cards(name, "pm-wave-finish"))
+        finish_surfaces.extend(sorted(
+            (TEMPLATES / name).glob(
+                "*/skills/pm-wave-finish/references/operational-details.md"
+            )
+        ))
+    haystack = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(set(finish_surfaces))
+    )
+    for marker in (
+        "ticket done", "cluster closed", "slot released",
+        "--reconcile-integrated", "--integrated-rev", "--legacy-base-rev",
+        "--user-ack", "--repo", "--slot", "dirty slot",
+    ):
+        assert marker in haystack, f"종결/복구 기준 marker 누락: {marker}"
