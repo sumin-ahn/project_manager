@@ -62,7 +62,7 @@ ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크**만
 ## 작업이 끝나면
 
 ```bash
-{{PY}} .project_manager/tools/board.py complete T-NNNN --tests-pass     # 또는
+{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<이름> [--repo <repo> --slot <N>]     # 또는
 {{PY}} .project_manager/tools/board.py block T-NNNN --reason "..."
 ```
 
@@ -117,7 +117,7 @@ ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크**만
 {{PY}} .project_manager/tools/board.py list
 {{PY}} .project_manager/tools/board.py show T-NNNN
 {{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 활성 lease 1개면 생략 가능 (§세션 이름)
-{{PY}} .project_manager/tools/board.py complete T-NNNN --tests-pass
+{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<이름> [--repo <repo> --slot <N>]
 {{PY}} .project_manager/tools/board.py new "title" --touches a.py,b.py --tag phase-1
 {{PY}} .project_manager/tools/board.py lint     # 의존성·thin-ticket 일관성 검사
 

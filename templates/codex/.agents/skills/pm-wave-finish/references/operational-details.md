@@ -23,6 +23,31 @@
   `통합 브랜치 미선언 — 무대상` 으로 건너뛴다(비차단). 브랜치까지 쓰려면
   `python3 .project_manager/tools/board.py cluster new <이름> --tickets <T-NNNN>` 으로 선언한다.
 
+## all-done recovery (반쪽 종결 전용)
+
+`ticket done`, `cluster closed`, `slot released`는 독립 상태다. 모든 멤버가 이미 done인데 장부만
+open이면 정상 8단계를 다시 돌리거나 `board complete`를 직접 호출하지 않는다. PM이 선택한 clean
+제품 worktree의 exact HEAD와 티켓별 evidence commit을 명시해 다음 제한된 문만 사용한다.
+
+```bash
+python3 .project_manager/tools/ticket_finish.py --cluster <C-이름> \
+  --reconcile-integrated \
+  --integrated-rev T-NNNN=<commit> \
+  --legacy-base-rev T-OLD=<anchor-commit> \
+  --user-ack <C-이름> --repo <repo> --slot <N>
+```
+
+- `--integrated-rev`는 장부 멤버마다 정확히 하나다. 선택 제품 HEAD에서
+  `claimed_rev <= evidence <= HEAD`를 검증하며 ref 이름이나 PM 홈 git으로 강등하지 않는다.
+- `claimed_rev`가 없는 legacy 멤버만 `--legacy-base-rev`가 필수이고, audit에는
+  `anchor_source=operator-supplied`로 남는다. branch·시각·commit message로 anchor를 추론하지 않는다.
+- `--repo`와 `--slot`을 둘 다 명시한다. `--task`·암묵 slot은 recovery에서 거부하고
+  `--user-ack`은 cluster ID와 정확히 같아야 한다.
+- 성공은 장부 `closure.mode=reconciled`·exact `integration_head`·멤버 revision/anchor를 기록할
+  뿐 제품/slot을 쓰지 않는다. 같은 증거 재실행은 no-op, 다른 증거는 fail-loud다.
+- 선택 slot이 dirty면 첫 write 전에 정지한다. 비선택 dirty slot은 path·branch·dirty를 보고만 하고
+  byte 보존한다. reset/stash/release 처분은 별도 사용자 판단이다.
+
 ## 3단계(완료 기록)가 티켓마다 하는 일
 
 1. **회귀 측정** — red면 즉시 중단하고 dev 재작업. board complete 도 차단한다.

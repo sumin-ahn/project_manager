@@ -765,6 +765,61 @@ def _complete_args(tid: str) -> argparse.Namespace:
         id=tid, tests_pass=True, allow_missing_log=True, allow_untested=False)
 
 
+def _seed_cluster(board, cluster: str, tickets: tuple[str, ...], *, status: str = "open") -> Path:
+    path = board.tickets_dir() / "clusters" / f"{cluster}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "---\n"
+        f"id: {cluster}\n"
+        "tickets:\n" + "".join(f"- {tid}\n" for tid in tickets) +
+        "base_branch: task/main\nbranch: task/fixture\nspike: null\n"
+        "budget: {}\n"
+        f"status: {status}\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_cluster_member_complete_requires_exact_closer_binding(
+    live_board, capsys, monkeypatch,
+):
+    """AT-001: cluster 멤버 direct complete는 첫 write 전 막고 exact closer만 연다."""
+    tid = "T-9882"
+    claimed = _seed_ticket(live_board, tid, _dod_body("- [x] 코드"))
+    claimed.write_text(
+        claimed.read_text(encoding="utf-8").replace("tags: []", "cluster: C-gate\ntags: []"),
+        encoding="utf-8",
+    )
+    ledger = _seed_cluster(live_board, "C-gate", (tid,))
+    sync_calls: list[tuple] = []
+    monkeypatch.setattr(
+        live_board, "_board_git_sync_best_effort",
+        lambda *args: sync_calls.append(args) or True,
+    )
+    ticket_before = claimed.read_bytes()
+    ledger_before = ledger.read_bytes()
+
+    assert live_board.cmd_complete(_complete_args(tid)) == 1
+    assert claimed.read_bytes() == ticket_before
+    assert ledger.read_bytes() == ledger_before
+    assert sync_calls == []
+    assert "direct complete" in capsys.readouterr().err
+
+    wrong = _complete_args(tid)
+    wrong.cluster_close = "C-other"
+    assert live_board.cmd_complete(wrong) == 1
+    assert claimed.read_bytes() == ticket_before and ledger.read_bytes() == ledger_before
+    assert sync_calls == []
+
+    exact = _complete_args(tid)
+    exact.cluster_close = "C-gate"
+    assert live_board.cmd_complete(exact) == 0
+    assert not claimed.exists()
+    assert list((live_board.tickets_dir() / "done").glob(f"{tid}*"))
+    assert len(sync_calls) == 1
+
+
 def _internal_round(
     sequence: int,
     verdict: int,

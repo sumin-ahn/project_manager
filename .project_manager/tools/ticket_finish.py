@@ -3462,6 +3462,7 @@ class TicketFinisher:
         session: str | None = None,
         board_identity_args: Sequence[str] = (),
         close: bool = False,
+        cluster_close: str | None = None,
     ) -> int:
         """ticket_id 완료 기록 전체 흐름을 실행한다.
 
@@ -3484,6 +3485,9 @@ class TicketFinisher:
         `close` 는 이 실행이 종결 파이프라인 안에 있다는 뜻이다 — [1/5]~[4/5]는 그대로이고
         [5/5]의 손작업 안내만 바뀐다(커밋·재배치·머지·반납·board 기록을 종결이 실행하므로 그
         안내가 남으면 이미 기계가 한 일을 사람에게 시킨다). 판정·부작용은 같다.
+
+        `cluster_close`는 ``ClusterCloser``가 넘기는 exact ledger path-binding이다. 인증
+        capability가 아니며 public ``board complete``가 묶음 멤버를 반쪽 완료하지 못하게 한다.
         """
         del section  # status 합계표 제거로 더 이상 쓰지 않음(후방호환 수용만).
         print(
@@ -3610,8 +3614,10 @@ class TicketFinisher:
 
         # ── 3. board.py complete ──────────────────────────────────────
         print("\n[3/5] board.py complete...")
-        board_complete_argv = ["complete", ticket_id, "--tests-pass",
-                               *board_identity_args]
+        board_complete_argv = ["complete", ticket_id, "--tests-pass"]
+        if cluster_close is not None:
+            board_complete_argv.extend(["--cluster-close", cluster_close])
+        board_complete_argv.extend(board_identity_args)
         if dry_run:
             print(f"  [dry-run] board.py {' '.join(board_complete_argv)}")
         else:
@@ -3865,6 +3871,11 @@ class ClusterCloser:
         board_identity_args: Sequence[str] = (),
         dry_run: bool = False,
         skip_pytest: bool = False,
+        reconcile_integrated: bool = False,
+        integrated_revisions: Sequence[str] = (),
+        legacy_base_revisions: Sequence[str] = (),
+        user_ack: str | None = None,
+        explicit_slot: bool = False,
         run_delegate_fn: Callable[[list[str]], tuple[int, str]] | None = None,
         release_fn: Callable[[str], tuple[bool, str]] | None = None,
     ) -> None:
@@ -3877,6 +3888,11 @@ class ClusterCloser:
         self._board_identity_args = list(board_identity_args)
         self._dry_run = dry_run
         self._skip_pytest = skip_pytest
+        self._reconcile_integrated = reconcile_integrated
+        self._integrated_revision_args = tuple(integrated_revisions)
+        self._legacy_base_revision_args = tuple(legacy_base_revisions)
+        self._user_ack = user_ack
+        self._explicit_slot = explicit_slot
         # 라운드 처분 seam — 묶음 표면이 있으면 한 번, 없으면 티켓별로 반복한다(둘 다 같은
         # 커맨드의 인자 차이라 여기서 고르는 것은 argv 뿐이다).
         self._run_delegate_fn = run_delegate_fn or self._default_run_delegate
@@ -4240,6 +4256,7 @@ class ClusterCloser:
                 session=self._session,
                 board_identity_args=self._board_identity_args,
                 close=True,
+                cluster_close=self._cluster,
             )
             if rc != 0:
                 return (f"{tid} 완료 기록이 중단됐다 (rc={rc}) — 위 사유를 해소한 뒤 다시 "
@@ -4589,6 +4606,339 @@ class ClusterCloser:
                     "`board.py cluster show <이름>` 이다.")
         return None
 
+    # ── all-done recovery ───────────────────────────────────────────
+
+    @staticmethod
+    def _revision_map(values: Sequence[str], label: str) -> tuple[dict[str, str], str | None]:
+        """``T-NNNN=<rev>`` 반복 인자를 중복 없이 읽는다."""
+        mapped: dict[str, str] = {}
+        for value in values:
+            ticket, separator, revision = str(value).partition("=")
+            ticket, revision = ticket.strip(), revision.strip()
+            if not separator or not ticket or not revision:
+                return {}, f"{label} 형식은 T-NNNN=<git-rev> 이다: {value!r}"
+            if ticket in mapped:
+                return {}, f"{label}에 {ticket} mapping이 중복됐다"
+            mapped[ticket] = revision
+        return mapped, None
+
+    def _commit_oid(self, tree: Path, revision: str, *, label: str) -> tuple[str | None, str | None]:
+        """명시 hex revision을 선택 제품 git의 full commit OID로 정규화한다."""
+        if re.fullmatch(r"[0-9A-Fa-f]{7,64}", revision) is None:
+            return None, f"{label}는 ref/branch가 아닌 hex commit revision이어야 한다: {revision!r}"
+        rc, out = self._git_stdout(
+            tree, ["rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}"])
+        oid = out.strip().splitlines()[0] if rc == 0 and out.strip() else ""
+        if rc != 0 or re.fullmatch(r"[0-9a-fA-F]{40,64}", oid) is None:
+            return None, f"{label}를 선택 제품 git에서 commit으로 해소하지 못했다: {revision}"
+        return oid.lower(), None
+
+    def _reconcile_dirty_paths(self, tree: Path) -> tuple[str, ...]:
+        """Recovery용 read-only status — optional index refresh도 금지한다."""
+        rc, out = self._git_stdout(
+            tree,
+            ["--no-optional-locks", "status", "--porcelain", "-z",
+             "--untracked-files=all"],
+        )
+        if rc != 0:
+            raise _CloseObservationFailure(f"작업 트리 상태를 read-only 관측하지 못했다 ({tree})")
+        parse = getattr(self._board, "git_parse_porcelain_z", None) if self._board else None
+        entries = (parse(out) if parse is not None else tuple(
+            (token[:2], token[3:]) for token in out.split("\0") if len(token) >= 4
+        ))
+        return tuple(path for _code, path in entries)
+
+    def _reconcile_ticket_frontmatter(self, tid: str) -> tuple[dict | None, str | None]:
+        find = getattr(self._board, "find_ticket_exact", None) if self._board else None
+        load = getattr(self._board, "load_ticket", None) if self._board else None
+        if find is None or load is None:
+            return None, f"{tid} 티켓 조회 seam이 없다 ({self._board_py})"
+        try:
+            found = find(tid)
+            if found is None:
+                return None, f"{tid} 티켓을 찾지 못했다"
+            status, path = found
+            fm, _body = load(path)
+        except Exception as exc:  # noqa: BLE001 — recovery 판정 불능은 fail-closed.
+            # 동적 board 사본의 marked skew는 일반 판독 실패 문구로 접으면 사본 불일치를 숨긴다.
+            # 따라서 그것만 전파하고, 나머지 조회 실패만 값으로 바꿔 첫 write 전 정지한다.
+            if _is_engine_rev_skew(exc):
+                raise
+            return None, f"{tid} 티켓을 읽지 못했다: {type(exc).__name__}: {exc}"
+        if status != "done" or str(fm.get("status") or "") != "done":
+            return None, f"{tid}가 all-done 상태가 아니다 (directory={status}, frontmatter={fm.get('status')})"
+        return fm, None
+
+    def _validate_reconcile(self) -> tuple[dict | None, str | None, str | None]:
+        """Recovery의 전 입력과 제품 graph를 읽는다 — write는 절대 하지 않는다.
+
+        반환은 ``(canonical closure, ledger status, problem)``이다. 호출자가 이 스냅샷을
+        bookend로 두 번 대조한 뒤에만 장부를 쓴다.
+        """
+        if not self._explicit_slot or not self._slot or self._task is not None:
+            return None, None, "recovery는 명시 --repo와 --slot 둘 다 필요하고 --task를 받지 않는다"
+        if self._user_ack != self._cluster:
+            return None, None, (f"--user-ack은 대상 cluster와 정확히 같아야 한다: "
+                                f"expected {self._cluster!r}, got {self._user_ack!r}")
+        tree = self._code_tree()
+        try:
+            if tree.resolve() == REPO.resolve():
+                return None, None, f"제품 git이 PM 홈으로 강등됐다: {tree}"
+        except OSError as exc:
+            return None, None, f"선택 제품 경로를 해소하지 못했다: {exc}"
+        if not (tree / ".git").is_file():
+            return None, None, f"선택 경로가 linked product worktree가 아니다: {tree}"
+        dirty = self._reconcile_dirty_paths(tree)
+        if dirty:
+            return None, None, (f"선택 슬롯이 dirty라 recovery를 거부한다 ({tree} · "
+                                f"{len(dirty)}건: {', '.join(dirty[:5])})")
+
+        ledger = self._ledger()
+        if ledger is None:
+            return None, None, f"묶음 장부를 찾지 못했다: {self._cluster}"
+        ledger_id = str(ledger.get("id") or "").strip()
+        if ledger_id != self._cluster:
+            return None, None, f"장부 id가 대상과 다르다: {ledger_id!r} != {self._cluster!r}"
+        members_fn = getattr(self._board, "cluster_tickets", None) if self._board else None
+        all_clusters_fn = getattr(self._board, "all_clusters", None) if self._board else None
+        board_root_fn = getattr(self._board, "board_root", None) if self._board else None
+        if members_fn is None or all_clusters_fn is None or board_root_fn is None:
+            return None, None, "cluster 멤버십 전수 검증 seam이 없다"
+        board_root = Path(board_root_fn())
+        if not (board_root / ".git").exists():
+            return None, None, f"recovery는 분리 board-git이 필요하다: {board_root}"
+        members = tuple(members_fn(ledger))
+        if not members or len(members) != len(set(members)) or members != self._tickets:
+            return None, None, f"cluster 멤버 집합이 비었거나 중복·drift했다: {members}"
+
+        evidence, problem = self._revision_map(
+            self._integrated_revision_args, "--integrated-rev")
+        if problem:
+            return None, None, problem
+        legacy, problem = self._revision_map(
+            self._legacy_base_revision_args, "--legacy-base-rev")
+        if problem:
+            return None, None, problem
+        member_set = set(members)
+        if set(evidence) != member_set:
+            missing = sorted(member_set - set(evidence))
+            extra = sorted(set(evidence) - member_set)
+            return None, None, f"evidence mapping 전수성 위반 (누락={missing}, 여분={extra})"
+
+        head, problem = self._commit_oid(tree, self._head_revision(tree), label="제품 exact HEAD")
+        if problem:
+            return None, None, problem
+        assert head is not None
+        normalized_revisions: dict[str, str] = {}
+        member_anchors: dict[str, dict[str, str]] = {}
+        ledgers = all_clusters_fn()
+        for tid in members:
+            fm, problem = self._reconcile_ticket_frontmatter(tid)
+            if problem:
+                return None, None, problem
+            assert fm is not None
+            declared = str(fm.get("cluster") or "").strip()
+            owners = [
+                str(row.get("id") or "").strip() for row in ledgers
+                if tid in members_fn(row)
+            ]
+            if declared != self._cluster or owners != [self._cluster]:
+                return None, None, (f"{tid} 양방향 cluster 귀속 불일치 "
+                                    f"(ticket={declared or '없음'}, ledgers={owners})")
+            revision, problem = self._commit_oid(
+                tree, evidence[tid], label=f"{tid} evidence")
+            if problem:
+                return None, None, problem
+            assert revision is not None
+            claimed = str(fm.get("claimed_rev") or "").strip()
+            if claimed:
+                if tid in legacy:
+                    return None, None, f"{tid}는 claimed_rev가 있어 legacy base를 받을 수 없다"
+                anchor, problem = self._commit_oid(
+                    tree, claimed, label=f"{tid} claimed_rev anchor")
+                source = "claimed_rev"
+            else:
+                supplied = legacy.get(tid)
+                if supplied is None:
+                    return None, None, f"{tid}는 claimed_rev가 없어 --legacy-base-rev가 필수다"
+                anchor, problem = self._commit_oid(
+                    tree, supplied, label=f"{tid} operator legacy anchor")
+                source = "operator-supplied"
+            if problem:
+                return None, None, problem
+            assert anchor is not None
+            if not self._is_ancestor(tree, anchor, revision):
+                return None, None, f"{tid} evidence가 anchor 이후가 아니다: {anchor} !<= {revision}"
+            if not self._is_ancestor(tree, revision, head):
+                return None, None, f"{tid} evidence가 제품 exact HEAD의 조상이 아니다: {revision} !<= {head}"
+            normalized_revisions[tid] = revision
+            member_anchors[tid] = {"anchor": anchor, "anchor_source": source}
+
+        expected_legacy = {
+            tid for tid in members if member_anchors[tid]["anchor_source"] == "operator-supplied"
+        }
+        if set(legacy) != expected_legacy:
+            return None, None, (f"legacy base mapping 전수성 위반 "
+                                f"(필요={sorted(expected_legacy)}, 제공={sorted(legacy)})")
+        closure = {
+            "mode": "reconciled",
+            "integration_head": head,
+            "member_revisions": normalized_revisions,
+            "member_anchors": member_anchors,
+        }
+        status = str(ledger.get("status") or "").strip()
+        existing = ledger.get("closure")
+        if status == "closed":
+            if existing != closure:
+                return None, status, "closed 장부의 closure evidence가 이번 명시 증거와 다르다"
+        elif status == "open":
+            if existing not in (None, closure):
+                return None, status, "open 장부에 다른 closure evidence가 남아 있다"
+        else:
+            return None, status, f"recovery는 open all-done 전용이다 (현재 status={status!r})"
+        return closure, status, None
+
+    def _head_revision(self, tree: Path) -> str:
+        rc, out = self._git_stdout(tree, ["rev-parse", "--verify", "HEAD"])
+        if rc != 0 or not out.strip():
+            raise _CloseObservationFailure(f"제품 exact HEAD를 읽지 못했다 ({tree})")
+        return out.strip().splitlines()[0]
+
+    def _report_other_slots(self) -> None:
+        """선택 밖 leased slot은 읽기만 하고 path·branch·dirty를 loud 보고한다."""
+        try:
+            data = json.loads(
+                _load_file_lock().read_text_shared(LEASES_FILE, encoding="utf-8"))
+        except (OSError, ValueError, TypeError) as exc:
+            print(f"  ⚠ 다른 슬롯 상태를 읽지 못했다: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return
+        rows = data.get("leases", []) if isinstance(data, dict) else []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict) or row.get("state") != "leased":
+                continue
+            slot = str(row.get("slot") or "").strip()
+            if not slot or slot == self._slot:
+                continue
+            path = REPO / slot
+            rc, out = self._git_stdout(path, ["symbolic-ref", "--quiet", "--short", "HEAD"])
+            branch = out.strip() if rc == 0 and out.strip() else "unknown"
+            try:
+                dirty = self._reconcile_dirty_paths(path)
+                dirty_label = f"dirty({len(dirty)})" if dirty else "clean"
+            except _CloseObservationFailure:
+                dirty_label = "unknown"
+            print(f"  · 비선택 슬롯 보존: path={path} branch={branch} state={dirty_label}")
+
+    def _commit_reconcile_pointer(self) -> str | None:
+        """Recovery가 허용하는 유일한 PM-home write: board submodule pointer commit."""
+        pointer = self._board_pointer_path()
+        if pointer is None:
+            print("  PM 홈 board pointer 무대상")
+            return None
+        if not self._pending_paths(REPO, [pointer]):
+            print("  PM 홈 board pointer 이미 최신 — 건너뜀")
+            return None
+        if self._dry_run:
+            print(f"  [dry-run] cwd={REPO} git add/commit -- {pointer}")
+            return None
+        rc, out = self._git(REPO, ["add", "--", pointer])
+        if rc != 0:
+            return f"board pointer stage 실패 (rc={rc}): {out.rstrip()}"
+        unit, title = self._unit()
+        message = _CLOSE_BOARD_MESSAGE.format(unit=unit, title=title)
+        rc, out = self._git(REPO, ["commit", "-m", message, "--", pointer])
+        if rc != 0:
+            return f"board pointer commit 실패 (rc={rc}): {out.rstrip()}"
+        print(f"  ✓ PM 홈 board pointer 기록 ({message})")
+        return None
+
+    def _reconcile_ledger_pending(self) -> bool:
+        """Crash 뒤 closed ledger가 board-git에 아직 미기록인지 관측한다."""
+        board_root = Path(getattr(self._board, "board_root")())
+        ledger_path = Path(getattr(self._board, "cluster_ledger_path")(self._cluster))
+        try:
+            pathspec = ledger_path.relative_to(board_root).as_posix()
+        except ValueError as exc:
+            raise _CloseObservationFailure(
+                f"cluster ledger가 board-git 밖을 가리킨다: {ledger_path}") from exc
+        return bool(self._pending_paths(board_root, [pathspec]))
+
+    def _run_reconcile(self) -> int:
+        """이미 통합된 all-done cluster를 git mutation 없이 감사 가능하게 닫는다."""
+        try:
+            first, first_status, problem = self._validate_reconcile()
+        except _CloseObservationFailure as failure:
+            first, first_status, problem = None, None, f"관측 실패 — {failure}"
+        if problem:
+            print(f"\n[중단] reconcile preflight — {problem}", file=sys.stderr)
+            return 1
+        assert first is not None
+        self._report_other_slots()
+        try:
+            second, second_status, problem = self._validate_reconcile()
+        except _CloseObservationFailure as failure:
+            second, second_status, problem = None, None, f"관측 실패 — {failure}"
+        if problem or second != first or second_status != first_status:
+            detail = problem or "제품 HEAD 또는 board 상태가 bookend 사이에 drift했다"
+            print(f"\n[중단] reconcile bookend — {detail}", file=sys.stderr)
+            return 1
+        if self._dry_run:
+            print(f"[dry-run] {self._cluster} all-done reconcile: {first}")
+            return 0
+
+        prior: dict | None = None
+        if first_status == "open":
+            lock = getattr(self._board, "board_lock", None) if self._board else None
+            load = getattr(self._board, "load_cluster", None) if self._board else None
+            dump = getattr(self._board, "dump_cluster", None) if self._board else None
+            if load is None or dump is None:
+                print("\n[중단] reconcile 장부 persistence seam이 없다", file=sys.stderr)
+                return 1
+            with lock() if callable(lock) else contextlib.nullcontext():
+                third, third_status, problem = self._validate_reconcile()
+                if problem or third != first or third_status != "open":
+                    detail = problem or "최종 write 직전 board/HEAD가 drift했다"
+                    print(f"\n[중단] reconcile final bookend — {detail}", file=sys.stderr)
+                    return 1
+                prior = dict(load(self._cluster) or {})
+                updated = dict(prior)
+                updated["closure"] = first
+                updated["status"] = _CLUSTER_STATUS_CLOSED
+                updated[_CLOSE_STEP_KEY] = self.STEPS[-1][0]
+                dump(updated)
+            needs_board_sync = True
+        else:
+            try:
+                needs_board_sync = self._reconcile_ledger_pending()
+            except _CloseObservationFailure as failure:
+                print(f"\n[중단] reconcile board persistence 관측 실패 — {failure}", file=sys.stderr)
+                return 1
+            if needs_board_sync:
+                print("  동일 closure evidence의 미완 board-git 기록을 재개")
+            else:
+                print("  동일 closure evidence가 이미 board-git에 기록됨 — 장부 write 건너뜀")
+
+        if needs_board_sync:
+            ledger_path = getattr(self._board, "cluster_ledger_path")(self._cluster)
+            try:
+                block = self._sync_board_git([ledger_path])
+            except _CloseObservationFailure as failure:
+                block = f"board-git 기록 관측 실패 — {failure}"
+            if block is not None:
+                if prior is not None:
+                    with lock() if callable(lock) else contextlib.nullcontext():
+                        dump(prior)
+                print(f"\n[중단] {block}", file=sys.stderr)
+                return 1
+
+        block = self._commit_reconcile_pointer()
+        if block is not None:
+            print(f"\n[중단] {block} — 같은 증거로 재실행하면 pointer 단계만 재개한다.",
+                  file=sys.stderr)
+            return 1
+        print(f"\n[완료] {self._cluster} all-done reconcile 완료 (제품/slot write 0).")
+        return 0
+
     def run(self) -> int:
         """종결 파이프라인 실행 — 0=성공, 1=실패(그 단계에서 정지).
 
@@ -4603,6 +4953,8 @@ class ClusterCloser:
         if block:
             print(f"\n[중단] {block}", file=sys.stderr)
             return 1
+        if self._reconcile_integrated:
+            return self._run_reconcile()
         print(f"[close] {self._cluster} 종결 시작 "
               f"(dry_run={self._dry_run}, 멤버 {len(self._tickets)}: "
               f"{', '.join(self._tickets)})")
@@ -4657,6 +5009,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="편집·board·git 없이 무엇을 바꿀지만 출력한다.",
     )
+    parser.add_argument(
+        "--reconcile-integrated", action="store_true",
+        help="이미 all-done인 open cluster를 제품 git evidence 검증 뒤 장부만 복구한다.",
+    )
+    parser.add_argument(
+        "--integrated-rev", action="append", default=[], metavar="T-NNNN=<git-rev>",
+        help="reconcile 멤버별 통합 evidence commit (멤버마다 정확히 1개).",
+    )
+    parser.add_argument(
+        "--legacy-base-rev", action="append", default=[], metavar="T-NNNN=<git-rev>",
+        help="claimed_rev 없는 legacy 멤버의 명시 anchor commit.",
+    )
+    parser.add_argument(
+        "--user-ack", default=None, metavar="C-<이름>",
+        help="reconcile 대상 cluster ID와 정확히 같은 사용자 승인값.",
+    )
     # ── 두-git 다중슬롯 seam (pm_handoff 미러) ──────────
     # 분리된 PM 홈 + worktree 슬롯 여럿 형상에서 회귀를 어느 worktree(tests/ 보유)에서
     # 돌릴지 disambiguate 한다 — pm_handoff `--repo`/`--slot`/`--no-pytest` 와 동형(canonical
@@ -4688,6 +5056,20 @@ def _main(argv: list[str] | None = None) -> int:
             "완료 기록 대상은 하나다 — ticket ID 를 주거나 `--cluster <이름>` 으로 묶음을 "
             "종결하라(둘 다 지정하거나 둘 다 생략할 수 없다)."
         )
+
+    recovery_args_present = bool(
+        args.reconcile_integrated or args.integrated_rev or args.legacy_base_rev
+        or args.user_ack is not None
+    )
+    if recovery_args_present and not args.reconcile_integrated:
+        parser.error("--integrated-rev/--legacy-base-rev/--user-ack은 --reconcile-integrated 전용이다.")
+    if args.reconcile_integrated:
+        if args.cluster is None:
+            parser.error("--reconcile-integrated는 --cluster <이름> 전용이다.")
+        if args.task is not None or args.repo is None or args.slot is None:
+            parser.error(
+                "--reconcile-integrated는 --repo <repo> --slot <N> 둘 다 필수이고 --task를 받지 않는다."
+            )
 
     # task 실행-위치 핀은 독립 축이다. 혼합을 parse_identity의 bare-slot 오류보다
     # 먼저 거부해 `--repo`를 추가하라는 잘못된 해결책을 안내하지 않는다.
@@ -4813,6 +5195,11 @@ def _main(argv: list[str] | None = None) -> int:
         board_identity_args=board_identity,
         dry_run=args.dry_run,
         skip_pytest=args.no_pytest,
+        reconcile_integrated=args.reconcile_integrated,
+        integrated_revisions=args.integrated_rev,
+        legacy_base_revisions=args.legacy_base_rev,
+        user_ack=args.user_ack,
+        explicit_slot=(identity.kind == "slot"),
     ).run()
 
 

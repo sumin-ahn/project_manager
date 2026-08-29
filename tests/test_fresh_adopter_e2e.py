@@ -380,7 +380,7 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     # 거부 문구가 이동 경로(unclaim→claim · --takeover)를 지목해야 한다.
     foreign = _board(
         dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested",
-        "--repo", "pilot", "--slot", "9",
+        "--repo", "pilot", "--slot", "9", "--cluster-close", f"C-{tid}",
     )
     assert foreign.returncode != 0, (
         f"{harness}: 타 세션이 남의 claim 을 complete 했다 — 소유 게이트가 채택자 사본에 없다.\n"
@@ -393,7 +393,7 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     # 빠뜨리면 이 단언이 red — 반쪽 출하 방지). complete 는 claim 과 **같은 정체성**으로 부른다.
     blocked = _board(
         dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested",
-        "--repo", "pilot", "--slot", "1",
+        "--repo", "pilot", "--slot", "1", "--cluster-close", f"C-{tid}",
     )
     assert blocked.returncode != 0, (
         f"{harness}: 미체크 DoD 인데 complete 가 통과함 — DoD 게이트가 채택자 사본에 없다.\n"
@@ -404,7 +404,7 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     _check_off_dod(dest, tid)
     done = _board(
         dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested",
-        "--repo", "pilot", "--slot", "1",
+        "--repo", "pilot", "--slot", "1", "--cluster-close", f"C-{tid}",
     )
     assert done.returncode == 0, f"{harness} `board.py complete {tid}` 실패: {done.stderr}"
 
@@ -513,7 +513,8 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
         encoding="utf-8", newline="\n")
     complete = _board(
         dest, "complete", tid, "--tests-pass", "--allow-missing-log",
-        "--allow-untested", "--repo", "pilot", "--slot", "1")
+        "--allow-untested", "--repo", "pilot", "--slot", "1",
+        "--cluster-close", f"C-{tid}")
     assert complete.returncode == 0, f"complete 실패: {complete.stderr}"
     done_matches = list(board_tickets.glob(f"done/{tid}-*.md"))
     assert len(done_matches) == 1, (
@@ -991,7 +992,8 @@ def test_missing_ticket_status_dirs_self_repair_through_full_lifecycle(pm_import
     _check_off_dod(dest, tid)   # DoD 기록 게이트(T-0596) — 미체크면 complete 가 막힌다.
     # complete 는 claim 과 같은 정체성으로 부른다 — 소유 대조(T-0781).
     done = _board(dest, "complete", tid, "--tests-pass", "--allow-missing-log",
-                  "--allow-untested", "--repo", "pilot", "--slot", "1")
+                  "--allow-untested", "--repo", "pilot", "--slot", "1",
+                  "--cluster-close", f"C-{tid}")
     assert done.returncode == 0, done.stderr
     reopened = _board(dest, "reopen", tid, "--reason", "오처리 복구 스모크")
     assert reopened.returncode == 0, reopened.stderr

@@ -11365,6 +11365,14 @@ def cmd_complete(args: argparse.Namespace) -> int:
             spec_text = handle.read()
         fm, body = load_ticket(path)
 
+        # 묶음 멤버 lifecycle mutation은 정상 8단계에 결속한다. ownership, DoD,
+        # move/dump와 board-git sync보다 앞이라 거부 시 ticket/ledger/git write가 0이다.
+        binding_problem = cluster_complete_binding_problem(
+            args.id, fm, getattr(args, "cluster_close", None))
+        if binding_problem is not None:
+            print(f"cannot complete {args.id}: {binding_problem}", file=sys.stderr)
+            return 1
+
         # 소유 대조 — claim 한 정체성만 완료할 수 있다. 이동·기록 **전**이라 거부 시 티켓은
         # claimed/ 에 한 바이트도 안 바뀐 채 남는다.
         ownership = _ticket_ownership(fm, args)
@@ -13317,6 +13325,64 @@ def _cluster_of_record(tid: str) -> str | None:
     for fm in all_clusters():
         if tid in cluster_tickets(fm):
             return str(fm.get("id") or "").strip() or None
+    return None
+
+
+def cluster_complete_binding_problem(
+    tid: str, ticket_fm: dict[str, Any], cluster_close: str | None,
+) -> str | None:
+    """완료 호출이 티켓의 정확한 cluster에 결속되지 않은 이유를 돌려준다.
+
+    ``--cluster-close``는 인증 토큰이 아니라 path-binding이다. 인자·티켓 역참조·유일한
+    ledger owner가 모두 일치하고 장부 전 멤버의 양방향 귀속이 온전할 때만 통과한다.
+    장부 이전 legacy 티켓은 ledger owner와 ``cluster`` 선언이 모두 없을 때만 호환한다.
+    """
+    binding = cluster_id_for_name(cluster_close) if cluster_close else None
+    declared_raw = str(ticket_fm.get("cluster") or "").strip()
+    declared = cluster_id_for_name(declared_raw) if declared_raw else None
+    ledgers = all_clusters()
+    owners = [ledger for ledger in ledgers if tid in cluster_tickets(ledger)]
+
+    if not owners and declared is None:
+        if binding is not None:
+            return (f"cluster 결속 {binding}을 검증할 장부가 없다 — 장부 없는 legacy 티켓은 "
+                    "결속 인자 없이만 완료할 수 있다")
+        return None
+    if len(owners) != 1:
+        owner_ids = [str(row.get("id") or "<id 없음>") for row in owners]
+        return (f"cluster ledger owner가 정확히 하나가 아니다: {owner_ids or ['없음']} — "
+                "멤버십을 복구한 뒤 묶음 종결을 다시 실행하라")
+
+    ledger = owners[0]
+    owner_raw = str(ledger.get("id") or "").strip()
+    owner = cluster_id_for_name(owner_raw) if owner_raw else ""
+    members = cluster_tickets(ledger)
+    if not owner or len(members) != len(set(members)) or not members:
+        return f"{owner or '<id 없음>'} 장부의 멤버 집합이 비었거나 중복됐다"
+    if declared != owner:
+        return (f"티켓 cluster 역참조({declared or '없음'})와 ledger owner({owner})가 "
+                "일치하지 않는다")
+    if binding != owner:
+        return (f"활성 cluster 멤버는 direct complete할 수 없다 — "
+                f"ticket_finish 묶음 종결의 exact 결속 {owner}가 필요하다")
+    if str(ledger.get("status") or "").strip() == "closed":
+        return f"{owner} 장부는 closed인데 {tid}가 claimed다 — 모순을 complete로 덮지 않는다"
+
+    for member in members:
+        found = find_ticket_exact(member)
+        if found is None:
+            return f"{owner} 멤버 {member} 티켓을 찾지 못했다"
+        loaded = load_ticket_soft(found[1])
+        member_cluster = str((loaded[0] if loaded else {}).get("cluster") or "").strip()
+        if not member_cluster or cluster_id_for_name(member_cluster) != owner:
+            return (f"{owner} 멤버 {member}의 cluster 역참조가 일치하지 않는다: "
+                    f"{member_cluster or '없음'}")
+        member_owners = [
+            str(row.get("id") or "") for row in ledgers
+            if member in cluster_tickets(row)
+        ]
+        if member_owners != [owner]:
+            return f"{member}가 여러 cluster ledger에 귀속됐다: {member_owners}"
     return None
 
 
@@ -19496,6 +19562,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--allow-untested", action="store_true",
                    help="bypass the regression check "
                         "(regression-irrelevant ticket)")
+    # 보안 capability가 아니라 ClusterCloser의 사고 방지용 exact path-binding이다.
+    # 사용자 완료 표면을 하나로 유지하려 help에서는 감춘다.
+    p.add_argument("--cluster-close", default=None, help=argparse.SUPPRESS)
     identity_args.add_identity_args(p)   # claim 소유 대조용 세션 해소
     p.set_defaults(fn=cmd_complete)
 

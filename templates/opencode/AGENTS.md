@@ -65,7 +65,7 @@ env prefix 없이 호출한다:
 ticket을 닫을 때:
 
 ```bash
-{{PY}} .project_manager/tools/board.py complete T-NNNN --tests-pass
+{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<이름> [--repo <repo> --slot <N>]
 ```
 
 추가로 PM이:
@@ -116,7 +116,7 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 {{PY}} .project_manager/tools/board.py list
 {{PY}} .project_manager/tools/board.py show T-NNNN
 {{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 활성 lease 1개면 생략 가능 (§세션 식별)
-{{PY}} .project_manager/tools/board.py complete T-NNNN --tests-pass
+{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<이름> [--repo <repo> --slot <N>]
 {{PY}} .project_manager/tools/board.py new "title" --touches a.py,b.py --tag phase-1
 {{PY}} .project_manager/tools/board.py lint           # depends_on·thin-ticket 검사
 

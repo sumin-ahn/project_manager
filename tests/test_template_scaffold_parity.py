@@ -651,3 +651,58 @@ def test_shipped_finish_card_carries_engine_close_steps(name: str):
     assert not missing, (
         f"{name}: 종결 단계 이름이 엔진 값과 어긋남 (누락 {missing})"
     )
+
+
+def test_completion_guidance_uses_cluster_finish_not_direct_complete():
+    """AT-005: full/lite·wiki·카드는 direct complete 대신 정상/복구/상태 분리를 안내한다."""
+    entry_guides = [
+        TEMPLATES / "claude_code" / "CLAUDE.md",
+        TEMPLATES / "claude_code" / "CLAUDE.lite.md",
+        TEMPLATES / "codex" / "AGENTS.md",
+        TEMPLATES / "opencode" / "AGENTS.md",
+        TEMPLATES / "opencode" / "AGENTS.lite.md",
+    ]
+    methodology = [
+        REPO / ".project_manager" / "wiki" / "pm_role.md",
+        REPO / ".project_manager" / "wiki" / "pm_playbook.md",
+        REPO / ".project_manager" / "wiki" / "tickets" / "README.md",
+    ]
+    for name in TEMPLATE_NAMES:
+        methodology.extend((
+            _wiki(name) / "pm_role.md",
+            _wiki(name) / "pm_playbook.md",
+        ))
+    direct_command = re.compile(
+        r"(?m)^\s*(?:\{\{PY\}\}\s+|python3\s+)?\.project_manager/tools/board\.py\s+complete\b"
+    )
+    for path in entry_guides + methodology:
+        text = path.read_text(encoding="utf-8")
+        assert direct_command.search(text) is None, (
+            f"{path.relative_to(REPO)}: 사용자-facing direct board complete 처방 잔존"
+        )
+        assert "ticket_finish.py" in text or "/pm-wave-finish" in text, (
+            f"{path.relative_to(REPO)}: 묶음 종결 진입 누락"
+        )
+
+    finish_surfaces = [
+        REPO / ".claude" / "skills" / "pm-wave-finish" / "SKILL.md",
+        REPO / ".claude" / "skills" / "pm-wave-finish" / "references" /
+        "operational-details.md",
+        TEMPLATES / "opencode" / ".opencode" / "command" / "pm-wave-finish.md",
+    ]
+    for name in TEMPLATE_NAMES:
+        finish_surfaces.extend(_shipped_cards(name, "pm-wave-finish"))
+        finish_surfaces.extend(sorted(
+            (TEMPLATES / name).glob(
+                "*/skills/pm-wave-finish/references/operational-details.md"
+            )
+        ))
+    haystack = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(set(finish_surfaces))
+    )
+    for marker in (
+        "ticket done", "cluster closed", "slot released",
+        "--reconcile-integrated", "--integrated-rev", "--legacy-base-rev",
+        "--user-ack", "--repo", "--slot", "dirty slot",
+    ):
+        assert marker in haystack, f"종결/복구 기준 marker 누락: {marker}"
