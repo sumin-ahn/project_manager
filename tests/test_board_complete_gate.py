@@ -820,6 +820,76 @@ def test_cluster_member_complete_requires_exact_closer_binding(
     assert len(sync_calls) == 1
 
 
+def test_legacy_ticket_completes_with_its_size_one_binding(live_board, capsys, monkeypatch):
+    """X-003: 장부도 역참조도 없는 구세대 티켓은 크기 1 해석 결속만 받고 나머지는 거부한다.
+
+    `cluster_members` 폴백이 그 티켓을 `C-<티켓 ID>` 크기 1 묶음으로 접어 종결에 태우므로,
+    완료 게이트가 다른 규칙을 쓰면 그 티켓은 종결도 직접 완료도 못 하는 막다른 길에 놓인다.
+    """
+    tid = "T-9884"
+    claimed = _seed_ticket(live_board, tid, _dod_body("- [x] 코드"))
+    assert "cluster:" not in claimed.read_text(encoding="utf-8")
+    monkeypatch.setattr(live_board, "_board_git_sync_best_effort", lambda *args: True)
+    ticket_before = claimed.read_bytes()
+
+    wrong = _complete_args(tid)
+    wrong.cluster_close = "C-other"
+    assert live_board.cmd_complete(wrong) == 1
+    assert claimed.read_bytes() == ticket_before
+    assert f"C-{tid}" in capsys.readouterr().err
+
+    exact = _complete_args(tid)
+    exact.cluster_close = f"C-{tid}"
+    assert live_board.cmd_complete(exact) == 0
+    assert not claimed.exists()
+    assert list((live_board.tickets_dir() / "done").glob(f"{tid}*"))
+
+
+def test_cluster_binding_rejects_unreadable_ledger_catalog(live_board, capsys, monkeypatch):
+    """F-003: 장부 catalog 를 한 파일이라도 못 읽으면 귀속 유일성 판정은 정지다.
+
+    조회용 `all_clusters()` 는 손상 파일을 경고 뒤 건너뛴다. 그 관용을 mutation 판정이 쓰면
+    빠진 파일이 그 티켓을 중복으로 담고 있을 가능성을 배제하지 못한 채 "owner 가 하나"라고
+    말하게 된다 — 판정 불능은 통과가 아니라 첫 write 앞 정지다.
+    """
+    tid = "T-9885"
+    claimed = _seed_ticket(live_board, tid, _dod_body("- [x] 코드"))
+    claimed.write_text(
+        claimed.read_text(encoding="utf-8").replace("tags: []", "cluster: C-gate\ntags: []"),
+        encoding="utf-8",
+    )
+    ledger = _seed_cluster(live_board, "C-gate", (tid,))
+    sync_calls: list[tuple] = []
+    monkeypatch.setattr(
+        live_board, "_board_git_sync_best_effort",
+        lambda *args: sync_calls.append(args) or True,
+    )
+    ticket_before = claimed.read_bytes()
+    ledger_before = ledger.read_bytes()
+    exact = _complete_args(tid)
+    exact.cluster_close = "C-gate"
+
+    broken = live_board.tickets_dir() / "clusters" / "C-broken.md"
+    broken.write_text("---\nid: C-broken\ntickets: [T-9885\n---\n", encoding="utf-8")
+    assert live_board.cmd_complete(exact) == 1
+    assert claimed.read_bytes() == ticket_before and ledger.read_bytes() == ledger_before
+    assert sync_calls == []
+    assert "전수 확인할 수 없어" in capsys.readouterr().err
+
+    # id 를 선언하지 않은 장부도 같은 축이다 — 그 파일이 담은 멤버를 알 수 없다.
+    broken.write_text("---\ntickets:\n- T-9885\nstatus: open\n---\n", encoding="utf-8")
+    assert live_board.cmd_complete(exact) == 1
+    assert claimed.read_bytes() == ticket_before and ledger.read_bytes() == ledger_before
+    assert sync_calls == []
+    assert "id 선언이 없다" in capsys.readouterr().err
+
+    # 손상 장부를 치우면 같은 호출이 그대로 통과한다(가드가 정상 경로를 막지 않는다).
+    broken.unlink()
+    assert live_board.cmd_complete(exact) == 0
+    assert list((live_board.tickets_dir() / "done").glob(f"{tid}*"))
+    assert len(sync_calls) == 1
+
+
 def _internal_round(
     sequence: int,
     verdict: int,

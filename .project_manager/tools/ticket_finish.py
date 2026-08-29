@@ -3814,10 +3814,12 @@ class TicketFinisher:
 # 재개는 없는 커밋 위에서 진행한다. 기록은 어디까지 갔는지 사람이 읽는 값이다.
 #
 # 크기 1 묶음도 같은 경로를 탄다(특례 없음) — 티켓 하나짜리 종결이라고 다른 코드가 도는 일은
-# 없다. 통합 브랜치를 선언하지 않은 묶음에서는 재배치·머지가 **무대상**이고 나머지는 그대로다.
+# 없다. 발행이 만드는 크기 1 장부는 기준 브랜치(`base_branch`)를 싣고 묶음 브랜치(`branch`)만
+# 비우므로 머지가 **무대상**이다. 기준 브랜치 미선언은 그 축이 아니라 판정 기준의 부재라 정지다.
 
 _CLOSE_STEP_KEY = "close_step"            # 장부에 남기는 단계 진행 기록(보조 기록)
-_CLUSTER_STATUS_CLOSING = "closing"       # 열거의 소유자는 board — 그 열거 안에 있을 때만 쓴다
+_CLUSTER_STATUS_OPEN = "open"             # 열거의 소유자는 board — 그 열거 안에 있을 때만 쓴다
+_CLUSTER_STATUS_CLOSING = "closing"
 _CLUSTER_STATUS_CLOSED = "closed"
 _CLOSE_BOARD_POINTER_PATH = ".project_manager/board"
 _CLOSE_SUBMODULE_MODE = "160000"          # `ls-files --stage` 가 gitlink 에 쓰는 모드
@@ -3829,6 +3831,16 @@ _CLOSE_INTEGRATION_UNDECLARED = (
     "{cluster} 장부가 통합 브랜치(base_branch)를 선언하지 않았다 — 재배치·머지의 대상이 "
     "그 선언이다. `board.py cluster show {cluster}` 로 장부를 확인하고 `base_branch` 를 채운 "
     "뒤 다시 실행하라."
+)
+
+_CLOSE_OPEN_ALL_DONE = (
+    "{cluster} 장부는 open 인데 멤버 {members} 가 이미 전부 done 이다 — 정상 종결 8단계는 이 "
+    "반쪽 상태를 닫지 않는다(그 완료 기록은 이 파이프라인이 만든 것이 아니라 커밋·재배치·머지가 "
+    "무엇을 근거로 도는지 알 수 없다). 이미 통합된 commit 을 명시하는 복구 문으로 닫는다:\n"
+    "  python3 .project_manager/tools/ticket_finish.py --cluster {cluster} "
+    "--reconcile-integrated \\\n"
+    "    --integrated-rev T-NNNN=<commit> [--legacy-base-rev T-NNNN=<commit>] \\\n"
+    "    --user-ack {cluster} --repo <repo> --slot <N>"
 )
 
 
@@ -4606,6 +4618,24 @@ class ClusterCloser:
                     "`board.py cluster show <이름>` 이다.")
         return None
 
+    def _open_all_done_block(self) -> str | None:
+        """정상 종결의 첫 부작용 앞 read-only 상태 게이트 — open + 전원 done 은 복구 전용이다.
+
+        `open` 장부의 멤버가 전부 done 이면 그 완료 기록은 이 파이프라인이 남긴 것이 아니다
+        (1단계가 성공하는 순간 장부는 `closing` 이 된다). 그 상태로 8단계를 시작하면 무엇이
+        이미 통합됐는지 모르는 채 커밋·재배치·머지·반납으로 들어간다 — 그래서 여기서 멈추고
+        증거를 명시하는 복구 문으로 보낸다. `closing` 재개와 `closed` 멱등 관측은 그대로다.
+        """
+        ledger = self._ledger()
+        if ledger is None:
+            return None
+        if str(ledger.get("status") or "").strip() != _CLUSTER_STATUS_OPEN:
+            return None
+        if any(self._ticket_status(tid) != "done" for tid in self._tickets):
+            return None
+        return _CLOSE_OPEN_ALL_DONE.format(
+            cluster=self._cluster, members=", ".join(self._tickets))
+
     # ── all-done recovery ───────────────────────────────────────────
 
     @staticmethod
@@ -4621,6 +4651,21 @@ class ClusterCloser:
                 return {}, f"{label}에 {ticket} mapping이 중복됐다"
             mapped[ticket] = revision
         return mapped, None
+
+    def _cluster_id(self, value: str | None) -> str:
+        """이름/장부 id 어느 표기든 board 의 장부 id 하나로 정규화한다 (빈 값은 빈 값).
+
+        정상 8단계는 `load_cluster`·`cluster_members` 안에서 이 정규화를 이미 받는다. recovery
+        만 원시 문자열을 비교하면 같은 표기로 부른 호출이 "장부 id 가 다르다"로 멈춘다.
+        """
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        normalize = getattr(self._board, "cluster_id_for_name", None) if self._board else None
+        if normalize is None:
+            raise _CloseObservationFailure(
+                f"cluster id 정규화 seam 을 로드하지 못했다 ({self._board_py})")
+        return str(normalize(text)).strip()
 
     def _commit_oid(self, tree: Path, revision: str, *, label: str) -> tuple[str | None, str | None]:
         """명시 hex revision을 선택 제품 git의 full commit OID로 정규화한다."""
@@ -4677,7 +4722,8 @@ class ClusterCloser:
         """
         if not self._explicit_slot or not self._slot or self._task is not None:
             return None, None, "recovery는 명시 --repo와 --slot 둘 다 필요하고 --task를 받지 않는다"
-        if self._user_ack != self._cluster:
+        cluster_id = self._cluster_id(self._cluster)
+        if self._cluster_id(self._user_ack) != cluster_id:
             return None, None, (f"--user-ack은 대상 cluster와 정확히 같아야 한다: "
                                 f"expected {self._cluster!r}, got {self._user_ack!r}")
         tree = self._code_tree()
@@ -4696,13 +4742,14 @@ class ClusterCloser:
         ledger = self._ledger()
         if ledger is None:
             return None, None, f"묶음 장부를 찾지 못했다: {self._cluster}"
-        ledger_id = str(ledger.get("id") or "").strip()
-        if ledger_id != self._cluster:
-            return None, None, f"장부 id가 대상과 다르다: {ledger_id!r} != {self._cluster!r}"
+        ledger_id = self._cluster_id(ledger.get("id"))
+        if ledger_id != cluster_id:
+            return None, None, f"장부 id가 대상과 다르다: {ledger_id!r} != {cluster_id!r}"
         members_fn = getattr(self._board, "cluster_tickets", None) if self._board else None
-        all_clusters_fn = getattr(self._board, "all_clusters", None) if self._board else None
+        strict_catalog_fn = (
+            getattr(self._board, "all_clusters_strict", None) if self._board else None)
         board_root_fn = getattr(self._board, "board_root", None) if self._board else None
-        if members_fn is None or all_clusters_fn is None or board_root_fn is None:
+        if members_fn is None or strict_catalog_fn is None or board_root_fn is None:
             return None, None, "cluster 멤버십 전수 검증 seam이 없다"
         board_root = Path(board_root_fn())
         if not (board_root / ".git").exists():
@@ -4731,18 +4778,22 @@ class ClusterCloser:
         assert head is not None
         normalized_revisions: dict[str, str] = {}
         member_anchors: dict[str, dict[str, str]] = {}
-        ledgers = all_clusters_fn()
+        # 귀속 유일성은 **전 catalog 를 읽었다는 증명** 위에서만 성립한다 — 판독 불능 장부가
+        # 하나라도 있으면 그 파일이 중복 귀속일 가능성을 배제하지 못하므로 첫 write 전에 정지한다.
+        ledgers, catalog_problem = strict_catalog_fn()
+        if catalog_problem is not None:
+            return None, None, catalog_problem
         for tid in members:
             fm, problem = self._reconcile_ticket_frontmatter(tid)
             if problem:
                 return None, None, problem
             assert fm is not None
-            declared = str(fm.get("cluster") or "").strip()
+            declared = self._cluster_id(fm.get("cluster"))
             owners = [
-                str(row.get("id") or "").strip() for row in ledgers
+                self._cluster_id(row.get("id")) for row in ledgers
                 if tid in members_fn(row)
             ]
-            if declared != self._cluster or owners != [self._cluster]:
+            if declared != cluster_id or owners != [cluster_id]:
                 return None, None, (f"{tid} 양방향 cluster 귀속 불일치 "
                                     f"(ticket={declared or '없음'}, ledgers={owners})")
             revision, problem = self._commit_oid(
@@ -4947,6 +4998,8 @@ class ClusterCloser:
         진행되므로, 같은 자리에서 같은 rc 로 멈춘다."""
         try:
             block = self._resolve_members()
+            if not block and not self._reconcile_integrated:
+                block = self._open_all_done_block()
         except _CloseObservationFailure as failure:
             print(f"\n[중단] 관측 실패 — {failure}", file=sys.stderr)
             return 1

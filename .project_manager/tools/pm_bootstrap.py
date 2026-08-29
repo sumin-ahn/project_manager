@@ -374,7 +374,6 @@ _C_BOARD_LIST = _CardCmd("board.py", "list", ("list",), ())
 _C_BOARD_LIST_ALL = _CardCmd("board.py", "list --all", ("list",), ("--all",))
 _C_BOARD_NEW = _CardCmd("board.py", 'new "<제목>" --prefix <PFX>', ("new",), ("--prefix",))
 _C_BOARD_PROMOTE = _CardCmd("board.py", "promote T-NNNN", ("promote",), ())
-_C_BOARD_COMPLETE = _CardCmd("board.py", "complete T-NNNN --tests-pass", ("complete",), ("--tests-pass",))
 _C_BOARD_SHOW = _CardCmd("board.py", "show T-NNNN", ("show",), ())
 _C_BOARD_LINT = _CardCmd("board.py", "lint", ("lint",), ())
 _C_BOARD_CLAIM = _CardCmd("board.py", "claim T-NNNN", ("claim",), ())
@@ -414,7 +413,7 @@ _C_PC_STATUS = _CardCmd("pm_config.py", "status", ("status",), ())
 # + 각 record 를 실 파서로 검증(정의서↔파서). skill(`/pm-…`) 줄은 CLI 가 아니라 대상 밖.
 _CARD_SLOT_CLI = (
     _C_BOARD_LIST_MINE, _C_BOARD_LIST, _C_BOARD_LIST_ALL, _C_BOARD_NEW, _C_BOARD_PROMOTE,
-    _C_BOARD_COMPLETE, _C_BOARD_SHOW, _C_BOARD_LINT, _C_BOARD_CLAIM, _C_BOARD_REGRESSION,
+    _C_BOARD_SHOW, _C_BOARD_LINT, _C_BOARD_CLAIM, _C_BOARD_REGRESSION,
     _C_TICKET_FINISH, _C_ADDITIONAL_REVIEWER, _C_PM_HANDOFF, _C_BOARD_LIVEGATE, _C_BOARD_PREFIX_LIST,
     _C_BOARD_PREFIX_RENAME, _C_BOARD_PREFIX_MERGE, _C_BOARD_REID, _C_BOARD_MIGRATE_IDENTITY,
     _C_PM_LOG_TAIL, _C_DOMAIN_AFFECTED,
@@ -5208,7 +5207,8 @@ class PmBootstrap:
         pm_handoff.py)일 때만** "직접 금지" 강등 줄로 그리고, 엔진이 Agent 툴(`/pm-dev-delegate`)·
         facade 셸(`/pm-update`=pm-update.sh)이면 python3 줄을 지어내지 않고 skill-only + 평문 note
         로 둔다. additional_reviewer 는 래핑 스킬 없는 별도 추가 리뷰어 게이트라 강등이 아니라 직접-CLI 예외
-        (`board.py complete` 직접완료 경로·new/promote 도 동일). 강등 = 제거 아님: CLI backbone
+        (`board.py new`/`promote` 발행 authoring 도 동일 · 완료 진입은 /pm-wave-finish 하나라
+        direct `board.py complete` 줄은 카드에 없다). 강등 = 제거 아님: CLI backbone
         줄은 정체성 보간·⚠ 인접·argparse 정합 가드를 위해 남긴다. 규칙·why 는 재설명하지 않고
         카드 상단 1줄 pointer 로 pm_role 규율 절을 가리킨다.
         """
@@ -5337,10 +5337,13 @@ class PmBootstrap:
         ))
         lines.append("")
 
-        # 티켓 lifecycle 직접 (직접 — 래핑 스킬 없음). new/promote authoring +
-        # complete 는 스킬 없는 fresh-adopter/concept(--allow-untested) 직접완료 경로(정상 wave
-        # 종료=/pm-wave-finish→ticket_finish 가 complete 를 내부 수행·중복 실행 말 것).
-        lines.append("# 티켓 lifecycle 직접 (래핑 스킬 없음)")
+        # 티켓 lifecycle 직접 (직접 — 래핑 스킬 없음) = new/promote authoring 둘뿐이다.
+        # 완료 진입은 /pm-wave-finish 하나다 — 발행이 모든 티켓을 크기 1 묶음에 귀속시키므로
+        # direct `board.py complete` 는 묶음 결속 없이는 거부된다(카드가 그 줄을 싣지 않는다).
+        lines.append(
+            "# 티켓 lifecycle 직접 (래핑 스킬 없음 — 완료 진입은 "
+            f"{_runtime_skill_entry('pm-wave-finish')})"
+        )
         lines.append(cmd(
             _C_BOARD_NEW,
             "draft 발행(본문은 board 밖에서 채움 · 미등록 prefix 는 사용자 승인값이 필요하다 — "
@@ -5348,10 +5351,6 @@ class PmBootstrap:
         ))
         lines.append(cmd(
             _C_BOARD_PROMOTE, "draft → open(본문 채운 뒤·claim 선행조건)",
-        ))
-        lines.append(cmd(
-            _C_BOARD_COMPLETE,
-            "직접 완료 — fresh-adopter/concept(--allow-untested)·정상 wave 는 finish 스킬",
         ))
         lines.append("")
 

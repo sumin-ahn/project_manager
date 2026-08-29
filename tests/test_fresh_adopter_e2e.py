@@ -251,10 +251,10 @@ def test_real_install_codex_readable_surfaces_have_no_unannotated_slash_entries(
     assert not failures, f"실 설치본 Codex-readable 문서의 slash 오표기 잔존: {failures}"
 
 
-def _board(dest: Path, *args: str) -> subprocess.CompletedProcess:
-    """imported 트리의 board.py 를 동일 인터프리터로 subprocess 호출 (cwd=dest·비대화형·capture)."""
+def _tool(dest: Path, tool: str, *args: str) -> subprocess.CompletedProcess:
+    """imported 트리의 엔진 도구를 동일 인터프리터로 subprocess 호출 (cwd=dest·비대화형·capture)."""
     return subprocess.run(
-        [sys.executable, str(dest / ".project_manager" / "tools" / "board.py"), *args],
+        [sys.executable, str(dest / ".project_manager" / "tools" / tool), *args],
         cwd=str(dest),
         capture_output=True,
         text=True,
@@ -264,6 +264,16 @@ def _board(dest: Path, *args: str) -> subprocess.CompletedProcess:
         errors="replace",
         env={**os.environ, "PM_NONINTERACTIVE": "1"},
     )
+
+
+def _board(dest: Path, *args: str) -> subprocess.CompletedProcess:
+    """채택자 사본의 `board.py` 호출."""
+    return _tool(dest, "board.py", *args)
+
+
+def _ticket_finish(dest: Path, *args: str) -> subprocess.CompletedProcess:
+    """채택자 사본의 `ticket_finish.py` 호출 — 완료 진입은 묶음 종결 하나다."""
+    return _tool(dest, "ticket_finish.py", *args)
 
 
 @pytest.mark.parametrize("harness", HARNESSES)
@@ -456,7 +466,12 @@ _FOUR_STEP_FILLED_BODY = (
 
 @requires_git
 def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, monkeypatch):
-    """new(draft)→promote→claim→complete 4단계 완주 — 매 단계 rc·상태 디렉터리를 단언한다."""
+    """new(draft)→promote→claim→묶음 종결 4단계 완주 — 매 단계 rc·상태 디렉터리를 단언한다.
+
+    완료 축은 출하 사본의 `ticket_finish.py --cluster` 다(X-005). 발행이 모든 티켓을 크기 1
+    장부에 귀속시키므로 결속 없는 direct `board.py complete` 는 채택자 사본에서도 거부돼야
+    하고, 그 거부와 묶음 종결 성공을 같은 케이스에서 함께 본다.
+    """
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     bare = tmp_path / "board.git"
@@ -467,6 +482,10 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
         "--board-submodule", "--board-remote", str(bare), "--fill", "manual",
     ])
     assert rc == 0, f"board-submodule import 실패 (rc={rc})"
+    # PM 홈 첫 커밋 — import 직후 홈 git 은 unborn 이라 발행이 장부에 싣는 기준 브랜치가
+    # commit 으로 해소되지 않는다. 채택자의 실제 형상(커밋 있는 홈)을 만들어 준다.
+    _git(["-c", "advice.addEmbeddedRepo=false", "add", "-A"], dest)
+    assert _git(["commit", "-qm", "adopter home seed"], dest).returncode == 0
     board_tickets = dest / ".project_manager" / "board" / "tickets"
 
     # 1단계 — new: 제목만 있는 미충전 본문은 board-git 활성 하에서 draft 로 격리된다(open/ 창 0).
@@ -496,8 +515,10 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
     assert not list((board_tickets / ".drafts").glob(f"{tid}-*.md")), "promote 후에도 draft 잔존"
 
     # 3단계 — claim: open/ → claimed/. 대상 정확히 1개·출발(open/) 0개까지 단언한다(F-003 —
-    # 존재만 보면 copy-without-delete 회귀도 green 이 된다).
-    claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
+    # 존재만 보면 copy-without-delete 회귀도 green 이 된다). 정체성은 import 가 등록한 홈
+    # 슬롯 행이다 — 4단계 묶음 종결이 같은 행으로 코드 트리와 소유를 해소하므로 두 단계의
+    # 정체성 축이 하나여야 한다(명시 `--repo/--slot` claim 은 bare-claim 케이스가 따로 덮는다).
+    claim = _board(dest, "claim", tid)
     assert claim.returncode == 0, f"claim 실패: {claim.stderr}"
     claimed_matches = list(board_tickets.glob(f"claimed/{tid}-*.md"))
     assert len(claimed_matches) == 1, (
@@ -505,22 +526,35 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
     assert not list(board_tickets.glob(f"open/{tid}-*.md")), (
         "claim 성공인데 open/ 에 원본이 남음 — copy-without-delete 회귀.")
 
-    # DoD 체크 후 4단계 — complete: claimed/ → done/. 대상 정확히 1개·출발(claimed/) 0개까지
+    # DoD 체크 후 4단계 — 묶음 종결: claimed/ → done/. 대상 정확히 1개·출발(claimed/) 0개까지
     # 단언한다(F-003 — 동형 근거).
     claimed_path = claimed_matches[0]
     claimed_path.write_text(
         claimed_path.read_text(encoding="utf-8").replace("- [ ] ", "- [x] "),
         encoding="utf-8", newline="\n")
-    complete = _board(
-        dest, "complete", tid, "--tests-pass", "--allow-missing-log",
-        "--allow-untested", "--repo", "pilot", "--slot", "1",
-        "--cluster-close", f"C-{tid}")
-    assert complete.returncode == 0, f"complete 실패: {complete.stderr}"
+
+    # 결속 없는 direct complete 는 채택자 사본에서도 거부된다 — 발행이 만든 크기 1 장부의
+    # 멤버라, 완료 진입은 묶음 종결 하나다.
+    direct = _board(
+        dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested")
+    assert direct.returncode != 0, (
+        f"결속 없는 direct complete 가 통과했다:\n--- stdout ---\n{direct.stdout}")
+    assert "direct complete" in direct.stderr, (
+        f"거부 사유가 묶음 결속 축이 아님:\n{direct.stderr}")
+    assert list(board_tickets.glob(f"claimed/{tid}-*.md")), (
+        "거부됐는데 티켓이 claimed/ 를 떠났다")
+
+    complete = _ticket_finish(dest, "--cluster", f"C-{tid}", "--no-pytest")
+    assert complete.returncode == 0, (
+        f"묶음 종결 실패:\n--- stdout ---\n{complete.stdout}\n--- stderr ---\n{complete.stderr}")
     done_matches = list(board_tickets.glob(f"done/{tid}-*.md"))
     assert len(done_matches) == 1, (
-        f"complete 성공인데 done/ 에 정확히 1개가 아님: {done_matches}")
+        f"종결 성공인데 done/ 에 정확히 1개가 아님: {done_matches}")
     assert not list(board_tickets.glob(f"claimed/{tid}-*.md")), (
-        "complete 성공인데 claimed/ 에 원본이 남음 — copy-without-delete 회귀.")
+        "종결 성공인데 claimed/ 에 원본이 남음 — copy-without-delete 회귀.")
+    ledger = board_tickets / "clusters" / f"C-{tid}.md"
+    assert "status: closed" in ledger.read_text(encoding="utf-8"), (
+        f"종결 뒤에도 장부가 닫히지 않았다:\n{ledger.read_text(encoding='utf-8')}")
 
 
 # ── bare 귀속 조작(홈 슬롯 행) ────────────────────────────────────────────
