@@ -218,4 +218,6 @@ def test_every_code_reviewer_finding_requires_a_concrete_fix_contract(label, pat
     text = path.read_text(encoding="utf-8")
     assert "severity와 무관하게" in text, label
     assert "모든 finding" in text and "구체값" in text, label
+    for contract_part in ("코드 위치", "오류 거동", "수정 설계", "추가 회귀 테스트", "명령", "기대값"):
+        assert contract_part in text, f"{label}: {contract_part}"
     assert "must-fix를 선언할" not in text and "must-fix마다 골격" not in text, label

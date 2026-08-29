@@ -357,6 +357,18 @@ def test_legacy_scope_with_current_contract_notice_remains_pending(pd):
     assert pd.ticket_round_body_is_pending("code-reviewer", body) is True
 
 
+def test_legacy_contract_notice_remains_pending(pd, monkeypatch):
+    """계약 안내 문구 교체 전 예약된 무편집 seed도 세대 목록으로 계속 pending이다."""
+    legacy_rule = "옛 구체값 계약 문구"
+    monkeypatch.setattr(
+        pd, "LEGACY_PM_REVIEW_CONCRETE_FIX_CONTRACT_RULES", (legacy_rule,),
+    )
+    body = pd._render_review_round_seed_body(
+        "code-reviewer", ["F-001"], "F-002", contract_rule=legacy_rule,
+    )
+    assert pd.ticket_round_body_is_pending("code-reviewer", body) is True
+
+
 def test_pending_judgment_reads_only_the_round_body(pd):
     """판정 입력은 라운드 본문 하나다 — 프리필 ID·날짜·명세는 판정을 바꾸지 않는다."""
     previous = _reviewer_round(pd, _review_payload("F-003", "F-001"))

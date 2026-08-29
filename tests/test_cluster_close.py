@@ -1115,14 +1115,16 @@ def test_close_leaves_one_log_entry_after_a_failed_board_complete(close_env, cap
     capsys.readouterr()
 
     assert first == 1
-    assert env.log_text().count(f"| [[{env.ticket}]] — ") == 1
-    assert env.log_text().count(f"| {env.ticket} — ") == 0
+    first_log = env.log_text()
+    assert first_log.count(f"| [[{env.ticket}]] — ") == 1
+    assert first_log.count(f"| {env.ticket} — ") == 0
     assert env.slot_log()[0] == "code seed"            # 커밋 단계까지 가지 못했다
 
     second = env.closer().run()
     out = capsys.readouterr().out
 
     assert second == 0, out
+    assert env.log_text() == first_log                   # 재개가 기존 entry 본문도 다시 쓰지 않는다
     assert env.log_text().count(f"| [[{env.ticket}]] — ") == 1  # 중복 append 없음
     assert env.log_text().count(f"| {env.ticket} — ") == 0
     assert "스켈레톤 이미 있음" in out

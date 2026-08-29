@@ -341,6 +341,7 @@ def test_canonical_delegate_rule_requires_contracts_for_every_finding():
     )
     assert "severity와 무관하게 모든 finding마다" in rule
     assert "reviewer는 must-fix마다" not in rule
+    assert "완전성·실행 가능성만 read-only로 검증하고" in rule
 
 
 def test_canonical_registry_loads_from_each_shipped_target(m):

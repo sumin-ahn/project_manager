@@ -780,6 +780,7 @@ def test_prompt_requires_concrete_fix_contract_values(external, pd):
     for key, value in values.items():
         assert pd._pm_review_contract_string(value, f"example.{key}") == value
     pd._pm_review_assert_verify_command_shape(values["command"], "example.command")
+    assert requirement.endswith("\n\n")
 
 
 def test_disposition_template_targets_the_external_channel(

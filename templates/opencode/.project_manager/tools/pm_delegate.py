@@ -459,6 +459,9 @@ PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE = (
     + "·".join(PM_REVIEW_CONTRACT_PLACEHOLDER_WORDS)
     + ")를 쓰지 않는다."
 )
+# 이 문구를 바꾸기 전에 예약된 review seed도 무편집 상태로 계속 읽어야 한다. 새 항목은
+# 문장을 바꿀 때만 맨 앞에 덧붙인다(CONFIRM scope 문구의 세대 호환과 같은 계약).
+LEGACY_PM_REVIEW_CONCRETE_FIX_CONTRACT_RULES: tuple[str, ...] = ()
 _CONTRACT_TEST_TARGET_RE = re.compile(
     r"(?<![A-Za-z0-9_./-])(?P<path>tests/[A-Za-z0-9_./-]+\.py)"
     r"(?=::|(?:(?:에서|에는|에도|에게|으로|에|은|는|이|가|을|를|와|과|의|로))?"
@@ -5505,13 +5508,17 @@ def ticket_round_body_is_pending(role: str, body: str) -> bool:
     if prefill is None:
         return False
     next_finding_id, confirmation_ids = prefill
-    # 후보는 현재 골격과 옛 스코프 문구로 렌더한 같은 골격들이다 — 문구를 바꾸기 전에 예약된
-    # 라운드가 그 변경만으로 "산출 있음" 이 되면 안 된다. 값이 채워진 라운드는 어느 후보와도
-    # 같지 않으므로 이 후보 확장이 pending 판정을 느슨하게 만들지 않는다.
+    # 후보는 현재/옛 스코프 문구 × 현재/옛/부재 계약 문구의 같은 골격들이다 — 어느 문구든
+    # 바꾸기 전에 예약된 라운드가 그 변경만으로 "산출 있음" 이 되면 안 된다. 값이 채워진
+    # 라운드는 어느 후보와도 같지 않으므로 이 후보 확장이 pending 판정을 느슨하게 하지 않는다.
     candidates = [
         (scope_rule, contract_rule)
         for scope_rule in (CONFIRM_ROUND_SCOPE_RULE, *LEGACY_CONFIRM_ROUND_SCOPE_RULES)
-        for contract_rule in (PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE, None)
+        for contract_rule in (
+            PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE,
+            *LEGACY_PM_REVIEW_CONCRETE_FIX_CONTRACT_RULES,
+            None,
+        )
     ]
     return any(
         normalized == _normalized_newlines(

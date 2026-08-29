@@ -56,7 +56,8 @@ ADR(`decisions/`)·domain 페이지·`architecture.md`·`status.md`는 다른 �
 ### log entry 작성 경로 — 둘 중 하나만
 
 - **선작성:** 회귀·리뷰 증거가 이미 확정됐으면 actual finish 전에 canonical
-  `| [[T-NNNN]] —` heading으로 실제 entry 하나를 작성한다. detector는 이 heading과 옛
+  `| [[T-NNNN]] —` heading으로 아래 "종결 뒤 PM 손 잔여" 2항의 내용 기준을 갖춘 실제
+  entry 하나를 작성한다. detector는 이 heading과 옛
   `| T-NNNN —` heading을 모두 인식하며 skeleton append를 건너뛴다.
 - **후작성:** 증거가 아직 없으면 finish가 만든 skeleton의 placeholder를 종결 직후 실제 내용으로
   교체하고 그 경로만 별도 commit한다. 새 entry를 하나 더 append하지 않는다.
@@ -67,7 +68,8 @@ ADR(`decisions/`)·domain 페이지·`architecture.md`·`status.md`는 다른 �
 
 1. **status.md 모듈 판정/비고** — 모듈 상태가 바뀌었으면 architect가 코드 대조로 갱신하고 PM이 점검한다. 테스트 수는 박제하지 않는다. CLI 자동화 금지.
 
-2. **log/current.md complete entry 서술** — 선작성하지 않은 경우에만 `<PM: 무엇을·왜>`를 다음 실제 내용으로 교체:
+2. **log/current.md complete entry 서술** — 선작성 entry와 skeleton 치환 모두 다음 내용을
+   포함한다. 후작성은 `<PM: 무엇을·왜>` placeholder를 실제 내용으로 교체한다:
    - 변경 파일 목록
    - 단위 테스트 수·증가량
    - 리뷰·fix 라운드 요약(finding 판정 분기)

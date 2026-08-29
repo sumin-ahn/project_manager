@@ -1533,6 +1533,7 @@ def _versioned_block_requirement(
         + rules
         + "\n"
         + delegate.render_pm_review_block_skeleton(role, confirmation_ids)
+        + "\n"
     )
 
 

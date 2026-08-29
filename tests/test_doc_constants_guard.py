@@ -269,3 +269,6 @@ def test_wave_finish_docs_distinguish_dod_preflight_outcomes_and_single_log_entr
             "ticket당 완료 entry 하나",
         ):
             assert phrase in text, f"{rel}: pm-wave-finish 계약 문구 '{phrase}' 누락"
+        assert "선작성하지 않은 경우에만" not in text, (
+            f"{rel}: 완료 entry 내용 계약이 후작성 경로에만 걸림"
+        )

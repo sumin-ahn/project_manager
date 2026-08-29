@@ -524,6 +524,23 @@ def test_log_entry_detection_accepts_canonical_and_legacy_ticket_markers(
     assert tf.TicketFinisher(log_file=log_file)._log_has_entry("T-9999") is False
 
 
+def test_dry_run_reports_existing_entry_skip_without_append_preview(
+    tf, tmp_path, capsys,
+):
+    """선작성 entry가 있으면 dry-run과 actual이 같은 skip 판정을 내고 파일은 그대로다."""
+    log_file = tmp_path / "log.md"
+    original = "## [2026-08-29] fix | [[T-1234]] — 완료\n\n- 실제 증거\n"
+    log_file.write_text(original, encoding="utf-8")
+    finisher = _make_finisher(tf, tmp_path, affected=[])
+
+    assert finisher.run("T-1234", section=None, dry_run=True) == 0
+
+    out = capsys.readouterr().out
+    assert "[dry-run] T-1234 스켈레톤 이미 있음 — append 건너뜀" in out
+    assert "log/current.md 에 append 할 스켈레톤" not in out
+    assert log_file.read_text(encoding="utf-8") == original
+
+
 def test_get_ticket_touches_non_list_returns_empty(tf, tmp_path):
     """get_ticket_touches — board 부재(spec 실패 가능)·touches 비-리스트 graceful []."""
     # 존재하지 않는 board_py → spec 은 만들어지나 exec 실패 → [].

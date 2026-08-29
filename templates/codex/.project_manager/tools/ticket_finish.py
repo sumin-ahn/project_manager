@@ -3595,13 +3595,15 @@ class TicketFinisher:
             session=session,
         )
 
-        if dry_run:
-            print("  [dry-run] log/current.md 에 append 할 스켈레톤:")
-            print("  " + skeleton.replace("\n", "\n  "))
-        elif self._log_has_entry(ticket_id):
+        log_has_entry = self._log_has_entry(ticket_id)
+        if log_has_entry:
             # 재실행이 곧 재개다 — 뒤 단계가 실패해 이 자리를 다시 지날 때 관측 없이 append
             # 하면 같은 스켈레톤이 중복으로 쌓인다.
-            print(f"  {ticket_id} 스켈레톤 이미 있음 — append 건너뜀")
+            prefix = "[dry-run] " if dry_run else ""
+            print(f"  {prefix}{ticket_id} 스켈레톤 이미 있음 — append 건너뜀")
+        elif dry_run:
+            print("  [dry-run] log/current.md 에 append 할 스켈레톤:")
+            print("  " + skeleton.replace("\n", "\n  "))
         else:
             _load_pm_log().append_log(self._log_file, "\n" + skeleton)
             print(f"  ✓ log/current.md 스켈레톤 append ({ticket_id})")

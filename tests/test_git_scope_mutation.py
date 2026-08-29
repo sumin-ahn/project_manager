@@ -1078,6 +1078,9 @@ def test_engine_written_paths_are_this_runs_outputs_only(tf, tmp_path, monkeypat
     monkeypatch.setattr(tf, "REPO", tmp_path)
     log_file = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
     assert tf.engine_written_paths(None, "T-0001", log_file) == [log_file]
+    doc = tf.engine_written_paths.__doc__ or ""
+    assert "선작성 entry가 있으면 append하지 않더라도" in doc
+    assert "항상 append" not in doc
 
 
 @requires_git

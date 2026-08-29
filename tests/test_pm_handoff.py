@@ -1088,7 +1088,9 @@ def test_session_entries_collect_canonical_wikilink_ticket_headings(
         **handoff_kwargs,
     )
 
-    assert f"  - {heading}" in skeleton
+    assert skeleton.count(f"  - {heading}") == 1
+    if not legacy_raw:
+        assert f"[[{ticket}]]" in heading
 
 
 def test_slot_session_uses_own_previous_handoff_as_boundary(hf):

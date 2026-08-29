@@ -578,7 +578,7 @@ def move_or_append_backref_row(text: str, *, target_num: int, new_id: str, verb:
 # ── 5. log decide entry ──────────────────────────────────────────────────────
 
 _DECIDE_LOG_TEMPLATE = """\
-## [{date}] decide | {adr_id} — {title}
+## [{date}] decide | [[{adr_id}]] — {title}
 
 - <!-- PM: 결정 요약·발단·게이트·메타 서술 -->
 """
