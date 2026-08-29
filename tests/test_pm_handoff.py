@@ -1055,6 +1055,44 @@ def test_collect_session_entries_round_trip_prefixed_id_from_real_producers(hf):
     ]
 
 
+@pytest.mark.parametrize("legacy_raw", (False, True), ids=("canonical", "legacy"))
+@pytest.mark.parametrize("mode", ("task", "slot", "solo"))
+def test_session_entries_collect_canonical_wikilink_ticket_headings(
+    hf, mode, legacy_raw,
+):
+    """ticket_finish heading을 task·slot·solo 모두 수집하며 raw legacy도 계속 읽는다."""
+    ticket_finish = _load_tool("ticket_finish")
+    ticket = "T-service-a-001"
+    if mode == "task":
+        finish_kwargs = {"task": "alpha"}
+        handoff_kwargs = {"task": "alpha", "session": "task:alpha"}
+        boundary = "## [2026-08-05] handoff | PM 2차 (task:alpha) → 다음 PM 세션"
+    elif mode == "slot":
+        finish_kwargs = {"session": "slot_1"}
+        handoff_kwargs = {"session": "slot_1"}
+        boundary = "## [2026-08-05] handoff | PM 2차 (slot_1) → 다음 PM 세션"
+    else:
+        finish_kwargs = {}
+        handoff_kwargs = {}
+        boundary = "## [2026-08-05] handoff | PM 2차 → 다음 PM 세션"
+
+    finish = ticket_finish.build_log_skeleton(
+        ticket, "완료 entry", 42, 1, 2,
+        entry_type="fix", date="2026-08-06", **finish_kwargs,
+    )
+    if legacy_raw:
+        finish = finish.replace(f"[[{ticket}]]", ticket, 1)
+    heading = finish.splitlines()[0]
+    skeleton = hf.build_handoff_log_skeleton(
+        3, date="2026-08-07", log_text=boundary + "\n\n" + finish,
+        **handoff_kwargs,
+    )
+
+    assert skeleton.count(f"  - {heading}") == 1
+    if not legacy_raw:
+        assert f"[[{ticket}]]" in heading
+
+
 def test_slot_session_uses_own_previous_handoff_as_boundary(hf):
     """slot handoff가 반복돼도 같은 slot의 직전 경계 이전 entry를 재수집하지 않는다."""
     log_text = """\

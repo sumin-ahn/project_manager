@@ -45,6 +45,11 @@ REPORT_ONLY_CARDS = [
     ("claude code-reviewer", CLAUDE_AGENTS / "code-reviewer.md", "code-reviewer"),
     ("opencode code-reviewer", OPENCODE_AGENTS / "code-reviewer.md", "code-reviewer"),
 ]
+CODE_REVIEWER_CONCRETE_CARDS = [
+    ("claude code-reviewer", CLAUDE_AGENTS / "code-reviewer.md"),
+    ("opencode code-reviewer", OPENCODE_AGENTS / "code-reviewer.md"),
+    ("codex code-reviewer", REPO / "templates/codex/.codex/agents/code-reviewer.toml"),
+]
 
 # 규약 절 슬라이스 앵커 — 4 카드 공통(각 카드 본문은 역할 결에 맞게 다르지만 마커는 공유).
 CONVENTION_MARKER = "**대형 산출물은 파일로 — 응답(보고) 절단 우회.**"
@@ -205,3 +210,14 @@ def test_report_only_roles_do_not_create_standalone_delivery_files(label, path, 
     else:
         assert "라운드 파일" in text
         assert "별도 산출 파일" in text
+
+
+@pytest.mark.parametrize("label,path", CODE_REVIEWER_CONCRETE_CARDS)
+def test_every_code_reviewer_finding_requires_a_concrete_fix_contract(label, path):
+    """strict v3 parser는 severity와 무관하게 모든 finding의 구체 계약을 요구한다."""
+    text = path.read_text(encoding="utf-8")
+    assert "severity와 무관하게" in text, label
+    assert "모든 finding" in text and "구체값" in text, label
+    for contract_part in ("코드 위치", "오류 거동", "수정 설계", "추가 회귀 테스트", "명령", "기대값"):
+        assert contract_part in text, f"{label}: {contract_part}"
+    assert "must-fix를 선언할" not in text and "must-fix마다 골격" not in text, label

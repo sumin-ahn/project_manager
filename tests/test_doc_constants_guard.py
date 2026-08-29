@@ -244,3 +244,31 @@ def test_tickets_readme_dod_contract_matches_complete_gate():
         for label in _DOD_BLOCKED_SHAPES:
             assert label in text, f"{rel}: 차단 형상 '{label}' 서술 누락"
         assert "부분 이월" in text, f"{rel}: 통과 형상(부분 이월) 서술 누락"
+
+
+# ── ⑥ pm-wave-finish: DoD preflight의 확정/불확정 경로와 log 멱등 계약 ────────
+
+WAVE_FINISH_DOCS = (
+    ".claude/skills/pm-wave-finish/SKILL.md",
+    "templates/claude_code/.claude/skills/pm-wave-finish/SKILL.md",
+    "templates/codex/.agents/skills/pm-wave-finish/SKILL.md",
+    "templates/opencode/.claude/skills/pm-wave-finish/SKILL.md",
+    "templates/opencode/.opencode/command/pm-wave-finish.md",
+)
+
+
+def test_wave_finish_docs_distinguish_dod_preflight_outcomes_and_single_log_entry():
+    """판정 가능 차단과 fail-soft 불확정을 섞지 않고 ticket당 log 하나를 약속한다."""
+    for rel in WAVE_FINISH_DOCS:
+        text = _read(rel)
+        for phrase in (
+            "판정 가능",
+            "판정 불가",
+            "fail-soft",
+            "중복 append",
+            "ticket당 완료 entry 하나",
+        ):
+            assert phrase in text, f"{rel}: pm-wave-finish 계약 문구 '{phrase}' 누락"
+        assert "선작성하지 않은 경우에만" not in text, (
+            f"{rel}: 완료 entry 내용 계약이 후작성 경로에만 걸림"
+        )

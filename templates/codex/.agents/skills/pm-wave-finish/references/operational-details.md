@@ -26,7 +26,8 @@
 ## 3단계(완료 기록)가 티켓마다 하는 일
 
 1. **회귀 측정** — red면 즉시 중단하고 dev 재작업. board complete 도 차단한다.
-2. **log/current.md skeleton append** — `## [YYYY-MM-DD] complete | T-NNNN — <title>`; 본문은 `<PM: 무엇을·왜>` placeholder.
+2. **log/current.md 단일 entry 확보** — `## [YYYY-MM-DD] complete | [[T-NNNN]] — <title>`.
+   같은 heading의 선작성 entry가 있으면 append를 건너뛰고, 없으면 `<PM: 무엇을·왜>` skeleton을 만든다.
 3. **board complete** — `--tests-pass` 가드 + **DoD 기록 게이트** 후 claimed→done.
 4. **git stage** — ticket frontmatter `touches` ∪ 이 실행이 실제 쓴 산출물만 `git add`:
    - `.project_manager/wiki/log/current.md`
@@ -39,7 +40,11 @@ ADR(`decisions/`)·domain 페이지·`architecture.md`·`status.md`는 다른 �
 > - `- [x] <원문>` — 실제로 했다.
 > - `- [>] <원문> (이월: <사유·귀속>)` — 사용자가 명시적으로 범위에서 제외한 항목만 그 결정과 귀속을 같은 줄에 남겼다.
 >
-> 미체크(`- [ ]`)나 사유 없는 `- [>]`가 하나라도 남으면 rc=1로 차단되고, log skeleton은 이미 append된 상태다. 본문을 고친 뒤 재실행하면 중복 entry가 생기므로 **실행 전에** 본문 DoD를 마감한다.
+> ticket 본문을 정상 해석해 판정 가능하면 미체크(`- [ ]`)나 사유 없는 `- [>]`를 log append보다
+> 앞선 preflight에서 rc=1로 차단하며 log·board·git 부작용은 없다. board load 실패나 ticket
+> 손상으로 판정 불가한 경우에만 preflight는 fail-soft다. 이때 뒤의 `board.py complete`가 차단해
+> skeleton이 남을 수 있으므로, 재실행 시 detector가 중복 append를 막고 PM은 그 skeleton을
+> 수리한다. 어느 경로든 **실행 전에** 본문 DoD를 마감하는 것이 기준이다.
 
 > **stage 잔여 보고는 둘 다 확인한다.**
 >
@@ -48,11 +53,23 @@ ADR(`decisions/`)·domain 페이지·`architecture.md`·`status.md`는 다른 �
 
 `status.md`는 자동으로 건드리지 않는다. 테스트 수는 박제하지 않고 pytest 실측/history는 log에 둔다.
 
+### log entry 작성 경로 — 둘 중 하나만
+
+- **선작성:** 회귀·리뷰 증거가 이미 확정됐으면 actual finish 전에 canonical
+  `| [[T-NNNN]] —` heading으로 아래 "종결 뒤 PM 손 잔여" 2항의 내용 기준을 갖춘 실제
+  entry 하나를 작성한다. detector는 이 heading과 옛
+  `| T-NNNN —` heading을 모두 인식하며 skeleton append를 건너뛴다.
+- **후작성:** 증거가 아직 없으면 finish가 만든 skeleton의 placeholder를 종결 직후 실제 내용으로
+  교체하고 그 경로만 별도 commit한다. 새 entry를 하나 더 append하지 않는다.
+
+어느 경로든 최종 불변식은 ticket당 완료 entry 하나, placeholder 0이다.
+
 ## 종결 뒤 PM 손 잔여
 
 1. **status.md 모듈 판정/비고** — 모듈 상태가 바뀌었으면 architect가 코드 대조로 갱신하고 PM이 점검한다. 테스트 수는 박제하지 않는다. CLI 자동화 금지.
 
-2. **log/current.md complete entry 서술** — `<PM: 무엇을·왜>`를 다음 실제 내용으로 교체:
+2. **log/current.md complete entry 서술** — 선작성 entry와 skeleton 치환 모두 다음 내용을
+   포함한다. 후작성은 `<PM: 무엇을·왜>` placeholder를 실제 내용으로 교체한다:
    - 변경 파일 목록
    - 단위 테스트 수·증가량
    - 리뷰·fix 라운드 요약(finding 판정 분기)

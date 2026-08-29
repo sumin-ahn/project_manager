@@ -486,7 +486,7 @@ def test_log_skeleton_adds_task_tag_when_task_is_resolved(tf):
         entry_type="feat", date="2026-08-06", task="orch-dev-T0547",
     )
     assert skeleton.splitlines()[0] == (
-        "## [2026-08-06] feat | T-0547 — 박제 (task:orch-dev-T0547)"
+        "## [2026-08-06] feat | [[T-0547]] — 박제 (task:orch-dev-T0547)"
     )
 
 
@@ -497,17 +497,48 @@ def test_log_skeleton_adds_canonical_slot_tag_when_session_is_resolved(tf):
         entry_type="feat", date="2026-08-06", session="project_manager_2",
     )
     assert skeleton.splitlines()[0] == (
-        "## [2026-08-06] feat | T-0547 — 박제 (project_manager_2)"
+        "## [2026-08-06] feat | [[T-0547]] — 박제 (project_manager_2)"
     )
 
 
-def test_log_skeleton_without_task_is_byte_compatible(tf):
-    """솔로처럼 task/slot 정체성이 미해소면 종전 헤더와 바이트 단위로 동일하다."""
+def test_log_skeleton_without_task_uses_canonical_ticket_wikilink(tf):
+    """정체성 태그와 무관하게 새 완료 entry의 ticket 참조는 canonical wikilink다."""
     skeleton = tf.build_log_skeleton(
         ticket_id="T-0547", title="박제", new_total=42, board_before=1, board_after=2,
         entry_type="feat", date="2026-08-06",
     )
-    assert skeleton.splitlines()[0] == "## [2026-08-06] feat | T-0547 — 박제"
+    assert skeleton.splitlines()[0] == "## [2026-08-06] feat | [[T-0547]] — 박제"
+
+
+@pytest.mark.parametrize("ticket_marker", ("[[T-0547]]", "T-0547"))
+def test_log_entry_detection_accepts_canonical_and_legacy_ticket_markers(
+    tf, tmp_path, ticket_marker,
+):
+    """선작성 canonical entry와 옛 raw-ID entry 모두 재실행 중복 방지 입력이다."""
+    log_file = tmp_path / "log.md"
+    log_file.write_text(
+        f"## [2026-08-29] fix | {ticket_marker} — 완료\n\n- 실제 증거\n",
+        encoding="utf-8",
+    )
+    assert tf.TicketFinisher(log_file=log_file)._log_has_entry("T-0547") is True
+    assert tf.TicketFinisher(log_file=log_file)._log_has_entry("T-9999") is False
+
+
+def test_dry_run_reports_existing_entry_skip_without_append_preview(
+    tf, tmp_path, capsys,
+):
+    """선작성 entry가 있으면 dry-run과 actual이 같은 skip 판정을 내고 파일은 그대로다."""
+    log_file = tmp_path / "log.md"
+    original = "## [2026-08-29] fix | [[T-1234]] — 완료\n\n- 실제 증거\n"
+    log_file.write_text(original, encoding="utf-8")
+    finisher = _make_finisher(tf, tmp_path, affected=[])
+
+    assert finisher.run("T-1234", section=None, dry_run=True) == 0
+
+    out = capsys.readouterr().out
+    assert "[dry-run] T-1234 스켈레톤 이미 있음 — append 건너뜀" in out
+    assert "log/current.md 에 append 할 스켈레톤" not in out
+    assert log_file.read_text(encoding="utf-8") == original
 
 
 def test_get_ticket_touches_non_list_returns_empty(tf, tmp_path):

@@ -1341,7 +1341,8 @@ def _round_stage_candidates(
 def engine_written_paths(board, ticket_id: str, log_file: Path) -> list[Path]:
     """**이 실행이 실제로 쓴** 산출물 경로.
 
-      - `log/current.md` — 2단계가 스켈레톤을 append 한다(항상).
+      - `log/current.md` — 선작성 entry가 있으면 append하지 않더라도 2단계의 stage 스코프에
+        항상 포함한다.
       - 티켓 파일의 옛/새 경로 · 라운드 사이드카(`tickets/rounds/<id>/*.md`) — 3단계
         `board.py complete` 가 티켓을 `claimed/`→`done/` 로 옮기고, 라운드는
         `ticket_rounds.rounds_dir_for_ticket` 가 정하는 고정 위치라 상태 이동을 따라가지
@@ -1849,15 +1850,16 @@ _TASK_TAG_PREFIX = "task:"
 
 
 LOG_SKELETON_TEMPLATE = """\
-## [{date}] {entry_type} | {ticket_id} — {title}{task_tag}
+## [{date}] {entry_type} | [[{ticket_id}]] — {title}{task_tag}
 
 - <!-- PM: 무엇을·왜 서술 -->
 - 테스트: 회귀 {new_total} / {new_total} (실측 · 직전 대비 delta 는 PM 서술).
 - board: done {board_before}→{board_after}.
 """
 
-# 스켈레톤 헤딩 줄에서 그 티켓의 기록을 식별하는 표기 — 재실행 중복 append 관측이 쓴다.
-_LOG_ENTRY_TICKET_MARKER = "| {ticket} — "
+# 스켈레톤 헤딩 줄에서 그 티켓의 기록을 식별하는 표기 — 새 canonical wikilink와 이미
+# 발행된 legacy raw-ID를 함께 읽어 재실행·선작성 모두 중복 append를 만들지 않는다.
+_LOG_ENTRY_TICKET_MARKERS = ("| [[{ticket}]] — ", "| {ticket} — ")
 
 
 def build_log_skeleton(
@@ -2057,10 +2059,10 @@ class TicketFinisher:
         return result.returncode, output
 
     def _log_has_entry(self, ticket_id: str) -> bool:
-        """이 티켓의 완료 기록 스켈레톤이 log 에 이미 있는가 (읽기 실패·파일 부재는 False).
+        """이 티켓의 완료 entry가 log 에 이미 있는가 (읽기 실패·파일 부재는 False).
 
-        판정은 스켈레톤 헤딩 줄의 티켓 표기 하나다 — 서술 불릿을 PM 이 채워도 그 표기는
-        남으므로, 한 번 남은 기록을 재실행이 다시 쌓지 않는다.
+        판정은 완료 헤딩 줄의 티켓 표기 하나다 — PM이 선작성했거나 스켈레톤의 서술 불릿을
+        채워도 그 표기는 남으므로, 한 번 남은 기록을 재실행이 다시 쌓지 않는다.
 
         읽기 실패는 '없음'으로 접는다 — 이 관측은 차단 판정이 아니라 중복 방지이고, 못 읽었다고
         기록을 막으면 완료 기록이 벽돌이 된다(중복은 사람이 지우면 되고, 누락은 안 그렇다)."""
@@ -2070,9 +2072,13 @@ class TicketFinisher:
             if _is_engine_rev_skew(exc):
                 raise
             return False
-        marker = _LOG_ENTRY_TICKET_MARKER.format(ticket=ticket_id)
-        return any(line.startswith("## ") and marker in line
-                   for line in text.splitlines())
+        markers = tuple(
+            marker.format(ticket=ticket_id) for marker in _LOG_ENTRY_TICKET_MARKERS
+        )
+        return any(
+            line.startswith("## ") and any(marker in line for marker in markers)
+            for line in text.splitlines()
+        )
 
     def _code_tree(self) -> Path:
         """코드가 있는 트리 — 회귀 cwd 해소와 **같은 규칙**(task 작업공간 > 명시 > 자동 슬롯).
@@ -3589,13 +3595,15 @@ class TicketFinisher:
             session=session,
         )
 
-        if dry_run:
-            print("  [dry-run] log/current.md 에 append 할 스켈레톤:")
-            print("  " + skeleton.replace("\n", "\n  "))
-        elif self._log_has_entry(ticket_id):
+        log_has_entry = self._log_has_entry(ticket_id)
+        if log_has_entry:
             # 재실행이 곧 재개다 — 뒤 단계가 실패해 이 자리를 다시 지날 때 관측 없이 append
             # 하면 같은 스켈레톤이 중복으로 쌓인다.
-            print(f"  {ticket_id} 스켈레톤 이미 있음 — append 건너뜀")
+            prefix = "[dry-run] " if dry_run else ""
+            print(f"  {prefix}{ticket_id} 스켈레톤 이미 있음 — append 건너뜀")
+        elif dry_run:
+            print("  [dry-run] log/current.md 에 append 할 스켈레톤:")
+            print("  " + skeleton.replace("\n", "\n  "))
         else:
             _load_pm_log().append_log(self._log_file, "\n" + skeleton)
             print(f"  ✓ log/current.md 스켈레톤 append ({ticket_id})")

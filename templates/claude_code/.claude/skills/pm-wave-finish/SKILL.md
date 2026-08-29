@@ -34,4 +34,7 @@ python3 .project_manager/tools/ticket_finish.py T-NNNN
 - **`--task <이름>`** (task-mode · 일반 사용자 경로): 작업공간을 task 리스에서 해소해 회귀·diff 서킷브레이커 측정·stage 가 **그 worktree** 를 본다. `--repo/--slot` 과 혼합은 거부. task 세션(`/pm-bootstrap --task <이름>`)에서는 **이 형태가 정상 경로**다.
 - **`--no-pytest`**: 회귀를 별도(`/pm-qa` 등)로 이미 측정했을 때 회귀 실행만 skip 한다(board complete는 `--tests-pass` 유지). 코드 트리 해소·diff 서킷브레이커 측정·stage 는 그대로 그 트리에서 한다. **wave 중 종결은 이 형태가 표준**이며 전량 검증은 릴리즈 절차 1회다.
 - **`--dry-run`**: 편집·board·git 없이 어느 단계가 무엇을 할지만 출력한다. 처음 도는 묶음은 이걸 먼저 본다.
+- **log entry는 티켓당 하나다.** 증거가 이미 확정됐으면 `| [[T-NNNN]] —` heading의 실제 entry를
+  종결 전에 선작성한다(엔진이 감지해 skeleton을 건너뜀). 아니면 종결이 만든 skeleton을 종결 직후
+  실제 내용으로 **교체**하며 별도 entry를 추가하지 않는다. 상세 순서는 operational-details를 따른다.
 - `--section`: **deprecated no-op**(status.md 합계표 제거, 후방호환 수용만).

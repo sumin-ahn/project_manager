@@ -369,7 +369,8 @@ def test_move_row_target_absent_failsoft(adr):
 
 def test_build_decide_log_entry(adr):
     entry = adr.build_decide_log_entry(70, "새 결정 제목", "2026-07-19")
-    assert entry.startswith("## [2026-07-19] decide | ADR-0070 — 새 결정 제목")
+    assert entry.startswith("## [2026-07-19] decide | [[ADR-0070]] — 새 결정 제목")
+    assert "decide | ADR-0070 —" not in entry
     assert "PM:" in entry  # placeholder 본문
 
 
@@ -423,7 +424,7 @@ def test_issue_new_adr_amending_target_end_to_end(adr, wiki):
 
     # 4. log decide entry append.
     log_text = log.read_text(encoding="utf-8")
-    assert "## [2026-07-19] decide | ADR-0062 — 원자화 결정" in log_text
+    assert "## [2026-07-19] decide | [[ADR-0062]] — 원자화 결정" in log_text
     assert log_text.startswith("# Log")  # 기존 내용 보존
 
 
@@ -490,7 +491,7 @@ def test_apply_partial_failure_reports_done_and_remaining(adr, wiki, monkeypatch
     # 신규 ADR 파일은 먼저 기록돼 디스크에 보존(결정 본문 유실 없음).
     assert (decisions / "0062-partial.md").exists()
     # log 단계(README 뒤)는 미수행 — log 에 새 decide entry 없음.
-    assert "decide | ADR-0062" not in log.read_text(encoding="utf-8")
+    assert "decide | [[ADR-0062]]" not in log.read_text(encoding="utf-8")
 
 
 def test_cli_main_dry_run(adr, capsys, monkeypatch, wiki):
