@@ -48,7 +48,8 @@ _GIT_IDENTITY = {
 
 _INTEGRATION_BRANCH = "task/main"     # 통합 브랜치(장부 `base_branch`)
 _CLUSTER_BRANCH = "task/wave"         # 묶음 브랜치(장부 `branch`)
-_CLUSTER = "C-wave"
+_CLUSTER_NAME = "wave"                # 사람 표기 — 장부 id 는 board 접두 `C-` 를 붙인 값이다
+_CLUSTER = f"C-{_CLUSTER_NAME}"
 _SLOT = "work/code_1"
 _ROUND_FILE = "01-architect.md"      # 라운드 사이드카 한 벌(동형 대조의 위치 값)
 _CLOSED_STATUS = "closed"            # 장부 종결 표시(열거의 소유자는 board)
@@ -98,6 +99,12 @@ def _rev(root: Path, ref: str = "HEAD") -> str:
 
 def _short(root: Path, ref: str) -> str:
     return _git(root, "rev-parse", "--short", ref).stdout.strip()
+
+
+def _git_index_bytes(root: Path) -> bytes:
+    raw = _git(root, "rev-parse", "--git-path", "index").stdout.strip()
+    path = Path(raw)
+    return (path if path.is_absolute() else root / path).read_bytes()
 
 
 def _commit(root: Path, message: str) -> str:
@@ -334,6 +341,25 @@ def test_cli_takes_exactly_one_close_target(tf, monkeypatch, capsys):
         assert "완료 기록 대상은 하나다" in capsys.readouterr().err
 
 
+def test_reconcile_cli_requires_explicit_repo_and_slot_and_rejects_task(
+    tf, monkeypatch, capsys,
+):
+    """Recovery selector는 제품 repo+slot 둘 다 명시하며 task/암묵 해소를 받지 않는다."""
+    monkeypatch.setattr(tf, "_pm_home_misanchor", lambda: None, raising=False)
+    cases = (
+        ["--cluster", _CLUSTER, "--reconcile-integrated", "--repo", "code"],
+        ["--cluster", _CLUSTER, "--reconcile-integrated", "--task", "main"],
+        ["--cluster", _CLUSTER, "--user-ack", _CLUSTER],
+    )
+    for argv in cases:
+        with pytest.raises(SystemExit) as excinfo:
+            tf._main(argv)
+        assert excinfo.value.code == 2
+    err = capsys.readouterr().err
+    assert "--repo <repo> --slot <N>" in err
+    assert "--reconcile-integrated 전용" in err
+
+
 # ════════════════════════════════════════════════════════════════════════
 # 측정 폭 — 흡수분 제외 · 두 형식 소비자 동일
 # ════════════════════════════════════════════════════════════════════════
@@ -471,7 +497,8 @@ class _CloseEnv:
             affected_domain_fn=lambda tid: None,
         )
 
-    def closer(self, **kwargs):
+    def closer(self, *, cluster: str = _CLUSTER, **kwargs):
+        """이 환경의 종결 대역 — `cluster` 는 호출 표기 축(장부 id / 사람 이름 둘 다 받는다)."""
         values = dict(
             finisher=self.finisher(),
             board_py=self.board_dir.parent / "tools" / "board.py",
@@ -479,7 +506,7 @@ class _CloseEnv:
             run_delegate_fn=self.run_delegate,
         )
         values.update(kwargs)
-        return self.tf.ClusterCloser(_CLUSTER, **values)
+        return self.tf.ClusterCloser(cluster, **values)
 
     # ── 관측 ────────────────────────────────────────────────────────
     def slot_log(self) -> list[str]:
@@ -601,6 +628,373 @@ def _build_close_env(tf, base: Path, monkeypatch) -> _CloseEnv:
 @pytest.fixture
 def close_env(tf, tmp_path, monkeypatch) -> _CloseEnv:
     return _build_close_env(tf, tmp_path, monkeypatch)
+
+
+def _prepare_reconcile(env: _CloseEnv, *, legacy: bool = False) -> tuple[str, str]:
+    """반쪽 종결(open ledger + done ticket + 이미 commit된 제품 tree)을 만든다."""
+    evidence = _commit(env.slot, "already integrated work")
+    claimed_path = next((env.board_dir / "tickets" / "claimed").glob(f"{env.ticket}*.md"))
+    text = claimed_path.read_text(encoding="utf-8").replace("status: claimed", "status: done")
+    claimed_rev = next(
+        line.split(":", 1)[1].strip() for line in text.splitlines()
+        if line.startswith("claimed_rev:")
+    )
+    if legacy:
+        text = "\n".join(
+            line for line in text.splitlines() if not line.startswith("claimed_rev:")
+        ) + "\n"
+    done_path = env.board_dir / "tickets" / "done" / claimed_path.name
+    done_path.write_text(text, encoding="utf-8")
+    claimed_path.unlink()
+    _git(env.board_dir, "add", "-A")
+    _git(env.board_dir, "commit", "-qm", "ticket completed without cluster close")
+    _git(env.board_dir, "push", "-q")
+    assert _git(env.slot, "status", "--porcelain").stdout == ""
+    return evidence, claimed_rev
+
+
+def _reconcile_closer(
+    env: _CloseEnv, evidence: str, *, legacy_anchor: str | None = None,
+    **overrides,
+):
+    values = dict(
+        reconcile_integrated=True,
+        integrated_revisions=[f"{env.ticket}={evidence}"],
+        legacy_base_revisions=(
+            [f"{env.ticket}={legacy_anchor}"] if legacy_anchor is not None else []
+        ),
+        user_ack=_CLUSTER,
+        explicit_slot=True,
+    )
+    values.update(overrides)
+    return env.closer(**values)
+
+
+@requires_git
+def test_reconcile_integrated_records_exact_product_head_without_product_or_slot_write(
+    close_env, capsys,
+):
+    """AT-002: all-done recovery는 exact 제품 HEAD를 감사하고 제품/slot을 쓰지 않는다."""
+    env = close_env
+    evidence, claimed_rev = _prepare_reconcile(env)
+    # anchor 기대값은 준비가 심은 `claimed_rev` 를 full OID 로 정규화한 **상수**다 — 기록값을
+    # 자기 자신과 대조하면 anchor 축이 통째로 틀려도 green 이 된다(X-006).
+    anchor = _rev(env.slot, claimed_rev)
+    assert re.fullmatch(r"[0-9a-f]{40,64}", anchor) and anchor != evidence
+    product_before = (_rev(env.code), _git(env.code, "status", "--porcelain").stdout)
+    slot_before = (
+        _rev(env.slot), _git(env.slot, "--no-optional-locks", "status", "--porcelain").stdout,
+        (env.slot / ".git").read_bytes(), _git_index_bytes(env.slot),
+    )
+    lease_before = (env.home / ".project_manager" / ".local" /
+                    "worktree-leases.json").read_bytes()
+
+    rc = _reconcile_closer(env, evidence).run()
+    captured = capsys.readouterr()
+
+    assert rc == 0, captured.out + captured.err
+    assert product_before == (_rev(env.code), _git(env.code, "status", "--porcelain").stdout)
+    assert slot_before == (
+        _rev(env.slot), _git(env.slot, "--no-optional-locks", "status", "--porcelain").stdout,
+        (env.slot / ".git").read_bytes(), _git_index_bytes(env.slot),
+    )
+    assert lease_before == (env.home / ".project_manager" / ".local" /
+                            "worktree-leases.json").read_bytes()
+    board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
+    ledger = board.load_cluster(_CLUSTER)
+    assert ledger["status"] == "closed"
+    assert ledger["close_step"] == "board"
+    assert ledger["closure"] == {
+        "mode": "reconciled",
+        "integration_head": evidence,
+        "member_revisions": {env.ticket: evidence},
+        "member_anchors": {
+            env.ticket: {"anchor": anchor, "anchor_source": "claimed_rev"},
+        },
+    }
+    assert env.board_calls == [] and env.delegate_calls == [] and env.release_calls == []
+    assert env.lease_state() == "leased"
+    assert "제품/slot write 0" in captured.out
+
+
+@requires_git
+def test_reconcile_integrated_fail_closed_matrix(tf, tmp_path, monkeypatch, capsys):
+    """AT-003 · F-004 · X-002: 입력·graph·상태·repo·dirty·bookend 오류는 첫 write 전에 다 막힌다.
+
+    각 케이스는 자기 3-repo 픽스처를 세우고 `(장부 bytes, 슬롯 HEAD, 리스 bytes)` 를 호출
+    직전에 찍는다 — 거부는 rc=1 이면서 그 셋이 byte 불변이어야 하고, 어느 축에서 막혔는지도
+    진단 문구로 구별돼야 한다(같은 rc 로 뭉뚱그리면 검사 하나를 지워도 행렬이 green 이다).
+    """
+    def snapshot(env):
+        ledger = env.board_dir / "tickets" / "clusters" / f"{_CLUSTER}.md"
+        lease = env.home / ".project_manager" / ".local" / "worktree-leases.json"
+        return ledger.read_bytes(), _rev(env.slot), lease.read_bytes()
+
+    def reject(name, build, fragment):
+        """`build(env)` 가 만든 호출 = rc 1 · 세 축 byte 불변 · 진단 문구 일치."""
+        env = _build_close_env(tf, tmp_path / name, monkeypatch)
+        closer = build(env)
+        before = snapshot(env)
+        assert closer.run() == 1, f"{name}: 거부되지 않았다"
+        assert snapshot(env) == before, f"{name}: 첫 write 전 거부인데 상태가 바뀌었다"
+        err = capsys.readouterr().err
+        assert fragment in err, f"{name}: 진단 축 불일치 — {fragment!r} 없음\n{err}"
+        return env
+
+    # ── 입력 전수성 ────────────────────────────────────────────────
+    def missing_mapping(env):
+        _prepare_reconcile(env)
+        return env.closer(reconcile_integrated=True, integrated_revisions=[],
+                          user_ack=_CLUSTER, explicit_slot=True)
+
+    def duplicate_mapping(env):
+        evidence, _anchor = _prepare_reconcile(env)
+        return _reconcile_closer(env, evidence, integrated_revisions=[
+            f"{env.ticket}={evidence}", f"{env.ticket}={evidence}"])
+
+    def extra_mapping(env):
+        evidence, _anchor = _prepare_reconcile(env)
+        return _reconcile_closer(env, evidence, integrated_revisions=[
+            f"{env.ticket}={evidence}", f"{_SYNTHETIC_REF}={evidence}"])
+
+    reject("missing-mapping", missing_mapping, "evidence mapping 전수성 위반")
+    reject("duplicate-mapping", duplicate_mapping, "mapping이 중복됐다")
+    reject("extra-mapping", extra_mapping, f"여분=['{_SYNTHETIC_REF}']")
+
+    # ── revision 해소 ──────────────────────────────────────────────
+    def unresolvable_rev(env):
+        _prepare_reconcile(env)
+        return _reconcile_closer(env, "deadbee")
+
+    def non_commit_object(env):
+        _prepare_reconcile(env)
+        tree_oid = _git(env.slot, "rev-parse", "HEAD^{tree}").stdout.strip()
+        assert re.fullmatch(r"[0-9a-f]{40,64}", tree_oid), tree_oid
+        return _reconcile_closer(env, tree_oid)
+
+    reject("bad-rev", unresolvable_rev, "commit으로 해소하지 못했다")
+    reject("non-commit-object", non_commit_object, "commit으로 해소하지 못했다")
+
+    # ── 제품 graph 두 축 (recovery 가 존재하는 이유) ────────────────
+    def evidence_not_in_head(env):
+        _prepare_reconcile(env)
+        # 통합 트리에만 있는 commit — 선택 슬롯 HEAD 의 조상이 아니다.
+        (env.code / "side.txt").write_text("side\n", encoding="utf-8")
+        side = _commit(env.code, "integration-only work")
+        return _reconcile_closer(env, side)
+
+    def evidence_before_anchor(env):
+        evidence, claimed_rev = _prepare_reconcile(env)
+        done_path = next((env.board_dir / "tickets" / "done").glob(f"{env.ticket}*.md"))
+        # anchor 를 뒤 commit 으로 옮겨, HEAD 조상이지만 claim 이전인 evidence 를 만든다.
+        done_path.write_text(
+            done_path.read_text(encoding="utf-8").replace(
+                f"claimed_rev: {claimed_rev}", f"claimed_rev: {evidence}"),
+            encoding="utf-8")
+        return _reconcile_closer(env, claimed_rev)
+
+    reject("side-branch-evidence", evidence_not_in_head,
+           "제품 exact HEAD의 조상이 아니다")
+    reject("evidence-before-anchor", evidence_before_anchor, "anchor 이후가 아니다")
+
+    # ── 장부·티켓 상태 ─────────────────────────────────────────────
+    def not_all_done(env):
+        # 산출만 커밋되고 완료 기록은 없는 상태 — 장부 open · 티켓 claimed.
+        evidence = _commit(env.slot, "committed but never recorded")
+        return _reconcile_closer(env, evidence)
+
+    def non_open_status(env):
+        evidence, _anchor = _prepare_reconcile(env)
+        ledger_path = env.board_dir / "tickets" / "clusters" / f"{_CLUSTER}.md"
+        ledger_path.write_text(
+            ledger_path.read_text(encoding="utf-8").replace(
+                "status: open", f"status: {env.tf._CLUSTER_STATUS_CLOSING}"),
+            encoding="utf-8")
+        return _reconcile_closer(env, evidence)
+
+    def unreadable_catalog(env):
+        # 귀속 유일성은 전 catalog 판독 위에서만 성립한다 — 손상 장부 하나가 곧 판정 불능이다.
+        evidence, _anchor = _prepare_reconcile(env)
+        broken = env.board_dir / "tickets" / "clusters" / "C-broken.md"
+        broken.write_text(f"---\nid: C-broken\ntickets: [{env.ticket}\n---\n",
+                          encoding="utf-8")
+        return _reconcile_closer(env, evidence)
+
+    reject("not-all-done", not_all_done, "all-done 상태가 아니다")
+    reject("non-open-status", non_open_status, "recovery는 open all-done 전용이다")
+    reject("unreadable-catalog", unreadable_catalog, "전수 확인할 수 없어")
+
+    # ── legacy anchor · 선택 슬롯 ──────────────────────────────────
+    def legacy_without_base(env):
+        evidence, _anchor = _prepare_reconcile(env, legacy=True)
+        return _reconcile_closer(env, evidence)
+
+    def pm_home_anchor(env):
+        evidence, _anchor = _prepare_reconcile(env)
+        closer = _reconcile_closer(env, evidence)
+        closer._finisher._regression_cwd = str(env.home)
+        return closer
+
+    def dirty_selected_slot(env):
+        evidence, _anchor = _prepare_reconcile(env)
+        (env.slot / "dirty.txt").write_text("preserve\n", encoding="utf-8")
+        return _reconcile_closer(env, evidence)
+
+    legacy_env = reject("legacy", legacy_without_base, "--legacy-base-rev가 필수다")
+    reject("pm-home", pm_home_anchor, "PM 홈으로 강등됐다")
+    dirty_env = reject("dirty", dirty_selected_slot, "선택 슬롯이 dirty")
+    assert (dirty_env.slot / "dirty.txt").read_text(encoding="utf-8") == "preserve\n"
+
+    # 같은 legacy 묶음은 명시 anchor 를 공급하면 통과하고 그 출처를 장부에 남긴다.
+    legacy_evidence = _rev(legacy_env.slot)
+    legacy_anchor = _rev(legacy_env.slot, "HEAD~1")
+    assert _reconcile_closer(
+        legacy_env, legacy_evidence, legacy_anchor=legacy_anchor).run() == 0
+    board = legacy_env.tf._board_module_at(
+        legacy_env.board_dir.parent / "tools" / "board.py")
+    closure = board.load_cluster(_CLUSTER)["closure"]
+    assert closure["member_anchors"][legacy_env.ticket] == {
+        "anchor": legacy_anchor, "anchor_source": "operator-supplied",
+    }
+    capsys.readouterr()
+
+    # ── bookend drift 는 두 번째 snapshot 에서 감지하고 write 하지 않는다 ──
+    env = _build_close_env(tf, tmp_path / "head-race", monkeypatch)
+    evidence, _anchor = _prepare_reconcile(env)
+    closer = _reconcile_closer(env, evidence)
+    original = closer._validate_reconcile
+    calls = 0
+
+    def drifting_snapshot():
+        nonlocal calls
+        calls += 1
+        closure, status, problem = original()
+        if calls == 2 and closure is not None:
+            closure = json.loads(json.dumps(closure))
+            closure["integration_head"] = "f" * 40
+        return closure, status, problem
+
+    monkeypatch.setattr(closer, "_validate_reconcile", drifting_snapshot)
+    before = snapshot(env)
+    assert closer.run() == 1
+    assert snapshot(env) == before
+    assert "bookend" in capsys.readouterr().err
+
+
+@requires_git
+def test_reconcile_integrated_is_idempotent_and_preserves_other_dirty_slots(
+    close_env, capsys,
+):
+    """AT-004: 같은 증거 재실행은 no-op이고 비선택 dirty slot은 byte 보존한다."""
+    env = close_env
+    evidence, anchor = _prepare_reconcile(env)
+    other = env.home / "work" / "code_2"
+    assert _git(
+        env.code, "worktree", "add", "-q", "-b", "dirty-other", str(other),
+        _INTEGRATION_BRANCH,
+    ).returncode == 0
+    (other / "sentinel.txt").write_text("do not touch\n", encoding="utf-8")
+    lease_path = env.home / ".project_manager" / ".local" / "worktree-leases.json"
+    leases = json.loads(lease_path.read_text(encoding="utf-8"))
+    leases["leases"].append({
+        "slot": "work/code_2", "repo": "code", "session": "other",
+        "pid": 0, "started": _FIXTURE_STAMP, "state": "leased",
+    })
+    lease_path.write_text(json.dumps(leases), encoding="utf-8")
+    lease_before = lease_path.read_bytes()
+    other_before = (
+        _rev(other), _git(other, "--no-optional-locks", "status", "--porcelain").stdout,
+        (other / "sentinel.txt").read_bytes(), _git_index_bytes(other),
+    )
+
+    # crash seam: ledger dump 뒤 board-git sync 전에 프로세스가 끊긴 상태를 합성한다.
+    first_closer = _reconcile_closer(env, evidence)
+    assert first_closer._resolve_members() is None
+    closure, status, problem = first_closer._validate_reconcile()
+    assert problem is None and status == "open"
+    board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
+    ledger = board.load_cluster(_CLUSTER)
+    ledger.update({"closure": closure, "status": "closed", "close_step": "board"})
+    board.dump_cluster(ledger)
+    pre_resume_board_head = _rev(env.board_dir)
+
+    assert first_closer.run() == 0
+    assert _rev(env.board_dir) != pre_resume_board_head
+    board_head = _rev(env.board_dir)
+    home_head = _rev(env.home)
+    slot_head = _rev(env.slot)
+    assert _reconcile_closer(env, evidence).run() == 0
+    assert (_rev(env.board_dir), _rev(env.home), _rev(env.slot)) == (
+        board_head, home_head, slot_head,
+    )
+    assert lease_path.read_bytes() == lease_before
+    assert other_before == (
+        _rev(other), _git(other, "--no-optional-locks", "status", "--porcelain").stdout,
+        (other / "sentinel.txt").read_bytes(), _git_index_bytes(other),
+    )
+    # 다른 유효 evidence도 이미 기록한 감사값과 다르면 fail-loud다.
+    assert _reconcile_closer(env, anchor).run() == 1
+    assert (_rev(env.board_dir), _rev(env.home), _rev(env.slot)) == (
+        board_head, home_head, slot_head,
+    )
+    out = capsys.readouterr()
+    assert "비선택 슬롯 보존" in out.out and "dirty(1)" in out.out
+
+
+@requires_git
+def test_reconcile_integrated_accepts_the_name_notation_of_the_normal_path(
+    close_env, capsys,
+):
+    """X-004: 정상 경로가 받는 이름 표기(`wave`)로 불러도 장부 id 비교가 어긋나지 않는다."""
+    env = close_env
+    evidence, _anchor = _prepare_reconcile(env)
+
+    rc = _reconcile_closer(
+        env, evidence, cluster=_CLUSTER_NAME, user_ack=_CLUSTER_NAME).run()
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured.out + captured.err
+    board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
+    ledger = board.load_cluster(_CLUSTER)
+    assert ledger["status"] == _CLOSED_STATUS
+    assert ledger["closure"]["member_revisions"] == {env.ticket: evidence}
+
+
+@requires_git
+def test_normal_close_rejects_open_all_done_cluster_before_side_effects(
+    close_env, capsys,
+):
+    """F-001: open 장부 + 멤버 전원 done 은 정상 8단계가 아니라 복구 전용이다.
+
+    그 완료 기록은 이 파이프라인이 남긴 것이 아니다(1단계가 성공하면 장부는 `closing` 이 된다)
+    — 무엇이 이미 통합됐는지 모르는 채 커밋·재배치·머지·반납으로 들어가지 않는다. 게이트는
+    `open` + 전원 done 에만 걸리고 `closing` 재개는 그대로 통과한다.
+    """
+    env = close_env
+    _evidence, _anchor = _prepare_reconcile(env)
+    ledger_path = env.board_dir / "tickets" / "clusters" / f"{_CLUSTER}.md"
+    before = (ledger_path.read_bytes(), _rev(env.slot), _rev(env.board_dir),
+              _rev(env.home), env.integration_log(), env.lease_state())
+
+    rc = env.closer().run()
+
+    captured = capsys.readouterr()
+    assert rc == 1, captured.out + captured.err
+    assert "--reconcile-integrated" in captured.err
+    assert "[1/8]" not in captured.out, "첫 단계가 이미 시작됐다(부작용 앞 게이트가 아님)"
+    assert env.board_calls == [] and env.delegate_calls == []
+    assert before == (ledger_path.read_bytes(), _rev(env.slot), _rev(env.board_dir),
+                      _rev(env.home), env.integration_log(), env.lease_state())
+
+    # 게이트는 좁다 — 같은 픽스처의 장부를 `closing` 으로 두면 정상 재개가 그대로 돈다.
+    ledger_path.write_text(
+        ledger_path.read_text(encoding="utf-8").replace(
+            "status: open", f"status: {env.tf._CLUSTER_STATUS_CLOSING}"),
+        encoding="utf-8")
+    resumed = env.closer().run()
+    resumed_out = capsys.readouterr()
+    assert resumed == 0, resumed_out.out + resumed_out.err
+    assert env.ledger()["status"] == _CLOSED_STATUS
 
 
 @requires_git
@@ -1171,7 +1565,7 @@ def test_the_ticket_form_and_the_cluster_form_take_the_same_path(tf, tmp_path,
     assert ticket_side == cluster_side, out
     rc, board, rounds, ledger = ticket_side
     assert rc == 0, out
-    assert board == (("complete", _TICKET, "--tests-pass"),)
+    assert board == (("complete", _TICKET, "--tests-pass", "--cluster-close", _CLUSTER),)
     assert rounds == ((f"tickets/rounds/{_TICKET}/{_ROUND_FILE}", "## 라운드 표본\n"),)
     assert dict(ledger)["close_step"] == tf.ClusterCloser.STEPS[-1][0]
     assert dict(ledger)["status"] == _CLOSED_STATUS

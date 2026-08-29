@@ -10,8 +10,8 @@
 | 2 | 기계 확인 생성·리뷰 게이트 처분 | `rounds resolve --cluster --pm-verified`가 기계/PM-owned terminal 확인을 만들고 처분 | 처분할 게이트 없음 |
 | 3 | 티켓별 완료 기록 | 회귀·log 스켈레톤·`board complete`·선언 경로 stage | 이미 done |
 | 4 | 슬롯 커밋 | 티켓마다 그 티켓이 stage 한 경로를 **티켓 제목 문안**으로 커밋 | 커밋할 변경 없음 |
-| 5 | 통합 브랜치로 재배치 | 묶음 브랜치를 통합 브랜치 위로 rebase(충돌은 abort 후 정지) | 통합 브랜치 미선언 |
-| 6 | 통합 브랜치 머지 | 통합 브랜치에서 묶음 브랜치를 `--no-ff` 로 받음 | 이미 조상 · 브랜치 미선언 |
+| 5 | 통합 브랜치로 재배치 | 묶음 브랜치를 통합 브랜치 위로 rebase(충돌은 abort 후 정지) | 이미 통합 브랜치 위 |
+| 6 | 통합 브랜치 머지 | 통합 브랜치에서 묶음 브랜치를 `--no-ff` 로 받음 | 묶음 브랜치 미선언 · 이미 조상 |
 | 7 | 슬롯 반납 | 이 종결이 쓴 슬롯 lease 해제 | 슬롯 미해소 · 리스 없음 |
 | 8 | board·포인터 커밋 | board 커밋 + PM 홈 서브모듈 포인터 커밋 | 포인터 미대상 |
 
@@ -19,9 +19,39 @@
   관측이다. 기록과 실제가 어긋나면(중단·외부 원복) 기록을 믿는 재개는 없는 커밋 위에서 진행한다.
 - **관측 실패는 정지다.** "관측했는데 대상이 없다"(커밋할 변경 없음·리스 없음)와 "관측 자체가
   실패했다"는 다르다. 뒤쪽을 무대상으로 접으면 근거 없는 종결 기록만 남는다.
-- 발행이 만든 크기 1 장부는 통합·묶음 브랜치를 선언하지 않으므로 5·6단계가
-  `통합 브랜치 미선언 — 무대상` 으로 건너뛴다(비차단). 브랜치까지 쓰려면
+- **`base_branch` 미선언은 건너뛰기가 아니라 정지다.** 5·6단계의 대상이 그 선언이라 값이 없으면
+  판정 기준 자체가 없다. 엔진은 그 자리에서 멈추고 `board.py cluster show <이름>` 으로 장부를
+  확인해 `base_branch` 를 채운 뒤 다시 실행하라고 안내한다.
+- 발행이 만드는 크기 1 장부는 그 세션 코드 트리의 현재 브랜치를 `base_branch` 로 기록하고
+  묶음 브랜치(`branch`)만 비운다. 그래서 6단계가 `묶음 브랜치 미선언 — 무대상` 으로 건너뛰고,
+  5단계는 이미 그 기준 브랜치 위면 건너뛴다. 발행 시점 코드 트리가 브랜치를 갖지 않았으면
+  (detached·비-git) `base_branch` 가 비므로 위 정지 규칙에 걸린다. 묶음 브랜치까지 쓰려면
   `python3 .project_manager/tools/board.py cluster new <이름> --tickets <T-NNNN>` 으로 선언한다.
+
+## all-done recovery (반쪽 종결 전용)
+
+`ticket done`, `cluster closed`, `slot released`는 독립 상태다. 모든 멤버가 이미 done인데 장부만
+open이면 정상 8단계를 다시 돌리거나 `board complete`를 직접 호출하지 않는다. PM이 선택한 clean
+제품 worktree의 exact HEAD와 티켓별 evidence commit을 명시해 다음 제한된 문만 사용한다.
+
+```bash
+python3 .project_manager/tools/ticket_finish.py --cluster <C-이름> \
+  --reconcile-integrated \
+  --integrated-rev T-NNNN=<commit> \
+  --legacy-base-rev T-OLD=<anchor-commit> \
+  --user-ack <C-이름> --repo <repo> --slot <N>
+```
+
+- `--integrated-rev`는 장부 멤버마다 정확히 하나다. 선택 제품 HEAD에서
+  `claimed_rev <= evidence <= HEAD`를 검증하며 ref 이름이나 PM 홈 git으로 강등하지 않는다.
+- `claimed_rev`가 없는 legacy 멤버만 `--legacy-base-rev`가 필수이고, audit에는
+  `anchor_source=operator-supplied`로 남는다. branch·시각·commit message로 anchor를 추론하지 않는다.
+- `--repo`와 `--slot`을 둘 다 명시한다. `--task`·암묵 slot은 recovery에서 거부하고
+  `--user-ack`은 cluster ID와 정확히 같아야 한다.
+- 성공은 장부 `closure.mode=reconciled`·exact `integration_head`·멤버 revision/anchor를 기록할
+  뿐 제품/slot을 쓰지 않는다. 같은 증거 재실행은 no-op, 다른 증거는 fail-loud다.
+- 선택 slot이 dirty면 첫 write 전에 정지한다. 비선택 dirty slot은 path·branch·dirty를 보고만 하고
+  byte 보존한다. reset/stash/release 처분은 별도 사용자 판단이다.
 
 ## 3단계(완료 기록)가 티켓마다 하는 일
 

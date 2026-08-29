@@ -766,7 +766,9 @@ def test_e2e_team_init_then_multi_and_solo_coexist(init_board, monkeypatch):
 
     _check_off_dod(board, pay_id)
     complete_args = argparse.Namespace(
-        id=pay_id, tests_pass=True, allow_missing_log=True, allow_untested=False)
+        id=pay_id, tests_pass=True, allow_missing_log=True, allow_untested=False,
+        # lifecycle unit seam: public 사용자는 ticket_finish 묶음 종결만 쓴다.
+        cluster_close=f"C-{pay_id}")
     assert board.cmd_complete(complete_args) == 0
     assert list((board.TICKETS_DIR / "done").glob(f"{pay_id}-*.md"))
 
@@ -790,7 +792,7 @@ def test_e2e_no_prefix_board_flow(init_board, monkeypatch):
     _check_off_dod(board, "T-0001")
     assert board.cmd_complete(argparse.Namespace(
         id="T-0001", tests_pass=True, allow_missing_log=True,
-        allow_untested=False)) == 0
+        allow_untested=False, cluster_close="C-T-0001")) == 0
     assert list((board.TICKETS_DIR / "done").glob("T-0001-*.md"))
 
 

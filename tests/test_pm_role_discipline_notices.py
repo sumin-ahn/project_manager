@@ -27,11 +27,11 @@ def test_unticketed_work_confirmation_notice_present():
     assert "board.py new" in text
 
 
-def test_allow_untested_test_less_done_notice_present():
-    """T-0198: `complete --allow-untested` test-less done 경로가 안내돼 있다."""
+def test_no_pytest_test_less_cluster_finish_notice_present():
+    """T-0198: test-less done도 `--no-pytest` 묶음 종결 경로로 안내돼 있다."""
     text = _text()
-    assert "--allow-untested" in text
-    assert "test-less done" in text or "회귀와 무관" in text
+    assert "/pm-wave-finish" in text
+    assert "ticket_finish.py --cluster ... --no-pytest" in text
 
 
 def test_list_session_slot_scoping_notice_present():

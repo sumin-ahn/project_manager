@@ -419,7 +419,7 @@ def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path):
     # complete 는 claim 과 같은 정체성으로 부른다 — 소유 대조(T-0781).
     rc = board.cmd_complete(argparse.Namespace(
         id=seed_id, tests_pass=True, allow_missing_log=True, allow_untested=False,
-        repo="me", slot=1, user="me"))
+        repo="me", slot=1, user="me", cluster_close=f"C-{seed_id}"))
     assert rc == 0, "seed 티켓 complete 실패(테스트 전제 붕괴)."
 
     # draft 는 여전히 drafts_dir() 에 있고 board-git 에 커밋/push 되지 않아야 한다.

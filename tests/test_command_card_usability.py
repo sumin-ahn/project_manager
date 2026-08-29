@@ -83,10 +83,15 @@ _ADOPTER_LOG_PATH = ".project_manager/wiki/log/current.md"
 # 커맨드에서 **각 정확히 1회** 관측됐는지 본다: 0회=카드 커맨드 건너뜀(누락·false-green 원천)·
 # 2회+=첫 시도 실패 후 재시도. read 조작(list/show/regression/prefix list 등)은 반복 무해·판정 제외.
 # (핸드오프는 이 시퀀스에서 제외 — `_usability_prompt` docstring 근거.)
-_EXPECTED_LIFECYCLE_OPS = ("new", "promote", "claim", "complete")
+# **완료 축은 묶음 종결(`ticket_finish.py`)이다** — 발행이 모든 티켓을 크기 1 묶음에 귀속시켜
+# direct `board.py complete` 는 결속 없이 거부되고 카드도 그 줄을 싣지 않는다. 카드가 처방하지
+# 않는 명령을 기대 op 로 남기면 이 게이트는 LLM 에게 없는 커맨드를 요구해 라이브에서만 터진다
+# (평시 skip 이라 회귀는 green — 이 파일이 막으려는 false-green 클래스 그대로다).
+_EXPECTED_LIFECYCLE_OPS = ("new", "promote", "claim", "finish")
 
 # mutating 조작 분류 집합(핸드오프 포함) — `_board_operation` 이 read/write 구분에 참조(classifier).
-_SEQUENCE_MUTATING_OPS = frozenset({"new", "promote", "claim", "complete", "handoff"})
+# 카드 시퀀스가 낼 수 있는 어휘만 담는다 — `complete` 는 카드가 처방하지 않으므로 여기 없다.
+_SEQUENCE_MUTATING_OPS = frozenset({"new", "promote", "claim", "finish", "handoff"})
 
 # --help/-h 토큰 매칭(--tests-pass·--session-seq 등 오탐 방지). 경계를 `[\w-]` 로 잡아 셸 구두점
 # (`;`·따옴표)이 인접해도(`--help;`·`"--help"`) 매칭되게 한다 — opencode stdout 라인 스캔
@@ -143,7 +148,11 @@ def _usability_prompt(card: str) -> str:
     않으므로 release_wave 의 검증된 gate-satisfaction 문구를 미러해 housekeeping(로그 한 줄)만
     안내한다 — *board 커맨드 자체*(new/promote/claim/complete)는 카드에서 그대로 옮겨야 한다.
     로그 경로는 게이트가 읽는 정확한 `_ADOPTER_LOG_PATH`(fresh adopter 실측)로 지시한다 — 짧은
-    `wiki/log/current.md` 로 지시하면 게이트가 못 읽어 complete 가 spurious RED(R4 MF).
+    `wiki/log/current.md` 로 지시하면 게이트가 못 읽어 완료 기록이 spurious RED(R4 MF).
+    완료 단계는 **카드의 wave-finish 진입**을 시킨다 — 카드 lifecycle 절에 direct complete 줄이
+    없고(발행이 만든 크기 1 묶음의 멤버라 결속 없는 direct complete 는 rc=1), 그 진입이 부르는
+    엔진이 `ticket_finish.py` 다. 회귀 게이트 만족(`--no-pytest`)도 sync-gate 로그와 같은 축의
+    housekeeping 이라 프롬프트가 명시한다 — 채택자 fresh 트리에는 test 스위트가 없다.
     promote 전에 **티켓 본문 채우기** 단계를 명시해 claim=promote 선행 트랩(카드 4대장 ①·본문
     채운 뒤 promote)을 시퀀스에서 실제로 밟게 한다(fresh import 형상에서 이 축 보강·R4 suggestion 2).
     핸드오프는 이 시퀀스에서 제외한다: 세션 종료 op 는 무거운 side-effect(pm_state write·log
@@ -166,9 +175,11 @@ def _usability_prompt(card: str) -> str:
         "body must be filled and the ticket promoted before you can claim it).\n"
         "  4. Promote it.\n"
         "  5. Claim it.\n"
-        "  6. Complete it. The completion sync gate requires a log entry — first append a one-line "
-        f"entry mentioning the new ticket id to {_ADOPTER_LOG_PATH}, then run the card's complete "
-        "command with --tests-pass.\n\n"
+        "  6. Finish the ticket through the card's wave-finish entry (the ticket lifecycle section "
+        "has no direct complete command; that entry's engine command is the one to run for this "
+        "ticket id). Two facts the card does not state: the completion sync gate requires a log "
+        f"entry, so first append a one-line entry mentioning the new ticket id to "
+        f"{_ADOPTER_LOG_PATH}; and this project ships no test suite, so pass --no-pytest.\n\n"
         "Command card:\n"
         "<<<CARD\n"
         f"{card}\n"
@@ -218,6 +229,18 @@ _PY_EXECUTABLES = frozenset({"python", "python3", "py"})
 _ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
 _SHELL_PUNCT = set("();<>|&;")  # shlex punctuation_chars — statement 를 가르는 연산자 문자.
 _OP_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+# 스크립트 자신이 곧 조작인 도구 — `board.py <op>` 와 달리 서브커맨드가 없다(카드의 강등 엔진 줄).
+# `ticket_finish.py` = /pm-wave-finish 의 엔진이고 그것이 카드의 유일한 완료 진입이다.
+_SCRIPT_OPS = {"pm_handoff.py": "handoff", "ticket_finish.py": "finish"}
+
+def _op_command(inv: str, op: str, tid: str = "T-1") -> str:
+    """그 op 를 실행하는 커맨드 1줄 — 도구·서브커맨드 형태가 op 마다 다르다(board.py <op> vs 스크립트)."""
+    if op == "new":
+        return f'{inv}/board.py new "{PROBE_TITLE}" --prefix {PROBE_PREFIX}'
+    if op == "finish":
+        return f"{inv}/ticket_finish.py {tid} --no-pytest"
+    return f"{inv}/board.py {op} {tid}"
+
 
 # rc 마스킹(디커플링) 연산자 — 한 Bash 콜의 tool_result rc 를 그 안 lifecycle op 의 rc 와 분리시키는
 # 셸 제어흐름. `||`(실패 은폐)·`;`(rc=마지막 statement)·`|`(rc=파이프 마지막)·`&`(백그라운드→즉시 rc0).
@@ -277,6 +300,7 @@ def _executed_board_ops(command: str) -> list[str]:
         statements.append(current)
 
     ops: list[str] = []
+    # `board.py <op>` 는 서브커맨드가 op 이고, `_SCRIPT_OPS` 도구는 스크립트 자신이 op 다.
     for stmt in statements:
         idx = 0
         while idx < len(stmt) and _ENV_ASSIGN_RE.match(stmt[idx]):  # 선행 KEY=VAL 스킵.
@@ -287,7 +311,7 @@ def _executed_board_ops(command: str) -> list[str]:
         cmd_base = words[0].rsplit("/", 1)[-1]
         if cmd_base in _PY_EXECUTABLES:
             args = words[1:]           # `python3 …/board.py <op>` — 스크립트는 인자.
-        elif cmd_base in ("board.py", "pm_handoff.py"):
+        elif cmd_base == "board.py" or cmd_base in _SCRIPT_OPS:
             args = words               # 스크립트 직접 실행(chmod+x) — 명령어 자신이 스크립트.
         else:
             continue                   # echo/printf/cat/mv/… (비실행) — 배제.
@@ -297,8 +321,8 @@ def _executed_board_ops(command: str) -> list[str]:
                 if pos + 1 < len(args) and _OP_NAME_RE.match(args[pos + 1]):
                     ops.append(args[pos + 1])
                 break
-            if tok_base == "pm_handoff.py":
-                ops.append("handoff")
+            if tok_base in _SCRIPT_OPS:
+                ops.append(_SCRIPT_OPS[tok_base])
                 break
     return ops
 
@@ -311,8 +335,7 @@ def _board_op_mentions(text: str) -> list[str]:
     실어 투명화하는 용도다(에코여도 무해). 실행 여부 hard 판정은 claude `_executed_board_ops` 몫.
     """
     ops = re.findall(r"board\.py\s+([a-z][a-z0-9-]*)", text)
-    if "pm_handoff.py" in text:
-        ops.append("handoff")
+    ops.extend(op for script, op in _SCRIPT_OPS.items() if script in text)
     return ops
 
 
@@ -677,19 +700,28 @@ def test_command_card_usability_opencode_best_effort(tmp_path):
 
 
 def test_render_command_card_has_lifecycle_commands():
-    """카드 렌더가 lifecycle 커맨드(new/promote/claim/complete)+핸드오프를 담고 --session 미포함."""
+    """카드 렌더가 lifecycle 커맨드(new/promote/claim + 묶음 종결)+핸드오프를 담고 --session 미포함.
+
+    완료 축은 `board.py complete` 가 아니라 묶음 종결이다 — 발행이 모든 티켓을 크기 1 묶음에
+    귀속시키므로 direct complete 는 결속 없이 거부되고, 카드는 그 줄을 싣지 않는다(X-001).
+    실행 줄만 본다: ticket_finish 강등 줄의 "내부서 board.py complete 수행" 주석이 토큰 검사를
+    대신 충족하면 이 가드가 공허해진다.
+    """
     card = _render_command_card(REPO)
+    command_parts = "\n".join(ln.split("#", 1)[0] for ln in card.splitlines())
     for token in (
         "board.py new", "board.py promote", "board.py claim",
-        "board.py complete", "pm_handoff.py",
+        "ticket_finish.py", "pm_handoff.py",
     ):
-        assert token in card, f"카드에 '{token}' 부재"
+        assert token in command_parts, f"카드 실행 줄에 '{token}' 부재"
+    assert "board.py complete" not in command_parts, \
+        "카드가 direct board complete 를 실행 줄로 되살렸다(항상 rc=1·X-001)"
     # 정체성 헤더는 실값 또는 미해소 명시 — 폐지된 `--session` placeholder 는 어느 쪽에도 없다.
     assert "정체성:" in card and "--session <session>" not in card
 
 
 def test_usability_prompt_embeds_card_and_sequence():
-    """프롬프트가 카드 전문 + 표준 lifecycle 시퀀스(create/fill/promote/claim/complete)를 담고 --help 를 금한다."""
+    """프롬프트가 카드 전문 + 표준 lifecycle 시퀀스(create/fill/promote/claim/finish)를 담고 --help 를 금한다."""
     card = _render_command_card(REPO)
     prompt = _usability_prompt(card)
     # 카드가 유일 컨텍스트로 임베드된다(진입문서 경로 미제공).
@@ -697,10 +729,36 @@ def test_usability_prompt_embeds_card_and_sequence():
     assert "CLAUDE.md" not in prompt and "AGENTS.md" not in prompt
     # 표준 조작 시퀀스 + probe 식별자.
     assert PROBE_TITLE in prompt and PROBE_PREFIX in prompt
-    for step in ("Create a new ticket", "Fill in the new ticket", "Promote it", "Claim it", "Complete it"):
+    for step in ("Create a new ticket", "Fill in the new ticket", "Promote it", "Claim it",
+                 "Finish the ticket"):
         assert step in prompt, f"프롬프트에 '{step}' 단계 부재"
+    # 지시부(카드 임베드 앞)는 카드가 처방하지 않는 direct complete 를 시키지 않는다.
+    instructions = prompt.split("Command card:", 1)[0]
+    assert "board.py complete" not in instructions and "--tests-pass" not in instructions, \
+        "프롬프트가 카드에 없는 direct complete 를 시킨다(라이브에서만 red 나는 false-green)"
+    # 회귀 게이트 만족(`--no-pytest`)은 sync-gate 로그와 같은 축의 housekeeping 으로 명시된다.
+    assert "--no-pytest" in instructions
     # --help 사용 금지가 명시된다(사용성 판정 대상).
     assert "Do NOT run any command with --help or -h" in prompt
+
+
+def test_expected_lifecycle_ops_are_all_prescribed_by_the_card():
+    """기대 op 는 **카드가 실제로 처방하는 커맨드**에서만 온다 (X-001 낙수 가드).
+
+    카드에 없는 명령을 기대 op 로 남기면 라이브 게이트는 LLM 에게 존재하지 않는 커맨드를 요구해
+    반드시 red 가 되는데, 이 파일의 라이브 2건은 평시 skip 이라 회귀는 green 이다 — 정확히 이
+    파일이 막으려는 false-green 클래스다. 그래서 카드 실행 줄에서 op 를 추출해 기대 집합과
+    대조한다(판정기·프롬프트·카드 3자 정합).
+    """
+    card = _render_command_card(REPO)
+    prescribed: set[str] = set()
+    for line in card.splitlines():
+        prescribed.update(_executed_board_ops(line.split("#", 1)[0]))
+    assert prescribed, "카드에서 실행 op 를 하나도 못 뽑았다(추출기 가정 붕괴)"
+    missing = [op for op in _EXPECTED_LIFECYCLE_OPS if op not in prescribed]
+    assert not missing, f"카드가 처방하지 않는 기대 op: {missing} (카드 처방={sorted(prescribed)})"
+    assert "complete" not in prescribed, \
+        "카드가 direct complete 를 되살렸다 — 크기 1 묶음 귀속으로 항상 rc=1 이다"
 
 
 def test_usability_prompt_uses_gate_log_path():
@@ -760,6 +818,7 @@ def test_command_has_help_flag_detects_shlex_tokens():
     assert _command_has_help_flag("python3 board.py claim --help && echo x")
     # 오탐 0 — 유사 플래그·부분 문자열은 help 토큰이 아니다.
     assert not _command_has_help_flag("python3 board.py complete T-1 --tests-pass")
+    assert not _command_has_help_flag("python3 ticket_finish.py T-1 --no-pytest")
     assert not _command_has_help_flag("python3 board.py list --mine")
     assert not _command_has_help_flag("python3 pm_handoff.py --session-seq 1 --wave-summary x")
     assert not _command_has_help_flag("python3 board.py new --help-me")  # --help 아님(경계).
@@ -771,8 +830,11 @@ def test_board_operation_classifies_lifecycle_and_handoff():
     assert _board_operation(f'{inv}/board.py new "x" --prefix probe') == "new"
     assert _board_operation(f"{inv}/board.py promote T-1") == "promote"
     assert _board_operation(f"{inv}/board.py claim T-1") == "claim"
-    assert _board_operation(f"{inv}/board.py complete T-1 --tests-pass") == "complete"
+    assert _board_operation(f"{inv}/ticket_finish.py T-1 --no-pytest") == "finish"
     assert _board_operation(f"{inv}/pm_handoff.py --session-seq 1 --wave-summary x") == "handoff"
+    # direct complete 는 여전히 파싱되지만 **카드가 처방하지 않으므로** 시퀀스 어휘가 아니다.
+    assert _board_operation(f"{inv}/board.py complete T-1 --tests-pass") == "complete"
+    assert "complete" not in _SEQUENCE_MUTATING_OPS
     # read op 는 분류되나 mutating 이 아니라 재시도 판정 대상 아님.
     assert _board_operation(f"{inv}/board.py list --mine") == "list"
     assert _board_operation(f"{inv}/board.py list --mine") not in _SEQUENCE_MUTATING_OPS
@@ -787,7 +849,7 @@ def test_judge_commands_passes_clean_first_try_sequence():
         f'{inv}/board.py new "{PROBE_TITLE}" --prefix {PROBE_PREFIX}',
         f"{inv}/board.py promote T-probe-001",
         f"{inv}/board.py claim T-probe-001",
-        f"{inv}/board.py complete T-probe-001 --tests-pass",
+        f"{inv}/ticket_finish.py T-probe-001 --no-pytest",
     ]
     ok, detail = _judge_commands(commands)
     assert ok, detail
@@ -810,7 +872,7 @@ def test_judge_commands_flags_retried_operation():
         f'{inv}/board.py new "{PROBE_TITLE}" --prefix {PROBE_PREFIX}',
         f"{inv}/board.py promote T-probe-001",
         f"{inv}/board.py claim T-probe-001",    # 1차 claim.
-        f"{inv}/board.py complete T-probe-001 --tests-pass",
+        f"{inv}/ticket_finish.py T-probe-001 --no-pytest",
         f"{inv}/board.py claim T-probe-001",    # 재시도 → claim ×2.
     ]
     ok, detail = _judge_commands(commands)
@@ -828,7 +890,7 @@ def test_judge_commands_flags_skipped_lifecycle_op():
         f'{inv}/board.py new "{PROBE_TITLE}" --prefix {PROBE_PREFIX}',
         f"{inv}/board.py promote T-probe-001",
         # claim 누락 — 카드 커맨드를 건너뜀.
-        f"{inv}/board.py complete T-probe-001 --tests-pass",
+        f"{inv}/ticket_finish.py T-probe-001 --no-pytest",
     ]
     ok, detail = _judge_commands(commands)
     assert not ok and "claim 미실행" in detail
@@ -859,7 +921,7 @@ def test_judge_commands_counts_chained_board_ops():
         f'{inv}/board.py new "{PROBE_TITLE}" --prefix {PROBE_PREFIX} && '
         f"{inv}/board.py promote T-probe-001 && "
         f"{inv}/board.py claim T-probe-001 && "
-        f"{inv}/board.py complete T-probe-001 --tests-pass"
+        f"{inv}/ticket_finish.py T-probe-001 --no-pytest"
     )
     ok, detail = _judge_commands([chained])
     assert ok, detail
@@ -880,8 +942,8 @@ def test_executed_board_ops_excludes_echoed_strings():
     assert _executed_board_ops(f"{inv}/board.py claim T-probe-001 --session probe_1") == ["claim"]
     # env prefix + 리다이렉션 + chained 실 실행(`cd`/log append 는 op 아님).
     assert _executed_board_ops(
-        f'echo "log line" >> wiki/log/current.md && {inv}/board.py complete T-1 --tests-pass'
-    ) == ["complete"]
+        f'echo "log line" >> wiki/log/current.md && {inv}/ticket_finish.py T-1 --no-pytest'
+    ) == ["finish"]
     assert _executed_board_ops(
         f'PM_SESSION_NAME=x {inv}/board.py new "t" --prefix probe ; {inv}/board.py promote T-1'
     ) == ["new", "promote"]
@@ -898,7 +960,7 @@ def test_judge_commands_flags_echoed_only_ops():
         f'echo "{inv}/board.py new x --prefix probe"',
         f'echo "{inv}/board.py promote T-1"',
         f'echo "{inv}/board.py claim T-1"',
-        f'echo "{inv}/board.py complete T-1 --tests-pass"',
+        f'echo "{inv}/ticket_finish.py T-1 --no-pytest"',
     ]
     ok, detail = _judge_commands(commands)
     assert not ok
@@ -941,7 +1003,7 @@ def test_judge_claude_rejects_done_side_effect_when_op_skipped(tmp_path):
         f'{inv}/board.py new "{PROBE_TITLE}" --prefix {PROBE_PREFIX}',
         f"{inv}/board.py promote T-probe-001",
         # claim 누락 — 카드 커맨드 건너뜀(파일 직접 이동으로 done/ 위조).
-        f"{inv}/board.py complete T-probe-001 --tests-pass",
+        f"{inv}/ticket_finish.py T-probe-001 --no-pytest",
     ])
     proc = subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
 
@@ -965,7 +1027,7 @@ def test_judge_claude_rejects_done_side_effect_when_ops_only_echoed(tmp_path):
         f'echo "{inv}/board.py new x --prefix probe"',
         f'echo "{inv}/board.py promote T-probe-001"',
         f'echo "{inv}/board.py claim T-probe-001"',
-        f'echo "{inv}/board.py complete T-probe-001 --tests-pass"',
+        f'echo "{inv}/ticket_finish.py T-probe-001 --no-pytest"',
     ])
     proc = subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
 
@@ -991,7 +1053,7 @@ def test_judge_claude_rejects_first_try_failures_with_manual_done(tmp_path):
         (f'{inv}/board.py new "{PROBE_TITLE}" --prefix {PROBE_PREFIX}', True),
         (f"{inv}/board.py promote T-probe-001", True),
         (f"{inv}/board.py claim T-probe-001", True),
-        (f"{inv}/board.py complete T-probe-001 --tests-pass", True),
+        (f"{inv}/ticket_finish.py T-probe-001 --no-pytest", True),
     ])
     proc = subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
 
@@ -1006,7 +1068,7 @@ def test_judge_first_try_rc0_flags_missing_tool_result(tmp_path):
     calls = _collect_bash_tool_calls("\n".join(
         json.dumps({"type": "assistant", "message": {"content": [
             {"type": "tool_use", "id": f"toolu_{i}", "name": "Bash",
-             "input": {"command": f"{inv}/board.py {op} T-1"}}]}})
+             "input": {"command": _op_command(inv, op)}}]}})
         for i, op in enumerate(_EXPECTED_LIFECYCLE_OPS)
     ))
     ok, detail = _judge_first_try_rc0(calls, {})  # results 비어있음.
@@ -1041,7 +1103,7 @@ def test_judge_first_try_rc0_rejects_rc_masking_even_when_result_success(tmp_pat
         (f'{inv}/board.py new "{PROBE_TITLE}" --prefix {PROBE_PREFIX}', False),
         (f"{inv}/board.py promote T-probe-001", False),
         (f"{inv}/board.py claim T-probe-001 || true", False),   # 마스킹 — rc0 로 기록되나 신뢰 불가.
-        (f"{inv}/board.py complete T-probe-001 --tests-pass", False),
+        (f"{inv}/ticket_finish.py T-probe-001 --no-pytest", False),
     ])
     calls = _collect_bash_tool_calls(stdout)
     results = _collect_tool_results(stdout)
@@ -1056,7 +1118,7 @@ def test_judge_first_try_rc0_rejects_semicolon_chain(tmp_path):
         (f'{inv}/board.py new "{PROBE_TITLE}" --prefix {PROBE_PREFIX}', False),
         (f"{inv}/board.py promote T-probe-001", False),
         (f"{inv}/board.py claim T-probe-001; echo done", False),  # 세미콜론 — rc=echo(마지막).
-        (f"{inv}/board.py complete T-probe-001 --tests-pass", False),
+        (f"{inv}/ticket_finish.py T-probe-001 --no-pytest", False),
     ])
     calls = _collect_bash_tool_calls(stdout)
     results = _collect_tool_results(stdout)
@@ -1075,7 +1137,7 @@ def test_judge_first_try_rc0_allows_and_prefix_single_op(tmp_path):
         (f'{inv}/board.py new "{PROBE_TITLE}" --prefix {PROBE_PREFIX}', False),
         (f"cd home && {inv}/board.py promote T-probe-001", False),
         (f"cd home && {inv}/board.py claim T-probe-001 --session probe_1", False),
-        (f"cd home && {inv}/board.py complete T-probe-001 --tests-pass", False),
+        (f"cd home && {inv}/ticket_finish.py T-probe-001 --no-pytest", False),
     ])
     calls = _collect_bash_tool_calls(stdout)
     results = _collect_tool_results(stdout)
@@ -1094,7 +1156,7 @@ def test_judge_claude_passes_full_op_sequence_with_done(tmp_path):
         f'{inv}/board.py new "{PROBE_TITLE}" --prefix {PROBE_PREFIX}',
         f"{inv}/board.py promote T-probe-001",
         f"{inv}/board.py claim T-probe-001",
-        f"{inv}/board.py complete T-probe-001 --tests-pass",
+        f"{inv}/ticket_finish.py T-probe-001 --no-pytest",
     ])
     proc = subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
 

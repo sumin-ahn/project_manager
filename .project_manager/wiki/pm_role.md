@@ -90,7 +90,9 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 | `/pm-wave-finish` | 묶음 종결 8단계(확인 입력 preflight·확인 생성/처분·완료 기록·커밋·재배치·머지·반납·board); status 미접촉 | `ticket_finish.py` |
 | `/pm-handoff` | 세션 종료 7단계 | `pm_handoff.py` |
 
-**무코드/개념(ADR·doc·decision) ticket의 test-less done:** `board.py complete --allow-untested`를 쓰며 본문에 log entry도 없으면 `--allow-missing-log`를 더한다. `/pm-wave-finish`(`ticket_finish.py`)도 코드 변경 없는 ticket에는 같은 플래그를 넘긴다.
+**무코드/개념(ADR·doc·decision) ticket도 종결 단위는 묶음이다.** 별도 검증 근거가 있으면
+`/pm-wave-finish`(`ticket_finish.py --cluster ... --no-pytest`)로 같은 8단계를 실행한다.
+`board.py complete`는 8단계 내부 결속 호출이며 PM이 직접 실행하지 않는다.
 
 환경·갱신:
 
@@ -162,6 +164,11 @@ developer/code-reviewer draft 실행과 blocked/done 전 역할은 예약 전에
 final-fix 확인 입력 preflight·기계/PM-owned terminal 확인 생성과 게이트 처분·티켓별 완료 기록·커밋·재배치·머지·슬롯 반납·board 기록을 고정 순서로 실행하고,
 실패 지점에서 멈추며 재실행이 곧 재개다. 실행 인자·실패 복구는 카드가 단일 진실이고 여기서는 규율만
 소유한다.
+
+`ticket done`·`cluster closed`·`slot released`는 서로 다른 상태다. 모든 멤버만 이미 done이고
+장부가 open인 과거 반쪽 상태는 정상 종결을 재실행하거나 수동으로 status를 편집하지 않는다.
+`/pm-wave-finish` 카드의 all-done recovery가 요구하는 명시 제품 slot·멤버별 commit·legacy anchor·
+exact 사용자 승인값을 검증해 `closure.mode=reconciled`로만 닫는다. dirty slot은 보고·보존한다.
 
 티어는 다음 순서의 첫 매치로 PM이 확정해 `board.py tier <T-NNNN> pm-direct|normal|hard`로 기록한다.
 `board.py tier-signals`의 h1(도구 모듈 2+)·h2(공용 코드)·docs-only는 보조 신호일 뿐 확정이 아니다.
