@@ -53,7 +53,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -3702,9 +3701,7 @@ class PmHandoff:
         if relay is None:
             return None
         try:
-            _raw_dir, ledger = relay.raw_storage_paths(
-                REPO, "delegate", None, temp_dir=Path(tempfile.gettempdir()),
-            )
+            _raw_dir, ledger = relay.raw_storage_paths(REPO, "delegate")
         except Exception as exc:  # noqa: BLE001 — fail-soft: 위치 해소 실패는 sweep 만 건너뛴다.
             if _is_engine_rev_skew(exc):
                 raise  # 사본 skew 는 삼키지 않는다(`_load_pm_relay` 와 같은 규칙).

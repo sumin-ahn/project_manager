@@ -1197,14 +1197,11 @@ def test_reserve_check_save_under_single_lock(external, monkeypatch, tmp_path):
     assert _ledger(external, tmp_path)["T-0116"]["count"] == 1
 
 
-def test_save_output_tempdir_fallback_with_injected_destination(
-        external, monkeypatch, tmp_path):
-    """PM 홈 미해소 폴백은 유지하되 테스트에서는 pytest 관리 목적지를 주입한다."""
-    monkeypatch.setattr(external, "REPO", tmp_path / "unresolved-adopter")
-    monkeypatch.setattr(external.tempfile, "gettempdir", lambda: str(tmp_path))
-    dest = external.save_output("x", "fallback content")
+def test_save_output_writes_into_explicit_destination(external, tmp_path):
+    """명시 output_dir 은 raw 를 그 디렉터리에 격리한다(기본 목적지는 해소된 PM 홈뿐)."""
+    dest = external.save_output("x", "explicit content", tmp_path)
     assert dest.parent == tmp_path
-    assert dest.read_text(encoding="utf-8") == "fallback content"
+    assert dest.read_text(encoding="utf-8") == "explicit content"
 
 
 # ══ 라운드별 산출 장부 + wave 예산 (T-0583) ═════════════════════════════════

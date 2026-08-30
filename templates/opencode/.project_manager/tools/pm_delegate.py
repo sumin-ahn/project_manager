@@ -2917,9 +2917,7 @@ def _abandon_raw_ledger_hint(pm_home: Path, row: dict, relay) -> str:
     예약이 조용히 "증거 있음"으로 뒤바뀐다. 참고를 읽지 못하면 참고만 빠진다(판정은 그대로다).
     """
     try:
-        _raw_dir, ledger_path = relay.raw_storage_paths(
-            pm_home, "delegate", None, temp_dir=Path(_gettempdir()),
-        )
+        _raw_dir, ledger_path = relay.raw_storage_paths(pm_home, "delegate")
         rows = relay.raw_records(ledger_path, unfinished_only=True, lock=False)
     except (OSError, ValueError, UnicodeError):
         return ""
@@ -10018,11 +10016,10 @@ def _gettempdir() -> str:
 
 
 def _raw_storage(output_dir: Path | None = None) -> tuple[Path, Path]:
-    """raw/장부 위치를 해소된 PM 홈 소유자에서 정한다(REPO 미해소만 폴백)."""
+    """raw/장부 위치를 해소된 PM 홈 소유자에서 정한다(REPO 미해소는 fail-loud)."""
     relay = _load_relay()
     return relay.raw_storage_paths(
-        _CONFIG_REPO_OVERRIDE or REPO,
-        "delegate", output_dir, temp_dir=Path(_gettempdir()),
+        _CONFIG_REPO_OVERRIDE or REPO, "delegate", output_dir,
     )
 
 
@@ -10388,13 +10385,8 @@ def _print_orphan_raw_summary(
     한다. delegate·review 두 디렉터리를 모두 스캔한다(장부는 두 표면이 공유하는 한 파일).
     """
     repo_override = _CONFIG_REPO_OVERRIDE or REPO
-    temp_dir = Path(_gettempdir())
-    delegate_dir, _ = relay.raw_storage_paths(
-        repo_override, "delegate", output_dir, temp_dir=temp_dir,
-    )
-    review_dir, _ = relay.raw_storage_paths(
-        repo_override, "review", output_dir, temp_dir=temp_dir,
-    )
+    delegate_dir, _ = relay.raw_storage_paths(repo_override, "delegate", output_dir)
+    review_dir, _ = relay.raw_storage_paths(repo_override, "review", output_dir)
     summary = relay.scan_orphan_raw_files((delegate_dir, review_dir), ledger_path)
     if summary.count == 0:
         return
@@ -13188,8 +13180,8 @@ def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
     반환값/rc 를 바꾸지 않는다 — 격리/복원/수용 판정은 PM 몫이다. 한 축의 판정
     실패가 다른 축까지 지우지 않으며 둘 다 비차단이다. 쓰기 허용 역할집합은 이 모듈의
     WRITE_ROLES 를 주입해 단일 출처로 쓴다(감지기 기본값과의 드리프트는 테스트가 막는다).
-    raw 박제 기본 `.project_manager/.local/delegate/`는 gitignored라 판정에 안 잡히며(PM 홈
-    미해소 시 tempdir 폴백도 repo 밖), `--output-dir`를 repo 안의 비-ignore 경로로 주면 그 산출물도
+    raw 박제 기본 `.project_manager/.local/delegate/`는 gitignored라 판정에 안 잡히며,
+    `--output-dir`를 repo 안의 비-ignore 경로로 주면 그 산출물도
     '위임이 만든 변경'으로 잡힌다(의도). 일반 판정 실패는 비차단하되 엔진 사본 skew만은 재-raise 한다.
 
     형제-가지 여집합 결정: 어댑터 축은 ``--ticket``이 있을 때만 돌지 않는다. 생략 실행에서도
@@ -15295,7 +15287,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "배포별 조정은 local.conf harness.<name>.wall_timeout/.idle_timeout")
     parser.add_argument("--output-dir", default=None, metavar="DIR",
                         help="raw 출력 박제 디렉토리"
-                             "(기본 .project_manager/.local/delegate, PM 홈 미해소 시 tempdir)")
+                             "(기본 .project_manager/.local/delegate)")
     parser.add_argument("--ticket", default=None, metavar="T-NNNN",
                         help="위임 대상 ticket — touches 로 범위 밖 변경을 경고 판정"
                              "(code-reviewer는 --ticket 또는 --gate 필수; 그 밖 역할은 생략 시 "

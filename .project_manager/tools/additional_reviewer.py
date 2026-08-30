@@ -6353,7 +6353,7 @@ def detect_output_contamination(output: str) -> OutputContamination:
 
 
 def _raw_storage(output_dir: Path | None = None) -> tuple[Path, Path]:
-    """추가 리뷰 raw/공유 장부 위치 — 앵커는 해소된 소유 PM 홈(미해소만 tempdir 폴백).
+    """추가 리뷰 raw/공유 장부 위치 — 앵커는 해소된 소유 PM 홈(미해소는 fail-loud).
 
     diff 앵커(`_main` 이 주입하는 REPO=diff_root)가 아니라 `_PM_HOME_OVERRIDE`(= 같은 실행이
     해소한 소유 PM 홈)를 쓴다. 기록이 슬롯/스냅샷 장부로 갈리면 PM 홈 장부를 읽는
@@ -6368,7 +6368,6 @@ def _raw_storage(output_dir: Path | None = None) -> tuple[Path, Path]:
         _PM_HOME_OVERRIDE or REPO,
         "review",
         output_dir,
-        temp_dir=Path(tempfile.gettempdir()),
     )
 
 
@@ -6949,7 +6948,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "만들지 않는다 · 미리보기는 --dry-run)")
     parser.add_argument("--output-dir", default=None, metavar="DIR",
                         help="리뷰 원문 저장 디렉토리"
-                             " (기본: .project_manager/.local/review, PM 홈 미해소 시 tempdir)."
+                             " (기본: .project_manager/.local/review)."
                              " 실제 전송이 일어나는 실행에서만 생성된다"
                              " (미리보기·비활성 no-op·게이트 거부는 만들지 않음)")
     parser.add_argument("--timeout", type=_timeout_seconds_arg, default=None,

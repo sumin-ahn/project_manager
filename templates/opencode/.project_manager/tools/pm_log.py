@@ -45,7 +45,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
 from collections.abc import Iterator
@@ -1373,9 +1372,7 @@ def _inflight_section(
         delegate = _load_pm_delegate()
         unharvested_rows = delegate.ticket_copy_records(pm_home, unharvested=True)
         relay = _load_pm_relay()
-        _raw_dir, raw_ledger = relay.raw_storage_paths(
-            pm_home, "delegate", None, temp_dir=Path(tempfile.gettempdir()),
-        )
+        _raw_dir, raw_ledger = relay.raw_storage_paths(pm_home, "delegate")
         unfinished_raw_rows = relay.unfinished_raw_records(raw_ledger, lock=False)
         tickets_dir, _counts = _ticket_counts(pm_home)
         claimed_ids = [

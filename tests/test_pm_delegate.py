@@ -6619,18 +6619,6 @@ def test_native_advisory_rejects_values_outside_public_domain(pd, monkeypatch):
     assert pd.native_advisory(None) is None
 
 
-def test_save_raw_output_tempdir_fallback_with_injected_destination(
-        pd, monkeypatch, tmp_path):
-    """PM 홈 미해소 폴백은 유지하되 테스트에서는 pytest 관리 목적지를 주입한다."""
-    # module-scoped 도구의 직전 main 호출이 남긴 config owner는 이 독립 폴백 축의 입력이 아니다.
-    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", None)
-    monkeypatch.setattr(pd, "REPO", tmp_path / "unresolved-adopter")
-    monkeypatch.setattr(pd, "_gettempdir", lambda: str(tmp_path))
-    dest = pd.save_raw_output("codex", "fallback content")
-    assert dest.parent == tmp_path
-    assert dest.read_text(encoding="utf-8") == "fallback content"
-
-
 # ══ ⑫ Codex egress 승격 브리지 (T-0592·network-off 안전 경계 × 실위임) ═══════
 #
 # 전부 run_fn DI mock — 외부 네트워크/실 하네스 스폰은 이 절에서도 0이다. 판정 입력은 env 마커

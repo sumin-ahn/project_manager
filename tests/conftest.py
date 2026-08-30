@@ -58,7 +58,7 @@ import pytest
 # 심으면 그 뒤 어떤 경로로 `configure_console_utf8()` 이 호출돼도 값으로 발화한다.
 os.environ["PYTHONUTF8"] = "1"
 
-# 테스트가 제품의 output_dir 폴백을 밟으면 tempdir에 감사 raw가 영구 누적된다.
+# 테스트가 raw 목적지를 tempdir 로 주면 tempdir에 감사 raw가 영구 누적된다.
 # 세션 기본 tempdir를 pytest 소유 디렉터리로 격리해 다른 checkout/PM 프로세스 출력과 섞지 않는다.
 _PROJECT_TEMPDIR_GLOBS = (
     "pm_delegate_*",
@@ -68,17 +68,13 @@ _PROJECT_TEMPDIR_GLOBS = (
     "safewrite-fac-*",
     "swroot-*",
     "swout-*",
-    # tempdir 폴백 장부(PM 홈 미해소 형상) + 그 잠금 파일. 기본 목적지가 repo 로 옮겨졌어도
-    # 폴백 경로는 살아 있으므로 이 축도 세션 누출 대상이다.
-    "pm_raw_outputs.json",
-    "pm_raw_outputs.json.lock",
 )
 _TEMPDIR_ENV_KEYS = ("TMPDIR", "TEMP", "TMP")
 
 # 위임·외부리뷰 raw 의 **기본 목적지**는 tempdir 가 아니라 해소된 repo 의
 # `.project_manager/.local/` 하위다. 그래서 tempdir 격리만으로는 부족하다 — 기본 경로를 밟는
 # 테스트는 tempdir 가 아니라 **실 작업 트리 안**에 raw 를 쓰고, 위 세션 스냅샷은 그것을 보지
-# 못한다. 감시 축을 하나 더 세워 두 목적지를 함께 닫는다(tempdir 폴백 + repo 기본 경로).
+# 못한다. 감시 축을 하나 더 세워 두 목적지를 함께 닫는다(tempdir + repo 기본 경로).
 # 이 경로는 *이 checkout* 소유라 다른 PM 프로세스(자기 PM 홈에 쓴다)의 동시 출력과 섞이지 않는다 —
 # 전역 tempdir 감시가 flaky 했던 원인이 여기엔 없다.
 _REPO_ROOT_FOR_RAW_GUARD = Path(__file__).resolve().parent.parent

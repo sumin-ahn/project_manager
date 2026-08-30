@@ -392,23 +392,28 @@ def raw_storage_paths(
     repo: Path,
     surface: str,
     output_dir: Path | None = None,
-    *,
-    temp_dir: Path,
 ) -> tuple[Path, Path]:
     """raw 디렉터리와 공유 장부 경로를 결정한다.
 
-    명시 output_dir은 raw와 장부를 함께 그 디렉터리에 격리한다. 기본은 해소된 repo의
-    `.project_manager/.local/{delegate,review}`와 공유 `raw_outputs.json`이다. 채택자 형상에서
-    PM 홈 마커를 못 찾으면 OS tempdir의 결정적 장부로 폴백한다.
+    명시 output_dir은 raw와 장부를 함께 그 디렉터리에 격리한다. 그 밖에는 해소된 repo의
+    `.project_manager/.local/{delegate,review}`와 공유 `raw_outputs.json`이다. 위임 raw 출력과
+    라운드 장부는 무엇을 보냈는지·몇 라운드였는지를 남기는 **기록**이라, 앵커를 해소하지 못하면
+    휘발성 위치로 바꾸지 않고 여기서 멈춘다.
     """
     if output_dir is not None:
         base = Path(output_dir)
         return base, base / "raw_outputs.json"
-    if (repo / ".project_manager").is_dir():
-        local = repo / ".project_manager" / ".local"
-        return local / surface, local / "raw_outputs.json"
-    fallback = Path(temp_dir)
-    return fallback, fallback / "pm_raw_outputs.json"
+    anchor = Path(repo)
+    if not (anchor / ".project_manager").is_dir():
+        raise ValueError(
+            f"raw 저장 위치를 해소하지 못했습니다 — 앵커에 .project_manager 가 없습니다: {anchor}. "
+            "위임 raw 출력과 라운드 장부는 기록이라 임시 위치로 대체하지 않습니다. "
+            "PM 홈이나 그 lease 에 등록된 슬롯에서 실행하고, 직전에 'PM 홈 해소 실패' 경고가 "
+            "있었다면 worktree lease 장부를 먼저 복구하세요. PM 홈이 아닌 저장소를 대상으로 삼는 "
+            "실행이면 --output-dir <DIR> 로 저장 위치를 명시하세요."
+        )
+    local = anchor / ".project_manager" / ".local"
+    return local / surface, local / "raw_outputs.json"
 
 
 def _raw_lock_path(ledger_path: Path) -> Path:
