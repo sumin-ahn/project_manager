@@ -119,6 +119,9 @@ def _make_pm_home_with_worktree(
     pm_home = tmp_path / "project_manager"
     (pm_home / ".project_manager").mkdir(parents=True)
     _make_real_board(pm_home / ".project_manager", split=True)
+    # PM 홈은 자기 main checkout 이다 — 선언이 없으면 `git rev-parse` 가 픽스처를 감싼
+    # 저장소(이 worktree)를 답해 PM 홈이 linked worktree 로 오판된다.
+    _git(["init", "-q", "-b", "main"], pm_home)
 
     # ADR-0027 실 형상: 공유 bare 저장소는 PM 홈 안 `.repos/<repo>.git` 에 있다
     # (`worktree_pool.bare_repo_path`). 슬롯의 `.git` 포인터가 그 자리를 통해 소유 PM 홈을
@@ -455,27 +458,66 @@ def test_worktree_idea_list_reads_pm_home_idea_content(
     assert captured.out.splitlines()[0].endswith("(PM 홈 폴백: ideas)")
 
 
-def test_boardless_worktree_without_ledger_fails_loud_before_ticket_lookup(
-        tmp_path, monkeypatch, capsys):
-    """장부 부재는 빈 board로 강등하지 않고 실제 board 없는 임시 worktree에서 명시 중단한다."""
-    b = _load_board()
-    pm_home, worktree = _make_pm_home_with_worktree(tmp_path, register=False)
-    assert not (
-        pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-    ).exists(), "전제 붕괴 — 장부 부재 경로가 아님"
-    assert list(
-        (worktree / ".project_manager" / "wiki" / "tickets").glob("*/*.md")
-    ) == [], "전제 붕괴 — worktree에 실 티켓이 있음"
+def _make_unresolvable_worktree(tmp_path: Path) -> Path:
+    """어느 PM 홈의 worktree 도 아닌 앵커 — 공용 저장소 자리가 `<X>/.repos/<repo>.git` 도
+    `<X>/.git` 도 아니라 소유 PM 홈이 유도되지 않는다(실 board 없는 빈 scaffold)."""
+    seed = tmp_path / "vendor-seed"
+    seed.mkdir(parents=True)
+    _git(["init", "-q", "-b", "main"], seed)
+    (seed / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git(["add", "-A"], seed)
+    _git(["commit", "-qm", "seed"], seed)
+    bare = tmp_path / "vendor" / "app.git"
+    bare.parent.mkdir(parents=True)
+    _git(["clone", "-q", "--bare", str(seed), str(bare)], tmp_path)
+    anchor = tmp_path / "vendor-worktree"
+    _git(["worktree", "add", "-q", str(anchor)], bare)
+    _make_scaffold_board(anchor / ".project_manager")
+    return anchor
 
-    _isolate_board_module(b, monkeypatch, worktree)
+
+def test_unresolvable_anchor_read_line_does_not_assert_worktree_role(
+        tmp_path, monkeypatch, capsys):
+    """소유 PM 홈이 유도되지 않는 앵커의 read 조회는 `worktree` 역할을 단언하지 않는다.
+
+    해소 실패는 확인된 사실이 아니라 확인의 부재다. 그 부재로 첫 줄이 `(worktree)` 라고
+    말하면 확인되지 않은 소속을 양성 판정으로 바꾸는 것이다. 실패한 실행은 read dispatch 에
+    들어오지 못하고 `main()` 이 `[중단] …` + rc1 로 번역한다.
+    """
+    b = _load_board()
+    anchor = _make_unresolvable_worktree(tmp_path)
+    assert list(
+        (anchor / ".project_manager" / "wiki" / "tickets").glob("*/*.md")
+    ) == [], "전제 붕괴 — 앵커에 실 티켓이 있음"
+
+    _isolate_board_module(b, monkeypatch, anchor)
     assert b.main(["show", "T-0100"]) == 1
     captured = capsys.readouterr()
-    assert captured.out.splitlines()[0] == (
-        f"repo 앵커: {worktree} (worktree) → PM 입력 앵커: 없음"
-    )
-    assert "이 앵커에는 board가 없" in captured.err
-    assert "worktree lease 장부 없음" in captured.err
+    assert "(worktree)" not in captured.out
+    assert "[중단] 소유 PM 홈을 확정할 수 없습니다" in captured.err
+    assert "PM 홈을 찾지 못했습니다" in captured.err
     assert "ticket not found" not in (captured.out + captured.err)
+
+
+def test_unresolvable_anchor_mutation_stops_with_guidance_not_traceback(
+        tmp_path, monkeypatch, capsys):
+    """같은 해소 실패가 mutation 경로에서도 안내 + rc1 이다 — 두 얼굴을 갖지 않는다.
+
+    `main()` 은 CLI 최외곽이라 예외가 여기를 통과하면 사용자는 traceback 을 본다. 번역
+    지점을 하나로 모아 read·mutation 이 같은 원인에서 같은 안내를 낸다. 실패는 여전히
+    실패다 — rc1 이고 앵커에 아무것도 쓰지 않는다.
+    """
+    b = _load_board()
+    anchor = _make_unresolvable_worktree(tmp_path)
+    _isolate_board_module(b, monkeypatch, anchor)
+
+    assert b.main(["claim", "T-0100"]) == 1
+    captured = capsys.readouterr()
+    assert "[중단] 소유 PM 홈을 확정할 수 없습니다" in captured.err
+    assert "PM 홈을 찾지 못했습니다" in captured.err
+    assert list(
+        (anchor / ".project_manager" / "wiki" / "tickets").glob("*/*.md")
+    ) == [], "미해소 앵커에서 mutation 이 티켓을 만들었다"
 
 
 def test_boardless_worktree_owner_comes_from_its_own_git_declaration(
@@ -873,7 +915,7 @@ def test_read_board_resolution_opens_only_read_dispatch(
 
     def resolve(anchor):
         calls.append(anchor)
-        return b._ReadBoardResolution(b._board_root_at(anchor), None, None)
+        return b._ReadBoardResolution(b._board_root_at(anchor), None)
 
     monkeypatch.setattr(b, "_resolve_read_board", resolve)
     monkeypatch.setattr(b, "_print_read_anchor", lambda **_kwargs: None)
@@ -925,13 +967,18 @@ def test_solo_board_in_same_repo_show_is_unchanged(tmp_path, monkeypatch, capsys
     assert captured.err == ""
 
 
+def _non_git_runner(cmd, **kwargs):
+    """git 이 "저장소 아님"으로 답하는 러너 — 비-git 트리라는 사실을 명시 입력으로 준다."""
+    return types.SimpleNamespace(returncode=128, stdout="", stderr="not a git repository")
+
+
 def test_non_git_tree_no_false_positive(tmp_path):
     # 비-git 트리(standalone) → fail-soft None (오탐 0).
     b = _load_board()
     plain = tmp_path / "plain"
     (plain / ".project_manager").mkdir(parents=True)
     _make_scaffold_board(plain / ".project_manager")
-    assert b._is_linked_worktree(plain) is False
+    assert b._is_linked_worktree(plain, runner=_non_git_runner) is False
     assert b._pm_home_worktree_misanchor(plain) is None
 
 

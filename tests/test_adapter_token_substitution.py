@@ -32,6 +32,8 @@ from pathlib import Path
 
 import pytest
 
+from _git_fixture import init_git_repo
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -211,6 +213,8 @@ def test_pm_update_renders_toml_adapter(pm_update, tmp_path, monkeypatch, capsys
     src = stored / "templates" / "codex" / ".codex" / "agents" / "developer.toml"
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_text('description = "{{PROJECT_NAME}} 구현 subagent"\n', encoding="utf-8")
+    # 출하 인벤토리는 `git ls-files` 가 낸다 — source 트리가 자기 checkout 이라고 선언한다.
+    init_git_repo(stored, commit="seed")
 
     dest_manifest = adopter / ".project_manager" / "engine.manifest"
     dest_manifest.parent.mkdir(parents=True, exist_ok=True)

@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from _git_fixture import init_git_repo
+
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -471,6 +473,8 @@ def test_pm_update_exit_exposes_final_delta_lines(
         path.write_text("# same engine byte\n", encoding="utf-8")
         (root / ".project_manager" / "engine.manifest").write_text(
             relpath + "\n", encoding="utf-8")
+    # 출하 인벤토리는 `git ls-files` 가 낸다 — 픽스처 트리가 자기 checkout 이라고 선언한다.
+        init_git_repo(root, commit="seed")
     expected = [
         "⚠️  인스턴스 소유 템플릿 변경 — AGENTS.md · +2/-1줄 · 첫 차이 1줄 · "
         "처방(세대 변경; 기존 config 채널 보고는 내용 drift): "
@@ -502,6 +506,8 @@ def test_pm_update_managed_auto_update_does_not_prescribe_accept(
         path.write_text("# same engine byte\n", encoding="utf-8")
         (root / ".project_manager" / "engine.manifest").write_text(
             relpath + "\n", encoding="utf-8")
+    # 출하 인벤토리는 `git ls-files` 가 낸다 — 픽스처 트리가 자기 checkout 이라고 선언한다.
+        init_git_repo(root, commit="seed")
     (dest / ".codex").mkdir()
     (dest / ".codex" / "hooks.json").write_text("{}\n", encoding="utf-8")
     synced = {"done": False}

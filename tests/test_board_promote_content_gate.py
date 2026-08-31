@@ -33,6 +33,8 @@ from pathlib import Path
 
 import pytest
 
+from _git_fixture import init_git_repo
+
 from conftest import anchor_board_module
 
 REPO = Path(__file__).resolve().parents[1]
@@ -112,6 +114,9 @@ def anchored(tmp_path, monkeypatch):
     """board-git 없이 판정 함수만 태우는 tmp 홈 (board 루트 = `.project_manager/board`)."""
     mod = _load_board()
     anchor_board_module(mod, tmp_path, monkeypatch)
+    # 인용 색인은 `git ls-files` 로 소유 트리를 묻는다 — 홈이 자기 checkout 이라고 선언하지
+    # 않으면 픽스처가 앉아 있는 저장소가 답해(추적 안 된 트리라) 색인이 0건이 된다.
+    init_git_repo(tmp_path)
     (tmp_path / ".project_manager" / "board" / "tickets").mkdir(parents=True)
     return mod
 
@@ -404,6 +409,7 @@ def board_git(tmp_path, monkeypatch):
     """board 가 별도 git(공유 형상)인 hermetic 홈 — draft 격리·promote 게이트가 작동한다."""
     mod = _load_board()
     anchor_board_module(mod, tmp_path, monkeypatch)
+    init_git_repo(tmp_path)      # 인용 색인이 묻는 소유 트리 — `anchored` 와 같은 선언.
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     board = tmp_path / ".project_manager" / "board"

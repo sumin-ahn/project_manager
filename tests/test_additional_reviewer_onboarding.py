@@ -379,18 +379,19 @@ def test_active_pm_surface_inventory_covers_agent_cards():
         assert rel in scanned, f"agent 카드가 인벤토리 밖: {rel}"
 
 
-def _surface_label(path: Path) -> str:
-    """진단용 자리 이름 — repo 안이면 repo-상대 경로, 밖이면 파일 이름.
+def _surface_label(path: Path, *, root: Path = REPO) -> str:
+    """진단용 자리 이름 — `root` 안이면 root-상대 경로, 밖이면 파일 이름.
 
-    sensitivity 가 합성 표면(tmp)으로 검출기를 태울 수 있어야 하므로 repo 결합을 여기서만 푼다.
+    기준 root 는 명시 입력이다. 합성 표면(tmp)으로 검출기를 태우는 sensitivity 는 자기
+    root 를 넘긴다 — 그 자리가 파일시스템 어디에 있느냐가 이름을 정하지 않는다.
     """
     try:
-        return path.relative_to(REPO).as_posix()
+        return path.relative_to(root).as_posix()
     except ValueError:
         return path.name
 
 
-def _phrase_residue(paths, phrases, allowed_lines=None) -> list[str]:
+def _phrase_residue(paths, phrases, allowed_lines=None, *, root: Path = REPO) -> list[str]:
     """주어진 표면들에서 폐기 표현이 놓인 자리 — `<자리>:<lineno> — <표현>` 목록.
 
     잔존 가드 3축(역할·활동 명사·구키)이 같은 검출기를 쓰게 만드는 단일 seam 이다. 축마다 스캔을
@@ -402,14 +403,15 @@ def _phrase_residue(paths, phrases, allowed_lines=None) -> list[str]:
     hits: list[str] = []
     for path in paths:
         assert path.is_file(), f"인벤토리 대상 부재: {path}"
-        allowed = frozenset((allowed_lines or {}).get(_surface_label(path), ()))
+        allowed = frozenset(
+            (allowed_lines or {}).get(_surface_label(path, root=root), ()))
         for lineno, line in enumerate(
             path.read_text(encoding="utf-8").splitlines(), 1
         ):
             if line.strip() in allowed:
                 continue
             hits += [
-                f"{_surface_label(path)}:{lineno} — {phrase}"
+                f"{_surface_label(path, root=root)}:{lineno} — {phrase}"
                 for phrase in phrases
                 if phrase in line
             ]
@@ -431,16 +433,17 @@ def test_retired_phrase_scan_detects_an_injected_residue(tmp_path):
     surface = tmp_path / "SKILL.md"
     clean = "위임(`pm_delegate.py`)과 추가 리뷰(`additional_reviewer.py`)는 raw 를 예약한다.\n"
     surface.write_text(clean, encoding="utf-8")
-    assert _phrase_residue([surface], RETIRED_REVIEW_PHRASES) == []
+    # 합성 표면의 기준 root 를 명시로 준다 — 임시 폴더가 어디에 있든 같은 자리 이름이 나온다.
+    assert _phrase_residue([surface], RETIRED_REVIEW_PHRASES, root=tmp_path) == []
 
     activity = RETIRED_ACTIVITY_PHRASES[0]
     surface.write_text(
         clean + f"금지(반드시 ticket → dev → {activity})\n", encoding="utf-8")
-    hits = _phrase_residue([surface], RETIRED_REVIEW_PHRASES)
+    hits = _phrase_residue([surface], RETIRED_REVIEW_PHRASES, root=tmp_path)
     assert hits == [f"SKILL.md:2 — {activity}"], hits
 
     surface.write_text(clean, encoding="utf-8")
-    assert _phrase_residue([surface], RETIRED_REVIEW_PHRASES) == []
+    assert _phrase_residue([surface], RETIRED_REVIEW_PHRASES, root=tmp_path) == []
 
 
 # 활동 명사 sweep 이 닿은 엔진 파일 — 위임/추가 리뷰 실행 축 4종(T-0600). **엔진 파일 전체를

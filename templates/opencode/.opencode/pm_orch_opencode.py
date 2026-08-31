@@ -35,15 +35,13 @@ CTX_WINDOW_TOKENS_DEFAULT = 200_000
 
 
 def repo_root(start: Path) -> Path:
-    """driver 위치(.opencode/)에서 엔진 루트를 찾는다 — JS `findEngineRoot` 와 동일 규칙.
+    """driver 위치(``<root>/.opencode/``)에서 엔진 루트를 낸다 — 그 부모다.
 
-    `.project_manager/tools/pm_handoff.py` 가 있는 가장 가까운 조상을 루트로 본다(ctx-guard.js
-    의 루트 탐색과 일치 — 같은 어댑터의 일관). 없으면 start 의 부모(.opencode/ → 루트)."""
-    start = start.resolve()
-    for cand in (start, *start.parents):
-        if (cand / ".project_manager" / "tools" / "pm_handoff.py").exists():
-            return cand
-    return start.parents[0] if start.parents else start
+    어댑터 사본은 항상 ``<root>/.opencode/`` 에 설치되므로 루트는 그 자리의 함수다. 조상을
+    훑어 ``.project_manager/tools/pm_handoff.py`` 를 찾으면 driver 가 자기 트리가 아니라 위에
+    있는 남의 PM 홈에 착지한다(claude ctx_guard.repo_root·codex `repo_root` 동형).
+    """
+    return start.resolve().parent
 
 
 def _load_engine():

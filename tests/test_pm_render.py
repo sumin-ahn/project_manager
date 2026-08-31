@@ -431,6 +431,8 @@ def test_plan_non_render_uses_copy_semantics(pm_update, tmp_path):
     (src / ".project_manager/tools/board.py").write_text("# new\n", encoding="utf-8")
     (dst / ".project_manager/tools").mkdir(parents=True)
     (dst / ".project_manager/tools/board.py").write_text("# old\n", encoding="utf-8")
+    # 출하 인벤토리는 `git ls-files` 가 낸다 — 픽스처 트리가 자기 checkout 이라고 선언한다.
+    _track_source_tree(src)
     # 평문 str manifest (레거시 호출) → render=False.
     changes, missing = pm_update.plan(src, [".project_manager/tools/board.py"], dest_root=dst)
     assert missing == []

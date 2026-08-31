@@ -25,6 +25,8 @@ import importlib.util
 import re
 from pathlib import Path
 
+from _git_fixture import init_git_repo
+
 from _repo_owned_inventory import OWNED, repo_owned_paths
 
 REPO = Path(__file__).resolve().parents[1]
@@ -187,6 +189,16 @@ def _load_pm_import():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _track(template_roots: dict[str, Path]) -> None:
+    """합성 템플릿 트리를 자기 checkout 으로 선언하고 현재 내용을 index 에 올린다.
+
+    **합성 픽스처 전용이다** — 이 파일의 다른 가드는 같은 헬퍼(`_shared_import_diffs`)를 실
+    `templates/` 루트로도 부르므로, 선언을 그 안에 두면 실 트리에 `git init` 을 하게 된다.
+    """
+    for root in template_roots.values():
+        init_git_repo(root, commit="fixture")
 
 
 def _shared_import_diffs(template_roots: dict[str, Path]) -> list[str]:
@@ -492,15 +504,20 @@ def test_shared_import_guard_classifies_equal_missing_and_byte_drift(tmp_path):
         target = root / rel
         target.parent.mkdir(parents=True)
         target.write_bytes(b"")
+    # 출하 인벤토리는 `git ls-files` 가 낸다 — 합성 트리가 자기 checkout 이라고 선언하고,
+    # 내용을 바꿀 때마다 index 를 현행화한다.
+    _track(roots)
     assert _shared_import_diffs(roots) == []
 
     # 0-byte vs 1-byte는 사람이 보기엔 사소해도 설치 충돌의 원인이므로 red다.
     (roots["codex"] / rel).write_bytes(b"\n")
+    _track(roots)
     assert _shared_import_diffs(roots) == [rel.as_posix()]
 
     # 한 harness 부재는 adapter-owned 후보라 이 content 가드에서는 판정하지 않는다.
     (roots["codex"] / rel).unlink()
     (roots["codex"] / "adapter-only.txt").write_bytes(b"adapter\n")
+    _track(roots)
     assert _shared_import_diffs(roots) == []
 
 
@@ -515,6 +532,7 @@ def test_shared_import_guard_detects_byte_drift_in_exactly_two_trees(tmp_path):
         target = roots[name] / rel
         target.parent.mkdir(parents=True)
         target.write_bytes(content)
+    _track(roots)
 
     assert _shared_import_diffs(roots) == [rel.as_posix()]
 

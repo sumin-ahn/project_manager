@@ -1,10 +1,10 @@
-"""additional_reviewer REPO 앵커 — 상향 탐색(`.project_manager` 마커) 해소 가드 (T-0242·ADR-0033 ①).
+"""additional_reviewer REPO 앵커 — 설치 깊이 고정 해소 가드.
 
-finance_dev 제보 D2: 하드코딩 `REPO = Path(__file__).resolve().parents[2]` 는 tools 가
-`<root>/.project_manager/tools/` 정확히 2단 깊이라고 가정한다 — 채택자 형상(PM 홈/worktree
-구조 상이·다른 깊이)에선 어긋난다. `_find_repo_root()` 가 부모 체인을 상향 탐색해 `.project_manager`
-를 품은 첫(최근접) 조상을 REPO 로 해소하고, 마커 부재 시 현행 `parents[2]` 로 폴백함을 hermetic
-하게 단언한다 (board.py `board_root()` graceful 탐지 동형·존재할 때만 갈리고 없으면 현 위치 폴백).
+도구는 언제나 `<root>/.project_manager/tools/` 에 설치된다 — 설치 경로를 만드는
+`pm_import` 가 그 깊이를 못 박으므로 다른 깊이는 나올 수 없다. 그래서 REPO 는 상향 탐색이
+아니라 `Path(__file__).resolve().parents[2]` 다. 상향 탐색은 합성 트리에서 *자기 위의 실
+인스턴스*를 답으로 주는 부작용만 냈다(실측: 실 PM 홈 log 오염 · 등록 안 된 worktree 가
+등록으로 판정).
 
 hermetic seam: `_find_repo_root()` 는 모듈 전역 `__file__` 을 읽으므로, fresh 모듈 인스턴스의
 `__file__` 을 tmp 합성 경로로 monkeypatch 해 실제 파일 이동 없이 임의 깊이를 모사한다
@@ -34,23 +34,11 @@ def external():
     return _load("additional_reviewer")
 
 
-def test_find_repo_root_resolves_project_manager_ancestor(external, tmp_path, monkeypatch):
-    """채택자 형상(tools 가 다른 깊이) → REPO == `.project_manager` 를 품은 최근접 조상.
-
-    tools 를 `<root>/.project_manager/tools/nested/` 에 두면 하드코딩 parents[2] 는
-    `<root>/.project_manager/tools`(오답)를 준다 — 상향 탐색은 마커로 <root> 를 해소해야 한다."""
-    root = tmp_path / "adopter"
-    nested = root / ".project_manager" / "tools" / "nested"
-    nested.mkdir(parents=True)
-    monkeypatch.setattr(external, "__file__", str(nested / "additional_reviewer.py"))
-    assert external._find_repo_root() == root
-
-
-def test_find_repo_root_returns_nearest_ancestor(external, tmp_path, monkeypatch):
-    """중첩 `.project_manager`(PM 홈 안 worktree) → 최근접 조상을 반환한다(바깥 홈 아님).
+def test_repo_root_is_the_own_root_not_the_enclosing_home(external, tmp_path, monkeypatch):
+    """중첩 `.project_manager`(PM 홈 안 worktree) → 자기 루트를 낸다(바깥 홈 아님).
 
     self-host 형상(② 홈 안 ① worktree·ADR-0027)에서 각 도구가 *자기* worktree 로 해소되게
-    하는 핵심 — 바깥 홈의 `.project_manager` 를 먼저 만나지 않는다(최근접 우선)."""
+    하는 핵심이다. 설치 깊이가 고정이라 바깥 홈이 답이 될 수 없다."""
     outer = tmp_path / "home"
     inner = outer / "work" / "wt1"
     (outer / ".project_manager").mkdir(parents=True)
@@ -60,22 +48,12 @@ def test_find_repo_root_returns_nearest_ancestor(external, tmp_path, monkeypatch
     assert external._find_repo_root() == inner
 
 
-def test_find_repo_root_falls_back_to_parents2_when_marker_absent(external, tmp_path, monkeypatch):
-    """마커 부재 → 현행 `parents[2]` 폴백(회귀 0·board_root 동형 graceful 폴백)."""
-    deep = tmp_path / "a" / "b" / "c" / "d"
-    deep.mkdir(parents=True)
-    monkeypatch.setattr(external, "__file__", str(deep / "additional_reviewer.py"))
-    # parents of .../a/b/c/d/additional_reviewer.py: [d, c, b, ...] → parents[2] == .../a/b
-    assert external._find_repo_root() == tmp_path / "a" / "b"
+def test_repo_constant_anchors_at_the_install_depth(external):
+    """모듈 상수 REPO 는 도구 **자기 위치**에서 나온다 — 하위 파생 경로가 함께 따라온다.
 
-
-def test_find_repo_root_framework_shape_matches_parents2(external):
-    """프레임워크 형상(현 repo) → 상향 탐색 == 하드코딩 parents[2](불변·additive).
-
-    실 repo 는 `<root>/.project_manager/tools/additional_reviewer.py` 정확히 2단이라 마커 해소가
-    parents[2] 와 동일해야 한다 — REPO 상수·하위 파생(TICKETS_DIR/LOCAL_CONF 등)이 안 바뀜을 박제."""
+    실 repo 는 `<root>/.project_manager/tools/additional_reviewer.py` 정확히 2단이다.
+    REPO 상수·하위 파생(TICKETS_DIR/LOCAL_CONF 등)이 그 앵커를 쓰는지 박제한다."""
     expected = Path(external.__file__).resolve().parents[2]
-    assert external._find_repo_root() == expected
     assert external.REPO == expected
 
 

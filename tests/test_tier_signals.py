@@ -8,6 +8,8 @@ import types
 import uuid
 from pathlib import Path
 
+from _git_fixture import init_git_repo
+
 
 REPO = Path(__file__).resolve().parents[1]
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
@@ -32,6 +34,9 @@ def _tool_tree(tmp_path: Path) -> Path:
     (tools / "solo.py").write_text("VALUE = 2\n", encoding="utf-8")
     # 테스트의 import는 공용 코드 사용 도구 수에 포함되지 않는다.
     (tools / "test_solo.py").write_text("import solo\n", encoding="utf-8")
+    # 공용 코드 판정은 `git ls-files` 가 낸 repo-owned 목록을 입력으로 쓴다 — 픽스처가 자기
+    # checkout 이라고 선언해야 답이 픽스처 자신의 함수가 된다.
+    init_git_repo(tmp_path)
     return tools
 
 
@@ -75,6 +80,7 @@ def test_shared_code_derives_literal_dynamic_loader_dependencies(tmp_path):
     )
     (tools / "alpha.py").write_text(loader, encoding="utf-8")
     (tools / "beta.py").write_text(loader, encoding="utf-8")
+    init_git_repo(tmp_path)
 
     assert board._shared_tool_code(tools) == (".project_manager/tools/shared.py",)
 

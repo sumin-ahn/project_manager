@@ -857,15 +857,22 @@ def test_codex_main_forwards_task_budget_and_engine_seams(driver_mod, monkeypatc
     assert captured["validated"] == (333000, 15)
 
 
-def test_codex_driver_repo_root_finds_engine(driver_mod, tmp_path):
-    """repo_root 가 pm_handoff.py 가 있는 조상을 엔진 루트로 찾는다(opencode findEngineRoot 동형)."""
-    (tmp_path / ".project_manager" / "tools").mkdir(parents=True)
-    (tmp_path / ".project_manager" / "tools" / "pm_handoff.py").write_text(
+def test_codex_driver_repo_root_is_the_adapter_parent(driver_mod, tmp_path):
+    """repo_root 는 driver 설치 자리(.codex/)의 부모다 — 조상을 훑지 않는다.
+
+    바깥 트리에만 엔진 사본이 있는 중첩 형상에서 조상 훑기는 바깥 루트를 답하고 `.parent`
+    는 자기 루트를 답한다. 어댑터가 위에 있는 남의 PM 홈에 착지하지 않게 하는 축이다
+    (claude ctx_guard.repo_root 동형).
+    """
+    outer = tmp_path / "outer"
+    (outer / ".project_manager" / "tools").mkdir(parents=True)
+    (outer / ".project_manager" / "tools" / "pm_handoff.py").write_text(
         "x", encoding="utf-8"
     )
-    nested = tmp_path / ".codex"
-    nested.mkdir()
-    assert driver_mod.repo_root(nested) == tmp_path.resolve()
+    root = outer / "nested" / "root"
+    nested = root / ".codex"
+    nested.mkdir(parents=True)
+    assert driver_mod.repo_root(nested) == root.resolve()
 
 
 # ── codex 고유 라이브 실측 (T-0407·codex-cli 0.144.6·gpt-5.5·격리 CODEX_HOME·spike §6 잔여 해소) ──

@@ -235,11 +235,12 @@ Agent 툴 호출:
      작업 위치(worktree 절대경로): <해소 절대경로 — task-mode 시·슬롯 세션은 생략>.
 
      ticket 본문은 python3 .project_manager/tools/board.py show T-NNNN 로 확인.
-     등록 worktree 에 board 가 없으면 엔진이 worktree lease 장부로 단일 소유 PM 홈을 확정하고,
+     등록 worktree 에 board 가 없으면 엔진이 그 트리의 `.git` 포인터에서 소유 PM 홈을 유도하고,
      read 명령이 요구하는 PM-owned 입력을 그 홈으로 **함께** 해소한다 — 첫 줄의
      `PM 입력 앵커: <PM 홈> (PM 홈 폴백: <입력 목록>)` 을 확인하라(`show` 는 `board`, `lint` 는
-     `board·areas·wiki(...)·hooks·local.conf`). 장부 부재·손상·미등록이거나 여러 PM 홈이 같은 슬롯을
-     등록하면 추측하지 않고 `[중단] 이 앵커에는 board가 없고 …` 로 멈춘다 — 그때는
+     `board·areas·wiki(...)·hooks·local.conf`). 유도가 안 되면(공용 Git 저장소를 못 읽거나, 그
+     형상에서 홈을 못 찾거나, 찾은 홈에 `.project_manager` 가 없으면) 추측하지 않고
+     `[중단] 소유 PM 홈을 확정할 수 없습니다: …` + rc1 로 멈춘다(read·mutation 같은 문구) — 그때는
      **프롬프트 요약만으로 진행하지 말고 즉시 PM 에게 보고**하라. board mutation 은 폴백하지 않으며
      PM 홈에서만 실행한다.
      본문이 self-contained — 목표/인터페이스/결정/DoD/참고 절 대로 구현.

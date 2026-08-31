@@ -26,6 +26,8 @@ from pathlib import Path
 
 import pytest
 
+from _git_fixture import init_git_repo
+
 from _test_exec import python_argv_command
 from _settings_portability import portability_failures, referenced_hook_paths
 from _harness_matrix import (
@@ -1766,7 +1768,9 @@ def _build_opencode_framework(tmp_path: Path) -> Path:
     `.project_manager/` + root `.claude/skills` + @source remap 읽기) 둘 다 결정적으로 rc0 동작한다(엔진
     어느 항목도 missing 아님). REPO 를 손대지 않도록 복사본을 쓴다 — 엔진 mutate 를 이 복사본에 가한다(격리)."""
     framework = tmp_path / "framework"
-    ignore = shutil.ignore_patterns("__pycache__", ".git", "node_modules")
+    # `.local` 은 per-clone 스크래치(git-untracked·manifest 밖)다. pytest 임시 루트가
+    # 그 아래 있으므로 제외하지 않으면 목적지를 다시 복사해 무한 재귀한다.
+    ignore = shutil.ignore_patterns("__pycache__", ".git", "node_modules", ".local")
     shutil.copytree(REPO / ".project_manager", framework / ".project_manager", ignore=ignore)
     shutil.copytree(REPO / "templates" / "opencode",
                     framework / "templates" / "opencode", ignore=ignore)
@@ -1774,6 +1778,9 @@ def _build_opencode_framework(tmp_path: Path) -> Path:
     #   claude_code 와 동일). opencode self-update의 skill/command 두 채널이 이 canonical을 읽는다.
     shutil.copytree(REPO / ".claude" / "skills", framework / ".claude" / "skills", ignore=ignore)
     shutil.copy2(REPO / ".gitattributes", framework / ".gitattributes")
+    # 출하 인벤토리는 `git ls-files` 가 낸다 — 합성 프레임워크 트리가 자기 checkout 이라고
+    # 선언한다(선언이 없으면 이 저장소가 답해 인벤토리가 0건이 된다).
+    init_git_repo(framework, commit="framework fixture")
     return framework
 
 
@@ -1874,8 +1881,11 @@ def test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0(
     crlf_skip = (*_SNAPSHOT_EXCLUDE_PARTS, ".local")
     for root in (framework, dest):
         for path in sorted(root.rglob("*")):
+            # 제외 판정은 **트리 안 상대 경로**로 한다 — 절대 경로로 보면 임시 루트가 어디에
+            # 있느냐(`.local` 등 조상 이름)가 판정을 뒤집는다.
+            relative = path.relative_to(root)
             if (path.is_file() and path.suffix in _CRLF_CHECKOUT_SUFFIXES
-                    and not any(part in crlf_skip for part in path.parts)):
+                    and not any(part in crlf_skip for part in relative.parts)):
                 _to_crlf(path)
     crlf_before = {
         path: path.read_bytes()

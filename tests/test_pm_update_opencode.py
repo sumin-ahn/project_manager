@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from _git_fixture import init_git_repo
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -122,11 +124,16 @@ def test_resolve_manifest_raises_when_both_missing(pm_update, tmp_path):
 # ── plan() with dest_root ──────────────────────────────────────────────────
 
 def _make_source(root: Path, files: dict[str, str]) -> None:
-    """source_root 에 파일들을 생성한다."""
+    """source_root 에 파일들을 생성하고 그 트리를 자기 Git 저장소로 선언한다.
+
+    출하 인벤토리는 `git ls-files` 가 낸다 — 선언이 없으면 픽스처가 앉아 있는 저장소가
+    답해(추적 안 된 트리라) 인벤토리가 0건이 된다.
+    """
     for rel, content in files.items():
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
+    init_git_repo(root, commit="seed")
 
 
 def test_plan_with_dest_root_new_files(pm_update, tmp_path):
@@ -185,6 +192,7 @@ def test_plan_without_dest_root_defaults_to_repo(pm_update, tmp_path):
     sentinel = source / rel
     sentinel.parent.mkdir(parents=True, exist_ok=True)
     sentinel.write_text("# sentinel", encoding="utf-8")
+    init_git_repo(source, commit="seed")
 
     manifest = [rel]
     changes, missing = pm_update.plan(source, manifest, dest_root=None)

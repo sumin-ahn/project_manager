@@ -1044,12 +1044,15 @@ def test_iter_source_files_rejects_special_index_modes_even_if_materialized_regu
     assert got == []
 
 
-def test_iter_source_files_non_git_fallback_is_loud(pm_import, tmp_path):
+def test_iter_source_files_non_git_fallback_is_loud(pm_import, tmp_path, monkeypatch):
     """비-git 배포 사본은 복사를 계속하되 tracked 보장 소실을 공용 seam 경고로 표면화."""
     template = tmp_path / "unpacked-template"
     template.mkdir()
     (template / "kept.txt").write_text("kept\n", encoding="utf-8")
     repo_files = pm_import._load_repo_owned_files()
+    # "이 트리는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
+    # 정하지 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    monkeypatch.setattr(repo_files, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
 
     with pytest.warns(repo_files.RepoFilesFallbackWarning, match="filesystem 전수 순회"):
         got = list(pm_import._iter_source_files(template))
@@ -1061,7 +1064,7 @@ def test_iter_source_files_non_git_fallback_is_loud(pm_import, tmp_path):
 
 @requires_symlink
 def test_iter_source_files_non_git_fallback_lstat_skips_symlink_loudly(
-        pm_import, tmp_path):
+        pm_import, tmp_path, monkeypatch):
     """mode 없는 filesystem 폴백도 lstat으로 symlink를 거르고 폴백·제외를 모두 알린다."""
     template = tmp_path / "unpacked-template"
     template.mkdir()
@@ -1069,6 +1072,9 @@ def test_iter_source_files_non_git_fallback_lstat_skips_symlink_loudly(
     external_payload.write_text("outside\n", encoding="utf-8")
     (template / "outside-link.txt").symlink_to(external_payload)
     repo_files = pm_import._load_repo_owned_files()
+    # "이 트리는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
+    # 정하지 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    monkeypatch.setattr(repo_files, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
 
     with pytest.warns(Warning) as caught:
         got = list(pm_import._iter_source_files(template))
@@ -1135,15 +1141,19 @@ def test_iter_source_files_empty_disk_inventory_fails_without_seam_warning(
 
 
 def test_main_empty_non_git_template_uses_filesystem_diagnostic(
-        pm_import, tmp_path, capsys):
+        pm_import, tmp_path, capsys, monkeypatch):
     """비-git filesystem 강등의 빈 템플릿은 git index 대신 소스 디렉토리 원인을 안내한다."""
     source = tmp_path / "unpacked-source"
     (source / "templates" / "claude_code").mkdir(parents=True)
     dest = tmp_path / "dest"
     dest.mkdir()
+    repo_files = pm_import._load_repo_owned_files()
+    # "이 트리는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
+    # 정하지 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    monkeypatch.setattr(repo_files, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
 
     with pytest.warns(
-            pm_import._load_repo_owned_files().RepoFilesFallbackWarning,
+            repo_files.RepoFilesFallbackWarning,
             match="filesystem 전수 순회"):
         rc = pm_import.main([
             "--into", str(dest), "--from", str(source), "--harness", "claude",
@@ -1977,6 +1987,8 @@ def test_combination_conflicting_relpath_warns_and_prefers_registry_first(
         target = root / "shared.txt"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(payload)
+        # 출하 인벤토리는 `git ls-files` 가 낸다 — 각 트리가 자기 checkout 이라고 선언한다.
+        _track_source_tree(root)
     pm_import.plan_copy([first, second], tmp_path / "planned", None)
     warning = capsys.readouterr().err
     assert "'shared.txt'" in warning
@@ -5312,8 +5324,12 @@ def test_pm_update_updates_promoted_guest_path_in_single_run(
     fw = tmp_path / "fw"
     fw.mkdir()
     for sub in (".project_manager", "templates", ".claude", ".github"):
-        shutil.copytree(REPO / sub, fw / sub)
+        # `.local` 제외 — per-clone 스크래치이고 그 아래가 pytest 임시 루트다(자기 복사 차단).
+        shutil.copytree(REPO / sub, fw / sub,
+                        ignore=shutil.ignore_patterns(".local"))
     shutil.copy2(REPO / ".gitattributes", fw / ".gitattributes")
+    # 출하 인벤토리는 `git ls-files` 가 낸다 — 합성 프레임워크 트리가 자기 checkout 이다.
+    _track_source_tree(fw)
     dest = tmp_path / "inst"
     assert pm_import.main(["--new", str(dest), "--harness", "claude,opencode", "--name", "X",
                            "--from", str(fw)]) == 0
@@ -5345,7 +5361,9 @@ def test_pm_update_diverged_selfheal_keeps_local_only_core_declaration(
     fw = tmp_path / "fw-diverged"
     fw.mkdir()
     for sub in (".project_manager", "templates", ".claude", ".github"):
-        shutil.copytree(REPO / sub, fw / sub)
+        # `.local` 제외 — per-clone 스크래치이고 그 아래가 pytest 임시 루트다(자기 복사 차단).
+        shutil.copytree(REPO / sub, fw / sub,
+                        ignore=shutil.ignore_patterns(".local"))
     shutil.copy2(REPO / ".gitattributes", fw / ".gitattributes")
     # local-only core 선언이 missing(rc=2)이 되지 않도록 source에는 두되 선택 manifest에는 등재하지 않는다.
     custom_source = fw / ".local" / "custom-core"

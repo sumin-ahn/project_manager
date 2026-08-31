@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import subprocess
@@ -157,9 +158,31 @@ _ENGINE_COPY_ROOTS = (
 
 _PM_HOME_GUESS_FILES = ("pm_log.py", "board.py", "additional_reviewer.py", "pm_delegate.py")
 
+# 어댑터는 항상 `<root>/.claude/`·`<root>/.codex/`·`<root>/.opencode/` 에 설치되므로 루트는 그
+# 자리의 부모다. 세 하네스가 같은 규칙을 받아야 한다(ADR-0095) — 한 하네스만 고친 상태는 그
+# 결정 위반이라, 조상 훑기 관용구 자체를 파일 단위로 막는다.
+_ADAPTER_REPO_ROOT_FILES = (
+    Path(".claude/ctx_guard.py"),
+    Path("templates/claude_code/.claude/ctx_guard.py"),
+    Path("templates/codex/.codex/pm_orch_codex.py"),
+    Path("templates/opencode/.opencode/pm_orch_opencode.py"),
+)
+
+
+def _repo_root_source(path: Path) -> str:
+    """어댑터 파일에서 `repo_root` 정의 본문만 잘라 낸다(정의가 정확히 하나여야 한다)."""
+    source = path.read_text(encoding="utf-8")
+    segments = [
+        ast.get_source_segment(source, node)
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "repo_root"
+    ]
+    assert len(segments) == 1, f"{path}: repo_root 정의 {len(segments)}개"
+    return segments[0]
+
 
 def test_retired_pm_home_guess_symbols_absent_in_all_engine_copies():
-    """추측 해소 심볼은 canonical + 템플릿 3벌 어디에도 남지 않는다(parity 포함)."""
+    """추측 해소 심볼은 canonical + 템플릿 3벌 어디에도 남지 않는다(어댑터 사본 포함)."""
     found: list[str] = []
     for root in _ENGINE_COPY_ROOTS:
         tools = ROOT / root / ".project_manager" / "tools"
@@ -169,39 +192,131 @@ def test_retired_pm_home_guess_symbols_absent_in_all_engine_copies():
             for symbol in _RETIRED_PM_HOME_GUESS_SYMBOLS:
                 if symbol in source:
                     found.append(f"{root}/{name}: {symbol}")
+    for relative in _ADAPTER_REPO_ROOT_FILES:
+        path = ROOT / relative
+        assert path.is_file(), f"어댑터 사본 없음: {path}"
+        if "parents" in _repo_root_source(path):
+            found.append(f"{relative}: repo_root 가 조상을 훑는다")
     assert not found, "퇴역 심볼 잔존: " + ", ".join(found)
 
 
-@pytest.mark.parametrize(
-    "ledger_state", ["absent-row", "missing", "corrupt", "foreign-commondir"],
-)
-def test_unregistered_linked_worktree_fails_loud_without_demotion(
-    tmp_path, ledger_state,
-):
-    """소유 PM 홈을 확정 못 하는 네 형상 전부 `AnchorResolutionError` — 강등이 없다."""
-    external = _load(f"additional_reviewer_fail_loud_{ledger_state}")
+def _foreign_commondir_worktree(tmp_path: Path) -> Path:
+    """공용 저장소가 `<X>/.git` 도 `<X>/.repos/<repo>.git` 도 아닌 자리에 있는 worktree."""
+    source = tmp_path / "vendor-source"
+    source.mkdir()
+    _git(source, "init", "-q")
+    _git(source, "config", "user.email", "test@example.invalid")
+    _git(source, "config", "user.name", "test")
+    (source / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git(source, "add", "seed.txt")
+    _git(source, "commit", "-qm", "seed")
+    bare = tmp_path / "vendor" / "app.git"
+    bare.parent.mkdir(parents=True)
+    _git(tmp_path, "clone", "-q", "--bare", str(source), str(bare))
+    anchor = tmp_path / "vendor-worktree"
+    _git(bare, "worktree", "add", "-q", "-b", "vendor", str(anchor))
+    return anchor
 
-    if ledger_state == "foreign-commondir":
-        _source, anchor = _unregistered_worktree(tmp_path)
+
+@pytest.mark.parametrize(
+    "shape", ["foreign-commondir", "pm-home-without-project-manager"],
+)
+def test_unregistered_linked_worktree_fails_loud_without_demotion(tmp_path, shape):
+    """소유 PM 홈을 확정 못 하는 두 형상은 `AnchorResolutionError` — 강등이 없다.
+
+    판정 입력은 anchor 의 `.git` commondir 형상과 유도된 홈의 `.project_manager` 실재 둘뿐
+    이다. lease 장부는 슬롯 배정 원장이지 소유 증거가 아니라 판정에 들어가지 않는다 —
+    장부 부재·손상·빈 장부는 해소 실패가 아니다.
+    """
+    external = _load(f"additional_reviewer_fail_loud_{shape}")
+
+    if shape == "foreign-commondir":
+        anchor = _foreign_commondir_worktree(tmp_path)
     else:
-        home, anchor, _ticket = _managed_worktree(tmp_path)
-        ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-        if ledger_state == "missing":
-            ledger.unlink()
-        elif ledger_state == "corrupt":
-            ledger.write_text("{broken", encoding="utf-8")
-        else:
-            ledger.write_text(json.dumps({"leases": []}), encoding="utf-8")
+        _source, anchor = _unregistered_worktree(tmp_path)
 
     with pytest.raises(external.AnchorResolutionError) as caught:
         external.resolve_pm_home_for_repo(anchor)
     message = str(caught.value)
+    assert "PM 홈을 찾지 못했습니다" in message
     assert "PM 홈 해소 실패" not in message
     assert "board가 필요 없는 실행" not in message
 
     # `required=` 는 사라진 인터페이스다 — 남겨 두면 호출 자체가 TypeError 다.
     with pytest.raises(TypeError):
         external.resolve_pm_home_for_repo(anchor, required=True)
+
+
+def test_ledger_without_the_anchor_row_still_resolves_by_git_declaration(tmp_path):
+    """장부에 등재되지 않은 슬롯도 자기 `.git` 선언으로 같은 소유 PM 홈을 받는다.
+
+    소유는 공용 저장소의 자리가 정한다 — `<X>/.repos/<repo>.git` 이면 X 가 그 bare 를 만든
+    주체다. 장부는 어느 슬롯을 누구에게 빌려줬는지 적는 배정 원장이라 소유 증거가 아니고,
+    gitignored·per-clone 파일이라 anchor 의 함수도 아니다.
+    """
+    pm_home = tmp_path / "pm-home"
+    (pm_home / ".project_manager").mkdir(parents=True)
+    app_source = tmp_path / "app-source"
+    app_source.mkdir()
+    _git(app_source, "init", "-q")
+    _git(app_source, "config", "user.email", "test@example.invalid")
+    _git(app_source, "config", "user.name", "test")
+    (app_source / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git(app_source, "add", "seed.txt")
+    _git(app_source, "commit", "-qm", "seed")
+    bare = pm_home / ".repos" / "app.git"
+    bare.parent.mkdir(parents=True)
+    _git(tmp_path, "clone", "-q", "--bare", str(app_source), str(bare))
+
+    registered = pm_home / "work" / "app_1"
+    unregistered = pm_home / "work" / "app_2"
+    registered.parent.mkdir()
+    _git(bare, "worktree", "add", "-q", "-b", "task/app-1", str(registered))
+    _git(bare, "worktree", "add", "-q", "-b", "task/app-2", str(unregistered))
+    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        json.dumps({"leases": [{"slot": "work/app_1", "state": "leased"}]}),
+        encoding="utf-8",
+    )
+
+    external = _load("additional_reviewer_unregistered_row")
+    assert external.resolve_pm_home_for_repo(registered) == pm_home.resolve()
+    assert external.resolve_pm_home_for_repo(unregistered) == pm_home.resolve()
+
+
+def test_pool_less_adopter_worktree_resolves_to_its_main_checkout(tmp_path):
+    """워크트리 풀을 쓰지 않는 채택자(장부 파일 자체가 없음)도 소유 PM 홈을 받는다.
+
+    채택자가 우리 슬롯 체계를 쓰는지는 소유 판정 조건이 아니다 — 평범한 `git worktree add`
+    와 `--detach --no-checkout` 스냅샷 둘 다 자기 main checkout 으로 해소된다. 그래도 답이
+    하나가 아닌 형상(미지 commondir)은 여전히 실패다.
+    """
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    _git(adopter, "init", "-q")
+    _git(adopter, "config", "user.email", "test@example.invalid")
+    _git(adopter, "config", "user.name", "test")
+    (adopter / ".project_manager").mkdir()
+    (adopter / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git(adopter, "add", "seed.txt")
+    _git(adopter, "commit", "-qm", "seed")
+    assert not (
+        adopter / ".project_manager" / ".local" / "worktree-leases.json"
+    ).exists(), "전제 붕괴 — 풀 미사용 채택자 형상이 아님"
+
+    worktree = tmp_path / "adopter-work"
+    _git(adopter, "worktree", "add", "-q", "-b", "feature", str(worktree))
+    snapshot = tmp_path / "adopter-snapshot"
+    _git(adopter, "worktree", "add", "-q", "--detach", "--no-checkout",
+         str(snapshot), "HEAD")
+
+    external = _load("additional_reviewer_pool_less_adopter")
+    assert external.resolve_pm_home_for_repo(worktree) == adopter.resolve()
+    assert external.resolve_pm_home_for_repo(snapshot) == adopter.resolve()
+
+    with pytest.raises(external.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
+        external.resolve_pm_home_for_repo(_foreign_commondir_worktree(tmp_path))
 
 
 def test_repo_root_from_cwd_stops_at_markerless_linked_app_worktree(tmp_path):
@@ -565,57 +680,6 @@ def test_slot_own_ticket_does_not_change_the_owning_pm_home(
     capsys.readouterr()
 
 
-@pytest.mark.parametrize("ledger_state", ["corrupt", "missing", "empty"])
-def test_unreadable_lease_ledger_fails_loud_and_records_no_round(
-    tmp_path, monkeypatch, capsys, ledger_state,
-):
-    """장부 손상·부재·빈 장부는 전부 실패다 — 자기 앵커 복구 채널로 낮추지 않는다.
-
-    옛 코드는 손상 장부를 '단일 관리 후보 복구 폴백'으로 접어 슬롯의 휘발 장부에 실 라운드를
-    기록했다. 그 폴백이 있으면 장부를 지우기만 해도 수렴 게이트가 사라진다.
-    """
-    home, worktree, _ticket = _managed_worktree(tmp_path)
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    if ledger_state == "corrupt":
-        ledger.write_text("{broken", encoding="utf-8")
-    elif ledger_state == "missing":
-        ledger.unlink()
-    else:
-        ledger.write_text(json.dumps({"leases": []}), encoding="utf-8")
-    _enable_additional_review(worktree)
-    (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
-
-    external = _load(f"additional_reviewer_{ledger_state}_lease_fail_loud")
-    monkeypatch.setattr(external, "REPO", worktree)
-
-    with pytest.raises(external.AnchorResolutionError, match="worktree lease 장부"):
-        external.resolve_pm_home_for_repo(worktree)
-
-    side_effects = []
-
-    def _forbidden(name):
-        def _fail(*args, **kwargs):
-            side_effects.append(name)
-            raise AssertionError(f"{name} must not run")
-        return _fail
-
-    monkeypatch.setattr(external, "_reserve_round_budget", _forbidden("round"))
-    monkeypatch.setattr(external, "_reserve_output", _forbidden("raw"))
-    monkeypatch.setattr(external, "run_review", _forbidden("spawn"))
-    output_dir = tmp_path / f"{ledger_state}-lease-raw"
-
-    assert external.main([
-        "--gate", f"T-0643-{ledger_state}-lease", "--paths", "seed.txt",
-        "--output-dir", str(output_dir),
-    ]) == 1
-
-    err = capsys.readouterr().err
-    assert "앵커 해소 실패" in err and "worktree lease 장부" in err
-    assert side_effects == []
-    assert not output_dir.exists()
-    assert not (worktree / ".project_manager" / ".local" / "review_rounds.json").exists()
-
-
 def test_markerless_snapshot_with_corrupt_lease_is_blocked(
     tmp_path, monkeypatch, capsys,
 ):
@@ -921,23 +985,6 @@ def test_ledger_row_alone_cannot_claim_a_slot_of_another_repository(tmp_path):
     external = _load("additional_reviewer_ledger_row_alone")
     with pytest.raises(external.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
         external.resolve_pm_home_for_repo(worktree)
-
-
-def test_corrupt_lease_ledger_is_not_bypassed_by_absolute_paths(
-    tmp_path, monkeypatch, capsys,
-):
-    """손상 장부는 절대 `--paths` 로도 우회되지 않는다 — 소유자 미확정은 실행 전 중단이다."""
-    home, worktree, _ticket = _managed_worktree(tmp_path)
-    source = worktree / "seed.txt"
-    source.write_text("changed\n", encoding="utf-8")
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.write_text("{broken", encoding="utf-8")
-    external = _load("additional_reviewer_absolute_corrupt_ledger")
-    monkeypatch.setattr(external, "REPO", home)
-
-    assert external.main(["--paths", str(source), "--dry-run"]) == 1
-    err = capsys.readouterr().err
-    assert "앵커 해소 실패" in err and "worktree lease 장부" in err
 
 
 def test_external_main_restores_selector_globals_between_calls(
@@ -1413,8 +1460,8 @@ def _cross_repo_absolute_target(
     fail-closed 를 본다.
     """
     home_a, slot_a, _ticket_a = _managed_worktree(tmp_path / "a")
-    # 깨뜨리는 것은 **conf 판독**뿐이다. lease 장부 손상은 소유자 미확정이라 이제 실행 전
-    # 중단이고(`test_unreadable_lease_ledger_fails_loud_and_records_no_round`), 그 축을 여기
+    # 깨뜨리는 것은 **conf 판독**뿐이다. lease 장부 손상은 라운드 장부를 읽는 게이트 실행에서
+    # 따로 중단시키는 축이라(`test_markerless_snapshot_with_corrupt_lease_is_blocked`), 여기
     # 섞으면 "선택 전 conf 를 읽지 않는다"는 이 픽스처의 명제를 관측할 수 없다.
     (home_a / ".project_manager" / "local.conf").write_bytes(b"\xff\xfe\x00")
     (slot_a / ".project_manager" / "local.conf").write_bytes(b"\xff\xfe\x00")

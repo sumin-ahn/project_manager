@@ -1978,22 +1978,21 @@ def _resolved_subcommand(args: argparse.Namespace) -> str:
     return f"{cmd} {getattr(args, dest, '') or ''}".strip()
 
 
-def _print_read_anchor(
-    *, subcommand: str, pm_home: Path | None = None, pm_inputs_missing: bool = False
-) -> None:
+def _print_read_anchor(*, subcommand: str, pm_home: Path | None = None) -> None:
     """읽기 조회가 실제로 측정하는 repo 앵커와 역할을 stdout 첫 줄에 표시한다.
 
-    앵커는 도구가 이미 사용하는 ``REPO`` 그대로다. 역할은 mutation misanchor
-    가드가 등록 worktree라고 확인한 경우만 ``worktree``로, 실 board 소유가 확인된
-    경우만 ``PM 홈``으로 표기한다. 어느 양성 증거도 없으면 역할을 단언하지 않는다.
-    PM 홈 폴백이면 같은 첫 줄에 실제 PM 입력 앵커와 read leaf별 입력 목록을 함께
-    표시한다. PM 입력 홈을 확정하지 못해 조회를 중단하는 경우에도 첫 줄에서 그 사실을
-    숨기지 않는다.
+    앵커는 도구가 이미 사용하는 ``REPO`` 그대로다. 역할은 소유 PM 홈 유도가 다른 홈의
+    worktree라고 확인한 경우만 ``worktree``로, 실 board 소유가 확인된 경우만 ``PM 홈``
+    으로 표기한다. 어느 양성 증거도 없으면 역할을 단언하지 않는다. PM 홈 폴백이면 같은
+    첫 줄에 실제 PM 입력 앵커와 read leaf별 입력 목록을 함께 표시한다.
+
+    해소 실패는 이 줄의 입력이 아니다 — 실패한 실행은 dispatch 에 들어오지 못하고
+    ``main()`` 이 `[중단] …` 으로 번역한다. 실패 사실로 ``worktree`` 라는 양성 역할을
+    단언하지 않는다.
     """
     anchor = REPO
-    if pm_home is not None or pm_inputs_missing:
-        # 이 두 입력은 read dispatch 가 이미 해소한 사실이다 — 여기서 다시 해소하면 같은
-        # 판정이 두 번 돌고, 해소 실패 실행에서는 안내보다 예외가 먼저 나온다.
+    if pm_home is not None:
+        # read dispatch 가 이미 해소한 사실이다 — 여기서 다시 해소하면 같은 판정이 두 번 돈다.
         role = "worktree"
     elif _has_real_board(anchor / ".project_manager"):
         role = "PM 홈"
@@ -2007,8 +2006,6 @@ def _print_read_anchor(
     if pm_home is not None:
         inputs = _READ_PM_INPUTS_BY_SUBCOMMAND[subcommand]
         line += f" → PM 입력 앵커: {pm_home} (PM 홈 폴백: {inputs})"
-    elif pm_inputs_missing:
-        line += " → PM 입력 앵커: 없음"
     print(line, flush=True)
 
 
@@ -2068,7 +2065,7 @@ def _load_pm_log():
     """소유 PM 홈 유도 규칙(`pm_log.owning_pm_home`)을 형제 경로에서 로드한다.
 
     해소 판정의 구현은 하나다 — board·additional_reviewer 가 같은 함수를 부른다. 조상 훑기·
-    git subprocess 없이 anchor 자신의 `.git` 선언과 소유 홈의 lease 장부만 읽는다.
+    git subprocess 없이 anchor 자신의 `.git` 선언만 읽는다.
     """
     path = Path(__file__).resolve().parent / "pm_log.py"
     return _load_module_from_path(
@@ -2092,11 +2089,10 @@ def _pm_home_worktree_misanchor(anchor: Path) -> Path | None:
 
 
 class _ReadBoardResolution(NamedTuple):
-    """read dispatch의 board 해소 결과. error가 있으면 root/home은 None이다."""
+    """read dispatch의 board 해소 결과. home이 None이면 자기 앵커의 board를 그대로 쓴다."""
 
-    root: Path | None
+    root: Path
     home: Path | None
-    error: str | None
 
 
 # 등록 worktree read 폴백에서 같은 PM 홈으로 옮겨야 하는 import-time 경로 상수 전수.
@@ -2196,24 +2192,16 @@ def _resolve_read_board(anchor: Path) -> _ReadBoardResolution:
 
     자기 앵커가 실제 board를 가지면 그대로 쓴다. 그 밖에는 `pm_log.owning_pm_home` 유도가
     소유 PM 홈을 낸다 — 유도 결과가 앵커 자신이면 legacy/비분리 graceful 경로를 그대로
-    보존하고, 다른 홈이면 그 board를 연다. 유도 실패는 board 를 추측하지 않고 그 사유를
-    그대로 조회 중단 안내로 옮긴다.
+    보존하고, 다른 홈이면 그 board를 연다. 유도 실패는 여기서 삼키지 않는다 — 같은 실패가
+    mutation 경로에서는 traceback, read 경로에서는 안내로 갈리지 않도록 번역은 `main()`
+    한 곳이 한다.
     """
     if _has_real_board(anchor / ".project_manager"):
-        return _ReadBoardResolution(_board_root_at(anchor), anchor, None)
-    pm_log = _load_pm_log()
-    try:
-        home = pm_log.owning_pm_home(anchor)
-    except pm_log.PmHomeResolutionError as exc:
-        return _ReadBoardResolution(
-            None,
-            None,
-            f"이 앵커에는 board가 없고 소유 PM 홈을 확정할 수 없습니다: {exc}. "
-            "PM 홈에서 조회하세요.",
-        )
+        return _ReadBoardResolution(_board_root_at(anchor), anchor)
+    home = _load_pm_log().owning_pm_home(anchor)
     if home == Path(anchor).resolve():
-        return _ReadBoardResolution(_board_root_at(anchor), None, None)
-    return _ReadBoardResolution(_board_root_at(home), home, None)
+        return _ReadBoardResolution(_board_root_at(anchor), None)
+    return _ReadBoardResolution(_board_root_at(home), home)
 
 
 def _guard_worktree_misanchor(action: str) -> bool:
@@ -19565,11 +19553,7 @@ def _main(argv: list[str] | None = None) -> int:
         _print_read_anchor(
             subcommand=subcommand,
             pm_home=resolution.home if resolution.home != REPO else None,
-            pm_inputs_missing=resolution.error is not None,
         )
-        if resolution.error is not None:
-            print(f"[중단] {resolution.error}", file=sys.stderr)
-            return 1
         local_root = _board_root_at(REPO)
         if resolution.home is not None and resolution.home != REPO:
             with _read_pm_inputs_at(resolution.home, resolution.root):
@@ -19585,7 +19569,11 @@ def _main(argv: list[str] | None = None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI 최외곽에서 엔진 사본 불일치를 traceback 대신 복구 안내로 번역한다."""
+    """CLI 최외곽에서 엔진 사본 불일치·소유 PM 홈 미확정을 traceback 대신 안내로 번역한다.
+
+    소유 PM 홈 유도 실패는 read·mutation 어느 경로에서 나든 같은 원인이므로 번역 지점도
+    하나다 — 실패는 여전히 실패다(rc1·부작용 0). 자기 앵커로 접지 않는다.
+    """
     try:
         _console_encoding = _load_module_from_path(
             Path(__file__).resolve().with_name("console_encoding.py"),
@@ -19594,9 +19582,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         _console_encoding.configure_console_utf8()
         return _main(argv)
-    except Exception as exc:  # noqa: BLE001 — marked skew만 사용자 진단+rc로 종료.
+    except Exception as exc:  # noqa: BLE001 — marked skew·PM 홈 미확정만 진단+rc로 종료.
         if _is_engine_rev_skew(exc):
             return _report_engine_rev_skew_at_terminal(exc)
+        if isinstance(exc, _load_pm_log().PmHomeResolutionError):
+            print(f"[중단] 소유 PM 홈을 확정할 수 없습니다: {exc}", file=sys.stderr)
+            return 1
         raise
 
 

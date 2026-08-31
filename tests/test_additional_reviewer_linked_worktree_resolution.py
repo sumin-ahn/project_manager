@@ -120,60 +120,6 @@ def test_shape_c_unrelated_repository_cannot_reuse_pm_home(tmp_path):
         external.resolve_pm_home_for_repo(snapshot)
 
 
-def test_empty_lease_ledger_owner_fails_loud(tmp_path):
-    """공용 저장소를 둔 홈의 lease 장부가 비어 있으면 소유자를 확정하지 않고 멈춘다.
-
-    옛 해소는 같은 저장소의 다른 checkout을 `git worktree list`로 훑어 제3의 홈을 소유자
-    후보로 세웠다. 유도는 후보를 하나만 만들고, 그 홈이 worktree를 관리하지 않으면 실패다.
-    """
-    home_a = tmp_path / "pm-a"
-    home_a.mkdir()
-    _git(home_a, "init", "-q")
-    _git(home_a, "config", "user.email", "test@example.invalid")
-    _git(home_a, "config", "user.name", "test")
-    (home_a / "seed.txt").write_text("seed\n", encoding="utf-8")
-    _git(home_a, "add", "seed.txt")
-    _git(home_a, "commit", "-qm", "seed")
-    tickets_a = home_a / ".project_manager" / "wiki" / "tickets" / "open"
-    tickets_a.mkdir(parents=True)
-    (tickets_a / "T-9101-a.md").write_text(
-        "---\nid: T-9101\ntitle: owner a\nstatus: open\n---\n",
-        encoding="utf-8",
-    )
-    ledger_a = home_a / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger_a.parent.mkdir(parents=True)
-    ledger_a.write_text(json.dumps({"leases": []}), encoding="utf-8")
-
-    home_b = tmp_path / "pm-b"
-    checkout_b = home_b / "work" / "repo_1"
-    checkout_b.parent.mkdir(parents=True)
-    _git(home_a, "worktree", "add", "-q", "--detach", str(checkout_b), "HEAD")
-    tickets_b = home_b / ".project_manager" / "wiki" / "tickets" / "open"
-    tickets_b.mkdir(parents=True)
-    (tickets_b / "T-9102-b.md").write_text(
-        "---\nid: T-9102\ntitle: owner b\nstatus: open\n---\n",
-        encoding="utf-8",
-    )
-    ledger_b = home_b / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger_b.parent.mkdir(parents=True)
-    ledger_b.write_text(
-        json.dumps({"leases": [{"slot": "work/repo_1", "state": "leased"}]}),
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "ambiguous" / "gate-X"
-    snapshot.parent.mkdir()
-    _git(home_a, "worktree", "add", "-q", "--detach", str(snapshot), "HEAD")
-
-    external = _load("additional_reviewer_empty_lease_ledger_owner")
-    with pytest.raises(external.AnchorResolutionError) as caught:
-        external.resolve_pm_home_for_repo(snapshot)
-    message = str(caught.value)
-    assert "worktree lease 장부에 등록 행이 없습니다" in message
-    assert str(home_a.resolve()) in message
-    # 경로만 겹치는 home_b 의 장부 등재는 소유권 후보를 만들지 않는다.
-    assert str(home_b.resolve()) not in message
-
-
 def test_code_reviewer_gate_and_ticket_share_required_owner_failure(
     tmp_path, monkeypatch, capsys,
 ):

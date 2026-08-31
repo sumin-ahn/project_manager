@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from _git_fixture import init_git_repo
+
 from _win_skip import posix_filenames_supported
 
 REPO = Path(__file__).resolve().parents[1]
@@ -41,6 +43,17 @@ def dm():
 
 
 # ── 페이지 작성 헬퍼 ─────────────────────────────────────────────────────────
+
+
+def _declare_repo(dm, monkeypatch, root: Path) -> Path:
+    """`dm.REPO` 를 픽스처 트리로 두고, 그 트리를 자기 Git 저장소로 선언한다.
+
+    디렉토리 touch 전개는 `git ls-files` 로 repo-owned 파일을 센다. 선언이 없으면 픽스처가
+    앉아 있는 저장소가 답해(추적 안 된 트리라) 전개가 0건이 되고, 판정이 위치의 함수가 된다.
+    """
+    init_git_repo(root, commit="seed")
+    monkeypatch.setattr(dm, "REPO", root)
+    return root
 
 
 def _write_page(domain_dir: Path, name: str, *, frontmatter: str, body: str = "\nbody\n") -> Path:
@@ -510,7 +523,7 @@ def test_pages_for_touches_directory_expansion_matches_exact_file_cover(
     )
     pages = dm.load_pages(domain_dir=tmp_path)
     touch = ".project_manager/tools"
-    monkeypatch.setattr(dm, "REPO", tmp_path)
+    _declare_repo(dm, monkeypatch, tmp_path)
     assert _titles(dm.pages_for_touches([touch], pages)) == ["domain-layer"]
     assert dm.uncovered_paths([touch], pages) == []
 
@@ -724,6 +737,9 @@ def test_normalized_touch_non_git_checkout_warns_and_does_not_match(
         "covers": ["src/shared.py"],
     }
     monkeypatch.setattr(dm, "_page_owner_repo", lambda _page: (workspace, None))
+    # "이 자리는 git 저장소가 아니다"가 이 테스트의 입력이다 — 픽스처가 어디에 있느냐로
+    # 그 답이 갈리지 않게 엔진의 runner 주입 seam 으로 답을 명시한다.
+    monkeypatch.setattr(dm, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
     dm._REPOSITORY_IDENTITY_CACHE.clear()
     dm._REPOSITORY_MATCH_CACHE.clear()
 
@@ -1006,7 +1022,7 @@ def test_affected_ticket_directory_touch_summons_exact_cover(
             "  - .project_manager/tools/domain.py"
         ),
     )
-    monkeypatch.setattr(dm, "REPO", tmp_path)
+    _declare_repo(dm, monkeypatch, tmp_path)
     monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
     monkeypatch.setattr(
         dm,
@@ -2021,7 +2037,7 @@ def test_recall_and_gaps_expand_directory_with_the_same_file_unit(
         "title": "owner",
         "covers": ["src/covered.py"],
     }]
-    monkeypatch.setattr(dm, "REPO", tmp_path)
+    _declare_repo(dm, monkeypatch, tmp_path)
 
     assert _titles(dm.pages_for_path("src", pages)) == ["owner"]
     assert _titles(dm.pages_for_touches(["src"], pages)) == ["owner"]
@@ -2040,7 +2056,7 @@ def test_directory_recall_dedups_page_after_multiple_files_expand(
         "title": "owner",
         "covers": ["src/*.py"],
     }
-    monkeypatch.setattr(dm, "REPO", tmp_path)
+    _declare_repo(dm, monkeypatch, tmp_path)
 
     assert dm.pages_for_touches(["src"], [page]) == [page]
 
@@ -2056,7 +2072,7 @@ def test_directory_recall_preserves_injected_page_order(
         {"path": Path("b.md"), "title": "b", "covers": ["src/b.py"]},
         {"path": Path("a.md"), "title": "a", "covers": ["src/a.py"]},
     ]
-    monkeypatch.setattr(dm, "REPO", tmp_path)
+    _declare_repo(dm, monkeypatch, tmp_path)
 
     assert dm.pages_for_path("src", pages) == pages
 
@@ -2267,6 +2283,7 @@ def test_uncovered_directory_files_preserve_normalized_repo_metadata(
     src.mkdir(parents=True)
     (src / "covered.py").write_text("# covered\n", encoding="utf-8")
     (src / "gap.py").write_text("# gap\n", encoding="utf-8")
+    init_git_repo(workspace, commit="seed")
 
     class OwnedPath(str):
         def __new__(
@@ -2386,7 +2403,7 @@ def test_capture_directory_touch_renders_each_uncovered_file(
         "a.md",
         frontmatter="title: 담당페이지\ntype: concept\ncovers:\n  - src/covered.py",
     )
-    monkeypatch.setattr(dm, "REPO", tmp_path)
+    _declare_repo(dm, monkeypatch, tmp_path)
     monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
 
     assert dm.main(["capture", "--touches", "src"]) == 0
@@ -2409,7 +2426,7 @@ def test_capture_directory_touch_folds_gaps_at_limit_with_exact_summary(
         (src / f"gap_{index:02}.py").write_text("# gap\n", encoding="utf-8")
     domain_dir = tmp_path / "domain"
     domain_dir.mkdir()
-    monkeypatch.setattr(dm, "REPO", tmp_path)
+    _declare_repo(dm, monkeypatch, tmp_path)
     monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
 
     assert dm.main(["capture", "--touches", "src"]) == 0
@@ -2433,7 +2450,7 @@ def test_capture_all_gaps_shows_complete_directory_expansion(
         (src / f"gap_{index:02}.py").write_text("# gap\n", encoding="utf-8")
     domain_dir = tmp_path / "domain"
     domain_dir.mkdir()
-    monkeypatch.setattr(dm, "REPO", tmp_path)
+    _declare_repo(dm, monkeypatch, tmp_path)
     monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
 
     assert dm.main(["capture", "--touches", "src", "--all-gaps"]) == 0
@@ -2456,7 +2473,7 @@ def test_capture_folds_only_large_directory_group_and_keeps_file_touches(
         (bulk / f"gap_{index:02}.py").write_text("# gap\n", encoding="utf-8")
     domain_dir = tmp_path / "domain"
     domain_dir.mkdir()
-    monkeypatch.setattr(dm, "REPO", tmp_path)
+    _declare_repo(dm, monkeypatch, tmp_path)
     monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
     file_touches = ["loose/one.py", "loose/two.py", "loose/three.py"]
     touches = ["bulk", *file_touches]
@@ -2536,7 +2553,7 @@ def test_capture_directory_leading_wildcard_is_affected_without_gap(
         "readme.md",
         frontmatter="title: README 담당\ntype: concept\ncovers:\n  - '**/README.md'",
     )
-    monkeypatch.setattr(dm, "REPO", tmp_path)
+    _declare_repo(dm, monkeypatch, tmp_path)
     monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
 
     assert dm.main(["capture", "--touches", "src"]) == 0
@@ -2557,7 +2574,7 @@ def test_capture_guard_remains_for_other_empty_judgment_inconsistencies(
     (src / "owned.py").write_text("# owned\n", encoding="utf-8")
     domain_dir = tmp_path / "domain"
     domain_dir.mkdir()
-    monkeypatch.setattr(dm, "REPO", tmp_path)
+    _declare_repo(dm, monkeypatch, tmp_path)
     monkeypatch.setattr(dm, "DOMAIN_DIR", domain_dir)
     monkeypatch.setattr(dm, "pages_for_touches", lambda _touches, _pages: [])
     monkeypatch.setattr(
@@ -2907,8 +2924,11 @@ def test_capture_draft_without_scaffold_omits_guide(dm, tmp_path):
     assert text.startswith("---") and "# 샘플 개념" in text
 
 
-def test_capture_draft_source_file_prose_verbatim(dm, tmp_path):
+def test_capture_draft_source_file_prose_verbatim(dm, tmp_path, monkeypatch):
     # --source <file>: 파일 prose 가 ## 조사 결과 아래 *그대로*(verbatim) 배치된다.
+    # repo 경계는 픽스처가 선언한다 — tmp_path 가 repo 밖이라는 사실이 임시 루트 위치에
+    # 딸려 오면 같은 테스트가 위치에 따라 다른 것을 검증한다.
+    monkeypatch.setattr(dm, "REPO", tmp_path / "repo")
     src = tmp_path / "research.txt"
     prose = "factor beta 는 X 로 추정.\n  - 근거 1\n  - 근거 2 (미해결: Y)\n"
     src.write_text(prose, encoding="utf-8")
@@ -3210,8 +3230,10 @@ def test_capture_draft_source_stdin_is_placeholder(dm, tmp_path, monkeypatch):
     assert "stdin prose." in text  # prose 본문은 여전히 배치.
 
 
-def test_capture_draft_source_outside_repo_is_placeholder(dm, tmp_path):
-    # repo 밖(tmp_path 등 일시 경로) source → placeholder(절대경로 박제 금지·dangling 방지).
+def test_capture_draft_source_outside_repo_is_placeholder(dm, tmp_path, monkeypatch):
+    # repo 밖 source → placeholder(절대경로 박제 금지·dangling 방지). repo 경계는 픽스처가
+    # 선언한다 — 임시 루트 위치가 "밖인지"를 정하면 판정이 위치의 함수가 된다.
+    monkeypatch.setattr(dm, "REPO", tmp_path / "repo")
     src = tmp_path / "scratch.md"
     src.write_text("repo 밖 prose.\n", encoding="utf-8")
     path = dm.write_draft_page("밖", slug="outside", source=str(src), domain_dir=tmp_path)

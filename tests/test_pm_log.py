@@ -980,11 +980,12 @@ def test_main_checkpoint_unregistered_slot_fails_loud_without_self_demotion(
     pm_home = tmp_path / "pm-home"
     worktree = pm_home / "work" / "product_1"
     worktree.mkdir(parents=True)
-    _declare_slot_git_pointer(pm_home, worktree)   # 선언은 있으나 lease 장부가 없다.
-    (pm_home / ".project_manager").mkdir(parents=True, exist_ok=True)
+    # 선언은 있으나 그 자리에 PM 홈이 없다(`.project_manager` 부재) — 답이 하나가 아니다.
+    _declare_slot_git_pointer(pm_home, worktree)
+    assert not (pm_home / ".project_manager").exists(), "전제 붕괴 — 미해소 형상이 아님"
     _redirect_paths(mod, monkeypatch, worktree)
 
-    with pytest.raises(mod.PmHomeResolutionError, match="worktree lease 장부 없음"):
+    with pytest.raises(mod.PmHomeResolutionError, match="에 .project_manager 가 없습니다"):
         mod.main(["checkpoint", "--task", "main"])
     assert not mod.CURRENT_FILE.exists()
 

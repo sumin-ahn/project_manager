@@ -1409,6 +1409,9 @@ def test_claim_without_a_git_tree_warns_and_still_claims(board, tmp_path, monkey
     """비-git 트리에선 필드를 생략하고 경고만 낸다 — 박제 실패가 claim 을 막지 않는다."""
     monkeypatch.setenv("PM_SESSION_NAME", "me")
     _seed_open_ticket(tmp_path, "T-9014")
+    # "이 트리에서 git HEAD 를 읽을 수 없다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
+    # 정하지 않도록 board 가 이미 쓰는 `_git_head_at` seam 으로 해소 실패를 명시한다.
+    monkeypatch.setattr(board, "_git_head_at", lambda _cwd: "")
 
     assert board.cmd_claim(argparse.Namespace(id="T-9014", user="me")) == 0
 
@@ -1499,6 +1502,9 @@ def test_reclaim_without_git_pops_a_stale_claimed_rev_from_a_reused_ticket(
     fm, body = board.load_ticket(path)
     fm["claimed_rev"] = "a" * 40
     board.dump_ticket(path, fm, body)
+    # "이 트리에서 git HEAD 를 읽을 수 없다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
+    # 정하지 않도록 board 가 이미 쓰는 `_git_head_at` seam 으로 해소 실패를 명시한다.
+    monkeypatch.setattr(board, "_git_head_at", lambda _cwd: "")
 
     assert board.cmd_claim(argparse.Namespace(id="T-9017", user="me")) == 0
 

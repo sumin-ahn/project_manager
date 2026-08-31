@@ -863,46 +863,23 @@ def _pm_home_from_common_dir(common_dir: Path) -> Path | None:
     return None
 
 
-def _require_lease_ledger(pm_home: Path, anchor: Path) -> None:
-    """PM 홈 lease 장부를 strict point-read 한다 — 부재·손상·빈 장부는 전부 실패."""
-    ledger = Path(pm_home) / ".project_manager" / ".local" / "worktree-leases.json"
-    if not ledger.is_file():
-        raise PmHomeResolutionError(
-            f"{anchor}: 소유 PM 홈 후보 {pm_home} 의 worktree lease 장부 없음 ({ledger})"
-        )
-    try:
-        data = json.loads(_read_text_shared(ledger, encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeError) as exc:
-        raise PmHomeResolutionError(
-            f"{anchor}: 소유 PM 홈 후보 {pm_home} 의 worktree lease 장부를 읽을 수 "
-            f"없습니다 ({ledger}: {type(exc).__name__}: {exc})"
-        ) from exc
-    rows = data.get("leases") if isinstance(data, dict) else None
-    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
-        raise PmHomeResolutionError(
-            f"{anchor}: 소유 PM 홈 후보 {pm_home} 의 worktree lease 장부 형식이 "
-            f"올바르지 않습니다 ({ledger})"
-        )
-    if not rows:
-        raise PmHomeResolutionError(
-            f"{anchor}: 소유 PM 홈 후보 {pm_home} 의 worktree lease 장부에 등록 행이 "
-            f"없습니다 ({ledger})"
-        )
-
-
 def owning_pm_home(anchor: Path) -> Path:
     """anchor 자신이 들고 있는 선언만으로 소유 PM 홈을 유도한다 — 답은 하나이거나 예외다.
 
-    입력은 anchor 의 `.git` 포인터(슬롯을 만든 도구가 쓴 값)와 그 포인터가 지목한 PM 홈의
-    lease 장부뿐이다. 조상 훑기·cwd·환경·subprocess 를 쓰지 않으므로 같은 모양의 트리는
-    파일시스템 어디에 있어도 같은 답을 낸다.
+    입력은 anchor 의 `.git` 포인터(슬롯을 만든 도구가 쓴 값) 하나다. 조상 훑기·cwd·환경·
+    subprocess 를 쓰지 않으므로 같은 모양의 트리는 파일시스템 어디에 있어도 같은 답을 낸다.
 
       - `.git` 없음/디렉터리        → anchor 자신 (아무의 linked worktree 도 아니다)
       - `.git` 파일 → `<X>/.repos/<repo>.git` 또는 `<X>/.git` → `X`
       - 그 밖의 commondir           → 실패
 
-    유도된 `X` 는 `<X>/.project_manager` 실재와 lease 장부 strict point-read 를 요구한다.
-    부재·손상·빈 장부는 전부 실패다 — 못 받으면 anchor 자신으로 강등하지 않는다.
+    유도된 `X` 는 `<X>/.project_manager` 실재를 요구하고, 부재는 실패다 — 못 받으면 anchor
+    자신으로 강등하지 않는다.
+
+    lease 장부는 판정 입력이 아니다. 그 파일은 어느 슬롯을 누구에게 빌려줬는지 적는 슬롯 배정
+    원장이지 소유 증거가 아니며, gitignored·per-clone 이라 anchor 의 함수도 아니다. 소유는
+    commondir 형상이 이미 정한다 — `<X>/.repos/<repo>.git` 이면 X 가 그 bare 를 만든 주체이고
+    `<X>/.git` 이면 X 가 main checkout 이다.
     """
     anchor = Path(anchor).resolve(strict=False)
     if not (anchor / _GIT_DIR_NAME).is_file():
@@ -924,7 +901,6 @@ def owning_pm_home(anchor: Path) -> Path:
             f"{anchor}: 공용 Git 저장소 {common_dir} 의 소유 PM 홈을 찾지 못했습니다 — "
             f"{pm_home} 에 .project_manager 가 없습니다."
         )
-    _require_lease_ledger(pm_home, anchor)
     return pm_home
 
 

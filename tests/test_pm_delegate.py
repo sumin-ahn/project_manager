@@ -32,6 +32,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+from _git_fixture import init_git_repo
 from _textio import normalize_newline_bytes
 from _win_skip import _can_symlink, posix_mode_supported
 from conftest import write_cluster_ledger
@@ -2314,6 +2316,9 @@ def _fake_pm_home(tmp_path: Path) -> tuple[Path, Path]:
     wt_tools = home / "work" / "wt1" / ".project_manager" / "tools"
     wt_tools.mkdir(parents=True)
     (wt_tools / "additional_reviewer.py").write_text("# stub", encoding="utf-8")
+    # `--cwd` 는 git 에게 "이 자리가 어느 checkout 인가"를 묻는다 — 자기 선언이 없으면 이
+    # 저장소가 답하고, 그 답의 소유 PM 홈(실 PM 홈)이 앵커로 잡힌다.
+    init_git_repo(home)
     return home, home / "work" / "wt1"
 
 
