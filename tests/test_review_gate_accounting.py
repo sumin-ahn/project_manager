@@ -314,7 +314,7 @@ def test_paths_only_dry_run_needs_no_gate(external, monkeypatch, tmp_path, capsy
     assert reviewer.calls == 0
     assert _ledger(tmp_path) == {}
     captured = capsys.readouterr()
-    assert "[dry-run] 외부 호출 생략" in captured.out
+    assert "[dry-run] 리뷰어 호출 생략" in captured.out
     assert external._GATE_ACCOUNTING_REQUIRED_GUIDANCE not in captured.err
 
 

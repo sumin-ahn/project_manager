@@ -6063,7 +6063,7 @@ def _board_git_stage_and_commit(
 
     `paths=None` = **레거시 광역 스코프**(board 전체·draft 제외). 엔진 호출부는 더 이상 이
     형태를 쓰지 않는다 — 마지막 소비자였던 `_prefix_relabel` 도 rewrite 가 실제로 쓴 파일 +
-    rename 경로로 스코프됐다. 하위호환(외부 호출·테스트)으로만 남긴다.
+    rename 경로로 스코프됐다. 하위호환(모듈 밖 호출부·테스트)으로만 남긴다.
     **호출부는 반드시 경로를 준다.**
 
     새 커밋 생성 판정은 rc 가 아니라 **`HEAD != anchor`** 다 — 부분 커밋은 pathspec 이 아무것도
@@ -6115,7 +6115,7 @@ def _board_git_uncommitted_scope(
 
     best-effort가 local commit을 못 만든 경우, board 전체 dirty를 진단에 쓰면 다른 ticket의
     WIP를 이번 mutation 실패로 오인하고 그 경로까지 복구 대상으로 노출한다. 따라서 호출자가
-    선언한 경로만 porcelain -z로 조회한다. ``paths=None``인 레거시 외부 호출에는 소유 경계가
+    선언한 경로만 porcelain -z로 조회한다. ``paths=None``인 레거시 호출부에는 소유 경계가
     없으므로 false-success 판정을 하지 않는다.
     """
     if paths is None:

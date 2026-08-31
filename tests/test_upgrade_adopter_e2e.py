@@ -736,7 +736,9 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   해소되고, 배달 경계(planning → apply → self-update 순서)·배달 파일 집합도 불변이다: 이
 #   fixture 의 두 실행은 `PM_NONINTERACTIVE=1` 이라 삭제된 질문이 애초에 발화하지 않았고, 삭제로
 #   줄어든 것은 그 실행이 부르지 않던 코드뿐이다. 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "2d5bf4afa47ae5a0a03e4ea4c74649bc982c09ae644e9d8dea6b44994c92f467"
+#   같은 티켓의 수정 라운드에서 한 번 더 이동했다 — `plan()` docstring 의 낱말 하나("모듈 밖
+#   호출부")뿐이고 실행 코드·배달 경계는 무편집이다.
+_T0585_PM_UPDATE_SHA256 = "bc07ff63ff2c4c398d98f01662c50e578c7145ec9e0158e722aaf60c7e22ed0b"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -921,6 +923,11 @@ def _t0585_pm_update_source() -> str:
     던지던 두 자리가 그 호출 한 줄로 줄어든 것뿐이라 baseline 수렴의 순서·조건은 그대로다. 역델타
     marker 4곳이 모두 그대로 유일 해소됐고(marker assert 선통과) anachronism 부재 단언 2건도
     통과한 상태에서 SHA 만 갱신했다.
+
+    T-0887 수정 라운드 — 같은 티켓의 용어 정정이 `plan()` docstring 한 줄의 낱말만 바꿨다
+    ("모듈 밖 호출부"). 실행 코드·배달 경계(source/manifest planning → apply → self-update 순서)·
+    `sync_adapter_configs`·`_adapter_config_gate_failed`·`apply` 는 무편집이고, 역델타 marker 4곳과
+    anachronism 부재 단언 2건도 그대로 통과했다 — 현재화한 것은 기대 SHA 하나뿐이다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -1044,7 +1051,7 @@ def _install_t0585_updater(dest: Path) -> None:
 # T-0887: 온보딩 opt-in 일습 삭제로 역적용 delta 의 exact-marker 목록이 두 항목으로 줄고
 # (되돌릴 원문이 사라졌다) 그만큼 historical 전문 SHA 도 이동했다. 퇴역 경로 delta 의 marker 는
 # 전부 그 절 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "d2166c82dabd482f05313deec8c74bee5ad6536b92ede2538261690544aac36e"
+_PRE_T0876_PM_UPDATE_SHA256 = "245a2b0438c048351e0bb7f1f12842a1a55bdd0ee0af6551718852142708e83d"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -1059,7 +1066,8 @@ def _pre_t0876_pm_update_source() -> str:
     하는 T-0878·T-0876 delta 는 retired-path 선언 검증과 legacy flavor 선택 판정이라 삭제된 온보딩
     코드와 겹치지 않고, exact-marker 는 모두 그대로 유일 해소됐다(marker assert 선통과). RUN1 이
     검증하는 배달 경계(신 reviewer 설치 → 두 번째 실행의 구 파일 퇴역)도 무편집이므로 합성본
-    bytes 차이만 SHA 에 반영했다.
+    bytes 차이만 SHA 에 반영했다. 같은 티켓의 수정 라운드에서 `plan()` docstring 한 줄의 낱말이
+    바뀌어("모듈 밖 호출부") 다시 이동했다 — 역적용 marker 는 그 줄과 겹치지 않는다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")

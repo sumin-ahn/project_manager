@@ -2949,7 +2949,7 @@ def test_reapply_preserved_conf_keys_only_adds_missing(pm_import, tmp_path):
         "session=pm\nproject.name=New\n", encoding="utf-8"
     )
     # 기존 원본 — session 은 다른 값('mine'), 추가로 사용자 키를 보유.
-    original = "session=mine\nadditional_reviewer.harness=codex\nreviewer_cmd=bar\n"
+    original = "session=mine\nadditional_reviewer.harness=codex\n"
     changed = pm_import.reapply_preserved_conf_keys(dest, original)
     assert changed is True
 
@@ -2959,7 +2959,45 @@ def test_reapply_preserved_conf_keys_only_adds_missing(pm_import, tmp_path):
     assert conf["project.name"] == "New"
     # 현재 파일에 없던 기존 키만 재병합.
     assert conf["additional_reviewer.harness"] == "codex"
-    assert conf["reviewer_cmd"] == "bar"
+
+
+def test_reimport_drops_retired_conf_keys_and_keeps_custom_ones(
+    pm_import, tmp_path, capsys
+):
+    """재병합은 사라진 이름을 되살리지 않는다 — 되살리면 그 clone 이 다음 실행부터 멈춘다.
+
+    백업 텍스트에 남은 제거키(`additional_reviewer.enabled`·`reviewer_cmd`·`session`)와 구표기
+    키(`test_cmd`)는 재병합 대상이 아니고, 채택자가 만든 커스텀 축은 그대로 왕복한다. 드롭은
+    조용하지 않다 — 무엇이 빠졌는지 한 줄로 알린다.
+    """
+    dest = tmp_path / "retired_keys"
+    pm_dir = dest / ".project_manager"
+    pm_dir.mkdir(parents=True)
+    (pm_dir / "local.conf").write_text("project.name=New\n", encoding="utf-8")
+    backup = (
+        "additional_reviewer.enabled=false\n"
+        "reviewer_cmd=codex exec\n"
+        "session=mine\n"
+        "test_cmd=pytest -q\n"
+        "additional_reviewer.harness=codex\n"
+        "additional_reviewer.persona=security\n"
+    )
+
+    assert pm_import.reapply_preserved_conf_keys(dest, backup) is True
+
+    conf = _parse_conf(pm_dir / "local.conf")
+    for retired in ("additional_reviewer.enabled", "reviewer_cmd", "session", "test_cmd"):
+        assert retired not in conf, retired
+    assert conf["additional_reviewer.harness"] == "codex"
+    assert conf["additional_reviewer.persona"] == "security"
+    assert conf["project.name"] == "New"
+    out = capsys.readouterr().out
+    assert "재병합하지 않음(제거)" in out
+    assert "additional_reviewer.enabled" in out
+
+    # 재병합 산출을 그대로 소비할 수 있다 — 되살아난 제거키가 없으니 로더가 멈추지 않는다.
+    local_conf = pm_import._load_local_conf()
+    assert local_conf.load_checked_readable(pm_dir / "local.conf")["project.name"] == "New"
 
 
 # ── T-0590: 추가 리뷰어 프로필 무손실 왕복 (레거시 reviewer_cmd · 구조적/커스텀 튜플) ──

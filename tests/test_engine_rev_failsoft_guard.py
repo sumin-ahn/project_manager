@@ -966,7 +966,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   · `pm_delegate._create_read_role_temp` · `_cleanup_read_role_temp` 흡수 두 경계 — 둘 다
     #     `_ENGINE_REV_SKEW_RECOVERY_REASONS` 에 사유를 등록하고 경고 문구로 원인을 구분한다
     #     (정리 실패가 성공한 실행을 뒤집지 않는다는 계약).
-    #   · `additional_reviewer.create_reviewer_workspace` 재-raise · `_remove_partial_container` 흡수.
+    #   · `additional_reviewer.run_review` 재-raise 한 경계.
     #   · `pm_config._protected_push_gate_config` 재-raise 한 경계.
     #   · `delegate_channel_guard._record_supervisor_fallback` 흡수 한 경계 — PowerShell 인용
     #     삼킴으로 래퍼가 폴백할 때 그 사실 기록이 판정을 막지 않는다.

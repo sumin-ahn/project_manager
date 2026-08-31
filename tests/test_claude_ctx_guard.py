@@ -1,7 +1,7 @@
 """claude 어댑터 ctx compaction-native 넛지 단위 테스트 (T-0550).
 
 어댑터 스크립트(templates/claude_code/.claude/ctx_guard·ctx_statusline·ctx_stop_hook)를
-importlib 로 직접 로드해 검증한다. stdlib only — 라이브 claude·외부 호출 없이
+importlib 로 직접 로드해 검증한다. stdlib only — 라이브 claude·subprocess 호출 없이
 가짜 transcript JSONL·가짜 statusline stdin·격리 tmp 만 본다.
 
 검증 축:

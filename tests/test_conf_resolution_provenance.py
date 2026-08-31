@@ -479,7 +479,7 @@ def test_additional_reviewer_missing_target_conf_is_quiet(
 
 def test_additional_reviewer_dangling_target_conf_symlink_fails_closed(
         external, monkeypatch, tmp_path, capsys):
-    """dangling local.conf는 부재가 아니라 판독 실패이며 대상 denylist 미확인 호출을 차단한다."""
+    """dangling local.conf는 부재가 아니라 판독 실패이며 대상 conf 미확인 호출을 차단한다."""
     engine_conf = dict(_REVIEWER_TARGET)
     engine = _repo(tmp_path / "engine", engine_conf)
     target = _repo(tmp_path / "target", None)
@@ -542,75 +542,6 @@ def test_delegate_target_conf_read_error_is_caught_without_traceback(
     assert "호출 전에 중단" in err
     assert str(target_conf) in err
     assert "Traceback" not in err
-
-
-def test_additional_reviewer_same_denylist_is_quiet(
-        external, monkeypatch, tmp_path, capsys):
-    conf = {
-        **_REVIEWER_TARGET,
-        "additional_reviewer.denylist_extra": "*.private *.vault",
-    }
-    engine = _repo(tmp_path / "engine", conf)
-    target = _repo(tmp_path / "target", dict(conf))
-    _wire_external(external, monkeypatch, engine, target, conf)
-
-    assert external.main(["--paths", "x.py", "--dry-run"]) == 0
-    assert "local.conf 프로필 분기" not in capsys.readouterr().err
-
-
-def test_additional_reviewer_engine_denylist_superset_is_safe_and_quiet(
-        external, monkeypatch, tmp_path, capsys):
-    """엔진이 대상 선언을 이미 모두 포함하면 값 문자열이 달라도 안전 방향이라 무소음이다."""
-    engine_conf = {
-        **_REVIEWER_TARGET,
-        "additional_reviewer.denylist_extra": "*.private *.vault",
-    }
-    engine = _repo(tmp_path / "engine", engine_conf)
-    target = _repo(tmp_path / "target", {
-        **_REVIEWER_TARGET,
-        "additional_reviewer.denylist_extra": "*.private",
-    })
-    _wire_external(external, monkeypatch, engine, target, engine_conf)
-
-    assert external.main(["--paths", "x.py", "--dry-run"]) == 0
-    assert "local.conf 프로필 분기" not in capsys.readouterr().err
-
-
-def test_additional_reviewer_same_effective_review_path_set_is_quiet(
-        external, monkeypatch, tmp_path, capsys):
-    """순서·중복과 src/src/./src 표기만 다르면 같은 Git 경로 집합이라 무소음이다."""
-    engine_conf = {
-        **_REVIEWER_TARGET,
-        "additional_reviewer.paths": "src tests src/",
-    }
-    engine = _repo(tmp_path / "engine", engine_conf)
-    target = _repo(tmp_path / "target", {
-        **_REVIEWER_TARGET,
-        "additional_reviewer.paths": "tests/,./src",
-    })
-    _wire_external(external, monkeypatch, engine, target, engine_conf)
-
-    assert external.main(["--dry-run"]) == 0
-    assert "local.conf 프로필 분기" not in capsys.readouterr().err
-
-
-def test_additional_reviewer_explicit_paths_suppresses_unused_review_paths_difference(
-        external, monkeypatch, tmp_path, capsys):
-    engine_conf = {
-        **_REVIEWER_TARGET,
-        "additional_reviewer.paths": "src tests",
-    }
-    engine = _repo(tmp_path / "engine", engine_conf)
-    target = _repo(tmp_path / "target", {
-        **_REVIEWER_TARGET,
-        "additional_reviewer.paths": "private docs",
-    })
-    _wire_external(external, monkeypatch, engine, target, engine_conf)
-
-    assert external.main(["--paths", "x.py", "--dry-run"]) == 0
-    err = capsys.readouterr().err
-    assert "additional_reviewer.paths:" not in err
-    assert "local.conf 프로필 분기" not in err
 
 
 def test_additional_reviewer_actual_execution_keeps_same_provenance(

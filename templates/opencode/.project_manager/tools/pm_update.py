@@ -1248,7 +1248,7 @@ def merge_manifest_sources(manifest_paths: list[Path]) -> dict:
 def _entry_render_flag(entry) -> bool:
     """manifest 항목의 render 플래그 — ManifestEntry 면 `.render`, 평문 str(레거시 호출)면 False.
 
-    plan() 이 `list[str]`(기존 테스트·외부 호출)과 `list[ManifestEntry]`(read_manifest) 둘 다
+    plan() 이 `list[str]`(기존 테스트·모듈 밖 호출부)과 `list[ManifestEntry]`(read_manifest) 둘 다
     받게 정규화한다 — 후방호환(평문 str 항목은 render 비대상).
     """
     return bool(getattr(entry, "render", False))

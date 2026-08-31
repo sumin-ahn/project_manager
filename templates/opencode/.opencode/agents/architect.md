@@ -156,4 +156,4 @@ generate(architect) ≠ evaluate(추가 리뷰어). PM 이 당신의 보고+DRAF
 영향·안전 경계 저촉·대안 누락·기존 ADR·architecture.md 모순을 비준 전에 점검한다. 당신은 그 자문이 가능하도록
 **근거·대안·영향·안전 경계 저촉 여부를 리뷰어가 검증할 수 있게 명료히** 인계하라(추측은 추측으로 표시·코드 확인은
 경로 명시). 추가 리뷰어 출력은 PM 의 *입력*이며 설계를 확정하지 않는다 — 채택·발행·비준은 PM. 외부 *전송*이
-발생하므로 추가 리뷰어 opt-in 정책(`additional_reviewer.enabled`)을 상속한다(꺼져 있으면 PM 내부 점검으로 대체).
+발생하므로 대상 튜플(`additional_reviewer.harness`/`.model`/`.reasoning`)이 없으면 PM 내부 점검으로 대체한다.

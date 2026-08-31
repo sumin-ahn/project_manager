@@ -878,7 +878,8 @@ def test_codex_driver_repo_root_finds_engine(driver_mod, tmp_path):
 #      호출 말라" 중립 프롬프트엔 발화 없이 열거만 함(발견≠강제발화). description-매칭 프롬프트의 과대
 #      발화 억제(per-skill allow_implicit_invocation)는 관찰 시 후속 티켓(§6·현 어댑터 기본 미설정).
 #   ② TUI env 마커 — codex shell tool env 에 `CODEX_THREAD_ID=<tid>`·`CODEX_CI=1`·
-#      `CODEX_SANDBOX_NETWORK_DISABLED` 실재(exec 경로·부트스트랩 카드 `_is_codex_harness` 판정 원천).
+#      `CODEX_SANDBOX_NETWORK_DISABLED` 실재(실측 로그 원문 — 앞의 둘만 판정 원천이고 셋째는
+#      T-0887 에서 폐지, 현재 `_is_codex_harness` 마커는 `CODEX_THREAD_ID`·`CODEX_CI` 둘뿐이다).
 #      실측: exec 에서 셸이 셋 모두 반환(tid=발급 thread_id·ci=1). **대화형 TUI 세션은 비대화 자동화
 #      불가**(입력 대기) — exec 경로로 재확인하되 TUI 마커 존치는 자동 커버 불가(한계 명시). 카드 감지는
 #      exec/relay 경로에서 확정 동작.

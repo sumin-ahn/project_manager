@@ -1,4 +1,4 @@
-"""T-0637 — 추가 리뷰 payload 기계 mirror 제외·sandbox transport·조기 종료 고지."""
+"""T-0637 — 추가 리뷰 payload 의 sandbox transport·조기 종료 고지."""
 from __future__ import annotations
 
 import importlib.util

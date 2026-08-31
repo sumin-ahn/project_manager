@@ -2,7 +2,7 @@
 
 크로스플랫폼 분기를 deterministic 하게 본다: os.name·venv 경로 존재·shutil.which 를
 monkeypatch 로 흔들어 4조합(_default_python)·3분기(_detect_py)를 검증한다.
-라이브 subprocess·외부 호출 0 — 순수 경로 로직만.
+라이브 subprocess 호출 0 — 순수 경로 로직만.
 
 도구들은 패키지가 아니므로 importlib 로 경로 로드하고(test_engine_smoke 와 동일),
 모듈 전역(REPO·os·sys·shutil)을 monkeypatch 해 분기를 강제한다.

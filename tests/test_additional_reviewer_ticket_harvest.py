@@ -9,7 +9,7 @@
     없음).
   · severity: `pm-review-v1` finding 의 심각도가 블록의 필수 필드다(산문 재기재 없음).
 
-hermetic: tmp REPO 에 실제 board 디렉터리를 만들고 diff·리뷰어 실행·격리 거울만 주입한다
+hermetic: tmp REPO 에 실제 board 디렉터리를 만들고 diff·리뷰어 실행만 주입한다
 (호출 0). 라이브 codex 호출은 이 파일 어디에서도 하지 않는다.
 """
 from __future__ import annotations

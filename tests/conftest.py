@@ -407,7 +407,7 @@ _CODEX_AMBIENT_MARKERS = (
 
 @pytest.fixture(autouse=True)
 def _neutralize_codex_ambient_markers(request, monkeypatch):
-    """모든 기계 테스트에 codex-미감지·egress-neutral env baseline 을 준다.
+    """모든 기계 테스트에 codex-미감지 env baseline 을 준다.
 
     라이브 게이트(`@pytest.mark.release`) 테스트는 실 codex 를 격리 CODEX_HOME env 로 명시 스폰하므로
     부모 프로세스의 ambient 마커에 의존/간섭하지 않는다 — 중화가 그 의도를 흐리지 않게 제외한다."""

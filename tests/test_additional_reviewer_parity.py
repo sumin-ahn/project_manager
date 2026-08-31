@@ -66,6 +66,7 @@ RETIRED_REVIEWER_SYMBOLS = (
     "resolve_review_content_conf",
     "_conf_with_owner_filters",
     "OwnerFilterConfError",
+    "_normalized_review_paths",
     # 네트워크 attestation
     "CODEX_EGRESS_FLAG",
 )
@@ -254,3 +255,18 @@ def test_a_leftover_switch_value_changes_nothing(external, monkeypatch, tmp_path
     # 엔진 코드가 그 키를 아예 읽지 않는다 — 값이 무엇이든 읽는 자리가 없다.
     source = (TOOLS / "additional_reviewer.py").read_text(encoding="utf-8")
     assert "additional_reviewer.enabled" not in source
+
+    # 옛 값이 실제로 남은 conf 를 만든다 — true/false 어느 값이든 같은 정지 처방이다.
+    local_conf = _load("local_conf")
+    leftover_conf = tmp_path / f"local-{leftover}.conf"
+    leftover_conf.write_text(
+        f"additional_reviewer.enabled={leftover}\n"
+        "additional_reviewer.harness=codex\n"
+        "additional_reviewer.model=gpt-5.1-codex-max\n",
+        encoding="utf-8")
+
+    with pytest.raises(local_conf.LegacyConfKeyError) as caught:
+        local_conf.load_checked_readable(leftover_conf)
+
+    assert caught.value.legacy == {"additional_reviewer.enabled": None}
+    assert "`additional_reviewer.enabled` → 제거(대체 키 없음)" in str(caught.value)

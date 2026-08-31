@@ -194,6 +194,10 @@ python3 .project_manager/tools/pm_delegate.py --role <역할> \
 
 ### 위임 마스터 스위치
 
+**위임자는 피위임자에게 자신과 같은 권한을 준다** — 위임 방향·하네스 조합과 무관하다(코덱스가 PM 일 때
+클로드에게 위임하든, 오픈코드가 코덱스에게 위임하든 같다). 위임 경로에서 접근 권한·경로·env·볼 수 있는
+내용을 좁히는 자리는 만들지 않는다. 남는 비대칭은 CLI 형식과 역할축(generate≠evaluate)뿐이다.
+
 `delegate.enabled`는 "PM이 위임을 해도 되는가" 하나만 정한다. **기본은 허용**이고 채널(native/cross)로
 갈리지 않는다 — 키를 지우면 허용, 명시적으로 끄려면 `false`:
 
@@ -364,6 +368,6 @@ touches 경로의 실재(소유 repo 좌표 기준) · 묶음 안팎 다른 열�
 > 재섭취를 라운드마다 다시 낸다 — fresh 는 resume 미일치 폴백·전사 과대 시에만). 실패 처리는
 > [`pm_principles.md`](../../../.project_manager/wiki/pm_principles.md) §"티켓과 위임"을 참조한다.
 
-`additional_reviewer.enabled=true` 로 추가 리뷰어(additional reviewer) 채널을 켠 채택자는 reviewer 라운드와 같은 시점에 교차검증을 돌린다. 기본은 OFF 이고, 끈 채택자에게 이 단계는 없다:
+대상 튜플(`additional_reviewer.harness`/`.model`/`.reasoning`)을 선언한 채택자는 reviewer 라운드와 같은 시점에 추가 리뷰어(additional reviewer) 교차검증을 돌린다. 선언이 없는 채택자에게 이 단계는 없다:
 `python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --adr ADR-NNNN`
 ADR 본문 정합 필요 시 `--paths`에 **코드 경로+ADR을 함께 나열**한다. `--paths`는 `--ticket` touches를 대체한다. 상세: `pm_playbook.md` §"추가 리뷰어 교차검증".

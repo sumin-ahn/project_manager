@@ -5878,7 +5878,7 @@ def test_additional_reviewer_raw_answer_accepts_new_and_legacy_header(pd, prefix
 def test_t0650_attach_raw_missing_or_unfinished_is_fail_loud(
     pd, monkeypatch, tmp_path, capsys, selector_kind,
 ):
-    """[A] 미존재·미마감 record id는 실제 장부 조회 뒤 rc=1이고 외부 호출은 없다."""
+    """[A] 미존재·미마감 record id는 실제 장부 조회 뒤 rc=1이고 하네스 호출은 없다."""
     output_dir = tmp_path / "raw"
     unfinished_id, _raw_path = _seed_t0650_raw(
         pd, output_dir, completed=False,

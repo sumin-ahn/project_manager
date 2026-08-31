@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
+from test_terminology import _shipped_text_surface
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -54,6 +55,13 @@ CONVERGENCE_GATE_CONTRACTS = (
     "현재 티켓을 정지",
     "사용자에게 보고",
     "새 티켓·분할·재설계로 잔여를 넘기지 않는다",
+)
+
+# 세 하네스의 위임 카드 — claude 는 루트 canonical, codex·opencode 는 타깃 소유 override 다.
+DELEGATE_CARDS = (
+    ".claude/skills/pm-dev-delegate/SKILL.md",
+    "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
+    "templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md",
 )
 
 CANONICAL_PM_REVIEW = REPO / ".claude" / "skills" / "pm-review" / "SKILL.md"
@@ -166,7 +174,7 @@ def test_codex_pm_review_override_is_registered_in_flavor_manifest():
     """codex flavor manifest 의 file override — 없으면 공유 카드 렌더가 이 판을 덮는다.
 
     상위 `.agents/skills @render @source=.claude/skills` 디렉토리 항목보다 구체적인 file
-    remap 이 이겨야 codex 전용 egress 절이 살아남는다(pm-dev-delegate 와 같은 기전).
+    remap 이 이겨야 codex 전용 Bash timeout 절이 살아남는다(pm-dev-delegate 와 같은 기전).
     """
     manifest = (
         REPO / "templates" / "codex" / ".project_manager" / "engine.manifest"
@@ -701,6 +709,70 @@ _KNOB_RESOLVERS = {
     "additional_reviewer.wave_budget": ("_wave_budget", 24),
 }
 KNOB_KEYS = tuple(_KNOB_RESOLVERS)
+
+
+# 출하 표면 전량 스캔의 유일한 예외 — 제거키 **원장**. 그 자리는 "그 이름은 사라졌다" 를 선언
+# 하므로 이름을 들고 있어야 한다: 엔진 매핑표 한 줄과, 그 표에서 생성돼 어댑터 파서가 품는 블록
+# (`local_conf.render_adapter_block`). CHANGELOG 는 기록이라 시야 밖이다(`_historical_record`).
+RETIRED_SWITCH_MAP_LINE = f'"{RETIRED_SWITCH_KEY}": None,'
+
+
+def _retired_switch_offenders(files):
+    """출하 표면에서 삭제된 채널 스위치 키를 산 전제로 든 줄 전수."""
+    local_conf = _load("local_conf")
+    offenders = []
+    for path in files:
+        inside_generated_ledger = False
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if local_conf.ADAPTER_BLOCK_BEGIN in line:
+                inside_generated_ledger = True
+            elif local_conf.ADAPTER_BLOCK_END in line:
+                inside_generated_ledger = False
+            if RETIRED_SWITCH_KEY not in line:
+                continue
+            if line.strip() == RETIRED_SWITCH_MAP_LINE:
+                continue
+            if (inside_generated_ledger
+                    and line.strip().strip(",").strip('"') == RETIRED_SWITCH_KEY):
+                continue
+            offenders.append(f"{path.relative_to(REPO).as_posix()}:{lineno}")
+    return offenders
+
+
+def test_no_shipping_surface_names_the_retired_channel_switch():
+    """카드·매뉴얼·엔진 어디에도 삭제된 스위치 키를 전제로 한 절차가 없다 (T-0887).
+
+    문서 두 개 전용 단언으로는 새 카드·새 타깃 사본이 시야 밖에서 옛 절차를 되살린다. 세 하네스
+    PM 이 같은 단계에서 서로 다른 절차를 읽는 것이 이 가드가 막는 형상이다.
+    """
+    offenders = _retired_switch_offenders(_shipped_text_surface())
+    assert not offenders, (
+        f"삭제된 채널 스위치 키 `{RETIRED_SWITCH_KEY}` 를 전제로 한 절차 잔존 — 대상 튜플"
+        f"(harness/model/reasoning) 기준으로 고치라 (T-0887): {offenders}"
+    )
+
+
+def test_retired_switch_scan_detects_an_injected_residue(tmp_path, monkeypatch):
+    """감도 — 스위치 전제 문구를 다시 넣으면 스캔이 그 줄을 검출한다."""
+    card = tmp_path / "SKILL.md"
+    card.write_text(
+        f"`{RETIRED_SWITCH_KEY}=true` 로 채널을 켠 채택자는 교차검증을 돌린다.\n",
+        encoding="utf-8")
+    monkeypatch.setitem(globals(), "REPO", tmp_path)
+
+    assert _retired_switch_offenders([card]) == ["SKILL.md:1"]
+
+
+@pytest.mark.parametrize("relpath", DELEGATE_CARDS)
+def test_delegate_cards_state_equal_authority(relpath):
+    """세 하네스의 위임 카드가 모두 위임 권한 동등 규칙을 싣는다 (T-0887).
+
+    코덱스·오픈코드가 PM 일 때 읽는 자리다 — 한 판만 빠지면 하네스가 바뀔 때 규칙이 사라진다.
+    """
+    text = (REPO / relpath).read_text(encoding="utf-8")
+    assert "위임자는 피위임자에게 자신과 같은 권한을 준다" in text, relpath
+    assert "위임 방향·하네스 조합과 무관하다" in text, relpath
+    assert "접근 권한·경로·env·볼 수 있는" in text, relpath
 
 
 def test_the_channel_has_no_switch_at_all(board, pm_update):

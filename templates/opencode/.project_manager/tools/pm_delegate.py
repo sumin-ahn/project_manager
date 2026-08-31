@@ -3429,7 +3429,7 @@ def _pm_review_refused_rounds(rounds: Sequence) -> set[tuple[str, int]]:
     판정 기준은 산문 문자열이 아니라 **엔진이 발행한 표식 줄**이고 역할을 가리지 않는다. 발행
     자리는 둘이다 — 단일 파일 시절의 거부 산출을 옮겨 온 라운드와, 중간 순번이라 board 예약을
     보존한 채 종결한 포기(`abandon_ticket_copy`)다. 역할로 좁히면 뒤의 것이 판독되지 않아 종결된
-    라운드가 자리표시 골격째로 표면에 선다. 표식을 실은 외부 회신은 회수가 거부한다
+    라운드가 자리표시 골격째로 표면에 선다. 표식을 실은 회신은 회수가 거부한다
     (`review_harvest_problem`).
     """
     return {
@@ -11350,7 +11350,7 @@ _READ_ROLE_STAGED_REQUIRED: frozenset[str] = frozenset({"code-reviewer"})
 
 
 def _preflight_codex_read_exec_root(cwd: Path, *, role: str) -> None:
-    """codex read 역할 스폰 **전** `--cwd` 저장소 형상을 기계로 확정한다(외부 호출 없음).
+    """codex read 역할 스폰 **전** `--cwd` 저장소 형상을 기계로 확정한다(호출 없음).
 
     (a) `--cwd` 가 git 저장소인가 (b) 그 `--show-toplevel` 값이 `--cwd` 자신과 일치하는가
     (저장소 하위 디렉터리가 잘못 `--cwd` 로 넘어온 경우를 잡는다) (c) code-reviewer 역할이면
@@ -11365,13 +11365,13 @@ def _preflight_codex_read_exec_root(cwd: Path, *, role: str) -> None:
     if toplevel.returncode != 0:
         cause = toplevel.stderr.strip() or toplevel.stdout.strip() or "원인 미상"
         raise DelegateError(
-            "codex read 역할 preflight 실패 — --cwd 가 git 저장소가 아님(외부 호출 전 중단): "
+            "codex read 역할 preflight 실패 — --cwd 가 git 저장소가 아님(호출 전 중단): "
             f"cwd={resolved_cwd} · {cause}"
         )
     resolved_toplevel = Path(toplevel.stdout.strip()).resolve()
     if resolved_toplevel != resolved_cwd:
         raise DelegateError(
-            "codex read 역할 preflight 실패 — 실행 root 불일치(외부 호출 전 중단): "
+            "codex read 역할 preflight 실패 — 실행 root 불일치(호출 전 중단): "
             f"--cwd={resolved_cwd} · git toplevel={resolved_toplevel} "
             "(--cwd 는 저장소 최상위여야 한다)"
         )
@@ -11389,13 +11389,13 @@ def _preflight_codex_read_exec_root(cwd: Path, *, role: str) -> None:
     if staged.returncode != 0:
         cause = staged.stderr.strip() or staged.stdout.strip() or "원인 미상"
         raise DelegateError(
-            "codex read 역할 preflight 실패 — staged 조회 실패(외부 호출 전 중단, "
+            "codex read 역할 preflight 실패 — staged 조회 실패(호출 전 중단, "
             f"rc={staged.returncode}): {cause}"
         )
     staged_count = len([line for line in staged.stdout.splitlines() if line])
     if staged_count == 0:
         raise DelegateError(
-            "codex read 역할 preflight 실패 — staged 변경 0(외부 호출 전 중단): "
+            "codex read 역할 preflight 실패 — staged 변경 0(호출 전 중단): "
             f"cwd={resolved_cwd} (리뷰할 diff 가 없다)"
         )
 
@@ -15046,7 +15046,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
                     cwd, predicted_exec_root, predicted_writable,
                 )
             print(dry_run_prompt)
-            print("=== [dry-run] 외부 호출 생략 ===")
+            print("=== [dry-run] 위임 호출 생략 ===")
             return 0
 
         # env allowlist 정제 + 실행. 인프라 실패일 때만 명시 폴백을 같은 드라이버 계약으로

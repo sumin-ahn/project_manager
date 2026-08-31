@@ -47,7 +47,7 @@ sed 로 못 채우는 **자유서술 placeholder** 채움(하니스 헤드리스
     안 됐다"는 잘못된 신호가 된다 — 백업 자리가 막힌 공유 문서를 재렌더에서 빼고 rc 0 으로 끝내는
     기존 처리와 같은 규칙이다. 계획 단계 위반은 반대다: 아직 아무것도 복사하지 않았으므로 전체를
     rc 1 로 멈춘다(부분 설치 0). dest 루트 자체 교체만 예외로 적용 중에도 즉시 전체 중단이다.
-  - fill opt-in 게이트(additional_reviewer 선례): 하니스 실구동은 토큰·모델 비용 → 기본 OFF.
+  - fill 실구동 게이트: 하니스 실구동은 토큰·모델 비용 → 기본 OFF.
     **실호출은 환경변수 PM_IMPORT_LIVE_HARNESS=1 AND --fill auto 동시 충족 시만.** 둘 중 하나라도
     없으면 실 runner 를 호출하지 않는다(CI·기본 테스트는 stub). 회사 배포(claude code 없음)는
     opencode 구동 경로 1급 — 혼합이면 등록 순서상 첫 가용 하네스를 택한다.
@@ -422,7 +422,8 @@ OPENCODE_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
 # `opencode models` 조회 명령 — 가용 모델의 단일 진실(LLM 추측 아님). 줄당 `provider/model`.
 OPENCODE_MODELS_CMD = ("opencode", "models")
 
-# fill 실 하니스 구동 opt-in 게이트 환경변수 (additional_reviewer 선례). PM_IMPORT_LIVE_HARNESS=1
+# fill 실 하니스 구동 게이트 환경변수(호출 횟수 축 — 무엇을 보여줄지가 아니라 몇 번 부를지다).
+# PM_IMPORT_LIVE_HARNESS=1
 # AND --fill auto 동시 충족 시만 실 runner 호출 — 둘 중 하나라도 없으면 stub/manual 강제.
 LIVE_HARNESS_ENV = "PM_IMPORT_LIVE_HARNESS"
 
@@ -3092,7 +3093,7 @@ def run_board_init(dest_root: Path) -> int:
     필요 없다(신규 카테고리 신설이 아니다).
 
     같은 인터프리터(sys.executable)로 호출 — board.py 는 pyyaml 의존이라 venv 보존 필요.
-    비대화형(stdin 비-tty)이면 additional_reviewer opt-in 은 board.py 가 안전쪽(OFF)으로 건너뛴다.
+    비대화형(stdin 비-tty)이면 board.py 는 대화형 질문을 건너뛰고 아무것도 묻지 않는다.
     stdin=DEVNULL 의 isatty() 가 Windows 서 신뢰불가라, env 로
     `PM_NONINTERACTIVE=1` 을 명시 전달해 결정적으로 skip 시킨다 (isatty 폴백 보조).
 
@@ -3497,8 +3498,8 @@ def backup_existing_local_conf(dest_root: Path, backup_root: Path | None) -> str
     """--into 재-import 전, 기존 local.conf 가 있으면 백업하고 원본 텍스트를 반환한다.
 
     MF1: board.py init 은 local.conf 를 무조건 write_text 로 덮으므로, 이미 프레임워크를
-    쓰던 프로젝트(재-import/업그레이드)면 기존 per-clone 설정(additional_reviewer.enabled·
-    추가 리뷰어 프로필 `additional_reviewer.*` 등)이
+    쓰던 프로젝트(재-import/업그레이드)면 기존 per-clone 설정(추가 리뷰어 대상 튜플
+    `additional_reviewer.harness`/`.model`/`.reasoning` 등)이
     무백업 손실된다. local.conf 는 pm_import 의
     copy/backup 대상 트리 밖이라 CopyAction 의 백업 로직을 안 탄다 — init 호출 전 여기서
     명시적으로 백업한다.
@@ -3528,7 +3529,7 @@ def reapply_preserved_conf_keys(dest_root: Path, original_text: str) -> bool:
     """board.py init 이 새로 쓴 local.conf 위에, 기존 파일의 사용자 키를 재병합한다.
 
     MF1: board.py init 은 local.conf 를 통째로 덮으므로, init 이 *안 쓴* 사용자 키
-    (additional_reviewer.enabled·추가 리뷰어 프로필 `additional_reviewer.*`
+    (추가 리뷰어 대상 튜플 `additional_reviewer.harness`/`.model`/`.reasoning`
     등)는 init 후 사라진다. 따라서 init 산출 local.conf 에 *없는* 기존 키만
     _set_conf_keys 로 다시 얹는다. init 이 쓴 키(`runtime.py`·`test.cmd`·`project.name`·ctx 예산)는
     init/operational sync 값을 우선해 덮지 않는다. 결과: import 후 local.conf = board init 기본 + operational sync
@@ -3536,13 +3537,14 @@ def reapply_preserved_conf_keys(dest_root: Path, original_text: str) -> bool:
 
     보존은 **키 이름을 열거하지 않는 일반 규칙**이다 — `_parse_conf_keys` 가 `key=value` 를
     문자열로만 다루므로 점 표기(`additional_reviewer.harness`)든 채택자가 만든 커스텀
-    `additional_reviewer.<임의>` 든 그대로 왕복한다. 구표기 키를 신표기로
-    **자동 마이그레이션하지 않고**, 사용자가 이미 쓴 튜플 값도 덮지 않는다(원문 보존).
+    `additional_reviewer.<임의>` 든 그대로 왕복한다. 사라진 이름만 예외다 — 구표기·제거 키는
+    되얹지 않고 한 줄로 알린다. 신표기로 **자동 마이그레이션하지 않고**(값 추측 금지), 사용자가
+    이미 쓴 튜플 값도 덮지 않는다(원문 보존).
 
     보존 대상 계산은 **쓰기와 같은 락 구간 안**이다. 현재 conf 를 락 밖에서 읽어 계획을 세우면
-    그사이 다른 진입(추가 리뷰어·위임 opt-in)이 기록한 새 결정이 "현재 conf 에 없는 키" 로 남아,
-    백업에 있던 **옛 값이 새 결정을 덮는다**(예: 백업 `additional_reviewer.enabled=false` 가 방금
-    기록된 `true` 를 되돌린다). 백업 텍스트 파싱은 대상 conf 와 경쟁하지 않으므로 락 밖이다.
+    그사이 다른 진입(추가 리뷰어 대상 튜플 기록 등)이 남긴 새 결정이 "현재 conf 에 없는 키" 로
+    남아, 백업에 있던 **옛 값이 새 결정을 덮는다**(예: 백업 `additional_reviewer.model=old` 가
+    방금 기록된 값을 되돌린다). 백업 텍스트 파싱은 대상 conf 와 경쟁하지 않으므로 락 밖이다.
     """
     local_conf = dest_root / ".project_manager" / "local.conf"
     if not local_conf.is_file():
@@ -3551,20 +3553,23 @@ def reapply_preserved_conf_keys(dest_root: Path, original_text: str) -> bool:
         # 락 안에서 다시 한다.
         return False
     original_keys = _parse_conf_keys(original_text)  # 대상 conf 와 무경쟁 — 락 밖.
+    legacy = _load_local_conf().is_legacy_key
     with _local_conf_write_lock(local_conf):
         if not local_conf.is_file():
             return False
         current_keys = _parse_conf_keys(_read_text_shared(local_conf, encoding="utf-8"))
         # board init 이 새로 쓴 local.conf 에 *없는* 기존 사용자 키만 복원(init 값 우선).
-        preserved = {
-            key: value
-            for key, value in original_keys.items()
-            if key not in current_keys
-        }
-        if not preserved:
-            return False
+        # 사라진 이름(`local_conf.LEGACY_KEY_MAP`)은 되얹지 않는다 — 재병합이 그것을 되살리면
+        # 그 clone 은 다음 실행부터 구표기 정지로 멈춘다. 판정 원장은 로더 하나다.
+        missing = {key: value for key, value in original_keys.items()
+                   if key not in current_keys}
+        preserved = {key: value for key, value in missing.items() if not legacy(key)}
+        dropped = sorted(key for key in missing if legacy(key))
         # 락을 이미 쥐었으므로 임계 구간 본문을 직접 부른다(`_write_conf_keys` 재호출 = 재진입).
-        changed = _write_conf_keys_locked(local_conf, preserved)
+        changed = _write_conf_keys_locked(local_conf, preserved) if preserved else False
+    if dropped:
+        # 조용히 지우지 않는다 — 채택자가 자기 파일에서 무엇이 빠졌는지 이 줄로 안다.
+        print(f"✓ 백업의 사라진 키는 재병합하지 않음(제거): {'·'.join(dropped)}")
     if changed:
         kept = "·".join(sorted(preserved))
         print(f"✓ 기존 local.conf 사용자 키 보존: {kept}")
@@ -9284,8 +9289,8 @@ def main(argv: list[str] | None = None) -> int:
             return board_rc
 
     # MF1: board.py init 은 local.conf 를 무조건 덮으므로(local.conf 는 복사/백업 대상 트리
-    #      밖), --into 재-import 면 기존 per-clone 설정(additional_reviewer.enabled·
-    #      additional_reviewer.* 등)이 무백업 손실된다.
+    #      밖), --into 재-import 면 기존 per-clone 설정(추가 리뷰어 대상 튜플
+    #      additional_reviewer.harness/.model/.reasoning 등)이 무백업 손실된다.
     #      init *호출 전*에 백업하고 원본 텍스트를 받아둔다(--new 는
     #      빈 디렉토리 보장이라 None — 보존할 것 없음).
     # 구표기 conf 는 백업 전에 멈춘다 — 바로 뒤 `board.py init` 이 그 conf 를 읽어 fail-loud 하므로
@@ -9316,8 +9321,8 @@ def main(argv: list[str] | None = None) -> int:
         print("✓ local.conf operational 값 동기화 (project.name·test.cmd·runtime.py)")
 
     # MF1: init 이 덮은 local.conf 위에, 백업해 둔 기존 사용자 키 중 init 이 *안 쓴* 것
-    #      (additional_reviewer.enabled·additional_reviewer.* 등)을
-    #      재병합. init/operational sync 값은 우선.
+    #      (추가 리뷰어 대상 튜플 additional_reviewer.harness/.model/.reasoning 등)을
+    #      재병합. init/operational sync 값은 우선(사라진 이름은 되얹지 않는다).
     if preserved_conf_text is not None:
         reapply_preserved_conf_keys(dest_root, preserved_conf_text)
 

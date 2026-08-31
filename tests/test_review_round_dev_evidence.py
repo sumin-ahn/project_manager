@@ -739,16 +739,13 @@ def test_spawn_face_real_send_over_a_seed_developer_round_warns_without_seed_bod
 ):
     """실 스폰 1건(형상 A1) — 미리보기와 같은 seam 이 실호출 경로도 지나는지 값으로 확인한다.
 
-    스텁 경계는 `create_reviewer_workspace`·`run_review`·`_harvest_additional_reviewer_section`
-    셋뿐이다. rc=0 · stderr 경고 · 프롬프트에 시드 라운드 본문이 실리지 않음을 단언한다.
+    스텁 경계는 `run_review`·`_harvest_additional_reviewer_section` 둘뿐이다. rc=0 · stderr 경고 · 프롬프트에 시드 라운드 본문이 실리지 않음을 단언한다.
     """
     pm_home, slot, tickets, _board = rounds_env
     ticket = "T-7826"
     _write_spec(tickets, ticket)
     _prepare(pd, pm_home, slot, ticket, "developer")  # 01-developer.md 시드
-    _wire_external(
-        external, monkeypatch, pm_home, conf={"additional_reviewer.enabled": "true"},
-    )
+    _wire_external(external, monkeypatch, pm_home)
     prompts: list[str] = []
     _stub_real_send_external(external, monkeypatch, tmp_path, prompts)
     capsys.readouterr()

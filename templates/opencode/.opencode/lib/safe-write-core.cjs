@@ -134,8 +134,8 @@ function checkOversizeWrite(toolName, args, denyBytes, fileExists, chunkBytes) {
   return { deny: false };
 }
 
-// ── 결정: append 는 기존 파일에도 의식적으로 허용 (외부 리뷰 제안 reject) ──────────────
-// 외부 리뷰는 "기존 파일 대형 수정을 safe_write append 로 우회 가능"을 must-fix 로 냈으나 reject 한다:
+// ── 결정: append 는 기존 파일에도 의식적으로 허용 (추가 리뷰 제안 reject) ──────────────
+// 추가 리뷰는 "기존 파일 대형 수정을 safe_write append 로 우회 가능"을 must-fix 로 냈으나 reject 한다:
 // append 는 append-only 라 기존 내용을 덮거나 자를 수 없고(훼손 불가), chunk 상한으로 절단-실패 모드도
 // 없어 데이터 유실 경로가 없다. 기존파일 append 거부·생성경로 상태추적은 중단-후-재개(프로세스 재시작
 // 후 이어쓰기·resume)를 파괴하는 퇴행이다. deny 정책(기존파일 재작성→edit 유도)의 목적은 *신뢰성*

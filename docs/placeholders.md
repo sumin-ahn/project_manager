@@ -22,7 +22,7 @@
 
 | 토큰 | 어디에 | 무엇을 채우나 |
 |---|---|---|
-| `{{PROJECT_CONSTRAINTS}}` | 진입 문서(`CLAUDE.md`/`AGENTS.md` §프로젝트 고유 제약) — 단일 거처 | 프로젝트의 **절대 위반 금지 제약**. 아키텍처 불변식·안전 경계 등. (예: "핵심 결정 로직 ↔ 비결정/LLM 계층 경계 분리", "외부 호출은 fail-soft") |
+| `{{PROJECT_CONSTRAINTS}}` | 진입 문서(`CLAUDE.md`/`AGENTS.md` §프로젝트 고유 제약) — 단일 거처 | 프로젝트의 **절대 위반 금지 제약**. 아키텍처 불변식·안전 경계 등. (예: "핵심 결정 로직 ↔ 비결정/LLM 계층 경계 분리", "외부 API 호출은 fail-soft") |
 | `{{PROTECTED_PATHS}}` | **`pm_role.local.md`** §보호 영역 (어댑터엔 이 거처를 가리키는 정적 포인터만) | 서브에이전트·PM 이 **건드리면 안 되는 파일/디렉토리**. (예: 운영 한도·안전 상수 config, immutable `raw/` 스냅샷) |
 | `{{USER_GATE_ITEMS}}` | **`pm_role.local.md`**(overlay) | PM 자율 결정 밖 — **사용자 사전 동의가 필요한 행위**. (예: 외부 비가역 행위, 유료 API 대량 호출) |
 

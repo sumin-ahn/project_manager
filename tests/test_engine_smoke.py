@@ -1,6 +1,6 @@
 """엔진 도구 스모크 테스트 — canonical 엔진(루트 .project_manager/tools/)을 직접 검증.
 
-도구들이 패키지가 아니므로 importlib 로 경로 로드한다. 무거운 외부 호출 없이
+도구들이 패키지가 아니므로 importlib 로 경로 로드한다. 무거운 subprocess 호출 없이
 순수 로직(파싱·필터·status 갱신)만 본다.
 """
 from __future__ import annotations

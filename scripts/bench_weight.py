@@ -10,7 +10,7 @@ lite 진입을 동일 시나리오로 돌려 **진입 토큰·완주 토큰·자
                             --scenario <id> [--out <경로>] [--live]
 
 기본(`--live` 없음) = **dry/plan 모드**: 측정을 실행하지 않고 해당 (harness,weight)
-의 진입 파일셋·프롬프트·sandbox 계획을 출력만 한다 (토큰 0·외부 호출 0). `--live`
+의 진입 파일셋·프롬프트·sandbox 계획을 출력만 한다 (토큰 0·subprocess 호출 0). `--live`
 일 때만 실제 하니스를 subprocess 로 구동한다.
 
 설계 (board T-0008):

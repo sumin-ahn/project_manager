@@ -105,7 +105,7 @@ import tempfile
 import time
 import tomllib
 import uuid
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Callable, Iterator, NamedTuple, Sequence
 
 _TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
@@ -1088,7 +1088,7 @@ def _pm_home_reanchor(anchor: Path) -> Path | None:
 # 엔진 기본 리뷰어 커맨드는 없다 — 대상은 구조화 tuple(`additional_reviewer.{harness,model}`)
 # 해소 결과뿐이고, 모델을 고정하지 않는 실행 경로를 남기지 않는다.
 
-# 외부 호출의 시간 예산(무진행 상한 + 벽시계 백스톱)은 **해소된 대상의 하네스 프로필**이 소유한다
+# 리뷰어 호출의 시간 예산(무진행 상한 + 벽시계 백스톱)은 **해소된 대상의 하네스 프로필**이 소유한다
 # (`pm_relay.HARNESS_PROFILES` — legacy 기본 command가 `codex exec`이면 codex 축 값). 이 모듈에
 # 별도 타임아웃 상수를 두지 않는 이유가 이 티켓의 편입 이유와 같다: **값이 두 군데면 규칙이 둘이
 # 된다.** 평범한 diff 153~294초·13파일 대형 227초 — 구 기본 180초는 평상 대역 *안*이라 상시 타임아웃
@@ -3586,7 +3586,7 @@ def _slot_selection_bases(base: str) -> tuple[str, ...]:
     사용자가 지정한 base 자신만 근거다. 암묵 폴백 단계(`HEAD~1..HEAD`)는 이 슬롯이 무엇을 했는지
     말해주지 않는다 — 슬롯이 아무 것도 안 해도 **공유 base 의 마지막 커밋**이 검토 경로를
     건드렸으면 비어 있지 않아, 놀고 있는 슬롯을 '변경 슬롯'으로 뽑고 그 커밋을 이번 작업물인 양
-    외부로 보낸다. 그래서 그 단계는 *이미 고른 repo 안에서 무엇을 리뷰할지*(추출 폭)에만 남기고
+    리뷰어에게 보낸다. 그래서 그 단계는 *이미 고른 repo 안에서 무엇을 리뷰할지*(추출 폭)에만 남기고
     *어느 repo인지*의 근거에서는 뺀다. 커밋만 된 변경으로 슬롯을 고르려면 앵커를 명시해야 한다 —
     `--base <공통 base ref>`(그 자체로 단계 하나) 또는 repo 를 직접 지정하는 절대 `--paths`.
     """
@@ -5973,19 +5973,6 @@ def _cross_repo_target_conf(
     return target_repo, target_conf_path, target_conf
 
 
-def _normalized_review_paths(conf: dict[str, str]) -> tuple[str, ...]:
-    """동일 Git 경로를 고르는 평범한 표기(`src`, `src/`, `./src`)를 비교용으로 정규화한다.
-
-    Git pathspec magic(`:(...)`)과 루트 표기는 의미를 보존하기 위해 손대지 않는다. 실제 diff에
-    전달하는 원문은 바꾸지 않고 cross-repo 경고의 동치 판정에만 쓴다.
-    """
-    normalized: set[str] = set()
-    for item in _configured_paths(conf):
-        value = item if item.startswith((":", "/")) else str(PurePosixPath(item))
-        normalized.add(value)
-    return tuple(sorted(normalized))
-
-
 def local_conf_divergence(
     *,
     engine_repo: Path,
@@ -6440,7 +6427,7 @@ def _main(argv: list[str] | None = None) -> int:
             print("ticket_body: 미조립 — 이번 리뷰어 입력에 게이트 티켓 본문이 실리지 않습니다")
         print("=== [dry-run] 프롬프트 미리보기 (호출 없음) ===")
         print(prompt)
-        print("=== [dry-run] 외부 호출 생략 ===")
+        print("=== [dry-run] 리뷰어 호출 생략 ===")
         return 0
 
     # ── diff 서킷브레이커 (유료 호출 진입 검사) ──────────

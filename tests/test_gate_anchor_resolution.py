@@ -438,7 +438,7 @@ def test_unregistered_snapshot_dry_run_and_report_stay_open_but_fixed_is_removed
         ])
     assert ledger_path.read_bytes() == before
     captured = capsys.readouterr()
-    assert "[dry-run] 외부 호출 생략" in captured.out
+    assert "[dry-run] 리뷰어 호출 생략" in captured.out
     assert "unrecognized arguments: --fixed" in captured.err
     assert "미등록 linked worktree 자기 앵커에서는" not in captured.err
 

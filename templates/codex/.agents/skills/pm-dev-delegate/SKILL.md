@@ -205,6 +205,10 @@ python3 .project_manager/tools/pm_delegate.py --role <역할> \
   `rc=3` 위임 스위치 off. reply 를 회수해 PM 이 검토·board 갱신을 담당한다(위임 대상은 board 조작 안 함).
 ### 위임 마스터 스위치
 
+**위임자는 피위임자에게 자신과 같은 권한을 준다** — 위임 방향·하네스 조합과 무관하다(코덱스가 PM 일 때
+클로드에게 위임하든, 오픈코드가 코덱스에게 위임하든 같다). 위임 경로에서 접근 권한·경로·env·볼 수 있는
+내용을 좁히는 자리는 만들지 않는다. 남는 비대칭은 CLI 형식과 역할축(generate≠evaluate)뿐이다.
+
 `delegate.enabled`는 "PM이 위임을 해도 되는가" 하나만 정한다. **기본은 허용**이고 채널(native/cross)로
 갈리지 않는다 — 키를 지우면 허용, 명시적으로 끄려면 `false`:
 

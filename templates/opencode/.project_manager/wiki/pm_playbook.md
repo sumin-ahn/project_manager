@@ -243,7 +243,8 @@ wave 하나 = 묶음 하나다. 단계 표·커맨드의 단일 진실은 `/pm-d
 6. **리뷰(묶음 1회) + 추가 리뷰어 교차** — `--role code-reviewer --cluster` 가 스냅샷·프롬프트·라운드
    자리를 만든다. PM이 넣는 것은 검토 중점 문단(`--focus`) 하나이며, 거기에 *"status.md /
    log/current.md 갱신은 PM 담당 — 그 누락은 developer must-fix 아님"* 을 명시한다. 추가 리뷰어는
-   켠 채택자만 같은 시점에 병행한다(티켓별 채널). PM-direct는 이 단계를 생략한다.
+   대상 튜플(`additional_reviewer.harness`/`.model`/`.reasoning`)을 선언한 채택자만 같은 시점에
+   병행한다(티켓별 채널). PM-direct는 이 단계를 생략한다.
 7. **판정 분기(PM 몫)** — finding 은 증거·제안이며 명령이 아니다. 판정 골격에 전수 판정을 채우고
    accepted 만 delta 로 내보낸다.
    - **fix 라운드**: accepted finding 전부를 reviewer 수정·테스트 계약대로 해소한다.
