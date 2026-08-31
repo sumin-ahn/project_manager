@@ -15,13 +15,38 @@
 
 ### Changed
 
+- **BREAKING — `ticket done`·`cluster closed`·`slot released` 를 서로 다른 상태로 분리한다.** 활성 묶음 멤버의 `board.py complete` 직접 호출은 첫 write 전에 거부하고, `ticket_finish.py` 의 `ClusterCloser` 가 넘기는 내부 결속값이 티켓 frontmatter·장부의 양방향 귀속과 정확히 같을 때만 완료 게이트로 들어간다. 장부·역참조가 둘 다 없는 구세대 티켓은 크기 1 해석 id 와 같은 결속만 통과한다. 부트스트랩 슬롯 카드에서 direct complete 처방을 없애 완료 진입은 `/pm-wave-finish` 하나이며, 손상된 cluster 장부가 하나라도 있으면 mutation 은 첫 write 전에 정지한다(조회용 목록과 분리 · 판정 불능은 통과가 아니다).
 - 추가 리뷰어의 canonical 물리 진입점을 `.project_manager/tools/additional_reviewer.py`로 완전 개명했다. 구 `external_review.py`는 shim으로 남기지 않고, `pm_update` full sync가 신 파일 설치를 확인한 뒤 채택자의 구 파일을 `.pm_import_backups/`에 보존하고 퇴역한다. 과거 raw/config/header/role 판독은 호환을 유지하지만 신규 writer는 `additional_reviewer` 식별자만 생성한다.
 
 ### Fixed
 
+- `board complete` 만 먼저 실행돼 **멤버 ticket=done 인데 cluster=open** 으로 남은 반쪽 종결을 `ticket_finish.py --cluster <C> --reconcile-integrated` 로 닫는다. 멤버마다 정확히 한 evidence commit 을 요구해 선택한 제품 git 의 exact HEAD 에서 `anchor <= evidence <= HEAD` 조상 관계를 기계 검증하고(anchor 는 `claimed_rev`, 그 필드가 없는 legacy 멤버만 명시 `--legacy-base-rev`), merge·rebase·code commit·review resolve·slot release 를 0회 호출하며 작업 중인 다른 슬롯은 보존·보고만 한다. 같은 증거 재실행은 무부작용 성공이고 증거·HEAD 불일치는 거부다. 정상 8단계는 이 상태를 만나면 첫 부작용 전에 멈추고 복구 경로를 안내한다.
+- `.project_manager` 가 없는 linked app worktree 의 하위 `--cwd` 가 그 app 의 Git 루트로 해소되지 않아 위임 diff 루트가 어긋나던 결함을 고쳤다(3-repo 분리 형상 채택자 제보). 잘못된 `base_rev` 의 `git diff` 실패도 빈 changed-paths 가 아니라 진단적 오류로 표면화한다.
 - 종료 archive를 같은 task identity로 복원하는 `task reopen`을 추가하고, archived 이름의 신규 bootstrap을 차단했다. `task end`는 handoff 진입이 남긴 durable `pid=0` intent 뒤에만 허용해 무handoff 종료의 슬롯·state 손실을 막는다.
 - Windows 11 QEMU 전체 회귀에서 발견한 99 node·13파일의 테스트 이식성 결함을 실행 인터프리터, 논리/네이티브 경로, JSON backslash, 과대한 parameter ID 축으로 전수 폐쇄했다. 가짜 WindowsApps `python3` shim을 설치한 실제 VM에서도 출하 계약을 유지한다.
 - 한 shell cell의 `git-anchor` `PreToolUse` 판정은 최강 verdict만 남기고 인접한 동일 경고를 `호출 5–6 [pm-home/warn] ×2: …` 형태로 압축한다. 하위 `slot/ok` 반복은 최종 `systemMessage`에서 제외하되 deny code·호출 순서는 보존한다.
+
+### 업그레이드 노트
+
+- **BREAKING — 티켓 완료 진입이 `/pm-wave-finish`(`ticket_finish.py`) 하나다.** `board.py new` 로
+  발행한 티켓은 크기 1 장부에 귀속되므로 `board.py complete T-NNNN` 직접 호출은 이제 첫 write 전에
+  거부된다. 스크립트·문서·훅에서 direct complete 를 부르고 있으면 묶음 종결 호출로 바꿔라. 부트스트랩
+  슬롯 카드에서도 그 줄이 사라졌다.
+- **BREAKING — 반쪽 종결은 복구 전용 경로로만 닫힌다.** 과거에 `board complete` 만 실행해 멤버가 전부
+  `done` 인데 장부가 `open` 으로 남은 묶음이 있으면, 정상 종결은 첫 부작용 전에 멈추고 복구 경로를
+  안내한다. 그 상태는 아래로 닫는다(제품 git 과 슬롯에 쓰기 0 · 작업 중인 다른 슬롯 보존).
+
+  ```
+  ticket_finish.py --cluster C-<이름> --reconcile-integrated \
+    --integrated-rev T-NNNN=<commit> [--legacy-base-rev T-NNNN=<commit>] \
+    --user-ack C-<이름> --repo <repo> --slot <N>
+  ```
+
+  멤버마다 evidence commit 이 정확히 하나 필요하고, `claimed_rev` 가 없는 옛 티켓만 `--legacy-base-rev`
+  로 시작점을 명시한다. `board.py cluster show <이름>` 으로 멤버와 상태를 먼저 확인하라.
+- **`external_review.py` 는 없어졌다.** canonical 진입점은 `.project_manager/tools/additional_reviewer.py`
+  다. shim 을 남기지 않으므로 옛 경로를 부르는 스크립트는 고쳐야 한다. `pm_update` full sync 가 신
+  파일 설치를 확인한 뒤 채택자의 구 파일을 `.pm_import_backups/` 로 옮긴다.
 
 ## [1.7.11] - 2026-08-25
 
