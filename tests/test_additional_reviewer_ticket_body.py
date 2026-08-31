@@ -20,7 +20,6 @@ DIFF = "diff --git a/x.py b/x.py\n@@ -1 +1 @@\n-old\n+new\n"
 # 해소 가능한 추가 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본 커맨드
 # 없음) 이 파일의 모든 형상이 그 세트를 깔고 시작한다.
 _REVIEWER_TARGET = {
-    "additional_reviewer.enabled": "true",
     "additional_reviewer.harness": "codex",
     "additional_reviewer.model": "gpt-5.6-sol",
 }
@@ -89,7 +88,7 @@ def _wire(external, monkeypatch, tmp_path, ticket: Path | None = None, *, conf=N
     monkeypatch.setattr(external, "REPO", tmp_path)
     monkeypatch.setattr(external, "local_config",
                         lambda repo=None: {**_REVIEWER_TARGET, **(conf or {})})
-    monkeypatch.setattr(external, "extract_diff", lambda *args, **kwargs: (DIFF, []))
+    monkeypatch.setattr(external, "extract_diff", lambda *args, **kwargs: DIFF)
     if ticket is not None:
         monkeypatch.setattr(
             external, "_find_ticket_file", lambda ticket_id, pm_home=None: ticket,
@@ -97,24 +96,13 @@ def _wire(external, monkeypatch, tmp_path, ticket: Path | None = None, *, conf=N
 
 
 def _stub_real_send(external, monkeypatch, tmp_path, prompts: list[str]):
-    # 실 송신 경로는 서킷브레이커 진입 검사를 지난다 — 그 폭의 기준점(묶음 장부 통합 브랜치 ·
+    # 실 호출 경로는 서킷브레이커 진입 검사를 지난다 — 그 폭의 기준점(묶음 장부 통합 브랜치 ·
     # 그 merge-base)은 이 tmp REPO 에 없으므로 해소된 값을 그 자리에 넣는다. 기준점 해소
     # 자체의 거부는 전용 파일(`test_additional_reviewer_diff_cap.py`)이 실 git 으로 값 단언한다.
     monkeypatch.setattr(
         external, "cluster_integration_tip", lambda *a, **k: ("task/main", None))
     monkeypatch.setattr(
         external, "integration_anchor", lambda *a, **k: ("a" * 40, None))
-
-    def _workspace(*args, **kwargs):
-        root = tmp_path / "reviewer"
-        tree = root / "tree"
-        home = root / "home"
-        tree.mkdir(parents=True)
-        home.mkdir()
-        return external.ReviewerWorkspace(
-            root=root, tree=tree, home=home,
-            files=1, skipped_unsafe=0, git_repo=True,
-        )
 
     def _run_review(prompt, *args, **kwargs):
         prompts.append(prompt)
@@ -125,7 +113,6 @@ def _stub_real_send(external, monkeypatch, tmp_path, prompts: list[str]):
             "any_must_fix": False, "all_pass": True,
         }
 
-    monkeypatch.setattr(external, "create_reviewer_workspace", _workspace)
     monkeypatch.setattr(external, "run_review", _run_review)
     # 이 파일은 프롬프트 입력 축(T-0695)을 소유한다. 산출 회수(T-0696)는 실 board 왕복이 필요한
     # 별도 축이라 tests/test_additional_reviewer_ticket_harvest.py가 소유하고 여기서는 격리한다.
@@ -154,8 +141,8 @@ def test_ticket_dry_run_prompt_includes_full_body_without_frontmatter(
 def test_real_send_prompt_includes_ticket_body_without_frontmatter(
     external, monkeypatch, tmp_path,
 ):
-    """비-dry-run 전송 직전 조립이 run_review 입력에도 전체 본문을 싣는다(F-005)."""
-    body = "## 결정\n실 전송 경로도 확정 결정을 받는다.\n"
+    """비-dry-run 호출 직전 조립이 run_review 입력에도 전체 본문을 싣는다(F-005)."""
+    body = "## 결정\n실 호출 경로도 확정 결정을 받는다.\n"
     ticket = _ticket(tmp_path / "T-9001-real-send.md", body=body)
     _wire(
         external, monkeypatch, tmp_path, ticket,
@@ -169,7 +156,7 @@ def test_real_send_prompt_includes_ticket_body_without_frontmatter(
     assert len(prompts) == 1
     prompt = prompts[0]
     assert "### 게이트 티켓 본문 (T-9001)" in prompt
-    assert "## 결정\n실 전송 경로도 확정 결정을 받는다." in prompt
+    assert "## 결정\n실 호출 경로도 확정 결정을 받는다." in prompt
     assert "secret_frontmatter: do-not-send" not in prompt
 
 
@@ -324,7 +311,7 @@ def test_ticket_and_cross_repo_paths_load_body_from_selected_pm_home(
     monkeypatch.setattr(
         external, "_normalize_review_paths", lambda *args, **kwargs: ("x.py",),
     )
-    monkeypatch.setattr(external, "extract_diff", lambda *args, **kwargs: (DIFF, []))
+    monkeypatch.setattr(external, "extract_diff", lambda *args, **kwargs: DIFF)
 
     assert external.main([
         "--ticket", "T-9001", "--paths", str(selected_home / "x.py"), "--dry-run",
@@ -493,7 +480,7 @@ def test_select_ticket_body_for_review_is_pure_and_deterministic(
 def test_malformed_rounds_directory_fails_loud_without_sending(
     external, monkeypatch, tmp_path, capsys,
 ):
-    """(e) 라운드 디렉터리 규약 위반은 조용히 지나가지 않는다 — 전송 없이 loud 하게 멈춘다."""
+    """(e) 라운드 디렉터리 규약 위반은 조용히 지나가지 않는다 — 호출 없이 loud 하게 멈춘다."""
     _board_ticket(tmp_path, body=SPEC_BODY)
     stray = (
         tmp_path / ".project_manager" / "board" / "tickets" / "rounds" / "T-9001"

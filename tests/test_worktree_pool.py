@@ -4861,7 +4861,7 @@ def test_generated_hook_rejects_multiline_registry_with_partial_last_row(wp):
 )
 def test_generated_hook_external_command_absence_fails_closed(
         wp, tmp_path, missing, available, bypass, unique_message):
-    """pre-push 외부 프로세스 전수 중 self-test 명령 부재는 모두 보호 push를 거부한다.
+    """pre-push 자식 프로세스 전수 중 self-test 명령 부재는 모두 보호 push를 거부한다.
 
     전수표: `cat` 보호목록 I/O 건전성→거부, `git` HEAD/clean 판정→거부(단, 명시 우회의
     status만 dirty=unknown), `tr`·`date` 감사 증거→거부, `sh` 계약 실행→거부,

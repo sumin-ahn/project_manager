@@ -47,12 +47,12 @@ sed 로 못 채우는 **자유서술 placeholder** 채움(하니스 헤드리스
     안 됐다"는 잘못된 신호가 된다 — 백업 자리가 막힌 공유 문서를 재렌더에서 빼고 rc 0 으로 끝내는
     기존 처리와 같은 규칙이다. 계획 단계 위반은 반대다: 아직 아무것도 복사하지 않았으므로 전체를
     rc 1 로 멈춘다(부분 설치 0). dest 루트 자체 교체만 예외로 적용 중에도 즉시 전체 중단이다.
-  - fill opt-in 게이트(additional_reviewer 선례): 하니스 실구동은 토큰·외부모델 비용 → 기본 OFF.
+  - fill opt-in 게이트(additional_reviewer 선례): 하니스 실구동은 토큰·모델 비용 → 기본 OFF.
     **실호출은 환경변수 PM_IMPORT_LIVE_HARNESS=1 AND --fill auto 동시 충족 시만.** 둘 중 하나라도
     없으면 실 runner 를 호출하지 않는다(CI·기본 테스트는 stub). 회사 배포(claude code 없음)는
     opencode 구동 경로 1급 — 혼합이면 등록 순서상 첫 가용 하네스를 택한다.
 
-opt-in 실 e2e (CI 비포함 — 토큰·외부모델 비용 발생):
+opt-in 실 e2e (CI 비포함 — 토큰·모델 비용 발생):
     1) 대상 하니스 바이너리 설치 확인 (@REGISTERED_FILL_BINARIES@ 중 선택한 것이 PATH 에 있어야 함).
     2) 환경변수와 플래그를 *동시* 지정해 실구동:
            PM_IMPORT_LIVE_HARNESS=1 pm_import.py --into <repo> --fill auto [--fill-harness opencode]
@@ -2872,7 +2872,7 @@ def _report_copied_scope_anomalies(
 def assert_dest_root_unchanged(dest_root: Path, root_identity: tuple | None) -> None:
     """고정한 루트 신원을 **외부 단계 직전에** 재확인한다(board init·실 하니스 fill 등).
 
-    그 단계들은 subprocess/외부 프로세스라 우리 fd 를 물려줄 수 없다 — 구조적 폐쇄가 불가능한
+    그 단계들은 subprocess/자식 프로세스라 우리 fd 를 물려줄 수 없다 — 구조적 폐쇄가 불가능한
     구간이므로 직전 재확인으로 창을 좁힌다(검사-사용 사이 gap 은 남는다·명시). 불일치는 파일
     단위가 아니라 **전체 중단** 클래스다."""
     if root_identity is None:
@@ -4016,7 +4016,7 @@ def resolve_opencode_model(
 # ── fill 단계 (자유서술 placeholder · 하니스 구동 · opt-in) ──────────────────
 # board init·local.conf 동기화 직후의 hook 지점. sed 로 못 채우는 자유서술 placeholder 를
 # 대상 하니스를 헤드리스 구동해 *제안* 한다(auto) / TODO 로 표시한다(manual). 실구동은 토큰·
-# 외부모델 비용이므로 opt-in 게이트(LIVE_HARNESS_ENV + --fill auto) 뒤로 격리한다.
+# 모델 비용이므로 opt-in 게이트(LIVE_HARNESS_ENV + --fill auto) 뒤로 격리한다.
 
 # 하니스 호출 seam — (argv, prompt) → (성공 여부, stdout). 테스트가 stub 주입(토큰 0).
 HarnessRunner = Callable[[list[str], str], "tuple[bool, str]"]
@@ -4231,7 +4231,7 @@ def _real_harness_runner(
     세 하네스 모두 pm_relay 공용 워치독을 경유한다. 하네스별 차이는 코드 분기가 아니라
     HARNESS_PROFILES 선언(startup 감시 여부·진행 신호·idle/wall 상한)이며 대상 repo local.conf
     override도 같은 해소기를 탄다. startup stall만 선언된 유한 재시도를 하고, idle/wall kill은
-    중복 과금·외부 전송을 피하려 자동 재시도하지 않은 채 부분 산출물과 함께 fail-soft 한다.
+    중복 과금·중복 호출을 피하려 자동 재시도하지 않은 채 부분 산출물과 함께 fail-soft 한다.
 
     codex 경로(`codex exec …`)는 **빈 stdin PIPE를 즉시 닫아 EOF를 전달**한다 — stdin 미닫힘 시
     "Reading additional input from stdin..." 로 무기한 대기. stdin·진행 신호 정책은 실제 argv와

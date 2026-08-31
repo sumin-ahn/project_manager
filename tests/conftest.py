@@ -75,7 +75,7 @@ _PROJECT_TEMPDIR_GLOBS = (
 )
 _TEMPDIR_ENV_KEYS = ("TMPDIR", "TEMP", "TMP")
 
-# 위임·외부리뷰 raw 의 **기본 목적지**는 tempdir 가 아니라 해소된 repo 의
+# 위임·추가리뷰 raw 의 **기본 목적지**는 tempdir 가 아니라 해소된 repo 의
 # `.project_manager/.local/` 하위다. 그래서 tempdir 격리만으로는 부족하다 — 기본 경로를 밟는
 # 테스트는 tempdir 가 아니라 **실 작업 트리 안**에 raw 를 쓰고, 위 세션 스냅샷은 그것을 보지
 # 못한다. 감시 축을 하나 더 세워 두 목적지를 함께 닫는다(tempdir 폴백 + repo 기본 경로).
@@ -397,14 +397,11 @@ def current_branch(root: Path) -> str:
 
 # ── ① codex ambient env 중화 (autouse) ────────────────────────────────────────
 
-# 카드 감지 predicate 의 두 마커와 T-0592 실송신 게이트의 network-off 마커를 중화한다.
-# 후자는 승인형 비샌드박스 실행에서도 부모 Codex가 `1`로 유지하는 ambient 값이라, mock runner로
-# 제품 흐름을 검증하는 기존 테스트가 호출층 attestation 부재로 차단되는 것을 막아야 한다. egress
-# 전용 테스트는 이 fixture 뒤에 monkeypatch.setenv 로 다시 켜 두 축을 명시 검증한다.
+# 카드 감지 predicate 의 두 마커를 중화한다 — Codex 세션에서 회귀를 돌리면 이 값들이 pytest env
+# 로 새어, 하네스 미감지를 전제로 하는 케이스가 통째로 codex 판정을 타게 된다.
 _CODEX_AMBIENT_MARKERS = (
     "CODEX_THREAD_ID",
     "CODEX_CI",
-    "CODEX_SANDBOX_NETWORK_DISABLED",
 )
 
 

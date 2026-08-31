@@ -7,6 +7,22 @@
 
 ## [Unreleased]
 
+### Removed
+
+- **BREAKING — 추가 리뷰어를 켜고 끄는 축을 없앴다.** `additional_reviewer.enabled` 키, `board init`·`pm-update` 의 opt-in 질문, 비활성 1회 강제 플래그(`--force`), 그 값을 읽던 모든 분기를 지웠다. 추가 리뷰어는 developer·architect 와 같이 **부르면 도는 역할**이다. 채택자 `local.conf` 에 남은 그 줄은 소비 지점에서 멈추며(대체 키 없음) 지우면 된다 — `true`/`false` 어느 값이든 실행 조건은 같다.
+- 추가 리뷰어에게만 붙던 가시 범위 격리 컨테이너(저장소 거울·임시 홈·리뷰어 전용 env allowlist)를 삭제했다. 리뷰어는 위임과 같은 조건으로 돈다 — cwd 는 검토 대상 저장소, env 는 위임 채널이 소유한 같은 seam 이 조립한다. 리뷰어 전용 노브 `additional_reviewer.env_keep_extra`·`.home_artifacts_extra` 도 대체 키 없이 제거됐다.
+- 보낼 내용을 미리 재던 자리를 전부 지웠다 — 프롬프트 시크릿 스캔과 승인 플래그(`--secret-scan-ack`), 리뷰 diff 의 시크릿 denylist 제외와 노브 `additional_reviewer.denylist_extra`, 기계 사본 경로 제외, 프롬프트 파일 경계 검사, 그리고 그 결과로 실행을 막던 분기와 보고 항목이 함께 사라졌다. 폴백 억제 규칙(`ack` 통과 실행)도 같이 없어졌다.
+- codex 네트워크 attestation 축(`CODEX_SANDBOX_NETWORK_DISABLED` 게이트·`--codex-egress-escalated` 플래그·dry-run 승격 표기·카드 산문)을 지웠다. codex sandbox 의 명령 승인은 codex 자신이 소유하며 엔진이 그 축을 대신 판정하지 않는다.
+
+### Changed
+
+- 우리가 띄우는 행위자를 `외부` 로 부르던 표기를 역할 이름(추가 리뷰어·위임·하네스)으로 바꾸고, `외부 전송`·`외부 송신` 계열 표기까지 출하 표면 전량에서 0 으로 고정하는 검사를 `tests/test_terminology.py` 에 추가했다. 기계 밖으로 나가는 행위·저장소 밖 경로의 `외부` 는 그대로 둔다.
+- 남은 판단 축을 자기 근거로 부른다 — 라운드·wave 예산이 세는 것은 **유료 호출** 횟수다. 엔진 안내·카드·문서의 `전송`/`송신` 표기를 `호출` 로 바꿨고, 손대지 않은 축은 이 예산 상한 하나뿐이다.
+
+### Added
+
+- 하네스 이름을 조건으로 접근 권한·경로·env·판단 축을 가르는 분기를 AST 로 세어 원장 밖 자리를 거부하는 `tests/test_harness_parity_guard.py` 를 추가했다. 현재 등재는 CLI 형식(argv 조립·어댑터 설치·dry-run 표기) 20건이고 권한 분기는 0 이며, 원장은 축소 방향으로만 바뀐다.
+
 ## [1.7.12] - 2026-08-29
 
 ### Added

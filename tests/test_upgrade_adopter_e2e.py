@@ -731,7 +731,12 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   목록이 아니라 그 밖의 코드·산문을 바꿨고, 이 절의 역적용 delta anchor 네 자리는 전부
 #   그 구간 밖이라 그대로 유일 해소된다. 배달 경계(planning → apply → self-update 순서)와
 #   배달 파일 집합은 여전히 불변이고, 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "b21c753db1413ea06855d1780b7261a2a2d1975a9de8bd76ba8c25a1588383bc"
+#   T-0887 에서 또 이동했다 — 추가 리뷰어 온보딩 opt-in 일습(상수·판정·커밋·질문 함수와 두
+#   호출부)이 통째로 사라졌다. 역적용 delta 의 네 anchor 는 전부 그 절 밖이라 그대로 유일
+#   해소되고, 배달 경계(planning → apply → self-update 순서)·배달 파일 집합도 불변이다: 이
+#   fixture 의 두 실행은 `PM_NONINTERACTIVE=1` 이라 삭제된 질문이 애초에 발화하지 않았고, 삭제로
+#   줄어든 것은 그 실행이 부르지 않던 코드뿐이다. 현재화한 것은 기대 SHA 하나뿐이다.
+_T0585_PM_UPDATE_SHA256 = "2d5bf4afa47ae5a0a03e4ea4c74649bc982c09ae644e9d8dea6b44994c92f467"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -906,6 +911,16 @@ def _t0585_pm_update_source() -> str:
     adapter config 판정·apply·self-update 순서는 무편집이며 marker 4곳과 anachronism 부재 단언도
     선통과했으므로, 새 검증 helper/선택 판정 bytes만 합성본 SHA에 반영했다. 후속 수정의 no-local
     strict 검증과 OLD+NEW retired heal 조건도 이 fixture의 현행 manifest 형상에서는 비발화한다.
+
+    T-0887 — 추가 리뷰어의 별도 동의 축을 없애면서 `pm_update.py` 에서 opt-in 온보딩 일체
+    (`maybe_prompt_additional_reviewer`·`_commit_additional_reviewer_optin`·기본 프로필 상수·대상
+    판정 helper·`_append_local_conf_atomic`·`_is_noninteractive`)와 `_main()` 의 호출 2곳을 지웠다.
+    지운 코드는 **동기가 끝난 뒤** 도는 사후 질문 경로이고, 배달 경계(source/manifest planning →
+    apply → self-update 순서)·`sync_adapter_configs`·`_adapter_config_gate_failed`·`apply` 는
+    무편집이다 — `_main()` 에서 바뀐 것은 `converge_upstream_revs(...)` 의 반환을 조건으로 질문을
+    던지던 두 자리가 그 호출 한 줄로 줄어든 것뿐이라 baseline 수렴의 순서·조건은 그대로다. 역델타
+    marker 4곳이 모두 그대로 유일 해소됐고(marker assert 선통과) anachronism 부재 단언 2건도
+    통과한 상태에서 SHA 만 갱신했다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -1026,7 +1041,10 @@ def _install_t0585_updater(dest: Path) -> None:
         _t0585_pm_update_source(), encoding="utf-8", newline="\n")
 
 
-_PRE_T0876_PM_UPDATE_SHA256 = "2949e925d012e12f20867144e1222c42ea75ce135c85b0d12dc64f509ef09ccc"
+# T-0887: 온보딩 opt-in 일습 삭제로 역적용 delta 의 exact-marker 목록이 두 항목으로 줄고
+# (되돌릴 원문이 사라졌다) 그만큼 historical 전문 SHA 도 이동했다. 퇴역 경로 delta 의 marker 는
+# 전부 그 절 밖이라 그대로 유일 해소된다.
+_PRE_T0876_PM_UPDATE_SHA256 = "d2166c82dabd482f05313deec8c74bee5ad6536b92ede2538261690544aac36e"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -1034,6 +1052,14 @@ def _pre_t0876_pm_update_source() -> str:
 
     git history나 HEAD^가 없는 출하 트리에서도 RUN1을 실제 구 updater subprocess로 재현한다.
     whole-file SHA는 역적용 범위를 역사적 구 source bytes에 고정한다.
+
+    재핀 이력:
+
+    T-0887 — 추가 리뷰어 opt-in 온보딩 블록을 `pm_update.py` 에서 삭제했다. 이 fixture 가 역적용
+    하는 T-0878·T-0876 delta 는 retired-path 선언 검증과 legacy flavor 선택 판정이라 삭제된 온보딩
+    코드와 겹치지 않고, exact-marker 는 모두 그대로 유일 해소됐다(marker assert 선통과). RUN1 이
+    검증하는 배달 경계(신 reviewer 설치 → 두 번째 실행의 구 파일 퇴역)도 무편집이므로 합성본
+    bytes 차이만 SHA 에 반영했다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -1157,20 +1183,11 @@ def _pre_t0876_pm_update_source() -> str:
         "",
         1,
     )
+    # T-0887 이 온보딩 opt-in 일습을 지워, 그 절을 되돌리던 역전 항목들도 함께 사라졌다
+    # (되돌릴 원문이 없다 — 죽은 예외를 남기지 않는다). 남은 것은 개칭 축 하나뿐이다.
     exact_reversals = (
         ("import hashlib\n", ""),
-        ("무거운 additional_reviewer 코어를 업데이트 경로", "무거운 external_review 코어를 업데이트 경로"),
-        ("board·additional_reviewer 사본과 같은 판정", "board·external_review 사본과 같은 판정"),
-        ("additional_reviewer 코어가 소유하고", "external_review 코어가 소유하고"),
-        ("additional_reviewer 를 import 하지 않는 이유", "external_review 를 import 하지 않는 이유"),
-        ("(additional_reviewer 의 해소 규칙과 같은 판정·같은 이유)",
-         "(external_review 의 해소 규칙과 같은 판정·같은 이유)"),
-        ("def maybe_prompt_additional_reviewer(dest_root: Path) -> None:",
-         "def maybe_prompt_external_review(dest_root: Path) -> None:"),
-        ("board.prompt_additional_reviewer_optin", "board.prompt_external_review_optin"),
         ("`additional_reviewer.py` 실 실행 커맨드", "`external_review.py` 실 실행 커맨드"),
-        ("maybe_prompt_additional_reviewer(effective_dest)",
-         "maybe_prompt_external_review(effective_dest)"),
     )
     for current, legacy in exact_reversals:
         assert current in source, current

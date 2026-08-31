@@ -5,7 +5,7 @@
 adopter#0 PM 홈(import 사본)을 가리키고 `--paths` override 가 없으면, diff 추출 전에 canonical 코드
 worktree 재지정을 안내하며 fail-loud 한다([[adopter0-gates-use-worktree-canonical]]·PM 65).
 
-규율 경로(cwd·paths) 단언은 순수 filesystem 판정이라 hermetic — 외부 codex 실호출(과금·ADR-0004
+규율 경로(cwd·paths) 단언은 순수 filesystem 판정이라 hermetic — codex 실호출(과금·ADR-0004
 opt-in) 없이 REPO 앵커를 tmp PM 홈/worktree 형상으로 monkeypatch 해 게이트 분기를 단언한다. stage
 선행(git add)·빈-diff 백스톱은 `test_additional_reviewer_repo_root.py` 가 이미 커버(직교).
 
@@ -97,7 +97,6 @@ def test_owns_real_board_legacy_wiki_tickets(external, tmp_path):
 # 리뷰어 대상은 구조화 키로만 지정한다 — 모델을 고정하지 않는 실행 경로가 없어서, 게이트 축을
 # 보는 테스트도 대상 튜플을 갖춰야 실제 실행 지점까지 도달한다.
 _ENABLED_CONF = {
-    "additional_reviewer.enabled": "true",
     "additional_reviewer.harness": "codex",
     "additional_reviewer.model": "gpt-5.6-sol",
 }
@@ -163,28 +162,16 @@ def test_reanchor_none_when_no_worktree(external, tmp_path):
 
 
 def _run_main(external, monkeypatch, anchor: Path, conf: dict, argv: list[str]):
-    """REPO/local_config 를 monkeypatch 해 main() 을 격리 실행 — 외부 리뷰어는 호출되면 기록.
+    """REPO/local_config 를 monkeypatch 해 main() 을 격리 실행 — 추가 리뷰어는 호출되면 기록.
 
-    반환: (exit_code, reviewer_called). 게이트가 codex 전송 전에 차단함을 격리한다."""
+    반환: (exit_code, reviewer_called). 게이트가 codex 호출 전에 차단함을 격리한다."""
     monkeypatch.setattr(external, "REPO", anchor)
     monkeypatch.setattr(external, "local_config", lambda repo=None: conf)
     monkeypatch.setattr(
         external, "resolve_pm_home_for_repo", lambda target, **kwargs: anchor,
     )
-    # extract_diff 는 (diff, 제외 경로 목록) 튜플 반환 (T-0428) — 제외 없음(빈 목록)으로 주입.
-    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: ("diff --git a/x b/x\n+y\n", []))
-    # 리뷰어 가시 범위 거울도 스텁 (T-0563) — 이 픽스처의 앵커는 실 git 저장소가 아니고, 이 파일이
-    # 보는 것은 앵커 해소/차단 분기다. 실 거울 회귀는 test_additional_reviewer_reviewer_isolation.py 소유.
-    monkeypatch.setattr(
-        external, "create_reviewer_workspace",
-        lambda diff_root, *, base_dir=None, conf=None, source_home=None, denylist=():
-        external.ReviewerWorkspace(
-            root=Path(tempfile.mkdtemp(prefix="stub_reviewer_mirror_")),
-            tree=Path(tempfile.mkdtemp(prefix="stub_reviewer_tree_")),
-            home=Path(tempfile.mkdtemp(prefix="stub_reviewer_home_")),
-            files=1, skipped_unsafe=0, git_repo=True,
-        ),
-    )
+    # extract_diff 는 diff 원문 하나만 돌려준다 — 스텁도 문자열이다.
+    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: "diff --git a/x b/x\n+y\n")
     called = {"reviewer": False}
 
     def _fake_run_review(*a, **k):
@@ -217,7 +204,7 @@ def test_main_pm_home_no_paths_derives_worktree(external, monkeypatch, tmp_path,
 
 def test_main_default_review_paths_rejects_changed_pm_home_before_send(
         external, monkeypatch, tmp_path, capsys):
-    """다중 슬롯을 최초 conf review_paths로 고른 뒤 소유 PM 홈이 바뀌면 송신 전 차단한다."""
+    """다중 슬롯을 최초 conf review_paths로 고른 뒤 소유 PM 홈이 바뀌면 호출 전 차단한다."""
     engine_home = tmp_path / "engine-pm-home"
     owner_home = tmp_path / "resolved-owner-pm-home"
     slot_one = engine_home / "work" / "slot-one"
@@ -234,11 +221,9 @@ def test_main_default_review_paths_rejects_changed_pm_home_before_send(
     (owner_home / ".project_manager").mkdir(parents=True)
     configs = {
         engine_home: {
-            "additional_reviewer.enabled": "true",
             "additional_reviewer.paths": "engine-only-path",
         },
         owner_home: {
-            "additional_reviewer.enabled": "true",
             "additional_reviewer.paths": "owner-only-path",
         },
     }
@@ -262,7 +247,7 @@ def test_main_default_review_paths_rejects_changed_pm_home_before_send(
     assert "additional_reviewer.paths" in err
     assert str(engine_home) in err
     assert str(owner_home) in err
-    assert "외부 송신 전에 중단" in err
+    assert "호출 전에 중단" in err
 
 
 def test_main_pm_home_ticket_derives_board_and_diff_separately(external, monkeypatch, tmp_path, capsys):

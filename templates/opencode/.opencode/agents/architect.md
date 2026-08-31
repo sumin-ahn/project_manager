@@ -30,7 +30,7 @@ permission:
 > **1차 위임 경로** —
 > PM(build primary)이 내장 `task` tool 로 이 subagent 를 직접 호출(`subagent_type: architect`)하면
 > opencode 가 별도 자식 세션(fresh ctx·200K 격리)에서 이 정의의 `model:`/`permission:` 대로
-> 구동한다 (PM 9차 deciding test 실증). **폴백 = `opencode run --agent architect` 외부 프로세스**
+> 구동한다 (PM 9차 deciding test 실증). **폴백 = `opencode run --agent architect` 자식 프로세스**
 > (headless·CI·task tool 미노출 빌드)이며 같은 custom 정의의 `model:`과 쓰기 권한을 그대로 쓴다.
 > 코드/엔진은 수정하지 않는다(이 정의 지침).
 > (`.opencode/pm-instructions.md` §2 위임 규약 · ADR-0006 §3/D3/D5 supersede — PM 9차 · spike §3.2)

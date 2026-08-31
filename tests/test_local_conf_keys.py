@@ -11,7 +11,7 @@
 6. 가드 민감도 — 레지스트리에서 키 1개를 빼면 그 키를 담은 conf 가 red.
 
 hermetic: 실 `local.conf` 파일을 tmp 에 만들어 board 도구가 그 파일을 읽어 해소한 값을 단언한다.
-외부 프로세스 스폰 0.
+자식 프로세스 스폰 0.
 """
 from __future__ import annotations
 
@@ -393,7 +393,6 @@ def _wired_init_board(monkeypatch, tmp_path, alias: str):
     }.items():
         monkeypatch.setattr(module, name, value)
     monkeypatch.setattr(module, "install_pre_push_hook", lambda: False)
-    monkeypatch.setattr(module, "prompt_additional_reviewer_optin", lambda: None)
     monkeypatch.setattr(module, "_configure_board_submodule", lambda: False)
     monkeypatch.setattr(module, "_git_config_email", lambda: None)
     monkeypatch.setattr(module, "_detect_py", lambda: "python3")

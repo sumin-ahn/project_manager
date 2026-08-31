@@ -283,54 +283,6 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*'",
     ): WalkException("tmp_path에 fresh import한 adapter fixture의 치환 결과만 검사"),
-    (
-        "tests/test_additional_reviewer_isolation.py",
-        "test_workspace_hides_old_review_raw_from_reviewer_visible_tree",
-        "rglob",
-        "'*'",
-    ): WalkException(
-        "tmp 리뷰어 거울 fixture의 **전수** 검사가 판정의 본질 — 격리 성질은 '어떤 파일도 옛 raw를 "
-        "담지 않는다'라 seam의 tracked-only 열거로는 검증 자체가 성립하지 않는다"),
-    (
-        "tests/test_additional_reviewer_isolation.py",
-        "test_no_isolated_absolute_path_survives_in_any_home_artifact",
-        "rglob",
-        "'*'",
-    ): WalkException(
-        "tmp 임시 홈 fixture **전수**에 격리 대상 절대경로가 없음을 검증 — '무엇이 남았나'가 판정의 "
-        "본질이라 좁힌 열거로는 새 경로 키를 놓친다"),
-    (
-        "tests/test_additional_reviewer_isolation.py",
-        "test_mirror_excludes_secret_denylist_files",
-        "rglob",
-        "'*'",
-    ): WalkException(
-        "tmp 거울 fixture **전수**에 시크릿 본문이 없음을 검증 — '어떤 파일에도 없다'가 판정의 "
-        "본질이라 좁힌 열거로는 유출을 놓친다"),
-    (
-        "tests/test_additional_reviewer_isolation.py",
-        "test_reviewer_home_carries_auth_but_no_sessions",
-        "rglob",
-        "'*'",
-    ): WalkException(
-        "tmp 임시 홈 fixture의 **전수** 검사가 판정의 본질 — '선언된 인증/설정 파일 말고는 아무것도 "
-        "없다'는 성질이라 좁힌 열거로는 세션/이력 잔존을 놓친다"),
-    (
-        "tests/test_additional_reviewer_isolation.py",
-        "test_workspace_builds_tree_and_home_side_by_side",
-        "rglob",
-        "'auth.json'",
-    ): WalkException(
-        "tmp 거울 fixture 안에 인증 파일이 섞이지 않았음을 이름으로 검증(거울은 git 인벤토리가 "
-        "아니라 방금 만든 닫힌 트리)"),
-    (
-        "tests/test_additional_reviewer_isolation.py",
-        "test_workspace_refuses_files_reached_through_out_of_repo_parent_symlink",
-        "rglob",
-        "'*'",
-    ): WalkException(
-        "tmp 리뷰어 거울 fixture 전수에 저장소 밖 내용이 없음을 검증 — 거울은 git 저장소 인벤토리가 "
-        "아니라 방금 만든 닫힌 트리다"),
 }
 
 ALL_EXCEPTIONS = {**MIGRATION_EXCEPTIONS, **REVIEWED_NON_INVENTORY_EXCEPTIONS}

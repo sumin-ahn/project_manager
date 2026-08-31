@@ -3,7 +3,7 @@
 T-0007 의 기계 단계 위에 얹은 fill 단계를 검증한다. 핵심 안전 계약:
   - 실 하니스(claude/opencode) 바이너리는 절대 호출하지 않는다 — 전부 stub runner(토큰 0).
   - opt-in 게이트: PM_IMPORT_LIVE_HARNESS=1 AND --fill auto 동시 충족 시만 실 runner 경로.
-    둘 중 하나라도 없으면 실호출 차단(stub/manual 강제) — 토큰·외부모델 비용 0.
+    둘 중 하나라도 없으면 실호출 차단(stub/manual 강제) — 토큰·모델 비용 0.
   - 생성물은 *제안* — 자유서술 placeholder 만 채우고 자동 확정 안 함(비가역 회피).
 
 run_fill 의 runner seam(주입 콜러블)으로 명령 조립을 토큰 0 으로 검증한다. main 통합은

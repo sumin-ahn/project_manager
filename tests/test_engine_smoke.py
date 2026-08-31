@@ -43,7 +43,6 @@ def additional_reviewer():
 def test_board_exposes_lint_seams(board):
     assert callable(board.lint_wikilinks)        # R14
     assert callable(board._run_lint_hooks)       # R15
-    assert callable(board.prompt_additional_reviewer_optin)  # R17 opt-in
 
 
 def test_ticket_finish_pytest_parser_seams(ticket_finish):
@@ -56,7 +55,7 @@ def test_ticket_finish_pytest_parser_seams(ticket_finish):
 
 
 def test_additional_reviewer_symbols(additional_reviewer):
-    for sym in ("run_review", "parse_verdict", "filter_secret_hunks", "build_prompt"):
+    for sym in ("run_review", "parse_verdict", "extract_diff", "build_prompt"):
         assert callable(getattr(additional_reviewer, sym))
 
 
@@ -105,7 +104,3 @@ def test_verdict_and_exit(additional_reviewer, tmp_path):
     assert r["failed"] and additional_reviewer.determine_exit_code(r) == 1
 
 
-def test_secret_denylist(additional_reviewer):
-    diff = "diff --git a/x.py b/x.py\n+ok\ndiff --git a/.env b/.env\n+SECRET=1\n"
-    filtered, excluded = additional_reviewer.filter_secret_hunks(diff, additional_reviewer._SECRET_DENYLIST_PATTERNS)
-    assert excluded == [".env"] and "SECRET" not in filtered

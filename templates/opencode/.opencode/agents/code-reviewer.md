@@ -30,7 +30,7 @@ permission:
 > **1차 위임 경로** —
 > PM(build primary)이 내장 `task` tool 로 이 subagent 를 직접 호출(`subagent_type: code-reviewer`)하면
 > opencode 가 별도 자식 세션(fresh ctx·200K 격리)에서 이 정의의 `model:`/`permission:` 대로
-> 구동한다 (PM 9차 deciding test 실증). **폴백 = `opencode run --agent code-reviewer` 외부 프로세스**
+> 구동한다 (PM 9차 deciding test 실증). **폴백 = `opencode run --agent code-reviewer` 자식 프로세스**
 > (headless·CI·task tool 미노출 빌드)이며 같은 custom 정의를 쓴다. reviewer는 제품 코드를 생성하지
 > 않지만 위임 프롬프트가 지정한 라운드 파일(`NN-code-reviewer.md`)은 반드시 기록한다.
 > (`.opencode/pm-instructions.md` §2 위임 규약 · ADR-0006 §3/D3/D5 supersede — PM 9차 · spike §3.2)

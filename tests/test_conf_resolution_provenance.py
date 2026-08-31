@@ -1,7 +1,7 @@
-"""Cross-repo local.conf 분기와 송신 프로필 provenance.
+"""Cross-repo local.conf 분기와 호출 프로필 provenance.
 
-두 외부 송신 표면만 대상으로 한다. `_find_repo_root` 보유 도구 전수는 아래 inventory 테스트가
-기계로 다시 뽑아, local.conf 로 송신 대상을 고르지 않는 형제의 제외도 명시적으로 고정한다.
+두 호출 표면만 대상으로 한다. `_find_repo_root` 보유 도구 전수는 아래 inventory 테스트가
+기계로 다시 뽑아, local.conf 로 호출 대상을 고르지 않는 형제의 제외도 명시적으로 고정한다.
 """
 from __future__ import annotations
 
@@ -50,7 +50,6 @@ def _repo(root: Path, conf: dict[str, str] | None) -> Path:
 # 해소 가능한 추가 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본 커맨드
 # 없음) 리뷰 축 형상은 전부 이 세트를 깔고 시작한다.
 _REVIEWER_TARGET = {
-    "additional_reviewer.enabled": "true",
     "additional_reviewer.harness": "codex",
     "additional_reviewer.model": "gpt-5.6-sol",
 }
@@ -120,20 +119,7 @@ def _wire_external(external, monkeypatch, engine: Path, target: Path,
     monkeypatch.setattr(
         external,
         "extract_diff",
-        lambda *args, **kwargs: ("diff --git a/x.py b/x.py\n-old\n+new\n", []),
-    )
-    # 리뷰어 가시 범위 거울 스텁 (T-0563) — 이 파일은 conf provenance 만 본다. 픽스처 앵커는 실
-    # git 저장소가 아니라 거울을 못 만든다. 실 거울 회귀는
-    # test_additional_reviewer_reviewer_isolation.py 가 실 저장소로 소유한다.
-    monkeypatch.setattr(
-        external, "create_reviewer_workspace",
-        lambda diff_root, *, base_dir=None, conf=None, source_home=None, denylist=():
-        external.ReviewerWorkspace(
-            root=Path(tempfile.mkdtemp(prefix="stub_reviewer_mirror_")),
-            tree=Path(tempfile.mkdtemp(prefix="stub_reviewer_tree_")),
-            home=Path(tempfile.mkdtemp(prefix="stub_reviewer_home_")),
-            files=1, skipped_unsafe=0, git_repo=True,
-        ),
+        lambda *args, **kwargs: "diff --git a/x.py b/x.py\n-old\n+new\n",
     )
 
 
@@ -340,53 +326,6 @@ def test_delegate_cli_override_suppresses_configured_fallback_divergence(
     assert "source=cli-override" in err
 
 
-def test_delegate_valid_secret_ack_suppresses_unreachable_fallback_warning(
-        delegate, monkeypatch, tmp_path, capsys):
-    """유효 ack가 fallback을 확정 억제한 뒤에는 양쪽 fallback 값이 달라도 경고하지 않는다."""
-    engine_conf = _with_researcher_fallback(_delegate_conf(), "opus")
-    target_conf = _with_researcher_fallback(_delegate_conf(), "sonnet")
-    engine = _repo(tmp_path / "engine", engine_conf)
-    target = _repo(tmp_path / "target", target_conf)
-    task = "예시 ~/.aws/credentials 를 확인하라."
-    prompt_file = target / "prompt.md"
-    prompt_file.write_text(task, encoding="utf-8")
-    output_dir = tmp_path / "raw"
-    monkeypatch.setattr(delegate, "REPO", engine)
-    monkeypatch.setattr(delegate, "local_config", lambda: dict(engine_conf))
-    monkeypatch.setattr(delegate, "_cwd_in_git_repo", lambda *args, **kwargs: True)
-    monkeypatch.setattr(delegate, "_resolved_adapter_directories", lambda: ())
-    monkeypatch.setattr(delegate, "begin_scope_audit", lambda *args, **kwargs: None)
-    monkeypatch.setattr(delegate, "report_scope_audit", lambda *args, **kwargs: None)
-    prompt = delegate._role_preamble("researcher", ()) + "\n\n" + task
-    digest = delegate.secret_scan_prompt_digest(
-        prompt, "codex", "gpt-5.6-terra",
-    )
-
-    def _run(*args, **kwargs):
-        stdout = "\n".join([
-            json.dumps({"type": "thread.started", "thread_id": "t"}),
-            json.dumps({
-                "type": "item.completed",
-                "item": {"type": "agent_message", "text": "DONE"},
-            }),
-        ])
-        return {
-            "returncode": 0, "stdout": stdout, "stderr": "", "timed_out": False,
-        }
-
-    assert delegate.main([
-        "--role", "researcher",
-        "--prompt-file", str(prompt_file),
-        "--cwd", str(target),
-        "--output-dir", str(output_dir),
-        "--secret-scan-ack", digest,
-    ], run_fn=_run) == 0
-    err = capsys.readouterr().err
-    assert "시크릿 스캔 차단을 명시 승인으로 통과" in err
-    assert "local.conf 프로필 분기" not in err
-    assert "fallback.model" not in err
-
-
 def test_delegate_primary_raw_records_conf_and_profile(
         delegate, monkeypatch, tmp_path, capsys):
     conf = _delegate_conf("medium")
@@ -486,7 +425,6 @@ def test_additional_reviewer_cross_repo_different_reviewer_warns_without_blockin
     engine_conf = dict(_REVIEWER_TARGET)
     engine = _repo(tmp_path / "engine", engine_conf)
     target = _repo(tmp_path / "target", {
-        "additional_reviewer.enabled": "true",
         "additional_reviewer.harness": "claude",
         "additional_reviewer.model": "opus",
     })
@@ -510,7 +448,7 @@ def test_additional_reviewer_cross_repo_different_reviewer_warns_without_blockin
 
 def test_additional_reviewer_same_effective_reviewer_is_quiet_with_provenance(
         external, monkeypatch, tmp_path, capsys):
-    # 두 conf 가 같은 구조화 대상을 지정 — 실제 송신값이 같으므로 무소음이다.
+    # 두 conf 가 같은 구조화 대상을 지정 — 실제 호출값이 같으므로 무소음이다.
     engine_conf = dict(_REVIEWER_TARGET)
     engine = _repo(tmp_path / "engine", engine_conf)
     target = _repo(tmp_path / "target", dict(_REVIEWER_TARGET))
@@ -541,7 +479,7 @@ def test_additional_reviewer_missing_target_conf_is_quiet(
 
 def test_additional_reviewer_dangling_target_conf_symlink_fails_closed(
         external, monkeypatch, tmp_path, capsys):
-    """dangling local.conf는 부재가 아니라 판독 실패이며 대상 denylist 미확인 송신을 차단한다."""
+    """dangling local.conf는 부재가 아니라 판독 실패이며 대상 denylist 미확인 호출을 차단한다."""
     engine_conf = dict(_REVIEWER_TARGET)
     engine = _repo(tmp_path / "engine", engine_conf)
     target = _repo(tmp_path / "target", None)
@@ -556,7 +494,7 @@ def test_additional_reviewer_dangling_target_conf_symlink_fails_closed(
     assert external.main(["--paths", "x.py"]) == 1
     err = capsys.readouterr().err
     assert "대상 local.conf 읽기 실패" in err
-    assert "외부 송신 전에 중단" in err
+    assert "호출 전에 중단" in err
     assert str(target_conf) in err
     assert extracted == []
 
@@ -582,7 +520,7 @@ def test_additional_reviewer_existing_unreadable_target_conf_fails_closed(
     assert external.main(["--paths", "x.py"]) == 1
     err = capsys.readouterr().err
     assert "대상 local.conf 읽기 실패" in err
-    assert "외부 송신 전에 중단" in err
+    assert "호출 전에 중단" in err
     assert str(target_conf) in err
     assert extracted == []
 
@@ -601,41 +539,9 @@ def test_delegate_target_conf_read_error_is_caught_without_traceback(
     ) == 1
     err = capsys.readouterr().err
     assert "해소된 local.conf 읽기 실패" in err
-    assert "외부 송신 전에 중단" in err
+    assert "호출 전에 중단" in err
     assert str(target_conf) in err
     assert "Traceback" not in err
-
-
-def test_additional_reviewer_target_only_denylist_warns_and_is_union_applied(
-        external, monkeypatch, tmp_path, capsys):
-    """대상 보호 선언을 경고만 하고 무시하지 않고 실제 diff denylist에 합친다."""
-    engine_conf = {
-        **_REVIEWER_TARGET,
-        "additional_reviewer.denylist_extra": "*.engine-vault",
-    }
-    engine = _repo(tmp_path / "engine", engine_conf)
-    target = _repo(tmp_path / "target", {
-        **_REVIEWER_TARGET,
-        "additional_reviewer.denylist_extra": "*.target-private",
-    })
-    _wire_external(external, monkeypatch, engine, target, engine_conf)
-    seen = {}
-
-    def _extract(*args, **kwargs):
-        seen["denylist"] = kwargs["denylist"]
-        return "diff --git a/x.py b/x.py\n-old\n+new\n", []
-
-    monkeypatch.setattr(external, "extract_diff", _extract)
-    assert external.main(["--paths", "x.py", "--dry-run"]) == 0
-    err = capsys.readouterr().err
-    assert "additional_reviewer.denylist_extra" in err
-    assert "diff-worktree-only=('*.target-private',)" in err
-    assert "합집합 적용" in err
-    assert "*.engine-vault" in seen["denylist"]
-    assert "*.target-private" in seen["denylist"]
-    assert external._matching_denylist_pattern(
-        "config.target-private", seen["denylist"],
-    ) == "*.target-private"
 
 
 def test_additional_reviewer_same_denylist_is_quiet(
@@ -670,30 +576,6 @@ def test_additional_reviewer_engine_denylist_superset_is_safe_and_quiet(
     assert "local.conf 프로필 분기" not in capsys.readouterr().err
 
 
-def test_additional_reviewer_effective_review_paths_difference_warns_when_used(
-        external, monkeypatch, tmp_path, capsys):
-    engine_conf = {
-        **_REVIEWER_TARGET,
-        "additional_reviewer.paths": "src tests",
-    }
-    engine = _repo(tmp_path / "engine", engine_conf)
-    target = _repo(tmp_path / "target", {
-        **_REVIEWER_TARGET,
-        "additional_reviewer.paths": "src docs",
-    })
-    _wire_external(external, monkeypatch, engine, target, engine_conf)
-
-    assert external.main(["--dry-run"]) == 0
-    err = capsys.readouterr().err
-    assert (
-        "additional_reviewer.paths: pm-home=('src', 'tests'), "
-        "diff-worktree=('docs', 'src')"
-    ) in err
-    assert "review_paths의 이번 범위는 해소된 PM 홈 conf가 정했습니다" in err
-    assert "두 conf를 맞추거나" not in err
-    assert "차단하지 않고 계속합니다" in err
-
-
 def test_additional_reviewer_same_effective_review_path_set_is_quiet(
         external, monkeypatch, tmp_path, capsys):
     """순서·중복과 src/src/./src 표기만 다르면 같은 Git 경로 집합이라 무소음이다."""
@@ -710,51 +592,6 @@ def test_additional_reviewer_same_effective_review_path_set_is_quiet(
 
     assert external.main(["--dry-run"]) == 0
     assert "local.conf 프로필 분기" not in capsys.readouterr().err
-
-
-def test_additional_reviewer_target_denylist_explicit_path_uses_real_filter_and_blocks(
-        external, monkeypatch, tmp_path, capsys):
-    """대상 전용 합집합 패턴은 실 extract_diff 필터를 거쳐 명시 --paths를 fail-loud 차단한다."""
-    engine_conf = {
-        **_REVIEWER_TARGET,
-        "additional_reviewer.denylist_extra": "*.engine-vault",
-    }
-    engine = tmp_path / "engine"
-    (engine / ".project_manager").mkdir(parents=True)
-    subprocess.run(["git", "init", "-q", str(engine)], check=True)
-    protected = engine / "config.target-private"
-    protected.write_text("before\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(engine), "add", protected.name], check=True)
-    subprocess.run([
-        "git", "-C", str(engine),
-        "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
-        "commit", "-qm", "baseline",
-    ], check=True)
-    protected.write_text("after\n", encoding="utf-8")
-    target = _repo(tmp_path / "target", {
-        **_REVIEWER_TARGET,
-        "additional_reviewer.denylist_extra": "*.engine-vault",
-    })
-    (engine / ".project_manager" / "local.conf").write_text(
-        "additional_reviewer.denylist_extra=*.target-private\n", encoding="utf-8",
-    )
-    monkeypatch.setattr(external, "REPO", engine)
-    monkeypatch.setattr(external, "local_config", lambda repo=None: dict(engine_conf))
-    monkeypatch.setattr(
-        external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: target,
-    )
-    monkeypatch.setattr(
-        external, "_resolve_diff_root", lambda *args, **kwargs: engine,
-    )
-
-    assert external.main([
-        "--paths", protected.name, "--dry-run",
-    ]) == 1
-    captured = capsys.readouterr()
-    assert "--paths 로 명시 지정한 경로" in captured.err
-    assert protected.name in captured.err
-    assert "*.target-private" in captured.err
-    assert "외부 호출 생략" not in captured.out
 
 
 def test_additional_reviewer_explicit_paths_suppresses_unused_review_paths_difference(
@@ -774,31 +611,6 @@ def test_additional_reviewer_explicit_paths_suppresses_unused_review_paths_diffe
     err = capsys.readouterr().err
     assert "additional_reviewer.paths:" not in err
     assert "local.conf 프로필 분기" not in err
-
-
-@pytest.mark.parametrize("target_kind", ["none", "same", "missing-conf"])
-def test_review_content_new_axis_preserves_structural_quiet_cases(
-        external, tmp_path, target_kind):
-    engine_conf = {
-        "additional_reviewer.denylist_extra": "*.engine",
-        "additional_reviewer.paths": "src tests",
-    }
-    engine = _repo(tmp_path / "engine", engine_conf)
-    if target_kind == "none":
-        target = None
-    elif target_kind == "same":
-        target = engine
-    else:
-        target = _repo(tmp_path / "target", None)
-
-    resolution = external.resolve_review_content_conf(
-        engine_repo=engine,
-        engine_conf=engine_conf,
-        target_repo=target,
-        include_review_paths=True,
-    )
-    assert resolution.divergence is None
-    assert resolution.denylist == external._denylist_patterns(engine_conf)
 
 
 def test_additional_reviewer_actual_execution_keeps_same_provenance(
@@ -992,7 +804,7 @@ def test_find_repo_root_tool_inventory_and_scope_are_explicit():
 
     assert _reads_delegate_conf_keys(source["pm_delegate.py"])
     assert "local.conf" not in source["contradiction_lint.py"]
-    # ticket_finish 는 local.conf 를 읽지만 외부 송신 프로필 키/소비자는 없다.
+    # ticket_finish 는 local.conf 를 읽지만 호출 프로필 키/소비자는 없다.
     assert "LOCAL_CONF" in source["ticket_finish.py"]
     assert "reviewer_cmd" not in source["ticket_finish.py"]
     assert not _reads_delegate_conf_keys(source["ticket_finish.py"])

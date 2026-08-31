@@ -1,15 +1,15 @@
 """local.conf writer 전수 직렬화 — 공유 락 하나로 lost update 를 닫는다 (T-0590 4차).
 
-`local.conf` 를 쓰는 진입은 한 도구가 아니다: board init(최초 전체 생성·비파괴 병합), board·
-pm_update 의 두 opt-in append(추가 리뷰어·cross-harness 위임), pm_import 의 키 writer
-(`_write_conf_keys` — pm_import 자신·pm_update 의 upstream_rev 기록·pm_config 의 upstream set 이
-공유하는 백엔드). 이들은 **서로 다른 프로세스**로 같은 파일에 동시에 닿을 수 있다.
+`local.conf` 를 쓰는 진입은 한 도구가 아니다: board init(최초 전체 생성·비파괴 병합), pm_update 의
+upstream rev 기록, pm_import 의 키 writer(`_write_conf_keys` — pm_import 자신·pm_update 의
+upstream_rev 기록·pm_config 의 upstream set 이 공유하는 백엔드). 이들은 **서로 다른 프로세스**로
+같은 파일에 동시에 닿을 수 있다.
 
-opt-in append 끼리만 직렬화하면 부족하다는 것이 이 파일의 출발점이다 — append 가 O_APPEND 단일
-write 로 원자적이어도, 커밋 **전에** 내용을 읽고 나중에 통째로 갈아끼우는 writer(init 병합·
-`_write_conf_keys` 의 temp+`os.replace`)가 그사이의 append 를 읽지 못하면 그 결정은 교체본에 없어
-사라진다. 그래서 락의 단위는 "append" 가 아니라 "이 conf 를 읽고 쓰는 구간" 이고, 경로 유도까지
-공용 seam(`file_lock.conf_lock_path`) 한 곳이 소유한다(사본이 갈리면 같은 conf 에 다른 락 파일 =
+쓰기끼리만 직렬화하면 부족하다는 것이 이 파일의 출발점이다 — 각 write 가 원자적이어도, 커밋
+**전에** 내용을 읽고 나중에 통째로 갈아끼우는 writer(init 병합·`_write_conf_keys` 의
+temp+`os.replace`)가 그사이의 다른 결정을 읽지 못하면 그 결정은 교체본에 없어 사라진다. 그래서
+락의 단위는 "쓰기" 가 아니라 "이 conf 를 읽고 쓰는 구간" 이고, 경로 유도까지 공용
+seam(`file_lock.conf_lock_path`) 한 곳이 소유한다(사본이 갈리면 같은 conf 에 다른 락 파일 =
 직렬화 없음).
 
 R6 에서 그 단위가 한 번 더 정확해졌다 — 쓰기만 잠그고 **현재 상태 읽기와 계획**을 락 밖에 두면,
@@ -105,14 +105,6 @@ LOCK_SEAM_CALL = "_local_conf_write_lock("
 LOCAL_CONF_WRITERS: dict[tuple[str, str], tuple[str, str]] = {
     ("board.py", "_write_init_local_conf"):
         (HOLDS_LOCK, "init 최초 전체 생성 + 비파괴 병합(read→merge→write_text)"),
-    ("board.py", "_commit_additional_reviewer_optin"):
-        (HOLDS_LOCK, "추가 리뷰어 opt-in 커밋(재읽기→재판정→단일 추가)"),
-    ("board.py", "_append_local_conf_atomic"):
-        (UNDER_CALLER_LOCK, "선행 개행 + 블록을 한 번의 O_APPEND write 로 붙이는 helper"),
-    ("pm_update.py", "_commit_additional_reviewer_optin"):
-        (HOLDS_LOCK, "추가 리뷰어 opt-in 커밋(동기 대상 conf)"),
-    ("pm_update.py", "_append_local_conf_atomic"):
-        (UNDER_CALLER_LOCK, "board 사본과 동형 append helper(무락 폴백 포함)"),
     ("pm_update.py", "record_upstream_revs"):
         (HOLDS_LOCK, "형상 판정(upstream=)→updates 계획→키 write→검증이 한 구간"),
     ("pm_import.py", "_write_conf_keys"):
@@ -375,18 +367,19 @@ class _Barrier:
             raise self.error
 
 
-def _optin_yes(board, monkeypatch, conf):
-    """board 추가 리뷰어 opt-in 커밋('예') 을 대상 conf 에 태우는 클로저."""
+def _init_merge(board, monkeypatch, conf):
+    """board init 의 비파괴 병합(read→merge→write)을 대상 conf 에 태우는 클로저."""
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
-    return lambda: board._commit_additional_reviewer_optin(True)
+    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    return board._write_init_local_conf
 
 
-def test_a_concurrent_key_writer_never_loses_the_optin_append(
+def test_a_concurrent_key_writer_never_loses_the_init_merge(
     board, pm_import, monkeypatch, tmp_path,
 ):
-    """RMW writer 가 **먼저 읽고** 나중에 교체해도 그사이 opt-in append 가 사라지지 않는다.
+    """RMW writer 가 **먼저 읽고** 나중에 교체해도 그사이 init 병합 결정이 사라지지 않는다.
 
-    이것이 4차 지적의 원문 형상이다 — append 만 서로 직렬화하면 이 순서에서 opt-in 결정이 통째
+    이것이 4차 지적의 원문 형상이다 — 각자 자기 쓰기만 직렬화하면 이 순서에서 한쪽 결정이 통째
     교체에 덮인다. 같은 락을 공유해야 두 결정이 모두 남는다.
     """
     conf = _conf_at(tmp_path, "session=pm\n")
@@ -404,46 +397,46 @@ def test_a_concurrent_key_writer_never_loses_the_optin_append(
         lambda: pm_import._write_conf_keys(conf, {"upstream.rev": "rev-2"}))
     assert barrier.entered.wait(SYNC_TIMEOUT), "RMW writer 가 임계 구간에 못 들어갔다"
 
-    appended = threading.Event()
-    commit = _optin_yes(board, monkeypatch, conf)
+    merged = threading.Event()
+    commit = _init_merge(board, monkeypatch, conf)
 
-    def _append():
+    def _merge():
         commit()
-        appended.set()
+        merged.set()
 
-    append_thread = threading.Thread(target=_append, daemon=True)
-    append_thread.start()
-    assert not appended.wait(BLOCKED_PROBE), (
-        "RMW 가 읽고 쓰는 사이에 append 가 끼어들었다 — 락을 공유하지 않는다")
+    merge_thread = threading.Thread(target=_merge, daemon=True)
+    merge_thread.start()
+    assert not merged.wait(BLOCKED_PROBE), (
+        "RMW 가 읽고 쓰는 사이에 init 병합이 끼어들었다 — 락을 공유하지 않는다")
 
     barrier.resume.set()
     barrier.join(rmw)
-    append_thread.join(SYNC_TIMEOUT)
-    assert not append_thread.is_alive()
+    merge_thread.join(SYNC_TIMEOUT)
+    assert not merge_thread.is_alive()
 
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
     assert parsed["upstream.rev"] == "rev-2", "RMW 의 결정이 사라졌다"
-    assert parsed["additional_reviewer.enabled"] == "true", "opt-in 결정이 교체에 덮였다"
+    assert parsed["runtime.py"] == "python3", "init 병합 결정이 교체에 덮였다"
     assert parsed["session"] == "pm"
 
 
-def test_a_concurrent_key_writer_waits_for_an_in_flight_optin_append(
+def test_a_concurrent_key_writer_waits_for_an_in_flight_init_merge(
     board, pm_import, monkeypatch, tmp_path,
 ):
-    """반대 순서 — append 가 임계 구간에 있으면 RMW writer 가 기다렸다 그 결과 위에 쓴다."""
+    """반대 순서 — init 병합이 임계 구간에 있으면 RMW writer 가 기다렸다 그 결과 위에 쓴다."""
     conf = _conf_at(tmp_path, "session=pm\n")
     barrier = _Barrier()
-    real_append = board.file_lock.append_atomic
+    commit = _init_merge(board, monkeypatch, conf)
+    real_set_conf_keys = board._set_conf_keys
 
-    def _blocking_append(path, text, **kwargs):
+    def _blocking_set(text, updates):
         barrier.entered.set()
         assert barrier.resume.wait(SYNC_TIMEOUT), "배리어 해제 실패"
-        return real_append(path, text, **kwargs)
+        return real_set_conf_keys(text, updates)
 
-    monkeypatch.setattr(board.file_lock, "append_atomic", _blocking_append)
-    commit = _optin_yes(board, monkeypatch, conf)
-    optin = barrier.run(commit)
-    assert barrier.entered.wait(SYNC_TIMEOUT), "opt-in 이 임계 구간에 못 들어갔다"
+    monkeypatch.setattr(board, "_set_conf_keys", _blocking_set)
+    merge = barrier.run(commit)
+    assert barrier.entered.wait(SYNC_TIMEOUT), "init 병합이 임계 구간에 못 들어갔다"
 
     written = threading.Event()
 
@@ -454,97 +447,17 @@ def test_a_concurrent_key_writer_waits_for_an_in_flight_optin_append(
     rmw_thread = threading.Thread(target=_rmw, daemon=True)
     rmw_thread.start()
     assert not written.wait(BLOCKED_PROBE), (
-        "append 가 진행 중인데 RMW 가 먼저 교체했다 — 락을 공유하지 않는다")
+        "init 병합이 진행 중인데 RMW 가 먼저 교체했다 — 락을 공유하지 않는다")
 
     barrier.resume.set()
-    barrier.join(optin)
+    barrier.join(merge)
     rmw_thread.join(SYNC_TIMEOUT)
     assert not rmw_thread.is_alive()
 
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
     assert parsed["upstream.rev"] == "rev-2"
-    assert parsed["additional_reviewer.enabled"] == "true"
-
-
-def test_init_merge_and_optin_append_do_not_lose_either_decision(
-    board, monkeypatch, tmp_path,
-):
-    """board init 병합(전체 교체)과 opt-in append 가 겹쳐도 양쪽 결정이 남는다."""
-    conf = _conf_at(tmp_path, "session=pm\nupstream.path=/somewhere\n")
-    monkeypatch.setattr(board, "LOCAL_CONF", conf)
-    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
-    barrier = _Barrier()
-    real_set_conf_keys = board._set_conf_keys
-
-    def _blocking_set(text, updates):
-        barrier.entered.set()
-        assert barrier.resume.wait(SYNC_TIMEOUT), "배리어 해제 실패"
-        return real_set_conf_keys(text, updates)
-
-    monkeypatch.setattr(board, "_set_conf_keys", _blocking_set)
-    merge = barrier.run(board._write_init_local_conf)
-    assert barrier.entered.wait(SYNC_TIMEOUT), "init 병합이 임계 구간에 못 들어갔다"
-
-    appended = threading.Event()
-
-    def _append():
-        board._commit_additional_reviewer_optin(True)
-        appended.set()
-
-    append_thread = threading.Thread(target=_append, daemon=True)
-    append_thread.start()
-    assert not appended.wait(BLOCKED_PROBE), "init 병합 중에 append 가 끼어들었다"
-
-    barrier.resume.set()
-    barrier.join(merge)
-    append_thread.join(SYNC_TIMEOUT)
-    assert not append_thread.is_alive()
-
-    parsed = _parse_conf(conf.read_text(encoding="utf-8"))
-    assert parsed["additional_reviewer.enabled"] == "true", "opt-in 결정이 병합 교체에 덮였다"
-    assert parsed["upstream.path"] == "/somewhere", "init 이 안 쓰는 사용자 키가 사라졌다"
     assert parsed["runtime.py"] == "python3"
-
-
-def test_delegate_optin_and_key_writer_do_not_lose_either_decision(
-    board, pm_import, monkeypatch, tmp_path,
-):
-    """opt-in append 도 같은 락 아래다 — 키 writer 와 겹쳐도 둘 다 남는다."""
-    conf = _conf_at(tmp_path, "session=pm\n")
-    monkeypatch.setattr(board, "LOCAL_CONF", conf)
-    monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
-    monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
-    barrier = _Barrier()
-    real_set_conf_keys = pm_import._set_conf_keys
-
-    def _blocking_set(text, updates):
-        barrier.entered.set()
-        assert barrier.resume.wait(SYNC_TIMEOUT), "배리어 해제 실패"
-        return real_set_conf_keys(text, updates)
-
-    monkeypatch.setattr(pm_import, "_set_conf_keys", _blocking_set)
-    rmw = barrier.run(lambda: pm_import._write_conf_keys(conf, {"upstream.rev": "rev-2"}))
-    assert barrier.entered.wait(SYNC_TIMEOUT)
-
-    done = threading.Event()
-
-    def _optin():
-        board.prompt_additional_reviewer_optin()
-        done.set()
-
-    optin_thread = threading.Thread(target=_optin, daemon=True)
-    optin_thread.start()
-    assert not done.wait(BLOCKED_PROBE), "RMW 임계 구간에 opt-in 이 끼어들었다"
-
-    barrier.resume.set()
-    barrier.join(rmw)
-    optin_thread.join(SYNC_TIMEOUT)
-    assert not optin_thread.is_alive()
-
-    parsed = _parse_conf(conf.read_text(encoding="utf-8"))
-    assert parsed["upstream.rev"] == "rev-2"
-    assert parsed["additional_reviewer.enabled"] == "true"
+    assert parsed["session"] == "pm"
 
 
 # ── 축 3'': 계획도 락 안이다 (stale plan 경쟁·R5 재현) ──────────────────────
@@ -558,26 +471,27 @@ def test_preserve_does_not_revive_a_backup_value_over_a_decision_made_meanwhile(
 ):
     """재-import 의 사용자 키 보존이 **그사이 생긴 결정**을 백업의 옛 값으로 덮지 않는다.
 
-    형상: 백업에 `additional_reviewer.enabled=false` 가 있고, board init 산출 conf 에는 아직 그 키가
-    없다. 보존 재병합이 "현재 conf 에 없는 키" 판정을 락 밖에서 해 두면, 그 사이 추가 리뷰어
-    opt-in 이 `true` 를 기록해도 낡은 계획이 `false` 로 되돌린다(사람이 방금 켠 결정을 무음
-    롤백). 판정을 락 안에서 하면 새 결정은 그대로 남고 충돌하지 않는 보존 대상만 복원된다.
+    형상: 백업에 `runtime.py=oldpy` 가 있고 대상 conf 에는 아직 그 키가 없다. 보존 재병합이
+    "현재 conf 에 없는 키" 판정을 락 밖에서 해 두면, 그 사이 init 병합이 `python3` 를 기록해도
+    낡은 계획이 `oldpy` 로 되돌린다(방금 정한 값을 무음 롤백). 판정을 락 안에서 하면 새 결정은
+    그대로 남고 충돌하지 않는 보존 대상만 복원된다.
     """
     conf = _conf_at(tmp_path, "session=pm\n")
-    backup = "additional_reviewer.enabled=false\nmy_custom_key=값\n"
+    backup = "runtime.py=oldpy\nmy_custom_key=값\n"
     barrier = _Barrier()
-    real_append = board.file_lock.append_atomic
+    commit = _init_merge(board, monkeypatch, conf)
+    real_set_conf_keys = board._set_conf_keys
 
-    def _blocking_append(path, text, **kwargs):
-        # opt-in 이 락을 쥔 채 **아직 붙이지 않은** 창 — 보존 재병합이 이 창에서 계획을 세우면
+    def _blocking_set(text, updates):
+        # init 병합이 락을 쥔 채 **아직 쓰지 않은** 창 — 보존 재병합이 이 창에서 계획을 세우면
         # 그 계획은 곧 낡는다.
         barrier.entered.set()
         assert barrier.resume.wait(SYNC_TIMEOUT), "배리어 해제 실패"
-        return real_append(path, text, **kwargs)
+        return real_set_conf_keys(text, updates)
 
-    monkeypatch.setattr(board.file_lock, "append_atomic", _blocking_append)
-    optin = barrier.run(_optin_yes(board, monkeypatch, conf))
-    assert barrier.entered.wait(SYNC_TIMEOUT), "opt-in 이 임계 구간에 못 들어갔다"
+    monkeypatch.setattr(board, "_set_conf_keys", _blocking_set)
+    merge = barrier.run(commit)
+    assert barrier.entered.wait(SYNC_TIMEOUT), "init 병합이 임계 구간에 못 들어갔다"
 
     preserved = threading.Event()
 
@@ -588,36 +502,33 @@ def test_preserve_does_not_revive_a_backup_value_over_a_decision_made_meanwhile(
     preserve_thread = threading.Thread(target=_preserve, daemon=True)
     preserve_thread.start()
     assert not preserved.wait(BLOCKED_PROBE), (
-        "opt-in 임계 구간에 보존 재병합이 끼어들었다 — 락을 공유하지 않는다")
+        "init 병합 임계 구간에 보존 재병합이 끼어들었다 — 락을 공유하지 않는다")
 
     barrier.resume.set()
-    barrier.join(optin)
+    barrier.join(merge)
     preserve_thread.join(SYNC_TIMEOUT)
     assert not preserve_thread.is_alive()
 
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
-    assert parsed["additional_reviewer.enabled"] == "true", (
+    assert parsed["runtime.py"] == "python3", (
         "백업의 옛 값이 방금 기록된 결정을 덮었다(락 밖에서 세운 계획)")
     assert parsed["my_custom_key"] == "값", "충돌하지 않는 보존 대상이 사라졌다"
     assert parsed["session"] == "pm"
 
 
-def test_an_in_flight_preserve_blocks_a_later_optin_and_keeps_both_decisions(
+def test_an_in_flight_preserve_blocks_a_later_merge_and_keeps_both_decisions(
     board, pm_import, monkeypatch, tmp_path,
 ):
-    """반대 순서 — 보존 재병합이 **현재 상태를 읽는 지점부터** 락 안이라 뒤 opt-in 이 기다린다.
+    """반대 순서 — 보존 재병합이 **현재 상태를 읽는 지점부터** 락 안이라 뒤 init 병합이 기다린다.
 
     배리어를 쓰기 지점이 아니라 *대상 conf 의 현재 상태 파싱* 지점에 둔다 — 그 읽기가 락 밖이면
-    opt-in 이 이 창에서 즉시 끝나 버린다(red). 락 안이면 순서가 강제되고 두 결정
-    (보존 대상 + opt-in)이 모두 남는다.
+    init 병합이 이 창에서 즉시 끝나 버린다(red). 락 안이면 순서가 강제되고 두 결정
+    (보존 대상 + init 병합)이 모두 남는다.
     """
     conf = _conf_at(tmp_path, "session=pm\n")
     backup = ("my_custom_key=값\nadditional_reviewer.harness=codex\n"
               "additional_reviewer.model=gpt-5.6-sol\n")
-    monkeypatch.setattr(board, "LOCAL_CONF", conf)
-    monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
-    monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    commit = _init_merge(board, monkeypatch, conf)
     barrier = _Barrier()
     real_parse = pm_import._parse_conf_keys
 
@@ -635,24 +546,24 @@ def test_an_in_flight_preserve_blocks_a_later_optin_and_keeps_both_decisions(
 
     done = threading.Event()
 
-    def _optin():
-        board.prompt_additional_reviewer_optin()
+    def _merge():
+        commit()
         done.set()
 
-    optin_thread = threading.Thread(target=_optin, daemon=True)
-    optin_thread.start()
+    merge_thread = threading.Thread(target=_merge, daemon=True)
+    merge_thread.start()
     assert not done.wait(BLOCKED_PROBE), (
-        "보존 재병합이 현재 상태를 읽는 사이 opt-in 이 끼어들었다 — 읽기가 락 밖이다")
+        "보존 재병합이 현재 상태를 읽는 사이 init 병합이 끼어들었다 — 읽기가 락 밖이다")
 
     barrier.resume.set()
     barrier.join(preserve)
-    optin_thread.join(SYNC_TIMEOUT)
-    assert not optin_thread.is_alive()
+    merge_thread.join(SYNC_TIMEOUT)
+    assert not merge_thread.is_alive()
 
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
     assert parsed["my_custom_key"] == "값"
     assert parsed["additional_reviewer.harness"] == "codex"
-    assert parsed["additional_reviewer.enabled"] == "true", "opt-in 결정이 보존 교체에 덮였다"
+    assert parsed["runtime.py"] == "python3", "init 병합 결정이 보존 교체에 덮였다"
 
 
 def _pm_update_rev_writer(pm_update, monkeypatch, rev: str):
@@ -839,20 +750,17 @@ def test_key_writer_takes_the_shared_lock(pm_import, monkeypatch, tmp_path):
     assert taken == [str(conf.parent / ".local" / "local-conf.lock")]
 
 
-def test_pm_update_optin_takes_the_shared_lock(pm_update, monkeypatch, tmp_path):
-    """pm_update 의 opt-in 기록도 공용 락 + 단일 원자 추가다."""
-    conf = _conf_at(tmp_path, "session=pm\n")
-    monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
-    monkeypatch.setattr(pm_update.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+def test_pm_update_rev_record_takes_the_shared_lock(pm_update, monkeypatch, tmp_path):
+    """pm_update 의 upstream rev 기록도 공용 락 안이다(형상 판정→계획→write 가 한 구간)."""
+    conf = _conf_at(tmp_path, "session=pm\nupstream.path=/somewhere\n")
+    _pm_update_rev_writer(pm_update, monkeypatch, "rev-new")
     taken: list[str] = []
     _spy_lock(pm_update._load_file_lock(), monkeypatch, taken)
 
-    pm_update.maybe_prompt_additional_reviewer(conf.parent.parent)
+    assert pm_update.record_upstream_revs(conf.parent.parent, tmp_path / "src")[0]
 
     assert taken == [str(conf.parent / ".local" / "local-conf.lock")]
-    assert (_parse_conf(conf.read_text(encoding="utf-8"))["additional_reviewer.enabled"]
-            == "true")
+    assert _parse_conf(conf.read_text(encoding="utf-8"))["upstream.rev"] == "rev-new"
 
 
 # ── 축 5: 부분 업그레이드 호환 (구세대 file_lock 사본) ──────────────────────
@@ -932,7 +840,7 @@ def test_a_legacy_copy_still_serializes_against_a_new_api_writer(
     """구 API 로 잡은 락이 새 API 로 잡은 락과 실제로 배타적이다(경로가 같으므로).
 
     경로 단언만으로는 "같은 파일" 을 말할 뿐이라, 실제로 한쪽이 다른 쪽을 막는지 배리어로 본다 —
-    구세대 사본으로 물러난 pm_import 의 키 writer 가 임계 구간에 있으면 board 의 opt-in
+    구세대 사본으로 물러난 pm_import 의 키 writer 가 임계 구간에 있으면 board 의 init 병합
     (새 API)이 기다린다.
     """
     conf = _conf_at(tmp_path, "session=pm\n")
@@ -950,25 +858,26 @@ def test_a_legacy_copy_still_serializes_against_a_new_api_writer(
     rmw = barrier.run(lambda: pm_import._write_conf_keys(conf, {"upstream.rev": "rev-2"}))
     assert barrier.entered.wait(SYNC_TIMEOUT), "구세대 사본 writer 가 임계 구간에 못 들어갔다"
 
-    appended = threading.Event()
+    merged = threading.Event()
+    commit = _init_merge(board, monkeypatch, conf)
 
-    def _append():
-        _optin_yes(board, monkeypatch, conf)()
-        appended.set()
+    def _merge():
+        commit()
+        merged.set()
 
-    append_thread = threading.Thread(target=_append, daemon=True)
-    append_thread.start()
-    assert not appended.wait(BLOCKED_PROBE), (
+    merge_thread = threading.Thread(target=_merge, daemon=True)
+    merge_thread.start()
+    assert not merged.wait(BLOCKED_PROBE), (
         "구 API 락이 새 API 락과 배타적이지 않다 — 다른 파일을 잡았다")
 
     barrier.resume.set()
     barrier.join(rmw)
-    append_thread.join(SYNC_TIMEOUT)
-    assert not append_thread.is_alive()
+    merge_thread.join(SYNC_TIMEOUT)
+    assert not merge_thread.is_alive()
 
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
     assert parsed["upstream.rev"] == "rev-2"
-    assert parsed["additional_reviewer.enabled"] == "true"
+    assert parsed["runtime.py"] == "python3"
 
 
 @pytest.mark.parametrize("name", _LEGACY_MODULES)
@@ -989,12 +898,10 @@ def test_a_copy_without_any_lock_primitive_keeps_the_lockless_recovery_contract(
         assert module._write_conf_keys(conf, {"upstream.rev": "rev-2"}) is True
         assert _parse_conf(conf.read_text(encoding="utf-8"))["upstream.rev"] == "rev-2"
     else:
-        monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
-        monkeypatch.setattr(module.sys.stdin, "isatty", lambda: True)
-        monkeypatch.setattr("builtins.input", lambda prompt="": "y")
-        module.maybe_prompt_additional_reviewer(conf.parent.parent)
-        assert (_parse_conf(conf.read_text(encoding="utf-8"))["additional_reviewer.enabled"]
-                == "true")
+        conf.write_text("session=pm\nupstream.path=/somewhere\n", encoding="utf-8")
+        _pm_update_rev_writer(module, monkeypatch, "rev-new")
+        assert module.record_upstream_revs(conf.parent.parent, tmp_path / "src")[0]
+        assert _parse_conf(conf.read_text(encoding="utf-8"))["upstream.rev"] == "rev-new"
 
 
 def test_marked_rev_skew_is_not_absorbed_by_the_conf_lock_seam(pm_import, monkeypatch, tmp_path):
@@ -1072,16 +979,17 @@ def test_serialized_writers_preserve_comments_unknown_keys_and_newlines(
     conf = _conf_at(tmp_path, existing)
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
 
-    board._commit_additional_reviewer_optin(True)
+    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    board._write_init_local_conf()
     pm_import._write_conf_keys(conf, {"upstream.rev": "rev-2"})
 
     text = conf.read_text(encoding="utf-8")
     parsed = _parse_conf(text)
     assert parsed["session"] == "pm"
-    assert parsed["additional_reviewer.enabled"] == "true"
+    assert parsed["runtime.py"] == "python3"
     assert parsed["upstream.rev"] == "rev-2"
     if "my_custom_key" in existing:
         assert "# 사용자 주석" in text and parsed["my_custom_key"] == "값"
     else:
-        # 개행 없이 끝나던 마지막 키가 append 로 변질되지 않았다.
-        assert "abc#" not in text and "abctrue" not in text
+        # 개행 없이 끝나던 마지막 키가 이어붙기로 변질되지 않았다.
+        assert "abc#" not in text and "abcrev-2" not in text

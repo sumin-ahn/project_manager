@@ -417,7 +417,7 @@ flowchart TB
 
 이게 중요한 이유는 하네스마다 강점과 실패 모드가 다르기 때문이다. PM 대화는 Claude Code 로
 열고, 대용량 산출은 opencode 의 파일-전달 규약과 safe_write 를 쓰고, codex 는 별도 실행 하네스나
-외부 검토 게이트로 돌릴 수 있다. 어느 하나가 토큰 한도나 도구 문제에 걸려도 ticket, log, ADR,
+추가 리뷰 게이트로 돌릴 수 있다. 어느 하나가 토큰 한도나 도구 문제에 걸려도 ticket, log, ADR,
 domain 지식은 같은 PM 홈에 남아 다른 하네스가 이어받는다.
 
 ```mermaid
@@ -425,7 +425,7 @@ flowchart LR
     Home["공유 PM 홈<br/>board · wiki · engine"]
     Claude["Claude Code<br/>대화형 PM · 설계"]
     OpenCode["opencode<br/>대용량 산출 · safe_write"]
-    Codex["codex<br/>실행 하네스 · 외부 검토 게이트"]
+    Codex["codex<br/>실행 하네스 · 추가 리뷰 게이트"]
 
     Claude --> Home
     OpenCode --> Home
@@ -574,13 +574,12 @@ dot notation이고 세그먼트 안 철자는 그 식별자의 정본을 따른�
 | `delegate.model_alias.<name>` | (없음) | 모델 별칭 |
 | `delegate.timeout` · `delegate.idle_timeout` | 하네스별 엔진 기본 | 위임 실행의 벽시계 백스톱과 무진행 판정(하네스별 키가 이긴다) |
 | `delegate.code-reviewer.rounds_max` | `3` | 내부 code-reviewer 라운드 수렴 상한(추가 리뷰어 예산과 별개 축·과금 없음) |
-| `harness.<name>.{idle_timeout,wall_timeout}` | 하네스별 엔진 기본 | 외부 하네스 실행의 무진행 판정(주)과 벽시계 백스톱. 미설정이어도 안전하다 |
+| `harness.<name>.{idle_timeout,wall_timeout}` | 하네스별 엔진 기본 | 하네스 실행의 무진행 판정(주)과 벽시계 백스톱. 미설정이어도 안전하다 |
 | `harness.<name>.ctx_window_tokens` | `ctx.window_tokens` | 그 하네스의 컨텍스트 예산(분모) |
 | `harness.opencode.pro_model` | (없음) | opencode 어댑터 카드 렌더에 쓰는 모델 |
 | `ctx.nudge_pct` · `ctx.stop_pct` | `30` · `20` | 잔여 컨텍스트 % 기준 checkpoint 넛지·정지 임계 |
 | `ctx.window_tokens` | `200000` | 하네스별 값이 없을 때의 컨텍스트 예산 |
 | `regression.min_collected` | (없음) | 회귀 수집 하한(0 수집 false-green 차단) |
-| `additional_reviewer.enabled` | `false` | 추가 리뷰어 opt-in(외부 전송·과금 동의) |
 | `additional_reviewer.{harness,model,reasoning}` | (없음) | 리뷰어 대상. 세 키를 세트로 쓴다 |
 | `additional_reviewer.{rounds_max,incomplete_rounds_max,wave_budget}` | 엔진 기본 | 라운드/예산 상한(비용 게이트가 아니라 anti-loop 정지) |
 
@@ -589,32 +588,30 @@ dot notation이고 세그먼트 안 철자는 그 식별자의 정본을 따른�
 `PM_QA_RESULT_V1={"platform":"<name>","head":"<Git OID>","status":"pass","collected":N}`를
 출력해야 한다. JSON member는 이 네 개만 허용되고 중복은 거부한다. `platform`과 `head`는 전달받은
 두 값과 정확히 같아야 하며, `collected`는 bool이 아닌 양의 정수이자 현재 수집 하한 이상이어야 한다.
-명령 rc가 0이 아니거나 marker가 없거나 둘 이상이면 해당 platform은 red다. VM 기동·전송·접속은
+명령 rc가 0이 아니거나 marker가 없거나 둘 이상이면 해당 platform은 red다. VM 기동·접속은
 wrapper 소유이며 board는 이 프로토콜만 검증한다.
 | `additional_reviewer.{timeout,idle_timeout,progress_signal}` | 엔진 기본 | 리뷰어 실행 예산(하네스별 키가 이긴다) |
-| `additional_reviewer.{paths,denylist_extra,env_keep_extra,home_artifacts_extra}` | (없음) | 리뷰 대상 경로·격리 예외 |
+| `additional_reviewer.paths` | (없음) | 리뷰 대상 경로 |
 
 역할 모델을 고를 때는 **generate≠evaluate**가 기준이다. 위임은 매번 새 세션이라 모델이 같아도
 전사 공유가 없지만, `delegate.code-reviewer.model`을 developer와 다르게 두면 맹점을 공유하지 않아
 검출력이 는다(하네스는 달라도 된다). `.reasoning`은 codex가 `low/medium/high/xhigh`를 받고,
 claude·opencode는 실측 후 적용되며 그 전에 지정하면 fail-loud다.
 
-**추가 리뷰어**(additional reviewer) 는 기본적으로 꺼져 있다. 켜면 코드 diff 가 외부로 전송되므로
-프로젝트가 직접 opt-in 을 결정한다. 질문은 첫 init/update 에서 **한 번**뿐이고, "예" 는
-`local.conf` 에 아래 튜플을 원자적으로 기록한다.
+**추가 리뷰어**(additional reviewer) 는 developer·architect·code-reviewer 와 같이 **부르면 도는
+역할**이다 — 채널을 켜고 끄는 스위치도, 이 역할만의 별도 승인 축도 없다. 쓰려면 `local.conf` 에
+아래 대상 튜플을 적는다(없으면 fail-loud).
 
 ```
-additional_reviewer.enabled=true
 additional_reviewer.harness=codex
 additional_reviewer.model=gpt-5.6-sol
 additional_reviewer.reasoning=max
 ```
 
-`additional_reviewer.enabled=true` 는 설정된 외부 전송과 통상 과금에 대한 지속 동의라, 그 뒤 리뷰마다
-비용 승인을 다시 받지 않는다. 프로필은 세 키를 고쳐 교체한다. 리뷰어 대상은 이 구조화 키로만
-지정하며, 옛 `reviewer_cmd` 통짜 커맨드는 더 이상 읽히지 않는다.
+무한 반복은 라운드/wave 예산이 기계로 막는다. 프로필은 세 키를 고쳐 교체한다. 리뷰어 대상은 이
+구조화 키로만 지정하며, 옛 `reviewer_cmd` 통짜 커맨드는 더 이상 읽히지 않는다.
 
-`local.conf` 키 표기는 **dot notation 하나로 통일**돼 있다(`additional_reviewer.enabled`·
+`local.conf` 키 표기는 **dot notation 하나로 통일**돼 있다(`additional_reviewer.harness`·
 `delegate.timeout`·`ctx.window_tokens`·`harness.opencode.pro_model` 형태). 옛 flat 표기
 (`external_review_enabled`·`additional_reviewer_enabled`·`reviewer_cmd`·`ctx_window_tokens_opencode`
 등)는 **읽히지 않고 조용히 무시되지도 않는다** — 그 conf 를 소비하는 도구가 실행 시점에 멈추고
@@ -760,7 +757,7 @@ opencode 는 `.opencode/agents/<역할>.md`, codex 는 `.codex/agents/<역할>.t
   자동화 장치가 아니라 각 단계를 명시적으로 밟게 하는 장치다.
 
 실전 멀티-에이전트 프로젝트에서 검증하며 발전시키는 운영 프레임워크다. 팀과 프로젝트마다 필요한
-자동화 수준은 다르지만, 되돌리기 어려운 결정(자본, 안전 한도, 외부 송신 같은 것)은 자동화하지
+자동화 수준은 다르지만, 되돌리기 어려운 결정(자본, 안전 한도, 비가역 행위 같은 것)은 자동화하지
 않고 사용자 게이트로 남긴다.
 
 ## 라이선스

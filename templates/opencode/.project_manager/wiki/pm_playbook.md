@@ -97,8 +97,8 @@ T-NNNN 의 변경을 검토하라. 변경 파일: <경로>. (code-reviewer)
 
 **검토 루프:** 단계 준비·회수는 `/pm-dev-delegate`, 확인 생성과 처분은 `pm_delegate.py rounds resolve
 --cluster <C-이름> --pm-verified`, 종결은 `ticket_finish.py --cluster`가 수행한다. 수렴 불변식은
-[`pm_principles.md`](pm_principles.md) §"티켓과 위임"만 소유한다. 추가 리뷰어는 기본 OFF 인 opt-in 채널이라 `additional_reviewer.enabled=true` 인
-채택자만 이 루프에 병행한다(§추가 리뷰어 교차검증). reviewer 산출은 구현 명령이 아니라
+[`pm_principles.md`](pm_principles.md) §"티켓과 위임"만 소유한다. 추가 리뷰어는 대상 튜플
+(`additional_reviewer.harness`/`.model`)을 선언한 채택자만 이 루프에 병행한다(§추가 리뷰어 교차검증). reviewer 산출은 구현 명령이 아니라
 증거·제안이며, `review disposition-template`과 `review delta`가 PM 판정 및 fix 입력을 연결한다.
 git 도입 후 code-reviewer는 `git diff`로 변경 범위·내용을 직접 검증한다. PM-direct는 이 루프 대신 PM 구현·self-review·범위 테스트를 거친다.
 
@@ -151,20 +151,19 @@ wave 중 묶음 종결은 `ticket_finish.py --cluster <C-이름> --no-pytest` + 
     처방대로 따르면 다른 결함이 생기는 상호작용을 developer 가 발견하면 라운드 파일의 빈틈 절에
     기록한다. 이후 처리 규범은 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다.
 
-### 추가 리뷰어 교차검증 (opt-in 채널 · 기본 OFF)
+### 추가 리뷰어 교차검증 (대상 튜플을 선언한 채택자)
 
-추가 리뷰어(additional reviewer)는 기본 OFF 인 opt-in 채널이다. `additional_reviewer.enabled=true` 로 켠 채택자만 code-reviewer 라운드에 이 채널을 병행하며, 아래 규약은 켠 경우에 적용된다. 역할 이름도 설정 키(`additional_reviewer.enabled`·`additional_reviewer.*`)도 추가 리뷰어로 통일돼 있다. 신규 CLI·모듈·설정·raw 표면의 canonical은 `additional_reviewer`다. 개칭 전 `external_review`는 구 설정·raw header/prefix·round role 판독과 퇴역 이주를 위한 read-only 호환 이름으로만 남으며, 구 실행 파일은 다시 만들지 않는다. 구키를 쓰는 채택자 `local.conf` 는 실행 시 안내 1줄을 받는다(마이그레이션 절차는 README).
+추가 리뷰어(additional reviewer)는 위임과 **같은 실행 조건**을 받는 역할이다 — 이 역할만 켜고 끄는 스위치는 없다. 대상 튜플(`additional_reviewer.harness`/`.model`)을 선언한 채택자만 code-reviewer 라운드에 이 역할을 병행한다. 역할 이름도 설정 키(`additional_reviewer.*`)도 추가 리뷰어로 통일돼 있다. 신규 CLI·모듈·설정·raw 표면의 canonical은 `additional_reviewer`다. 개칭 전 `external_review`는 구 설정 키 이주표와 과거 raw header/prefix 판독을 위한 read-only 호환 이름으로만 남으며, 구 실행 파일도 라운드 role 별칭도 다시 만들지 않는다. 구키를 쓰는 채택자 `local.conf` 는 실행 시 안내 1줄을 받는다(마이그레이션 절차는 README).
 
-전제는 `local.conf` 의 원자적 튜플 하나다(첫 init/update 에서 **1회만** 묻는다 — 비활성이면 `--dry-run` 미리보기·`--force` 1회 강제).
+전제는 `local.conf` 의 원자적 튜플 하나다(선언이 없으면 대상이 없어 fail-loud · 미리보기는 `--dry-run`).
 
 ```
-additional_reviewer.enabled=true
 additional_reviewer.harness=codex
 additional_reviewer.model=gpt-5.6-sol
 additional_reviewer.reasoning=max
 ```
 
-`additional_reviewer.enabled=true` 는 설정된 외부 전송과 통상 과금에 대한 **지속 동의**다 — 켠 뒤에는 리뷰마다·상한 재개마다 사용자에게 비용을 다시 묻지 않는다. 라운드/wave 상한은 비용 게이트가 아니라 기계적 anti-loop 정지이며 축마다 규율이 다르다:
+호출마다 비용을 다시 묻지 않는다 — 리뷰마다·상한 재개마다의 승인 절차는 없다. 라운드/wave 상한은 기계적 anti-loop 정지이며 축마다 규율이 다르다:
 
 - **리뷰 라운드 축(연장 승인 없음)** — 상한 2회(`additional_reviewer.rounds_max`), 직전 라운드 대비 must-fix 증가는 상한 전 조기 차단이다. rc=4면 `--rounds-report`로 장부를 읽고 현재 티켓을 정지해 사용자에게 보고한다. 라운드를 연장하는 승인 플래그는 폐지됐다.
 - **wave 예산 축(재개 ack 유지)** — rc=4 면 `--rounds-report` 로 장부를 읽고 **같은 scope 의 정상 수렴이면 PM 이 자율로 `--ack-wave`** 하며 판단 근거를 log 에 남긴다. 예산을 열어도 라운드 축의 수렴 판정은 그대로 닫혀 있다.
@@ -190,10 +189,10 @@ Claude Bash 도구로 아래 장시간 커맨드를 실행할 때는 호출층 `
   `--ticket` 이 touches 를 diff 경로로 잡고, `--adr` 이 관련 ADR 을 프롬프트에 참조로 넣는다.
 - **설계 리뷰** (ADR/spike): ADR/spike 문서 자체를 diff 로 보낸다.
   ```
-  python3 .project_manager/tools/additional_reviewer.py --base <ref> --paths .project_manager/wiki/decisions/ ... --gate <T-NNNN|ADR-NNNN>   # 실 전송은 --gate(또는 --ticket 유도)나 명시적 --no-gate 필수
+  python3 .project_manager/tools/additional_reviewer.py --base <ref> --paths .project_manager/wiki/decisions/ ... --gate <T-NNNN|ADR-NNNN>   # 실 호출은 --gate(또는 --ticket 유도)나 명시적 --no-gate 필수
   ```
 - **diff-only 한계**: 추가 리뷰어는 **diff 만** 본다 (`--adr` 은 ID 참조일 뿐 본문 미포함). ADR 본문이 필요하거나 코드 ticket 이 ADR 을 함께 개정하면 **`--paths` 에 코드 경로(ticket touches)와 ADR/문서 경로를 함께 나열**한다. ⚠️ `--paths` 는 `--ticket` touches 를 *대체*하므로 코드 경로 누락 시 코드 diff 가 리뷰에서 빠진다. 또는 코드(`--ticket`)·설계(`--paths`)를 **별도 실행**한다.
-- 판정: 추가 리뷰어가 must-fix 감지 시 exit 1 (반려). 외부 호출 실패(인증/한도/네트워크/타임아웃) → exit 1 + `FALLBACK_INTERNAL` (내부 reviewer 폴백 신호).
+- 판정: 추가 리뷰어가 must-fix 감지 시 exit 1 (반려). 리뷰어 호출 실패(인증/한도/네트워크/타임아웃) → exit 1 + `FALLBACK_INTERNAL` (내부 reviewer 폴백 신호).
 
 ### 방식 B — 독립 구현 세션 (별도 Claude 세션, 수동 spawn)
 
@@ -224,7 +223,7 @@ wave 하나 = 묶음 하나다. 단계 표·커맨드의 단일 진실은 `/pm-d
    의 h1·h2·docs-only 보조 신호를 보고 PM이 아래 순서의 첫 매치를 확정해 `board.py tier`로 기록한다.
    - **PM-direct**: touches 실제 파일 ≤2, 동작 무변경 또는 red→green 테스트 확정, hard 신호 0,
      완료 전 범위 테스트. 위임·리뷰 없음.
-   - **hard**: 도구 모듈 2+, 공용 코드, 파싱 규칙, 기존 동작 영향, 보안·시크릿·외부 송신·git 훅,
+   - **hard**: 도구 모듈 2+, 공용 코드, 파싱 규칙, 기존 동작 영향, 보안·시크릿·git 훅,
      board 상태 전이·lease·잠금·동시성 중 1개 이상. 상위 developer 프로필을 쓴다.
    - **normal**: 소거법. 애매하면 상향한다.
 2. **묶음 선언 + claim** — `board.py cluster new <이름> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로>`

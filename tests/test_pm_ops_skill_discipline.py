@@ -266,7 +266,7 @@ def test_review_operation_docs_keep_current_and_legacy_names_in_the_right_direct
         text = path.read_text(encoding="utf-8")
         assert "canonical은 `additional_reviewer`" in text, path
         assert "개칭 전 `external_review`" in text and "read-only 호환 이름" in text, path
-        assert "구 실행 파일은 다시 만들지 않는다" in text, path
+        assert "구 실행 파일도 라운드 role 별칭도 다시 만들지 않는다" in text, path
         assert "`additional_reviewer` 는 엔진 모듈 파일 이름" not in text, path
 
 

@@ -21,8 +21,6 @@ multi_agent = true    # .codex/agents/*.toml in-session spawn (stable·기본 on
 hooks = true          # 비차단 PreCompact checkpoint 안내 발화 전제
 
 [sandbox_workspace_write]
-# egress 차단 안전 경계. cross-harness 실위임은 전역 true로 완화하지 않고,
-# $pm-dev-delegate 카드의 dry-run → exec_command require_escalated 건별 승격 계약을 탄다.
-# 최초 pm_delegate.py reusable prefix 승인이 그 승격의 근거다 —
-# local.conf delegate.enabled 는 위임 허용 여부만 정하고 승격을 대신하지 않는다.
+# codex 자신의 sandbox 안전 경계 — 전역 true 로 완화하지 않는다. 네트워크가 필요한 명령은
+# codex 의 명령 승인 절차로 건별 승격한다(엔진이 이 축을 대신 판정하지 않는다).
 network_access = false

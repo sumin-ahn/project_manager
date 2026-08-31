@@ -729,15 +729,15 @@ def test_codex_resolve_ctx_budget_precedence(driver_mod):
     assert resolve({"harness.codex.ctx_window_tokens": "0"}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
 
 
-# ── 엔진 Supervisor + codex driver 결합 (post-turn 회전·재전송 금지·codex R2 핵심 가드) ──
+# ── 엔진 Supervisor + codex driver 결합 (post-turn 회전·재호출 금지·codex R2 핵심 가드) ──
 
 def test_supervisor_with_codex_driver_post_turn_no_resend(orch, driver_mod, tmp_path):
-    """codex post-turn marker 회전 — turn 실행 *후* 박제라 그 입력을 **재전송하지 않는다**(이중 실행 방지).
+    """codex post-turn marker 회전 — turn 실행 *후* 박제라 그 입력을 **재호출하지 않는다**(이중 실행 방지).
 
-    opencode/claude pre-turn(입력 *처리 전* 차단)은 회전 후 그 입력을 재전송하지만, codex 는 turn 이
-    이미 실행·응답됐으므로 Supervisor 가 재전송 없이 회전한다(codex R2 must-fix). marker 는 codex
+    opencode/claude pre-turn(입력 *처리 전* 차단)은 회전 후 그 입력을 재호출하지만, codex 는 turn 이
+    이미 실행·응답됐으므로 Supervisor 가 재호출 없이 회전한다(codex R2 must-fix). marker 는 codex
     driver 자신의 `_maybe_mark_ctx`(usage 예산 초과 → 엔진 write_post_turn_marker)가 박제 — 통합 경로.
-    'first' 입력이 정확히 **1회만** relay(부작용 1회)되고 회전이 일어남을 단언. (구 pre-turn 재전송이면
+    'first' 입력이 정확히 **1회만** relay(부작용 1회)되고 회전이 일어남을 단언. (구 pre-turn 재호출이면
     'first' 가 2회 relay 돼 이 단언이 실패 → 이중 실행 결함을 못박는다.)"""
     relayed = []          # relay 로 전달된 프롬프트 순서(spawn bootstrap 은 제외).
     spawn_count = {"n": 0}
@@ -763,8 +763,8 @@ def test_supervisor_with_codex_driver_post_turn_no_resend(orch, driver_mod, tmp_
     rc = sup.run_loop("/repo/root", io.StringIO("first\nsecond\n"), io.StringIO())
     assert rc == 0
     assert spawn_count["n"] == 2               # 회전 발생(초기 spawn + post-turn respawn).
-    assert relayed.count("first") == 1         # 'first' 재전송 안 됨 — 정확히 1회(부작용 1회).
-    assert relayed == ["first", "second"]      # 재전송이면 ["first","first","second"] 가 됐을 것.
+    assert relayed.count("first") == 1         # 'first' 재호출 안 됨 — 정확히 1회(부작용 1회).
+    assert relayed == ["first", "second"]      # 재호출이면 ["first","first","second"] 가 됐을 것.
 
 
 def test_supervisor_codex_spawn_marker_rotates_before_first_input(orch, driver_mod, tmp_path):

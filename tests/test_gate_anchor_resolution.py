@@ -101,35 +101,23 @@ def _unregistered_worktree(tmp_path: Path) -> tuple[Path, Path]:
 
 
 # 해소 가능한 추가 리뷰어 대상 줄 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본
-# 커맨드 없음) 실 전송 분기를 태우는 conf 는 이 세 줄을 함께 담아야 한다.
+# 커맨드 없음) 실 호출 분기를 태우는 conf 는 이 세 줄을 함께 담아야 한다.
 _REVIEWER_TARGET_LINES = (
-    "additional_reviewer.enabled=true\n"
     "additional_reviewer.harness=codex\n"
     "additional_reviewer.model=gpt-5.6-sol\n"
 )
 
 
 def _enable_additional_review(repo: Path) -> None:
-    """실 전송 분기까지 태울 최소 opt-in conf."""
+    """실 호출 분기까지 태울 최소 opt-in conf."""
     local = repo / ".project_manager" / "local.conf"
     local.parent.mkdir(parents=True, exist_ok=True)
     local.write_text(_REVIEWER_TARGET_LINES, encoding="utf-8")
 
 
 def _stub_review_send(external, monkeypatch, tmp_path: Path) -> dict[str, int]:
-    """실 프로세스 없이 격리·전송 경계를 지나게 하는 최소 리뷰어 대역."""
+    """실 프로세스 없이 호출 경계를 지나게 하는 최소 리뷰어 대역."""
     calls = {"reviewer": 0}
-
-    def _workspace(*args, **kwargs):
-        root = tmp_path / f"reviewer-{calls['reviewer']}"
-        tree = root / "tree"
-        home = root / "home"
-        tree.mkdir(parents=True)
-        home.mkdir()
-        return external.ReviewerWorkspace(
-            root=root, tree=tree, home=home,
-            files=1, skipped_unsafe=0, git_repo=True,
-        )
 
     def _review(*args, **kwargs):
         calls["reviewer"] += 1
@@ -141,7 +129,6 @@ def _stub_review_send(external, monkeypatch, tmp_path: Path) -> dict[str, int]:
             "any_must_fix": False, "all_pass": True,
         }
 
-    monkeypatch.setattr(external, "create_reviewer_workspace", _workspace)
     monkeypatch.setattr(external, "run_review", _review)
     return calls
 
@@ -273,7 +260,6 @@ def test_unregistered_snapshot_gated_round_fails_before_ledger_raw_or_spawn(
     (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
     external = _load("additional_reviewer_unregistered_round_block")
     monkeypatch.setattr(external, "REPO", snapshot)
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     monkeypatch.setattr(
         external, "_reserve_round_budget",
         lambda *args, **kwargs: (_ for _ in ()).throw(
@@ -281,9 +267,9 @@ def test_unregistered_snapshot_gated_round_fails_before_ledger_raw_or_spawn(
         ),
     )
     monkeypatch.setattr(
-        external, "reviewer_visibility_scope",
+        external, "run_review",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("reviewer isolation/spawn path must not run"),
+            AssertionError("reviewer spawn path must not run"),
         ),
     )
     output_dir = tmp_path / "raw"
@@ -295,7 +281,7 @@ def test_unregistered_snapshot_gated_round_fails_before_ledger_raw_or_spawn(
 
     err = capsys.readouterr().err
     assert "미등록 linked worktree 자기 앵커" in err
-    assert "외부로 전송하지 않았습니다" in err
+    assert "호출하지 않았습니다" in err
     assert "PM 홈 cwd" in err and "--paths <경로>" in err and "--ticket <T-NNNN>" in err
     assert str(snapshot / ".project_manager" / ".local" / "review_rounds.json") in err
     assert not output_dir.exists()
@@ -305,7 +291,7 @@ def test_unregistered_snapshot_gated_round_fails_before_ledger_raw_or_spawn(
 def test_unregistered_snapshot_with_ticket_gated_round_still_fails_before_side_effects(
     tmp_path, monkeypatch, capsys,
 ):
-    """스냅샷의 실 ticket이 강등 기록을 없애도 lease 미등록 자기 앵커는 전송하지 않는다."""
+    """스냅샷의 실 ticket이 강등 기록을 없애도 lease 미등록 자기 앵커는 호출하지 않는다."""
     _source, snapshot = _unregistered_worktree(tmp_path)
     _enable_additional_review(snapshot)
     tickets = snapshot / ".project_manager" / "board" / "tickets" / "open"
@@ -317,7 +303,6 @@ def test_unregistered_snapshot_with_ticket_gated_round_still_fails_before_side_e
     (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
     external = _load("additional_reviewer_unregistered_ticket_round_block")
     monkeypatch.setattr(external, "REPO", snapshot)
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
 
     # 발단 우회 형상을 고정한다: real-board 조기 반환 때문에 자기 앵커지만 강등 기록은 없다.
     demotions = []
@@ -336,7 +321,7 @@ def test_unregistered_snapshot_with_ticket_gated_round_still_fails_before_side_e
 
     monkeypatch.setattr(external, "_reserve_round_budget", _forbidden("round"))
     monkeypatch.setattr(external, "_reserve_output", _forbidden("raw"))
-    monkeypatch.setattr(external, "reviewer_visibility_scope", _forbidden("spawn"))
+    monkeypatch.setattr(external, "run_review", _forbidden("spawn"))
     output_dir = tmp_path / "raw-ticket-snapshot"
 
     assert external.main([
@@ -346,7 +331,7 @@ def test_unregistered_snapshot_with_ticket_gated_round_still_fails_before_side_e
 
     err = capsys.readouterr().err
     assert "미등록 linked worktree 자기 앵커" in err
-    assert "lease 장부" in err and "외부로 전송하지 않았습니다" in err
+    assert "lease 장부" in err and "호출하지 않았습니다" in err
     assert "PM 홈 cwd" in err and "--paths <경로>" in err and "--ticket <T-NNNN>" in err
     assert side_effects == []
     assert not output_dir.exists()
@@ -362,7 +347,6 @@ def test_unregistered_snapshot_no_gate_send_keeps_explicit_paths_recovery_channe
     (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
     external = _load("additional_reviewer_unregistered_no_gate")
     monkeypatch.setattr(external, "REPO", snapshot)
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
     assert external.main([
@@ -393,12 +377,11 @@ def test_resolver_override_is_guard_seam_even_when_anchor_has_snapshot_marker(
     monkeypatch.setattr(
         external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: snapshot.resolve(),
     )
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
     gate = "T-0643-resolver-seam"
     assert external.main([
-        "--gate", gate, "--paths", "seed.txt", "--force",
+        "--gate", gate, "--paths", "seed.txt",
         "--output-dir", str(tmp_path / "resolver-seam-raw"),
     ]) == 0
 
@@ -411,7 +394,7 @@ def test_resolver_override_is_guard_seam_even_when_anchor_has_snapshot_marker(
 def test_unregistered_snapshot_dry_run_and_report_stay_open_but_fixed_is_removed(
     tmp_path, monkeypatch, capsys,
 ):
-    """미전송 dry-run·조회는 열리지만 폐지된 fixed 처분은 장부를 바꾸지 않는다."""
+    """미호출 dry-run·조회는 열리지만 폐지된 fixed 처분은 장부를 바꾸지 않는다."""
     _source, snapshot = _unregistered_worktree(tmp_path)
     _enable_additional_review(snapshot)
     (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
@@ -469,7 +452,6 @@ def test_registered_worktree_gated_round_still_uses_pm_home_ledger(
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
     external = _load("additional_reviewer_registered_round")
     monkeypatch.setattr(external, "REPO", worktree)
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
     assert external.main([
@@ -499,7 +481,6 @@ def test_registered_worktree_with_ticket_gated_round_remains_allowed(
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
     external = _load("additional_reviewer_registered_ticket_round")
     monkeypatch.setattr(external, "REPO", worktree)
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
     demotions = []
@@ -531,11 +512,10 @@ def test_corrupt_lease_registered_slot_keeps_round_recovery_fallback(
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
     external = _load("additional_reviewer_corrupt_lease_round_recovery")
     monkeypatch.setattr(external, "REPO", worktree)
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
     assert external.main([
-        "--gate", "T-0643-corrupt-lease", "--paths", "seed.txt", "--force",
+        "--gate", "T-0643-corrupt-lease", "--paths", "seed.txt",
         "--output-dir", str(tmp_path / "corrupt-lease-raw"),
     ]) == 0
 
@@ -571,7 +551,6 @@ def test_self_board_registered_slot_keeps_recovery_for_unreadable_lease(
 
     external = _load(f"additional_reviewer_self_board_{ledger_state}_lease_recovery")
     monkeypatch.setattr(external, "REPO", worktree)
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
     demotions = []
@@ -584,7 +563,7 @@ def test_self_board_registered_slot_keeps_recovery_for_unreadable_lease(
 
     gate = f"T-0643-self-board-{ledger_state}"
     assert external.main([
-        "--gate", gate, "--paths", "seed.txt", "--force",
+        "--gate", gate, "--paths", "seed.txt",
         "--output-dir", str(tmp_path / f"self-board-{ledger_state}-raw"),
     ]) == 0
 
@@ -611,7 +590,6 @@ def test_markerless_snapshot_with_corrupt_lease_keeps_known_exposure_open(
 
     external = _load("additional_reviewer_markerless_corrupt_lease_exposure")
     monkeypatch.setattr(external, "REPO", snapshot)
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
     demotions = []
@@ -625,7 +603,7 @@ def test_markerless_snapshot_with_corrupt_lease_keeps_known_exposure_open(
 
     gate = "T-0643-markerless-corrupt-ledger"
     assert external.main([
-        "--gate", gate, "--paths", "seed.txt", "--force",
+        "--gate", gate, "--paths", "seed.txt",
         "--output-dir", str(tmp_path / "markerless-corrupt-raw"),
     ]) == 0
 
@@ -647,7 +625,6 @@ def test_valid_empty_lease_blocks_unregistered_worktree_round(
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
     external = _load("additional_reviewer_valid_empty_lease_round_block")
     monkeypatch.setattr(external, "REPO", worktree)
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
 
     side_effects = []
 
@@ -659,7 +636,7 @@ def test_valid_empty_lease_blocks_unregistered_worktree_round(
 
     monkeypatch.setattr(external, "_reserve_round_budget", _forbidden("round"))
     monkeypatch.setattr(external, "_reserve_output", _forbidden("raw"))
-    monkeypatch.setattr(external, "reviewer_visibility_scope", _forbidden("spawn"))
+    monkeypatch.setattr(external, "run_review", _forbidden("spawn"))
     output_dir = tmp_path / "valid-empty-lease-raw"
 
     demotions = []
@@ -672,7 +649,7 @@ def test_valid_empty_lease_blocks_unregistered_worktree_round(
     assert board._ledger_registration(home, worktree) == (False, None)
 
     assert external.main([
-        "--gate", "T-0643-valid-empty-lease", "--paths", "seed.txt", "--force",
+        "--gate", "T-0643-valid-empty-lease", "--paths", "seed.txt",
         "--output-dir", str(output_dir),
     ]) == 1
 
@@ -1309,7 +1286,7 @@ def _cross_owned_slot(root, *, declare_review_paths: bool = True):
     두 PM 홈이 서로 다른 additional_reviewer.paths 를 선언하고, A 의 lease 장부가 B 의
     worktree 를 슬롯으로 등록한다. 인자 없는 실행에서 A 의 additional_reviewer.paths 로
     diff_root 를 고르면 그 소유자는 B 라, 표시된 config provenance 와 실제
-    전송 범위가 갈린다.
+    호출 범위가 갈린다.
 
     `declare_review_paths=False` 면 두 conf 모두 additional_reviewer.paths 를 선언하지 않아 범위가 엔진 고정
     기본 경로로 떨어진다 — 범위 출처가 최초 PM 홈이라는 사실은 같은 형상이다.
@@ -1375,7 +1352,7 @@ def test_explicit_paths_escape_cross_owned_conf_block(
     capsys.readouterr()
 
 
-# ── 강등 실행의 소유 PM 홈 필터 승계 (송신 방향) ────────────────────────────
+# ── 강등 실행의 소유 PM 홈 필터 승계 (호출 방향) ────────────────────────────
 
 
 def _demoted_worktree_with_owner_filters(tmp_path) -> tuple[Path, Path]:
@@ -1409,93 +1386,10 @@ def _demoted_worktree_with_owner_filters(tmp_path) -> tuple[Path, Path]:
     return home, worktree
 
 
-def test_demoted_conf_owner_inherits_owner_pm_home_review_filters(
-    tmp_path, monkeypatch, capsys,
-):
-    """강등 실행도 소유 PM 홈의 denylist/additional_reviewer.paths 를 승계해 필터가 좁아지지 않는다."""
-    home, worktree = _demoted_worktree_with_owner_filters(tmp_path)
-    external = _load("additional_reviewer_demoted_inherit")
-    monkeypatch.setattr(external, "REPO", worktree)
-
-    assert external.main(["--dry-run"]) == 0
-    err = capsys.readouterr().err
-    assert "소유 PM 홈 유효 필터를 승계했습니다" in err
-    assert str(home.resolve()) in err
-    assert "검토 경로: ['src']" in err
-    assert "'*.vault' 매칭" in err
-
-
-def test_demoted_owner_without_unique_candidate_blocks_before_external_send(
-    tmp_path, monkeypatch, capsys,
-):
-    """소유 PM 홈을 되찾을 수 없는 강등은 diff 추출 전에 차단한다 — 무필터 송신 0."""
-    _home, worktree = _unregistered_worktree(tmp_path)
-    (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("additional_reviewer_demoted_block")
-    monkeypatch.setattr(external, "REPO", worktree)
-    monkeypatch.setattr(
-        external, "extract_diff",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("diff must not run"),
-        ),
-    )
-    monkeypatch.setattr(
-        external, "run_review",
-        lambda *args, **kwargs: pytest.fail("외부 송신 전에 차단해야 한다"),
-    )
-
-    assert external.main(["--dry-run"]) == 1
-    err = capsys.readouterr().err
-    assert "시크릿 필터가 좁아진" in err
-    assert "전송 전에 중단합니다" in err
-    assert str(worktree.resolve()) in err
-
-
-def test_explicit_paths_escape_demoted_owner_filter_block(
-    tmp_path, monkeypatch, capsys,
-):
-    """명시 --paths 는 강등 차단의 탈출구로 남는다(복구 채널 자기잠김 금지)."""
-    _home, worktree = _unregistered_worktree(tmp_path)
-    (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("additional_reviewer_demoted_escape")
-    monkeypatch.setattr(external, "REPO", worktree)
-
-    assert external.main(["--paths", "seed.txt", "--dry-run"]) == 0
-    err = capsys.readouterr().err
-    assert "소유 PM 홈 필터를 승계하지 못했습니다" in err
-    assert "명시 --paths 범위로 계속" in err
-
-
-def test_ambiguous_owner_candidates_block_without_paths_and_warn_with_paths(
-    tmp_path, capsys,
-):
-    """후보 2+ 행: 어느 PM 홈이 지배하는지 확정 못 하므로 차단, 명시 --paths 만 탈출구."""
-    external = _load("additional_reviewer_owner_filter_matrix")
-    homes = (tmp_path / "home-a", tmp_path / "home-b")
-    for home in homes:
-        (home / ".project_manager").mkdir(parents=True)
-        (home / ".project_manager" / "local.conf").write_text(
-            _REVIEWER_TARGET_LINES + "additional_reviewer.denylist_extra=*.vault\n",
-            encoding="utf-8",
-        )
-    demotion = external.PmHomeDemotion(tmp_path / "slot", "중복 등록", tuple(homes))
-
-    with pytest.raises(
-        external.AnchorResolutionError, match="하나로 좁히지 못했습니다",
-    ):
-        external._conf_with_owner_filters({}, [demotion], explicit_paths=False)
-
-    kept = external._conf_with_owner_filters(
-        {"additional_reviewer.paths": "."}, [demotion], explicit_paths=True,
-    )
-    assert kept == {"additional_reviewer.paths": "."}
-    assert "승계하지 못했습니다" in capsys.readouterr().err
-
-
 def _demoted_worktree_with_owner_default_scope(tmp_path) -> tuple[Path, Path]:
     """소유 PM 홈은 additional_reviewer.paths 미선언(=엔진 기본 경로)이고 슬롯만 `.` 를 선언한 강등 형상.
 
-    슬롯 선언이 살아남으면 lease 손상만으로 송신 범위가 소유 유효 범위보다 넓어진다 — 기본 경로
+    슬롯 선언이 살아남으면 lease 손상만으로 호출 범위가 소유 유효 범위보다 넓어진다 — 기본 경로
     밖 파일(`docs/notes.md`)의 포함 여부가 그 판별자다.
     """
     home, worktree, _ticket = _managed_worktree(tmp_path)
@@ -1518,65 +1412,6 @@ def _demoted_worktree_with_owner_default_scope(tmp_path) -> tuple[Path, Path]:
         "{broken", encoding="utf-8",
     )
     return home, worktree
-
-
-def test_demoted_run_inherits_owner_default_scope_over_slot_declaration(
-    tmp_path, monkeypatch, capsys,
-):
-    """소유 PM 홈이 미선언이면 그 **유효 범위**(엔진 기본 경로)를 승계한다 — 슬롯 `.` 는 진다."""
-    _home, worktree = _demoted_worktree_with_owner_default_scope(tmp_path)
-    external = _load("additional_reviewer_owner_default_scope")
-    monkeypatch.setattr(external, "REPO", worktree)
-
-    assert external.main(["--dry-run"]) == 0
-    captured = capsys.readouterr()
-    assert "검토 경로: ['src', 'tests', 'scripts', '.project_manager/tools']" in captured.err
-    assert "src/module.py" in captured.out
-    assert "docs/notes.md" not in captured.out
-
-
-def test_owner_scope_oracle_is_sensitive_to_surviving_slot_declaration(
-    tmp_path, monkeypatch, capsys,
-):
-    """소유 미선언 시 슬롯 선언을 남기던 옛 병합으로 되돌리면 송신 범위가 `.` 로 넓어진다."""
-    _home, worktree = _demoted_worktree_with_owner_default_scope(tmp_path)
-    external = _load("additional_reviewer_owner_scope_sensitivity")
-    monkeypatch.setattr(external, "REPO", worktree)
-
-    def _legacy_merge(conf, owner_filters):
-        merged = dict(conf)
-        owner_paths = owner_filters.get("additional_reviewer.paths", "").strip()
-        if owner_paths:
-            merged["additional_reviewer.paths"] = owner_paths
-        return merged
-
-    monkeypatch.setattr(external, "_merged_owner_filters", _legacy_merge)
-    assert external.main(["--dry-run"]) == 0
-    captured = capsys.readouterr()
-    assert "검토 경로: ['.']" in captured.err
-    assert "docs/notes.md" in captured.out
-
-
-def test_owner_conf_read_failure_blocks_with_and_without_explicit_paths(
-    tmp_path, monkeypatch, capsys,
-):
-    """소유 conf 를 못 읽으면 어떤 인자에서도 차단한다 — --paths 는 확인 못 한 denylist 를 대체 못 한다."""
-    home, worktree = _demoted_worktree_with_owner_filters(tmp_path)
-    (home / ".project_manager" / "local.conf").write_bytes(b"\xff\xfe\x00")
-    external = _load("additional_reviewer_owner_conf_unreadable")
-    monkeypatch.setattr(external, "REPO", worktree)
-    monkeypatch.setattr(
-        external, "extract_diff",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("diff must not run"),
-        ),
-    )
-
-    for argv in (["--dry-run"], ["--paths", "src/module.py", "--dry-run"]):
-        assert external.main(argv) == 1
-        err = capsys.readouterr().err
-        assert "소유 PM 홈 conf 를 읽지 못했습니다" in err
-        assert "명시 --paths 로 대체되지 않으므로" in err
 
 
 def _cross_repo_absolute_target(
@@ -1619,38 +1454,6 @@ def _cross_repo_absolute_target(
     return home_a, slot_a, home_b, slot_b
 
 
-def test_absolute_paths_to_other_repo_use_selected_owner_not_engine_context(
-    tmp_path, monkeypatch, capsys,
-):
-    """초기 엔진 컨텍스트가 강등·손상이어도 다른 repo를 가리키는 절대 --paths 는 자기잠기지 않는다."""
-    home_a, slot_a, home_b, slot_b = _cross_repo_absolute_target(
-        tmp_path, break_target_owner=False,
-    )
-    external = _load("additional_reviewer_cross_repo_absolute")
-    monkeypatch.setattr(external, "REPO", slot_a)
-
-    # A 컨텍스트는 실제로 차단 사유를 갖는다 — 옛 순서(엔진 먼저 검사)라면 여기서 막혔다.
-    with pytest.raises(external.OwnerFilterConfError):
-        external._owner_filter_conf(
-            external.PmHomeDemotion(slot_a, "lease 손상", (home_a,)),
-        )
-
-    assert external.main([
-        "--dry-run", "--paths", str(slot_b / "src" / "module.py"),
-    ]) == 0
-    err = capsys.readouterr().err
-    assert f"diff_root={slot_b.resolve()}" in err
-    assert f"pm_home={home_b.resolve()}" in err
-    assert "소유 PM 홈 conf 를 읽지 못했습니다" not in err
-
-    # 적용된 denylist 도 선택된 소유자(B)의 선언이다 — 명시 지정한 `*.b-vault` 경로가 차단된다.
-    assert external.main([
-        "--dry-run", "--paths", str(slot_b / "src" / "keys.b-vault"),
-    ]) == 1
-    blocked = capsys.readouterr().err
-    assert "*.b-vault" in blocked
-
-
 def test_explicit_anchor_run_has_zero_pre_selection_conf_dependency(
     tmp_path, monkeypatch, capsys,
 ):
@@ -1675,83 +1478,6 @@ def test_explicit_anchor_run_has_zero_pre_selection_conf_dependency(
     # 선택된 소유자 conf 정확히 1회 — 엔진 슬롯/그 소유 PM 홈 conf 는 열리지 않는다.
     assert loaded == [home_b.resolve()]
     assert f"pm_home={home_b.resolve()}" in capsys.readouterr().err
-
-
-def test_absolute_paths_still_fail_closed_when_target_owner_conf_is_unreadable(
-    tmp_path, monkeypatch, capsys,
-):
-    """역케이스: 선택된 소유자(B) 쪽 conf 를 못 읽으면 절대 --paths 여도 차단(MF-3 불변)."""
-    _home_a, slot_a, home_b, slot_b = _cross_repo_absolute_target(
-        tmp_path, break_target_owner=True,
-    )
-    external = _load("additional_reviewer_cross_repo_absolute_closed")
-    monkeypatch.setattr(external, "REPO", slot_a)
-    monkeypatch.setattr(
-        external, "run_review",
-        lambda *args, **kwargs: pytest.fail("외부 송신 전에 차단해야 한다"),
-    )
-
-    assert external.main([
-        "--dry-run", "--paths", str(slot_b / "src" / "module.py"),
-    ]) == 1
-    err = capsys.readouterr().err
-    assert "소유 PM 홈 conf 를 읽지 못했습니다" in err
-    assert str((home_b / ".project_manager" / "local.conf").resolve()) in err
-
-
-def test_owner_conf_read_failure_oracle_is_sensitive_to_paths_escape(
-    tmp_path, monkeypatch, capsys,
-):
-    """읽기 실패를 후보 모호성과 같은 등급으로 되돌리면 --paths 가 미검증 필터 송신을 통과시킨다."""
-    home, worktree = _demoted_worktree_with_owner_filters(tmp_path)
-    (home / ".project_manager" / "local.conf").write_bytes(b"\xff\xfe\x00")
-    external = _load("additional_reviewer_owner_conf_escape_sensitivity")
-    monkeypatch.setattr(external, "REPO", worktree)
-    real_owner_filter_conf = external._owner_filter_conf
-
-    def _legacy_owner_filter_conf(demotion):
-        try:
-            return real_owner_filter_conf(demotion)
-        except external.OwnerFilterConfError as exc:
-            raise external.AnchorResolutionError(str(exc)) from exc
-
-    monkeypatch.setattr(external, "_owner_filter_conf", _legacy_owner_filter_conf)
-    assert external.main(["--paths", "src/module.py", "--dry-run"]) == 0
-    assert "승계하지 못했습니다" in capsys.readouterr().err
-
-
-def test_demoted_filter_oracle_is_sensitive_to_unfiltered_send(
-    tmp_path, monkeypatch, capsys,
-):
-    """승계·차단 가드를 강등 이전 동작으로 되돌리면 두 형상 모두 무필터로 통과한다."""
-    _home, worktree = _demoted_worktree_with_owner_filters(tmp_path / "inherit")
-    external = _load("additional_reviewer_demoted_sensitivity")
-    monkeypatch.setattr(external, "REPO", worktree)
-    monkeypatch.setattr(
-        external, "_conf_with_owner_filters",
-        lambda conf, demotions, **kwargs: conf,
-    )
-
-    assert external.main(["--dry-run"]) == 0
-    err = capsys.readouterr().err
-    assert "'*.vault' 매칭" not in err        # 시크릿 파일이 필터 없이 diff 에 남는다
-    assert "검토 경로: ['src']" not in err     # 소유 PM 홈 범위도 적용되지 않는다
-
-    (tmp_path / "block").mkdir()
-    _source, unregistered = _unregistered_worktree(tmp_path / "block")
-    module = unregistered / "src" / "module.py"
-    module.parent.mkdir()
-    module.write_text("value = 1\n", encoding="utf-8")
-    _git(unregistered, "add", "src/module.py")
-    _git(unregistered, "commit", "-qm", "source")
-    module.write_text("value = 2\n", encoding="utf-8")
-    monkeypatch.setattr(external, "REPO", unregistered)
-
-    # 승계 불가 형상도 차단 없이 diff 추출·송신 단계까지 내려간다(옛 동작).
-    assert external.main(["--dry-run"]) == 0
-    unblocked = capsys.readouterr().err
-    assert "시크릿 필터가 좁아진" not in unblocked
-    assert "검토 경로:" in unblocked
 
 
 # ── diff 폭 표 · 슬롯 소유 근거 단계 ────────────────────────────────────────
@@ -1820,7 +1546,7 @@ def test_clean_slot_on_multi_commit_base_is_never_selected_as_changed(
     monkeypatch.setattr(external, "REPO", home)
     monkeypatch.setattr(
         external, "run_review",
-        lambda *args, **kwargs: pytest.fail("외부 송신 전에 차단해야 한다"),
+        lambda *args, **kwargs: pytest.fail("호출 전에 차단해야 한다"),
     )
 
     assert external.main(["--dry-run"]) == 1
@@ -1867,7 +1593,7 @@ def test_worktree_change_selects_its_slot_over_commit_only_slot(
 def test_slot_selection_oracle_is_sensitive_to_commit_fallback_as_evidence(
     tmp_path, monkeypatch, capsys,
 ):
-    """폴백 단계를 소유 근거로 되돌리면 놀던 tip 슬롯이 뽑혀 공유 base 커밋이 송신된다."""
+    """폴백 단계를 소유 근거로 되돌리면 놀던 tip 슬롯이 뽑혀 공유 base 커밋이 호출된다."""
     home, _old, tip = _multi_commit_base_home(tmp_path / "fallback-evidence")
     external = _load("additional_reviewer_fallback_evidence")
     monkeypatch.setattr(external, "REPO", home)
@@ -1893,12 +1619,12 @@ def test_default_review_paths_cross_owned_slot_blocks_before_external_send(
     monkeypatch.setattr(external, "REPO", home_a)
     monkeypatch.setattr(
         external, "run_review",
-        lambda *args, **kwargs: pytest.fail("외부 송신 전에 차단해야 한다"),
+        lambda *args, **kwargs: pytest.fail("호출 전에 차단해야 한다"),
     )
 
     assert external.main(["--dry-run"]) == 1
     err = capsys.readouterr().err
-    assert "외부 송신 전에 중단합니다" in err
+    assert "호출 전에 중단합니다" in err
     assert str(home_a.resolve()) in err
     assert str(home_b.resolve()) in err
 

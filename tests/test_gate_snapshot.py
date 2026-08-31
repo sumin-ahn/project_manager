@@ -36,7 +36,6 @@ TEMPLATE_TOOLS = {
 # 해소 가능한 추가 리뷰어 대상 줄 — 대상 해소는 게이트 판정보다 앞이라, 이 절이 재는 축(스냅샷
 # 마커 거부·장부 유지)을 태우려면 conf 가 그 세트를 담아야 한다.
 _REVIEWER_TARGET_LINES = (
-    "additional_reviewer.enabled=true\n"
     "additional_reviewer.harness=codex\n"
     "additional_reviewer.model=gpt-5.6-sol\n"
 )
@@ -272,7 +271,6 @@ def test_pm_home_work_snapshot_marker_blocks_round_despite_corrupt_lease_candida
         _REVIEWER_TARGET_LINES, encoding="utf-8")
     external = _load("additional_reviewer")
     external.REPO = created
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     demotions = []
     assert external.resolve_pm_home_for_repo(
         created, demotion_sink=demotions,
@@ -290,10 +288,10 @@ def test_pm_home_work_snapshot_marker_blocks_round_despite_corrupt_lease_candida
 
     monkeypatch.setattr(external, "_reserve_round_budget", _forbidden("round"))
     monkeypatch.setattr(external, "_reserve_output", _forbidden("raw"))
-    monkeypatch.setattr(external, "reviewer_visibility_scope", _forbidden("spawn"))
+    monkeypatch.setattr(external, "run_review", _forbidden("spawn"))
 
     assert external.main([
-        "--gate", "T-0643", "--paths", "review/target.txt", "--force",
+        "--gate", "T-0643", "--paths", "review/target.txt",
         "--output-dir", str(tmp_path / "raw"),
     ]) == 1
 
@@ -1259,9 +1257,8 @@ def test_additional_reviewer_head_diff_includes_unstaged_selected_path(tmp_path)
     target.write_text("working-only\n", encoding="utf-8")
     external.REPO = repo
 
-    diff, excluded = external.extract_diff("HEAD", ["review/target.txt"])
+    diff = external.extract_diff("HEAD", ["review/target.txt"])
 
-    assert excluded == []
     assert "+working-only" in diff
     assert "review/target.txt" in diff
 
@@ -1303,9 +1300,8 @@ def test_snapshot_index_exposes_new_modified_deleted_and_renamed_files(
     }.issubset(files)
 
     external.REPO = output
-    diff, excluded = external.extract_diff("HEAD", ["review"])
+    diff = external.extract_diff("HEAD", ["review"])
 
-    assert excluded == []
     assert "+new-body" in diff
     assert "+modified-body" in diff
     assert "-deleted-body" in diff
@@ -1461,21 +1457,6 @@ def test_snapshot_recreation_keeps_pm_home_ledger_while_removed_fix_flag_is_iner
     (first / ".project_manager" / "local.conf").write_text(
         _REVIEWER_TARGET_LINES, encoding="utf-8")
     external = _load("additional_reviewer")
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
-
-    workspace_calls = {"n": 0}
-
-    def _workspace(*args, **kwargs):
-        workspace_calls["n"] += 1
-        root = tmp_path / f"reviewer-workspace-{workspace_calls['n']}"
-        tree = root / "tree"
-        home = root / "home"
-        tree.mkdir(parents=True)
-        home.mkdir()
-        return external.ReviewerWorkspace(
-            root=root, tree=tree, home=home,
-            files=1, skipped_unsafe=0, git_repo=True,
-        )
 
     answers = [
         (
@@ -1499,14 +1480,13 @@ def test_snapshot_recreation_keeps_pm_home_ledger_while_removed_fix_flag_is_iner
             "any_must_fix": rejected, "all_pass": not rejected,
         }
 
-    monkeypatch.setattr(external, "create_reviewer_workspace", _workspace)
     monkeypatch.setattr(external, "run_review", _review)
 
     # PM 37의 발단 형상: 격리 스냅샷 cwd(=엔진 자기 앵커)에서 장부 라운드를 열려 하면
-    # 전송·예약 전에 막히고 스냅샷 안에는 휘발 장부가 생기지 않는다.
+    # 호출·예약 전에 막히고 스냅샷 안에는 휘발 장부가 생기지 않는다.
     external.REPO = first
     assert external.main([
-        "--gate", "T-0634", "--paths", "review/target.txt", "--force",
+        "--gate", "T-0634", "--paths", "review/target.txt",
         "--output-dir", str(tmp_path / "snapshot-raw"),
     ]) == 1
     assert review_calls["n"] == 0

@@ -266,7 +266,7 @@ def test_gate_honours_an_explicit_base_over_the_anchor(external, tmp_path, capsy
 def test_gate_refuses_when_the_ledger_declares_no_integration_branch(
     external, tmp_path, capsys,
 ):
-    """장부 선언이 없으면 리뷰 송신을 거부한다 — 다른 기준으로 재지 않는다."""
+    """장부 선언이 없으면 리뷰 호출을 거부한다 — 다른 기준으로 재지 않는다."""
     root, _claim_rev = _wave_repo(tmp_path)
     home = _pm_home(tmp_path, "T-7301", "estimate: small\n", base_branch=None)
 

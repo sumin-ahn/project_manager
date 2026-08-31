@@ -470,7 +470,7 @@ def _runtime_skill_entry(skill: str) -> str:
 _CODEX_CARD_SECTION = "\n".join((
     "# codex 하네스 (실행모델·위임 — 정적 진입 doc 없음)",
     "- **위임 = 세션 내 spawn** — `.codex/agents/{architect,developer,code-reviewer,researcher}` 를 "
-    "codex 가 이 세션 안에서 스폰(부모 sandbox 상속)·`codex exec --agent` 플래그 부재라 외부 프로세스 위임 없음.",
+    "codex 가 이 세션 안에서 스폰(부모 sandbox 상속)·`codex exec --agent` 플래그 부재라 자식 프로세스 위임 없음.",
     "- **trust 2단계** — 대화형 `codex` 1회 열어 프로젝트 trust 수락 `/hooks` 로 hook trust 승인. "
     "`-c projects.<path>.trust_level=trusted` CLI override 는 안 먹음(실측).",
     "- **방법론 소재** — 공통 코어 `AGENTS.md`(codex 자동 로드) + 이 카드 + `.agents/skills`"

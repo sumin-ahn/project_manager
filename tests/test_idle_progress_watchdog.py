@@ -1,6 +1,6 @@
 """무진행(idle) 판정 — 벽시계 단독 판정의 정상-진행 false-kill 폐쇄 (T-0489).
 
-**왜 판정 기준을 바꾸나**: 외부 프로세스를 "시작 후 경과 시간"으로 죽이면 임계값이 정상 작업의
+**왜 판정 기준을 바꾸나**: 자식 프로세스를 "시작 후 경과 시간"으로 죽이면 임계값이 정상 작업의
 분산 대역 *안*에 놓인다. 1차 증거는 통계가 아니라 같은 작업 2회다 — PM 17차가 `additional_reviewer` 로
 같은 diff·같은 모델을 두 번 돌렸는데 1차는 900초 초과 kill(raw **138바이트**·회신 0), 2차는
 `--timeout 1500` 만 붙여 성공(raw 271,713바이트)했다. 어떤 값을 골라도 그 분산 때문에 정상 완주가
@@ -16,7 +16,7 @@
   ⑤ claude `--output-format stream-json` 전환 후에도 회신 추출 동일(파서 동치).
   ⑥ 감사 헤더에 최종 이벤트 이후 침묵 초.
   ⑧ `additional_reviewer` 도 **같은 공용 seam**(pm_relay)으로 전환 — 복붙 구현 0.
-  ⑨ kill 시점까지 받은 출력 보존(위임·외부리뷰·fill 세 표면).
+  ⑨ kill 시점까지 받은 출력 보존(위임·추가리뷰·fill 세 표면).
 
 **벽시계의 위치**: DoD 는 "이벤트가 계속 흐르면 벽시계 초과해도 안 죽음"을 요구하고 §결정은
 "무제한 금지 — 유한 백스톱 유지"를 요구한다. 둘의 해소는 *역할 교체* 다 — 옛 벽시계(정상 작업
@@ -508,7 +508,7 @@ def test_process_group_cleanup_failure_is_loud_even_after_parent_exit(relay, mon
 @pytest.mark.skipif(os.name != "posix", reason="분리 session 손자·killpg 경계 실증은 POSIX 전용")
 def test_cleanup_failure_preserves_partial_raw_and_forbids_fallback_e2e(
         relay, pd, monkeypatch, tmp_path, capsys):
-    """분리 session 손자가 drain을 막으면 raw 보존+fail-loud, 설정 폴백은 **전송 0회**다."""
+    """분리 session 손자가 drain을 막으면 raw 보존+fail-loud, 설정 폴백은 **호출 0회**다."""
     pid_file = tmp_path / "detached-grandchild.pid"
     parent_code = (
         "import pathlib, subprocess, sys, time\n"
@@ -544,10 +544,9 @@ def test_cleanup_failure_preserves_partial_raw_and_forbids_fallback_e2e(
             fallback=("claude", "fallback-model", None), fallback_skip=None,
             cwd=tmp_path, prompt="test", timeout=1, fallback_timeout=1,
             output_dir=tmp_path, run_fn=run_detached,
-            secret_scan_ack_digest=None, secret_scan_ack_hits=(),
         )
         assert rc == 1
-        assert calls == ["codex"], "정리 실패 뒤 fallback 프롬프트가 중복 전송됐다"
+        assert calls == ["codex"], "정리 실패 뒤 fallback 프롬프트가 중복 호출됐다"
         raw_path = sorted(tmp_path.glob("pm_delegate_codex_*"))[0]
         raw = raw_path.read_text(encoding="utf-8")
         assert "PARTIAL-BEFORE-CLEANUP" in raw
@@ -794,7 +793,7 @@ def test_first_event_stall_preserves_output_received_before_kill(relay):
 
 
 def test_startup_wait_wall_axis_stops_after_first_attempt(relay):
-    """startup 대기 중 wall이 먼저 발화하면 첫 시도에서 종료하고 외부 전송을 반복하지 않는다."""
+    """startup 대기 중 wall이 먼저 발화하면 첫 시도에서 종료하고 호출을 반복하지 않는다."""
     clock = _FakeClock()
     procs = [_ScriptedProc(clock, event_times=[], exit_at=None) for _ in range(3)]
     launched = []
@@ -1160,7 +1159,7 @@ def test_completed_process_carries_silence_observation(relay):
 
 
 def test_drain_oserror_kills_process_group(relay):
-    """드레인 중 OSError(전송 후 I/O 오류)도 자식 잔존 없이 정리 후 전파(정책은 호출부)."""
+    """드레인 중 OSError(호출 후 I/O 오류)도 자식 잔존 없이 정리 후 전파(정책은 호출부)."""
     clock = _FakeClock()
 
     class _BrokenProc(_ScriptedProc):
@@ -2003,10 +2002,8 @@ def board(tmp_path, monkeypatch):
                       "PM_STATE_TEMPLATE": pm / "wiki" / "pm_state.template.md"}.items():
         monkeypatch.setattr(mod, name, val)
     monkeypatch.setattr(mod, "install_pre_push_hook", lambda: False)
-    monkeypatch.setattr(mod, "prompt_additional_reviewer_optin", lambda: None)
     monkeypatch.setattr(mod, "_configure_board_submodule", lambda: False)
     monkeypatch.setattr(mod, "_detect_py", lambda: "python3")
-    monkeypatch.setattr(mod, "_is_noninteractive", lambda: True)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     return mod
@@ -2454,7 +2451,7 @@ def test_additional_reviewer_runtime_harness_cap_advisory(external):
 
 
 def test_both_surfaces_share_retry_cleanup_budget_formula(external, pd, relay):
-    """외부리뷰·위임이 startup 재시도마다 wait+drain 10초를 같은 공용 식으로 센다."""
+    """추가리뷰·위임이 startup 재시도마다 wait+drain 10초를 같은 공용 식으로 센다."""
     expected = 14400 + 2 * 90 + 3 * 10
     assert relay.watchdog_execution_budget(
         14400, first_event_timeout=90, retries=2
@@ -2476,7 +2473,7 @@ def test_wall_before_startup_window_has_single_attempt_budget(relay):
 # ── DoD: 세 표면이 **같은 판정 코드** 를 탄다 (복붙 구현 0) ──────────────────────────
 
 def test_all_surfaces_load_the_same_relay_judgment_code(pd, external, pm_import):
-    """위임·외부리뷰·fill이 로드하는 공용 seam 이 **같은 소스 파일의 같은 함수**다.
+    """위임·추가리뷰·fill이 로드하는 공용 seam 이 **같은 소스 파일의 같은 함수**다.
 
     한쪽만 고쳐진 상태(복붙 구현·자체 판정)면 이 단언이 무너진다 — 편입의 목적이 "거기도 고쳐야
     해서"가 아니라 "규칙이 둘로 갈리는 걸 막기 위해서"이므로 코드 동일성을 직접 잠근다."""
@@ -2506,7 +2503,7 @@ def test_idle_judgment_is_implemented_once(relay):
 # ── 스폰 경계 seam: 소유권 이전은 `Popen` 직전 한 자리 (T-0590 R3) ───────────
 #
 # 워치독 진입~`Popen` 사이에는 인자 검증·프로필 해소·워치독 준비가 있고 그 구간엔 자식이 없다.
-# 예산 소유권을 워치독 **호출** 지점에서 넘기면 그 준비 실패가 전송 0·과금 0 인데도 예산을 먹는다.
+# 예산 소유권을 워치독 **호출** 지점에서 넘기면 그 준비 실패가 호출 0·과금 0 인데도 예산을 먹는다.
 # 경계는 여기 한 자리이고, 어댑터가 exec 에 실패해 던진 OSError 에는 "자식 없음" 표식이 붙는다.
 
 
@@ -2602,7 +2599,7 @@ def test_watched_popen_marks_post_spawn_init_failure_as_spawned(relay, monkeypat
     """`Popen` 성공 뒤의 초기화 실패는 자식이 **있었던** 실행이라 표식이 False 다.
 
     실 자식을 띄운 뒤 리더 스레드 생성을 실패시켜, 롤백(그룹 kill·drain)을 거쳐 올라오는 원
-    예외의 표식을 본다. 종류만 보고 환불하면 이 형상이 '전송 0' 으로 오분류된다.
+    예외의 표식을 본다. 종류만 보고 환불하면 이 형상이 '호출 0' 으로 오분류된다.
     """
     class _NoThreads:
         """relay 가 쓰는 threading 표면 대역 — Thread 생성만 실패시킨다."""
@@ -2623,7 +2620,7 @@ def test_watched_popen_marks_post_spawn_init_failure_as_spawned(relay, monkeypat
 # ── 스폰 경계 표식: 경계가 종류를 이긴다 (T-0590 R4) ─────────────────────────
 #
 # "자식이 있었나"는 예외 **종류**로 알 수 없다. 같은 `ValueError` 가 `Popen` 이 fork 전에 argv 를
-# 거절한 결과일 수도(전송 0·환불 대상), `Popen` 성공 뒤 초기화가 깨진 결과일 수도(자식 있었음·
+# 거절한 결과일 수도(호출 0·환불 대상), `Popen` 성공 뒤 초기화가 깨진 결과일 수도(자식 있었음·
 # 과금 가능) 있다. 그래서 판정은 경계를 실제로 본 층이 표식으로 남기고, 상위는 그 표식을 읽는다.
 # 그리고 표식은 **실행 단위**다 — 재시도 중 한 번이라도 자식이 떴으면 그 뒤 어떤 기동 실패도
 # 실행 전체를 '자식 없음'으로 되돌릴 수 없다(앞선 자식이 이미 프롬프트를 보냈을 수 있다).
@@ -2633,7 +2630,7 @@ def test_a_second_attempt_launch_failure_never_unmarks_the_first_child(relay):
     """1회차가 자식을 띄우고 stall → 2회차 기동 실패: 표식은 '자식 있었음'(False)이다.
 
     시도 단위로만 보면 2회차는 exec 실패라 '자식 없음'이다. 그 표식이 그대로 올라가면 상위가
-    실행 전체를 스폰 0 으로 읽어 **1회차에 이미 나갔을 수 있는 전송**을 환불한다(라운드/wave 예산이
+    실행 전체를 스폰 0 으로 읽어 **1회차에 이미 나갔을 수 있는 호출**을 환불한다(라운드/wave 예산이
     조용히 되살아난다). 실행 단위 사실이 시도 단위 관측을 이겨야 한다."""
     clock = _FakeClock()
     first = _ScriptedProc(clock, event_times=[], exit_at=None)   # 첫 이벤트가 영원히 안 옴
@@ -2658,14 +2655,14 @@ def test_a_second_attempt_launch_failure_never_unmarks_the_first_child(relay):
     assert attempts == ["spawned", "launch-failed"]     # 정확히 2회 시도
     assert first.kill_count == 1                        # 1회차 자식은 실제로 떴다가 kill 됐다
     assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is False, (
-        "2회차 기동 실패가 1회차 자식을 '자식 없음'으로 되돌렸다 — 나간 전송이 환불된다")
+        "2회차 기동 실패가 1회차 자식을 '자식 없음'으로 되돌렸다 — 나간 호출이 환불된다")
     assert handoffs == [1]                              # 소유권 이전은 실행당 1회 그대로
 
 
 def test_watched_popen_marks_a_nul_argv_rejection_as_no_child(relay):
     """argv 에 NUL 이 섞이면 `Popen` 이 fork **전에** `ValueError` 로 거절한다 → 자식 없음.
 
-    OSError 만 '자식 없음'으로 표식하면 이 형상은 표식이 없어, 상위가 보수적으로 '전송됐을 수
+    OSError 만 '자식 없음'으로 표식하면 이 형상은 표식이 없어, 상위가 보수적으로 '호출됐을 수
     있음'으로 읽고 예산을 태운다 — 실제로는 프로세스가 만들어진 적이 없다."""
     with pytest.raises(ValueError) as excinfo:
         relay._WatchedPopen([sys.executable, "-c", "print(1)\x00"])
@@ -2690,7 +2687,7 @@ def test_nul_argv_through_the_real_watchdog_is_marked_no_child(relay):
 def test_watched_popen_marks_post_spawn_valueerror_as_spawned(relay, monkeypatch):
     """`Popen` **성공 뒤**의 `ValueError` 는 자식이 있었던 실행이다 → 표식 False.
 
-    NUL 거절과 **같은 종류**의 예외로 반대편을 세운다: 종류로 환불을 정하면 이 형상이 '전송 0'
+    NUL 거절과 **같은 종류**의 예외로 반대편을 세운다: 종류로 환불을 정하면 이 형상이 '호출 0'
     으로 오분류돼 과금된 실행이 예산에서 사라진다."""
     class _NoThreads:
         Event = threading.Event
@@ -2967,7 +2964,7 @@ def test_popen_exception_after_a_child_exists_is_not_ruled_a_no_child(
     """`Popen` 안에서 자식이 뜬 뒤 나온 예외는 '자식 없음'으로 확정하지 않는다.
 
     preflight 가 내는 `ValueError` 와 **같은 종류**가 여기서도 나온다 — 종류로 확정하면 이 형상이
-    전송 0 으로 오분류돼 과금된 실행이 환불된다. 확정할 수 없으면 보수쪽(False)이다."""
+    호출 0 으로 오분류돼 과금된 실행이 환불된다. 확정할 수 없으면 보수쪽(False)이다."""
     spawned: list = []
     monkeypatch.setattr(relay, "subprocess",
                         _PopenPatchedSubprocess(_ChildThenRaisePopen(exc, spawned)))
@@ -2976,7 +2973,7 @@ def test_popen_exception_after_a_child_exists_is_not_ruled_a_no_child(
             relay._WatchedPopen(["drv"])
         assert spawned, "반례 형상이 성립하려면 자식이 실제로 떠야 한다"
         assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR, None) is not True, (
-            "자식이 있었는데 '자식 없음'으로 확정했다 — 나간 전송이 환불된다")
+            "자식이 있었는데 '자식 없음'으로 확정했다 — 나간 호출이 환불된다")
     finally:
         for child in spawned:
             child.kill()

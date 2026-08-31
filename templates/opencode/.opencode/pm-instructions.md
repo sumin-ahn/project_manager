@@ -21,7 +21,7 @@
 - **위임 = 네이티브 `task` tool.** PM 은 dev/reviewer/architect 역할을 내장 `task` tool 로
   위임한다 — opencode 가 `.opencode/agents/*.md` (`mode: all`) 를 **별도 자식 세션**에서
   구동한다 (fresh 컨텍스트 = 200K 격리 · 자식 model/권한이 subagent 정의대로 — PM 9차 실증).
-  **폴백 = `opencode run` 외부 프로세스** (headless·CI·task tool 미노출 빌드). §2 위임 규약.
+  **폴백 = `opencode run` 자식 프로세스** (headless·CI·task tool 미노출 빌드). §2 위임 규약.
 - **엔진 = 공유 python.** PM 운영 로직은 `.project_manager/tools/*.py` (board.py·pm_*.py)에
   있다. PM 은 bash tool 로 이 CLI 를 호출·해석한다. **엔진은 0 수정** — 어댑터(공통 코어
   AGENTS.md·이 지침·`.opencode/`)만 타깃별로 다르다.
@@ -128,10 +128,10 @@ status.md / log 갱신은 PM 담당 — 그 누락은 dev must-fix 아님.
 - **reviewer cross-check** — reviewer 도 틀릴 수 있다. should-fix 처리 전 코드 흐름 독립
   점검 · 부정확이면 변경 불필요 + log 영구 기록.
 
-### 2.7 외부 프로세스 진입 (폴백) — `opencode run`
+### 2.7 자식 프로세스 진입 (폴백) — `opencode run`
 
 `task` tool 을 못 쓰는 환경 — headless 자동화·CI·task tool 미노출 빌드 — 에서만 동일
-인터페이스를 외부 프로세스로 띄운다:
+인터페이스를 자식 프로세스로 띄운다:
 
 ```bash
 opencode run --agent developer    --format json "<developer 프롬프트>"

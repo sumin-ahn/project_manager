@@ -17,7 +17,7 @@
 7. conf 생성 문자열 — 주석이 설정값을 재진술하지 않는다(손으로 옮겨 적은 값은 반드시 drift 한다).
 
 hermetic: 실 `local.conf` **파일**을 tmp 에 만들어 각 도구가 그 파일을 읽어 해소한 값을 단언한다
-(조립한 dict·monkeypatch 상수를 단언하면 파일→값 경로가 통째로 빠진다). 외부 프로세스 스폰 0.
+(조립한 dict·monkeypatch 상수를 단언하면 파일→값 경로가 통째로 빠진다). 자식 프로세스 스폰 0.
 """
 from __future__ import annotations
 
@@ -93,8 +93,8 @@ def test_missing_conf_is_an_empty_result_not_an_error(conf_module, tmp_path):
 def test_unreadable_conf_splits_by_caller_policy(conf_module, tmp_path):
     """판독 실패의 처리는 **호출부 정책**이다 — 삼키는 진입과 올리는 진입이 따로 있다.
 
-    한 함수로 합치면 "conf 를 못 읽었다" 가 "conf 가 비었다" 로 접히는데, 외부 송신 전 보호 선언을
-    확인하는 자리에서 그 접힘은 미확인 송신이 된다.
+    한 함수로 합치면 "conf 를 못 읽었다" 가 "conf 가 비었다" 로 접히는데, 호출 전 보호 선언을
+    확인하는 자리에서 그 접힘은 미확인 호출이 된다.
     """
     path = _write_conf(tmp_path, "")
     path.write_bytes(b"\xff\xfe\x00")            # UTF-8 로 못 읽는 바이트
@@ -172,7 +172,7 @@ def test_legacy_keys_stop_the_consumer_instead_of_silently_defaulting(tmp_path, 
     for key in ("additional_reviewer_enabled", "delegate_enabled",
                 "regression_min_collected", "ctx_window_tokens_claude"):
         assert key in message, key
-    assert "additional_reviewer.enabled" in message
+    assert "`additional_reviewer_enabled` → 제거(대체 키 없음)" in message
     assert "harness.claude.ctx_window_tokens" in message
 
 
@@ -514,7 +514,7 @@ def test_import_into_an_existing_tree_delivers_engine_then_refuses_init(
     imp.print_conf_migration_notice(dest)
     out = capsys.readouterr().out
     assert "additional_reviewer_enabled" in out
-    assert "additional_reviewer.enabled" in out
+    assert "제거(대체 키 없음)" in out
 
 
 # ── ⑥ 위임 마스터 스위치 (차단 3층 · 면제) ─────────────────────────────────
@@ -649,9 +649,9 @@ def test_delegate_switch_section_is_identical_across_targets():
 
 
 def test_no_surface_calls_the_delegate_switch_a_consent_axis():
-    """위임 축 문구에 "외부 송신·과금 동의" 가 0 이다 — 그 축은 폐지됐다.
+    """위임 축 문구에 "호출·과금 동의" 가 0 이다 — 그 축은 폐지됐다.
 
-    남은 동의 축은 추가 리뷰어(diff 통째 외부 전송)뿐이다. 위임 스위치를 동의로 다시 쓰면 native
+    남은 동의 축은 추가 리뷰어(diff 통째 호출)뿐이다. 위임 스위치를 동의로 다시 쓰면 native
     위임까지 "동의를 받아야 하는 행위" 로 되돌아가 스위치의 의미가 둘이 된다.
     """
     surfaces = [

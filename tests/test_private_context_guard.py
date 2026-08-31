@@ -1662,7 +1662,7 @@ def test_marker_label_residuals_are_zero_on_real_canonical_tree():
 def test_temp_output_guard_scopes_concurrent_process_output_to_session_directory(
     tmp_path,
 ):
-    """외부 프로세스의 동형 이름은 무시하고 세션 디렉터리의 산출물만 관찰한다."""
+    """자식 프로세스의 동형 이름은 무시하고 세션 디렉터리의 산출물만 관찰한다."""
     suite_conftest = sys.modules["conftest"]
     session_dir = tmp_path / "session-temp"
     external_dir = tmp_path / "external-temp"
@@ -1706,7 +1706,7 @@ def test_temp_output_guard_scopes_concurrent_process_output_to_session_directory
 def test_repo_raw_output_guard_observes_default_destination_and_ledger(tmp_path):
     """repo 기본 raw 목적지 축이 실제로 관찰한다 — tempdir 격리만으로는 못 보는 경로.
 
-    위임·외부리뷰 raw 의 **기본** 목적지는 tempdir 가 아니라 해소된 repo 의
+    위임·추가리뷰 raw 의 **기본** 목적지는 tempdir 가 아니라 해소된 repo 의
     `.project_manager/.local/` 하위로 옮겼다. 이 축이 없으면 기본 경로를 밟는 신규 테스트가
     실 작업 트리를 오염시켜도 세션 가드가 조용히 통과한다(vacuous). 빈 트리에서 스냅샷이
     비어 있는지까지 단언해 "아무것도 안 보고 통과"를 배제한다.

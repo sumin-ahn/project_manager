@@ -30,7 +30,7 @@ permission:
 > **기본 위임 경로** —
 > PM(build primary)이 내장 `task` tool 로 이 subagent 를 직접 호출(`subagent_type: developer-hard`)하면
 > opencode 가 별도 자식 세션(fresh ctx·격리)에서 이 정의의 `model:`/`permission:` 대로
-> 구동한다. **폴백 = `opencode run --agent developer-hard` 외부 프로세스**
+> 구동한다. **폴백 = `opencode run --agent developer-hard` 자식 프로세스**
 > (headless·CI·task tool 미노출 빌드)이며 같은 custom 정의의 `model:`과 권한을 그대로 쓴다.
 > (`.opencode/pm-instructions.md` 위임 규약)
 

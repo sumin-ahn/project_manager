@@ -2655,13 +2655,13 @@ def test_into_backs_up_and_preserves_existing_local_conf(pm_import, tmp_path):
     local.conf 에 재병합한다 — operational sync(project_name·test_cmd)도 동시 충족.
 
     codex 4차 MF1: local.conf 는 pm_import 의 copy/backup 대상 트리 밖이라, board.py init
-    이 통째로 덮으면 additional_reviewer.enabled·reviewer_cmd·session 등이 무백업 손실된다.
+    이 통째로 덮으면 additional_reviewer.harness·reviewer_cmd·session 등이 무백업 손실된다.
 
-    T-0021 메모 — additional_reviewer.enabled 보존(아래 assert)은 **T-0017 의 board.py
+    T-0021 메모 — additional_reviewer.harness 보존(아래 assert)은 **T-0017 의 board.py
     EOF/비대화 가드**에 의존한다: board init 은 pm_import 가 stdin=DEVNULL 로 호출하므로
     `prompt_additional_reviewer_optin` 은 비대화(isatty=False/EOF)로 판정해 **아무것도 쓰지
     않고 반환**해야 한다. 그래야 reapply_preserved_conf_keys 가 백업의 사용자값('true')을
-    그대로 재병합한다. board.py 가 pre-fix(가드 없음)면 init 이 `additional_reviewer.enabled=false`
+    그대로 재병합한다. board.py 가 pre-fix(가드 없음)면 init 이 `additional_reviewer.harness=codex`
     를 먼저 써 버려 재병합이 스킵되고 이 테스트는 'false' 로 실패한다 — 정상(엔진 미수정 신호).
     이 ticket(tests-only)에서는 board.py 를 고치지 않으므로, 복사되는 엔진이 pre-fix 인 run
     에서는 이 테스트가 red 일 수 있다. 통합(T-0017 머지·pm_update 동기화) 후 green 이어야 한다.
@@ -2674,7 +2674,6 @@ def test_into_backs_up_and_preserves_existing_local_conf(pm_import, tmp_path):
     # 기존 프로젝트가 갖고 있던 per-clone 설정(board init 솔로가 안 쓰는 키 포함).
     existing_content = (
         "# 기존 사용자 local.conf — 보존되어야 함\n"
-        "additional_reviewer.enabled=true\n"
         "additional_reviewer.harness=codex\n"
         "session=mine\n"
     )
@@ -2695,8 +2694,8 @@ def test_into_backs_up_and_preserves_existing_local_conf(pm_import, tmp_path):
     # ② 새 local.conf = board init 기본 + 사용자 키 보존 + operational sync 동시 충족.
     conf = _parse_conf(existing_conf)
     # board init 솔로가 안 쓰는 사용자 키 보존.
-    assert conf.get("additional_reviewer.enabled") == "true", \
-        f"additional_reviewer.enabled 가 보존되지 않음: {conf.get('additional_reviewer.enabled')!r}"
+    assert conf.get("additional_reviewer.harness") == "codex", \
+        f"additional_reviewer.harness 가 보존되지 않음: {conf.get('additional_reviewer.harness')!r}"
     assert conf.get("additional_reviewer.harness") == "codex", \
         f"additional_reviewer.harness 가 보존되지 않음: {conf.get('additional_reviewer.harness')!r}"
     # operational sync 동시 충족 (project_name·test_cmd 가 pm_import 치환값).
@@ -2709,7 +2708,7 @@ def test_into_backs_up_and_preserves_existing_local_conf(pm_import, tmp_path):
 def test_into_local_conf_init_keys_take_precedence(pm_import, tmp_path):
     """재-import 는 기존 사용자 설정을 보존한다 — session 은 명시 인자가 없으므로 기존값
     ('mine')을 유지하고(T-0184 비파괴 병합·cmd_init 이 통째 덮지 않음), init 이 안 쓰는
-    사용자 키(additional_reviewer.enabled)도 보존된다.
+    사용자 키(additional_reviewer.harness)도 보존된다.
 
     T-0184 이전엔 board init 이 local.conf 를 통째 덮어 session 이 init 솔로 기본('pm')으로
     리셋됐고 기존 'mine' 은 백업에만 남았다(데이터 손실 버그). 이제 cmd_init 은 local.conf
@@ -2720,7 +2719,7 @@ def test_into_local_conf_init_keys_take_precedence(pm_import, tmp_path):
     pm_dir = dest / ".project_manager"
     pm_dir.mkdir()
     (pm_dir / "local.conf").write_text(
-        "session=mine\nadditional_reviewer.enabled=false\n", encoding="utf-8"
+        "session=mine\nadditional_reviewer.harness=codex\n", encoding="utf-8"
     )
 
     rc = pm_import.main(["--into", str(dest), "--harness", "claude", "--name", "Prec"])
@@ -2731,7 +2730,7 @@ def test_into_local_conf_init_keys_take_precedence(pm_import, tmp_path):
     assert conf.get("session") == "mine", \
         f"재-import 가 기존 session 을 보존하지 않음(T-0184 비파괴 병합 기대): {conf.get('session')!r}"
     # board init 이 안 쓰는 사용자 키는 보존.
-    assert conf.get("additional_reviewer.enabled") == "false"
+    assert conf.get("additional_reviewer.harness") == "codex"
 
 
 # ── T-0071: run_board_init 이 subprocess env 에 PM_NONINTERACTIVE=1 명시 전달 ──
@@ -2949,8 +2948,8 @@ def test_reapply_preserved_conf_keys_only_adds_missing(pm_import, tmp_path):
     (pm_dir / "local.conf").write_text(
         "session=pm\nproject.name=New\n", encoding="utf-8"
     )
-    # 기존 원본 — session 은 다른 값('mine'), 추가로 additional_reviewer.enabled 보유.
-    original = "session=mine\nadditional_reviewer.enabled=true\nreviewer_cmd=bar\n"
+    # 기존 원본 — session 은 다른 값('mine'), 추가로 사용자 키를 보유.
+    original = "session=mine\nadditional_reviewer.harness=codex\nreviewer_cmd=bar\n"
     changed = pm_import.reapply_preserved_conf_keys(dest, original)
     assert changed is True
 
@@ -2959,7 +2958,7 @@ def test_reapply_preserved_conf_keys_only_adds_missing(pm_import, tmp_path):
     assert conf["session"] == "pm"
     assert conf["project.name"] == "New"
     # 현재 파일에 없던 기존 키만 재병합.
-    assert conf["additional_reviewer.enabled"] == "true"
+    assert conf["additional_reviewer.harness"] == "codex"
     assert conf["reviewer_cmd"] == "bar"
 
 
@@ -2972,14 +2971,12 @@ def test_reapply_preserved_conf_keys_only_adds_missing(pm_import, tmp_path):
 
 _LEGACY_ONLY_CONF = (
     "# 레거시 채택자 — 구조적 튜플 없이 폐지된 reviewer_cmd 만 쓴다\n"
-    "additional_reviewer.enabled=true\n"
     "reviewer_cmd=codex exec --sandbox read-only --skip-git-repo-check\n"
     "session=mine\n"
 )
 
 _CANONICAL_TUPLE_CONF = (
     "# 추가 리뷰어(additional reviewer) — ON.\n"
-    "additional_reviewer.enabled=true\n"
     "additional_reviewer.harness=codex\n"
     "additional_reviewer.model=gpt-5.6-sol\n"
     "additional_reviewer.reasoning=max\n"
@@ -2987,7 +2984,6 @@ _CANONICAL_TUPLE_CONF = (
 )
 
 _CUSTOM_TUPLE_CONF = (
-    "additional_reviewer.enabled=true\n"
     "additional_reviewer.harness=opencode\n"
     "additional_reviewer.model=qwen3-coder-next\n"
     "additional_reviewer.reasoning=low\n"
@@ -3002,7 +2998,6 @@ _CUSTOM_TUPLE_CONF = (
         pytest.param(
             _CANONICAL_TUPLE_CONF,
             {
-                "additional_reviewer.enabled": "true",
                 "additional_reviewer.harness": "codex",
                 "additional_reviewer.model": "gpt-5.6-sol",
                 "additional_reviewer.reasoning": "max",
@@ -3012,7 +3007,6 @@ _CUSTOM_TUPLE_CONF = (
         pytest.param(
             _CUSTOM_TUPLE_CONF,
             {
-                "additional_reviewer.enabled": "true",
                 "additional_reviewer.harness": "opencode",
                 "additional_reviewer.model": "qwen3-coder-next",
                 "additional_reviewer.reasoning": "low",

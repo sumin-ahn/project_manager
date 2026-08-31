@@ -67,7 +67,6 @@ def board(tmp_path, monkeypatch):
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     monkeypatch.setattr(module, "_git_config_email", lambda: None)
     monkeypatch.setattr(module, "install_pre_push_hook", lambda: False)
-    monkeypatch.setattr(module, "prompt_additional_reviewer_optin", lambda: None)
     monkeypatch.setattr(module, "_board_git_enabled", lambda: False)
     module.invalidate_known_prefixes_cache()
     module._project = project

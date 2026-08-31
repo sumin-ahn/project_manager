@@ -179,7 +179,6 @@ def test_board_init_writes_ctx_defaults(board, tmp_path, monkeypatch):
     # pm_state 생성·pre-push 훅·additional-reviewer opt-in 부수효과를 격리한다.
     monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "missing-template.md")
     monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
-    monkeypatch.setattr(board, "prompt_additional_reviewer_optin", lambda: None)
     # init 은 areas repo 행을 **항상** 등록하므로(T-0779) REPO 도 tmp 로 묶어야 hermetic 하다 —
     # 안 묶으면 `areas_file()`·`board_lock()` 이 실 저장소 루트를 잡는다.
     _pm = tmp_path / "proj" / ".project_manager"

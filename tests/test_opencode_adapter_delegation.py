@@ -1,6 +1,6 @@
 """opencode 어댑터 위임 규약 회귀 가드 (T-0032).
 
-opencode 어댑터의 **위임 1차 경로를 `opencode run` 외부 프로세스 → 네이티브 `task` tool 로
+opencode 어댑터의 **위임 1차 경로를 `opencode run` 자식 프로세스 → 네이티브 `task` tool 로
 뒤집었다** (PM 9차 deciding test 실증 + 회사 라이브 PM 결론과 일치). `opencode run` 은 삭제가
 아니라 headless·CI·task tool 미노출 빌드용 *폴백*으로 강등됐고, 위임마다 모델을 명시하던
 `-m {{OPENCODE_PRO_MODEL}}` 은 전부 제거됐다 — 모델은 subagent 정의(`.opencode/agents/*.md`
