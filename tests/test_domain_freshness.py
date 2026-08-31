@@ -745,6 +745,17 @@ def test_unusable_upstream_paths_stay_advisory(
         candidate.mkdir()
         if case == "damaged_git_marker":
             (candidate / ".git").mkdir()  # 표식만 있고 rev-parse는 실패하는 손상 경로.
+            # 손상 `.git` 을 만난 git 은 조상 저장소로 넘어가므로 픽스처 위치가 답을 정한다.
+            # "이 후보는 유효한 checkout 이 아니다"가 이 케이스의 입력이니 그 한 질문에만
+            # 답을 명시한다(나머지 git 조회는 그대로 위임).
+            real_git_run = board._git_run
+
+            def _git_run(argv, *, runner=None, repo=None):
+                if repo is not None and Path(repo) == candidate:
+                    return (128, "")
+                return real_git_run(argv, runner=runner, repo=repo)
+
+            monkeypatch.setattr(board, "_git_run", _git_run)
         upstream = str(candidate)
     local_conf.write_text(f"upstream.path={upstream}\n", encoding="utf-8")
 

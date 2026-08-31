@@ -514,8 +514,7 @@ def test_stage_exit_uses_pm_owned_project_test_cmd_not_candidate_local_serial(
             pass
 
         @staticmethod
-        def resolve_pm_home_for_repo(_repo, *, required):
-            assert required is False
+        def resolve_pm_home_for_repo(_repo):
             return pm_home
 
     class _Board:

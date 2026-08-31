@@ -281,16 +281,20 @@ def _write_machine_line(text: str) -> None:
     console_encoding.write_machine_line(text)
 
 
-# ── REPO 앵커 (additional_reviewer 동형·상향 탐색·hermetic 테스트 monkeypatch seam) ────────
-# 하드코딩 parents[2] 대신 `.project_manager` 를 품은 첫 조상을 REPO 로 삼는다(채택자/worktree 등
-# 다른 깊이여도 견고). module-level 상수라 테스트가 monkeypatch 할 수 있다.
+# ── REPO 앵커 (설치 깊이 고정 · hermetic 테스트 monkeypatch seam) ──────────
+# 설치 깊이는 `pm_import` 가 못 박는다 — 도구는 `<root>/.project_manager/tools/` 에만 놓인다.
+# REPO 는 module-level 상수로 유지해 hermetic 테스트가 monkeypatch 할 수 있게 한다
+# (각 파일 self-contained — 공유 import 미도입).
 
 def _find_repo_root() -> Path:
-    here = Path(__file__).resolve()
-    for ancestor in here.parents:
-        if (ancestor / ".project_manager").is_dir():
-            return ancestor
-    return here.parents[2]
+    """엔진 루트 — 도구는 언제나 `<root>/.project_manager/tools/` 에 설치된다.
+
+    상향 탐색을 하지 않는다. 설치 경로를 만드는 쪽(`pm_import`)이 그 깊이를 못 박으므로
+    다른 깊이는 나올 수 없고, 탐색은 합성 트리에서 **자기 위 실 인스턴스**를 답으로 주는
+    부작용만 낸다(실측: 실 PM 홈 log 오염·등록 안 된 worktree 가 등록으로 판정).
+    나머지 도구 20곳과 같은 규칙이다.
+    """
+    return Path(__file__).resolve().parents[2]
 
 
 REPO = _find_repo_root()
@@ -2579,8 +2583,7 @@ def _full_regression_command(cwd: Path) -> str:
     """developer 단계 종료의 프로젝트 test_cmd(areas/slot/local/default 해소 전부)."""
     repo = Path(cwd).resolve()
     er = _load_additional_reviewer()
-    owner = er.resolve_pm_home_for_repo(repo, required=False)
-    config_root = Path(owner).resolve() if owner else repo
+    config_root = Path(er.resolve_pm_home_for_repo(repo)).resolve()
     board = _load_board_for_repo(config_root)
     command = str(board._test_cmd(None, session=None)).strip()
     if not command:
@@ -12520,7 +12523,7 @@ def _ticket_cli_owner(cwd: Path) -> Path:
         raise DelegateError(f"--cwd 는 파일시스템 루트가 아닌 git 작업공간이어야 합니다: {resolved}")
     er = _load_additional_reviewer()
     try:
-        owner = Path(er.resolve_pm_home_for_repo(resolved, required=True)).resolve()
+        owner = Path(er.resolve_pm_home_for_repo(resolved)).resolve()
     except er.AnchorResolutionError as exc:
         raise DelegateError(f"--cwd 소유 PM 홈 해소 실패: {exc}") from exc
     if er._owns_real_board(REPO / ".project_manager") and REPO.resolve() != owner:
@@ -14628,9 +14631,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
     er = _load_additional_reviewer()
     cwd_repo = _repo_root_for_cwd(cwd, er)
     try:
-        config_repo = er.resolve_pm_home_for_repo(
-            cwd_repo, required=bool(args.ticket or args.gate),
-        )
+        config_repo = er.resolve_pm_home_for_repo(cwd_repo)
     except er.AnchorResolutionError as exc:
         print(f"오류: --cwd 소유 PM 홈 해소 실패 — {exc}", file=sys.stderr)
         return 1

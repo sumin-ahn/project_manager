@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from _git_fixture import init_git_repo
+
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts/strip_private_refs.py"
@@ -626,6 +628,8 @@ def _mini_repo(root: Path) -> None:
     (root / ".project_manager/wiki").mkdir(parents=True)
     (root / ".claude").mkdir()
     (root / "tests").mkdir()
+    # 스캔 인벤토리는 `git ls-files` 가 낸다 — 합성 repo 가 자기 checkout 이라고 선언한다.
+    init_git_repo(root)
 
 
 def test_cli_dry_run_writes_reports_without_source_changes(tmp_path):

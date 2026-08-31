@@ -29,6 +29,8 @@ from pathlib import Path, PureWindowsPath
 
 import pytest
 
+from _git_fixture import init_git_repo
+
 from _textio import utf8_child_env
 from _win_skip import _can_symlink
 
@@ -1404,6 +1406,9 @@ def test_interrupted_update_new_pm_update_with_unusable_seam_recovers(
         assert "def _real_git_runner(" not in partial
         dest_seam.write_text(partial, encoding="utf-8")
 
+    # 출하 인벤토리는 `git ls-files` 가 낸다 — source 트리가 자기 checkout 이라고 선언한다.
+    init_git_repo(source, commit="seed")
+
     result = subprocess.run(
         [
             sys.executable,
@@ -2447,6 +2452,8 @@ def test_pm_update_cli_recovery_survives_unusable_engine_rev(
         "README.md\n",
         encoding="utf-8",
     )
+    # 출하 인벤토리는 `git ls-files` 가 낸다 — source 트리가 자기 checkout 이라고 선언한다.
+    init_git_repo(root, commit="seed")
 
     help_result = subprocess.run(
         [sys.executable, str(tools / "pm_update.py"), "--help"],

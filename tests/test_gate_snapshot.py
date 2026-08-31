@@ -228,7 +228,7 @@ def test_snapshot_marker_rejects_symlink_parent_without_external_write(
     assert str(output) not in _git(repo, "worktree", "list", "--porcelain").stdout
 
 
-def test_pm_home_work_snapshot_marker_blocks_round_despite_corrupt_lease_candidate(
+def test_pm_home_work_snapshot_marker_blocks_round_in_pm_home_work(
     snapshot, tmp_path, monkeypatch, capsys,
 ):
     """bare + 관리 슬롯에서 `<PM 홈>/work/gate-*`를 만든 PM 37 체인을 rc1로 닫는다."""
@@ -256,7 +256,12 @@ def test_pm_home_work_snapshot_marker_blocks_round_despite_corrupt_lease_candida
     )
     lease = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     lease.parent.mkdir(parents=True)
-    lease.write_text("{broken", encoding="utf-8")
+    # 소유자 해소는 정상이어야 이 절이 재는 축(마커 거부)이 관측된다. 장부 손상은 해소 자체가
+    # 실패하는 별도 축이다.
+    lease.write_text(
+        json.dumps({"leases": [{"slot": "work/product_1", "state": "leased"}]}),
+        encoding="utf-8",
+    )
 
     target = slot / "review" / "target.txt"
     target.write_text("ready-for-review\n", encoding="utf-8")
@@ -266,17 +271,12 @@ def test_pm_home_work_snapshot_marker_blocks_round_despite_corrupt_lease_candida
         slot, output, ["review/target.txt"],
     )
 
-    (created / ".project_manager").mkdir(parents=True, exist_ok=True)
-    (created / ".project_manager" / "local.conf").write_text(
+    # conf 소유자는 해소된 PM 홈이다 — 대상 해소가 마커 거부보다 먼저 걸리지 않게 거기 둔다.
+    (pm_home / ".project_manager" / "local.conf").write_text(
         _REVIEWER_TARGET_LINES, encoding="utf-8")
     external = _load("additional_reviewer")
     external.REPO = created
-    demotions = []
-    assert external.resolve_pm_home_for_repo(
-        created, demotion_sink=demotions,
-    ) == created.resolve()
-    assert len(demotions) == 1
-    assert demotions[0].candidates == (pm_home.resolve(),)
+    assert external.resolve_pm_home_for_repo(created) == pm_home.resolve()
 
     side_effects = []
 
@@ -1446,6 +1446,14 @@ def test_snapshot_recreation_keeps_pm_home_ledger_while_removed_fix_flag_is_iner
     target = repo / "review" / "target.txt"
     target.write_text("changed\n", encoding="utf-8")
     _git(repo, "add", "review/target.txt")
+
+    # 스냅샷의 소유 PM 홈 해소가 정상이어야 마커 거부 축이 관측된다(장부 부재는 해소 실패 축).
+    lease = repo / ".project_manager" / ".local" / "worktree-leases.json"
+    lease.parent.mkdir(parents=True, exist_ok=True)
+    lease.write_text(
+        json.dumps({"leases": [{"slot": "work/slot_1", "state": "leased"}]}),
+        encoding="utf-8",
+    )
 
     snapshot = _load("gate_snapshot")
     first, _files = snapshot.create_snapshot(

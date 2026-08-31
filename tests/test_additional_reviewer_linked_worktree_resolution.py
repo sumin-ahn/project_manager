@@ -18,8 +18,8 @@ def test_shape_a_pm_home_and_registered_worktree_keep_existing_owner(tmp_path):
     home, worktree, _ticket = _managed_worktree(tmp_path)
     external = _load("additional_reviewer_shape_a_registered_owner")
 
-    assert external.resolve_pm_home_for_repo(home, required=True) == home.resolve()
-    assert external.resolve_pm_home_for_repo(worktree, required=True) == home.resolve()
+    assert external.resolve_pm_home_for_repo(home) == home.resolve()
+    assert external.resolve_pm_home_for_repo(worktree) == home.resolve()
 
 
 def test_shape_b_unregistered_gate_worktree_uses_pm_home_for_delegate(
@@ -41,7 +41,7 @@ def test_shape_b_unregistered_gate_worktree_uses_pm_home_for_delegate(
     prompt.write_text("review the isolated gate snapshot", encoding="utf-8")
 
     external = _load("additional_reviewer_shape_b_gate_owner")
-    assert external.resolve_pm_home_for_repo(snapshot, required=True) == home.resolve()
+    assert external.resolve_pm_home_for_repo(snapshot) == home.resolve()
 
     delegate = _load("pm_delegate_shape_b_gate_owner")
     monkeypatch.setattr(delegate, "REPO", worktree)
@@ -97,7 +97,7 @@ def test_shape_b_bare_common_dir_uses_registered_checkout_owner(tmp_path):
     _git(canonical, "worktree", "add", "-q", "--detach", str(snapshot), "HEAD")
 
     external = _load("additional_reviewer_shape_b_bare_gate_owner")
-    assert external.resolve_pm_home_for_repo(snapshot, required=True) == home.resolve()
+    assert external.resolve_pm_home_for_repo(snapshot) == home.resolve()
 
 
 def test_shape_c_unrelated_repository_cannot_reuse_pm_home(tmp_path):
@@ -117,57 +117,7 @@ def test_shape_c_unrelated_repository_cannot_reuse_pm_home(tmp_path):
 
     external = _load("additional_reviewer_shape_c_unrelated")
     with pytest.raises(external.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
-        external.resolve_pm_home_for_repo(snapshot, required=True)
-
-
-def test_same_repo_multiple_checkout_owners_fail_loud(tmp_path):
-    """같은 common-dir의 checkout들이 다른 PM 홈에 등록되면 어느 conf도 선택하지 않는다."""
-    home_a = tmp_path / "pm-a"
-    home_a.mkdir()
-    _git(home_a, "init", "-q")
-    _git(home_a, "config", "user.email", "test@example.invalid")
-    _git(home_a, "config", "user.name", "test")
-    (home_a / "seed.txt").write_text("seed\n", encoding="utf-8")
-    _git(home_a, "add", "seed.txt")
-    _git(home_a, "commit", "-qm", "seed")
-    tickets_a = home_a / ".project_manager" / "wiki" / "tickets" / "open"
-    tickets_a.mkdir(parents=True)
-    (tickets_a / "T-9101-a.md").write_text(
-        "---\nid: T-9101\ntitle: owner a\nstatus: open\n---\n",
-        encoding="utf-8",
-    )
-    ledger_a = home_a / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger_a.parent.mkdir(parents=True)
-    ledger_a.write_text(json.dumps({"leases": []}), encoding="utf-8")
-
-    home_b = tmp_path / "pm-b"
-    checkout_b = home_b / "work" / "repo_1"
-    checkout_b.parent.mkdir(parents=True)
-    _git(home_a, "worktree", "add", "-q", "--detach", str(checkout_b), "HEAD")
-    tickets_b = home_b / ".project_manager" / "wiki" / "tickets" / "open"
-    tickets_b.mkdir(parents=True)
-    (tickets_b / "T-9102-b.md").write_text(
-        "---\nid: T-9102\ntitle: owner b\nstatus: open\n---\n",
-        encoding="utf-8",
-    )
-    ledger_b = home_b / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger_b.parent.mkdir(parents=True)
-    ledger_b.write_text(
-        json.dumps({"leases": [{"slot": "work/repo_1", "state": "leased"}]}),
-        encoding="utf-8",
-    )
-    snapshot = tmp_path / "ambiguous" / "gate-X"
-    snapshot.parent.mkdir()
-    _git(home_a, "worktree", "add", "-q", "--detach", str(snapshot), "HEAD")
-
-    external = _load("additional_reviewer_same_repo_multiple_owners")
-    with pytest.raises(external.AnchorResolutionError) as caught:
-        external.resolve_pm_home_for_repo(snapshot, required=True)
-    message = str(caught.value)
-    assert "여러 PM 홈의 worktree lease 장부에 등록" in message
-    assert "소유자가 모호" in message
-    assert str(home_a.resolve()) in message
-    assert str(home_b.resolve()) in message
+        external.resolve_pm_home_for_repo(snapshot)
 
 
 def test_code_reviewer_gate_and_ticket_share_required_owner_failure(

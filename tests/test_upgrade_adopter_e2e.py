@@ -45,6 +45,8 @@ from pathlib import Path
 
 import pytest
 
+from _git_fixture import init_git_repo
+
 from _harness_matrix import HARNESSES
 # fresh-adopter 게이트의 헬퍼를 그대로 쓴다(판정 사본 금지) — `_snapshot_tree` 는 산출물 트리
 #   컴포넌트(`__pycache__`·`.git`·`.pm_import_backups`) 제외까지 이미 담고 있다.
@@ -1265,6 +1267,8 @@ def _make_pre_t0876_codex_framework(tmp_path: Path) -> Path:
             "\n".join(lines).replace("additional_reviewer", "external_review") + "\n",
             encoding="utf-8", newline="\n",
         )
+    # 되감은 뒤의 트리가 출하 인벤토리다 — rename/재작성분을 index 에 현행화한다.
+    init_git_repo(framework, commit="pre-T-0876 세대")
     return framework
 
 
@@ -1616,13 +1620,18 @@ def _build_codex_framework(tmp_path: Path) -> Path:
     `.gitattributes`. REPO 를 안 건드리려고 사본에 엔진 mutate 를 가한다(fresh 게이트의 opencode
     헬퍼와 같은 모델)."""
     framework = tmp_path / "framework"
-    ignore = shutil.ignore_patterns("__pycache__", ".git", "node_modules")
+    # `.local` 은 per-clone 스크래치(git-untracked·manifest 밖)다. pytest 임시 루트가
+    # 그 아래 있으므로 제외하지 않으면 목적지를 다시 복사해 무한 재귀한다.
+    ignore = shutil.ignore_patterns("__pycache__", ".git", "node_modules", ".local")
     shutil.copytree(REPO / ".project_manager", framework / ".project_manager", ignore=ignore)
     shutil.copytree(REPO / "templates" / "codex",
                     framework / "templates" / "codex", ignore=ignore)
     shutil.copytree(REPO / ".claude" / "skills", framework / ".claude" / "skills",
                     ignore=ignore)
     shutil.copy2(REPO / ".gitattributes", framework / ".gitattributes")
+    # 출하 인벤토리는 `git ls-files` 가 낸다 — 합성 프레임워크 트리가 자기 checkout 이라고
+    # 선언한다(선언이 없으면 이 저장소가 답해 인벤토리가 0건이 된다).
+    init_git_repo(framework, commit="framework fixture")
     return framework
 
 

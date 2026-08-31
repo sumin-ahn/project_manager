@@ -435,13 +435,16 @@ def test_pm_update_nested_checkout_keeps_git_ignore_guarantee(tmp_path):
     assert got == ["engine/tracked.py"]
 
 
-def test_pm_update_non_git_directory_rc128_warns_and_falls_back(tmp_path):
+def test_pm_update_non_git_directory_rc128_warns_and_falls_back(tmp_path, monkeypatch):
     pm_update = _load("pm_update_nongit_fallback_test", "pm_update.py")
     repo_files = pm_update._load_repo_owned_files()
     source = tmp_path / "source"
     ship = source / "ship"
     ship.mkdir(parents=True)
     (ship / "fallback.txt").write_text("fallback\n", encoding="utf-8")
+    # "이 트리는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
+    # 정하지 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    monkeypatch.setattr(repo_files, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
 
     with pytest.warns(
         repo_files.RepoFilesFallbackWarning,
@@ -725,12 +728,15 @@ def test_pm_import_dest_fallback_uses_owned_mode(repo_files, tmp_path):
     assert got == {Path(".gitignore"), Path("tracked.md"), Path("new.md")}
 
 
-def test_pm_import_non_git_dest_fallback_warning_is_visible(tmp_path):
+def test_pm_import_non_git_dest_fallback_warning_is_visible(tmp_path, monkeypatch):
     pm_import = _load("pm_import_repo_files_nongit_test", "pm_import.py")
     repo_files = pm_import._load_repo_owned_files()
     dest = tmp_path / "adopter"
     dest.mkdir()
     (dest / "copied.md").write_text("copied\n", encoding="utf-8")
+    # "이 트리는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
+    # 정하지 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    monkeypatch.setattr(repo_files, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
 
     with pytest.warns(
         repo_files.RepoFilesFallbackWarning,

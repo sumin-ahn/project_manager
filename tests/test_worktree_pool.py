@@ -5692,12 +5692,22 @@ def test_generated_commit_hook_empty_branch_name_fails_closed(wp, tmp_path):
 @_git_required
 @pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
 def test_generated_commit_hook_real_git_rc128_fails_closed(wp, tmp_path):
-    """비-repo에서 실제 git의 브랜치 판정 rc128을 정상 detached로 오인하지 않는다."""
+    """실제 git의 브랜치 판정 rc128을 정상 detached로 오인하지 않는다.
+
+    `git symbolic-ref` 는 detached(rc1) 와 "저장소가 아님"(rc128) 을 둘 다 rc≠0 으로 답한다.
+    훅은 앞을 통과, 뒤를 차단해야 한다. rc128 을 내는 자리는 **깨진 gitfile** 이다 —
+    `.git` 이 없는 곳을 찾아 올라가는 대신, 자기 트리가 스스로 "내 저장소는 여기"라고
+    가리킨 곳이 없다고 선언한다. 실 git 이 실제로 rc128 로 답하므로 이 테스트가 지키는
+    "실제 git 의 rc 규약" 축이 그대로 남는다(PATH 대역·경계 env 를 쓰지 않는다).
+    """
     _mk_bare_placeholder(wp, "A")
     wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-commit"
     outside_repo = tmp_path / "not-a-repository"
     outside_repo.mkdir()
+    (outside_repo / ".git").write_text(
+        f"gitdir: {tmp_path / 'no-such-git-dir'}\n", encoding="utf-8",
+    )
     probe = subprocess.run(
         [_GIT, "symbolic-ref", "-q", "--short", "HEAD"], cwd=outside_repo,
         capture_output=True, text=True, env=_protection_env(),

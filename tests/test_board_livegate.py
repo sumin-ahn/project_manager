@@ -20,6 +20,7 @@ import types
 from pathlib import Path
 
 import pytest
+from _git_fixture import init_git_repo
 from _home_slot import seed_home_slot
 
 REPO = Path(__file__).resolve().parents[1]
@@ -66,6 +67,9 @@ def live_board(tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     local = proj / ".project_manager" / ".local"
     seed_home_slot(proj)
+    # 픽스처가 자기 저장소라고 선언한다 — 선언이 없으면 `_resolve_livegate_flag` 의
+    # `git config core.hooksPath` 가 이 저장소를 답해 실 PM 홈의 livegate.json 을 쓴다.
+    init_git_repo(proj)
     mod = _load_board()
     monkeypatch.setattr(mod, "REPO", proj)
     monkeypatch.setattr(mod, "LOCAL_DIR", local)
@@ -137,6 +141,10 @@ def _seed_engine_drift_fixture(dest_root: Path, upstream_root: Path, *, drift: b
         "# widget v1 — drifted\n" if drift else "# widget v1\n", encoding="utf-8")
     (dest_root / ".project_manager" / "local.conf").write_text(
         f"upstream.path={upstream_root}\n", encoding="utf-8")
+    # 출하 인벤토리는 `git ls-files` 가 낸다 — 두 트리가 자기 저장소로 자기 파일을 추적해야
+    # 답이 픽스처 자신의 함수가 된다(선언이 없으면 이 저장소의 빈 인벤토리를 받는다).
+    for root in (dest_root, upstream_root):
+        init_git_repo(root, commit="seed")
 
 
 _DRY_RUN_CHANGE_RE = re.compile(r"^\s*\[(?:new|update|render)\]\s+(.+)$")
@@ -426,6 +434,8 @@ def _seed_target_render_notation_fixture(
         dst_file = dest_root / _NOTATION_WIKI_REL
         dst_file.parent.mkdir(parents=True, exist_ok=True)
         dst_file.write_text(text, encoding="utf-8")  # 미렌더 원문 그대로.
+    # 출하 인벤토리는 `git ls-files` 가 낸다 — source 트리가 자기 저장소로 자기 파일을 추적한다.
+    init_git_repo(source_root, commit="seed")
     return skill
 
 

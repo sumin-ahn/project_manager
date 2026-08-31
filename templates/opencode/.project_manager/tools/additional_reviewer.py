@@ -313,26 +313,20 @@ def _require_engine_sibling(path: Path, filename: str) -> None:
     raise err
 
 
-# ── REPO 앵커 (상향 탐색·board_root() graceful 탐지 동형) ──────────
-# 하드코딩 `parents[2]` 는 tools 가 `<root>/.project_manager/tools/` 정확히 2단 깊이에 있다고
-# 가정한다 — 채택자 형상(PM 홈/worktree 구조 상이·다른 깊이)에선 어긋난다.
-# 스크립트 위치에서 부모 체인을 상향 탐색해 `.project_manager` 를 품은 첫(최근접) 조상을 REPO 로
-# 삼아 견고화한다 — board.py `board_root()` 의 "존재할 때만 갈리고 없으면 현 위치 100% 폴백"
-# 패턴과 동형(additive·회귀 0). REPO 는 module-level 상수로 유지해 hermetic 테스트가 monkeypatch
-# 할 수 있게 한다(각 파일 self-contained — 공유 import 미도입·ticket_finish 와 동형 복제).
+# ── REPO 앵커 (설치 깊이 고정 · hermetic 테스트 monkeypatch seam) ──────────
+# 설치 깊이는 `pm_import` 가 못 박는다 — 도구는 `<root>/.project_manager/tools/` 에만 놓인다.
+# REPO 는 module-level 상수로 유지해 hermetic 테스트가 monkeypatch 할 수 있게 한다
+# (각 파일 self-contained — 공유 import 미도입).
 
 def _find_repo_root() -> Path:
-    """스크립트 위치에서 부모 체인을 상향 탐색해 `.project_manager` 를 품은 첫 조상을 반환한다.
+    """엔진 루트 — 도구는 언제나 `<root>/.project_manager/tools/` 에 설치된다.
 
-    `Path(__file__).resolve()` 부모 체인을 최근접부터 훑어 `.project_manager` 디렉토리를 자식으로
-    가진 첫 조상을 REPO 로 반환한다(worktree/PM 홈 등 다른 깊이여도 마커로 견고 해소). 마커를
-    못 찾으면 현행 `parents[2]` 로 폴백한다 — board_root() 동형의 graceful 폴백(회귀 0·additive).
+    상향 탐색을 하지 않는다. 설치 경로를 만드는 쪽(`pm_import`)이 그 깊이를 못 박으므로
+    다른 깊이는 나올 수 없고, 탐색은 합성 트리에서 **자기 위 실 인스턴스**를 답으로 주는
+    부작용만 낸다(실측: 실 PM 홈 log 오염·등록 안 된 worktree 가 등록으로 판정).
+    나머지 도구 20곳과 같은 규칙이다.
     """
-    here = Path(__file__).resolve()
-    for ancestor in here.parents:
-        if (ancestor / ".project_manager").is_dir():
-            return ancestor
-    return here.parents[2]
+    return Path(__file__).resolve().parents[2]
 
 
 REPO = _find_repo_root()
@@ -351,18 +345,6 @@ class AnchorResolutionError(RuntimeError):
     """명시 입력에서 diff/board/config 앵커를 유일하게 해소하지 못한 오류."""
 
 
-class PmHomeDemotion(NamedTuple):
-    """소유 PM 홈 해소에 실패해 anchor 자신이 이 실행의 config 앵커가 된 근거.
-
-    `candidates` 는 이 anchor 를 자기 worktree 로 등록한다고 주장한 PM 홈들이다 — 장부 손상 등으로
-    소유 판정까지 가지 못했을 뿐 config 소유자 후보로는 남아 있다.
-    """
-
-    anchor: Path
-    reason: str
-    candidates: tuple[Path, ...]
-
-
 class PmHomeResolutionFacts(NamedTuple):
     """한 번의 PM-home 해소가 가드에 넘기는 자기-앵커 판정 사실.
 
@@ -374,7 +356,6 @@ class PmHomeResolutionFacts(NamedTuple):
     anchor: Path
     pm_home: Path
     snapshot_marker: Path | None
-    unregistered_linked_self_anchor: bool
 
 
 def _load_board():
@@ -403,238 +384,43 @@ def _status_dirs() -> tuple[str, ...]:
     return tuple(_load_board().STATUS_DIRS)
 
 
-def _absolute_git_common_dir(board, anchor: Path) -> Path | None:
-    """Git이 증명한 ``anchor``의 공용 저장소 디렉터리를 절대경로로 반환한다."""
-    common = board._git_rev_parse(
-        anchor, "--path-format=absolute", "--git-common-dir",
+def _load_pm_log():
+    """소유 PM 홈 유도 규칙(`pm_log.owning_pm_home`)을 형제 경로에서 로드한다.
+
+    해소 판정의 구현은 하나다 — 이 모듈과 board 가 같은 함수를 부른다.
+    """
+    path = Path(__file__).resolve().with_name("pm_log.py")
+    return _load_module_from_path(
+        path, "pm_log.py", verifier=_verify_engine_rev, cache=True,
+        cache_key=f"_project_manager_pm_log:{path.parent}",
     )
-    if common is None:
-        # Git 2.31 미만 호환. 기존 해소 경로가 쓰던 상대경로 정규화와 같은 폴백이다.
-        common = board._git_rev_parse(anchor, "--git-common-dir")
-    if common is None:
-        return None
-    common_path = Path(common)
-    if not common_path.is_absolute():
-        common_path = anchor / common_path
-    return common_path.resolve()
-
-
-def _git_worktree_records(anchor: Path) -> tuple[tuple[Path, bool], ...]:
-    """``anchor``와 같은 저장소라고 Git이 열거한 worktree와 bare 여부를 반환한다."""
-    try:
-        result = subprocess.run(
-            [
-                "git", "-C", str(anchor), "worktree", "list",
-                "--porcelain", "-z",
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ()
-    if result.returncode != 0:
-        return ()
-
-    records: list[tuple[Path, bool]] = []
-    for raw_record in result.stdout.split("\0\0"):
-        fields = [field for field in raw_record.split("\0") if field]
-        if not fields or not fields[0].startswith("worktree "):
-            continue
-        records.append((
-            Path(fields[0][len("worktree "):]).resolve(),
-            "bare" in fields[1:],
-        ))
-    return tuple(records)
-
-
-def _checkout_pm_home_matches(board, checkout: Path) -> tuple[Path, ...]:
-    """같은 저장소 checkout 하나의 기존 board/lease 축에서 소유 PM 홈을 찾는다.
-
-    일반 main worktree가 실 board 자체면 그 checkout이 소유자다. 그 밖에는 checkout의 경로와
-    git-common-dir 조상만 후보로 삼고 기존 strict lease point-read로 정확한 등록을 요구한다.
-    """
-    checkout = checkout.resolve()
-    if board._has_real_board(checkout / ".project_manager"):
-        return (checkout,)
-
-    search: list[Path] = [checkout, *checkout.parents]
-    common_path = _absolute_git_common_dir(board, checkout)
-    if common_path is not None:
-        search.extend((common_path, *common_path.parents))
-
-    matches: list[Path] = []
-    seen: set[Path] = set()
-    for path in search:
-        home = path.resolve()
-        if home in seen:
-            continue
-        seen.add(home)
-        if not (home / ".project_manager").is_dir():
-            continue
-        matched, _error = board._ledger_registration(home, checkout)
-        if matched:
-            matches.append(home)
-    return tuple(sorted(set(matches)))
-
-
-def _same_repo_checkout_pm_home_matches(
-    board, anchor: Path, common_path: Path,
-) -> tuple[Path, ...]:
-    """미등록 linked worktree를 같은 Git 저장소의 소유 checkout을 거쳐 재해소한다.
-
-    main worktree를 포함한 모든 non-bare checkout에서 기존 board/lease 소유자를 찾는다. 어느
-    후보든 common-dir을 다시 대조하고, 서로 다른 소유자가 나오면 호출부가 모호성으로 거부한다.
-    임의 경로/상위 디렉터리로 해소 축을 넓히지 않는다.
-    """
-    records = _git_worktree_records(anchor)
-    if not records:
-        return ()
-    roots = tuple(path for path, is_bare in records if not is_bare)
-    owners: list[Path] = []
-    for checkout in roots:
-        if checkout == anchor or not checkout.is_dir():
-            continue
-        if _absolute_git_common_dir(board, checkout) != common_path:
-            continue
-        owners.extend(_checkout_pm_home_matches(board, checkout))
-    return tuple(sorted(set(owners)))
 
 
 def resolve_pm_home_for_repo(
-    anchor: Path, *, required: bool = False, warning_sink: list[str] | None = None,
-    demotion_sink: list[PmHomeDemotion] | None = None,
-    resolution_sink: list[PmHomeResolutionFacts] | None = None,
+    anchor: Path, *, resolution_sink: list[PmHomeResolutionFacts] | None = None,
 ) -> Path:
-    """repo/worktree가 소속된 PM 홈을 lease 장부로 해소한다.
+    """repo/worktree가 소속된 PM 홈을 anchor 자신의 선언으로 해소한다 — 답은 하나이거나 예외다.
 
-    실 board를 가진 repo는 자기 자신, 등록 linked worktree는 정확히 한 lease 소유 홈을
-    반환한다. lease 미등록 gate snapshot은 Git이 증명한 같은 저장소의 main/등록 checkout을
-    거쳐 그 소유 홈을 반환한다. 일반 standalone repo는 자기 local.conf를 쓰도록 자기 자신을
-    반환한다. board가 필수면 장부 부재·손상·중복은 fail-loud다. board 불필요 실행은 한 줄
-    경고 후 자기 repo를 standalone 앵커로 사용한다.
+    판정 입력은 `pm_log.owning_pm_home` 유도 하나다: anchor 의 `.git` 포인터가 가리키는 공용
+    저장소가 소유 PM 홈을 지목하고, 그 홈에 `.project_manager` 가 실재하는지만 확인한다.
+    `.git` 이 없거나 디렉터리인 트리(PM 홈 main checkout·일반 clone)는 자기 자신이라는
+    확정된 답이다. 미지 commondir·`.project_manager` 부재는 `AnchorResolutionError` 다 —
+    자기 앵커로 강등해 계속 진행하지 않는다.
 
-    `demotion_sink` 를 주면 그 폴백(강등)의 근거를 `PmHomeDemotion` 으로 담는다 — 호출부가
-    소유 PM 홈 필터 승계/차단을 판단하는 입력이다. standalone·실 board 소유처럼 폴백이 아닌
-    정상 해소는 아무것도 담지 않는다. `resolution_sink` 는 마커/linked/lease를 포함한 가드 판정
-    사실을 담아, 호출부가 이 resolver seam을 건너뛰고 실제 checkout을 다시 읽지 않게 한다.
+    앵커가 실 board 를 갖는지는 판정 입력이 아니다. 스냅샷 안에 실 ticket 이 있다는 이유로
+    조기 반환하면, 소유자를 확정하지 못한 트리가 휘발 장부에 라운드를 기록할 수 있다.
+
+    `resolution_sink` 는 게이트 스냅샷 마커를 포함한 가드 판정 사실을 담아, 호출부가 이
+    resolver seam을 건너뛰고 실제 checkout을 다시 읽지 않게 한다.
     """
     anchor = anchor.resolve()
-    board = _load_board()
-
-    # PM 홈 자기 checkout과 plain clone은 lease가 없는 정상 standalone 형상이다. linked
-    # worktree만 소유자 재해소가 필요하다. board._resolve_read_board()는 티켓이 실재하는 홈만
-    # 후보로 삼으므로, 아직 티켓이 하나도 없는 등록 슬롯의 config 소유자 판정에는 쓸 수 없다.
-    if board._has_real_board(anchor / ".project_manager"):
-        _publish_pm_home_resolution(resolution_sink, (), anchor=anchor, pm_home=anchor)
-        return anchor
-    if not board._is_linked_worktree(anchor):
-        _publish_pm_home_resolution(resolution_sink, (), anchor=anchor, pm_home=anchor)
-        return anchor
-
-    search: list[Path] = list(anchor.parents)
-    common_path = _absolute_git_common_dir(board, anchor)
-    if common_path is not None:
-        search.extend((common_path, *common_path.parents))
-
-    # config 소유자는 아직 ticket이 없는 PM 홈도 lease로 해소해야 한다. 다만 board.py보다
-    # 넓게 보이는 tools-only checkout은 오류 후보가 아니다: 유효 lease match는 인정하되,
-    # 장부 오류는 실 board 소유자에게서만 load-bearing으로 취급한다. board._resolve_read_board()가
-    # 어떤 장부 오류든 유일 match보다 우선하는 것과 의도적으로 다르다: 이 복구 경로는 정상
-    # 소유자를 제3자의 손상된 장부로 자기잠금하지 않고, 실제 중복 match만 모호성으로 차단한다.
-    candidates: list[Path] = []
-    seen: set[Path] = set()
-    for path in search:
-        home = path.resolve()
-        if home in seen:
-            continue
-        seen.add(home)
-        if not (home / ".project_manager").is_dir():
-            continue
-        if board._registers_worktree(home, anchor):
-            candidates.append(home)
-
-    matches: list[Path] = []
-    errors: list[str] = []
-    for home in candidates:
-        matched, error = board._ledger_registration(home, anchor)
-        if matched:
-            matches.append(home)
-        elif error is not None and board._has_real_board(home / ".project_manager"):
-            errors.append(error)
-
-    unique = sorted(set(matches))
-    if len(unique) == 1:
-        pm_home = unique[0]
-        _publish_pm_home_resolution(resolution_sink, (), anchor=anchor, pm_home=pm_home)
-        return pm_home
-    if len(unique) > 1:
-        homes = ", ".join(str(home) for home in unique)
-        resolution_error = (
-            "이 앵커가 여러 PM 홈의 worktree lease 장부에 등록되어 소유자가 "
-            f"모호합니다: {homes}"
-        )
-    elif errors:
-        detail = "; ".join(errors)
-        resolution_error = (
-            "이 앵커의 소유 PM 홈 worktree lease 장부를 확정할 수 없습니다: "
-            f"{detail}"
-        )
-    else:
-        # `<pm-home>/work/<slot>`은 lease가 소유하는 정규 슬롯이다. 장부에서 빠진 정규 슬롯까지
-        # main-worktree 축으로 되살리면 lease 제거/손상의 fail-loud 계약이 무력화된다. 새 축은 그
-        # 관례 밖에 만들어지는 일회용 gate snapshot에만 적용한다.
-        managed_slot_without_lease = any(
-            anchor.parent.name == "work" and anchor.parent.parent == home
-            for home in candidates
-        )
-        if managed_slot_without_lease:
-            resolution_error = (
-                "worktree lease 장부에서 소유 PM 홈을 찾지 못했습니다."
-            )
-        else:
-            same_repo_owners = (
-                _same_repo_checkout_pm_home_matches(board, anchor, common_path)
-                if common_path is not None else ()
-            )
-            if len(same_repo_owners) == 1:
-                pm_home = same_repo_owners[0]
-                _publish_pm_home_resolution(
-                    resolution_sink, (), anchor=anchor, pm_home=pm_home,
-                )
-                return pm_home
-            if len(same_repo_owners) > 1:
-                homes = ", ".join(str(home) for home in same_repo_owners)
-                resolution_error = (
-                    "같은 Git 저장소 checkout들이 여러 PM 홈의 worktree lease 장부에 "
-                    f"등록되어 소유자가 모호합니다: {homes}. 장부를 정리한 뒤 다시 "
-                    "실행하세요."
-                )
-            else:
-                resolution_error = (
-                    "worktree lease 장부와 같은 Git 저장소의 소유 checkout에서 PM 홈을 "
-                    "찾지 못했습니다."
-                )
-
-    if required:
-        raise AnchorResolutionError(f"{anchor}: {resolution_error}")
-    warning = (
-        "경고: PM 홈 해소 실패 — board가 필요 없는 실행이라 repo 자기 앵커를 사용합니다: "
-        f"{anchor} ({resolution_error})"
-    )
-    if warning_sink is None:
-        print(warning, file=sys.stderr)
-    else:
-        warning_sink.append(warning)
-    demotion = PmHomeDemotion(anchor, resolution_error, tuple(candidates))
-    if demotion_sink is not None:
-        demotion_sink.append(demotion)
-    _publish_pm_home_resolution(
-        resolution_sink, (demotion,), anchor=anchor, pm_home=anchor,
-    )
-    return anchor
+    pm_log = _load_pm_log()
+    try:
+        pm_home = pm_log.owning_pm_home(anchor)
+    except pm_log.PmHomeResolutionError as exc:
+        raise AnchorResolutionError(str(exc)) from exc
+    _publish_pm_home_resolution(resolution_sink, anchor=anchor, pm_home=pm_home)
+    return pm_home
 
 
 _GATE_SNAPSHOT_MARKER = Path(
@@ -657,73 +443,8 @@ def _gate_snapshot_marker(anchor: Path) -> Path | None:
     return marker
 
 
-def _is_unregistered_linked_self_anchor(
-    demotions: Sequence[PmHomeDemotion], *, diff_root: Path, pm_home: Path,
-) -> bool:
-    """라운드 장부 앵커가 lease 미등록 linked worktree 자신인지 단일 판정한다.
-
-    `resolve_pm_home_for_repo` 의 강등 기록은 판정 입력이 아니다. 스냅샷 안에 실 ticket이 있으면
-    resolver가 정상 board 자기 앵커로 조기 반환해 강등 기록이 생기지 않기 때문이다. 대신
-    git-dir/common-dir 차이로 linked worktree를 확인하고, 경로 조상과 common-dir 조상에 있는
-    PM 홈 lease 장부 중 하나라도 이 앵커를 등록하는지 직접 조회한다.
-
-    main checkout/standalone PM 홈은 linked worktree가 아니므로 False다. 정상 등록 worktree가
-    자기 ticket 때문에 self-anchor로 해소돼도 lease match가 있으므로 False다. 소유 PM 홈으로
-    재앵커된 정상 worktree도 `pm_home != diff_root`에서 False다. lease 장부가 손상돼
-    자기 앵커로 강등됐더라도 해소기가 남긴 단일 소유 후보가 있으면 관리 슬롯 복구 폴백으로
-    False다. 후보가 생긴 *이유 문자열*은 판정에 쓰지 않는다.
-    """
-    anchor = diff_root.resolve()
-    if pm_home.resolve() != anchor:
-        return False
-
-    board = _load_board()
-    if not board._is_linked_worktree(anchor):
-        return False
-
-    search: list[Path] = list(anchor.parents)
-    common = board._git_rev_parse(anchor, "--git-common-dir")
-    if common is not None:
-        common_path = Path(common)
-        if not common_path.is_absolute():
-            common_path = (anchor / common_path).resolve()
-        search.extend((common_path, *common_path.parents))
-
-    seen: set[Path] = set()
-    for path in search:
-        owner = path.resolve()
-        if owner in seen:
-            continue
-        seen.add(owner)
-        if not (owner / ".project_manager").is_dir():
-            continue
-        if not board._registers_worktree(owner, anchor):
-            continue
-        matched, error = board._ledger_registration(owner, anchor)
-        if matched or error is not None:
-            return False
-    # lease 장부 손상 시 exact match는 읽을 수 없다. 그래도 resolver가 경로/git common-dir
-    # 사실으로 단일 관리 후보를 남겼고 **그 후보의 strict point-read가 실제 오류를 반환**하면
-    # 종전 복구 폴백을 보존한다. 정상적으로 읽힌 장부의 non-match까지 후보 수만으로 허용하면
-    # 유효한 빈 장부 아래 미등록 worktree가 휘발 장부에 라운드를 기록할 수 있다.
-    # gate_snapshot 마커는 호출자가 이 술어보다 먼저 검사하므로 후보·경로와 무관하게 차단된다.
-    candidate_owners = {
-        candidate.resolve()
-        for demotion in demotions
-        if demotion.anchor.resolve() == anchor
-        for candidate in demotion.candidates
-    }
-    if len(candidate_owners) == 1:
-        candidate_owner = next(iter(candidate_owners))
-        _matched, error = board._ledger_registration(candidate_owner, anchor)
-        if error is not None:
-            return False
-    return True
-
-
 def _publish_pm_home_resolution(
     sink: list[PmHomeResolutionFacts] | None,
-    demotions: Sequence[PmHomeDemotion],
     *,
     anchor: Path,
     pm_home: Path,
@@ -732,37 +453,27 @@ def _publish_pm_home_resolution(
     if sink is None:
         return
     resolved_anchor = anchor.resolve()
-    resolved_home = pm_home.resolve()
-    marker = _gate_snapshot_marker(resolved_anchor)
     sink.append(PmHomeResolutionFacts(
         anchor=resolved_anchor,
-        pm_home=resolved_home,
-        snapshot_marker=marker,
-        unregistered_linked_self_anchor=(
-            False
-            if marker is not None
-            else _is_unregistered_linked_self_anchor(
-                demotions, diff_root=resolved_anchor, pm_home=resolved_home,
-            )
-        ),
+        pm_home=pm_home.resolve(),
+        snapshot_marker=_gate_snapshot_marker(resolved_anchor),
     ))
 
 
-def _self_anchored_round_refusal(
-    demotions: Sequence[PmHomeDemotion],
+def _gate_snapshot_round_refusal(
     resolutions: Sequence[PmHomeResolutionFacts],
     *,
     diff_root: Path,
     pm_home: Path,
     gate: str | None,
 ) -> str | None:
-    """스냅샷/미등록 linked worktree의 휘발 장부에 라운드를 기록하면 차단 안내를 반환한다.
+    """게이트 스냅샷의 휘발 장부에 라운드를 기록하면 차단 안내를 반환한다.
 
-    생성 마커는 경로·PM-home 후보·lease 상태보다 먼저 판정한다. 마커 없는 과거/수동 linked
-    worktree 판정까지 `resolve_pm_home_for_repo`가 게시한 facts만 소비한다. 이 seam이 고정된
-    하네스에서는 가드도 실제 checkout/git/lease/마커를 다시 읽지 않는다. 강등 사유 문자열은
-    안내에만 쓰며 판정 입력이 아니다. `gate is None` 인 명시 `--no-gate` 자문은 라운드 장부를
-    쓰지 않아 raw 자기 앵커 복구 채널의 기존 계약을 보존한다.
+    판정 입력은 생성기가 남긴 마커 파일 사실 하나이며, `resolve_pm_home_for_repo`가 게시한
+    facts로만 소비한다. 이 seam이 고정된 하네스에서는 가드도 실제 checkout/마커를 다시 읽지
+    않는다. 미등록 linked worktree는 해소 단계에서 이미 실패하므로 여기까지 오지 않는다.
+    `gate is None` 인 명시 `--no-gate` 자문은 라운드 장부를 쓰지 않아 raw 자기 앵커 복구
+    채널의 기존 계약을 보존한다.
 
     호출부는 dry-run·조회·처분과 diff-cap 조기 종료가 끝난 뒤 이 함수를 부른다. 따라서 여기서
     문자열이 나오면 바로 다음 단계가 라운드 예약인 **유료 호출 확정 구간**이다.
@@ -775,33 +486,13 @@ def _self_anchored_round_refusal(
         fact for fact in resolutions
         if fact.anchor == resolved_diff and fact.pm_home == resolved_home
     ), None)
-    if resolution is None:
+    if resolution is None or resolution.snapshot_marker is None:
         return None
-    marker = resolution.snapshot_marker
-    if marker is not None:
-        ledger = resolved_home / ".project_manager" / ".local" / "review_rounds.json"
-        return _GATE_SNAPSHOT_ROUND_GUIDANCE.format(
-            anchor=resolved_diff,
-            gate=gate,
-            ledger=ledger,
-            marker=marker,
-        )
-    if not resolution.unregistered_linked_self_anchor:
-        return None
-    reason = next(
-        (
-            demotion.reason
-            for demotion in demotions
-            if demotion.anchor.resolve() == resolved_diff
-        ),
-        "linked worktree 자기 앵커가 어떤 PM 홈 lease 장부에도 등록되지 않았습니다.",
-    )
-    ledger = resolved_diff / ".project_manager" / ".local" / "review_rounds.json"
-    return _SELF_ANCHORED_ROUND_GUIDANCE.format(
+    return _GATE_SNAPSHOT_ROUND_GUIDANCE.format(
         anchor=resolved_diff,
         gate=gate,
-        ledger=ledger,
-        reason=reason,
+        ledger=resolved_home / ".project_manager" / ".local" / "review_rounds.json",
+        marker=resolution.snapshot_marker,
     )
 
 
@@ -1055,7 +746,7 @@ def _canonical_worktree(anchor: Path) -> Path | None:
     """adopter#0 PM 홈 `anchor` 의 canonical 코드 worktree(재지정 대상) 경로 — 없으면 None.
 
     `<anchor>/work/*` 스캔 중 엔진 사본(`.project_manager/tools/additional_reviewer.py`)을 가진 첫
-    디렉토리를 반환한다(board.py `_registers_worktree` (a) `work/<name>` 등록 관례와 동형). 없으면
+    디렉토리를 반환한다(슬롯 생성 도구가 쓰는 `work/<name>` 경로 관례와 동형). 없으면
     None(무관 형상·재지정 대상 없음).
 
     local.conf `upstream.path` 은 재지정 대상 결정에 **쓰지 않는다** — upstream 은 URL 이거나 무관한
@@ -1494,17 +1185,6 @@ _GATE_SNAPSHOT_ROUND_GUIDANCE = (
     "  · PM 홈 cwd에서 다시 실행하고, 등록 worktree를 가리키는 `--paths <경로>` 또는 "
     "`--ticket <T-NNNN>`을 명시하세요.\n"
     "  · 현재 스냅샷 앵커: {anchor} · gate={gate} · 장부={ledger} · 마커={marker}"
-)
-
-_SELF_ANCHORED_ROUND_GUIDANCE = (
-    "오류: 미등록 linked worktree 자기 앵커에서는 실 호출 라운드를 기록할 수 없습니다 — "
-    "휘발성 장부가 스냅샷 재생성 때 사라져 수렴 게이트를 우회하므로 호출하지 "
-    "않았습니다.\n"
-    "  · PM 홈 cwd에서 다시 실행하고, 등록 worktree를 가리키는 `--paths <경로>` 또는 "
-    "`--ticket <T-NNNN>`을 명시하세요.\n"
-    "  · worktree lease 장부에 등록되지 않은 linked worktree 전반에서 게이트 라운드를 "
-    "실행하지 마세요. 격리 스냅샷은 내부 reviewer 전용입니다.\n"
-    "  · 현재 자기 앵커: {anchor} · gate={gate} · 장부={ledger} · 판정 근거={reason}"
 )
 
 # 판정 블록의 게이트 줄 — 회계 밖 실행은 **끝난 뒤** 여기서 확정형으로 말한다. stderr 경고는 로그를
@@ -3264,7 +2944,7 @@ def _print_rounds_report(
     뒤 자기 앵커 폴백이다."""
     global _PM_HOME_OVERRIDE
     _PM_HOME_OVERRIDE = (
-        anchor if resolved else resolve_pm_home_for_repo(anchor, required=False)
+        anchor if resolved else resolve_pm_home_for_repo(anchor)
     )
     try:
         wave_budget = _wave_budget(_local_config_for_repo(_PM_HOME_OVERRIDE))
@@ -3335,7 +3015,7 @@ def _resolve_gate_command(args: argparse.Namespace, engine_repo: Path) -> int:
     if ignored:
         print(f"경고: --resolve-gate 는 장부 기록 전용이라 다음 플래그를 무시합니다: {ignored}.",
               file=sys.stderr)
-    _PM_HOME_OVERRIDE = resolve_pm_home_for_repo(engine_repo, required=False)
+    _PM_HOME_OVERRIDE = resolve_pm_home_for_repo(engine_repo)
     board = _load_board()
     with _round_ledger_lock():
         ledger = _load_round_ledger()
@@ -6105,8 +5785,6 @@ def _main(argv: list[str] | None = None) -> int:
             return _print_rounds_report(engine_repo, gate=args.gate)
     ticket_selected = bool(args.ticket and not args.paths)
     explicit_paths = bool(args.paths)
-    engine_demotions: list[PmHomeDemotion] = []
-    diff_owner_demotions: list[PmHomeDemotion] = []
     engine_resolutions: list[PmHomeResolutionFacts] = []
     diff_owner_resolutions: list[PmHomeResolutionFacts] = []
     ticket_body_source: Path | None = None
@@ -6115,8 +5793,7 @@ def _main(argv: list[str] | None = None) -> int:
     ticket_scope_fixture_injected = False
     try:
         engine_pm_home = resolve_pm_home_for_repo(
-            engine_repo, required=ticket_selected, demotion_sink=engine_demotions,
-            resolution_sink=engine_resolutions,
+            engine_repo, resolution_sink=engine_resolutions,
         )
         scope_from_initial_pm_home = _scope_from_initial_pm_home(
             ticket_selected=ticket_selected, explicit_paths=explicit_paths,
@@ -6156,9 +5833,7 @@ def _main(argv: list[str] | None = None) -> int:
             engine_pm_home
             if diff_root.resolve() == engine_repo
             else resolve_pm_home_for_repo(
-                diff_root, required=ticket_selected,
-                demotion_sink=diff_owner_demotions,
-                resolution_sink=diff_owner_resolutions,
+                diff_root, resolution_sink=diff_owner_resolutions,
             )
         )
         if ticket_selected and pm_home != engine_pm_home:
@@ -6198,11 +5873,7 @@ def _main(argv: list[str] | None = None) -> int:
     TICKETS_DIR = pm_home / ".project_manager" / "wiki" / "tickets"
     # raw 산출/공유 장부도 board/config 와 같은 소유 경계에 등재한다 — 슬롯(diff_root) 장부에
     # 박제하면 PM 홈 장부를 읽는 `pm_delegate raw` 통합 조회가 이 실행의 raw 를 못 본다.
-    # 해소 실패 형상에서는 pm_home 자체가 loud 경고 뒤 diff_root 로 폴백해 있다.
     _PM_HOME_OVERRIDE = pm_home
-    selected_owner_demotions = (
-        engine_demotions if pm_home == engine_pm_home else diff_owner_demotions
-    )
     selected_owner_resolutions = (
         engine_resolutions
         if diff_root.resolve() == engine_repo
@@ -6458,8 +6129,7 @@ def _main(argv: list[str] | None = None) -> int:
     # dry-run·조회·처분·diff-cap 거부가 모두 반환한 뒤이고, 바로 아래
     # 예약부터 장부 부작용이 시작되는 경계다. `--no-gate` 는 gate=None 이라 기존 raw 자기-앵커
     # 복구 채널을 그대로 통과한다.
-    anchor_refusal = _self_anchored_round_refusal(
-        selected_owner_demotions,
+    anchor_refusal = _gate_snapshot_round_refusal(
         selected_owner_resolutions,
         diff_root=diff_root,
         pm_home=pm_home,

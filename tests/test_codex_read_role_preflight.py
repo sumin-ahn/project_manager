@@ -88,10 +88,24 @@ def _run_attempt(pd, *, harness, role, cwd, tmp_path, run_fn):
 
 # ── (a) 세 형상 — 각각 호출 전 rc≠0 차단 ─────────────────────────────────
 
-def test_non_repo_cwd_blocks_before_spawn(pd, tmp_path):
-    """--cwd 가 git 저장소가 아니면 codex 를 스폰하지 않고 DelegateError 로 끊는다."""
+def test_non_repo_cwd_blocks_before_spawn(pd, tmp_path, monkeypatch):
+    """--cwd 가 git 저장소가 아니면 codex 를 스폰하지 않고 DelegateError 로 끊는다.
+
+    "이 `--cwd` 는 어느 checkout 도 아니다"가 입력이다 — 픽스처 위치가 그 답을 정하지 않도록
+    그 한 질문(`rev-parse --show-toplevel`)에만 비-repo(rc 128)를 명시하고 나머지 git 호출은
+    실제 git 에 그대로 위임한다.
+    """
     cwd = tmp_path / "worktree"
     cwd.mkdir()
+    real_run = pd.subprocess.run
+
+    def run(argv, **kwargs):
+        if list(argv[:3]) == ["git", "-C", str(cwd.resolve())] and "--show-toplevel" in argv:
+            return subprocess.CompletedProcess(
+                argv, 128, "", "fatal: not a git repository")
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(pd.subprocess, "run", run)
 
     with pytest.raises(pd.DelegateError, match="git 저장소가 아님"):
         _run_attempt(

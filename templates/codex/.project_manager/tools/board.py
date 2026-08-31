@@ -602,8 +602,6 @@ def _registered_slot_paths(
                 continue
             if not _is_linked_worktree(path, runner=runner):
                 continue
-            if _pm_home_worktree_misanchor(path, runner=runner) != pm_home:
-                continue
             registered, _error = _ledger_registration(pm_home, path)
             if not registered:
                 continue
@@ -621,7 +619,7 @@ def _git_anchor_identity(
         return "non-repo", None, None
     if _has_real_board(root / ".project_manager"):
         return "pm-home", root, root
-    pm_home = _pm_home_worktree_misanchor(root, runner=runner)
+    pm_home = _pm_home_worktree_misanchor(root)
     if pm_home is not None:
         registered_slots = _registered_slot_paths(pm_home, runner=runner)
         return ("slot" if root in registered_slots else "worktree"), root, pm_home
@@ -1980,20 +1978,21 @@ def _resolved_subcommand(args: argparse.Namespace) -> str:
     return f"{cmd} {getattr(args, dest, '') or ''}".strip()
 
 
-def _print_read_anchor(
-    *, subcommand: str, pm_home: Path | None = None, pm_inputs_missing: bool = False
-) -> None:
+def _print_read_anchor(*, subcommand: str, pm_home: Path | None = None) -> None:
     """읽기 조회가 실제로 측정하는 repo 앵커와 역할을 stdout 첫 줄에 표시한다.
 
-    앵커는 도구가 이미 사용하는 ``REPO`` 그대로다. 역할은 mutation misanchor
-    가드가 등록 worktree라고 확인한 경우만 ``worktree``로, 실 board 소유가 확인된
-    경우만 ``PM 홈``으로 표기한다. 어느 양성 증거도 없으면 역할을 단언하지 않는다.
-    PM 홈 폴백이면 같은 첫 줄에 실제 PM 입력 앵커와 read leaf별 입력 목록을 함께
-    표시한다. PM 입력 홈을 확정하지 못해 조회를 중단하는 경우에도 첫 줄에서 그 사실을
-    숨기지 않는다.
+    앵커는 도구가 이미 사용하는 ``REPO`` 그대로다. 역할은 소유 PM 홈 유도가 다른 홈의
+    worktree라고 확인한 경우만 ``worktree``로, 실 board 소유가 확인된 경우만 ``PM 홈``
+    으로 표기한다. 어느 양성 증거도 없으면 역할을 단언하지 않는다. PM 홈 폴백이면 같은
+    첫 줄에 실제 PM 입력 앵커와 read leaf별 입력 목록을 함께 표시한다.
+
+    해소 실패는 이 줄의 입력이 아니다 — 실패한 실행은 dispatch 에 들어오지 못하고
+    ``main()`` 이 `[중단] …` 으로 번역한다. 실패 사실로 ``worktree`` 라는 양성 역할을
+    단언하지 않는다.
     """
     anchor = REPO
-    if _pm_home_worktree_misanchor(anchor) is not None:
+    if pm_home is not None:
+        # read dispatch 가 이미 해소한 사실이다 — 여기서 다시 해소하면 같은 판정이 두 번 돈다.
         role = "worktree"
     elif _has_real_board(anchor / ".project_manager"):
         role = "PM 홈"
@@ -2007,8 +2006,6 @@ def _print_read_anchor(
     if pm_home is not None:
         inputs = _READ_PM_INPUTS_BY_SUBCOMMAND[subcommand]
         line += f" → PM 입력 앵커: {pm_home} (PM 홈 폴백: {inputs})"
-    elif pm_inputs_missing:
-        line += " → PM 입력 앵커: 없음"
     print(line, flush=True)
 
 
@@ -2064,66 +2061,38 @@ def _has_real_board(pm_dir: Path) -> bool:
     return False
 
 
-def _registers_worktree(pm_home: Path, anchor: Path, *, runner: Any = subprocess.run) -> bool:
-    """`pm_home` 이 `anchor` 를 **자기 worktree 로 등록**하는가 — git worktree 메타/경로 관례로 확인.
+def _load_pm_log():
+    """소유 PM 홈 유도 규칙(`pm_log.owning_pm_home`)을 형제 경로에서 로드한다.
 
-    조상 스캔이 '실 board 를 가진 최근접 디렉토리'를 찾아도, 그게 *실제로* 이 anchor 를 자기
-    worktree 로 두는 PM 홈인지 미검증이면, 무관한 프레임워크 PM 홈 하위에 우연히 중첩된 linked
-    worktree 를 엉뚱한 pm_home 으로 오귀속한다(reviewer should-fix). 아래 둘 중 하나면 등록으로 인정:
-      (a) anchor 경로가 `<pm_home>/work/<name>` 형태 — 프레임워크 worktree 등록 관례(leases slot·
-          `_active_slot_path` 가 `repo_root / "work/<repo>_<N>"` 조립·동형), 또는
-      (b) anchor 의 `git rev-parse --git-common-dir`(공유 git 저장소)이 `pm_home` 하위 —
-          `<pm_home>/.repos/<repo>.git`(두-git) 또는 `<pm_home>/.git`(단일 git worktree).
-    둘 다 아니면 False → 호출부가 None(기존 fail-soft·오탐 0).
+    해소 판정의 구현은 하나다 — board·additional_reviewer 가 같은 함수를 부른다. 조상 훑기·
+    git subprocess 없이 anchor 자신의 `.git` 선언만 읽는다.
     """
-    # (a) work/<name> 관례 — git 불요(경로만).
-    if anchor.parent.name == "work" and anchor.parent.parent == pm_home:
-        return True
-    # (b) 공유 git-common-dir 이 pm_home 하위.
-    common = _git_rev_parse(anchor, "--git-common-dir", runner=runner)
-    if common is not None:
-        common_path = Path(common)
-        if not common_path.is_absolute():
-            common_path = (anchor / common_path).resolve()
-        try:
-            common_path.relative_to(pm_home)
-            return True
-        except ValueError:
-            pass
-    return False
+    path = Path(__file__).resolve().parent / "pm_log.py"
+    return _load_module_from_path(
+        path, "pm_log.py", verifier=_verify_engine_rev, cache=True,
+        cache_key=f"_project_manager_pm_log:{path.parent}",
+    )
 
 
-def _pm_home_worktree_misanchor(anchor: Path, *, runner: Any = subprocess.run) -> Path | None:
-    """`anchor`(도구 자기-앵커=REPO)가 **다른 PM 홈의 등록 worktree** 안이면 그 PM 홈 경로를,
-    아니면 None(fail-soft·standalone 무영향·오탐 0).
+def _pm_home_worktree_misanchor(anchor: Path) -> Path | None:
+    """`anchor`(도구 자기-앵커=REPO)가 **다른 PM 홈의 등록 worktree** 면 그 PM 홈 경로를,
+    아니면 None.
 
-    3중 conjunction (오탐 0 지향·ticket §인터페이스 recipe):
-      1. anchor 자신이 *실 board* 를 소유하지 않음 — 소유하면 정당(자체 board 사용이 있는
-         가상 채택자도 무영향). (공개 제품 worktree)은 코드 전용·board 미소유라 항상 통과
-         
-      2. anchor 가 linked git worktree — standalone(일반 checkout·PM 홈)은 여기서 탈락.
-      3. 상위 PM 홈 식별 + **등록 확인** — anchor 조상 중 *실 board* 를 가진 최근접 디렉토리를
-         찾고, 그 홈이 `_registers_worktree`(work/<name> 관례 또는 git-common-dir 하위)로 anchor 를
-         실제 자기 worktree 로 두는지 확인. 등록 안 하면 None(무관 중첩 오탐 방지). 못 찾아도 None.
+    소유 판정은 `pm_log.owning_pm_home` 유도 하나가 낸다 — anchor 자신이 실 board 를 가지면
+    자기 것이고(자체 board 사용 존중), 그 밖에는 anchor 의 `.git` 선언이 답을 정한다. 유도가
+    실패하면 자기 앵커로 강등하지 않고 그대로 올린다(fail-loud).
     """
     if _has_real_board(anchor / ".project_manager"):
         return None
-    if not _is_linked_worktree(anchor, runner=runner):
-        return None
-    for parent in anchor.parents:
-        if _has_real_board(parent / ".project_manager"):
-            # 최근접 board-owner 가 anchor 를 자기 worktree 로 등록해야 그 홈을 안내한다
-            # (무관 프레임워크 홈 하위 우연 중첩이면 등록 실패 → None·fail-soft).
-            return parent if _registers_worktree(parent, anchor, runner=runner) else None
-    return None
+    pm_home = _load_pm_log().owning_pm_home(anchor)
+    return None if pm_home == Path(anchor).resolve() else pm_home
 
 
 class _ReadBoardResolution(NamedTuple):
-    """read dispatch의 board 해소 결과. error가 있으면 root/home은 None이다."""
+    """read dispatch의 board 해소 결과. home이 None이면 자기 앵커의 board를 그대로 쓴다."""
 
-    root: Path | None
+    root: Path
     home: Path | None
-    error: str | None
 
 
 # 등록 worktree read 폴백에서 같은 PM 홈으로 옮겨야 하는 import-time 경로 상수 전수.
@@ -2186,32 +2155,6 @@ def _read_pm_inputs_at(pm_home: Path, board_root_path: Path) -> Iterator[None]:
         _READ_PM_HOME_OVERRIDE = saved_home_override
 
 
-def _candidate_board_homes(anchor: Path, *, runner: Any = subprocess.run) -> list[Path]:
-    """worktree 소유 PM 홈 후보를 경로 조상과 git common-dir 조상에서 찾는다.
-
-    worktree 경로를 둔 홈과 bare git을 둔 홈이 다를 수 있으므로 두 증거축을 합친다.
-    실제 티켓을 가진 board 소유 홈만 후보이며, 최종 선택은 이 함수가 아니라 각 홈의
-    worktree lease 장부가 한다.
-    """
-    search: list[Path] = list(anchor.parents)
-    common = _git_rev_parse(anchor, "--git-common-dir", runner=runner)
-    if common is not None:
-        common_path = Path(common)
-        if not common_path.is_absolute():
-            common_path = (anchor / common_path).resolve()
-        search.extend((common_path, *common_path.parents))
-    homes: list[Path] = []
-    seen: set[Path] = set()
-    for path in search:
-        resolved = path.resolve()
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        if _has_real_board(resolved / ".project_manager"):
-            homes.append(resolved)
-    return homes
-
-
 def _ledger_registration(
     pm_home: Path, anchor: Path
 ) -> tuple[bool, str | None]:
@@ -2244,60 +2187,24 @@ def _ledger_registration(
     return False, None
 
 
-def _resolve_read_board(
-    anchor: Path, *, runner: Any = subprocess.run
-) -> _ReadBoardResolution:
+def _resolve_read_board(anchor: Path) -> _ReadBoardResolution:
     """read-only board를 uniform 규칙으로 해소한다.
 
-    자기 앵커가 실제 board를 가지면 그대로 쓴다. linked worktree가 아니면 legacy/비분리
-    graceful 경로를 그대로 보존한다. board 없는 linked worktree만 PM 홈 후보의 strict
-    lease 장부를 조회하며, 정확히 한 홈이 슬롯을 등록할 때만 그 board를 연다.
+    자기 앵커가 실제 board를 가지면 그대로 쓴다. 그 밖에는 `pm_log.owning_pm_home` 유도가
+    소유 PM 홈을 낸다 — 유도 결과가 앵커 자신이면 legacy/비분리 graceful 경로를 그대로
+    보존하고, 다른 홈이면 그 board를 연다. 유도 실패는 여기서 삼키지 않는다 — 같은 실패가
+    mutation 경로에서는 traceback, read 경로에서는 안내로 갈리지 않도록 번역은 `main()`
+    한 곳이 한다.
     """
     if _has_real_board(anchor / ".project_manager"):
-        return _ReadBoardResolution(_board_root_at(anchor), anchor, None)
-    if not _is_linked_worktree(anchor, runner=runner):
-        return _ReadBoardResolution(_board_root_at(anchor), None, None)
-
-    matches: list[Path] = []
-    errors: list[str] = []
-    for home in _candidate_board_homes(anchor, runner=runner):
-        matched, error = _ledger_registration(home, anchor)
-        if matched:
-            matches.append(home)
-        elif error is not None and _registers_worktree(home, anchor, runner=runner):
-            # 무관한 상위 board 홈의 장부 부재는 오류가 아니다. 경로/git 증거상 이 슬롯을
-            # 등록한 홈만 load-bearing 장부 부재·손상을 fail-loud 사유로 삼는다.
-            errors.append(error)
-
-    if errors:
-        detail = "; ".join(errors)
-        return _ReadBoardResolution(
-            None,
-            None,
-            "이 앵커에는 board가 없고 소유 PM 홈의 worktree lease 장부를 확정할 수 "
-            f"없습니다: {detail}. PM 홈에서 조회하세요.",
-        )
-    unique = sorted(set(matches))
-    if len(unique) == 1:
-        home = unique[0]
-        return _ReadBoardResolution(_board_root_at(home), home, None)
-    if len(unique) > 1:
-        homes = ", ".join(str(home) for home in unique)
-        return _ReadBoardResolution(
-            None,
-            None,
-            "이 앵커에는 board가 없고 슬롯이 여러 PM 홈의 worktree lease 장부에 "
-            f"등록되어 board 소유자가 모호합니다: {homes}. 장부를 정리한 뒤 다시 조회하세요.",
-        )
-    return _ReadBoardResolution(
-        None,
-        None,
-        "이 앵커에는 board가 없고 worktree lease 장부에서 소유 PM 홈을 찾지 "
-        "못했습니다. PM 홈에서 조회하세요.",
-    )
+        return _ReadBoardResolution(_board_root_at(anchor), anchor)
+    home = _load_pm_log().owning_pm_home(anchor)
+    if home == Path(anchor).resolve():
+        return _ReadBoardResolution(_board_root_at(anchor), None)
+    return _ReadBoardResolution(_board_root_at(home), home)
 
 
-def _guard_worktree_misanchor(action: str, *, runner: Any = subprocess.run) -> bool:
+def _guard_worktree_misanchor(action: str) -> bool:
     """쓰기-경로 진입 가드 — `anchor`(호출 시점 module-global `REPO`·hermetic monkeypatch
     추종)가 PM 홈 등록 worktree 면 fail-loud 후 True(차단), 아니면 False(통과).
 
@@ -2306,7 +2213,7 @@ def _guard_worktree_misanchor(action: str, *, runner: Any = subprocess.run) -> b
     (pm_handoff LEASES_FILE 재해소와 동형 규율).
     """
     anchor = REPO
-    pm_home = _pm_home_worktree_misanchor(anchor, runner=runner)
+    pm_home = _pm_home_worktree_misanchor(anchor)
     if pm_home is None:
         return False
     print(
@@ -11542,21 +11449,16 @@ _ROUND_PENDING_UNHARVESTED_QUERY = (
 )
 
 
-def _round_pending_ledger_owner(delegate) -> Path | None:
+def _round_pending_ledger_owner(delegate) -> Path:
     """미회수 라운드 장부의 PM 홈 — board 자신의 `REPO`(테스트·slot 재앵커 존중)로 해소한다.
 
     `pm_delegate._activate_internal_rounds_cli_owner()` 는 그 모듈 **자신의** 고정 `REPO`(자기
     파일 경로에서 계산)를 써서 board 의 `REPO` 재앵커(테스트·등록 슬롯)를 못 본다 — 그래서 같은
     해소 함수(`additional_reviewer.resolve_pm_home_for_repo`)를 board 의 `REPO` 로 직접 부른다.
-    해소 실패는 안내를 못 내는 것으로 흡수한다(discard 는 이 축을 차단하지 않는다).
+    해소는 답이 하나이거나 예외다 — 실패를 삼켜 안내 결손으로 낮추지 않는다.
     """
-    try:
-        additional_reviewer = delegate._load_additional_reviewer()
-        return Path(additional_reviewer.resolve_pm_home_for_repo(REPO)).resolve()
-    except Exception as exc:  # noqa: BLE001 — 장부 해소는 discard 를 막지 않는다(안내만 못 낸다).
-        if _is_engine_rev_skew(exc):
-            raise  # 형제 사본 skew 는 안내 결손으로 접지 않는다(fail-loud · 재동기 안내).
-        return None
+    additional_reviewer = delegate._load_additional_reviewer()
+    return Path(additional_reviewer.resolve_pm_home_for_repo(REPO)).resolve()
 
 
 def _round_pending_abandon_command(
@@ -11570,8 +11472,6 @@ def _round_pending_abandon_command(
     if delegate is None:
         return None
     owner = _round_pending_ledger_owner(delegate)
-    if owner is None:
-        return None
     try:
         rows = delegate.ticket_copy_records(owner, ticket=tid, unharvested=True)
     except Exception as exc:  # noqa: BLE001 — 장부 손상도 해소 불능으로 흡수(discard 비차단).
@@ -19653,11 +19553,7 @@ def _main(argv: list[str] | None = None) -> int:
         _print_read_anchor(
             subcommand=subcommand,
             pm_home=resolution.home if resolution.home != REPO else None,
-            pm_inputs_missing=resolution.error is not None,
         )
-        if resolution.error is not None:
-            print(f"[중단] {resolution.error}", file=sys.stderr)
-            return 1
         local_root = _board_root_at(REPO)
         if resolution.home is not None and resolution.home != REPO:
             with _read_pm_inputs_at(resolution.home, resolution.root):
@@ -19673,7 +19569,11 @@ def _main(argv: list[str] | None = None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI 최외곽에서 엔진 사본 불일치를 traceback 대신 복구 안내로 번역한다."""
+    """CLI 최외곽에서 엔진 사본 불일치·소유 PM 홈 미확정을 traceback 대신 안내로 번역한다.
+
+    소유 PM 홈 유도 실패는 read·mutation 어느 경로에서 나든 같은 원인이므로 번역 지점도
+    하나다 — 실패는 여전히 실패다(rc1·부작용 0). 자기 앵커로 접지 않는다.
+    """
     try:
         _console_encoding = _load_module_from_path(
             Path(__file__).resolve().with_name("console_encoding.py"),
@@ -19682,9 +19582,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         _console_encoding.configure_console_utf8()
         return _main(argv)
-    except Exception as exc:  # noqa: BLE001 — marked skew만 사용자 진단+rc로 종료.
+    except Exception as exc:  # noqa: BLE001 — marked skew·PM 홈 미확정만 진단+rc로 종료.
         if _is_engine_rev_skew(exc):
             return _report_engine_rev_skew_at_terminal(exc)
+        if isinstance(exc, _load_pm_log().PmHomeResolutionError):
+            print(f"[중단] 소유 PM 홈을 확정할 수 없습니다: {exc}", file=sys.stderr)
+            return 1
         raise
 
 

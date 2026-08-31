@@ -269,6 +269,12 @@ def test_empty_non_git_manifest_inventory_uses_filesystem_diagnostic(
     manifest.parent.mkdir(parents=True)
     manifest.write_text("ship\n", encoding="utf-8")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    # "이 source 는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처가 어디에 놓이든
+    # 같은 답이 나오도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    monkeypatch.setattr(
+        pm_update._load_repo_owned_files(),
+        "_real_git_runner", lambda _cwd: lambda _argv: (128, ""),
+    )
 
     with pytest.warns(
             pm_update._load_repo_owned_files().RepoFilesFallbackWarning,
@@ -2510,6 +2516,8 @@ def test_retirement_heals_and_moves_old_when_local_manifest_already_has_new(
     shared = source / ".shared/a"
     shared.parent.mkdir(parents=True)
     shared.write_text("shared\n", encoding="utf-8")
+    # 픽스처 트리가 자기 checkout 이라고 선언한다 — 출하/잔존 열거는 `git ls-files` 가 낸다.
+    _track_source_tree(source)
     dest = tmp_path / "dest"
     selfprop = (
         f"{MANIFEST_SELF_REL}    "
@@ -5075,6 +5083,8 @@ def test_retired_upstream_file_survives_sync_and_is_reported(
     retired = fake_repo / RETIRED_DIR_REL / "retired.md"
     retired.write_text("# 상류에서 은퇴한 파일\n", encoding="utf-8")
     _write_local_conf(fake_repo, f"upstream.path={source}\n")
+    # 픽스처 트리가 자기 checkout 이라고 선언한다 — 출하/잔존 열거는 `git ls-files` 가 낸다.
+    _track_source_tree(fake_repo)
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     argv = ["--dry-run"] if dry_run else []
@@ -5102,6 +5112,8 @@ def test_adopter_local_asset_is_reported_as_indistinguishable(
     local_asset.parent.mkdir(parents=True)
     local_asset.write_text("# 채택자 로컬 자산\n", encoding="utf-8")
     _write_local_conf(fake_repo, f"upstream.path={source}\n")
+    # 픽스처 트리가 자기 checkout 이라고 선언한다 — 출하/잔존 열거는 `git ls-files` 가 낸다.
+    _track_source_tree(fake_repo)
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     assert pm_update.main([]) == 0
@@ -5138,6 +5150,8 @@ def test_retired_manifest_files_reverses_source_remap(pm_update, tmp_path):
     dest_dir.mkdir(parents=True)
     (dest_dir / "reviewer.md").write_text("# reviewer\n", encoding="utf-8")
     (dest_dir / "retired.md").write_text("# 상류 은퇴\n", encoding="utf-8")
+    # 픽스처 트리가 자기 checkout 이라고 선언한다 — 출하/잔존 열거는 `git ls-files` 가 낸다.
+    _track_source_tree(dest)
     manifest = _manifest_entries(pm_update, [
         ".codex/agents    @source=templates/codex/.codex/agents",
     ])
@@ -5165,6 +5179,8 @@ def test_retired_manifest_files_skips_target_owned_and_supplied_paths(pm_update,
     shipped_dir.mkdir(parents=True)
     (shipped_dir / "keep.md").write_text("# keep\n", encoding="utf-8")
     (source / RETIRED_DIR_REL).mkdir(parents=True)
+    # 픽스처 트리가 자기 checkout 이라고 선언한다 — 출하/잔존 열거는 `git ls-files` 가 낸다.
+    _track_source_tree(dest)
     manifest = _manifest_entries(pm_update, [
         ".opencode/lib    @target-owned",
         RETIRED_DIR_REL,
@@ -5197,6 +5213,8 @@ def test_retired_manifest_files_reports_whole_directory_removed_upstream(
     owned_dir = dest / ".opencode" / "lib"
     owned_dir.mkdir(parents=True)
     (owned_dir / "relay.cjs").write_text("// 타깃 고유\n", encoding="utf-8")
+    # 픽스처 트리가 자기 checkout 이라고 선언한다 — 출하/잔존 열거는 `git ls-files` 가 낸다.
+    _track_source_tree(dest)
     manifest = _manifest_entries(pm_update, [
         RETIRED_DIR_REL,
         ".opencode/lib    @target-owned",
@@ -5354,7 +5372,7 @@ def test_retired_report_caps_listing_with_remainder_count(pm_update, capsys):
 
 
 def test_retired_scan_does_not_leak_repo_files_fallback_warning(
-        pm_update, tmp_path, recwarn):
+        pm_update, tmp_path, monkeypatch, recwarn):
     """비-git dest 은퇴 스캔이 엔진 내부 폴백 경고를 채택자에게 노출하지 않는다 (SF-7).
 
     열거는 폴백으로 정상 동작한다 — 진단 보고 하나 때문에 seam 경고 원문을 띄울 이유가 없다."""
@@ -5366,6 +5384,12 @@ def test_retired_scan_does_not_leak_repo_files_fallback_warning(
     (dest_dir / "keep.md").write_text("# keep\n", encoding="utf-8")
     (dest_dir / "retired.md").write_text("# 상류 은퇴\n", encoding="utf-8")
     manifest = _manifest_entries(pm_update, [RETIRED_DIR_REL])
+    # "dest 는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을 정하지
+    # 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    monkeypatch.setattr(
+        pm_update._load_repo_owned_files(),
+        "_real_git_runner", lambda _cwd: lambda _argv: (128, ""),
+    )
 
     assert pm_update._retired_manifest_files(source, manifest, dest, set()) == [
         f"{RETIRED_DIR_REL}/retired.md"
@@ -5386,6 +5410,8 @@ def test_retired_planned_filter_uses_dest_coordinates_only(pm_update, tmp_path):
     dest_dir.mkdir(parents=True)
     (dest_dir / "reviewer.md").write_text("# reviewer\n", encoding="utf-8")
     (dest_dir / "retired.md").write_text("# 상류 은퇴\n", encoding="utf-8")
+    # 픽스처 트리가 자기 checkout 이라고 선언한다 — 출하/잔존 열거는 `git ls-files` 가 낸다.
+    _track_source_tree(dest)
     manifest = _manifest_entries(pm_update, [
         ".codex/agents    @source=templates/codex/.codex/agents",
     ])

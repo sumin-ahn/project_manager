@@ -22,6 +22,7 @@ import pytest
 
 from _repo_owned_inventory import (
     OWNED,
+    REPO_FILES,
     RepoFilesFallbackWarning,
     repo_owned_paths,
 )
@@ -286,7 +287,7 @@ def test_all_long_engine_command_markdown_declares_explicit_bash_timeout():
     assert "pytest" in regression and _execution_command_budget_seconds(regression) == []
 
 
-def test_new_markdown_with_engine_command_is_automatically_classified(tmp_path):
+def test_new_markdown_with_engine_command_is_automatically_classified(tmp_path, monkeypatch):
     """새 실행 카드의 파일명을 가드에 등록하지 않아도 내용으로 대상이 된다."""
     new_doc = tmp_path / ".claude" / "skills" / "future" / "SKILL.md"
     new_doc.parent.mkdir(parents=True)
@@ -294,13 +295,16 @@ def test_new_markdown_with_engine_command_is_automatically_classified(tmp_path):
         "```bash\npython3 .project_manager/tools/additional_reviewer.py --ticket T-9999\n```\n",
         encoding="utf-8",
     )
+    # "이 트리는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
+    # 정하지 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    monkeypatch.setattr(REPO_FILES, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
     with pytest.warns(RepoFilesFallbackWarning, match="filesystem 전수 순회"):
         targets = _long_engine_command_markdown(tmp_path)
     assert list(targets) == [new_doc]
     assert targets[new_doc][0][0] == "additional_reviewer.py"
 
 
-def test_real_command_card_without_timeout_contract_is_red(tmp_path):
+def test_real_command_card_without_timeout_contract_is_red(tmp_path, monkeypatch):
     """실행 카드 분류를 좁혀도 timeout 계약 누락 민감도는 유지한다."""
     new_doc = tmp_path / ".claude" / "skills" / "future" / "SKILL.md"
     new_doc.parent.mkdir(parents=True)
@@ -308,6 +312,9 @@ def test_real_command_card_without_timeout_contract_is_red(tmp_path):
         "```bash\npython3 .project_manager/tools/pm_delegate.py run developer\n```\n",
         encoding="utf-8",
     )
+    # "이 트리는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
+    # 정하지 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    monkeypatch.setattr(REPO_FILES, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
     with pytest.warns(RepoFilesFallbackWarning, match="filesystem 전수 순회"):
         with pytest.raises(AssertionError, match="호출층 명시 timeout"):
             _assert_long_engine_cards_declare_explicit_bash_timeout(tmp_path)

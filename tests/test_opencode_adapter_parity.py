@@ -104,9 +104,17 @@ def test_pm_update_plan_generates_and_updates_flat_command_copies(tmp_path):
     ]
 
 
-def _plan_one_command(pm_update, source_root: Path, manifest: Path, dest_root: Path):
-    """tmp source(비-git)로 command 사본 1건을 계획한다 — 강등 warning 은 이 축의 관심사 아니다."""
-    fallback_warning = pm_update._load_repo_owned_files().RepoFilesFallbackWarning
+def _plan_one_command(pm_update, monkeypatch, source_root: Path, manifest: Path,
+                      dest_root: Path):
+    """tmp source(비-git)로 command 사본 1건을 계획한다 — 강등 warning 은 이 축의 관심사 아니다.
+
+    "source 가 git checkout 이 아니다"는 이 헬퍼의 명시 전제다 — 픽스처 위치가 그 답을 정하지
+    않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    """
+    repo_files = pm_update._load_repo_owned_files()
+    monkeypatch.setattr(
+        repo_files, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
+    fallback_warning = repo_files.RepoFilesFallbackWarning
     with pytest.warns(fallback_warning, match="filesystem 전수 순회"):
         changes, missing = pm_update.plan(
             source_root, pm_update.read_manifest(manifest),
@@ -115,7 +123,7 @@ def _plan_one_command(pm_update, source_root: Path, manifest: Path, dest_root: P
     return changes
 
 
-def test_generated_command_copy_takes_source_then_dest_notation(tmp_path):
+def test_generated_command_copy_takes_source_then_dest_notation(tmp_path, monkeypatch):
     """생성 사본의 개행 표기 = 신규는 **source 표기**, 기존 파일은 **그 파일 표기**(T-0709).
 
     CRLF 체크아웃에서만 성립하던 축이라 LF 개발기에서는 늘 초록이었다 — CRLF source·CRLF 사본을
@@ -139,7 +147,7 @@ def test_generated_command_copy_takes_source_then_dest_notation(tmp_path):
     assert b"\r\n" in skill.read_bytes(), "픽스처가 CRLF source 를 만들지 못했다"
     dest_root = tmp_path / "dest"
 
-    changes = _plan_one_command(pm_update, source_root, manifest, dest_root)
+    changes = _plan_one_command(pm_update, monkeypatch, source_root, manifest, dest_root)
     assert [(rel, kind) for rel, _src, _dst, kind in changes] == [
         (".opencode/command/pm-x.md", "new")
     ]
@@ -153,7 +161,7 @@ def test_generated_command_copy_takes_source_then_dest_notation(tmp_path):
 
     # 기존 사본이 있으면 그 파일의 표기를 따른다 — 채택자 체크아웃 표기를 뒤집지 않는다.
     write_lf(generated, "stale 사본\n두 줄\n")
-    changes = _plan_one_command(pm_update, source_root, manifest, dest_root)
+    changes = _plan_one_command(pm_update, monkeypatch, source_root, manifest, dest_root)
     assert [(rel, kind) for rel, _src, _dst, kind in changes] == [
         (".opencode/command/pm-x.md", "update")
     ]
@@ -162,7 +170,7 @@ def test_generated_command_copy_takes_source_then_dest_notation(tmp_path):
         "기존 사본(LF)의 표기를 보존하지 않았다"
 
 
-def test_synced_crlf_command_copy_plans_no_change(tmp_path):
+def test_synced_crlf_command_copy_plans_no_change(tmp_path, monkeypatch):
     """표기만 CRLF인 동기 완료 사본을 다시 계획하면 변경 0이다 (내용 무변경 churn 금지).
 
     결함 형상([[T-0727]]): 계획의 최소 렌더 분기가 raw bytes로 대조했다. 렌더 산출물은 LF인데
@@ -186,20 +194,20 @@ def test_synced_crlf_command_copy_plans_no_change(tmp_path):
         ".opencode/command/pm-x.md @render @source=.claude/skills/pm-x/SKILL.md\n",
     )
     dest_root = tmp_path / "dest"
-    pm_update.apply(_plan_one_command(pm_update, source_root, manifest, dest_root))
+    pm_update.apply(_plan_one_command(pm_update, monkeypatch, source_root, manifest, dest_root))
     generated = dest_root / ".opencode" / "command" / "pm-x.md"
     # 주입 선-단언: 사본이 실제로 CRLF고, LF 렌더층과 byte가 갈려 있어야 이 축이 시험된다.
     assert b"\r\n" in generated.read_bytes(), "픽스처가 CRLF 사본을 만들지 못했다(공허 회귀)"
     assert generated.read_bytes() != _expected_command(skill, "pm-x"), \
         "CRLF 사본이 LF 렌더층과 byte 동일하다 — 이 가드가 시험되지 않는다"
 
-    assert _plan_one_command(pm_update, source_root, manifest, dest_root) == [], \
+    assert _plan_one_command(pm_update, monkeypatch, source_root, manifest, dest_root) == [], \
         "표기만 CRLF인 무변경 사본을 update로 재계획했다(내용 무변경 churn)"
 
     # 판정 민감도는 그대로다 — 표기가 CRLF여도 내용이 한 글자 다르면 여전히 update.
     generated.write_bytes(generated.read_bytes() + "한 줄\r\n".encode("utf-8"))
     assert [(rel, kind) for rel, _src, _dst, kind
-            in _plan_one_command(pm_update, source_root, manifest, dest_root)] == [
+            in _plan_one_command(pm_update, monkeypatch, source_root, manifest, dest_root)] == [
         (".opencode/command/pm-x.md", "update")
     ], "CRLF 사본의 내용 차이를 놓쳤다(정규화가 판정을 무디게 만듦)"
 

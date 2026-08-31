@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from _git_fixture import init_git_repo
+
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -123,6 +125,9 @@ def _ok(stdout: str) -> dict:
 
 
 def _write_prompt(directory: Path, text: str = "직전 지적을 해소했다. 다시 검토하라.") -> Path:
+    # 이 디렉토리가 곧 `--cwd` 다. git 에게 "이 자리가 어느 checkout 인가"를 묻는 단계가 있어
+    # 선언이 없으면 이 저장소가 답하고, 그 소유 PM 홈의 실 라운드 장부가 판정 입력이 된다.
+    init_git_repo(directory)
     prompt = directory / "prompt.md"
     prompt.write_text(text, encoding="utf-8")
     return prompt

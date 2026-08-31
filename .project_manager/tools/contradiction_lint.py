@@ -166,17 +166,20 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
             raise
 
 
-# ── REPO 앵커 (additional_reviewer `_find_repo_root` 동형·adopter self-location) ──────
+# ── REPO 앵커 (설치 깊이 고정 · hermetic 테스트 monkeypatch seam) ──────────
+# 설치 깊이는 `pm_import` 가 못 박는다 — 도구는 `<root>/.project_manager/tools/` 에만 놓인다.
+# REPO 는 module-level 상수로 유지해 hermetic 테스트가 monkeypatch 할 수 있게 한다
+# (각 파일 self-contained — 공유 import 미도입).
 
 def _find_repo_root() -> Path:
-    """스크립트 위치에서 부모 체인을 상향 탐색해 `.project_manager` 를 품은 첫 조상을 반환한다.
+    """엔진 루트 — 도구는 언제나 `<root>/.project_manager/tools/` 에 설치된다.
 
-    worktree/PM 홈 등 다른 깊이여도 마커로 견고 해소한다. 못 찾으면 `parents[2]` 폴백(graceful·회귀 0)."""
-    here = Path(__file__).resolve()
-    for ancestor in here.parents:
-        if (ancestor / ".project_manager").is_dir():
-            return ancestor
-    return here.parents[2]
+    상향 탐색을 하지 않는다. 설치 경로를 만드는 쪽(`pm_import`)이 그 깊이를 못 박으므로
+    다른 깊이는 나올 수 없고, 탐색은 합성 트리에서 **자기 위 실 인스턴스**를 답으로 주는
+    부작용만 낸다(실측: 실 PM 홈 log 오염·등록 안 된 worktree 가 등록으로 판정).
+    나머지 도구 20곳과 같은 규칙이다.
+    """
+    return Path(__file__).resolve().parents[2]
 
 
 REPO = _find_repo_root()

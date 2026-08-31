@@ -106,9 +106,14 @@ def topology(tmp_path):
 
     source = tmp_path / "product-source"
     _seed_repo(source)
+    # ADR-0027 실 형상 — 공유 저장소는 PM 홈 안 `.repos/<repo>.git`(`worktree_pool.bare_repo_path`).
+    # 슬롯의 `.git` 포인터가 이 자리를 통해 소유 PM 홈을 선언한다(product git 은 여전히 별개).
+    bare = home / ".repos" / "product.git"
+    bare.parent.mkdir(parents=True)
+    _git(tmp_path, "clone", "-q", "--bare", str(source), str(bare))
     slot = home / "work" / "product_1"
     slot.parent.mkdir(parents=True)
-    _git(source, "worktree", "add", "-q", str(slot))
+    _git(bare, "worktree", "add", "-q", str(slot))
     ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True)
     ledger.write_text(json.dumps({"leases": [{"slot": "work/product_1", "repo": "product",
