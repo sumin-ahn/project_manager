@@ -1505,7 +1505,9 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     assert "skip resolve entirely" in prompt
     assert "Do not search source or help" in prompt
     assert "ticket_finish.py <ticket> --no-pytest" in prompt
-    assert "board.py complete" not in prompt
+    # 프롬프트는 "직접 board.py complete 는 거부된다" 를 **설명으로** 담는다. 금지 대상은
+    # 그 설명이 아니라 옛 처방 커맨드 자체다.
+    assert "board.py complete <ticket> --tests-pass" not in prompt
     assert ".project_manager/wiki/tickets/rounds/<ticket>/01-architect.md" in prompt
     assert ".project_manager/wiki/tickets/claimed/T-*.md" in prompt
     assert ".project_manager/wiki/tickets/done/T-*.md" in prompt
@@ -1529,7 +1531,9 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     assert "fresh board.py show process" in prompt
     # (5) complete + sync gate.
     assert "ticket_finish.py <ticket> --no-pytest" in prompt
-    assert "board.py complete" not in prompt
+    # 프롬프트는 "직접 board.py complete 는 거부된다" 를 **설명으로** 담는다. 금지 대상은
+    # 그 설명이 아니라 옛 처방 커맨드 자체다.
+    assert "board.py complete <ticket> --tests-pass" not in prompt
     # 진입문서가 프롬프트에 박힌다(harness 별 CLAUDE.md/AGENTS.md).
     assert "CLAUDE.md" in prompt
     assert "AGENTS.md" in _full_wave_prompt("AGENTS.md", "codex")
