@@ -239,7 +239,7 @@ def test_gate_and_anchor_order_remains_unambiguous(external):
         source.index("if not diff.strip():"),
         source.index("cap_block = _diff_cap_refusal("),
         source.index("if not args.gate and not args.no_gate:"),
-        source.index("anchor_refusal = _self_anchored_round_refusal("),
+        source.index("anchor_refusal = _gate_snapshot_round_refusal("),
         source.index("budget = _reserve_round_budget("),
     ]
     assert positions == sorted(positions)

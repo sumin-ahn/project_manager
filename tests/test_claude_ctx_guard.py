@@ -1320,6 +1320,12 @@ def _worktree_pm_home_checkpoint_probe(tmp_path: Path, canonical_mode: str) -> d
     pm_home = tmp_path / "pm-home"
     worktree = pm_home / "work" / "product_1"
     worktree.mkdir(parents=True)
+    # 슬롯이 소유 PM 홈을 선언하는 `.git` 포인터(worktree_pool 실 형상). 소유 판정의 유일한
+    # 입력이라 이 선언이 없으면 이 트리는 아무의 worktree 도 아니다.
+    slot_git_dir = pm_home / ".repos" / "product.git" / "worktrees" / "product_1"
+    slot_git_dir.mkdir(parents=True)
+    (worktree / ".git").write_text(f"gitdir: {slot_git_dir}\n", encoding="utf-8")
+    (slot_git_dir / "commondir").write_text("../..\n", encoding="utf-8")
     shutil.copytree(
         REPO / ".project_manager" / "tools",
         worktree / ".project_manager" / "tools",

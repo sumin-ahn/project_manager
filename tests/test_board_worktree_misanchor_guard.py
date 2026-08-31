@@ -120,13 +120,18 @@ def _make_pm_home_with_worktree(
     (pm_home / ".project_manager").mkdir(parents=True)
     _make_real_board(pm_home / ".project_manager", split=True)
 
-    # 소스 repo → `git worktree add` 로 *실* linked worktree (git-dir ≠ git-common-dir).
-    src = tmp_path / ".repos" / "product"
-    src.mkdir(parents=True)
-    _git(["init", "-q", "-b", "main"], src)
-    (src / "seed.txt").write_text("seed\n", encoding="utf-8")
-    _git(["add", "-A"], src)
-    _git(["commit", "-qm", "seed"], src)
+    # ADR-0027 실 형상: 공유 bare 저장소는 PM 홈 안 `.repos/<repo>.git` 에 있다
+    # (`worktree_pool.bare_repo_path`). 슬롯의 `.git` 포인터가 그 자리를 통해 소유 PM 홈을
+    # 선언하므로, 소유 판정이 조상 추측 없이 성립한다.
+    seed = tmp_path / "product-seed"
+    seed.mkdir(parents=True)
+    _git(["init", "-q", "-b", "main"], seed)
+    (seed / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git(["add", "-A"], seed)
+    _git(["commit", "-qm", "seed"], seed)
+    src = pm_home / ".repos" / "product.git"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    _git(["clone", "-q", "--bare", str(seed), str(src)], tmp_path)
     worktree = pm_home / "work" / "product_1"
     _git(["worktree", "add", "-q", str(worktree)], src)
 
@@ -473,9 +478,14 @@ def test_boardless_worktree_without_ledger_fails_loud_before_ticket_lookup(
     assert "ticket not found" not in (captured.out + captured.err)
 
 
-def test_boardless_worktree_registered_by_multiple_homes_fails_loud(
+def test_boardless_worktree_owner_comes_from_its_own_git_declaration(
         tmp_path, monkeypatch, capsys):
-    """경로 소유 홈과 git 소유 홈 장부가 같은 슬롯을 등록하면 어느 board도 추측하지 않는다."""
+    """다른 홈이 같은 슬롯을 자기 장부에 등재해도 소유자는 슬롯의 `.git` 선언이 정한다.
+
+    옛 해소는 경로 조상 축과 git 축을 각각 후보로 세워 두 홈이 모두 '등록'을 주장하면 모호로
+    막았다. 유도는 후보를 하나만 만든다 — 공용 저장소를 둔 홈이 소유자이고, 경로만 겹치는
+    홈의 장부 등재는 소유권을 만들지 못한다(답이 하나이거나 예외).
+    """
     b = _load_board()
     path_home = tmp_path / "path-home"
     git_home = tmp_path / "git-home"
@@ -483,13 +493,17 @@ def test_boardless_worktree_registered_by_multiple_homes_fails_loud(
         (home / ".project_manager").mkdir(parents=True)
         _make_real_board(home / ".project_manager", split=True)
 
-    src = git_home / ".repos" / "product"
-    src.mkdir(parents=True)
-    _git(["init", "-q", "-b", "main"], src)
-    (src / "seed.txt").write_text("seed\n", encoding="utf-8")
-    _git(["add", "-A"], src)
-    _git(["commit", "-qm", "seed"], src)
+    seed = tmp_path / "product-seed"
+    seed.mkdir()
+    _git(["init", "-q", "-b", "main"], seed)
+    (seed / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git(["add", "-A"], seed)
+    _git(["commit", "-qm", "seed"], seed)
+    src = git_home / ".repos" / "product.git"
+    src.parent.mkdir(parents=True)
+    _git(["clone", "-q", "--bare", str(seed), str(src)], tmp_path)
     worktree = path_home / "work" / "product_1"
+    worktree.parent.mkdir(parents=True)
     _git(["worktree", "add", "-q", str(worktree)], src)
     _make_scaffold_board(worktree / ".project_manager")
 
@@ -501,12 +515,13 @@ def test_boardless_worktree_registered_by_multiple_homes_fails_loud(
     assert alias.resolve() == worktree.resolve(), "전제 붕괴 — 두 번째 장부 슬롯이 대상과 다름"
 
     _isolate_board_module(b, monkeypatch, worktree)
-    assert b.main(["show", "T-0100"]) == 1
+    assert b.main(["show", "T-0100"]) == 0
     captured = capsys.readouterr()
-    assert "여러 PM 홈" in captured.err
-    assert str(path_home) in captured.err
-    assert str(git_home) in captured.err
-    assert "ticket not found" not in (captured.out + captured.err)
+    assert captured.out.splitlines()[0] == (
+        f"repo 앵커: {worktree} (worktree) → PM 입력 앵커: {git_home} "
+        f"(PM 홈 폴백: {b._READ_PM_INPUTS_BY_SUBCOMMAND['show']})"
+    )
+    assert f"PM 입력 앵커: {path_home}" not in captured.out
 
 
 def test_read_anchor_labels_only_real_board_owner_as_pm_home(
@@ -540,86 +555,85 @@ def test_mutation_dispatch_never_prints_read_anchor(monkeypatch, subcommand):
     assert b.main([]) == 0
 
 
-# ── _pm_home_worktree_misanchor (3중 conjunction·runner 주입) ──────────────
+# ── _pm_home_worktree_misanchor (anchor 자신의 `.git` 선언 유도) ──────────────
+# 판정 입력은 anchor 의 `.git` 포인터와 유도된 홈의 lease 장부뿐이다 — git subprocess 도,
+# 조상 훑기도 없으므로 runner 주입 축이 사라졌다. 아래는 유도 표의 행 전수다.
 
-def test_detector_flags_registered_worktree(tmp_path):
+def test_detector_flags_registered_two_git_slot(pm_home_worktree):
+    """`.repos/<repo>.git` 공용 저장소를 가리키는 등록 슬롯 → 소유 PM 홈."""
     b = _load_board()
-    pm_home = tmp_path / "pm"
-    _make_real_board(pm_home / ".project_manager", split=True)
-    wt = pm_home / "work" / "product_1"
-    _make_scaffold_board(wt / ".project_manager")
-    r = _fake_runner("/x/.git/worktrees/product_1", "/x/.git")   # linked
-    assert b._pm_home_worktree_misanchor(wt, runner=r) == pm_home
+    pm_home, worktree = pm_home_worktree
+    assert b._pm_home_worktree_misanchor(worktree) == pm_home.resolve()
 
 
-def test_detector_none_when_not_linked_worktree(tmp_path):
-    # conjunction #2 실패: linked 아님 → None (솔로/standalone 무영향).
+def test_detector_none_when_anchor_is_plain_checkout(tmp_path):
+    """`.git` 이 디렉토리면 이 트리는 아무의 linked worktree 도 아니다 → None."""
     b = _load_board()
-    pm_home = tmp_path / "pm"
-    _make_real_board(pm_home / ".project_manager", split=True)
-    wt = pm_home / "work" / "product_1"
-    _make_scaffold_board(wt / ".project_manager")
-    r = _fake_runner("/x/.git", "/x/.git")   # not linked
-    assert b._pm_home_worktree_misanchor(wt, runner=r) is None
+    plain = tmp_path / "plain-clone"
+    plain.mkdir()
+    _git(["init", "-q", "-b", "main"], plain)
+    _make_scaffold_board(plain / ".project_manager")
+    assert b._pm_home_worktree_misanchor(plain) is None
 
 
 def test_detector_none_when_anchor_owns_real_board(tmp_path):
-    # conjunction #1 실패: 앵커가 *자기* 실 board 소유 → 정당(①-자체 board 사용 존중·flag 안 함).
+    """앵커가 *자기* 실 board 소유면 정당(자체 board 사용 존중·flag 안 함)."""
     b = _load_board()
-    pm_home = tmp_path / "pm"
-    _make_real_board(pm_home / ".project_manager", split=True)
-    wt = pm_home / "work" / "product_1"
-    _make_real_board(wt / ".project_manager", split=False)   # worktree 가 board 소유
-    r = _fake_runner("/x/.git/worktrees/product_1", "/x/.git")   # linked 이지만 board 소유
-    assert b._pm_home_worktree_misanchor(wt, runner=r) is None
+    pm_home, worktree = _make_pm_home_with_worktree(tmp_path)
+    _make_real_board(worktree / ".project_manager", split=False)
+    assert b._pm_home_worktree_misanchor(worktree) is None
+    assert pm_home.is_dir()
 
 
-def test_detector_none_when_no_pm_home_ancestor(tmp_path):
-    # conjunction #3 실패: linked·board 없음이나 상위 PM 홈(실 board) 없음 → None.
+def test_detector_none_for_markerless_tree_inside_a_pm_home(tmp_path):
+    """`.git` 없는 합성 트리는 PM 홈 *안*에 있어도 자기 자신이다 → None(위치 불참)."""
     b = _load_board()
-    wt = tmp_path / "lonely" / "work" / "product_1"
-    _make_scaffold_board(wt / ".project_manager")
-    r = _fake_runner("/x/.git/worktrees/product_1", "/x/.git")
-    assert b._pm_home_worktree_misanchor(wt, runner=r) is None
-
-
-def test_detector_none_when_nested_but_unregistered(tmp_path):
-    # 오탐 경계(reviewer should-fix): 무관 프레임워크 PM 홈(실 board) *하위*에 우연히 중첩된
-    # linked worktree — 그 홈이 anchor 를 등록하지 않음(work/<name> 아님·git-common-dir 이 홈 밖).
-    # 조건 3 등록 확인이 없으면 엉뚱한 pm_home 을 안내(오탐) → 이제 None.
-    b = _load_board()
-    pm_home = tmp_path / "unrelated_pm"
-    _make_real_board(pm_home / ".project_manager", split=True)
-    nested = pm_home / "vendor" / "someproj"          # work/<name> 관례 아님
+    pm_home, worktree = _make_pm_home_with_worktree(tmp_path)
+    nested = worktree / ".project_manager" / ".local" / "tmp" / "anchor"
+    nested.mkdir(parents=True)
     _make_scaffold_board(nested / ".project_manager")
-    r = _fake_runner("/elsewhere/.git/worktrees/x", "/elsewhere/.git")   # common-dir 홈 밖·linked
-    assert b._pm_home_worktree_misanchor(nested, runner=r) is None
+    assert b._pm_home_worktree_misanchor(nested) is None
+    assert b._pm_home_worktree_misanchor(pm_home / "vendor-tree") is None
 
 
-def test_detector_flags_when_common_dir_under_pm_home(tmp_path):
-    # 등록 확인 (b): work/<name> 관례가 아니어도 git-common-dir 이 pm_home 하위(ADR-0027
-    # `<pm_home>/.repos/<repo>.git`)면 등록으로 인정 → pm_home 안내(오탐 아님).
+def test_detector_fails_loud_when_owning_pm_home_is_unresolvable(tmp_path):
+    """소유 PM 홈을 확정 못 하는 linked worktree 는 자기 앵커로 강등하지 않고 터진다."""
     b = _load_board()
-    pm_home = tmp_path / "pm"
+    pm_log = b._load_pm_log()
+    source = tmp_path / "foreign-source"
+    source.mkdir()
+    _git(["init", "-q", "-b", "main"], source)
+    (source / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git(["add", "-A"], source)
+    _git(["commit", "-qm", "seed"], source)
+    stray = tmp_path / "unrelated_pm" / "vendor" / "someproj"
+    stray.parent.mkdir(parents=True)
+    _make_real_board(tmp_path / "unrelated_pm" / ".project_manager", split=True)
+    _git(["worktree", "add", "-q", str(stray)], source)
+    _make_scaffold_board(stray / ".project_manager")
+
+    with pytest.raises(pm_log.PmHomeResolutionError, match="PM 홈을 찾지 못했습니다"):
+        b._pm_home_worktree_misanchor(stray)
+
+
+def test_detector_flags_single_git_slot(tmp_path):
+    """공용 저장소가 `<X>/.git` 인 단일-git 슬롯도 같은 유도로 소유 PM 홈을 낸다."""
+    b = _load_board()
+    pm_home = tmp_path / "single-git-home"
+    pm_home.mkdir()
+    _git(["init", "-q", "-b", "main"], pm_home)
+    (pm_home / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git(["add", "-A"], pm_home)
+    _git(["commit", "-qm", "seed"], pm_home)
+    # board 는 커밋 뒤에 만든다 — 커밋에 실으면 슬롯 checkout 도 실 board 를 갖게 돼
+    # "앵커가 자기 board 소유" 조기 반환이 먼저 걸린다(형상 전제 붕괴).
     _make_real_board(pm_home / ".project_manager", split=True)
-    nested = pm_home / "checkout"                      # work/ 관례 아님
-    _make_scaffold_board(nested / ".project_manager")
-    common = str(pm_home / ".repos" / "p.git")         # pm_home 하위
-    r = _fake_runner(common + "/worktrees/x", common)
-    assert b._pm_home_worktree_misanchor(nested, runner=r) == pm_home
-
-
-def test_registers_worktree_branches(tmp_path):
-    # _registers_worktree 세 갈래 직접 검증: (a) work/<name> · (b) common-dir 하위 · 둘 다 아님.
-    b = _load_board()
-    pm_home = tmp_path / "pm"
-    assert b._registers_worktree(pm_home, pm_home / "work" / "repo_1",
-                                 runner=_fake_runner("/x", "/x")) is True          # (a)
-    common = str(pm_home / ".repos" / "p.git")
-    assert b._registers_worktree(pm_home, pm_home / "checkout",
-                                 runner=_fake_runner(common + "/wt", common)) is True  # (b)
-    assert b._registers_worktree(pm_home, pm_home / "vendor" / "x",
-                                 runner=_fake_runner("/z/.git", "/z/.git")) is False    # 둘 다 아님
+    slot = pm_home / "work" / "product_1"
+    slot.parent.mkdir()
+    _git(["worktree", "add", "-q", str(slot)], pm_home)
+    _make_scaffold_board(slot / ".project_manager")
+    _register_slot(pm_home, slot)
+    assert b._pm_home_worktree_misanchor(slot) == pm_home.resolve()
 
 
 def test_detector_flags_real_worktree_default_runner(pm_home_worktree):

@@ -67,6 +67,18 @@ def _make_repo(tmp_path: Path, *, with_log: bool, source_claude: Path = CLAUDE) 
     return hook_copy
 
 
+def _declare_slot_git_pointer(pm_home: Path, worktree: Path, repo: str = "product") -> None:
+    """슬롯이 소유 PM 홈을 선언하는 `.git` 포인터를 세운다(`worktree_pool` 실 형상).
+
+    공용 bare 저장소는 `<pm_home>/.repos/<repo>.git` 이고 슬롯의 `.git` 은 그 안 worktree
+    gitdir 을 가리킨다. 소유 판정의 유일한 입력이라 이 선언이 없는 트리는 자기 자신이다.
+    """
+    git_dir = pm_home / ".repos" / f"{repo}.git" / "worktrees" / worktree.name
+    git_dir.mkdir(parents=True, exist_ok=True)
+    (worktree / ".git").write_text(f"gitdir: {git_dir}\n", encoding="utf-8")
+    (git_dir / "commondir").write_text("../..\n", encoding="utf-8")
+
+
 def _run_hook(hook_path: Path, payload: dict | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [_SH, str(hook_path)], input=json.dumps(payload or {}),
@@ -404,6 +416,7 @@ def test_registered_worktree_records_only_in_pm_home(tmp_path):
     pm_home = tmp_path / "pm-home"
     worktree = pm_home / "work" / "product_1"
     hook = _make_repo(worktree, with_log=False)
+    _declare_slot_git_pointer(pm_home, worktree)
     shutil.copytree(TOOLS, pm_home / ".project_manager" / "tools")
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True, exist_ok=True)
@@ -423,6 +436,46 @@ def test_registered_worktree_records_only_in_pm_home(tmp_path):
     assert result.returncode == 0
     assert BREADCRUMB_MARKER in home_log.read_text(encoding="utf-8")
     assert not (worktree / ".project_manager" / "wiki" / "log" / "current.md").exists()
+
+
+def test_hook_never_writes_to_an_enclosing_pm_home(tmp_path):
+    """감싸는 PM 홈이 있어도 훅은 자기 트리에만 기록한다 — 위치는 판정 입력이 아니다.
+
+    2026-08-31 실측에서 실 PM 홈 `wiki/log/current.md` 에 108줄이 들어간 경로와 같은 형상이다:
+    등록 슬롯 안쪽의 마커 없는 트리에서 훅을 돌리면, 조상 훑기가 살아 있을 때 바깥 PM 홈이
+    소유자로 뽑혀 그쪽 log 에 append 된다.
+    """
+    pm_home = tmp_path / "pm-home"
+    slot = pm_home / "work" / "product_1"
+    slot.mkdir(parents=True)
+    _declare_slot_git_pointer(pm_home, slot)
+    shutil.copytree(TOOLS, pm_home / ".project_manager" / "tools")
+    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(
+        '{"leases":[{"slot":"work/product_1","state":"leased","session":"main"}]}',
+        encoding="utf-8",
+    )
+    state = pm_home / ".project_manager" / ".local" / "tasks" / "main" / "pm_state.md"
+    state.parent.mkdir(parents=True)
+    state.write_text("# main\n", encoding="utf-8")
+    home_log = pm_home / ".project_manager" / "wiki" / "log" / "current.md"
+    home_log.parent.mkdir(parents=True)
+    home_log.write_text("## [2026-01-01] handoff | PM 홈 기존 entry\n", encoding="utf-8")
+    home_log_before = home_log.read_bytes()
+
+    inner = slot / ".project_manager" / ".local" / "tmp" / "anchor"
+    inner.mkdir(parents=True)
+    hook = _make_repo(inner, with_log=True)
+    inner_log = inner / ".project_manager" / "wiki" / "log" / "current.md"
+
+    result = _run_hook(hook, {"cwd": str(inner), "session_id": "inner-session"})
+
+    assert result.returncode == 0
+    inner_text = inner_log.read_text(encoding="utf-8")
+    assert BREADCRUMB_MARKER in inner_text
+    assert "checkpoint | (task:main) — compaction" in inner_text
+    assert home_log.read_bytes() == home_log_before
 
 
 # ── ③ 항상 exit 0 (fail-soft) ─────────────────────────────────────────────────

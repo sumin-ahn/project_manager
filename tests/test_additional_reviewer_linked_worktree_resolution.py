@@ -18,8 +18,8 @@ def test_shape_a_pm_home_and_registered_worktree_keep_existing_owner(tmp_path):
     home, worktree, _ticket = _managed_worktree(tmp_path)
     external = _load("additional_reviewer_shape_a_registered_owner")
 
-    assert external.resolve_pm_home_for_repo(home, required=True) == home.resolve()
-    assert external.resolve_pm_home_for_repo(worktree, required=True) == home.resolve()
+    assert external.resolve_pm_home_for_repo(home) == home.resolve()
+    assert external.resolve_pm_home_for_repo(worktree) == home.resolve()
 
 
 def test_shape_b_unregistered_gate_worktree_uses_pm_home_for_delegate(
@@ -41,7 +41,7 @@ def test_shape_b_unregistered_gate_worktree_uses_pm_home_for_delegate(
     prompt.write_text("review the isolated gate snapshot", encoding="utf-8")
 
     external = _load("additional_reviewer_shape_b_gate_owner")
-    assert external.resolve_pm_home_for_repo(snapshot, required=True) == home.resolve()
+    assert external.resolve_pm_home_for_repo(snapshot) == home.resolve()
 
     delegate = _load("pm_delegate_shape_b_gate_owner")
     monkeypatch.setattr(delegate, "REPO", worktree)
@@ -97,7 +97,7 @@ def test_shape_b_bare_common_dir_uses_registered_checkout_owner(tmp_path):
     _git(canonical, "worktree", "add", "-q", "--detach", str(snapshot), "HEAD")
 
     external = _load("additional_reviewer_shape_b_bare_gate_owner")
-    assert external.resolve_pm_home_for_repo(snapshot, required=True) == home.resolve()
+    assert external.resolve_pm_home_for_repo(snapshot) == home.resolve()
 
 
 def test_shape_c_unrelated_repository_cannot_reuse_pm_home(tmp_path):
@@ -117,11 +117,15 @@ def test_shape_c_unrelated_repository_cannot_reuse_pm_home(tmp_path):
 
     external = _load("additional_reviewer_shape_c_unrelated")
     with pytest.raises(external.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
-        external.resolve_pm_home_for_repo(snapshot, required=True)
+        external.resolve_pm_home_for_repo(snapshot)
 
 
-def test_same_repo_multiple_checkout_owners_fail_loud(tmp_path):
-    """같은 common-dir의 checkout들이 다른 PM 홈에 등록되면 어느 conf도 선택하지 않는다."""
+def test_empty_lease_ledger_owner_fails_loud(tmp_path):
+    """공용 저장소를 둔 홈의 lease 장부가 비어 있으면 소유자를 확정하지 않고 멈춘다.
+
+    옛 해소는 같은 저장소의 다른 checkout을 `git worktree list`로 훑어 제3의 홈을 소유자
+    후보로 세웠다. 유도는 후보를 하나만 만들고, 그 홈이 worktree를 관리하지 않으면 실패다.
+    """
     home_a = tmp_path / "pm-a"
     home_a.mkdir()
     _git(home_a, "init", "-q")
@@ -160,14 +164,14 @@ def test_same_repo_multiple_checkout_owners_fail_loud(tmp_path):
     snapshot.parent.mkdir()
     _git(home_a, "worktree", "add", "-q", "--detach", str(snapshot), "HEAD")
 
-    external = _load("additional_reviewer_same_repo_multiple_owners")
+    external = _load("additional_reviewer_empty_lease_ledger_owner")
     with pytest.raises(external.AnchorResolutionError) as caught:
-        external.resolve_pm_home_for_repo(snapshot, required=True)
+        external.resolve_pm_home_for_repo(snapshot)
     message = str(caught.value)
-    assert "여러 PM 홈의 worktree lease 장부에 등록" in message
-    assert "소유자가 모호" in message
+    assert "worktree lease 장부에 등록 행이 없습니다" in message
     assert str(home_a.resolve()) in message
-    assert str(home_b.resolve()) in message
+    # 경로만 겹치는 home_b 의 장부 등재는 소유권 후보를 만들지 않는다.
+    assert str(home_b.resolve()) not in message
 
 
 def test_code_reviewer_gate_and_ticket_share_required_owner_failure(

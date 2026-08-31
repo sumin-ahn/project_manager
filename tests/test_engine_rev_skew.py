@@ -544,6 +544,8 @@ def test_board_non_consumers_do_not_load_stale_pm_delegate(tmp_path, monkeypatch
         "file_lock.py": None,
         "local_conf.py": None,
         "console_encoding.py": None,
+        # 소유 PM 홈 유도는 board 가 형제 로드하는 단일 구현이다(read dispatch 진입 경로).
+        "pm_log.py": None,
         "pm_delegate.py": _stale_source("pm_delegate"),
     })
     board = _load(tools, "board")

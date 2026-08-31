@@ -569,7 +569,9 @@ def _pm_home_misanchor() -> Path | None:
         return None
     try:
         return mod._pm_home_worktree_misanchor(REPO)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 — 판정 실패는 통과(오탐 0·standalone 무영향).
+        if _is_engine_rev_skew(exc):
+            raise  # 형제 사본 skew 는 앵커 판정 생략으로 접지 않는다(fail-loud · 재동기 안내).
         return None
 
 

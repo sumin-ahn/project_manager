@@ -3835,7 +3835,9 @@ class PmBootstrap:
             return False
         try:
             pm_home = guard(REPO)
-        except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 통과(오탐 0).
+        except Exception as exc:  # noqa: BLE001 — fail-soft: 판정 실패는 통과(오탐 0).
+            if _is_engine_rev_skew(exc):
+                raise  # 형제 사본 skew 는 앵커 판정 생략으로 접지 않는다(fail-loud · 재동기 안내).
             return False
         if pm_home is None:
             return False

@@ -926,26 +926,27 @@ def test_legacy_diff_root_raw_anchor_writes_to_the_slot_ledger(
     assert slot_rows[0]["surface"] == "additional-reviewer"
 
 
-def test_unresolvable_pm_home_keeps_loud_diff_root_fallback(
+def test_unresolvable_pm_home_fails_loud_and_writes_no_raw(
         external, monkeypatch, tmp_path, capsys):
-    """lease 손상으로 소유자를 확정 못 하면 loud 경고 + diff_root 폴백을 유지한다(자기잠김 금지)."""
+    """lease 손상으로 소유자를 확정 못 하면 raw 를 어디에도 쓰지 않고 멈춘다.
+
+    옛 계약은 loud 경고 뒤 diff_root 로 폴백해 슬롯 장부에 raw 를 박제했다. 그 폴백이 있으면
+    장부를 깨뜨리는 것만으로 귀속이 슬롯으로 옮겨간다.
+    """
     pm_home, worktree = _review_slot_family(tmp_path)
     lease = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     lease.write_text("{broken", encoding="utf-8")
     monkeypatch.setattr(external, "REPO", worktree)
     _stub_reviewer(external, monkeypatch)
 
-    assert external.main(["--paths", "seed.txt", "--no-gate"]) == 0
+    assert external.main(["--paths", "seed.txt", "--no-gate"]) == 1
 
     err = capsys.readouterr().err
-    assert err.splitlines()[0].startswith("경고: PM 홈 해소 실패")
-    assert "board가 필요 없는 실행" in err
-    assert f"pm_home={worktree.resolve()}" in err
-    slot_rows = _ledger(
+    assert "앵커 해소 실패" in err and "worktree lease 장부" in err
+    assert "board가 필요 없는 실행" not in err
+    assert not (
         worktree / ".project_manager" / ".local" / "raw_outputs.json"
-    )["records"]
-    assert len(slot_rows) == 1
-    assert slot_rows[0]["surface"] == "additional-reviewer"
+    ).exists()
     assert not (
         pm_home / ".project_manager" / ".local" / "raw_outputs.json"
     ).exists()
@@ -1151,13 +1152,13 @@ def test_legacy_round_inheritance_happens_once_per_gate(
     assert _round_count(pm_home, gate) == 3
 
 
-def test_corrupt_lease_registered_slot_keeps_loud_round_fallback(
+def test_corrupt_lease_registered_slot_records_no_round_anywhere(
         external, monkeypatch, tmp_path, capsys):
-    """lease 손상 관리 슬롯은 마커가 없으면 종전 diff-root 회계 폴백을 유지한다([[T-0643]]).
+    """lease 손상 관리 슬롯은 마커 유무와 무관하게 실 라운드도 회계 밖 자문도 만들지 않는다.
 
-    T-0634의 강등 사유 기반 차단은 lease 손상 관리 슬롯까지 닫았다. 스냅샷 생성 사실은 이제
-    전용 마커가 증명하므로, 마커 없는 단일 관리 후보는 강등 사유가 같아도 실 라운드와 회계 밖
-    자문 모두 종전 loud 폴백으로 통과한다. 이 대비가 사유 문자열 단독 판정을 막는다."""
+    옛 계약은 마커 없는 단일 관리 후보를 '복구 폴백'으로 인정해 슬롯의 휘발 장부에 실 라운드를
+    기록했다. 그러면 장부를 깨뜨리는 것만으로 과금 상한이 0 부터 다시 세어진다.
+    """
     pm_home, worktree = _review_slot_family(tmp_path)
     lease = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     lease.write_text("{broken", encoding="utf-8")
@@ -1165,17 +1166,15 @@ def test_corrupt_lease_registered_slot_keeps_loud_round_fallback(
     _stub_reviewer(external, monkeypatch)
     gate = "T-" + "0001"
 
-    assert external.main(["--paths", "seed.txt", "--gate", gate]) == 0
-    err = capsys.readouterr().err
-    assert err.splitlines()[0].startswith("경고: PM 홈 해소 실패")
-    assert "게이트 스냅샷 마커" not in err
-    assert _round_count(worktree, gate) == 1        # 손상 중에는 강등 앵커에 loud 기록
-    assert _round_count(pm_home, gate) == 0
+    for argv in (["--paths", "seed.txt", "--gate", gate],
+                 ["--paths", "seed.txt", "--no-gate"]):
+        assert external.main(argv) == 1, argv
+        err = capsys.readouterr().err
+        assert "앵커 해소 실패" in err and "worktree lease 장부" in err, argv
+        assert "게이트 스냅샷 마커" not in err, argv
 
-    # 회계 밖 자문은 종전대로 통과하며 raw 장부는 강등 앵커 폴백을 유지한다.
-    assert external.main(["--paths", "seed.txt", "--no-gate"]) == 0
-    err = capsys.readouterr().err
-    assert err.splitlines()[0].startswith("경고: PM 홈 해소 실패")
+    assert _round_count(worktree, gate) == 0
+    assert _round_count(pm_home, gate) == 0
 
 
 def test_main_clears_raw_anchor_between_calls(

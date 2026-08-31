@@ -2579,8 +2579,7 @@ def _full_regression_command(cwd: Path) -> str:
     """developer 단계 종료의 프로젝트 test_cmd(areas/slot/local/default 해소 전부)."""
     repo = Path(cwd).resolve()
     er = _load_additional_reviewer()
-    owner = er.resolve_pm_home_for_repo(repo, required=False)
-    config_root = Path(owner).resolve() if owner else repo
+    config_root = Path(er.resolve_pm_home_for_repo(repo)).resolve()
     board = _load_board_for_repo(config_root)
     command = str(board._test_cmd(None, session=None)).strip()
     if not command:
@@ -12520,7 +12519,7 @@ def _ticket_cli_owner(cwd: Path) -> Path:
         raise DelegateError(f"--cwd 는 파일시스템 루트가 아닌 git 작업공간이어야 합니다: {resolved}")
     er = _load_additional_reviewer()
     try:
-        owner = Path(er.resolve_pm_home_for_repo(resolved, required=True)).resolve()
+        owner = Path(er.resolve_pm_home_for_repo(resolved)).resolve()
     except er.AnchorResolutionError as exc:
         raise DelegateError(f"--cwd 소유 PM 홈 해소 실패: {exc}") from exc
     if er._owns_real_board(REPO / ".project_manager") and REPO.resolve() != owner:
@@ -14628,9 +14627,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
     er = _load_additional_reviewer()
     cwd_repo = _repo_root_for_cwd(cwd, er)
     try:
-        config_repo = er.resolve_pm_home_for_repo(
-            cwd_repo, required=bool(args.ticket or args.gate),
-        )
+        config_repo = er.resolve_pm_home_for_repo(cwd_repo)
     except er.AnchorResolutionError as exc:
         print(f"오류: --cwd 소유 PM 홈 해소 실패 — {exc}", file=sys.stderr)
         return 1

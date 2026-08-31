@@ -113,19 +113,13 @@ def _assert_no_legacy_conf(conf: dict[str, str], path: Path) -> None:
 
 
 def repo_root(start: Path) -> Path:
-    """스크립트 위치(.claude/)에서 프로젝트 루트를 찾는다.
+    """스크립트 위치(``<root>/.claude/``)에서 프로젝트 루트를 낸다 — 그 부모다.
 
-    ``.project_manager/local.conf`` 가 있는 가장 가까운 조상을 루트로 본다.
-    없으면 .git 디렉토리, 그것도 없으면 start 의 부모(.claude/ → 루트).
+    어댑터 사본은 항상 ``<root>/.claude/`` 에 설치되므로 루트는 그 자리의 함수다. 조상을
+    훑어 ``.project_manager/local.conf``/``.git`` 을 찾으면 훅이 자기 트리가 아니라 위에
+    있는 남의 PM 홈에 착지한다(실측: 격리 트리의 훅이 바깥 PM 홈 log 에 기록).
     """
-    start = start.resolve()
-    for cand in (start, *start.parents):
-        if (cand / ".project_manager" / "local.conf").exists():
-            return cand
-        if (cand / ".git").exists():
-            return cand
-    # 폴백: .claude/ 의 부모 = 프로젝트 루트.
-    return start.parents[0] if start.parents else start
+    return start.resolve().parent
 
 
 def load_local_config(root: Path) -> dict[str, str]:

@@ -721,6 +721,87 @@ def test_registered_repos_engine_rev_skew_is_fail_loud(monkeypatch):
         mod._registered_repos()
 
 
+# ── 소유 PM 홈 유도 (T-0888) ────────────────────────────────────────────────
+
+def _synthetic_pm_home(root: Path, *, repo: str = "app") -> Path:
+    """실 티켓 1건 + lease 장부 + `.repos/<repo>.git` 을 가진 합성 PM 홈."""
+    pm_home = root / "pm-home"
+    tickets = pm_home / ".project_manager" / "wiki" / "tickets" / "open"
+    tickets.mkdir(parents=True)
+    (tickets / "T-0001-fixture.md").write_text(
+        "---\nid: T-0001\ntitle: fixture\nstatus: open\n---\n", encoding="utf-8",
+    )
+    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        json.dumps({"leases": [{"slot": f"work/{repo}_1", "state": "leased"}]}),
+        encoding="utf-8",
+    )
+    slot = pm_home / "work" / f"{repo}_1"
+    slot.mkdir(parents=True)
+    _declare_slot_git_pointer(pm_home, slot, repo)
+    return pm_home
+
+
+def _markerless_tree(root: Path) -> Path:
+    """`.git` 도 `.project_manager` 실 board 도 없는 합성 트리 — 아무의 worktree 도 아니다."""
+    root.mkdir(parents=True)
+    (root / "seed.txt").write_text("seed\n", encoding="utf-8")
+    return root
+
+
+def test_pm_home_resolution_is_position_independent(tmp_path):
+    """같은 모양의 트리는 파일시스템 어디에 있어도 같은 답을 낸다 — 위치는 판정 입력이 아니다."""
+    mod = _load_module()
+    pm_home = _synthetic_pm_home(tmp_path)
+    slot = pm_home / "work" / "app_1"
+
+    outside = _markerless_tree(tmp_path / "anchor")
+    inside = _markerless_tree(slot / ".project_manager" / ".local" / "tmp" / "anchor")
+
+    # 조상 훑기를 되살리면 (b) 만 합성 PM 홈을 돌려줘 두 값이 갈린다.
+    assert mod.owning_pm_home(outside) == outside.resolve()
+    assert mod.owning_pm_home(inside) == inside.resolve()
+    assert mod.owning_pm_home(slot) == pm_home.resolve()
+
+
+def test_registered_slot_resolves_from_git_pointer_without_subprocess(
+    tmp_path, monkeypatch,
+):
+    """등록 슬롯·PM 홈 밖 절대 슬롯·저장소 밖 스냅샷 셋 다 subprocess 0회로 소유 홈을 낸다."""
+    mod = _load_module()
+    pm_home = _synthetic_pm_home(tmp_path)
+    slot = pm_home / "work" / "app_1"
+
+    absolute_slot = tmp_path / "external-slots" / "app_2"
+    absolute_slot.mkdir(parents=True)
+    _declare_slot_git_pointer(pm_home, absolute_slot, "app")
+
+    snapshot = tmp_path / "scratch" / "gate-X"
+    snapshot.mkdir(parents=True)
+    _declare_slot_git_pointer(pm_home, snapshot, "app")
+
+    def _forbidden(*_args, **_kwargs):
+        raise AssertionError("PM 홈 유도는 git subprocess 를 부르지 않는다")
+
+    monkeypatch.setattr(mod.subprocess, "run", _forbidden)
+
+    for anchor in (slot, absolute_slot, snapshot):
+        assert mod.owning_pm_home(anchor) == pm_home.resolve(), anchor
+
+
+def _declare_slot_git_pointer(pm_home: Path, worktree: Path, repo: str = "product") -> None:
+    """슬롯이 소유 PM 홈을 선언하는 `.git` 포인터를 세운다(`worktree_pool` 실 형상).
+
+    공용 bare 저장소는 `<pm_home>/.repos/<repo>.git` 이고 슬롯의 `.git` 은 그 안 worktree
+    gitdir 을 가리킨다. 소유 판정의 유일한 입력이라 이 선언이 없는 트리는 자기 자신이다.
+    """
+    git_dir = pm_home / ".repos" / f"{repo}.git" / "worktrees" / worktree.name
+    git_dir.mkdir(parents=True, exist_ok=True)
+    (worktree / ".git").write_text(f"gitdir: {git_dir}\n", encoding="utf-8")
+    (git_dir / "commondir").write_text("../..\n", encoding="utf-8")
+
+
 def test_main_checkpoint_worktree_anchor_forwards_to_pm_home_engine(
     tmp_path, monkeypatch
 ):
@@ -729,6 +810,7 @@ def test_main_checkpoint_worktree_anchor_forwards_to_pm_home_engine(
     pm_home = tmp_path / "pm-home"
     worktree = pm_home / "work" / "product_1"
     worktree.mkdir(parents=True)
+    _declare_slot_git_pointer(pm_home, worktree)
     monkeypatch.setattr(mod, "REPO", worktree)
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True)
@@ -781,6 +863,7 @@ def test_main_hook_redispatch_retries_old_pm_home_engine_without_new_options(
     pm_home = tmp_path / "pm-home"
     worktree = pm_home / "work" / "product_1"
     worktree.mkdir(parents=True)
+    _declare_slot_git_pointer(pm_home, worktree)
     monkeypatch.setattr(mod, "REPO", worktree)
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True)
@@ -815,6 +898,7 @@ def test_main_manual_checkpoint_forwards_pm_home_engine_rc(
     pm_home = tmp_path / "pm-home"
     worktree = pm_home / "work" / "product_1"
     worktree.mkdir(parents=True)
+    _declare_slot_git_pointer(pm_home, worktree)
     monkeypatch.setattr(mod, "REPO", worktree)
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True)
@@ -875,7 +959,7 @@ def test_main_external_absolute_lease_uses_file_git_common_dir_pm_home(
         or SimpleNamespace(returncode=19),
     )
 
-    assert mod.resolve_pm_home(worktree, worktree) == pm_home
+    assert mod.owning_pm_home(worktree) == pm_home
     assert mod.main([*argv, "--cwd", str(worktree)]) == 0
     assert len(calls) == 1  # PM 홈 해소 자체는 git subprocess를 만들지 않는다.
     call_argv, kwargs = calls[0]
@@ -883,39 +967,25 @@ def test_main_external_absolute_lease_uses_file_git_common_dir_pm_home(
     assert kwargs["cwd"] == str(pm_home)
 
 
-def test_main_checkpoint_unleased_worktree_misanchor_fails_loud_before_write(
-    tmp_path, monkeypatch, capsys,
+def test_main_checkpoint_unregistered_slot_fails_loud_without_self_demotion(
+    tmp_path, monkeypatch,
 ):
-    """lease 행이 없어도 board fallback이 수동 checkpoint의 stray log를 막는다."""
+    """소유 PM 홈을 확정 못 하는 슬롯은 자기 트리에 stray log를 만들지 않고 그대로 터진다.
+
+    옛 경로는 lease 미등재를 board detector로 재확인해 안내 rc1(수동)·무음 rc0(hook)으로
+    나눴다. 1차 해소가 fail-loud가 되면 그 2차 축은 존재 이유가 없다 — 미해소 상태 자체가
+    생기지 않는다.
+    """
     mod = _load_module()
-    worktree = tmp_path / "pm-home" / "work" / "product_1"
     pm_home = tmp_path / "pm-home"
+    worktree = pm_home / "work" / "product_1"
+    worktree.mkdir(parents=True)
+    _declare_slot_git_pointer(pm_home, worktree)   # 선언은 있으나 lease 장부가 없다.
+    (pm_home / ".project_manager").mkdir(parents=True, exist_ok=True)
     _redirect_paths(mod, monkeypatch, worktree)
-    monkeypatch.setattr(mod, "resolve_pm_home", lambda repo, _cwd: repo)
-    monkeypatch.setattr(mod, "_pm_home_misanchor", lambda: pm_home)
 
-    assert mod.main(["checkpoint", "--task", "main"]) == 1
-    captured = capsys.readouterr()
-    assert "PM 홈에서 실행하세요" in captured.err and str(pm_home) in captured.err
-    assert not mod.CURRENT_FILE.exists()
-
-
-def test_main_checkpoint_unleased_worktree_compaction_skips_silently(
-    tmp_path, monkeypatch, capsys,
-):
-    """같은 fallback 판정도 hook compaction은 무음 rc0이며 worktree log를 만들지 않는다."""
-    mod = _load_module()
-    worktree = tmp_path / "pm-home" / "work" / "product_1"
-    pm_home = tmp_path / "pm-home"
-    _redirect_paths(mod, monkeypatch, worktree)
-    monkeypatch.setattr(mod, "resolve_pm_home", lambda repo, _cwd: repo)
-    monkeypatch.setattr(mod, "_pm_home_misanchor", lambda: pm_home)
-
-    assert mod.main([
-        "checkpoint", "--task", "main", "--trigger", "compaction", "--phase", "pre",
-    ]) == 0
-    captured = capsys.readouterr()
-    assert captured.out == captured.err == ""
+    with pytest.raises(mod.PmHomeResolutionError, match="worktree lease 장부 없음"):
+        mod.main(["checkpoint", "--task", "main"])
     assert not mod.CURRENT_FILE.exists()
 
 
@@ -927,7 +997,7 @@ def test_main_tail_remains_ungated(tmp_path, monkeypatch, capsys):
     (log_dir / "current.md").write_text(_HEADER + _ENTRY_A, encoding="utf-8")
     monkeypatch.setattr(
         mod,
-        "resolve_pm_home",
+        "owning_pm_home",
         lambda *_: pytest.fail("tail must not resolve a PM-home anchor"),
     )
 
