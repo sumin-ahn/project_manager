@@ -598,7 +598,7 @@ def test_fresh_codex_adopter_scaffold_lints_clean_and_bootstrap_card(tmp_path, m
         "import 된 pm_bootstrap 카드에 codex 절 미출현 (env 감지/append 실패·전파 손상?)"
     assert ".codex/agents/{architect,developer,code-reviewer,researcher}" in card, \
         "codex 절에 위임 4축(세션 내 spawn) 미기재"
-    assert "codex exec --agent" in card, "codex 절에 `codex exec --agent` 부재 명시 누락(외부 프로세스 위임 없음)"
+    assert "codex exec --agent" in card, "codex 절에 `codex exec --agent` 부재 명시 누락(자식 프로세스 위임 없음)"
     assert "trust 2단계" in card, "codex 절에 trust 2단계 힌트 미기재"
 
     # (4) trust loud 안내 — import 출력에 2단계 trust 승인 loud 안내(미승인 시 위임 spawn·PreCompact 훅

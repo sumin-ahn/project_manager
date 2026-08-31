@@ -1590,13 +1590,13 @@ def test_no_consumer_keeps_local_outcome_regex():
 # ════════════════════════════════════════════════════════════════════════
 # 리뷰 라운드마다 FULL 회귀를 도는 것이 라운드 비용의 세 번째 축이었다. 리뷰가 아직 닫히지 않은
 # 티켓의 FULL 요청은 그 티켓 touches 로 강등하고, FULL 은 `--final`(수렴 후)·핸드오프·pre-push
-# 경로만 돈다. 판정 입력은 이미 있는 데이터 둘뿐이다(사람 선언 0): 외부 리뷰 라운드 장부 +
+# 경로만 돈다. 판정 입력은 이미 있는 데이터 둘뿐이다(사람 선언 0): 추가 리뷰 라운드 장부 +
 # 보드 티켓 status. 장부는 append-only 라 자체 마감 이벤트가 없어, **티켓이 현재 claimed 인지**를
 # 함께 봐야 done 티켓의 옛 반려가 영원히 강등을 유발하지 않는다(실측: done 10건 잔존).
 
 
 def _write_rounds_ledger(board, gates: dict) -> None:
-    """외부 리뷰 라운드 장부를 심는다 — 값은 `{gate: [(sequence, verdict), ...]}`."""
+    """추가 리뷰 라운드 장부를 심는다 — 값은 `{gate: [(sequence, verdict), ...]}`."""
     board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
         gate: {"rounds": [{"sequence": seq, "verdict": verdict, "must_fix": None}

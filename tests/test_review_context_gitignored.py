@@ -2,7 +2,7 @@
 
 실측한 결함(2026-08-09·PM 33차 릴리즈): additional_reviewer 가 읽는 인스턴스 소유 overlay
 `.project_manager/review_context.local.md` 가 어느 ignore 파일에도 없어(`git check-ignore` rc=1)
-PM 홈에 untracked 로 표면화했다. per-clone 파일이 커밋에 유입되면 인스턴스마다 다른 외부 리뷰어
+PM 홈에 untracked 로 표면화했다. per-clone 파일이 커밋에 유입되면 인스턴스마다 다른 추가 리뷰어
 프롬프트 보강이 공유 히스토리에 박힌다.
 
 `local.conf`·`.local/` 과 같은 per-clone 클래스라 엔진 `.project_manager/.gitignore` 에 등재하고

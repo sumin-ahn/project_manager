@@ -1,6 +1,6 @@
 """리뷰 수렴 게이트 · 폐지 플래그 차단 · diff 서킷브레이커 (T-0593).
 
-라운드 상한(T-0457)과 wave 예산(T-0583)은 "몇 번 전송했나"만 셌고 "닫히고 있나"는 묻지 않았다.
+라운드 상한(T-0457)과 wave 예산(T-0583)은 "몇 번 호출했나"만 셌고 "닫히고 있나"는 묻지 않았다.
 실측 두 형상이 그 공백이다 — 리뷰 12라운드(연장 승인 반복)와 must_fix 3→2→2 평탄. 이 파일은 세
 축을 단언한다:
 
@@ -12,7 +12,7 @@
      같은 단계 표를 쓰고(`_diff_bases`), 초과면 리뷰어 호출 전에 rc 1 로 막는다.
 
 hermetic: REPO 를 tmp 로 monkeypatch 해 장부를 격리하고(`test_additional_reviewer.py` 동형),
-extract_diff·run_review·local_config 를 주입해 실제 git/추가 리뷰어 없이(외부 전송 0) 분기를
+extract_diff·run_review·local_config 를 주입해 실제 git/추가 리뷰어 없이(호출 0) 분기를
 단언한다. diff 측정만 실 git 을 쓰는 테스트는 tmp 저장소를 직접 만든다.
 """
 from __future__ import annotations
@@ -32,7 +32,6 @@ TOOLS = REPO / ".project_manager" / "tools"
 # 해소 가능한 추가 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본 커맨드
 # 없음) 이 파일의 모든 형상이 그 세트를 깔고 시작한다.
 _REVIEWER_TARGET = {
-    "additional_reviewer.enabled": "true",
     "additional_reviewer.harness": "codex",
     "additional_reviewer.model": "gpt-5.6-sol",
 }
@@ -102,14 +101,7 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int], conf=None,
         else dict(_REVIEWER_TARGET))
     monkeypatch.setattr(
         external, "extract_diff",
-        lambda *a, **k: ("diff --git a/x b/x\n@@ -1 +1 @@\n-o\n+n\n", []))
-    monkeypatch.setattr(
-        external, "create_reviewer_workspace",
-        lambda diff_root, *, base_dir=None, conf=None, source_home=None, denylist=():
-        external.ReviewerWorkspace(
-            root=tmp_path / "mirror", tree=tmp_path / "tree", home=tmp_path / "home",
-            files=1, skipped_unsafe=0, git_repo=True,
-        ))
+        lambda *a, **k: "diff --git a/x b/x\n@@ -1 +1 @@\n-o\n+n\n")
     if stub_diff_cap:
         monkeypatch.setattr(external, "_diff_cap_refusal", lambda *a, **k: None)
     else:
@@ -223,7 +215,7 @@ def test_default_cap_blocks_the_third_round(external, monkeypatch, tmp_path, cap
     capsys.readouterr()
 
     assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert reviewer.calls == 2                    # 리뷰어 미호출 (외부 전송 0)
+    assert reviewer.calls == 2                    # 리뷰어 미호출 (호출 0)
     err = capsys.readouterr().err
     assert "수렴 게이트 차단" in err
     assert "3 → 2" in err                         # 판정 근거를 그대로 보여준다
@@ -293,7 +285,7 @@ def test_gate_without_a_ledger_is_untouched(external, monkeypatch, tmp_path):
 @pytest.mark.parametrize("gate_state", ("empty", "rejected", "passed"))
 def test_removed_confirm_fix_flag_is_rejected_before_any_send(
         external, monkeypatch, tmp_path, capsys, gate_state):
-    """게이트 이력과 무관하게 폐지 플래그는 argparse 에서 거부되고 장부·전송은 불변이다."""
+    """게이트 이력과 무관하게 폐지 플래그는 argparse 에서 거부되고 장부·호출은 불변이다."""
     reviewer = _wire(
         external, monkeypatch, tmp_path,
         series=[0] if gate_state == "passed" else [1],
@@ -328,7 +320,7 @@ def test_round_records_keep_must_fix_texts_for_audit(
 
 # ══ ②-b 수렴 상한의 **진행 중 예약** (T-0602 ②) ══════════════════════════════
 # codex R2 지적: 상한 판정이 완료 `rounds` 만 세고 예약된 실행을 무시한다 — 2완료 상태에서 두
-# 실행이 연속 예약되면 둘 다 통과해 상한 3 인데 4라운드가 전송된다. 미마감 예약을 상한에 더해
+# 실행이 연속 예약되면 둘 다 통과해 상한 3 인데 4라운드가 호출된다. 미마감 예약을 상한에 더해
 # 그 창을 닫는다(미완 재시도 상한과는 역할이 다르다).
 
 
@@ -367,7 +359,7 @@ def _seed_rounds(tmp_path, gate: str, *, completed: int, inflight: int,
 
 
 def test_inflight_reservation_counts_toward_the_convergence_cap(external, tmp_path):
-    """2완료 + 1예약 = 상한 3 도달 — 완료분만 세면 이 형상이 통과해 4전송이 난다 (순수 판정)."""
+    """2완료 + 1예약 = 상한 3 도달 — 완료분만 세면 이 형상이 통과해 4호출이 난다 (순수 판정)."""
     _seed_rounds(tmp_path, "g", completed=2, inflight=1)
     ledger = json.loads(
         (tmp_path / ".project_manager" / ".local" / "review_rounds.json").read_text(
@@ -380,7 +372,7 @@ def test_inflight_reservation_counts_toward_the_convergence_cap(external, tmp_pa
 
 def test_second_concurrent_reservation_is_refused_before_sending(
         external, monkeypatch, tmp_path, capsys):
-    """재현: 2완료 + 1예약(동시 실행 A) 상태에서 실행 B 는 전송 전에 막힌다 (상한 3·4전송 창)."""
+    """재현: 2완료 + 1예약(동시 실행 A) 상태에서 실행 B 는 호출 전에 막힌다 (상한 3·4호출 창)."""
     conf = {**_REVIEWER_TARGET, "additional_reviewer.rounds_max": "3"}
     reviewer = _wire(external, monkeypatch, tmp_path, series=[2], conf=conf)
     _seed_rounds(tmp_path, "T-0602f", completed=2, inflight=1)
@@ -388,7 +380,7 @@ def test_second_concurrent_reservation_is_refused_before_sending(
     rc = external.main(["--gate", "T-0602f", "--paths", "x.py"])
 
     assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert reviewer.calls == 0                       # 외부 전송 0
+    assert reviewer.calls == 0                       # 호출 0
     err = capsys.readouterr().err
     assert "수렴 게이트 차단" in err
     assert "진행 중 예약 1" in err                    # 판정 근거를 그대로 보여준다
@@ -443,7 +435,7 @@ def test_timed_out_reservation_does_not_lock_the_convergence_axis(
 
 
 def test_refunded_reservation_does_not_hold_the_cap(external, monkeypatch, tmp_path):
-    """전송이 없던 예약은 환불로 레코드째 사라져 상한을 잡아 두지 않는다 (fail-closed 오차단 방지)."""
+    """호출이 없던 예약은 환불로 레코드째 사라져 상한을 잡아 두지 않는다 (fail-closed 오차단 방지)."""
     conf = {**_REVIEWER_TARGET, "additional_reviewer.rounds_max": "3"}
     _wire(external, monkeypatch, tmp_path, series=[1], conf=conf)
     unstarted = {
@@ -495,7 +487,7 @@ def test_reservation_stamps_its_own_deadline(external):
 def test_a_short_caller_timeout_does_not_expire_a_long_running_reservation(external):
     """긴 timeout 으로 도는 라운드를 짧은 timeout 의 후속 호출이 stale 로 접지 않는다.
 
-    이 오판이 곧 상한 초과 예약이다 — 실제로 나가 있는 전송을 0으로 세고 슬롯을 다시 내준다."""
+    이 오판이 곧 상한 초과 예약이다 — 실제로 나가 있는 호출을 0으로 세고 슬롯을 다시 내준다."""
     entry = _inflight_entry(deadline=_ahead(3600), started_at=_ago(600))
 
     assert external._inflight_reservations(entry, wall_timeout_sec=60) == 1
@@ -842,22 +834,9 @@ def test_untracked_new_files_appear_in_the_review_diff(external, monkeypatch, tm
     _untracked(root, "new_module.py", 3)
     monkeypatch.setattr(external, "REPO", root)
 
-    diff, excluded = external.extract_diff("HEAD", ["new_module.py"])
+    diff = external.extract_diff("HEAD", ["new_module.py"])
 
-    assert excluded == []
     assert "new file mode" in diff and "new_module.py" in diff and "+n0" in diff
-
-
-def test_a_secret_named_untracked_file_is_still_filtered(external, monkeypatch, tmp_path):
-    """신규 파일도 denylist 필터를 그대로 탄다 — 포함 채널이 시크릿 우회로가 되지 않는다."""
-    root = _git_repo(tmp_path)
-    _untracked(root, ".env", 2)
-    _untracked(root, "new_module.py", 2)
-    monkeypatch.setattr(external, "REPO", root)
-
-    diff, excluded = external.extract_diff("HEAD", [".env", "new_module.py"])
-
-    assert excluded == [".env"] and "new_module.py" in diff
 
 
 def test_main_blocks_an_oversized_ticket_before_the_reviewer(
@@ -868,7 +847,7 @@ def test_main_blocks_an_oversized_ticket_before_the_reviewer(
     monkeypatch.setattr(external, "diff_line_total", lambda *a, **k: 301)
 
     assert external.main(["--gate", "T-0601", "--paths", "x.py"]) == 1
-    assert reviewer.calls == 0                       # 외부 전송 0
+    assert reviewer.calls == 0                       # 호출 0
     assert _ledger(tmp_path) == {}                   # 라운드도 쓰지 않는다
     err = capsys.readouterr().err
     assert "서킷브레이커 차단" in err and "301줄" in err
@@ -886,7 +865,7 @@ def test_main_lets_a_ticket_within_the_cap_through(external, monkeypatch, tmp_pa
 
 def test_dry_run_is_not_blocked_by_the_circuit_breaker(
         external, monkeypatch, tmp_path, capsys):
-    """미리보기는 전송·과금 0 이라 서킷을 지나지 않는다 — 분할 판단에 필요한 diff 확인 채널.
+    """미리보기는 호출·과금 0 이라 서킷을 지나지 않는다 — 분할 판단에 필요한 diff 확인 채널.
 
     막으면 "왜 막혔는지 보려고 dry-run 하는" 동선이 함께 닫힌다(목적 밖 차단)."""
     reviewer = _wire(external, monkeypatch, tmp_path, series=[0], stub_diff_cap=False)
@@ -894,7 +873,7 @@ def test_dry_run_is_not_blocked_by_the_circuit_breaker(
     monkeypatch.setattr(external, "diff_line_total", lambda *a, **k: 99999)
 
     assert external.main(["--gate", "T-0605", "--paths", "x.py", "--dry-run"]) == 0
-    assert reviewer.calls == 0                       # 미리보기는 전송하지 않는다
+    assert reviewer.calls == 0                       # 미리보기는 호출하지 않는다
     out, err = capsys.readouterr()
     assert "서킷브레이커 차단" not in err
     assert "[dry-run] 프롬프트 미리보기" in out

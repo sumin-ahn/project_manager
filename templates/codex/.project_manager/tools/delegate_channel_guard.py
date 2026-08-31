@@ -365,7 +365,7 @@ def _prescribed_interpreter() -> str:
     """처방 커맨드가 쓰는 인터프리터 표기 — 진입점 prefix 와 **같은 규칙**을 쓴다.
 
     Windows 의 ``python3``/``python`` 은 WindowsApps 가짜 shim 일 수 있어(이 파일이 위에서 rc 9009
-    로 기록해 둔 그 표기다) 런처가 1순위다. 그 판정은 ``pm_relay.codex_egress_entrypoint`` 하나가
+    로 기록해 둔 그 표기다) 런처가 1순위다. 그 판정은 ``pm_relay.entrypoint_command`` 하나가
     소유한다 — 여기에 규칙 사본을 만들면 표기가 둘이 되어 반드시 갈린다.
 
     이 함수는 **훅 경로**에서 불린다. 형제 모듈 로드가 실패해도 deny 판정과 엔벨로프 키를 무너뜨리면
@@ -373,7 +373,7 @@ def _prescribed_interpreter() -> str:
     """
     try:
         relay = _load_pm_relay()
-        interpreter, _entry = relay.codex_egress_entrypoint(
+        interpreter, _entry = relay.entrypoint_command(
             relay.DELEGATE_ENTRYPOINT, windows=_running_on_windows(),
         )
     except Exception as exc:  # noqa: BLE001 — 훅 fail-open: 판정을 막지 않는다.

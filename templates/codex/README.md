@@ -194,7 +194,7 @@ codex          # 대화형 — AGENTS.md(공통 코어)를 자동 로드해 그 
 ## 위임 (in-session spawn · 4축)
 
 위임은 codex **multi_agent in-session spawn** 이다 — PM(메인세션)이 세션 *안에서* 명명 custom
-agent 를 스폰한다(부모 sandbox 상속·`codex exec --agent` 플래그 부재라 **외부 프로세스 위임 없음**).
+agent 를 스폰한다(부모 sandbox 상속·`codex exec --agent` 플래그 부재라 **자식 프로세스 위임 없음**).
 
 - 4축 = `.codex/agents/{architect,code-reviewer,developer,researcher}.toml`. 각 TOML 은 필수 필드
   `name`/`description`/`developer_instructions`(≈system prompt) + `sandbox_mode`(developer/architect=

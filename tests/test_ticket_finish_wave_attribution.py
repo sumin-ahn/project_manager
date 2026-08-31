@@ -626,12 +626,12 @@ def test_anchor_width_gets_the_same_yield(tmp_path):
 
 @requires_git
 def test_both_seams_share_one_width_and_answer_two_questions(tmp_path, capsys):
-    """리뷰 진입점은 전송량(union)을, 완료 진입점은 티켓 귀속값을 낸다 — 폭은 하나다.
+    """리뷰 진입점은 호출량(union)을, 완료 진입점은 티켓 귀속값을 낸다 — 폭은 하나다.
 
     폭이 같다는 것은 내 touches 위에서 두 seam 의 합이 정확히 같다는 뜻이다(`총량 = 귀속 +
     양보`). 총량이 다른 것은 결함이 아니라 질문이 다르기 때문이다 — 리뷰어에게 실제로 가는
     diff 는 union 이고, 완료 게이트가 묻는 것은 이 티켓 구현 스코프다. 이 비대칭을 없애려고
-    한쪽에 다른 쪽 규칙을 이식하면 리뷰 전송량을 실제보다 작게 재게 된다.
+    한쪽에 다른 쪽 규칙을 이식하면 리뷰 호출량을 실제보다 작게 재게 된다.
     """
     root, tf, _anchor = _v178_shape(tmp_path)
     finisher, external, touches, measured = _measure(root, tf, "T-1701")
@@ -645,7 +645,7 @@ def test_both_seams_share_one_width_and_answer_two_questions(tmp_path, capsys):
 
     # 같은 폭 — 내 touches 위 union 은 귀속값과 양보분의 합이다(빠지는 줄이 없다).
     assert measured.total + measured.unattributed_total == union == 2271
-    # 다른 총량 — 리뷰는 전송량으로 차단하고, 완료는 귀속값으로 통과한다.
+    # 다른 총량 — 리뷰는 호출량으로 차단하고, 완료는 귀속값으로 통과한다.
     assert review_block is not None and "diff 2271줄 > 상한 1000줄" in review_block
     assert finish_block is None
 

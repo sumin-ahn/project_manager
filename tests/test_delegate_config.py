@@ -48,10 +48,8 @@ def board(tmp_path, monkeypatch):
     # 실 git hook 설치·stdin opt-in 프롬프트·board submodule 조작을 무해 stub 으로 차단
     # (init 의 local.conf 효과만 검증).
     monkeypatch.setattr(mod, "install_pre_push_hook", lambda: False)
-    monkeypatch.setattr(mod, "prompt_additional_reviewer_optin", lambda: None)
     monkeypatch.setattr(mod, "_configure_board_submodule", lambda: False)
     monkeypatch.setattr(mod, "_detect_py", lambda: "python3")
-    monkeypatch.setattr(mod, "_is_noninteractive", lambda: True)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     return mod
@@ -173,7 +171,7 @@ def test_init_merges_without_appending_a_delegate_block(board):
     board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
     board.LOCAL_CONF.write_text(
         "session=pm\nruntime.py=python3\ntest.cmd=pytest -q\nctx.window_tokens=500000\n"
-        "additional_reviewer.enabled=true\n",
+        "additional_reviewer.harness=codex\n",
         encoding="utf-8")
 
     assert board.cmd_init(_init_args()) == 0
@@ -183,7 +181,7 @@ def test_init_merges_without_appending_a_delegate_block(board):
         assert marker not in text
     parsed = board.local_config()
     assert parsed["ctx.window_tokens"] == "500000"          # 커스텀 값 보존
-    assert parsed["additional_reviewer.enabled"] == "true"  # 기존 결정 보존
+    assert parsed["additional_reviewer.harness"] == "codex"  # 기존 값 보존
     assert parsed["session"] == "pm"
 
 

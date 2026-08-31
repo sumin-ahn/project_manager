@@ -504,9 +504,9 @@ def test_deny_remediation_interpreter_follows_the_execution_platform(
             "hookSpecificOutput"
         ]["permissionDecisionReason"]
 
-    windows_token, _entry = relay.codex_egress_entrypoint(
+    windows_token, _entry = relay.entrypoint_command(
         relay.DELEGATE_ENTRYPOINT, windows=True)
-    posix_token, _entry = relay.codex_egress_entrypoint(
+    posix_token, _entry = relay.entrypoint_command(
         relay.DELEGATE_ENTRYPOINT, windows=False)
     # 주입 선-단언 — 두 표기가 실제로 갈리지 않으면 이 회귀는 아무것도 검사하지 못한다.
     assert windows_token != posix_token, (
@@ -1413,5 +1413,5 @@ def test_delegation_docs_distinguish_common_mapping_from_cross_transport():
     assert "cross-harness 판정과 위임" not in combined
     assert combined.count("native") >= 3
     assert combined.count("cross transport") >= 3
-    assert "cross 위임은 코드/프롬프트·worktree 내용을 외부 하네스로 전송" in skill
+    assert "cross 위임은 통상 과금이 발생하는 유료 호출이다" in skill
     assert "delegate.enabled" in readme and "delegate.enabled" in playbook

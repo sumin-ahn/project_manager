@@ -83,22 +83,21 @@ def test_find_repo_root_framework_shape_matches_parents2(external):
 # adopter#0/worktree 형상에서 REPO 앵커가 PM 홈을 가리키면 실 변경은 worktree 에 있어
 # `git diff` 가 비고, codex 가 "변경 없음"을 통과로 판정해 가짜 통과(false-green)가 난다
 # (PM 65 실측). main() 이 diff 추출 직후·codex 호출 전에 빈/공백-only diff 를 무조건 fail
-# (비-0 exit)하고 외부 리뷰어를 호출하지 않음을 hermetic 하게 단언한다. extract_diff·run_review
+# (비-0 exit)하고 추가 리뷰어를 호출하지 않음을 hermetic 하게 단언한다. extract_diff·run_review
 # 를 module-level 로 monkeypatch 해 실제 git/codex 없이 diff 를 주입한다(--force 로 활성화
 # 게이트 우회 → 가드가 유일한 차단 지점임을 보장).
 
 
 def _run_main_with_diff(external, monkeypatch, diff: str):
-    """main() 을 실행하되 diff 는 주입하고 외부 리뷰어(run_review) 호출 여부를 기록한다.
+    """main() 을 실행하되 diff 는 주입하고 추가 리뷰어(run_review) 호출 여부를 기록한다.
 
     반환: (exit_code, reviewer_called). --paths 로 ticket 파싱을 건너뛰고 --force 로 활성화
     게이트를 우회한다 — 빈-diff 가드가 codex 호출 전에 유일하게 차단함을 격리한다."""
     # extract_diff 는 (diff, 제외 경로 목록) 튜플 반환 (T-0428) — 제외 없음(빈 목록)으로 주입.
-    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: (diff, []))
+    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: diff)
     # conf 도 주입한다 — 주입하지 않으면 이 실행이 **개발자 트리의 실 local.conf** 를 읽어,
     # 그 파일의 상태(구표기 잔존 등)가 이 절의 판정을 좌우한다(hermetic 아님).
     monkeypatch.setattr(external, "local_config", lambda repo=None: {
-        "additional_reviewer.enabled": "true",
         "additional_reviewer.harness": "codex",
         "additional_reviewer.model": "gpt-5.6-sol",
     })
@@ -113,12 +112,12 @@ def _run_main_with_diff(external, monkeypatch, diff: str):
         }
 
     monkeypatch.setattr(external, "run_review", _fake_run_review)
-    exit_code = external.main(["--paths", "foo.py", "--force", "--no-gate"])
+    exit_code = external.main(["--paths", "foo.py", "--no-gate"])
     return exit_code, called["reviewer"]
 
 
 def test_main_empty_diff_fails_loud_before_reviewer(external, monkeypatch, capsys):
-    """빈 diff → 비-0 exit + 외부 리뷰어 미호출 + 원인/조치 안내(false-green 차단)."""
+    """빈 diff → 비-0 exit + 추가 리뷰어 미호출 + 원인/조치 안내(false-green 차단)."""
     exit_code, reviewer_called = _run_main_with_diff(external, monkeypatch, "")
     assert exit_code != 0
     assert reviewer_called is False  # codex subprocess 미호출 단언 (DoD)
@@ -137,7 +136,7 @@ def test_main_whitespace_only_diff_fails_loud(external, monkeypatch, capsys):
 
 
 def test_main_nonempty_diff_invokes_reviewer(external, monkeypatch, capsys):
-    """비어있지 않은 diff → 가드 통과·외부 리뷰어 호출·기존 동작 불변(통과→exit 0)."""
+    """비어있지 않은 diff → 가드 통과·추가 리뷰어 호출·기존 동작 불변(통과→exit 0)."""
     diff = "diff --git a/foo.py b/foo.py\n@@ -1 +1 @@\n-old\n+new\n"
     exit_code, reviewer_called = _run_main_with_diff(external, monkeypatch, diff)
     assert reviewer_called is True  # 가드가 정상 diff 를 막지 않음

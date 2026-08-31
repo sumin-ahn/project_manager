@@ -383,7 +383,6 @@ def test_cross_auto_prepare_shares_the_prepare_seam(pd, rounds_env, capsys, monk
     # 범위 감사·codex egress 승격은 이 진입점 판정과 독립 축이다(전용 회귀가 각각 소유) —
     # 여기서 죽이면 준비/예약/장부 축만 남는다.
     monkeypatch.setattr(pd, "begin_scope_audit", lambda *_a, **_kw: None)
-    monkeypatch.setattr(pd, "codex_egress_escalation_required", lambda *_a, **_kw: False)
 
     # --prompt-file 은 containment 게이트가 --cwd 하위만 허용한다(유출 경로 차단) — slot 안에 둔다.
     prompt = slot / "prompt.md"
@@ -578,7 +577,7 @@ def _wire_external(external, monkeypatch, pm_home: Path, *, conf=None):
     resolved.update(conf or {})
     monkeypatch.setattr(external, "REPO", pm_home)
     monkeypatch.setattr(external, "local_config", lambda repo=None: dict(resolved))
-    monkeypatch.setattr(external, "extract_diff", lambda *args, **kwargs: (DIFF, []))
+    monkeypatch.setattr(external, "extract_diff", lambda *args, **kwargs: DIFF)
     monkeypatch.setattr(
         external, "parse_ticket_touches", lambda ticket_id, pm_home=None: ["x.py"],
     )
@@ -596,17 +595,6 @@ def _stub_real_send_external(external, monkeypatch, tmp_path, prompts: list[str]
     monkeypatch.setattr(
         external, "integration_anchor", lambda *a, **k: ("a" * 40, None))
 
-    def _workspace(*args, **kwargs):
-        root = tmp_path / "reviewer"
-        tree = root / "tree"
-        home = root / "home"
-        tree.mkdir(parents=True, exist_ok=True)
-        home.mkdir(exist_ok=True)
-        return external.ReviewerWorkspace(
-            root=root, tree=tree, home=home,
-            files=1, skipped_unsafe=0, git_repo=True,
-        )
-
     def _run_review(prompt, *args, **kwargs):
         prompts.append(prompt)
         return {
@@ -616,7 +604,6 @@ def _stub_real_send_external(external, monkeypatch, tmp_path, prompts: list[str]
             "any_must_fix": False, "all_pass": True,
         }
 
-    monkeypatch.setattr(external, "create_reviewer_workspace", _workspace)
     monkeypatch.setattr(external, "run_review", _run_review)
     monkeypatch.setattr(
         external, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
@@ -750,18 +737,15 @@ def test_spawn_face_shape_e_paths_gate_without_ticket_is_silent(
 def test_spawn_face_real_send_over_a_seed_developer_round_warns_without_seed_body(
     pd, external, rounds_env, monkeypatch, capsys, tmp_path,
 ):
-    """실 스폰 1건(형상 A1) — 미리보기와 같은 seam 이 실전송 경로도 지나는지 값으로 확인한다.
+    """실 스폰 1건(형상 A1) — 미리보기와 같은 seam 이 실호출 경로도 지나는지 값으로 확인한다.
 
-    스텁 경계는 `create_reviewer_workspace`·`run_review`·`_harvest_additional_reviewer_section`
-    셋뿐이다. rc=0 · stderr 경고 · 프롬프트에 시드 라운드 본문이 실리지 않음을 단언한다.
+    스텁 경계는 `run_review`·`_harvest_additional_reviewer_section` 둘뿐이다. rc=0 · stderr 경고 · 프롬프트에 시드 라운드 본문이 실리지 않음을 단언한다.
     """
     pm_home, slot, tickets, _board = rounds_env
     ticket = "T-7826"
     _write_spec(tickets, ticket)
     _prepare(pd, pm_home, slot, ticket, "developer")  # 01-developer.md 시드
-    _wire_external(
-        external, monkeypatch, pm_home, conf={"additional_reviewer.enabled": "true"},
-    )
+    _wire_external(external, monkeypatch, pm_home)
     prompts: list[str] = []
     _stub_real_send_external(external, monkeypatch, tmp_path, prompts)
     capsys.readouterr()
@@ -775,7 +759,7 @@ def test_spawn_face_real_send_over_a_seed_developer_round_warns_without_seed_bod
     assert SPAWN_WARNING_MARK in captured.err
     assert "02-developer.md" in captured.err
     assert len(prompts) == 1
-    assert "--- 02-developer" not in prompts[0], "시드 라운드 본문은 실 전송 프롬프트에도 안 실린다"
+    assert "--- 02-developer" not in prompts[0], "시드 라운드 본문은 실 호출 프롬프트에도 안 실린다"
 
 
 def test_spawn_face_axis_agrees_with_the_preparation_face_across_the_shape_table(

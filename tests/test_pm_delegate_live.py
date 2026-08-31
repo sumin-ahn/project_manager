@@ -162,7 +162,7 @@ def _growth_ticket_text(ticket: str) -> str:
         "design: done\ntags: []\n---\n"
         f"# {ticket} — live cross growth\n\n## 목표\nrole round persistence\n\n"
         "## 설계\n"
-        "- **경계 실측**: 라이브 전송 픽스처\n"
+        "- **경계 실측**: 라이브 호출 픽스처\n"
         "- **불변식**: 이 파일의 축 밖\n"
         "- **표면 상한**: 픽스처 1건\n"
         "- **테스트 전략**: 정상·실패 경로\n"

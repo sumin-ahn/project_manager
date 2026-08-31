@@ -2821,7 +2821,7 @@ def test_harvest_and_copies_are_outside_the_gate(pd, rounds_env, monkeypatch):
 
 def test_flat_cross_cli_preserves_round_limit_rc(pd, rounds_env, monkeypatch):
     """F-004 회귀 — flat cross CLI 도 InternalRoundLimitExceeded 를 rc=1 로 뭉개지 않고
-    전용 rc(외부 채널 EXIT_ROUND_LIMIT_EXCEEDED=4)로 보존한다(per-ticket cap 은 어떤 승인으로도
+    전용 rc(추가 리뷰어 채널 EXIT_ROUND_LIMIT_EXCEEDED=4)로 보존한다(per-ticket cap 은 어떤 승인으로도
     안 열림)."""
     pm_home, _slot, tickets, _sync = rounds_env
     _write_spec(tickets, "T-8020")
@@ -2909,9 +2909,6 @@ def test_concurrent_prepares_at_the_cap_boundary_admit_exactly_one(
 # 로 즉시 환불한다(대안 b · 새 경로 없음). 불변식: 거부 뒤 board 라운드 증가 0 · 장부 미회수
 # 행 0 · run-dir 0, 정상 실행 경로엔 환불이 발동하지 않는다(역방향).
 
-_REFUND_EGRESS_MARKER = "CODEX_SANDBOX_NETWORK_DISABLED"
-
-
 @pytest.fixture
 def refund_env(tmp_path, pd, monkeypatch):
     """cwd·PM 홈이 같은 디렉터리(자기-정박) — `main()` 이 실 prepare 로 board 라운드·장부
@@ -2943,7 +2940,6 @@ def refund_env(tmp_path, pd, monkeypatch):
         "delegate.developer.harness": "codex", "delegate.developer.model": "gpt-x",
     })
     monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *a, **k: True)
-    monkeypatch.delenv(_REFUND_EGRESS_MARKER, raising=False)
     return home, tickets
 
 
@@ -2967,35 +2963,6 @@ def _refund_unterminated_ledger_rows(pd, home: Path, ticket: str) -> int:
         1 for row in latest_by_copy.values()
         if row.get("harvested_at") is None and "abandoned_at" not in row
     )
-
-
-def test_secret_scan_rejection_refunds_the_reserved_ticket_copy(pd, refund_env):
-    """F-005 — 시크릿 스캔 거부 뒤 board 라운드·run-dir·장부 미회수 행이 전부 0으로 되돌아간다."""
-    home, tickets = refund_env
-    ticket = "T-9101"
-    _write_spec(tickets, ticket)
-    before = (
-        _refund_round_file_count(pd, home, ticket),
-        _refund_run_dir_count(pd, home, ticket),
-        _refund_unterminated_ledger_rows(pd, home, ticket),
-    )
-    assert before == (0, 0, 0)
-
-    prompt = home / "task.md"
-    prompt.write_text("배포 전에 config.secret.key 를 확인하라", encoding="utf-8")
-    rc = pd.main(
-        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
-         "--ticket", ticket, "--output-dir", str(home / "raw")],
-        run_fn=lambda *a, **k: pytest.fail("시크릿 스캔 거부 뒤 스폰되면 안 됨"),
-    )
-    assert rc == 1
-
-    after = (
-        _refund_round_file_count(pd, home, ticket),
-        _refund_run_dir_count(pd, home, ticket),
-        _refund_unterminated_ledger_rows(pd, home, ticket),
-    )
-    assert after == (0, 0, 0), f"환불 뒤 잔류 — before={before} after={after}"
 
 
 def test_reanchor_rejection_refunds_the_reserved_ticket_copy(pd, refund_env):
@@ -3023,37 +2990,6 @@ def test_reanchor_rejection_refunds_the_reserved_ticket_copy(pd, refund_env):
         ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
          "--ticket", ticket, "--output-dir", str(home / "raw")],
         run_fn=lambda *a, **k: pytest.fail("재앵커 거부 뒤 스폰되면 안 됨"),
-    )
-    assert rc == 1
-
-    after = (
-        _refund_round_file_count(pd, home, ticket),
-        _refund_run_dir_count(pd, home, ticket),
-        _refund_unterminated_ledger_rows(pd, home, ticket),
-    )
-    assert after == (0, 0, 0), f"환불 뒤 잔류 — before={before} after={after}"
-
-
-def test_codex_egress_rejection_refunds_the_reserved_ticket_copy(pd, refund_env, monkeypatch):
-    """F-005 — codex egress 미승격 거부 뒤 board 라운드·run-dir·장부 미회수 행이 0으로
-    되돌아간다."""
-    home, tickets = refund_env
-    ticket = "T-9103"
-    _write_spec(tickets, ticket)
-    monkeypatch.setenv(_REFUND_EGRESS_MARKER, "1")
-    before = (
-        _refund_round_file_count(pd, home, ticket),
-        _refund_run_dir_count(pd, home, ticket),
-        _refund_unterminated_ledger_rows(pd, home, ticket),
-    )
-    assert before == (0, 0, 0)
-
-    prompt = home / "task.md"
-    prompt.write_text("문서를 정리하라", encoding="utf-8")
-    rc = pd.main(
-        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
-         "--ticket", ticket, "--output-dir", str(home / "raw")],
-        run_fn=lambda *a, **k: pytest.fail("egress 미승격 거부 뒤 스폰되면 안 됨"),
     )
     assert rc == 1
 
@@ -3463,18 +3399,22 @@ def test_cleanup_failure_does_not_mask_the_original_rejection(
         raise RuntimeError("정리 폭발(probe)")
 
     monkeypatch.setattr(pd, "abandon_ticket_copy", _boom)
+    wt_tools = home / "work" / "wt1" / ".project_manager" / "tools"
+    wt_tools.mkdir(parents=True)
+    (wt_tools / "additional_reviewer.py").write_text("# stub", encoding="utf-8")
 
     prompt = home / "task.md"
-    prompt.write_text("배포 전에 config.secret.key 를 확인하라", encoding="utf-8")
+    prompt.write_text(
+        "다음 파일을 수정하라: .project_manager/tools/board.py 의 함수", encoding="utf-8")
     rc = pd.main(
         ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
          "--ticket", ticket, "--output-dir", str(home / "raw")],
-        run_fn=lambda *a, **k: pytest.fail("시크릿 스캔 거부 뒤 스폰되면 안 됨"),
+        run_fn=lambda *a, **k: pytest.fail("재앵커 거부 뒤 스폰되면 안 됨"),
     )
     assert rc == 1
 
     err = capsys.readouterr().err
-    assert "시크릿 denylist 판정" in err, "원 거부 사유가 그대로 나와야 한다"
+    assert "재앵커" in err, "원 거부 사유가 그대로 나와야 한다"
     assert "환불 실패" in err and "정리 폭발" in err, "정리 실패가 추가 loud 줄로 붙어야 한다"
 
     after = (
@@ -3578,18 +3518,22 @@ def test_gate_refund_control_exceptions_do_not_override_the_original_rejection_r
             raise exc_factory()
 
         monkeypatch.setattr(pd, "abandon_ticket_copy", _boom)
+        wt_tools = home / "work" / f"wt{index}" / ".project_manager" / "tools"
+        wt_tools.mkdir(parents=True)
+        (wt_tools / "additional_reviewer.py").write_text("# stub", encoding="utf-8")
 
         prompt = home / "task.md"
-        prompt.write_text("배포 전에 config.secret.key 를 확인하라", encoding="utf-8")
+        prompt.write_text(
+            "다음 파일을 수정하라: .project_manager/tools/board.py 의 함수", encoding="utf-8")
         rc = pd.main(
             ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
              "--ticket", ticket, "--output-dir", str(home / "raw")],
-            run_fn=lambda *a, **k: pytest.fail("시크릿 스캔 거부 뒤 스폰되면 안 됨"),
+            run_fn=lambda *a, **k: pytest.fail("재앵커 거부 뒤 스폰되면 안 됨"),
         )
         assert rc == 1, f"{label}: 원 rc=1 이 보존돼야 한다"
 
         err = capsys.readouterr().err
-        assert "시크릿 denylist 판정" in err, f"{label}: 원 거부 사유가 그대로 나와야 한다"
+        assert "재앵커" in err, f"{label}: 원 거부 사유가 그대로 나와야 한다"
         assert "환불 실패" in err and label in err, (
             f"{label}: 정리 실패가 유형과 함께 추가 loud 줄로 붙어야 한다 — err={err}"
         )

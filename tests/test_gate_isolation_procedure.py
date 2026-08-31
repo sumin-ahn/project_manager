@@ -108,7 +108,7 @@ def test_isolation_section_states_branch_binding_and_refusal():
         ("결속 판정 횟수", "두 번"),
         ("미커밋 거부", "커밋되지 않은 변경"),
         ("범위 기준", "merge-base"),
-        ("송신 전 차단", "송신 전"),
+        ("호출 전 차단", "호출 전"),
     ]
     flat = _flat(region)
     missing = [name for name, token in required if token not in flat]

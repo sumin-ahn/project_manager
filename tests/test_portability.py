@@ -2,7 +2,7 @@
 
 크로스플랫폼 분기를 deterministic 하게 본다: os.name·venv 경로 존재·shutil.which 를
 monkeypatch 로 흔들어 4조합(_default_python)·3분기(_detect_py)를 검증한다.
-라이브 subprocess·외부 호출 0 — 순수 경로 로직만.
+라이브 subprocess 호출 0 — 순수 경로 로직만.
 
 도구들은 패키지가 아니므로 importlib 로 경로 로드하고(test_engine_smoke 와 동일),
 모듈 전역(REPO·os·sys·shutil)을 monkeypatch 해 분기를 강제한다.
@@ -151,11 +151,10 @@ def test_init_writes_detected_py_to_local_conf(monkeypatch, tmp_path, board):
     """init 이 local.conf 의 py= 에 _detect_py() 결과를 박는지 (tmp REPO + which monkeypatch)."""
     local_conf = tmp_path / "local.conf"
     monkeypatch.setattr(board, "LOCAL_CONF", local_conf)
-    # 부수 파일 생성·훅 설치·외부리뷰 프롬프트는 이 단언과 무관 — 무력화.
+    # 부수 파일 생성·훅 설치·추가리뷰 프롬프트는 이 단언과 무관 — 무력화.
     monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
     monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "no_such_template.md")
     monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
-    monkeypatch.setattr(board, "prompt_additional_reviewer_optin", lambda: None)
     # init 은 areas repo 행을 **항상** 등록하므로(T-0779) REPO 도 tmp 로 묶어야 hermetic 하다 —
     # 안 묶으면 `areas_file()`·`board_lock()` 이 실 저장소 루트를 잡는다.
     _pm = tmp_path / "proj" / ".project_manager"

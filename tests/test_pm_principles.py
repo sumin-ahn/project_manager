@@ -313,11 +313,11 @@ def test_broken_registry_warning_is_carried_in_the_single_text_field_all_adapter
 # ── canonical 레지스트리 형태 값 확인 ────────────────────────────────────
 
 def test_canonical_registry_recall_and_judgment_counts(m):
-    """실 출하 레지스트리의 분류 건수 — RECALL 9(태그) · JUDGMENT 12(무태그)."""
+    """실 출하 레지스트리의 분류 건수 — RECALL 13(태그) · JUDGMENT 12(무태그)."""
     rules = m.load(REPO)
     recall = [rule for rule in rules if rule.on is not None]
     judgment = [rule for rule in rules if rule.on is None]
-    assert len(recall) == 12, [rule.match for rule in recall]
+    assert len(recall) == 13, [rule.match for rule in recall]
     assert len(judgment) == 12
     for rule in recall:
         assert rule.on in m.ON_VALUES
@@ -344,12 +344,32 @@ def test_canonical_delegate_rule_requires_contracts_for_every_finding():
     assert "완전성·실행 가능성만 read-only로 검증하고" in rule
 
 
+def test_delegator_grants_equal_authority_is_registered(m):
+    """위임 권한 동등 규칙이 레지스트리 항목으로 실려 있고 위임 축에서 회상된다 (T-0887).
+
+    카드 산문만으로는 하네스가 바뀌면 규칙이 사라진다 — 세 하네스가 공유하는 이 표에 있어야
+    코덱스·오픈코드가 PM 일 때도 같은 규칙을 받는다.
+    """
+    rules = m.load(REPO)
+    matched = [rule for rule in rules
+               if "위임자는 피위임자에게 자신과 같은 권한을 준다" in rule.text]
+    assert len(matched) == 1, [rule.text[:40] for rule in rules]
+    rule = matched[0]
+    assert "위임 방향·하네스 조합 무관" in rule.text
+    assert rule.on == "edit"
+    # 위임을 말하는 편집에서 실제로 회상된다(태그가 하네스 이름만 보면 이 축을 놓친다).
+    for probe in ("delegate 경로를 고친다", "위임 경로를 고친다", "codex argv"):
+        recalled = m.judge_recall(REPO, on="edit", text=probe)
+        assert recalled is not None, probe
+        assert "같은 권한을 준다" in recalled["text"], probe
+
+
 def test_canonical_registry_loads_from_each_shipped_target(m):
     """3타깃 사본 각자의 트리에서 로더가 항목을 읽는다(값으로 확인 — 채택자 시야)."""
     for target in ("claude_code", "codex", "opencode"):
         target_root = REPO / "templates" / target
         rules = m.load(target_root)
-        assert len(rules) == 24, target
+        assert len(rules) == 25, target
 
 
 # ── engine.manifest 정합 ──────────────────────────────────────────────────

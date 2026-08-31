@@ -128,7 +128,7 @@ def _make_selfupdate_pair(tmp_path: Path, agents: str) -> tuple[Path, Path]:
     (dest / ".opencode" / "opencode.jsonc").write_text(_MINIMAL_OLD_JSONC, encoding="utf-8")
     (dest / ".project_manager" / "local.conf").write_text(
         "runtime.py=python3\nproject.name=myproj\ntest.cmd=pytest tests/ -q\n"
-        "additional_reviewer.enabled=false\n", encoding="utf-8")
+        "", encoding="utf-8")
     return dest, src
 
 

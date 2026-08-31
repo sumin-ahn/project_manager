@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 554,
+  "count": 549,
   "surface_counts": {
-    "markdown": 142,
+    "markdown": 141,
     "python-non-prose": 24,
-    "python-prose": 388
+    "python-prose": 384
   },
   "entries": [
     {
@@ -557,14 +557,6 @@
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "244faa36b2351d0db075af70563681dea89ed578d6f69a361e5fc32dc61182b1",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/pm_delegate.py",
-      "kind": "work_item",
-      "match": "T-0472",
-      "surface": "python-prose",
-      "hash": "b28a29a3fb04704aa735ebed4db2c89d07a330b1e38c2254bbf3d9c9baa7978a",
       "count": 1
     },
     {
@@ -1418,14 +1410,6 @@
     {
       "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
       "kind": "work_item",
-      "match": "T-0472",
-      "surface": "python-prose",
-      "hash": "b28a29a3fb04704aa735ebed4db2c89d07a330b1e38c2254bbf3d9c9baa7978a",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
-      "kind": "work_item",
       "match": "T-0701",
       "surface": "python-prose",
       "hash": "8a16dce21c6e816d92fe31d3534a6782d0c2fb52752d5984961f3b46018d8ef4",
@@ -1853,14 +1837,6 @@
       "match": "T-0355",
       "surface": "markdown",
       "hash": "db0cc907f0c47a647350014be2bd2335ddfc36fffc08fd3955deacbc93b3bce6",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
-      "kind": "work_item",
-      "match": "T-0476",
-      "surface": "markdown",
-      "hash": "8421649fa3e94e69177f66fb3469cc38e2c5b7c31f141c805b04b3ca9c6802ba",
       "count": 1
     },
     {
@@ -2397,14 +2373,6 @@
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "244faa36b2351d0db075af70563681dea89ed578d6f69a361e5fc32dc61182b1",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/pm_delegate.py",
-      "kind": "work_item",
-      "match": "T-0472",
-      "surface": "python-prose",
-      "hash": "b28a29a3fb04704aa735ebed4db2c89d07a330b1e38c2254bbf3d9c9baa7978a",
       "count": 1
     },
     {
@@ -3613,14 +3581,6 @@
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "244faa36b2351d0db075af70563681dea89ed578d6f69a361e5fc32dc61182b1",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/pm_delegate.py",
-      "kind": "work_item",
-      "match": "T-0472",
-      "surface": "python-prose",
-      "hash": "b28a29a3fb04704aa735ebed4db2c89d07a330b1e38c2254bbf3d9c9baa7978a",
       "count": 1
     },
     {

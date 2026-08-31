@@ -1,7 +1,7 @@
 """pm_handoff 세션-차수 추론 · 대화형 skeleton · ctx 임계 config 단위 테스트.
 
 엔진 canonical(루트 .project_manager/tools/pm_handoff.py·board.py)을 importlib 로
-직접 검증한다. 무거운 외부 호출 없이 순수 로직 + 격리된 tmp 파일만 본다.
+직접 검증한다. 무거운 subprocess 호출 없이 순수 로직 + 격리된 tmp 파일만 본다.
 
 비대화 `--trigger` auto-skeleton machinery 는 폐기됐다(ADR-0038 D1·T-0186) — rich 본문은
 nudge tier(ADR-0037)가 담당하므로 얇은 자동 skeleton 박제 경로가 죽은 채널이 됐다. 이
@@ -179,7 +179,6 @@ def test_board_init_writes_ctx_defaults(board, tmp_path, monkeypatch):
     # pm_state 생성·pre-push 훅·additional-reviewer opt-in 부수효과를 격리한다.
     monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "missing-template.md")
     monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
-    monkeypatch.setattr(board, "prompt_additional_reviewer_optin", lambda: None)
     # init 은 areas repo 행을 **항상** 등록하므로(T-0779) REPO 도 tmp 로 묶어야 hermetic 하다 —
     # 안 묶으면 `areas_file()`·`board_lock()` 이 실 저장소 루트를 잡는다.
     _pm = tmp_path / "proj" / ".project_manager"

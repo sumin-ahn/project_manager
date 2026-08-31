@@ -163,10 +163,10 @@ def test_parse_round_filename_accepts_canonical_names(rounds, name, expected):
     assert rounds.parse_round_filename(name) == expected
 
 
-def test_parse_round_filename_reads_legacy_external_role_as_canonical_only(rounds):
-    assert rounds.parse_round_filename("03-external-reviewer.md") == (
-        3, "additional-reviewer",
-    )
+def test_parse_round_filename_refuses_the_retired_role_name(rounds):
+    """개칭 전 역할 이름은 읽기도 쓰기도 하지 않는다 — 옛 이름 호환은 남기지 않는다 (T-0887)."""
+    assert rounds.parse_round_filename("03-external-reviewer.md") is None
+    assert not hasattr(rounds, "READ_ONLY_ROLE_ALIASES")
     with pytest.raises(rounds.RoundsError):
         rounds.round_filename(3, "external-reviewer")
 

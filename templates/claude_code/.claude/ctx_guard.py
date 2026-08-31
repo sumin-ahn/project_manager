@@ -53,6 +53,7 @@ CTX_WINDOW_TOKENS_DEFAULT = 200_000
 #   python3 .project_manager/tools/local_conf.py --render-adapter-block python
 # 생성 시작 — 차단 구키 (local_conf.render_adapter_block · 손편집 금지)
 LEGACY_CONF_KEYS = (
+    "additional_reviewer.enabled",
     "additional_reviewer_enabled",
     "additional_reviewer_incomplete_round_limit",
     "additional_reviewer_round_limit",

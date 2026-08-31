@@ -8,7 +8,7 @@ test_claude_ctx_guard 패턴: importlib 로드·DI runner·subprocess 폭발 가
   ① marker-watch 분기(있음/없음) — stop_marker_present stat.
   ② respawn 결정 — marker 시 새 session·없으면 relay 지속(호출 카운트).
   ③ parse_stream_json — sid/result/usage 추출 + JSONDecodeError 라인 skip.
-  ④ post-turn 단일 의미론 — marker 회전 후 처리된 입력 재전송 없음.
+  ④ post-turn 단일 의미론 — marker 회전 후 처리된 입력 재호출 없음.
   ⑤ stateless — supervisor 가 대화/작업 상태 필드를 보유하지 않음.
   ⑥ subprocess 폭발 가드 — relay 경로가 실 claude 를 부르지 않음(FakeDriver).
 
@@ -618,10 +618,10 @@ def test_parse_stream_json_uses_last_assistant_partial_usage(orch):
     assert orch.parse_stream_json(lines) == (None, None, 7)
 
 
-# ── ④ post-turn marker 단일 의미론(재전송 없음) ────────────────
+# ── ④ post-turn marker 단일 의미론(재호출 없음) ────────────────
 
 def test_marker_turn_is_not_resent_to_new_session(orch, tmp_path):
-    """marker 를 남긴 완료 turn 은 회전 후 재전송하지 않는다."""
+    """marker 를 남긴 완료 turn 은 회전 후 재호출하지 않는다."""
     driver = _make_driver(orch, tmp_path, stop_after_relays=1)
     sup = orch.Supervisor(driver, root=tmp_path)
     in_stream = io.StringIO("trigger\nfollowup\n")
@@ -635,7 +635,7 @@ def test_marker_turn_is_not_resent_to_new_session(orch, tmp_path):
 
 
 def test_marker_payload_is_ignored_and_input_is_not_resent(orch, tmp_path):
-    """구 pre-turn payload도 존재만으로 회전하며 처리된 입력은 재전송하지 않는다."""
+    """구 pre-turn payload도 존재만으로 회전하며 처리된 입력은 재호출하지 않는다."""
     driver = _make_driver(orch, tmp_path, stop_after_relays=1)
     sup = orch.Supervisor(driver, root=tmp_path)
     sup.run_loop("/cwd", io.StringIO("trigger\nsecond\n"), io.StringIO())
@@ -727,7 +727,7 @@ def test_supervisor_task_bakes_and_forwards_on_respawn(orch, tmp_path):
     assert "--task mytask" in sup.bootstrap
     # stateless 불변식 — task 는 인스턴스 필드로 안 남는다(bootstrap 에만 흡수).
     assert "task" not in vars(sup)
-    # 한 입력 → relay 1회 후 marker → respawn(재전송 없음). 두 spawn 모두 task 포함.
+    # 한 입력 → relay 1회 후 marker → respawn(재호출 없음). 두 spawn 모두 task 포함.
     sup.run_loop("/cwd", io.StringIO("hello\n"), io.StringIO())
     assert len(seen) >= 2
     assert all("/pm-bootstrap --task mytask" in b for b in seen)

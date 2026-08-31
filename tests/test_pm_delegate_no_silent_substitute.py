@@ -26,8 +26,6 @@ PM_DELEGATE = REPO / ".project_manager" / "tools" / "pm_delegate.py"
 
 # 제거된 옛 안내 문구 — 이 문자열이 stderr 에 다시 나오면 무음 대체의 입구가 되살아난 것이다.
 _SUBSTITUTION_INVITATION = "네이티브/다른 하네스로 재시도"
-# Codex sandbox 의 네트워크 차단 마커 — 스폰 전 차단 경로의 유일한 판정 입력.
-_EGRESS_MARKER = "CODEX_SANDBOX_NETWORK_DISABLED"
 
 
 @pytest.fixture()
@@ -36,12 +34,6 @@ def pd():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-@pytest.fixture(autouse=True)
-def _neutral_codex_egress_marker(monkeypatch):
-    """ambient Codex egress 마커 중화 — Codex 세션에서 돌려도 다른 케이스가 게이트에 안 걸린다."""
-    monkeypatch.delenv(_EGRESS_MARKER, raising=False)
 
 
 class _FakeRun:
@@ -246,34 +238,11 @@ def test_declared_fallback_failure_has_no_second_substitute(pd, monkeypatch, tmp
     assert "재위임은 명시 재호출만" in err
 
 
-# ════════════════════════════════════════════════════════════════════════
-# 스폰 전 차단 경로 — 장부 안전망이 없는 자리라 안내가 더 중요하다
-# ════════════════════════════════════════════════════════════════════════
-
-def test_codex_egress_block_carries_no_substitute_note(pd, monkeypatch, tmp_path, capsys):
-    """네트워크 차단 환경의 증명 없는 실행(스폰·raw 예약 전 종료)도 무음 대체 금지 안내를 낸다.
-
-    이 경로는 raw 예약 **전**이라 장부에 아무것도 안 남는다 — 안내가 없으면 실패가 어디에도
-    기록되지 않은 채 세션 native 모델이 대행하는 실사고 경로가 그대로 열린다.
-    """
-    monkeypatch.setenv(_EGRESS_MARKER, "1")
-    fake = _FakeRun(stdout=_codex_stdout("가면 안 되는 답"))
-
-    rc, ledger = _run(pd, monkeypatch, tmp_path, fake)
-
-    err = capsys.readouterr().err
-    assert rc == 1
-    assert fake.calls == [], "차단 경로인데 타겟 CLI 가 스폰됨"
-    assert not ledger.exists(), "스폰 전 차단인데 raw 장부 레코드가 예약됨"
-    assert "Codex sandbox 네트워크 차단" in err, f"차단 사유가 사라짐:\n{err}"
-    assert "재위임은 명시 재호출만" in err, f"스폰 전 차단 경로에 무음 대체 금지 안내 누락:\n{err}"
-
-
 def test_no_substitute_note_has_single_consumer(pd):
     """`NO_SILENT_SUBSTITUTE_NOTE` 의 소비자는 `fail_loud` 하나뿐이다(문자열 수동 결합 금지).
 
-    지점마다 안내를 손으로 이어붙이면 **새 실패 경로가 조용히 빠뜨린다** — 실제로 스폰 전 egress
-    차단 경로가 그렇게 누락됐다. 소비자를 하나로 묶어 다음 인스턴스를 기계로 막는다.
+    지점마다 안내를 손으로 이어붙이면 **새 실패 경로가 조용히 빠뜨린다** — 실제로 스폰 전 거부
+    경로가 그렇게 누락됐다. 소비자를 하나로 묶어 다음 인스턴스를 기계로 막는다.
     """
     tree = ast.parse(PM_DELEGATE.read_text(encoding="utf-8"))
     funnel = next(
@@ -304,7 +273,7 @@ def test_no_substitute_note_has_single_consumer(pd):
 # 구간의 **비영 종료 전수**가 `fail_loud` 경유임을 구조로 단언한다.
 
 # 채널 실행 구간 = 하네스를 실제로 스폰하고 결과를 회수하는 함수. 이 앞의 게이트(설정 해소·시크릿
-# 스캔·재앵커)는 전송 자체가 없어 다른 축이다.
+# 스캔·재앵커)는 호출 자체가 없어 다른 축이다.
 _CHANNEL_FUNCTION = "_execute_and_collect"
 
 

@@ -1184,7 +1184,7 @@ def test_best_effort_still_pushes_when_tracked_dirty(board, tmp_path):
 def test_ticket_mutations_pass_scoped_paths():
     """메타가드 — board.py 의 best-effort sync **호출 전부**가 경로 인자를 준다 (AST 감사).
 
-    `paths` 는 레거시 외부 호출부(pm_config 의 areas.md 갱신) 호환 때문에 선택 인자다. 그래서
+    `paths` 는 레거시 호출부(pm_config 의 areas.md 갱신) 호환 때문에 선택 인자다. 그래서
     ticket mutation 이 인자를 빠뜨리면 조용히 board 전체를 커밋하는 옛 동작으로 되돌아간다.
     문자열 매칭(`f"` 포함 줄 세기)은 **비-f-string 메시지로 추가된 새 호출부를 못 본다** —
     호출자 이름 기준 AST 감사로 그 사각을 없앤다."""

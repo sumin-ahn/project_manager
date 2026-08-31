@@ -1302,11 +1302,11 @@ def test_size_one_cluster_matches_the_single_ticket_finish(close_env, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 리뷰 송신 폭 — 실제 진입점(`_diff_cap_refusal`)이 통합 merge-base 로 잰다
+# 리뷰 호출 폭 — 실제 진입점(`_diff_cap_refusal`)이 통합 merge-base 로 잰다
 # ════════════════════════════════════════════════════════════════════════
 
 def _cap_refusal(external, root: Path, *, cap: int) -> tuple[str | None, str]:
-    """리뷰 송신 서킷브레이커를 **실제 진입점으로** 부른다 — `(차단 문자열, stderr)`.
+    """리뷰 호출 서킷브레이커를 **실제 진입점으로** 부른다 — `(차단 문자열, stderr)`.
 
     helper 를 따로 부르면 진입점이 그 helper 에 무엇을 넘기는지가 검증되지 않는다(폭 기준이
     진입점에서만 갈린 실측이 있다)."""
@@ -1330,7 +1330,7 @@ def _cap_total(external, root: Path) -> int:
 
 @requires_git
 def test_review_width_is_the_same_before_and_after_commit_and_rebase(external, tmp_path):
-    """리뷰 송신 폭이 미커밋 / 커밋 / 재배치 전 / 재배치 후 네 형상에서 같은 값이다.
+    """리뷰 호출 폭이 미커밋 / 커밋 / 재배치 전 / 재배치 후 네 형상에서 같은 값이다.
 
     옛 기준(claim 앵커)은 재배치 뒤 흡수분을 자기 폭으로 실어 형상 4 만 값이 뛰었다.
     """
@@ -1370,7 +1370,7 @@ def test_review_width_is_the_same_before_and_after_commit_and_rebase(external, t
 def test_review_width_refuses_when_the_integration_branch_is_undeclared(
     external, tmp_path,
 ):
-    """통합 브랜치 선언이 없으면 리뷰 송신을 거부한다 — 다른 기준으로 재지 않는다."""
+    """통합 브랜치 선언이 없으면 리뷰 호출을 거부한다 — 다른 기준으로 재지 않는다."""
     root, _seed = _width_repo(tmp_path)
 
     declared_block, declared_stderr = _cap_refusal(external, root, cap=0)

@@ -966,7 +966,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   · `pm_delegate._create_read_role_temp` · `_cleanup_read_role_temp` 흡수 두 경계 — 둘 다
     #     `_ENGINE_REV_SKEW_RECOVERY_REASONS` 에 사유를 등록하고 경고 문구로 원인을 구분한다
     #     (정리 실패가 성공한 실행을 뒤집지 않는다는 계약).
-    #   · `additional_reviewer.create_reviewer_workspace` 재-raise · `_remove_partial_container` 흡수.
+    #   · `additional_reviewer.run_review` 재-raise 한 경계.
     #   · `pm_config._protected_push_gate_config` 재-raise 한 경계.
     #   · `delegate_channel_guard._record_supervisor_fallback` 흡수 한 경계 — PowerShell 인용
     #     삼킴으로 래퍼가 폴백할 때 그 사실 기록이 판정을 막지 않는다.
@@ -1126,11 +1126,11 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #     `_dirty_paths`·`_integration_worktree`·`_board_pointer_path`(단계 건너뛰기 관측) ·
     #     `_delegate_supports_cluster`(처분 표면 조회) · `_board_git_paths`(티켓 경로 조회) ·
     #     `_write_progress`(장부 진행 기록 — 기록 실패가 종결을 되돌리지 않는다).
-    # 267 = 265 + 2. 재실행 중복 방지와 리뷰 송신 폭 기준의 두 경계다:
+    # 267 = 265 + 2. 재실행 중복 방지와 리뷰 호출 폭 기준의 두 경계다:
     #   + `ticket_finish.py:TicketFinisher._log_has_entry` reraises — 이미 남은 완료 기록
     #     스켈레톤을 log 에서 관측하는 자리(재실행이 같은 스켈레톤을 다시 쌓지 않게). 읽기 실패는
     #     '없음'(중복 방지 판정 불능 — 기록을 막지 않는다)이고 마킹된 skew 만 올린다.
-    #   + `additional_reviewer.py:cluster_integration_tip` reraises — 리뷰 송신 폭의 기준점(묶음 장부
+    #   + `additional_reviewer.py:cluster_integration_tip` reraises — 리뷰 호출 폭의 기준점(묶음 장부
     #     통합 브랜치)을 형제 완료 기록 엔진의 해소 seam 으로 읽는 자리. 부재/손상은 사유를 돌려
     #     호출부가 거부하게 하고 마킹된 skew 는 그대로 올린다(다른 형제 로더와 같은 규칙).
     # 269 = 267 + 2. 잔여 판정 인구가 커밋분까지 넓어지며 연 두 경계다:
@@ -1158,7 +1158,9 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   `ticket_finish.py:ClusterCloser._reconcile_ticket_frontmatter`가 동적 board 사본의
     #   `find_ticket_exact`·`load_ticket` 판독 실패를 fail-closed 사유로 접되, marked skew는
     #   그대로 올려 엔진 사본 불일치를 일반적인 "티켓 읽기 실패"로 숨기지 않는다.
-    assert len(report.boundaries) == 271, "propagation sweep boundary ratchet changed"
+    # 269 = 271 − T-0887 이 지운 두 경계(추가 리뷰어 격리 컨테이너의 부분 정리 · 임시 홈 정화).
+    #   컨테이너 자체가 없어져 접을 곳이 사라졌다 — 래칫은 제거 방향으로만 움직인다.
+    assert len(report.boundaries) == 269, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

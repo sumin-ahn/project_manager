@@ -3,7 +3,7 @@
 codex 어댑터의 위임 4축은 **`.codex/agents/*.toml` custom agent** 로 표현된다 — claude 의
 `.claude/agents/*.md`·opencode 의 `.opencode/agents/*.md` 에 대응하는 codex 등가물(md→TOML
 재표현·G6). 위임 = codex multi_agent **in-session spawn**(부모 sandbox 상속·`codex exec --agent`
-플래그 부재라 외부 프로세스 위임 없음·D1). PM 은 메인세션이라 `pm.toml` 은 **없다**(load-bearing
+플래그 부재라 자식 프로세스 위임 없음·D1). PM 은 메인세션이라 `pm.toml` 은 **없다**(load-bearing
 absence·opencode 의 `pm.md` primary 에 해당하는 파일 부재).
 
 이 테스트는 그 어댑터 계약을 회귀 가드한다:
@@ -228,11 +228,10 @@ def test_default_permissions_allow_routine_work_and_auto_review_escalations():
     assert config["approvals_reviewer"] == "auto_review"
     assert config["sandbox_workspace_write"]["network_access"] is False
     config_text = CONFIG.read_text(encoding="utf-8")
-    assert "cross-harness 실위임은 전역 true로 완화하지 않고" in config_text
-    assert "exec_command require_escalated 건별 승격" in config_text
-    assert "pm_delegate.py reusable prefix 승인" in config_text
-    # 승격 근거는 도구 승인이다 — 위임 스위치는 "위임을 해도 되는가" 만 정한다(동의 축 아님).
-    assert "local.conf delegate.enabled 는 위임 허용 여부만 정하고" in config_text
+    # 이 경계는 codex 자신의 sandbox 설정이다 — 엔진이 하네스별로 판정하는 축이 아니다.
+    assert "전역 true 로 완화하지 않는다" in config_text
+    assert "codex 의 명령 승인 절차로 건별 승격한다" in config_text
+    assert "엔진이 이 축을 대신 판정하지 않는다" in config_text
 
 
 def test_command_rules_allow_local_checkpoints_and_guard_dangerous_commands():
@@ -444,52 +443,6 @@ def test_pm_dev_delegate_custom_roles_never_use_full_history_fork():
     assert not _native_spawn_is_accepted(stale_claude_fields), (
         "sensitivity: stale Claude fields가 native spawn 가드에서 수락됨"
     )
-
-
-def test_pm_dev_delegate_documents_codex_cross_harness_egress_bridge():
-    """network-off를 유지한 cross 실위임의 두 계층(도구 승격+argv attestation).
-
-    `--codex-egress-escalated`만 샌드박스 내 명령에 붙이면 권한이 생기지 않는다.
-    카드가 정확한 Codex tool metadata와 플래그의 동반, dry-run 선행, 무음 native
-    대체 금지를 모두 박아야 사용자 건별 승인 경계가 성립한다.
-    """
-    text = PM_DEV_DELEGATE.read_text(encoding="utf-8")
-    for contract in (
-        "Codex egress 건별 승격 (load-bearing)",
-        "Codex egress: escalation required",
-        'sandbox_permissions="require_escalated"',
-        "--codex-egress-escalated",
-        "호출층 attestation",
-        'prefix_rule=["python3", ".project_manager/tools/pm_delegate.py"]',
-        'prefix_rule=["py", ".project_manager/tools/pm_delegate.py"]',
-        "delegate.enabled",
-        "기본은 허용",
-        "native Codex/GPT로 무음 대체하지 마라",
-        "sandbox_workspace_write.network_access=true",
-    ):
-        assert contract in text, f"Codex cross-harness egress 계약 누락: {contract}"
-
-    dry_run_i = text.index("`--dry-run`을 실행")
-    permission_i = text.index('sandbox_permissions="require_escalated"')
-    attestation_i = text.index("--codex-egress-escalated", permission_i)
-    assert dry_run_i < permission_i < attestation_i
-    assert 'prefix_rule=["python3", ".project_manager/tools/pm_delegate.py"]' in text
-    assert 'prefix_rule=["python3"]' not in text
-
-
-def test_codex_egress_bridge_does_not_leak_into_shared_harness_cards():
-    """Codex tool metadata는 Claude/OpenCode가 byte-공유하는 카드의 계약이 아니다."""
-    shared_cards = (
-        REPO / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md",
-        REPO / "templates" / "claude_code" / ".claude" / "skills"
-        / "pm-dev-delegate" / "SKILL.md",
-        REPO / "templates" / "opencode" / ".claude" / "skills"
-        / "pm-dev-delegate" / "SKILL.md",
-    )
-    for path in shared_cards:
-        text = path.read_text(encoding="utf-8")
-        assert 'sandbox_permissions="require_escalated"' not in text, path
-        assert "--codex-egress-escalated" not in text, path
 
 
 def test_pm_update_dry_run_preserves_codex_native_delegate_override():

@@ -30,7 +30,7 @@ permission:
 > **1차 위임 경로** —
 > PM(build primary)이 내장 `task` tool 로 이 subagent 를 직접 호출(`subagent_type: architect`)하면
 > opencode 가 별도 자식 세션(fresh ctx·200K 격리)에서 이 정의의 `model:`/`permission:` 대로
-> 구동한다 (PM 9차 deciding test 실증). **폴백 = `opencode run --agent architect` 외부 프로세스**
+> 구동한다 (PM 9차 deciding test 실증). **폴백 = `opencode run --agent architect` 자식 프로세스**
 > (headless·CI·task tool 미노출 빌드)이며 같은 custom 정의의 `model:`과 쓰기 권한을 그대로 쓴다.
 > 코드/엔진은 수정하지 않는다(이 정의 지침).
 > (`.opencode/pm-instructions.md` §2 위임 규약 · ADR-0006 §3/D3/D5 supersede — PM 9차 · spike §3.2)
@@ -156,4 +156,4 @@ generate(architect) ≠ evaluate(추가 리뷰어). PM 이 당신의 보고+DRAF
 영향·안전 경계 저촉·대안 누락·기존 ADR·architecture.md 모순을 비준 전에 점검한다. 당신은 그 자문이 가능하도록
 **근거·대안·영향·안전 경계 저촉 여부를 리뷰어가 검증할 수 있게 명료히** 인계하라(추측은 추측으로 표시·코드 확인은
 경로 명시). 추가 리뷰어 출력은 PM 의 *입력*이며 설계를 확정하지 않는다 — 채택·발행·비준은 PM. 외부 *전송*이
-발생하므로 추가 리뷰어 opt-in 정책(`additional_reviewer.enabled`)을 상속한다(꺼져 있으면 PM 내부 점검으로 대체).
+발생하므로 대상 튜플(`additional_reviewer.harness`/`.model`/`.reasoning`)이 없으면 PM 내부 점검으로 대체한다.

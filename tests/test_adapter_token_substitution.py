@@ -218,7 +218,7 @@ def test_pm_update_renders_toml_adapter(pm_update, tmp_path, monkeypatch, capsys
         ".codex/agents    @render @source=templates/codex/.codex/agents\n", encoding="utf-8")
     conf = adopter / ".project_manager" / "local.conf"
     conf.write_text(
-        f"upstream.path={stored}\nproject.name={PROJECT_NAME}\nadditional_reviewer.enabled=false\n",
+        f"upstream.path={stored}\nproject.name={PROJECT_NAME}\n",
         encoding="utf-8")
 
     monkeypatch.setattr(pm_update, "REPO", adopter)

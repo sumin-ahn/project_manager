@@ -87,8 +87,8 @@ python3 .project_manager/tools/board.py regression run --task <이름>
 하네스면 `pm_delegate.py` cross transport를 선택한다. native agent 카드의 모델은 conf와 일치해야
 하며 가드가 불일치를 경고하되 spawn을 막거나 카드를 자동 수정하지 않는다. `delegate.enabled`는
 위임 전체의 마스터 스위치(기본 허용·채널 무관)이며 native/cross 어느 쪽도 예외가 아니다.
-cross 위임은 코드/프롬프트·worktree 내용을 외부 하네스로 전송하고 통상 과금이 발생한다 —
-그 승격은 도구 승인 축이 소유하며 이 스위치가 대신하지 않는다.
+cross 위임은 통상 과금이 발생하는 유료 호출이다 — 그 승인은 도구 승인 축이 소유하며 이
+스위치가 대신하지 않는다.
 1차 판정은 이 카드이며 `pm_delegate.py` same-harness 경고는 never-block 백스톱이다.
 
 ### 라운드 파일 — 모든 위임의 준비/회수
@@ -140,7 +140,7 @@ developer·code-reviewer·architect·researcher는 PM 홈 티켓을 직접 편�
 
 ### 1. 매핑 조회 (dry-run)
 
-실 스폰·외부 송신 없이 하네스·모델을 확인한다(rc=0):
+실 스폰 없이 하네스·모델을 확인한다(rc=0):
 
 ```bash
 python3 .project_manager/tools/pm_delegate.py --dry-run \
@@ -148,9 +148,9 @@ python3 .project_manager/tools/pm_delegate.py --dry-run \
     --prompt-file <task 프롬프트 파일 절대경로> --cwd <작업 worktree 절대경로> [--tier normal|hard]
 ```
 
-- 출력: 해소된 `(harness, model, reasoning)` + 합성 프롬프트 + argv. 전송하지 않는다.
+- 출력: 해소된 `(harness, model, reasoning)` + 합성 프롬프트 + argv. 하네스를 부르지 않는다.
 - dry-run은 opt-in 게이트를 우회하며 항상 rc=0 미리보기. opt-in OFF의 `rc=3`은 실 실행에서만 발생.
-- 역할 매핑 미설정은 `rc=1` fail-loud. `local.conf`에 `delegate.<role>.harness/.model`을 채운다. 조용한 폴백은 없다. 단 `delegate.<role>[.<tier>].fallback.harness/.model[/.reasoning]`을 명시하면 **인프라 실패**(스폰 실패·한도·타임아웃·stall)에만 1단 폴백하고 사유를 stderr에 표기한다. 판정 반려/denylist 차단에는 발동하지 않는다. 권장 조합은 claude/opus. **예외 — `--secret-scan-ack`로 통과한 실행은 폴백이 발동하지 않는다**: ack 승인은 해소된 primary 수신자에 결속돼 있어 폴백 수신자에게 재승인 없이 승계될 수 없다. 인프라 실패 시 `rc=1`로 fail-loud하며 억제 사유가 stderr와 primary raw 양쪽에 남는다(폴백이 필요하면 `--harness/--model`로 수신자를 명시해 재실행하거나 ack이 불필요하도록 프롬프트를 정리한다).
+- 역할 매핑 미설정은 `rc=1` fail-loud. `local.conf`에 `delegate.<role>.harness/.model`을 채운다. 조용한 폴백은 없다. 단 `delegate.<role>[.<tier>].fallback.harness/.model[/.reasoning]`을 명시하면 **인프라 실패**(스폰 실패·한도·타임아웃·stall)에만 1단 폴백하고 사유를 stderr에 표기한다. 판정 반려에는 발동하지 않는다. 권장 조합은 claude/opus.
 - `--tier`는 developer 전용. 비-개발 역할에 주면 usage error.
 
 ### developer 티어
@@ -170,7 +170,7 @@ cross는 **`--tier hard`**, native는 그 하네스의 hard 카드(`developer-ha
 
 ### 3. cross 실행
 
-target이 다른 하네스면 `--dry-run`을 떼고 실행한다(opt-in 필요·외부 송신):
+target이 다른 하네스면 `--dry-run`을 떼고 실행한다(유료 호출):
 
 **Claude PM은 아래 실 실행 커맨드를 Bash 툴로 호출할 때 `timeout: 29300000`(ms)을 반드시
 명시한다.** 이는 CLI `--timeout`(위임 turn 벽시계)이 아니라 호출층 Bash 툴 파라미터다.
@@ -190,9 +190,11 @@ python3 .project_manager/tools/pm_delegate.py --role <역할> \
 - 같은 세션이 claim 중인 다른 ticket과 `touches`가 겹치면(dry-run 포함) `pm_delegate`가 이미 `=== 병렬 위임 touches 겹침 ===` 경고를 stderr에 낸다(never-block·처방: 순차 실행 또는 슬롯 분리). 이 경고 하나만으로 "겹치니 직렬"로 판단하지 않는다 — `board.py new`/`promote`가 발행 시점에 낸 가용(idle) 슬롯 수 재료를 함께 보고, 슬롯이 남아 있으면 순차 대신 슬롯 분리로 병렬을 유지한다.
 - 결과: `rc=0` 성공(stdout 첫 줄=실행 provenance, 폴백 시 실제 하네스 포함; 이후 최종 reply; raw 파일 박제), `rc=1` 실패(loud·raw 경로 stderr), `rc=3` 위임 스위치 off. PM이 reply를 검토하고 board를 갱신하며 위임 대상은 board를 조작하지 않는다.
 - `--ticket T-NNNN`은 해당 ticket `touches`를 허용 집합으로 전후 워크스페이스를 비교해 범위 밖 신규/변경/커밋을 stderr 경고한다(차단 아님·rc 불변). 생략 시 허용 0이라 모든 변경을 경고한다. **dev 위임에는 `--ticket`이 표준**.
-- secret scan이 막으면 전 탐지 목록(발췌·판정·축), 승인 토큰, `--secret-scan-ack <digest>` 재실행 커맨드를 출력한다. **PM(LLM)이 반사적으로 재실행하지 않는다.** 모든 발췌를 읽고 시크릿을 논하는 텍스트(오탐)인지 실 크리덴셜(정탐)인지 판단한다. 조금이라도 모호하면 발췌를 사용자에게 제시하고 승인받은 뒤에만 ack한다. 정탐이면 ack 금지, 해당 내용을 제거해 프롬프트를 재작성한다. 승인은 프롬프트 전문+해소 수신자(harness:model)에 결속된 건별 1회이며 1자나 수신자 변경 시 재승인. ack로 통과한 실행은 **폴백이 억제**되므로(위 §매핑 조회 참조) 인프라 실패가 폴백 없이 `rc=1`로 끝난다 — 그 조합을 기대하지 말고 수신자를 명시해 재실행한다.
-
 ### 위임 마스터 스위치
+
+**위임자는 피위임자에게 자신과 같은 권한을 준다** — 위임 방향·하네스 조합과 무관하다(코덱스가 PM 일 때
+클로드에게 위임하든, 오픈코드가 코덱스에게 위임하든 같다). 위임 경로에서 접근 권한·경로·env·볼 수 있는
+내용을 좁히는 자리는 만들지 않는다. 남는 비대칭은 CLI 형식과 역할축(generate≠evaluate)뿐이다.
 
 `delegate.enabled`는 "PM이 위임을 해도 되는가" 하나만 정한다. **기본은 허용**이고 채널(native/cross)로
 갈리지 않는다 — 키를 지우면 허용, 명시적으로 끄려면 `false`:
@@ -359,6 +361,6 @@ touches 경로의 실재(소유 repo 좌표 기준) · 묶음 안팎 다른 열�
 > 재섭취를 라운드마다 다시 낸다 — fresh 는 resume 미일치 폴백·전사 과대 시에만). 실패 처리는
 > [`pm_principles.md`](../../../.project_manager/wiki/pm_principles.md) §"티켓과 위임"을 참조한다.
 
-`additional_reviewer.enabled=true` 로 추가 리뷰어(additional reviewer) 채널을 켠 채택자는 reviewer 라운드와 같은 시점에 교차검증을 돌린다. 기본은 OFF 이고, 끈 채택자에게 이 단계는 없다:
+대상 튜플(`additional_reviewer.harness`/`.model`)을 선언한 채택자는 reviewer 라운드와 같은 시점에 추가 리뷰어(additional reviewer) 교차검증을 돌린다. 선언이 없는 채택자에게 이 단계는 없다:
 `python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --adr ADR-NNNN`
 ADR 본문 정합 필요 시 `--paths`에 **코드 경로+ADR을 함께 나열**한다. `--paths`는 `--ticket` touches를 대체한다. 상세: `pm_playbook.md` §"추가 리뷰어 교차검증".

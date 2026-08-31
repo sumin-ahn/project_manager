@@ -7,6 +7,23 @@
 
 ## [Unreleased]
 
+### Removed
+
+- **BREAKING — 추가 리뷰어를 켜고 끄는 축을 없앴다.** `additional_reviewer.enabled` 키, `board init`·`pm-update` 의 opt-in 질문, 비활성 1회 강제 플래그(`--force`), 그 값을 읽던 모든 분기를 지웠다. 추가 리뷰어는 developer·architect 와 같이 **부르면 도는 역할**이다. 채택자 `local.conf` 에 남은 그 줄은 소비 지점에서 멈추며(대체 키 없음) 지우면 된다 — `true`/`false` 어느 값이든 실행 조건은 같다.
+- 추가 리뷰어에게만 붙던 가시 범위 격리 컨테이너(저장소 거울·임시 홈·리뷰어 전용 env allowlist)를 삭제했다. 리뷰어는 위임과 같은 조건으로 돈다 — cwd 는 검토 대상 저장소, env 는 위임 채널이 소유한 같은 seam 이 조립한다. 리뷰어 전용 노브 `additional_reviewer.env_keep_extra`·`.home_artifacts_extra` 도 대체 키 없이 제거됐다.
+- 보낼 내용을 미리 재던 자리를 전부 지웠다 — 프롬프트 시크릿 스캔과 승인 플래그(`--secret-scan-ack`), 리뷰 diff 의 시크릿 denylist 제외와 노브 `additional_reviewer.denylist_extra`, 기계 사본 경로 제외, 프롬프트 파일 경계 검사, 그리고 그 결과로 실행을 막던 분기와 보고 항목이 함께 사라졌다. 폴백 억제 규칙(`ack` 통과 실행)도 같이 없어졌다.
+- codex 네트워크 attestation 축(`CODEX_SANDBOX_NETWORK_DISABLED` 게이트·`--codex-egress-escalated` 플래그·dry-run 승격 표기·카드 산문)을 지웠다. codex sandbox 의 명령 승인은 codex 자신이 소유하며 엔진이 그 축을 대신 판정하지 않는다.
+
+### Changed
+
+- 우리가 띄우는 행위자를 `외부` 로 부르던 표기를 역할 이름(추가 리뷰어·위임·하네스)으로 바꾸고, `외부 전송`·`외부 송신` 계열 표기까지 출하 표면 전량에서 0 으로 고정하는 검사를 `tests/test_terminology.py` 에 추가했다. 기계 밖으로 나가는 행위·저장소 밖 경로의 `외부` 는 그대로 둔다.
+- 남은 판단 축을 자기 근거로 부른다 — 라운드·wave 예산이 세는 것은 **유료 호출** 횟수다. 엔진 안내·카드·문서의 `전송`/`송신` 표기를 `호출` 로 바꿨고, 손대지 않은 축은 이 예산 상한 하나뿐이다.
+- **위임자는 피위임자에게 자신과 같은 권한을 준다** — 위임 방향·하네스 조합과 무관하다(코덱스가 PM 일 때 클로드에게 위임하든, 오픈코드가 코덱스에게 위임하든 같다). 이 규칙을 판단 원칙 레지스트리와 세 하네스의 위임 카드에 실었고, 위임 경로에서 피위임자 권한을 좁히는 자리는 파리티 원장에 등재해 새 좁힘이 미등재로 걸리게 했다. 남는 비대칭은 CLI 형식과 역할축(generate≠evaluate)뿐이다.
+
+### Added
+
+- 하네스 이름을 조건으로 접근 권한·경로·env·판단 축을 가르는 분기를 AST 로 세어 원장 밖 자리를 거부하는 `tests/test_harness_parity_guard.py` 를 추가했다. 현재 등재는 CLI 형식(argv 조립·어댑터 설치·dry-run 표기) 20건이고 권한 분기는 0 이며, 원장은 축소 방향으로만 바뀐다.
+
 ## [1.7.12] - 2026-08-29
 
 ### Added
@@ -359,7 +376,7 @@
   명시가 필요하다.
 - **추가 리뷰어 구키 4종은 여전히 읽지 않는다(v1.7.7 폐지 유지).** `external_review_enabled` 와 노브
   `external_review_round_limit`·`external_review_incomplete_round_limit`·`external_review_wave_budget`
-  은 제거됐다 — 신키 `additional_reviewer_enabled`·`additional_reviewer_*` 로만 동작한다.
+  은 제거됐다 — 신키 `additional_reviewer_enabled`·`additional_reviewer_*` 로만 동작한다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - **fix 라운드 산출에 검증 골격이 의무화된다.** developer fix 골격에 accepted finding 별
   `pm-review-verify-v1` 행(재현 커맨드·기대값·fix 전 실값 — 메타문자 없는 단일 비파괴 명령)이
   시드되고, PM 이 직접 실행한 기계 확인은 명세 PM 영역의 `pm-review-confirmation-v1` 블록(라운드
@@ -441,7 +458,7 @@
   `external_review_enabled` 와 노브 `external_review_round_limit`·`external_review_wave_budget`·
   `external_review_incomplete_round_limit` 가 대상이다. 구키만 있는 `local.conf` 는 추가 리뷰어가
   꺼진 상태이므로, 키 이름을 신키(`additional_reviewer_*`)로 직접 바꾸거나 opt-in
-  질문(`board.py init`·`pm-update`)에 다시 답한다.
+  질문(`board.py init`·`pm-update`)에 다시 답한다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 
 ### Changed
 
@@ -600,7 +617,7 @@
   `external_review_enabled` 와 노브 `external_review_round_limit`·`external_review_wave_budget`·
   `external_review_incomplete_round_limit` 가 대상이다. 구키만 있는 `local.conf` 는 추가 리뷰어가
   꺼진 상태이므로, 키 이름을 신키(`additional_reviewer_*`)로 직접 바꾸거나 opt-in
-  질문(`board.py init`·`pm-update`)에 다시 답한다.
+  질문(`board.py init`·`pm-update`)에 다시 답한다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 
 ### Added
 
@@ -805,7 +822,7 @@ Windows 11 에서 엔진 전체 회귀를 돌려 나온 실패를 원인별로 �
 - **추가 리뷰어 구키 4종은 더 이상 읽지 않는다.** `external_review_enabled`와
   `external_review_{round_limit,incomplete_round_limit,wave_budget}`만 남은 `local.conf`는 추가
   리뷰어가 꺼진 상태다. 대응하는 `additional_reviewer_*` 키로 직접 바꾸거나 `board.py init`·
-  `pm-update`의 opt-in 질문에 다시 답한다. 엔진은 인스턴스 소유 `local.conf`를 대신 고치지 않는다.
+  `pm-update`의 opt-in 질문에 다시 답한다. 엔진은 인스턴스 소유 `local.conf`를 대신 고치지 않는다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - **위임 작업은 티켓의 역할별 성장 절을 사본으로 전달하고 회수할 수 있다.**
   Claude·Codex·OpenCode native 위임은 각 하네스의 `Agent`·`spawn_agent`·`task` 앞뒤에서
   `pm_delegate.py ticket prepare|harvest`를 사용한다. cross Codex reviewer의 좁은 named permission
@@ -891,7 +908,7 @@ Windows 11 에서 엔진 전체 회귀를 돌려 나온 실패를 원인별로 �
   `external_review_enabled` 와 노브 `external_review_round_limit`·`external_review_wave_budget`·
   `external_review_incomplete_round_limit` 가 대상이다. 구키만 있는 `local.conf` 는 추가 리뷰어가
   꺼진 상태이므로, 키 이름을 신키(`additional_reviewer_*`)로 직접 바꾸거나 opt-in
-  질문(`board.py init`·`pm-update`)에 다시 답한다.
+  질문(`board.py init`·`pm-update`)에 다시 답한다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - **Windows 에서 opencode 위임 채널 가드가 `py` 런처를 인식한다.** 이전에는 `python3`·`python`
   만 탐색해 `py` 만 있는 환경에서 가드가 항상 fail-open 이었다.
 
@@ -984,7 +1001,7 @@ Windows 11 에서 엔진 전체 회귀를 돌려 나온 실패를 원인별로 �
   `external_review_enabled` 와 노브 `external_review_round_limit`·`external_review_wave_budget`·
   `external_review_incomplete_round_limit` 가 대상이다. 구키만 있는 `local.conf` 는 추가
   리뷰어가 꺼진 상태이므로, 키 이름을 신키(`additional_reviewer_*`)로 직접 바꾸거나 opt-in
-  질문(`board.py init`·`pm-update`)에 다시 답한다.
+  질문(`board.py init`·`pm-update`)에 다시 답한다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 
 ### Added
 - **compaction 경계 기계화 (3하네스)** — 컨텍스트 압축 경계의 보존·복구를 LLM 규율에서 기계
@@ -1031,7 +1048,7 @@ Windows 11 에서 엔진 전체 회귀를 돌려 나온 실패를 원인별로 �
   (`additional_reviewer_*`)로 직접 바꾸거나, 구키만 남은 conf 를 미결정으로 보고 다시 묻는 opt-in
   질문(`board.py init`·`pm-update`)에 답한다(그 답이 신키로 기록된다). 엔진은 인스턴스 소유인
   `local.conf` 를 대신 고쳐 쓰지 않으므로 구키 줄 자체는 남는다(무해·직접 지운다). 두 키가 함께
-  있으면 종전대로 신키가 이긴다.
+  있으면 종전대로 신키가 이긴다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - **릴리즈에 must-fix 잔여 기계 차단이 생겼다.** `livegate record`/`check` 가 추가 리뷰어 라운드
   장부에서 미처분 must-fix 잔여를 발견하면 릴리즈를 rc 1 로 차단한다(우회 플래그 없음). 상한으로
   종결된 게이트의 잔여는 `external_review.py --resolve-gate <게이트> --into <후속 티켓>`(그 티켓
@@ -1112,7 +1129,7 @@ Windows 11 에서 엔진 전체 회귀를 돌려 나온 실패를 원인별로 �
   (`external_review_*.txt`)·레거시 타임아웃 키(`external_review_timeout`·
   `external_review_idle_timeout`·`external_review_progress_signal`)는 그대로다 — 파일명 변경은
   채택자 PM 홈에 구 사본이 남는 형상(동기는 상류 부재 파일을 지우지 않는다)을 만들고, raw 접두는
-  이미 기록된 감사물의 이름이다.
+  이미 기록된 감사물의 이름이다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - **라운드/wave 노브 키 개칭** — 게이트 키와 같은 규칙으로 예산 노브 3종도 개칭한다:
   `external_review_round_limit` → **`additional_reviewer_round_limit`**,
   `external_review_wave_budget` → **`additional_reviewer_wave_budget`**,
@@ -1135,7 +1152,7 @@ Windows 11 에서 엔진 전체 회귀를 돌려 나온 실패를 원인별로 �
   대상은 쓰기 전에 크게 알리고, stdin EOF는 거절로 박제하지 않는다. 질문에 답하는 동안 다른
   writer가 설정을 바꿔도 commit 시점에 잠금 안에서 최신 파일을 다시 판정해 새 결정·대상을
   덮어쓰거나 이중 대상을 만들지 않는다. 재-import/update 는 커스텀 `additional_reviewer.*` 를
-  포함해 무손실 왕복한다.
+  포함해 무손실 왕복한다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - **추가 리뷰어 구조화 실행 계약** — `additional_reviewer.{harness,model,reasoning}` 을 원자적으로
   해소해 codex·claude·opencode 세 하네스를 같은 공용 relay seam 으로 실행한다. 기본값은
   `codex/gpt-5.6-sol/max`, 역할은 하네스별 고정 read-only `code-reviewer`이고, 실행 전 stderr·
@@ -1146,7 +1163,7 @@ Windows 11 에서 엔진 전체 회귀를 돌려 나온 실패를 원인별로 �
   지속 동의다. 카드·매뉴얼·플레이북이 리뷰마다·라운드 상한 재개마다 사용자에게 비용을 다시 묻던
   문구를 걷어낸다. 라운드/wave 상한은 기계적 anti-loop 정지로 남으며, PM 은 `--rounds-report` 를
   읽고 **같은 scope 의 정상 수렴이면 자율로 ack** 한다. 사용자에게 올리는 경우는 진짜 미수렴,
-  중대한 scope 확대, 그 밖의 독립적 사용자 게이트 사유다.
+  중대한 scope 확대, 그 밖의 독립적 사용자 게이트 사유다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 
 ### Changed
 - **상태 변경 명령의 티켓 조회 엄격화** — `claim`·`complete`·`block`·`unclaim`·`unblock`·
@@ -1238,7 +1255,7 @@ Windows 11 에서 엔진 전체 회귀를 돌려 나온 실패를 원인별로 �
   prefix로 기억하고, `delegate_enabled=true`·`additional_reviewer_enabled=true`인 후속 호출은 과금을
   재질문하지 않는다. 일반 sandbox 오호출은 원격 CLI
   재시도·raw 예약·과금 전 fail-loud하고, 거절/실패를 native GPT로 무음
-  대체하지 않는다.
+  대체하지 않는다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - **추가 리뷰 실행 예산의 실제 spawn 판정** — 자식 프로세스 생성 여부를 실제 `Popen` 경계에서
   실행 전체에 걸쳐 단조롭게 기록한다. 첫 재시도에서 이미 자식이 생겼다면 뒤 재시도의 launch
   실패로 리뷰 예산을 환불하지 않는다. NUL argv·명령 부재·권한·경로 형상처럼 확실한 pre-child
@@ -1307,7 +1324,7 @@ Windows 11 에서 엔진 전체 회귀를 돌려 나온 실패를 원인별로 �
 - **외부리뷰 라운드 산출 장부 + wave 총예산** — 게이트별 라운드 이력(`rounds`: 판정·must-fix
   수·예약 순번)과 세션 총예산(`external_review_wave_budget` 기본 24·`--ack-wave` 승인 재개·
   세대 토큰으로 환불 우회 차단)을 장부에 신설, `--rounds-report` read-only 조회면을 제공한다.
-  게이트 상한과 wave 예산은 독립 축이며 승인은 서로를 열지 않는다.
+  게이트 상한과 wave 예산은 독립 축이며 승인은 서로를 열지 않는다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - **업그레이드-채택자 e2e 게이트** — 구세대 디스크 상태(옛 guest 마커·add-harness 이력·치환
   상태)를 주입한 채택자 픽스처로 guest 절 생존·동결 가시성·토큰 안정성·reconcile 절차 안전을
   상설 검증한다(v1.6.1 엔진이면 red 인 민감도 실증 포함).
@@ -1349,7 +1366,7 @@ Windows 11 에서 엔진 전체 회귀를 돌려 나온 실패를 원인별로 �
 
 **게이트·렌더 견고화 릴리스.** 관통 성질: 조용한 degrade 의 잔여 클래스를 기계 판정으로 폐쇄한다 —
 표기 렌더의 미소유 파일 skip, 외부리뷰 앵커의 자기잠김/무필터 송신, 락 사본 중복, 현재-진실
-문서의 히스토리 누적이 각각 가드·fail-loud·공용 seam 으로 닫힌다.
+문서의 히스토리 누적이 각각 가드·fail-loud·공용 seam 으로 닫힌다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 
 ### Added
 - **공용 파일락 seam** — `file_lock.py` 신설. board·pm_log·pm_relay·pm_handoff·worktree_pool·
@@ -1359,14 +1376,14 @@ Windows 11 에서 엔진 전체 회귀를 돌려 나온 실패를 원인별로 �
 - **codex 외부 리뷰어 가시 범위 격리** — 게이트 리뷰어를 저장소 밖 tracked 거울(시크릿 denylist
   동일 적용) + 세션·이력 없는 임시 홈(인증만 선언 복제·projects/기능 테이블 scrub·경로 노출 성질
   자물쇠) + 최소 allowlist env 로 실행한다. 세션 전사·옛 raw 의 echo 오염은 회신 채널 한정 검출로
-  판정을 전면 불명확 처리하고, 격리 실패는 기본 차단(`--allow-unisolated-reviewer` 탈출구)이다.
+  판정을 전면 불명확 처리하고, 격리 실패는 기본 차단(`--allow-unisolated-reviewer` 탈출구)이다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - **영속 설치 기록(install receipt)** — `pm_import`/`add-harness` 가 실제 성립한 하네스를
   `.project_manager/install.json`(git 추적)에 기록하고 표기 독자 판정이 기록을 1순위로 소비한다
   (부재 시 증거 추론 폴백·손상은 `.corrupt` 백업 후 재기록·미래 schema 읽기/쓰기 거부).
 - **pm_update `--paths`** — 명시 경로만 전파하는 opt-in 스코프(등재 검증 선행·디렉토리 하위 오타
   rc=1·board 분리 리매핑·부분 전파는 baseline/마이그레이션 비발화).
 - **라운드 장부 소유 PM 홈 앵커** — 외부리뷰 라운드 상한 장부가 diff 슬롯이 아닌 소유 PM 홈에
-  쌓인다(스냅샷/새 worktree 로 상한이 리셋되던 창 폐쇄·기존 슬롯 장부는 1회 승계·차단 상태 유지).
+  쌓인다(스냅샷/새 worktree 로 상한이 리셋되던 창 폐쇄·기존 슬롯 장부는 1회 승계·차단 상태 유지). (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - **worktree refresh `--onto` 명시 해소** — 명시 ref 를 그대로 해소한다(자동 origin 대체 제거·
   무인자 기본 경로는 origin 우선 유지·성공 메시지가 실측 ref/sha 표기).
 - **codex 템플릿 wiki seed 대칭** — claude/opencode 와 동일한 13종 seed(architecture·status·
@@ -1388,7 +1405,7 @@ Windows 11 에서 엔진 전체 회귀를 돌려 나온 실패를 원인별로 �
 - **외부리뷰 앵커 보안** — conf 소유자 강등 시 소유 PM 홈의 유효 범위·denylist 를 승계하고,
   승계 불가면 전송 전 차단한다(`--paths` 탈출구 유지). 소유자 conf 읽기 실패는 `--paths` 로도
   차단(fail-closed). 명시 앵커 실행은 선택-전 config 를 읽지 않는다(자기잠김 제거). diff 폭
-  서술은 단일 표로 수렴하고 슬롯 소유 근거는 명시 base 로 한정한다.
+  서술은 단일 표로 수렴하고 슬롯 소유 근거는 명시 base 로 한정한다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - **리뷰 raw 장부 앵커** — external_review 의 raw 기록이 diff 슬롯이 아니라 해소된 소유 PM 홈
   장부에 박제된다(`pm_delegate raw` 통합 조회 정합·슬롯 축적/오염 원천 제거).
 - **gate_snapshot 정밀화** — 심링크 prefix-only 해소(false-red 제거), 출력 경로 거부를 git 공용
@@ -1473,7 +1490,7 @@ LLM 라이브 검증 완료.
   (`pm-update 로 엔진 전체를 동기화한 뒤 다시 실행`)와 rc=1 로 끝난다.
 - **위임·외부리뷰 도구가 프로세스 cwd 에 따라 조용히 오해소되던 문제** — 앵커를 명시 인자
   (`--cwd`·`--paths`·ticket touches)에서 파생한다. 외부리뷰 라운드 상한은 판정 라운드와 중단(kill)
-  라운드를 구분해 센다(판정 4 + 미완 2).
+  라운드를 구분해 센다(판정 4 + 미완 2). (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - **보호훅이 `dirname` 부재 환경에서 무승인 push 를 통과시키던 문제** — 훅 경로 해소를 dirname
   비의존으로 바꾸고 해소 실패는 차단이다(fail-closed).
 - **codex 채택자가 출하 문서 안내대로 스킬을 못 부르던 문제** — 스킬 진입 표기를 하네스별로 렌더한다
@@ -1493,7 +1510,7 @@ LLM 라이브 검증 완료.
 ### Fixed
 - **장시간 위임·외부 리뷰가 벽시계 타임아웃에 잘리던 문제** — 시간 판정을 "시작 후 경과"에서
   "마지막 진행 이후 침묵"으로 바꿨다. 진행 신호는 stdout·stderr 양쪽을 보므로 진행 로그가 전부
-  stderr 로 나오는 평문 리뷰어도 살아남는다. 벽시계는 백스톱으로 남고 임계는 설정에서 조정한다.
+  stderr 로 나오는 평문 리뷰어도 살아남는다. 벽시계는 백스톱으로 남고 임계는 설정에서 조정한다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - **백그라운드 위임이 끊기면 산출물을 못 찾던 문제** — raw 파일 위치를 실행 *전에* 공유 장부에
   등재한다. 호출이 죽어 표준출력(그 안의 경로)을 잃어도 `pm_delegate.py raw --unfinished` 로
   조회하며, 미마감 레코드 자체가 중단 증거다.
@@ -1508,7 +1525,7 @@ LLM 라이브 검증 완료.
 - **머신-로컬 파일이 채택자에게 출하되던 문제** — 출하 열거를 git 추적분으로 좁혔고, 열거 결과
   0건은 성공이 아니라 실패로 세운다.
 - **엔진 사본마다 설정 해소가 갈리던 문제** — 위임·외부 리뷰가 어느 설정 파일로 나갔는지 실행마다
-  표시하고, 트리별 설정이 실제로 다르면 경고한다.
+  표시하고, 트리별 설정이 실제로 다르면 경고한다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - **opencode 템플릿의 무시 규칙 파일이 자기 자신을 숨겨 출하되지 않던 문제**.
 - **시크릿 스캔 승인이 폴백 수신자까지 승계되던 문제** — 승인은 해소된 수신자에 결속되며, 승인이
   붙은 실행은 폴백을 끄고 그 사유를 남긴다.
@@ -1619,7 +1636,7 @@ LLM 라이브 검증 완료.
 - **문서 신선도 시계 = 담당 코드 소유 저장소** — 페이지가 담당하는 코드가 다른 저장소(upstream)에
   있으면 그쪽 git 시계로 신선도를 판정한다(사본 시계의 조용한 오답 창 폐쇄). 검증 앵커 일괄 재핀
   CLI 동반.
-- **외부 리뷰 타임아웃 실측 기반 900s** 기본 + 설정 채널(정상 라운드가 죽던 300s 대체)·실패 사유 병기.
+- **외부 리뷰 타임아웃 실측 기반 900s** 기본 + 설정 채널(정상 라운드가 죽던 300s 대체)·실패 사유 병기. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - **엔진 일괄 전파 `--all-targets`** — 존재하는 모든 출하 타깃에 한 번에 동기하고, 진입문서의 타깃
   열거와 실디렉토리 집합 일치를 기계 검증한다.
 - **task 진입 좌표 단일화** — task 세션 진입은 `--task` 단독으로 고정하고 슬롯 좌표 혼합 지정은
@@ -1641,7 +1658,7 @@ LLM 라이브 검증 완료.
   커버한다. 업데이트는 guest 를 덮지 않고(구획 보존·plan 제외), 재실행(refresh)이 동기 채널.
   cross-harness 의존물(예: codex 호스트의 `.claude/skills`)도 정확히 따라온다.
 - **외부 리뷰 라운드 상한** — 게이트별 라운드 장부·기본 4회 한도. 초과분은 실행 전 차단되고
-  사용자 승인(`--ack-rounds`) 후에만 재개된다(호출 전 예약이라 타임아웃으로 우회 불가).
+  사용자 승인(`--ack-rounds`) 후에만 재개된다(호출 전 예약이라 타임아웃으로 우회 불가). (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - **cross-harness 역할 위임 채널 (`pm_delegate`)** — PM 세션이 세션을 떠나지 않고 역할 노동
   (developer·researcher·architect·code-reviewer)을 **다른 하네스 CLI** 로 위임한다. 호출측 하네스
   조건 0(N×N 대칭) — claude·codex·opencode 세 드라이버를 지원하고, 역할→(하네스·모델·reasoning)
@@ -1649,7 +1666,7 @@ LLM 라이브 검증 완료.
   폴백 대신 fail-loud). 역할축으로 권한을 강제하고(쓰기=developer·architect / 읽기=researcher·
   code-reviewer), 엔진 코드 쓰기 위임이 잘못된 저장소를 향하면 차단하며, 프롬프트 시크릿 스캔과
   하위 프로세스 환경변수 정제를 거친다. 결과는 최종 답변만 회수하고 원문은 별도 파일로 박제.
-  **기본 OFF** — 외부 송신·과금 수용 opt-in 을 설정에서 켜야 동작한다.
+  **기본 OFF** — 외부 송신·과금 수용 opt-in 을 설정에서 켜야 동작한다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 
 ### Changed
 - **컨텍스트 가드 세션-스코프 분리** — hard-stop 은 메인 세션만(정제 handoff 강제), 서브에이전트는
@@ -2048,7 +2065,7 @@ opencode 문제해결 + 누락-기능 수정 patch — 대용량 write/edit sile
 v1.2.0 직후 backlog 소거 patch — 게이트 무결성·부트스트랩 오독 방지·nudge 능동화·문서 정합. 이중게이트(내부 reviewer + codex·codex 반려 2건 재작업 수렴) 통과·라이브 검증 포함.
 
 ### Fixed
-- **external_review 빈-diff fail-loud** (T-0326) — 빈/공백 diff 를 외부 리뷰어 호출 전에 exit 1 로 차단(원인·조치 안내 포함). 분리 형상(adopter#0 등)에서 stale 사본 실행이 "변경 없음 통과"로 위장하던 false-green 원천 차단. dry-run 포함 무조건 fail.
+- **external_review 빈-diff fail-loud** (T-0326) — 빈/공백 diff 를 외부 리뷰어 호출 전에 exit 1 로 차단(원인·조치 안내 포함). 분리 형상(adopter#0 등)에서 stale 사본 실행이 "변경 없음 통과"로 위장하던 false-green 원천 차단. dry-run 포함 무조건 fail. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - **pm_bootstrap `--branch`/`--resume` repo-가드 순서** (T-0327) — 가드를 auto-resolve 앞으로 이동, `--repo` 없는 호출이 자동바인딩 슬롯에 silent 부착되던 edge 차단(에러 문구 불변).
 - **pm_bootstrap 보드 요약 open 라벨 오독 방지** (T-0331) — open 카운트 라벨을 `(공유 backlog·슬롯무관)` 으로 정정(보드 섹션+첫-turn 요약 양쪽·done/claimed 는 슬롯-스코프 유지) + **타 세션 진행(claimed) 현황 1줄** 병기(전용 무렌즈 조회·fail-soft) + pm-bootstrap 카드에 "board 숫자는 스냅샷 — 옵션 제시 전 `list --mine` 교차 확인" 지침. claimed 행 파서는 고정폭 컬럼 위치 기반(제목/tags 내용 불독·cmd_list 실행 통합 가드).
 - **pm_import 치환-제외 목록 하드코딩 제거** (T-0329) — 방법론 문서 제외 집합을 치환 시점 dest 인스턴스 manifest 에서 파생(신규 방법론 문서 자동 편입·`--from` 흡수 경로 정합) + broken-manifest 폴백 floor. identity_args 로더 관용구 통일·pm_playbook 라벨 정렬 동반.

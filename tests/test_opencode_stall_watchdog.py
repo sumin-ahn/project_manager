@@ -455,7 +455,7 @@ def test_pm_import_claude_fill_routes_shared_watchdog(monkeypatch):
 # ── ⑤ 결정적 픽스처 e2e (무응답 소켓 서버 + 실 opencode·skipif 부재) ─────────────
 
 def _loopback_socket_capability(socket_factory=socket.socket) -> tuple[bool, str | None]:
-    """AF_INET loopback bind 가능 여부만 probe한다(외부 송신 0).
+    """AF_INET loopback bind 가능 여부만 probe한다(호출 0).
 
     일부 network-off sandbox 는 socket() 자체 또는 loopback bind 를 EPERM 으로 막는다.
     그 환경에서는 실 socket E2E를 skip 하되, 아래의 hermetic watchdog 계약 검증은 계속 실행한다.
@@ -487,7 +487,7 @@ def _require_loopback_socket_capability() -> None:
 
 
 def test_loopback_socket_capability_probe_allows_bind_without_network():
-    """허용 분기: probe 는 loopback bind 뒤 close만 하며 외부 연결/송신을 하지 않는다."""
+    """허용 분기: probe 는 loopback bind 뒤 close만 하며 외부 연결/호출을 하지 않는다."""
     calls: list[object] = []
 
     class FakeSocket:

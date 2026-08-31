@@ -1644,7 +1644,7 @@ def _cluster_integration_branch(board_py: Path, ticket_id: str) -> str | None:
 
     값의 소유자는 board 의 묶음 장부(`base_branch`)다 — 이 도구는 그 선언을 읽기만 한다.
     값은 장부를 만들 때 박히므로(발행이 만드는 크기 1 장부 포함) 선언 부재는 판정 입력이
-    없다는 사실이고, 이 판독을 쓰는 두 소비자(완료 기록 판정·리뷰 송신 폭)는 그 사실에
+    없다는 사실이고, 이 판독을 쓰는 두 소비자(완료 기록 판정·리뷰 호출 폭)는 그 사실에
     **멈춘다** — 다른 기준으로 접는 갈래가 없다.
     """
     _cluster, ledger = ticket_cluster_ledger(board_py, ticket_id)
