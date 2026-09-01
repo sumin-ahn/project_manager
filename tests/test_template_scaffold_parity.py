@@ -419,10 +419,15 @@ def test_templates_no_personal_path_leak():
 # 새 타깃이 생겨도 `TEMPLATE_NAMES` 를 통해 자동 편입된다.
 
 _CLUSTER_STAGE_HEADING = "## 클러스터 단계 표"
-_CLOSE_STEP_COUNT_TOKEN = "8단계"
+_CLOSE_STEP_COUNT_TOKEN = "7단계"
 # 카드 본문에 실린 라운드 순번 표기 전수 — 엔진 수열 밖 순번(확인용 라운드 등)이 하나라도 실리면
 # 그 카드가 서술하는 경로가 엔진 예산과 다르다.
 _ROUND_LABEL_RE = re.compile(r"\b(\d{2})-(architect|developer|code-reviewer)\b")
+# 카드 종결 단계 표의 행 — 이름 부분집합 대조만 하면 지워진 단계가 표에 남아도 통과한다.
+# 행 판정은 표 블록 안에서 한 줄씩 한다(파일 전체 스캔이 아니다 — `_close_step_table_rows`).
+_CLOSE_STEP_TABLE_ROW_RE = re.compile(r"^\| \d+ \| ")
+# 종결 단계 표 절의 헤딩 — 행 수 단언의 대상을 이 절로 좁히는 앵커.
+_CLOSE_STEP_HEADING_PREFIX = "## 종결 "
 # 폐지된 부분 재설계 서술 — 재설계는 예산 4키를 전부 리셋해 주기를 처음부터 다시 연다.
 _RETIRED_REPLAN_PHRASE = "쌍을 뒤에 붙인다"
 
@@ -451,7 +456,7 @@ def _round_ordinal_labels() -> tuple[str, ...]:
 def _close_step_labels() -> tuple[str, ...]:
     """엔진이 정한 종결 단계 이름 — 고정 순서 그대로."""
     finish = _load_engine_module("ticket_finish")
-    steps = tuple(label for _key, label in finish.ClusterCloser.STEPS)
+    steps = tuple(label for _key, label, _pre in finish.ClusterCloser.STEPS)
     assert steps, "엔진 종결 단계가 비었다 — 파생 입력이 stale"
     return steps
 
@@ -631,6 +636,32 @@ def test_shipped_reviewer_contracts_name_complete_fix_inputs(relative: str):
         assert marker in text, f"{relative}: reviewer fix 계약 marker 누락 {marker}"
 
 
+def _close_step_table_rows(path: Path) -> list[str]:
+    """카드의 **종결 단계 표 블록** 안의 행만 돌려준다(헤딩 다음 줄부터 첫 빈 줄까지).
+
+    파일 전체에서 세면 all-done recovery 절 같은 다른 번호 표가 하나만 늘어도 종결 단계와
+    무관한 이유로 red 가 된다 — 단언이 말하는 것과 실제로 세는 것을 같은 자리로 둔다.
+    """
+    lines = path.read_text(encoding="utf-8").splitlines()
+    start = next(
+        (index for index, line in enumerate(lines)
+         if line.startswith(_CLOSE_STEP_HEADING_PREFIX)
+         and _CLOSE_STEP_COUNT_TOKEN in line),
+        None,
+    )
+    assert start is not None, (
+        f"{path.relative_to(REPO)}: 종결 단계 표 절"
+        f"({_CLOSE_STEP_HEADING_PREFIX}{_CLOSE_STEP_COUNT_TOKEN} …) 이 없음"
+    )
+    block: list[str] = []
+    for line in lines[start + 1:]:
+        if line.strip():
+            block.append(line)
+        elif block:
+            break
+    return [line for line in block if _CLOSE_STEP_TABLE_ROW_RE.match(line)]
+
+
 @pytest.mark.parametrize("name", TEMPLATE_NAMES)
 def test_shipped_finish_card_carries_engine_close_steps(name: str):
     """출하 종결 카드가 엔진 종결 단계 이름 전수와 단계 수를 싣는다."""
@@ -652,6 +683,12 @@ def test_shipped_finish_card_carries_engine_close_steps(name: str):
     assert not missing, (
         f"{name}: 종결 단계 이름이 엔진 값과 어긋남 (누락 {missing})"
     )
+    # 부분집합 대조만으로는 **지워진 단계가 표에 남은** 형상을 못 잡는다 — 행 수까지 센다.
+    for path in details:
+        rows = _close_step_table_rows(path)
+        assert len(rows) == len(steps), (
+            f"{path.relative_to(REPO)}: 종결 단계 표 행 {len(rows)} != 엔진 단계 {len(steps)}"
+        )
 
 
 # F-002 — 종결 5·6단계의 브랜치 계약. 엔진은 `base_branch` 미선언을 **차단**하고 묶음
@@ -688,12 +725,15 @@ def test_completion_guidance_matches_close_branch_contract():
     closer = finish.ClusterCloser
 
     # 엔진 축 — 기준 브랜치 미선언은 두 단계 모두 차단 문구로 정지하고,
-    # 무대상 건너뛰기는 묶음 브랜치(`branch`) 미선언에만 있다.
+    # 무대상 건너뛰기는 묶음 브랜치(`branch`) 미선언에만 있다. 판정 자리는 그 단계가 선언한
+    # 읽기 전용 선검사이므로 선언에서 파생해 본다(메서드 이름을 여기 손으로 적지 않는다).
     blocking = finish._CLOSE_INTEGRATION_UNDECLARED
     assert "base_branch" in blocking
-    for step in (closer._step_rebase, closer._step_merge):
-        assert "_CLOSE_INTEGRATION_UNDECLARED" in inspect.getsource(step), (
-            f"{step.__name__} 가 기준 브랜치 미선언을 더는 차단하지 않는다 — 카드 문구의 근거 소멸"
+    prechecks = {key: precheck for key, _label, precheck in closer.STEPS}
+    for key in ("rebase", "merge"):
+        precheck = getattr(closer, prechecks[key])
+        assert "_CLOSE_INTEGRATION_UNDECLARED" in inspect.getsource(precheck), (
+            f"{precheck.__name__} 가 기준 브랜치 미선언을 더는 차단하지 않는다 — 카드 문구의 근거 소멸"
         )
     assert "묶음 브랜치 미선언" in inspect.getsource(closer._step_merge)
     assert "묶음 브랜치 미선언" not in inspect.getsource(closer._step_rebase)

@@ -119,7 +119,7 @@ git 도입 후 code-reviewer는 `git diff`로 변경 범위·내용을 직접 �
    해소된 프로젝트 `test_cmd`를 직접 실행해 라운드 `## 회귀`의 커맨드·`rc=0` 결과를 채운다. 횟수와 red
    처리 규범은 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다. harvest는
    architect/reviewer 계약 명령과 전체 회귀 기록만 검증하며 full은 다시 실행하지 않는다.
-   `ticket_finish.py`의 1단계가 final-fix 확인 입력을 read-only preflight하고, 2단계의
+   `ticket_finish.py`의 선검사가 final-fix 확인 입력을 read-only 판정하고, 1단계의
    `rounds resolve --cluster <C-이름> --pm-verified`가 기계/PM-owned terminal 확인을 명세에 기록해
    게이트를 처분한다. 재현 커맨드의 문법 검사는 엔진의 비파괴 명령
    파서가 담당한다.
@@ -250,9 +250,9 @@ wave 하나 = 묶음 하나다. 단계 표·커맨드의 단일 진실은 `/pm-d
    - **fix 라운드**: accepted finding 전부를 reviewer 수정·테스트 계약대로 해소한다.
    - **rejected/suggestion**: board 의무로 바꾸지 않고 현재 판정에서 닫는다.
    - **결정 필요**: 목표 확대가 필요하면 board를 쓰지 않고 사용자에게 선택을 요청한다.
-8. **묶음 종결** — `/pm-wave-finish`(`ticket_finish.py --cluster`)가 final-fix 확인 입력 preflight → 기계/PM-owned terminal 확인 생성·게이트 처분 →
+8. **묶음 종결** — `/pm-wave-finish`(`ticket_finish.py --cluster`)가 기계/PM-owned terminal 확인 생성·게이트 처분 →
    티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → 슬롯 반납 → board·포인터 커밋을 고정 순서로
-   실행한다. 실패 지점에서 멈추고 재실행이 곧 재개다. **status.md 는 건드리지 않는다**(judgment-only ·
+   실행한다. 막는 조건은 첫 부작용 앞 선검사가 전건 보고하고, 실패 지점에서 멈추며 재실행이 곧 재개다. **status.md 는 건드리지 않는다**(judgment-only ·
    테스트 수 박제 ✗).
 9. **PM 손 잔여 + 종결 entry** — log/current.md 스켈레톤 `<!-- PM: 무엇을·왜 -->` 를 실제 서술로 교체 +
    status.md 모듈 행 판정/비고(architect 유지·PM 점검). 묶음 산출 밖 파일(ADR·domain 페이지·status.md)은
@@ -275,7 +275,7 @@ wave 하나 = 묶음 하나다. 단계 표·커맨드의 단일 진실은 `/pm-d
 
 board·status·log·로드맵 단일 진실은 PM 1명이 유지하되 잡일을 줄인다:
 
-- **종결 자동화** — 묶음 종결(final-fix 확인 입력 preflight → 기계/PM-owned terminal 확인 생성·게이트 처분 → 티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → 슬롯 반납 → board·포인터 커밋)은 `.project_manager/tools/ticket_finish.py --cluster` / `/pm-wave-finish` skill 이 고정 순서로 실행한다. **손 git 은 0**이고 커밋 문안도 엔진이 낸다. status.md 는 안 건드린다. PM 은 서술(왜·무엇)과 status.md **모듈 행 판정/비고**만 채우며, 묶음 산출 밖 파일(ADR·domain·status.md)은 그 경로만 따로 `git add` 해 별도 커밋으로 싣는다.
+- **종결 자동화** — 묶음 종결(첫 부작용 앞 선검사 → 기계/PM-owned terminal 확인 생성·게이트 처분 → 티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → 슬롯 반납 → board·포인터 커밋)은 `.project_manager/tools/ticket_finish.py --cluster` / `/pm-wave-finish` skill 이 고정 순서로 실행한다. **손 git 은 0**이고 커밋 문안도 엔진이 낸다. status.md 는 안 건드린다. PM 은 서술(왜·무엇)과 status.md **모듈 행 판정/비고**만 채우며, 묶음 산출 밖 파일(ADR·domain·status.md)은 그 경로만 따로 `git add` 해 별도 커밋으로 싣는다.
 - **상태 분리·복구** — `ticket done`·`cluster closed`·`slot released`를 서로 추론하지 않는다.
   PM의 direct `board.py complete`는 금지되고 cluster 멤버는 엔진도 첫 write 전에 거부한다. 모든
   멤버가 done인데 장부만 open인 legacy 반쪽 상태는 `ticket_finish.py --cluster ...

@@ -39,6 +39,9 @@ def _write_claimed_ticket(
         "status: claimed\n"
         f"touches:\n{touch_lines}\n"
         f"estimate: {estimate}\n"
+        # 장부(`write_cluster_ledger`)와 명세의 귀속은 **양방향**이어야 한다 — 한쪽만 있으면
+        # 실 `board complete` 가 첫 write 앞에서 거부하는 형상이다(board 대역이 가리던 자리).
+        f"cluster: C-{ticket_id}\n"
         "---\n\n"
         "# hermetic shape\n\n"
         # 완료 기록 경로는 DoD 게이트를 지난다 — 마감된 DoD 를 심어 이 픽스처의 관측 축
