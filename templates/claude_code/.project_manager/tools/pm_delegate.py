@@ -463,6 +463,13 @@ _CONTRACT_TEST_TARGET_RE = re.compile(
     r"(?=::|(?:(?:에서|에는|에도|에게|으로|에|은|는|이|가|을|를|와|과|의|로))?"
     r"(?:$|[\s,.;:!?…·，。)\]}>'\"`]))",
 )
+# 같은 경계 규칙의 확장 — 확장자 있는 repo-relative 파일 경로면 트리 어디든 잡는다.
+# 선행 부정 lookbehind 가 절대경로의 꼬리를 잘라 오는 것을 막는다(루트 시작 경로는 미매치).
+_CONTRACT_REPO_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_./-])(?P<path>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)"
+    r"(?=::|(?:(?:에서|에는|에도|에게|으로|에|은|는|이|가|을|를|와|과|의|로))?"
+    r"(?:$|[\s,.;:!?…·，。)\]}>'\"`]))",
+)
 PM_REVIEW_VERIFY_PAYLOAD_KEYS: tuple[str, ...] = ("version", "verifications")
 PM_REVIEW_VERIFY_ROW_KEYS: tuple[str, ...] = (
     "id", "machine_verifiable", "command", "expected", "before", "reason",
@@ -2642,16 +2649,16 @@ def parse_developer_regression_record(text: str) -> DeveloperRegressionRecord:
 def _developer_round_changed_paths(
     repo_root: Path, *, base_rev: str,
 ) -> frozenset[str]:
-    """직전 developer 커밋 후 현재 라운드가 추가·수정한 경로.
+    """직전 developer 커밋 후 현재 라운드가 바꾼 경로.
 
     developer 산출은 harvest 성공 뒤에만 커밋되므로 ``HEAD..작업트리``가
-    해당 단계의 자연스런 기준선이다. 삭제는 회귀를 추가한 것이 아니므로
-    대상에서 빼고, untracked 테스트는 별도로 포함한다.
+    해당 단계의 자연스런 기준선이다. 존재 이유가 사라진 코드·테스트를 지우는 것도
+    그 라운드의 산출이라 같이 세고, untracked 테스트는 별도로 포함한다.
     """
     changed = {
         line.strip()
         for line in _cluster_git(
-            repo_root, "diff", "--name-only", "--diff-filter=ACMRTUXB",
+            repo_root, "diff", "--name-only", "--diff-filter=ACMRTUXBD",
             base_rev, "--",
         ).splitlines()
         if line.strip()
@@ -2821,11 +2828,31 @@ def _developer_round_harvest_problem(
             try:
                 targets = _contract_test_targets(
                     finding.fix_contract["test"],
-                    f"reviewer 추가 회귀 {finding.id}.test",
+                    f"reviewer 추가 회귀 {finding.id}.test", required=False,
+                )
+                location_paths = _contract_repo_paths(
+                    finding.fix_contract["location"],
+                    f"reviewer 수정 계약 {finding.id}.location",
                 )
             except DelegateError as exc:
                 return str(exc)
-            missing = [target for target in targets if target not in changed_paths]
+            if not targets and not location_paths:
+                return (
+                    f"reviewer 수정 계약 {finding.id}이 이 저장소의 경로를 하나도 "
+                    "지목하지 않았습니다 — test 의 repo-relative 테스트 대상"
+                    "(tests/*.py)이나 location 의 repo-relative 파일 경로가 필요합니다"
+                )
+            # 회귀를 붙이겠다고 적었으면 그 파일이 전부 이번 diff 에 있어야 하고, 붙일
+            # 테스트가 없는 지적(죽은 코드 삭제)은 계약이 적은 고칠 자리 중 하나를 이번
+            # 라운드가 바꿨으면 된다. 어느 쪽이든 판정은 계약이 이미 적은 값과 diff 의
+            # 교집합이라 리뷰어가 새로 선언할 것은 없다.
+            if targets:
+                missing = [target for target in targets if target not in changed_paths]
+            else:
+                missing = (
+                    [] if changed_paths.intersection(location_paths)
+                    else list(location_paths)
+                )
             if missing:
                 return (
                     f"reviewer 추가 회귀 {finding.id} 대상이 이 fix diff에 "
@@ -4103,8 +4130,15 @@ def _pm_review_contract_string(value: object, field: str) -> str:
     return text
 
 
-def _contract_test_targets(value: str, field: str) -> tuple[str, ...]:
-    """계약 산문에서 repo-relative Python 테스트 대상을 해소한다."""
+def _contract_test_targets(
+    value: str, field: str, *, required: bool = True,
+) -> tuple[str, ...]:
+    """계약 산문에서 repo-relative Python 테스트 대상을 해소한다.
+
+    ``required`` 는 architect 축(설계 라운드가 확정하는 필수 테스트)의 규칙이다 —
+    거기서는 테스트 대상이 계약이라 하나도 없으면 거부한다. reviewer fix 축은
+    붙일 테스트가 없는 지적(죽은 코드 삭제)을 표현할 수 있어야 하므로 끈다.
+    """
     targets: list[str] = []
     for match in _CONTRACT_TEST_TARGET_RE.finditer(value):
         target = match.group("path")
@@ -4113,11 +4147,30 @@ def _contract_test_targets(value: str, field: str) -> tuple[str, ...]:
             raise DelegateError(f"{field} 테스트 대상은 repo-relative tests/*.py여야 합니다: {target}")
         if target not in targets:
             targets.append(target)
-    if not targets:
+    if not targets and required:
         raise DelegateError(
             f"{field}에 repo-relative 테스트 대상(tests/*.py)이 없습니다"
         )
     return tuple(targets)
+
+
+def _contract_repo_paths(value: str, field: str) -> tuple[str, ...]:
+    """계약 산문이 지목한 이 저장소의 파일 경로.
+
+    fix 축의 작업 증명은 "계약이 적은 자리를 이번 라운드가 바꿨는가"다. 그 자리는
+    새 선언이 아니라 계약이 이미 채운 ``location`` 산문이라, 여기서 diff 와 대조할 수
+    있는 repo-relative 파일 경로만 뽑는다. 절대경로는 저장소 경로가 아니라 애초에
+    잡히지 않고, 상위 탈출은 loud 거부다.
+    """
+    paths: list[str] = []
+    for match in _CONTRACT_REPO_PATH_RE.finditer(value):
+        target = match.group("path")
+        path = PurePosixPath(target)
+        if ".." in path.parts:
+            raise DelegateError(f"{field} 경로는 repo-relative여야 합니다: {target}")
+        if path.suffix and target not in paths:
+            paths.append(target)
+    return tuple(paths)
 
 
 def _pm_review_pm_owned_contract_ids(
