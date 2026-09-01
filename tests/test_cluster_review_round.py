@@ -1420,7 +1420,7 @@ def test_confirmation_tree_must_be_the_cluster_branch(pd, review_env):
     """다른 브랜치에서 잰 관측을 확인으로 적지 않는다."""
     home, _tickets = review_env
     board = _fixture_board(pd, home)
-    board._cluster_code_tree = lambda *_a, **_k: str(home)
+    board._claim_code_tree = lambda *_a, **_k: str(home)
 
     assert pd._cluster_confirmation_tree(board, _CLUSTER) == home
 
@@ -1500,7 +1500,7 @@ def test_resolve_cluster_executes_writes_and_declares_per_ticket(
         tree_identities.append(identity)
         return str(home)
 
-    board._cluster_code_tree = task_tree
+    board._claim_code_tree = task_tree
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
@@ -1549,7 +1549,7 @@ def test_resolve_cluster_closes_strict_pm_owned_findings_without_reviewer_or_com
 ):
     home, tickets = review_env
     board = _fixture_board(pd, home)
-    board._cluster_code_tree = lambda *_a, **_k: str(home)
+    board._claim_code_tree = lambda *_a, **_k: str(home)
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
     monkeypatch.setattr(pd, "_load_board", lambda: board)
@@ -1598,7 +1598,7 @@ def test_resolve_retry_merges_pm_owned_row_into_partial_same_round_and_completes
     """machine 확인 append 뒤 처분 실패를 재시도해도 같은 round block을 중복하지 않는다."""
     home, tickets = review_env
     board = _fixture_board(pd, home)
-    board._cluster_code_tree = lambda *_a, **_k: str(home)
+    board._claim_code_tree = lambda *_a, **_k: str(home)
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
     monkeypatch.setattr(pd, "_load_board", lambda: board)

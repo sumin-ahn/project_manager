@@ -13443,10 +13443,19 @@ def _cluster_confirmation_tree(
     """확인 커맨드를 돌릴 트리 1곳 — 묶음 통합 브랜치를 체크아웃한 코드 트리.
 
     관측값을 만드는 자리라 그 자리가 그 브랜치가 아니면 **거부한다**: 다른 브랜치에서 잰 값을
-    확인으로 적으면 기계 확인이 거짓이 된다. 트리 해소는 board 의 기존 규칙 하나를 쓴다
-    (명시 정체성 > 활성 슬롯 > 이 트리) — 여기서 해소 규칙을 새로 만들지 않는다.
+    확인으로 적으면 기계 확인이 거짓이 된다. 트리 해소는 board 의 규칙 하나
+    (`_claim_code_tree` — claim·완료 기록과 같은 해소)를 쓴다 — 여기서 해소 규칙을 새로
+    만들지 않는다. 해소 실패(`None`)는 거부다: 트리를 모른 채 잰 값은 확인이 아니다.
     """
-    tree = Path(board._cluster_code_tree(identity))
+    # 정체성 미지정은 "인자 전무"(kind="none") 그대로 넘긴다 — board 가 그 갈래를 소유한다.
+    resolved = board._claim_code_tree(
+        identity if identity is not None else argparse.Namespace())
+    if not resolved:
+        raise DelegateError(
+            f"확인 커맨드를 돌릴 코드 트리를 해소하지 못했습니다: {cluster} — "
+            "`--repo <이름> --slot <N>` 또는 `--task <이름>` 으로 트리를 명시하세요"
+        )
+    tree = Path(resolved)
     branch = str((board.load_cluster(cluster) or {}).get("branch") or "").strip()
     if branch:
         current = board._cluster_current_branch(str(tree))
