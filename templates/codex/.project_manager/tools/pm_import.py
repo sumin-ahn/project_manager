@@ -6466,11 +6466,6 @@ def _upstream_hook_set_declarations(
         #   실패(핸들 잠금·AV 스캔 — Windows 실 클래스)가 `__exit__` 에서 올라와 "상류 로드 실패" 로
         #   분류되고, 그 사유 한 줄이 mutation 게이트를 근거 없이 fail-closed 로 떨어뜨린다. 선언은
         #   이미 읽혔다 — 뒷정리 실패가 그 사실을 뒤집지 않는다(best-effort).
-        # **작업용 임시 루트 seam 을 쓰지 않는다.** 그 seam 은 형제 `pm_relay` 를 경로 로드하는데,
-        #   이 함수가 도는 자리가 바로 그 로드를 믿을 수 없는 창(자기 갱신 mid-sync·형제 rev 혼재)
-        #   이다 — 거기서 seam 을 부르면 상류 세대 선언을 통째로 잃고 설치본 선언으로 강등된다
-        #   (`tests/test_engine_rev_midsync_absorption.py` 실측). 이 스테이징은 아래 finally 가
-        #   자기 손으로 지운다.
         staging = tempfile.mkdtemp(prefix=".pm_hook_set_gen.")
         try:
             staged = Path(staging) / "pm_import.py"
