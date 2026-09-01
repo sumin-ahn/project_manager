@@ -40,6 +40,20 @@ SELF_LOCATED_CORES = (
     ".opencode/lib/stall-watchdog-core.cjs",
 )
 ENGINE_ROOT_DECLARATION = 'const ENGINE_ROOT = path.resolve(__dirname, "..", "..");'
+# 엔진 경로를 조립하는 base 식별자 — 두 번째 인자가 ".project_manager" 리터럴이거나 모듈 상수
+# (이름이 `_REL` 로 끝나는 것)인 `path.join`/`path.resolve` 호출의 첫 인자를 뽑는다. 반복문 모양이
+# 아니라 "경로의 뿌리가 무엇인가"를 보므로, 조상 탐색을 다른 문법으로 다시 써도 base 가 늘어나 걸린다.
+# 엔진 경로를 조립하는 호출의 **뿌리 식별자**를 뽑는다. 뿌리는 `path.resolve(...)` 로 한 번
+# 감싸여 있을 수 있다(`path.join(path.resolve(root), MARKER_DIR_REL, ...)`) — 그 껍질을 벗기지
+# 않으면 그 파일이 검사에서 조용히 빠진다.
+ENGINE_PATH_BASE_RE = re.compile(
+    r"path\.(?:join|resolve)\(\s*"
+    r"(?:path\.resolve\(\s*)?"
+    r"([A-Za-z_$][A-Za-z0-9_$]*)\s*\)?\s*,\s*"
+    r"(?:\"\.project_manager\"|[A-Za-z_$][A-Za-z0-9_$]*_REL\b)"
+)
+# 허용되는 뿌리는 둘뿐이다 — 파일 자기 위치 상수 ENGINE_ROOT 와 순수함수가 인자로 받은 root.
+ALLOWED_ENGINE_PATH_BASES = frozenset(("ENGINE_ROOT", "root"))
 
 PM_DEV_DELEGATE_SOURCE = (
     "templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md"
@@ -310,3 +324,14 @@ def test_opencode_hook_cores_have_no_ancestor_engine_root_search():
         core = REPO / relative
         source = core.read_text(encoding="utf-8")
         assert ENGINE_ROOT_DECLARATION in source, f"자기 위치 엔진 루트 선언 없음: {core}"
+        bases = set(ENGINE_PATH_BASE_RE.findall(source))
+        # 추출 0건은 통과가 아니라 **무구속**이다 — 그 파일은 이 단언의 사각지대에 있다.
+        # 6파일 전부가 엔진 경로를 실제로 조립하므로 공집합이면 추출기가 그 문법을 놓친 것이다.
+        assert bases, (
+            f"엔진 경로 base 추출 0건 — 이 파일이 검사에서 빠졌다: {core}. "
+            "ENGINE_PATH_BASE_RE 가 이 파일의 경로 조립 문법을 못 읽는다."
+        )
+        assert bases <= ALLOWED_ENGINE_PATH_BASES, (
+            f"엔진 경로 base 가 자기 위치·인자 밖으로 늘어남: {core} · "
+            f"{sorted(bases - ALLOWED_ENGINE_PATH_BASES)}"
+        )
