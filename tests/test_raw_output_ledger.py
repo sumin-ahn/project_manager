@@ -154,7 +154,9 @@ def test_unresolved_anchor_refuses_instead_of_writing_to_the_os_tempdir(
 def test_no_engine_copy_can_store_raw_records_in_the_os_tempdir():
     """canonical + 3 템플릿 사본 어디에도 tempdir 목적지가 남아 있지 않다(정적 핀).
 
-    parity 누락(canonical 만 고치고 `pm_update --all-targets` 미실행)도 이 한 테스트가 잡는다.
+    폴백이 사라지며 소비처가 0 이 된 자리도 같은 핀이 잡는다 — additional_reviewer 의 tempfile
+    import 과 호출부 없이 남아 있던 박제 wrapper 2개. parity 누락(canonical 만 고치고
+    `pm_update --all-targets` 미실행)도 이 한 테스트가 잡는다.
     """
     relay_module = _load("pm_relay")
     assert "temp_dir" not in inspect.signature(
@@ -166,6 +168,7 @@ def test_no_engine_copy_can_store_raw_records_in_the_os_tempdir():
         for target in ("claude_code", "codex", "opencode")
     ]
     temp_kwarg = re.compile(r"raw_storage_paths\([^)]*temp_dir")
+    dead_archivers = ("def save_raw_output(", "def save_output(")
     offenders = []
     for tools_dir in tool_dirs:
         assert tools_dir.is_dir(), tools_dir
@@ -175,6 +178,12 @@ def test_no_engine_copy_can_store_raw_records_in_the_os_tempdir():
                 offenders.append(f"{path}: pm_raw_outputs")
             if temp_kwarg.search(text):
                 offenders.append(f"{path}: raw_storage_paths(temp_dir=)")
+            # pm_delegate 의 tempfile 은 자식 env·read tmp 축이 살아 있어 이 단언 밖이다.
+            if path.name == "additional_reviewer.py" and "tempfile" in text:
+                offenders.append(f"{path}: tempfile")
+            for archiver in dead_archivers:
+                if archiver in text:
+                    offenders.append(f"{path}: {archiver}")
     assert offenders == []
 
 
@@ -890,7 +899,7 @@ def test_external_raw_storage_anchor_is_resolved_pm_home_owner(
 
     unresolved = tmp_path / "anchor-without-pm-home"
     monkeypatch.setattr(external, "_PM_HOME_OVERRIDE", unresolved)
-    with pytest.raises(ValueError, match=".project_manager 가 없습니다"):
+    with pytest.raises(ValueError, match=r"\.project_manager 가 없습니다"):
         external._raw_storage()
     assert external._raw_storage(explicit) == (
         explicit, explicit / "raw_outputs.json",
@@ -905,7 +914,7 @@ def test_delegate_raw_storage_refuses_unresolved_config_owner(
     """
     unresolved = tmp_path / "config-owner-without-pm-home"
     monkeypatch.setattr(delegate, "_CONFIG_REPO_OVERRIDE", unresolved)
-    with pytest.raises(ValueError, match=".project_manager 가 없습니다"):
+    with pytest.raises(ValueError, match=r"\.project_manager 가 없습니다"):
         delegate._raw_storage()
 
     explicit = tmp_path / "explicit-output"

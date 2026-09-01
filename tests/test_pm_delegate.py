@@ -404,6 +404,28 @@ def test_successful_delegation_stdout_reply(pd, monkeypatch, tmp_path, capsys):
     assert list(outdir.glob("pm_delegate_codex_*.txt"))  # raw 박제
 
 
+def test_reserve_raw_output_is_o_excl_0600(pd, tmp_path, monkeypatch):
+    """raw 선점 = O_EXCL 원자 생성 + mode 0600 + PID/UUID 파일명(감사·권한 유출 회귀·§3.4)."""
+    dest = pd._reserve_raw_output("codex", tmp_path)
+    assert dest.is_file()
+    assert dest.name.startswith("pm_delegate_codex_")
+    if posix_mode_supported():
+        assert stat.S_IMODE(os.stat(dest).st_mode) == 0o600
+
+    class _ReservedUuid:
+        """다음 선점이 같은 경로를 노리도록 uuid 성분을 고정한다."""
+
+        hex = dest.stem.rsplit("_", 1)[1]
+
+        @staticmethod
+        def uuid4():
+            return _ReservedUuid
+
+    monkeypatch.setattr(pd, "uuid", _ReservedUuid)
+    with pytest.raises(FileExistsError):
+        pd._reserve_raw_output("codex", tmp_path)
+
+
 def test_empty_reply_fail_loud(pd, monkeypatch, tmp_path, capsys):
     """reply 미추출(빈 출력) → rc=1 + raw 경로(§3.4·false-green 차단)."""
     prompt = _write_prompt(tmp_path)

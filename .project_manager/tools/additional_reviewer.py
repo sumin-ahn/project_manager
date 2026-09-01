@@ -101,7 +101,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 import tomllib
 import uuid
@@ -4975,19 +4974,6 @@ def _write_reserved_output(
             content, local_conf_path, resolved_profile, target))
 
 
-def save_output(reviewer: str, content: str, output_dir: Path | None = None, *, local_conf_path: Path | None = None, resolved_profile: str | None = None, target: ReviewerTarget | None = None) -> Path:
-    """추가 리뷰어 출력 원문(+선택적 conf provenance 감사 헤더)을 저장하고 경로를 반환한다."""
-    dest = _reserve_output(reviewer, output_dir)
-    _write_reserved_output(
-        dest,
-        content,
-        local_conf_path=local_conf_path,
-        resolved_profile=resolved_profile,
-        target=target,
-    )
-    return dest
-
-
 # ── 실행 + 수합 ────────────────────────────────────────────────────────────
 
 
@@ -5124,7 +5110,7 @@ def run_review(
     (stdout+stderr)를 그대로 보존한다.
     `started` = 자식 프로세스가 스폰됐는가(호출·과금 가능성) — 라운드 카운트 환불
     판정에 쓴다(False = 확실히 호출 전 실패 → 예약 환불). `idle_timeout` = 무진행 상한(None=공유
-    기본) — 타임아웃 시에도 `output` 에 부분 산출물이 실려 `save_output` 이 그대로 박제한다.
+    기본) — 타임아웃 시에도 `output` 에 부분 산출물이 실려 `_write_reserved_output` 이 그대로 박제한다.
     `cwd`/`env` = 리뷰어 실행 조건(None=호출 프로세스 상속). 정상 경로는 `_main` 이 검토 대상
     저장소(diff_root)와 위임 채널과 같은 seam 이 조립한 env 를 넘긴다 — 채널이 다르다고 다른
     cwd·다른 홈을 주지 않는다.

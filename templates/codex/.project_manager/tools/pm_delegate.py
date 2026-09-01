@@ -9128,23 +9128,6 @@ def check_write_target_reanchor(role: str, cwd: Path, prompt: str) -> Path | Non
 
 # ── 결과 박제 (O_EXCL·0600·PID/UUID) ─────────────────────────────────────
 
-def save_raw_output(
-    harness: str, content: str, output_dir: Path | None = None,
-) -> Path:
-    """raw 하네스 출력 + 메타를 파일로 박제한다 — O_EXCL·mode 0600·PID/UUID 원자 파일명.
-
-    additional_reviewer.save_output 형이나 보안 요구(원자 생성·0600 권한)를 더한다 — 감사용·충돌/권한
-    유출 회귀 가드. 반환: 박제 파일 경로."""
-    base_dir, _ledger_path = _raw_storage(output_dir)
-    base_dir.mkdir(parents=True, exist_ok=True)
-    name = f"pm_delegate_{harness}_{os.getpid()}_{uuid.uuid4().hex}.txt"
-    dest = base_dir / name
-    fd = os.open(str(dest), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-        handle.write(content)
-    return dest
-
-
 def _gettempdir() -> str:
     import tempfile
     return tempfile.gettempdir()

@@ -2381,7 +2381,7 @@ class WallTimeoutExpired(WatchdogTimeoutExpired):
         )
 
 
-# CompletedProcess 에 실어 보내는 관측 침묵 초 속성명 — 감사 헤더(save_raw_output)가 읽는다.
+# CompletedProcess 에 실어 보내는 관측 침묵 초 속성명 — 감사 헤더(_write_reserved_raw)가 읽는다.
 SILENCE_SEC_ATTR = "silence_sec"
 
 
