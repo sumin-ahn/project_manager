@@ -9,8 +9,8 @@
     없음).
   · severity: `pm-review-v1` finding 의 심각도가 블록의 필수 필드다(산문 재기재 없음).
 
-hermetic: tmp REPO 에 실제 board 디렉터리를 만들고 diff·리뷰어 실행·격리 거울만 주입한다
-(외부 전송 0). 라이브 codex 호출은 이 파일 어디에서도 하지 않는다.
+hermetic: tmp REPO 에 실제 board 디렉터리를 만들고 diff·리뷰어 실행만 주입한다
+(호출 0). 라이브 codex 호출은 이 파일 어디에서도 하지 않는다.
 """
 from __future__ import annotations
 
@@ -33,7 +33,6 @@ ROLE = "additional-reviewer"
 # 해소 가능한 추가 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본 커맨드
 # 없음) 이 파일의 모든 형상이 그 세트를 깔고 시작한다.
 _REVIEWER_TARGET = {
-    "additional_reviewer.enabled": "true",
     "additional_reviewer.harness": "codex",
     "additional_reviewer.model": "gpt-5.6-sol",
 }
@@ -266,7 +265,7 @@ def _external_round_text(pd, payload: dict, *, today: str = "2026-08-18",
 def _wire(
     external, monkeypatch, pm_home: Path, reply, *, conf: dict | None = None,
 ) -> dict:
-    """main() 을 tmp PM 홈으로 배선한다 — 반환 dict['n'] = 리뷰어 호출 수(외부 전송 시도).
+    """main() 을 tmp PM 홈으로 배선한다 — 반환 dict['n'] = 리뷰어 호출 수(호출 시도).
 
     `reply` 가 호출 가능이면 프롬프트를 인자로 받아 회신을 만든다(프롬프트가 지시한 ID 를 따르는
     리뷰어 형상). dict['prompts'] 에는 이 배선으로 나간 프롬프트가 순서대로 쌓인다.
@@ -276,17 +275,7 @@ def _wire(
     monkeypatch.setattr(
         external, "local_config", lambda repo=None: dict(resolved_conf),
     )
-    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: (DIFF, []))
-
-    def _workspace(*args, **kwargs):
-        root = pm_home / "reviewer"
-        tree, home = root / "tree", root / "home"
-        tree.mkdir(parents=True, exist_ok=True)
-        home.mkdir(parents=True, exist_ok=True)
-        return external.ReviewerWorkspace(
-            root=root, tree=tree, home=home,
-            files=1, skipped_unsafe=0, git_repo=True,
-        )
+    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: DIFF)
 
     calls: dict = {"n": 0, "prompt": "", "prompts": []}
 
@@ -304,7 +293,6 @@ def _wire(
             "any_must_fix": rejected, "all_pass": not rejected,
         }
 
-    monkeypatch.setattr(external, "create_reviewer_workspace", _workspace)
     monkeypatch.setattr(external, "run_review", _run_review)
     return calls
 
@@ -757,7 +745,7 @@ def test_prompt_says_the_round_file_is_the_harvest_target(external):
 
 
 def test_prompt_requires_concrete_fix_contract_values(external, pd):
-    """설명용 metavariable도 strict parser에는 placeholder다 — 송신 전에 금지를 명시한다."""
+    """설명용 metavariable도 strict parser에는 placeholder다 — 호출 전에 금지를 명시한다."""
     requirement = external._versioned_block_requirement()
     assert "여섯 문자열은 모두 **구체값**" in requirement
     assert "JSON 문자열 값에는 `<` 또는 `>` 문자를 아예 쓰지 마라" in requirement
@@ -1210,7 +1198,7 @@ def test_declarations_count_only_the_surface_rounds(pd):
 def test_removed_confirm_fix_is_rejected_before_ticket_harvest(
     external, monkeypatch, tmp_path, capsys,
 ):
-    """폐지한 fix 후 재리뷰 플래그는 전송·라운드 파일·장부 변경 전에 거부된다."""
+    """폐지한 fix 후 재리뷰 플래그는 호출·라운드 파일·장부 변경 전에 거부된다."""
     _seed_board(tmp_path)
     calls = _wire(external, monkeypatch, tmp_path, _confirm_reply({
         "id": "X-001", "status": "resolved", "evidence": "옛 경로 probe",
@@ -1229,7 +1217,7 @@ def test_removed_confirm_fix_is_rejected_before_ticket_harvest(
 def test_prompt_skeleton_does_not_prefill_previous_round_confirmations(
     external, pd, monkeypatch, tmp_path,
 ):
-    """새 외부 리뷰 프롬프트는 지난 지적을 재리뷰 대상으로 미리 채우지 않는다."""
+    """새 추가 리뷰 프롬프트는 지난 지적을 재리뷰 대상으로 미리 채우지 않는다."""
     conf = {"additional_reviewer.rounds_max": "9"}
     _seed_board(tmp_path)
     calls = _wire(external, monkeypatch, tmp_path,
@@ -1327,23 +1315,6 @@ def test_prompt_does_not_resolve_confirmable_ids(
     err = capsys.readouterr().err
     assert "확인 목록 해소 실패 probe" not in err
     assert pd.render_pm_review_block_skeleton(ROLE, []) in calls["prompt"]
-
-
-def test_a_disabled_run_does_not_read_the_harvest_target(
-    external, monkeypatch, tmp_path,
-):
-    """(F-025) 비활성 no-op 은 티켓을 읽지 않는다 — 해소는 소비 지점에서만 일어난다."""
-    _seed_board(tmp_path)
-    _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")),
-          conf={**_REVIEWER_TARGET, "additional_reviewer.enabled": "false"})
-    reads: list[str] = []
-    monkeypatch.setattr(
-        external, "_harvest_target_ticket_state",
-        lambda *args, **kwargs: reads.append("read") or None,
-    )
-
-    assert _run(external, tmp_path, "--ticket", TICKET) == 0     # no-op
-    assert reads == []
 
 
 # ── F-005 개행: 회신 bytes 를 그대로 보존한다 ────────────────────────────

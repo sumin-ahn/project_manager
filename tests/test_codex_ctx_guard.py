@@ -561,7 +561,6 @@ def test_board_init_leaves_the_codex_budget_key_to_the_docs(tmp_path, monkeypatc
     monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
     monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "missing-template.md")
     monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
-    monkeypatch.setattr(board, "prompt_additional_reviewer_optin", lambda: None)
     # init 은 areas repo 행을 **항상** 등록하므로(T-0779) REPO 도 tmp 로 묶어야 hermetic 하다 —
     # 안 묶으면 `areas_file()`·`board_lock()` 이 실 저장소 루트를 잡는다.
     _pm = tmp_path / "proj" / ".project_manager"
@@ -1182,12 +1181,16 @@ def test_dispatcher_stays_byte_identical_to_the_pass_shape_out_of_band(codex_ctx
 def test_shipped_cli_emits_one_line_and_rc0(tmp_path, conf, expected_prefix):
     """출하 CLI(`--hook-dispatch`)를 실제로 태운다 — rc0 + 한 줄, 밴드 밖은 `{}` 뿐."""
     root = _adopter_root(tmp_path, conf=conf, pm_log_body=_STUB_PM_LOG)
-    shutil.copy2(DISPATCHER, root / "pm_orch_codex.py")
+    # 출하 레이아웃 그대로 — 디스패처는 `<root>/.codex/` 에 설치되고 `repo_root` 는 그 자리의
+    # 부모다. flat 배치로 두면 이 테스트가 출하 형상이 아닌 것을 태운다.
+    dispatcher = root / ".codex" / "pm_orch_codex.py"
+    dispatcher.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(DISPATCHER, dispatcher)
     (root / ".project_manager" / "tools" / "pm_handoff.py").write_text("", encoding="utf-8")
     rollout = _write_rollout(tmp_path)
 
     completed = subprocess.run(
-        [sys.executable, str(root / "pm_orch_codex.py"), "--hook-dispatch", "UserPromptSubmit"],
+        [sys.executable, str(dispatcher), "--hook-dispatch", "UserPromptSubmit"],
         input=json.dumps(_payload(
             rollout, hook_event_name="UserPromptSubmit")).encode("utf-8"),
         capture_output=True, timeout=60)

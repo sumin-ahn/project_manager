@@ -481,11 +481,17 @@ _V160_RETIRED_CTX_TERMS: tuple[_RetiredCtxTerm, ...] = (
         underscore_exemption_reason=(
             "live 런타임 이름 ctx.stop_pct·ctx_stop_hook.py 와 겹친다"
         ),
-        runtime_allowances=(".local/ctx-stop", "marker_dir"),
+        # JS 어댑터는 같은 마커를 `path.join(".project_manager", ".local", "ctx-stop")` 으로
+        # 조립하고 상수 이름·주석으로 그 디렉터리를 지목한다 — 파이썬 판과 같은 런타임 문맥이다.
+        runtime_allowances=(".local/ctx-stop", "marker_dir",
+                            "ctx_stop_rel", "ctx-stop 디렉터리"),
     ),
 )
 _V160_TEXT_SUFFIXES = {
     ".py", ".md", ".sh", ".cmd", ".json", ".jsonc", ".toml", ".manifest",
+    # 어댑터 plugin/lib 은 채택자에게 그대로 출하되는 산문 보유 파일이다 — 확장자가 빠져 있어
+    # 폐기 호칭이 출하 사본에 물리적으로 남은 채 전체 스위트가 초록이었다(T-0887).
+    ".cjs", ".js",
 }
 _V160_ADAPTER_DIRS = {".claude", ".opencode", ".codex", ".agents"}
 
@@ -875,9 +881,10 @@ def test_v160_compound_boundary_does_not_open_a_miss_window(
 
 # ── T-0794: 리뷰 루프 서술 가드 (이중 채널 병행=표준 → 단일 reviewer + opt-in 추가 리뷰어) ──
 # v1.7.8 이 리뷰 루프를 reviewer 1회 → PM 판정 delta([[T-0785]]) → PM 기계 확인([[T-0786]]) 으로
-# 기계화했고, 추가 리뷰어는 `additional_reviewer.enabled` 로 켜는 opt-in 채널(기본 OFF)이다. 그런데
-# 출하 방법론·스킬 산문은 "내부 code-reviewer + 추가 리뷰어 (둘 다)"·"표준 리뷰 게이트"로 병행을
-# *표준*으로 서술해 채택자에게 켜지 않은 채널을 필수 단계로 읽혔다. "병행을 표준으로 서술"은 의미
+# 기계화했고, 추가 리뷰어는 대상 튜플(`additional_reviewer.harness`/`.model`/`.reasoning`)을 선언한
+# 채택자만 병행하는 채널이다. 그런데 출하 방법론·스킬 산문은 "내부 code-reviewer + 추가 리뷰어
+# (둘 다)"·"표준 리뷰 게이트"로 병행을 *표준*으로 서술해 채택자에게 선언하지 않은 채널을 필수
+# 단계로 읽혔다. "병행을 표준으로 서술"은 의미
 # 판정이 불가능하므로 관측된 표기 4종을 토큰으로 못박는다.
 #
 # 리터럴 분할: 이 가드 파일 자신이 자기 검사에 안 걸리게(_SELF 제외와 이중 방어).
@@ -956,13 +963,13 @@ def test_no_retired_review_loop_phrasing_in_shipping_surface():
     """출하 표면이 추가 리뷰어 병행을 표준 리뷰 게이트로 서술하지 않는다 (T-0794).
 
     현행 흐름은 dev → code-reviewer 1회 → PM 판정 delta → dev fix → PM 기계 확인이고, 추가
-    리뷰어는 켠 채택자만 병행하는 opt-in 채널이다. 켜지 않은 채택자가 필수 단계로 읽으면 없는
-    게이트를 기다리거나 외부 전송 동의 없이 채널을 켠다.
+    리뷰어는 대상 튜플을 선언한 채택자만 병행한다. 선언하지 않은 채택자가 필수 단계로 읽으면
+    없는 게이트를 기다린다.
     """
     offenders = _review_loop_offenders(_review_loop_surface())
     assert not offenders, (
-        "폐기된 리뷰 루프 표기 잔존 — 추가 리뷰어는 opt-in(기본 OFF) 채널로 서술하라 "
-        f"(T-0794): {offenders}"
+        "폐기된 리뷰 루프 표기 잔존 — 추가 리뷰어는 대상 튜플을 선언한 채택자의 병행 채널로 "
+        f"서술하라 (T-0794): {offenders}"
     )
 
 
@@ -1093,3 +1100,190 @@ def test_bookkeeping_guard_detects_reintroduction(tmp_path, monkeypatch):
     monkeypatch.setitem(globals(), "REPO", tmp_path)
 
     assert _retired_bookkeeping_offenders([doc]) == ["tool.py:1"]
+
+
+# ── T-0887: 우리 채널을 '외부'로 부르지 않는다 ─────────────────────────────
+# 사용자는 claude·codex·opencode 를 교차로 쓰고 셋 다에 developer·architect·code-reviewer 를 위임
+# 한다. 그런데 엔진 산문은 추가 리뷰어 채널만 '외부 리뷰어'·'외부 하네스'·'외부 채널'로 불러 같은
+# 등급의 행위자를 바깥 사람처럼 서술했고, 그 호칭이 저장소 거울·임시 홈·별도 동의 축이라는 권한
+# 차등의 근거로 쓰였다(T-0887 이 그 장치를 전부 삭제). 이름이 남으면 차등이 다시 자란다.
+#
+# 같은 이유로 '외부 전송'·'외부 송신'도 폐기한다. 우리가 부르는 하네스로 프롬프트가 가는 것은
+# 이 프레임워크의 정상 동작이고, 그것을 '밖으로 내보낸다'는 별도 위험 축으로 세우는 순간 채널마다
+# 다른 동의·필터·게이트를 붙일 근거가 다시 생긴다. 남는 판단 축은 자기 근거로 부른다 — 라운드·
+# wave 예산이 세는 것은 유료 **호출** 횟수다.
+#
+# 판정 경계: 폐기 대상은 **우리 채널**을 가리키는 말이다 — 리뷰어·하네스·모델·에이전트·채널·
+# 프로세스 같은 행위자 명사와, 그 채널로 나가는 행위를 위험 축으로 세우는 전송/송신. 우리 채널이
+# 아닌 것에는 '외부'가 그대로 남는다 — 저장소 밖 경로, 프로젝트 밖 파일, 기계 밖으로 나가는 행위
+# (`외부 비가역 행위`·`외부 API` 같은 안전 분류). 남의 프로세스가 파일을 바꾸는 축은 `외부 개입`
+# 이라는 별도 표현이 이미 살아 있으므로 '외부 프로세스'는 live 용법이 없다.
+#
+# 시야에 `tests/` 를 넣는다(부기 가드와 같은 축): 런타임 메시지·카드 문구를 문자열로 단언하는
+# 테스트가 있어 메시지와 단언이 같은 표기를 들고 있어야 한다.
+#
+# 리터럴 분할: 이 가드 파일 자신이 자기 검사에 안 걸리게(_SELF 제외와 이중 방어).
+_RETIRED_OUTSIDER = "외" + "부"
+_RETIRED_ACTOR_PHRASES = (
+    f"{_RETIRED_OUTSIDER} 리뷰",       # 외부 리뷰어·외부 리뷰 MF·외부 리뷰면을 함께 덮는다
+    f"{_RETIRED_OUTSIDER}리뷰",
+    f"{_RETIRED_OUTSIDER} 검토",
+    f"{_RETIRED_OUTSIDER} 평가",
+    f"{_RETIRED_OUTSIDER} 교차검증",
+    f"{_RETIRED_OUTSIDER} 코드리뷰",
+    f"{_RETIRED_OUTSIDER} 코드 리뷰",
+    f"{_RETIRED_OUTSIDER} 모델",
+    f"{_RETIRED_OUTSIDER}모델",
+    f"{_RETIRED_OUTSIDER} 에이전트",
+    f"{_RETIRED_OUTSIDER} 하네스",
+    f"{_RETIRED_OUTSIDER} 채널",
+    f"{_RETIRED_OUTSIDER} 스폰",
+    f"{_RETIRED_OUTSIDER} 게이트",
+    f"{_RETIRED_OUTSIDER} MF",
+    f"{_RETIRED_OUTSIDER} 프로세스",
+    f"{_RETIRED_OUTSIDER} codex",
+    f"{_RETIRED_OUTSIDER} 전송",       # 채널 행위를 별도 위험 축으로 세우던 표기
+    f"{_RETIRED_OUTSIDER}전송",
+    f"{_RETIRED_OUTSIDER} 송신",
+    f"{_RETIRED_OUTSIDER}송신",
+    f"{_RETIRED_OUTSIDER} 호출",       # 우리가 부르는 하네스 호출을 바깥 행위로 세우던 결합
+    f"{_RETIRED_OUTSIDER} 회신",
+    f"{_RETIRED_OUTSIDER} 응답",
+)
+
+
+def _retired_actor_offenders(files: list[Path]) -> list[str]:
+    """검사 대상에서 우리 채널을 '외부'로 부르는 표기를 줄 단위로 반환한다."""
+    offenders = []
+    for f in files:
+        for lineno, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            for phrase in _RETIRED_ACTOR_PHRASES:
+                if phrase in line:
+                    offenders.append(
+                        f"{f.relative_to(REPO).as_posix()}:{lineno} :: {phrase}"
+                    )
+    return offenders
+
+
+def test_no_retired_outsider_naming_of_our_own_actors():
+    """출하 표면 전량이 리뷰어·하네스·모델·채널과 그 호출을 '외부'로 부르지 않는다 (T-0887).
+
+    행위자는 역할 이름(추가 리뷰어·위임·하네스)으로, 그 행위는 자기 근거(유료 호출)로 부른다.
+    표기가 남으면 채널마다 다른 권한·동의·필터 규칙을 붙일 근거로 다시 쓰인다.
+    """
+    offenders = _retired_actor_offenders(_shipped_text_surface(include_tests=True))
+    assert not offenders, (
+        "우리 채널을 '외부'로 부르는 표기 잔존 — 역할 이름·유료 호출로 부르라 "
+        f"(T-0887): {offenders}"
+    )
+
+
+@pytest.mark.parametrize("relpath", [
+    ".project_manager/tools/additional_reviewer.py",   # 호칭이 가장 두껍게 박혔던 자리
+    ".project_manager/tools/pm_delegate.py",
+    ".claude/agents/architect.md",                     # 역할 카드 — 사람이 읽는 호칭
+    ".claude/skills/pm-review/references/operational-details.md",
+    ".project_manager/wiki/pm_playbook.md",
+    "README.md",
+    "docs/portability.md",
+    "tests/test_additional_reviewer_target.py",        # 메시지 단언 축
+    "templates/codex/.agents/skills/pm-review/SKILL.md",
+    "templates/opencode/.opencode/agents/architect.md",
+    "templates/claude_code/.project_manager/tools/additional_reviewer.py",
+    # 출하 어댑터 plugin/lib — 루트 사본만 고쳐 드리프트가 났던 자리(T-0887 fix).
+    "templates/opencode/.opencode/lib/safe-write-core.cjs",
+    ".opencode/lib/safe-write-core.cjs",
+])
+def test_outsider_naming_guard_scope_includes_every_sweep_axis(relpath):
+    """sweep 이 손댄 축(엔진·역할 카드·스킬·방법론·README·문서·테스트·3타깃 사본)이 시야 안이다."""
+    view = {path.relative_to(REPO).as_posix()
+            for path in _shipped_text_surface(include_tests=True)}
+    assert relpath in view
+
+
+@pytest.mark.parametrize("phrase", _RETIRED_ACTOR_PHRASES)
+def test_outsider_naming_guard_detects_each_retired_phrase(
+        phrase, tmp_path, monkeypatch):
+    """폐기 표기를 하나라도 다시 넣으면 검사가 그 줄을 검출한다 (sensitivity)."""
+    doc = tmp_path / "card.md"
+    doc.write_text(f"리뷰 게이트는 {phrase} 를 전제한다.\n", encoding="utf-8")
+    monkeypatch.setitem(globals(), "REPO", tmp_path)
+
+    assert _retired_actor_offenders([doc]) == [f"card.md:1 :: {phrase}"]
+
+
+# ── T-0887: 과거 릴리즈 절의 폐지 축에는 무효 표시를 단다 ──────────────
+# CHANGELOG 는 기록이라 원문을 지우지 않는다(용어 가드 시야 밖). 대신 폐지된 축을 설명하는 항목
+# 마다 무효 표시를 달아, 위에서 아래로 읽는 채택자가 없는 스위치·격리·전송 동의 축을 현행으로
+# 오해하지 않게 한다. 판정 단위는 **항목 블록**이다(`- ` 시작 + 이어지는 들여쓰기 줄).
+_RETIRED_AXIS_MARKERS = (
+    f"{_RETIRED_OUTSIDER} 리뷰", f"{_RETIRED_OUTSIDER}리뷰",
+    f"{_RETIRED_OUTSIDER} 전송", f"{_RETIRED_OUTSIDER} 송신",
+    "additional_reviewer_enabled", "additional_reviewer.enabled",
+    "external_review_enabled",
+)
+_INVALIDATION_NOTE = "(T-0887 에서 폐지 — 이 축은 더 이상 없다)"
+
+
+def _past_release_blocks(lines: list[str]) -> list[tuple[int, list[str]]]:
+    """과거 릴리즈 절의 항목 블록 목록 — (시작 줄번호, 줄들)."""
+    start = next(index for index, line in enumerate(lines)
+                 if line.startswith("## [") and "Unreleased" not in line)
+    blocks: list[tuple[int, list[str]]] = []
+    index = start
+    while index < len(lines):
+        if not lines[index].strip() or lines[index].startswith("#"):
+            index += 1
+            continue
+        end = index + 1
+        while end < len(lines):
+            following = lines[end]
+            if (not following.strip() or following.startswith("#")
+                    or following.lstrip().startswith("- ")):
+                break
+            end += 1
+        blocks.append((index + 1, lines[index:end]))
+        index = end
+    return blocks
+
+
+def _uninvalidated_retired_axis_notes() -> list[str]:
+    """폐지 축을 설명하면서 무효 표시가 없는 과거 릴리즈 항목 전수."""
+    lines = (REPO / "CHANGELOG.md").read_text(encoding="utf-8").splitlines()
+    offenders = []
+    for lineno, block in _past_release_blocks(lines):
+        body = "\n".join(block)
+        if not any(marker in body for marker in _RETIRED_AXIS_MARKERS):
+            continue
+        if _INVALIDATION_NOTE in body:
+            continue
+        offenders.append(f"CHANGELOG.md:{lineno}")
+    return offenders
+
+
+def test_retired_axis_release_notes_carry_an_invalidation_note():
+    """과거 릴리즈 절의 폐지 축 항목이 전부 무효 표시를 달고 있다 (T-0887).
+
+    원문 서술은 기록이라 지우지 않는다 — 그 축이 지금은 없다는 사실만 항목 끝에 덧붙인다.
+    """
+    offenders = _uninvalidated_retired_axis_notes()
+    assert not offenders, (
+        f"폐지 축을 설명하면서 무효 표시가 없는 과거 릴리즈 항목 — `{_INVALIDATION_NOTE}` 를 "
+        f"항목 끝에 달라 (T-0887): {offenders}"
+    )
+
+
+@pytest.mark.parametrize("live", [
+    "외부 비가역 행위·미션 변경은 권한 밖이다",
+    "외부 API 응답은 그대로 신뢰하지 않는다",
+    "저장소 외부 경로에 쓰지 않는다",
+    "외부 개입(다른 편집기)이 파일을 바꿨다",
+])
+def test_outsider_naming_guard_leaves_non_actor_usage_alone(live, tmp_path,
+                                                            monkeypatch):
+    """우리 채널이 아닌 것(비가역 행위·저장소 밖 경로·남의 개입)의 '외부'는 살아 있다."""
+    doc = tmp_path / "card.md"
+    doc.write_text(live + "\n", encoding="utf-8")
+    monkeypatch.setitem(globals(), "REPO", tmp_path)
+
+    assert _retired_actor_offenders([doc]) == []

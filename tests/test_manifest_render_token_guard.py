@@ -40,6 +40,8 @@ from pathlib import Path
 
 import pytest
 
+from _git_fixture import init_git_repo
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -397,7 +399,6 @@ def test_board_init_seeds_pm_state_with_creation_date(board, monkeypatch, tmp_pa
     monkeypatch.setattr(board, "PM_STATE_TEMPLATE",
                         REPO / ".project_manager" / "wiki" / "pm_state.template.md")
     monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
-    monkeypatch.setattr(board, "prompt_additional_reviewer_optin", lambda: None)
     # init 은 areas repo 행을 **항상** 등록하므로(T-0779) REPO 도 tmp 로 묶어야 hermetic 하다 —
     # 안 묶으면 `areas_file()`·`board_lock()` 이 실 저장소 루트를 잡는다.
     _pm = tmp_path / "proj" / ".project_manager"
@@ -441,13 +442,18 @@ def _build_claude_framework(tmp_path: Path) -> Path:
     사본을 쓴다.
     """
     framework = tmp_path / "framework"
-    ignore = shutil.ignore_patterns("__pycache__", ".git", "node_modules")
+    # `.local` 은 per-clone 스크래치(git-untracked·manifest 밖)다. pytest 임시 루트가
+    # 그 아래 있으므로 제외하지 않으면 목적지를 다시 복사해 무한 재귀한다.
+    ignore = shutil.ignore_patterns("__pycache__", ".git", "node_modules", ".local")
     shutil.copytree(REPO / ".project_manager", framework / ".project_manager", ignore=ignore)
     shutil.copytree(REPO / "templates" / "claude_code",
                     framework / "templates" / "claude_code", ignore=ignore)
     shutil.copytree(REPO / ".claude", framework / ".claude", ignore=ignore)
     shutil.copytree(REPO / ".github", framework / ".github", ignore=ignore)
     shutil.copy2(REPO / ".gitattributes", framework / ".gitattributes")
+    # 출하 인벤토리는 `git ls-files` 가 낸다 — 합성 프레임워크 트리가 자기 checkout 이라고
+    # 선언한다(선언이 없으면 이 저장소가 답해 인벤토리가 0건이 된다).
+    init_git_repo(framework, commit="framework fixture")
     return framework
 
 

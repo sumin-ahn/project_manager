@@ -16,7 +16,8 @@ opencode sid 발급(claude 와 다른 핵심): claude 는 `--session-id <uuid>` 
 권위 — driver 가 그 sid 로 post-turn marker 를 쓰고 supervisor 가 stat).
 
 opencode 어댑터는 claude 와 달리 옆에 Python `ctx_guard` 모듈이 없다(ctx-guard 는 JS plugin) —
-그래서 엔진 루트 탐색을 driver 자체에 둔다(JS `findEngineRoot` 와 동일 규칙·동형 어댑터).
+그래서 엔진 루트 해소를 driver 자체에 둔다. 규칙은 JS 훅 코어의 `ENGINE_ROOT` 와 같다: 파일 자기
+위치에서 고정 깊이로 받고 조상을 훑지 않는다.
 """
 from __future__ import annotations
 
@@ -35,15 +36,13 @@ CTX_WINDOW_TOKENS_DEFAULT = 200_000
 
 
 def repo_root(start: Path) -> Path:
-    """driver 위치(.opencode/)에서 엔진 루트를 찾는다 — JS `findEngineRoot` 와 동일 규칙.
+    """driver 위치(``<root>/.opencode/``)에서 엔진 루트를 낸다 — 그 부모다.
 
-    `.project_manager/tools/pm_handoff.py` 가 있는 가장 가까운 조상을 루트로 본다(ctx-guard.js
-    의 루트 탐색과 일치 — 같은 어댑터의 일관). 없으면 start 의 부모(.opencode/ → 루트)."""
-    start = start.resolve()
-    for cand in (start, *start.parents):
-        if (cand / ".project_manager" / "tools" / "pm_handoff.py").exists():
-            return cand
-    return start.parents[0] if start.parents else start
+    어댑터 사본은 항상 ``<root>/.opencode/`` 에 설치되므로 루트는 그 자리의 함수다. 조상을
+    훑어 ``.project_manager/tools/pm_handoff.py`` 를 찾으면 driver 가 자기 트리가 아니라 위에
+    있는 남의 PM 홈에 착지한다(claude ctx_guard.repo_root·codex `repo_root` 동형).
+    """
+    return start.resolve().parent
 
 
 def _load_engine():
@@ -64,6 +63,7 @@ def _load_engine():
 #   python3 .project_manager/tools/local_conf.py --render-adapter-block python
 # 생성 시작 — 차단 구키 (local_conf.render_adapter_block · 손편집 금지)
 LEGACY_CONF_KEYS = (
+    "additional_reviewer.enabled",
     "additional_reviewer_enabled",
     "additional_reviewer_incomplete_round_limit",
     "additional_reviewer_round_limit",

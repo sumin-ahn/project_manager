@@ -1082,29 +1082,16 @@ def test_default_run_pytest_resolves_cwd_at_runtime_when_not_injected(tf, monkey
 
 # ── REPO 앵커 상향 탐색 (T-0242·finance_dev 제보 D2·board_root 동형) ──────────────
 #
-# 하드코딩 `REPO = Path(__file__).resolve().parents[2]` 는 tools 가 `<root>/.project_manager/
-# tools/` 정확히 2단 깊이라고 가정한다 — 채택자 형상(PM 홈/worktree 구조 상이·다른 깊이)에선
-# 어긋난다. `_find_repo_root()` 가 `.project_manager` 마커를 품은 첫(최근접) 조상으로 견고 해소
-# 하고, 마커 부재 시 현행 `parents[2]` 로 폴백함을 hermetic 하게 단언한다 (additional_reviewer 동형).
+# 도구는 언제나 `<root>/.project_manager/tools/` 에 설치된다 — `pm_import` 가 그 깊이를 못 박으
+# 므로 REPO 는 상향 탐색이 아니라 `Path(__file__).resolve().parents[2]` 다. 상향 탐색은 합성
+# 트리에서 자기 위의 실 인스턴스를 답으로 주는 부작용만 냈다 (additional_reviewer 동형).
 #
 # hermetic seam: 헬퍼는 모듈 전역 `__file__` 을 읽으므로 fresh 모듈 인스턴스의 `__file__` 을
 # tmp 합성 경로로 monkeypatch 해 실제 파일 이동 없이 임의 깊이를 모사한다.
 
 
-def test_find_repo_root_resolves_project_manager_ancestor(tf, tmp_path, monkeypatch):
-    """채택자 형상(tools 가 다른 깊이) → REPO == `.project_manager` 를 품은 최근접 조상.
-
-    tools 를 `<root>/.project_manager/tools/nested/` 에 두면 하드코딩 parents[2] 는
-    `<root>/.project_manager/tools`(오답)를 준다 — 상향 탐색은 마커로 <root> 를 해소해야 한다."""
-    root = tmp_path / "adopter"
-    nested = root / ".project_manager" / "tools" / "nested"
-    nested.mkdir(parents=True)
-    monkeypatch.setattr(tf, "__file__", str(nested / "ticket_finish.py"))
-    assert tf._find_repo_root() == root
-
-
-def test_find_repo_root_returns_nearest_ancestor(tf, tmp_path, monkeypatch):
-    """중첩 `.project_manager`(PM 홈 안 worktree·ADR-0027) → 최근접 조상을 반환한다(바깥 홈 아님)."""
+def test_repo_root_is_the_own_root_not_the_enclosing_home(tf, tmp_path, monkeypatch):
+    """중첩 `.project_manager`(PM 홈 안 worktree·ADR-0027) → 자기 루트를 낸다(바깥 홈 아님)."""
     outer = tmp_path / "home"
     inner = outer / "work" / "wt1"
     (outer / ".project_manager").mkdir(parents=True)
@@ -1114,18 +1101,9 @@ def test_find_repo_root_returns_nearest_ancestor(tf, tmp_path, monkeypatch):
     assert tf._find_repo_root() == inner
 
 
-def test_find_repo_root_falls_back_to_parents2_when_marker_absent(tf, tmp_path, monkeypatch):
-    """마커 부재 → 현행 `parents[2]` 폴백(회귀 0·board_root 동형 graceful 폴백)."""
-    deep = tmp_path / "a" / "b" / "c" / "d"
-    deep.mkdir(parents=True)
-    monkeypatch.setattr(tf, "__file__", str(deep / "ticket_finish.py"))
-    assert tf._find_repo_root() == tmp_path / "a" / "b"
-
-
-def test_find_repo_root_framework_shape_matches_parents2(tf):
-    """프레임워크 형상(현 repo) → 상향 탐색 == 하드코딩 parents[2](REPO 상수 불변·additive)."""
+def test_repo_constant_anchors_at_the_install_depth(tf):
+    """모듈 상수 REPO 는 도구 자기 위치에서 나온다 — 하위 파생 경로가 함께 따라온다."""
     expected = Path(tf.__file__).resolve().parents[2]
-    assert tf._find_repo_root() == expected
     assert tf.REPO == expected
 
 

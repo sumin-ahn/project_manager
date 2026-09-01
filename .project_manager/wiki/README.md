@@ -19,7 +19,7 @@
 | 사양 (포맷·한도·인터페이스) 단일 진실 | [`specs/`](specs/) |
 | 왜 이렇게 결정했는가? (히스토리·근거) | [`decisions/`](decisions/) (ADR — 현재 구속력 없음) |
 | 아직 결정 안 된 후보 아이디어 | [`ideas/`](ideas/) |
-| 시간 스냅샷 (plan_vN·벤치마크·외부 평가) | [`raw/`](raw/) (immutable) |
+| 시간 스냅샷 (plan_vN·벤치마크·추가 리뷰 평가) | [`raw/`](raw/) (immutable) |
 | 작업 일지 | [`log/current.md`](log/current.md) (활성) + [`log/archive/`](log/archive/) (봉인) |
 
 ## 디렉토리 의미

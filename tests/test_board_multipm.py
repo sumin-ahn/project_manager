@@ -547,14 +547,12 @@ def _init_args(prefix=None, area=None, owner=None, repo=None, slot=None, user=No
 
 @pytest.fixture
 def init_board(board, monkeypatch):
-    """cmd_init 용 board — 실 git/stdin 부작용 헬퍼를 무해 stub 으로 차단한다.
+    """cmd_init 용 board — 실 git 부작용 헬퍼를 무해 stub 으로 차단한다.
 
-    install_pre_push_hook 은 실 REPO 의 git hooks 를, prompt_additional_reviewer_optin 은
-    stdin 을 건드린다. cmd_init 의 areas/local.conf 효과만 검증하려고 둘을 stub.
-    PM_STATE_TEMPLATE 부재로 pm_state 생성은 자연히 skip 된다.
+    install_pre_push_hook 은 실 REPO 의 git hooks 를 건드린다. cmd_init 의 areas/local.conf
+    효과만 검증하려고 stub. PM_STATE_TEMPLATE 부재로 pm_state 생성은 자연히 skip 된다.
     """
     monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
-    monkeypatch.setattr(board, "prompt_additional_reviewer_optin", lambda: None)
     return board
 
 

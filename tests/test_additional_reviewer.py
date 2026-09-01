@@ -1,9 +1,9 @@
 """additional_reviewer 라운드 상한 게이트 — codex 게이트 무한 라운드 기계 차단 (T-0457).
 
-외부 리뷰(codex)는 과금·외부 전송 게이트라 라운드가 무한정 이어지면 비용이 쌓인다(PM 10차 실측:
+추가 리뷰(codex)는 과금·호출 게이트라 라운드가 무한정 이어지면 비용이 쌓인다(PM 10차 실측:
 한 게이트 클러스터 25라운드). PM 자의 "수렴 판단"을 기계 판정으로 대체한다
 ([[mechanize-dont-instruct-llm]]): `--gate <T-NNNN>` 별 라운드 장부
-(`.project_manager/.local/review_rounds.json`·per-clone·git-ignored)에 실 전송 count 를 쌓고,
+(`.project_manager/.local/review_rounds.json`·per-clone·git-ignored)에 실 호출 count 를 쌓고,
 limit(엔진 고정 4)을 넘기면 실행 *전에* 거부(전용 rc
 `EXIT_ROUND_LIMIT_EXCEEDED`)하고 loud 안내를 낸다. **재개 승인 경로는 없다**(T-0593 이 라운드 연장
 승인을 폐지 — 이 파일의 `--ack-rounds` 리터럴은 전부 "어느 표면에서도 rc=1 로 거부된다"는 단언이다).
@@ -16,7 +16,7 @@ T-0583 이 같은 장부에 두 축을 더한다: 라운드별 **산출**(`round
 
 hermetic: REPO 를 tmp 로 monkeypatch 해 장부가 tmp `.local/` 에 격리되게 하고(`_round_ledger_path`
 가 호출 시점 REPO 파생·`_tickets_dir` 동형), extract_diff·run_review·local_config 를 module-level
-로 주입해 실제 git/codex 없이(외부 전송 0·ADR-0004 opt-in) 게이트 분기를 단언한다. 카운트 규칙
+로 주입해 실제 git/codex 없이(호출 0·ADR-0004 opt-in) 게이트 분기를 단언한다. 카운트 규칙
 경계(dry-run·빈-diff·리뷰어 실패 제외)는 리뷰어 호출 여부·장부 count 로 격리한다.
 """
 from __future__ import annotations
@@ -285,17 +285,17 @@ def test_timeout_output_shared_formatter_policy(external, output, expected):
 
 
 def test_the_verdict_round_limit_axis_is_gone(external):
-    """전송 횟수만 세던 판정 상한은 상수·해소 함수·안내 항목이 모두 없다(축 제거)."""
+    """호출 횟수만 세던 판정 상한은 상수·해소 함수·안내 항목이 모두 없다(축 제거)."""
     assert not hasattr(external, "DEFAULT_ROUND_LIMIT")
     assert not hasattr(external, "_round_limit")
     assert not hasattr(external, "ADDITIONAL_REVIEWER_ROUND_LIMIT_KEY")
     assert "판정 상한" not in external._ROUND_LIMIT_GUIDANCE
-    # 남은 티켓 축은 둘이다 — 수렴(must_fix 추이)과 미완(판정 없는 전송).
+    # 남은 티켓 축은 둘이다 — 수렴(must_fix 추이)과 미완(판정 없는 호출).
     assert external.DEFAULT_REVIEW_ROUNDS_MAX == 2
     assert external.DEFAULT_INCOMPLETE_ROUND_LIMIT == 2
 
 
-# ── 순수 헬퍼: 외부 리뷰 timeout 해소 (T-0467) ───────────────────────────────
+# ── 순수 헬퍼: 추가 리뷰 timeout 해소 (T-0467) ───────────────────────────────
 
 
 def test_timeout_cli_override_beats_local_conf(external):
@@ -476,7 +476,7 @@ def test_failed_result_with_partial_verdict_text_is_still_incomplete(external):
 
 # ── started 신호: 스폰 여부 판정 (_run_reviewer_ex·MF-A 근원) ────────────────
 # main() 게이트 테스트는 run_review 를 mock 하므로 started 매핑을 직접 태우지 않는다 — 여기서
-# 실제 스폰-여부 판정(환불 대상 = 확실히 전송 전 실패만)을 run_fn 주입으로 단언한다.
+# 실제 스폰-여부 판정(환불 대상 = 확실히 호출 전 실패만)을 run_fn 주입으로 단언한다.
 
 
 def _completed(rc, out="판정: 통과"):
@@ -501,7 +501,7 @@ def _codex_reply(text="판정: 통과\n\n**must-fix**:\n- 없음\n"):
 
 
 def test_started_true_on_success_and_nonzero_rc(external):
-    """정상 종료(성공/비-0 rc)는 프로세스가 실행됐으므로 started=True (전송·과금 가능)."""
+    """정상 종료(성공/비-0 rc)는 프로세스가 실행됐으므로 started=True (호출·과금 가능)."""
     ok, _o, started = external._run_reviewer_ex("p", "codex", 5, lambda *a, **k: _completed(0))
     assert (ok, started) == (True, True)
     ok, _o, started = external._run_reviewer_ex("p", "codex", 5, lambda *a, **k: _completed(1))
@@ -509,7 +509,7 @@ def test_started_true_on_success_and_nonzero_rc(external):
 
 
 def test_started_true_on_timeout(external):
-    """타임아웃은 프로세스가 시작돼 전송됐을 수 있으므로 started=True (카운트 유지·MF-A 핵심)."""
+    """타임아웃은 프로세스가 시작돼 호출됐을 수 있으므로 started=True (카운트 유지·MF-A 핵심)."""
     def _raise(*a, **k):
         import subprocess
         raise subprocess.TimeoutExpired(cmd="codex", timeout=5)
@@ -521,7 +521,7 @@ def test_started_true_on_timeout(external):
 
 
 def test_started_false_on_spawn_failures(external):
-    """스폰-전 실패(빈 cmd·실행 파일 부재)는 전송 0 → started=False (환불 대상)."""
+    """스폰-전 실패(빈 cmd·실행 파일 부재)는 호출 0 → started=False (환불 대상)."""
     ok, _o, started = external._run_reviewer_ex("p", "", 5, None)  # 빈 argv
     assert (ok, started) == (False, False)
 
@@ -610,34 +610,15 @@ def test_run_review_surfaces_started(external, tmp_path):
         import subprocess
         raise subprocess.TimeoutExpired(cmd="codex", timeout=5)
     res = external.run_review("p", target=target, output_dir=tmp_path, run_fn=_timeout)
-    assert res["failed"] is True and res["started"] is True  # 타임아웃=전송 가능 → 카운트 유지
+    assert res["failed"] is True and res["started"] is True  # 타임아웃=호출 가능 → 카운트 유지
 
 
 # ── main() 게이트 harness ───────────────────────────────────────────────────
 
 
-def _stub_reviewer_isolation(external, monkeypatch) -> None:
-    """리뷰어 가시 범위 거울 생성을 스텁한다 (T-0563 · run_review 스텁과 같은 취지).
-
-    이 파일의 게이트 테스트는 라운드 장부/앵커 분기만 보며 diff 를 주입하므로 tmp REPO 가 실제 git
-    저장소가 아니다. 실 거울(격리) 회귀는 `test_additional_reviewer_reviewer_isolation.py` 가 실 저장소로
-    소유한다 — 여기서는 격리 성립을 가정하고 그 아래 분기만 격리한다."""
-    def _fake_workspace(diff_root, *, base_dir=None, conf=None, source_home=None,
-                        denylist=()):
-        return external.ReviewerWorkspace(
-            root=Path(tempfile.mkdtemp(prefix="stub_reviewer_mirror_")),
-            tree=Path(tempfile.mkdtemp(prefix="stub_reviewer_tree_")),
-            home=Path(tempfile.mkdtemp(prefix="stub_reviewer_home_")),
-            files=1, skipped_unsafe=0, git_repo=True,
-        )
-
-    monkeypatch.setattr(external, "create_reviewer_workspace", _fake_workspace)
-
-
 # 리뷰어 대상은 구조화 키로만 지정한다 — 모델을 고정하지 않는 실행 경로가 없으므로 CLI 표면을
 # 태우는 배선은 대상 튜플까지 갖춰야 실제 실행 지점에 닿는다.
 _ENABLED_CONF = {
-    "additional_reviewer.enabled": "true",
     "additional_reviewer.harness": "codex",
     "additional_reviewer.model": "gpt-5.6-sol",
 }
@@ -645,18 +626,17 @@ _ENABLED_CONF = {
 
 def _wire(external, monkeypatch, tmp_path, *, conf=None,
           diff="diff --git a/x b/x\n@@ -1 +1 @@\n-o\n+n\n", result=None):
-    """main() 을 tmp REPO 로 격리 배선 — 외부 리뷰어 호출 횟수를 세는 counter 반환.
+    """main() 을 tmp REPO 로 격리 배선 — 추가 리뷰어 호출 횟수를 세는 counter 반환.
 
     REPO=tmp(장부 격리)·local_config(활성)·extract_diff(diff 주입·제외 없음)·run_review 를
     module-level 로 monkeypatch 한다. `result` 미지정이면 통과(started=True) 결과를, 지정하면 그
     dict 를 돌려준다(타임아웃=started True·스폰실패=started False 시나리오 주입). 반환 calls['n'] =
-    run_review 호출 수(=외부 전송 시도)."""
+    run_review 호출 수(=호출 시도)."""
     monkeypatch.setattr(external, "REPO", tmp_path)
     monkeypatch.setattr(
         external, "local_config",
         lambda repo=None: dict(conf) if conf is not None else dict(_ENABLED_CONF))
-    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: (diff, []))
-    _stub_reviewer_isolation(external, monkeypatch)
+    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: diff)
     real_main = external.main
 
     def _isolated_main(argv=None):
@@ -679,7 +659,7 @@ def _wire(external, monkeypatch, tmp_path, *, conf=None,
     return calls
 
 
-# run_review 실패 결과 템플릿 (started 로 전송 여부를 구분 — MF-A).
+# run_review 실패 결과 템플릿 (started 로 호출 여부를 구분 — MF-A).
 _FAIL_STARTED = {"reviewer": "x", "ok": False, "output": "[리뷰어 타임아웃 — 180초 초과]",
                  "verdict": {"has_must_fix": False, "has_pass": False}, "file": None,
                  "failed": True, "started": True, "any_must_fix": False, "all_pass": False}
@@ -716,9 +696,9 @@ def test_valid_json_with_corrupt_records_still_runs_gate(
     assert entry["records"][0]["verdict"] is True
 
 
-# ── 전송 횟수 축 제거: 판정 라운드는 더 이상 티켓 축을 막지 않는다 (DoD) ──────
+# ── 호출 횟수 축 제거: 판정 라운드는 더 이상 티켓 축을 막지 않는다 (DoD) ──────
 
-# 수렴-형상 상한은 이 형상보다 앞에서 막으므로, 전송 횟수만 보는 테스트는 그 노브를 열어
+# 수렴-형상 상한은 이 형상보다 앞에서 막으므로, 호출 횟수만 보는 테스트는 그 노브를 열어
 # 둔다(`additional_reviewer.rounds_max` 는 T-0593 의 별도 축이고 전용 테스트가 소유한다).
 _ROUNDS_MAX_OFF = {**_ENABLED_CONF, "additional_reviewer.rounds_max": "99"}
 
@@ -728,7 +708,7 @@ def test_verdict_rounds_no_longer_refuse_the_next_round(
     """판정 라운드는 몇 번을 채워도 티켓 축을 막지 않는다 — 옛 상한(4)의 다음 라운드가 정상이다.
 
     제거 전에는 5회째가 rc 4 로 거부됐다. 제거 후 남는 티켓 축은 수렴(여기서는 열어 둠)과
-    미완(판정 없는 전송)뿐이라, 판정만 쌓인 게이트는 계속 열린다."""
+    미완(판정 없는 호출)뿐이라, 판정만 쌓인 게이트는 계속 열린다."""
     calls = _wire(external, monkeypatch, tmp_path, conf=_ROUNDS_MAX_OFF)
     argv = ["--gate", "T-0100", "--paths", "x.py"]
 
@@ -758,7 +738,7 @@ _RETIRED_ACK_SHAPES = (
 
 
 def _verdict_records(count: int) -> list[dict]:
-    """판정까지 마감된 전송 레코드 — 미완 축에 들어가지 않는 형상."""
+    """판정까지 마감된 호출 레코드 — 미완 축에 들어가지 않는 형상."""
     return [
         {"id": f"r{index}", "sequence": index, "number": index,
          "started_at": "2026-08-19T00:00:00+00:00",
@@ -849,7 +829,7 @@ def test_blocked_gate_warns_about_the_retired_field_exactly_once_across_repeats(
 )
 def test_removed_confirm_fix_flag_is_rejected_without_side_effects(
         external, monkeypatch, tmp_path, capsys, argv):
-    """폐지한 fix 후 재리뷰 표면은 argparse 에서 거부되고 전송·장부 쓰기가 없다."""
+    """폐지한 fix 후 재리뷰 표면은 argparse 에서 거부되고 호출·장부 쓰기가 없다."""
     calls = _wire(external, monkeypatch, tmp_path)
     ledger_path = external._round_ledger_path()
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
@@ -869,7 +849,7 @@ def test_removed_confirm_fix_flag_is_rejected_without_side_effects(
 
 def test_ack_rounds_is_refused_and_changes_nothing(
         external, monkeypatch, tmp_path, capsys):
-    """`--ack-rounds` 호출은 거부된다 — 전송 0·장부 무변경·처방 안내 (연장 경로 폐지).
+    """`--ack-rounds` 호출은 거부된다 — 호출 0·장부 무변경·처방 안내 (연장 경로 폐지).
 
     플래그가 다시 통하면 차단 축(수렴·미완)이 사람 승인으로 열리는 옛 구조가 되살아난다."""
     calls = _wire(external, monkeypatch, tmp_path, conf=_ROUNDS_MAX_OFF)
@@ -879,7 +859,7 @@ def test_ack_rounds_is_refused_and_changes_nothing(
     capsys.readouterr()
 
     assert external.main(argv + ["--ack-rounds"]) == 1   # 승인이 아니라 거부
-    assert calls["n"] == 4                               # 전송 없음
+    assert calls["n"] == 4                               # 호출 없음
     entry = _ledger(external, tmp_path)[argv[1]]
     assert entry["count"] == 4                           # 장부 무변경
     assert "acked_through" not in entry                  # 폐지 필드는 되살아나지 않는다
@@ -902,7 +882,7 @@ def test_ack_rounds_is_refused_even_on_the_report_surface(
 
 
 def test_dry_run_excluded_from_count(external, monkeypatch, tmp_path):
-    """dry-run 은 외부 전송이 없어 라운드가 아니다 — 리뷰어 미호출·장부 미기록(무한 반복 무영향)."""
+    """dry-run 은 호출이 없어 라운드가 아니다 — 리뷰어 미호출·장부 미기록(무한 반복 무영향)."""
     calls = _wire(external, monkeypatch, tmp_path)
     for _ in range(6):
         assert external.main(["--gate", "T-0102", "--paths", "x.py", "--dry-run"]) == 0
@@ -911,18 +891,18 @@ def test_dry_run_excluded_from_count(external, monkeypatch, tmp_path):
 
 
 def test_empty_diff_excluded_from_count(external, monkeypatch, tmp_path):
-    """빈-diff 거부(T-0326)는 전송 전 fail 이라 카운트 제외 — 리뷰어 미호출·장부 미기록."""
+    """빈-diff 거부(T-0326)는 호출 전 fail 이라 카운트 제외 — 리뷰어 미호출·장부 미기록."""
     calls = _wire(external, monkeypatch, tmp_path, diff="")
     for _ in range(6):
-        assert external.main(["--gate", "T-0103", "--paths", "x.py", "--force"]) == 1
+        assert external.main(["--gate", "T-0103", "--paths", "x.py"]) == 1
     assert calls["n"] == 0
     assert _ledger(external, tmp_path) == {}
 
 
 def test_timeout_uses_separate_incomplete_retry_limit(external, monkeypatch, tmp_path, capsys):
-    """판정 없는 종료는 미완 재시도 예산 2회를 쓰고 세 번째 전송을 막는다.
+    """판정 없는 종료는 미완 재시도 예산 2회를 쓰고 세 번째 호출을 막는다.
 
-    프롬프트가 이미 전송·과금됐을 수 있으므로 실패여도 예약을 환불하지 않는다. 두 번 모두 종료
+    프롬프트가 이미 호출·과금됐을 수 있으므로 실패여도 예약을 환불하지 않는다. 두 번 모두 종료
     마감되지만 verdict=false이고, 세 번째 호출은 reviewer 전에 차단된다."""
     calls = _wire(
         external, monkeypatch, tmp_path, result=_FAIL_STARTED, conf=_ROUNDS_MAX_OFF,
@@ -943,26 +923,26 @@ def test_timeout_uses_separate_incomplete_retry_limit(external, monkeypatch, tmp
 
 
 def test_spawn_failure_refunds_reservation(external, monkeypatch, tmp_path):
-    """스폰-전 실패(started=False·전송 0·과금 0)는 예약을 환불한다 — 상한을 소진하지 않는다.
+    """스폰-전 실패(started=False·호출 0·과금 0)는 예약을 환불한다 — 상한을 소진하지 않는다.
 
-    MF-A: 외부 프로세스가 확실히 시작되지 않았으면(실행 파일 부재 등) 아무것도 전송되지 않았으므로
+    MF-A: 자식 프로세스가 확실히 시작되지 않았으면(실행 파일 부재 등) 아무것도 호출되지 않았으므로
     예약한 라운드를 되돌린다. 6회 스폰 실패해도 count 는 0 으로 남아 정상 리뷰가 조기 차단되지 않음을
     단언한다(설치/PATH 문제로 게이트가 막히면 안 된다)."""
     calls = _wire(external, monkeypatch, tmp_path, result=_FAIL_UNSTARTED)
     for _ in range(6):
         assert external.main(["--gate", "T-0114", "--paths", "x.py"]) == 1
-    assert calls["n"] == 6                       # 전송은 시도됨(리뷰어 호출)
+    assert calls["n"] == 6                       # 호출은 시도됨(리뷰어 호출)
     assert _ledger(external, tmp_path)["T-0114"]["count"] == 0  # 예약 환불 → never blocked
 
 
 def test_spawn_failure_refund_is_announced_not_silent(
     external, monkeypatch, tmp_path, capsys,
 ):
-    """전송 0 으로 되돌린 라운드는 **말하고** 되돌린다 (무음 환불 0 · T-0722).
+    """호출 0 으로 되돌린 라운드는 **말하고** 되돌린다 (무음 환불 0 · T-0722).
 
     조용히 환불하면 채택자에게 남는 사실이 "장부가 그대로다" 뿐이라, 교차검증이 한 번도 돌지 않은
     실행과 리뷰어를 선언하지 않은 실행이 같은 모양이 된다 — Windows 경로 분해 결함이 30여 릴리즈
-    숨어 있던 경로다. 스폰된 실행(전송됐을 수 있음)에는 이 경고가 붙지 않음을 같이 못 박는다."""
+    숨어 있던 경로다. 스폰된 실행(호출됐을 수 있음)에는 이 경고가 붙지 않음을 같이 못 박는다."""
     _wire(external, monkeypatch, tmp_path, result=_FAIL_UNSTARTED)
     assert external.main(["--gate", "T-0722", "--paths", "x.py"]) == 1
     err = capsys.readouterr().err
@@ -1123,7 +1103,7 @@ def _flaky_round_lock(external, monkeypatch, *, fail_on: int):
 def test_lock_failure_before_send_is_translated_and_blocks_the_send(
     external, monkeypatch, tmp_path, capsys,
 ):
-    """예약 구간 락 실패 = **전송 전 중단**(과금 0) + 조치 문구 — 상한 미확인 전송 금지."""
+    """예약 구간 락 실패 = **호출 전 중단**(과금 0) + 조치 문구 — 상한 미확인 호출 금지."""
     calls = _wire(external, monkeypatch, tmp_path)
     _flaky_round_lock(external, monkeypatch, fail_on=1)
 
@@ -1131,7 +1111,7 @@ def test_lock_failure_before_send_is_translated_and_blocks_the_send(
 
     err = capsys.readouterr().err
     assert rc == 1
-    assert calls["n"] == 0                       # 외부 전송 시도 0
+    assert calls["n"] == 0                       # 호출 시도 0
     assert "다른 게이트 실행이 장부 락을 보유" in err
     assert "잠시 후 다시 실행" in err
     assert str(external._round_ledger_path()) in err
@@ -1140,7 +1120,7 @@ def test_lock_failure_before_send_is_translated_and_blocks_the_send(
 def test_lock_failure_at_finish_keeps_the_verdict_exit_code(
     external, monkeypatch, tmp_path, capsys,
 ):
-    """마감 구간 락 실패는 판정 rc 를 보존한다 — 끝난 전송의 기록이 판정을 뒤집지 않는다."""
+    """마감 구간 락 실패는 판정 rc 를 보존한다 — 끝난 호출의 기록이 판정을 뒤집지 않는다."""
     calls = _wire(external, monkeypatch, tmp_path)
     _flaky_round_lock(external, monkeypatch, fail_on=2)
 
@@ -1148,7 +1128,7 @@ def test_lock_failure_at_finish_keeps_the_verdict_exit_code(
 
     err = capsys.readouterr().err
     assert rc == 0                               # 통과 판정 그대로 (락 사정으로 안 뒤집힘)
-    assert calls["n"] == 1                       # 전송은 정상 수행
+    assert calls["n"] == 1                       # 호출은 정상 수행
     assert "라운드 장부 마감 실패" in err
     assert "미완으로 남아" in err
     # 마감 못 한 레코드는 finished_at 없이 남아 다음 실행이 보수적으로(미완) 센다.
@@ -1339,7 +1319,7 @@ def test_gate_names_skip_the_reserved_wave_key(external):
 
 def test_reserved_gate_name_is_refused_before_any_effect(
         external, monkeypatch, tmp_path, capsys):
-    """`--gate wave` 는 리뷰어 호출·장부 접근 전에 거부된다 (전송 0·장부 미생성)."""
+    """`--gate wave` 는 리뷰어 호출·장부 접근 전에 거부된다 (호출 0·장부 미생성)."""
     calls = _wire(external, monkeypatch, tmp_path)
     rc = external.main(["--gate", external.WAVE_SECTION_KEY, "--paths", "x.py"])
     err = capsys.readouterr().err
@@ -1493,7 +1473,7 @@ def test_must_fix_count_is_null_without_a_valid_verdict(external):
 
 
 def test_pass_round_appends_outcome_with_verdict(external, monkeypatch, tmp_path):
-    """전송된 라운드는 산출(`ts`·판정 rc·결함 수)이 장부에 append 된다 (DoD)."""
+    """호출된 라운드는 산출(`ts`·판정 rc·결함 수)이 장부에 append 된다 (DoD)."""
     _wire(external, monkeypatch, tmp_path, result=_PASS_WITH_ANSWER)
     assert external.main(["--gate", "T-0303", "--paths", "x.py"]) == 0
     rounds = _ledger(external, tmp_path)["T-0303"]["rounds"]
@@ -1540,7 +1520,7 @@ def test_round_outcome_carries_the_reservation_identity(external, monkeypatch, t
 
 def test_unparsable_outcome_is_null_and_does_not_block_the_review(
         external, monkeypatch, tmp_path):
-    """산출 파싱 불가(판정 없는 전송)는 null 기록 — 리뷰 판정/rc 는 그대로다 (DoD·fail-soft)."""
+    """산출 파싱 불가(판정 없는 호출)는 null 기록 — 리뷰 판정/rc 는 그대로다 (DoD·fail-soft)."""
     calls = _wire(external, monkeypatch, tmp_path, result=_FAIL_STARTED)
     assert external.main(["--gate", "T-0305", "--paths", "x.py"]) == 1  # 판정 rc 보존
     assert calls["n"] == 1
@@ -1558,7 +1538,7 @@ def test_contaminated_round_records_no_defect_count(external, monkeypatch, tmp_p
 
 
 def test_spawn_failure_leaves_no_outcome(external, monkeypatch, tmp_path):
-    """전송이 확실히 없던 라운드는 산출도 남기지 않는다 (리뷰어가 아무 말도 하지 않았다)."""
+    """호출이 확실히 없던 라운드는 산출도 남기지 않는다 (리뷰어가 아무 말도 하지 않았다)."""
     _wire(external, monkeypatch, tmp_path, result=_FAIL_UNSTARTED)
     assert external.main(["--gate", "T-0307", "--paths", "x.py"]) == 1
     entry = _ledger(external, tmp_path)["T-0307"]
@@ -1609,7 +1589,7 @@ def test_wave_budget_blocks_across_gates_then_ack_wave_resumes(
 
     rc = external.main(["--gate", "T-0312", "--paths", "x.py"])
     assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED   # 라운드 상한과 같은 rc
-    assert calls["n"] == 2                            # 리뷰어 미호출 (전송 전 거부)
+    assert calls["n"] == 2                            # 리뷰어 미호출 (호출 전 거부)
     err = capsys.readouterr().err
     assert "wave 예산 소진" in err
     assert "--ack-wave" in err and "예산 리셋" in err
@@ -1619,11 +1599,11 @@ def test_wave_budget_blocks_across_gates_then_ack_wave_resumes(
     rc = external.main(["--gate", "T-0312", "--paths", "x.py", "--ack-wave"])
     assert rc == 0 and calls["n"] == 3
     assert "wave 예산 승인 재개" in capsys.readouterr().err
-    assert _wave(external, tmp_path)["spent"] == 1     # 리셋 후 이번 전송 1
+    assert _wave(external, tmp_path)["spent"] == 1     # 리셋 후 이번 호출 1
 
 
 def test_wave_started_marks_the_first_send_and_accumulates(external, monkeypatch, tmp_path):
-    """wave.started 는 첫 전송 시각이고 명시 리셋 전까지 누적된다 (세션 자동 감지 없음)."""
+    """wave.started 는 첫 호출 시각이고 명시 리셋 전까지 누적된다 (세션 자동 감지 없음)."""
     _wire(external, monkeypatch, tmp_path)
     argv = ["--gate", "T-0313", "--paths", "x.py"]
     assert external.main(argv) == 0
@@ -1635,10 +1615,10 @@ def test_wave_started_marks_the_first_send_and_accumulates(external, monkeypatch
 
 
 def test_spawn_failure_refunds_the_wave_budget(external, monkeypatch, tmp_path):
-    """전송 0(스폰 전 실패)은 라운드 count 와 wave spent 를 같은 조건으로 되돌린다.
+    """호출 0(스폰 전 실패)은 라운드 count 와 wave spent 를 같은 조건으로 되돌린다.
 
-    첫 전송이 아예 없었으므로 시작 시각도 남지 않는다 — 그러지 않으면 조회 표가 있지도 않은
-    wave 를 진행 중으로 보여주고, 다음 첫 전송이 자기 시각을 못 찍는다."""
+    첫 호출이 아예 없었으므로 시작 시각도 남지 않는다 — 그러지 않으면 조회 표가 있지도 않은
+    wave 를 진행 중으로 보여주고, 다음 첫 호출이 자기 시각을 못 찍는다."""
     calls = _wire(external, monkeypatch, tmp_path, result=_FAIL_UNSTARTED)
     for _ in range(6):
         assert external.main(["--gate", "T-0314", "--paths", "x.py"]) == 1
@@ -1650,7 +1630,7 @@ def test_spawn_failure_refunds_the_wave_budget(external, monkeypatch, tmp_path):
 
 def test_refund_keeps_the_wave_start_when_earlier_sends_exist(
         external, monkeypatch, tmp_path):
-    """실 전송이 있던 wave 는 환불 후에도 첫 전송 시각을 유지한다 (0 으로 돌아갈 때만 지운다)."""
+    """실 호출이 있던 wave 는 환불 후에도 첫 호출 시각을 유지한다 (0 으로 돌아갈 때만 지운다)."""
     _wire(external, monkeypatch, tmp_path)
     assert external.main(["--gate", "T-0314", "--paths", "x.py"]) == 0
     started = _wave(external, tmp_path)["started"]
@@ -1681,7 +1661,7 @@ def test_refund_wave_round_ignores_another_generation(external):
 
 def test_refund_skips_a_wave_that_was_reset_mid_flight(
         external, monkeypatch, tmp_path, capsys):
-    """전송 중 `--ack-wave` 로 새 wave 가 열리면 이 실패는 그 예산을 깎지 않는다 (세대 확인).
+    """호출 중 `--ack-wave` 로 새 wave 가 열리면 이 실패는 그 예산을 깎지 않는다 (세대 확인).
 
     다른 실행이 리뷰 도중 승인·리셋한 형상을 리뷰어 스텁 안에서 재현한다 — 예약 구간 락은 이미
     풀린 뒤라 실제 동시 실행과 같은 순서다."""
@@ -1773,7 +1753,7 @@ def test_negative_wave_spent_does_not_reopen_the_budget(
 
     err = capsys.readouterr().err
     assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED          # 여전히 막힌다
-    assert calls["n"] == 2                                   # 전송 없음
+    assert calls["n"] == 2                                   # 호출 없음
     assert "음수" in err and "재계산" in err
     assert "wave 예산 소진" in err
     assert _wave(external, tmp_path)["spent"] == 2           # 이력 기반 복원값이 저장된다
@@ -1798,7 +1778,7 @@ def test_ack_wave_does_not_open_the_gate_round_limit(
 
 def test_refused_run_leaves_no_gate_entry_in_the_ledger(
         external, monkeypatch, tmp_path, capsys):
-    """거부된 실행은 그 게이트의 장부 항목 자체를 만들지 않는다 (전송 0 = 흔적 0).
+    """거부된 실행은 그 게이트의 장부 항목 자체를 만들지 않는다 (호출 0 = 흔적 0).
 
     항목을 만들어 두면 "라운드를 쓴 적 없는 게이트"가 장부에 나타나 조회 표와 승계 판정이 실제
     소비와 어긋난다 — 정규화 결과는 통과한 실행만 저장한다."""
@@ -1812,7 +1792,7 @@ def test_refused_run_leaves_no_gate_entry_in_the_ledger(
 
     assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
     assert "wave 예산 소진" in capsys.readouterr().err
-    assert calls["n"] == 2                                        # 전송 없음
+    assert calls["n"] == 2                                        # 호출 없음
     assert "T-0332" not in _ledger(external, tmp_path)
 
 
@@ -1825,7 +1805,7 @@ def test_refused_run_leaves_no_gate_entry_in_the_ledger(
 def _exhaust_both_budgets(external, monkeypatch, tmp_path):
     """게이트 미완 상한(2)과 wave 예산(3)을 동시에 소진한 장부를 만든다.
 
-    게이트 축은 미완(판정 없이 끝난 전송)이다 — 전송 횟수만 세던 판정 상한은 제거됐다."""
+    게이트 축은 미완(판정 없이 끝난 호출)이다 — 호출 횟수만 세던 판정 상한은 제거됐다."""
     spend = external.DEFAULT_INCOMPLETE_ROUND_LIMIT
     conf = {
         **_ROUNDS_MAX_OFF,                      # 수렴 축은 별도 테스트 소유(미완 축만 본다)
@@ -1864,7 +1844,7 @@ def test_wave_approval_survives_a_round_limit_refusal(
 
 def test_dry_run_and_empty_diff_do_not_spend_the_wave_budget(
         external, monkeypatch, tmp_path):
-    """전송 없는 실행(dry-run·빈 diff)은 wave 예산도 쓰지 않는다 (라운드 count 규칙과 동형)."""
+    """호출 없는 실행(dry-run·빈 diff)은 wave 예산도 쓰지 않는다 (라운드 count 규칙과 동형)."""
     calls = _wire(external, monkeypatch, tmp_path)
     for _ in range(3):
         assert external.main(["--gate", "T-0319", "--paths", "x.py", "--dry-run"]) == 0
@@ -1872,7 +1852,7 @@ def test_dry_run_and_empty_diff_do_not_spend_the_wave_budget(
     assert _ledger(external, tmp_path) == {}
 
     _wire(external, monkeypatch, tmp_path, diff="")
-    assert external.main(["--gate", "T-0319", "--paths", "x.py", "--force"]) == 1
+    assert external.main(["--gate", "T-0319", "--paths", "x.py"]) == 1
     assert _ledger(external, tmp_path) == {}
 
 
@@ -1889,7 +1869,7 @@ def test_ack_wave_without_gate_warns_and_proceeds(external, monkeypatch, tmp_pat
 
 
 def test_rounds_report_dumps_gate_rounds_and_wave(external, monkeypatch, tmp_path, capsys):
-    """조회면이 게이트별 라운드 수·라운드별 판정/결함 수·wave spent 를 표로 낸다 (외부 전송 0)."""
+    """조회면이 게이트별 라운드 수·라운드별 판정/결함 수·wave spent 를 표로 낸다 (호출 0)."""
     calls = _wire(external, monkeypatch, tmp_path, result=_REJECT_WITH_ANSWER)
     assert external.main(["--gate", "T-0320", "--paths", "x.py"]) == 1
     capsys.readouterr()
@@ -1916,7 +1896,7 @@ def test_rounds_report_filters_by_gate(external, monkeypatch, tmp_path, capsys):
 
 
 def test_rounds_report_on_empty_ledger_is_rc_zero(external, monkeypatch, tmp_path, capsys):
-    """장부가 없어도 조회는 답을 낸다 — diff·검토 경로 없이 rc 0 (전송 게이트 뒤가 아니다)."""
+    """장부가 없어도 조회는 답을 낸다 — diff·검토 경로 없이 rc 0 (호출 게이트 뒤가 아니다)."""
     calls = _wire(external, monkeypatch, tmp_path)
     assert external.main(["--rounds-report"]) == 0
     out = capsys.readouterr().out
@@ -1937,7 +1917,7 @@ def test_rounds_report_with_a_selector_reads_the_recording_anchor(
 
     assert external.main(["--rounds-report", "--paths", "x.py"]) == 0
     out = capsys.readouterr().out
-    assert calls["n"] == 1                                  # selector 조회도 전송 없음
+    assert calls["n"] == 1                                  # selector 조회도 호출 없음
     assert str(external._round_ledger_path()) in out
     assert "게이트 T-0334: count=1" in out
 
@@ -1946,9 +1926,9 @@ def test_rounds_report_warns_about_ignored_action_flags(
         external, monkeypatch, tmp_path, capsys):
     """조회 전용면이 행동 플래그를 조용히 무시하지 않는다 (승인이 삼켜졌다고 오인 금지)."""
     calls = _wire(external, monkeypatch, tmp_path)
-    assert external.main(["--rounds-report", "--ack-wave", "--force"]) == 0
+    assert external.main(["--rounds-report", "--ack-wave", "--no-gate"]) == 0
     err = capsys.readouterr().err
-    assert "조회 전용" in err and "--ack-wave" in err and "--force" in err
+    assert "조회 전용" in err and "--ack-wave" in err and "--no-gate" in err
     assert calls["n"] == 0
     assert _ledger(external, tmp_path) == {}                # 조회는 장부를 고치지 않는다
 
@@ -2008,11 +1988,11 @@ def test_rounds_report_numbers_rounds_by_reservation_sequence(external):
 # ── 스폰 경계 seam: 소유권 이전은 **자식 생성 직전** 한 자리 (T-0590 R3) ─────
 #
 # 소유권 이전이 러너 **호출** 직전에 있으면, 러너 안의 준비 구간(relay 로드·프로필 해소·워치독
-# 셋업)과 exec 실패가 전부 "이미 넘긴 뒤"가 된다 — 스폰 0·전송 0 인 실행이 라운드/wave 예산을
+# 셋업)과 exec 실패가 전부 "이미 넘긴 뒤"가 된다 — 스폰 0·호출 0 인 실행이 라운드/wave 예산을
 # 먹고, 상한 1 형상에서 다음 **정상** 호출이 곧바로 rc=4 로 막힌다. 경계는 relay 워치독이
 # `Popen` 을 부르기 한 줄 앞이고, 그 앞의 실패와 확정 기동 실패는 started=False 다.
 
-# 확정 기동 실패 표 — exec 자체가 실패해 자식이 뜬 적 없는 예외들(전송 0·과금 0).
+# 확정 기동 실패 표 — exec 자체가 실패해 자식이 뜬 적 없는 예외들(호출 0·과금 0).
 _DEFINITE_LAUNCH_EXCEPTIONS = (
     pytest.param(FileNotFoundError, id="file-not-found"),
     pytest.param(PermissionError, id="permission-denied"),
@@ -2188,8 +2168,8 @@ def test_default_runner_forwards_the_boundary_to_the_shared_watchdog(external, m
 #
 # `_run_reviewer_ex` 의 TypeError 전용 분기는 relay 표식을 보지 않고 스폰 경계 위치만 봤다. 같은
 # 예외 종류가 경계 앞뒤 어디서든 올라올 수 있으므로 그 위치 추정은 두 방향으로 다 틀린다 —
-# 표식 True 인데 경계를 지났으면 전송 0 인 실행이 예산을 먹고, 표식 False 인데 콜백이 아직 안
-# 돌았으면 이미 나간 전송이 환불된다. 우선순위는 한 줄이다: 표식 True→started False,
+# 표식 True 인데 경계를 지났으면 호출 0 인 실행이 예산을 먹고, 표식 False 인데 콜백이 아직 안
+# 돌았으면 이미 나간 호출이 환불된다. 우선순위는 한 줄이다: 표식 True→started False,
 # 표식 False→started True, 표식 없음→종전 seam 위치.
 
 
@@ -2218,7 +2198,7 @@ def test_seam_typeerror_marked_child_existed_is_started_true(external):
         raise_before=_marked(TypeError("Popen 뒤 초기화 skew"), False))
     ok, _out, started = external._run_reviewer_ex(
         "p", "codex", 5, runner, on_spawn_attempt=lambda: handoffs.append(1))
-    assert (ok, started) == (False, True), "표식(자식 있었음)을 무시하고 이미 나간 전송을 환불했다"
+    assert (ok, started) == (False, True), "표식(자식 있었음)을 무시하고 이미 나간 호출을 환불했다"
     assert handoffs == [], "경계 콜백은 실제로 돌지 않았다(표식만이 판정 입력)"
 
 
@@ -2264,8 +2244,7 @@ def _wire_real_run_review(external, monkeypatch, tmp_path, *, conf, runner,
     장부·예약 환불까지 실 경로로 돌려야 하므로 기본 러너 자리만 바꾼다."""
     monkeypatch.setattr(external, "REPO", tmp_path)
     monkeypatch.setattr(external, "local_config", lambda repo=None: dict(conf))
-    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: (diff, []))
-    _stub_reviewer_isolation(external, monkeypatch)
+    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: diff)
     monkeypatch.setattr(external, "_watchdog_reviewer_run", runner)
 
     def _run(argv):
@@ -2405,9 +2384,9 @@ def test_knob_conf_run_names_no_retired_key(external, monkeypatch, tmp_path, cap
 
 
 # ── `--resolve-gate --pm-verified` — 추가 리뷰어 채널 처분 CLI (T-0791) ──────────
-# 채널 폐지 뒤에도 additional-reviewer 장부(review_rounds.json)의 반려 잔여를 외부 재송신 없이
+# 채널 폐지 뒤에도 additional-reviewer 장부(review_rounds.json)의 반려 잔여를 재호출 없이
 # 종결하는 선언면. 릴리즈 축(`_unresolved_must_fix_data`)의 재검증·채널 격리·실패 경로는
-# `tests/test_board_livegate.py` 가 진다 — 여기는 CLI 선언면 자체(모드 선택·전송 0·장부 불변·
+# `tests/test_board_livegate.py` 가 진다 — 여기는 CLI 선언면 자체(모드 선택·호출 0·장부 불변·
 # v1.7.8 실물 형상의 선언 성공/실패)를 담당한다.
 
 @pytest.fixture
@@ -2415,7 +2394,7 @@ def pm_verified_declare(tmp_path, monkeypatch):
     """`--resolve-gate --pm-verified` CLI 검증 — 실 티켓 트리 + 실 라운드 파일 + 실 review_rounds.json.
 
     `run_review` 호출은 assert 로 막는다 — 선언면이 reviewer 를 스폰하면 이 대역이 즉시 실패시킨다
-    (전송 0 계약을 값으로 단언)."""
+    (호출 0 계약을 값으로 단언)."""
     proj = tmp_path
     _pv_seed_ticket_tree(proj)
     board_mod = _pv_load_board()
@@ -2426,7 +2405,7 @@ def pm_verified_declare(tmp_path, monkeypatch):
     monkeypatch.setattr(
         external, "run_review",
         lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("--resolve-gate 선언면이 reviewer 를 스폰했다 — 전송 0 계약 위반"),
+            AssertionError("--resolve-gate 선언면이 reviewer 를 스폰했다 — 호출 0 계약 위반"),
         ),
     )
     ledger_path = proj / ".project_manager" / ".local" / "review_rounds.json"
@@ -2490,7 +2469,7 @@ def test_pm_verified_declares_the_v178_shape_with_zero_external_send(pm_verified
     assert "confirm_fix" not in after
     assert after["rounds"] == before["rounds"]
     assert "wave" not in after       # wave 절 자체를 건드리지 않는다(불변)
-    assert not raw_dir.exists(), "선언면이 raw 출력 디렉토리를 만들면 전송이 있었다는 뜻이다"
+    assert not raw_dir.exists(), "선언면이 raw 출력 디렉토리를 만들면 호출이 있었다는 뜻이다"
 
 
 def test_pm_verified_declaration_is_refused_with_reason_when_evidence_is_insufficient(

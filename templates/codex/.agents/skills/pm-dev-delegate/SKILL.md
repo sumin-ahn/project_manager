@@ -120,9 +120,9 @@ cross 역할은 고아 시드를 막기 위해 rc≠0 으로 거부되며, `--ti
 나가야 하는지**(cross)를 먼저 판정한다. 판정 1차 = 이 카드(PM)이고, `pm_delegate.py` 의 same-harness
 경고는 백스톱(never-block·spike §3.6). 매핑은 `local.conf` 의 `delegate.<role>[.<tier>]` 키가 소유한다.
 
-### 1. 매핑 조회 (dry-run — 미전송 미리보기)
+### 1. 매핑 조회 (dry-run — 미리보기)
 
-역할이 어느 하네스·모델로 해소되는지 먼저 확인한다 (실 스폰 없음·외부 송신 0·rc=0):
+역할이 어느 하네스·모델로 해소되는지 먼저 확인한다 (실 스폰 없음·rc=0):
 
 ```bash
 python3 .project_manager/tools/pm_delegate.py --dry-run \
@@ -130,7 +130,7 @@ python3 .project_manager/tools/pm_delegate.py --dry-run \
     --prompt-file <task 프롬프트 파일 절대경로> --cwd <작업 worktree 절대경로> [--tier normal|hard]
 ```
 
-- 출력 = 해소된 `(harness, model, reasoning)` + 합성 프롬프트 + argv 미리보기. **전송하지 않는다**.
+- 출력 = 해소된 `(harness, model, reasoning)` + 합성 프롬프트 + argv 미리보기. **하네스를 부르지 않는다**.
 - dry-run 은 opt-in 게이트를 **우회**한다(항상 rc=0 미리보기) — opt-in OFF 판정(`rc=3`)은 실 실행에서만 난다(아래 §opt-in 게이트).
 - 매핑 미설정 역할은 `rc=1` fail-loud — `local.conf` 에 `delegate.<role>.harness/.model` 을 채운다(조용한 폴백 없음).
 - `--tier` 는 **developer 전용** (난제=`hard`·평시=`normal`). 아래 §티어 판정 기준으로 고른다.
@@ -165,53 +165,18 @@ claude `.claude/agents/developer-hard.md` · opencode `.opencode/agents/develope
 
 해소된 **target harness == 내(PM) 하네스**면 → **네이티브 위임**을 쓴다. codex PM 은 아래 §실행 패턴의
 `spawn_agent` 네이티브 위임을 그대로 쓴다(다른 하네스가 PM 일 때는 각자의 네이티브 서브에이전트 위임).
-pm_delegate 를 부르지 않는다 — 외부 송신 0·같은 프로세스 계열이라 더 저렴하다.
+pm_delegate 를 부르지 않는다 — 같은 프로세스 계열이라 더 저렴하다.
 
 해소된 **target harness != 내 하네스**(cross)면 → 아래 §3 pm_delegate 호출.
 
 ### 3. cross 위임 실행 (pm_delegate.py)
 
-target 이 다른 하네스면 `--dry-run` 을 떼고 실행한다 (opt-in 필요·외부 송신 발생):
+target 이 다른 하네스면 `--dry-run` 을 떼고 실행한다 (유료 호출):
 
 ```bash
 python3 .project_manager/tools/pm_delegate.py --role <역할> \
     --prompt-file <프롬프트 파일 절대경로> --cwd <작업 worktree 절대경로> [--tier normal|hard] [--ticket T-NNNN]
 ```
-
-#### Codex egress 건별 승격 (load-bearing)
-
-Codex 출하 기본은 `workspace-write` + `network_access=false`다. 이 경계는 일상 명령의
-egress를 막지만 자식 `claude -p`/`opencode run` 역시 동일한 sandbox를 상속한다.
-따라서 Codex PM의 cross 실위임은 아래 두 계층을 **항상 동반**한다.
-
-1. 먼저 일반 sandbox에서 위 명령의 `--dry-run`을 실행한다. 해소 profile·argv·합성
-   프롬프트·시크릿 판정을 확인하고, `Codex egress: escalation required`가 표시되는지
-   본다. dry-run은 외부 송신·raw 예약·과금을 하지 않는다.
-2. 승격이 필요한 실 명령은 Codex `exec_command` 호출에
-   `sandbox_permissions="require_escalated"`와 기술적 network `justification`을 주고, 명령 argv에
-   `--codex-egress-escalated`를 동시에 추가한다.
-
-```text
-exec_command(
-  cmd="python3 .project_manager/tools/pm_delegate.py --codex-egress-escalated --role <역할> --prompt-file <절대경로> --cwd <절대경로> [--tier normal|hard] [--ticket T-NNNN]",
-  workdir="<PM 홈 절대경로>",
-  sandbox_permissions="require_escalated",
-  justification="설정된 pm_delegate 수신자 호출에 필요한 network를 sandbox 밖에서 허용합니다.",
-  prefix_rule=["python3", ".project_manager/tools/pm_delegate.py"],
-)
-```
-
-`--codex-egress-escalated`는 권한을 만드는 플래그가 아니라 호출층 attestation이다. 단독으로
-샌드박스 명령에 붙이지 말고 반드시 위 `sandbox_permissions` 메타데이터와 같이 쓴다.
-최초 승인은 위의 좁은 reusable `prefix_rule`로 기억할 수 있다. Python 전체나 인자
-전체를 prefix로 승인하지 마라. 승격의 근거는 이 도구 승인이며 `delegate.enabled`는 위임 허용
-여부만 정하는 마스터 스위치라 egress 승격을 대신하지 않는다.
-Windows의 동일 좁은 prefix는 `prefix_rule=["py", ".project_manager/tools/pm_delegate.py"]`이며,
-복사용 재실행 명령도 같은 `py + script` 2 token으로 시작해야 한다.
-승인이 거절되거나 실행이 `rc!=0`/reply 미추출로 끝나면 그 역할 위임은 실패다.
-사용자에게 보고하지 않고 native Codex/GPT로 무음 대체하지 마라. 대체는 사용자 지시
-또는 이미 명시된 `fallback.*` tuple의 현행 규약으로만 한다. 전역
-`sandbox_workspace_write.network_access=true`로 이 문제를 회피하지 마라.
 
 - `--prompt-file` — PM 이 만든 **self-contained task 프롬프트**를 담은 파일. 아래 §실행 패턴의 위임
   프롬프트 본문(developer/code-reviewer)을 그대로 파일로 저장해 넘긴다. 경로는 해소된 `--cwd` 하위
@@ -238,18 +203,11 @@ Windows의 동일 좁은 prefix는 `prefix_rule=["py", ".project_manager/tools/p
   병렬을 유지한다.
 - 결과: `rc=0` 성공(최종 reply = stdout·raw 는 파일 박제) / `rc=1` 실패(loud·raw 경로 stderr) /
   `rc=3` 위임 스위치 off. reply 를 회수해 PM 이 검토·board 갱신을 담당한다(위임 대상은 board 조작 안 함).
-- **시크릿 스캔 차단 시 `--secret-scan-ack <digest>` 사용 규율**(T-0476): §4.7 이 합성 프롬프트를
-  차단하면 **전 탐지 목록(발췌·판정·축) + 승인 토큰 + 재실행 커맨드**가 출력된다. **PM(LLM)이 반사적으로
-  재실행하지 마라** — 그러면 게이트가 사실상 무력화된다. 규율: ① 전 탐지 발췌를 읽고 *시크릿을 논하는
-  텍스트*(오탐)인지 *실 크리덴셜*(정탐)인지 판단 ② 조금이라도 모호하면 발췌를 **사용자에게 제시하고
-  승인받은 뒤에만** ack ③ 정탐이면 ack 금지 — 프롬프트에서 해당 내용을 제거하고 재작성. 승인은 그
-  프롬프트 전문+해소 수신자(harness:model)에 결속된 건별 1회다(1자 변경·수신자 변경 = 재승인).
-  또한 **ack 로 통과한 실행은 폴백이 억제된다** — 승인이 primary 수신자에 결속돼 있어 폴백 수신자에게
-  재승인 없이 승계될 수 없다. `delegate.<role>[.<tier>].fallback.*` 를 설정해 뒀어도 인프라 실패 시
-  `rc=1` fail-loud 이며 억제 사유가 stderr·primary raw 양쪽에 남는다(폴백이 필요하면 `--harness/--model`
-  로 수신자를 명시해 재실행하거나 ack 이 불필요하도록 프롬프트를 정리한다).
-
 ### 위임 마스터 스위치
+
+**위임자는 피위임자에게 자신과 같은 권한을 준다** — 위임 방향·하네스 조합과 무관하다(코덱스가 PM 일 때
+클로드에게 위임하든, 오픈코드가 코덱스에게 위임하든 같다). 위임 경로에서 접근 권한·경로·env·볼 수 있는
+내용을 좁히는 자리는 만들지 않는다. 남는 비대칭은 CLI 형식과 역할축(generate≠evaluate)뿐이다.
 
 `delegate.enabled`는 "PM이 위임을 해도 되는가" 하나만 정한다. **기본은 허용**이고 채널(native/cross)로
 갈리지 않는다 — 키를 지우면 허용, 명시적으로 끄려면 `false`:
@@ -287,11 +245,12 @@ spawn_agent(
      작업 위치(worktree 절대경로): <F6 해소 절대경로 — task-mode 시·슬롯 세션은 생략>.
 
      ticket 본문은 python3 .project_manager/tools/board.py show T-NNNN 로 확인.
-     등록 worktree 에 board 가 없으면 엔진이 worktree lease 장부로 단일 소유 PM 홈을 확정하고,
+     등록 worktree 에 board 가 없으면 엔진이 그 트리의 `.git` 포인터에서 소유 PM 홈을 유도하고,
      read 명령이 요구하는 PM-owned 입력을 그 홈으로 **함께** 해소한다 — 첫 줄의
      `PM 입력 앵커: <PM 홈> (PM 홈 폴백: <입력 목록>)` 을 확인하라(`show` 는 `board`, `lint` 는
-     `board·areas·wiki(...)·hooks·local.conf`). 장부 부재·손상·미등록이거나 여러 PM 홈이 같은 슬롯을
-     등록하면 추측하지 않고 `[중단] 이 앵커에는 board가 없고 …` 로 멈춘다 — 그때는
+     `board·areas·wiki(...)·hooks·local.conf`). 유도가 안 되면(공용 Git 저장소를 못 읽거나, 그
+     형상에서 홈을 못 찾거나, 찾은 홈에 `.project_manager` 가 없으면) 추측하지 않고
+     `[중단] 소유 PM 홈을 확정할 수 없습니다: …` + rc1 로 멈춘다(read·mutation 같은 문구) — 그때는
      **프롬프트 요약만으로 진행하지 말고 즉시 PM 에게 보고**하라. board mutation 은 폴백하지 않으며
      PM 홈에서만 실행한다.
      본문이 self-contained — 목표/인터페이스/결정/DoD/참고 절 대로 구현.
@@ -422,8 +381,8 @@ touches 경로의 실재(소유 repo 좌표 기준) · 묶음 안팎 다른 열�
 > 재섭취를 라운드마다 다시 낸다 — fresh 는 resume 미일치 폴백·전사 과대 시에만). 실패 처리는
 > [`pm_principles.md`](../../../.project_manager/wiki/pm_principles.md) §"티켓과 위임"을 참조한다.
 
-> ⚙️ `additional_reviewer.enabled=true` 로 추가 리뷰어(additional reviewer) 채널을 켠 채택자는
-> reviewer 위임과 같은 시점에 교차검증을 돌린다. 기본은 OFF 이고, 끈 채택자에게 이 단계는 없다:
+> ⚙️ 대상 튜플(`additional_reviewer.harness`/`.model`)을 선언한 채택자는 추가 리뷰어(additional reviewer) 로
+> reviewer 위임과 같은 시점에 교차검증을 돌린다. 선언이 없는 채택자에게 이 단계는 없다:
 > `python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --adr ADR-NNNN`
 > (ADR 본문 정합 필요 시 `--paths` 에 **코드 경로+ADR 함께 나열** — `--paths` 는
 > `--ticket` touches 를 *대체*함). 상세는 `pm_playbook.md` §"추가 리뷰어 교차검증".

@@ -421,7 +421,7 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
         "pm_delegate.py rounds resolve --gate <ticket> --pm-verified`; when the review delta is empty, "
         "skip resolve entirely. Do not search source or help for another gate command. Check all ticket DoD "
         "boxes, update the status row, append one ticket entry to log/current.md, then run exactly "
-        "`python3 .project_manager/tools/board.py complete <ticket> --tests-pass` using the sole local lease. "
+        "`python3 .project_manager/tools/ticket_finish.py <ticket> --no-pytest` using the sole local lease (publishing put the ticket in a size-1 cluster, so a direct `board.py complete` is rejected without the closer binding; --no-pytest reuses the full regression this wave already recorded). "
         "Do not do further discovery after that command succeeds. "
         "Reply with the ticket id when the ticket is done."
     )
@@ -1504,7 +1504,10 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     assert "if and only if accepted findings exist" in prompt
     assert "skip resolve entirely" in prompt
     assert "Do not search source or help" in prompt
-    assert "board.py complete <ticket> --tests-pass" in prompt
+    assert "ticket_finish.py <ticket> --no-pytest" in prompt
+    # 프롬프트는 "직접 board.py complete 는 거부된다" 를 **설명으로** 담는다. 금지 대상은
+    # 그 설명이 아니라 옛 처방 커맨드 자체다.
+    assert "board.py complete <ticket> --tests-pass" not in prompt
     assert ".project_manager/wiki/tickets/rounds/<ticket>/01-architect.md" in prompt
     assert ".project_manager/wiki/tickets/claimed/T-*.md" in prompt
     assert ".project_manager/wiki/tickets/done/T-*.md" in prompt
@@ -1527,7 +1530,10 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     # (4) 새 프로세스 canonical 재조회.
     assert "fresh board.py show process" in prompt
     # (5) complete + sync gate.
-    assert "board.py complete <ticket> --tests-pass" in prompt
+    assert "ticket_finish.py <ticket> --no-pytest" in prompt
+    # 프롬프트는 "직접 board.py complete 는 거부된다" 를 **설명으로** 담는다. 금지 대상은
+    # 그 설명이 아니라 옛 처방 커맨드 자체다.
+    assert "board.py complete <ticket> --tests-pass" not in prompt
     # 진입문서가 프롬프트에 박힌다(harness 별 CLAUDE.md/AGENTS.md).
     assert "CLAUDE.md" in prompt
     assert "AGENTS.md" in _full_wave_prompt("AGENTS.md", "codex")

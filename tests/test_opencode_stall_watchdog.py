@@ -455,7 +455,7 @@ def test_pm_import_claude_fill_routes_shared_watchdog(monkeypatch):
 # ── ⑤ 결정적 픽스처 e2e (무응답 소켓 서버 + 실 opencode·skipif 부재) ─────────────
 
 def _loopback_socket_capability(socket_factory=socket.socket) -> tuple[bool, str | None]:
-    """AF_INET loopback bind 가능 여부만 probe한다(외부 송신 0).
+    """AF_INET loopback bind 가능 여부만 probe한다(호출 0).
 
     일부 network-off sandbox 는 socket() 자체 또는 loopback bind 를 EPERM 으로 막는다.
     그 환경에서는 실 socket E2E를 skip 하되, 아래의 hermetic watchdog 계약 검증은 계속 실행한다.
@@ -487,7 +487,7 @@ def _require_loopback_socket_capability() -> None:
 
 
 def test_loopback_socket_capability_probe_allows_bind_without_network():
-    """허용 분기: probe 는 loopback bind 뒤 close만 하며 외부 연결/송신을 하지 않는다."""
+    """허용 분기: probe 는 loopback bind 뒤 close만 하며 외부 연결/호출을 하지 않는다."""
     calls: list[object] = []
 
     class FakeSocket:
@@ -653,14 +653,31 @@ def _stall_shim_src() -> str:
     return STALL_PLUGIN_FILE.read_text(encoding="utf-8")
 
 
-def _run_stall_node_script(script: str, env_extra: dict | None = None) -> subprocess.CompletedProcess:
+def _install_stall_core(root: Path) -> Path:
+    """core 사본을 픽스처의 `<root>/.opencode/lib/` 에 둔다 — 설치 형상 그대로.
+
+    core 는 엔진 루트를 자기 위치(`path.resolve(__dirname, "..", "..")`)에서 내므로, 소스
+    트리에서 require 하면 세션 마커가 `templates/opencode/.project_manager/.local/` 에 생긴다.
+    팩토리를 구동하는 검증은 이 사본을 cwd 로 돌린다.
+    """
+    lib = root / ".opencode" / "lib"
+    lib.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(STALL_CORE_FILE, lib / STALL_CORE_FILE.name)
+    return lib
+
+
+def _run_stall_node_script(
+    script: str,
+    env_extra: dict | None = None,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess:
     """stall core 자가검증용 node 실행 (safe-write _run_node_check 과 동일 cwd·env 확장만 허용)."""
     env = os.environ.copy()
     if env_extra:
         env.update(env_extra)
     return subprocess.run(
         [_NODE, "-e", script],
-        cwd=str(STALL_CORE_FILE.parent),
+        cwd=str(STALL_CORE_FILE.parent if cwd is None else cwd),
         capture_output=True,
         text=True,
         timeout=30,
@@ -940,10 +957,6 @@ function msg(role, parts, extra) {
 }
 
 (async () => {
-  // 엔진 root 흉내 — findEngineRoot 가 .project_manager/tools/pm_log.py 를 발견해 영속화가 켜진다.
-  fs.mkdirSync(path.join(td, ".project_manager", "tools"), {recursive:true});
-  fs.writeFileSync(path.join(td, ".project_manager", "tools", "pm_log.py"), "");
-
   const prompts = [];
   let promptShouldThrow = false;
   let currentMessages = [];
@@ -1057,9 +1070,15 @@ function msg(role, parts, extra) {
   console.log("STALL_WIRING_OK");
 })().catch((e) => { console.error(e && e.stack || String(e)); process.exit(1); });
 """
-    out = _run_stall_node_script(script, {"STALL_WIRING_ROOT": str(tmp_path)})
+    out = _run_stall_node_script(
+        script, {"STALL_WIRING_ROOT": str(tmp_path)}, cwd=_install_stall_core(tmp_path),
+    )
     combined = out.stdout + out.stderr
     assert "STALL_WIRING_OK" in out.stdout, f"팩토리 배선 자가검증 실패. out={combined!r}"
+    # 팩토리 구동이 소스 트리에 세션 상태를 쓰지 않는다 (엔진 루트 = 설치 트리).
+    assert not (STALL_OPENCODE.parent / ".project_manager" / ".local").exists(), (
+        "팩토리 구동이 templates/opencode 소스 트리에 산출물을 남김"
+    )
 
 
 def test_stall_watchdog_state_persists_across_processes_node_selfcheck(tmp_path):

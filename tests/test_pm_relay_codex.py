@@ -729,15 +729,15 @@ def test_codex_resolve_ctx_budget_precedence(driver_mod):
     assert resolve({"harness.codex.ctx_window_tokens": "0"}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
 
 
-# ── 엔진 Supervisor + codex driver 결합 (post-turn 회전·재전송 금지·codex R2 핵심 가드) ──
+# ── 엔진 Supervisor + codex driver 결합 (post-turn 회전·재호출 금지·codex R2 핵심 가드) ──
 
 def test_supervisor_with_codex_driver_post_turn_no_resend(orch, driver_mod, tmp_path):
-    """codex post-turn marker 회전 — turn 실행 *후* 박제라 그 입력을 **재전송하지 않는다**(이중 실행 방지).
+    """codex post-turn marker 회전 — turn 실행 *후* 박제라 그 입력을 **재호출하지 않는다**(이중 실행 방지).
 
-    opencode/claude pre-turn(입력 *처리 전* 차단)은 회전 후 그 입력을 재전송하지만, codex 는 turn 이
-    이미 실행·응답됐으므로 Supervisor 가 재전송 없이 회전한다(codex R2 must-fix). marker 는 codex
+    opencode/claude pre-turn(입력 *처리 전* 차단)은 회전 후 그 입력을 재호출하지만, codex 는 turn 이
+    이미 실행·응답됐으므로 Supervisor 가 재호출 없이 회전한다(codex R2 must-fix). marker 는 codex
     driver 자신의 `_maybe_mark_ctx`(usage 예산 초과 → 엔진 write_post_turn_marker)가 박제 — 통합 경로.
-    'first' 입력이 정확히 **1회만** relay(부작용 1회)되고 회전이 일어남을 단언. (구 pre-turn 재전송이면
+    'first' 입력이 정확히 **1회만** relay(부작용 1회)되고 회전이 일어남을 단언. (구 pre-turn 재호출이면
     'first' 가 2회 relay 돼 이 단언이 실패 → 이중 실행 결함을 못박는다.)"""
     relayed = []          # relay 로 전달된 프롬프트 순서(spawn bootstrap 은 제외).
     spawn_count = {"n": 0}
@@ -763,8 +763,8 @@ def test_supervisor_with_codex_driver_post_turn_no_resend(orch, driver_mod, tmp_
     rc = sup.run_loop("/repo/root", io.StringIO("first\nsecond\n"), io.StringIO())
     assert rc == 0
     assert spawn_count["n"] == 2               # 회전 발생(초기 spawn + post-turn respawn).
-    assert relayed.count("first") == 1         # 'first' 재전송 안 됨 — 정확히 1회(부작용 1회).
-    assert relayed == ["first", "second"]      # 재전송이면 ["first","first","second"] 가 됐을 것.
+    assert relayed.count("first") == 1         # 'first' 재호출 안 됨 — 정확히 1회(부작용 1회).
+    assert relayed == ["first", "second"]      # 재호출이면 ["first","first","second"] 가 됐을 것.
 
 
 def test_supervisor_codex_spawn_marker_rotates_before_first_input(orch, driver_mod, tmp_path):
@@ -857,15 +857,22 @@ def test_codex_main_forwards_task_budget_and_engine_seams(driver_mod, monkeypatc
     assert captured["validated"] == (333000, 15)
 
 
-def test_codex_driver_repo_root_finds_engine(driver_mod, tmp_path):
-    """repo_root 가 pm_handoff.py 가 있는 조상을 엔진 루트로 찾는다(opencode findEngineRoot 동형)."""
-    (tmp_path / ".project_manager" / "tools").mkdir(parents=True)
-    (tmp_path / ".project_manager" / "tools" / "pm_handoff.py").write_text(
+def test_codex_driver_repo_root_is_the_adapter_parent(driver_mod, tmp_path):
+    """repo_root 는 driver 설치 자리(.codex/)의 부모다 — 조상을 훑지 않는다.
+
+    바깥 트리에만 엔진 사본이 있는 중첩 형상에서 조상 훑기는 바깥 루트를 답하고 `.parent`
+    는 자기 루트를 답한다. 어댑터가 위에 있는 남의 PM 홈에 착지하지 않게 하는 축이다
+    (claude ctx_guard.repo_root 동형).
+    """
+    outer = tmp_path / "outer"
+    (outer / ".project_manager" / "tools").mkdir(parents=True)
+    (outer / ".project_manager" / "tools" / "pm_handoff.py").write_text(
         "x", encoding="utf-8"
     )
-    nested = tmp_path / ".codex"
-    nested.mkdir()
-    assert driver_mod.repo_root(nested) == tmp_path.resolve()
+    root = outer / "nested" / "root"
+    nested = root / ".codex"
+    nested.mkdir(parents=True)
+    assert driver_mod.repo_root(nested) == root.resolve()
 
 
 # ── codex 고유 라이브 실측 (T-0407·codex-cli 0.144.6·gpt-5.5·격리 CODEX_HOME·spike §6 잔여 해소) ──
@@ -878,7 +885,8 @@ def test_codex_driver_repo_root_finds_engine(driver_mod, tmp_path):
 #      호출 말라" 중립 프롬프트엔 발화 없이 열거만 함(발견≠강제발화). description-매칭 프롬프트의 과대
 #      발화 억제(per-skill allow_implicit_invocation)는 관찰 시 후속 티켓(§6·현 어댑터 기본 미설정).
 #   ② TUI env 마커 — codex shell tool env 에 `CODEX_THREAD_ID=<tid>`·`CODEX_CI=1`·
-#      `CODEX_SANDBOX_NETWORK_DISABLED` 실재(exec 경로·부트스트랩 카드 `_is_codex_harness` 판정 원천).
+#      `CODEX_SANDBOX_NETWORK_DISABLED` 실재(실측 로그 원문 — 앞의 둘만 판정 원천이고 셋째는
+#      T-0887 에서 폐지, 현재 `_is_codex_harness` 마커는 `CODEX_THREAD_ID`·`CODEX_CI` 둘뿐이다).
 #      실측: exec 에서 셸이 셋 모두 반환(tid=발급 thread_id·ci=1). **대화형 TUI 세션은 비대화 자동화
 #      불가**(입력 대기) — exec 경로로 재확인하되 TUI 마커 존치는 자동 커버 불가(한계 명시). 카드 감지는
 #      exec/relay 경로에서 확정 동작.

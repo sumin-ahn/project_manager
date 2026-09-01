@@ -977,40 +977,29 @@ def test_partial_run_scope_does_not_leak_between_runs(pm_update, tmp_path, monke
     assert "엔진 사본 rev 혼합 skew" not in capsys.readouterr().err
 
 
-def test_unconverged_run_skips_the_optin_prompts(pm_update, tmp_path, monkeypatch,
-                                                 capsys):
-    """미수렴 실행은 opt-in 을 묻지 않는다 — baseline 억제와 같은 논거(성공 아닌 실행).
-
-    성공하지 않은 실행이 던진 질문의 답을 local.conf 에 박으면, 그 실행의 비영 rc 와 기록이
-    어긋난다(다음 실행은 이미 답한 것으로 보고 다시 묻지 않는다)."""
+def test_unconverged_run_skips_the_baseline_update(pm_update, tmp_path, monkeypatch,
+                                                   capsys):
+    """미수렴 실행은 upstream baseline 을 갱신하지 않는다 — 성공하지 않은 실행이라서다."""
     dest, source, rel = _sync_tree(tmp_path, dest_rev="v0.0.0-stale")
     monkeypatch.setattr(pm_update, "REPO", dest)
-    asked: list[str] = []
-    monkeypatch.setattr(pm_update, "maybe_prompt_additional_reviewer",
-                        lambda _dest: asked.append("additional_reviewer"))
 
     rc = pm_update.main(["--from", str(source)])
 
     err = capsys.readouterr().err
     assert rc == pm_update._UNCONVERGED_RC, err
-    assert asked == [], "미수렴 실행이 opt-in 을 물었다"
     assert (dest / rel).read_text(encoding="utf-8") == "# 상류 문서\n", \
-        "프롬프트 게이트가 파일 적용까지 되돌렸다"
+        "미수렴 게이트가 파일 적용까지 되돌렸다"
 
 
-def test_converged_run_still_asks_the_optin_prompts(pm_update, tmp_path, monkeypatch,
-                                                    capsys):
-    """수렴 실행은 종전대로 묻는다 — 게이트가 정상 경로까지 좁히면 안 된다."""
+def test_converged_run_finishes_with_rc_zero(pm_update, tmp_path, monkeypatch,
+                                             capsys):
+    """수렴 실행은 종전대로 rc 0 — 게이트가 정상 경로까지 좁히면 안 된다."""
     dest, source, rel = _sync_tree(tmp_path, dest_rev="v9.9.9")
     monkeypatch.setattr(pm_update, "REPO", dest)
-    asked: list[str] = []
-    monkeypatch.setattr(pm_update, "maybe_prompt_additional_reviewer",
-                        lambda _dest: asked.append("additional_reviewer"))
 
     rc = pm_update.main(["--from", str(source)])
 
     assert rc == 0, capsys.readouterr().err
-    assert asked == ["additional_reviewer"]
 
 
 def test_converge_returns_the_convergence_verdict(pm_update, tmp_path, capsys):

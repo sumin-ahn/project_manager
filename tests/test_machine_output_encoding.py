@@ -207,7 +207,7 @@ def test_pm_log_ctx_guidance_json_payload_is_utf8(capture_console, monkeypatch):
 def test_pm_log_snapshot_json_payload_is_utf8(capture_console, monkeypatch, tmp_path):
     """snapshot 훅 페이로드는 ASCII 이스케이프지만 같은 seam 을 지나 UTF-8 bytes 로 나간다."""
     pm_log = _load("pm_log")
-    monkeypatch.setattr(pm_log, "resolve_pm_home", lambda repo, cwd: cwd)
+    monkeypatch.setattr(pm_log, "owning_pm_home", lambda anchor: anchor)
     monkeypatch.setattr(
         pm_log, "build_snapshot", lambda *args, **kwargs: (LOSSY_SAMPLE, "")
     )

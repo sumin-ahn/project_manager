@@ -9,7 +9,7 @@
   (5) `--background` 는 부작용 없이 분리 세션을 띄우고 pid 를 장부에 남긴다. 회수 판정은
       rc 가 아니라 라운드 회수 상태다.
   (6) final-fix 확인 입력은 read-only preflight하고, PM resolve가 기계 확인과 엄격히 이중 결속된
-      PM-owned terminal 확인을 만든 뒤 게이트를 처분한다(reviewer 재송신 경로 없음).
+      PM-owned terminal 확인을 만든 뒤 게이트를 처분한다(reviewer 재호출 경로 없음).
 
 hermetic 패턴은 `test_pm_delegate_rounds.py`(자기-정박 PM 홈 + 실 git)를 따른다.
 """
@@ -230,7 +230,7 @@ def test_review_input_refuses_a_ledger_without_branch_coordinates(pd, review_env
 
 @requires_git
 def test_review_input_refuses_an_empty_span(pd, review_env):
-    """빈 diff 는 가짜 통과의 입력이다 — 스냅샷·송신 전에 멈춘다."""
+    """빈 diff 는 가짜 통과의 입력이다 — 스냅샷·호출 전에 멈춘다."""
     home, _tickets = review_env
     assert _git(home, "reset", "-q", "--hard", _BASE_BRANCH).returncode == 0
     board = _fixture_board(pd, home)
@@ -1425,17 +1425,14 @@ def test_confirmation_tree_must_be_the_cluster_branch(pd, review_env):
 
 
 @requires_git
-def test_focus_file_must_stay_inside_the_review_boundary(pd, review_env, tmp_path):
-    """검토 중점도 프롬프트 소스다 — repo 경계 밖 파일은 읽지 않는다(유출 경로 0)."""
+def test_focus_file_is_read_as_prompt_source_and_missing_paths_fail_loud(
+        pd, review_env):
+    """검토 중점 파일은 그대로 프롬프트에 실리고, 없는 경로는 조용히 비지 않는다."""
     home, _tickets = review_env
     inside = home / "focus.md"
     inside.write_text("경계 판정을 중점으로 본다.\n", encoding="utf-8", newline="\n")
-    outside = tmp_path / "outside-focus.md"
-    outside.write_text("바깥 파일\n", encoding="utf-8", newline="\n")
 
     assert "경계 판정" in pd._cluster_review_focus(inside, cwd=home, pm_home=home)
-    with pytest.raises(pd.DelegateError, match="repo 경계 밖"):
-        pd._cluster_review_focus(outside, cwd=home, pm_home=home)
     with pytest.raises(pd.DelegateError, match="--focus 파일이 없습니다"):
         pd._cluster_review_focus(home / "없다.md", cwd=home, pm_home=home)
 

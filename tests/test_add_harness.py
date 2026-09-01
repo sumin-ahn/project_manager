@@ -427,7 +427,8 @@ def test_add_harness_backup_gitignore_idempotent_when_present(pm_import, tmp_pat
     assert "keep/" in text, "기존 규칙이 손실됨(비파괴 위반)."
 
 
-def test_add_harness_backup_on_non_git_adopter_creates_no_gitignore(pm_import, tmp_path):
+def test_add_harness_backup_on_non_git_adopter_creates_no_gitignore(
+        pm_import, tmp_path, monkeypatch):
     """비-git 채택자(git_safe None) + 백업 발생 → `.gitignore` **무생성**(무의미 아티팩트 오염 방지).
 
     `git_safe is not None` short-circuit 이 load-bearing: 없으면 백업 발생 시 helper 가 호출되고,
@@ -441,6 +442,10 @@ def test_add_harness_backup_on_non_git_adopter_creates_no_gitignore(pm_import, t
     (dest / ".codex" / "agents").mkdir(parents=True, exist_ok=True)
     (dest / ".codex" / "agents" / "researcher.toml").write_text("existing agent\n", encoding="utf-8")
     today = datetime.date.today().isoformat()
+    # "채택자가 git work tree 가 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을 정하지
+    # 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    monkeypatch.setattr(
+        pm_import, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
     pm_import.add_harness(dest, "codex", dry_run=False)             # source_root=None → upstream 해소
     backup_root = dest / pm_import.BACKUP_DIR_NAME / today
     # 전제: 비-git 이라 engine-managed 충돌이 중앙 백업됨(git_safe None → 전부 백업).

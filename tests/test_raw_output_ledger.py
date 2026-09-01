@@ -1,4 +1,4 @@
-"""위임·외부리뷰 raw 결정적 장부 회귀 가드."""
+"""위임·추가리뷰 raw 결정적 장부 회귀 가드."""
 from __future__ import annotations
 
 import datetime
@@ -806,7 +806,7 @@ def test_completed_delegate_keeps_existing_raw_audit_header(
     assert str(result.raw_path.resolve()) in query
 
 
-# ── 외부리뷰 raw 기록 앵커 = 소유 PM 홈 (기록·조회 단일 앵커) ────────────────────
+# ── 추가리뷰 raw 기록 앵커 = 소유 PM 홈 (기록·조회 단일 앵커) ────────────────────
 # 기록이 diff 슬롯 장부로 갈리면 PM 홈 장부를 읽는 `pm_delegate raw` 통합 조회가 게이트 raw 를
 # 영구히 못 본다(실측 2건). 조회를 넓히지 않고 기록을 소유 PM 홈으로 수렴시킨 뒤의 회귀다.
 
@@ -814,7 +814,6 @@ def test_completed_delegate_keeps_existing_raw_audit_header(
 # 해소 가능한 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(기본 커맨드 없음)
 # 이 파일의 모든 형상이 conf 에 그 세트를 갖춰야 run_review 본체까지 들어간다.
 _REVIEWER_CONF = (
-    "additional_reviewer.enabled=true\n"
     "additional_reviewer.harness=codex\n"
     "additional_reviewer.model=gpt-5.6-sol\n"
 )
@@ -839,7 +838,7 @@ _CODEX_PASS_WIRE = json.dumps(
 
 
 def _stub_reviewer(external, monkeypatch) -> None:
-    """외부 프로세스 스폰 없이 run_review 본체(raw 박제·장부 등재)를 그대로 태운다."""
+    """자식 프로세스 스폰 없이 run_review 본체(raw 박제·장부 등재)를 그대로 태운다."""
     def _fake_run_reviewer_ex(
         prompt, reviewer_cmd, timeout, run_fn, idle_timeout=None, metrics=None,
         *, cwd=None, env=None, argv=None, stdin_text=None, on_spawn_attempt=None,
@@ -932,7 +931,7 @@ def test_review_run_records_raw_in_pm_home_and_unified_query_shows_it(
     monkeypatch.setattr(external, "REPO", engine_repo)
     _stub_reviewer(external, monkeypatch)
 
-    assert external.main([*review_paths, "--force", "--no-gate"]) == 0
+    assert external.main([*review_paths, "--no-gate"]) == 0
     capsys.readouterr()
 
     home_ledger = pm_home / ".project_manager" / ".local" / "raw_outputs.json"
@@ -972,7 +971,7 @@ def test_legacy_diff_root_raw_anchor_writes_to_the_slot_ledger(
         return relay.raw_storage_paths(external.REPO, "review", output_dir)
 
     monkeypatch.setattr(external, "_raw_storage", legacy_raw_storage)
-    assert external.main(["--paths", "seed.txt", "--force", "--no-gate"]) == 0
+    assert external.main(["--paths", "seed.txt", "--no-gate"]) == 0
     capsys.readouterr()
 
     assert not (
@@ -985,33 +984,34 @@ def test_legacy_diff_root_raw_anchor_writes_to_the_slot_ledger(
     assert slot_rows[0]["surface"] == "additional-reviewer"
 
 
-def test_unresolvable_pm_home_keeps_loud_diff_root_fallback(
+def test_unresolvable_pm_home_fails_loud_and_writes_no_raw(
         external, monkeypatch, tmp_path, capsys):
-    """lease 손상으로 소유자를 확정 못 하면 loud 경고 + diff_root 폴백을 유지한다(자기잠김 금지)."""
+    """lease 손상으로 소유자를 확정 못 하면 raw 를 어디에도 쓰지 않고 멈춘다.
+
+    옛 계약은 loud 경고 뒤 diff_root 로 폴백해 슬롯 장부에 raw 를 박제했다. 그 폴백이 있으면
+    장부를 깨뜨리는 것만으로 귀속이 슬롯으로 옮겨간다.
+    """
     pm_home, worktree = _review_slot_family(tmp_path)
     lease = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     lease.write_text("{broken", encoding="utf-8")
     monkeypatch.setattr(external, "REPO", worktree)
     _stub_reviewer(external, monkeypatch)
 
-    assert external.main(["--paths", "seed.txt", "--force", "--no-gate"]) == 0
+    assert external.main(["--paths", "seed.txt", "--no-gate"]) == 1
 
     err = capsys.readouterr().err
-    assert err.splitlines()[0].startswith("경고: PM 홈 해소 실패")
-    assert "board가 필요 없는 실행" in err
-    assert f"pm_home={worktree.resolve()}" in err
-    slot_rows = _ledger(
+    assert "앵커 해소 실패" in err and "worktree lease 장부" in err
+    assert "board가 필요 없는 실행" not in err
+    assert not (
         worktree / ".project_manager" / ".local" / "raw_outputs.json"
-    )["records"]
-    assert len(slot_rows) == 1
-    assert slot_rows[0]["surface"] == "additional-reviewer"
+    ).exists()
     assert not (
         pm_home / ".project_manager" / ".local" / "raw_outputs.json"
     ).exists()
 
 
 # ── 라운드 장부 앵커 = 소유 PM 홈 (과금 상한 연속성) ──────────────────────────
-# 라운드 장부(`review_rounds.json`)는 `--gate` 별 실 전송 횟수로 과금 상한을 강제한다. 그 앵커가
+# 라운드 장부(`review_rounds.json`)는 `--gate` 별 실 호출 횟수로 과금 상한을 강제한다. 그 앵커가
 # diff_root 면 게이트 스냅샷 worktree·새로 판 슬롯에서 같은 게이트를 돌릴 때 count 가 0 부터 다시
 # 세어져 **상한이 조용히 리셋**된다. 라운드는 이미 `--gate` 키로 분리되므로 슬롯별 장부 분리가 주는
 # 추가 격리는 없다 — raw 장부와 같은 소유 PM 홈 앵커로 모은다.
@@ -1044,7 +1044,7 @@ def _round_entry(anchor: Path, gate: str) -> dict:
 
 
 def _round_count(anchor: Path, gate: str) -> int:
-    """앵커의 라운드 장부에 기록된 게이트 전송 횟수 (장부 부재 = 0)."""
+    """앵커의 라운드 장부에 기록된 게이트 호출 횟수 (장부 부재 = 0)."""
     return _round_entry(anchor, gate).get("count", 0)
 
 
@@ -1057,12 +1057,12 @@ def test_round_ledger_counts_continue_across_diff_roots(
     gate = "T-" + "0001"
 
     monkeypatch.setattr(external, "REPO", worktree)
-    assert external.main(["--paths", "seed.txt", "--gate", gate, "--force"]) == 0
+    assert external.main(["--paths", "seed.txt", "--gate", gate]) == 0
     capsys.readouterr()
     assert _round_count(pm_home, gate) == 1
 
     monkeypatch.setattr(external, "REPO", snapshot)
-    assert external.main(["--paths", "seed.txt", "--gate", gate, "--force"]) == 0
+    assert external.main(["--paths", "seed.txt", "--gate", gate]) == 0
     capsys.readouterr()
 
     assert _round_count(pm_home, gate) == 2          # 이어서 센다(상한이 살아 있다)
@@ -1093,9 +1093,9 @@ def test_legacy_diff_root_round_anchor_resets_the_count_per_slot(
     monkeypatch.setattr(external, "_round_ledger_path", legacy_round_ledger_path)
 
     monkeypatch.setattr(external, "REPO", worktree)
-    assert external.main(["--paths", "seed.txt", "--gate", gate, "--force"]) == 0
+    assert external.main(["--paths", "seed.txt", "--gate", gate]) == 0
     monkeypatch.setattr(external, "REPO", snapshot)
-    assert external.main(["--paths", "seed.txt", "--gate", gate, "--force"]) == 0
+    assert external.main(["--paths", "seed.txt", "--gate", gate]) == 0
     capsys.readouterr()
 
     assert _round_count(worktree, gate) == 1         # 각 슬롯이 자기 장부에서 1 부터
@@ -1122,7 +1122,7 @@ def test_legacy_gate_is_inherited_and_the_retired_field_is_dropped(
     """legacy 게이트는 앵커 이동 후에도 그대로 승계되고, 폐지 필드는 그 경로에서 떨어진다.
 
     반례 형상 (i) — `rounds` 가 비고 `count` 만 있는 승계 항목이다. 수렴 축의 입력이 0 이라
-    전에는 전송-판정 축만이 이 게이트를 막았고, 그 축이 사라진 지금은 라운드가 열린다(값 단언).
+    전에는 호출-판정 축만이 이 게이트를 막았고, 그 축이 사라진 지금은 라운드가 열린다(값 단언).
     폐지 필드는 장부 스캔이 아니라 이 정규화 경로에서 접히므로 승계분도 같은 규칙이다."""
     pm_home, worktree = _review_slot_family(tmp_path)
     _stub_reviewer(external, monkeypatch)
@@ -1130,7 +1130,7 @@ def test_legacy_gate_is_inherited_and_the_retired_field_is_dropped(
     _write_legacy_round_ledger(worktree, gate, {"count": 4, "acked_through": 2})
     monkeypatch.setattr(external, "REPO", worktree)
 
-    rc = external.main(["--paths", "seed.txt", "--gate", gate, "--force"])
+    rc = external.main(["--paths", "seed.txt", "--gate", gate])
 
     err = capsys.readouterr().err
     assert rc == 0                                # 제거된 축이 막던 자리 — 이제 열린다
@@ -1143,7 +1143,7 @@ def test_legacy_gate_is_inherited_and_the_retired_field_is_dropped(
 
     # 2회차 — 이미 이관됐으므로 재승계도, 폐지 필드 알림도 없다(장부 재기록 뒤 대상 0).
     assert external.main(
-        ["--paths", "seed.txt", "--gate", gate, "--force"]
+        ["--paths", "seed.txt", "--gate", gate]
     ) == 0
     err = capsys.readouterr().err
     assert "legacy 라운드 장부 승계" not in err
@@ -1163,7 +1163,7 @@ def test_inherited_gate_has_no_round_extension_path(
     monkeypatch.setattr(external, "REPO", worktree)
 
     assert external.main(
-        ["--paths", "seed.txt", "--gate", gate, "--ack-rounds", "--force"]
+        ["--paths", "seed.txt", "--gate", gate, "--ack-rounds"]
     ) == 1
     err = capsys.readouterr().err
     assert "폐지" in err and "정지" in err and "사용자에게 보고" in err
@@ -1181,7 +1181,7 @@ def test_gate_absent_from_legacy_starts_from_zero(
     monkeypatch.setattr(external, "REPO", worktree)
 
     assert external.main(
-        ["--paths", "seed.txt", "--gate", fresh_gate, "--force"]
+        ["--paths", "seed.txt", "--gate", fresh_gate]
     ) == 0
 
     err = capsys.readouterr().err
@@ -1198,25 +1198,25 @@ def test_legacy_round_inheritance_happens_once_per_gate(
     _write_legacy_round_ledger(worktree, gate, {"count": 1})
     monkeypatch.setattr(external, "REPO", worktree)
 
-    assert external.main(["--paths", "seed.txt", "--gate", gate, "--force"]) == 0
+    assert external.main(["--paths", "seed.txt", "--gate", gate]) == 0
     assert "legacy 라운드 장부 승계" in capsys.readouterr().err
     assert _round_count(pm_home, gate) == 2       # 승계 1 + 이번 예약 1
 
     # legacy 를 차단 수위로 바꿔도 두 번째 실행은 쳐다보지 않는다(재승계면 rc 4 로 막혔을 값).
     _write_legacy_round_ledger(worktree, gate, {"count": 99})
 
-    assert external.main(["--paths", "seed.txt", "--gate", gate, "--force"]) == 0
+    assert external.main(["--paths", "seed.txt", "--gate", gate]) == 0
     assert "legacy 라운드 장부 승계" not in capsys.readouterr().err
     assert _round_count(pm_home, gate) == 3
 
 
-def test_corrupt_lease_registered_slot_keeps_loud_round_fallback(
+def test_corrupt_lease_registered_slot_records_no_round_anywhere(
         external, monkeypatch, tmp_path, capsys):
-    """lease 손상 관리 슬롯은 마커가 없으면 종전 diff-root 회계 폴백을 유지한다([[T-0643]]).
+    """lease 손상 관리 슬롯은 마커 유무와 무관하게 실 라운드도 회계 밖 자문도 만들지 않는다.
 
-    T-0634의 강등 사유 기반 차단은 lease 손상 관리 슬롯까지 닫았다. 스냅샷 생성 사실은 이제
-    전용 마커가 증명하므로, 마커 없는 단일 관리 후보는 강등 사유가 같아도 실 라운드와 회계 밖
-    자문 모두 종전 loud 폴백으로 통과한다. 이 대비가 사유 문자열 단독 판정을 막는다."""
+    옛 계약은 마커 없는 단일 관리 후보를 '복구 폴백'으로 인정해 슬롯의 휘발 장부에 실 라운드를
+    기록했다. 그러면 장부를 깨뜨리는 것만으로 과금 상한이 0 부터 다시 세어진다.
+    """
     pm_home, worktree = _review_slot_family(tmp_path)
     lease = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     lease.write_text("{broken", encoding="utf-8")
@@ -1224,17 +1224,15 @@ def test_corrupt_lease_registered_slot_keeps_loud_round_fallback(
     _stub_reviewer(external, monkeypatch)
     gate = "T-" + "0001"
 
-    assert external.main(["--paths", "seed.txt", "--gate", gate, "--force"]) == 0
-    err = capsys.readouterr().err
-    assert err.splitlines()[0].startswith("경고: PM 홈 해소 실패")
-    assert "게이트 스냅샷 마커" not in err
-    assert _round_count(worktree, gate) == 1        # 손상 중에는 강등 앵커에 loud 기록
-    assert _round_count(pm_home, gate) == 0
+    for argv in (["--paths", "seed.txt", "--gate", gate],
+                 ["--paths", "seed.txt", "--no-gate"]):
+        assert external.main(argv) == 1, argv
+        err = capsys.readouterr().err
+        assert "앵커 해소 실패" in err and "worktree lease 장부" in err, argv
+        assert "게이트 스냅샷 마커" not in err, argv
 
-    # 회계 밖 자문은 종전대로 통과하며 raw 장부는 강등 앵커 폴백을 유지한다.
-    assert external.main(["--paths", "seed.txt", "--force", "--no-gate"]) == 0
-    err = capsys.readouterr().err
-    assert err.splitlines()[0].startswith("경고: PM 홈 해소 실패")
+    assert _round_count(worktree, gate) == 0
+    assert _round_count(pm_home, gate) == 0
 
 
 def test_main_clears_raw_anchor_between_calls(
@@ -1246,7 +1244,7 @@ def test_main_clears_raw_anchor_between_calls(
     monkeypatch.setattr(external, "REPO", worktree)
     _stub_reviewer(external, monkeypatch)
 
-    assert external.main(["--paths", "seed.txt", "--force", "--no-gate"]) == 0
+    assert external.main(["--paths", "seed.txt", "--no-gate"]) == 0
     capsys.readouterr()
     assert external._PM_HOME_OVERRIDE is None
 

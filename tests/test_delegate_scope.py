@@ -237,11 +237,16 @@ def test_resolve_workspace_root_from_subdirectory(scope, delegated_repo):
 
 
 def test_resolve_workspace_root_outside_repo_is_loud(scope, tmp_path):
-    """repo 밖이면 조용히 통과시키지 않고 DelegateScopeError(호출부가 loud degrade)."""
+    """repo 밖이면 조용히 통과시키지 않고 DelegateScopeError(호출부가 loud degrade).
+
+    "이 자리는 어느 checkout 도 아니다"가 입력이다 — 픽스처 위치가 그 답을 정하지 않도록
+    이 함수가 이미 가진 `run_git` 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    """
     outside = tmp_path / "not-a-repo"
     outside.mkdir()
     with pytest.raises(scope.DelegateScopeError):
-        scope.resolve_workspace_root(outside)
+        scope.resolve_workspace_root(
+            outside, run_git=lambda _cwd, _args: (128, ""))
 
 
 def test_subdirectory_capture_uses_repo_relative_paths(scope, delegated_repo):

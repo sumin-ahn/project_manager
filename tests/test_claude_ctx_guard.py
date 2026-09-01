@@ -1,7 +1,7 @@
 """claude 어댑터 ctx compaction-native 넛지 단위 테스트 (T-0550).
 
 어댑터 스크립트(templates/claude_code/.claude/ctx_guard·ctx_statusline·ctx_stop_hook)를
-importlib 로 직접 로드해 검증한다. stdlib only — 라이브 claude·외부 호출 없이
+importlib 로 직접 로드해 검증한다. stdlib only — 라이브 claude·subprocess 호출 없이
 가짜 transcript JSONL·가짜 statusline stdin·격리 tmp 만 본다.
 
 검증 축:
@@ -1320,6 +1320,12 @@ def _worktree_pm_home_checkpoint_probe(tmp_path: Path, canonical_mode: str) -> d
     pm_home = tmp_path / "pm-home"
     worktree = pm_home / "work" / "product_1"
     worktree.mkdir(parents=True)
+    # 슬롯이 소유 PM 홈을 선언하는 `.git` 포인터(worktree_pool 실 형상). 소유 판정의 유일한
+    # 입력이라 이 선언이 없으면 이 트리는 아무의 worktree 도 아니다.
+    slot_git_dir = pm_home / ".repos" / "product.git" / "worktrees" / "product_1"
+    slot_git_dir.mkdir(parents=True)
+    (worktree / ".git").write_text(f"gitdir: {slot_git_dir}\n", encoding="utf-8")
+    (slot_git_dir / "commondir").write_text("../..\n", encoding="utf-8")
     shutil.copytree(
         REPO / ".project_manager" / "tools",
         worktree / ".project_manager" / "tools",

@@ -11,7 +11,7 @@
 |---|---|---|
 | `spikes/` | 대화형 설계 spike 산출 (옵션 비교 + ADR/ticket DRAFT). `/spike-new` 스킬이 박제 | `web-auth-redesign-2026-06-03.md`, `_template.md` |
 | `plans/` | plan_v1 → plan_v2 → … 누적되는 전체 계획 문서 | `plan_v1.md`, `plan_v2.md`, `plan_v5_review_A.md` |
-| `evaluations/` | 모델 평가·외부 코드 리뷰·사용자 피드백 정리 | `model_eval_2026-05.md`, `additional_reviewer_2026-06.md` |
+| `evaluations/` | 모델 평가·추가 리뷰어 코드리뷰·사용자 피드백 정리 | `model_eval_2026-05.md`, `additional_reviewer_2026-06.md` |
 | `benchmarks/` | 실측 결과 (latency·throughput·정확도 등) | `latency_2026-05-19.md`, `bench_GPU_2026-06.md` |
 
 프로젝트가 plan 을 안 쓰면 `plans/` 를 안 만든다. 평가가 없으면 `evaluations/`
@@ -47,7 +47,7 @@
 ## 그럼 갱신은 어떻게
 
 - 같은 plan 의 새 버전이면: `plan_v2.md`. v1 은 그대로 둔다.
-- plan v5 에 대한 외부 리뷰면: `plans/reviews/plan_v5_review_A.md`.
+- plan v5 에 대한 추가 리뷰면: `plans/reviews/plan_v5_review_A.md`.
 - 같은 벤치마크의 재측정이면: `benchmarks/latency_2026-06-15.md`. 5월 측정은 그대로.
 
 ## 어디서 무엇을 인용하는가

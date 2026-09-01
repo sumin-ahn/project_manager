@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from _git_fixture import init_git_repo
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 NEW_TEMPLATE = REPO / "templates" / "opencode" / "AGENTS.md"
@@ -128,7 +130,9 @@ def _make_selfupdate_pair(tmp_path: Path, agents: str) -> tuple[Path, Path]:
     (dest / ".opencode" / "opencode.jsonc").write_text(_MINIMAL_OLD_JSONC, encoding="utf-8")
     (dest / ".project_manager" / "local.conf").write_text(
         "runtime.py=python3\nproject.name=myproj\ntest.cmd=pytest tests/ -q\n"
-        "additional_reviewer.enabled=false\n", encoding="utf-8")
+        "", encoding="utf-8")
+    # 출하 인벤토리는 `git ls-files` 가 낸다 — source 트리가 자기 checkout 이라고 선언한다.
+    init_git_repo(src, commit="seed")
     return dest, src
 
 

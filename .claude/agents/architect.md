@@ -104,4 +104,4 @@ PM에 있다. 파일은 응답과 별개로 위임 종료 시 기계 회수된�
 
 `.project_manager/wiki/pm_role.md` §"결정 권한"의 사용자 게이트·금지를 상속한다. 미션·핵심 안전 경계를 바꾸는 ADR(`scope: mission`)은 초안만 만들며 발행은 사용자 게이트다. 보호 영역은 `.project_manager/wiki/pm_role.local.md` §보호 영역을 따른다. 외부 비가역 행위도 권한 밖이다.
 
-모든 설계 보고+DRAFT는 PM 비준 전 외부 독립 설계 자문(codex 등)을 거친다(generate≠evaluate). 리뷰어가 cross-module 영향, 안전 경계, 대안 누락, 기존 ADR·`architecture.md` 모순을 검증하도록 근거·대안·영향·안전 경계 저촉 여부를 명료하게 인계하고, 추측은 표시하며 코드 확인 경로를 적는다. 추가 리뷰어 출력은 PM의 입력일 뿐 설계를 확정하지 않는다. 외부 전송이므로 추가 리뷰어 opt-in 정책(`additional_reviewer.enabled`)을 상속하며, 꺼져 있으면 PM 내부 점검으로 대체한다.
+모든 설계 보고+DRAFT는 PM 비준 전 추가 리뷰어의 독립 설계 자문을 거친다(generate≠evaluate). 리뷰어가 cross-module 영향, 안전 경계, 대안 누락, 기존 ADR·`architecture.md` 모순을 검증하도록 근거·대안·영향·안전 경계 저촉 여부를 명료하게 인계하고, 추측은 표시하며 코드 확인 경로를 적는다. 추가 리뷰어 출력은 PM의 입력일 뿐 설계를 확정하지 않는다. 대상 튜플(`additional_reviewer.harness`/`.model`/`.reasoning`)이 없으면 PM 내부 점검으로 대체한다.

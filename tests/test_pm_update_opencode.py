@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from _git_fixture import init_git_repo
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -122,11 +124,16 @@ def test_resolve_manifest_raises_when_both_missing(pm_update, tmp_path):
 # ── plan() with dest_root ──────────────────────────────────────────────────
 
 def _make_source(root: Path, files: dict[str, str]) -> None:
-    """source_root 에 파일들을 생성한다."""
+    """source_root 에 파일들을 생성하고 그 트리를 자기 Git 저장소로 선언한다.
+
+    출하 인벤토리는 `git ls-files` 가 낸다 — 선언이 없으면 픽스처가 앉아 있는 저장소가
+    답해(추적 안 된 트리라) 인벤토리가 0건이 된다.
+    """
     for rel, content in files.items():
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
+    init_git_repo(root, commit="seed")
 
 
 def test_plan_with_dest_root_new_files(pm_update, tmp_path):
@@ -185,6 +192,7 @@ def test_plan_without_dest_root_defaults_to_repo(pm_update, tmp_path):
     sentinel = source / rel
     sentinel.parent.mkdir(parents=True, exist_ok=True)
     sentinel.write_text("# sentinel", encoding="utf-8")
+    init_git_repo(source, commit="seed")
 
     manifest = [rel]
     changes, missing = pm_update.plan(source, manifest, dest_root=None)
@@ -365,107 +373,6 @@ def test_opencode_manifest_includes_engine_tools(pm_update):
     ]
     for entry in required:
         assert entry in entries, f"필수 엔진 항목 누락: {entry}"
-
-
-# ── maybe_prompt_additional_reviewer dest_root 기반 동작 ─────────────────────
-
-def test_maybe_prompt_additional_reviewer_uses_dest_local_conf(pm_update, tmp_path):
-    """maybe_prompt_additional_reviewer 가 dest_root 기준 local.conf 를 읽는다.
-
-    --target 모드에서 루트 local.conf 를 오염시키지 않음을 검증한다.
-    dest_root 에 local.conf 가 없으면 (init 전) 아무 일도 일어나지 않아야 한다.
-    """
-    dest = tmp_path / "dest_instance"
-    dest.mkdir()
-    # local.conf 없음 → 조기 리턴, 루트 LOCAL_CONF 에 아무것도 쓰지 않아야 한다
-    root_local_conf = pm_update.REPO / ".project_manager" / "local.conf"
-    existed_before = root_local_conf.exists()
-
-    pm_update.maybe_prompt_additional_reviewer(dest)
-
-    # 루트 local.conf 존재 여부가 변해서는 안 된다
-    assert root_local_conf.exists() == existed_before, (
-        "--target 모드에서 루트 local.conf 를 건드려선 안 된다."
-    )
-    # dest 기준 local.conf 도 생성돼선 안 된다 (init 전)
-    dest_local_conf = dest / ".project_manager" / "local.conf"
-    assert not dest_local_conf.exists()
-
-
-def test_maybe_prompt_additional_reviewer_skips_when_already_set(pm_update, tmp_path):
-    """dest_root 의 local.conf 에 additional_reviewer.enabled 가 있으면 아무것도 하지 않는다."""
-    dest = tmp_path / "dest_instance"
-    local_conf = dest / ".project_manager" / "local.conf"
-    local_conf.parent.mkdir(parents=True)
-    local_conf.write_text("additional_reviewer.enabled=false\n", encoding="utf-8")
-
-    mtime_before = local_conf.stat().st_mtime
-    pm_update.maybe_prompt_additional_reviewer(dest)
-    mtime_after = local_conf.stat().st_mtime
-
-    assert mtime_before == mtime_after, "이미 설정된 경우 local.conf 를 수정해선 안 된다."
-
-
-def test_maybe_prompt_additional_reviewer_skips_non_tty(pm_update, tmp_path, monkeypatch):
-    """비대화형(stdin isatty=False)이면 prompt 없이 넘어간다 — local.conf 변경 없음."""
-    dest = tmp_path / "dest_instance"
-    local_conf = dest / ".project_manager" / "local.conf"
-    local_conf.parent.mkdir(parents=True)
-    # additional_reviewer.enabled 미포함 → prompt 조건 성립, 그러나 비대화형이므로 skip
-    local_conf.write_text("# 초기\n", encoding="utf-8")
-
-    monkeypatch.setattr("sys.stdin", type("FakeStdin", (), {"isatty": lambda self: False})())
-
-    mtime_before = local_conf.stat().st_mtime
-    pm_update.maybe_prompt_additional_reviewer(dest)
-    mtime_after = local_conf.stat().st_mtime
-
-    assert mtime_before == mtime_after, "비대화형에서 local.conf 를 수정해선 안 된다."
-
-
-# ── T-0071: PM_NONINTERACTIVE 명시 신호 우선 (isatty 신뢰불가 함정 회피) ──
-
-@pytest.mark.parametrize("val", ["1", "true", "TRUE", "yes", "on"])
-def test_maybe_prompt_skips_when_pm_noninteractive_truthy(
-    pm_update, tmp_path, monkeypatch, val
-):
-    """PM_NONINTERACTIVE truthy → isatty=True(거짓 DEVNULL 보고)여도 묻지 않고 skip.
-
-    input() 을 절대 안 부르고 local.conf 를 수정하지 않는다(Windows DEVNULL isatty 함정 회피).
-    """
-    dest = tmp_path / "dest_instance"
-    local_conf = dest / ".project_manager" / "local.conf"
-    local_conf.parent.mkdir(parents=True)
-    local_conf.write_text("# 초기\n", encoding="utf-8")
-
-    monkeypatch.setattr("sys.stdin", type("FakeStdin", (), {"isatty": lambda self: True})())
-    monkeypatch.setenv("PM_NONINTERACTIVE", val)
-    monkeypatch.setattr(
-        "builtins.input",
-        lambda prompt="": pytest.fail("PM_NONINTERACTIVE 인데 input() 호출됨 — skip 위반."),
-    )
-
-    mtime_before = local_conf.stat().st_mtime
-    pm_update.maybe_prompt_additional_reviewer(dest)
-    mtime_after = local_conf.stat().st_mtime
-
-    assert mtime_before == mtime_after, "PM_NONINTERACTIVE 면 local.conf 미수정."
-
-
-def test_maybe_prompt_falsy_env_preserves_isatty_path(pm_update, tmp_path, monkeypatch):
-    """PM_NONINTERACTIVE 빈/falsy + isatty=True + 'y' → 기록까지 진행(isatty 폴백 보존)."""
-    dest = tmp_path / "dest_instance"
-    local_conf = dest / ".project_manager" / "local.conf"
-    local_conf.parent.mkdir(parents=True)
-    local_conf.write_text("# 초기\n", encoding="utf-8")
-
-    monkeypatch.setattr("sys.stdin", type("FakeStdin", (), {"isatty": lambda self: True})())
-    monkeypatch.setenv("PM_NONINTERACTIVE", "0")
-    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
-
-    pm_update.maybe_prompt_additional_reviewer(dest)
-
-    assert "additional_reviewer.enabled=true" in local_conf.read_text(encoding="utf-8")
 
 
 # ── 타깃 발견: templates/*/ 디렉토리 기반 ────────────────────────────────

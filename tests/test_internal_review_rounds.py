@@ -1306,7 +1306,7 @@ def test_reservation_boundary_absorbs_unicode_error_from_reader(
 def test_driver_return_before_raw_write_failure_still_consumes_round(
     pd, monkeypatch, tmp_path,
 ):
-    """driver 송신 뒤 raw 박제가 실패해도 any_spawned가 이미 고정돼 환불되지 않는다."""
+    """driver 호출 뒤 raw 박제가 실패해도 any_spawned가 이미 고정돼 환불되지 않는다."""
     budget = pd._reserve_internal_review_round(
         "T-SPAWN-001", wall_timeout_sec=60,
         target_rev="same",
@@ -1388,7 +1388,6 @@ def test_main_derives_gate_from_ticket_and_links_the_real_raw_record(
         lambda *args, **kwargs: (owner, None, external),
     )
     monkeypatch.setattr(pd, "begin_scope_audit", lambda *args, **kwargs: None)
-    monkeypatch.setattr(pd, "codex_egress_escalation_required", lambda *_a, **_kw: False)
 
     class FakeRun:
         def __call__(self, argv, **kwargs):

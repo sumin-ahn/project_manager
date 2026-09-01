@@ -103,7 +103,7 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 
 각 skill의 체크리스트는 `.claude/skills/pm-*/SKILL.md`를 본다.
 
-리뷰는 내부 code-reviewer(generate≠evaluate)와 **추가 리뷰어**(additional reviewer·엔진 이름 `additional_reviewer`)를 병행한다. 코드: `python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --adr ADR-NNNN`; 설계(ADR/spike): `--base <ref> --paths .project_manager/wiki/decisions/ ... --gate <T-NNNN|ADR-NNNN>`(회계 밖 자문만 `--no-gate` 명시). 전제는 `additional_reviewer.enabled=true`(opt-in), 상세·diff-only 한계는 [`pm_playbook.md`](pm_playbook.md) §"검토 루프". Claude Bash 도구 실행은 호출층 `timeout: 29300000`(ms)을 반드시 명시하며, 엔진 CLI `--timeout`은 이 호출층 상한을 대신하지 않는다.
+리뷰는 내부 code-reviewer(generate≠evaluate)와 **추가 리뷰어**(additional reviewer·엔진 이름 `additional_reviewer`)를 병행한다. 코드: `python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --adr ADR-NNNN`; 설계(ADR/spike): `--base <ref> --paths .project_manager/wiki/decisions/ ... --gate <T-NNNN|ADR-NNNN>`(회계 밖 자문만 `--no-gate` 명시). 전제는 대상 튜플 `additional_reviewer.harness`/`.model`/`.reasoning` 선언이며, 상세·diff-only 한계는 [`pm_playbook.md`](pm_playbook.md) §"검토 루프". Claude Bash 도구 실행은 호출층 `timeout: 29300000`(ms)을 반드시 명시하며, 엔진 CLI `--timeout`은 이 호출층 상한을 대신하지 않는다.
 
 내부 루프의 수렴 불변식은 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"만 소유하고, 실행 절차는 [`pm_playbook.md`](pm_playbook.md) §"라운드 프로토콜"을 따른다.
 
@@ -176,7 +176,7 @@ exact 사용자 승인값을 검증해 `closure.mode=reconciled`로만 닫는다
 1. **PM-direct** — touches 실제 파일 2개 이하, 동작 무변경 또는 red→green 테스트 확정, hard 신호 0,
    완료 전 범위 테스트의 네 조건을 모두 만족. 티켓은 발행하되 위임 라운드를 열지 않고 PM이
    구현·self-review한다.
-2. **hard** — 도구 모듈 2+, 공용 코드, 파싱 규칙, 기존 동작 영향, 보안·시크릿·외부 송신·git 훅,
+2. **hard** — 도구 모듈 2+, 공용 코드, 파싱 규칙, 기존 동작 영향, 보안·시크릿·git 훅,
    board 상태 전이·lease·잠금·동시성 중 하나라도 해당. 상위 developer 프로필
    (`delegate.developer.hard.*`)로 위임한다.
 3. **normal** — 위 두 단계가 아닌 경우. 기본 developer 프로필로 위임한다.
@@ -211,7 +211,7 @@ developer·reviewer·추가 리뷰어 없이 PM이 직접 편집할 수 있다. 
 
 **허용:** UI/UX·템플릿·문구·docstring·주석·typo·표시 라벨·링크·README; 비핵심 상수·임계값(가독성·로깅·표시 항목 수·UI timeout 등); 재현·검증이 명백한 한 파일·수십 줄 이내 버그; 기록·`status.md` process·`log/current.md`·`board.md`·메모리·현재-진실 doc 점검; 개발 도구/스크립트의 비기능 출력 포맷·도움말·dry-run 개선.
 
-**PM-direct 금지(최소 normal 또는 hard):** 위 네 조건 중 하나라도 불충족; 신규 모듈·신규 ADR·구조/스키마 변경; `scope: mission` ADR; [[pm_role.local.md]] §보호 영역. 보안/인증/시크릿·외부 송신·핵심 안전 게이트는 hard 신호다.
+**PM-direct 금지(최소 normal 또는 hard):** 위 네 조건 중 하나라도 불충족; 신규 모듈·신규 ADR·구조/스키마 변경; `scope: mission` ADR; [[pm_role.local.md]] §보호 영역. 보안/인증/시크릿·핵심 안전 게이트는 hard 신호다.
 
 **직접편집 공통 의무:**
 1. full 또는 변경 모듈 회귀 통과.
@@ -250,7 +250,7 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 - **상한 이후 보고**: 조건: 라운드·wave 상한 도달로 해당 루프가 정지한 상태. 결론: 라운드를 더 열거나 board를 쓰지 않고 현재 티켓 상태와 실패 근거를 사용자에게 보고한다.
 - **종료·축소 권한**: 조건: 세션 종료 또는 작업 축소를 결정하는 경우. 결론: 세션 종료·작업 축소는 사용자 지시로만 한다.
 
-비용 동의는 **켤 때 한 번**이다 — `additional_reviewer.enabled=true`(추가 리뷰어)는 설정된 외부 전송과 통상 과금에 대한 지속 의사표시이고, 그 뒤 호출마다 비용을 다시 묻지 않는다. 위임의 `delegate.enabled`는 동의 축이 아니라 "위임을 해도 되는가"를 정하는 마스터 스위치다(기본 허용·채널 무관). 라운드/wave 상한은 비용 게이트가 아니라 기계적 anti-loop 정지다(§"검토 루프"). 리뷰 라운드 축은 연장 승인이 없고 상한이나 발산 차단에 걸리면 현재 티켓을 정지해 사용자에게 보고한다. 사용자에게 올리는 경우는 중대 scope 확대·독립적 사용자 게이트 사유다.
+추가 리뷰어는 developer·code-reviewer 와 같이 부르면 도는 역할이고, 이 역할만의 별도 승인 축은 없다 — 호출마다 비용을 다시 묻지 않는다. 위임의 `delegate.enabled`는 "위임을 해도 되는가"를 정하는 마스터 스위치다(기본 허용·채널 무관). 라운드/wave 상한은 기계적 anti-loop 정지다(§"검토 루프"). 리뷰 라운드 축은 연장 승인이 없고 상한이나 발산 차단에 걸리면 현재 티켓을 정지해 사용자에게 보고한다. 사용자에게 올리는 경우는 중대 scope 확대·독립적 사용자 게이트 사유다.
 
 **금지(양측 합의+별도 ADR 필요):** [[pm_role.local.md]] §금지. 예: 미션 변경, 핵심 안전 경계(kill switch/한도/보호 영역) 약화, 영구 수동 영역 자동화.
 

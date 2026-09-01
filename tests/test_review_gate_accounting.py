@@ -1,6 +1,6 @@
 """게이트 회계 자동 유도 — `--ticket` 실행의 조용한 무기록 폐쇄 (T-0626).
 
-`additional_reviewer.py` 를 `--ticket`(+`--paths`)만으로 돌리면 리뷰는 정상 전송·과금되면서 라운드
+`additional_reviewer.py` 를 `--ticket`(+`--paths`)만으로 돌리면 리뷰는 정상 호출·과금되면서 라운드
 예약·기록·상한 회계가 전부 생략됐다(`_reserve_round_budget` 첫 분기 = `--gate` 미지정 → 상한 대상
 밖·무기록). 실측(2026-08-10): 하루 8+ 라운드가 장부에 0건이라, 반려 must-fix 가 릴리즈 차단
 표면(`board.py livegate record`)에 도달하지 못했다. 이 파일은 그 함정이 기계로 닫혔음을 단언한다:
@@ -14,7 +14,7 @@
 
 hermetic: REPO 를 tmp 로 monkeypatch 해 장부를 격리하고(형제 `test_additional_reviewer.py`·
 `test_review_convergence_gate.py` 동일 규약), PM 홈 해소·touches·extract_diff·run_review 를 주입해
-실제 git/추가 리뷰어 없이(외부 전송 0·ADR-0004 opt-in) 분기를 단언한다.
+실제 git/추가 리뷰어 없이(호출 0·ADR-0004 opt-in) 분기를 단언한다.
 """
 from __future__ import annotations
 
@@ -43,7 +43,6 @@ FOLLOW_UP_TICKET = "T-" + "0627"
 # 해소 가능한 추가 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본 커맨드
 # 없음) 이 파일의 모든 형상이 그 세트를 깔고 시작한다.
 _REVIEWER_TARGET = {
-    "additional_reviewer.enabled": "true",
     "additional_reviewer.harness": "codex",
     "additional_reviewer.model": "gpt-5.6-sol",
 }
@@ -114,14 +113,7 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int] | None = None, c
     monkeypatch.setattr(external, "parse_ticket_touches", lambda ticket, **kwargs: ["x.py"])
     monkeypatch.setattr(
         external, "extract_diff",
-        lambda *a, **k: ("diff --git a/x b/x\n@@ -1 +1 @@\n-o\n+n\n", []))
-    monkeypatch.setattr(
-        external, "create_reviewer_workspace",
-        lambda diff_root, *, base_dir=None, conf=None, source_home=None, denylist=():
-        external.ReviewerWorkspace(
-            root=tmp_path / "mirror", tree=tmp_path / "tree", home=tmp_path / "home",
-            files=1, skipped_unsafe=0, git_repo=True,
-        ))
+        lambda *a, **k: "diff --git a/x b/x\n@@ -1 +1 @@\n-o\n+n\n")
     monkeypatch.setattr(external, "_diff_cap_refusal", lambda *a, **k: None)
     # 이 파일의 스코프는 회계 축 하나다. 리뷰 뒤 게이트 티켓에 additional-reviewer 절을 기록하는
     # 회수(T-0696)는 실 보드 왕복이 필요한 별도 축이라 여기서는 격리한다 — 그 회귀는
@@ -221,7 +213,7 @@ def test_ticket_only_run_is_ledgered_under_the_derived_gate(
         external, monkeypatch, tmp_path, capsys):
     """`--ticket` 단독 실행이 게이트 자동 유도로 라운드를 예약·기록한다 (DoD·발단 클래스).
 
-    수정 전엔 같은 실행이 리뷰를 전송·과금하고도 장부에 0건을 남겼다."""
+    수정 전엔 같은 실행이 리뷰를 호출·과금하고도 장부에 0건을 남겼다."""
     reviewer = _wire(external, monkeypatch, tmp_path)
 
     assert external.main(["--ticket", TICKET]) == 0
@@ -251,7 +243,7 @@ def test_derived_gate_hits_the_convergence_cap_like_an_explicit_one(
     capsys.readouterr()
 
     assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert reviewer.calls == 2              # 리뷰어 미호출 (외부 전송 0·과금 0)
+    assert reviewer.calls == 2              # 리뷰어 미호출 (호출 0·과금 0)
     err = capsys.readouterr().err
     assert "수렴 게이트 차단" in err
     assert "3 → 2" in err
@@ -269,20 +261,20 @@ def test_explicit_gate_wins_over_the_ticket(external, monkeypatch, tmp_path, cap
 
 def test_paths_only_real_send_requires_gate_or_explicit_opt_out(
         external, monkeypatch, tmp_path, capsys):
-    """`--paths` 단독 실 전송은 회계 선택 누락을 fail-loud 한다 (T-0631 E2E-1)."""
+    """`--paths` 단독 실 호출은 회계 선택 누락을 fail-loud 한다 (T-0631 E2E-1)."""
     reviewer = _wire(external, monkeypatch, tmp_path)
 
     assert external.main(["--paths", "x.py"]) == 1
     assert reviewer.calls == 0
     assert _ledger(tmp_path) == {}
     err = capsys.readouterr().err
-    assert "실 전송에는 게이트 회계 지정 또는 명시 opt-out" in err
+    assert "실 호출에는 게이트 회계 지정 또는 명시 opt-out" in err
     assert "--ticket <T-NNNN>" in err and "--gate <게이트>" in err
     assert "--no-gate" in err
 
 
 def test_real_send_help_examples_choose_gate_accounting(external):
-    """도움말의 복사 가능한 실 전송 예시는 게이트 회계 선택 없이 rc=1 경로를 안내하지 않는다."""
+    """도움말의 복사 가능한 실 호출 예시는 게이트 회계 선택 없이 rc=1 경로를 안내하지 않는다."""
     prefix = "python3 .project_manager/tools/additional_reviewer.py"
     commands = [
         shlex.split(line.strip())
@@ -302,7 +294,7 @@ def test_real_send_help_examples_choose_gate_accounting(external):
 
 def test_paths_only_with_no_gate_sends_and_keeps_the_unaccounted_notice(
         external, monkeypatch, tmp_path, capsys):
-    """`--paths --no-gate` 실 전송은 허용하되 무기록 고지를 유지한다 (T-0631 E2E-2)."""
+    """`--paths --no-gate` 실 호출은 허용하되 무기록 고지를 유지한다 (T-0631 E2E-2)."""
     reviewer = _wire(external, monkeypatch, tmp_path)
 
     assert external.main(["--paths", "x.py", "--no-gate"]) == 0
@@ -310,19 +302,19 @@ def test_paths_only_with_no_gate_sends_and_keeps_the_unaccounted_notice(
     assert _ledger(tmp_path) == {}
     err = capsys.readouterr().err
     assert "`--no-gate` 명시 opt-out" in err
-    assert "이 실행이 전송되면" in err
+    assert "리뷰어를 부르면 라운드 장부에" in err
     assert "라운드 장부에 기록되지 않고" in err
 
 
 def test_paths_only_dry_run_needs_no_gate(external, monkeypatch, tmp_path, capsys):
-    """`--dry-run` 은 미전송 미리보기라 게이트 선택 없이도 통과한다 (T-0631 E2E-3)."""
+    """`--dry-run` 은 미호출 미리보기라 게이트 선택 없이도 통과한다 (T-0631 E2E-3)."""
     reviewer = _wire(external, monkeypatch, tmp_path)
 
     assert external.main(["--paths", "x.py", "--dry-run"]) == 0
     assert reviewer.calls == 0
     assert _ledger(tmp_path) == {}
     captured = capsys.readouterr()
-    assert "[dry-run] 외부 호출 생략" in captured.out
+    assert "[dry-run] 리뷰어 호출 생략" in captured.out
     assert external._GATE_ACCOUNTING_REQUIRED_GUIDANCE not in captured.err
 
 
@@ -338,7 +330,7 @@ def test_dry_run_with_a_derived_gate_records_nothing(external, monkeypatch, tmp_
 
 def test_a_reserved_ledger_key_ticket_is_refused_before_sending(
         external, monkeypatch, tmp_path, capsys):
-    """유도한 이름도 예약 키 검사를 지난다 — 장부 예약 키 티켓은 전송 전 rc 1 (크래시 아님)."""
+    """유도한 이름도 예약 키 검사를 지난다 — 장부 예약 키 티켓은 호출 전 rc 1 (크래시 아님)."""
     reviewer = _wire(external, monkeypatch, tmp_path)
 
     assert external.main(["--ticket", external.WAVE_SECTION_KEY]) == 1
@@ -391,16 +383,16 @@ def test_derivation_notice_follows_the_provenance_first_line(
 
 def test_empty_diff_does_not_claim_the_derived_gate_was_ledgered(
         external, monkeypatch, tmp_path, capsys):
-    """빈 diff 조기 종료는 예약·기록 전이라 자동 유도 고지도 전송 조건형으로만 남는다."""
+    """빈 diff 조기 종료는 예약·기록 전이라 자동 유도 고지도 호출 조건형으로만 남는다."""
     reviewer = _wire(external, monkeypatch, tmp_path)
-    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: ("", []))
+    monkeypatch.setattr(external, "extract_diff", lambda *a, **k: "")
 
     assert external.main(["--ticket", TICKET]) == 1
     assert reviewer.calls == 0
     assert _ledger(tmp_path) == {}
     err = capsys.readouterr().err
     assert _DERIVED_PREFIX in err
-    assert "이 실행이 전송되면" in err
+    assert "이 실행이 리뷰어를 부르면 라운드 회계가" in err
     assert "라운드 회계가 이 게이트에 붙습니다" not in err
 
 
@@ -502,19 +494,20 @@ def test_removed_confirm_fix_without_any_selector_is_rejected(
 
 def test_pre_spawn_notice_is_conditional_not_a_sent_claim(
         external, monkeypatch, tmp_path, capsys):
-    """예약 자리 고지는 조건형이다 — 그 뒤 격리 실패로 중단돼도 이미 찍힌 문구와 모순되지 않는다.
+    """예약 자리 고지는 조건형이다 — 그 뒤 스폰 전 실패로 중단돼도 이미 찍힌 문구와 모순되지 않는다.
 
-    확정형("이번 전송은 회계 밖")으로 찍으면 스폰 전에 끊긴 실행이 '전송했다'고 말한 셈이 된다."""
+    확정형("이번 호출은 회계 밖")으로 찍으면 스폰 전에 끊긴 실행이 '호출했다'고 말한 셈이 된다."""
     _wire(external, monkeypatch, tmp_path)
 
     def _fail(*a, **k):
-        raise external.ReviewerWorkspaceError("거울 생성 실패")
+        raise RuntimeError("리뷰어 환경 구성 실패(주입)")
 
-    monkeypatch.setattr(external, "create_reviewer_workspace", _fail)
-    assert external.main(["--paths", "x.py", "--no-gate"]) == 1
+    monkeypatch.setattr(external._load_pm_delegate(), "build_env", _fail)
+    with pytest.raises(RuntimeError):
+        external.main(["--paths", "x.py", "--no-gate"])
     err = capsys.readouterr().err
-    assert "이 실행이 전송되면" in err                        # 조건형
-    assert "이번 전송은" not in err                          # 확정형 아님
+    assert "리뷰어를 부르면 라운드 장부에" in err                        # 조건형
+    assert "이번 호출은" not in err                          # 확정형 아님
     assert _ledger(tmp_path) == {}
 
 
@@ -549,7 +542,7 @@ def test_report_surface_warns_that_no_gate_is_ignored(external, monkeypatch, tmp
 
 
 def test_resolve_gate_surface_warns_that_no_gate_is_ignored(external):
-    """처분 선언면의 무시 목록에도 `--no-gate` 가 든다 (선언은 전송·예약이 없다)."""
+    """처분 선언면의 무시 목록에도 `--no-gate` 가 든다 (선언은 호출·예약이 없다)."""
     ignored = external._resolve_gate_ignored_flags(
         argparse.Namespace(gate=None, no_gate=True, rounds_report=False,
                            ack_wave=False, force=False))

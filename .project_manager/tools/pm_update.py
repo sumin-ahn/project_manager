@@ -200,122 +200,6 @@ if TYPE_CHECKING:
 REPO = Path(__file__).resolve().parents[2]
 MANIFEST = REPO / ".project_manager" / "engine.manifest"
 
-# 추가 리뷰어(additional reviewer) 첫 opt-in 이 원자적으로 심는 기본 프로필 —
-#   board.ADDITIONAL_REVIEWER_DEFAULTS 와 **같은 값**이어야 한다(두 온보딩 진입·동일 프로필).
-#   board 를 import 하지 않는 이유는 의존 방향(pm_update 는 stdlib-only 로 돈다)이고, 실행
-#   해소를 하지 않는 이유는 무거운 additional_reviewer 코어를 업데이트 경로로 끌어오지 않기
-#   위해서다 — 여기서는 값만 시드하고 드리프트는 테스트가 잡는다.
-#   자유 문자열 리뷰어 커맨드 키는 폐지됐다 — 대상은 구조화 튜플 하나뿐이다. 구표기 키가 남은
-#   conf 는 값을 소비하는 지점에서 fail-loud 다(공용 로더 `local_conf.assert_no_legacy`).
-ADDITIONAL_REVIEWER_ENABLED_KEY = "additional_reviewer.enabled"
-
-ADDITIONAL_REVIEWER_DEFAULTS: tuple[tuple[str, str], ...] = (
-    (ADDITIONAL_REVIEWER_ENABLED_KEY, "true"),
-    ("additional_reviewer.harness", "codex"),
-    ("additional_reviewer.model", "gpt-5.6-sol"),
-    ("additional_reviewer.reasoning", "max"),
-)
-
-
-def additional_reviewer_decision_key(conf: dict[str, str]) -> str | None:
-    """이미 기록된 opt-in 결정을 공급하는 키 — **신키뿐** (없으면 None).
-
-    board·additional_reviewer 사본과 같은 판정이다. 판정은 키 존재이고(`false` 도 결정), 구표기 키는
-    값을 공급하지 않으며 그 잔존은 conf 소비 지점에서 fail-loud 다.
-    """
-    return (ADDITIONAL_REVIEWER_ENABLED_KEY
-            if ADDITIONAL_REVIEWER_ENABLED_KEY in conf else None)
-
-
-ADDITIONAL_REVIEWER_OPTIN_BLOCK = (
-    "# 추가 리뷰어(additional reviewer) — ON.\n"
-    "# additional_reviewer.enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
-    "# (리뷰마다·라운드 상한마다 비용을 다시 묻지 않는다). 프로필은 아래 3키로 교체한다.\n"
-    + "".join(f"{key}={value}\n" for key, value in ADDITIONAL_REVIEWER_DEFAULTS)
-)
-
-# 이미 **유효한 대상**이 있는 conf 의 "예" 가 쓰는 블록 — 활성 플래그만 심고 대상은 손대지 않는다
-#   (board.ADDITIONAL_REVIEWER_ENABLE_ONLY_BLOCK 과 같은 값). 기본 4키를 그냥 덧붙이면 구조화
-#   튜플은 last-wins 로 갈아치워져 사용자의 하네스/모델/추론 강도가 조용히 바뀐다.
-ADDITIONAL_REVIEWER_ENABLE_ONLY_BLOCK = (
-    "# 추가 리뷰어(additional reviewer) — ON (이미 설정된 대상 그대로).\n"
-    "# additional_reviewer.enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
-    "# (리뷰마다·라운드 상한마다 비용을 다시 묻지 않는다).\n"
-    "additional_reviewer.enabled=true\n"
-)
-
-ADDITIONAL_REVIEWER_ENABLE_HINT = (
-    "local.conf 에 additional_reviewer.enabled=true + "
-    "additional_reviewer.harness/model/reasoning"
-)
-
-# **이미 대상이 있는** conf 의 안내 — 활성 플래그 한 줄만 말한다(board 사본과 같은 값·같은 이유).
-#   기본 문장을 그대로 쓰면 구조화 3키를 *더* 적으라는 말이 돼, 이미 대상이 있는 conf 에서는
-#   구조화 튜플 위에서는 last-wins 로 자기 선언이 덮인다.
-ADDITIONAL_REVIEWER_ENABLE_ONLY_HINT = "local.conf 에 additional_reviewer.enabled=true"
-
-# 거절이 기록하는 블록 — 결정 자체는 대상과 무관하므로 한 벌뿐이다(board 사본과 같은 값).
-ADDITIONAL_REVIEWER_DECLINE_BLOCK = (
-    "# 추가 리뷰어 — 기본 OFF. 켜려면 true 로.\n"
-    "additional_reviewer.enabled=false\n"
-)
-
-# opt-in 커밋 결과 — 락 안에서 **다시 판정한** 사실이다(질문 시점의 판정이 아니다·board 동형).
-OPTIN_COMMIT_ALREADY = "already"          # 질문하는 사이 활성 키가 생김 → byte 보존 no-op
-OPTIN_COMMIT_BROKEN = "broken"            # 질문하는 사이 대상이 깨짐 → loud no-write
-OPTIN_COMMIT_DEFAULTS = "defaults"        # 대상 없음 + 수락 → 기본 4키
-OPTIN_COMMIT_ENABLE_ONLY = "enable_only"  # 대상 있음 + 수락 → 활성 플래그 한 줄
-OPTIN_COMMIT_DECLINED = "declined"        # 거절 → false 실키
-
-# ── 기존 대상 판정 (온보딩 전용 · 실행 해소 없음 · board 와 같은 규칙) ────────
-# 실행 해소(하네스→실 명령·값 검증)는 additional_reviewer 코어가 소유하고, 온보딩이 알아야 하는 것은
-# "덧쓰면 안 되는 선언이 이미 있는가" 하나다. board 를 import 하지 않는 이유는 의존 방향
-# (pm_update 는 stdlib-only), additional_reviewer 를 import 하지 않는 이유는 무거운 실행 코어를
-# 업데이트 경로로 끌어오지 않기 위해서다. 세 사본의 키/판정 일치는 테스트가 잡는다.
-ADDITIONAL_REVIEWER_PREFIX = "additional_reviewer"
-ADDITIONAL_REVIEWER_HARNESS_KEY = f"{ADDITIONAL_REVIEWER_PREFIX}.harness"
-ADDITIONAL_REVIEWER_MODEL_KEY = f"{ADDITIONAL_REVIEWER_PREFIX}.model"
-ADDITIONAL_REVIEWER_REASONING_KEY = f"{ADDITIONAL_REVIEWER_PREFIX}.reasoning"
-ADDITIONAL_REVIEWER_KEYS: tuple[str, ...] = (
-    ADDITIONAL_REVIEWER_HARNESS_KEY,
-    ADDITIONAL_REVIEWER_MODEL_KEY,
-    ADDITIONAL_REVIEWER_REASONING_KEY,
-)
-# 판정 결과 — 대상 없음 / 구조화 튜플.
-REVIEWER_TARGET_NONE = "none"
-REVIEWER_TARGET_STRUCTURED = "structured"
-
-
-class AdditionalReviewerTargetError(RuntimeError):
-    """기존 대상이 그 자체로 깨져 있어 온보딩이 결정을 쓸 수 없는 형상(부분 튜플)."""
-
-
-def classify_additional_reviewer_target(conf: dict[str, str]) -> str:
-    """활성 플래그만 없는 conf 에 **이미 어떤 대상이 있는가**를 판정한다
-    (board.classify_additional_reviewer_target 와 같은 계약·같은 판정).
-
-    · 구조화 키가 하나도 없으면 `none`(대상 없음).
-    · 구조화 키가 하나라도 **있으면**(값이 비어 있어도 선언이다) harness/model 동반 필수이고,
-      그 둘이 온전하면 `structured`. 판정 기준을 값의 truthiness 로 하면 비운 채 선언한 부분
-      튜플이 '대상 없음'으로 떨어져, 온보딩이 기본 4키를 덧써 사용자의 선언을 갈아치운다.
-    · 부분 튜플은 `AdditionalReviewerTargetError` 다 — 절반만 반영된 대상을 추측해 쓰지 않는다
-      (additional_reviewer 의 해소 규칙과 같은 판정·같은 이유).
-    """
-    present = tuple(key for key in ADDITIONAL_REVIEWER_KEYS if key in conf)
-    if not present:
-        return REVIEWER_TARGET_NONE
-    missing = ", ".join(
-        key for key in (ADDITIONAL_REVIEWER_HARNESS_KEY, ADDITIONAL_REVIEWER_MODEL_KEY)
-        if not (conf.get(key) or "").strip()
-    )
-    if missing:
-        raise AdditionalReviewerTargetError(
-            f"구조화 프로필이 불완전합니다({missing} 부재/빈 값) — harness/model 은 동반 필수인 "
-            f"원자 tuple 입니다. 두 키를 함께 채우거나 {ADDITIONAL_REVIEWER_PREFIX}.* 줄을 "
-            "지우세요."
-        )
-    return REVIEWER_TARGET_STRUCTURED
-
 
 def _is_engine_rev_skew(exc) -> bool:
     """stamped sibling 로더가 표시한 사본 불일치인가."""
@@ -726,32 +610,10 @@ def _templates_dir() -> Path:
     return REPO / "templates"
 
 
-def _is_noninteractive() -> bool:
-    """`PM_NONINTERACTIVE` env 가 truthy 면 True — 비대화 결정 신호.
-
-    Windows DEVNULL stdin 의 `isatty()` 가 신뢰불가한 cross-OS 함정을 회피. truthy 판정은
-    `"1"`/`"true"`/`"yes"`/`"on"`(대소문자 무관) — board._is_noninteractive 와 동일 동작
-    (stdlib-only·board 미import 결합 회피). 빈/`"0"`/`"false"` 등은 미설정 취급(isatty 폴백).
-    """
-    return os.environ.get("PM_NONINTERACTIVE", "").strip().lower() in (
-        "1", "true", "yes", "on"
-    )
-
-
-def _additional_reviewer_enable_hint(target: str) -> str:
-    """대상 유무에 맞는 "나중에 켜는 법" 1줄 (비대화형·거절 경로 공용·board 사본과 동형).
-
-    대상이 없으면(`none`) 종전 문장 그대로 — 그 conf 는 활성 플래그와 대상을 **둘 다** 받아야
-    한다. 대상이 이미 있으면 활성 플래그만 안내한다.
-    """
-    return (ADDITIONAL_REVIEWER_ENABLE_HINT if target == REVIEWER_TARGET_NONE
-            else ADDITIONAL_REVIEWER_ENABLE_ONLY_HINT)
-
-
 def _load_file_lock():
     """공용 파일락 seam(`file_lock.py`)을 같은 tools/ 에서 로드 (`_load_pm_render` 패턴 동형).
 
-    onboarding 응답의 conf write 를 배타락 + 단일 O_APPEND 로 닫는 데만 쓴다. board 처럼 import
+    conf write 구간을 배타락으로 닫는 데 쓴다. board 처럼 import
     시점에 바인딩하지 않는 이유는 pm_update 가 **복구 채널**이기 때문이다 — 엔진 사본이 깨진
     채택자에게도 이 도구는 떠야 하고, 동기가 이미 끝난 뒤의 온보딩 질문이 형제 로드 실패로 죽으면
     자기 자신을 못 고친다. 그래서 로드 실패는 호출부가 fail-soft 로 받는다(락 없는 단일 추가로
@@ -842,8 +704,8 @@ def _open_shared(path, *, binary, encoding=None, errors=None, newline=None):
 def _local_conf_lock_path(conf_path: Path) -> Path:
     """local.conf writer 직렬화 락 경로 — 공용 seam 의 유도 규칙을 그대로 쓴다.
 
-    같은 conf 를 건드리는 **모든** writer(board init 의 전체/병합 write·두 진입의 opt-in append·
-    pm_import 의 키 writer)가 같은 파일에 도달해야 배타가 성립한다. 규칙을 도구마다 복제하면 한
+    같은 conf 를 건드리는 **모든** writer(board init 의 전체/병합 write·pm_import 의 키 writer)가
+    같은 파일에 도달해야 배타가 성립한다. 규칙을 도구마다 복제하면 한
     사본만 어긋나도 직렬화가 조용히 사라지므로 `file_lock.conf_lock_path` 한 곳이 소유한다.
     `conf_lock_path` 를 못 읽는 사본(형제를 아예 못 읽는 손상 사본·그 함수 이전의 구세대 사본)에서는
     같은 규칙의 인라인 폴백으로 계산한다. 손상 사본에서는 락 자체가 없어(아래
@@ -880,7 +742,7 @@ def _local_conf_write_lock(conf_path: Path):
 
     무락 폴백은 `file_lock` 자신의 규약과 같은 선택이다(프리미티브 *부재* 에만 허용). 여기서
     부재는 형제 모듈을 못 읽는 손상 사본이거나 락 프리미티브가 없는 구세대 사본
-    (`_conf_lock_section`)이고, 그때도 재읽기→재판정→단일 추가라는 좁은 구간은 그대로 남는다.
+    (`_conf_lock_section`)이고, 그때도 재읽기→재판정→쓰기라는 좁은 구간은 그대로 남는다.
 
     구간의 단위는 write 가 아니라 **"이 conf 를 읽고 판단하고 쓰는" 전체**다 — 현재 상태를 락
     밖에서 읽어 계획을 세우면 커밋 시점엔 이미 낡은 계획(stale plan)이라 그사이 들어온 결정을
@@ -898,61 +760,6 @@ def _local_conf_write_lock(conf_path: Path):
         yield lock
 
 
-def _append_local_conf_atomic(conf_path: Path, block: str, lock) -> None:
-    """conf 끝에 블록을 **한 번의 원자 추가**로 붙인다 (필요한 선행 개행 포함·board 동형).
-
-    개행 보장과 블록 추가를 두 write 로 나누면 그 사이가 또 하나의 창이다 — 선행 개행을 같은
-    문자열에 실어 O_APPEND 단일 write 로 붙인다. 끝 개행 판정은 **바이트**로 한다(디코딩 불가한
-    conf 에서도 마지막 줄을 변질시키지 않게). `lock` 이 None(seam 부재 폴백)이면 같은 의미의
-    stdlib append 로 물러난다.
-    """
-    try:
-        raw = _read_bytes_shared(Path(conf_path))
-    except OSError:
-        raw = b""
-    text = ("\n" if raw and not raw.endswith(b"\n") else "") + block
-    if lock is not None:
-        lock.append_atomic(conf_path, text)
-        return
-    with Path(conf_path).open("a", encoding="utf-8", newline="\n") as f:
-        f.write(text)
-
-
-def _commit_additional_reviewer_optin(
-        local_conf: Path, accepted: bool) -> tuple[str, str]:
-    """opt-in 응답을 대상 local.conf 에 확정한다 — 락 안에서 **다시 읽고 다시 판정**한다.
-
-    board.`_commit_additional_reviewer_optin` 과 같은 계약이다. 질문은 사람이 답할 때까지 열려
-    있고, 그동안 다른 행위자가 같은 conf 를 바꿀 수 있다 — 활성 키를 켜거나, 레거시
-    구조화 튜플을 새로 적거나, 부분 튜플로 깨뜨린다. 질문 **전** 판정으로 쓰면 그
-    사이 생긴 대상 위에 기본 4키가 얹혀 last-wins 손상이 재현된다. 재읽기→재판정→append
-    를 배타락 + 단일 O_APPEND write 로 닫아 그 사이에 새 창을 만들지 않는다.
-
-    반환 `(결과, 상세)` — 결과는 `OPTIN_COMMIT_*`, 상세는 broken 이면 진단 사유, 그 밖에는 커밋
-    시점의 대상 종류. 사용자 표면 문구는 호출부가 낸다(락 밖).
-    """
-    with _local_conf_write_lock(local_conf) as lock:
-        conf = _read_local_conf(local_conf)
-        if additional_reviewer_decision_key(conf) is not None:
-            # 질문하는 사이 결정이 생겼다 — 그 결정이 이긴다(이 응답은 버린다·byte 보존).
-            return OPTIN_COMMIT_ALREADY, ""
-        try:
-            target = classify_additional_reviewer_target(conf)
-        except AdditionalReviewerTargetError as exc:
-            # 질문 전에는 온전했던 대상이 그사이 깨졌다 — 어느 쪽이 이기는지 추측해 쓰지 않는다.
-            return OPTIN_COMMIT_BROKEN, str(exc)
-        if not accepted:
-            block, outcome = ADDITIONAL_REVIEWER_DECLINE_BLOCK, OPTIN_COMMIT_DECLINED
-        elif target == REVIEWER_TARGET_NONE:
-            block, outcome = ADDITIONAL_REVIEWER_OPTIN_BLOCK, OPTIN_COMMIT_DEFAULTS
-        else:
-            # 이미 있는 대상은 한 글자도 건드리지 않는다 — 활성 플래그만 덧붙인다.
-            block, outcome = (ADDITIONAL_REVIEWER_ENABLE_ONLY_BLOCK,
-                              OPTIN_COMMIT_ENABLE_ONLY)
-        _append_local_conf_atomic(local_conf, block, lock)
-        return outcome, target
-
-
 def print_conf_migration_notice(dest_root: Path) -> None:
     """local.conf 표기 통일 교체 안내 — **apply 를 막지 않고** 안내만 낸다.
 
@@ -966,87 +773,6 @@ def print_conf_migration_notice(dest_root: Path) -> None:
     module = _load_local_conf()
     for line in module.migration_notice(module.load(local_conf)):
         print(f"[pm_update] {line}")
-
-
-def maybe_prompt_additional_reviewer(dest_root: Path) -> None:
-    """업데이트 후 추가 리뷰어(additional reviewer) opt-in — 아직 미설정이면 **1회** 묻는다.
-
-    코드 diff 외부 *전송*이라 기본 OFF. `additional_reviewer.enabled` **실키**가 이미 있으면
-    (true/false 무관) 묻지 않고 기존 프로필을 그대로 둔다. 구표기 키만 있는
-    conf 는 **미결정**이라 다시 묻되(그 답이 신키로 기록되는 게 이주 경로다) 먼저 안내 1줄로 왜
-    다시 묻는지 말한다 — 엔진은 채택자 conf 를 대신 고쳐 쓰지 않는다(자동 마이그레이션 없음).
-    비대화형은 안전쪽으로 건너뛰되 나중에 켜는 법을 1줄로 남긴다.
-    board.prompt_additional_reviewer_optin 과 같은 계약이다 — "예" 는 기존 대상이 없을 때만
-    ADDITIONAL_REVIEWER_DEFAULTS 4키를 원자 기록하고, 이미 유효한 대상(
-    구조화 튜플)이 있으면 **활성 플래그 한 줄만** 덧붙여 그 대상을 byte 그대로 둔다. 어느
-    기존 대상이 깨져 있으면(부분 튜플)
-    질문도 기록도 하지 않고 진단만 낸다.
-
-    질문 전 판정은 **질문 문구**의 입력일 뿐이다. 기록의 입력은 `_commit_additional_reviewer_optin`
-    이 커밋 시점에 배타락 안에서 다시 읽어 다시 판정한다 — 사람이 답하는 동안 conf 가 바뀌면 옛
-    판정으로 쓴 기본 4키가 그사이 생긴 대상을 last-wins 로 망가뜨린다.
-
-    dest_root: 동기화 대상 루트 (루트 또는 타깃). local.conf 는 이 경로 기준으로 읽고 쓴다.
-    --target 모드에서 루트 local.conf 를 오염시키지 않기 위해 반드시 effective_dest 를 전달한다.
-    """
-    local_conf = dest_root / ".project_manager" / "local.conf"
-    if not local_conf.exists():
-        return  # init 전 — board.py init 에서 묻는다
-    conf = _read_local_conf(local_conf)
-    decision_key = additional_reviewer_decision_key(conf)
-    if decision_key is not None:
-        # 실키로 이미 결정됨(true/false 무관·기존 프로필 불변). 판정은 파싱된
-        # 키 존재로 한다 — raw 텍스트 substring 으로 보면 주석(`# additional_reviewer.enabled=false`)
-        # 이나 안내 문장이 결정을 가로채, 켜려던 채택자가 질문도 안내도 못 받는다.
-        # board.prompt_additional_reviewer_optin 과 같은 seam.
-        return
-    try:
-        target = classify_additional_reviewer_target(conf)
-    except AdditionalReviewerTargetError as exc:
-        # 쓰기 **전에** 멈춘다 — 이 conf 는 어떤 답을 받아도 정직하게 기록할 수 없다(board 동형).
-        print(f"[pm_update] ⚠ 추가 리뷰어 설정이 이미 깨져 있어 opt-in 을 묻지 않습니다: {exc} "
-              "(local.conf 를 고친 뒤 다시 실행하세요 — 지금은 아무것도 기록하지 않았습니다.)")
-        return
-    # 명시적 비대화 신호 우선: Windows DEVNULL isatty() 신뢰불가 함정 회피.
-    # PM_NONINTERACTIVE truthy 면 묻지 않고 안전쪽 skip. isatty 는 보조 폴백(env 없을 때).
-    if _is_noninteractive() or not sys.stdin.isatty():
-        print("[pm_update] 추가 리뷰어 OFF 유지(비대화형). 켜려면 "
-              f"{_additional_reviewer_enable_hint(target)}")
-        return
-    print("\n[pm_update] 추가 리뷰어(additional reviewer)를 켤까요? 코드 diff 가 "
-          "설정된 리뷰 하네스로 *전송*되고 그 하네스에 *과금*됩니다 — 내부 code-reviewer 와 상보적.")
-    if target == REVIEWER_TARGET_NONE:
-        print("  예 = 기본 프로필(codex · gpt-5.6-sol · reasoning max)을 한 번에 기록합니다 "
-              "— 이후 리뷰마다 비용을 다시 묻지 않습니다.")
-    else:
-        print("  예 = local.conf 에 이미 설정된 대상을 그대로 쓰고 활성 플래그만 기록합니다 "
-              "— 이후 리뷰마다 비용을 다시 묻지 않습니다.")
-    try:
-        answer = input("  켜기 [y/N]: ").strip().lower()
-    except EOFError:
-        # stdin EOF = 비대화/파이프 종료 신호이지 **거절이 아니다** — TTY 오판정으로 들어온
-        # 질문이라 결정을 박제하면 안 된다(board.prompt_additional_reviewer_optin 과 같은 계약).
-        # 아무것도 쓰지 않고 반환한다: 다음 실행이 제대로 된 표면에서 다시 묻는다.
-        return
-    # 질문 전 판정(target)은 **질문 문구**까지의 입력이다. 기록의 입력(대상 판정·개행 가드)은
-    # 커밋 시점에 배타락 안에서 다시 읽는다 — 질문하는 동안 바뀐 실제 끝 상태가 기준이다.
-    outcome, detail = _commit_additional_reviewer_optin(
-        local_conf, answer in ("y", "yes"))
-    if outcome == OPTIN_COMMIT_ALREADY:
-        print("[pm_update] 질문하는 사이 local.conf 에 additional_reviewer.enabled 결정이 생겨 "
-              "그 결정을 그대로 둡니다 — 이 응답은 기록하지 않았습니다.")
-    elif outcome == OPTIN_COMMIT_BROKEN:
-        print(f"[pm_update] ⚠ 추가 리뷰어 설정이 이미 깨져 있어 opt-in 을 기록하지 않습니다: "
-              f"{detail} (local.conf 를 고친 뒤 다시 실행하세요 — 지금은 아무것도 기록하지 "
-              "않았습니다.)")
-    elif outcome == OPTIN_COMMIT_DEFAULTS:
-        print("  ✓ 추가 리뷰어 ON (codex · gpt-5.6-sol · reasoning max — "
-              "local.conf additional_reviewer.* 로 교체 가능)")
-    elif outcome == OPTIN_COMMIT_ENABLE_ONLY:
-        print(f"  ✓ 추가 리뷰어 ON (기존 {detail} 대상 유지 — local.conf 의 설정 그대로)")
-    else:
-        print("  → 추가 리뷰어 OFF (나중에 "
-              f"{_additional_reviewer_enable_hint(detail)} 로 켤 수 있음).")
 
 
 def read_manifest(path: Path) -> list[ManifestEntry]:
@@ -1522,7 +1248,7 @@ def merge_manifest_sources(manifest_paths: list[Path]) -> dict:
 def _entry_render_flag(entry) -> bool:
     """manifest 항목의 render 플래그 — ManifestEntry 면 `.render`, 평문 str(레거시 호출)면 False.
 
-    plan() 이 `list[str]`(기존 테스트·외부 호출)과 `list[ManifestEntry]`(read_manifest) 둘 다
+    plan() 이 `list[str]`(기존 테스트·모듈 밖 호출부)과 `list[ManifestEntry]`(read_manifest) 둘 다
     받게 정규화한다 — 후방호환(평문 str 항목은 render 비대상).
     """
     return bool(getattr(entry, "render", False))
@@ -4123,7 +3849,7 @@ def _render_codex_operational_detail(text: str, skill_name: str) -> str:
         )
         return _replace_exactly_once(
             text, old,
-            "Codex 전용 실행·egress 승격 규율과 환경별 명령 문법은 상시 `SKILL.md`가 단일 진실이다.",
+            "Codex 전용 실행 규율과 환경별 명령 문법은 상시 `SKILL.md`가 단일 진실이다.",
             label=skill_name,
         )
     raise ValueError(f"미등록 Codex operational detail: {skill_name}")
@@ -6459,7 +6185,7 @@ def _print_adapter_hook_set_finding(result: dict, *, dry_run: bool = False) -> N
 # 끊긴 채 green·[[robustness-value-connections-before-ship]]). 그래서 매 sync **실행마다** 등록
 # repo 전수 정합 확인 + drift 재설치를 신설한다.
 #
-# ⚠ **`changes` 유무로 게이트하지 않는다**(내부/외부 게이트 must-fix·격리 실측): 업그레이드
+# ⚠ **`changes` 유무로 게이트하지 않는다**(내부/추가 리뷰어 게이트 must-fix·격리 실측): 업그레이드
 # 경계에서 sync 를 *실행하는 주체는 dest 의 구 엔진*이다 — 이 기능을 배달하는 그 sync 자체는
 # 재설치 코드를 갖고 있지도 않다(RUN 1 미발화). 바로 다음 실행은 dest 가 신 엔진이지만
 # `changes == 0` 이라, "changes>0 에서만" 으로 좁히면 **다음에 우연히 엔진이 또 바뀔 때까지**
@@ -7224,16 +6950,9 @@ def _main(argv: list[str] | None = None) -> int:
         #    `--paths` 는 baseline 을 건드리지 않는다 — 부분 전파를 "여기까지 흡수함" 으로 박으면
         #    나머지 미전파분이 drift-lint 에서 사라진다(거짓 최신).
         if not args.dry_run and not scope_paths:
-            # 변경 0 경로에서도 opt-in/안내 — has-changes 경로와 **같은 순서·같은 게이트**.
-            #   추가 리뷰어를 배달한 RUN1 은 구 엔진이 실행할 수 있고, 이미 최신인 채택자는
-            #   changes 가 영영 0 이라 apply 경로로 오지 않는다. 여기서 묻지 않으면 미결정
-            #   채택자가 첫 질문/안내를 한 번도 못 받는다(훅 재설치·migrate 와 같은 논거).
-            #   재질문은 두 helper 의 "실키 있으면 no-op" 계약이 흡수한다.
-            #   단 **미수렴 실행에서는 묻지 않는다** — 종료 rc 가 서는 실패 실행이라 baseline 과
-            #   같은 이유로 그 답을 local.conf 에 박을 자리가 아니다(수렴한 뒤 실행이 묻는다).
-            if converge_upstream_revs(
-                    effective_dest, source_root, skew_status, skew_new):
-                maybe_prompt_additional_reviewer(effective_dest)
+            # 변경 0 경로에서도 baseline 수렴은 has-changes 경로와 **같은 순서·같은 게이트**다.
+            converge_upstream_revs(
+                effective_dest, source_root, skew_status, skew_new)
         return 0
     if args.dry_run:
         print(f"[dry-run] {len(changes)} 파일 변경 예정 (적용 안 함).")
@@ -7330,17 +7049,14 @@ def _main(argv: list[str] | None = None) -> int:
     # (회사 채택자 실측). skew 아님(정합·또는 upstream manifest 부재 fail-soft)이면 현행대로 갱신.
     # source 가 로컬 git checkout 일 때만(URL upstream 은 로컬 checkout 없어 graceful 생략).
     # best-effort — 기록 실패가 동기화 자체를 무효화하지 않는다(파일은 이미 적용됨). --target
-    # 모드는 effective_dest(templates/<name>)의 conf 에 기록(루트 오염 방지·maybe_prompt 와 동형).
-    # `--paths`(부분 전파)는 baseline·프롬프트를 건너뛴다 — 요청 경로만 옮긴 실행을 "전량 흡수"
+    # 모드는 effective_dest(templates/<name>)의 conf 에 기록(루트 오염 방지).
+    # `--paths`(부분 전파)는 baseline 을 건너뛴다 — 요청 경로만 옮긴 실행을 "전량 흡수"
     # 로 박으면 나머지 미전파분이 drift-lint 에서 사라진다(거짓 최신).
     if scope_paths:
         print("  (경로 스코프 — upstream.rev baseline 을 갱신하지 않는다: 나머지 경로는 "
               "여전히 미전파다.)")
         return 0
-    # 미수렴이면 프롬프트도 건너뛴다 — baseline 억제와 같은 논거다(성공하지 않은 실행이 던진
-    #   질문의 답을 local.conf 에 박으면, 그 실행의 rc1 과 기록이 어긋난다).
-    if converge_upstream_revs(effective_dest, source_root, skew_status, skew_new):
-        maybe_prompt_additional_reviewer(effective_dest)
+    converge_upstream_revs(effective_dest, source_root, skew_status, skew_new)
     return 0
 
 

@@ -10,7 +10,7 @@
 ## 0. opencode 실행 모델
 
 - **build primary=PM(orchestrator).**
-- **위임=네이티브 `task` tool.** `.opencode/agents/*.md` subagent를 별도 자식 세션(fresh ctx=200K, 정의된 model/권한)에서 실행한다. 폴백은 `opencode run` 외부 프로세스(§3).
+- **위임=네이티브 `task` tool.** `.opencode/agents/*.md` subagent를 별도 자식 세션(fresh ctx=200K, 정의된 model/권한)에서 실행한다. 폴백은 `opencode run` 자식 프로세스(§3).
 - **엔진=공유 python**(`.project_manager/tools/*.py`). PM이 bash로 호출·해석하며 **엔진은 수정하지 않는다.**
 - **인코딩**은 엔진이 파일·콘솔에서 처리하므로 PowerShell/CP949도 env prefix 불필요. 필요할 때만 PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1`.
 - **PowerShell 5.x `&&` 미지원**(ParseError): `cd X && cmd` 대신 workdir 파라미터/명령 분리. Windows 진입은 `.\pm-config.cmd`·`.\pm-update.cmd`(bash 불요).
@@ -85,7 +85,7 @@ bare commit은 남이 stage한 변경도 싣는다. 티켓 이동은 옛·새 �
 
 ## 7. 라이브 외부 행위 안전 가드
 
-- 단위 테스트는 전부 mock, 라이브 외부 호출은 통합 마커로만 한다. **프로덕션 진입점 라이브 실행 금지**; mock 자동 테스트로 검증한다.
+- 단위 테스트는 전부 mock, 라이브 API 호출은 통합 마커로만 한다. **프로덕션 진입점 라이브 실행 금지**; mock 자동 테스트로 검증한다.
 - 외부 비가역 행위(송신·배포·키 발급) ticket은 사용자 명시 승인 후 진행한다. 새 비가역 행위에는 opt-in env 코드 안전 가드를 둔다.
 
 ## 8. 자주 쓰는 명령 / 핵심 디렉토리

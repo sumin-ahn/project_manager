@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import subprocess
@@ -101,35 +102,23 @@ def _unregistered_worktree(tmp_path: Path) -> tuple[Path, Path]:
 
 
 # 해소 가능한 추가 리뷰어 대상 줄 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본
-# 커맨드 없음) 실 전송 분기를 태우는 conf 는 이 세 줄을 함께 담아야 한다.
+# 커맨드 없음) 실 호출 분기를 태우는 conf 는 이 세 줄을 함께 담아야 한다.
 _REVIEWER_TARGET_LINES = (
-    "additional_reviewer.enabled=true\n"
     "additional_reviewer.harness=codex\n"
     "additional_reviewer.model=gpt-5.6-sol\n"
 )
 
 
 def _enable_additional_review(repo: Path) -> None:
-    """실 전송 분기까지 태울 최소 opt-in conf."""
+    """실 호출 분기까지 태울 최소 opt-in conf."""
     local = repo / ".project_manager" / "local.conf"
     local.parent.mkdir(parents=True, exist_ok=True)
     local.write_text(_REVIEWER_TARGET_LINES, encoding="utf-8")
 
 
 def _stub_review_send(external, monkeypatch, tmp_path: Path) -> dict[str, int]:
-    """실 프로세스 없이 격리·전송 경계를 지나게 하는 최소 리뷰어 대역."""
+    """실 프로세스 없이 호출 경계를 지나게 하는 최소 리뷰어 대역."""
     calls = {"reviewer": 0}
-
-    def _workspace(*args, **kwargs):
-        root = tmp_path / f"reviewer-{calls['reviewer']}"
-        tree = root / "tree"
-        home = root / "home"
-        tree.mkdir(parents=True)
-        home.mkdir()
-        return external.ReviewerWorkspace(
-            root=root, tree=tree, home=home,
-            files=1, skipped_unsafe=0, git_repo=True,
-        )
 
     def _review(*args, **kwargs):
         calls["reviewer"] += 1
@@ -141,9 +130,193 @@ def _stub_review_send(external, monkeypatch, tmp_path: Path) -> dict[str, int]:
             "any_must_fix": False, "all_pass": True,
         }
 
-    monkeypatch.setattr(external, "create_reviewer_workspace", _workspace)
     monkeypatch.setattr(external, "run_review", _review)
     return calls
+
+
+# ── 소유 PM 홈 해소의 fail-loud 계약 · 퇴역 심볼 (T-0888) ───────────────────────
+
+_RETIRED_PM_HOME_GUESS_SYMBOLS = (
+    "_pm_home_candidates",
+    "_pm_home_misanchor",
+    "_registers_worktree",
+    "_candidate_board_homes",
+    "_checkout_pm_home_matches",
+    "_same_repo_checkout_pm_home_matches",
+    "_git_worktree_records",
+    "_absolute_git_common_dir",
+    "_is_unregistered_linked_self_anchor",
+    "PmHomeDemotion",
+)
+
+_ENGINE_COPY_ROOTS = (
+    Path("."),
+    Path("templates/claude_code"),
+    Path("templates/codex"),
+    Path("templates/opencode"),
+)
+
+_PM_HOME_GUESS_FILES = ("pm_log.py", "board.py", "additional_reviewer.py", "pm_delegate.py")
+
+# 어댑터는 항상 `<root>/.claude/`·`<root>/.codex/`·`<root>/.opencode/` 에 설치되므로 루트는 그
+# 자리의 부모다. 세 하네스가 같은 규칙을 받아야 한다(ADR-0095) — 한 하네스만 고친 상태는 그
+# 결정 위반이라, 조상 훑기 관용구 자체를 파일 단위로 막는다.
+_ADAPTER_REPO_ROOT_FILES = (
+    Path(".claude/ctx_guard.py"),
+    Path("templates/claude_code/.claude/ctx_guard.py"),
+    Path("templates/codex/.codex/pm_orch_codex.py"),
+    Path("templates/opencode/.opencode/pm_orch_opencode.py"),
+)
+
+
+def _repo_root_source(path: Path) -> str:
+    """어댑터 파일에서 `repo_root` 정의 본문만 잘라 낸다(정의가 정확히 하나여야 한다)."""
+    source = path.read_text(encoding="utf-8")
+    segments = [
+        ast.get_source_segment(source, node)
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "repo_root"
+    ]
+    assert len(segments) == 1, f"{path}: repo_root 정의 {len(segments)}개"
+    return segments[0]
+
+
+def test_retired_pm_home_guess_symbols_absent_in_all_engine_copies():
+    """추측 해소 심볼은 canonical + 템플릿 3벌 어디에도 남지 않는다(어댑터 사본 포함)."""
+    found: list[str] = []
+    for root in _ENGINE_COPY_ROOTS:
+        tools = ROOT / root / ".project_manager" / "tools"
+        assert tools.is_dir(), f"엔진 사본 없음: {tools}"
+        for name in _PM_HOME_GUESS_FILES:
+            source = (tools / name).read_text(encoding="utf-8")
+            for symbol in _RETIRED_PM_HOME_GUESS_SYMBOLS:
+                if symbol in source:
+                    found.append(f"{root}/{name}: {symbol}")
+    for relative in _ADAPTER_REPO_ROOT_FILES:
+        path = ROOT / relative
+        assert path.is_file(), f"어댑터 사본 없음: {path}"
+        if "parents" in _repo_root_source(path):
+            found.append(f"{relative}: repo_root 가 조상을 훑는다")
+    assert not found, "퇴역 심볼 잔존: " + ", ".join(found)
+
+
+def _foreign_commondir_worktree(tmp_path: Path) -> Path:
+    """공용 저장소가 `<X>/.git` 도 `<X>/.repos/<repo>.git` 도 아닌 자리에 있는 worktree."""
+    source = tmp_path / "vendor-source"
+    source.mkdir()
+    _git(source, "init", "-q")
+    _git(source, "config", "user.email", "test@example.invalid")
+    _git(source, "config", "user.name", "test")
+    (source / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git(source, "add", "seed.txt")
+    _git(source, "commit", "-qm", "seed")
+    bare = tmp_path / "vendor" / "app.git"
+    bare.parent.mkdir(parents=True)
+    _git(tmp_path, "clone", "-q", "--bare", str(source), str(bare))
+    anchor = tmp_path / "vendor-worktree"
+    _git(bare, "worktree", "add", "-q", "-b", "vendor", str(anchor))
+    return anchor
+
+
+@pytest.mark.parametrize(
+    "shape", ["foreign-commondir", "pm-home-without-project-manager"],
+)
+def test_unregistered_linked_worktree_fails_loud_without_demotion(tmp_path, shape):
+    """소유 PM 홈을 확정 못 하는 두 형상은 `AnchorResolutionError` — 강등이 없다.
+
+    판정 입력은 anchor 의 `.git` commondir 형상과 유도된 홈의 `.project_manager` 실재 둘뿐
+    이다. lease 장부는 슬롯 배정 원장이지 소유 증거가 아니라 판정에 들어가지 않는다 —
+    장부 부재·손상·빈 장부는 해소 실패가 아니다.
+    """
+    external = _load(f"additional_reviewer_fail_loud_{shape}")
+
+    if shape == "foreign-commondir":
+        anchor = _foreign_commondir_worktree(tmp_path)
+    else:
+        _source, anchor = _unregistered_worktree(tmp_path)
+
+    with pytest.raises(external.AnchorResolutionError) as caught:
+        external.resolve_pm_home_for_repo(anchor)
+    message = str(caught.value)
+    assert "PM 홈을 찾지 못했습니다" in message
+    assert "PM 홈 해소 실패" not in message
+    assert "board가 필요 없는 실행" not in message
+
+    # `required=` 는 사라진 인터페이스다 — 남겨 두면 호출 자체가 TypeError 다.
+    with pytest.raises(TypeError):
+        external.resolve_pm_home_for_repo(anchor, required=True)
+
+
+def test_ledger_without_the_anchor_row_still_resolves_by_git_declaration(tmp_path):
+    """장부에 등재되지 않은 슬롯도 자기 `.git` 선언으로 같은 소유 PM 홈을 받는다.
+
+    소유는 공용 저장소의 자리가 정한다 — `<X>/.repos/<repo>.git` 이면 X 가 그 bare 를 만든
+    주체다. 장부는 어느 슬롯을 누구에게 빌려줬는지 적는 배정 원장이라 소유 증거가 아니고,
+    gitignored·per-clone 파일이라 anchor 의 함수도 아니다.
+    """
+    pm_home = tmp_path / "pm-home"
+    (pm_home / ".project_manager").mkdir(parents=True)
+    app_source = tmp_path / "app-source"
+    app_source.mkdir()
+    _git(app_source, "init", "-q")
+    _git(app_source, "config", "user.email", "test@example.invalid")
+    _git(app_source, "config", "user.name", "test")
+    (app_source / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git(app_source, "add", "seed.txt")
+    _git(app_source, "commit", "-qm", "seed")
+    bare = pm_home / ".repos" / "app.git"
+    bare.parent.mkdir(parents=True)
+    _git(tmp_path, "clone", "-q", "--bare", str(app_source), str(bare))
+
+    registered = pm_home / "work" / "app_1"
+    unregistered = pm_home / "work" / "app_2"
+    registered.parent.mkdir()
+    _git(bare, "worktree", "add", "-q", "-b", "task/app-1", str(registered))
+    _git(bare, "worktree", "add", "-q", "-b", "task/app-2", str(unregistered))
+    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        json.dumps({"leases": [{"slot": "work/app_1", "state": "leased"}]}),
+        encoding="utf-8",
+    )
+
+    external = _load("additional_reviewer_unregistered_row")
+    assert external.resolve_pm_home_for_repo(registered) == pm_home.resolve()
+    assert external.resolve_pm_home_for_repo(unregistered) == pm_home.resolve()
+
+
+def test_pool_less_adopter_worktree_resolves_to_its_main_checkout(tmp_path):
+    """워크트리 풀을 쓰지 않는 채택자(장부 파일 자체가 없음)도 소유 PM 홈을 받는다.
+
+    채택자가 우리 슬롯 체계를 쓰는지는 소유 판정 조건이 아니다 — 평범한 `git worktree add`
+    와 `--detach --no-checkout` 스냅샷 둘 다 자기 main checkout 으로 해소된다. 그래도 답이
+    하나가 아닌 형상(미지 commondir)은 여전히 실패다.
+    """
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    _git(adopter, "init", "-q")
+    _git(adopter, "config", "user.email", "test@example.invalid")
+    _git(adopter, "config", "user.name", "test")
+    (adopter / ".project_manager").mkdir()
+    (adopter / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git(adopter, "add", "seed.txt")
+    _git(adopter, "commit", "-qm", "seed")
+    assert not (
+        adopter / ".project_manager" / ".local" / "worktree-leases.json"
+    ).exists(), "전제 붕괴 — 풀 미사용 채택자 형상이 아님"
+
+    worktree = tmp_path / "adopter-work"
+    _git(adopter, "worktree", "add", "-q", "-b", "feature", str(worktree))
+    snapshot = tmp_path / "adopter-snapshot"
+    _git(adopter, "worktree", "add", "-q", "--detach", "--no-checkout",
+         str(snapshot), "HEAD")
+
+    external = _load("additional_reviewer_pool_less_adopter")
+    assert external.resolve_pm_home_for_repo(worktree) == adopter.resolve()
+    assert external.resolve_pm_home_for_repo(snapshot) == adopter.resolve()
+
+    with pytest.raises(external.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
+        external.resolve_pm_home_for_repo(_foreign_commondir_worktree(tmp_path))
 
 
 def test_repo_root_from_cwd_stops_at_markerless_linked_app_worktree(tmp_path):
@@ -169,9 +342,14 @@ def test_repo_root_from_cwd_stops_at_markerless_linked_app_worktree(tmp_path):
     _git(app_source, "add", "seed.txt")
     _git(app_source, "commit", "-qm", "seed")
 
+    # ADR-0027 실 형상 — app 저장소의 공유 bare 원본은 PM 홈 안 `.repos/<repo>.git` 이다
+    # (`worktree_pool.bare_repo_path`). 슬롯의 `.git` 포인터가 이 자리로 소유 PM 홈을 선언한다.
+    bare = pm_home / ".repos" / "app.git"
+    bare.parent.mkdir(parents=True)
+    _git(tmp_path, "clone", "-q", "--bare", str(app_source), str(bare))
     slot = pm_home / "work" / "app_1"
     slot.parent.mkdir()
-    _git(app_source, "worktree", "add", "-q", "-b", "task/app", str(slot))
+    _git(bare, "worktree", "add", "-q", "-b", "task/app", str(slot))
     nested = slot / "src" / "package"
     nested.mkdir(parents=True)
     assert (slot / ".git").is_file()
@@ -186,7 +364,7 @@ def test_repo_root_from_cwd_stops_at_markerless_linked_app_worktree(tmp_path):
     external = _load("additional_reviewer_markerless_app_root")
 
     assert external.repo_root_from_cwd(nested) == slot.resolve()
-    assert external.resolve_pm_home_for_repo(slot, required=True) == pm_home.resolve()
+    assert external.resolve_pm_home_for_repo(slot) == pm_home.resolve()
 
 
 def test_delegate_config_anchor_follows_registered_worktree_from_both_shell_dirs(
@@ -225,9 +403,14 @@ def test_delegate_anchor_oracle_is_sensitive_to_engine_repo_fallback(
         delegate.resolve_delegate(old_conf, "developer", "normal", None, None, None)
 
 
-def test_unregistered_worktree_allows_boardless_delegate_and_review(
+def test_unregistered_worktree_fails_loud_for_delegate_and_review(
     tmp_path, monkeypatch, capsys,
 ):
+    """소유 PM 홈이 없는 linked worktree 는 자기 앵커로 강등하지 않고 두 도구 모두 멈춘다.
+
+    옛 계약은 "board 가 필요 없는 실행" 이라며 경고 한 줄 뒤 자기 repo 를 앵커로 썼다. 그래서
+    같은 코드가 실행 위치에 따라 다른 앵커를 골랐다 — 그 강등 경로가 이 티켓이 지운 것이다.
+    """
     _home, worktree = _unregistered_worktree(tmp_path)
     local = worktree / ".project_manager" / "local.conf"
     local.parent.mkdir(exist_ok=True)
@@ -246,85 +429,34 @@ def test_unregistered_worktree_allows_boardless_delegate_and_review(
     assert delegate.main([
         "--role", "developer", "--prompt-file", str(prompt),
         "--cwd", str(worktree), "--dry-run",
-    ]) == 0
+    ]) == 1
     delegate_err = capsys.readouterr().err
-    assert delegate_err.splitlines()[0].startswith("경고: PM 홈 해소 실패")
-    assert "board가 필요 없는 실행" in delegate_err
-    assert delegate_err.count("board가 필요 없는 실행") == 1
-    assert f"pm_home={worktree.resolve()}" in delegate_err
+    assert "오류: --cwd 소유 PM 홈 해소 실패" in delegate_err
+    assert "PM 홈을 찾지 못했습니다" in delegate_err
+    assert "board가 필요 없는 실행" not in delegate_err
 
     external = _load("additional_reviewer_unregistered")
     monkeypatch.setattr(external, "REPO", worktree)
-    assert external.main(["--paths", "seed.txt", "--dry-run"]) == 0
+    assert external.main(["--paths", "seed.txt", "--dry-run"]) == 1
     review_err = capsys.readouterr().err
-    assert review_err.splitlines()[0].startswith("경고: PM 홈 해소 실패")
-    assert "board가 필요 없는 실행" in review_err
-    assert review_err.count("board가 필요 없는 실행") == 1
-    assert f"diff_root={worktree.resolve()}" in review_err
-    assert f"pm_home={worktree.resolve()}" in review_err
+    assert "앵커 해소 실패" in review_err
+    assert "PM 홈을 찾지 못했습니다" in review_err
+    assert "board가 필요 없는 실행" not in review_err
 
 
-def test_unregistered_snapshot_gated_round_fails_before_ledger_raw_or_spawn(
+def test_unregistered_snapshot_run_fails_before_ledger_raw_or_spawn(
     tmp_path, monkeypatch, capsys,
 ):
-    """미등록 linked worktree 자기 앵커 + 실 장부 라운드는 rc1 로 기계 차단한다."""
+    """미등록 linked worktree 는 실 라운드·raw·스폰 어느 것도 만들기 전에 rc1 로 멈춘다.
+
+    옛 코드는 여기까지 자기 앵커로 내려온 뒤 라운드 예약 직전 별도 가드가 막았다. 해소가
+    fail-loud 가 되면 그 2차 가드가 볼 형상 자체가 없다.
+    """
     _source, snapshot = _unregistered_worktree(tmp_path)
     _enable_additional_review(snapshot)
     (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
     external = _load("additional_reviewer_unregistered_round_block")
     monkeypatch.setattr(external, "REPO", snapshot)
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
-    monkeypatch.setattr(
-        external, "_reserve_round_budget",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("round ledger must not be reserved"),
-        ),
-    )
-    monkeypatch.setattr(
-        external, "reviewer_visibility_scope",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("reviewer isolation/spawn path must not run"),
-        ),
-    )
-    output_dir = tmp_path / "raw"
-
-    assert external.main([
-        "--gate", "T-0634", "--paths", "seed.txt",
-        "--output-dir", str(output_dir),
-    ]) == 1
-
-    err = capsys.readouterr().err
-    assert "미등록 linked worktree 자기 앵커" in err
-    assert "외부로 전송하지 않았습니다" in err
-    assert "PM 홈 cwd" in err and "--paths <경로>" in err and "--ticket <T-NNNN>" in err
-    assert str(snapshot / ".project_manager" / ".local" / "review_rounds.json") in err
-    assert not output_dir.exists()
-    assert not (snapshot / ".project_manager" / ".local" / "review_rounds.json").exists()
-
-
-def test_unregistered_snapshot_with_ticket_gated_round_still_fails_before_side_effects(
-    tmp_path, monkeypatch, capsys,
-):
-    """스냅샷의 실 ticket이 강등 기록을 없애도 lease 미등록 자기 앵커는 전송하지 않는다."""
-    _source, snapshot = _unregistered_worktree(tmp_path)
-    _enable_additional_review(snapshot)
-    tickets = snapshot / ".project_manager" / "board" / "tickets" / "open"
-    tickets.mkdir(parents=True)
-    (tickets / "T-0634-snapshot.md").write_text(
-        "---\nid: T-0634\ntitle: snapshot fixture\nstatus: open\n---\n",
-        encoding="utf-8",
-    )
-    (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("additional_reviewer_unregistered_ticket_round_block")
-    monkeypatch.setattr(external, "REPO", snapshot)
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
-
-    # 발단 우회 형상을 고정한다: real-board 조기 반환 때문에 자기 앵커지만 강등 기록은 없다.
-    demotions = []
-    assert external.resolve_pm_home_for_repo(
-        snapshot, demotion_sink=demotions,
-    ) == snapshot.resolve()
-    assert demotions == []
 
     side_effects = []
 
@@ -336,7 +468,55 @@ def test_unregistered_snapshot_with_ticket_gated_round_still_fails_before_side_e
 
     monkeypatch.setattr(external, "_reserve_round_budget", _forbidden("round"))
     monkeypatch.setattr(external, "_reserve_output", _forbidden("raw"))
-    monkeypatch.setattr(external, "reviewer_visibility_scope", _forbidden("spawn"))
+    monkeypatch.setattr(external, "run_review", _forbidden("spawn"))
+    output_dir = tmp_path / "raw"
+
+    assert external.main([
+        "--gate", "T-0634", "--paths", "seed.txt",
+        "--output-dir", str(output_dir),
+    ]) == 1
+
+    err = capsys.readouterr().err
+    assert "앵커 해소 실패" in err and "PM 홈을 찾지 못했습니다" in err
+    assert side_effects == []
+    assert not output_dir.exists()
+    assert not (snapshot / ".project_manager" / ".local" / "review_rounds.json").exists()
+
+
+def test_unregistered_snapshot_with_real_ticket_still_fails_loud(
+    tmp_path, monkeypatch, capsys,
+):
+    """스냅샷 안에 실 ticket 이 있어도 소유자 판정은 `.git` 선언 하나가 한다.
+
+    실 board 소유를 조기 반환 조건으로 두면, 소유자를 확정 못 한 트리가 자기 휘발 장부에
+    라운드를 기록할 수 있다 — 그 조기 반환이 없어야 이 형상이 닫힌다.
+    """
+    _source, snapshot = _unregistered_worktree(tmp_path)
+    _enable_additional_review(snapshot)
+    tickets = snapshot / ".project_manager" / "board" / "tickets" / "open"
+    tickets.mkdir(parents=True)
+    (tickets / "T-0634-snapshot.md").write_text(
+        "---\nid: T-0634\ntitle: snapshot fixture\nstatus: open\n---\n",
+        encoding="utf-8",
+    )
+    (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
+    external = _load("additional_reviewer_unregistered_ticket_round_block")
+    monkeypatch.setattr(external, "REPO", snapshot)
+
+    with pytest.raises(external.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
+        external.resolve_pm_home_for_repo(snapshot)
+
+    side_effects = []
+
+    def _forbidden(name):
+        def _fail(*args, **kwargs):
+            side_effects.append(name)
+            raise AssertionError(f"{name} must not run")
+        return _fail
+
+    monkeypatch.setattr(external, "_reserve_round_budget", _forbidden("round"))
+    monkeypatch.setattr(external, "_reserve_output", _forbidden("raw"))
+    monkeypatch.setattr(external, "run_review", _forbidden("spawn"))
     output_dir = tmp_path / "raw-ticket-snapshot"
 
     assert external.main([
@@ -345,36 +525,33 @@ def test_unregistered_snapshot_with_ticket_gated_round_still_fails_before_side_e
     ]) == 1
 
     err = capsys.readouterr().err
-    assert "미등록 linked worktree 자기 앵커" in err
-    assert "lease 장부" in err and "외부로 전송하지 않았습니다" in err
-    assert "PM 홈 cwd" in err and "--paths <경로>" in err and "--ticket <T-NNNN>" in err
+    assert "앵커 해소 실패" in err
     assert side_effects == []
     assert not output_dir.exists()
     assert not (snapshot / ".project_manager" / ".local" / "review_rounds.json").exists()
 
 
-def test_unregistered_snapshot_no_gate_send_keeps_explicit_paths_recovery_channel(
+def test_unregistered_snapshot_no_gate_and_dry_run_do_not_rescue_the_anchor(
     tmp_path, monkeypatch, capsys,
 ):
-    """명시 --paths + --no-gate 실 자문은 장부를 안 쓰므로 기존 자기 앵커 폴백을 유지한다."""
+    """`--no-gate`·`--dry-run`·조회도 미해소 앵커를 복구하지 않는다 — 해소가 먼저다."""
     _source, snapshot = _unregistered_worktree(tmp_path)
     _enable_additional_review(snapshot)
     (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
     external = _load("additional_reviewer_unregistered_no_gate")
     monkeypatch.setattr(external, "REPO", snapshot)
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
-    assert external.main([
-        "--paths", "seed.txt", "--no-gate",
-        "--output-dir", str(tmp_path / "raw"),
-    ]) == 0
+    for argv in (
+        ["--paths", "seed.txt", "--no-gate", "--output-dir", str(tmp_path / "raw")],
+        ["--gate", "T-0634", "--paths", "seed.txt", "--dry-run"],
+        ["--rounds-report", "--gate", "T-0634", "--paths", "seed.txt"],
+    ):
+        assert external.main(argv) == 1, argv
+        err = capsys.readouterr().err
+        assert "앵커 해소 실패" in err, argv
 
-    assert calls["reviewer"] == 1
-    err = capsys.readouterr().err
-    assert "PM 홈 해소 실패" in err
-    assert "`--no-gate` 명시 opt-out" in err
-    assert "미등록 linked worktree 자기 앵커에서는" not in err
+    assert calls["reviewer"] == 0
     assert not (snapshot / ".project_manager" / ".local" / "review_rounds.json").exists()
 
 
@@ -393,12 +570,11 @@ def test_resolver_override_is_guard_seam_even_when_anchor_has_snapshot_marker(
     monkeypatch.setattr(
         external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: snapshot.resolve(),
     )
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
     gate = "T-0643-resolver-seam"
     assert external.main([
-        "--gate", gate, "--paths", "seed.txt", "--force",
+        "--gate", gate, "--paths", "seed.txt",
         "--output-dir", str(tmp_path / "resolver-seam-raw"),
     ]) == 0
 
@@ -408,24 +584,16 @@ def test_resolver_override_is_guard_seam_even_when_anchor_has_snapshot_marker(
     assert "게이트 스냅샷 마커가 있는 앵커" not in capsys.readouterr().err
 
 
-def test_unregistered_snapshot_dry_run_and_report_stay_open_but_fixed_is_removed(
+def test_removed_fixed_disposition_never_touches_the_round_ledger(
     tmp_path, monkeypatch, capsys,
 ):
-    """미전송 dry-run·조회는 열리지만 폐지된 fixed 처분은 장부를 바꾸지 않는다."""
-    _source, snapshot = _unregistered_worktree(tmp_path)
-    _enable_additional_review(snapshot)
-    (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("additional_reviewer_unregistered_non_sending")
-    monkeypatch.setattr(external, "REPO", snapshot)
+    """폐지된 `--fixed` 처분은 argparse 경계에서 거부되고 장부를 한 바이트도 바꾸지 않는다."""
+    home, worktree, _ticket = _managed_worktree(tmp_path)
+    _enable_additional_review(home)
+    external = _load("additional_reviewer_removed_fixed_disposition")
+    monkeypatch.setattr(external, "REPO", worktree)
 
-    assert external.main([
-        "--gate", "T-0634", "--paths", "seed.txt", "--dry-run",
-    ]) == 0
-    assert external.main([
-        "--rounds-report", "--gate", "T-0634", "--paths", "seed.txt",
-    ]) == 0
-
-    ledger_path = snapshot / ".project_manager" / ".local" / "review_rounds.json"
+    ledger_path = home / ".project_manager" / ".local" / "review_rounds.json"
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
     ledger_path.write_text(json.dumps({
         "T-0634-rejected": {
@@ -454,10 +622,7 @@ def test_unregistered_snapshot_dry_run_and_report_stay_open_but_fixed_is_removed
             "--resolve-gate", "T-0634-rejected", "--fixed", "T-0634-passed",
         ])
     assert ledger_path.read_bytes() == before
-    captured = capsys.readouterr()
-    assert "[dry-run] 외부 호출 생략" in captured.out
-    assert "unrecognized arguments: --fixed" in captured.err
-    assert "미등록 linked worktree 자기 앵커에서는" not in captured.err
+    assert "unrecognized arguments: --fixed" in capsys.readouterr().err
 
 
 def test_registered_worktree_gated_round_still_uses_pm_home_ledger(
@@ -469,7 +634,6 @@ def test_registered_worktree_gated_round_still_uses_pm_home_ledger(
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
     external = _load("additional_reviewer_registered_round")
     monkeypatch.setattr(external, "REPO", worktree)
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
     assert external.main([
@@ -484,10 +648,10 @@ def test_registered_worktree_gated_round_still_uses_pm_home_ledger(
     assert "미등록 linked worktree 자기 앵커에서는" not in capsys.readouterr().err
 
 
-def test_registered_worktree_with_ticket_gated_round_remains_allowed(
+def test_slot_own_ticket_does_not_change_the_owning_pm_home(
     tmp_path, monkeypatch, capsys,
 ):
-    """자기 실 ticket 때문에 self-anchor여도 lease 등록 worktree는 오탐 차단하지 않는다."""
+    """슬롯 안에 실 ticket 이 있어도 소유자는 `.git` 선언이 정한다 — 라운드는 PM 홈 장부로."""
     home, worktree, _ticket = _managed_worktree(tmp_path)
     tickets = worktree / ".project_manager" / "board" / "tickets" / "open"
     tickets.mkdir(parents=True)
@@ -495,109 +659,31 @@ def test_registered_worktree_with_ticket_gated_round_remains_allowed(
         "---\nid: T-0634-registered\ntitle: registered fixture\nstatus: open\n---\n",
         encoding="utf-8",
     )
-    _enable_additional_review(worktree)
+    _enable_additional_review(home)
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
     external = _load("additional_reviewer_registered_ticket_round")
     monkeypatch.setattr(external, "REPO", worktree)
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
-    demotions = []
-    assert external.resolve_pm_home_for_repo(
-        worktree, demotion_sink=demotions,
-    ) == worktree.resolve()
-    assert demotions == []
+    assert external.resolve_pm_home_for_repo(worktree) == home.resolve()
 
+    gate = "T-0634-registered-ticket"
     assert external.main([
-        "--gate", "T-0634-registered-ticket", "--paths", "seed.txt",
+        "--gate", gate, "--paths", "seed.txt",
         "--output-dir", str(tmp_path / "registered-ticket-raw"),
     ]) == 0
 
     assert calls["reviewer"] == 1
-    ledger = worktree / ".project_manager" / ".local" / "review_rounds.json"
-    assert json.loads(ledger.read_text(encoding="utf-8"))[
-        "T-0634-registered-ticket"
-    ]["count"] == 1
-    assert "미등록 linked worktree 자기 앵커에서는" not in capsys.readouterr().err
+    home_ledger = home / ".project_manager" / ".local" / "review_rounds.json"
+    assert json.loads(home_ledger.read_text(encoding="utf-8"))[gate]["count"] == 1
+    assert not (worktree / ".project_manager" / ".local" / "review_rounds.json").exists()
+    capsys.readouterr()
 
 
-def test_corrupt_lease_registered_slot_keeps_round_recovery_fallback(
+def test_markerless_snapshot_with_corrupt_lease_is_blocked(
     tmp_path, monkeypatch, capsys,
 ):
-    """마커 없는 단일 관리 후보는 lease 손상이어도 실 라운드 복구 채널을 유지한다."""
-    home, worktree, _ticket = _managed_worktree(tmp_path)
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.write_text("{broken", encoding="utf-8")
-    (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("additional_reviewer_corrupt_lease_round_recovery")
-    monkeypatch.setattr(external, "REPO", worktree)
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
-    calls = _stub_review_send(external, monkeypatch, tmp_path)
-
-    assert external.main([
-        "--gate", "T-0643-corrupt-lease", "--paths", "seed.txt", "--force",
-        "--output-dir", str(tmp_path / "corrupt-lease-raw"),
-    ]) == 0
-
-    assert calls["reviewer"] == 1
-    round_ledger = worktree / ".project_manager" / ".local" / "review_rounds.json"
-    assert json.loads(round_ledger.read_text(encoding="utf-8"))[
-        "T-0643-corrupt-lease"
-    ]["count"] == 1
-    err = capsys.readouterr().err
-    assert "worktree lease 장부를 확정할 수 없습니다" in err
-    assert "미등록 linked worktree 자기 앵커에서는" not in err
-
-
-@pytest.mark.parametrize("ledger_state", ["corrupt", "missing"])
-def test_self_board_registered_slot_keeps_recovery_for_unreadable_lease(
-    tmp_path, monkeypatch, capsys, ledger_state,
-):
-    """자기 실 board로 조기 해소된 등록 슬롯도 장부 손상/부재면 복구 폴백을 유지한다."""
-    home, worktree, _ticket = _managed_worktree(tmp_path)
-    tickets = worktree / ".project_manager" / "board" / "tickets" / "open"
-    tickets.mkdir(parents=True)
-    (tickets / f"T-0643-{ledger_state}.md").write_text(
-        f"---\nid: T-0643-{ledger_state}\ntitle: self board fixture\nstatus: open\n---\n",
-        encoding="utf-8",
-    )
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    if ledger_state == "corrupt":
-        ledger.write_text("{broken", encoding="utf-8")
-    else:
-        ledger.unlink()
-    _enable_additional_review(worktree)
-    (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
-
-    external = _load(f"additional_reviewer_self_board_{ledger_state}_lease_recovery")
-    monkeypatch.setattr(external, "REPO", worktree)
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
-    calls = _stub_review_send(external, monkeypatch, tmp_path)
-
-    demotions = []
-    resolutions = []
-    assert external.resolve_pm_home_for_repo(
-        worktree, demotion_sink=demotions, resolution_sink=resolutions,
-    ) == worktree.resolve()
-    assert demotions == []
-    assert resolutions[0].unregistered_linked_self_anchor is False
-
-    gate = f"T-0643-self-board-{ledger_state}"
-    assert external.main([
-        "--gate", gate, "--paths", "seed.txt", "--force",
-        "--output-dir", str(tmp_path / f"self-board-{ledger_state}-raw"),
-    ]) == 0
-
-    assert calls["reviewer"] == 1
-    round_ledger = worktree / ".project_manager" / ".local" / "review_rounds.json"
-    assert json.loads(round_ledger.read_text(encoding="utf-8"))[gate]["count"] == 1
-    assert "미등록 linked worktree 자기 앵커에서는" not in capsys.readouterr().err
-
-
-def test_markerless_snapshot_with_corrupt_lease_keeps_known_exposure_open(
-    tmp_path, monkeypatch, capsys,
-):
-    """마커 도입 전 스냅샷은 손상 장부와 겹치면 관리 후보 복구 규칙상 휘발 장부를 허용한다."""
+    """마커 도입 전 스냅샷 + 손상 장부라는 알려진 노출도 같은 실패로 닫힌다."""
     home, _registered, _ticket = _managed_worktree(tmp_path)
     snapshot = home / "work" / "gate-markerless"
     _git(home, "worktree", "add", "-q", "-b", "markerless-snapshot", str(snapshot))
@@ -609,97 +695,33 @@ def test_markerless_snapshot_with_corrupt_lease_keeps_known_exposure_open(
         snapshot / ".project_manager" / ".local" / "gate-snapshot.json"
     ).exists()
 
-    external = _load("additional_reviewer_markerless_corrupt_lease_exposure")
+    external = _load("additional_reviewer_markerless_corrupt_lease_blocked")
     monkeypatch.setattr(external, "REPO", snapshot)
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
-    demotions = []
-    resolutions = []
-    assert external.resolve_pm_home_for_repo(
-        snapshot, demotion_sink=demotions, resolution_sink=resolutions,
-    ) == snapshot.resolve()
-    assert demotions[0].candidates == (home.resolve(),)
-    assert resolutions[0].snapshot_marker is None
-    assert resolutions[0].unregistered_linked_self_anchor is False
-
-    gate = "T-0643-markerless-corrupt-ledger"
     assert external.main([
-        "--gate", gate, "--paths", "seed.txt", "--force",
+        "--gate", "T-0643-markerless-corrupt-ledger", "--paths", "seed.txt",
         "--output-dir", str(tmp_path / "markerless-corrupt-raw"),
-    ]) == 0
-
-    assert calls["reviewer"] == 1
-    volatile_ledger = snapshot / ".project_manager" / ".local" / "review_rounds.json"
-    assert json.loads(volatile_ledger.read_text(encoding="utf-8"))[gate]["count"] == 1
-    err = capsys.readouterr().err
-    assert "worktree lease 장부를 확정할 수 없습니다" in err
-    assert "미등록 linked worktree 자기 앵커에서는" not in err
-
-
-def test_valid_empty_lease_blocks_unregistered_worktree_round(
-    tmp_path, monkeypatch, capsys,
-):
-    """단일 후보여도 정상 장부의 non-match는 복구 폴백이 아니며 실 라운드를 차단한다."""
-    home, worktree, _ticket = _managed_worktree(tmp_path)
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.write_text(json.dumps({"leases": []}), encoding="utf-8")
-    (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("additional_reviewer_valid_empty_lease_round_block")
-    monkeypatch.setattr(external, "REPO", worktree)
-    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
-
-    side_effects = []
-
-    def _forbidden(name):
-        def _fail(*args, **kwargs):
-            side_effects.append(name)
-            raise AssertionError(f"{name} must not run")
-        return _fail
-
-    monkeypatch.setattr(external, "_reserve_round_budget", _forbidden("round"))
-    monkeypatch.setattr(external, "_reserve_output", _forbidden("raw"))
-    monkeypatch.setattr(external, "reviewer_visibility_scope", _forbidden("spawn"))
-    output_dir = tmp_path / "valid-empty-lease-raw"
-
-    demotions = []
-    assert external.resolve_pm_home_for_repo(
-        worktree, demotion_sink=demotions,
-    ) == worktree.resolve()
-    assert len(demotions) == 1
-    assert demotions[0].candidates == (home.resolve(),)
-    board = external._load_board()
-    assert board._ledger_registration(home, worktree) == (False, None)
-
-    assert external.main([
-        "--gate", "T-0643-valid-empty-lease", "--paths", "seed.txt", "--force",
-        "--output-dir", str(output_dir),
     ]) == 1
 
-    err = capsys.readouterr().err
-    assert "worktree lease 장부에서 소유 PM 홈을 찾지 못했습니다" in err
-    assert "미등록 linked worktree 자기 앵커" in err
-    assert side_effects == []
-    assert not output_dir.exists()
-    assert not (worktree / ".project_manager" / ".local" / "review_rounds.json").exists()
+    assert calls["reviewer"] == 0
+    assert not (
+        snapshot / ".project_manager" / ".local" / "review_rounds.json"
+    ).exists()
+    assert "worktree lease 장부" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
-    ("extra_args", "expected_rc", "expected_error"),
-    [
-        (("--tier", "hard", "--dry-run"), 1, "hard 프로필 미설정"),
-        # 위임 스위치 기본이 허용이라, 매핑 없는 conf 의 진단은 "비활성"(rc=3)이 아니라 "역할 매핑
-        # 미설정"(rc=1)이다 — 실제로 없는 것이 매핑이므로 이쪽이 정확한 진단이다.
-        ((), 1, "역할 매핑 미설정"),
-    ],
+    "extra_args", [("--tier", "hard", "--dry-run"), ()],
 )
-def test_unregistered_delegate_failure_flushes_anchor_warning_before_return(
-    tmp_path, monkeypatch, capsys, extra_args, expected_rc, expected_error,
+def test_unregistered_delegate_stops_at_anchor_before_profile_diagnostics(
+    tmp_path, monkeypatch, capsys, extra_args,
 ):
+    """미해소 앵커는 프로필/역할 매핑 진단보다 먼저 멈춘다 — 강등 경고가 아니라 오류다."""
     _home, worktree = _unregistered_worktree(tmp_path)
     prompt = worktree / "prompt.md"
     prompt.write_text("implement the unit", encoding="utf-8")
-    delegate = _load(f"pm_delegate_unregistered_failure_{expected_rc}")
+    delegate = _load(f"pm_delegate_unregistered_failure_{len(extra_args)}")
     monkeypatch.setattr(delegate, "REPO", worktree)
 
     rc = delegate.main([
@@ -707,12 +729,11 @@ def test_unregistered_delegate_failure_flushes_anchor_warning_before_return(
         "--cwd", str(worktree), *extra_args,
     ])
 
-    assert rc == expected_rc
+    assert rc == 1
     err = capsys.readouterr().err
-    assert err.splitlines()[0].startswith("경고: PM 홈 해소 실패")
-    assert err.count("경고: PM 홈 해소 실패") == 1
-    assert expected_error in err
-    assert str(worktree / ".project_manager" / "local.conf") in err
+    assert "오류: --cwd 소유 PM 홈 해소 실패" in err
+    assert "경고: PM 홈 해소 실패" not in err
+    assert "hard 프로필 미설정" not in err and "역할 매핑 미설정" not in err
 
 
 def test_boardless_review_oracle_is_sensitive_to_unconditional_anchor_error(
@@ -731,22 +752,22 @@ def test_boardless_review_oracle_is_sensitive_to_unconditional_anchor_error(
     assert "unconditional anchor error" in capsys.readouterr().err
 
 
-def test_explicit_paths_ignore_missing_ticket_in_unregistered_worktree(
+def test_explicit_paths_do_not_rescue_an_unresolvable_anchor(
     tmp_path, monkeypatch, capsys,
 ):
+    """명시 `--paths` 는 검토 범위를 정할 뿐 소유 PM 홈을 대신 선언하지 못한다."""
     _home, worktree = _unregistered_worktree(tmp_path)
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
     external = _load("additional_reviewer_explicit_paths")
     monkeypatch.setattr(external, "REPO", worktree)
 
     missing = "T-" + "missing"
-    assert external.main([
-        "--ticket", missing, "--paths", "seed.txt", "--dry-run",
-    ]) == 0
-    assert "ticket board" not in capsys.readouterr().err
-
-    assert external.main(["--ticket", missing, "--dry-run"]) == 1
-    assert "앵커 해소 실패" in capsys.readouterr().err
+    for argv in (
+        ["--ticket", missing, "--paths", "seed.txt", "--dry-run"],
+        ["--ticket", missing, "--dry-run"],
+    ):
+        assert external.main(argv) == 1, argv
+        assert "앵커 해소 실패" in capsys.readouterr().err, argv
 
 
 def test_standalone_repo_uses_itself_for_both_tools(tmp_path, monkeypatch, capsys):
@@ -844,7 +865,10 @@ def test_delegate_and_review_failure_sets_match_across_three_repo_shapes(
         capsys.readouterr()
 
     assert failure_sets == {
-        shape: {"delegate-hard", "review-empty"} for shape in shapes
+        # 미등록 worktree 는 소유 PM 홈이 없어 네 표면 전부가 해소 단계에서 멈춘다.
+        "registered-slot": {"delegate-hard", "review-empty"},
+        "unregistered-worktree": set(results),
+        "plain-clone": {"delegate-hard", "review-empty"},
     }
 
 
@@ -884,7 +908,7 @@ def test_delegate_anchor_handles_symlink_standalone_and_missing_inputs(
     assert rc == 1 and "git 저장소" in capsys.readouterr().err
 
 
-def test_duplicate_pm_home_registration_is_rejected(tmp_path):
+def test_duplicate_pm_home_registration_does_not_create_ambiguity(tmp_path):
     outer = tmp_path / "outer"
     inner = outer / "inner"
     inner.mkdir(parents=True)
@@ -913,9 +937,8 @@ def test_duplicate_pm_home_registration_is_rejected(tmp_path):
         )
 
     external = _load("additional_reviewer_duplicate_owner")
-    assert external.resolve_pm_home_for_repo(worktree) == worktree.resolve()
-    with pytest.raises(external.AnchorResolutionError, match="모호"):
-        external.resolve_pm_home_for_repo(worktree, required=True)
+    # 두 홈이 같은 슬롯을 등재해도 후보는 하나다 — 공용 저장소를 둔 홈이 소유자다.
+    assert external.resolve_pm_home_for_repo(worktree) == inner.resolve()
 
 
 def test_registered_worktree_owner_does_not_require_existing_ticket(tmp_path):
@@ -925,10 +948,15 @@ def test_registered_worktree_owner_does_not_require_existing_ticket(tmp_path):
         ticket_file.unlink()
 
     external = _load("additional_reviewer_empty_board_owner")
-    assert external.resolve_pm_home_for_repo(worktree, required=True) == home.resolve()
+    assert external.resolve_pm_home_for_repo(worktree) == home.resolve()
 
 
-def test_tools_only_checkout_cannot_override_unique_board_lease_owner(tmp_path):
+def test_ledger_row_alone_cannot_claim_a_slot_of_another_repository(tmp_path):
+    """장부 등재만으로는 소유권이 생기지 않는다 — 슬롯의 `.git` 선언이 소유자를 정한다.
+
+    옛 해소는 조상 훑기로 실 board 를 가진 홈을 찾아 그 장부의 등재만 확인했다. 그래서 남의
+    저장소에서 판 worktree 도 경로가 겹치면 이 홈 소유가 됐다.
+    """
     home = tmp_path / "pm"
     source = home / ".project_manager" / "tools" / "source"
     source.mkdir(parents=True)
@@ -938,8 +966,6 @@ def test_tools_only_checkout_cannot_override_unique_board_lease_owner(tmp_path):
     (source / "seed.txt").write_text("seed\n", encoding="utf-8")
     _git(source, "add", "seed.txt")
     _git(source, "commit", "-qm", "seed")
-    # tools-only checkout 마커: 실 ticket board는 의도적으로 없다.
-    (source / ".project_manager" / "tools").mkdir(parents=True)
     worktree = tmp_path / "slot"
     _git(source, "worktree", "add", "-q", "-b", "nested-slot", str(worktree))
 
@@ -956,23 +982,9 @@ def test_tools_only_checkout_cannot_override_unique_board_lease_owner(tmp_path):
         encoding="utf-8",
     )
 
-    external = _load("additional_reviewer_tools_only_ancestor")
-    assert external.resolve_pm_home_for_repo(worktree, required=True) == home.resolve()
-
-
-def test_non_ticket_absolute_paths_bypass_corrupt_lease_ledger(
-    tmp_path, monkeypatch, capsys,
-):
-    home, worktree, _ticket = _managed_worktree(tmp_path)
-    source = worktree / "seed.txt"
-    source.write_text("changed\n", encoding="utf-8")
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.write_text("{broken", encoding="utf-8")
-    external = _load("additional_reviewer_absolute_recovery")
-    monkeypatch.setattr(external, "REPO", home)
-
-    assert external.main(["--paths", str(source), "--dry-run"]) == 0
-    assert f"diff_root={worktree.resolve()}" in capsys.readouterr().err
+    external = _load("additional_reviewer_ledger_row_alone")
+    with pytest.raises(external.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
+        external.resolve_pm_home_for_repo(worktree)
 
 
 def test_external_main_restores_selector_globals_between_calls(
@@ -1309,7 +1321,7 @@ def _cross_owned_slot(root, *, declare_review_paths: bool = True):
     두 PM 홈이 서로 다른 additional_reviewer.paths 를 선언하고, A 의 lease 장부가 B 의
     worktree 를 슬롯으로 등록한다. 인자 없는 실행에서 A 의 additional_reviewer.paths 로
     diff_root 를 고르면 그 소유자는 B 라, 표시된 config provenance 와 실제
-    전송 범위가 갈린다.
+    호출 범위가 갈린다.
 
     `declare_review_paths=False` 면 두 conf 모두 additional_reviewer.paths 를 선언하지 않아 범위가 엔진 고정
     기본 경로로 떨어진다 — 범위 출처가 최초 PM 홈이라는 사실은 같은 형상이다.
@@ -1375,7 +1387,7 @@ def test_explicit_paths_escape_cross_owned_conf_block(
     capsys.readouterr()
 
 
-# ── 강등 실행의 소유 PM 홈 필터 승계 (송신 방향) ────────────────────────────
+# ── 강등 실행의 소유 PM 홈 필터 승계 (호출 방향) ────────────────────────────
 
 
 def _demoted_worktree_with_owner_filters(tmp_path) -> tuple[Path, Path]:
@@ -1409,93 +1421,10 @@ def _demoted_worktree_with_owner_filters(tmp_path) -> tuple[Path, Path]:
     return home, worktree
 
 
-def test_demoted_conf_owner_inherits_owner_pm_home_review_filters(
-    tmp_path, monkeypatch, capsys,
-):
-    """강등 실행도 소유 PM 홈의 denylist/additional_reviewer.paths 를 승계해 필터가 좁아지지 않는다."""
-    home, worktree = _demoted_worktree_with_owner_filters(tmp_path)
-    external = _load("additional_reviewer_demoted_inherit")
-    monkeypatch.setattr(external, "REPO", worktree)
-
-    assert external.main(["--dry-run"]) == 0
-    err = capsys.readouterr().err
-    assert "소유 PM 홈 유효 필터를 승계했습니다" in err
-    assert str(home.resolve()) in err
-    assert "검토 경로: ['src']" in err
-    assert "'*.vault' 매칭" in err
-
-
-def test_demoted_owner_without_unique_candidate_blocks_before_external_send(
-    tmp_path, monkeypatch, capsys,
-):
-    """소유 PM 홈을 되찾을 수 없는 강등은 diff 추출 전에 차단한다 — 무필터 송신 0."""
-    _home, worktree = _unregistered_worktree(tmp_path)
-    (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("additional_reviewer_demoted_block")
-    monkeypatch.setattr(external, "REPO", worktree)
-    monkeypatch.setattr(
-        external, "extract_diff",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("diff must not run"),
-        ),
-    )
-    monkeypatch.setattr(
-        external, "run_review",
-        lambda *args, **kwargs: pytest.fail("외부 송신 전에 차단해야 한다"),
-    )
-
-    assert external.main(["--dry-run"]) == 1
-    err = capsys.readouterr().err
-    assert "시크릿 필터가 좁아진" in err
-    assert "전송 전에 중단합니다" in err
-    assert str(worktree.resolve()) in err
-
-
-def test_explicit_paths_escape_demoted_owner_filter_block(
-    tmp_path, monkeypatch, capsys,
-):
-    """명시 --paths 는 강등 차단의 탈출구로 남는다(복구 채널 자기잠김 금지)."""
-    _home, worktree = _unregistered_worktree(tmp_path)
-    (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("additional_reviewer_demoted_escape")
-    monkeypatch.setattr(external, "REPO", worktree)
-
-    assert external.main(["--paths", "seed.txt", "--dry-run"]) == 0
-    err = capsys.readouterr().err
-    assert "소유 PM 홈 필터를 승계하지 못했습니다" in err
-    assert "명시 --paths 범위로 계속" in err
-
-
-def test_ambiguous_owner_candidates_block_without_paths_and_warn_with_paths(
-    tmp_path, capsys,
-):
-    """후보 2+ 행: 어느 PM 홈이 지배하는지 확정 못 하므로 차단, 명시 --paths 만 탈출구."""
-    external = _load("additional_reviewer_owner_filter_matrix")
-    homes = (tmp_path / "home-a", tmp_path / "home-b")
-    for home in homes:
-        (home / ".project_manager").mkdir(parents=True)
-        (home / ".project_manager" / "local.conf").write_text(
-            _REVIEWER_TARGET_LINES + "additional_reviewer.denylist_extra=*.vault\n",
-            encoding="utf-8",
-        )
-    demotion = external.PmHomeDemotion(tmp_path / "slot", "중복 등록", tuple(homes))
-
-    with pytest.raises(
-        external.AnchorResolutionError, match="하나로 좁히지 못했습니다",
-    ):
-        external._conf_with_owner_filters({}, [demotion], explicit_paths=False)
-
-    kept = external._conf_with_owner_filters(
-        {"additional_reviewer.paths": "."}, [demotion], explicit_paths=True,
-    )
-    assert kept == {"additional_reviewer.paths": "."}
-    assert "승계하지 못했습니다" in capsys.readouterr().err
-
-
 def _demoted_worktree_with_owner_default_scope(tmp_path) -> tuple[Path, Path]:
     """소유 PM 홈은 additional_reviewer.paths 미선언(=엔진 기본 경로)이고 슬롯만 `.` 를 선언한 강등 형상.
 
-    슬롯 선언이 살아남으면 lease 손상만으로 송신 범위가 소유 유효 범위보다 넓어진다 — 기본 경로
+    슬롯 선언이 살아남으면 lease 손상만으로 호출 범위가 소유 유효 범위보다 넓어진다 — 기본 경로
     밖 파일(`docs/notes.md`)의 포함 여부가 그 판별자다.
     """
     home, worktree, _ticket = _managed_worktree(tmp_path)
@@ -1520,65 +1449,6 @@ def _demoted_worktree_with_owner_default_scope(tmp_path) -> tuple[Path, Path]:
     return home, worktree
 
 
-def test_demoted_run_inherits_owner_default_scope_over_slot_declaration(
-    tmp_path, monkeypatch, capsys,
-):
-    """소유 PM 홈이 미선언이면 그 **유효 범위**(엔진 기본 경로)를 승계한다 — 슬롯 `.` 는 진다."""
-    _home, worktree = _demoted_worktree_with_owner_default_scope(tmp_path)
-    external = _load("additional_reviewer_owner_default_scope")
-    monkeypatch.setattr(external, "REPO", worktree)
-
-    assert external.main(["--dry-run"]) == 0
-    captured = capsys.readouterr()
-    assert "검토 경로: ['src', 'tests', 'scripts', '.project_manager/tools']" in captured.err
-    assert "src/module.py" in captured.out
-    assert "docs/notes.md" not in captured.out
-
-
-def test_owner_scope_oracle_is_sensitive_to_surviving_slot_declaration(
-    tmp_path, monkeypatch, capsys,
-):
-    """소유 미선언 시 슬롯 선언을 남기던 옛 병합으로 되돌리면 송신 범위가 `.` 로 넓어진다."""
-    _home, worktree = _demoted_worktree_with_owner_default_scope(tmp_path)
-    external = _load("additional_reviewer_owner_scope_sensitivity")
-    monkeypatch.setattr(external, "REPO", worktree)
-
-    def _legacy_merge(conf, owner_filters):
-        merged = dict(conf)
-        owner_paths = owner_filters.get("additional_reviewer.paths", "").strip()
-        if owner_paths:
-            merged["additional_reviewer.paths"] = owner_paths
-        return merged
-
-    monkeypatch.setattr(external, "_merged_owner_filters", _legacy_merge)
-    assert external.main(["--dry-run"]) == 0
-    captured = capsys.readouterr()
-    assert "검토 경로: ['.']" in captured.err
-    assert "docs/notes.md" in captured.out
-
-
-def test_owner_conf_read_failure_blocks_with_and_without_explicit_paths(
-    tmp_path, monkeypatch, capsys,
-):
-    """소유 conf 를 못 읽으면 어떤 인자에서도 차단한다 — --paths 는 확인 못 한 denylist 를 대체 못 한다."""
-    home, worktree = _demoted_worktree_with_owner_filters(tmp_path)
-    (home / ".project_manager" / "local.conf").write_bytes(b"\xff\xfe\x00")
-    external = _load("additional_reviewer_owner_conf_unreadable")
-    monkeypatch.setattr(external, "REPO", worktree)
-    monkeypatch.setattr(
-        external, "extract_diff",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("diff must not run"),
-        ),
-    )
-
-    for argv in (["--dry-run"], ["--paths", "src/module.py", "--dry-run"]):
-        assert external.main(argv) == 1
-        err = capsys.readouterr().err
-        assert "소유 PM 홈 conf 를 읽지 못했습니다" in err
-        assert "명시 --paths 로 대체되지 않으므로" in err
-
-
 def _cross_repo_absolute_target(
     tmp_path, *, break_target_owner: bool,
 ) -> tuple[Path, Path, Path, Path]:
@@ -1590,10 +1460,10 @@ def _cross_repo_absolute_target(
     fail-closed 를 본다.
     """
     home_a, slot_a, _ticket_a = _managed_worktree(tmp_path / "a")
+    # 깨뜨리는 것은 **conf 판독**뿐이다. lease 장부 손상은 라운드 장부를 읽는 게이트 실행에서
+    # 따로 중단시키는 축이라(`test_markerless_snapshot_with_corrupt_lease_is_blocked`), 여기
+    # 섞으면 "선택 전 conf 를 읽지 않는다"는 이 픽스처의 명제를 관측할 수 없다.
     (home_a / ".project_manager" / "local.conf").write_bytes(b"\xff\xfe\x00")
-    (home_a / ".project_manager" / ".local" / "worktree-leases.json").write_text(
-        "{broken", encoding="utf-8",
-    )
     (slot_a / ".project_manager" / "local.conf").write_bytes(b"\xff\xfe\x00")
 
     home_b, slot_b, _ticket_b = _managed_worktree(tmp_path / "b")
@@ -1617,38 +1487,6 @@ def _cross_repo_absolute_target(
             "{broken", encoding="utf-8",
         )
     return home_a, slot_a, home_b, slot_b
-
-
-def test_absolute_paths_to_other_repo_use_selected_owner_not_engine_context(
-    tmp_path, monkeypatch, capsys,
-):
-    """초기 엔진 컨텍스트가 강등·손상이어도 다른 repo를 가리키는 절대 --paths 는 자기잠기지 않는다."""
-    home_a, slot_a, home_b, slot_b = _cross_repo_absolute_target(
-        tmp_path, break_target_owner=False,
-    )
-    external = _load("additional_reviewer_cross_repo_absolute")
-    monkeypatch.setattr(external, "REPO", slot_a)
-
-    # A 컨텍스트는 실제로 차단 사유를 갖는다 — 옛 순서(엔진 먼저 검사)라면 여기서 막혔다.
-    with pytest.raises(external.OwnerFilterConfError):
-        external._owner_filter_conf(
-            external.PmHomeDemotion(slot_a, "lease 손상", (home_a,)),
-        )
-
-    assert external.main([
-        "--dry-run", "--paths", str(slot_b / "src" / "module.py"),
-    ]) == 0
-    err = capsys.readouterr().err
-    assert f"diff_root={slot_b.resolve()}" in err
-    assert f"pm_home={home_b.resolve()}" in err
-    assert "소유 PM 홈 conf 를 읽지 못했습니다" not in err
-
-    # 적용된 denylist 도 선택된 소유자(B)의 선언이다 — 명시 지정한 `*.b-vault` 경로가 차단된다.
-    assert external.main([
-        "--dry-run", "--paths", str(slot_b / "src" / "keys.b-vault"),
-    ]) == 1
-    blocked = capsys.readouterr().err
-    assert "*.b-vault" in blocked
 
 
 def test_explicit_anchor_run_has_zero_pre_selection_conf_dependency(
@@ -1675,83 +1513,6 @@ def test_explicit_anchor_run_has_zero_pre_selection_conf_dependency(
     # 선택된 소유자 conf 정확히 1회 — 엔진 슬롯/그 소유 PM 홈 conf 는 열리지 않는다.
     assert loaded == [home_b.resolve()]
     assert f"pm_home={home_b.resolve()}" in capsys.readouterr().err
-
-
-def test_absolute_paths_still_fail_closed_when_target_owner_conf_is_unreadable(
-    tmp_path, monkeypatch, capsys,
-):
-    """역케이스: 선택된 소유자(B) 쪽 conf 를 못 읽으면 절대 --paths 여도 차단(MF-3 불변)."""
-    _home_a, slot_a, home_b, slot_b = _cross_repo_absolute_target(
-        tmp_path, break_target_owner=True,
-    )
-    external = _load("additional_reviewer_cross_repo_absolute_closed")
-    monkeypatch.setattr(external, "REPO", slot_a)
-    monkeypatch.setattr(
-        external, "run_review",
-        lambda *args, **kwargs: pytest.fail("외부 송신 전에 차단해야 한다"),
-    )
-
-    assert external.main([
-        "--dry-run", "--paths", str(slot_b / "src" / "module.py"),
-    ]) == 1
-    err = capsys.readouterr().err
-    assert "소유 PM 홈 conf 를 읽지 못했습니다" in err
-    assert str((home_b / ".project_manager" / "local.conf").resolve()) in err
-
-
-def test_owner_conf_read_failure_oracle_is_sensitive_to_paths_escape(
-    tmp_path, monkeypatch, capsys,
-):
-    """읽기 실패를 후보 모호성과 같은 등급으로 되돌리면 --paths 가 미검증 필터 송신을 통과시킨다."""
-    home, worktree = _demoted_worktree_with_owner_filters(tmp_path)
-    (home / ".project_manager" / "local.conf").write_bytes(b"\xff\xfe\x00")
-    external = _load("additional_reviewer_owner_conf_escape_sensitivity")
-    monkeypatch.setattr(external, "REPO", worktree)
-    real_owner_filter_conf = external._owner_filter_conf
-
-    def _legacy_owner_filter_conf(demotion):
-        try:
-            return real_owner_filter_conf(demotion)
-        except external.OwnerFilterConfError as exc:
-            raise external.AnchorResolutionError(str(exc)) from exc
-
-    monkeypatch.setattr(external, "_owner_filter_conf", _legacy_owner_filter_conf)
-    assert external.main(["--paths", "src/module.py", "--dry-run"]) == 0
-    assert "승계하지 못했습니다" in capsys.readouterr().err
-
-
-def test_demoted_filter_oracle_is_sensitive_to_unfiltered_send(
-    tmp_path, monkeypatch, capsys,
-):
-    """승계·차단 가드를 강등 이전 동작으로 되돌리면 두 형상 모두 무필터로 통과한다."""
-    _home, worktree = _demoted_worktree_with_owner_filters(tmp_path / "inherit")
-    external = _load("additional_reviewer_demoted_sensitivity")
-    monkeypatch.setattr(external, "REPO", worktree)
-    monkeypatch.setattr(
-        external, "_conf_with_owner_filters",
-        lambda conf, demotions, **kwargs: conf,
-    )
-
-    assert external.main(["--dry-run"]) == 0
-    err = capsys.readouterr().err
-    assert "'*.vault' 매칭" not in err        # 시크릿 파일이 필터 없이 diff 에 남는다
-    assert "검토 경로: ['src']" not in err     # 소유 PM 홈 범위도 적용되지 않는다
-
-    (tmp_path / "block").mkdir()
-    _source, unregistered = _unregistered_worktree(tmp_path / "block")
-    module = unregistered / "src" / "module.py"
-    module.parent.mkdir()
-    module.write_text("value = 1\n", encoding="utf-8")
-    _git(unregistered, "add", "src/module.py")
-    _git(unregistered, "commit", "-qm", "source")
-    module.write_text("value = 2\n", encoding="utf-8")
-    monkeypatch.setattr(external, "REPO", unregistered)
-
-    # 승계 불가 형상도 차단 없이 diff 추출·송신 단계까지 내려간다(옛 동작).
-    assert external.main(["--dry-run"]) == 0
-    unblocked = capsys.readouterr().err
-    assert "시크릿 필터가 좁아진" not in unblocked
-    assert "검토 경로:" in unblocked
 
 
 # ── diff 폭 표 · 슬롯 소유 근거 단계 ────────────────────────────────────────
@@ -1820,7 +1581,7 @@ def test_clean_slot_on_multi_commit_base_is_never_selected_as_changed(
     monkeypatch.setattr(external, "REPO", home)
     monkeypatch.setattr(
         external, "run_review",
-        lambda *args, **kwargs: pytest.fail("외부 송신 전에 차단해야 한다"),
+        lambda *args, **kwargs: pytest.fail("호출 전에 차단해야 한다"),
     )
 
     assert external.main(["--dry-run"]) == 1
@@ -1867,7 +1628,7 @@ def test_worktree_change_selects_its_slot_over_commit_only_slot(
 def test_slot_selection_oracle_is_sensitive_to_commit_fallback_as_evidence(
     tmp_path, monkeypatch, capsys,
 ):
-    """폴백 단계를 소유 근거로 되돌리면 놀던 tip 슬롯이 뽑혀 공유 base 커밋이 송신된다."""
+    """폴백 단계를 소유 근거로 되돌리면 놀던 tip 슬롯이 뽑혀 공유 base 커밋이 호출된다."""
     home, _old, tip = _multi_commit_base_home(tmp_path / "fallback-evidence")
     external = _load("additional_reviewer_fallback_evidence")
     monkeypatch.setattr(external, "REPO", home)
@@ -1893,12 +1654,12 @@ def test_default_review_paths_cross_owned_slot_blocks_before_external_send(
     monkeypatch.setattr(external, "REPO", home_a)
     monkeypatch.setattr(
         external, "run_review",
-        lambda *args, **kwargs: pytest.fail("외부 송신 전에 차단해야 한다"),
+        lambda *args, **kwargs: pytest.fail("호출 전에 차단해야 한다"),
     )
 
     assert external.main(["--dry-run"]) == 1
     err = capsys.readouterr().err
-    assert "외부 송신 전에 중단합니다" in err
+    assert "호출 전에 중단합니다" in err
     assert str(home_a.resolve()) in err
     assert str(home_b.resolve()) in err
 

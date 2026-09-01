@@ -1044,12 +1044,15 @@ def test_iter_source_files_rejects_special_index_modes_even_if_materialized_regu
     assert got == []
 
 
-def test_iter_source_files_non_git_fallback_is_loud(pm_import, tmp_path):
+def test_iter_source_files_non_git_fallback_is_loud(pm_import, tmp_path, monkeypatch):
     """비-git 배포 사본은 복사를 계속하되 tracked 보장 소실을 공용 seam 경고로 표면화."""
     template = tmp_path / "unpacked-template"
     template.mkdir()
     (template / "kept.txt").write_text("kept\n", encoding="utf-8")
     repo_files = pm_import._load_repo_owned_files()
+    # "이 트리는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
+    # 정하지 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    monkeypatch.setattr(repo_files, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
 
     with pytest.warns(repo_files.RepoFilesFallbackWarning, match="filesystem 전수 순회"):
         got = list(pm_import._iter_source_files(template))
@@ -1061,7 +1064,7 @@ def test_iter_source_files_non_git_fallback_is_loud(pm_import, tmp_path):
 
 @requires_symlink
 def test_iter_source_files_non_git_fallback_lstat_skips_symlink_loudly(
-        pm_import, tmp_path):
+        pm_import, tmp_path, monkeypatch):
     """mode 없는 filesystem 폴백도 lstat으로 symlink를 거르고 폴백·제외를 모두 알린다."""
     template = tmp_path / "unpacked-template"
     template.mkdir()
@@ -1069,6 +1072,9 @@ def test_iter_source_files_non_git_fallback_lstat_skips_symlink_loudly(
     external_payload.write_text("outside\n", encoding="utf-8")
     (template / "outside-link.txt").symlink_to(external_payload)
     repo_files = pm_import._load_repo_owned_files()
+    # "이 트리는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
+    # 정하지 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    monkeypatch.setattr(repo_files, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
 
     with pytest.warns(Warning) as caught:
         got = list(pm_import._iter_source_files(template))
@@ -1135,15 +1141,19 @@ def test_iter_source_files_empty_disk_inventory_fails_without_seam_warning(
 
 
 def test_main_empty_non_git_template_uses_filesystem_diagnostic(
-        pm_import, tmp_path, capsys):
+        pm_import, tmp_path, capsys, monkeypatch):
     """비-git filesystem 강등의 빈 템플릿은 git index 대신 소스 디렉토리 원인을 안내한다."""
     source = tmp_path / "unpacked-source"
     (source / "templates" / "claude_code").mkdir(parents=True)
     dest = tmp_path / "dest"
     dest.mkdir()
+    repo_files = pm_import._load_repo_owned_files()
+    # "이 트리는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
+    # 정하지 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    monkeypatch.setattr(repo_files, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
 
     with pytest.warns(
-            pm_import._load_repo_owned_files().RepoFilesFallbackWarning,
+            repo_files.RepoFilesFallbackWarning,
             match="filesystem 전수 순회"):
         rc = pm_import.main([
             "--into", str(dest), "--from", str(source), "--harness", "claude",
@@ -1977,6 +1987,8 @@ def test_combination_conflicting_relpath_warns_and_prefers_registry_first(
         target = root / "shared.txt"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(payload)
+        # 출하 인벤토리는 `git ls-files` 가 낸다 — 각 트리가 자기 checkout 이라고 선언한다.
+        _track_source_tree(root)
     pm_import.plan_copy([first, second], tmp_path / "planned", None)
     warning = capsys.readouterr().err
     assert "'shared.txt'" in warning
@@ -2655,13 +2667,13 @@ def test_into_backs_up_and_preserves_existing_local_conf(pm_import, tmp_path):
     local.conf 에 재병합한다 — operational sync(project_name·test_cmd)도 동시 충족.
 
     codex 4차 MF1: local.conf 는 pm_import 의 copy/backup 대상 트리 밖이라, board.py init
-    이 통째로 덮으면 additional_reviewer.enabled·reviewer_cmd·session 등이 무백업 손실된다.
+    이 통째로 덮으면 additional_reviewer.harness·reviewer_cmd·session 등이 무백업 손실된다.
 
-    T-0021 메모 — additional_reviewer.enabled 보존(아래 assert)은 **T-0017 의 board.py
+    T-0021 메모 — additional_reviewer.harness 보존(아래 assert)은 **T-0017 의 board.py
     EOF/비대화 가드**에 의존한다: board init 은 pm_import 가 stdin=DEVNULL 로 호출하므로
     `prompt_additional_reviewer_optin` 은 비대화(isatty=False/EOF)로 판정해 **아무것도 쓰지
     않고 반환**해야 한다. 그래야 reapply_preserved_conf_keys 가 백업의 사용자값('true')을
-    그대로 재병합한다. board.py 가 pre-fix(가드 없음)면 init 이 `additional_reviewer.enabled=false`
+    그대로 재병합한다. board.py 가 pre-fix(가드 없음)면 init 이 `additional_reviewer.harness=codex`
     를 먼저 써 버려 재병합이 스킵되고 이 테스트는 'false' 로 실패한다 — 정상(엔진 미수정 신호).
     이 ticket(tests-only)에서는 board.py 를 고치지 않으므로, 복사되는 엔진이 pre-fix 인 run
     에서는 이 테스트가 red 일 수 있다. 통합(T-0017 머지·pm_update 동기화) 후 green 이어야 한다.
@@ -2674,7 +2686,6 @@ def test_into_backs_up_and_preserves_existing_local_conf(pm_import, tmp_path):
     # 기존 프로젝트가 갖고 있던 per-clone 설정(board init 솔로가 안 쓰는 키 포함).
     existing_content = (
         "# 기존 사용자 local.conf — 보존되어야 함\n"
-        "additional_reviewer.enabled=true\n"
         "additional_reviewer.harness=codex\n"
         "session=mine\n"
     )
@@ -2695,8 +2706,8 @@ def test_into_backs_up_and_preserves_existing_local_conf(pm_import, tmp_path):
     # ② 새 local.conf = board init 기본 + 사용자 키 보존 + operational sync 동시 충족.
     conf = _parse_conf(existing_conf)
     # board init 솔로가 안 쓰는 사용자 키 보존.
-    assert conf.get("additional_reviewer.enabled") == "true", \
-        f"additional_reviewer.enabled 가 보존되지 않음: {conf.get('additional_reviewer.enabled')!r}"
+    assert conf.get("additional_reviewer.harness") == "codex", \
+        f"additional_reviewer.harness 가 보존되지 않음: {conf.get('additional_reviewer.harness')!r}"
     assert conf.get("additional_reviewer.harness") == "codex", \
         f"additional_reviewer.harness 가 보존되지 않음: {conf.get('additional_reviewer.harness')!r}"
     # operational sync 동시 충족 (project_name·test_cmd 가 pm_import 치환값).
@@ -2709,7 +2720,7 @@ def test_into_backs_up_and_preserves_existing_local_conf(pm_import, tmp_path):
 def test_into_local_conf_init_keys_take_precedence(pm_import, tmp_path):
     """재-import 는 기존 사용자 설정을 보존한다 — session 은 명시 인자가 없으므로 기존값
     ('mine')을 유지하고(T-0184 비파괴 병합·cmd_init 이 통째 덮지 않음), init 이 안 쓰는
-    사용자 키(additional_reviewer.enabled)도 보존된다.
+    사용자 키(additional_reviewer.harness)도 보존된다.
 
     T-0184 이전엔 board init 이 local.conf 를 통째 덮어 session 이 init 솔로 기본('pm')으로
     리셋됐고 기존 'mine' 은 백업에만 남았다(데이터 손실 버그). 이제 cmd_init 은 local.conf
@@ -2720,7 +2731,7 @@ def test_into_local_conf_init_keys_take_precedence(pm_import, tmp_path):
     pm_dir = dest / ".project_manager"
     pm_dir.mkdir()
     (pm_dir / "local.conf").write_text(
-        "session=mine\nadditional_reviewer.enabled=false\n", encoding="utf-8"
+        "session=mine\nadditional_reviewer.harness=codex\n", encoding="utf-8"
     )
 
     rc = pm_import.main(["--into", str(dest), "--harness", "claude", "--name", "Prec"])
@@ -2731,7 +2742,7 @@ def test_into_local_conf_init_keys_take_precedence(pm_import, tmp_path):
     assert conf.get("session") == "mine", \
         f"재-import 가 기존 session 을 보존하지 않음(T-0184 비파괴 병합 기대): {conf.get('session')!r}"
     # board init 이 안 쓰는 사용자 키는 보존.
-    assert conf.get("additional_reviewer.enabled") == "false"
+    assert conf.get("additional_reviewer.harness") == "codex"
 
 
 # ── T-0071: run_board_init 이 subprocess env 에 PM_NONINTERACTIVE=1 명시 전달 ──
@@ -2949,8 +2960,8 @@ def test_reapply_preserved_conf_keys_only_adds_missing(pm_import, tmp_path):
     (pm_dir / "local.conf").write_text(
         "session=pm\nproject.name=New\n", encoding="utf-8"
     )
-    # 기존 원본 — session 은 다른 값('mine'), 추가로 additional_reviewer.enabled 보유.
-    original = "session=mine\nadditional_reviewer.enabled=true\nreviewer_cmd=bar\n"
+    # 기존 원본 — session 은 다른 값('mine'), 추가로 사용자 키를 보유.
+    original = "session=mine\nadditional_reviewer.harness=codex\n"
     changed = pm_import.reapply_preserved_conf_keys(dest, original)
     assert changed is True
 
@@ -2959,8 +2970,46 @@ def test_reapply_preserved_conf_keys_only_adds_missing(pm_import, tmp_path):
     assert conf["session"] == "pm"
     assert conf["project.name"] == "New"
     # 현재 파일에 없던 기존 키만 재병합.
-    assert conf["additional_reviewer.enabled"] == "true"
-    assert conf["reviewer_cmd"] == "bar"
+    assert conf["additional_reviewer.harness"] == "codex"
+
+
+def test_reimport_drops_retired_conf_keys_and_keeps_custom_ones(
+    pm_import, tmp_path, capsys
+):
+    """재병합은 사라진 이름을 되살리지 않는다 — 되살리면 그 clone 이 다음 실행부터 멈춘다.
+
+    백업 텍스트에 남은 제거키(`additional_reviewer.enabled`·`reviewer_cmd`·`session`)와 구표기
+    키(`test_cmd`)는 재병합 대상이 아니고, 채택자가 만든 커스텀 축은 그대로 왕복한다. 드롭은
+    조용하지 않다 — 무엇이 빠졌는지 한 줄로 알린다.
+    """
+    dest = tmp_path / "retired_keys"
+    pm_dir = dest / ".project_manager"
+    pm_dir.mkdir(parents=True)
+    (pm_dir / "local.conf").write_text("project.name=New\n", encoding="utf-8")
+    backup = (
+        "additional_reviewer.enabled=false\n"
+        "reviewer_cmd=codex exec\n"
+        "session=mine\n"
+        "test_cmd=pytest -q\n"
+        "additional_reviewer.harness=codex\n"
+        "additional_reviewer.persona=security\n"
+    )
+
+    assert pm_import.reapply_preserved_conf_keys(dest, backup) is True
+
+    conf = _parse_conf(pm_dir / "local.conf")
+    for retired in ("additional_reviewer.enabled", "reviewer_cmd", "session", "test_cmd"):
+        assert retired not in conf, retired
+    assert conf["additional_reviewer.harness"] == "codex"
+    assert conf["additional_reviewer.persona"] == "security"
+    assert conf["project.name"] == "New"
+    out = capsys.readouterr().out
+    assert "재병합하지 않음(제거)" in out
+    assert "additional_reviewer.enabled" in out
+
+    # 재병합 산출을 그대로 소비할 수 있다 — 되살아난 제거키가 없으니 로더가 멈추지 않는다.
+    local_conf = pm_import._load_local_conf()
+    assert local_conf.load_checked_readable(pm_dir / "local.conf")["project.name"] == "New"
 
 
 # ── T-0590: 추가 리뷰어 프로필 무손실 왕복 (레거시 reviewer_cmd · 구조적/커스텀 튜플) ──
@@ -2972,14 +3021,12 @@ def test_reapply_preserved_conf_keys_only_adds_missing(pm_import, tmp_path):
 
 _LEGACY_ONLY_CONF = (
     "# 레거시 채택자 — 구조적 튜플 없이 폐지된 reviewer_cmd 만 쓴다\n"
-    "additional_reviewer.enabled=true\n"
     "reviewer_cmd=codex exec --sandbox read-only --skip-git-repo-check\n"
     "session=mine\n"
 )
 
 _CANONICAL_TUPLE_CONF = (
     "# 추가 리뷰어(additional reviewer) — ON.\n"
-    "additional_reviewer.enabled=true\n"
     "additional_reviewer.harness=codex\n"
     "additional_reviewer.model=gpt-5.6-sol\n"
     "additional_reviewer.reasoning=max\n"
@@ -2987,7 +3034,6 @@ _CANONICAL_TUPLE_CONF = (
 )
 
 _CUSTOM_TUPLE_CONF = (
-    "additional_reviewer.enabled=true\n"
     "additional_reviewer.harness=opencode\n"
     "additional_reviewer.model=qwen3-coder-next\n"
     "additional_reviewer.reasoning=low\n"
@@ -3002,7 +3048,6 @@ _CUSTOM_TUPLE_CONF = (
         pytest.param(
             _CANONICAL_TUPLE_CONF,
             {
-                "additional_reviewer.enabled": "true",
                 "additional_reviewer.harness": "codex",
                 "additional_reviewer.model": "gpt-5.6-sol",
                 "additional_reviewer.reasoning": "max",
@@ -3012,7 +3057,6 @@ _CUSTOM_TUPLE_CONF = (
         pytest.param(
             _CUSTOM_TUPLE_CONF,
             {
-                "additional_reviewer.enabled": "true",
                 "additional_reviewer.harness": "opencode",
                 "additional_reviewer.model": "qwen3-coder-next",
                 "additional_reviewer.reasoning": "low",
@@ -5280,8 +5324,12 @@ def test_pm_update_updates_promoted_guest_path_in_single_run(
     fw = tmp_path / "fw"
     fw.mkdir()
     for sub in (".project_manager", "templates", ".claude", ".github"):
-        shutil.copytree(REPO / sub, fw / sub)
+        # `.local` 제외 — per-clone 스크래치이고 그 아래가 pytest 임시 루트다(자기 복사 차단).
+        shutil.copytree(REPO / sub, fw / sub,
+                        ignore=shutil.ignore_patterns(".local"))
     shutil.copy2(REPO / ".gitattributes", fw / ".gitattributes")
+    # 출하 인벤토리는 `git ls-files` 가 낸다 — 합성 프레임워크 트리가 자기 checkout 이다.
+    _track_source_tree(fw)
     dest = tmp_path / "inst"
     assert pm_import.main(["--new", str(dest), "--harness", "claude,opencode", "--name", "X",
                            "--from", str(fw)]) == 0
@@ -5313,7 +5361,9 @@ def test_pm_update_diverged_selfheal_keeps_local_only_core_declaration(
     fw = tmp_path / "fw-diverged"
     fw.mkdir()
     for sub in (".project_manager", "templates", ".claude", ".github"):
-        shutil.copytree(REPO / sub, fw / sub)
+        # `.local` 제외 — per-clone 스크래치이고 그 아래가 pytest 임시 루트다(자기 복사 차단).
+        shutil.copytree(REPO / sub, fw / sub,
+                        ignore=shutil.ignore_patterns(".local"))
     shutil.copy2(REPO / ".gitattributes", fw / ".gitattributes")
     # local-only core 선언이 missing(rc=2)이 되지 않도록 source에는 두되 선택 manifest에는 등재하지 않는다.
     custom_source = fw / ".local" / "custom-core"

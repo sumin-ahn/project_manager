@@ -7,6 +7,7 @@ source 표기와 무관하게 LF bytes를 기록한다).
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,37 @@ DOCS = (
     REPO / "templates" / "opencode" / "AGENTS.lite.md",
     REPO / "templates" / "opencode" / "README.md",
 )
+# 훅 core 가 사는 두 자리 — 출하 템플릿과 이 저장소 자기 어댑터 사본(손복사·전파 경로 없음).
+HOOK_CORE_DIRS = (
+    REPO / "templates" / "opencode" / ".opencode" / "lib",
+    REPO / ".opencode" / "lib",
+)
+# 엔진 루트를 자기 위치에서 내야 하는 core (판정·주입·감시 훅). 나머지 core 는 엔진 루트를
+# 쓰지 않는다 — safe-write 의 root 는 write 경로 해소용 context.directory 로 별개 축이다.
+SELF_LOCATED_CORES = (
+    "templates/opencode/.opencode/lib/git-anchor-core.cjs",
+    "templates/opencode/.opencode/lib/principle-recall-core.cjs",
+    "templates/opencode/.opencode/lib/delegate-channel-core.cjs",
+    "templates/opencode/.opencode/lib/stall-watchdog-core.cjs",
+    "templates/opencode/.opencode/lib/ctx-guard-core.cjs",
+    ".opencode/lib/stall-watchdog-core.cjs",
+)
+ENGINE_ROOT_DECLARATION = 'const ENGINE_ROOT = path.resolve(__dirname, "..", "..");'
+# 엔진 경로를 조립하는 base 식별자 — 두 번째 인자가 ".project_manager" 리터럴이거나 모듈 상수
+# (이름이 `_REL` 로 끝나는 것)인 `path.join`/`path.resolve` 호출의 첫 인자를 뽑는다. 반복문 모양이
+# 아니라 "경로의 뿌리가 무엇인가"를 보므로, 조상 탐색을 다른 문법으로 다시 써도 base 가 늘어나 걸린다.
+# 엔진 경로를 조립하는 호출의 **뿌리 식별자**를 뽑는다. 뿌리는 `path.resolve(...)` 로 한 번
+# 감싸여 있을 수 있다(`path.join(path.resolve(root), MARKER_DIR_REL, ...)`) — 그 껍질을 벗기지
+# 않으면 그 파일이 검사에서 조용히 빠진다.
+ENGINE_PATH_BASE_RE = re.compile(
+    r"path\.(?:join|resolve)\(\s*"
+    r"(?:path\.resolve\(\s*)?"
+    r"([A-Za-z_$][A-Za-z0-9_$]*)\s*\)?\s*,\s*"
+    r"(?:\"\.project_manager\"|[A-Za-z_$][A-Za-z0-9_$]*_REL\b)"
+)
+# 허용되는 뿌리는 둘뿐이다 — 파일 자기 위치 상수 ENGINE_ROOT 와 순수함수가 인자로 받은 root.
+ALLOWED_ENGINE_PATH_BASES = frozenset(("ENGINE_ROOT", "root"))
+
 PM_DEV_DELEGATE_SOURCE = (
     "templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md"
 )
@@ -104,9 +136,17 @@ def test_pm_update_plan_generates_and_updates_flat_command_copies(tmp_path):
     ]
 
 
-def _plan_one_command(pm_update, source_root: Path, manifest: Path, dest_root: Path):
-    """tmp source(비-git)로 command 사본 1건을 계획한다 — 강등 warning 은 이 축의 관심사 아니다."""
-    fallback_warning = pm_update._load_repo_owned_files().RepoFilesFallbackWarning
+def _plan_one_command(pm_update, monkeypatch, source_root: Path, manifest: Path,
+                      dest_root: Path):
+    """tmp source(비-git)로 command 사본 1건을 계획한다 — 강등 warning 은 이 축의 관심사 아니다.
+
+    "source 가 git checkout 이 아니다"는 이 헬퍼의 명시 전제다 — 픽스처 위치가 그 답을 정하지
+    않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    """
+    repo_files = pm_update._load_repo_owned_files()
+    monkeypatch.setattr(
+        repo_files, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
+    fallback_warning = repo_files.RepoFilesFallbackWarning
     with pytest.warns(fallback_warning, match="filesystem 전수 순회"):
         changes, missing = pm_update.plan(
             source_root, pm_update.read_manifest(manifest),
@@ -115,7 +155,7 @@ def _plan_one_command(pm_update, source_root: Path, manifest: Path, dest_root: P
     return changes
 
 
-def test_generated_command_copy_takes_source_then_dest_notation(tmp_path):
+def test_generated_command_copy_takes_source_then_dest_notation(tmp_path, monkeypatch):
     """생성 사본의 개행 표기 = 신규는 **source 표기**, 기존 파일은 **그 파일 표기**(T-0709).
 
     CRLF 체크아웃에서만 성립하던 축이라 LF 개발기에서는 늘 초록이었다 — CRLF source·CRLF 사본을
@@ -139,7 +179,7 @@ def test_generated_command_copy_takes_source_then_dest_notation(tmp_path):
     assert b"\r\n" in skill.read_bytes(), "픽스처가 CRLF source 를 만들지 못했다"
     dest_root = tmp_path / "dest"
 
-    changes = _plan_one_command(pm_update, source_root, manifest, dest_root)
+    changes = _plan_one_command(pm_update, monkeypatch, source_root, manifest, dest_root)
     assert [(rel, kind) for rel, _src, _dst, kind in changes] == [
         (".opencode/command/pm-x.md", "new")
     ]
@@ -153,7 +193,7 @@ def test_generated_command_copy_takes_source_then_dest_notation(tmp_path):
 
     # 기존 사본이 있으면 그 파일의 표기를 따른다 — 채택자 체크아웃 표기를 뒤집지 않는다.
     write_lf(generated, "stale 사본\n두 줄\n")
-    changes = _plan_one_command(pm_update, source_root, manifest, dest_root)
+    changes = _plan_one_command(pm_update, monkeypatch, source_root, manifest, dest_root)
     assert [(rel, kind) for rel, _src, _dst, kind in changes] == [
         (".opencode/command/pm-x.md", "update")
     ]
@@ -162,7 +202,7 @@ def test_generated_command_copy_takes_source_then_dest_notation(tmp_path):
         "기존 사본(LF)의 표기를 보존하지 않았다"
 
 
-def test_synced_crlf_command_copy_plans_no_change(tmp_path):
+def test_synced_crlf_command_copy_plans_no_change(tmp_path, monkeypatch):
     """표기만 CRLF인 동기 완료 사본을 다시 계획하면 변경 0이다 (내용 무변경 churn 금지).
 
     결함 형상([[T-0727]]): 계획의 최소 렌더 분기가 raw bytes로 대조했다. 렌더 산출물은 LF인데
@@ -186,20 +226,20 @@ def test_synced_crlf_command_copy_plans_no_change(tmp_path):
         ".opencode/command/pm-x.md @render @source=.claude/skills/pm-x/SKILL.md\n",
     )
     dest_root = tmp_path / "dest"
-    pm_update.apply(_plan_one_command(pm_update, source_root, manifest, dest_root))
+    pm_update.apply(_plan_one_command(pm_update, monkeypatch, source_root, manifest, dest_root))
     generated = dest_root / ".opencode" / "command" / "pm-x.md"
     # 주입 선-단언: 사본이 실제로 CRLF고, LF 렌더층과 byte가 갈려 있어야 이 축이 시험된다.
     assert b"\r\n" in generated.read_bytes(), "픽스처가 CRLF 사본을 만들지 못했다(공허 회귀)"
     assert generated.read_bytes() != _expected_command(skill, "pm-x"), \
         "CRLF 사본이 LF 렌더층과 byte 동일하다 — 이 가드가 시험되지 않는다"
 
-    assert _plan_one_command(pm_update, source_root, manifest, dest_root) == [], \
+    assert _plan_one_command(pm_update, monkeypatch, source_root, manifest, dest_root) == [], \
         "표기만 CRLF인 무변경 사본을 update로 재계획했다(내용 무변경 churn)"
 
     # 판정 민감도는 그대로다 — 표기가 CRLF여도 내용이 한 글자 다르면 여전히 update.
     generated.write_bytes(generated.read_bytes() + "한 줄\r\n".encode("utf-8"))
     assert [(rel, kind) for rel, _src, _dst, kind
-            in _plan_one_command(pm_update, source_root, manifest, dest_root)] == [
+            in _plan_one_command(pm_update, monkeypatch, source_root, manifest, dest_root)] == [
         (".opencode/command/pm-x.md", "update")
     ], "CRLF 사본의 내용 차이를 놓쳤다(정규화가 판정을 무디게 만듦)"
 
@@ -259,3 +299,39 @@ def test_entry_docs_describe_both_distinct_surfaces():
         text = path.read_text(encoding="utf-8")
         assert ".claude/skills/" in text and ".opencode/command" in text, path
         assert not any(phrase in text for phrase in stale), (path, stale)
+
+
+def test_opencode_hook_cores_have_no_ancestor_engine_root_search():
+    """훅 core 는 엔진 루트를 조상에서 찾지 않고 자기 설치 위치에서 낸다.
+
+    조상 탐색은 중첩 트리(PM 홈 안 worktree 슬롯)에서 바깥 프로젝트의 엔진을 실행한다. 두 자리를
+    모두 본다 — 출하 템플릿과 이 저장소 자기 사본(전파 경로가 없어 손복사로 유지된다).
+    """
+    scanned = []
+    for core_dir in HOOK_CORE_DIRS:
+        assert core_dir.is_dir(), f"훅 core 디렉터리 없음: {core_dir}"
+        for core in sorted(core_dir.glob("*.cjs")):
+            source = core.read_text(encoding="utf-8")
+            scanned.append(core)
+            assert "findEngineRoot" not in source, f"조상 탐색 함수 잔존: {core}"
+            assert not re.search(r"for \(let i = 0; i < 12", source), (
+                f"12단 상향 반복문 잔존: {core}"
+            )
+            assert "parent === dir" not in source, f"조상 훑기 관용구 잔존: {core}"
+    assert len(scanned) >= len(SELF_LOCATED_CORES), f"스캔 대상이 사라짐: {scanned}"
+
+    for relative in SELF_LOCATED_CORES:
+        core = REPO / relative
+        source = core.read_text(encoding="utf-8")
+        assert ENGINE_ROOT_DECLARATION in source, f"자기 위치 엔진 루트 선언 없음: {core}"
+        bases = set(ENGINE_PATH_BASE_RE.findall(source))
+        # 추출 0건은 통과가 아니라 **무구속**이다 — 그 파일은 이 단언의 사각지대에 있다.
+        # 6파일 전부가 엔진 경로를 실제로 조립하므로 공집합이면 추출기가 그 문법을 놓친 것이다.
+        assert bases, (
+            f"엔진 경로 base 추출 0건 — 이 파일이 검사에서 빠졌다: {core}. "
+            "ENGINE_PATH_BASE_RE 가 이 파일의 경로 조립 문법을 못 읽는다."
+        )
+        assert bases <= ALLOWED_ENGINE_PATH_BASES, (
+            f"엔진 경로 base 가 자기 위치·인자 밖으로 늘어남: {core} · "
+            f"{sorted(bases - ALLOWED_ENGINE_PATH_BASES)}"
+        )

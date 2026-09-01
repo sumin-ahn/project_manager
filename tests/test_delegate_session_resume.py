@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from _git_fixture import init_git_repo
+
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -123,6 +125,9 @@ def _ok(stdout: str) -> dict:
 
 
 def _write_prompt(directory: Path, text: str = "직전 지적을 해소했다. 다시 검토하라.") -> Path:
+    # 이 디렉토리가 곧 `--cwd` 다. git 에게 "이 자리가 어느 checkout 인가"를 묻는 단계가 있어
+    # 선언이 없으면 이 저장소가 답하고, 그 소유 PM 홈의 실 라운드 장부가 판정 입력이 된다.
+    init_git_repo(directory)
     prompt = directory / "prompt.md"
     prompt.write_text(text, encoding="utf-8")
     return prompt
@@ -615,7 +620,7 @@ def test_resume_mismatch_fresh_rerun_binds_the_ticket_copy_run_id(pd, tmp_path):
         harness="claude", model="opus", reasoning=None,
         fallback=None, fallback_skip=None,
         cwd=tmp_path, prompt="p", timeout=60, output_dir=out_dir,
-        run_fn=_run_fn, secret_scan_ack_digest=None, secret_scan_ack_hits=(),
+        run_fn=_run_fn,
         resume=resume, ticket_copy=plan,
     )
     assert rc == 0
@@ -650,7 +655,6 @@ def test_infra_fallback_attempt_binds_the_ticket_copy_run_id(pd, tmp_path):
         fallback=("claude", "opus", None), fallback_skip=None,
         cwd=tmp_path, prompt="p", timeout=1, fallback_timeout=60,
         output_dir=out_dir, run_fn=_run_fn,
-        secret_scan_ack_digest=None, secret_scan_ack_hits=(),
         ticket_copy=plan,
     )
     assert rc == 0
@@ -740,7 +744,7 @@ def test_review_round_ledger_is_never_touched(pd, monkeypatch, tmp_path, capsys)
     assert len(_rows(ledger_path)) == 2             # 시드 1 + 이번 실행 1
 
 
-# ══ ④⑤ resume 라운드 실행 (delta 송신·일치 판정·폴백) ════════════════════════
+# ══ ④⑤ resume 라운드 실행 (delta 호출·일치 판정·폴백) ════════════════════════
 
 def _resume_fixture(pd, tmp_path, *, must_fix=("직전 지적 A", "직전 지적 B"),
                     base_rev="cafebabe", session_id=SESSION_ID,
@@ -768,7 +772,7 @@ def _resume_fixture(pd, tmp_path, *, must_fix=("직전 지적 A", "직전 지적
 
 
 def test_resume_round_sends_delta_on_the_reused_session(pd, monkeypatch, tmp_path, capsys):
-    """재사용 라운드 = `--resume <sid>` argv + delta payload 1회 송신(full 재적재 없음)."""
+    """재사용 라운드 = `--resume <sid>` argv + delta payload 1회 호출(full 재적재 없음)."""
     out_dir, ledger_path, record_id = _resume_fixture(pd, tmp_path)
     prompt = _write_prompt(tmp_path, "지적 두 건 모두 해소했다.")
     fake = _FakeRun(_ok(_claude_wire("판정: 통과", usage=_MEASURED_USAGE)))
@@ -784,7 +788,7 @@ def test_resume_round_sends_delta_on_the_reused_session(pd, monkeypatch, tmp_pat
     assert "cafebabe" in sent                                # 장부 기준 rev
     assert "지적 두 건 모두 해소했다." in sent                # 호출자 원문(불투명 전달)
     assert "POISON-ONLY-IN-RAW-TXT" not in sent              # raw .txt 재파싱 0
-    assert _PREAMBLE_MARKER not in sent                       # 역할 preamble 재전송 없음
+    assert _PREAMBLE_MARKER not in sent                       # 역할 preamble 재호출 없음
     # 이번 실행 레코드가 이어받은 세션과 일치 결과를 남긴다.
     row = max(_rows(ledger_path), key=lambda item: item["started_at"])
     assert row["attempt"] == pd.RESUME_ATTEMPT
@@ -1246,21 +1250,6 @@ def test_delta_payload_consumes_only_structured_fields(pd):
     assert "장부에 기록 없음" in missing
 
 
-def test_delta_round_is_gated_like_a_fresh_send(pd, monkeypatch, tmp_path, capsys):
-    """delta 도 실제 송신 본문이므로 전송-전 시크릿 게이트를 통과해야 한다(무검사 우회 0)."""
-    out_dir, _ledger_path, _record_id = _resume_fixture(
-        pd, tmp_path, must_fix=("~/.ssh/id_rsa 를 프롬프트에서 빼라",))
-    prompt = _write_prompt(tmp_path, "해소했다")
-    fake = _FakeRun(_ok(_claude_wire("판정: 통과")))
-
-    rc = _run_main(pd, monkeypatch,
-                   _argv(prompt, tmp_path, out_dir, "--resume-from", TICKET_ID), fake)
-    err = capsys.readouterr().err
-
-    assert rc == 1 and fake.calls == []             # 전송 전 차단
-    assert "시크릿 denylist 판정" in err
-
-
 # ══ 실 위임 배선 (ticket·base_rev 가 장부까지 흐르는가) ═══════════════════════
 
 def _git_workspace(tmp_path: Path) -> Path:
@@ -1296,13 +1285,13 @@ def test_base_rev_comes_from_the_prerun_worktree_capture(pd, monkeypatch, tmp_pa
 
 # ── 재실행 자격 = 확정된 재사용 실패뿐 (T-0605 ⑤) ─────────────────────────────
 # codex R5 지적: 세션 id 가 없고 인프라 실패로 분류되지 않은 **모든** 실패를 재사용 불일치로 보고
-# read 역할을 자동 재실행했다 — 전송 *후* 죽은 미분류 `rc≠0` 도 full payload 로 다시 나가
-# 중복 과금·중복 외부 전송이 된다. 자격은 둘뿐이다: 깨끗한 완료의 명시적 id 불일치, 확정된
+# read 역할을 자동 재실행했다 — 호출 *후* 죽은 미분류 `rc≠0` 도 full payload 로 다시 나가
+# 중복 과금·중복 호출이 된다. 자격은 둘뿐이다: 깨끗한 완료의 명시적 id 불일치, 확정된
 # "세션 없음" 오류.
 
 
 def test_unclassified_failure_after_send_is_not_rerun(pd, monkeypatch, tmp_path, capsys):
-    """미분류 `rc≠0`(전송 후 실패 가능)은 재실행하지 않는다 — 기존 fail-loud (DoD)."""
+    """미분류 `rc≠0`(호출 후 실패 가능)은 재실행하지 않는다 — 기존 fail-loud (DoD)."""
     out_dir, _ledger_path, _record_id = _resume_fixture(pd, tmp_path)
     prompt = _write_prompt(tmp_path)
     fake = _FakeRun(
@@ -1316,7 +1305,7 @@ def test_unclassified_failure_after_send_is_not_rerun(pd, monkeypatch, tmp_path,
     err = capsys.readouterr().err
 
     assert rc == 1
-    assert len(fake.calls) == 1, f"미분류 실패인데 재전송이 일어남: {fake.calls}"
+    assert len(fake.calls) == 1, f"미분류 실패인데 재호출이 일어남: {fake.calls}"
     assert "세션 재사용 실패" not in err          # 재사용 축 오진단 없음
     assert "위임 하네스 실패(rc=1)" in err        # 기존 fail-loud 그대로
 
@@ -1338,7 +1327,7 @@ def test_a_clean_completion_without_an_observed_id_is_not_rerun(
                    _argv(prompt, tmp_path, out_dir, "--resume-from", TICKET_ID), fake)
 
     assert rc == 0
-    assert len(fake.calls) == 1, f"관측 실패인데 재전송이 일어남: {fake.calls}"
+    assert len(fake.calls) == 1, f"관측 실패인데 재호출이 일어남: {fake.calls}"
     assert "세션 재사용 실패" not in capsys.readouterr().err
 
 

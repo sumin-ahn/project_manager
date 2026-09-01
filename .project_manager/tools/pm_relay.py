@@ -531,7 +531,7 @@ def start_raw_record(
     now: datetime.datetime | None = None,
     extra: dict[str, object] | None = None,
 ) -> str:
-    """외부 프로세스 실행 전에 미마감 레코드를 원자 등록하고 record id를 반환한다.
+    """자식 프로세스 실행 전에 미마감 레코드를 원자 등록하고 record id를 반환한다.
 
     `extra` = 표면별 해소 provenance 의 **추가** 필드(예: 추가 리뷰어의 source/reasoning/command).
     공통 스키마 키(`RAW_LEDGER_RESERVED_KEYS`)는 덮어쓰지 않는다 — 조회면이 보는 필드 이름의 뜻이
@@ -1052,7 +1052,7 @@ READ_ROLES: frozenset[str] = frozenset({"researcher", "code-reviewer"})
 #   · opencode(`--variant`): minimal/low/medium/high/max — opencode 는 `--variant` 를 **CLI 검증하지
 #     않고 provider 로 passthrough**(valid/invalid 모두 rc=0·미지원값은 provider 가 silent-ignore).
 #     그래서 이 집합은 opencode 문서화 ladder 를 **typo-guard** 로 인코딩한 것 — silent no-op 을
-#     전송 전에 차단한다. provider 별 실지원은 다를 수 있다(passthrough 특성).
+#     호출 전에 차단한다. provider 별 실지원은 다를 수 있다(passthrough 특성).
 REASONING_ALLOWED: dict[str, frozenset[str]] = {
     "codex": frozenset({"low", "medium", "high", "xhigh", "max"}),
     "claude": frozenset({"low", "medium", "high", "xhigh", "max"}),
@@ -1318,7 +1318,7 @@ def assert_opencode_prompt_in_cwd(cwd: str | Path, prompt_file: str | Path) -> N
     """opencode ``--file`` 이 ``--dir`` sandbox의 실제 하위 경로인지 단언한다.
 
     argv 빌더 자체는 추가 리뷰어의 표시용 placeholder도 조립하므로 순수 함수로 둔다. 실제 파일을
-    전송하는 호출부가 이 가드를 직전에 호출한다. 양쪽 경로를 resolve해 실제 containment를 판정하며,
+    넘기는 호출부가 이 가드를 직전에 호출한다. 양쪽 경로를 resolve해 실제 containment를 판정하며,
     해소 자체가 실패하면 공용 계약 예외로 번역한다. 따라서 ``--dir`` 안의 symlink가 바깥 파일을
     가리키는 형상도 거부하며, 파일 경로가 sandbox 루트와 같은 값인 형상도 하위로 인정하지 않는다.
     """
@@ -1463,28 +1463,13 @@ def extract_harness_reply(harness: str, stdout: str) -> str | None:
     return extract_harness_result(harness, stdout).reply
 
 
-# ── Codex egress 승격 브리지 (network-off 안전 경계 × 외부 스폰) ─────────────────
+# ── 스폰 진입점 표기 (도구 승인 prefix·처방 커맨드가 공유) ──────────────────
 #
-# 실측(2026년 8월 7일·adopter#0): Codex PM(`workspace-write` + `network_access=false`)에서 띄운
-# 자식 CLI는 부모 sandbox 의 egress 차단을 그대로 상속해 API 재시도 뒤 rc≠0 로 끝난다. 엔진은
-# sandbox 를 스스로 벗어나지 않는다(재실행·config 자동 완화 없음) — 실제 이탈은 Codex 도구 호출의
-# `sandbox_permissions="require_escalated"` 메타데이터만 수행하고, 엔진은 그 의도를
-# `--codex-egress-escalated` 호출층 attestation 으로 감사한다.
-#
-# 같은 실측에서 **승인형 비샌드박스 명령에도 마커가 그대로 남았다**. 그래서 마커는 "승격이 필요한
-# 형상인가"만 판정하고, "이번 호출이 승격됐는가"는 attestation 플래그가 소유한다(플래그는 권한을
-# 만들지 않으므로 샌드박스 안에서 잘못 붙이면 권한 상승 없이 타겟 CLI 가 기존처럼 fail-loud 한다).
-#
-# 두 외부 스폰 표면(pm_delegate 실위임·additional_reviewer 추가 리뷰어)이 이 절을 공유한다 — 진입점
-# 스크립트와 게이트 키만 표면별 인자다(승인 prefix 는 그 표면 자신을 가리켜야 재사용된다).
+# 처방·재실행 안내가 찍는 2-token(`인터프리터 + 진입점`)은 도구 승인 prefix 와 **같은 표기**여야
+# 재사용 승인을 소비한다. Windows 의 `python3`/`python` 은 WindowsApps 가짜 shim 일 수 있어
+# 런처(`py`)가 1순위다 — 그 규칙은 이 한 함수가 소유한다(사본을 만들면 표기가 갈린다).
 
-CODEX_EGRESS_MARKER_ENV = "CODEX_SANDBOX_NETWORK_DISABLED"
-CODEX_EGRESS_NOT_REQUIRED = "not-required"
-CODEX_EGRESS_ESCALATED_ATTESTED = "escalated-attested"
-CODEX_EGRESS_FLAG = "--codex-egress-escalated"
-_CODEX_EGRESS_MARKER_TRUE = frozenset({"1", "true", "yes", "on"})
-
-# 표면별 진입점 — Codex 도구 재사용 승인 prefix 가 되는 2-token 이다.
+# 표면별 진입점 — 도구 재사용 승인 prefix 가 되는 2-token 이다.
 DELEGATE_ENTRYPOINT = ".project_manager/tools/pm_delegate.py"
 ADDITIONAL_REVIEWER_ENTRYPOINT = ".project_manager/tools/additional_reviewer.py"
 
@@ -1494,124 +1479,11 @@ def running_on_windows() -> bool:
     return os.name == "nt"
 
 
-def codex_egress_escalation_required(env: dict[str, str] | None = None) -> bool:
-    """현재 환경이 외부 스폰에 Codex egress 승격을 요구하나.
-
-    마커 부재/false(채택자가 네트워크를 명시 허용한 형상)는 False — 기존 실행을 그대로 보존한다."""
-    env = os.environ if env is None else env
-    value = env.get(CODEX_EGRESS_MARKER_ENV)
-    return value is not None and value.strip().lower() in _CODEX_EGRESS_MARKER_TRUE
-
-
-def codex_egress_label(*, escalation_required: bool, attested: bool) -> str:
-    """실행 provenance·raw 감사 헤더가 공유하는 egress 라벨(두 값만)."""
-    return (
-        CODEX_EGRESS_ESCALATED_ATTESTED
-        if (escalation_required and attested)
-        else CODEX_EGRESS_NOT_REQUIRED
-    )
-
-
-def codex_egress_provenance(*, escalation_required: bool, attested: bool,
-                            env: dict[str, str] | None = None) -> str:
-    """`codex_egress=<라벨>` 1줄 — 실행 후 안전 경계를 재구성하는 감사 입력."""
-    env = os.environ if env is None else env
-    label = codex_egress_label(
-        escalation_required=escalation_required, attested=attested)
-    if label == CODEX_EGRESS_ESCALATED_ATTESTED:
-        marker = env.get(CODEX_EGRESS_MARKER_ENV)
-        note = (f"호출층 attestation({CODEX_EGRESS_FLAG}) 동반 · "
-                f"{CODEX_EGRESS_MARKER_ENV}={marker!r} 은 승격 명령에서도 남는다"
-                "(실측·엔진은 마커를 해제하지 않음)")
-    elif attested:
-        note = (f"{CODEX_EGRESS_MARKER_ENV} 미설정/false — 승격이 필요 없는 환경이라 "
-                f"{CODEX_EGRESS_FLAG} 는 권한 의미가 없다(감사 기록만)")
-    else:
-        note = f"{CODEX_EGRESS_MARKER_ENV} 미설정/false — Codex sandbox egress 차단 없음"
-    return f"codex_egress={label} · {note}"
-
-
-def codex_egress_entrypoint(script: str, *,
-                            windows: bool | None = None) -> tuple[str, str]:
-    """Codex 도구 재사용 승인과 복사 재실행이 공유하는 2-token prefix."""
+def entrypoint_command(script: str, *,
+                       windows: bool | None = None) -> tuple[str, str]:
+    """도구 승인 prefix·처방 커맨드가 공유하는 2-token(인터프리터, 진입점)."""
     on_windows = running_on_windows() if windows is None else windows
     return ("py" if on_windows else "python3", script)
-
-
-def codex_egress_prefix_rule_text(script: str, *,
-                                  windows: bool | None = None) -> str:
-    """도구 승인 UI 에 그대로 붙일 좁은 prefix 규칙 표기."""
-    interpreter, entry = codex_egress_entrypoint(script, windows=windows)
-    return f'prefix_rule=["{interpreter}", "{entry}"]'
-
-
-def codex_egress_retry_command(argv: list[str], *, script: str,
-                               windows: bool | None = None) -> str:
-    """재사용 승인 prefix와 동일한 진입점 + attestation 재실행 표시."""
-    cleaned = [token for token in argv if token != CODEX_EGRESS_FLAG]
-    # 안내를 복사한 실행이 바로 위 `prefix_rule`을 소비해야 한다. sys.executable·
-    # resolve 절대경로를 쓰면 기능은 같아도 승인 토큰이 달라져 다시 prompt 될 수 있다.
-    on_windows = running_on_windows() if windows is None else windows
-    interpreter, entry = codex_egress_entrypoint(script, windows=on_windows)
-    command = [interpreter, entry, *cleaned, CODEX_EGRESS_FLAG]
-    if not on_windows:
-        return shlex.join(command)
-    # Encoded PowerShell wrapper를 쓰면 도구가 보는 명령 prefix가 `powershell.exe`로
-    # 바뀌어 `py + script` 재사용 승인을 소비하지 못한다. 첫 2 token은 그대로 두고
-    # 나머지만 PowerShell literal로 quote한다.
-    rest = " ".join("'" + token.replace("'", "''") + "'" for token in command[2:])
-    return f"{interpreter} {entry}{' ' + rest if rest else ''}"
-
-
-def codex_egress_block_message(
-    argv: list[str], harness: str, model: str, *,
-    script: str,
-    gate_key: str,
-    subject: str,
-    windows: bool | None = None,
-) -> str:
-    """증명 없는 network-off 실행의 차단 사유 + 실행 가능한 승격 처방."""
-    return (
-        f"오류: Codex sandbox 네트워크 차단 환경에서 승격 증명 없는 {subject}을 "
-        "중단합니다 — 외부 스폰·raw 예약·과금 전입니다.\n"
-        f"  · 판정 근거: {CODEX_EGRESS_MARKER_ENV}=true · 수신자 {harness}(model={model})\n"
-        "  · 자식 CLI는 부모 Codex sandbox 의 egress 차단을 상속합니다. 지금 실행하면 API 재시도 뒤 "
-        "무진행으로 끝납니다(엔진은 sandbox 를 스스로 벗어나지 않습니다).\n"
-        "  · 미리보기는 이 환경에서 그대로 가능합니다(외부 송신 없음): --dry-run\n"
-        "  · 실 실행은 두 계층을 **함께** 씁니다 — Codex 도구 호출을 "
-        'sandbox_permissions="require_escalated" + 기술적 network justification 으로 올리고, 같은 명령에 '
-        f"{CODEX_EGRESS_FLAG} 를 동반하세요(플래그는 권한을 만들지 않는 호출층 attestation).\n"
-        f"  · 최초 도구 승인은 {codex_egress_prefix_rule_text(script, windows=windows)} "
-        "로 이 진입점만 재사용 승인하세요. Python 전체를 승인하지 마세요.\n"
-        f"  · 승격의 근거는 이 도구 승인입니다 — local.conf `{gate_key}` 는 이 채널을 쓸지 "
-        "정하는 스위치일 뿐 egress 승격을 대신하지 않습니다.\n"
-        f"  · 재실행: {codex_egress_retry_command(argv, script=script, windows=windows)}\n"
-        "  · 전역 sandbox_workspace_write.network_access=true 로 우회하지 마세요 — 일상 명령의 "
-        "egress 차단은 프로젝트 안전 경계로 유지합니다."
-    )
-
-
-def dry_run_codex_egress_line(*, escalation_required: bool, attested: bool,
-                              script: str, gate_key: str,
-                              windows: bool | None = None) -> str:
-    """dry-run 이 표시하는 승격 필요/불필요 1~2줄(외부 송신·raw·관측 부작용 없음)."""
-    if not escalation_required:
-        return (
-            f"Codex egress: 승격 불필요 ({CODEX_EGRESS_MARKER_ENV} 미설정/false · "
-            f"codex_egress={CODEX_EGRESS_NOT_REQUIRED})"
-        )
-    attestation = (
-        f"{CODEX_EGRESS_FLAG} 동반됨 — 실 실행은 이 플래그와 함께 도구 승격도 유지하세요."
-        if attested else
-        f"실 실행은 {CODEX_EGRESS_FLAG} 없이는 스폰 전 rc=1 로 중단됩니다."
-    )
-    return (
-        f"Codex egress: escalation required ({CODEX_EGRESS_MARKER_ENV}=true)\n"
-        '  실행 도구 호출을 sandbox_permissions="require_escalated" + 기술적 network justification 으로 '
-        f"올리고, 같은 명령에 {CODEX_EGRESS_FLAG} 를 동반합니다.\n"
-        f"  최초에만 {codex_egress_prefix_rule_text(script, windows=windows)} 로 재사용 "
-        f"승인합니다(local.conf `{gate_key}` 는 이 채널을 쓸지만 정합니다).\n  {attestation}"
-    )
 
 
 # ── opencode 첫-이벤트 stall 워치독 (하니스-무관 순수 헬퍼·parse_opencode_json 동거) ──
@@ -1822,8 +1694,8 @@ def stall_retries_default() -> int:
 
 
 # ── 무진행(idle) 판정 — 벽시계 단독 판정의 false-kill 폐쇄 ──────────────────────
-# 외부 프로세스를 "시작 후 경과 시간"으로 죽이면 **정상 진행 중인 작업**이 잘린다. 값 튜닝으로는
-# 못 닫는다 — 동일 입력이 900초를 넘기도 하고 안 넘기도 한 직접 증거(외부 리뷰 채널 실측 2회
+# 자식 프로세스를 "시작 후 경과 시간"으로 죽이면 **정상 진행 중인 작업**이 잘린다. 값 튜닝으로는
+# 못 닫는다 — 동일 입력이 900초를 넘기도 하고 안 넘기도 한 직접 증거(추가 리뷰 채널 실측 2회
 # 실행·입력 동일·한 번은 kill/한 번은 성공)가 임계값이 정상 작업의 **분산 대역 안**에 있음을 보였다.
 # 그래서 판정 기준을 **마지막 진행 이벤트 이후 무진행 시간**으로 교체하고 벽시계는 백스톱으로
 # 강등한다(worktree_pool.py:84-100 "진행이 보이면 관대하게, 안 보이면 유한하게"의 승계).
@@ -2177,7 +2049,7 @@ def _preflight_spawn_inputs(argv, *, cwd, env) -> None:
     """fork/exec **전에** 확정 판정할 수 있는 입력만 명시적으로 거절한다 (embedded NUL).
 
     `Popen` 이 던졌다는 사실만으로는 자식 유무를 확정할 수 없다 — 그 생성자는 fork/exec 앞의 인자
-    검증도, 자식이 뜬 **뒤**의 부모측 초기화도 같은 자리에서 올린다. 그래서 "전송 0" 판정의 근거를
+    검증도, 자식이 뜬 **뒤**의 부모측 초기화도 같은 자리에서 올린다. 그래서 "호출 0" 판정의 근거를
     예외를 받는 자리가 아니라 **부르기 전**으로 옮긴다: argv·cwd·env 의 NUL 은 이 함수가 보고
     거절하므로 그 거절에 붙는 '자식 없음' 표식은 관측이지 추측이 아니다(환불 계약 보존).
 
@@ -2209,7 +2081,7 @@ def _mark_child_existed(exc: BaseException) -> None:
     `_mark_spawn_failed` 는 최초 관측이 이긴다(같은 시도 안에서 층끼리 서로 덮지 않게). 이 선언은
     시도를 가로지르는 상위 사실이라 그 규칙 위에 선다: 앞 시도가 자식을 띄웠다면 뒤 시도가 exec 에
     실패해도 실행 전체는 '자식 없음'이 아니다(앞 자식이 프롬프트를 이미 보냈을 수 있다). 방향은
-    True→False 한쪽뿐이라 단조롭고, 그 쪽이 보수적(전송됐을 수 있음)이다.
+    True→False 한쪽뿐이라 단조롭고, 그 쪽이 보수적(호출됐을 수 있음)이다.
     """
     try:
         setattr(exc, SPAWN_FAILED_ATTR, False)
@@ -2266,7 +2138,7 @@ class _WatchedPopen:
             except _DEFINITE_LAUNCH_FAILURES as launch_failure:
                 # exec 자체가 실패한 확정 기동 실패다 — CPython 은 이때 자기가 만든 자식을
                 # errpipe 로 확인하고 회수하며, 프롬프트를 밀어 넣는 stdin 펌프는 `Popen` 이
-                # 돌아온 **뒤에야** 시작한다. 전송 0·과금 0 이므로 환불 계약을 유지한다.
+                # 돌아온 **뒤에야** 시작한다. 호출 0·과금 0 이므로 환불 계약을 유지한다.
                 _mark_spawn_failed(launch_failure, True)
                 raise
             except Exception as unknown_boundary:
@@ -2274,7 +2146,7 @@ class _WatchedPopen:
                 # fork/exec 앞의 인자 검증(그건 위 preflight 가 이미 걷어냈다)과 자식이 뜬
                 # **뒤**의 부모측 초기화(errpipe 읽기·fd 정리)를 같은 자리에서 올린다. 확정할 수
                 # 없는 나머지는 보수쪽으로 못박는다 — '자식 있었음'(False)이면 최악의 경우
-                # 라운드를 한 번 더 세지만, 반대로 틀리면 이미 나간 전송이 예산에서 사라진다.
+                # 라운드를 한 번 더 세지만, 반대로 틀리면 이미 나간 호출이 예산에서 사라진다.
                 # `BaseException`(Ctrl-C 등)은 표식 없이 그대로 올린다: 판정 유보 = 보수쪽이다.
                 _mark_spawn_failed(unknown_boundary, False)
                 raise
@@ -2305,7 +2177,7 @@ class _WatchedPopen:
         except BaseException as primary:
             if spawned is not None:
                 # 자식이 **실제로 떴다** — 뒤이은 초기화 실패는 '스폰 전'이 아니다. 회수는 하되
-                # 그 사실을 예외에 표식으로 남긴다(호출부가 exec 실패와 구분해 전송 가능성을
+                # 그 사실을 예외에 표식으로 남긴다(호출부가 exec 실패와 구분해 호출 가능성을
                 # 보수적으로 판정한다). 표식을 못 붙이는 예외는 표식 없음 = 판정 유보다.
                 _mark_spawn_failed(primary, False)
                 process_group_id = spawned.pid if os.name == "posix" else None
@@ -2660,7 +2532,7 @@ def run_with_first_event_watchdog(
 
     `on_spawn_attempt` = **첫 자식 생성 직전** 1회 호출되는 seam(기본 None = 종전 동작). 호출
     지점은 인자 검증·프로필 해소·워치독 준비가 모두 끝나 **다음 문장이 자식을 띄우는** 자리다 —
-    그보다 앞의 실패(준비 구간)는 전송이 확실히 0 이라, 이 콜백으로 예산 소유권을 옮기는 호출부가
+    그보다 앞의 실패(준비 구간)는 호출이 확실히 0 이라, 이 콜백으로 예산 소유권을 옮기는 호출부가
     그 구간을 환불 대상으로 유지할 수 있다. stall 재시도의 2회차 이후에는 다시 호출하지 않는다
     (소유권 이전은 실행당 1회이고, 그때는 이미 자식이 한 번 떴다).
 
@@ -2672,7 +2544,7 @@ def run_with_first_event_watchdog(
     에만 True 를 덧붙이고, **자식이 한 번이라도 떴으면** 그 뒤의 실패에 표식을 False 로 못박는다:
     앞선 시도의 자식이 있는데 뒤 시도가 기동에 실패한 경우도, `popen` 이 돌아온 **뒤** 본문
     (시계·first_event·poll·communicate·정리)이 무엇으로 실패한 경우도 같다. 실행 단위 보수 규칙이
-    시도 단위 관측을 이긴다(이미 나갔을 전송이 환불되지 않게).
+    시도 단위 관측을 이긴다(이미 나갔을 호출이 환불되지 않게).
     overall_timeout 은 호출부의 벽시계 백스톱이다 — 무진행 판정이 켜지면 주 판정 자리를 내주고
     "감지기가 고장난 경우"의 유한 상한으로만 남는다.
     """
@@ -2699,11 +2571,11 @@ def run_with_first_event_watchdog(
     stalled_stdout: list[str] = []
     stalled_stderr: list[str] = []
     # 이 **실행**에서 자식이 한 번이라도 실제로 떴는가. 재시도 2회차 이후의 기동 실패가 1회차
-    # 자식(이미 전송·과금됐을 수 있다)을 '자식 없음'으로 되돌리지 못하게 막는 상위 사실이다.
+    # 자식(이미 호출·과금됐을 수 있다)을 '자식 없음'으로 되돌리지 못하게 막는 상위 사실이다.
     child_created = False
     for attempt in range(1, attempts + 1):
         # ── 실 스폰 경계 ────────────────────────────────────────────────
-        # 여기까지가 "확실히 전송 전"이다(인자 검증·프로필 해소·워치독 준비). 다음 문장이 자식을
+        # 여기까지가 "확실히 호출 전"이다(인자 검증·프로필 해소·워치독 준비). 다음 문장이 자식을
         # 띄우므로 소유권 이전 콜백은 이 자리에 선다. 재시도 2회차부터는 이미 자식이 한 번 떴으니
         # 다시 넘기지 않는다.
         if on_spawn_attempt is not None and attempt == 1:
@@ -2714,8 +2586,8 @@ def run_with_first_event_watchdog(
             if child_created:
                 # 앞선 시도의 자식이 이미 떴다 — 그 자식이 프롬프트를 보냈을 수 있으므로 이번
                 # 시도가 무엇으로 실패했든 **실행 전체**를 '자식 없음'으로 만들 수 없다. 여기서
-                # 되돌리면 이미 나간 전송이 예산에서 사라진다(재시도 2회차의 기동 실패가 1회차
-                # 전송을 환불하던 구멍).
+                # 되돌리면 이미 나간 호출이 예산에서 사라진다(재시도 2회차의 기동 실패가 1회차
+                # 호출을 환불하던 구멍).
                 _mark_child_existed(exc)
                 raise
             # 첫 자식을 만들다 실패했다 — 자식은 아직 없었다. `_WatchedPopen` 이 실 `Popen`
@@ -2809,7 +2681,7 @@ def run_with_first_event_watchdog(
             # 여기까지 왔다는 것은 `popen(argv)` 가 이미 핸들을 돌려줬다는 뜻이다 — 이 실행에는
             # 자식이 **있었다**. 그러니 본문(시계·first_event·poll·communicate·정리)에서 무엇이
             # 나오든 실행 전체를 '자식 없음'으로 읽히게 두면 안 된다. 종류만 보는 상위(추가 리뷰어
-            # 러너)는 `PermissionError` 같은 확정-기동-실패 종류가 여기서 올라오면 전송 0 으로
+            # 러너)는 `PermissionError` 같은 확정-기동-실패 종류가 여기서 올라오면 호출 0 으로
             # 오분류해 이미 나갔을 프롬프트를 환불한다. 정리·재전파 **전에** 못박고(정리가 실패해
             # cause 로 매달려도 원 예외 객체는 그대로라 표식이 보존된다), 방향은 True→False 한쪽뿐이라
             # 단조롭다(`_mark_child_existed` 는 앞선 표식도 덮는 실행 단위 사실이다).
@@ -2850,7 +2722,7 @@ def run_with_first_event_watchdog(
         stderr="".join(stalled_stderr),
     )
     # 여기 도달했다는 것은 모든 시도가 자식을 띄우고 stall 로 kill 됐다는 뜻이다 — 표식을 명시해
-    # 상위가 종류 추론으로 이 실행을 '전송 0' 으로 읽을 여지를 남기지 않는다.
+    # 상위가 종류 추론으로 이 실행을 '호출 0' 으로 읽을 여지를 남기지 않는다.
     _mark_child_existed(exhausted)
     raise exhausted
 

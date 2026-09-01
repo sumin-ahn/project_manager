@@ -17,10 +17,10 @@
 8. 모듈 경계 — pm_relay 는 cycle-free(다른 엔진 표면을 읽지 않는다)·additional_reviewer 는
    opencode 전달 사본만 pm_delegate에서 지연 재사용한다·위임 공개 wrapper 는 T-0592 행동을
    그대로 보존한다.
-9. 문구 규율 — 사람 역할 이름은 **추가 리뷰어**, 상한은 anti-loop PM 자율 ack, 기계 식별자·전송
+9. 문구 규율 — 사람 역할 이름은 **추가 리뷰어**, 상한은 anti-loop PM 자율 ack, 기계 식별자·호출
    문구는 불변.
 
-hermetic: 외부 프로세스 스폰 0. 실행 경로 테스트는 tmp repo 를 REPO/PM 홈으로 주입하고
+hermetic: 자식 프로세스 스폰 0. 실행 경로 테스트는 tmp repo 를 REPO/PM 홈으로 주입하고
 `_watchdog_reviewer_run`(기본 러너 seam)을 캡처 스텁으로 갈아 끼워 **실 argv/stdin** 을 본다 —
 `run_review` 를 통째로 스텁하면 이 절이 소유한 argv·wire·raw 계약이 통과 없이 green 이 된다.
 """
@@ -40,9 +40,6 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
-
-_EGRESS_MARKER = "CODEX_SANDBOX_NETWORK_DISABLED"
-
 
 def _load(name: str):
     """도구 모듈을 (패키지 아님) importlib 로 경로 로드 — sibling 테스트 동일 규약."""
@@ -72,15 +69,6 @@ def relay():
     return _load("pm_relay")
 
 
-@pytest.fixture(autouse=True)
-def _neutral_codex_egress_marker(monkeypatch):
-    """ambient Codex egress 마커 중화 — 승격 명령에서도 마커는 남는 실측(T-0592).
-
-    Codex 세션에서 회귀를 돌리면 이 마커가 pytest env 로 새어 실행 경로 테스트가 통째로 승격
-    게이트에 걸린다. 마커를 *쓰는* 테스트만 명시로 켠다."""
-    monkeypatch.delenv(_EGRESS_MARKER, raising=False)
-
-
 # ── 형상 헬퍼 ──────────────────────────────────────────────────────────────
 
 
@@ -90,7 +78,6 @@ def _conf(harness: str = "codex", model: str = "gpt-5.6-sol",
 
     kwargs 는 점을 담지 못하므로 축 접두(`additional_reviewer.`)를 여기서 붙인다."""
     conf = {
-        "additional_reviewer.enabled": "true",
         "additional_reviewer.harness": harness,
         "additional_reviewer.model": model,
     }
@@ -180,42 +167,32 @@ class _FakeReviewer:
 
 
 def _wire_main(external, monkeypatch, repo: Path, reviewer: _FakeReviewer | None = None):
-    """main() 을 tmp repo 로 격리 배선한다 — 앵커·diff·거울만 스텁하고 그 아래는 실 경로."""
+    """main() 을 tmp repo 로 배선한다 — 앵커·diff 만 스텁하고 그 아래는 실 경로."""
     monkeypatch.setattr(external, "REPO", repo)
     monkeypatch.setattr(
         external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: repo)
     monkeypatch.setattr(external, "_resolve_diff_root", lambda *a, **k: repo)
     monkeypatch.setattr(
         external, "extract_diff",
-        lambda *a, **k: ("diff --git a/x.py b/x.py\n-old\n+new\n", []))
-    monkeypatch.setattr(
-        external, "create_reviewer_workspace",
-        lambda diff_root, *, base_dir=None, conf=None, source_home=None, denylist=():
-        external.ReviewerWorkspace(
-            root=Path(tempfile.mkdtemp(prefix="stub_reviewer_mirror_")),
-            tree=Path(tempfile.mkdtemp(prefix="stub_reviewer_tree_")),
-            home=Path(tempfile.mkdtemp(prefix="stub_reviewer_home_")),
-            files=1, skipped_unsafe=0, git_repo=True,
-        ))
+        lambda *a, **k: "diff --git a/x.py b/x.py\n-old\n+new\n")
     if reviewer is not None:
         monkeypatch.setattr(external, "_watchdog_reviewer_run", reviewer)
     return reviewer
 
 
-def _count_isolation(external, monkeypatch) -> list[Path]:
-    """격리 seam **진입**을 센다 — 실 `reviewer_visibility_scope` 를 그대로 감싼 카운터.
+def _break_env_preparation(external, monkeypatch, failure):
+    """스폰 **전** 준비 구간(리뷰어 env 조립)에 실패를 주입하고 되돌리는 함수를 준다.
 
-    거울 생성 스텁(`_wire_main`)만 세면 "무엇을 만들었나"는 보이지만 "seam 에 들어갔나"는 안
-    보인다. 진입 자체가 컨테이너 생성·정리 왕복의 시작이라 여기서 센다."""
-    entered: list[Path] = []
-    real_scope = external.reviewer_visibility_scope
+    리뷰어 env 는 위임 채널과 같은 seam(`pm_delegate.build_env`)이 조립한다 — 이 자리는 예약
+    뒤·스폰 전이라 호출이 확실히 0 인 구간이다."""
+    delegate = external._load_pm_delegate()
+    real_build_env = delegate.build_env
 
-    def _counting(diff_root, **kwargs):
-        entered.append(Path(diff_root))
-        return real_scope(diff_root, **kwargs)
+    def _boom(*args, **kwargs):
+        raise failure("리뷰어 환경 구성 실패(주입)")
 
-    monkeypatch.setattr(external, "reviewer_visibility_scope", _counting)
-    return entered
+    monkeypatch.setattr(delegate, "build_env", _boom)
+    return lambda: monkeypatch.setattr(delegate, "build_env", real_build_env)
 
 
 def _round_ledger(repo: Path) -> dict:
@@ -367,13 +344,10 @@ def test_legitimate_model_names_are_not_swept_up_by_the_reserved_check(external,
 
 def test_reserved_sentinel_model_is_refused_before_output_dir_raw_and_spawn(
         external, monkeypatch, tmp_path, capsys):
-    """sentinel 거부는 output-dir 생성·raw 예약·격리·스폰 **어느 것보다도 앞**에서 성립한다."""
+    """sentinel 거부는 output-dir 생성·raw 예약·스폰 **어느 것보다도 앞**에서 성립한다."""
     repo = _repo(tmp_path / "repo", _conf(model="default"))
     reviewer = _FakeReviewer()
     _wire_main(external, monkeypatch, repo, reviewer)
-    isolations: list[str] = []
-    monkeypatch.setattr(external, "reviewer_visibility_scope",
-                        lambda *a, **k: isolations.append("called"))
     outdir = tmp_path / "raw-out"
 
     rc = external.main(["--gate", "T-0590", "--paths", "x.py",
@@ -381,8 +355,7 @@ def test_reserved_sentinel_model_is_refused_before_output_dir_raw_and_spawn(
     captured = capsys.readouterr()
 
     assert rc == 1
-    assert reviewer.calls == []                                   # 외부 스폰 0
-    assert isolations == []                                       # 격리 거울 0
+    assert reviewer.calls == []                                   # 스폰 0
     assert not outdir.exists()                                    # output-dir 생성 0
     assert not (repo / ".project_manager" / ".local").exists()    # raw·라운드 장부 0
     assert "추가 리뷰어 실행 중" not in captured.err                # 과금 문구 앞에서 끊긴다
@@ -392,14 +365,10 @@ def test_reserved_sentinel_model_is_refused_before_output_dir_raw_and_spawn(
 
 def test_resolution_failure_precedes_every_side_effect(
         external, monkeypatch, tmp_path, capsys):
-    """잘못된 프로필은 output-dir·raw·라운드·격리 거울·스폰·과금 문구 **전부보다 앞**에서 끊긴다."""
+    """잘못된 프로필은 output-dir·raw·라운드·스폰·과금 문구 **전부보다 앞**에서 끊긴다."""
     repo = _repo(tmp_path / "repo", _conf(reasoning="ultra"))
     reviewer = _FakeReviewer()
     _wire_main(external, monkeypatch, repo, reviewer)
-    isolations: list[Path] = []
-    monkeypatch.setattr(
-        external, "reviewer_visibility_scope",
-        lambda *a, **k: isolations.append(Path("called")))
     outdir = tmp_path / "raw-out"
 
     rc = external.main(["--gate", "T-0590", "--paths", "x.py",
@@ -408,7 +377,6 @@ def test_resolution_failure_precedes_every_side_effect(
 
     assert rc == 1
     assert reviewer.calls == []                                  # 스폰 0
-    assert isolations == []                                      # 격리 거울 0
     assert not outdir.exists()                                   # output-dir 생성 0
     assert not (repo / ".project_manager" / ".local").exists()   # raw·라운드 장부 0
     assert "추가 리뷰어 실행 중" not in err                        # 과금 문구 앞에서 끊긴다
@@ -433,7 +401,7 @@ def test_resolution_failure_precedes_every_side_effect(
     ]),
         ("opencode", "zai/glm-4.6", "medium", [
             "opencode", "run", "<msg>", "--file", "<prompt-file>",
-            "--agent", "code-reviewer", "--format", "json", "--dir", "<isolated-cwd>",
+            "--agent", "code-reviewer", "--format", "json", "--dir", "<review-cwd>",
             "-m", "zai/glm-4.6", "--variant", "medium",
         ]),
 ])
@@ -487,29 +455,23 @@ def test_codex_max_reasoning_is_available_to_the_reviewer_profile(external, rela
     assert target.command.endswith("-c model_reasoning_effort=max")
 
 
-def test_copied_home_config_defaults_cannot_change_argv_or_ledger(
+def test_user_config_defaults_cannot_change_argv_or_ledger(
         external, monkeypatch, tmp_path, capsys):
-    """격리 홈에 복제된 사용자 config 기본값은 argv·장부를 못 바꾸고, tuple 모델은 둘 다 바꾼다.
+    """사용자 홈 config 기본값은 argv·장부를 못 바꾸고, tuple 모델은 둘 다 바꾼다.
 
-    명시 플래그가 config 기본값을 이기는 구조라, 거울 홈에 어떤 `model=` 기본값이 복제돼도 이번
+    명시 플래그가 config 기본값을 이기는 구조라, 실행 홈에 어떤 `model=` 기본값이 있어도 이번
     실행의 수신자와 장부 기록은 tuple 이 정한 값 하나다."""
     def _run(model: str) -> tuple[list[str], dict]:
         repo = _repo(tmp_path / f"repo-{model}", _conf(model=model))
         reviewer = _FakeReviewer(stdout=_wire("codex"))
         with pytest.MonkeyPatch.context() as patch:
             _wire_main(external, patch, repo, reviewer)
-            # 거울 홈에 다른 모델 기본값이 복제된 형상을 그대로 재현한다.
-            home = repo / "mirror-home"
+            # 사용자 홈에 다른 모델 기본값이 있는 형상을 그대로 재현한다.
+            home = repo / "user-home"
             (home / ".codex").mkdir(parents=True)
             (home / ".codex" / "config.toml").write_text(
                 'model = "someone-elses-default"\n', encoding="utf-8")
-            patch.setattr(
-                external, "create_reviewer_workspace",
-                lambda diff_root, *, base_dir=None, conf=None, source_home=None,
-                denylist=(): external.ReviewerWorkspace(
-                    root=repo / "mirror", tree=repo / "mirror-tree", home=home,
-                    files=1, skipped_unsafe=0, git_repo=True))
-            (repo / "mirror-tree").mkdir(parents=True, exist_ok=True)
+            patch.setenv("HOME", str(home))
             assert external.main(["--paths", "x.py", "--no-gate"]) == 0
             capsys.readouterr()
         rows = _raw_ledger(repo)
@@ -538,7 +500,7 @@ def test_ledger_model_is_the_explicit_tuple_value(external):
     assert structured.ledger_model == "gpt-5.6-sol"
     assert "model=gpt-5.6-sol" in structured.profile_tail
     assert ("# model: gpt-5.6-sol"
-            in external._review_raw_content("본문", None, None, structured, None))
+            in external._review_raw_content("본문", None, None, structured))
 
 
 # ══ ③ opencode 프롬프트 파일 (0600 · 전 경로 정리) ══════════════════════════
@@ -783,7 +745,7 @@ def test_a_whitespace_only_reply_takes_the_fail_loud_extraction_path(
     captured = capsys.readouterr()
 
     assert rc == 1
-    assert len(reviewer.calls) == 1                          # 스폰은 됐다(전송·과금 있음)
+    assert len(reviewer.calls) == 1                          # 스폰은 됐다(호출·과금 있음)
     assert "FALLBACK_INTERNAL" in captured.out               # 내부 리뷰어 폴백 신호
     assert "회신 추출 실패" in captured.out
     assert "종합 판정: 통과" not in captured.out               # 미끼가 판정이 되지 않았다
@@ -793,7 +755,7 @@ def test_a_whitespace_only_reply_takes_the_fail_loud_extraction_path(
     assert "진행 로그: " + _DECOY in raw
     row = _raw_ledger(repo)[0]
     assert row["rc"] == 0 and row["finished_at"]             # 프로세스 자체는 정상 종료
-    # 라운드는 전송이 있었으므로 환불하지 않는다 — 판정 없는 라운드로 마감된다.
+    # 라운드는 호출이 있었으므로 환불하지 않는다 — 판정 없는 라운드로 마감된다.
     assert _round_ledger(repo)["T-0590"]["count"] == 1
 
 
@@ -813,7 +775,7 @@ def test_malformed_wire_fails_loudly_and_still_closes_raw_and_ledger(
     captured = capsys.readouterr()
 
     assert rc == 1                                          # 조용한 통과 없음
-    assert len(reviewer.calls) == 1                          # 실제로 스폰은 됐다(전송·과금 있음)
+    assert len(reviewer.calls) == 1                          # 실제로 스폰은 됐다(호출·과금 있음)
     assert "FALLBACK_INTERNAL" in captured.out               # 내부 리뷰어 폴백 신호
     assert "회신 추출 실패" in captured.out                    # 사람이 읽는 진단
     assert "종합 판정: 통과" not in captured.out               # 미끼가 판정이 되지 않았다
@@ -963,110 +925,16 @@ def test_dry_run_and_execution_render_the_same_command_for_opencode_placeholders
 # ══ ⑦ Codex egress 게이트 (network-off 안전 경계) ══════════════════════════
 
 
-def test_network_off_without_attestation_fails_before_round_raw_isolation_and_spawn(
+def test_round_limit_refusal_creates_no_output_dir(
         external, monkeypatch, tmp_path, capsys):
-    """증명 없는 network-off 실행은 라운드 예약·raw·격리·스폰 전에 rc=1 로 끝난다."""
-    monkeypatch.setenv(_EGRESS_MARKER, "1")
+    """호출 전 거부(수렴 축)도 같은 규율이다 — 산출 디렉토리·스폰·장부 변화 모두 0."""
+    limit = external.DEFAULT_REVIEW_ROUNDS_MAX      # 호출 횟수 축 제거 후 남는 티켓 축
     repo = _repo(tmp_path / "repo", _conf())
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
-    isolations: list[str] = []
-    monkeypatch.setattr(external, "reviewer_visibility_scope",
-                        lambda *a, **k: isolations.append("called"))
-    outdir = tmp_path / "raw-out"
-
-    rc = external.main(["--gate", "T-0590", "--paths", "x.py",
-                        "--output-dir", str(outdir)])
-    err = capsys.readouterr().err
-
-    assert rc == 1
-    assert reviewer.calls == []                                   # 외부 스폰 0
-    assert isolations == []                                       # 격리 거울 0
-    # 요청한 산출 디렉토리 **자체가 생기지 않는다** — "비어 있다"로는 부족하다: 차단된 실행이
-    # 남긴 빈 디렉토리는 파일시스템에서 "아무 일도 없었다"를 거짓으로 만들고, 사람이 산출물
-    # 위치로 오독한다.
-    assert not outdir.exists()                                    # raw 예약·디렉토리 생성 0
-    assert not (repo / ".project_manager" / ".local").exists()    # 라운드 장부 0
-    assert "추가 리뷰어 실행 중" not in err                         # 과금 문구 전
-    for expected in (
-        'sandbox_permissions="require_escalated"',
-        external.CODEX_EGRESS_FLAG,
-        "--dry-run",
-        f"{_EGRESS_MARKER}=true",
-        "sandbox_workspace_write.network_access=true",
-        external.ADDITIONAL_REVIEWER_ENABLED_KEY,
-    ):
-        assert expected in err, expected
-
-
-def test_force_cannot_bypass_the_egress_gate(external, monkeypatch, tmp_path, capsys):
-    """`--force` 는 opt-in 게이트용이다 — 안전 경계(egress)를 여는 우회로가 아니다."""
-    monkeypatch.setenv(_EGRESS_MARKER, "1")
-    repo = _repo(tmp_path / "repo", _conf(enabled="false"))
-    reviewer = _FakeReviewer(stdout=_wire("codex"))
-    _wire_main(external, monkeypatch, repo, reviewer)
-    outdir = tmp_path / "raw-out"
-
-    assert external.main(["--paths", "x.py", "--force",
-                          "--output-dir", str(outdir)]) == 1
-    assert reviewer.calls == []
-    # 강제 실행도 게이트 **앞**에서 끝난다 — 부작용(산출 디렉토리)도 만들지 않는다.
-    assert not outdir.exists()
-    assert not (repo / ".project_manager" / ".local").exists()
-    assert external.CODEX_EGRESS_FLAG in capsys.readouterr().err
-
-
-def test_opt_in_off_is_a_no_op_that_creates_no_output_dir(
-        external, monkeypatch, tmp_path, capsys):
-    """비활성 no-op(rc=0)도 부작용 0 이다 — 요청한 산출 디렉토리를 만들지 않는다."""
-    repo = _repo(tmp_path / "repo", _conf(enabled="false"))
-    reviewer = _FakeReviewer(stdout=_wire("codex"))
-    _wire_main(external, monkeypatch, repo, reviewer)
-    outdir = tmp_path / "raw-out"
-
-    assert external.main(["--paths", "x.py", "--output-dir", str(outdir)]) == 0
-    assert reviewer.calls == []
-    assert not outdir.exists()
-    assert "추가 리뷰어 비활성" in capsys.readouterr().err
-
-
-def test_legacy_only_conf_stops_the_run_instead_of_reading_a_stale_decision(
-        external, monkeypatch, tmp_path):
-    """구키만 있는 conf 는 "결정 없음"으로 접히지 않고 **conf 를 읽는 지점에서 멈춘다**.
-
-    구키는 값을 공급하지 않으므로, 조용히 미결정으로 접으면 opt-in 을 켜 뒀다고 믿는 채택자가
-    아무 리뷰도 받지 못한 채 green 을 본다. 안내는 어느 키를 무엇으로 바꿀지 키 단위로 말한다."""
-    conf = _conf()
-    del conf[external.ADDITIONAL_REVIEWER_ENABLED_KEY]
-    conf["additional_reviewer_enabled"] = "false"
-    repo = _repo(tmp_path / "repo", conf)
-    _wire_main(external, monkeypatch, repo, _FakeReviewer(stdout=_wire("codex")))
-    legacy_error = external._load_local_conf().LegacyConfKeyError
-
-    with pytest.raises(legacy_error) as caught:
-        external.main(["--paths", "x.py"])
-
-    message = str(caught.value)
-    assert "additional_reviewer_enabled" in message                       # 어느 키가 문제인지
-    assert external.ADDITIONAL_REVIEWER_ENABLED_KEY in message        # 무엇으로 바꾸는지
-    assert "모델 값은 자동으로 옮기지 않습니다" in message              # 수동 합의 요구
-
-
-def test_round_limit_refusal_enters_no_isolation_and_creates_no_output_dir(
-        external, monkeypatch, tmp_path, capsys):
-    """전송 전 거부(수렴 축)도 같은 규율이다 — 격리 진입·산출 디렉토리·장부 변화 모두 0.
-
-    예산 확인·예약이 격리 **뒤**에 서면 이미 상한에 닿은 호출도 거울과 임시 홈을 한 번 만들었다
-    지운다. 정리가 성공했다는 것(=`남은 게 없다`)은 seam 에 들어간 적 없다는 것과 다른 진술이다 —
-    거부된 호출은 저장소 tracked 사본·홈 인증 사본 복제를 아예 시작하지 않아야 한다."""
-    limit = external.DEFAULT_REVIEW_ROUNDS_MAX      # 전송 횟수 축 제거 후 남는 티켓 축
-    repo = _repo(tmp_path / "repo", _conf())
-    reviewer = _FakeReviewer(stdout=_wire("codex"))
-    _wire_main(external, monkeypatch, repo, reviewer)
-    entered = _count_isolation(external, monkeypatch)
     first_out, second_out = tmp_path / "raw-1", tmp_path / "raw-2"
 
-    for _ in range(limit):                          # 상한까지 실제로 전송한다
+    for _ in range(limit):                          # 상한까지 실제로 호출한다
         assert external.main(["--gate", "T-0590", "--paths", "x.py",
                               "--output-dir", str(first_out)]) == 0
     after_first = _round_ledger(repo)
@@ -1078,8 +946,7 @@ def test_round_limit_refusal_enters_no_isolation_and_creates_no_output_dir(
     assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
     assert first_out.is_dir()                       # 실제로 나간 실행은 산출을 남긴다
     assert not second_out.exists()                  # 거부된 실행은 자리도 만들지 않는다
-    assert len(entered) == limit                    # 격리 seam 진입은 나간 실행에서만
-    assert len(reviewer.calls) == limit             # 스폰도 그 실행에서만
+    assert len(reviewer.calls) == limit             # 스폰은 나간 실행에서만
     # 장부는 상한 도달 상태 그대로다 — 거부는 예약도 환불도 하지 않는다(왕복 흔적 없음).
     assert _round_ledger(repo) == after_first
     assert after_first["T-0590"]["count"] == limit
@@ -1087,66 +954,28 @@ def test_round_limit_refusal_enters_no_isolation_and_creates_no_output_dir(
     assert "추가 리뷰어 실행 중" not in err            # 과금 문구 앞에서 끊긴다
 
 
-def test_isolation_failure_after_reservation_refunds_that_reservation(
-        external, monkeypatch, tmp_path, capsys):
-    """예약 뒤 격리가 실패하면 그 예약 하나만 원자 환불한다 — 전송 0 인데 상한이 줄면 안 된다.
-
-    예산 게이트를 격리 앞으로 옮긴 대가가 이 경로다: 스폰이 확실히 없었다는 점에서 마감 시점의
-    `started=False` 환불과 같은 조건이라, 같은 락·같은 환불 기계를 그대로 쓴다. 되돌린 슬롯은
-    다음 정상 실행이 그대로 소비한다(상한이 조용히 깎이지 않는다)."""
-    repo = _repo(tmp_path / "repo", _conf())
-    reviewer = _FakeReviewer(stdout=_wire("codex"))
-    _wire_main(external, monkeypatch, repo, reviewer)
-    workspace_stub = external.create_reviewer_workspace     # _wire_main 이 심은 거울 스텁
-    outdir = tmp_path / "raw-out"
-
-    def _fail(*args, **kwargs):
-        raise external.ReviewerWorkspaceError("거울 생성 실패(주입)")
-
-    monkeypatch.setattr(external, "create_reviewer_workspace", _fail)
-    rc = external.main(["--gate", "T-0590", "--paths", "x.py",
-                        "--output-dir", str(outdir)])
-    err = capsys.readouterr().err
-
-    assert rc == 1
-    assert reviewer.calls == []                             # 스폰 0
-    assert not outdir.exists()                              # raw 예약·디렉토리 0
-    ledger = _round_ledger(repo)
-    assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
-    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 0   # 두 축을 같은 조건으로 되돌린다
-    assert ledger["T-0590"]["rounds"] == []                  # 산출 이력도 남기지 않는다
-    assert err.count("라운드 예약 환불") == 1                 # 조용히도, 두 번도 되돌리지 않는다
-    assert external.UNISOLATED_REVIEWER_FLAG in err          # 중단 사유는 격리 실패 그대로
-
-    # 환불한 슬롯은 그대로 살아 있다 — limit=1 인데 다음 실행이 정상 전송된다.
-    monkeypatch.setattr(external, "create_reviewer_workspace", workspace_stub)
-    assert external.main(["--gate", "T-0590", "--paths", "x.py",
-                          "--output-dir", str(outdir)]) == 0
-    capsys.readouterr()
-    assert len(reviewer.calls) == 1
-    assert _round_ledger(repo)["T-0590"]["count"] == 1
-
-
 def test_early_refund_never_charges_a_wave_that_was_reset_meanwhile(
         external, monkeypatch, tmp_path, capsys):
-    """격리 실패 환불도 **예약 시점 세대**만 깎는다 (마감 경로와 같은 규칙).
+    """스폰 전 실패의 환불도 **예약 시점 세대**만 깎는다 (마감 경로와 같은 규칙).
 
-    예약 구간 락은 이미 풀린 뒤라, 거울 생성 중 다른 실행이 `--ack-wave` 로 새 wave 를 여는 순서는
+    예약 구간 락은 이미 풀린 뒤라, 준비 구간 중 다른 실행이 `--ack-wave` 로 새 wave 를 여는 순서는
     실제 동시 실행과 같다. 세대 확인이 없으면 옛 실행의 실패가 새 예산을 깎아 승인 1회로 예산이
     늘어난다."""
     repo = _repo(tmp_path / "repo", _conf())
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
+    delegate = external._load_pm_delegate()
 
     def _reset_wave_then_fail(*args, **kwargs):
         with external._round_ledger_lock():          # 다른 실행의 `--ack-wave` 대역
             ledger = external._load_round_ledger()
             external._spend_wave_round(external._reset_wave(ledger))
             external._save_round_ledger(ledger)
-        raise external.ReviewerWorkspaceError("거울 생성 실패(주입)")
+        raise RuntimeError("리뷰어 환경 구성 실패(주입)")
 
-    monkeypatch.setattr(external, "create_reviewer_workspace", _reset_wave_then_fail)
-    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1
+    monkeypatch.setattr(delegate, "build_env", _reset_wave_then_fail)
+    with pytest.raises(RuntimeError):
+        external.main(["--gate", "T-0590", "--paths", "x.py"])
     err = capsys.readouterr().err
 
     ledger = _round_ledger(repo)
@@ -1166,64 +995,20 @@ def _round_records(repo: Path, gate: str = "T-0590") -> list[dict]:
 
 
 @pytest.mark.parametrize("failure", _PRE_SPAWN_FAILURES)
-def test_unexpected_failure_entering_isolation_refunds_and_propagates(
-        external, monkeypatch, tmp_path, capsys, failure):
-    """격리 진입에서 **알려지지 않은** 예외가 나도 예약은 환불되고, 예외는 그대로 전파된다.
-
-    알려진 실패(`ReviewerWorkspaceError`)만 되돌리면 나머지 예외는 스폰도 전송도 없이 끝난
-    실행의 예약을 미완 레코드로 남긴다 — `incomplete_limit=1` 이면 다음 **정상** 호출이 곧바로
-    rc=4 로 막힌다(전송 0인 실패가 예산을 먹는다). 그래서 환불 조건은 예외 종류가 아니라
-    '스폰 전 구간'이다. 반대로 rc 로 삼켜서도 안 된다 — 예상 못 한 예외를 격리 실패와 같은
-    rc=1 로 바꾸면 진단이 사라진다."""
-    repo = _repo(tmp_path / "repo", _conf(incomplete_rounds_max="1"))
-    reviewer = _FakeReviewer(stdout=_wire("codex"))
-    _wire_main(external, monkeypatch, repo, reviewer)
-    workspace_stub = external.create_reviewer_workspace   # _wire_main 이 심은 거울 스텁
-    outdir = tmp_path / "raw-out"
-
-    def _boom(*args, **kwargs):
-        raise failure("격리 진입 실패(주입)")
-
-    monkeypatch.setattr(external, "create_reviewer_workspace", _boom)
-    with pytest.raises(failure):
-        external.main(["--gate", "T-0590", "--paths", "x.py",
-                       "--output-dir", str(outdir)])
-    err = capsys.readouterr().err
-
-    assert reviewer.calls == []                              # 스폰 0
-    assert not outdir.exists()                               # raw 예약·디렉토리 0
-    ledger = _round_ledger(repo)
-    assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
-    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 0    # 두 축을 같은 조건으로 되돌린다
-    assert ledger["T-0590"]["rounds"] == []
-    assert err.count("라운드 예약 환불") == 1                  # 이중 환불도 아니다
-    assert "추가 리뷰어 실행 중" not in err                     # 과금 문구 앞에서 끊긴다
-
-    # 환불한 슬롯은 살아 있다 — 상한 1·미완 상한 1 인데 다음 정상 실행이 그대로 전송된다.
-    monkeypatch.setattr(external, "create_reviewer_workspace", workspace_stub)
-    assert external.main(["--gate", "T-0590", "--paths", "x.py",
-                          "--output-dir", str(outdir)]) == 0
-    capsys.readouterr()
-    assert len(reviewer.calls) == 1
-    assert _round_ledger(repo)["T-0590"]["count"] == 1
-
-
-@pytest.mark.parametrize("failure", _PRE_SPAWN_FAILURES)
 def test_unexpected_failure_preparing_the_reviewer_environment_refunds_too(
         external, monkeypatch, tmp_path, capsys, failure):
-    """격리 진입 **뒤**·스폰 **전**의 준비 구간(리뷰어 환경 구성)도 같은 seam 이 소유한다.
+    """예약 **뒤**·스폰 **전**의 준비 구간(리뷰어 환경 구성)도 스폰 전 seam 이 소유한다.
 
-    격리 컨테이너는 이미 섰지만 리뷰어 프로세스는 아직 없는 구간이라, 여기서 죽어도 외부 전송은
-    확실히 0 이다. 진입 지점만 막으면 예약이 이 한 칸 뒤에서 그대로 새어나간다."""
+    예약은 이미 잡혔지만 리뷰어 프로세스는 아직 없는 구간이라, 여기서 죽어도 호출은 확실히 0 이다.
+    환불 조건은 예외 종류가 아니라 '스폰 전 구간'이다 — 알려진 예외만 되돌리면 나머지 예외가
+    호출 0 인 실행의 예약을 미완 레코드로 남겨, `incomplete_limit=1` 형상에서 다음 **정상** 호출이
+    곧바로 rc=4 로 막힌다. 반대로 rc 로 삼켜서도 안 된다(진단이 사라진다)."""
     repo = _repo(tmp_path / "repo", _conf(incomplete_rounds_max="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
+    restore = _break_env_preparation(external, monkeypatch, failure)
     outdir = tmp_path / "raw-out"
 
-    def _boom(*args, **kwargs):
-        raise failure("리뷰어 환경 구성 실패(주입)")
-
-    monkeypatch.setattr(external, "reviewer_env", _boom)
     with pytest.raises(failure):
         external.main(["--gate", "T-0590", "--paths", "x.py",
                        "--output-dir", str(outdir)])
@@ -1237,6 +1022,14 @@ def test_unexpected_failure_preparing_the_reviewer_environment_refunds_too(
     assert err.count("라운드 예약 환불") == 1
     assert "추가 리뷰어 실행 중" not in err
 
+    # 환불한 슬롯은 살아 있다 — 상한 1·미완 상한 1 인데 다음 정상 실행이 그대로 호출된다.
+    restore()
+    assert external.main(["--gate", "T-0590", "--paths", "x.py",
+                          "--output-dir", str(outdir)]) == 0
+    capsys.readouterr()
+    assert len(reviewer.calls) == 1
+    assert _round_ledger(repo)["T-0590"]["count"] == 1
+
 
 def test_unusable_output_dir_fails_before_any_spawn_and_refunds(
         external, monkeypatch, tmp_path, capsys):
@@ -1244,7 +1037,7 @@ def test_unusable_output_dir_fails_before_any_spawn_and_refunds(
 
     소유권을 `run_review` **진입**에서 넘기면 이 실행이 반례가 된다: 자식은 뜬 적이 없는데
     (raw 선점의 mkdir 이 먼저 터진다) 예약은 finished_at 없는 미완 레코드로 남는다. 상한 1·미완
-    상한 1·wave 예산 1 형상에서는 다음 **정상** 호출이 곧바로 rc=4 로 막혀, 전송 0·과금 0 인
+    상한 1·wave 예산 1 형상에서는 다음 **정상** 호출이 곧바로 rc=4 로 막혀, 호출 0·과금 0 인
     실패가 다음 라운드를 먹는다. 이전 시점이 러너 호출 직전이면 이 구간은 그대로 환불 대상이다."""
     repo = _repo(tmp_path / "repo", _conf(
         incomplete_rounds_max="1",
@@ -1267,7 +1060,7 @@ def test_unusable_output_dir_fails_before_any_spawn_and_refunds(
     assert err.count("라운드 예약 환불") == 1                      # 조용히도, 두 번도 아니다
     assert _raw_ledger(repo) == []                               # raw 장부에 남긴 것도 없다
 
-    # 환불한 슬롯은 살아 있다 — 세 예산이 모두 1 인데 다음 정상 호출이 그대로 전송된다.
+    # 환불한 슬롯은 살아 있다 — 세 예산이 모두 1 인데 다음 정상 호출이 그대로 호출된다.
     outdir = tmp_path / "raw-out-ok"
     assert external.main(["--gate", "T-0590", "--paths", "x.py",
                           "--output-dir", str(outdir)]) == 0
@@ -1329,7 +1122,7 @@ def test_pre_spawn_failure_after_the_raw_reservation_refunds_and_closes_the_reco
         external, monkeypatch, tmp_path, capsys, failure):
     """raw 선점·장부 시작 레코드 **뒤**, 러너 호출 **앞** 구간도 같은 스폰 전 규칙을 탄다.
 
-    이 구간에서 죽으면 되돌릴 게 둘이다. (1) 라운드 예약 — 전송이 확실히 없었으니 환불한다.
+    이 구간에서 죽으면 되돌릴 게 둘이다. (1) 라운드 예약 — 호출이 확실히 없었으니 환불한다.
     (2) raw 장부의 미마감 레코드 — 그 상태는 "떠 있을지 모르는 자식"(고아 조회면 `--unfinished`
     의 입력)이라는 뜻이라, 스폰이 없었으면 장부가 거짓말을 하는 것이다. 레코드는 실패 축으로
     마감하고 중단 사유는 그 레코드가 가리키는 raw 파일에 박제한다(0바이트 파일도 남기지 않는다)."""
@@ -1359,10 +1152,10 @@ def test_pre_spawn_failure_after_the_raw_reservation_refunds_and_closes_the_reco
     assert records[0]["rc"] == 1                    # 리뷰를 하나도 못 받은 실행 = 실패 축
     raw = _raw_text(repo)
     assert Path(records[0]["raw_path"]).name.startswith("additional_reviewer_")
-    assert "스폰 전 중단" in raw and "전송 0·과금 0" in raw
+    assert "스폰 전 중단" in raw and "호출 0·과금 0" in raw
     assert failure.__name__ in raw                               # 무엇으로 끊겼는지까지
 
-    # 환불한 슬롯은 살아 있다 — 상한 1·미완 1 인데 다음 정상 호출이 그대로 전송된다.
+    # 환불한 슬롯은 살아 있다 — 상한 1·미완 1 인데 다음 정상 호출이 그대로 호출된다.
     monkeypatch.setattr(external, "_structured_transport", real_transport)
     assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 0
     capsys.readouterr()
@@ -1371,7 +1164,7 @@ def test_pre_spawn_failure_after_the_raw_reservation_refunds_and_closes_the_reco
 
 
 def _runner_that_spawns_then_dies(reviewer: _FakeReviewer, failure: type):
-    """실제 러너 자리 대역 — 스폰(=전송)을 한 번 하고 그 자리에서 죽는다.
+    """실제 러너 자리 대역 — 스폰(=호출)을 한 번 하고 그 자리에서 죽는다.
 
     `_FakeReviewer` 와 **같은 시그니처**를 선언한다: `_reviewer_run_kwargs` 가 러너 시그니처를
     introspect 해 `idle_timeout` 전달 여부와 bind 검증을 하므로, 대역이 `**kwargs` 로 뭉개면 이
@@ -1387,7 +1180,7 @@ def _runner_that_spawns_then_dies(reviewer: _FakeReviewer, failure: type):
 @pytest.mark.parametrize("seam", ["runner", "raw-write"])
 def test_failure_after_the_spawn_attempt_keeps_the_reservation(
         external, monkeypatch, tmp_path, capsys, seam):
-    """러너 호출로 소유권이 넘어간 뒤의 실패는 **환불하지 않는다** — 이미 전송됐을 수 있다.
+    """러너 호출로 소유권이 넘어간 뒤의 실패는 **환불하지 않는다** — 이미 호출됐을 수 있다.
 
     환불 seam 을 실행 전체로 넓히면 타임아웃·비정상 종료로 죽은 라운드까지 되돌아가, 프롬프트가
     이미 나가 과금된 호출이 상한을 소비하지 않는다(MF-A 가 막으려던 무한 우회). 넘어간 예약은
@@ -1401,7 +1194,7 @@ def test_failure_after_the_spawn_attempt_keeps_the_reservation(
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     if seam == "runner":
-        # 러너 호출 **안**에서 나가는 BaseException — 전송은 이미 일어났다.
+        # 러너 호출 **안**에서 나가는 BaseException — 호출은 이미 일어났다.
         expected = KeyboardInterrupt
         monkeypatch.setattr(
             external, "_watchdog_reviewer_run",
@@ -1444,7 +1237,7 @@ def test_missing_reviewer_binary_refunds_exactly_once_through_finalization(
 
     def _missing(argv, *, input=None, timeout=None, idle_timeout=None,
                  cwd=None, env=None, **_ignored):
-        raise FileNotFoundError(argv[0])              # 실행 파일 부재 — 전송 0
+        raise FileNotFoundError(argv[0])              # 실행 파일 부재 — 호출 0
 
     monkeypatch.setattr(external, "_watchdog_reviewer_run", _missing)
     assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1
@@ -1464,7 +1257,7 @@ def test_missing_reviewer_binary_refunds_exactly_once_through_finalization(
 #
 # 환불 판정의 입력은 예외 **종류**가 아니라 relay 가 스폰 경계에서 붙인 표식이다. 아래 세 축이
 # 그 귀결을 예산 장부로 못박는다: (1) 재시도 중 자식이 한 번이라도 떴으면 뒤 시도의 기동 실패는
-# 환불하지 않는다, (2) `Popen` 이 fork 전에 거절한 실행(argv NUL)은 전송 0 이라 환불한다,
+# 환불하지 않는다, (2) `Popen` 이 fork 전에 거절한 실행(argv NUL)은 호출 0 이라 환불한다,
 # (3) `Popen` 성공 뒤의 같은 종류 예외는 환불하지 않는다.
 
 
@@ -1534,7 +1327,7 @@ def test_a_second_attempt_launch_failure_still_charges_the_first_spawn(
     """1회차 스폰 + 2회차 기동 실패 = 정확히 두 시도 — 예약은 소비된 채로 남는다(환불 0).
 
     stall 재시도는 자식을 여러 번 띄운다. 2회차가 exec 에 실패했다고 실행 전체를 '스폰 없음'으로
-    읽으면, **1회차에 이미 나갔을 수 있는 전송**이 라운드·wave 예산에서 사라진다(같은 형상을
+    읽으면, **1회차에 이미 나갔을 수 있는 호출**이 라운드·wave 예산에서 사라진다(같은 형상을
     반복하면 상한이 무한히 우회된다). 종류(FileNotFoundError)가 아니라 실행 단위 표식이 이긴다."""
     repo = _repo(tmp_path / "repo", _conf())
     _wire_main(external, monkeypatch, repo)          # 러너 자리는 아래에서 실 relay 로 건다
@@ -1558,19 +1351,19 @@ def test_a_second_attempt_launch_failure_still_charges_the_first_spawn(
     assert attempts == ["spawned", "launch-failed"]  # 정확히 2회 시도
     assert first.kill_count == 1                     # 1회차 자식은 실제로 떴다가 kill 됐다
     ledger = _round_ledger(repo)
-    assert ledger["T-0590"]["count"] == 1, "이미 전송됐을 수 있는 실행이 환불됐다"
+    assert ledger["T-0590"]["count"] == 1, "이미 호출됐을 수 있는 실행이 환불됐다"
     assert ledger[external.WAVE_SECTION_KEY]["spent"] == 1
     assert "라운드 예약 환불" not in err
-    assert "전송은 일어나지 않았습니다" not in err     # 확정 기동 실패 문구를 쓰면 안 된다
+    assert "호출은 일어나지 않았습니다" not in err     # 확정 기동 실패 문구를 쓰면 안 된다
 
 
 def test_a_nul_argv_rejected_before_the_child_refunds_and_the_next_call_still_runs(
         external, monkeypatch, tmp_path, capsys):
-    """argv NUL 은 `Popen` 이 fork 전에 거절한다(전송 0) — 상한 1 에서도 슬롯이 살아남는다.
+    """argv NUL 은 `Popen` 이 fork 전에 거절한다(호출 0) — 상한 1 에서도 슬롯이 살아남는다.
 
     실 러너·실 relay·실 `_WatchedPopen` 을 그대로 태운다(프로세스는 하나도 뜨지 않는다 — 거절이
     fork 앞이라 hermetic 하다). 종류가 `ValueError` 라 확정 기동 실패 종류표에는 없다: 표식이
-    없으면 보수적으로 '전송됐을 수 있음'이 되어, 상한 1·미완 1 인 채택자는 **한 번도 전송하지
+    없으면 보수적으로 '호출됐을 수 있음'이 되어, 상한 1·미완 1 인 채택자는 **한 번도 호출하지
     못한 채** 다음 호출이 막힌다."""
     # 모델 값에 NUL — 구조화 argv(`-m <model>`)로 그대로 실려 `Popen` 이 fork 전에 거절한다.
     repo = _repo(tmp_path / "repo", _conf(
@@ -1584,9 +1377,9 @@ def test_a_nul_argv_rejected_before_the_child_refunds_and_the_next_call_still_ru
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
     assert ledger[external.WAVE_SECTION_KEY]["spent"] == 0
     raw = _raw_text(repo)
-    assert "실행할 수 없음" in raw and "외부 전송은 일어나지 않았습니다" in raw
+    assert "실행할 수 없음" in raw and "호출은 일어나지 않았습니다" in raw
 
-    # 환불한 슬롯은 살아 있다 — 상한 1·미완 1 인데 다음 정상 호출이 그대로 전송된다.
+    # 환불한 슬롯은 살아 있다 — 상한 1·미완 1 인데 다음 정상 호출이 그대로 호출된다.
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     monkeypatch.setattr(external, "_watchdog_reviewer_run", reviewer)
     assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 0
@@ -1596,7 +1389,7 @@ def test_a_nul_argv_rejected_before_the_child_refunds_and_the_next_call_still_ru
 
 
 def _runner_that_spawns_then_raises_marked(reviewer: _FakeReviewer, relay, failure: type):
-    """스폰(=전송)한 뒤 `Popen` 성공 뒤 실패로 죽는 러너 — relay 가 붙이는 표식까지 재현한다."""
+    """스폰(=호출)한 뒤 `Popen` 성공 뒤 실패로 죽는 러너 — relay 가 붙이는 표식까지 재현한다."""
     def _run(argv, *, input=None, timeout=None, idle_timeout=None,
              cwd=None, env=None, **_ignored):
         reviewer(argv, input=input, timeout=timeout, idle_timeout=idle_timeout,
@@ -1624,7 +1417,7 @@ def test_a_post_spawn_failure_is_never_refunded_whatever_its_type(
     assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1
     err = capsys.readouterr().err
 
-    assert len(reviewer.calls) == 1                       # 전송은 실제로 일어났다
+    assert len(reviewer.calls) == 1                       # 호출은 실제로 일어났다
     ledger = _round_ledger(repo)
     assert ledger["T-0590"]["count"] == 1
     assert ledger[external.WAVE_SECTION_KEY]["spent"] == 1
@@ -1638,7 +1431,7 @@ def _missing_binary_runner(argv, *, input=None, timeout=None, idle_timeout=None,
 
 
 def _runner_that_spawns_then_times_out(reviewer: _FakeReviewer):
-    """스폰(=전송)한 뒤 타임아웃으로 끝나는 러너 — started=True 의 대표 축(과금 가능)."""
+    """스폰(=호출)한 뒤 타임아웃으로 끝나는 러너 — started=True 의 대표 축(과금 가능)."""
     def _run(argv, *, input=None, timeout=None, idle_timeout=None,
              cwd=None, env=None, **_ignored):
         reviewer(argv, input=input, timeout=timeout, idle_timeout=idle_timeout,
@@ -1772,7 +1565,7 @@ def test_a_proven_no_spawn_refunds_even_if_the_summary_dies(
     assert records[0]["finished_at"] is not None
     assert "스폰 전 중단" not in _raw_text(repo)
 
-    # 되돌린 슬롯은 살아 있다 — 세 예산이 모두 1 인데 다음 정상 호출이 그대로 전송된다.
+    # 되돌린 슬롯은 살아 있다 — 세 예산이 모두 1 인데 다음 정상 호출이 그대로 호출된다.
     monkeypatch.setattr(external, "_watchdog_reviewer_run", reviewer)
     monkeypatch.setattr(external, "print_summary", real_summary)
     assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 0
@@ -1824,7 +1617,7 @@ def test_a_proven_no_spawn_refunds_and_stays_loud_when_raw_bookkeeping_dies(
         assert "스폰 전 중단 레코드 마감 실패" in err
         assert "실제로는 스폰 0" in err
         raw = _raw_text(repo)
-        assert "스폰 전 중단" in raw and "전송 0·과금 0" in raw
+        assert "스폰 전 중단" in raw and "호출 0·과금 0" in raw
 
 
 def _flaky_ledger_save(external, monkeypatch, *, fail_from: int, fail_to: int | None = None):
@@ -1851,7 +1644,7 @@ def test_a_proven_no_spawn_refunds_when_the_finalization_save_fails(
     """마감 **저장**이 실패해도 판명된 no-spawn 의 예약은 되돌아간다 — 정상 return 경로의 소유.
 
     이 경로는 예외를 삼키고 판정 rc 를 그대로 돌려주므로 스폰 전 seam 의 `__exit__` 가 소유를
-    보지 못한다. 되돌리지 않으면 자식이 뜬 적 없는(전송 0·과금 0) 실행이 라운드 count·wave 예산을
+    보지 못한다. 되돌리지 않으면 자식이 뜬 적 없는(호출 0·과금 0) 실행이 라운드 count·wave 예산을
     먹은 채 미완으로 남아, 상한 1·미완 상한 1·wave 1 형상에서 다음 **정상** 호출이 곧바로 rc=4 로
     막힌다. 마감 저장은 실패했지만 환불 저장은 성공하는 형상이 실측 축이다(락 경합은 지나간다)."""
     repo = _repo(tmp_path / "repo", _conf(
@@ -1865,7 +1658,7 @@ def test_a_proven_no_spawn_refunds_when_the_finalization_save_fails(
     assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1   # 판정 rc 보존
     err = capsys.readouterr().err
 
-    assert reviewer.calls == []                                   # 자식 0 (전송·과금 0)
+    assert reviewer.calls == []                                   # 자식 0 (호출·과금 0)
     assert saves["n"] == 3                        # 예약 · 마감(실패) · 보상 환불
     ledger = _round_ledger(repo)
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
@@ -1889,7 +1682,7 @@ def test_a_failing_compensation_after_no_spawn_stays_loud_and_conservative(
         external, monkeypatch, tmp_path, capsys):
     """보상 환불까지 실패하면 예약은 미완으로 남되 두 실패가 모두 loud 하다 (보수적 방향).
 
-    장부가 실제보다 헐거워지는 방향(전송한 라운드를 안 셈)으로 틀리지 않는 대신, 되돌리지 못한
+    장부가 실제보다 헐거워지는 방향(호출한 라운드를 안 셈)으로 틀리지 않는 대신, 되돌리지 못한
     사실은 조용히 숨기지 않는다 — 사후에 장부를 믿으려면 실패 표면이 남아야 한다."""
     repo = _repo(tmp_path / "repo", _conf(incomplete_rounds_max="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
@@ -2055,114 +1848,6 @@ def test_permitted_run_still_creates_the_requested_output_dir(
     assert not (repo / ".project_manager" / ".local" / "review").exists()
 
 
-def _resolved_prefix_rule(external, relay, *, windows: bool | None = None) -> str:
-    """이 표면의 dry-run·차단 처방이 낼 prefix 규칙 표기 — 엔진 해소로 구성한다.
-
-    인터프리터 표기는 플랫폼마다 다르다(Windows 는 런처). 기대값을 리터럴로 박으면 테스트가
-    플랫폼을 박제하므로, 렌더 소유자(pm_relay)와 이 표면의 판정 seam(`_running_on_windows`)에서
-    같은 값을 만들어 쓴다."""
-    return relay.codex_egress_prefix_rule_text(
-        relay.ADDITIONAL_REVIEWER_ENTRYPOINT,
-        windows=external._running_on_windows() if windows is None else windows,
-    )
-
-
-def test_dry_run_under_network_off_is_side_effect_free_and_prints_the_prefix_rule(
-        external, relay, monkeypatch, tmp_path, capsys):
-    """미리보기는 차단 환경에서도 그대로 돈다(외부 송신 0) — 처방만 정확히 낸다."""
-    monkeypatch.setenv(_EGRESS_MARKER, "1")
-    repo = _repo(tmp_path / "repo", _conf())
-    reviewer = _FakeReviewer(stdout=_wire("codex"))
-    _wire_main(external, monkeypatch, repo, reviewer)
-    outdir = tmp_path / "raw-out"
-
-    rc = external.main(["--gate", "T-0590", "--paths", "x.py", "--dry-run",
-                        "--output-dir", str(outdir)])
-    out = capsys.readouterr().out
-
-    assert rc == 0
-    assert reviewer.calls == []
-    # 미리보기는 로컬에서 그대로 쓸모 있어야 하지만(대상·처방·프롬프트를 다 보여준다), 요청한
-    # 산출 디렉토리를 **만들지는 않는다** — 부작용 0 은 파일시스템에서도 참이어야 한다.
-    assert not outdir.exists()
-    assert not (repo / ".project_manager" / ".local").exists()
-    assert "=== [dry-run] 프롬프트 미리보기 (외부 전송 없음) ===" in out
-    assert "diff --git a/x.py b/x.py" in out                  # 실제 나갈 내용 그대로
-    assert f"Codex egress: escalation required ({_EGRESS_MARKER}=true)" in out
-    assert _resolved_prefix_rule(external, relay) in out
-    assert f"실 실행은 {external.CODEX_EGRESS_FLAG} 없이는 스폰 전 rc=1 로 중단됩니다." in out
-
-
-@pytest.mark.parametrize("windows", [False, True])
-def test_dry_run_prefix_rule_follows_engine_interpreter_resolution(
-        external, relay, monkeypatch, tmp_path, capsys, windows):
-    """처방의 인터프리터 표기는 엔진 해소를 따른다 — 두 플랫폼 표기를 여기서 모두 태운다.
-
-    반대 플랫폼 표기가 출력에 없다는 단언이 "플랫폼 축이 실제로 갈리는가"까지 판정한다."""
-    monkeypatch.setenv(_EGRESS_MARKER, "1")
-    monkeypatch.setattr(external, "_running_on_windows", lambda: windows)
-    repo = _repo(tmp_path / "repo", _conf())
-    reviewer = _FakeReviewer(stdout=_wire("codex"))
-    _wire_main(external, monkeypatch, repo, reviewer)
-
-    rc = external.main(["--gate", "T-0590", "--paths", "x.py", "--dry-run"])
-    out = capsys.readouterr().out
-
-    assert rc == 0 and reviewer.calls == []
-    assert _resolved_prefix_rule(external, relay) in out          # 존재 + 내용 일치
-    assert relay.ADDITIONAL_REVIEWER_ENTRYPOINT in out
-    assert _resolved_prefix_rule(external, relay, windows=not windows) not in out
-
-
-def test_attested_run_proceeds_and_labels_the_boundary_everywhere(
-        external, monkeypatch, tmp_path, capsys):
-    """증명 실행은 그대로 돌고, egress 라벨이 stderr·raw 헤더·장부에 같은 값으로 남는다."""
-    monkeypatch.setenv(_EGRESS_MARKER, "1")
-    repo = _repo(tmp_path / "repo", _conf())
-    reviewer = _FakeReviewer(stdout=_wire("codex"))
-    _wire_main(external, monkeypatch, repo, reviewer)
-
-    assert external.main([
-        "--paths", "x.py", "--no-gate", external.CODEX_EGRESS_FLAG,
-    ]) == 0
-    err = capsys.readouterr().err
-
-    assert len(reviewer.calls) == 1                       # 실행됨(sandbox 완화 시도 없음)
-    label = external._load_relay().CODEX_EGRESS_ESCALATED_ATTESTED
-    assert f"codex_egress={label}" in err
-    assert f"# codex_egress: {label}" in _raw_text(repo)
-    assert _raw_ledger(repo)[0]["codex_egress"] == label
-    # 엔진은 마커를 지우지 않는다 — 자식에게도 그대로 전달되는 실측 형상 보존.
-    assert os.environ[_EGRESS_MARKER] == "1"
-
-
-@pytest.mark.parametrize("windows,expected_prefix", [
-    (False, "python3 .project_manager/tools/additional_reviewer.py"),
-    (True, "py .project_manager/tools/additional_reviewer.py"),
-])
-def test_retry_command_starts_with_this_surface_entrypoint(
-        external, relay, monkeypatch, windows, expected_prefix):
-    """재실행 안내는 승인 prefix 와 **같은 2-token** 으로 시작한다(재승인 유발 금지)."""
-    monkeypatch.setattr(external, "_running_on_windows", lambda: windows)
-    message = relay.codex_egress_block_message(
-        ["--gate", "T-0590", "--paths", "x.py"], "codex", "gpt-5.6-sol",
-        script=relay.ADDITIONAL_REVIEWER_ENTRYPOINT,
-        gate_key=external.ADDITIONAL_REVIEWER_ENABLED_KEY,
-        subject="추가 리뷰어 외부 전송",
-        windows=windows,
-    )
-    retry = next(line for line in message.splitlines() if "재실행: " in line)
-    assert retry.strip().startswith(f"· 재실행: {expected_prefix} ")
-    # 증명 플래그는 같은 호출에 하나만 더해진다(다른 수신자로 갈아타지 않는다). Windows 는 첫
-    # 2 token 만 그대로 두고 나머지를 PowerShell literal 로 인용하므로 표기만 다르다.
-    assert retry.rstrip().endswith(
-        f"'{external.CODEX_EGRESS_FLAG}'" if windows else external.CODEX_EGRESS_FLAG)
-    assert "--gate" in retry and "T-0590" in retry
-    assert "powershell.exe" not in retry
-    assert relay.codex_egress_prefix_rule_text(
-        relay.ADDITIONAL_REVIEWER_ENTRYPOINT, windows=windows) in message
-
-
 # ══ ⑧ 모듈 경계 (cycle-free 공용 계약) ═════════════════════════════════════
 
 
@@ -2234,8 +1919,9 @@ def test_delegate_public_wrappers_still_speak_the_shared_contract():
         wire = _wire(harness)
         assert delegate.extract_reply(harness, wire) == _PASS_REPLY
         assert shared.extract_harness_reply(harness, wire) == _PASS_REPLY
-    # egress 브리지는 위임 진입점을 유지한다(표면별 인자는 진입점·동의 키뿐).
-    assert delegate._codex_egress_entrypoint()[1] == shared.DELEGATE_ENTRYPOINT
+    # 두 표면의 진입점 표기는 서로 다른 스크립트를 가리킨다(처방 커맨드가 자기 표면을 부른다).
+    assert shared.entrypoint_command(shared.DELEGATE_ENTRYPOINT)[1] == \
+        shared.DELEGATE_ENTRYPOINT
     assert shared.DELEGATE_ENTRYPOINT != shared.ADDITIONAL_REVIEWER_ENTRYPOINT
 
 
@@ -2294,20 +1980,23 @@ _OWNED_TOOLS = (
 )
 
 
+# 리터럴 분할 — 폐기 낱말 가드(`tests/test_terminology.py`)가 이 단언 자체를 잔존으로 잡지 않게.
+_RETIRED_ROLE_NAME = "외" + "부 리뷰어"
+
+
 @pytest.mark.parametrize("name", _OWNED_TOOLS)
 def test_owned_tools_call_the_person_an_additional_reviewer(name):
     """사람 역할 이름은 **추가 리뷰어** 다 — 팀에 한 명 더 붙는 리뷰어다."""
     source = (TOOLS / name).read_text(encoding="utf-8")
-    assert "외부 리뷰어" not in source
+    assert _RETIRED_ROLE_NAME not in source
 
 
 def test_reviewer_surface_states_the_name_and_keeps_the_transport_axis(external):
-    """추가 리뷰어 명칭과 외부 전송이라는 동작 축은 서로 구분한다."""
+    """추가 리뷰어 명칭과 기계 식별자 축은 서로 구분한다."""
     source = (TOOLS / "additional_reviewer.py").read_text(encoding="utf-8")
     assert "추가 리뷰어" in source
-    assert "외부 전송" in source and "과금" in source          # 전송 축 문구는 유지
-    # 설정 키는 역할 이름과 같은 축으로 통일됐다(T-0597) — 구키는 값을 공급하지 않는다.
-    assert external.ADDITIONAL_REVIEWER_ENABLED_KEY == "additional_reviewer.enabled"
+    # 채널 스위치 키는 없어졌고(T-0887) raw/모듈 접두만 기계 식별자로 남는다.
+    assert "additional_reviewer.enabled" not in source
     assert external.ADDITIONAL_REVIEWER_PREFIX == "additional_reviewer"
     # 신규 진입점만 출하하고 구 물리명은 retire migration이 제거한다. 이력은 docstring 1줄.
     assert (TOOLS / "additional_reviewer.py").is_file()
@@ -2329,8 +2018,6 @@ def test_round_and_wave_caps_are_anti_loop_without_round_extension(external):
     # wave 축만 승인으로 재개한다 (별개 비용 축).
     assert "--ack-wave" in external._WAVE_BUDGET_GUIDANCE
     assert "자율" in external._WAVE_BUDGET_GUIDANCE
-    # 지속 동의 = 한 번 켜면 호출마다 비용을 다시 묻지 않는다.
-    assert "지속 동의" in external._is_enabled.__doc__
 
 
 def test_reviewer_source_comments_match_structured_target_and_durable_consent():
