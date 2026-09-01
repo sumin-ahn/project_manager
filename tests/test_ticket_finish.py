@@ -3022,6 +3022,21 @@ def test_self_axis_failed_node_ids_parses_function_level_ids(tf):
     }
 
 
+def test_self_axis_failed_node_ids_normalizes_the_path_to_posix(tf):
+    """자식이 `os.sep` 표기로 낸 노드 ID 도 경로 부분은 POSIX 표기로 돌려준다(Windows 자식이
+    상위 `pytest.ini` 를 rootdir 로 잡으면 역슬래시로 낸다) — `::` 뒤 파라미터 ID 는 경로가
+    아니므로 손대지 않는다."""
+    output = (
+        "FAILED tests\\test_a.py::test_x - AssertionError\n"
+        "ERROR tests\\test_c.py - collection error\n"
+        "FAILED tests/test_d.py::test_p[a\\b] - AssertionError\n"
+        "2 failed, 1 error in 0.1s\n"
+    )
+    assert tf._self_axis_failed_node_ids(output) == {
+        "tests/test_a.py::test_x", "tests/test_c.py", "tests/test_d.py::test_p[a\\b]",
+    }
+
+
 # ── `_self_axis_target_files` — 대상 집합 산출 ────────────────────────────────
 
 def test_self_axis_target_files_unions_tracked_untracked_and_ratchet_list(tf, tmp_path):
@@ -3123,6 +3138,74 @@ def test_default_self_axis_block_is_silent_when_claimed_rev_is_absent(
     assert block is None
     captured = capsys.readouterr()
     assert captured.out == "" and captured.err == ""
+
+
+# ── 노드 ID 표기 정규화 — 비교 축·진단문 축 ────────────────────────────────
+#
+# 자식 pytest 는 rootdir 해소에 따라 같은 실패를 `os.sep` 표기로 낸다(Windows 실측 — 상위
+# `pytest.ini` 를 rootdir 로 잡는 트리에서 `tests\test_axis_a.py::test_a`). 그 표기를 Linux
+# 에서도 값으로 재려면 자식 출력 자체를 주입한다. 정규화가 비교 **전에** 걸리지 않으면 표기만
+# 다른 같은 실패가 신규 실패로 둔갑하므로 비교 축과 진단문 축을 따로 본다.
+
+_AXIS_BACKSLASH_NODE_A = "tests\\test_axis_a.py::test_a"
+_AXIS_BACKSLASH_NODE_B = "tests\\test_axis_a.py::test_b"
+
+
+def _axis_child_output_runner(code_tree: Path, work_out: str, base_out: str):
+    """`_run_pytest_subset` 대역 — 작업 트리에는 `work_out`, baseline 트리에는 `base_out`."""
+    def _run(cwd: Path, files) -> tuple[int, str]:
+        return 1, (work_out if Path(cwd) == code_tree else base_out)
+    return _run
+
+
+def test_default_self_axis_block_does_not_invent_a_new_failure_from_separator_notation(
+        tf, tmp_path, monkeypatch, capsys):
+    """비교 축 — 작업 트리 자식이 역슬래시 표기로, baseline 자식이 POSIX 표기로 같은 실패를
+    내면 상속 red 다. 정규화가 비교 전에 걸리지 않으면 없는 신규 실패로 차단한다."""
+    root = _axis_repo(tmp_path)
+    base = _axis_head(root)
+    board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev=base)
+
+    finisher = _axis_finisher(tf, root, board_py)
+    monkeypatch.setattr(
+        finisher, "_run_pytest_subset",
+        _axis_child_output_runner(
+            finisher._code_tree(),
+            f"FAILED {_AXIS_BACKSLASH_NODE_A} - AssertionError\n1 failed in 0.1s\n",
+            "FAILED tests/test_axis_a.py::test_a - AssertionError\n1 failed in 0.1s\n"))
+
+    block = finisher._default_self_axis_block("T-AXIS")
+
+    assert block is None
+    err = capsys.readouterr().err
+    assert "경고" in err and "tests/test_axis_a.py::test_a" in err
+    assert _AXIS_BACKSLASH_NODE_A not in err
+
+
+def test_default_self_axis_block_lists_new_failures_in_posix_notation(
+        tf, tmp_path, monkeypatch):
+    """진단문 축 — 자식이 역슬래시 표기로 낸 신규 실패도 POSIX 표기로 나열하고, 표기만 다른
+    상속 red 는 신규분에서 빠진다."""
+    root = _axis_repo(tmp_path)
+    base = _axis_head(root)
+    board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev=base)
+
+    finisher = _axis_finisher(tf, root, board_py)
+    monkeypatch.setattr(
+        finisher, "_run_pytest_subset",
+        _axis_child_output_runner(
+            finisher._code_tree(),
+            f"FAILED {_AXIS_BACKSLASH_NODE_A} - AssertionError\n"
+            f"FAILED {_AXIS_BACKSLASH_NODE_B} - AssertionError\n2 failed in 0.1s\n",
+            "FAILED tests/test_axis_a.py::test_a - AssertionError\n1 failed in 0.1s\n"))
+
+    block = finisher._default_self_axis_block("T-AXIS")
+
+    assert block is not None
+    assert "✗ tests/test_axis_a.py::test_b" in block          # 신규분 — POSIX 표기
+    assert f"✗ {_AXIS_BACKSLASH_NODE_B}" not in block         # 자식 표기 그대로 새지 않는다
+    assert "✗ tests/test_axis_a.py::test_a" not in block      # 표기만 다른 상속 red 는 제외
+    assert f"✗ {_AXIS_BACKSLASH_NODE_A}" not in block
 
 
 # ── T4 — untracked 민감도 ─────────────────────────────────────────────────

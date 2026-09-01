@@ -1465,8 +1465,20 @@ def _self_axis_target_paths(path_list_stdout: str) -> set[str]:
 def _self_axis_failed_node_ids(pytest_output: str) -> set[str]:
     """pytest `-q` 출력의 `FAILED`/`ERROR` 요약 줄에서 실패한 **테스트 노드 ID** 전체(파일이
     아니라 함수 단위) — base·dev 양쪽에 실패가 있는 파일에서도 신규분만 비교하려면 함수
-    단위가 필요하다(파일 단위 비교는 그 신규분을 지운다)."""
-    return {match.group(1) for match in _SELF_AXIS_FAILED_NODE_RE.finditer(pytest_output)}
+    단위가 필요하다(파일 단위 비교는 그 신규분을 지운다).
+
+    노드 ID 의 파일 경로 부분은 POSIX 표기로 고정한다. 자식 pytest 는 rootdir 해소에 따라
+    같은 실패를 `os.sep` 표기로 낸다(Windows 실측: 상위 `pytest.ini` 를 rootdir 로 잡으면
+    `tests\\test_a.py::test_x`). 표기가 갈리면 작업 트리와 baseline 이 같은 실패를 서로 다른
+    노드 ID 로 보고 없는 신규 실패를 만들어 내고, 진단문도 엔진의 다른 경로 출력(`git diff
+    --name-only` 산출·`touches`)과 표기가 어긋난다. 정규화는 이 한 곳뿐이다 — 비교도 진단문도
+    전부 이 반환값에서 나온다. `::` 뒤(파라미터 ID)는 경로가 아니라 pytest 가 만든 표기라
+    그대로 둔다."""
+    node_ids: set[str] = set()
+    for match in _SELF_AXIS_FAILED_NODE_RE.finditer(pytest_output):
+        path, separator, parameters = match.group(1).partition("::")
+        node_ids.add(path.replace("\\", "/") + separator + parameters)
+    return node_ids
 
 
 def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
