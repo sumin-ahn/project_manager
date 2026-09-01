@@ -2087,6 +2087,26 @@ def test_sync_check_surfaces_the_query_axis_downgrade_reason(pm_update, tmp_path
     assert "상류 pm_import 부재" in err, err
 
 
+def test_upstream_declarations_do_not_write_into_the_upstream_tree(pm_import, tmp_path):
+    """상류 선언을 읽는 조회는 상류 트리에 아무것도 만들지 않는다 — 스테이징 소유자는 실행 clone.
+
+    상류는 읽기 대상이다(읽기 전용 마운트·권한·볼륨 고갈이 실 형상). 자기 임시물을 거기 만들면
+    읽기만 하는 조회가 상류의 쓰기 권한에 매이고, 사유로 강등되게 돼 있는 `required=False` 경로가
+    대신 크래시한다 — 다른 상류 실패 모드(파일 부재·읽기 실패·모듈 손상)는 전부 사유로 내려간다."""
+    source = tmp_path / "framework"
+    upstream = _plant_upstream_pm_import(source)
+    # 실 설치본은 형제 엔진 모듈을 함께 갖는다(engine.manifest 가 같은 디렉터리로 출하한다).
+    (upstream.parent / "pm_relay.py").write_text(
+        (TOOLS / "pm_relay.py").read_text(encoding="utf-8"), encoding="utf-8")
+
+    generation = pm_import.hook_set_declarations(source, required=True)
+
+    assert generation.origin == pm_import.HOOK_SET_ORIGIN_UPSTREAM, generation.reasons
+    assert generation.declarations, generation.reasons
+    assert not (source / ".project_manager" / ".local").exists(), \
+        "읽기만 해야 할 상류 트리에 스테이징을 만들었다(앵커가 상류다)"
+
+
 def _load_pm_import_at(path: Path, name: str):
     """그 경로의 pm_import 사본을 **실행 중인 엔진**으로 적재한다(자기 자신 경로 재현)."""
     spec = importlib.util.spec_from_file_location(name, path)

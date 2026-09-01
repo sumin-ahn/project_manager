@@ -6482,8 +6482,11 @@ def _upstream_hook_set_declarations(
         #   실패(핸들 잠금·AV 스캔 — Windows 실 클래스)가 `__exit__` 에서 올라와 "상류 로드 실패" 로
         #   분류되고, 그 사유 한 줄이 mutation 게이트를 근거 없이 fail-closed 로 떨어뜨린다. 선언은
         #   이미 읽혔다 — 뒷정리 실패가 그 사실을 뒤집지 않는다(best-effort).
+        # 스테이징은 **실행 중인 이 clone** 이 소유한다 — 상류 bytes 의 사본을 만드는 주체가
+        #   여기다. 상류 트리에 만들면 읽기만 해야 할 트리를 쓰고, 그 트리가 쓰기 불가면
+        #   (읽기 전용 마운트·권한·볼륨 고갈) 사유로 강등돼야 할 조회가 크래시가 된다.
         staging = tempfile.mkdtemp(prefix=".pm_hook_set_gen.",
-                                   dir=_temp_root(source_root))
+                                   dir=_temp_root(REPO))
         try:
             staged = Path(staging) / "pm_import.py"
             staged.write_bytes(payload)

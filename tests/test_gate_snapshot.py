@@ -1051,6 +1051,31 @@ def test_output_inside_other_registered_worktree_is_rejected(snapshot, tmp_path)
     assert str(output) not in _git(repo, "worktree", "list", "--porcelain").stdout
 
 
+def test_output_inside_a_nested_registered_worktree_is_rejected_even_when_ignored(
+    snapshot, tmp_path
+):
+    """무시되는 부모 아래에 선 등록 worktree 안도 거부한다 — 판정 주체는 오염될 그 트리다.
+
+    무시 판정을 바깥 저장소에 물으면 목적지가 그 저장소의 규칙에 걸리기만 해도 Git 공용
+    디렉터리·다른 등록 worktree 거부가 전부 우회된다. 엔진의 임시 루트가 무시되는 자리
+    (`.project_manager/.local/tmp`)이고 격리 스냅샷 worktree 가 그 아래 서므로, 이 형상이
+    바로 살아 있는 스냅샷 worktree 안에 또 하나를 세우는 경로다."""
+    repo = _repo(tmp_path)
+    (repo / ".gitignore").write_text("scratch/\n", encoding="utf-8")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "commit", "-qm", "ignore scratch")
+    nested = repo / "scratch" / "worktree"
+    _git(repo, "worktree", "add", "-q", "--detach", str(nested))
+    output = nested / "gate"
+
+    with pytest.raises(snapshot.SnapshotError, match="다른 worktree"):
+        snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert not output.exists()
+    assert _git(nested, "status", "--porcelain").stdout == ""
+    assert str(output) not in _git(repo, "worktree", "list", "--porcelain").stdout
+
+
 def test_stale_worktree_registration_prescribes_prune_instead_of_outside_repo(
     snapshot, tmp_path
 ):

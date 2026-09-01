@@ -12,6 +12,8 @@ import os
 import re
 from pathlib import Path
 
+from _repo_owned_inventory import OWNED, repo_owned_paths
+
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_CONFTEST = ROOT / "conftest.py"
 EXPECTED_TEMP_ROOT = ROOT / ".project_manager" / ".local" / "tmp"
@@ -157,6 +159,28 @@ def test_engine_copies_create_temp_only_under_an_explicit_dir():
                 path.read_text(encoding="utf-8")
             ):
                 offenders.append(f"{copy_root}/{path.name}:{lineno}")
+    assert not offenders, "부모를 명시하지 않은 임시물 생성 호출: " + ", ".join(offenders)
+
+
+def test_tests_create_temp_only_under_an_explicit_dir():
+    """회귀 자신도 같은 규약을 받는다 — `tests/` 의 임시물 생성 호출은 전부 부모를 명시한다.
+
+    수집 시점(`skipif` 인자 평가)은 픽스처가 없어 `dir=` 로 자리를 주고, 실행 시점은 `tmp_path`
+    가 준다(그건 tempfile 생성 호출이 아니라 이 검사의 대상이 아니다). `dir=` 없는 호출은 자리를
+    OS 임시 폴더에 맡기고, 그 자리는 이 저장소가 재는 대상 밖이라 무엇이 언제 쌓였는지 보이지
+    않는다 — 회귀가 만든 것이 가장 많이 쌓이는 쪽이다.
+    """
+    # 열거는 repo-owned seam 으로 한다 — 재귀 tree-walk 는 이 저장소의 열거 규약 밖이다.
+    scanned = sorted(
+        path for path in repo_owned_paths(ROOT, "tests", mode=OWNED)
+        if path.is_file() and path.suffix == ".py"
+    )
+    # 스캔 입력이 비면 이 단언은 아무것도 재지 않는다 — 대상 수를 먼저 세운다.
+    assert len(scanned) > 1, f"스캔 입력이 비었다: {ROOT / 'tests'}"
+    offenders: list[str] = []
+    for path in scanned:
+        for lineno in _temp_creator_calls_without_dir(path.read_text(encoding="utf-8")):
+            offenders.append(f"{path.relative_to(ROOT).as_posix()}:{lineno}")
     assert not offenders, "부모를 명시하지 않은 임시물 생성 호출: " + ", ".join(offenders)
 
 
