@@ -12,6 +12,13 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+# 능력 탐지는 **수집 시점**(`skipif` 인자 평가)이라 `tmp_path` 픽스처가 없다. 그래서 부모를
+# 명시한다 — 프로젝트 안 per-clone 스크래치이며 루트 `conftest.py` 가 모듈 로드 시점에 이미
+# 만들어 둔 그 자리다(pytest 임시 루트와 같은 디렉터리).
+PROJECT_TEMP_ROOT = (
+    Path(__file__).resolve().parents[1] / ".project_manager" / ".local" / "tmp"
+)
+
 _CAN_SYMLINK: bool | None = None  # 1회 탐지 결과 캐시.
 _POSIX_MODE_SUPPORTED: bool | None = None
 _GIT_SYMLINK_SUPPORTED: bool | None = None
@@ -30,7 +37,7 @@ def _can_symlink() -> bool:
 
     can = False
     try:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=PROJECT_TEMP_ROOT) as tmp:
             target = Path(tmp) / "target"
             target.mkdir()
             link = Path(tmp) / "link"
@@ -51,7 +58,7 @@ def posix_mode_supported() -> bool:
 
     supported = False
     try:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=PROJECT_TEMP_ROOT) as tmp:
             probe = Path(tmp) / "mode-probe"
             probe.write_bytes(b"probe")
             probe.chmod(0o600)
@@ -83,7 +90,7 @@ def git_symlink_supported() -> bool:
         return False
     supported = False
     try:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=PROJECT_TEMP_ROOT) as tmp:
             root = Path(tmp)
             source = root / "source"
             clone = root / "clone"

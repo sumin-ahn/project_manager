@@ -636,15 +636,13 @@ def test_reopen_lifecycle_engines_are_manifested_and_shipped_byte_identical():
             )
 
 
-def test_content_guard_is_sensitive_to_drift():
+def test_content_guard_is_sensitive_to_drift(tmp_path):
     """sensitivity — 고의로 1바이트 다른 가상 template 트리에 helper 가 drift 를 검출함을 입증(non-vacuous).
 
     실 트리는 안 건드린다 — canonical(REPO) board.py 내용에 1바이트를 더한 사본을 임시 디렉토리
     (가상 template_root)에 만들어 helper 에 주입한다. canonical 은 실 파일이라 불변. helper 가 그 1바이트
     차이를 잡아내면(diff == [board.py]) 가드가 vacuous 하지 않음이 입증된다. 끝에 동일-트리 음성 통제로
     false-positive 가 아님도 확인한다."""
-    import tempfile
-
     pm_update = _load_pm_update()
     # board.py 엔트리 하나만 골라 격리 (단일 파일·non-render).
     entry = next(
@@ -654,17 +652,16 @@ def test_content_guard_is_sensitive_to_drift():
     rel = str(entry)
     canon_file = REPO / rel
 
-    with tempfile.TemporaryDirectory() as td:
-        fake_root = Path(td)
-        target = fake_root / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        # canonical 내용 + 1바이트 → 고의 drift (실 파일 미변경).
-        target.write_bytes(canon_file.read_bytes() + b"\n# sensitivity drift\n")
+    fake_root = tmp_path / "fake-template-root"
+    target = fake_root / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # canonical 내용 + 1바이트 → 고의 drift (실 파일 미변경).
+    target.write_bytes(canon_file.read_bytes() + b"\n# sensitivity drift\n")
 
-        diffs = _engine_content_diffs(fake_root, manifest_entries=[entry])
-        assert diffs == [rel], (
-            f"content 가드가 1바이트 drift 를 못 잡음(vacuous 위험) — 검출 {diffs}, 예상 [{rel!r}]"
-        )
+    diffs = _engine_content_diffs(fake_root, manifest_entries=[entry])
+    assert diffs == [rel], (
+        f"content 가드가 1바이트 drift 를 못 잡음(vacuous 위험) — 검출 {diffs}, 예상 [{rel!r}]"
+    )
 
     # 음성 통제: 동일 입력(canonical=REPO 자신)엔 0 diff (false-positive 아님 확인).
     no_diff = _engine_content_diffs(REPO, manifest_entries=[entry])

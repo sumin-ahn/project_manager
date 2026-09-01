@@ -271,6 +271,18 @@ def _load_pm_log():
     )
 
 
+def _engine_temp_root(repo: Path) -> Path:
+    """그 clone 이 소유한 작업용 임시 루트 — 단일 소유자는 `pm_relay.temp_root` 다.
+
+    자리 규약(`.project_manager/.local/tmp`)을 이 도구가 다시 적지 않는다. 로더는 형제 모듈
+    경로 로드 관례 그대로다(`_load_pm_log` 동형·sys.path 무오염).
+    """
+    relay = _load_module_from_path(
+        TOOLS_DIR / "pm_relay.py", "pm_relay.py", verifier=_verify_engine_rev, cache=True,
+    )
+    return relay.temp_root(repo)
+
+
 def _load_file_lock():
     """공용 파일 프리미티브 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
 
@@ -3077,7 +3089,8 @@ class TicketFinisher:
         재현된다). `code_tree` 의 ref·index·worktree 등록은 만들지 않는다 — 원 저장소는
         읽기만 당한다(alternates 는 OID 로 객체를 해소할 뿐 이름으로 ref 를 해소하지 않는다).
         """
-        scratch = Path(tempfile.mkdtemp(prefix="ticket-finish-baseline-"))
+        scratch = Path(tempfile.mkdtemp(
+            prefix="ticket-finish-baseline-", dir=_engine_temp_root(REPO)))
         try:
             archive = subprocess.run(
                 ["git", "archive", ref], cwd=str(code_tree), capture_output=True)

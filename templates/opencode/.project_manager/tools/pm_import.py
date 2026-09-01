@@ -4081,6 +4081,22 @@ def _load_watchdog():
     )
 
 
+def _temp_root(root) -> Path:
+    """그 트리가 소유한 작업용 임시 루트 — 단일 소유자는 `pm_relay.temp_root` 다.
+
+    **rev 결속 없이 로드한다(`allow_unverified=True`).** 이 호출이 받아 오는 것은 *경로 하나*이고
+    어떤 판정의 입력도 아니다 — rev 결속이 지키는 것은 "신 해시 + 구 선언 코드" 조합이지 스크래치
+    자리가 아니다. 결속을 걸면 자기 갱신 mid-sync(형제 rev 혼재)에서 이 로드가 skew 로 터지고,
+    훅 세트 상류 세대 선언이 통째로 설치본 선언으로 강등된다 — 자리를 묻다가 판정을 잃는다.
+    자리 규약은 이 파일에 복제하지 않는다.
+    """
+    engine_path = Path(__file__).resolve().parent / "pm_relay.py"
+    relay = _load_module_from_path(
+        engine_path, "pm_relay.py", allow_unverified=True,
+    )
+    return relay.temp_root(Path(root))
+
+
 def _fill_driver(argv: list[str]) -> tuple[str, bool, str | None]:
     """실제 fill argv를 (하네스·증분 신호·stdin) 선언으로 해소한다."""
     for command, driver in FILL_DRIVER_BY_CMD.items():
@@ -6466,7 +6482,11 @@ def _upstream_hook_set_declarations(
         #   실패(핸들 잠금·AV 스캔 — Windows 실 클래스)가 `__exit__` 에서 올라와 "상류 로드 실패" 로
         #   분류되고, 그 사유 한 줄이 mutation 게이트를 근거 없이 fail-closed 로 떨어뜨린다. 선언은
         #   이미 읽혔다 — 뒷정리 실패가 그 사실을 뒤집지 않는다(best-effort).
-        staging = tempfile.mkdtemp(prefix=".pm_hook_set_gen.")
+        # 스테이징은 **실행 중인 이 clone** 이 소유한다 — 상류 bytes 의 사본을 만드는 주체가
+        #   여기다. 상류 트리에 만들면 읽기만 해야 할 트리를 쓰고, 그 트리가 쓰기 불가면
+        #   (읽기 전용 마운트·권한·볼륨 고갈) 사유로 강등돼야 할 조회가 크래시가 된다.
+        staging = tempfile.mkdtemp(prefix=".pm_hook_set_gen.",
+                                   dir=_temp_root(REPO))
         try:
             staged = Path(staging) / "pm_import.py"
             staged.write_bytes(payload)
@@ -8566,7 +8586,7 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
         print(f"오류: {_BOARD_SUBMODULE_PATH} 가 이미 존재 — board submodule 셋업 중단.",
               file=sys.stderr)
         return 1
-    tmp_clone = Path(tempfile.mkdtemp(prefix="pm_board_seed_"))
+    tmp_clone = Path(tempfile.mkdtemp(prefix="pm_board_seed_", dir=_temp_root(dest_root)))
     try:
         # ── 1. clone remote → temp; 비었으면 스캐폴드 seed ──
         rc, out = _board_setup_git(["clone", remote_url, str(tmp_clone)], cwd=None)

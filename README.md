@@ -589,7 +589,9 @@ dot notation이고 세그먼트 안 철자는 그 식별자의 정본을 따른�
 출력해야 한다. JSON member는 이 네 개만 허용되고 중복은 거부한다. `platform`과 `head`는 전달받은
 두 값과 정확히 같아야 하며, `collected`는 bool이 아닌 양의 정수이자 현재 수집 하한 이상이어야 한다.
 명령 rc가 0이 아니거나 marker가 없거나 둘 이상이면 해당 platform은 red다. VM 기동·접속은
-wrapper 소유이며 board는 이 프로토콜만 검증한다.
+wrapper 소유이며 board는 이 프로토콜만 검증한다. wrapper는 자기가 만든 것
+(전송 번들·게스트 클론·호스트 임시물)을 **실행 시작에** 치운다 — 정리를 종료 시점에 두면
+중단된 실행에서 그 코드가 돌지 않아 잔여가 계속 쌓인다.
 | `additional_reviewer.{timeout,idle_timeout,progress_signal}` | 엔진 기본 | 리뷰어 실행 예산(하네스별 키가 이긴다) |
 | `additional_reviewer.paths` | (없음) | 리뷰 대상 경로 |
 

@@ -303,7 +303,7 @@ def test_live_env_passthrough_is_explicit_whitelist(monkeypatch):
     assert set(env).issubset(allowed)
 
 
-def test_live_calls_use_isolated_env(monkeypatch):
+def test_live_calls_use_isolated_env(monkeypatch, tmp_path):
     """라이브 호출 2개가 부모 env 통째 상속이 아니라 _live_env(화이트리스트)로 LLM 을 띄운다.
 
     실 LLM 을 띄우지 않고(subprocess.run 을 가로채) 각 라이브 테스트가 LLM 호출에 넘기는 env 가
@@ -332,19 +332,20 @@ def test_live_calls_use_isolated_env(monkeypatch):
     mod = importlib.import_module(__name__)
     monkeypatch.setattr(mod, "PM_ORCH_LIVE_RELEASE", True)
 
-    # tmp_path 대신 직접 만든 임시 디렉토리로 2개 라이브 테스트 함수를 spy 하에 구동.
-    import tempfile
+    # 2개 라이브 테스트 함수를 각자 별도 자리에서 spy 하에 구동한다(둘이 같은 트리를 쓰면
+    # 앞 실행의 import 결과가 뒤 실행의 입력이 된다).
     live_tests = [
         test_live_opencode_adopter_survives_pm_update_then_operates,
         test_live_claude_adopter_survives_pm_update_then_operates,
     ]
     for fn in live_tests:
-        with tempfile.TemporaryDirectory() as td:
-            try:
-                fn(Path(td))
-            except AssertionError:
-                # 라이브 LLM 을 stub 으로 막아 발행 단언은 실패할 수 있다 — 여기선 env 만 관심.
-                pass
+        dest = tmp_path / fn.__name__
+        dest.mkdir()
+        try:
+            fn(dest)
+        except AssertionError:
+            # 라이브 LLM 을 stub 으로 막아 발행 단언은 실패할 수 있다 — 여기선 env 만 관심.
+            pass
 
     assert llm_envs, "LLM subprocess 호출이 한 건도 포착되지 않음 — spy 배선 오류"
     for env in llm_envs:

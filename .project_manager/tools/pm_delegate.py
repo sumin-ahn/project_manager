@@ -47,7 +47,6 @@ import errno
 import functools
 import hashlib
 import json
-import math
 import os
 import re
 import shlex
@@ -9129,6 +9128,14 @@ def check_write_target_reanchor(role: str, cwd: Path, prompt: str) -> Path | Non
 # ── 결과 박제 (O_EXCL·0600·PID/UUID) ─────────────────────────────────────
 
 def _gettempdir() -> str:
+    """OS 임시 디렉터리 — **자식 프로세스 env 채우기와 read 역할 격리 자리 전용**이다.
+
+    엔진이 자기 작업용으로 만드는 임시물의 자리는 `pm_relay.temp_root`(프로젝트 안) 하나이고,
+    여기 남은 두 소비자는 그 규칙의 대상이 아니다: (1) 정제 env 에 임시 키가 하나도 없을 때
+    스폰되는 하네스 CLI 에게 줄 값이 필요하고(그 자식의 임시물 전체 표면은 이 엔진 소유가
+    아니다), (2) read 역할 위임의 격리 자리는 소유자 ACL·fd 결속·symlink 재검증으로 짜인
+    시스템 temp 트리다. 새 소비자를 여기 붙이지 마라 — 엔진 자기 임시물이면 `temp_root` 다.
+    """
     import tempfile
     return tempfile.gettempdir()
 
@@ -13867,15 +13874,18 @@ def create_cluster_review_snapshot(
     repo: Path, review: ClusterReviewInput, *, board,
     git_run_fn: Callable | None = None,
 ) -> Path:
-    """리뷰 대상 트리를 저장소 밖 격리 스냅샷으로 확정한다(생성 실패는 실행 전 차단).
+    """리뷰 대상 트리를 격리 스냅샷으로 확정한다(생성 실패는 실행 전 차단).
 
-    생성 경로·검증·마커는 전부 기존 생성기 소유다 — 여기서는 저장소 밖 자리 하나를 잡아
-    넘길 뿐이다. 넘기기 **직전에** 트리를 다시 결속한다: 입력 해소와 이 지점 사이에 트리가
-    다른 브랜치로 옮겨 갔으면 그 순간부터 스냅샷은 프롬프트 diff 와 다른 코드다.
+    자리는 이 clone 이 소유한 작업용 임시 루트다(`pm_relay.temp_root`) — gitignore 된 자리라
+    생성기의 오염 판정(`gate_snapshot._reject_output_location`)을 통과한다. 생성 경로·검증·
+    마커는 전부 기존 생성기 소유다 — 여기서는 자리 하나를 잡아 넘길 뿐이다. 넘기기
+    **직전에** 트리를 다시 결속한다: 입력 해소와 이 지점 사이에 트리가 다른 브랜치로 옮겨
+    갔으면 그 순간부터 스냅샷은 프롬프트 diff 와 다른 코드다.
     """
     assert_cluster_review_tree(board, review, repo=repo, git_run_fn=git_run_fn)
     gate_snapshot = _load_gate_snapshot()
-    destination = Path(tempfile.mkdtemp(prefix=_CLUSTER_SNAPSHOT_PREFIX))
+    destination = Path(tempfile.mkdtemp(
+        prefix=_CLUSTER_SNAPSHOT_PREFIX, dir=_load_relay().temp_root(repo)))
     output = destination / _CLUSTER_SNAPSHOT_DIRNAME
     try:
         created, _files = gate_snapshot.create_snapshot(

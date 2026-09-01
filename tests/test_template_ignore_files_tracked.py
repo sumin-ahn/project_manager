@@ -106,12 +106,15 @@ def _untracked_ignore_files(root: Path, subdir: str) -> list[str]:
     return sorted(_ondisk_ignore_relpaths(root, subdir) - _tracked_relpaths(root, subdir))
 
 
-def _self_hiding_entries(text: str, file_name: str) -> list[str]:
+def _self_hiding_entries(text: str, file_name: str, tmp_path: Path) -> list[str]:
     """git 의미론으로 `.gitignore` 본문이 자기 파일을 무시하는지 판정해 마지막 매치 규칙을 반환.
 
     임시 worktree 로 본문만 격리해 실제 템플릿 트리의 상위 ignore 규칙이 판정에 섞이지 않게 한다.
     글롭·문자 클래스·이스케이프·디렉토리 전용 `/`·부정 패턴의 마지막 매치 의미론은 재구현하지 않고
     `git check-ignore -v --no-index` 에 전부 위임한다.
+
+    worktree 자리는 호출한 테스트의 `tmp_path` 아래다 — 한 테스트가 본문 여러 벌을 판정하므로
+    호출마다 새 이름이 필요하고(`mkdtemp` 유일성), 프로젝트 밖으로는 나가지 않는다.
     """
     if _GIT is None:
         raise RuntimeError("git 바이너리 부재 — 자기-은닉 의미론을 판정할 수 없음")
@@ -119,7 +122,7 @@ def _self_hiding_entries(text: str, file_name: str) -> list[str]:
         raise ValueError(
             f"{file_name} 은 git ignore 규칙 파일이 아님 — 해당 도구의 의미론으로 별도 판정해야 함")
 
-    with tempfile.TemporaryDirectory(prefix="pm-self-hiding-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="pm-self-hiding-", dir=tmp_path) as temp_dir:
         worktree = Path(temp_dir)
         subprocess.run(
             [_GIT, "init", "-q"], cwd=str(worktree), check=True, capture_output=True)
@@ -195,7 +198,7 @@ def test_template_ignore_files_are_all_tracked():
 
 
 @requires_git_binary
-def test_template_ignore_files_do_not_self_hide():
+def test_template_ignore_files_do_not_self_hide(tmp_path):
     """어떤 템플릿 ignore 파일도 자기 자신을 무시하지 않는다 (가드 ① 을 은폐하는 근본 원인).
 
     자기-은닉 규칙 파일은 *미추적인 어느 clone 에서도* `git status` 에 뜨지 않아 영영 커밋되지 않는다
@@ -207,7 +210,7 @@ def test_template_ignore_files_do_not_self_hide():
         path = REPO / rel
         if path.name not in GIT_IGNORE_FILE_NAMES:
             continue
-        for line in _self_hiding_entries(path.read_text(encoding="utf-8"), path.name):
+        for line in _self_hiding_entries(path.read_text(encoding="utf-8"), path.name, tmp_path):
             offenders.append(f"{rel}: {line!r}")
     assert offenders == [], (
         "ignore 규칙 파일이 자기 자신을 무시 — 어느 clone 에서도 git status 에 안 떠 영영 미추적으로 "
@@ -219,7 +222,7 @@ def test_template_ignore_files_do_not_self_hide():
 
 
 @requires_git_worktree
-def test_opencode_adapter_gitignore_tracked_and_keeps_artifact_rules():
+def test_opencode_adapter_gitignore_tracked_and_keeps_artifact_rules(tmp_path):
     """opencode 어댑터 `.gitignore` 가 추적되고, opencode 생성 산출물 무시 규칙을 그대로 유지한다.
 
     추적 전환은 **additive** — 자기-은닉 줄만 빼고 산출물 4종(`node_modules`·`package.json`·
@@ -240,7 +243,7 @@ def test_opencode_adapter_gitignore_tracked_and_keeps_artifact_rules():
     assert not missing, (
         f"opencode 로컬 산출물 무시 규칙 누락 {sorted(missing)} — 추적 전환은 additive 여야 한다"
         "(무시되던 산출물은 계속 무시)")
-    assert _self_hiding_entries(body, ".gitignore") == [], \
+    assert _self_hiding_entries(body, ".gitignore", tmp_path) == [], \
         "opencode 어댑터 .gitignore 가 자기 자신을 무시 — 자기-은닉 재발(T-0492)"
 
 
@@ -321,27 +324,27 @@ def test_root_opencode_gitignore_matches_template_and_ignores_runtime_artifacts(
 
 
 @requires_git_binary
-def test_self_hiding_detector_catches_opencode_original_body():
+def test_self_hiding_detector_catches_opencode_original_body(tmp_path):
     """자기-은닉 판정이 opencode 원본 5줄 본문을 실제로 잡고, 출하판(4줄)엔 무발화.
 
     원본 = opencode `Config.ensureGitignore` 가 써넣는 리터럴
     `["node_modules","package.json","package-lock.json","bun.lock",".gitignore"]`.
     """
     original = "node_modules\npackage.json\npackage-lock.json\nbun.lock\n.gitignore"
-    assert _self_hiding_entries(original, ".gitignore") == [".gitignore"], \
+    assert _self_hiding_entries(original, ".gitignore", tmp_path) == [".gitignore"], \
         "판정이 opencode 원본의 자기-은닉 줄을 못 잡음(가드 무력)"
 
     shipped = "# 주석\nnode_modules\npackage.json\npackage-lock.json\nbun.lock\n"
-    assert _self_hiding_entries(shipped, ".gitignore") == [], "출하판에 오탐"
+    assert _self_hiding_entries(shipped, ".gitignore", tmp_path) == [], "출하판에 오탐"
 
 
 @requires_git_binary
-def test_self_hiding_detector_normalizes_equivalent_forms_and_skips_negation():
+def test_self_hiding_detector_normalizes_equivalent_forms_and_skips_negation(tmp_path):
     """git 동치 표기는 잡고, 부정·주석·비동치 이름·선행 공백은 무발화."""
     for variant in ("/.gitignore", "**/.gitignore", ".gitignore  "):
-        assert _self_hiding_entries(variant, ".gitignore"), f"동치 표기 미검출: {variant!r}"
+        assert _self_hiding_entries(variant, ".gitignore", tmp_path), f"동치 표기 미검출: {variant!r}"
     for benign in ("!.gitignore", "# .gitignore", ".gitignore.bak", "gitignore", "  .gitignore"):
-        assert _self_hiding_entries(benign, ".gitignore") == [], f"오탐: {benign!r}"
+        assert _self_hiding_entries(benign, ".gitignore", tmp_path) == [], f"오탐: {benign!r}"
 
 
 @requires_git_binary
@@ -358,9 +361,9 @@ def test_self_hiding_detector_normalizes_equivalent_forms_and_skips_negation():
         pytest.param(".gitignore\n!.gitignore", [], id="honor-last-negation"),
     ),
 )
-def test_self_hiding_detector_follows_git_semantics(body, expected):
+def test_self_hiding_detector_follows_git_semantics(body, expected, tmp_path):
     """손-파서가 오판하던 8개 패턴을 git 실제 의미론대로 판정한다."""
-    assert _self_hiding_entries(body, ".gitignore") == expected
+    assert _self_hiding_entries(body, ".gitignore", tmp_path) == expected
 
 
 @requires_git_binary

@@ -724,6 +724,8 @@ def _forbidden_output_locations(
 
     공유 working tree뿐 아니라 같은 저장소의 Git 공용 디렉터리와 다른 등록 worktree까지
     막는다. 셋 중 어디에 만들어도 병렬 작업 트리나 Git 메타데이터를 오염시킨다.
+    **다만 그 트리의 git 이 무시하는 자리는 이 목록에 걸려도 통과한다** — 오염 판정의 사실은
+    `git check-ignore` 이고, 그 자리는 추적 대상이 아니라 오염 표면이 없다(`_reject_output_location`).
 
     디렉터리가 사라지고 등록만 남은(prunable) worktree는 제외한다. 그 자리는 지켜야 할
     작업 트리가 아니고, 같은 경로 재실행은 조치 가능한 별도 진단(prune 처방)이 맡는다.
@@ -749,19 +751,38 @@ def _forbidden_output_locations(
     return tuple(unique)
 
 
+def _git_ignores(tree: Path, destination: Path) -> bool:
+    """그 트리의 git 이 이 자리를 무시하는가 — `git check-ignore` 의 사실만 본다.
+
+    묻는 대상은 **오염될 그 트리 자신**이다. 바깥 저장소에 물으면 그 한 번의 rc 0 이 Git 공용
+    디렉터리·다른 등록 worktree 거부까지 통째로 우회시킨다(무시되는 자리에 선 중첩 worktree).
+
+    무시되는 자리는 추적 대상이 아니므로 스냅샷이 거기 서도 오염시킬 표면이 없다. rc 0(무시됨)
+    에서만 참이고, rc 1(추적 중이거나 규칙에 안 맞음 — 추적 파일은 패턴이 맞아도 1이다)과
+    rc 128(그 트리 밖이라 판정 불능 — Git 공용 디렉터리처럼 working tree 가 아닌 자리를 포함한다)은
+    둘 다 거짓이다 — 확정 사실에서만 허용한다.
+    """
+    return _git(tree, "check-ignore", "-q", "--", str(destination)).returncode == 0
+
+
 def _reject_output_location(root: Path, destination: Path) -> None:
     registered = _registered_worktrees(root)
-    # 실재하는 자산의 오염이 먼저다 — 저장소 안 경로는 등록 상태와 무관하게 그 진단을
+    # 실재하는 자산의 오염이 먼저다 — 추적되는 자리는 등록 상태와 무관하게 그 진단을
     # 받아야 prune 뒤 두 번 실패하는 흐름이 안 생긴다.
     for location, label in _forbidden_output_locations(root, registered):
-        if destination.is_relative_to(location):
-            raise SnapshotError(
-                f"격리 스냅샷은 저장소 밖에 만들어야 합니다 — {label} 안입니다: "
-                f"{destination} ({label}: {location})"
-            )
+        if not destination.is_relative_to(location):
+            continue
+        if _git_ignores(location, destination):
+            # gitignore 된 자리다 — 추적되지 않으므로 병렬 트리도 메타데이터도 오염되지 않는다.
+            # 판정은 매치된 그 자리(`location`)에 묻는다. 오염될 트리가 판정 주체다.
+            continue
+        raise SnapshotError(
+            f"격리 스냅샷은 저장소가 추적하는 자리에 만들 수 없습니다 — {label} 안입니다"
+            f"(gitignore 된 자리는 허용): {destination} ({label}: {location})"
+        )
     if any(path == destination and not path.exists() for path in registered):
         # `git worktree remove` 없이 디렉터리만 지운 뒤 같은 경로로 다시 도는 흐름이다.
-        # '저장소 밖에 만들라'는 안내는 조치가 불가능하다 — 등록 정리를 처방한다.
+        # '다른 자리에 만들라'는 안내는 조치가 불가능하다 — 등록 정리를 처방한다.
         raise SnapshotError(
             f"같은 경로에 삭제된 worktree 등록이 남아 있습니다: {destination}. "
             f"`git -C {shlex.quote(str(root))} worktree prune`으로 등록을 정리한 뒤 "

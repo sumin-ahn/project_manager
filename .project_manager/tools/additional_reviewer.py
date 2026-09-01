@@ -89,7 +89,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime
-import fnmatch
 import hashlib
 import io
 import inspect
@@ -97,12 +96,9 @@ import json
 import os
 import re
 import shlex
-import shutil
-import stat
 import subprocess
 import sys
 import time
-import tomllib
 import uuid
 from pathlib import Path
 from typing import Callable, Iterator, NamedTuple, Sequence
