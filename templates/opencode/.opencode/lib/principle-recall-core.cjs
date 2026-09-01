@@ -17,16 +17,10 @@ const path = require("node:path");
 const childProcess = require("node:child_process");
 const { createWarningChannel } = require("./warning-channel-core.cjs");
 
-function findEngineRoot(startDir, fs = require("node:fs")) {
-  let dir = path.resolve(startDir || process.cwd());
-  for (let i = 0; i < 12; i += 1) {
-    if (fs.existsSync(path.join(dir, ".project_manager", "tools", "pm_principles.py"))) return dir;
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
-}
+// 엔진 루트는 이 파일 자기 위치에서 나온다 — 훅은 언제나 `<root>/.opencode/lib/*.cjs` 에 설치되고
+// (pm_import 가 그 깊이를 못박는다) 이는 파이썬 도구의 `Path(__file__).resolve().parents[2]` 와 같은
+// 규칙이다. 조상을 훑으면 중첩 트리에서 바깥 프로젝트의 pm_principles.py 를 실행한다.
+const ENGINE_ROOT = path.resolve(__dirname, "..", "..");
 
 // tool.execute.before 도구 이름(소문자·safe-write-core.cjs 실측) → recall `on` 축 + 대조 텍스트.
 // 매핑은 어댑터 소유(§7.3) — claude Bash/Edit·Agent, codex shell/apply_patch/
@@ -65,7 +59,6 @@ function extractPromptText(info) {
 }
 
 function judgeRecall(root, on, text, sessionID, spawnSync = childProcess.spawnSync) {
-  if (!root) return { count: 0, keys: [], text: "" };
   const engine = path.join(root, ".project_manager", "tools", "pm_principles.py");
   let lastError = "Python interpreter 없음";
   for (const py of ["python3", "python"]) {
@@ -109,7 +102,6 @@ function judgeRecall(root, on, text, sessionID, spawnSync = childProcess.spawnSy
 // (부작용만, 반환값 없음). 실패해도 침묵한다 — 최악의 결과는 다음 압축까지 재주입이 늦는
 // 것뿐이라 도구 실행을 막을 이유가 없다.
 function rearmRecall(root, sessionID, spawnSync = childProcess.spawnSync) {
-  if (!root) return;
   const engine = path.join(root, ".project_manager", "tools", "pm_principles.py");
   for (const py of ["python3", "python"]) {
     let result;
@@ -128,8 +120,8 @@ function rearmRecall(root, sessionID, spawnSync = childProcess.spawnSync) {
 }
 
 function makePrincipleRecallPlugin(judge = judgeRecall, rearm = rearmRecall) {
-  return async ({ client, directory, worktree }) => {
-    const root = findEngineRoot(directory || worktree || process.cwd());
+  return async ({ client }) => {
+    const root = ENGINE_ROOT;
     const warnings = createWarningChannel(client);
 
     async function inject(sessionID, text) {
@@ -189,5 +181,4 @@ module.exports = {
   extractPromptText,
   judgeRecall,
   rearmRecall,
-  findEngineRoot,
 };

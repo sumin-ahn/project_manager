@@ -2150,3 +2150,55 @@ assert.strictEqual(typeof m.makeGitAnchorPlugin, "function");
     result = subprocess.run([node, "-e", script], cwd=OPEN_CORE.parent, check=True,
                             capture_output=True, text=True, encoding="utf-8")
     assert "GIT_ANCHOR_CORE_OK" in result.stdout
+
+
+def test_opencode_git_anchor_blocks_when_engine_absent_at_install_root(tmp_path):
+    """설치 트리에 board.py 가 없으면 경고로 낮추지 않고 `tool.execute.before` 에서 막는다.
+
+    payload `directory` 와 조상(이 저장소)에는 board.py 가 있다 — 그 둘 중 하나로 엔진 루트를
+    잡는 코드라면 판정이 호출돼 통과한다. 자기 설치 트리를 보는 코드만 차단한다.
+    """
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node 없음")
+    lib = tmp_path / "install" / ".opencode" / "lib"
+    lib.mkdir(parents=True)
+    for name in ("git-anchor-core.cjs", "warning-channel-core.cjs"):
+        shutil.copyfile(OPEN_CORE.parent / name, lib / name)
+    assert not (tmp_path / "install" / ".project_manager").exists()
+
+    script = r'''
+const assert = require("node:assert");
+const m = require("./git-anchor-core.cjs");
+const repoWithEngine = process.argv[1];
+
+(async () => {
+  const toasts = [];
+  const judge = () => { throw new Error("설치가 깨졌는데 판정을 호출함"); };
+  const hooks = await m.makeGitAnchorPlugin(judge)({
+    directory: repoWithEngine,
+    worktree: repoWithEngine,
+    client: {tui: {showToast: async (value) => toasts.push(value)}},
+  });
+  // 설치 확인은 선필터 뒤다 — git 이 아닌 명령은 그대로 지나간다.
+  await hooks["tool.execute.before"](
+    {tool:"bash", sessionID:"S"}, {args:{command:"echo hello"}},
+  );
+  await assert.rejects(
+    hooks["tool.execute.before"](
+      {tool:"bash", sessionID:"S"}, {args:{command:"git commit -m x"}},
+    ),
+    /\[git-anchor\/설치\]/,
+  );
+  const context = {system: []};
+  await hooks["experimental.chat.system.transform"]({sessionID:"S"}, context);
+  assert.deepStrictEqual(context.system, [], "차단 대신 경고로 강등됨");
+  assert.deepStrictEqual(toasts, [], "차단 대신 toast 로 강등됨");
+  console.log("GIT_ANCHOR_INSTALL_BLOCK_OK");
+})().catch((error) => { console.error(error); process.exit(1); });
+'''
+    result = subprocess.run(
+        [node, "-e", script, str(REPO)], cwd=lib, check=True,
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    assert "GIT_ANCHOR_INSTALL_BLOCK_OK" in result.stdout

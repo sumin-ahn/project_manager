@@ -37,8 +37,8 @@
 //   (ctx-guard-core.cjs L369 문서화)이라 in-memory 카운터는 매 턴 소멸한다. 그래서 게이트 상태를
 //   sessionID 키 durable marker(`<root>/.project_manager/.local/stall-watchdog/state.<sid>.json`,
 //   ctx-guard marker 선례 준용)로 디스크에 영속화해 프로세스 간 유지한다. IO 실패는 전부 흡수한다
-//   (never-block — 관측·넛지 채널 실패가 세션을 막지 않는다). 엔진 root(.project_manager 발견)를 못
-//   찾으면 영속화 없이 이벤트마다 기본 상태로 동작한다(게이트 약화 — PM 어댑터라 root 부재는 비정형).
+//   (never-block — 관측·넛지 채널 실패가 세션을 막지 않는다). 엔진 root 는 이 파일 자기 위치에서
+//   나오므로(아래 ENGINE_ROOT) 탐색도 미해소 형상도 없다.
 //
 // 진행 감지 v1: todo 기반만(client.session.todo 완료 수 변동). 파일 변경 감지는 비용·경합 불명으로
 //   범위 밖(아키텍트 권고 수용). SDK 표면 실측(@opencode-ai/sdk gen):
@@ -50,6 +50,11 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+
+// 엔진 루트는 이 파일 자기 위치에서 나온다 — 훅은 언제나 `<root>/.opencode/lib/*.cjs` 에 설치되고
+// (pm_import 가 그 깊이를 못박는다) 이는 파이썬 도구의 `Path(__file__).resolve().parents[2]` 와 같은
+// 규칙이다. 조상을 훑으면 중첩 트리에서 바깥 프로젝트에 세션 마커를 쓴다.
+const ENGINE_ROOT = path.resolve(__dirname, "..", "..");
 
 // ── 임계값 상수 (core 상단 명시·env override) ────────────────────────────────
 // MAX_CONSEC: 연속 무진행 허용 상한 — 카운터가 이 횟수에 도달하면 차단(스트릭당 최대 이 횟수만큼
@@ -280,22 +285,9 @@ function safeSessionKey(sessionID) {
   return key || null;
 }
 
-function findEngineRoot(startDir) {
-  let dir = startDir;
-  for (let i = 0; i < 12 && dir; i++) {
-    if (fs.existsSync(path.join(dir, ".project_manager", "tools", "pm_log.py"))) {
-      return dir;
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
-}
-
 function stallStatePath(root, sessionID) {
   const key = safeSessionKey(sessionID);
-  if (!root || !key) return null;
+  if (!key) return null;
   return path.join(path.resolve(root), MARKER_DIR_REL, `state.${key}.json`);
 }
 
@@ -432,8 +424,8 @@ function isSelfNudgeEntry(entry) {
 }
 
 function makeStallWatchdogPlugin(client) {
-  return async ({ directory, worktree } = {}) => {
-    const root = findEngineRoot(directory || worktree || process.cwd());
+  return async () => {
+    const root = ENGINE_ROOT;
 
     // 넛지 주입 — fire-and-forget(prompt 는 모델 턴을 트리거해 완응까지 수 분 가능). 이벤트 핸들러를
     // 붙잡지 않게 즉석 호출+흡수. 게이트 소모(delivery 확정 전 기록)는 반복 소음 방지가 우선이다.
@@ -561,7 +553,6 @@ module.exports = {
   releaseWatchdog,
   recordNudgeFired,
   safeSessionKey,
-  findEngineRoot,
   stallStatePath,
   loadStallState,
   saveStallState,

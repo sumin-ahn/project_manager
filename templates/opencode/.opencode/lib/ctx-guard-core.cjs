@@ -47,7 +47,10 @@ const NUDGE2_MARGIN_PCT = 3;
 // resolveBudget 이 하네스별 오버라이드 > generic > 이 기본 순으로 예산 하나를 해소한다.
 const CTX_WINDOW_TOKENS_DEFAULT = 200000;
 
-// 엔진 경로 (plugin 의 directory 기준 .project_manager 까지 거슬러 올라가 해석).
+// 엔진 루트는 이 파일 자기 위치에서 나온다 — 훅은 언제나 `<root>/.opencode/lib/*.cjs` 에 설치되고
+// (pm_import 가 그 깊이를 못박는다) 이는 파이썬 도구의 `Path(__file__).resolve().parents[2]` 와 같은
+// 규칙이다. 조상을 훑으면 중첩 트리에서 바깥 프로젝트의 pm_log.py 를 실행한다.
+const ENGINE_ROOT = path.resolve(__dirname, "..", "..");
 const LOCAL_CONF_REL = path.join(".project_manager", "local.conf");
 const CTX_STOP_REL = path.join(".project_manager", ".local", "ctx-stop");
 // 세션 parentID 역조회는 ctx guard 의 보조 입력이다. SDK가 응답하지 않아 이벤트 처리가 멈추지
@@ -138,7 +141,6 @@ function assertNoLegacyConf(conf, confPath) {
 
 // 파일 → 값 한 경로. 부재·판독 실패는 빈 conf(정상 형상)지만 **구표기 잔존은 멈춘다**.
 function loadLocalConf(root) {
-  if (!root) return {};
   const confPath = path.join(root, LOCAL_CONF_REL);
   let text = null;
   try {
@@ -277,23 +279,8 @@ function buildNudge2Guidance(state, thresholds) {
   );
 }
 
-// ── 엔진 루트 탐색: directory 에서 위로 .project_manager 를 찾는다 ───────────
-function findEngineRoot(startDir) {
-  let dir = startDir;
-  for (let i = 0; i < 12 && dir; i++) {
-    if (fs.existsSync(path.join(dir, ".project_manager", "tools", "pm_log.py"))) {
-      return dir;
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
-}
-
 // ── compaction 엔진 호출: git-anchor-core의 spawnSync+python3→python+timeout 패턴 동형 ──
 function runPmLog(root, args, options = {}, spawnSync = childProcess.spawnSync) {
-  if (!root) return null;
   const engine = path.join(root, ".project_manager", "tools", "pm_log.py");
   const capture = options.capture === true;
   for (const py of ["python3", "python"]) {
@@ -384,13 +371,13 @@ function createCompactionSnapshotGeneration() {
 }
 
 function compactionSnapshotMarkerDirectory(root) {
-  return root ? path.resolve(root, CTX_STOP_REL) : null;
+  return path.resolve(root, CTX_STOP_REL);
 }
 
 function compactionSnapshotMarkerPath(root, sessionID, generation) {
   const directory = compactionSnapshotMarkerDirectory(root);
   const key = safeCompactionSnapshotSessionKey(sessionID);
-  if (!directory || !key || typeof generation !== "string") return null;
+  if (!key || typeof generation !== "string") return null;
   if (!/^[A-Za-z0-9_-]+$/.test(generation)) return null;
   return path.join(directory, `compact-snapshot.${key}.${generation}`);
 }
@@ -398,7 +385,7 @@ function compactionSnapshotMarkerPath(root, sessionID, generation) {
 function compactionSnapshotReceiptPath(root, sessionID, generation) {
   const directory = compactionSnapshotMarkerDirectory(root);
   const key = safeCompactionSnapshotSessionKey(sessionID);
-  if (!directory || !key || typeof generation !== "string") return null;
+  if (!key || typeof generation !== "string") return null;
   if (!/^[A-Za-z0-9_-]+$/.test(generation)) return null;
   return path.join(directory, `compact-snapshot-receipt.${key}.${generation}`);
 }
@@ -406,7 +393,7 @@ function compactionSnapshotReceiptPath(root, sessionID, generation) {
 function compactionSnapshotGenerationFromMarker(root, sessionID, ownedMarker) {
   const directory = compactionSnapshotMarkerDirectory(root);
   const key = safeCompactionSnapshotSessionKey(sessionID);
-  if (!directory || !key || typeof ownedMarker !== "string") return null;
+  if (!key || typeof ownedMarker !== "string") return null;
   const marker = path.resolve(ownedMarker);
   const prefix = `compact-snapshot.${key}.`;
   if (path.dirname(marker) !== directory || !path.basename(marker).startsWith(prefix)) return null;
@@ -428,7 +415,7 @@ function writeCompactionSnapshotReceipt(root, sessionID, generation) {
 function pruneCompactionSnapshotReceipts(root, sessionID) {
   const directory = compactionSnapshotMarkerDirectory(root);
   const key = safeCompactionSnapshotSessionKey(sessionID);
-  if (!directory || !key) return;
+  if (!key) return;
   const prefix = `compact-snapshot-receipt.${key}.`;
   try {
     const receipts = fs.readdirSync(directory, { withFileTypes: true })
@@ -481,7 +468,7 @@ function stageCompactionSnapshot(root, sessionID, payload) {
 function discardCompactionSnapshot(root, sessionID, ownedMarker) {
   const directory = compactionSnapshotMarkerDirectory(root);
   const key = safeCompactionSnapshotSessionKey(sessionID);
-  if (!directory || !key || typeof ownedMarker !== "string") return;
+  if (!key || typeof ownedMarker !== "string") return;
   const marker = path.resolve(ownedMarker);
   const prefix = `compact-snapshot.${key}.`;
   // 세션 상태가 기억한 자기 generation 정확한 경로만 삭제한다.
@@ -496,7 +483,7 @@ function discardCompactionSnapshot(root, sessionID, ownedMarker) {
 function listCompactionSnapshots(root, sessionID) {
   const directory = compactionSnapshotMarkerDirectory(root);
   const key = safeCompactionSnapshotSessionKey(sessionID);
-  if (!directory || !key) return [];
+  if (!key) return [];
   const prefix = `compact-snapshot.${key}.`;
   const snapshots = [];
   try {
@@ -615,10 +602,10 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
     return state;
   }
 
-  const root = findEngineRoot(directory || worktree || process.cwd());
+  const root = ENGINE_ROOT;
   const hookCwd = directory || worktree || process.cwd();
 
-  // local.conf 직접 파싱 (thresholds·budget 공용·1회 캐시). root 없거나 실패 시 {}.
+  // local.conf 직접 파싱 (thresholds·budget 공용·1회 캐시). 판독 실패 시 {}.
   function loadConf() {
     if (cachedConf) return cachedConf;
     // 판독 실패는 빈 conf 로 강등하지만(부재가 정상 형상) 구표기 잔존은 그대로 올린다 —
@@ -854,7 +841,6 @@ module.exports = {
   computeCtxState,
   buildNudgeGuidance,
   buildNudge2Guidance,
-  findEngineRoot,
   runPmLog,
   buildEngineCtxGuidance,
   buildCompactionSnapshot,
