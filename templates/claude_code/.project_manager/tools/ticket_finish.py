@@ -271,6 +271,18 @@ def _load_pm_log():
     )
 
 
+def _engine_temp_root(repo: Path) -> Path:
+    """그 clone 이 소유한 작업용 임시 루트 — 단일 소유자는 `pm_relay.temp_root` 다.
+
+    자리 규약(`.project_manager/.local/tmp`)을 이 도구가 다시 적지 않는다. 로더는 형제 모듈
+    경로 로드 관례 그대로다(`_load_pm_log` 동형·sys.path 무오염).
+    """
+    relay = _load_module_from_path(
+        TOOLS_DIR / "pm_relay.py", "pm_relay.py", verifier=_verify_engine_rev, cache=True,
+    )
+    return relay.temp_root(repo)
+
+
 def _load_file_lock():
     """공용 파일 프리미티브 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
 
@@ -3077,7 +3089,8 @@ class TicketFinisher:
         재현된다). `code_tree` 의 ref·index·worktree 등록은 만들지 않는다 — 원 저장소는
         읽기만 당한다(alternates 는 OID 로 객체를 해소할 뿐 이름으로 ref 를 해소하지 않는다).
         """
-        scratch = Path(tempfile.mkdtemp(prefix="ticket-finish-baseline-"))
+        scratch = Path(tempfile.mkdtemp(
+            prefix="ticket-finish-baseline-", dir=_engine_temp_root(REPO)))
         try:
             archive = subprocess.run(
                 ["git", "archive", ref], cwd=str(code_tree), capture_output=True)
@@ -3800,11 +3813,18 @@ class TicketFinisher:
 
 # ── close 파이프라인 (묶음 종결) ───────────────────────────────────────────
 #
-# 종결은 순서가 있는 여덟 단계다: final-fix 확인 입력 preflight → 리뷰 게이트 처분(확인 생성) → 티켓별 완료 기록 → 슬롯
-# 커밋 → 통합 브랜치로 재배치 → 머지 → 슬롯 반납 → board·포인터 커밋. 사람이 순서를 규칙으로
+# 종결은 순서가 있는 일곱 단계다: 리뷰 게이트 처분(확인 생성) → 티켓별 완료 기록 → 슬롯 커밋 →
+# 통합 브랜치로 재배치 → 머지 → 슬롯 반납 → board·포인터 커밋. 사람이 순서를 규칙으로
 # 지키던 자리를 한 커맨드가 가져간다 — 순서가 판정 결과를 바꾸던 축(사설 참조·측정 폭)은 이미
 # 판정 기준 교체로 닫혔으므로, 남은 것은 "빠뜨리지 않는" 축이다(반납 누락·포인터 커밋 누락이
 # 실측된 잔여다).
+#
+# **막을 조건은 첫 부작용 전에 전부 모아 한 번에 낸다**(`preflight`). 각 단계가 자기 차례에
+# 와서야 자기 조건을 보면 한 실행에 차단 사유가 하나씩만 나오고, 첫 완주까지 사람이 같은
+# 명령을 여러 번 친다(실측). 그래서 단계마다 **읽기 전용 선검사**를 선언으로 달고, 실행 전에
+# 그것만 전부 돌려 사유를 누적한다. 편입 기준은 "읽기 전용"이 아니라 **단조성**이다 — 앞
+# 단계가 해소할 수 있는 조건(작업 트리 dirty·log entry 부재·게이트 미처분)을 선검사에 넣으면
+# 정상 실행이 첫 줄에서 막힌다. 실행해야 아는 것(머지 충돌·회귀 red)은 선언에서 `None` 이다.
 #
 # **재실행이 곧 재개다.** 각 단계는 자기 부작용이 이미 있는지 **관측**해서 건너뛴다(티켓이
 # done 인가 · 커밋할 변경이 남았나 · 통합 브랜치의 조상인가 · 슬롯이 아직 대여 중인가). 장부의
@@ -3831,8 +3851,29 @@ _CLOSE_INTEGRATION_UNDECLARED = (
     "뒤 다시 실행하라."
 )
 
+_CLOSE_INTEGRATION_BRANCH_MISSING = (
+    "통합 브랜치 {integration} 를 이 코드 트리에서 찾지 못했다 ({tree}) — 장부가 선언한 "
+    "이름과 이 트리의 브랜치를 대조하라."
+)
+
+_CLOSE_SOURCE_BRANCH_MISSING = "묶음 브랜치 {source} 를 이 코드 트리에서 찾지 못했다 ({tree})."
+
+_CLOSE_INTEGRATION_TREE_MISSING = (
+    "{integration} 를 체크아웃한 작업 트리를 찾지 못했다 — 같은 브랜치를 두 트리가 동시에 "
+    "체크아웃할 수 없으므로 머지는 그 트리에서만 된다. 통합 브랜치를 가진 트리를 열어 두고 "
+    "다시 실행하라."
+)
+
+_CLOSE_INTEGRATION_TREE_DIRTY = (
+    "{integration} 트리에 남은 변경이 있어 머지하지 않는다 ({count}건 · {tree})."
+)
+
+_CLOSE_TICKET_NOT_CLAIMED = (
+    "{ticket} 가 claimed 가 아니다({status}) — 완료 기록은 claimed 티켓만 done 으로 옮긴다."
+)
+
 _CLOSE_OPEN_ALL_DONE = (
-    "{cluster} 장부는 open 인데 멤버 {members} 가 이미 전부 done 이다 — 정상 종결 8단계는 이 "
+    "{cluster} 장부는 open 인데 멤버 {members} 가 이미 전부 done 이다 — 정상 종결 7단계는 이 "
     "반쪽 상태를 닫지 않는다(그 완료 기록은 이 파이프라인이 만든 것이 아니라 커밋·재배치·머지가 "
     "무엇을 근거로 도는지 알 수 없다). 이미 통합된 commit 을 명시하는 복구 문으로 닫는다:\n"
     "  python3 .project_manager/tools/ticket_finish.py --cluster {cluster} "
@@ -3852,21 +3893,24 @@ class _CloseObservationFailure(Exception):
 
 
 class ClusterCloser:
-    """묶음 종결(close) — 고정 여덟 단계·상태 관측 기반 멱등.
+    """묶음 종결(close) — 고정 일곱 단계·상태 관측 기반 멱등 + 첫 부작용 앞 선검사.
 
     git·board·위임 호출은 전부 `TicketFinisher` 가 이미 들고 있는 seam 을 그대로 쓴다(사본 0).
     이 클래스가 새로 받는 seam 은 둘뿐이다 — 라운드 처분 CLI 와 슬롯 반납.
     """
 
-    STEPS: tuple[tuple[str, str], ...] = (
-        ("confirm", "final-fix 확인 입력 preflight"),
-        ("resolve", "기계 확인 생성·리뷰 게이트 처분"),
-        ("record", "티켓별 완료 기록"),
-        ("commit", "슬롯 커밋"),
-        ("rebase", "통합 브랜치로 재배치"),
-        ("merge", "통합 브랜치 머지"),
-        ("release", "슬롯 반납"),
-        ("board", "board·포인터 커밋"),
+    # `(단계 키, 사람이 읽는 이름, 읽기 전용 선검사 메서드 이름 또는 None)`.
+    # 세 번째 값이 **선언**이다 — `None` 은 "실행해야 아는 것"(머지 충돌·커밋 rc·반납 거부).
+    # `run()`·`preflight()` 가 이 3-튜플을 언팩하므로 선언을 빠뜨린 단계를 추가하면 그 자리에서
+    # `ValueError` 다(별도 가드 장치 없음).
+    STEPS: tuple[tuple[str, str, str | None], ...] = (
+        ("resolve", "기계 확인 생성·리뷰 게이트 처분", "_pre_resolve"),
+        ("record", "티켓별 완료 기록", "_pre_record"),
+        ("commit", "슬롯 커밋", None),
+        ("rebase", "통합 브랜치로 재배치", "_pre_rebase"),
+        ("merge", "통합 브랜치 머지", "_pre_merge"),
+        ("release", "슬롯 반납", None),
+        ("board", "board·포인터 커밋", "_pre_board"),
     )
 
     def __init__(
@@ -4182,20 +4226,24 @@ class ClusterCloser:
 
     # ── 단계 ──────────────────────────────────────────────────────────
 
-    def _step_confirm(self) -> str | None:
-        """resolve가 소비할 final-fix verify 입력을 read-only 검증한다(board 판정 소유)."""
+    def _pre_resolve(self) -> list[str]:
+        """resolve가 소비할 final-fix verify 입력을 read-only 검증한다(board 판정 소유).
+
+        게이트 **처분 여부**는 여기 없다 — 처분은 resolve 자신이 하는 일이라 비단조다. 여기서
+        묻는 것은 그 처분이 소비할 입력이 지금 갖춰졌는가뿐이다.
+        """
         board = self._board
         pending = self._pending_gates()
         if not pending:
-            print("  처분할 리뷰 잔여 없음 — preflight 대상 0")
-            return None
+            print("  처분할 리뷰 잔여 없음 — 확인 입력 선검사 대상 0")
+            return []
         problem_fn = (
             getattr(board, "_pm_verified_resolution_input_problem", None)
             if board else None
         )
         channel = getattr(board, "GATE_CHANNEL_INTERNAL", None) if board else None
         if problem_fn is None or channel is None:
-            return "final-fix 확인 입력 preflight seam 부재 — board 사본을 확인하세요"
+            return ["final-fix 확인 입력 preflight seam 부재 — board 사본을 확인하세요"]
         ledger = self._gate_ledger()
         problems: list[str] = []
         for tid in pending:
@@ -4203,13 +4251,8 @@ class ClusterCloser:
             if problem is None:
                 print(f"  ✓ {tid} final-fix 확인 입력 complete · resolve 실행 가능")
             else:
-                problems.append(f"  ✗ {tid}: {problem}")
-        if problems:
-            return "\n".join([
-                "final-fix 확인 입력 미충족 — resolve 전 preflight에서 정지했습니다:",
-                *problems,
-            ])
-        return None
+                problems.append(f"final-fix 확인 입력 미충족 — {tid}: {problem}")
+        return problems
 
     def _step_resolve(self) -> str | None:
         """리뷰 게이트 처분 — 묶음 표면이 있으면 한 번, 없으면 티켓별로 반복한다."""
@@ -4250,6 +4293,93 @@ class ClusterCloser:
                 raise
             return False
         return rc == 0 and "--cluster" in out
+
+    def _pre_record(self) -> list[str]:
+        """완료 기록의 읽기 전용 차단 사유 전건 — 이미 done 인 티켓은 세지 않는다.
+
+        여기 **없는** 것과 그 이유: [1/5] 회귀 red 와 자기 축 회귀는 판정 입력이 pytest 실행
+        결과라 읽기로 답이 나오지 않는다. [2/5] log entry 부재와 내부 리뷰 잔여는 각각 그
+        append 와 앞 단계(resolve)가 **해소하는** 조건이라 선검사에 넣으면 정상 실행이 첫 줄에서
+        막힌다(비단조).
+
+        판정은 전부 남의 함수다 — 완료 기록이 쓰는 DI 네 개(`_diff_cap_block_fn`·
+        `_private_ref_block_fn`·`_dod_block_fn`·`_residual_block_fn`)와 `board complete` 가 쓰는
+        판정 셋을 그대로 부른다(사본 0).
+        """
+        reasons: list[str] = []
+        for tid in self._tickets:
+            status = self._ticket_status(tid)
+            if status == "done":
+                continue
+            if status != "claimed":
+                # 여기서 멈추지 않는다 — `board complete` 는 이 한 줄에서 return 하지만, 그
+                # 자리가 곧 "한 번에 하나씩" 의 원인이다. 나머지 판정도 전부 읽기로 답이 난다.
+                reasons.append(_CLOSE_TICKET_NOT_CLAIMED.format(
+                    ticket=tid, status=status or "board 에 없음"))
+            for block_fn in (self._finisher._diff_cap_block_fn,
+                             self._finisher._private_ref_block_fn,
+                             self._finisher._dod_block_fn,
+                             self._finisher._residual_block_fn):
+                block = block_fn(tid)
+                if block:
+                    reasons.append(block)
+            reasons.extend(self._board_complete_problems(tid))
+        return reasons
+
+    def _board_complete_problems(self, tid: str) -> list[str]:
+        """`board complete` 가 첫 거부에서 멈추는 판정 셋을 읽기로 **전건** 모은다(사본 0).
+
+        `cmd_complete` 는 결속 → 소유 → 게이트 순서로 첫 거부에서 return 하므로, 그 셋을 여기서
+        각각 불러 누적한다. Namespace 는 `cmd_complete` 가 받는 것과 **같은 파서**로 만든다 —
+        손으로 조립하면 소유 판정이 보는 속성이 조용히 빠진다.
+        """
+        board = self._board
+        seams = {
+            name: (getattr(board, name, None) if board else None)
+            for name in ("find_ticket_exact", "load_ticket", "build_parser",
+                         "cluster_complete_binding_problem", "_ticket_ownership",
+                         "_ownership_rejection", "_round_completion_problems")
+        }
+        missing = sorted(name for name, seam in seams.items() if seam is None)
+        if missing:
+            raise _CloseObservationFailure(
+                f"완료 게이트 판정 seam 을 로드하지 못했다 ({self._board_py}: {missing}) — "
+                "차단 사유를 관측할 수 없다. board 사본을 확인하라.")
+        found = seams["find_ticket_exact"](tid)
+        if found is None:
+            raise _CloseObservationFailure(
+                f"{tid} 명세 파일을 board 에서 찾지 못했다 — 차단 사유를 관측할 수 없다.")
+        _status, path = found
+        frontmatter, _body = seams["load_ticket"](path)
+        spec_text = _load_file_lock().read_text_shared(path, encoding="utf-8")
+        problems: list[str] = []
+        binding = seams["cluster_complete_binding_problem"](
+            tid, frontmatter, self._cluster)
+        if binding is not None:
+            problems.append(f"{tid}: {binding}")
+        namespace = seams["build_parser"]().parse_args(
+            ["complete", tid, "--tests-pass", *self._board_identity_args])
+        verdict = seams["_ticket_ownership"](frontmatter, namespace)
+        if not verdict.ok:
+            problems.append(seams["_ownership_rejection"]("complete", tid, verdict))
+        problems.extend(
+            f"{tid}: {problem}"
+            for problem in seams["_round_completion_problems"](tid, spec_text))
+        return problems
+
+    def _has_pipeline_work(self) -> bool:
+        """이 파이프라인이 아직 낼 부작용이 남아 있는가 — 커밋 대상이 하나라도 남았으면 참.
+
+        "이미 끝난 단계는 차단 사유가 아니다"의 억제 조건이다. 커밋 전에는 묶음 브랜치가
+        통합 브랜치의 조상이라 **이미 머지된 것처럼 보이는** 형상이 있는데, 그 관측을 그대로
+        믿으면 선검사가 통과하고 커밋 뒤 머지 단계가 통합 트리 부재로 막힌다.
+        """
+        for tid in self._tickets:
+            _home, code = self._plans(tid)
+            pathspec = list(code.scope.pathspec) if code is not None else []
+            if pathspec and self._pending_paths(code.cwd, pathspec):
+                return True
+        return False
 
     def _step_record(self) -> str | None:
         """티켓별 완료 기록 — 현행 완료 기록 그대로다(같은 코드 경로·같은 출력 줄)."""
@@ -4296,25 +4426,39 @@ class ClusterCloser:
             print(f"  ✓ {tid} 커밋 — {len(pending)}개 경로 ({title})")
         return None
 
+    def _pre_rebase(self) -> list[str]:
+        """재배치의 읽기 전용 선행 조건 — 선언·존재·이 트리가 든 브랜치(사유 전건).
+
+        작업 트리 dirty 와 재배치 충돌은 여기 없다 — 앞 단계(슬롯 커밋)가 해소하거나 실행해야
+        아는 것이라 첫 부작용 앞에서 물으면 정상 실행이 첫 줄에서 막힌다.
+        """
+        integration = self._declared_branch("base_branch")
+        if not integration:
+            return [_CLOSE_INTEGRATION_UNDECLARED.format(cluster=self._cluster)]
+        reasons: list[str] = []
+        tree = self._code_tree()
+        rc, _out = self._git_stdout(
+            tree, ["rev-parse", "--verify", "--quiet", f"{integration}^{{commit}}"])
+        if rc != 0:
+            reasons.append(_CLOSE_INTEGRATION_BRANCH_MISSING.format(
+                integration=integration, tree=tree))
+        source = self._declared_branch("branch")
+        if source:
+            wrong_branch = self._wrong_branch_reason(tree, source)
+            if wrong_branch is not None:
+                reasons.append(wrong_branch)
+        return reasons
+
     def _step_rebase(self) -> str | None:
         """통합 브랜치로 재배치 — 충돌은 원상 복구(abort) 후 정지한다.
 
         기준 브랜치 선언이 없으면 무대상이 아니라 정지다 — 재배치를 건너뛴 종결은 이 작업을
         통합 브랜치 밖에 남긴 채 완료를 선언한다."""
+        blocks = self._pre_rebase()
+        if blocks:
+            return "\n".join(blocks)
         integration = self._declared_branch("base_branch")
-        if not integration:
-            return _CLOSE_INTEGRATION_UNDECLARED.format(cluster=self._cluster)
         tree = self._code_tree()
-        rc, _out = self._git_stdout(
-            tree, ["rev-parse", "--verify", "--quiet", f"{integration}^{{commit}}"])
-        if rc != 0:
-            return (f"통합 브랜치 {integration} 를 이 코드 트리에서 찾지 못했다 ({tree}) — "
-                    "장부가 선언한 이름과 이 트리의 브랜치를 대조하라.")
-        source = self._declared_branch("branch")
-        if source:
-            wrong_branch = self._wrong_branch_reason(tree, source)
-            if wrong_branch is not None:
-                return wrong_branch
         if self._is_ancestor(tree, integration, "HEAD"):
             print(f"  이미 {integration} 위에 있다 — 건너뜀")
             return None
@@ -4341,39 +4485,65 @@ class ClusterCloser:
         print(f"  ✓ {integration} 위로 재배치")
         return None
 
+    def _pre_merge(self) -> list[str]:
+        """머지의 읽기 전용 선행 조건 — 선언·존재·현재 브랜치·통합 트리(사유 전건).
+
+        통합 트리는 이 파이프라인이 커밋하지 않으므로 그 트리의 dirty 도 단조다(앞 단계가
+        해소하지 않는다) — 그래서 여기 있다. 머지 충돌만 실행해야 아는 것이다.
+
+        **이미 머지됐다는 관측은 아직 낼 부작용이 없을 때만 믿는다**(`_has_pipeline_work`).
+        커밋 전에는 묶음 브랜치가 통합 브랜치의 조상이라 끝난 것처럼 보이는 형상이 있다.
+        """
+        integration = self._declared_branch("base_branch")
+        if not integration:
+            return [_CLOSE_INTEGRATION_UNDECLARED.format(cluster=self._cluster)]
+        source = self._declared_branch("branch")
+        if not source:
+            return []                       # 묶음 브랜치 미선언 = 머지 무대상
+        tree = self._code_tree()
+        rc, _out = self._git_stdout(
+            tree, ["rev-parse", "--verify", "--quiet", f"{source}^{{commit}}"])
+        if rc != 0:
+            return [_CLOSE_SOURCE_BRANCH_MISSING.format(source=source, tree=tree)]
+        if not self._has_pipeline_work() and self._is_ancestor(tree, source, integration):
+            return []                       # 이미 머지됐다 — 끝난 단계는 차단 사유가 아니다
+        reasons: list[str] = []
+        wrong_branch = self._wrong_branch_reason(tree, source)
+        if wrong_branch is not None:
+            reasons.append(wrong_branch)
+        target_tree = self._integration_worktree(integration)
+        if target_tree is None:
+            reasons.append(
+                _CLOSE_INTEGRATION_TREE_MISSING.format(integration=integration))
+            return reasons
+        dirty = self._dirty_paths(target_tree)
+        if dirty:
+            reasons.append(_CLOSE_INTEGRATION_TREE_DIRTY.format(
+                integration=integration, count=len(dirty), tree=target_tree))
+        return reasons
+
     def _step_merge(self) -> str | None:
         """통합 브랜치 머지 — 통합 브랜치를 가진 트리에서 `--no-ff` 로 받는다.
 
         묶음 브랜치(`branch`)는 사람이 선언한 묶음만 갖는다(크기 1 자동 장부는 없다) — 그
         선언이 없으면 받을 브랜치가 없어 무대상이다. 기준 브랜치 미선언은 그 축이 아니라
         판정 기준의 부재라 정지다."""
+        blocks = self._pre_merge()
+        if blocks:
+            return "\n".join(blocks)
         integration = self._declared_branch("base_branch")
-        if not integration:
-            return _CLOSE_INTEGRATION_UNDECLARED.format(cluster=self._cluster)
         source = self._declared_branch("branch")
         if not source:
             print("  묶음 브랜치 미선언 — 무대상")
             return None
         tree = self._code_tree()
-        rc, _out = self._git_stdout(
-            tree, ["rev-parse", "--verify", "--quiet", f"{source}^{{commit}}"])
-        if rc != 0:
-            return (f"묶음 브랜치 {source} 를 이 코드 트리에서 찾지 못했다 ({tree}).")
         if self._is_ancestor(tree, source, integration):
             print(f"  {source} 는 이미 {integration} 에 있다 — 건너뜀")
             return None
-        wrong_branch = self._wrong_branch_reason(tree, source)
-        if wrong_branch is not None:
-            return wrong_branch
         target_tree = self._integration_worktree(integration)
         if target_tree is None:
-            return (f"{integration} 를 체크아웃한 작업 트리를 찾지 못했다 — 같은 브랜치를 두 "
-                    "트리가 동시에 체크아웃할 수 없으므로 머지는 그 트리에서만 된다. 통합 "
-                    "브랜치를 가진 트리를 열어 두고 다시 실행하라.")
-        dirty = self._dirty_paths(target_tree)
-        if dirty:
-            return (f"{integration} 트리에 남은 변경이 있어 머지하지 않는다 ({len(dirty)}건 · "
-                    f"{target_tree}).")
+            # 선검사가 같은 관측으로 이미 막았어야 하는 자리 — 그 사이에 트리가 사라졌다.
+            return _CLOSE_INTEGRATION_TREE_MISSING.format(integration=integration)
         unit, title = self._unit()
         message = _CLOSE_MERGE_MESSAGE.format(unit=unit, title=title)
         if self._dry_run:
@@ -4409,13 +4579,22 @@ class ClusterCloser:
         print(f"  ✓ {message}")
         return None
 
+    def _pre_board(self) -> list[str]:
+        """기록 대상 경로가 해소되는가 — 해소 불가는 차단 사유가 아니라 관측 실패(정지)다.
+
+        단계와 **같은 함수**(`_board_git_paths`)를 부른다. board-git 로컬 커밋 미생성과 PM 홈
+        커밋 실패는 실행해야 아는 것이라 여기 없다.
+        """
+        self._board_git_paths()
+        return []
+
     def _step_board(self) -> str | None:
         """board-git 기록 + PM 홈 포인터·산출물 커밋 — 두 git 을 한 단계가 닫는다.
 
         종결 표시(`status=closed`)는 커밋 **대상**이다 — 장부 자신이 board-git 커밋에 실리므로,
         표시를 커밋 뒤에 쓰면 board-git 이 그 값을 영영 못 담고 다음 실행마다 그 한 줄을
         커밋하려 든다(재실행 무부작용이 깨진다). 그래서 순서는 표시 → 두 커밋이고, **어느
-        커밋이든 실패하면 표시를 되돌린다** — 디스크에 남는 `closed` 는 여덟 단계가 전부
+        커밋이든 실패하면 표시를 되돌린다** — 디스크에 남는 `closed` 는 일곱 단계가 전부
         관측된 뒤에만 존재한다.
         """
         paths = self._board_git_paths()
@@ -4569,7 +4748,7 @@ class ClusterCloser:
         """마지막 단계가 실패했을 때 진행 기록을 그 실행 **직전 값**으로 되돌린다.
 
         종결 표시는 커밋에 실어야 해서 커밋보다 먼저 쓰지만, 커밋이 실패하면 그 표시는 근거가
-        없다 — 디스크에 남는 `closed` 는 여덟 단계 전부가 관측된 경우로 제한한다."""
+        없다 — 디스크에 남는 `closed` 는 일곱 단계 전부가 관측된 경우로 제한한다."""
         self._write_progress(step_key, status)
 
     def _write_progress(self, step_key: str | None, status: str | None) -> None:
@@ -4620,7 +4799,7 @@ class ClusterCloser:
         """정상 종결의 첫 부작용 앞 read-only 상태 게이트 — open + 전원 done 은 복구 전용이다.
 
         `open` 장부의 멤버가 전부 done 이면 그 완료 기록은 이 파이프라인이 남긴 것이 아니다
-        (1단계가 성공하는 순간 장부는 `closing` 이 된다). 그 상태로 8단계를 시작하면 무엇이
+        (1단계가 성공하는 순간 장부는 `closing` 이 된다). 그 상태로 7단계를 시작하면 무엇이
         이미 통합됐는지 모르는 채 커밋·재배치·머지·반납으로 들어간다 — 그래서 여기서 멈추고
         증거를 명시하는 복구 문으로 보낸다. `closing` 재개와 `closed` 멱등 관측은 그대로다.
         """
@@ -4653,7 +4832,7 @@ class ClusterCloser:
     def _cluster_id(self, value: str | None) -> str:
         """이름/장부 id 어느 표기든 board 의 장부 id 하나로 정규화한다 (빈 값은 빈 값).
 
-        정상 8단계는 `load_cluster`·`cluster_members` 안에서 이 정규화를 이미 받는다. recovery
+        정상 7단계는 `load_cluster`·`cluster_members` 안에서 이 정규화를 이미 받는다. recovery
         만 원시 문자열을 비교하면 같은 표기로 부른 호출이 "장부 id 가 다르다"로 멈춘다.
         """
         text = str(value or "").strip()
@@ -4988,6 +5167,23 @@ class ClusterCloser:
         print(f"\n[완료] {self._cluster} all-done reconcile 완료 (제품/slot write 0).")
         return 0
 
+    def preflight(self) -> list[str]:
+        """첫 부작용 앞에서 읽기만으로 판정 가능한 차단 사유를 **전건** 모은다.
+
+        단계 선언(`STEPS` 3번째 값)이 대상 여부의 단일 진실이다 — 여기서 단계 목록을 다시
+        적지 않는다. 통과한 종결은 **읽기로 알 수 있는 사유로는** 중간에 멈추지 않는다:
+        선검사가 통과시켰는데 뒤 단계가 같은 판정 함수로 멈추면 그것이 결함이다.
+
+        `--dry-run` 여부와 무관하게 항상 먼저 돈다.
+        """
+        reasons: list[str] = []
+        for _key, label, precheck in self.STEPS:
+            if precheck is None:
+                continue
+            for reason in getattr(self, precheck)():
+                reasons.append(f"[{label}] {reason}")
+        return reasons
+
     def run(self) -> int:
         """종결 파이프라인 실행 — 0=성공, 1=실패(그 단계에서 정지).
 
@@ -5009,8 +5205,19 @@ class ClusterCloser:
         print(f"[close] {self._cluster} 종결 시작 "
               f"(dry_run={self._dry_run}, 멤버 {len(self._tickets)}: "
               f"{', '.join(self._tickets)})")
+        try:
+            reasons = self.preflight()
+        except _CloseObservationFailure as failure:
+            print(f"\n[중단] 관측 실패 — {failure}", file=sys.stderr)
+            return 1
+        if reasons:
+            print(f"\n[중단] 종결 선검사 — 막는 조건 {len(reasons)}건. 아직 아무 부작용도 "
+                  "내지 않았다. 전부 해소한 뒤 다시 실행하라:", file=sys.stderr)
+            for index, reason in enumerate(reasons, start=1):
+                print(f"  {index}. {reason}", file=sys.stderr)
+            return 1
         total = len(self.STEPS)
-        for index, (key, label) in enumerate(self.STEPS, start=1):
+        for index, (key, label, _precheck) in enumerate(self.STEPS, start=1):
             print(f"\n[{index}/{total}] {label}...")
             try:
                 block = getattr(self, f"_step_{key}")()

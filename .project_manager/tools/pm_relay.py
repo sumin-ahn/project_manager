@@ -388,6 +388,24 @@ def pid_is_alive(
         return True
 
 
+TEMP_ROOT_DIRNAME = "tmp"
+
+
+def temp_root(repo: Path) -> Path:
+    """이 clone 이 소유한 작업용 임시 루트 — 없으면 만든다.
+
+    `raw_storage_paths` 와 같은 앵커(`repo/.project_manager/.local`) 아래다. `.local/` 접두에는
+    gitignore·잔여 판정 제외(`ticket_finish._is_local_runtime_path`)·pytest 수집 제외가 이미
+    걸려 있어 새 규칙이 필요 없다 — 형제로 두면 같은 뜻의 두 번째 접두를 세 곳에 더해야 한다.
+
+    임시물의 정리 시점은 **실행 시작**이다(중단에서는 종료 코드가 돌지 않는다). 이 함수는
+    자리만 주고, 비우는 규칙은 그 자리를 쓰는 실행이 자기 시작점에서 소유한다.
+    """
+    root = Path(repo) / ".project_manager" / ".local" / TEMP_ROOT_DIRNAME
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def raw_storage_paths(
     repo: Path,
     surface: str,

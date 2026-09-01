@@ -87,12 +87,12 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 | `/pm-dev-delegate T-NNNN --role developer\|code-reviewer` | 묶음 단계 위임 — 설계·리뷰·fix 는 묶음 1회, 개발은 티켓당 1회 | `Agent` 툴 |
 | `/pm-regression` | 비차단 백그라운드 회귀 pre-warm + 완료 알림 | `board.py regression` |
 | `/pm-qa` | 회귀+lint+git 통합 report | `board.py regression/lint` |
-| `/pm-wave-finish` | 묶음 종결 8단계(확인 입력 preflight·확인 생성/처분·완료 기록·커밋·재배치·머지·반납·board); status 미접촉 | `ticket_finish.py` |
+| `/pm-wave-finish` | 묶음 종결 7단계(확인 생성/처분·완료 기록·커밋·재배치·머지·반납·board) + 첫 부작용 앞 선검사 전건 보고; status 미접촉 | `ticket_finish.py` |
 | `/pm-handoff` | 세션 종료 7단계 | `pm_handoff.py` |
 
 **무코드/개념(ADR·doc·decision) ticket도 종결 단위는 묶음이다.** 별도 검증 근거가 있으면
-`/pm-wave-finish`(`ticket_finish.py --cluster ... --no-pytest`)로 같은 8단계를 실행한다.
-`board.py complete`는 8단계 내부 결속 호출이며 PM이 직접 실행하지 않는다.
+`/pm-wave-finish`(`ticket_finish.py --cluster ... --no-pytest`)로 같은 7단계를 실행한다.
+`board.py complete`는 7단계 내부 결속 호출이며 PM이 직접 실행하지 않는다.
 
 환경·갱신:
 
@@ -161,8 +161,8 @@ prepare/harvest가 허용되며 이 로컬 authoring 경로는 board-git sync를
 developer/code-reviewer draft 실행과 blocked/done 전 역할은 예약 전에 거부되고, promote/claim 게이트는
 그대로다. 라운드 디렉터리는 고정 위치라 티켓 상태 이동을 따라가지 않는다. 실 위임에서는
 `/pm-dev-delegate`가 prepare/harvest를 감싼다. **종결은 한 커맨드다** — `ticket_finish.py --cluster`가
-final-fix 확인 입력 preflight·기계/PM-owned terminal 확인 생성과 게이트 처분·티켓별 완료 기록·커밋·재배치·머지·슬롯 반납·board 기록을 고정 순서로 실행하고,
-실패 지점에서 멈추며 재실행이 곧 재개다. 실행 인자·실패 복구는 카드가 단일 진실이고 여기서는 규율만
+기계/PM-owned terminal 확인 생성과 게이트 처분·티켓별 완료 기록·커밋·재배치·머지·슬롯 반납·board 기록을 고정 순서로 실행하고,
+막는 조건은 첫 부작용 앞 선검사가 전건 보고하며, 실패 지점에서 멈추고 재실행이 곧 재개다. 실행 인자·실패 복구는 카드가 단일 진실이고 여기서는 규율만
 소유한다.
 
 `ticket done`·`cluster closed`·`slot released`는 서로 다른 상태다. 모든 멤버만 이미 done이고

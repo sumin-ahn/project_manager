@@ -1,6 +1,6 @@
 ---
 name: pm-wave-finish
-description: "묶음 종결(close) — ticket_finish.py 고정 8단계 wrapper: final-fix 확인 입력 preflight → 확인 생성·게이트 처분 → 티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → 슬롯 반납 → board·포인터 커밋. 재실행이 곧 재개. 모듈 판정·비고·log/current.md 서술은 PM 손. Triggers: 'T-NNNN 완료', '묶음 종결', 'ticket 정리', 'finish', 'pm-wave-finish'."
+description: "묶음 종결(close) — ticket_finish.py 고정 7단계 wrapper: 확인 생성·게이트 처분 → 티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → 슬롯 반납 → board·포인터 커밋. 막는 조건은 첫 부작용 앞 선검사가 전건 보고. 재실행이 곧 재개. 모듈 판정·비고·log/current.md 서술은 PM 손. Triggers: 'T-NNNN 완료', '묶음 종결', 'ticket 정리', 'finish', 'pm-wave-finish'."
 audience: pm-internal
 ---
 
@@ -17,7 +17,7 @@ audience: pm-internal
 ## 실행
 
 ```bash
-# 묶음 종결 — 고정 8단계
+# 묶음 종결 — 고정 7단계
 python3 .project_manager/tools/ticket_finish.py --cluster <C-이름>
 # 티켓 표기도 같은 경로다 — 그 티켓이 속한 묶음 전체를 종결한다(크기 1이면 티켓 하나)
 python3 .project_manager/tools/ticket_finish.py T-NNNN
@@ -25,11 +25,11 @@ python3 .project_manager/tools/ticket_finish.py T-NNNN
 
 - **`board.py complete`를 직접 실행하지 않는다.** cluster 멤버의 direct complete는 엔진이
   첫 write 전에 거부한다. `ticket done`·`cluster closed`·`slot released`는 서로 다른 상태이며,
-  정상 8단계가 세 상태를 각각 관측·기록한다.
+  정상 7단계가 세 상태를 각각 관측·기록한다.
 - **완료 기록 단위는 묶음 하나다.** 티켓 ID 를 준 호출도 그 티켓의 묶음으로 해소해 같은 파이프라인을
   탄다(티켓당 별도 코드 경로 0). 묶음을 선언하지 않은 티켓은 board 가 크기 1로 접어 준다.
-  멤버 중 final-fix 확인 입력이나 완료 조건이 덜 채워진 티켓이 있으면 **1단계(preflight) 또는 3단계(완료 기록)에서 멈춘다**
-  — 그 지점까지의 부작용만 남고 나머지 단계는 실행되지 않는다.
+  멤버 중 final-fix 확인 입력이나 완료 조건이 덜 채워진 티켓이 있으면 **선검사가 첫 부작용 전에
+  전건을 번호와 함께 보고하고 멈춘다** — 그 실행은 board·git·위임 어디에도 손대지 않는다.
 - **재실행이 곧 재개다.** 각 단계는 자기 부작용이 이미 있는지 관측해서 건너뛴다(티켓이 done 인가 ·
   커밋할 변경이 남았나 · 통합 브랜치의 조상인가 · 슬롯이 아직 대여 중인가). 실패 지점을 고치고 같은
   커맨드를 다시 부르면 끝난 단계는 반복하지 않는다.
@@ -42,7 +42,7 @@ python3 .project_manager/tools/ticket_finish.py T-NNNN
   실제 내용으로 **교체**하며 별도 entry를 추가하지 않는다. 상세 순서는 operational-details를 따른다.
 - `--section`: **deprecated no-op**(status.md 합계표 제거, 후방호환 수용만).
 
-이미 direct complete로 멤버만 done이고 장부가 open인 과거 반쪽 상태는 정상 8단계를 재실행하지
+이미 direct complete로 멤버만 done이고 장부가 open인 과거 반쪽 상태는 정상 7단계를 재실행하지
 않는다. `references/operational-details.md`의 **all-done recovery** 절에 따라 제품 slot·멤버별
 commit·legacy anchor·사용자 승인값을 모두 명시해 reconcile한다. recovery는 merge/rebase/commit/
 review resolve/slot release를 실행하지 않으며, dirty slot을 reset·stash·release하지 않는다.

@@ -4081,6 +4081,15 @@ def _load_watchdog():
     )
 
 
+def _temp_root(root) -> Path:
+    """그 clone 이 소유한 작업용 임시 루트 — 단일 소유자는 `pm_relay.temp_root` 다.
+
+    같은 형제 모듈(`pm_relay`)을 이미 경로 로드하는 seam 을 그대로 쓴다(로더 사본 0). 형제를
+    로드하므로 **형제 rev 를 믿을 수 있는 자리에서만** 부른다.
+    """
+    return _load_watchdog().temp_root(Path(root))
+
+
 def _fill_driver(argv: list[str]) -> tuple[str, bool, str | None]:
     """실제 fill argv를 (하네스·증분 신호·stdin) 선언으로 해소한다."""
     for command, driver in FILL_DRIVER_BY_CMD.items():
@@ -6466,6 +6475,11 @@ def _upstream_hook_set_declarations(
         #   실패(핸들 잠금·AV 스캔 — Windows 실 클래스)가 `__exit__` 에서 올라와 "상류 로드 실패" 로
         #   분류되고, 그 사유 한 줄이 mutation 게이트를 근거 없이 fail-closed 로 떨어뜨린다. 선언은
         #   이미 읽혔다 — 뒷정리 실패가 그 사실을 뒤집지 않는다(best-effort).
+        # **작업용 임시 루트 seam 을 쓰지 않는다.** 그 seam 은 형제 `pm_relay` 를 경로 로드하는데,
+        #   이 함수가 도는 자리가 바로 그 로드를 믿을 수 없는 창(자기 갱신 mid-sync·형제 rev 혼재)
+        #   이다 — 거기서 seam 을 부르면 상류 세대 선언을 통째로 잃고 설치본 선언으로 강등된다
+        #   (`tests/test_engine_rev_midsync_absorption.py` 실측). 이 스테이징은 아래 finally 가
+        #   자기 손으로 지운다.
         staging = tempfile.mkdtemp(prefix=".pm_hook_set_gen.")
         try:
             staged = Path(staging) / "pm_import.py"
@@ -8566,7 +8580,7 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
         print(f"오류: {_BOARD_SUBMODULE_PATH} 가 이미 존재 — board submodule 셋업 중단.",
               file=sys.stderr)
         return 1
-    tmp_clone = Path(tempfile.mkdtemp(prefix="pm_board_seed_"))
+    tmp_clone = Path(tempfile.mkdtemp(prefix="pm_board_seed_", dir=_temp_root(dest_root)))
     try:
         # ── 1. clone remote → temp; 비었으면 스캐폴드 seed ──
         rc, out = _board_setup_git(["clone", remote_url, str(tmp_clone)], cwd=None)

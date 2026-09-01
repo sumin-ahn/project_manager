@@ -3198,6 +3198,20 @@ def test_head_tree_alone_would_have_missed_the_staged_red(tf, tmp_path):
 # 각각의 형제 불변식을 지키는지 값으로 본다.
 
 
+def _failing_force_rmtree(recorded: list, error: OSError):
+    """삭제를 실패시키되 **어느 경로였는지 기록**하는 주입 대역.
+
+    임시 루트가 저장소 안(`.project_manager/.local/tmp`)이라 실패를 일부러 만든 케이스가
+    남긴 트리는 그대로 쌓인다. 그 케이스가 뒷정리를 소유하되, 대상은 **자기가 요청받은
+    경로**여야 한다 — 디렉터리 차집합으로 지우면 같은 루트를 쓰는 병렬 케이스의 트리를
+    실행 중에 지운다(xdist 실측).
+    """
+    def _fail(path, **_kwargs):
+        recorded.append(Path(path))
+        raise error
+    return _fail
+
+
 def test_materialize_tree_exception_cleanup_failure_does_not_mask_the_original_error(
         tf, tmp_path, monkeypatch, capsys):
     """except 경로 — 정리(force_rmtree) 실패가 원래 예외(git archive 실패)를 덮지 않고, 정리
@@ -3206,10 +3220,11 @@ def test_materialize_tree_exception_cleanup_failure_does_not_mask_the_original_e
     finisher = tf.TicketFinisher()
 
     file_lock = tf._load_file_lock()
+    real_force_rmtree = file_lock.force_rmtree
+    attempted: list[Path] = []
     injected = OSError("디렉터리 정리 실패 — 시뮬레이션(권한 거부)")
     monkeypatch.setattr(
-        file_lock, "force_rmtree",
-        lambda path, **kw: (_ for _ in ()).throw(injected))
+        file_lock, "force_rmtree", _failing_force_rmtree(attempted, injected))
 
     with pytest.raises(RuntimeError, match="git archive"):
         finisher._materialize_tree(root, "no-such-ref-at-all")
@@ -3217,6 +3232,8 @@ def test_materialize_tree_exception_cleanup_failure_does_not_mask_the_original_e
     captured = capsys.readouterr()
     assert "baseline scratch 정리 실패" in captured.err
     assert str(injected) in captured.err
+    for path in attempted:
+        real_force_rmtree(path)
 
 
 def test_default_self_axis_block_returns_correctly_despite_a_baseline_cleanup_failure(
@@ -3234,10 +3251,11 @@ def test_default_self_axis_block_returns_correctly_despite_a_baseline_cleanup_fa
     finisher = _axis_finisher(tf, root, board_py)
 
     file_lock = tf._load_file_lock()
+    real_force_rmtree = file_lock.force_rmtree
+    attempted: list[Path] = []
     injected = OSError("디렉터리 정리 실패 — 시뮬레이션(잠긴 핸들)")
     monkeypatch.setattr(
-        file_lock, "force_rmtree",
-        lambda path, **kw: (_ for _ in ()).throw(injected))
+        file_lock, "force_rmtree", _failing_force_rmtree(attempted, injected))
 
     block = finisher._default_self_axis_block("T-AXIS")
 
@@ -3247,6 +3265,8 @@ def test_default_self_axis_block_returns_correctly_despite_a_baseline_cleanup_fa
     captured = capsys.readouterr()
     assert "baseline 트리 정리 실패" in captured.err
     assert str(injected) in captured.err
+    for path in attempted:
+        real_force_rmtree(path)
 
 
 # ── T6 — alternates 민감도(baseline materialize 의 원 이력 해소) ─────────────
@@ -3300,7 +3320,7 @@ def test_alternates_presence_flips_a_real_pytest_failure_set_by_exactly_one_node
         _write_alternates_canary(on_tree, target_sha)
         on_rc, on_out = finisher._run_pytest_subset(on_tree, [_ALTERNATES_CANARY_FILE])
     finally:
-        shutil.rmtree(on_tree, ignore_errors=True)
+        tf._load_file_lock().force_rmtree(on_tree)
     t1 = time.time()
 
     off_tree = finisher._materialize_tree(tf.REPO, "HEAD")
@@ -3309,7 +3329,7 @@ def test_alternates_presence_flips_a_real_pytest_failure_set_by_exactly_one_node
         _write_alternates_canary(off_tree, target_sha)
         off_rc, off_out = finisher._run_pytest_subset(off_tree, [_ALTERNATES_CANARY_FILE])
     finally:
-        shutil.rmtree(off_tree, ignore_errors=True)
+        tf._load_file_lock().force_rmtree(off_tree)
     t2 = time.time()
 
     on_failed = tf._self_axis_failed_node_ids(on_out)
@@ -3354,7 +3374,9 @@ def test_gate_execution_does_not_mutate_the_original_repository(tf):
     before = _repo_fingerprint(finisher, tf.REPO)
 
     scratch = finisher._materialize_tree(tf.REPO, "HEAD")
-    shutil.rmtree(scratch, ignore_errors=True)
+    # `ignore_errors=True` 는 read-only git object 를 남긴다 — baseline scratch 는 이제
+    # 저장소 안 임시 루트에 서므로 남으면 그대로 쌓인다. 엔진과 같은 삭제 seam 을 쓴다.
+    tf._load_file_lock().force_rmtree(scratch)
 
     after = _repo_fingerprint(finisher, tf.REPO)
     assert before == after

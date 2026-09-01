@@ -6,7 +6,8 @@
       값이다. 순서를 규칙으로 지키던 자리를 판정 기준(통합 브랜치 도달 여부)이 대체한다.
   (2) 측정 폭이 통합 브랜치에서 흡수한 분량을 제외하고, 두 형식 소비자(numstat·unified diff)가
       같은 폭을 본다.
-  (3) close 가 고정 여덟 단계를 순서대로 실행하고, 중간에서 멈춘 뒤 다시 실행하면 이미 끝난
+  (3) close 가 첫 부작용 앞에서 막을 조건을 전건 보고하고, 고정 일곱 단계를 순서대로
+      실행하며, 중간에서 멈춘 뒤 다시 실행하면 이미 끝난
       단계를 반복하지 않는다(부작용 카운터로 단언).
   (4) 크기 1 묶음이 티켓 하나 완료 기록과 같은 결과를 낸다(rc·board 결과·stage 범위).
 
@@ -433,7 +434,7 @@ def test_both_width_consumers_see_the_same_stage(external, tmp_path):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# close — 고정 여덟 단계 · 재실행은 재개
+# close — 첫 부작용 앞 선검사 · 고정 일곱 단계 · 재실행은 재개
 # ════════════════════════════════════════════════════════════════════════
 
 class _CloseEnv:
@@ -479,11 +480,15 @@ class _CloseEnv:
         self.delegate_calls.append(list(args))
         return 0, ""
 
-    def finisher(self, finisher_class=None):
+    def finisher(self, finisher_class=None, **overrides):
         """이 환경의 완료 기록 대역 — `finisher_class` 는 진짜 클래스를 이미 대역으로 바꾼
-        테스트가 원본을 명시로 넘기는 자리다(대역이 대역을 만드는 것을 막는다)."""
+        테스트가 원본을 명시로 넘기는 자리다(대역이 대역을 만드는 것을 막는다).
+
+        `overrides` 는 판정 DI 를 케이스가 골라 **진짜 판정으로 되돌리는** 자리다
+        (`dod_block_fn=None` → 생성자 기본값 = 실제 DoD 판정).
+        """
         cls = finisher_class or self.tf.TicketFinisher
-        return cls(
+        values = dict(
             board_py=self.board_dir.parent / "tools" / "board.py",
             log_file=self.home / ".project_manager" / "wiki" / "log" / "current.md",
             regression_cwd=str(self.slot),
@@ -496,8 +501,10 @@ class _CloseEnv:
             self_axis_block_fn=lambda tid: None,
             affected_domain_fn=lambda tid: None,
         )
+        values.update(overrides)
+        return cls(**values)
 
-    def closer(self, *, cluster: str = _CLUSTER, **kwargs):
+    def closer(self, *, cluster: str = _CLUSTER, closer_class=None, **kwargs):
         """이 환경의 종결 대역 — `cluster` 는 호출 표기 축(장부 id / 사람 이름 둘 다 받는다)."""
         values = dict(
             finisher=self.finisher(),
@@ -506,7 +513,8 @@ class _CloseEnv:
             run_delegate_fn=self.run_delegate,
         )
         values.update(kwargs)
-        return self.tf.ClusterCloser(cluster, **values)
+        cls = closer_class or self.tf.ClusterCloser
+        return cls(cluster, **values)
 
     # ── 관측 ────────────────────────────────────────────────────────
     def slot_log(self) -> list[str]:
@@ -613,6 +621,10 @@ def _build_close_env(tf, base: Path, monkeypatch) -> _CloseEnv:
             "started": _FIXTURE_STAMP, "state": "leased",
         }]}, ensure_ascii=False), encoding="utf-8")
 
+    # 이 픽스처의 실행 세션은 리스 장부·`claimed_by` 와 같은 `t` 다. 선검사가 board 의 소유
+    # 판정을 그대로 부르므로(사본 0), 리스를 비우는 케이스에서도 세션이 해소돼야 그 케이스가
+    # 재려던 축(반납 무대상)만 남는다 — 세션 미해소는 소유 거부라는 다른 축이다.
+    monkeypatch.setenv("PM_SESSION_NAME", "t")
     monkeypatch.setattr(tf, "REPO", home)
     monkeypatch.setattr(tf, "TOOLS_DIR", home / ".project_manager" / "tools")
     monkeypatch.setattr(tf, "BOARD_PY", home / ".project_manager" / "tools" / "board.py")
@@ -964,7 +976,7 @@ def test_reconcile_integrated_accepts_the_name_notation_of_the_normal_path(
 def test_normal_close_rejects_open_all_done_cluster_before_side_effects(
     close_env, capsys,
 ):
-    """F-001: open 장부 + 멤버 전원 done 은 정상 8단계가 아니라 복구 전용이다.
+    """F-001: open 장부 + 멤버 전원 done 은 정상 7단계가 아니라 복구 전용이다.
 
     그 완료 기록은 이 파이프라인이 남긴 것이 아니다(1단계가 성공하면 장부는 `closing` 이 된다)
     — 무엇이 이미 통합됐는지 모르는 채 커밋·재배치·머지·반납으로 들어가지 않는다. 게이트는
@@ -981,7 +993,7 @@ def test_normal_close_rejects_open_all_done_cluster_before_side_effects(
     captured = capsys.readouterr()
     assert rc == 1, captured.out + captured.err
     assert "--reconcile-integrated" in captured.err
-    assert "[1/8]" not in captured.out, "첫 단계가 이미 시작됐다(부작용 앞 게이트가 아님)"
+    assert "[1/7]" not in captured.out, "첫 단계가 이미 시작됐다(부작용 앞 게이트가 아님)"
     assert env.board_calls == [] and env.delegate_calls == []
     assert before == (ledger_path.read_bytes(), _rev(env.slot), _rev(env.board_dir),
                       _rev(env.home), env.integration_log(), env.lease_state())
@@ -998,8 +1010,8 @@ def test_normal_close_rejects_open_all_done_cluster_before_side_effects(
 
 
 @requires_git
-def test_close_runs_the_eight_steps_and_leaves_no_hand_work(close_env, capsys):
-    """성공 경로 — 여덟 단계가 순서대로 돌고 커밋·재배치·머지·반납·기록이 실제로 남는다."""
+def test_close_runs_the_seven_steps_and_leaves_no_hand_work(close_env, capsys):
+    """성공 경로 — 일곱 단계가 순서대로 돌고 커밋·재배치·머지·반납·기록이 실제로 남는다."""
     env = close_env
     # 통합 브랜치가 앞서 나가 있다 — 재배치 단계가 무대상이 아니게 한다.
     (env.code / "other.txt").write_text("x\n", encoding="utf-8")
@@ -1010,20 +1022,20 @@ def test_close_runs_the_eight_steps_and_leaves_no_hand_work(close_env, capsys):
     out = capsys.readouterr().out
     assert rc == 0, out
     order = [line.split("] ", 1)[1].removesuffix("...") for line in out.splitlines()
-             if line.startswith("[") and "/8] " in line]
-    assert order == [label for _key, label in env.tf.ClusterCloser.STEPS], order
-    # 단계 3 — 완료 기록이 돌았다(board complete 1회).
+             if line.startswith("[") and "/7] " in line]
+    assert order == [label for _key, label, _pre in env.tf.ClusterCloser.STEPS], order
+    # 단계 2 — 완료 기록이 돌았다(board complete 1회).
     assert [args[0] for args in env.board_calls] == ["complete"]
-    # 단계 4 — 슬롯 커밋 문안은 티켓 제목이다.
+    # 단계 3 — 슬롯 커밋 문안은 티켓 제목이다.
     assert env.slot_log()[0] == "종결 픽스처"
-    # 단계 5 — 통합 브랜치가 앞서 얹은 커밋 위로 재배치됐다.
+    # 단계 4 — 통합 브랜치가 앞서 얹은 커밋 위로 재배치됐다.
     assert "integration moves on" in env.slot_log()
-    # 단계 6 — `--no-ff` 머지 문안.
+    # 단계 5 — `--no-ff` 머지 문안.
     assert env.integration_log()[0] == f"{env.ticket} merge — 종결 픽스처"
     assert _git(env.code, "rev-parse", f"{_INTEGRATION_BRANCH}^2").returncode == 0
-    # 단계 7 — 슬롯 반납.
+    # 단계 6 — 슬롯 반납.
     assert env.lease_state() == "idle"
-    # 단계 8 — PM 홈 포인터·산출물 커밋.
+    # 단계 7 — PM 홈 포인터·산출물 커밋.
     assert env.home_log()[0] == f"{env.ticket} board — 종결 픽스처"
     committed = _git(env.home, "show", "--name-only", "--format=", "HEAD").stdout
     assert ".project_manager/board" in committed
@@ -1031,6 +1043,185 @@ def test_close_runs_the_eight_steps_and_leaves_no_hand_work(close_env, capsys):
     # 종결이 하는 일을 사람에게 다시 시키지 않는다.
     assert "git commit — **경로를 명시**하라" not in out
     assert "종결 파이프라인이 실행한다" in out
+
+
+# ── 첫 부작용 앞 선검사 — 막는 조건을 한 번에 전부 낸다 ────────────────────
+
+
+def _detach_integration_tree(env) -> None:
+    """통합 브랜치를 든 트리를 없앤다 — 그 브랜치를 체크아웃한 작업 트리가 0이 된다."""
+    assert _git(env.code, "checkout", "-q", "--detach").returncode == 0
+
+
+def _reopen_ticket(env) -> None:
+    """멤버를 claimed 밖(open)으로 되돌린다 — 완료 기록이 옮길 수 없는 상태."""
+    claimed = next((env.board_dir / "tickets" / "claimed").glob(f"{env.ticket}*.md"))
+    target = env.board_dir / "tickets" / "open" / claimed.name
+    claimed.replace(target)
+    target.write_text(
+        target.read_text(encoding="utf-8").replace("status: claimed", "status: open"),
+        encoding="utf-8")
+
+
+def _unmark_dod(env) -> None:
+    """완료 조건을 미마감으로 되돌린다 — board 가 소유한 DoD 판정의 입력."""
+    for status in ("claimed", "open"):
+        for path in (env.board_dir / "tickets" / status).glob(f"{env.ticket}*.md"):
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("- [x] 표본", "- [ ] 표본"),
+                encoding="utf-8")
+
+
+@requires_git
+def test_close_preflight_reports_every_readonly_block_at_once(close_env, capsys):
+    """AT-001: 읽기로 판정되는 차단 사유 셋을 동시에 심어도 **한 실행에 전건**이 나온다.
+
+    옛 거동은 단계 루프·완료 기록 preflight 루프·`board complete` 세 층이 전부 첫 사유에서
+    멈추는 것이라, 사람이 같은 명령을 사유 수만큼 다시 쳐야 첫 완주에 닿았다(실측).
+    """
+    env = close_env
+    _unmark_dod(env)
+    _reopen_ticket(env)
+    _detach_integration_tree(env)
+    before = (env.slot_log(), env.home_log(), env.integration_log(), env.lease_state())
+
+    rc = env.closer(finisher=env.finisher(dod_block_fn=None)).run()
+
+    captured = capsys.readouterr()
+    assert rc == 1, captured.out + captured.err
+    assert "종결 선검사" in captured.err
+    reasons = [line for line in captured.err.splitlines()
+               if re.match(r"^  \d+\. ", line)]
+    assert len(reasons) >= 3, captured.err
+    joined = captured.err
+    assert "완료 조건(DoD) 미마감" in joined
+    assert "claimed 가 아니다" in joined
+    assert "체크아웃한 작업 트리를 찾지 못했다" in joined
+    # 첫 부작용이 0 이다 — 단계 표시조차 찍히지 않는다.
+    assert "[1/7]" not in captured.out
+    assert env.board_calls == [] and env.delegate_calls == []
+    assert before == (env.slot_log(), env.home_log(), env.integration_log(),
+                      env.lease_state())
+
+
+@requires_git
+def test_close_preflight_pass_then_pipeline_never_blocks_on_readonly_reason(
+    close_env, capsys,
+):
+    """AT-002: 선검사를 통과한 종결은 읽기로 알 수 있는 사유로 중간에 멈추지 않는다.
+
+    반대 축도 같은 자리에서 지킨다 — 커밋 전 슬롯 dirty 는 앞 단계가 해소하는 조건이라
+    선검사 사유가 아니다(비단조 조건을 넣으면 정상 실행이 첫 줄에서 막힌다).
+    """
+    env = close_env
+    (env.code / "other.txt").write_text("x\n", encoding="utf-8")
+    _commit(env.code, "integration moves on")
+    closer = env.closer()
+
+    # 슬롯에 아직 미커밋 산출이 남은 첫 실행 형상 — 그래도 선검사 사유는 0이다.
+    assert _git(env.slot, "status", "--porcelain").stdout.strip() != ""
+    assert closer._resolve_members() is None
+    assert closer.preflight() == []
+
+    rc = closer.run()
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured.out + captured.err
+    assert "[중단]" not in captured.err
+    assert env.lease_state() == "idle"
+
+
+@requires_git
+def test_close_preflight_preserves_resume_of_finished_steps(close_env, capsys, tmp_path,
+                                                            monkeypatch):
+    """AT-003: 끝난 단계는 차단 사유가 아니고, 아직 낼 부작용이 남았으면 그 면제가 꺼진다."""
+    env = close_env
+    assert env.closer().run() == 0
+    capsys.readouterr()
+    # 머지까지 끝난 뒤 통합 트리를 없애도 재실행은 통과한다 — 그 단계는 이미 끝났다.
+    _detach_integration_tree(env)
+
+    rc = env.closer().run()
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured.out + captured.err
+
+    # 반대 방향 — 커밋할 것이 남은 형상에서는 "이미 머지됨" 관측을 믿지 않는다.
+    fresh = _build_close_env(env.tf, tmp_path / "pending-work", monkeypatch)
+    _detach_integration_tree(fresh)
+    pending = fresh.closer()
+    assert pending._resolve_members() is None
+    reasons = pending.preflight()
+    assert any("체크아웃한 작업 트리를 찾지 못했다" in reason for reason in reasons), reasons
+
+
+@requires_git
+def test_close_steps_declare_preflight_membership(close_env):
+    """AT-004: 단계마다 선검사 대상 여부가 선언이고, 선언 없는 단계는 그 자리에서 터진다."""
+    env = close_env
+    closer_class = env.tf.ClusterCloser
+    keys = [key for key, _label, _pre in closer_class.STEPS]
+
+    assert len(closer_class.STEPS) == 7
+    assert "confirm" not in keys
+    for key, _label, precheck in closer_class.STEPS:
+        assert callable(getattr(closer_class, f"_step_{key}", None)), key
+        assert precheck is None or callable(getattr(closer_class, precheck, None)), key
+
+    class _UndeclaredStepCloser(closer_class):
+        STEPS = (("merge", "통합 브랜치 머지"),)          # 선언 없는 2-튜플
+
+    with pytest.raises(ValueError):
+        env.closer(closer_class=_UndeclaredStepCloser).run()
+
+
+@requires_git
+def test_close_preflight_calls_the_same_judgement_functions(close_env, monkeypatch):
+    """AT-005: 선검사는 판정을 재구현하지 않고 단계가 쓰는 그 함수를 부른다(사본 0)."""
+    env = close_env
+    calls: list[str] = []
+
+    def _record(name):
+        def _fn(tid, *_a, **_k):
+            calls.append(f"{name}:{tid}")
+            return None
+        return _fn
+
+    finisher = env.finisher(
+        diff_cap_block_fn=_record("diff_cap"),
+        private_ref_block_fn=_record("private_ref"),
+        dod_block_fn=_record("dod"),
+        residual_block_fn=_record("residual"),
+        self_axis_block_fn=lambda tid: pytest.fail("선검사가 pytest 를 도는 판정을 불렀다"),
+    )
+    closer = env.closer(finisher=finisher)
+
+    namespaces: list[object] = []
+    monkeypatch.setattr(
+        closer._board, "cluster_complete_binding_problem",
+        lambda tid, fm, binding: calls.append(f"binding:{tid}") or None)
+    ownership = closer._board._ticket_ownership
+    monkeypatch.setattr(
+        closer._board, "_ticket_ownership",
+        lambda fm, args: namespaces.append(args) or ownership(fm, args))
+    monkeypatch.setattr(
+        closer._board, "_round_completion_problems",
+        lambda tid, spec_text: calls.append(f"rounds:{tid}") or [])
+
+    assert closer._resolve_members() is None
+    assert closer.preflight() == []
+
+    assert calls == [
+        f"diff_cap:{env.ticket}", f"private_ref:{env.ticket}", f"dod:{env.ticket}",
+        f"residual:{env.ticket}", f"binding:{env.ticket}", f"rounds:{env.ticket}",
+    ]
+    # 소유 판정이 받는 Namespace 는 `board complete` 가 받는 것과 같은 파서 산출이다 —
+    # 손조립하면 이 속성 집합이 조용히 얇아진다(board 가 인자 이름을 바꾸면 여기서 난다).
+    assert len(namespaces) == 1
+    board_module = closer._board
+    expected = vars(board_module.build_parser().parse_args(
+        ["complete", env.ticket, "--tests-pass"]))
+    assert vars(namespaces[0]) == expected
 
 
 @requires_git
@@ -1130,11 +1321,10 @@ def test_close_stops_before_any_side_effect_when_the_confirmation_is_missing(
 def test_close_preflight_precedes_resolve_in_dry_run_and_actual(
     close_env, capsys, monkeypatch,
 ):
-    """step 1은 confirmation 부재를 허용하는 입력 preflight, step 2가 실제 생성·처분 소유자다."""
+    """선검사가 confirmation 부재를 허용하는 입력 판정, step 1이 실제 생성·처분 소유자다."""
     env = close_env
-    assert [key for key, _label in env.tf.ClusterCloser.STEPS[:2]] == [
-        "confirm", "resolve",
-    ]
+    first_key, _first_label, first_precheck = env.tf.ClusterCloser.STEPS[0]
+    assert (first_key, first_precheck) == ("resolve", "_pre_resolve")
 
     dry_events: list[str] = []
     dry = env.closer(dry_run=True)
@@ -1147,9 +1337,9 @@ def test_close_preflight_precedes_resolve_in_dry_run_and_actual(
     )
     monkeypatch.setattr(
         dry._board, "_pm_verified_evidence_problem",
-        lambda *_a, **_k: pytest.fail("step 1이 post-resolution evidence를 선호출했다"),
+        lambda *_a, **_k: pytest.fail("선검사가 post-resolution evidence를 선호출했다"),
     )
-    assert dry._step_confirm() is None
+    assert dry._pre_resolve() == []
     assert dry._step_resolve() is None
     assert dry_events == ["preflight"]
     assert env.delegate_calls == []
@@ -1169,7 +1359,7 @@ def test_close_preflight_precedes_resolve_in_dry_run_and_actual(
         actual._board, "_pm_verified_resolution_input_problem",
         lambda *_a, **_k: actual_events.append("preflight") or None,
     )
-    assert actual._step_confirm() is None
+    assert actual._pre_resolve() == []
     assert actual._step_resolve() is None
     assert actual_events == ["preflight", "resolve"]
 
@@ -1408,7 +1598,7 @@ def test_review_width_refuses_when_the_integration_branch_is_unresolvable(
 
 @requires_git
 def test_close_stops_when_the_board_record_channel_cannot_commit(close_env, capsys):
-    """board-git 로컬 커밋이 안 생기면 단계 8 에서 멈추고 종결 표시도 남기지 않는다.
+    """board-git 로컬 커밋이 안 생기면 마지막 단계에서 멈추고 종결 표시도 남기지 않는다.
 
     `False` 는 board 가 "이 경로가 아직 미커밋" 이라고 확정 보고한 값이다 — 경고로 강등하면
     board 에 없는 내용을 가리키는 포인터 커밋이 남는다.
@@ -1422,7 +1612,7 @@ def test_close_stops_when_the_board_record_channel_cannot_commit(close_env, caps
 
     assert rc == 1
     assert "board-git 로컬 커밋이 생기지 않았다" in captured.err
-    assert "[8/8]" in captured.err
+    assert "[7/7]" in captured.err
     assert env.ledger()["status"] != _CLOSED_STATUS      # 관측 전 종결 표시 없음
     assert env.home_log()[0] == "home seed"              # 포인터 커밋도 없다
 
