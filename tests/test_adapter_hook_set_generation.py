@@ -2105,6 +2105,10 @@ def test_same_path_generation_is_loaded_from_the_hashed_bytes(tmp_path):
     source = tmp_path / "framework"
     upstream = _plant_upstream_pm_import(
         source, extra_tail=_flag_declaration_tail(_STALE_PYC_FLAG_A))
+    # 여기서는 상류 사본이 곧 **실행 중인 엔진**이다. 실 설치본은 형제 엔진 모듈을 함께 갖고,
+    # 스테이징 자리를 형제(`pm_relay.temp_root`)에게 묻는 경로가 그 형제를 실제로 로드한다.
+    (upstream.parent / "pm_relay.py").write_text(
+        (TOOLS / "pm_relay.py").read_text(encoding="utf-8"), encoding="utf-8")
     running = _load_pm_import_at(upstream, "pm_import_selfpath")
     assert Path(running.__file__).resolve() == upstream.resolve(), \
         "픽스처 전제 붕괴 — 상류가 실행 중인 그 파일이 아니다(빠른 경로 미도달)"

@@ -250,10 +250,15 @@ def test_snapshot_is_the_shared_generator_output_with_its_marker(pd, review_env)
     review = pd.cluster_review_input(board, _CLUSTER, repo=home)
     gate_snapshot = pd._load_gate_snapshot()
 
+    status_before = _git(home, "status", "--porcelain").stdout
+
     snapshot = pd.create_cluster_review_snapshot(home, review, board=board)
     try:
-        # 저장소 밖이고, 생성기의 사실 마커가 있으며, 내용이 묶음 브랜치와 같다.
-        assert not str(snapshot).startswith(str(home))
+        # 이 clone 이 소유한 작업용 임시 루트 아래이고, 생성기의 사실 마커가 있으며, 내용이
+        # 묶음 브랜치와 같다. 그 자리는 gitignore 돼 있어 재는 대상 트리가 그대로다 —
+        # 스냅샷 한 벌(추적 파일 전부)이 저장소 안에 섰는데도 status 는 한 줄도 늘지 않는다.
+        assert (home / ".project_manager" / ".local" / "tmp") in snapshot.parents
+        assert _git(home, "status", "--porcelain").stdout == status_before
         assert gate_snapshot.is_snapshot(snapshot)
         assert gate_snapshot.snapshot_marker_path(snapshot).is_file()
         for path in review.paths:
@@ -636,7 +641,7 @@ def test_delegation_lays_a_reviewer_seat_per_ticket_and_runs_in_the_snapshot(
     ]
     assert snapshot_line, seen["prompt"][:400]
     snapshot = Path(snapshot_line[0].split(": ", 1)[1].strip())
-    assert not str(snapshot).startswith(str(home))
+    assert (home / ".project_manager" / ".local" / "tmp") in snapshot.parents
     # 실행이 끝나면 자리 전부가 회수되고(board 라운드에 산출) 스냅샷은 정리된다.
     for ticket in _MEMBERS:
         board_round = (

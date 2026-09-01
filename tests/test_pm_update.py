@@ -4244,22 +4244,16 @@ def _make_source_with_manifest(root: Path, manifest_lines):
         "\n".join(manifest_lines) + "\n", encoding="utf-8")
 
 
-def _manifest_entries(pm_update, lines):
+def _manifest_entries(pm_update, lines, tmp_path):
     """manifest 줄 리스트 → ManifestEntry 리스트 (summarize_upstream_changes 에 직접 주입용).
 
     헬퍼 단위테스트는 manifest 를 *인자로* 넘긴다(codex MF — 분류 manifest 는 호출부가 sync 와
     동일 경로로 해소). read_manifest 의 파싱(마커·주석)을 거쳐 실제 ManifestEntry 를 만든다.
+    파일 자리는 호출한 테스트의 `tmp_path` 다 — 프로젝트 밖에 임시물을 만들지 않는다.
     """
-    text = "\n".join(lines) + "\n"
-    import tempfile
-    with tempfile.NamedTemporaryFile(
-        "w", suffix=".manifest", delete=False, encoding="utf-8") as f:
-        f.write(text)
-        path = Path(f.name)
-    try:
-        return pm_update.read_manifest(path)
-    finally:
-        path.unlink()
+    path = tmp_path / "injected.manifest"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return pm_update.read_manifest(path)
 
 
 # ── 헬퍼 단위: summarize_upstream_changes (git_runner 주입·hermetic) ──────────
@@ -4271,7 +4265,7 @@ def test_summarize_normal_splits_engine_and_other(pm_update, tmp_path):
     manifest = _manifest_entries(pm_update, [
         ".project_manager/tools/board.py",   # 파일 항목
         ".claude/agents",                    # 디렉토리 항목(prefix 매칭)
-    ])
+    ], tmp_path)
     runner = _make_fake_git_runner(
         head="abcdef1234567890",
         log_lines=["abc1234 fix board lint", "def5678 add agent"],
@@ -4309,7 +4303,7 @@ def test_summarize_classifies_source_mapped_entry_as_engine(pm_update, tmp_path)
         ".claude/ctx_guard.py    @source=templates/claude_code/.claude/ctx_guard.py",
         # 디렉토리 매핑(하위 파일이 prefix 로 잡혀야 한다).
         ".codex/agents    @render @source=templates/codex/.codex/agents",
-    ])
+    ], tmp_path)
     runner = _make_fake_git_runner(
         head="h",
         log_lines=["abc1234 adapter hook 교체"],
@@ -4345,12 +4339,12 @@ def test_path_under_manifest_covers_shipped_source_entries(pm_update):
         f"출하 @source 엔트리의 상류 경로가 manifest 밖으로 오분류: {misclassified}"
 
 
-def test_path_under_manifest_bare_entry_unchanged(pm_update):
+def test_path_under_manifest_bare_entry_unchanged(pm_update, tmp_path):
     """source_rel 없는 bare 엔트리는 동작 무변경 — dest 경로 축만으로 판정(회귀 없음)."""
     manifest = _manifest_entries(pm_update, [
         ".project_manager/tools/board.py",   # 파일 항목
         ".claude/agents",                    # 디렉토리 항목
-    ])
+    ], tmp_path)
     assert pm_update._path_under_manifest(".project_manager/tools/board.py", manifest)
     assert pm_update._path_under_manifest(".claude/agents/x.md", manifest)
     assert not pm_update._path_under_manifest("README.md", manifest)
@@ -4359,7 +4353,7 @@ def test_path_under_manifest_bare_entry_unchanged(pm_update):
         "templates/claude_code/.claude/agents/x.md", manifest)
 
 
-def test_path_under_manifest_respects_specific_source_override(pm_update):
+def test_path_under_manifest_respects_specific_source_override(pm_update, tmp_path):
     """더 구체적인 파일 override 가 있으면 **상위 항목의 source 변경은 그 파일 축에서 비분류**다.
 
     출하 codex 형상: `.agents/skills @source=.claude/skills` 위에
@@ -4373,7 +4367,7 @@ def test_path_under_manifest_respects_specific_source_override(pm_update):
     manifest = _manifest_entries(pm_update, [
         f".agents/skills    @render @source={parent_source}",
         f"{override_dest}    @render @source={override_source}",
-    ])
+    ], tmp_path)
     # ① override 가 소유하는 파일의 **상위 source** 변경 — 그 파일은 override 에서 오므로 비분류.
     assert not pm_update._path_under_manifest(
         f"{parent_source}/pm-dev-delegate/SKILL.md", manifest), \
@@ -4410,7 +4404,7 @@ def test_path_under_manifest_shipped_codex_override_not_overclassified(pm_update
             f"override 자신의 source({override.source_rel})가 엔진 영향에서 누락"
 
 
-def test_path_under_manifest_mapped_entry_ignores_dest_coordinate(pm_update):
+def test_path_under_manifest_mapped_entry_ignores_dest_coordinate(pm_update, tmp_path):
     """`@source` 매핑 엔트리는 **읽기 좌표만** 엔진 영향이다 (T-0575 축·codex 지적).
 
     `.codex/agents @source=templates/codex/.codex/agents` 에서 상류 변경이 dest 좌표
@@ -4419,7 +4413,7 @@ def test_path_under_manifest_mapped_entry_ignores_dest_coordinate(pm_update):
     manifest = _manifest_entries(pm_update, [
         ".codex/agents    @render @source=templates/codex/.codex/agents",
         ".project_manager/tools/board.py",
-    ])
+    ], tmp_path)
     assert pm_update._path_under_manifest(
         "templates/codex/.codex/agents/reviewer.md", manifest), \
         "매핑 엔트리의 상류 좌표가 엔진 영향에서 누락"
@@ -4438,7 +4432,7 @@ def test_summarize_head_equals_baseline_empty_log(pm_update, tmp_path):
     """HEAD==baseline(빈 log) → status='up_to_date'·count 0·변경 목록 빈."""
     source = tmp_path / "src"
     source.mkdir()
-    manifest = _manifest_entries(pm_update, [".project_manager/tools/board.py"])
+    manifest = _manifest_entries(pm_update, [".project_manager/tools/board.py"], tmp_path)
     runner = _make_fake_git_runner(head="samehead0000", log_lines=[], diff_lines=[])
     s = pm_update.summarize_upstream_changes(source, "samehead0000", manifest, git_runner=runner)
     assert s["status"] == "up_to_date"
@@ -4450,7 +4444,7 @@ def test_summarize_baseline_unreachable(pm_update, tmp_path):
     """baseline rev 도달불가(cat-file rc≠0·force-push/shallow) → status='baseline_unreachable'."""
     source = tmp_path / "src"
     source.mkdir()
-    manifest = _manifest_entries(pm_update, [".project_manager/tools/board.py"])
+    manifest = _manifest_entries(pm_update, [".project_manager/tools/board.py"], tmp_path)
     runner = _make_fake_git_runner(baseline_reachable=False)
     s = pm_update.summarize_upstream_changes(source, "gonerev00000", manifest, git_runner=runner)
     assert s["status"] == "baseline_unreachable"
@@ -4463,7 +4457,7 @@ def test_summarize_rename_code_first_letter_and_new_path(pm_update, tmp_path):
     """R(rename) name-status 는 `R100\\told\\tnew` 3필드 — 코드 첫글자 R·경로는 새 경로."""
     source = tmp_path / "src"
     source.mkdir()
-    manifest = _manifest_entries(pm_update, [".project_manager/tools/board.py"])
+    manifest = _manifest_entries(pm_update, [".project_manager/tools/board.py"], tmp_path)
     runner = _make_fake_git_runner(
         head="h",
         log_lines=["aaa renamed tool"],
@@ -4489,7 +4483,7 @@ def test_summarize_log_failure_surfaces(pm_update, tmp_path):
     """git log rc≠0(도달가능한데 호출 실패) → status='summary_failed'(빈 결과 오판 금지·suggestion 1)."""
     source = tmp_path / "src"
     source.mkdir()
-    manifest = _manifest_entries(pm_update, [".project_manager/tools/board.py"])
+    manifest = _manifest_entries(pm_update, [".project_manager/tools/board.py"], tmp_path)
 
     def runner(argv):
         if "rev-parse" in argv:
@@ -4510,7 +4504,7 @@ def test_summarize_diff_failure_surfaces(pm_update, tmp_path):
     """git log 는 성공했으나 diff --name-status rc≠0 → status='summary_failed'(엔진 영향 0 오판 금지)."""
     source = tmp_path / "src"
     source.mkdir()
-    manifest = _manifest_entries(pm_update, [".project_manager/tools/board.py"])
+    manifest = _manifest_entries(pm_update, [".project_manager/tools/board.py"], tmp_path)
 
     def runner(argv):
         if "rev-parse" in argv:
@@ -5154,7 +5148,7 @@ def test_retired_manifest_files_reverses_source_remap(pm_update, tmp_path):
     _track_source_tree(dest)
     manifest = _manifest_entries(pm_update, [
         ".codex/agents    @source=templates/codex/.codex/agents",
-    ])
+    ], tmp_path)
 
     retired = pm_update._retired_manifest_files(source, manifest, dest, set())
 
@@ -5184,7 +5178,7 @@ def test_retired_manifest_files_skips_target_owned_and_supplied_paths(pm_update,
     manifest = _manifest_entries(pm_update, [
         ".opencode/lib    @target-owned",
         RETIRED_DIR_REL,
-    ])
+    ], tmp_path)
 
     # keep.md 는 상류에 없지만 계획 인벤토리(dest_map)에 있으면 상류가 공급하는 파일이다.
     assert pm_update._retired_manifest_files(
@@ -5218,7 +5212,7 @@ def test_retired_manifest_files_reports_whole_directory_removed_upstream(
     manifest = _manifest_entries(pm_update, [
         RETIRED_DIR_REL,
         ".opencode/lib    @target-owned",
-    ])
+    ], tmp_path)
 
     retired = pm_update._retired_manifest_files(source, manifest, dest, set())
 
@@ -5247,7 +5241,7 @@ def test_retired_manifest_files_skips_deleted_but_indexed_paths(pm_update, tmp_p
     deleted = shipped_dir / "deleted.md"
     deleted.write_text("# 곧 삭제\n", encoding="utf-8")
     _track_source_tree(dest)  # 두 파일 모두 index 에 등록.
-    manifest = _manifest_entries(pm_update, [RETIRED_DIR_REL])
+    manifest = _manifest_entries(pm_update, [RETIRED_DIR_REL], tmp_path)
 
     assert sorted(pm_update._retired_manifest_files(source, manifest, dest, set())) == [
         f"{RETIRED_DIR_REL}/deleted.md", f"{RETIRED_DIR_REL}/kept.md",
@@ -5383,7 +5377,7 @@ def test_retired_scan_does_not_leak_repo_files_fallback_warning(
     dest_dir.mkdir(parents=True)
     (dest_dir / "keep.md").write_text("# keep\n", encoding="utf-8")
     (dest_dir / "retired.md").write_text("# 상류 은퇴\n", encoding="utf-8")
-    manifest = _manifest_entries(pm_update, [RETIRED_DIR_REL])
+    manifest = _manifest_entries(pm_update, [RETIRED_DIR_REL], tmp_path)
     # "dest 는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을 정하지
     # 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
     monkeypatch.setattr(
@@ -5414,7 +5408,7 @@ def test_retired_planned_filter_uses_dest_coordinates_only(pm_update, tmp_path):
     _track_source_tree(dest)
     manifest = _manifest_entries(pm_update, [
         ".codex/agents    @source=templates/codex/.codex/agents",
-    ])
+    ], tmp_path)
 
     # dest 좌표만 담긴 인벤토리 — 잔존물은 그대로 후보다.
     dest_only = {".codex/agents/reviewer.md"}
@@ -5662,7 +5656,7 @@ def test_summarize_rename_inside_manifest_keeps_new_path_as_engine(pm_update, tm
     """manifest 안 rename: 새 경로는 engine(상류가 공급)·낡은 경로는 removed_upstream(잔존)."""
     source = tmp_path / "src"
     source.mkdir()
-    manifest = _manifest_entries(pm_update, [".project_manager/tools"])
+    manifest = _manifest_entries(pm_update, [".project_manager/tools"], tmp_path)
     runner = _make_fake_git_runner(
         head="h",
         log_lines=["aaa 도구 rename"],
@@ -5916,7 +5910,7 @@ def test_self_update_propagates_engine_safety_hook_via_source_remap(pm_update, t
     frozen.write_text("#!/bin/sh\n# OLD frozen hook\nexit 0\n", encoding="utf-8")
 
     # 실 manifest 엔트리(@source remap) — read_manifest 파싱을 거친 ManifestEntry.
-    entries = _manifest_entries(pm_update, [f"{dst_rel}    @source={src_rel}"])
+    entries = _manifest_entries(pm_update, [f"{dst_rel}    @source={src_rel}"], tmp_path)
 
     # plan: dest=adopter·render_enabled=True(hook 은 .sh → @render 없어도 byte-copy). @source 라
     #   source_root/src_rel 읽고 dest 엔 dst_rel 로 기록(remap·root 어댑터엔 ctx 훅 부재 비대칭 해소).
@@ -5949,7 +5943,7 @@ def test_self_update_bare_engine_file_propagates(pm_update, tmp_path):
     frozen.parent.mkdir(parents=True, exist_ok=True)
     frozen.write_text("# OLD frozen tool\n", encoding="utf-8")
 
-    entries = _manifest_entries(pm_update, [rel])  # bare (source_rel None → 루트 상대 = rel)
+    entries = _manifest_entries(pm_update, [rel], tmp_path)  # bare (source_rel None → 루트 상대 = rel)
     changes, missing = pm_update.plan(upstream, entries, dest_root=adopter, render_enabled=True)
     assert not missing
     assert [c[0] for c in changes] == [rel]
@@ -5967,7 +5961,7 @@ def test_source_remapped_hook_missing_source_reports_rc2_class(pm_update, tmp_pa
     adopter = tmp_path / "adopter"
     dst_rel = ".claude/ctx_guard.py"
     src_rel = "templates/claude_code/.claude/ctx_guard.py"
-    entries = _manifest_entries(pm_update, [f"{dst_rel}    @source={src_rel}"])
+    entries = _manifest_entries(pm_update, [f"{dst_rel}    @source={src_rel}"], tmp_path)
     changes, missing = pm_update.plan(upstream, entries, dest_root=adopter, render_enabled=True)
     assert changes == []
     assert missing == [dst_rel], f"@source 소스 부재가 missing(rc2 입력)으로 안 잡힘: {missing}"

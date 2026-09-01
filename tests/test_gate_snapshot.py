@@ -916,11 +916,33 @@ def test_output_inside_shared_repo_is_rejected_before_creating_files(snapshot, t
     repo = _repo(tmp_path)
     output = repo / "gate-output"
 
-    with pytest.raises(snapshot.SnapshotError, match="저장소 밖"):
+    with pytest.raises(snapshot.SnapshotError, match="저장소가 추적하는 자리"):
         snapshot.create_snapshot(repo, output, ["review/target.txt"])
 
     assert not output.exists()
     assert "gate-output" not in _git(repo, "status", "--porcelain").stdout
+
+
+def test_output_inside_a_gitignored_path_is_accepted(snapshot, tmp_path):
+    """무시되는 자리는 저장소 안이어도 통과한다 — 오염 판정의 사실은 `git check-ignore` 다.
+
+    막는 뜻은 "재는 대상 트리를 더럽히지 않는다" 이지 "프로젝트 밖" 이 아니다. 무시되는 자리는
+    추적 대상이 아니라 오염시킬 표면이 없고, 그 사실을 `git status` 가 그대로 보여 준다.
+    """
+    repo = _repo(tmp_path)
+    (repo / ".gitignore").write_text("scratch/\n", encoding="utf-8")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "commit", "-qm", "ignore scratch")
+    scratch = repo / "scratch"
+    scratch.mkdir()
+    output = scratch / "gate"
+
+    created, files = snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert created == output.resolve()
+    assert files == ("review/target.txt",)
+    assert snapshot.is_snapshot(output)
+    assert _git(repo, "status", "--porcelain").stdout == ""
 
 
 def test_existing_output_is_rejected_without_changing_it(snapshot, tmp_path):
@@ -1004,7 +1026,7 @@ def test_output_inside_git_common_dir_is_rejected(snapshot, tmp_path):
         snapshot.create_snapshot(repo, output, ["review/target.txt"])
 
     message = str(exc.value)
-    assert "저장소 밖" in message
+    assert "저장소가 추적하는 자리" in message
     assert "Git 공용 디렉터리" in message
     assert not output.exists()
 
@@ -1022,7 +1044,7 @@ def test_output_inside_other_registered_worktree_is_rejected(snapshot, tmp_path)
         snapshot.create_snapshot(repo, output, ["review/target.txt"])
 
     message = str(exc.value)
-    assert "저장소 밖" in message
+    assert "저장소가 추적하는 자리" in message
     assert "다른 worktree" in message
     assert not output.exists()
     assert _git(other, "status", "--porcelain").stdout == ""

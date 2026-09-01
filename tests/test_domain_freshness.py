@@ -27,7 +27,7 @@ from types import SimpleNamespace
 import pytest
 
 from _textio import write_lf
-from _win_skip import posix_filenames_supported
+from _win_skip import PROJECT_TEMP_ROOT, posix_filenames_supported
 
 # 리터럴 `?`/`[]` 파일명은 Windows 에서 불법이라 실 git 이스케이프 테스트는 POSIX 전용 (codex R7).
 _posix_only = pytest.mark.skipif(not posix_filenames_supported(),
@@ -36,7 +36,7 @@ _posix_only = pytest.mark.skipif(not posix_filenames_supported(),
 
 def _sha256_supported() -> bool:
     """git 이 `--object-format=sha256` 을 지원하나 (SHA-256 회귀 테스트 게이트·codex R10)."""
-    probe = tempfile.mkdtemp(prefix="sha256probe_")
+    probe = tempfile.mkdtemp(prefix="sha256probe_", dir=PROJECT_TEMP_ROOT)
     try:
         return subprocess.run(["git", "-C", probe, "init", "--object-format=sha256", "-q"],
                               capture_output=True).returncode == 0

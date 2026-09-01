@@ -31,7 +31,6 @@ import json
 import math
 import os
 import re
-import shlex
 import signal
 import subprocess
 import sys
@@ -386,6 +385,25 @@ def pid_is_alive(
         # EPERM은 존재하지만 조회 권한이 없는 프로세스다. 그 밖의 조회 오류도 슬롯을
         # 조기 회수하지 않도록 보수적으로 생존으로 간주한다.
         return True
+
+
+TEMP_ROOT_DIRNAME = "tmp"
+
+
+def temp_root(repo: Path) -> Path:
+    """이 clone 이 소유한 작업용 임시 루트 — 없으면 만든다.
+
+    `raw_storage_paths` 와 같은 앵커(`repo/.project_manager/.local`) 아래다. `.local/` 접두에는
+    gitignore·잔여 판정 제외(`ticket_finish._is_local_runtime_path`)·pytest 수집 제외가 이미
+    걸려 있어 새 규칙이 필요 없다 — 형제로 두면 같은 뜻의 두 번째 접두를 세 곳에 더해야 한다.
+
+    엔진이 자기 작업용으로 만드는 임시 디렉터리의 자리는 이 함수 하나가 정한다. 호출부는
+    `mkdtemp(prefix=..., dir=temp_root(repo))` 로만 쓰고 자리 규약을 자기 파일에 다시 적지
+    않는다. 자식 이름의 유일성은 `mkdtemp` 가 그대로 소유한다 — 바뀌는 것은 부모뿐이다.
+    """
+    root = Path(repo) / ".project_manager" / ".local" / TEMP_ROOT_DIRNAME
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 def raw_storage_paths(

@@ -2217,6 +2217,11 @@ def test_parameter_loaders_are_measured_and_hook_exemption_is_code_owned():
     assert engine_rev.EXEMPT_UNVERIFIED_DEEP_IMPORTS[
         ("board.py", "_run_lint_hooks")
     ].strip()
+    # 작업용 임시 루트의 자리 하나를 형제에게 묻는 로드도 같은 규약이다 — rev 결속을 걸면
+    # 자기 갱신 mid-sync 에서 훅 세트 상류 세대 선언을 통째로 잃는다.
+    assert engine_rev.EXEMPT_UNVERIFIED_DEEP_IMPORTS[
+        ("pm_import.py", "_temp_root")
+    ].strip()
 
 
 def test_ast_ignores_comments_strings_and_vendor_template_copies(tmp_path):

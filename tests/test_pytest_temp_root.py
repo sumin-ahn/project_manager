@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import os
 import re
 from pathlib import Path
@@ -14,6 +15,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_CONFTEST = ROOT / "conftest.py"
 EXPECTED_TEMP_ROOT = ROOT / ".project_manager" / ".local" / "tmp"
+TOOLS = ROOT / ".project_manager" / "tools"
+
+# 실제로 디렉터리/파일을 **만드는** tempfile 표면. `gettempdir` 은 경로 문자열만 돌려주므로
+# 이 검사의 대상이 아니다 — 자리 규약은 "무엇이 어디에 만들어지나" 의 규약이다.
+_TEMP_CREATORS = frozenset(
+    {"mkdtemp", "mkstemp", "TemporaryDirectory", "NamedTemporaryFile"}
+)
 
 # 엔진 사본 전수 — 한 벌이라도 프로젝트 밖 임시 경로를 값으로 들고 있으면 채택자에게 그대로 나간다.
 _ENGINE_COPY_ROOTS = (
@@ -111,3 +119,58 @@ def test_engine_copies_have_no_out_of_project_temp_path_literals():
                         f"{copy_root}/{path.name}:{node.lineno}: {node.value[:60]!r}"
                     )
     assert not offenders, "프로젝트 밖 임시 경로 리터럴: " + ", ".join(offenders)
+
+
+def _temp_creator_calls_without_dir(source: str) -> list[int]:
+    """`dir=` 없이 임시물을 만드는 호출의 줄번호 — 자리를 OS 임시 폴더에 맡기는 형태다."""
+    offenders: list[int] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            name = func.attr
+        elif isinstance(func, ast.Name):
+            name = func.id
+        else:
+            continue
+        if name not in _TEMP_CREATORS:
+            continue
+        if not any(keyword.arg == "dir" for keyword in node.keywords):
+            offenders.append(node.lineno)
+    return offenders
+
+
+def test_engine_copies_create_temp_only_under_an_explicit_dir():
+    """엔진 사본 전수에서 임시물 생성 호출은 전부 부모를 명시한다(자리 규약·예외 목록 0).
+
+    `dir=` 를 빼면 그 자리는 OS 임시 폴더로 가고, 재는 대상 트리 밖이라 무엇이 언제 쌓였는지
+    보이지 않는다. 자리 하나를 돌려주는 소유자는 `pm_relay.temp_root` 이고, 원자적 쓰기는
+    대상 파일의 부모를 준다 — 어느 쪽이든 **호출 형태가 선언**이라 예외 목록이 필요 없다.
+    """
+    offenders: list[str] = []
+    for copy_root in _ENGINE_COPY_ROOTS:
+        tools = ROOT / copy_root / ".project_manager" / "tools"
+        assert tools.is_dir(), f"엔진 사본 없음: {tools}"
+        for path in sorted(tools.glob("*.py")):
+            for lineno in _temp_creator_calls_without_dir(
+                path.read_text(encoding="utf-8")
+            ):
+                offenders.append(f"{copy_root}/{path.name}:{lineno}")
+    assert not offenders, "부모를 명시하지 않은 임시물 생성 호출: " + ", ".join(offenders)
+
+
+def test_engine_temp_root_is_the_project_local_tmp(tmp_path):
+    """`pm_relay.temp_root` 이 그 clone 의 `.project_manager/.local/tmp` 를 만들어 돌려준다."""
+    spec = importlib.util.spec_from_file_location(
+        "pm_relay_temp_root_contract", TOOLS / "pm_relay.py"
+    )
+    relay = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(relay)
+
+    root = relay.temp_root(tmp_path)
+
+    assert root == tmp_path / ".project_manager" / ".local" / "tmp"
+    assert root.is_dir()
+    # 두 번 불러도 같은 자리다 — 자리 규약이지 매번 새로 잡는 예약이 아니다.
+    assert relay.temp_root(tmp_path) == root
