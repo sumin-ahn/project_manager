@@ -42,7 +42,7 @@ RESEARCHER_MD = OPENCODE / ".opencode" / "agents" / "researcher.md"
 # T-0674: opencode는 canonical skill 미러와 기계 생성 command 사본을 모두 출하한다.
 PM_DEV_DELEGATE_MIRROR = OPENCODE / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md"
 PM_DEV_DELEGATE_COMMAND = OPENCODE / ".opencode" / "command" / "pm-dev-delegate.md"
-PM_DEV_DELEGATE_CANONICAL = OPENCODE / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md"
+PM_DEV_DELEGATE_CANONICAL = REPO / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md"
 OPENCODE_MANIFEST = OPENCODE / ".project_manager" / "engine.manifest"
 
 
@@ -188,7 +188,7 @@ def test_pm_instructions_lists_researcher_subagent_type():
 
 
 def test_opencode_pm_dev_delegate_ships_as_canonical_skill_mirror():
-    """opencode pm-dev-delegate target override와 command가 같은 canonical source를 쓴다.
+    """opencode 스킬 미러와 command가 root canonical 하나에서 나온다 (T-0895).
 
     command 사본 판정은 개행 표기를 정규화한 **내용 동일성**이다(바이트 표기 동일성이 아니다·T-0708).
     """
@@ -197,7 +197,6 @@ def test_opencode_pm_dev_delegate_ships_as_canonical_skill_mirror():
         "(`pm_update --target opencode` 로 전파).")
     assert PM_DEV_DELEGATE_CANONICAL.is_file(), (
         f"canonical pm-dev-delegate 스킬 없음: {PM_DEV_DELEGATE_CANONICAL}")
-    assert PM_DEV_DELEGATE_MIRROR.resolve() == PM_DEV_DELEGATE_CANONICAL.resolve()
     assert PM_DEV_DELEGATE_COMMAND.is_file(), "opencode pm-dev-delegate 슬래시 command 누락"
     # 판정 층은 공용 seam(LF 정규화 bytes 내용 동일성·T-0708) — 기대·실측을 한 곳에서 읽어
     # 체크아웃 개행 표기와 무관하게, 내용 1자 차이는 red로 판정한다.
@@ -205,40 +204,31 @@ def test_opencode_pm_dev_delegate_ships_as_canonical_skill_mirror():
         PM_DEV_DELEGATE_CANONICAL, "pm-dev-delegate", PM_DEV_DELEGATE_COMMAND,
     ), "opencode pm-dev-delegate command가 canonical과 내용 drift(T-0674)."
     manifest = OPENCODE_MANIFEST.read_text(encoding="utf-8")
-    source = "templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md"
-    assert f".claude/skills/pm-dev-delegate/SKILL.md    @render @source={source}" in manifest
-    assert f".opencode/command/pm-dev-delegate.md     @render @source={source}" in manifest
+    assert (".opencode/command/pm-dev-delegate.md     @render "
+            "@source=.claude/skills/pm-dev-delegate/SKILL.md") in manifest
 
 
-def test_opencode_native_ticket_rounds_use_task_contract_only():
-    """손-스폰 위임 역할은 OpenCode task의 실제 3필드로 prepare→spawn→harvest한다.
+def test_canonical_delegate_card_routes_every_harness_to_its_native_channel():
+    """한 카드를 세 하네스가 읽어도 자기 native 호출 채널을 찾는다 (T-0895).
 
-    라운드 파일 모델(ADR-0090)에서 쓰기 대상은 `NN-<역할>.md` 하나이고 명세·이전 라운드는
-    읽기 전용 입력이라, 프롬프트 블록이 그 좌표를 실값으로 실어야 한다. 손-스폰 역할은
-    둘(developer·architect)이다 — 리뷰는 엔진이 스냅샷·프롬프트·라운드 자리를 만들어 직접
-    스폰하므로 카드에 손 위임 블록이 없다.
+    claude 와 opencode 는 같은 물리 경로(`.claude/skills/pm-dev-delegate/SKILL.md`)를 읽으므로
+    그 자리에 하네스별 판을 얹지 않는다. 위임 블록은 claude 표기 한 벌이고, 카드 머리의 harness
+    노트가 opencode(native `task` 툴·background 필드 없음)와 codex(`spawn_agent`)를 안내한다.
+    노트가 사라지면 opencode PM 은 claude 블록만 읽고 자기에게 없는 필드를 싣는다(실사고).
+    블록 자체의 필드 계약은 `test_claude_adapter_parity` 가 소유한다.
     """
     text = PM_DEV_DELEGATE_CANONICAL.read_text(encoding="utf-8")
-    blocks = re.findall(r"task tool 호출:\n(.*?)(?=\n```)", text, flags=re.DOTALL)
-    assert len(blocks) == 2
-    for role, block in zip(("developer", "architect"), blocks):
-        assert f"subagent_type: {role}" in block
-        assert "description:" in block and "prompt:" in block
-        assert f"NN-{role}.md" in block and "<prepare JSON의 copy>" in block
-        assert "spec.md" in block and "rounds/" in block
-    assert "subagent_type: code-reviewer" not in text, (
-        "리뷰가 손 위임 블록으로 되살아남 — 묶음 리뷰는 엔진 경로 하나다"
+    note = next(
+        (line for line in text.splitlines() if line.startswith("> **harness 노트:**")), "")
+    assert note, "canonical pm-dev-delegate 카드에 harness 노트가 없음 — opencode PM 은 claude 블록만 읽는다"
+    for harness, channel in (
+        ("claude", "`Agent` 툴"), ("opencode", "`task`"), ("codex", "spawn_agent"),
+    ):
+        assert harness in note and channel in note, (
+            f"harness 노트가 {harness} 의 native 호출 채널({channel})을 안내하지 않음: {note}")
+    assert "task tool 호출:" not in text, (
+        "opencode 전용 위임 블록이 되살아남 — 같은 자리에 하네스별 판이 다시 갈린다"
     )
-    assert "--role code-reviewer \\\n    --cluster" in text, (
-        "카드에 묶음 리뷰 실행(--role code-reviewer --cluster)이 없음"
-    )
-    assert "ticket prepare" in text and "ticket harvest" in text
-    assert "Agent 툴 호출" not in text
-    assert "run_in_background" not in text
-    assert "pm_principles.md" in text
-    assert "다음 순번의 새 라운드 파일" not in text
-    for stale in ("pm-ticket-section", "성장 티켓 사본", "capability", "transfer-from"):
-        assert stale not in text, f"opencode pm-dev-delegate 카드에 옛 모델 어휘 잔존: {stale}"
 
 
 def test_opencode_pm_dev_delegate_no_framework_wikilink():

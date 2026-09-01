@@ -280,7 +280,10 @@ spawn_agent(
      - 신규 테스트 수
      - 지정 회귀 결과 (A passed · 범위 명시)
      - 단계 종료 전체 회귀 명령과 `rc=0` 결과
-     - DoD 각 항목별 충족 evidence 명시""",
+     - DoD 각 항목별 충족 evidence 명시
+     - fix 라운드면 엔진이 시드한 검증 골격을 accepted ID 전수로 채운다(재현 커맨드·기대값·fix 전
+       실값). 기계로 확인할 수 없는 항목은 골격이 제공하는 닫힌 사유로 선언한다. 형식·낱말은 골격이
+       단일 진실이다.""",
 )
 ```
 
@@ -290,9 +293,10 @@ spawn_agent(
 > (`rc`·`elapsed_sec`·`silence_sec`)로 마감한다. 백그라운드 호출이 끊겨 stdout(그 안의 raw 경로)을
 > 잃어도 `python3 .project_manager/tools/pm_delegate.py raw [--unfinished]` 로 절대경로를 조회하라 —
 > **미마감 레코드 자체가 kill 증거**다. 재위임 전에 반드시 확인한다(완성분을 버리고 중복 과금하는 경로).
-> **native 위임은 장부에 남지 않는다** — 같은 하네스 안에서 도는 위임(각 하네스의 native
-> 서브에이전트 경로)은 `pm_delegate` 를 경유하지 않으므로 이 조회 대상이 아니다. native 산출은
-> 하네스 자체의 보고/전사에서 찾는다.
+> **native 위임은 raw 장부에는 남지 않지만 라운드 파일에는 남는다** — 같은 하네스 안에서 도는 위임은
+> 위 native prepare → spawn_agent → harvest를 수행한다. 하네스 보고/전사가 끊겨도 prepare가 출력한
+> 라운드 파일을 먼저 읽고, `ticket harvest --copy ... --cwd ...`로 회수한 뒤에만 재위임한다. 경로마저
+> 잃었으면 `ticket copies --unharvested`가 미회수 준비를 열거한다.
 > **어느 장부를 봤는지 첫 줄로 확인한다** — `조회 장부: <절대경로>`. 장부는 **엔진 사본별**이라
 > `경고: 다른 엔진 사본 장부가 있습니다(이 조회에서는 읽지 않음): <경로>` 가 뜨면 자동 대체 조회가
 > 된 게 아니다 — 표시된 사본에서 **명시적으로 다시 조회**하라. `--output-dir DIR` 로 저장한 산출은
@@ -381,7 +385,7 @@ touches 경로의 실재(소유 repo 좌표 기준) · 묶음 안팎 다른 열�
 > 재섭취를 라운드마다 다시 낸다 — fresh 는 resume 미일치 폴백·전사 과대 시에만). 실패 처리는
 > [`pm_principles.md`](../../../.project_manager/wiki/pm_principles.md) §"티켓과 위임"을 참조한다.
 
-> ⚙️ 대상 튜플(`additional_reviewer.harness`/`.model`)을 선언한 채택자는 추가 리뷰어(additional reviewer) 로
+> ⚙️ 대상 튜플(`additional_reviewer.harness`/`.model`/`.reasoning`)을 선언한 채택자는 추가 리뷰어(additional reviewer) 로
 > reviewer 위임과 같은 시점에 교차검증을 돌린다. 선언이 없는 채택자에게 이 단계는 없다:
 > `python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --adr ADR-NNNN`
 > (ADR 본문 정합 필요 시 `--paths` 에 **코드 경로+ADR 함께 나열** — `--paths` 는
