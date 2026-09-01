@@ -1177,16 +1177,6 @@ def test_reserve_check_save_under_single_lock(external, monkeypatch, tmp_path):
     assert _ledger(external, tmp_path)["T-0116"]["count"] == 1
 
 
-def test_save_output_tempdir_fallback_with_injected_destination(
-        external, monkeypatch, tmp_path):
-    """PM 홈 미해소 폴백은 유지하되 테스트에서는 pytest 관리 목적지를 주입한다."""
-    monkeypatch.setattr(external, "REPO", tmp_path / "unresolved-adopter")
-    monkeypatch.setattr(external.tempfile, "gettempdir", lambda: str(tmp_path))
-    dest = external.save_output("x", "fallback content")
-    assert dest.parent == tmp_path
-    assert dest.read_text(encoding="utf-8") == "fallback content"
-
-
 # ══ 라운드별 산출 장부 + wave 예산 (T-0583) ═════════════════════════════════
 # 라운드 count 만으로는 "그 라운드가 실결함을 냈는가"를 기계로 확인할 수 없어 비용 적정성 판단이
 # PM 자기보고에 의존했다. 게이트 항목에 산출 이력(`rounds`)을 append 하고, 게이트별 상한과 별개인

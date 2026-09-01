@@ -1069,6 +1069,54 @@ def test_unusable_output_dir_fails_before_any_spawn_and_refunds(
     assert _round_ledger(repo)["T-0590"]["count"] == 1
 
 
+def test_marker_less_anchor_refuses_before_any_spawn_and_refunds(
+        external, monkeypatch, tmp_path, capsys):
+    """`--output-dir` 없는 실행의 raw 앵커에 `.project_manager` 가 없으면 스폰 전에 끊긴다.
+
+    이 파일의 실행 경로 테스트는 전부 `--output-dir` 을 줘서 **기본 목적지**(해소된 PM 홈의
+    `.local/review`)로 가는 축이 비어 있었다. 옛 엔진은 바로 이 자리에서 OS tempdir 로 조용히
+    갈아타, 무엇을 보냈는지·몇 라운드였는지를 남기는 기록을 임시 폴더 청소와 함께 잃었다.
+
+    예외를 주입하지 않는다 — 마커 없는 앵커라는 실제 형상 하나로 발화시킨다. 실패는 `run_review`
+    **첫 줄**(raw 선점)이라 예약 소유권을 넘기기 전이고, 그래서 호출부의 스폰 전 seam 이 라운드
+    예약을 환불한다: `on_spawn_attempt` 미호출이 그 환불의 성립 조건이다."""
+    anchor = tmp_path / "outside-pm-home"       # PM 홈이 아닌 저장소(마커 없음)
+    anchor.mkdir()
+    monkeypatch.setattr(external, "REPO", anchor)
+    monkeypatch.setattr(external, "_PM_HOME_OVERRIDE", None)
+    target = external.resolve_reviewer_target(
+        {"additional_reviewer.harness": "codex", "additional_reviewer.model": "m"})
+    reviewer = _FakeReviewer(stdout=_wire("codex"))
+    handed_off: list[int] = []
+    reclaimed: list[int] = []
+
+    with pytest.raises(ValueError, match=r"\.project_manager 가 없습니다"):
+        external.run_review(
+            "프롬프트", timeout=30, target=target, run_fn=reviewer,
+            cwd=anchor, env={"PATH": os.environ.get("PATH", "")},
+            on_spawn_attempt=lambda: handed_off.append(1),
+            on_no_spawn=lambda: reclaimed.append(1),
+        )
+    err = capsys.readouterr().err
+
+    assert reviewer.calls == []                     # 스폰 0
+    assert list(anchor.iterdir()) == []             # raw 디렉토리·장부 어느 것도 만들지 않는다
+    assert (handed_off, reclaimed) == ([], [])      # 예약 소유권 미이전 = 호출부가 환불한다
+    assert "추가 리뷰어 실행 중" not in err          # 과금 문구 앞에서 끊긴다
+
+    # 복구 채널은 자기잠기지 않는다 — 같은 앵커라도 `--output-dir` 을 주면 그대로 전송된다.
+    outdir = tmp_path / "explicit-out"
+    result = external.run_review(
+        "프롬프트", timeout=30, output_dir=outdir, target=target, run_fn=reviewer,
+        cwd=anchor, env={"PATH": os.environ.get("PATH", "")},
+        on_spawn_attempt=lambda: handed_off.append(1),
+    )
+    assert len(reviewer.calls) == 1
+    assert handed_off == [1]
+    assert result["file"].parent == outdir
+    assert list(anchor.iterdir()) == []             # 앵커는 여전히 비어 있다
+
+
 @pytest.mark.parametrize("failure", _PRE_SPAWN_FAILURES)
 def test_pre_spawn_failure_after_the_raw_reservation_refunds_and_closes_the_record(
         external, monkeypatch, tmp_path, capsys, failure):

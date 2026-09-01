@@ -119,28 +119,72 @@ def _engine_family(tmp_path: Path) -> tuple[Path, Path]:
 def test_default_storage_is_pm_local_and_explicit_destination_is_unchanged(
         relay, tmp_path):
     repo = _repo(tmp_path)
-    raw, ledger = relay.raw_storage_paths(
-        repo, "delegate", temp_dir=tmp_path / "os-temp"
-    )
+    raw, ledger = relay.raw_storage_paths(repo, "delegate")
     assert raw == repo / ".project_manager" / ".local" / "delegate"
     assert ledger == repo / ".project_manager" / ".local" / "raw_outputs.json"
 
     explicit = tmp_path / "injected-output"
-    raw, ledger = relay.raw_storage_paths(
-        repo, "review", explicit, temp_dir=tmp_path / "os-temp"
-    )
+    raw, ledger = relay.raw_storage_paths(repo, "review", explicit)
     assert raw == explicit
     assert ledger == explicit / "raw_outputs.json"
 
 
-def test_unresolved_pm_home_falls_back_to_injected_tempdir(relay, tmp_path):
+def test_unresolved_anchor_refuses_instead_of_writing_to_the_os_tempdir(
+        relay, tmp_path):
+    """앵커를 해소 못 하면 값을 돌려주지 않는다 — 기록의 목적지는 두 곳뿐이다.
+
+    옛 동작은 OS tempdir 의 `pm_raw_outputs.json` 으로 조용히 갈아탔다. 위임 raw 출력과 라운드
+    장부는 기록이라 임시 폴더 청소와 함께 사라지면 안 된다. 복구 채널(명시 output_dir)은 마커
+    검사보다 앞이라 같은 앵커에서도 그대로 통과한다 — 자기잠김 0.
+    """
     unresolved = tmp_path / "adopter-without-pm-home"
-    tempdir = tmp_path / "injected-tempdir"
-    raw, ledger = relay.raw_storage_paths(
-        unresolved, "delegate", temp_dir=tempdir
+    with pytest.raises(ValueError) as excinfo:
+        relay.raw_storage_paths(unresolved, "delegate")
+    message = str(excinfo.value)
+    assert ".project_manager 가 없습니다" in message
+    assert str(unresolved) in message
+    assert "--output-dir" in message
+
+    explicit = tmp_path / "explicit-output"
+    assert relay.raw_storage_paths(unresolved, "delegate", explicit) == (
+        explicit, explicit / "raw_outputs.json",
     )
-    assert raw == tempdir
-    assert ledger == tempdir / "pm_raw_outputs.json"
+
+
+def test_no_engine_copy_can_store_raw_records_in_the_os_tempdir():
+    """canonical + 3 템플릿 사본 어디에도 tempdir 목적지가 남아 있지 않다(정적 핀).
+
+    폴백이 사라지며 소비처가 0 이 된 자리도 같은 핀이 잡는다 — additional_reviewer 의 tempfile
+    import 과 호출부 없이 남아 있던 박제 wrapper 2개. parity 누락(canonical 만 고치고
+    `pm_update --all-targets` 미실행)도 이 한 테스트가 잡는다.
+    """
+    relay_module = _load("pm_relay")
+    assert "temp_dir" not in inspect.signature(
+        relay_module.raw_storage_paths
+    ).parameters
+
+    tool_dirs = [TOOLS] + [
+        REPO / "templates" / target / ".project_manager" / "tools"
+        for target in ("claude_code", "codex", "opencode")
+    ]
+    temp_kwarg = re.compile(r"raw_storage_paths\([^)]*temp_dir")
+    dead_archivers = ("def save_raw_output(", "def save_output(")
+    offenders = []
+    for tools_dir in tool_dirs:
+        assert tools_dir.is_dir(), tools_dir
+        for path in sorted(tools_dir.glob("*.py")):
+            text = path.read_text(encoding="utf-8")
+            if "pm_raw_outputs" in text:
+                offenders.append(f"{path}: pm_raw_outputs")
+            if temp_kwarg.search(text):
+                offenders.append(f"{path}: raw_storage_paths(temp_dir=)")
+            # pm_delegate 의 tempfile 은 자식 env·read tmp 축이 살아 있어 이 단언 밖이다.
+            if path.name == "additional_reviewer.py" and "tempfile" in text:
+                offenders.append(f"{path}: tempfile")
+            for archiver in dead_archivers:
+                if archiver in text:
+                    offenders.append(f"{path}: {archiver}")
+    assert offenders == []
 
 
 def test_start_and_finish_record_preserve_audit_fields(relay, tmp_path):
@@ -853,6 +897,31 @@ def test_external_raw_storage_anchor_is_resolved_pm_home_owner(
         explicit, explicit / "raw_outputs.json",
     )
 
+    unresolved = tmp_path / "anchor-without-pm-home"
+    monkeypatch.setattr(external, "_PM_HOME_OVERRIDE", unresolved)
+    with pytest.raises(ValueError, match=r"\.project_manager 가 없습니다"):
+        external._raw_storage()
+    assert external._raw_storage(explicit) == (
+        explicit, explicit / "raw_outputs.json",
+    )
+
+
+def test_delegate_raw_storage_refuses_unresolved_config_owner(
+        delegate, monkeypatch, tmp_path):
+    """PM 홈 강등 뒤 그 앵커에도 마커가 없으면 기록을 tempdir 로 옮기지 않고 멈춘다.
+
+    명시 output_dir 은 마커 검사보다 앞이라 같은 앵커에서도 통과한다(복구 채널 자기잠김 0).
+    """
+    unresolved = tmp_path / "config-owner-without-pm-home"
+    monkeypatch.setattr(delegate, "_CONFIG_REPO_OVERRIDE", unresolved)
+    with pytest.raises(ValueError, match=r"\.project_manager 가 없습니다"):
+        delegate._raw_storage()
+
+    explicit = tmp_path / "explicit-output"
+    assert delegate._raw_storage(explicit) == (
+        explicit, explicit / "raw_outputs.json",
+    )
+
 
 @pytest.mark.parametrize("engine_side", ["slot", "pm-home"])
 def test_review_run_records_raw_in_pm_home_and_unified_query_shows_it(
@@ -908,9 +977,7 @@ def test_legacy_diff_root_raw_anchor_writes_to_the_slot_ledger(
     relay = external._load_relay()
 
     def legacy_raw_storage(output_dir=None):
-        return relay.raw_storage_paths(
-            external.REPO, "review", output_dir, temp_dir=tmp_path / "os-temp",
-        )
+        return relay.raw_storage_paths(external.REPO, "review", output_dir)
 
     monkeypatch.setattr(external, "_raw_storage", legacy_raw_storage)
     assert external.main(["--paths", "seed.txt", "--no-gate"]) == 0
