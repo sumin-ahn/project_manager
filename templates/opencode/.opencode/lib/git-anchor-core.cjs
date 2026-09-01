@@ -2,8 +2,15 @@
 // 판정은 Python board.judge_git_anchor_command 단일 진실을 subprocess로 호출하고, 이 모듈은
 // 선필터 + opencode hook 배선만 소유한다. plugins/ 진입점은 팩토리 하나만 export한다.
 const path = require("node:path");
+const fs = require("node:fs");
 const childProcess = require("node:child_process");
 const { createWarningChannel } = require("./warning-channel-core.cjs");
+
+// 엔진 루트는 이 파일 자기 위치에서 나온다 — 훅은 언제나 `<root>/.opencode/lib/*.cjs` 에 설치되고
+// (pm_import 가 그 깊이를 못박는다) 이는 파이썬 도구의 `Path(__file__).resolve().parents[2]` 와 같은
+// 규칙이다. 조상을 훑으면 중첩 트리에서 바깥 프로젝트의 board.py 를 실행한다.
+const ENGINE_ROOT = path.resolve(__dirname, "..", "..");
+const BOARD_PY = path.join(ENGINE_ROOT, ".project_manager", "tools", "board.py");
 
 const GIT_PREFILTER = [
   /(^|[^A-Za-z0-9_.-])git(?=\s|$|[<>])/,
@@ -19,23 +26,9 @@ function containsGitCommand(command) {
   return GIT_PREFILTER.some((pattern, index) => pattern.test(index === 1 ? normalized : prefilter));
 }
 
-function findEngineRoot(startDir, fs = require("node:fs")) {
-  let dir = path.resolve(startDir || process.cwd());
-  for (let i = 0; i < 12; i += 1) {
-    if (fs.existsSync(path.join(dir, ".project_manager", "tools", "board.py"))) return dir;
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
-}
-
 function judgeCommand(root, cwd, command, spawnSync = childProcess.spawnSync) {
   if (!containsGitCommand(command)) {
     return { verdict: "ok", cwd_identity: "non-repo", reason: "git mutation 없음" };
-  }
-  if (!root) {
-    return { verdict: "warn", cwd_identity: "non-repo", reason: "엔진 root 미해소 — cwd를 직접 확인" };
   }
   const board = path.join(root, ".project_manager", "tools", "board.py");
   let lastError = "Python interpreter 없음";
@@ -69,7 +62,7 @@ function judgeCommand(root, cwd, command, spawnSync = childProcess.spawnSync) {
 
 function makeGitAnchorPlugin(judge = judgeCommand) {
   return async ({ client, directory, worktree }) => {
-  const root = findEngineRoot(directory || worktree || process.cwd());
+  const root = ENGINE_ROOT;
   const warnings = createWarningChannel(client);
 
   return {
@@ -78,6 +71,8 @@ function makeGitAnchorPlugin(judge = judgeCommand) {
       const args = output && output.args;
       const command = args && args.command;
       if (String(tool || "").toLowerCase() !== "bash" || !containsGitCommand(command)) return;
+      // 설치 깨짐은 일시 실패가 아니다 — 판정 엔진이 자기 위치 아래 없으면 경고로 낮추지 않고 막는다.
+      if (!fs.existsSync(BOARD_PY)) throw new Error(`[git-anchor/설치] 판정 엔진 부재: ${BOARD_PY}`);
       const cwd = (args && (args.workdir || args.cwd)) || directory || worktree || process.cwd();
       let judgment;
       try {
@@ -114,6 +109,5 @@ module.exports = {
   GitAnchorPlugin,
   makeGitAnchorPlugin,
   containsGitCommand,
-  findEngineRoot,
   judgeCommand,
 };

@@ -434,6 +434,20 @@ def _run_node_check(script: str) -> str:
     ).stdout
 
 
+def _install_recall_core(root: Path) -> Path:
+    """core 사본을 픽스처의 `<root>/.opencode/lib/` 에 둔다 — 설치 형상 그대로.
+
+    core 는 엔진 루트를 자기 위치(`path.resolve(__dirname, "..", "..")`)에서 내므로, 소스
+    트리에서 require 하면 judge-recall 이 `templates/opencode` 의 registry 를 읽고 그 트리에
+    marker 를 쓴다. 팩토리를 구동하는 검증은 이 사본을 cwd 로 돌린다.
+    """
+    lib = root / ".opencode" / "lib"
+    lib.mkdir(parents=True, exist_ok=True)
+    for name in ("principle-recall-core.cjs", "warning-channel-core.cjs"):
+        shutil.copyfile(_OPENCODE_LIB / name, lib / name)
+    return lib
+
+
 def test_opencode_principle_recall_core_requires_cleanly_in_node():
     if _NODE is None:
         pytest.skip("node 없음 — require 검증 skip")
@@ -525,9 +539,13 @@ async function compact() {{
 }})().catch((error) => {{ console.error(error); process.exit(1); }});
 """
     result = subprocess.run(
-        ["node", "-e", script], cwd=str(_OPENCODE_LIB), capture_output=True, text=True, timeout=30,
+        ["node", "-e", script], cwd=str(_install_recall_core(tmp_path)),
+        capture_output=True, text=True, timeout=30,
     )
     assert "REARM_CYCLE_OK" in result.stdout, (result.stdout, result.stderr)
+    assert not (_OPENCODE_LIB.parents[1] / ".project_manager" / ".local").exists(), (
+        "팩토리 구동이 templates/opencode 소스 트리에 marker 를 남김"
+    )
 
 
 def test_opencode_principle_recall_core_surfaces_broken_registry_warning(tmp_path):
@@ -562,7 +580,8 @@ const sessionID = "broken-registry-session";
 }})().catch((error) => {{ console.error(error); process.exit(1); }});
 """
     result = subprocess.run(
-        ["node", "-e", script], cwd=str(_OPENCODE_LIB), capture_output=True, text=True, timeout=30,
+        ["node", "-e", script], cwd=str(_install_recall_core(tmp_path)),
+        capture_output=True, text=True, timeout=30,
     )
     assert "BROKEN_WARNING_OK" in result.stdout, (result.stdout, result.stderr)
 

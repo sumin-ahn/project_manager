@@ -3,8 +3,18 @@
 // and decisions.  This module owns only the measured OpenCode hook surface and
 // subprocess/warning wiring.
 const path = require("node:path");
+const fs = require("node:fs");
 const childProcess = require("node:child_process");
 const { createWarningChannel } = require("./warning-channel-core.cjs");
+
+// The engine root comes from this file's own location: hooks always install at
+// `<root>/.opencode/lib/*.cjs` (pm_import fixes that depth), the same rule as the
+// Python tools' `Path(__file__).resolve().parents[2]`.  Walking ancestors picks the
+// outer project inside nested trees.
+const ENGINE_ROOT = path.resolve(__dirname, "..", "..");
+const GUARD_PY = path.join(
+  ENGINE_ROOT, ".project_manager", "tools", "delegate_channel_guard.py",
+);
 
 const DECIDE_TIMEOUT_MS = 10000;
 const MIN_PYTHON = Object.freeze([3, 11]);
@@ -20,20 +30,6 @@ const DEFAULT_SURFACE = Object.freeze({
   roleValuePrefix: "",
   enforceDeny: true,
 });
-
-function findEngineRoot(startDir, fs = require("node:fs")) {
-  let dir = path.resolve(startDir || process.cwd());
-  for (let i = 0; i < 12; i += 1) {
-    const guard = path.join(
-      dir, ".project_manager", "tools", "delegate_channel_guard.py",
-    );
-    if (fs.existsSync(guard)) return dir;
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
-}
 
 function warning(reason) {
   return {
@@ -107,7 +103,6 @@ function judgeDelegation(
   spawnSync = childProcess.spawnSync,
   platform = process.platform,
 ) {
-  if (!root) return warning("엔진 root 미해소");
   const guard = path.join(
     root, ".project_manager", "tools", "delegate_channel_guard.py",
   );
@@ -208,13 +203,18 @@ function makeDelegateChannelPlugin(
     // Live 1.18.12/1.18.5 probes observed worktree="/" even when directory
     // identified the actual scratch project, so directory must stay first.
     const cwd = directory || worktree || process.cwd();
-    const root = findEngineRoot(cwd);
+    const root = ENGINE_ROOT;
     const warnings = createWarningChannel(client);
 
     return {
       "tool.execute.before": async (input, output) => {
         const tool = String((input && input.tool) || "").toLowerCase();
         if (tool !== String(surface.toolName).toLowerCase()) return;
+        // A broken install is not a transient failure, and enforceDeny only governs
+        // role denials, so a missing decision engine blocks unconditionally.
+        if (!fs.existsSync(GUARD_PY)) {
+          throw new Error(`[delegate-channel/설치] 판정 엔진 부재: ${GUARD_PY}`);
+        }
         const args = output && output.args;
         const agentName = agentNameFromArgs(args, surface);
         const sessionID = (input && input.sessionID) || "__global__";
@@ -260,7 +260,6 @@ module.exports = {
   MIN_PYTHON,
   DelegateChannelPlugin,
   agentNameFromArgs,
-  findEngineRoot,
   judgeDelegation,
   makeDelegateChannelPlugin,
   pythonCandidates,

@@ -31,6 +31,23 @@ def _node() -> str:
     return node
 
 
+def _install_core(root: Path, *, with_engine: bool) -> Path:
+    """core 사본을 픽스처의 `<root>/.opencode/lib/` 에 둔다 — 설치 형상 그대로.
+
+    core 는 엔진 루트를 자기 위치(`path.resolve(__dirname, "..", "..")`)에서 내므로, 판정
+    엔진의 존재 여부는 이 픽스처 안에서 정해진다.
+    """
+    lib = root / ".opencode" / "lib"
+    lib.mkdir(parents=True)
+    for name in ("delegate-channel-core.cjs", "warning-channel-core.cjs"):
+        shutil.copyfile(OPEN_LIB / name, lib / name)
+    if with_engine:
+        tools = root / ".project_manager" / "tools"
+        tools.mkdir(parents=True)
+        (tools / GUARD_PY.name).write_text("", encoding="utf-8")
+    return lib
+
+
 def _load_guard():
     spec = importlib.util.spec_from_file_location("delegate_guard_opencode", GUARD_PY)
     module = importlib.util.module_from_spec(spec)
@@ -473,3 +490,86 @@ console.log(`REAL_PYTHON_PARITY_OK:${cases.length}`);
     )
     assert result.returncode == 0, result.stderr or result.stdout
     assert f"REAL_PYTHON_PARITY_OK:{len(cases)}" in result.stdout
+
+
+def test_opencode_delegate_channel_cwd_axis_prefers_directory_over_root_worktree(tmp_path):
+    """판정 대상 cwd 축은 `directory || worktree || process.cwd()` 순 그대로다.
+
+    라이브 1.18.12/1.18.5 프로브에서 worktree="/" 가 관측됐고 1.18.25 바이너리도 worktree!=="/"
+    를 특례로 갖는다 — worktree 를 앞세우면 판정이 "/" 를 받는다. 엔진 루트를 자기 위치에서
+    받도록 바꾼 뒤에도 이 축은 payload 그대로여야 한다.
+    """
+    lib = _install_core(tmp_path / "install", with_engine=True)
+    script = r"""
+const assert = require("node:assert");
+const m = require("./delegate-channel-core.cjs");
+(async () => {
+  const seen = [];
+  const judge = (_root, cwd) => {
+    seen.push(cwd);
+    return {
+      verdict: "allow", reason: "[delegate-channel/allow] fixture",
+      harness: "opencode", model: "fixture",
+    };
+  };
+  const hooks = await m.makeDelegateChannelPlugin(judge)({
+    directory: "/repo",
+    worktree: "/",
+    client: {tui: {showToast: async () => {}}},
+  });
+  await hooks["tool.execute.before"](
+    {tool: "task", sessionID: "cwd-axis"},
+    {args: {subagent_type: "prober"}},
+  );
+  assert.deepStrictEqual(seen, ["/repo"]);
+  console.log("DELEGATE_CWD_AXIS_OK");
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    result = subprocess.run(
+        [_node(), "-e", script], cwd=lib, check=True,
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    assert "DELEGATE_CWD_AXIS_OK" in result.stdout
+
+
+def test_opencode_delegate_channel_blocks_when_guard_engine_absent(tmp_path):
+    """설치 트리에 판정 엔진이 없으면 fail-open 경고가 아니라 위임 자체를 막는다.
+
+    payload `directory` 와 조상(이 저장소)에는 `delegate_channel_guard.py` 가 있다 — 그 둘 중
+    하나로 엔진 루트를 잡는 코드라면 판정이 호출돼 통과한다. enforceDeny 는 역할 판정 deny 의
+    스위치라 설치 무결성에는 적용하지 않는다.
+    """
+    lib = _install_core(tmp_path / "install", with_engine=False)
+    assert not (tmp_path / "install" / ".project_manager").exists()
+    script = r"""
+const assert = require("node:assert");
+const m = require("./delegate-channel-core.cjs");
+const repoWithEngine = process.argv[1];
+(async () => {
+  const toasts = [];
+  const judge = () => { throw new Error("설치가 깨졌는데 판정을 호출함"); };
+  const hooks = await m.makeDelegateChannelPlugin(judge)({
+    directory: repoWithEngine,
+    worktree: repoWithEngine,
+    client: {tui: {showToast: async (value) => toasts.push(value)}},
+  });
+  // 설치 확인은 toolName 선필터 뒤다 — 다른 도구는 그대로 지나간다.
+  await hooks["tool.execute.before"]({tool: "bash", sessionID: "S"}, {args: {}});
+  await assert.rejects(
+    hooks["tool.execute.before"](
+      {tool: "task", sessionID: "S"}, {args: {subagent_type: "developer"}},
+    ),
+    /\[delegate-channel\/설치\]/,
+  );
+  const context = {system: []};
+  await hooks["experimental.chat.system.transform"]({sessionID: "S"}, context);
+  assert.deepStrictEqual(context.system, [], "차단 대신 경고로 강등됨");
+  assert.deepStrictEqual(toasts, [], "차단 대신 toast 로 강등됨");
+  console.log("DELEGATE_INSTALL_BLOCK_OK");
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    result = subprocess.run(
+        [_node(), "-e", script, str(REPO)], cwd=lib, check=True,
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    assert "DELEGATE_INSTALL_BLOCK_OK" in result.stdout

@@ -16,7 +16,8 @@ opencode sid 발급(claude 와 다른 핵심): claude 는 `--session-id <uuid>` 
 권위 — driver 가 그 sid 로 post-turn marker 를 쓰고 supervisor 가 stat).
 
 opencode 어댑터는 claude 와 달리 옆에 Python `ctx_guard` 모듈이 없다(ctx-guard 는 JS plugin) —
-그래서 엔진 루트 탐색을 driver 자체에 둔다(JS `findEngineRoot` 와 동일 규칙·동형 어댑터).
+그래서 엔진 루트 해소를 driver 자체에 둔다. 규칙은 JS 훅 코어의 `ENGINE_ROOT` 와 같다: 파일 자기
+위치에서 고정 깊이로 받고 조상을 훑지 않는다(T-0889).
 """
 from __future__ import annotations
 

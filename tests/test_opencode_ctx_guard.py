@@ -26,7 +26,6 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -71,11 +70,26 @@ def _shim_src() -> str:
     return PLUGIN_FILE.read_text(encoding="utf-8")
 
 
+def _install_core(root: Path) -> Path:
+    """core 사본을 픽스처의 `<root>/.opencode/lib/` 에 둔다 — 설치 형상 그대로.
+
+    core 는 엔진 루트를 자기 위치(`path.resolve(__dirname, "..", "..")`)에서 내므로, 소스
+    트리에서 require 하면 root 가 `templates/opencode` 가 되어 마커·conf·pm_log subprocess 가
+    소스 트리에 착지한다. 팩토리를 구동하는 검증은 이 사본을 cwd 로 돌린다.
+    """
+    lib = root / ".opencode" / "lib"
+    lib.mkdir(parents=True, exist_ok=True)
+    for name in ("ctx-guard-core.cjs", "warning-channel-core.cjs"):
+        shutil.copyfile(CORE_DIR / name, lib / name)
+    return lib
+
+
 def _make_ctx_guard_project(tmp_path: Path, *, snapshot: bool = True) -> Path:
-    """findEngineRoot가 인식할 최소 project를 pytest tmp_path 아래에 만든다(소스 트리 무오염)."""
+    """최소 project 를 pytest tmp_path 아래에 만든다(소스 트리 무오염)."""
     root = tmp_path / "ctx-guard-project"
     tools = root / ".project_manager" / "tools"
     tools.mkdir(parents=True)
+    _install_core(root)
     source = "import sys\n"
     if snapshot:
         source += (
@@ -414,7 +428,7 @@ const projectRoot = __PROJECT_ROOT__;
   console.log("JS_SUBSESSION_GUARD_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_SUBSESSION_GUARD_OK" in out, f"sub-session SDK mock 단위 실패. out={out!r}"
 
 
@@ -488,7 +502,7 @@ const nudgeEvent = () => ({
   console.log("JS_COMPACTION_REARM_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_COMPACTION_REARM_OK" in out, f"compaction 병행 신호 실패. out={out!r}"
 
 
@@ -519,7 +533,7 @@ const sessionID = "ses_snapshot_null";
   console.log("JS_COMPACTION_FALLBACK_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_COMPACTION_FALLBACK_OK" in out, f"snapshot null fallback 실패. out={out!r}"
 
 
@@ -549,7 +563,7 @@ const sessionID = __SESSION_ID__;
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
         "__SESSION_ID__", json.dumps(session_id)
     )
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_DURABLE_SNAPSHOT_STAGE_OK" in out, f"durable snapshot staging 실패. out={out!r}"
     markers = _snapshot_markers(project_root, session_id)
     assert len(markers) == 1
@@ -560,6 +574,61 @@ const sessionID = __SESSION_ID__;
     assert markers[0].read_text(encoding="utf-8") == (
         "## PM 정체성 (compaction 복구)\n- task: main\n"
     )
+
+
+def test_engine_root_is_install_tree_not_ancestor_project(tmp_path):
+    """중첩 트리에서 훅은 payload directory 나 조상이 아니라 **자기 설치 트리**를 엔진 루트로 쓴다.
+
+    바깥 프로젝트 안에 설치 트리를 두고 payload `directory` 로는 **바깥**을 준다. 조상 탐색이나
+    directory 유도라면 바깥 프로젝트의 pm_log.py 를 돌려 바깥에 marker 를 남긴다. 자기 위치
+    규칙이면 안쪽 설치 트리의 엔진을 돌려 안쪽에만 남는다.
+    """
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — 엔진 루트 유도 단위 skip")
+
+    def _project(root: Path, payload: str) -> Path:
+        tools = root / ".project_manager" / "tools"
+        tools.mkdir(parents=True)
+        (tools / "pm_log.py").write_text(
+            "import sys\n"
+            "if 'snapshot' in sys.argv:\n"
+            f"    print({payload!r})\n",
+            encoding="utf-8",
+        )
+        return root
+
+    outer = _project(tmp_path / "outer", "OUTER-PROJECT-SNAPSHOT")
+    inner = _project(outer / "nested" / "inner", "INNER-INSTALL-SNAPSHOT")
+    _install_core(inner)
+    session_id = "ses_engine_root_install_tree"
+
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const outerDirectory = __OUTER__;
+const sessionID = __SESSION_ID__;
+
+(async () => {
+  const hooks = await m.CtxGuardPlugin({client:{session:{
+    get: async ({path:{id}}) => ({data:{id}}),
+  }}, directory:outerDirectory});
+  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  console.log("JS_ENGINE_ROOT_SELF_LOCATION_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__OUTER__", json.dumps(str(outer))).replace(
+        "__SESSION_ID__", json.dumps(session_id)
+    )
+    out = _run_node_check(script, inner)
+    assert "JS_ENGINE_ROOT_SELF_LOCATION_OK" in out, f"엔진 루트 유도 실패. out={out!r}"
+
+    markers = _snapshot_markers(inner, session_id)
+    assert len(markers) == 1, f"설치 트리에 marker 가 없음: {markers}"
+    assert markers[0].read_text(encoding="utf-8") == "INNER-INSTALL-SNAPSHOT\n"
+    assert not _snapshot_marker_dir(outer).exists(), (
+        "바깥 프로젝트에 marker 를 남겼다 — 조상/ payload directory 유도 잔존"
+    )
+    assert _snapshot_markers(REPO, session_id) == [], "저장소 루트에 marker 를 남겼다"
 
 
 def test_plugin_snapshot_session_key_cannot_escape_marker_directory(tmp_path):
@@ -597,7 +666,7 @@ const sessionIDs = __SESSION_IDS__;
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
         "__SESSION_IDS__", json.dumps(session_ids)
     )
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_DURABLE_SNAPSHOT_SID_PATH_SAFE_OK" in out, f"SID 경로 안전화 실패. out={out!r}"
 
     marker_dir = _snapshot_marker_dir(project_root)
@@ -686,7 +755,7 @@ const builder = (value) =>
     ).replace("__ENGINE__", json.dumps(str(engine))).replace(
         "__SESSION_ID__", json.dumps(session_id)
     )
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_DURABLE_SNAPSHOT_RESTART_CONSUME_OK" in out, (
         f"durable snapshot restart consume 실패. out={out!r}"
     )
@@ -754,7 +823,7 @@ const builder = (value) =>
     ).replace("__ENGINE__", json.dumps(str(engine))).replace(
         "__SESSION_ID__", json.dumps(session_id)
     )
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_IN_MEMORY_MARKER_OWNERSHIP_OK" in out, f"in-memory marker 소유 규율 실패. out={out!r}"
 
 
@@ -828,7 +897,7 @@ const receiptPaths = () => fs.readdirSync(markerDir)
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
         "__MARKER_DIR__", json.dumps(str(marker_dir))
     ).replace("__SESSION_ID__", json.dumps(session_id))
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_NUDGE_SNAPSHOT_MARKER_INTERFERENCE_OK" in out, (
         f"nudge/snapshot marker 간섭 방지 실패. out={out!r}"
     )
@@ -881,7 +950,7 @@ const builder = (value) =>
     ).replace("__ENGINE__", json.dumps(str(engine))).replace(
         "__SESSION_ID__", json.dumps(session_id)
     )
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_DURABLE_SNAPSHOT_OVERWRITE_OK" in out, f"durable snapshot overwrite 실패. out={out!r}"
 
 
@@ -967,7 +1036,7 @@ const builder = (value) =>
     ).replace("__ENGINE__", json.dumps(str(engine))).replace(
         "__SESSION_ID__", json.dumps(session_id)
     )
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_RECOMPACTION_STAGING_FAILURE_OWNERSHIP_OK" in out, (
         f"recompaction staging 실패 소유권 보존 실패. out={out!r}"
     )
@@ -1046,7 +1115,7 @@ const beforeLatestPayload = __BEFORE_LATEST_PAYLOAD__;
     ).replace("__AFTER_SESSION_ID__", json.dumps(after_session_id)).replace(
         "__BEFORE_LATEST_PAYLOAD__", json.dumps(before_latest_payload)
     )
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_SNAPSHOT_LATE_ENTRY_GC_FIRST_OK" in out, (
         f"snapshot late-entry GC-선행 실패. out={out!r}"
     )
@@ -1144,7 +1213,7 @@ const receiptPaths = () => fs.readdirSync(markerDir)
     ).replace("__LATEST_MARKER__", json.dumps(str(latest_marker))).replace(
         "__LATEST_PAYLOAD__", json.dumps(latest_payload)
     )
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_SNAPSHOT_OLD_GC_FAILURE_RETRY_OK" in out, (
         f"snapshot old GC 실패 후 재시도 복구 실패. out={out!r}"
     )
@@ -1265,7 +1334,7 @@ const waitForSignals = (suffix) => {
     processes = [
         subprocess.Popen(
             [_NODE, "-e", render_consumer(consumer_id)],
-            cwd=str(CORE_DIR),
+            cwd=str(project_root / ".opencode" / "lib"),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -1340,7 +1409,7 @@ const latestPayload = __LATEST_PAYLOAD__;
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
         "__SESSION_ID__", json.dumps(session_id)
     ).replace("__LATEST_PAYLOAD__", json.dumps(latest_payload))
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_SNAPSHOT_PRECLAIM_CRASH_RECOVERY_OK" in out, (
         f"snapshot pre-claim crash 복구 실패. out={out!r}"
     )
@@ -1386,7 +1455,7 @@ const sessionID = __SESSION_ID__;
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
         "__SESSION_ID__", json.dumps(session_id)
     )
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_SNAPSHOT_RECEIPT_GC_OK" in out, f"snapshot receipt GC 실패. out={out!r}"
 
     receipts = _snapshot_receipts(project_root, session_id)
@@ -1448,7 +1517,7 @@ const receiptPaths = () => fs.readdirSync(markerDir)
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
         "__MARKER_DIR__", json.dumps(str(marker_dir))
     ).replace("__SESSION_ID__", json.dumps(session_id))
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_SNAPSHOT_RECEIPT_IO_FAIL_SOFT_OK" in out, (
         f"snapshot receipt IO fail-soft 실패. out={out!r}"
     )
@@ -1489,7 +1558,7 @@ const sessionID = __SESSION_ID__;
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
         "__SESSION_ID__", json.dumps(session_id)
     )
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_DURABLE_SNAPSHOT_IO_FAIL_SOFT_OK" in out, f"marker IO fail-soft 실패. out={out!r}"
     assert marker_parent.is_file()
     assert not _snapshot_receipts(project_root, session_id), "staging 실패가 receipt를 생성함"
@@ -1542,7 +1611,7 @@ const preservedMarker = __PRESERVED_MARKER__;
     ).replace("__PRESERVED_CHILD_ID__", json.dumps(preserved_child_id)).replace(
         "__MARKER_DIR__", json.dumps(str(_snapshot_marker_dir(project_root)))
     ).replace("__PRESERVED_MARKER__", json.dumps(str(preserved_marker)))
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_CHILD_DURABLE_SNAPSHOT_EXEMPT_OK" in out, (
         f"child durable snapshot exemption 실패. out={out!r}"
     )
@@ -1628,7 +1697,7 @@ const sessionID = "ses_child_no_snapshot";
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
         "__PROBE__", json.dumps(str(probe))
     )
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_CHILD_COMPACTION_NO_SUBPROCESS_OK" in out
 
 
@@ -1682,7 +1751,7 @@ const sessionID = "ses_unawaited_compacted";
   console.log("JS_COMPACTED_SYNC_STAGE_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_COMPACTED_SYNC_STAGE_OK" in out, f"compacted 동기 적재 경합 실패. out={out!r}"
 
 
@@ -1732,7 +1801,7 @@ const nudgeEvent = () => ({event:{type:"message.updated", properties:{info:{
   console.log("JS_CYCLE_EPOCH_GUARD_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_CYCLE_EPOCH_GUARD_OK" in out, f"cycle epoch 경합 방지 실패. out={out!r}"
 
 
@@ -1779,7 +1848,7 @@ const nudgeEvent = (sessionID, input) => ({event:{type:"message.updated", proper
   console.log("JS_PENDING_NUDGE_SID_RACE_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_PENDING_NUDGE_SID_RACE_OK" in out, f"pending nudge SID 경합 실패. out={out!r}"
 
 
@@ -1836,7 +1905,7 @@ const nudgeEvent = (sessionID) => ({
   console.log("JS_NUDGE_SESSION_ISOLATED_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
-    out = _run_node_check(script)
+    out = _run_node_check(script, project_root)
     assert "JS_NUDGE_SESSION_ISOLATED_OK" in out, f"nudge 세션 격리 실패. out={out!r}"
 
 
@@ -1853,11 +1922,17 @@ def test_plugin_emits_nudge():
 _NODE = shutil.which("node")
 
 
-def _run_node_check(script: str) -> str:
+def _run_node_check(
+    script: str,
+    project_root: Path | None = None,
+    node_args: list[str] | None = None,
+) -> str:
     # cwd = core lib 디렉토리 → 스크립트의 `require("./ctx-guard-core.cjs")` 가 해소된다.
+    # project_root 를 주면 그 픽스처의 설치 사본(`<root>/.opencode/lib/`)에서 돌린다 —
+    # 팩토리가 쓰는 엔진 루트가 픽스처 루트여야 산출물이 소스 트리에 남지 않는다.
     proc = subprocess.run(
-        [_NODE, "-e", script],
-        cwd=str(CORE_DIR),
+        [_NODE, "-e", script, *(node_args or [])],
+        cwd=str(CORE_DIR if project_root is None else project_root / ".opencode" / "lib"),
         capture_output=True,
         text=True,
         timeout=30,
@@ -2024,27 +2099,33 @@ console.log("JS_NUDGE_GUIDANCE_OK");
     assert "JS_NUDGE_GUIDANCE_OK" in out, f"JS buildNudgeGuidance 검증 실패. out={out!r}"
 
 
-def test_js_engine_failure_fallback_keeps_continuity_policy_in_all_bands():
-    """중앙 pm_log 호출 실패 시 네 band fallback도 필수 정책 두 사실을 보존한다."""
+def test_js_engine_failure_fallback_keeps_continuity_policy_in_all_bands(tmp_path):
+    """중앙 pm_log 호출 실패 시 네 band fallback도 필수 정책 두 사실을 보존한다.
+
+    실패 형상은 *엔진이 그 자리에 없는* 루트다(pm_log.py 없는 픽스처 → spawn rc!=0).
+    """
     if _NODE is None:
         import pytest
 
         pytest.skip("node 없음 — ctx fallback 순수 단위 skip")
 
+    engineless_root = tmp_path / "no-engine"
+    engineless_root.mkdir()
     script = r"""
 const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
+const root = process.argv[1];
 const state = {remainingPct:8, usedPct:92};
 const thresholds = {nudge_pct:30, stop_pct:20};
 for (const band of ["nudge", "nudge2", "final", "precompact"]) {
-  const guidance = m.buildEngineCtxGuidance(null, band, state, thresholds);
+  const guidance = m.buildEngineCtxGuidance(root, band, state, thresholds);
   assert.ok(guidance.includes("압축은 자동이고 세션은 그대로 이어진다"), band + ": continuity missing");
   assert.ok(guidance.includes("핸드오프는 사용자 명시 지시로만 한다"), band + ": handoff policy missing");
   assert.ok(!guidance.includes("새 큰 작업보다 현재 서사 기록을 우선"), band + ": forbidden phrase present");
 }
 console.log("JS_CTX_FALLBACK_POLICY_OK");
 """
-    out = _run_node_check(script)
+    out = _run_node_check(script, node_args=[str(engineless_root)])
     assert "JS_CTX_FALLBACK_POLICY_OK" in out
 
 
@@ -2179,16 +2260,17 @@ def _stage_opencode_project(root: Path, plugin_body: str | None = None) -> Path:
 
 
 @_live_skip
-def test_live_opencode_loads_ctx_guard_plugin():
+def test_live_opencode_loads_ctx_guard_plugin(tmp_path):
     """실 opencode 헤드리스가 출하 ctx-guard 플러그인을 autoload 성공하는지 실측 (T-0283 핵심 게이트).
 
     단언: (1) "failed to load plugin" 부재 (2) "Plugin export is not a function" 부재
     (3) factory 실행 마커 존재 = 플러그인이 실제로 로드되고 팩토리가 돌았다. 유닛 green 만으론
     못 잡던 갭(실 세션 로드 실패)을 이 게이트가 닫는다.
     """
-    with tempfile.TemporaryDirectory() as td:
-        _stage_opencode_project(Path(td))
-        log = _run_opencode_load(td)
+    td = tmp_path / "live-load"
+    td.mkdir()
+    _stage_opencode_project(td)
+    log = _run_opencode_load(str(td))
     assert _LOAD_FAIL not in log, (
         f"opencode 가 ctx-guard 플러그인 로드 실패 (T-0283 회귀). 로그 꼬리:\n{log[-2500:]}"
     )
@@ -2201,7 +2283,7 @@ def test_live_opencode_loads_ctx_guard_plugin():
 
 
 @_live_skip
-def test_live_gate_rejects_broken_object_export():
+def test_live_gate_rejects_broken_object_export(tmp_path):
     """sensitivity 대조군: T-0283 원 버그 형태(CJS 객체 export)를 심으면 이 게이트가 *실제로* 로드 실패를
     잡는지 실측 — false-green(무조건 통과) 방지. 대조군 진입점만 교체하고 core 는 그대로 둔다.
 
@@ -2213,9 +2295,10 @@ def test_live_gate_rejects_broken_object_export():
         "module.exports = { CtxGuardPlugin: core.CtxGuardPlugin, "
         "parseLocalConf: core.parseLocalConf, NUDGE_PCT_DEFAULT: core.NUDGE_PCT_DEFAULT };\n"
     )
-    with tempfile.TemporaryDirectory() as td:
-        _stage_opencode_project(Path(td), plugin_body=broken)
-        log = _run_opencode_load(td)
+    td = tmp_path / "live-broken"
+    td.mkdir()
+    _stage_opencode_project(td, plugin_body=broken)
+    log = _run_opencode_load(str(td))
     assert _LOAD_FAIL in log or _EXPORT_NOT_FN in log, (
         "게이트 무력화 위험 — 깨진 CJS 객체 export 를 opencode 가 로드 실패로 보고하지 않았다 "
         f"(로그 형식 변화?). 로그 꼬리:\n{log[-2500:]}"
