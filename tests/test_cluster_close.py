@@ -1104,6 +1104,55 @@ def test_close_preflight_reports_every_readonly_block_at_once(close_env, capsys)
                       env.lease_state())
 
 
+def _reason_bodies(reasons: list[str]) -> list[str]:
+    """`[단계 이름] 사유` 에서 사유 본문만 뽑는다 — 중복 판정의 축은 라벨이 아니라 본문이다."""
+    return [reason.split("] ", 1)[1] for reason in reasons]
+
+
+def _step_label(tf, key: str) -> str:
+    return next(label for step, label, _pre in tf.ClusterCloser.STEPS if step == key)
+
+
+@requires_git
+def test_close_preflight_reports_no_duplicate_reason(close_env):
+    """두 단계가 같은 조건을 각자 판정해도 목록에는 한 번만 실린다(다른 사유는 안 잃는다).
+
+    재배치와 머지는 기준 브랜치 선언과 이 트리가 든 브랜치를 둘 다 본다. 그대로 누적하면
+    "막는 조건 N건" 의 N 이 부풀어 사람이 고칠 것을 두 개로 읽는다.
+    """
+    env = close_env
+
+    # (1) 이 트리가 묶음 브랜치를 들고 있지 않다 — 재배치·머지가 같은 문장을 각자 낸다.
+    _unmark_dod(env)
+    _commit(env.slot, "cluster work")
+    assert _git(env.slot, "checkout", "-q", "-b", "dev/side").returncode == 0
+    closer = env.closer(finisher=env.finisher(dod_block_fn=None))
+    assert closer._resolve_members() is None
+    wrong_branch = closer._pre_rebase()
+    assert len(wrong_branch) == 1 and wrong_branch[0] in closer._pre_merge()
+
+    bodies = _reason_bodies(closer.preflight())
+
+    assert bodies.count(wrong_branch[0]) == 1, bodies
+    assert len(bodies) == len(set(bodies)), bodies
+    # 접기가 라벨을 고르는 축 — 먼저 판정한 단계의 라벨이 남는다.
+    assert closer.preflight()[bodies.index(wrong_branch[0])].startswith(
+        f"[{_step_label(env.tf, 'rebase')}] ")
+    # 서로 다른 사유는 하나도 잃지 않는다.
+    assert any("완료 조건(DoD) 미마감" in body for body in bodies), bodies
+
+    # (2) 기준 브랜치 미선언 — 두 단계가 조기 반환으로 같은 문장을 각자 낸다.
+    _write_cluster_ledger(env.board_dir, tickets=(env.ticket,), base_branch=None)
+    undeclared = env.closer()
+    assert undeclared._resolve_members() is None
+    assert undeclared._pre_rebase() == undeclared._pre_merge() != []
+
+    bodies = _reason_bodies(undeclared.preflight())
+
+    assert bodies.count(undeclared._pre_rebase()[0]) == 1, bodies
+    assert len(bodies) == len(set(bodies)), bodies
+
+
 @requires_git
 def test_close_preflight_pass_then_pipeline_never_blocks_on_readonly_reason(
     close_env, capsys,

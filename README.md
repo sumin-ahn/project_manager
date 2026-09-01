@@ -588,10 +588,8 @@ dot notation이고 세그먼트 안 철자는 그 식별자의 정본을 따른�
 `PM_QA_RESULT_V1={"platform":"<name>","head":"<Git OID>","status":"pass","collected":N}`를
 출력해야 한다. JSON member는 이 네 개만 허용되고 중복은 거부한다. `platform`과 `head`는 전달받은
 두 값과 정확히 같아야 하며, `collected`는 bool이 아닌 양의 정수이자 현재 수집 하한 이상이어야 한다.
-명령 rc가 0이 아니거나 marker가 없거나 둘 이상이면 해당 platform은 red다. VM 기동·전송·접속은
-wrapper 소유이며 board는 이 프로토콜만 검증한다. wrapper가 만든 번들·게스트 클론·호스트 임시도
-wrapper가 치운다 — 치우는 시점은 **실행 시작**이다(중단에서는 종료 코드가 돌지 않아 "끝나면
-지운다"가 성립하지 않는다). 고정 부모 한 곳을 정하고 매 실행의 첫 동작으로 그 안을 비운다.
+명령 rc가 0이 아니거나 marker가 없거나 둘 이상이면 해당 platform은 red다. VM 기동·접속은
+wrapper 소유이며 board는 이 프로토콜만 검증한다.
 | `additional_reviewer.{timeout,idle_timeout,progress_signal}` | 엔진 기본 | 리뷰어 실행 예산(하네스별 키가 이긴다) |
 | `additional_reviewer.paths` | (없음) | 리뷰 대상 경로 |
 

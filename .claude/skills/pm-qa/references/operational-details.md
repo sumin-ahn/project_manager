@@ -35,11 +35,6 @@
   `PM_QA_RESULT_V1={"platform":"<name>","head":"<Git OID>","status":"pass","collected":N}`를
   출력한다. exact 4-key JSON, 전달값과 같은 platform/HEAD, bool 아닌 양의 정수 `collected`, rc0을
   모두 만족해야 green이며 marker 부재·복수·중복 member는 red다.
-- **wrapper는 자기가 만든 것을 치운다.** 전송용 번들·게스트 클론·호스트 임시는 그 wrapper가
-  만든 것이고 board는 그 자리를 모른다. 치우는 시점은 **실행 시작**이다 — 중단(kill·VM 다운)에서는
-  종료 코드가 돌지 않으므로 "끝나면 지운다"는 그 경우를 닫지 못한다. 고정 부모 한 곳을 정하고
-  매 실행의 첫 동작으로 그 안을 비운 뒤 새로 만든다. 이 조항이 없으면 회당 번들·클론이 그대로
-  쌓여 검증 머신의 디스크가 마르고, 그 red 는 코드 결함이 아니라 정리 부재다.
 - 1번 회귀와 3번 git은 독립이므로 multiple Bash 병렬 호출할 수 있다.
 - 비즈니스 로직 없는 thin 합성이며 실제 차단 검증은 push gate(pre-push hook)가 보증한다.
 - evidence는 선택·인스턴스 소유다.

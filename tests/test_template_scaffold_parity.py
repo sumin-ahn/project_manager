@@ -424,7 +424,10 @@ _CLOSE_STEP_COUNT_TOKEN = "7단계"
 # 그 카드가 서술하는 경로가 엔진 예산과 다르다.
 _ROUND_LABEL_RE = re.compile(r"\b(\d{2})-(architect|developer|code-reviewer)\b")
 # 카드 종결 단계 표의 행 — 이름 부분집합 대조만 하면 지워진 단계가 표에 남아도 통과한다.
-_CLOSE_STEP_TABLE_ROW_RE = re.compile(r"^\| \d+ \| ", re.M)
+# 행 판정은 표 블록 안에서 한 줄씩 한다(파일 전체 스캔이 아니다 — `_close_step_table_rows`).
+_CLOSE_STEP_TABLE_ROW_RE = re.compile(r"^\| \d+ \| ")
+# 종결 단계 표 절의 헤딩 — 행 수 단언의 대상을 이 절로 좁히는 앵커.
+_CLOSE_STEP_HEADING_PREFIX = "## 종결 "
 # 폐지된 부분 재설계 서술 — 재설계는 예산 4키를 전부 리셋해 주기를 처음부터 다시 연다.
 _RETIRED_REPLAN_PHRASE = "쌍을 뒤에 붙인다"
 
@@ -633,6 +636,32 @@ def test_shipped_reviewer_contracts_name_complete_fix_inputs(relative: str):
         assert marker in text, f"{relative}: reviewer fix 계약 marker 누락 {marker}"
 
 
+def _close_step_table_rows(path: Path) -> list[str]:
+    """카드의 **종결 단계 표 블록** 안의 행만 돌려준다(헤딩 다음 줄부터 첫 빈 줄까지).
+
+    파일 전체에서 세면 all-done recovery 절 같은 다른 번호 표가 하나만 늘어도 종결 단계와
+    무관한 이유로 red 가 된다 — 단언이 말하는 것과 실제로 세는 것을 같은 자리로 둔다.
+    """
+    lines = path.read_text(encoding="utf-8").splitlines()
+    start = next(
+        (index for index, line in enumerate(lines)
+         if line.startswith(_CLOSE_STEP_HEADING_PREFIX)
+         and _CLOSE_STEP_COUNT_TOKEN in line),
+        None,
+    )
+    assert start is not None, (
+        f"{path.relative_to(REPO)}: 종결 단계 표 절"
+        f"({_CLOSE_STEP_HEADING_PREFIX}{_CLOSE_STEP_COUNT_TOKEN} …) 이 없음"
+    )
+    block: list[str] = []
+    for line in lines[start + 1:]:
+        if line.strip():
+            block.append(line)
+        elif block:
+            break
+    return [line for line in block if _CLOSE_STEP_TABLE_ROW_RE.match(line)]
+
+
 @pytest.mark.parametrize("name", TEMPLATE_NAMES)
 def test_shipped_finish_card_carries_engine_close_steps(name: str):
     """출하 종결 카드가 엔진 종결 단계 이름 전수와 단계 수를 싣는다."""
@@ -656,7 +685,7 @@ def test_shipped_finish_card_carries_engine_close_steps(name: str):
     )
     # 부분집합 대조만으로는 **지워진 단계가 표에 남은** 형상을 못 잡는다 — 행 수까지 센다.
     for path in details:
-        rows = _CLOSE_STEP_TABLE_ROW_RE.findall(path.read_text(encoding="utf-8"))
+        rows = _close_step_table_rows(path)
         assert len(rows) == len(steps), (
             f"{path.relative_to(REPO)}: 종결 단계 표 행 {len(rows)} != 엔진 단계 {len(steps)}"
         )

@@ -11272,7 +11272,7 @@ def cmd_complete(args: argparse.Namespace) -> int:
             spec_text = handle.read()
         fm, body = load_ticket(path)
 
-        # 묶음 멤버 lifecycle mutation은 정상 8단계에 결속한다. ownership, DoD,
+        # 묶음 멤버 lifecycle mutation은 정상 종결 파이프라인에 결속한다. ownership, DoD,
         # move/dump와 board-git sync보다 앞이라 거부 시 ticket/ledger/git write가 0이다.
         binding_problem = cluster_complete_binding_problem(
             args.id, fm, getattr(args, "cluster_close", None))

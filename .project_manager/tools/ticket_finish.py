@@ -271,18 +271,6 @@ def _load_pm_log():
     )
 
 
-def _engine_temp_root(repo: Path) -> Path:
-    """그 clone 이 소유한 작업용 임시 루트 — 단일 소유자는 `pm_relay.temp_root` 다.
-
-    자리 규약(`.project_manager/.local/tmp`)을 이 도구가 다시 적지 않는다. 로더는 형제 모듈
-    경로 로드 관례 그대로다(`_load_pm_log` 동형·sys.path 무오염).
-    """
-    relay = _load_module_from_path(
-        TOOLS_DIR / "pm_relay.py", "pm_relay.py", verifier=_verify_engine_rev, cache=True,
-    )
-    return relay.temp_root(repo)
-
-
 def _load_file_lock():
     """공용 파일 프리미티브 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
 
@@ -3089,8 +3077,7 @@ class TicketFinisher:
         재현된다). `code_tree` 의 ref·index·worktree 등록은 만들지 않는다 — 원 저장소는
         읽기만 당한다(alternates 는 OID 로 객체를 해소할 뿐 이름으로 ref 를 해소하지 않는다).
         """
-        scratch = Path(tempfile.mkdtemp(
-            prefix="ticket-finish-baseline-", dir=_engine_temp_root(REPO)))
+        scratch = Path(tempfile.mkdtemp(prefix="ticket-finish-baseline-"))
         try:
             archive = subprocess.run(
                 ["git", "archive", ref], cwd=str(code_tree), capture_output=True)
@@ -5176,13 +5163,17 @@ class ClusterCloser:
 
         `--dry-run` 여부와 무관하게 항상 먼저 돈다.
         """
-        reasons: list[str] = []
+        labelled: dict[str, str] = {}
         for _key, label, precheck in self.STEPS:
             if precheck is None:
                 continue
             for reason in getattr(self, precheck)():
-                reasons.append(f"[{label}] {reason}")
-        return reasons
+                # 두 단계가 같은 조건을 각자 판정하는 자리가 있다(기준 브랜치 미선언·현재
+                # 브랜치 불일치는 재배치와 머지가 둘 다 본다). 그대로 누적하면 목록의 건수가
+                # 부풀어 사람이 고칠 것을 두 개로 읽는다 — 사유 **본문**으로 접고 먼저 만난
+                # 라벨만 남긴다. `_pre_*` 는 각자 독립 판정 그대로다(단계가 서로를 알지 않는다).
+                labelled.setdefault(reason, f"[{label}] {reason}")
+        return list(labelled.values())
 
     def run(self) -> int:
         """종결 파이프라인 실행 — 0=성공, 1=실패(그 단계에서 정지).

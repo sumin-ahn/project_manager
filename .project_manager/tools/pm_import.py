@@ -4081,15 +4081,6 @@ def _load_watchdog():
     )
 
 
-def _temp_root(root) -> Path:
-    """그 clone 이 소유한 작업용 임시 루트 — 단일 소유자는 `pm_relay.temp_root` 다.
-
-    같은 형제 모듈(`pm_relay`)을 이미 경로 로드하는 seam 을 그대로 쓴다(로더 사본 0). 형제를
-    로드하므로 **형제 rev 를 믿을 수 있는 자리에서만** 부른다.
-    """
-    return _load_watchdog().temp_root(Path(root))
-
-
 def _fill_driver(argv: list[str]) -> tuple[str, bool, str | None]:
     """실제 fill argv를 (하네스·증분 신호·stdin) 선언으로 해소한다."""
     for command, driver in FILL_DRIVER_BY_CMD.items():
@@ -8580,7 +8571,7 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
         print(f"오류: {_BOARD_SUBMODULE_PATH} 가 이미 존재 — board submodule 셋업 중단.",
               file=sys.stderr)
         return 1
-    tmp_clone = Path(tempfile.mkdtemp(prefix="pm_board_seed_", dir=_temp_root(dest_root)))
+    tmp_clone = Path(tempfile.mkdtemp(prefix="pm_board_seed_"))
     try:
         # ── 1. clone remote → temp; 비었으면 스캐폴드 seed ──
         rc, out = _board_setup_git(["clone", remote_url, str(tmp_clone)], cwd=None)
