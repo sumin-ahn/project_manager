@@ -1014,12 +1014,14 @@ _DELEGATE_ROUNDS_LEDGER_REQUIRED_FIELDS: frozenset[str] = frozenset(
 # 선택 키 셋은 하위 호환이다(기존 8키 행에는 없다) — `abandoned_at` 은 kill 잔여를 명시적으로
 # 포기(abandon)한 행에, `owner_pid` 는 준비 프로세스가 그 run 의 소유자일 때(prepare·실행·회수가
 # 한 프로세스인 cross 위임)에만, `superseded_by_ordinal` 은 산출이 시드와 달라도 재실행 대체본을
-# 운영자가 명시해 포기를 허용받은 행에만 붙는다. `cluster` 는 run-dir 이 묶음 키로 갈린 세대의
-# 행에 붙는다 — **없으면 종전 티켓 키 경로로 조립한다**(엔진 교체 시점에 열려 있던 준비가
+# 운영자가 명시해 포기를 허용받은 행에만, `discard_reason` 은 재실행 대체가 아니라 **폐기**를
+# 밝혀 포기한 행에만 붙는다(그 사유가 처분의 유일한 기록이다). `cluster` 는 run-dir 이 묶음
+# 키로 갈린 세대의 행에 붙는다 — **없으면 종전 티켓 키 경로로 조립한다**(엔진 교체 시점에 열려 있던 준비가
 # 회수 불가가 되지 않게). 검증은 필수-집합 정확 일치가 아니라 상한-집합 포함으로 완화한다:
 # 정확-일치였다면 이 키를 추가하는 순간 기존 행 전부가 schema 불일치로 건너뛰어진다.
 _DELEGATE_ROUNDS_LEDGER_OPTIONAL_FIELDS: frozenset[str] = frozenset(
-    {"abandoned_at", "owner_pid", "superseded_by_ordinal", "cluster", "base_rev"}
+    {"abandoned_at", "owner_pid", "superseded_by_ordinal", "discard_reason", "cluster",
+     "base_rev"}
 )
 # 묶음 id 는 run-dir 의 **경로 성분**이 된다 — board 이름 문법과 같은 보수적 집합만 받는다
 # (경로 구분자·상위 참조 배제). 회수측이 같은 형식을 다시 확인해 장부 값 하나로 경로가
@@ -1031,6 +1033,10 @@ ABANDON_ASSUME_DEAD_FLAG = "--assume-dead"
 # 재실행으로 대체된 라운드의 "시드 그대로" 거부를 여는 유일한 통로 — 값은 대체본 라운드의
 # ordinal 이다(자기 자신 참조는 거부). `--assume-dead` 와 같은 문구/CLI 단일 출처 원칙.
 ABANDON_SUPERSEDED_BY_FLAG = "--superseded-by"
+# 재실행 대체가 아닌 **폐기**로 처분하는 유일한 통로 — 값은 사람이 읽는 한 줄 사유다. 처분은
+# 회수 계약과 독립이지만 선언 없는 처분은 조용한 파괴라, 이 값이 그 라운드를 왜 지웠는지에 대한
+# 유일한 기록이 된다(`--superseded-by` 와 배타 · 같은 문구/CLI 단일 출처 원칙).
+ABANDON_DISCARD_REASON_FLAG = "--discard-reason"
 _DELEGATE_ROUNDS_LEDGER_FIELDS: frozenset[str] = (
     _DELEGATE_ROUNDS_LEDGER_REQUIRED_FIELDS | _DELEGATE_ROUNDS_LEDGER_OPTIONAL_FIELDS
 )
@@ -1171,6 +1177,9 @@ def _delegate_rounds_ledger_row(row: object, *, line_number: int) -> dict:
             and not isinstance(row["superseded_by_ordinal"], bool)
             and row["superseded_by_ordinal"] > 0
         ))
+        # `discard_reason` 은 그 처분의 **유일한 기록**이라 값 형식을 행 판독 자리에서 닫는다 —
+        # 빈 값·여러 줄을 통과시키면 사람이 읽을 사유가 없는 행이 "밝힌 처분" 으로 남는다.
+        or ("discard_reason" in row and not _is_valid_discard_reason(row["discard_reason"]))
         # 묶음 키는 경로 성분이 되므로 값 형식을 행 판독 자리에서 닫는다.
         or ("cluster" in row and not (
             isinstance(row["cluster"], str) and _is_valid_cluster_id(row["cluster"])
@@ -1342,6 +1351,16 @@ def _secure_machine_dir(
 def _is_valid_cluster_id(value: object) -> bool:
     """묶음 id 가 경로 성분으로 안전한 형식인가(회수·예약 양쪽이 쓰는 단일 술어)."""
     return bool(_CLUSTER_ID_RE.fullmatch(str(value or "")))
+
+
+def _is_valid_discard_reason(value: object) -> bool:
+    """폐기 사유가 조회면에 그대로 실릴 한 줄인가 (쓰기·행 판독이 쓰는 단일 술어)."""
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and "\n" not in value
+        and "\r" not in value
+    )
 
 
 def _cluster_run_relative_dir(cluster: str, run_id: str) -> Path:
@@ -2934,6 +2953,22 @@ def _abandon_raw_ledger_hint(pm_home: Path, row: dict, relay) -> str:
     )
 
 
+def _read_board_round_text(board_path: Path) -> str:
+    """board 라운드 파일의 현재 bytes — 개행 표기를 보존해 읽는다(대조·기준선 단일 판독).
+
+    부재는 여기서 답하지 않는다 — 호출부가 부재를 먼저 관측해 그 자리마다 다른 결론(선언을
+    받아 종결 / 예약 소실 거부)을 낸다.
+    """
+    try:
+        return _load_file_lock().read_text_shared(
+            board_path, encoding="utf-8", newline="",
+        )
+    except (OSError, UnicodeError) as exc:
+        raise DelegateError(
+            f"board 라운드 파일 읽기 실패: {board_path}: {exc}"
+        ) from exc
+
+
 def _abandon_liveness_problem(
     row: dict, *, copy_path: Path, pm_home: Path, relay,
 ) -> str | None:
@@ -2968,7 +3003,7 @@ def _abandon_liveness_problem(
 
 def abandon_ticket_copy(
     *, copy_path: Path, cwd: Path, pm_home: Path, assume_dead: bool = False,
-    superseded_by_ordinal: int | None = None,
+    superseded_by_ordinal: int | None = None, discard_reason: str | None = None,
 ) -> TicketAbandonResult:
     """kill 로 죽어 이어 갈 수 없는 준비를 명시적으로 정리한다 — 장부 행·board 라운드·run-dir.
 
@@ -2977,27 +3012,34 @@ def abandon_ticket_copy(
 
     1. **종료 증거**(`_abandon_liveness_problem`) — 살아 있는 run 을 지우지 않는다.
     2. **시드 그대로** — 슬롯 사본 bytes 와 board 라운드 파일의 현재 bytes 직접 대조(개행 표기만
-       정규화). 산출이 있으면 harvest 로 회수할 대상이지 지울 대상이 아니다. **예외**:
-       `superseded_by_ordinal` 로 운영자가 "이 라운드는 다른 라운드로 대체됐다" 를 명시하면
-       (finding ID 재선언 등으로 harvest 도 거부하는 재실행 대체본 한정) 이 대조를 건너뛴다 —
-       기본은 여전히 거부다. 값 형식(자기 자신 아님·1 이상)과 실재(그 ordinal 의 라운드가 이
-       티켓에 있음) 검증은 인자를 받는 즉시(시드 대조와 무관하게) 끝낸다.
+       정규화). 산출이 있으면 harvest 로 회수할 대상이지 지울 대상이 아니다. **예외는 운영자의
+       선언 둘**이고 서로 배타다: `superseded_by_ordinal` 은 "이 라운드는 재실행된 그 라운드로
+       대체됐다"(finding ID 재선언 등으로 harvest 도 거부하는 재실행 대체본 한정),
+       `discard_reason` 은 "이 라운드는 폐기한다"다. 선언이 하나도 없으면 여전히 거부다 —
+       선언 없는 처분은 조용한 파괴다. 값 형식(대체본: 자기 자신 아님·1 이상 · 폐기: 한 줄
+       비지 않은 사유)과 실재(그 ordinal 의 라운드가 이 티켓에 있음) 검증은 인자를 받는
+       즉시(시드 대조와 무관하게) 끝낸다.
     3. **최대 순번일 때만 board 파일 삭제** — 중간 순번을 지우면 `round-gap`(완료 게이트 red)을
        만든다. 중간 순번이면 board 파일을 **보존**하고 장부 행과 run-dir 만 종결한다. 거부가
        아니라 분기라서 프로토콜이 항상 수렴한다. 보존한 파일에는 엔진 표식 줄을 발행한다 —
        그 라운드는 영원히 시드 그대로라 표식이 없으면 `round-pending` 과 판정 표면에 자리표시
-       골격째로 남는다(발행은 파괴 판정 기준선을 읽은 **뒤**다).
+       골격째로 남는다(발행은 파괴 판정 기준선을 읽은 **뒤**다). **폐기 선언은 순번과 무관하게
+       보존**이고, 보존한 파일에 관측한 슬롯 산출을 그대로 옮긴 뒤 같은 표식을 붙인다 — 슬롯
+       사본이 그 산출의 유일본이라 지우기 전에 board 로 옮기지 않으면 산출이 사라진다.
+    4. **지울 자산이 둘 다 없는 행**(슬롯 사본도 board 라운드 파일도 없다) — 폐기 선언을 받아
+       장부 행만 닫는다. 자산 부재는 "판정 불능"이 아니라 그 단계가 끝난 상태다. 사본만 없고
+       board 가 살아 있으면 지울 대상이 있는데 기준선을 못 읽는 상태라 종전대로 거부다.
 
     순서는 되돌릴 수 없는 삭제를 마지막에 두고 그 앞을 전부 멱등 기록으로 만든다 — journal 없이
-    재개가 성립한다. (1) 인가 + 대체-확인 값·실재 검증 (2) 종료 판단·시드 대조 → mismatch 분기가
+    재개가 성립한다. (1) 인가 + 선언 배타·값·실재 검증 (2) 종료 판단·시드 대조 → 선언 분기가
     실제로 발화했을 때만(값이 그냥 주어졌다는 사실만으로는 아님) 생존 게이트 통과 뒤 loud +
-    `abandoned_at` 마감 행 append 에 `superseded_by_ordinal` 동반 (3) `board_lock` 안에서 최대
-    순번 재확인 + 최대면 unlink (4) 락 밖 sync (5) 슬롯 파일 재판독 후 시드(또는 **장부에 기록된**
-    대체-확인이면 이번 호출이 관측한 산출) 그대로일 때만 run-dir 삭제 — 재호출이 인자를 다시 줘도
-    장부에 기록되지 않은 값은 이 판정에 쓰지 않는다 (6) 세 자산 재판독 수렴 단언. **재호출은
-    rollback 이 아니라 남은 작업의 완료**다 — 마감 행이 이미 있는 행은 거부하지 않고 2 를
-    건너뛰고, 대체-확인 여부는 장부 행에서 다시 읽는다(재호출은 `superseded_by_ordinal` 인자를
-    다시 주지 않아도 된다).
+    `abandoned_at` 마감 행 append 에 `superseded_by_ordinal`·`discard_reason` 동반 (3)
+    `board_lock` 안에서 최대 순번 재확인 + 최대면 unlink(폐기는 보존) (4) 락 밖 산출 이관·표식
+    발행·sync (5) 슬롯 파일 재판독 후 시드(또는 **장부에 기록된** 선언이 있으면 이번 호출이
+    관측한 산출) 그대로일 때만 run-dir 삭제 — 재호출이 인자를 다시 줘도 장부에 기록되지 않은
+    값은 이 판정에 쓰지 않는다 (6) 세 자산 재판독 수렴 단언. **재호출은 rollback 이 아니라 남은
+    작업의 완료**다 — 마감 행이 이미 있는 행은 거부하지 않고 2 를 건너뛰고, 선언 여부는 장부
+    행에서 다시 읽는다(재호출은 선언 인자를 다시 주지 않아도 된다).
 
     `board_lock` 안에는 순번 판정과 unlink 만 둔다. `_rounds_mutation_sync_paths` 는
     `refresh_board` → `board_lock` 재진입이고 전역 락 순서(board_git_lock → board_lock) 역전이라
@@ -3007,6 +3049,17 @@ def abandon_ticket_copy(
     cwd = Path(cwd).resolve()
     rounds_module = _load_ticket_rounds()
     relay = _load_relay()
+    # 선언이 둘이면 장부에 어느 것이 실릴지 모호하다 — 상태를 읽기 전에 거부한다.
+    if superseded_by_ordinal is not None and discard_reason is not None:
+        raise DelegateError(
+            f"처분 선언은 하나여야 합니다 — {ABANDON_SUPERSEDED_BY_FLAG}(재실행 대체)와 "
+            f"{ABANDON_DISCARD_REASON_FLAG}(폐기)를 함께 줄 수 없습니다"
+        )
+    if discard_reason is not None and not _is_valid_discard_reason(discard_reason):
+        raise DelegateError(
+            f"폐기 사유는 비어 있지 않은 한 줄이어야 합니다: "
+            f"{ABANDON_DISCARD_REASON_FLAG}={discard_reason!r}"
+        )
     # ── 1단계: 인가 ────────────────────────────────────────────────────────
     row = _delegate_round_record(pm_home, copy_path)
     if row["harvested_at"] is not None:
@@ -3059,38 +3112,49 @@ def abandon_ticket_copy(
     )
 
     # ── 2단계: 종료 판단 + 시드 대조 → 마감 행 append(내구성 있는 intent) ──
-    # 이번 호출이 실제로 mismatch 분기를 발화해 대체-확인을 확정했는지 — 장부 기록·loud 는 이
+    # 이번 호출이 실제로 선언 분기를 발화해 대체-확인·폐기를 확정했는지 — 장부 기록·loud 는 이
     # 값이 True 일 때만 한다(값이 그냥 주어졌다는 사실만으로는 기록하지 않는다).
     superseded_confirmed_this_call = False
+    discard_confirmed_this_call = False
     if "abandoned_at" not in row:
-        if observed_slot_text is None:
+        reserved = (
+            _read_board_round_text(board_path) if os.path.lexists(board_path) else None
+        )
+        if observed_slot_text is None and reserved is None:
+            # 지울 자산이 하나도 없다 — 남은 것은 장부 행뿐이고, 그 행을 닫는 조건은 "무엇을
+            # 지우나" 가 아니라 "무엇을 밝혔나" 다.
+            if discard_reason is None:
+                raise DelegateError(
+                    "슬롯 사본도 board 라운드 파일도 없어 지울 자산이 없습니다 — 이 예약을 왜 "
+                    f"폐기하는지 {ABANDON_DISCARD_REASON_FLAG} 로 밝히고 다시 부르세요: "
+                    f"ticket={row['ticket']} · role={row['role']} · "
+                    f"ordinal={row['ordinal']} · copy={expected}"
+                )
+            discard_confirmed_this_call = True
+        elif observed_slot_text is None:
             raise DelegateError(
                 f"슬롯 라운드 파일이 없습니다(포기 판정 불능): {expected}"
             )
-        try:
-            reserved = _load_file_lock().read_text_shared(
-                board_path, encoding="utf-8", newline="",
-            )
-        except FileNotFoundError as exc:
+        elif reserved is None:
             raise DelegateError(
                 f"board 라운드 파일이 없습니다(예약 소실): {board_path}"
-            ) from exc
-        except (OSError, UnicodeError) as exc:
-            raise DelegateError(
-                f"board 라운드 파일 읽기 실패: {board_path}: {exc}"
-            ) from exc
-        if _normalized_newlines(observed_slot_text) != _normalized_newlines(reserved):
-            if superseded_by_ordinal is None:
+            )
+        elif _normalized_newlines(observed_slot_text) != _normalized_newlines(reserved):
+            # 값·실재 검증은 1단계에서 이미 끝났다 — 여기서는 이번 호출이 그 검증을 거쳐
+            # 선언 분기를 실제로 발화했다는 사실만 표시한다(장부 기록·loud 를 여는 유일한
+            # 조건).
+            if discard_reason is not None:
+                discard_confirmed_this_call = True
+            elif superseded_by_ordinal is not None:
+                superseded_confirmed_this_call = True
+            else:
                 raise DelegateError(
                     "산출이 있어 포기할 수 없습니다(시드 그대로가 아님) — `ticket harvest` 로 "
                     "회수하거나, 재실행으로 대체된 라운드라면 그 대체본 ordinal 을 "
-                    f"{ABANDON_SUPERSEDED_BY_FLAG} 로 밝히고 다시 부르세요: "
+                    f"{ABANDON_SUPERSEDED_BY_FLAG} 로, 폐기하는 라운드라면 그 사유를 "
+                    f"{ABANDON_DISCARD_REASON_FLAG} 로 밝히고 다시 부르세요: "
                     f"ticket={row['ticket']} {board_path.name}"
                 )
-            # 값·실재 검증은 1단계에서 이미 끝났다 — 여기서는 이번 호출이 그 검증을 거쳐
-            # mismatch 분기를 실제로 발화했다는 사실만 표시한다(장부 기록·loud 를 여는 유일한
-            # 조건).
-            superseded_confirmed_this_call = True
         if not assume_dead:
             problem = _abandon_liveness_problem(
                 row, copy_path=expected, pm_home=pm_home, relay=relay,
@@ -3106,18 +3170,28 @@ def abandon_ticket_copy(
                 f"오르지 않습니다): copy={copy_path}",
                 file=sys.stderr,
             )
+        if discard_confirmed_this_call:
+            print(
+                "[pm-delegate] 폐기-확인: 이 라운드를 폐기합니다 — "
+                f"ticket={row['ticket']} role={row['role']} ordinal={row['ordinal']} · "
+                f"사유={discard_reason}(산출이 있으면 board 라운드 파일로 옮기고 판정 표면에는 "
+                f"오르지 않습니다): copy={copy_path}",
+                file=sys.stderr,
+            )
         abandoned = dict(row)
         abandoned["abandoned_at"] = datetime.datetime.now(
             datetime.timezone.utc
         ).isoformat()
         if superseded_confirmed_this_call:
             abandoned["superseded_by_ordinal"] = superseded_by_ordinal
+        if discard_confirmed_this_call:
+            abandoned["discard_reason"] = discard_reason
         _append_delegate_rounds_ledger(pm_home, abandoned)
         changed = True
 
-    # 5단계의 파괴 효력은 **장부에 기록된** 대체-확인 값만 인정한다 — 재호출 인자는(다시
-    # 줬어도) 무시한다. 이번 호출이 2단계를 거쳤으면 방금 기록한 값을, 건너뛰었으면(행이 이미
-    # 닫혀 있었으면) 그 닫힌 행에 이미 기록됐던 값을 그대로 읽는다 — 검증을 거치지 않은 이번
+    # 5단계의 파괴 효력은 **장부에 기록된** 선언만 인정한다 — 재호출 인자는(다시 줬어도)
+    # 무시한다. 이번 호출이 2단계를 거쳤으면 방금 기록한 값을, 건너뛰었으면(행이 이미 닫혀
+    # 있었으면) 그 닫힌 행에 이미 기록됐던 값을 그대로 읽는다 — 검증을 거치지 않은 이번
     # 호출의 인자가 파괴 판정에 섞이지 않는다.
     superseded_marker_recorded: int | None
     if superseded_confirmed_this_call:
@@ -3127,8 +3201,12 @@ def abandon_ticket_copy(
         superseded_marker_recorded = (
             recorded if isinstance(recorded, int) and not isinstance(recorded, bool) else None
         )
+    discarded_recorded: bool = (
+        discard_confirmed_this_call or _is_valid_discard_reason(row.get("discard_reason"))
+    )
 
     # ── 3단계: board_lock 안 — 최대 순번 재확인 + 최대면 unlink (락 안은 여기까지) ──
+    # 폐기는 순번과 무관하게 보존이다 — 그 자리가 산출을 옮겨 받는 자리라 지울 수 없다.
     board_kept_reason: str | None = None
     reserved_now: str | None = None
     unlinked = False
@@ -3136,7 +3214,7 @@ def abandon_ticket_copy(
         if os.path.lexists(board_path):
             existing = rounds_module.load_rounds(board.tickets_dir(), row["ticket"])
             max_ordinal = max((item.ordinal for item in existing), default=row["ordinal"])
-            if row["ordinal"] >= max_ordinal:
+            if not discarded_recorded and row["ordinal"] >= max_ordinal:
                 try:
                     board_path.unlink()
                 except OSError as exc:
@@ -3146,28 +3224,31 @@ def abandon_ticket_copy(
                 unlinked = True
                 changed = True
             else:
-                board_kept_reason = f"중간 순번(현재 최대 순번={max_ordinal})"
-                try:
-                    reserved_now = _load_file_lock().read_text_shared(
-                        board_path, encoding="utf-8", newline="",
-                    )
-                except (OSError, UnicodeError) as exc:
-                    raise DelegateError(
-                        f"board 라운드 파일 읽기 실패: {board_path}: {exc}"
-                    ) from exc
+                board_kept_reason = (
+                    "폐기 처분(산출 이관 대상)" if discarded_recorded
+                    else f"중간 순번(현재 최대 순번={max_ordinal})"
+                )
+                reserved_now = _read_board_round_text(board_path)
 
-    # ── 4단계: 락 밖 — 보존 분기 표식 발행 + sync ─────────────────────────
+    # ── 4단계: 락 밖 — 보존 분기 산출 이관·표식 발행 + sync ────────────────
     # 발행은 `reserved_now` 재판독 **뒤**다: 5단계 파괴 판정이 그 bytes 를 기준선으로 쓰므로,
     # 앞서 붙이면 표식 자체가 "산출이 생겼다" 로 읽혀 정상 포기가 거부로 뒤집힌다. 락 안에도
     # 두지 않는다 — 그 임계구역은 순번 판정과 unlink 만 담는다(재진입 교착 주석 참조).
+    # 폐기 분기는 표식만 붙이지 않고 **관측한 슬롯 산출로 본문을 교체**한다 — 그 사본이 유일본
+    # 이라, 옮기지 않고 run-dir 을 지우면 산출이 사라진다. 표식 유무가 이관 완료의 관측이라
+    # 재호출은 두 번 쓰지 않는다.
     marker_issued = False
     if reserved_now is not None:
         baseline = _round_text_without_refused_marker(reserved_now, row["role"])
         if baseline == reserved_now:
+            moved = (
+                observed_slot_text
+                if discarded_recorded and observed_slot_text is not None
+                else reserved_now
+            )
             try:
                 rounds_module.replace_round(
-                    board_path,
-                    _round_text_with_refused_marker(reserved_now, row["role"]),
+                    board_path, _round_text_with_refused_marker(moved, row["role"]),
                 )
             except (OSError, UnicodeError) as exc:
                 raise DelegateError(
@@ -3196,10 +3277,15 @@ def abandon_ticket_copy(
             current = _read_slot_round_text(expected)
             references = [observed_slot_text]
             # board 파일이 남아 있으면(중간 순번 보존) 그 bytes 가 시드의 단일 진실이다 — 호출
-            # 사이에 착지한 쓰기까지 이 대조가 잡는다. **대체-확인 행은 예외다**: 그 board 파일은
-            # 이 run 이 산출을 낸 뒤로도 시드 그대로 남아 있으므로(harvest 되지 않았다) 시드와
-            # 영구히 어긋난다 — 이 축에서는 관측된 산출(`observed_slot_text`)이 유일한 기준선이다.
-            if reserved_now is not None and superseded_marker_recorded is None:
+            # 사이에 착지한 쓰기까지 이 대조가 잡는다. **선언이 기록된 행은 예외다**: 그 board
+            # 파일은 이 run 이 산출을 낸 뒤로도 시드 그대로 남아 있거나(대체-확인) 이관으로
+            # 산출을 받았으므로(폐기) 시드와 영구히 어긋난다 — 이 축에서는 관측된
+            # 산출(`observed_slot_text`)이 유일한 기준선이다.
+            if (
+                reserved_now is not None
+                and superseded_marker_recorded is None
+                and not discarded_recorded
+            ):
                 references.append(reserved_now)
             if any(
                 reference is None
@@ -12722,6 +12808,14 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
             "허용한다(생존 확인은 별도 축 — --assume-dead 필요 여부는 그대로)"
         ),
     )
+    abandon.add_argument(
+        ABANDON_DISCARD_REASON_FLAG, default=None, dest="discard_reason", metavar="사유",
+        help=(
+            "이 라운드를 폐기한다(재실행 대체가 아니다) — 산출이 있으면 board 라운드 파일로 "
+            "옮겨 표식을 붙이고, 사본도 board 파일도 없는 행은 이 사유로 장부만 닫는다. "
+            f"{ABANDON_SUPERSEDED_BY_FLAG} 와 함께 줄 수 없다"
+        ),
+    )
     copies = sub.add_parser("copies", help="PM 홈 delegate-rounds 장부 조회")
     copies.add_argument("--ticket", default=None, metavar="T-NNNN")
     copies.add_argument(
@@ -13023,6 +13117,7 @@ def _cmd_ticket(argv: list[str]) -> int:
                 copy_path=copy, cwd=cwd_repo, pm_home=owner,
                 assume_dead=args.assume_dead,
                 superseded_by_ordinal=args.superseded_by_ordinal,
+                discard_reason=args.discard_reason,
             )
             _write_machine_line(json.dumps({
                 "copy": str(copy.resolve()),

@@ -3851,6 +3851,10 @@ _CLOSE_STEP_KEY = "close_step"            # 장부에 남기는 단계 진행 �
 _CLUSTER_STATUS_OPEN = "open"             # 열거의 소유자는 board — 그 열거 안에 있을 때만 쓴다
 _CLUSTER_STATUS_CLOSING = "closing"
 _CLUSTER_STATUS_CLOSED = "closed"
+# 처분 종결(board `STATUS_DIRS` 안의 값 · 열거의 소유자는 board). `done` 과 달리 구현이 끝나서
+# 닫힌 것이 아니라 흡수·폐기로 닫힌 상태다 — 완료 기록 대상도 코드 산출도 없으므로 종결
+# 파이프라인의 코드 단계는 이 멤버를 대상으로 삼지 않는다.
+_TICKET_STATUS_DISCARDED = "discarded"
 _CLOSE_BOARD_POINTER_PATH = ".project_manager/board"
 _CLOSE_SUBMODULE_MODE = "160000"          # `ls-files --stage` 가 gitlink 에 쓰는 모드
 _CLOSE_MERGE_MESSAGE = "{unit} merge — {title}"
@@ -3925,6 +3929,13 @@ class ClusterCloser:
         ("board", "board·포인터 커밋", "_pre_board"),
     )
 
+    # 멤버의 코드 산출을 전제하는 단계 — 완료 기록할 티켓·커밋할 경로·재배치할 브랜치·머지할
+    # 브랜치·반납할 슬롯이 전부 살아 있는 멤버에서 나온다. 멤버가 전부 종결(처분)이면 이
+    # 단계들은 대상이 없다(머지할 것도 반납할 슬롯도 없다).
+    CODE_STEP_KEYS: frozenset[str] = frozenset(
+        {"record", "commit", "rebase", "merge", "release"}
+    )
+
     def __init__(
         self,
         cluster: str,
@@ -3964,6 +3975,10 @@ class ClusterCloser:
         self._run_delegate_fn = run_delegate_fn or self._default_run_delegate
         self._release_fn = release_fn or self._default_release
         self._board = _board_module_at(board_py)
+        # 장부가 선언한 멤버 전부와, 그중 코드 단계의 대상이 되는 **살아 있는** 멤버.
+        # 기록 축(무엇을 board 에 남기나·커밋 문안의 단위)은 선언을, 실행 축(완료 기록·커밋·
+        # 재배치·머지·반납)은 살아 있는 멤버를 본다.
+        self._declared_tickets: tuple[str, ...] = ()
         self._tickets: tuple[str, ...] = ()
 
     # ── 기본 seam 구현 ────────────────────────────────────────────────
@@ -4219,9 +4234,12 @@ class ClusterCloser:
                 "돈다(다른 브랜치를 옮기지 않는다).")
 
     def _unit(self) -> tuple[str, str]:
-        """커밋 문안이 쓰는 `(단위 표기, 제목)` — 크기 1 은 티켓 표기, 묶음은 묶음 표기."""
-        if len(self._tickets) == 1:
-            tid = self._tickets[0]
+        """커밋 문안이 쓰는 `(단위 표기, 제목)` — 크기 1 은 티켓 표기, 묶음은 묶음 표기.
+
+        단위는 **선언 멤버**로 정한다 — 멤버가 처분됐다고 해서 그 묶음이 다른 단위가 되지 않는다.
+        """
+        if len(self._declared_tickets) == 1:
+            tid = self._declared_tickets[0]
             return tid, (self._finisher._ticket_title_fn(tid) or tid)
         name_fn = getattr(self._board, "cluster_name_of", None) if self._board else None
         name = name_fn(self._cluster) if name_fn is not None else self._cluster
@@ -4627,10 +4645,11 @@ class ClusterCloser:
         return None
 
     def _board_git_paths(self) -> list[Path]:
-        """board-git 에 기록할 경로 — 묶음 장부 + 멤버 티켓 명세 (해소 실패는 정지).
+        """board-git 에 기록할 경로 — 묶음 장부 + **선언** 멤버 티켓 명세 (해소 실패는 정지).
 
-        여기서 하나라도 못 찾으면 이번 종결이 무엇을 기록해야 하는지 모르는 것이다 — 빈 목록
-        으로 접으면 아무것도 기록하지 않은 실행이 성공으로 끝난다."""
+        기록 축은 선언이다 — 처분된 멤버도 이 묶음의 멤버라 그 명세가 기록 대상에서 빠지지
+        않는다. 여기서 하나라도 못 찾으면 이번 종결이 무엇을 기록해야 하는지 모르는 것이다 —
+        빈 목록으로 접으면 아무것도 기록하지 않은 실행이 성공으로 끝난다."""
         board = self._board
         paths: list[Path] = []
         ledger_path_fn = getattr(board, "cluster_ledger_path", None) if board else None
@@ -4641,7 +4660,7 @@ class ClusterCloser:
             raise _CloseObservationFailure(
                 f"티켓 파일 조회 seam 을 로드하지 못했다 ({self._board_py}) — 무엇을 기록할지 "
                 "관측할 수 없다. board 사본을 확인하라.")
-        for tid in self._tickets:
+        for tid in self._declared_tickets:
             try:
                 found = find(tid)
             except Exception as exc:  # noqa: BLE001 — 조회 실패는 정지.
@@ -4796,15 +4815,23 @@ class ClusterCloser:
     # ── 실행 ──────────────────────────────────────────────────────────
 
     def _resolve_members(self) -> str | None:
-        """멤버 티켓 해소 — 묶음을 못 찾으면 사유(첫 부작용 앞에서 거부)."""
+        """멤버 티켓 해소 — 묶음을 못 찾으면 사유(첫 부작용 앞에서 거부).
+
+        **선언 멤버 0**(묶음 부재)과 **살아 있는 멤버 0**(선언은 있고 전부 처분됨)은 다른
+        상태다 — 전자는 대상 자체가 없어 거부이고, 후자는 코드 단계가 무대상인 정상 종결이다.
+        """
         members_fn = getattr(self._board, "cluster_members", None) if self._board else None
         if members_fn is None:
             return (f"묶음 장부 seam 을 로드하지 못했다 ({self._board_py}) — "
                     "board 사본을 확인하라.")
-        self._tickets = tuple(members_fn(self._cluster))
-        if not self._tickets:
+        self._declared_tickets = tuple(members_fn(self._cluster))
+        if not self._declared_tickets:
             return (f"묶음을 찾지 못했다: {self._cluster} — 멤버 조회는 "
                     "`board.py cluster show <이름>` 이다.")
+        self._tickets = tuple(
+            tid for tid in self._declared_tickets
+            if self._ticket_status(tid) != _TICKET_STATUS_DISCARDED
+        )
         return None
 
     def _open_all_done_block(self) -> str | None:
@@ -4819,6 +4846,10 @@ class ClusterCloser:
         if ledger is None:
             return None
         if str(ledger.get("status") or "").strip() != _CLUSTER_STATUS_OPEN:
+            return None
+        # 살아 있는 멤버가 없으면 "그 완료 기록을 누가 남겼나" 라는 질문 자체가 없다 — 기록할
+        # 멤버가 0이라 복구 문이 요구하는 통합 commit 증거도 존재하지 않는다.
+        if not self._tickets:
             return None
         if any(self._ticket_status(tid) != "done" for tid in self._tickets):
             return None
@@ -4944,7 +4975,8 @@ class ClusterCloser:
         if not (board_root / ".git").exists():
             return None, None, f"recovery는 분리 board-git이 필요하다: {board_root}"
         members = tuple(members_fn(ledger))
-        if not members or len(members) != len(set(members)) or members != self._tickets:
+        if (not members or len(members) != len(set(members))
+                or members != self._declared_tickets):
             return None, None, f"cluster 멤버 집합이 비었거나 중복·drift했다: {members}"
 
         evidence, problem = self._revision_map(
@@ -5179,6 +5211,17 @@ class ClusterCloser:
         print(f"\n[완료] {self._cluster} all-done reconcile 완료 (제품/slot write 0).")
         return 0
 
+    def _steps(self) -> tuple[tuple[str, str, str | None], ...]:
+        """이번 종결이 밟는 단계 — 살아 있는 멤버가 없으면 코드 단계가 목록에서 빠진다.
+
+        폐기를 아는 단계를 뒤에 더하는 대신 **무엇을 밟을지**를 앞에서 정한다. 그래야 그
+        단계들의 선검사(통합 브랜치 실재·묶음 브랜치 실재·완료 기록 가능)도 함께 무대상이 된다
+        — 머지할 코드도 반납할 슬롯도 없는 묶음에 브랜치를 요구하지 않는다.
+        """
+        if self._tickets:
+            return self.STEPS
+        return tuple(step for step in self.STEPS if step[0] not in self.CODE_STEP_KEYS)
+
     def preflight(self) -> list[str]:
         """첫 부작용 앞에서 읽기만으로 판정 가능한 차단 사유를 **전건** 모은다.
 
@@ -5189,7 +5232,7 @@ class ClusterCloser:
         `--dry-run` 여부와 무관하게 항상 먼저 돈다.
         """
         labelled: dict[str, str] = {}
-        for _key, label, precheck in self.STEPS:
+        for _key, label, precheck in self._steps():
             if precheck is None:
                 continue
             for reason in getattr(self, precheck)():
@@ -5219,8 +5262,14 @@ class ClusterCloser:
         if self._reconcile_integrated:
             return self._run_reconcile()
         print(f"[close] {self._cluster} 종결 시작 "
-              f"(dry_run={self._dry_run}, 멤버 {len(self._tickets)}: "
-              f"{', '.join(self._tickets)})")
+              f"(dry_run={self._dry_run}, 멤버 {len(self._declared_tickets)}: "
+              f"{', '.join(self._declared_tickets)})")
+        discarded = [
+            tid for tid in self._declared_tickets if tid not in self._tickets
+        ]
+        if discarded:
+            print(f"  처분 종결 멤버 {len(discarded)}: {', '.join(discarded)} — 코드 산출이 "
+                  f"없어 코드 단계는 대상이 아니다({', '.join(sorted(self.CODE_STEP_KEYS))})")
         try:
             reasons = self.preflight()
         except _CloseObservationFailure as failure:
@@ -5232,8 +5281,9 @@ class ClusterCloser:
             for index, reason in enumerate(reasons, start=1):
                 print(f"  {index}. {reason}", file=sys.stderr)
             return 1
-        total = len(self.STEPS)
-        for index, (key, label, _precheck) in enumerate(self.STEPS, start=1):
+        steps = self._steps()
+        total = len(steps)
+        for index, (key, label, _precheck) in enumerate(steps, start=1):
             print(f"\n[{index}/{total}] {label}...")
             try:
                 block = getattr(self, f"_step_{key}")()
