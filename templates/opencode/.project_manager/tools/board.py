@@ -9877,6 +9877,24 @@ def tier_signals(
     )
 
 
+def _section_add_owning_cluster(tid: str, path: Path) -> str | None:
+    """그 티켓의 라운드 수열을 **소유하는 묶음 장부 id**(없으면 None).
+
+    장부가 있으면 그 티켓의 라운드는 고정 예산 수열이 지배한다 — 라운드를 여는 표면은 위임
+    준비(`pm_delegate.py ticket prepare`) 하나뿐이고, 그 판정을 거치지 않는 `section-add` 가
+    같은 자리를 열면 예산이 세는 수열 밖에서 라운드가 늘어난다. 장부가 없는 티켓(발행 전
+    draft)은 예산 판정의 입력 자체가 없어 이 명령이 유일한 예약 표면이다.
+
+    손상 명세는 여기서 판정하지 않는다 — 클러스터 해소는 `ticket_cluster_from_text` 와 같은
+    규칙(필드 부재·파싱 실패는 크기 1)이고, YAML 손상 자체는 호출부의 `load_ticket` 이 loud
+    하게 낸다.
+    """
+    loaded = load_ticket_soft(path)
+    fm = loaded[0] if loaded is not None else {}
+    cluster = ticket_cluster(tid, fm if isinstance(fm, dict) else {})
+    return cluster if load_cluster(cluster) is not None else None
+
+
 def _active_ticket_path(
     tid: str, action: str, *, role: str | None = None,
 ) -> tuple[int, Path | None]:
@@ -9887,6 +9905,10 @@ def _active_ticket_path(
     상태를 `done`으로 올릴 수 없으면 setter가 있어도 실제 막힌 상황을 풀지 못한다.
     blocked/done 및 위 두 draft 예외 밖(section-add×developer|code-reviewer 등)은 같은 경계에서
     거부한다. directory 상태가 lifecycle 단일 진실인 기존 mutation 규약을 그대로 쓴다.
+
+    section-add 는 그 위에 조건이 하나 더 있다 — **묶음 장부가 없는 티켓**만 연다. 라운드
+    예약 표면은 둘이고 정의역이 겹치지 않는다: 장부가 있는 티켓은 위임 준비만(고정 예산이
+    수열을 지배한다), 장부가 없는 티켓은 이 명령만.
     """
     try:
         status, path = find_ticket_for_mutation(tid)
@@ -9907,6 +9929,19 @@ def _active_ticket_path(
         print(f"cannot {action} {tid}: currently in {status}/ "
               f"({allowed}만 허용)", file=sys.stderr)
         return 1, None
+    if action == "section-add":
+        cluster = _section_add_owning_cluster(tid, path)
+        if cluster is not None:
+            print(
+                f"cannot section-add {tid}: 묶음 장부 {cluster} 가 이 티켓의 라운드 수열을 "
+                "소유한다 — 라운드는 위임 준비가 연다(고정 예산 판정)\n"
+                "  · python3 .project_manager/tools/pm_delegate.py ticket prepare "
+                f"--ticket {tid} --role {role} --cwd <작업공간 절대경로>\n"
+                "  · 이어 시키는 단계를 같은 순번에 다시 여는 인자는 그 명령의 --help 가 "
+                "말한다.",
+                file=sys.stderr,
+            )
+            return 1, None
     return 0, path
 
 

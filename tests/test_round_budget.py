@@ -646,6 +646,133 @@ def test_the_declared_cycle_runs_and_the_next_request_is_refused(pd, budget_env)
     assert _open_runs(pd, slot, "C-cycle") == []
 
 
+def test_reopened_round_consumes_no_new_budget_step(pd, budget_env):
+    """이어 시킨 단계는 **같은 순번**을 다시 연다 — 수열이 밀리지도, 우회로가 늘지도 않는다.
+
+    변경 전에는 이어 시킨 작업이 `max + 1` 로 새 파일을 받아 같은 역할이 번호만 바꿔 반복했고,
+    그만큼 고정 수열의 남은 자리가 사라졌다. 재개방은 라운드를 만들지 않으므로 수열이 세는
+    대상이 아니고, **재개방이 아닌 새 순번 요청은 종전 판정 그대로** 거부된다.
+    """
+    pm_home, slot, tickets = budget_env
+    _seed(pm_home, tickets, "C-reopen", ["T-7100"])
+    _advance(pd, "C-reopen", "architect", pm_home=pm_home, slot=slot)
+    board = _fixture_board(pd, pm_home)
+    board_round = _rounds_dir(pm_home, "T-7100") / "01-architect.md"
+    harvested = board_round.read_bytes()
+
+    plan = pd.prepare_cluster_copy(
+        cluster="C-reopen", role="architect", cwd=slot, pm_home=pm_home,
+        reopen_ordinal=1,
+    )
+
+    assert _round_names(pm_home, "T-7100") == ["01-architect.md"]
+    assert plan.rounds[0].ordinal == 1
+    assert plan.rounds[0].board_path == board_round
+    # 슬롯 시드는 골격이 아니라 board 라운드의 현재 내용이다(이어 시키는 자리).
+    assert plan.rounds[0].path.read_bytes() == harvested
+    # 그 순번은 쓰기 사본으로 깔린다 — 읽기 전용 이전 라운드로 한 벌 더 깔지 않는다.
+    assert not (plan.rounds[0].run_dir / pd.TICKET_COPY_ROUNDS_DIRNAME
+                / "01-architect.md").exists()
+
+    plan.rounds[0].path.write_text(
+        plan.rounds[0].path.read_text(encoding="utf-8")
+        + "\n## 이어 시킨 산출\n- 재개방 실측\n",
+        encoding="utf-8", newline="",
+    )
+    outcomes = pd.harvest_cluster_copy(
+        run_dir=plan.run_dir, cwd=slot, pm_home=pm_home,
+    )
+
+    assert all(item.refusal is None for item in outcomes), outcomes
+    assert _round_names(pm_home, "T-7100") == ["01-architect.md"]
+    assert "재개방 실측" in board_round.read_text(encoding="utf-8")
+    assert len(pd.parse_architect_tests(
+        board_round.read_text(encoding="utf-8"))) == 1
+
+    rounds_after = pd._load_ticket_rounds().load_rounds(
+        board.tickets_dir(), "T-7100")
+    assert pd._cluster_cycle_roles(rounds_after, frozenset(_CYCLE)) == ("architect",)
+    with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
+        pd.prepare_cluster_copy(
+            cluster="C-reopen", role="architect", cwd=slot, pm_home=pm_home,
+        )
+    assert "다음 라운드는 developer" in str(caught.value)
+    assert _round_names(pm_home, "T-7100") == ["01-architect.md"]
+
+    following = pd.prepare_cluster_copy(
+        cluster="C-reopen", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    assert following.rounds[0].ordinal == 2
+    assert _round_names(pm_home, "T-7100") == [
+        "01-architect.md", "02-developer.md",
+    ]
+
+
+def test_a_reopened_developer_round_harvests_into_the_same_file(pd, budget_env):
+    """이어 시킨 dev 단계 — 회수 판정 입력이 시드가 아니라 **직전 산출**이어도 통과한다.
+
+    developer 회수는 예약 bytes 에서 verify 행 기준선을 뽑는데, 재개방의 그 bytes 는 시드가
+    아니라 앞 회차의 산출이다. 그 자리가 갈리면 이어 시킨 단계가 회수 불가가 된다. 회수는
+    같은 순번의 파일을 교체하고 새 순번을 만들지 않는다.
+    """
+    pm_home, slot, tickets = budget_env
+    _seed(pm_home, tickets, "C-reopen-dev", ["T-7103"])
+    _advance(pd, "C-reopen-dev", "architect", pm_home=pm_home, slot=slot)
+    _advance(pd, "C-reopen-dev", "developer", pm_home=pm_home, slot=slot)
+
+    plan = pd.prepare_cluster_copy(
+        cluster="C-reopen-dev", role="developer", cwd=slot, pm_home=pm_home,
+        reopen_ordinal=2,
+    )
+    plan.rounds[0].path.write_text(
+        plan.rounds[0].path.read_text(encoding="utf-8")
+        + "\n## 이어 시킨 산출\n- 재개방 실측\n",
+        encoding="utf-8", newline="",
+    )
+    # 이어 시킨 단계도 그 단계의 계약 대상을 실제로 만진다(회수 판정은 이 run 의 diff 를 본다).
+    target = slot / "tests" / "test_round_budget.py"
+    target.write_text(
+        target.read_text(encoding="utf-8") + "# 이어 시킨 단계의 변경\n",
+        encoding="utf-8", newline="\n",
+    )
+
+    outcome = pd.harvest_cluster_copy(
+        run_dir=plan.run_dir, cwd=slot, pm_home=pm_home,
+    )[0]
+
+    assert outcome.refusal is None, outcome.refusal
+    assert _round_names(pm_home, "T-7103") == ["01-architect.md", "02-developer.md"]
+    landed = (_rounds_dir(pm_home, "T-7103") / "02-developer.md").read_text(
+        encoding="utf-8")
+    assert "재개방 실측" in landed
+    # 다음 기대 역할은 그대로 code-reviewer 다 — 재개방이 수열을 소비하지 않았다.
+    review = pd.prepare_cluster_copy(
+        cluster="C-reopen-dev", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    assert review.rounds[0].ordinal == 3
+
+
+def test_reopening_a_missing_or_mismatched_ordinal_leaves_no_residue(pd, budget_env):
+    """재개방 대상이 없거나 역할이 다르면 예약도 run-dir 도 남기지 않고 멈춘다."""
+    pm_home, slot, tickets = budget_env
+    _seed(pm_home, tickets, "C-reopen-miss", ["T-7101"])
+    _advance(pd, "C-reopen-miss", "architect", pm_home=pm_home, slot=slot)
+
+    with pytest.raises(pd.DelegateError, match="재개방할 라운드가 없다"):
+        pd.prepare_cluster_copy(
+            cluster="C-reopen-miss", role="architect", cwd=slot, pm_home=pm_home,
+            reopen_ordinal=2,
+        )
+    with pytest.raises(pd.DelegateError, match="역할이 다르다"):
+        pd.prepare_ticket_copy(
+            ticket="T-7101", role="developer", cwd=slot, pm_home=pm_home,
+            reopen_ordinal=1,
+        )
+
+    assert _round_names(pm_home, "T-7101") == ["01-architect.md"]
+    assert _open_runs(pd, slot, "C-reopen-miss") == []
+
+
 def _prepare_recorded_developer(pd, budget_env, *, phase: str, suffix: str):
     pm_home, slot, tickets = budget_env
     ticket = f"T-{suffix}"
@@ -932,6 +1059,33 @@ def test_cli_prepare_refuses_over_budget_with_the_stop_prescription(
     assert "고정 라운드 종료" in err
     assert "추가 라운드 없이 정지·보고" in err
     assert "replan" not in err and "--force" not in err
+
+
+def test_cli_prepare_reopens_the_named_ordinal_and_refuses_a_zero(
+        pd, budget_env, monkeypatch, capsys):
+    """CLI 인자 하나가 재개방을 연다 — 새 서브커맨드도, 암묵 재개방도 없다."""
+    pm_home, slot, tickets = budget_env
+    _seed(pm_home, tickets, "C-cli-reopen", ["T-7102"])
+    _advance(pd, "C-cli-reopen", "architect", pm_home=pm_home, slot=slot)
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _repo: pm_home)
+    monkeypatch.setattr(pd, "_repo_root_for_cwd", lambda cwd: Path(cwd))
+    monkeypatch.setattr(pd, "local_config", lambda *_a, **_k: {})
+    monkeypatch.setattr(pd, "_reject_cross_role_prepare", lambda *_a, **_k: None)
+    capsys.readouterr()
+
+    rc = pd.main(["ticket", "prepare", "--ticket", "T-7102", "--role", "architect",
+                  pd.PREPARE_REOPEN_ORDINAL_FLAG, "1", "--cwd", str(slot)])
+
+    assert rc == 0
+    machine = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert machine["ordinal"] == 1
+    assert _round_names(pm_home, "T-7102") == ["01-architect.md"]
+
+    with pytest.raises(SystemExit) as caught:
+        pd.main(["ticket", "prepare", "--ticket", "T-7102", "--role", "architect",
+                 pd.PREPARE_REOPEN_ORDINAL_FLAG, "0", "--cwd", str(slot)])
+    assert caught.value.code == 2
+    assert "1 이상" in capsys.readouterr().err
 
 
 # ════════════════════════════════════════════════════════════════════════

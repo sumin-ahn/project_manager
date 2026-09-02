@@ -277,11 +277,13 @@ def _declare_rounds(tickets: Path, members, rounds, *, cluster: str | None = Non
 
 
 def _write_spec(
-    tickets: Path, ticket: str, *, rounds=("developer",), **kwargs,
+    tickets: Path, ticket: str, *, rounds=("developer",), ledger: bool = True, **kwargs,
 ) -> Path:
+    """명세(+ 기본으로 크기 1 묶음 장부) 1건 — `ledger=False` 는 장부가 없는 티켓이다."""
     path = tickets / f"{ticket}-rounds.md"
     path.write_text(_spec_text(ticket, **kwargs), encoding="utf-8", newline="\n")
-    _declare_rounds(tickets, ticket, rounds)
+    if ledger:
+        _declare_rounds(tickets, ticket, rounds)
     return path
 
 
@@ -3961,11 +3963,17 @@ def _design_spec_text(
 
 
 def _write_design_spec(
-    tickets: Path, ticket: str, *, rounds=("developer",), **kwargs,
+    tickets: Path, ticket: str, *, rounds=("developer",), ledger: bool = True, **kwargs,
 ) -> Path:
+    """명세(+ 기본으로 크기 1 묶음 장부) 1건.
+
+    `ledger=False` 는 **장부가 없는 티켓**이다 — 라운드 예약 표면이 `board section-add` 하나뿐인
+    자리(장부가 있는 티켓의 라운드는 위임 준비만 연다).
+    """
     path = tickets / f"{ticket}-rounds.md"
     path.write_text(_design_spec_text(ticket, **kwargs), encoding="utf-8", newline="\n")
-    _declare_rounds(tickets, ticket, rounds)
+    if ledger:
+        _declare_rounds(tickets, ticket, rounds)
     return path
 
 
@@ -4216,8 +4224,11 @@ def test_all_three_entry_points_report_the_identical_rejection_reason(
         )
     message1 = str(caught1.value)
 
+    # 진입점 3 은 장부가 없는 티켓의 표면이다 — 두 표면의 정의역이 겹치지 않으므로 대상
+    # 티켓이 다르고, 그래도 사유 문자열은 같아야 한다(판정이 한 seam 에만 있다).
+    _write_design_spec(tickets, "T-8142", design="n/a", ledger=False)
     board_fixture = _fixture_board(pd, home, [])
-    rc3 = board_fixture.main(["section-add", "T-8140", "--role", "developer"])
+    rc3 = board_fixture.main(["section-add", "T-8142", "--role", "developer"])
     err3 = capsys.readouterr().err
     assert rc3 == 1
     assert err3.rstrip("\n") == f"cannot section-add: {message1}"
@@ -4262,7 +4273,7 @@ def test_disabling_the_design_gate_turns_every_rejection_shape_green(
     )
     assert plan.board_path.name == "01-developer.md"
 
-    _write_design_spec(tickets, "T-8131", design="n/a")
+    _write_design_spec(tickets, "T-8131", design="n/a", ledger=False)
     rc = board_fixture.main(["section-add", "T-8131", "--role", "developer"])
     assert rc == 0
 
@@ -4288,7 +4299,9 @@ def test_forcing_the_design_gate_turns_every_pass_shape_red(pd, rounds_env, monk
             ticket="T-8132", role="developer", cwd=slot, pm_home=pm_home,
         )
 
-    _write_spec(tickets, "T-8133")
+    # 진입점 3 의 정의역은 장부가 없는 티켓이다 — 장부를 얹으면 이 rc 는 강제 거부가 아니라
+    # 정의역 거부가 되어 이 테스트가 판정을 더 이상 보지 않는다.
+    _write_spec(tickets, "T-8133", ledger=False)
     rc = board_fixture.main(["section-add", "T-8133", "--role", "developer"])
     assert rc == 1
 

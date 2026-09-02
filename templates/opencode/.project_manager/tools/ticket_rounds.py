@@ -13,6 +13,8 @@
   - 티켓 전역 순번 예약(`reserve_round`) — 채번과 배타 생성을 호출자가 넘긴 락 컨텍스트 안에서
     한 번에 끝낸다. 두 예약이 같은 번호를 계산할 수 있는 창이 그 구간뿐이라 락은 짧고,
     회수(`replace_round`)에는 락이 없다(교체 대상이 자기 파일 하나).
+  - 예약된 순번의 재개방(`reopen_round`) — 채번 없이 그 자리만 다시 연다. 한 단계를 이어
+    시켜도 순번이 늘지 않고, 산출은 회수가 그 파일을 교체한다(지나간 판은 board git).
   - 로드·판정·렌더(`load_rounds`·`verify_rounds`·`render_rounds_for_show`).
 
 소유하지 않는 것: 보드 경로 해소와 락 자체(호출자가 `tickets_dir` 와 락 컨텍스트를 넘긴다 —
@@ -596,6 +598,55 @@ def reserve_round(
             raise RoundsError(
                 f"라운드 예약 충돌 — 이미 있는 파일: {path} (같은 순번을 두 예약이 잡았다)"
             ) from exc
+    return path
+
+
+def reopen_round(
+    tickets_dir: Path | str, ticket_id: str, role: str, *, ordinal: int, lock,
+) -> Path:
+    """이미 예약된 그 순번을 **다시 열어** 경로만 돌려준다 — 채번도 생성도 하지 않는다.
+
+    한 단계를 이어 시키는 자리다. 이어 시킬 때마다 새 순번을 채번하면 같은 역할이 번호만 바꿔
+    반복되고 고정 예산의 수열이 그만큼 밀린다. 재개방은 순번을 그대로 두고, 산출은 회수가
+    `replace_round` 로 그 파일을 교체한다 — 지나간 판은 board git 이 들고 있다(라운드 파일 안에
+    이력을 쌓지 않는다).
+
+    통과 조건은 하나다: **그 순번이 실재하고 역할이 요청과 같다**. 없는 순번이나 다른 역할의
+    순번을 열면 순번↔역할 결속이 깨지고, 한 순번을 둘이 쥔 상태(`round-dup`)면 어느 파일을
+    여는지가 조용히 갈린다 — 셋 다 거부다.
+
+    락은 예약과 같은 구간을 잡는다 — 판정과 반환 사이에 다른 예약이 이 디렉터리를 바꿀 수 있는
+    창이 그 구간이다(보드 락은 재진입이 없어 호출자는 잡지 않은 채 넘긴다).
+    """
+    _require_role(role)
+    if lock is None:
+        raise RoundsError(
+            "라운드 재개방에는 락 컨텍스트가 필요하다 — 판정+반환을 직렬화하지 않으면 그사이 "
+            "예약이 같은 자리를 바꾼다 (호출자가 board_lock() 을 넘긴다)"
+        )
+    directory = rounds_dir_for_ticket(ticket_id, tickets_dir)
+    with lock:
+        existing = _scan_round_files(directory)
+        matched = [item for item in existing if item[0] == ordinal]
+        if not matched:
+            reserved = ", ".join(
+                round_filename(item[0], item[1]) for item in existing
+            ) or "없음"
+            raise RoundsError(
+                f"재개방할 라운드가 없다: {ticket_id} ordinal={ordinal} "
+                f"(예약된 라운드: {reserved})"
+            )
+        if len(matched) > 1:
+            raise RoundsError(
+                f"재개방 대상이 모호하다 — 순번 중복: {ticket_id} ordinal={ordinal} "
+                f"({', '.join(sorted(item[1] for item in matched))})"
+            )
+        _ordinal, found_role, path = matched[0]
+        if found_role != role:
+            raise RoundsError(
+                f"재개방 대상의 역할이 다르다: {ticket_id} ordinal={ordinal} "
+                f"role={found_role} · 요청={role} (한 순번은 한 역할이다)"
+            )
     return path
 
 

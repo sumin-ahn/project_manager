@@ -355,6 +355,156 @@ def test_reserve_round_refuses_to_overwrite_when_the_scan_was_stale(
     assert existing.read_bytes() == before
 
 
+# ── 재개방 (같은 순번을 다시 연다) ─────────────────────────────────────────
+
+def _architect_output(delegate, marker: str) -> str:
+    """architect 라운드 산출 — 테스트 계약 블록 **한 벌**을 든 실제 회수 형상."""
+    payload = json.dumps({
+        "version": delegate.ARCHITECT_TEST_VERSION,
+        "tests": [{
+            "id": "AT-001", "target": "tests/test_ticket_rounds.py",
+            "command": "python3 -m pytest tests/test_ticket_rounds.py -q",
+            "expected": "passed", "negative": f"{marker} 없이 통과하면 계약이 헐겁다",
+        }],
+    }, ensure_ascii=False, separators=(",", ":"))
+    return (
+        f"## 설계 (architect · 2026-01-03)\n\n## 경계 실측\n- {marker}\n\n"
+        "## 불변식\n- 한 단계 = 한 순번\n\n## 표면 상한\n- 재개방 1건\n\n"
+        "## 테스트 전략\n- 정상·실패\n\n"
+        f"```{delegate.ARCHITECT_TEST_BLOCK}\n{payload}\n```\n\n검토 판정: 설계 통과\n"
+    )
+
+
+def test_reopen_round_keeps_the_ordinal_and_replaces_the_file(
+    rounds, tickets_dir, delegate,
+):
+    """이어 시킨 단계는 순번을 늘리지 않는다 — 같은 자리를 다시 열고 그 파일을 교체한다.
+
+    변경 전에는 이 자리가 없어 이어 시킨 작업이 `max + 1` 로 새 파일을 받았고, 같은 역할이
+    번호만 바꿔 반복됐다. 교체이므로 계약 블록은 한 벌 그대로다(절을 더하는 처방은 반려).
+    """
+    first = _reserve(rounds, tickets_dir, "T-0001", "architect")
+    _reserve(rounds, tickets_dir, "T-0001", "developer")
+    rounds.replace_round(first, _architect_output(delegate, "1차 산출"))
+    before = sorted(item.name for item in first.parent.iterdir())
+
+    reopened = rounds.reopen_round(
+        tickets_dir, "T-0001", "architect", ordinal=1, lock=threading.Lock(),
+    )
+
+    assert reopened == first
+    assert sorted(item.name for item in first.parent.iterdir()) == before
+    # 재개방이 여는 것은 자리뿐이다 — 슬롯 시드가 될 현재 내용은 손대지 않는다.
+    assert reopened.read_text(encoding="utf-8") == _architect_output(delegate, "1차 산출")
+
+    rounds.replace_round(reopened, _architect_output(delegate, "이어 시킨 산출"))
+
+    assert sorted(item.name for item in first.parent.iterdir()) == before
+    text = first.read_text(encoding="utf-8")
+    assert "이어 시킨 산출" in text and "1차 산출" not in text
+    assert len(delegate.parse_architect_tests(text)) == 1
+    loaded = rounds.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    assert [(item.ordinal, item.role) for item in loaded] == [
+        (1, "architect"), (2, "developer"),
+    ]
+    assert [problem.code for problem in rounds.verify_rounds(
+        tickets_dir, "T-0001", ticket_text=TICKET_TEXT,
+    )] == [rounds.PROBLEM_PENDING]      # 손대지 않은 02 하나뿐 — gap·dup 없음
+
+
+def test_reopen_round_refuses_a_missing_or_mismatched_ordinal(rounds, tickets_dir):
+    """없는 순번·다른 역할의 순번은 열지 않는다 — 한 순번은 한 역할이다."""
+    _reserve(rounds, tickets_dir, "T-0001", "architect")
+    before = sorted(item.name for item in (tickets_dir / "rounds" / "T-0001").iterdir())
+
+    with pytest.raises(rounds.RoundsError, match="재개방할 라운드가 없다"):
+        rounds.reopen_round(
+            tickets_dir, "T-0001", "developer", ordinal=2, lock=threading.Lock(),
+        )
+    with pytest.raises(rounds.RoundsError, match="역할이 다르다"):
+        rounds.reopen_round(
+            tickets_dir, "T-0001", "developer", ordinal=1, lock=threading.Lock(),
+        )
+    with pytest.raises(rounds.RoundsError, match="재개방할 라운드가 없다"):
+        rounds.reopen_round(
+            tickets_dir, "T-0001", "architect", ordinal=0, lock=threading.Lock(),
+        )
+
+    assert sorted(
+        item.name for item in (tickets_dir / "rounds" / "T-0001").iterdir()
+    ) == before
+
+
+def test_reopen_round_without_a_lock_is_refused_before_touching_the_disk(
+    rounds, tickets_dir,
+):
+    _reserve(rounds, tickets_dir, "T-0001", "architect")
+    with pytest.raises(rounds.RoundsError, match="락"):
+        rounds.reopen_round(
+            tickets_dir, "T-0001", "architect", ordinal=1, lock=None,
+        )
+
+
+def test_reopen_round_judges_inside_the_caller_lock(rounds, tickets_dir):
+    """판정과 반환 사이가 예약과 같은 창이다 — 그 구간을 호출자 락이 덮는다."""
+    reserved = _reserve(rounds, tickets_dir, "T-0001", "developer")
+    lock = RecordingLock(lambda: reserved.exists())
+    rounds.reopen_round(
+        tickets_dir, "T-0001", "developer", ordinal=1, lock=lock,
+    )
+    assert lock.entered == 1
+    assert lock.events == [("enter", True), ("exit", True)]
+
+
+def test_reopen_round_refuses_an_ambiguous_duplicate_ordinal(rounds, tickets_dir):
+    """한 순번을 둘이 쥔 상태에서는 어느 파일을 여는지 고르지 않는다."""
+    directory = tickets_dir / "rounds" / "T-0001"
+    directory.mkdir(parents=True)
+    for role in ("architect", "developer"):
+        (directory / f"01-{role}.md").write_text(
+            f"## 산출 ({role} · 2026-01-03)\n\n내용\n", encoding="utf-8",
+        )
+    with pytest.raises(rounds.RoundsError, match="순번 중복"):
+        rounds.reopen_round(
+            tickets_dir, "T-0001", "developer", ordinal=1, lock=threading.Lock(),
+        )
+
+
+def test_a_deleted_round_is_restored_from_the_board_git_record(
+    rounds, tickets_dir, delegate,
+):
+    """빈 순번의 유일한 처방 — 기록에 남은 그 파일을 되쓰고 엔진 표식을 붙인다.
+
+    엔진은 빈 순번을 만들지 않는다(포기는 최대 순번만 지우고 중간 순번은 보존한다). 사람이
+    직접 지운 자리는 board git 이 든 그 bytes 를 공용 교체 seam 으로 되쓰면 채워지고, 엔진
+    표식이 그 라운드를 판정 표면 밖에 세운다 — 되살린 시드가 `round-pending` 으로 남지 않고
+    직전 산출로도 서지 않는다. 새 규약을 만들지 않는다는 것이 이 테스트의 내용이다.
+    """
+    for role in ("architect", "developer", "code-reviewer"):
+        path = _reserve(rounds, tickets_dir, "T-0001", role)
+        rounds.replace_round(path, f"## 산출 ({role} · 2026-01-03)\n\n내용\n")
+    # board git 이 든 그 순번의 기록(여기서는 산출 없는 시드였다) + 사람이 직접 rm 한 상태.
+    recorded = _seed(rounds, "developer")
+    target = tickets_dir / "rounds" / "T-0001" / "02-developer.md"
+    target.unlink()
+    assert [problem.code for problem in rounds.verify_rounds(
+        tickets_dir, "T-0001", ticket_text=TICKET_TEXT,
+    )] == [rounds.PROBLEM_GAP]
+
+    rounds.replace_round(
+        target, recorded + delegate.pm_review_refused_line("developer") + "\n",
+    )
+
+    assert rounds.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT) == []
+    loaded = rounds.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    assert [(item.ordinal, item.role) for item in loaded] == [
+        (1, "architect"), (2, "developer"), (3, "code-reviewer"),
+    ]
+    restored = next(item for item in loaded if item.ordinal == 2)
+    assert not restored.pending
+    assert rounds.latest_round_of_role(loaded, "developer") is None
+
+
 def test_temporary_round_path_stays_outside_the_round_name_grammar(rounds, tickets_dir):
     target = tickets_dir / "rounds" / "T-0001" / "01-developer.md"
     temporary = rounds._temporary_round_path(target)

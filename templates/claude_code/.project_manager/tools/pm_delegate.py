@@ -1037,6 +1037,9 @@ ABANDON_SUPERSEDED_BY_FLAG = "--superseded-by"
 # 회수 계약과 독립이지만 선언 없는 처분은 조용한 파괴라, 이 값이 그 라운드를 왜 지웠는지에 대한
 # 유일한 기록이 된다(`--superseded-by` 와 배타 · 같은 문구/CLI 단일 출처 원칙).
 ABANDON_DISCARD_REASON_FLAG = "--discard-reason"
+# 이어 시키는 단계를 **같은 순번**에 다시 여는 유일한 통로 — 값은 그 라운드의 ordinal 이다.
+# 요청이 없으면 준비는 종전대로 새 순번을 채번한다(암묵 재개방 없음 · 같은 문구/CLI 단일 출처).
+PREPARE_REOPEN_ORDINAL_FLAG = "--reopen-ordinal"
 _DELEGATE_ROUNDS_LEDGER_FIELDS: frozenset[str] = (
     _DELEGATE_ROUNDS_LEDGER_REQUIRED_FIELDS | _DELEGATE_ROUNDS_LEDGER_OPTIONAL_FIELDS
 )
@@ -1892,8 +1895,26 @@ def _cluster_budget_refusal(
     return None
 
 
+def _reopen_round_path(
+    rounds_module, tickets_dir, ticket: str, role: str, *, ordinal: int, lock,
+) -> Path:
+    """재개방 대상 라운드의 경로 — 판정은 사이드카 seam 하나가 소유한다.
+
+    준비는 이 호출을 두 번 한다(run-dir 만들기 전 사전판정 · board_lock 안 최종). 두 지점이
+    같은 규칙을 봐야 흔한 실패가 잔여 없이 끝나고 경합 실패도 같은 문구로 거부된다. 오류형만
+    이 층의 것으로 옮긴다 — 준비의 다른 거부와 같은 rc·같은 경로로 나온다.
+    """
+    try:
+        return rounds_module.reopen_round(
+            tickets_dir, ticket, role, ordinal=ordinal, lock=lock,
+        )
+    except rounds_module.RoundsError as exc:
+        raise DelegateError(f"{ticket}: {exc}") from exc
+
+
 def prepare_ticket_copy(
     *, ticket: str, role: str, cwd: Path, pm_home: Path, owner_pid: int | None = None,
+    reopen_ordinal: int | None = None,
 ) -> TicketCopyPlan:
     """티켓 하나의 라운드를 준비한다 — **크기 1 묶음 호출**의 얇은 래퍼.
 
@@ -1913,14 +1934,14 @@ def prepare_ticket_copy(
     cluster = board.ticket_cluster_from_text(ticket, spec_text)
     plan = prepare_cluster_copy(
         cluster=cluster, tickets=(ticket,), role=role, cwd=cwd, pm_home=pm_home,
-        owner_pid=owner_pid,
+        owner_pid=owner_pid, reopen_ordinal=reopen_ordinal,
     )
     return plan.rounds[0]
 
 
 def prepare_cluster_copy(
     *, cluster: str, tickets: Sequence[str] | None = None, role: str, cwd: Path,
-    pm_home: Path, owner_pid: int | None = None,
+    pm_home: Path, owner_pid: int | None = None, reopen_ordinal: int | None = None,
 ) -> ClusterCopyPlan:
     """board 에 티켓별 라운드 순번을 시드로 예약하고, 같은 파일들을 run-dir 하나에 깐다.
 
@@ -1959,6 +1980,12 @@ def prepare_cluster_copy(
     (per-ticket 상한과 같은 창).
     장부가 없거나 예산을 선언하지 않았으면 그 요청은 멈춘다(무제한·순서 무검사로 접는 갈래가
     없다).
+
+    `reopen_ordinal` 은 **이어 시키는 단계**의 명시 요청이다 — 그 순번을 채번하지 않고 다시 열어
+    (`reopen_round`) 슬롯 사본을 **board 라운드 파일의 현재 내용**으로 시드한다(시드 골격이
+    아니다). 재개방은 라운드를 만들지 않으므로 수를 세는 두 판정(묶음 고정 예산 수열·역할별
+    per-ticket 상한)의 대상이 아니고, 대신 "그 순번이 있고 역할이 같다"를 예약 seam 이 판정한다.
+    요청이 없으면 종전대로 새 순번을 채번한다(암묵 재개방 없음).
     """
     if role not in TICKET_COPY_PREPARE_ROLES:
         raise DelegateError(f"티켓 라운드 준비 미지원 역할: {role}")
@@ -2034,6 +2061,16 @@ def prepare_cluster_copy(
     # 같은 요청이 두 사유로 갈리지 않는다). 여기도 신뢰 뿌리가 아니다. 빈 수열은 판정을
     # 건너뛰는 값이 아니라 모든 요청을 거부하는 값이다.
     for ticket in members:
+        if reopen_ordinal is not None:
+            # 재개방은 라운드를 만들지 않는다 — 수열도 상한도 예약 수를 세는 판정이라 대상이
+            # 아니다(불변식 4). 대신 대상 실재·역할 일치를 여기서 미리 본다: 신뢰 뿌리는 아래
+            # (4) 의 board_lock 안 같은 호출이고, 이 자리는 run-dir 을 만들기 전에 흔한 실패를
+            # 끝내는 자리다.
+            _reopen_round_path(
+                rounds_module, tickets_dir, ticket, role,
+                ordinal=reopen_ordinal, lock=board.board_lock(),
+            )
+            continue
         refusal = _cluster_budget_refusal(
             cluster=cluster, ticket=ticket, role=role,
             existing=existing_rounds[ticket], sequence=budget_sequence,
@@ -2044,7 +2081,7 @@ def prepare_cluster_copy(
     # ── (1.5) 내부 라운드 상한 — 빠른 실패 사전판정. 신뢰 뿌리가 아니다: 최종 판정은
     # 아래 (4) 의 board_lock 임계구역이 최신 스냅샷으로 다시 낸다. 이 사전판정은 상한을 넘은
     # 흔한(비경합) 요청이 run-dir 을 만들기 전에 끝나게 하는 최적화일 뿐이다.
-    if role in DEFAULT_INTERNAL_ROUND_LIMITS:
+    if role in DEFAULT_INTERNAL_ROUND_LIMITS and reopen_ordinal is None:
         for ticket in members:
             count = _internal_round_count(existing_rounds[ticket], role)
             if count >= limit:
@@ -2099,17 +2136,22 @@ def prepare_cluster_copy(
             # ── (3) 티켓별 시드 렌더 — 설계 근거 게이트가 여기서 거부한다(예약 전·잔여 0).
             for ticket in members:
                 try:
-                    seeds[ticket] = _ticket_round_seed(
-                        rounds_module, role, specs[ticket],
-                        # 프리필 공급원 규칙(같은 역할 직전 라운드 · 산출 없는 라운드 배제)은
-                        # 사이드카 seam 하나가 소유한다 — 여기서 다시 구현하면 예약측·판정측
-                        # 규칙이 갈린다.
-                        rounds_module.previous_round_of_role(existing_rounds[ticket], role),
-                        today=datetime.date.today().isoformat(),
-                        # developer 골격의 verify 프리필 입력 — 이미 손에 든 라운드를 그대로
-                        # 넘긴다(신규 로드 0).
-                        rounds=existing_rounds[ticket],
-                    )
+                    # 재개방의 시드는 골격이 아니라 board 라운드 파일의 현재 내용이라 여기서
+                    # 렌더하지 않는다 — 최신 bytes 를 (4) 의 board_lock 안에서 읽어 채운다.
+                    if reopen_ordinal is None:
+                        seeds[ticket] = _ticket_round_seed(
+                            rounds_module, role, specs[ticket],
+                            # 프리필 공급원 규칙(같은 역할 직전 라운드 · 산출 없는 라운드
+                            # 배제)은 사이드카 seam 하나가 소유한다 — 여기서 다시 구현하면
+                            # 예약측·판정측 규칙이 갈린다.
+                            rounds_module.previous_round_of_role(
+                                existing_rounds[ticket], role,
+                            ),
+                            today=datetime.date.today().isoformat(),
+                            # developer 골격의 verify 프리필 입력 — 이미 손에 든 라운드를
+                            # 그대로 넘긴다(신규 로드 0).
+                            rounds=existing_rounds[ticket],
+                        )
                     # 사본 프리앰블이 실을 값 — 시드가 방금 쓴 것과 같은 함수·같은 입력이다
                     # (리뷰 채널이 아닌 역할은 실을 값 자체가 없다).
                     next_finding_ids[ticket] = (
@@ -2148,6 +2190,10 @@ def prepare_cluster_copy(
                             "티켓 라운드 준비는 open/claimed 또는 draft×architect만 허용: "
                             f"{ticket} role={role} currently in {fresh_status}/"
                         )
+                    if reopen_ordinal is not None:
+                        # 재개방은 순번을 늘리지 않아 수열·상한이 볼 것이 없다 — 이 티켓의
+                        # 재확인은 아래 예약 루프의 `reopen_round` 가 최신 스캔으로 낸다.
+                        continue
                     fresh_existing = rounds_module.load_rounds(
                         tickets_dir, ticket, ticket_text=specs[ticket],
                     )
@@ -2169,12 +2215,22 @@ def prepare_cluster_copy(
                                 )
                             )
                 for ticket in members:
-                    # 이 함수가 이미 board_lock 을 쥐고 있다(재진입 금지) — reserve_round 자신의
-                    # `with lock:` 은 null 컨텍스트로 채워 채번+생성이 같은 임계구역 안에서 돈다.
-                    board_path = rounds_module.reserve_round(
-                        tickets_dir, ticket, role, content=seeds[ticket],
-                        lock=contextlib.nullcontext(),
-                    )
+                    # 이 함수가 이미 board_lock 을 쥐고 있다(재진입 금지) — 두 seam 자신의
+                    # `with lock:` 은 null 컨텍스트로 채워 판정+생성이 같은 임계구역 안에서 돈다.
+                    if reopen_ordinal is None:
+                        board_path = rounds_module.reserve_round(
+                            tickets_dir, ticket, role, content=seeds[ticket],
+                            lock=contextlib.nullcontext(),
+                        )
+                    else:
+                        board_path = _reopen_round_path(
+                            rounds_module, tickets_dir, ticket, role,
+                            ordinal=reopen_ordinal, lock=contextlib.nullcontext(),
+                        )
+                        # 슬롯 시드 = 이 임계구역에서 읽은 board bytes. 회수의 "산출 없음"
+                        # 판정이 슬롯과 board 를 직접 대조하므로, 낡은 판독을 깔면 손대지 않은
+                        # 사본이 산출로 읽혀 옛 내용을 board 에 다시 쓴다.
+                        seeds[ticket] = _read_board_round_text(board_path)
                     board_paths[ticket] = board_path
                     # 반환 즉시, **락 이탈 전** 같은 락 본문 안에서 예약 성공 상태와 복구 좌표를
                     # 기록한다. `exclusive_file_lock` 은 unlock/close 실패를 올리는 계약이라,
@@ -2219,9 +2275,13 @@ def prepare_cluster_copy(
                         + _reserved_round_residue(board_rel, ordinal)
                     ) from exc
                 # 이전 라운드는 읽기 전용 입력이다 — 시드 그대로인 미회수 라운드도 함께 깐다
-                # (진행 중 다른 역할의 자리를 숨기지 않는다).
+                # (진행 중 다른 역할의 자리를 숨기지 않는다). 재개방한 순번은 **쓰기 사본**이
+                # 그 자리라 여기서 빠진다 — 같은 파일을 읽기 전용으로 한 벌 더 깔면 어느 쪽에
+                # 쓰는지가 모호해진다.
                 try:
                     for item in existing_rounds[ticket]:
+                        if item.path.name == board_path.name:
+                            continue
                         _write_exclusive_file(
                             rounds_dir / item.path.name,
                             item.text.encode("utf-8"),
@@ -12781,6 +12841,15 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
         help="developer 2티어(normal/hard) — 그 외 역할은 항상 normal 로 강제(cross 채널 판정 입력, "
              "flat CLI와 같은 규칙)",
     )
+    prepare.add_argument(
+        PREPARE_REOPEN_ORDINAL_FLAG, type=int, default=None, dest="reopen_ordinal",
+        metavar="N",
+        help=(
+            "이미 예약된 순번 N 을 다시 연다(이어 시키는 단계 — 새 순번을 만들지 않는다). "
+            "그 순번이 실재하고 역할이 --role 과 같아야 하며, 슬롯 사본은 board 라운드 파일의 "
+            "현재 내용으로 시드된다(회수가 그 파일을 교체하고 지나간 판은 board git 이 갖는다)"
+        ),
+    )
     prepare.add_argument("--cwd", required=True, metavar="ABSPATH")
     harvest = sub.add_parser(
         "harvest", help="slot 라운드 파일로 board 라운드 파일을 교체하고 run 을 닫음",
@@ -13083,9 +13152,14 @@ def _cmd_ticket(argv: list[str]) -> int:
                 parser.error("--cluster는 board 클러스터 장부 id 형식이어야 합니다")
             tier = args.tier if (args.role == "developer" and args.tier) else "normal"
             _reject_cross_role_prepare(args.role, tier, owner_conf)
+            if args.reopen_ordinal is not None and args.reopen_ordinal < 1:
+                parser.error(
+                    f"{PREPARE_REOPEN_ORDINAL_FLAG} 은 1 이상의 라운드 순번이어야 합니다"
+                )
             if args.cluster:
                 cluster_plan = prepare_cluster_copy(
                     cluster=args.cluster, role=args.role, cwd=cwd_repo, pm_home=owner,
+                    reopen_ordinal=args.reopen_ordinal,
                 )
                 for round_plan in cluster_plan.rounds:
                     _write_machine_line(json.dumps({
@@ -13102,6 +13176,7 @@ def _cmd_ticket(argv: list[str]) -> int:
                 return 0
             plan = prepare_ticket_copy(
                 ticket=args.ticket, role=args.role, cwd=cwd_repo, pm_home=owner,
+                reopen_ordinal=args.reopen_ordinal,
             )
             _write_machine_line(json.dumps({
                 "copy": str(plan.path),
