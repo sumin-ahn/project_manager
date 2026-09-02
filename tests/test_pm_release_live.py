@@ -58,7 +58,10 @@ from _textio import utf8_child_env
 # release_wave/runtime_smoke/command_card 헬퍼 재사용(중복 인프라 금지·같은 tests/ 디렉토리 import) —
 # adopter import(hermetic·models 조회 차단)·LLM env 격리(화이트리스트)·claude stream-json Bash 파싱.
 from test_fresh_adopter_runtime_smoke import _import_adopter, _live_env
-from test_command_card_usability import _collect_bash_commands
+from test_command_card_usability import (
+    _collect_bash_commands,
+    _commands_leaving_the_sandbox,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -398,13 +401,18 @@ def _proc_tail(proc: subprocess.CompletedProcess, harness: str) -> str:
     )
 
 
-def _pm_release_prompt(skill_text: str, *, repo: str, readonly_cwd: Path) -> str:
+def _pm_release_prompt(skill_text: str, *, repo: str, home: Path,
+                       readonly_cwd: Path) -> str:
     """실 LLM 에 스킬만 주고 릴리즈 pre-push 준비를 시키는 프롬프트 (스킬 = 유일 컨텍스트).
 
     진입문서(CLAUDE.md/AGENTS.md) 경로를 *주지 않는다* — 스킬만으로 커맨드를 골라야 통과(= 스킬
     사용성·ADR-0050). 시나리오: solo 단일-슬롯 프로젝트의 릴리즈를 준비하되 **사용자가 공개 main
     push 를 아직 승인하지 않았다** — 스킬이 정의한 로컬·가역 pre-push 단계(release livegate 기록)만
     수행하고 push/tag/gh 는 하지 않는다(승인 대기). pm_worktree_live 의 --help 금지 문구 미러(사용성).
+
+    프로젝트 루트는 **절대경로 값**으로 준다(서술 지칭 0). 격리 홈은 바깥 저장소 트리 안에
+    만들어지므로(임시 루트 규약), "the PM home root" 같은 서술은 바깥 홈도 만족한다 — 실제로
+    모델이 그 접두를 루트로 읽고 바깥 장부에 record 를 걸어 실패했다(2026-09-02 livegate #2).
     """
     exact_record = (
         "PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record "
@@ -417,8 +425,11 @@ def _pm_release_prompt(skill_text: str, *, repo: str, readonly_cwd: Path) -> str
         f"Context: you are preparing release {_RELEASE_VERSION}. The human has NOT yet approved the "
         f"public main push. The registered repo is `{repo}` and the already-prepared detached readonly "
         f"release coordinate is `{readonly_cwd}`. Do not invent or discover either value.\n\n"
+        f"This project's root is exactly `{home}` — that is your working directory and it is already "
+        "your shell's cwd. Run every command there; do NOT `cd` to any other directory and do NOT "
+        "run commands against any path outside it (paths above it belong to a different project).\n\n"
         "Do ONLY the local, reversible pre-push verification step this skill defines — record the "
-        "release livegate for this project — from the PM home root. Run exactly this concrete command "
+        "release livegate for this project. Run exactly this concrete command "
         f"once: `{exact_record}`. Then STOP and report.\n"
         "Do NOT run `git push`, do NOT run `git tag`, and do NOT run any `gh` command — the human "
         "has NOT approved the public main push yet (the skill keeps that behind an approval gate).\n\n"
@@ -451,6 +462,7 @@ def test_pm_release_live_claude(tmp_path):
     prompt = _pm_release_prompt(
         _CLAUDE_SKILL.read_text(encoding="utf-8"),
         repo=home.name,
+        home=home,
         readonly_cwd=readonly,
     )
     proc = subprocess.run(
@@ -482,6 +494,13 @@ def test_pm_release_live_claude(tmp_path):
         f"livegate.json 이 green 이 아님(존재만으론 불충분·record 오호출/실패 의심) — 기록={lg} "
         f"(기대 status=pass·n={pin}·rc=0).\n" + _proc_tail(proc, "claude")
     )
+    # (4) 좌표(hard) — 샌드박스 밖(중첩된 바깥 PM 홈)에 대고 돈 커맨드가 0. 격리 홈이 바깥 저장소
+    #     트리 안에 있어 그 접두를 루트로 오독하면 바깥 장부에 부딪힌다(2026-09-02 livegate #2).
+    escaped = _commands_leaving_the_sandbox(commands, tmp_path)
+    assert not escaped, (
+        f"claude 가 테스트 샌드박스 밖 디렉터리에 대고 커맨드를 실행함(격리 위반·바깥 PM 홈 "
+        f"오배치): {escaped}\n" + _proc_tail(proc, "claude")
+    )
 
 
 @pytest.mark.release
@@ -509,6 +528,7 @@ def test_pm_release_live_opencode_best_effort(tmp_path):
     prompt = _pm_release_prompt(
         _OPENCODE_SKILL.read_text(encoding="utf-8"),
         repo=home.name,
+        home=home,
         readonly_cwd=readonly,
     )
     proc = subprocess.run(
@@ -556,13 +576,23 @@ def test_pm_release_skill_files_exist_and_reference_backbone():
         assert "승인" in text and "자동" in text, f"{skill.name} 에 공개 main push 승인/자동-금지 명문 부재"
 
 
-def test_pm_release_prompt_embeds_skill_and_scenario():
-    """프롬프트가 스킬 전문 + 시나리오(릴리즈 버전·push 금지·유일 컨텍스트)를 담고 --help 를 금한다."""
+def test_pm_release_prompt_embeds_skill_and_scenario(tmp_path):
+    """프롬프트가 스킬 전문 + 시나리오(릴리즈 버전·push 금지·유일 컨텍스트)를 담고 --help 를 금한다.
+
+    루트 지칭은 **절대경로 값**이다 — 격리 홈이 바깥 저장소 트리 안에 있어 "the PM home root"
+    같은 서술은 바깥 홈도 만족한다(그 오독이 livegate #2 의 원인이었다).
+    """
     skill_text = _CLAUDE_SKILL.read_text(encoding="utf-8")
-    readonly = Path("/tmp/release-readonly")
+    home = tmp_path / "adopter-claude"
+    readonly = tmp_path / "adopter-claude-readonly"
     prompt = _pm_release_prompt(
-        skill_text, repo="fixture-repo", readonly_cwd=readonly,
+        skill_text, repo="fixture-repo", home=home, readonly_cwd=readonly,
     )
+    # 루트는 값으로 준다 — 서술 지칭 0(그 밖으로 나가지 말라는 금지까지 명시).
+    assert str(home) in prompt
+    assert "PM home root" not in prompt
+    assert "the directory that contains" not in prompt
+    assert "do NOT `cd` to any other directory" in prompt
     # 스킬이 유일 컨텍스트로 임베드된다(진입문서 경로 미제공 — 스킬 사용성).
     assert skill_text in prompt
     assert "CLAUDE.md" not in prompt and "AGENTS.md" not in prompt

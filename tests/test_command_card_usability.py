@@ -44,6 +44,7 @@ import shlex
 import shutil
 import subprocess
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -264,6 +265,76 @@ def _shell_tokens(command: str) -> list[str]:
         return []
 
 
+def _shell_statements(command: str) -> list[list[str]]:
+    """command 를 statement(연산자로 끊긴 실행 단위) 목록으로 — 파싱 불가면 빈 목록.
+
+    `_executed_board_ops`(실행 op 추출)와 `_commands_leaving_the_sandbox`(이탈 판정)가 같은
+    분할을 쓴다 — 규칙이 둘로 갈리면 한쪽이 보는 커맨드를 다른 쪽이 못 본다.
+    """
+    statements: list[list[str]] = []
+    current: list[str] = []
+    for tok in _shell_tokens(command):
+        if tok and set(tok) <= _SHELL_PUNCT:
+            if current:
+                statements.append(current)
+                current = []
+        else:
+            current.append(tok)
+    if current:
+        statements.append(current)
+    return statements
+
+
+# 커맨드가 **어디에 작용하는지** 지시하는 옵션 — 이탈 판정의 대상 자리(값은 다음 토큰).
+_DIRECTORY_OPTIONS = frozenset({"--cwd", "--dir", "-C"})
+
+
+def _directory_targets(command: str) -> list[str]:
+    """그 커맨드가 작용 대상으로 **지목한 디렉터리** 절대경로 목록.
+
+    보는 자리는 넷이다 — `cd <경로>` · `git -C <경로>` · `--cwd/--dir <경로>`(붙여 쓴 `=` 형태
+    포함) · 절대경로로 실행한 프로그램. 상대경로는 실행 cwd(격리 홈) 기준이라 여기서 세지
+    않는다. 커맨드 안의 임의 절대경로(예: 읽기 인자)를 전부 세지 않는 이유는 같다 — 판정하려는
+    것은 "어디에서/어디에 대고 도는가" 이지 문자열에 무엇이 들어 있나가 아니다.
+    """
+    targets: list[str] = []
+    for statement in _shell_statements(command):
+        index = 0
+        while index < len(statement) and _ENV_ASSIGN_RE.match(statement[index]):
+            index += 1
+        words = statement[index:]
+        if not words:
+            continue
+        if words[0].startswith("/"):
+            targets.append(words[0])
+        for position, token in enumerate(words):
+            if token == "cd" or token in _DIRECTORY_OPTIONS:
+                if position + 1 < len(words):
+                    targets.append(words[position + 1])
+            elif "=" in token and token.split("=", 1)[0] in _DIRECTORY_OPTIONS:
+                targets.append(token.split("=", 1)[1])
+    return [target for target in targets if target.startswith("/")]
+
+
+def _commands_leaving_the_sandbox(commands: Sequence[str], sandbox: Path) -> list[str]:
+    """샌드박스(테스트 `tmp_path`) 밖 디렉터리를 지목한 커맨드만 골라낸다.
+
+    라이브 격리 홈은 바깥 저장소 트리 **안**에 만들어진다(임시 루트 규약·T-0890). 그래서 홈
+    경로의 접두를 프로젝트 루트로 오독하면 모델이 바깥 PM 홈에 대고 backbone 을 돌린다
+    (2026-09-02 livegate #2 실측). 경계는 격리 홈이 아니라 **샌드박스**다 — 홈의 형제인
+    readonly 좌표도 정당한 홈 밖 절대경로라, 홈으로 경계를 잡으면 그 정상 커맨드가 오탐이 된다.
+    """
+    root = Path(sandbox).resolve()
+    escaped: list[str] = []
+    for command in commands:
+        for target in _directory_targets(command):
+            resolved = Path(target).resolve()
+            if resolved != root and root not in resolved.parents:
+                escaped.append(command)
+                break
+    return escaped
+
+
 def _command_has_help_flag(command: str) -> bool:
     """커맨드에 `--help`/`-h` 가 **셸 토큰**으로 있는가 (MF-2).
 
@@ -284,20 +355,7 @@ def _executed_board_ops(command: str) -> list[str]:
     실 실행으로 카운트한다 — 명령어가 echo/printf/cat/mv 등이면(에코·리터럴) 배제된다. chained
     (`&&`/`;`/`|`)·env prefix(`KEY=VAL`)·리다이렉션(`>>`)·`cd X && …` 도 정확히 처리한다.
     """
-    tokens = _shell_tokens(command)  # 파싱 불가면 [] → 비실행 취급(false-positive 0).
-
-    # 연산자 토큰(전부 punctuation)으로 statement 분할.
-    statements: list[list[str]] = []
-    current: list[str] = []
-    for tok in tokens:
-        if tok and set(tok) <= _SHELL_PUNCT:
-            if current:
-                statements.append(current)
-                current = []
-        else:
-            current.append(tok)
-    if current:
-        statements.append(current)
+    statements = _shell_statements(command)  # 파싱 불가면 [] → 비실행 취급(false-positive 0).
 
     ops: list[str] = []
     # `board.py <op>` 는 서브커맨드가 op 이고, `_SCRIPT_OPS` 도구는 스크립트 자신이 op 다.
@@ -822,6 +880,32 @@ def test_command_has_help_flag_detects_shlex_tokens():
     assert not _command_has_help_flag("python3 board.py list --mine")
     assert not _command_has_help_flag("python3 pm_handoff.py --session-seq 1 --wave-summary x")
     assert not _command_has_help_flag("python3 board.py new --help-me")  # --help 아님(경계).
+
+
+def test_commands_leaving_the_sandbox_are_detected(tmp_path):
+    """샌드박스 밖으로 나가는 커맨드만 잡는다 — 홈의 형제(readonly 좌표)는 오탐이 아니다.
+
+    라이브 격리 홈은 바깥 PM 홈 트리 안에 만들어지므로(임시 루트 규약), 모델이 홈 경로의 접두를
+    프로젝트 루트로 오독하면 바깥 장부에 대고 backbone 을 돈다(2026-09-02 livegate #2 의 그 한 줄이
+    아래 음성 사례다). 경계는 홈이 아니라 샌드박스라, 홈 밖이지만 샌드박스 안인 readonly 좌표를
+    위반으로 잡으면 정상 커맨드가 red 가 된다.
+    """
+    home = tmp_path / "adopter-claude"
+    readonly = tmp_path / "adopter-claude-readonly"
+    outside = tmp_path.parent / "outer-pm-home"
+    record = ("PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record "
+              f"--repo adopter-claude --cwd {readonly}")
+    clean = [
+        "python3 .project_manager/tools/board.py list",       # 홈 안 상대 실행
+        record,                                               # 형제 readonly 절대경로 --cwd
+        f"cd {home} && {record}",                             # 격리 홈 절대경로로 cd
+    ]
+    escaping = f"cd {outside} && {record}"
+
+    assert _commands_leaving_the_sandbox(clean, tmp_path) == []
+    assert _commands_leaving_the_sandbox(clean + [escaping], tmp_path) == [escaping]
+    assert _commands_leaving_the_sandbox(
+        [f"git -C {outside} status"], tmp_path) == [f"git -C {outside} status"]
 
 
 def test_board_operation_classifies_lifecycle_and_handoff():
