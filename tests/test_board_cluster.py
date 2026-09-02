@@ -5,22 +5,26 @@
   (2) 발행(`new`)·승격(`promote`)이 그 티켓의 크기 1 장부를 만들고 기준 브랜치·예산을 박는다
       (활성 묶음에 자동으로 끼우지 않는다 — 묶는 것은 사람 선언뿐).
   (3) 필드도 장부도 없는 티켓은 **읽는 자리에서** 크기 1 로 접힌다(파일 마이그레이션 0).
-  (4) 장부 관측(멤버 부재·통합 브랜치 부재·중복 귀속)은 advisory 로만 보인다(never-block).
+  (4) 장부 관측(멤버 부재·중복 귀속)은 advisory 로만 보인다(never-block · 장부만 읽는다).
 
 hermetic 패턴은 `test_board_new_draft_gate.py` 와 동형 — 실 board git + bare remote 를 tmp 에
-세우고 board 모듈의 `REPO` 를 그 tmp 로 재앵커한다. 통합 브랜치 축은 tmp 자신을 코드 git 으로
-쓴다(분리 PM 홈에서 활성 슬롯이 없으면 이 트리가 코드 트리다).
+세우고 board 모듈의 `REPO` 를 그 tmp 로 재앵커한다. 코드 트리 축은 두 형상을 다 세운다:
+`env` 는 PM 홈 자신이 코드 트리인 N=1 채택자(홈 슬롯 행 `slot="."`), `split_env` 는 PM 홈과
+코드 트리가 **다른 디렉터리**인 adopter#0 형상이다. 겹친 형상 하나만 있으면 코드 트리를 PM
+홈으로 접는 해소가 정답과 값으로 구분되지 않는다.
 """
 from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from _home_slot import HOME_REPO, home_lease_row, seed_home_slot
 from conftest import anchor_board_module
 
 REPO = Path(__file__).resolve().parents[1]
@@ -111,6 +115,12 @@ def _make_code_git(root: Path) -> None:
 def board(tmp_path, monkeypatch):
     mod = _load_tool("board")
     anchor_board_module(mod, tmp_path, monkeypatch)
+    # 코드 트리 해소(`_claim_code_tree`)가 읽는 장부도 tmp 로 재앵커한다 — 실 트리의 리스를
+    # 읽으면 이 파일의 답이 실행 환경에 따라 바뀐다.
+    monkeypatch.setattr(
+        mod, "LEASES_FILE",
+        tmp_path / ".project_manager" / ".local" / "worktree-leases.json")
+    seed_home_slot(tmp_path)
     mod.BOARD_FILE.parent.mkdir(parents=True, exist_ok=True)
     mod.BOARD_FILE.touch()
     for key, val in _GIT_IDENTITY.items():
@@ -128,6 +138,43 @@ def env(board, tmp_path):
     return board, board_dir
 
 
+# 분리 형상의 슬롯 수 — 실 PM 홈 장부와 같이 **여러 슬롯이 동시에 대여된** 상태다. 슬롯이
+# 하나뿐이면 세션이 그 행 하나로 유도돼(`session_name` 단일-lease 층) 활성 슬롯이 늘 해소되고,
+# 재발한 형상(세션 미해소 → 코드 없는 PM 홈으로 접힘)이 재현되지 않는다.
+_SPLIT_SLOT_COUNT = 2
+# 그 슬롯들이 공유하는 세션 값 — 실 장부와 같이 행마다 같은 값이라 유도가 성립하지 않는다.
+_SPLIT_SESSION = "main"
+
+
+@pytest.fixture
+def split_env(board, tmp_path):
+    """PM 홈 ≠ 코드 트리 — 통합 브랜치는 슬롯 worktree 의 git 에만 있다(adopter#0 형상).
+
+    PM 홈은 자기 git(브랜치 `main`)이고 코드는 `work/proj_<N>` 슬롯의 별 git(기점 `task/main`)
+    이다. 리스 장부는 그 슬롯들을 대여 중으로 적어 `--repo`/`--slot` 이 코드 트리를 지목하게
+    한다. 겹친 형상(`env`)에서는 PM 홈을 코드 트리로 접어도 답이 같아 결함이 보이지 않는다.
+    """
+    bare = tmp_path / "bare"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    # PM 홈도 git 이지만 통합 브랜치의 기점(`task/main`)이 없다 — 코드가 없는 트리.
+    _git(["init", "-q", "-b", "main"], tmp_path)
+    (tmp_path / "home.txt").write_text("home\n", encoding="utf-8", newline="\n")
+    _git(["add", "--", "home.txt"], tmp_path)
+    _git(["commit", "-qm", "home seed"], tmp_path)
+    slots = [tmp_path / "work" / f"{HOME_REPO}_{n}"
+             for n in range(1, _SPLIT_SLOT_COUNT + 1)]
+    for slot in slots:
+        slot.mkdir(parents=True)
+        _make_code_git(slot)
+    board.LEASES_FILE.write_text(
+        json.dumps({"leases": [
+            home_lease_row(slot=f"work/{HOME_REPO}_{n}", session=_SPLIT_SESSION)
+            for n in range(1, _SPLIT_SLOT_COUNT + 1)
+        ]}, ensure_ascii=False), encoding="utf-8")
+    return board, board_dir, slots[0]
+
+
 def _new_args(title: str, **kwargs) -> argparse.Namespace:
     values = dict(title=title, touches=None, depends=None, tag=None,
                   estimate="small", prefix=None, user=None, session=None,
@@ -136,9 +183,27 @@ def _new_args(title: str, **kwargs) -> argparse.Namespace:
     return argparse.Namespace(**values)
 
 
+def _subparser_help(parser: argparse.ArgumentParser, *path: str) -> str:
+    """`board.py <path...>` 서브파서의 한 줄 help — 부모 액션의 pseudo-action 이 소유한다."""
+    node = parser
+    help_text = ""
+    for name in path:
+        sub = next(action for action in node._actions
+                   if action.__class__.__name__ == "_SubParsersAction")
+        help_text = next(
+            choice for choice in sub._choices_actions if choice.dest == name).help or ""
+        node = sub.choices[name]
+    return help_text
+
+
 def _cluster_args(action: str, name: str, **kwargs) -> argparse.Namespace:
+    """`cluster new|show` 인자 — 코드 트리는 명시가 기본이다(`--repo <등록 repo>`).
+
+    `cluster new` 는 트리를 추측하지 않으므로 정체성 없는 호출은 거부 케이스에서만 쓴다
+    (`repo=None` 을 명시적으로 넘긴다).
+    """
     values = dict(cluster_cmd=action, name=name, tickets=None, spike=None,
-                  repo=None, slot=None, task=None)
+                  repo=HOME_REPO, slot=None, task=None)
     values.update(kwargs)
     return argparse.Namespace(**values)
 
@@ -208,6 +273,69 @@ def test_cluster_new_writes_ledger_branch_and_membership(env, capsys):
     committed = _git(["show", "--stat", "--name-only", "--format=", "HEAD"],
                      board_dir).stdout
     assert "tickets/clusters/C-wave.md" in committed, committed
+
+
+@requires_git
+def test_cluster_new_puts_the_branch_in_the_declared_code_tree(split_env, capsys):
+    """분리 형상 — 통합 브랜치는 **선언된 슬롯의 git** 에 생기고 PM 홈엔 생기지 않는다.
+
+    기점도 그 트리에서 읽는다: PM 홈의 현재 브랜치(`main`)가 아니라 코드 트리의 현재
+    브랜치(`task/main`)가 장부에 실린다.
+    """
+    board, _board_dir, code = split_env
+    first = _issue_ticket(board, "분리 형상 멤버")
+    capsys.readouterr()
+
+    rc = board.cmd_cluster(_cluster_args(
+        "new", "split", tickets=first, repo=HOME_REPO, slot=1))
+
+    assert rc == 0
+    ledger = board.load_cluster("C-split")
+    assert ledger["branch"] == "task/split"
+    assert ledger["base_branch"] == _BASE_BRANCH
+    assert board._cluster_branch_state(str(code), "task/split") is True
+    # PM 홈은 코드가 없는 트리다 — 여기에 브랜치가 생기면 아무도 못 쓴다.
+    assert board._cluster_branch_state(str(board.REPO), "task/split") is False
+    tip = _git(["rev-parse", "task/split"], code).stdout.strip()
+    assert tip == _git(["rev-parse", _BASE_BRANCH], code).stdout.strip()
+
+
+@requires_git
+def test_cluster_new_refuses_when_the_code_tree_is_not_declared(split_env, capsys):
+    """정체성 없는 `cluster new` 는 첫 부작용 앞에서 거부한다 — 트리를 추측하지 않는다.
+
+    이 명령은 git 브랜치를 만들고 기점을 장부에 박는 쓰기다. 추측하면 PM 홈(코드 없는 트리)
+    에 브랜치가 생기고 그 트리의 현재 브랜치가 기점으로 실린다(재발 5회의 형태).
+    """
+    board, _board_dir, code = split_env
+    first = _issue_ticket(board, "미선언 트리")
+    capsys.readouterr()
+
+    rc = board.cmd_cluster(_cluster_args(
+        "new", "bare", tickets=first, repo=None, slot=None, task=None))
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "코드 트리를 명시로 받는다" in err
+    assert "--repo" in err and "--task" in err
+    # 첫 쓰기 앞 거부 — 장부도 브랜치도 멤버 귀속 변경도 없다.
+    assert not board.cluster_ledger_path("C-bare").exists()
+    assert board._cluster_branch_state(str(board.REPO), "task/bare") is False
+    assert board._cluster_branch_state(str(code), "task/bare") is False
+    assert _ticket_fm(board, first)["cluster"] == f"C-{first}"
+
+
+def test_cluster_new_help_declares_the_code_tree_requirement(board):
+    """`cluster new` 서브파서 help 가 코드 트리 명시 요구를 말한다.
+
+    거부 판정은 `_cmd_cluster_new` 가 소유하고 help 는 그것을 인용만 한다. help 가 침묵하면
+    `--help` 만 읽고 실행한 사람이 첫 쓰기 앞 rc=1 을 실행 시점에야 만난다.
+    """
+    help_text = _subparser_help(board.build_parser(), "cluster", "new")
+
+    assert "--repo" in help_text and "--slot" in help_text
+    assert "--task" in help_text
+    assert "명시" in help_text
 
 
 @requires_git
@@ -500,8 +628,8 @@ def test_draft_defers_attribution_until_promote(board, tmp_path, capsys):
 # ════════════════════════════════════════════════════════════════════════
 
 @requires_git
-def test_lint_reports_member_branch_and_duplicate_as_advisory(env, capsys):
-    board, board_dir = env
+def test_lint_reports_member_and_duplicate_as_advisory(env, capsys):
+    board, _board_dir = env
     first = _issue_ticket(board, "관측 멤버")
     capsys.readouterr()
     assert board.cmd_cluster(_cluster_args("new", "obs", tickets=first)) == 0
@@ -510,8 +638,6 @@ def test_lint_reports_member_branch_and_duplicate_as_advisory(env, capsys):
     ledger = board.load_cluster("C-obs")
     ledger["tickets"] = [first, "T-9998"]
     board.dump_cluster(ledger)
-    # 통합 브랜치 부재 — 진행 중 묶음의 선언 브랜치가 코드 git 에 없다.
-    _git(["branch", "-D", "task/obs"], board_dir.parent.parent)
     # 중복 귀속 — 다른 장부가 같은 티켓을 멤버로 담는다.
     board.dump_cluster(board._new_cluster_fm("C-shadow", [first]))
 
@@ -520,10 +646,9 @@ def test_lint_reports_member_branch_and_duplicate_as_advisory(env, capsys):
     kinds = {kind for _id, kind, _detail in findings}
     assert kinds == {
         board._CLUSTER_MEMBER_LINT_KIND,
-        board._CLUSTER_BRANCH_LINT_KIND,
         board._CLUSTER_DUPLICATE_LINT_KIND,
     }, findings
-    # 세 kind 전부 advisory 다 — `lint --gate` 차단 집합에 들지 않는다.
+    # 두 kind 다 advisory 다 — `lint --gate` 차단 집합에 들지 않는다.
     assert kinds <= board._ADVISORY_LINT_KINDS
     duplicate = [item for item in findings
                  if item[1] == board._CLUSTER_DUPLICATE_LINT_KIND][0]
@@ -531,18 +656,32 @@ def test_lint_reports_member_branch_and_duplicate_as_advisory(env, capsys):
 
 
 @requires_git
-def test_lint_skips_the_branch_axis_for_closed_clusters(env, capsys):
-    """종결 묶음의 통합 브랜치는 머지 뒤 지우는 것이 정상이라 결함으로 세지 않는다."""
-    board, board_dir = env
-    first = _issue_ticket(board, "종결 멤버")
+def test_lint_clusters_reads_only_the_ledger(split_env, capsys):
+    """lint 는 장부 파일만 읽는다 — 브랜치 실재를 재려면 트리를 추측해야 하기 때문이다.
+
+    이 표면은 인자를 받지 않고 장부에도 코드 트리를 적는 자리가 없다. 추측하면 PM 홈(코드
+    없는 트리)에서 "통합 브랜치 부재"가 상시 참이 된다 — 그래서 그 축 자체를 없앴다.
+    """
+    board, _board_dir, code = split_env
+    first = _issue_ticket(board, "장부만 읽는다")
     capsys.readouterr()
-    assert board.cmd_cluster(_cluster_args("new", "closed", tickets=first)) == 0
-    _git(["branch", "-D", "task/closed"], board_dir.parent.parent)
-    ledger = board.load_cluster("C-closed")
-    ledger["status"] = "closed"
+    assert board.cmd_cluster(_cluster_args(
+        "new", "ledger", tickets=first, repo=HOME_REPO, slot=1)) == 0
+    capsys.readouterr()
+    assert board._cluster_branch_state(str(code), "task/ledger") is True
+    # 코드 트리에서 통합 브랜치를 지우고, 멤버 부재 축은 살려 둔다(입력이 장부 안에 있다).
+    _git(["checkout", "-q", _BASE_BRANCH], code)
+    _git(["branch", "-D", "task/ledger"], code)
+    ledger = board.load_cluster("C-ledger")
+    ledger["tickets"] = [first, "T-9998"]
     board.dump_cluster(ledger)
 
-    assert board.lint_clusters() == []
+    findings = board.lint_clusters()
+
+    assert {kind for _id, kind, _detail in findings} == {
+        board._CLUSTER_MEMBER_LINT_KIND}, findings
+    assert all("통합 브랜치" not in detail for _id, _kind, detail in findings), findings
+    assert not hasattr(board, "_CLUSTER_BRANCH_LINT_KIND")
 
 
 @requires_git
@@ -560,7 +699,9 @@ def test_cluster_show_renders_the_declared_values(env, capsys):
     assert rc == 0
     assert "-- C-view (open · 멤버 1) --" in out
     assert f"base_branch: {_BASE_BRANCH}" in out
-    assert "branch: task/view (존재)" in out
+    assert "branch: task/view" in out
+    # 실재 표기는 없다 — 이 표면은 트리를 들지 않는다(선언값 그대로).
+    assert "(존재)" not in out and "(부재)" not in out and "판정 불능" not in out
     assert "spike: raw/spikes/x.md" in out
     assert "architect=1" in out and "fix=1" in out
     assert "replans:" not in out

@@ -145,7 +145,8 @@ rc=1), 그 밖의 티켓에는 규범으로 적용한다. **설계 면제 값은
 PM 판정 전 증거·제안이며 developer 명령이 아니다. PM은 versioned disposition으로 전수 판정하고
 `pm_delegate.py review delta --cluster`가 accepted-only delta를 렌더한다. 그 출력은 fix 준비의
 입력이고, decision-required는 사용자 결정 요청 표면으로 전달된다. 라운드 파일의
-이름·순번은 엔진이 만들며(`section-add`는 슬롯 없는 준비, `ticket prepare`는 위임용 준비),
+이름·순번은 엔진이 만들며(`section-add`는 **묶음 장부가 없는 티켓**의 슬롯 없는 준비, `ticket prepare`는
+위임용 준비 — 장부가 있는 티켓의 라운드는 고정 예산이 지배하므로 위임 준비만 연다),
 에이전트가 파일을 만들지 않는다.
 
 에이전트는 PM 홈 티켓에 직접 쓰지 않는다. `pm_delegate.py ticket prepare --cluster`가 board에 멤버

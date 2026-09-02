@@ -136,6 +136,23 @@ def _seed_ticket(board_dir: Path, tid: str, status: str, *, tier: str | None = N
     return path
 
 
+def _write_cluster_ledger(board_dir: Path, cluster: str, tickets: list[str]) -> Path:
+    """묶음 장부 1건 — 발행이 만드는 크기 1 장부와 같은 자리·같은 키."""
+    directory = board_dir / "tickets" / "clusters"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{cluster}.md"
+    path.write_text(
+        "---\n"
+        f"id: {cluster}\n"
+        "tickets:\n" + "".join(f"- {item}\n" for item in tickets)
+        + "budget:\n  architect: 1\n  developer_per_ticket: 1\n"
+        "  code-reviewer: 1\n  fix: 1\n"
+        "status: open\n"
+        "---\n",
+        encoding="utf-8", newline="\n")
+    return path
+
+
 def _rounds_dir(board_dir: Path, tid: str) -> Path:
     """라운드 디렉터리 — 상태 디렉터리의 형제라 티켓 이동을 따라가지 않는다."""
     return board_dir / "tickets" / "rounds" / tid
@@ -473,6 +490,120 @@ def test_draft_section_add_rejects_non_architect_before_write(board_env, capsys,
     assert path.read_bytes() == before
     assert _round_names(board_dir, "T-1012") == []
     assert "draft×architect" in capsys.readouterr().err
+
+
+def _assert_section_add_refuses_the_ledger_ticket(
+    board_env, capsys, *, status: str, role: str, tid: str,
+) -> None:
+    """장부가 있는 티켓에 `section-add` → rc=1 · 첫 쓰기 앞 거부 · 처방 출력.
+
+    형상(상태·역할)마다 테스트 하나씩 부른다 — 단언은 이 자리 하나가 소유한다.
+    """
+    board, board_dir, _bare = board_env
+    path = (_write_ticket(board_dir, tid, status) if status == "draft"
+            else _seed_ticket(board_dir, tid, status))
+    _write_cluster_ledger(board_dir, f"C-{tid}", [tid])
+    before_spec = path.read_bytes()
+    before_head = _head(board_dir)
+
+    assert board.main(["section-add", tid, "--role", role]) == 1
+
+    assert _round_names(board_dir, tid) == []
+    assert path.read_bytes() == before_spec
+    assert _head(board_dir) == before_head
+    error = capsys.readouterr().err
+    assert f"C-{tid}" in error and "ticket prepare" in error
+
+
+@requires_git
+def test_section_add_refuses_a_ticket_that_has_a_cluster_ledger(board_env, capsys):
+    """장부가 있는 티켓의 라운드는 위임 준비만 연다 — 고정 예산을 우회하는 표면이 없다.
+
+    변경 전에는 이 명령이 예산 판정을 거치지 않고 open 티켓의 라운드를 열어, 고정 수열 밖에서
+    라운드가 늘어났다. 거부는 첫 쓰기 앞이라 라운드 파일도 commit 도 없다.
+    """
+    _assert_section_add_refuses_the_ledger_ticket(
+        board_env, capsys, status="open", role="developer", tid="T-1015",
+    )
+
+
+@requires_git
+def test_section_add_refuses_a_claimed_ticket_that_has_a_cluster_ledger(
+    board_env, capsys,
+):
+    """claimed 도 같은 정의역이다 — 상태가 아니라 장부가 표면을 가른다."""
+    _assert_section_add_refuses_the_ledger_ticket(
+        board_env, capsys, status="claimed", role="architect", tid="T-1016",
+    )
+
+
+@requires_git
+def test_section_add_refuses_a_ledgered_draft_even_for_architect(board_env, capsys):
+    """장부를 얹은 draft 는 draft×architect 예외로도 열리지 않는다.
+
+    `cluster new --tickets` 로 사람이 묶은 draft 가 그 형상이다 — 그 티켓의 라운드 수열도
+    고정 예산이 지배하므로 예약 표면은 위임 준비 하나다.
+    """
+    _assert_section_add_refuses_the_ledger_ticket(
+        board_env, capsys, status="draft", role="architect", tid="T-1017",
+    )
+
+
+@requires_git
+def test_section_add_on_a_ledgered_ticket_refuses_before_the_loud_spec_read(
+    board_env, capsys,
+):
+    """장부 판정이 명세 loud 판독 **앞**이다 — 손상 YAML 도 묶음 소유 거부를 받는다.
+
+    정의역 판정은 `load_ticket_soft` 로 읽고 거부하므로 `cmd_section_add` 의 `load_ticket`
+    까지 가지 않는다. 두 거부 모두 첫 쓰기 앞 rc=1 이라 갈리는 것은 진단 문구뿐이고,
+    `_section_add_owning_cluster` docstring 이 그 사실을 적는다.
+    """
+    board, board_dir, _bare = board_env
+    tid = "T-1020"
+    path = board_dir / "tickets" / "open" / f"{tid}-growth.md"
+    path.write_text(
+        f"---\nid: {tid}\ntitle: 손상: 인용 없는 콜론\nstatus: open\n---\n\n# {tid}\n",
+        encoding="utf-8", newline="\n")
+    _write_cluster_ledger(board_dir, f"C-{tid}", [tid])
+    before_spec = path.read_bytes()
+    before_head = _head(board_dir)
+
+    assert board.main(["section-add", tid, "--role", "developer"]) == 1
+
+    error = capsys.readouterr().err
+    assert "티켓을 읽지 못해 건너뜁니다" in error          # soft 판독까지만 갔다
+    assert f"묶음 장부 C-{tid}" in error and "ticket prepare" in error
+    assert _round_names(board_dir, tid) == []
+    assert path.read_bytes() == before_spec and _head(board_dir) == before_head
+
+
+@requires_git
+def test_section_add_still_opens_a_ledgerless_draft_architect_round(
+    board_env, monkeypatch, capsys,
+):
+    """장부가 없는 draft 는 이 명령이 유일한 예약 표면이다(hard draft 설계 인라인 경로).
+
+    남의 장부는 판정 입력이 아니다 — 장부가 하나라도 있으면 막는 판정이면 발행된 티켓 하나가
+    board 전체의 draft 설계를 막는다.
+    """
+    board, board_dir, _bare = board_env
+    path = _write_ticket(board_dir, "T-1018", "draft")
+    _write_cluster_ledger(board_dir, "C-other", ["T-1019"])
+    before_head = _head(board_dir)
+    sync_calls = []
+    monkeypatch.setattr(
+        board, "_rounds_mutation_sync_paths",
+        lambda *_args: sync_calls.append(_args) or True,
+    )
+
+    assert board.main(["section-add", "T-1018", "--role", "architect"]) == 0
+
+    fm, _body = board.load_ticket(path)
+    assert board.load_cluster(board.ticket_cluster("T-1018", fm)) is None
+    assert _round_names(board_dir, "T-1018") == ["01-architect.md"]
+    assert sync_calls == [] and _head(board_dir) == before_head
+    assert "local draft; promote가 출하 소유" in capsys.readouterr().out
 
 
 @requires_git

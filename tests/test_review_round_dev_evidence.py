@@ -163,13 +163,20 @@ def _fill_architect_contract(text: str) -> str:
     return text[:start] + _architect_contract() + text[end:]
 
 
-def _write_spec(tickets: Path, ticket: str, *, rounds=("developer",)) -> Path:
-    """고정 4단계 장부와, 옛 dev-first 형상의 선행 architect 산출을 함께 쓴다."""
+def _write_spec(
+    tickets: Path, ticket: str, *, rounds=("developer",), ledger: bool = True,
+) -> Path:
+    """고정 4단계 장부와, 옛 dev-first 형상의 선행 architect 산출을 함께 쓴다.
+
+    `ledger=False` 는 **장부가 없는 티켓**이다 — 라운드 예약 표면이 `board section-add` 하나뿐인
+    자리(장부가 있는 티켓의 라운드는 위임 준비만 연다).
+    """
     path = tickets / f"{ticket}-review-round.md"
     path.write_text(_spec_text(ticket), encoding="utf-8", newline="\n")
-    write_cluster_ledger(
-        tickets.parent.parent, ticket, base_branch="task/main", rounds=_FIXED_ROUNDS,
-    )
+    if ledger:
+        write_cluster_ledger(
+            tickets.parent.parent, ticket, base_branch="task/main", rounds=_FIXED_ROUNDS,
+        )
     if rounds and rounds[0] == "developer":
         rounds_dir = tickets.parent / "rounds" / ticket
         rounds_dir.mkdir(parents=True, exist_ok=True)
@@ -424,7 +431,7 @@ def test_cross_auto_prepare_shares_the_prepare_seam(pd, rounds_env, capsys, monk
 def test_board_section_add_applies_the_same_rule(pd, rounds_env, capsys):
     """진입점 3 — `board section-add --role code-reviewer` 도 같은 규칙·같은 rc."""
     pm_home, slot, tickets, board = rounds_env
-    _write_spec(tickets, "T-7808")
+    _write_spec(tickets, "T-7808", ledger=False)
     assert board.main(["section-add", "T-7808", "--role", "developer"]) == 0
     capsys.readouterr()
 
@@ -443,7 +450,7 @@ def test_both_review_channels_get_the_same_rule(pd, rounds_env, capsys):
     """
     pm_home, slot, tickets, board = rounds_env
     for ticket, role in (("T-7814", "code-reviewer"), ("T-7815", "additional-reviewer")):
-        _write_spec(tickets, ticket)
+        _write_spec(tickets, ticket, ledger=False)
         assert board.main(["section-add", ticket, "--role", "developer"]) == 0
         capsys.readouterr()
 
@@ -456,7 +463,7 @@ def test_both_review_channels_get_the_same_rule(pd, rounds_env, capsys):
 def test_board_section_add_is_silent_on_the_normal_path(pd, rounds_env, capsys):
     """역방향 — section-add 의 정상 경로(회수된 dev · dev 없음)는 조용하다."""
     pm_home, slot, tickets, board = rounds_env
-    _write_spec(tickets, "T-7809")
+    _write_spec(tickets, "T-7809", ledger=False)
     assert board.main(["section-add", "T-7809", "--role", "developer"]) == 0
     landed = _rounds_dir(pm_home, "T-7809") / "02-developer.md"
     landed.write_text(
@@ -468,7 +475,7 @@ def test_board_section_add_is_silent_on_the_normal_path(pd, rounds_env, capsys):
     assert board.main(["section-add", "T-7809", "--role", "code-reviewer"]) == 0
     assert WARNING_MARK not in capsys.readouterr().err
 
-    _write_spec(tickets, "T-7810")
+    _write_spec(tickets, "T-7810", ledger=False)
     capsys.readouterr()
 
     assert board.main(["section-add", "T-7810", "--role", "code-reviewer"]) == 0

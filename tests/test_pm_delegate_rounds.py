@@ -277,11 +277,13 @@ def _declare_rounds(tickets: Path, members, rounds, *, cluster: str | None = Non
 
 
 def _write_spec(
-    tickets: Path, ticket: str, *, rounds=("developer",), **kwargs,
+    tickets: Path, ticket: str, *, rounds=("developer",), ledger: bool = True, **kwargs,
 ) -> Path:
+    """명세(+ 기본으로 크기 1 묶음 장부) 1건 — `ledger=False` 는 장부가 없는 티켓이다."""
     path = tickets / f"{ticket}-rounds.md"
     path.write_text(_spec_text(ticket, **kwargs), encoding="utf-8", newline="\n")
-    _declare_rounds(tickets, ticket, rounds)
+    if ledger:
+        _declare_rounds(tickets, ticket, rounds)
     return path
 
 
@@ -1487,26 +1489,168 @@ def test_pm_owned_scope_and_false_verify_must_match_loudly(
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
 
 
-def test_developer_owned_contract_without_repo_test_target_is_still_rejected(
+# ── T-0893: 삭제 지적의 회수 판정 ────────────────────────────────────────
+
+_NO_TEST_TARGET_PROSE = "산문 회귀만 적고 repo-relative 테스트 파일은 지정하지 않는다"
+
+
+def _design_judgment_row(finding_id: str) -> dict:
+    """기계 재현이 아니라 사람 판단으로 닫는 developer-owned verify 행."""
+    return {
+        "id": finding_id, "machine_verifiable": False, "command": "",
+        "expected": "사람 판단 필요", "before": "", "reason": "design-judgment",
+    }
+
+
+def _commit_slot_file(slot: Path, relative: str, body: str) -> Path:
+    """슬롯 HEAD 에 파일 하나를 심는다 — 준비가 고정할 base_rev 의 내용이다."""
+    path = slot / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8", newline="\n")
+    assert _git(slot, "add", "--", relative).returncode == 0
+    assert _git(slot, "commit", "-qm", f"seed {relative}").returncode == 0
+    return path
+
+
+def test_deleted_paths_count_as_this_round_changes(pd, rounds_env):
+    """코드와 그 테스트를 함께 지운 fix 는 회수된다 — 삭제도 이 라운드의 산출이다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    dead_source = _commit_slot_file(slot, "src/dead_axis.py", "def dead():\n    pass\n")
+    dead_test = _commit_slot_file(
+        slot, "tests/test_dead_axis.py",
+        "from src.dead_axis import dead\n\n\ndef test_dead():\n    assert dead() is None\n",
+    )
+    contract = dict(
+        _fix_contract("F-001"),
+        location="src/dead_axis.py 의 dead — 남은 호출자가 없다",
+        test="tests/test_dead_axis.py 는 그 함수만 재는 회귀라 함께 지운다",
+    )
+    plan = _prepare_single_finding_fix(
+        pd, pm_home, slot, tickets, ticket="T-7044", finding_id="F-001",
+        contract=contract, scope="F-001 developer 범위",
+        verify_row=_design_judgment_row("F-001"),
+    )
+    dead_test.unlink()
+    dead_source.unlink()
+
+    changed = pd._developer_round_changed_paths(
+        pd._repo_root_for_cwd(slot), base_rev="HEAD",
+    )
+    assert {"src/dead_axis.py", "tests/test_dead_axis.py"} <= changed
+    assert pd.harvest_ticket_copy(
+        copy_path=plan.path, cwd=slot, pm_home=pm_home,
+    ).changed is True
+
+
+def test_fix_contract_without_a_test_target_is_carried_by_location_paths(
     pd, rounds_env,
 ):
+    """붙일 테스트가 없는 삭제 지적 — 계약이 적은 고칠 자리가 이번 diff 에 있으면 회수된다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    dead_source = _commit_slot_file(slot, "src/dead_import.py", "import math\n")
+    contract = dict(
+        _fix_contract("F-001"),
+        location="src/dead_import.py 의 import math — 이 모듈은 math 를 쓰지 않는다",
+        test="죽은 import 삭제라 새로 붙일 회귀가 없다 — 전체 회귀가 그대로 초록이면 된다",
+    )
+    plan = _prepare_single_finding_fix(
+        pd, pm_home, slot, tickets, ticket="T-7045", finding_id="F-001",
+        contract=contract, scope="F-001 developer 범위",
+        verify_row=_design_judgment_row("F-001"),
+    )
+    dead_source.unlink()
+
+    assert pd.harvest_ticket_copy(
+        copy_path=plan.path, cwd=slot, pm_home=pm_home,
+    ).changed is True
+
+
+def test_contract_paths_untouched_by_this_round_still_reject(pd, rounds_env):
+    """근거 없는 지적은 여전히 거부다 — 계약이 지목한 자리를 이번 라운드가 안 바꿨다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    contract = dict(_fix_contract("F-001"), test=_NO_TEST_TARGET_PROSE)
+    plan = _prepare_single_finding_fix(
+        pd, pm_home, slot, tickets, ticket="T-7046", finding_id="F-001",
+        contract=contract, scope="F-001 developer 범위",
+        verify_row=_design_judgment_row("F-001"),
+    )
+    with pytest.raises(
+        pd.TerminalFixHarvestError,
+        match=r"이 fix diff에 .*\.project_manager/tools/pm_delegate\.py",
+    ):
+        pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
+
+
+def test_contract_naming_no_repo_path_at_all_is_refused(pd, rounds_env):
+    """바꿀 자리를 대지 못한 계약은 대조할 것이 없어 거부다."""
     pm_home, slot, tickets, _sync = rounds_env
     contract = dict(
         _fix_contract("F-001"),
-        test="산문 회귀만 추가하고 repo-relative 테스트 파일은 지정하지 않는다",
+        location="회수 판정 언저리", test=_NO_TEST_TARGET_PROSE,
     )
-    row = {
-        "id": "F-001", "machine_verifiable": False, "command": "",
-        "expected": "사람 판단 필요", "before": "", "reason": "design-judgment",
-    }
     plan = _prepare_single_finding_fix(
-        pd, pm_home, slot, tickets, ticket="T-7044", finding_id="F-001",
-        contract=contract, scope="F-001 developer 범위", verify_row=row,
+        pd, pm_home, slot, tickets, ticket="T-7047", finding_id="F-001",
+        contract=contract, scope="F-001 developer 범위",
+        verify_row=_design_judgment_row("F-001"),
     )
     with pytest.raises(
-        pd.TerminalFixHarvestError, match="repo-relative 테스트 대상",
+        pd.TerminalFixHarvestError, match="저장소의 경로를 하나도 지목하지 않았습니다",
     ):
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
+
+
+def test_architect_test_target_still_requires_a_tests_path(pd):
+    """reviewer fix 축의 완화가 architect 축까지 풀지 않는다."""
+    with pytest.raises(pd.DelegateError, match="repo-relative 테스트 대상"):
+        pd._contract_test_targets(
+            _NO_TEST_TARGET_PROSE, "architect 필수 테스트 AT-001.target",
+        )
+    assert pd._contract_test_targets(
+        _NO_TEST_TARGET_PROSE, "reviewer 추가 회귀 F-001.test", required=False,
+    ) == ()
+
+    payload = json.dumps({
+        "version": pd.ARCHITECT_TEST_VERSION,
+        "tests": [{
+            "id": "AT-001", "target": _NO_TEST_TARGET_PROSE,
+            "command": python_argv_command("--version"), "expected": "Python",
+            "negative": "계약 대상 누락을 거부",
+        }],
+    }, ensure_ascii=False)
+    with pytest.raises(pd.DelegateError, match="repo-relative 테스트 대상"):
+        pd.parse_architect_tests(
+            f"```{pd.ARCHITECT_TEST_BLOCK}\n{payload}\n```\n"
+        )
+
+
+def test_deletion_axis_is_shared_and_the_architect_command_catches_it(pd, rounds_env):
+    """F-007: `D` 는 두 축이 공유하고, architect 축은 뒤의 명령 실행이 잡는다.
+
+    삭제를 세는 집합 하나를 reviewer fix 계약 검사와 architect 필수 테스트 대상 검사가 함께
+    본다 — 그래서 계약이 지목한 테스트를 **지운** 라운드도 대상 검사만으로는 통과한다. 막는
+    것은 그 직후의 계약 command 실행이다(지워진 노드를 지목한 명령은 red). 축을 인자로
+    가르지 않는 이유가 이것이라 그 사실을 회귀로 고정한다.
+    """
+    _pm_home, slot, _tickets, _sync = rounds_env
+    contract_target = "tests/test_architect_contract_axis.py"
+    contract_path = _commit_slot_file(
+        slot, contract_target, "def test_axis():\n    assert True\n",
+    )
+    contract_path.unlink()
+
+    changed = pd._developer_round_changed_paths(
+        pd._repo_root_for_cwd(slot), base_rev="HEAD",
+    )
+    # 대상 검사가 보는 집합에 지운 파일이 들어 있다 — 삭제 축은 하나이고 공유된다.
+    assert contract_target in changed
+
+    # 실질 방어는 그 다음 줄이다 — 계약 command 가 그 노드를 찾지 못해 green 이 아니다.
+    problem = pd._run_required_test(
+        python_argv_command("-m", "pytest", contract_target, "-q"),
+        "1 passed", cwd=slot,
+    )
+    assert problem is not None
+    assert "green이 아닙니다" in problem
 
 
 def test_harvest_refuses_a_verify_command_outside_the_safety_boundary(pd, rounds_env):
@@ -3849,11 +3993,17 @@ def _design_spec_text(
 
 
 def _write_design_spec(
-    tickets: Path, ticket: str, *, rounds=("developer",), **kwargs,
+    tickets: Path, ticket: str, *, rounds=("developer",), ledger: bool = True, **kwargs,
 ) -> Path:
+    """명세(+ 기본으로 크기 1 묶음 장부) 1건.
+
+    `ledger=False` 는 **장부가 없는 티켓**이다 — 라운드 예약 표면이 `board section-add` 하나뿐인
+    자리(장부가 있는 티켓의 라운드는 위임 준비만 연다).
+    """
     path = tickets / f"{ticket}-rounds.md"
     path.write_text(_design_spec_text(ticket, **kwargs), encoding="utf-8", newline="\n")
-    _declare_rounds(tickets, ticket, rounds)
+    if ledger:
+        _declare_rounds(tickets, ticket, rounds)
     return path
 
 
@@ -4104,8 +4254,11 @@ def test_all_three_entry_points_report_the_identical_rejection_reason(
         )
     message1 = str(caught1.value)
 
+    # 진입점 3 은 장부가 없는 티켓의 표면이다 — 두 표면의 정의역이 겹치지 않으므로 대상
+    # 티켓이 다르고, 그래도 사유 문자열은 같아야 한다(판정이 한 seam 에만 있다).
+    _write_design_spec(tickets, "T-8142", design="n/a", ledger=False)
     board_fixture = _fixture_board(pd, home, [])
-    rc3 = board_fixture.main(["section-add", "T-8140", "--role", "developer"])
+    rc3 = board_fixture.main(["section-add", "T-8142", "--role", "developer"])
     err3 = capsys.readouterr().err
     assert rc3 == 1
     assert err3.rstrip("\n") == f"cannot section-add: {message1}"
@@ -4150,7 +4303,7 @@ def test_disabling_the_design_gate_turns_every_rejection_shape_green(
     )
     assert plan.board_path.name == "01-developer.md"
 
-    _write_design_spec(tickets, "T-8131", design="n/a")
+    _write_design_spec(tickets, "T-8131", design="n/a", ledger=False)
     rc = board_fixture.main(["section-add", "T-8131", "--role", "developer"])
     assert rc == 0
 
@@ -4176,7 +4329,9 @@ def test_forcing_the_design_gate_turns_every_pass_shape_red(pd, rounds_env, monk
             ticket="T-8132", role="developer", cwd=slot, pm_home=pm_home,
         )
 
-    _write_spec(tickets, "T-8133")
+    # 진입점 3 의 정의역은 장부가 없는 티켓이다 — 장부를 얹으면 이 rc 는 강제 거부가 아니라
+    # 정의역 거부가 되어 이 테스트가 판정을 더 이상 보지 않는다.
+    _write_spec(tickets, "T-8133", ledger=False)
     rc = board_fixture.main(["section-add", "T-8133", "--role", "developer"])
     assert rc == 1
 

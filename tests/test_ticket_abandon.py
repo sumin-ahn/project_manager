@@ -212,9 +212,11 @@ def _land_architect(pd, env: Env, plan) -> None:
     assert result.changed is True
 
 
-def _abandon(pd, env: Env, plan, *, assume_dead: bool = True):
+def _abandon(pd, env: Env, plan, *, assume_dead: bool = True, **declaration):
+    """`declaration` 은 처분 선언 인자(`superseded_by_ordinal`·`discard_reason`) 자리다."""
     return pd.abandon_ticket_copy(
         copy_path=plan.path, cwd=env.slot, pm_home=env.pm_home, assume_dead=assume_dead,
+        **declaration,
     )
 
 
@@ -689,6 +691,155 @@ def test_max_ordinal_abandon_leaves_no_gap_for_the_remaining_rounds(pd, env):
     assert "round-gap" not in codes and "round-dup" not in codes
 
 
+# ── D5 폐기 처분: 선언이 있으면 산출을 board 로 옮기고 종결한다 ────────────
+#
+# 재실행 대체(`superseded_by_ordinal`)가 아닌 처분 축이다. 슬롯 사본이 그 산출의 유일본이라
+# (`ticket prepare` 로 예약만 하고 실행하지 않은 라운드는 위임 raw 장부에 레코드가 없다) 지우기
+# 전에 board 라운드 파일로 옮기고 엔진 표식을 붙인다.
+
+_DISCARD_REASON = "티켓 폐기 — 이 라운드는 재실행되지 않는다"
+
+
+def test_discard_moves_the_output_into_the_board_round_and_marks_it(pd, env):
+    """AT-001: 산출 있는 사본을 폐기 선언으로 처분 — 산출은 board 로, run-dir 은 종결."""
+    _write_spec(env, "T-8080")
+    plan = _prepare(pd, env, "T-8080")
+    _write_output(plan.path)
+    produced = plan.path.read_text(encoding="utf-8")
+    seed_bytes = plan.board_path.read_bytes()
+    assert produced.encode("utf-8") != seed_bytes
+
+    result = _abandon(pd, env, plan, discard_reason=_DISCARD_REASON)
+
+    assert (result.changed, result.board_removed, result.run_dir_removed) == (
+        True, False, True
+    )
+    assert result.converged is True and result.sync_ready is True
+    # 산출은 버려지지 않는다 — board 라운드 파일이 사본 bytes + 표식 한 줄이다.
+    marker = pd.pm_review_refused_line("architect")
+    assert plan.board_path.read_bytes() == (produced + marker + "\n").encode("utf-8")
+    assert pd.pm_review_refused_marker_present(
+        plan.board_path.read_text(encoding="utf-8"))
+    assert not plan.run_dir.exists()
+    row = _ledger_rows(env)[-1]
+    assert row["abandoned_at"] is not None and row["discard_reason"] == _DISCARD_REASON
+    assert "superseded_by_ordinal" not in row
+    assert pd.ticket_copy_records(env.pm_home, ticket="T-8080", unharvested=True) == []
+    assert env.sync_calls[-1] == (
+        "ticket-abandon T-8080 architect", [plan.board_path],
+    )
+    # I5 — 순번 무결성은 그대로고, 옮겨 온 라운드는 `pending` 도 아니다.
+    assert _problem_codes(pd, env, "T-8080") == []
+
+    # 재호출은 표식을 두 번 붙이지 않는다(표식 유무가 이관 완료의 관측이다).
+    board_bytes = plan.board_path.read_bytes()
+    again = _abandon(pd, env, plan, discard_reason=_DISCARD_REASON)
+    assert again.converged is True and again.changed is False
+    assert plan.board_path.read_bytes() == board_bytes
+
+
+def test_discard_of_a_middle_ordinal_keeps_the_other_rounds_intact(pd, env):
+    """중간 순번 폐기도 같은 자리에 옮긴다 — 앞뒤 라운드의 순번·bytes 는 그대로다."""
+    _write_spec(env, "T-8083")
+    architect = _prepare(pd, env, "T-8083")
+    _land_architect(pd, env, architect)
+    architect_bytes = architect.board_path.read_bytes()
+    target = _prepare(pd, env, "T-8083", "developer")
+    _write_output(target.path)
+    produced = target.path.read_text(encoding="utf-8")
+    reviewer = _prepare(pd, env, "T-8083", "code-reviewer")
+    reviewer_bytes = reviewer.board_path.read_bytes()
+
+    result = _abandon(pd, env, target, discard_reason=_DISCARD_REASON)
+
+    assert result.converged is True and result.board_removed is False
+    marker = pd.pm_review_refused_line("developer")
+    assert target.board_path.read_bytes() == (produced + marker + "\n").encode("utf-8")
+    assert architect.board_path.read_bytes() == architect_bytes
+    assert reviewer.board_path.read_bytes() == reviewer_bytes
+    codes = _problem_codes(pd, env, "T-8083")
+    assert "round-gap" not in codes and "round-dup" not in codes
+
+
+def test_discard_converges_when_both_artifacts_are_gone(pd, env):
+    """AT-002: 슬롯 사본도 board 파일도 없는 행(T-0778 실측 형상)은 선언으로 닫힌다."""
+    _write_spec(env, "T-8081")
+    plan = _prepare(pd, env, "T-8081")
+    # 실측 형상 — 슬롯 트리가 통째로 사라졌고 board 예약도 남아 있지 않다.
+    plan.board_path.unlink()
+    shutil.rmtree(env.slot)
+    assert not plan.path.exists() and not plan.board_path.exists()
+
+    # 선언이 없으면 종전대로 거부다 — 자산 부재가 처분의 근거가 되지는 않는다.
+    with pytest.raises(pd.DelegateError, match="지울 자산이 없습니다"):
+        _abandon(pd, env, plan)
+    assert "abandoned_at" not in _ledger_rows(env)[-1]
+
+    result = _abandon(pd, env, plan, discard_reason=_DISCARD_REASON)
+
+    assert (result.changed, result.converged) == (True, True)
+    assert (result.board_removed, result.run_dir_removed) == (True, True)
+    row = _ledger_rows(env)[-1]
+    assert row["abandoned_at"] is not None and row["discard_reason"] == _DISCARD_REASON
+    assert pd.ticket_copy_records(env.pm_home, ticket="T-8081", unharvested=True) == []
+    assert env.sync_calls == []              # 지운 자산이 없어 커밋할 board 변경도 없다
+
+    # 멱등 — 남은 정리가 없는 행의 재호출도 rc 0 이다(선언 인자는 다시 주지 않아도 된다).
+    again = _abandon(pd, env, plan)
+    assert again.converged is True and again.changed is False
+
+
+def test_discard_without_any_declaration_is_still_refused(pd, env):
+    """AT-003: 선언 없는 처분은 조용한 파괴다 — 산출 있는 사본은 종전대로 거부한다."""
+    _write_spec(env, "T-8082")
+    plan = _prepare(pd, env, "T-8082")
+    _write_output(plan.path)
+    before = _assets(plan, env)
+
+    with pytest.raises(pd.DelegateError, match="산출이 있어 포기할 수 없습니다") as caught:
+        _abandon(pd, env, plan)
+
+    # 거부 문구가 두 선언을 모두 가리킨다 — 사람이 다음 수를 문구에서 읽는다.
+    assert pd.ABANDON_SUPERSEDED_BY_FLAG in str(caught.value)
+    assert pd.ABANDON_DISCARD_REASON_FLAG in str(caught.value)
+    assert _assets(plan, env) == before      # 세 자산 전부 불변
+    assert env.sync_calls == []
+
+
+def test_the_two_disposal_declarations_are_mutually_exclusive(pd, env):
+    """선언이 둘이면 장부에 어느 것이 실릴지 모호하다 — 상태를 읽기 전에 거부한다."""
+    _write_spec(env, "T-8084")
+    architect = _prepare(pd, env, "T-8084")
+    _land_architect(pd, env, architect)
+    plan = _prepare(pd, env, "T-8084", "developer")
+    _write_output(plan.path)
+    before = _assets(plan, env)
+    sync_before = list(env.sync_calls)
+
+    with pytest.raises(pd.DelegateError, match="처분 선언은 하나여야 합니다"):
+        _abandon(
+            pd, env, plan,
+            superseded_by_ordinal=architect.ordinal, discard_reason=_DISCARD_REASON,
+        )
+
+    assert _assets(plan, env) == before
+    assert env.sync_calls == sync_before
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "첫 줄\n둘째 줄"])
+def test_discard_reason_must_be_one_non_empty_line(pd, env, bad):
+    """사유가 그 처분의 유일한 기록이라 빈 값·여러 줄은 쓰기 전에 막는다."""
+    _write_spec(env, "T-8085")
+    plan = _prepare(pd, env, "T-8085")
+    _write_output(plan.path)
+    before = _assets(plan, env)
+
+    with pytest.raises(pd.DelegateError, match="폐기 사유는"):
+        _abandon(pd, env, plan, discard_reason=bad)
+
+    assert _assets(plan, env) == before
+
+
 # ── I3 단일 처분 (D4) ──────────────────────────────────────────────────────
 
 def test_abandon_refuses_an_already_harvested_run(pd, env):
@@ -758,6 +909,22 @@ def test_ledger_row_accepts_the_two_optional_keys(pd):
     )
     assert row["abandoned_at"] == "2026-08-22T01:00:00+00:00"
     assert row["owner_pid"] == 4242
+
+
+def test_ledger_row_accepts_a_discard_reason(pd):
+    row = pd._delegate_rounds_ledger_row(
+        _base_row(abandoned_at="2026-09-02T01:00:00+00:00",
+                  discard_reason="티켓 폐기"),
+        line_number=1,
+    )
+    assert row["discard_reason"] == "티켓 폐기"
+
+
+@pytest.mark.parametrize("bad", [None, "", "   ", "첫 줄\n둘째 줄", 5])
+def test_ledger_row_rejects_discard_reasons_without_a_readable_value(pd, bad):
+    """사유가 그 처분의 유일한 기록이라 읽을 값이 없는 행은 장부 경계에서 막는다."""
+    with pytest.raises(pd.DelegateError, match="값 형식 불일치"):
+        pd._delegate_rounds_ledger_row(_base_row(discard_reason=bad), line_number=1)
 
 
 @pytest.mark.parametrize("bad", [None, ""])
@@ -841,6 +1008,27 @@ def test_cli_reports_the_convergence_assertion_as_machine_fields(pd, env, monkey
     assert payload["converged"] is True
     assert payload["board_removed"] is True and payload["run_dir_removed"] is True
     assert payload["changed"] is True and payload["copy"] == str(plan.path)
+
+
+def test_cli_abandon_wires_the_discard_reason_flag(pd, env, monkeypatch, capsys):
+    """CLI 표면 — `--discard-reason` 이 argparse 를 거쳐 실제 처분까지 전달된다."""
+    _write_spec(env, "T-8112")
+    plan = _prepare(pd, env, "T-8112")
+    _write_output(plan.path)
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: env.pm_home)
+    capsys.readouterr()
+
+    rc = pd._cmd_ticket([
+        "abandon", "--copy", str(plan.path), "--cwd", str(env.slot),
+        pd.ABANDON_ASSUME_DEAD_FLAG, pd.ABANDON_DISCARD_REASON_FLAG, _DISCARD_REASON,
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out.strip().splitlines()[-1])
+    assert rc == 0
+    assert payload["converged"] is True and payload["board_removed"] is False
+    assert _ledger_rows(env)[-1]["discard_reason"] == _DISCARD_REASON
+    assert "폐기-확인" in captured.err
 
 
 def test_cli_copies_query_labels_abandoned_rows(pd, env, monkeypatch, capsys):

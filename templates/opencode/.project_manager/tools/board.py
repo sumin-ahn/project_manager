@@ -9877,6 +9877,26 @@ def tier_signals(
     )
 
 
+def _section_add_owning_cluster(tid: str, path: Path) -> str | None:
+    """그 티켓의 라운드 수열을 **소유하는 묶음 장부 id**(없으면 None).
+
+    장부가 있으면 그 티켓의 라운드는 고정 예산 수열이 지배한다 — 라운드를 여는 표면은 위임
+    준비(`pm_delegate.py ticket prepare`) 하나뿐이고, 그 판정을 거치지 않는 `section-add` 가
+    같은 자리를 열면 예산이 세는 수열 밖에서 라운드가 늘어난다. 장부가 없는 티켓(발행 전
+    draft)은 예산 판정의 입력 자체가 없어 이 명령이 유일한 예약 표면이다.
+
+    손상 명세는 여기서 판정하지 않는다 — 클러스터 해소는 `ticket_cluster_from_text` 와 같은
+    규칙(필드 부재·파싱 실패는 크기 1)이라 `load_ticket_soft` 로 읽는다. 이 판정이 호출부
+    (`cmd_section_add`)의 `load_ticket` **앞**이므로, 장부를 가진 티켓은 명세 YAML 이 손상돼도
+    loud 판독 대신 아래 묶음 소유 거부 문구를 받는다 — 둘 다 첫 쓰기 앞 rc=1 이라 갈리는 것은
+    진단 문구뿐이다. 장부가 없는 티켓은 종전대로 `load_ticket` 이 손상을 loud 하게 낸다.
+    """
+    loaded = load_ticket_soft(path)
+    fm = loaded[0] if loaded is not None else {}
+    cluster = ticket_cluster(tid, fm if isinstance(fm, dict) else {})
+    return cluster if load_cluster(cluster) is not None else None
+
+
 def _active_ticket_path(
     tid: str, action: str, *, role: str | None = None,
 ) -> tuple[int, Path | None]:
@@ -9887,6 +9907,10 @@ def _active_ticket_path(
     상태를 `done`으로 올릴 수 없으면 setter가 있어도 실제 막힌 상황을 풀지 못한다.
     blocked/done 및 위 두 draft 예외 밖(section-add×developer|code-reviewer 등)은 같은 경계에서
     거부한다. directory 상태가 lifecycle 단일 진실인 기존 mutation 규약을 그대로 쓴다.
+
+    section-add 는 그 위에 조건이 하나 더 있다 — **묶음 장부가 없는 티켓**만 연다. 라운드
+    예약 표면은 둘이고 정의역이 겹치지 않는다: 장부가 있는 티켓은 위임 준비만(고정 예산이
+    수열을 지배한다), 장부가 없는 티켓은 이 명령만.
     """
     try:
         status, path = find_ticket_for_mutation(tid)
@@ -9907,6 +9931,19 @@ def _active_ticket_path(
         print(f"cannot {action} {tid}: currently in {status}/ "
               f"({allowed}만 허용)", file=sys.stderr)
         return 1, None
+    if action == "section-add":
+        cluster = _section_add_owning_cluster(tid, path)
+        if cluster is not None:
+            print(
+                f"cannot section-add {tid}: 묶음 장부 {cluster} 가 이 티켓의 라운드 수열을 "
+                "소유한다 — 라운드는 위임 준비가 연다(고정 예산 판정)\n"
+                "  · python3 .project_manager/tools/pm_delegate.py ticket prepare "
+                f"--ticket {tid} --role {role} --cwd <작업공간 절대경로>\n"
+                "  · 이어 시키는 단계를 같은 순번에 다시 여는 인자는 그 명령의 --help 가 "
+                "말한다.",
+                file=sys.stderr,
+            )
+            return 1, None
     return 0, path
 
 
@@ -12744,7 +12781,6 @@ CLUSTER_BRANCH_PREFIX = "task/"           # 통합 브랜치 이름 접두
 CLUSTER_STATUS_OPEN = "open"
 # 장부 status 열거 — 종결(`closed`)만 비활성이고 나머지는 진행 중(자동 귀속 후보)이다.
 CLUSTER_STATUSES: tuple[str, ...] = ("open", "review", "fix", "closing", "closed")
-CLUSTER_ACTIVE_STATUSES: tuple[str, ...] = CLUSTER_STATUSES[:-1]
 # 라운드 예산 기본값 — 초과 판정(예약 거부)은 라운드 예약 표면이 소유하고, 여기서는 장부에
 # 박는 기본값 한 벌만 정의한다(각 단계 정확히 1회).
 CLUSTER_BUDGET_DEFAULT: dict[str, int] = {
@@ -12773,7 +12809,6 @@ _CLUSTER_MEMBER_REJECT_STATUSES: tuple[str, ...] = ("done", "discarded")
 _CLUSTER_INTERNAL_OVERLAP_PATH_LIMIT = 3
 # lint 판정 코드 — advisory 등재(`_ADVISORY_LINT_KINDS`)와 같은 문자열을 여기서 소유한다.
 _CLUSTER_MEMBER_LINT_KIND = "cluster-member-missing"
-_CLUSTER_BRANCH_LINT_KIND = "cluster-branch-missing"
 _CLUSTER_DUPLICATE_LINT_KIND = "cluster-duplicate"
 
 
@@ -13050,7 +13085,7 @@ def _new_cluster_fm(
 
 
 def _cluster_auto_attach(
-    tid: str, args: argparse.Namespace | None,
+    tid: str, args: argparse.Namespace,
 ) -> tuple[str, Path]:
     """발행 시점 크기 1 장부 생성 — `(클러스터 id, 장부 경로)`.
 
@@ -13071,16 +13106,15 @@ def _cluster_auto_attach(
 
 
 def _cluster_publish_base_branch(
-    args: argparse.Namespace | None,
-) -> tuple[str, str | None]:
-    """장부에 박을 `(코드 트리, 기준 브랜치)` — 브랜치 없는 트리(detached·비-git)는 None.
+    args: argparse.Namespace,
+) -> tuple[str | None, str | None]:
+    """장부에 박을 `(코드 트리, 기준 브랜치)` — 트리 미해소·브랜치 없는 트리(detached·비-git)는 None.
 
-    값은 그 세션이 보는 코드 트리의 현재 브랜치다(`_cluster_code_tree` 가 명시 정체성 >
-    활성 슬롯 > 이 트리 순으로 해소한다 · 해소 규칙 사본 0). task 작업공간에서 발행하면 그
-    세션의 통합 브랜치가 그대로 장부에 실린다.
+    트리 해소는 claim 과 **같은 하나**(`_claim_code_tree`)다 — 이 자리에 별도 규칙은 없다.
+    task 작업공간에서 발행하면 그 세션의 통합 브랜치가 그대로 장부에 실린다.
     """
-    tree = _cluster_code_tree(args)
-    return tree, _cluster_current_branch(tree)
+    tree = _claim_code_tree(args)
+    return tree, (_cluster_current_branch(tree) if tree else None)
 
 
 def _cluster_release_member(cluster: str, tid: str) -> Path | None:
@@ -13115,20 +13149,6 @@ def _cluster_release_member(cluster: str, tid: str) -> Path | None:
     return dump_cluster(fm)
 
 
-def _cluster_code_tree(args: argparse.Namespace | None = None) -> str:
-    """통합 브랜치가 사는 **코드 트리** — 명시 정체성 > 이 세션의 활성 슬롯 > 이 트리.
-
-    분리된 PM 홈에는 코드가 없다 — 통합 브랜치는 슬롯 worktree 가 공유하는 코드 git 에 있으므로,
-    인자 없는 자리(lint)는 활성 슬롯을 먼저 본다. PM 홈 자신에서 브랜치를 찾으면 "없다"가
-    정상이라 판정이 거짓이 된다. 명시 인자는 claim 과 같은 해소(`_claim_code_tree`)를 쓴다 —
-    코드 트리 해소 규칙을 새로 만들지 않는다.
-    """
-    explicit = None
-    if args is not None and (getattr(args, "repo", None) or getattr(args, "task", None)):
-        explicit = _claim_code_tree(args)
-    return explicit or _active_slot_path() or str(REPO)
-
-
 def _cluster_current_branch(tree: str) -> str | None:
     """코드 트리의 현재 브랜치 — detached·비-git·git 부재는 None."""
     result = _git_run(["symbolic-ref", "--quiet", "--short", "HEAD"], repo=Path(tree))
@@ -13149,8 +13169,9 @@ def _cluster_branch_state(tree: str, branch: str) -> bool | None:
 def _cluster_ensure_branch(tree: str, branch: str, base: str | None) -> str:
     """통합 브랜치를 만든다(있으면 그대로) — 결과를 사람이 읽는 1줄로 돌려준다.
 
-    브랜치 생성 실패는 장부 생성을 막지 않는다 — 장부가 선언한 브랜치가 실재하지 않는 상태는
-    lint(`cluster-branch-missing`)가 계속 보이게 한다(조용한 통과 아님).
+    브랜치 생성 실패는 장부 생성을 막지 않는다 — 이 1줄이 `cluster new` 출력에 그대로 실리고,
+    그 뒤의 브랜치 부재는 **트리를 든 표면**(확인 실행 `pm_delegate._cluster_confirmation_tree` ·
+    완료 기록 `ticket_finish`)이 자기 자리에서 판정한다(조용한 통과 아님).
     """
     state = _cluster_branch_state(tree, branch)
     if state is None:
@@ -13228,10 +13249,23 @@ def _cmd_cluster_new(args: argparse.Namespace) -> int:
     거부 판정은 전부 첫 쓰기 앞에 둔다(부분 생성 없음). 발행이 만든 크기 1 장부는 흡수하고,
     이미 **여러 티켓의** 묶음에 속한 티켓은 옮기지 않는다 — 소속 이동은 사람 판정이라 엔진이
     조용히 하지 않는다.
+
+    코드 트리는 **명시로만** 받는다(`--repo/--slot` 또는 `--task`) — 이 명령은 git 브랜치를
+    만들고 그 트리의 현재 브랜치를 기점으로 장부에 박는 쓰기라, 트리를 추측하면 엉뚱한
+    저장소에 브랜치가 생기고 다른 묶음의 브랜치가 기점으로 실린다.
     """
     reason = _validate_cluster_name(args.name)
     if reason:
         print(f"[중단] {reason}", file=sys.stderr)
+        return 1
+    try:
+        identity = identity_args.parse_identity(args)
+    except ValueError as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
+    if identity.kind == "none" and not (identity.task or "").strip():
+        print("[중단] cluster new 는 통합 브랜치를 만들 코드 트리를 명시로 받는다 — "
+              "`--repo <이름> --slot <N>` 또는 `--task <이름>` 을 지정하라.", file=sys.stderr)
         return 1
     cluster = cluster_id_for_name(args.name)
     raw = (getattr(args, "tickets", None) or "").strip()
@@ -13283,6 +13317,12 @@ def _cmd_cluster_new(args: argparse.Namespace) -> int:
                 drafts.append(tid)
             resolved.append((tid, path, fm, body, owner))
         tree, base_branch = _cluster_publish_base_branch(args)
+        if tree is None:
+            print(f"[중단] 코드 트리를 해소하지 못했다 — 정체성 "
+                  f"(repo={identity.repo} · slot={identity.slot} · task={identity.task}) "
+                  "이 리스 장부의 활성 슬롯과 조인되지 않는다. `pm_handoff`/`worktree_pool` "
+                  "로 슬롯을 확인한 뒤 다시 실행하라.", file=sys.stderr)
+            return 1
         branch_note = _cluster_ensure_branch(tree, branch, base_branch)
         touched.append(dump_cluster(_new_cluster_fm(
             cluster, members, base_branch=base_branch, branch=branch, spike=spike)))
@@ -13317,13 +13357,9 @@ def _cmd_cluster_new(args: argparse.Namespace) -> int:
         print(f"  ⚠ draft 멤버 {len(drafts)}건({', '.join(drafts)}) — 장부는 공유 board 에 "
               "있으나 draft 명세는 승격 전까지 공유되지 않는다(다른 클론에서 멤버 부재 "
               "advisory). `promote` 로 승격하라.", file=sys.stderr)
-    try:
-        cluster_repo = identity_args.parse_identity(args).repo
-    except ValueError:
-        cluster_repo = None
     material = _cluster_overlap_material(
         [(tid, fm.get("touches")) for tid, _path, fm, _body, _owner in resolved],
-        cluster_repo or REPO.name,
+        identity.repo or REPO.name,
     )
     for line in material:
         print(line, file=sys.stderr)
@@ -13331,7 +13367,11 @@ def _cmd_cluster_new(args: argparse.Namespace) -> int:
 
 
 def _cmd_cluster_show(args: argparse.Namespace) -> int:
-    """장부 1건 조회 — 선언값 그대로 + 멤버의 현재 status + 브랜치 실재 여부."""
+    """장부 1건 조회 — 선언값 그대로 + 멤버의 현재 status.
+
+    브랜치 실재는 재지 않는다 — 이 표면은 트리를 들지 않고, 장부에도 코드 트리를 적는 자리가
+    없어(`CLUSTER_LEDGER_KEYS`) 어느 저장소에서 찾을지 지목할 수 없다.
+    """
     cluster = cluster_id_for_name(args.name)
     fm = load_cluster(cluster)
     if fm is None:
@@ -13347,13 +13387,7 @@ def _cmd_cluster_show(args: argparse.Namespace) -> int:
     status = str(fm.get("status") or CLUSTER_STATUS_OPEN)
     print(f"-- {cluster} ({status} · 멤버 {len(declared)}) --")
     print(f"  base_branch: {fm.get('base_branch') or '—'}")
-    branch = str(fm.get("branch") or "").strip()
-    if branch:
-        state = _cluster_branch_state(_cluster_code_tree(args), branch)
-        mark = {True: "존재", False: "부재", None: "판정 불능"}[state]
-        print(f"  branch: {branch} ({mark})")
-    else:
-        print("  branch: —")
+    print(f"  branch: {str(fm.get('branch') or '').strip() or '—'}")
     print(f"  spike: {fm.get('spike') or '—'}")
     budget = fm.get("budget") if isinstance(fm.get("budget"), dict) else {}
     print("  budget: " + (" · ".join(f"{key}={value}" for key, value in budget.items())
@@ -17336,7 +17370,7 @@ _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
      "round-name", "round-gap", "round-dup", "round-pending", "round-temporary",
      "round-stray", "round-unreadable",
      # 클러스터 장부 관측 — 운영 재료지 push 결함이 아니다(never-block · `lint_clusters`).
-     _CLUSTER_MEMBER_LINT_KIND, _CLUSTER_BRANCH_LINT_KIND, _CLUSTER_DUPLICATE_LINT_KIND})
+     _CLUSTER_MEMBER_LINT_KIND, _CLUSTER_DUPLICATE_LINT_KIND})
 
 
 def _adr_id_from_path(p: Path) -> str:
@@ -18752,22 +18786,22 @@ def lint_rounds() -> list[tuple[str, str, str]]:
 
 
 def lint_clusters() -> list[tuple[str, str, str]]:
-    """클러스터 장부 판정 — 멤버 부재·통합 브랜치 부재·중복 귀속 (advisory·never-block).
+    """클러스터 장부 판정 — 멤버 부재·중복 귀속 (advisory·never-block).
 
-    장부는 운영 재료지 push 결함이 아니다 — 보이게만 한다. 브랜치 축은 **진행 중 묶음만** 본다:
-    종결된 묶음의 통합 브랜치는 머지 뒤 지우는 것이 정상이라 그걸 결함으로 세면 잡음이 된다.
-    판정 트리는 통합 브랜치가 사는 코드 트리(`_cluster_code_tree` — 분리 PM 홈은 활성 슬롯)이고
-    판정 불능(git 부재·비-git·fatal)은 아무 줄도 내지 않는다(없다고 단정하지 않는다).
+    장부는 운영 재료지 push 결함이 아니다 — 보이게만 한다. 판정 입력은 **장부 파일 안에만**
+    있다: 이 표면은 인자를 받지 않고 장부에도 코드 트리·repo 를 적는 자리가 없어
+    (`CLUSTER_LEDGER_KEYS`) 통합 브랜치 실재를 잴 트리를 지목할 방법이 없다. 트리를 추측해서
+    재면 PM 홈(코드 없는 트리)에서 "브랜치 부재"가 상시 참이 된다 — 그래서 브랜치 실재는
+    **트리를 든 표면**(생성 `_cluster_ensure_branch` · 확인 실행 `pm_delegate.
+    _cluster_confirmation_tree` · 완료 기록 `ticket_finish`)만 판정한다.
     """
     clusters = all_clusters()
     if not clusters:
         return []
     findings: list[tuple[str, str, str]] = []
     owners: dict[str, list[str]] = {}
-    tree = _cluster_code_tree()
     for fm in clusters:
         cluster = str(fm.get("id") or "").strip()
-        status = str(fm.get("status") or CLUSTER_STATUS_OPEN).strip()
         for tid in cluster_tickets(fm):
             owners.setdefault(tid, []).append(cluster)
             if find_ticket_exact(tid) is None:
@@ -18775,13 +18809,6 @@ def lint_clusters() -> list[tuple[str, str, str]]:
                     cluster, _CLUSTER_MEMBER_LINT_KIND,
                     f"멤버 티켓 부재: {tid} — 장부가 board 에 없는 티켓을 가리킨다"
                     "(draft 는 승격 전까지 공유 board 밖이다)",
-                ))
-        branch = str(fm.get("branch") or "").strip()
-        if branch and status in CLUSTER_ACTIVE_STATUSES:
-            if _cluster_branch_state(tree, branch) is False:
-                findings.append((
-                    cluster, _CLUSTER_BRANCH_LINT_KIND,
-                    f"통합 브랜치 부재: {branch} (코드 트리 {tree})",
                 ))
     for tid, declared in sorted(owners.items()):
         if len(declared) > 1:
@@ -19299,7 +19326,8 @@ def build_parser() -> argparse.ArgumentParser:
     cluster_sub = cluster_p.add_subparsers(dest="cluster_cmd", required=True)
 
     cp = cluster_sub.add_parser(
-        "new", help="장부 + 통합 브랜치 생성 · 멤버 귀속 · 겹침/슬롯 재료")
+        "new", help="장부 + 통합 브랜치 생성 · 멤버 귀속 · 겹침/슬롯 재료 "
+                    "(코드 트리는 `--repo/--slot` 또는 `--task` 로 명시 필수 — 없으면 거부)")
     cp.add_argument("name", metavar="<이름>",
                     help="클러스터 이름(장부 id 는 `C-<이름>` · 통합 브랜치는 `task/<이름>`)")
     cp.add_argument("--tickets", metavar="T-...,T-...", required=True,
@@ -19307,17 +19335,17 @@ def build_parser() -> argparse.ArgumentParser:
                          "티켓의 묶음에 속한 티켓은 거부한다.")
     cp.add_argument("--spike", metavar="경로",
                     help="설계 단일 진실 문서 경로 (선택 · 장부에 기록만 한다)")
-    identity_args.add_identity_args(cp)  # 통합 브랜치를 둘 코드 트리 해소(claim 과 같은 규칙)
+    identity_args.add_identity_args(cp)  # 통합 브랜치를 둘 코드 트리 — 명시 필수(claim 과 같은 규칙)
     cp.set_defaults(fn=cmd_cluster)
 
     cp = cluster_sub.add_parser("show", help="장부 1건 조회(선언값 + 멤버 현재 status)")
     cp.add_argument("name", metavar="<이름>")
-    identity_args.add_identity_args(cp)  # 브랜치 실재 판정 트리 해소(조회 표시용)
     cp.set_defaults(fn=cmd_cluster)
 
     p = sub.add_parser(
         "section-add",
-        help="open/claimed 티켓의 다음 라운드를 빈 시드로 예약(슬롯 없는 준비)")
+        help="묶음 장부가 없는 티켓의 다음 라운드를 빈 시드로 예약(슬롯 없는 준비) — "
+             "장부가 있는 티켓의 라운드는 위임 준비(`pm_delegate.py ticket prepare`)가 연다")
     p.add_argument("id", metavar="T-NNNN")
     p.add_argument("--role", required=True, choices=_round_role_choices(),
                    help="라운드 역할(파일명과 기본 절명을 함께 결정)")

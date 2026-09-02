@@ -10,6 +10,7 @@
       실행하며, 중간에서 멈춘 뒤 다시 실행하면 이미 끝난
       단계를 반복하지 않는다(부작용 카운터로 단언).
   (4) 크기 1 묶음이 티켓 하나 완료 기록과 같은 결과를 낸다(rc·board 결과·stage 범위).
+  (5) 멤버가 전부 처분(discarded)된 묶음은 코드 단계 없이 board 기록만으로 닫힌다.
 
 실 git 으로 재현한다(DI 로 git 을 가짜로 만들지 않는다) — 조상 판정·재배치·머지·worktree 해소가
 전부 git 의 실제 동작이라 가짜 러너로는 이 성질을 확인할 수 없다. 합성 사설 참조는 이 파일의
@@ -54,6 +55,7 @@ _CLUSTER = f"C-{_CLUSTER_NAME}"
 _SLOT = "work/code_1"
 _ROUND_FILE = "01-architect.md"      # 라운드 사이드카 한 벌(동형 대조의 위치 값)
 _CLOSED_STATUS = "closed"            # 장부 종결 표시(열거의 소유자는 board)
+_DISCARDED_STATUS = "discarded"      # 처분 종결 상태 디렉토리(열거의 소유자는 board)
 
 # 합성 사설 참조 — 조각 조립(소스에 완전한 사설 ID 리터럴 0).
 _SYNTHETIC_REF = "T-" + "0" * 3 + "7"
@@ -1045,6 +1047,75 @@ def test_close_runs_the_seven_steps_and_leaves_no_hand_work(close_env, capsys):
     assert "종결 파이프라인이 실행한다" in out
 
 
+@requires_git
+def test_close_of_an_all_discarded_cluster_runs_no_code_step(close_env, capsys):
+    """AT-004: 멤버가 전부 처분된 묶음은 브랜치 요구 없이 닫히고 슬롯 리스는 반납된다.
+
+    실측 형상(`C-delegate-model-single-truth-v1.7.12`)은 멤버 하나가 폐기됐고 장부가 선언한
+    묶음 브랜치·통합 브랜치가 코드 git 에 없다. 머지할 코드가 없으므로 코드 네 단계는 대상이
+    아니고, 제품 git 은 한 번도 바뀌지 않는다. **반납은 그 네 단계에 들지 않는다** — 슬롯
+    리스는 멤버의 코드 산출이 아니라 묶음이 든 자원이라, 건너뛰면 그대로 샌다(실측 형상도
+    슬롯을 대여한 채였다).
+    """
+    env = close_env
+    _discard_ticket(env)
+    # 폐기는 그 라운드의 산출을 버린 처분이라 슬롯에 남을 미커밋 편집도 없다. dirty 슬롯의
+    # 반납 거부는 `_step_release` 가 종전대로 소유하는 별 축이다(이 케이스의 관측 대상 아님).
+    _git(env.slot, "checkout", "--", "src/app.py")
+    _write_cluster_ledger(env.board_dir, tickets=(env.ticket,),
+                          base_branch="task/absent-integration",
+                          branch="task/absent-cluster")
+    before = (_rev(env.code), _rev(env.slot), env.integration_log(), env.slot_log(),
+              _git(env.slot, "status", "--porcelain").stdout)
+    assert before[-1].strip() == ""
+    assert env.lease_state() == "leased"
+
+    rc = env.closer().run()
+
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    # 밟은 단계는 셋 — 코드 네 단계만 목록에서 빠졌다(반납은 남는다).
+    order = [line.split("] ", 1)[1].removesuffix("...") for line in out.splitlines()
+             if line.startswith("[") and "/3] " in line]
+    assert order == ["기계 확인 생성·리뷰 게이트 처분", "슬롯 반납",
+                     "board·포인터 커밋"], out
+    assert "처분 종결 멤버 1" in out
+    assert env.board_calls == [] and env.delegate_calls == []
+    assert env.lease_state() == "idle"        # 반납이 돌았다 — 리스가 새지 않는다
+    # 제품 git 은 어느 축도 바뀌지 않았다(커밋·재배치·머지 0회).
+    assert before == (_rev(env.code), _rev(env.slot), env.integration_log(),
+                      env.slot_log(), _git(env.slot, "status", "--porcelain").stdout)
+    # 장부는 닫혔고 그 종결이 board-git·PM 홈에 기록됐다.
+    assert env.ledger()["status"] == _CLOSED_STATUS
+    assert env.ledger()["close_step"] == env.tf.ClusterCloser.STEPS[-1][0]
+    assert env.home_log()[0].startswith(f"{env.ticket} board — ")
+
+
+@requires_git
+def test_a_live_member_still_requires_the_code_steps(tf, tmp_path, monkeypatch, capsys):
+    """민감도 — 살아 있는 멤버가 있으면 같은 장부가 종전대로 브랜치를 요구한다.
+
+    폐기 멤버 건너뛰기가 정상 종결의 판정을 느슨하게 만들지 않는다(멤버를 처분하지 않은 것
+    하나만 다르고 장부·트리는 같다).
+    """
+    env = _build_close_env(tf, tmp_path / "live-member", monkeypatch)
+    _write_cluster_ledger(env.board_dir, tickets=(env.ticket,),
+                          base_branch="task/absent-integration",
+                          branch="task/absent-cluster")
+    ledger_before = (env.board_dir / "tickets" / "clusters" / f"{_CLUSTER}.md").read_bytes()
+
+    rc = env.closer().run()
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "task/absent-integration 를 이 코드 트리에서 찾지 못했다" in captured.err
+    assert "묶음 브랜치 task/absent-cluster 를 이 코드 트리에서 찾지 못했다" in captured.err
+    assert "[1/7]" not in captured.out          # 첫 부작용 앞에서 막혔다
+    assert env.board_calls == [] and env.lease_state() == "leased"
+    assert (env.board_dir / "tickets" / "clusters" /
+            f"{_CLUSTER}.md").read_bytes() == ledger_before
+
+
 # ── 첫 부작용 앞 선검사 — 막는 조건을 한 번에 전부 낸다 ────────────────────
 
 
@@ -1061,6 +1132,22 @@ def _reopen_ticket(env) -> None:
     target.write_text(
         target.read_text(encoding="utf-8").replace("status: claimed", "status: open"),
         encoding="utf-8")
+
+
+def _discard_ticket(env) -> Path:
+    """멤버를 처분 종결(discarded)로 옮긴다 — 완료 기록 대상도 코드 산출도 없는 상태."""
+    claimed = next((env.board_dir / "tickets" / "claimed").glob(f"{env.ticket}*.md"))
+    target = env.board_dir / "tickets" / "discarded" / claimed.name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    claimed.replace(target)
+    target.write_text(
+        target.read_text(encoding="utf-8").replace(
+            "status: claimed", f"status: {_DISCARDED_STATUS}"),
+        encoding="utf-8")
+    _git(env.board_dir, "add", "-A")
+    _git(env.board_dir, "commit", "-qm", "member discarded")
+    _git(env.board_dir, "push", "-q")
+    return target
 
 
 def _unmark_dod(env) -> None:
@@ -2012,3 +2099,4 @@ def test_close_stops_when_the_status_query_returns_an_error_code(
     assert "작업 트리 상태를 관측하지 못했다" in captured.err
     assert env.integration_log()[0] == "code seed"       # 머지는 돌지 않았다
     assert env.lease_state() == "leased"                 # 반납도 돌지 않았다
+

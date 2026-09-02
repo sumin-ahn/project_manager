@@ -36,7 +36,8 @@
   묶음 브랜치(`branch`)만 비운다. 그래서 5단계가 `묶음 브랜치 미선언 — 무대상` 으로 건너뛰고,
   4단계는 이미 그 기준 브랜치 위면 건너뛴다. 발행 시점 코드 트리가 브랜치를 갖지 않았으면
   (detached·비-git) `base_branch` 가 비므로 위 정지 규칙에 걸린다. 묶음 브랜치까지 쓰려면
-  `python3 .project_manager/tools/board.py cluster new <이름> --tickets <T-NNNN>` 으로 선언한다.
+  `python3 .project_manager/tools/board.py cluster new <이름> --tickets <T-NNNN> --repo <이름> --slot <N>`
+  (또는 `--task <이름>`) 으로 선언한다 — 통합 브랜치를 둘 코드 트리는 명시가 필수다.
 
 ## all-done recovery (반쪽 종결 전용)
 

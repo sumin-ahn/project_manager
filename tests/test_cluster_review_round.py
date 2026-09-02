@@ -1420,7 +1420,7 @@ def test_confirmation_tree_must_be_the_cluster_branch(pd, review_env):
     """다른 브랜치에서 잰 관측을 확인으로 적지 않는다."""
     home, _tickets = review_env
     board = _fixture_board(pd, home)
-    board._cluster_code_tree = lambda *_a, **_k: str(home)
+    board._claim_code_tree = lambda *_a, **_k: str(home)
 
     assert pd._cluster_confirmation_tree(board, _CLUSTER) == home
 
@@ -1500,7 +1500,7 @@ def test_resolve_cluster_executes_writes_and_declares_per_ticket(
         tree_identities.append(identity)
         return str(home)
 
-    board._cluster_code_tree = task_tree
+    board._claim_code_tree = task_tree
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
@@ -1549,7 +1549,7 @@ def test_resolve_cluster_closes_strict_pm_owned_findings_without_reviewer_or_com
 ):
     home, tickets = review_env
     board = _fixture_board(pd, home)
-    board._cluster_code_tree = lambda *_a, **_k: str(home)
+    board._claim_code_tree = lambda *_a, **_k: str(home)
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
     monkeypatch.setattr(pd, "_load_board", lambda: board)
@@ -1598,7 +1598,7 @@ def test_resolve_retry_merges_pm_owned_row_into_partial_same_round_and_completes
     """machine 확인 append 뒤 처분 실패를 재시도해도 같은 round block을 중복하지 않는다."""
     home, tickets = review_env
     board = _fixture_board(pd, home)
-    board._cluster_code_tree = lambda *_a, **_k: str(home)
+    board._claim_code_tree = lambda *_a, **_k: str(home)
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
     monkeypatch.setattr(pd, "_load_board", lambda: board)
@@ -1728,3 +1728,67 @@ def test_a_refused_seat_harvest_does_not_pass_as_success(pd, review_env, capsys)
         / "03-code-reviewer.md"
     )
     assert pd.PM_REVIEW_BLOCK in first.read_text(encoding="utf-8")
+
+
+def _passed_reply() -> str:
+    return (
+        "판정: 통과\n\n"
+        "**must-fix** (반드시 수정):\n- 없음\n\n"
+        "**suggestion** (권장):\n- 없음\n"
+    )
+
+
+def _record_passed_round(pd, gate: str) -> None:
+    """그 게이트의 내부 라운드 장부에 통과(must-fix 0) 라운드를 남긴다(처분 무대상 상태)."""
+    budget = pd._reserve_internal_review_round(
+        gate, wall_timeout_sec=60, target_rev="deadbeef",
+        diff_fingerprint="fp-a",
+    )
+    trace = pd.InternalRoundTrace(budget)
+    trace.start_attempt("raw-1")
+    trace.finish_attempt({}, _passed_reply())
+    pd._finish_internal_review_round(budget, trace)
+
+
+@requires_git
+def test_resolve_cluster_skips_a_member_whose_review_passed_clean(
+        pd, review_env, monkeypatch, capsys):
+    """통과(must-fix 0) 멤버는 무대상으로 건너뛰고 반려 멤버만 처분한다 — 묶음은 닫힌다."""
+    home, tickets = review_env
+    board = _fixture_board(pd, home)
+    board._claim_code_tree = lambda *_a, **_k: str(home)
+    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
+    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
+    monkeypatch.setattr(pd, "_load_board", lambda: board)
+    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
+    rounds_module = pd._load_ticket_rounds()
+    import contextlib
+    rejected, passed = _MEMBERS
+    spec, rounds = _accepted_ticket(pd, command="echo hi", expected="hi")
+    path = tickets / f"{rejected}-review.md"
+    path.write_text(path.read_text(encoding="utf-8") + "\n" + spec,
+                    encoding="utf-8", newline="")
+    for item in rounds:
+        rounds_module.reserve_round(
+            board.tickets_dir(), rejected, item.role, content=item.text,
+            lock=contextlib.nullcontext(),
+        )
+    _record_rejected_round(pd, rejected)
+    _record_passed_round(pd, passed)
+    capsys.readouterr()
+
+    rc = pd._cmd_rounds(
+        ["resolve", "--cluster", _CLUSTER, "--pm-verified"],
+        run_fn=_stub_run(0, "hi\n"),
+    )
+
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    ledger = json.loads((
+        home / ".project_manager" / ".local" / pd.INTERNAL_REVIEW_LEDGER_NAME
+    ).read_text(encoding="utf-8"))
+    assert ledger[rejected]["resolution"]["kind"] == "pm-verified"
+    assert ledger[passed].get("resolution") is None
+    assert f"{passed}: 처분할 반려 잔여 없음(must-fix 0건) — 무대상" in out
+    assert pd.PM_REVIEW_CONFIRMATION_SECTION not in (
+        tickets / f"{passed}-review.md").read_text(encoding="utf-8")
