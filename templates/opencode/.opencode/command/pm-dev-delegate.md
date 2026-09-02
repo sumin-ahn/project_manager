@@ -28,7 +28,7 @@ audience: pm-internal
 | 종결 | `rounds resolve --cluster` → `ticket_finish.py --cluster` | 묶음 1 | — |
 
 ```bash
-python3 .project_manager/tools/board.py cluster new <이름> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로>
+python3 .project_manager/tools/board.py cluster new <이름> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로> --repo <이름> --slot <N>
 python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster <C-이름> --role architect --cwd <worktree 절대경로>
 python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster <C-이름> --role developer --cwd <worktree 절대경로>
 python3 .project_manager/tools/pm_delegate.py --role code-reviewer --cluster <C-이름> --cwd <worktree 절대경로> --focus <검토 중점 파일> --background
