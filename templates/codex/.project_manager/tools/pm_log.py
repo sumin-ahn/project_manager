@@ -1705,16 +1705,20 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
     )
     if warning:
         print(warning, file=sys.stderr)
+    if not text:
+        # 주입할 것을 만들지 못한 실행은 실패다 — 정체성 미해소든 원장 판독 실패든 같은 규칙
+        # (특례 0). 실패에 반쪽 답(무응답 엔벨로프)을 내지 않는다: 소비자가 그 한 줄을 "답" 으로
+        # 세면 조용한 생략이 되고, 셸 폴백 배선(`snapshot --json || printf …`)에서는 엔벨로프가
+        # 두 줄이 된다. stdout 0줄 + rc 1 이면 세 하네스가 같은 실패를 같은 자리에서 본다.
+        return 1
     if args.json:
-        payload = {"suppressOutput": True}
-        if text:
-            payload = {"systemMessage": text, "suppressOutput": False}
+        payload = {"systemMessage": text, "suppressOutput": False}
         _write_machine_line(
             json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
         )
-    elif text:
+    else:
         sys.stdout.write(text)
-    return 1 if warning == _CTX_WINDOW_MISMATCH_READ_WARNING else 0
+    return 0
 
 
 def _registered_repos() -> set[str] | None:
@@ -1903,13 +1907,8 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
         cwd = Path(getattr(args, "cwd", None) or Path.cwd()).resolve(strict=False)
         identity_name, source = resolve_snapshot_identity(REPO, cwd)
         if identity_name is None:
-            if getattr(args, "trigger", None) == "compaction":
-                print(
-                    "[pm-checkpoint] checkpoint 정체성 미해소 — "
-                    "cwd lease 불일치·활성 task 비단일; 기록 생략",
-                    file=sys.stderr,
-                )
-                return 0
+            # 트리거 특례 없음 — 훅은 stdio 를 버리므로 rc 0 생략은 아무도 못 본다
+            # (기록 0건이 성공으로 위장한다). 미해소는 어느 트리거에서든 rc 1 이다.
             print(
                 "[중단] checkpoint 정체성 미해소 — cwd lease 불일치·활성 task 비단일; "
                 "--task NAME을 명시하세요.",

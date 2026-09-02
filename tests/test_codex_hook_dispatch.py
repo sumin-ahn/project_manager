@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pytest
 
+from _home_slot import seed_home_slot
 from _hook_commands import powershell_native_arguments
 from _win_skip import posix_bash_supported
 
@@ -1213,10 +1214,21 @@ def test_migrated_event_answers_exactly_what_the_old_direct_wiring_answered(
 
     옛 세 커맨드는 payload 를 읽지 않거나(압축 2단) 판별 없는 matcher(`.*`) 뒤에 있었다 —
     그래서 라우팅 값이 무엇이든, 심지어 읽을 수 없는 stdin 이어도 가드가 돌았다. 진입점 뒤
-    registry 가 그 사실을 판별식 없음으로 옮겼는지가 여기서 값으로 판정된다."""
+    registry 가 그 사실을 판별식 없음으로 옮겼는지가 여기서 값으로 판정된다.
+
+    두 실행은 **다른 트리**에서 돈다(부작용 격리) — PostCompact 엔벨로프에 실리는 snapshot 은
+    그 홈 경로를 본문에 담으므로, 트리 경로만 자리표시자로 정규화한 뒤 대조한다(경로 차이는
+    이 판정의 축이 아니다)."""
     legacy_root = _adopter_tree(tmp_path / "legacy", conf_lines=_CROSS_CONF)
     new_root = _adopter_tree(tmp_path / "new", conf_lines=_CROSS_CONF)
+    for tree in (legacy_root, new_root):
+        seed_home_slot(tree)
     entrypoint = _entry_handler(event)["command"]
+
+    def _tree_agnostic(out: str, root: Path) -> dict:
+        for form in (str(root.resolve()), str(root)):
+            out = out.replace(form, "<TREE>")
+        return json.loads(out)
 
     for label, stdin_text in _equivalence_inputs(hook_io_schema, event):
         legacy_rc, legacy_out = _run_command_in_tree(
@@ -1224,7 +1236,8 @@ def test_migrated_event_answers_exactly_what_the_old_direct_wiring_answered(
         new_rc, new_out = _run_command_in_tree(entrypoint, new_root, stdin_text)
 
         assert legacy_rc == 0 and new_rc == 0, (label, legacy_rc, new_rc)
-        assert json.loads(new_out) == json.loads(legacy_out), label
+        assert _tree_agnostic(new_out, new_root) == _tree_agnostic(
+            legacy_out, legacy_root), label
 
 
 @pytest.mark.skipif(not posix_bash_supported(),
@@ -1238,6 +1251,7 @@ def test_compaction_normal_traffic_emits_no_adapter_fallback_warning(
     자식 계약("rc0 + JSON dict")으로 옮기면 모든 압축마다 없던 경고가 새로 나간다. 옛 배선의
     침묵이 값 그대로 보존됐는지를 실 출하 커맨드 실행으로 본다."""
     root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF)
+    seed_home_slot(root)
     entrypoint = _entry_handler(event)["command"]
 
     for trigger in ("auto", "manual"):
@@ -1425,6 +1439,7 @@ def test_legacy_wiring_adopter_is_told_future_guards_not_current_ones(
     같은 트리에서 옛 커맨드를 태우면 가드가 정상 엔벨로프를 낸다. 처방이 거짓 사실을 근거로
     들면 채택자는 그 처방을 안 믿는다."""
     root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF)
+    seed_home_slot(root)
     (root / ".project_manager").mkdir(exist_ok=True)
     (root / ".project_manager" / "install.json").write_text(
         '{"schema": 1, "harnesses": ["codex"]}\n', encoding="utf-8")
@@ -1490,6 +1505,7 @@ def test_live_compaction_payload_runs_through_the_shipped_entrypoint(
         guard, tmp_path, event):
     """라이브에서 실제로 온 payload 를 출하 진입점에 그대로 먹여도 경고 0줄이다."""
     root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF)
+    seed_home_slot(root)
 
     returncode, stdout = _run_command_in_tree(
         _entry_handler(event)["command"], root,
@@ -1500,3 +1516,26 @@ def test_live_compaction_payload_runs_through_the_shipped_entrypoint(
     assert isinstance(envelope, dict) and envelope
     assert guard.CODEX_ADAPTER_FALLBACK_MARKER not in json.dumps(envelope,
                                                                 ensure_ascii=False)
+
+
+@pytest.mark.skipif(not posix_bash_supported(),
+                    reason="POSIX bash wrapper 실행 환경이 아님")
+def test_unregistered_home_compaction_is_loud_not_silent(guard, tmp_path, hook_io_schema):
+    """정체성 미해소 홈의 PostCompact 는 **경고**로 나온다 — 조용한 통과가 아니다(fail-open 유지).
+
+    등록 행(`slot="."`)이 없는 홈에서는 snapshot 이 낼 텍스트가 없다. 옛 형상은 그 실행을 rc 0 +
+    무응답 엔벨로프로 끝내 아무 데도 흔적이 없었다(compaction 마다 기록 0건이 성공으로 위장).
+    이제 rc 1 · stdout 0줄이라 디스패처가 `adapter-fallback` 마커를 달아 사실을 남긴다 — 세션은
+    막지 않는다(rc 0).
+    """
+    root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF)   # 홈 lease 행 없음(미등록 홈).
+
+    returncode, stdout = _run_command_in_tree(
+        _entry_handler("PostCompact")["command"], root,
+        json.dumps(_synth_payload(hook_io_schema, "PostCompact")))
+
+    assert returncode == 0, stdout                            # fail-open — 압축을 막지 않는다.
+    envelope = json.loads(stdout)
+    rendered = json.dumps(envelope, ensure_ascii=False)
+    assert guard.CODEX_ADAPTER_FALLBACK_MARKER in rendered, rendered
+    assert "compaction-snapshot" in rendered, rendered

@@ -303,25 +303,36 @@ def test_checkpoint_slot_header_round_trips_through_handoff_collector(
     assert mismatch is not None and "[ctx-window-mismatch]" in mismatch
 
 
-def test_checkpoint_parser_unresolved_compaction_warns_without_failing(
+def test_cmd_checkpoint_unresolved_identity_fails_on_every_trigger(
     tmp_path, monkeypatch, capsys,
 ):
-    """T-0686: 훅 CLI 계약은 rc 0을 유지하며 무기록을 stderr로 관측시킨다."""
-    mod = _load_module("pm_log_t0686_unresolved")
+    """정체성 미해소는 트리거와 무관하게 rc 1 · 무기록이다 — compaction 특례가 없다.
+
+    훅은 이 CLI 의 stdio 를 버리므로 rc 0 "생략" 은 아무도 관측하지 못한다(기록 0건이
+    성공으로 위장한다). 실패는 rc 로 터져야 훅 로그·회귀가 본다. 두 트리거를 **한 판정**
+    으로 보는 이유는 이 성질의 축이 트리거 목록 자체이기 때문이다 — 처방 문구(`--task NAME`)와
+    기존 엔트리 보존까지 같은 자리에서 본다(같은 성질을 두 테스트가 나눠 재지 않는다).
+    """
+    mod = _load_module("pm_log_unresolved_identity")
     log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
     log_dir.mkdir(parents=True)
-    mod.CURRENT_FILE.write_text(_HEADER, encoding="utf-8")
-    args = mod.build_parser().parse_args([
-        "checkpoint", "--trigger", "compaction", "--phase", "pre",
-        "--cwd", str(tmp_path),
-    ])
+    original = _HEADER + _ENTRY_A          # 비어 있지 않은 기존 log — 무기록은 그 바이트 보존이다.
+    mod.CURRENT_FILE.write_text(original, encoding="utf-8")
 
-    rc = args.fn(args)
+    for trigger in ("manual", "compaction"):
+        args = mod.build_parser().parse_args([
+            "checkpoint", "--trigger", trigger, "--phase", "pre",
+            "--cwd", str(tmp_path),
+        ])
 
-    captured = capsys.readouterr()
-    assert rc == 0 and captured.out == ""
-    assert "checkpoint 정체성 미해소" in captured.err and "기록 생략" in captured.err
-    assert mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1] == []
+        rc = args.fn(args)
+
+        captured = capsys.readouterr()
+        assert rc == 1 and captured.out == "", trigger
+        assert "[중단]" in captured.err and "checkpoint 정체성 미해소" in captured.err
+        assert "--task NAME" in captured.err, trigger
+        assert "생략" not in captured.err, trigger
+        assert mod.CURRENT_FILE.read_text(encoding="utf-8") == original
 
 
 def test_checkpoint_slot_compaction_dedups_same_boundary(tmp_path, monkeypatch):
@@ -502,45 +513,6 @@ def test_cmd_checkpoint_rejects_invalid_task_before_write(tmp_path, monkeypatch,
     assert rc == 1
     assert "부적합 task 명" in capsys.readouterr().err
     assert current.read_text(encoding="utf-8") == original
-
-
-def test_cmd_checkpoint_missing_identity_manual_fails_loud(
-    tmp_path, monkeypatch, capsys,
-):
-    """--task 없는 manual 호출은 기록 없는 성공으로 가장하지 않는다."""
-    mod = _load_module()
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
-    log_dir.mkdir(parents=True)
-    original = _HEADER + _ENTRY_A
-    mod.CURRENT_FILE.write_text(original, encoding="utf-8")
-
-    rc = mod.cmd_checkpoint(SimpleNamespace(
-        task=None, trigger="manual", cwd=str(tmp_path),
-    ))
-
-    captured = capsys.readouterr()
-    assert rc == 1 and captured.out == ""
-    assert "정체성 미해소" in captured.err and "--task NAME" in captured.err
-    assert mod.CURRENT_FILE.read_text(encoding="utf-8") == original
-
-
-def test_cmd_checkpoint_missing_identity_compaction_warns_and_skips(
-    tmp_path, monkeypatch, capsys,
-):
-    """같은 identity 실패도 compaction 훅은 rc 0·진단·무기록이다."""
-    mod = _load_module()
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
-    log_dir.mkdir(parents=True)
-    original = _HEADER + _ENTRY_A
-    mod.CURRENT_FILE.write_text(original, encoding="utf-8")
-
-    rc = mod.cmd_checkpoint(SimpleNamespace(
-        task=None, trigger="compaction", cwd=str(tmp_path), phase="pre",
-    ))
-
-    captured = capsys.readouterr()
-    assert rc == 0 and captured.out == "" and "정체성 미해소" in captured.err
-    assert mod.CURRENT_FILE.read_text(encoding="utf-8") == original
 
 
 def test_append_atomic_uses_one_o_append_write(tmp_path, monkeypatch):
@@ -1804,6 +1776,37 @@ def test_cmd_snapshot_reads_ledgers_without_subprocess_and_json_envelope_is_sing
     assert payload["systemMessage"].startswith(mod._SNAPSHOT_IDENTITY_HEADING)
     assert "조회 불가" in payload["systemMessage"]  # WIP 프로브가 fail-soft 로 표기됐는지
     assert 0 < len(probe_calls) <= mod._WIP_PROBE_MAX_CALLS
+
+
+def test_cmd_snapshot_unresolved_identity_returns_one(tmp_path, monkeypatch, capsys):
+    """정체성 미해소 snapshot 은 rc 1 · stdout 0줄이다 — `--json` 도 무응답 엔벨로프를 내지 않는다.
+
+    rc 0 + `{"suppressOutput":true}` 는 "주입할 것이 없다" 를 성공으로 위장한다(그 위장이
+    compaction 마다 관측 불가였다). 원장 판독 실패 경로도 같은 규칙이라 특례가 없다 — 두 실패가
+    같은 rc·같은 stdout 을 낸다.
+    """
+    mod = _load_module("pm_log_snapshot_unresolved_identity")
+    pm_home = tmp_path / "empty"
+    pm_home.mkdir()
+    monkeypatch.setattr(mod, "REPO", pm_home)
+
+    for json_mode in (False, True):
+        rc = mod.cmd_snapshot(
+            SimpleNamespace(cwd=str(pm_home), state_lines=24, json=json_mode))
+
+        captured = capsys.readouterr()
+        assert rc == 1 and captured.out == "", json_mode
+        assert captured.err.count("\n") == 1 and "재주입 생략" in captured.err
+
+    # 원장 판독 실패(다른 사유)도 같은 규칙 — rc 1 · stdout 0줄.
+    monkeypatch.setattr(mod, "build_snapshot",
+                        lambda *a, **k: (None, mod._CTX_WINDOW_MISMATCH_READ_WARNING))
+
+    rc = mod.cmd_snapshot(SimpleNamespace(cwd=str(pm_home), state_lines=24, json=True))
+
+    captured = capsys.readouterr()
+    assert rc == 1 and captured.out == ""
+    assert mod._CTX_WINDOW_MISMATCH_READ_WARNING in captured.err
 
 
 def test_snapshot_missing_all_ledgers_is_fail_soft_one_line_warning(tmp_path):

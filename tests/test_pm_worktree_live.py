@@ -290,7 +290,7 @@ def _assert_worktree_git_state(fx: _Fixture, proc: subprocess.CompletedProcess, 
     )
 
 
-def _pm_worktree_prompt(skill_text: str) -> str:
+def _pm_worktree_prompt(skill_text: str, *, root: Path) -> str:
     """실 LLM 에 스킬만 주고 운영중-관리 시나리오를 시키는 프롬프트 (스킬 = 유일 컨텍스트).
 
     진입문서(CLAUDE.md/AGENTS.md) 경로를 *주지 않는다* — 스킬만으로 커맨드/플래그를 골라야 통과
@@ -298,6 +298,10 @@ def _pm_worktree_prompt(skill_text: str) -> str:
     경로·dev 브랜치)는 자연어로 주되 *커맨드 구문*(worktree_pool.py dev/sync·--slot)은 스킬에서
     옮겨야 한다. 두 단계: (1) dev submodule 을 dev 브랜치로 지정("작업 중" 선언·pool 보호) (2) 슬롯
     submodule 을 pin 에 재동기. command_card_usability 의 --help 금지 문구를 미러(사용성 판정).
+
+    루트는 **절대경로 값**으로 준다 — 격리 홈이 바깥 저장소 트리 안에 만들어지므로 "the
+    directory that contains .project_manager" 같은 서술은 바깥 홈도 만족한다(pm_release_live 에서
+    실제로 그 오독이 났다).
     """
     return (
         "You are the PM operating this project's worktree pool. Below (between <<<SKILL and "
@@ -306,9 +310,12 @@ def _pm_worktree_prompt(skill_text: str) -> str:
         "documentation.\n\n"
         f"Context: the slot is {_SLOT}. It contains two git submodules — {_DEV_SUB} (which you are "
         f"about to edit yourself) and {_CONSUME_SUB} (which you are NOT editing).\n\n"
-        "Do exactly these two steps from the shared root (the directory that contains "
-        ".project_manager), one skill command per step, using the EXACT command form the skill "
-        "shows:\n"
+        f"This project's shared root is exactly `{root}` — that is your working directory and it is "
+        "already your shell's cwd. Run every command there; do NOT `cd` to any other directory and "
+        "do NOT run commands against any path outside it (paths above it belong to a different "
+        "project).\n\n"
+        "Do exactly these two steps, one skill command per step, using the EXACT command form the "
+        "skill shows:\n"
         f"  1. Declare that you are working in the {_DEV_SUB} submodule by designating it as a dev "
         f"submodule on a branch named {_DEV_BRANCH!r} (so the pool will not clobber your work). "
         f"Pass the slot explicitly as {_SLOT}.\n"
@@ -337,7 +344,8 @@ def test_pm_worktree_live_claude(tmp_path, monkeypatch):
     fx = _setup_home_with_submodule_slot(tmp_path, "claude", monkeypatch)
     _assert_initial_state(fx)
 
-    prompt = _pm_worktree_prompt(_CLAUDE_SKILL.read_text(encoding="utf-8"))
+    prompt = _pm_worktree_prompt(
+        _CLAUDE_SKILL.read_text(encoding="utf-8"), root=fx.home)
     proc = subprocess.run(
         ["claude", "-p", "--model", CLAUDE_MODEL,
          "--allowedTools", "Bash",
@@ -381,7 +389,8 @@ def test_pm_worktree_live_opencode_best_effort(tmp_path, monkeypatch):
     fx = _setup_home_with_submodule_slot(tmp_path, "opencode", monkeypatch)
     _assert_initial_state(fx)
 
-    prompt = _pm_worktree_prompt(_OPENCODE_SKILL.read_text(encoding="utf-8"))
+    prompt = _pm_worktree_prompt(
+        _OPENCODE_SKILL.read_text(encoding="utf-8"), root=fx.home)
     proc = subprocess.run(
         ["opencode", "run", "--agent", "build", "--dir", str(fx.home),
          "--dangerously-skip-permissions", "-m", LIVE_MODEL, prompt],
@@ -417,10 +426,10 @@ def test_pm_worktree_skill_files_exist_and_reference_backbone():
         assert "--slot" in text, f"{skill.name} 에 --slot(정체성 명시 전달) 부재"
 
 
-def test_pm_worktree_prompt_embeds_skill_and_scenario():
+def test_pm_worktree_prompt_embeds_skill_and_scenario(tmp_path):
     """프롬프트가 스킬 전문 + 시나리오 파라미터(슬롯·submodule·dev 브랜치·2단계)를 담고 --help 를 금한다."""
     skill_text = _CLAUDE_SKILL.read_text(encoding="utf-8")
-    prompt = _pm_worktree_prompt(skill_text)
+    prompt = _pm_worktree_prompt(skill_text, root=tmp_path / "adopter-claude")
     # 스킬이 유일 컨텍스트로 임베드된다(진입문서 경로 미제공 — 스킬 사용성).
     assert skill_text in prompt
     assert "CLAUDE.md" not in prompt and "AGENTS.md" not in prompt
@@ -430,6 +439,21 @@ def test_pm_worktree_prompt_embeds_skill_and_scenario():
     assert _DEV_BRANCH in prompt
     # --help 사용 금지 명시(사용성 판정 대상·command_card_usability 미러).
     assert "Do NOT run any command with --help or -h" in prompt
+
+
+def test_pm_worktree_prompt_names_the_root_by_absolute_path(tmp_path):
+    """루트 지칭은 절대경로 **값**이다 — 서술 지칭("`.project_manager` 를 가진 디렉터리")은 0.
+
+    격리 홈은 바깥 저장소 트리 안에 만들어지므로(임시 루트 규약) 그 서술은 바깥 홈도 만족한다 —
+    같은 문안이 pm_release_live 에서 실제 오배치를 냈다(2026-09-02 livegate #2).
+    """
+    root = tmp_path / "adopter-claude"
+    prompt = _pm_worktree_prompt(_CLAUDE_SKILL.read_text(encoding="utf-8"), root=root)
+
+    assert str(root) in prompt
+    assert "the directory that contains" not in prompt
+    assert "shared root (the" not in prompt
+    assert "do NOT `cd` to any other directory" in prompt
 
 
 @_git_required

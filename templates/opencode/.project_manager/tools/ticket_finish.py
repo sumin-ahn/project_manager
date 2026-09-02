@@ -1938,6 +1938,35 @@ _RESIDUAL_ATTRIBUTION_SKIP_NOTE = (
     "잔여 판정 귀속 보정 skip — {ticket} 창 안 티켓 touches 를 읽지 못했다 ({error}). 같은 "
     "묶음 다른 멤버가 선언한 경로도 잔여로 잡힐 수 있다."
 )
+_UNBORN_BASELINE_GUARD_OFF = (
+    "{ticket} 기준선 없음 — 장부가 선언한 통합 브랜치 {branch} 가 이 트리가 든 그 브랜치이고 "
+    "커밋이 0이다. 잴 표면(기준선·HEAD)이 없어 이 축의 가드를 끕니다(측정 불가 = 가드 off)."
+)
+_UNBORN_SKELETON_NOTE = (
+    "{ticket} 기준선 없음(커밋 0) — 선언 스코프 밖 {count}건은 이 티켓의 잔여가 아니라 아직 "
+    "아무도 커밋하지 않은 뼈대다(차단하지 않음). 뼈대를 저장소에 실으려면 `git add -A` 로 "
+    "따로 커밋하라."
+)
+
+
+def _unborn_baseline(git_stdout, cwd: Path, branch: str) -> bool:
+    """장부가 선언한 통합 브랜치가 **이 트리가 든 바로 그 브랜치이고 커밋이 0**인가.
+
+    새 채택자(`pm_import --new` 직후)의 첫 종결이 이 형상이다 — 그때 통합 tip 은 "없는
+    브랜치" 가 아니라 이 종결의 커밋 단계가 첫 커밋을 얹을 자기 브랜치다. 관측 입력은 둘
+    뿐이고 **둘 다 참일 때만** 참이다: HEAD 가 커밋을 가리키지 않는다(`rev-parse --verify
+    HEAD` 실패) **그리고** HEAD 가 그 브랜치의 ref 를 가리킨다(`symbolic-ref HEAD`).
+    detached·다른 브랜치·비-git 트리는 둘째 관측에서 거짓이라 종전 판정(정지·가드 off)이
+    그대로 돈다.
+
+    이 판정은 여기 한 곳이 소유한다 — 소비자(`_integration_tip`·`_pre_rebase`·
+    `_step_rebase`)가 같은 관측을 각자 쓰면 네 판정이 서로 다른 트리 상태를 본다.
+    """
+    rc, _out = git_stdout(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"])
+    if rc == 0:
+        return False
+    rc, out = git_stdout(cwd, ["symbolic-ref", "--quiet", "HEAD"])
+    return rc == 0 and out.strip() == f"refs/heads/{branch}"
 
 
 class TicketFinisher:
@@ -2145,28 +2174,39 @@ class TicketFinisher:
         self._loud_notes.add(key)
         print(f"  ⚠ {message}", file=sys.stderr)
 
-    def _measurement_anchor(self, ticket_id: str, external) -> str:
+    def _measurement_anchor(self, ticket_id: str, external) -> str | None:
         """측정 폭의 기준점 — 통합 브랜치와의 merge-base. 해소 실패는 정지다.
 
         두 게이트(diff 서킷브레이커·사설 참조)가 이 한 자리에서 같은 값을 받는다 — 리뷰가 본
         표면과 완료 기록이 보는 표면이 갈리지 않는다. 구형/부분 설치로 측정 seam 이 없으면
-        폭을 물을 수 없으므로 그것도 정지다(옛 폭으로 접는 갈래가 없다)."""
+        폭을 물을 수 없으므로 그것도 정지다(옛 폭으로 접는 갈래가 없다).
+
+        빈 기준선(커밋 0)에서는 기준선도 HEAD 도 없어 **잴 표면 자체가 없다** — `None` 을
+        돌려주고, 호출부가 기존 "측정 불가 = 가드 off + loud 한 줄" 등급으로 접는다(빈 트리
+        sentinel 같은 새 rev 를 만들지 않는다)."""
         anchor_fn = getattr(external, "integration_anchor", None)
         if anchor_fn is None:
             raise _CloseObservationFailure(_INTEGRATION_ANCHOR_SEAM_ABSENT)
         code_tree = self._code_tree()
-        anchor, reason = anchor_fn(
-            code_tree, self._integration_tip(ticket_id, code_tree))
+        tip = self._integration_tip(ticket_id, code_tree)
+        if tip is None:
+            return None
+        anchor, reason = anchor_fn(code_tree, tip)
         if reason is not None:
             raise _CloseObservationFailure(f"{ticket_id} {reason}")
         return anchor
 
-    def _integration_tip(self, ticket_id: str, code_tree: Path) -> str:
+    def _integration_tip(self, ticket_id: str, code_tree: Path) -> str | None:
         """판정 기준으로 쓸 통합 브랜치 — 장부 선언 ∩ 이 코드 트리 실재.
 
         선언이 없거나 이 트리에서 해소되지 않으면 **멈춘다**. 이 값은 측정 폭·사설 참조 신규
         판정·잔여 인구 세 판정의 공통 기준이라, 없는 채로 진행하면 세 판정이 각자 다른 것을
-        보고 갈린다(선언과 실재가 갈린 상태를 통과로 위장하지도 않는다)."""
+        보고 갈린다(선언과 실재가 갈린 상태를 통과로 위장하지도 않는다).
+
+        **빈 기준선**(`_unborn_baseline`)은 그 미해소가 아니라 값이 없는 상태라 `None` 이다 —
+        커밋이 0이고 HEAD 가 그 브랜치를 가리키면 잴 기준선이 아직 만들어지지 않은 것이고,
+        이 종결의 커밋 단계가 그 첫 커밋을 얹는다. 소비자는 각자 그 상태의 참값을 쓴다
+        (커밋된 인구 = 공집합 · 측정 폭 = 가드 off)."""
         branch = _cluster_integration_branch(self._board_py, ticket_id)
         if not branch:
             raise _CloseObservationFailure(
@@ -2176,9 +2216,19 @@ class TicketFinisher:
             ["rev-parse", "--verify", "--quiet", f"{branch}^{{commit}}"],
         )
         if rc != 0:
+            if _unborn_baseline(self._run_git_stdout_at_fn, code_tree, branch):
+                return None
             raise _CloseObservationFailure(_INTEGRATION_TIP_UNRESOLVED.format(
                 ticket=ticket_id, branch=branch, tree=code_tree))
         return branch
+
+    def _warn_unborn_baseline(self, ticket_id: str) -> None:
+        """빈 기준선에서 가드를 끈 사실의 단일 loud 표면 — 조용한 통과가 아니다."""
+        branch = _cluster_integration_branch(self._board_py, ticket_id) or "(미선언)"
+        self._warn_once(
+            f"unborn-baseline:{ticket_id}",
+            _UNBORN_BASELINE_GUARD_OFF.format(ticket=ticket_id, branch=branch),
+        )
 
     @staticmethod
     def _warn_directory_yield(ticket_id: str, amount: int) -> None:
@@ -2542,6 +2592,9 @@ class TicketFinisher:
         if cap is None:
             return None
         anchor = self._measurement_anchor(ticket_id, external)
+        if anchor is None:
+            self._warn_unborn_baseline(ticket_id)
+            return None
         try:
             attribution = self._ticket_diff_attribution(
                 ticket_id, external, touches, board_error=inputs.board_error,
@@ -2750,6 +2803,9 @@ class TicketFinisher:
         if not surface_paths:
             return None
         integration_tip = self._integration_tip(ticket_id, code_tree)
+        if integration_tip is None:
+            self._warn_unborn_baseline(ticket_id)
+            return None
         anchor = self._measurement_anchor(ticket_id, external)
         relative_paths = [path.relative_to(code_tree).as_posix() for path in surface_paths]
         try:
@@ -2935,6 +2991,17 @@ class TicketFinisher:
         정상·`scope_error` 두 갈래가 이 함수를 공유한다(후자는 빈 스코프로 부른다).
         """
         staged_out, unstaged = self._dirty_split(scope, cwd=cwd)
+        if self._integration_tip(ticket_id, cwd) is None:
+            # 빈 기준선 — 아직 한 번도 커밋되지 않은 저장소다. 이 게이트가 세는 것은 **이
+            # 작업이 만든** 선언 밖 변경인데, 커밋이 0이면 트리의 모든 파일이 미추적이라
+            # 뼈대 전부가 인구가 된다(어떤 첫 티켓도 닫히지 않는다). 인구는 이 종결이 커밋할
+            # 선언 경로뿐이고, 그 밖은 차단이 아니라 값으로 보고한다.
+            self._warn_once(
+                f"unborn-skeleton:{ticket_id}",
+                _UNBORN_SKELETON_NOTE.format(
+                    ticket=ticket_id, count=len(staged_out) + len(unstaged)),
+            )
+            return (), (), ()
         excluded = tuple(home_prefixes) + self._sibling_member_scopes(ticket_id)
         if excluded:
             staged_out = tuple(line for line in staged_out
@@ -2998,6 +3065,8 @@ class TicketFinisher:
         인구로 접으면 커밋된 선언 밖 변경이 보이지 않는 채로 통과한다.
         """
         tip = self._integration_tip(ticket_id, cwd)
+        if tip is None:
+            return ()       # 빈 기준선 — 커밋이 0이면 커밋된 인구는 공집합이다(참값).
         rc, out = self._run_git_stdout_at_fn(
             cwd, ["diff", "--name-only", "-z", f"{tip}...HEAD"])
         if rc != 0:
@@ -4014,6 +4083,17 @@ class ClusterCloser:
             return False, f"{type(exc).__name__}: {exc}"
         return True, f"슬롯 {slot} 반납됨"
 
+    def _is_home_slot(self, slot: str) -> bool:
+        """그 슬롯이 PM 홈 자신(`worktree_pool.HOME_SLOT`)인가 — 반납 무대상 판별.
+
+        풀이 이름 붙인 상수와의 값 비교 하나다(`"."` 리터럴 사본 0). 풀을 로드하지 못하면
+        False 이고, 판정 불능은 바로 뒤 `_slot_state` 가 관측 실패(정지)로 올린다 — 여기서
+        조용히 접지 않는다.
+        """
+        pool = _load_tool_module(TOOLS_DIR / "worktree_pool.py")
+        home_slot = getattr(pool, "HOME_SLOT", None) if pool is not None else None
+        return home_slot is not None and slot == home_slot
+
     def _slot_state(self, slot: str) -> str | None:
         """슬롯의 현재 상태 — 리스 장부에 그 슬롯이 없으면 None(관측 성공·대여 아님).
 
@@ -4464,6 +4544,10 @@ class ClusterCloser:
 
         작업 트리 dirty 와 재배치 충돌은 여기 없다 — 앞 단계(슬롯 커밋)가 해소하거나 실행해야
         아는 것이라 첫 부작용 앞에서 물으면 정상 실행이 첫 줄에서 막힌다.
+
+        빈 기준선(`_unborn_baseline` — 커밋 0 · HEAD 가 그 브랜치)은 "브랜치가 없다" 가
+        아니라 첫 커밋이 아직 없는 것이라 차단 사유가 아니다. detached·다른 브랜치의
+        미해소는 종전대로 사유다.
         """
         integration = self._declared_branch("base_branch")
         if not integration:
@@ -4472,7 +4556,7 @@ class ClusterCloser:
         tree = self._code_tree()
         rc, _out = self._git_stdout(
             tree, ["rev-parse", "--verify", "--quiet", f"{integration}^{{commit}}"])
-        if rc != 0:
+        if rc != 0 and not _unborn_baseline(self._git_stdout, tree, integration):
             reasons.append(_CLOSE_INTEGRATION_BRANCH_MISSING.format(
                 integration=integration, tree=tree))
         source = self._declared_branch("branch")
@@ -4492,6 +4576,11 @@ class ClusterCloser:
             return "\n".join(blocks)
         integration = self._declared_branch("base_branch")
         tree = self._code_tree()
+        if _unborn_baseline(self._git_stdout, tree, integration):
+            # 선언 경로가 비어 앞 단계가 첫 커밋을 만들지 못한 형상 — 기준선도 HEAD 도 없어
+            # 조상 판정 자체가 성립하지 않는다(그 상태로 물으면 관측 실패로 죽는다).
+            print(f"  {integration} 에 커밋이 없다 — 재배치할 것 없음")
+            return None
         if self._is_ancestor(tree, integration, "HEAD"):
             print(f"  이미 {integration} 위에 있다 — 건너뜀")
             return None
@@ -4591,9 +4680,18 @@ class ClusterCloser:
         return None
 
     def _step_release(self) -> str | None:
-        """슬롯 반납 — dirty 슬롯은 거부다(자동 경로라고 산출물을 치우지 않는다)."""
+        """슬롯 반납 — dirty 슬롯은 거부다(자동 경로라고 산출물을 치우지 않는다).
+
+        PM 홈 자신인 행(`worktree_pool.HOME_SLOT`)은 반납 대상이 아니다 — 리스풀의 작업
+        슬롯과 달리 그 행은 자원이 아니라 **그 홈의 정체성**이라(`register_home_slot` 이
+        `bound=True` 로 회수 제외를 이미 선언했다) 반납하면 돌려줄 사람이 없고, 그 홈의
+        정체성 의존 조작(claim·complete·checkpoint·snapshot)이 전부 "미해소" 로 막힌다.
+        """
         if not self._slot:
             print("  슬롯 미해소 — 무대상")
+            return None
+        if self._is_home_slot(self._slot):
+            print(f"  슬롯 {self._slot} 은 PM 홈 자신(정체성) — 반납 무대상")
             return None
         state = self._slot_state(self._slot)
         if state is None:
