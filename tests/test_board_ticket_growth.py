@@ -550,6 +550,35 @@ def test_section_add_refuses_a_ledgered_draft_even_for_architect(board_env, caps
 
 
 @requires_git
+def test_section_add_on_a_ledgered_ticket_refuses_before_the_loud_spec_read(
+    board_env, capsys,
+):
+    """장부 판정이 명세 loud 판독 **앞**이다 — 손상 YAML 도 묶음 소유 거부를 받는다.
+
+    정의역 판정은 `load_ticket_soft` 로 읽고 거부하므로 `cmd_section_add` 의 `load_ticket`
+    까지 가지 않는다. 두 거부 모두 첫 쓰기 앞 rc=1 이라 갈리는 것은 진단 문구뿐이고,
+    `_section_add_owning_cluster` docstring 이 그 사실을 적는다.
+    """
+    board, board_dir, _bare = board_env
+    tid = "T-1020"
+    path = board_dir / "tickets" / "open" / f"{tid}-growth.md"
+    path.write_text(
+        f"---\nid: {tid}\ntitle: 손상: 인용 없는 콜론\nstatus: open\n---\n\n# {tid}\n",
+        encoding="utf-8", newline="\n")
+    _write_cluster_ledger(board_dir, f"C-{tid}", [tid])
+    before_spec = path.read_bytes()
+    before_head = _head(board_dir)
+
+    assert board.main(["section-add", tid, "--role", "developer"]) == 1
+
+    error = capsys.readouterr().err
+    assert "티켓을 읽지 못해 건너뜁니다" in error          # soft 판독까지만 갔다
+    assert f"묶음 장부 C-{tid}" in error and "ticket prepare" in error
+    assert _round_names(board_dir, tid) == []
+    assert path.read_bytes() == before_spec and _head(board_dir) == before_head
+
+
+@requires_git
 def test_section_add_still_opens_a_ledgerless_draft_architect_round(
     board_env, monkeypatch, capsys,
 ):

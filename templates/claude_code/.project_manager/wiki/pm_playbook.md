@@ -60,7 +60,9 @@ type: reference
 시점에도 self-contained다. 그래서 위임 프롬프트를 bespoke하게 재작성하지 않는다.
 `/pm-dev-delegate`는 `pm_delegate.py ticket prepare|harvest --cluster`로 slot
 run-dir(`.project_manager/.local/delegate-ticket-copies/` 아래) 하나에 티켓별 라운드 파일 N개를
-전달·회수한다(슬롯 없이 PM이 직접 채울 자리는 `board.py section-add`가 예약한다). 에이전트는 자기
+전달·회수한다(슬롯 없이 PM이 직접 채울 자리는 `board.py section-add`가 예약하는데, 그 명령은 **묶음
+장부가 없는 티켓만** 연다 — 장부가 있는 티켓의 라운드는 고정 예산이 지배하므로 위임 준비가 연다).
+에이전트는 자기
 라운드 파일만 쓰고 명세·이전 라운드는 읽기 전용으로 읽는다. board 상태 전이는 PM 몫이고, 커밋·재배치·
 머지는 묶음 종결(`ticket_finish.py --cluster`)이 실행한다.
 
@@ -226,8 +228,10 @@ wave 하나 = 묶음 하나다. 단계 표·커맨드의 단일 진실은 `/pm-d
    - **hard**: 도구 모듈 2+, 공용 코드, 파싱 규칙, 기존 동작 영향, 보안·시크릿·git 훅,
      board 상태 전이·lease·잠금·동시성 중 1개 이상. 상위 developer 프로필을 쓴다.
    - **normal**: 소거법. 애매하면 상향한다.
-2. **묶음 선언 + claim** — `board.py cluster new <이름> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로>`
-   로 이번 wave 의 운영 단위·통합 브랜치·설계 문서를 결속한다. 그 다음 멤버마다 `/pm-wave-claim`이
+2. **묶음 선언 + claim** — `board.py cluster new <이름> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로>
+   --repo <이름> --slot <N>`(또는 `--task <이름>`)로 이번 wave 의 운영 단위·통합 브랜치·설계 문서를
+   결속한다. 통합 브랜치를 둘 **코드 트리는 명시가 필수**이고, 없으면 첫 쓰기 앞에서 거부된다.
+   그 다음 멤버마다 `/pm-wave-claim`이
    DoD self-containment·depends_on·placeholder·wikilink dangling을 검증한다. **묶음 판단은 PM 몫**이다 —
    엔진은 touches 겹침·가용 슬롯을 경고만 하고 자동으로 묶지 않는다. 겹침이 있어도 슬롯이 남아 있으면
    병렬로 나눌 수 있다.

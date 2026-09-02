@@ -1825,7 +1825,8 @@ _CLUSTER_LEDGER_ABSENT = (
     "묶음 장부가 없습니다: {cluster} — 고정 라운드 수열은 장부가 소유하고, 준비는 "
     "그 선언만 읽습니다(선언 없는 묶음은 판정 입력이 아니라 정지 사유입니다).\n"
     "  · `python3 .project_manager/tools/board.py cluster show {cluster}` 로 장부를 확인하고, "
-    "없으면 `board.py cluster new <이름> --tickets <T-...>` 로 선언하세요."
+    "없으면 `board.py cluster new <이름> --tickets <T-...> --repo <이름> --slot <N>`"
+    "(또는 `--task <이름>`) 으로 선언하세요 — 통합 브랜치를 둘 코드 트리는 명시가 필수입니다."
 )
 _CLUSTER_BUDGET_UNDECLARED = (
     "묶음 라운드 예산이 선언되지 않았습니다: {cluster} · 장부 `budget` 의 {key} 가 없거나 "
@@ -2475,7 +2476,7 @@ def harvest_ticket_copy(
         # 티켓 전역 delta 가 막히고 라운드 파일을 되돌릴 정식 수단이 없다(회수면에서 끊는다).
         problem = _review_round_harvest_problem(
             text, ticket=row["ticket"], reviewer_role=row["role"],
-            board=board, rounds_module=rounds_module,
+            ordinal=int(row["ordinal"]), board=board, rounds_module=rounds_module,
         )
         if problem is not None:
             raise DelegateError(
@@ -2608,13 +2609,19 @@ def harvest_cluster_copy(
 
 
 def _review_round_harvest_problem(
-    text: str, *, ticket: str, reviewer_role: str, board, rounds_module,
+    text: str, *, ticket: str, reviewer_role: str, ordinal: int, board, rounds_module,
 ) -> str | None:
     """내부 채널 회수 직전 리뷰 라운드 내용 판정 — 위반 사유 또는 None.
 
     판정 자체는 두 채널 공용(`review_harvest_problem`)이고 이 함수가 하는 일은 그 판정의 입력
     (명세·라운드 목록)을 PM 홈 board 좌표에서 읽어 오는 것뿐이다. 추가 리뷰어 채널은 같은 입력을
     회수 직전에 읽는다 — 두 채널이 같은 스냅샷 규칙을 쓴다.
+
+    입력에서 **회수 대상 라운드 자신은 뺀다**. 그 자리는 장부 행의 `(역할, 순번)` 좌표가 이미
+    가리키고 있다. 새로 예약한 라운드는 시드 그대로라 `pending` 배제에 걸리지만, 재개방
+    (`--reopen-ordinal`)한 라운드는 직전 회수 산출로 채워져 있어 `pending` 도 엔진 표식도
+    아니다 — 좌표로 빼지 않으면 그 라운드가 앞서 선언한 ID 가 자기 자신과 충돌해 이어 시키는
+    회수가 통째로 막힌다. 다른 라운드가 이미 쓴 ID 의 재선언은 종전대로 거부다.
 
     입력을 읽지 못하면 통과가 아니라 거부다. 판정 불능인 채로 회수하면 그 라운드가 판정 표면에
     올라 티켓 전체를 막을 수 있고, 거부는 산출을 파괴하지 않으므로(run-dir 유지) 되돌릴 수 있다.
@@ -2632,8 +2639,12 @@ def _review_round_harvest_problem(
         )
     except (DelegateError, rounds_module.RoundsError, OSError, UnicodeError) as exc:
         return f"회수 판정 입력을 읽지 못했습니다: {ticket}: {exc}"
+    corpus = tuple(
+        item for item in rounds
+        if not (item.role == reviewer_role and item.ordinal == ordinal)
+    )
     return review_harvest_problem(
-        text, ticket_text=spec_text, rounds=rounds, reviewer_role=reviewer_role,
+        text, ticket_text=spec_text, rounds=corpus, reviewer_role=reviewer_role,
     )
 
 
@@ -2733,6 +2744,13 @@ def _developer_round_changed_paths(
     developer 산출은 harvest 성공 뒤에만 커밋되므로 ``HEAD..작업트리``가
     해당 단계의 자연스런 기준선이다. 존재 이유가 사라진 코드·테스트를 지우는 것도
     그 라운드의 산출이라 같이 세고, untracked 테스트는 별도로 포함한다.
+
+    삭제(``D``)를 세는 이 집합은 **두 축이 공유한다** — reviewer fix 계약 대상 검사와
+    architect 필수 테스트 대상 검사가 같은 값을 본다. 그래서 architect 계약이 지목한 테스트
+    파일을 **지운** 라운드도 대상 검사만으로는 통과한다. 그 자리를 인자로 가르지 않는 이유는
+    바로 뒤에서 그 계약의 command 를 실제로 실행하기 때문이다 — 지목된 파일이 없으면 명령
+    자체가 red 라 같은 라운드가 그 자리에서 멈춘다. 축을 가르는 인자는 이미 실행이 내는 답을
+    한 번 더 재는 장치다.
     """
     changed = {
         line.strip()
@@ -12847,7 +12865,10 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
         help=(
             "이미 예약된 순번 N 을 다시 연다(이어 시키는 단계 — 새 순번을 만들지 않는다). "
             "그 순번이 실재하고 역할이 --role 과 같아야 하며, 슬롯 사본은 board 라운드 파일의 "
-            "현재 내용으로 시드된다(회수가 그 파일을 교체하고 지나간 판은 board git 이 갖는다)"
+            "현재 내용으로 시드된다(회수가 그 파일을 교체하고 지나간 판은 board git 이 갖는다). "
+            f"{ABANDON_DISCARD_REASON_FLAG} 로 폐기한 순번을 다시 시키려면 이 값으로 재개방한 "
+            f"뒤 슬롯 사본에서 `{PM_REVIEW_REFUSED_MARKER}` 표식 줄을 지운다 — 회수는 그 줄을 "
+            "실은 회신을 거부한다"
         ),
     )
     prepare.add_argument("--cwd", required=True, metavar="ABSPATH")
@@ -12882,7 +12903,9 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
         help=(
             "이 라운드를 폐기한다(재실행 대체가 아니다) — 산출이 있으면 board 라운드 파일로 "
             "옮겨 표식을 붙이고, 사본도 board 파일도 없는 행은 이 사유로 장부만 닫는다. "
-            f"{ABANDON_SUPERSEDED_BY_FLAG} 와 함께 줄 수 없다"
+            f"{ABANDON_SUPERSEDED_BY_FLAG} 와 함께 줄 수 없다. 폐기한 순번은 예산 한 칸을 "
+            f"계속 차지하므로, 그 단계를 다시 시키려면 {PREPARE_REOPEN_ORDINAL_FLAG} 로 "
+            f"재개방한 뒤 슬롯 사본에서 `{PM_REVIEW_REFUSED_MARKER}` 표식 줄을 지운다"
         ),
     )
     copies = sub.add_parser("copies", help="PM 홈 delegate-rounds 장부 조회")
@@ -14025,7 +14048,8 @@ def cluster_review_input(
     if fm is None:
         raise DelegateError(
             f"클러스터 장부가 없습니다: {cluster} — 리뷰 단위는 선언된 묶음입니다"
-            f"(`board.py cluster new` 로 먼저 선언하세요)"
+            f"(`board.py cluster new <이름> --tickets <T-...> --repo <이름> --slot <N>` "
+            f"또는 `--task <이름>` 으로 먼저 선언하세요 — 코드 트리는 명시가 필수입니다)"
         )
     branch = str(fm.get("branch") or "").strip()
     base_branch = str(fm.get("base_branch") or "").strip()

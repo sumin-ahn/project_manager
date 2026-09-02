@@ -1049,32 +1049,39 @@ def test_close_runs_the_seven_steps_and_leaves_no_hand_work(close_env, capsys):
 
 @requires_git
 def test_close_of_an_all_discarded_cluster_runs_no_code_step(close_env, capsys):
-    """AT-004: 멤버가 전부 처분된 묶음은 브랜치 요구 없이 board 기록만으로 닫힌다.
+    """AT-004: 멤버가 전부 처분된 묶음은 브랜치 요구 없이 닫히고 슬롯 리스는 반납된다.
 
     실측 형상(`C-delegate-model-single-truth-v1.7.12`)은 멤버 하나가 폐기됐고 장부가 선언한
-    묶음 브랜치·통합 브랜치가 코드 git 에 없다. 머지할 코드도 반납할 슬롯도 없으므로 코드
-    다섯 단계는 대상이 아니고, 제품 git 은 한 번도 바뀌지 않는다.
+    묶음 브랜치·통합 브랜치가 코드 git 에 없다. 머지할 코드가 없으므로 코드 네 단계는 대상이
+    아니고, 제품 git 은 한 번도 바뀌지 않는다. **반납은 그 네 단계에 들지 않는다** — 슬롯
+    리스는 멤버의 코드 산출이 아니라 묶음이 든 자원이라, 건너뛰면 그대로 샌다(실측 형상도
+    슬롯을 대여한 채였다).
     """
     env = close_env
     _discard_ticket(env)
+    # 폐기는 그 라운드의 산출을 버린 처분이라 슬롯에 남을 미커밋 편집도 없다. dirty 슬롯의
+    # 반납 거부는 `_step_release` 가 종전대로 소유하는 별 축이다(이 케이스의 관측 대상 아님).
+    _git(env.slot, "checkout", "--", "src/app.py")
     _write_cluster_ledger(env.board_dir, tickets=(env.ticket,),
                           base_branch="task/absent-integration",
                           branch="task/absent-cluster")
     before = (_rev(env.code), _rev(env.slot), env.integration_log(), env.slot_log(),
               _git(env.slot, "status", "--porcelain").stdout)
-    assert before[-1].strip() != ""          # 슬롯은 dirty 다 — 코드 단계가 돌면 막힌다
+    assert before[-1].strip() == ""
+    assert env.lease_state() == "leased"
 
     rc = env.closer().run()
 
     out = capsys.readouterr().out
     assert rc == 0, out
-    # 밟은 단계는 둘뿐이다 — 코드 다섯 단계는 목록에서 빠졌다.
+    # 밟은 단계는 셋 — 코드 네 단계만 목록에서 빠졌다(반납은 남는다).
     order = [line.split("] ", 1)[1].removesuffix("...") for line in out.splitlines()
-             if line.startswith("[") and "/2] " in line]
-    assert order == ["기계 확인 생성·리뷰 게이트 처분", "board·포인터 커밋"], out
+             if line.startswith("[") and "/3] " in line]
+    assert order == ["기계 확인 생성·리뷰 게이트 처분", "슬롯 반납",
+                     "board·포인터 커밋"], out
     assert "처분 종결 멤버 1" in out
     assert env.board_calls == [] and env.delegate_calls == []
-    assert env.lease_state() == "leased"      # 반납 단계는 돌지 않았다
+    assert env.lease_state() == "idle"        # 반납이 돌았다 — 리스가 새지 않는다
     # 제품 git 은 어느 축도 바뀌지 않았다(커밋·재배치·머지 0회).
     assert before == (_rev(env.code), _rev(env.slot), env.integration_log(),
                       env.slot_log(), _git(env.slot, "status", "--porcelain").stdout)

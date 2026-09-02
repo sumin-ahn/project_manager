@@ -752,6 +752,100 @@ def test_a_reopened_developer_round_harvests_into_the_same_file(pd, budget_env):
     assert review.rounds[0].ordinal == 3
 
 
+def _write_review_output(pd, path: Path, finding_ids: list[str], *, ticket: str) -> None:
+    """리뷰 라운드 산출 — 지정한 ID 를 계약과 함께 실은 `pm-review-v1` 블록 하나."""
+    findings = [
+        {
+            "id": finding_id, "class": "implementation-defect", "severity": "must-fix",
+            "authority": f"[[{ticket}]] §완료 조건", "evidence": f"{finding_id} 실측",
+            "recommendation": "현재 fix에서 계약대로 수정",
+            "fix_contract": {
+                "location": "src/example.py:1", "failure": f"{finding_id} red",
+                "design": "현재 fix 경계 안에서 결함을 제거",
+                "test": "tests/test_round_budget.py 회귀를 추가",
+                "command": python_argv_command("--version"), "expected": "Python",
+            },
+            "design_change": False,
+        }
+        for finding_id in finding_ids
+    ]
+    payload = json.dumps(
+        {"version": pd.PM_REVIEW_VERSION, "findings": findings, "confirmations": []},
+        ensure_ascii=False, separators=(",", ":"),
+    )
+    header = path.read_text(encoding="utf-8").partition("\n")[0]
+    path.write_text(
+        f"{header}\n\n## must-fix\n"
+        + "".join(f"- {finding_id}\n" for finding_id in finding_ids)
+        + f"\n## 판정\n판정: 반려\n\n```{pd.PM_REVIEW_BLOCK}\n{payload}\n```\n",
+        encoding="utf-8", newline="",
+    )
+
+
+def test_a_reopened_review_round_carries_its_own_findings_and_still_blocks_others(
+    pd, budget_env,
+):
+    """이어 시킨 리뷰 단계는 **자기 자신과** 충돌하지 않는다 — 좌표로 corpus 에서 빠진다.
+
+    재개방 시드는 board 라운드의 직전 회수 산출이라 `pending` 도 엔진 표식도 아니다. 회수 대상
+    라운드 자신을 빼지 않으면 그 라운드가 앞서 선언한 ID 가 '티켓에 이미 있는 ID' 로 세어져,
+    앞 지적을 유지한 회신이 통째로 거부된다(앞 지적을 빼면 그 finding 이 delta 에서 사라져
+    어느 쪽으로도 이어 시킬 수 없다). 다른 라운드가 이미 쓴 ID 의 재선언은 종전대로 거부다.
+    """
+    pm_home, slot, tickets = budget_env
+    ticket, cluster = "T-7104", "C-reopen-review"
+    _seed(pm_home, tickets, cluster, [ticket])
+    _advance(pd, cluster, "architect", pm_home=pm_home, slot=slot)
+    _advance(pd, cluster, "developer", pm_home=pm_home, slot=slot)
+    review = pd.prepare_cluster_copy(
+        cluster=cluster, role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    _write_review_output(pd, review.rounds[0].path, ["F-001"], ticket=ticket)
+    assert pd.harvest_cluster_copy(
+        run_dir=review.run_dir, cwd=slot, pm_home=pm_home,
+    )[0].refusal is None
+
+    reopened = pd.prepare_cluster_copy(
+        cluster=cluster, role="code-reviewer", cwd=slot, pm_home=pm_home,
+        reopen_ordinal=3,
+    )
+    # 시드가 골격이 아니라 F-001 을 실은 직전 산출이다(이 형상이 자기 충돌의 입력이었다).
+    assert "F-001" in reopened.rounds[0].path.read_text(encoding="utf-8")
+    _write_review_output(pd, reopened.rounds[0].path, ["F-001", "F-002"], ticket=ticket)
+
+    outcome = pd.harvest_cluster_copy(
+        run_dir=reopened.run_dir, cwd=slot, pm_home=pm_home,
+    )[0]
+
+    assert outcome.refusal is None, outcome.refusal
+    landed = (_rounds_dir(pm_home, ticket) / "03-code-reviewer.md").read_text(
+        encoding="utf-8")
+    assert "F-001" in landed and "F-002" in landed
+    assert _round_names(pm_home, ticket) == [
+        "01-architect.md", "02-developer.md", "03-code-reviewer.md",
+    ]
+
+    # 역방향 — **다른** 라운드가 이미 쓴 ID 는 재개방 라운드에서도 거부다(빠지는 것은 좌표 하나).
+    developer_round = _rounds_dir(pm_home, ticket) / "02-developer.md"
+    developer_round.write_text(
+        developer_round.read_text(encoding="utf-8")
+        + "\n- F-003 은 이 구현 단계가 이미 다뤘다\n",
+        encoding="utf-8", newline="",
+    )
+    again = pd.prepare_cluster_copy(
+        cluster=cluster, role="code-reviewer", cwd=slot, pm_home=pm_home,
+        reopen_ordinal=3,
+    )
+    _write_review_output(pd, again.rounds[0].path, ["F-001", "F-003"], ticket=ticket)
+
+    refused = pd.harvest_cluster_copy(
+        run_dir=again.run_dir, cwd=slot, pm_home=pm_home,
+    )[0]
+
+    assert refused.refusal is not None
+    assert "finding ID 재선언: F-003" in refused.refusal
+
+
 def test_reopening_a_missing_or_mismatched_ordinal_leaves_no_residue(pd, budget_env):
     """재개방 대상이 없거나 역할이 다르면 예약도 run-dir 도 남기지 않고 멈춘다."""
     pm_home, slot, tickets = budget_env

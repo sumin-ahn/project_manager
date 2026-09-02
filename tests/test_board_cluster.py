@@ -183,6 +183,19 @@ def _new_args(title: str, **kwargs) -> argparse.Namespace:
     return argparse.Namespace(**values)
 
 
+def _subparser_help(parser: argparse.ArgumentParser, *path: str) -> str:
+    """`board.py <path...>` 서브파서의 한 줄 help — 부모 액션의 pseudo-action 이 소유한다."""
+    node = parser
+    help_text = ""
+    for name in path:
+        sub = next(action for action in node._actions
+                   if action.__class__.__name__ == "_SubParsersAction")
+        help_text = next(
+            choice for choice in sub._choices_actions if choice.dest == name).help or ""
+        node = sub.choices[name]
+    return help_text
+
+
 def _cluster_args(action: str, name: str, **kwargs) -> argparse.Namespace:
     """`cluster new|show` 인자 — 코드 트리는 명시가 기본이다(`--repo <등록 repo>`).
 
@@ -310,6 +323,19 @@ def test_cluster_new_refuses_when_the_code_tree_is_not_declared(split_env, capsy
     assert board._cluster_branch_state(str(board.REPO), "task/bare") is False
     assert board._cluster_branch_state(str(code), "task/bare") is False
     assert _ticket_fm(board, first)["cluster"] == f"C-{first}"
+
+
+def test_cluster_new_help_declares_the_code_tree_requirement(board):
+    """`cluster new` 서브파서 help 가 코드 트리 명시 요구를 말한다.
+
+    거부 판정은 `_cmd_cluster_new` 가 소유하고 help 는 그것을 인용만 한다. help 가 침묵하면
+    `--help` 만 읽고 실행한 사람이 첫 쓰기 앞 rc=1 을 실행 시점에야 만난다.
+    """
+    help_text = _subparser_help(board.build_parser(), "cluster", "new")
+
+    assert "--repo" in help_text and "--slot" in help_text
+    assert "--task" in help_text
+    assert "명시" in help_text
 
 
 @requires_git

@@ -16,8 +16,8 @@ audience: pm-internal
 ## 실행
 
 ```bash
-# 1. 묶음 선언 (이번 wave 의 운영 단위 · 통합 브랜치·설계 문서 결속)
-python3 .project_manager/tools/board.py cluster new <이름> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로>
+# 1. 묶음 선언 (이번 wave 의 운영 단위 · 통합 브랜치·설계 문서 결속 · 코드 트리는 명시 필수)
+python3 .project_manager/tools/board.py cluster new <이름> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로> --repo <이름> --slot <N>
 python3 .project_manager/tools/board.py cluster show <이름>   # 선언값 + 멤버 현재 status
 
 # 2. ticket 본문 dump (멤버마다)
@@ -34,7 +34,8 @@ python3 .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   
 
 - 발행이 이미 크기 1 장부를 만들어 뒀으면 `cluster new` 가 그것을 흡수한다. 이미 여러 티켓의 묶음에
   속한 티켓은 거부되므로 옛 묶음을 먼저 정리한다.
-- `cluster new` 는 그 코드 트리의 **현재 브랜치를 통합 브랜치로 기록**하고 묶음 브랜치를 만든다 —
-  통합 브랜치를 체크아웃한 트리에서 실행한다.
+- `cluster new` 는 코드 트리를 **명시로만** 받는다(`--repo <이름> --slot <N>` 또는 `--task <이름>`) —
+  없으면 첫 쓰기 앞에서 rc=1 이다. 그 트리의 **현재 브랜치를 통합 브랜치로 기록**하고 묶음 브랜치를
+  만드므로, 통합 브랜치를 체크아웃한 트리를 그 인자로 지목한다(cwd 는 판정에 쓰이지 않는다).
 - 묶음 단계 표(설계 1 · 개발 N · 리뷰 1 · fix 1)와 예산은 `$pm-dev-delegate` §클러스터 단계 표가
   단일 진실이다.

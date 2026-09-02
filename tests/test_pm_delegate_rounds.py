@@ -1623,6 +1623,36 @@ def test_architect_test_target_still_requires_a_tests_path(pd):
         )
 
 
+def test_deletion_axis_is_shared_and_the_architect_command_catches_it(pd, rounds_env):
+    """F-007: `D` 는 두 축이 공유하고, architect 축은 뒤의 명령 실행이 잡는다.
+
+    삭제를 세는 집합 하나를 reviewer fix 계약 검사와 architect 필수 테스트 대상 검사가 함께
+    본다 — 그래서 계약이 지목한 테스트를 **지운** 라운드도 대상 검사만으로는 통과한다. 막는
+    것은 그 직후의 계약 command 실행이다(지워진 노드를 지목한 명령은 red). 축을 인자로
+    가르지 않는 이유가 이것이라 그 사실을 회귀로 고정한다.
+    """
+    _pm_home, slot, _tickets, _sync = rounds_env
+    contract_target = "tests/test_architect_contract_axis.py"
+    contract_path = _commit_slot_file(
+        slot, contract_target, "def test_axis():\n    assert True\n",
+    )
+    contract_path.unlink()
+
+    changed = pd._developer_round_changed_paths(
+        pd._repo_root_for_cwd(slot), base_rev="HEAD",
+    )
+    # 대상 검사가 보는 집합에 지운 파일이 들어 있다 — 삭제 축은 하나이고 공유된다.
+    assert contract_target in changed
+
+    # 실질 방어는 그 다음 줄이다 — 계약 command 가 그 노드를 찾지 못해 green 이 아니다.
+    problem = pd._run_required_test(
+        python_argv_command("-m", "pytest", contract_target, "-q"),
+        "1 passed", cwd=slot,
+    )
+    assert problem is not None
+    assert "green이 아닙니다" in problem
+
+
 def test_harvest_refuses_a_verify_command_outside_the_safety_boundary(pd, rounds_env):
     """역방향 — 금지 토큰 커맨드는 종전대로 거부다(실행 전 · 파서 경계 그대로)."""
     pm_home, slot, tickets, _sync = rounds_env

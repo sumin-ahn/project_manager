@@ -9886,8 +9886,10 @@ def _section_add_owning_cluster(tid: str, path: Path) -> str | None:
     draft)은 예산 판정의 입력 자체가 없어 이 명령이 유일한 예약 표면이다.
 
     손상 명세는 여기서 판정하지 않는다 — 클러스터 해소는 `ticket_cluster_from_text` 와 같은
-    규칙(필드 부재·파싱 실패는 크기 1)이고, YAML 손상 자체는 호출부의 `load_ticket` 이 loud
-    하게 낸다.
+    규칙(필드 부재·파싱 실패는 크기 1)이라 `load_ticket_soft` 로 읽는다. 이 판정이 호출부
+    (`cmd_section_add`)의 `load_ticket` **앞**이므로, 장부를 가진 티켓은 명세 YAML 이 손상돼도
+    loud 판독 대신 아래 묶음 소유 거부 문구를 받는다 — 둘 다 첫 쓰기 앞 rc=1 이라 갈리는 것은
+    진단 문구뿐이다. 장부가 없는 티켓은 종전대로 `load_ticket` 이 손상을 loud 하게 낸다.
     """
     loaded = load_ticket_soft(path)
     fm = loaded[0] if loaded is not None else {}
@@ -19324,7 +19326,8 @@ def build_parser() -> argparse.ArgumentParser:
     cluster_sub = cluster_p.add_subparsers(dest="cluster_cmd", required=True)
 
     cp = cluster_sub.add_parser(
-        "new", help="장부 + 통합 브랜치 생성 · 멤버 귀속 · 겹침/슬롯 재료")
+        "new", help="장부 + 통합 브랜치 생성 · 멤버 귀속 · 겹침/슬롯 재료 "
+                    "(코드 트리는 `--repo/--slot` 또는 `--task` 로 명시 필수 — 없으면 거부)")
     cp.add_argument("name", metavar="<이름>",
                     help="클러스터 이름(장부 id 는 `C-<이름>` · 통합 브랜치는 `task/<이름>`)")
     cp.add_argument("--tickets", metavar="T-...,T-...", required=True,
@@ -19341,7 +19344,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "section-add",
-        help="open/claimed 티켓의 다음 라운드를 빈 시드로 예약(슬롯 없는 준비)")
+        help="묶음 장부가 없는 티켓의 다음 라운드를 빈 시드로 예약(슬롯 없는 준비) — "
+             "장부가 있는 티켓의 라운드는 위임 준비(`pm_delegate.py ticket prepare`)가 연다")
     p.add_argument("id", metavar="T-NNNN")
     p.add_argument("--role", required=True, choices=_round_role_choices(),
                    help="라운드 역할(파일명과 기본 절명을 함께 결정)")
