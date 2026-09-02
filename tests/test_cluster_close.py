@@ -1942,6 +1942,7 @@ _TOUCH_A = "src/a.py"
 _TOUCH_B = "src/b.py"
 _UNDECLARED = "src/loose.py"         # 어느 멤버도 선언하지 않은 경로
 _SEED_BODY = "seed = 1\n"
+_UNBORN_SKELETON_PRESCRIPTION = "git add -A"   # 뼈대 보고가 실어야 하는 처방
 _CHANGED_BODY = "seed = 1\nwork = 2\n"
 
 
@@ -2082,6 +2083,148 @@ def test_residual_population_stops_without_an_integration_tip(
 
     assert _MEMBER_A in str(caught.value)
     assert "통합 브랜치(base_branch)를 선언하지 않았다" in str(caught.value)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 빈 기준선 — `pm_import --new` 직후(커밋 0 · 뼈대 미추적)의 첫 종결
+# ════════════════════════════════════════════════════════════════════════
+
+_UNBORN_BRANCH = "main"              # 신선 홈이 든 브랜치이자 장부의 base_branch
+_OTHER_BRANCH = "task/other"         # 커밋 0이지만 HEAD 가 딴 브랜치인 대조 형상
+
+
+def _unborn_repo(tf, tmp_path: Path, monkeypatch, *,
+                 head_branch: str | None = None) -> Path:
+    """`pm_import --new` 직후 형상 — 커밋 0 · 뼈대 전부 미추적 · 단일 clone 임베디드 홈.
+
+    실 git 으로만 재현된다(HEAD 부재를 가짜 러너로 만들 수 없다). 장부는 발행이 만드는 크기 1
+    형상 그대로다 — `base_branch` 는 이 트리가 든 브랜치, 묶음 브랜치는 미선언
+    (`_cluster_publish_base_branch` 실측 형상). `head_branch` 를 주면 커밋 0 은 그대로 두고
+    HEAD 만 딴 브랜치로 돌린다(빈 기준선 판정의 둘째 관측 대조).
+    """
+    root = tmp_path / "unborn-home"
+    shutil.copytree(TOOLS, root / ".project_manager" / "tools")
+    board_dir = root / ".project_manager" / "board"
+    for status in ("open", "claimed", "blocked", "done"):
+        (board_dir / "tickets" / status).mkdir(parents=True)
+    (root / ".project_manager" / "wiki" / "log").mkdir(parents=True)
+    (root / ".project_manager" / "wiki" / "log" / "current.md").write_text(
+        "# log\n", encoding="utf-8")
+    (root / ".gitignore").write_text(".project_manager/.local/\n", encoding="utf-8")
+    (root / "src").mkdir()
+    for path in (_TOUCH_A, _UNDECLARED):
+        (root / path).write_text(_SEED_BODY, encoding="utf-8")
+    _git(root, "init", "-q", "-b", _UNBORN_BRANCH)
+    _git(root, "config", "user.email", "t@t")
+    _git(root, "config", "user.name", "t")
+    if head_branch is not None:
+        _git(root, "symbolic-ref", "HEAD", f"refs/heads/{head_branch}")
+    seed_home_slot(root, repo="home", session="t")
+    _write_ticket(board_dir, _MEMBER_A, claimed_rev="null", touches=(_TOUCH_A,))
+    _write_cluster_ledger(board_dir, tickets=(_MEMBER_A,),
+                          base_branch=_UNBORN_BRANCH, branch=None)
+    monkeypatch.setenv("PM_SESSION_NAME", "t")
+    monkeypatch.setattr(tf, "REPO", root)
+    monkeypatch.setattr(tf, "TOOLS_DIR", root / ".project_manager" / "tools")
+    monkeypatch.setattr(tf, "BOARD_PY", root / ".project_manager" / "tools" / "board.py")
+    monkeypatch.setattr(
+        tf, "LOG_FILE", root / ".project_manager" / "wiki" / "log" / "current.md")
+    monkeypatch.setattr(
+        tf, "LEASES_FILE",
+        root / ".project_manager" / ".local" / "worktree-leases.json")
+    monkeypatch.setattr(tf, "_pm_home_misanchor", lambda: None, raising=False)
+    return root
+
+
+@requires_git
+def test_residual_gate_reads_an_unborn_baseline_as_empty(tf, tmp_path, monkeypatch):
+    """커밋 0 트리에서 미추적 뼈대는 이 티켓의 잔여가 아니다 — 차단 없이 값으로 보고한다.
+
+    뼈대 전부를 잔여로 세면 어떤 첫 티켓도 닫히지 않는다. 통과가 조용하지도 않다 — 건수와
+    처방(`git add`)이 stderr 한 줄로 남는다.
+    """
+    root = _unborn_repo(tf, tmp_path, monkeypatch)
+
+    block, stderr = _residual_verdict(tf, root, _MEMBER_A)
+
+    assert block is None
+    assert "기준선 없음" in stderr and _UNBORN_SKELETON_PRESCRIPTION in stderr
+
+
+@requires_git
+def test_unborn_baseline_requires_head_on_the_declared_branch(tf, tmp_path, monkeypatch):
+    """빈 기준선은 두 관측이 **함께** 참일 때뿐이다 — 하나라도 어긋나면 종전대로 멈춘다.
+
+    (1) 커밋 0 이지만 HEAD 가 장부의 base_branch 가 아닌 다른 브랜치를 가리키는 트리와
+    (2) 커밋이 있는데 그 base_branch 가 이 트리에 없는 트리 — 둘 다 판정 기준 미해소다.
+    """
+    detached_head = _unborn_repo(tf, tmp_path / "other-head", monkeypatch,
+                                 head_branch=_OTHER_BRANCH)
+
+    with pytest.raises(tf._CloseObservationFailure) as caught:
+        _residual_verdict(tf, detached_head, _MEMBER_A)
+    assert _UNBORN_BRANCH in str(caught.value) and "이 코드 트리에 없다" in str(caught.value)
+
+    committed = _residual_repo(tf, tmp_path / "committed", monkeypatch,
+                               members=(_MEMBER_A,))
+    _write_cluster_ledger(committed / ".project_manager" / "board",
+                          tickets=(_MEMBER_A,), base_branch="task/absent")
+
+    with pytest.raises(tf._CloseObservationFailure) as caught:
+        _residual_verdict(tf, committed, _MEMBER_A)
+    assert "task/absent" in str(caught.value) and "이 코드 트리에 없다" in str(caught.value)
+
+
+@requires_git
+def test_fresh_single_clone_home_closes_on_the_first_call(
+        tf, tmp_path, monkeypatch, capsys):
+    """신선 단일 clone 홈(커밋 0)의 첫 티켓이 **첫 호출**에 닫힌다 — rc 0 · done · 첫 커밋.
+
+    v1.7.12 후보에서는 통합 브랜치 미해소 → 스코프 밖 잔여 → 슬롯 반납 거부가 차례로 막았다
+    (2026-09-02 라이브 실측). 셋째는 홈 슬롯 반납 무대상([[T-0897]])이 닫으므로 이 케이스는
+    두 티켓이 함께 있어야 green 이다.
+    """
+    root = _unborn_repo(tf, tmp_path, monkeypatch)
+    board_dir = root / ".project_manager" / "board"
+    board_py = root / ".project_manager" / "tools" / "board.py"
+    board_calls: list[list[str]] = []
+
+    def _run_board(args: list[str]) -> tuple[int, str]:
+        board_calls.append(list(args))
+        if args and args[0] == "complete":
+            source = next((board_dir / "tickets" / "claimed").glob("T-*.md"))
+            target = board_dir / "tickets" / "done" / source.name
+            source.replace(target)
+            target.write_text(
+                target.read_text(encoding="utf-8").replace(
+                    "status: claimed", "status: done"),
+                encoding="utf-8")
+        return 0, "ok"
+
+    finisher = tf.TicketFinisher(
+        board_py=board_py,
+        log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
+        task_workspace=root,
+        run_pytest_fn=lambda: (0, "1 passed in 0.01s"),
+        run_board_fn=_run_board,
+        dod_block_fn=lambda tid: None,
+        self_axis_block_fn=lambda tid: None,
+        affected_domain_fn=lambda tid: None,
+    )
+    closer = tf.ClusterCloser(
+        _CLUSTER, finisher=finisher, board_py=board_py, slot=HOME_SLOT,
+        run_delegate_fn=lambda args: (0, ""),
+    )
+
+    rc = closer.run()
+    captured = capsys.readouterr()
+
+    assert rc == 0, captured.out + captured.err
+    assert [args[0] for args in board_calls] == ["complete"]
+    assert list((board_dir / "tickets" / "done").glob(f"{_MEMBER_A}*.md"))
+    assert _git(root, "rev-parse", "--verify", "--quiet", "HEAD").returncode == 0
+    assert _git(root, "log", "--format=%s").stdout.splitlines() == ["종결 픽스처"]
+    assert _lease_rows(root)[0]["session"] == "t"      # 홈 정체성이 살아 있다
 
 
 def test_status_seam_is_strict_and_the_non_blocking_report_absorbs_it(

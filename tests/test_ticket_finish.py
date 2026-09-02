@@ -2293,6 +2293,44 @@ def test_an_untracked_file_within_the_cap_still_completes(tf, tmp_path, monkeypa
     assert finisher._default_diff_cap_block("T-0604") is None
 
 
+def test_diff_cap_guard_is_off_without_a_baseline(tf, tmp_path, monkeypatch, capsys):
+    """touches 를 선언해도 커밋 0 트리엔 잴 표면이 없다 — 가드 off + loud 한 줄.
+
+    새 채택자(`pm_import --new` 직후)의 첫 티켓 형상이다. 기준선(통합 브랜치 tip)도 HEAD 도
+    없으므로 폭을 물을 수 없는데, 그 상태로 멈추면 첫 티켓이 닫히지 않고 조용히 통과하면
+    상한이 꺼진 사실이 아무 데도 남지 않는다. 같은 트리에 커밋 하나가 생기면 같은 파일이
+    상한 초과로 잡힌다 — 원래부터 통과라서 조용한 것이 아니다.
+    """
+    root = tmp_path / "code"
+    root.mkdir()
+    for args in (["init", "-q", "-b", "main"], ["config", "user.email", "t@e"],
+                 ["config", "user.name", "t"]):
+        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+    (root / "src").mkdir()
+    (root / "src" / "new_module.py").write_text(
+        "".join(f"n{index}\n" for index in range(400)), encoding="utf-8")
+    external = tf._load_additional_reviewer()
+    monkeypatch.setattr(tf, "_cluster_integration_branch",
+                        lambda _board_py, _ticket_id: "main")
+    monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["src/"])
+    monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
+    monkeypatch.setattr(external, "local_config", lambda repo=None: {})
+    monkeypatch.setattr(tf, "_load_additional_reviewer", lambda: external)
+    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", regression_cwd=root)
+
+    assert finisher._default_diff_cap_block("T-0896") is None
+    stderr = capsys.readouterr().err
+    assert "기준선 없음" in stderr and stderr.count("\n") == 1
+
+    subprocess.run(["git", "-C", str(root), "commit", "-q", "--allow-empty",
+                    "-m", "seed"], check=True, capture_output=True)
+    block = tf.TicketFinisher(
+        log_file=tmp_path / "log.md", regression_cwd=root,
+    )._default_diff_cap_block("T-0896")
+
+    assert block is not None and "400줄" in block and "300줄" in block
+
+
 def test_completion_surface_carries_the_shared_measurement_meaning(
         tf, tmp_path, monkeypatch):
     """완료 기록 안내도 '측정=손작업 스코프(기계 mirror 제외)'를 싣는다 (문구 단일 출처)."""
