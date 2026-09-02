@@ -1795,6 +1795,37 @@ def test_cmd_snapshot_reads_ledgers_without_subprocess_and_json_envelope_is_sing
     assert 0 < len(probe_calls) <= mod._WIP_PROBE_MAX_CALLS
 
 
+def test_cmd_snapshot_unresolved_identity_returns_one(tmp_path, monkeypatch, capsys):
+    """정체성 미해소 snapshot 은 rc 1 · stdout 0줄이다 — `--json` 도 무응답 엔벨로프를 내지 않는다.
+
+    rc 0 + `{"suppressOutput":true}` 는 "주입할 것이 없다" 를 성공으로 위장한다(그 위장이
+    compaction 마다 관측 불가였다). 원장 판독 실패 경로도 같은 규칙이라 특례가 없다 — 두 실패가
+    같은 rc·같은 stdout 을 낸다.
+    """
+    mod = _load_module("pm_log_snapshot_unresolved_identity")
+    pm_home = tmp_path / "empty"
+    pm_home.mkdir()
+    monkeypatch.setattr(mod, "REPO", pm_home)
+
+    for json_mode in (False, True):
+        rc = mod.cmd_snapshot(
+            SimpleNamespace(cwd=str(pm_home), state_lines=24, json=json_mode))
+
+        captured = capsys.readouterr()
+        assert rc == 1 and captured.out == "", json_mode
+        assert captured.err.count("\n") == 1 and "재주입 생략" in captured.err
+
+    # 원장 판독 실패(다른 사유)도 같은 규칙 — rc 1 · stdout 0줄.
+    monkeypatch.setattr(mod, "build_snapshot",
+                        lambda *a, **k: (None, mod._CTX_WINDOW_MISMATCH_READ_WARNING))
+
+    rc = mod.cmd_snapshot(SimpleNamespace(cwd=str(pm_home), state_lines=24, json=True))
+
+    captured = capsys.readouterr()
+    assert rc == 1 and captured.out == ""
+    assert mod._CTX_WINDOW_MISMATCH_READ_WARNING in captured.err
+
+
 def test_snapshot_missing_all_ledgers_is_fail_soft_one_line_warning(tmp_path):
     mod = _load_module()
     pm_home = tmp_path / "empty"

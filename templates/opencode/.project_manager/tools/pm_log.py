@@ -1705,16 +1705,20 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
     )
     if warning:
         print(warning, file=sys.stderr)
+    if not text:
+        # 주입할 것을 만들지 못한 실행은 실패다 — 정체성 미해소든 원장 판독 실패든 같은 규칙
+        # (특례 0). 실패에 반쪽 답(무응답 엔벨로프)을 내지 않는다: 소비자가 그 한 줄을 "답" 으로
+        # 세면 조용한 생략이 되고, 셸 폴백 배선(`snapshot --json || printf …`)에서는 엔벨로프가
+        # 두 줄이 된다. stdout 0줄 + rc 1 이면 세 하네스가 같은 실패를 같은 자리에서 본다.
+        return 1
     if args.json:
-        payload = {"suppressOutput": True}
-        if text:
-            payload = {"systemMessage": text, "suppressOutput": False}
+        payload = {"systemMessage": text, "suppressOutput": False}
         _write_machine_line(
             json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
         )
-    elif text:
+    else:
         sys.stdout.write(text)
-    return 1 if warning == _CTX_WINDOW_MISMATCH_READ_WARNING else 0
+    return 0
 
 
 def _registered_repos() -> set[str] | None:
