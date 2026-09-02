@@ -183,7 +183,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 
 # ── 엔진 사본 rev 스탬프 (pm_bootstrap deep-import target) ────────────────
-ENGINE_REV = "v1.7.12"
+ENGINE_REV = "v1.7.13"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):

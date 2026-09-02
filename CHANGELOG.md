@@ -7,22 +7,49 @@
 
 ## [Unreleased]
 
+## [1.7.13] - 2026-09-02
+
 ### Removed
 
-- **BREAKING — 추가 리뷰어를 켜고 끄는 축을 없앴다.** `additional_reviewer.enabled` 키, `board init`·`pm-update` 의 opt-in 질문, 비활성 1회 강제 플래그(`--force`), 그 값을 읽던 모든 분기를 지웠다. 추가 리뷰어는 developer·architect 와 같이 **부르면 도는 역할**이다. 채택자 `local.conf` 에 남은 그 줄은 소비 지점에서 멈추며(대체 키 없음) 지우면 된다 — `true`/`false` 어느 값이든 실행 조건은 같다.
+- **BREAKING — 추가 리뷰어를 켜고 끄는 축을 없앴다.** `additional_reviewer.enabled` 키, `board init`·`pm-update` 의 opt-in 질문, 비활성 1회 강제 플래그(`--force`), 그 값을 읽던 모든 분기를 지웠다. 추가 리뷰어는 developer·architect 와 같이 **부르면 도는 역할**이다. 채택자 `local.conf` 에 남은 그 줄은 소비 지점에서 멈추며(대체 키 없음) 지우면 된다 — `true`/`false` 어느 값이든 실행 조건은 같다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - 추가 리뷰어에게만 붙던 가시 범위 격리 컨테이너(저장소 거울·임시 홈·리뷰어 전용 env allowlist)를 삭제했다. 리뷰어는 위임과 같은 조건으로 돈다 — cwd 는 검토 대상 저장소, env 는 위임 채널이 소유한 같은 seam 이 조립한다. 리뷰어 전용 노브 `additional_reviewer.env_keep_extra`·`.home_artifacts_extra` 도 대체 키 없이 제거됐다.
 - 보낼 내용을 미리 재던 자리를 전부 지웠다 — 프롬프트 시크릿 스캔과 승인 플래그(`--secret-scan-ack`), 리뷰 diff 의 시크릿 denylist 제외와 노브 `additional_reviewer.denylist_extra`, 기계 사본 경로 제외, 프롬프트 파일 경계 검사, 그리고 그 결과로 실행을 막던 분기와 보고 항목이 함께 사라졌다. 폴백 억제 규칙(`ack` 통과 실행)도 같이 없어졌다.
 - codex 네트워크 attestation 축(`CODEX_SANDBOX_NETWORK_DISABLED` 게이트·`--codex-egress-escalated` 플래그·dry-run 승격 표기·카드 산문)을 지웠다. codex sandbox 의 명령 승인은 codex 자신이 소유하며 엔진이 그 축을 대신 판정하지 않는다.
+- **BREAKING — `board.py cluster new` 가 코드 트리를 추측하던 두 번째 규칙을 지웠다.** 인자가 없으면 활성 슬롯, 그것도 없으면 PM 홈으로 조용히 접혀 통합 브랜치가 엉뚱한 저장소·기점에 생기던 자리다. 이제 `--repo/--slot`(또는 `--task`) 명시가 없으면 첫 쓰기 앞에서 거부한다. 코드 트리 추측을 전제하던 `cluster show` 의 브랜치 실재 표기와 lint `cluster-branch-missing` 축도 함께 사라졌다.
+- **BREAKING — 엔진이 자기 PM 홈을 부모 폴더를 훑어 추측하던 경로 7곳을 지웠다.** 못 찾으면 경고 뒤 자기 자리로 강등해 진행하던 분기도 같이 없어졌다. 소유 PM 홈은 anchor 의 `.git` 포인터가 가리키는 공용 저장소에서 유도하며(`pm_log.owning_pm_home`), 못 찾으면 오류로 멈춘다. opencode 훅 코어가 세션 폴더의 부모를 최대 12단 훑어 엔진 루트를 추측하던 `findEngineRoot` 도 같은 클래스라 지웠다 — 엔진 루트는 훅 파일 자기 위치에서 받는다.
+- 위임 raw·라운드 장부의 저장 위치를 못 정하면 OS 임시 폴더로 떨어뜨리던 폴백을 지웠다. `pm_relay.raw_storage_paths` 는 해소 실패를 오류로 세우고, 폴백 전용 인자 `temp_dir=` 는 파라미터째 사라졌다.
+- **BREAKING — `board.py section-add` 가 고정 라운드 예산 밖에서 새 순번을 만들던 경로를 닫았다.** 묶음 장부가 있는 티켓에는 거부하고 `pm_delegate.py ticket prepare` 를 안내한다. 장부 없는 draft 의 architect 설계 인라인 자리로만 남는다.
+- 위임 스킬 카드 `pm-dev-delegate` 의 opencode 판을 지웠다. canonical 1판 + codex override 1판이며, claude 와 opencode 가 함께 읽는 `.claude/skills/` 자리는 canonical 이 채운다. codex 판의 사실 오류 3건(native 위임 산출이 라운드 파일에 남는다는 서술의 반대)도 정정했다.
 
 ### Changed
 
-- 우리가 띄우는 행위자를 `외부` 로 부르던 표기를 역할 이름(추가 리뷰어·위임·하네스)으로 바꾸고, `외부 전송`·`외부 송신` 계열 표기까지 출하 표면 전량에서 0 으로 고정하는 검사를 `tests/test_terminology.py` 에 추가했다. 기계 밖으로 나가는 행위·저장소 밖 경로의 `외부` 는 그대로 둔다.
+- 우리가 띄우는 행위자를 `외부` 로 부르던 표기를 역할 이름(추가 리뷰어·위임·하네스)으로 바꾸고, `외부 전송`·`외부 송신` 계열 표기까지 출하 표면 전량에서 0 으로 고정하는 검사를 `tests/test_terminology.py` 에 추가했다. 기계 밖으로 나가는 행위·저장소 밖 경로의 `외부` 는 그대로 둔다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - 남은 판단 축을 자기 근거로 부른다 — 라운드·wave 예산이 세는 것은 **유료 호출** 횟수다. 엔진 안내·카드·문서의 `전송`/`송신` 표기를 `호출` 로 바꿨고, 손대지 않은 축은 이 예산 상한 하나뿐이다.
 - **위임자는 피위임자에게 자신과 같은 권한을 준다** — 위임 방향·하네스 조합과 무관하다(코덱스가 PM 일 때 클로드에게 위임하든, 오픈코드가 코덱스에게 위임하든 같다). 이 규칙을 판단 원칙 레지스트리와 세 하네스의 위임 카드에 실었고, 위임 경로에서 피위임자 권한을 좁히는 자리는 파리티 원장에 등재해 새 좁힘이 미등재로 걸리게 했다. 남는 비대칭은 CLI 형식과 역할축(generate≠evaluate)뿐이다.
+- 묶음 종결(`ticket_finish.py --cluster`)이 차단 사유를 하나 찾을 때마다 멈추지 않고, 첫 부작용 앞에서 읽기로 판정 가능한 사유를 전부 모아 번호와 함께 한 번에 보고한다. 죽은 확인 단계를 지워 파이프라인은 8단계에서 7단계가 됐다.
+- 엔진이 자기 작업용으로 만드는 임시 디렉터리를 OS 임시 폴더가 아니라 프로젝트 안 고정 폴더 `.project_manager/.local/tmp` 에 만들고 실행 후 비운다(`pm_relay.temp_root` 단일 소유 · 생성 호출 4자리). 대상 파일 옆에 써야 하는 원자적 쓰기 3곳은 그대로다.
+- **이어 시키는 위임은 새 순번을 만들지 않고 같은 순번을 다시 연다** — `pm_delegate.py ticket prepare --reopen-ordinal N`. 재개방은 라운드 예산을 소비하지 않고, 슬롯 사본은 board 라운드 파일의 현재 내용으로 시드되며, 회수는 그 파일을 통째로 교체한다(과거 판은 board git 이 보존). 한 단계 = 한 순번 = 한 파일이다. ADR-0090 의 "회수 후 불변 · 이어 시키면 새 라운드" 는 ADR-0096 이 개정했다.
+- 리뷰 지적 회수 판정이 삭제를 변경으로 센다(`--diff-filter` 에 `D`). 지적의 `fix_contract.test` 가 테스트를 지목하지 않아도 계약이 지목한 경로 중 하나라도 diff 에 있으면 회수되고, 지목한 경로가 하나도 없을 때만 거부한다 — 죽은 코드를 지우는 지적에 테스트를 강요하지 않는다.
 
 ### Added
 
 - 하네스 이름을 조건으로 접근 권한·경로·env·판단 축을 가르는 분기를 AST 로 세어 원장 밖 자리를 거부하는 `tests/test_harness_parity_guard.py` 를 추가했다. 현재 등재는 CLI 형식(argv 조립·어댑터 설치·dry-run 표기) 20건이고 권한 분기는 0 이며, 원장은 축소 방향으로만 바뀐다.
+- `pm_delegate.py ticket abandon --discard-reason <사유>` — 산출이 있는 미회수 라운드 사본을 재실행 대체 없이 폐기한다. 산출은 순번과 무관하게 board 라운드 파일로 옮겨 `pm-review-refused` 표식을 붙이고, 사본도 board 파일도 없는 행은 사유만으로 장부를 닫는다. `--superseded-by` 와 함께 줄 수 없다.
+- 멤버가 전부 폐기된 묶음을 `ticket_finish.py --cluster` 가 닫는다 — 코드 산출을 전제하는 단계(완료 기록·커밋·재배치·머지)는 대상에서 빠지고 슬롯 반납과 board 기록만 돈다.
+
+### Fixed
+
+- `rounds resolve --cluster --pm-verified` 가 리뷰를 통과한(must-fix 0) 멤버를 "처분할 반려 잔여가 없습니다" 로 거부해, 통과 멤버가 하나라도 섞인 묶음이 닫히지 않던 결함을 고쳤다. 통과 멤버는 무대상으로 건너뛴다(`--gate` 단건 거부는 그대로).
+- Windows 에서 자기 축 회귀의 실패 노드 ID 가 플랫폼 경로 표기로 나와 없는 실패를 새로 판정하던 것을 POSIX 표기로 고정했다(정규화 지점 `_self_axis_failed_node_ids` 한 곳 · 플랫폼 분기 0).
+- 위임 raw 저장 경로의 0600·O_EXCL 보장을 단언하는 테스트가 폴백 테스트 삭제와 함께 사라져 있던 것을 실 경로에 다시 세웠다.
+
+### 업그레이드 노트
+
+- **BREAKING — `board.py cluster new` 는 코드 트리 정체성을 요구한다.** `--repo <이름> --slot <N>` 또는 `--task <이름>` 없이 부르던 스크립트·카드는 거부된다. 추측으로 PM 홈에 만들어졌던 통합 브랜치가 있으면 `cluster show` 의 선언값과 실제 저장소를 대조해 손으로 정리한다.
+- **BREAKING — `board.py section-add` 는 묶음 장부가 있는 티켓에 거부된다.** 라운드를 이어 시키려면 `pm_delegate.py ticket prepare --reopen-ordinal N` 으로 같은 순번을 다시 연다. 폐기·복원으로 표식이 붙은 순번을 다시 시킬 때는 재개방 뒤 슬롯 사본에서 `pm-review-refused` 줄을 지운다.
+- **BREAKING — PM 홈·엔진 루트를 추측하지 않는다.** anchor 의 `.git` 이 공용 저장소를 가리키지 않는 형상(복사본 checkout·submodule 없는 사본)에서는 이제 오류다. 오류 문안이 anchor 와 공용 저장소를 찍으므로 그 값으로 형상을 고친다.
+- 임시 파일이 `.project_manager/.local/tmp` 아래로 온다. 그 경로를 백업·감시 대상에서 빼고 있었다면 확인한다.
+- opencode 채택자: `pm_update` 는 인스턴스 소유 guest 절의 옛 `pm-dev-delegate` override 행을 보존한다. `./pm-config.sh add-harness --harness opencode` 를 한 번 다시 돌려 canonical 카드로 갱신한다.
 
 ## [1.7.12] - 2026-08-29
 
