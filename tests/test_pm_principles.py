@@ -391,7 +391,9 @@ def _manifest_entry_paths(text: str) -> set[str]:
 def _covered_by_current_entry(path: str, current_paths: set[str]) -> bool:
     """상위 디렉터리 등재가 그 경로를 계속 동기하는가 — 그러면 등재 소실이 아니다.
 
-    부모 등재가 없는 경로(개별 등록된 `.project_manager/tools/*.py` 등)가 빠지면 그대로 red 다."""
+    부모 등재가 없는 경로(개별 등록된 `.project_manager/tools/*.py` 등)가 빠지면 그대로 red 다.
+    소스 동등성은 보지 않는다 — `@source` 값은 flavor manifest parity 가드
+    (`test_manifest_template_parity`·`test_opencode_adapter_parity`) 소관이다."""
     parts = path.split("/")
     return any("/".join(parts[:i]) in current_paths for i in range(1, len(parts)))
 
