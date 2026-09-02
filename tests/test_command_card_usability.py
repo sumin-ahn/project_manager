@@ -38,7 +38,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import ntpath
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -260,6 +262,7 @@ def _shell_tokens(command: str) -> list[str]:
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars="".join(_SHELL_PUNCT))
         lexer.whitespace_split = True
+        lexer.escape = ""  # 백슬래시를 이스케이프로 먹지 않는다 — Windows 절대경로(C:\...)가 토큰째 살아야 한다.
         return list(lexer)
     except ValueError:
         return []
@@ -312,7 +315,9 @@ def _directory_targets(command: str) -> list[str]:
                     targets.append(words[position + 1])
             elif "=" in token and token.split("=", 1)[0] in _DIRECTORY_OPTIONS:
                 targets.append(token.split("=", 1)[1])
-    return [target for target in targets if target.startswith("/")]
+    # 절대경로만 대상이다(실행 cwd=격리 홈 기준의 상대경로는 세지 않는다). POSIX(`/…`)와
+    # Windows(`C:\…`·UNC) 를 모두 인정한다 — 한 규약만 보면 다른 플랫폼에서 이탈 탐지가 눈이 먼다.
+    return [t for t in targets if posixpath.isabs(t) or ntpath.isabs(t)]
 
 
 def _commands_leaving_the_sandbox(commands: Sequence[str], sandbox: Path) -> list[str]:
