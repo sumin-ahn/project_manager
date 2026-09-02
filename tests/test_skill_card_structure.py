@@ -6,10 +6,10 @@ guard owns only the failure mode where a fenced call example is left open or a
 Markdown list item is pasted into the call body.
 
 The Codex delegation card is a hand-authored variant with a Python-shaped
-``spawn_agent(...)`` call. Claude uses an ``Agent 툴 호출:`` pseudo-configuration
-block and OpenCode uses ``task tool 호출:``. Only the Python-shaped variant is
-parsed as Python; every variant rejects a top-level Markdown list item inside
-the delegation block.
+``spawn_agent(...)`` call. The shared card uses an ``Agent 툴 호출:``
+pseudo-configuration block, which OpenCode reads through the harness note
+(T-0895). Only the Python-shaped variant is parsed as Python; every variant
+rejects a top-level Markdown list item inside the delegation block.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ _ADAPTER_DIRS = tuple(dict.fromkeys(
 ))
 _FENCE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<tail>.*)$")
 _MARKDOWN_LIST_ITEM = re.compile(r"^[-+*]\s")
-_DELEGATION_MARKERS = ("spawn_agent(", "Agent 툴 호출:", "task tool 호출:")
+_DELEGATION_MARKERS = ("spawn_agent(", "Agent 툴 호출:")
 
 
 @dataclass(frozen=True)
@@ -227,13 +227,13 @@ def test_structure_guard_is_sensitive_when_spawn_agent_marker_is_removed():
     assert any("delegation block count is 0" in issue for issue in issues)
 
 
-def test_structure_guard_is_sensitive_when_task_marker_is_removed():
-    """OpenCode native task marker 손상도 0-block으로 검출한다."""
-    card = REPO / "templates" / "opencode" / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md"
+def test_structure_guard_is_sensitive_when_agent_tool_marker_is_removed():
+    """claude·opencode 가 공유하는 카드의 marker 손상도 0-block으로 검출한다."""
+    card = REPO / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md"
     text = card.read_text(encoding="utf-8")
-    assert "task tool 호출:" in text
+    assert "Agent 툴 호출:" in text
     assert _card_structure_issues(text) == []
-    issues = _card_structure_issues(text.replace("task tool 호출:", ""))
+    issues = _card_structure_issues(text.replace("Agent 툴 호출:", ""))
     assert any("delegation block count is 0" in issue for issue in issues)
 
 

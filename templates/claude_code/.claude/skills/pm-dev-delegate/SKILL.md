@@ -6,7 +6,7 @@ audience: pm-internal
 
 # /pm-dev-delegate T-NNNN [--role architect|developer|code-reviewer] [--background] — orchestrator 위임
 
-Agent 툴 + `subagent_type: architect|developer|code-reviewer` + `run_in_background` 옵션. ticket 본문이 self-contained 의무 충족 시 위임 프롬프트는 한 줄.
+> **harness 노트:** 아래 위임 블록은 **claude**(`Agent` 툴 · `subagent_type` · `run_in_background`) 표기다. **opencode** 는 같은 `description`·`subagent_type`·`prompt` 를 native `task` 툴로 부르고 background 필드가 없다(병렬은 호출측 동시 실행). **codex** 는 `spawn_agent(agent_type=…)` 를 쓰며 카드를 `.agents/skills/pm-dev-delegate/SKILL.md` 로 따로 출하한다. 필드 이름만 다르고 prepare→spawn→harvest 절차와 프롬프트 본문은 세 하네스가 같다. ticket 본문이 self-contained 의무 충족 시 위임 프롬프트는 한 줄.
 
 환경별 명령 문법은 부트스트랩의 "현재 환경" 표시에 맞춰 [Windows 안내](../references/environment-windows.md) 또는 [Linux/macOS 안내](../references/environment-posix.md)를 참조한다.
 

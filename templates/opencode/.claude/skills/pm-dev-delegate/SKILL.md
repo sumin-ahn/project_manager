@@ -1,12 +1,12 @@
 ---
 name: pm-dev-delegate
-description: "OpenCode task 기반 architect/developer/code-reviewer 위임 표준 프롬프트 + touches disjoint 안전성 cross-check. claim 은 별도 (pm-wave-claim). reviewer 위임 시 status.md/log/current.md 갱신 책임 명시. Triggers: 'dev 위임', 'reviewer 위임', 'T-NNNN 위임', 'pm-dev-delegate'."
+description: "orchestrator dev/code-reviewer 위임 표준 프롬프트 + touches disjoint 안전성 cross-check + background 옵션. claim 은 별도 (pm-wave-claim). reviewer 위임 시 status.md/log/current.md 갱신 책임 명시. Triggers: 'dev 위임', 'reviewer 위임', 'T-NNNN 위임', 'pm-dev-delegate'."
 audience: pm-internal
 ---
 
-# /pm-dev-delegate T-NNNN [--role architect|developer|code-reviewer] — orchestrator 위임
+# /pm-dev-delegate T-NNNN [--role architect|developer|code-reviewer] [--background] — orchestrator 위임
 
-OpenCode native `task` tool + `description`·`subagent_type: architect|developer|code-reviewer`·`prompt` 필드. ticket 본문이 self-contained 의무 충족 시 위임 프롬프트는 한 줄.
+> **harness 노트:** 아래 위임 블록은 **claude**(`Agent` 툴 · `subagent_type` · `run_in_background`) 표기다. **opencode** 는 같은 `description`·`subagent_type`·`prompt` 를 native `task` 툴로 부르고 background 필드가 없다(병렬은 호출측 동시 실행). **codex** 는 `spawn_agent(agent_type=…)` 를 쓰며 카드를 `.agents/skills/pm-dev-delegate/SKILL.md` 로 따로 출하한다. 필드 이름만 다르고 prepare→spawn→harvest 절차와 프롬프트 본문은 세 하네스가 같다. ticket 본문이 self-contained 의무 충족 시 위임 프롬프트는 한 줄.
 
 환경별 명령 문법은 부트스트랩의 "현재 환경" 표시에 맞춰 [Windows 안내](../references/environment-windows.md) 또는 [Linux/macOS 안내](../references/environment-posix.md)를 참조한다.
 
@@ -53,7 +53,7 @@ python3 .project_manager/tools/ticket_finish.py --cluster <C-이름>
 - depends_on 모두 done.
 - touches 명시.
 - DoD verify-able.
-- **컨텍스트 예산 확인** — claim 전에 본문이 정확한 함수/라인·패턴 reference로 dev 읽기 범위를 좁혔는지 확인한다. 티켓 생성·목표 확대 판단은 [`pm_principles.md`](../../../.project_manager/wiki/pm_principles.md) §"티켓과 위임"을 참조한다.
+- **컨텍스트 예산 확인** — touches 대형 파일·광범위 읽기 필요 시 dev truncation 위험. claim 전에 본문이 정확한 함수/라인·패턴 reference로 읽기 범위를 좁혔는지 확인한다. 티켓 생성·목표 확대 판단은 [`pm_principles.md`](../../../.project_manager/wiki/pm_principles.md) §"티켓과 위임"을 참조한다.
 
 ## domain 소환 (dev 위임 전)
 
@@ -105,7 +105,7 @@ developer·code-reviewer·architect·researcher는 PM 홈 티켓을 직접 편�
   python3 .project_manager/tools/pm_delegate.py ticket prepare \
       --cluster <C-이름> --role <developer|code-reviewer|architect|researcher> \
       --cwd <작업 worktree 절대경로>
-  # 티켓마다 stdout JSON 한 줄 — `copy`(라운드 파일 절대경로)만 native task prompt에 주입한다.
+  # 티켓마다 stdout JSON 한 줄 — `copy`(라운드 파일 절대경로)만 native Agent 프롬프트에 주입한다.
   # native 위임 종료 뒤(rc/판정과 무관) — run-dir 을 주면 그 run 의 티켓 전부를 한 번에 회수한다:
   python3 .project_manager/tools/pm_delegate.py ticket harvest \
       --copy <prepare JSON의 copy 또는 그 run-dir> --cwd <작업 worktree 절대경로>
@@ -131,7 +131,8 @@ developer·code-reviewer·architect·researcher는 PM 홈 티켓을 직접 편�
 
 - **실패 판정**: PM 홈 장부에 준비 기록이 없는 경로, 장부의 board 경로와 라운드 이름 불일치,
   예약 소실(board 라운드 파일 부재)은 board 를 바꾸지 않고 rc=1이다. run-dir 과 board 라운드를
-  보존한 채 원인을 고친 뒤 출력된 `ticket harvest --copy ... --cwd ...`를 다시 실행한다. 산출이
+  보존한 채 원인을 고친 뒤 출력된 copy 경로로 `ticket harvest --copy <copy> --cwd <worktree>` 를
+  다시 실행한다. 산출이
   **시드 그대로**면 board 를 바꾸지 않고 경고만 내며 run-dir 을 남긴다(게이트가 아니라 같은 세션을
   이어 시킬 여지다). run-dir 루트 `.project_manager/.local/delegate-ticket-copies/`는 tracked
   `.project_manager/.gitignore`의 `.local/` 규칙으로 무시되어 `git status --short`와 커밋 대상에
@@ -165,7 +166,7 @@ cross는 **`--tier hard`**, native는 그 하네스의 hard 카드(`developer-ha
 
 ### 2. native/cross
 
-- **target harness == PM 하네스**: 아래 실행 패턴대로 OpenCode native `task` tool을 호출한다. 실행 필드는 `description`·`subagent_type`·`prompt` 세 가지이며 다른 하네스의 background 필드를 요구하지 않는다. `pm_delegate`를 호출하지 않는다.
+- **target harness == PM 하네스**: 아래 실행 패턴대로 native 위임(claude=Agent 툴 `subagent_type`, codex=`spawn_agent`, opencode=subagent). `pm_delegate`를 호출하지 않는다.
 - **target harness != PM 하네스**: 아래 `pm_delegate` 호출.
 
 ### 3. cross 실행
@@ -185,11 +186,12 @@ python3 .project_manager/tools/pm_delegate.py --role <역할> \
 - `--cwd`: 구현할 worktree **절대경로**. 모든 역할 필수(기본값 없음). task-mode 해소값을 실값으로 넣는다.
 - `--tier`: developer에만 사용.
 - role preamble(역할 정체성, commit/push 등 git 비가역·board 조작·어댑터 `.claude/.codex/.opencode` 수정 금지)은 엔진이 자동 합성한다. 프롬프트 파일에는 작업만 담고 금지 문구를 중복하지 않는다.
-- developer·code-reviewer·architect의 정식 실행은 `--ticket`을 받아 라운드 파일을 자동 준비하고 그 절대경로 하나만 편집한다. OpenCode 네 역할 카드는 `mode: all`이며 native `task(subagent_type=<role>)`와 cross `opencode run --agent <role>`가 정확한 역할명을 쓴다. 타 하네스 adopter처럼 역할 카드가 없는 cross는 엔진이 이번 역할 하나의 mode/permission을 정제된 env에 주입하고 모델을 CLI로 명시해 default build/plan 폴백을 막는다. code-reviewer는 제품 코드를 고치지 않지만 지정된 라운드 파일은 반드시 기록한다. OpenCode처럼 단일 경로 쓰기 격리를 보장하지 못해도 경고 후 사용자가 고른 target으로 계속 실행하며, 역할 규약과 위임 전후 git/touches 감사가 범위 밖 변경을 loud하게 표면화한다. target 자동 대체·새 reviewer opt-in·새 sandbox는 추가하지 않는다.
-- 병렬 cross wave는 OpenCode가 제공하는 호출측 동시 실행으로 동기·stateless `pm_delegate` 호출을 병렬화한다.
+- developer·code-reviewer·architect의 정식 실행은 `--ticket`을 받아 라운드 파일을 자동 준비하고, 그 절대경로 하나만 편집한다. Codex reviewer는 실행 root를 격리 tmp로 옮긴 `workspace-write`와 정확한 copy run-dir `--add-dir`만 사용해 원 worktree를 read-only로 둔다. OpenCode는 native에서 `mode: all` custom 역할 카드, cross에서 `run --agent <role>`와 엔진 소유 런타임 role config를 쓴다. 수신 저장소에 `.opencode/agents`가 없어도 정제된 env에 이번 역할 하나의 mode/permission을 주입하고 모델은 CLI로 명시해 default build/plan 폴백을 막는다. reviewer는 라운드 파일 기록을 위해 edit 가능하며 추가-dir 기능이 없어 repo 쓰기 표면을 경고한다. Claude·OpenCode처럼 단일 경로 쓰기 격리를 보장하지 못해도 경고 후 사용자가 고른 target으로 계속 실행하며, 역할 규약과 위임 전후 git/touches 감사가 범위 밖 변경을 loud하게 표면화한다. target 자동 대체·새 reviewer opt-in·새 sandbox는 추가하지 않는다.
+- 병렬 wave는 호출측 PM 하네스의 background 실행(claude Bash `run_in_background` 등)으로 동기·stateless `pm_delegate` 호출을 병렬화한다.
 - 같은 세션이 claim 중인 다른 ticket과 `touches`가 겹치면(dry-run 포함) `pm_delegate`가 이미 `=== 병렬 위임 touches 겹침 ===` 경고를 stderr에 낸다(never-block·처방: 순차 실행 또는 슬롯 분리). 이 경고 하나만으로 "겹치니 직렬"로 판단하지 않는다 — `board.py new`/`promote`가 발행 시점에 낸 가용(idle) 슬롯 수 재료를 함께 보고, 슬롯이 남아 있으면 순차 대신 슬롯 분리로 병렬을 유지한다.
 - 결과: `rc=0` 성공(stdout 첫 줄=실행 provenance, 폴백 시 실제 하네스 포함; 이후 최종 reply; raw 파일 박제), `rc=1` 실패(loud·raw 경로 stderr), `rc=3` 위임 스위치 off. PM이 reply를 검토하고 board를 갱신하며 위임 대상은 board를 조작하지 않는다.
 - `--ticket T-NNNN`은 해당 ticket `touches`를 허용 집합으로 전후 워크스페이스를 비교해 범위 밖 신규/변경/커밋을 stderr 경고한다(차단 아님·rc 불변). 생략 시 허용 0이라 모든 변경을 경고한다. **dev 위임에는 `--ticket`이 표준**.
+
 ### 위임 마스터 스위치
 
 **위임자는 피위임자에게 자신과 같은 권한을 준다** — 위임 방향·하네스 조합과 무관하다(코덱스가 PM 일 때
@@ -218,9 +220,10 @@ false-green이다.
 ### developer 위임
 
 ```
-task tool 호출:
+Agent 툴 호출:
   description: "T-NNNN implement"
   subagent_type: developer
+  run_in_background: true (병렬 wave 시) | false (직렬·이 결과에 의존 시)
   prompt:
     "T-NNNN 을 구현하라.
 
@@ -267,7 +270,10 @@ task tool 호출:
      - 신규 테스트 수
      - 지정 회귀 결과 (A passed · 범위 명시)
      - 단계 종료 전체 회귀 명령과 `rc=0` 결과
-     - DoD 각 항목별 충족 evidence 명시"
+     - DoD 각 항목별 충족 evidence 명시
+     - fix 라운드면 엔진이 시드한 검증 골격을 accepted ID 전수로 채운다(재현 커맨드·기대값·fix 전
+       실값). 기계로 확인할 수 없는 항목은 골격이 제공하는 닫힌 사유로 선언한다. 형식·낱말은 골격이
+       단일 진실이다."
 ```
 
 > ⚠ **kill 되어도 산출은 남는다 — 단 `pm_delegate`/`additional_reviewer` 실행에 한한다.**
@@ -320,9 +326,10 @@ python3 .project_manager/tools/pm_delegate.py cluster wait \
 장부가 가리키는 설계 문서 하나이고, 티켓별 라운드 파일에는 그 티켓의 경계 실측·보정이 들어간다.
 
 ```
-task tool 호출:
+Agent 툴 호출:
   description: "<C-이름> design"
   subagent_type: architect
+  run_in_background: false
   prompt:
     "<C-이름> 묶음의 설계를 수행하라.
 
@@ -331,7 +338,7 @@ task tool 호출:
      각 티켓 자리에 기록하라(첫 줄 헤더 유지). `spec.md`·`rounds/`는 읽기 전용이다."
 ```
 
-architect도 위 `ticket prepare --cluster` 뒤 `task`를 호출하고 종료 뒤 `ticket harvest --copy <run-dir>`
+architect도 위 `ticket prepare --cluster` 뒤 Agent를 호출하고 종료 뒤 `ticket harvest --copy <run-dir>`
 를 실행한다. architect는 1회이고 회수 뒤 불변이다.
 
 **본문 점검(draft·승격 전)** 도 같은 architect 호출을 쓴다 — 바꾸는 것은 프롬프트 본문 한 곳이다.
@@ -362,6 +369,6 @@ touches 경로의 실재(소유 repo 좌표 기준) · 묶음 안팎 다른 열�
 > 재섭취를 라운드마다 다시 낸다 — fresh 는 resume 미일치 폴백·전사 과대 시에만). 실패 처리는
 > [`pm_principles.md`](../../../.project_manager/wiki/pm_principles.md) §"티켓과 위임"을 참조한다.
 
-대상 튜플(`additional_reviewer.harness`/`.model`)을 선언한 채택자는 reviewer 라운드와 같은 시점에 추가 리뷰어(additional reviewer) 교차검증을 돌린다. 선언이 없는 채택자에게 이 단계는 없다:
+대상 튜플(`additional_reviewer.harness`/`.model`/`.reasoning`)을 선언한 채택자는 reviewer 라운드와 같은 시점에 추가 리뷰어(additional reviewer) 교차검증을 돌린다. 선언이 없는 채택자에게 이 단계는 없다:
 `python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --adr ADR-NNNN`
 ADR 본문 정합 필요 시 `--paths`에 **코드 경로+ADR을 함께 나열**한다. `--paths`는 `--ticket` touches를 대체한다. 상세: `pm_playbook.md` §"추가 리뷰어 교차검증".

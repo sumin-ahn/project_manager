@@ -1,8 +1,8 @@
 """T-0674 — canonical skill ↔ opencode command 기계 사본 정합 가드.
 
-command는 사람 슬래시 팔레트, skill은 모델 tool 표면이다. 기본 저작 소스는 root
-``.claude/skills/<name>/SKILL.md``이며, native tool schema가 다른 명시 target override만
-OpenCode flavor source를 쓴다. 이 가드는 실 파일 전수 집합과 기계 생성 정합을 강제한다.
+command는 사람 슬래시 팔레트, skill은 모델 tool 표면이다. 저작 소스는 15건 전부 root
+``.claude/skills/<name>/SKILL.md`` 하나이며 flavor override 는 없다(T-0895). 이 가드는 실 파일
+전수 집합과 기계 생성 정합을 강제한다.
 
 **판정 층(T-0708)**: 기대값·실측값을 모두 `read_bytes()` 로 읽어 개행 표기만 LF로 정규화한
 **내용 동일성**이다(바이트 표기 동일성이 아니다). 체크아웃 표기는 채택자 설정 소관이고, 내용이
@@ -18,10 +18,6 @@ from _textio import write_crlf, write_lf
 REPO = Path(__file__).resolve().parents[1]
 CANONICAL = REPO / ".claude" / "skills"
 COMMANDS = REPO / "templates" / "opencode" / ".opencode" / "command"
-OPENCODE_OVERRIDES = {
-    "pm-dev-delegate": REPO / "templates" / "opencode" / ".claude" / "skills"
-    / "pm-dev-delegate" / "SKILL.md",
-}
 
 
 def _skills(root: Path) -> dict[str, Path]:
@@ -47,18 +43,14 @@ def _expected_command(skill: Path, name: str) -> bytes:
     return expected_command_bytes(skill, name)
 
 
-def _parity_errors(
-        canonical: Path, commands: Path, overrides: dict[str, Path] | None = None,
-) -> list[str]:
+def _parity_errors(canonical: Path, commands: Path) -> list[str]:
     skills = _skills(canonical)
     copies = _commands(commands)
-    sources = dict(skills)
-    sources.update(overrides or {})
     errors = [f"missing-command:{name}" for name in sorted(skills.keys() - copies.keys())]
     errors += [f"orphan-command:{name}" for name in sorted(copies.keys() - skills.keys())]
     errors += [
         f"drift:{name}" for name in sorted(skills.keys() & copies.keys())
-        if _expected_command(sources[name], name) != normalized_bytes(copies[name])
+        if _expected_command(skills[name], name) != normalized_bytes(copies[name])
     ]
     return errors
 
@@ -68,8 +60,7 @@ def test_all_canonical_skills_have_exact_rendered_command_copies():
     copies = _commands(COMMANDS)
     assert len(skills) == 15, f"출하 canonical 스킬 예상 15개, 실제 {len(skills)}개: {sorted(skills)}"
     assert len(copies) == 15, f"opencode command 사본 예상 15개, 실제 {len(copies)}개: {sorted(copies)}"
-    assert set(OPENCODE_OVERRIDES) <= set(skills)
-    assert _parity_errors(CANONICAL, COMMANDS, OPENCODE_OVERRIDES) == []
+    assert _parity_errors(CANONICAL, COMMANDS) == []
 
 
 def test_parity_guard_reports_missing_copy(tmp_path):

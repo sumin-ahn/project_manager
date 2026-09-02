@@ -1,9 +1,8 @@
 """T-0674 — opencode skill tool·slash command 두 진입 표면 가드.
 
-root `.claude/skills/*/SKILL.md`가 공용 canonical이고, 하네스 실행 계약이 다른
-`pm-dev-delegate`만 OpenCode target override를 canonical로 쓴다. opencode는 스킬
-미러를 모델 `skill` tool로 소비하고, 각 manifest source 본문에서 기계 생성한
-`.opencode/command/<name>.md`를 사람 slash 팔레트로 소비한다. 이 legacy
+root `.claude/skills/*/SKILL.md`가 15건 전부의 공용 canonical이다 — 하네스별 판이 없으므로
+예외도 없다(T-0895). opencode는 스킬 미러를 모델 `skill` tool로 소비하고, canonical 본문에서
+기계 생성한 `.opencode/command/<name>.md`를 사람 slash 팔레트로 소비한다. 이 legacy
 파일은 스킬 미러 정합, command 채널 존재, 두 표면을 혼동하는 옛 문서
 서술 부재를 보조 검증한다. 전수·byte·manifest 정합은 T-0674 신설 가드가 담당한다.
 """
@@ -18,7 +17,6 @@ REPO = Path(__file__).resolve().parents[1]
 ROOT_SKILLS = REPO / ".claude" / "skills"
 OPENCODE_SKILLS_MIRROR = REPO / "templates" / "opencode" / ".claude" / "skills"
 OPENCODE_COMMAND_DIR = REPO / "templates" / "opencode" / ".opencode" / "command"
-PM_DEV_DELEGATE_REL = "pm-dev-delegate/SKILL.md"
 
 # T-0364 단일-채널 서술의 재유입 가드.
 _STALE_SINGLE_CHANNEL_RES = (
@@ -61,11 +59,10 @@ def _neutralize_entry_notation(raw: bytes) -> bytes:
 
 
 def test_opencode_skill_mirror_matches_canonical_except_entry_notation():
-    """공용 14개는 root와 정합하고 pm-dev-delegate는 명시 override→command가 정합한다.
+    """출하 스킬 15건 전부가 root canonical과 정합한다 (진입 표기만 예외).
 
-    opencode 는 공용 스킬을 bare @render(root `.claude/skills`)로 소비한다. 실행 도구 계약이 다른
-    pm-dev-delegate만 target-specific source를 쓰므로 root와의 차이는 허용하되, 그 source에서
-    생성된 command와 byte parity를 직접 고정한다."""
+    opencode 는 스킬 전건을 bare @render(root `.claude/skills`)로 소비한다. 하네스 실행 계약 차이는
+    카드 머리의 harness 노트가 지고, 파일을 갈라 담지 않는다(T-0895) — 예외 목록이 비어 있다."""
     canon = _skill_files(ROOT_SKILLS)
     mirror = _skill_files(OPENCODE_SKILLS_MIRROR)
     # sensitivity: canonical 이 비면 경로 stale (공허 통과 방지).
@@ -77,8 +74,8 @@ def test_opencode_skill_mirror_matches_canonical_except_entry_notation():
         "opencode 스킬 미러가 canonical 과 스킬 집합 불일치 — "
         f"canonical에만: {sorted(set(canon) - set(mirror))} / 미러에만: {sorted(set(mirror) - set(canon))}. "
         "`pm_update --target opencode` 로 재전파.")
-    shared = sorted(set(canon) - {PM_DEV_DELEGATE_REL})
-    assert len(shared) == 14 and PM_DEV_DELEGATE_REL in mirror
+    shared = sorted(canon)
+    assert len(shared) == 15
     drifted = sorted(
         rel
         for rel in shared
@@ -86,17 +83,8 @@ def test_opencode_skill_mirror_matches_canonical_except_entry_notation():
         != _neutralize_entry_notation(mirror[rel].read_bytes())
     )
     assert not drifted, (
-        f"opencode 공용 스킬 미러가 진입 표기 외 canonical 내용과 drift: {drifted} — "
+        f"opencode 스킬 미러가 진입 표기 외 canonical 내용과 drift: {drifted} — "
         "전파 누락/구버전 잔존 또는 허용 범위 밖 수기 변경.")
-    override = mirror[PM_DEV_DELEGATE_REL].read_bytes()
-    root_shared = canon[PM_DEV_DELEGATE_REL].read_bytes()
-    generated = (OPENCODE_COMMAND_DIR / "pm-dev-delegate.md").read_bytes()
-    assert _neutralize_entry_notation(override) != _neutralize_entry_notation(root_shared), (
-        "target override가 root 공용 카드와 같아져 OpenCode task 계약 분기가 사라짐"
-    )
-    assert _neutralize_entry_notation(generated) == _neutralize_entry_notation(override), (
-        "pm-dev-delegate command가 manifest의 target override source와 drift"
-    )
 
 
 def test_normalized_parity_guard_is_sensitive_to_non_notation_drift():

@@ -45,15 +45,13 @@ CODEX_MANIFEST = REPO / "templates" / "codex" / ".project_manager" / "engine.man
 #     tests/test_skill_command_parity.py 가 강제).
 #   opencode 가 제외: .claude/agents(opencode 는 .opencode/agents)·ctx 훅·회귀 훅·relay 드라이버.
 #     regression.yml 은 이제 어느 채택자 템플릿에도 출하하지 않는다. `.claude/skills` 는 **더 이상 제외 아님** — opencode
-#     (≥1.17.x)가 네이티브 스캔하는 canonical 스킬을 claude 와 동일 bare @render 로 공유한다(ADR-0065).
+#     (≥1.17.x)가 네이티브 스캔하는 canonical 스킬을 claude 와 동일 bare @render 로 공유한다(ADR-0065·전건 예외 0·T-0895).
 # NOTE(T-0305 supersedes T-0283): .opencode/lib·.opencode/plugins(ctx-guard core+shim)·pm_orch_opencode.py
 #   는 T-0283 당시 `@target-owned` 등재=self-update skip(전파 0)이라 미등재였으나, T-0303 `@source`
 #   채널(ADR-0054)이 그 비대칭(canonical=templates/opencode·루트 `.opencode/` 부재)을 이어 이제 engine
 #   update 로 *전파*된다(engine-mirror·frozen 근절). 대칭으로 claude 는 ctx 훅·relay 드라이버를 등재.
 #   settings.json·opencode.jsonc·루트 doc(CLAUDE/AGENTS)·local.conf 는 여전히 instance-owned(미등재).
 OPENCODE_ONLY_PATHS = {
-    # native task tool schema가 Claude Agent와 달라 shared directory 위에 얹는 file override.
-    ".claude/skills/pm-dev-delegate/SKILL.md",
     ".opencode/agents",
     ".opencode/command/pm-adr.md",
     ".opencode/command/pm-bootstrap.md",
@@ -170,10 +168,6 @@ _IMPORT_MERGED_EXCEPTIONS = {
     # 단일 설치에서는 각 실제 진입 표기를 갖고, 다중 설치에서는 pm_import의 선언된 중립-source
     # override + 선택 flavor 병기가 충돌을 해소한다. 다른 공유 relpath는 계속 byte-identity 대상이다.
     "AGENTS.md",
-    # OpenCode native 위임은 task(description/subagent_type/prompt), Claude는
-    # Agent(.../run_in_background)라 같은 relpath의 target override가 의도적이다. 각 flavor manifest의
-    # 구체적 @source와 adapter contract 테스트가 소유하며 shared byte-parity로 되돌리면 안 된다.
-    ".claude/skills/pm-dev-delegate/SKILL.md",
 }
 
 

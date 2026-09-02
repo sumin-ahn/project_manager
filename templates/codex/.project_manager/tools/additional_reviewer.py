@@ -3379,7 +3379,7 @@ def _numstat_path(field: str) -> str:
 # 위치 복사다. `@source=<path>` 항목은 그 경로가 명시 소스다. 두 경우 다 "그 항목이 가리키는 실제
 # 소스 경로가 이 파일 자신의 templates/<타깃>/ 물리 경로와 같은가"만 보면 된다 — 같으면(자기참조)
 # `pm_update`가 이 파일을 재생성하지 않는다는 뜻이라(no-op self-copy) 그 flavor 가 손으로 관리하는
-# canonical 원본이고(예: `templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md` — 각 flavor 가
+# canonical 원본이고(예: `templates/codex/.agents/skills/pm-dev-delegate/SKILL.md` — 각 flavor 가
 # 자기 소스를 갖는 자리라 제외 대상이 아니다), 다르면 다른 위치(대개 레포 루트의 canonical)에서
 # 기계로 복사돼 들어온 mirror 다. manifest 미등재 경로(CLAUDE.md·AGENTS.md·local.conf·설정 파일 등
 # 인스턴스/flavor 전용 문서)는 애초에 이 판정에 들어오지 않아 손작업으로 남는다. 새 타깃이

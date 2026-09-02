@@ -382,10 +382,26 @@ _MANIFEST_PATHS = (
 )
 
 
+def _manifest_entry_paths(text: str) -> set[str]:
+    """manifest 텍스트의 등재 경로 집합 (주석·빈 줄·`@마커` 제거)."""
+    return {line.split()[0] for line in text.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")}
+
+
+def _covered_by_current_entry(path: str, current_paths: set[str]) -> bool:
+    """상위 디렉터리 등재가 그 경로를 계속 동기하는가 — 그러면 등재 소실이 아니다.
+
+    부모 등재가 없는 경로(개별 등록된 `.project_manager/tools/*.py` 등)가 빠지면 그대로 red 다.
+    소스 동등성은 보지 않는다 — `@source` 값은 flavor manifest parity 가드
+    (`test_manifest_template_parity`·`test_opencode_adapter_parity`) 소관이다."""
+    parts = path.split("/")
+    return any("/".join(parts[:i]) in current_paths for i in range(1, len(parts)))
+
+
 @pytest.mark.parametrize("manifest_path", _MANIFEST_PATHS, ids=lambda p: p.relative_to(REPO).as_posix())
 def test_manifest_bare_entries_are_a_superset_of_the_pre_regression_baseline(manifest_path):
     """rebase 충돌 해소가 manifest 를 통째로 교체하면서 기존 등재(`private_refs.py` 등)를
-    지운 회귀를 막는다 — `task/main` 커밋 시점의 행 집합이 이 브랜치 manifest 행 집합의
+    지운 회귀를 막는다 — `task/main` 커밋 시점의 등재 경로 집합이 이 브랜치 manifest 등재 집합의
     부분집합이어야 한다(누락 0). `task/main` 참조가 이 환경에 없으면(fresh clone·다른 워크트리)
     비교 기준이 없다는 뜻이라 skip 한다 — 이 검증은 이 저장소의 이 시점(rebase 직후)을
     겨냥한 값 확인이다."""
@@ -396,25 +412,26 @@ def test_manifest_bare_entries_are_a_superset_of_the_pre_regression_baseline(man
     )
     if baseline.returncode != 0:
         pytest.skip(f"task/main 참조 없음 — 이 환경에선 기준선 비교 불가: {baseline.stderr.strip()}")
-    baseline_lines = {line for line in baseline.stdout.splitlines() if line.strip()}
-    current_lines = {
-        line for line in manifest_path.read_text(encoding="utf-8").splitlines() if line.strip()
-    }
-    missing = baseline_lines - current_lines
+    current_text = manifest_path.read_text(encoding="utf-8")
+    current_paths = _manifest_entry_paths(current_text)
+    # 재는 것은 **등재 경로가 사라졌는가** 하나다 — 주석 문면과 `@source` 값은 등재가 아니라
+    # flavor manifest parity 가드의 소관이다.
+    missing = {path for path in _manifest_entry_paths(baseline.stdout) - current_paths
+               if not _covered_by_current_entry(path, current_paths)}
     # 선언된 retire는 기존 bare 파일과 그 이름을 설명하던 주석의 의도적 제거다. 그 밖의
     # baseline 행은 계속 부분집합이어야 하므로 rename이 unrelated manifest 누락을 가리지 않는다.
     retired_stems = {
         Path(line.split(":", 1)[1].split("->", 1)[0].strip()).stem
-        for line in current_lines
+        for line in current_text.splitlines()
         if line.startswith("# pm-retired-path:")
     }
-    missing = {line for line in missing
-               if not any(stem in line for stem in retired_stems)}
-    assert not missing, f"{rel} 에서 task/main 대비 누락된 행: {sorted(missing)}"
+    missing = {path for path in missing
+               if not any(stem in path for stem in retired_stems)}
+    assert not missing, f"{rel} 에서 task/main 대비 누락된 등재: {sorted(missing)}"
     # 이번 라운드의 두 신규 bare 등재도 값으로 함께 확인한다(F-001 이 지운 두 항목).
-    assert ".project_manager/tools/private_refs.py" in current_lines
-    assert ".project_manager/tools/pm_principles.py" in current_lines
-    assert ".project_manager/wiki/pm_principles.md" in current_lines
+    assert ".project_manager/tools/private_refs.py" in current_paths
+    assert ".project_manager/tools/pm_principles.py" in current_paths
+    assert ".project_manager/wiki/pm_principles.md" in current_paths
 
 
 # ── 4. opencode plugin core 순수함수 자가검증(node) ──────────────────────

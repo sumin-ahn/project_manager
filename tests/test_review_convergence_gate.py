@@ -20,6 +20,7 @@ from __future__ import annotations
 import datetime
 import importlib.util
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -613,9 +614,9 @@ def test_machine_mirror_predicate_is_the_single_exclusion_rule(external, path, m
 @pytest.mark.parametrize("path, mirrored", [
     # bare(마커 없음) manifest 항목 — 소스는 레포 루트의 같은 상대경로(교차 위치) → 기계 mirror.
     ("templates/opencode/.claude/skills/pm-env/SKILL.md", True),
+    ("templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md", True),
     # `@source=` 가 flavor 자기 자신을 가리키는(self-referential) override — pm_update 가 재생성
     # 하지 않는 canonical 원본이라 flavor 가 손으로 고친다(결정문 예시와 동형).
-    ("templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md", False),
     ("templates/codex/.agents/skills/pm-dev-delegate/SKILL.md", False),
     ("templates/claude_code/.claude/ctx_guard.py", False),
     # `@source=` 가 다른 flavor 물리 경로(레포 루트 `.claude/skills`)를 가리키는 진짜 교차 위치.
@@ -628,6 +629,27 @@ def test_machine_mirror_predicate_is_the_single_exclusion_rule(external, path, m
 def test_adapter_layer_mirror_derives_from_manifest_source_direction(external, path, mirrored):
     """어댑터층 판정 = 그 타깃 engine.manifest 의 `@source=` 방향(자기참조=손작업·교차=mirror)."""
     assert external.is_machine_mirror_path(path) is mirrored
+
+
+def test_comment_example_of_a_self_referential_original_is_still_self_referential(external):
+    """판정 근거 주석이 예로 든 경로는 지금도 자기참조 원본이어야 한다 (설명↔거동 drift 0).
+
+    주석은 `_TEMPLATES_FLAVOR_RE` 위에서 판정 규칙을 서술하며 "flavor 가 손으로 관리하는 canonical
+    원본" 의 실례를 하나 든다. manifest 에서 그 override 행이 사라지면 경로 성격이 기계 mirror 로
+    뒤집히는데 주석은 옛 성격을 예로 든 채 남는다(T-0895 실측). 예시 경로를 주석에서 뽑아 술어로
+    되재 그 drift 를 값으로 막는다 — `<타깃>` 류 자리표시자는 실 경로가 아니라 제외한다."""
+    lines = (TOOLS / "additional_reviewer.py").read_text(encoding="utf-8").splitlines()
+    anchor = next(index for index, line in enumerate(lines)
+                  if line.startswith("_TEMPLATES_FLAVOR_RE"))
+    start = anchor
+    while start > 0 and lines[start - 1].startswith("#"):
+        start -= 1
+    quoted = [path for path in re.findall(r"`(templates/[^`\s]+)`", "\n".join(lines[start:anchor]))
+              if "<" not in path]
+    assert quoted, "판정 근거 주석이 자기참조 원본의 실 경로 예시를 잃었다"
+    for path in quoted:
+        assert external.is_machine_mirror_path(path) is False, (
+            f"주석이 자기참조 원본의 예로 든 {path} 가 지금은 기계 mirror 다")
 
 
 def test_adapter_layer_mirror_extends_to_a_new_target_without_code_changes(

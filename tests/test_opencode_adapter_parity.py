@@ -55,11 +55,6 @@ ENGINE_PATH_BASE_RE = re.compile(
 # 허용되는 뿌리는 둘뿐이다 — 파일 자기 위치 상수 ENGINE_ROOT 와 순수함수가 인자로 받은 root.
 ALLOWED_ENGINE_PATH_BASES = frozenset(("ENGINE_ROOT", "root"))
 
-PM_DEV_DELEGATE_SOURCE = (
-    "templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md"
-)
-
-
 def _load_pm_update():
     path = REPO / ".project_manager" / "tools" / "pm_update.py"
     spec = importlib.util.spec_from_file_location("t0674_pm_update", path)
@@ -95,15 +90,11 @@ def test_manifest_maps_every_command_to_root_canonical_skill():
     assert len(entries) == len(skills) == 15
     actual = {str(entry): (entry.render, entry.source_rel) for entry in entries}
     expected = {
-        f".opencode/command/{name}.md": (
-            True,
-            PM_DEV_DELEGATE_SOURCE if name == "pm-dev-delegate"
-            else f".claude/skills/{name}/SKILL.md",
-        ) for name in skills
+        f".opencode/command/{name}.md": (True, f".claude/skills/{name}/SKILL.md")
+        for name in skills
     }
     assert actual == expected
-    assert sum(source == PM_DEV_DELEGATE_SOURCE for _render, source in actual.values()) == 1
-    assert sum(source.startswith(".claude/skills/") for _render, source in actual.values()) == 14
+    assert sum(source.startswith(".claude/skills/") for _render, source in actual.values()) == 15
 
 
 def test_pm_update_plan_generates_and_updates_flat_command_copies(tmp_path):
@@ -116,9 +107,9 @@ def test_pm_update_plan_generates_and_updates_flat_command_copies(tmp_path):
     generated = tmp_path / ".opencode/command/pm-bootstrap.md"
     canonical = REPO / ".claude/skills/pm-bootstrap/SKILL.md"
     assert normalized_bytes(generated) == _expected_command(canonical, "pm-bootstrap")
-    override = REPO / PM_DEV_DELEGATE_SOURCE
+    delegate = REPO / ".claude/skills/pm-dev-delegate/SKILL.md"
     delegated = tmp_path / ".opencode/command/pm-dev-delegate.md"
-    assert normalized_bytes(delegated) == _expected_command(override, "pm-dev-delegate")
+    assert normalized_bytes(delegated) == _expected_command(delegate, "pm-dev-delegate")
     # 생성 층 자체의 표기 단언 — pm_update는 **신규 사본을 source 표기로** 쓴다(T-0709
     # `_write_rendered_text`: dest 표기 보존·신규는 source 표기 = byte-copy 동형). "항상 LF"로
     # 손으로 적은 기대는 CRLF 체크아웃(`core.autocrlf=true`)에서만 red였다(T-0724 실측). 기대
@@ -126,7 +117,7 @@ def test_pm_update_plan_generates_and_updates_flat_command_copies(tmp_path):
     assert generated.read_bytes() == _expected_command_bytes_on_disk(
         canonical, "pm-bootstrap")
     assert delegated.read_bytes() == _expected_command_bytes_on_disk(
-        override, "pm-dev-delegate")
+        delegate, "pm-dev-delegate")
 
     generated.write_text("stale\n", encoding="utf-8")
     changes, missing = pm_update.plan(REPO, entries, dest_root=tmp_path, render_enabled=False)

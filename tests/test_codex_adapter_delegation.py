@@ -42,6 +42,19 @@ AGENTS_MD = CODEX / "AGENTS.md"
 CONFIG = CODEX / ".codex" / "config.toml"
 COMMAND_RULES = CODEX / ".codex" / "rules" / "default.rules"
 PM_DEV_DELEGATE = CODEX / ".agents" / "skills" / "pm-dev-delegate" / "SKILL.md"
+# codex 는 `subagent_type`/`run_in_background` 를 담을 수 없어(아래 native 필드 가드) 카드를
+# 따로 출하하는 유일한 하네스다. 실행 형식만 갈리고 **사실**은 canonical 과 같아야 한다.
+CANONICAL_DELEGATE = REPO / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md"
+# 실제로 갈렸던 세 자리(T-0895) — 회수 절차·fix 라운드 검증 골격·추가 리뷰어 튜플 키.
+SHARED_DELEGATE_FACTS = (
+    "native 위임은 raw 장부에는 남지 않지만 라운드 파일에는 남는다",
+    "`ticket harvest --copy ... --cwd ...`로 회수한 뒤에만 재위임한다",
+    "`ticket copies --unharvested`가 미회수 준비를 열거한다",
+    "fix 라운드면 엔진이 시드한 검증 골격을 accepted ID 전수로 채운다",
+    "`additional_reviewer.harness`/`.model`/`.reasoning`",
+)
+# canonical 과 정반대였던 옛 주장 — 이 문장은 회수를 건너뛰라는 지시가 된다.
+_RETIRED_NATIVE_LEDGER_CLAIM = "native 위임은 장부에 남지 않는다"
 
 AGENT_NAMES = ("architect", "code-reviewer", "developer", "researcher")
 # developer 2티어(난제=hard) 프로필 — 4 역할 축이 아니라 developer 축의 티어 변주다(T-0448).
@@ -387,6 +400,24 @@ def test_pm_dev_delegate_documents_only_native_codex_spawn_fields():
     for stale_field in ("subagent_type", "run_in_background"):
         assert stale_field not in text, f"Codex pm-dev-delegate에 타 harness 필드 잔존: {stale_field}"
     assert "비동기로 진행" in text, "spawn 반환 thread의 비동기 운영 규칙 누락"
+
+
+def test_codex_override_states_the_same_delegation_facts_as_canonical():
+    """codex 판은 실행 형식만 다르고 위임 사실은 canonical 과 같다 (T-0895).
+
+    옛 codex 판은 `native 위임은 장부에 남지 않는다`고 적어 canonical 과 **정반대**였다 —
+    codex PM 이 kill 된 native 위임의 라운드 파일을 회수하지 않고 재위임하는 경로다(미회수 사본이
+    쌓인다). 같은 결손으로 fix 라운드 검증 골격 지시와 `additional_reviewer.reasoning` 키도
+    빠져 있었다. 계약을 canonical 에서도 확인하므로 한쪽만 고친 상태가 통과하지 않는다.
+    """
+    codex = PM_DEV_DELEGATE.read_text(encoding="utf-8")
+    canonical = CANONICAL_DELEGATE.read_text(encoding="utf-8")
+    for fact in SHARED_DELEGATE_FACTS:
+        assert fact in canonical, f"canonical 에 없는 문면을 계약으로 삼았다(가드 stale): {fact}"
+        assert fact in codex, f"codex 판이 canonical 사실을 잃음: {fact}"
+    assert _RETIRED_NATIVE_LEDGER_CLAIM not in codex, (
+        "codex 판에 native 회수 불필요 주장 재유입 — 라운드 파일 미회수 재위임 경로"
+    )
 
 
 def test_codex_native_reviewer_can_write_only_its_round_file_by_role_contract():
