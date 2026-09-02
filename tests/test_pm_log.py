@@ -303,25 +303,33 @@ def test_checkpoint_slot_header_round_trips_through_handoff_collector(
     assert mismatch is not None and "[ctx-window-mismatch]" in mismatch
 
 
-def test_checkpoint_parser_unresolved_compaction_warns_without_failing(
+def test_cmd_checkpoint_unresolved_identity_fails_on_every_trigger(
     tmp_path, monkeypatch, capsys,
 ):
-    """T-0686: 훅 CLI 계약은 rc 0을 유지하며 무기록을 stderr로 관측시킨다."""
-    mod = _load_module("pm_log_t0686_unresolved")
+    """정체성 미해소는 트리거와 무관하게 rc 1 · 무기록이다 — compaction 특례가 없다.
+
+    훅은 이 CLI 의 stdio 를 버리므로 rc 0 "생략" 은 아무도 관측하지 못한다(기록 0건이
+    성공으로 위장한다). 실패는 rc 로 터져야 훅 로그·회귀가 본다. 두 트리거를 **한 판정**
+    으로 보는 이유는 이 성질의 축이 트리거 목록 자체이기 때문이다.
+    """
+    mod = _load_module("pm_log_unresolved_identity")
     log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
     log_dir.mkdir(parents=True)
     mod.CURRENT_FILE.write_text(_HEADER, encoding="utf-8")
-    args = mod.build_parser().parse_args([
-        "checkpoint", "--trigger", "compaction", "--phase", "pre",
-        "--cwd", str(tmp_path),
-    ])
 
-    rc = args.fn(args)
+    for trigger in ("manual", "compaction"):
+        args = mod.build_parser().parse_args([
+            "checkpoint", "--trigger", trigger, "--phase", "pre",
+            "--cwd", str(tmp_path),
+        ])
 
-    captured = capsys.readouterr()
-    assert rc == 0 and captured.out == ""
-    assert "checkpoint 정체성 미해소" in captured.err and "기록 생략" in captured.err
-    assert mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1] == []
+        rc = args.fn(args)
+
+        captured = capsys.readouterr()
+        assert rc == 1 and captured.out == "", trigger
+        assert "[중단]" in captured.err and "checkpoint 정체성 미해소" in captured.err
+        assert "생략" not in captured.err, trigger
+        assert mod.CURRENT_FILE.read_text(encoding="utf-8") == _HEADER
 
 
 def test_checkpoint_slot_compaction_dedups_same_boundary(tmp_path, monkeypatch):
@@ -521,25 +529,6 @@ def test_cmd_checkpoint_missing_identity_manual_fails_loud(
     captured = capsys.readouterr()
     assert rc == 1 and captured.out == ""
     assert "정체성 미해소" in captured.err and "--task NAME" in captured.err
-    assert mod.CURRENT_FILE.read_text(encoding="utf-8") == original
-
-
-def test_cmd_checkpoint_missing_identity_compaction_warns_and_skips(
-    tmp_path, monkeypatch, capsys,
-):
-    """같은 identity 실패도 compaction 훅은 rc 0·진단·무기록이다."""
-    mod = _load_module()
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
-    log_dir.mkdir(parents=True)
-    original = _HEADER + _ENTRY_A
-    mod.CURRENT_FILE.write_text(original, encoding="utf-8")
-
-    rc = mod.cmd_checkpoint(SimpleNamespace(
-        task=None, trigger="compaction", cwd=str(tmp_path), phase="pre",
-    ))
-
-    captured = capsys.readouterr()
-    assert rc == 0 and captured.out == "" and "정체성 미해소" in captured.err
     assert mod.CURRENT_FILE.read_text(encoding="utf-8") == original
 
 

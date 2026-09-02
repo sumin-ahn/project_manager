@@ -4014,6 +4014,17 @@ class ClusterCloser:
             return False, f"{type(exc).__name__}: {exc}"
         return True, f"슬롯 {slot} 반납됨"
 
+    def _is_home_slot(self, slot: str) -> bool:
+        """그 슬롯이 PM 홈 자신(`worktree_pool.HOME_SLOT`)인가 — 반납 무대상 판별.
+
+        풀이 이름 붙인 상수와의 값 비교 하나다(`"."` 리터럴 사본 0). 풀을 로드하지 못하면
+        False 이고, 판정 불능은 바로 뒤 `_slot_state` 가 관측 실패(정지)로 올린다 — 여기서
+        조용히 접지 않는다.
+        """
+        pool = _load_tool_module(TOOLS_DIR / "worktree_pool.py")
+        home_slot = getattr(pool, "HOME_SLOT", None) if pool is not None else None
+        return home_slot is not None and slot == home_slot
+
     def _slot_state(self, slot: str) -> str | None:
         """슬롯의 현재 상태 — 리스 장부에 그 슬롯이 없으면 None(관측 성공·대여 아님).
 
@@ -4591,9 +4602,18 @@ class ClusterCloser:
         return None
 
     def _step_release(self) -> str | None:
-        """슬롯 반납 — dirty 슬롯은 거부다(자동 경로라고 산출물을 치우지 않는다)."""
+        """슬롯 반납 — dirty 슬롯은 거부다(자동 경로라고 산출물을 치우지 않는다).
+
+        PM 홈 자신인 행(`worktree_pool.HOME_SLOT`)은 반납 대상이 아니다 — 리스풀의 작업
+        슬롯과 달리 그 행은 자원이 아니라 **그 홈의 정체성**이라(`register_home_slot` 이
+        `bound=True` 로 회수 제외를 이미 선언했다) 반납하면 돌려줄 사람이 없고, 그 홈의
+        정체성 의존 조작(claim·complete·checkpoint·snapshot)이 전부 "미해소" 로 막힌다.
+        """
         if not self._slot:
             print("  슬롯 미해소 — 무대상")
+            return None
+        if self._is_home_slot(self._slot):
+            print(f"  슬롯 {self._slot} 은 PM 홈 자신(정체성) — 반납 무대상")
             return None
         state = self._slot_state(self._slot)
         if state is None:

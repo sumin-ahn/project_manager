@@ -31,6 +31,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from _home_slot import HOME_SLOT, seed_home_slot
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -94,6 +96,12 @@ def _git_identity(monkeypatch):
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(root), *args], capture_output=True,
                           text=True, encoding="utf-8", errors="replace", check=False)
+
+
+def _lease_rows(home: Path) -> list[dict]:
+    """리스 장부의 행 전체 — 반납 여부를 상태 하나가 아니라 행 값으로 본다."""
+    path = home / ".project_manager" / ".local" / "worktree-leases.json"
+    return json.loads(path.read_text(encoding="utf-8"))["leases"]
 
 
 def _rev(root: Path, ref: str = "HEAD") -> str:
@@ -1570,6 +1578,33 @@ def test_close_refuses_to_release_a_dirty_slot(close_env, capsys):
     assert block is not None and "슬롯 반납 실패" in block
     assert env.lease_state() == "leased"
     assert (env.slot / "stray.txt").is_file()
+
+
+@requires_git
+def test_close_does_not_release_the_home_slot_row(close_env, capsys):
+    """PM 홈 자신인 행(`slot="."`)은 반납 대상이 아니다 — 그 행은 자원이 아니라 정체성이다.
+
+    반납하면 그 홈의 세션 정체성이 지워져 claim·complete·checkpoint·snapshot 이 전부
+    "미해소" 로 막힌다(2026-09-02 실측). 대역은 진짜 반납으로 이어지므로 무대상 판정이
+    사라지면 호출 기록과 장부 행이 함께 바뀐다.
+    """
+    env = close_env
+    seed_home_slot(env.home, repo="code", session="t")
+    before = _lease_rows(env.home)
+    released: list[str] = []
+
+    def _release(slot: str) -> tuple[bool, str]:
+        released.append(slot)
+        return closer._default_release(slot)
+
+    closer = env.closer(slot=HOME_SLOT, release_fn=_release)
+
+    block = closer._step_release()
+
+    assert block is None
+    assert released == []
+    assert _lease_rows(env.home) == before
+    assert "PM 홈 자신" in capsys.readouterr().out
 
 
 @requires_git

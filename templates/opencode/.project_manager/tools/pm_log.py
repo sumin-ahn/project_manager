@@ -1903,13 +1903,8 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
         cwd = Path(getattr(args, "cwd", None) or Path.cwd()).resolve(strict=False)
         identity_name, source = resolve_snapshot_identity(REPO, cwd)
         if identity_name is None:
-            if getattr(args, "trigger", None) == "compaction":
-                print(
-                    "[pm-checkpoint] checkpoint 정체성 미해소 — "
-                    "cwd lease 불일치·활성 task 비단일; 기록 생략",
-                    file=sys.stderr,
-                )
-                return 0
+            # 트리거 특례 없음 — 훅은 stdio 를 버리므로 rc 0 생략은 아무도 못 본다
+            # (기록 0건이 성공으로 위장한다). 미해소는 어느 트리거에서든 rc 1 이다.
             print(
                 "[중단] checkpoint 정체성 미해소 — cwd lease 불일치·활성 task 비단일; "
                 "--task NAME을 명시하세요.",
