@@ -310,12 +310,14 @@ def test_cmd_checkpoint_unresolved_identity_fails_on_every_trigger(
 
     훅은 이 CLI 의 stdio 를 버리므로 rc 0 "생략" 은 아무도 관측하지 못한다(기록 0건이
     성공으로 위장한다). 실패는 rc 로 터져야 훅 로그·회귀가 본다. 두 트리거를 **한 판정**
-    으로 보는 이유는 이 성질의 축이 트리거 목록 자체이기 때문이다.
+    으로 보는 이유는 이 성질의 축이 트리거 목록 자체이기 때문이다 — 처방 문구(`--task NAME`)와
+    기존 엔트리 보존까지 같은 자리에서 본다(같은 성질을 두 테스트가 나눠 재지 않는다).
     """
     mod = _load_module("pm_log_unresolved_identity")
     log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
     log_dir.mkdir(parents=True)
-    mod.CURRENT_FILE.write_text(_HEADER, encoding="utf-8")
+    original = _HEADER + _ENTRY_A          # 비어 있지 않은 기존 log — 무기록은 그 바이트 보존이다.
+    mod.CURRENT_FILE.write_text(original, encoding="utf-8")
 
     for trigger in ("manual", "compaction"):
         args = mod.build_parser().parse_args([
@@ -328,8 +330,9 @@ def test_cmd_checkpoint_unresolved_identity_fails_on_every_trigger(
         captured = capsys.readouterr()
         assert rc == 1 and captured.out == "", trigger
         assert "[중단]" in captured.err and "checkpoint 정체성 미해소" in captured.err
+        assert "--task NAME" in captured.err, trigger
         assert "생략" not in captured.err, trigger
-        assert mod.CURRENT_FILE.read_text(encoding="utf-8") == _HEADER
+        assert mod.CURRENT_FILE.read_text(encoding="utf-8") == original
 
 
 def test_checkpoint_slot_compaction_dedups_same_boundary(tmp_path, monkeypatch):
@@ -510,26 +513,6 @@ def test_cmd_checkpoint_rejects_invalid_task_before_write(tmp_path, monkeypatch,
     assert rc == 1
     assert "부적합 task 명" in capsys.readouterr().err
     assert current.read_text(encoding="utf-8") == original
-
-
-def test_cmd_checkpoint_missing_identity_manual_fails_loud(
-    tmp_path, monkeypatch, capsys,
-):
-    """--task 없는 manual 호출은 기록 없는 성공으로 가장하지 않는다."""
-    mod = _load_module()
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
-    log_dir.mkdir(parents=True)
-    original = _HEADER + _ENTRY_A
-    mod.CURRENT_FILE.write_text(original, encoding="utf-8")
-
-    rc = mod.cmd_checkpoint(SimpleNamespace(
-        task=None, trigger="manual", cwd=str(tmp_path),
-    ))
-
-    captured = capsys.readouterr()
-    assert rc == 1 and captured.out == ""
-    assert "정체성 미해소" in captured.err and "--task NAME" in captured.err
-    assert mod.CURRENT_FILE.read_text(encoding="utf-8") == original
 
 
 def test_append_atomic_uses_one_o_append_write(tmp_path, monkeypatch):

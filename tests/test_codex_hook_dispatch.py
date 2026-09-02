@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pytest
 
+from _home_slot import seed_home_slot
 from _hook_commands import powershell_native_arguments
 from _win_skip import posix_bash_supported
 
@@ -730,22 +731,6 @@ def _adopter_tree(tmp_path: Path, *, conf_lines: tuple[str, ...],
     return root
 
 
-def _seed_home_lease(root: Path, *, session: str = "adopter_1") -> Path:
-    """그 채택자 홈에 자기 정체성 행(`slot="."`)을 깐다 — 등록된 홈 형상.
-
-    `pm_log snapshot`·`checkpoint` 는 이 행에서 정체성을 해소한다. 행이 없는 트리는 "아직
-    등록되지 않은 홈" 이라 그 조작들이 실패로 끝나는 것이 맞다(rc 1) — 압축 훅 등가·정상
-    트래픽 판정은 **등록된 홈**을 전제하므로 그 전제를 픽스처가 값으로 세운다.
-    """
-    ledger = root / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    ledger.write_text(
-        json.dumps({"leases": [{"slot": ".", "state": "leased", "session": session}]},
-                   ensure_ascii=False) + "\n",
-        encoding="utf-8", newline="\n")
-    return ledger
-
-
 def _run_entrypoint(event: str, root: Path, payload: dict) -> tuple[dict, float]:
     started = time.monotonic()
     completed = subprocess.run(
@@ -1237,7 +1222,7 @@ def test_migrated_event_answers_exactly_what_the_old_direct_wiring_answered(
     legacy_root = _adopter_tree(tmp_path / "legacy", conf_lines=_CROSS_CONF)
     new_root = _adopter_tree(tmp_path / "new", conf_lines=_CROSS_CONF)
     for tree in (legacy_root, new_root):
-        _seed_home_lease(tree)
+        seed_home_slot(tree)
     entrypoint = _entry_handler(event)["command"]
 
     def _tree_agnostic(out: str, root: Path) -> dict:
@@ -1266,7 +1251,7 @@ def test_compaction_normal_traffic_emits_no_adapter_fallback_warning(
     자식 계약("rc0 + JSON dict")으로 옮기면 모든 압축마다 없던 경고가 새로 나간다. 옛 배선의
     침묵이 값 그대로 보존됐는지를 실 출하 커맨드 실행으로 본다."""
     root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF)
-    _seed_home_lease(root)
+    seed_home_slot(root)
     entrypoint = _entry_handler(event)["command"]
 
     for trigger in ("auto", "manual"):
@@ -1454,7 +1439,7 @@ def test_legacy_wiring_adopter_is_told_future_guards_not_current_ones(
     같은 트리에서 옛 커맨드를 태우면 가드가 정상 엔벨로프를 낸다. 처방이 거짓 사실을 근거로
     들면 채택자는 그 처방을 안 믿는다."""
     root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF)
-    _seed_home_lease(root)
+    seed_home_slot(root)
     (root / ".project_manager").mkdir(exist_ok=True)
     (root / ".project_manager" / "install.json").write_text(
         '{"schema": 1, "harnesses": ["codex"]}\n', encoding="utf-8")
@@ -1520,7 +1505,7 @@ def test_live_compaction_payload_runs_through_the_shipped_entrypoint(
         guard, tmp_path, event):
     """라이브에서 실제로 온 payload 를 출하 진입점에 그대로 먹여도 경고 0줄이다."""
     root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF)
-    _seed_home_lease(root)
+    seed_home_slot(root)
 
     returncode, stdout = _run_command_in_tree(
         _entry_handler(event)["command"], root,
