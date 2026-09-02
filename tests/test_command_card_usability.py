@@ -292,10 +292,11 @@ _DIRECTORY_OPTIONS = frozenset({"--cwd", "--dir", "-C"})
 def _directory_targets(command: str) -> list[str]:
     """그 커맨드가 작용 대상으로 **지목한 디렉터리** 절대경로 목록.
 
-    보는 자리는 넷이다 — `cd <경로>` · `git -C <경로>` · `--cwd/--dir <경로>`(붙여 쓴 `=` 형태
-    포함) · 절대경로로 실행한 프로그램. 상대경로는 실행 cwd(격리 홈) 기준이라 여기서 세지
-    않는다. 커맨드 안의 임의 절대경로(예: 읽기 인자)를 전부 세지 않는 이유는 같다 — 판정하려는
-    것은 "어디에서/어디에 대고 도는가" 이지 문자열에 무엇이 들어 있나가 아니다.
+    보는 자리는 셋이다 — `cd <경로>`(statement 의 명령 낱말일 때만 · `echo cd /etc` 는 실행이
+    아니다) · `git -C <경로>` · `--cwd/--dir <경로>`(붙여 쓴 `=` 형태 포함). 프로그램 경로는
+    대상이 아니다 — 격리 홈 안에서 `/usr/bin/python3` 로 실행하는 것은 정상이다. 상대경로도
+    세지 않는다(실행 cwd = 격리 홈 기준). 판정하려는 것은 "어디에 대고 도는가" 이지 문자열에
+    무엇이 들어 있나가 아니다.
     """
     targets: list[str] = []
     for statement in _shell_statements(command):
@@ -305,10 +306,8 @@ def _directory_targets(command: str) -> list[str]:
         words = statement[index:]
         if not words:
             continue
-        if words[0].startswith("/"):
-            targets.append(words[0])
         for position, token in enumerate(words):
-            if token == "cd" or token in _DIRECTORY_OPTIONS:
+            if (position == 0 and token == "cd") or token in _DIRECTORY_OPTIONS:
                 if position + 1 < len(words):
                     targets.append(words[position + 1])
             elif "=" in token and token.split("=", 1)[0] in _DIRECTORY_OPTIONS:
@@ -899,6 +898,8 @@ def test_commands_leaving_the_sandbox_are_detected(tmp_path):
         "python3 .project_manager/tools/board.py list",       # 홈 안 상대 실행
         record,                                               # 형제 readonly 절대경로 --cwd
         f"cd {home} && {record}",                             # 격리 홈 절대경로로 cd
+        "/usr/bin/python3 .project_manager/tools/board.py list",  # 절대경로 인터프리터(정상 실행)
+        f"echo cd {outside}",                                 # 낱말 cd 를 담은 비실행 문자열
     ]
     escaping = f"cd {outside} && {record}"
 
