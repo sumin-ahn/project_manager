@@ -30,6 +30,7 @@ from typing import NamedTuple
 
 import pytest
 
+from _git_fixture import remove_git_tree
 from conftest import write_cluster_ledger
 
 REPO = Path(__file__).resolve().parents[1]
@@ -767,7 +768,7 @@ def test_discard_converges_when_both_artifacts_are_gone(pd, env):
     plan = _prepare(pd, env, "T-8081")
     # 실측 형상 — 슬롯 트리가 통째로 사라졌고 board 예약도 남아 있지 않다.
     plan.board_path.unlink()
-    shutil.rmtree(env.slot)
+    remove_git_tree(env.slot)          # Windows read-only git object 대응
     assert not plan.path.exists() and not plan.board_path.exists()
 
     # 선언이 없으면 종전대로 거부다 — 자산 부재가 처분의 근거가 되지는 않는다.

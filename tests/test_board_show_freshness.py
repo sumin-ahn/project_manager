@@ -23,12 +23,12 @@ import importlib.util
 import os
 import shutil
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 import pytest
 
+from _git_fixture import remove_git_tree
 from conftest import anchor_board_module
 
 REPO = Path(__file__).resolve().parents[1]
@@ -72,17 +72,6 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
                           text=True, encoding="utf-8", errors="replace",
                           check=False)
-
-
-def _force_rmtree(path: Path) -> None:
-    """bare remote 를 실제로 지워 offline(도달 불가)을 모의 — Windows read-only object 대응."""
-    def _chmod_and_retry(func, target, _exc):
-        os.chmod(target, 0o700)
-        func(target)
-    if sys.version_info >= (3, 12):
-        shutil.rmtree(path, onexc=_chmod_and_retry)
-    else:  # pragma: no cover — 3.11 이하 호환
-        shutil.rmtree(path, onerror=_chmod_and_retry)
 
 
 def _bare(tmp_path: Path, name: str) -> Path:
@@ -227,7 +216,7 @@ def test_show_does_not_mutate_board_working_tree(board, tmp_path, capsys):
 def test_show_offline_degrades_without_crash_or_false_currency_claim(board, tmp_path, capsys):
     bare = _bare(tmp_path, "bare-show-offline")
     board_dir = _make_board_git(tmp_path, remote=bare)
-    _force_rmtree(bare)   # 원격 도달 불가.
+    remove_git_tree(bare)   # 원격 도달 불가.
 
     rc = board.cmd_show(_show_args())
     assert rc == 0
@@ -264,7 +253,7 @@ def test_show_withholds_mismatch_verdict_when_remote_snapshot_unverified(
     assert fetch_head.exists()
     stale_ts = time.time() - 120              # TTL(60s) 밖 → 이번 조회는 재검증이 필요하다.
     os.utime(fetch_head, (stale_ts, stale_ts))
-    _force_rmtree(bare)                       # 그런데 원격 도달 불가 → fetch 실패(검증 불가).
+    remove_git_tree(bare)                       # 그런데 원격 도달 불가 → fetch 실패(검증 불가).
 
     rc = board.cmd_show(_show_args())
     assert rc == 0

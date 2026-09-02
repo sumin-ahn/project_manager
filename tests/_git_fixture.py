@@ -11,7 +11,11 @@ work tree 안에 있다. `git rev-parse --show-toplevel`·`git ls-files`·`git c
 """
 from __future__ import annotations
 
+import os
+import shutil
+import stat
 import subprocess
+import sys
 from pathlib import Path
 
 _IDENTITY = (
@@ -38,3 +42,21 @@ def init_git_repo(root: Path, *, commit: str | None = None) -> Path:
         git(root, "add", "-A")
         git(root, "commit", "-qm", commit, "--allow-empty")
     return root
+
+
+def remove_git_tree(root: Path) -> None:
+    """픽스처 git 트리를 통째로 지운다 — Windows read-only object(WinError 5)는 chmod +w 후 재시도.
+
+    Windows 는 `.git/objects/` 파일이 read-only 라 `shutil.rmtree` 가 PermissionError 로 멈춘다.
+    쓰기권한을 주고 같은 호출을 다시 시도하며, 그래도 안 되면 예외를 그대로 전파한다(실패를
+    삼키면 "지워졌다" 를 전제하는 테스트가 거짓 통과한다). POSIX 는 부모 디렉터리 쓰기권한만
+    있으면 지워져 이 핸들러에 오지 않는다.
+    """
+    def _chmod_and_retry(func, target, _exc):
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(root, onexc=_chmod_and_retry)
+    else:  # pragma: no cover — 3.11 이하 호환(onexc 미지원 → onerror)
+        shutil.rmtree(root, onerror=_chmod_and_retry)

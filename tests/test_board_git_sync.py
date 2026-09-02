@@ -24,13 +24,12 @@ import argparse
 import importlib.util
 import os
 import shutil
-import stat
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
+from _git_fixture import remove_git_tree
 from conftest import anchor_board_module
 
 REPO = Path(__file__).resolve().parents[1]
@@ -41,24 +40,6 @@ requires_git = pytest.mark.skipif(
     reason="git 바이너리 부재 — 실 git 통합 케이스 skip(게이트 단위 테스트는 항상 실행).",
 )
 
-
-def _force_rmtree(path: Path) -> None:
-    """`shutil.rmtree` — Windows read-only git object(WinError 5)는 chmod +w 후 재시도.
-
-    이 테스트들은 remote(bare)를 *실제로 지워* offline(도달 불가)을 모의한다. Windows 는
-    git object 가 read-only 라 rmtree 가 PermissionError 로 막히므로, 쓰기권한을 부여하고
-    재삭제해 반드시 remote 를 없앤다 — 실패를 삼키지 않고(chmod 재시도로도 안 되면 예외
-    전파) offline 모의 시맨틱을 보존한다. POSIX 는 부모 디렉토리 쓰기권한만 있으면 지워져
-    이 핸들러에 도달하지 않으므로 현행 동작 그대로다.
-    """
-    def _chmod_and_retry(func, target, _exc):
-        os.chmod(target, stat.S_IWRITE)
-        func(target)
-
-    if sys.version_info >= (3, 12):
-        shutil.rmtree(path, onexc=_chmod_and_retry)
-    else:  # pragma: no cover — 3.11 이하 호환(onexc 미지원 → onerror)
-        shutil.rmtree(path, onerror=_chmod_and_retry)
 
 # hermetic git commit 을 위한 결정적 author/committer (실 사용자 config 불요).
 _GIT_IDENTITY = {
@@ -233,7 +214,7 @@ def test_claim_strict_offline_fails_explicitly(board, tmp_path):
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
     # remote 제거 → pull --rebase 가 도달 불가로 실패.
-    _force_rmtree(bare)
+    remove_git_tree(bare)
 
     rc = board.cmd_claim(argparse.Namespace(id="T-0001", repo="me", slot=1, user="me"))
     assert rc == 1, "offline 인데 claim 이 성공함 — claim 은 remote 도달 없이 확정 금지."
@@ -663,7 +644,7 @@ def test_best_effort_push_failure_does_not_block(board, tmp_path, capsys):
     # 로컬 변경 1건(다음 commit 거리) + remote 제거.
     (board_dir / "tickets" / "open" / "T-0002-t.md").write_text(
         _TICKET_TEXT.format(tid="T-0002"), encoding="utf-8")
-    _force_rmtree(bare)
+    remove_git_tree(bare)
 
     head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
     # 예외 없이 리턴해야 한다(무차단).
@@ -686,7 +667,7 @@ def test_complete_best_effort_offline_still_completes(board, tmp_path, capsys):
     board_dir = _make_board_git(tmp_path, remote=bare)
     assert board.cmd_claim(argparse.Namespace(id="T-0001", repo="me", slot=1, user="me")) == 0
 
-    _force_rmtree(bare)  # 이제 remote 도달 불가.
+    remove_git_tree(bare)  # 이제 remote 도달 불가.
     rc = board.cmd_complete(argparse.Namespace(
         id="T-0001", tests_pass=True, allow_missing_log=True, allow_untested=False,
         repo="me", slot=1))
