@@ -13818,8 +13818,21 @@ def _cmd_rounds_resolve_cluster(
     except DelegateError as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
+    # 멤버 반복은 **같은 처분의 티켓별 반복**이라 처분할 잔여가 없는 멤버(마지막 라운드가 통과 ·
+    # must-fix 0)는 무대상이다 — 그 멤버의 accepted suggestion 확인은 fix 회수가 이미 기입했고,
+    # 선언할 잔여가 없어 게이트 하나짜리 `--gate` 의 거부("처분할 반려 잔여가 없습니다")를 여기서
+    # 그대로 내면 통과 멤버가 하나라도 있는 묶음은 닫히지 않는다. 미상(판정 무효)은 잔여다.
+    ledger = _load_internal_round_ledger()
     rc = 0
     for ticket in members:
+        if isinstance(ledger.get(ticket), dict):
+            entry = _internal_gate_entry(ledger, ticket)
+            if not board.gate_has_residual(entry):
+                print(
+                    f"{ticket}: 처분할 반려 잔여 없음(must-fix "
+                    f"{board.gate_residual_label(entry)}) — 무대상"
+                )
+                continue
         rc = max(rc, _resolve_ticket_pm_verified(
             ticket, cluster=cluster, board=board, owner=owner, tree=tree,
             run_fn=run_fn,
