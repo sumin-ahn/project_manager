@@ -24,3 +24,8 @@ PYTEST_TEMP_ROOT = Path(__file__).resolve().parent / ".project_manager" / ".loca
 # 선언한 쪽이 세운다.
 PYTEST_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
 os.environ["PYTEST_DEBUG_TEMPROOT"] = str(PYTEST_TEMP_ROOT)
+# 임시 루트가 저장소 **안**이라(T-0888) git 이 픽스처 디렉터리에서 위로 올라가 실제 저장소를 찾는다 —
+# 비-git 픽스처에서 `git rev-parse --git-path hooks` 가 실제 보호훅 dir 을 돌려줘 `board init` 이 그것을
+# 덮었다(2026-09-03 실측 · 테스트 18건 · 22538→486). 걸어올라감의 천장을 임시 루트로 박아 옛 `/tmp`
+# 형상과 같게 한다(픽스처가 자기 저장소를 git init 했으면 그대로 자기 훅으로 해소된다 · 서브프로세스도 상속).
+os.environ["GIT_CEILING_DIRECTORIES"] = str(PYTEST_TEMP_ROOT)
