@@ -219,7 +219,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # Python 하한 probe보다 먼저 평가되므로 3.10에서도 파싱 가능한 문법만 쓴다.
-ENGINE_REV = "v1.7.12"
+ENGINE_REV = "v1.7.13"
 
 
 # 신규 공유 board 에 스캐폴드하는 상태 디렉토리 — board `STATUS_DIRS` 와 같은 집합(리터럴 · 동치는
