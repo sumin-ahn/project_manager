@@ -4266,7 +4266,7 @@ def _legacy_pre_push_hook_bodies(py: str) -> tuple[str, ...]:
 
 
 def install_pre_push_hook() -> bool:
-    """Install the pre-push gate (회귀 + lint). Idempotent. False if not a git repo.
+    """Install the pre-push gate (회귀 + lint). Idempotent. 자기 저장소의 훅 폴더에만 쓴다.
 
     두 단계를 AND 로 묶는다:
       1. 회귀 게이트 — green 회귀만 push (`regression check` 실패 시 `regression run --final`).
@@ -4275,12 +4275,33 @@ def install_pre_push_hook() -> bool:
          **`tests/` 가 있는 트리에서만** 돈다 — 판정은 훅 본문이 push 시점에 한다.
       2. lint 게이트 — `lint --gate` 차단 카테고리(dangling/unstable-ref/
          dependency/thin) 발견 시 push 실패. status drift 자문성은 차단 안 함. 두 형상 모두 돈다.
-    설치는 **어디서든** 한다(트리 형상을 여기서 묻지 않는다) — 코드가 뒤에 생기거나(worktree add)
-    사라져도 같은 훅이 그때그때 맞게 가리므로, 설치/제거를 오가는 상태 기계가 필요 없다.
-    `board.py init` 가 (재)설치하므로 멱등·재설치 안전.
+
+    **쓰는 자리는 `REPO/.git` 아래 하나다.** git 은 훅 위치를 물으면 트리를 걸어올라가 답하므로
+    (비-git 폴더에서 물으면 상위 저장소의 훅 폴더를, `core.hooksPath` 가 선언돼 있으면 그 폴더를
+    돌려준다), 그 답을 그대로 쓰면 남의 저장소 pre-push 를 덮는다(실측: `pm_import --into <남의
+    저장소의 비-git 하위>` 가 그 저장소의 훅을 교체 · 원본 소실). 판정 입력은 자기 `.git`
+    디렉터리와 git 이 해소한 훅 폴더 두 값뿐이고, 셋 중 어느 관문에서 멈추든 사유가 stderr 에
+    1줄 남는다(침묵 False 없음). `board.py init` 가 (재)설치하므로 멱등·재설치 안전.
     """
+    # 자기 `.git` 이 디렉터리인 트리만 plain 훅의 대상이다 — 비-git 폴더·linked worktree
+    # (`.git` 이 gitfile)는 여기서 멈춘다(슬롯의 보호훅은 worktree_pool 이 설치한다).
+    own = REPO / ".git"
+    if not own.is_dir():
+        print(f"{PM_HOOK_NOTICE_PREFIX}설치 생략 — 자기 `.git` 디렉터리가 없습니다 "
+              f"({own}) · 훅은 자기 저장소의 `.git/hooks` 에만 씁니다.", file=sys.stderr)
+        return False
     hooks = _hooks_dir()
     if hooks is None:
+        print(f"{PM_HOOK_NOTICE_PREFIX}설치 생략 — git 이 훅 디렉토리를 해소하지 못해 "
+              "설치할 자리를 확정할 수 없습니다.", file=sys.stderr)
+        return False
+    # 대소문자·심볼릭 링크·`..` 를 걷어낸 뒤 비교한다(`Path.is_relative_to` 는 문자열 비교라
+    # 정규화 전 경로로는 같은 자리를 다른 자리로 읽는다 · `pm_log._wip_probe_targets` 동형 관용구).
+    own_resolved = Path(os.path.normcase(str(own.resolve(strict=False))))
+    hooks_resolved = Path(os.path.normcase(str(hooks.resolve(strict=False))))
+    if not hooks_resolved.is_relative_to(own_resolved):
+        print(f"{PM_HOOK_NOTICE_PREFIX}설치 생략 — 해소된 훅 폴더가 자기 `.git` 밖입니다 "
+              f"(훅 폴더 {hooks_resolved} · 자기 .git {own_resolved}).", file=sys.stderr)
         return False
     hooks.mkdir(parents=True, exist_ok=True)
     _write_hook_atomic(hooks / "pre-push", pre_push_hook_body())
@@ -11948,8 +11969,10 @@ def cmd_init(args: argparse.Namespace) -> int:
             "{{DATE}}", datetime.date.today().isoformat())
         PM_STATE_FILE.write_text(seed, encoding="utf-8", newline="\n")
         print(f"✓ pm_state.md 생성 ({_rel_to_repo(PM_STATE_TEMPLATE)} 에서)")
+    # 미설치면 사유를 `install_pre_push_hook` 이 stderr 에 남긴다 — 여기서는 설치한 자리를 밝힌다.
     if install_pre_push_hook():
-        print("✓ pre-push 게이트 훅 설치 (lint 게이트는 항상 · 회귀 게이트는 tests/ 있는 트리만)")
+        print("✓ pre-push 게이트 훅 설치 — 자기 저장소의 .git/hooks "
+              "(lint 게이트는 항상 · 회귀 게이트는 tests/ 있는 트리만)")
     # board submodule 이 분리된 형상이면 ignore=all 자동 설정 — design(코드) git 이
     # board PM-commit 으로 오염되지 않게(누출 0). 미분리/git 부재면 no-op(fail-soft·무영향).
     if _configure_board_submodule():
