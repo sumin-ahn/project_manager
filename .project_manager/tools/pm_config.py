@@ -2517,7 +2517,8 @@ def cmd_worktree_remove(
     (worktree 부재 장부만 정리)과 달리 **실 worktree 를 지운다**. orphan worktree(장부 미등록)는
     여전히 `git worktree remove` 로 사용자가.
 
-    - dirty/활성 리스(leased·사용 중) → 거부(RemoveRefused·rc1). `--force` = stash 보존 후 강제.
+    - dirty·활성 리스(leased·사용 중)·git 미등록 트리 → 거부(RemoveRefused·rc1). `--force` 가
+      그 파괴를 승인한다(dirty 는 stash 보존 후 강제·미등록 트리는 삭제).
     - 장부에 슬롯 없으면 무해 종료(rc0·이미 정리됨).
     - 브랜치: 제외 집합(보호목록·bare 기본 브랜치·다른 슬롯 기준 브랜치)이면 보존(사유 1줄),
       아니면 `git branch -d` 판정대로 삭제/보존(판정 기준 `merge_ref` 를 함께 보고).
@@ -2546,8 +2547,9 @@ def cmd_worktree_remove(
             )
         else:
             print(
-                f"[중단] 슬롯 {args.slot!r} 이 dirty — 제거 거부(작업 유실 방지). "
-                "수동 정리 후 재시도하거나 `worktree remove --force`(stash 보존 강제).",
+                f"[중단] 슬롯 {args.slot!r} 제거 거부 — {exc.reason}(작업 유실 방지). "
+                "수동 정리 후 재시도하거나 `worktree remove --force`"
+                "(dirty 는 stash 보존 · git 미등록 트리는 삭제 승인).",
                 file=sys.stderr,
             )
         return 1
@@ -2577,7 +2579,9 @@ def cmd_worktree_remove(
     if result.branch_action == "deleted":
         branch_line = f" · 브랜치 {result.branch!r} 삭제(머지 완료) — 기준 {result.merge_ref}"
     elif result.branch_action == "preserved-unmerged":
-        branch_line = (f" · 브랜치 {result.branch} 보존(미머지) — 기준 {result.merge_ref}"
+        # `git branch -d` 는 미머지 말고도 거부한다(그 브랜치를 쥔 worktree 등) — 라벨은 축
+        # (git 이 거부했다)만 말하고 사유는 git 출력 그대로인 `branch_reason` 이 말한다.
+        branch_line = (f" · 브랜치 {result.branch} 보존(git 거부) — 기준 {result.merge_ref}"
                        f": {result.branch_reason}")
     elif result.branch_action == "preserved-protected":
         branch_line = f" · 브랜치 {result.branch} 보존({result.branch_reason})"
@@ -2597,9 +2601,9 @@ def cmd_worktree_remove(
     # 미머지 보존 브랜치 캐비앗(reviewer emergent gap) — 같은 번호 base-경로 재생성이 막힌다.
     if result.branch_action == "preserved-unmerged":
         print(
-            f"  ⚠ 미머지 브랜치 {result.branch} 보존됨 — 같은 번호 슬롯 재생성은 브랜치 잔존을"
+            f"  ⚠ 브랜치 {result.branch} 보존됨 — 같은 번호 슬롯 재생성은 브랜치 잔존을"
             " 선-검출해 명확히 멈춘다(SlotBranchExists). 정리(머지/삭제) 후 새 슬롯 재생성하거나,"
-            f" 미머지 작업을 이어가려면 그 브랜치를 수동 checkout(`git worktree add <path> {result.branch}`·리셋 없음)."
+            f" 그 브랜치 작업을 이어가려면 수동 checkout(`git worktree add <path> {result.branch}`·리셋 없음)."
         )
     return 0
 

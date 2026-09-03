@@ -700,6 +700,40 @@ def test_reopen_keeps_declared_cluster_and_does_not_touch_ledger(env, capsys):
 
 
 @requires_git
+def test_reopen_binds_to_an_existing_ledger_without_overwriting_it(env, capsys):
+    """필드는 비었는데 장부가 이미 이 티켓을 담고 있으면 만들지 않고 역참조만 복구한다.
+
+    구세대 티켓 중에는 종결을 위해 장부를 손으로 만든 자산이 있다(실 board 의 C-T-0866).
+    필드 유무만 보고 같은 이름으로 새 장부를 만들면 그 장부가 기본값으로 덮여
+    `base_branch`·`status`·`close_step` 이 사라지고, 멤버가 여럿이면 나머지 멤버가 장부에서
+    떨어져 나간다. 귀속 판정은 필드와 장부 파일 두 축을 다 본다(`_cluster_of_record`).
+    """
+    board, board_dir = env
+    _write_legacy_ticket(board_dir, "T-0503")
+    ledger_fm = board._new_cluster_fm("C-T-0503", ["T-0503"], base_branch="task/main")
+    ledger_fm["status"] = "closed"
+    ledger_fm["close_step"] = "board"
+    ledger_fm["replans"] = []
+    ledger_path = board.dump_cluster(ledger_fm)
+    before = ledger_path.read_bytes()
+    _git(["add", "-A"], board_dir)
+    _git(["commit", "-qm", "hand-made ledger"], board_dir)
+    capsys.readouterr()
+
+    rc = board.cmd_reopen(_reopen_args("T-0503", "구세대 재작업"))
+
+    assert rc == 0
+    fm = _ticket_fm(board, "T-0503")
+    assert fm["status"] == "open"
+    assert fm["cluster"] == "C-T-0503"            # 역참조만 복구한다.
+    assert ledger_path.read_bytes() == before     # base_branch·status·close_step 전부 불변
+    assert board.cluster_members("C-T-0503") == ("T-0503",)
+    # 장부를 만지지 않았으므로 board-git 커밋 스코프에도 없다.
+    assert all(not name.startswith("tickets/clusters/")
+               for name in _head_files(board_dir)), _head_files(board_dir)
+
+
+@requires_git
 def test_reopen_to_draft_creates_no_ledger(env, capsys):
     """`discarded_from: draft` 복귀는 장부를 만들지 않는다 — 승격이 그 자리를 받는다.
 

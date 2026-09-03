@@ -374,9 +374,6 @@ def test_board_submodule_ignore_all_zero_leak(tmp_path):
 # 직접 세운다(git 미호출·결정적). 실 git 해소를 태우는 end-to-end 는 tests/test_pm_import.py
 # 의 `test_into_non_git_subdir_leaves_parent_hook_untouched` 가 본다.
 
-# `python3` 인터프리터로 조립한 현행 plain 훅 본문의 바이트 수 — 설치기가 쓴 파일이 그 훅임을
-# 크기로 못박는다(슬롯의 보호훅은 22538 바이트라 덮어쓰기가 나면 값이 갈린다).
-PLAIN_HOOK_BYTES = 486
 # 엔진이 덮으면 안 되는 남의 훅 — 상위 저장소·보호훅 폴더 자리에 미리 놓고 바이트를 대조한다.
 FOREIGN_HOOK_BODY = "#!/bin/sh\n# 채택자가 직접 쓴 훅\nexit 0\n"
 
@@ -402,7 +399,10 @@ def test_hook_installs_under_own_git_dir(board, monkeypatch, capsys):
 
     body = (hooks / "pre-push").read_text(encoding="utf-8")
     assert board._PM_HOOK_SIGNATURE in body
-    assert len(body.encode("utf-8")) == PLAIN_HOOK_BYTES
+    # 길이는 엔진 본문에서 유도한다 — 값을 복제하면 본문 한 글자에 이 테스트가 거짓 red 다.
+    # 그래도 보호훅(22538 바이트)과는 세 자릿수로 갈려 덮어쓰기는 이 대조에 걸린다.
+    assert len(body.encode("utf-8")) == len(
+        board.pre_push_hook_body("python3").encode("utf-8"))
     assert capsys.readouterr().err == ""       # 설치했으면 사유를 낼 것이 없다
 
 

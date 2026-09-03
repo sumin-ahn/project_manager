@@ -2880,11 +2880,15 @@ def test_stale_role_limit_key_does_not_change_reservation(pd, rounds_env):
 
 
 def test_no_role_round_limit_symbol_remains():
-    """지운 역할별 상한 축의 이름이 엔진·테스트 소스 어디에도 없다(전수 스캔).
+    """지운 역할별 상한 축의 이름이 엔진·테스트·출하 사본 어디에도 없다(전수 스캔).
 
     검색어를 리터럴로 적으면 이 파일이 자기 스캔에 걸리고 `__pycache__` 에도 남는다 —
     인접 리터럴 결합(`"a" + "b"`)은 컴파일러가 상수로 접으므로 `str.join` 호출로 실행
     시점에 조립한다. 스캔 대상은 `.py` 소스뿐이다(생성물인 `__pycache__` 는 제외).
+
+    뿌리는 canonical 엔진·`tests/` 에 더해 **채택자에게 나가는 출하 사본**(`templates/`
+    아래 존재하는 모든 타깃의 `.project_manager/tools`)이다 — 동기가 빠져 사본에만 옛
+    이름이 남는 형상을 이 가드가 보지 못하면 삭제는 절반만 된 것이다.
     """
     upper = "_".join(["ROUND", "LIMIT"])
     needles = (
@@ -2892,9 +2896,11 @@ def test_no_role_round_limit_symbol_remains():
         "".join(["Internal", "Round", "Limit", "Exceeded"]),     # 옛 예외 클래스
         "_".join(["DEFAULT", "INTERNAL", upper]) + "S",          # 옛 기본값 표
     )
+    shipped = sorted(REPO.glob("templates/*/.project_manager/tools"))
+    assert shipped, "출하 타깃 tools 가 하나도 없다 — 경로 해소가 깨졌다"
     sources = [
         path
-        for root in (TOOLS, REPO / "tests")
+        for root in (TOOLS, REPO / "tests", *shipped)
         for path in root.rglob("*.py")
         if "__pycache__" not in path.parts
     ]

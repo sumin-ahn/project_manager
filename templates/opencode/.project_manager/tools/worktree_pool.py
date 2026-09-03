@@ -341,12 +341,14 @@ class RemoveRefused(Exception):
     `release` 의 dirty 거부 철학과 동형이되, remove 는 슬롯을 *통째로* 없애므로 활성 리스
     (다른 세션 사용 중·in-flight 생성)까지 거부한다 — force=True 로만 무시(dirty 는 stash
     보존 후 강제 제거). 정석 흐름은 `release`(→idle) 후 `remove`(idle 슬롯). `reason` ∈
-    {"dirty", "active-lease"}·`state` = active-lease 시 슬롯 상태(leased/creating·진단용).
+    {"dirty", "active-lease", "unregistered-tree"}(git 이 등록하지 않는 트리는 dirty 를 물을
+    자리가 없어 삭제 자체가 승인 대상이다)·`state` = active-lease 시 슬롯 상태
+    (leased/creating·진단용).
     """
 
     def __init__(self, slot: str, reason: str, *, state: "str | None" = None):
         self.slot = slot
-        self.reason = reason      # "dirty" | "active-lease"
+        self.reason = reason      # "dirty" | "active-lease" | "unregistered-tree"
         self.state = state        # active-lease 시 슬롯 state (leased/creating)
         detail = f" (state={state})" if state else ""
         super().__init__(
@@ -3119,20 +3121,26 @@ def _worktree_registered(path: Path, *, git_runner: GitRunner) -> bool:
     return False
 
 
-def _bare_head_branch(*, git_runner: GitRunner) -> "str | None":
+def _bare_head_branch(*, git_runner: GitRunner) -> str:
     """bare 의 기본 브랜치(HEAD) 이름 — `git branch -d` 가 머지를 재는 기준.
 
     full ref(`refs/heads/<name>`)를 받아 그 접두만 정확히 제거한다. `symbolic-ref --short` 는
     같은 이름의 태그가 있으면 `heads/<name>` 을 돌려줘(실측 · git 2.43) 브랜치명이 아니다 —
     `current_branch` 가 `--short` 를 버린 것과 같은 이유이고, 여기서는 그 오판이 곧 bare 기본
-    브랜치를 삭제 대상으로 흘려보내는 자리라 더 치명적이다. HEAD 를 못 읽으면 None.
+    브랜치를 삭제 대상으로 흘려보내는 자리라 더 치명적이다.
+
+    조회 실패(rc≠0)와 브랜치가 아닌 출력(detached bare 의 `HEAD` 등)은 **답이 아니라 판정
+    실패**라 raise 한다(`_worktree_registered` 와 같은 규율). 빈 값으로 접으면 제외 축(bare 기본
+    브랜치)이 조용히 사라지고, 아무 worktree 도 쥐지 않은 bare 기본 브랜치는 `git branch -d` 가
+    rc0 으로 지운다(실측).
     """
     rc, out = git_runner(["rev-parse", "--symbolic-full-name", "HEAD"])
-    if rc != 0:
-        return None
-    ref = out.strip()
-    if not ref.startswith(_SYMREF_BRANCH_PREFIX):
-        return None
+    ref = str(out).strip()
+    if rc != 0 or not ref.startswith(_SYMREF_BRANCH_PREFIX):
+        raise RuntimeError(
+            f"git rev-parse --symbolic-full-name HEAD failed (rc={rc}, out={ref[:200]!r}) — "
+            "머지 판정 기준(bare 기본 브랜치)을 관측하지 못해 브랜치를 지우지 않았다."
+        )
     return ref[len(_SYMREF_BRANCH_PREFIX):]
 
 
@@ -3145,7 +3153,7 @@ def _lease_base_branch(lease: "Lease") -> "str | None":
 
 
 def _branch_delete_exclusion(
-    branch: str, *, repo: str, head_branch: "str | None",
+    branch: str, *, repo: str, head_branch: str,
     leases: "list[Lease]", slot: str,
 ) -> "str | None":
     """이 브랜치를 삭제 대상에서 빼는 사유 — 빠질 이유가 없으면 None(=git 판정에 맡긴다).
@@ -3157,7 +3165,7 @@ def _branch_delete_exclusion(
     """
     if branch in _resolve_protected(repo):
         return f"{repo} 보호 브랜치"
-    if head_branch is not None and branch == head_branch:
+    if branch == head_branch:
         return "bare 기본 브랜치(HEAD)"
     for lease in leases:
         if lease.slot != slot and _lease_base_branch(lease) == branch:
@@ -3190,10 +3198,11 @@ def remove_slot(
       **슬롯 트리 부재** — 지울 디렉터리가 애초에 없으면 `prune` + 장부 정리로 끝낸다
          (dangling 장부 회수·`branch_action="none"` — 그 트리에서 브랜치를 물을 수 없다).
       **등록 조회**(`_worktree_registered`) — git 이 이 경로를 worktree 로 아는가. **모르는데
-         디렉터리가 있으면** 두 갈래다: 그 경로가 pool 슬롯 자리면 git 이 등록만 지우고 남긴
-         잔재라 `force_rmtree` 로 마저 지우고 장부까지 정리한다(`tree_cleaned=True`). pool
-         슬롯 자리가 아니면(PM 홈 자신을 가리키는 행 등) 지울 자리가 아니므로 파일시스템을
-         건드리지 않고 `RuntimeError`.
+         디렉터리가 있으면** 두 갈래다: pool 슬롯 자리가 아니면(PM 홈 자신을 가리키는 행 등)
+         지울 자리가 아니므로 파일시스템을 건드리지 않고 `RuntimeError`. pool 슬롯 자리면 git
+         이 등록만 지우고 남긴 잔재이지만 그 트리의 dirty 를 물을 곳이 없으므로
+         `RemoveRefused`("unregistered-tree")로 거부하고, `force=True` 일 때만 `force_rmtree`
+         로 마저 지우고 장부까지 정리한다(`tree_cleaned=True`).
       **dirty 검사** — dirty 면 `RemoveRefused`("dirty")·`force=True` 면 stash 보존 후 강제.
          **stash 실패(rc≠0)** 또는 **stash 후에도 여전히 dirty**(submodule 내부 변경 등
          top-level stash 가 못 담는 잔존)면 제거를 중단(`RuntimeError`·장부/worktree/브랜치
@@ -3259,12 +3268,18 @@ def remove_slot(
         # 등록 조회 — git 이 이 경로를 worktree 로 아는가(파괴 판단의 입력·dirty 검사보다 먼저).
         # 모르는데 디렉터리가 있으면 git 에 물을 것이 없다: pool 슬롯 자리면 잔재라 마저 지우고,
         # 아니면(PM 홈 자신을 가리키는 행 등) 지울 자리가 아니라 파일시스템을 건드리지 않는다.
+        # 잔재를 지우는 것은 **파괴**다 — 등록이 없으면 git 에게 dirty 를 물을 수 없어(그 자리는
+        # 이미 worktree 가 아니다) 미커밋·미추적 내용이 있어도 그대로 사라진다. 그래서 이 갈래는
+        # `worktree remove` 실패 뒤(git 이 자기 dirty 판정을 통과시킨 뒤)와 달리 사용자 승인
+        # (`force`)을 요구한다.
         if not _worktree_registered(path, git_runner=bare_runner):
             if not _is_pool_worktree_slot(slot):
                 raise RuntimeError(
                     f"slot {slot!r} 은 git worktree 등록이 없고 그 경로({path})는 pool 슬롯 자리도 "
                     "아니다 — 지울 등록도 지울 자리도 없어 아무것도 하지 않았다(장부/트리 미변경)."
                 )
+            if not force:
+                raise RemoveRefused(slot, "unregistered-tree")
             file_lock.force_rmtree(path)
             bare_runner(["worktree", "prune"])
             _drop_ledger_row()

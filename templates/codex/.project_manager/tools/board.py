@@ -11677,9 +11677,16 @@ def cmd_reopen(args: argparse.Namespace) -> int:
         # 멈춘다. 필드가 이미 있으면 손대지 않는다: 그 장부가 이 티켓을 담고 있고, 덮으면
         # 그 장부의 선언(status·budget·tickets)이 지워지거나 중복 귀속이 남는다. `.drafts/`
         # 복귀는 귀속하지 않는다 — draft 명세는 공유 board 밖이다(`cmd_new` 와 같은 규칙).
+        # 필드가 비었어도 **장부 파일이** 이 티켓을 담고 있으면(구세대 티켓·손으로 만든
+        # 장부) 만들지 않고 역참조만 복구한다 — 같은 이름으로 새로 만들면 그 장부의
+        # base_branch·status·close_step 이 기본값으로 덮인다(실측).
         cluster_ledger: Path | None = None
         if dest_status == "open" and not str(fm.get("cluster") or "").strip():
-            fm["cluster"], cluster_ledger = _cluster_auto_attach(args.id, args)
+            of_record = _cluster_of_record(args.id)
+            if of_record is not None:
+                fm["cluster"] = of_record
+            else:
+                fm["cluster"], cluster_ledger = _cluster_auto_attach(args.id, args)
         note = f"\n## Reopened\n{reason} — {now_utc()} (이전 상태 {status}/)\n"
         dump_ticket(new_path, fm, body + note)
     refresh_board()
