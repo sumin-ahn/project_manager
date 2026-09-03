@@ -2812,23 +2812,18 @@ def test_pre_change_confirmation_seed_stays_pending_through_an_unchanged_harvest
     assert [finding.id for finding, _row in delta.accepted] == ["F-001"]
 
 
-# ── T-0841: 내부 위임 라운드 상한 (additional_reviewer.py:49-59 미러) ──────────────────
+# ── 라운드 예약 거부의 부작용 경계 (묶음 예산 축) ─────────────────────────────
 
-def _prepare_rc(
-    pd, monkeypatch, pm_home: Path, slot: Path, ticket: str, role: str,
-) -> int:
-    """실 CLI rc — 소유 PM 홈 해소만 픽스처 좌표로 고정한다(판정은 엔진 그대로)."""
-    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
-    return pd._cmd_ticket(["prepare", "--ticket", ticket, "--role", role, "--cwd", str(slot)])
+# 성질 케이스가 태우는 예산 자리 수 — 이만큼 예약하면 다음 요청이 묶음 예산 축에서 거부된다.
+_DECLARED_DEVELOPER_ROUNDS = 3
 
 
-def _rounds_past_the_cap(pd, role: str) -> tuple[str, ...]:
-    """그 역할 상한보다 한 건 넉넉한 예약 계획 — 장부 예산이 아니라 상한이 걸리는 픽스처다.
+def _round_plan(role: str, count: int) -> tuple[str, ...]:
+    """그 역할 라운드 `count` 건을 선언하는 장부 예산 계획 — 예약 계획이 곧 예산이다.
 
-    예산 판정이 상한보다 먼저 발동하므로, 상한 축을 태우는 티켓의 장부는 상한 + 1 건을
-    선언해야 한다(상한과 같으면 예산 소진이 먼저 나서 축이 갈린다).
+    `count + 1` 번째 요청은 묶음 예산 축(`ClusterRoundBudgetExceeded`)이 거부한다.
     """
-    return (role,) * (pd.DEFAULT_INTERNAL_ROUND_LIMITS[role] + 1)
+    return (role,) * count
 
 
 def _prepare_n_rounds(pd, pm_home: Path, slot: Path, ticket: str, role: str, n: int):
@@ -2841,99 +2836,78 @@ def _prepare_n_rounds(pd, pm_home: Path, slot: Path, ticket: str, role: str, n: 
     return plan
 
 
-def test_developer_round_limit_blocks_at_default_cap(pd, rounds_env, capsys):
-    pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-8001", rounds=_rounds_past_the_cap(pd, "developer"))
-    limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
-    _prepare_n_rounds(pd, pm_home, slot, "T-8001", "developer", limit)
-    capsys.readouterr()
-
-    with pytest.raises(pd.InternalRoundLimitExceeded, match="라운드 상한 도달"):
-        pd.prepare_ticket_copy(ticket="T-8001", role="developer", cwd=slot, pm_home=pm_home)
-
-
-def test_developer_round_limit_cli_rc_matches_external_channel(
-    pd, rounds_env, monkeypatch, capsys,
-):
-    pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-8002", rounds=_rounds_past_the_cap(pd, "developer"))
-    limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
-    _prepare_n_rounds(pd, pm_home, slot, "T-8002", "developer", limit)
-    capsys.readouterr()
-
-    rc = _prepare_rc(pd, monkeypatch, pm_home, slot, "T-8002", "developer")
-
-    external = pd._load_additional_reviewer()
-    assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
-    err = capsys.readouterr().err
-    assert "현재 티켓을 정지하고 사용자에게 보고" in err
-    assert "라운드를 더 예약하지 않습니다" in err
-    assert "재설계" not in err and "분할" not in err
-    assert "현재 라운드" in err and "01-developer.md" in err
-    assert "다시 시도" not in err and "재시도" not in err  # 라운드 추가 유도 문구 없음
-
-
-def test_round_under_cap_is_not_blocked(pd, rounds_env):
-    """역방향: 상한 미만이면 정상 준비된다(오차단 0)."""
-    pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-8003", rounds=_rounds_past_the_cap(pd, "developer"))
-    limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
-    plan = _prepare_n_rounds(pd, pm_home, slot, "T-8003", "developer", limit - 1)
-    assert plan.ordinal == limit - 1
-
-
-def test_round_limit_rejection_leaves_no_slot_residue(pd, rounds_env):
+def test_budget_rejection_leaves_no_slot_residue(pd, rounds_env):
     """게이트는 예약(board)뿐 아니라 슬롯 run-dir 도 만들기 전에 거부한다(고아 0)."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-8017", rounds=_rounds_past_the_cap(pd, "developer"))
-    limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
-    _prepare_n_rounds(pd, pm_home, slot, "T-8017", "developer", limit)
+    declared = _DECLARED_DEVELOPER_ROUNDS
+    _write_spec(tickets, "T-8017", rounds=_round_plan("developer", declared))
+    _prepare_n_rounds(pd, pm_home, slot, "T-8017", "developer", declared)
     copy_root = _copy_root(pd, slot, "T-8017")
     before = set(copy_root.iterdir()) if copy_root.exists() else set()
 
-    with pytest.raises(pd.InternalRoundLimitExceeded):
+    with pytest.raises(pd.ClusterRoundBudgetExceeded):
         pd.prepare_ticket_copy(ticket="T-8017", role="developer", cwd=slot, pm_home=pm_home)
 
     after = set(copy_root.iterdir()) if copy_root.exists() else set()
     assert after == before
 
 
-def test_code_reviewer_and_architect_caps_are_higher_than_developer(pd):
-    """결정: code-reviewer·architect 는 developer 보다 라운드가 더 필요하다(실측 분포 근거)."""
-    limits = pd.DEFAULT_INTERNAL_ROUND_LIMITS
-    assert limits["code-reviewer"] > limits["developer"]
-    assert limits["architect"] > limits["developer"]
+def test_stale_role_limit_key_does_not_change_reservation(pd, rounds_env):
+    """채택자 local.conf 에 남은 옛 역할 상한 키는 예약 판정에 끼어들지 않는다.
 
-
-def test_local_conf_overrides_role_round_limit(pd, rounds_env, capsys):
+    엔진은 그 키를 읽지 않고, 공용 로더는 unknown 키(오타 advisory)로 잡는다. 키 문자열을
+    런타임에 조립하는 이유는 이 파일에 리터럴이 남으면 삭제 게이트(엔진·테스트 전수 grep
+    0건)가 깨지기 때문이다.
+    """
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-8004", rounds=_rounds_past_the_cap(pd, "developer"))
-    (pm_home / ".project_manager" / "local.conf").write_text(
-        "internal_review_round_limit.developer=2\n", encoding="utf-8",
+    declared = _DECLARED_DEVELOPER_ROUNDS
+    _write_spec(tickets, "T-8004", rounds=_round_plan("developer", declared))
+    # 인접 리터럴 결합은 컴파일러가 상수로 접어 pyc 에 전체 문자열을 남긴다 — 어느
+    # 리터럴에도 전체 키가 없도록 실행 시점에 조립한다(삭제 게이트는 pycache 도 훑는다).
+    stale_key = "_".join(["internal", "review", "round", "limit"]) + ".developer"
+    conf_path = pm_home / ".project_manager" / "local.conf"
+    conf_path.write_text(f"{stale_key}=1\n", encoding="utf-8")
+
+    plan = _prepare_n_rounds(pd, pm_home, slot, "T-8004", "developer", declared)
+
+    # 옛 키 값 1 이 아직 판정에 쓰이면 두 번째 라운드부터 거부된다.
+    assert plan.ordinal == declared
+    local_conf = pd._load_module_from_path(
+        pm_home / ".project_manager" / "tools" / "local_conf.py",
+        "local_conf.py", verifier=pd._verify_engine_rev,
     )
-    _prepare_n_rounds(pd, pm_home, slot, "T-8004", "developer", 2)
-    capsys.readouterr()
-
-    with pytest.raises(pd.InternalRoundLimitExceeded, match=r"상한 2\)"):
-        pd.prepare_ticket_copy(ticket="T-8004", role="developer", cwd=slot, pm_home=pm_home)
+    assert stale_key in local_conf.load(conf_path).unknown
 
 
-def test_the_role_cap_is_final_for_every_caller(pd, rounds_env):
-    """예약 상한은 어떤 인자로도 한 라운드를 더 열지 않고 현재 티켓을 보고한다."""
-    pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-8021", rounds=_rounds_past_the_cap(pd, "code-reviewer"))
-    limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["code-reviewer"]
-    _prepare_n_rounds(pd, pm_home, slot, "T-8021", "code-reviewer", limit)
+def test_no_role_round_limit_symbol_remains():
+    """지운 역할별 상한 축의 이름이 엔진·테스트 소스 어디에도 없다(전수 스캔).
 
-    with pytest.raises(pd.InternalRoundLimitExceeded, match=r"상한 \d+\)") as caught:
-        pd.prepare_ticket_copy(
-            ticket="T-8021", role="code-reviewer", cwd=slot, pm_home=pm_home,
-        )
+    검색어를 리터럴로 적으면 이 파일이 자기 스캔에 걸리고 `__pycache__` 에도 남는다 —
+    인접 리터럴 결합(`"a" + "b"`)은 컴파일러가 상수로 접으므로 `str.join` 호출로 실행
+    시점에 조립한다. 스캔 대상은 `.py` 소스뿐이다(생성물인 `__pycache__` 는 제외).
+    """
+    upper = "_".join(["ROUND", "LIMIT"])
+    needles = (
+        "_".join(["internal", "review", "round", "limit"]),      # 옛 conf 키 접두
+        "".join(["Internal", "Round", "Limit", "Exceeded"]),     # 옛 예외 클래스
+        "_".join(["DEFAULT", "INTERNAL", upper]) + "S",          # 옛 기본값 표
+    )
+    sources = [
+        path
+        for root in (TOOLS, REPO / "tests")
+        for path in root.rglob("*.py")
+        if "__pycache__" not in path.parts
+    ]
+    assert sources, "스캔 대상이 비었다 — 경로 해소가 깨졌다"
 
-    message = str(caught.value)
-    assert "현재 티켓을 정지하고 사용자에게 보고" in message
-    assert "라운드를 더 예약하지 않습니다" in message
-    assert "재설계" not in message and "분할" not in message
+    found = [
+        f"{path.relative_to(REPO).as_posix()}:{needle}"
+        for path in sources
+        for needle in needles
+        if needle in path.read_text(encoding="utf-8")
+    ]
+
+    assert found == [], f"역할별 상한 축의 이름이 남아 있다: {found}"
 
 
 def test_researcher_round_prepare_is_refused(pd, rounds_env):
@@ -2949,10 +2923,10 @@ def test_researcher_round_prepare_is_refused(pd, rounds_env):
 def test_harvest_and_copies_are_outside_the_gate(pd, rounds_env, monkeypatch):
     """역방향: harvest·copies 는 게이트 밖이다 — 진행 중 라운드를 고아로 만들지 않는다."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-8006", rounds=_rounds_past_the_cap(pd, "developer"))
-    limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
-    plan = _prepare_n_rounds(pd, pm_home, slot, "T-8006", "developer", limit)
-    # 상한 도달 상태에서도 이미 예약된 라운드의 harvest 는 막히지 않는다.
+    declared = _DECLARED_DEVELOPER_ROUNDS
+    _write_spec(tickets, "T-8006", rounds=_round_plan("developer", declared))
+    plan = _prepare_n_rounds(pd, pm_home, slot, "T-8006", "developer", declared)
+    # 예산이 소진된 상태에서도 이미 예약된 라운드의 harvest 는 막히지 않는다.
     produced = plan.path.read_text(encoding="utf-8") + "\n## 변경 파일\n- x\n"
     plan.path.write_text(produced, encoding="utf-8", newline="")
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
@@ -2963,58 +2937,28 @@ def test_harvest_and_copies_are_outside_the_gate(pd, rounds_env, monkeypatch):
     assert rc2 == 0
 
 
-def test_flat_cross_cli_preserves_round_limit_rc(pd, rounds_env, monkeypatch):
-    """F-004 회귀 — flat cross CLI 도 InternalRoundLimitExceeded 를 rc=1 로 뭉개지 않고
-    전용 rc(추가 리뷰어 채널 EXIT_ROUND_LIMIT_EXCEEDED=4)로 보존한다(per-ticket cap 은 어떤 승인으로도
-    안 열림)."""
-    pm_home, _slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-8020")
-
-    def _raise(*_args, **_kwargs):
-        raise pd.InternalRoundLimitExceeded("오류: 내부 위임 라운드 상한 도달 — test")
-
-    monkeypatch.setattr(pd, "prepare_ticket_copy", _raise)
-    monkeypatch.setattr(pd, "local_config", lambda: {
-        "delegate_enabled": "true",
-        "delegate.developer.harness": "codex", "delegate.developer.model": "gpt-x",
-    })
-    monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *a, **k: True)
-
-    prompt = pm_home / "task.md"
-    prompt.write_text("작업 내용", encoding="utf-8")
-
-    rc = pd.main(
-        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(pm_home),
-         "--ticket", "T-8020", "--output-dir", str(pm_home / "raw")],
-        run_fn=lambda *a, **k: pytest.fail("라운드 상한 거부 뒤 스폰되면 안 됨"),
-    )
-
-    external = pd._load_additional_reviewer()
-    assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
-
-
-def test_concurrent_prepares_at_the_cap_boundary_admit_exactly_one(
+def test_concurrent_prepares_at_the_budget_boundary_admit_exactly_one(
     pd, rounds_env, monkeypatch,
 ):
-    """F-003 TOCTOU 회귀 — 상한-1 에서 두 동시 prepare 중 정확히 하나만 성공하고
-    최종 count 가 상한을 넘지 않는다(리뷰어 결정적 재현 재구성: 사전판정 직후 barrier)."""
+    """F-003 TOCTOU 회귀 — 예산 마지막 자리에서 두 동시 prepare 중 정확히 하나만 성공하고
+    최종 라운드 수가 예산을 넘지 않는다(리뷰어 결정적 재현 재구성: 사전판정 직후 barrier)."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-9001", rounds=_rounds_past_the_cap(pd, "developer"))
-    limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
-    _prepare_n_rounds(pd, pm_home, slot, "T-9001", "developer", limit - 1)
+    declared = _DECLARED_DEVELOPER_ROUNDS
+    _write_spec(tickets, "T-9001", rounds=_round_plan("developer", declared))
+    _prepare_n_rounds(pd, pm_home, slot, "T-9001", "developer", declared - 1)
 
     barrier = threading.Barrier(2)
-    real_count = pd._internal_round_count
+    real_refusal = pd._cluster_budget_refusal
     call_lock = threading.Lock()
     state = {"n": 0}
 
-    def _synced_count(existing, role):
-        # 처음 두 호출(양쪽 thread 의 (1.5) 사전판정)만 서로 기다린다 — phase-2(락 안·직렬)
+    def _synced_refusal(**kwargs):
+        # 처음 두 호출(양쪽 thread 의 (1.4) 사전판정)만 서로 기다린다 — phase-2(락 안·직렬)
         # 호출까지 묶으면 락을 쥔 쪽이 상대를 영원히 기다려 교착한다.
         with call_lock:
             state["n"] += 1
             my_call = state["n"]
-        result = real_count(existing, role)
+        result = real_refusal(**kwargs)
         if my_call <= 2:
             barrier.wait(timeout=5)
         return result
@@ -3028,10 +2972,12 @@ def test_concurrent_prepares_at_the_cap_boundary_admit_exactly_one(
                 ticket="T-9001", role="developer", cwd=slot, pm_home=pm_home,
             )
             results.append(plan)
-        except pd.InternalRoundLimitExceeded as exc:
+        except pd.ClusterRoundBudgetExceeded as exc:
             errors.append(exc)
 
-    with unittest.mock.patch.object(pd, "_internal_round_count", side_effect=_synced_count):
+    with unittest.mock.patch.object(
+        pd, "_cluster_budget_refusal", side_effect=_synced_refusal,
+    ):
         threads = [threading.Thread(target=_worker) for _ in range(2)]
         for thread in threads:
             thread.start()
@@ -3043,7 +2989,7 @@ def test_concurrent_prepares_at_the_cap_boundary_admit_exactly_one(
 
     rounds_module = pd._load_ticket_rounds()
     final = rounds_module.load_rounds(pm_home / ".project_manager" / "wiki" / "tickets", "T-9001")
-    assert pd._internal_round_count(final, "developer") == limit
+    assert sum(1 for item in final if item.role == "developer") == declared
 
 
 # ── F-005(라운드 6) — 스폰 전 게이트 거부의 ticket 예약 환불 ────────────────
@@ -3364,13 +3310,14 @@ def test_two_cross_runs_of_the_same_ticket_and_role_bind_1to1_not_swapped(
 def test_configured_convergence_limit_runs_every_round_through_main(
     pd, refund_env, monkeypatch,
 ):
-    """설정된 수렴 상한(`delegate.code-reviewer.rounds_max=5` · 예약 상한 기본값과 같은 값)에서
-    `main()` 경유 5회가 전부 성공하고, 그 다음 요청은 rc 1 로 막힌다(상한 뒤 창 0)."""
+    """설정된 수렴 상한(`delegate.code-reviewer.rounds_max=5`)에서 `main()` 경유 5회가 전부
+    성공하고, 그 다음 요청은 rc 1 로 막힌다(상한 뒤 창 0)."""
     home, tickets = refund_env
     ticket = "T-9105"
-    _write_spec(tickets, ticket, rounds=_rounds_past_the_cap(pd, "code-reviewer"))
     rounds_max = 5
-    assert rounds_max == pd.DEFAULT_INTERNAL_ROUND_LIMITS["code-reviewer"]
+    # 장부 예산은 수렴 상한보다 한 자리 넉넉히 선언한다 — 예산이 먼저 소진되면 이 테스트가
+    # 재려는 수렴 게이트에 도달하지 못한다.
+    _write_spec(tickets, ticket, rounds=_round_plan("code-reviewer", rounds_max + 1))
     # 실 conf 파일 하나를 단일 진실로 쓴다 — `main()`(prepare/reserve)과 board 의 완료
     # 재검증(별도로 로드되는 pm_delegate 사본)이 같은 파일을 읽어야 F-001 이 재현·검증된다.
     (home / ".project_manager" / "local.conf").write_text(
@@ -3435,8 +3382,7 @@ def test_configured_convergence_limit_runs_every_round_through_main(
          "--ticket", ticket, "--output-dir", str(home / "raw")],
         run_fn=_run_fn,
     )
-    assert rc == pd._load_additional_reviewer().EXIT_ROUND_LIMIT_EXCEEDED, (
-        "상한을 넘긴 요청은 예약되지 않는다")
+    assert rc == 1, "수렴 상한을 넘긴 요청은 예약되지 않는다"
 
 
 # ── T-0846 — 단일 정리 경계(지점 삽입 대체) ─────────────────────────────────
@@ -3570,13 +3516,13 @@ def test_cleanup_failure_does_not_mask_the_original_rejection(
 
 
 def test_concurrent_prepare_loser_leaves_no_orphaned_run_dir(pd, rounds_env):
-    """T-0846(F-010) — 상한-1 에서 동시 prepare 두 건 중 패자가 board 라운드·장부 행 없이
-    run-dir 만 남기지 않는다(결정적 barrier 재현 — 라운드 7 실측: developer 상한 4 ·
-    before=(3,3,3) → 성공 1·`InternalRoundLimitExceeded` 1 → after=(4,5,4) 였던 결함)."""
+    """T-0846(F-010) — 예산 마지막 자리에서 동시 prepare 두 건 중 패자가 board 라운드·장부
+    행 없이 run-dir 만 남기지 않는다(결정적 barrier 재현 — 라운드 7 실측: before=(3,3,3) →
+    성공 1·거부 1 → after=(4,5,4) 였던 결함)."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-9201", rounds=_rounds_past_the_cap(pd, "developer"))
-    limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
-    _prepare_n_rounds(pd, pm_home, slot, "T-9201", "developer", limit - 1)
+    declared = _DECLARED_DEVELOPER_ROUNDS
+    _write_spec(tickets, "T-9201", rounds=_round_plan("developer", declared))
+    _prepare_n_rounds(pd, pm_home, slot, "T-9201", "developer", declared - 1)
 
     def _round_files() -> int:
         rounds_dir = _rounds_dir(pm_home, "T-9201")
@@ -3597,19 +3543,19 @@ def test_concurrent_prepare_loser_leaves_no_orphaned_run_dir(pd, rounds_env):
         )
 
     before = (_round_files(), _run_dirs(), _unterminated_ledger_rows())
-    assert before == (limit - 1, limit - 1, limit - 1)
+    assert before == (declared - 1, declared - 1, declared - 1)
 
     barrier = threading.Barrier(2)
-    real_count = pd._internal_round_count
+    real_refusal = pd._cluster_budget_refusal
     call_lock = threading.Lock()
     state = {"n": 0}
 
-    def _synced_count(existing, role):
-        # F-003 회귀와 같은 재구성 — 처음 두 호출(양쪽 thread 의 (1.5) 사전판정)만 서로 기다린다.
+    def _synced_refusal(**kwargs):
+        # F-003 회귀와 같은 재구성 — 처음 두 호출(양쪽 thread 의 (1.4) 사전판정)만 서로 기다린다.
         with call_lock:
             state["n"] += 1
             my_call = state["n"]
-        result = real_count(existing, role)
+        result = real_refusal(**kwargs)
         if my_call <= 2:
             barrier.wait(timeout=5)
         return result
@@ -3623,10 +3569,12 @@ def test_concurrent_prepare_loser_leaves_no_orphaned_run_dir(pd, rounds_env):
                 ticket="T-9201", role="developer", cwd=slot, pm_home=pm_home,
             )
             results.append(plan)
-        except pd.InternalRoundLimitExceeded as exc:
+        except pd.ClusterRoundBudgetExceeded as exc:
             errors.append(exc)
 
-    with unittest.mock.patch.object(pd, "_internal_round_count", side_effect=_synced_count):
+    with unittest.mock.patch.object(
+        pd, "_cluster_budget_refusal", side_effect=_synced_refusal,
+    ):
         threads = [threading.Thread(target=_worker) for _ in range(2)]
         for thread in threads:
             thread.start()
@@ -3637,7 +3585,9 @@ def test_concurrent_prepare_loser_leaves_no_orphaned_run_dir(pd, rounds_env):
     assert len(errors) == 1
 
     after = (_round_files(), _run_dirs(), _unterminated_ledger_rows())
-    assert after == (limit, limit, limit), f"패자 run-dir 잔류 — before={before} after={after}"
+    assert after == (declared, declared, declared), (
+        f"패자 run-dir 잔류 — before={before} after={after}"
+    )
 
 
 # ── T-0846 라운드 3 fix — F-001(BaseException-safe 정리) · F-002(락 이탈 후 잔여) ──────────
@@ -3728,21 +3678,21 @@ def test_gate_refund_original_control_exception_still_propagates_when_cleanup_su
     assert after == (0, 0, 0), f"원 제어 예외 뒤 잔류 — before={before} after={after}"
 
 
-def test_prepare_rollback_control_exceptions_preserve_the_original_round_limit_error(
+def test_prepare_rollback_control_exceptions_preserve_the_original_budget_error(
     pd, rounds_env, monkeypatch, capsys,
 ):
     """F-001 — `prepare_ticket_copy` 예약 전 rollback(`force_rmtree`) 에 `RuntimeError`·
-    `KeyboardInterrupt`·`SystemExit` 를 주입해도 원 `InternalRoundLimitExceeded` 가 그대로
+    `KeyboardInterrupt`·`SystemExit` 를 주입해도 원 `ClusterRoundBudgetExceeded` 가 그대로
     전파된다(원래는 `except OSError`만 잡아 주입 예외가 대신 전파되고 경고도 없었다). 정리
     자체는 여전히 실패하므로(주입) run-dir 고아는 남는다 — 이번 fix 가 보장하는 건 원 예외
     형·경고 유무이지 정리 성공이 아니다."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-9304", rounds=_rounds_past_the_cap(pd, "developer"))
-    limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
-    # (1.5) 빠른 사전판정은 통과시키고(existing=limit-1), 락 안 **최종 admission** 재확인만
-    # 거부시킨다(review 재현과 동일 축 — F-003 TOCTOU 재구성 패턴 재사용). run_dir 은 사전판정
-    # 뒤에 만들어지므로 이래야 force_rmtree 롤백 경로가 실제로 발동한다.
-    _prepare_n_rounds(pd, pm_home, slot, "T-9304", "developer", limit - 1)
+    declared = _DECLARED_DEVELOPER_ROUNDS
+    _write_spec(tickets, "T-9304", rounds=_round_plan("developer", declared))
+    # (1.4) 빠른 사전판정은 통과시키고(예산 마지막 자리 하나를 남긴다), 락 안 **최종 admission**
+    # 재확인만 거부시킨다(review 재현과 동일 축 — F-003 TOCTOU 재구성 패턴 재사용). run_dir 은
+    # 사전판정 뒤에 만들어지므로 이래야 force_rmtree 롤백 경로가 실제로 발동한다.
+    _prepare_n_rounds(pd, pm_home, slot, "T-9304", "developer", declared - 1)
 
     def _round_files() -> int:
         rounds_dir = _rounds_dir(pm_home, "T-9304")
@@ -3763,22 +3713,22 @@ def test_prepare_rollback_control_exceptions_preserve_the_original_round_limit_e
         )
 
     baseline = (_round_files(), _run_dirs(), _unterminated_ledger_rows())
-    assert baseline == (limit - 1, limit - 1, limit - 1)
+    assert baseline == (declared - 1, declared - 1, declared - 1)
 
-    real_count = pd._internal_round_count
+    real_refusal = pd._cluster_budget_refusal
 
-    def _force_final_check_over_limit(existing, role):
-        # 첫 호출((1.5) 사전판정)은 실값을 그대로 돌려 통과시키고, 두 번째 호출(락 안 최종
-        # 재확인)만 상한 도달로 강제한다.
+    def _force_final_refusal(**kwargs):
+        # 첫 호출((1.4) 사전판정)은 실판정을 그대로 돌려 통과시키고, 두 번째 호출(락 안 최종
+        # 재확인)만 예산 소진으로 강제한다.
         state["n"] += 1
         if state["n"] == 1:
-            return real_count(existing, role)
-        return limit
+            return real_refusal(**kwargs)
+        return "묶음 고정 라운드 종료(probe) — 락 안 재확인이 마지막 자리를 거부"
 
     def _attempt_rejected_prepare():
         state["n"] = 0
         with unittest.mock.patch.object(
-            pd, "_internal_round_count", side_effect=_force_final_check_over_limit,
+            pd, "_cluster_budget_refusal", side_effect=_force_final_refusal,
         ):
             pd.prepare_ticket_copy(
                 ticket="T-9304", role="developer", cwd=slot, pm_home=pm_home,
@@ -3786,7 +3736,7 @@ def test_prepare_rollback_control_exceptions_preserve_the_original_round_limit_e
 
     state = {"n": 0}
     # 역방향(F-001 c) — 정리가 정상 동작하면(주입 없음) 여전히 (0,0,0) 델타다.
-    with pytest.raises(pd.InternalRoundLimitExceeded):
+    with pytest.raises(pd.ClusterRoundBudgetExceeded):
         _attempt_rejected_prepare()
     assert (_round_files(), _run_dirs(), _unterminated_ledger_rows()) == baseline
 
@@ -3802,7 +3752,7 @@ def test_prepare_rollback_control_exceptions_preserve_the_original_round_limit_e
 
         monkeypatch.setattr(file_lock, "force_rmtree", _boom)
         capsys.readouterr()
-        with pytest.raises(pd.InternalRoundLimitExceeded):
+        with pytest.raises(pd.ClusterRoundBudgetExceeded):
             _attempt_rejected_prepare()
         err = capsys.readouterr().err
         assert "run-dir 정리 실패" in err and label in err, (

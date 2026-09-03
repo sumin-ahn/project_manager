@@ -1706,31 +1706,6 @@ def _board_relative_path(board_path: Path, pm_home: Path) -> str:
         ) from exc
 
 
-class InternalRoundLimitExceeded(DelegateError):
-    """내부 위임 라운드 상한 도달 — `_cmd_ticket`/cross flat CLI 가 exit 4(추가 리뷰어 채널
-    `additional_reviewer.EXIT_ROUND_LIMIT_EXCEEDED` 와 동형)로 낸다."""
-
-
-# ── 내부 위임 라운드 상한 ──────────────────────────────────────────────────
-# 추가 리뷰어 채널의 라운드 상한 미러다 — 판정식·rc·정지/보고 처방·우회 없음 규약은 그대로 두고,
-# 입력만 내부 채널이 이미 가진 board 라운드
-# 파일로 좁힌다(결정: 새 장부·새 필드 0). architect·developer·code-reviewer만 대상이다 —
-# researcher는 board 라운드 실사용 0건(전수 실측)이라 티켓 스코프 밖으로 남긴다. 축은
-# 역할별 per-ticket 상한 하나뿐이다(cross-ticket 판정 없음).
-#
-# 값은 `tickets/rounds/` 전수 실측(티켓 디렉터리 107개)에서 역할별 정상↔이상 분기점
-# 으로 정했다(중간값 없이 갈린다):
-#   developer      정상 최대 4(5건) → 이상 6(사례 3건 — 각 12·11·11 라운드 실측)
-#   code-reviewer  정상 최대 4(1건)·3(6건) → 이상 5~6(사례 4건)
-#   architect      정상 최대 3(정상 사례) → architect 5회(총 8라운드)로 튄 사례는 발산이다.
-DEFAULT_INTERNAL_ROUND_LIMITS: dict[str, int] = {
-    "developer": 4,
-    "code-reviewer": 5,
-    "architect": 6,
-}
-INTERNAL_ROUND_LIMIT_KEY_PREFIX = "internal_review_round_limit."  # + role
-
-
 def _internal_conf_int(conf: dict[str, str], key: str, default: int) -> int:
     """local.conf 정수 노브 — 비정수·음수는 기본값으로 fail-soft(추가 리뷰어 채널 예산 노브와 같은 규칙:
     깨진 노브가 게이트를 벽돌로 만들지 않는다)."""
@@ -1756,38 +1731,6 @@ def internal_review_rounds_max(conf: dict[str, str] | None = None) -> int:
     )
 
 
-def _internal_round_limit(conf: dict[str, str], role: str) -> int:
-    return _internal_conf_int(
-        conf, f"{INTERNAL_ROUND_LIMIT_KEY_PREFIX}{role}",
-        DEFAULT_INTERNAL_ROUND_LIMITS[role],
-    )
-
-
-def _internal_round_count(existing, role: str) -> int:
-    """이 티켓에서 그 역할로 이미 예약된 라운드 수(산출 유무 무관 — 예약 자체를 센다)."""
-    return sum(1 for item in existing if item.role == role)
-
-
-def _internal_round_list(existing, role: str, rounds_module) -> str:
-    """거부 메시지에 싣는 "현재 라운드" 목록 — 순번·역할·산출 유무만(본문은 담지 않는다)."""
-    names = [
-        rounds_module.round_filename(item.ordinal, item.role)
-        + (" (산출 없음)" if item.pending else "")
-        for item in sorted(existing, key=lambda entry: entry.ordinal)
-        if item.role == role
-    ]
-    return ", ".join(names) if names else "(없음)"
-
-
-_INTERNAL_ROUND_LIMIT_GUIDANCE = (
-    "오류: 내부 위임 라운드 상한 도달 — {ticket} role={role} · count={count}(상한 {limit})\n"
-    "  현재 라운드: {rounds}\n"
-    "  · 현재 티켓을 정지하고 사용자에게 보고합니다 — 이 역할로 라운드를 더 예약하지 않습니다"
-    "(우회 없음 · 추가 리뷰어 채널 라운드 상한과 같은 규율).\n"
-    "  · 상한 조정은 local.conf `internal_review_round_limit.{role}`(기본 {limit})."
-)
-
-
 class ClusterRoundBudgetExceeded(DelegateError):
     """고정 수열 밖 라운드 요청. fix 뒤에는 사람 라운드를 다시 열지 않는다."""
 
@@ -1797,10 +1740,6 @@ class ClusterRoundBudgetExceeded(DelegateError):
 # 리뷰(code-reviewer) → fix(developer). 장부 `budget` 의 4키가 그 수열의 **길이**를 값으로
 # 말하고, 아래 표가 키↔역할 대응과 순서를 소유한다. 초과나 순서 밖 요청은 티켓을 정지시키며
 # 예산 리셋·추가 설계·추가 fix로 다시 열 수 없다.
-#
-# 역할별 per-ticket 상한(`DEFAULT_INTERNAL_ROUND_LIMITS`)과 축이 다르다: 그쪽은 한 역할이 몇
-# 번까지인가이고, 이쪽은 **묶음의 라운드 수열 자체**다. 묶음 준비 표면에서는 이 판정이 항상
-# 먼저 발동하므로, 두 축이 같은 요청을 두 사유로 거부하는 일이 없다.
 CLUSTER_BUDGET_ROLE_SEQUENCE: tuple[tuple[str, str], ...] = (
     ("architect", "architect"),
     ("developer", "developer_per_ticket"),
@@ -1951,19 +1890,18 @@ def prepare_cluster_copy(
     (하네스가 여는 범위가 원래 run-dir 통째다) 티켓별 명세·이전 라운드는 읽기 전용 입력이다.
     크기 1 묶음이면 티켓 하나짜리 run-dir 이라 종전 준비와 동작이 같다(별도 코드 경로 없음).
 
-    **거부 판정은 전부 예약 앞에 둔다** — 역할·티켓 조회·상태·ignore 규칙·run-dir·내부 라운드
-    상한·시드 렌더(설계 근거 게이트 포함)가 **N 티켓 전부** board 를 건드리기 전에 끝난다.
+    **거부 판정은 전부 예약 앞에 둔다** — 역할·티켓 조회·상태·ignore 규칙·run-dir·시드 렌더
+    (설계 근거 게이트 포함)가 **N 티켓 전부** board 를 건드리기 전에 끝난다.
     뒤에 두면 거부된 준비가 board 에 회수 불가능한 고아 라운드를 남기고 순번을 영구 소모한다.
 
-    순서는 여섯이다 — (1) 역할·멤버 해소·티켓별 상태 판정 (1.5) 내부 라운드 상한 사전판정
-    (빠른 실패 — run-dir 을 만들기 전에 흔한/비경합 초과 요청을 끝낸다) (2) ignore 검증과
+    순서는 다섯이다 — (1) 역할·멤버 해소·티켓별 상태 판정 (2) ignore 검증과
     run-dir 확보(슬롯 전용 부작용) (3) 티켓별 시드 렌더 (4) **상태 재확인 + 역할 count 재확인 +
     채번 + O_EXCL 예약을 하나의 board_lock 임계구역에서 최신 스냅샷으로 수행** (5) 슬롯 파일
     laydown + PM 홈 장부 기록(회수의 신뢰 뿌리 · 티켓당 한 행).
 
     락은 (4) 구간만 잡는다. 재확인·채번·생성이 그 구간 안에서 한 번에 끝나는 게 두 준비가 같은
-    번호를 계산하거나 상한을 함께 넘길 수 있는 유일한 창을 닫는 방법이고, 회수·기록 경로에는
-    락이 없다. 순번은 **티켓별**이다 — 묶음 하나의 라운드가 티켓마다 다른 번호를 받을 수 있다.
+    번호를 계산할 수 있는 유일한 창을 닫는 방법이고, 회수·기록 경로에는 락이 없다. 순번은
+    **티켓별**이다 — 묶음 하나의 라운드가 티켓마다 다른 번호를 받을 수 있다.
 
     `owner_pid` 는 **호출자가 이 run 의 소유자일 때만** 준다 — 준비·실행·회수가 한 프로세스의
     try/finally 인 cross 위임이 그 경우다. 그 값이 장부에 실리면 포기(abandon) 판정이 "이 run 이
@@ -1971,21 +1909,17 @@ def prepare_cluster_copy(
     세션인 native 위임은 이 값을 **주지 않는다**: 즉사한 준비 pid 를 표식으로 실으면 살아 있는
     run 이 죽은 것으로 읽힌다. 키 부재는 "죽음"이 아니라 "증거 없음"이다.
 
-    내부 라운드 상한(게이트별 · role 당)은 발산(라운드 증가) 방향으로는 어떤 인자로도 열리지
-    않는다(추가 리뷰어 채널과 같은 규율 — 정지·사용자 보고만 허용 · 우회 플래그가 없다).
-
-    묶음 고정 예산은 **모든 준비 표면**에서 같은 판정을 받는다 — 장부가 예산을 선언한 묶음이면
-    역할 수열 판정을 per-ticket 상한보다 **먼저** 낸다. 표면마다 켜고 끄는 인자가 없으므로
-    티켓 하나짜리 준비가 단계 게이트를 비켜 가는 길도 없다. 판정은 사전판정과 board_lock
-    재확인 **두 지점**에 함께 건다 — 한쪽에만 걸면 동시 준비 둘이 같은 예산을 함께 통과한다
-    (per-ticket 상한과 같은 창).
+    묶음 고정 예산은 **모든 준비 표면**에서 같은 판정을 받는다 — 표면마다 켜고 끄는 인자가
+    없으므로 티켓 하나짜리 준비가 단계 게이트를 비켜 가는 길도 없다. 판정은 사전판정과
+    board_lock 재확인 **두 지점**에 함께 건다 — 한쪽에만 걸면 동시 준비 둘이 같은 예산을
+    함께 통과한다.
     장부가 없거나 예산을 선언하지 않았으면 그 요청은 멈춘다(무제한·순서 무검사로 접는 갈래가
     없다).
 
     `reopen_ordinal` 은 **이어 시키는 단계**의 명시 요청이다 — 그 순번을 채번하지 않고 다시 열어
     (`reopen_round`) 슬롯 사본을 **board 라운드 파일의 현재 내용**으로 시드한다(시드 골격이
-    아니다). 재개방은 라운드를 만들지 않으므로 수를 세는 두 판정(묶음 고정 예산 수열·역할별
-    per-ticket 상한)의 대상이 아니고, 대신 "그 순번이 있고 역할이 같다"를 예약 seam 이 판정한다.
+    아니다). 재개방은 라운드를 만들지 않으므로 수를 세는 판정(묶음 고정 예산 수열)의 대상이
+    아니고, 대신 "그 순번이 있고 역할이 같다"를 예약 seam 이 판정한다.
     요청이 없으면 종전대로 새 순번을 채번한다(암묵 재개방 없음).
     """
     if role not in TICKET_COPY_PREPARE_ROLES:
@@ -2050,20 +1984,12 @@ def prepare_cluster_copy(
 
     budget_sequence: tuple[str, ...] = ()
     budget_sequence = _budget_inputs()
-    conf = (
-        _load_additional_reviewer()._local_config_for_repo(pm_home)
-        if role in DEFAULT_INTERNAL_ROUND_LIMITS else None
-    )
-    limit = 0
-    if role in DEFAULT_INTERNAL_ROUND_LIMITS:
-        limit = _internal_round_limit(conf, role)
 
-    # ── (1.4) 묶음 예산 사전판정 — per-ticket 상한보다 앞이다(예산 축이 항상 먼저 발동해야
-    # 같은 요청이 두 사유로 갈리지 않는다). 여기도 신뢰 뿌리가 아니다. 빈 수열은 판정을
+    # ── (1.4) 묶음 예산 사전판정 — 여기도 신뢰 뿌리가 아니다. 빈 수열은 판정을
     # 건너뛰는 값이 아니라 모든 요청을 거부하는 값이다.
     for ticket in members:
         if reopen_ordinal is not None:
-            # 재개방은 라운드를 만들지 않는다 — 수열도 상한도 예약 수를 세는 판정이라 대상이
+            # 재개방은 라운드를 만들지 않는다 — 수열은 예약 수를 세는 판정이라 대상이
             # 아니다(불변식 4). 대신 대상 실재·역할 일치를 여기서 미리 본다: 신뢰 뿌리는 아래
             # (4) 의 board_lock 안 같은 호출이고, 이 자리는 run-dir 을 만들기 전에 흔한 실패를
             # 끝내는 자리다.
@@ -2079,25 +2005,9 @@ def prepare_cluster_copy(
         if refusal is not None:
             raise ClusterRoundBudgetExceeded(refusal)
 
-    # ── (1.5) 내부 라운드 상한 — 빠른 실패 사전판정. 신뢰 뿌리가 아니다: 최종 판정은
-    # 아래 (4) 의 board_lock 임계구역이 최신 스냅샷으로 다시 낸다. 이 사전판정은 상한을 넘은
-    # 흔한(비경합) 요청이 run-dir 을 만들기 전에 끝나게 하는 최적화일 뿐이다.
-    if role in DEFAULT_INTERNAL_ROUND_LIMITS and reopen_ordinal is None:
-        for ticket in members:
-            count = _internal_round_count(existing_rounds[ticket], role)
-            if count >= limit:
-                raise InternalRoundLimitExceeded(
-                    _INTERNAL_ROUND_LIMIT_GUIDANCE.format(
-                        ticket=ticket, role=role, count=count, limit=limit,
-                        rounds=_internal_round_list(
-                            existing_rounds[ticket], role, rounds_module,
-                        ),
-                    )
-                )
-
     # developer 준비의 입력 계약은 실제 prepare 경계에서 검증한다. 순수 시드 renderer는
     # 리뷰/verify 골격 단위 테스트에서도 쓰이므로 architect 라운드에 결합하지 않는다. 고정
-    # 수열·라운드 상한 판정을 먼저 낸 뒤, 아직 run-dir/board 예약 전인 여기서 누락·미완성
+    # 수열 판정을 먼저 낸 뒤, 아직 run-dir/board 예약 전인 여기서 누락·미완성
     # architect 계약을 잔여 없이 거부한다.
     if role == "developer":
         for ticket in members:
@@ -2192,7 +2102,7 @@ def prepare_cluster_copy(
                             f"{ticket} role={role} currently in {fresh_status}/"
                         )
                     if reopen_ordinal is not None:
-                        # 재개방은 순번을 늘리지 않아 수열·상한이 볼 것이 없다 — 이 티켓의
+                        # 재개방은 순번을 늘리지 않아 수열이 볼 것이 없다 — 이 티켓의
                         # 재확인은 아래 예약 루프의 `reopen_round` 가 최신 스캔으로 낸다.
                         continue
                     fresh_existing = rounds_module.load_rounds(
@@ -2204,17 +2114,6 @@ def prepare_cluster_copy(
                     )
                     if refusal is not None:
                         raise ClusterRoundBudgetExceeded(refusal)
-                    if role in DEFAULT_INTERNAL_ROUND_LIMITS:
-                        count = _internal_round_count(fresh_existing, role)
-                        if count >= limit:
-                            raise InternalRoundLimitExceeded(
-                                _INTERNAL_ROUND_LIMIT_GUIDANCE.format(
-                                    ticket=ticket, role=role, count=count, limit=limit,
-                                    rounds=_internal_round_list(
-                                        fresh_existing, role, rounds_module,
-                                    ),
-                                )
-                            )
                 for ticket in members:
                     # 이 함수가 이미 board_lock 을 쥐고 있다(재진입 금지) — 두 seam 자신의
                     # `with lock:` 은 null 컨텍스트로 채워 판정+생성이 같은 임계구역 안에서 돈다.
@@ -13272,10 +13171,6 @@ def _cmd_ticket(argv: list[str]) -> int:
             "verify_missing": list(result.verify_missing),
         }, sort_keys=True))
         return 0
-    except InternalRoundLimitExceeded as exc:
-        # 추가 리뷰어 채널 exit 4(EXIT_ROUND_LIMIT_EXCEEDED)와 동형 — 실행 전 거부라 slot 부작용 0.
-        print(str(exc), file=sys.stderr)
-        return _load_additional_reviewer().EXIT_ROUND_LIMIT_EXCEEDED
     except DelegateError as exc:
         print(f"오류: ticket {args.ticket_command} 실패: {exc}", file=sys.stderr)
         return 1
@@ -15046,11 +14941,6 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
             ticket_copy = cluster_plan.rounds[0]
         except ClusterRoundBudgetExceeded as exc:
             return fail_loud(f"오류: 묶음 리뷰 라운드 준비 실패: {exc}")
-        except InternalRoundLimitExceeded as exc:
-            return fail_loud(
-                f"오류: 묶음 리뷰 라운드 준비 실패: {exc}",
-                rc=_load_additional_reviewer().EXIT_ROUND_LIMIT_EXCEEDED,
-            )
         except DelegateError as exc:
             return fail_loud(f"오류: 묶음 리뷰 라운드 준비 실패: {exc}")
     elif not args.dry_run and effective_ticket and args.role in TICKET_COPY_PREPARE_ROLES:
@@ -15061,13 +14951,6 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
                 # 이 pid 가 살아 있으면 run 도 살아 있다. 포기(abandon) 판정의 유일한 기계
                 # 증거이고, 소유자가 아닌 native 준비는 이 값을 싣지 않는다.
                 owner_pid=os.getpid(),
-            )
-        except InternalRoundLimitExceeded as exc:
-            # 전용 rc(F-004) — 추가 리뷰어 채널 exit 4(EXIT_ROUND_LIMIT_EXCEEDED)와 동형. per-ticket
-            # cap 은 어떤 승인으로도 열리지 않는다(우회 플래그 없음).
-            return fail_loud(
-                f"오류: 위임 티켓 라운드 준비 실패: {exc}",
-                rc=_load_additional_reviewer().EXIT_ROUND_LIMIT_EXCEEDED,
             )
         except DelegateError as exc:
             return fail_loud(f"오류: 위임 티켓 라운드 준비 실패: {exc}")

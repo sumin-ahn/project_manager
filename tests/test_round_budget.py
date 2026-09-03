@@ -646,6 +646,46 @@ def test_the_declared_cycle_runs_and_the_next_request_is_refused(pd, budget_env)
     assert _open_runs(pd, slot, "C-cycle") == []
 
 
+def test_the_budget_axis_is_the_only_round_cap(pd, budget_env):
+    """고정 수열(4키 전부 1) 밖 요청의 거부 사유는 예산 축 하나다 — 역할별 상한은 없다.
+
+    [[T-0901]] 이 도달 불가였던 역할별 per-ticket 상한을 지웠다. 그 축이 되살아나면 같은
+    요청이 두 사유로 갈리므로, 거부 예외형과 심볼 부재를 함께 못박는다.
+    """
+    pm_home, slot, tickets = budget_env
+    _seed(pm_home, tickets, "C-onlycap", ["T-7060"])
+    for role in _CYCLE:
+        _advance(pd, "C-onlycap", role, pm_home=pm_home, slot=slot)
+
+    with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
+        pd.prepare_cluster_copy(
+            cluster="C-onlycap", role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+    # 예외형이 정확히 예산 축의 그것이다(다른 상한 예외로 갈리지 않는다).
+    assert type(caught.value) is pd.ClusterRoundBudgetExceeded
+    message = str(caught.value)
+    assert "고정 라운드 종료" in message and "추가 라운드 없이 정지·보고" in message
+    # 역할별 상한 판정이 되살아나면 이 이름 중 하나가 다시 생긴다.
+    assert [
+        name for name in dir(pd) if "ROUNDLIMIT" in name.upper().replace("_", "")
+    ] == []
+    # 삭제 게이트는 소스와 pycache 를 함께 훑는 전수 grep 이라 지워진 심볼 이름을 리터럴로
+    # 남기지 않는다 — 인접 리터럴 결합은 컴파일러가 접으므로 실행 시점에 조립한다.
+    upper = "_".join(["ROUND", "LIMIT"])
+    camel = "".join(["Round", "Limit"])
+    for name in (
+        f"Internal{camel}Exceeded", f"DEFAULT_INTERNAL_{upper}S",
+        f"INTERNAL_{upper}_KEY_PREFIX", f"_internal_{upper.lower()}",
+        "_internal_round_count", "_internal_round_list",
+        f"_INTERNAL_{upper}_GUIDANCE",
+    ):
+        assert not hasattr(pd, name), f"역할별 상한 축이 되살아났다: {name}"
+    # 거부는 예약 앞이다 — 수열 4자리 그대로고 열린 run 도 없다.
+    assert len(_round_names(pm_home, "T-7060")) == 4
+    assert _open_runs(pd, slot, "C-onlycap") == []
+
+
 def test_reopened_round_consumes_no_new_budget_step(pd, budget_env):
     """이어 시킨 단계는 **같은 순번**을 다시 연다 — 수열이 밀리지도, 우회로가 늘지도 않는다.
 

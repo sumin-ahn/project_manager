@@ -1485,6 +1485,30 @@ def test_internal_rounds_max_conf_moves_the_refusal_point(pd, capsys, limit):
     assert _entry(pd, gate)["count"] == limit             # 거부는 예약하지 않는다
 
 
+def test_the_convergence_knob_is_the_only_surviving_internal_round_cap(pd, capsys):
+    """수렴 게이트는 conf 값을 읽어 그대로 산다 — 이 채널의 라운드 거부 rc 는 1 하나다.
+
+    [[T-0901]] 이 역할별 예약 상한(전용 rc 4)을 지웠다. 그 삭제가 이 노브나 공용 정수
+    헬퍼(`_internal_conf_int`)까지 걷어냈으면 여기서 red 다.
+    """
+    limit = 2
+    _write_internal_conf(pd, {pd.INTERNAL_REVIEW_ROUNDS_MAX_KEY: str(limit)})
+
+    assert pd.internal_review_rounds_max() == limit       # 파일 값이 판정 입력이다
+    assert pd._internal_conf_int({}, pd.INTERNAL_REVIEW_ROUNDS_MAX_KEY, 7) == 7
+
+    gate = "T-RMX-ONLY"
+    for index in range(limit):
+        budget, _trace = _consume(pd, gate, _reply(REJECT_REPLY))
+        assert budget.refused_rc is None, f"라운드 {index + 1} 는 상한 안이다"
+    capsys.readouterr()
+
+    refused, _trace = _consume(pd, gate, _reply(REJECT_REPLY))
+
+    assert refused.refused_rc == 1                        # 이 채널의 거부 rc 는 1 하나다
+    assert f"상한 {limit} 도달" in capsys.readouterr().err
+
+
 def test_internal_ledger_drops_the_retired_ack_field_too(pd, capsys):
     """공용 스키마의 두 번째 소비자(내부 장부)도 같은 규칙이다 — 폐지 필드는 승계 없이 떨어진다.
 
