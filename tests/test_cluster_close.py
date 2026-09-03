@@ -1551,6 +1551,62 @@ def test_close_task_identity_is_forwarded_to_resolve_without_ambient_env(
 
 
 @requires_git
+def test_close_merge_step_attempts_cluster_branch_delete(close_env, capsys):
+    """AT-008 — 머지 단계는 묶음 브랜치 삭제를 시도하고 git 의 판정을 사실대로 보고한다.
+
+    브랜치 수명은 묶음 수명이다. 세 갈래를 한 자리에서 본다.
+      (1) dry-run — 명령 문구만 내고 실제 `branch -d` 는 발행하지 않는다.
+      (2) 머지 성공 — `branch -d` 를 통합 트리에서 발행한다. 반납은 슬롯의 체크아웃을 바꾸지
+          않으므로 이 시점엔 슬롯이 묶음 브랜치를 쥐고 있고 git 이 거부한다(정상 형상) —
+          그 rc≠0 이 종결을 실패로 뒤집지 않는다.
+      (3) 이미 조상 — 그 경로에서도 삭제를 시도하고, 아무도 쥐지 않으면 실제로 지워진다.
+    """
+    env = close_env
+    _commit(env.slot, "cluster work")          # 묶음 브랜치에 머지할 것이 생긴다
+
+    def _recording(**kwargs):
+        finisher = env.finisher()
+        seen: list[tuple[Path, list[str]]] = []
+        passthrough = finisher._run_git_at_fn
+
+        def _record(cwd, args):
+            seen.append((Path(cwd), list(args)))
+            return passthrough(cwd, args)
+
+        finisher._run_git_at_fn = _record
+        return env.closer(finisher=finisher, **kwargs), seen
+
+    # (1) dry-run — 문구만, 부작용 0.
+    dry_closer, dry_calls = _recording(dry_run=True)
+    assert dry_closer._step_merge() is None
+    dry_out = capsys.readouterr().out
+    assert f"[dry-run] cwd={env.code} git branch -d {_CLUSTER_BRANCH}" in dry_out
+    assert not any(args[:2] == ["branch", "-d"] for _cwd, args in dry_calls), \
+        "dry-run 이 실제 브랜치 삭제를 발행했다"
+
+    # (2) 머지 성공 — 통합 트리에서 삭제 시도. 슬롯이 쥐고 있어 git 이 거부하지만 종결은 산다.
+    closer, calls = _recording()
+    assert closer._step_merge() is None, "브랜치 삭제 거부가 종결을 실패로 뒤집었다"
+    out = capsys.readouterr().out
+    assert (env.code, ["branch", "-d", _CLUSTER_BRANCH]) in calls
+    assert f"묶음 브랜치 {_CLUSTER_BRANCH} 보존" in out
+    assert _CLUSTER_BRANCH in _git(env.code, "branch", "--list", _CLUSTER_BRANCH).stdout
+    # 머지는 실제로 났다 — 거부된 것은 브랜치 삭제뿐이다(통합 브랜치에 2번 부모가 생긴다).
+    assert _git(env.code, "rev-parse", f"{_INTEGRATION_BRANCH}^2").returncode == 0
+
+    # (3) 이미 조상 — 슬롯이 놓아주면 같은 자리에서 실제로 지워진다.
+    _git(env.slot, "checkout", "-q", "--detach")
+    ancestor_closer, ancestor_calls = _recording()
+    assert ancestor_closer._step_merge() is None
+    ancestor_out = capsys.readouterr().out
+    assert "건너뜀" in ancestor_out
+    assert (env.code, ["branch", "-d", _CLUSTER_BRANCH]) in ancestor_calls
+    assert f"✓ 묶음 브랜치 {_CLUSTER_BRANCH} 삭제" in ancestor_out
+    assert _git(env.code, "branch", "--list", _CLUSTER_BRANCH).stdout.strip() == "", \
+        "머지된 묶음 브랜치가 잔재로 남았다"
+
+
+@requires_git
 def test_close_refuses_to_move_a_branch_that_is_not_the_cluster_branch(close_env):
     """슬롯이 묶음 브랜치를 들고 있지 않으면 재배치·머지 앞에서 거부한다."""
     env = close_env

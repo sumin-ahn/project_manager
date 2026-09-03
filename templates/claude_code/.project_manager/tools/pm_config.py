@@ -16,7 +16,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config repo list                                    # 등록 repo 표 (repo·prefix·base·protected·test_cmd·area_owner)
     pm-config worktree add <repo> --user-ack <repo>        # 사용자 승인값 결속 + 새 슬롯 생성 + submodule init
     pm-config worktree prune-stale                         # worktree 사라진 dangling 장부 엔트리 정리
-    pm-config worktree remove <slot> [--force]             # 슬롯 통째 제거 — worktree+브랜치+장부 (원자)
+    pm-config worktree remove <slot> [--force]             # 슬롯 통째 제거 — worktree+브랜치+장부
     pm-config status | whoami                              # 풀/리스 + 이 세션 repo/슬롯/branch
     pm-config alloc <repo> --task <이름>                    # task 명의로 idle 최소 번호 슬롯 대여 (자동 생성 안 함)
     pm-config release <slot> [--task <이름>] [--force]      # 작업완료 반납 (--task 소유검사) / 수동 강제(백스톱)
@@ -2506,10 +2506,10 @@ def cmd_worktree_remove(
     *,
     worktree_pool=None,
 ) -> int:
-    """`worktree remove <slot> [--force]` — 슬롯 통째 제거(원자·user-invoked).
+    """`worktree remove <slot> [--force]` — 슬롯 통째 제거(user-invoked).
 
-    worktree_pool.remove_slot(slot, force=) 로 리스 확인 → `git worktree remove` → 슬롯 전용
-    브랜치 정리 → 장부 엔트리 제거를 한 번에 한다. footgun 체인(수동 remove → dangling
+    worktree_pool.remove_slot(slot, force=) 로 리스 확인 → 등록 조회 → `git worktree remove`
+    → 브랜치 정리 → 장부 엔트리 제거를 한 번에 한다. footgun 체인(수동 remove → dangling
     장부 → `add` 가 번호 skip → 뒤늦은 prune)을 원천 종결한다 — 장부 엔트리 제거로 `add` 가
     빈 번호를 재사용한다.
 
@@ -2519,8 +2519,10 @@ def cmd_worktree_remove(
 
     - dirty/활성 리스(leased·사용 중) → 거부(RemoveRefused·rc1). `--force` = stash 보존 후 강제.
     - 장부에 슬롯 없으면 무해 종료(rc0·이미 정리됨).
-    - 전용 브랜치(`<repo>_<N>`): 머지 완료면 삭제·미머지면 보존(1줄 보고)·공유 브랜치면 스킵.
-    - `git worktree remove` 실패(RuntimeError) → rc1(장부/브랜치 미변경·원자).
+    - 브랜치: 제외 집합(보호목록·bare 기본 브랜치·다른 슬롯 기준 브랜치)이면 보존(사유 1줄),
+      아니면 `git branch -d` 판정대로 삭제/보존(판정 기준 `merge_ref` 를 함께 보고).
+    - `git worktree remove` 실패(RuntimeError) → rc1. 그 실패가 무엇을 남겼는지는 엔진이
+      등록을 다시 물어 판정하므로, 여기서 재시도 방법을 지어내지 않는다.
 
     worktree_pool 주입으로 hermetic 테스트(실 worktree remove·장부 쓰기 없이 배선 검증).
     """
@@ -2571,13 +2573,14 @@ def cmd_worktree_remove(
             file=sys.stderr,
         )
 
-    # 성공 surface — 슬롯 전용 브랜치 처리 결과 1줄(결정 §브랜치 정리).
+    # 성공 surface — 브랜치 처리 결과 1줄(결정 §브랜치 정리·판정 기준을 함께 밝힌다).
     if result.branch_action == "deleted":
-        branch_line = f" · 전용 브랜치 {result.branch!r} 삭제(머지 완료)"
+        branch_line = f" · 브랜치 {result.branch!r} 삭제(머지 완료) — 기준 {result.merge_ref}"
     elif result.branch_action == "preserved-unmerged":
-        branch_line = f" · 브랜치 {result.branch} 보존(미머지)"
-    elif result.branch_action == "skipped-shared":
-        branch_line = f" · 브랜치 {result.branch!r} 보존(공유/전용 아님·삭제 스킵)"
+        branch_line = (f" · 브랜치 {result.branch} 보존(미머지) — 기준 {result.merge_ref}"
+                       f": {result.branch_reason}")
+    elif result.branch_action == "preserved-protected":
+        branch_line = f" · 브랜치 {result.branch} 보존({result.branch_reason})"
     else:
         branch_line = ""
     stash_line = " · dirty stash 보존" if result.stashed else ""
@@ -2585,6 +2588,9 @@ def cmd_worktree_remove(
         f"✓ 슬롯 {args.slot!r} 제거 — worktree remove + 장부 엔트리 삭제(빈 번호 재사용 가능)"
         f"{branch_line}{stash_line}."
     )
+    # git 이 등록만 지우고 트리를 남긴 형상(읽기 전용 잔재 등) — 엔진이 마저 지웠음을 고지한다.
+    if result.tree_cleaned:
+        print("  git 이 등록만 지우고 남긴 디렉터리 잔재를 엔진이 마저 정리했다.")
     # stash 복구 UX(suggestion 1) — 슬롯 worktree 가 사라져도 stash 는 공유 refs/stash 에 남는다.
     if result.stashed:
         print("  복구: 아무 worktree 에서 `git stash list` / `git stash pop` (공유 refs/stash).")
@@ -4350,14 +4356,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="worktree dir 이 사라진 dangling 장부 엔트리 정리 (stale/incomplete·안전)",
     )
     p_wt_prune.set_defaults(func=cmd_worktree_prune_stale)
-    # worktree remove <slot> [--force] — 슬롯 통째 제거(원자·user-invoked).
-    # 리스 확인→git worktree remove→전용 브랜치 정리→장부 엔트리 삭제를 한 번에. prune-stale
+    # worktree remove <slot> [--force] — 슬롯 통째 제거(user-invoked).
+    # 리스 확인→등록 조회→git worktree remove→브랜치 정리→장부 엔트리 삭제를 한 번에. prune-stale
     # (worktree 부재 장부만 정리·안전)과 달리 **실 worktree 를 지운다** — 사용자 명시 호출 전제
     # (PM 자율 실행 아님·삭제-위임). 장부 엔트리 제거로 `add` 가 빈 번호 재사용(번호 skip footgun 종결).
     p_wt_remove = wt_sub.add_parser(
         "remove",
-        help="슬롯 통째 제거 — worktree remove + 전용 브랜치 정리 + 장부 엔트리 삭제 (원자·사용자 "
-             "명시 호출·prune-stale 과 달리 실 worktree 삭제·번호 재사용). ⚠ 미머지 전용 "
+        help="슬롯 통째 제거 — worktree remove + 브랜치 정리 + 장부 엔트리 삭제 (사용자 "
+             "명시 호출·prune-stale 과 달리 실 worktree 삭제·번호 재사용). ⚠ 미머지 "
              "브랜치는 보존되며 같은 번호 base-경로 재생성을 막는다(브랜치 정리 후 재시도).",
     )
     p_wt_remove.add_argument("slot", help="제거할 슬롯 (work/<repo>_<N>·release 와 동일 식별 방식)")

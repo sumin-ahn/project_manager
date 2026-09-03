@@ -4645,11 +4645,12 @@ class ClusterCloser:
         return reasons
 
     def _step_merge(self) -> str | None:
-        """통합 브랜치 머지 — 통합 브랜치를 가진 트리에서 `--no-ff` 로 받는다.
+        """통합 브랜치 머지 — 통합 브랜치를 가진 트리에서 `--no-ff` 로 받고, 묶음 브랜치를 정리한다.
 
         묶음 브랜치(`branch`)는 사람이 선언한 묶음만 갖는다(크기 1 자동 장부는 없다) — 그
         선언이 없으면 받을 브랜치가 없어 무대상이다. 기준 브랜치 미선언은 그 축이 아니라
-        판정 기준의 부재라 정지다."""
+        판정 기준의 부재라 정지다. 머지가 끝난(또는 이미 조상인) 묶음 브랜치는 그 자리에서
+        삭제를 시도한다(`_delete_cluster_branch` — 거부는 사유 1줄이고 종결을 뒤집지 않는다)."""
         blocks = self._pre_merge()
         if blocks:
             return "\n".join(blocks)
@@ -4659,10 +4660,11 @@ class ClusterCloser:
             print("  묶음 브랜치 미선언 — 무대상")
             return None
         tree = self._code_tree()
+        target_tree = self._integration_worktree(integration)
         if self._is_ancestor(tree, source, integration):
             print(f"  {source} 는 이미 {integration} 에 있다 — 건너뜀")
+            self._delete_cluster_branch(target_tree, source)
             return None
-        target_tree = self._integration_worktree(integration)
         if target_tree is None:
             # 선검사가 같은 관측으로 이미 막았어야 하는 자리 — 그 사이에 트리가 사라졌다.
             return _CLOSE_INTEGRATION_TREE_MISSING.format(integration=integration)
@@ -4670,6 +4672,7 @@ class ClusterCloser:
         message = _CLOSE_MERGE_MESSAGE.format(unit=unit, title=title)
         if self._dry_run:
             print(f"  [dry-run] cwd={target_tree} git merge --no-ff -m \"{message}\" {source}")
+            self._delete_cluster_branch(target_tree, source)
             return None
         rc, out = self._git(target_tree, ["merge", "--no-ff", "-m", message, source])
         if rc != 0:
@@ -4677,7 +4680,30 @@ class ClusterCloser:
             return (f"머지 충돌 — 원상 복구했다(merge --abort). 충돌을 해소한 뒤 다시 "
                     f"실행하라: {out.rstrip()}")
         print(f"  ✓ {source} → {integration} ({message})")
+        self._delete_cluster_branch(target_tree, source)
         return None
+
+    def _delete_cluster_branch(self, tree: "Path | None", source: str) -> None:
+        """묶음 브랜치 삭제 시도 1회 — 통합 브랜치를 든 트리에서. 결과는 1줄 보고다.
+
+        브랜치 수명은 묶음 수명이다. 통합에 들어간 뒤에도 남는 묶음 브랜치가 잔재의 한 무리라,
+        종결이 그 자리에서 삭제를 시도한다. **rc≠0 은 종결을 실패시키지 않는다** — 반납
+        (`release`)은 슬롯의 체크아웃을 바꾸지 않으므로 이 시점에 작업 슬롯이 묶음 브랜치를
+        아직 쥐고 있고, 그때 git 이 거부하는 것이 정상 형상이다(그 자리의 삭제는 슬롯 제거
+        `worktree_pool.remove_slot` 이 맡는다). `git branch -d` 고정 — `-D` 승격은 없다.
+        """
+        if tree is None:
+            print(f"  묶음 브랜치 {source} — 통합 트리가 없어 삭제를 시도하지 않는다")
+            return
+        if self._dry_run:
+            print(f"  [dry-run] cwd={tree} git branch -d {source}")
+            return
+        rc, out = self._git(tree, ["branch", "-d", source])
+        if rc == 0:
+            print(f"  ✓ 묶음 브랜치 {source} 삭제")
+            return
+        detail = next((line.strip() for line in out.splitlines() if line.strip()), "")
+        print(f"  묶음 브랜치 {source} 보존 — {detail}")
 
     def _step_release(self) -> str | None:
         """슬롯 반납 — dirty 슬롯은 거부다(자동 경로라고 산출물을 치우지 않는다).

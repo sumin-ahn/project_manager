@@ -4020,6 +4020,34 @@ def test_is_dirty_rc_nonzero_is_conservatively_dirty(wp):
     assert wp._is_dirty(wp.slot_path("work/A_1"), git_runner=_StatusFailGit()) is True
 
 
+# ── 등록 조회 — 파괴 판단의 입력(T-0902) ──────────────────────────────────────
+
+
+def test_worktree_registered_matches_by_path_value_and_fails_loud(wp):
+    """등록 조회는 경로 값으로 판정하고, 조회 실패는 값으로 접지 않고 raise 한다.
+
+    이 판정이 `remove_slot` 에서 디렉터리를 지울지 말지를 가른다 — 등록 여부를 모르는 채
+    "미등록" 으로 접으면 git 이 아직 쥐고 있는 트리를 날린다. 슬롯 식별자가 아니라 경로 값을
+    보므로 bare 엔트리·다른 슬롯은 자기 자신이 아니다.
+    """
+    target = wp.slot_path("work/A_1")
+    listing = (f"worktree /nowhere/A.git\nbare\n\n"
+               f"worktree {target}\nHEAD 0123abc\nbranch refs/heads/A_1\n")
+
+    def _listed(argv):
+        return (0, listing) if argv == ["worktree", "list", "--porcelain"] else (0, "")
+
+    assert wp._worktree_registered(target, git_runner=_listed) is True
+    assert wp._worktree_registered(wp.slot_path("work/A_2"), git_runner=_listed) is False
+
+    def _failing(argv):
+        return (128, "fatal: not a git repository\n")
+
+    with pytest.raises(RuntimeError) as exc:
+        wp._worktree_registered(target, git_runner=_failing)
+    assert "worktree list" in str(exc.value)
+
+
 def test_porcelain_status_lines_filters_warnings(wp):
     """`_porcelain_status_lines` 가 porcelain 엔트리만 추리고 경고/빈 줄을 거른다(T-0070)."""
     out = (
