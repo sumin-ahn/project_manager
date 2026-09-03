@@ -21,6 +21,7 @@ monkeypatch 패턴 동류). board_root/areas_file 가 *함수*라 monkeypatch �
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -362,3 +363,93 @@ def test_board_submodule_ignore_all_zero_leak(tmp_path):
     assert pull.returncode == 0, f"board pull 복구 실패: {pull.stderr}"
     assert (board_sub / "board-file.txt").read_text(encoding="utf-8") == "v2 — board advanced\n", \
         "pull 복구 후에도 board v2 전진분을 못 되찾음."
+
+
+# ════════════════════════════════════════════════════════════════════════
+# A6 — pre-push 훅 설치 자리 (자기 `.git` 디렉터리 아래에만 쓴다 · T-0899)
+# ════════════════════════════════════════════════════════════════════════
+# git 은 훅 위치를 물으면 트리를 걸어올라가 답한다 — 그 답을 그대로 쓰면 상위 저장소나
+# `core.hooksPath` 가 가리키는 보호훅 폴더의 pre-push 를 덮는다(2026-09-03 실측·원본 소실).
+# 판정 입력은 자기 `.git` 디렉터리와 해소된 훅 폴더 **두 값**뿐이라, 형상 4종을 그 두 값으로
+# 직접 세운다(git 미호출·결정적). 실 git 해소를 태우는 end-to-end 는 tests/test_pm_import.py
+# 의 `test_into_non_git_subdir_leaves_parent_hook_untouched` 가 본다.
+
+# 엔진이 덮으면 안 되는 남의 훅 — 상위 저장소·보호훅 폴더 자리에 미리 놓고 바이트를 대조한다.
+FOREIGN_HOOK_BODY = "#!/bin/sh\n# 채택자가 직접 쓴 훅\nexit 0\n"
+
+
+def _resolved_key(path: Path) -> str:
+    """엔진이 비교에 쓰는 정규화 형태 (`install_pre_push_hook` 과 같은 규칙)."""
+    return os.path.normcase(str(path.resolve(strict=False)))
+
+
+def _git_answers(board, monkeypatch, hooks: Path) -> Path:
+    """git 이 그 훅 폴더를 답한 형상 — 해소는 stub 하고 설치 자리 판정만 태운다."""
+    monkeypatch.setattr(board, "_hooks_dir", lambda: hooks)
+    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    return hooks
+
+
+def test_hook_installs_under_own_git_dir(board, monkeypatch, capsys):
+    """자기 `.git` 디렉터리 아래로 해소되면 설치한다 (단일 clone 의 기본 형상)."""
+    (board._tmp / ".git").mkdir()
+    hooks = _git_answers(board, monkeypatch, board._tmp / ".git" / "hooks")
+
+    assert board.install_pre_push_hook() is True
+
+    body = (hooks / "pre-push").read_text(encoding="utf-8")
+    assert board._PM_HOOK_SIGNATURE in body
+    # 길이는 엔진 본문에서 유도한다 — 값을 복제하면 본문 한 글자에 이 테스트가 거짓 red 다.
+    # 그래도 보호훅(22538 바이트)과는 세 자릿수로 갈려 덮어쓰기는 이 대조에 걸린다.
+    assert len(body.encode("utf-8")) == len(
+        board.pre_push_hook_body("python3").encode("utf-8"))
+    assert capsys.readouterr().err == ""       # 설치했으면 사유를 낼 것이 없다
+
+
+def test_hook_refuses_parent_repo_hooks_dir(board, monkeypatch, capsys):
+    """비-git 하위 폴더에서 상위 저장소로 걸어올라간 해소는 거부한다 — 그 훅 바이트 불변."""
+    parent_hooks = board._tmp / ".git" / "hooks"
+    parent_hooks.mkdir(parents=True)
+    parent_hook = parent_hooks / "pre-push"
+    parent_hook.write_text(FOREIGN_HOOK_BODY, encoding="utf-8", newline="\n")
+    before = parent_hook.read_bytes()
+    child = board._tmp / "tooling"             # 상위 저장소 안 비-git 하위 폴더
+    child.mkdir()
+    monkeypatch.setattr(board, "REPO", child)
+    _git_answers(board, monkeypatch, parent_hooks)
+
+    assert board.install_pre_push_hook() is False
+
+    assert parent_hook.read_bytes() == before
+    assert not (child / ".git").exists()       # 자기 자리를 새로 만들지도 않는다
+    err = capsys.readouterr().err
+    assert str(child / ".git") in err, f"미설치 사유에 확인한 경로가 없다: {err!r}"
+
+
+def test_hook_refuses_hooks_path_outside_own_git(board, monkeypatch, capsys):
+    """`core.hooksPath` 가 자기 `.git` 밖(보호훅 폴더)을 가리키면 쓰지 않는다."""
+    (board._tmp / ".git").mkdir()
+    outside = board._tmp / ".project_manager" / ".local" / "repo-hooks" / "project_manager"
+    outside.mkdir(parents=True)
+    protected = outside / "pre-push"
+    protected.write_text(FOREIGN_HOOK_BODY, encoding="utf-8", newline="\n")
+    before = protected.read_bytes()
+    _git_answers(board, monkeypatch, outside)
+
+    assert board.install_pre_push_hook() is False
+
+    assert protected.read_bytes() == before
+    assert not (board._tmp / ".git" / "hooks").exists()   # 다른 자리로 우회 설치하지도 않는다
+    err = capsys.readouterr().err
+    assert _resolved_key(outside) in err, f"미설치 사유에 훅 폴더 경로가 없다: {err!r}"
+
+
+def test_hook_installs_when_hooks_path_points_inside_own_git(board, monkeypatch):
+    """`core.hooksPath` 가 자기 `.git/hooks` 를 절대경로로 선언한 형상(PM 홈)에서도 설치한다."""
+    (board._tmp / ".git").mkdir()
+    declared = (board._tmp / ".git" / "hooks").resolve()   # git 이 돌려주는 절대경로 선언
+    hooks = _git_answers(board, monkeypatch, declared)
+
+    assert board.install_pre_push_hook() is True
+
+    assert board._PM_HOOK_SIGNATURE in (hooks / "pre-push").read_text(encoding="utf-8")

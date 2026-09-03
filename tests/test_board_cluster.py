@@ -4,7 +4,7 @@
   (1) `cluster new` 가 장부와 통합 브랜치를 만들고 멤버 티켓에 귀속을 박는다.
   (2) 발행(`new`)·승격(`promote`)이 그 티켓의 크기 1 장부를 만들고 기준 브랜치·예산을 박는다
       (활성 묶음에 자동으로 끼우지 않는다 — 묶는 것은 사람 선언뿐).
-  (3) 필드도 장부도 없는 티켓은 **읽는 자리에서** 크기 1 로 접힌다(파일 마이그레이션 0).
+  (3) 재개방(`reopen`)도 같은 자리에서 귀속하고, 멤버는 **장부만** 답한다(합성 0).
   (4) 장부 관측(멤버 부재·중복 귀속)은 advisory 로만 보인다(never-block · 장부만 읽는다).
 
 hermetic 패턴은 `test_board_new_draft_gate.py` 와 동형 — 실 board git + bare remote 를 tmp 에
@@ -230,6 +230,35 @@ def _all_ticket_files(board) -> list[Path]:
 def _ticket_fm(board, tid: str) -> dict:
     _status, path = board.find_ticket_exact(tid)
     return board.load_ticket(path)[0]
+
+
+def _write_legacy_ticket(board_dir: Path, tid: str, *, status: str = "done",
+                         cluster: str | None = None,
+                         discarded_from: str | None = None) -> Path:
+    """장부 도입 이전 형상의 티켓 — 발행 경로를 타지 않고 `<status>/` 에 직접 놓는다."""
+    text = (_TEMPLATE_TEXT.replace("T-NNNN", tid).replace("<제목>", "구세대")
+            .replace("status: open", f"status: {status}"))
+    text = (text.replace("cluster:\n", f"cluster: {cluster}\n") if cluster
+            else text.replace("cluster:\n", ""))
+    if discarded_from is not None:
+        text = text.replace("tags: []", f"discarded_from: {discarded_from}\ntags: []")
+    path = board_dir / "tickets" / status / f"{tid}-legacy.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8", newline="\n")
+    _git(["add", "-A"], board_dir)
+    _git(["commit", "-qm", f"legacy {tid}"], board_dir)
+    return path
+
+
+def _reopen_args(tid: str, reason: str) -> argparse.Namespace:
+    """`reopen` 서브파서가 만드는 Namespace — 정체성 인자가 없다(파서 실측)."""
+    return argparse.Namespace(id=tid, reason=reason)
+
+
+def _head_files(board_dir: Path) -> set[str]:
+    """board git 마지막 커밋이 담은 경로들 — mutation 의 커밋 스코프."""
+    out = _git(["show", "--name-only", "--pretty=format:", "HEAD"], board_dir).stdout
+    return {line.strip() for line in out.splitlines() if line.strip()}
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -532,7 +561,7 @@ def test_cluster_new_separates_internal_overlap_from_outside_overlap(env, capsys
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 크기 1 장부 — 발행 · 승격 · 필드 부재
+# 크기 1 장부 — 발행 · 승격 · 재개방
 # ════════════════════════════════════════════════════════════════════════
 
 @requires_git
@@ -579,22 +608,149 @@ def test_new_keeps_its_own_ledger_while_a_declared_cluster_is_active(env, capsys
 
 
 @requires_git
-def test_ticket_without_the_field_reads_as_a_size_one_cluster(env):
-    """필드도 장부도 없는 구세대 티켓 — 읽는 자리에서 크기 1 (파일 마이그레이션 0)."""
-    board, board_dir = env
-    legacy = board_dir / "tickets" / "open" / "T-0777-legacy.md"
-    legacy.write_text(
-        _TEMPLATE_TEXT.replace("T-NNNN", "T-0777").replace("<제목>", "구세대")
-        .replace("cluster:\n", ""),
-        encoding="utf-8", newline="\n")
+def test_cluster_members_without_ledger_is_empty(env, capsys):
+    """멤버는 장부가 선언한다 — 이름 모양으로 멤버를 합성하지 않는다(구세대 티켓 포함).
 
+    이름 해석(`ticket_cluster`)은 남는다 — 종결 티켓도 자기 묶음 id 는 갖는다. 사라진 것은
+    멤버 합성이고, 그 빈 튜플이 조회 부재와 준비 거부의 입력이다.
+    """
+    board, board_dir = env
+    legacy = _write_legacy_ticket(board_dir, "T-0777", status="open")
     fm = board.load_ticket(legacy)[0]
 
     assert "cluster" not in fm
     assert board.ticket_cluster("T-0777", fm) == "C-T-0777"
-    assert board.cluster_members("C-T-0777") == ("T-0777",)
     assert board.load_cluster("C-T-0777") is None
+    assert board.cluster_members("C-T-0777") == ()
+    # 없는 티켓 ID 모양도 같은 빈 값이다(이름 모양은 입력이 아니다).
+    assert board.cluster_members("C-T-9999") == ()
     assert board.lint_clusters() == []      # 장부가 없으니 관측할 것도 없다.
+
+    # 선언된 묶음만 멤버를 답한다 — 멤버가 흡수된 자동 장부 이름도 빈 값이다.
+    first = _issue_ticket(board, "선언된 멤버")
+    second = _issue_ticket(board, "선언된 멤버 둘")
+    assert board.cmd_cluster(_cluster_args(
+        "new", "declared", tickets=f"{first},{second}")) == 0
+    capsys.readouterr()
+
+    assert board.cluster_members("C-declared") == (first, second)
+    assert board.cluster_members(f"C-{first}") == ()
+
+
+@requires_git
+def test_reopen_legacy_done_creates_size_one_ledger(env, capsys):
+    """장부 없는 done 티켓의 reopen — open 진입 자리에서 자기 장부를 만든다.
+
+    장부 없이 open 으로 돌아오면 라운드 예산·완료 기록이 읽을 선언이 없어 그 티켓은 위임에서
+    멈춘다(장부를 손으로 만들어야 종결되던 실증). 발행·승격과 같은 술어·같은 생성이다.
+    """
+    board, board_dir = env
+    _write_legacy_ticket(board_dir, "T-0500")
+    capsys.readouterr()
+
+    rc = board.cmd_reopen(_reopen_args("T-0500", "오처리 복구"))
+
+    assert rc == 0
+    fm = _ticket_fm(board, "T-0500")
+    assert fm["status"] == "open"
+    assert fm["cluster"] == "C-T-0500"
+    ledger = board.load_cluster("C-T-0500")
+    assert ledger["tickets"] == ["T-0500"]
+    assert ledger["base_branch"] == _BASE_BRANCH
+    assert ledger["budget"] == board.CLUSTER_BUDGET_DEFAULT
+    assert ledger["status"] == board.CLUSTER_STATUS_OPEN
+    assert board.cluster_members("C-T-0500") == ("T-0500",)
+    # 장부는 board-git 공유 파일이다 — 같은 커밋 스코프로 실린다(미커밋으로 남으면 다른
+    # 클론에서 부재다).
+    head = _head_files(board_dir)
+    assert "tickets/clusters/C-T-0500.md" in head, head
+    assert "tickets/open/T-0500-legacy.md" in head, head
+    assert _git(["status", "--porcelain", "--", "tickets"], board_dir).stdout == ""
+
+
+@requires_git
+def test_reopen_keeps_declared_cluster_and_does_not_touch_ledger(env, capsys):
+    """이미 귀속된 티켓의 reopen 은 장부를 손대지 않는다 — 덮으면 선언이 사라진다.
+
+    무조건 귀속하면 같은 이름의 장부가 덮여 `status`·`budget`·`tickets` 가 기본값으로
+    되돌아가고, 사람이 선언한 묶음의 멤버는 자기 이름 장부와 옛 장부에 이중으로 귀속된다.
+    """
+    board, board_dir = env
+    _write_legacy_ticket(board_dir, "T-0501", cluster="C-declared")
+    ledger_fm = board._new_cluster_fm(
+        "C-declared", ["T-0501", "T-0502"], base_branch=_BASE_BRANCH,
+        branch="task/declared")
+    ledger_fm["status"] = "closed"
+    ledger_path = board.dump_cluster(ledger_fm)
+    before = ledger_path.read_bytes()
+    _git(["add", "-A"], board_dir)
+    _git(["commit", "-qm", "declared ledger"], board_dir)
+    capsys.readouterr()
+
+    rc = board.cmd_reopen(_reopen_args("T-0501", "묶음 재작업"))
+
+    assert rc == 0
+    assert _ticket_fm(board, "T-0501")["cluster"] == "C-declared"
+    assert ledger_path.read_bytes() == before      # status·budget·tickets 전부 불변
+    assert not board.cluster_ledger_path("C-T-0501").exists()
+    assert board.cluster_members("C-declared") == ("T-0501", "T-0502")
+    # 만지지 않은 파일은 커밋 스코프에도 없다.
+    assert all(not name.startswith("tickets/clusters/")
+               for name in _head_files(board_dir)), _head_files(board_dir)
+
+
+@requires_git
+def test_reopen_binds_to_an_existing_ledger_without_overwriting_it(env, capsys):
+    """필드는 비었는데 장부가 이미 이 티켓을 담고 있으면 만들지 않고 역참조만 복구한다.
+
+    구세대 티켓 중에는 종결을 위해 장부를 손으로 만든 자산이 있다(실 board 의 C-T-0866).
+    필드 유무만 보고 같은 이름으로 새 장부를 만들면 그 장부가 기본값으로 덮여
+    `base_branch`·`status`·`close_step` 이 사라지고, 멤버가 여럿이면 나머지 멤버가 장부에서
+    떨어져 나간다. 귀속 판정은 필드와 장부 파일 두 축을 다 본다(`_cluster_of_record`).
+    """
+    board, board_dir = env
+    _write_legacy_ticket(board_dir, "T-0503")
+    ledger_fm = board._new_cluster_fm("C-T-0503", ["T-0503"], base_branch="task/main")
+    ledger_fm["status"] = "closed"
+    ledger_fm["close_step"] = "board"
+    ledger_fm["replans"] = []
+    ledger_path = board.dump_cluster(ledger_fm)
+    before = ledger_path.read_bytes()
+    _git(["add", "-A"], board_dir)
+    _git(["commit", "-qm", "hand-made ledger"], board_dir)
+    capsys.readouterr()
+
+    rc = board.cmd_reopen(_reopen_args("T-0503", "구세대 재작업"))
+
+    assert rc == 0
+    fm = _ticket_fm(board, "T-0503")
+    assert fm["status"] == "open"
+    assert fm["cluster"] == "C-T-0503"            # 역참조만 복구한다.
+    assert ledger_path.read_bytes() == before     # base_branch·status·close_step 전부 불변
+    assert board.cluster_members("C-T-0503") == ("T-0503",)
+    # 장부를 만지지 않았으므로 board-git 커밋 스코프에도 없다.
+    assert all(not name.startswith("tickets/clusters/")
+               for name in _head_files(board_dir)), _head_files(board_dir)
+
+
+@requires_git
+def test_reopen_to_draft_creates_no_ledger(env, capsys):
+    """`discarded_from: draft` 복귀는 장부를 만들지 않는다 — 승격이 그 자리를 받는다.
+
+    draft 명세는 공유 board 밖이라(`cmd_new` 와 같은 규칙) 지금 장부를 만들면 다른 클론에
+    없는 티켓을 가리키는 장부가 공유된다.
+    """
+    board, board_dir = env
+    _write_legacy_ticket(board_dir, "T-0502", status="discarded", discarded_from="draft")
+    capsys.readouterr()
+
+    rc = board.cmd_reopen(_reopen_args("T-0502", "draft 로 복귀"))
+
+    assert rc == 0
+    assert (board_dir / "tickets" / ".drafts" / "T-0502-legacy.md").exists()
+    assert not board.clusters_dir().exists()
+    assert not _ticket_fm(board, "T-0502").get("cluster")
+    assert board.cluster_members("C-T-0502") == ()
 
 
 @requires_git
@@ -719,35 +875,22 @@ def test_cluster_show_reports_a_missing_ledger(env, capsys):
 
 
 @requires_git
-def test_show_refuses_a_ticket_shaped_name_with_no_such_ticket(env, capsys):
-    """장부 없는 크기 1 폴백은 **티켓 실재**를 본다 — 이름 모양만으로 멤버를 합성하지 않는다."""
-    board, _board_dir = env
+def test_cluster_show_without_ledger_is_not_found(env, capsys):
+    """장부 없음은 rc 2 하나다 — 조회가 묶음을 합성하던 rc 0 경로는 없다.
 
-    rc = board.cmd_cluster(_cluster_args("show", "T-9999"))
-
-    assert rc == 2
-    assert "cluster not found: C-T-9999" in capsys.readouterr().err
-    # 준비(`prepare --cluster C-T-9999`)가 거부하는 입력도 이 빈 값이다(같은 seam).
-    assert board.cluster_members("C-T-9999") == ()
-
-
-@requires_git
-def test_show_refuses_the_self_name_of_a_ticket_that_declares_another_cluster(
-        env, capsys):
-    """다른 묶음을 선언한 티켓은 자기 이름의 가짜 묶음으로 열리지 않는다."""
-    board, _board_dir = env
-    first = _issue_ticket(board, "선언된 멤버")
-    second = _issue_ticket(board, "선언된 멤버 둘")
-    assert board.cmd_cluster(_cluster_args(
-        "new", "declared", tickets=f"{first},{second}")) == 0
+    티켓이 실재하는 이름(구세대 티켓의 자기 이름)이 그 경로의 입력이었다 — 조회가 선언한 적
+    없는 묶음을 만들어 보이면 준비 표면도 같은 유령을 받는다.
+    """
+    board, board_dir = env
+    _write_legacy_ticket(board_dir, "T-0777", status="open")
     capsys.readouterr()
-    assert _ticket_fm(board, first)["cluster"] == "C-declared"
-    assert not board.cluster_ledger_path(f"C-{first}").exists()
 
-    rc = board.cmd_cluster(_cluster_args("show", first))
+    rc = board.cmd_cluster(_cluster_args("show", "T-0777"))
 
+    captured = capsys.readouterr()
     assert rc == 2
-    assert f"cluster not found: C-{first}" in capsys.readouterr().err
-    # 크기 1 폴백이 여기서 열리면 선언한 적 없는 묶음이 준비 표면에도 생긴다.
-    assert board.cluster_members(f"C-{first}") == ()
-    assert board.cluster_members("C-declared") == (first, second)
+    assert "cluster not found: C-T-0777" in captured.err
+    assert captured.out == ""       # 크기 1 해석 rc 0 경로가 남으면 여기 값이 나온다
+    # 없는 티켓 ID 모양도 같은 답·같은 문구다(새 문구 0).
+    assert board.cmd_cluster(_cluster_args("show", "T-9999")) == 2
+    assert "cluster not found: C-T-9999" in capsys.readouterr().err

@@ -484,17 +484,22 @@ def test_reopen_rejects_a_non_terminal_ticket(board):
 
 
 def test_reopened_ticket_runs_the_normal_cycle_again(board):
-    """왕복 — done → reopen → claim → complete 가 정상 사이클로 돈다."""
+    """왕복 — done → reopen → claim → complete 가 정상 사이클로 돈다.
+
+    되돌린 티켓은 발행된 티켓과 같은 형상이다 — reopen 이 open 진입 자리에서 크기 1 장부를
+    만들므로 완료도 다른 열린 티켓과 같이 그 묶음 결속으로 한다(`--cluster-close`).
+    """
     _seed(board, status="done", claimed_by="alice/pm_1",
           completed_at="2026-08-20T01:00:00+00:00")
 
     assert board.cmd_reopen(argparse.Namespace(id="T-0001", reason="오처리 복구")) == 0
+    assert board.load_cluster("C-T-0001")["tickets"] == ["T-0001"]
     assert board.cmd_claim(argparse.Namespace(
         id="T-0001", repo="pm", slot=1, user="alice")) == 0
     fm, _body = board.load_ticket(_ticket_path(board, "T-0001", "claimed"))
     assert fm["claimed_by"] == "alice/pm_1"
 
-    assert _call(board, "complete") == 0
+    assert _call(board, "complete", cluster_close="C-T-0001") == 0
     assert list((board.tickets_dir() / "done").glob("T-0001-*.md"))
 
 
@@ -512,7 +517,7 @@ def test_all_deferred_completion_is_refused_but_the_discard_path_works(board, ca
     # 되돌린 뒤 다시 claim→complete 를 시도하면 전량 이월이라 막힌다(그 형상이 done 이 아님).
     assert board.cmd_claim(argparse.Namespace(
         id="T-0001", repo="pm", slot=1, user="alice")) == 0
-    assert _call(board, "complete") == 1
+    assert _call(board, "complete", cluster_close="C-T-0001") == 1
     assert "discard" in capsys.readouterr().err
 
     assert board.cmd_unclaim(argparse.Namespace(

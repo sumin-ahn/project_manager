@@ -5,7 +5,9 @@
   - lint 함수는 모듈-레벨 경로 상수(REPO·TICKETS_DIR·DECISIONS_DIR·IDEAS_DIR)를 tmp_path
     로 monkeypatch 해 구동한다 — **실 .project_manager/wiki/ 미접촉**. `_collect_wikilink_files`
     가 `REPO/.project_manager/wiki` 를 직접 계산하므로 tmp 트리를 그 레이아웃으로 깐다.
-  - 훅 테스트는 `install_pre_push_hook` 의 `_hooks_dir`/`_detect_py` 를 stub 해 tmp 에 쓴다.
+  - 훅 테스트는 tmp REPO 에 자기 `.git` 디렉토리를 세우고 `install_pre_push_hook` 의
+    `_hooks_dir`/`_detect_py` 를 stub 해 그 아래에 쓴다 — 설치는 자기 `.git` 아래로 해소될
+    때만 선다(T-0899).
 
 도구는 패키지가 아니므로 importlib 동적 로드 (test_pm_log 의 _load_module 관용구).
 """
@@ -692,9 +694,21 @@ def test_gate_zero_on_unstable_ref_advice_only(board, monkeypatch, tmp_path):
 
 # ── ⑥ pre-push 훅 본문에 lint --gate 단계 포함 ────────────────────────────────
 
-def test_pre_push_hook_includes_lint_gate(board, monkeypatch, tmp_path):
-    hooks = tmp_path / "hooks"
+def _own_git_hooks(board, monkeypatch, root: Path) -> Path:
+    """자기 `.git` 디렉토리를 갖춘 tmp REPO + 그 아래 훅 폴더 — 설치가 서는 형상(T-0899).
+
+    엔진은 해소된 훅 폴더가 `REPO/.git` 아래일 때만 쓴다. 훅 폴더를 저장소 밖에 두면 설치
+    자체가 서지 않아 본문을 볼 수 없다.
+    """
+    monkeypatch.setattr(board, "REPO", root)
+    (root / ".git").mkdir(exist_ok=True)
+    hooks = root / ".git" / "hooks"
     monkeypatch.setattr(board, "_hooks_dir", lambda: hooks)
+    return hooks
+
+
+def test_pre_push_hook_includes_lint_gate(board, monkeypatch, tmp_path):
+    hooks = _own_git_hooks(board, monkeypatch, tmp_path)
     monkeypatch.setattr(board, "_detect_py", lambda: "python3")
     assert board.install_pre_push_hook() is True
     text = (hooks / "pre-push").read_text(encoding="utf-8")
@@ -706,8 +720,7 @@ def test_pre_push_hook_includes_lint_gate(board, monkeypatch, tmp_path):
 
 def test_pre_push_hook_idempotent(board, monkeypatch, tmp_path):
     """재설치 안전 — 두 번 설치해도 동일 본문 (board.py init 가 재설치)."""
-    hooks = tmp_path / "hooks"
-    monkeypatch.setattr(board, "_hooks_dir", lambda: hooks)
+    hooks = _own_git_hooks(board, monkeypatch, tmp_path)
     monkeypatch.setattr(board, "_detect_py", lambda: "python3")
     board.install_pre_push_hook()
     first = (hooks / "pre-push").read_text(encoding="utf-8")

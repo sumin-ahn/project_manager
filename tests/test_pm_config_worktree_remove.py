@@ -1,12 +1,12 @@
 """worktree 슬롯 제거 시스템화 — remove_slot 엔진 + `pm-config worktree remove` CLI (T-0333 · ADR-0051).
 
-worktree 슬롯 lifecycle 의 *제거 본체*(수동 `git worktree remove` 위임)를 단일 원자 커맨드로
+worktree 슬롯 lifecycle 의 *제거 본체*(수동 `git worktree remove` 위임)를 단일 커맨드로
 닫는다. PM 69 footgun 체인(수동 remove → dangling 장부 → `add` 가 번호 skip → 뒤늦은 prune)을
 원천 종결하는 게 이 티켓의 핵심이다. 검증:
 
   - **remove_slot 엔진**(worktree_pool·DI seam·mock git): 정상 제거 / dirty 거부 / --force stash
-    보존 / 활성 리스 거부 / 미머지 브랜치 보존 / 공유 브랜치 스킵 / detached / 장부 없음 무해 종료 /
-    worktree remove 실패 원자성.
+    보존 / 활성 리스 거부 / 미머지 브랜치 보존 / 제외 집합 보존 / detached / 장부 없음 무해 종료 /
+    worktree remove 실패 뒤 등록 판정(등록 잔존 = 무변경 · 등록 소실 = 잔재 정리 후 마무리).
   - **remove→add 번호 재사용 회귀**(실 git·hermetic 임시 repo): remove_slot 경유 시 다음 add 가
     빈 번호를 재사용(skip 없음) + 대조(수동 git worktree remove 는 dangling 장부로 번호 skip).
   - **cmd_worktree_remove CLI 배선**(pm_config·mock worktree_pool 주입): remove_slot 호출 / --force
@@ -26,6 +26,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
+from _git_fixture import init_git_repo
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -77,40 +79,73 @@ def wp(proj):
 
 
 class RemoveFakeGit:
-    """remove_slot DI seam 용 mock git — status/symbolic-ref/worktree remove·prune/branch -d/stash 모델.
+    """remove_slot DI seam 용 mock git — worktree list/status/symbolic-ref/remove·prune/branch -d/stash 모델.
 
+    - `slot` → 이 대역이 등록 상태를 모델링할 슬롯(경로는 `wp.slot_path(slot)` 으로 해소).
+    - `registered` → `worktree list --porcelain` 이 그 경로를 등록으로 내는지(False=미등록).
+    - `list_rc` → `worktree list --porcelain` rc(≠0=조회 실패→판정 불능이라 raise).
     - `dirty` → `status --porcelain` 이 변경 1줄(=dirty)·아니면 빈(=clean).
     - `head` → 슬롯 worktree 의 현재 브랜치(`symbolic-ref HEAD` full ref·T-0377). None=detached(rc≠0).
+    - `bare_head` → bare 기본 브랜치(`rev-parse --symbolic-full-name HEAD`·머지 판정 기준).
+      슬롯 HEAD 와 argv 가 달라(T-0902) 한 대역이 두 값을 따로 모델링한다.
     - `branch_merged` → `git branch -d` rc(True=머지완료 rc0 삭제·False=미머지 rc1 보존).
-    - `remove_rc` → `git worktree remove` rc(0=성공·≠0=실패→RuntimeError).
+    - `remove_rc` → `git worktree remove` rc(0=성공·≠0=실패).
+    - `deregisters_on_failure` → remove 가 rc≠0 인데 **등록은 이미 지워진** 실측 형상(읽기 전용
+      잔재). True 면 실패 후 등록 조회가 미등록으로 뒤집힌다.
     - `stash_rc` → `git stash push` rc(0=성공 보존·≠0=실패→제거 중단·작업 유실 방지·codex must-fix).
     - `stash_clears_dirty` → stash rc0 시 워킹트리 dirty 를 지우는지. True(정상 stash)면 이후
       `status --porcelain` 이 clean. False(submodule 내부 변경 등 top-level stash 가 못 담는 잔존)면
       stash rc0 라도 dirty 잔존 → remove_slot 이 stash-후 재검사로 중단(codex R2 must-fix 모델).
     """
 
-    def __init__(self, *, dirty=False, head=None, branch_merged=True, remove_rc=0,
+    def __init__(self, wp, *, slot="work/A_1", registered=True, list_rc=0,
+                 dirty=False, head=None, bare_head="main", branch_merged=True,
+                 remove_rc=0, deregisters_on_failure=False,
                  stash_rc=0, stash_clears_dirty=True):
+        self.slot_dir = wp.slot_path(slot)
+        self.registered = registered
+        self.list_rc = list_rc
         self.dirty = dirty
         self.head = head
+        self.bare_head = bare_head
         self.branch_merged = branch_merged
         self.remove_rc = remove_rc
+        self.deregisters_on_failure = deregisters_on_failure
         self.stash_rc = stash_rc
         self.stash_clears_dirty = stash_clears_dirty
         self.calls: list[list] = []
 
+    def _porcelain(self) -> str:
+        """`git worktree list --porcelain` 출력 — 등록돼 있으면 그 슬롯 엔트리 1건."""
+        if not self.registered:
+            return "worktree /nowhere/bare.git\nbare\n\n"
+        return (f"worktree /nowhere/bare.git\nbare\n\n"
+                f"worktree {self.slot_dir}\nHEAD 0123abc\n"
+                + (f"branch refs/heads/{self.head}\n" if self.head else "detached\n"))
+
     def __call__(self, argv: list) -> tuple[int, str]:
         self.calls.append(list(argv))
+        if argv == ["worktree", "list", "--porcelain"]:
+            if self.list_rc != 0:
+                return (self.list_rc, "fatal: not a git repository\n")
+            return (0, self._porcelain())
         if argv[:2] == ["status", "--porcelain"]:
             return (0, " M f.py\n") if self.dirty else (0, "")
         if argv == ["symbolic-ref", "HEAD"]:   # full ref — current_branch 가 refs/heads/ strip (T-0377).
             return (1, "fatal: not a symbolic ref\n") if self.head is None else (0, "refs/heads/" + self.head + "\n")
+        if argv == ["rev-parse", "--symbolic-full-name", "HEAD"]:   # bare 기본 브랜치(머지 판정 기준).
+            return (1, "fatal: ambiguous argument\n") if self.bare_head is None else (0, "refs/heads/" + self.bare_head + "\n")
         if argv[:2] == ["worktree", "remove"]:
-            return (self.remove_rc, "" if self.remove_rc == 0 else "fatal: cannot remove worktree\n")
+            if self.remove_rc == 0:
+                self.registered = False
+                return (0, "")
+            if self.deregisters_on_failure:
+                self.registered = False   # git 은 등록을 지운 뒤 트리 삭제에서 실패한다(실측).
+            return (self.remove_rc, "fatal: cannot remove worktree\n")
         if argv[:2] == ["worktree", "prune"]:
             return (0, "")
         if argv[:2] == ["branch", "-d"]:
-            return (0, "Deleted branch\n") if self.branch_merged else (1, "error: not fully merged\n")
+            return (0, "Deleted branch\n") if self.branch_merged else (1, "error: the branch is not fully merged\n")
         if argv[:2] == ["stash", "push"]:
             if self.stash_rc == 0:
                 if self.stash_clears_dirty:
@@ -123,9 +158,18 @@ class RemoveFakeGit:
         return any(c[: len(prefix)] == list(prefix) for c in self.calls)
 
 
-def _seed(wp, *leases):
+def _seed(wp, *leases, tree=True):
+    """리스 장부를 쓰고, 기본으로 그 슬롯 디렉터리도 세운다.
+
+    `remove_slot` 은 지울 트리가 실재하는지를 파일시스템에 묻는다(주입 runner 여부와 무관) —
+    hermetic 케이스도 슬롯 자리를 실물로 둬야 등록 조회 이후 경로를 탄다. `tree=False` 는
+    트리가 이미 사라진 형상(dangling 장부)을 재현하는 자리다.
+    """
     with wp._lease_lock():
         wp._write_ledger(list(leases))
+    if tree:
+        for lease in leases:
+            wp.slot_path(lease.slot).mkdir(parents=True, exist_ok=True)
 
 
 def _lease(wp, *, slot, repo, session="s1", pid=None, state="leased"):
@@ -136,7 +180,7 @@ def _lease(wp, *, slot, repo, session="s1", pid=None, state="leased"):
 def test_remove_slot_normal_removes_and_deletes_merged_branch(wp):
     """정상 제거 — idle·clean·전용 브랜치(머지 완료) → worktree remove + branch -d + 장부 삭제."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
-    git = RemoveFakeGit(head="A_1", branch_merged=True)
+    git = RemoveFakeGit(wp, head="A_1", branch_merged=True)
     result = wp.remove_slot("work/A_1", git_runner=git)
     assert result is not None
     assert git.did("worktree", "remove", str(wp.slot_path("work/A_1")))
@@ -151,7 +195,7 @@ def test_remove_slot_normal_removes_and_deletes_merged_branch(wp):
 def test_remove_slot_dirty_refused_without_force(wp):
     """dirty 거부 — dirty + force 아님 → RemoveRefused("dirty")·worktree 미제거·장부 보존."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
-    git = RemoveFakeGit(dirty=True, head="A_1")
+    git = RemoveFakeGit(wp, dirty=True, head="A_1")
     with pytest.raises(wp.RemoveRefused) as exc:
         wp.remove_slot("work/A_1", git_runner=git)
     assert exc.value.reason == "dirty"
@@ -162,7 +206,7 @@ def test_remove_slot_dirty_refused_without_force(wp):
 def test_remove_slot_force_stashes_dirty_and_removes(wp):
     """--force stash 보존 — dirty + force → stash push 후 강제 제거·stashed=True."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
-    git = RemoveFakeGit(dirty=True, head="A_1", branch_merged=True)
+    git = RemoveFakeGit(wp, dirty=True, head="A_1", branch_merged=True)
     result = wp.remove_slot("work/A_1", force=True, git_runner=git)
     assert result.stashed is True
     assert git.did("stash", "push")
@@ -179,13 +223,13 @@ def test_remove_slot_force_stash_failure_aborts_without_removing(wp):
     날린다. rc≠0 이면 RuntimeError 로 중단(아직 아무것도 안 지웠다)함을 박제한다.
     """
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
-    git = RemoveFakeGit(dirty=True, head="A_1", stash_rc=1)   # stash 실패.
+    git = RemoveFakeGit(wp, dirty=True, head="A_1", stash_rc=1)   # stash 실패.
     with pytest.raises(RuntimeError) as exc:
         wp.remove_slot("work/A_1", force=True, git_runner=git)
     assert "stash" in str(exc.value).lower()
     assert git.did("stash", "push")               # stash 는 시도했고,
     assert not git.did("worktree", "remove")      # 실패했으니 worktree 는 안 지운다(작업 유실 방지).
-    assert not git.did("branch", "-d")            # 브랜치도 미변경(원자).
+    assert not git.did("branch", "-d")            # 브랜치도 미변경.
     assert wp.list_leases()[0].slot == "work/A_1"  # 장부 보존.
 
 
@@ -197,20 +241,20 @@ def test_remove_slot_force_stash_residual_dirty_aborts(wp):
     worktree remove 미호출·장부 보존 — dirty submodule 작업이 `--force` 로 유실되는 것을 막는다.
     """
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
-    git = RemoveFakeGit(dirty=True, head="A_1", stash_rc=0, stash_clears_dirty=False)
+    git = RemoveFakeGit(wp, dirty=True, head="A_1", stash_rc=0, stash_clears_dirty=False)
     with pytest.raises(RuntimeError) as exc:
         wp.remove_slot("work/A_1", force=True, git_runner=git)
     assert "stash" in str(exc.value).lower()
     assert git.did("stash", "push")               # stash 는 성공(만들어짐),
     assert not git.did("worktree", "remove")      # 그래도 여전히 dirty → 제거 안 함(작업 유실 방지).
-    assert not git.did("branch", "-d")            # 브랜치 미변경(원자).
+    assert not git.did("branch", "-d")            # 브랜치 미변경.
     assert wp.list_leases()[0].slot == "work/A_1"  # 장부 보존.
 
 
 def test_remove_slot_force_stash_clears_dirty_proceeds(wp):
     """대조 — 정상 stash(rc0·워킹트리 clean)면 재검사 통과 → 정상 제거(재검사가 정상 경로를 막지 않음)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
-    git = RemoveFakeGit(dirty=True, head="A_1", stash_rc=0, stash_clears_dirty=True, branch_merged=True)
+    git = RemoveFakeGit(wp, dirty=True, head="A_1", stash_rc=0, stash_clears_dirty=True, branch_merged=True)
     result = wp.remove_slot("work/A_1", force=True, git_runner=git)
     assert result.stashed is True
     assert git.did("worktree", "remove")
@@ -220,7 +264,7 @@ def test_remove_slot_force_stash_clears_dirty_proceeds(wp):
 def test_remove_slot_force_override_active_lease_sets_forced_state(wp):
     """reviewer should-fix — --force 로 leased override 시 forced_state 에 원래 state 를 싣는다(CLI 경고용)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="other", state="leased"))
-    git = RemoveFakeGit(head="A_1", branch_merged=True)
+    git = RemoveFakeGit(wp, head="A_1", branch_merged=True)
     result = wp.remove_slot("work/A_1", force=True, git_runner=git)
     assert result.forced_state == "leased"
     assert wp.list_leases() == []
@@ -229,7 +273,7 @@ def test_remove_slot_force_override_active_lease_sets_forced_state(wp):
 def test_remove_slot_force_override_creating_sets_forced_state(wp):
     """--force 로 creating(in-flight) override 시 forced_state="creating" (leased 와 동형)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="creating"))
-    git = RemoveFakeGit(head="A_1", branch_merged=True)
+    git = RemoveFakeGit(wp, head="A_1", branch_merged=True)
     result = wp.remove_slot("work/A_1", force=True, git_runner=git)
     assert result.forced_state == "creating"
 
@@ -237,7 +281,7 @@ def test_remove_slot_force_override_creating_sets_forced_state(wp):
 def test_remove_slot_idle_removal_forced_state_none(wp):
     """정상(idle) 제거는 forced_state=None (강제 회수 아님·CLI 경고 불요)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
-    git = RemoveFakeGit(head="A_1", branch_merged=True)
+    git = RemoveFakeGit(wp, head="A_1", branch_merged=True)
     result = wp.remove_slot("work/A_1", git_runner=git)
     assert result.forced_state is None
 
@@ -249,7 +293,7 @@ def test_remove_slot_force_does_not_escalate_unmerged_branch_delete(wp):
     force 가 미머지 브랜치를 -D 로 날리지 않음을 박제(작업 유실 방지).
     """
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
-    git = RemoveFakeGit(head="A_1", branch_merged=False)
+    git = RemoveFakeGit(wp, head="A_1", branch_merged=False)
     result = wp.remove_slot("work/A_1", force=True, git_runner=git)
     assert result.branch_action == "preserved-unmerged"
     # 삭제 시도는 `branch -d`(안전) 고정 — `branch -D`(강제)는 절대 안 부른다.
@@ -258,13 +302,13 @@ def test_remove_slot_force_does_not_escalate_unmerged_branch_delete(wp):
 
 
 def test_remove_slot_real_path_missing_skips_remove_and_cleans_ledger(wp):
-    """suggestion 3 — 실경로 worktree dir 부재 + 장부 잔존 → remove 스킵·prune·장부 정리(dangling).
+    """suggestion 3 — worktree dir 부재 + 장부 잔존 → remove 스킵·prune·장부 정리(dangling).
 
-    git_runner 미주입(실경로) + 슬롯 dir 미생성 → real_path_missing True. worktree remove 를
+    지울 디렉터리가 없으면 파괴할 것도, git 에 등록을 물을 이유도 없다. worktree remove 를
     건너뛰고(지울 dir 없음) 장부 엔트리만 제거한다(prune-stale 와 겹치는 방어 경로·크래시 0).
     """
-    _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
-    # 슬롯 dir 미생성(부재) + git_runner=None → real_path_missing True (dirty/branch 판별 불가).
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"), tree=False)
+    # 슬롯 dir 미생성(부재) → 트리 부재 경로 (dirty/branch 판별 불가).
     result = wp.remove_slot("work/A_1")
     assert result is not None
     assert result.branch_action == "none"    # 슬롯 부재라 브랜치 판별 불가.
@@ -275,7 +319,7 @@ def test_remove_slot_real_path_missing_skips_remove_and_cleans_ledger(wp):
 def test_remove_slot_active_lease_refused_without_force(wp):
     """활성 리스 거부 — leased(사용 중) + force 아님 → RemoveRefused("active-lease")·아무 git op 없음."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="other", state="leased"))
-    git = RemoveFakeGit(head="A_1")
+    git = RemoveFakeGit(wp, head="A_1")
     with pytest.raises(wp.RemoveRefused) as exc:
         wp.remove_slot("work/A_1", git_runner=git)
     assert exc.value.reason == "active-lease"
@@ -287,7 +331,7 @@ def test_remove_slot_active_lease_refused_without_force(wp):
 def test_remove_slot_creating_state_also_refused_without_force(wp):
     """provisional(creating·in-flight 생성)도 활성으로 거부 — force 로만 (state=creating surface)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="creating"))
-    git = RemoveFakeGit(head="A_1")
+    git = RemoveFakeGit(wp, head="A_1")
     with pytest.raises(wp.RemoveRefused) as exc:
         wp.remove_slot("work/A_1", git_runner=git)
     assert exc.value.reason == "active-lease"
@@ -297,7 +341,7 @@ def test_remove_slot_creating_state_also_refused_without_force(wp):
 def test_remove_slot_force_overrides_active_lease(wp):
     """--force 는 활성 리스를 무시하고 제거한다(사용 중 슬롯 강제 회수·경고는 CLI 담당)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="other", state="leased"))
-    git = RemoveFakeGit(head="A_1", branch_merged=True)
+    git = RemoveFakeGit(wp, head="A_1", branch_merged=True)
     result = wp.remove_slot("work/A_1", force=True, git_runner=git)
     assert result is not None
     assert git.did("worktree", "remove")
@@ -307,27 +351,33 @@ def test_remove_slot_force_overrides_active_lease(wp):
 def test_remove_slot_unmerged_branch_preserved(wp):
     """미머지 브랜치 보존 — 전용 브랜치가 미머지(branch -d rc≠0) → preserved-unmerged·슬롯은 제거."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
-    git = RemoveFakeGit(head="A_1", branch_merged=False)
+    git = RemoveFakeGit(wp, head="A_1", branch_merged=False)
     result = wp.remove_slot("work/A_1", git_runner=git)
     assert result.branch_action == "preserved-unmerged"
     assert git.did("branch", "-d", "A_1")   # 삭제 시도는 한다(rc≠0 = 보존).
     assert wp.list_leases() == []            # 슬롯은 제거(브랜치만 보존).
 
 
-def test_remove_slot_shared_branch_skips_deletion(wp):
-    """공유 브랜치 스킵 — 슬롯이 전용(A_1) 아닌 공유 main 체크아웃 → 브랜치 삭제 자체 스킵."""
+def test_remove_slot_shared_branch_is_judged_not_skipped_by_name(wp, monkeypatch):
+    """이름이 슬롯과 달라도 스킵하지 않는다 — 제외 집합에 없으면 git 판정(`branch -d`)을 받는다.
+
+    옛 규칙은 `<repo>_<N>` 이 아닌 브랜치를 통째로 스킵해(`skipped-shared`) 머지된 브랜치를
+    남겼다. 이제 이름은 판정 입력이 아니고, 보호목록·bare 기본 브랜치·다른 슬롯 기준 브랜치만
+    빠진다. 여기서는 그 셋 중 어디에도 없는 `feature/x` 가 삭제 시도를 받는다.
+    """
+    monkeypatch.setattr(wp, "_resolve_protected", lambda repo: ["main"])
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
-    git = RemoveFakeGit(head="main")
+    git = RemoveFakeGit(wp, head="feature/x", bare_head="main", branch_merged=True)
     result = wp.remove_slot("work/A_1", git_runner=git)
-    assert result.branch_action == "skipped-shared"
-    assert not git.did("branch", "-d")       # 공유 브랜치는 안 지운다.
+    assert result.branch_action == "deleted"
+    assert git.did("branch", "-d", "feature/x")
     assert wp.list_leases() == []
 
 
 def test_remove_slot_detached_head_no_branch_action(wp):
     """detached HEAD — 브랜치 판별 불가 → branch_action="none"·삭제 시도 안 함."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
-    git = RemoveFakeGit(head=None)
+    git = RemoveFakeGit(wp, head=None)
     result = wp.remove_slot("work/A_1", git_runner=git)
     assert result.branch_action == "none"
     assert not git.did("branch", "-d")
@@ -336,20 +386,177 @@ def test_remove_slot_detached_head_no_branch_action(wp):
 
 def test_remove_slot_absent_ledger_returns_none(wp):
     """장부 없음 무해 종료 — 엔트리 없으면 None·git op 0(orphan 은 git worktree remove)."""
-    git = RemoveFakeGit(head="Z_9")
+    git = RemoveFakeGit(wp, head="Z_9")
     result = wp.remove_slot("work/Z_9", git_runner=git)
     assert result is None
     assert git.calls == []   # 아무 git op 도 안 한다(무해).
 
 
-def test_remove_slot_worktree_remove_failure_raises_and_preserves_ledger(wp):
-    """worktree remove 실패 원자성 — rc≠0 → RuntimeError·장부/브랜치 미변경(부분 상태 없음)."""
+def test_remove_slot_registration_intact_failure_changes_nothing(wp):
+    """AT-004 — remove 실패 + 등록 잔존 → RuntimeError·장부/브랜치/디렉터리 미변경.
+
+    git 이 등록을 그대로 쥐고 있으면 아무것도 파괴되지 않은 것이다. 그 사실만 내고 멈춘다 —
+    도달 불가한 `--force` 재시도를 권하지 않고 "원자" 를 주장하지도 않는다(관측 = 보고).
+    """
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
-    git = RemoveFakeGit(head="A_1", remove_rc=1)
-    with pytest.raises(RuntimeError):
+    git = RemoveFakeGit(wp, head="A_1", remove_rc=1)   # 실패하지만 등록은 남는다.
+    with pytest.raises(RuntimeError) as exc:
         wp.remove_slot("work/A_1", git_runner=git)
+    message = str(exc.value)
+    assert "--force" not in message and "원자" not in message
     assert wp.list_leases()[0].slot == "work/A_1"   # 장부 보존.
-    assert not git.did("branch", "-d")               # 브랜치 정리 도달 안 함(원자).
+    assert not git.did("branch", "-d")               # 브랜치 정리 도달 안 함.
+    assert wp.slot_path("work/A_1").is_dir()         # 디렉터리도 그대로.
+
+
+def test_remove_slot_finishes_when_git_deregistered_but_tree_remains(wp):
+    """AT-005 — remove 실패인데 등록은 사라진 실측 형상 → 잔재를 마저 지우고 제거를 마무리한다.
+
+    git 은 작업 트리 삭제에 실패해도 등록을 먼저 지운다(읽기 전용 잔재·실측). 옛 코드는 그때도
+    "장부/브랜치 미변경(원자)" 이라 보고했고 재시도는 dirty 로 거부됐다. 이제 실패 뒤 등록을
+    다시 물어, 등록이 없으면 디렉터리 잔재를 지우고 브랜치·장부까지 마무리한다.
+    """
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
+    git = RemoveFakeGit(wp, head="A_1", remove_rc=1, deregisters_on_failure=True,
+                        bare_head="main", branch_merged=True)
+    result = wp.remove_slot("work/A_1", git_runner=git)
+    assert result.tree_cleaned is True
+    assert not wp.slot_path("work/A_1").exists(), "디렉터리 잔재가 남았다"
+    assert result.branch_action == "deleted"     # 브랜치 정리까지 이어간다.
+    assert git.did("worktree", "prune")
+    assert wp.list_leases() == []                # 장부도 마무리된다.
+
+
+def test_remove_slot_unregistered_tree_needs_force(wp):
+    """등록 없는 슬롯 디렉터리 삭제는 `--force` 승인이 있어야 한다 — 없으면 아무것도 안 지운다.
+
+    이 갈래는 `worktree remove` 실패 뒤의 재시도만이 아니라 **첫 호출**에서도 열린다(수동
+    `git worktree prune` 뒤·슬롯 안 `.git` 손상·create_slot 중단 잔재). 등록이 없으면 git 에게
+    dirty 를 물을 자리가 없어 미커밋·미추적 내용이 경고 없이 사라지므로, 파괴 앞에 사용자
+    승인을 요구한다. 실패 뒤 갈래(git 이 자기 dirty 판정을 통과시킨 뒤)는 이 요구 밖이다.
+    """
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
+    slot_dir = wp.slot_path("work/A_1")
+    leftover = slot_dir / "wip.txt"
+    leftover.write_text("미커밋 작업\n", encoding="utf-8")
+    git = RemoveFakeGit(wp, registered=False, head="A_1")
+
+    with pytest.raises(wp.RemoveRefused) as exc:
+        wp.remove_slot("work/A_1", git_runner=git)
+
+    assert exc.value.reason == "unregistered-tree"
+    assert leftover.read_text(encoding="utf-8") == "미커밋 작업\n"   # 파일시스템 무접촉.
+    assert wp.list_leases()[0].slot == "work/A_1"                    # 장부도 그대로.
+    assert not git.did("worktree", "prune") and not git.did("branch", "-d")
+
+    # `--force` 로 승인하면 종전대로 잔재를 지우고 장부까지 마무리한다.
+    result = wp.remove_slot("work/A_1", force=True, git_runner=git)
+    assert result.tree_cleaned is True
+    assert not slot_dir.exists()
+    assert result.branch_action == "none"      # 등록이 없으니 브랜치를 물을 자리도 없다.
+    assert wp.list_leases() == []
+
+
+def test_remove_slot_preserves_when_the_merge_reference_is_unreadable(wp, monkeypatch):
+    """머지 판정 기준(bare HEAD)을 못 읽으면 판정 실패로 멈춘다 — 브랜치를 지우지 않는다.
+
+    빈 값으로 접으면 제외 축 2번(bare 기본 브랜치)이 통째로 사라지고, 아무 worktree 도 쥐지
+    않은 bare 기본 브랜치는 `git branch -d` 가 rc0 으로 지운다(실측). 조회 실패는 답이 아니라
+    판정 실패다(`_worktree_registered` 와 같은 규율).
+    """
+    monkeypatch.setattr(wp, "_resolve_protected", lambda repo: ["main"])
+    # 정상 bare — 기준을 읽으면 raise 없이 종전대로 판정한다(역방향 대조).
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
+    ok = RemoveFakeGit(wp, head="task/wip", bare_head="main", branch_merged=True)
+    assert wp.remove_slot("work/A_1", git_runner=ok).branch_action == "deleted"
+
+    _seed(wp, _lease(wp, slot="work/A_2", repo="A", state="idle"))
+    blind = RemoveFakeGit(wp, slot="work/A_2", head="task/wip", bare_head=None)
+
+    with pytest.raises(RuntimeError) as exc:
+        wp.remove_slot("work/A_2", git_runner=blind)
+
+    assert "머지 판정 기준" in str(exc.value)
+    assert not blind.did("branch", "-d")                       # 삭제 시도 자체가 없다.
+    assert not any(c[:2] == ["branch", "-D"] for c in blind.calls)
+    assert wp.list_leases()[0].slot == "work/A_2"              # 장부는 정지 지점에 남는다.
+
+
+def test_remove_slot_deletes_any_merged_branch_not_only_dedicated(wp, monkeypatch):
+    """AT-001 — 슬롯 이름과 다른 브랜치라도 머지됐으면 삭제한다(명명 조건 삭제).
+
+    브랜치 수명은 슬롯 수명이다. 옛 규칙은 브랜치명이 슬롯 식별자 tail(`<repo>_<N>`)일 때만
+    지워 `dev/…`·`task/…` 를 체크아웃한 슬롯이 머지된 브랜치를 남겼다(잔재 실측의 한 무리).
+    """
+    monkeypatch.setattr(wp, "_resolve_protected", lambda repo: ["main"])
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
+    git = RemoveFakeGit(wp, head="task/engine-fixes", bare_head="main", branch_merged=True)
+    result = wp.remove_slot("work/A_1", git_runner=git)
+    assert result.branch_action == "deleted"
+    assert result.branch_action != "skipped-shared"   # 옛 값은 값 집합에서 사라졌다.
+    assert git.did("branch", "-d", "task/engine-fixes")
+    assert result.merge_ref == "main"
+    assert wp.list_leases() == []
+
+
+def test_remove_slot_preserves_unmerged_and_reports_merge_ref(wp, monkeypatch):
+    """AT-002 — 미머지는 보존하고, 무엇을 기준으로 그렇게 판정했는지(bare HEAD)를 보고에 싣는다.
+
+    `git branch -d` 는 bare HEAD 기준 머지만 본다 — 로컬 기준이 origin 과 갈라져 있으면 이미
+    릴리즈된 브랜치도 미머지로 거부된다. 보존 사유를 사람이 이해하려면 그 기준이 보고에 있어야
+    한다. `-D` 승격은 없다(작업 유실 방지).
+    """
+    monkeypatch.setattr(wp, "_resolve_protected", lambda repo: ["main"])
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
+    git = RemoveFakeGit(wp, head="task/wip", bare_head="main", branch_merged=False)
+    result = wp.remove_slot("work/A_1", git_runner=git)
+    assert result.branch_action == "preserved-unmerged"
+    assert result.merge_ref == "main"                       # 판정 기준을 보고한다.
+    assert "not fully merged" in result.branch_reason       # git 출력 첫 줄 그대로.
+    assert git.did("branch", "-d", "task/wip")
+    assert not any(c[:2] == ["branch", "-D"] for c in git.calls)
+    assert wp.list_leases() == []
+
+
+def test_remove_slot_excludes_protected_bare_head_and_other_slot_base(wp, monkeypatch):
+    """AT-003 — 제외 집합 세 축(보호목록·bare 기본 브랜치·다른 슬롯 기준 브랜치)은 삭제 시도조차 없다.
+
+    bare 기본 브랜치는 아무 worktree 도 쥐지 않으면 `git branch -d` 가 rc0 으로 지운다(실측) —
+    git 판정에 맡길 수 없어 제외 집합이 필수다. 세 축을 각각 한 번씩 태운다.
+    """
+    monkeypatch.setattr(wp, "_resolve_protected", lambda repo: ["develop"])
+    other = _lease(wp, slot="work/A_2", repo="A", state="idle")
+    other.git = {"base": {"branch": "task/base", "commit": "abc"}}
+    for branch, expected_reason in (("develop", "보호"),
+                                    ("main", "bare"),
+                                    ("task/base", "work/A_2")):
+        _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"), other)
+        git = RemoveFakeGit(wp, head=branch, bare_head="main")
+        result = wp.remove_slot("work/A_1", git_runner=git)
+        assert result.branch_action == "preserved-protected", branch
+        assert expected_reason in result.branch_reason, (branch, result.branch_reason)
+        assert not git.did("branch", "-d"), f"{branch} 에 삭제를 시도했다"
+        assert not any(c[:2] == ["branch", "-D"] for c in git.calls)
+
+
+def test_remove_slot_home_slot_is_refused_without_touching_repo(wp, proj):
+    """AT-006 — PM 홈 자신을 가리키는 행 제거는 거부되고 REPO 디렉터리가 그대로 남는다.
+
+    `slot_path(HOME_SLOT)` 는 REPO 자신이다. 제거 *전에* 트리를 지우는 처방을 택했다면 이
+    호출이 PM 홈을 통째로 날린다 — 그 처방을 기각한 근거의 회귀 박제다. 등록 조회가 판정
+    입력이고(홈은 bare 의 worktree 가 아니다) pool 슬롯 자리도 아니라 아무것도 지우지 않는다.
+    """
+    marker = proj / "keep-me.txt"
+    marker.write_text("home\n", encoding="utf-8")
+    _seed(wp, _lease(wp, slot=wp.HOME_SLOT, repo="A", state="idle"))
+    git = RemoveFakeGit(wp, slot=wp.HOME_SLOT, registered=False, head="main")
+
+    with pytest.raises(RuntimeError):
+        wp.remove_slot(wp.HOME_SLOT, git_runner=git)
+
+    assert proj.is_dir() and marker.is_file(), "PM 홈(REPO)이 지워졌다"
+    assert wp.slot_path(wp.HOME_SLOT) == proj      # 홈 슬롯 경로 = REPO 자신(전제 박제).
+    assert wp.list_leases()[0].slot == wp.HOME_SLOT  # 장부도 그대로.
 
 
 def test_remove_slot_removes_branch_before_ledger_sensitivity(wp):
@@ -360,11 +567,11 @@ def test_remove_slot_removes_branch_before_ledger_sensitivity(wp):
     """
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
     # 정상: head=A_1 → branch -d A_1 호출.
-    git_ok = RemoveFakeGit(head="A_1", branch_merged=True)
+    git_ok = RemoveFakeGit(wp, head="A_1", branch_merged=True)
     assert wp.remove_slot("work/A_1", git_runner=git_ok).branch_action == "deleted"
     # 무력화: head=None → branch 판별 불가 → branch -d 호출 0.
     _seed(wp, _lease(wp, slot="work/A_2", repo="A", state="idle"))
-    git_blind = RemoveFakeGit(head=None)
+    git_blind = RemoveFakeGit(wp, slot="work/A_2", head=None)
     assert wp.remove_slot("work/A_2", git_runner=git_blind).branch_action == "none"
     assert not git_blind.did("branch", "-d")
 
@@ -483,6 +690,46 @@ def test_real_git_remove_slot_preserves_unmerged_branch(proj, tmp_path):
     # bare 에 A_1 브랜치가 살아있다(미머지라 삭제 거부됨).
     branches = _git(bare, "branch", "--list", "A_1").stdout
     assert "A_1" in branches, "미머지 브랜치가 삭제됨(작업 유실)"
+
+
+@_git_required
+def test_real_git_remove_slot_with_readonly_leftovers_succeeds(proj, tmp_path):
+    """AT-007 — 읽기 전용 잔재가 있는 슬롯도 제거가 성공하고 디렉터리가 사라진다 (실 git).
+
+    git 은 작업 트리 삭제에 실패해도 **등록을 먼저 지운다**(실측 rc=255 · 등록 부재 · 디렉터리
+    잔존). 옛 코드는 그 자리에서 "장부/브랜치 미변경(원자)" 이라 보고하고 멈춰, 재시도는 dirty
+    로 거부되고 슬롯이 영구 잔재가 됐다(실측 형상). 이제 실패 뒤 등록을 다시 물어 잔재를 마저
+    지운다. 픽스처 트리는 `init_git_repo` 로 자기 저장소를 선언한다(실 저장소 무접촉).
+    """
+    init_git_repo(proj, commit="home")
+    wp = _load_wp_bound(proj)
+    origin = init_git_repo(tmp_path / "A-origin", commit="seed")
+    bare = wp.bare_repo_path("A")
+    bare.parent.mkdir(parents=True, exist_ok=True)
+    _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
+
+    wp.create_slot("A", session="me", init_submodules=False)   # A_1
+    slot_dir = wp.slot_path("work/A_1")
+    # 커밋된 파일을 담은 디렉터리에서 쓰기 권한을 뺀다 — 트리는 clean 인데 삭제만 막힌다.
+    locked = slot_dir / "sub"
+    locked.mkdir()
+    (locked / "file.txt").write_text("x\n", encoding="utf-8")
+    _git(slot_dir, "add", "-A")
+    _git(slot_dir, "commit", "-q", "-m", "readonly leftover")
+    locked.chmod(0o555)
+
+    wp.release("work/A_1")
+    try:
+        result = wp.remove_slot("work/A_1")
+    finally:
+        if locked.exists():
+            locked.chmod(0o755)     # 실패해도 임시 트리가 정리되게 권한을 되돌린다.
+
+    assert result.tree_cleaned is True, "잔재 정리를 보고하지 않았다"
+    assert not slot_dir.exists(), "디렉터리 잔재가 남았다"
+    assert wp.list_leases() == [], "장부 엔트리가 남았다"
+    # 등록도 실제로 사라졌다 — prune 까지 이어졌다는 뜻이다.
+    assert str(slot_dir) not in _git(bare, "worktree", "list", "--porcelain").stdout
 
 
 @_git_required
@@ -777,10 +1024,14 @@ def pc():
 
 
 class FakeRemoveResult:
-    def __init__(self, slot, branch, branch_action, stashed, forced_state=None):
+    def __init__(self, slot, branch, branch_action, stashed, forced_state=None,
+                 branch_reason=None, merge_ref="main", tree_cleaned=False):
         self.slot = slot
         self.branch = branch
         self.branch_action = branch_action
+        self.branch_reason = branch_reason
+        self.merge_ref = merge_ref
+        self.tree_cleaned = tree_cleaned
         self.stashed = stashed
         self.forced_state = forced_state
 
@@ -796,12 +1047,16 @@ class FakeWP:
             super().__init__(f"{slot} {reason}")
 
     def __init__(self, *, result="ok", raises=None, branch_action="deleted",
-                 branch="A_1", stashed=False, forced_state=None):
+                 branch="A_1", stashed=False, forced_state=None,
+                 branch_reason=None, merge_ref="main", tree_cleaned=False):
         self.calls: list[tuple] = []
         self._result = result           # "ok" → FakeRemoveResult · None → None(무해)
         self._raises = raises            # 예외 인스턴스 또는 None
         self._branch_action = branch_action
         self._branch = branch
+        self._branch_reason = branch_reason
+        self._merge_ref = merge_ref
+        self._tree_cleaned = tree_cleaned
         self._stashed = stashed
         self._forced_state = forced_state
 
@@ -812,7 +1067,10 @@ class FakeWP:
         if self._result is None:
             return None
         return FakeRemoveResult(slot, self._branch, self._branch_action,
-                                self._stashed, self._forced_state)
+                                self._stashed, self._forced_state,
+                                branch_reason=self._branch_reason,
+                                merge_ref=self._merge_ref,
+                                tree_cleaned=self._tree_cleaned)
 
     def did(self, name) -> bool:
         return any(c[0] == name for c in self.calls)
@@ -879,19 +1137,67 @@ def test_cmd_remove_deleted_branch_surfaces(pc, capsys):
 
 
 def test_cmd_remove_preserved_branch_surfaces(pc, capsys):
-    """미머지 브랜치 보존을 '브랜치 X 보존(미머지)' 1줄로 surface(결정 문구)."""
+    """`git branch -d` 가 거부한 브랜치 보존을 '브랜치 X 보존(git 거부)' 1줄로 surface."""
     wp = FakeWP(branch_action="preserved-unmerged", branch="A_1")
     rc = pc.cmd_worktree_remove(argparse.Namespace(slot="work/A_1", force=False), worktree_pool=wp)
     assert rc == 0
-    assert "보존(미머지)" in capsys.readouterr().out
+    assert "보존(git 거부)" in capsys.readouterr().out
 
 
-def test_cmd_remove_skipped_shared_surfaces(pc, capsys):
-    """공유 브랜치 스킵을 surface(공유 브랜치 보호)."""
-    wp = FakeWP(branch_action="skipped-shared", branch="main")
+def test_cmd_remove_preserved_unmerged_label_matches_the_git_reason(pc, capsys):
+    """라벨은 관측과 맞아야 한다 — git 이 미머지 아닌 사유로 거부했으면 미머지라 단정하지 않는다.
+
+    `git branch -d` 는 미머지 말고도 거부한다(그 브랜치를 아직 쥔 worktree). 값 집합은 그대로
+    두고(네 값) 라벨이 축(git 이 거부했다)만 말하게 하면, 사유를 말하는 자리는 관측을 그대로
+    실은 `branch_reason` 하나로 남는다.
+    """
+    wp = FakeWP(branch_action="preserved-unmerged", branch="A_1", merge_ref="main",
+                branch_reason="error: Cannot delete branch 'A_1' used by worktree at '/w/A_1'")
     rc = pc.cmd_worktree_remove(argparse.Namespace(slot="work/A_1", force=False), worktree_pool=wp)
     assert rc == 0
-    assert "스킵" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "보존(git 거부)" in out
+    assert "used by worktree" in out          # 사유는 git 관측 그대로.
+    assert "미머지" not in out, out           # 관측하지 않은 축을 단정하지 않는다.
+
+
+def test_cmd_remove_preserved_protected_surfaces(pc, capsys):
+    """제외 집합 보존은 그 사유와 함께 surface — 어느 축이 막았는지 사람이 알아야 한다."""
+    wp = FakeWP(branch_action="preserved-protected", branch="main",
+                branch_reason="bare 기본 브랜치(HEAD)")
+    rc = pc.cmd_worktree_remove(argparse.Namespace(slot="work/A_1", force=False), worktree_pool=wp)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "보존" in out and "bare 기본 브랜치(HEAD)" in out
+
+
+def test_cmd_remove_preserved_unmerged_carries_merge_ref(pc, capsys):
+    """미머지 보존은 판정 기준(bare HEAD)과 git 사유를 함께 낸다 — 보존 이유가 읽혀야 한다."""
+    wp = FakeWP(branch_action="preserved-unmerged", branch="task/wip",
+                merge_ref="main", branch_reason="error: the branch is not fully merged")
+    rc = pc.cmd_worktree_remove(argparse.Namespace(slot="work/A_1", force=False), worktree_pool=wp)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "기준 main" in out and "not fully merged" in out
+
+
+def test_cmd_remove_tree_cleaned_is_announced(pc, capsys):
+    """git 이 등록만 지우고 남긴 디렉터리를 엔진이 마저 지웠으면 그 사실을 1줄로 고지한다."""
+    wp = FakeWP(branch_action="none", branch=None, tree_cleaned=True)
+    rc = pc.cmd_worktree_remove(argparse.Namespace(slot="work/A_1", force=False), worktree_pool=wp)
+    assert rc == 0
+    assert "디렉터리 잔재" in capsys.readouterr().out
+
+
+def test_cmd_remove_failure_does_not_advise_force_retry(pc, capsys):
+    """실패 안내는 관측만 낸다 — 등록이 사라진 형상에서 도달 불가한 `--force` 재시도를 권하지 않는다."""
+    wp = FakeWP(raises=RuntimeError(
+        "git worktree remove failed for 'work/A_1' (rc=255) — git 등록·장부·브랜치가 그대로다."))
+    rc = pc.cmd_worktree_remove(argparse.Namespace(slot="work/A_1", force=False), worktree_pool=wp)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "제거 실패" in err
+    assert "--force" not in err and "원자" not in err
 
 
 def test_cmd_remove_stash_note_surfaces(pc, capsys):
@@ -930,7 +1236,7 @@ def test_cmd_remove_no_forced_state_no_warning(pc, capsys):
 
 
 def test_cmd_remove_preserved_unmerged_caveat_surfaces(pc, capsys):
-    """reviewer emergent gap — 미머지 보존 시 재생성 캐비앗 1줄 (T-0335 선-검출 진단·재개=수동 checkout 문구).
+    """reviewer emergent gap — 브랜치 보존 시 재생성 캐비앗 1줄 (T-0335 선-검출 진단·재개=수동 checkout 문구).
 
     재개 안내는 **수동 checkout**(`git worktree add`)으로 준다 — `create_slot(branch=)` 의 `-B`
     create-or-reset 데이터-유실(codex must-fix)을 피한다. 문구에 SlotBranchExists + 수동 checkout 확인.
@@ -939,7 +1245,7 @@ def test_cmd_remove_preserved_unmerged_caveat_surfaces(pc, capsys):
     rc = pc.cmd_worktree_remove(argparse.Namespace(slot="work/A_1", force=False), worktree_pool=wp)
     assert rc == 0
     out = capsys.readouterr().out
-    assert "보존(미머지)" in out
+    assert "보존(git 거부)" in out
     assert "SlotBranchExists" in out
     # 재개는 수동 checkout(`git worktree add`)으로 — branch= (-B reset) 유도 아님.
     assert "수동 checkout" in out and "git worktree add" in out

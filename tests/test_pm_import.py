@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from _git_fixture import init_git_repo
 from _win_skip import _can_symlink
 from _harness_matrix import HARNESSES, HARNESS_ADAPTER_DIRS, HARNESS_ROOT_DOC
 from _textio import (
@@ -41,6 +42,12 @@ def _track_source_tree(root: Path) -> None:
 requires_symlink = pytest.mark.skipif(
     not _can_symlink(),
     reason="Windows: symlink requires Developer Mode/admin",
+)
+
+# 실 git 을 쓰는 통합 케이스(백업 git-safe 판정·상위 저장소 선언)를 git 부재 환경에서 skip.
+requires_git = pytest.mark.skipif(
+    shutil.which("git") is None,
+    reason="git 바이너리 부재 — 실 git 통합 케이스 skip(단위 seam 테스트는 항상 실행).",
 )
 
 # operational placeholder 치환에서 제외하는 방법론 문서 (pm_import.SED_EXCLUDE_FLOOR·manifest 파생과 동치).
@@ -1948,6 +1955,32 @@ def test_into_existing_dir_still_works(pm_import, tmp_path):
     assert rc == 0
     assert (dest / "CLAUDE.md").is_file()
     assert (dest / ".project_manager" / "local.conf").is_file()
+
+
+# ── T-0899: 상위 저장소 안 비-git 하위로 --into 해도 그 저장소의 훅은 그대로 ────
+
+@requires_git
+def test_into_non_git_subdir_leaves_parent_hook_untouched(pm_import, tmp_path):
+    """남의 저장소 안 비-git 하위 폴더로 import 해도 그 저장소의 pre-push 훅을 덮지 않는다.
+
+    2026-09-03 실측(원본 소실·백업 없음): import 이 부른 `init` 이 훅 위치를 git 에게 물어
+    **상위 저장소**의 훅 폴더를 받고 그 자리를 plain 훅으로 교체했다. 상위 저장소는
+    `_git_fixture.init_git_repo` 로 **선언**한다 — 경계 env 로 막으면 이 형상이 재현되지 않아
+    규칙이 아니라 우회를 검증하게 된다.
+    """
+    parent = init_git_repo(tmp_path / "parent")
+    parent_hook = parent / ".git" / "hooks" / "pre-push"
+    parent_hook.write_text("#!/bin/sh\n# 채택자가 직접 쓴 훅\nexit 0\n",
+                           encoding="utf-8", newline="\n")
+    before = parent_hook.read_bytes()
+    dest = parent / "tooling"          # 상위 저장소 안 비-git 하위 폴더
+    dest.mkdir()
+
+    rc = pm_import.main(["--into", str(dest), "--harness", "claude", "--name", "Sub"])
+
+    assert rc == 0
+    assert parent_hook.read_bytes() == before, "상위 저장소의 pre-push 훅이 덮였다"
+    assert not (dest / ".git").exists(), "import 이 하위 폴더를 저장소로 만들지 않는다"
 
 
 # ── MF3: 다중-tree 중복 relpath 내용 불일치 — 경고 + registry 우선 ───────────
@@ -3952,13 +3985,6 @@ def test_main_opencode_flag_end_to_end(pm_import, tmp_path):
 # ── T-0034: --into 백업 — 파일별 git-인지 skip + 중앙화 디렉토리 ───────────────
 # git 판정은 LLM 아님·결정적 — git_runner / git_safe 주입으로 라이브 git 없이 단위 검증한다
 # (_real_models_runner 류 seam 철학). 통합 케이스 1개만 실 git init 으로 e2e 확인.
-
-import shutil as _shutil_for_git  # noqa: E402 — 실 git 가용 여부 게이트(통합 케이스).
-
-requires_git = pytest.mark.skipif(
-    _shutil_for_git.which("git") is None,
-    reason="git 바이너리 부재 — 실 git 통합 케이스 skip(단위 seam 테스트는 항상 실행).",
-)
 
 
 # ── ① git 추적&clean → 백업 0·덮기 (git-safe skip) ──────────────────────────

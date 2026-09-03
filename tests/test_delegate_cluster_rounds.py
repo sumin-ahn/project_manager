@@ -13,6 +13,7 @@ ignore 된 슬롯 git 트리 한 쌍을 tmp 에 세운다.
 """
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import shutil
@@ -280,6 +281,39 @@ def test_single_ticket_prepare_uses_the_same_cluster_keyed_path(pd, cluster_env)
     # 자리를 닫으면 빈 run-dir 도 함께 걷힌다 — 크기 1 이면 곧 run 닫힘이다.
     assert not plan.run_dir.exists()
     assert not plan.run_dir.parent.exists()
+
+
+def test_developer_round_after_reopen_is_prepared(pd, cluster_env):
+    """재개방한 옛 티켓의 라운드가 열린다 — `reopen` 이 open 진입 자리에서 장부를 만든다.
+
+    장부 도입 이전 종결 티켓은 `cluster` 필드도 장부도 없어, 되돌린 뒤 준비가 "묶음 장부가
+    없습니다" 로 멈췄다(장부를 손으로 만들어야 진행되던 실증). 라운드 0건 티켓으로 세운다 —
+    라운드가 이미 쌓인 티켓은 장부와 무관하게 고정 수열이 먼저 거부한다.
+    """
+    pm_home, slot, tickets = cluster_env
+    done = tickets.parent / "done"
+    done.mkdir(parents=True, exist_ok=True)
+    (done / "T-6020-legacy.md").write_text(
+        _spec_text("T-6020", status="done"), encoding="utf-8", newline="\n")
+    board = pd._load_board_for_repo(pm_home)
+
+    assert board.cmd_reopen(argparse.Namespace(id="T-6020", reason="오처리 복구")) == 0
+
+    assert board.load_cluster("C-T-6020")["tickets"] == ["T-6020"]
+    assert not _rounds_dir(pm_home, "T-6020").exists()
+    architect = pd.prepare_ticket_copy(
+        ticket="T-6020", role="architect", cwd=slot, pm_home=pm_home)
+    _fill(architect.path, "## 경계 실측\n- 실측")
+    assert pd.harvest_ticket_copy(
+        copy_path=architect.path, cwd=slot, pm_home=pm_home).changed is True
+
+    plan = pd.prepare_ticket_copy(
+        ticket="T-6020", role="developer", cwd=slot, pm_home=pm_home)
+
+    assert plan.cluster == "C-T-6020"
+    assert plan.path.name == "02-developer.md"
+    assert plan.board_path == _rounds_dir(pm_home, "T-6020") / "02-developer.md"
+    assert _ledger_rows(pm_home)[-1]["cluster"] == "C-T-6020"
 
 
 # ════════════════════════════════════════════════════════════════════════

@@ -110,6 +110,19 @@ def test_load_ticket_passes_utf8_encoding(board, tmp_path, monkeypatch):
 
 # ── C5: pre-push 훅 본문이 탐지 인터프리터를 쓰는지 (bare 'python3' 하드코딩 아님) ──
 
+def _own_git_hooks(board, monkeypatch, root: Path) -> Path:
+    """자기 `.git` 디렉토리를 갖춘 tmp REPO + 그 아래 훅 폴더 — 설치가 서는 형상(T-0899).
+
+    엔진은 해소된 훅 폴더가 `REPO/.git` 아래일 때만 쓴다. 훅 폴더를 저장소 밖에 두면 설치
+    자체가 서지 않아 본문·인코딩을 볼 수 없다.
+    """
+    monkeypatch.setattr(board, "REPO", root)
+    (root / ".git").mkdir(exist_ok=True)
+    hooks = root / ".git" / "hooks"
+    monkeypatch.setattr(board, "_hooks_dir", lambda: hooks)
+    return hooks
+
+
 def test_hook_body_uses_detected_interpreter(board, monkeypatch, tmp_path):
     """훅 본문이 _detect_py() 결과를 주입하는지 — Windows 흔한 'python' 시나리오로 검증.
 
@@ -118,8 +131,7 @@ def test_hook_body_uses_detected_interpreter(board, monkeypatch, tmp_path):
     """
     import re
 
-    hooks = tmp_path / "hooks"
-    monkeypatch.setattr(board, "_hooks_dir", lambda: hooks)
+    hooks = _own_git_hooks(board, monkeypatch, tmp_path)
     # 실행검증 seam 을 mock 해 detection 을 which mock 만으로 결정적이게 (실 인터프리터 비의존).
     monkeypatch.setattr(board, "_interp_runs", lambda cmd: True)
     # python3 부재·python 존재 → _detect_py() == 'python'.
@@ -142,8 +154,7 @@ def test_hook_write_passes_utf8_encoding(board, monkeypatch, tmp_path):
     실제 쓰기는 **원자 교체**라 `pre-push.<pid>.tmp` 에 먼저 떨어진다(실행 중인 훅을 같은 inode
     에 truncate-rewrite 하지 않기 위해·T-0593) — spy 도 그 tmp 를 함께 본다.
     """
-    hooks = tmp_path / "hooks"
-    monkeypatch.setattr(board, "_hooks_dir", lambda: hooks)
+    hooks = _own_git_hooks(board, monkeypatch, tmp_path)
     # 실행검증 seam 을 mock 해 detection 을 which mock 만으로 결정적이게 (실 인터프리터 비의존).
     monkeypatch.setattr(board, "_interp_runs", lambda cmd: True)
     monkeypatch.setattr(board.shutil, "which", lambda cmd: "/usr/bin/python3" if cmd == "python3" else None)

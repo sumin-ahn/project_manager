@@ -4266,7 +4266,7 @@ def _legacy_pre_push_hook_bodies(py: str) -> tuple[str, ...]:
 
 
 def install_pre_push_hook() -> bool:
-    """Install the pre-push gate (회귀 + lint). Idempotent. False if not a git repo.
+    """Install the pre-push gate (회귀 + lint). Idempotent. 자기 저장소의 훅 폴더에만 쓴다.
 
     두 단계를 AND 로 묶는다:
       1. 회귀 게이트 — green 회귀만 push (`regression check` 실패 시 `regression run --final`).
@@ -4275,12 +4275,33 @@ def install_pre_push_hook() -> bool:
          **`tests/` 가 있는 트리에서만** 돈다 — 판정은 훅 본문이 push 시점에 한다.
       2. lint 게이트 — `lint --gate` 차단 카테고리(dangling/unstable-ref/
          dependency/thin) 발견 시 push 실패. status drift 자문성은 차단 안 함. 두 형상 모두 돈다.
-    설치는 **어디서든** 한다(트리 형상을 여기서 묻지 않는다) — 코드가 뒤에 생기거나(worktree add)
-    사라져도 같은 훅이 그때그때 맞게 가리므로, 설치/제거를 오가는 상태 기계가 필요 없다.
-    `board.py init` 가 (재)설치하므로 멱등·재설치 안전.
+
+    **쓰는 자리는 `REPO/.git` 아래 하나다.** git 은 훅 위치를 물으면 트리를 걸어올라가 답하므로
+    (비-git 폴더에서 물으면 상위 저장소의 훅 폴더를, `core.hooksPath` 가 선언돼 있으면 그 폴더를
+    돌려준다), 그 답을 그대로 쓰면 남의 저장소 pre-push 를 덮는다(실측: `pm_import --into <남의
+    저장소의 비-git 하위>` 가 그 저장소의 훅을 교체 · 원본 소실). 판정 입력은 자기 `.git`
+    디렉터리와 git 이 해소한 훅 폴더 두 값뿐이고, 셋 중 어느 관문에서 멈추든 사유가 stderr 에
+    1줄 남는다(침묵 False 없음). `board.py init` 가 (재)설치하므로 멱등·재설치 안전.
     """
+    # 자기 `.git` 이 디렉터리인 트리만 plain 훅의 대상이다 — 비-git 폴더·linked worktree
+    # (`.git` 이 gitfile)는 여기서 멈춘다(슬롯의 보호훅은 worktree_pool 이 설치한다).
+    own = REPO / ".git"
+    if not own.is_dir():
+        print(f"{PM_HOOK_NOTICE_PREFIX}설치 생략 — 자기 `.git` 디렉터리가 없습니다 "
+              f"({own}) · 훅은 자기 저장소의 `.git/hooks` 에만 씁니다.", file=sys.stderr)
+        return False
     hooks = _hooks_dir()
     if hooks is None:
+        print(f"{PM_HOOK_NOTICE_PREFIX}설치 생략 — git 이 훅 디렉토리를 해소하지 못해 "
+              "설치할 자리를 확정할 수 없습니다.", file=sys.stderr)
+        return False
+    # 대소문자·심볼릭 링크·`..` 를 걷어낸 뒤 비교한다(`Path.is_relative_to` 는 문자열 비교라
+    # 정규화 전 경로로는 같은 자리를 다른 자리로 읽는다 · `pm_log._wip_probe_targets` 동형 관용구).
+    own_resolved = Path(os.path.normcase(str(own.resolve(strict=False))))
+    hooks_resolved = Path(os.path.normcase(str(hooks.resolve(strict=False))))
+    if not hooks_resolved.is_relative_to(own_resolved):
+        print(f"{PM_HOOK_NOTICE_PREFIX}설치 생략 — 해소된 훅 폴더가 자기 `.git` 밖입니다 "
+              f"(훅 폴더 {hooks_resolved} · 자기 .git {own_resolved}).", file=sys.stderr)
         return False
     hooks.mkdir(parents=True, exist_ok=True)
     _write_hook_atomic(hooks / "pre-push", pre_push_hook_body())
@@ -11651,11 +11672,28 @@ def cmd_reopen(args: argparse.Namespace) -> int:
         fm["claimed_at"] = None
         for field in ("claimed_rev", "disposition", "disposition_reason", "discarded_from"):
             fm.pop(field, None)
+        # open 진입은 `new`(승격)·`promote` 와 같은 자리에서 묶음에 귀속한다 — 판정 표면
+        # (라운드 예산·완료 기록)은 장부 선언만 읽으므로 장부 없이 돌아온 티켓은 위임에서
+        # 멈춘다. 필드가 이미 있으면 손대지 않는다: 그 장부가 이 티켓을 담고 있고, 덮으면
+        # 그 장부의 선언(status·budget·tickets)이 지워지거나 중복 귀속이 남는다. `.drafts/`
+        # 복귀는 귀속하지 않는다 — draft 명세는 공유 board 밖이다(`cmd_new` 와 같은 규칙).
+        # 필드가 비었어도 **장부 파일이** 이 티켓을 담고 있으면(구세대 티켓·손으로 만든
+        # 장부) 만들지 않고 역참조만 복구한다 — 같은 이름으로 새로 만들면 그 장부의
+        # base_branch·status·close_step 이 기본값으로 덮인다(실측).
+        cluster_ledger: Path | None = None
+        if dest_status == "open" and not str(fm.get("cluster") or "").strip():
+            of_record = _cluster_of_record(args.id)
+            if of_record is not None:
+                fm["cluster"] = of_record
+            else:
+                fm["cluster"], cluster_ledger = _cluster_auto_attach(args.id, args)
         note = f"\n## Reopened\n{reason} — {now_utc()} (이전 상태 {status}/)\n"
         dump_ticket(new_path, fm, body + note)
     refresh_board()
+    touched = ((path, new_path) if cluster_ledger is None
+               else (path, new_path, cluster_ledger))
     ready = _board_git_sync_best_effort(
-        f"reopen {args.id} (from {status}: {reason})", (path, new_path))
+        f"reopen {args.id} (from {status}: {reason})", touched)
     print(f"reopened {args.id} (was {status}/): {reason}"
           f"{_board_git_mutation_state_suffix(ready)}")
     return 0
@@ -11938,8 +11976,10 @@ def cmd_init(args: argparse.Namespace) -> int:
             "{{DATE}}", datetime.date.today().isoformat())
         PM_STATE_FILE.write_text(seed, encoding="utf-8", newline="\n")
         print(f"✓ pm_state.md 생성 ({_rel_to_repo(PM_STATE_TEMPLATE)} 에서)")
+    # 미설치면 사유를 `install_pre_push_hook` 이 stderr 에 남긴다 — 여기서는 설치한 자리를 밝힌다.
     if install_pre_push_hook():
-        print("✓ pre-push 게이트 훅 설치 (lint 게이트는 항상 · 회귀 게이트는 tests/ 있는 트리만)")
+        print("✓ pre-push 게이트 훅 설치 — 자기 저장소의 .git/hooks "
+              "(lint 게이트는 항상 · 회귀 게이트는 tests/ 있는 트리만)")
     # board submodule 이 분리된 형상이면 ignore=all 자동 설정 — design(코드) git 이
     # board PM-commit 으로 오염되지 않게(누출 0). 미분리/git 부재면 no-op(fail-soft·무영향).
     if _configure_board_submodule():
@@ -12773,8 +12813,8 @@ def _publish_overlap_material(tid: str, touches: object, repo: str) -> list[str]
 # **특례가 없다** — 티켓 하나짜리 묶음도 크기 1 클러스터다. `new` 는 그 티켓 이름의 크기 1
 # 장부를 함께 만들고 기준 브랜치·예산을 그 자리에서 박는다(빈 값 0 · 판정 표면은 선언된 값만
 # 읽는다). 여러 티켓을 한 묶음으로 묶는 것은 사람 선언(`cluster new`)뿐이다 — 엔진이 고르면
-# 선언한 적 없는 묶음이 생긴다. 필드도 장부도 없는 구세대 티켓은 **읽는 자리에서** 크기 1 로
-# 접는다(파일 마이그레이션 0 · `cluster_members`).
+# 선언한 적 없는 묶음이 생긴다. 장부는 open 진입 세 경로(발행 승격 · `promote` · `reopen`)가
+# 만들고 멤버 조회(`cluster_members`)는 그 선언만 읽는다 — 장부 없는 묶음은 멤버가 없다.
 CLUSTERS_DIRNAME = "clusters"
 CLUSTER_ID_PREFIX = "C-"                  # 장부 파일명·frontmatter `id` 의 접두
 CLUSTER_BRANCH_PREFIX = "task/"           # 통합 브랜치 이름 접두
@@ -12966,29 +13006,15 @@ def ticket_cluster_from_text(tid: str, ticket_text: str) -> str:
 
 
 def cluster_members(cluster: str) -> tuple[str, ...]:
-    """멤버 티켓 ID — 장부가 있으면 그 목록, 없으면 크기 1 해석(마이그레이션 0).
+    """멤버 티켓 ID — **장부가 선언한 목록**(장부가 없으면 빈 튜플).
 
-    장부 없는 `C-` + 티켓 ID 는 필드도 장부도 없는 구세대 티켓의 자리다 — 읽는 쪽이 크기 1
-    묶음으로 접으면 티켓당 경로를 따로 둘 필요가 없다.
-
-    그 폴백은 **이름 모양이 아니라 티켓 실재와 그 명세의 귀속**이 연다: 그 ID 의 티켓이 board 에
-    있고 자기 명세가 `cluster` 를 선언하지 않은 경우에만 크기 1 로 접는다. 이름 모양만 보면 없는
-    티켓 ID 도, 이미 다른 묶음을 선언한 티켓도 멤버로 합성돼 **선언한 적 없는 묶음**이 조회·준비
-    표면에 생긴다(폴백이 자석이 된다). 둘 다 여기서 빈 튜플이 되고, 그 빈 값이 조회 부재(rc≠0)와
-    준비 거부의 입력이다.
+    멤버를 합성하지 않는다. 이름만 보고 접으면 선언한 적 없는 묶음이 조회·준비 표면에 생기고,
+    장부 삭제가 곧 그 묶음의 판정 우회 수단이 된다. 장부는 open 진입 세 경로(발행 승격·
+    `promote`·`reopen`)가 만들므로 열린 티켓은 언제나 자기 장부를 갖고, 장부 없는 이름의 빈
+    튜플은 조회 부재(rc≠0)와 준비 거부의 입력이다.
     """
     fm = load_cluster(cluster)
-    if fm is not None:
-        return tuple(cluster_tickets(fm))
-    candidate = cluster_name_of(cluster)
-    if not _is_valid_ticket_id(candidate):
-        return ()
-    found = find_ticket_exact(candidate)
-    if found is None:
-        return ()
-    loaded = load_ticket_soft(found[1])
-    declared = str((loaded[0] if loaded else {}).get("cluster") or "").strip()
-    return () if declared else (candidate,)
+    return tuple(cluster_tickets(fm)) if fm is not None else ()
 
 
 def _cluster_of_record(tid: str) -> str | None:
@@ -13009,7 +13035,7 @@ def cluster_complete_binding_problem(
 
     ``--cluster-close``는 인증 토큰이 아니라 path-binding이다. 인자·티켓 역참조·유일한
     ledger owner가 모두 일치하고 장부 전 멤버의 양방향 귀속이 온전할 때만 통과한다.
-    장부도 ``cluster`` 선언도 없는 legacy 티켓은 `cluster_members` 의 크기 1 폴백과 **같은
+    장부도 ``cluster`` 선언도 없는 legacy 티켓은 `ticket_cluster` 의 이름 해석과 **같은
     규칙**을 쓴다 — 그 티켓의 크기 1 해석 id(`C-` + 티켓 ID)와 정확히 같은 결속만 통과한다.
     """
     binding = cluster_id_for_name(cluster_close) if cluster_close else None
@@ -13021,7 +13047,7 @@ def cluster_complete_binding_problem(
     owners = [ledger for ledger in ledgers if tid in cluster_tickets(ledger)]
 
     if not owners and declared is None:
-        # 크기 1 폴백으로 종결에 들어온 구세대 티켓은 `ClusterCloser` 가 그 해석 id 를 결속으로
+        # 이름 해석으로 종결에 들어온 구세대 티켓은 `ClusterCloser` 가 그 id 를 결속으로
         # 싣고 온다 — 폴백을 연 규칙과 완료 게이트가 다른 값을 요구하면 그 티켓은 종결도 직접
         # 완료도 못 하는 막다른 길에 놓인다.
         legacy_binding = cluster_id_for_name(tid)
@@ -13375,12 +13401,6 @@ def _cmd_cluster_show(args: argparse.Namespace) -> int:
     cluster = cluster_id_for_name(args.name)
     fm = load_cluster(cluster)
     if fm is None:
-        members = cluster_members(cluster)
-        if members:
-            # 장부 없는 크기 1 해석(구세대 티켓) — 읽기 규칙을 조회 표면에도 그대로 보인다.
-            print(f"-- {cluster} (장부 없음 · 크기 1 해석) --")
-            print(f"  tickets: {members[0]}")
-            return 0
         print(f"cluster not found: {cluster}", file=sys.stderr)
         return 2
     declared = cluster_tickets(fm)

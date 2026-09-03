@@ -65,6 +65,15 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "인벤토리가 아니라 정적 테스트 소스 자체가 판정 대상(T-0741)"
     ),
     (
+        "tests/test_pm_delegate_rounds.py",
+        "test_no_role_round_limit_symbol_remains",
+        "rglob",
+        "'*.py'",
+    ): WalkException(
+        "닫힌 엔진·tests Python 소스의 삭제 심볼 전수 검사 — repo 소유 인벤토리가 아니라 "
+        "정적 소스 자체가 판정 대상(T-0901 · 지운 역할별 라운드 상한 이름의 재발 방지)"
+    ),
+    (
         "tests/test_pm_update_opencode.py",
         "test_templates_do_not_ship_github_workflows",
         "rglob",

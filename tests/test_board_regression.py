@@ -1939,9 +1939,11 @@ def test_explicit_scope_is_untouched_by_the_staging_rule(board, monkeypatch, cap
     assert "강등" not in out and "regression(scoped, 1 touches)" in out
 
 
-def test_pre_push_hook_runs_the_final_full_gate(board, monkeypatch, tmp_path):
+def test_pre_push_hook_runs_the_final_full_gate(board, monkeypatch):
     """훅은 FULL 을 요구한다 — 강등되면 게이트 플래그가 안 써져 push 가 통과할 수 없다."""
-    hooks = tmp_path / "hooks"
+    # 설치는 자기 `.git` 아래로 해소될 때만 선다(T-0899) — 훅 폴더는 엔진이 만든다.
+    (board.REPO / ".git").mkdir(parents=True, exist_ok=True)
+    hooks = board.REPO / ".git" / "hooks"
     monkeypatch.setattr(board, "_hooks_dir", lambda: hooks)
     monkeypatch.setattr(board, "_detect_py", lambda: "python3")
     assert board.install_pre_push_hook() is True

@@ -23,6 +23,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from _git_fixture import init_git_repo
 from conftest import write_cluster_ledger
 
 REPO = Path(__file__).resolve().parents[1]
@@ -1776,6 +1777,51 @@ def test_task_stage_plan_dry_run_matches_actual_repo_pathspec(tf, tmp_path, monk
     assert f"cwd={worktree} git add -A -- code.py" in out
     assert f"[PM 홈 산출물] cwd={home}: `git commit -m \"<메시지>\" -- home.md`" in out
     assert f"[task worktree touches] cwd={worktree}: `git commit -m \"<메시지>\" -- code.py`" in out
+
+
+def test_single_ticket_completion_never_deletes_a_branch(tf, tmp_path, monkeypatch, capsys):
+    """티켓 하나의 완료 기록은 브랜치를 지우지 않는다 — 브랜치 정리는 묶음 종결·슬롯 제거의 몫이다.
+
+    묶음 브랜치 삭제(T-0902)는 `ClusterCloser._step_merge` 에만 있다. 그 시도가 단일 티켓 완료
+    기록 경로로 새면 사람이 아직 쓰고 있는 브랜치를 완료 기록이 지우려 든다. 픽스처 트리는
+    `init_git_repo` 로 자기 저장소를 선언한다(실 저장소 무접촉).
+    """
+    home = tmp_path / "pm-home"
+    worktree = home / "work" / "project_manager_1"
+    worktree.mkdir(parents=True)
+    init_git_repo(worktree, commit="seed")
+    (home / ".project_manager" / "wiki" / "log").mkdir(parents=True)
+    monkeypatch.setattr(tf, "REPO", home)
+
+    def fake_scope(ticket_id, board_py, log_file, run_git, *, repo=None,
+                   include_touches=True, include_engine_outputs=True,
+                   touches_workspace=None, touches=None):
+        if include_engine_outputs:
+            return tf.StageScope((".project_manager/wiki/log/current.md",), None)
+        return tf.StageScope(("tests/test_real_change.py",), None)
+
+    monkeypatch.setattr(tf, "stage_scope", fake_scope)
+    mutations: list[list[str]] = []
+    finisher = tf.TicketFinisher(
+        run_pytest_fn=lambda: (0, "1 passed in 0.1s"),
+        run_board_fn=lambda args: (0, "board ok"),
+        run_git_fn=lambda args: (mutations.append(list(args)) or (0, "")),
+        run_git_at_fn=lambda cwd, args: (mutations.append(list(args)) or (0, "")),
+        board_count_fn=lambda: 0,
+        ticket_title_fn=lambda ticket_id: "no branch delete",
+        affected_domain_fn=lambda ticket_id: None,
+        status_entries_fn=lambda: (),
+        status_entries_at_fn=lambda cwd: (),
+        residual_block_fn=lambda ticket_id: None,
+        log_file=home / ".project_manager/wiki/log/current.md",
+        task_workspace=worktree,
+    )
+
+    assert finisher.run("T-0902", section=None, dry_run=False, skip_pytest=True) == 0
+    assert mutations, "git seam 이 한 번도 안 불렸다(공허한 단언)"
+    assert not any(args[:1] == ["branch"] for args in mutations), \
+        f"완료 기록이 브랜치를 건드렸다: {mutations!r}"
+    capsys.readouterr()
 
 
 def test_task_machine_parsers_use_stdout_only_not_mutation_stderr(tf, tmp_path, monkeypatch):
