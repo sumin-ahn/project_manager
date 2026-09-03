@@ -7,7 +7,7 @@
 
 ## [Unreleased]
 
-## [1.7.13] - 2026-09-02
+## [1.7.12] - 2026-09-03
 
 ### Removed
 
@@ -23,6 +23,9 @@
 
 ### Changed
 
+- **BREAKING — `ticket done`·`cluster closed`·`slot released` 를 서로 다른 상태로 분리한다.** 활성 묶음 멤버의 `board.py complete` 직접 호출은 첫 write 전에 거부하고, `ticket_finish.py` 의 `ClusterCloser` 가 넘기는 내부 결속값이 티켓 frontmatter·장부의 양방향 귀속과 정확히 같을 때만 완료 게이트로 들어간다. 장부·역참조가 둘 다 없는 구세대 티켓은 크기 1 해석 id 와 같은 결속만 통과한다. 부트스트랩 슬롯 카드에서 direct complete 처방을 없애 완료 진입은 `/pm-wave-finish` 하나이며, 손상된 cluster 장부가 하나라도 있으면 mutation 은 첫 write 전에 정지한다(조회용 목록과 분리 · 판정 불능은 통과가 아니다).
+- 추가 리뷰어의 canonical 물리 진입점을 `.project_manager/tools/additional_reviewer.py`로 완전 개명했다. 구 `external_review.py`는 shim으로 남기지 않고, `pm_update` full sync가 신 파일 설치를 확인한 뒤 채택자의 구 파일을 `.pm_import_backups/`에 보존하고 퇴역한다. 과거 raw/config/header/role 판독은 호환을 유지하지만 신규 writer는 `additional_reviewer` 식별자만 생성한다.
+
 - 우리가 띄우는 행위자를 `외부` 로 부르던 표기를 역할 이름(추가 리뷰어·위임·하네스)으로 바꾸고, `외부 전송`·`외부 송신` 계열 표기까지 출하 표면 전량에서 0 으로 고정하는 검사를 `tests/test_terminology.py` 에 추가했다. 기계 밖으로 나가는 행위·저장소 밖 경로의 `외부` 는 그대로 둔다. (T-0887 에서 폐지 — 이 축은 더 이상 없다)
 - 남은 판단 축을 자기 근거로 부른다 — 라운드·wave 예산이 세는 것은 **유료 호출** 횟수다. 엔진 안내·카드·문서의 `전송`/`송신` 표기를 `호출` 로 바꿨고, 손대지 않은 축은 이 예산 상한 하나뿐이다.
 - **위임자는 피위임자에게 자신과 같은 권한을 준다** — 위임 방향·하네스 조합과 무관하다(코덱스가 PM 일 때 클로드에게 위임하든, 오픈코드가 코덱스에게 위임하든 같다). 이 규칙을 판단 원칙 레지스트리와 세 하네스의 위임 카드에 실었고, 위임 경로에서 피위임자 권한을 좁히는 자리는 파리티 원장에 등재해 새 좁힘이 미등재로 걸리게 했다. 남는 비대칭은 CLI 형식과 역할축(generate≠evaluate)뿐이다.
@@ -33,37 +36,11 @@
 
 ### Added
 
+- `qa.platforms` / `test.<platform>.cmd` 선언으로 Linux core 회귀와 같은 HEAD의 Windows QEMU 회귀를 하나의 `pm-qa`·livegate 증거로 집계하는 platform QA gate를 추가했다. 각 스위트 내부는 `pytest -n auto`로 병렬 실행하고, 공유 QEMU 경합을 피하기 위해 platform 간은 직렬로 검증한다.
+
 - 하네스 이름을 조건으로 접근 권한·경로·env·판단 축을 가르는 분기를 AST 로 세어 원장 밖 자리를 거부하는 `tests/test_harness_parity_guard.py` 를 추가했다. 현재 등재는 CLI 형식(argv 조립·어댑터 설치·dry-run 표기) 20건이고 권한 분기는 0 이며, 원장은 축소 방향으로만 바뀐다.
 - `pm_delegate.py ticket abandon --discard-reason <사유>` — 산출이 있는 미회수 라운드 사본을 재실행 대체 없이 폐기한다. 산출은 순번과 무관하게 board 라운드 파일로 옮겨 `pm-review-refused` 표식을 붙이고, 사본도 board 파일도 없는 행은 사유만으로 장부를 닫는다. `--superseded-by` 와 함께 줄 수 없다.
 - 멤버가 전부 폐기된 묶음을 `ticket_finish.py --cluster` 가 닫는다 — 코드 산출을 전제하는 단계(완료 기록·커밋·재배치·머지)는 대상에서 빠지고 슬롯 반납과 board 기록만 돈다.
-
-### Fixed
-
-- `rounds resolve --cluster --pm-verified` 가 리뷰를 통과한(must-fix 0) 멤버를 "처분할 반려 잔여가 없습니다" 로 거부해, 통과 멤버가 하나라도 섞인 묶음이 닫히지 않던 결함을 고쳤다. 통과 멤버는 무대상으로 건너뛴다(`--gate` 단건 거부는 그대로).
-- Windows 에서 자기 축 회귀의 실패 노드 ID 가 플랫폼 경로 표기로 나와 없는 실패를 새로 판정하던 것을 POSIX 표기로 고정했다(정규화 지점 `_self_axis_failed_node_ids` 한 곳 · 플랫폼 분기 0).
-- 위임 raw 저장 경로의 0600·O_EXCL 보장을 단언하는 테스트가 폴백 테스트 삭제와 함께 사라져 있던 것을 실 경로에 다시 세웠다.
-- 묶음 종결이 PM 홈 자신의 lease 행(`slot "."`)을 반납 대상으로 세던 결함을 고쳤다 — dirty 홈에서 "슬롯 반납 실패" 로 멈추거나, 반납 뒤 그 홈의 정체성 의존 조작(claim·checkpoint·snapshot)이 "세션 미해소" 로 막히던 자리다. 홈 행은 반납 무대상이다(`worktree_pool.HOME_SLOT` 단일 비교). (T-0897)
-- `pm_log.py checkpoint` 가 compaction 트리거에서만 정체성 미해소를 rc 0 으로 조용히 생략하던 특례를 지웠다 — 어느 트리거든 rc 1 `[중단]` 하나다. `snapshot` 도 만들 텍스트가 없으면 rc 1 이고 stdout 에 아무것도 내지 않는다(`--json` 의 `{"suppressOutput":true}` 무응답 엔벨로프 삭제). 세 하네스의 압축 훅이 같은 실패를 같은 폴백 안내로 드러낸다 — codex 만 미등록 홈에서 침묵하던 차이가 사라졌다. (T-0897)
-- 단일 clone 채택자(`pm_import --new` 직후 · 커밋 0 · 기준 브랜치 미탄생)의 첫 티켓 종결이 "통합 브랜치가 이 코드 트리에 없다" 로 멈추던 결함을 고쳤다. HEAD 가 앉은 미탄생 기준 브랜치는 이 종결의 커밋 단계가 첫 커밋을 얹을 자기 브랜치로 읽고(`_unborn_baseline` 관측 한 곳), 측정 폭·사설 참조 가드는 기존 "측정 불가 = 가드 off + loud 한 줄" 등급, 잔여 인구는 선언 경로뿐이다(그 밖의 미추적 파일은 건수와 `git add` 처방 한 줄로 보고 · 차단 없음). detached·다른 브랜치·선언 브랜치 부재는 종전대로 정지한다. (T-0896)
-
-### 업그레이드 노트
-
-- **BREAKING — `board.py cluster new` 는 코드 트리 정체성을 요구한다.** `--repo <이름> --slot <N>` 또는 `--task <이름>` 없이 부르던 스크립트·카드는 거부된다. 추측으로 PM 홈에 만들어졌던 통합 브랜치가 있으면 `cluster show` 의 선언값과 실제 저장소를 대조해 손으로 정리한다.
-- **BREAKING — `board.py section-add` 는 묶음 장부가 있는 티켓에 거부된다.** 라운드를 이어 시키려면 `pm_delegate.py ticket prepare --reopen-ordinal N` 으로 같은 순번을 다시 연다. 폐기·복원으로 표식이 붙은 순번을 다시 시킬 때는 재개방 뒤 슬롯 사본에서 `pm-review-refused` 줄을 지운다.
-- **BREAKING — PM 홈·엔진 루트를 추측하지 않는다.** anchor 의 `.git` 이 공용 저장소를 가리키지 않는 형상(복사본 checkout·submodule 없는 사본)에서는 이제 오류다. 오류 문안이 anchor 와 공용 저장소를 찍으므로 그 값으로 형상을 고친다.
-- 임시 파일이 `.project_manager/.local/tmp` 아래로 온다. 그 경로를 백업·감시 대상에서 빼고 있었다면 확인한다.
-- opencode 채택자: `pm_update` 는 인스턴스 소유 guest 절의 옛 `pm-dev-delegate` override 행을 보존한다. `./pm-config.sh add-harness --harness opencode` 를 한 번 다시 돌려 canonical 카드로 갱신한다.
-
-## [1.7.12] - 2026-08-29
-
-### Added
-
-- `qa.platforms` / `test.<platform>.cmd` 선언으로 Linux core 회귀와 같은 HEAD의 Windows QEMU 회귀를 하나의 `pm-qa`·livegate 증거로 집계하는 platform QA gate를 추가했다. 각 스위트 내부는 `pytest -n auto`로 병렬 실행하고, 공유 QEMU 경합을 피하기 위해 platform 간은 직렬로 검증한다.
-
-### Changed
-
-- **BREAKING — `ticket done`·`cluster closed`·`slot released` 를 서로 다른 상태로 분리한다.** 활성 묶음 멤버의 `board.py complete` 직접 호출은 첫 write 전에 거부하고, `ticket_finish.py` 의 `ClusterCloser` 가 넘기는 내부 결속값이 티켓 frontmatter·장부의 양방향 귀속과 정확히 같을 때만 완료 게이트로 들어간다. 장부·역참조가 둘 다 없는 구세대 티켓은 크기 1 해석 id 와 같은 결속만 통과한다. 부트스트랩 슬롯 카드에서 direct complete 처방을 없애 완료 진입은 `/pm-wave-finish` 하나이며, 손상된 cluster 장부가 하나라도 있으면 mutation 은 첫 write 전에 정지한다(조회용 목록과 분리 · 판정 불능은 통과가 아니다).
-- 추가 리뷰어의 canonical 물리 진입점을 `.project_manager/tools/additional_reviewer.py`로 완전 개명했다. 구 `external_review.py`는 shim으로 남기지 않고, `pm_update` full sync가 신 파일 설치를 확인한 뒤 채택자의 구 파일을 `.pm_import_backups/`에 보존하고 퇴역한다. 과거 raw/config/header/role 판독은 호환을 유지하지만 신규 writer는 `additional_reviewer` 식별자만 생성한다.
 
 ### Fixed
 
@@ -72,6 +49,13 @@
 - 종료 archive를 같은 task identity로 복원하는 `task reopen`을 추가하고, archived 이름의 신규 bootstrap을 차단했다. `task end`는 handoff 진입이 남긴 durable `pid=0` intent 뒤에만 허용해 무handoff 종료의 슬롯·state 손실을 막는다.
 - Windows 11 QEMU 전체 회귀에서 발견한 99 node·13파일의 테스트 이식성 결함을 실행 인터프리터, 논리/네이티브 경로, JSON backslash, 과대한 parameter ID 축으로 전수 폐쇄했다. 가짜 WindowsApps `python3` shim을 설치한 실제 VM에서도 출하 계약을 유지한다.
 - 한 shell cell의 `git-anchor` `PreToolUse` 판정은 최강 verdict만 남기고 인접한 동일 경고를 `호출 5–6 [pm-home/warn] ×2: …` 형태로 압축한다. 하위 `slot/ok` 반복은 최종 `systemMessage`에서 제외하되 deny code·호출 순서는 보존한다.
+
+- `rounds resolve --cluster --pm-verified` 가 리뷰를 통과한(must-fix 0) 멤버를 "처분할 반려 잔여가 없습니다" 로 거부해, 통과 멤버가 하나라도 섞인 묶음이 닫히지 않던 결함을 고쳤다. 통과 멤버는 무대상으로 건너뛴다(`--gate` 단건 거부는 그대로).
+- Windows 에서 자기 축 회귀의 실패 노드 ID 가 플랫폼 경로 표기로 나와 없는 실패를 새로 판정하던 것을 POSIX 표기로 고정했다(정규화 지점 `_self_axis_failed_node_ids` 한 곳 · 플랫폼 분기 0).
+- 위임 raw 저장 경로의 0600·O_EXCL 보장을 단언하는 테스트가 폴백 테스트 삭제와 함께 사라져 있던 것을 실 경로에 다시 세웠다.
+- 묶음 종결이 PM 홈 자신의 lease 행(`slot "."`)을 반납 대상으로 세던 결함을 고쳤다 — dirty 홈에서 "슬롯 반납 실패" 로 멈추거나, 반납 뒤 그 홈의 정체성 의존 조작(claim·checkpoint·snapshot)이 "세션 미해소" 로 막히던 자리다. 홈 행은 반납 무대상이다(`worktree_pool.HOME_SLOT` 단일 비교). (T-0897)
+- `pm_log.py checkpoint` 가 compaction 트리거에서만 정체성 미해소를 rc 0 으로 조용히 생략하던 특례를 지웠다 — 어느 트리거든 rc 1 `[중단]` 하나다. `snapshot` 도 만들 텍스트가 없으면 rc 1 이고 stdout 에 아무것도 내지 않는다(`--json` 의 `{"suppressOutput":true}` 무응답 엔벨로프 삭제). 세 하네스의 압축 훅이 같은 실패를 같은 폴백 안내로 드러낸다 — codex 만 미등록 홈에서 침묵하던 차이가 사라졌다. (T-0897)
+- 단일 clone 채택자(`pm_import --new` 직후 · 커밋 0 · 기준 브랜치 미탄생)의 첫 티켓 종결이 "통합 브랜치가 이 코드 트리에 없다" 로 멈추던 결함을 고쳤다. HEAD 가 앉은 미탄생 기준 브랜치는 이 종결의 커밋 단계가 첫 커밋을 얹을 자기 브랜치로 읽고(`_unborn_baseline` 관측 한 곳), 측정 폭·사설 참조 가드는 기존 "측정 불가 = 가드 off + loud 한 줄" 등급, 잔여 인구는 선언 경로뿐이다(그 밖의 미추적 파일은 건수와 `git add` 처방 한 줄로 보고 · 차단 없음). detached·다른 브랜치·선언 브랜치 부재는 종전대로 정지한다. (T-0896)
 
 ### 업그레이드 노트
 
@@ -94,6 +78,12 @@
 - **`external_review.py` 는 없어졌다.** canonical 진입점은 `.project_manager/tools/additional_reviewer.py`
   다. shim 을 남기지 않으므로 옛 경로를 부르는 스크립트는 고쳐야 한다. `pm_update` full sync 가 신
   파일 설치를 확인한 뒤 채택자의 구 파일을 `.pm_import_backups/` 로 옮긴다.
+
+- **BREAKING — `board.py cluster new` 는 코드 트리 정체성을 요구한다.** `--repo <이름> --slot <N>` 또는 `--task <이름>` 없이 부르던 스크립트·카드는 거부된다. 추측으로 PM 홈에 만들어졌던 통합 브랜치가 있으면 `cluster show` 의 선언값과 실제 저장소를 대조해 손으로 정리한다.
+- **BREAKING — `board.py section-add` 는 묶음 장부가 있는 티켓에 거부된다.** 라운드를 이어 시키려면 `pm_delegate.py ticket prepare --reopen-ordinal N` 으로 같은 순번을 다시 연다. 폐기·복원으로 표식이 붙은 순번을 다시 시킬 때는 재개방 뒤 슬롯 사본에서 `pm-review-refused` 줄을 지운다.
+- **BREAKING — PM 홈·엔진 루트를 추측하지 않는다.** anchor 의 `.git` 이 공용 저장소를 가리키지 않는 형상(복사본 checkout·submodule 없는 사본)에서는 이제 오류다. 오류 문안이 anchor 와 공용 저장소를 찍으므로 그 값으로 형상을 고친다.
+- 임시 파일이 `.project_manager/.local/tmp` 아래로 온다. 그 경로를 백업·감시 대상에서 빼고 있었다면 확인한다.
+- opencode 채택자: `pm_update` 는 인스턴스 소유 guest 절의 옛 `pm-dev-delegate` override 행을 보존한다. `./pm-config.sh add-harness --harness opencode` 를 한 번 다시 돌려 canonical 카드로 갱신한다.
 
 ## [1.7.11] - 2026-08-25
 
