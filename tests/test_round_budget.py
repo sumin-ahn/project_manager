@@ -1349,17 +1349,24 @@ def test_a_ledger_that_disappears_mid_prepare_refuses(pd, budget_env, monkeypatc
 
 
 def test_a_ticket_without_a_ledger_stops_the_preparation(pd, budget_env):
-    """장부 없는 크기 1 해석(구세대 티켓)도 무제한이 아니라 정지다 — 판정 입력이 없다."""
+    """장부 없는 묶음 이름은 멤버가 없다 — 준비는 그 빈 값에서 정지한다(멤버 합성 0).
+
+    이름 모양이 멤버를 만들던 자리다. 그 합성이 열리면 선언한 적 없는 묶음이 예산 선언 없이
+    라운드를 받는다. 티켓 표기(`--ticket`)는 멤버를 명시로 싣고 오므로 같은 부재를 한 걸음 뒤
+    장부 판정에서 만난다(`test_the_ticket_surface_without_a_ledger_stops_too`).
+    """
     pm_home, slot, tickets = budget_env
     (tickets / "T-7130-budget.md").write_text(
         _spec_text("T-7130", ""), encoding="utf-8", newline="\n")
+
+    assert pd._load_board_for_repo(pm_home).cluster_members("C-T-7130") == ()
 
     with pytest.raises(pd.DelegateError) as caught:
         pd.prepare_cluster_copy(
             cluster="C-T-7130", role="architect", cwd=slot, pm_home=pm_home,
         )
 
-    assert "묶음 장부가 없습니다" in str(caught.value)
+    assert "클러스터 멤버가 없습니다" in str(caught.value)
     assert _round_names(pm_home, "T-7130") == []
 
 

@@ -823,12 +823,14 @@ def test_cluster_member_complete_requires_exact_closer_binding(
 def test_legacy_ticket_completes_with_its_size_one_binding(live_board, capsys, monkeypatch):
     """X-003: 장부도 역참조도 없는 구세대 티켓은 크기 1 해석 결속만 받고 나머지는 거부한다.
 
-    `cluster_members` 폴백이 그 티켓을 `C-<티켓 ID>` 크기 1 묶음으로 접어 종결에 태우므로,
-    완료 게이트가 다른 규칙을 쓰면 그 티켓은 종결도 직접 완료도 못 하는 막다른 길에 놓인다.
+    `ticket_cluster` 의 이름 해석이 그 티켓을 `C-<티켓 ID>` 로 부르고 `ClusterCloser` 가 그 값을
+    결속으로 싣고 오므로, 완료 게이트가 다른 규칙을 쓰면 그 티켓은 종결도 직접 완료도 못 하는
+    막다른 길에 놓인다. 멤버 합성은 이 규칙의 입력이 아니다 — 장부 없는 이름의 멤버는 없다.
     """
     tid = "T-9884"
     claimed = _seed_ticket(live_board, tid, _dod_body("- [x] 코드"))
     assert "cluster:" not in claimed.read_text(encoding="utf-8")
+    assert live_board.cluster_members(f"C-{tid}") == ()
     monkeypatch.setattr(live_board, "_board_git_sync_best_effort", lambda *args: True)
     ticket_before = claimed.read_bytes()
 
