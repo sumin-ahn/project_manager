@@ -2389,18 +2389,19 @@ def _assert_developer_commit_tree(cwd: Path) -> None:
         return                              # 임베드·단일 clone — PM 홈이 곧 코드 트리다.
     pools = []
     for bare in bares:
+        # git 은 Windows 에서도 `/` 경로를 찍는다 — 장부 루트와 같은 절대경로 표기로 싣는다.
         slots = [
-            line[len("worktree "):].strip()
+            Path(line[len("worktree "):].strip()).resolve()
             for line in _cluster_git(
                 bare, "worktree", "list", "--porcelain",
             ).splitlines()
             if line.startswith("worktree ")
         ]
-        slots = [slot for slot in slots if Path(slot).resolve() != bare.resolve()]
+        slots = [slot for slot in slots if slot != bare.resolve()]
         # 슬롯이 하나도 없는 풀은 나열할 값이 없다 — 그 자리에는 나열 대신 슬롯을 만드는
         # 커맨드를 싣는다(빈 나열로 끝나면 문구만 읽고 `--cwd` 를 무엇으로 바꿀지 알 수 없다).
         pools.append(
-            (f"{bare} 의 슬롯 = " + " · ".join(slots)) if slots
+            (f"{bare} 의 슬롯 = " + " · ".join(map(str, slots))) if slots
             else (
                 f"{bare} 에는 아직 슬롯이 없습니다 — `pm-config worktree add {bare.stem} "
                 f"--user-ack {bare.stem}` 로 슬롯을 만드세요"
