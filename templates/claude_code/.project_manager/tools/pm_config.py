@@ -1393,6 +1393,69 @@ def _ensure_bare_branch_tracking(bare_path: Path, *, runner: GitRunner) -> None:
     )
 
 
+# ── 풀 슬롯 사본 루트 ignore 규칙 ───────────────────────────────────
+
+# 위임 사본 루트(run-dir)를 숨기는 정본 규칙 — 두-git 풀 슬롯의 정본은 그 풀 bare 의
+# `info/exclude` 다. bare 의 exclude 는 `$GIT_COMMON_DIR/info/exclude` 라 그 풀의 모든 linked
+# worktree 가 공유하므로, 앱 저장소에 프레임워크 파일을 두거나 사람이 exclude 를 손으로
+# 고치는 절차가 사라진다. 값은 `pm_delegate.TICKET_COPY_POOL_IGNORE_RULE` 과 같은
+# 문자열이어야 한다(판정하는 쪽과 설치하는 쪽의 불변식은 테스트가 고정). 루트 앵커 디렉터리
+# 규칙이라 저장소가 추적하는 `.project_manager/tools`·`wiki` 는 숨기지 않는다.
+TICKET_COPY_POOL_IGNORE_RULE = "/.project_manager/.local/"
+_TICKET_COPY_EXCLUDE_COMMENT = "# pm_delegate ticket copy run-dir (engine-owned)"
+
+
+def _ensure_bare_ticket_copy_exclude(bare_path: Path) -> bool:
+    """bare `info/exclude` 에 사본 루트 ignore 규칙을 멱등 설치한다 (순수 파일 IO·fail-soft).
+
+    규칙 줄이 이미 있으면 아무것도 쓰지 않는다(두 번 불러도 줄은 하나). 없을 때만 주석 1줄 +
+    규칙 1줄을 append 한다 — **남이 넣은 줄은 건드리지 않는다**(옛 손 편집 줄 제거는 사람이
+    1회 하는 데이터 정리이지 이 함수의 일이 아니다).
+
+    bare 부재는 no-op + 경고다. 없는 자리에 `info/exclude` 를 만들면 `<repo>.git` 디렉터리가
+    생겨 나중 `git clone --bare` 가 "destination path already exists" 로 죽는다.
+
+    **fail-soft**: 쓰기 실패는 경고를 surface 하되 repo 등록·슬롯 생성 자체는 막지 않는다
+    (옆 두 헬퍼 `_set_bare_fetch_refspec`·`_ensure_bare_branch_tracking` 과 같은 계약). 조용한
+    생략이 아니다 — 진짜 게이트는 `pm_delegate` 의 사본 루트 검사(fail-loud)이고, 여기서 rc 를
+    1 로 만들면 exclude 쓰기 실패가 repo 등록 자체를 막는다. 반환 = 규칙이 설치된 상태인지.
+    """
+    exclude = bare_path / "info" / "exclude"
+    if not bare_path.is_dir():
+        print(
+            f"[경고] 사본 루트 ignore 규칙을 설치하지 못했다 — bare 부재: {bare_path}. "
+            f"이 풀의 슬롯에서 위임 라운드 준비(`ticket prepare`)가 거부된다 — bare 복구 후 "
+            f"`{_FACADE_PROG} repo add <repo>` 로 재설치하라 (멱등).",
+            file=sys.stderr,
+        )
+        return False
+    try:
+        existing = (
+            _load_file_lock().read_text_shared(exclude, encoding="utf-8")
+            if exclude.is_file() else ""
+        )
+        if any(line.strip() == TICKET_COPY_POOL_IGNORE_RULE
+               for line in existing.splitlines()):
+            return True
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        lead = "" if (not existing or existing.endswith("\n")) else "\n"
+        with exclude.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(
+                f"{lead}{_TICKET_COPY_EXCLUDE_COMMENT}\n{TICKET_COPY_POOL_IGNORE_RULE}\n"
+            )
+    except OSError as exc:
+        print(
+            f"[경고] 사본 루트 ignore 규칙 설치 실패: {exclude} — {exc}. 이 풀의 슬롯에서 위임 "
+            f"라운드 준비(`ticket prepare`)가 거부된다 — 수동으로 그 파일에 "
+            f"`{TICKET_COPY_POOL_IGNORE_RULE}` 줄을 넣거나 권한 복구 후 "
+            f"`{_FACADE_PROG} repo add <repo>` 를 재실행하라 (멱등).",
+            file=sys.stderr,
+        )
+        return False
+    print(f"✓ 사본 루트 ignore 규칙 설치: {exclude} (`{TICKET_COPY_POOL_IGNORE_RULE}`).")
+    return True
+
+
 # ── 위임 forward 시 usage prog 정합 ────────────────────────
 
 # `pm-config init`/`update` 는 board.py / pm_update.py 의 main() 으로 verbatim forward
@@ -1698,6 +1761,11 @@ def cmd_repo_add(
     #     같은 위치(clone 성공/기존 bare 재사용 둘 다·already_registered early-return 이전)라 과거
     #     tracking-없는 bare 도 다음 repo add 에 자가치유된다(멱등·fail-soft).
     _ensure_bare_branch_tracking(bare_path, runner=runner)
+
+    # 1d) 사본 루트 ignore 규칙 설치 — 이 풀의 모든 슬롯이 공유하는 bare `info/exclude` 에
+    #     위임 run-dir 규칙을 멱등으로 박는다. refspec/tracking 보정과 같은 자리
+    #     (already_registered early-return 이전)라 기존 풀도 다음 `repo add` 에 규칙을 얻는다.
+    _ensure_bare_ticket_copy_exclude(bare_path)
 
     # 2) 이미 등록돼 있으면 base 재해소/등록을 건너뛴다(append-only·중복 등록 금지). base 는
     #    첫 등록 때 박힌 값 그대로(clone 만 실패했던 재시도 경로는 위 clone 으로 복구됨).
@@ -2227,6 +2295,9 @@ def cmd_worktree_add(
     # (훅 설치 False 침묵은 보호 가드 무력화를 감춘다).
     _install_protected_hook_reporting(
         args.repo, board=board, worktree_pool=wp, action="(재)설치")
+    # 사본 루트 ignore 규칙 (재)설치 (멱등 자가치유) — 훅과 같은 자리에서 슬롯 op
+    # 마다 (재)설치해, 규칙 없이 만들어진 기존 풀도 다음 worktree add 에 규칙을 얻는다.
+    _ensure_bare_ticket_copy_exclude(wp.bare_repo_path(args.repo))
     # task-명의 생성이면 집합 변경 직후 재열거 — 지금 보유한 슬롯 집합을 surface.
     if task is not None:
         _render_task_slots(wp, task)

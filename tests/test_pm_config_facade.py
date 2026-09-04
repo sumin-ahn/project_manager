@@ -54,6 +54,16 @@ def pc():
     return _load_pm_config()
 
 
+@pytest.fixture(autouse=True)
+def _fake_bare_root(tmp_path, monkeypatch):
+    """`FakeWorktreePool.bare_repo_path` 가 답할 임시 `.repos` 루트를 테스트마다 새로 준다.
+
+    `cmd_worktree_add` 는 그 repo 의 bare `info/exclude` 에 사본 루트 규칙을 심는다
+    ([[T-0903]]). 대역이 실 `.repos` 를 돌려주면 이 저장소의 bare 를 건드리게 된다.
+    """
+    monkeypatch.setattr(FakeWorktreePool, "bare_root", tmp_path / ".repos")
+
+
 # ── 주입형 엔진 fake (DI seam — hermetic) ────────────────────────────────────
 
 
@@ -79,6 +89,10 @@ class FakeWorktreePool:
     배선을 결정적으로 친다. 예외 클래스(NeedsCreate·ReleaseRefused)도 노출해 디스패처가
     그를 잡는 경로를 검증할 수 있게 한다.
     """
+
+    # 공유 bare 대역의 루트 — autouse `_fake_bare_root` 가 테스트별 tmp 로 채운다(기본 None =
+    # 미설정이면 `bare_repo_path` 가 즉시 실패해 실 `.repos` 로 새지 않는다).
+    bare_root = None
 
     class NeedsCreate(Exception):
         def __init__(self, repo):
@@ -143,8 +157,12 @@ class FakeWorktreePool:
                  alloc_returns=None, alloc_raises=None, task_record="__unset__",
                  end_task_result=None, validate_raises=False,
                  set_prefix_result="__unset__", tasks=None, slot_git=None,
-                 reopen_result="__unset__", reopen_raises=None, end_raises=None):
+                 reopen_result="__unset__", reopen_raises=None, end_raises=None,
+                 bare_present=True):
         self.leases = leases or []
+        # 그 repo 의 공유 bare 가 디스크에 있는지([[T-0903]]) — False 면 `bare_repo_path` 가
+        # 경로만 답하고 만들지 않아, 규칙 설치가 실패하는 fail-soft 분기를 친다.
+        self._bare_present = bare_present
         self.calls: list[tuple] = []
         self._release_raises = release_raises   # 예외 클래스 또는 None
         self._force_returns = force_returns     # "present" → Lease, "absent" → None
@@ -209,6 +227,17 @@ class FakeWorktreePool:
     def slot_path(self, slot):
         self.calls.append(("slot_path", slot))
         return REPO / slot
+
+    def bare_repo_path(self, repo):
+        # 그 repo 의 공유 bare 대역([[T-0903]]) — `cmd_worktree_add` 가 사본 루트 ignore 규칙을
+        # 심는 자리다. **실 `.repos` 를 절대 돌려주지 않는다** — autouse `_fake_bare_root` 가
+        # 준 임시 루트 안에서만 답하고, clone 이 깐 bare 처럼 디렉터리를 갖춰 둔다.
+        self.calls.append(("bare_repo_path", repo))
+        assert self.bare_root is not None, "bare_root 미설정 — 실 `.repos` 를 건드릴 뻔했다"
+        path = Path(self.bare_root) / f"{repo}.git"
+        if self._bare_present:
+            path.mkdir(parents=True, exist_ok=True)
+        return path
 
     def list_leases(self):
         self.calls.append(("list_leases",))
@@ -1601,6 +1630,40 @@ def test_worktree_add_installs_protected_hook(pc, capsys):
     assert rc == 0
     call = _install_hook_call(wp)
     assert call == ("install_protected_hook", "svc", ["main", "develop"])
+
+
+def test_worktree_add_installs_the_ticket_copy_exclude(pc, tmp_path, capsys):
+    """[[T-0903]] — `worktree add` 가 그 풀 bare 의 `info/exclude` 에 사본 루트 규칙을 심는다.
+
+    훅 (재)설치와 같은 자리라 규칙 없이 만들어진 기존 풀도 다음 슬롯 생성에서 규칙을 얻는다.
+    두 번 불러도 줄은 하나다(멱등).
+    """
+    wp = FakeWorktreePool()
+    board = FakeBoard(repo_protecteds={"svc": ["main"]})
+    args = argparse.Namespace(repo="svc", test=None, user_ack="svc")
+
+    assert pc.cmd_worktree_add(args, worktree_pool=wp, board=board) == 0
+    assert pc.cmd_worktree_add(args, worktree_pool=wp, board=board) == 0
+
+    exclude = tmp_path / ".repos" / "svc.git" / "info" / "exclude"
+    lines = exclude.read_text(encoding="utf-8").splitlines()
+    assert [line for line in lines if line.strip() == pc.TICKET_COPY_POOL_IGNORE_RULE] == [
+        pc.TICKET_COPY_POOL_IGNORE_RULE]
+
+
+def test_worktree_add_stays_green_when_the_exclude_install_fails(pc, tmp_path, capsys):
+    """규칙 설치 실패는 경고일 뿐 슬롯 생성을 막지 않는다 (fail-soft·훅 설치와 같은 계약)."""
+    wp = FakeWorktreePool(bare_present=False)
+    board = FakeBoard(repo_protecteds={"svc": ["main"]})
+
+    rc = pc.cmd_worktree_add(
+        argparse.Namespace(repo="svc", test=None, user_ack="svc"),
+        worktree_pool=wp, board=board,
+    )
+
+    assert rc == 0
+    assert not (tmp_path / ".repos" / "svc.git").exists()   # 없는 bare 를 만들지 않는다
+    assert "사본 루트 ignore 규칙" in capsys.readouterr().err
 
 
 def test_worktree_add_install_hook_uses_default_protected(pc, capsys):

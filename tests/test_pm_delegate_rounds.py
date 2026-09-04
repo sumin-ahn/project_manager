@@ -227,11 +227,8 @@ def _fixture_board(pd, pm_home: Path, sync_log: list | None = None):
     return board
 
 
-@pytest.fixture
-def rounds_env(tmp_path, pd, monkeypatch):
-    """PM 홈(board 데이터+엔진 사본)과 ignore 된 슬롯 git 트리 한 쌍."""
-    pm_home = tmp_path / "pm-home"
-    slot = tmp_path / "slot"
+def _seed_pm_home(pm_home: Path) -> Path:
+    """PM 홈 한 벌(board 데이터 자리 + 엔진 사본) — 반환은 claimed 티켓 디렉터리."""
     pm_tools = pm_home / ".project_manager" / "tools"
     pm_tools.mkdir(parents=True)
     for source in TOOLS.glob("*.py"):
@@ -239,6 +236,26 @@ def rounds_env(tmp_path, pd, monkeypatch):
     tickets = pm_home / ".project_manager" / "wiki" / "tickets" / "claimed"
     tickets.mkdir(parents=True)
     (pm_home / ".project_manager" / ".local").mkdir(parents=True)
+    return tickets
+
+
+def _set_git_identity(monkeypatch, name: str) -> None:
+    monkeypatch.setenv("GIT_AUTHOR_NAME", name)
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", f"{name}@test.invalid")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", name)
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", f"{name}@test.invalid")
+
+
+@pytest.fixture
+def rounds_env(tmp_path, pd, monkeypatch):
+    """PM 홈(board 데이터+엔진 사본)과 ignore 된 슬롯 git 트리 한 쌍.
+
+    슬롯은 자기 `.git` 디렉터리를 가진 **임베드 형상**이다 — 사본 루트 ignore 정본이 tracked
+    `.project_manager/.gitignore` 인 갈래. 비임베드 풀 슬롯 갈래는 `pool_env` 가 태운다.
+    """
+    pm_home = tmp_path / "pm-home"
+    slot = tmp_path / "slot"
+    tickets = _seed_pm_home(pm_home)
     slot.mkdir()
     assert _git(slot, "init", "-q").returncode == 0
     slot_ignore = slot / ".project_manager" / ".gitignore"
@@ -246,10 +263,7 @@ def rounds_env(tmp_path, pd, monkeypatch):
     slot_ignore.write_text(".local/\n", encoding="utf-8", newline="\n")
     (slot / "tracked.txt").write_text("seed\n", encoding="utf-8", newline="\n")
     assert _git(slot, "add", "tracked.txt", ".project_manager/.gitignore").returncode == 0
-    monkeypatch.setenv("GIT_AUTHOR_NAME", "rounds")
-    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "rounds@test.invalid")
-    monkeypatch.setenv("GIT_COMMITTER_NAME", "rounds")
-    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "rounds@test.invalid")
+    _set_git_identity(monkeypatch, "rounds")
     assert _git(slot, "commit", "-qm", "seed").returncode == 0
     sync_log: list = []
     monkeypatch.setattr(
@@ -257,6 +271,38 @@ def rounds_env(tmp_path, pd, monkeypatch):
         lambda _repo: _fixture_board(pd, pm_home, sync_log),
     )
     return pm_home, slot, tickets, sync_log
+
+
+@pytest.fixture
+def pool_env(tmp_path, pd, monkeypatch):
+    """두-git 풀 형상 — PM 홈 안 bare(`.repos/app.git`)와 그 bare 가 판 linked worktree 슬롯.
+
+    슬롯에는 `.project_manager` 가 **없다**(채택자 앱 저장소 실형상 · finance 제보 R1). 이
+    형상의 사본 루트 ignore 정본은 그 bare 의 `info/exclude` 이고, 규칙은 케이스가 심는다.
+    반환은 `(pm_home, slot, tickets, bare_exclude)`.
+    """
+    pm_home = tmp_path / "pm-home"
+    tickets = _seed_pm_home(pm_home)
+    _set_git_identity(monkeypatch, "pool")
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    assert _git(seed, "init", "-q").returncode == 0
+    (seed / "tracked.txt").write_text("seed\n", encoding="utf-8", newline="\n")
+    assert _git(seed, "add", "tracked.txt").returncode == 0
+    assert _git(seed, "commit", "-qm", "seed").returncode == 0
+    bare = pm_home / ".repos" / "app.git"
+    bare.parent.mkdir(parents=True)
+    assert _git(tmp_path, "clone", "-q", "--bare", str(seed), str(bare)).returncode == 0
+    slot = pm_home / "work" / "app_1"
+    slot.parent.mkdir(parents=True)
+    assert _git(bare, "worktree", "add", "-q", "-b", "app_1", str(slot), "HEAD").returncode == 0
+    assert not (slot / ".project_manager").exists()
+    sync_log: list = []
+    monkeypatch.setattr(
+        pd, "_load_board_for_repo",
+        lambda _repo: _fixture_board(pd, pm_home, sync_log),
+    )
+    return pm_home, slot, tickets, bare / "info" / "exclude"
 
 
 # 이 파일의 티켓은 `cluster` 필드가 없는 크기 1 묶음이다 — 준비는 예산·순서를 그 묶음
@@ -569,6 +615,126 @@ def test_slot_without_tracked_ignore_rule_is_refused(pd, rounds_env):
         pd.prepare_ticket_copy(
             ticket="T-7013", role="developer", cwd=slot, pm_home=pm_home,
         )
+
+
+# ── 사본 루트 ignore 정본은 형상마다 하나 ([[T-0903]]) ─────────────────────
+
+
+def _add_bare_exclude_rule(exclude: Path, rule: str) -> None:
+    """bare `info/exclude` 에 규칙 한 줄을 더한다(clone 이 깐 기본 내용 뒤)."""
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    with exclude.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(f"{rule}\n")
+
+
+def test_prepare_accepts_a_pool_slot_ignored_by_the_bare_exclude(pd, pool_env):
+    """[[T-0903]] — 비임베드 풀 슬롯의 정본은 그 풀 bare 의 `info/exclude` 다.
+
+    앱 저장소에 `.project_manager` 가 없는 형상은 tracked 정본을 가질 수 없어, 정본을 파일
+    경로 하나로 못박은 [[T-0704]] 판정으로는 구조적으로 통과할 수 없었다(finance 제보 R1).
+    """
+    pm_home, slot, tickets, exclude = pool_env
+    _write_spec(tickets, "T-7920")
+    _add_bare_exclude_rule(exclude, pd.TICKET_COPY_POOL_IGNORE_RULE)
+
+    plan = pd.prepare_ticket_copy(
+        ticket="T-7920", role="developer", cwd=slot, pm_home=pm_home,
+    )
+
+    assert plan.path.is_file()
+    # 프레임워크 파일을 앱 저장소에 두지 않고 통과한다 — 이 파일이 생기면 임베드 형상이라
+    # 이 케이스가 무효가 된다.
+    assert not (slot / ".project_manager" / ".gitignore").exists()
+
+
+def test_prepare_refuses_a_pool_slot_whose_bare_exclude_lacks_the_rule(pd, pool_env):
+    """[[T-0903]] — 규칙 부재는 거부이고, 문구는 정본 파일 실경로와 규칙 문자열을 싣는다."""
+    pm_home, slot, tickets, exclude = pool_env
+    _write_spec(tickets, "T-7921")
+
+    with pytest.raises(pd.DelegateError) as absent:
+        pd.prepare_ticket_copy(
+            ticket="T-7921", role="developer", cwd=slot, pm_home=pm_home,
+        )
+    assert str(exclude) in str(absent.value)
+    assert pd.TICKET_COPY_POOL_IGNORE_RULE in str(absent.value)
+
+    # 손으로 넣은 옛 규칙(더 좁은 문자열 · adopter#0 bare 실측)도 정본이 아니다 — 형상마다
+    # 정본이 정확히 하나이고, 문자열이 다르면 통과하지 않는다.
+    _add_bare_exclude_rule(exclude, "/.project_manager/.local/delegate-ticket-copies/")
+    with pytest.raises(pd.DelegateError) as narrow:
+        pd.prepare_ticket_copy(
+            ticket="T-7921", role="developer", cwd=slot, pm_home=pm_home,
+        )
+    assert str(exclude) in str(narrow.value)
+    assert pd.TICKET_COPY_POOL_IGNORE_RULE in str(narrow.value)
+
+
+def test_pool_slot_judgment_ignores_a_tracked_nested_gitignore(pd, pool_env):
+    """[[T-0903]] — 풀 갈래의 판정 입력은 bare 규칙 존재뿐이다(check-ignore 출처가 아니다).
+
+    중첩 `.gitignore` 는 `info/exclude` 보다 우선순위가 높아 check-ignore 출처를 가로챈다.
+    출처로 판정하면 bare 규칙이 없는 풀도 그 파일 하나로 우연히 통과한다(adopter#0 슬롯 실측).
+    """
+    pm_home, slot, tickets, exclude = pool_env
+    _write_spec(tickets, "T-7922")
+    nested = slot / ".project_manager" / ".gitignore"
+    nested.parent.mkdir(parents=True)
+    nested.write_text(".local/\n", encoding="utf-8", newline="\n")
+    assert _git(slot, "add", ".project_manager/.gitignore").returncode == 0
+    observed = _git(slot, "check-ignore", "-v", ".project_manager/.local/probe")
+    assert observed.stdout.startswith(".project_manager/.gitignore:")
+
+    with pytest.raises(pd.DelegateError) as refused:
+        pd.prepare_ticket_copy(
+            ticket="T-7922", role="developer", cwd=slot, pm_home=pm_home,
+        )
+    assert str(exclude) in str(refused.value)
+
+    # 같은 슬롯이 bare 규칙을 얻으면 통과한다(이관 뒤 adopter#0 형상).
+    _add_bare_exclude_rule(exclude, pd.TICKET_COPY_POOL_IGNORE_RULE)
+    plan = pd.prepare_ticket_copy(
+        ticket="T-7922", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    assert plan.path.is_file()
+
+
+def test_embed_shape_ignore_canon_and_message_are_unchanged(pd, rounds_env):
+    """[[T-0704]] 임베드 갈래의 정본·거부 문구는 [[T-0903]] 형상 분기 뒤에도 바이트 불변이다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-7923", rounds=("developer",) * 3)
+
+    # (1) 정본 = tracked `.project_manager/.gitignore` — 그대로면 통과한다.
+    assert pd.prepare_ticket_copy(
+        ticket="T-7923", role="developer", cwd=slot, pm_home=pm_home,
+    ).path.is_file()
+
+    # (2) 규칙이 아예 없는 거부 문구.
+    assert _git(slot, "rm", "-q", "-f", ".project_manager/.gitignore").returncode == 0
+    with pytest.raises(pd.DelegateError) as missing:
+        pd.prepare_ticket_copy(
+            ticket="T-7923", role="developer", cwd=slot, pm_home=pm_home,
+        )
+    assert str(missing.value) == (
+        "사본 루트가 git 무시 대상이 아님 — `.project_manager/.gitignore` 의 "
+        "`.local/` 규칙을 복원하라"
+    )
+
+    # (3) 정본 위치 밖 tracked 출처의 사유·문구.
+    (slot / ".gitignore").write_text(
+        ".project_manager/.local/\n", encoding="utf-8", newline="\n",
+    )
+    assert _git(slot, "add", ".gitignore").returncode == 0
+    with pytest.raises(pd.DelegateError) as elsewhere:
+        pd.prepare_ticket_copy(
+            ticket="T-7923", role="developer", cwd=slot, pm_home=pm_home,
+        )
+    assert str(elsewhere.value) == (
+        "사본 루트를 숨기는 ignore 규칙이 정본 위치(`.project_manager/.gitignore`) 밖 출처 — "
+        "tracked 비정본 위치 유래 — 다른 클론에도 있지만 정본 위치가 아님 — "
+        "출처=.gitignore:1 패턴='.project_manager/.local/' · `.project_manager/.gitignore` "
+        "에 `.local/` 규칙을 복원하라"
+    )
 
 
 # ── 시드 프리필 ([[T-0749]] 리뷰 F-007) ──────────────────────────────────

@@ -990,6 +990,14 @@ TICKET_COPY_REL_ROOT = Path(".project_manager") / ".local" / "delegate-ticket-co
 # 사본 루트를 숨기는 ignore 규칙의 정본 위치([[T-0704]]) — 이 파일 유래가 아니면 로컬 전용
 # 소스(`.git/info/exclude`·전역 excludesFile 등)로 보고 fail-loud 한다.
 TICKET_COPY_IGNORE_TRACKED_SOURCE = Path(".project_manager") / ".gitignore"
+# 두-git 풀 슬롯(앱 저장소에 `.project_manager` 가 없는 형상)의 정본은 그 풀 bare 의
+# `info/exclude` 에 있는 이 줄이다. bare 의 exclude 는 `$GIT_COMMON_DIR/info/exclude` 라 그 풀의
+# 모든 linked worktree 가 공유하므로, 위 tracked 정본이 지키려는 성질(사본 루트를 숨기는 규칙이
+# 이 코드 트리의 모든 사본에 있다)이 이 형상에서도 그대로 성립한다. 규칙을 심는 쪽은
+# `pm_config._ensure_bare_ticket_copy_exclude` 이고 두 값은 같은 문자열이어야 한다
+# (불변식은 테스트가 고정). 루트 앵커 디렉터리 규칙이라 저장소가 추적하는
+# `.project_manager/tools`·`wiki` 의 새 파일은 숨기지 않는다.
+TICKET_COPY_POOL_IGNORE_RULE = "/.project_manager/.local/"
 _TICKET_COPY_FD_SUPPORTED = (
     hasattr(os, "O_NOFOLLOW")
     and hasattr(os, "O_DIRECTORY")
@@ -1483,11 +1491,73 @@ def _check_ignore_source_is_tracked(cwd: Path, source: str) -> bool:
     raise DelegateError(f"git ls-files 실패(rc={result.returncode}): {cause}")
 
 
+def _pool_bare_for_code_root(cwd: Path) -> Path | None:
+    """이 코드 트리가 두-git 풀 슬롯이면 그 풀의 공용 bare 를, 임베드면 None 을 돌려준다.
+
+    형상 규칙 사본을 만들지 않는다 — 소유 PM 홈은 `pm_log.owning_pm_home` 이 이 트리의 `.git`
+    선언에서 유도하고, 여기서는 두 값만 비교한다. 그 유도가 인정하는 공용 저장소 형상은
+    `<X>/.git`(임베드·단일 clone·그 clone 이 판 linked worktree)과 `<X>/.repos/<repo>.git`
+    (풀 슬롯) 둘뿐이고 그 밖은 예외이므로, 공용 저장소가 `<PM 홈>/.git` 이 아니면 남는 형상은
+    풀 bare 하나이며 그 값이 곧 bare 다.
+    """
+    common = Path(_cluster_git(cwd, "rev-parse", "--git-common-dir").strip())
+    if not common.is_absolute():
+        common = cwd / common
+    common = common.resolve()
+    pm_home = Path(_load_pm_log().owning_pm_home(cwd)).resolve()
+    if common == (pm_home / ".git").resolve():
+        return None
+    return common
+
+
+def _check_ignore_observation(result: subprocess.CompletedProcess) -> str:
+    """check-ignore 관측을 진단 한 조각으로 요약한다 — 풀 갈래에서 **판정 입력이 아니다**."""
+    if result.returncode == 1:
+        return "현재 이 경로를 무시하는 규칙이 없다"
+    lines = [entry for entry in (result.stdout or "").splitlines() if entry]
+    parsed = _parse_check_ignore_verbose_line(lines[0]) if len(lines) == 1 else None
+    if parsed is None:
+        return f"현재 check-ignore 출력={result.stdout!r}"
+    source, linenum, pattern = parsed
+    return f"현재 check-ignore 출처={source}:{linenum} 패턴={pattern!r}"
+
+
+def _assert_pool_bare_ignore_rule(bare: Path, *, observation: str) -> None:
+    """풀 슬롯의 정본 — 그 풀 bare 의 `info/exclude` 에 규칙 줄이 있는지 fail-loud 확인한다.
+
+    check-ignore 가 어느 출처를 보고했는지는 판정 입력이 아니다. 중첩 `.gitignore` 가
+    `info/exclude` 보다 우선순위가 높아, 출처로 판정하면 규칙이 없는 풀도 그 중첩 파일 하나로
+    우연히 통과한다. 파일 부재는 규칙 부재와 같은 거부이고, 읽기 실패는 그대로 올린다
+    (빈 값으로 바꾸지 않는다).
+    """
+    exclude = bare / "info" / "exclude"
+    lines = (
+        _load_file_lock()
+        .read_text_shared(exclude, encoding="utf-8", errors="replace")
+        .splitlines()
+        if exclude.is_file() else []
+    )
+    if any(line.strip() == TICKET_COPY_POOL_IGNORE_RULE for line in lines):
+        return
+    raise DelegateError(
+        f"사본 루트를 숨기는 ignore 규칙이 이 풀의 bare 에 없음 — 정본은 {exclude} 의 "
+        f"`{TICKET_COPY_POOL_IGNORE_RULE}` 줄이다({observation}) · 이 bare 를 공유하는 모든 "
+        f"슬롯이 그 규칙을 함께 받는다 · `pm-config repo add {bare.stem}` 1회로 엔진이 멱등 "
+        "설치한다"
+    )
+
+
 def _assert_ticket_copy_root_ignored(
     cwd: Path, *, cluster: str, run_id: str, ticket: str,
 ) -> None:
-    """ignore 규칙이 실제 ticket-copy 경로 형상을 숨기는지, 그 규칙이 tracked
+    """ignore 규칙이 실제 ticket-copy 경로 형상을 숨기는지, 임베드 형상이면 그 규칙이 tracked
     `.project_manager/.gitignore` 유래인지 fail-loud 확인한다([[T-0704]]).
+
+    정본은 형상마다 정확히 하나다 — 임베드·단일 clone 은 tracked
+    `.project_manager/.gitignore`(아래 본문), 두-git 풀 슬롯은 그 풀 bare 의 `info/exclude`
+    (`_assert_pool_bare_ignore_rule`)다. 한쪽이 거부돼도 다른 후보로 재시도하지 않는다.
+    앱 저장소에 `.project_manager` 가 없는 풀 슬롯은 tracked 정본을 가질 수 없어, 정본을
+    파일 경로 하나로 못박으면 구조적으로 통과할 수 없다.
 
     경로가 정본 위치와 같아도 그 파일 자체가 untracked 면(예: fresh import 직후 아직 `git add`
     하지 않은 형상) 다른 클론에는 없는 로컬 산출물일 수 있어 별도로 `ls-files --error-unmatch` 로
@@ -1507,14 +1577,18 @@ def _assert_ticket_copy_root_ignored(
         ],
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
+    if result.returncode not in (0, 1):
+        cause = result.stderr.strip() or result.stdout.strip() or "원인 미상"
+        raise DelegateError(f"git check-ignore 실패(rc={result.returncode}): {cause}")
+    bare = _pool_bare_for_code_root(cwd)
+    if bare is not None:
+        _assert_pool_bare_ignore_rule(bare, observation=_check_ignore_observation(result))
+        return
     if result.returncode == 1:
         raise DelegateError(
             "사본 루트가 git 무시 대상이 아님 — `.project_manager/.gitignore` 의 "
             "`.local/` 규칙을 복원하라"
         )
-    if result.returncode != 0:
-        cause = result.stderr.strip() or result.stdout.strip() or "원인 미상"
-        raise DelegateError(f"git check-ignore 실패(rc={result.returncode}): {cause}")
     lines = [entry for entry in (result.stdout or "").splitlines() if entry]
     parsed = _parse_check_ignore_verbose_line(lines[0]) if len(lines) == 1 else None
     if parsed is None:
@@ -3821,6 +3895,19 @@ def _load_review_rounds():
     path = Path(__file__).resolve().parent / "review_rounds.py"
     return _load_module_from_path(
         path, "review_rounds.py", verifier=_verify_engine_rev, cache=True,
+    )
+
+
+def _load_pm_log():
+    """소유 PM 홈 유도 규칙(`pm_log.owning_pm_home`) — 코드 트리 형상 판정의 단일 진실.
+
+    `additional_reviewer.resolve_pm_home_for_repo` 도 결국 이 함수를 부르지만, 그쪽은 **설정·
+    board 앵커**를 정하는 seam 이라 호출부가 앵커를 다른 트리로 돌려놓기도 한다. 형상은 앵커
+    선택과 무관하게 코드 트리 자신의 `.git` 선언만으로 정해져야 하므로 유도 규칙을 직접 부른다.
+    """
+    path = Path(__file__).resolve().parent / "pm_log.py"
+    return _load_module_from_path(
+        path, "pm_log.py", verifier=_verify_engine_rev, cache=True,
     )
 
 

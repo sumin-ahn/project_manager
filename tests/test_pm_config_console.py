@@ -36,6 +36,16 @@ def pc():
     return _load_pm_config()
 
 
+@pytest.fixture(autouse=True)
+def _fake_bare_root(tmp_path, monkeypatch):
+    """`FakeWorktreePool.bare_repo_path` 가 답할 임시 `.repos` 루트를 테스트마다 새로 준다.
+
+    `cmd_worktree_add` 는 그 repo 의 bare `info/exclude` 에 사본 루트 규칙을 심는다
+    ([[T-0903]]). 대역이 실 `.repos` 를 돌려주면 이 저장소의 bare 를 건드리게 된다.
+    """
+    monkeypatch.setattr(FakeWorktreePool, "bare_root", tmp_path / ".repos")
+
+
 # ── 주입형 입력/엔진 fake (hermetic) ─────────────────────────────────────────
 
 
@@ -89,6 +99,9 @@ class FakeLease:
 class FakeWorktreePool:
     """worktree_pool 대역 — list_leases(슬롯 surface) + create_slot(빌드명령 경로 검증)."""
 
+    # 공유 bare 대역의 루트 — autouse `_fake_bare_root` 가 테스트별 tmp 로 채운다.
+    bare_root = None
+
     def __init__(self, *, leases=None):
         self.leases = leases or []
         self.calls: list[tuple] = []
@@ -122,6 +135,15 @@ class FakeWorktreePool:
 
     def slot_path(self, slot):
         return f"/tmp/{slot}"
+
+    def bare_repo_path(self, repo):
+        # 그 repo 의 공유 bare 대역([[T-0903]]) — `cmd_worktree_add` 가 사본 루트 ignore 규칙을
+        # 심는 자리다. autouse `_fake_bare_root` 가 준 임시 루트 안에서만 답한다(실 `.repos`
+        # 로 새지 않는다). clone 이 깐 bare 처럼 디렉터리를 갖춰 둔다.
+        assert self.bare_root is not None, "bare_root 미설정 — 실 `.repos` 를 건드릴 뻔했다"
+        path = Path(self.bare_root) / f"{repo}.git"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
 
 # ── 상태 렌더 — repos(areas) + slots(리스) ───────────────────────────────────

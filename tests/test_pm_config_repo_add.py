@@ -731,3 +731,79 @@ def test_repo_add_owner_explicit_bypasses_unresolved_session(pc, tmp_path, monke
     )
     assert rc == 0
     assert board.append_calls and board.append_calls[0]["repo"] == "svc"
+# ── 사본 루트 ignore 규칙 멱등 설치 ([[T-0903]]) ─────────────────────────────
+
+
+def _exclude_rule_lines(exclude: Path, rule: str) -> list[str]:
+    return [line for line in exclude.read_text(encoding="utf-8").splitlines()
+            if line.strip() == rule]
+
+
+def test_repo_add_installs_the_ticket_copy_exclude_idempotently(pc, tmp_path):
+    """[[T-0903]] — `repo add` 가 bare `info/exclude` 에 사본 루트 규칙을 멱등 설치한다.
+
+    호출 자리는 refspec/tracking 보정 옆(이미 등록 early-return **이전**)이라, 규칙 없이
+    만들어진 기존 풀도 다음 `repo add` 한 번으로 규칙을 얻는다. 두 번 불러도 줄은 하나다.
+    """
+    board = FakeBoard(registered=("svc",))     # 이미 등록 → early-return 경로
+    repos = tmp_path / ".repos"
+    (repos / "svc.git" / "info").mkdir(parents=True)   # clone 이 깐 bare 형상
+    exclude = repos / "svc.git" / "info" / "exclude"
+    exclude.write_text("# git default\n", encoding="utf-8", newline="\n")
+
+    for _ in range(2):
+        rc = pc.cmd_repo_add(
+            _args(), board=board, clone_runner=GitFake(), repos_dir=repos,
+        )
+        assert rc == 0
+
+    assert board.append_calls == []             # 등록은 여전히 no-op(멱등 재등록)
+    assert _exclude_rule_lines(exclude, pc.TICKET_COPY_POOL_IGNORE_RULE) == [
+        pc.TICKET_COPY_POOL_IGNORE_RULE]
+    body = exclude.read_text(encoding="utf-8")
+    assert body.startswith("# git default\n")  # 남의 줄은 건드리지 않는다
+    assert body.count(pc._TICKET_COPY_EXCLUDE_COMMENT) == 1
+
+
+def test_repo_add_creates_the_exclude_file_when_the_bare_has_none(pc, tmp_path):
+    """`info/exclude` 가 없는 bare 도 규칙을 얻는다 — 파일·`info/` 를 만들어 append 한다."""
+    board = FakeBoard(registered=("svc",))
+    repos = tmp_path / ".repos"
+    (repos / "svc.git").mkdir(parents=True)
+
+    assert pc.cmd_repo_add(
+        _args(), board=board, clone_runner=GitFake(), repos_dir=repos) == 0
+
+    exclude = repos / "svc.git" / "info" / "exclude"
+    assert _exclude_rule_lines(exclude, pc.TICKET_COPY_POOL_IGNORE_RULE) == [
+        pc.TICKET_COPY_POOL_IGNORE_RULE]
+
+
+def test_missing_bare_warns_and_keeps_repo_add_green(pc, tmp_path, capsys):
+    """bare 부재는 no-op + 경고다 — 없는 자리에 `<repo>.git` 을 만들면 나중 clone 이 죽는다.
+
+    fail-soft(rc 0)이지 조용한 생략이 아니다. 진짜 게이트는 `ticket prepare` 의 fail-loud 다.
+    """
+    board = FakeBoard(registered=("svc",))
+    repos = tmp_path / ".repos"
+    repos.mkdir()
+
+    assert pc.cmd_repo_add(
+        _args(), board=board, clone_runner=GitFake(), repos_dir=repos) == 0
+
+    assert not (repos / "svc.git").exists()
+    assert "bare 부재" in capsys.readouterr().err
+
+
+def test_ticket_copy_exclude_rule_matches_the_delegate_canon(pc):
+    """설치하는 쪽(`pm_config`)과 판정하는 쪽(`pm_delegate`)의 규칙 문자열은 하나다.
+
+    두 값이 어긋나면 엔진이 심은 규칙을 엔진 자신이 정본으로 인정하지 않아 모든 풀 슬롯의
+    라운드 준비가 막힌다.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "pm_delegate_exclude_rule", TOOLS / "pm_delegate.py")
+    delegate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(delegate)
+
+    assert pc.TICKET_COPY_POOL_IGNORE_RULE == delegate.TICKET_COPY_POOL_IGNORE_RULE
