@@ -291,6 +291,8 @@ def test_seed_has_no_fence_when_accepted_is_empty(pd):
     assert body_no_rounds == (
         "## 변경 파일\n- `<경로>`: <변경 내용과 이유>\n\n"
         "## 신규 테스트\n- 추가한 테스트: <N개 · 파일/케이스>\n\n"
+        "<!-- 이 절의 비어 있지 않은 줄은 커맨드·결과 두 행뿐이다. 커맨드는 백틱으로 "
+        "끝나고 결과는 rc=0 을 포함한다. -->\n"
         "## 회귀\n- 커맨드: `<실행 커맨드>`\n"
         "- 결과: <rc=0 · A passed / 0 failed>\n\n"
         "## DoD evidence\n- <완료 조건>: <충족 근거>\n\n"
@@ -802,6 +804,8 @@ def test_accepted_zero_developer_seed_bytes_are_unchanged_from_pre_t0786(pd):
     pre_t0786_constant = (
         "## 변경 파일\n- `<경로>`: <변경 내용과 이유>\n\n"
         "## 신규 테스트\n- 추가한 테스트: <N개 · 파일/케이스>\n\n"
+        "<!-- 이 절의 비어 있지 않은 줄은 커맨드·결과 두 행뿐이다. 커맨드는 백틱으로 "
+        "끝나고 결과는 rc=0 을 포함한다. -->\n"
         "## 회귀\n- 커맨드: `<실행 커맨드>`\n"
         "- 결과: <rc=0 · A passed / 0 failed>\n\n"
         "## DoD evidence\n- <완료 조건>: <충족 근거>\n\n"
@@ -1492,6 +1496,12 @@ def _verify_fence_text(pd, finding_ids=("F-001",)) -> str:
     return rendered.split(f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n", 1)[1].split("\n```", 1)[0]
 
 
+def _verify_notice_text(pd, rows=(("F-001", None),)) -> str:
+    """골격 fence **앞**의 규칙 주석 — 프리필이 덮는 값 자리 밖에 있는 문구다."""
+    rendered = pd.render_pm_review_verify_skeleton(list(rows))
+    return rendered.split(f"```{pd.PM_REVIEW_VERIFY_BLOCK}", 1)[0]
+
+
 # ── 축 1 — machine_verifiable 자리는 따옴표 없는 raw placeholder ────────────────────
 
 def test_machine_verifiable_placeholder_is_unquoted_raw_in_the_rendered_skeleton(pd):
@@ -1620,14 +1630,48 @@ def test_cd_and_shell_join_command_is_still_rejected_absolute_path_form_still_pa
         )
 
 
-# ── 축 3 — expected placeholder 는 짧은 기계 대조 가능 문자열만 유도한다 ────────────
+# ── 축 3 — expected 규칙은 짧은 기계 대조 가능 문자열만 유도한다 ────────────────────
 
-def test_expected_placeholder_forbids_prose_and_points_to_round_body(pd):
-    """축 3 — placeholder 문구가 '짧은'·'산문 금지'·'라운드 본문' 을 명시해 산문 유도를 막는다."""
-    fence = _verify_fence_text(pd)
-    assert "짧은 부분 문자열" in fence
-    assert "산문" in fence
-    assert "라운드 본문" in fence
+def test_expected_rule_forbids_prose_and_points_to_round_body(pd):
+    """축 3 — 규칙 문구가 '짧은'·'산문 금지'·'라운드 본문' 을 명시해 산문 유도를 막는다.
+
+    문구의 자리는 값 힌트가 아니라 블록 위 주석이다(프리필이 값 4칸을 통째로 덮으므로).
+    """
+    notice = _verify_notice_text(pd)
+    assert "짧은 부분 문자열" in notice
+    assert "산문" in notice
+    assert "라운드 본문" in notice
+
+
+def test_verify_skeleton_keeps_the_value_rules_when_rows_are_prefilled(pd):
+    """축 3 보강 — 값 규칙은 프리필 여부와 무관하게 남고, 값 힌트에 두 번 적히지 않는다.
+
+    프리필 행은 값 4칸을 최신 선언으로 통째로 덮는다 — 규칙을 값 자리에 적어 두면 fix 라운드
+    (프리필이 있는 유일한 형상)에서 규칙만 사라진다. 규칙의 자리는 블록 위 주석 하나다.
+    """
+    prefill = {
+        "command": "python3 -m pytest tests/test_pm_review_verify.py -q",
+        "expected": "1 passed", "before": "1 failed", "reason": "",
+    }
+    rendered = pd.render_pm_review_verify_skeleton([("F-001", prefill), ("F-002", None)])
+    notice, marker, fence = rendered.partition(f"```{pd.PM_REVIEW_VERIFY_BLOCK}")
+    assert marker, rendered
+
+    # 프리필 행은 선언값 그대로, 미프리필 행은 자리표시자 그대로 — 두 형상이 한 블록에 있다.
+    for value in prefill.values():
+        if value:
+            assert json.dumps(value, ensure_ascii=False) in fence
+    assert pd._CONTRACT_PLACEHOLDER_RE.search(fence), fence
+
+    # 세 규칙(reason 선언 조건 · expected 부분 문자열 계약 · 확인 커맨드 rc 규약)은 주석에만.
+    for rule in (
+        "reason 은 machine_verifiable=false 일 때만",
+        "짧은 부분 문자열",
+        "rc 0 이고 expected 가 출력에 포함",
+        "`grep -L`/`-c 0` 이 rc 1",
+    ):
+        assert rule in notice, rule
+        assert rule not in fence, f"규칙이 값 힌트에도 남았다(중복): {rule}"
 
 
 def test_expected_short_literal_round_trips_through_a_real_command_into_the_confirmation_contract(

@@ -298,6 +298,54 @@ def test_off_tree_citation_is_counted_not_judged(anchored, tmp_path):
     assert "인용 2건" in issues[0][1]
 
 
+def test_unverifiable_advisory_reports_only_nonzero_axes(anchored, tmp_path):
+    """판정불능 문구는 **0 이 아닌 축만** 적는다 — "touches 좌표 0건" 은 판정불능 0 이 아니라
+    touches 를 하나도 못 봤다는 뜻으로 읽혀 정상 티켓을 결함으로 보이게 한다."""
+    # 인용 축만 판정불능(basename 단독) · touches 는 전부 해소된다.
+    _write(tmp_path, ".project_manager/tools/board.py", "a\n")
+    citation_only = _issues(
+        anchored, _body("- 근거 `board.py:9999`\n"),
+        touches=[".project_manager/tools/board.py"])
+    assert _kinds(citation_only) == ["content-unverifiable"], citation_only
+    assert "인용 1건" in citation_only[0][1]
+    assert "touches 좌표" not in citation_only[0][1], citation_only[0][1]
+
+    # touches 축만 판정불능(리스 장부 없는 슬롯 접두) · 인용은 0 건.
+    touches_only = _issues(
+        anchored, _body(), touches=["work/demo_1/tools/engine.py"])
+    assert _kinds(touches_only) == ["content-unverifiable"], touches_only
+    assert "touches 좌표 1건" in touches_only[0][1]
+    assert "인용" not in touches_only[0][1], touches_only[0][1]
+
+    # 두 축 다 0 이면 문구 자체가 없다(발생 조건은 종전 그대로).
+    assert _issues(
+        anchored, _body("- 근거 `.project_manager/tools/board.py:1`\n"),
+        touches=[".project_manager/tools/board.py"]) == []
+
+
+def test_pm_ticket_card_states_the_citation_syntax(anchored, tmp_path):
+    """카드 §4 가 인용의 **인식 문법**(백틱 코드 span · 펜스 밖)을 적는다.
+
+    해소 규칙(루트 기준 → 하위 디렉터리 기준 → basename 단독은 판정불능)만 적혀 있으면 무엇이
+    애초에 인용으로 세어지는지 알 수 없어, 판정불능 개수가 어디서 나왔는지 되짚을 수 없다.
+    같은 문장이 주장하는 엔진 거동을 함께 관측한다(카드와 판정이 갈리면 red).
+    """
+    card = (REPO / ".claude" / "skills" / "pm-ticket" / "SKILL.md").read_text(
+        encoding="utf-8")
+    section = card.split("\n## 4.", 1)[1].split("\n## ", 1)[0]
+    syntax_lines = [line for line in section.splitlines()
+                    if "백틱" in line and "펜스" in line]
+    assert len(syntax_lines) == 1, section
+
+    # 백틱 없는 좌표는 인용이 아니다(부재 파일이어도 무판정).
+    assert _issues(
+        anchored, _body("- 근거 .project_manager/tools/absent.py:12 (백틱 없음)\n")) == []
+    # 백틱 안 좌표는 같은 경로에서 차단 판정을 받는다 — 인식 문법이 실제 판정 입력이다.
+    assert _kinds(_issues(
+        anchored, _body("- 근거 `.project_manager/tools/absent.py:12`\n"),
+    )) == ["citation-unresolved"]
+
+
 # ════════════════════════════════════════════════════════════════════════
 # 3. architect 점검 라운드 — design: required|done 만 대상
 # ════════════════════════════════════════════════════════════════════════

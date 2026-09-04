@@ -2710,6 +2710,12 @@ class DeveloperRegressionRecord(NamedTuple):
 
 
 _DEVELOPER_REGRESSION_HEADING = "## 회귀"
+# 시드가 이 규칙을 미리 고지한다 — 회수 거부로만 알게 되는 형식은 고지 실패다. 주석은 이 절
+# **위**에 둔다: 절 안에 넣으면 아래 파서가 비어 있지 않은 줄 3개를 보고 형식 위반으로 읽는다.
+DEVELOPER_REGRESSION_RULE = (
+    "이 절의 비어 있지 않은 줄은 커맨드·결과 두 행뿐이다. 커맨드는 백틱으로 끝나고 "
+    "결과는 rc=0 을 포함한다."
+)
 _DEVELOPER_REGRESSION_COMMAND_PREFIX = "- 커맨드: `"
 _DEVELOPER_REGRESSION_RESULT_PREFIX = "- 결과: "
 _DEVELOPER_REGRESSION_GREEN_RE = re.compile(r"(?:^|[ ·])rc\s*=\s*0(?:$|[ ·])")
@@ -4327,25 +4333,29 @@ def _pm_review_contract_string(value: object, field: str) -> str:
 def _contract_test_targets(
     value: str, field: str, *, required: bool = True,
 ) -> tuple[str, ...]:
-    """계약 산문에서 repo-relative Python 테스트 대상을 해소한다.
+    """계약이 지목한 repo-relative Python 테스트 대상 — 값의 **첫 토큰** 하나뿐이다.
+
+    산문 전역을 훑으면 "옛 경로 대신 새 경로" 같은 서술의 옛 경로까지 diff 결속 대상이 된다 —
+    이번 라운드가 손댈 자리가 아닌 파일을 회수가 요구하게 되므로, 대상은 값이 맨 앞에 적은
+    하나로 고정한다. 여러 파일을 결속하려면 계약 행을 여러 개 쓴다.
 
     ``required`` 는 architect 축(설계 라운드가 확정하는 필수 테스트)의 규칙이다 —
     거기서는 테스트 대상이 계약이라 하나도 없으면 거부한다. reviewer fix 축은
     붙일 테스트가 없는 지적(죽은 코드 삭제)을 표현할 수 있어야 하므로 끈다.
     """
-    targets: list[str] = []
-    for match in _CONTRACT_TEST_TARGET_RE.finditer(value):
+    head = value.split(maxsplit=1)
+    match = _CONTRACT_TEST_TARGET_RE.match(head[0]) if head else None
+    if match is not None:
         target = match.group("path")
         path = PurePosixPath(target)
         if path.is_absolute() or ".." in path.parts or path.parts[0] != "tests":
             raise DelegateError(f"{field} 테스트 대상은 repo-relative tests/*.py여야 합니다: {target}")
-        if target not in targets:
-            targets.append(target)
-    if not targets and required:
+        return (target,)
+    if required:
         raise DelegateError(
             f"{field}에 repo-relative 테스트 대상(tests/*.py)이 없습니다"
         )
-    return tuple(targets)
+    return ()
 
 
 def _contract_repo_paths(value: str, field: str) -> tuple[str, ...]:
@@ -5093,6 +5103,18 @@ def _pm_review_verify_seed_values(row: PMReviewVerifyRow) -> dict[str, str]:
     return {key: getattr(row, key) for key in _PM_REVIEW_VERIFY_SEED_VALUE_KEYS}
 
 
+# 값 자리(4칸)는 프리필이 통째로 덮는 자리라 규칙을 거기 적으면 프리필된 라운드에서 규칙이
+# 사라진다. 값 자리에 남는 것은 자리표시자 최소형뿐이고, 규칙은 블록 **위** 주석 한 줄이 소유한다
+# (fence 밖이라 어떤 블록 파서의 정의역에도 들어가지 않는다).
+PM_REVIEW_VERIFY_VALUE_RULES = (
+    "reason 은 machine_verifiable=false 일 때만 채운다. "
+    "expected 는 그 커맨드 output 에 그대로 나오는 짧은 부분 문자열만 적는다"
+    "(수치·핵심 토큰 — 산문 설명은 이 자리가 아니라 라운드 본문에 쓴다). "
+    "확인은 rc 0 이고 expected 가 출력에 포함돼야 통과다 — 부재 단언은 `grep -L`/`-c 0` 이 "
+    "rc 1 이라 통과할 수 없으니 실제 잔여 건수를 기대값으로 쓴다."
+)
+
+
 def render_pm_review_verify_skeleton(
     rows: Sequence[tuple[str, Mapping[str, str] | None]],
 ) -> str:
@@ -5104,25 +5126,23 @@ def render_pm_review_verify_skeleton(
 
     `machine_verifiable` 은 boolean 자리라 `_PMReviewRawPlaceholder` 로 따옴표 없이 낸다
     (axis 1). `command` placeholder 는 파서의 재현 커맨드 안전 경계 문구(`_pm_review_command_shape_
-    hint`)를 그대로 소비해 금지 문자를 두 곳에 적지 않는다(axis 2). `expected` placeholder 는
-    확인 블록의 `expected ⊆ observed` 계약(짧은 부분 문자열만)을 명시해 산문을 유도하지 않는다
-    (axis 3)."""
+    hint`)를 그대로 소비해 금지 문자를 두 곳에 적지 않는다(axis 2). `expected` 의 부분 문자열
+    계약(axis 3)과 `reason` 의 선언 조건, 확인 커맨드의 rc 규약은 프리필이 덮지 않는
+    블록 위 주석(`PM_REVIEW_VERIFY_VALUE_RULES`)이 소유한다."""
     command_hint = (
         "<machine_verifiable=true 면 " + _pm_review_command_shape_hint()
         + "(cwd 무관하게 대상을 절대경로로 쓰고 `cd X &&` 는 쓰지 않는다 — `&`가 금지 문자다), "
         "아니면 빈 문자열>"
     )
     expected_hint = (
-        "<fix 후 그 커맨드 output 에 그대로 나오는 짧은 부분 문자열만(수치·핵심 토큰 — 산문 "
-        "설명은 이 자리가 아니라 라운드 본문에 따로 쓴다), machine_verifiable=false 면 무엇이 "
-        f"참이어야 하는지 한 줄로 짧게, reason={PM_REVIEW_VERIFY_GAP_REASON} 이면 빈틈 요지 한 줄>"
+        "<machine_verifiable=true 면 fix 후 그 커맨드 output 의 기대값, false 면 무엇이 "
+        f"참이어야 하는지 한 줄, reason={PM_REVIEW_VERIFY_GAP_REASON} 이면 빈틈 요지 한 줄>"
     )
     hints = {
         "command": command_hint,
         "expected": expected_hint,
         "before": "<machine_verifiable=true 면 fix 전 실값, 아니면 빈 문자열>",
-        "reason": "<machine_verifiable=false 일 때만 "
-                  + "|".join(PM_REVIEW_VERIFY_REASONS) + ", 아니면 빈 문자열>",
+        "reason": "<" + "|".join(PM_REVIEW_VERIFY_REASONS) + " 중 하나 또는 빈 문자열>",
     }
     seed_rows = [
         _pm_review_seed_object(PM_REVIEW_VERIFY_ROW_KEYS, {
@@ -5139,7 +5159,10 @@ def render_pm_review_verify_skeleton(
         "version": PM_REVIEW_VERIFY_VERSION,
         "verifications": seed_rows,
     })
-    return _pm_review_fenced_json(PM_REVIEW_VERIFY_BLOCK, payload)
+    return (
+        f"<!-- {PM_REVIEW_VERIFY_VALUE_RULES} -->\n"
+        + _pm_review_fenced_json(PM_REVIEW_VERIFY_BLOCK, payload)
+    )
 
 
 def _pm_review_parse_machine_confirmation_row(
@@ -5605,6 +5628,7 @@ def _render_developer_round_seed_body(
     body = (
         "## 변경 파일\n- `<경로>`: <변경 내용과 이유>\n\n"
         "## 신규 테스트\n- 추가한 테스트: <N개 · 파일/케이스>\n\n"
+        f"<!-- {DEVELOPER_REGRESSION_RULE} -->\n"
         "## 회귀\n- 커맨드: `<실행 커맨드>`\n"
         "- 결과: <rc=0 · A passed / 0 failed>\n\n"
         "## DoD evidence\n- <완료 조건>: <충족 근거>\n\n"

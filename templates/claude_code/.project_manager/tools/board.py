@@ -16179,11 +16179,18 @@ def _content_fact_issues(
     issues.extend(citation_issues)
     touch_issues, touch_unverifiable = _touches_existence_issues(tid, touches, roots)
     issues.extend(touch_issues)
-    if touch_unverifiable or citation_unverifiable:
+    # 축별로 적는다 — 0 인 축까지 세면 "touches 좌표 0건" 이 판정불능 0 이 아니라 touches
+    # 인식 0 으로 읽힌다(실제로는 전부 해소된 정상 티켓이다).
+    axes = [
+        (touch_unverifiable, f"touches 좌표 {touch_unverifiable}건"),
+        (citation_unverifiable,
+         f"basename 단독/트리 밖 인용 {citation_unverifiable}건"),
+    ]
+    counted = [detail for count, detail in axes if count]
+    if counted:
         issues.append((tid, _UNVERIFIABLE_KIND,
-                       f"판정불능 — touches 좌표 {touch_unverifiable}건 · "
-                       f"basename 단독/트리 밖 인용 {citation_unverifiable}건 "
-                       f"(게이트 시야 밖 · 통과로 세지 않는다)"))
+                       "판정불능 — " + " · ".join(counted)
+                       + " (게이트 시야 밖 · 통과로 세지 않는다)"))
     return issues
 
 

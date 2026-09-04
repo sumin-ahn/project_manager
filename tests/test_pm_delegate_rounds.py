@@ -4977,3 +4977,35 @@ def test_developer_harvest_commits_in_a_pool_slot(pd, pool_env):
     assert _git(slot, "log", "-1", "--format=%s").stdout.strip() == "라운드 왕복"
     # 커밋은 코드 트리에만 생긴다 — 이 형상의 PM 홈은 git 트리조차 아니다(장부 루트).
     assert not (pm_home / ".git").exists()
+
+
+# ── 회수 게이트 규칙 고지 — 시드가 형식을 미리 적는다 ──────────────────────────────
+
+def test_developer_seed_states_the_two_line_regression_rule():
+    """`## 회귀` 두 행 규칙은 절 **위** 주석이다 — 절 안이면 그 고지가 파서를 깬다.
+
+    같은 시드를 실값으로 채운 본문이 파서를 통과하는지 함께 본다(고지를 더해도 판정은 불변).
+    운송 픽스처(`pd`)는 이 파서를 상수 기록으로 갈아 끼우므로 여기서는 원 모듈을 직접 쓴다.
+    """
+    pd = _load_pd()
+    body = pd._render_developer_round_seed_body([])
+    notice = f"<!-- {pd.DEVELOPER_REGRESSION_RULE} -->"
+    lines = body.splitlines()
+    assert notice in lines, body
+    assert lines[lines.index(pd._DEVELOPER_REGRESSION_HEADING) - 1] == notice
+
+    filled = body.replace(
+        "- 커맨드: `<실행 커맨드>`", "- 커맨드: `python3 -m pytest tests/ -q -n auto`",
+    ).replace("- 결과: <rc=0 · A passed / 0 failed>", "- 결과: rc=0 · 4212 passed")
+    record = pd.parse_developer_regression_record(filled)
+    assert record.command == "python3 -m pytest tests/ -q -n auto"
+    assert record.result == "rc=0 · 4212 passed"
+
+    # 역방향 — 같은 주석을 절 **안**(헤딩 아래)으로 옮기면 파서가 세 행을 보고 거부한다.
+    inside = filled.replace(
+        f"{notice}\n{pd._DEVELOPER_REGRESSION_HEADING}\n",
+        f"{pd._DEVELOPER_REGRESSION_HEADING}\n{notice}\n",
+    )
+    assert inside != filled
+    with pytest.raises(pd.DelegateError, match="커맨드·결과 두 행"):
+        pd.parse_developer_regression_record(inside)
