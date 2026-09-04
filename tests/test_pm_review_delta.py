@@ -274,6 +274,39 @@ def test_architect_target_axis_uses_the_same_first_token_rule(pd):
         )
 
 
+def test_contract_value_hints_state_the_first_token_rule(pd):
+    """두 값 힌트(architect `target` · reviewer `fix_contract.test`)가 첫 토큰 결속 규칙을 적는다.
+
+    고지가 없으면 산문으로 시작한 값이 `required=False` 축에서 조용히 0건으로 통과해, 그
+    finding 의 fix diff 결속이 사라진다. 고지와 판정은 한 규칙이라 같은 케이스에서 함께 본다.
+    """
+    rule = "첫 공백 구분 토큰 하나만 결속한다(여러 파일은 계약 행을 여러 개 쓴다)"
+    architect = pd.render_architect_test_skeleton()
+    reviewer = pd.render_pm_review_block_skeleton("code-reviewer")
+    assert rule in architect, architect
+    assert rule in reviewer, reviewer
+
+    # 자리표시자 괄호 형태는 유지된다 — 미편집 시드는 계속 placeholder 로 거부된다.
+    seeded = (
+        json.loads(architect.splitlines()[1])["tests"][0]["target"],
+        json.loads(reviewer.splitlines()[1])["findings"][0]["fix_contract"]["test"],
+    )
+    for value in seeded:
+        assert value.startswith("<") and value.endswith(">")
+        assert pd._CONTRACT_PLACEHOLDER_RE.search(value)
+
+    # 고지한 그대로의 파서 거동 — 첫 토큰만 결속하고, 산문으로 시작하면 결속 0 이다.
+    assert pd._contract_test_targets(
+        "tests/test_pm_review_delta.py::test_case 는 결속하고 "
+        "뒤따르는 tests/test_round_budget.py 는 대상이 아니다",
+        "reviewer 추가 회귀 F-001.test", required=False,
+    ) == ("tests/test_pm_review_delta.py",)
+    assert pd._contract_test_targets(
+        "기존 tests/test_a.py 에 케이스 추가", "reviewer 추가 회귀 F-002.test",
+        required=False,
+    ) == ()
+
+
 @pytest.mark.parametrize("value", (
     "src/test_wrong.py에 회귀를 추가한다",
     "tests/../test_escape.py에 회귀를 추가한다",

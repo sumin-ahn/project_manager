@@ -1511,7 +1511,11 @@ def _pool_bare_for_code_root(cwd: Path) -> Path | None:
 
 
 def _check_ignore_observation(result: subprocess.CompletedProcess) -> str:
-    """check-ignore 관측을 진단 한 조각으로 요약한다 — 풀 갈래에서 **판정 입력이 아니다**."""
+    """check-ignore 관측을 진단 한 조각으로 요약한다 — 이 문자열은 **판정 입력이 아니다**.
+
+    풀 갈래가 보는 것은 rc(사본 루트가 실제로 무시되는가)와 bare 규칙 존재 둘뿐이고, 어느
+    출처가 그 판정을 냈는지는 진단 문구에만 싣는다.
+    """
     if result.returncode == 1:
         return "현재 이 경로를 무시하는 규칙이 없다"
     lines = [entry for entry in (result.stdout or "").splitlines() if entry]
@@ -1522,15 +1526,25 @@ def _check_ignore_observation(result: subprocess.CompletedProcess) -> str:
     return f"현재 check-ignore 출처={source}:{linenum} 패턴={pattern!r}"
 
 
-def _assert_pool_bare_ignore_rule(bare: Path, *, observation: str) -> None:
-    """풀 슬롯의 정본 — 그 풀 bare 의 `info/exclude` 에 규칙 줄이 있는지 fail-loud 확인한다.
+def _assert_pool_bare_ignore_rule(bare: Path, *, ignored: bool, observation: str) -> None:
+    """풀 슬롯의 정본 — 사본 루트가 실제로 무시되고 그 규칙이 이 풀 bare 의 `info/exclude` 에
+    있는지 fail-loud 확인한다. 둘을 함께 요구한다.
 
-    check-ignore 가 어느 출처를 보고했는지는 판정 입력이 아니다. 중첩 `.gitignore` 가
+    규칙 존재만 보면 슬롯 안 `.gitignore` 의 부정 규칙 한 줄이 정본을 뒤집어도 통과한다 — 그
+    형상에서 사본 루트는 실제로 무시되지 않아 게이트가 지키려던 성질이 이 갈래에서만 사라진다.
+    거꾸로 check-ignore 가 어느 출처를 보고했는지는 판정 입력이 아니다. 중첩 `.gitignore` 가
     `info/exclude` 보다 우선순위가 높아, 출처로 판정하면 규칙이 없는 풀도 그 중첩 파일 하나로
     우연히 통과한다. 파일 부재는 규칙 부재와 같은 거부이고, 읽기 실패는 그대로 올린다
     (빈 값으로 바꾸지 않는다).
     """
     exclude = bare / "info" / "exclude"
+    if not ignored:
+        raise DelegateError(
+            f"사본 루트가 이 슬롯에서 실제로 무시되지 않음 — {observation} · 정본은 {exclude} 의 "
+            f"`{TICKET_COPY_POOL_IGNORE_RULE}` 줄이고 `pm-config repo add {bare.stem}` 1회로 "
+            "엔진이 멱등 설치한다 · 그 줄이 이미 있으면 슬롯 안 `.gitignore` 의 부정 규칙이 "
+            "정본보다 우선해 뒤집은 것이니 그 줄을 지워라"
+        )
     lines = (
         _load_file_lock()
         .read_text_shared(exclude, encoding="utf-8", errors="replace")
@@ -1582,7 +1596,11 @@ def _assert_ticket_copy_root_ignored(
         raise DelegateError(f"git check-ignore 실패(rc={result.returncode}): {cause}")
     bare = _pool_bare_for_code_root(cwd)
     if bare is not None:
-        _assert_pool_bare_ignore_rule(bare, observation=_check_ignore_observation(result))
+        _assert_pool_bare_ignore_rule(
+            bare,
+            ignored=result.returncode == 0,
+            observation=_check_ignore_observation(result),
+        )
         return
     if result.returncode == 1:
         raise DelegateError(
@@ -2378,9 +2396,14 @@ def _assert_developer_commit_tree(cwd: Path) -> None:
             ).splitlines()
             if line.startswith("worktree ")
         ]
+        slots = [slot for slot in slots if Path(slot).resolve() != bare.resolve()]
+        # 슬롯이 하나도 없는 풀은 나열할 값이 없다 — 그 자리에는 나열 대신 슬롯을 만드는
+        # 커맨드를 싣는다(빈 나열로 끝나면 문구만 읽고 `--cwd` 를 무엇으로 바꿀지 알 수 없다).
         pools.append(
-            f"{bare} 의 슬롯 = " + " · ".join(
-                slot for slot in slots if Path(slot).resolve() != bare.resolve()
+            (f"{bare} 의 슬롯 = " + " · ".join(slots)) if slots
+            else (
+                f"{bare} 에는 아직 슬롯이 없습니다 — `pm-config worktree add {bare.stem} "
+                f"--user-ack {bare.stem}` 로 슬롯을 만드세요"
             )
         )
     raise DelegateError(
@@ -4741,7 +4764,10 @@ def render_architect_test_skeleton() -> str:
     """architect가 채울 필수 테스트 계약. 실행 게이트와 같은 key 집합에서 렌더한다."""
     row = _pm_review_seed_object(ARCHITECT_TEST_ROW_KEYS, {
         "id": "AT-001",
-        "target": "<테스트 파일/케이스 또는 검증 대상>",
+        "target": (
+            "<테스트 파일/케이스 또는 검증 대상 · 첫 공백 구분 토큰 하나만 결속한다"
+            "(여러 파일은 계약 행을 여러 개 쓴다)>"
+        ),
         "command": "<shell 메타문자 없는 단일 테스트 명령>",
         "expected": "<성공 output에 포함될 짧은 문자열>",
         "negative": "<변경 전 실패하거나 거부돼야 하는 음성 사례>",
@@ -5356,7 +5382,10 @@ def render_pm_review_block_skeleton(
             "location": "<잘못된 코드 위치(file:line 또는 symbol)>",
             "failure": "<현재 잘못된 거동과 재현 조건>",
             "design": "<수정 설계와 보존할 불변식>",
-            "test": "<추가할 회귀 테스트 파일/케이스>",
+            "test": (
+                "<추가할 회귀 테스트 파일/케이스 · 첫 공백 구분 토큰 하나만 결속한다"
+                "(여러 파일은 계약 행을 여러 개 쓴다)>"
+            ),
             "command": "<추가 테스트 실행 명령(shell 메타문자 없는 단일 명령)>",
             "expected": "<성공 output에 포함될 짧은 문자열>",
         }),
