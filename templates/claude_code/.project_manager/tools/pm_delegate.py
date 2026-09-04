@@ -2352,6 +2352,46 @@ def _ticket_commit_message(board, ticket: str) -> str:
     return title or ticket
 
 
+def _assert_developer_commit_tree(cwd: Path) -> None:
+    """dev 산출을 커밋할 트리가 코드 트리인지 확인한다 — 장부 루트면 거부한다.
+
+    티켓 제목 커밋은 코드 트리에만 만든다. 장부 루트(PM 홈)를 `--cwd` 로 받으면 board·wiki·
+    log 변경이 `add -A` 에 함께 실려 그 티켓 제목의 커밋으로 묶인다. 판정 입력은 형상 하나다 —
+    소유 PM 홈이 자기 자신이면 그 트리가 곧 PM 홈이고, 그 홈이 슬롯 풀의 공용 bare
+    (`.repos/<repo>.git` · 풀을 만든 도구가 써 넣은 자리)를 가지면 코드 트리는 그 풀의 슬롯이지
+    이 트리가 아니다. 임베드·단일 clone(풀 없음)은 PM 홈이 곧 코드 트리라 그대로 통과한다.
+
+    자리는 회수의 다른 developer 게이트와 같다(board 교체 앞) — 커밋 직전으로 밀면 거부 시점에
+    board 라운드 교체·장부 append·run-dir 삭제가 이미 끝나 같은 자리로 다시 회수할 수 없다.
+    """
+    if Path(_load_pm_log().owning_pm_home(cwd)).resolve() != Path(cwd).resolve():
+        return                              # 풀 슬롯 — 소유 PM 홈이 따로 있다.
+    bares = sorted((Path(cwd) / ".repos").glob("*.git"))
+    if not bares:
+        return                              # 임베드·단일 clone — PM 홈이 곧 코드 트리다.
+    pools = []
+    for bare in bares:
+        slots = [
+            line[len("worktree "):].strip()
+            for line in _cluster_git(
+                bare, "worktree", "list", "--porcelain",
+            ).splitlines()
+            if line.startswith("worktree ")
+        ]
+        pools.append(
+            f"{bare} 의 슬롯 = " + " · ".join(
+                slot for slot in slots if Path(slot).resolve() != bare.resolve()
+            )
+        )
+    raise DelegateError(
+        "developer 라운드 회수 거부 — --cwd 가 슬롯 풀을 운영하는 PM 홈입니다"
+        f"(장부 루트: {Path(cwd).resolve()}). 티켓 제목 커밋은 코드 트리에만 만듭니다: "
+        + " / ".join(pools)
+        + ". board 라운드 파일과 slot run-dir 은 그대로 보존했습니다 — `--cwd` 를 그 슬롯으로 "
+        "바꿔 같은 회수를 다시 실행하세요."
+    )
+
+
 def _commit_developer_round_output(cwd: Path, *, ticket: str, board) -> str | None:
     """dev 산출을 그 슬롯에서 커밋한다 — 커밋했으면 문안, 커밋할 변경이 없으면 None.
 
@@ -2459,6 +2499,9 @@ def harvest_ticket_copy(
                 f"round={board_path.name} · copy={expected}"
             )
     if row["role"] == "developer":
+        # 커밋 대상 트리 판정도 같은 자리다 — 이 회수가 만들 티켓 제목 커밋의 트리를 board
+        # 교체 앞에서 확정한다.
+        _assert_developer_commit_tree(cwd)
         # 검증 게이트는 리뷰 게이트와 **같은 자리**(교체 앞)다 — 교체 뒤로 밀면 낡은 기대값이
         # 이미 board 에 착지한 뒤라 되돌릴 정식 수단이 없다(라운드 파일은 회수 후 불변).
         terminal_fix = _terminal_developer_round(

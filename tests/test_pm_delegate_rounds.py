@@ -4878,3 +4878,102 @@ def test_fail_open_and_single_stderr_line_when_decide_raises(
     assert "decide 실행 실패 2행째" in captured.err
     plan_json = json.loads(captured.out.strip().splitlines()[-1])
     assert Path(plan_json["copy"]).exists()
+
+
+# ── 회수 커밋의 대상 트리 ────────────────────────────────────────────────
+
+def _head_count(tree: Path) -> int:
+    return int(_git(tree, "rev-list", "--count", "HEAD").stdout.strip())
+
+
+def _init_pm_home_code_tree(pm_home: Path) -> None:
+    """PM 홈 자신을 git 트리로 만든다 — 임베드 채택자의 실형상(tracked ignore 정본 포함)."""
+    assert _git(pm_home, "init", "-q").returncode == 0
+    ignore = pm_home / ".project_manager" / ".gitignore"
+    ignore.write_text(".local/\n", encoding="utf-8", newline="\n")
+    assert _git(pm_home, "add", ".project_manager/.gitignore").returncode == 0
+    assert _git(pm_home, "commit", "-qm", "pm home seed").returncode == 0
+
+
+def _produced_developer_round(plan) -> None:
+    plan.path.write_text(
+        plan.path.read_text(encoding="utf-8") + "\n## 변경 파일\n- 실산출\n",
+        encoding="utf-8", newline="",
+    )
+
+
+def test_developer_harvest_refuses_a_pool_operating_pm_home_as_cwd(pd, pool_env):
+    """슬롯 풀을 운영하는 PM 홈(장부 루트)을 `--cwd` 로 받은 dev 회수는 커밋 앞에서 거부한다.
+
+    거부는 부작용 0 이다 — board 라운드 파일·장부·run-dir 이 그대로라 같은 회수를 `--cwd` 만
+    코드 트리로 바꿔 다시 실행할 수 있다. 문구는 처방으로 슬롯 절대경로를 싣는다.
+    """
+    pm_home, slot, tickets, _exclude = pool_env
+    _init_pm_home_code_tree(pm_home)
+    _write_spec(tickets, "T-7930")
+    plan = pd.prepare_ticket_copy(
+        ticket="T-7930", role="developer", cwd=pm_home, pm_home=pm_home,
+    )
+    _produced_developer_round(plan)
+    (pm_home / "impl.py").write_text("value = 1\n", encoding="utf-8", newline="\n")
+    before = (
+        _head_count(pm_home), plan.board_path.read_bytes(), _ledger_rows(pm_home),
+    )
+
+    with pytest.raises(pd.DelegateError) as refused:
+        pd.harvest_ticket_copy(copy_path=plan.path, cwd=pm_home, pm_home=pm_home)
+
+    # 사유(장부 루트)와 처방(그 풀의 코드 트리 절대경로)이 함께 나온다.
+    assert str(pm_home / ".repos" / "app.git") in str(refused.value)
+    assert str(slot) in str(refused.value)
+    assert (
+        _head_count(pm_home), plan.board_path.read_bytes(), _ledger_rows(pm_home),
+    ) == before
+    assert plan.path.is_file() and plan.run_dir.is_dir()
+    assert _ledger_rows(pm_home)[-1]["harvested_at"] is None
+    # 같은 회수를 다시 불러도 같은 거부다(자리가 닫히지 않았다).
+    with pytest.raises(pd.DelegateError) as again:
+        pd.harvest_ticket_copy(copy_path=plan.path, cwd=pm_home, pm_home=pm_home)
+    assert str(again.value) == str(refused.value)
+
+
+def test_developer_harvest_commits_in_an_embed_single_clone(pd, rounds_env):
+    """임베드 단일 clone(PM 홈 = 코드 트리 · 풀 없음)의 회수 커밋은 종전 그대로다."""
+    pm_home, _slot, tickets, _sync = rounds_env
+    _init_pm_home_code_tree(pm_home)
+    assert not (pm_home / ".repos").exists()
+    _write_spec(tickets, "T-7931")
+    plan = pd.prepare_ticket_copy(
+        ticket="T-7931", role="developer", cwd=pm_home, pm_home=pm_home,
+    )
+    _produced_developer_round(plan)
+    (pm_home / "impl.py").write_text("value = 1\n", encoding="utf-8", newline="\n")
+    before = _head_count(pm_home)
+
+    result = pd.harvest_ticket_copy(copy_path=plan.path, cwd=pm_home, pm_home=pm_home)
+
+    assert result.changed is True
+    assert _head_count(pm_home) == before + 1
+    assert _git(pm_home, "log", "-1", "--format=%s").stdout.strip() == "라운드 왕복"
+    assert _git(pm_home, "status", "--porcelain").stdout.strip() == ""
+
+
+def test_developer_harvest_commits_in_a_pool_slot(pd, pool_env):
+    """풀 슬롯(소유 PM 홈이 따로 있는 코드 트리)의 회수 커밋도 종전 그대로다."""
+    pm_home, slot, tickets, exclude = pool_env
+    _add_bare_exclude_rule(exclude, pd.TICKET_COPY_POOL_IGNORE_RULE)
+    _write_spec(tickets, "T-7932")
+    plan = pd.prepare_ticket_copy(
+        ticket="T-7932", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    _produced_developer_round(plan)
+    (slot / "impl.py").write_text("value = 1\n", encoding="utf-8", newline="\n")
+    before = _head_count(slot)
+
+    result = pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
+
+    assert result.changed is True
+    assert _head_count(slot) == before + 1
+    assert _git(slot, "log", "-1", "--format=%s").stdout.strip() == "라운드 왕복"
+    # 커밋은 코드 트리에만 생긴다 — 이 형상의 PM 홈은 git 트리조차 아니다(장부 루트).
+    assert not (pm_home / ".git").exists()
