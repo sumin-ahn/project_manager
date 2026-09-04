@@ -2158,14 +2158,22 @@ def test_transport_prompt_write_restricts_owner_access_via_shared_seam(
     reason="opencode 실제 `${TMPDIR}/opencode/*` 권한 선언 계약 — binary 필요",
 )
 def test_opencode_binary_permission_tracks_child_tmpdir(tmp_path):
-    """OpenCode 1.18.12 실제 agent 선언은 고정 /tmp가 아니라 child TMPDIR 값을 보간한다."""
+    """OpenCode 1.18.12 실제 agent 선언은 고정 /tmp가 아니라 child TMPDIR 값을 보간한다.
+
+    cold start 는 빈 XDG 만으로 격리되지 않는다. (1) 부모 셸이 `OPENCODE_CONFIG_DIR` 로 다른 설정
+    폴더를 가리키면 그 폴더를, (2) sandbox 가 이 저장소 안(임시 루트 `.project_manager/.local/tmp`)에
+    있으면 상위로 올라가 이 저장소의 `.opencode` 설정을 읽는다. 둘 다 플러그인 선언이라 opencode 가
+    fresh 설정 폴더에 의존성을 npm 에서 설치하며 30초 예산을 넘긴다(2026-09-04 실측 · npm 감사 호출
+    무응답). 설정 폴더 env 를 지우고 sandbox 를 자기 git 저장소로 선언해 두 입구를 닫는다."""
     attempt = tmp_path / "attempt"
     allowed = attempt / "opencode"
     sandbox = tmp_path / "sandbox"
     attempt.mkdir()
     allowed.mkdir()
-    sandbox.mkdir()
+    init_git_repo(sandbox)
     env = dict(os.environ)
+    for key in ("OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "ORCA_OPENCODE_CONFIG_DIR"):
+        env.pop(key, None)
     env.update({"TMPDIR": str(attempt), "TMP": str(allowed), "TEMP": str(allowed)})
     for key, name in (
         ("XDG_DATA_HOME", "xdg-data"),
