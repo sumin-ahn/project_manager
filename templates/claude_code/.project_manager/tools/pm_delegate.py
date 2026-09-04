@@ -990,6 +990,14 @@ TICKET_COPY_REL_ROOT = Path(".project_manager") / ".local" / "delegate-ticket-co
 # 사본 루트를 숨기는 ignore 규칙의 정본 위치([[T-0704]]) — 이 파일 유래가 아니면 로컬 전용
 # 소스(`.git/info/exclude`·전역 excludesFile 등)로 보고 fail-loud 한다.
 TICKET_COPY_IGNORE_TRACKED_SOURCE = Path(".project_manager") / ".gitignore"
+# 두-git 풀 슬롯(앱 저장소에 `.project_manager` 가 없는 형상)의 정본은 그 풀 bare 의
+# `info/exclude` 에 있는 이 줄이다. bare 의 exclude 는 `$GIT_COMMON_DIR/info/exclude` 라 그 풀의
+# 모든 linked worktree 가 공유하므로, 위 tracked 정본이 지키려는 성질(사본 루트를 숨기는 규칙이
+# 이 코드 트리의 모든 사본에 있다)이 이 형상에서도 그대로 성립한다. 규칙을 심는 쪽은
+# `pm_config._ensure_bare_ticket_copy_exclude` 이고 두 값은 같은 문자열이어야 한다
+# (불변식은 테스트가 고정). 루트 앵커 디렉터리 규칙이라 저장소가 추적하는
+# `.project_manager/tools`·`wiki` 의 새 파일은 숨기지 않는다.
+TICKET_COPY_POOL_IGNORE_RULE = "/.project_manager/.local/"
 _TICKET_COPY_FD_SUPPORTED = (
     hasattr(os, "O_NOFOLLOW")
     and hasattr(os, "O_DIRECTORY")
@@ -1483,11 +1491,87 @@ def _check_ignore_source_is_tracked(cwd: Path, source: str) -> bool:
     raise DelegateError(f"git ls-files 실패(rc={result.returncode}): {cause}")
 
 
+def _pool_bare_for_code_root(cwd: Path) -> Path | None:
+    """이 코드 트리가 두-git 풀 슬롯이면 그 풀의 공용 bare 를, 임베드면 None 을 돌려준다.
+
+    형상 규칙 사본을 만들지 않는다 — 소유 PM 홈은 `pm_log.owning_pm_home` 이 이 트리의 `.git`
+    선언에서 유도하고, 여기서는 두 값만 비교한다. 그 유도가 인정하는 공용 저장소 형상은
+    `<X>/.git`(임베드·단일 clone·그 clone 이 판 linked worktree)과 `<X>/.repos/<repo>.git`
+    (풀 슬롯) 둘뿐이고 그 밖은 예외이므로, 공용 저장소가 `<PM 홈>/.git` 이 아니면 남는 형상은
+    풀 bare 하나이며 그 값이 곧 bare 다.
+    """
+    common = Path(_cluster_git(cwd, "rev-parse", "--git-common-dir").strip())
+    if not common.is_absolute():
+        common = cwd / common
+    common = common.resolve()
+    pm_home = Path(_load_pm_log().owning_pm_home(cwd)).resolve()
+    if common == (pm_home / ".git").resolve():
+        return None
+    return common
+
+
+def _check_ignore_observation(result: subprocess.CompletedProcess) -> str:
+    """check-ignore 관측을 진단 한 조각으로 요약한다 — 이 문자열은 **판정 입력이 아니다**.
+
+    풀 갈래가 보는 것은 rc(사본 루트가 실제로 무시되는가)와 bare 규칙 존재 둘뿐이고, 어느
+    출처가 그 판정을 냈는지는 진단 문구에만 싣는다.
+    """
+    if result.returncode == 1:
+        return "현재 이 경로를 무시하는 규칙이 없다"
+    lines = [entry for entry in (result.stdout or "").splitlines() if entry]
+    parsed = _parse_check_ignore_verbose_line(lines[0]) if len(lines) == 1 else None
+    if parsed is None:
+        return f"현재 check-ignore 출력={result.stdout!r}"
+    source, linenum, pattern = parsed
+    return f"현재 check-ignore 출처={source}:{linenum} 패턴={pattern!r}"
+
+
+def _assert_pool_bare_ignore_rule(bare: Path, *, ignored: bool, observation: str) -> None:
+    """풀 슬롯의 정본 — 사본 루트가 실제로 무시되고 그 규칙이 이 풀 bare 의 `info/exclude` 에
+    있는지 fail-loud 확인한다. 둘을 함께 요구한다.
+
+    규칙 존재만 보면 슬롯 안 `.gitignore` 의 부정 규칙 한 줄이 정본을 뒤집어도 통과한다 — 그
+    형상에서 사본 루트는 실제로 무시되지 않아 게이트가 지키려던 성질이 이 갈래에서만 사라진다.
+    거꾸로 check-ignore 가 어느 출처를 보고했는지는 판정 입력이 아니다. 중첩 `.gitignore` 가
+    `info/exclude` 보다 우선순위가 높아, 출처로 판정하면 규칙이 없는 풀도 그 중첩 파일 하나로
+    우연히 통과한다. 파일 부재는 규칙 부재와 같은 거부이고, 읽기 실패는 그대로 올린다
+    (빈 값으로 바꾸지 않는다).
+    """
+    exclude = bare / "info" / "exclude"
+    if not ignored:
+        raise DelegateError(
+            f"사본 루트가 이 슬롯에서 실제로 무시되지 않음 — {observation} · 정본은 {exclude} 의 "
+            f"`{TICKET_COPY_POOL_IGNORE_RULE}` 줄이고 `pm-config repo add {bare.stem}` 1회로 "
+            "엔진이 멱등 설치한다 · 그 줄이 이미 있으면 슬롯 안 `.gitignore` 의 부정 규칙이 "
+            "정본보다 우선해 뒤집은 것이니 그 줄을 지워라"
+        )
+    lines = (
+        _load_file_lock()
+        .read_text_shared(exclude, encoding="utf-8", errors="replace")
+        .splitlines()
+        if exclude.is_file() else []
+    )
+    if any(line.strip() == TICKET_COPY_POOL_IGNORE_RULE for line in lines):
+        return
+    raise DelegateError(
+        f"사본 루트를 숨기는 ignore 규칙이 이 풀의 bare 에 없음 — 정본은 {exclude} 의 "
+        f"`{TICKET_COPY_POOL_IGNORE_RULE}` 줄이다({observation}) · 이 bare 를 공유하는 모든 "
+        f"슬롯이 그 규칙을 함께 받는다 · `pm-config repo add {bare.stem}` 1회로 엔진이 멱등 "
+        "설치한다"
+    )
+
+
 def _assert_ticket_copy_root_ignored(
     cwd: Path, *, cluster: str, run_id: str, ticket: str,
 ) -> None:
-    """ignore 규칙이 실제 ticket-copy 경로 형상을 숨기는지, 그 규칙이 tracked
+    """ignore 규칙이 실제 ticket-copy 경로 형상을 숨기는지, 임베드 형상이면 그 규칙이 tracked
     `.project_manager/.gitignore` 유래인지 fail-loud 확인한다([[T-0704]]).
+
+    정본은 형상마다 정확히 하나다 — 임베드·단일 clone 은 tracked
+    `.project_manager/.gitignore`(아래 본문), 두-git 풀 슬롯은 그 풀 bare 의 `info/exclude`
+    (`_assert_pool_bare_ignore_rule`)다. 한쪽이 거부돼도 다른 후보로 재시도하지 않는다.
+    앱 저장소에 `.project_manager` 가 없는 풀 슬롯은 tracked 정본을 가질 수 없어, 정본을
+    파일 경로 하나로 못박으면 구조적으로 통과할 수 없다.
 
     경로가 정본 위치와 같아도 그 파일 자체가 untracked 면(예: fresh import 직후 아직 `git add`
     하지 않은 형상) 다른 클론에는 없는 로컬 산출물일 수 있어 별도로 `ls-files --error-unmatch` 로
@@ -1507,14 +1591,22 @@ def _assert_ticket_copy_root_ignored(
         ],
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
+    if result.returncode not in (0, 1):
+        cause = result.stderr.strip() or result.stdout.strip() or "원인 미상"
+        raise DelegateError(f"git check-ignore 실패(rc={result.returncode}): {cause}")
+    bare = _pool_bare_for_code_root(cwd)
+    if bare is not None:
+        _assert_pool_bare_ignore_rule(
+            bare,
+            ignored=result.returncode == 0,
+            observation=_check_ignore_observation(result),
+        )
+        return
     if result.returncode == 1:
         raise DelegateError(
             "사본 루트가 git 무시 대상이 아님 — `.project_manager/.gitignore` 의 "
             "`.local/` 규칙을 복원하라"
         )
-    if result.returncode != 0:
-        cause = result.stderr.strip() or result.stdout.strip() or "원인 미상"
-        raise DelegateError(f"git check-ignore 실패(rc={result.returncode}): {cause}")
     lines = [entry for entry in (result.stdout or "").splitlines() if entry]
     parsed = _parse_check_ignore_verbose_line(lines[0]) if len(lines) == 1 else None
     if parsed is None:
@@ -2278,6 +2370,51 @@ def _ticket_commit_message(board, ticket: str) -> str:
     return title or ticket
 
 
+def _assert_developer_commit_tree(cwd: Path) -> None:
+    """dev 산출을 커밋할 트리가 코드 트리인지 확인한다 — 장부 루트면 거부한다.
+
+    티켓 제목 커밋은 코드 트리에만 만든다. 장부 루트(PM 홈)를 `--cwd` 로 받으면 board·wiki·
+    log 변경이 `add -A` 에 함께 실려 그 티켓 제목의 커밋으로 묶인다. 판정 입력은 형상 하나다 —
+    소유 PM 홈이 자기 자신이면 그 트리가 곧 PM 홈이고, 그 홈이 슬롯 풀의 공용 bare
+    (`.repos/<repo>.git` · 풀을 만든 도구가 써 넣은 자리)를 가지면 코드 트리는 그 풀의 슬롯이지
+    이 트리가 아니다. 임베드·단일 clone(풀 없음)은 PM 홈이 곧 코드 트리라 그대로 통과한다.
+
+    자리는 회수의 다른 developer 게이트와 같다(board 교체 앞) — 커밋 직전으로 밀면 거부 시점에
+    board 라운드 교체·장부 append·run-dir 삭제가 이미 끝나 같은 자리로 다시 회수할 수 없다.
+    """
+    if Path(_load_pm_log().owning_pm_home(cwd)).resolve() != Path(cwd).resolve():
+        return                              # 풀 슬롯 — 소유 PM 홈이 따로 있다.
+    bares = sorted((Path(cwd) / ".repos").glob("*.git"))
+    if not bares:
+        return                              # 임베드·단일 clone — PM 홈이 곧 코드 트리다.
+    pools = []
+    for bare in bares:
+        slots = [
+            line[len("worktree "):].strip()
+            for line in _cluster_git(
+                bare, "worktree", "list", "--porcelain",
+            ).splitlines()
+            if line.startswith("worktree ")
+        ]
+        slots = [slot for slot in slots if Path(slot).resolve() != bare.resolve()]
+        # 슬롯이 하나도 없는 풀은 나열할 값이 없다 — 그 자리에는 나열 대신 슬롯을 만드는
+        # 커맨드를 싣는다(빈 나열로 끝나면 문구만 읽고 `--cwd` 를 무엇으로 바꿀지 알 수 없다).
+        pools.append(
+            (f"{bare} 의 슬롯 = " + " · ".join(slots)) if slots
+            else (
+                f"{bare} 에는 아직 슬롯이 없습니다 — `pm-config worktree add {bare.stem} "
+                f"--user-ack {bare.stem}` 로 슬롯을 만드세요"
+            )
+        )
+    raise DelegateError(
+        "developer 라운드 회수 거부 — --cwd 가 슬롯 풀을 운영하는 PM 홈입니다"
+        f"(장부 루트: {Path(cwd).resolve()}). 티켓 제목 커밋은 코드 트리에만 만듭니다: "
+        + " / ".join(pools)
+        + ". board 라운드 파일과 slot run-dir 은 그대로 보존했습니다 — `--cwd` 를 그 슬롯으로 "
+        "바꿔 같은 회수를 다시 실행하세요."
+    )
+
+
 def _commit_developer_round_output(cwd: Path, *, ticket: str, board) -> str | None:
     """dev 산출을 그 슬롯에서 커밋한다 — 커밋했으면 문안, 커밋할 변경이 없으면 None.
 
@@ -2385,6 +2522,9 @@ def harvest_ticket_copy(
                 f"round={board_path.name} · copy={expected}"
             )
     if row["role"] == "developer":
+        # 커밋 대상 트리 판정도 같은 자리다 — 이 회수가 만들 티켓 제목 커밋의 트리를 board
+        # 교체 앞에서 확정한다.
+        _assert_developer_commit_tree(cwd)
         # 검증 게이트는 리뷰 게이트와 **같은 자리**(교체 앞)다 — 교체 뒤로 밀면 낡은 기대값이
         # 이미 board 에 착지한 뒤라 되돌릴 정식 수단이 없다(라운드 파일은 회수 후 불변).
         terminal_fix = _terminal_developer_round(
@@ -2593,6 +2733,12 @@ class DeveloperRegressionRecord(NamedTuple):
 
 
 _DEVELOPER_REGRESSION_HEADING = "## 회귀"
+# 시드가 이 규칙을 미리 고지한다 — 회수 거부로만 알게 되는 형식은 고지 실패다. 주석은 이 절
+# **위**에 둔다: 절 안에 넣으면 아래 파서가 비어 있지 않은 줄 3개를 보고 형식 위반으로 읽는다.
+DEVELOPER_REGRESSION_RULE = (
+    "이 절의 비어 있지 않은 줄은 커맨드·결과 두 행뿐이다. 커맨드는 백틱으로 끝나고 "
+    "결과는 rc=0 을 포함한다."
+)
 _DEVELOPER_REGRESSION_COMMAND_PREFIX = "- 커맨드: `"
 _DEVELOPER_REGRESSION_RESULT_PREFIX = "- 결과: "
 _DEVELOPER_REGRESSION_GREEN_RE = re.compile(r"(?:^|[ ·])rc\s*=\s*0(?:$|[ ·])")
@@ -3824,6 +3970,19 @@ def _load_review_rounds():
     )
 
 
+def _load_pm_log():
+    """소유 PM 홈 유도 규칙(`pm_log.owning_pm_home`) — 코드 트리 형상 판정의 단일 진실.
+
+    `additional_reviewer.resolve_pm_home_for_repo` 도 결국 이 함수를 부르지만, 그쪽은 **설정·
+    board 앵커**를 정하는 seam 이라 호출부가 앵커를 다른 트리로 돌려놓기도 한다. 형상은 앵커
+    선택과 무관하게 코드 트리 자신의 `.git` 선언만으로 정해져야 하므로 유도 규칙을 직접 부른다.
+    """
+    path = Path(__file__).resolve().parent / "pm_log.py"
+    return _load_module_from_path(
+        path, "pm_log.py", verifier=_verify_engine_rev, cache=True,
+    )
+
+
 def _load_file_lock():
     """라운드 장부 read-modify-write 직렬화에 쓰는 공용 OS 파일락."""
     path = Path(__file__).resolve().parent / "file_lock.py"
@@ -4197,25 +4356,29 @@ def _pm_review_contract_string(value: object, field: str) -> str:
 def _contract_test_targets(
     value: str, field: str, *, required: bool = True,
 ) -> tuple[str, ...]:
-    """계약 산문에서 repo-relative Python 테스트 대상을 해소한다.
+    """계약이 지목한 repo-relative Python 테스트 대상 — 값의 **첫 토큰** 하나뿐이다.
+
+    산문 전역을 훑으면 "옛 경로 대신 새 경로" 같은 서술의 옛 경로까지 diff 결속 대상이 된다 —
+    이번 라운드가 손댈 자리가 아닌 파일을 회수가 요구하게 되므로, 대상은 값이 맨 앞에 적은
+    하나로 고정한다. 여러 파일을 결속하려면 계약 행을 여러 개 쓴다.
 
     ``required`` 는 architect 축(설계 라운드가 확정하는 필수 테스트)의 규칙이다 —
     거기서는 테스트 대상이 계약이라 하나도 없으면 거부한다. reviewer fix 축은
     붙일 테스트가 없는 지적(죽은 코드 삭제)을 표현할 수 있어야 하므로 끈다.
     """
-    targets: list[str] = []
-    for match in _CONTRACT_TEST_TARGET_RE.finditer(value):
+    head = value.split(maxsplit=1)
+    match = _CONTRACT_TEST_TARGET_RE.match(head[0]) if head else None
+    if match is not None:
         target = match.group("path")
         path = PurePosixPath(target)
         if path.is_absolute() or ".." in path.parts or path.parts[0] != "tests":
             raise DelegateError(f"{field} 테스트 대상은 repo-relative tests/*.py여야 합니다: {target}")
-        if target not in targets:
-            targets.append(target)
-    if not targets and required:
+        return (target,)
+    if required:
         raise DelegateError(
             f"{field}에 repo-relative 테스트 대상(tests/*.py)이 없습니다"
         )
-    return tuple(targets)
+    return ()
 
 
 def _contract_repo_paths(value: str, field: str) -> tuple[str, ...]:
@@ -4601,7 +4764,10 @@ def render_architect_test_skeleton() -> str:
     """architect가 채울 필수 테스트 계약. 실행 게이트와 같은 key 집합에서 렌더한다."""
     row = _pm_review_seed_object(ARCHITECT_TEST_ROW_KEYS, {
         "id": "AT-001",
-        "target": "<테스트 파일/케이스 또는 검증 대상>",
+        "target": (
+            "<테스트 파일/케이스 또는 검증 대상 · 첫 공백 구분 토큰 하나만 결속한다"
+            "(여러 파일은 계약 행을 여러 개 쓴다)>"
+        ),
         "command": "<shell 메타문자 없는 단일 테스트 명령>",
         "expected": "<성공 output에 포함될 짧은 문자열>",
         "negative": "<변경 전 실패하거나 거부돼야 하는 음성 사례>",
@@ -4963,6 +5129,18 @@ def _pm_review_verify_seed_values(row: PMReviewVerifyRow) -> dict[str, str]:
     return {key: getattr(row, key) for key in _PM_REVIEW_VERIFY_SEED_VALUE_KEYS}
 
 
+# 값 자리(4칸)는 프리필이 통째로 덮는 자리라 규칙을 거기 적으면 프리필된 라운드에서 규칙이
+# 사라진다. 값 자리에 남는 것은 자리표시자 최소형뿐이고, 규칙은 블록 **위** 주석 한 줄이 소유한다
+# (fence 밖이라 어떤 블록 파서의 정의역에도 들어가지 않는다).
+PM_REVIEW_VERIFY_VALUE_RULES = (
+    "reason 은 machine_verifiable=false 일 때만 채운다. "
+    "expected 는 그 커맨드 output 에 그대로 나오는 짧은 부분 문자열만 적는다"
+    "(수치·핵심 토큰 — 산문 설명은 이 자리가 아니라 라운드 본문에 쓴다). "
+    "확인은 rc 0 이고 expected 가 출력에 포함돼야 통과다 — 부재 단언은 `grep -L`/`-c 0` 이 "
+    "rc 1 이라 통과할 수 없으니 실제 잔여 건수를 기대값으로 쓴다."
+)
+
+
 def render_pm_review_verify_skeleton(
     rows: Sequence[tuple[str, Mapping[str, str] | None]],
 ) -> str:
@@ -4974,25 +5152,23 @@ def render_pm_review_verify_skeleton(
 
     `machine_verifiable` 은 boolean 자리라 `_PMReviewRawPlaceholder` 로 따옴표 없이 낸다
     (axis 1). `command` placeholder 는 파서의 재현 커맨드 안전 경계 문구(`_pm_review_command_shape_
-    hint`)를 그대로 소비해 금지 문자를 두 곳에 적지 않는다(axis 2). `expected` placeholder 는
-    확인 블록의 `expected ⊆ observed` 계약(짧은 부분 문자열만)을 명시해 산문을 유도하지 않는다
-    (axis 3)."""
+    hint`)를 그대로 소비해 금지 문자를 두 곳에 적지 않는다(axis 2). `expected` 의 부분 문자열
+    계약(axis 3)과 `reason` 의 선언 조건, 확인 커맨드의 rc 규약은 프리필이 덮지 않는
+    블록 위 주석(`PM_REVIEW_VERIFY_VALUE_RULES`)이 소유한다."""
     command_hint = (
         "<machine_verifiable=true 면 " + _pm_review_command_shape_hint()
         + "(cwd 무관하게 대상을 절대경로로 쓰고 `cd X &&` 는 쓰지 않는다 — `&`가 금지 문자다), "
         "아니면 빈 문자열>"
     )
     expected_hint = (
-        "<fix 후 그 커맨드 output 에 그대로 나오는 짧은 부분 문자열만(수치·핵심 토큰 — 산문 "
-        "설명은 이 자리가 아니라 라운드 본문에 따로 쓴다), machine_verifiable=false 면 무엇이 "
-        f"참이어야 하는지 한 줄로 짧게, reason={PM_REVIEW_VERIFY_GAP_REASON} 이면 빈틈 요지 한 줄>"
+        "<machine_verifiable=true 면 fix 후 그 커맨드 output 의 기대값, false 면 무엇이 "
+        f"참이어야 하는지 한 줄, reason={PM_REVIEW_VERIFY_GAP_REASON} 이면 빈틈 요지 한 줄>"
     )
     hints = {
         "command": command_hint,
         "expected": expected_hint,
         "before": "<machine_verifiable=true 면 fix 전 실값, 아니면 빈 문자열>",
-        "reason": "<machine_verifiable=false 일 때만 "
-                  + "|".join(PM_REVIEW_VERIFY_REASONS) + ", 아니면 빈 문자열>",
+        "reason": "<" + "|".join(PM_REVIEW_VERIFY_REASONS) + " 중 하나 또는 빈 문자열>",
     }
     seed_rows = [
         _pm_review_seed_object(PM_REVIEW_VERIFY_ROW_KEYS, {
@@ -5009,7 +5185,10 @@ def render_pm_review_verify_skeleton(
         "version": PM_REVIEW_VERIFY_VERSION,
         "verifications": seed_rows,
     })
-    return _pm_review_fenced_json(PM_REVIEW_VERIFY_BLOCK, payload)
+    return (
+        f"<!-- {PM_REVIEW_VERIFY_VALUE_RULES} -->\n"
+        + _pm_review_fenced_json(PM_REVIEW_VERIFY_BLOCK, payload)
+    )
 
 
 def _pm_review_parse_machine_confirmation_row(
@@ -5203,7 +5382,10 @@ def render_pm_review_block_skeleton(
             "location": "<잘못된 코드 위치(file:line 또는 symbol)>",
             "failure": "<현재 잘못된 거동과 재현 조건>",
             "design": "<수정 설계와 보존할 불변식>",
-            "test": "<추가할 회귀 테스트 파일/케이스>",
+            "test": (
+                "<추가할 회귀 테스트 파일/케이스 · 첫 공백 구분 토큰 하나만 결속한다"
+                "(여러 파일은 계약 행을 여러 개 쓴다)>"
+            ),
             "command": "<추가 테스트 실행 명령(shell 메타문자 없는 단일 명령)>",
             "expected": "<성공 output에 포함될 짧은 문자열>",
         }),
@@ -5475,6 +5657,7 @@ def _render_developer_round_seed_body(
     body = (
         "## 변경 파일\n- `<경로>`: <변경 내용과 이유>\n\n"
         "## 신규 테스트\n- 추가한 테스트: <N개 · 파일/케이스>\n\n"
+        f"<!-- {DEVELOPER_REGRESSION_RULE} -->\n"
         "## 회귀\n- 커맨드: `<실행 커맨드>`\n"
         "- 결과: <rc=0 · A passed / 0 failed>\n\n"
         "## DoD evidence\n- <완료 조건>: <충족 근거>\n\n"

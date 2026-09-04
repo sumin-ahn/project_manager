@@ -215,23 +215,96 @@ def test_declared_contract_placeholder_words_are_all_parser_inputs(pd):
         assert pd._CONTRACT_PLACEHOLDER_RE.search(word)
 
 
-def test_contract_test_targets_strip_korean_particles_and_punctuation(pd):
-    original_f001 = (
-        "tests/test_pm_review_delta.py에 v3 자리표시자 거부 케이스를, "
-        "tests/test_round_budget.py에 diff 결속 회귀를 추가한다."
-    )
+# 계약 값의 결속 대상은 **첫 공백 구분 토큰** 하나다 — 산문 전역을 훑던 옛 규칙은 "옛 경로
+# 대신 새 경로" 같은 서술의 옛 경로까지 diff 결속 대상으로 삼아, 이번 라운드가 손대지 않을
+# 파일을 회수가 요구하게 했다. 두 축(architect target · reviewer fix test)이 같은 파서다.
+
+def test_contract_test_target_binds_only_the_first_token(pd):
+    """첫 토큰만 결속한다 — 뒤따르는 산문의 경로는 대상이 아니다(조사·구두점은 계속 벗긴다)."""
     assert pd._contract_test_targets(
-        original_f001, "reviewer 추가 회귀 F-001.test",
-    ) == (
-        "tests/test_pm_review_delta.py",
-        "tests/test_round_budget.py",
-    )
+        "tests/test_pm_review_delta.py에 첫 토큰 회귀를 추가한다. "
+        "tests/test_round_budget.py 는 이번 라운드가 손대지 않는다.",
+        "reviewer 추가 회귀 F-001.test",
+    ) == ("tests/test_pm_review_delta.py",)
     assert pd._contract_test_targets(
         "tests/test_a.py와 tests/test_b.py과 tests/test_c.py, tests/test_d.py.",
         "reviewer 추가 회귀 F-002.test",
-    ) == (
-        "tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "tests/test_d.py",
+    ) == ("tests/test_a.py",)
+    assert pd._contract_test_targets(
+        "tests/test_a.py::test_case 로 좁힌 대상", "reviewer 추가 회귀 F-003.test",
+    ) == ("tests/test_a.py",)
+
+    # 첫 토큰이 테스트 경로가 아니면 결속 0 — 붙일 테스트가 없는 지적을 허용하는 축은 통과,
+    # 대상이 계약인 축은 종전 문구로 거부다.
+    prose_first = "회귀는 tests/test_a.py 에 추가한다"
+    assert pd._contract_test_targets(
+        prose_first, "reviewer 추가 회귀 F-004.test", required=False,
+    ) == ()
+    with pytest.raises(pd.DelegateError, match="repo-relative 테스트 대상"):
+        pd._contract_test_targets(prose_first, "reviewer 추가 회귀 F-004.test")
+
+
+def test_architect_target_axis_uses_the_same_first_token_rule(pd):
+    """architect `target` 축도 같은 파서다 — 축마다 다른 결속 규칙을 두지 않는다."""
+    multi = (
+        "tests/test_pm_review_delta.py::test_first (cwd=work/slot_1) · "
+        "tests/test_round_budget.py 는 대상이 아니다"
     )
+    assert pd._contract_test_targets(
+        multi, "architect 필수 테스트 AT-001.target",
+    ) == pd._contract_test_targets(
+        multi, "reviewer 추가 회귀 F-001.test",
+    ) == ("tests/test_pm_review_delta.py",)
+
+    payload = json.dumps({
+        "version": pd.ARCHITECT_TEST_VERSION,
+        "tests": [{
+            "id": "AT-001", "target": multi,
+            "command": "python3 -m pytest tests/test_pm_review_delta.py -q",
+            "expected": "1 passed", "negative": "첫 토큰 결속이 풀리면 실패",
+        }],
+    }, ensure_ascii=False)
+    parsed = pd.parse_architect_tests(
+        f"```{pd.ARCHITECT_TEST_BLOCK}\n{payload}\n```\n"
+    )
+    assert parsed[0].target == multi
+    with pytest.raises(pd.DelegateError, match="repo-relative 테스트 대상"):
+        pd._contract_test_targets(
+            "회귀는 tests/test_a.py 에 추가한다", "architect 필수 테스트 AT-002.target",
+        )
+
+
+def test_contract_value_hints_state_the_first_token_rule(pd):
+    """두 값 힌트(architect `target` · reviewer `fix_contract.test`)가 첫 토큰 결속 규칙을 적는다.
+
+    고지가 없으면 산문으로 시작한 값이 `required=False` 축에서 조용히 0건으로 통과해, 그
+    finding 의 fix diff 결속이 사라진다. 고지와 판정은 한 규칙이라 같은 케이스에서 함께 본다.
+    """
+    rule = "첫 공백 구분 토큰 하나만 결속한다(여러 파일은 계약 행을 여러 개 쓴다)"
+    architect = pd.render_architect_test_skeleton()
+    reviewer = pd.render_pm_review_block_skeleton("code-reviewer")
+    assert rule in architect, architect
+    assert rule in reviewer, reviewer
+
+    # 자리표시자 괄호 형태는 유지된다 — 미편집 시드는 계속 placeholder 로 거부된다.
+    seeded = (
+        json.loads(architect.splitlines()[1])["tests"][0]["target"],
+        json.loads(reviewer.splitlines()[1])["findings"][0]["fix_contract"]["test"],
+    )
+    for value in seeded:
+        assert value.startswith("<") and value.endswith(">")
+        assert pd._CONTRACT_PLACEHOLDER_RE.search(value)
+
+    # 고지한 그대로의 파서 거동 — 첫 토큰만 결속하고, 산문으로 시작하면 결속 0 이다.
+    assert pd._contract_test_targets(
+        "tests/test_pm_review_delta.py::test_case 는 결속하고 "
+        "뒤따르는 tests/test_round_budget.py 는 대상이 아니다",
+        "reviewer 추가 회귀 F-001.test", required=False,
+    ) == ("tests/test_pm_review_delta.py",)
+    assert pd._contract_test_targets(
+        "기존 tests/test_a.py 에 케이스 추가", "reviewer 추가 회귀 F-002.test",
+        required=False,
+    ) == ()
 
 
 @pytest.mark.parametrize("value", (

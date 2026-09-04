@@ -583,9 +583,11 @@ def test_fix_harvest_requires_each_reviewer_test_target_in_the_fix_diff(
     assert outcome.terminal is True
 
 
-def test_fix_harvest_binds_each_korean_particle_test_target_to_the_fix_diff(
+def test_fix_harvest_binds_only_the_first_test_target_token_to_the_fix_diff(
     pd, budget_env,
 ):
+    """결속 대상은 계약 값의 첫 토큰 하나다 — 조사는 계속 벗기고, 뒤따르는 산문의 경로는
+    이번 라운드가 손댈 자리가 아니므로 회수가 요구하지 않는다."""
     pm_home, slot, tickets = budget_env
     ticket = "T-7090"
     cluster = "C-review-korean-targets"
@@ -595,17 +597,14 @@ def test_fix_harvest_binds_each_korean_particle_test_target_to_the_fix_diff(
     _prepare_accepted_review(
         pd, pm_home=pm_home, slot=slot, cluster=cluster, ticket=ticket,
         target=(
-            "tests/test_pm_review_delta.py에 v3 자리표시자 거부 케이스를, "
-            "tests/test_round_budget.py에 diff 결속 회귀를 추가한다"
+            "tests/test_pm_review_delta.py에 v3 자리표시자 거부 케이스를 추가한다. "
+            "tests/test_round_budget.py 는 이번 라운드가 손대지 않는다"
         ),
     )
     fix = pd.prepare_cluster_copy(
         cluster=cluster, role="developer", cwd=slot, pm_home=pm_home,
     )
     _write_round_output(pd, fix.rounds[0].path, "developer")
-    first_target = slot / "tests" / "test_pm_review_delta.py"
-    first_target.parent.mkdir(parents=True, exist_ok=True)
-    first_target.write_text("# first reviewer target\n", encoding="utf-8", newline="\n")
 
     outcome = pd.harvest_cluster_copy(
         run_dir=fix.run_dir, cwd=slot, pm_home=pm_home,
@@ -613,8 +612,9 @@ def test_fix_harvest_binds_each_korean_particle_test_target_to_the_fix_diff(
     assert outcome.refusal is not None
     assert (
         "reviewer 추가 회귀 F-001 대상이 이 fix diff에 추가·수정되지 않았습니다: "
-        "tests/test_round_budget.py"
+        "tests/test_pm_review_delta.py"
     ) in outcome.refusal
+    assert "tests/test_round_budget.py" not in outcome.refusal, outcome.refusal
     assert outcome.terminal is True
 
 

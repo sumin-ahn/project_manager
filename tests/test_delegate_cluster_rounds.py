@@ -185,7 +185,9 @@ def _fill(path: Path, marker: str) -> None:
     text = path.read_text(encoding="utf-8")
     if "```pm-architect-tests-v1" in text:
         replacements = {
-            "<테스트 파일/케이스 또는 검증 대상>": "tests/test_delegate_cluster_rounds.py",
+            "<테스트 파일/케이스 또는 검증 대상 · 첫 공백 구분 토큰 하나만 결속한다"
+            "(여러 파일은 계약 행을 여러 개 쓴다)>":
+                "tests/test_delegate_cluster_rounds.py",
             "<실행할 비파괴 커맨드>": "python3 --version",
             "<shell 메타문자 없는 단일 테스트 명령>": "python3 --version",
             "<stdout/stderr/exit 또는 output에 포함될 짧은 문자열>": "Python",

@@ -624,8 +624,17 @@ class _SlotPool:
             self.reason = reason
             super().__init__(reason)
 
-    def __init__(self):
+    def __init__(self, bare_root=None):
         self.created = []
+        # 그 repo 의 공유 bare 자리([[T-0903]]) — `cmd_worktree_add` 가 사본 루트 ignore 규칙을
+        # 심는다. 실 `.repos` 로 새지 않게 테스트가 준 임시 루트 안에서만 답한다.
+        self.bare_root = bare_root
+
+    def bare_repo_path(self, repo):
+        assert self.bare_root is not None, "bare_root 미설정 — 실 `.repos` 를 건드릴 뻔했다"
+        path = Path(self.bare_root) / f"{repo}.git"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     def _validate_task_name(self, name, registered_repos=None):
         return None
@@ -681,9 +690,9 @@ def test_worktree_add_rejects_ack_bound_to_other_repo(pm_config, capsys):
     ids=["normal", "readonly-role", "task-leased"],
 )
 def test_worktree_add_bound_ack_preserves_create_slot_semantics(
-    pm_config, monkeypatch, capsys, readonly, task, expected_role,
+    pm_config, monkeypatch, capsys, tmp_path, readonly, task, expected_role,
 ):
-    pool = _SlotPool()
+    pool = _SlotPool(bare_root=tmp_path / ".repos")
     monkeypatch.setattr(pm_config, "_install_protected_hook_reporting", lambda *a, **k: True)
     monkeypatch.setattr(pm_config, "_render_task_slots", lambda *a, **k: None)
     args = argparse.Namespace(
