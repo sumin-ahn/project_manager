@@ -15,6 +15,10 @@
 - **reopen 한 티켓이 위임 준비에서 멈추지 않는다.** open 상태 티켓은 언제나 묶음 장부를 가진다. `board.py reopen` 이 promote 와 같은 규칙으로 장부에 귀속하고(기존 장부가 그 티켓을 이미 담고 있으면 역참조만 복구), 장부 없는 옛 티켓을 크기 1 묶음으로 읽어 주던 폴백은 지웠다. `cluster show` 는 장부가 없으면 `cluster not found`(rc 2)다.
 - **슬롯 제거가 브랜치를 남기지 않는다.** `pm-config worktree remove` 가 슬롯이 체크아웃했던 브랜치를 이름과 무관하게 정리한다. 기본 브랜치에 머지됐으면 지우고, 미머지·보호·다른 슬롯의 기준 브랜치는 보존하며 사유와 머지 판정 기준을 보고한다. `git worktree remove` 가 중간에 실패해 git 등록만 사라진 형상은 재실행이 마무리하고, 등록 없는 디렉터리를 처음 지우는 경우는 `--force` 가 있어야 한다. "원자" 문구와 동작하지 않던 `--force` 재시도 안내는 삭제했다. 묶음 종결도 머지한 묶음 브랜치 삭제를 시도하고 결과를 보고한다.
 
+- **앱 저장소에 `.project_manager` 가 없는 형상(PM 홈 + bare pool + 슬롯 worktree)에서도 `ticket prepare --cwd <슬롯>` 이 통과한다.** 사본 루트 ignore 정본을 형상별로 해소한다. 임베드는 종전대로 tracked `.project_manager/.gitignore`, pool 슬롯은 그 bare 의 `info/exclude` 에 `/.project_manager/.local/` 규칙이 있고 사본 루트가 실제로 무시될 때다. 그 규칙은 `pm-config repo add` 와 `worktree add` 가 멱등 설치하므로 `info/exclude` 를 손으로 고치던 절차는 없어졌다. 기존 풀은 `pm-config repo add <repo>` 를 한 번 다시 돌려 규칙을 받는다.
+- **developer 회수의 슬롯 커밋이 장부 루트(PM 홈)에서 실행되지 않는다.** `--cwd` 가 슬롯 풀을 운영하는 PM 홈이면 board 를 바꾸기 전에 거부하고 슬롯 절대경로(슬롯이 없으면 생성 명령)를 안내한다. 임베드 단일 clone 과 pool 슬롯의 커밋 동작은 그대로다.
+- **회수 게이트 규칙이 라운드 골격·힌트·스킬 카드에 미리 적힌다.** `## 회귀` 두 행, verify `reason`·`expected` 규칙, 확인 커맨드의 rc 0 규약(부재 단언에 `grep -L`·`grep -c` 0건은 통과 불가)을 골격 주석과 힌트로 고지한다. 계약의 테스트 대상 결속은 첫 공백 구분 토큰 하나만 본다(산문 속 경로 언급은 결속되지 않는다). `promote` 의 판정불능 안내는 축별 건수로 나오고 인식 문법을 pm-ticket 카드에 적었다.
+
 ### Removed
 
 - 역할별 내부 라운드 상한 `internal_review_round_limit.<역할>` 과 그 판정·예외를 삭제했다. 묶음 고정 수열이 유일한 상한이라 닿을 수 없던 값이다. `local.conf` 에 그 키가 남아 있으면 unknown-key 안내만 나오며 지우면 된다.
