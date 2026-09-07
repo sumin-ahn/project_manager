@@ -253,6 +253,52 @@ def test_task_new_engine_missing_errors(pc, monkeypatch, capsys):
     assert "worktree_pool" in capsys.readouterr().err
 
 
+# ── 예약패턴 해소 규칙 단일화 (판정 사본 0) ──────────────────────────────────
+
+
+def test_registered_repos_resolution_is_shared_by_task_new_and_prebound_validation(
+        pc, wp, monkeypatch, capsys):
+    """예약패턴 판별 근거의 해소가 `_registered_repos` 한 자리다 — 두 호출부가 같은 값을 본다.
+
+    board 모듈 부재·`registered_repos` 속성 부재·조회 예외는 셋 다 None(예약패턴만 완화되고
+    traversal 검증은 유지)이고, 실 레지스트리가 있으면 같은 목록이다. 규칙이 두 자리로 갈리면
+    같은 이름이 `task new` 에서는 거부되고 `alloc`/`worktree add --task` 에서는 통과한다(또는
+    반대)."""
+
+    class BoardWithoutRegistry:
+        pass
+
+    class RaisingBoard:
+        def registered_repos(self):
+            raise RuntimeError("areas broken")
+
+    board = FakeBoard(registered=("app",))
+    assert pc._registered_repos(None) is None
+    assert pc._registered_repos(BoardWithoutRegistry()) is None
+    assert pc._registered_repos(RaisingBoard()) is None
+    assert pc._registered_repos(board) == ["app"]
+
+    calls: list = []
+    resolve = pc._registered_repos
+
+    def _record(board_mod):
+        resolved = resolve(board_mod)
+        calls.append((board_mod, resolved))
+        return resolved
+
+    monkeypatch.setattr(pc, "_registered_repos", _record)
+
+    # 생성 경로(기바인딩 미요구)와 기바인딩 요구 경로가 같은 이름을 같은 근거로 거부한다.
+    assert _run_new(pc, wp, "app_2", board=board) == 1
+    assert pc._validate_prebound_task(wp, board, "app_2") == 1
+    assert "부적합 task 명" in capsys.readouterr().err
+
+    assert [seen for seen, _ in calls] == [board, board], \
+        "두 호출부가 같은 해소 자리를 부르지 않았다(사본이 남아 있다)"
+    assert [resolved for _, resolved in calls] == [["app"], ["app"]]
+    assert not wp.LEASES_FILE.exists(), "거부 경로가 장부를 건드렸다"
+
+
 # ── 파서 표면 (상한: 새 서브커맨드 하나 · 새 플래그 0) ────────────────────────
 
 

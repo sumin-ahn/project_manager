@@ -19,6 +19,7 @@ hermetic: 실 `local.conf` 파일을 tmp 에 만들어 board 도구가 그 파�
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib.util
 import subprocess
 import sys
@@ -493,6 +494,43 @@ def test_every_registered_key_declares_description_default_and_required(conf_mod
         assert spec.default is None or isinstance(spec.default, str), key
         assert isinstance(spec.required, bool), key
         assert spec.group in conf_module.KEY_GROUPS, (key, spec.group)
+
+
+def test_declared_groups_is_a_single_key_groups_order_filter(conf_module):
+    """`_declared_groups()` 는 `KEY_GROUPS` 순서 필터 **하나**다 — 뒤에 덧붙는 자리가 없다.
+
+    레지스트리의 모든 `spec.group` 이 `KEY_GROUPS` 원소라(위 완전성 가드가 강제) "KEY_GROUPS
+    밖 묶음을 뒤에 붙인다" 는 확장은 어떤 입력으로도 발화하지 않는다. 그 발화 불가 분기를 지운
+    뒤의 계약을 세 축으로 못박는다 — 함수 본문이 단일 `return`(누적-확장 경로 재유입 차단) ·
+    산출이 `KEY_GROUPS` 순서 필터와 같음 · `--keys` 절 이름/순서와 각 절의 키 목록 불변.
+    새 묶음을 쓰는 유일한 경로는 `KEY_GROUPS` 에 순서를 선언하는 것이다."""
+    used = {spec.group for spec in conf_module.KEY_REGISTRY.values()}
+    assert used <= set(conf_module.KEY_GROUPS), used - set(conf_module.KEY_GROUPS)
+
+    tree = ast.parse(LOCAL_CONF_PY.read_text(encoding="utf-8"))
+    function = next(node for node in tree.body
+                    if isinstance(node, ast.FunctionDef) and node.name == "_declared_groups")
+    statements = [node for node in function.body
+                  if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant))]
+    assert len(statements) == 1 and isinstance(statements[0], ast.Return), \
+        "본문이 단일 return 이 아니다 — 순서 필터 뒤에 다른 경로가 붙었다"
+
+    declared = conf_module._declared_groups()
+    assert declared == [group for group in conf_module.KEY_GROUPS if group in used]
+
+    # `--keys` 표: 절 이름·순서가 그 목록 그대로이고, 각 절의 키 목록이 레지스트리 순서 그대로다.
+    sections: dict[str, list[str]] = {}
+    current = None
+    for line in conf_module.render_key_table().splitlines():
+        if line.startswith("[") and line.endswith("]"):
+            current = line[1:-1]
+            sections[current] = []
+        elif current and line.split(" ", 1)[0] in conf_module.KEY_REGISTRY:
+            sections[current].append(line.split(" ", 1)[0])
+    assert list(sections) == declared
+    for group, keys in sections.items():
+        assert keys == [key for key, spec in conf_module.KEY_REGISTRY.items()
+                        if spec.group == group], group
 
 
 _PATTERN_SAMPLES = (
