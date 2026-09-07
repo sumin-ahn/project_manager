@@ -3230,6 +3230,29 @@ def test_adapter_drift_uses_two_distinct_keys(board, monkeypatch):
     assert board._DRIFT_BASELINE_KEY != board._DRIFT_SEEN_KEY
 
 
+# 두 키의 **소유권 서술**은 판정 코드와 함께 갱신돼야 한다 — T-0908 이 `_upstream_rev_updates` 의
+# URL 제외 분기를 지워 `upstream.seen_rev` 의 writer 가 `record_upstream_revs` 하나가 됐는데, 그
+# 자리의 주석/docstring 이 옛 계약(스킬층 writer·경로 upstream 한정·cache 부재 URL 은 키 부재 →
+# graceful skip)을 계속 서술하면 지워진 분기를 되살릴 근거로 읽힌다. 판정 코드 자체의 불변은 위
+# rev 비교 케이스들이 이미 잰다 — 여기서는 그 문장을 값으로 고정한다.
+def test_adapter_drift_key_contract_documents_the_single_writer():
+    """drift-lint 두 키의 정의 주석·`lint_adapter_drift` docstring 이 단일 writer 를 서술한다."""
+    source = BOARD_PY.read_text(encoding="utf-8")
+    start = source.index("# adapter-drift baseline 의 두 local.conf 키.")
+    end = source.index("findings: list[tuple[str, str, str]] = []", start)
+    block = source[start:end]
+    assert "def lint_adapter_drift" in block, "블록 좌표가 어긋났다(공허 통과 방지)"
+
+    # 현행 계약: 형상과 무관한 단일 writer 를 이름으로 가리킨다(주석·docstring 양쪽).
+    assert block.count("record_upstream_revs") >= 2, block
+    assert block.count("형상 무관") >= 2, block
+
+    # 옛 계약 서술 잔존 0 — 되살릴 근거가 남지 않는다.
+    for retired in ("pm-update 스킬", "graceful skip", "record_upstream_rev_baseline",
+                    "경로 upstream 은 pm_update 가", "경로 upstream 에서 두 키 동시 기록"):
+        assert retired not in block, f"옛 writer 계약 서술 잔존: {retired!r}"
+
+
 def test_adapter_drift_kind_is_advisory(board):
     # adapter-drift 는 `_ADVISORY_LINT_KINDS` 등재 → --gate 종료코드 비기여(never-block).
     assert "adapter-drift" in board._ADVISORY_LINT_KINDS

@@ -449,3 +449,32 @@ def test_skill_card_shell_procedure_retired(relpath):
     residual = [token for token in _RETIRED_CARD_TOKENS if token in text]
     assert not residual, f"{relpath}: 폐지된 셸 절차 조각 잔존 {residual}"
     assert "./pm-update.sh" in text, f"{relpath}: facade 한 줄 절차가 없다"
+
+
+# 같은 계열 — pm-env 카드 5벌(canonical + templates 4벌)의 **소유자 서술**. pm-update 카드가
+# "URL: 스킬이 할 일이 없다" 로 바뀐 뒤에도 pm-env 가 캐시 clone 을 스킬 소관으로 가르치면 두
+# 카드가 서로 다른 소유자를 가르친다(같은 하네스 세션이 둘 다 읽는다).
+_PM_ENV_CARDS = (
+    ".claude/skills/pm-env/SKILL.md",
+    "templates/claude_code/.claude/skills/pm-env/SKILL.md",
+    "templates/codex/.agents/skills/pm-env/SKILL.md",
+    "templates/opencode/.claude/skills/pm-env/SKILL.md",
+    "templates/opencode/.opencode/command/pm-env.md",
+)
+
+
+@pytest.mark.parametrize("relpath", _PM_ENV_CARDS)
+def test_pm_env_card_attributes_the_url_cache_to_the_engine(relpath):
+    """pm-env 카드 5벌이 URL 캐시 clone/fetch 를 엔진 소관으로 서술한다(스킬 소관 서술 0)."""
+    card = REPO / relpath
+    assert card.is_file(), f"pm-env 카드 부재: {relpath}"
+    text = card.read_text(encoding="utf-8")
+
+    assert "URL이면 엔진" in text, f"{relpath}: 캐시 주체가 엔진으로 적혀 있지 않다"
+    assert "upstream-cache" in text, f"{relpath}: 캐시 자리(엔진 소유 스크래치)를 가리키지 않는다"
+    assert "로컬 경로 upstream의 pull" in text, f"{relpath}: 스킬 몫(경로 pull 판단)이 없다"
+    for retired in ("URL이면 cache clone", "가 URL이면 cache clone, 경로면 pull"):
+        assert retired not in text, f"{relpath}: 옛 소유자 서술 잔존 {retired!r}"
+    # `upstream show|set` 검증 서술은 그대로 남아야 한다(문구 교체가 그 절을 지우지 않았다).
+    assert "git ls-remote" in text and "https/ssh/file" in text, \
+        f"{relpath}: upstream 검증·판별 규칙 서술이 사라졌다"
