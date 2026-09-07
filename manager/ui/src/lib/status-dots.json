@@ -1,10 +1,10 @@
 {
-  "note": "상태 점 판정 — 위에서부터 첫 일치가 이긴다. 값은 status --json 의 필드 그대로이고 관리자 쪽 판정 코드는 없다. readonly 가 맨 앞인 이유: 실제 `worktree add --readonly` 슬롯은 leased·pid 0·alive false 라 순서가 없으면 전부 '회수 대기' 빨강으로 오표시된다.",
+  "note": "상태 점 + 변경 동작 판정 — 위에서부터 첫 일치가 이긴다. 값은 status --json 의 필드 그대로이고 관리자 쪽 판정 코드는 없다. readonly 가 맨 앞인 이유: 실제 `worktree add --readonly` 슬롯은 leased·pid 0·alive false 라 순서가 없으면 전부 '회수 대기' 빨강으로 오표시된다. actions 는 그 행에서 여는 동작이다 — change=변경 동작 가능 · disabled=비활성(사유 표시) · refresh=재조회만.",
   "rules": [
-    { "field": "role", "equals": "readonly", "dot": "blue", "label": "readonly" },
-    { "field": "state", "equals": "idle", "dot": "gray", "label": "아이들" },
-    { "field": "pid", "equals": 0, "dot": "gray", "label": "아이들" },
-    { "field": "alive", "equals": true, "dot": "orange", "label": "작업 중" },
-    { "field": "alive", "equals": false, "dot": "red", "label": "회수 대기" }
+    { "field": "role", "equals": "readonly", "dot": "blue", "label": "readonly", "actions": "refresh" },
+    { "field": "state", "equals": "idle", "dot": "gray", "label": "아이들", "actions": "change" },
+    { "field": "pid", "equals": 0, "dot": "gray", "label": "아이들", "actions": "change" },
+    { "field": "alive", "equals": true, "dot": "orange", "label": "작업 중", "actions": "disabled" },
+    { "field": "alive", "equals": false, "dot": "red", "label": "회수 대기", "actions": "disabled" }
   ]
 }

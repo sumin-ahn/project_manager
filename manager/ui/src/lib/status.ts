@@ -4,6 +4,9 @@ import dotRules from "./status-dots.json";
 
 export type Dot = "blue" | "gray" | "orange" | "red";
 
+/** 그 행에서 여는 동작 — 판정표의 셋째 칼럼이고 관리자가 따로 계산하지 않는다. */
+export type RowActionMode = "change" | "disabled" | "refresh";
+
 export type StatusRow = {
   state?: string;
   pid?: number;
@@ -11,13 +14,20 @@ export type StatusRow = {
   role?: string;
 };
 
-export type DotVerdict = { dot: Dot; label: string };
+export type DotVerdict = { dot: Dot; label: string; actions: RowActionMode };
 
-/** 슬롯·task 행 하나의 점 — 규칙표(`status-dots.json`)의 첫 일치가 이긴다. */
+/**
+ * 슬롯·task 행 하나의 판정 — 규칙표(`status-dots.json`)의 첫 일치가 이긴다.
+ *
+ * 점·라벨과 **변경 동작 가부가 같은 한 줄**에서 나온다. 아이들 규칙(§4.5)을 두 번째 순회로
+ * 다시 재면 readonly 우선 순서가 두 벌이 되고, 한쪽만 고쳐지는 날 공유 슬롯이 회수 대기로
+ * 오표시된다.
+ */
 export function rowDot(row: StatusRow): DotVerdict {
   for (const rule of dotRules.rules) {
     if ((row as Record<string, unknown>)[rule.field] === rule.equals) {
-      return { dot: rule.dot as Dot, label: rule.label };
+      return { dot: rule.dot as Dot, label: rule.label,
+               actions: rule.actions as RowActionMode };
     }
   }
   throw new Error(`상태 점 규칙에 없는 행: ${JSON.stringify(row)}`);

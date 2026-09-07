@@ -1,13 +1,28 @@
 /** 브리지 타입과 pywebview 배선 — 화면이 파이썬을 부르는 유일한 자리. */
 
 export type BridgeError = {
-  kind: "old-generation" | "spawn" | "timeout" | "not-json" | "invalid-path";
+  /**
+   * 앞 다섯은 바깥(사본·git·등록부)을 부르다 실패한 자리이고, 뒤 둘은 부르기를 **거절한**
+   * 자리다(허용 목록 밖 명령 · `--force`). 거절은 서브프로세스 0개라 `stderr` 가 빈 값이다.
+   */
+  kind: "old-generation" | "spawn" | "timeout" | "not-json" | "invalid-path"
+      | "not-allowed" | "forbidden-flag";
   message: string;
   stderr: string;
   rc: number | null;
 };
 
 export type ErrorResponse = { error: BridgeError };
+
+/** 등록 repo 한 행 — areas.md 레지스트리 칼럼 그대로다(`repo list` 와 같은 칼럼·빈 셀은 null). */
+export type RepoRow = {
+  repo: string;
+  prefix: string | null;
+  base: string | null;
+  protected: string | null;
+  test_cmd: string | null;
+  area_owner: string | null;
+};
 
 export type SlotRow = {
   slot: string;
@@ -49,7 +64,7 @@ export type StatusDocument = {
   slots: SlotRow[];
   tasks: TaskRow[];
   git: { branch: string | null; head: string | null; dirty: boolean | null };
-  repos: { repo: string; prefix: string | null }[];
+  repos: RepoRow[];
   harnesses: string[];
   conf: ConfSection;
   board: BoardSection | null;
@@ -164,6 +179,8 @@ export type Bridge = {
   apply_new(dest: string, harness: string, name: string, prefix: string, area: string,
             owner: string, upstream: string, prefixAck: string):
     Promise<ApplyResult | ApplyFailure>;
+  /** 사본의 `pm-config <argv…>` 한 번 — 허용 목록 밖·`--force` 는 서브프로세스 없이 거절된다. */
+  run(path: string, argv: string[]): Promise<CommandResult | ErrorResponse>;
 };
 
 export function isError<T>(response: T | ErrorResponse): response is ErrorResponse {
@@ -219,5 +236,6 @@ export function pywebviewBridge(): Bridge {
     apply_new: (dest, harness, name, prefix, area, owner, upstream, prefixAck) =>
       call("apply_new", dest, harness, name, prefix, area, owner, upstream, prefixAck) as
         Promise<ApplyResult | ApplyFailure>,
+    run: (path, argv) => call("run", path, argv) as Promise<CommandResult | ErrorResponse>,
   };
 }

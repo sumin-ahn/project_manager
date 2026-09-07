@@ -153,6 +153,13 @@ export default function App({ bridge }: { bridge: Bridge }) {
     await refreshLight([path]);
   }, [loadProjects, refreshLight]);
 
+  // 관리자가 그 프로젝트에 쓰기 동작을 한 직후 — 가벼운 절 + 무거운 절 둘만 다시 읽는다
+  // (최신 태그는 네트워크라 여기서 돌리지 않는다 · §6.5).
+  const refreshAfterAction = useCallback(() => {
+    if (selected === null) return;
+    void Promise.all([refreshLight([selected]), refreshHeavy(selected)]);
+  }, [selected, refreshLight, refreshHeavy]);
+
   const refreshSelected = useCallback(async () => {
     if (selected === null) return;
     await Promise.all([refreshLight([selected]), refreshHeavy(selected), refreshTags()]);
@@ -191,6 +198,7 @@ export default function App({ bridge }: { bridge: Bridge }) {
         <Tabs bridge={bridge} path={selected} light={selectedLight} heavy={selectedHeavy}
               latestTag={selected === null ? null : latestTagOf(tags, selected)}
               onOpenUpdate={refreshTags} onApplied={refreshSelected}
+              onChanged={refreshAfterAction}
               startAsking={selected !== null && selected === appliedPath} />
         {matrixOpen && <AdapterMatrix bridge={bridge} onClose={() => setMatrixOpen(false)} />}
         {newOpen && (

@@ -11,7 +11,15 @@ describe("상태 점 — 판정 순서(첫 일치가 이긴다)", () => {
     const readonly = slotOf("work/app_1");
     expect([readonly.state, readonly.pid, readonly.alive, readonly.role])
       .toEqual(["leased", 0, false, "readonly"]);
-    expect(rowDot(readonly)).toEqual({ dot: "blue", label: "readonly" });
+    expect(rowDot(readonly)).toEqual({ dot: "blue", label: "readonly", actions: "refresh" });
+  });
+
+  it("변경 동작 가부가 같은 한 줄에서 나온다 — 아이들만 change", () => {
+    expect(rowDot(slotOf("work/app_3")).actions).toBe("change");     // 아이들
+    expect(rowDot(slotOf("work/app_2")).actions).toBe("disabled");   // 작업 중
+    expect(rowDot(slotOf(".")).actions).toBe("disabled");            // 회수 대기
+    expect(rowDot(slotOf("work/app_1")).actions).toBe("refresh");    // readonly
+    expect(rowDot(tasks.find((task) => task.name === "demo")!).actions).toBe("change");
   });
 
   it("idle 슬롯은 회색 · leased+alive 는 주황 · leased+죽은 pid 는 빨강", () => {
