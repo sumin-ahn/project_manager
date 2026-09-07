@@ -3293,7 +3293,7 @@ def test_alloc_forwards_registered_repos_for_reserved_check(pc):
 
 
 def test_alloc_requires_prebound_task(pc, capsys):
-    """미바인딩 task → rc1 + F1(bootstrap) 안내(정체성 생성 단일화·reviewer suggestion)."""
+    """미바인딩 task → rc1 + **두 생성 진입점** 안내(alloc 은 붙이기만·T-0909)."""
     wp = FakeWorktreePool(task_record=None)   # find_task → None(미바인딩)
     rc = pc.cmd_alloc(
         argparse.Namespace(repo="svc", task="job"), worktree_pool=wp, board=FakeBoard()
@@ -3301,6 +3301,9 @@ def test_alloc_requires_prebound_task(pc, capsys):
     assert rc == 1
     err = capsys.readouterr().err
     assert "pm-bootstrap" in err and "job" in err
+    # 생성 진입점이 둘(정체성만 `task new` · 생성+진입 bootstrap)이므로 안내도 둘을 말한다.
+    assert "pm-config task new job" in err
+    assert "()" not in err          # 스트립 잔재(빈 괄호) 재발 금지(T-0810 동형)
     assert not wp.did("alloc")    # 미바인딩이면 대여 안 함
 
 
@@ -3780,8 +3783,8 @@ def test_task_prefix_bad_format_refused(pc, capsys):
     assert "형식 위반" in err
 
 
-def test_task_prefix_task_missing_refuses_with_bootstrap_hint(pc, capsys):
-    """set_task_prefix→None(task 부재) → rc1 + `/pm-bootstrap --task` 안내(생성은 F1 단일 지점)."""
+def test_task_prefix_task_missing_refuses_with_creation_hints(pc, capsys):
+    """set_task_prefix→None(task 부재) → rc1 + 두 생성 진입점 안내(`task new`·bootstrap·T-0909)."""
     wp = FakeWorktreePool(set_prefix_result=None)   # task 부재 모델
     rc = pc.cmd_task_prefix(
         argparse.Namespace(name="ghost", value="pay"), worktree_pool=wp, board=FakeBoard()
@@ -3792,6 +3795,7 @@ def test_task_prefix_task_missing_refuses_with_bootstrap_hint(pc, capsys):
     # T-0810 — 스트립이 남긴 빈 괄호 잔재(`()`) 정정 확인(실 CLI 출력 값 단언·조립 문자열 금지).
     assert "()" not in err
     assert "정체성을 생성하지 않는다. 먼저" in err
+    assert "pm-config task new ghost" in err   # 정체성만 만드는 진입점도 안내(진입점 둘)
 
 
 def test_task_prefix_engine_missing_errors(pc, capsys, monkeypatch):

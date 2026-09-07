@@ -20,6 +20,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config status | whoami                              # 풀/리스 + 이 세션 repo/슬롯/branch
     pm-config alloc <repo> --task <이름>                    # task 명의로 idle 최소 번호 슬롯 대여 (자동 생성 안 함)
     pm-config release <slot> [--task <이름>] [--force]      # 작업완료 반납 (--task 소유검사) / 수동 강제(백스톱)
+    pm-config task new <이름>                               # task 정체성 생성 — 장부 행(pid 0)+pm_state (세션 묶기 없음·진입은 부트스트랩)
     pm-config task prefix <이름> <p|none> [--user-ack <p>] # 신규 prefix 사용자 승인값 결속·변경/해제 (`none`=해제)
     pm-config task end <이름>                               # task 종료 — claimed 소진 게이트·dirty 게이트·일괄 반납 + _ended 아카이브
     pm-config task reopen <이름> [--archive <basename>]     # 종료 archive를 동일 task 정체성으로 복원
@@ -2796,7 +2797,7 @@ def _validate_prebound_task(wp, board_mod, task: str) -> int:
     """task 명 검증(예약패턴·traversal) + 기바인딩 요구 — `alloc`/`worktree add --task` 공용.
 
     task 이름이 lease session 으로 **기록**되는 write-capable 경로의 선검증이자,
-    정체성 *생성*은 (bootstrap) 단일 지점이라는 순서를 한 곳에 강제한다. 통과면 0,
+    정체성 *생성*(`task new`·bootstrap)이 슬롯 부착보다 먼저라는 순서를 강제한다. 통과면 0,
     실패면 1(진단은 이 함수가 stderr 로 출력). registered_repos 는 예약패턴(`<repo>_<N>`)
     판별 근거로 board 에서 fail-soft 해소(부재면 None → traversal 검증만·예약패턴만 완화).
     """
@@ -2816,12 +2817,13 @@ def _validate_prebound_task(wp, board_mod, task: str) -> int:
             file=sys.stderr,
         )
         return 1
-    # 기바인딩 요구 — task 생성은 (bootstrap) 단일 지점. 미바인딩이면 안내 rc1.
+    # 기바인딩 요구 — 생성은 `task new`·bootstrap 이 하고 여기선 붙이기만 한다. 미바인딩이면 안내 rc1.
     if wp.find_task(task) is None:
         print(
             f"[중단] task {task!r} 이(가) 아직 없다 — alloc/add 는 기존 task 에 슬롯을 붙일 뿐 "
-            f"정체성을 생성하지 않는다( 순서). 먼저 `{_runtime_skill_entry('pm-bootstrap')} --task "
-            f"{task}` 로 task 를 만든 뒤 다시 시도하라.",
+            f"정체성을 생성하지 않는다. 먼저 `pm-config task new {task}`(정체성만) 또는 "
+            f"`{_runtime_skill_entry('pm-bootstrap')} --task {task}`(생성+진입) 로 task 를 만든 뒤 "
+            "다시 시도하라.",
             file=sys.stderr,
         )
         return 1
@@ -2894,9 +2896,9 @@ def cmd_alloc(
     -capable 진입점이다 — 공유 헬퍼 `_validate_prebound_task`(`worktree add --task` 와 동일 계약·엔진
     validator `_validate_task_name` + `find_task` 를 묶음)로 선검증해 traversal/절대경로/빈 이름/
     `<repo>_<N>` 예약(기계판별 구멍)을 fail-loud rc1 하고, **task 는 기바인딩이어야 한다**를
-    강제한다 — 미바인딩이면 "먼저 `/pm-bootstrap --task <이름>` 으로 task 를 만들라" 안내(정체성 *생성*은
-    [bootstrap] 단일 지점·alloc은 이미 존재하는 task 에 슬롯을 붙일 뿐). board 를 해소해 넘겨야
-    (registered_repos) 예약패턴 검증이 활성(부재면 traversal 만·예약패턴 완화).
+    강제한다 — 미바인딩이면 "먼저 `pm-config task new <이름>` 또는 `/pm-bootstrap --task <이름>` 으로
+    task 를 만들라" 안내(정체성 *생성*은 그 둘 소관·alloc은 이미 존재하는 task 에 슬롯을 붙일 뿐).
+    board 를 해소해 넘겨야 (registered_repos) 예약패턴 검증이 활성(부재면 traversal 만·예약패턴 완화).
 
     worktree_pool/board 주입으로 hermetic 테스트(실 git alloc 없이 배선·분기 검증).
     """
@@ -2948,6 +2950,88 @@ def cmd_alloc(
     )
     # 집합 변경 직후 재열거 — task 가 지금 보유한 슬롯 집합을 surface.
     _render_task_slots(wp, args.task)
+    return 0
+
+
+def cmd_task_new(
+    args: argparse.Namespace,
+    *,
+    worktree_pool=None,
+    board=None,
+) -> int:
+    """`task new <이름>` — task 정체성만 생성(세션 묶기 없음·`pid 0`·슬롯 0).
+
+    `worktree_pool.create_task` 로 장부 `tasks[]` 행(`prefix=None`·`pid=0`)과 서술 pm_state 를
+    만든다 — 관리자/사용자가 아이들 상태에서 task 목록을 조정하는 진입이다. 세션에 묶는 것은
+    부트스트랩 몫이고, `pid 0` 은 미점유 표현이라 이어지는 `/pm-bootstrap --task <이름>` 이
+    **resume** 으로 이어받는다(신규 생성 아님).
+
+    `--prefix` 는 두지 않는다 — 새 prefix 신설은 `task prefix` 의 `--user-ack` 승인 게이트
+    단일 지점이고, 여기에 같은 인자를 두면 그 게이트를 우회한다. 생성 후
+    `pm-config task prefix <이름> <p>` 로 지정한다(출력이 그 다음 단계를 안내한다).
+
+    거부(각각 rc1·장부 무변경): 부적합 이름(`InvalidTaskName` — traversal·`<repo>_<N>` 예약) ·
+    동명 종료 archive(`TaskArchived` — `task reopen` 안내) · **이미 있는 이름**(재개는 bootstrap
+    몫이라 여기서 pid 를 만지지 않는다).
+
+    worktree_pool/board 주입으로 hermetic 테스트. registered_repos 는 예약패턴 판별 근거로
+    board 에서 fail-soft 해소한다(부재면 None → traversal 검증만·`cmd_alloc` 동형).
+    """
+    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
+    if wp is None:
+        print(
+            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — task 생성 불가 "
+            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
+            file=sys.stderr,
+        )
+        return 1
+    name = args.name
+
+    # 예약패턴(`<repo>_<N>`) 판별 근거 — board fail-soft 해소(부재면 None·traversal 검증은 유지).
+    board_mod = board or _load_module("board", "board.py")
+    registered = None
+    _reg_fn = getattr(board_mod, "registered_repos", None) if board_mod else None
+    if _reg_fn is not None:
+        try:
+            registered = _reg_fn()
+        except Exception:  # noqa: BLE001 — areas 파싱 실패는 None(예약패턴 검증만 완화·traversal 유지).
+            registered = None
+
+    try:
+        task = wp.create_task(name, registered_repos=registered)
+    except wp.InvalidTaskName as exc:
+        print(
+            f"[중단] 부적합 task 명 {name!r} — {exc.reason}. task 이름은 안전한 단일 이름이어야 "
+            "하고 슬롯 예약패턴(`<repo>_<N>`)은 쓸 수 없다.",
+            file=sys.stderr,
+        )
+        return 1
+    except wp.TaskArchived as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        print(
+            f"  → `pm-config task reopen {name}` (복수 후보면 `--archive <basename>` 추가) 로 "
+            "같은 정체성을 복원하라.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if task is None:
+        print(
+            f"[중단] task {name!r} 이(가) 이미 있다 — `task new` 는 정체성을 새로 만들 뿐 "
+            f"재개하지 않는다. 재개는 `{_runtime_skill_entry('pm-bootstrap')} --task {name}` 다.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"✓ task 생성: {name!r} (pid 0 · 슬롯 0) — 정체성만 만들었다(세션 묶기 없음).")
+    print(
+        f"  다음 진입: `{_runtime_skill_entry('pm-bootstrap')} --task {name}` "
+        "(이 정체성을 재개로 이어받는다)."
+    )
+    print(
+        f"  슬롯 대여: `pm-config alloc <repo> --task {name}` · "
+        f"prefix 지정: `pm-config task prefix {name} <p>`."
+    )
     return 0
 
 
@@ -3140,7 +3224,7 @@ def cmd_task_prefix(
          그 외는 board **소비측 grammar 단일 진실**(`_validate_prefix` `[a-z0-9_]` 형식·예약어)로
          선검증 — `board.py new` 가 task prefix 를 재검증 없이 신뢰하므로 여기가 유일 입력 게이트다.
       3. **저장** — `worktree_pool.set_task_prefix`(장부 flock/스키마 단일 소유·직접 JSON write 금지)로
-         atomic 갱신. task 부재면 rc1 안내(생성은 [bootstrap] 단일 지점).
+         atomic 갱신. task 부재면 rc1 안내(생성은 `task new`·bootstrap 소관).
 
     worktree_pool/board 주입으로 hermetic 테스트. board 부재/헬퍼 부재는 prefix 형식·
     신설 승인·락 안 fresh 재검증을 증명할 수 없으므로 저장 없이 fail-closed rc1이다.
@@ -3239,8 +3323,9 @@ def cmd_task_prefix(
     if updated is None:
         print(
             f"[중단] task {name!r} 이(가) 아직 없다 — prefix 설정은 기존 task 레코드를 갱신할 뿐 "
-            f"정체성을 생성하지 않는다. 먼저 `{_runtime_skill_entry('pm-bootstrap')} --task "
-            f"{name}` 로 task 를 만든 뒤 다시 설정하라.",
+            f"정체성을 생성하지 않는다. 먼저 `pm-config task new {name}`(정체성만) 또는 "
+            f"`{_runtime_skill_entry('pm-bootstrap')} --task {name}`(생성+진입) 로 task 를 만든 뒤 "
+            "다시 설정하라.",
             file=sys.stderr,
         )
         return 1
@@ -4492,9 +4577,18 @@ def build_parser() -> argparse.ArgumentParser:
                            help="dirty/leased 무시 강제 idle 화 (dirty 는 stash 보존 시도·--task 소유검사도 우회)")
     p_release.set_defaults(func=cmd_release)
 
-    # task end <이름> — task 종료: claimed 소진 게이트·dirty 게이트·clean 시 일괄 반납 + 아카이브 이동
-    p_task = sub.add_parser("task", help="task 정체성 관리 (prefix·end·reopen)")
+    # task new <이름> — 정체성만 생성(pid 0·세션 묶기 없음) / task end <이름> — task 종료:
+    # claimed 소진 게이트·dirty 게이트·clean 시 일괄 반납 + 아카이브 이동
+    p_task = sub.add_parser("task", help="task 정체성 관리 (new·prefix·end·reopen)")
     task_sub = p_task.add_subparsers(dest="task_command", metavar="<task-command>")
+    p_task_new = task_sub.add_parser(
+        "new",
+        help="task 정체성 생성 — 장부 행(pid 0)+pm_state 만 만들고 세션에 안 묶는다"
+             f"(진입은 `{_runtime_skill_entry('pm-bootstrap')} --task <이름>` 이 resume 으로 이어받음)",
+    )
+    p_task_new.add_argument("name", help="생성할 task 이름")
+    p_task_new.set_defaults(func=cmd_task_new)
+
     p_task_end = task_sub.add_parser(
         "end",
         help="task 종료 — claimed 소진 게이트·dirty 게이트·전부 clean 시 일괄 idle 반납 + "

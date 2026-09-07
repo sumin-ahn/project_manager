@@ -2428,6 +2428,56 @@ def find_task_strict(name: str) -> "Task | None":
     return None
 
 
+def _create_task_locked(tasks: list[Task], name: str, *, pid: int) -> Task:
+    """task 정체성을 신규 생성해 장부에 기록한다 — **_lease_lock 보유 전제**.
+
+    task 생성 진입점 둘(`bind_task` 의 신규 가지 = 세션 진입 겸 생성 · `create_task` = 정체성만
+    생성)이 **같은 생성 로직**을 쓰도록 락 안쪽으로 뺀 헬퍼다. 락을 잡는 층은 공개 함수에만
+    둔다 — 공개 `create_task` 를 `bind_task` 안에서 부르면 같은 락 파일을 두 fd 로 잡아
+    (재진입) 블로킹 획득이 그 자리에 멈춘다.
+
+    두 진입점이 갈리는 값은 `pid` 하나다 — 세션 진입은 자기 pid, 정체성만 생성은 0(미점유·
+    `release_task_pid` 와 같은 값이라 다음 bind 가 clean resume 으로 분류한다). 동명 종료
+    archive 가 있으면 부작용 이전에 `TaskArchived`(복원은 `task reopen`)로 거부하고, pm_state 는
+    `ensure_task_pm_state` 가 만든다(템플릿 복제 금지). 장부 write 는 이 함수에서 1회다.
+    """
+    archives = task_archive_candidates(name)
+    if archives:
+        raise TaskArchived(name, archives)
+    task = Task(name=name, prefix=None, pid=pid, started=_now_utc())
+    ensure_task_pm_state(name)
+    tasks.append(task)
+    _write_tasks(tasks)
+    return task
+
+
+def create_task(
+    name: str, *, registered_repos: "list[str] | set[str] | None" = None
+) -> "Task | None":
+    """task 정체성만 만든다 — 세션에 묶지 않는다(`pid=0`). 이미 있으면 `None`.
+
+    `pm-config task new <이름>` 의 write 백엔드다. 장부 `tasks[]` 행(`prefix=None`·`pid=0`)과
+    `.local/tasks/<이름>/pm_state.md`(`ensure_task_pm_state` — `bind_task` 신규 생성분과 같은
+    산출)까지만 만들고 끝낸다: 슬롯 대여(`alloc` 소관)도 세션 묶기(bootstrap 소관)도 하지
+    않는다. 이후 `pm-bootstrap --task <이름>` 이 그 행을 **resumed** 로 이어받는다 — `pid=0`
+    (미점유)은 `bind_task` 가 이미 clean resume 으로 분류하는 기존 값이라 새 상태값이 없다.
+
+    이미 있는 이름은 `None`(호출부가 rc1 안내)이다 — 재개는 bootstrap 몫이라 여기서 기존
+    레코드의 pid 를 만지지 않는다(`set_task_prefix` 의 부재-`None` 과 같은 계약·새 예외 0).
+    동명 종료 archive 는 `TaskArchived`(`task reopen` 안내), 부적합 이름은 `InvalidTaskName`.
+
+    **명 검증(must-fix)**: `_validate_task_name` 을 mkdir·장부 write **이전**에 돌린다
+    (`bind_task` 동형 — CLI 를 우회한 직접 소비도 닫는다).
+    """
+    _validate_task_name(name, registered_repos)   # mkdir·장부 write 이전 fail-loud(부작용 0).
+    with _lease_lock():
+        tasks = _read_tasks_strict()
+        if any(task.name == name for task in tasks):
+            return None
+        # pid 0 = 미점유(아무 세션도 없음) — readonly 슬롯·핸드오프 종료 의도와 같은 표현.
+        return _create_task_locked(tasks, name, pid=0)
+
+
 def bind_task(name: str, *, pid: "int | None" = None,
               registered_repos: "list[str] | set[str] | None" = None) -> tuple[Task, str, "int | None"]:
     """task 를 신규/resume 바인딩한다 — 명 검증(must-fix) + 동시 세션 거부 + 서술 디렉토리 신설.
@@ -2465,14 +2515,9 @@ def bind_task(name: str, *, pid: "int | None" = None,
         tasks = _read_tasks_strict()
         existing = next((t for t in tasks if t.name == name), None)
         if existing is None:
-            archives = task_archive_candidates(name)
-            if archives:
-                raise TaskArchived(name, archives)
-            task = Task(name=name, prefix=None, pid=pid, started=_now_utc())
-            ensure_task_pm_state(name)
-            tasks.append(task)
-            _write_tasks(tasks)
-            return task, "created", None
+            # 생성은 `create_task`(`task new`)와 공유하는 락 안쪽 헬퍼가 한다 — 여기선 pid 만
+            # 자기 것으로 준다(재진입 없음·공개 create_task 를 부르지 않는다).
+            return _create_task_locked(tasks, name, pid=pid), "created", None
         # 동시 세션 거부 — 기록 pid 가 살아있고 내가 아니면(다른 창) 거부.
         if existing.pid and existing.pid != pid and _pid_alive(existing.pid):
             raise TaskActiveElsewhere(name, existing.pid)
@@ -2505,8 +2550,8 @@ def set_task_prefix(name: str, prefix: "str | None") -> "Task | None":
 
     **장부 IO 는 이 모듈이 단일 소유**(직접 JSON read/write 금지·flock/스키마) — `_lease_lock`
     아래 `_read_tasks`/`_write_tasks`(형제 `leases`·미지 top-level 키 무손실 round-trip)로 atomic 하게
-    갱신한다. task 부재면 `None`(호출부가 rc1 안내) — 생성은 단일 지점이라 여기서
-    task 를 만들지 않는다.
+    갱신한다. task 부재면 `None`(호출부가 rc1 안내) — 생성은 `create_task`(`task new`)와
+    `bind_task`(bootstrap) 소관이라 여기서 task 를 만들지 않는다.
 
     **명 검증(must-fix)**: `_validate_task_name` 을 장부 write **이전**에 돌려 traversal/절대경로/빈
     이름을 fail-loud(`InvalidTaskName`) — write-capable 엔진 진입점이라 CLI 우회(직접 소비)도 닫는다.
