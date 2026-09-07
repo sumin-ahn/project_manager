@@ -40,9 +40,15 @@ UPSTREAM_REV = "v9.9.9"
 FILE_WRITING_APIS = ("copy", "copy2", "copyfile", "copytree", "copyfileobj",
                      "write_text", "write_bytes", "mkdir", "unlink")
 REGISTRY_OWNED_MODULE = "registry.py"
+# 판정 대상은 **번들에서 도는 코드**다. `build.py` 는 실행 파일을 만드는 자리(빌드 시각·번들 밖)라
+# 각인 모듈 `manager/_build_info.py` 를 쓴다 — 그 파일이 번들에 실리지 않는 것은
+# tests/test_manager_bundle_layout.py 가 잰다.
+BUILD_TIME_MODULE = "build.py"
 # 엔진이 소유한 per-clone 스크래치(락 파일·임시 트리) — git-ignored 이고 명령마다 생겼다 사라진다.
 # "갱신이 무엇을 남겼는가" 는 이 축을 걷어낸 트리에서만 말할 수 있다.
 ENGINE_SCRATCH_ROOT = ".project_manager/.local"
+# 엔진이 갱신을 예고하는 두 채널 — byte-copy 와 토큰 치환(@render). 둘 다 예고다.
+ANNOUNCE_PREFIXES = ("[update] ", "[render] ")
 
 
 @pytest.fixture(scope="module")
@@ -210,7 +216,7 @@ def test_the_manager_package_has_no_file_copying_code():
     """갱신도 적용도 전부 서브프로세스다 — 파일을 만드는 자리는 등록부 하나뿐이다."""
     offenders: dict[str, list[str]] = {}
     for module in sorted((REPO / "manager").glob("*.py")):
-        if module.name == REGISTRY_OWNED_MODULE:
+        if module.name in (REGISTRY_OWNED_MODULE, BUILD_TIME_MODULE):
             continue
         source = module.read_text(encoding="utf-8")
         found = [f"{api_name}(" for api_name in FILE_WRITING_APIS
@@ -223,9 +229,9 @@ def test_the_manager_package_has_no_file_copying_code():
 
 def test_the_update_call_only_changes_what_the_engine_announced(api, pm_home):
     """적용이 바꾸는 것은 엔진이 바꾼다고 말한 그 파일들이다(관리자가 더 손대지 않는다)."""
-    announced = {line.split("[update] ", 1)[1].strip()
+    announced = {line.split(prefix, 1)[1].strip()
                  for line in api.update_preview(str(pm_home))["stdout"].splitlines()
-                 if "[update] " in line}
+                 for prefix in ANNOUNCE_PREFIXES if prefix in line}
     assert announced, "상류가 앞서 있지 않다 — 픽스처 전제 붕괴"
     before = _durable(tree_snapshot(pm_home))
 

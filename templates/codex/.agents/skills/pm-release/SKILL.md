@@ -1,6 +1,6 @@
 ---
 name: pm-release
-description: "릴리즈 절차 명령어化 — adopter#0 sync 선행 → livegate record(readonly 슬롯 핀·수집 N 확인) → main push(대화 승인·자동 안 함) → tag → gh release create → gh release view 완결 확인 → adopter#0 흡수 → audience 라벨. backbone = board.py livegate record/check + pm_update(= pm-update 스킬). 공개 main push 는 사용자 승인 게이트 유지. Triggers: '릴리즈 내', 'release vX.Y.Z', '태그·GitHub Release', 'pm-release'."
+description: "릴리즈 절차 명령어化 — adopter#0 sync 선행 → livegate record(readonly 슬롯 핀·수집 N 확인) → main push(대화 승인·자동 안 함) → tag → gh release create → 관리자 자산 3종 도착 확인(release-manager.yml) → gh release view 완결 확인 → adopter#0 흡수 → audience 라벨. backbone = board.py livegate record/check + pm_update(= pm-update 스킬). 공개 main push 는 사용자 승인 게이트 유지. Triggers: '릴리즈 내', 'release vX.Y.Z', '태그·GitHub Release', 'pm-release'."
 audience: pm-internal
 ---
 
@@ -70,7 +70,23 @@ record는 라이브 wave 전에 추가 리뷰 라운드 장부의 미해소 must
 
    gh 미인증이면 생략하지 말고 사용자에게 넘기며 **릴리즈 미완료**로 명시한다.
 
-4. **릴리즈 완결 확인**:
+4. **관리자 실행 파일 3종 도착 확인**(손 업로드가 아니라 워크플로가 올린다). 3번의
+   `gh release create`가 `release-manager.yml`(`on: release: types: [published]`)을 깨우고, 그
+   워크플로가 세 OS에서 `manager/build.py` → `--smoke`(ubuntu는 `xvfb-run -a`) →
+   `gh release upload vX.Y.Z <파일> --clobber`를 돈다.
+
+   ```bash
+   gh run list --workflow release-manager.yml --limit 3   # 그 릴리즈로 깨어난 실행
+   gh run view <run-id>                                   # ubuntu·windows·macos 세 job 성공
+   gh release view vX.Y.Z                                 # 자산 pm-manager-{linux,windows,macos}-* 3종
+   ```
+
+   `--smoke` 세 OS 결과는 livegate 기록에 넣지 않는다(그 스키마는 `pytest -m release` 축이다).
+   job 성공·실패가 기계 기록이고 이 단계는 그 결과와 자산 3종을 확인한다. job이 red면 릴리즈는
+   자산 없이 열린 상태이므로, 사유를 고친 뒤 `gh run rerun --failed <run-id>`로 같은 릴리즈에
+   다시 붙인다.
+
+5. **릴리즈 완결 확인**:
 
    ```bash
    gh release view vX.Y.Z      # Release 객체가 실제로 존재해야 릴리즈 종료

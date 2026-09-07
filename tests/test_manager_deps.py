@@ -1,8 +1,12 @@
-"""창 의존 확인과 `--smoke` — 진입점을 격리 서브프로세스로 실제 실행해 잰다 (T-0910).
+"""창 의존 확인과 `--smoke` — 진입점을 격리 서브프로세스로 실제 실행해 잰다 (T-0910·T-0914).
 
 웹뷰가 없으면 설치 명령 두 줄을 찍고 rc 3 이다(대체 렌더러로 갈아타지 않는다). `--smoke` 는
 창을 열어 화면과 브리지를 한 번 확인하고 닫는다 — Linux headless 는 `Gtk.init_check` 가 False 라
 `xvfb-run -a` 아래에서만 통과한다.
+
+Windows 분기(T-0914·AT-001)는 import 가 아니라 **WebView2 런타임의 레지스트리 키**로 갈린다.
+`winreg` 는 Windows 에만 있으므로 이 상자에서는 레지스트리를 읽는 자리를 매개변수로 갈아 끼워
+판정 자체를 실제로 돌린다(가짜 모듈 주입 아님). 실제 Windows 실측은 QEMU VM 몫이다.
 """
 from __future__ import annotations
 
@@ -68,11 +72,80 @@ def test_the_macos_branch_names_the_missing_binding():
     assert "pip install" in message
 
 
-def test_windows_is_not_judged_here():
-    """WebView2 분기는 T-0914 소관이다 — 여기서 흉내 내지 않는다."""
+def _absent_key(_hive: str, _subkey: str) -> str:
+    """레지스트리에 그 키가 없는 상자 — `winreg.OpenKey` 가 내는 그 예외 그대로."""
+    raise FileNotFoundError(2, "지정된 파일을 찾을 수 없습니다")
+
+
+def test_a_missing_webview2_runtime_prints_the_download_line_and_stops():
+    """Windows 도 같은 계약이다 — 안내 두 줄 + rc 3, 대체 렌더러 0."""
     from manager import deps
 
-    assert deps.missing_renderer_message(system="Windows") is None
+    message = deps.missing_renderer_message(
+        system="Windows", read_registry_version=_absent_key)
+
+    assert message is not None
+    lines = message.splitlines()
+    assert len(lines) == 3, lines
+    assert "https://developer.microsoft.com/microsoft-edge/webview2/" in lines[1]
+    assert "winget install" in lines[2]
+    assert deps.MISSING_RENDERER_RC == 3
+
+
+@pytest.mark.parametrize("installed_at", range(3))
+def test_an_installed_runtime_passes_from_any_of_the_three_registry_places(installed_at):
+    """시스템(64비트·32비트 뷰)·사용자 어느 자리에 설치돼도 통과한다."""
+    from manager import deps
+
+    places = deps.WEBVIEW2_REGISTRY_LOCATIONS
+    assert len(places) == 3, places
+
+    def read(hive: str, subkey: str) -> str:
+        if (hive, subkey) == places[installed_at]:
+            return "142.0.3595.94"
+        raise FileNotFoundError(2, "지정된 파일을 찾을 수 없습니다")
+
+    assert deps.missing_renderer_message(system="Windows", read_registry_version=read) is None
+
+
+def test_the_uninstalled_marker_version_is_not_an_installed_runtime():
+    """런타임을 지우면 키는 남고 값만 `0.0.0.0` 이 된다 — 설치로 세지 않는다."""
+    from manager import deps
+
+    message = deps.missing_renderer_message(
+        system="Windows",
+        read_registry_version=lambda hive, subkey: deps.WEBVIEW2_UNINSTALLED_VERSION)
+
+    assert message is not None
+
+
+def test_every_registry_place_is_looked_at_before_the_absence_is_declared():
+    from manager import deps
+
+    looked_at: list[tuple[str, str]] = []
+
+    def read(hive: str, subkey: str) -> str:
+        looked_at.append((hive, subkey))
+        raise FileNotFoundError(2, "지정된 파일을 찾을 수 없습니다")
+
+    deps.missing_renderer_message(system="Windows", read_registry_version=read)
+
+    assert looked_at == list(deps.WEBVIEW2_REGISTRY_LOCATIONS)
+    hives = {hive for hive, _ in looked_at}
+    assert hives == {"HKEY_LOCAL_MACHINE", "HKEY_CURRENT_USER"}
+    assert any("WOW6432Node" in subkey for _, subkey in looked_at), "64비트 뷰만 본다"
+
+
+def test_the_windows_branch_reads_the_registry_and_not_an_import():
+    """import 로 갈리면 WebView2 는 항상 '있음' 이 된다(백엔드 모듈은 런타임과 무관하다)."""
+    from manager import deps
+
+    source = Path(deps.__file__).read_text(encoding="utf-8")
+    windows_branch = source[source.index("def missing_webview2_message"):
+                            source.index("def missing_renderer_message")]
+
+    assert "import_module" not in windows_branch
+    assert deps.WEBVIEW2_VERSION_VALUE == "pv"
 
 
 @_needs_webview

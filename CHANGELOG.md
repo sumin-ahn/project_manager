@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **프로젝트 관리자 앱 `pm-manager`** — 등록한 PM 홈들을 창 하나에서 보고 조작한다. 탭은 현황(각 사본의 `pm-config status --json`)·설정(`local.conf` 편집형·질문형)·구성(`pm-config` 명령)·갱신(`pm-config update` 미리보기와 적용)·새 프로젝트 적용(`pm_import --new` 뒤 자동 등록)이고, 등록부는 사용자 설정 폴더의 `projects.json` 하나다. 관리자가 프로젝트 폴더에 직접 쓰는 파일은 없다 — 프로젝트를 바꾸는 일은 전부 그 사본의 명령이 한다. 릴리즈마다 운영체제별 실행 파일 1개(`pm-manager-linux-x86_64` · `pm-manager-windows-x86_64.exe` · `pm-manager-macos-arm64`)를 GitHub Release 자산으로 올린다. 파이썬 인터프리터는 번들하지 않으므로 프로젝트 사본은 그 사본 `local.conf` 의 `runtime.py`(빈값이면 OS 기본 `python3`, Windows `py -3`)로 부른다. 창을 여는 웹뷰는 운영체제 것을 쓰며(Linux GTK 웹킷 · Windows WebView2 런타임), 없으면 설치 명령을 찍고 rc 3 으로 멈춘다(대체 렌더러 없음).
+
 ## [1.7.13] - 2026-09-04
 
 ### Fixed
