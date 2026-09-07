@@ -23,6 +23,7 @@ pool.py·test_pm_handoff.py 의 real-git 픽스처 동류). 검증은 실 git wo
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -183,6 +184,52 @@ _TRIGGER_PLAYBOOK = (
 # ════════════════════════════════════════════════════════════════════════════
 # 사이클 완주 e2e (①~④·release-marked)
 # ════════════════════════════════════════════════════════════════════════════
+
+
+def test_task_new_identity_then_bootstrap_resumes(tmp_path, capsys):
+    """`task new`(정체성만) → 부트스트랩이 **resume 으로 이어받는다** (T-0909·사이클 앞단 분리).
+
+    생성 진입점이 둘이 된 뒤에도 사이클이 끊기지 않는지 재는 축이다 — 정체성만 만든 task(`pid 0`·
+    슬롯 0)에 `--task` 로 진입하면 신규 생성(`created`)이 아니라 clean `resumed` 여야 한다(회수 경고
+    없음·행 1개). 실 장부·실 pm_state·실 엔진(worktree_pool·pm_bootstrap)으로 판정한다.
+    """
+    proj = tmp_path / "proj"
+    (proj / ".project_manager" / ".local").mkdir(parents=True, exist_ok=True)
+    template_dst = proj / ".project_manager" / "wiki" / "pm_state.template.md"
+    template_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(REPO / ".project_manager" / "wiki" / "pm_state.template.md", template_dst)
+    (proj / "work").mkdir(parents=True, exist_ok=True)
+    (proj / ".repos").mkdir(parents=True, exist_ok=True)
+
+    wp = _load_wp_bound(proj)
+    bootstrap_mod = _load_module("pm_bootstrap")
+    task = "idle-made"
+
+    # ① 정체성만 생성 — 세션에 묶지 않는다(pid 0·슬롯 0·pm_state 즉시 생성).
+    created = wp.create_task(task)
+    assert created is not None and created.pid == 0 and created.prefix is None
+    state_after_create = wp.task_pm_state_file(task).read_bytes()
+
+    # ② 그 정체성으로 부트스트랩 진입 — created 가 아니라 resumed 여야 한다.
+    rc = _make_bootstrap(bootstrap_mod, wp, tmp_path).run(task=task)
+    assert rc == 0
+    out = capsys.readouterr().out
+    # 상태 표기는 identity surface 한 줄이 진실이다(카드 정적 안내문에도 "신규 task" 가 있어
+    # 부분 문자열 부재로는 못 가른다).
+    assert f"task `{task}`** PM · prefix=(없음) · 상태=재개(resume)." in out, (
+        "정체성만 만든 task 진입인데 clean resume 으로 분류되지 않았다"
+    )
+    assert "상태=신규 task" not in out, "이미 만든 정체성인데 신규 생성으로 분류됐다"
+    assert "회수 진입" not in out, "pid 0(미점유) 재개인데 crash 회수 경고 오탐"
+    assert "작업공간: (없음)" in out, "슬롯 0 진입 열거가 사라졌다"
+
+    # ③ 장부는 행 하나(중복 생성 없음)이고 pid 만 세션 것으로 바뀐다. pm_state 는 재개가 덮지 않는다.
+    rows = json.loads(
+        (proj / ".project_manager" / ".local" / "worktree-leases.json").read_text(encoding="utf-8")
+    )["tasks"]
+    assert [row["name"] for row in rows] == [task]
+    assert rows[0]["pid"] != 0 and rows[0]["prefix"] is None
+    assert wp.task_pm_state_file(task).read_bytes() == state_after_create
 
 
 @pytest.mark.release

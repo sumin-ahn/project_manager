@@ -551,37 +551,13 @@ opencode=`provider/model` · codex=사용자 codex config 가 인정하는 문�
 조회 수단이 있는 opencode 는 실제 목록을 조회해 보여준다(조회 실패 시 형식 안내로 강등하며 그
 사실을 말한다). `delegate.model_alias`를 선언해 뒀다면 그 멤버도 함께 보여준다.
 
-### `local.conf` 키 카탈로그
+### `local.conf` 설정
 
 `local.conf`에는 **이 clone이 실제로 정한 값만** 둔다(`board.py init`이 만드는 파일도 실값 6줄뿐).
-키 목록과 기본값은 여기가 단일 진실이며, 설정하지 않으면 아래 기본값으로 동작한다. 표기는 전부
-dot notation이고 세그먼트 안 철자는 그 식별자의 정본을 따른다(역할은 `code-reviewer`처럼 하이픈,
-속성은 `idle_timeout`처럼 snake_case).
-
-| 키 | 기본값 | 뜻 |
-|---|---|---|
-| `project.name` | (빈값) | 어댑터 문서 렌더에 쓰는 프로젝트 이름 |
-| `project.tagline` · `project.root` · `project.date` | (없음) | 어댑터 문서 렌더 토큰(한 줄 소개·문서가 가리키는 루트 경로·기준 날짜) |
-| `runtime.py` | 탐지값 | 이 clone의 python 인터프리터(`board.py init`이 실행검증으로 채운다) |
-| `test.cmd` | `pytest -q` | 회귀 게이트가 그대로 실행하는 프로젝트 test 명령 |
-| `qa.platforms` · `test.<name>.cmd` | (없음) | opt-in platform 목록과 각 host-side wrapper 명령. 무인자 FULL이 core 뒤 선언 순서로 직렬 실행하며 같은 HEAD 결과 marker를 요구 |
-| `identity.user` | `git config user.email` | 이 clone에서 나는 누구인가(slot·task 무관) |
-| `upstream.path` | (없음) | `pm-update`가 기본 source로 쓰는 프레임워크 경로/URL |
-| `upstream.rev` · `upstream.seen_rev` | (없음) | drift-lint의 baseline과 현재 관찰값(엔진이 기록) |
-| `delegate.enabled` | `true` | 위임 마스터 스위치(채널 무관). 끄려면 `false` |
-| `delegate.<role>[.hard].{harness,model,reasoning}` | (없음) | 역할→하네스/모델 매핑. 세트를 통째로 쓴다(티어 간 상속 없음) |
-| `delegate.<role>[.hard].fallback.{harness,model,reasoning}` | (없음) | **인프라 실패**(스폰 실패·타임아웃·한도/인증) 1회 대체. 정상 완료 판정(반려·must-fix)은 대상이 아니다 |
-| `delegate.model_alias.<name>` | (없음) | 모델 별칭 |
-| `delegate.timeout` · `delegate.idle_timeout` | 하네스별 엔진 기본 | 위임 실행의 벽시계 백스톱과 무진행 판정(하네스별 키가 이긴다) |
-| `delegate.code-reviewer.rounds_max` | `3` | 내부 code-reviewer 라운드 수렴 상한(추가 리뷰어 예산과 별개 축·과금 없음) |
-| `harness.<name>.{idle_timeout,wall_timeout}` | 하네스별 엔진 기본 | 하네스 실행의 무진행 판정(주)과 벽시계 백스톱. 미설정이어도 안전하다 |
-| `harness.<name>.ctx_window_tokens` | `ctx.window_tokens` | 그 하네스의 컨텍스트 예산(분모) |
-| `harness.opencode.pro_model` | (없음) | opencode 어댑터 카드 렌더에 쓰는 모델 |
-| `ctx.nudge_pct` · `ctx.stop_pct` | `30` · `20` | 잔여 컨텍스트 % 기준 checkpoint 넛지·정지 임계 |
-| `ctx.window_tokens` | `200000` | 하네스별 값이 없을 때의 컨텍스트 예산 |
-| `regression.min_collected` | (없음) | 회귀 수집 하한(0 수집 false-green 차단) |
-| `additional_reviewer.{harness,model,reasoning}` | (없음) | 리뷰어 대상. 세 키를 세트로 쓴다 |
-| `additional_reviewer.{rounds_max,incomplete_rounds_max,wave_budget}` | 엔진 기본 | 라운드/예산 상한(비용 게이트가 아니라 anti-loop 정지) |
+키 목록·설명·기본값의 정본은 `local_conf.py` 레지스트리이며
+`python3 .project_manager/tools/local_conf.py --keys`로 본다. 표기는 전부 dot notation이고
+세그먼트 안 철자는 그 식별자의 정본을 따른다(역할은 `code-reviewer`처럼 하이픈, 속성은
+`idle_timeout`처럼 snake_case).
 
 `test.<name>.cmd` wrapper에는 board가 `PM_QA_PLATFORM=<name>`과
 `PM_QA_EXPECTED_HEAD=<Git OID>`를 전달한다. wrapper는 stdout에 정확히 한 줄의
@@ -592,8 +568,6 @@ dot notation이고 세그먼트 안 철자는 그 식별자의 정본을 따른�
 wrapper 소유이며 board는 이 프로토콜만 검증한다. wrapper는 자기가 만든 것
 (전송 번들·게스트 클론·호스트 임시물)을 **실행 시작에** 치운다 — 정리를 종료 시점에 두면
 중단된 실행에서 그 코드가 돌지 않아 잔여가 계속 쌓인다.
-| `additional_reviewer.{timeout,idle_timeout,progress_signal}` | 엔진 기본 | 리뷰어 실행 예산(하네스별 키가 이긴다) |
-| `additional_reviewer.paths` | (없음) | 리뷰 대상 경로 |
 
 역할 모델을 고를 때는 **generate≠evaluate**가 기준이다. 위임은 매번 새 세션이라 모델이 같아도
 전사 공유가 없지만, `delegate.code-reviewer.model`을 developer와 다르게 두면 맹점을 공유하지 않아
@@ -621,10 +595,11 @@ additional_reviewer.reasoning=max
 고쳐 쓰지 않으므로 안내대로 키 이름을 바꿔 주면 된다. `pm-update` 의 파일 반영 자체는 이 검사에
 막히지 않아서, 구키가 남은 상태에서도 엔진 갱신을 받아 안내를 볼 수 있다.
 
-위 카탈로그와 옛 flat 표기 어느 쪽에도 없는 키(오타·이 문서에서 사라진 폐기 키)는 조용히
-무시되지 않는다 — `board.py lint`(그리고 `board.py init` 병합 경로)가 `local-conf-unknown-key`
-advisory 1줄로 표면화한다. push 를 막지는 않지만(`lint --gate` 종료코드 비기여) 무인자
-`board.py lint` 는 그 줄을 보인다. 값을 자동으로 고치지 않으므로 오탈자면 직접 바로잡는다.
+레지스트리와 옛 flat 표기 어느 쪽에도 없는 키(오타·폐기 키)는 조용히 무시되지 않는다 —
+`board.py lint`(그리고 `board.py init` 병합 경로)가 `local-conf-unknown-key` advisory 1줄로
+표면화한다. 필수 키(`runtime.py`·`test.cmd`)가 없으면 같은 자리에서 `local-conf-missing-required`
+1줄이 뜬다. 둘 다 push 를 막지는 않지만(`lint --gate` 종료코드 비기여) 무인자 `board.py lint` 는
+그 줄을 보인다. 값을 자동으로 고치지 않으므로 오탈자면 직접 바로잡는다.
 
 ### 티켓의 수명
 

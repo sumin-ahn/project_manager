@@ -2378,3 +2378,127 @@ def test_generation_and_sibling_resolve_with_one_load(pm_update, monkeypatch):
 
     assert predicate(_WRAPPER_REL), "판정자가 훅 경로를 놓쳤다(해소 실패)"
     assert len(loads) == 1, f"형제 사본을 {len(loads)}회 적재했다"
+
+
+# ── 기능 표(관리자 읽기 계약)가 훅 세트 판정을 바꾸지 않는다 (T-0907·AT-005) ─────
+# `status --json --with-adapters` 의 기능 표는 같은 선언(`ADAPTER_HOOK_SET`)과 같은 실재 판정
+# (`_entrypoint_is_present`)을 소비한다. 그 배선이 들어오면서 훅 커맨드 수집이 이벤트별로
+# 갈렸는데(`_hook_commands` → `_hook_event_commands` 평탄화), **판정 입력이 한 커맨드라도
+# 달라지면** 세대 게이트가 조용히 다른 것을 보게 된다. 아래는 실 출하 template 으로 그 축을 고정한다.
+
+
+def _shipped_hook_configs(pm_import) -> list[tuple[str, Path, dict]]:
+    """출하 template 의 훅 선언 config 전수 — (하네스, template 루트, 파싱 문서)."""
+    out = []
+    for harness, spec in pm_import.ADAPTER_HOOK_SET.items():
+        if not spec.config_relpath:
+            continue
+        template_root = REPO / "templates" / pm_import.HARNESS_TEMPLATE_DIRS[harness][0]
+        out.append((harness, template_root, json.loads(
+            (template_root / spec.config_relpath).read_text(encoding="utf-8"))))
+    assert out, "훅 선언 config 를 가진 하네스가 없다(공허 가드)"
+    return out
+
+
+def test_hook_set_spec_fields_are_unchanged_by_the_settings_key_declaration(pm_import):
+    """설정 키 선언이 `AdapterHookSetSpec` 에 필드로 얹히지 않았다 — 키는 **config 파일** 축이다.
+
+    훅 세트 선언에 필드를 더하면 그 선언을 읽는 판정 전부(세대 게이트·원자 write 대상·결합 묶음)가
+    같은 튜플 모양에 묶인다. 설정 키는 opencode(`config_relpath` 빈 문자열)와 `.codex/config.toml`
+    (훅 세트 밖)에 달 자리가 없어 파일 단위 표로 분리했다."""
+    assert pm_import.AdapterHookSetSpec._fields == (
+        "config_relpath", "live_files", "flag_support", "coupled_groups", "entrypoints")
+    channel_paths = {relpath
+                     for channel in pm_import.ADAPTER_CONFIG_CHANNEL.values()
+                     for relpath in channel}
+    assert set(pm_import.ADAPTER_SETTINGS_KEYS) <= channel_paths, \
+        "설정 키 선언의 키는 config 파일 relpath 여야 한다(하네스 이름 축 금지)"
+    assert all(keys for keys in pm_import.ADAPTER_SETTINGS_KEYS.values()), \
+        "빈 키 목록은 그 파일의 기능 축을 통째로 끈다"
+
+
+def test_declared_settings_keys_resolve_in_the_shipped_templates(pm_import):
+    """선언한 설정 키 전수가 그 하네스 **출하 template** 문서에서 present 로 해소된다.
+
+    선언과 실체가 갈리면 조용히 false-green 이다 — 양쪽 문서에 없는 키는 `_feature_verdict` 가
+    None 이라 `_adapter_feature_rows` 가 행 자체를 건너뛰고, 기능 표의 관측 범위와 `distance`
+    분모가 소리 없이 줄어 관리자는 그 축을 "차이 없음" 으로 읽는다. 자기 대조 가드
+    (`test_shipped_config_has_no_feature_distance_against_itself`)는 양쪽 부재를 same 으로 접어
+    이 축을 못 잡는다."""
+    template_dir_by_relpath = {
+        relpath: pm_import.HARNESS_TEMPLATE_DIRS[harness][0]
+        for harness, channel in pm_import.ADAPTER_CONFIG_CHANNEL.items()
+        for relpath in channel
+    }
+    declared = sum(len(keys) for keys in pm_import.ADAPTER_SETTINGS_KEYS.values())
+    assert declared > 0, "선언이 비면 이 가드는 공허하다"
+
+    resolved = 0
+    for relpath, keys in pm_import.ADAPTER_SETTINGS_KEYS.items():
+        template_path = (REPO / "templates" / template_dir_by_relpath[relpath] / relpath)
+        document = pm_import._load_adapter_config_document(template_path)
+        assert document, f"{relpath}: 출하 template 을 문서로 못 읽었다"
+        for key in keys:
+            present, _value = pm_import._document_key_value(document, key)
+            assert present, (
+                f"{relpath}: 선언 키 {key!r} 가 출하 template 에 없다 — 상류에서 지워졌거나 "
+                "이름이 바뀌었다(그 키의 기능 행이 표에서 사라져 distance 가 조용히 줄어든다)")
+            resolved += 1
+    assert resolved == declared
+
+
+def test_event_split_preserves_the_hook_command_inventory(pm_import):
+    """이벤트별 수집의 평탄화 == 세대 판정이 보던 커맨드 전수(순서 포함) — 실 출하 config 로.
+
+    커맨드 하나가 빠지면 `_hook_set_demands` 가 그 커맨드의 요구를 못 보고 조용히 통과한다."""
+    for harness, template_root, document in _shipped_hook_configs(pm_import):
+        expected = [
+            entry[key]
+            for groups in document["hooks"].values()
+            for group in groups
+            for entry in group["hooks"]
+            for key in ("command", "commandWindows")
+            if isinstance(entry.get(key), str) and entry[key].strip()
+        ]
+        assert pm_import._hook_commands(document) == expected, harness
+        assert [command
+                for commands in pm_import._hook_event_commands(document).values()
+                for command in commands] == expected, harness
+        # 판정 자체도 그대로 조용하다(출하 template 자기정합·claude 축과 같은 근거).
+        assert pm_import._hook_set_demands(document, pm_import.ADAPTER_HOOK_SET[harness],
+                                           template_root) == {}, harness
+
+
+def test_feature_axis_reuses_the_entrypoint_presence_judgment(pm_import):
+    """기능 표의 이벤트 축은 진입점 **실재 판정**을 그대로 쓴다(두 번째 판정 신설 0).
+
+    출하 codex 커맨드는 인터프리터 해소를 담은 셸 한 줄이라 argv 분해로는 스크립트가 안 나온다 —
+    실재 판정을 병용하지 않으면 손대지 않은 config 도 이벤트마다 다름으로 실린다."""
+    seen_any = False
+    for harness, _template_root, document in _shipped_hook_configs(pm_import):
+        spec = pm_import.ADAPTER_HOOK_SET[harness]
+        events = pm_import._hook_event_scripts(document, spec.entrypoints)
+        for entrypoint in spec.entrypoints:
+            seen_any = True
+            present = pm_import._entrypoint_is_present(document, entrypoint)
+            assert present, f"{harness}:{entrypoint.event} 출하 config 가 진입점을 잃었다"
+            assert entrypoint.dispatcher in events.get(entrypoint.event, ()), \
+                f"{harness}:{entrypoint.event} 실재 판정과 기능 축이 갈렸다"
+    assert seen_any, "진입점 선언이 하나도 없다(공허 가드)"
+
+
+def test_shipped_config_has_no_feature_distance_against_itself(pm_import):
+    """template 과 바이트가 같은 config 의 기능 거리는 0 이다 — 표기 때문에 다름이 생기지 않는다.
+
+    (`pm-config status --json --with-adapters` 의 거리 축·실측 회귀: codex 훅 커맨드 형상에서
+    손대지 않은 `.codex/hooks.json` 이 거리 6 으로 실렸다.)"""
+    for harness, channel in pm_import.ADAPTER_CONFIG_CHANNEL.items():
+        template_root = REPO / "templates" / pm_import.HARNESS_TEMPLATE_DIRS[harness][0]
+        for relpath, mode in channel.items():
+            if mode == pm_import.ADAPTER_CONFIG_NO_CHANNEL:
+                continue
+            document = pm_import._load_adapter_config_document(template_root / relpath)
+            assert document, f"{relpath}: 출하 template 을 문서로 못 읽었다"
+            rows = pm_import._adapter_feature_rows(relpath, document, document)
+            assert [row for row in rows
+                    if row.verdict != pm_import.ADAPTER_FEATURE_SAME] == [], relpath

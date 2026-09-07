@@ -2419,6 +2419,15 @@ def _load_local_conf():
     )
 
 
+def _conf_default_int(key: str) -> int:
+    """이 conf 키의 엔진 기본값(정수) — 정본은 `local_conf.KEY_REGISTRY` 다.
+
+    기본값이 선언되지 않은 키를 여기로 부르면 `TypeError` 로 멈춘다 — 엔진이 없는 값을 지어내지
+    않는다(하네스별 표가 정본인 키는 그 표를 읽는 자리가 따로 있다).
+    """
+    return int(_load_local_conf().default_for(key))
+
+
 def _load_review_rounds():
     """PM 직접 해소 근거/쿼터를 소유하는 공용 라운드 모듈을 지연 로드한다."""
     path = Path(__file__).resolve().parent / "review_rounds.py"
@@ -7000,29 +7009,25 @@ def default_pytest_cmd(py: str | None = None) -> str:
 
 
 # ── ctx 임계 (context 정지-핸드오프) ──────────────────────────────
-# 세 하네스 어댑터 훅(claude·opencode·codex)이 컨텍스트 잔여 비율로 nudge/stop 을 판정할 기본값.
-# local.conf `ctx.nudge_pct`·`ctx.stop_pct` 로 per-clone 조정 가능 (board.py init 기록).
-# 잔여 10% 정지는 rich 핸드오프 돌릴 컨텍스트가 아슬.
+# 세 하네스 어댑터 훅(claude·opencode·codex)이 컨텍스트 잔여 비율로 nudge/stop 을 판정할 기본값의
+# 정본은 **레지스트리**다(`local_conf.KEY_REGISTRY` 의 `ctx.nudge_pct`·`ctx.stop_pct`·
+# `ctx.window_tokens`) — board 는 그 값을 읽어 판정하고 init 이 local.conf 에 기록한다.
+# local.conf 로 per-clone 조정 가능. 잔여 10% 정지는 rich 핸드오프 돌릴 컨텍스트가 아슬.
 # 어댑터 사본 3파일(claude `.claude/ctx_guard.py`·opencode `.opencode/lib/ctx-guard-core.cjs`·
-# codex `.codex/pm_orch_codex.py`)과 미러 — 이 board 상수까지 **4사이트**를
-# `test_ctx_default_mirror` 가드가 대조한다. codex 사이트는 한 파일이 두 소비자를 겸한다
-# (relay 회전 축 `resolve_stop_pct` + 세션 안 훅 넛지 축 `ctx_thresholds`·`ctx_nudge_envelope`).
-CTX_NUDGE_PCT_DEFAULT = 30  # 잔여 ≤ 이 % → "곧 정지" nudge (아직 일은 계속).
-CTX_STOP_PCT_DEFAULT = 20   # 잔여 ≤ 이 % → 정지·핸드오프 트리거 임계.
-# 핸드오프 토큰 예산(위 nudge/stop %의 기준). 어댑터 ctx_guard.CTX_WINDOW_TOKENS_DEFAULT
-# 와 값을 동기 — board 는 ctx_guard 를 import 하지 않고(touches 격리) 리터럴을 보유한다
-# (nudge/stop pct 도 동형으로 board 자체 상수). 큰 물리 window(1M) 모델이라도 낮게 두면
-# 이른 핸드오프 = 토큰 경제이므로 기본은 200K 유지(auto-detect 안 함). init 이 local.conf surface.
-CTX_WINDOW_TOKENS_DEFAULT = 200000
+# codex `.codex/pm_orch_codex.py`)은 엔진을 import 하지 않아(touches 격리) 리터럴을 보유하며,
+# 그 3사본과 레지스트리까지 **4사이트**를 `test_ctx_default_mirror` 가드가 대조한다. codex
+# 사이트는 한 파일이 두 소비자를 겸한다(relay 회전 축 `resolve_stop_pct` + 세션 안 훅 넛지 축
+# `ctx_thresholds`·`ctx_nudge_envelope`).
 
 
-# conf 예시 시드는 없다 — 키 카탈로그·설명은 출하 문서 한 곳이 소유한다. 파일이 자기 규칙
-# ("여기엔 실값만 둔다")을 스스로 어기지 않게, 엔진은 conf 에 주석 스키마를 배달하지 않는다.
-# 모르는 키는 `board.py lint` advisory 로 드러나므로 스키마 배달 경로가 따로 필요 없다.
+# conf 예시 시드는 없다 — 키 목록·설명은 레지스트리 한 곳이 소유한다(`local_conf.py --keys`).
+# 파일이 자기 규칙("여기엔 실값만 둔다")을 스스로 어기지 않게, 엔진은 conf 에 주석 스키마를
+# 배달하지 않는다. 모르는 키는 `board.py lint` advisory 로 드러나므로 배달 경로가 필요 없다.
 
 
-def _ctx_pct(key: str, default: int) -> int:
-    """local.conf 의 ctx 임계값을 정수로 읽는다. 없거나 비정수면 default."""
+def _ctx_pct(key: str) -> int:
+    """local.conf 의 ctx 임계값을 정수로 읽는다. 없거나 비정수면 레지스트리 기본값."""
+    default = _conf_default_int(key)
     raw = local_config().get(key)
     if raw is None:
         return default
@@ -7035,11 +7040,11 @@ def _ctx_pct(key: str, default: int) -> int:
 def ctx_thresholds() -> dict[str, int]:
     """ctx 정지-핸드오프 임계값을 dict 로 반환 (어댑터 훅이 읽어 판정).
 
-    반환: {"nudge_pct": N, "stop_pct": M}. local.conf 우선·없으면 엔진 기본(30/20).
+    반환: {"nudge_pct": N, "stop_pct": M}. local.conf 우선·없으면 레지스트리 기본값.
     """
     return {
-        "nudge_pct": _ctx_pct("ctx.nudge_pct", CTX_NUDGE_PCT_DEFAULT),
-        "stop_pct": _ctx_pct("ctx.stop_pct", CTX_STOP_PCT_DEFAULT),
+        "nudge_pct": _ctx_pct("ctx.nudge_pct"),
+        "stop_pct": _ctx_pct("ctx.stop_pct"),
     }
 
 
@@ -11752,13 +11757,13 @@ def _write_init_local_conf() -> None:
             # 키가 무엇을 하는지와 전체 카탈로그는 출하 문서 한 곳이 소유한다.
             conf = (
                 "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
-                "# 여기엔 실값만 둔다 — 키 카탈로그·설명은 출하 문서 참조.\n"
+                "# 여기엔 실값만 둔다 — 키 목록·설명은 `local_conf.py --keys` 참조.\n"
                 f"runtime.py={detected_py}\n"
                 f"test.cmd={detected_test_cmd}\n"
                 "project.name=\n"
-                f"ctx.nudge_pct={CTX_NUDGE_PCT_DEFAULT}\n"
-                f"ctx.stop_pct={CTX_STOP_PCT_DEFAULT}\n"
-                f"ctx.window_tokens={CTX_WINDOW_TOKENS_DEFAULT}\n"
+                f"ctx.nudge_pct={_conf_default_int('ctx.nudge_pct')}\n"
+                f"ctx.stop_pct={_conf_default_int('ctx.stop_pct')}\n"
+                f"ctx.window_tokens={_conf_default_int('ctx.window_tokens')}\n"
             )
             LOCAL_CONF.write_text(conf, encoding="utf-8", newline="\n")
             return
@@ -11773,9 +11778,9 @@ def _write_init_local_conf() -> None:
             "runtime.py": detected_py,
             "test.cmd": detected_test_cmd,
             "project.name": "",
-            "ctx.nudge_pct": str(CTX_NUDGE_PCT_DEFAULT),
-            "ctx.stop_pct": str(CTX_STOP_PCT_DEFAULT),
-            "ctx.window_tokens": str(CTX_WINDOW_TOKENS_DEFAULT),
+            "ctx.nudge_pct": str(_conf_default_int("ctx.nudge_pct")),
+            "ctx.stop_pct": str(_conf_default_int("ctx.stop_pct")),
+            "ctx.window_tokens": str(_conf_default_int("ctx.window_tokens")),
         }
         for key, value in defaults.items():
             if key not in existing:
@@ -15262,6 +15267,55 @@ def _run_lint_hooks() -> list[tuple[str, str]]:
     return out
 
 
+def _sidecar_document(path: Path) -> dict | None:
+    """기계 기록 sidecar 한 개를 읽는다 — 부재·손상·비-dict 는 None(판정 없음)."""
+    try:
+        data = json.loads(file_lock.read_text_shared(path, encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def status_snapshot() -> dict:
+    """board 현황 기계 조회 — 상태별 티켓 수 · open 목록 · lint 판정 · 회귀/라이브게이트 기록.
+
+    `pm-config status --json --with-board` 가 부르는 **얇은 조립**이다. 수집은 전부 기존 함수가
+    하고(`_all_tickets` · `lint_tickets` + `_run_lint_hooks` · 회귀/라이브게이트 sidecar) 여기선
+    dict 로 묶기만 한다 — `cmd_list`·`cmd_lint` 의 필터·출력·종료코드 경로는 건드리지 않는다
+    (판정 사본 0). lint 는 **목록으로만** 실린다: 이슈가 있어도 이 함수는 실패하지 않는다(rc 는
+    `cmd_lint` 의 관심사다).
+
+    세는 축은 `STATUS_DIRS` 다섯이다 — `.drafts`(발행 전 초안)는 그 밖이라 세지 않는다.
+    sidecar 좌표는 push 보호훅이 쓰는 것과 **같은 해소**를 거친다(사본/cwd 별 오독 차단).
+    """
+    counts = {status: 0 for status in STATUS_DIRS}
+    open_rows: list[dict] = []
+    for status, front_matter in _all_tickets():
+        counts[status] = counts.get(status, 0) + 1
+        if status == "open":
+            open_rows.append({
+                "id": front_matter.get("id"),
+                "title": front_matter.get("title"),
+                # open 티켓의 `claimed_by` 는 불변식상 null 이다(`lint_ticket_status_fields`) —
+                # 값이 실리면 그 자체가 드리프트 신호라 접지 않고 그대로 보인다.
+                "claimed_by": front_matter.get("claimed_by"),
+            })
+    open_rows.sort(key=lambda row: str(row.get("id") or ""))
+    lint: list[dict] = [
+        {"kind": kind, "message": f"{subject}: {detail}"}
+        for subject, kind, detail in lint_tickets()
+    ]
+    lint.extend({"kind": hook_name, "message": detail}
+                for hook_name, detail in _run_lint_hooks())
+    return {
+        "counts": counts,
+        "open": open_rows,
+        "lint": lint,
+        "regression": _sidecar_document(_resolve_regression_flag(str(REPO))[0]),
+        "livegate": _sidecar_document(_resolve_livegate_flag(str(REPO))[0]),
+    }
+
+
 def cmd_lint(args: argparse.Namespace) -> int:
     """전체 lint 보고 (무인자) 또는 push 게이트 (`--gate`).
 
@@ -17391,7 +17445,7 @@ _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
      "adr-author", "areas-repo-unregistered", "areas-duplicate-repo", "areas-merge-union",
      "delegate-same-model", "design-pending", "design-estimate",
      "codex-delegate-matcher-miss", "open-claimed-contradiction", "local-conf",
-     "local-conf-unknown-key",
+     "local-conf-unknown-key", "local-conf-missing-required",
      # 라운드 판정 코드(사이드카 seam 소유) + board 고유 잔여·판정불능 관측. 차단은 완료
      # 게이트가 한다.
      "round-name", "round-gap", "round-dup", "round-pending", "round-temporary",
@@ -18454,9 +18508,9 @@ def cmd_verified_at_repin(args: argparse.Namespace) -> int:
 # adapter-drift baseline 의 두 local.conf 키.
 # 한 키가 baseline 과 현재-관찰을 겸하면 race/자기비교라 *분리*한다:
 #   - upstream.rev      : baseline — 마지막 성공 sync 의 upstream revision (pm_import·pm_update 가 기록).
-#   - upstream.seen_rev : 현재 관찰값 — URL 은 pm-update 스킬이 fetch 후 기록, 경로 upstream 은
-#                         pm_update 가 sync 시 baseline 과 *함께* 기록(동기 시점 checkout rev = 관찰값·
-#                         cache 부재 URL 은 이 키 부재 → graceful skip.
+#   - upstream.seen_rev : 현재 관찰값 — 형상 무관하게 pm_update.record_upstream_revs 단일 writer 가
+#                         sync 시 baseline 과 *함께* 기록(동기 시점 소스 checkout rev = 관찰값 · URL 은
+#                         그 실행이 clone/fetch 한 캐시 HEAD·경로는 그 checkout HEAD).
 _DRIFT_BASELINE_KEY = "upstream.rev"
 _DRIFT_SEEN_KEY = "upstream.seen_rev"
 
@@ -18474,15 +18528,15 @@ def lint_adapter_drift() -> list[tuple[str, str, str]]:
     의 **2개 키**만 비교한다 —
 
       - `upstream.rev`      (baseline·마지막 성공 sync·pm_import/pm_update 가 기록)
-      - `upstream.seen_rev` (현재 관찰값·URL 은 pm-update 스킬이 fetch 후 기록·경로 upstream 은 pm_update 가
-        sync 시 baseline 과 함께 기록)
+      - `upstream.seen_rev` (현재 관찰값·형상 무관·pm_update 가 sync 시 baseline 과 함께 기록하는
+        동기 시점 소스 checkout rev)
 
     둘 다 존재하고 **다르면** drift 1 finding(두 rev 불일치 = adapter-layer 가 낡았을 수 있음). 한 키 2역
     금지(race/자기비교 회피·codex round-3 NEW-2). **메시지는 방향-중립**— lint 는 git 을 호출하지
     않으므로(rev 문자열 비교뿐) 두 rev 의 선후를 알 수 없다. 관찰값이 baseline 의 *조상*(구 흡수 잔재)인
     경우까지 "upstream 이 baseline 이후 변경됨"이라 단정하면 거짓 경보다(정상 흡수 직후 상시
     발화). 선후를 알려고 런타임 git ancestor 판정을 넣지 않고, 기록 시점 정합
-    (pm_update.record_upstream_rev_baseline 이 경로 upstream 에서 두 키 동시 기록)으로 원천 해소한다.
+    (pm_update.record_upstream_revs 가 형상 무관하게 두 키 동시 기록)으로 원천 해소한다.
 
     scope: 대상 = manifest-제외 adapter-layer(settings.json·루트 doc·
     facade·진입문서·local.conf — adopter config·전파 채널 없음) / 제외 = instance-state(status·
@@ -18678,8 +18732,29 @@ def _restated_conf_comments(text: str) -> list[tuple[str, str]]:
     return pairs
 
 
+def _lint_local_conf_read():
+    """lint 조회면이 쓰는 실 local.conf 판독 — `(로더 모듈, 판독 결과)` 또는 None(관측 없음).
+
+    조회면은 판독 실패로 멈추지 않는다(값 소비 지점의 차단은 그 지점이 이미 한다). 아래 두
+    관측 kind 가 이 **한 경계**를 공유한다 — 같은 흡수 규칙을 함수마다 복제하면 규칙이 갈린다.
+    사본 skew 는 흡수하지 않고 그대로 올린다(다른 형제 로더와 같은 관용구).
+    """
+    if not LOCAL_CONF.is_file():
+        return None
+    try:
+        module = _load_local_conf()
+        return module, module.load(LOCAL_CONF)
+    except Exception as exc:  # noqa: BLE001 — 조회면은 판독 실패로 멈추지 않는다.
+        if _is_engine_rev_skew(exc):
+            raise
+        return None
+
+
 # 실 local.conf 의 **레지스트리 밖 키** 관측 kind — `local-conf`(구표기 잔존)와 배타적 축이다.
 _LOCAL_CONF_UNKNOWN_LINT_KIND = "local-conf-unknown-key"
+# 키 목록·설명·기본값의 정본은 레지스트리(`local_conf.KEY_REGISTRY`)이고, 사람은 이 명령으로
+# 본다 — 안내 두 줄이 같은 문자열을 쓴다(문서 절 이름을 가리키던 옛 안내는 사라졌다).
+_LOCAL_CONF_KEYS_CMD = "python3 .project_manager/tools/local_conf.py --keys"
 
 
 def lint_local_conf_keys() -> list[tuple[str, str, str]]:
@@ -18694,23 +18769,43 @@ def lint_local_conf_keys() -> list[tuple[str, str, str]]:
     하나로 걸린다. 여러 키가 한꺼번에 있어도 finding 은 1개(1줄) — `cmd_init` 병합 경로가 같은
     목록을 같은 형태로 재사용한다(사본 없이 같은 함수 재호출).
     """
-    if not LOCAL_CONF.is_file():
+    read = _lint_local_conf_read()
+    if read is None:
         return []
-    try:
-        module = _load_local_conf()
-        result = module.load(LOCAL_CONF)
-    except Exception as exc:  # noqa: BLE001 — 조회면은 판독 실패로 멈추지 않는다.
-        if _is_engine_rev_skew(exc):
-            raise
-        return []
+    _module, result = read
     unknown = result.unknown
     if not unknown:
         return []
     where = _rel_to_repo(LOCAL_CONF)
     keys = ", ".join(f"`{key}`" for key in unknown)
     return [(where, _LOCAL_CONF_UNKNOWN_LINT_KIND,
-             f"엔진이 모르는 local.conf 키: {keys} (오타 또는 폐기 키 — README.md "
-             "§`local.conf` 키 카탈로그로 이름을 대조하라)")]
+             f"엔진이 모르는 local.conf 키: {keys} (오타 또는 폐기 키 — "
+             f"`{_LOCAL_CONF_KEYS_CMD}` 로 이름을 대조하라)")]
+
+
+# 실 local.conf 의 **필수 키 누락** 관측 kind — 위 두 kind(구표기·모르는 키)와 배타적 축이다.
+_LOCAL_CONF_MISSING_LINT_KIND = "local-conf-missing-required"
+
+
+def lint_local_conf_required() -> list[tuple[str, str, str]]:
+    """실 local.conf 에 **필수 키가 선언되지 않은** 것을 advisory 로 표면화(never-block).
+
+    필수 판정은 공용 로더가 소유한다(`local_conf.missing_required` · 사본 금지). 필수는 핵심
+    명령(회귀·init)이 못 도는 두 키뿐이고 `board.py init` 이 둘 다 심으므로, 이 줄이 뜨는 형상은
+    init 을 거치지 않고 손으로 만든 conf 다. 값이 빈 문자열이면 "있음" 으로 본다 — 선언 유무만
+    보는 축이고 값의 내용 판정은 그 값을 소비하는 지점이 한다.
+    """
+    read = _lint_local_conf_read()
+    if read is None:
+        return []
+    module, result = read
+    missing = module.missing_required(result.values)
+    if not missing:
+        return []
+    keys = ", ".join(f"`{key}`" for key in missing)
+    return [(_rel_to_repo(LOCAL_CONF), _LOCAL_CONF_MISSING_LINT_KIND,
+             f"local.conf 필수 키 누락: {keys} (`board.py init` 이 채운다 — 설명·기본값은 "
+             f"`{_LOCAL_CONF_KEYS_CMD}`)")]
 
 
 def lint_delegate() -> list[tuple[str, str, str]]:
@@ -19064,6 +19159,8 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     advisory·never-block) +
     local-conf-unknown-key(local.conf 의 레지스트리 밖 키 — 오타/폐기 키 조용한 무시 표면화·
     advisory·never-block) +
+    local-conf-missing-required(local.conf 에 필수 키 미선언 — 핵심 명령이 못 도는 형상 표면화·
+    advisory·never-block) +
     cluster-*(클러스터 장부의 멤버 부재·통합 브랜치 부재·중복 귀속 가시화·advisory·
     never-block)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
@@ -19076,6 +19173,7 @@ def lint_tickets() -> list[tuple[str, str, str]]:
             + lint_areas_repo_unregistered()
             + lint_areas_duplicate_repo() + lint_areas_merge_union()
             + lint_delegate() + lint_local_conf() + lint_local_conf_keys()
+            + lint_local_conf_required()
             + lint_rounds() + lint_clusters()
             + lint_legacy_growth_sections()
             + lint_codex_delegate_observations() + lint_claim_identity())

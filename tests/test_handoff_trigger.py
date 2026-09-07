@@ -150,12 +150,12 @@ def test_thread_tail_adapter_interface_is_absent(handoff):
 # ── 3. ctx 임계 config (board.py reader + init 기본값) ─────────────────────────
 
 def test_ctx_threshold_defaults(board, monkeypatch):
-    """local.conf 에 ctx 키가 없으면 엔진 기본(30/20 — T-0207 상향)."""
+    """local.conf 에 ctx 키가 없으면 레지스트리 기본(30/20 — T-0207 상향)."""
     monkeypatch.setattr(board, "local_config", lambda: {})
     th = board.ctx_thresholds()
     assert th == {"nudge_pct": 30, "stop_pct": 20}
-    assert board.CTX_NUDGE_PCT_DEFAULT == 30
-    assert board.CTX_STOP_PCT_DEFAULT == 20
+    assert board._conf_default_int("ctx.nudge_pct") == 30
+    assert board._conf_default_int("ctx.stop_pct") == 20
 
 
 def test_ctx_threshold_reads_local_conf(board, monkeypatch):

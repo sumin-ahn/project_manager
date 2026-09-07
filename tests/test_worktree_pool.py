@@ -23,6 +23,7 @@ board.py 는 import 하지 않는다(touches 격리·병렬충돌 회피) — �
 from __future__ import annotations
 
 import ast
+import contextlib
 import importlib.util
 import io
 import json
@@ -8495,6 +8496,181 @@ def test_validate_task_name_is_load_bearing_before_writes(wp):
         wp.bind_task("../escape")
     assert not (wp.LOCAL_DIR / "tasks").exists()
     assert wp.list_tasks() == []
+
+
+# ════════════════════════════════════════════════════════════════════════
+# create_task — 정체성만 생성 (pid 0·세션 묶기 없음·T-0909)
+#
+# `bind_task` 의 신규 가지와 **같은 락 안쪽 헬퍼**(`_create_task_locked`)를 쓴다. 여기서
+# 재는 축: 생성 산출(장부 행·pm_state)이 bind 신규분과 같은가 · 생성 뒤 bind 가 resume 으로
+# 이어받는가 · 거부가 장부를 안 건드리는가 · 락을 한 호출에 한 번만 잡는가(재진입 없음).
+# ════════════════════════════════════════════════════════════════════════
+
+
+def test_create_task_creates_unoccupied_record_and_state(wp):
+    """정체성만 — `pid 0`·`prefix None` 장부 행 + pm_state 즉시 생성 + 슬롯 리스 0."""
+    task = wp.create_task("newjob")
+
+    assert task is not None
+    assert task.name == "newjob" and task.prefix is None
+    assert task.pid == 0, "세션에 묶지 않는 생성인데 pid 가 붙었다"
+    assert task.started
+
+    data = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
+    assert [row["name"] for row in data["tasks"]] == ["newjob"]
+    assert data["tasks"][0]["pid"] == 0 and data["tasks"][0]["prefix"] is None
+    state = wp.task_pm_state_file("newjob")
+    assert state.exists()
+    assert wp.TASK_PM_STATE_EMPTY_MARKER in state.read_text(encoding="utf-8")
+    assert wp.list_leases() == []          # 슬롯 대여는 alloc 소관(직교)
+
+
+def test_create_task_pm_state_matches_bind_task_output(wp, tmp_path):
+    """pm_state 는 `bind_task` 신규 생성분과 **바이트 동일**(같은 `ensure_task_pm_state`)."""
+    other = tmp_path / "proj_bind"
+    (other / ".project_manager" / ".local").mkdir(parents=True)
+    wiki = other / ".project_manager" / "wiki"
+    wiki.mkdir(parents=True)
+    shutil.copyfile(
+        REPO / ".project_manager" / "wiki" / "pm_state.template.md",
+        wiki / "pm_state.template.md",
+    )
+    wp_bind = _load_wp_bound(other)
+
+    wp.create_task("twin")
+    wp_bind.bind_task("twin")
+
+    assert (
+        wp.task_pm_state_file("twin").read_bytes()
+        == wp_bind.task_pm_state_file("twin").read_bytes()
+    )
+
+
+def test_create_task_then_bind_task_is_clean_resume(wp):
+    """생성 뒤 bootstrap 진입은 **resumed** — 신규 생성 아님·회수 경고 없음(pid 0=미점유)."""
+    wp.create_task("job1")
+
+    record, action, reclaimed_from = wp.bind_task("job1")
+
+    assert action == "resumed" and reclaimed_from is None
+    assert record.pid == os.getpid()
+    assert len(json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))["tasks"]) == 1
+
+
+def test_create_task_duplicate_returns_none_without_ledger_change(wp):
+    """이미 있는 이름은 `None` — 장부 바이트 불변(재개는 bootstrap 몫·pid 무접촉)."""
+    wp.bind_task("job1")                       # pid = 이 프로세스
+    before = wp.LEASES_FILE.read_bytes()
+
+    assert wp.create_task("job1") is None
+
+    assert wp.LEASES_FILE.read_bytes() == before
+    assert wp.find_task("job1").pid == os.getpid()
+
+
+def test_create_task_refuses_archived_identity_without_side_effects(wp):
+    """동명 종료 archive → 기존 `TaskArchived`(새 예외 0) · 장부/서술 폴더 무생성."""
+    archive = wp.TASKS_DIR / "_ended" / "job-20260901"
+    archive.mkdir(parents=True)
+    (archive / "pm_state.md").write_text("old-state", encoding="utf-8")
+
+    with _pytest_task.raises(wp.TaskArchived) as exc_info:
+        wp.create_task("job")
+
+    assert exc_info.value.archives == (archive,)
+    assert wp.find_task("job") is None and not wp.task_dir("job").exists()
+    assert (archive / "pm_state.md").read_text(encoding="utf-8") == "old-state"
+
+
+def test_create_task_rejects_unsafe_name_before_writes(wp):
+    """부적합 이름은 mkdir·장부 write 이전 fail-loud(`bind_task` 동형 must-fix)."""
+    with _pytest_task.raises(wp.InvalidTaskName):
+        wp.create_task("../escape")
+    assert not (wp.LOCAL_DIR / "tasks").exists()
+    assert wp.list_tasks() == []
+
+
+def test_create_task_rejects_reserved_pattern_when_repos_given(wp):
+    """예약명(`<repo>_<N>`)은 registered_repos 를 받으면 엔진 진입점에서 거부(bind_task 동형)."""
+    with _pytest_task.raises(wp.InvalidTaskName):
+        wp.create_task("project_manager_1", registered_repos=["project_manager"])
+    assert wp.list_tasks() == []
+
+
+def test_create_task_preserves_sibling_leases_collection(wp):
+    """생성 write 가 형제 `leases` 를 보존한다(둘은 같은 파일·같은 락·독립 컬렉션)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="me", state="leased"))
+
+    wp.create_task("job1")
+
+    data = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
+    assert data["leases"][0]["slot"] == "work/A_1"
+    assert data["tasks"][0]["name"] == "job1"
+
+
+def _count_lease_lock_entries(wp, monkeypatch) -> list[int]:
+    """`_lease_lock` 획득 횟수 카운터를 건다 — 반환 리스트의 len 이 획득 횟수."""
+    entries: list[int] = []
+    real_lock = wp._lease_lock
+
+    @contextlib.contextmanager
+    def counting_lock():
+        entries.append(1)
+        with real_lock():
+            yield
+
+    monkeypatch.setattr(wp, "_lease_lock", counting_lock)
+    return entries
+
+
+def test_create_task_acquires_lease_lock_once(wp, monkeypatch):
+    """한 호출에 락 1회 — 락 안쪽 헬퍼를 쓰므로 재진입이 없다."""
+    entries = _count_lease_lock_entries(wp, monkeypatch)
+
+    wp.create_task("job1")
+
+    assert len(entries) == 1, f"락 획득 {len(entries)}회 — 재진입(중첩 획득) 의심"
+
+
+def test_bind_task_create_branch_acquires_lease_lock_once(wp, monkeypatch):
+    """`bind_task` 신규 가지도 락 1회 — 공개 `create_task` 를 안에서 부르지 않는다."""
+    entries = _count_lease_lock_entries(wp, monkeypatch)
+
+    _record, action, _ = wp.bind_task("job1")
+
+    assert action == "created"
+    assert len(entries) == 1, f"락 획득 {len(entries)}회 — bind_task 안에서 공개 API 재진입 의심"
+
+
+def test_create_task_blocks_while_lease_lock_is_held(wp):
+    """공개 `create_task` 는 **자기가 락을 잡는다** — 실 `file_lock` 로 블로킹을 실측한다.
+
+    이 성질이 `bind_task` 안에서 공개 `create_task` 를 부르면 안 되는 이유다(같은 락 파일을 두
+    fd 로 잡아 그 자리에서 멈춘다). 락을 쥔 채 다른 스레드가 부르면 끝나지 않고, 락을 놓으면
+    끝난다 — 두 방향을 다 잰다.
+    """
+    done = threading.Event()
+    outcome = {}
+
+    def run_create():
+        try:
+            outcome["task"] = wp.create_task("job1")
+        except Exception as exc:  # noqa: BLE001 — 스레드 결과를 본 스레드에서 단언.
+            outcome["error"] = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=run_create)
+    with wp._lease_lock():
+        thread.start()
+        finished_while_locked = done.wait(0.3)
+    thread.join(SYNC_TIMEOUT)
+
+    assert not finished_while_locked, "락을 쥐고 있는데 create_task 가 통과했다(락 미획득)"
+    assert not thread.is_alive()
+    assert "error" not in outcome
+    assert outcome["task"].pid == 0
+    assert wp.find_task("job1") is not None
 
 
 # ════════════════════════════════════════════════════════════════════════

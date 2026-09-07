@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import unicodedata
 from pathlib import Path
 
 
@@ -352,42 +353,45 @@ def is_legacy_key(key: str) -> bool:
 
 
 # ── 신키 레지스트리 ──────────────────────────────────────────────────────
+# **이 표가 키의 정본이다** — 이름·설명·기본값·필수 여부를 한 자리에서 소유한다. 코드에 흩어져
+# 있던 conf 기본값 상수(board ctx 3 · additional_reviewer 5 · pm_delegate 1)는 여기로 옮겨졌고
+# 소비자는 `default_for()` 로 읽는다. 출하 문서는 이 표를 복제하지 않고 `local_conf.py --keys`
+# 를 가리킨다 — 복제본은 반드시 drift 한다.
+#
 # 축 없는 단일값도 축을 만든다(`test.cmd`·`runtime.py`) — "이 키는 왜 다르지" 가 생기지 않게
 # 예외를 두지 않는다. 세그먼트 구분자만 점이고, 세그먼트 안의 철자는 그 식별자의 정본을 따른다
 # (역할은 `pm_delegate.ROLE_CHOICES` 표기 `code-reviewer`, 속성은 snake_case `idle_timeout`).
-KNOWN_KEYS: tuple[str, ...] = (
-    "delegate.enabled",
-    "delegate.timeout",
-    "delegate.idle_timeout",
-    # 내부 code-reviewer 수렴 상한 — 역할 한 곳에만 있는 고정 키라 패턴이 아니라 실명으로 둔다
-    # (`pm_delegate.INTERNAL_REVIEW_ROUNDS_MAX_KEY` 와 글자 단위로 같다·회귀가 대조한다).
-    "delegate.code-reviewer.rounds_max",
-    "additional_reviewer.harness",
-    "additional_reviewer.model",
-    "additional_reviewer.reasoning",
-    "additional_reviewer.incomplete_rounds_max",
-    "additional_reviewer.wave_budget",
-    "additional_reviewer.rounds_max",
-    "additional_reviewer.paths",
-    "additional_reviewer.timeout",
-    "additional_reviewer.idle_timeout",
-    "additional_reviewer.progress_signal",
-    "ctx.nudge_pct",
-    "ctx.stop_pct",
-    "ctx.window_tokens",
-    "qa.platforms",
-    "regression.min_collected",
-    "upstream.path",
-    "upstream.rev",
-    "upstream.seen_rev",
-    "project.name",
-    "project.tagline",
-    "project.root",
-    "project.date",
-    "runtime.py",
-    "test.cmd",
-    "identity.user",
-)
+# 폐지된 이름은 여기 없다 — 그 표는 `LEGACY_KEY_MAP` 하나다(중복 표기 금지).
+
+
+class KeySpec:
+    """local.conf 키 하나의 선언 — 설명·기본값·필수 여부·표시 묶음.
+
+    (평범한 클래스 — `@dataclass` 미사용 이유는 `ConfResult` 와 같다: 이 모듈은
+    `spec_from_file_location` 으로 로드되는데 `from __future__ import annotations` 와 결합 시
+    dataclass 처리가 깨진다.)
+
+    `default` 는 **conf 파일에 적히는 문자열**이다(표기가 곧 값). 고정 기본값이 없는 키는 `None`
+    이고 편차 판정(`nonstandard`)의 대상이 아니다 — 하네스별 표(`pm_relay.HARNESS_PROFILES`)나
+    실행 탐지값처럼 한 칸으로 표현되지 않는 기본을 지어내지 않는다.
+
+    `required` 는 **반드시 명시**한다(기본값 없음) — 새 키를 적으면서 필수 여부를 빠뜨리면
+    import 시점에 `TypeError` 로 멈춘다.
+    """
+
+    __slots__ = ("description", "default", "required", "group")
+
+    def __init__(self, description: str, *, default: str | None,
+                 required: bool, group: str) -> None:
+        self.description = description
+        self.default = default
+        self.required = required
+        self.group = group
+
+    def __repr__(self) -> str:                                   # 진단 표면(테스트 실패 메시지)
+        return (f"KeySpec(default={self.default!r}, required={self.required!r}, "
+                f"group={self.group!r})")
+
 
 # 패턴 키군 — `<name>` 자리에 들어갈 목록은 **코드가 소유**한다(손열거 0). 전개는 형제 모듈의
 # 선언에서 파생하고, 형제를 못 읽는 형상(부분 사본·복구 채널)에서는 모양 판정으로 강등한다 —
@@ -397,6 +401,265 @@ _HARNESS_SUFFIXES: tuple[str, ...] = (
     "idle_timeout", "wall_timeout", "ctx_window_tokens", "pro_model",
 )
 _PLATFORM_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}\Z")
+
+# 패턴 군의 표시 이름 = 레지스트리 키. 전개 가능한 자리는 위 선언에서 만든다(사본 0).
+DELEGATE_ROLE_PATTERN = (
+    "delegate.<role>[.hard][.fallback].{" + ",".join(_ROLE_SUFFIXES) + "}")
+DELEGATE_ALIAS_PATTERN = "delegate.model_alias.<name>"
+HARNESS_PATTERN = "harness.<name>.{" + ",".join(_HARNESS_SUFFIXES) + "}"
+DIFF_CAP_PATTERN = "diff_cap.<estimate>"
+PLATFORM_TEST_PATTERN = "test.<platform>.cmd"
+
+# diff 서킷브레이커 상한 — 값이 estimate 마다 달라 군 선언 한 칸에 담기지 않는다. 이 표가
+# estimate 목록의 정본이기도 하다(`_matches_pattern` 이 여기서 이름을 읽는다).
+DIFF_CAP_DEFAULTS: dict[str, str] = {"small": "300", "medium": "1000", "large": "2500"}
+
+# 표시 묶음 — `--keys` 출력과 설정 화면이 쓰는 절 이름이다(선언 순서 = 표시 순서).
+KEY_GROUPS: tuple[str, ...] = (
+    "project", "runtime", "identity", "upstream",
+    "ctx", "harness", "delegate", "additional_reviewer",
+)
+
+# 시간 예산 키의 기본은 **하네스별 표**라 한 칸에 담기지 않는다 — 설명이 정본의 자리를 말한다.
+_HARNESS_PROFILE_NOTE = "미설정이면 하네스 프로필(`pm_relay.HARNESS_PROFILES`)이 정본이다"
+
+KEY_REGISTRY: dict[str, KeySpec] = {
+    "project.name": KeySpec(
+        "어댑터 문서 렌더에 쓰는 프로젝트 이름 (빈값 허용).",
+        default=None, required=False, group="project"),
+    "project.tagline": KeySpec(
+        "어댑터 문서 렌더 토큰 — 프로젝트 한 줄 소개.",
+        default=None, required=False, group="project"),
+    "project.root": KeySpec(
+        "어댑터 문서 렌더 토큰 — 문서가 가리키는 루트 경로.",
+        default=None, required=False, group="project"),
+    "project.date": KeySpec(
+        "어댑터 문서 렌더 토큰 — 기준 날짜.",
+        default=None, required=False, group="project"),
+    "runtime.py": KeySpec(
+        "이 clone 의 python 인터프리터 (`board.py init` 이 실행검증으로 채운다).",
+        default=None, required=True, group="runtime"),
+    "test.cmd": KeySpec(
+        "회귀 게이트가 그대로 실행하는 프로젝트 test 명령 "
+        "(`board.py init` 이 탐지한 인터프리터로 채운다).",
+        default=None, required=True, group="runtime"),
+    "qa.platforms": KeySpec(
+        "opt-in platform 이름 목록(쉼표 구분). 선언하면 platform 마다 `test.<name>.cmd` 가 "
+        "필요하고, 무인자 FULL 이 core 뒤 선언 순서로 직렬 실행한다.",
+        default=None, required=False, group="runtime"),
+    "regression.min_collected": KeySpec(
+        "FULL 회귀 수집 하한 (부분 수집 false-green 차단). 미설정이면 하한 검사를 하지 않는다.",
+        default=None, required=False, group="runtime"),
+    "identity.user": KeySpec(
+        "이 clone 에서 나는 누구인가 (slot·task 무관). 미설정이면 `git config user.email`.",
+        default=None, required=False, group="identity"),
+    "upstream.path": KeySpec(
+        "`pm-update` 가 기본 source 로 쓰는 프레임워크 경로/URL.",
+        default=None, required=False, group="upstream"),
+    "upstream.rev": KeySpec(
+        "drift-lint 의 baseline rev (엔진이 기록한다).",
+        default=None, required=False, group="upstream"),
+    "upstream.seen_rev": KeySpec(
+        "마지막으로 관찰한 upstream rev (엔진이 기록한다).",
+        default=None, required=False, group="upstream"),
+    "ctx.nudge_pct": KeySpec(
+        "잔여 컨텍스트 % 넛지 임계 — 이 값 이하면 checkpoint 를 권고한다(일은 계속).",
+        default="30", required=False, group="ctx"),
+    "ctx.stop_pct": KeySpec(
+        "잔여 컨텍스트 % 정지 임계 — 이 값 이하면 정지·핸드오프.",
+        default="20", required=False, group="ctx"),
+    "ctx.window_tokens": KeySpec(
+        "하네스별 값이 없을 때의 컨텍스트 예산(핸드오프 판정의 분모). 물리 window 가 커도 낮게 "
+        "두면 이른 핸드오프 = 토큰 경제라 기본은 200K 다.",
+        default="200000", required=False, group="ctx"),
+    "delegate.enabled": KeySpec(
+        "위임 마스터 스위치(채널 무관) — `false` 면 위임 실행이 거부된다.",
+        default="true", required=False, group="delegate"),
+    "delegate.timeout": KeySpec(
+        f"위임 실행의 벽시계 백스톱(초) — {_HARNESS_PROFILE_NOTE}(하네스별 키가 이긴다).",
+        default=None, required=False, group="delegate"),
+    "delegate.idle_timeout": KeySpec(
+        f"위임 실행의 무진행 판정 상한(초) — {_HARNESS_PROFILE_NOTE}(하네스별 키가 이긴다).",
+        default=None, required=False, group="delegate"),
+    "delegate.code-reviewer.rounds_max": KeySpec(
+        "내부 code-reviewer 라운드 수렴 상한 (추가 리뷰어 예산과 별개 축·과금 없음).",
+        default="3", required=False, group="delegate"),
+    "additional_reviewer.harness": KeySpec(
+        "추가 리뷰어를 실행할 하네스. `model`·`reasoning` 과 세트로 쓴다(없으면 fail-loud).",
+        default=None, required=False, group="additional_reviewer"),
+    "additional_reviewer.model": KeySpec(
+        "추가 리뷰어 모델 — 그 하네스가 인정하는 표기를 그대로 쓴다.",
+        default=None, required=False, group="additional_reviewer"),
+    "additional_reviewer.reasoning": KeySpec(
+        "추가 리뷰어 추론 강도 (codex 는 low/medium/high/xhigh).",
+        default=None, required=False, group="additional_reviewer"),
+    "additional_reviewer.rounds_max": KeySpec(
+        "게이트 하나의 리뷰 라운드 수렴 상한 — 호출 횟수가 아니라 must_fix 추이로 본다.",
+        default="2", required=False, group="additional_reviewer"),
+    "additional_reviewer.incomplete_rounds_max": KeySpec(
+        "판정 없이 끝난 호출(타임아웃·중단·오염 무효화)의 재시도 상한.",
+        default="2", required=False, group="additional_reviewer"),
+    "additional_reviewer.wave_budget": KeySpec(
+        "wave(세션) 단위 총 라운드 예산 — 게이트별 상한과 별개 축이다.",
+        default="24", required=False, group="additional_reviewer"),
+    "additional_reviewer.paths": KeySpec(
+        "리뷰 대상 경로 목록 (쉼표 또는 공백 구분).",
+        default="src/,tests/,scripts/,.project_manager/tools/",
+        required=False, group="additional_reviewer"),
+    "additional_reviewer.timeout": KeySpec(
+        f"리뷰어 실행의 벽시계 백스톱(초) — {_HARNESS_PROFILE_NOTE}(하네스별 키가 이긴다).",
+        default=None, required=False, group="additional_reviewer"),
+    "additional_reviewer.idle_timeout": KeySpec(
+        f"리뷰어 실행의 무진행 판정 상한(초) — {_HARNESS_PROFILE_NOTE}(하네스별 키가 이긴다).",
+        default=None, required=False, group="additional_reviewer"),
+    "additional_reviewer.progress_signal": KeySpec(
+        "리뷰어 진행 신호 형식 — 미설정이면 해소된 리뷰어 CLI 의 옵션 계약에서 파생한다.",
+        default=None, required=False, group="additional_reviewer"),
+}
+
+PATTERN_REGISTRY: dict[str, KeySpec] = {
+    HARNESS_PATTERN: KeySpec(
+        "하네스별 실행 예산·모델. `idle_timeout`(무진행 판정·주)·`wall_timeout`(벽시계 백스톱)은 "
+        f"{_HARNESS_PROFILE_NOTE} — 미설정이어도 안전하다. `ctx_window_tokens` 는 그 하네스의 "
+        "컨텍스트 예산(미설정이면 `ctx.window_tokens`), `pro_model` 은 어댑터 카드 렌더 모델이다.",
+        default=None, required=False, group="harness"),
+    DELEGATE_ROLE_PATTERN: KeySpec(
+        "역할→하네스/모델/추론 강도 매핑. 세트를 통째로 쓴다(티어 간 상속 없음). `.hard` 는 난제 "
+        "티어, `.fallback` 은 인프라 실패(스폰 실패·타임아웃·한도/인증) 1회 대체다.",
+        default=None, required=False, group="delegate"),
+    DELEGATE_ALIAS_PATTERN: KeySpec(
+        "모델 별칭 — 역할 키의 `model` 값에 이 이름을 적으면 여기 선언한 값으로 해소한다.",
+        default=None, required=False, group="delegate"),
+    DIFF_CAP_PATTERN: KeySpec(
+        "티켓 `estimate` 별 diff 총량(추가+삭제) 상한. 엔진이 모르는 estimate 는 상한을 지어내지 "
+        "않는다(가드 off).",
+        default=None, required=False, group="additional_reviewer"),
+    PLATFORM_TEST_PATTERN: KeySpec(
+        "`qa.platforms` 에 선언한 platform 의 host-side wrapper 명령 (선언 없는 platform 키는 "
+        "모르는 키로 뜬다).",
+        default=None, required=False, group="runtime"),
+}
+
+# 기존 호출부(`unknown_keys`·`_matches_pattern`)가 그대로 도는 파생 튜플 — 레지스트리가 정본이다.
+KNOWN_KEYS: tuple[str, ...] = tuple(KEY_REGISTRY)
+
+
+def key_spec(key: str) -> KeySpec | None:
+    """이 키의 선언 — 실명은 레지스트리에서, 패턴 키는 그 군에서 해소한다(모르는 키는 None)."""
+    spec = KEY_REGISTRY.get(key)
+    if spec is not None:
+        return spec
+    pattern = pattern_for(key)
+    if pattern is None:
+        return None
+    spec = PATTERN_REGISTRY[pattern]
+    if pattern == DIFF_CAP_PATTERN:
+        # 상한이 estimate 마다 다르다 — 군 선언은 값을 담지 못하므로 이 키의 값으로 채워 준다.
+        return KeySpec(spec.description, default=DIFF_CAP_DEFAULTS[key.split(".")[1]],
+                       required=spec.required, group=spec.group)
+    return spec
+
+
+def default_for(key: str) -> str | None:
+    """이 키의 엔진 기본값(conf 표기 그대로) — 선언이 없거나 모르는 키면 None."""
+    spec = key_spec(key)
+    return None if spec is None else spec.default
+
+
+def required_keys() -> tuple[str, ...]:
+    """없으면 핵심 명령(회귀·init)이 못 도는 키 — 선언 순서.
+
+    역할 위임 키는 필수가 아니다: 없으면 위임 시점에 이미 fail-loud 이고, 필수로 두면 새로
+    import 한 프로젝트가 전부 누락 배너를 달고 태어난다.
+    """
+    return tuple(key for key, spec in KEY_REGISTRY.items() if spec.required)
+
+
+def missing_required(values: dict[str, str]) -> tuple[str, ...]:
+    """`values` 에 **선언 자체가 없는** 필수 키 — 빈 문자열은 "있음" 으로 본다.
+
+    값의 내용 판정은 그 값을 소비하는 지점이 한다(빈값 허용 키를 여기서 오탐하지 않는다).
+    """
+    return tuple(key for key in required_keys() if key not in values)
+
+
+def nonstandard(values: dict[str, str]) -> dict[str, tuple[str, str]]:
+    """기본값이 선언된 키 중 값이 기본과 다른 것 → `{키: (값, 기본값)}`.
+
+    기본값이 없는 키(하네스별 표·탐지값·per-clone 좌표)는 비교 대상이 아니다 — 기준이 없는
+    자리에 기준을 지어내지 않는다.
+    """
+    out: dict[str, tuple[str, str]] = {}
+    for key, value in values.items():
+        default = default_for(key)
+        if default is not None and value != default:
+            out[key] = (value, default)
+    return out
+
+
+# ── 키 표 출력 (`--keys`) ────────────────────────────────────────────────
+_KEY_TABLE_HEADERS = ("키", "필수", "기본값", "설명")
+
+
+def _key_table_rows(registry: dict[str, KeySpec]) -> list[tuple[str, str, str, str]]:
+    """표 한 벌의 행 — 필수는 `필수`/`-`, 선언 없는 기본값은 `-` 로 적는다."""
+    return [(key, "필수" if spec.required else "-",
+             _default_display(key, spec), spec.description)
+            for key, spec in registry.items()]
+
+
+def _default_display(key: str, spec: KeySpec) -> str:
+    """표에 적는 기본값 — 군 전체가 한 값을 갖지 않으면 멤버별로 펼쳐 적는다."""
+    if key == DIFF_CAP_PATTERN:
+        return " · ".join(f"{name} {value}" for name, value in DIFF_CAP_DEFAULTS.items())
+    return spec.default if spec.default is not None else "-"
+
+
+def _display_width(text: str) -> int:
+    """전각(한글·CJK)을 2칸으로 센 표시 폭 — `str.ljust` 는 한글 헤더에서 칸을 어긋나게 한다."""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
+def _render_key_rows(rows: list[tuple[str, str, str, str]]) -> list[str]:
+    """앞 세 칸만 폭을 맞춘다(설명은 자유 길이 — 줄바꿈으로 정렬을 흉내내지 않는다)."""
+    table = [_KEY_TABLE_HEADERS, *rows]
+    widths = [max(_display_width(row[i]) for row in table) for i in range(3)]
+    out = []
+    for row in table:
+        cells = [row[i] + " " * (widths[i] - _display_width(row[i])) for i in range(3)]
+        out.append("  ".join([*cells, row[3]]).rstrip())
+    return out
+
+
+def render_key_table() -> str:
+    """`--keys` 출력 — 실명 키 표 + 패턴 키군 표. 이 산출이 키 목록의 사람 표면이다."""
+    lines = [
+        "local.conf 키 — 정본은 `local_conf.py` 레지스트리다(문서는 이 표를 복제하지 않는다).",
+        "필수 = 없으면 핵심 명령(회귀·init)이 못 도는 키 · 기본값 `-` = 선언된 고정 기본값 없음.",
+    ]
+    for group in _declared_groups():
+        rows = _key_table_rows(
+            {key: spec for key, spec in KEY_REGISTRY.items() if spec.group == group})
+        if not rows:
+            continue
+        lines.append("")
+        lines.append(f"[{group}]")
+        lines.extend(_render_key_rows(rows))
+    lines.append("")
+    lines.append("패턴 키군 (`<...>` 자리 목록은 코드·선언이 소유한다)")
+    lines.extend(_render_key_rows(_key_table_rows(PATTERN_REGISTRY)))
+    return "\n".join(lines)
+
+
+def _declared_groups() -> list[str]:
+    """실제 선언에 쓰인 묶음 이름 — 표시 순서는 `KEY_GROUPS` 하나가 정한다.
+
+    `KEY_GROUPS` 밖의 묶음을 뒤에 덧붙이는 자리는 두지 않는다 — 완전성 테스트가 모든
+    `spec.group` 이 `KEY_GROUPS` 안에 있음을 강제하므로 그 확장은 발화할 수 없다(새 묶음을
+    쓰려면 `KEY_GROUPS` 에 순서를 선언하는 것이 유일한 경로다).
+    """
+    return [group for group in KEY_GROUPS
+            if any(spec.group == group for spec in KEY_REGISTRY.values())]
 
 
 class ConfResult:
@@ -624,21 +887,28 @@ def unknown_keys(values: dict[str, str]) -> tuple[str, ...]:
 
 
 def _matches_pattern(key: str) -> bool:
-    """패턴 키군(`delegate.<role>…`·`harness.<name>.*`·`diff_cap.<estimate>`) 소속 여부."""
+    """패턴 키군 소속 여부 — 어느 군인지는 `pattern_for` 가 말한다."""
+    return pattern_for(key) is not None
+
+
+def pattern_for(key: str) -> str | None:
+    """이 키가 속한 패턴 군의 표시 이름 (어느 군도 아니면 None)."""
     segments = key.split(".")
     if len(segments) < 2:
-        return False
+        return None
     head = segments[0]
     if head == "diff_cap":
-        return len(segments) == 2 and segments[1] in _diff_cap_names()
+        return DIFF_CAP_PATTERN if (
+            len(segments) == 2 and segments[1] in DIFF_CAP_DEFAULTS) else None
     if head == "harness":
-        return (len(segments) == 3 and segments[1] in _harness_names()
-                and segments[2] in _HARNESS_SUFFIXES)
+        return HARNESS_PATTERN if (
+            len(segments) == 3 and segments[1] in _harness_names()
+            and segments[2] in _HARNESS_SUFFIXES) else None
     if head == "delegate":
-        return _matches_delegate_pattern(segments[1:])
+        return _delegate_pattern_for(segments[1:])
     if head == "test":
-        return _platform_command_name(key) is not None
-    return False
+        return PLATFORM_TEST_PATTERN if _platform_command_name(key) else None
+    return None
 
 
 def _platform_command_name(key: str) -> str | None:
@@ -687,20 +957,21 @@ def platform_test_commands(values: dict[str, str]) -> tuple[tuple[str, str], ...
     return tuple(resolved)
 
 
-def _matches_delegate_pattern(rest: list[str]) -> bool:
-    """`delegate.` 아래 닫힌 문법 — 역할 매핑 tuple 과 model_alias 표."""
+def _delegate_pattern_for(rest: list[str]) -> str | None:
+    """`delegate.` 아래 닫힌 문법 — 역할 매핑 tuple 과 model_alias 표 (아니면 None)."""
     if not rest:
-        return False
+        return None
     if rest[0] == "model_alias":
-        return len(rest) == 2 and bool(rest[1])
+        return DELEGATE_ALIAS_PATTERN if (len(rest) == 2 and rest[1]) else None
     if rest[0] not in _role_names():
-        return False
+        return None
     tail = rest[1:]
     if tail and tail[0] == "hard":
         tail = tail[1:]
     if tail and tail[0] == "fallback":
         tail = tail[1:]
-    return len(tail) == 1 and tail[0] in _ROLE_SUFFIXES
+    return DELEGATE_ROLE_PATTERN if (
+        len(tail) == 1 and tail[0] in _ROLE_SUFFIXES) else None
 
 
 def _role_names() -> tuple[str, ...]:
@@ -711,11 +982,6 @@ def _role_names() -> tuple[str, ...]:
 def _harness_names() -> tuple[str, ...]:
     """하네스 목록 — `pm_relay.HARNESS_CHOICES` 파생."""
     return _sibling_sequence("pm_relay.py", "HARNESS_CHOICES")
-
-
-def _diff_cap_names() -> tuple[str, ...]:
-    """diff 상한 estimate 목록 — `additional_reviewer.DEFAULT_DIFF_CAPS` 키 파생."""
-    return _sibling_sequence("additional_reviewer.py", "DEFAULT_DIFF_CAPS")
 
 
 _SEQUENCE_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
@@ -775,7 +1041,7 @@ def _verify_engine_rev(sibling_module, sibling_filename):
 
 
 def main(argv: list[str] | None = None) -> int:
-    """어댑터 생성 블록 출력 — 파서에 붙일 텍스트를 사람이 손으로 옮겨 적지 않게 한다."""
+    """키 표(`--keys`)와 어댑터 생성 블록 출력 — 사람이 손으로 옮겨 적는 표면을 없앤다."""
     _console_encoding = _load_module_from_path(
         Path(__file__).resolve().with_name("console_encoding.py"),
         "console_encoding.py",
@@ -783,10 +1049,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     _console_encoding.configure_console_utf8()
     args = list(sys.argv[1:] if argv is None else argv)
+    if args == ["--keys"]:
+        print(render_key_table())
+        return 0
     if len(args) == 2 and args[0] == "--render-adapter-block":
         print(render_adapter_block(args[1]))
         return 0
-    print("사용법: local_conf.py --render-adapter-block <python|js|sh>", file=sys.stderr)
+    print("사용법: local_conf.py [--keys | --render-adapter-block <python|js|sh>]",
+          file=sys.stderr)
     return 2
 
 

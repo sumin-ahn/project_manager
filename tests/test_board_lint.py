@@ -23,6 +23,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from _git_fixture import init_git_repo
 from _win_skip import _can_symlink
 
 REPO = Path(__file__).resolve().parents[1]
@@ -3229,6 +3230,29 @@ def test_adapter_drift_uses_two_distinct_keys(board, monkeypatch):
     assert board._DRIFT_BASELINE_KEY != board._DRIFT_SEEN_KEY
 
 
+# 두 키의 **소유권 서술**은 판정 코드와 함께 갱신돼야 한다 — T-0908 이 `_upstream_rev_updates` 의
+# URL 제외 분기를 지워 `upstream.seen_rev` 의 writer 가 `record_upstream_revs` 하나가 됐는데, 그
+# 자리의 주석/docstring 이 옛 계약(스킬층 writer·경로 upstream 한정·cache 부재 URL 은 키 부재 →
+# graceful skip)을 계속 서술하면 지워진 분기를 되살릴 근거로 읽힌다. 판정 코드 자체의 불변은 위
+# rev 비교 케이스들이 이미 잰다 — 여기서는 그 문장을 값으로 고정한다.
+def test_adapter_drift_key_contract_documents_the_single_writer():
+    """drift-lint 두 키의 정의 주석·`lint_adapter_drift` docstring 이 단일 writer 를 서술한다."""
+    source = BOARD_PY.read_text(encoding="utf-8")
+    start = source.index("# adapter-drift baseline 의 두 local.conf 키.")
+    end = source.index("findings: list[tuple[str, str, str]] = []", start)
+    block = source[start:end]
+    assert "def lint_adapter_drift" in block, "블록 좌표가 어긋났다(공허 통과 방지)"
+
+    # 현행 계약: 형상과 무관한 단일 writer 를 이름으로 가리킨다(주석·docstring 양쪽).
+    assert block.count("record_upstream_revs") >= 2, block
+    assert block.count("형상 무관") >= 2, block
+
+    # 옛 계약 서술 잔존 0 — 되살릴 근거가 남지 않는다.
+    for retired in ("pm-update 스킬", "graceful skip", "record_upstream_rev_baseline",
+                    "경로 upstream 은 pm_update 가", "경로 upstream 에서 두 키 동시 기록"):
+        assert retired not in block, f"옛 writer 계약 서술 잔존: {retired!r}"
+
+
 def test_adapter_drift_kind_is_advisory(board):
     # adapter-drift 는 `_ADVISORY_LINT_KINDS` 등재 → --gate 종료코드 비기여(never-block).
     assert "adapter-drift" in board._ADVISORY_LINT_KINDS
@@ -4107,3 +4131,122 @@ def test_lint_claim_identity_still_flags_contradiction_alongside_realistic_healt
     issues = board.lint_claim_identity()
     assert [(tid, kind) for tid, kind, _detail in issues] == [
         ("T-0002", "open-claimed-contradiction")]
+
+
+# ── local.conf 필수 키 누락 lint (`local-conf-missing-required` · T-0906) ────
+
+def test_missing_required_surfaces_as_an_advisory_finding(board, monkeypatch, tmp_path):
+    """필수 키가 없는 conf 는 1줄 advisory — kind 는 모르는-키 축과 배타적이다."""
+    conf = tmp_path / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_text("runtime.py=python3\nreview_ticket_body_max_bytes=65536\n", encoding="utf-8")
+    monkeypatch.setattr(board, "LOCAL_CONF", conf)
+
+    findings = board.lint_local_conf_required()
+
+    assert len(findings) == 1, findings
+    where, kind, detail = findings[0]
+    assert kind == "local-conf-missing-required"
+    assert "test.cmd" in detail and "runtime.py" not in detail
+    assert "--keys" in detail
+    # 기존 축은 그대로다 — 같은 conf 에서 모르는-키 판정은 여전히 그 키만 낸다.
+    assert _kinds(board.lint_local_conf_keys()) == ["local-conf-unknown-key"]
+
+
+_UNRELATED_LINT_FNS = (
+    "lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
+    "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
+    "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
+    "lint_render_leak", "lint_unmigrated_overlay", "_run_lint_hooks",
+)
+
+
+def test_missing_required_kind_is_advisory_and_joins_the_report(board, monkeypatch, tmp_path):
+    """kind 등재(`--gate` 종료코드 비기여) + `lint_tickets()` 합류."""
+    assert "local-conf-missing-required" in board._ADVISORY_LINT_KINDS
+    _wire_repo(board, monkeypatch, tmp_path)
+    conf = tmp_path / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_text("project.name=x\n", encoding="utf-8")
+    monkeypatch.setattr(board, "LOCAL_CONF", conf)
+    for fn in _UNRELATED_LINT_FNS:
+        monkeypatch.setattr(board, fn, lambda: [])
+
+    kinds = _kinds(board.lint_tickets())
+
+    assert kinds.count("local-conf-missing-required") == 1, kinds
+    assert board.cmd_lint(SimpleNamespace(gate=True)) == 0      # never-block
+    assert board.cmd_lint(SimpleNamespace(gate=False)) == 1     # 무인자는 보인다
+
+
+def test_no_local_conf_file_reports_no_missing_required(board, monkeypatch, tmp_path):
+    """conf 부재는 정상 형상이다 — 없는 파일에 필수 누락을 씌우지 않는다."""
+    monkeypatch.setattr(board, "LOCAL_CONF", tmp_path / ".project_manager" / "local.conf")
+    assert board.lint_local_conf_required() == []
+
+
+def test_fresh_init_conf_has_no_missing_required(board, monkeypatch, tmp_path):
+    """`board.py init` 산출 conf 는 필수 키를 둘 다 담는다 — 새 import 트리의 배너 0."""
+    pm = tmp_path / ".project_manager"
+    pm.mkdir(parents=True)
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "LOCAL_CONF", pm / "local.conf")
+    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+
+    board._write_init_local_conf()
+
+    assert board.lint_local_conf_required() == []
+    conf_module = board._load_local_conf()
+    assert conf_module.missing_required(conf_module.load(pm / "local.conf").values) == ()
+
+
+# ════════════════════════════════════════════════════════════════════════
+# `status_snapshot()` — 관리자 읽기 계약(`pm-config status --json --with-board`)이 부르는
+# 얇은 조립. 여기서는 board 소유 축(상태별 수·open 목록·lint 목록·sidecar 통과)만 본다.
+# CLI 배선은 tests/test_pm_config_status_json.py 가 실 홈에서 end-to-end 로 잰다.
+
+
+def test_status_snapshot_counts_open_rows_and_gate_records(board, monkeypatch, tmp_path):
+    """상태별 수는 `STATUS_DIRS` 다섯 축이고, open 행과 게이트 기록이 그대로 실린다."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    local = tmp_path / ".project_manager" / ".local"
+    local.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(board, "LOCAL_DIR", local)
+    monkeypatch.setattr(board, "REGRESSION_FLAG", local / "regression.json")
+    monkeypatch.setattr(board, "LIVEGATE_FLAG", local / "livegate.json")
+    # sidecar 좌표 해소는 git(`core.hooksPath`)에 묻는다 — tmp 트리가 자기 저장소라고 선언하지
+    # 않으면 이 저장소의 답을 받아 실 PM 홈 기록을 읽는다(tests/_git_fixture 규약).
+    init_git_repo(tmp_path)
+    _ticket(board, "open", "T-0001", _healthy_ticket_text("T-0001"))
+    _ticket(board, "done", "T-0002",
+            "---\nid: T-0002\ntitle: 끝난 것\nstatus: done\ndepends_on: []\n---\n## 목표\n실값\n")
+    (local / "regression.json").write_text(
+        json.dumps({"head": "abc", "status": "pass", "collected": 42}), encoding="utf-8")
+
+    snapshot = board.status_snapshot()
+
+    assert set(snapshot["counts"]) == set(board.STATUS_DIRS)
+    assert snapshot["counts"]["open"] == 1 and snapshot["counts"]["done"] == 1
+    assert snapshot["open"] == [{"id": "T-0001", "title": "정상 티켓", "claimed_by": None}]
+    assert snapshot["regression"] == {"head": "abc", "status": "pass", "collected": 42}
+    assert snapshot["livegate"] is None, "기록이 없으면 판정도 없다(빈 dict 를 지어내지 않는다)"
+
+
+def test_status_snapshot_carries_lint_findings_without_failing(board, monkeypatch, tmp_path):
+    """lint 이슈는 목록으로만 실린다 — 조회가 rc 를 내지 않는다(`cmd_lint` 의 관심사)."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    local = tmp_path / ".project_manager" / ".local"
+    local.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(board, "REGRESSION_FLAG", local / "regression.json")
+    monkeypatch.setattr(board, "LIVEGATE_FLAG", local / "livegate.json")
+    init_git_repo(tmp_path)
+    _ticket(board, "open", "T-0001",
+            "---\nid: T-0001\ntitle: 의존 깨짐\nstatus: open\ndepends_on: [T-9999]\n---\n"
+            "## 목표\n실값\n")
+
+    snapshot = board.status_snapshot()
+
+    assert board.cmd_lint(SimpleNamespace(gate=False)) == 1, "전제: lint 는 이슈를 낸다"
+    assert any(row["kind"] == "unknown" and "T-9999" in row["message"]
+               for row in snapshot["lint"]), snapshot["lint"]
+    assert all(set(row) == {"kind", "message"} for row in snapshot["lint"])

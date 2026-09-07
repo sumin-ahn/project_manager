@@ -928,7 +928,7 @@ def test_dry_run_and_execution_render_the_same_command_for_opencode_placeholders
 def test_round_limit_refusal_creates_no_output_dir(
         external, monkeypatch, tmp_path, capsys):
     """호출 전 거부(수렴 축)도 같은 규율이다 — 산출 디렉토리·스폰·장부 변화 모두 0."""
-    limit = external.DEFAULT_REVIEW_ROUNDS_MAX      # 호출 횟수 축 제거 후 남는 티켓 축
+    limit = external._review_rounds_max({})         # 호출 횟수 축 제거 후 남는 티켓 축
     repo = _repo(tmp_path / "repo", _conf())
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)

@@ -305,3 +305,24 @@ def test_free_form_gate_stays_silent_and_off(external, tmp_path, capsys):
 
     assert block is None
     assert capsys.readouterr().err == ""
+
+
+# ══ 상한 값 (레지스트리 계약) ═════════════════════════════════════════════════════
+
+
+def test_the_default_caps_match_the_key_registry_values(external):
+    """estimate 별 기본 상한은 `local_conf` 레지스트리 값과 같다(300·1000·2500 이탈 시 red)."""
+    local_conf = _load("local_conf")
+    assert external._diff_cap({}, "small") == 300
+    assert external._diff_cap({}, "medium") == 1000
+    assert external._diff_cap({}, "large") == 2500
+    assert local_conf.DIFF_CAP_DEFAULTS == {"small": "300", "medium": "1000", "large": "2500"}
+    assert local_conf.default_for("diff_cap.small") == "300"
+    assert local_conf.default_for("diff_cap.medium") == "1000"
+    assert local_conf.default_for("diff_cap.large") == "2500"
+
+
+def test_an_unknown_estimate_and_a_negative_override_fall_back(external):
+    """모르는 estimate(`huge`)는 상한을 지어내지 않고 None, 음수 override 는 기본값으로 fail-soft."""
+    assert external._diff_cap({}, "huge") is None
+    assert external._diff_cap({"diff_cap.small": "-1"}, "small") == 300

@@ -2313,7 +2313,7 @@ def summarize_upstream_changes(
       - `other`: [(code, path)] — manifest 밖 변경(동기 안 받음)
       - `log`: [(sha, subject)] — `git log --oneline baseline..HEAD` (--log 옵션용)
 
-    호출부(main --changes 분기)가 baseline 부재·URL upstream·HEAD==baseline 등 *상위* 게이트를
+    호출부(main --changes 분기)가 baseline 부재·소스 해소·HEAD==baseline 등 *상위* 게이트를
     이미 처리한 뒤 진입한다. 여기선 baseline rev 가 checkout 에서 도달 가능한지(rc)만 본다 —
     도달불가(force-push·shallow)면 status='baseline_unreachable'(호출부가 재clone 권고). log/diff
     가 rc≠0(도달가능한데도 git 호출 실패·예외)면 status='summary_failed' — 빈 결과를 "변경 0"으로
@@ -2404,7 +2404,7 @@ def _resolve_dest_source(args) -> tuple:
     """args(--target·--from) → (rc, dest_root, source_root). rc≠0 이면 메시지는 이미 출력됨.
 
     dest/source 해소는 sync(main)와 read-only --changes가 공유한다 — 둘 다
-    같은 우선순위(명시 --from local.conf upstream.path= 에러)·URL 게이트·stale
+    같은 우선순위(명시 --from local.conf upstream.path= 에러)·URL 캐시 해소·stale
     가드를 거쳐야 일관적이다. 추출로 두 진입이 같은 코드 경로를 탄다(중복 0). 성공 시 rc=0 +
     (dest_root[None=self-loc], source_root[디렉토리 검증 통과]). 실패 시 rc≠0(메시지 stderr 출력)
     + (None, None).
@@ -2443,23 +2443,24 @@ def _resolve_dest_source(args) -> tuple:
                 file=sys.stderr,
             )
             return 1, None, None
-        # upstream= 이 URL(릴리스 추적 기본값)이면 엔진은
-        #   로컬 파일만 복사하므로 `Path(url).resolve()` 했다간 "디렉터리 없음" 류로 침묵 실패한다.
-        #   URL 은 디렉토리로 해소하지 말고 *명확·actionable* 에러로 멈춘다 — git freshness 는
-        #   스킬층(pm-update: URL→cache clone)이거나 `--from <로컬 checkout>` 명시가 답이다.
+        # upstream= 이 URL(릴리스 추적 기본값)이면 그 URL 을 복사 소스로 쓸 **로컬 캐시
+        #   checkout** 으로 바꾼다(최초 clone·이후 fetch). 캐시 자리는 dest PM 홈 안
+        #   `.project_manager/.local/upstream-cache/<URL 해시>/` 하나이고, 만드는 코드는 엔진에
+        #   하나뿐이다(pm_import.resolve_upstream_url_cache — 스킬·관리자·명령줄 공용). clone/fetch
+        #   실패는 옛 캐시로 미끄러지지 않고 여기서 rc 1 로 끝난다.
         try:
             kind = _load_pm_import().classify_upstream(stored)
         except Exception:  # noqa: BLE001 — 분류 실패는 보수적으로 경로 취급(기존 동작·fail-soft).
             kind = "path"
         if kind == "url":
-            print(
-                f"오류: upstream 이 URL 이다 ({stored}) — 엔진(pm_update)은 로컬 파일만 복사한다 "
-                "(git clone/fetch 안 함). `pm-update` 스킬(URL→cache clone 후 sync)을 "
-                "쓰거나, `--from <로컬 checkout>` 으로 로컬 경로를 명시하라.",
-                file=sys.stderr,
-            )
-            return 1, None, None
-        source_root = Path(stored).resolve()
+            pm_import = _load_pm_import()
+            try:
+                source_root = pm_import.resolve_upstream_url_cache(effective_dest, stored)
+            except pm_import.UpstreamCacheError as exc:
+                print(f"오류: {exc}", file=sys.stderr)
+                return 1, None, None
+        else:
+            source_root = Path(stored).resolve()
 
     # stale 가드: 해소된 upstream 이 부재/디렉토리 아님 → 자동 진행 금지(명확한 에러). 기존
     # missing-manifest(rc 2)와 구분되는 메시지·rc(=1)로 "upstream 자체가 잘못됐다"를 알린다.
@@ -2479,14 +2480,14 @@ def _resolve_dest_source(args) -> tuple:
 def _run_changes(args) -> int:
     """`--changes` read-only 분기 — baseline..HEAD 변경점 요약 출력(실 sync 안 함).
 
-    dest/source 해소는 sync 와 공유(_resolve_dest_source) — URL upstream 은 거기서 명확 에러로
-    멈춘다(엔진은 git clone/fetch 안 함). baseline(`upstream.rev`)은 *dest* local.conf
+    dest/source 해소는 sync 와 공유(_resolve_dest_source) — URL upstream 도 거기서 같은 로컬
+    캐시로 해소된다(clone/fetch). baseline(`upstream.rev`)은 *dest* local.conf
     에서 읽는다(매 sync 시 pm_update 가 기록한 마지막 동기 기준점). 전부 fail-soft·exit 0(graceful
     안내) — baseline 미기록·HEAD==baseline·baseline 도달불가 각각 메시지로 surface 한다.
     """
     rc, dest_root, source_root = _resolve_dest_source(args)
     if rc != 0:
-        return rc  # URL upstream·미등록·stale 는 sync 와 동일한 명확 에러(rc≠0).
+        return rc  # 미등록·stale·캐시 clone/fetch 실패는 sync 와 동일한 명확 에러(rc≠0).
 
     effective_dest = dest_root if dest_root is not None else REPO
     baseline = _read_local_conf(
@@ -2588,38 +2589,18 @@ def _run_changes(args) -> int:
     return 0
 
 
-# 경로 upstream 에서 baseline 과 *함께* 기록하는 현재-관찰 키 (board._DRIFT_SEEN_KEY 동명).
+# baseline 과 *함께* 기록하는 현재-관찰 키 (board._DRIFT_SEEN_KEY 동명).
 _SEEN_REV_KEY = "upstream.seen_rev"
 
 
-def _upstream_shape(pm_import, dest_root: Path) -> str:
-    """dest local.conf 의 `upstream.path=` 값 모양 — 'url' | 'path' (네트워크 0).
+def _upstream_rev_updates(rev: str) -> dict[str, str]:
+    """이번에 기록할 rev 키 계획 — baseline 과 관찰값을 같은 rev 로 함께 쓴다(형상 무관).
 
-    seen-rev 동시 기록의 분기 입력이다. 미등록(`--from` 직접 지정·구 import)·분류 실패는
-    `_resolve_dest_source` 와 동일하게 **보수적으로 'path'** 취급한다(기존 동작·fail-soft).
+    엔진이 URL upstream 도 직접 캐시 clone/fetch 하게 된 뒤로 두 형상 모두 *이 실행의 소스
+    checkout HEAD* 가 곧 관찰값이다 — 관찰을 따로 하는 층이 없어졌으므로 한쪽을 비워 두면 그
+    자리를 채울 writer 가 없어 두 키가 영구히 어긋난다(정상 흡수 직후에도 상시 거짓 drift).
     """
-    stored = _read_local_conf(
-        dest_root / ".project_manager" / "local.conf").get("upstream.path", "").strip()
-    if not stored:
-        return "path"
-    try:
-        return pm_import.classify_upstream(stored)
-    except Exception:  # noqa: BLE001 — 분류 실패는 보수적으로 경로 취급(fail-soft).
-        return "path"
-
-
-def _upstream_rev_updates(pm_import, dest_root: Path, rev: str) -> dict[str, str]:
-    """이번에 기록할 rev 키 계획 — baseline 은 항상, 관찰값은 **경로 형상에서만**.
-
-    형상 입력은 대상 conf 의 현재 `upstream.path=` 값이라 이 계산은 conf 락 구간 안에서만 유효하다
-    (락 밖에서 세운 계획은 커밋 시점에 이미 낡을 수 있다 — 동시 `upstream set` 이 path↔URL 을
-    뒤집으면 stale 형상으로 `upstream.seen_rev` 을 잘못 쓰거나 빠뜨린다). 계획을 락 안에서 다시
-    세울 수 있게 분리한 조각이다.
-    """
-    updates = {"upstream.rev": rev}
-    if _upstream_shape(pm_import, dest_root) == "path":
-        updates[_SEEN_REV_KEY] = rev
-    return updates
+    return {"upstream.rev": rev, _SEEN_REV_KEY: rev}
 
 
 def _warn_missing_conf_for_rev(local_conf: Path) -> tuple[bool, dict[str, str]]:
@@ -2631,18 +2612,16 @@ def _warn_missing_conf_for_rev(local_conf: Path) -> tuple[bool, dict[str, str]]:
 def record_upstream_revs(dest_root: Path, source_root: Path) -> tuple[bool, dict[str, str]]:
     """매 sync 후 upstream rev 키들을 dest local.conf 에 **단일 write** 로 기록.
 
-    반환 `(변경 여부, 이번에 엔진이 기록한 {키: rev})` — 호출부가 *실제로 무엇을 썼는지* 를
-    보고 안내 문구를 정한다(결과 상태로 역추론 금지: URL 형상은 스킬층이 쓴 seen 이 이미
-    baseline 과 같아서 "엔진이 썼다"와 구분되지 않는다). 기록 생략 시 `(False, {})`.
+    반환 `(변경 여부, 이번에 기록한 {키: rev})` — 호출부가 그 rev 를 안내 문구에 싣는다.
+    기록 생략 시 `(False, {})`.
 
     기록 키:
       - `upstream.rev`      (baseline·항상) — drift-lint의 "마지막 동기 이후" 기준점
         pm_import(import 시)와 여기(매 sync) 둘 다 갱신해야 그 의미가 성립한다.
-      - `upstream.seen_rev` (현재 관찰값·**경로 upstream 한정**) — 경로 형상은 fetch 채널이
-        따로 없어 *동기 시점의 로컬 checkout rev 가 곧 관찰값*이다('로컬 경로'
-        분기와 동일 규정). baseline 만 갱신하면 두 키가 영구히 어긋나 정상 흡수 직후에도 drift
-        거짓 경보가 상시 뜬다(실측). URL 형상은 **건드리지 않는다** — 스킬층이 fetch 후
-        관찰값을 기록한다(한 키 2역 금지·race/자기비교 회피).
+      - `upstream.seen_rev` (현재 관찰값·형상 무관) — *동기 시점 소스 checkout 의 rev 가 곧
+        관찰값*이다(URL 은 이 실행이 clone/fetch 한 캐시 HEAD·경로는 그 checkout HEAD).
+        baseline 만 갱신하면 두 키가 영구히 어긋나 정상 흡수 직후에도 drift 거짓 경보가 상시
+        뜬다(실측).
 
     두 키를 한 번의 공용 atomic writer로 묶는다 — 중간 중단에도 baseline 만 앞선 반쪽
     상태가 생기지 않는다(어긋난 두 키 = 거짓 drift 의 원인이었다). rev 읽기는 pm_import 의
@@ -2651,11 +2630,9 @@ def record_upstream_revs(dest_root: Path, source_root: Path) -> tuple[bool, dict
     임계 구간 본문)를 재사용한다. git repo 아님·HEAD 해소 실패·pm_import 로드 실패·local.conf
     부재는 **graceful 생략**(best-effort — sync 자체는 안 깬다).
 
-    conf 존재 판정·형상 판정(`upstream.path=` 읽기)·updates 계산·atomic write·실효값 검증은 **한
-    락 구간**이다 — 형상을 락 밖에서 읽으면 동시 `pm-config upstream set` 이 path↔URL 을 뒤집는
-    사이 stale 형상으로 계획이 굳어, URL 이 된 conf 에 `upstream.seen_rev`(스킬층 소유)을 쓰거나
-    path 가 된 conf 에서 그 키를 빠뜨린다. source rev 읽기(git·네트워크)는 대상 conf 와 무관하므로
-    락 밖이다 — 사람/네트워크 대기를 임계 구역에 넣지 않는다는 seam 규약 그대로다.
+    conf 존재 판정·atomic write·실효값 검증은 **한 락 구간**이다. source rev 읽기(git·네트워크)는
+    대상 conf 와 무관하므로 락 밖이다 — 사람/네트워크 대기를 임계 구역에 넣지 않는다는 seam
+    규약 그대로다.
     """
     try:
         pm_import = _load_pm_import()
@@ -2668,7 +2645,7 @@ def record_upstream_revs(dest_root: Path, source_root: Path) -> tuple[bool, dict
     try:
         rev = pm_import.read_upstream_rev(source_root)  # 대상 conf 와 무관(git) — 락 밖.
         if not rev:
-            return False, {}  # git repo 아님·HEAD 해소 실패 — graceful 생략(URL upstream 포함).
+            return False, {}  # git repo 아님·HEAD 해소 실패 — graceful 생략.
 
         local_conf = dest_root / ".project_manager" / "local.conf"
         if not local_conf.is_file():
@@ -2678,15 +2655,15 @@ def record_upstream_revs(dest_root: Path, source_root: Path) -> tuple[bool, dict
             return _warn_missing_conf_for_rev(local_conf)
         if not callable(getattr(pm_import, "_write_conf_keys_locked", None)):
             # 구세대 pm_import 사본(임계 구간 본문 seam 이전) — 자기-락 writer 로 물러난다. 우리 락을
-            # 쥔 채 부르면 같은 락 파일을 두 fd 로 잡아 데드락이므로 락 밖에서 계획·위임한다(종전 동작:
-            # 그 사본에서만 stale-plan 창이 남는다·부분 업그레이드 복구가 크래시보다 우선).
-            updates = _upstream_rev_updates(pm_import, dest_root, rev)
+            # 쥔 채 부르면 같은 락 파일을 두 fd 로 잡아 데드락이므로 락 밖에서 계획·위임한다(종전
+            # 동작·부분 업그레이드 복구가 크래시보다 우선).
+            updates = _upstream_rev_updates(rev)
             return pm_import._write_conf_keys(local_conf, updates), updates
 
         with _local_conf_write_lock(local_conf):
             if not local_conf.is_file():
                 return _warn_missing_conf_for_rev(local_conf)
-            updates = _upstream_rev_updates(pm_import, dest_root, rev)
+            updates = _upstream_rev_updates(rev)
             changed = pm_import._write_conf_keys_locked(local_conf, updates)
         return changed, updates
     except Exception as exc:  # noqa: BLE001 — 사본 skew 만 생략으로 내린다(그 밖은 종전대로 전파).
@@ -2714,8 +2691,8 @@ def converge_upstream_revs(
     묻는다). manifest skew 억제는 rc 축이 아니라 baseline 축이므로 그 판정과 독립이다."""
     if skew_status == "skew":
         print(
-            f"→ manifest skew({len(skew_new)}건)로 upstream.rev baseline(+경로 upstream 의 "
-            "upstream.seen_rev 관찰값) 갱신을 **억제**한다 — drift-lint 가 계속 이 skew 를 울리게 "
+            f"→ manifest skew({len(skew_new)}건)로 upstream.rev baseline(+upstream.seen_rev "
+            "관찰값) 갱신을 **억제**한다 — drift-lint 가 계속 이 skew 를 울리게 "
             "둔다. 로컬 engine.manifest 를 reconcile 한 뒤 다시 pm-update 하라(신규 등재분 "
             ")."
         )
@@ -2728,14 +2705,10 @@ def converge_upstream_revs(
               "**억제**한다 — 수렴한 뒤의 실행이 기록한다.")
         return False
 
-    # 안내 문구는 **엔진이 실제로 기록한 키**(recorded)로 정한다 — 파일의 결과 상태로
-    # 역추론하면 URL 형상(스킬층이 쓴 seen 이 이미 baseline 과 같음)에서 "동시 기록" 이
-    # 거짓으로 뜬다.
     changed, recorded = record_upstream_revs(dest_root, source_root)
     if changed:
-        seen_note = " (+upstream.seen_rev 동시 기록)" if _SEEN_REV_KEY in recorded else ""
         print("✓ local.conf upstream.rev baseline 갱신 (drift-lint 기준점): "
-              f"{recorded['upstream.rev']}{seen_note}")
+              f"{recorded['upstream.rev']} (+upstream.seen_rev 동시 기록)")
     return True
 
 
@@ -4297,8 +4270,9 @@ def drift_changes(engine_root: Path) -> list[str] | None:
     아니라 무판정):
       - `local.conf` 자체가 없음(빈 dict 로드 → upstream 키도 없음)
       - upstream 키가 비어 있음(미등록)
-      - upstream 이 URL(릴리스 추적 기본값) — 엔진은 로컬 파일만 비교한다(git clone/fetch 없음·
-        네트워크 0 유지). URL 은 캐시 clone 후 로컬 경로로 재등록해야 판정 가능해진다.
+      - upstream 이 URL(릴리스 추적 기본값) — 이 게이트는 lint 경로라 **네트워크 0** 을 유지한다
+        (`pm-config update` 의 URL 캐시를 여기로 넓히지 않는다 — lint 가 네트워크에 의존하게 된다).
+        URL 형상의 실제 흡수는 `pm-update` 가 캐시로 수행한다.
       - upstream 경로가 디렉토리로 존재하지 않음(이동/삭제)
       - manifest 부재(engine_root·source_root 양쪽 다 `engine.manifest` 없음)
       - 선택된 flavor manifest 를 읽을 수 없음(notation context 해소 실패)
@@ -6415,9 +6389,9 @@ def _main(argv: list[str] | None = None) -> int:
         epilog=(
             "--from 생략 시 <dest>/.project_manager/local.conf 의 `upstream.path=` 값을 기본으로 쓴다 "
             "(pm_import 가 한 번 import 하면 자동 기록·--from 명시로 override 가능). "
-            "단 upstream= 이 **URL**(릴리스 추적 기본)이면 엔진은 로컬 파일만 복사하므로 "
-            "(git clone/fetch 안 함) 자동 진행하지 않고 명확한 에러로 멈춘다 — "
-            "`pm-update` 스킬(URL→cache clone)을 쓰거나 `--from <로컬 checkout>` 을 명시하라. "
+            "upstream= 이 **URL**(릴리스 추적 기본)이면 <dest>/.project_manager/.local/"
+            "upstream-cache/ 에 clone(최초)/fetch(이후)한 뒤 그 캐시를 소스로 쓴다 — "
+            "clone/fetch 가 실패하면 옛 캐시로 진행하지 않고 명확한 에러로 멈춘다. "
             "upstream 미등록이거나 그 경로가 부재/디렉토리 아님이어도 명확한 에러로 멈춘다(침묵 폴백 없음)."
         ),
     )
@@ -6465,7 +6439,7 @@ def _main(argv: list[str] | None = None) -> int:
         help=(
             "받은 upstream baseline(local.conf upstream.rev) ↔ 그 이후 upstream HEAD 변경점을 "
             "read-only 로 요약(실 sync 안 함). 엔진 영향(manifest 경로)/그 외 분리. "
-            "upstream 이 로컬 checkout 일 때만(URL 은 명확 에러·git clone/fetch 안 함)."
+            "URL upstream 은 같은 로컬 캐시(clone/fetch)를 소스로 쓴다."
         ),
     )
     ap.add_argument(
@@ -6554,7 +6528,7 @@ def _main(argv: list[str] | None = None) -> int:
     if args.changes:
         return _run_changes(args)
 
-    # dest/source 해소(--target·--from·URL 게이트·stale 가드)는 --changes 와 공유한다.
+    # dest/source 해소(--target·--from·URL 캐시·stale 가드)는 --changes 와 공유한다.
     rc, dest_root, source_root = _resolve_dest_source(args)
     if rc != 0:
         return rc
@@ -7041,13 +7015,13 @@ def _main(argv: list[str] | None = None) -> int:
         print_instance_owned_delta()
 
     # upstream.rev baseline 갱신 — 매 sync 마다 source(upstream) HEAD 를
-    # local.conf 에 박아 drift-lint의 "마지막 동기 이후" 기준점을 최신화한다. 경로
-    # upstream 이면 `upstream.seen_rev`(현재 관찰값)도 같은 rev 로 함께 기록한다(
-    # 경로는 동기 시점 checkout rev 가 곧 관찰값·두 키가 어긋난 채 남으면 상시 거짓 drift). 단
+    # local.conf 에 박아 drift-lint의 "마지막 동기 이후" 기준점을 최신화한다.
+    # `upstream.seen_rev`(현재 관찰값)도 같은 rev 로 함께 기록한다(동기 시점 소스 checkout rev 가
+    # 곧 관찰값·두 키가 어긋난 채 남으면 상시 거짓 drift). 단
     # **manifest skew**(로컬 manifest 구형·신규 등재분 미도달)면 갱신을 억제한다 —
     # baseline 을 최신으로 박으면 drift-lint 가 "최신"으로 침묵해 신규 엔진 파일 누락을 은폐한다
     # (회사 채택자 실측). skew 아님(정합·또는 upstream manifest 부재 fail-soft)이면 현행대로 갱신.
-    # source 가 로컬 git checkout 일 때만(URL upstream 은 로컬 checkout 없어 graceful 생략).
+    # source 는 로컬 checkout 이다(URL upstream 은 이 실행이 만든 캐시 checkout).
     # best-effort — 기록 실패가 동기화 자체를 무효화하지 않는다(파일은 이미 적용됨). --target
     # 모드는 effective_dest(templates/<name>)의 conf 에 기록(루트 오염 방지).
     # `--paths`(부분 전파)는 baseline 을 건너뛴다 — 요청 경로만 옮긴 실행을 "전량 흡수"
