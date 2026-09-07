@@ -1,0 +1,576 @@
+{
+  "schema": 1,
+  "groups": [
+    "project",
+    "runtime",
+    "identity",
+    "upstream",
+    "ctx",
+    "harness",
+    "delegate",
+    "additional_reviewer"
+  ],
+  "keys": [
+    {
+      "key": "project.name",
+      "group": "project",
+      "description": "어댑터 문서 렌더에 쓰는 프로젝트 이름 (빈값 허용).",
+      "default": null,
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "project.tagline",
+      "group": "project",
+      "description": "어댑터 문서 렌더 토큰 — 프로젝트 한 줄 소개.",
+      "default": null,
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "project.root",
+      "group": "project",
+      "description": "어댑터 문서 렌더 토큰 — 문서가 가리키는 루트 경로.",
+      "default": null,
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "project.date",
+      "group": "project",
+      "description": "어댑터 문서 렌더 토큰 — 기준 날짜.",
+      "default": null,
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "runtime.py",
+      "group": "runtime",
+      "description": "이 clone 의 python 인터프리터 (`board.py init` 이 실행검증으로 채운다).",
+      "default": null,
+      "required": true,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "test.cmd",
+      "group": "runtime",
+      "description": "회귀 게이트가 그대로 실행하는 프로젝트 test 명령 (`board.py init` 이 탐지한 인터프리터로 채운다).",
+      "default": null,
+      "required": true,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "qa.platforms",
+      "group": "runtime",
+      "description": "opt-in platform 이름 목록(쉼표 구분). 선언하면 platform 마다 `test.<name>.cmd` 가 필요하고, 무인자 FULL 이 core 뒤 선언 순서로 직렬 실행한다.",
+      "default": null,
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "regression.min_collected",
+      "group": "runtime",
+      "description": "FULL 회귀 수집 하한 (부분 수집 false-green 차단). 미설정이면 하한 검사를 하지 않는다.",
+      "default": null,
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "identity.user",
+      "group": "identity",
+      "description": "이 clone 에서 나는 누구인가 (slot·task 무관). 미설정이면 `git config user.email`.",
+      "default": null,
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "upstream.path",
+      "group": "upstream",
+      "description": "`pm-update` 가 기본 source 로 쓰는 프레임워크 경로/URL.",
+      "default": null,
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "upstream.rev",
+      "group": "upstream",
+      "description": "drift-lint 의 baseline rev (엔진이 기록한다).",
+      "default": null,
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "upstream.seen_rev",
+      "group": "upstream",
+      "description": "마지막으로 관찰한 upstream rev (엔진이 기록한다).",
+      "default": null,
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "ctx.nudge_pct",
+      "group": "ctx",
+      "description": "잔여 컨텍스트 % 넛지 임계 — 이 값 이하면 checkpoint 를 권고한다(일은 계속).",
+      "default": "30",
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "ctx.stop_pct",
+      "group": "ctx",
+      "description": "잔여 컨텍스트 % 정지 임계 — 이 값 이하면 정지·핸드오프.",
+      "default": "20",
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "ctx.window_tokens",
+      "group": "ctx",
+      "description": "하네스별 값이 없을 때의 컨텍스트 예산(핸드오프 판정의 분모). 물리 window 가 커도 낮게 두면 이른 핸드오프 = 토큰 경제라 기본은 200K 다.",
+      "default": "200000",
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "delegate.enabled",
+      "group": "delegate",
+      "description": "위임 마스터 스위치(채널 무관) — `false` 면 위임 실행이 거부된다.",
+      "default": "true",
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "delegate.timeout",
+      "group": "delegate",
+      "description": "위임 실행의 벽시계 백스톱(초) — 미설정이면 하네스 프로필(`pm_relay.HARNESS_PROFILES`)이 정본이다(하네스별 키가 이긴다).",
+      "default": null,
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "delegate.idle_timeout",
+      "group": "delegate",
+      "description": "위임 실행의 무진행 판정 상한(초) — 미설정이면 하네스 프로필(`pm_relay.HARNESS_PROFILES`)이 정본이다(하네스별 키가 이긴다).",
+      "default": null,
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "delegate.code-reviewer.rounds_max",
+      "group": "delegate",
+      "description": "내부 code-reviewer 라운드 수렴 상한 (추가 리뷰어 예산과 별개 축·과금 없음).",
+      "default": "3",
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "additional_reviewer.harness",
+      "group": "additional_reviewer",
+      "description": "추가 리뷰어를 실행할 하네스. `model`·`reasoning` 과 세트로 쓴다(없으면 fail-loud).",
+      "default": null,
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "additional_reviewer.model",
+      "group": "additional_reviewer",
+      "description": "추가 리뷰어 모델 — 그 하네스가 인정하는 표기를 그대로 쓴다.",
+      "default": null,
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "additional_reviewer.reasoning",
+      "group": "additional_reviewer",
+      "description": "추가 리뷰어 추론 강도 (codex 는 low/medium/high/xhigh).",
+      "default": null,
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "additional_reviewer.rounds_max",
+      "group": "additional_reviewer",
+      "description": "게이트 하나의 리뷰 라운드 수렴 상한 — 호출 횟수가 아니라 must_fix 추이로 본다.",
+      "default": "2",
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "additional_reviewer.incomplete_rounds_max",
+      "group": "additional_reviewer",
+      "description": "판정 없이 끝난 호출(타임아웃·중단·오염 무효화)의 재시도 상한.",
+      "default": "2",
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "additional_reviewer.wave_budget",
+      "group": "additional_reviewer",
+      "description": "wave(세션) 단위 총 라운드 예산 — 게이트별 상한과 별개 축이다.",
+      "default": "24",
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "additional_reviewer.paths",
+      "group": "additional_reviewer",
+      "description": "리뷰 대상 경로 목록 (쉼표 또는 공백 구분).",
+      "default": "src/,tests/,scripts/,.project_manager/tools/",
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "additional_reviewer.timeout",
+      "group": "additional_reviewer",
+      "description": "리뷰어 실행의 벽시계 백스톱(초) — 미설정이면 하네스 프로필(`pm_relay.HARNESS_PROFILES`)이 정본이다(하네스별 키가 이긴다).",
+      "default": null,
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "additional_reviewer.idle_timeout",
+      "group": "additional_reviewer",
+      "description": "리뷰어 실행의 무진행 판정 상한(초) — 미설정이면 하네스 프로필(`pm_relay.HARNESS_PROFILES`)이 정본이다(하네스별 키가 이긴다).",
+      "default": null,
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "additional_reviewer.progress_signal",
+      "group": "additional_reviewer",
+      "description": "리뷰어 진행 신호 형식 — 미설정이면 해소된 리뷰어 CLI 의 옵션 계약에서 파생한다.",
+      "default": null,
+      "required": false,
+      "kind": "key",
+      "members": null
+    },
+    {
+      "key": "harness.<name>.{idle_timeout,wall_timeout,ctx_window_tokens,pro_model}",
+      "group": "harness",
+      "description": "하네스별 실행 예산·모델. `idle_timeout`(무진행 판정·주)·`wall_timeout`(벽시계 백스톱)은 미설정이면 하네스 프로필(`pm_relay.HARNESS_PROFILES`)이 정본이다 — 미설정이어도 안전하다. `ctx_window_tokens` 는 그 하네스의 컨텍스트 예산(미설정이면 `ctx.window_tokens`), `pro_model` 은 어댑터 카드 렌더 모델이다.",
+      "default": null,
+      "required": false,
+      "kind": "pattern",
+      "members": [
+        {
+          "key": "harness.claude.idle_timeout",
+          "default": null
+        },
+        {
+          "key": "harness.claude.wall_timeout",
+          "default": null
+        },
+        {
+          "key": "harness.claude.ctx_window_tokens",
+          "default": null
+        },
+        {
+          "key": "harness.claude.pro_model",
+          "default": null
+        },
+        {
+          "key": "harness.codex.idle_timeout",
+          "default": null
+        },
+        {
+          "key": "harness.codex.wall_timeout",
+          "default": null
+        },
+        {
+          "key": "harness.codex.ctx_window_tokens",
+          "default": null
+        },
+        {
+          "key": "harness.codex.pro_model",
+          "default": null
+        },
+        {
+          "key": "harness.opencode.idle_timeout",
+          "default": null
+        },
+        {
+          "key": "harness.opencode.wall_timeout",
+          "default": null
+        },
+        {
+          "key": "harness.opencode.ctx_window_tokens",
+          "default": null
+        },
+        {
+          "key": "harness.opencode.pro_model",
+          "default": null
+        }
+      ]
+    },
+    {
+      "key": "delegate.<role>[.hard][.fallback].{harness,model,reasoning}",
+      "group": "delegate",
+      "description": "역할→하네스/모델/추론 강도 매핑. 세트를 통째로 쓴다(티어 간 상속 없음). `.hard` 는 난제 티어, `.fallback` 은 인프라 실패(스폰 실패·타임아웃·한도/인증) 1회 대체다.",
+      "default": null,
+      "required": false,
+      "kind": "pattern",
+      "members": [
+        {
+          "key": "delegate.developer.harness",
+          "default": null
+        },
+        {
+          "key": "delegate.developer.model",
+          "default": null
+        },
+        {
+          "key": "delegate.developer.reasoning",
+          "default": null
+        },
+        {
+          "key": "delegate.developer.hard.harness",
+          "default": null
+        },
+        {
+          "key": "delegate.developer.hard.model",
+          "default": null
+        },
+        {
+          "key": "delegate.developer.hard.reasoning",
+          "default": null
+        },
+        {
+          "key": "delegate.developer.fallback.harness",
+          "default": null
+        },
+        {
+          "key": "delegate.developer.fallback.model",
+          "default": null
+        },
+        {
+          "key": "delegate.developer.fallback.reasoning",
+          "default": null
+        },
+        {
+          "key": "delegate.developer.hard.fallback.harness",
+          "default": null
+        },
+        {
+          "key": "delegate.developer.hard.fallback.model",
+          "default": null
+        },
+        {
+          "key": "delegate.developer.hard.fallback.reasoning",
+          "default": null
+        },
+        {
+          "key": "delegate.researcher.harness",
+          "default": null
+        },
+        {
+          "key": "delegate.researcher.model",
+          "default": null
+        },
+        {
+          "key": "delegate.researcher.reasoning",
+          "default": null
+        },
+        {
+          "key": "delegate.researcher.hard.harness",
+          "default": null
+        },
+        {
+          "key": "delegate.researcher.hard.model",
+          "default": null
+        },
+        {
+          "key": "delegate.researcher.hard.reasoning",
+          "default": null
+        },
+        {
+          "key": "delegate.researcher.fallback.harness",
+          "default": null
+        },
+        {
+          "key": "delegate.researcher.fallback.model",
+          "default": null
+        },
+        {
+          "key": "delegate.researcher.fallback.reasoning",
+          "default": null
+        },
+        {
+          "key": "delegate.researcher.hard.fallback.harness",
+          "default": null
+        },
+        {
+          "key": "delegate.researcher.hard.fallback.model",
+          "default": null
+        },
+        {
+          "key": "delegate.researcher.hard.fallback.reasoning",
+          "default": null
+        },
+        {
+          "key": "delegate.architect.harness",
+          "default": null
+        },
+        {
+          "key": "delegate.architect.model",
+          "default": null
+        },
+        {
+          "key": "delegate.architect.reasoning",
+          "default": null
+        },
+        {
+          "key": "delegate.architect.hard.harness",
+          "default": null
+        },
+        {
+          "key": "delegate.architect.hard.model",
+          "default": null
+        },
+        {
+          "key": "delegate.architect.hard.reasoning",
+          "default": null
+        },
+        {
+          "key": "delegate.architect.fallback.harness",
+          "default": null
+        },
+        {
+          "key": "delegate.architect.fallback.model",
+          "default": null
+        },
+        {
+          "key": "delegate.architect.fallback.reasoning",
+          "default": null
+        },
+        {
+          "key": "delegate.architect.hard.fallback.harness",
+          "default": null
+        },
+        {
+          "key": "delegate.architect.hard.fallback.model",
+          "default": null
+        },
+        {
+          "key": "delegate.architect.hard.fallback.reasoning",
+          "default": null
+        },
+        {
+          "key": "delegate.code-reviewer.harness",
+          "default": null
+        },
+        {
+          "key": "delegate.code-reviewer.model",
+          "default": null
+        },
+        {
+          "key": "delegate.code-reviewer.reasoning",
+          "default": null
+        },
+        {
+          "key": "delegate.code-reviewer.hard.harness",
+          "default": null
+        },
+        {
+          "key": "delegate.code-reviewer.hard.model",
+          "default": null
+        },
+        {
+          "key": "delegate.code-reviewer.hard.reasoning",
+          "default": null
+        },
+        {
+          "key": "delegate.code-reviewer.fallback.harness",
+          "default": null
+        },
+        {
+          "key": "delegate.code-reviewer.fallback.model",
+          "default": null
+        },
+        {
+          "key": "delegate.code-reviewer.fallback.reasoning",
+          "default": null
+        },
+        {
+          "key": "delegate.code-reviewer.hard.fallback.harness",
+          "default": null
+        },
+        {
+          "key": "delegate.code-reviewer.hard.fallback.model",
+          "default": null
+        },
+        {
+          "key": "delegate.code-reviewer.hard.fallback.reasoning",
+          "default": null
+        }
+      ]
+    },
+    {
+      "key": "delegate.model_alias.<name>",
+      "group": "delegate",
+      "description": "모델 별칭 — 역할 키의 `model` 값에 이 이름을 적으면 여기 선언한 값으로 해소한다.",
+      "default": null,
+      "required": false,
+      "kind": "pattern",
+      "members": []
+    },
+    {
+      "key": "diff_cap.<estimate>",
+      "group": "additional_reviewer",
+      "description": "티켓 `estimate` 별 diff 총량(추가+삭제) 상한. 엔진이 모르는 estimate 는 상한을 지어내지 않는다(가드 off).",
+      "default": null,
+      "required": false,
+      "kind": "pattern",
+      "members": [
+        {
+          "key": "diff_cap.small",
+          "default": "300"
+        },
+        {
+          "key": "diff_cap.medium",
+          "default": "1000"
+        },
+        {
+          "key": "diff_cap.large",
+          "default": "2500"
+        }
+      ]
+    },
+    {
+      "key": "test.<platform>.cmd",
+      "group": "runtime",
+      "description": "`qa.platforms` 에 선언한 platform 의 host-side wrapper 명령 (선언 없는 platform 키는 모르는 키로 뜬다).",
+      "default": null,
+      "required": false,
+      "kind": "pattern",
+      "members": []
+    }
+  ]
+}

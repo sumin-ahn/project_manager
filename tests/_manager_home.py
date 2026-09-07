@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -32,6 +33,19 @@ print("pool: (텍스트 출력)")
 SLOW_SCRIPT = '''#!/usr/bin/env python3
 import time
 time.sleep(30)
+'''
+
+# `--keys` 는 알지만 `--json` 은 모르는 실제 등가물 — T-0911 직전 세대의 `main()` 그대로
+# (`args == ["--keys"]` 완전 일치만 받고 그 밖은 사용법 rc 2).
+OLD_GENERATION_KEY_REGISTRY = '''#!/usr/bin/env python3
+"""옛 세대 local_conf.py — 키 표는 있고 기계 표면(`--json`)은 없다."""
+import sys
+
+if sys.argv[1:] == ["--keys"]:
+    print("local.conf 키 — 사람 표(옛 세대)")
+    raise SystemExit(0)
+print("사용법: local_conf.py [--keys | --render-adapter-block <python|js|sh>]", file=sys.stderr)
+raise SystemExit(2)
 '''
 
 
@@ -88,6 +102,28 @@ def remove_engine_script(pm_home: Path) -> None:
 def install_slow_engine(pm_home: Path) -> None:
     """상한을 재는 자리 — 응답하지 않는 사본."""
     engine_script(pm_home).write_text(SLOW_SCRIPT, encoding="utf-8")
+
+
+def install_old_generation_key_registry(pm_home: Path) -> None:
+    """항목 목록 축의 옛 세대 — 그 사본의 `local_conf.py` 가 `--keys --json` 을 모른다."""
+    (pm_home / ".project_manager" / "tools" / "local_conf.py").write_text(
+        OLD_GENERATION_KEY_REGISTRY, encoding="utf-8")
+
+
+def tree_snapshot(root: Path) -> dict[str, str]:
+    """트리의 `{상대경로: 내용 해시}` — 생성·수정·삭제가 전부 키/값 차이로 드러난다.
+
+    관리자의 계약은 "프로젝트 폴더에 직접 쓰는 파일은 `local.conf` 하나" 라, 조회·저장 전후로
+    **무엇이 바뀌었는지 이름 단위로** 재야 한다(한 덩이 해시는 무엇이 바뀌었는지 말하지 못한다).
+    """
+    snapshot: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        if "__pycache__" in path.parts:
+            continue
+        relative = path.relative_to(root).as_posix()
+        snapshot[relative] = (
+            hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "<dir>")
+    return snapshot
 
 
 def make_bare_with_tags(root: Path, tags: tuple[str, ...] = (

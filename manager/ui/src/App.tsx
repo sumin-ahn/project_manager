@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Bridge, BridgeError, Project, StatusDocument, TagsResponse } from "./api";
 import { isError } from "./api";
+import AdapterMatrix from "./components/AdapterMatrix";
 import Header from "./components/Header";
 import ProjectList from "./components/ProjectList";
 import RefreshBar from "./components/RefreshBar";
@@ -32,6 +33,8 @@ export default function App({ bridge }: { bridge: Bridge }) {
   const [busy, setBusy] = useState<Busy>({ light: false, heavy: false, tags: false });
   const [selected, setSelected] = useState<string | null>(null);
   const [visible, setVisible] = useState(() => document.visibilityState === "visible");
+  // 전체 보기(어댑터 매트릭스)는 등록 프로젝트마다 무거운 조회 한 번이라 열어야만 돈다.
+  const [matrixOpen, setMatrixOpen] = useState(false);
 
   const loadProjects = useCallback(async (): Promise<Project[]> => {
     const response = await bridge.list_projects();
@@ -156,8 +159,9 @@ export default function App({ bridge }: { bridge: Bridge }) {
         onSelect={setSelected}
         onAdd={addProject}
         onRemove={removeProject}
+        onOpenMatrix={() => setMatrixOpen(true)}
       />
-      <main className="flex min-w-0 flex-1 flex-col">
+      <main className="relative flex min-w-0 flex-1 flex-col">
         <Header
           name={selectedName}
           entry={selectedLight}
@@ -169,7 +173,9 @@ export default function App({ bridge }: { bridge: Bridge }) {
           tags={{ at: tagsAt, error: tagsError, busy: busy.tags }}
           onRefresh={refreshSelected}
         />
-        <Tabs light={selectedLight} heavy={selectedHeavy} onOpenUpdate={refreshTags} />
+        <Tabs bridge={bridge} path={selected} light={selectedLight} heavy={selectedHeavy}
+              onOpenUpdate={refreshTags} />
+        {matrixOpen && <AdapterMatrix bridge={bridge} onClose={() => setMatrixOpen(false)} />}
       </main>
     </div>
   );

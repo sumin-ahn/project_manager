@@ -19,7 +19,9 @@ import pytest
 from _manager_home import git_required, make_pm_home, pm_config
 
 REPO = Path(__file__).resolve().parents[1]
-FIXTURE = REPO / "manager" / "ui" / "src" / "fixtures" / "status.sample.json"
+FIXTURES = REPO / "manager" / "ui" / "src" / "fixtures"
+FIXTURE = FIXTURES / "status.sample.json"
+KEYS_FIXTURE = FIXTURES / "conf-keys.sample.json"
 
 pytestmark = git_required
 
@@ -100,3 +102,28 @@ def test_the_fixture_carries_no_personal_path():
     text = FIXTURE.read_text(encoding="utf-8")
 
     assert "/home/" not in text and "/Users/" not in text
+
+
+# ── 키 목록 픽스처 (T-0911) ──────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def live_keys(tmp_path_factory) -> dict:
+    """그 자리에서 만든 실 PM 홈의 실 `local_conf.py --keys --json`."""
+    home = make_pm_home(tmp_path_factory.mktemp("keys-home") / "demo")
+    completed = subprocess.run(
+        [sys.executable, str(home / ".project_manager" / "tools" / "local_conf.py"),
+         "--keys", "--json"],
+        cwd=str(home), capture_output=True, text=True, encoding="utf-8", errors="replace")
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def test_the_key_fixture_is_the_engines_own_registry(live_keys):
+    """설정 화면 픽스처가 현행 레지스트리와 같은 키·같은 필드인지 (손으로 적은 목록 0)."""
+    sample = json.loads(KEYS_FIXTURE.read_text(encoding="utf-8"))
+
+    assert sample["schema"] == live_keys["schema"]
+    assert sample["groups"] == live_keys["groups"]
+    assert [row["key"] for row in sample["keys"]] == [row["key"] for row in live_keys["keys"]]
+    assert _row_keys(sample["keys"]) == _row_keys(live_keys["keys"])

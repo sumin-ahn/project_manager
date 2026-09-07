@@ -6,7 +6,7 @@ import StatusDot from "./StatusDot";
 
 /** 왼쪽 2단의 왼칸 — 등록 프로젝트 전부(가벼운 절의 대상). */
 export default function ProjectList({
-  projects, light, tags, selected, listError, onSelect, onAdd, onRemove,
+  projects, light, tags, selected, listError, onSelect, onAdd, onRemove, onOpenMatrix,
 }: {
   projects: Project[];
   light: Record<string, Entry>;
@@ -16,15 +16,22 @@ export default function ProjectList({
   onSelect: (path: string) => void;
   onAdd: () => void;
   onRemove: (path: string) => void;
+  onOpenMatrix: () => void;
 }) {
   return (
     <aside className="flex w-72 shrink-0 flex-col border-r border-slate-200">
       <div className="flex items-center justify-between px-3 py-2 border-b border-slate-200">
         <span className="font-medium">Projects</span>
-        <button type="button" aria-label="프로젝트 추가" onClick={onAdd}
-                className="rounded p-1 hover:bg-slate-100">
-          <Plus size={14} />
-        </button>
+        <span className="flex items-center gap-1">
+          <button type="button" onClick={onOpenMatrix}
+                  className="rounded border border-slate-200 px-1 text-[11px] hover:bg-slate-100">
+            전체 보기
+          </button>
+          <button type="button" aria-label="프로젝트 추가" onClick={onAdd}
+                  className="rounded p-1 hover:bg-slate-100">
+            <Plus size={14} />
+          </button>
+        </span>
       </div>
       {listError && (
         <p role="alert" className="px-3 py-2 text-red-600">

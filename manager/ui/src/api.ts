@@ -51,10 +51,65 @@ export type StatusDocument = {
   git: { branch: string | null; head: string | null; dirty: boolean | null };
   repos: { repo: string; prefix: string | null }[];
   harnesses: string[];
-  conf: { missing_required: string[]; unknown: string[] };
+  conf: ConfSection;
   board: BoardSection | null;
-  adapters: { source: string; files: { path: string; status?: string }[] } | null;
+  adapters: AdapterDocument | null;
 };
+
+/** 설정 완전성 다섯 목록. `missing_for_latest` 는 소스가 해소된 호출에서만 배열이고 아니면 null(모름). */
+export type ConfSection = {
+  missing_required: string[];
+  legacy: { key: string; replacement: string | null }[];
+  unknown: string[];
+  nonstandard: { key: string; value: string; default: string }[];
+  missing_for_latest: string[] | null;
+};
+
+/** 키 레지스트리 한 행 — 실명(`kind: "key"`)과 패턴 키군(`kind: "pattern"`)이 한 목록에 있다. */
+export type ConfKeyRow = {
+  key: string;
+  group: string;
+  description: string;
+  default: string | null;
+  required: boolean;
+  kind: "key" | "pattern";
+  members: { key: string; default: string | null }[] | null;
+};
+
+export type ConfKeysDocument = { schema: number; groups: string[]; keys: ConfKeyRow[] };
+export type ConfValuesDocument = { values: Record<string, string>; conf: ConfSection };
+export type ConfSaveResult = { changed: boolean; conf: ConfSection };
+
+export type AdapterFeature = {
+  name: string;
+  project: string | number | boolean | null;
+  latest: string | number | boolean | null;
+  verdict: "same" | "missing" | "differs" | "retired";
+};
+
+/**
+ * 어댑터 파일 한 행 — 모양이 **둘**이다. 채널 있는 파일은 아래 필드 전부를 들고, 인스턴스 소유
+ * 문서(`CLAUDE.md`·`AGENTS.md`)는 `path`·`ownership`·`status` 셋뿐이다(나머지는 null 이 아니라
+ * **키가 없다**). 화면은 `"mode" in file` 로 가른다.
+ */
+export type AdapterFile = {
+  path: string;
+  status: string;
+  ownership?: string;
+  harness?: string;
+  mode?: "managed" | "report";
+  template_rev?: string;
+  diff_lines?: { added: number; removed: number };
+  diff_vs_baseline?: string;
+  diff_vs_latest?: string;
+  features?: AdapterFeature[];
+  distance?: number;
+};
+
+export type AdapterDocument = { source: string; files: AdapterFile[] };
+export type AdapterMatrixDocument = Record<string, AdapterDocument | ErrorResponse>;
+/** 사본 명령 하나의 산출 — 거부 문구는 엔진 원문이라 화면이 다시 쓰지 않는다. */
+export type CommandResult = { rc: number; stdout: string; stderr: string };
 
 export type Project = { path: string; name: string };
 export type ProjectsResponse = { projects: Project[] };
@@ -71,6 +126,16 @@ export type Bridge = {
     Promise<StatusDocument | ErrorResponse>;
   latest_tags(): Promise<TagsResponse | ErrorResponse>;
   pick_folder(): Promise<{ path: string | null } | ErrorResponse>;
+  conf_keys(path: string): Promise<ConfKeysDocument | ErrorResponse>;
+  conf_values(path: string): Promise<ConfValuesDocument | ErrorResponse>;
+  conf_save(path: string, updates: Record<string, string>):
+    Promise<ConfSaveResult | ErrorResponse>;
+  conf_reset(path: string, key: string): Promise<ConfSaveResult | ErrorResponse>;
+  adapters(path: string): Promise<AdapterDocument | ErrorResponse>;
+  adapter_accept(path: string, relpath: string): Promise<CommandResult | ErrorResponse>;
+  adapter_matrix(): Promise<AdapterMatrixDocument | ErrorResponse>;
+  upstream_show(path: string): Promise<CommandResult | ErrorResponse>;
+  upstream_set(path: string, value: string): Promise<CommandResult | ErrorResponse>;
 };
 
 export function isError<T>(response: T | ErrorResponse): response is ErrorResponse {
@@ -105,5 +170,19 @@ export function pywebviewBridge(): Bridge {
       call("status", path, withBoard, withAdapters) as Promise<StatusDocument | ErrorResponse>,
     latest_tags: () => call("latest_tags") as Promise<TagsResponse | ErrorResponse>,
     pick_folder: () => call("pick_folder") as Promise<{ path: string | null } | ErrorResponse>,
+    conf_keys: (path) => call("conf_keys", path) as Promise<ConfKeysDocument | ErrorResponse>,
+    conf_values: (path) =>
+      call("conf_values", path) as Promise<ConfValuesDocument | ErrorResponse>,
+    conf_save: (path, updates) =>
+      call("conf_save", path, updates) as Promise<ConfSaveResult | ErrorResponse>,
+    conf_reset: (path, key) =>
+      call("conf_reset", path, key) as Promise<ConfSaveResult | ErrorResponse>,
+    adapters: (path) => call("adapters", path) as Promise<AdapterDocument | ErrorResponse>,
+    adapter_accept: (path, relpath) =>
+      call("adapter_accept", path, relpath) as Promise<CommandResult | ErrorResponse>,
+    adapter_matrix: () => call("adapter_matrix") as Promise<AdapterMatrixDocument | ErrorResponse>,
+    upstream_show: (path) => call("upstream_show", path) as Promise<CommandResult | ErrorResponse>,
+    upstream_set: (path, value) =>
+      call("upstream_set", path, value) as Promise<CommandResult | ErrorResponse>,
   };
 }
