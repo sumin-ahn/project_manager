@@ -70,7 +70,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import datetime
 import inspect
+import json
 import os
 import re
 import shutil
@@ -238,6 +240,10 @@ ENGINE_REV = "v1.7.13"
 # deep-import AST 가드가 실제 호출 target에서 목록/검증 누락을 자동 적발한다.
 _STAMPED_SIBLINGS = frozenset({"file_lock.py", 
     "identity_args.py", "board.py", "worktree_pool.py", "pm_import.py",
+    # local_conf.py 는 `_load_local_conf` 가 이미 rev 대조로 로드하는 형제다. 여기 명시해야
+    # **다른 세대**를 의도적으로 여는 자리(`_source_missing_required` — 소스 checkout 의 사본)가
+    # 그 gate 아래의 명시적 우회로 읽힌다(선언 없는 무검증 로드와 구분).
+    "local_conf.py",
 })
 
 
@@ -445,58 +451,64 @@ def _default_user() -> str | None:
     return _git_config_email()
 
 
-# areas.md canonical 칼럼 순서상 `area_owner` 의 위치(마지막·index 7·board `_AREAS_COLUMNS`).
-# 구 헤더(area_owner 이전) + 신 canonical row 가 append 된 업그레이드 행을 이 위치로 폴백 read
-# 한다(board `_parse_areas` 의 wider-row 관용과 동형·유실 방지).
-_CANONICAL_AREA_OWNER_IDX = 7
+# areas.md canonical 칼럼 순서 (board `_AREAS_COLUMNS` 와 같은 순서). 구 헤더는 이 순서의
+# *prefix* 라, 헤더보다 넓은 행(구 헤더에 신 canonical row 가 append 된 업그레이드 행)은 이
+# 순서로 이어 매핑해 `base`/`protected`/`area_owner` 유실을 막는다(board `_areas_row_dict` 동형).
+_AREAS_CANONICAL_COLUMNS = ("repo", "prefix", "git", "test_cmd", "owner", "base",
+                            "protected", "area_owner")
+
+
+def _areas_rows() -> list[dict[str, str]]:
+    """areas.md 데이터 행 → `{칼럼명: 값}` 목록 — pm_config 자체 파싱(board.py 미로드).
+
+    board 의 `_parse_areas` 와 **같은 매핑 규칙**이되 board 를 import 하지 않는다. `cmd_status`
+    (정체성 posture)와 기계 조회(`status --json` 의 `repos`)가 이 파서 하나를 공유한다 — 같은
+    파일을 두 번 파싱하지 않는다. 구분선(`|---|`)은 건너뛰고 첫 table row 를 헤더로 본다.
+    파일 부재·읽기 실패·손상 UTF-8 은 빈 목록(fail-soft — 조회가 크래시하지 않는다).
+    """
+    areas_file = REPO / ".project_manager" / "areas.md"
+    try:
+        lines = _load_file_lock().read_text_shared(areas_file, encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return []
+    header: list[str] = []
+    rows: list[dict[str, str]] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if cells and all(c and set(c) <= {"-", ":"} for c in cells):
+            continue  # 구분선(|---|:--:|) skip.
+        if not header:
+            header = [c.lower() for c in cells]
+            continue
+        if len(cells) > len(header):
+            rows.append({
+                (_AREAS_CANONICAL_COLUMNS[i] if i < len(_AREAS_CANONICAL_COLUMNS)
+                 else f"col{i}"): cells[i]
+                for i in range(len(cells))
+            })
+        else:
+            rows.append({header[i]: (cells[i] if i < len(cells) else "")
+                         for i in range(len(header))})
+    return rows
 
 
 def _distinct_area_owners() -> int:
-    """areas.md 의 distinct non-empty `area_owner` 수 — pm_config 자체 파싱(다중사용자 최소 신호).
+    """areas.md 의 distinct non-empty `area_owner` 수 — 다중사용자 최소 신호.
 
     `cmd_status` 의 isolation posture(strict/degrade/single-user) 판정용 *coarse* 신호다. board.py 를
     import 하지 않으므로 `_local_conf_user` 동형으로
-    areas.md 를 stdlib 로 직접 읽는다 — board 의 격리 *판정*(`_ticket_is_mine`·티켓 스캔
-    `_distinct_ticket_users`)은 복제하지 않고, 공유 레지스트리(areas.md)의 `area_owner` 칼럼만
+    areas.md 를 stdlib 로 직접 읽는다(`_areas_rows`) — board 의 격리 *판정*(`_ticket_is_mine`·티켓
+    스캔 `_distinct_ticket_users`)은 복제하지 않고, 공유 레지스트리(areas.md)의 `area_owner` 칼럼만
     헤더-인식으로 센다. 실 strict-exclude 여부는 `board list --mine` loud-warn이
     authoritative — 여긴 정체성·모드 posture 만.
 
-    헤더에서 `area_owner` 칼럼을 찾는다(신 스키마). 헤더에 없어도 데이터 행이 canonical
-    폭(≥8 셀)이면 마지막(`_CANONICAL_AREA_OWNER_IDX`)에서 읽어 구-헤더+신-row 업그레이드의 유실을
-    막는다. 구분선(`|---|`) skip. 파일/칼럼 부재·파싱 실패는 0(fail-soft·단일 사용자 취급·크래시 0).
+    파일/칼럼 부재·파싱 실패는 0(fail-soft·단일 사용자 취급·크래시 0).
     """
-    af = REPO / ".project_manager" / "areas.md"
-    try:
-        lines = _load_file_lock().read_text_shared(af, encoding="utf-8").splitlines()
-    except (OSError, UnicodeError):
-        return 0    # 부재/읽기실패/손상 UTF-8 → 0(단일 사용자 취급·크래시 0·docstring fail-soft 계약).
-    owners: set[str] = set()
-    header_idx: int | None = None
-    header_seen = False
-    for line in lines:
-        s = line.strip()
-        if not s.startswith("|"):
-            continue
-        cells = [c.strip() for c in s.strip("|").split("|")]
-        if cells and all(c and set(c) <= {"-", ":"} for c in cells):
-            continue  # 구분선(|---|:--:|) skip.
-        if not header_seen:
-            header_seen = True
-            lowered = [c.lower() for c in cells]
-            if "area_owner" in lowered:
-                header_idx = lowered.index("area_owner")
-            continue
-        # 데이터 행: 헤더에 area_owner 가 있으면 그 위치, 없어도 canonical 폭이면 마지막에서
-        # 읽는다(구 헤더 + 신 canonical row 업그레이드·board `_parse_areas` 동형).
-        if header_idx is not None and header_idx < len(cells):
-            val = cells[header_idx]
-        elif header_idx is None and len(cells) > _CANONICAL_AREA_OWNER_IDX:
-            val = cells[_CANONICAL_AREA_OWNER_IDX]
-        else:
-            val = ""
-        if val:
-            owners.add(val)
-    return len(owners)
+    return len({owner for owner in (row.get("area_owner") for row in _areas_rows())
+                if owner})
 
 
 def _local_conf_test_cmd() -> str | None:
@@ -2346,10 +2358,263 @@ def _slot_git_summary(status: dict, *, readonly: bool = False) -> str:
     return f"{branch_disp}@{head_disp} (base: - · {reason})"
 
 
+# ── 기계 현황 계약 (`status --json`) ──────────────────────────────────────────
+# 관리자(설치본)가 프로젝트 사본에서 현황을 읽는 **유일한 계약**이다. 새 명령을 만들지 않고
+# 이미 읽기 전용인 `status` 에 기계 출력을 붙였다 — 사람 출력(텍스트)은 바이트 그대로다.
+#
+# 절은 비용으로 갈린다: 기본은 가벼운 절(슬롯·task·git·repo·하네스·설정)이고,
+# `--with-board`(티켓·lint·게이트 기록)와 `--with-adapters`(어댑터 판정·diff·기능 표)가 무거운
+# 절을 붙인다. 기본 호출은 board 를 로드하지 않는다(티켓 파일을 읽지 않는다).
+STATUS_JSON_SCHEMA = 1
+
+
+def _write_machine_line(text: str) -> None:
+    """기계 판독 한 줄(JSON 페이로드)을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다.
+
+    사람 출력(`print`)은 PowerShell 캡처에서 콘솔 codepage(cp949 등)로 강등될 수 있고 그 치환은
+    되돌릴 수 없다 — 다른 프로세스가 파싱하는 출력은 공용 seam 으로 UTF-8 bytes 를 직접 쓴다
+    (board `_write_machine_line` 동형).
+    """
+    console_encoding = _load_module_from_path(
+        Path(__file__).resolve().with_name("console_encoding.py"),
+        "console_encoding.py",
+        verifier=_verify_engine_rev,
+        cache=True,
+    )
+    console_encoding.write_machine_line(text)
+
+
+def _status_json_slots(wp, leases, task_names: set) -> list[dict]:
+    """슬롯 축 — 리스 장부 + 슬롯당 git 요약. 판정은 전부 `worktree_pool` 것을 그대로 싣는다.
+
+    `alive` 는 `_pid_alive`(→ `pm_relay.pid_is_alive`) 그대로다(생존 판정 재구현 0). `role` 은
+    장부에 키가 없는 행이 있어 `work`/`readonly` 두 값으로 정규화한다 — 표시 축이 아니라 판정
+    축이라 빈 값을 남기지 않는다.
+    """
+    rows: list[dict] = []
+    for lease in leases:
+        git = wp.slot_git_status(lease.slot)
+        rows.append({
+            "slot": lease.slot,
+            "repo": lease.repo,
+            "state": lease.state,
+            "session": lease.session or None,
+            "pid": lease.pid,
+            "alive": bool(wp._pid_alive(lease.pid)),
+            "role": getattr(lease, "role", "work") or "work",
+            "task": lease.session if (lease.session and lease.session in task_names) else None,
+            "branch": git.get("branch"),
+            "head": git.get("head"),
+            "base": git.get("base"),
+            "behind": git.get("behind"),
+            "dirty": bool(git.get("dirty")),
+        })
+    return rows
+
+
+def _status_json_tasks(wp, tasks) -> list[dict]:
+    """task 축 — 정체성 + 보유 슬롯(`slots_for_task` · session 축 귀속)."""
+    return [{
+        "name": task.name,
+        "prefix": getattr(task, "prefix", None) or None,
+        "pid": task.pid,
+        "alive": bool(wp._pid_alive(task.pid)),
+        "started": getattr(task, "started", "") or None,
+        "slots": [lease.slot for lease in (wp.slots_for_task(task.name) or [])],
+    } for task in tasks]
+
+
+def _status_json_git(git_runner: GitRunner) -> dict:
+    """PM 홈 checkout 의 git 요약 — branch·head·dirty.
+
+    슬롯 축(`slots[].branch`)과 다른 축이다 — 이건 board·wiki·장부를 담은 **이 사본 자신**이고,
+    회귀·라이브게이트 기록이 어느 HEAD 에 대한 판정인지 대조하는 기준이다. git checkout 이
+    아니면 세 값 모두 None(그 사실이 곧 신호다).
+
+    커밋 0 인 저장소(`pm_import --new` 직후 fresh clone)는 정상 형상이다 — `rev-parse` 가 rc≠0 을
+    내므로 `symbolic-ref` 로 브랜치명을 얻고 `head` 는 None 이다(`pm_bootstrap._collect_git` 과
+    같은 폴백 규약). 둘 다 실패해야 git checkout 이 아니다.
+    """
+    rc, branch = git_runner(["-C", str(REPO), "rev-parse", "--abbrev-ref", "HEAD"])
+    head: str | None = None
+    if rc == 0:
+        head_rc, head_out = git_runner(["-C", str(REPO), "rev-parse", "HEAD"])
+        head = head_out.strip() if head_rc == 0 else None
+    else:
+        rc, branch = git_runner(["-C", str(REPO), "symbolic-ref", "--short", "HEAD"])
+        if rc != 0:
+            return {"branch": None, "head": None, "dirty": None}
+    dirty_rc, dirty_out = git_runner(["-C", str(REPO), "status", "--porcelain"])
+    return {
+        "branch": branch.strip() or None,
+        "head": head,
+        "dirty": bool(dirty_out.strip()) if dirty_rc == 0 else None,
+    }
+
+
+def _status_json_repos() -> list[dict]:
+    """등록 repo — areas.md 레지스트리 행(`repo list` 와 같은 칼럼·빈 셀은 null)."""
+    return [
+        {column: (row.get(column) or None) for column in _REPO_LIST_COLUMNS}
+        for row in _areas_rows() if row.get("repo")
+    ]
+
+
+def _source_missing_required(source_root: Path, values: dict) -> list[str]:
+    """**소스** 레지스트리 기준 필수 누락 — "갱신하면 필요" 축.
+
+    비교 기준은 소스 checkout 의 `local_conf.py` 다(이 사본의 선언이 아니라 갱신하면 오게 될
+    선언). rev 대조는 하지 않는다 — 새 세대를 읽는 것이 목적이라 `allow_unverified` 로 연다.
+    소스에 그 파일이 없으면 예외가 그대로 올라간다(비교 못 하는 상태를 빈 목록으로 접지 않는다).
+    """
+    module = _load_module_from_path(
+        Path(source_root) / ".project_manager" / "tools" / "local_conf.py",
+        "local_conf.py", allow_unverified=True,
+    )
+    return list(module.missing_required(values))
+
+
+def _status_json_conf(source_root: Path | None) -> dict:
+    """설정 완전성 — 필수 누락·폐지 키·미지 키·표준과 다른 값·최신 기준 누락 다섯 목록.
+
+    판정은 `local_conf` 레지스트리 하나가 낸다(값 해석 사본 0). `missing_for_latest` 는 소스
+    checkout 이 해소된 호출(`--from` 또는 `--with-adapters`)에서만 채워지고 그 밖에는 null 이다.
+    """
+    local_conf = _load_local_conf()
+    result = local_conf.load(REPO / ".project_manager" / "local.conf")
+    values = result.values
+    return {
+        "missing_required": list(local_conf.missing_required(values)),
+        "legacy": [{"key": key, "replacement": replacement}
+                   for key, replacement in sorted(result.legacy.items())],
+        "unknown": list(result.unknown),
+        "nonstandard": [{"key": key, "value": value, "default": default}
+                        for key, (value, default) in sorted(local_conf.nonstandard(values).items())],
+        "missing_for_latest": (None if source_root is None
+                               else _source_missing_required(source_root, values)),
+    }
+
+
+def _status_json_adapters(pm_import_mod, source_root: Path) -> dict:
+    """어댑터 파일별 판정·diff 둘·기능 표 + 문서 파일(검사 없음) 한 줄.
+
+    판정 어휘(`mode`·`status`)는 엔진 값 그대로다 — 표시 라벨은 읽는 쪽(관리자) 몫이라 여기서
+    번역하지 않는다. 문서 파일(`CLAUDE.md`·`AGENTS.md`)은 채널이 없어 검사 대상이 아니고,
+    그 사실 자체를 한 줄로 싣는다(목록에서 빠지면 "없는 파일" 과 구분되지 않는다).
+    """
+    files: list[dict] = [{
+        "path": report.relpath,
+        "harness": report.harness,
+        "mode": report.mode,
+        "status": report.status,
+        "template_rev": report.template_rev,
+        "diff_lines": {"added": report.added, "removed": report.removed},
+        "diff_vs_baseline": report.diff_vs_baseline,
+        "diff_vs_latest": report.diff_vs_latest,
+        "features": [{"name": feature.name, "project": feature.project,
+                      "latest": feature.latest, "verdict": feature.verdict}
+                     for feature in report.features],
+        "distance": report.distance,
+    } for report in pm_import_mod.adapter_config_reports(REPO, source_root)]
+    files.extend(
+        {"path": target.relpath, "ownership": "instance", "status": "unchecked"}
+        for target in pm_import_mod.instance_owned_template_targets(REPO, source_root)
+        if target.mode == pm_import_mod.ADAPTER_CONFIG_NO_CHANNEL
+    )
+    files.sort(key=lambda row: row["path"])
+    return {"source": str(Path(source_root).resolve()), "files": files}
+
+
+def _status_json_document(args, wp, *, board_mod, pm_import_mod,
+                          source_root: Path | None, git_runner: GitRunner) -> dict:
+    """현황 JSON 한 벌 — 절 순서는 계약이 아니고 키가 계약이다(스키마 번호는 상수 하나)."""
+    leases = wp.list_leases()
+    tasks = wp.list_tasks() or []
+    task_names = {name for name in (getattr(task, "name", None) for task in tasks) if name}
+    return {
+        "schema": STATUS_JSON_SCHEMA,
+        "engine_rev": ENGINE_REV,
+        "pm_home": str(REPO.resolve()),
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "slots": _status_json_slots(wp, leases, task_names),
+        "tasks": _status_json_tasks(wp, tasks),
+        "git": _status_json_git(git_runner),
+        "repos": _status_json_repos(),
+        "harnesses": list(pm_import_mod.installed_harnesses(REPO)),
+        "conf": _status_json_conf(source_root),
+        "board": None if board_mod is None else board_mod.status_snapshot(),
+        "adapters": (None if not getattr(args, "with_adapters", False)
+                     else _status_json_adapters(pm_import_mod, source_root)),
+    }
+
+
+def _emit_status_json(args, wp, *, board=None, pm_import=None,
+                      git_runner: GitRunner | None = None) -> int:
+    """`status --json` — 문서를 **전부 만든 뒤** 한 번에 낸다(부분 산출 없음).
+
+    소스가 필요한 절(`--with-adapters`·`--from`)에서 소스를 못 잡으면 stdout 에 아무것도 쓰지
+    않고 rc≠0 이다 — 반쪽 JSON 을 파싱한 관리자가 "그 절이 비어 있다" 를 정상으로 읽는 것이
+    이 계약이 막으려는 상태다(텍스트 경로 `sync-adapter-config` 의 `[중단]` + rc 1 과 같은 판정).
+    """
+    pm_import_mod = pm_import or _load_module("pm_import", "pm_import.py")
+    if pm_import_mod is None:
+        print("[중단] pm_import.py 엔진을 찾을 수 없다 — 하네스·어댑터 조회 불가 "
+              f"({TOOLS_DIR / 'pm_import.py'} 부재 또는 로드 실패).", file=sys.stderr)
+        return 1
+    board_mod = None
+    if getattr(args, "with_board", False):
+        board_mod = board or _load_module("board", "board.py")
+        if board_mod is None:
+            print("[중단] board.py 엔진을 찾을 수 없다 — 보드 현황 조회 불가 "
+                  f"({TOOLS_DIR / 'board.py'} 부재 또는 로드 실패).", file=sys.stderr)
+            return 1
+    source_root: Path | None = None
+    if getattr(args, "with_adapters", False) or getattr(args, "source", None):
+        try:
+            source_root = pm_import_mod.resolve_adapter_config_source(
+                REPO, getattr(args, "source", None))
+        except FileNotFoundError as exc:
+            print(f"[중단] {exc}", file=sys.stderr)
+            return 1
+        except pm_import_mod.UpstreamCacheError as exc:
+            # URL upstream 캐시 clone/fetch 실패 — 옛 캐시로 진행하지 않고 조회를 멈춘다.
+            print(f"[중단] {exc}", file=sys.stderr)
+            return 1
+    try:
+        document = _status_json_document(
+            args, wp, board_mod=board_mod, pm_import_mod=pm_import_mod,
+            source_root=source_root,
+            git_runner=git_runner if git_runner is not None else _real_clone_runner())
+    except (FileNotFoundError, pm_import_mod.AdapterConfigChannelUnavailable) as exc:
+        # 판정 기준이 없는 상태 둘만 rc 로 번역한다 — 소스에 대조할 파일이 없거나(잘못된 `--from`)
+        # 어댑터 판정 채널이 unavailable 인 경우. 그 밖의 실패는 삼키지 않는다(정상 산출로 위장 금지).
+        print(f"[중단] 현황 JSON 조회 실패: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    _write_machine_line(json.dumps(document, ensure_ascii=False))
+    return 0
+
+
+def _status_json_usage_error(args) -> str | None:
+    """`--json` 없이 준 범위 플래그 — usage error 문구(없으면 None).
+
+    조용히 무시하면 관리자가 "무거운 절을 받았다" 고 오독한다. 텍스트 경로는 이 플래그들의
+    소비 지점이 아니므로 받는 척하지 않는다.
+    """
+    given = [flag for flag, attribute in (
+        ("--with-board", "with_board"), ("--with-adapters", "with_adapters"),
+        ("--from", "source")) if getattr(args, attribute, None)]
+    if not given or getattr(args, "json", False):
+        return None
+    return (f"[중단] {' · '.join(given)} 은 `--json` 과 함께만 쓴다 — 텍스트 출력에는 그 절이 "
+            "없다. `pm-config status --json " + " ".join(given) + "` 로 다시 실행하라.")
+
+
 def cmd_status(
     args: argparse.Namespace,
     *,
     worktree_pool=None,
+    board=None,
+    pm_import=None,
 ) -> int:
     """`status | whoami` — 2축 cockpit(task 상황 + slot 풀·슬롯당 git 요약).
 
@@ -2369,8 +2634,16 @@ def cmd_status(
     전부 장부(기계)에서 파생([[living-truth-docs-anti-ossification]]) — 신설 저장소 없음. 전
     surface(task/slot/git)는 일반 조회 실패에 fail-soft 이되 marked engine skew 는 막는다.
 
-    worktree_pool 주입으로 hermetic 테스트.
+    `status --json` 은 같은 수집을 **기계 계약**으로 낸다(`_emit_status_json` — 관리자 읽기
+    표면). 텍스트 출력은 그 플래그가 없을 때 종전 바이트 그대로다. `--json` 은 `status` 전용이라
+    `whoami` 는 텍스트 별칭으로 남는다(계약 하나).
+
+    worktree_pool 주입으로 hermetic 테스트(board·pm_import 도 같은 관례).
     """
+    usage_error = _status_json_usage_error(args)
+    if usage_error is not None:
+        print(usage_error, file=sys.stderr)
+        return 2                              # 인자 오용 — argparse 와 같은 종료코드.
     wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
     if wp is None:
         print(
@@ -2379,6 +2652,8 @@ def cmd_status(
             file=sys.stderr,
         )
         return 1
+    if getattr(args, "json", False):
+        return _emit_status_json(args, wp, board=board, pm_import=pm_import)
     leases = wp.list_leases()
     sess = _default_session()
     mine = [l for l in leases if l.state == "leased" and l.session == sess]
@@ -4538,8 +4813,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_wt_remove.set_defaults(func=cmd_worktree_remove)
 
-    # status | whoami (같은 핸들러)
-    p_status = sub.add_parser("status", help="풀/리스 상태 + 이 세션 repo/슬롯/branch")
+    # status | whoami (같은 핸들러) — `--json` 은 status 전용 기계 계약(관리자 읽기 표면).
+    p_status = sub.add_parser(
+        "status",
+        help="풀/리스 상태 + 이 세션 repo/슬롯/branch (`--json` 으로 기계 현황)",
+    )
+    p_status.add_argument(
+        "--json", action="store_true",
+        help="현황을 JSON 한 줄로 출력한다 (관리자 읽기 계약·읽기 전용). 기본은 가벼운 절 "
+             "(슬롯·task·git·repo·하네스·설정 완전성)이고 무거운 절은 아래 플래그로 붙인다.",
+    )
+    p_status.add_argument(
+        "--with-board", action="store_true",
+        help="티켓 수·open 목록·lint 판정·회귀/라이브게이트 기록을 함께 낸다 (`--json` 필요·"
+             "티켓 전수 스캔이라 느리다).",
+    )
+    p_status.add_argument(
+        "--with-adapters", action="store_true",
+        help="어댑터 config 파일별 판정·기준/최신 diff·기능 표를 함께 낸다 (`--json` 필요·"
+             "소스 checkout 필요). 소스를 못 잡으면 부분 산출 없이 오류다.",
+    )
+    p_status.add_argument(
+        "--from", dest="source", metavar="SOURCE", default=None,
+        help="어댑터·최신 설정 레지스트리를 읽을 소스 프레임워크 checkout (생략 시 local.conf "
+             "upstream.path 에서 자동 해소·add-harness 와 같은 규칙·URL 은 로컬 캐시).",
+    )
     p_status.set_defaults(func=cmd_status)
     p_whoami = sub.add_parser("whoami", help="status 의 별칭 — 이 세션 리스를 머리에 표면")
     p_whoami.set_defaults(func=cmd_status)

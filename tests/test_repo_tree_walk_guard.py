@@ -98,6 +98,16 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "git 추적분만 세어 이 트리에서 0건을 낸다."
     ),
     (
+        "tests/test_pm_config_status_json.py",
+        "_tree_digest",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "tmp PM 홈 `.project_manager/` 픽스처 트리의 조회 전후 해시 — 읽기 전용 JSON 경로가 "
+        "파일을 만들지도 고치지도 않았음을 재는 것이 판정의 본질이다(T-0907). repo-owned seam 은 "
+        "git 추적분만 세어 조회가 새로 만든 미추적 파일을 놓친다."
+    ),
+    (
         "tests/conftest.py",
         "_snapshot_repo_board_outputs",
         "rglob",

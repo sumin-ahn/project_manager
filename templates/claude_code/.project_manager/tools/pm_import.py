@@ -575,6 +575,32 @@ ADAPTER_CONFIG_REAPPROVAL_NOTE = {
     ".codex/hooks.json": "codex 세션에서 `/hooks` 로 훅을 다시 승인해야 새 정의가 발화한다",
 }
 
+# instance-owned config 가 담는 **설정 키**의 선언 — 기능 단위 거리(`adapter_config_reports`)가
+# "최신 템플릿과 무엇이 다른가" 를 줄 수가 아니라 항목으로 말하는 축이다. 키는 점 표기 경로이며
+# 문서 안쪽으로 한 단계씩 내려간다(`permissions.allow` = `permissions` 객체의 `allow`).
+#
+# **키는 파일 단위로 선언한다.** 훅 세트(`ADAPTER_HOOK_SET`)에 얹지 않는 이유는 그 선언의 좌표가
+# 훅을 등록하는 config 하나뿐이기 때문이다 — opencode 는 `config_relpath` 가 빈 문자열이고
+# `.codex/config.toml` 은 훅 세트 밖이라, 하네스 축에 달면 이 두 파일의 설정 키가 선언될 자리가
+# 없다. 파일 축은 그 자리를 그대로 준다(파일 = 판정 단위 = 표시 행).
+#
+# 훅 배선(`hooks.<이벤트>`)은 여기 없다 — 그 축은 문서의 `hooks` 매핑과
+# `ADAPTER_HOOK_SET[...].entrypoints` 에서 파생한다(선언 중복 0).
+ADAPTER_SETTINGS_KEYS: dict[str, tuple[str, ...]] = {
+    ".claude/settings.json": (
+        "autoCompactEnabled", "env", "permissions.allow", "permissions.deny", "statusLine",
+    ),
+    ".opencode/opencode.jsonc": (
+        "instructions", "permission.bash", "provider",
+        "tool_output.max_lines", "tool_output.max_bytes",
+    ),
+    ".codex/config.toml": (
+        "sandbox_mode", "approval_policy", "approvals_reviewer",
+        "model_auto_compact_token_limit", "features.multi_agent", "features.hooks",
+        "sandbox_workspace_write.network_access",
+    ),
+}
+
 # ── 어댑터 훅 세트 (세대 정합 판정의 데이터 축) ─────────────────────────────────
 # 훅 세트 = "instance-owned config 가 선언한 훅 호출" + "그 호출이 실행하는 manifest 소유
 # 래퍼/드라이버". 두 축은 **갱신 주체가 다르다** — config 는 채택자 소유라 pm_update 가 못 덮고,
@@ -6171,6 +6197,81 @@ def _template_generation_size(old_lines: list[str], current_lines: list[str]) ->
     return added, removed, first_diff or 1
 
 
+# 소스 checkout 의 git object DB 를 읽는 두 관용구 — 세대 요약(`instance_owned_template_delta_lines`)
+# 과 기준 diff(`adapter_config_reports`)가 **같은 읽기**를 공유한다(두 번째 git 경로 신설 0).
+SOURCE_PREFIX_OK = "ok"
+SOURCE_PREFIX_NOT_GIT = "not-git"          # 소스가 git checkout 이 아니다(세대 판정 비대상).
+SOURCE_PREFIX_UNRESOLVED = "unresolved"    # 접두를 못 읽거나 비정상 형상(기준 해소 불가).
+
+
+def _source_git_path_prefix(
+        source_root: Path, runner: GitRunner) -> tuple[str, PurePosixPath]:
+    """소스 checkout 의 **저장소 최상위 상대 접두** — (판정, 접두).
+
+    영수증의 template 좌표는 `source_root` 상대지만 `show`/`ls-tree` 의 path 는 저장소 최상위
+    상대다. source_root 가 상위 저장소의 하위 디렉터리면 접두 없는 조회가 모든 과거 파일을
+    "없음" 으로 오판한다. 접두 자체를 해소하지 못하거나 비정상 형상(개행 포함·절대·`..`)이면
+    전량 추가로 접지 않고 `SOURCE_PREFIX_UNRESOLVED` 로 내린다(판정 불가 ≠ 변경 없음).
+    """
+    git_rc, git_out = runner([
+        "-C", str(source_root), "rev-parse", "--is-inside-work-tree",
+    ])
+    if git_rc != 0 and "not a git repository" in git_out.lower():
+        return SOURCE_PREFIX_NOT_GIT, PurePosixPath("")
+    if git_rc == 0 and git_out.strip().lower() != "true":
+        return SOURCE_PREFIX_NOT_GIT, PurePosixPath("")
+    prefix_rc, prefix_out = runner([
+        "-C", str(source_root), "rev-parse", "--show-prefix",
+    ])
+    source_prefix = prefix_out.rstrip("\r\n") if prefix_rc == 0 else ""
+    prefix_path = PurePosixPath(source_prefix)
+    if (prefix_rc != 0 or "\n" in source_prefix or "\r" in source_prefix
+            or prefix_path.is_absolute()
+            or any(part in {".", ".."} for part in prefix_path.parts)):
+        return SOURCE_PREFIX_UNRESOLVED, PurePosixPath("")
+    return SOURCE_PREFIX_OK, prefix_path
+
+
+def _baseline_rev_reachable(source_root: Path, rev: str, runner: GitRunner) -> bool:
+    """그 rev 가 소스 object DB 에 실재하는 commit 인가 (`cat-file -e <rev>^{commit}`)."""
+    rc, _out = runner([
+        "-C", str(source_root), "cat-file", "-e", rev + "^{commit}",
+    ])
+    return rc == 0
+
+
+TEMPLATE_BLOB_OK = "ok"
+TEMPLATE_BLOB_ABSENT = "absent"            # 그 시점 tree 에 경로가 없었다(신규 파일·기존 0줄).
+TEMPLATE_BLOB_UNRESOLVED = "unresolved"    # 판정 불가(git I/O·손상) — 전량 추가로 접지 않는다.
+
+
+def _template_blob_at_rev(source_root: Path, rev: str, git_relpath: str,
+                          runner: GitRunner) -> tuple[str, str]:
+    """그 rev 시점 template 파일 내용 — (판정, 텍스트). 원장은 내용을 담지 않아 여기서 읽는다.
+
+    `git show rev:path` 비0 하나만으로는 과거 경로 부재와 git I/O·timeout·저장소 손상을 구분할 수
+    없다. 같은 commit tree 를 별도 조회해 **부재가 증명될 때만** 신규 파일로 본다(그 경우 텍스트는
+    빈 문자열). tree 조회 실패 또는 경로가 있는데 blob show 만 실패한 경우는 해소 불가다.
+    """
+    rc, text = runner([
+        "-C", str(source_root), "show", f"{rev}:{git_relpath}",
+    ])
+    if rc == 0:
+        return TEMPLATE_BLOB_OK, text
+    tree_rc, tree_out = runner([
+        "-C", str(source_root), "ls-tree", "--name-only", "-z", rev, "--", git_relpath,
+    ])
+    tree_paths = {
+        line
+        for nul_chunk in tree_out.split("\0")
+        for line in nul_chunk.splitlines()
+        if line
+    }
+    if tree_rc != 0 or git_relpath in tree_paths:
+        return TEMPLATE_BLOB_UNRESOLVED, ""
+    return TEMPLATE_BLOB_ABSENT, ""
+
+
 def instance_owned_template_delta_lines(
         dest_root: Path, source_root: Path, *,
         git_runner: GitRunner | None = None) -> list[str]:
@@ -6212,25 +6313,10 @@ def instance_owned_template_delta_lines(
         # 자동 완료로 접지 않고 아래의 원장 기준 경고/처방을 보존한다.
         managed_converged = set()
     runner = git_runner if git_runner is not None else _real_upstream_git_runner()
-    git_rc, git_out = runner([
-        "-C", str(source_root), "rev-parse", "--is-inside-work-tree",
-    ])
-    if git_rc != 0 and "not a git repository" in git_out.lower():
+    prefix_status, prefix_path = _source_git_path_prefix(source_root, runner)
+    if prefix_status == SOURCE_PREFIX_NOT_GIT:
         return ["ℹ️  이 소스는 git 이 아니라 세대 판정 비대상."]
-    if git_rc == 0 and git_out.strip().lower() != "true":
-        return ["ℹ️  이 소스는 git 이 아니라 세대 판정 비대상."]
-    prefix_rc, prefix_out = runner([
-        "-C", str(source_root), "rev-parse", "--show-prefix",
-    ])
-    # 영수증의 template 좌표는 source_root 상대지만 show/ls-tree의 path는 저장소 최상위
-    # 상대다. source_root가 상위 저장소의 하위 디렉터리면 prefix를 붙이지 않은 조회는 모든
-    # 과거 파일을 "없음"으로 오판한다. prefix 자체를 해소하지 못하거나 비정상 형상이면
-    # 전량 추가로 접지 않고 기준 해소 불가로 내린다.
-    source_prefix = prefix_out.rstrip("\r\n") if prefix_rc == 0 else ""
-    prefix_path = PurePosixPath(source_prefix)
-    if (prefix_rc != 0 or "\n" in source_prefix or "\r" in source_prefix
-            or prefix_path.is_absolute()
-            or any(part in {".", ".."} for part in prefix_path.parts)):
+    if prefix_status != SOURCE_PREFIX_OK:
         return [
             "⚠️  인스턴스 소유 템플릿 기준 해소 불가 — "
             "판정 불가(변경 없음 아님)·전량 확인 권장."
@@ -6254,11 +6340,8 @@ def instance_owned_template_delta_lines(
             continue
 
         if baseline_rev not in reachability:
-            rc, _out = runner([
-                "-C", str(source_root), "cat-file", "-e",
-                baseline_rev + "^{commit}",
-            ])
-            reachability[baseline_rev] = rc == 0
+            reachability[baseline_rev] = _baseline_rev_reachable(
+                source_root, baseline_rev, runner)
         if not reachability[baseline_rev]:
             baseline_unreachable = True
             continue
@@ -6272,31 +6355,12 @@ def instance_owned_template_delta_lines(
 
         git_relpath = (prefix_path / target.template_git_relpath).as_posix()
 
-        rc, old_text = runner([
-            "-C", str(source_root), "show",
-            f"{baseline_rev}:{git_relpath}",
-        ])
-        if rc == 0:
-            old_lines = old_text.splitlines(keepends=True)
-        else:
-            # `git show rev:path` 비0 하나만으로는 과거 경로 부재와 git I/O·timeout·저장소
-            # 손상을 구분할 수 없다. 같은 commit tree를 별도 조회해 **부재가 증명될 때만**
-            # 신규 파일(기존 0줄)로 본다. tree 조회 실패 또는 경로가 있는데 blob show만 실패한
-            # 경우는 기준 해소 불가다 — 전량 추가라는 거짓 요약을 만들지 않는다.
-            tree_rc, tree_out = runner([
-                "-C", str(source_root), "ls-tree", "--name-only", "-z",
-                baseline_rev, "--", git_relpath,
-            ])
-            tree_paths = {
-                line
-                for nul_chunk in tree_out.split("\0")
-                for line in nul_chunk.splitlines()
-                if line
-            }
-            if tree_rc != 0 or git_relpath in tree_paths:
-                baseline_unreachable = True
-                continue
-            old_lines = []
+        blob_status, old_text = _template_blob_at_rev(
+            source_root, baseline_rev, git_relpath, runner)
+        if blob_status == TEMPLATE_BLOB_UNRESOLVED:
+            baseline_unreachable = True
+            continue
+        old_lines = old_text.splitlines(keepends=True)
         if old_lines == current_lines:
             continue
         if target.mode == ADAPTER_CONFIG_MANAGED and target.relpath in managed_converged:
@@ -6328,6 +6392,278 @@ def instance_owned_template_delta_lines(
         prefix.append(
             "⚠️  인스턴스 소유 템플릿 기준 해소 불가 — 판정 불가(변경 없음 아님)·전량 확인 권장.")
     return [*prefix, *findings]
+
+
+# ── 어댑터 기능 단위 거리 (읽기 계약 · `pm-config status --json --with-adapters`) ──────
+# 줄 수 차이는 "얼마나" 만 말하고 "무엇이" 를 말하지 않는다. 기능 표는 선언
+# (`ADAPTER_SETTINGS_KEYS` + `ADAPTER_HOOK_SET[...].entrypoints`)과 최신 template 을 축으로
+# 항목별 판정을 낸다. 판정 어휘는 넷뿐이고 그 밖의 상태를 만들지 않는다.
+ADAPTER_FEATURE_SAME = "same"          # 프로젝트 값 == 최신 값.
+ADAPTER_FEATURE_MISSING = "missing"    # 최신에는 있고 프로젝트에는 없다.
+ADAPTER_FEATURE_DIFFERS = "differs"    # 둘 다 있고 값이 다르다.
+ADAPTER_FEATURE_RETIRED = "retired"    # 프로젝트에는 있고 최신에는 없다(폐지).
+
+
+class AdapterFeature(NamedTuple):
+    """기능 표 한 행 — 항목 이름과 양쪽 값 요약, 그리고 판정.
+
+    `project`·`latest` 는 **표시용 요약**이다(모음은 원소 수·그 밖은 값 그대로). 판정은 요약이
+    아니라 **원값 동일성**으로 낸다 — 길이만 같고 내용이 다른 allowlist 를 `same` 으로 접지 않는다.
+    """
+    name: str
+    project: object
+    latest: object
+    verdict: str
+
+
+class AdapterConfigReport(NamedTuple):
+    """instance-owned config 한 개의 읽기 보고 — 판정 + 기준/최신 diff + 기능 표.
+
+    `judge_adapter_configs` 의 판정(`mode`·`status`)을 그대로 싣고 표시 어휘를 새로 만들지 않는다.
+    `diff_vs_baseline` 은 설치 기준(`template_rev` 시점 template) → 현재 파일이라 **채택자 편집**의
+    크기이고(`added`/`removed` 도 그 축), `diff_vs_latest` 는 현재 파일 → 최신 template 이라
+    **상류 변경**이다. 기준을 해소하지 못하면 `None` 이다(빈 문자열 = 차이 없음과 구분한다).
+    """
+    relpath: str
+    harness: str
+    mode: str
+    status: str
+    template_rev: str | None
+    added: int | None
+    removed: int | None
+    diff_vs_baseline: str | None
+    diff_vs_latest: str
+    features: tuple[AdapterFeature, ...]
+    distance: int
+
+
+def _load_adapter_config_document(path: Path) -> dict:
+    """설정 파일 → 문서 dict. 형식은 **확장자**가 정한다(하네스 이름을 묻지 않는다).
+
+    읽기 실패·파손은 빈 문서다 — 채택자 소유 파일이라 임의 상태가 정상 범위이고
+    (`_read_hook_set_config` 와 같은 관용), 빈 문서로 보면 선언 키가 전부 `missing` 으로 실려
+    표에서 loud 하다(조용한 `same` 으로 접히지 않는다).
+
+    jsonc 주석 마스킹은 `pm_update` 가 소유한 것 하나를 지연 로드해 쓴다(`_load_pm_update` 관용 ·
+    마스커 두 벌 금지). 그 seam 을 못 읽는 부분 사본은 판정 기준이 없는 상태라
+    `AdapterConfigChannelUnavailable` 로 올린다 — 못 읽은 파일을 "설정 없음" 으로 보고하지 않는다.
+    """
+    path = Path(path)
+    try:
+        text = _read_text_shared(path, encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}
+    suffix = path.suffix.lower()
+    if suffix == ".toml":
+        try:
+            document = tomllib.loads(text)
+        except (tomllib.TOMLDecodeError, ValueError):
+            return {}
+        return document if isinstance(document, dict) else {}
+    if suffix == ".jsonc":
+        pm_update = _load_pm_update()
+        mask = getattr(pm_update, "_mask_jsonc_comments", None) if pm_update else None
+        if not callable(mask):
+            raise AdapterConfigChannelUnavailable(
+                "jsonc 주석 마스킹 seam 을 읽을 수 없다 (pm_update._mask_jsonc_comments) — "
+                "어댑터 설정 판정 불가")
+        text = mask(text)
+    try:
+        document = json.loads(text)
+    except ValueError:
+        return {}
+    return document if isinstance(document, dict) else {}
+
+
+def _document_key_value(document: dict, dotted_key: str) -> tuple[bool, object]:
+    """점 표기 경로로 문서 안쪽 값을 찾는다 — (있음, 값). 중간이 dict 가 아니면 없음."""
+    node: object = document
+    for part in dotted_key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return False, None
+        node = node[part]
+    return True, node
+
+
+def _feature_value_summary(value: object) -> object:
+    """표에 싣는 값 요약 — 모음은 원소 수, 그 밖은 값 그대로(JSON 스칼라)."""
+    if isinstance(value, (list, tuple, dict, set)):
+        return len(value)
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    return str(value)
+
+
+def _feature_verdict(project_present: bool, project_value: object,
+                     latest_present: bool, latest_value: object) -> str | None:
+    """네 어휘 중 하나 — 양쪽 다 없으면 행 자체가 없다(None)."""
+    if not project_present and not latest_present:
+        return None
+    if not project_present:
+        return ADAPTER_FEATURE_MISSING
+    if not latest_present:
+        return ADAPTER_FEATURE_RETIRED
+    if project_value == latest_value:
+        return ADAPTER_FEATURE_SAME
+    return ADAPTER_FEATURE_DIFFERS
+
+
+def _hook_event_scripts(document, entrypoints: tuple = ()) -> dict[str, tuple[str, ...]]:
+    """문서의 `hooks.<이벤트>` → 그 이벤트가 실행하는 훅 스크립트 relpath (정렬·중복 제거).
+
+    기능 축은 "이 이벤트에서 무엇이 실행되나" 라 커맨드 문자열이 아니라 **스크립트**가 단위다
+    (인터프리터 표기가 달라도 같은 훅이다). 추출 규칙 **둘 다 엔진 것**이다:
+      · argv 분해(`_hook_script_and_arguments`) — 직접 실행·인터프리터 선행 커맨드.
+      · 진입점 실재 판정(`_entrypoint_is_present`) — 선언된 진입점 한정.
+    후자가 없으면 안 된다: 출하 codex 커맨드는 인터프리터 해소를 담은 셸 한 줄(`if command -v …`)
+    이라 argv 분해가 스크립트를 못 뽑고, 그러면 **template 과 바이트가 같은 config 도** 이벤트마다
+    "다름" 으로 실린다(판정이 표기에 걸린 거짓 신호).
+    """
+    out: dict[str, tuple[str, ...]] = {}
+    for event, commands in _hook_event_commands(document).items():
+        scripts = set()
+        for command in commands:
+            script, _arguments = _hook_script_and_arguments(_split_hook_command(command))
+            if script:
+                scripts.add(script)
+        out[event] = tuple(sorted(scripts))
+    for entrypoint in entrypoints:
+        if not _entrypoint_is_present(document, entrypoint):
+            continue
+        merged = set(out.get(entrypoint.event, ()))
+        merged.add(entrypoint.dispatcher)
+        out[entrypoint.event] = tuple(sorted(merged))
+    return out
+
+
+def _adapter_feature_rows(relpath: str, project_document: dict,
+                          latest_document: dict) -> tuple[AdapterFeature, ...]:
+    """한 config 파일의 기능 표 — 선언 설정 키 축 + 훅 이벤트 축."""
+    rows: list[AdapterFeature] = []
+    for key in ADAPTER_SETTINGS_KEYS.get(relpath, ()):
+        project_present, project_value = _document_key_value(project_document, key)
+        latest_present, latest_value = _document_key_value(latest_document, key)
+        verdict = _feature_verdict(project_present, project_value,
+                                   latest_present, latest_value)
+        if verdict is None:
+            continue
+        rows.append(AdapterFeature(
+            key, _feature_value_summary(project_value) if project_present else None,
+            _feature_value_summary(latest_value) if latest_present else None, verdict))
+
+    entrypoints = tuple(
+        entrypoint
+        for spec in ADAPTER_HOOK_SET.values() if spec.config_relpath == relpath
+        for entrypoint in spec.entrypoints
+    )
+    project_events = _hook_event_scripts(project_document, entrypoints)
+    latest_events = dict(_hook_event_scripts(latest_document, entrypoints))
+    # 이 엔진 세대가 config 에 기대하는 진입점은 template 에 없더라도 최신 축에 든다 — 선언이
+    # 곧 "있어야 하는 것" 이고, 그것이 빠진 채택자는 `missing` 으로 보여야 한다.
+    for entrypoint in entrypoints:
+        merged = set(latest_events.get(entrypoint.event, ()))
+        merged.add(entrypoint.dispatcher)
+        latest_events[entrypoint.event] = tuple(sorted(merged))
+    for event in sorted(set(project_events) | set(latest_events)):
+        project_scripts = project_events.get(event)
+        latest_scripts = latest_events.get(event)
+        verdict = _feature_verdict(
+            project_scripts is not None, project_scripts,
+            latest_scripts is not None, latest_scripts)
+        if verdict is None:
+            continue
+        rows.append(AdapterFeature(
+            f"hooks.{event}",
+            ", ".join(project_scripts) if project_scripts is not None else None,
+            ", ".join(latest_scripts) if latest_scripts is not None else None,
+            verdict))
+    return tuple(rows)
+
+
+def adapter_config_reports(dest_root: Path, source_root: Path, *,
+                           git_runner: GitRunner | None = None
+                           ) -> list[AdapterConfigReport]:
+    """instance-owned config 전수의 읽기 보고 (부작용 0 · 판정은 `judge_adapter_configs` 그대로).
+
+    관리자(`pm-config status --json --with-adapters`)가 파일별 상태·차이·기능 거리를 한 번에 읽는
+    자리다. 기준(`template_rev` 시점) 내용은 원장에 없으므로 소스 checkout 의 object DB 에서
+    읽는다 — 세대 요약과 **같은 읽기 관용구**(`_source_git_path_prefix`·`_template_blob_at_rev`)를
+    쓰고 새 git 경로를 만들지 않는다. 기준을 해소하지 못한 파일은 `diff_vs_baseline=None` 이며
+    변경 없음으로 접지 않는다.
+    """
+    dest_root = Path(dest_root)
+    source_root = Path(source_root)
+    judgments = judge_adapter_configs(dest_root, source_root)
+    targets = {target.relpath: target
+               for target in instance_owned_template_targets(dest_root, source_root)}
+    recorded = read_adapter_baseline(dest_root).get("files", {})
+    fallback_rev = _instance_owned_fallback_rev(dest_root)
+    runner = git_runner if git_runner is not None else _real_upstream_git_runner()
+    prefix_status, prefix_path = _source_git_path_prefix(source_root, runner)
+    reachability: dict[str, bool] = {}
+
+    out: list[AdapterConfigReport] = []
+    for judgment in judgments:
+        relpath = judgment.relpath
+        dest_path = dest_root / relpath
+        current_lines = _read_text_shared(
+            dest_path, encoding="utf-8", errors="replace").splitlines(keepends=True)
+        latest_lines = _read_text_shared(
+            judgment.template, encoding="utf-8", errors="replace").splitlines(keepends=True)
+        diff_vs_latest = "".join(difflib.unified_diff(
+            current_lines, latest_lines,
+            fromfile=relpath, tofile=f"{relpath}@latest"))
+
+        entry = recorded.get(relpath)
+        entry_rev = entry.get("template_rev") if isinstance(entry, dict) else None
+        baseline_rev = entry_rev.strip() if isinstance(entry_rev, str) else ""
+        baseline_rev = baseline_rev or fallback_rev or None
+
+        target = targets.get(relpath)
+        baseline_lines: list[str] | None = None
+        if (baseline_rev and prefix_status == SOURCE_PREFIX_OK
+                and target is not None and target.template_git_relpath):
+            if baseline_rev not in reachability:
+                reachability[baseline_rev] = _baseline_rev_reachable(
+                    source_root, baseline_rev, runner)
+            if reachability[baseline_rev]:
+                git_relpath = (prefix_path / target.template_git_relpath).as_posix()
+                blob_status, baseline_text = _template_blob_at_rev(
+                    source_root, baseline_rev, git_relpath, runner)
+                if blob_status != TEMPLATE_BLOB_UNRESOLVED:
+                    baseline_lines = baseline_text.splitlines(keepends=True)
+
+        if baseline_lines is None:
+            added = removed = None
+            diff_vs_baseline = None
+            template_rev = baseline_rev
+        else:
+            added, removed, _first = _template_generation_size(
+                baseline_lines, current_lines)
+            diff_vs_baseline = "".join(difflib.unified_diff(
+                baseline_lines, current_lines,
+                fromfile=f"{relpath}@{baseline_rev}", tofile=relpath))
+            template_rev = baseline_rev
+
+        features = _adapter_feature_rows(
+            relpath,
+            _load_adapter_config_document(dest_path),
+            _load_adapter_config_document(judgment.template))
+        distance = sum(1 for row in features if row.verdict != ADAPTER_FEATURE_SAME)
+        out.append(AdapterConfigReport(
+            relpath=relpath,
+            harness=judgment.harness,
+            mode=judgment.mode,
+            status=judgment.status,
+            template_rev=template_rev,
+            added=added,
+            removed=removed,
+            diff_vs_baseline=diff_vs_baseline,
+            diff_vs_latest=diff_vs_latest,
+            features=features,
+            distance=distance,
+        ))
+    return out
 
 
 def _write_adapter_baseline(dest_root: Path, document: dict,
@@ -6669,30 +7005,39 @@ def _hook_set_table(declarations) -> dict:
 _HOOK_COMMAND_KEYS = ("command", "commandWindows")
 
 
-def _hook_commands(document) -> list[str]:
-    """config document 의 훅 커맨드 전수 — `hooks.<event>[].hooks[].{command,commandWindows}`.
+def _hook_event_commands(document) -> dict[str, tuple[str, ...]]:
+    """config document 의 훅 커맨드를 **이벤트별**로 — `hooks.<event>[].hooks[].{command,…}`.
 
     claude `settings.json` 과 codex `hooks.json` 이 같은 형상이라 추출 규칙이 하나다. 형상이
-    어긋난 항목은 조용히 건너뛴다(채택자 소유 파일이라 임의 구조가 정상 범위)."""
+    어긋난 항목은 조용히 건너뛴다(채택자 소유 파일이라 임의 구조가 정상 범위). 세대 판정은
+    이벤트를 묻지 않고(`_hook_commands`), 기능 표는 이벤트가 곧 행이라 같은 순회를 나눠 쓴다."""
     hooks = document.get("hooks") if isinstance(document, dict) else None
     if not isinstance(hooks, dict):
-        return []
-    out: list[str] = []
-    for groups in hooks.values():
-        if not isinstance(groups, list):
-            continue
-        for group in groups:
-            entries = group.get("hooks") if isinstance(group, dict) else None
-            if not isinstance(entries, list):
-                continue
-            for entry in entries:
-                if not isinstance(entry, dict):
+        return {}
+    out: dict[str, tuple[str, ...]] = {}
+    for event, groups in hooks.items():
+        commands: list[str] = []
+        if isinstance(groups, list):
+            for group in groups:
+                entries = group.get("hooks") if isinstance(group, dict) else None
+                if not isinstance(entries, list):
                     continue
-                for key in _HOOK_COMMAND_KEYS:
-                    command = entry.get(key)
-                    if isinstance(command, str) and command.strip():
-                        out.append(command)
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    for key in _HOOK_COMMAND_KEYS:
+                        command = entry.get(key)
+                        if isinstance(command, str) and command.strip():
+                            commands.append(command)
+        out[event] = tuple(commands)
     return out
+
+
+def _hook_commands(document) -> list[str]:
+    """config document 의 훅 커맨드 전수(이벤트 무관·선언 순서 보존)."""
+    return [command
+            for commands in _hook_event_commands(document).values()
+            for command in commands]
 
 
 def _split_hook_command(command: str) -> list[str]:

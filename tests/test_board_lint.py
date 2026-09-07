@@ -23,6 +23,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from _git_fixture import init_git_repo
 from _win_skip import _can_symlink
 
 REPO = Path(__file__).resolve().parents[1]
@@ -4174,3 +4175,55 @@ def test_fresh_init_conf_has_no_missing_required(board, monkeypatch, tmp_path):
     assert board.lint_local_conf_required() == []
     conf_module = board._load_local_conf()
     assert conf_module.missing_required(conf_module.load(pm / "local.conf").values) == ()
+
+
+# ════════════════════════════════════════════════════════════════════════
+# `status_snapshot()` — 관리자 읽기 계약(`pm-config status --json --with-board`)이 부르는
+# 얇은 조립. 여기서는 board 소유 축(상태별 수·open 목록·lint 목록·sidecar 통과)만 본다.
+# CLI 배선은 tests/test_pm_config_status_json.py 가 실 홈에서 end-to-end 로 잰다.
+
+
+def test_status_snapshot_counts_open_rows_and_gate_records(board, monkeypatch, tmp_path):
+    """상태별 수는 `STATUS_DIRS` 다섯 축이고, open 행과 게이트 기록이 그대로 실린다."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    local = tmp_path / ".project_manager" / ".local"
+    local.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(board, "LOCAL_DIR", local)
+    monkeypatch.setattr(board, "REGRESSION_FLAG", local / "regression.json")
+    monkeypatch.setattr(board, "LIVEGATE_FLAG", local / "livegate.json")
+    # sidecar 좌표 해소는 git(`core.hooksPath`)에 묻는다 — tmp 트리가 자기 저장소라고 선언하지
+    # 않으면 이 저장소의 답을 받아 실 PM 홈 기록을 읽는다(tests/_git_fixture 규약).
+    init_git_repo(tmp_path)
+    _ticket(board, "open", "T-0001", _healthy_ticket_text("T-0001"))
+    _ticket(board, "done", "T-0002",
+            "---\nid: T-0002\ntitle: 끝난 것\nstatus: done\ndepends_on: []\n---\n## 목표\n실값\n")
+    (local / "regression.json").write_text(
+        json.dumps({"head": "abc", "status": "pass", "collected": 42}), encoding="utf-8")
+
+    snapshot = board.status_snapshot()
+
+    assert set(snapshot["counts"]) == set(board.STATUS_DIRS)
+    assert snapshot["counts"]["open"] == 1 and snapshot["counts"]["done"] == 1
+    assert snapshot["open"] == [{"id": "T-0001", "title": "정상 티켓", "claimed_by": None}]
+    assert snapshot["regression"] == {"head": "abc", "status": "pass", "collected": 42}
+    assert snapshot["livegate"] is None, "기록이 없으면 판정도 없다(빈 dict 를 지어내지 않는다)"
+
+
+def test_status_snapshot_carries_lint_findings_without_failing(board, monkeypatch, tmp_path):
+    """lint 이슈는 목록으로만 실린다 — 조회가 rc 를 내지 않는다(`cmd_lint` 의 관심사)."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    local = tmp_path / ".project_manager" / ".local"
+    local.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(board, "REGRESSION_FLAG", local / "regression.json")
+    monkeypatch.setattr(board, "LIVEGATE_FLAG", local / "livegate.json")
+    init_git_repo(tmp_path)
+    _ticket(board, "open", "T-0001",
+            "---\nid: T-0001\ntitle: 의존 깨짐\nstatus: open\ndepends_on: [T-9999]\n---\n"
+            "## 목표\n실값\n")
+
+    snapshot = board.status_snapshot()
+
+    assert board.cmd_lint(SimpleNamespace(gate=False)) == 1, "전제: lint 는 이슈를 낸다"
+    assert any(row["kind"] == "unknown" and "T-9999" in row["message"]
+               for row in snapshot["lint"]), snapshot["lint"]
+    assert all(set(row) == {"kind", "message"} for row in snapshot["lint"])
