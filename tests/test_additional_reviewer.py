@@ -291,8 +291,8 @@ def test_the_verdict_round_limit_axis_is_gone(external):
     assert not hasattr(external, "ADDITIONAL_REVIEWER_ROUND_LIMIT_KEY")
     assert "판정 상한" not in external._ROUND_LIMIT_GUIDANCE
     # 남은 티켓 축은 둘이다 — 수렴(must_fix 추이)과 미완(판정 없는 호출).
-    assert external.DEFAULT_REVIEW_ROUNDS_MAX == 2
-    assert external.DEFAULT_INCOMPLETE_ROUND_LIMIT == 2
+    assert external._review_rounds_max({}) == 2
+    assert external._incomplete_round_limit({}) == 2
 
 
 # ── 순수 헬퍼: 추가 리뷰 timeout 해소 (T-0467) ───────────────────────────────
@@ -766,7 +766,7 @@ def test_real_ledger_shapes_drop_the_retired_field_and_recount(
     assert "acked_through" not in entry
     assert retired_ack == acked
     assert external._round_counts(entry) == (count, count, 0)   # 제거 전: count-acked 기준
-    assert external._round_counts(entry)[2] < external.DEFAULT_INCOMPLETE_ROUND_LIMIT
+    assert external._round_counts(entry)[2] < external._incomplete_round_limit({})
     assert capsys.readouterr().err == ""         # 정규화만으로는 저장 여부를 몰라 침묵한다
 
 
@@ -1239,8 +1239,8 @@ def _wave_budget_state(external, tmp_path) -> dict:
 
 
 def test_wave_budget_default(external):
-    """미설정 → DEFAULT_WAVE_BUDGET(24 = 게이트 상한 4 × 동시 진행 6티켓 어림)."""
-    assert external._wave_budget({}) == external.DEFAULT_WAVE_BUDGET == 24
+    """미설정 → 레지스트리 기본값(24 = 게이트 상한 4 × 동시 진행 6티켓 어림)."""
+    assert external._wave_budget({}) == 24
 
 
 def test_wave_budget_knob_override(external):
@@ -1755,7 +1755,7 @@ def test_negative_wave_spent_does_not_reopen_the_budget(
 def test_ack_wave_does_not_open_the_gate_round_limit(
         external, monkeypatch, tmp_path, capsys):
     """두 예산은 독립 축 — wave 승인이 게이트 미완 라운드 상한을 열지 않는다."""
-    spend = external.DEFAULT_INCOMPLETE_ROUND_LIMIT
+    spend = external._incomplete_round_limit({})
     calls = _wire(
         external, monkeypatch, tmp_path, result=_FAIL_STARTED, conf=_ROUNDS_MAX_OFF,
     )
@@ -1799,7 +1799,7 @@ def _exhaust_both_budgets(external, monkeypatch, tmp_path):
     """게이트 미완 상한(2)과 wave 예산(3)을 동시에 소진한 장부를 만든다.
 
     게이트 축은 미완(판정 없이 끝난 호출)이다 — 호출 횟수만 세던 판정 상한은 제거됐다."""
-    spend = external.DEFAULT_INCOMPLETE_ROUND_LIMIT
+    spend = external._incomplete_round_limit({})
     conf = {
         **_ROUNDS_MAX_OFF,                      # 수렴 축은 별도 테스트 소유(미완 축만 본다)
         "additional_reviewer.wave_budget": str(spend + 1),
@@ -1817,7 +1817,7 @@ def _exhaust_both_budgets(external, monkeypatch, tmp_path):
 def test_wave_approval_survives_a_round_limit_refusal(
         external, monkeypatch, tmp_path, capsys):
     """게이트가 막아도 `--ack-wave` 리셋은 저장된다 (다음 실행이 그 상태를 이어받는다)."""
-    spent = external.DEFAULT_INCOMPLETE_ROUND_LIMIT + 1
+    spent = external._incomplete_round_limit({}) + 1
     calls = _exhaust_both_budgets(external, monkeypatch, tmp_path)
     capsys.readouterr()
 

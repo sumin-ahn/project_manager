@@ -683,8 +683,8 @@ def _scope_from_initial_pm_home(*, ticket_selected: bool, explicit_paths: bool) 
     """이번 검토 범위가 **최초 PM 홈**에서 파생됐는가 (diff 소유자 대조 대상).
 
     명시 `--paths` 나 유효 ticket touches 가 범위를 완전 지정하지 않은 실행은 최초 PM 홈 config
-    를 읽어 범위를 얻는다. 그 config 가 `additional_reviewer.paths` 를 선언했든 엔진 고정 기본 경로
-    (`DEFAULT_PATHS`)로 떨어졌든 **범위의 출처는 최초 PM 홈 하나**라, 표시 conf 와 실제 호출
+    를 읽어 범위를 얻는다. 그 config 가 `additional_reviewer.paths` 를 선언했든 레지스트리 기본
+    경로로 떨어졌든 **범위의 출처는 최초 PM 홈 하나**라, 표시 conf 와 실제 호출
     범위가 갈리는 위험은 같다 — 그래서 선언 유무를 판정 입력으로 쓰지 않는다.
     """
     return not ticket_selected and not explicit_paths
@@ -705,10 +705,6 @@ def _tickets_dir() -> Path:
     if (base / "board" / "tickets").is_dir():
         return base / "board" / "tickets"
     return base / "wiki" / "tickets"
-
-
-# 기본 검토 경로 (--paths·local.conf additional_reviewer.paths 미지정 시)
-DEFAULT_PATHS: list[str] = ["src/", "tests/", "scripts/", ".project_manager/tools/"]
 
 
 # ── PM 홈 앵커 재지정 감지 (adopter#0 false-green 게이트) ────────────────
@@ -819,16 +815,15 @@ _REVIEWER_PROGRESS_CONTRACTS = {
     },
 }
 
-# 미완 라운드 상한 — 판정 없이 끝난 호출(타임아웃·중단·오염 무효화)이 같은 게이트에서 이 횟수를
-# 채우면 이후 실행을 거부한다. 호출 횟수만 세던 판정 라운드 상한은 같은 범위를 보는 수렴 축과
-# 중복이라 제거됐다(실 장부 53게이트에서 한 번도 발동하지 않았고, 발산은 수렴 축이 더 일찍 잡는다).
-DEFAULT_INCOMPLETE_ROUND_LIMIT = 2
+# 미완 라운드 상한 — 판정 없이 끝난 호출(타임아웃·중단·오염 무효화)이 같은 게이트에서 상한
+# 횟수를 채우면 이후 실행을 거부한다. 호출 횟수만 세던 판정 라운드 상한은 같은 범위를 보는 수렴
+# 축과 중복이라 제거됐다(실 장부 53게이트에서 한 번도 발동하지 않았고, 발산은 수렴 축이 더 일찍
+# 잡는다). 상한 값의 정본은 레지스트리다(`local_conf` · 아래 예산 노브 전부 동형).
 
-# 수렴-형상 상한 — 코드 리뷰 라운드 수 상한(기본 2·local.conf `additional_reviewer.rounds_max`).
+# 수렴-형상 상한 — 코드 리뷰 라운드 수 상한(local.conf `additional_reviewer.rounds_max`).
 # 이 축은 호출 횟수가 아니라 **장부의 must_fix 추이**로 수렴 여부를
 # 본다: 상한을 넘겼거나(초과), 직전 라운드보다 must_fix 가 늘었으면(발산) 라운드를 더 쓰지 않는다.
 # 실측에서 green 6건 중 5건이 2R 종결이고 관측된 3R 시도 8건은 모두 반려였다.
-DEFAULT_REVIEW_ROUNDS_MAX = 2
 REVIEW_ROUNDS_MAX_KEY = "additional_reviewer.rounds_max"
 
 # 수렴 차단 사유 — 안내 문구의 라벨이자 판정 반환값(호출부가 사유별로 갈리지 않게 한 축).
@@ -843,9 +838,9 @@ _CONVERGENCE_REASONS: dict[str, str] = {
 
 # diff 서킷브레이커 — 티켓 `estimate` 별 diff 총량(추가+삭제) 상한. 리뷰 라운드가 수렴하지 않는
 # 두 번째 원인이 **구현 스코프 팽창**이라(실측 5,018줄 단일 티켓), 리뷰/완료 진입에서 총량을
-# 기계로 대조한다. 값은 프로젝트 규약이고 채택자는 local.conf `diff_cap.<estimate>` 로
-# 덮어쓴다. estimate 가 없거나 모르는 값이면 가드 off(None) — 엔진이 보편값을 지어내지 않는다.
-DEFAULT_DIFF_CAPS: dict[str, int] = {"small": 300, "medium": 1000, "large": 2500}
+# 기계로 대조한다. estimate 별 기본 상한의 정본은 레지스트리(`local_conf.DIFF_CAP_DEFAULTS`)이고
+# 채택자는 local.conf `diff_cap.<estimate>` 로 덮어쓴다. estimate 가 없거나 레지스트리가 모르는
+# 값이면 가드 off(None) — 엔진이 보편값을 지어내지 않는다.
 DIFF_CAP_KEY_PREFIX = "diff_cap."
 
 # 측정 제외 subtree — 기계 생성·설치 산출물을 손작업 diff 와 같은 가중으로 합산하지 않는다.
@@ -873,7 +868,6 @@ MEASURED_SCOPE_NOTE = "측정=손작업 스코프(기계 mirror 제외)"
 # 게이트당 4라운드 × 동시 진행 6티켓 어림이고 실측 세션당 라운드(~50)보다 낮게 잡아 PM 이 중간에
 # `--rounds-report`로 수렴 상태를 점검하는 관측점을 만든다. local.conf
 # additional_reviewer.wave_budget 로 조정 가능.
-DEFAULT_WAVE_BUDGET = 24
 
 # 라운드 상한 초과 전용 종료 코드 (기존 0=통과·1=반려/실패/오류·2=argparse·3=예약 과 구분).
 # 실행 전 거부라 리뷰어는 호출되지 않는다(과금 없음). wave 예산 소진도 같은 축(호출 전
@@ -1289,6 +1283,16 @@ def _load_local_conf():
     )
 
 
+def _conf_default(key: str) -> str | None:
+    """이 conf 키의 엔진 기본값 — 정본은 `local_conf.KEY_REGISTRY` 다(선언이 없으면 None)."""
+    return _load_local_conf().default_for(key)
+
+
+def _conf_default_int(key: str) -> int:
+    """정수 기본값 — 선언이 없는 키를 부르면 `TypeError` 로 멈춘다(값을 지어내지 않는다)."""
+    return int(_conf_default(key))
+
+
 def local_config(repo: Path | None = None) -> dict[str, str]:
     """per-clone local.conf 를 KEY=value 로 읽는다 (없으면 빈 dict). board.py 와 동일 포맷."""
     path = (repo / ".project_manager" / "local.conf") if repo is not None else LOCAL_CONF
@@ -1641,50 +1645,55 @@ def _timeout_seconds_arg(raw: str) -> int:
 
 
 def _configured_paths(conf: dict[str, str]) -> list[str]:
-    raw = conf.get("additional_reviewer.paths", "").strip()
-    return [p for p in re.split(r"[,\s]+", raw) if p] if raw else list(DEFAULT_PATHS)
+    """검토 경로 — 선언이 없으면 레지스트리 기본값을 **같은 문법**으로 나눈다(파서 하나)."""
+    raw = conf.get("additional_reviewer.paths", "").strip() or _conf_default(
+        "additional_reviewer.paths")
+    return [p for p in re.split(r"[,\s]+", raw) if p]
 
 
 def _incomplete_round_limit(conf: dict[str, str]) -> int:
-    """판정 없는 호출의 별도 재시도 상한(기본 2)."""
+    """판정 없는 호출의 별도 재시도 상한(미설정·손상은 레지스트리 기본값)."""
+    default = _conf_default_int(ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY)
     raw = _knob_raw(conf, ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY)
     if not raw:
-        return DEFAULT_INCOMPLETE_ROUND_LIMIT
+        return default
     try:
         value = int(raw)
     except ValueError:
-        return DEFAULT_INCOMPLETE_ROUND_LIMIT
-    return value if value >= 0 else DEFAULT_INCOMPLETE_ROUND_LIMIT
+        return default
+    return value if value >= 0 else default
 
 
 def _wave_budget(conf: dict[str, str]) -> int:
-    """wave 총 라운드 예산 (local.conf additional_reviewer.wave_budget·기본 `DEFAULT_WAVE_BUDGET`).
+    """wave 총 라운드 예산 (local.conf additional_reviewer.wave_budget·미설정은 레지스트리 기본값).
 
     비정수·음수는 기본값으로 fail-soft — 라운드 상한 노브와 같은 규칙이다(깨진 노브가 게이트를
     벽돌로 만들지 않는다)."""
+    default = _conf_default_int(ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)
     raw = _knob_raw(conf, ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)
     if not raw:
-        return DEFAULT_WAVE_BUDGET
+        return default
     try:
         value = int(raw)
     except ValueError:
-        return DEFAULT_WAVE_BUDGET
-    return value if value >= 0 else DEFAULT_WAVE_BUDGET
+        return default
+    return value if value >= 0 else default
 
 
 def _review_rounds_max(conf: dict[str, str]) -> int:
-    """수렴-형상 라운드 상한 (local.conf `additional_reviewer.rounds_max`·기본 2).
+    """수렴-형상 라운드 상한 (local.conf `additional_reviewer.rounds_max`·미설정은 레지스트리 기본값).
 
     비정수·음수는 기본값으로 fail-soft — 다른 예산 노브와 같은 규칙이다(깨진 노브가 게이트를
     벽돌로 만들지 않는다)."""
+    default = _conf_default_int(REVIEW_ROUNDS_MAX_KEY)
     raw = conf.get(REVIEW_ROUNDS_MAX_KEY, "").strip()
     if not raw:
-        return DEFAULT_REVIEW_ROUNDS_MAX
+        return default
     try:
         value = int(raw)
     except ValueError:
-        return DEFAULT_REVIEW_ROUNDS_MAX
-    return value if value >= 0 else DEFAULT_REVIEW_ROUNDS_MAX
+        return default
+    return value if value >= 0 else default
 
 
 def _diff_cap(conf: dict[str, str], estimate: str | None) -> int | None:
@@ -1696,9 +1705,10 @@ def _diff_cap(conf: dict[str, str], estimate: str | None) -> int | None:
     if not estimate:
         return None
     key = estimate.strip().lower()
-    default = DEFAULT_DIFF_CAPS.get(key)
-    if default is None:
-        return None
+    declared = _conf_default(f"{DIFF_CAP_KEY_PREFIX}{key}")
+    if declared is None:
+        return None                       # 레지스트리가 모르는 estimate — 상한을 지어내지 않는다
+    default = int(declared)
     raw = conf.get(f"{DIFF_CAP_KEY_PREFIX}{key}", "").strip()
     if not raw:
         return default
@@ -2619,7 +2629,8 @@ def _reserve_round_budget(
                     rounds=completed + inflight, completed=completed, inflight=inflight,
                     limit=rounds_max,
                     series=_format_must_fix_series(series),
-                    knob=REVIEW_ROUNDS_MAX_KEY, default=DEFAULT_REVIEW_ROUNDS_MAX,
+                    knob=REVIEW_ROUNDS_MAX_KEY,
+                    default=_conf_default_int(REVIEW_ROUNDS_MAX_KEY),
                     ledger=_round_ledger_path()), file=sys.stderr)
                 return RoundBudget(refused_rc=EXIT_ROUND_LIMIT_EXCEEDED)
 
@@ -2874,7 +2885,7 @@ def render_rounds_report(
     *,
     ledger_path: Path | str | None = None,
     gate: str | None = None,
-    wave_budget: int = DEFAULT_WAVE_BUDGET,
+    wave_budget: int | None = None,
     title: str = "추가 리뷰 라운드 장부",
     include_wave: bool = True,
 ) -> str:
@@ -2884,7 +2895,11 @@ def render_rounds_report(
     해소는 호출부(`_print_rounds_report`)가 한다.
 
     라운드 번호와 나열 순서는 **예약 순번**(`sequence`)이다 — 장부의 append 순서는 완료 순서라
-    동시 리뷰가 역순으로 끝나면 라운드가 뒤바뀌어 보인다."""
+    동시 리뷰가 역순으로 끝나면 라운드가 뒤바뀌어 보인다.
+
+    `wave_budget` 미지정은 레지스트리 기본값이다(호출부가 conf 해소를 못 하는 조회 경로용)."""
+    if wave_budget is None:
+        wave_budget = _conf_default_int(ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)
     snapshot = dict(ledger)                # 사본 정규화 — 조회가 장부를 고치지 않는다
     wave = _wave_state(snapshot)
     lines = [
@@ -2948,10 +2963,10 @@ def _print_rounds_report(
         # 다른 축) — 예산 표기만 기본값으로 낮추고 그 사실을 알린다.
         print(
             f"경고: local.conf 읽기 실패 ({type(exc).__name__}: {exc}) — wave 예산 표기를 "
-            f"기본값 {DEFAULT_WAVE_BUDGET} 로 대체합니다.",
+            f"기본값 {_conf_default_int(ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)} 로 대체합니다.",
             file=sys.stderr,
         )
-        wave_budget = DEFAULT_WAVE_BUDGET
+        wave_budget = _conf_default_int(ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)
     print(render_rounds_report(
         _load_round_ledger(),
         ledger_path=_round_ledger_path(),
@@ -3764,8 +3779,9 @@ def diff_cap_block(
         ticket=ticket, estimate=estimate or "미지정", total=total, cap=cap,
         scope=", ".join(scope) or "(없음)", key=key,
         measured_note=MEASURED_SCOPE_NOTE,
-        small=DEFAULT_DIFF_CAPS["small"], medium=DEFAULT_DIFF_CAPS["medium"],
-        large=DEFAULT_DIFF_CAPS["large"],
+        small=_conf_default_int(f"{DIFF_CAP_KEY_PREFIX}small"),
+        medium=_conf_default_int(f"{DIFF_CAP_KEY_PREFIX}medium"),
+        large=_conf_default_int(f"{DIFF_CAP_KEY_PREFIX}large"),
     )
 
 

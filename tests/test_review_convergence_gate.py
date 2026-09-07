@@ -137,7 +137,7 @@ def _ledger(tmp_path) -> dict:
 
 def test_rounds_max_default_and_knob(external):
     """미설정 → 2(출하 기본값) · local.conf `additional_reviewer.rounds_max` 가 상한을 바꾼다."""
-    assert external._review_rounds_max({}) == external.DEFAULT_REVIEW_ROUNDS_MAX == 2
+    assert external._review_rounds_max({}) == 2
     assert external._review_rounds_max({"additional_reviewer.rounds_max": "5"}) == 5
 
 
@@ -541,7 +541,7 @@ def test_a_real_reservation_records_the_deadline_in_the_ledger(
 def test_diff_cap_defaults_per_estimate(external, estimate, cap):
     """3구간 기본 상한 — 사용자 확정 값(2026-08-08)."""
     assert external._diff_cap({}, estimate) == cap
-    assert external.DEFAULT_DIFF_CAPS[estimate] == cap
+    assert external._conf_default(f"diff_cap.{estimate}") == str(cap)
 
 
 def test_diff_cap_unknown_estimate_is_guard_off(external):

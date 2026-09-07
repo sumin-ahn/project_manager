@@ -1452,8 +1452,8 @@ def test_internal_rounds_max_key_is_derived_from_the_role_constant(pd):
     """키 문자열을 하드코딩하지 않는다 — 역할 표기가 갈리는 자리를 원천 차단한다."""
     assert (pd.INTERNAL_REVIEW_ROUNDS_MAX_KEY
             == f"delegate.{pd.INTERNAL_REVIEW_ROLE}.rounds_max")
-    assert pd.DEFAULT_INTERNAL_REVIEW_ROUNDS_MAX == 3
-    assert pd.internal_review_rounds_max() == 3          # conf 없음 = 엔진 기본값
+    assert pd._conf_default_int(pd.INTERNAL_REVIEW_ROUNDS_MAX_KEY) == 3
+    assert pd.internal_review_rounds_max() == 3          # conf 없음 = 레지스트리 기본값
 
 
 @pytest.mark.parametrize("raw", ["", "   ", "abc", "-1", "3.5"])

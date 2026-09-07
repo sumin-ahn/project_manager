@@ -549,10 +549,11 @@ def _load_board():
 
 
 def test_board_init_leaves_the_codex_budget_key_to_the_docs(tmp_path, monkeypatch):
-    """board.py init 산출에는 codex 예산 **설명/예시가 없다** — 카탈로그는 출하 문서 소유 (T-0767).
+    """board.py init 산출에는 codex 예산 **설명/예시가 없다** — 설명은 레지스트리 소유
+    (T-0767·T-0906).
 
     미러 test_board_portability.test_init_ctx_budget_is_a_value_not_an_explanation.
-    conf 는 이 clone 이 정한 값만 담고, 하네스별 오버라이드 키의 존재는 README 가 가르친다.
+    conf 는 이 clone 이 정한 값만 담고, 하네스별 오버라이드 키의 존재는 레지스트리가 가르친다.
     """
     board = _load_board()
     conf_path = tmp_path / "local.conf"
@@ -579,9 +580,9 @@ def test_board_init_leaves_the_codex_budget_key_to_the_docs(tmp_path, monkeypatc
         assert f"harness.{harness}.ctx_window_tokens" not in conf_text
     parsed = board.local_config()  # LOCAL_CONF 가 conf_path 로 patch 됨.
     assert not [key for key in parsed if key.startswith("harness.")]
-    # 카탈로그는 출하 문서가 소유한다 — 키가 사라진 게 아니라 자리를 옮겼다.
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
-    assert "harness.<name>.ctx_window_tokens" in readme
+    # 설명은 레지스트리가 소유한다 — 키가 사라진 게 아니라 자리를 옮겼다.
+    spec = board._load_local_conf().key_spec("harness.codex.ctx_window_tokens")
+    assert spec is not None and "ctx.window_tokens" in spec.description
 
 
 # ── 4. 세션 안 ctx 넛지 (T-0770 · claude 미러) ────────────────────────────────

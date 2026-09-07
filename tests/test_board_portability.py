@@ -203,7 +203,7 @@ def test_init_writes_ctx_window_tokens_budget(board, monkeypatch, tmp_path):
     """init 이 local.conf 에 ctx_window_tokens=<기본> 라인을 nudge/stop pct 옆에 기록한다.
 
     회사 실사용 계기(T-0128): 핸드오프 토큰 예산을 사용자가 발견·조정할 수 있게 surface.
-    기본은 어댑터 ctx_guard 와 동기된 200K (board 자체 상수 — touches 격리).
+    기본은 어댑터 ctx_guard 와 동기된 200K (정본=레지스트리 · 어댑터는 touches 격리로 리터럴).
     """
     conf_path = _init_isolated(board, monkeypatch, tmp_path)
     args = argparse.Namespace(prefix=None, area=None, owner=None, session="pm")
@@ -211,8 +211,8 @@ def test_init_writes_ctx_window_tokens_budget(board, monkeypatch, tmp_path):
     assert board.cmd_init(args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
-    assert f"ctx.window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}" in conf_text
-    assert board.CTX_WINDOW_TOKENS_DEFAULT == 200000
+    assert f"ctx.window_tokens={board._conf_default_int('ctx.window_tokens')}" in conf_text
+    assert board._conf_default_int("ctx.window_tokens") == 200000
     # nudge/stop pct 옆에 배치됐는지 (기존 ctx 임계와 한 블록).
     assert "ctx.nudge_pct=" in conf_text and "ctx.stop_pct=" in conf_text
 
@@ -221,7 +221,7 @@ def test_init_ctx_budget_is_a_value_not_an_explanation(board, monkeypatch, tmp_p
     """예산 라인은 **실값 한 줄**이다 — 비용 의미·오버라이드 카탈로그는 출하 문서가 소유한다.
 
     설명을 conf 에 심으면 값과 어긋난 채 굳는다(T-0767). conf 는 이 clone 이 정한 값만 담고,
-    "이 숫자가 무엇인가"는 README 키 카탈로그에서 읽는다.
+    "이 숫자가 무엇인가"는 레지스트리(`local_conf.py --keys`)에서 읽는다.
     """
     conf_path = _init_isolated(board, monkeypatch, tmp_path)
     args = argparse.Namespace(prefix=None, area=None, owner=None, session="pm")
@@ -229,22 +229,25 @@ def test_init_ctx_budget_is_a_value_not_an_explanation(board, monkeypatch, tmp_p
     assert board.cmd_init(args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
-    assert f"ctx.window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}" in conf_text
+    assert f"ctx.window_tokens={board._conf_default_int('ctx.window_tokens')}" in conf_text
     # 설명 산문·주석 예시가 conf 에 없다.
     for marker in ("핸드오프 토큰 예산", "물리 window 아님",
                    "harness.claude.ctx_window_tokens",
                    "harness.opencode.ctx_window_tokens"):
         assert marker not in conf_text, f"conf 에 설명 블록 잔존: {marker}"
     parsed = board.local_config()  # _init_isolated 가 LOCAL_CONF 를 conf_path 로 patch.
-    assert parsed.get("ctx.window_tokens") == str(board.CTX_WINDOW_TOKENS_DEFAULT)
+    assert parsed.get("ctx.window_tokens") == str(
+        board._conf_default_int("ctx.window_tokens"))
     assert not [key for key in parsed if key.startswith("harness.")]
 
 
-def test_harness_ctx_override_is_documented_in_shipping_docs(board):
-    """하네스별 오버라이드 키의 자리는 출하 문서다 — 카탈로그가 사라지지 않았음을 값으로 못박는다."""
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
-    assert "harness.<name>.ctx_window_tokens" in readme
-    assert "ctx.window_tokens" in readme
+def test_harness_ctx_override_is_documented_in_the_registry(board):
+    """하네스별 오버라이드 키의 설명 자리는 레지스트리다 — 키가 사라지지 않았음을 값으로 못박는다."""
+    conf_module = board._load_local_conf()
+    override = conf_module.key_spec("harness.claude.ctx_window_tokens")
+    assert override is not None and override.description
+    assert "ctx.window_tokens" in override.description        # 생략 시 무엇으로 떨어지는지
+    assert conf_module.key_spec("ctx.window_tokens").default == "200000"
 
 
 # ── C9: cmd_init 재실행 비파괴 병합 — 사용자/operational 키 보존 (T-0184) ──────
@@ -303,7 +306,7 @@ def test_init_rerun_preserves_custom_ctx_window_tokens(board, monkeypatch, tmp_p
 
     conf_text = conf_path.read_text(encoding="utf-8")
     assert "ctx.window_tokens=5000" in conf_text
-    assert f"ctx.window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}" not in conf_text
+    assert f"ctx.window_tokens={board._conf_default_int('ctx.window_tokens')}" not in conf_text
     # init 이 안 쓰는 키(구 `session=` 포함)는 비파괴 병합으로 byte 보존된다 — 엔진은 채택자
     # conf 를 대신 고쳐 쓰지 않는다(읽지 않을 뿐·T-0779).
     assert "session=my-pm" in conf_text
@@ -322,7 +325,7 @@ def test_init_absent_writes_full_default(board, monkeypatch, tmp_path):
     assert "session=" not in conf_text and "prefix=" not in conf_text
     assert "runtime.py=" in conf_text
     assert f"test.cmd={board.default_pytest_cmd(board._detect_py())}" in conf_text
-    assert f"ctx.window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}" in conf_text
+    assert f"ctx.window_tokens={board._conf_default_int('ctx.window_tokens')}" in conf_text
     assert "ctx.nudge_pct=" in conf_text and "ctx.stop_pct=" in conf_text
 
 

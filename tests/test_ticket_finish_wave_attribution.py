@@ -35,7 +35,7 @@ _CLAIMED_AT = "2026-08-21T16:29:57+00:00"
 _COMPLETED_IN_WINDOW = "2026-08-21T16:31:40+00:00"    # claim 이후 완료 — 창 안
 _COMPLETED_BEFORE_WINDOW = "2026-08-21T15:00:00+00:00"  # claim 이전 완료 — 창 밖
 
-_MEDIUM_CAP = 1000  # additional_reviewer.DEFAULT_DIFF_CAPS["medium"] — 재현 형상의 상한
+_MEDIUM_CAP = 1000  # local_conf 레지스트리 `diff_cap.medium` 기본값 — 재현 형상의 상한
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess:

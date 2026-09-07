@@ -609,15 +609,20 @@ def test_init_conf_holds_only_real_values(tmp_path, monkeypatch):
     assert board.local_config()["test.cmd"] == board.default_pytest_cmd("python3")
 
 
-def test_shipped_catalog_documents_the_keys_the_conf_no_longer_explains(conf_module):
-    """설명 블록의 이관처 — 출하 문서 카탈로그가 레지스트리 키를 실제로 담는다."""
-    catalog = (REPO / "README.md").read_text(encoding="utf-8")
+def test_the_registry_documents_the_keys_the_conf_no_longer_explains(conf_module):
+    """설명 블록의 이관처 — 레지스트리가 키마다 설명을 실제로 담는다 (T-0906: 문서→코드).
+
+    conf 파일은 실값만 담고(시드 주석 폐지) 출하 문서는 표를 복제하지 않는다. 그래서 "이 키가
+    무엇인가" 를 말하는 자리는 레지스트리 하나뿐이고, 그 표면이 `--keys` 출력이다.
+    """
     for key in conf_module.KNOWN_KEYS:
-        if key.startswith("additional_reviewer.") or key.startswith("upstream."):
-            continue                       # 축 단위로 묶어 적는 행이 있다(아래에서 축을 본다)
-        assert key in catalog, key
+        spec = conf_module.key_spec(key)
+        assert spec is not None and spec.description.strip(), key
+    table = conf_module.render_key_table()
+    for key in conf_module.KNOWN_KEYS:
+        assert key in table, key
     for axis in ("additional_reviewer.", "upstream.", "harness.", "delegate."):
-        assert axis in catalog, axis
+        assert axis in table, axis
 
 
 # ── ⑧ 문구 규율 (동의 축 폐지 · 3타깃 파리티) ──────────────────────────────

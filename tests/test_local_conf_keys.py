@@ -1,7 +1,8 @@
-"""local.conf 알려지지 않은 키 경고 (T-0761).
+"""local.conf 키 레지스트리와 그 lint 배선 (T-0761·T-0906).
 
-`local.conf` 의 known-key 판정은 `local_conf.py`(T-0767)가 소유한다(`KNOWN_KEYS`·`LEGACY_KEY_MAP`·
-패턴 키군 전개). 이 파일은 그 판정을 **소비만** 하는 board.py 배선의 회귀다 — 사본을 만들지 않는다:
+`local.conf` 의 키 판정은 `local_conf.py`(T-0767)가 소유하고, T-0906 이 그 자리를 **키마다
+설명·기본값·필수 여부를 든 레지스트리**(`KEY_REGISTRY`·`PATTERN_REGISTRY`)로 넓혔다. 이 파일은
+그 레지스트리의 완전성과, 판정을 **소비만** 하는 board.py 배선의 회귀다 — 사본을 만들지 않는다:
 
 1. `board.lint_local_conf_keys()` 가 `local_conf.load(...).unknown` 을 그대로 advisory 로 감싸는지.
 2. `lint_tickets()` 합류 · kind 등재(`_ADVISORY_LINT_KINDS`) · `lint --gate` 종료코드 비기여.
@@ -9,6 +10,8 @@
 4. 역방향 — 정상 키·주석·빈 줄이 새지 않는지.
 5. `board.py init` 병합 경로가 같은 함수·같은 목록을 1줄로 재사용하는지.
 6. 가드 민감도 — 레지스트리에서 키 1개를 빼면 그 키를 담은 conf 가 red.
+7. 레지스트리 자체 — 설명·기본값·필수 완전성, 옮겨 온 기본값 9개의 소비자 값 동일성,
+   `missing_required`/`nonstandard` 경계, `--keys` 표, 필수 누락 lint, 문서 카탈로그 퇴역.
 
 hermetic: 실 `local.conf` 파일을 tmp 에 만들어 board 도구가 그 파일을 읽어 해소한 값을 단언한다.
 자식 프로세스 스폰 0.
@@ -17,10 +20,14 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from _textio import utf8_child_env
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -432,3 +439,213 @@ def test_cmd_init_is_quiet_on_a_fresh_home(monkeypatch, tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "엔진이 모르는 local.conf 키" not in out
+
+
+# ── ⑦ 레지스트리 — 설명·기본값·필수의 정본 (T-0906) ─────────────────────────
+# 이 절은 "키가 무엇이고 기본이 얼마인가" 의 자리가 코드 한 곳임을 값으로 못박는다. 흩어져 있던
+# 기본값 상수 9개(board ctx 3 · additional_reviewer 5 · pm_delegate 1)는 삭제됐고, 소비자가 읽는
+# 값이 이동 전과 같은지를 소비 지점에서 확인한다(alias 0 · 옛 경로 0).
+
+
+@pytest.fixture(scope="module")
+def conf_module():
+    return _load_module("local_conf_registry", LOCAL_CONF_PY)
+
+
+@pytest.fixture(scope="module")
+def consumers():
+    """옮겨 온 기본값을 읽는 세 소비자 모듈 — 상수가 있던 바로 그 자리들."""
+    return SimpleNamespace(
+        board=_load_module("board_moved_defaults", BOARD_PY),
+        reviewer=_load_module("reviewer_moved_defaults", TOOLS / "additional_reviewer.py"),
+        delegate=_load_module("delegate_moved_defaults", TOOLS / "pm_delegate.py"),
+    )
+
+
+# T-0906 직전(레지스트리 도입 전) `KNOWN_KEYS` 원소 전수 — 파생 튜플이 이 집합을 **그대로**
+# 유지하는지가 이관의 불변식이다(키를 늘리거나 줄이는 티켓이 아니다).
+_KEYS_BEFORE_THE_REGISTRY = frozenset({
+    "delegate.enabled", "delegate.timeout", "delegate.idle_timeout",
+    "delegate.code-reviewer.rounds_max",
+    "additional_reviewer.harness", "additional_reviewer.model",
+    "additional_reviewer.reasoning", "additional_reviewer.incomplete_rounds_max",
+    "additional_reviewer.wave_budget", "additional_reviewer.rounds_max",
+    "additional_reviewer.paths", "additional_reviewer.timeout",
+    "additional_reviewer.idle_timeout", "additional_reviewer.progress_signal",
+    "ctx.nudge_pct", "ctx.stop_pct", "ctx.window_tokens",
+    "qa.platforms", "regression.min_collected",
+    "upstream.path", "upstream.rev", "upstream.seen_rev",
+    "project.name", "project.tagline", "project.root", "project.date",
+    "runtime.py", "test.cmd", "identity.user",
+})
+
+
+def test_known_keys_is_derived_from_the_registry_and_keeps_its_members(conf_module):
+    """`KNOWN_KEYS` 는 레지스트리 파생이고 원소 집합이 이관 전과 같다 (사본 0·표면 불변)."""
+    assert conf_module.KNOWN_KEYS == tuple(conf_module.KEY_REGISTRY)
+    assert set(conf_module.KNOWN_KEYS) == set(_KEYS_BEFORE_THE_REGISTRY)
+
+
+def test_every_registered_key_declares_description_default_and_required(conf_module):
+    """실명 29키 전부가 설명·기본값 표현·필수 bool·표시 묶음을 갖는다 (완전성)."""
+    for key, spec in conf_module.KEY_REGISTRY.items():
+        assert spec.description.strip(), key
+        assert spec.default is None or isinstance(spec.default, str), key
+        assert isinstance(spec.required, bool), key
+        assert spec.group in conf_module.KEY_GROUPS, (key, spec.group)
+
+
+_PATTERN_SAMPLES = (
+    ("delegate.developer.harness", "delegate"),
+    ("delegate.developer.hard.model", "delegate"),
+    ("delegate.architect.hard.fallback.reasoning", "delegate"),
+    ("delegate.model_alias.mymodel", "delegate"),
+    ("harness.opencode.pro_model", "harness"),
+    ("harness.codex.idle_timeout", "harness"),
+    ("diff_cap.large", "additional_reviewer"),
+    ("test.windows.cmd", "runtime"),
+)
+
+
+def test_every_pattern_family_declares_a_spec_and_resolves_its_members(conf_module):
+    """패턴 군 전부가 설명을 갖고, 실키가 그 군으로 해소된다 (실명·패턴 양쪽 해소)."""
+    for pattern, spec in conf_module.PATTERN_REGISTRY.items():
+        assert spec.description.strip(), pattern
+        assert isinstance(spec.required, bool), pattern
+        assert spec.group in conf_module.KEY_GROUPS, (pattern, spec.group)
+    for key, group in _PATTERN_SAMPLES:
+        spec = conf_module.key_spec(key)
+        assert spec is not None and spec.description.strip(), key
+        assert spec.group == group, key
+        assert conf_module.pattern_for(key) in conf_module.PATTERN_REGISTRY, key
+    # 군에 속하지 않는 이름은 해소되지 않는다 (판정이 헐거워지지 않았다).
+    for miss in ("delegate.no_such_role.model", "harness.no_such.idle_timeout",
+                 "diff_cap.huge", "test.windows.exe", "nope.nope"):
+        assert conf_module.key_spec(miss) is None, miss
+
+
+def test_required_is_only_what_the_core_commands_cannot_run_without(conf_module):
+    """필수는 두 키뿐이다 — 위임 역할 키를 필수로 두면 새 import 마다 누락 배너가 뜬다."""
+    assert conf_module.required_keys() == ("runtime.py", "test.cmd")
+    for optional in ("delegate.developer.model", "delegate.developer.harness",
+                     "additional_reviewer.harness", "project.name"):
+        spec = conf_module.key_spec(optional)
+        assert spec is not None and spec.required is False, optional
+
+
+_MOVED_DEFAULTS = (
+    pytest.param("ctx.nudge_pct", "30",
+                 lambda c: c.board.ctx_thresholds()["nudge_pct"], 30,
+                 id="board-ctx-nudge-pct"),
+    pytest.param("ctx.stop_pct", "20",
+                 lambda c: c.board.ctx_thresholds()["stop_pct"], 20,
+                 id="board-ctx-stop-pct"),
+    pytest.param("ctx.window_tokens", "200000",
+                 lambda c: c.board._conf_default_int("ctx.window_tokens"), 200000,
+                 id="board-ctx-window-tokens"),
+    pytest.param("additional_reviewer.paths", "src/,tests/,scripts/,.project_manager/tools/",
+                 lambda c: c.reviewer._configured_paths({}),
+                 ["src/", "tests/", "scripts/", ".project_manager/tools/"],
+                 id="reviewer-paths"),
+    pytest.param("additional_reviewer.incomplete_rounds_max", "2",
+                 lambda c: c.reviewer._incomplete_round_limit({}), 2,
+                 id="reviewer-incomplete-rounds-max"),
+    pytest.param("additional_reviewer.rounds_max", "2",
+                 lambda c: c.reviewer._review_rounds_max({}), 2,
+                 id="reviewer-rounds-max"),
+    pytest.param("diff_cap.medium", "1000",
+                 lambda c: [c.reviewer._diff_cap({}, e)
+                            for e in ("small", "medium", "large")], [300, 1000, 2500],
+                 id="reviewer-diff-caps"),
+    pytest.param("additional_reviewer.wave_budget", "24",
+                 lambda c: c.reviewer._wave_budget({}), 24,
+                 id="reviewer-wave-budget"),
+    pytest.param("delegate.code-reviewer.rounds_max", "3",
+                 lambda c: c.delegate.internal_review_rounds_max({}), 3,
+                 id="delegate-internal-rounds-max"),
+)
+
+
+@pytest.mark.parametrize("key,declared,probe,expected", _MOVED_DEFAULTS)
+def test_moved_default_is_declared_once_and_read_by_its_consumer(
+        conf_module, consumers, monkeypatch, key, declared, probe, expected):
+    """옮겨 온 기본값 9개 — 레지스트리 선언값과 소비자가 읽는 값이 이동 전 리터럴과 같다."""
+    monkeypatch.setattr(consumers.board, "local_config", lambda *a, **k: {})
+    assert conf_module.default_for(key) == declared
+    assert probe(consumers) == expected
+
+
+def test_the_deleted_constants_left_no_alias_behind(consumers):
+    """상수는 삭제됐다 — 같은 이름의 alias 가 남아 있으면 값이 두 곳에서 공급된다."""
+    for name in ("CTX_NUDGE_PCT_DEFAULT", "CTX_STOP_PCT_DEFAULT",
+                 "CTX_WINDOW_TOKENS_DEFAULT"):
+        assert not hasattr(consumers.board, name), name
+    for name in ("DEFAULT_PATHS", "DEFAULT_INCOMPLETE_ROUND_LIMIT",
+                 "DEFAULT_REVIEW_ROUNDS_MAX", "DEFAULT_DIFF_CAPS", "DEFAULT_WAVE_BUDGET"):
+        assert not hasattr(consumers.reviewer, name), name
+    assert not hasattr(consumers.delegate, "DEFAULT_INTERNAL_REVIEW_ROUNDS_MAX")
+
+
+def test_timeout_keys_declare_no_scalar_default_and_name_the_profile_table(conf_module):
+    """하네스별 표가 정본인 키는 기본값을 지어내지 않는다 (한 칸에 담기지 않는 값)."""
+    for key in ("delegate.timeout", "delegate.idle_timeout",
+                "additional_reviewer.timeout", "additional_reviewer.idle_timeout"):
+        spec = conf_module.key_spec(key)
+        assert spec.default is None, key
+        assert "HARNESS_PROFILES" in spec.description, key
+
+
+@pytest.mark.parametrize("values,missing", (
+    pytest.param({}, ("runtime.py", "test.cmd"), id="empty-conf"),
+    pytest.param({"runtime.py": "python3"}, ("test.cmd",), id="one-declared"),
+    pytest.param({"runtime.py": "", "test.cmd": ""}, (), id="declared-but-empty"),
+    pytest.param({"runtime.py": "python3", "test.cmd": "pytest -q"}, (), id="all-declared"),
+))
+def test_missing_required_reports_only_undeclared_keys(conf_module, values, missing):
+    """빈 문자열은 "있음" 이다 — 선언 유무만 보는 축이라 빈값 허용 키를 오탐하지 않는다."""
+    assert conf_module.missing_required(values) == missing
+
+
+def test_nonstandard_compares_only_keys_that_declare_a_default(conf_module):
+    """편차 판정은 기본값이 선언된 키만 본다 (기준 없는 자리에 기준을 지어내지 않는다)."""
+    deviation = conf_module.nonstandard({
+        "ctx.window_tokens": "300000",       # 선언된 기본과 다름 → 편차
+        "diff_cap.large": "20000",           # 패턴 키도 멤버 기본과 비교한다
+        "ctx.stop_pct": "20",                # 기본과 같음 → 편차 아님
+        "runtime.py": "python3",             # 기본 선언 없음 → 비교 대상 아님
+        "additional_reviewer.timeout": "900",  # 하네스 표가 정본 → 비교 대상 아님
+        "nope.nope": "1",                    # 모르는 키 → 비교 대상 아님
+    })
+    assert deviation == {
+        "ctx.window_tokens": ("300000", "200000"),
+        "diff_cap.large": ("20000", "2500"),
+    }
+
+
+def test_keys_cli_lists_all_keys(conf_module):
+    """`local_conf.py --keys` 가 실명 29키·패턴 군·기본값을 사람 표면 하나로 낸다."""
+    proc = subprocess.run(
+        [sys.executable, str(LOCAL_CONF_PY), "--keys"],
+        capture_output=True, text=True, encoding="utf-8", env=utf8_child_env(),
+    )
+    assert proc.returncode == 0, proc.stderr
+    for key in conf_module.KNOWN_KEYS:
+        assert key in proc.stdout, key
+    for pattern in conf_module.PATTERN_REGISTRY:
+        assert pattern in proc.stdout, pattern
+    for value in ("30", "20", "200000", "24", "300", "1000", "2500"):
+        assert value in proc.stdout, value
+    assert "필수" in proc.stdout                       # 필수 칸이 표에 있다
+
+
+def test_readme_catalog_retired(board, monkeypatch, tmp_path):
+    """키 표의 자리는 코드다 — 출하 문서에 표가 남아 있거나 안내가 문서를 가리키면 red."""
+    readme = README.read_text(encoding="utf-8")
+    assert "| 키 | 기본값 | 뜻 |" not in readme
+    assert "키 카탈로그" not in readme
+    assert "local_conf.py --keys" in readme
+    # 모르는-키 안내도 사라진 문서 절이 아니라 조회 명령을 가리킨다(dangling 참조 0).
+    conf = _write_conf(tmp_path, "runtime.py=python3\ntest.cmd=pytest -q\nnope.nope=1\n")
+    monkeypatch.setattr(board, "LOCAL_CONF", conf)
+    detail = board.lint_local_conf_keys()[0][2]
+    assert "local_conf.py --keys" in detail and "README" not in detail

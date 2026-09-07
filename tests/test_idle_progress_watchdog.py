@@ -2014,17 +2014,20 @@ def _init_args():
     return argparse.Namespace(prefix=None, area=None, owner=None, repo=None, slot=None, user=None)
 
 
-def test_harness_budget_keys_are_documented_in_the_shipped_catalog(relay):
-    """하네스별 시간 예산 키를 **출하 문서 카탈로그**가 노출한다 — 존재를 모르면 못 쓴다.
+def test_harness_budget_keys_are_documented_in_the_registry(board, relay):
+    """하네스별 시간 예산 키를 **레지스트리**가 노출한다 — 존재를 모르면 못 쓴다(T-0906).
 
-    GPU 부족은 엔진 속성이 아니라 배포 환경 조건이라 per-clone 으로 조여야 하는데, 키가 문서에
+    GPU 부족은 엔진 속성이 아니라 배포 환경 조건이라 per-clone 으로 조여야 하는데, 키 설명이
     없으면 채택자는 false-kill 을 당하고도 노브를 못 찾는다. conf 파일은 실값만 담으므로
-    (시드 주석 블록 폐지) 카탈로그가 그 노출을 단독으로 진다."""
-    catalog = (REPO / "README.md").read_text(encoding="utf-8")
-    assert "harness.<name>.{idle_timeout,wall_timeout}" in catalog
-    assert "미설정이어도 안전" in catalog        # 기본값이 안전하다는 사실도 알린다
-    for harness in relay.HARNESS_PROFILES:
-        assert f"`{harness}`" in catalog or f"harness.{harness}." in catalog, harness
+    (시드 주석 블록 폐지) 레지스트리와 그 조회 표면(`local_conf.py --keys`)이 노출을 단독으로 진다."""
+    conf_module = board._load_local_conf()
+    for suffix in ("idle_timeout", "wall_timeout"):
+        for harness in relay.HARNESS_PROFILES:
+            spec = conf_module.key_spec(f"harness.{harness}.{suffix}")
+            assert spec is not None and spec.description, (harness, suffix)
+            assert "미설정이어도 안전" in spec.description   # 기본값이 안전하다는 사실도 알린다
+    table = conf_module.render_key_table()
+    assert "idle_timeout,wall_timeout" in table
 
 
 def test_init_conf_holds_values_only_without_a_seed_block(board):
@@ -3040,9 +3043,9 @@ def _conf_with_init_defaults(board, extra: str) -> str:
     """
     return (
         "session=pm\nruntime.py=python3\ntest.cmd=pytest -q\nproject.name=\n"
-        f"ctx.nudge_pct={board.CTX_NUDGE_PCT_DEFAULT}\n"
-        f"ctx.stop_pct={board.CTX_STOP_PCT_DEFAULT}\n"
-        f"ctx.window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}\n" + extra)
+        f"ctx.nudge_pct={board._conf_default_int('ctx.nudge_pct')}\n"
+        f"ctx.stop_pct={board._conf_default_int('ctx.stop_pct')}\n"
+        f"ctx.window_tokens={board._conf_default_int('ctx.window_tokens')}\n" + extra)
 
 
 def test_already_seeded_conf_is_left_untouched(board):

@@ -317,7 +317,7 @@ REVIEW_ROLES: tuple[str, ...] = (INTERNAL_REVIEW_ROLE, ADDITIONAL_REVIEWER_ROLE)
 # 내부 code-reviewer 수렴 상한 — 추가 리뷰어 축과 같은 성격의 상한이라 채택자가 조정한다.
 # 키는 역할 상수에서 파생한다(표기가 갈리는 자리를 만들지 않는다). 외부 축과 **합치지 않는다** —
 # 대상 장부와 과금 채널이 달라, 한 값으로 묶으면 내부 라운드를 늘릴 때 과금 라운드까지 는다.
-DEFAULT_INTERNAL_REVIEW_ROUNDS_MAX = 3
+# 상한 값의 정본은 레지스트리다(`local_conf.KEY_REGISTRY` · `_conf_default_int` 가 읽는다).
 INTERNAL_REVIEW_ROUNDS_MAX_KEY = f"delegate.{INTERNAL_REVIEW_ROLE}.rounds_max"
 INTERNAL_REVIEW_LEDGER_NAME = "internal_review_rounds.json"
 INTERNAL_REVIEW_LOCK_NAME = "internal_review_rounds.lock"
@@ -1819,7 +1819,8 @@ def internal_review_rounds_max(conf: dict[str, str] | None = None) -> int:
     if conf is None:
         conf = local_config()
     return _internal_conf_int(
-        conf, INTERNAL_REVIEW_ROUNDS_MAX_KEY, DEFAULT_INTERNAL_REVIEW_ROUNDS_MAX,
+        conf, INTERNAL_REVIEW_ROUNDS_MAX_KEY,
+        _conf_default_int(INTERNAL_REVIEW_ROUNDS_MAX_KEY),
     )
 
 
@@ -3909,6 +3910,23 @@ def _load_additional_reviewer():
     return _load_module_from_path(
         path, "additional_reviewer.py", verifier=_verify_engine_rev,
     )
+
+
+def _load_local_conf():
+    """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다 (board 사본 동형).
+
+    이 모듈은 conf **값**은 additional_reviewer 의 해소를 재사용하고, 키 **선언**(기본값)은
+    레지스트리에서 직접 읽는다 — 기본값이 두 군데면 규칙이 둘이 된다."""
+    return _load_module_from_path(
+        Path(__file__).resolve().parent / "local_conf.py", "local_conf.py",
+        verifier=_verify_engine_rev, cache=True,
+        cache_key=f"_project_manager_local_conf:{Path(__file__).resolve().parent}",
+    )
+
+
+def _conf_default_int(key: str) -> int:
+    """이 conf 키의 엔진 기본값(정수) — 선언이 없으면 `TypeError` 로 멈춘다."""
+    return int(_load_local_conf().default_for(key))
 
 
 def _load_gate_snapshot():
@@ -7869,7 +7887,7 @@ def _reserve_internal_review_round(
                     gate=gate, reason=reasons[refusal],
                     used=completed + inflight, limit=rounds_max,
                     knob=INTERNAL_REVIEW_ROUNDS_MAX_KEY,
-                    default=DEFAULT_INTERNAL_REVIEW_ROUNDS_MAX,
+                    default=_conf_default_int(INTERNAL_REVIEW_ROUNDS_MAX_KEY),
                     series=_format_internal_series(entry),
                     ledger=_internal_round_ledger_path(),
                 ), file=sys.stderr)

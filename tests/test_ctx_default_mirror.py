@@ -1,12 +1,12 @@
-"""ctx 임계 디폴트 미러 정합 가드 (T-0207·T-0550·T-0770).
+"""ctx 임계 디폴트 미러 정합 가드 (T-0207·T-0550·T-0770·T-0906).
 
-nudge/stop 디폴트 상수는 여러 곳에 손으로 미러링돼 있다 — 엔진 board.py(fresh init 이
-local.conf 에 쓰는 값) + 세 어댑터 훅(claude ctx_guard.py·opencode ctx-guard-core.cjs·codex
-pm_orch_codex.py). 어댑터는 board.py 를 import 하지 않고(touches 격리·의존 최소) 리터럴을
-보유하므로, 한 곳만 바꾸고 미러를 잊으면 board 가 기록한 값과 훅 판정 임계가 어긋난다.
+nudge/stop 디폴트는 네 곳에 있다 — 엔진 레지스트리(`local_conf.KEY_REGISTRY` · fresh init 이
+local.conf 에 쓰는 값의 정본) + 세 어댑터 훅(claude ctx_guard.py·opencode ctx-guard-core.cjs·codex
+pm_orch_codex.py). 어댑터는 엔진을 import 하지 않고(touches 격리·의존 최소) 리터럴을
+보유하므로, 한 곳만 바꾸고 미러를 잊으면 엔진이 기록한 값과 훅 판정 임계가 어긋난다.
 
-이 가드는 네 파일을 정규식으로 파싱(언어 무관·hermetic·라이브/import 없음)해 사이트들의
-디폴트가 서로 **일치**함을 강제한다. ``stop`` 이름은 호환성을 위해 유지하며 Claude/codex 훅에서는
+이 가드는 어댑터 세 파일을 정규식으로 파싱(언어 무관·hermetic·라이브 없음)하고 엔진 사이트는
+레지스트리 조회로 읽어 사이트들의 디폴트가 서로 **일치**함을 강제한다. ``stop`` 이름은 호환성을 위해 유지하며 Claude/codex 훅에서는
 최종 비차단 넛지 밴드, relay 에서는 회전 임계로 소비한다. 구체 값(현재 30/20)은 각 사이트별 단위테스트가 핀
 (test_handoff_trigger·test_claude_ctx_guard·test_opencode_ctx_guard·test_codex_ctx_guard) — 여기서는
 사이트들의 합의만 검사해 값 변경 시 이 가드를 매번 손대지 않아도 되게 한다.
@@ -21,7 +21,8 @@ import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-BOARD = REPO / ".project_manager" / "tools" / "board.py"
+# 엔진 사이트는 리터럴이 아니라 키 레지스트리다(T-0906) — board 의 ctx 상수는 거기로 옮겨졌다.
+LOCAL_CONF_PY = REPO / ".project_manager" / "tools" / "local_conf.py"
 CLAUDE_GUARD = REPO / "templates" / "claude_code" / ".claude" / "ctx_guard.py"
 # opencode ctx-guard 상수는 진입점 shim(plugins/ctx-guard.js)이 아니라 core 모듈에 산다 — 진입점은
 # opencode 로드 규약(export=단일 함수·T-0283)을 위해 팩토리만 export 하는 얇은 shim 이고, 순수 헬퍼·
@@ -38,24 +39,31 @@ def _grab(path: Path, pattern: str) -> int:
     return int(match.group(1).replace("_", ""))  # 파이썬 숫자 리터럴 언더스코어(200_000) 허용.
 
 
+def _engine(key: str) -> int:
+    """엔진 사이트 = 레지스트리가 선언한 이 키의 기본값 (어댑터 리터럴의 대조 기준)."""
+    declared = _load_module("local_conf_ctx_mirror", LOCAL_CONF_PY).default_for(key)
+    assert declared is not None, f"레지스트리에 `{key}` 기본값 선언이 없다"
+    return int(declared)
+
+
 def test_ctx_nudge_default_mirrors_across_all_sites():
-    board = _grab(BOARD, r"CTX_NUDGE_PCT_DEFAULT\s*=\s*(\d+)")
+    engine = _engine("ctx.nudge_pct")
     claude = _grab(CLAUDE_GUARD, r"CTX_NUDGE_PCT_DEFAULT\s*=\s*(\d+)")
     opencode = _grab(OPENCODE_GUARD, r"const\s+NUDGE_PCT_DEFAULT\s*=\s*(\d+)")
     codex = _grab(CODEX_GUARD, r"CTX_NUDGE_PCT_DEFAULT\s*=\s*(\d+)")
-    assert board == claude == opencode == codex, (
-        f"nudge 디폴트 미러 불일치: board={board} claude={claude} "
+    assert engine == claude == opencode == codex, (
+        f"nudge 디폴트 미러 불일치: engine={engine} claude={claude} "
         f"opencode={opencode} codex={codex}"
     )
 
 
 def test_ctx_stop_default_mirrors_across_all_sites():
-    board = _grab(BOARD, r"CTX_STOP_PCT_DEFAULT\s*=\s*(\d+)")
+    engine = _engine("ctx.stop_pct")
     claude = _grab(CLAUDE_GUARD, r"CTX_STOP_PCT_DEFAULT\s*=\s*(\d+)")
     opencode = _grab(OPENCODE_GUARD, r"const\s+STOP_PCT_DEFAULT\s*=\s*(\d+)")
     codex = _grab(CODEX_GUARD, r"CTX_STOP_PCT_DEFAULT\s*=\s*(\d+)")
-    assert board == claude == opencode == codex, (
-        f"stop 디폴트 미러 불일치: board={board} claude={claude} "
+    assert engine == claude == opencode == codex, (
+        f"stop 디폴트 미러 불일치: engine={engine} claude={claude} "
         f"opencode={opencode} codex={codex}"
     )
 
@@ -66,12 +74,12 @@ def test_ctx_window_tokens_default_mirrors_across_all_sites():
     ADR-0041 이 분모=예산 통일을 확정하며 opencode(ctx-guard.js)에도
     CTX_WINDOW_TOKENS_DEFAULT 미러가 생겼다(T-0235) — nudge/stop 과 동형으로 사이트들의
     합의를 강제한다(한 곳만 바꾸면 하네스별 기본 예산이 어긋남)."""
-    board = _grab(BOARD, r"CTX_WINDOW_TOKENS_DEFAULT\s*=\s*(\d+)")
+    engine = _engine("ctx.window_tokens")
     claude = _grab(CLAUDE_GUARD, r"CTX_WINDOW_TOKENS_DEFAULT\s*=\s*([\d_]+)")
     opencode = _grab(OPENCODE_GUARD, r"const\s+CTX_WINDOW_TOKENS_DEFAULT\s*=\s*(\d+)")
     codex = _grab(CODEX_GUARD, r"CTX_WINDOW_TOKENS_DEFAULT\s*=\s*([\d_]+)")
-    assert board == claude == opencode == codex, (
-        f"window tokens 디폴트 미러 불일치: board={board} claude={claude} "
+    assert engine == claude == opencode == codex, (
+        f"window tokens 디폴트 미러 불일치: engine={engine} claude={claude} "
         f"opencode={opencode} codex={codex}"
     )
 
@@ -80,7 +88,7 @@ def test_ctx_nudge2_margin_mirrors_across_adapter_sites():
     """2단 넛지 마진(%p)도 세 어댑터가 같은 값을 갖는다 (T-0328·T-0770).
 
     nudge2 밴드 = stop_pct < 잔여 <= min(stop_pct + 마진, nudge_pct) 이라 마진이 어긋나면 세
-    하네스의 밴드 경계가 갈린다. board.py 엔 이 파생 상수가 없어(엔진은 nudge/stop 만 기록)
+    하네스의 밴드 경계가 갈린다. 엔진엔 이 파생 상수가 없어(레지스트리는 nudge/stop 만 선언)
     어댑터 3사이트만 대조한다."""
     claude = _grab(CLAUDE_GUARD, r"CTX_NUDGE2_MARGIN_PCT\s*=\s*(\d+)")
     opencode = _grab(OPENCODE_GUARD, r"const\s+NUDGE2_MARGIN_PCT\s*=\s*(\d+)")
@@ -93,8 +101,8 @@ def test_ctx_nudge2_margin_mirrors_across_adapter_sites():
 def test_ctx_default_sanity_stop_below_nudge():
     """디폴트 자체가 sanity(0 < stop <= nudge < 100)를 만족 — 어댑터 sanity 폴백이
     엔진 기본으로 떨어질 때 무한/역전이 없도록."""
-    nudge = _grab(BOARD, r"CTX_NUDGE_PCT_DEFAULT\s*=\s*(\d+)")
-    stop = _grab(BOARD, r"CTX_STOP_PCT_DEFAULT\s*=\s*(\d+)")
+    nudge = _engine("ctx.nudge_pct")
+    stop = _engine("ctx.stop_pct")
     assert 0 < stop <= nudge < 100, f"디폴트 sanity 위반: nudge={nudge} stop={stop}"
 
 

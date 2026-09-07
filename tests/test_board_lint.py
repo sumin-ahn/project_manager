@@ -4107,3 +4107,70 @@ def test_lint_claim_identity_still_flags_contradiction_alongside_realistic_healt
     issues = board.lint_claim_identity()
     assert [(tid, kind) for tid, kind, _detail in issues] == [
         ("T-0002", "open-claimed-contradiction")]
+
+
+# ── local.conf 필수 키 누락 lint (`local-conf-missing-required` · T-0906) ────
+
+def test_missing_required_surfaces_as_an_advisory_finding(board, monkeypatch, tmp_path):
+    """필수 키가 없는 conf 는 1줄 advisory — kind 는 모르는-키 축과 배타적이다."""
+    conf = tmp_path / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_text("runtime.py=python3\nreview_ticket_body_max_bytes=65536\n", encoding="utf-8")
+    monkeypatch.setattr(board, "LOCAL_CONF", conf)
+
+    findings = board.lint_local_conf_required()
+
+    assert len(findings) == 1, findings
+    where, kind, detail = findings[0]
+    assert kind == "local-conf-missing-required"
+    assert "test.cmd" in detail and "runtime.py" not in detail
+    assert "--keys" in detail
+    # 기존 축은 그대로다 — 같은 conf 에서 모르는-키 판정은 여전히 그 키만 낸다.
+    assert _kinds(board.lint_local_conf_keys()) == ["local-conf-unknown-key"]
+
+
+_UNRELATED_LINT_FNS = (
+    "lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
+    "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
+    "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
+    "lint_render_leak", "lint_unmigrated_overlay", "_run_lint_hooks",
+)
+
+
+def test_missing_required_kind_is_advisory_and_joins_the_report(board, monkeypatch, tmp_path):
+    """kind 등재(`--gate` 종료코드 비기여) + `lint_tickets()` 합류."""
+    assert "local-conf-missing-required" in board._ADVISORY_LINT_KINDS
+    _wire_repo(board, monkeypatch, tmp_path)
+    conf = tmp_path / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_text("project.name=x\n", encoding="utf-8")
+    monkeypatch.setattr(board, "LOCAL_CONF", conf)
+    for fn in _UNRELATED_LINT_FNS:
+        monkeypatch.setattr(board, fn, lambda: [])
+
+    kinds = _kinds(board.lint_tickets())
+
+    assert kinds.count("local-conf-missing-required") == 1, kinds
+    assert board.cmd_lint(SimpleNamespace(gate=True)) == 0      # never-block
+    assert board.cmd_lint(SimpleNamespace(gate=False)) == 1     # 무인자는 보인다
+
+
+def test_no_local_conf_file_reports_no_missing_required(board, monkeypatch, tmp_path):
+    """conf 부재는 정상 형상이다 — 없는 파일에 필수 누락을 씌우지 않는다."""
+    monkeypatch.setattr(board, "LOCAL_CONF", tmp_path / ".project_manager" / "local.conf")
+    assert board.lint_local_conf_required() == []
+
+
+def test_fresh_init_conf_has_no_missing_required(board, monkeypatch, tmp_path):
+    """`board.py init` 산출 conf 는 필수 키를 둘 다 담는다 — 새 import 트리의 배너 0."""
+    pm = tmp_path / ".project_manager"
+    pm.mkdir(parents=True)
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(board, "LOCAL_CONF", pm / "local.conf")
+    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+
+    board._write_init_local_conf()
+
+    assert board.lint_local_conf_required() == []
+    conf_module = board._load_local_conf()
+    assert conf_module.missing_required(conf_module.load(pm / "local.conf").values) == ()

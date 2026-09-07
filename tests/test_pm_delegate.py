@@ -4640,14 +4640,17 @@ def test_help_documents_classification_coverage_boundary(pd):
     assert "2×timeout" not in help_text
 
 
-def test_fallback_is_documented_in_shipping_docs_not_seeded_into_conf(pd):
-    """폴백 예시는 **출하 문서**가 소유한다 — conf 는 실값만 담고 엔진 기본값도 없다 (T-0767).
+def test_fallback_is_documented_in_the_registry_not_seeded_into_conf(pd):
+    """폴백 축의 설명은 **레지스트리**가 소유한다 — conf 는 실값만 담고 엔진 기본값도 없다
+    (T-0767·T-0906: 키 카탈로그가 문서에서 코드로 옮겨졌다).
 
-    설명을 conf 에 심으면 값과 어긋난 채 굳는다(그 파일은 아무도 다시 읽지 않는다). 카탈로그는
-    채택자가 실제로 읽는 문서에 있고, 엔진은 폴백을 설정 없이 지어내지 않는다.
+    설명을 conf 에 심으면 값과 어긋난 채 굳는다(그 파일은 아무도 다시 읽지 않는다). 엔진은
+    폴백을 설정 없이 지어내지 않는다.
     """
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
-    assert "delegate.<role>[.hard].fallback" in readme, "폴백 축이 출하 문서에 없다"
+    conf_module = pd._load_local_conf()
+    spec = conf_module.key_spec("delegate.developer.hard.fallback.model")
+    assert spec is not None and "fallback" in spec.description, "폴백 축 설명이 없다"
+    assert spec.default is None, "폴백은 엔진 기본값을 갖지 않는다"
     board_source = (TOOLS / "board.py").read_text(encoding="utf-8")
     assert "delegate.developer.fallback." not in board_source, "init 시드에 폴백 예시 잔존"
     assert pd.resolve_fallback({}, "developer", "normal") is None
