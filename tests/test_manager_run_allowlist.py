@@ -128,6 +128,19 @@ def test_a_command_outside_the_list_never_spawns(api, pm_home, no_spawn, argv):
     assert response["error"]["stderr"] == ""
 
 
+def test_release_stays_in_the_list_because_the_screen_calls_it(api, pm_home, spawned):
+    """현황 탭의 회수 대기 행이 부르는 자리다 — 목록에서 빼면 그 [반납] 이 거절로 죽는다."""
+    assert ("release",) in ALLOWED_COMMANDS
+    argv = SCREEN_ARGV[("release",)]
+    assert matched_command(argv) == ("release",)
+
+    response = api.run(str(pm_home), argv)
+
+    assert "error" not in response          # 거절이 아니라 사본이 답한 자리다
+    assert spawned, "허용 목록을 지났는데 서브프로세스가 뜨지 않았다"
+    assert spawned[0][-4:] == argv
+
+
 def test_the_first_token_alone_does_not_open_the_family(api, pm_home, no_spawn):
     """`repo` 를 여는 것과 `repo add` 를 여는 것은 다르다 — 형제 하위명령은 닫혀 있다."""
     assert matched_command(["repo", "remove", REPO_NAME]) is None

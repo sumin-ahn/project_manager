@@ -59,6 +59,14 @@ def _row(section: dict, path: str) -> dict:
     return next(row for row in section["files"] if row["path"] == path)
 
 
+def _drop_conf_key(pm_home: Path, key: str) -> None:
+    """그 사본의 `local.conf` 에서 키 한 줄을 지운다 — 소스 기준 누락을 실제로 만든다."""
+    path = pm_home / ".project_manager" / "local.conf"
+    kept = [line for line in path.read_text(encoding="utf-8").splitlines()
+            if not line.strip().startswith(f"{key}=")]
+    path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+
+
 def _shrink_allow_list(pm_home: Path, keep: int = 5) -> None:
     """채택자 편집을 실제로 만든다 — 허용 목록을 줄여 `permissions.allow` 를 다르게 한다."""
     path = pm_home / ".claude" / "settings.json"
@@ -83,6 +91,31 @@ def test_the_section_carries_the_source_and_both_file_shapes(api, pm_home):
     assert document == {"path": "CLAUDE.md", "ownership": "instance", "status": "unchecked"}
     # 화면은 `"mode" in row` 로 가른다 — 없는 키를 무조건 읽으면 그 자리에서 터진다.
     assert "mode" not in document and "features" not in document and "distance" not in document
+
+
+def test_the_section_carries_the_conf_verdict_of_the_same_call(api, pm_home):
+    """다섯 번째 목록(`missing_for_latest`)이 실리는 조회는 이것 하나다.
+
+    엔진은 소스가 해소된 호출(`--with-adapters`·`--from`)에서만 그 목록을 채운다. 화면이 늘
+    보관하는 가벼운/무거운 절은 소스를 해소하지 않아 null(모름)이라, 이 응답이 그 값을 화면에
+    나르는 유일한 자리다(조회는 늘리지 않는다).
+    """
+    section = api.adapters(str(pm_home))
+
+    conf = section["conf"]
+    assert set(conf) == {"missing_required", "legacy", "unknown", "nonstandard",
+                         "missing_for_latest"}
+    assert conf["missing_for_latest"] == []                   # 없음 — 모름(null)과 다른 값이다
+    light = api.conf_values(str(pm_home))["conf"]
+    assert light["missing_for_latest"] is None                # 같은 사본의 가벼운 절은 모름
+    # 나머지 네 목록은 같은 사본의 같은 판정이다 — 어댑터 절이 판정을 다시 계산하지 않는다.
+    assert {key: value for key, value in conf.items() if key != "missing_for_latest"} \
+        == {key: value for key, value in light.items() if key != "missing_for_latest"}
+
+    _drop_conf_key(pm_home, "test.cmd")
+
+    assert api.adapters(str(pm_home))["conf"]["missing_for_latest"] == ["test.cmd"]
+    assert api.conf_values(str(pm_home))["conf"]["missing_for_latest"] is None
 
 
 def test_looking_at_the_adapter_section_writes_nothing(api, pm_home):

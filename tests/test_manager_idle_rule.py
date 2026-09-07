@@ -99,10 +99,12 @@ def test_the_readonly_slot_really_looks_like_a_reclaim_candidate(rows):
 # ── ② 아이들 규칙 ───────────────────────────────────────────────────────────
 
 
-def test_only_idle_rows_open_the_change_actions(rows):
+def test_only_a_live_session_closes_the_change_actions(rows):
     assert _verdict(rows["idle"])["actions"] == "change"
     assert _verdict(rows["task"])["actions"] == "change"          # pid 0 인 task
-    assert _verdict(rows["reclaim"])["actions"] == "disabled"     # 회수는 다음 bootstrap 이
+    # 회수 대기 행은 반납이 열린다 — 화면에서 대여한 슬롯은 브리지 서브프로세스가 끝나는
+    # 순간 이 상태가 되고(lease.pid 는 그 프로세스), 그 행의 반납이 대여의 역이다.
+    assert _verdict(rows["reclaim"])["actions"] == "change"
     assert _verdict(rows["readonly"])["actions"] == "refresh"     # 변경 축이 아니다
 
 
@@ -128,7 +130,7 @@ def test_the_readonly_row_must_win_before_the_reclaim_rule(rows):
 def test_every_rule_carries_an_action_column(rows):
     """판정표의 셋째 칼럼이 비면 화면이 다시 계산해야 한다 — 그 자리를 만들지 않는다."""
     assert [rule["actions"] for rule in _rules()] == [
-        "refresh", "change", "change", "disabled", "disabled"]
+        "refresh", "change", "change", "disabled", "change"]
 
 
 def test_a_row_without_a_matching_rule_stops_instead_of_defaulting():

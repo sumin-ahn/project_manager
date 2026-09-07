@@ -121,8 +121,15 @@ export type AdapterFile = {
   distance?: number;
 };
 
+/** 엔진 `status --json --with-adapters` 의 `adapters` 절 그대로. */
 export type AdapterDocument = { source: string; files: AdapterFile[] };
-export type AdapterMatrixDocument = Record<string, AdapterDocument | ErrorResponse>;
+/**
+ * 브리지 `adapters(path)` 응답 — 같은 호출의 `conf` 절을 함께 싣는다. 소스가 해소된 호출에서만
+ * `missing_for_latest` 가 배열이라(그 밖에는 null=모름), 다섯 번째 목록이 화면에 닿는 자리는
+ * 이 응답 하나다.
+ */
+export type AdapterResponse = AdapterDocument & { conf: ConfSection };
+export type AdapterMatrixDocument = Record<string, AdapterResponse | ErrorResponse>;
 /** 사본 명령 하나의 산출 — 거부 문구는 엔진 원문이라 화면이 다시 쓰지 않는다. */
 export type CommandResult = { rc: number; stdout: string; stderr: string };
 
@@ -139,7 +146,6 @@ export type ApplyResult = {
   steps: ApplyStep[];
   ok: boolean;
   path: string | null;
-  question_mode: boolean;
 };
 
 /** 스폰·응답 없음처럼 rc 가 없는 실패 — 그때까지의 단계 로그를 함께 나른다. */
@@ -168,7 +174,7 @@ export type Bridge = {
   conf_save(path: string, updates: Record<string, string>):
     Promise<ConfSaveResult | ErrorResponse>;
   conf_reset(path: string, key: string): Promise<ConfSaveResult | ErrorResponse>;
-  adapters(path: string): Promise<AdapterDocument | ErrorResponse>;
+  adapters(path: string): Promise<AdapterResponse | ErrorResponse>;
   adapter_accept(path: string, relpath: string): Promise<CommandResult | ErrorResponse>;
   adapter_matrix(): Promise<AdapterMatrixDocument | ErrorResponse>;
   upstream_show(path: string): Promise<CommandResult | ErrorResponse>;
@@ -222,7 +228,7 @@ export function pywebviewBridge(): Bridge {
       call("conf_save", path, updates) as Promise<ConfSaveResult | ErrorResponse>,
     conf_reset: (path, key) =>
       call("conf_reset", path, key) as Promise<ConfSaveResult | ErrorResponse>,
-    adapters: (path) => call("adapters", path) as Promise<AdapterDocument | ErrorResponse>,
+    adapters: (path) => call("adapters", path) as Promise<AdapterResponse | ErrorResponse>,
     adapter_accept: (path, relpath) =>
       call("adapter_accept", path, relpath) as Promise<CommandResult | ErrorResponse>,
     adapter_matrix: () => call("adapter_matrix") as Promise<AdapterMatrixDocument | ErrorResponse>,

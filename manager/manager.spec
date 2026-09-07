@@ -9,6 +9,8 @@
   - 진입 스크립트 = `manager/entrypoint.py` (`manager/__main__.py` 를 그대로 주면 패키지 문맥이
     없어 상대 import 가 죽는다 — 그 사유는 진입 스크립트의 docstring 에 있다).
   - 번들 데이터 = `build.bundle_data_entries()` — **번들 안 상대 경로가 소스 상대 경로와 같다**.
+  - 숨은 import = `build.hidden_imports()` — 데이터로 실리는 엔진 파일의 최상위 import(정적 분석
+    밖)를 그 파일들에서 뽑은 값 + 각인 모듈. 이름을 여기에 다시 적지 않는다.
   - 이름 = `build.executable_stem()` (`pm-manager-<os>-<arch>` · Windows 는 PyInstaller 가 `.exe`).
 
 콘솔을 붙인 채로 만든다(`console=True`): 의존이 없으면 안내 두 줄을 찍고 rc 3 으로 멈추는 것이
@@ -37,7 +39,7 @@ build = _load_build_module()
 analysis = Analysis(  # noqa: F821
     [str(build.ENTRY_SCRIPT)],
     pathex=[str(_REPO_ROOT)],
-    hiddenimports=list(build.HIDDEN_IMPORTS),
+    hiddenimports=list(build.hidden_imports(_REPO_ROOT)),
     noarchive=False,
 )
 for source, prefix in build.bundle_data_entries(_REPO_ROOT):

@@ -17,6 +17,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from _manager_home import (
     make_pm_home, set_conf_key, tree_snapshot,
 )
 
+from manager import runner
 from manager.bridge import Api
 
 REPO = Path(__file__).resolve().parents[1]
@@ -36,6 +38,8 @@ pytestmark = git_required
 # 다른 프로세스가 conf 락을 쥐고 있는 창(초)과, 그 안에서 저장이 막혔다고 볼 하한.
 LOCK_HOLD_SECONDS = 2.0
 BLOCKED_FLOOR_SECONDS = 1.0
+# 저장 스레드가 남의 락 대기에 들어가기까지 주는 창 — 이 뒤의 조회가 "대기 중" 의 조회다.
+SAVE_ENTERS_THE_WAIT_SECONDS = 0.3
 
 # 락을 실제로 쥐는 **다른 프로세스** — 엔진 자신의 writer 로 결정 하나를 쓰고 창을 연 채 기다린다.
 LOCK_HOLDER = '''
@@ -218,7 +222,12 @@ def test_saving_an_unchanged_value_reports_no_change(api, pm_home):
 
 def test_a_concurrent_writer_in_another_process_serializes_on_the_same_lock(api, pm_home,
                                                                            tmp_path):
-    """다른 프로세스의 엔진 writer 가 락을 쥐면 저장이 기다리고, 두 결정이 모두 남는다."""
+    """다른 프로세스의 엔진 writer 가 락을 쥐면 저장이 기다리고, 두 결정이 모두 남는다.
+
+    기다리는 동안에도 다른 조회는 돌아야 한다 — 그 대기는 관리자 안의 공용 잠금(`ENGINE_LOCK`)
+    **밖**이다. 안에서 기다리면 같은 잠금을 쓰는 `runner.conf_values`·`interpreter` 가 함께
+    막혀 등록 프로젝트 전부의 주기 조회가 선다(창은 호출을 스레드마다 따로 처리한다).
+    """
     script = tmp_path / "holder.py"
     script.write_text(LOCK_HOLDER, encoding="utf-8")
     ready = tmp_path / "held.flag"
@@ -227,6 +236,7 @@ def test_a_concurrent_writer_in_another_process_serializes_on_the_same_lock(api,
          str(conf_path(pm_home)), str(ready), str(LOCK_HOLD_SECONDS)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
         errors="replace")
+    saved: list[dict] = []
     try:
         deadline = time.monotonic() + 30
         while not ready.exists() and time.monotonic() < deadline:
@@ -236,13 +246,25 @@ def test_a_concurrent_writer_in_another_process_serializes_on_the_same_lock(api,
         assert ready.exists(), "락 보유 프로세스가 30초 안에 락을 잡지 못했다"
 
         started = time.monotonic()
-        response = api.conf_save(str(pm_home), {"ctx.nudge_pct": "25"})
+        saver = threading.Thread(
+            target=lambda: saved.append(api.conf_save(str(pm_home), {"ctx.nudge_pct": "25"})))
+        saver.start()
+        time.sleep(SAVE_ENTERS_THE_WAIT_SECONDS)
+        assert saver.is_alive(), "저장이 이미 끝났다 — 대기 중을 재지 못했다"
+
+        polled = time.monotonic()
+        during = runner.conf_values(pm_home)
+        queried = time.monotonic() - polled
+
+        saver.join(timeout=30)
         waited = time.monotonic() - started
     finally:
         holder.wait(timeout=30)
 
+    assert queried < BLOCKED_FLOOR_SECONDS, f"대기 중 조회가 {queried:.2f}초 막혔다"
+    assert during["identity.user"] == "holder@example.invalid"  # 그 조회는 실제로 값을 읽었다
     assert waited >= BLOCKED_FLOOR_SECONDS, f"저장이 남의 락을 기다리지 않았다 ({waited:.2f}초)"
-    assert response["changed"] is True
+    assert saved[0]["changed"] is True
     values = _values(pm_home)
     assert values["ctx.nudge_pct"] == "25"                     # 이쪽 결정
     assert values["identity.user"] == "holder@example.invalid"  # 저쪽 결정도 살아 있다

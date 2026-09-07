@@ -84,7 +84,7 @@ def test_apply_new_runs_import_then_init_then_register(api, dest, upstream, regi
     assert [step["rc"] for step in response["steps"]] == [0, 0, 0]
     assert response["ok"] is True
     assert response["path"] == str(dest)
-    assert response["question_mode"] is True
+    assert set(response) == {"steps", "ok", "path"}   # 소비처 없는 필드를 두지 않는다
     assert (dest / ".project_manager" / "install.json").is_file()
     assert registry.load(registry_file) == [dest]
 
@@ -226,7 +226,7 @@ def test_a_failed_apply_leaves_the_registry_untouched(api, dest, upstream, regis
     assert "비어있지 않습니다" in response["steps"][0]["stderr"]
     assert response["ok"] is False
     assert response["path"] is None
-    assert response["question_mode"] is False
+    assert set(response) == {"steps", "ok", "path"}
     assert not registry_file.exists()
     assert (dest / "already-here.txt").read_text(encoding="utf-8") == "사람이 쓰던 폴더\n"
 

@@ -92,11 +92,13 @@ describe("슬롯 절", () => {
     expect(screen.queryByTestId("confirm-dialog")).toBeNull();
   });
 
-  it("제거는 아이들 슬롯만 열리고 readonly 행에는 없다", async () => {
+  it("제거는 판정표가 연 행에만 열리고 readonly 행에는 없다", async () => {
     const { run } = renderTab();
 
     expect(screen.getByTestId("slot-remove-work/app_2")).toBeDisabled();   // 작업 중
-    expect(screen.getByTestId("slot-remove-.")).toBeDisabled();            // 회수 대기
+    // 회수 대기 행은 판정표가 변경 동작을 여는 자리다(현황 탭의 [반납]과 같은 한 줄) — 이
+    // 명령의 가부는 엔진이 판정하고 거부 문구를 그대로 낸다.
+    expect(screen.getByTestId("slot-remove-.")).toBeEnabled();
     expect(screen.queryByTestId("slot-remove-work/app_1")).toBeNull();     // readonly
     fireEvent.click(screen.getByTestId("slot-remove-work/app_3"));
 

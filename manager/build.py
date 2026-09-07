@@ -19,6 +19,8 @@
 """
 from __future__ import annotations
 
+import ast
+import importlib.util
 import platform
 import shutil
 import subprocess
@@ -46,10 +48,9 @@ BUNDLED_TREES = (
 )
 # 번들에 실을 것이 아닌 개발 잔재 — 트리를 훑는 것은 PyInstaller 의 `Tree` 다.
 BUNDLE_EXCLUDES = ("__pycache__", "*.pyc", "node_modules")
-# 번들 안에서만 import 되는 모듈 — 정적 분석이 볼 수 없는 자리라 여기서 이름으로 세운다.
-# `manager._build_info` 는 이름 문자열로만 import 되고(`bridge_update.BUILD_INFO_MODULE`),
-# `tomllib` 은 데이터로 실리는 엔진 `pm_import.py` 가 부른다.
-HIDDEN_IMPORTS = ("manager._build_info", "tomllib")
+# 이름 문자열로만 열리는 각인 모듈(`bridge_update.BUILD_INFO_MODULE`) — 소스에 그 import 문이
+# 없어 파일에서 뽑을 수 없는 유일한 이름이다.
+IMPRINT_MODULE = "manager._build_info"
 
 EXECUTABLE_PREFIX = "pm-manager"
 WINDOWS_SUFFIX = ".exe"
@@ -95,12 +96,67 @@ def bundle_data_entries(repo_root: Path | str) -> tuple[tuple[str, str], ...]:
     return tuple((str(root / relative), relative) for relative in BUNDLED_TREES)
 
 
-def build_info_source(upstream_url: str, version: str) -> str:
-    """각인 모듈 `manager/_build_info.py` 의 내용."""
+def top_level_import_names(source: str) -> set[str]:
+    """파이썬 소스 하나가 **모듈 본문**에서 부르는 import 이름 후보.
+
+    `import a.b` 는 `a.b` 하나, `from a import b` 는 `a` 와 `a.b` 둘이다 — 뒤엣것의 `b` 가
+    서브모듈인지 그 모듈의 이름인지는 문법으로 갈리지 않아(`from ctypes import wintypes` ↔
+    `from pathlib import Path`) 해소는 부르는 쪽이 한다. 함수 안 import 는 최상위가 아니다.
+    """
+    names: set[str] = set()
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names.add(node.module)
+            names.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return names
+
+
+def _is_standard_library_module(name: str) -> bool:
+    """그 이름이 실제 표준 라이브러리 **모듈**인가 (이름 후보를 여기서 거른다)."""
+    if name.split(".")[0] not in sys.stdlib_module_names:
+        return False
+    try:
+        return importlib.util.find_spec(name) is not None
+    except ModuleNotFoundError:
+        # 부모가 패키지가 아니다 = 서브모듈이 아니라 그 모듈이 내보내는 이름(`pathlib.Path`).
+        return False
+
+
+def bundled_engine_imports(repo_root: Path | str,
+                           trees: tuple[str, ...] = BUNDLED_TREES) -> tuple[str, ...]:
+    """번들 트리의 `.py` 가 최상위에서 부르는 표준 라이브러리 모듈 이름 전부(정렬).
+
+    그 파일들은 모듈이 아니라 **데이터**로 실리고(`BUNDLED_TREES`) 런타임에 `load_engine_module`
+    이 exec 하므로, 그 import 는 PyInstaller 정적 분석이 보지 못한다. 그래서 이름으로 세워야
+    하는데 목록을 손으로 적으면 반드시 뒤처진다 — 파일에서 뽑는다.
+
+    표준 라이브러리만인 것은 인터프리터 합의다: 실행 파일에 엔진의 런타임 의존(PyYAML)은 들어
+    가지 않는다. 그것을 부르는 엔진 파일(`board.py`·`pm_adr.py`)은 관리자가 in-process 로 열지
+    않고 프로젝트 사본의 인터프리터가 서브프로세스로 부른다.
+    """
+    root = Path(repo_root)
+    candidates: set[str] = set()
+    for relative in trees:
+        for source_file in sorted((root / relative).rglob("*.py")):
+            candidates |= top_level_import_names(source_file.read_text(encoding="utf-8"))
+    return tuple(sorted(name for name in candidates if _is_standard_library_module(name)))
+
+
+def hidden_imports(repo_root: Path | str) -> tuple[str, ...]:
+    """PyInstaller `hiddenimports` — 번들 엔진 파일의 최상위 import + 각인 모듈."""
+    return (*bundled_engine_imports(repo_root), IMPRINT_MODULE)
+
+
+def build_info_source(upstream_url: str) -> str:
+    """각인 모듈 `manager/_build_info.py` 의 내용 — 읽는 곳이 있는 값 하나뿐이다.
+
+    관리자 버전 표기의 단일 진실은 번들 엔진의 rev(`manager.engine_rev()`)라 여기 없다.
+    """
     return (
         '"""빌드가 각인한 값 — 이 파일은 `manager/build.py` 가 만든다(git-ignored·손으로 고치지 않는다)."""\n'
         f"UPSTREAM_URL = {upstream_url!r}\n"
-        f"VERSION = {version!r}\n"
     )
 
 
@@ -114,16 +170,15 @@ def _engine_module(filename: str):
 
 
 def imprint_build_info() -> Path:
-    """빌드 checkout 의 origin URL·엔진 rev 를 각인한다."""
+    """빌드 checkout 의 origin URL 을 각인한다."""
     upstream_url = _engine_module("pm_import.py").derive_origin_url(REPO_ROOT)
     if not upstream_url:
         raise SystemExit(
             f"[중단] 빌드 checkout 의 origin 을 읽지 못했다: {REPO_ROOT}\n"
             "  각인 없이 만든 실행 파일은 새 프로젝트에 갱신 경로를 주지 못한다 "
             "(번들이 풀린 임시 폴더가 upstream 으로 박힌다).")
-    version = _engine_module("engine_rev.py").ENGINE_REV
-    BUILD_INFO_FILE.write_text(build_info_source(upstream_url, version), encoding="utf-8")
-    print(f"[build] 각인 {BUILD_INFO_FILE.name}: {upstream_url} ({version})", flush=True)
+    BUILD_INFO_FILE.write_text(build_info_source(upstream_url), encoding="utf-8")
+    print(f"[build] 각인 {BUILD_INFO_FILE.name}: {upstream_url}", flush=True)
     return BUILD_INFO_FILE
 
 

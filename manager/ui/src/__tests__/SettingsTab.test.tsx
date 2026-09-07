@@ -2,7 +2,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Bridge, ConfKeysDocument, ConfSection, ConfValuesDocument } from "../api";
 import confKeys from "../fixtures/conf-keys.sample.json";
-import SettingsTab, { buildSections, EXTRA_GROUP, FREE_INPUT_FAMILY } from "../tabs/SettingsTab";
+import SettingsTab, {
+  buildSections, EXTRA_GROUP, FREE_INPUT_FAMILY, UPSTREAM_PATH_KEY,
+} from "../tabs/SettingsTab";
 
 /** 키 목록은 실 엔진 산출(`local_conf.py --keys --json`)이고 값·판정만 자리마다 바꾼다. */
 const KEYS = confKeys as unknown as ConfKeysDocument;
@@ -20,8 +22,11 @@ const CONF: ConfSection = {
   legacy: [{ key: "delegate_enabled", replacement: "delegate.enabled" }],
   unknown: ["nope.nope"],
   nonstandard: [{ key: "ctx.nudge_pct", value: "25", default: "30" }],
-  missing_for_latest: ["qa.platforms"],
+  // 값·판정을 늘 나르는 두 조회(가벼운/무거운 절)는 소스를 해소하지 않아 이 축이 null 이다.
+  missing_for_latest: null,
 };
+/** 소스가 해소된 조회(어댑터 절)의 판정 — 다섯 번째 목록이 실린 유일한 자리다. */
+const LATEST: ConfSection = { ...CONF, missing_for_latest: ["qa.platforms"] };
 
 function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
   const values: ConfValuesDocument = { values: VALUES, conf: CONF };
@@ -30,7 +35,7 @@ function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
     conf_values: vi.fn(async () => values),
     conf_save: vi.fn(async () => ({ changed: true, conf: CONF })),
     conf_reset: vi.fn(async () => ({ changed: true, conf: CONF })),
-    adapters: vi.fn(async () => ({ source: "/projects/framework", files: [] })),
+    adapters: vi.fn(async () => ({ source: "/projects/framework", files: [], conf: LATEST })),
     adapter_accept: vi.fn(async () => ({ rc: 0, stdout: "", stderr: "" })),
     adapter_matrix: vi.fn(async () => ({})),
     upstream_show: vi.fn(async () => ({ rc: 0, stdout: "", stderr: "" })),
@@ -39,9 +44,13 @@ function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
   } as unknown as Bridge;
 }
 
-async function mounted(bridge: Bridge, startAsking = false) {
-  render(<SettingsTab bridge={bridge} path={DEMO} startAsking={startAsking} />);
+async function mounted(bridge: Bridge, startAsking = false,
+                       adapterConf: ConfSection | null = null) {
+  const onAdapterConf = vi.fn();
+  render(<SettingsTab bridge={bridge} path={DEMO} startAsking={startAsking}
+                      adapterConf={adapterConf} onAdapterConf={onAdapterConf} />);
   await screen.findByTestId("settings-banner");
+  return onAdapterConf;
 }
 
 afterEach(cleanup);
@@ -58,6 +67,31 @@ describe("항목 목록 구성", () => {
     expect(extra?.rows.map((row) => row.key)).toEqual(["delegate_enabled", "nope.nope"]);
   });
 
+  it("upstream.path 는 표에도 질문형에도 행이 없다 — 그 자리는 upstream 절 하나다", async () => {
+    const keys = buildSections(KEYS, VALUES).flatMap((section) => section.rows)
+      .map((row) => row.key);
+    expect(KEYS.keys.some((entry) => entry.key === UPSTREAM_PATH_KEY)).toBe(true);
+    expect(keys).not.toContain(UPSTREAM_PATH_KEY);
+    // 레지스트리가 아는 키라 "그 밖의 키" 로도 내려가지 않는다.
+    const extra = buildSections(KEYS, VALUES).find((section) => section.group === EXTRA_GROUP);
+    expect(extra?.rows.map((row) => row.key)).toEqual(["delegate_enabled", "nope.nope"]);
+
+    await mounted(makeBridge());
+
+    expect(screen.queryByTestId(`conf-${UPSTREAM_PATH_KEY}`)).toBeNull();
+    expect(screen.queryByLabelText(UPSTREAM_PATH_KEY)).toBeNull();
+    // 값을 고치는 자리는 남아 있다 — 도달성 검증을 포함한 사본 명령을 부르는 절이다.
+    expect(screen.getByLabelText("upstream 값")).toHaveValue(VALUES[UPSTREAM_PATH_KEY]);
+  });
+
+  it("질문형도 같은 목록이라 그 키를 묻지 않는다", async () => {
+    await mounted(makeBridge(), true);
+
+    const asked = buildSections(KEYS, VALUES).flatMap((section) => section.rows);
+    expect(asked.map((row) => row.key)).not.toContain(UPSTREAM_PATH_KEY);
+    expect(screen.getByTestId("question-key")).toHaveTextContent(asked[0].key);
+  });
+
   it("절 순서는 레지스트리가 준 그룹 순서 그대로다", () => {
     const sections = buildSections(KEYS, {});
 
@@ -71,18 +105,31 @@ describe("다섯 목록의 배너와 행 표시", () => {
   it("배너는 넷을 세고 `갱신하면 필요` 는 모름(null)과 없음([])을 가른다", async () => {
     await mounted(makeBridge());
     expect(screen.getByTestId("settings-banner"))
-      .toHaveTextContent("필수 누락 1 · 폐지 1 · 표준과 다른 값 1 · 갱신하면 필요 1");
+      .toHaveTextContent("필수 누락 1 · 폐지 1 · 표준과 다른 값 1 · 갱신하면 필요 모름");
     cleanup();
 
-    const unknownLatest: ConfSection = { ...CONF, missing_for_latest: null };
-    await mounted(makeBridge({
-      conf_values: vi.fn(async () => ({ values: VALUES, conf: unknownLatest })),
-    }));
-    expect(screen.getByTestId("settings-banner")).toHaveTextContent("갱신하면 필요 모름");
+    await mounted(makeBridge(), false, LATEST);
+    expect(screen.getByTestId("settings-banner")).toHaveTextContent("갱신하면 필요 1");
+    cleanup();
+
+    await mounted(makeBridge(), false, { ...CONF, missing_for_latest: [] });
+    expect(screen.getByTestId("settings-banner")).toHaveTextContent("갱신하면 필요 0");
+  });
+
+  it("[불러오기] 가 받아 온 판정이 다섯 번째 목록을 채운다 — 새 조회는 0이다", async () => {
+    const bridge = makeBridge();
+    const onAdapterConf = await mounted(bridge);
+    expect(screen.queryByText("갱신하면 필요")).toBeNull();       // 불러오기 전에는 모름이다
+
+    fireEvent.click(screen.getByTestId("adapter-load"));
+
+    await waitFor(() => expect(onAdapterConf).toHaveBeenCalledWith(LATEST));
+    expect(bridge.adapters).toHaveBeenCalledTimes(1);
+    expect(bridge.conf_values).toHaveBeenCalledTimes(1);          // 조회 횟수는 그대로다
   });
 
   it("행마다 필수 누락·폐지·레지스트리 밖·갱신하면 필요를 표시한다", async () => {
-    await mounted(makeBridge());
+    await mounted(makeBridge(), false, LATEST);
 
     expect(screen.getByTestId("conf-test.cmd")).toHaveTextContent("! 필수 누락");
     expect(screen.getByTestId("conf-delegate_enabled"))
@@ -209,7 +256,8 @@ describe("실패", () => {
         error: { kind: "old-generation" as const, message: "먼저 갱신하라.", stderr: "", rc: 2 },
       })),
     });
-    render(<SettingsTab bridge={bridge} path={DEMO} startAsking={false} />);
+    render(<SettingsTab bridge={bridge} path={DEMO} startAsking={false}
+                        adapterConf={null} onAdapterConf={vi.fn()} />);
 
     expect(await screen.findByText("설정을 읽지 못했다 — 먼저 갱신하라.")).toBeInTheDocument();
   });

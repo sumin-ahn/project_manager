@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Bridge, BridgeError, Project, StatusDocument, TagsResponse } from "./api";
 import { isError } from "./api";
 import AdapterMatrix from "./components/AdapterMatrix";
@@ -23,7 +23,39 @@ function merged(previous: Entry | undefined, response: StatusDocument | { error:
   return { status: response, at };
 }
 
-export default function App({ bridge }: { bridge: Bridge }) {
+/**
+ * 쓰기 동작(`update_apply`·`apply_new`·`run`)이 도는 프로젝트를 세는 배선 — 세 호출 모두 첫
+ * 인자가 그 프로젝트 폴더다.
+ *
+ * `pm-config update` 는 그 사본의 엔진 파일을 교체하는 중이라, 그 구간에 시작한 주기 조회는
+ * rc≠0(부분 사본)으로 끝나 **성공하는 갱신이** '먼저 갱신'·'조회 실패' 로 보인다. 실패를
+ * 숨기는 것이 아니라 그 동안 그 사본을 부르지 않는다 — 동작 뒤 재조회는 명시 호출 그대로다.
+ */
+function trackWrites(bridge: Bridge, inFlight: Map<string, number>): Bridge {
+  const counted = <Arguments extends unknown[], Result>(
+    call: (...args: Arguments) => Promise<Result>) => async (...args: Arguments) => {
+      const path = String(args[0]);
+      inFlight.set(path, (inFlight.get(path) ?? 0) + 1);
+      try {
+        return await call(...args);
+      } finally {
+        const running = (inFlight.get(path) ?? 1) - 1;
+        if (running > 0) inFlight.set(path, running);
+        else inFlight.delete(path);
+      }
+    };
+  return {
+    ...bridge,
+    update_apply: counted(bridge.update_apply),
+    apply_new: counted(bridge.apply_new),
+    run: counted(bridge.run),
+  };
+}
+
+export default function App({ bridge: given }: { bridge: Bridge }) {
+  // 쓰기 동작이 도는 프로젝트와 그 동작 수 — 화면에 보이는 값이 아니라 주기 조회의 제외 목록이다.
+  const writing = useRef(new Map<string, number>()).current;
+  const bridge = useMemo(() => trackWrites(given, writing), [given, writing]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [listError, setListError] = useState<BridgeError | null>(null);
   const [light, setLight] = useState<Record<string, Entry>>({});
@@ -106,14 +138,16 @@ export default function App({ bridge }: { bridge: Bridge }) {
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, [projects, refreshLight]);
 
-  // 주기 조회 — 창이 보이지 않으면 걸지 않는다.
+  // 주기 조회 — 창이 보이지 않으면 걸지 않고, 쓰기 동작이 도는 프로젝트는 그 동작이 끝날
+  // 때까지 뺀다(다른 프로젝트의 주기와 실패 격리는 그대로다).
   useEffect(() => {
     if (!visible || projects.length === 0) return;
     const timer = setInterval(() => {
-      void refreshLight(projects.map((project) => project.path));
+      void refreshLight(projects.map((project) => project.path)
+        .filter((path) => !writing.has(path)));
     }, LIGHT_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [visible, projects, refreshLight]);
+  }, [visible, projects, refreshLight, writing]);
 
   // 선택한 프로젝트만 무거운 절 1회.
   useEffect(() => {
@@ -123,15 +157,19 @@ export default function App({ bridge }: { bridge: Bridge }) {
   const addProject = useCallback(async () => {
     const picked = await bridge.pick_folder();
     if (isError(picked) || picked.path === null) return;
-    const response = await bridge.add_project(picked.path);
+    const before = new Set(projects.map((project) => project.path));
+    const response = await bridge.add_project(picked.path);   // 선택 대화의 표기는 등록 인자로만
     if (isError(response)) {
       setListError(response.error);
       return;
     }
     setListError(null);
     setProjects(response.projects);
-    await refreshLight([picked.path]);
-  }, [bridge, refreshLight]);
+    // 새 행의 조회 키는 **등록부가 돌려준 표기**다. 폴더 선택이 준 표기로 부르면 목록 행과 키가
+    // 달라(심볼릭 링크·끝 슬래시·물결표) 그 행이 자기 결과를 못 찾고 다음 주기까지 빈다.
+    await refreshLight(response.projects.map((project) => project.path)
+      .filter((path) => !before.has(path)));
+  }, [bridge, projects, refreshLight]);
 
   const removeProject = useCallback(async (path: string) => {
     const response = await bridge.remove_project(path);

@@ -1,7 +1,7 @@
 import * as RadixTabs from "@radix-ui/react-tabs";
 import { useEffect, useMemo, useState } from "react";
 import type { Entry } from "../App";
-import type { Bridge } from "../api";
+import type { Bridge, ConfSection } from "../api";
 import { ProjectRunContext } from "../lib/run";
 import ConfigTab from "../tabs/ConfigTab";
 import SettingsTab from "../tabs/SettingsTab";
@@ -21,6 +21,11 @@ export default function Tabs({ bridge, path, light, heavy, latestTag, onOpenUpda
     heavy: Entry | undefined; latestTag: string | null; onOpenUpdate: () => void;
     onApplied: () => void; onChanged: () => void; startAsking: boolean }) {
   const [tab, setTab] = useState("status");
+  // 설정 탭의 [불러오기] 가 받아 온 판정 — 설정 완전성 다섯 목록 중 "갱신하면 필요" 가 실린
+  // 유일한 조회라, 그 값을 쓰는 두 탭(설정·갱신)이 여기서 같은 것을 본다. 프로젝트를 바꾸면
+  // 지운다(다른 프로젝트의 판정을 보여 주지 않는다).
+  const [adapterConf, setAdapterConf] = useState<ConfSection | null>(null);
+  useEffect(() => { setAdapterConf(null); }, [path]);
   // 사본을 부르는 자리 하나 — 구성 탭과 현황 탭 행 동작이 같은 값을 쓴다(현황 탭의 읽기
   // 구조를 고치지 않고 행 동작에 바깥을 주는 유일한 배선이다).
   const run = useMemo(
@@ -46,11 +51,12 @@ export default function Tabs({ bridge, path, light, heavy, latestTag, onOpenUpda
         <ProjectRunContext.Provider value={run}>
           <RadixTabs.Content value="status"><StatusTab light={light} heavy={heavy} /></RadixTabs.Content>
           <RadixTabs.Content value="settings">
-            <SettingsTab bridge={bridge} path={path} startAsking={startAsking} />
+            <SettingsTab bridge={bridge} path={path} startAsking={startAsking}
+                         adapterConf={adapterConf} onAdapterConf={setAdapterConf} />
           </RadixTabs.Content>
           <RadixTabs.Content value="config"><ConfigTab /></RadixTabs.Content>
           <RadixTabs.Content value="update">
-            <UpdateTab bridge={bridge} path={path} light={light} heavy={heavy}
+            <UpdateTab bridge={bridge} path={path} light={light} adapterConf={adapterConf}
                        latestTag={latestTag} onApplied={onApplied} />
           </RadixTabs.Content>
         </ProjectRunContext.Provider>

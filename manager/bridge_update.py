@@ -211,8 +211,7 @@ class UpdateApi:
             return {**exc.as_error_dict(), "steps": steps}
 
         ok = all(step["rc"] == 0 for step in steps)
-        return {"steps": steps, "ok": ok, "path": str(target) if ok else None,
-                "question_mode": ok}
+        return {"steps": steps, "ok": ok, "path": str(target) if ok else None}
 
     def _register(self, target: Path) -> dict:
         """등록부 한 줄 추가 — 설치 기록이 없으면 넣지 않는다(적용이 끝나지 않은 트리)."""

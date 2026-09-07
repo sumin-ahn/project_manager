@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Entry } from "../App";
-import type { Bridge, SlotRow, StatusDocument } from "../api";
+import type { Bridge, ConfSection, SlotRow, StatusDocument } from "../api";
 import fixture from "../fixtures/status.sample.json";
 import UpdateTab, { busySessionCount } from "../tabs/UpdateTab";
 
@@ -31,8 +31,8 @@ function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
 }
 
 function mount(bridge: Bridge, latestTag: string | null, light: Entry | undefined,
-               onApplied = vi.fn()) {
-  render(<UpdateTab bridge={bridge} path={DEMO} light={light} heavy={undefined}
+               onApplied = vi.fn(), adapterConf: ConfSection | null = null) {
+  render(<UpdateTab bridge={bridge} path={DEMO} light={light} adapterConf={adapterConf}
                     latestTag={latestTag} onApplied={onApplied} />);
   return onApplied;
 }
@@ -64,13 +64,21 @@ describe("현재 ↔ 최신 배지", () => {
     expect(screen.getByText("최신 태그 모름")).toBeInTheDocument();
   });
 
-  it("갱신하면 필요한 설정 줄은 모름(null)이면 뜨지 않는다", () => {
-    const conf = { ...document_.conf, missing_for_latest: ["qa.platforms"] };
-    mount(makeBridge(), "v2.0.0", entry({ conf }));
+  it("갱신하면 필요한 설정 줄은 어댑터 절이 받아 온 값으로만 뜬다", () => {
+    // 이 탭이 늘 보는 가벼운 절은 소스를 해소하지 않아 그 축이 null 이다 — 값이 실린 조회는
+    // 설정 탭 [불러오기] 하나이고, 그 값이 여기까지 온다.
+    expect(entry().status!.conf.missing_for_latest).toEqual([]);
+    mount(makeBridge(), "v2.0.0", entry());
+    expect(screen.queryByTestId("missing-for-latest")).not.toBeInTheDocument();
+    cleanup();
+
+    const loaded = { ...document_.conf, missing_for_latest: ["qa.platforms"] };
+    mount(makeBridge(), "v2.0.0", entry(), vi.fn(), loaded);
     expect(screen.getByTestId("missing-for-latest")).toHaveTextContent("갱신하면 필요한 설정 1");
     cleanup();
 
-    mount(makeBridge(), "v2.0.0", entry({ conf: { ...document_.conf, missing_for_latest: null } }));
+    mount(makeBridge(), "v2.0.0", entry(), vi.fn(),
+          { ...document_.conf, missing_for_latest: null });
     expect(screen.queryByTestId("missing-for-latest")).not.toBeInTheDocument();
   });
 });
@@ -173,7 +181,7 @@ describe("적용", () => {
 
 describe("프로젝트 없음", () => {
   it("고른 프로젝트가 없으면 버튼을 두지 않는다", () => {
-    render(<UpdateTab bridge={makeBridge()} path={null} light={undefined} heavy={undefined}
+    render(<UpdateTab bridge={makeBridge()} path={null} light={undefined} adapterConf={null}
                       latestTag={null} onApplied={vi.fn()} />);
 
     expect(screen.queryByTestId("update-apply")).not.toBeInTheDocument();

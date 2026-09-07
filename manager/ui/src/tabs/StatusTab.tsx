@@ -1,7 +1,35 @@
 import type { Entry } from "../App";
 import { rowDot } from "../lib/status";
 import StatusDot from "../components/StatusDot";
-import StatusRowActions from "../components/StatusRowActions";
+import StatusRowActions, { SlotTableAllocate } from "../components/StatusRowActions";
+
+/**
+ * 기계 기록 한 줄 — 판정(`status`) · 수집 수/하한 · 시각. 값은 엔진 sidecar 그대로 고르고
+ * 여기서 다시 계산하지 않는다. 회귀는 `collected`/`floor`, 게이트는 `n` 이라 이름만 다르고,
+ * 그 축이 없는 옛 기록(하한 없이 남은 회귀)은 그 자리를 비운 채 나머지를 낸다.
+ */
+export function recordLine(record: Record<string, unknown>): string {
+  const collected = record.collected ?? record.n;
+  const counted = collected == null ? null
+    : record.floor == null ? `${collected}` : `${collected}/${record.floor}`;
+  return [record.status, counted, record.ts]
+    .filter((part) => part != null).map(String).join(" · ");
+}
+
+/** 그 기록 한 줄 + 접힌 원문 — 원문은 열어야 나오고, 접힌 채로는 한 줄만 자리를 쓴다. */
+function MachineRecord({ name, label, record }:
+  { name: string; label: string; record: Record<string, unknown> }) {
+  return (
+    <details data-testid={`record-${name}`}>
+      <summary className="cursor-default text-slate-600">
+        {label} {recordLine(record)}
+      </summary>
+      <pre className="mt-1 whitespace-pre-wrap bg-slate-50 p-2 font-mono text-[11px] text-slate-500">
+        {JSON.stringify(record, null, 2)}
+      </pre>
+    </details>
+  );
+}
 
 /** 현황 탭의 읽기 부분 — 보드 counts · task 표 · 슬롯 표 · 회귀/게이트 · lint 수. */
 export default function StatusTab({ light, heavy }:
@@ -28,10 +56,10 @@ export default function StatusTab({ light, heavy }:
           <p className="text-slate-500">{heavy?.error ? `보드를 읽지 못했다 — ${heavy.error.message}` : "선택 시 1회 조회"}</p>
         )}
         {board?.regression != null && (
-          <p className="font-mono text-[11px] text-slate-500">회귀 {JSON.stringify(board.regression)}</p>
+          <MachineRecord name="regression" label="회귀" record={board.regression} />
         )}
         {board?.livegate != null && (
-          <p className="font-mono text-[11px] text-slate-500">게이트 {JSON.stringify(board.livegate)}</p>
+          <MachineRecord name="livegate" label="게이트" record={board.livegate} />
         )}
       </section>
 
@@ -59,7 +87,10 @@ export default function StatusTab({ light, heavy }:
       </section>
 
       <section>
-        <h2 className="mb-1 font-medium">슬롯</h2>
+        <div className="mb-1 flex items-center gap-2">
+          <h2 className="font-medium">슬롯</h2>
+          <SlotTableAllocate />
+        </div>
         <table className="w-full">
           <tbody>
             {document_.slots.map((slot) => {

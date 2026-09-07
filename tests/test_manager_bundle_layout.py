@@ -27,6 +27,8 @@ SPEC_FILE = REPO / "manager" / "manager.spec"
 BUILD_PRODUCT_TREES = ("manager/ui/dist",)
 # PyInstaller onefile 이 소스를 푸는 자리를 가리키는 이름. frozen 여부의 단일 신호다.
 UNPACK_ATTRIBUTE = "_MEIPASS"
+# 관리자가 in-process 로 여는 엔진 사본 — 숨은 import 산출을 재는 트리다(templates 는 그 사본).
+ENGINE_TREE = ".project_manager/tools"
 
 git_required = pytest.mark.skipif(shutil.which("git") is None, reason="git 바이너리 없음")
 
@@ -132,11 +134,51 @@ def test_the_spec_makes_one_file_from_the_package_entry_script():
 
 def test_the_imprint_module_is_a_hidden_import_because_nothing_imports_it_statically():
     """`_build_info` 는 이름 문자열로만 열린다 — 정적 분석이 못 보므로 spec 이 이름으로 세운다."""
-    assert BUILD_INFO_MODULE in build.HIDDEN_IMPORTS
+    assert BUILD_INFO_MODULE in build.hidden_imports(REPO)
 
     static_importers = [module.name for module in sorted((REPO / "manager").glob("*.py"))
                         if "import _build_info" in module.read_text(encoding="utf-8")]
     assert static_importers == []
+
+
+def test_the_hidden_imports_come_from_the_bundled_engine_files():
+    """엔진 트리는 **데이터**로 실려 정적 분석 밖이다 — 그 최상위 import 를 파일에서 뽑는다.
+
+    빠지면 실패 시점이 갈린다: `console_encoding.py`(ctypes·ctypes.wintypes)는 매 기동에
+    로드돼 실행 파일이 기동에서 죽고, `pm_import.py`(difflib·secrets·shlex·tomllib)는 첫
+    프로젝트 조회에서 로드돼 사용자가 프로젝트를 등록한 뒤에야 드러난다.
+    """
+    derived = build.bundled_engine_imports(REPO, (ENGINE_TREE,))
+
+    assert {"difflib", "secrets", "shlex", "ctypes", "ctypes.wintypes", "tomllib"} <= set(derived)
+    # 이름 후보 중 모듈이 아닌 것(`pathlib.Path`)과 서드파티(`yaml`)는 산출이 아니다 —
+    # 실행 파일에 엔진 런타임 의존을 넣지 않는다는 인터프리터 합의의 다른 면이다.
+    assert "pathlib.Path" not in derived and "yaml" not in derived
+    assert list(derived) == sorted(set(derived))
+
+
+def test_the_hidden_imports_are_not_typed_by_hand():
+    """수기 목록은 반드시 뒤처진다 — build.py 에 stdlib 이름 문자열이 하나도 없다."""
+    text = (REPO / "manager" / "build.py").read_text(encoding="utf-8")
+
+    typed = [name for name in build.bundled_engine_imports(REPO, (ENGINE_TREE,))
+             if f'"{name}"' in text or f"'{name}'" in text]
+
+    assert typed == [], f"build.py 가 stdlib 이름을 손으로 적는다: {typed}"
+
+
+def test_the_imprint_module_is_the_only_name_the_derivation_cannot_see():
+    imprinted = build.hidden_imports(REPO)
+
+    assert imprinted[-1] == build.IMPRINT_MODULE == BUILD_INFO_MODULE
+    assert set(imprinted) - {build.IMPRINT_MODULE} == set(build.bundled_engine_imports(REPO))
+
+
+def test_the_spec_reads_the_hidden_imports_instead_of_naming_modules():
+    text = SPEC_FILE.read_text(encoding="utf-8")
+
+    assert "build.hidden_imports(" in text
+    assert "tomllib" not in text and build.IMPRINT_MODULE not in text
 
 
 # ── ④ 실행 파일 이름 ─────────────────────────────────────────────────────────
@@ -170,12 +212,13 @@ def test_an_unknown_target_is_not_given_a_made_up_name(system, machine):
 # ── ⑤ 각인 모듈과 빌드 산출의 자리 ───────────────────────────────────────────
 
 
-def test_the_imprint_module_carries_the_build_checkout_upstream():
+def test_the_imprint_module_carries_the_build_checkout_upstream_and_nothing_else():
+    """각인은 읽는 곳이 있는 값 하나다 — 관리자 버전 표기는 번들 엔진 rev 가 낸다."""
     namespace: dict = {}
-    exec(build.build_info_source("git@example.invalid:x/y.git", "v9.9.9"), namespace)
+    exec(build.build_info_source("git@example.invalid:x/y.git"), namespace)
 
     assert namespace["UPSTREAM_URL"] == "git@example.invalid:x/y.git"
-    assert namespace["VERSION"] == "v9.9.9"
+    assert [name for name in namespace if not name.startswith("__")] == ["UPSTREAM_URL"]
 
 
 @git_required

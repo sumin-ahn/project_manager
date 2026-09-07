@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useState } from "react";
 import type { Entry } from "../App";
-import type { Bridge, BridgeError, CommandResult, SlotRow } from "../api";
+import type { Bridge, BridgeError, CommandResult, ConfSection, SlotRow } from "../api";
 import { isError } from "../api";
 import { updateAvailable } from "../lib/status";
 
@@ -39,11 +39,12 @@ function EngineOutput({ result }: { result: CommandResult }) {
   );
 }
 
-export default function UpdateTab({ bridge, path, light, heavy, latestTag, onApplied }: {
+export default function UpdateTab({ bridge, path, light, adapterConf, latestTag, onApplied }: {
   bridge: Bridge;
   path: string | null;
   light: Entry | undefined;
-  heavy: Entry | undefined;
+  /** 설정 탭 [불러오기] 가 받아 온 판정 — 그 조회만 "갱신하면 필요" 를 채운다(전이면 null). */
+  adapterConf: ConfSection | null;
   latestTag: string | null;
   onApplied: () => void;
 }) {
@@ -75,7 +76,6 @@ export default function UpdateTab({ bridge, path, light, heavy, latestTag, onApp
   }
 
   const currentRev = light?.status?.engine_rev ?? null;
-  const conf = heavy?.status?.conf ?? light?.status?.conf ?? null;
   const busySessions = busySessionCount(light?.status?.slots ?? []);
   const pending = updateAvailable(currentRev, latestTag);
 
@@ -94,9 +94,9 @@ export default function UpdateTab({ bridge, path, light, heavy, latestTag, onApp
         )}
       </div>
 
-      {conf?.missing_for_latest != null && (
+      {adapterConf?.missing_for_latest != null && (
         <p data-testid="missing-for-latest" className="text-amber-700">
-          갱신하면 필요한 설정 {conf.missing_for_latest.length}
+          갱신하면 필요한 설정 {adapterConf.missing_for_latest.length}
         </p>
       )}
 

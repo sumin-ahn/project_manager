@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import type { AdapterDocument, AdapterFile, Bridge, BridgeError } from "../api";
+import type { AdapterFile, AdapterResponse, Bridge, BridgeError, ConfSection } from "../api";
 import { isError } from "../api";
 
 /**
@@ -8,6 +8,10 @@ import { isError } from "../api";
  * **[불러오기] 버튼으로만 돈다.** 소스 해소가 URL upstream 이면 엔진이 전체 clone 을 하므로 탭을
  * 여는 것만으로는 네트워크가 나가지 않는다. 수용은 그 사본의 `sync-adapter-config --accept` 이고
  * 관리자가 파일을 복사하지 않는다.
+ *
+ * 이 호출은 소스가 해소된 유일한 조회라 응답에 설정 완전성 `conf` 절이 함께 온다. 그 절의
+ * "갱신하면 필요"(`missing_for_latest`)를 쓰는 곳은 설정 탭 배너·행 배지와 갱신 탭 한 줄이라,
+ * 받은 값을 `onConfLoaded` 로 넘긴다(조회를 새로 만들지 않는다).
  */
 
 const STATUS_LABEL: Record<string, string> = {
@@ -53,8 +57,9 @@ function FeatureTable({ file }: { file: AdapterFile }) {
   );
 }
 
-export default function AdapterSection({ bridge, path }: { bridge: Bridge; path: string }) {
-  const [section, setSection] = useState<AdapterDocument | null>(null);
+export default function AdapterSection({ bridge, path, onConfLoaded }:
+  { bridge: Bridge; path: string; onConfLoaded: (conf: ConfSection) => void }) {
+  const [section, setSection] = useState<AdapterResponse | null>(null);
   const [error, setError] = useState<BridgeError | null>(null);
   const [busy, setBusy] = useState(false);
   const [opened, setOpened] = useState<Record<string, "features" | "diff" | null>>({});
@@ -67,9 +72,10 @@ export default function AdapterSection({ bridge, path }: { bridge: Bridge; path:
     else {
       setError(null);
       setSection(response);
+      onConfLoaded(response.conf);
     }
     setBusy(false);
-  }, [bridge, path]);
+  }, [bridge, path, onConfLoaded]);
 
   const accept = useCallback(async (relpath: string) => {
     setBusy(true);

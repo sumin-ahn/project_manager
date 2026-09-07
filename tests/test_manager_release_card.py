@@ -27,6 +27,9 @@ SHIPPED_CARDS = (
 )
 WORKFLOW = REPO / ".github" / "workflows" / "release-manager.yml"
 REGRESSION_WORKFLOW = REPO / ".github" / "workflows" / "regression.yml"
+CHANGELOG = REPO / "CHANGELOG.md"
+UNRELEASED_HEADING = "## [Unreleased]"
+MANAGER_ENTRY_MARK = "**프로젝트 관리자 앱 `pm-manager`**"
 
 SECTION_HEADING = "### 3. CHANGELOG → main push → tag → GitHub Release"
 NEXT_SECTION_HEADING = "### 4. adopter#0 흡수"
@@ -69,6 +72,14 @@ def _fenced_commands(block: str) -> list[str]:
         if inside and stripped and not stripped.startswith("#"):
             commands.append(stripped)
     return commands
+
+
+def _manager_changelog_entry() -> str:
+    """[Unreleased] 의 관리자 항목 한 줄 — 실행 파일만 받은 사용자가 읽는 자리다."""
+    text = CHANGELOG.read_text(encoding="utf-8")
+    start = text.index(UNRELEASED_HEADING)
+    section = text[start:text.index("\n## ", start + 1)]
+    return next(line for line in section.splitlines() if MANAGER_ENTRY_MARK in line)
 
 
 def _workflow() -> dict:
@@ -185,6 +196,19 @@ def test_the_regression_workflow_is_not_the_place_for_release_assets():
 
     assert set(_triggers(regression)) == {"push", "pull_request"}
     assert "pyinstaller" not in REGRESSION_WORKFLOW.read_text(encoding="utf-8").lower()
+
+
+def test_the_changelog_manager_entry_states_the_pyyaml_premise():
+    """인터프리터 합의의 다른 면 — 실행 파일에 엔진 런타임 의존이 없다는 말의 사용자 쪽 결과다.
+
+    새 프로젝트 적용 2단계(`pm-config init` → `board.py`)는 OS 기본 인터프리터로 도는데
+    `board.py` 가 최상위에서 yaml 을 부른다. 그 전제가 없으면 실행 파일만 받은 사용자는
+    적용이 끝나지 않는 이유를 릴리즈 노트에서 찾을 수 없다.
+    """
+    entry = _manager_changelog_entry()
+
+    assert "PyYAML" in entry
+    assert "OS 기본 인터프리터" in entry and "새 프로젝트 적용" in entry
 
 
 def test_the_asset_names_the_card_promises_are_the_ones_the_build_makes():

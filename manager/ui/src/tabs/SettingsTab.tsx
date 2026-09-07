@@ -17,6 +17,12 @@ import QuestionMode from "../components/QuestionMode";
 /** 이름을 자유롭게 칠 수 있는 유일한 군 — 축이 그 프로젝트의 `qa.platforms` 값이라서다. */
 export const FREE_INPUT_FAMILY = "test.<platform>.cmd";
 
+/**
+ * 표에도 질문형에도 행이 없는 키 — 값 자체가 도달성 계약이라 그 자리는 아래 upstream 절
+ * (`pm-config upstream set`) 하나다. 이 표의 저장 경로(conf writer)는 그 키를 거부한다.
+ */
+export const UPSTREAM_PATH_KEY = "upstream.path";
+
 /** 어댑터 카드 렌더에 박히는 키 — 저장해도 카드는 갱신 탭 [적용] 이 다시 낸다. */
 const ADAPTER_CARD_KEY = /^(project\.|runtime\.py$|test\.cmd$|delegate\..+\.model$|harness\..+\.pro_model$)/;
 
@@ -57,8 +63,10 @@ function registryRows(keys: ConfKeysDocument): Row[] {
 
 /** 레지스트리 행 + conf 에만 있는 행(폐지 키·레지스트리 밖 키·전개되지 않는 군의 실키). */
 export function buildSections(keys: ConfKeysDocument, values: Record<string, string>): Section[] {
-  const rows = registryRows(keys);
-  const known = new Set(rows.map((row) => row.key));
+  const registered = registryRows(keys);
+  const known = new Set(registered.map((row) => row.key));
+  // 레지스트리가 아는 키이므로 "그 밖의 키" 로 내려가지 않고, 행으로만 그리지 않는다.
+  const rows = registered.filter((row) => row.key !== UPSTREAM_PATH_KEY);
   const families = new Map(keys.keys.filter((entry) => entry.kind === "pattern")
     .map((entry) => [entry.key, entry.group]));
   const sections = keys.groups.map((group) => ({
@@ -102,8 +110,9 @@ function RowMarks({ row, conf }: { row: Row; conf: ConfSection }) {
   );
 }
 
-export default function SettingsTab({ bridge, path, startAsking }:
-  { bridge: Bridge; path: string | null; startAsking: boolean }) {
+export default function SettingsTab({ bridge, path, startAsking, adapterConf, onAdapterConf }:
+  { bridge: Bridge; path: string | null; startAsking: boolean;
+    adapterConf: ConfSection | null; onAdapterConf: (conf: ConfSection) => void }) {
   const [keys, setKeys] = useState<ConfKeysDocument | null>(null);
   const [current, setCurrent] = useState<ConfValuesDocument | null>(null);
   const [error, setError] = useState<BridgeError | null>(null);
@@ -201,7 +210,11 @@ export default function SettingsTab({ bridge, path, startAsking }:
     );
   }
 
-  const conf = current.conf;
+  // 다섯 번째 목록(`missing_for_latest`)만 어댑터 절이 받아 온 값으로 채운다 — 나머지 넷은
+  // 저장 직후 재조회한 이 판정이 더 새 것이고, 그 조회는 소스를 해소하지 않아 이 목록이 늘
+  // null(모름)이다. 어댑터 절을 불러오기 전에는 그 null 이 그대로 화면에 남는다.
+  const conf: ConfSection = adapterConf === null ? current.conf
+    : { ...current.conf, missing_for_latest: adapterConf.missing_for_latest };
   const rowsInOrder = sections.flatMap((section) => section.rows);
   const valueOf = (row: Row) => edits[row.key] ?? current.values[row.key] ?? "";
 
@@ -331,7 +344,7 @@ export default function SettingsTab({ bridge, path, startAsking }:
         </>
       )}
 
-      <AdapterSection bridge={bridge} path={path} />
+      <AdapterSection bridge={bridge} path={path} onConfLoaded={onAdapterConf} />
     </div>
   );
 }

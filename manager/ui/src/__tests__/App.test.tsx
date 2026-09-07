@@ -40,6 +40,11 @@ function lightCalls(bridge: Bridge) {
     .filter((call) => call[1] === false).length;
 }
 
+function lightCallsFor(bridge: Bridge, path: string) {
+  return (bridge.status as ReturnType<typeof vi.fn>).mock.calls
+    .filter((call) => call[0] === path && call[1] === false).length;
+}
+
 afterEach(() => {
   cleanup();
   setVisibility("visible");
@@ -96,6 +101,77 @@ describe("주기 조회", () => {
 
     setVisibility("visible");
     await waitFor(() => expect(lightCalls(bridge)).toBe(2));
+  });
+});
+
+describe("등록", () => {
+  const PICKED = "/projects/link-to-fresh/";
+  const REGISTERED = "/projects/fresh";
+
+  it("새 행의 조회 키는 폴더 선택 표기가 아니라 등록부가 돌려준 표기다", async () => {
+    const bridge = makeBridge({
+      pick_folder: vi.fn(async () => ({ path: PICKED })),
+      add_project: vi.fn(async () => ({
+        projects: [{ path: DEMO, name: "demo" }, { path: REGISTERED, name: "fresh" }],
+      })),
+    } as Partial<Bridge>);
+    render(<App bridge={bridge} />);
+    await screen.findByTestId("project-demo");
+
+    fireEvent.click(screen.getByLabelText("프로젝트 추가"));
+
+    // 등록 인자는 사람이 고른 표기 그대로다(관리자가 경로를 다시 풀지 않는다).
+    await waitFor(() => expect(bridge.add_project).toHaveBeenCalledWith(PICKED));
+    // 조회는 목록 행과 같은 키로 나간다 — 두 표기를 들면 그 행이 자기 결과를 못 찾는다.
+    await waitFor(() => expect(lightCallsFor(bridge, REGISTERED)).toBe(1));
+    expect(lightCallsFor(bridge, PICKED)).toBe(0);
+    expect(await screen.findByTestId("project-fresh")).toBeInTheDocument();
+  });
+
+  it("이미 등록된 폴더를 다시 고르면 새로 조회할 행이 없다", async () => {
+    const bridge = makeBridge({ pick_folder: vi.fn(async () => ({ path: DEMO })) } as Partial<Bridge>);
+    render(<App bridge={bridge} />);
+    await waitFor(() => expect(lightCalls(bridge)).toBe(1));
+
+    fireEvent.click(screen.getByLabelText("프로젝트 추가"));
+
+    await waitFor(() => expect(bridge.add_project).toHaveBeenCalledWith(DEMO));
+    expect(lightCalls(bridge)).toBe(1);
+  });
+});
+
+describe("쓰기 동작 중의 주기 조회", () => {
+  it("갱신이 도는 프로젝트는 끝날 때까지 주기 조회에서 빠지고, 끝나면 돌아온다", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let finish: (result: { rc: number; stdout: string; stderr: string }) => void = () => {};
+    const bridge = makeBridge({
+      list_projects: vi.fn(async () => ({
+        projects: [{ path: DEMO, name: "demo" }, { path: OTHER, name: "other" }],
+      })),
+      update_preview: vi.fn(async () => ({ rc: 0, stdout: "", stderr: "" })),
+      update_apply: vi.fn(() => new Promise((resolve) => { finish = resolve; })),
+    } as Partial<Bridge>);
+    render(<App bridge={bridge} />);
+    await waitFor(() => expect(lightCallsFor(bridge, DEMO)).toBe(1));
+
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "갱신" }));
+    fireEvent.click(await screen.findByTestId("update-apply"));
+    fireEvent.click(await screen.findByTestId("busy-continue"));   // 진행 중 세션 확인 대화
+    await waitFor(() => expect(bridge.update_apply).toHaveBeenCalledWith(DEMO));
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(LIGHT_INTERVAL_MS * 2); });
+
+    // 교체 중인 사본을 부르지 않는다 — 다른 프로젝트의 주기는 그대로 돈다.
+    expect(lightCallsFor(bridge, DEMO)).toBe(1);
+    expect(lightCallsFor(bridge, OTHER)).toBeGreaterThanOrEqual(3);
+
+    await act(async () => { finish({ rc: 0, stdout: "✓ 동기화", stderr: "" }); });
+    await waitFor(() => expect(lightCallsFor(bridge, DEMO)).toBe(2));   // 동작 직후 명시 재조회
+    const afterAction = lightCallsFor(bridge, DEMO);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(LIGHT_INTERVAL_MS); });
+
+    expect(lightCallsFor(bridge, DEMO)).toBe(afterAction + 1);          // 주기 조회 복귀
   });
 });
 
@@ -179,7 +255,7 @@ describe("새 프로젝트 적용", () => {
         registered = [...registered, { path: NEW, name: "fresh" }];
         return {
           steps: [{ name: "register" as const, rc: 0, stdout: "등록부에 추가", stderr: "" }],
-          ok: true, path: NEW, question_mode: true,
+          ok: true, path: NEW,
         };
       }),
       conf_keys: vi.fn(async () => confKeys as unknown as ConfKeysDocument),

@@ -1,12 +1,15 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AdapterDocument, AdapterFile, Bridge, StatusDocument } from "../api";
+import type { AdapterFile, AdapterResponse, Bridge, ConfSection, StatusDocument } from "../api";
 import AdapterMatrix, { cellText } from "../components/AdapterMatrix";
 import AdapterSection, { hasChannel } from "../components/AdapterSection";
 import status from "../fixtures/status.sample.json";
 
+const document_ = status as unknown as StatusDocument;
+/** 소스가 해소된 호출의 판정 — 이 응답만 `missing_for_latest` 를 배열로 싣는다. */
+const CONF: ConfSection = { ...document_.conf, missing_for_latest: ["qa.platforms"] };
 /** 두 모양은 실 엔진 산출에서 가져온다 — 채널 있는 파일과 인스턴스 소유 문서. */
-const SAMPLE = (status as unknown as StatusDocument).adapters as AdapterDocument;
+const SAMPLE: AdapterResponse = { ...document_.adapters!, conf: CONF };
 const CHANNEL = SAMPLE.files.find((file) => "mode" in file)!;
 const DOCUMENT = SAMPLE.files.find((file) => !("mode" in file))!;
 
@@ -29,8 +32,8 @@ const EDITED: AdapterFile = {
   distance: 3,
 };
 
-const EDITED_DOCUMENT: AdapterDocument = {
-  source: "/projects/framework", files: [EDITED, DOCUMENT],
+const EDITED_DOCUMENT: AdapterResponse = {
+  source: "/projects/framework", files: [EDITED, DOCUMENT], conf: CONF,
 };
 
 function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
@@ -51,7 +54,7 @@ afterEach(cleanup);
 describe("어댑터 절", () => {
   it("탭을 여는 것만으로는 조회하지 않는다 — [불러오기] 가 유일한 방아쇠", async () => {
     const bridge = makeBridge();
-    render(<AdapterSection bridge={bridge} path={DEMO} />);
+    render(<AdapterSection bridge={bridge} path={DEMO} onConfLoaded={vi.fn()} />);
 
     expect(bridge.adapters).not.toHaveBeenCalled();
     expect(screen.getByText("[불러오기] 를 눌러야 판정이 온다 (소스 해소가 무겁다)"))
@@ -65,7 +68,7 @@ describe("어댑터 절", () => {
   it("모양 둘을 가른다 — 인스턴스 소유 문서는 `mode` 키 자체가 없다", async () => {
     expect(hasChannel(CHANNEL)).toBe(true);
     expect(hasChannel(DOCUMENT)).toBe(false);
-    render(<AdapterSection bridge={makeBridge()} path={DEMO} />);
+    render(<AdapterSection bridge={makeBridge()} path={DEMO} onConfLoaded={vi.fn()} />);
     fireEvent.click(screen.getByTestId("adapter-load"));
 
     const row = await screen.findByTestId(`adapter-${DOCUMENT.path}`);
@@ -74,7 +77,7 @@ describe("어댑터 절", () => {
   });
 
   it("채널 있는 파일은 상태·기준 버전·거리·편집 줄 수를 한 줄로 보인다", async () => {
-    render(<AdapterSection bridge={makeBridge()} path={DEMO} />);
+    render(<AdapterSection bridge={makeBridge()} path={DEMO} onConfLoaded={vi.fn()} />);
     fireEvent.click(screen.getByTestId("adapter-load"));
 
     const row = await screen.findByTestId(`adapter-${EDITED.path}`);
@@ -85,7 +88,7 @@ describe("어댑터 절", () => {
   });
 
   it("[기능 보기] 는 같음/없음/다름/폐지됨 넷을 그대로 보인다", async () => {
-    render(<AdapterSection bridge={makeBridge()} path={DEMO} />);
+    render(<AdapterSection bridge={makeBridge()} path={DEMO} onConfLoaded={vi.fn()} />);
     fireEvent.click(screen.getByTestId("adapter-load"));
     fireEvent.click(await screen.findByText("기능 보기"));
 
@@ -98,7 +101,7 @@ describe("어댑터 절", () => {
   });
 
   it("[차이] 는 unified diff 둘(설치 기준↔현재 · 현재↔최신)을 보인다", async () => {
-    render(<AdapterSection bridge={makeBridge()} path={DEMO} />);
+    render(<AdapterSection bridge={makeBridge()} path={DEMO} onConfLoaded={vi.fn()} />);
     fireEvent.click(screen.getByTestId("adapter-load"));
     fireEvent.click(await screen.findByText("차이"));
 
@@ -111,7 +114,7 @@ describe("어댑터 절", () => {
 
   it("[수용] 은 사본 명령을 부르고 그 산출을 보인 뒤 다시 조회한다", async () => {
     const bridge = makeBridge();
-    render(<AdapterSection bridge={bridge} path={DEMO} />);
+    render(<AdapterSection bridge={bridge} path={DEMO} onConfLoaded={vi.fn()} />);
     fireEvent.click(screen.getByTestId("adapter-load"));
     fireEvent.click(await screen.findByText("수용"));
 
@@ -126,7 +129,7 @@ describe("어댑터 절", () => {
       adapter_accept: vi.fn(async () => ({
         rc: 1, stdout: "", stderr: "[중단] 어댑터 config 수용 거부 (.claude/settings.json)" })),
     });
-    render(<AdapterSection bridge={bridge} path={DEMO} />);
+    render(<AdapterSection bridge={bridge} path={DEMO} onConfLoaded={vi.fn()} />);
     fireEvent.click(screen.getByTestId("adapter-load"));
     fireEvent.click(await screen.findByText("수용"));
 
@@ -142,7 +145,7 @@ describe("어댑터 절", () => {
                  stderr: "[중단] 어댑터 config 소스 미해소", rc: 1 },
       })),
     });
-    render(<AdapterSection bridge={bridge} path={DEMO} />);
+    render(<AdapterSection bridge={bridge} path={DEMO} onConfLoaded={vi.fn()} />);
     fireEvent.click(screen.getByTestId("adapter-load"));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("[중단] 어댑터 config 소스 미해소");

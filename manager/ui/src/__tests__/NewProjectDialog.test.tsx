@@ -26,7 +26,7 @@ function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
       harnesses: ["claude", "opencode", "codex"], upstream: UPSTREAM })),
     pick_folder: vi.fn(async () => ({ path: DEST })),
     apply_new: vi.fn(async () => ({
-      steps: STEPS, ok: true, path: DEST, question_mode: true })),
+      steps: STEPS, ok: true, path: DEST })),
     ...overrides,
   } as unknown as Bridge;
 }
@@ -157,7 +157,7 @@ describe("진행 로그", () => {
   it("실패하면 그때까지의 로그가 엔진 문구 그대로 남고 넘어가지 않는다", async () => {
     const bridge = makeBridge({
       apply_new: vi.fn(async () => ({
-        steps: REFUSED, ok: false, path: null, question_mode: false })),
+        steps: REFUSED, ok: false, path: null })),
     });
     const { onApplied } = await mounted(bridge);
     fireEvent.click(screen.getByText("폴더 선택"));

@@ -121,9 +121,15 @@ class SettingsApi:
                 "`upstream_set(path, value)` 을 부른다")
         try:
             home = _pm_home(path)
+            # 잠금은 모듈 해소까지다 — 엔진 모듈과 그것이 쓰기 중에 지연 로드하는 형제
+            # (`file_lock`)를 여기서 끝내 놓는다.
             with ENGINE_LOCK:
-                changed = load_engine_module("pm_import.py")._write_conf_keys(
-                    _conf_path(home), dict(updates))
+                engine = load_engine_module("pm_import.py")
+                engine._load_file_lock()
+            # 쓰기는 잠금 **밖**이다. 이 함수는 대상 conf 에서 유도한 교차 프로세스 배타락을
+            # 기다리는데, 그 대기를 ENGINE_LOCK 을 쥔 채 하면 같은 잠금을 쓰는
+            # `runner.conf_values`·`interpreter` 가 막혀 등록 프로젝트 전체의 주기 조회가 선다.
+            changed = engine._write_conf_keys(_conf_path(home), dict(updates))
             return {"changed": bool(changed), "conf": runner.status(home)["conf"]}
         except CallError as exc:
             return exc.as_error_dict()
@@ -140,12 +146,16 @@ class SettingsApi:
 
     # ── 어댑터 파일 ───────────────────────────────────────────────────────
     def adapters(self, path: str) -> dict:
-        """`status --json --with-adapters` 의 `adapters` 절 — **버튼으로만** 부른다.
+        """`status --json --with-adapters` 의 `adapters` 절 + **같은 호출의** `conf` 절.
 
         소스는 그 사본이 자기 `upstream.path` 로 해소한다(URL 이면 엔진 캐시 clone/fetch).
+        설정 완전성 다섯 목록 중 `missing_for_latest` 는 소스가 해소된 호출에서만 채워지므로
+        (엔진 `_status_json_conf`), 그 값이 실린 `conf` 절을 내는 조회는 이것 하나다 — 같은
+        응답에 함께 싣는다(그 목록 때문에 조회를 새로 만들지 않는다 · 어댑터 절은 버튼 전용).
         """
         try:
-            return runner.status(_pm_home(path), with_adapters=True)["adapters"]
+            document = runner.status(_pm_home(path), with_adapters=True)
+            return {**document["adapters"], "conf": document["conf"]}
         except CallError as exc:
             return exc.as_error_dict()
 
