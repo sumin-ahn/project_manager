@@ -3,3 +3,5 @@
 pytest
 # 회귀 병렬 실행(`-n`) — 단일 프로세스 30분+ 가 8 워커에서 4분대(T-0757).
 pytest-xdist>=3.5
+# 관리자 앱 회귀가 `manager` 를 import 한다 — 창을 여는 모듈의 런타임 의존.
+pywebview>=5
