@@ -740,7 +740,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   줄어든 것은 그 실행이 부르지 않던 코드뿐이다. 현재화한 것은 기대 SHA 하나뿐이다.
 #   같은 티켓의 수정 라운드에서 한 번 더 이동했다 — `plan()` docstring 의 낱말 하나("모듈 밖
 #   호출부")뿐이고 실행 코드·배달 경계는 무편집이다.
-_T0585_PM_UPDATE_SHA256 = "bc07ff63ff2c4c398d98f01662c50e578c7145ec9e0158e722aaf60c7e22ed0b"
+_T0585_PM_UPDATE_SHA256 = "7332fe08d06964537f6ce24b0a9c4fdd9eb8b6ca76bff36d6ac13e8a5d3a3d3a"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -840,6 +840,12 @@ def _t0585_pm_update_source() -> str:
     해당하는 새 텍스트를 찾아 marker 문자열만 갱신한 뒤 이 함수를 처음부터 다시 돌린다.
 
     T-0748 재핀 이력(배달 경계가 그대로였던 근거는 여기 계속 쌓는다):
+
+    T-0908 — URL upstream 을 `_resolve_dest_source` 가 로컬 캐시 checkout 으로 해소하게 바꾸고
+    `upstream.seen_rev` 의 형상 분기를 지웠다. 바뀐 곳은 **소스 해소 입구**와 sync 종료 직전의
+    rev 기록이며, 그 사이의 배달 경계(source/manifest planning → apply → self-update 순서)는 한 줄도
+    건드리지 않았다. 이 fixture 의 upstream 은 로컬 경로라 캐시 분기 자체가 실행되지 않는다.
+    marker 4곳 모두 그대로 유일 해소됐고 anachronism 부재 단언 2건도 통과한 상태에서 SHA 만 갱신했다.
 
     T-0848 — `drift_changes` 가 엔진 사본 rev skew 를 `None`(게이트 비적용) 으로 접던 분기를 없애고
     예외를 그대로 전파한다(livegate drift-0 게이트가 자기 양성 형상에서 false-green 이 되던 결함).
@@ -1053,7 +1059,7 @@ def _install_t0585_updater(dest: Path) -> None:
 # T-0887: 온보딩 opt-in 일습 삭제로 역적용 delta 의 exact-marker 목록이 두 항목으로 줄고
 # (되돌릴 원문이 사라졌다) 그만큼 historical 전문 SHA 도 이동했다. 퇴역 경로 delta 의 marker 는
 # 전부 그 절 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "245a2b0438c048351e0bb7f1f12842a1a55bdd0ee0af6551718852142708e83d"
+_PRE_T0876_PM_UPDATE_SHA256 = "f44de3ee36365c20350333af416da24dabfb065a429c26d87989a14748007c86"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -1063,6 +1069,12 @@ def _pre_t0876_pm_update_source() -> str:
     whole-file SHA는 역적용 범위를 역사적 구 source bytes에 고정한다.
 
     재핀 이력:
+
+    T-0908 — URL upstream 캐시 해소와 `upstream.seen_rev` 단일 writer 전환으로 `pm_update.py` 의
+    소스 해소 입구·rev 기록 문구가 바뀌었다. 이 fixture 가 역적용하는 T-0878·T-0876 delta(retired-path
+    선언 검증·legacy flavor 선택 판정)와 겹치지 않아 exact-marker 는 모두 그대로 유일 해소됐고
+    (marker assert 선통과), RUN1 이 검증하는 배달 경계도 무편집이라 합성본 bytes 차이만 SHA 에
+    반영했다. 이 fixture 의 upstream 도 로컬 경로라 캐시 분기는 실행되지 않는다.
 
     T-0887 — 추가 리뷰어 opt-in 온보딩 블록을 `pm_update.py` 에서 삭제했다. 이 fixture 가 역적용
     하는 T-0878·T-0876 delta 는 retired-path 선언 검증과 legacy flavor 선택 판정이라 삭제된 온보딩

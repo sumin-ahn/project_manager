@@ -67,7 +67,7 @@ _UNABSORBED_SIBLING_CALLS = {
     ("_retired_manifest_files", "repo_files._real_git_runner"): "no-verified-load",
     ("_retired_manifest_files", "repo_files.list_repo_owned_entries"): "no-verified-load",
     ("_guest_engine_backfill_entries", "pm_import._guest_manifest_lines"): "no-verified-load",
-    ("_upstream_shape", "pm_import.classify_upstream"): "no-verified-load",
+    ("_resolve_dest_source", "pm_import.resolve_upstream_url_cache"): "no-verified-load",
     ("sync_adapter_configs", "pm_import.adapter_config_drift_summary"): "no-verified-load",
     ("sync_adapter_configs", "pm_import.unconverged_managed_adapter_configs"):
         "no-verified-load",

@@ -88,6 +88,16 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "'*.md'",
     ): WalkException("출하 wiki 전 파일 링크 해소 검증 — 대상 열거 자체가 판정의 본질"),
     (
+        "tests/test_pm_update_url_cache.py",
+        "_snapshot",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "비-git tmp dest 트리의 실행 전후 파일 스냅샷 — clone/fetch 실패가 dest 를 한 바이트도 "
+        "건드리지 않았음을 파일 단위로 재는 것이 판정의 본질이다(T-0908). repo-owned seam 은 "
+        "git 추적분만 세어 이 트리에서 0건을 낸다."
+    ),
+    (
         "tests/conftest.py",
         "_snapshot_repo_board_outputs",
         "rglob",

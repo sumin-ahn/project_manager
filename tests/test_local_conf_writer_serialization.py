@@ -13,9 +13,8 @@ seam(`file_lock.conf_lock_path`) 한 곳이 소유한다(사본이 갈리면 같
 직렬화 없음).
 
 R6 에서 그 단위가 한 번 더 정확해졌다 — 쓰기만 잠그고 **현재 상태 읽기와 계획**을 락 밖에 두면,
-원자적으로 써도 그사이 들어온 결정을 옛 값으로 덮거나(재-import 의 사용자 키 보존) 잘못된 분기로
-기록·누락한다(경로↔URL 형상에 따른 `upstream_seen_rev`). 계약은 read → 판단/계획 → write →
-postcondition 전체의 직렬화다.
+원자적으로 써도 그사이 들어온 결정을 옛 값으로 덮는다(재-import 의 사용자 키 보존). 계약은
+read → 판단/계획 → write → postcondition 전체의 직렬화다.
 
 검증 축:
   1. inventory ratchet — canonical tools 를 AST 로 훑어 conf writer 를 기계적으로 세고, 각 writer 의
@@ -24,7 +23,7 @@ postcondition 전체의 직렬화다.
   2. 경로 규약 — 모든 진입이 같은 conf 에서 같은 락 파일에 도달한다.
   3. 실 경쟁 — 배리어로 겹치게 돌려 **어느 순서로 겹쳐도** 양쪽 결정이 남는지 본다(helper 대역이
      아니라 실 writer 두 개를 실제 스레드로 경쟁시킨다). 계획이 락 안인지는 배리어를 *현재 상태를
-     읽는 지점*·*형상이 뒤집히는 지점* 에 걸어 잰다.
+     읽는 지점* 에 걸어 잰다.
   4. 비파괴 — 직렬화가 기존 주석·미지 키·개행 없는 마지막 줄을 바꾸지 않는다.
   5. 부분 업그레이드 호환 — 새 conf seam 이 없는 구세대 `file_lock` 사본에서도 복구 채널이 죽지
      않고 **같은 락 파일**로 물러나며, marked engine-rev skew 는 그 폴백에 삼켜지지 않는다.
@@ -585,7 +584,7 @@ def _run_rev_record_against_an_upstream_flip(
     """`upstream` 플립이 먼저 커밋되는 순서를 강제하고 rev 기록 결과를 돌려준다.
 
     플립(=`pm-config upstream set` 백엔드)이 락을 쥔 채 아직 교체하지 않은 창에서 rev 기록이
-    출발한다 — 형상 판정이 락 밖이면 그 창의 **옛 형상**으로 계획이 굳는다. 반환은
+    출발한다 — 두 writer 가 같은 락을 공유하지 않으면 나중 교체본이 앞선 결정을 지운다. 반환은
     (record_upstream_revs 반환값, 최종 conf 파싱).
     """
     conf = _conf_at(tmp_path, f"session=pm\nupstream.path={stored}\n")
@@ -625,41 +624,31 @@ def _run_rev_record_against_an_upstream_flip(
     return recorded[0], parsed
 
 
-def test_seen_rev_is_not_written_when_the_shape_becomes_a_url_meanwhile(
-    pm_update, pm_import, monkeypatch, tmp_path,
+@pytest.mark.parametrize(
+    ("stored", "flipped"),
+    [
+        ("/local/upstream", "https://example.invalid/u.git"),
+        ("https://example.invalid/u.git", "/local/upstream"),
+    ],
+)
+def test_rev_record_and_an_upstream_flip_both_survive(
+    pm_update, pm_import, monkeypatch, tmp_path, stored, flipped,
 ):
-    """path→URL 플립이 먼저 커밋되면 경로-전용 관찰값은 **쓰지 않는다**(stale 형상 금지).
+    """플립과 rev 기록이 겹쳐도 양쪽 결정이 남는다 — 두 rev 키는 형상과 무관하게 함께 쓰인다.
 
-    `upstream_seen_rev` 은 URL 형상에서 스킬층(fetch 후 관찰)이 소유한다 — 엔진이 옛 'path'
-    계획으로 그 키를 쓰면 한 키를 두 주체가 쓰게 되고, 자기비교로 drift 판정이 무의미해진다.
+    한쪽만 남으면(플립이 덮이거나 관찰값이 누락되면) 두 키가 영구히 어긋나 정상 흡수 직후에도
+    drift 거짓 경보가 상시 뜬다. 기록 자체는 형상을 읽지 않으므로 어느 방향 플립이든 결과가
+    같다(T-0908 — 두 키의 writer 는 record_upstream_revs 하나).
     """
     (changed, updates), parsed = _run_rev_record_against_an_upstream_flip(
-        pm_update, pm_import, monkeypatch, tmp_path,
-        stored="/local/upstream", flipped="https://example.invalid/u.git")
-
-    assert changed is True
-    assert updates == {"upstream.rev": "rev-new"}, "URL 형상인데 경로-전용 키를 계획했다"
-    assert parsed["upstream.rev"] == "rev-new"
-    assert "upstream.seen_rev" not in parsed, (
-        "URL 이 된 conf 에 경로-전용 관찰값이 stale 계획으로 기록됐다")
-
-
-def test_seen_rev_is_written_when_the_shape_becomes_a_path_meanwhile(
-    pm_update, pm_import, monkeypatch, tmp_path,
-):
-    """URL→path 플립이 먼저 커밋되면 관찰값을 **함께** 쓴다 — 누락도 같은 창의 결함이다.
-
-    baseline 만 갱신되면 두 키가 영구히 어긋나 정상 흡수 직후에도 drift 거짓 경보가 상시 뜬다.
-    """
-    (changed, updates), parsed = _run_rev_record_against_an_upstream_flip(
-        pm_update, pm_import, monkeypatch, tmp_path,
-        stored="https://example.invalid/u.git", flipped="/local/upstream")
+        pm_update, pm_import, monkeypatch, tmp_path, stored=stored, flipped=flipped)
 
     assert changed is True
     assert updates == {"upstream.rev": "rev-new", "upstream.seen_rev": "rev-new"}
     assert parsed["upstream.rev"] == "rev-new"
     assert parsed["upstream.seen_rev"] == "rev-new", (
-        "경로 형상이 된 conf 에서 관찰값이 stale 계획으로 누락됐다")
+        "겹친 실행에서 관찰값이 누락됐다(두 키 어긋남)")
+    assert parsed["upstream.path"] == flipped, "플립 결정이 rev 기록에 덮였다"
 
 
 def _vanishing_conf_lock(module, monkeypatch):

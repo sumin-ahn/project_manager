@@ -149,11 +149,10 @@ def _self_update(dest: Path) -> subprocess.CompletedProcess:
     """채택자 디렉토리에서 self-update(pm_update) 실행 — 채택자 update 흐름 (hermetic).
 
     `--from str(REPO)` = 로컬 worktree 를 명시한다. pm_import 가 기록하는 기본 upstream 은
-    릴리즈 추적용 **URL**(git@github.com:…)이고, 엔진 pm_update 는 URL 을 git clone/fetch
-    하지 않는다(ADR-0032 D5 — URL→cache clone 은 `pm-update` 스킬 책임). 실 채택자는 그 스킬을
-    쓰지만 테스트는 스킬(LLM/facade)을 못 돌리므로, 스킬이 cache clone 후 하는 "로컬 checkout
-    에서 sync" 단계를 `--from <로컬 worktree>` 로 hermetic 근사한다. (이 명시가 없으면 URL
-    upstream 에서 엔진이 rc 1 로 거부 → 게이트 영구 red — 출하 테스트 도그푸드가 포착.)
+    릴리즈 추적용 **URL**(git@github.com:…)이고, 엔진은 그 URL 을 캐시로 clone/fetch 해 소스로
+    쓴다(T-0908). 이 테스트에서 생략하면 실행이 **github 로 나간다** — 회귀 스위트는 네트워크를
+    타지 않으므로 이 실행이 흡수할 로컬 worktree 를 명시해 hermetic 하게 잡는다(URL 캐시 경로
+    자체는 로컬 bare + file:// 로 tests/test_pm_update_url_cache.py 가 판정한다).
     """
     return subprocess.run(
         [sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"),

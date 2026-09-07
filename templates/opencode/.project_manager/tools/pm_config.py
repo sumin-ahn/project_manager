@@ -3804,7 +3804,8 @@ def cmd_sync_adapter_config(
 
     판정·수용 로직은 pm_import 단일 진실(`judge_adapter_configs`·`accept_adapter_config`)이고
     여기선 표시와 rc 번역만 한다. dest 해소는 pm_config 관례(REPO 앵커·cmd_add_harness 동형),
-    소스 해소는 add-harness 와 같은 규칙(`--from` > local.conf upstream.path > dest 자기전환)이다.
+    소스 해소는 add-harness 와 같은 규칙(`--from` > local.conf upstream.path(경로) > dest
+    자기전환 > local.conf upstream.path(URL→로컬 캐시 clone/fetch))이다.
 
     ``--check``의 인스턴스-소유 세대 요약은 경로별 기준 원장을 따른다. 동기가
     ``upstream.rev``를 전진시키는 경로는 직후 check에서 사라질 수 있지만, report-drift·
@@ -3824,6 +3825,10 @@ def cmd_sync_adapter_config(
         source_root = pm_import_mod.resolve_adapter_config_source(
             dest, getattr(args, "source", None))
     except FileNotFoundError as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return _finish_sync_adapter_config(1, check=getattr(args, "check", False))
+    except pm_import_mod.UpstreamCacheError as exc:
+        # URL upstream 캐시 clone/fetch 실패 — 옛 캐시로 진행하지 않고 판정 자체를 멈춘다.
         print(f"[중단] {exc}", file=sys.stderr)
         return _finish_sync_adapter_config(1, check=getattr(args, "check", False))
 

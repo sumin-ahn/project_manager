@@ -508,10 +508,10 @@ def test_main_dry_run_does_not_record_upstream_rev(pm_update, tmp_path, monkeypa
     assert "upstream.rev" not in conf, "dry-run 인데 upstream_rev 가 기록됨(부작용 누출)"
 
 
-# ── T-0413: 경로 upstream 은 seen(관찰값)도 baseline 과 동시 기록 (거짓 drift 근절) ──
-# 경로 형상은 fetch 채널이 따로 없어 *동기 시점 checkout rev 가 곧 관찰값*이다. baseline 만
-# 갱신하면 두 키가 영구히 어긋나 정상 흡수 직후에도 adapter-drift 가 상시 뜬다(② 실측).
-# URL 형상은 스킬층이 fetch 후 seen 을 쓰므로 엔진이 건드리지 않는다(한 키 2역 금지·ADR-0032 D2).
+# ── T-0413·T-0908: seen(관찰값)은 형상과 무관하게 baseline 과 동시 기록 (거짓 drift 근절) ──
+# 동기 시점 소스 checkout 의 rev 가 곧 관찰값이다 — URL 은 엔진이 clone/fetch 한 캐시 HEAD,
+# 경로는 그 checkout HEAD. baseline 만 갱신하면 두 키가 영구히 어긋나 정상 흡수 직후에도
+# adapter-drift 가 상시 뜬다(② 실측). 두 키의 writer 는 record_upstream_revs 하나다.
 
 def test_record_upstream_rev_baseline_records_seen_for_path_upstream(
         pm_update, tmp_path, monkeypatch):
@@ -565,20 +565,20 @@ def test_record_upstream_rev_baseline_replaces_stale_seen_in_place(
     assert text.count("upstream.seen_rev=") == 1, f"seen 키 중복 append: {text!r}"
 
 
-def test_record_upstream_rev_baseline_leaves_seen_for_url_upstream(
+def test_record_upstream_rev_baseline_records_seen_for_url_upstream(
         pm_update, tmp_path, monkeypatch):
-    """URL upstream(스킬이 cache clone 후 --from) — baseline 만 갱신, seen 은 스킬층 값 그대로.
+    """URL upstream — 엔진이 캐시를 fetch 한 이 실행이 곧 관찰이라 seen 도 같은 rev 로 갱신된다.
 
-    URL 은 fetch 관찰과 sync 가 분리된 채널이라 엔진이 seen 을 쓰면 race/자기비교가 된다
-    (ADR-0032 D2·codex round-3 NEW-2). 엔진은 건드리지 않는다.
+    관찰을 따로 하는 층(옛 스킬 절차)이 없어졌다 — seen 을 남겨 두면 그 자리를 채울 writer 가
+    없어 옛 관찰값이 영구히 굳는다(T-0908).
     """
     dest = tmp_path / "dest"
     _write_local_conf(
         dest,
         "upstream.path=https://github.com/example/project_manager.git\n"
-        "upstream.seen_rev=skillfetchrev\n",
+        "upstream.seen_rev=staleobserved\n",
     )
-    source = tmp_path / "cache"  # 스킬이 clone 한 로컬 cache checkout.
+    source = tmp_path / "cache"  # 엔진이 clone/fetch 한 로컬 캐시 checkout.
     source.mkdir()
 
     pm_import = pm_update._load_pm_import()
@@ -588,16 +588,15 @@ def test_record_upstream_rev_baseline_leaves_seen_for_url_upstream(
     assert pm_update.record_upstream_rev_baseline(dest, source) is True
     conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
     assert conf["upstream.rev"] == "cacheheadrev"
-    assert conf["upstream.seen_rev"] == "skillfetchrev", \
-        f"URL 형상인데 엔진이 seen 을 덮음(한 키 2역·스킬층 관찰 파괴): {conf!r}"
+    assert conf["upstream.seen_rev"] == "cacheheadrev", \
+        f"URL 형상에서 seen 이 옛 관찰값에 굳었다(단일 writer 위반): {conf!r}"
 
 
-def test_record_upstream_revs_reports_recorded_keys_per_shape(
+def test_record_upstream_revs_reports_same_keys_for_both_shapes(
         pm_update, tmp_path, monkeypatch):
-    """반환 `(changed, recorded)` 의 recorded = *엔진이 실제로 기록한* 키 — 형상별로 다르다.
+    """반환 `(changed, recorded)` 의 recorded = 이번에 기록한 키 — 두 형상이 같다(단일 writer).
 
-    호출부(main)가 안내 문구를 결과 상태로 역추론하지 않게 하는 입력이다(상태 추론 금지):
-    URL 정상 흐름은 스킬이 쓴 seen 이 이미 baseline 과 같아 파일만 봐선 구분이 안 된다.
+    형상별 분기가 남아 있으면 URL 인스턴스의 `upstream.seen_rev` 를 아무도 쓰지 않는다.
     """
     source = tmp_path / "src"
     source.mkdir()
@@ -605,23 +604,23 @@ def test_record_upstream_revs_reports_recorded_keys_per_shape(
     monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "shaperev777")
     monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
 
+    both = {"upstream.rev": "shaperev777", "upstream.seen_rev": "shaperev777"}
+
     path_dest = tmp_path / "path_dest"
     _write_local_conf(path_dest, "upstream.path=/w/project_manager_1\n")
     changed, recorded = pm_update.record_upstream_revs(path_dest, source)
     assert changed is True
-    assert recorded == {"upstream.rev": "shaperev777", "upstream.seen_rev": "shaperev777"}
+    assert recorded == both
 
     url_dest = tmp_path / "url_dest"
-    # URL 형상 + 스킬이 이미 기록한 seen == 이번 cache HEAD (파일 상태로는 구분 불가한 조건).
     _write_local_conf(
         url_dest,
         "upstream.path=https://github.com/example/project_manager.git\n"
-        "upstream.seen_rev=shaperev777\n",
+        "upstream.seen_rev=staleobserved\n",
     )
     changed, recorded = pm_update.record_upstream_revs(url_dest, source)
     assert changed is True
-    assert recorded == {"upstream.rev": "shaperev777"}, \
-        f"URL 형상인데 seen 을 기록했다고 보고: {recorded!r}"
+    assert recorded == both, f"URL 형상에서 기록 키가 갈렸다(단일 writer 위반): {recorded!r}"
 
 
 def test_record_upstream_revs_writes_both_keys_in_single_pass(
@@ -785,19 +784,15 @@ def test_main_no_changes_skew_suppresses_both_path_revs(
     assert "manifest skew" in out and "억제" in out
 
 
-def test_main_url_sync_does_not_claim_seen_was_recorded(pm_update, tmp_path, monkeypatch, capsys):
-    """URL 형상 실 sync — 엔진이 seen 을 안 썼으므로 "(+동시 기록)" 문구가 뜨면 안 된다.
-
-    URL 정상 흐름(스킬이 fetch 후 seen 기록 → `--from <cache>` sync)에서는 seen==cache HEAD 라
-    *결과 상태*로는 "엔진이 썼다"와 구분되지 않는다 — 문구는 실제 기록분으로만 정해야 한다.
-    """
+def test_main_url_sync_records_both_keys(pm_update, tmp_path, monkeypatch, capsys):
+    """URL 형상 실 sync(캐시를 --from 으로 명시) — 두 키를 함께 기록하고 그렇게 안내한다."""
     fake_repo = tmp_path / "fake_repo"
-    cache = tmp_path / "cache"  # 스킬이 clone/fetch 한 로컬 cache checkout.
+    cache = tmp_path / "cache"  # 엔진이 clone/fetch 한 로컬 캐시 checkout.
     _make_upstream(cache)
     _write_local_conf(
         fake_repo,
         "upstream.path=https://github.com/example/project_manager.git\n"
-        "upstream.seen_rev=cachehead77\n",  # 스킬이 fetch 후 기록한 관찰값.
+        "upstream.seen_rev=staleobserved\n",
     )
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
@@ -808,9 +803,9 @@ def test_main_url_sync_does_not_claim_seen_was_recorded(pm_update, tmp_path, mon
     assert pm_update.main(["--from", str(cache)]) == 0
     out = capsys.readouterr().out
     assert "baseline 갱신" in out, f"URL sync 인데 baseline 갱신 안내 부재: {out!r}"
-    assert "동시 기록" not in out, f"엔진이 안 쓴 seen 을 썼다고 주장(상태 역추론): {out!r}"
+    assert "upstream.seen_rev 동시 기록" in out, f"동시 기록 안내 부재: {out!r}"
     conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
-    assert conf.get("upstream.seen_rev") == "cachehead77"  # 스킬층 관찰값 그대로.
+    assert conf.get("upstream.rev") == conf.get("upstream.seen_rev") == "cachehead77"
 
 
 def test_main_skew_suppression_suppresses_seen_too(pm_update, tmp_path, monkeypatch, capsys):
@@ -2982,25 +2977,10 @@ def test_main_flavor_selfheal_skew_uses_flavor_manifest_no_false_suppress(
         f"flavor 치유 후 정합인데 baseline 미갱신(root skew 오탐 억제?): {conf.get('upstream.rev')!r}"
 
 
-# ── MF1(codex): URL upstream + --from 생략 → 명확·actionable 에러 (D5 경계·침묵 실패 금지) ──
-
-def test_url_upstream_omitted_from_errors_clearly(pm_update, tmp_path, monkeypatch, capsys):
-    """local.conf upstream= 이 URL 이고 --from 생략이면 디렉토리 resolve 안 하고 명확 에러로 멈춘다.
-
-    엔진(pm_update)은 로컬 파일만 복사한다(git clone/fetch 안 함·ADR-0032 D5). URL upstream 을
-    `Path(url).resolve()` 했다간 "디렉터리 없음" 류로 침묵 실패하므로, classify_upstream 으로
-    URL 을 판별해 actionable 에러(pm-update 스킬·--from 명시 안내)로 멈춘다(MF1).
-    """
-    fake_repo = tmp_path / "fake_repo"
-    _write_local_conf(fake_repo, "upstream.path=https://github.com/acme/proj.git\n")
-    monkeypatch.setattr(pm_update, "REPO", fake_repo)
-
-    rc = pm_update.main([])  # --from 생략 → local.conf URL upstream 해소 시도.
-    assert rc == 1, "URL upstream 인데 rc 0/2 — 명확 에러로 안 멈춤"
-    err = capsys.readouterr().err
-    assert "URL" in err and ("pm-update" in err or "--from" in err), \
-        f"actionable 에러 아님(스킬·--from 안내 없음): {err!r}"
-
+# ── URL upstream + --from 생략 → 엔진이 로컬 캐시로 해소 (T-0908) ──
+# 그 계약(clone/fetch·실패 시 무변경·캐시 재사용)은 실 git 산출물로 재는
+# tests/test_pm_update_url_cache.py 가 소유한다. 여기 남는 축은 **명시 --from 이 종전대로
+# 동작한다**는 것뿐이다(아래 두 건).
 
 # ── ADR-0036: engine.version 유령 마커 폐기 가드 (제거 회귀 방지) ──────────────
 
@@ -3033,10 +3013,10 @@ def test_version_arg_rejected_by_argparse(pm_update):
 
 
 def test_url_upstream_explicit_from_local_still_works(pm_update, tmp_path, monkeypatch, capsys):
-    """local.conf 가 URL upstream 이어도 --from <로컬 checkout> 명시면 정상 sync(URL 게이트 우회).
+    """local.conf 가 URL upstream 이어도 --from <로컬 checkout> 명시면 그 checkout 에서 sync.
 
-    MF1 게이트는 *--from 생략 + local.conf URL* 경로 한정 — 명시 --from(로컬)은 그대로 동작
-    (URL 게이트는 stored upstream 해소 분기에만 있고 명시 --from 은 그 분기를 안 탄다).
+    URL 캐시 해소는 *--from 생략* 경로 한정이다 — 명시 --from 은 stored upstream 해소 분기를
+    아예 타지 않으므로 clone/fetch 도 일어나지 않는다.
     """
     fake_repo = tmp_path / "fake_repo"
     _write_local_conf(fake_repo, "upstream.path=https://github.com/acme/proj.git\n")
@@ -4659,27 +4639,10 @@ def test_changes_main_baseline_unreachable(pm_update, tmp_path, monkeypatch, cap
     assert "재clone" in out or "재 clone" in out
 
 
-def test_changes_main_url_upstream_early_error(pm_update, tmp_path, monkeypatch, capsys):
-    """--changes + URL upstream + --from 생략 → 명확 에러로 멈춤(rc≠0·D5: git clone/fetch 안 함).
-
-    엔진은 로컬 checkout 만 read 한다 — URL freshness 는 스킬층(T-0147) 소관. _run_changes 가
-    sync 와 같은 _resolve_dest_source 를 타므로 URL 게이트를 동일하게 거친다.
-    """
-    fake_repo = tmp_path / "fake_repo"
-    _write_local_conf(
-        fake_repo, "upstream.path=https://github.com/acme/proj.git\nupstream.rev=base\n")
-    monkeypatch.setattr(pm_update, "REPO", fake_repo)
-
-    rc = pm_update.main(["--changes"])
-    assert rc == 1, "URL upstream 인데 명확 에러로 안 멈춤(D5 경계 위반)."
-    err = capsys.readouterr().err
-    assert "URL" in err and ("pm-update" in err or "--from" in err)
-
-
 def test_changes_main_url_upstream_explicit_local_from_works(pm_update, tmp_path, monkeypatch, capsys):
-    """local.conf 가 URL 이어도 --changes --from <로컬 checkout> 명시면 동작(URL 게이트 우회).
+    """local.conf 가 URL 이어도 --changes --from <로컬 checkout> 명시면 그 checkout 을 본다.
 
-    URL 게이트는 stored upstream 해소 분기 한정 — 명시 --from(로컬)은 그 분기를 안 탄다(sync 동형).
+    URL 캐시 해소는 stored upstream 분기 한정 — 명시 --from 은 그 분기를 안 탄다(sync 동형).
     """
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "checkout"

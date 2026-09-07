@@ -6,11 +6,13 @@
     explicit `--from`  >  dest local.conf upstream(path·templates 보유)  >  dest 자신(templates
     보유·framework-checkout 자기전환)  >  친화 FileNotFoundError
 
-URL upstream 은 이번 스코프 밖(엔진은 로컬 파일만 복사·git clone/fetch 안 함) — path 만 자동
-해소하고 URL 은 skip 해 `--from` 명시를 요구한다.
+URL upstream 은 로컬 소스(경로 upstream·dest 자기전환)가 없을 때 **로컬 캐시 checkout**
+(`resolve_upstream_url_cache` — clone/fetch)으로 해소한다(T-0908). 캐시 실패는 다음 후보로
+미끄러지지 않고 `UpstreamCacheError` 로 멈춘다. 실 clone 산출물 판정은
+`tests/test_pm_update_url_cache.py`(로컬 bare + file://) 소관이고, 여기선 배선과 우선순위만 본다.
 
 커버:
-  - 소스 해소 precedence(_resolve_add_harness_source) — explicit·upstream(절대/상대)·URL skip·
+  - 소스 해소 precedence(_resolve_add_harness_source) — explicit·upstream(절대/상대)·URL 캐시·
     dest 자기전환·친화 에러·local.conf 부재.
   - add_harness end-to-end(source_root=None) — imported 인스턴스 자동 upstream 해소로 `.opencode/**`
     +`AGENTS.md` plan 산출 · explicit --from override.
@@ -142,13 +144,27 @@ def test_resolve_source_from_upstream_relative_path(pm_import, tmp_path):
     assert got == (dest / "fw").resolve()
 
 
-def test_resolve_source_skips_url_upstream(pm_import, tmp_path):
-    """URL upstream 은 자동 해소 대상 아님(엔진은 clone/fetch 안 함) — dest-self 도 없으면 친화 에러."""
+def test_resolve_source_url_upstream_failure_is_loud(pm_import, tmp_path):
+    """URL upstream 은 캐시로 해소한다 — 그 캐시를 못 만들면 친화 에러로 접지 않고 멈춘다.
+
+    옛 계약(URL skip → 말단 FileNotFoundError)은 "소스가 없다" 로 읽혀 채택자가 --from 을 찾게
+    했지만, 실제 사유는 "상류를 못 받았다" 다. 도달 불가 `file://`(네트워크 0)로 그 구분을 박는다.
+    """
     dest = tmp_path / "inst"
-    _write_local_conf(dest, upstream="https://example.com/framework.git")
-    with pytest.raises(FileNotFoundError) as exc:
+    _write_local_conf(dest, upstream=(tmp_path / "absent.git").as_uri())
+    with pytest.raises(pm_import.UpstreamCacheError) as exc:
         pm_import._resolve_add_harness_source(dest, "opencode", None)
-    assert "--from" in str(exc.value)
+    assert "clone 실패" in str(exc.value)
+
+
+def test_resolve_source_prefers_dest_self_over_url_cache(pm_import, tmp_path):
+    """dest 에 templates 가 있으면 URL upstream 이어도 캐시를 만들지 않는다(네트워크는 마지막 수단)."""
+    dest = _make_fake_framework(tmp_path / "fwdest", "opencode")
+    _write_local_conf(dest, upstream=(tmp_path / "absent.git").as_uri())
+
+    assert pm_import._resolve_add_harness_source(dest, "opencode", None) == dest.resolve()
+    assert not (dest / ".project_manager" / ".local" / "upstream-cache").exists(), \
+        "로컬 소스로 끝나는 형상에서 캐시 clone 을 시도했다"
 
 
 def test_resolve_source_dest_self_when_has_templates(pm_import, tmp_path):
@@ -224,20 +240,24 @@ def test_add_harness_auto_resolves_upstream_end_to_end(pm_import, tmp_path):
 def test_add_harness_explicit_from_overrides_upstream(pm_import, tmp_path):
     """explicit source_root(--from)은 upstream 자동 해소를 override 한다(기존 계약 보존)."""
     dest = _build_live_instance(pm_import, tmp_path / "imported2", "claude")
-    _set_conf_upstream(dest, "https://example.com/bogus.git")     # URL — 자동 해소면 실패할 값
+    _set_conf_upstream(dest, (tmp_path / "absent.git").as_uri())  # URL — 자동 해소면 실패할 값
     # explicit REPO 를 주면 upstream 무관하게 그대로 소스로 쓴다.
     plan = pm_import.add_harness(dest, "opencode", dry_run=True, source_root=REPO)
     rels = _plan_relpaths(plan, dest)
     assert "AGENTS.md" in rels and ".opencode/agents/pm.md" in rels
 
 
-def test_add_harness_imported_instance_errors_without_resolvable_source(pm_import, tmp_path):
-    """imported 인스턴스인데 upstream 이 URL·--from 미지정이면 친화 FileNotFoundError(→rc 1)."""
+def test_add_harness_imported_instance_reports_cache_failure(pm_import, tmp_path, capsys):
+    """imported 인스턴스 + 도달 불가 URL upstream — 캐시 실패가 CLI 경계에서 rc 1 로 번역된다."""
     dest = _build_live_instance(pm_import, tmp_path / "imported3", "claude")
-    _set_conf_upstream(dest, "https://example.com/bogus.git")
-    with pytest.raises(FileNotFoundError) as exc:
+    _set_conf_upstream(dest, (tmp_path / "absent.git").as_uri())
+    with pytest.raises(pm_import.UpstreamCacheError):
         pm_import.add_harness(dest, "opencode", dry_run=True)      # source_root=None
-    assert "--from" in str(exc.value)
+
+    capsys.readouterr()
+    rc = pm_import.add_harness_cli(dest, "opencode", dry_run=True)
+    assert rc == 1, "캐시 실패가 rc 1 로 번역되지 않음(traceback 노출)"
+    assert "clone 실패" in capsys.readouterr().err
 
 
 # ── codex add-harness (세 번째 하네스·ADR-0070 D5·T-0403) ─────────────────────

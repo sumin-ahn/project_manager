@@ -914,6 +914,11 @@ GIT_SAFE_TIMEOUT_SECONDS = 15
 # 체크는 clone 만큼 길 필요 없음·과대 대기 방지).
 UPSTREAM_GIT_TIMEOUT_SECONDS = 60
 
+# URL upstream 캐시 clone/fetch 타임아웃 (초). 조회(ls-remote)와 비용 축이 다르다 — 이 제품
+# repo 를 `file://` 로 전체 clone 하면 로컬 디스크에서도 2.87초(트리 40MB)고, 원격은 회선에
+# 달렸다. 60초로 자르면 정상 원격 clone 이 중간에 끊긴다(pm_config 의 bare clone 상한과 같은 축).
+UPSTREAM_CLONE_TIMEOUT_SECONDS = 600
+
 # upstream(네트워크-facing) git 호출의 config 격리 키 (codex MF4·worktree_pool GIT_CONFIG_*
 # 선례). untrusted URL 의 ls-remote/rev-parse 에 사용자/global git config 의 `insteadOf`
 # rewrite·credential helper 가 끼어드는 것을 막는다(defense-in-depth). GIT_CONFIG_GLOBAL/
@@ -1071,8 +1076,8 @@ _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 def classify_upstream(value: str) -> str:
     """upstream 값을 self-describing 으로 분류한다 — 'url' | 'path'.
 
-    스킬층이 freshness 분기(URL→clone/fetch · 경로→pull)에 쓰는 것과 *동일 규칙*을 엔진이
-    공유한다(값 모양만 본다·네트워크 0). 판정 순서:
+    엔진의 소스 해소(URL→로컬 캐시 clone/fetch · 경로→그 checkout)와 스킬의 pull 판단이 이
+    한 규칙을 공유한다(값 모양만 본다·네트워크 0). 판정 순서:
       1. 허용 scheme(`https://`·`ssh://`·`file://`) prefix → 'url'.
       2. Windows 드라이브(`C:\\`·`C:/`) → 'path'(콜론 모호성 우선 해소).
       3. scp-style(`user@host:path`·`host:path`) → 'url'(git SSH 문법).
@@ -1179,8 +1184,8 @@ def validate_upstream_value(value: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _real_upstream_git_runner() -> GitRunner:
-    """upstream git 호출(ls-remote·remote get-url·rev-parse)용 GitRunner (fail-soft).
+def _real_upstream_git_runner(*, timeout: int = UPSTREAM_GIT_TIMEOUT_SECONDS) -> GitRunner:
+    """upstream git 호출(ls-remote·remote get-url·rev-parse·캐시 clone/fetch)용 GitRunner (fail-soft).
 
     `_real_git_runner` 와 달리 `-C <dest>` 로 고정하지 않는다 — 호출부가 `-C <checkout>`·
     `ls-remote <url>` 등 컨텍스트를 argv 로 직접 준다. URL 안전 계약 강제:
@@ -1190,7 +1195,8 @@ def _real_upstream_git_runner() -> GitRunner:
         무력화(사용자 `insteadOf` rewrite·credential helper 가 untrusted URL 호출에 끼는 것 차단)
         + `GIT_CONFIG_COUNT` 패턴으로 protocol allowlist(https/ssh/file 만)·credential.helper=
         (빈값) 강제. `_real_git_runner`(로컬 추적집합 조회)와 달리 *네트워크-facing* 이라 격리한다.
-      - timeout — ls-remote 는 네트워크라 GIT_TIMEOUT 류 상한.
+      - timeout — 기본값은 조회(ls-remote·rev-parse) 기준 상한이고, 캐시 clone/fetch 처럼
+        비용 축이 다른 호출은 호출부가 `timeout=` 으로 자기 상한을 준다(runner 사본 0).
     git 바이너리 부재·예외는 (1, stderr) 로 감싼다(호출부가 rc 로 판정).
     """
     git_binary = shutil.which("git")
@@ -1223,7 +1229,7 @@ def _real_upstream_git_runner() -> GitRunner:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=UPSTREAM_GIT_TIMEOUT_SECONDS,
+                timeout=timeout,
                 env=env,
             )
             return result.returncode, (result.stdout or "") + (result.stderr or "")
@@ -1260,8 +1266,8 @@ def read_upstream_rev(checkout_root: Path, *, git_runner: GitRunner | None = Non
 
     `upstream.rev=<commit>` baseline 기록의 입력이다. checkout_root 가 가리키는
     로컬 git work tree 의 현재 HEAD commit 을 읽는다 — git repo 아님·HEAD 해소 실패는 None
-    (graceful·기록 생략). URL upstream(로컬 checkout 없음)은 baseline 을 못 읽으므로 호출부가
-    경로 upstream 에 한해 호출한다(스킬층이 URL 의 seen-rev 를 별도 기록·`upstream.seen_rev`).
+    (graceful·기록 생략). 호출부는 이미 로컬 트리로 해소된 소스를 준다(URL upstream 이면 이
+    실행이 clone/fetch 한 캐시 checkout).
     안전 계약은 `_real_upstream_git_runner`(argv-list·timeout·GIT_TERMINAL_PROMPT=0).
     """
     runner = git_runner if git_runner is not None else _real_upstream_git_runner()
@@ -1270,6 +1276,84 @@ def read_upstream_rev(checkout_root: Path, *, git_runner: GitRunner | None = Non
         return None
     rev = out.strip().splitlines()[0].strip() if out.strip() else ""
     return rev or None
+
+
+# ── URL upstream 의 로컬 캐시 checkout (엔진 소유) ──────────
+# 엔진은 파일을 *로컬 트리에서* 복사한다. upstream 이 URL 이면 그 로컬 트리를 엔진이 직접 만든다 —
+# 최초 실행이 clone, 이후 실행이 fetch + 작업트리 전진이다. 캐시가 채택자 트리 밖으로 나가지
+# 않도록 자리는 dest PM 홈 안 `.project_manager/.local/`(git-ignored) 하나로 고정한다.
+#
+# `fetch` 만으로는 부족하다 — fetch 는 remote-tracking ref 만 옮기고 작업트리 HEAD 는 그대로다.
+# 복사 소스도 baseline rev(`read_upstream_rev`)도 작업트리 HEAD 를 보므로, 전진시키지 않으면
+# 최초 clone 시점에 영원히 묶인 트리를 "최신 upstream" 이라 부르게 된다. 캐시는 엔진 소유라
+# 보존할 로컬 편집이 없어 tracking ref 로 hard reset 한다(force-push 된 상류도 그대로 따라간다).
+UPSTREAM_CACHE_RELDIR = Path(".project_manager") / ".local" / "upstream-cache"
+
+# 캐시 디렉터리 이름 = URL 다이제스트 앞 16자. 경로 조립 입력이 URL 이므로 이름에 URL 문자를
+# 그대로 쓰지 않는다(경로 탈출·플랫폼 금지문자 표면 0).
+_UPSTREAM_CACHE_NAME_LEN = 16
+
+
+class UpstreamCacheError(RuntimeError):
+    """URL upstream 캐시 clone/fetch 실패 — 호출부가 rc≠0 으로 멈춘다.
+
+    옛 캐시로 조용히 진행하지 않기 위해 별도 타입이다: 소스 해소의 다른 실패(FileNotFoundError)
+    는 다음 후보로 넘어가도 되지만, 이 실패는 "받아야 할 상류를 못 받았다" 라 넘어갈 후보가 없다.
+    """
+
+
+def upstream_cache_dir(dest_root: Path, url: str) -> Path:
+    """URL upstream 하나가 쓰는 캐시 checkout 자리 (dest PM 홈 안·git-ignored)."""
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:_UPSTREAM_CACHE_NAME_LEN]
+    return Path(dest_root).resolve() / UPSTREAM_CACHE_RELDIR / digest
+
+
+def resolve_upstream_url_cache(
+    dest_root: Path, url: str, *, git_runner: GitRunner | None = None,
+) -> Path:
+    """URL upstream → 복사 소스로 쓸 로컬 캐시 checkout 경로 (clone 최초·fetch 이후).
+
+    `pm-config update`(pm_update)·`add-harness`·`sync-adapter-config` 가 같은 자리를 부른다 —
+    URL 을 로컬 트리로 바꾸는 코드는 엔진에 하나뿐이다(스킬·관리자·명령줄이 한 자리).
+
+    git 호출은 `_real_upstream_git_runner`(argv-list·protocol allowlist·credential 미경유·
+    `GIT_TERMINAL_PROMPT=0`)에 clone/fetch 상한을 준 것 하나다. 값 자체는 그 전에
+    `validate_upstream_value` 로 다시 거른다(형태 안전은 호출부마다 다시 세우지 않는다).
+
+    실패(clone·fetch·작업트리 전진 어느 단계든)는 `UpstreamCacheError` 로 올린다 — 옛 캐시로
+    미끄러지면 낡은 트리를 상류라 부르며 baseline 까지 전진시킨다. `--filter` 없는 전체 clone 인
+    이유는 어댑터 기준 diff 가 `template_rev` 시점 파일을 읽어야 하기 때문이다(이력 필요).
+    """
+    ok, reason = validate_upstream_value(url)
+    if not ok:
+        raise UpstreamCacheError(f"upstream URL 을 캐시로 받을 수 없다: {reason}")
+    runner = git_runner if git_runner is not None else _real_upstream_git_runner(
+        timeout=UPSTREAM_CLONE_TIMEOUT_SECONDS)
+    cache = upstream_cache_dir(dest_root, url)
+
+    if (cache / ".git").is_dir():
+        print(f"upstream URL 캐시 fetch: {url} → {cache}", file=sys.stderr)
+        rc, out = runner(["-C", str(cache), "fetch", "origin"])
+        if rc != 0:
+            raise UpstreamCacheError(
+                f"upstream 캐시 fetch 실패 (rc={rc}): {url} → {cache} — {out.strip()[:400]}")
+        # 작업트리를 이번 fetch 결과로 전진시킨다(fetch 는 ref 만 옮긴다).
+        rc, out = runner(["-C", str(cache), "reset", "--hard", "@{upstream}"])
+        if rc != 0:
+            raise UpstreamCacheError(
+                f"upstream 캐시 작업트리 전진 실패 (rc={rc}): {cache} — {out.strip()[:400]}")
+        return cache
+
+    # 실패한 clone 의 잔재는 git 이 스스로 지운다(자기가 만든 목적지를 되돌린다 — 실측). 그래도
+    # 남은 것(중단된 프로세스 등)이 있으면 clone 이 "빈 디렉터리 아님" 으로 loud 하게 실패하고
+    # 그 문구가 아래 예외에 실린다 — 엔진이 대신 지우지 않는다(삭제는 사람이 한다).
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    print(f"upstream URL 캐시 clone: {url} → {cache} (최초·전체 clone)", file=sys.stderr)
+    rc, out = runner(["clone", "--", url, str(cache)])
+    if rc != 0:
+        raise UpstreamCacheError(
+            f"upstream 캐시 clone 실패 (rc={rc}): {url} → {cache} — {out.strip()[:400]}")
+    return cache
 
 
 def _parse_status_dirty(porcelain_z: str) -> set:
@@ -4966,15 +5050,17 @@ def _resolve_add_harness_source(
     소스 트리가 없다 — 소스는 그 인스턴스의 **upstream 프레임워크 checkout** 이다(add-harness 를
     *라이브 인스턴스*에 걸면 소스는 항상 그 인스턴스의 upstream 이다). 해소 우선순위:
       1. explicit(`--from`)      → 그대로 (기존 계약·override).
-      2. dest local.conf upstream.path → classify_upstream=path 이고 그 경로에 templates/<harness>/
-                                    가 있으면 소스.
+      2. dest local.conf upstream.path(경로) → 그 경로에 templates/<harness>/ 가 있으면 소스.
       3. dest 자신              → dest 에 templates/ 가 있으면 dest (framework-checkout 자기전환·
                                     REPO 하드 기본이 맞던 유일 케이스·현행 회귀 보존).
-      4. 전부 실패              → 친화 FileNotFoundError (actionable).
+      4. dest local.conf upstream.path(URL) → 로컬 캐시 checkout(`resolve_upstream_url_cache` —
+                                    clone/fetch)에 templates/<harness>/ 가 있으면 소스.
+      5. 전부 실패              → 친화 FileNotFoundError (actionable).
 
-    URL upstream 은 이번 스코프 밖 — 엔진은 로컬 파일만 복사(git clone/fetch 안 함)
-    하므로 path upstream 만 자동 해소하고 URL 은 skip 해 말단(dest 자기전환 또는 친화 에러)으로
-    유도한다(명시 `--from` 요구). classify_upstream 으로 분기.
+    URL 캐시가 **로컬 소스보다 뒤**인 이유는 네트워크가 마지막 수단이기 때문이다 — dest 자신이
+    프레임워크 checkout 이면 templates/ 가 이미 손 안에 있고, 그 형상에서 clone 을 먼저 걸면
+    오프라인에서 되던 add-harness 를 새로 막는다. 캐시 clone/fetch 실패는 `UpstreamCacheError`
+    로 그대로 올린다(다음 후보로 미끄러지지 않는다 — 받아야 할 상류를 못 받은 것이다).
     """
     if explicit is not None:
         return Path(explicit).resolve()
@@ -4982,28 +5068,34 @@ def _resolve_add_harness_source(
 
     # dest 는 엔진 사본(templates 부재) — 소스는 upstream 프레임워크 checkout.
     local_conf = dest_root / ".project_manager" / "local.conf"
+    upstream = ""
     if local_conf.is_file():
         try:
             upstream = _parse_conf_keys(
                 _read_text_shared(local_conf, encoding="utf-8")).get("upstream.path", "").strip()
         except (UnicodeDecodeError, OSError):
             upstream = ""
-        # path upstream 만 자동 해소 — URL 은 로컬 파일 소스가 아니므로 skip(--from 요구).
-        if upstream and classify_upstream(upstream) == "path":
-            # 상대 경로는 인스턴스 루트(dest) 기준·절대면 그대로(pathlib: 절대 우변 승).
-            candidate = (dest_root / upstream).resolve()
-            if _has_harness_templates(candidate, harness):
-                return candidate
+    kind = classify_upstream(upstream) if upstream else ""
+    if kind == "path":
+        # 상대 경로는 인스턴스 루트(dest) 기준·절대면 그대로(pathlib: 절대 우변 승).
+        candidate = (dest_root / upstream).resolve()
+        if _has_harness_templates(candidate, harness):
+            return candidate
 
     # framework-checkout 자기전환(dest 에 templates/ 보유) — 현행 REPO 하드 기본의 회귀 보존.
     if _has_harness_templates(dest_root, harness):
         return dest_root
 
+    if kind == "url":
+        cache = resolve_upstream_url_cache(dest_root, upstream)
+        if _has_harness_templates(cache, harness):
+            return cache
+
     raise FileNotFoundError(
-        f"add_harness 소스 미해소: {dest_root} 에 templates/ 가 없고, local.conf upstream.path 도 "
-        f"templates/<harness> 를 가진 로컬 프레임워크 경로가 아니다. "
-        f"`--from <프레임워크 checkout>` 를 주거나 local.conf 의 upstream.path= 을 로컬 프레임워크 "
-        f"경로로 두라(URL upstream 은 자동 해소하지 않는다)."
+        f"add_harness 소스 미해소: {dest_root} 에 templates/ 가 없고, local.conf upstream.path "
+        f"({upstream or '미등록'}) 에서도 templates/<harness> 를 찾지 못했다. "
+        f"`--from <프레임워크 checkout>` 를 주거나 local.conf 의 upstream.path= 을 그 하네스 "
+        f"어댑터를 가진 프레임워크 경로/URL 로 두라."
     )
 
 
@@ -7264,7 +7356,10 @@ def resolve_adapter_config_source(dest_root: Path, explicit=None) -> Path:
     """instance-owned config 채널의 어댑터 소스 checkout — add-harness 와 **같은 해소 규칙**.
 
     설치 하네스를 돌며 `_resolve_add_harness_source` 를 태운다(해소 규칙 사본 0). 어느 하네스로도
-    소스를 못 찾으면 add-harness 와 같은 친화 FileNotFoundError 를 그대로 올린다."""
+    소스를 못 찾으면 add-harness 와 같은 친화 FileNotFoundError 를 그대로 올린다.
+
+    URL 캐시 실패(`UpstreamCacheError`)는 순회가 잡지 않는다 — 하네스가 달라도 URL 은 하나라
+    다음 하네스에서 같은 clone/fetch 를 한 번 더 시도하게 될 뿐이다(재시도 0)."""
     if explicit is not None:
         return Path(explicit).resolve()
     dest_root = Path(dest_root).resolve()
@@ -8407,13 +8502,14 @@ def add_harness_cli(
     잡아 `main()` 과 *동일하게* 처리한다(에러 처리의 단일 진실 = CLI contract owner = pm_import):
       - ValueError            : 미지원/집합 harness·미등록 표기 하네스(add_harness 입구 검증).
       - FileNotFoundError     : dest 부재/비-디렉토리·소스 템플릿 부재(resolve_template_roots).
+      - UpstreamCacheError    : URL upstream 캐시 clone/fetch 실패(소스 해소·복사 전).
       - FileVsDirConflict     : 어댑터 dst 위치에 기존 디렉토리(plan_copy·비파괴 거부).
       - AncestorConflict      : dst 조상에 symlink/비-디렉토리 파일(plan_copy·비파괴 거부).
       - UnsafeDestPathError   : engine.manifest·공유 문서 경로가 repo 밖 지향(복사 전 거부).
       - DestRootSwappedError  : dest 루트 자체가 계획 뒤 교체됨(**적용 중에도** 즉시 전체 중단).
-    앞 넷(ValueError·FileNotFoundError·FileVsDirConflict·AncestorConflict)과
+    앞 다섯(ValueError·FileNotFoundError·UpstreamCacheError·FileVsDirConflict·AncestorConflict)과
     `EmptyTemplateShippingInventoryError` 는 add_harness 가 *복사 전*(plan_copy·
-    resolve_template_roots·입구 검증)에 던지므로 부분 적용 없이 깨끗한 `오류: …`(stderr) + rc 1 로
+    resolve_template_roots·소스 해소·입구 검증)에 던지므로 부분 적용 없이 깨끗한 `오류: …`(stderr) + rc 1 로
     끝난다(traceback 0·main 동형). **`UnsafeDestPathError` 는 복사 전(계획 경로 안전 가드)뿐 아니라
     복사 *중*(`CopyAction.run` 의 fd 가드 — 계획 뒤 조상·목적지 교체)에도 나올 수 있다**: 그때는
     그 시점까지의 복사가 남지만 저장소 밖 쓰기는 0이고, 사람이 정리한 뒤 재실행하면 된다.
@@ -8428,6 +8524,7 @@ def add_harness_cli(
     except (
         ValueError,
         FileNotFoundError,
+        UpstreamCacheError,
         FileVsDirConflict,
         AncestorConflict,
         UnsafeDestPathError,
@@ -9364,8 +9461,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # upstream.rev baseline 기록 — --from 이 로컬 git checkout
     # 이면 그 HEAD commit 을 baseline 으로 박는다("마지막 동기 이후 변경" 의 기준점). git repo
-    # 아님·HEAD 해소 실패면 graceful 생략(URL upstream 은 로컬 checkout 이 없어 baseline 없음 —
-    # 스킬층이 fetch 후 upstream.seen_rev 를 별도 기록·별개 키).
+    # 아님·HEAD 해소 실패면 graceful 생략(다음 pm-update 가 두 rev 키를 함께 기록한다).
     baseline_rev = read_upstream_rev(source_root)
     if baseline_rev and record_upstream_rev(dest_root, baseline_rev):
         print(f"✓ local.conf upstream.rev baseline 기록 (drift-lint 기준점): {baseline_rev}")
