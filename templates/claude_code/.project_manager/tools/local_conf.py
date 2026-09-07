@@ -22,6 +22,7 @@ stdlib-only 이며 형제는 `file_lock`(공유 읽기 seam) 하나만 경로-�
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -397,6 +398,9 @@ class KeySpec:
 # 선언에서 파생하고, 형제를 못 읽는 형상(부분 사본·복구 채널)에서는 모양 판정으로 강등한다 —
 # 이 판정의 유일한 소비자가 never-block advisory(모르는 키 경고)라 강등이 무엇도 막지 않는다.
 _ROLE_SUFFIXES: tuple[str, ...] = ("harness", "model", "reasoning")
+# 역할 키의 티어 조합 — `_delegate_pattern_for` 가 파싱하는 것과 같은 닫힌 문법이다
+# (선언과 파서가 갈리면 `pattern_for` 왕복 테스트가 red).
+_DELEGATE_TIERS: tuple[str, ...] = ("", ".hard", ".fallback", ".hard.fallback")
 _HARNESS_SUFFIXES: tuple[str, ...] = (
     "idle_timeout", "wall_timeout", "ctx_window_tokens", "pro_model",
 )
@@ -649,6 +653,56 @@ def render_key_table() -> str:
     lines.append("패턴 키군 (`<...>` 자리 목록은 코드·선언이 소유한다)")
     lines.extend(_render_key_rows(_key_table_rows(PATTERN_REGISTRY)))
     return "\n".join(lines)
+
+
+# ── 키 표의 기계 표면 (`--keys --json`) ──────────────────────────────────
+# 사람 표(`render_key_table`)와 **같은 레지스트리·같은 순서**를 낸다. 다른 점은 둘뿐이다:
+# 표시용 합성 표기(`_default_display` 의 `small 300 · medium 1000 · …`)를 싣지 않고, 패턴 키군의
+# 전개된 실명을 `members` 로 함께 낸다. 소비자는 관리자 화면이고, 화면은 **그 프로젝트 사본의**
+# 이 산출을 읽는다(세대가 다르면 키 집합이 다르므로 남의 레지스트리로 대신 그리지 않는다).
+KEY_JSON_SCHEMA = 1
+
+
+def _pattern_members(pattern: str) -> list[dict[str, str | None]]:
+    """패턴 키군의 전개된 실명과 각 기본값 — 축은 이 모듈이 이미 소유한 선언에서 온다.
+
+    코드가 축을 갖지 않는 군은 빈 목록이다(지어내지 않는다): `test.<platform>.cmd` 의 축은 그
+    프로젝트의 `qa.platforms` 값이고, `delegate.model_alias.<name>` 의 축은 채택자가 정하는
+    이름이다. 그 두 군의 실키는 화면이 **conf 에 이미 있는 값**에서 읽는다.
+    """
+    if pattern == HARNESS_PATTERN:
+        keys = [f"harness.{name}.{suffix}"
+                for name in _harness_names() for suffix in _HARNESS_SUFFIXES]
+    elif pattern == DELEGATE_ROLE_PATTERN:
+        keys = [f"delegate.{role}{tier}.{suffix}"
+                for role in _role_names() for tier in _DELEGATE_TIERS
+                for suffix in _ROLE_SUFFIXES]
+    elif pattern == DIFF_CAP_PATTERN:
+        keys = [f"diff_cap.{name}" for name in DIFF_CAP_DEFAULTS]
+    else:
+        keys = []
+    return [{"key": key, "default": default_for(key)} for key in keys]
+
+
+def key_registry_json() -> dict:
+    """`--keys --json` 산출 — 실명 키와 패턴 키군을 `kind` 로 가른 한 벌.
+
+    `kind` 는 어느 레지스트리에서 왔는지다(`KeySpec` 에 그 필드는 없다 — 레지스트리가 둘이다).
+    `groups` 는 `KEY_GROUPS` 순서 그대로이고 그것이 화면의 절 순서다.
+    """
+    keys: list[dict] = [
+        {"key": key, "group": spec.group, "description": spec.description,
+         "default": spec.default, "required": spec.required,
+         "kind": "key", "members": None}
+        for key, spec in KEY_REGISTRY.items()
+    ]
+    keys.extend(
+        {"key": pattern, "group": spec.group, "description": spec.description,
+         "default": spec.default, "required": spec.required,
+         "kind": "pattern", "members": _pattern_members(pattern)}
+        for pattern, spec in PATTERN_REGISTRY.items()
+    )
+    return {"schema": KEY_JSON_SCHEMA, "groups": list(KEY_GROUPS), "keys": keys}
 
 
 def _declared_groups() -> list[str]:
@@ -1049,13 +1103,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     _console_encoding.configure_console_utf8()
     args = list(sys.argv[1:] if argv is None else argv)
-    if args == ["--keys"]:
-        print(render_key_table())
+    if args[:1] == ["--keys"] and args[1:] in ([], ["--json"]):
+        if args[1:]:
+            # 기계 판독 페이로드는 콘솔 텍스트 레이어를 건너뛴다 — 그 레이어는 PowerShell 캡처에서
+            # 콘솔 codepage 로 강등되고 그 치환은 되돌릴 수 없다(사람 표는 종전 `print` 그대로).
+            _console_encoding.write_machine_line(
+                json.dumps(key_registry_json(), ensure_ascii=False))
+        else:
+            print(render_key_table())
         return 0
     if len(args) == 2 and args[0] == "--render-adapter-block":
         print(render_adapter_block(args[1]))
         return 0
-    print("사용법: local_conf.py [--keys | --render-adapter-block <python|js|sh>]",
+    print("사용법: local_conf.py [--keys [--json] | --render-adapter-block <python|js|sh>]",
           file=sys.stderr)
     return 2
 

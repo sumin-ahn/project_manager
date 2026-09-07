@@ -108,6 +108,16 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "git 추적분만 세어 조회가 새로 만든 미추적 파일을 놓친다."
     ),
     (
+        "tests/_manager_home.py",
+        "tree_snapshot",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "tmp PM 홈 트리의 조회·저장 전후 파일별 해시 — 관리자가 직접 쓰는 파일이 local.conf "
+        "하나뿐임을 이름 단위로 재는 것이 판정의 본질이다(T-0911). repo-owned seam 은 git "
+        "추적분만 세어 저장이 만든 미추적 락 파일과 tmp 홈 전체를 놓친다."
+    ),
+    (
         "tests/conftest.py",
         "_snapshot_repo_board_outputs",
         "rglob",

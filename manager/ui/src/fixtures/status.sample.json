@@ -1,0 +1,335 @@
+{
+  "schema": 1,
+  "engine_rev": "v1.7.13",
+  "pm_home": "/projects/demo",
+  "generated_at": "2026-09-07T15:07:48.849758+00:00",
+  "slots": [
+    {
+      "slot": ".",
+      "repo": "proj1",
+      "state": "leased",
+      "session": "proj1_1",
+      "pid": 232958,
+      "alive": false,
+      "role": "work",
+      "task": null,
+      "branch": "master",
+      "head": null,
+      "base": null,
+      "behind": null,
+      "dirty": true
+    },
+    {
+      "slot": "work/app_1",
+      "repo": "app",
+      "state": "leased",
+      "session": null,
+      "pid": 0,
+      "alive": false,
+      "role": "readonly",
+      "task": null,
+      "branch": null,
+      "head": "ea647d3cd6aadae80919108ac6315487c5b0c9b2",
+      "base": {
+        "branch": "master",
+        "commit": "ea647d3cd6aadae80919108ac6315487c5b0c9b2"
+      },
+      "behind": 0,
+      "dirty": false
+    },
+    {
+      "slot": "work/app_2",
+      "repo": "app",
+      "state": "leased",
+      "session": "proj1_2",
+      "pid": 259842,
+      "alive": true,
+      "role": "work",
+      "task": null,
+      "branch": "app_2",
+      "head": "ea647d3cd6aadae80919108ac6315487c5b0c9b2",
+      "base": null,
+      "behind": null,
+      "dirty": false
+    },
+    {
+      "slot": "work/app_3",
+      "repo": "app",
+      "state": "idle",
+      "session": null,
+      "pid": 0,
+      "alive": false,
+      "role": "work",
+      "task": null,
+      "branch": "app_3",
+      "head": "ea647d3cd6aadae80919108ac6315487c5b0c9b2",
+      "base": null,
+      "behind": null,
+      "dirty": false
+    },
+    {
+      "slot": "work/app_4",
+      "repo": "app",
+      "state": "idle",
+      "session": null,
+      "pid": 0,
+      "alive": false,
+      "role": "work",
+      "task": null,
+      "branch": "app_4",
+      "head": "ea647d3cd6aadae80919108ac6315487c5b0c9b2",
+      "base": null,
+      "behind": null,
+      "dirty": false
+    }
+  ],
+  "tasks": [
+    {
+      "name": "demo",
+      "prefix": null,
+      "pid": 0,
+      "alive": false,
+      "started": "2026-09-07T14:57:50+00:00",
+      "slots": []
+    },
+    {
+      "name": "live",
+      "prefix": null,
+      "pid": 259842,
+      "alive": true,
+      "started": "2026-09-07T14:59:02+00:00",
+      "slots": []
+    }
+  ],
+  "git": {
+    "branch": "master",
+    "head": null,
+    "dirty": true
+  },
+  "repos": [
+    {
+      "repo": "proj1",
+      "prefix": null,
+      "base": null,
+      "protected": null,
+      "test_cmd": null,
+      "area_owner": "pm@example.invalid"
+    },
+    {
+      "repo": "app",
+      "prefix": null,
+      "base": "master",
+      "protected": null,
+      "test_cmd": null,
+      "area_owner": "pm@example.invalid"
+    }
+  ],
+  "harnesses": [
+    "claude"
+  ],
+  "conf": {
+    "missing_required": [],
+    "legacy": [],
+    "unknown": [],
+    "nonstandard": [],
+    "missing_for_latest": []
+  },
+  "board": {
+    "counts": {
+      "open": 3,
+      "claimed": 0,
+      "blocked": 0,
+      "done": 0,
+      "discarded": 0
+    },
+    "open": [
+      {
+        "id": "T-0001",
+        "title": "첫 화면 배선",
+        "claimed_by": null
+      },
+      {
+        "id": "T-0002",
+        "title": "등록부 원자 교체",
+        "claimed_by": null
+      },
+      {
+        "id": "T-0003",
+        "title": "최신 태그 조회",
+        "claimed_by": null
+      }
+    ],
+    "lint": [
+      {
+        "kind": "placeholder",
+        "message": "T-0001: unfilled template text: '무엇을 만들 / 바꿀 / 검증할지'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0001: unfilled template text: '이 ticket 이 만들거나 바꾸는'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0001: unfilled template text: '구현 방향에 대한 확정 사항'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0001: unfilled template text: '핵심 산출물 (파일, 동작)'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0001: unfilled template text: '[[architecture]] 관련 절'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0001: unfilled template text: '[[xxxxx]]'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0001: unfilled template text: 'T-XXXX'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0002: unfilled template text: '무엇을 만들 / 바꿀 / 검증할지'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0002: unfilled template text: '이 ticket 이 만들거나 바꾸는'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0002: unfilled template text: '구현 방향에 대한 확정 사항'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0002: unfilled template text: '핵심 산출물 (파일, 동작)'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0002: unfilled template text: '[[architecture]] 관련 절'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0002: unfilled template text: '[[xxxxx]]'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0002: unfilled template text: 'T-XXXX'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0003: unfilled template text: '무엇을 만들 / 바꿀 / 검증할지'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0003: unfilled template text: '이 ticket 이 만들거나 바꾸는'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0003: unfilled template text: '구현 방향에 대한 확정 사항'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0003: unfilled template text: '핵심 산출물 (파일, 동작)'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0003: unfilled template text: '[[architecture]] 관련 절'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0003: unfilled template text: '[[xxxxx]]'"
+      },
+      {
+        "kind": "placeholder",
+        "message": "T-0003: unfilled template text: 'T-XXXX'"
+      },
+      {
+        "kind": "adapter-drift",
+        "message": "adapter-layer: upstream.seen_rev 미기록 — upstream 관찰값이 없어 baseline(6b8d8f74d5f8) 이후 adapter-layer(settings·루트 doc·facade) drift 를 판정할 수 없음(관찰불가). `pm-update`(upstream fetch)로 관찰값을 기록하면 추적된다 (never-block·hooks/driver 는 전파됨)"
+      }
+    ],
+    "regression": null,
+    "livegate": null
+  },
+  "adapters": {
+    "source": "/projects/framework",
+    "files": [
+      {
+        "path": ".claude/settings.json",
+        "harness": "claude",
+        "mode": "report",
+        "status": "in-sync",
+        "template_rev": "6b8d8f74d5f8613d79aff3ccf57cac66e52c8c3e",
+        "diff_lines": {
+          "added": 0,
+          "removed": 0
+        },
+        "diff_vs_baseline": "",
+        "diff_vs_latest": "",
+        "features": [
+          {
+            "name": "autoCompactEnabled",
+            "project": true,
+            "latest": true,
+            "verdict": "same"
+          },
+          {
+            "name": "env",
+            "project": 2,
+            "latest": 2,
+            "verdict": "same"
+          },
+          {
+            "name": "permissions.allow",
+            "project": 42,
+            "latest": 42,
+            "verdict": "same"
+          },
+          {
+            "name": "permissions.deny",
+            "project": 5,
+            "latest": 5,
+            "verdict": "same"
+          },
+          {
+            "name": "statusLine",
+            "project": 3,
+            "latest": 3,
+            "verdict": "same"
+          },
+          {
+            "name": "hooks.PostCompact",
+            "project": ".claude/ctx_stop_hook.sh",
+            "latest": ".claude/ctx_stop_hook.sh",
+            "verdict": "same"
+          },
+          {
+            "name": "hooks.PreCompact",
+            "project": ".claude/precompact_capture_hook.sh",
+            "latest": ".claude/precompact_capture_hook.sh",
+            "verdict": "same"
+          },
+          {
+            "name": "hooks.PreToolUse",
+            "project": ".claude/ctx_stop_hook.sh, .claude/delegate_channel_guard_hook.sh",
+            "latest": ".claude/ctx_stop_hook.sh, .claude/delegate_channel_guard_hook.sh",
+            "verdict": "same"
+          },
+          {
+            "name": "hooks.UserPromptSubmit",
+            "project": ".claude/ctx_stop_hook.sh",
+            "latest": ".claude/ctx_stop_hook.sh",
+            "verdict": "same"
+          }
+        ],
+        "distance": 0
+      },
+      {
+        "path": "CLAUDE.md",
+        "ownership": "instance",
+        "status": "unchecked"
+      }
+    ]
+  }
+}

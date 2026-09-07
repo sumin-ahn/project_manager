@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import ast
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -674,6 +675,114 @@ def test_keys_cli_lists_all_keys(conf_module):
     for value in ("30", "20", "200000", "24", "300", "1000", "2500"):
         assert value in proc.stdout, value
     assert "필수" in proc.stdout                       # 필수 칸이 표에 있다
+
+
+# ── ⑧ `--keys --json` — 화면이 읽는 기계 표면 (T-0911) ──────────────────────
+# 관리자 설정 화면의 항목 목록은 **그 프로젝트 사본의** 이 산출이다. 사람 표와 같은 레지스트리를
+# 읽되 표시용 합성 표기는 싣지 않고, 패턴 키군은 전개된 실명(`members`)을 함께 낸다.
+
+
+def _keys_json(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(LOCAL_CONF_PY), "--keys", *args],
+        capture_output=True, text=True, encoding="utf-8", env=utf8_child_env(),
+    )
+
+
+@pytest.fixture(scope="module")
+def keys_document() -> dict:
+    proc = _keys_json("--json")
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def test_keys_json_carries_both_registries_split_by_kind(conf_module, keys_document):
+    """실명 레지스트리와 패턴 레지스트리가 `kind` 로 갈려 **선언 순서 그대로** 실린다."""
+    assert keys_document["schema"] == conf_module.KEY_JSON_SCHEMA == 1
+    assert keys_document["groups"] == list(conf_module.KEY_GROUPS)
+
+    named = [row for row in keys_document["keys"] if row["kind"] == "key"]
+    patterns = [row for row in keys_document["keys"] if row["kind"] == "pattern"]
+    assert [row["key"] for row in named] == list(conf_module.KEY_REGISTRY)
+    assert [row["key"] for row in patterns] == list(conf_module.PATTERN_REGISTRY)
+    for row in named:
+        spec = conf_module.KEY_REGISTRY[row["key"]]
+        assert row["description"] == spec.description
+        assert row["default"] == spec.default
+        assert row["required"] == spec.required
+        assert row["group"] == spec.group
+        assert row["members"] is None, row["key"]     # 실명 키에는 전개할 축이 없다
+    assert all(row["group"] in keys_document["groups"] for row in keys_document["keys"])
+
+
+def test_pattern_members_take_the_registry_default_not_the_table_string(
+        conf_module, keys_document):
+    """멤버의 기본값은 `default_for` 그대로다 — 사람 표의 합성 표기는 JSON 에 없다."""
+    families = {row["key"]: row for row in keys_document["keys"] if row["kind"] == "pattern"}
+    diff_cap = families[conf_module.DIFF_CAP_PATTERN]
+
+    assert diff_cap["default"] is None                # 군 자체는 한 값을 갖지 않는다
+    assert diff_cap["members"] == [
+        {"key": "diff_cap.small", "default": "300"},
+        {"key": "diff_cap.medium", "default": "1000"},
+        {"key": "diff_cap.large", "default": "2500"},
+    ]
+    composed = conf_module._default_display(
+        conf_module.DIFF_CAP_PATTERN, conf_module.PATTERN_REGISTRY[conf_module.DIFF_CAP_PATTERN])
+    assert composed == "small 300 · medium 1000 · large 2500"     # 사람 표에는 있고
+    assert composed not in json.dumps(keys_document, ensure_ascii=False)   # JSON 에는 없다
+    for family in families.values():
+        for member in family["members"]:
+            assert member["default"] == conf_module.default_for(member["key"]), member
+
+
+def test_every_expanded_member_resolves_back_to_its_own_family(conf_module, keys_document):
+    """전개 축(`_DELEGATE_TIERS`·하네스·역할)이 파서(`pattern_for`)와 갈리면 red.
+
+    전개는 선언에서 만들고 판정은 `_delegate_pattern_for` 가 한다 — 둘이 어긋나면 화면이 그
+    사본이 모르는 키를 목록에 싣는다. 왕복이 그 어긋남의 유일한 관측점이다.
+    """
+    families = {row["key"]: row for row in keys_document["keys"] if row["kind"] == "pattern"}
+    expanded = [(family, member["key"])
+                for family, row in families.items() for member in row["members"]]
+    assert len(expanded) == 12 + 48 + 3, expanded    # 하네스 3×4 · 역할 4×4×3 · estimate 3
+    for family, key in expanded:
+        assert conf_module.pattern_for(key) == family, key
+        assert key not in conf_module.KEY_REGISTRY, key
+
+
+def test_families_without_a_code_owned_axis_expand_to_nothing(conf_module, keys_document):
+    """축이 코드에 없는 군은 빈 목록이다 — 이름을 지어내지 않는다.
+
+    `test.<platform>.cmd` 의 축은 그 프로젝트의 `qa.platforms` 값이고,
+    `delegate.model_alias.<name>` 의 축은 채택자가 정하는 이름이다. 화면은 이 두 군의 실키를
+    conf 에 이미 있는 값에서 읽는다(자유 입력을 여는 자리는 platform 명령 한 군뿐).
+    """
+    families = {row["key"]: row["members"]
+                for row in keys_document["keys"] if row["kind"] == "pattern"}
+    empty = {family for family, members in families.items() if members == []}
+
+    assert empty == {conf_module.PLATFORM_TEST_PATTERN, conf_module.DELEGATE_ALIAS_PATTERN}
+
+
+def test_the_human_table_is_byte_identical_with_or_without_the_json_flag(conf_module):
+    """`--json` 을 붙인 것은 표를 바꾸지 않는다 — 사람 표면은 이전 세대와 같은 바이트다."""
+    table = _keys_json()
+
+    assert table.returncode == 0, table.stderr
+    assert table.stdout == conf_module.render_key_table() + "\n"
+
+
+@pytest.mark.parametrize("args", [["--json", "--keys"], ["--keys", "--json", "--json"],
+                                  ["--keys", "--nope"]])
+def test_the_keys_cli_takes_only_the_declared_two_forms(args):
+    """받는 모양은 `--keys` 와 `--keys --json` 둘뿐이다(그 밖은 사용법 rc 2)."""
+    proc = subprocess.run(
+        [sys.executable, str(LOCAL_CONF_PY), *args],
+        capture_output=True, text=True, encoding="utf-8", env=utf8_child_env())
+
+    assert proc.returncode == 2, proc.stdout
+    assert "--keys [--json]" in proc.stderr
 
 
 def test_readme_catalog_retired(board, monkeypatch, tmp_path):

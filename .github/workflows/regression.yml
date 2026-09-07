@@ -22,3 +22,23 @@ jobs:
           pip install pytest pytest-xdist
       - name: full regression
         run: pytest -q -n auto   # 러너 코어 수만큼 병렬 (pytest-xdist)
+
+  # 화면(manager/ui)은 Node 툴체인이라 파이썬 job 과 독립이다 — `pytest tests/` 는 Node 없이 돈다.
+  ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: manager/ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: manager/ui/package-lock.json
+      - name: install
+        run: npm ci
+      - name: screen tests
+        run: npm test
+      - name: build
+        run: npm run build
