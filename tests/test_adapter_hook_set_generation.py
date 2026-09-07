@@ -2417,6 +2417,36 @@ def test_hook_set_spec_fields_are_unchanged_by_the_settings_key_declaration(pm_i
         "빈 키 목록은 그 파일의 기능 축을 통째로 끈다"
 
 
+def test_declared_settings_keys_resolve_in_the_shipped_templates(pm_import):
+    """선언한 설정 키 전수가 그 하네스 **출하 template** 문서에서 present 로 해소된다.
+
+    선언과 실체가 갈리면 조용히 false-green 이다 — 양쪽 문서에 없는 키는 `_feature_verdict` 가
+    None 이라 `_adapter_feature_rows` 가 행 자체를 건너뛰고, 기능 표의 관측 범위와 `distance`
+    분모가 소리 없이 줄어 관리자는 그 축을 "차이 없음" 으로 읽는다. 자기 대조 가드
+    (`test_shipped_config_has_no_feature_distance_against_itself`)는 양쪽 부재를 same 으로 접어
+    이 축을 못 잡는다."""
+    template_dir_by_relpath = {
+        relpath: pm_import.HARNESS_TEMPLATE_DIRS[harness][0]
+        for harness, channel in pm_import.ADAPTER_CONFIG_CHANNEL.items()
+        for relpath in channel
+    }
+    declared = sum(len(keys) for keys in pm_import.ADAPTER_SETTINGS_KEYS.values())
+    assert declared > 0, "선언이 비면 이 가드는 공허하다"
+
+    resolved = 0
+    for relpath, keys in pm_import.ADAPTER_SETTINGS_KEYS.items():
+        template_path = (REPO / "templates" / template_dir_by_relpath[relpath] / relpath)
+        document = pm_import._load_adapter_config_document(template_path)
+        assert document, f"{relpath}: 출하 template 을 문서로 못 읽었다"
+        for key in keys:
+            present, _value = pm_import._document_key_value(document, key)
+            assert present, (
+                f"{relpath}: 선언 키 {key!r} 가 출하 template 에 없다 — 상류에서 지워졌거나 "
+                "이름이 바뀌었다(그 키의 기능 행이 표에서 사라져 distance 가 조용히 줄어든다)")
+            resolved += 1
+    assert resolved == declared
+
+
 def test_event_split_preserves_the_hook_command_inventory(pm_import):
     """이벤트별 수집의 평탄화 == 세대 판정이 보던 커맨드 전수(순서 포함) — 실 출하 config 로.
 

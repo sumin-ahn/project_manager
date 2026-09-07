@@ -2431,23 +2431,26 @@ def _status_json_git(git_runner: GitRunner) -> dict:
     회귀·라이브게이트 기록이 어느 HEAD 에 대한 판정인지 대조하는 기준이다. git checkout 이
     아니면 세 값 모두 None(그 사실이 곧 신호다).
 
-    커밋 0 인 저장소(`pm_import --new` 직후 fresh clone)는 정상 형상이다 — `rev-parse` 가 rc≠0 을
-    내므로 `symbolic-ref` 로 브랜치명을 얻고 `head` 는 None 이다(`pm_bootstrap._collect_git` 과
-    같은 폴백 규약). 둘 다 실패해야 git checkout 이 아니다.
+    브랜치는 `worktree_pool.current_branch` 와 **같은 primitive** 하나로 읽는다 —
+    `symbolic-ref HEAD`(full ref·`--short` 없이) rc 0 이면 `refs/heads/` 접두만 정확히 벗겨
+    브랜치명, rc≠0 이면 detached 라 None 이다. 두 축이 같은 상태를 같은 값(null)으로 말해야
+    읽는 쪽이 판정을 다시 구현하지 않는다. `rev-parse --abbrev-ref HEAD` 를 쓰지 않는 이유는
+    `current_branch` docstring 에 기록된 실측 사고 그대로다 — detached 를 문자열 `"HEAD"` 로,
+    브랜치명과 동명의 태그가 있으면 `heads/<이름>` 으로, 커밋 0 인 브랜치는 rc≠0 으로 준다.
+
+    커밋 0 인 저장소(`pm_import --new` 직후 fresh clone)는 정상 형상이다 — `symbolic-ref` 가
+    `refs/heads/<이름>` 을 rc 0 으로 주므로 브랜치명은 있고 `head` 만 None 이다
+    (`rev-parse HEAD` 가 rc≠0 · `pm_bootstrap._collect_git` 과 같은 규약).
     """
-    rc, branch = git_runner(["-C", str(REPO), "rev-parse", "--abbrev-ref", "HEAD"])
-    head: str | None = None
-    if rc == 0:
-        head_rc, head_out = git_runner(["-C", str(REPO), "rev-parse", "HEAD"])
-        head = head_out.strip() if head_rc == 0 else None
-    else:
-        rc, branch = git_runner(["-C", str(REPO), "symbolic-ref", "--short", "HEAD"])
-        if rc != 0:
-            return {"branch": None, "head": None, "dirty": None}
+    rc, ref = git_runner(["-C", str(REPO), "symbolic-ref", "HEAD"])
+    branch: str | None = None
+    if rc == 0 and ref.strip().startswith(_SYMREF_BRANCH_PREFIX):
+        branch = ref.strip()[len(_SYMREF_BRANCH_PREFIX):] or None
+    head_rc, head_out = git_runner(["-C", str(REPO), "rev-parse", "HEAD"])
     dirty_rc, dirty_out = git_runner(["-C", str(REPO), "status", "--porcelain"])
     return {
-        "branch": branch.strip() or None,
-        "head": head,
+        "branch": branch,
+        "head": head_out.strip() if head_rc == 0 else None,
         "dirty": bool(dirty_out.strip()) if dirty_rc == 0 else None,
     }
 
@@ -2466,6 +2469,10 @@ def _source_missing_required(source_root: Path, values: dict) -> list[str]:
     비교 기준은 소스 checkout 의 `local_conf.py` 다(이 사본의 선언이 아니라 갱신하면 오게 될
     선언). rev 대조는 하지 않는다 — 새 세대를 읽는 것이 목적이라 `allow_unverified` 로 연다.
     소스에 그 파일이 없으면 예외가 그대로 올라간다(비교 못 하는 상태를 빈 목록으로 접지 않는다).
+
+    **신뢰 경계**: 이 호출은 소스 트리의 Python 을 import 해 **실행**한다 — 채택자가
+    `upstream.path` 로 등록한 checkout(URL 이면 이 실행이 clone/fetch 한 캐시) 한정이고,
+    그 트리의 엔진은 `pm-config update` 가 이미 복사·실행하는 것과 같은 경계다.
     """
     module = _load_module_from_path(
         Path(source_root) / ".project_manager" / "tools" / "local_conf.py",
@@ -3068,21 +3075,32 @@ def cmd_release(
     return 0
 
 
+def _registered_repos(board_mod) -> "set[str] | None":
+    """등록 repo 이름 — task 명 예약패턴(`<repo>_<N>`) 판별 근거. board 에서 fail-soft 해소.
+
+    board 모듈 부재·`registered_repos` 속성 부재·조회 예외를 전부 `None` 으로 내린다. `None` 은
+    "등록 목록을 못 읽었다" 는 뜻이고, 그 상태에서도 `_validate_task_name` 의 traversal·절대경로·
+    빈 이름 검증은 그대로 강제된다 — 완화되는 것은 예약패턴 하나다. 해소 규칙이 이 한 자리라
+    `task new`(생성)와 `alloc`/`worktree add --task`(기바인딩 요구)가 같은 근거로 판정한다.
+    """
+    reg_fn = getattr(board_mod, "registered_repos", None) if board_mod else None
+    if reg_fn is None:
+        return None
+    try:
+        return reg_fn()
+    except Exception:  # noqa: BLE001 — areas 파싱 실패는 None(예약패턴 검증만 완화·traversal 유지).
+        return None
+
+
 def _validate_prebound_task(wp, board_mod, task: str) -> int:
     """task 명 검증(예약패턴·traversal) + 기바인딩 요구 — `alloc`/`worktree add --task` 공용.
 
     task 이름이 lease session 으로 **기록**되는 write-capable 경로의 선검증이자,
     정체성 *생성*(`task new`·bootstrap)이 슬롯 부착보다 먼저라는 순서를 강제한다. 통과면 0,
-    실패면 1(진단은 이 함수가 stderr 로 출력). registered_repos 는 예약패턴(`<repo>_<N>`)
-    판별 근거로 board 에서 fail-soft 해소(부재면 None → traversal 검증만·예약패턴만 완화).
+    실패면 1(진단은 이 함수가 stderr 로 출력). 예약패턴 판별 근거는 `_registered_repos` 하나가
+    해소한다(부재면 None → traversal 검증만·예약패턴만 완화).
     """
-    registered = None
-    _reg_fn = getattr(board_mod, "registered_repos", None) if board_mod else None
-    if _reg_fn is not None:
-        try:
-            registered = _reg_fn()
-        except Exception:  # noqa: BLE001 — areas 파싱 실패는 None(예약패턴 검증만 완화·traversal 유지).
-            registered = None
+    registered = _registered_repos(board_mod)
     try:
         wp._validate_task_name(task, registered)
     except wp.InvalidTaskName as exc:
@@ -3249,8 +3267,8 @@ def cmd_task_new(
     동명 종료 archive(`TaskArchived` — `task reopen` 안내) · **이미 있는 이름**(재개는 bootstrap
     몫이라 여기서 pid 를 만지지 않는다).
 
-    worktree_pool/board 주입으로 hermetic 테스트. registered_repos 는 예약패턴 판별 근거로
-    board 에서 fail-soft 해소한다(부재면 None → traversal 검증만·`cmd_alloc` 동형).
+    worktree_pool/board 주입으로 hermetic 테스트. 예약패턴 판별 근거는 `_registered_repos` 가
+    해소한다(부재면 None → traversal 검증만·`cmd_alloc` 과 같은 한 자리).
     """
     wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
     if wp is None:
@@ -3264,13 +3282,7 @@ def cmd_task_new(
 
     # 예약패턴(`<repo>_<N>`) 판별 근거 — board fail-soft 해소(부재면 None·traversal 검증은 유지).
     board_mod = board or _load_module("board", "board.py")
-    registered = None
-    _reg_fn = getattr(board_mod, "registered_repos", None) if board_mod else None
-    if _reg_fn is not None:
-        try:
-            registered = _reg_fn()
-        except Exception:  # noqa: BLE001 — areas 파싱 실패는 None(예약패턴 검증만 완화·traversal 유지).
-            registered = None
+    registered = _registered_repos(board_mod)
 
     try:
         task = wp.create_task(name, registered_repos=registered)

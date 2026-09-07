@@ -652,11 +652,14 @@ def render_key_table() -> str:
 
 
 def _declared_groups() -> list[str]:
-    """실제 선언에 쓰인 묶음 이름 — 선언 순서 보존(표시 순서는 `KEY_GROUPS` 가 정한다)."""
-    seen = [group for group in KEY_GROUPS
+    """실제 선언에 쓰인 묶음 이름 — 표시 순서는 `KEY_GROUPS` 하나가 정한다.
+
+    `KEY_GROUPS` 밖의 묶음을 뒤에 덧붙이는 자리는 두지 않는다 — 완전성 테스트가 모든
+    `spec.group` 이 `KEY_GROUPS` 안에 있음을 강제하므로 그 확장은 발화할 수 없다(새 묶음을
+    쓰려면 `KEY_GROUPS` 에 순서를 선언하는 것이 유일한 경로다).
+    """
+    return [group for group in KEY_GROUPS
             if any(spec.group == group for spec in KEY_REGISTRY.values())]
-    seen.extend(sorted({spec.group for spec in KEY_REGISTRY.values()} - set(KEY_GROUPS)))
-    return seen
 
 
 class ConfResult:

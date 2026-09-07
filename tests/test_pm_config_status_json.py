@@ -307,6 +307,40 @@ def test_status_json_git_section_handles_zero_commit_clone(home):
     assert section["dirty"] is True
 
 
+@_git_required
+def test_status_json_git_section_reports_detached_head_as_null_branch(home):
+    """detached 는 `slots[].branch` 와 **같은 null** 이다 — 한 문서 안에서 표현이 갈리지 않는다.
+
+    `rev-parse --abbrev-ref HEAD` 는 이 상태를 브랜치 이름처럼 보이는 문자열 `"HEAD"` 로 줘서,
+    읽는 쪽이 detached 와 'HEAD 라는 이름의 브랜치' 를 구분할 수 없게 만든다."""
+    slot = _make_slot(home, "app", 1, "feat/x")
+    _git(home / slot, "checkout", "-q", "--detach")
+    _ledger(home, [{"slot": slot, "repo": "app", "session": "main", "pid": os.getpid(),
+                    "started": "s", "state": "leased", "test_cmd": None}])
+    _write(home / ".gitignore", ".project_manager/\nwork/\n.repos/\n.origin/\n")
+    _git(home, "add", "-A")
+    _git(home, "commit", "-q", "-m", "tree")
+    head = _git(home, "rev-parse", "HEAD").stdout.strip()
+    _git(home, "checkout", "-q", "--detach")
+
+    document = _status_json(home)
+
+    assert document["git"] == {"branch": None, "head": head, "dirty": False}
+    assert document["slots"][0]["branch"] is None, "두 축의 detached 표현이 갈렸다"
+
+
+@_git_required
+def test_status_json_git_section_is_not_shadowed_by_a_tag_of_the_same_name(home):
+    """브랜치명과 동명의 태그가 있어도 순수 브랜치명이다 — `heads/<이름>` 으로 실리지 않는다.
+
+    릴리즈가 `v1.7.13` 브랜치를 같은 이름의 태그로 찍는 이 저장소의 실제 규약이다."""
+    _ledger(home, [])
+    _git(home, "checkout", "-q", "-b", "v1.7.13")
+    _git(home, "tag", "v1.7.13")
+
+    assert _status_json(home)["git"]["branch"] == "v1.7.13"
+
+
 # ── ② conf 다섯 목록 ─────────────────────────────────────────────────────────
 
 
@@ -582,16 +616,14 @@ def test_with_adapters_diffs_against_baseline_rev_and_latest(tmp_path):
     assert '+  "autoCompactEnabled": true' in row["diff_vs_latest"]
 
 
-@_git_required
-def test_with_adapters_resolves_url_upstream_via_cache(tmp_path):
-    """URL upstream 은 `--from` 없이 T-0908 캐시로 해소되고 결과가 `--from <캐시>` 와 같다.
+def _url_upstream_home(tmp_path: Path) -> Path:
+    """URL upstream(로컬 bare + `file://`·네트워크 0)을 가리키는 codex 인스턴스 홈.
 
-    픽스처는 로컬 bare + `file://` 라 네트워크가 0 이다(T-0908 헬퍼 재사용). 캐시 checkout 이
-    소스가 됐음을 `adapters.source` 절대경로로 단언하고, 같은 캐시를 `--from` 으로 준 산출과
-    문서 전체를 대조한다(`generated_at` 만 시각이라 제외).
+    T-0908 의 캐시 픽스처를 그대로 쓴다(캐시 자리·형상 판정을 두 벌로 만들지 않는다). 상류
+    checkout 에는 최신 설정 레지스트리를 얹는다 — `conf.missing_for_latest` 의 비교 기준이라
+    없으면 소스 레지스트리 로드가 그대로 터진다.
     """
     framework = _make_framework_repo(tmp_path / "fw")
-    # 상류 checkout 에는 최신 설정 레지스트리가 있다(`conf.missing_for_latest` 의 비교 기준).
     shutil.copyfile(TOOLS / "local_conf.py",
                     framework / ".project_manager" / "tools" / "local_conf.py")
     subprocess.run(["git", "-C", str(framework), "add", "-A"], check=True,
@@ -615,6 +647,18 @@ def test_with_adapters_resolves_url_upstream_via_cache(tmp_path):
     (home / ".agents").mkdir(exist_ok=True)
     _write_json(home / ".project_manager" / "install.json",
                 {"schema": 2, "harnesses": ["codex"]})
+    return home
+
+
+@_git_required
+def test_with_adapters_resolves_url_upstream_via_cache(tmp_path):
+    """URL upstream 은 `--from` 없이 T-0908 캐시로 해소되고 결과가 `--from <캐시>` 와 같다.
+
+    픽스처는 로컬 bare + `file://` 라 네트워크가 0 이다(T-0908 헬퍼 재사용). 캐시 checkout 이
+    소스가 됐음을 `adapters.source` 절대경로로 단언하고, 같은 캐시를 `--from` 으로 준 산출과
+    문서 전체를 대조한다(`generated_at` 만 시각이라 제외).
+    """
+    home = _url_upstream_home(tmp_path)
 
     cached = _status_json(home, "--with-adapters")
     cache = _only_cache(home)
@@ -651,11 +695,17 @@ def test_with_adapters_source_unresolved_errors(home):
 # ── ⑤ 부작용 0 · 텍스트 불변 · 표면 상한 ─────────────────────────────────────
 
 
-def _tree_digest(root: Path) -> str:
-    """`.project_manager/` 트리의 경로+내용 해시 — 생성·수정·삭제를 모두 잡는다."""
+def _tree_digest(root: Path, *, exclude: Path | None = None) -> str:
+    """`.project_manager/` 트리의 경로+내용 해시 — 생성·수정·삭제를 모두 잡는다.
+
+    `exclude` 는 부분트리 하나를 해시에서 뺀다 — 읽기 전용 계약이 쓰기를 허용하는 유일한 자리
+    (엔진 소유 스크래치 `.local/upstream-cache/`)를 **명시적 예외**로 선언하기 위한 축이다.
+    """
     digest = hashlib.sha256()
     for path in sorted(root.rglob("*")):
         if "__pycache__" in path.parts:
+            continue
+        if exclude is not None and (path == exclude or exclude in path.parents):
             continue
         digest.update(str(path.relative_to(root)).encode("utf-8"))
         digest.update(b"\0")
@@ -683,6 +733,30 @@ def test_json_path_writes_nothing(tmp_path):
 
     assert _tree_digest(home / ".project_manager") == before, \
         "JSON 조회가 PM 홈 .project_manager/ 트리를 건드렸다"
+
+
+@_git_required
+def test_json_path_url_upstream_writes_only_the_engine_cache(tmp_path):
+    """URL upstream 형상의 무쓰기 범위 — 예외는 엔진 소유 `.local/upstream-cache/` 하나다.
+
+    `--from` 없이 URL upstream 을 쓰면 소스 해소가 그 캐시를 clone(최초)/fetch(이후)하므로 전체
+    트리 해시로는 잴 수 없다. 허용된 쓰기 자리가 그 부분트리 하나뿐임을 값으로 고정한다 — 캐시를
+    뺀 `.project_manager/` 는 전후 동일해야 하고, 캐시는 이 실행이 실제로 만들었어야 한다(예외가
+    선언된 것임을 함께 못박는다·`--from` 형상의 전체 트리 무변경 단언은 그대로 둔다)."""
+    home = _url_upstream_home(tmp_path)
+    cache_root = home / ".project_manager" / ".local" / "upstream-cache"
+    assert not cache_root.exists(), "픽스처 전제: 캐시가 아직 없어야 한다"
+    # 텍스트 경로를 먼저 돌려 공유 읽기 seam(리스 락 파일)이 선 상태를 기준선으로 삼는다.
+    assert _run_cli(home, "status").returncode == 0
+    before = _tree_digest(home / ".project_manager", exclude=cache_root)
+
+    _status_json(home, "--with-adapters")   # 최초 — clone
+    _status_json(home, "--with-adapters")   # 이후 — fetch
+
+    assert _tree_digest(home / ".project_manager", exclude=cache_root) == before, \
+        "URL 형상의 JSON 조회가 캐시 밖 .project_manager/ 를 건드렸다"
+    assert _only_cache(home).is_dir(), \
+        "캐시가 만들어지지 않았다면 이 예외 선언은 공허하다(형상이 URL 로 해소되지 않았다)"
 
 
 @_git_required
