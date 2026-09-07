@@ -39,8 +39,8 @@ function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
   } as unknown as Bridge;
 }
 
-async function mounted(bridge: Bridge) {
-  render(<SettingsTab bridge={bridge} path={DEMO} />);
+async function mounted(bridge: Bridge, startAsking = false) {
+  render(<SettingsTab bridge={bridge} path={DEMO} startAsking={startAsking} />);
   await screen.findByTestId("settings-banner");
 }
 
@@ -209,7 +209,7 @@ describe("실패", () => {
         error: { kind: "old-generation" as const, message: "먼저 갱신하라.", stderr: "", rc: 2 },
       })),
     });
-    render(<SettingsTab bridge={bridge} path={DEMO} />);
+    render(<SettingsTab bridge={bridge} path={DEMO} startAsking={false} />);
 
     expect(await screen.findByText("설정을 읽지 못했다 — 먼저 갱신하라.")).toBeInTheDocument();
   });

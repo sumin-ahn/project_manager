@@ -3,6 +3,7 @@ import type { Bridge, BridgeError, Project, StatusDocument, TagsResponse } from 
 import { isError } from "./api";
 import AdapterMatrix from "./components/AdapterMatrix";
 import Header from "./components/Header";
+import NewProjectDialog from "./components/NewProjectDialog";
 import ProjectList from "./components/ProjectList";
 import RefreshBar from "./components/RefreshBar";
 import Tabs from "./components/Tabs";
@@ -35,6 +36,10 @@ export default function App({ bridge }: { bridge: Bridge }) {
   const [visible, setVisible] = useState(() => document.visibilityState === "visible");
   // 전체 보기(어댑터 매트릭스)는 등록 프로젝트마다 무거운 조회 한 번이라 열어야만 돈다.
   const [matrixOpen, setMatrixOpen] = useState(false);
+  const [newOpen, setNewOpen] = useState(false);
+  // 갓 적용한 프로젝트 — 이 값이 서 있는 동안만 설정 탭이 질문형으로 열린다(사람이 목록에서
+  // 무엇이든 고르면 풀린다 · 같은 프로젝트를 다시 고를 때마다 질문형이 되지 않는다).
+  const [appliedPath, setAppliedPath] = useState<string | null>(null);
 
   const loadProjects = useCallback(async (): Promise<Project[]> => {
     const response = await bridge.list_projects();
@@ -139,6 +144,15 @@ export default function App({ bridge }: { bridge: Bridge }) {
     setSelected((current) => (current === path ? response.projects[0]?.path ?? null : current));
   }, [bridge]);
 
+  // 적용 성공 — 등록부를 다시 읽고 그 프로젝트를 골라 질문형 설정으로 넘긴다.
+  const openApplied = useCallback(async (path: string) => {
+    setNewOpen(false);
+    await loadProjects();
+    setSelected(path);
+    setAppliedPath(path);
+    await refreshLight([path]);
+  }, [loadProjects, refreshLight]);
+
   const refreshSelected = useCallback(async () => {
     if (selected === null) return;
     await Promise.all([refreshLight([selected]), refreshHeavy(selected), refreshTags()]);
@@ -156,10 +170,11 @@ export default function App({ bridge }: { bridge: Bridge }) {
         tags={tags}
         selected={selected}
         listError={listError}
-        onSelect={setSelected}
+        onSelect={(path) => { setAppliedPath(null); setSelected(path); }}
         onAdd={addProject}
         onRemove={removeProject}
         onOpenMatrix={() => setMatrixOpen(true)}
+        onOpenNew={() => setNewOpen(true)}
       />
       <main className="relative flex min-w-0 flex-1 flex-col">
         <Header
@@ -174,8 +189,14 @@ export default function App({ bridge }: { bridge: Bridge }) {
           onRefresh={refreshSelected}
         />
         <Tabs bridge={bridge} path={selected} light={selectedLight} heavy={selectedHeavy}
-              onOpenUpdate={refreshTags} />
+              latestTag={selected === null ? null : latestTagOf(tags, selected)}
+              onOpenUpdate={refreshTags} onApplied={refreshSelected}
+              startAsking={selected !== null && selected === appliedPath} />
         {matrixOpen && <AdapterMatrix bridge={bridge} onClose={() => setMatrixOpen(false)} />}
+        {newOpen && (
+          <NewProjectDialog bridge={bridge} onClose={() => setNewOpen(false)}
+                            onApplied={(path) => void openApplied(path)} />
+        )}
       </main>
     </div>
   );

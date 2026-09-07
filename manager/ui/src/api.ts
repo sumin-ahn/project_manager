@@ -111,6 +111,28 @@ export type AdapterMatrixDocument = Record<string, AdapterDocument | ErrorRespon
 /** 사본 명령 하나의 산출 — 거부 문구는 엔진 원문이라 화면이 다시 쓰지 않는다. */
 export type CommandResult = { rc: number; stdout: string; stderr: string };
 
+/** 새 프로젝트 적용의 단계 하나 — 세 단계가 이 순서로 온다. */
+export type ApplyStep = {
+  name: "import" | "init" | "register";
+  rc: number;
+  stdout: string;
+  stderr: string;
+};
+
+/** 적용 결과 — 중간에 실패해도 그때까지의 단계 로그가 실려 온다. */
+export type ApplyResult = {
+  steps: ApplyStep[];
+  ok: boolean;
+  path: string | null;
+  question_mode: boolean;
+};
+
+/** 스폰·응답 없음처럼 rc 가 없는 실패 — 그때까지의 단계 로그를 함께 나른다. */
+export type ApplyFailure = ErrorResponse & { steps?: ApplyStep[] };
+
+/** 적용 대화가 미리 채울 값 — 하네스 이름과 빌드 각인 upstream(둘 다 번들에서 온다). */
+export type ApplyDefaults = { harnesses: string[]; upstream: string };
+
 export type Project = { path: string; name: string };
 export type ProjectsResponse = { projects: Project[] };
 export type TagsResponse = {
@@ -136,6 +158,12 @@ export type Bridge = {
   adapter_matrix(): Promise<AdapterMatrixDocument | ErrorResponse>;
   upstream_show(path: string): Promise<CommandResult | ErrorResponse>;
   upstream_set(path: string, value: string): Promise<CommandResult | ErrorResponse>;
+  update_preview(path: string): Promise<CommandResult | ErrorResponse>;
+  update_apply(path: string): Promise<CommandResult | ErrorResponse>;
+  apply_defaults(): Promise<ApplyDefaults | ErrorResponse>;
+  apply_new(dest: string, harness: string, name: string, prefix: string, area: string,
+            owner: string, upstream: string, prefixAck: string):
+    Promise<ApplyResult | ApplyFailure>;
 };
 
 export function isError<T>(response: T | ErrorResponse): response is ErrorResponse {
@@ -184,5 +212,12 @@ export function pywebviewBridge(): Bridge {
     upstream_show: (path) => call("upstream_show", path) as Promise<CommandResult | ErrorResponse>,
     upstream_set: (path, value) =>
       call("upstream_set", path, value) as Promise<CommandResult | ErrorResponse>,
+    update_preview: (path) =>
+      call("update_preview", path) as Promise<CommandResult | ErrorResponse>,
+    update_apply: (path) => call("update_apply", path) as Promise<CommandResult | ErrorResponse>,
+    apply_defaults: () => call("apply_defaults") as Promise<ApplyDefaults | ErrorResponse>,
+    apply_new: (dest, harness, name, prefix, area, owner, upstream, prefixAck) =>
+      call("apply_new", dest, harness, name, prefix, area, owner, upstream, prefixAck) as
+        Promise<ApplyResult | ApplyFailure>,
   };
 }

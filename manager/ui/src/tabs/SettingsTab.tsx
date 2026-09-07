@@ -102,7 +102,8 @@ function RowMarks({ row, conf }: { row: Row; conf: ConfSection }) {
   );
 }
 
-export default function SettingsTab({ bridge, path }: { bridge: Bridge; path: string | null }) {
+export default function SettingsTab({ bridge, path, startAsking }:
+  { bridge: Bridge; path: string | null; startAsking: boolean }) {
   const [keys, setKeys] = useState<ConfKeysDocument | null>(null);
   const [current, setCurrent] = useState<ConfValuesDocument | null>(null);
   const [error, setError] = useState<BridgeError | null>(null);
@@ -112,7 +113,7 @@ export default function SettingsTab({ bridge, path }: { bridge: Bridge; path: st
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [command, setCommand] = useState<string | null>(null);
-  const [asking, setAsking] = useState(false);
+  const [asking, setAsking] = useState(startAsking);
 
   const loadValues = useCallback(async (target: string) => {
     const response = await bridge.conf_values(target);
@@ -123,6 +124,9 @@ export default function SettingsTab({ bridge, path }: { bridge: Bridge; path: st
     setError(null);
     setCurrent(response);
   }, [bridge]);
+
+  // 갓 적용한 프로젝트는 질문형으로 열린다 — 그 프로젝트를 고른 순간의 표시 모드다.
+  useEffect(() => { setAsking(startAsking); }, [path, startAsking]);
 
   useEffect(() => {
     if (path === null) return;

@@ -126,29 +126,48 @@ def tree_snapshot(root: Path) -> dict[str, str]:
     return snapshot
 
 
+def _git(*argv: str) -> subprocess.CompletedProcess:
+    """픽스처가 부르는 git — 커밋 정체성을 환경으로 준다(사용자 git config 비의존)."""
+    environment = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t.invalid",
+                       GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t.invalid")
+    completed = subprocess.run(["git", *argv], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", env=environment)
+    assert completed.returncode == 0, f"git {' '.join(argv)}\n{completed.stderr}"
+    return completed
+
+
 def make_bare_with_tags(root: Path, tags: tuple[str, ...] = (
         "v1.7.9", "v1.7.13", "wip/x")) -> Path:
     """로컬 bare 저장소 하나 — 태그는 실 git 이 단다(`v2.0.0` 은 annotated · peeled 행이 생긴다)."""
     root.mkdir(parents=True, exist_ok=True)
     bare = root / "upstream.git"
     source = root / "source"
-    environment = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t.invalid",
-                       GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t.invalid")
-
-    def git(*argv: str) -> subprocess.CompletedProcess:
-        completed = subprocess.run(["git", *argv], capture_output=True, text=True,
-                                   encoding="utf-8", errors="replace", env=environment)
-        assert completed.returncode == 0, f"git {' '.join(argv)}\n{completed.stderr}"
-        return completed
-
-    git("init", "-q", "--bare", str(bare))
-    git("init", "-q", str(source))
+    _git("init", "-q", "--bare", str(bare))
+    _git("init", "-q", str(source))
     (source / "README.md").write_text("fixture\n", encoding="utf-8")
-    git("-C", str(source), "add", "-A")
-    git("-C", str(source), "commit", "-qm", "init")
+    _git("-C", str(source), "add", "-A")
+    _git("-C", str(source), "commit", "-qm", "init")
     for tag in tags:
-        git("-C", str(source), "tag", tag)
-    git("-C", str(source), "tag", "-a", "v2.0.0", "-m", "release")
-    branch = git("-C", str(source), "symbolic-ref", "--short", "HEAD").stdout.strip()
-    git("-C", str(source), "push", "-q", str(bare), "--tags", f"HEAD:refs/heads/{branch}")
+        _git("-C", str(source), "tag", tag)
+    _git("-C", str(source), "tag", "-a", "v2.0.0", "-m", "release")
+    branch = _git("-C", str(source), "symbolic-ref", "--short", "HEAD").stdout.strip()
+    _git("-C", str(source), "push", "-q", str(bare), "--tags", f"HEAD:refs/heads/{branch}")
     return bare
+
+
+def make_upstream_checkout(root: Path, *, rev: str = "v9.9.9") -> Path:
+    """이 트리의 실 clone 하나 — 엔진 rev 를 `rev` 로 올리고 같은 이름의 태그를 단다.
+
+    갱신 축의 실물 상류다: `pm-config update` 가 파일을 복사해 갈 작업트리이면서
+    `git ls-remote --tags` 가 최신 태그를 답하는 저장소다(네트워크 0 · 실측 3.5초라 모듈 단위
+    픽스처로 한 번만 만든다). rev 는 엔진 자신의 `engine_rev.py --bump` 로 올린다 — 리터럴을
+    손으로 고치면 stamped 형제 29개가 어긋나 그 사본이 skew 로 죽는다(실측).
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    checkout = root / "upstream"
+    _git("clone", "-q", "--no-local", str(REPO), str(checkout))
+    _run([sys.executable, str(checkout / ".project_manager" / "tools" / "engine_rev.py"),
+          "--bump", rev])
+    _git("-C", str(checkout), "commit", "-qam", f"engine rev {rev}")
+    _git("-C", str(checkout), "tag", rev)
+    return checkout

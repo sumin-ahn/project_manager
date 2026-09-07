@@ -7,6 +7,7 @@ import StatusDot from "./StatusDot";
 /** 왼쪽 2단의 왼칸 — 등록 프로젝트 전부(가벼운 절의 대상). */
 export default function ProjectList({
   projects, light, tags, selected, listError, onSelect, onAdd, onRemove, onOpenMatrix,
+  onOpenNew,
 }: {
   projects: Project[];
   light: Record<string, Entry>;
@@ -17,6 +18,7 @@ export default function ProjectList({
   onAdd: () => void;
   onRemove: (path: string) => void;
   onOpenMatrix: () => void;
+  onOpenNew: () => void;
 }) {
   return (
     <aside className="flex w-72 shrink-0 flex-col border-r border-slate-200">
@@ -26,6 +28,10 @@ export default function ProjectList({
           <button type="button" onClick={onOpenMatrix}
                   className="rounded border border-slate-200 px-1 text-[11px] hover:bg-slate-100">
             전체 보기
+          </button>
+          <button type="button" onClick={onOpenNew}
+                  className="rounded border border-slate-200 px-1 text-[11px] hover:bg-slate-100">
+            새 프로젝트
           </button>
           <button type="button" aria-label="프로젝트 추가" onClick={onAdd}
                   className="rounded p-1 hover:bg-slate-100">

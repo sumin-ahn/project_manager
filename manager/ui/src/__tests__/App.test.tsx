@@ -1,7 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App, { LIGHT_INTERVAL_MS } from "../App";
-import type { Bridge, BridgeError, StatusDocument } from "../api";
+import type { Bridge, BridgeError, ConfKeysDocument, StatusDocument } from "../api";
+import confKeys from "../fixtures/conf-keys.sample.json";
 import fixture from "../fixtures/status.sample.json";
 
 const DEMO = "/projects/demo";
@@ -161,5 +162,44 @@ describe("갱신 탭", () => {
     expect(screen.getByTestId("UpdateTab")).toBeInTheDocument();
     // 탭 전환은 네트워크 조회만 다시 돈다 — 가벼운/무거운 절은 그대로다.
     expect(lightCalls(bridge)).toBe(1);
+  });
+});
+
+describe("새 프로젝트 적용", () => {
+  const NEW = "/projects/fresh";
+
+  /** 적용 성공 뒤 목록에 그 프로젝트가 등장하는 등록부. */
+  function applyBridge(): Bridge {
+    let registered = [{ path: DEMO, name: "demo" }];
+    return makeBridge({
+      list_projects: vi.fn(async () => ({ projects: registered })),
+      apply_defaults: vi.fn(async () => ({ harnesses: ["claude"], upstream: "git@x/pm.git" })),
+      pick_folder: vi.fn(async () => ({ path: NEW })),
+      apply_new: vi.fn(async () => {
+        registered = [...registered, { path: NEW, name: "fresh" }];
+        return {
+          steps: [{ name: "register" as const, rc: 0, stdout: "등록부에 추가", stderr: "" }],
+          ok: true, path: NEW, question_mode: true,
+        };
+      }),
+      conf_keys: vi.fn(async () => confKeys as unknown as ConfKeysDocument),
+      conf_values: vi.fn(async () => ({ values: {}, conf: document_.conf })),
+    } as Partial<Bridge>);
+  }
+
+  it("적용이 끝나면 그 프로젝트가 목록에 서고 설정 탭이 질문형으로 열린다", async () => {
+    const bridge = applyBridge();
+    render(<App bridge={bridge} />);
+    await screen.findByTestId("project-demo");
+
+    fireEvent.click(screen.getByText("새 프로젝트"));
+    fireEvent.click(await screen.findByText("폴더 선택"));
+    await screen.findByText(NEW);
+    fireEvent.click(screen.getByTestId("new-apply"));
+
+    expect(await screen.findByTestId("project-fresh")).toBeInTheDocument();
+    expect(screen.queryByTestId("new-project")).not.toBeInTheDocument();
+    expect(await screen.findByTestId("question-mode")).toBeInTheDocument();
+    expect(bridge.conf_values).toHaveBeenCalledWith(NEW);
   });
 });
