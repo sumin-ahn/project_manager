@@ -446,7 +446,13 @@ def test_reviewer_role_cannot_be_overridden_by_config(
 
 
 def test_codex_max_reasoning_is_available_to_the_reviewer_profile(external, relay):
-    """추가 리뷰어 기본 프로필이 쓰는 ladder 상단(codex `max`)이 허용집합에 등재돼 있다."""
+    """추가 리뷰어 기본 프로필이 쓰는 ladder 상단(codex `max`)이 허용집합에 등재돼 있다.
+
+    허용집합의 선언 형태(tuple 리터럴)도 함께 못박는다 — `local_conf._sibling_mapping` 이 이 선언을
+    소스 텍스트로 읽어 설정 화면 선택지를 만들고, `frozenset({...})`(Call 노드)로 되돌아가면 그
+    파생이 **조용히** 빈 목록으로 강등된다(리뷰어 argv 는 그대로라 여기서만 잡힌다).
+    """
+    assert relay.REASONING_ALLOWED["codex"] == ("low", "medium", "high", "xhigh", "max")
     assert "max" in relay.REASONING_ALLOWED["codex"]
     target = external.resolve_reviewer_target(
         {"additional_reviewer.harness": "codex",

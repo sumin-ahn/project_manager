@@ -28,6 +28,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config upstream show | set <url|path>               # upstream 조회/전환 (검증·fail-closed)
     pm-config add-harness <harness> [--from <src>] [--dry-run]  # 라이브 인스턴스에 두 번째 harness 어댑터 추가
     pm-config sync-adapter-config [--list | --check | --accept <경로> | --accept-all] # 어댑터 config 판정 조회 / 수렴 게이트 / 상류 값 수용(단건·세트)
+    pm-config delegate models --harness <h> --json         # 그 하네스가 인정하는 모델 목록 조회 (읽기 전용·JSON 한 줄)
 
 서브커맨드별 엔진 배선:
   - init      → board.main(["init", ...]) verbatim forward (clone 당 1회 셋업·N=1·M=1 ~ N×M 공용).
@@ -53,6 +54,9 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
   - add-harness → pm_import.add_harness_cli(dest, harness, dry_run=, source_root=) verbatim forward
                   (복사 스코프+인터페이스 예외 번역+소스 해소는 pm_import 단일 진실·
                   중복 0). `--from` 생략 시 dest local.conf upstream.path 자동 해소(imported 인스턴스).
+  - delegate models → pm_relay.MODEL_SOURCE(모델 원천 표 단일 진실)의 `kind` 로만 갈린다:
+                  별칭 표 그대로 / 사용자 config 의 현재 값 / pm_import._real_models_runner 실조회.
+                  읽기 전용이고 조회 실패는 빈 목록이 아니라 rc 3 이다(사유는 stderr 한 줄).
   - sync-adapter-config → pm_import.judge_adapter_configs(조회) / accept_adapter_config(수용·백업
                   후 template 채택 + 원장 기록). manifest 밖 instance-owned config 는 동기가 무편집
                   분만 자동 갱신하고 나머지는 보존+보고하므로, 이 커맨드가 보존분을 채택자가
@@ -78,6 +82,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 import unicodedata
 from pathlib import Path
 from types import SimpleNamespace
@@ -244,6 +249,9 @@ _STAMPED_SIBLINGS = frozenset({"file_lock.py",
     # **다른 세대**를 의도적으로 여는 자리(`_source_missing_required` — 소스 checkout 의 사본)가
     # 그 gate 아래의 명시적 우회로 읽힌다(선언 없는 무검증 로드와 구분).
     "local_conf.py",
+    # pm_relay.py 는 모델 원천 표(`MODEL_SOURCE`)와 하네스 CLI 계약의 소유자다 — 구형 사본을
+    # 조용히 읽으면 안내·조회가 이 세대에 없는 값을 말한다.
+    "pm_relay.py",
 })
 
 
@@ -4388,11 +4396,9 @@ _CONSOLE_MENU = (
 # 조회 수단이 있는 하네스만 실조회 목록을 보여주고, 없는 하네스는 값 **형식**과 확인 방법만
 # 안내한다. 값 형식이 하네스마다 근본적으로 달라 값 자체의 통일은 불가능하고, 통일 대상은
 # 취급 방식(= local.conf 단일 진실)이다.
-_DELEGATE_MODEL_FORMAT_HINTS = {
-    "claude": ("별칭 또는 풀네임", "`claude --help` 의 모델 옵션 설명"),
-    "codex": ("사용자 codex config 가 인정하는 문자열", "사용자 codex config 의 모델 설정"),
-    "opencode": ("provider/model", "`opencode models`"),
-}
+#
+# 형식·확인 방법·원천의 표는 이 파일에 없다 — `pm_relay.MODEL_SOURCE` 한 자리이고 사람 안내
+# (`[m]`)·기계 조회(`delegate models`)·설정 화면 선택지가 모두 그 표를 읽는다.
 # 실조회 목록은 길 수 있다 — 안내는 콘솔 한 화면을 넘기지 않는다(전량은 조회 명령으로).
 _DELEGATE_MODEL_LIST_LIMIT = 12
 _MODEL_ALIAS_CONF_PREFIX = "delegate.model_alias."
@@ -4577,15 +4583,17 @@ def _print_delegate_model_guidance(
             file=sys.stderr,
         )
         return 1
+    model_source = _load_model_source_table()
+    if model_source is None:
+        return 1
 
     print("\n## 위임 모델 안내 (local.conf `delegate.<role>[.hard].model` 단일 진실):")
     installed = _installed_harnesses(pm_import_mod)
     if not installed:
         print("  (설치된 하네스 없음 — 안내할 대상이 없다. 하네스를 설치한 뒤 다시 보라.)")
     for harness in installed:
-        value_format, how_to_check = _DELEGATE_MODEL_FORMAT_HINTS.get(
-            harness, ("(형식 미등록)", "(확인 방법 미등록)")
-        )
+        source = model_source[harness]
+        value_format, how_to_check = source.value_format, source.how_to_check
         print(f"  - {harness}: 값 형식 {value_format} · 확인 {how_to_check}")
         if harness != "opencode":
             continue
@@ -4620,6 +4628,101 @@ def _console_delegate_models() -> None:
     """`[m]` 콘솔 액션 — 모델 안내를 출력만 한다(장부 변경 0)."""
     _print_delegate_model_guidance()
     return None
+
+
+# ── 모델 목록 조회 (`delegate models --harness <h> --json`) ────────────────────
+# 설정 화면과 사람이 "이 하네스에 무엇을 적나" 를 받는 **읽기 전용** 자리다. 목록의 원천은
+# `pm_relay.MODEL_SOURCE` 한 표이고 이 명령은 그 표의 `kind` 로만 갈린다(하네스 이름 분기 0).
+# 조회는 파일을 쓰지 않고, 실패를 빈 목록으로 위장하지 않는다 — 0개면 성공이 아니라 rc 3 이다.
+_DELEGATE_MODELS_QUERY_FAILED = 3
+
+
+def _load_model_source_table():
+    """모델 원천 표(`pm_relay.MODEL_SOURCE`) — 부재/로드 실패는 명시 에러 후 None.
+
+    표의 소유자는 하네스 CLI 계약을 단일 소유하는 `pm_relay` 다(여기 사본을 두지 않는다).
+    """
+    relay = _load_module("pm_relay", "pm_relay.py")
+    if relay is None:
+        print(
+            "[중단] pm_relay.py 엔진을 찾을 수 없다 — 모델 원천 표 조회 불가 "
+            f"({TOOLS_DIR / 'pm_relay.py'} 부재 또는 로드 실패).",
+            file=sys.stderr,
+        )
+        return None
+    return relay.MODEL_SOURCE
+
+
+def _config_declared_model(source) -> tuple[list[str], str | None]:
+    """`kind="config"` — 사용자 config 파일에 선언된 현재 모델 1개 (실패면 (빈 목록, 사유)).
+
+    경로는 표가 정한다: env(`config_env`)가 있으면 그 아래, 없으면 홈 아래 `config_home`.
+    파일 부재·키 없음·문자열 아님은 전부 실패다(읽지 못한 자리에 값을 지어내지 않는다).
+    """
+    declared_home = os.environ.get(source.config_env, "").strip() if source.config_env else ""
+    path = (Path(declared_home) / Path(source.config_home).name if declared_home
+            else Path.home() / source.config_home)
+    if not path.is_file():
+        return [], f"{path} 부재"
+    try:
+        parsed = tomllib.loads(
+            _load_file_lock().read_text_shared(path, encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        return [], f"{path} 를 읽지 못했다 ({exc})"
+    declared = parsed.get(source.config_key)
+    if not isinstance(declared, str) or not declared.strip():
+        return [], f"{path} 에 최상위 `{source.config_key}` 문자열이 없다"
+    return [declared.strip()], None
+
+
+def _delegate_models(source, *, models_runner=None) -> tuple[list[str], str | None]:
+    """모델 원천 한 행 → (모델 목록, 실패 사유). 갈림은 `kind` 뿐이다.
+
+    `live` 조회 seam 은 `pm_import._real_models_runner`(PATH 부재·rc·timeout·파싱 0 을 stderr
+    한 줄로 남기는 fail-soft) 를 **그대로 재사용**한다 — 두 번째 조회 코드를 만들지 않는다.
+    """
+    if source.kind == "alias":
+        return list(source.values), None
+    if source.kind == "config":
+        return _config_declared_model(source)
+    if source.kind == "live":
+        runner = models_runner
+        if runner is None:
+            pm_import_mod = _load_module("pm_import", "pm_import.py")
+            if pm_import_mod is None:
+                return [], f"{TOOLS_DIR / 'pm_import.py'} 부재 또는 로드 실패"
+            runner = pm_import_mod._real_models_runner
+        ok, models = runner()
+        if not ok or not models:
+            return [], f"{source.how_to_check} 조회 실패 (사유는 위 stderr 한 줄)"
+        return models, None
+    raise ValueError(
+        f"모르는 모델 원천 kind {source.kind!r} — pm_relay.MODEL_SOURCE 선언과 이 판정이 갈렸다.")
+
+
+def cmd_delegate_models(args, *, models_runner=None) -> int:
+    """`delegate models --harness <h> --json` — 그 하네스가 인정하는 모델 목록(읽기 전용).
+
+    응답은 `{"harness", "kind", "models"}` 하나다. `free_text`(모델은 검증상 언제나 자유 문자열)는
+    싣지 않는다 — 그 사실은 키 레지스트리의 `choices.free_text` 가 소유하고, 두 자리에 두면 갈린다.
+    rc: 0 성공 · 2 `--harness`/`--json` 미지정·미지원 · 3 조회 실패(사유는 stderr 한 줄).
+    """
+    table = _load_model_source_table()
+    if table is None:
+        return 1
+    source = table.get(args.harness)
+    if source is None:
+        print(f"[중단] 미지원 harness {args.harness!r} — 지원: {', '.join(table)}.",
+              file=sys.stderr)
+        return 2
+    models, failure = _delegate_models(source, models_runner=models_runner)
+    if failure is not None:
+        print(f"[중단] {args.harness} 모델 목록을 얻지 못했다 — {failure}", file=sys.stderr)
+        return _DELEGATE_MODELS_QUERY_FAILED
+    _write_machine_line(json.dumps(
+        {"harness": args.harness, "kind": source.kind, "models": models},
+        ensure_ascii=False))
+    return 0
 
 
 def _console_update(pm_update=None) -> None:
@@ -4995,6 +5098,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_sync_cfg.set_defaults(func=cmd_sync_adapter_config)
 
+    # delegate models --harness <h> --json — 위임 모델 목록 조회(읽기 전용·장부 변경 0).
+    #   `--harness` 값의 닫힌 집합은 `pm_relay.MODEL_SOURCE` 의 키다. 그 표를 파서 조립 시점에
+    #   읽지 않는 것은 의도다 — 파서는 실패를 보고할 채널이 없어서, 표를 못 읽는 사본에서
+    #   무관한 서브커맨드(`status` 등)까지 함께 죽는다. 값 판정은 핸들러가 같은 표로 하고 rc 2 다.
+    p_delegate = sub.add_parser("delegate", help="위임 설정 조회 (models)")
+    delegate_sub = p_delegate.add_subparsers(
+        dest="delegate_command", metavar="<delegate-command>")
+    p_delegate_models = delegate_sub.add_parser(
+        "models", help="하네스가 인정하는 모델 목록 조회 (읽기 전용·JSON)")
+    p_delegate_models.add_argument(
+        "--harness", required=True,
+        help="조회할 하네스 (claude|codex|opencode — 등재는 pm_relay.MODEL_SOURCE 가 소유·"
+             "그 밖의 값은 rc 2).",
+    )
+    p_delegate_models.add_argument(
+        "--json", action="store_true", required=True,
+        help="기계 판독 한 줄(JSON)로 받는다 — 이 명령이 받는 유일한 모양이다.",
+    )
+    p_delegate_models.set_defaults(func=cmd_delegate_models)
+
     # update [--from ...] — pm-update 흡수. 실제 forward 는 main 이 argparse 우회로
     # 처리한다(아래 special-case) — 여기 등록은 `--help` 목록 surface(발견성)용이다.
     # option-like 플래그(--from·--dry-run)를 이 디스패처가 가로채면 안 되므로 forward
@@ -5072,6 +5195,10 @@ def _main(argv: list[str] | None = None) -> int:
     # `task` 만 주고 하위 동작(end)을 안 줬으면 그 그룹 도움말 surface(repo/worktree/upstream 동형).
     if args.command == "task" and getattr(args, "task_command", None) is None:
         parser.parse_args(["task", "--help"])
+        return 1
+    # `delegate` 만 주고 하위 동작(models)을 안 줬으면 그 그룹 도움말 surface(위 넷과 동형).
+    if args.command == "delegate" and getattr(args, "delegate_command", None) is None:
+        parser.parse_args(["delegate", "--help"])
         return 1
 
     return args.func(args)

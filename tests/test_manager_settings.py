@@ -92,7 +92,7 @@ def _values(pm_home: Path) -> dict[str, str]:
 def test_conf_keys_comes_from_the_project_copy_registry(api, pm_home):
     document = api.conf_keys(str(pm_home))
 
-    assert document["schema"] == 1
+    assert document["schema"] == 2
     assert document["groups"][0] == "project" and "harness" in document["groups"]
     kinds = {row["kind"] for row in document["keys"]}
     assert kinds == {"key", "pattern"}

@@ -494,7 +494,8 @@ def test_help_surfaces_all_subcommands(pc, capsys):
     rc = pc.main([])
     assert rc == 1
     out = capsys.readouterr().out
-    for sub in ("init", "repo", "worktree", "status", "whoami", "release", "update", "upstream"):
+    for sub in ("init", "repo", "worktree", "status", "whoami", "release", "update",
+                "upstream", "delegate"):
         assert sub in out, f"서브커맨드 {sub!r} 가 --help surface 에 없다"
 
 
@@ -2823,6 +2824,39 @@ def test_main_worktree_without_add_shows_group_help(pc):
     """`worktree`(하위 동작 없이) → worktree 그룹 도움말 surface(SystemExit)."""
     with pytest.raises(SystemExit):
         pc.main(["worktree"])
+
+
+# ── delegate models 배선 — 읽기 전용 조회 하나 (T-0916) ──────────────────────
+
+
+def test_main_delegate_without_models_shows_group_help(pc):
+    """`delegate`(하위 동작 없이) → 그룹 도움말 surface(repo/worktree/task 동형)."""
+    with pytest.raises(SystemExit):
+        pc.main(["delegate"])
+
+
+def test_main_routes_delegate_models_to_the_lookup(pc, monkeypatch):
+    """`delegate models --harness <h> --json` 이 조회 핸들러로 간다(파싱된 인자 그대로)."""
+    seen = {}
+
+    def _capture(args):
+        seen["harness"] = args.harness
+        seen["json"] = args.json
+        return 0
+
+    monkeypatch.setattr(pc, "cmd_delegate_models", _capture)
+    rc = pc.main(["delegate", "models", "--harness", "codex", "--json"])
+
+    assert rc == 0
+    assert seen == {"harness": "codex", "json": True}
+
+
+def test_delegate_models_takes_only_the_json_shape(pc):
+    """받는 모양은 `--json` 하나다 — 없으면 사용법 종료(rc 2)이지 사람 출력이 아니다."""
+    with pytest.raises(SystemExit) as exc:
+        pc.main(["delegate", "models", "--harness", "codex"])
+
+    assert exc.value.code == 2
 
 
 # ════════════════════════════════════════════════════════════════════════

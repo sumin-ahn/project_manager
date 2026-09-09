@@ -1195,10 +1195,51 @@ READ_ROLES: frozenset[str] = frozenset({"researcher", "code-reviewer"})
 #     않고 provider 로 passthrough**(valid/invalid 모두 rc=0·미지원값은 provider 가 silent-ignore).
 #     그래서 이 집합은 opencode 문서화 ladder 를 **typo-guard** 로 인코딩한 것 — silent no-op 을
 #     호출 전에 차단한다. provider 별 실지원은 다를 수 있다(passthrough 특성).
-REASONING_ALLOWED: dict[str, frozenset[str]] = {
-    "codex": frozenset({"low", "medium", "high", "xhigh", "max"}),
-    "claude": frozenset({"low", "medium", "high", "xhigh", "max"}),
-    "opencode": frozenset({"minimal", "low", "medium", "high", "max"}),
+#   값이 **tuple 리터럴**인 것은 형식이 아니라 계약이다: 설정 키 레지스트리가 이 선언을 소스
+#   텍스트로(`ast.literal_eval`) 읽어 설정 화면의 선택지를 만든다 — `frozenset({...})` 는 Call
+#   노드라 읽히지 않고, 그 실패는 fail-soft 라 선택지가 조용히 빈 목록이 된다. 순서는 ladder 순이다.
+REASONING_ALLOWED: dict[str, tuple[str, ...]] = {
+    "codex": ("low", "medium", "high", "xhigh", "max"),
+    "claude": ("low", "medium", "high", "xhigh", "max"),
+    "opencode": ("minimal", "low", "medium", "high", "max"),
+}
+
+
+class ModelSource(NamedTuple):
+    """하네스별 **모델 값의 원천** 선언 — 목록을 엔진에 박지 않고 어디서 읽는지만 적는다.
+
+    모델은 자주 바뀌므로 하드코딩은 곧 stale 이다. `kind` 가 읽는 방식을 정하고 소비자는 그 값으로만
+    갈린다(하네스 이름 분기 0):
+      · `alias`  — CLI 가 계약한 별칭이 `values` 에 있다(그 CLI `--help` 실측).
+      · `config` — 사용자 config 파일의 키 하나가 현재 값이다(`config_env`·`config_home`·`config_key`).
+      · `live`   — CLI 조회 명령이 목록을 준다(조회 seam 은 `pm_import._real_models_runner`).
+
+    `value_format`·`how_to_check` 는 사람 안내 문구다(`pm_config` 의 `[m]` 위임 모델 안내).
+    """
+
+    kind: str
+    values: tuple[str, ...]
+    config_env: str | None
+    config_home: str | None
+    config_key: str | None
+    value_format: str
+    how_to_check: str
+
+
+# 모델 원천 표 — 설정 키 레지스트리의 선택지·`pm-config delegate models`·`[m]` 안내가
+# **이 표 하나**를 읽는다(값 표는 한 자리).
+MODEL_SOURCE: dict[str, ModelSource] = {
+    # `claude --help` 실측: "Provide an alias for the latest model (e.g. 'fable', 'opus', or
+    # 'sonnet') or a model's full name (e.g. 'claude-fable-5')."
+    "claude": ModelSource("alias", ("fable", "opus", "sonnet"), None, None, None,
+                          "별칭 또는 풀네임", "`claude --help` 의 모델 옵션 설명"),
+    # codex 는 목록 서브커맨드가 없다 — `-c/--config` 도움말이 기본 경로로 명시하는
+    # `~/.codex/config.toml`(env `CODEX_HOME` 이 있으면 그 아래)의 최상위 `model` 이 현재 값이다.
+    "codex": ModelSource("config", (), "CODEX_HOME", ".codex/config.toml", "model",
+                         "사용자 codex config 가 인정하는 문자열",
+                         "사용자 codex config 의 모델 설정"),
+    "opencode": ModelSource("live", (), None, None, None,
+                            "provider/model", "`opencode models`"),
 }
 
 # codex sandbox 모드 — write=workspace-write·read=read-only.
@@ -1345,7 +1386,7 @@ def validate_reasoning(harness: str, reasoning: str | None) -> str | None:
     if reasoning is None or not reasoning.strip():
         return None
     reasoning = reasoning.strip()
-    allowed = REASONING_ALLOWED.get(harness, frozenset())
+    allowed = REASONING_ALLOWED.get(harness, ())
     if reasoning not in allowed:
         known = ", ".join(sorted(allowed)) if allowed else "(미확정 라이브 실측 전)"
         raise HarnessContractError(

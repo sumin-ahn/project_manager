@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "groups": [
     "project",
     "runtime",
@@ -18,7 +18,9 @@
       "default": null,
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "project.tagline",
@@ -27,7 +29,9 @@
       "default": null,
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "project.root",
@@ -36,7 +40,9 @@
       "default": null,
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "project.date",
@@ -45,7 +51,9 @@
       "default": null,
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "runtime.py",
@@ -54,7 +62,9 @@
       "default": null,
       "required": true,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "test.cmd",
@@ -63,7 +73,9 @@
       "default": null,
       "required": true,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "qa.platforms",
@@ -72,7 +84,9 @@
       "default": null,
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "regression.min_collected",
@@ -81,7 +95,9 @@
       "default": null,
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "identity.user",
@@ -90,7 +106,9 @@
       "default": null,
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "upstream.path",
@@ -99,7 +117,9 @@
       "default": null,
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "upstream.rev",
@@ -108,7 +128,9 @@
       "default": null,
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "upstream.seen_rev",
@@ -117,7 +139,9 @@
       "default": null,
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "ctx.nudge_pct",
@@ -126,7 +150,9 @@
       "default": "30",
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "ctx.stop_pct",
@@ -135,7 +161,9 @@
       "default": "20",
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "ctx.window_tokens",
@@ -144,7 +172,9 @@
       "default": "200000",
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "delegate.enabled",
@@ -153,7 +183,9 @@
       "default": "true",
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "delegate.timeout",
@@ -162,7 +194,9 @@
       "default": null,
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "delegate.idle_timeout",
@@ -171,7 +205,9 @@
       "default": null,
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "delegate.code-reviewer.rounds_max",
@@ -180,7 +216,9 @@
       "default": "3",
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "additional_reviewer.harness",
@@ -189,7 +227,20 @@
       "default": null,
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": {
+        "depends_on": null,
+        "values": {
+          "": [
+            "claude",
+            "codex",
+            "opencode"
+          ]
+        },
+        "fetch": null,
+        "free_text": false
+      },
+      "recommended": null
     },
     {
       "key": "additional_reviewer.model",
@@ -198,7 +249,17 @@
       "default": null,
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": {
+        "depends_on": "additional_reviewer.harness",
+        "values": {},
+        "fetch": {
+          "command": "delegate models",
+          "arg": "harness"
+        },
+        "free_text": true
+      },
+      "recommended": null
     },
     {
       "key": "additional_reviewer.reasoning",
@@ -207,7 +268,36 @@
       "default": null,
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": {
+        "depends_on": "additional_reviewer.harness",
+        "values": {
+          "codex": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "claude": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "opencode": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "max"
+          ]
+        },
+        "fetch": null,
+        "free_text": false
+      },
+      "recommended": null
     },
     {
       "key": "additional_reviewer.rounds_max",
@@ -216,7 +306,9 @@
       "default": "2",
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "additional_reviewer.incomplete_rounds_max",
@@ -225,7 +317,9 @@
       "default": "2",
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "additional_reviewer.wave_budget",
@@ -234,7 +328,9 @@
       "default": "24",
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "additional_reviewer.paths",
@@ -243,7 +339,9 @@
       "default": "src/,tests/,scripts/,.project_manager/tools/",
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "additional_reviewer.timeout",
@@ -252,7 +350,9 @@
       "default": null,
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "additional_reviewer.idle_timeout",
@@ -261,7 +361,9 @@
       "default": null,
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "additional_reviewer.progress_signal",
@@ -270,7 +372,9 @@
       "default": null,
       "required": false,
       "kind": "key",
-      "members": null
+      "members": null,
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "harness.<name>.{idle_timeout,wall_timeout,ctx_window_tokens,pro_model}",
@@ -282,53 +386,79 @@
       "members": [
         {
           "key": "harness.claude.idle_timeout",
-          "default": null
+          "default": null,
+          "choices": null,
+          "recommended": null
         },
         {
           "key": "harness.claude.wall_timeout",
-          "default": null
+          "default": null,
+          "choices": null,
+          "recommended": null
         },
         {
           "key": "harness.claude.ctx_window_tokens",
-          "default": null
+          "default": null,
+          "choices": null,
+          "recommended": null
         },
         {
           "key": "harness.claude.pro_model",
-          "default": null
+          "default": null,
+          "choices": null,
+          "recommended": null
         },
         {
           "key": "harness.codex.idle_timeout",
-          "default": null
+          "default": null,
+          "choices": null,
+          "recommended": null
         },
         {
           "key": "harness.codex.wall_timeout",
-          "default": null
+          "default": null,
+          "choices": null,
+          "recommended": null
         },
         {
           "key": "harness.codex.ctx_window_tokens",
-          "default": null
+          "default": null,
+          "choices": null,
+          "recommended": null
         },
         {
           "key": "harness.codex.pro_model",
-          "default": null
+          "default": null,
+          "choices": null,
+          "recommended": null
         },
         {
           "key": "harness.opencode.idle_timeout",
-          "default": null
+          "default": null,
+          "choices": null,
+          "recommended": null
         },
         {
           "key": "harness.opencode.wall_timeout",
-          "default": null
+          "default": null,
+          "choices": null,
+          "recommended": null
         },
         {
           "key": "harness.opencode.ctx_window_tokens",
-          "default": null
+          "default": null,
+          "choices": null,
+          "recommended": null
         },
         {
           "key": "harness.opencode.pro_model",
-          "default": null
+          "default": null,
+          "choices": null,
+          "recommended": null
         }
-      ]
+      ],
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "delegate.<role>[.hard][.fallback].{harness,model,reasoning}",
@@ -340,197 +470,1031 @@
       "members": [
         {
           "key": "delegate.developer.harness",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": null,
+            "values": {
+              "": [
+                "claude",
+                "codex",
+                "opencode"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": "claude"
         },
         {
           "key": "delegate.developer.model",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.developer.harness",
+            "values": {},
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness"
+            },
+            "free_text": true
+          },
+          "recommended": "sonnet"
         },
         {
           "key": "delegate.developer.reasoning",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.developer.harness",
+            "values": {
+              "codex": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "claude": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "opencode": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "max"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": "high"
         },
         {
           "key": "delegate.developer.hard.harness",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": null,
+            "values": {
+              "": [
+                "claude",
+                "codex",
+                "opencode"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": "claude"
         },
         {
           "key": "delegate.developer.hard.model",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.developer.hard.harness",
+            "values": {},
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness"
+            },
+            "free_text": true
+          },
+          "recommended": "opus"
         },
         {
           "key": "delegate.developer.hard.reasoning",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.developer.hard.harness",
+            "values": {
+              "codex": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "claude": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "opencode": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "max"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": "high"
         },
         {
           "key": "delegate.developer.fallback.harness",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": null,
+            "values": {
+              "": [
+                "claude",
+                "codex",
+                "opencode"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.developer.fallback.model",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.developer.fallback.harness",
+            "values": {},
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness"
+            },
+            "free_text": true
+          },
+          "recommended": null
         },
         {
           "key": "delegate.developer.fallback.reasoning",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.developer.fallback.harness",
+            "values": {
+              "codex": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "claude": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "opencode": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "max"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.developer.hard.fallback.harness",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": null,
+            "values": {
+              "": [
+                "claude",
+                "codex",
+                "opencode"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.developer.hard.fallback.model",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.developer.hard.fallback.harness",
+            "values": {},
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness"
+            },
+            "free_text": true
+          },
+          "recommended": null
         },
         {
           "key": "delegate.developer.hard.fallback.reasoning",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.developer.hard.fallback.harness",
+            "values": {
+              "codex": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "claude": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "opencode": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "max"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.researcher.harness",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": null,
+            "values": {
+              "": [
+                "claude",
+                "codex",
+                "opencode"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": "claude"
         },
         {
           "key": "delegate.researcher.model",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.researcher.harness",
+            "values": {},
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness"
+            },
+            "free_text": true
+          },
+          "recommended": "sonnet"
         },
         {
           "key": "delegate.researcher.reasoning",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.researcher.harness",
+            "values": {
+              "codex": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "claude": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "opencode": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "max"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": "medium"
         },
         {
           "key": "delegate.researcher.hard.harness",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": null,
+            "values": {
+              "": [
+                "claude",
+                "codex",
+                "opencode"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.researcher.hard.model",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.researcher.hard.harness",
+            "values": {},
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness"
+            },
+            "free_text": true
+          },
+          "recommended": null
         },
         {
           "key": "delegate.researcher.hard.reasoning",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.researcher.hard.harness",
+            "values": {
+              "codex": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "claude": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "opencode": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "max"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.researcher.fallback.harness",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": null,
+            "values": {
+              "": [
+                "claude",
+                "codex",
+                "opencode"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.researcher.fallback.model",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.researcher.fallback.harness",
+            "values": {},
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness"
+            },
+            "free_text": true
+          },
+          "recommended": null
         },
         {
           "key": "delegate.researcher.fallback.reasoning",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.researcher.fallback.harness",
+            "values": {
+              "codex": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "claude": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "opencode": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "max"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.researcher.hard.fallback.harness",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": null,
+            "values": {
+              "": [
+                "claude",
+                "codex",
+                "opencode"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.researcher.hard.fallback.model",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.researcher.hard.fallback.harness",
+            "values": {},
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness"
+            },
+            "free_text": true
+          },
+          "recommended": null
         },
         {
           "key": "delegate.researcher.hard.fallback.reasoning",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.researcher.hard.fallback.harness",
+            "values": {
+              "codex": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "claude": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "opencode": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "max"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.architect.harness",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": null,
+            "values": {
+              "": [
+                "claude",
+                "codex",
+                "opencode"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": "claude"
         },
         {
           "key": "delegate.architect.model",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.architect.harness",
+            "values": {},
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness"
+            },
+            "free_text": true
+          },
+          "recommended": "opus"
         },
         {
           "key": "delegate.architect.reasoning",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.architect.harness",
+            "values": {
+              "codex": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "claude": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "opencode": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "max"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": "xhigh"
         },
         {
           "key": "delegate.architect.hard.harness",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": null,
+            "values": {
+              "": [
+                "claude",
+                "codex",
+                "opencode"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.architect.hard.model",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.architect.hard.harness",
+            "values": {},
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness"
+            },
+            "free_text": true
+          },
+          "recommended": null
         },
         {
           "key": "delegate.architect.hard.reasoning",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.architect.hard.harness",
+            "values": {
+              "codex": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "claude": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "opencode": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "max"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.architect.fallback.harness",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": null,
+            "values": {
+              "": [
+                "claude",
+                "codex",
+                "opencode"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.architect.fallback.model",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.architect.fallback.harness",
+            "values": {},
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness"
+            },
+            "free_text": true
+          },
+          "recommended": null
         },
         {
           "key": "delegate.architect.fallback.reasoning",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.architect.fallback.harness",
+            "values": {
+              "codex": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "claude": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "opencode": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "max"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.architect.hard.fallback.harness",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": null,
+            "values": {
+              "": [
+                "claude",
+                "codex",
+                "opencode"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.architect.hard.fallback.model",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.architect.hard.fallback.harness",
+            "values": {},
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness"
+            },
+            "free_text": true
+          },
+          "recommended": null
         },
         {
           "key": "delegate.architect.hard.fallback.reasoning",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.architect.hard.fallback.harness",
+            "values": {
+              "codex": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "claude": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "opencode": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "max"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.code-reviewer.harness",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": null,
+            "values": {
+              "": [
+                "claude",
+                "codex",
+                "opencode"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": "claude"
         },
         {
           "key": "delegate.code-reviewer.model",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.code-reviewer.harness",
+            "values": {},
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness"
+            },
+            "free_text": true
+          },
+          "recommended": "opus"
         },
         {
           "key": "delegate.code-reviewer.reasoning",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.code-reviewer.harness",
+            "values": {
+              "codex": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "claude": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "opencode": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "max"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": "xhigh"
         },
         {
           "key": "delegate.code-reviewer.hard.harness",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": null,
+            "values": {
+              "": [
+                "claude",
+                "codex",
+                "opencode"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.code-reviewer.hard.model",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.code-reviewer.hard.harness",
+            "values": {},
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness"
+            },
+            "free_text": true
+          },
+          "recommended": null
         },
         {
           "key": "delegate.code-reviewer.hard.reasoning",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.code-reviewer.hard.harness",
+            "values": {
+              "codex": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "claude": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "opencode": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "max"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.code-reviewer.fallback.harness",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": null,
+            "values": {
+              "": [
+                "claude",
+                "codex",
+                "opencode"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.code-reviewer.fallback.model",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.code-reviewer.fallback.harness",
+            "values": {},
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness"
+            },
+            "free_text": true
+          },
+          "recommended": null
         },
         {
           "key": "delegate.code-reviewer.fallback.reasoning",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.code-reviewer.fallback.harness",
+            "values": {
+              "codex": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "claude": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "opencode": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "max"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.code-reviewer.hard.fallback.harness",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": null,
+            "values": {
+              "": [
+                "claude",
+                "codex",
+                "opencode"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         },
         {
           "key": "delegate.code-reviewer.hard.fallback.model",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.code-reviewer.hard.fallback.harness",
+            "values": {},
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness"
+            },
+            "free_text": true
+          },
+          "recommended": null
         },
         {
           "key": "delegate.code-reviewer.hard.fallback.reasoning",
-          "default": null
+          "default": null,
+          "choices": {
+            "depends_on": "delegate.code-reviewer.hard.fallback.harness",
+            "values": {
+              "codex": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "claude": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "opencode": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "max"
+              ]
+            },
+            "fetch": null,
+            "free_text": false
+          },
+          "recommended": null
         }
-      ]
+      ],
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "delegate.model_alias.<name>",
@@ -539,7 +1503,9 @@
       "default": null,
       "required": false,
       "kind": "pattern",
-      "members": []
+      "members": [],
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "diff_cap.<estimate>",
@@ -551,17 +1517,25 @@
       "members": [
         {
           "key": "diff_cap.small",
-          "default": "300"
+          "default": "300",
+          "choices": null,
+          "recommended": null
         },
         {
           "key": "diff_cap.medium",
-          "default": "1000"
+          "default": "1000",
+          "choices": null,
+          "recommended": null
         },
         {
           "key": "diff_cap.large",
-          "default": "2500"
+          "default": "2500",
+          "choices": null,
+          "recommended": null
         }
-      ]
+      ],
+      "choices": null,
+      "recommended": null
     },
     {
       "key": "test.<platform>.cmd",
@@ -570,7 +1544,9 @@
       "default": null,
       "required": false,
       "kind": "pattern",
-      "members": []
+      "members": [],
+      "choices": null,
+      "recommended": null
     }
   ]
 }
