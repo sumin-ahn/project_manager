@@ -517,7 +517,8 @@ KEY_REGISTRY: dict[str, KeySpec] = {
         "추가 리뷰어 모델 — 그 하네스가 인정하는 표기를 그대로 쓴다.",
         default=None, required=False, group="additional_reviewer", choices="model"),
     "additional_reviewer.reasoning": KeySpec(
-        "추가 리뷰어 추론 강도 (codex 는 low/medium/high/xhigh).",
+        "추가 리뷰어 추론 강도. 허용값은 하네스마다 다르며 `pm_relay.REASONING_ALLOWED` 가 "
+        "소유한다 — `harness`·`model` 과 세트로 쓴다(없으면 fail-loud).",
         default=None, required=False, group="additional_reviewer", choices="reasoning"),
     "additional_reviewer.rounds_max": KeySpec(
         "게이트 하나의 리뷰 라운드 수렴 상한 — 호출 횟수가 아니라 must_fix 추이로 본다.",

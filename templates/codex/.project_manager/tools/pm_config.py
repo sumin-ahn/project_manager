@@ -3541,13 +3541,7 @@ def cmd_task_prefix(
     # 1) task 명 검증(must-fix) — 공유 엔진 validator. registered_repos 는 예약패턴(`<repo>_<N>`)
     # 거부용(board fail-soft 해소·부재면 None → traversal 검증만). InvalidTaskName → rc1(부작용 이전).
     board_mod = board or _load_module("board", "board.py")
-    registered = None
-    _reg_fn = getattr(board_mod, "registered_repos", None) if board_mod else None
-    if _reg_fn is not None:
-        try:
-            registered = _reg_fn()
-        except Exception:  # noqa: BLE001 — areas 파싱 실패는 None(예약패턴 검증만 완화·traversal 유지).
-            registered = None
+    registered = _registered_repos(board_mod)
     try:
         wp._validate_task_name(name, registered)
     except wp.InvalidTaskName as exc:

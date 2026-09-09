@@ -23,6 +23,7 @@ import ast
 import importlib.util
 import inspect
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -863,6 +864,29 @@ def test_reasoning_choices_are_the_relay_allowed_sets_bucketed_by_harness(
         assert {harness: set(listed) for harness, listed in values.items()} == expected
         assert row["choices"]["fetch"] is None
         assert row["choices"]["free_text"] is False
+
+
+def test_reasoning_descriptions_point_at_the_owner_instead_of_copying_the_ladder(
+        conf_module, keys_document, relay_module):
+    """추론 강도 키의 **설명**은 허용집합을 복제하지 않고 소유자를 가리킨다(T-0918·X-4).
+
+    복제한 목록은 반드시 갈린다 — 설명이 `codex 는 low/medium/high/xhigh` 라고 적어 둔 동안
+    선언은 이미 `max` 를 갖고 있었다(설명만 보고 고른 값이 소비 지점에서 거부된다).
+    """
+    ladder = {value for values in relay_module.REASONING_ALLOWED.values()
+              for value in values}
+    assert ladder, "허용집합이 비었다(공허 가드)"
+    pattern = re.compile(r"\b(" + "|".join(sorted(ladder, key=len, reverse=True)) + r")\b")
+    keys = [row["key"] for row in _rows(keys_document)
+            if row["key"].rsplit(".", 1)[-1] == "reasoning"]
+    assert len(keys) == 1 + 16, keys
+
+    for key in keys:
+        description = conf_module.key_spec(key).description
+        copied = pattern.findall(description)
+        assert copied == [], f"{key}: 설명이 허용값을 복제한다 {copied}"
+    owner = conf_module.key_spec("additional_reviewer.reasoning").description
+    assert "pm_relay.REASONING_ALLOWED" in owner, owner
 
 
 def test_model_rows_open_free_text_and_point_at_the_query_command(keys_document):

@@ -31,8 +31,8 @@ export function hasChannel(file: AdapterFile): boolean {
   return "mode" in file;
 }
 
-function label(status: string): string {
-  return STATUS_LABEL[status] ?? status;
+function label(status: string | null): string {
+  return status === null ? "파일 없음" : STATUS_LABEL[status] ?? status;
 }
 
 function shown(value: AdapterFile["distance"]): string {

@@ -133,10 +133,11 @@ export type AdapterFeature = {
  * 어댑터 파일 한 행 — 모양이 **둘**이다. 채널 있는 파일은 아래 필드 전부를 들고, 인스턴스 소유
  * 문서(`CLAUDE.md`·`AGENTS.md`)는 `path`·`ownership`·`status` 셋뿐이다(나머지는 null 이 아니라
  * **키가 없다**). 화면은 `"mode" in file` 로 가른다.
+ * `status: null` = 선언된 대상인데 그 파일이 없다(행은 전수라 사라지지 않는다).
  */
 export type AdapterFile = {
   path: string;
-  status: string;
+  status: string | null;
   ownership?: string;
   harness?: string;
   mode?: "managed" | "report";

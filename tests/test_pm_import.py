@@ -6125,6 +6125,69 @@ def test_sync_updates_legacy_raw_digest_managed_config_without_requiring_accept(
         REPO / "templates" / "codex" / ".codex" / "hooks.json").read_bytes()
 
 
+# ── jsonc 후행 쉼표 (T-0918·X-2a) ────────────────────────────────────────────
+# jsonc 는 후행 쉼표를 허용하는데 `json.loads` 는 거부한다. 채택자가 `instructions` 배열에서 항목
+# 하나를 손으로 지우면 그 형상이 되고, 유효한 파일이 통째로 빈 문서로 읽혀 선언 키 전량이
+# `missing` 으로 실렸다(유효한 파일을 오판). 진짜 파손의 빈 문서 관용은 그대로 둔다 — 그 자리는
+# 이미 loud 하고(선언 키 전부 없음), 채택자 소유 파일 하나 때문에 조회 전체를 세우지 않는다.
+
+
+def test_trailing_comma_jsonc_reads_as_a_document(pm_import, tmp_path):
+    """후행 쉼표가 든 유효 jsonc 가 정상 문서로 읽힌다(주석·문자열 안 쉼표 존중)."""
+    path = tmp_path / "opencode.jsonc"
+    path.write_text(
+        "{\n"
+        "  // 채택자 주석, 그리고 쉼표\n"
+        "  \"instructions\": [\n"
+        "    \".opencode/pm-instructions.md\",\n"
+        "  ],\n"
+        "  \"note\": \"a,]\",\n"
+        "}\n", encoding="utf-8")
+
+    document = pm_import._load_adapter_config_document(path)
+
+    assert document == {"instructions": [".opencode/pm-instructions.md"], "note": "a,]"}
+
+
+def test_jsonc_syntax_transforms_preserve_offsets(pm_import):
+    """주석 마스킹·쉼표 치환 **둘 다** 길이 보존 — 배열 삽입 위치 계산이 원본과 안 어긋난다."""
+    pm_update = pm_import._load_pm_update()
+    text = (
+        "{\n"
+        "  /* 블록 주석, ] */\n"
+        "  \"instructions\": [\n"
+        "    \"a,]\",\n"
+        "  ],\n"
+        "}\n"
+    )
+
+    masked = pm_update._mask_jsonc_comments(text)
+    stripped = pm_update._strip_jsonc_trailing_commas(masked)
+
+    assert len(masked) == len(text), "마스킹이 오프셋을 옮겼다"
+    assert len(stripped) == len(text), "쉼표 치환이 오프셋을 옮겼다"
+    assert json.loads(stripped) == {"instructions": ["a,]"]}
+    assert stripped.count("\"a,]\"") == 1, "문자열 리터럴 안의 쉼표를 건드렸다"
+
+
+def test_broken_jsonc_is_still_the_declared_empty_document(pm_import, tmp_path):
+    """진짜 파싱 실패는 종전대로 빈 문서다 — 그 자리는 선언 키 전량 `missing` 으로 loud 하다."""
+    path = tmp_path / "broken.jsonc"
+    path.write_text("{\"instructions\": [1, 2\n", encoding="utf-8")
+
+    assert pm_import._load_adapter_config_document(path) == {}
+
+
+def test_shipped_opencode_config_document_is_unchanged_by_the_comma_pass(pm_import):
+    """손대지 않은 출하 jsonc 는 종전과 같은 문서다(정상 파싱 불변)."""
+    path = REPO / "templates" / "opencode" / ".opencode" / "opencode.jsonc"
+    pm_update = pm_import._load_pm_update()
+    text = path.read_text(encoding="utf-8")
+
+    assert pm_import._load_adapter_config_document(path) == json.loads(
+        pm_update._mask_jsonc_comments(text)), "후행 쉼표 처리가 정상 문서를 바꿨다"
+
+
 def test_build_parser_routes_sync_adapter_config(pm_config):
     """build_parser 가 `sync-adapter-config` 를 파싱하고 cmd_sync_adapter_config 로 라우팅한다.
 

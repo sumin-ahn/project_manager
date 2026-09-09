@@ -3805,6 +3805,48 @@ def test_task_prefix_forwards_registered_repos_for_reserved_check(pc):
     assert val and set(val[0][2]) == {"svc", "acc"}
 
 
+def test_task_prefix_resolves_registered_repos_through_the_shared_helper(pc, monkeypatch):
+    """등록 repo 해소는 `_registered_repos` 한 자리다 — 이 명령이 자기 사본으로 읽지 않는다.
+
+    사본이 남아 있으면 fail-soft 규칙(board 부재·속성 부재·조회 예외)이 자리마다 갈려, 같은
+    이름이 `task new` 에서는 거부되고 여기서는 통과한다(또는 반대)."""
+    wp = FakeWorktreePool()
+    board = FakeBoard(registered=("ignored",))
+    seen: list = []
+
+    def _spy(board_mod):
+        seen.append(board_mod)
+        return ["svc"]
+
+    monkeypatch.setattr(pc, "_registered_repos", _spy)
+
+    rc = pc.cmd_task_prefix(
+        argparse.Namespace(name="job", value="pay"), worktree_pool=wp, board=board
+    )
+
+    assert rc == 0
+    assert seen == [board], "해소가 공용 헬퍼를 거치지 않았다(인라인 사본 잔존)"
+    val = [call for call in wp.calls if call[0] == "_validate_task_name"]
+    assert val and val[0][2] == ["svc"]
+
+
+def test_task_prefix_keeps_going_when_the_registry_lookup_raises(pc):
+    """조회 예외는 `None` 으로 내려가고 저장은 계속된다 — 헬퍼의 fail-soft 규칙 그대로."""
+    class RaisingBoard(FakeBoard):
+        def registered_repos(self):
+            raise RuntimeError("areas broken")
+
+    wp = FakeWorktreePool()
+
+    rc = pc.cmd_task_prefix(
+        argparse.Namespace(name="job", value="pay"), worktree_pool=wp, board=RaisingBoard()
+    )
+
+    assert rc == 0
+    val = [call for call in wp.calls if call[0] == "_validate_task_name"]
+    assert val and val[0][2] is None
+
+
 def test_task_prefix_bad_format_refused(pc, capsys):
     """형식 위반(하이픈 등·ADR-0042) → board `_validate_prefix` 사유 → rc1(set_task_prefix 미호출)."""
     wp = FakeWorktreePool()

@@ -639,12 +639,36 @@ def test_with_adapters_feature_table_and_distance(tmp_path):
     assert features["permissions.allow"]["project"] == 1
     assert features["permissions.allow"]["latest"] > 1
     assert features["hooks.PostToolUse"]["verdict"] == "retired"
-    assert features["hooks.PostToolUse"]["project"] == ".claude/run_tests_hook.sh"
+    assert features["hooks.PostToolUse"]["project"] == "*:.claude/run_tests_hook.sh"
     assert features["hooks.PostToolUse"]["latest"] is None
     assert features["hooks.PreToolUse"]["verdict"] == "missing"
     assert row["distance"] == sum(1 for feature in row["features"]
                                   if feature["verdict"] != "same")
     assert row["distance"] >= 4
+
+
+@_git_required
+def test_with_adapters_keeps_a_deleted_managed_file_as_a_null_status_row(tmp_path):
+    """관리 대상 config 를 지워도 행이 남는다 — `status=null`(파일 없음)이다.
+
+    행이 사라지면 관리자 화면에서 "없는 파일" 과 "판정할 것이 없는 파일" 이 같은 그림이 된다
+    (선언된 대상이 통째로 시야에서 빠진다)."""
+    home = _adapter_home(tmp_path / "home")
+    (home / ".codex/hooks.json").unlink()
+
+    adapters = _status_json(home, "--with-adapters", "--from", str(REPO))["adapters"]
+
+    row = next(item for item in adapters["files"] if item["path"] == ".codex/hooks.json")
+    assert row["status"] is None
+    assert "present" not in row, "같은 사실을 두 필드로 말한다"
+    assert row["mode"] == "managed"
+    assert row["harness"] == "codex"
+    assert row["features"] == [] and row["distance"] == 0
+    assert row["diff_vs_baseline"] is None and row["diff_vs_latest"] == ""
+    assert row["diff_lines"] == {"added": None, "removed": None}
+    # 남은 대상은 종전 판정 그대로다(부재 한 건이 표를 통째로 바꾸지 않는다).
+    assert next(item for item in adapters["files"]
+                if item["path"] == ".claude/settings.json")["status"] == "in-sync"
 
 
 @_git_required

@@ -4200,6 +4200,77 @@ def test_fresh_init_conf_has_no_missing_required(board, monkeypatch, tmp_path):
     assert conf_module.missing_required(conf_module.load(pm / "local.conf").values) == ()
 
 
+# ── local.conf 판독 실패 lint (`local-conf-unreadable` · T-0918·X-5) ────────
+# 판독 seam 이 삼키던 동안 잘못된 UTF-8 conf 는 "키 0 개" 로 읽혀 conf 관측 kind 전부가 0 건이었다
+# (못 읽은 것이 값이 없는 것으로 위장). 이제 seam 이 세 상태를 구분하고 발견은 한 자리가 낸다.
+
+
+def _unreadable_conf(tmp_path: Path) -> Path:
+    """잘못된 UTF-8 바이트가 든 실 local.conf — 판독은 실패하고 파일은 존재한다."""
+    conf = tmp_path / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_bytes(b"runtime.py=python3\ntest.cmd=\xff\xfe not utf-8\n")
+    return conf
+
+
+def test_unreadable_local_conf_surfaces_one_advisory_finding(board, monkeypatch, tmp_path):
+    """읽지 못한 conf 는 1줄 advisory 다 — 값 축 kind 들은 침묵한다(같은 사실 재진술 0)."""
+    monkeypatch.setattr(board, "LOCAL_CONF", _unreadable_conf(tmp_path))
+
+    findings = board.lint_local_conf_readable()
+
+    assert len(findings) == 1, findings
+    _where, kind, detail = findings[0]
+    assert kind == "local-conf-unreadable"
+    assert "읽지 못했다" in detail and "인코딩" in detail
+    assert board.lint_local_conf_keys() == []
+    assert board.lint_local_conf_required() == []
+
+
+def test_no_local_conf_file_reports_nothing_unreadable(board, monkeypatch, tmp_path):
+    """파일 부재는 관측 없음이다 — 없는 파일을 못 읽었다고 말하지 않는다."""
+    monkeypatch.setattr(board, "LOCAL_CONF", tmp_path / ".project_manager" / "local.conf")
+
+    assert board.lint_local_conf_readable() == []
+
+
+def test_readable_local_conf_reports_nothing_unreadable(board, monkeypatch, tmp_path):
+    """정상 conf 는 이 축에서 조용하다(대조군 — 가드가 항상 뜨지 않는다)."""
+    conf = tmp_path / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_text("runtime.py=python3\ntest.cmd=pytest -q\n", encoding="utf-8")
+    monkeypatch.setattr(board, "LOCAL_CONF", conf)
+
+    assert board.lint_local_conf_readable() == []
+
+
+def test_unreadable_kind_is_advisory_and_joins_the_report(board, monkeypatch, tmp_path):
+    """kind 등재(`--gate` 종료코드 비기여) + `lint_tickets()` 합류(발견 1건).
+
+    `lint_adapter_drift` 도 끈다 — 그 자리는 판독을 이 seam 이 아니라 값 소비 계약
+    (`local_config` → `load_checked_readable`)으로 하므로 같은 트리에서 예외를 그대로 올린다
+    (판독 실패를 조용히 접지 않는다는 그 함수의 계약이라 이 티켓이 손대지 않는다)."""
+    assert "local-conf-unreadable" in board._ADVISORY_LINT_KINDS
+    _wire_repo(board, monkeypatch, tmp_path)
+    monkeypatch.setattr(board, "LOCAL_CONF", _unreadable_conf(tmp_path))
+    for fn in (*_UNRELATED_LINT_FNS, "lint_adapter_drift"):
+        monkeypatch.setattr(board, fn, lambda: [])
+
+    kinds = _kinds(board.lint_tickets())
+
+    assert kinds.count("local-conf-unreadable") == 1, kinds
+    assert board.cmd_lint(SimpleNamespace(gate=True)) == 0      # never-block
+    assert board.cmd_lint(SimpleNamespace(gate=False)) == 1     # 무인자는 보인다
+
+
+def test_read_seam_uses_the_strict_loader(board, monkeypatch, tmp_path):
+    """판독 seam 은 `local_conf.load_strict` 를 부른다 — 삼키는 `load` 로 돌아가면 red."""
+    monkeypatch.setattr(board, "LOCAL_CONF", _unreadable_conf(tmp_path))
+
+    with pytest.raises(board.LocalConfUnreadable):
+        board._lint_local_conf_read()
+
+
 # ════════════════════════════════════════════════════════════════════════
 # `status_snapshot()` — 관리자 읽기 계약(`pm-config status --json --with-board`)이 부르는
 # 얇은 조립. 여기서는 board 소유 축(상태별 수·open 목록·lint 목록·sidecar 통과)만 본다.

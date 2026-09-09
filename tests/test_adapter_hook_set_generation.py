@@ -2463,7 +2463,7 @@ def test_event_split_preserves_the_hook_command_inventory(pm_import):
         assert pm_import._hook_commands(document) == expected, harness
         assert [command
                 for commands in pm_import._hook_event_commands(document).values()
-                for command in commands] == expected, harness
+                for _matcher, command in commands] == expected, harness
         # 판정 자체도 그대로 조용하다(출하 template 자기정합·claude 축과 같은 근거).
         assert pm_import._hook_set_demands(document, pm_import.ADAPTER_HOOK_SET[harness],
                                            template_root) == {}, harness
@@ -2477,14 +2477,67 @@ def test_feature_axis_reuses_the_entrypoint_presence_judgment(pm_import):
     seen_any = False
     for harness, _template_root, document in _shipped_hook_configs(pm_import):
         spec = pm_import.ADAPTER_HOOK_SET[harness]
-        events = pm_import._hook_event_scripts(document, spec.entrypoints)
+        events = pm_import._hook_event_units(document, spec.entrypoints)
         for entrypoint in spec.entrypoints:
             seen_any = True
             present = pm_import._entrypoint_is_present(document, entrypoint)
             assert present, f"{harness}:{entrypoint.event} 출하 config 가 진입점을 잃었다"
-            assert entrypoint.dispatcher in events.get(entrypoint.event, ()), \
+            unit = f"{entrypoint.matcher or ''}:{entrypoint.dispatcher}"
+            assert unit in events.get(entrypoint.event, ()), \
                 f"{harness}:{entrypoint.event} 실재 판정과 기능 축이 갈렸다"
     assert seen_any, "진입점 선언이 하나도 없다(공허 가드)"
+
+
+# ── 이벤트 축 단위 = (matcher, 스크립트, 인자) (T-0918·X-1) ────────────────────
+# 값이 스크립트 **집합**이던 동안은 출하 claude `PreToolUse` 의 `Bash` 그룹(같은 래퍼를
+# `--git-anchor-hook` 로 부른다)을 통째로 지워도 집합이 안 변해 표가 `same` 으로 접혔다 —
+# 채택자가 git anchor 가드를 잃은 상태가 관리자 화면에서 "차이 없음" 이었다.
+
+_SHIPPED_CLAUDE_UNITS = {
+    "PreToolUse": ("*:.claude/ctx_stop_hook.sh",
+                   "Agent:.claude/delegate_channel_guard_hook.sh",
+                   "Bash:.claude/ctx_stop_hook.sh --git-anchor-hook"),
+    "UserPromptSubmit": (":.claude/ctx_stop_hook.sh",),
+}
+
+
+def test_hook_event_units_keep_matcher_and_arguments(pm_import):
+    """출하 claude settings.json 의 두 이벤트 단위가 실값 그대로다(matcher · 인자 포함)."""
+    spec = pm_import.ADAPTER_HOOK_SET["claude"]
+    document = json.loads(
+        (REPO / "templates" / "claude_code" / spec.config_relpath).read_text(
+            encoding="utf-8"))
+
+    units = pm_import._hook_event_units(document, spec.entrypoints)
+
+    for event, expected in _SHIPPED_CLAUDE_UNITS.items():
+        assert units[event] == tuple(sorted(expected)), event
+
+
+def test_removing_one_matcher_group_is_a_feature_difference(pm_import):
+    """출하 settings.json 에서 `Bash` matcher 그룹만 지우면 그 이벤트가 `differs` 다.
+
+    같은 스크립트가 `*` 그룹에도 있으므로 스크립트 집합으로는 안 잡히는 형상이다."""
+    spec = pm_import.ADAPTER_HOOK_SET["claude"]
+    latest = json.loads(
+        (REPO / "templates" / "claude_code" / spec.config_relpath).read_text(
+            encoding="utf-8"))
+    project = json.loads(json.dumps(latest))
+    project["hooks"]["PreToolUse"] = [
+        group for group in project["hooks"]["PreToolUse"]
+        if group.get("matcher") != "Bash"
+    ]
+    assert project != latest, "픽스처가 아무것도 지우지 않았다(공허 가드)"
+
+    rows = pm_import._adapter_feature_rows(spec.config_relpath, project, latest)
+
+    row = next(row for row in rows if row.name == "hooks.PreToolUse")
+    assert row.verdict == pm_import.ADAPTER_FEATURE_DIFFERS
+    assert "Bash:.claude/ctx_stop_hook.sh --git-anchor-hook" not in row.project
+    assert "Bash:.claude/ctx_stop_hook.sh --git-anchor-hook" in row.latest
+    distance = sum(1 for row in rows
+                   if row.verdict != pm_import.ADAPTER_FEATURE_SAME)
+    assert distance >= 1
 
 
 def test_shipped_config_has_no_feature_distance_against_itself(pm_import):
