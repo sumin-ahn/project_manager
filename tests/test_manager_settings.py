@@ -4,16 +4,20 @@
 가짜 runner 나 수기 dict 로 판정을 지어내지 않는다 — 이 파일이 지키는 것이 "관리자가 프로젝트
 폴더에 무엇을 하는가" 라서, 그 답은 디스크에서만 나온다.
 
-축 다섯:
+축 여섯:
+  0. 값 조회는 conf 파일 읽기 하나다 — 판정(다섯 목록)은 화면이 이미 들고 있는 가벼운 현황
+     조회가 나르므로, 이 조회가 사본 프로세스를 띄우지 않는다.
   1. 항목 목록의 정본이 **그 사본의** 레지스트리다(사본을 옛 세대로 갈면 그 사실이 드러난다).
   2. 저장은 엔진의 유일한 conf writer 를 통과한다 — 공용 락 파일이 서고, 다른 프로세스의
      writer 와 같은 락에 직렬화되며, 그 밖의 파일은 한 개도 바뀌지 않는다.
   3. 저장 뒤 화면 값은 **재조회 결과**다(낙관적 갱신 없음) — 판정은 그 사본이 낸다.
   4. [기본값으로] 는 레지스트리 기본값을 쓰고, 기본값이 없는 키에는 쓸 값이 없다.
   5. upstream 전환은 도달성 검증을 포함한 사본 명령이고, 거부 문구는 원문 그대로 온다.
+  6. 모델 목록 조회는 그 사본의 `delegate models` 원문 중계다 — 실패를 빈 목록으로 접지 않는다.
 """
 from __future__ import annotations
 
+import importlib.util
 import shutil
 import subprocess
 import sys
@@ -24,8 +28,9 @@ from pathlib import Path
 import pytest
 
 from _manager_home import (
-    conf_path, git_required, install_old_generation_key_registry, make_bare_with_tags,
-    make_pm_home, set_conf_key, tree_snapshot,
+    conf_path, git_required, install_old_generation_engine, install_old_generation_key_registry,
+    install_previous_generation_key_registry, install_slow_engine, make_bare_with_tags,
+    make_pm_home, remove_engine_script, set_conf_key, tree_snapshot,
 )
 
 from manager import runner
@@ -118,27 +123,54 @@ def test_an_old_generation_copy_cannot_answer_the_key_list(api, pm_home):
     assert "--keys" in response["error"]["stderr"]
 
 
+def test_a_registry_without_the_choice_fields_is_an_old_generation(api, pm_home):
+    """선택지·권장값이 없는 세대의 산출로 화면을 절반만 그리지 않는다 — 그 사실을 말한다."""
+    install_previous_generation_key_registry(pm_home)
+
+    response = api.conf_keys(str(pm_home))
+
+    assert response["error"]["kind"] == "old-generation"
+    assert "schema 1" in response["error"]["message"]
+    assert "schema 2" in response["error"]["message"]
+
+
 # ── ② 현재값과 설정 완전성 다섯 목록 ─────────────────────────────────────────
 
 
-def test_conf_values_carries_the_file_values_and_the_five_lists(api, pm_home):
+def test_conf_values_carries_the_file_values_and_nothing_else(api, pm_home):
     response = api.conf_values(str(pm_home))
 
-    assert response["values"] == _values(pm_home)
-    assert set(response["conf"]) == {
-        "missing_required", "legacy", "unknown", "nonstandard", "missing_for_latest"}
-    # 가벼운 절은 소스를 해소하지 않는다 — "갱신하면 필요" 는 없음([])이 아니라 모름(null)이다.
-    assert response["conf"]["missing_for_latest"] is None
+    assert response == {"values": _values(pm_home)}
+
+
+def test_reading_the_values_does_not_run_the_copy_again(api, pm_home):
+    """값 조회는 conf 파일 읽기 하나다 — 사본 명령을 띄우면 설정 탭마다 프로세스가 하나 더 뜬다.
+
+    판정(다섯 목록)은 화면이 이미 들고 있는 가벼운 현황 조회가 나른다. 사본의 실행 스크립트를
+    통째로 지운 홈에서도 값이 그대로 오면, 이 경로에 서브프로세스가 없다는 뜻이다.
+    """
+    remove_engine_script(pm_home)
+
+    assert api.conf_values(str(pm_home)) == {"values": _values(pm_home)}
+    # 같은 홈에서 판정을 내는 조회는 그 스크립트가 없어 실패한다(둘이 다른 경로임을 못박는다).
+    assert api.status(str(pm_home))["error"]["kind"] == "old-generation"
 
 
 def test_the_five_lists_are_the_copys_verdict_not_a_manager_calculation(api, pm_home):
-    """필수 누락·폐지·미지·표준과 다름을 한 conf 에 한꺼번에 심고 그대로 받는지 본다."""
+    """필수 누락·폐지·미지·표준과 다름을 한 conf 에 한꺼번에 심고 그대로 받는지 본다.
+
+    화면이 그 판정을 받는 자리는 가벼운 현황 조회(`status --json` 의 `conf` 절)다.
+    """
     text = conf_path(pm_home).read_text(encoding="utf-8")
     conf_path(pm_home).write_text(
         text.replace("test.cmd=", "#test.cmd=").replace("ctx.nudge_pct=30", "ctx.nudge_pct=25")
         + "delegate_enabled=true\nnope.nope=1\n", encoding="utf-8")
 
-    verdict = api.conf_values(str(pm_home))["conf"]
+    verdict = api.status(str(pm_home))["conf"]
+    assert set(verdict) == {
+        "missing_required", "legacy", "unknown", "nonstandard", "missing_for_latest"}
+    # 가벼운 절은 소스를 해소하지 않는다 — "갱신하면 필요" 는 없음([])이 아니라 모름(null)이다.
+    assert verdict["missing_for_latest"] is None
 
     assert verdict["missing_required"] == ["test.cmd"]
     assert verdict["legacy"] == [{"key": "delegate_enabled", "replacement": "delegate.enabled"}]
@@ -213,7 +245,7 @@ def test_the_screen_value_after_a_save_is_the_requery_not_the_request(api, pm_ho
     response = api.conf_save(str(pm_home), {"test.windows.cmd": "py -3 -m pytest -q"})
 
     assert response["conf"]["unknown"] == ["test.windows.cmd"]  # qa.platforms 미선언 → 미지 키
-    assert response["conf"] == api.conf_values(str(pm_home))["conf"]
+    assert response["conf"] == api.status(str(pm_home))["conf"]
 
 
 def test_saving_an_unchanged_value_reports_no_change(api, pm_home):
@@ -349,3 +381,113 @@ def test_an_unreachable_value_comes_back_refused_word_for_word(api, pm_home, tmp
         "[중단] upstream 값 거부 (기록 안 함) — 경로 upstream 이 디렉토리가 아니거나 "
         f"존재하지 않음: {missing}")
     assert _values(pm_home)["upstream.path"] == before
+
+
+# ── ⑥ 모델 목록 조회 ─────────────────────────────────────────────────────────
+#
+# 목록의 정본은 **그 사본의** 모델 원천 표(`pm_relay.MODEL_SOURCE`)다. 기대값을 손으로 적으면
+# 표가 바뀌어도 red 가 되지 않으므로, 아래 테스트는 그 표를 읽어 원천 종류(alias·config·live)
+# 별로 하나씩 태운다 — 하네스 이름을 테스트도 적지 않는다.
+
+
+def _model_source_table(pm_home: Path) -> dict:
+    """그 사본의 모델 원천 표 — 조회가 무엇을 답해야 하는지의 단일 진실."""
+    target = pm_home / ".project_manager" / "tools" / "pm_relay.py"
+    specification = importlib.util.spec_from_file_location(f"_pm_relay_settings:{pm_home}", target)
+    module = importlib.util.module_from_spec(specification)
+    sys.modules[specification.name] = module
+    specification.loader.exec_module(module)
+    return module.MODEL_SOURCE
+
+
+def _harness_of(pm_home: Path, kind: str) -> tuple[str, object]:
+    table = _model_source_table(pm_home)
+    return next((name, source) for name, source in table.items() if source.kind == kind)
+
+
+def _isolated_path(tmp_path: Path, monkeypatch) -> None:
+    """조회 대상 CLI 가 하나도 없는 PATH — 사본을 부를 인터프리터만 남긴다."""
+    binaries = tmp_path / "bin"
+    binaries.mkdir(exist_ok=True)
+    (binaries / "python3").symlink_to(sys.executable)
+    monkeypatch.setenv("PATH", str(binaries))
+
+
+def test_an_alias_harness_comes_back_as_the_copys_own_table(api, pm_home):
+    name, source = _harness_of(pm_home, "alias")
+
+    response = api.delegate_models(str(pm_home), name)
+
+    assert response == {"harness": name, "kind": "alias", "models": list(source.values)}
+
+
+def test_a_config_harness_comes_back_as_the_declared_model(api, pm_home, tmp_path, monkeypatch):
+    name, source = _harness_of(pm_home, "config")
+    declared = tmp_path / "cli-home"
+    declared.mkdir()
+    (declared / Path(source.config_home).name).write_text(
+        f'{source.config_key} = "model-in-config"\n', encoding="utf-8")
+    monkeypatch.setenv(source.config_env, str(declared))
+
+    response = api.delegate_models(str(pm_home), name)
+
+    assert response == {"harness": name, "kind": "config", "models": ["model-in-config"]}
+
+
+def test_a_live_query_that_fails_is_an_error_dict_not_an_empty_list(api, pm_home, tmp_path,
+                                                                    monkeypatch):
+    """조회 실패는 실패다 — 0개를 성공으로 접으면 화면이 "고를 것이 없다" 로 보인다."""
+    name, _ = _harness_of(pm_home, "live")
+    _isolated_path(tmp_path, monkeypatch)
+
+    response = api.delegate_models(str(pm_home), name)
+
+    assert response["error"]["kind"] == "old-generation"
+    assert response["error"]["rc"] == 3
+    assert name in response["error"]["stderr"]
+
+
+def test_an_unsupported_harness_comes_back_refused(api, pm_home):
+    response = api.delegate_models(str(pm_home), "no-such-harness")
+
+    assert response["error"]["rc"] == 2
+    assert "no-such-harness" in response["error"]["stderr"]
+
+
+def test_a_copy_that_does_not_know_the_command_is_an_error_dict(api, pm_home):
+    """옛 세대 사본은 번들 목록으로 대신 답하지 않는다 — 그 사본의 사유가 화면에 간다."""
+    install_old_generation_engine(pm_home)
+    name, _ = _harness_of(pm_home, "alias")
+
+    response = api.delegate_models(str(pm_home), name)
+
+    assert response["error"]["kind"] == "old-generation"
+    assert response["error"]["rc"] == 2
+    assert "delegate" in response["error"]["stderr"]
+
+
+def test_a_model_query_writes_nothing_in_the_project(api, pm_home, tmp_path, monkeypatch):
+    api.conf_values(str(pm_home))                    # 공유 읽기 seam 을 먼저 세운다
+    _isolated_path(tmp_path, monkeypatch)            # live 조회가 실제로 도는 자리까지 태운다
+    before = tree_snapshot(pm_home)
+
+    for name in _model_source_table(pm_home):
+        api.delegate_models(str(pm_home), name)
+
+    assert tree_snapshot(pm_home) == before
+
+
+def test_the_model_query_waits_on_the_heavy_limit(api, pm_home, monkeypatch):
+    """상한은 무거운 절의 것이다 — `live` 조회가 실 CLI 를 부르느라 가벼운 절 10초를 넘긴다.
+
+    두 상한을 갈라 놓고(무거운 1초·가벼운 60초) 답하지 않는 사본을 부른다. 가벼운 상한을 쓰면
+    이 호출은 1초에 끊기지 않는다.
+    """
+    install_slow_engine(pm_home)
+    monkeypatch.setattr(runner, "HEAVY_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(runner, "LIGHT_TIMEOUT_SECONDS", 60)
+    name, _ = _harness_of(pm_home, "alias")
+
+    response = api.delegate_models(str(pm_home), name)
+
+    assert response["error"]["kind"] == "timeout"

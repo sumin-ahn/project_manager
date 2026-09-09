@@ -53,6 +53,26 @@ raise SystemExit(2)
 '''
 
 
+# 선택지·권장값 이전 세대(schema 1)의 실제 등가물 — `--keys --json` 은 알지만 행에 `choices`·
+# `recommended` 가 없다. 화면이 그 필드를 읽으므로 관리자는 이 산출을 반쯤 그리지 않는다.
+PREVIOUS_GENERATION_KEY_REGISTRY = '''#!/usr/bin/env python3
+"""한 세대 앞선 local_conf.py — 키 목록은 기계 판독인데 선택지·권장값이 없다."""
+import json
+import sys
+
+if sys.argv[1:] == ["--keys", "--json"]:
+    print(json.dumps({
+        "schema": 1,
+        "groups": ["runtime"],
+        "keys": [{"key": "runtime.py", "group": "runtime", "description": "사본을 부를 인터프리터",
+                  "default": None, "required": True, "kind": "key", "members": None}],
+    }, ensure_ascii=False))
+    raise SystemExit(0)
+print("사용법: local_conf.py [--keys [--json]]", file=sys.stderr)
+raise SystemExit(2)
+'''
+
+
 def _run(argv: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess:
     completed = subprocess.run(
         argv, cwd=None if cwd is None else str(cwd), capture_output=True, text=True,
@@ -112,6 +132,12 @@ def install_old_generation_key_registry(pm_home: Path) -> None:
     """항목 목록 축의 옛 세대 — 그 사본의 `local_conf.py` 가 `--keys --json` 을 모른다."""
     (pm_home / ".project_manager" / "tools" / "local_conf.py").write_text(
         OLD_GENERATION_KEY_REGISTRY, encoding="utf-8")
+
+
+def install_previous_generation_key_registry(pm_home: Path) -> None:
+    """항목 목록 축의 한 세대 앞선 사본 — 기계 표면은 있고 선택지·권장값(schema 2)이 없다."""
+    (pm_home / ".project_manager" / "tools" / "local_conf.py").write_text(
+        PREVIOUS_GENERATION_KEY_REGISTRY, encoding="utf-8")
 
 
 def tree_snapshot(root: Path) -> dict[str, str]:

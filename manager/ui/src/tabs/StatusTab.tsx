@@ -4,14 +4,18 @@ import StatusDot from "../components/StatusDot";
 import StatusRowActions, { SlotTableAllocate } from "../components/StatusRowActions";
 
 /**
- * 기계 기록 한 줄 — 판정(`status`) · 수집 수/하한 · 시각. 값은 엔진 sidecar 그대로 고르고
- * 여기서 다시 계산하지 않는다. 회귀는 `collected`/`floor`, 게이트는 `n` 이라 이름만 다르고,
- * 그 축이 없는 옛 기록(하한 없이 남은 회귀)은 그 자리를 비운 채 나머지를 낸다.
+ * 기계 기록 한 줄 — 판정(`status`) · 수집 수 · 시각. 값은 엔진 sidecar 그대로 고르고 여기서
+ * 다시 계산하지 않는다. 회귀는 `collected`, 게이트는 `n` 이라 이름만 다르다.
+ *
+ * 하한(`floor`)은 **수집 수가 그에 못 미칠 때만** 붙는다 — 넘긴 하한은 사람이 읽을 것이 없고,
+ * 미달은 그 자체가 봐야 할 사실이다. 수집 수가 없는 옛 기록은 그 자리를 비운 채 나머지를 낸다.
  */
 export function recordLine(record: Record<string, unknown>): string {
   const collected = record.collected ?? record.n;
+  const short = record.floor != null && collected != null
+    && Number(collected) < Number(record.floor);
   const counted = collected == null ? null
-    : record.floor == null ? `${collected}` : `${collected}/${record.floor}`;
+    : short ? `${collected}개 수집 (하한 ${record.floor} 미달)` : `${collected}개 수집`;
   return [record.status, counted, record.ts]
     .filter((part) => part != null).map(String).join(" · ");
 }

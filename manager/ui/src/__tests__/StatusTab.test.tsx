@@ -85,11 +85,11 @@ describe("현황 탭 읽기 부분", () => {
     renderTab({ light: { status: document_ }, heavy: { status: withRecords() } });
 
     const regression = screen.getByTestId("record-regression");
-    expect(regression).toHaveTextContent("회귀 pass · 12882/7000 · 2026-09-04T07:34:00+00:00");
+    expect(regression).toHaveTextContent("회귀 pass · 12882개 수집 · 2026-09-04T07:34:00+00:00");
     expect(regression).not.toHaveAttribute("open");                   // 원문은 열어야 나온다
-    // 게이트는 하한이 없는 축이라 수집 수만 낸다(값 이름이 다르고 판정은 그대로다).
+    // 게이트는 하한이 없는 축이라 수집 수를 `n` 에서 고른다(값 이름이 다르고 판정은 그대로다).
     expect(screen.getByTestId("record-livegate"))
-      .toHaveTextContent("게이트 pass · 22 · 2026-09-06T10:42:33+00:00");
+      .toHaveTextContent("게이트 pass · 22개 수집 · 2026-09-06T10:42:33+00:00");
     // 접힌 상세 안에는 엔진 원문이 그대로 있다(요약이 지운 축을 잃지 않는다).
     expect(regression).toHaveTextContent("conf_anchor");
   });
@@ -104,9 +104,16 @@ describe("현황 탭 읽기 부분", () => {
 });
 
 describe("기계 기록 한 줄", () => {
-  it("판정·수집 수/하한·시각을 그 순서로 잇는다", () => {
-    expect(recordLine(REGRESSION)).toBe("pass · 12882/7000 · 2026-09-04T07:34:00+00:00");
-    expect(recordLine(LIVEGATE)).toBe("pass · 22 · 2026-09-06T10:42:33+00:00");
+  it("판정·수집 수·시각을 그 순서로 잇는다 — 넘긴 하한은 적지 않는다", () => {
+    expect(recordLine(REGRESSION)).toBe("pass · 12882개 수집 · 2026-09-04T07:34:00+00:00");
+    expect(recordLine(LIVEGATE)).toBe("pass · 22개 수집 · 2026-09-06T10:42:33+00:00");
+  });
+
+  it("수집 수가 하한에 못 미치면 그 사실을 적는다", () => {
+    expect(recordLine({ ...REGRESSION, collected: 6999 }))
+      .toBe("pass · 6999개 수집 (하한 7000 미달) · 2026-09-04T07:34:00+00:00");
+    expect(recordLine({ ...REGRESSION, collected: 7000 }))
+      .toBe("pass · 7000개 수집 · 2026-09-04T07:34:00+00:00");
   });
 
   it("없는 축은 자리를 비운다 — 하한 없이 남은 옛 회귀 기록", () => {

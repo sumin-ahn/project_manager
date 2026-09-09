@@ -98,8 +98,9 @@ def test_the_fixture_carries_every_status_dot_case(sample):
                and slot["role"] != "readonly" for slot in slots)
 
 
-def test_the_fixture_carries_no_personal_path():
-    text = FIXTURE.read_text(encoding="utf-8")
+@pytest.mark.parametrize("fixture", [FIXTURE, KEYS_FIXTURE])
+def test_the_fixture_carries_no_personal_path(fixture):
+    text = fixture.read_text(encoding="utf-8")
 
     assert "/home/" not in text and "/Users/" not in text
 
@@ -119,11 +120,22 @@ def live_keys(tmp_path_factory) -> dict:
     return json.loads(completed.stdout)
 
 
+def _member_rows(document: dict) -> list[dict]:
+    """패턴 키군에서 전개된 실명 행 전수 — 실명 키(`members is None`)는 셀 것이 없다."""
+    return [member for row in document["keys"] for member in row["members"] or []]
+
+
 def test_the_key_fixture_is_the_engines_own_registry(live_keys):
-    """설정 화면 픽스처가 현행 레지스트리와 같은 키·같은 필드인지 (손으로 적은 목록 0)."""
+    """설정 화면 픽스처가 현행 레지스트리와 같은 키·같은 필드인지 (손으로 적은 목록 0).
+
+    최상위 행 필드만 보면 멤버 행이 새 필드(선택지·권장값)를 얻어도 red 가 되지 않는다 —
+    화면의 위임 절이 읽는 것이 바로 그 멤버 행이라, 멤버 행 필드 집합까지 함께 잰다.
+    """
     sample = json.loads(KEYS_FIXTURE.read_text(encoding="utf-8"))
 
     assert sample["schema"] == live_keys["schema"]
     assert sample["groups"] == live_keys["groups"]
     assert [row["key"] for row in sample["keys"]] == [row["key"] for row in live_keys["keys"]]
     assert _row_keys(sample["keys"]) == _row_keys(live_keys["keys"])
+    assert _member_rows(live_keys), "실 산출에 멤버 행이 없으면 대조가 무의미하다"
+    assert _row_keys(_member_rows(sample)) == _row_keys(_member_rows(live_keys))

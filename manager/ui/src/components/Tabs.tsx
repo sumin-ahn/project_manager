@@ -1,6 +1,6 @@
 import * as RadixTabs from "@radix-ui/react-tabs";
 import { useEffect, useMemo, useState } from "react";
-import type { Entry } from "../App";
+import type { Entry, SettingsEntry } from "../App";
 import type { Bridge, ConfSection } from "../api";
 import { ProjectRunContext } from "../lib/run";
 import ConfigTab from "../tabs/ConfigTab";
@@ -15,11 +15,12 @@ const TRIGGER =
 const QUESTION_TAB = "settings";
 
 /** 가운데 칸 탭 넷 — 현황 탭의 읽기 부분, 설정 탭, 구성 탭, 갱신 탭. */
-export default function Tabs({ bridge, path, light, heavy, latestTag, onOpenUpdate, onApplied,
-                              onChanged, startAsking }:
+export default function Tabs({ bridge, path, light, heavy, settings, latestTag, onOpenUpdate,
+                              onApplied, onChanged, onReloadSettings, startAsking }:
   { bridge: Bridge; path: string | null; light: Entry | undefined;
-    heavy: Entry | undefined; latestTag: string | null; onOpenUpdate: () => void;
-    onApplied: () => void; onChanged: () => void; startAsking: boolean }) {
+    heavy: Entry | undefined; settings: SettingsEntry | undefined; latestTag: string | null;
+    onOpenUpdate: () => void; onApplied: () => void; onChanged: () => void;
+    onReloadSettings: () => void; startAsking: boolean }) {
   const [tab, setTab] = useState("status");
   // 설정 탭의 [불러오기] 가 받아 온 판정 — 설정 완전성 다섯 목록 중 "갱신하면 필요" 가 실린
   // 유일한 조회라, 그 값을 쓰는 두 탭(설정·갱신)이 여기서 같은 것을 본다. 프로젝트를 바꾸면
@@ -51,7 +52,8 @@ export default function Tabs({ bridge, path, light, heavy, latestTag, onOpenUpda
         <ProjectRunContext.Provider value={run}>
           <RadixTabs.Content value="status"><StatusTab light={light} heavy={heavy} /></RadixTabs.Content>
           <RadixTabs.Content value="settings">
-            <SettingsTab bridge={bridge} path={path} startAsking={startAsking}
+            <SettingsTab bridge={bridge} path={path} light={light} settings={settings}
+                         onReload={onReloadSettings} startAsking={startAsking}
                          adapterConf={adapterConf} onAdapterConf={setAdapterConf} />
           </RadixTabs.Content>
           <RadixTabs.Content value="config"><ConfigTab /></RadixTabs.Content>

@@ -26,8 +26,14 @@ function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
       upstreams: { "/projects/upstream.git": { tag: "v2.0.0" } },
     })),
     pick_folder: vi.fn(async () => ({ path: null })),
+    conf_keys: vi.fn(async () => confKeys as unknown as ConfKeysDocument),
+    conf_values: vi.fn(async () => ({ values: {} })),
     ...overrides,
   } as Bridge;
+}
+
+function settingsCalls(bridge: Bridge) {
+  return (bridge.conf_keys as ReturnType<typeof vi.fn>).mock.calls.length;
 }
 
 function setVisibility(value: "visible" | "hidden") {
@@ -212,10 +218,11 @@ describe("실패 처리", () => {
 });
 
 describe("수동 새로고침", () => {
-  it("선택 프로젝트의 세 조회를 전부 다시 돈다", async () => {
+  it("선택 프로젝트의 네 조회를 전부 다시 돈다", async () => {
     const bridge = makeBridge();
     render(<App bridge={bridge} />);
     await waitFor(() => expect(bridge.latest_tags).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(settingsCalls(bridge)).toBe(1));
 
     fireEvent.click(screen.getByLabelText("새로고침"));
 
@@ -223,6 +230,53 @@ describe("수동 새로고침", () => {
     expect(lightCalls(bridge)).toBe(2);
     expect((bridge.status as ReturnType<typeof vi.fn>).mock.calls
       .filter((call) => call[1] === true).length).toBe(2);
+    await waitFor(() => expect(settingsCalls(bridge)).toBe(2));
+  });
+});
+
+describe("설정 선읽기", () => {
+  it("프로젝트를 고를 때 설정 두 조회를 미리 받고, 탭을 여는 것으로는 부르지 않는다", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const bridge = makeBridge();
+    render(<App bridge={bridge} />);
+
+    // 선택 시 1회 — 탭은 아직 열지 않았다.
+    await waitFor(() => expect(bridge.conf_keys).toHaveBeenCalledWith(DEMO));
+    await waitFor(() => expect(bridge.conf_values).toHaveBeenCalledWith(DEMO));
+    expect(settingsCalls(bridge)).toBe(1);
+
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "설정" }));
+    await screen.findByTestId("settings-nav");
+    await act(async () => { await vi.advanceTimersByTimeAsync(LIGHT_INTERVAL_MS * 2); });
+
+    // 탭 진입도, 주기 조회도 설정을 다시 부르지 않는다.
+    expect(settingsCalls(bridge)).toBe(1);
+    expect(lightCalls(bridge)).toBeGreaterThan(1);
+  });
+
+  it("저장하면 값과 판정을 다시 읽는다 — 화면 값은 재조회 결과다", async () => {
+    let stored: Record<string, string> = {};
+    const bridge = makeBridge({
+      conf_save: vi.fn(async (_path: string, updates: Record<string, string>) => {
+        stored = { ...stored, ...updates };
+        return { changed: true, conf: document_.conf };
+      }),
+      conf_values: vi.fn(async () => ({ values: stored })),
+    } as Partial<Bridge>);
+    render(<App bridge={bridge} />);
+    await waitFor(() => expect(settingsCalls(bridge)).toBe(1));
+
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "설정" }));
+    fireEvent.click(await screen.findByTestId("nav-ctx"));
+    fireEvent.change(screen.getByLabelText("ctx.nudge_pct"), { target: { value: "26" } });
+    fireEvent.click(screen.getByTestId("save"));
+
+    await waitFor(() => expect(bridge.conf_save)
+      .toHaveBeenCalledWith(DEMO, { "ctx.nudge_pct": "26" }));
+    await waitFor(() => expect(settingsCalls(bridge)).toBe(2));
+    // 저장 직후 판정도 다시 읽는다(가벼운 절) — 배지는 사본이 낸 것이다.
+    expect(lightCalls(bridge)).toBeGreaterThan(1);
+    await waitFor(() => expect(screen.getByLabelText("ctx.nudge_pct")).toHaveValue("26"));
   });
 });
 
@@ -258,8 +312,6 @@ describe("새 프로젝트 적용", () => {
           ok: true, path: NEW,
         };
       }),
-      conf_keys: vi.fn(async () => confKeys as unknown as ConfKeysDocument),
-      conf_values: vi.fn(async () => ({ values: {}, conf: document_.conf })),
     } as Partial<Bridge>);
   }
 

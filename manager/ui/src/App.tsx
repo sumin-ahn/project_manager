@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Bridge, BridgeError, Project, StatusDocument, TagsResponse } from "./api";
+import type {
+  Bridge, BridgeError, ConfKeysDocument, Project, StatusDocument, TagsResponse,
+} from "./api";
 import { isError } from "./api";
 import AdapterMatrix from "./components/AdapterMatrix";
 import Header from "./components/Header";
@@ -14,6 +16,19 @@ export const LIGHT_INTERVAL_MS = 5000;
 
 /** 영역별 마지막 값 한 칸 — 조회가 실패해도 `status` 는 지우지 않고 `error` 만 붙인다. */
 export type Entry = { status?: StatusDocument; error?: BridgeError; at?: number };
+
+/**
+ * 프로젝트별 설정 두 조회의 마지막 값 — 설정 탭은 이것을 받아 그린다(탭 진입 조회 0).
+ *
+ * 프로젝트를 고를 때 무거운 절과 함께 미리 받고, 다시 읽는 때는 저장 직후·갱신 적용 직후·수동
+ * 새로고침 셋뿐이다. 다시 읽는 동안에도 마지막 값을 지우지 않는다(빈 화면 0).
+ */
+export type SettingsEntry = {
+  keys?: ConfKeysDocument;
+  values?: Record<string, string>;
+  error?: BridgeError;
+  at?: number;
+};
 
 type Busy = { light: boolean; heavy: boolean; tags: boolean };
 
@@ -60,6 +75,7 @@ export default function App({ bridge: given }: { bridge: Bridge }) {
   const [listError, setListError] = useState<BridgeError | null>(null);
   const [light, setLight] = useState<Record<string, Entry>>({});
   const [heavy, setHeavy] = useState<Record<string, Entry>>({});
+  const [settings, setSettings] = useState<Record<string, SettingsEntry>>({});
   const [tags, setTags] = useState<TagsResponse | null>(null);
   const [tagsError, setTagsError] = useState<BridgeError | null>(null);
   const [tagsAt, setTagsAt] = useState<number | undefined>(undefined);
@@ -107,6 +123,20 @@ export default function App({ bridge: given }: { bridge: Bridge }) {
     setBusy((current) => ({ ...current, heavy: false }));
   }, [bridge]);
 
+  // 설정 두 조회 — 키 레지스트리와 값 파일이다(판정은 가벼운 절의 `conf` 절이라 여기서 안 부른다).
+  const refreshSettings = useCallback(async (path: string) => {
+    const [keys, values] = await Promise.all([bridge.conf_keys(path), bridge.conf_values(path)]);
+    const failure = isError(keys) ? keys.error : isError(values) ? values.error : undefined;
+    const at = Date.now();
+    setSettings((previous) => {
+      const last = previous[path];
+      return { ...previous,
+               [path]: { keys: isError(keys) ? last?.keys : keys,
+                         values: isError(values) ? last?.values : values.values,
+                         error: failure, at } };
+    });
+  }, [bridge]);
+
   const refreshTags = useCallback(async () => {
     setBusy((current) => ({ ...current, tags: true }));
     const response = await bridge.latest_tags();
@@ -149,10 +179,12 @@ export default function App({ bridge: given }: { bridge: Bridge }) {
     return () => clearInterval(timer);
   }, [visible, projects, refreshLight, writing]);
 
-  // 선택한 프로젝트만 무거운 절 1회.
+  // 선택한 프로젝트만 무거운 절 1회 + 설정 두 조회 선읽기(탭을 열기 전에 채워 둔다).
   useEffect(() => {
-    if (selected !== null) void refreshHeavy(selected);
-  }, [selected, refreshHeavy]);
+    if (selected === null) return;
+    void refreshHeavy(selected);
+    void refreshSettings(selected);
+  }, [selected, refreshHeavy, refreshSettings]);
 
   const addProject = useCallback(async () => {
     const picked = await bridge.pick_folder();
@@ -200,8 +232,15 @@ export default function App({ bridge: given }: { bridge: Bridge }) {
 
   const refreshSelected = useCallback(async () => {
     if (selected === null) return;
-    await Promise.all([refreshLight([selected]), refreshHeavy(selected), refreshTags()]);
-  }, [selected, refreshLight, refreshHeavy, refreshTags]);
+    await Promise.all([refreshLight([selected]), refreshHeavy(selected), refreshTags(),
+                       refreshSettings(selected)]);
+  }, [selected, refreshLight, refreshHeavy, refreshTags, refreshSettings]);
+
+  // 설정을 저장한 직후 — 값(설정 조회)과 판정(가벼운 절)을 다시 읽는다. 낙관적 갱신은 없다.
+  const reloadSettings = useCallback(() => {
+    if (selected === null) return;
+    void Promise.all([refreshSettings(selected), refreshLight([selected])]);
+  }, [selected, refreshSettings, refreshLight]);
 
   const selectedLight = selected === null ? undefined : light[selected];
   const selectedHeavy = selected === null ? undefined : heavy[selected];
@@ -234,9 +273,10 @@ export default function App({ bridge: given }: { bridge: Bridge }) {
           onRefresh={refreshSelected}
         />
         <Tabs bridge={bridge} path={selected} light={selectedLight} heavy={selectedHeavy}
+              settings={selected === null ? undefined : settings[selected]}
               latestTag={selected === null ? null : latestTagOf(tags, selected)}
               onOpenUpdate={refreshTags} onApplied={refreshSelected}
-              onChanged={refreshAfterAction}
+              onChanged={refreshAfterAction} onReloadSettings={reloadSettings}
               startAsking={selected !== null && selected === appliedPath} />
         {matrixOpen && <AdapterMatrix bridge={bridge} onClose={() => setMatrixOpen(false)} />}
         {newOpen && (
