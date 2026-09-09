@@ -494,7 +494,8 @@ def test_help_surfaces_all_subcommands(pc, capsys):
     rc = pc.main([])
     assert rc == 1
     out = capsys.readouterr().out
-    for sub in ("init", "repo", "worktree", "status", "whoami", "release", "update", "upstream"):
+    for sub in ("init", "repo", "worktree", "status", "whoami", "release", "update",
+                "upstream", "delegate"):
         assert sub in out, f"서브커맨드 {sub!r} 가 --help surface 에 없다"
 
 
@@ -2825,6 +2826,39 @@ def test_main_worktree_without_add_shows_group_help(pc):
         pc.main(["worktree"])
 
 
+# ── delegate models 배선 — 읽기 전용 조회 하나 (T-0916) ──────────────────────
+
+
+def test_main_delegate_without_models_shows_group_help(pc):
+    """`delegate`(하위 동작 없이) → 그룹 도움말 surface(repo/worktree/task 동형)."""
+    with pytest.raises(SystemExit):
+        pc.main(["delegate"])
+
+
+def test_main_routes_delegate_models_to_the_lookup(pc, monkeypatch):
+    """`delegate models --harness <h> --json` 이 조회 핸들러로 간다(파싱된 인자 그대로)."""
+    seen = {}
+
+    def _capture(args):
+        seen["harness"] = args.harness
+        seen["json"] = args.json
+        return 0
+
+    monkeypatch.setattr(pc, "cmd_delegate_models", _capture)
+    rc = pc.main(["delegate", "models", "--harness", "codex", "--json"])
+
+    assert rc == 0
+    assert seen == {"harness": "codex", "json": True}
+
+
+def test_delegate_models_takes_only_the_json_shape(pc):
+    """받는 모양은 `--json` 하나다 — 없으면 사용법 종료(rc 2)이지 사람 출력이 아니다."""
+    with pytest.raises(SystemExit) as exc:
+        pc.main(["delegate", "models", "--harness", "codex"])
+
+    assert exc.value.code == 2
+
+
 # ════════════════════════════════════════════════════════════════════════
 # _default_session — board.session_name 과 동형 count-based 유도 (ADR-0040 D1·T-0073)
 # env > lease 장부 leased 1개면 그 session(단일-lease 유도) > None. per-clone
@@ -3769,6 +3803,48 @@ def test_task_prefix_forwards_registered_repos_for_reserved_check(pc):
     )
     val = [c for c in wp.calls if c[0] == "_validate_task_name"]
     assert val and set(val[0][2]) == {"svc", "acc"}
+
+
+def test_task_prefix_resolves_registered_repos_through_the_shared_helper(pc, monkeypatch):
+    """등록 repo 해소는 `_registered_repos` 한 자리다 — 이 명령이 자기 사본으로 읽지 않는다.
+
+    사본이 남아 있으면 fail-soft 규칙(board 부재·속성 부재·조회 예외)이 자리마다 갈려, 같은
+    이름이 `task new` 에서는 거부되고 여기서는 통과한다(또는 반대)."""
+    wp = FakeWorktreePool()
+    board = FakeBoard(registered=("ignored",))
+    seen: list = []
+
+    def _spy(board_mod):
+        seen.append(board_mod)
+        return ["svc"]
+
+    monkeypatch.setattr(pc, "_registered_repos", _spy)
+
+    rc = pc.cmd_task_prefix(
+        argparse.Namespace(name="job", value="pay"), worktree_pool=wp, board=board
+    )
+
+    assert rc == 0
+    assert seen == [board], "해소가 공용 헬퍼를 거치지 않았다(인라인 사본 잔존)"
+    val = [call for call in wp.calls if call[0] == "_validate_task_name"]
+    assert val and val[0][2] == ["svc"]
+
+
+def test_task_prefix_keeps_going_when_the_registry_lookup_raises(pc):
+    """조회 예외는 `None` 으로 내려가고 저장은 계속된다 — 헬퍼의 fail-soft 규칙 그대로."""
+    class RaisingBoard(FakeBoard):
+        def registered_repos(self):
+            raise RuntimeError("areas broken")
+
+    wp = FakeWorktreePool()
+
+    rc = pc.cmd_task_prefix(
+        argparse.Namespace(name="job", value="pay"), worktree_pool=wp, board=RaisingBoard()
+    )
+
+    assert rc == 0
+    val = [call for call in wp.calls if call[0] == "_validate_task_name"]
+    assert val and val[0][2] is None
 
 
 def test_task_prefix_bad_format_refused(pc, capsys):

@@ -5590,6 +5590,101 @@ def test_retired_path_main_dry_run_predicts_install_then_changes_zero_retires(
     assert backups[0].read_bytes() == b"locally modified old reviewer\n"
 
 
+# ── T-0918: v1.7.11 이하 사본의 두 단계 갱신 (회귀 고정·엔진 코드 변경 0) ──────
+# 그 세대의 manifest 는 퇴역 OLD(`external_review.py`)를 소유하고 새 source 에는 그 파일이 없다 —
+# 그래서 첫 full sync 는 rc 2(스코프 밖 source-부재)로 멈춘다. 그건 결함이 아니라 출하 계약이고,
+# 출하 문서(`pm-update/references/operational-details.md` §2.6)가 지정한 두 단계로 완주한다:
+# ① updater 만 `--paths` 로 self-delivery → ② 그 updater 의 full sync 가 퇴역을 닫는다.
+_V1711_UPDATER_REL = ".project_manager/tools/pm_update.py"
+# 그 세대 뒤에 상류가 새로 등재한 파일 — 구 manifest 는 이 행을 모른다. 이 한 줄이 있어야 구
+# manifest 가 신 manifest 의 역치환 정확일치가 아니게 되고(자기치유 비발화), 실물 사본처럼
+# **구 manifest 로 계획**한다. 없으면 픽스처가 우연히 정확일치라 치유가 먼저 돌아 형상이 다르다.
+_V1711_NEWER_REL = ".project_manager/tools/__v1711_newer_generation__.py"
+_V1711_NEW_MANIFEST = [
+    _V1711_UPDATER_REL, _V1711_NEWER_REL, _RETIRED_REVIEWER_NEW,
+    _RETIRED_REVIEWER_DIRECTIVE,
+]
+
+
+def _v1711_copy_fixture(pm_update, tmp_path, monkeypatch, name: str):
+    """(source, dest, dest 의 OLD 파일) — 구 사본 형상의 **최소** 재현.
+
+    실물(v1.7.11 사본)에서 인용하는 사실은 하나다: 그 manifest 가 퇴역 OLD 를 등재하고 퇴역
+    선언은 없다. 파일 내용·나머지 등재는 이 축과 무관하므로 짓지 않는다.
+    """
+    source = tmp_path / f"{name}_source"
+    dest = tmp_path / f"{name}_dest"
+    _make_upstream_tree(
+        source,
+        {_V1711_UPDATER_REL: "# new updater\n",
+         _V1711_NEWER_REL: "# newer generation\n",
+         _RETIRED_REVIEWER_NEW: "new reviewer\n",
+         # 출하 flavor manifest — 구 사본의 legacy manifest 가 이 후보와 정확일치가 아니라
+         #   불가침(`legacy_preserved`)이 되고, 그래서 계획이 **구 manifest** 로 선다.
+         "templates/claude_code/.project_manager/engine.manifest":
+             "\n".join(_V1711_NEW_MANIFEST) + "\n"},
+        _V1711_NEW_MANIFEST,
+    )
+    old = dest / _RETIRED_REVIEWER_OLD
+    old.parent.mkdir(parents=True)
+    old.write_text("old reviewer\n", encoding="utf-8")
+    (dest / _V1711_UPDATER_REL).write_text("# old updater\n", encoding="utf-8")
+    _write_dest_manifest(dest, [_V1711_UPDATER_REL, _RETIRED_REVIEWER_OLD])
+    _write_local_conf(dest, f"upstream.path={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    return source, dest, old
+
+
+def test_v1711_copy_first_full_sync_stops_on_the_retired_path(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """A — 구 manifest 가 소유한 퇴역 OLD 는 source 에 없어 첫 full sync 가 rc 2 로 멈춘다."""
+    source, _dest, old = _v1711_copy_fixture(pm_update, tmp_path, monkeypatch, "first")
+
+    rc = pm_update.main(["--from", str(source)])
+
+    err = capsys.readouterr().err
+    assert rc == 2, err
+    assert _RETIRED_REVIEWER_OLD in err and "source 에 없음" in err, err
+    assert old.is_file(), "멈춘 실행이 dest 를 건드렸다"
+
+
+def test_v1711_copy_updater_scope_run_is_not_blocked_by_the_missing_old_path(
+        pm_update, tmp_path, monkeypatch):
+    """B — 스코프 **밖**의 source-부재 등재는 `--paths` 실행을 막지 않는다(이 티켓의 새 가드).
+
+    막으면 v1.7.11 사본은 어떤 소스로도 갱신하지 못한다 — 두 단계 bridge 의 1회차가 바로 여기다.
+    """
+    source, dest, old = _v1711_copy_fixture(pm_update, tmp_path, monkeypatch, "scope")
+
+    rc = pm_update.main(["--from", str(source), "--paths", _V1711_UPDATER_REL])
+
+    assert rc == 0
+    assert (dest / _V1711_UPDATER_REL).read_text(encoding="utf-8") == "# new updater\n"
+    assert old.is_file(), "부분 전파가 퇴역 이주를 태웠다(스코프 밖 write)"
+    assert not (dest / _RETIRED_REVIEWER_NEW).exists(), "스코프 밖 파일이 착지했다"
+
+
+def test_v1711_copy_second_full_sync_installs_new_and_retires_old(
+        pm_update, tmp_path, monkeypatch):
+    """C — 새 manifest 를 든 2회차 full sync 가 NEW 를 설치하고 OLD 를 backup 으로 옮긴다."""
+    source, dest, old = _v1711_copy_fixture(pm_update, tmp_path, monkeypatch, "second")
+    # RUN1 이 배달한 새 updater 가 신 manifest 로 계획하는 상태(= 2회차 진입 형상).
+    _write_dest_manifest(dest, _V1711_NEW_MANIFEST)
+    # 픽스처 파일에는 rev 스탬프가 없어 수렴 판정이 rc 를 지배한다 — 이 케이스의 축이 아니다.
+    monkeypatch.setattr(pm_update, "converge_upstream_revs", lambda *a, **k: False)
+    monkeypatch.setattr(pm_update, "_verify_engine_rev_convergence", lambda *a, **k: True)
+
+    rc = pm_update.main(["--from", str(source)])
+
+    assert rc == 0
+    assert (dest / _RETIRED_REVIEWER_NEW).read_text(encoding="utf-8") == "new reviewer\n"
+    assert not old.exists(), "퇴역 OLD 가 dest 에 남았다"
+    backups = list((dest / ".pm_import_backups").glob(
+        f"*/{_RETIRED_REVIEWER_OLD}"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "old reviewer\n"
+
+
 def test_changes_reports_rename_old_path_leaving_manifest(
         pm_update, tmp_path, monkeypatch, capsys):
     """manifest 밖으로 나가는 rename 은 낡은 dest 파일이 잔존한다 — old 경로가 보고에 뜬다."""

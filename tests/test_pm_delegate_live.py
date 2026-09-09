@@ -628,9 +628,9 @@ def test_reasoning_allowed_measured_sets_pinned():
     wrapper 이므로 실효 판정을 `_validate_reasoning` 으로도 함께 못박는다."""
     pd = _load_pd()
     allowed = pd._load_relay().REASONING_ALLOWED
-    assert allowed["codex"] == frozenset({"low", "medium", "high", "xhigh", "max"})
-    assert allowed["claude"] == frozenset({"low", "medium", "high", "xhigh", "max"})
-    assert allowed["opencode"] == frozenset({"minimal", "low", "medium", "high", "max"})
+    assert allowed["codex"] == ("low", "medium", "high", "xhigh", "max")
+    assert allowed["claude"] == ("low", "medium", "high", "xhigh", "max")
+    assert allowed["opencode"] == ("minimal", "low", "medium", "high", "max")
     assert pd._validate_reasoning("codex", "max") == "max"
     assert pd._validate_reasoning("opencode", "minimal") == "minimal"
 

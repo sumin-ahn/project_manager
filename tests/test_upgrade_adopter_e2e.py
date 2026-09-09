@@ -740,7 +740,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   줄어든 것은 그 실행이 부르지 않던 코드뿐이다. 현재화한 것은 기대 SHA 하나뿐이다.
 #   같은 티켓의 수정 라운드에서 한 번 더 이동했다 — `plan()` docstring 의 낱말 하나("모듈 밖
 #   호출부")뿐이고 실행 코드·배달 경계는 무편집이다.
-_T0585_PM_UPDATE_SHA256 = "7332fe08d06964537f6ce24b0a9c4fdd9eb8b6ca76bff36d6ac13e8a5d3a3d3a"
+_T0585_PM_UPDATE_SHA256 = "6d81eb32ee13b0d9f682ded800dd2d463407b0206e8f7edc335f4e662d770d47"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -840,6 +840,13 @@ def _t0585_pm_update_source() -> str:
     해당하는 새 텍스트를 찾아 marker 문자열만 갱신한 뒤 이 함수를 처음부터 다시 돌린다.
 
     T-0748 재핀 이력(배달 경계가 그대로였던 근거는 여기 계속 쌓는다):
+
+    T-0918 — 어댑터 설정 판독이 jsonc 후행 쉼표를 처리하도록 `pm_update` 에 문법 헬퍼
+    `_strip_jsonc_trailing_commas` 를 **새로 더했다**(호출부는 `pm_import._load_adapter_config_document`
+    하나). `_main` 의 배달 경계(source/manifest planning → apply → self-update 순서)와
+    `sync_adapter_configs`·`_adapter_config_gate_failed`·`apply` 는 무편집이고, 이 fixture 의 역델타
+    marker 4곳도 그대로 유일 해소됐다(marker assert 선통과) — 합성본에 새 함수 bytes 가 실려 온
+    차이만 SHA 에 반영했다.
 
     T-0908 — URL upstream 을 `_resolve_dest_source` 가 로컬 캐시 checkout 으로 해소하게 바꾸고
     `upstream.seen_rev` 의 형상 분기를 지웠다. 바뀐 곳은 **소스 해소 입구**와 sync 종료 직전의
@@ -1059,7 +1066,7 @@ def _install_t0585_updater(dest: Path) -> None:
 # T-0887: 온보딩 opt-in 일습 삭제로 역적용 delta 의 exact-marker 목록이 두 항목으로 줄고
 # (되돌릴 원문이 사라졌다) 그만큼 historical 전문 SHA 도 이동했다. 퇴역 경로 delta 의 marker 는
 # 전부 그 절 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "f44de3ee36365c20350333af416da24dabfb065a429c26d87989a14748007c86"
+_PRE_T0876_PM_UPDATE_SHA256 = "3856f831fd6db553d05091265b6268c67a2601d658423c10fb937bbd8859b21f"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -1075,6 +1082,12 @@ def _pre_t0876_pm_update_source() -> str:
     선언 검증·legacy flavor 선택 판정)와 겹치지 않아 exact-marker 는 모두 그대로 유일 해소됐고
     (marker assert 선통과), RUN1 이 검증하는 배달 경계도 무편집이라 합성본 bytes 차이만 SHA 에
     반영했다. 이 fixture 의 upstream 도 로컬 경로라 캐시 분기는 실행되지 않는다.
+
+    T-0918 — jsonc 후행 쉼표 처리 헬퍼 `_strip_jsonc_trailing_commas` 를 `pm_update.py` 에 더했다
+    (어댑터 설정 판독 전용 · 호출부는 `pm_import` 하나). 이 fixture 가 역적용하는 T-0878·T-0876
+    delta(retired-path 선언 검증·legacy flavor 선택 판정)와 겹치지 않아 exact-marker 는 모두 그대로
+    유일 해소됐고(marker assert 선통과), RUN1 이 검증하는 배달 경계(신 reviewer 설치 → 두 번째 실행의
+    구 파일 퇴역)도 무편집이라 합성본 bytes 차이만 SHA 에 반영했다.
 
     T-0887 — 추가 리뷰어 opt-in 온보딩 블록을 `pm_update.py` 에서 삭제했다. 이 fixture 가 역적용
     하는 T-0878·T-0876 delta 는 retired-path 선언 검증과 legacy flavor 선택 판정이라 삭제된 온보딩

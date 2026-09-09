@@ -15,13 +15,35 @@ work/ 풀을 절대 건드리지 않는다(test_handoff_trigger.py 의 DI 패턴
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import shutil
+import sys
 from pathlib import Path, PureWindowsPath
 
 import pytest
 
+from _session_chain import live_harness_session, real_process_table_supported
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
+
+_real_chain = pytest.mark.skipif(
+    not real_process_table_supported(),
+    reason="실 세션 사슬 단언은 POSIX `ps` 표가 있는 환경에서만 돈다",
+)
+
+# 더미 세션 아래에서 홈 사본 엔진으로 task 를 바인딩한다 — 기록 pid 를 테스트가 조립하지 않고
+# 엔진이 정하게 둔다(T-0915).
+_BIND_TASK_SOURCE = '''\
+import importlib.util, json, sys
+
+spec = importlib.util.spec_from_file_location("worktree_pool_session_bind", sys.argv[1])
+worktree_pool = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(worktree_pool)
+record, action, _reclaimed_from = worktree_pool.bind_task(sys.argv[2])
+print(json.dumps({"pid": record.pid, "action": action}))
+'''
 
 
 def _load(name: str):
@@ -1754,6 +1776,65 @@ def test_bootstrap_task_invalid_name_rejected_rc1(bootstrap, tmp_path, capsys):
     captured = capsys.readouterr()
     assert "부적합" in captured.err
     assert "task identity surface" not in captured.out
+
+
+# ── F1b 동시 세션 거부의 실효 (기록 pid = 하네스 세션·T-0915) ────────────────────
+# 위 F1 은 `FakeWorktreePool` DI 로 부트스트랩 배선을 본다. 거부가 **실제로 발화하는지**는
+# 살아 있는 세션이 있어야 알 수 있어서, 여기서는 더미 하네스 세션을 띄워 그 아래에서 실
+# 엔진으로 task 를 바인딩하고 같은 장부에 다른 세션으로 들어가 본다.
+
+
+@pytest.fixture
+def pool_home(tmp_path):
+    """실 엔진 사본을 담은 tmp PM 홈 — 그 사본의 `worktree_pool` 이 자기 장부를 소유한다."""
+    home = tmp_path / "pool-home"
+    (home / ".project_manager" / ".local").mkdir(parents=True)
+    (home / ".project_manager" / "wiki").mkdir(parents=True)
+    shutil.copytree(TOOLS, home / ".project_manager" / "tools",
+                    ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
+    shutil.copyfile(REPO / ".project_manager" / "wiki" / "pm_state.template.md",
+                    home / ".project_manager" / "wiki" / "pm_state.template.md")
+    return home
+
+
+def _load_pool(home: Path):
+    """홈 사본의 `worktree_pool` 을 로드한다 — 경로 전역이 그 홈으로 굳는다(재배선 0)."""
+    target = home / ".project_manager" / "tools" / "worktree_pool.py"
+    spec = importlib.util.spec_from_file_location("worktree_pool_bootstrap_lease", target)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@_real_chain
+def test_bind_task_refuses_a_task_held_by_a_live_session(pool_home, tmp_path):
+    """살아 있는 다른 세션이 연 task 는 `TaskActiveElsewhere` — 그 세션이 끝나면 reclaimed.
+
+    기록 pid 가 엔진 프로세스이던 시절엔 bind 직후 죽어 거부가 사실상 발화하지 못했다
+    (두 부트스트랩이 같은 순간에 도는 창에서만). 이제 그 pid 는 세션이라 다른 창이 열려
+    있는 동안 거부가 발화하고, 그 창이 닫히면 예전처럼 회수 진입한다.
+    """
+    binder = tmp_path / "bind_task.py"
+    binder.write_text(_BIND_TASK_SOURCE, encoding="utf-8")
+    tools = pool_home / ".project_manager" / "tools" / "worktree_pool.py"
+    pool = _load_pool(pool_home)
+
+    with live_harness_session(
+        tmp_path, [sys.executable, str(binder), str(tools), "job1"],
+    ) as session:
+        assert session.rc == 0, session.stderr
+        assert json.loads(session.stdout) == {"pid": session.pid, "action": "created"}
+        assert pool.find_task("job1").pid == session.pid
+
+        with pytest.raises(pool.TaskActiveElsewhere) as refused:
+            pool.bind_task("job1")
+        assert refused.value.pid == session.pid
+
+    record, action, reclaimed_from = pool.bind_task("job1")
+
+    assert action == "reclaimed", "죽은 세션 pid 는 예전처럼 회수 진입이어야 한다"
+    assert reclaimed_from == session.pid
+    assert record.pid == pool._session_pid()
 
 
 # ── F7 resume-read 소비 배선 (task 태그 귀속·task pm_state 본문 dump·T-0374) ──────

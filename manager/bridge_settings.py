@@ -87,25 +87,38 @@ class SettingsApi:
                     "이 사본의 엔진은 `local_conf.py --keys --json` 을 모른다 — 먼저 갱신하라.",
                     stderr=completed.stderr, rc=completed.returncode)
             try:
-                return json.loads(completed.stdout)
+                document = json.loads(completed.stdout)
             except json.JSONDecodeError as exc:
                 raise CallError(
                     "not-json", f"키 목록 출력이 JSON 이 아니다 ({exc})",
                     stderr=completed.stderr or completed.stdout,
                     rc=completed.returncode) from exc
+            # 화면은 행마다 선택지(`choices`)와 권장값(`recommended`)을 읽는다 — 그 필드가 없는
+            # 세대의 산출로 절반만 그리지 않고, 무엇이 모자란지 말한다. 기준 세대는 번들 엔진이
+            # 선언한 값이다(관리자가 숫자를 따로 들지 않는다).
+            with ENGINE_LOCK:
+                expected = load_engine_module("local_conf.py").KEY_JSON_SCHEMA
+            schema = document.get("schema")
+            if not isinstance(schema, int) or schema < expected:
+                raise CallError(
+                    "old-generation",
+                    f"이 사본의 키 레지스트리는 schema {schema} 다 — 화면이 읽는 것은 "
+                    f"schema {expected}(선택지·권장값)이니 먼저 갱신하라.",
+                    stderr=completed.stderr, rc=completed.returncode)
+            return document
         except CallError as exc:
             return exc.as_error_dict()
 
     def conf_values(self, path: str) -> dict:
-        """현재 값 + 설정 완전성 다섯 목록.
+        """현재 값 — 번들 엔진의 `local_conf.load(...).values`(runner 와 같은 자리) 하나다.
 
-        값은 번들 엔진의 `local_conf.load(...).values`(runner 와 같은 자리)이고, 판정은 그 사본의
-        `status --json` 의 `conf` 절이다 — 판정을 관리자가 다시 계산하지 않는다.
+        설정 완전성 다섯 목록은 여기서 내지 않는다. 그 판정은 화면이 이미 보관하는 가벼운 현황
+        조회(`status --json` 의 `conf` 절)에 실려 있어서, 이 조회가 같은 명령을 다시 띄우면 설정
+        탭을 열 때마다 사본 프로세스가 하나 더 뜬다(실측 0.43초 · Windows 1.5초). 서브프로세스
+        없이 conf 파일만 읽는다.
         """
         try:
-            home = _pm_home(path)
-            return {"values": runner.conf_values(home),
-                    "conf": runner.status(home)["conf"]}
+            return {"values": runner.conf_values(_pm_home(path))}
         except CallError as exc:
             return exc.as_error_dict()
 
@@ -131,6 +144,38 @@ class SettingsApi:
             # `runner.conf_values`·`interpreter` 가 막혀 등록 프로젝트 전체의 주기 조회가 선다.
             changed = engine._write_conf_keys(_conf_path(home), dict(updates))
             return {"changed": bool(changed), "conf": runner.status(home)["conf"]}
+        except CallError as exc:
+            return exc.as_error_dict()
+
+    def delegate_models(self, path: str, harness: str) -> dict:
+        """그 사본의 `pm-config delegate models --harness <h> --json` 산출 그대로.
+
+        모델 목록의 정본은 그 사본의 모델 원천 표(`pm_relay.MODEL_SOURCE`)다 — 번들 목록으로
+        대신 답하지 않는다. 상한이 `HEAVY_TIMEOUT_SECONDS` 인 이유는 `kind="live"` 인 하네스가
+        실제 CLI 를 부르기 때문이다(가벼운 절의 10초를 넘긴다).
+
+        rc≠0 은 전부 error dict 로 올린다 — 사본이 이 명령을 모르는 경우(rc 2)와 조회가 실패한
+        경우(rc 3)를 여기서 가르지 않고 사본의 사유를 그대로 나른다. **빈 목록 성공은 없다**:
+        0개면 사본이 rc 3 으로 답하므로 이 자리에서 빈 목록을 성공으로 접을 길이 없다.
+        """
+        try:
+            home = _pm_home(path)
+            argv = [*runner.interpreter(home), _tool(home, "pm_config.py"),
+                    "delegate", "models", "--harness", harness, "--json"]
+            completed = _run(home, argv, timeout=runner.HEAVY_TIMEOUT_SECONDS)
+            if completed.returncode != 0:
+                raise CallError(
+                    "old-generation",
+                    f"이 사본이 {harness} 모델 목록을 내지 못했다 "
+                    "(`delegate models` 를 모르는 세대면 먼저 갱신하라).",
+                    stderr=completed.stderr, rc=completed.returncode)
+            try:
+                return json.loads(completed.stdout)
+            except json.JSONDecodeError as exc:
+                raise CallError(
+                    "not-json", f"모델 목록 출력이 JSON 이 아니다 ({exc})",
+                    stderr=completed.stderr or completed.stdout,
+                    rc=completed.returncode) from exc
         except CallError as exc:
             return exc.as_error_dict()
 

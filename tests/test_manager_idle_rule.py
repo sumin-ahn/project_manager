@@ -15,7 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from _manager_home import git_required, make_bare_with_tags, make_pm_home
+from _manager_home import (
+    end_session, git_required, load_pool, make_bare_with_tags, make_pm_home,
+)
 from _repo_owned_inventory import OWNED, repo_owned_paths
 
 from manager.bridge import Api
@@ -52,7 +54,7 @@ def _verdict(row: dict, rules: list[dict] | None = None) -> dict:
 
 @pytest.fixture(scope="module")
 def rows(tmp_path_factory) -> dict[str, dict]:
-    """세 종류 슬롯 행과 아이들 task 행 — 전부 브리지 `run` 이 만든다."""
+    """세 종류 슬롯 행과 아이들 task 행 — 브리지 `run` 이 만들고, 회수 대기 행만 엔진 API 로 만든다."""
     root = tmp_path_factory.mktemp("idle-rule")
     bare = make_bare_with_tags(root / "remote")
     home = make_pm_home(root / "demo", upstream=REPO)
@@ -65,13 +67,21 @@ def rows(tmp_path_factory) -> dict[str, dict]:
 
     run(["repo", "add", REPO_NAME, "--git", str(bare)])
     run(["worktree", "add", REPO_NAME, "--user-ack", REPO_NAME])
+    run(["worktree", "add", REPO_NAME, "--user-ack", REPO_NAME])
     run(["worktree", "add", REPO_NAME, "--readonly", "--user-ack", REPO_NAME])
     run(["task", "new", "t1"])
     document = api.status(str(home))
-    # 만든 work 슬롯 하나를 반납해 아이들로 만든다(생성 직후는 만든 프로세스 명의로 대여 상태).
-    created = next(row["slot"] for row in document["slots"]
-                   if row["role"] == "work" and row["slot"] != ".")
-    run(["release", created])
+    # 만든 work 슬롯을 반납해 아이들로 만든다(생성 직후는 만든 세션 명의로 대여 상태).
+    for created in [row["slot"] for row in document["slots"]
+                    if row["role"] == "work" and row["slot"] != "."]:
+        run(["release", created])
+
+    # 회수 대기 행 = 끝난 세션이 잡은 채 남은 대여. 장부 pid 는 그 행을 만든 세션이라
+    # (T-0915) 세션이 죽어야 이 형태가 된다 — 반납한 슬롯 하나를 다른 세션 이름으로 잡고
+    # 그 세션을 끝낸다(장부 IO 는 엔진 것을 그대로 쓴다).
+    pool = load_pool(home)
+    pool.alloc(REPO_NAME, session="demo_9")
+    end_session(pool, "demo_9")
 
     document = api.status(str(home))
     slots = document["slots"]
@@ -102,8 +112,8 @@ def test_the_readonly_slot_really_looks_like_a_reclaim_candidate(rows):
 def test_only_a_live_session_closes_the_change_actions(rows):
     assert _verdict(rows["idle"])["actions"] == "change"
     assert _verdict(rows["task"])["actions"] == "change"          # pid 0 인 task
-    # 회수 대기 행은 반납이 열린다 — 화면에서 대여한 슬롯은 브리지 서브프로세스가 끝나는
-    # 순간 이 상태가 되고(lease.pid 는 그 프로세스), 그 행의 반납이 대여의 역이다.
+    # 회수 대기 행은 반납이 열린다 — 그 행을 적은 세션이 이미 끝난 것이라(그 창이 닫혔다)
+    # 잡고 있는 주체가 없고, 그 행의 반납이 대여의 역이다.
     assert _verdict(rows["reclaim"])["actions"] == "change"
     assert _verdict(rows["readonly"])["actions"] == "refresh"     # 변경 축이 아니다
 

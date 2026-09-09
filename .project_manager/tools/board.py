@@ -17446,6 +17446,7 @@ _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
      "delegate-same-model", "design-pending", "design-estimate",
      "codex-delegate-matcher-miss", "open-claimed-contradiction", "local-conf",
      "local-conf-unknown-key", "local-conf-missing-required",
+     "local-conf-unreadable",
      # 라운드 판정 코드(사이드카 seam 소유) + board 고유 잔여·판정불능 관측. 차단은 완료
      # 게이트가 한다.
      "round-name", "round-gap", "round-dup", "round-pending", "round-temporary",
@@ -18545,7 +18546,7 @@ def lint_adapter_drift() -> list[tuple[str, str, str]]:
     silent-stale 클래스가 "대상 단정 안 함". lint 가 파일 단위 diff 를
     하지 않으므로(rev 비교만) scope 는 advisory 메시지로 안내한다.
 
-    fail-soft / 관찰가시성:
+    관측 불가의 세 갈래 (never-block advisory):
       - `upstream` 미설정(non-adopter·templates/upstream 부재 환경) → [].
       - baseline(`upstream.rev`) 미기록(아직 revision 추적 전·구 import) → [](관찰 기준점 자체 부재).
       - baseline 은 있으나 seen(`upstream.seen_rev`) 미기록(cache 부재 URL·pm-update 미실행) → **관찰불가
@@ -18554,7 +18555,18 @@ def lint_adapter_drift() -> list[tuple[str, str, str]]:
         표면화한다. advisory 라 `--gate` 미차단·1줄이라 flood 아님.
     """
     findings: list[tuple[str, str, str]] = []
-    conf = local_config()
+    # conf 판독은 lint 조회면의 seam 하나(`_lint_local_conf_read`)로 한다 — 값 소비 계약
+    # (`local_config` → `load_checked_readable`)으로 읽으면 판독 실패가 여기서 traceback 이 되어
+    # lint 전체가 죽는다(그 상태를 말해 줄 `lint_local_conf_readable` 까지 함께 사라진다).
+    # 파일 부재·판독 실패는 빈 목록이고, 못 읽은 사실은 그 한 자리가 1건으로 말한다.
+    try:
+        read = _lint_local_conf_read()
+    except LocalConfUnreadable:
+        return findings
+    if read is None:
+        return findings
+    _module, result = read
+    conf = result.values
 
     # non-adopter — upstream 자체가 없으면 비교할 대상이 없다 (graceful).
     if not (conf.get("upstream.path") or "").strip():
@@ -18732,22 +18744,55 @@ def _restated_conf_comments(text: str) -> list[tuple[str, str]]:
     return pairs
 
 
-def _lint_local_conf_read():
-    """lint 조회면이 쓰는 실 local.conf 판독 — `(로더 모듈, 판독 결과)` 또는 None(관측 없음).
+class LocalConfUnreadable(RuntimeError):
+    """실 local.conf 가 **있는데 읽지 못했다**(인코딩·권한) — "값이 없다" 와 다른 사실이다."""
 
-    조회면은 판독 실패로 멈추지 않는다(값 소비 지점의 차단은 그 지점이 이미 한다). 아래 두
-    관측 kind 가 이 **한 경계**를 공유한다 — 같은 흡수 규칙을 함수마다 복제하면 규칙이 갈린다.
-    사본 skew 는 흡수하지 않고 그대로 올린다(다른 형제 로더와 같은 관용구).
+
+def _lint_local_conf_read():
+    """lint 조회면이 쓰는 실 local.conf 판독 — 세 상태를 구분한다.
+
+    · 파일 없음 → `None`(관측 없음 · conf 없는 트리는 정상 형상).
+    · 판독 실패(`OSError`·`UnicodeError`) → `LocalConfUnreadable` 로 **올린다**. 판독은
+      `local_conf.load_strict` 로 한다 — 삼키는 `load` 를 쓰면 잘못된 UTF-8 이 "키 0개" 가 돼
+      관측 kind 전부가 조용히 0건이 된다(못 읽은 것이 값이 없는 것으로 위장).
+    · 성공 → `(로더 모듈, 판독 결과)`.
+
+    아래 관측 kind 들이 이 **한 경계**를 공유한다 — 같은 규칙을 함수마다 복제하면 규칙이 갈린다.
+    발견을 내는 자리는 `lint_local_conf_readable()` 하나이고 나머지 소비자는 빈 목록이다(같은
+    사실을 여러 번 말하지 않는다). 사본 skew 는 흡수하지 않고 그대로 올린다(다른 형제 로더와 같은
+    관용구).
     """
     if not LOCAL_CONF.is_file():
         return None
     try:
         module = _load_local_conf()
-        return module, module.load(LOCAL_CONF)
-    except Exception as exc:  # noqa: BLE001 — 조회면은 판독 실패로 멈추지 않는다.
+        return module, module.load_strict(LOCAL_CONF)
+    except (OSError, UnicodeError) as exc:
+        raise LocalConfUnreadable(f"{LOCAL_CONF}: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 — 조회면은 로더 해소 실패로 멈추지 않는다.
         if _is_engine_rev_skew(exc):
             raise
         return None
+
+
+# 실 local.conf 를 **읽지 못한** 관측 kind — 위 판독 seam 하나가 낸다(값 축과 배타적).
+_LOCAL_CONF_UNREADABLE_LINT_KIND = "local-conf-unreadable"
+
+
+def lint_local_conf_readable() -> list[tuple[str, str, str]]:
+    """실 local.conf 를 읽지 못한 사실을 advisory 로 표면화(never-block · 발견 1건).
+
+    파일이 없으면 발견 0건이다(관측 대상 자체가 없다 — 채택자 대부분의 정상 형상). 있는데 못
+    읽었을 때만 뜬다: 그 상태에서 다른 conf 관측 kind 는 전부 0건이라, 이 줄이 없으면 화면은
+    "설정에 문제 없음" 과 구별되지 않는다.
+    """
+    try:
+        _lint_local_conf_read()
+    except LocalConfUnreadable as exc:
+        return [(_rel_to_repo(LOCAL_CONF), _LOCAL_CONF_UNREADABLE_LINT_KIND,
+                 f"local.conf 를 읽지 못했다: {exc} — 값이 없는 것이 아니라 읽지 못한 것이다"
+                 "(파일 인코딩/권한 확인)")]
+    return []
 
 
 # 실 local.conf 의 **레지스트리 밖 키** 관측 kind — `local-conf`(구표기 잔존)와 배타적 축이다.
@@ -18769,7 +18814,10 @@ def lint_local_conf_keys() -> list[tuple[str, str, str]]:
     하나로 걸린다. 여러 키가 한꺼번에 있어도 finding 은 1개(1줄) — `cmd_init` 병합 경로가 같은
     목록을 같은 형태로 재사용한다(사본 없이 같은 함수 재호출).
     """
-    read = _lint_local_conf_read()
+    try:
+        read = _lint_local_conf_read()
+    except LocalConfUnreadable:
+        return []          # 못 읽은 사실은 `lint_local_conf_readable` 이 한 번 말한다.
     if read is None:
         return []
     _module, result = read
@@ -18795,7 +18843,10 @@ def lint_local_conf_required() -> list[tuple[str, str, str]]:
     init 을 거치지 않고 손으로 만든 conf 다. 값이 빈 문자열이면 "있음" 으로 본다 — 선언 유무만
     보는 축이고 값의 내용 판정은 그 값을 소비하는 지점이 한다.
     """
-    read = _lint_local_conf_read()
+    try:
+        read = _lint_local_conf_read()
+    except LocalConfUnreadable:
+        return []          # 못 읽은 사실은 `lint_local_conf_readable` 이 한 번 말한다.
     if read is None:
         return []
     module, result = read
@@ -19161,6 +19212,8 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     advisory·never-block) +
     local-conf-missing-required(local.conf 에 필수 키 미선언 — 핵심 명령이 못 도는 형상 표면화·
     advisory·never-block) +
+    local-conf-unreadable(local.conf 가 있는데 판독 실패 — 값 0 개로 위장되던 상태 표면화·
+    advisory·never-block) +
     cluster-*(클러스터 장부의 멤버 부재·통합 브랜치 부재·중복 귀속 가시화·advisory·
     never-block)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
@@ -19173,7 +19226,7 @@ def lint_tickets() -> list[tuple[str, str, str]]:
             + lint_areas_repo_unregistered()
             + lint_areas_duplicate_repo() + lint_areas_merge_union()
             + lint_delegate() + lint_local_conf() + lint_local_conf_keys()
-            + lint_local_conf_required()
+            + lint_local_conf_required() + lint_local_conf_readable()
             + lint_rounds() + lint_clusters()
             + lint_legacy_growth_sections()
             + lint_codex_delegate_observations() + lint_claim_identity())

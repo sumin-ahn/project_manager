@@ -3712,8 +3712,9 @@ def record_upstream_rev(dest_root: Path, rev: str) -> bool:
     """upstream baseline revision 을 dest local.conf 에 `upstream.rev=<commit>` 로 기록한다.
 
     drift-lint의 baseline 입력 — "마지막 동기 이후 upstream 변경분"을 재는 기준점이다
-    import 시(이 함수)와 pm_update 매 sync 시 갱신된다. `upstream.seen_rev`(현재
-    관찰값·pm-update 스킬 기록)는 **별개 키** — 한 키 2역 금지(race/자기비교 회피). rev 가
+    import 시(이 함수)와 pm_update 매 sync 시 갱신된다. 현재 관찰값 `upstream.seen_rev` 는
+    **별개 키**이고 writer 도 하나뿐이다 — `pm_update.record_upstream_revs`(한 키 2역
+    금지·race/자기비교 회피). rev 가
     빈 값(git repo 아님·HEAD 해소 실패)이면 호출부가 이 함수를 부르지 않는다(기록 생략·graceful).
     공용 writer의 중복 정규화·atomic replace·실효값 검증을 거치며 다른 키·주석은 보존한다.
     """
@@ -6423,11 +6424,16 @@ class AdapterConfigReport(NamedTuple):
     `diff_vs_baseline` 은 설치 기준(`template_rev` 시점 template) → 현재 파일이라 **채택자 편집**의
     크기이고(`added`/`removed` 도 그 축), `diff_vs_latest` 는 현재 파일 → 최신 template 이라
     **상류 변경**이다. 기준을 해소하지 못하면 `None` 이다(빈 문자열 = 차이 없음과 구분한다).
+
+    `status is None` = **선언된 대상인데 판정이 없다**(대개 dest 파일 부재 · template 를 읽지 못한
+    report 대상 포함). 부재를 행이 사라지는 것으로 말하지 않는 축이라(관측 인벤토리는 전수) 같은
+    사실을 재진술하는 `present` 필드는 두지 않는다 — dest 존재 확인도 여기서 하지 않는다.
+    그 행은 `added`/`removed` 도 널이다(잴 기준이 없다 — 0 은 "차이 없음" 이라 다른 사실이다).
     """
     relpath: str
     harness: str
     mode: str
-    status: str
+    status: str | None
     template_rev: str | None
     added: int | None
     removed: int | None
@@ -6444,9 +6450,10 @@ def _load_adapter_config_document(path: Path) -> dict:
     (`_read_hook_set_config` 와 같은 관용), 빈 문서로 보면 선언 키가 전부 `missing` 으로 실려
     표에서 loud 하다(조용한 `same` 으로 접히지 않는다).
 
-    jsonc 주석 마스킹은 `pm_update` 가 소유한 것 하나를 지연 로드해 쓴다(`_load_pm_update` 관용 ·
-    마스커 두 벌 금지). 그 seam 을 못 읽는 부분 사본은 판정 기준이 없는 상태라
-    `AdapterConfigChannelUnavailable` 로 올린다 — 못 읽은 파일을 "설정 없음" 으로 보고하지 않는다.
+    jsonc 문법(주석 마스킹·후행 쉼표)은 `pm_update` 가 소유한 것을 지연 로드해 쓴다
+    (`_load_pm_update` 관용 · 문법 처리 두 벌 금지). 그 seam 을 못 읽는 부분 사본은 판정 기준이
+    없는 상태라 `AdapterConfigChannelUnavailable` 로 올린다 — 못 읽은 파일을 "설정 없음" 으로
+    보고하지 않는다.
     """
     path = Path(path)
     try:
@@ -6463,11 +6470,13 @@ def _load_adapter_config_document(path: Path) -> dict:
     if suffix == ".jsonc":
         pm_update = _load_pm_update()
         mask = getattr(pm_update, "_mask_jsonc_comments", None) if pm_update else None
-        if not callable(mask):
+        strip = (getattr(pm_update, "_strip_jsonc_trailing_commas", None)
+                 if pm_update else None)
+        if not callable(mask) or not callable(strip):
             raise AdapterConfigChannelUnavailable(
-                "jsonc 주석 마스킹 seam 을 읽을 수 없다 (pm_update._mask_jsonc_comments) — "
-                "어댑터 설정 판정 불가")
-        text = mask(text)
+                "jsonc 문법 seam 을 읽을 수 없다 (pm_update._mask_jsonc_comments·"
+                "_strip_jsonc_trailing_commas) — 어댑터 설정 판정 불가")
+        text = strip(mask(text))
     try:
         document = json.loads(text)
     except ValueError:
@@ -6508,10 +6517,15 @@ def _feature_verdict(project_present: bool, project_value: object,
     return ADAPTER_FEATURE_DIFFERS
 
 
-def _hook_event_scripts(document, entrypoints: tuple = ()) -> dict[str, tuple[str, ...]]:
-    """문서의 `hooks.<이벤트>` → 그 이벤트가 실행하는 훅 스크립트 relpath (정렬·중복 제거).
+def _hook_event_units(document, entrypoints: tuple = ()) -> dict[str, tuple[str, ...]]:
+    """문서의 `hooks.<이벤트>` → 그 이벤트가 실행하는 **단위** (정렬·중복 제거).
 
-    기능 축은 "이 이벤트에서 무엇이 실행되나" 라 커맨드 문자열이 아니라 **스크립트**가 단위다
+    단위는 `"<matcher>:<스크립트 relpath>[ 인자…]"` 다 — 한 이벤트 안에서도 matcher 나 인자가
+    다르면 **다른 것이 실행된다**(출하 claude `PreToolUse` 는 `*` 그룹과 `Bash` 그룹이 같은 래퍼를
+    다른 인자로 부른다). 스크립트 집합만 보면 그 그룹 하나를 통째로 지워도 집합이 안 변해 표가
+    `same` 으로 접힌다. matcher 없는 그룹의 자리는 빈 문자열이다.
+
+    기능 축은 "이 이벤트에서 무엇이 실행되나" 라 커맨드 문자열이 아니라 **스크립트+인자**가 단위다
     (인터프리터 표기가 달라도 같은 훅이다). 추출 규칙 **둘 다 엔진 것**이다:
       · argv 분해(`_hook_script_and_arguments`) — 직접 실행·인터프리터 선행 커맨드.
       · 진입점 실재 판정(`_entrypoint_is_present`) — 선언된 진입점 한정.
@@ -6521,17 +6535,19 @@ def _hook_event_scripts(document, entrypoints: tuple = ()) -> dict[str, tuple[st
     """
     out: dict[str, tuple[str, ...]] = {}
     for event, commands in _hook_event_commands(document).items():
-        scripts = set()
-        for command in commands:
-            script, _arguments = _hook_script_and_arguments(_split_hook_command(command))
-            if script:
-                scripts.add(script)
-        out[event] = tuple(sorted(scripts))
+        units = set()
+        for matcher, command in commands:
+            script, arguments = _hook_script_and_arguments(_split_hook_command(command))
+            if not script:
+                continue
+            unit = f"{matcher or ''}:{script}"
+            units.add(f"{unit} {' '.join(arguments)}" if arguments else unit)
+        out[event] = tuple(sorted(units))
     for entrypoint in entrypoints:
         if not _entrypoint_is_present(document, entrypoint):
             continue
         merged = set(out.get(entrypoint.event, ()))
-        merged.add(entrypoint.dispatcher)
+        merged.add(f"{entrypoint.matcher or ''}:{entrypoint.dispatcher}")
         out[entrypoint.event] = tuple(sorted(merged))
     return out
 
@@ -6556,26 +6572,26 @@ def _adapter_feature_rows(relpath: str, project_document: dict,
         for spec in ADAPTER_HOOK_SET.values() if spec.config_relpath == relpath
         for entrypoint in spec.entrypoints
     )
-    project_events = _hook_event_scripts(project_document, entrypoints)
-    latest_events = dict(_hook_event_scripts(latest_document, entrypoints))
+    project_events = _hook_event_units(project_document, entrypoints)
+    latest_events = dict(_hook_event_units(latest_document, entrypoints))
     # 이 엔진 세대가 config 에 기대하는 진입점은 template 에 없더라도 최신 축에 든다 — 선언이
     # 곧 "있어야 하는 것" 이고, 그것이 빠진 채택자는 `missing` 으로 보여야 한다.
     for entrypoint in entrypoints:
         merged = set(latest_events.get(entrypoint.event, ()))
-        merged.add(entrypoint.dispatcher)
+        merged.add(f"{entrypoint.matcher or ''}:{entrypoint.dispatcher}")
         latest_events[entrypoint.event] = tuple(sorted(merged))
     for event in sorted(set(project_events) | set(latest_events)):
-        project_scripts = project_events.get(event)
-        latest_scripts = latest_events.get(event)
+        project_units = project_events.get(event)
+        latest_units = latest_events.get(event)
         verdict = _feature_verdict(
-            project_scripts is not None, project_scripts,
-            latest_scripts is not None, latest_scripts)
+            project_units is not None, project_units,
+            latest_units is not None, latest_units)
         if verdict is None:
             continue
         rows.append(AdapterFeature(
             f"hooks.{event}",
-            ", ".join(project_scripts) if project_scripts is not None else None,
-            ", ".join(latest_scripts) if latest_scripts is not None else None,
+            ", ".join(project_units) if project_units is not None else None,
+            ", ".join(latest_units) if latest_units is not None else None,
             verdict))
     return tuple(rows)
 
@@ -6663,6 +6679,26 @@ def adapter_config_reports(dest_root: Path, source_root: Path, *,
             features=features,
             distance=distance,
         ))
+    judged = {judgment.relpath for judgment in judgments}
+    # 채널이 있는데 판정이 없는 대상 = dest 에 파일이 없다. 관측 인벤토리는 선언 전수라 그
+    # 사실을 행이 사라지는 것으로 말하지 않는다 — 상태만 `None`(파일 없음)이다.
+    out.extend(
+        AdapterConfigReport(
+            relpath=target.relpath,
+            harness=target.harness,
+            mode=target.mode,
+            status=None,
+            template_rev=None,
+            added=None,
+            removed=None,
+            diff_vs_baseline=None,
+            diff_vs_latest="",
+            features=(),
+            distance=0,
+        )
+        for target in targets.values()
+        if target.mode != ADAPTER_CONFIG_NO_CHANNEL and target.relpath not in judged
+    )
     return out
 
 
@@ -7005,8 +7041,11 @@ def _hook_set_table(declarations) -> dict:
 _HOOK_COMMAND_KEYS = ("command", "commandWindows")
 
 
-def _hook_event_commands(document) -> dict[str, tuple[str, ...]]:
-    """config document 의 훅 커맨드를 **이벤트별**로 — `hooks.<event>[].hooks[].{command,…}`.
+def _hook_event_commands(document) -> dict[str, tuple[tuple[str | None, str], ...]]:
+    """config document 의 훅 커맨드를 **이벤트별 (matcher, 커맨드)** 로 — `hooks.<event>[]`.
+
+    matcher 는 그 커맨드가 든 그룹의 선언값이고, 키가 없으면 `None` 이다. 커맨드만 실으면 같은
+    스크립트를 다른 matcher 로 부르는 그룹들이 한 값으로 접혀 기능 표가 그 차이를 못 본다.
 
     claude `settings.json` 과 codex `hooks.json` 이 같은 형상이라 추출 규칙이 하나다. 형상이
     어긋난 항목은 조용히 건너뛴다(채택자 소유 파일이라 임의 구조가 정상 범위). 세대 판정은
@@ -7014,30 +7053,31 @@ def _hook_event_commands(document) -> dict[str, tuple[str, ...]]:
     hooks = document.get("hooks") if isinstance(document, dict) else None
     if not isinstance(hooks, dict):
         return {}
-    out: dict[str, tuple[str, ...]] = {}
+    out: dict[str, tuple[tuple[str | None, str], ...]] = {}
     for event, groups in hooks.items():
-        commands: list[str] = []
+        commands: list[tuple[str | None, str]] = []
         if isinstance(groups, list):
             for group in groups:
                 entries = group.get("hooks") if isinstance(group, dict) else None
                 if not isinstance(entries, list):
                     continue
+                matcher = group.get("matcher")
                 for entry in entries:
                     if not isinstance(entry, dict):
                         continue
                     for key in _HOOK_COMMAND_KEYS:
                         command = entry.get(key)
                         if isinstance(command, str) and command.strip():
-                            commands.append(command)
+                            commands.append((matcher, command))
         out[event] = tuple(commands)
     return out
 
 
 def _hook_commands(document) -> list[str]:
-    """config document 의 훅 커맨드 전수(이벤트 무관·선언 순서 보존)."""
+    """config document 의 훅 커맨드 전수(이벤트·matcher 무관·선언 순서 보존)."""
     return [command
             for commands in _hook_event_commands(document).values()
-            for command in commands]
+            for _matcher, command in commands]
 
 
 def _split_hook_command(command: str) -> list[str]:

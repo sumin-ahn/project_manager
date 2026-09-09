@@ -620,9 +620,9 @@ class Lease:
         # mutation 거부(set-base/rebase/dev/sync)의 canonical 판별 축이다.
         self.role = role
         # bind-origin 마커 (additive 동형 조건방출): True = 사람 발의 `bind_slot`(직접 슬롯
-        # 바인딩)이 점유한 슬롯. `bind_slot` 이 적는 pid 는 *ephemeral bootstrap subprocess* pid 라
-        # 즉사하는데, 사람 경로는 명시 `release` 로만 반납한다(pid 는 정보용) — 그런데 타 세션 `alloc`
-        # (진입 시 `reclaim_stale` 호출)이 `state==leased && pid 죽음` 으로 이 bind lease 를 stale 오판해
+        # 바인딩)이 점유한 슬롯. 사람 경로는 세션이 끝나도 명시 `release` 로만 반납한다 — 그런데
+        # 타 세션 `alloc`(진입 시 `reclaim_stale` 호출)이 `state==leased && pid 죽음` 으로 이
+        # bind lease 를 stale 오판해
         # 회수(idle 화·session 비움)하면 사람 정체성이 유실된다(타 창 세션 bind slot 2 가
         # alloc 에 회수됨). `reclaim_stale` 과 alloc 의 branch/resume 재부착 경로가 `bound` lease 를 제외해
         # 닫는다("reclaim 제외 마커"). pool 경로(alloc idle-리스·
@@ -2036,6 +2036,17 @@ def _pid_alive(pid: object) -> bool:
     return _load_relay().pid_is_alive(pid)
 
 
+def _session_pid() -> int:
+    """공용 ``pm_relay.session_pid`` seam으로 이 명령을 부른 세션 pid 를 해소한다.
+
+    장부에 적는 pid 는 명령을 실행한 엔진 프로세스가 아니라 그 명령을 부른 **하네스 세션**
+    (없으면 부모 셸)이다 — 세션이 사는 동안 `_pid_alive` 가 True 여야 `status --json` 의
+    `alive`·`bind_task` 의 동시 세션 거부·`reclaim_stale` 이 뜻을 갖는다. 해소 실패는
+    `pm_relay.SessionPidUnresolved` 로 전파한다(기록 없이 실패·`os.getpid()` 폴백 없음).
+    """
+    return _load_relay().session_pid()
+
+
 # ── 공개 API ─────────────────────────────────────────────────────────────────
 
 
@@ -2050,7 +2061,7 @@ def reclaim_stale(*, git_runner: GitRunner | None = None) -> list[str]:
     with _lease_lock():
         leases = _read_ledger_strict()
         # task 소유 슬롯 회수 제외 근거 — **task 소유의 단일 진실 = tasks 장부**.
-        # `session` 이 명명 task 이름과 일치하는 leased 슬롯은 pid(즉사 CLI/bootstrap subprocess)가
+        # `session` 이 명명 task 이름과 일치하는 leased 슬롯은 기록된 세션 pid 가
         # 죽어도 회수하지 않는다(반납은 명시 `release --task`/`task end` 만). bound 마커와 별개의
         # 백스톱이자 상위 진실 — **구버전 alloc 이 만든 기존 task lease 는 `bound` 키 부재(=False 로드)**
         # 라 마커만으론 안 걸리는데, tasks 장부 조인은 마이그레이션 0 으로 구·신 lease 를 모두 보호한다.
@@ -2065,9 +2076,9 @@ def reclaim_stale(*, git_runner: GitRunner | None = None) -> list[str]:
             # 으로 보여도 회수 대상이 아니다(회수하면 idle 화돼 alloc 이 잡아채 role 이 유실된다).
             if lease.role == "readonly":
                 continue
-            # 사람 bind 슬롯(bound) 제외 — `bind_slot` 이 적는 pid 는 ephemeral bootstrap
-            # subprocess pid 라 즉사하는데, 사람 경로는 명시 `release` 로만 반납한다(pid=정보용). 타 세션
-            # alloc 의 `reclaim_stale` 진입이 이 bind lease 를 `leased && pid 죽음` = stale 오판해 회수하면
+            # 사람 bind 슬롯(bound) 제외 — 사람 경로는 세션이 끝나도 명시 `release` 로만
+            # 반납한다. 타 세션 alloc 의 `reclaim_stale` 진입이 이 bind lease 를
+            # `leased && pid 죽음` = stale 오판해 회수하면
             # 사람 정체성이 유실된다. bound 를 회수 대상에서 제외해 닫는다
             # Amendment가 처방한 "reclaim 제외 마커"). crash 후 자동 회수는 없다 — 0단계 세션명
             # 점유검사 + 재bind(직접 지정)로 자연 회복(열린 질문 수용).
@@ -2494,15 +2505,11 @@ def bind_task(name: str, *, pid: "int | None" = None,
     빈 이름/예약패턴(`registered_repos` 주면)을 fail-loud(`InvalidTaskName`) — 엔진층 배치
     0357 의 직접 소비도 우회 못 한다.
 
-    **동시 세션 거부의 실효 경계**: 기록 pid 가 **살아있고 내 pid 와 다르면**
-    `TaskActiveElsewhere`(부트스트랩이 dump 이전에 거부). 그러나 **기록 pid = 부트스트랩 헬퍼
-    프로세스**라(dump 후 즉사) alive 거부의 실효 창은 **두 부트스트랩이 동시에 도는 순간뿐**이다 —
-    이후 두 번째 창이 같은 task 를 열면 pid 가 죽어 `reclaimed` 로 통과한다. 이는 슬롯 lease pid 와
-    **동일 semantics**(슬롯의 실 보호는
-    session 명[phase0]이지만 task 는 두 창이 같은 이름이라 pid 가 유일 판별자)다. 크로스플랫폼
-    프로세스 조상 추적은 과설계라 **비채택** — 대신 `reclaimed_from_pid>0` 이면 호출부(부트스트랩)가
-    **loud notice**("다른 창이 아직 작업 중일 수 있다")를 surface 한다(감지=기계·해소=사용자·0단계
-    미기록 질의와 동형). 차단 아님(crash 재개가 다수 케이스).
+    **동시 세션 거부**: 기록 pid 가 **살아있고 내 pid 와 다르면** `TaskActiveElsewhere`(부트스트랩이
+    dump 이전에 거부). 기록 pid 는 `_session_pid()` 가 해소한 **하네스 세션**(없으면 부모 셸)이라
+    다른 창이 살아 있는 동안 거부가 발화한다 — 그 세션이 끝난 뒤 여는 두 번째 창은 pid 가 죽어
+    `reclaimed` 로 통과한다. `reclaimed_from_pid>0` 이면 호출부(부트스트랩)가 **loud notice** 를
+    surface 한다(감지=기계·해소=사용자·0단계 미기록 질의와 동형). 차단 아님(crash 재개가 다수 케이스).
 
     `_pid_alive` 는 `reclaim_stale` 과 같은 생존 primitive(동형·신설 0). prefix 는 여기서 안 만진다
     — 생성 시 None·재개 시 기존 값 유지(변경 = `task prefix`). 신규/재개 모두
@@ -2510,7 +2517,7 @@ def bind_task(name: str, *, pid: "int | None" = None,
     slot 유무와 무관한 연속성 앵커이며 첫 handoff까지 생성을 미루지 않는다.
     """
     _validate_task_name(name, registered_repos)   # mkdir·장부 write 이전 fail-loud(부작용 0).
-    pid = os.getpid() if pid is None else pid
+    pid = _session_pid() if pid is None else pid
     with _lease_lock():
         tasks = _read_tasks_strict()
         existing = next((t for t in tasks if t.name == name), None)
@@ -2572,9 +2579,9 @@ def release_task_pid(name: str) -> "Task | None":
     """task handoff intent — 장부 task 레코드 `pid=0`(미점유) 세팅.
 
     pm_handoff task 모드가 log 쓰기 전 load-bearing released/occupied 경계로 호출한다.
-    task 장부 pid 는 dump 후 즉사하는 bootstrap subprocess pid라, 핸드오프가 intent를 기록하지
-    않으면 **정상 인계 후 재개도** dead-pid →
-    `bind_task` 가 `reclaimed`(crash 회수 loud notice)로 상시 오탐한다. 종료 시 pid 를
+    task 장부 pid 는 그 task 를 연 세션 pid라, 핸드오프가 intent를 기록하지 않으면 **다음
+    세션의 정상 재개도** dead-pid → `bind_task` 가 `reclaimed`(crash 회수 loud notice)로
+    상시 오탐한다. 종료 시 pid 를
     0(미점유)으로 비워 두면 다음 부트스트랩이 clean `resumed`(경고 없음)로 재개한다 — 진짜 crash
     (핸드오프 없이 죽어 pid>0 잔존)만 회수 경고를 받게 구분한다. (슬롯 lease 재스냅·session
     end="두고 간다")의 task 축 짝. task end(`end_task`)와는 별개 — end 는 레코드 제거·아카이브,
@@ -3004,7 +3011,7 @@ def alloc(
                     _checkout_required(lease.slot, target_branch, git_runner=git_runner)
                     lease.state = "leased"
                     lease.session = sess
-                    lease.pid = os.getpid()
+                    lease.pid = _session_pid()
                     lease.started = _now_utc()
                     lease.bound = False  # pool 재부착 — 사람 bind 마커 해제(task 소유는 tasks 장부가 진실).
                     _apply_git_snapshot(lease, git_runner=git_runner)  # arrival 스냅(기대 baseline·base 보존).
@@ -3036,7 +3043,7 @@ def alloc(
                 _checkout_required(lease.slot, target_branch, git_runner=git_runner)
             lease.state = "leased"
             lease.session = sess
-            lease.pid = os.getpid()
+            lease.pid = _session_pid()
             lease.started = _now_utc()
             # pool 대여 — 사람 bind 마커 해제. task-명의(sess=task 이름)의 reclaim/재부착 보호는 bound 가
             # 아니라 tasks 장부 조인이 담당한다.
@@ -3424,15 +3431,19 @@ def create_slot(
     test_cmd: str | None = None,
     readonly: bool = False,
 ) -> Lease:
-    """새 슬롯을 *생성*하고 leased 로 리스한다 — 풀 확장 (NeedsCreate 게이트 통과 후).
+    """새 슬롯을 *생성*한다 — 풀 확장 (NeedsCreate 게이트 통과 후).
+
+    확정 상태는 세 갈래다: task 명의 생성은 그 task 명의 `leased`, `readonly` 는 무소유
+    공유 슬롯(leased·session/pid 없음), 그 밖은 **무소유 `idle`**(풀에 들어가는 슬롯 —
+    점유는 `alloc`/`bind_slot` 이 한다).
 
     **task-명의 생성 (`owner_task` 주어짐)**: 풀 소진 시 `worktree add <repo> --task
     <이름>` 이 새 슬롯을 만들고 **생성 직후 그 슬롯을** task 명의로 대여한다(min-idle 재탐색의
     오슬롯 리스크 없이 생성분 직결). lease.session=owner_task — 그 슬롯의 reclaim/재부착 보호는
     `bound` 이 아니라 **tasks 장부 조인**이 담당한다
     lease 통합·마이그레이션 0). owner_task 는 기바인딩 task 요구(cmd 층 `find_task`)라 항상 tasks
-    장부에 있다. readonly 와는 상호배타(readonly=무소유 공유 슬롯). owner_task 미지정은 현행(session=
-    도착 세션·pool 슬롯).
+    장부에 있다. readonly 와는 상호배타(readonly=무소유 공유 슬롯). owner_task 미지정은 무소유
+    idle pool 슬롯이다 — `session` 인자는 그동안의 provisional 마커에만 실린다(누가 만들다 말았는지).
 
     `test_cmd` 가 주어지면 그 슬롯 리스에 회귀/빌드명령을 바인딩한다(
     amend) — 같은 repo 의 슬롯들이 서로 다른 빌드 타깃(HIL config 등)을 가질 수 있게.
@@ -3460,7 +3471,7 @@ def create_slot(
          §8-4(d)) → `git submodule update --init --recursive --force`(슬롯 worktree cwd).
          `--force` 는 worktree+submodule edge(bare 에서 만든 fresh 슬롯)서 plain `--init` 이
          체크아웃 못 하는 상태를 강제 init — fresh 슬롯이라 잃을 로컬 변경 0.
-      5. 장부에 leased 엔트리 등록.
+      5. 장부 엔트리 확정(위 세 갈래 — task 명의 leased · readonly 무소유 leased · 그 밖 idle).
 
     **`readonly=True`**: research 전용 read-only 공유 슬롯을 만든다 —
     슬롯 전용 브랜치를 파지 않고 `git worktree add --detach <path> <base sha>` 로 **detached
@@ -3475,7 +3486,7 @@ def create_slot(
     submodule init.
     """
     # task-명의 생성이면 session=task 이름(reclaim/재부착 보호는 tasks 장부 조인이 담당·
-    # bound 아님). owner_task 미지정은 현행(session=도착 세션).
+    # bound 아님). owner_task 미지정이면 이 값은 provisional 마커에만 실리고 확정은 무소유 idle 이다.
     task_created = owner_task is not None
     # owner_task + readonly 는 모순(무소유 공유 자산 vs task 명의 배타 대여) — CLI 가드만 믿지 않고
     # 엔진 자체에서 fail-loud(codex suggestion·타 호출부/미래 경로 방어). 부작용(worktree add) 이전.
@@ -3522,7 +3533,7 @@ def create_slot(
         # 잡던 SIGKILL 을 provisional 이 커버한다(결정 §provisional 우선). 슬롯번호도 이 엔트리로
         # 예약된다(`_existing_slot_numbers` 가 세므로 후속 create_slot 이 재사용 안 함).
         provisional = Lease(
-            slot=slot, repo=repo, session=sess, pid=os.getpid(),
+            slot=slot, repo=repo, session=sess, pid=_session_pid(),
             started=_now_utc(), state="creating", test_cmd=test_cmd,
         )
         leases.append(provisional)
@@ -3752,6 +3763,13 @@ def create_slot(
 
             # 성공 — provisional 을 leased 로 **확정**한다(2차 write·branch 는 장부 미저장
             # git=진실·조회는 live current_branch). provisional 을 그대로 반환(같은 필드).
+            # 단, leased 는 **명의가 있을 때**다: owner_task 는 그 task 명의로, readonly 는
+            # 무소유 공유로 확정한다. 명의가 없는 생성(그 밖)은 leased 가 아니라 **idle** 이다 —
+            # 기록 pid 가 세션이 된 뒤로 만든 세션 명의 leased 로 남기면 그 세션이 사는 동안
+            # 살아 있는 대여라, 같은 세션의 다음 `alloc` 이 "idle 슬롯 없음"(풀 소진)으로 막히고
+            # 관리자에서는 그 행의 반납·제거·대여가 전부 닫힌다(회복 경로 없음). 생성은 풀
+            # 확장이고 점유는 alloc/bind 가 한다 — CLI 안내("다음 스텝: 이 슬롯을 세션에
+            # 바인딩")와도 같은 뜻이다.
             provisional.state = "leased"
             if readonly:
                 # readonly 공유 슬롯 — 무소유 확정: session/pid 를 비우고 role 을 박는다.
@@ -3760,6 +3778,12 @@ def create_slot(
                 provisional.session = ""
                 provisional.pid = 0
                 provisional.role = "readonly"
+            elif not task_created:
+                # 풀 슬롯 — 무소유 idle 확정: readonly 와 같은 "무소유" 표현(session 빈 문자열·
+                # pid 0)을 쓰고 state 만 idle 이라 alloc 의 idle-탐색이 곧바로 집는다.
+                provisional.state = "idle"
+                provisional.session = ""
+                provisional.pid = 0
             # create git 스냅— base 를 아는 유일 지점이다(base_branch=base·
             # commit=방금 파생된 fresh 슬롯 tip). base 미지정(branch·else 경로)이면 base 는 미기록
             # (drift 감지는 사용자 set-base 후 활성). fail-soft — 스냅 실패가 create 를 안 막는다.
@@ -3790,20 +3814,20 @@ def bind_slot(slot: str, repo: str, session: str, *, git_runner: GitRunner | Non
 
     **`reclaim_stale` 를 절대 호출하지 않는다** — 사람 경로는 pid-회수를 하지 않는다(근원
     제거). `alloc` 은 진입 시 `reclaim_stale` 로 풀 가용성을
-    회복하지만, `bind_slot` 은 슬롯을 직접 지정받으므로 회수가 필요 없다 — pid 는 정보용으로만
-    기록(`os.getpid()`)하고 liveness 판정에 쓰지 않는다(명시 `release` 로만 반납).
+    회복하지만, `bind_slot` 은 슬롯을 직접 지정받으므로 회수가 필요 없다 — 반납은 명시
+    `release` 로만 한다.
 
-    ⚠️ **cross-path 보호(bound 마커)**: 여기 적는 pid 는
-    *ephemeral bootstrap 프로세스* pid 라 bootstrap 종료 후 죽는다. **사람 경로는 회수를 안 하지만
-    (위), 타 세션 `alloc`(task alloc·relay 등)은 진입 시 `reclaim_stale` 를 부른다 — 같은
+    ⚠️ **cross-path 보호(bound 마커)**: 여기 적는 pid 는 `_session_pid()` 가 해소한 세션 pid 라
+    그 세션이 끝나면 죽는다. **사람 경로는 회수를 안 하지만(위), 타 세션
+    `alloc`(task alloc·relay 등)은 진입 시 `reclaim_stale` 를 부른다 — 같은
     장부를 공유하므로, 방치하면 이 bind 엔트리를 `state==leased && pid 죽음` = stale 로 오판해
     idle 화(session 비움)한다** (task `alloc` 이 타 창 세션 bind slot 을 회수). 이를
     막기 위해 bind 는 lease 에 **`bound=True` 마커**(additive·조건방출·구 장부 부재=False)를 박고
     `reclaim_stale` 은 `bound` lease 를 회수 대상에서 제외한다 — 사람 bind 정체성이 타 alloc 의
     reclaim 에 유실되지 않는다. 반납은 명시 경로(`release`/`force_release`/`pm_handoff --done`)로만
     이뤄지고 그때 마커가 해제된다(pool 재대여 slot 은 alloc 이 마커 clear·현행 pid-회수 복귀).
-    한계: bound lease 는 crash(bootstrap 후 세션 crash) 후 자동 회수가 없다 — slot bind 는 0단계
-    세션명 점유검사 + 재bind(직접 지정)로 자연 회복되므로 수용.
+    한계: bound lease 는 세션 crash 후 자동 회수가 없다 — slot bind 는 0단계 세션명 점유검사
+    + 재bind(직접 지정)로 자연 회복되므로 수용.
 
     **branch *표시* 는 건드리지 않는다** — 브랜치는 git=단일 진실이라 슬롯 worktree HEAD 에서
     live 조회(`current_branch(slot)`). bind 는 리스 장부의 점유 메타
@@ -3828,12 +3852,12 @@ def bind_slot(slot: str, repo: str, session: str, *, git_runner: GitRunner | Non
             raise ReadonlySlotNotLeasable(slot, "bind")
         if target is None:
             # 없으면 새 Lease append (직접 바인딩 — 풀 탐색/생성 게이트 없음). bound=True 로 사람
-            # bind 마커를 박아 이후 alloc 의 reclaim_stale 이 즉사 pid 로 오판·회수하지 못하게 한다.
+            # bind 마커를 박아 이후 alloc 의 reclaim_stale 이 죽은 세션 pid 로 오판·회수하지 못하게 한다.
             target = Lease(
                 slot=slot,
                 repo=repo,
                 session=session,
-                pid=os.getpid(),
+                pid=_session_pid(),
                 started=_now_utc(),
                 state="leased",
                 bound=True,
@@ -3845,7 +3869,7 @@ def bind_slot(slot: str, repo: str, session: str, *, git_runner: GitRunner | Non
             target.repo = repo
             target.session = session
             target.state = "leased"
-            target.pid = os.getpid()
+            target.pid = _session_pid()
             target.started = _now_utc()
             target.bound = True
         # arrival git 스냅(기대 baseline·기존 base 보존·fail-soft — 슬롯 부재면 no-op).
@@ -3874,7 +3898,7 @@ def register_home_slot(*, board=None, write: bool = True) -> "tuple[str, str]":
     이면 어느 repo 의 슬롯인지 지어낼 수 없으므로 무기록하고 그 사실을 돌려준다.
 
     세션 값은 `<repo>_1` — 슬롯 1번의 canonical 키다. `bound=True` 는 `reclaim_stale` 제외
-    마커다: 등록을 수행하는 프로세스의 pid 는 곧 죽으므로, 마커가 없으면 다음 `alloc` 이 이
+    마커다: 등록을 수행한 세션이 끝나면 그 pid 도 죽으므로, 마커가 없으면 다음 `alloc` 이 이
     행을 stale 로 오판해 idle 화한다. 장부 손상은 `_read_ledger_strict` 가 전파한다(조용한
     덮어쓰기 금지).
 
@@ -3895,7 +3919,7 @@ def register_home_slot(*, board=None, write: bool = True) -> "tuple[str, str]":
                 slot=HOME_SLOT,
                 repo=repo,
                 session=session,
-                pid=os.getpid(),
+                pid=_session_pid(),
                 started=_now_utc(),
                 state="leased",
                 bound=True,

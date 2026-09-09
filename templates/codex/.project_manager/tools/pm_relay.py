@@ -29,6 +29,7 @@ import datetime
 import errno
 import json
 import math
+import ntpath
 import os
 import re
 import signal
@@ -385,6 +386,134 @@ def pid_is_alive(
         # EPERM은 존재하지만 조회 권한이 없는 프로세스다. 그 밖의 조회 오류도 슬롯을
         # 조기 회수하지 않도록 보수적으로 생존으로 간주한다.
         return True
+
+
+class SessionPidUnresolved(RuntimeError):
+    """이 명령이 어느 세션에 귀속되는지 해소하지 못했다 — 장부를 쓰지 않고 실패한다."""
+
+
+# 조상 순회 상한 — `console_encoding._MAX_ANCESTOR_DEPTH` 와 같은 값이다(같은 축의 두 순회가
+# 다른 깊이를 쓰면 같은 사슬에서 다른 답이 나온다). 하네스는 사람 셸에서 1~3단 안에 있다.
+_MAX_SESSION_ANCESTOR_DEPTH = 8
+# 프로세스 표 조회(`ps`) 상한 — 장부 write 마다 지나는 경로라 무한 대기를 두지 않는다.
+_PROCESS_TABLE_TIMEOUT_SECONDS = 10
+
+
+def _posix_process_table() -> "list[tuple[int, int, str]]":
+    """`ps -eo pid=,ppid=,comm=` 한 번으로 ``(pid, parent_pid, name)`` 표를 만든다.
+
+    Linux·macOS 공용이다 — `/proc` 은 macOS 에 없으므로 쓰지 않는다. `comm` 은 execve 에 넘긴
+    경로의 basename(심링크 이름 보존·Linux 는 15자 절단)이고 macOS 의 `ps` 는 여기에 전체 경로를
+    싣기도 해서 basename 으로 한 번 더 줄인다. 줄당 `split(maxsplit=2)` 라 이름에 공백이 있어도
+    안전하다. 표를 못 읽으면 빈 목록으로 축약하지 않고 `SessionPidUnresolved` 로 올린다 —
+    "하네스 없음"과 "표를 못 읽음"은 다른 사실이다.
+    """
+    argv = ["ps", "-eo", "pid=,ppid=,comm="]
+    try:
+        done = subprocess.run(
+            argv, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=_PROCESS_TABLE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SessionPidUnresolved(
+            f"세션 pid 를 해소하지 못했다 — 프로세스 표를 읽지 못함({argv} 실행 실패: {exc}). "
+            "이 명령은 어느 세션에 귀속되는지 모른 채 장부를 쓰지 않는다."
+        ) from exc
+    if done.returncode != 0:
+        raise SessionPidUnresolved(
+            f"세션 pid 를 해소하지 못했다 — 프로세스 표를 읽지 못함({argv} rc={done.returncode}: "
+            f"{done.stderr.strip()!r}). 이 명령은 어느 세션에 귀속되는지 모른 채 장부를 쓰지 않는다."
+        )
+    rows: "list[tuple[int, int, str]]" = []
+    for line in done.stdout.splitlines():
+        fields = line.split(maxsplit=2)
+        if len(fields) != 3:
+            continue
+        pid_text, parent_text, name = fields
+        try:
+            rows.append((int(pid_text), int(parent_text), os.path.basename(name.strip())))
+        except ValueError:
+            continue
+    return rows
+
+
+def _windows_process_table() -> "list[tuple[int, int, str]]":
+    """Windows 프로세스 표 — `console_encoding._toolhelp_processes()` 를 그대로 쓴다.
+
+    Toolhelp32 열거는 그 모듈이 단일 소유한다(두 번째 열거 0). 이름만 돌려주는
+    `console_encoding._parent_process_name` 은 다른 소비자라 호출하지 않는다. 실패 시 빈 목록을
+    주는 fail-soft 이므로 그 결과는 `session_pid` 가 해소 실패로 올린다.
+
+    이름은 실행 파일 확장자를 벗긴 소문자 basename 이다(`…\\Claude.EXE` → `claude`) — Toolhelp
+    `szExeFile` 은 이미지 파일명이라 늘 확장자를 달고 오는데, POSIX `comm` 은 달지 않는다. 두
+    플랫폼의 이름 축을 여기서 같게 맞춰야 `session_pid` 의 완전 일치 판정이 한 규칙으로 선다
+    (판정 쪽에 접미 목록을 두면 규칙이 둘로 갈린다).
+    """
+    console_encoding_path = Path(__file__).resolve().parent / "console_encoding.py"
+    _require_engine_sibling(console_encoding_path, "console_encoding.py")
+    console_encoding = _load_module_from_path(
+        console_encoding_path, "console_encoding.py",
+        verifier=_verify_engine_rev, cache=True,
+    )
+    return [
+        (pid, parent_pid, ntpath.splitext(ntpath.basename(exe))[0].lower())
+        for pid, parent_pid, exe in console_encoding._toolhelp_processes()
+    ]
+
+
+def session_pid(
+    *,
+    _platform_name: str | None = None,
+    _process_table=None,
+) -> int:
+    """이 명령을 부른 **세션** 프로세스의 pid — 장부에 점유 주체로 적을 값.
+
+    세션 = 부모 사슬을 올라가 실행 파일 basename 이 `HARNESS_CHOICES` 와 **완전 일치**하는 첫
+    조상(claude·codex·opencode)이다. 접두/부분 일치는 쓰지 않는다 — 상주하는 `claude-desktop`
+    프로세스를 하네스로 오인한다(실측). 하네스 조상이 없으면 사람이 터미널에서 직접 부른
+    것이므로 직계 부모(`os.getppid()`)가 세션이다(그 셸이 닫히면 `pid_is_alive` 가 False).
+
+    부모가 0/1(이미 죽어 init 에 입양됨·double-fork)이면 귀속할 세션이 없으므로
+    `SessionPidUnresolved` 로 실패한다 — 1 을 기록하면 그 행이 영원히 "작업 중"으로 보인다.
+    `os.getpid()` 로 내려가는 폴백은 없다(명령 프로세스는 명령과 함께 죽는다 = 이 티켓이 고친
+    결함 그 자체).
+
+    ``_platform_name``·``_process_table`` 은 형제 `pid_is_alive(_platform_name=, _windows_api=)`
+    와 동형인 주입 seam 이다 — Windows 분기와 음성 사례를 실 프로세스에 손대지 않고 검증한다.
+    """
+    is_windows = (
+        os.name == "nt" if _platform_name is None else _platform_name == "nt"
+    )
+    if _process_table is None:
+        table = _windows_process_table() if is_windows else _posix_process_table()
+    else:
+        table = list(_process_table)
+    if not table:
+        raise SessionPidUnresolved(
+            "세션 pid 를 해소하지 못했다 — 프로세스 표를 읽지 못함(빈 목록). 이 명령은 어느 "
+            "세션에 귀속되는지 모른 채 장부를 쓰지 않는다."
+        )
+
+    parents = {pid: parent_pid for pid, parent_pid, _name in table}
+    names = {pid: name for pid, _parent_pid, name in table}
+    current = os.getpid()
+    visited = {current}
+    for _ in range(_MAX_SESSION_ANCESTOR_DEPTH):
+        parent_pid = parents.get(current)
+        if parent_pid is None or parent_pid in visited:
+            break               # 사슬 끝 또는 사이클 — 하네스 없음으로 본다.
+        visited.add(parent_pid)
+        if names.get(parent_pid) in HARNESS_CHOICES:
+            return parent_pid
+        current = parent_pid
+
+    direct_parent = os.getppid()
+    if direct_parent <= 1:
+        raise SessionPidUnresolved(
+            f"세션 pid 를 해소하지 못했다 — 하네스 조상이 없고 직계 부모가 {direct_parent} 다"
+            "(이미 죽어 init 에 입양됨). 이 명령은 어느 세션에 귀속되는지 모른 채 장부를 쓰지 않는다."
+        )
+    return direct_parent
 
 
 TEMP_ROOT_DIRNAME = "tmp"
@@ -1071,10 +1200,51 @@ READ_ROLES: frozenset[str] = frozenset({"researcher", "code-reviewer"})
 #     않고 provider 로 passthrough**(valid/invalid 모두 rc=0·미지원값은 provider 가 silent-ignore).
 #     그래서 이 집합은 opencode 문서화 ladder 를 **typo-guard** 로 인코딩한 것 — silent no-op 을
 #     호출 전에 차단한다. provider 별 실지원은 다를 수 있다(passthrough 특성).
-REASONING_ALLOWED: dict[str, frozenset[str]] = {
-    "codex": frozenset({"low", "medium", "high", "xhigh", "max"}),
-    "claude": frozenset({"low", "medium", "high", "xhigh", "max"}),
-    "opencode": frozenset({"minimal", "low", "medium", "high", "max"}),
+#   값이 **tuple 리터럴**인 것은 형식이 아니라 계약이다: 설정 키 레지스트리가 이 선언을 소스
+#   텍스트로(`ast.literal_eval`) 읽어 설정 화면의 선택지를 만든다 — `frozenset({...})` 는 Call
+#   노드라 읽히지 않고, 그 실패는 fail-soft 라 선택지가 조용히 빈 목록이 된다. 순서는 ladder 순이다.
+REASONING_ALLOWED: dict[str, tuple[str, ...]] = {
+    "codex": ("low", "medium", "high", "xhigh", "max"),
+    "claude": ("low", "medium", "high", "xhigh", "max"),
+    "opencode": ("minimal", "low", "medium", "high", "max"),
+}
+
+
+class ModelSource(NamedTuple):
+    """하네스별 **모델 값의 원천** 선언 — 목록을 엔진에 박지 않고 어디서 읽는지만 적는다.
+
+    모델은 자주 바뀌므로 하드코딩은 곧 stale 이다. `kind` 가 읽는 방식을 정하고 소비자는 그 값으로만
+    갈린다(하네스 이름 분기 0):
+      · `alias`  — CLI 가 계약한 별칭이 `values` 에 있다(그 CLI `--help` 실측).
+      · `config` — 사용자 config 파일의 키 하나가 현재 값이다(`config_env`·`config_home`·`config_key`).
+      · `live`   — CLI 조회 명령이 목록을 준다(조회 seam 은 `pm_import._real_models_runner`).
+
+    `value_format`·`how_to_check` 는 사람 안내 문구다(`pm_config` 의 `[m]` 위임 모델 안내).
+    """
+
+    kind: str
+    values: tuple[str, ...]
+    config_env: str | None
+    config_home: str | None
+    config_key: str | None
+    value_format: str
+    how_to_check: str
+
+
+# 모델 원천 표 — 설정 키 레지스트리의 선택지·`pm-config delegate models`·`[m]` 안내가
+# **이 표 하나**를 읽는다(값 표는 한 자리).
+MODEL_SOURCE: dict[str, ModelSource] = {
+    # `claude --help` 실측: "Provide an alias for the latest model (e.g. 'fable', 'opus', or
+    # 'sonnet') or a model's full name (e.g. 'claude-fable-5')."
+    "claude": ModelSource("alias", ("fable", "opus", "sonnet"), None, None, None,
+                          "별칭 또는 풀네임", "`claude --help` 의 모델 옵션 설명"),
+    # codex 는 목록 서브커맨드가 없다 — `-c/--config` 도움말이 기본 경로로 명시하는
+    # `~/.codex/config.toml`(env `CODEX_HOME` 이 있으면 그 아래)의 최상위 `model` 이 현재 값이다.
+    "codex": ModelSource("config", (), "CODEX_HOME", ".codex/config.toml", "model",
+                         "사용자 codex config 가 인정하는 문자열",
+                         "사용자 codex config 의 모델 설정"),
+    "opencode": ModelSource("live", (), None, None, None,
+                            "provider/model", "`opencode models`"),
 }
 
 # codex sandbox 모드 — write=workspace-write·read=read-only.
@@ -1221,7 +1391,7 @@ def validate_reasoning(harness: str, reasoning: str | None) -> str | None:
     if reasoning is None or not reasoning.strip():
         return None
     reasoning = reasoning.strip()
-    allowed = REASONING_ALLOWED.get(harness, frozenset())
+    allowed = REASONING_ALLOWED.get(harness, ())
     if reasoning not in allowed:
         known = ", ".join(sorted(allowed)) if allowed else "(미확정 라이브 실측 전)"
         raise HarnessContractError(

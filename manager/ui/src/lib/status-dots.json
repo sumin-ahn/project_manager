@@ -1,5 +1,5 @@
 {
-  "note": "상태 점 + 변경 동작 판정 — 위에서부터 첫 일치가 이긴다. 값은 status --json 의 필드 그대로이고 관리자 쪽 판정 코드는 없다. readonly 가 맨 앞인 이유: 실제 `worktree add --readonly` 슬롯은 leased·pid 0·alive false 라 순서가 없으면 전부 '회수 대기' 빨강으로 오표시된다. actions 는 그 행에서 여는 동작이다 — change=변경 동작 가능 · disabled=비활성(사유 표시) · refresh=재조회만. 회수 대기(leased·alive false)가 change 인 이유: 화면에서 대여한 슬롯은 브리지 서브프로세스가 끝나는 순간 이 상태가 되고, 그 행의 반납이 대여의 역이다. 회수를 기다릴 수도 있다(다음 bootstrap).",
+  "note": "상태 점 + 변경 동작 판정 — 위에서부터 첫 일치가 이긴다. 값은 status --json 의 필드 그대로이고 관리자 쪽 판정 코드는 없다. readonly 가 맨 앞인 이유: 실제 `worktree add --readonly` 슬롯은 leased·pid 0·alive false 라 순서가 없으면 전부 '회수 대기' 빨강으로 오표시된다. actions 는 그 행에서 여는 동작이다 — change=변경 동작 가능 · disabled=비활성(사유 표시) · refresh=재조회만. 회수 대기(leased·alive false)가 change 인 이유: 그 행을 적은 세션이 이미 끝난 것이라(그 창이 닫혔다) 잡고 있는 주체가 없고, 그 행의 반납이 대여의 역이다. 회수를 기다릴 수도 있다(다음 bootstrap).",
   "rules": [
     { "field": "role", "equals": "readonly", "dot": "blue", "label": "readonly", "actions": "refresh" },
     { "field": "state", "equals": "idle", "dot": "gray", "label": "아이들", "actions": "change" },

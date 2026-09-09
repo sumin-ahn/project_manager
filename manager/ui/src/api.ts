@@ -80,6 +80,20 @@ export type ConfSection = {
   missing_for_latest: string[] | null;
 };
 
+/**
+ * 그 키에 고를 수 있는 값 — 엔진 레지스트리가 소유한다(화면에 목록 상수를 두지 않는다).
+ *
+ * `values` 는 **버킷** 표다: `depends_on` 이 없으면 키가 `""` 인 한 칸이고, 있으면 그 키의 현재
+ * 값이 버킷 이름이다(하네스마다 다른 추론 강도). `fetch` 가 있는 칸은 목록을 미리 들고 있지
+ * 않고 그 명령으로 받아 온다. `free_text` 는 목록 밖 값도 유효하다는 뜻이다.
+ */
+export type ConfChoices = {
+  depends_on: string | null;
+  values: Record<string, string[]>;
+  fetch: { command: string; arg: string } | null;
+  free_text: boolean;
+};
+
 /** 키 레지스트리 한 행 — 실명(`kind: "key"`)과 패턴 키군(`kind: "pattern"`)이 한 목록에 있다. */
 export type ConfKeyRow = {
   key: string;
@@ -88,12 +102,25 @@ export type ConfKeyRow = {
   default: string | null;
   required: boolean;
   kind: "key" | "pattern";
-  members: { key: string; default: string | null }[] | null;
+  choices: ConfChoices | null;
+  recommended: string | null;
+  members: ConfKeyMember[] | null;
+};
+
+/** 패턴 키군에서 전개된 실명 한 행 — 선택지·권장값을 각자 든다. */
+export type ConfKeyMember = {
+  key: string;
+  default: string | null;
+  choices: ConfChoices | null;
+  recommended: string | null;
 };
 
 export type ConfKeysDocument = { schema: number; groups: string[]; keys: ConfKeyRow[] };
-export type ConfValuesDocument = { values: Record<string, string>; conf: ConfSection };
+/** 값 파일 그대로 — 판정(다섯 목록)은 가벼운 현황 조회의 `conf` 절이 나른다(조회 1회). */
+export type ConfValuesDocument = { values: Record<string, string> };
 export type ConfSaveResult = { changed: boolean; conf: ConfSection };
+/** `delegate models --harness <h> --json` 산출 그대로 — 빈 목록 성공은 없다(0개면 실패다). */
+export type DelegateModelsDocument = { harness: string; kind: string; models: string[] };
 
 export type AdapterFeature = {
   name: string;
@@ -106,15 +133,17 @@ export type AdapterFeature = {
  * 어댑터 파일 한 행 — 모양이 **둘**이다. 채널 있는 파일은 아래 필드 전부를 들고, 인스턴스 소유
  * 문서(`CLAUDE.md`·`AGENTS.md`)는 `path`·`ownership`·`status` 셋뿐이다(나머지는 null 이 아니라
  * **키가 없다**). 화면은 `"mode" in file` 로 가른다.
+ * `status: null` = 선언된 대상인데 **판정이 없다**(대개 dest 파일 부재 · template 를 읽지 못한
+ * report 대상 포함). 행은 전수라 사라지지 않는다 — 그 행은 `diff_lines` 두 칸도 널이다.
  */
 export type AdapterFile = {
   path: string;
-  status: string;
+  status: string | null;
   ownership?: string;
   harness?: string;
   mode?: "managed" | "report";
   template_rev?: string;
-  diff_lines?: { added: number; removed: number };
+  diff_lines?: { added: number | null; removed: number | null };
   diff_vs_baseline?: string;
   diff_vs_latest?: string;
   features?: AdapterFeature[];
@@ -174,6 +203,8 @@ export type Bridge = {
   conf_save(path: string, updates: Record<string, string>):
     Promise<ConfSaveResult | ErrorResponse>;
   conf_reset(path: string, key: string): Promise<ConfSaveResult | ErrorResponse>;
+  delegate_models(path: string, harness: string):
+    Promise<DelegateModelsDocument | ErrorResponse>;
   adapters(path: string): Promise<AdapterResponse | ErrorResponse>;
   adapter_accept(path: string, relpath: string): Promise<CommandResult | ErrorResponse>;
   adapter_matrix(): Promise<AdapterMatrixDocument | ErrorResponse>;
@@ -228,6 +259,8 @@ export function pywebviewBridge(): Bridge {
       call("conf_save", path, updates) as Promise<ConfSaveResult | ErrorResponse>,
     conf_reset: (path, key) =>
       call("conf_reset", path, key) as Promise<ConfSaveResult | ErrorResponse>,
+    delegate_models: (path, harness) =>
+      call("delegate_models", path, harness) as Promise<DelegateModelsDocument | ErrorResponse>,
     adapters: (path) => call("adapters", path) as Promise<AdapterResponse | ErrorResponse>,
     adapter_accept: (path, relpath) =>
       call("adapter_accept", path, relpath) as Promise<CommandResult | ErrorResponse>,

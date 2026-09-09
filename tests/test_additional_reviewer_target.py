@@ -446,7 +446,13 @@ def test_reviewer_role_cannot_be_overridden_by_config(
 
 
 def test_codex_max_reasoning_is_available_to_the_reviewer_profile(external, relay):
-    """추가 리뷰어 기본 프로필이 쓰는 ladder 상단(codex `max`)이 허용집합에 등재돼 있다."""
+    """추가 리뷰어 기본 프로필이 쓰는 ladder 상단(codex `max`)이 허용집합에 등재돼 있다.
+
+    허용집합의 선언 형태(tuple 리터럴)도 함께 못박는다 — `local_conf._sibling_mapping` 이 이 선언을
+    소스 텍스트로 읽어 설정 화면 선택지를 만들고, `frozenset({...})`(Call 노드)로 되돌아가면 그
+    파생이 **조용히** 빈 목록으로 강등된다(리뷰어 argv 는 그대로라 여기서만 잡힌다).
+    """
+    assert relay.REASONING_ALLOWED["codex"] == ("low", "medium", "high", "xhigh", "max")
     assert "max" in relay.REASONING_ALLOWED["codex"]
     target = external.resolve_reviewer_target(
         {"additional_reviewer.harness": "codex",
@@ -1880,9 +1886,11 @@ def test_pm_relay_is_cycle_free(relay):
     loads = {name for name in _sibling_loads("pm_relay.py") if (TOOLS / name).is_file()}
     assert "pm_delegate.py" not in loads
     assert "additional_reviewer.py" not in loads
-    # 형제는 부트스트랩 로더와 공용 파일락뿐이고, 그 둘은 아무것도 되로드하지 않는 leaf 다 —
-    # 어느 표면이 relay 를 deep-import 해도 순환이 생기지 않는다.
-    assert loads == {"file_lock.py", "repo_owned_files.py"}
+    # 형제는 부트스트랩 로더·공용 파일락·콘솔 인코딩 셋뿐이고, 셋 다 아무것도 되로드하지 않는
+    # leaf 다 — 어느 표면이 relay 를 deep-import 해도 순환이 생기지 않는다. `console_encoding` 은
+    # Windows 프로세스 표(`_toolhelp_processes`)의 단일 소유자라 `session_pid` 가 그걸 그대로
+    # 쓴다(두 번째 열거를 두지 않는다·T-0915).
+    assert loads == {"console_encoding.py", "file_lock.py", "repo_owned_files.py"}
     for leaf in sorted(loads):
         assert {name for name in _sibling_loads(leaf) if (TOOLS / name).is_file()} == set()
     assert Path(relay._load_file_lock().__file__).name == "file_lock.py"

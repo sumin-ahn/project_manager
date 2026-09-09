@@ -18,6 +18,8 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -3075,14 +3077,22 @@ def test_lint_tickets_includes_unmigrated_overlay(board, monkeypatch):
 # 주입한다(파일 IO·network 0). scope 제외(instance-state)는 lint 가 파일 diff 를 안 하므로
 # 자동 충족 — 여기선 rev 비교 sensitivity 와 advisory never-block 만 검증한다.
 
-def _wire_conf(board, monkeypatch, conf: dict) -> None:
-    """`local_config()` 를 고정 dict 로 stub — local.conf 파일/network 없이 2키 주입."""
-    monkeypatch.setattr(board, "local_config", lambda: dict(conf))
+def _wire_conf(board, monkeypatch, tmp_path, conf: dict) -> None:
+    """실 local.conf 를 깔고 그 경로를 물린다 — 판독은 lint 조회면의 seam 하나가 한다.
+
+    `local_config()` 를 dict 로 갈아끼우면 이 함수가 어느 경로로 conf 를 읽는지 자체가 가려진다
+    (판독 실패로 조회면이 죽던 형상이 그렇게 숨었다). 파일·로더를 그대로 태운다(network 0).
+    """
+    conf_path = tmp_path / ".project_manager" / "local.conf"
+    conf_path.parent.mkdir(parents=True, exist_ok=True)
+    conf_path.write_text(
+        "".join(f"{key}={value}\n" for key, value in conf.items()), encoding="utf-8")
+    monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
 
 
-def test_adapter_drift_flags_when_baseline_differs_from_seen(board, monkeypatch):
+def test_adapter_drift_flags_when_baseline_differs_from_seen(board, monkeypatch, tmp_path):
     # 정상 baseline 이후 upstream 이 앞섬(seen≠baseline) → 인위 drift → finding 1.
-    _wire_conf(board, monkeypatch, {
+    _wire_conf(board, monkeypatch, tmp_path, {
         "upstream.path": "https://github.com/example/project_manager",
         "upstream.rev": "aaaaaaaaaaaa1111",
         "upstream.seen_rev": "bbbbbbbbbbbb2222",
@@ -3097,9 +3107,9 @@ def test_adapter_drift_flags_when_baseline_differs_from_seen(board, monkeypatch)
     assert "pm-update" in detail
 
 
-def test_adapter_drift_clean_when_baseline_equals_seen(board, monkeypatch):
+def test_adapter_drift_clean_when_baseline_equals_seen(board, monkeypatch, tmp_path):
     # baseline == seen → 마지막 동기 이후 upstream 변경 없음 → finding 0 (정상→0).
-    _wire_conf(board, monkeypatch, {
+    _wire_conf(board, monkeypatch, tmp_path, {
         "upstream.path": "https://github.com/example/project_manager",
         "upstream.rev": "cccccccccccc3333",
         "upstream.seen_rev": "cccccccccccc3333",
@@ -3107,29 +3117,29 @@ def test_adapter_drift_clean_when_baseline_equals_seen(board, monkeypatch):
     assert board.lint_adapter_drift() == []
 
 
-def test_adapter_drift_graceful_when_upstream_absent(board, monkeypatch):
+def test_adapter_drift_graceful_when_upstream_absent(board, monkeypatch, tmp_path):
     # 솔로·non-adopter — upstream 자체 부재 → graceful 0 (fail-soft).
-    _wire_conf(board, monkeypatch, {
+    _wire_conf(board, monkeypatch, tmp_path, {
         "upstream.rev": "aaaaaaaaaaaa1111",
         "upstream.seen_rev": "bbbbbbbbbbbb2222",
     })
     assert board.lint_adapter_drift() == []
 
 
-def test_adapter_drift_graceful_when_baseline_unrecorded(board, monkeypatch):
+def test_adapter_drift_graceful_when_baseline_unrecorded(board, monkeypatch, tmp_path):
     # baseline(`upstream_rev`) 미기록(구 import·revision 추적 전) → graceful 0.
-    _wire_conf(board, monkeypatch, {
+    _wire_conf(board, monkeypatch, tmp_path, {
         "upstream.path": "/some/path/project_manager_1",
         "upstream.seen_rev": "bbbbbbbbbbbb2222",
     })
     assert board.lint_adapter_drift() == []
 
 
-def test_adapter_drift_observability_advisory_when_seen_unrecorded(board, monkeypatch):
+def test_adapter_drift_observability_advisory_when_seen_unrecorded(board, monkeypatch, tmp_path):
     # baseline 은 있으나 seen(`upstream_seen_rev`) 미기록 → 관찰불가 advisory (T-0305·ADR-0032 Q3).
     # 과거엔 조용한 [](silent skip)였으나, safety-critical 잔여가 *관찰 없이* 낡는 "green 인데 고장"을
     # 막으려 관찰불가 자체를 표면화한다(never-block·1줄이라 flood 아님).
-    _wire_conf(board, monkeypatch, {
+    _wire_conf(board, monkeypatch, tmp_path, {
         "upstream.path": "https://github.com/example/project_manager",
         "upstream.rev": "aaaaaaaaaaaa1111",
     })
@@ -3140,16 +3150,16 @@ def test_adapter_drift_observability_advisory_when_seen_unrecorded(board, monkey
     assert "관찰불가" in detail and "upstream.seen_rev" in detail and "pm-update" in detail
 
 
-def test_adapter_drift_graceful_when_conf_empty(board, monkeypatch):
-    # local.conf 부재(빈 dict·솔로/신규 clone) → graceful 0.
-    _wire_conf(board, monkeypatch, {})
+def test_adapter_drift_graceful_when_conf_empty(board, monkeypatch, tmp_path):
+    # 키 하나 없는 local.conf(솔로/신규 clone) → graceful 0.
+    _wire_conf(board, monkeypatch, tmp_path, {})
     assert board.lint_adapter_drift() == []
 
 
-def test_adapter_drift_blank_seen_treated_as_unrecorded(board, monkeypatch):
+def test_adapter_drift_blank_seen_treated_as_unrecorded(board, monkeypatch, tmp_path):
     # seen 키는 있으나 빈 값(`upstream.seen_rev=   `) → strip 후 미기록과 동치 → 관찰불가 advisory
     # (T-0305·never-block). baseline 빈값이면 여전히 graceful [](관찰 기준점 부재).
-    _wire_conf(board, monkeypatch, {
+    _wire_conf(board, monkeypatch, tmp_path, {
         "upstream.path": "https://github.com/example/project_manager",
         "upstream.rev": "aaaaaaaaaaaa1111",
         "upstream.seen_rev": "   ",
@@ -3159,10 +3169,10 @@ def test_adapter_drift_blank_seen_treated_as_unrecorded(board, monkeypatch):
     assert "관찰불가" in findings[0][2]
 
 
-def test_adapter_drift_message_is_direction_neutral(board, monkeypatch):
+def test_adapter_drift_message_is_direction_neutral(board, monkeypatch, tmp_path):
     # T-0413: lint 는 git 을 호출하지 않아(ADR-0032 D5·rev 문자열 비교뿐) 두 rev 의 선후를 모른다.
     # 따라서 "upstream 이 baseline 이후 변경됨" 같은 방향 단정을 하면 안 된다 — 불일치 사실만 알린다.
-    _wire_conf(board, monkeypatch, {
+    _wire_conf(board, monkeypatch, tmp_path, {
         "upstream.path": "/w/project_manager_1",
         "upstream.rev": "aaaaaaaaaaaa1111",
         "upstream.seen_rev": "bbbbbbbbbbbb2222",
@@ -3175,10 +3185,10 @@ def test_adapter_drift_message_is_direction_neutral(board, monkeypatch):
     assert "aaaaaaaaaaaa" in detail and "bbbbbbbbbbbb" in detail
 
 
-def test_adapter_drift_neutral_when_seen_is_older_than_baseline(board, monkeypatch):
+def test_adapter_drift_neutral_when_seen_is_older_than_baseline(board, monkeypatch, tmp_path):
     # ② adopter#0 실측(PM 4차): seen(0ccc0251…·v1.3.5)이 baseline(ddf6f484…·v1.4.0)의 *조상*.
     # finding 개수·kind 는 불변(advisory 1)이되, 메시지가 "upstream 이 앞섰다"고 단정하면 거짓이다.
-    _wire_conf(board, monkeypatch, {
+    _wire_conf(board, monkeypatch, tmp_path, {
         "upstream.path": "/w/project_manager_1",
         "upstream.rev": "ddf6f4842653",
         "upstream.seen_rev": "0ccc02513a7f",
@@ -3258,14 +3268,14 @@ def test_adapter_drift_kind_is_advisory(board):
     assert "adapter-drift" in board._ADVISORY_LINT_KINDS
 
 
-def test_adapter_drift_is_advisory_never_blocks(board, monkeypatch):
+def test_adapter_drift_is_advisory_never_blocks(board, monkeypatch, tmp_path):
     # 인위 drift finding 만 있어도 --gate 는 0(미차단)·무인자는 표면화로 1 (sensitivity).
     for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
                "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
                "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
                "lint_render_leak", "lint_unmigrated_overlay", "_run_lint_hooks"):
         monkeypatch.setattr(board, fn, lambda: [])
-    _wire_conf(board, monkeypatch, {
+    _wire_conf(board, monkeypatch, tmp_path, {
         "upstream.path": "https://github.com/example/project_manager",
         "upstream.rev": "aaaaaaaaaaaa1111",
         "upstream.seen_rev": "bbbbbbbbbbbb2222",
@@ -4198,6 +4208,107 @@ def test_fresh_init_conf_has_no_missing_required(board, monkeypatch, tmp_path):
     assert board.lint_local_conf_required() == []
     conf_module = board._load_local_conf()
     assert conf_module.missing_required(conf_module.load(pm / "local.conf").values) == ()
+
+
+# ── local.conf 판독 실패 lint (`local-conf-unreadable` · T-0918·X-5) ────────
+# 판독 seam 이 삼키던 동안 잘못된 UTF-8 conf 는 "키 0 개" 로 읽혀 conf 관측 kind 전부가 0 건이었다
+# (못 읽은 것이 값이 없는 것으로 위장). 이제 seam 이 세 상태를 구분하고 발견은 한 자리가 낸다.
+
+
+def _unreadable_conf(tmp_path: Path) -> Path:
+    """잘못된 UTF-8 바이트가 든 실 local.conf — 판독은 실패하고 파일은 존재한다."""
+    conf = tmp_path / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_bytes(b"runtime.py=python3\ntest.cmd=\xff\xfe not utf-8\n")
+    return conf
+
+
+def test_unreadable_local_conf_surfaces_one_advisory_finding(board, monkeypatch, tmp_path):
+    """읽지 못한 conf 는 1줄 advisory 다 — 값 축 kind 들은 침묵한다(같은 사실 재진술 0)."""
+    monkeypatch.setattr(board, "LOCAL_CONF", _unreadable_conf(tmp_path))
+
+    findings = board.lint_local_conf_readable()
+
+    assert len(findings) == 1, findings
+    _where, kind, detail = findings[0]
+    assert kind == "local-conf-unreadable"
+    assert "읽지 못했다" in detail and "인코딩" in detail
+    assert board.lint_local_conf_keys() == []
+    assert board.lint_local_conf_required() == []
+
+
+def test_no_local_conf_file_reports_nothing_unreadable(board, monkeypatch, tmp_path):
+    """파일 부재는 관측 없음이다 — 없는 파일을 못 읽었다고 말하지 않는다."""
+    monkeypatch.setattr(board, "LOCAL_CONF", tmp_path / ".project_manager" / "local.conf")
+
+    assert board.lint_local_conf_readable() == []
+
+
+def test_readable_local_conf_reports_nothing_unreadable(board, monkeypatch, tmp_path):
+    """정상 conf 는 이 축에서 조용하다(대조군 — 가드가 항상 뜨지 않는다)."""
+    conf = tmp_path / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_text("runtime.py=python3\ntest.cmd=pytest -q\n", encoding="utf-8")
+    monkeypatch.setattr(board, "LOCAL_CONF", conf)
+
+    assert board.lint_local_conf_readable() == []
+
+
+def test_unreadable_kind_is_advisory_and_joins_the_report(board, monkeypatch, tmp_path):
+    """kind 등재(`--gate` 종료코드 비기여) + `lint_tickets()` 합류(발견 1건).
+
+    `lint_adapter_drift` 는 대역으로 끄지 않는다 — 그 자리도 같은 판독 seam 을 쓰므로 같은
+    트리에서 조용히 빈 목록이다. 끄고 재면 조회면 전체가 traceback 으로 죽는 형상을 못 본다.
+    """
+    assert "local-conf-unreadable" in board._ADVISORY_LINT_KINDS
+    _wire_repo(board, monkeypatch, tmp_path)
+    monkeypatch.setattr(board, "LOCAL_CONF", _unreadable_conf(tmp_path))
+    for fn in _UNRELATED_LINT_FNS:
+        monkeypatch.setattr(board, fn, lambda: [])
+
+    assert board.lint_adapter_drift() == []      # 같은 seam — 못 읽었다고 두 번 말하지 않는다
+    kinds = _kinds(board.lint_tickets())
+
+    assert kinds.count("local-conf-unreadable") == 1, kinds
+    assert board.cmd_lint(SimpleNamespace(gate=True)) == 0      # never-block
+    assert board.cmd_lint(SimpleNamespace(gate=False)) == 1     # 무인자는 보인다
+
+
+def test_the_real_lint_command_reaches_the_advisory(tmp_path):
+    """실 `board.py lint` 가 그 줄을 낸다 — 조회면이 판독 실패로 죽지 않는다(도달성).
+
+    in-process 단언만으로는 이 축이 닫히지 않는다: 판독을 값 소비 계약으로 하던 자리가 하나라도
+    남으면 사용자가 실제로 보는 것은 새 줄이 아니라 `UnicodeDecodeError` traceback 이다.
+    rc 는 두 표면이 다르다 — 무인자 lint 는 발견이 있으면 1(보고 표면), `--gate` 는 advisory 라
+    0(never-block). 둘 다 traceback 없이 그 줄을 싣는지 값으로 고정한다.
+    """
+    inst = tmp_path / "adopter"
+    (inst / ".project_manager").mkdir(parents=True)
+    shutil.copytree(TOOLS, inst / ".project_manager" / "tools")
+    (inst / ".project_manager" / "local.conf").write_bytes(
+        b"runtime.py=python3\ntest.cmd=\xff\xfe not utf-8\n")
+
+    def lint(*argv: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(inst / ".project_manager" / "tools" / "board.py"), *argv],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(inst))
+
+    plain, gate = lint("lint"), lint("lint", "--gate")
+
+    assert gate.returncode == 0, gate.stderr          # advisory 는 게이트를 막지 않는다
+    assert plain.returncode == 1, plain.stderr        # 무인자는 발견이 있으면 1(보고 표면)
+    for completed in (plain, gate):
+        assert "local-conf-unreadable" in completed.stdout, completed.stdout
+        assert completed.stdout.count("local-conf-unreadable") == 1, completed.stdout
+        assert "Traceback" not in completed.stderr, completed.stderr
+
+
+def test_read_seam_uses_the_strict_loader(board, monkeypatch, tmp_path):
+    """판독 seam 은 `local_conf.load_strict` 를 부른다 — 삼키는 `load` 로 돌아가면 red."""
+    monkeypatch.setattr(board, "LOCAL_CONF", _unreadable_conf(tmp_path))
+
+    with pytest.raises(board.LocalConfUnreadable):
+        board._lint_local_conf_read()
 
 
 # ════════════════════════════════════════════════════════════════════════

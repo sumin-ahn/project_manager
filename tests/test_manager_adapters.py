@@ -106,7 +106,7 @@ def test_the_section_carries_the_conf_verdict_of_the_same_call(api, pm_home):
     assert set(conf) == {"missing_required", "legacy", "unknown", "nonstandard",
                          "missing_for_latest"}
     assert conf["missing_for_latest"] == []                   # 없음 — 모름(null)과 다른 값이다
-    light = api.conf_values(str(pm_home))["conf"]
+    light = api.status(str(pm_home))["conf"]
     assert light["missing_for_latest"] is None                # 같은 사본의 가벼운 절은 모름
     # 나머지 네 목록은 같은 사본의 같은 판정이다 — 어댑터 절이 판정을 다시 계산하지 않는다.
     assert {key: value for key, value in conf.items() if key != "missing_for_latest"} \
@@ -115,7 +115,7 @@ def test_the_section_carries_the_conf_verdict_of_the_same_call(api, pm_home):
     _drop_conf_key(pm_home, "test.cmd")
 
     assert api.adapters(str(pm_home))["conf"]["missing_for_latest"] == ["test.cmd"]
-    assert api.conf_values(str(pm_home))["conf"]["missing_for_latest"] is None
+    assert api.status(str(pm_home))["conf"]["missing_for_latest"] is None
 
 
 def test_looking_at_the_adapter_section_writes_nothing(api, pm_home):

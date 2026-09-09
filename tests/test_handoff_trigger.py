@@ -10,11 +10,13 @@ nudge tier(ADR-0037)가 담당하므로 얇은 자동 skeleton 박제 경로가 
   - 대화형 handoff skeleton (박제 entries 자동 목록·메타 학습·pending intent·회귀 1줄).
   - ctx 임계 config 기본값(30/20·T-0207 상향) + reader + board.py init 기록.
   - 대화형 run() 경로 회귀 불변 (인계 프롬프트 stdout·log 미오염·프롬프트 템플릿 lean).
+  - task 핸드오프 intent (장부 pid 0 기록 · 기록 실패는 log 무접촉 fail-loud).
 """
 from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from _pytest_summary import pytest_summary
@@ -279,6 +281,53 @@ def test_handoff_prompt_template_is_lean(handoff):
     # 옛 재열거 유도 문구 부재 (ADR-0008 금지).
     assert "5~10개 불릿" not in template, "옛 '5~10개 불릿' 재열거 유도 잔존"
     assert "board 상태 / 진행 중 작업" not in template, "옛 'board 상태' 재열거 유도 잔존"
+
+
+# ── 5. task 핸드오프 intent — 장부 pid 0 기록 (거동 불변 핀) ──────────────────
+# task 장부 pid 는 **그 task 를 연 세션 pid** 다. 핸드오프가 종료 intent 를 기록하지 않으면 다음
+# 세션의 정상 재개도 dead-pid 로 읽혀 `bind_task` 가 회수(이전 세션 crash)로 상시 오탐한다 —
+# 그래서 이 기록은 log 쓰기 **전에** 성공해야 하는 load-bearing 신호다. 기록 자리는 worktree_pool
+# 의 write 프리미티브 하나이고 핸드오프는 장부를 직접 쓰지 않는다.
+
+
+class _TaskLedgerStub:
+    """`release_task_pid` 만 흉내내는 최소 대역 — 호출 인자와 반환을 남긴다."""
+
+    def __init__(self, record) -> None:
+        self.calls: list[str] = []
+        self._record = record
+
+    def release_task_pid(self, name: str):
+        self.calls.append(name)
+        return self._record
+
+
+def test_task_handoff_intent_writes_pid_zero_through_the_pool_primitive(handoff, capsys):
+    """task 모드는 그 task 레코드의 pid 를 0(미점유)으로 비우고 성공을 보고한다."""
+    pool = _TaskLedgerStub(SimpleNamespace(name="t1", pid=0))
+    tool = handoff.PmHandoff(worktree_pool=pool)
+
+    assert tool._release_task_pid("t1") is True
+    assert pool.calls == ["t1"], "장부 write 는 그 프리미티브 한 번뿐이다"
+    assert "pid=0" in capsys.readouterr().out
+
+
+def test_task_handoff_intent_without_a_task_record_is_fail_loud(handoff, capsys):
+    """장부에 그 task 가 없으면 신호를 못 남긴 것이다 — 성공으로 접지 않는다(log 무접촉)."""
+    pool = _TaskLedgerStub(None)
+    tool = handoff.PmHandoff(worktree_pool=pool)
+
+    assert tool._release_task_pid("t1") is False
+    assert pool.calls == ["t1"]
+    assert "장부에 없음" in capsys.readouterr().err
+
+
+def test_task_handoff_intent_requires_the_pool_write_primitive(handoff, capsys):
+    """프리미티브가 없는 구버전 사본에서도 조용히 넘어가지 않는다(멱등성 신호 상실 = 중단)."""
+    tool = handoff.PmHandoff(worktree_pool=SimpleNamespace())
+
+    assert tool._release_task_pid("t1") is False
+    assert "release_task_pid" in capsys.readouterr().err
 
 
 def test_no_stale_handoff_guidance_across_tree():

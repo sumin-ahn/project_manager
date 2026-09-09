@@ -262,7 +262,7 @@ def test_alloc_idle_slot_leases_it(wp):
     assert lease.slot == "work/A_1"
     assert lease.state == "leased"
     assert lease.session == "me"
-    assert lease.pid == os.getpid()
+    assert lease.pid == wp._session_pid()
     # 장부에 반영됐는지.
     assert wp.list_leases()[0].state == "leased"
 
@@ -1323,6 +1323,130 @@ def test_shared_pid_alive_windows_uses_query_handle_and_absorbs_oserror(wp):
 
 
 # ════════════════════════════════════════════════════════════════════════
+# 세션 pid 기록 (T-0915) — 장부에 적히는 pid = 명령을 부른 하네스 세션
+# 엔진 프로세스 pid 를 적으면 명령이 끝나는 순간 죽어 `status --json` 의 alive 가 늘 false 다.
+# 기록 자리는 전부 `_session_pid()` 하나를 지나고, 생존 판정(`_pid_alive`)은 그대로다.
+# ════════════════════════════════════════════════════════════════════════
+
+_PID_RECORDING_FUNCTIONS = (
+    "bind_task", "alloc", "create_slot", "bind_slot", "register_home_slot",
+)
+# `os.getpid()` 가 남아도 되는 유일한 자리 — 세션 *이름* 조립(점유 pid 가 아니다).
+_SELF_PID_ALLOWED_FUNCTIONS = ("_default_session",)
+
+
+def _calls_named(node, name: str) -> list:
+    """`node` 아래에서 `name()`/`x.name()` 호출을 모은다(docstring 언급은 안 센다)."""
+    return [
+        call for call in ast.walk(node)
+        if isinstance(call, ast.Call)
+        and ((isinstance(call.func, ast.Name) and call.func.id == name)
+             or (isinstance(call.func, ast.Attribute) and call.func.attr == name))
+    ]
+
+
+def test_session_pid_seam_delegates_to_the_shared_relay(wp):
+    """`_session_pid` 는 `_pid_alive` 와 같은 한 줄 위임 seam이다(판정/해소 재구현 0)."""
+    assert wp._session_pid() == wp._load_relay().session_pid()
+
+    tree = ast.parse((TOOLS / "worktree_pool.py").read_text(encoding="utf-8"))
+    seam = next(node for node in tree.body
+                if isinstance(node, ast.FunctionDef) and node.name == "_session_pid")
+    body = [node for node in seam.body if not (isinstance(node, ast.Expr)
+                                               and isinstance(node.value, ast.Constant))]
+    assert len(body) == 1 and isinstance(body[0], ast.Return)
+    assert _calls_named(body[0], "session_pid")
+
+
+def test_pid_recording_sites_call_the_session_seam_and_never_os_getpid():
+    """기록 자리 다섯 함수는 `_session_pid()` 만 부른다 — 자기 pid 를 적는 자리는 0 이다."""
+    tree = ast.parse((TOOLS / "worktree_pool.py").read_text(encoding="utf-8"))
+    functions = {node.name: node for node in ast.walk(tree)
+                 if isinstance(node, ast.FunctionDef)}
+
+    for name in _PID_RECORDING_FUNCTIONS:
+        function = functions[name]
+        assert _calls_named(function, "_session_pid"), f"{name} 이 세션 pid seam 을 안 쓴다"
+        assert _calls_named(function, "getpid") == [], f"{name} 이 자기 pid 를 기록한다"
+
+    owners = {}
+    for owner in ast.walk(tree):
+        if isinstance(owner, ast.FunctionDef):
+            for call in _calls_named(owner, "getpid"):
+                owners[owner.name] = owners.get(owner.name, 0) + 1
+    assert set(owners) == set(_SELF_PID_ALLOWED_FUNCTIONS), (
+        f"`os.getpid()` 허용 자리 밖 사용: {sorted(set(owners) - set(_SELF_PID_ALLOWED_FUNCTIONS))}"
+    )
+
+
+def test_bind_task_records_the_resolved_session_pid(wp, monkeypatch):
+    """task 장부 pid = 해소된 세션 pid — seam 을 바꾸면 기록도 따라 바뀐다."""
+    monkeypatch.setattr(wp, "_session_pid", lambda: 424242)
+
+    record, action, _reclaimed_from = wp.bind_task("job1")
+
+    assert action == "created"
+    assert record.pid == 424242
+    assert wp.find_task("job1").pid == 424242
+
+
+def test_alloc_records_the_resolved_session_pid(wp, monkeypatch):
+    """idle 슬롯 대여도 같은 seam 을 지난다(장부 스키마 무변경·pid 의미만 세션)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", pid=0, state="idle"))
+    monkeypatch.setattr(wp, "_session_pid", lambda: 424243)
+
+    lease = wp.alloc("A", session="me", git_runner=FakeGit())
+
+    assert lease.pid == 424243
+    assert wp.list_leases()[0].pid == 424243
+
+
+def test_bind_slot_records_the_resolved_session_pid(wp, monkeypatch):
+    """사람 발의 직접 바인딩도 같은 seam 을 지난다(신규 append·기존 갱신 둘 다)."""
+    monkeypatch.setattr(wp, "_session_pid", lambda: 424244)
+
+    assert wp.bind_slot("work/A_2", "A", "A_2").pid == 424244
+
+    _seed(wp, _lease(wp, slot="work/A_3", repo="A", session="", pid=0, state="idle"))
+    assert wp.bind_slot("work/A_3", "A", "A_3").pid == 424244
+
+
+def test_create_slot_provisional_records_the_resolved_session_pid(wp, monkeypatch):
+    """provisional('creating')도 같은 세션 pid 다 — 중단 흔적 성질은 state 가 진다."""
+    _mk_bare_placeholder(wp, "A")
+    monkeypatch.setattr(wp, "_session_pid", lambda: 424245)
+    seen = {}
+
+    def git(argv):
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return (0, "true\n")
+        if argv[:2] == ["worktree", "add"]:
+            seen["provisional"] = [(l.state, l.pid) for l in wp._read_ledger()]
+        return (0, "")
+
+    lease = wp.create_slot("A", branch="a1", session="me", git_runner=git)
+
+    assert seen["provisional"] == [("creating", 424245)]
+    # 확정은 무소유 idle 이라 세션 pid 는 provisional 구간에만 남는다(생성 ≠ 점유).
+    assert lease.state == "idle" and lease.pid == 0
+
+
+def test_session_pid_resolution_failure_leaves_the_ledger_untouched(wp, monkeypatch):
+    """세션 pid 해소 실패는 기록 없이 터진다 — 자기 pid 로 조용히 내려가지 않는다."""
+    relay = wp._load_relay()
+
+    def unresolved():
+        raise relay.SessionPidUnresolved("세션 pid 를 해소하지 못했다 — 표 없음")
+
+    monkeypatch.setattr(wp, "_session_pid", unresolved)
+    with pytest.raises(relay.SessionPidUnresolved):
+        wp.bind_task("job1")
+
+    assert wp.list_tasks() == []
+    assert not wp.LEASES_FILE.exists() or wp.list_leases() == []
+
+
+# ════════════════════════════════════════════════════════════════════════
 # force_release
 # ════════════════════════════════════════════════════════════════════════
 
@@ -1357,12 +1481,12 @@ def test_force_release_unknown_slot_returns_none(wp):
 
 
 def test_create_slot_adds_worktree_and_submodule_init(wp):
-    """create_slot — worktree add + submodule init + 장부 leased 등록(번호 자동)."""
+    """create_slot — worktree add + submodule init + 장부 idle 등록(번호 자동)."""
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
     lease = wp.create_slot("A", branch="a1", session="me", git_runner=git)
     assert lease.slot == "work/A_1"
-    assert lease.state == "leased"
+    assert lease.state == "idle"
     # branch 파라미터는 worktree add `-B <branch>` 를 구동(checkout)하지만 장부엔 저장하지
     # 않는다(ADR-0013 amend T-0072 — git=진실). worktree add 가 `-B a1` 로 불렸는지 검증.
     assert git.did("worktree", "add", "-B", "a1")
@@ -1459,7 +1583,7 @@ def test_create_slot_submodule_init_failure_raises_before_register(wp):
 
 
 def test_create_slot_submodule_init_success_registers(wp):
-    """sensitivity 대조 — submodule rc0(성공)이면 슬롯이 정상 leased 등록된다.
+    """sensitivity 대조 — submodule rc0(성공)이면 슬롯이 정상 등록된다(무소유 idle).
 
     위 failure negative 와 대조: 같은 경로에서 rc 만 0/1 로 갈려 등록/raise 가 갈린다 →
     rc 확인이 유일한 방어선임을 보인다(가드 제거 시 failure case 도 등록돼 negative fail).
@@ -1470,7 +1594,7 @@ def test_create_slot_submodule_init_success_registers(wp):
             return (0, "true\n")   # 유효 bare 로 가드 통과(T-0294).
         return (0, "")  # worktree add·submodule 모두 성공
     lease = wp.create_slot("A", branch="a1", session="me", git_runner=succeeding)
-    assert lease.state == "leased"
+    assert lease.state == "idle"
     assert len(wp.list_leases()) == 1
 
 
@@ -1526,7 +1650,7 @@ def test_create_slot_valid_bare_passes_guard(wp):
     git = FakeGit(is_bare=True)
     lease = wp.create_slot("A", branch="a1", session="me", git_runner=git)
     assert lease.slot == "work/A_1"
-    assert lease.state == "leased"
+    assert lease.state == "idle"
     # 가드가 rev-parse 로 실 bare 를 판정했다(경로 존재만이 아님).
     assert git.did("-C", str(wp.bare_repo_path("A")), "rev-parse", "--is-bare-repository")
     assert git.did("worktree", "add")   # 유효 → worktree add 까지 도달
@@ -1594,7 +1718,7 @@ def test_create_slot_bare_validation_uses_injected_runner(wp):
     # 유효 mock → 통과.
     ok = FakeGit(is_bare=True)
     lease = wp.create_slot("A", branch="a1", session="me", git_runner=ok)
-    assert lease.state == "leased"
+    assert lease.state == "idle"
     # 같은 placeholder, 무효 mock → fail-loud (판정이 mock 에서 옴·경로는 동일).
     bad = FakeGit(is_bare=False)
     with pytest.raises(wp.BareRepoMissing):
@@ -1954,7 +2078,7 @@ def test_bind_slot_new_slot_appends_leased(wp):
     assert lease.repo == "A"
     assert lease.session == "A_2"
     assert lease.state == "leased"
-    assert lease.pid == os.getpid()
+    assert lease.pid == wp._session_pid()
     # 장부에 정확히 한 엔트리 등록.
     leases = wp.list_leases()
     assert len(leases) == 1
@@ -1969,7 +2093,7 @@ def test_bind_slot_existing_slot_updates_session_state(wp):
     assert lease.slot == "work/A_1"
     assert lease.session == "A_1"     # 갱신됨
     assert lease.state == "leased"    # idle → leased 전이
-    assert lease.pid == os.getpid()
+    assert lease.pid == wp._session_pid()
     # 슬롯이 두 개로 늘지 않음(update-in-place).
     leases = wp.list_leases()
     assert len(leases) == 1
@@ -2264,6 +2388,21 @@ def test_default_session_pool_row_present_falls_back_host_pid_despite_single_reg
     assert wp._default_session() == f"{socket.gethostname()}-{os.getpid()}"
 
 
+def _provisional_sessions(wp, seen):
+    """worktree add 시점의 disk 장부 session 값을 잡아 두는 git runner.
+
+    확정된 pool 슬롯은 무소유(session 빈 문자열)라, `_default_session()` 해소값이 실리는 자리는
+    provisional 마커 하나다 — 그 자리를 그대로 관측한다(값을 사후 재계산하지 않는다).
+    """
+    def git(argv):
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return (0, "true\n")
+        if argv[:2] == ["worktree", "add"]:
+            seen["sessions"] = [l.session for l in wp._read_ledger()]
+        return (0, "")
+    return git
+
+
 def test_create_slot_default_session_uses_home_row_when_registered(wp, proj, monkeypatch):
     """전이 일관성: 홈이 슬롯 행으로 등록돼 있으면 create_slot 이 그 행의 session 을 상속한다 —
     저장측(worktree_pool)과 매칭측(board.session_name)이 같은 장부 행 하나를 본다."""
@@ -2272,13 +2411,15 @@ def test_create_slot_default_session_uses_home_row_when_registered(wp, proj, mon
     monkeypatch.setattr(wp, "_load_board", lambda: _board_stub({"A"}, repo_path=proj))
     _seed(wp, _lease(wp, slot=".", repo="A", session="A_1", state="leased"))
     _mk_bare_placeholder(wp, "A")
-    git = FakeGit()
-    lease = wp.create_slot("A", git_runner=git, test_cmd="make hil2")  # session 미지정
-    assert lease.session == "A_1"
+    seen = {}
+    lease = wp.create_slot("A", git_runner=_provisional_sessions(wp, seen),
+                           test_cmd="make hil2")  # session 미지정
+    assert seen["sessions"] == ["A_1", "A_1"]     # 홈 행 + 방금 만든 provisional
+    assert lease.session == ""                    # 확정은 무소유 pool 슬롯
 
 
 def test_create_slot_default_session_uses_env_binding(wp, proj, monkeypatch):
-    """END-TO-END: env 바인딩 → create_slot 이 lease.session 을 그 값으로 저장.
+    """END-TO-END: env 바인딩 → create_slot 이 그 값을 provisional 마커에 저장.
 
     저장측(이 모듈)과 매칭측(board.session_name)이 같은 층을 읽어야 per-slot test_cmd·claim
     소유권이 맞는다. conf 폴백이 사라진 뒤 남은 명시 층이 env 다.
@@ -2287,9 +2428,11 @@ def test_create_slot_default_session_uses_env_binding(wp, proj, monkeypatch):
     monkeypatch.setenv("PM_SESSION_NAME", "foo")
     _write_local_conf(proj, "session=ignored\n")   # 읽는 층 없음
     _mk_bare_placeholder(wp, "A")
-    git = FakeGit()
-    lease = wp.create_slot("A", git_runner=git, test_cmd="make hil2")  # session 미지정
-    assert lease.session == "foo"
+    seen = {}
+    lease = wp.create_slot("A", git_runner=_provisional_sessions(wp, seen),
+                           test_cmd="make hil2")  # session 미지정
+    assert seen["sessions"] == ["foo"]
+    assert lease.session == ""                    # 확정은 무소유 pool 슬롯
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -3234,7 +3377,7 @@ def test_create_slot_worktree_add_injected_runner_preserves_di_seam(wp, monkeypa
     monkeypatch.setattr(wp, "_real_git_runner_interactive", trap)
     git = FakeGit()
     lease = wp.create_slot("A", branch="a1", session="me", git_runner=git)
-    assert lease.state == "leased"
+    assert lease.state == "idle"
     # 주입 runner 가 worktree add·submodule 둘 다 처리(인터랙티브 우회).
     assert git.did("worktree", "add", "-B", "a1")
     assert git.did("submodule", "update", "--init", "--recursive", "--force")
@@ -3605,8 +3748,8 @@ def test_create_slot_writes_provisional_before_worktree_add(wp):
     lease = wp.create_slot("A", session="me", git_runner=git)
     assert seen["at_add"] == [("work/A_1", "creating")], \
         "provisional('creating')이 worktree add 전에 disk 장부에 없음(SIGKILL 흔적 상실)"
-    assert lease.state == "leased"
-    assert [(l.slot, l.state) for l in wp.list_leases()] == [("work/A_1", "leased")]
+    assert lease.state == "idle"
+    assert [(l.slot, l.state) for l in wp.list_leases()] == [("work/A_1", "idle")]
 
 
 def test_create_slot_keyboard_interrupt_rolls_back_and_removes_provisional(wp):
@@ -8175,7 +8318,7 @@ def test_bind_task_creates_new_record_with_zero_workspaces(wp):
     record, action, reclaimed_from = wp.bind_task("newjob")
     assert action == "created" and reclaimed_from is None
     assert record.name == "newjob" and record.prefix is None
-    assert record.pid == os.getpid()
+    assert record.pid == wp._session_pid()
     # 장부에 영속 + task 연속성 state 즉시 생성(첫 handoff까지 지연 금지).
     assert wp.find_task("newjob").name == "newjob"
     assert wp.task_dir("newjob").exists()
@@ -8221,10 +8364,10 @@ def test_bind_task_refuses_archived_identity_without_creating_state(wp):
 
 def test_bind_task_resume_same_pid(wp):
     """기존 task 를 내 pid 로 재개 = resumed(crash 전 나·재진입)."""
-    wp.bind_task("job1")                             # created (pid=os.getpid())
+    wp.bind_task("job1")                             # created (pid=세션 pid)
     record, action, reclaimed_from = wp.bind_task("job1")  # 같은 프로세스 재호출
     assert action == "resumed" and reclaimed_from is None
-    assert record.pid == os.getpid()
+    assert record.pid == wp._session_pid()
 
 
 def test_bind_task_resume_backfills_missing_task_state(wp):
@@ -8237,7 +8380,7 @@ def test_bind_task_resume_backfills_missing_task_state(wp):
     record, action, reclaimed_from = wp.bind_task("job1")
 
     assert action == "resumed" and reclaimed_from is None
-    assert record.pid == os.getpid()
+    assert record.pid == wp._session_pid()
     assert wp.task_pm_state_file("job1").exists()
 
 
@@ -8248,7 +8391,7 @@ def test_bind_task_reclaims_dead_pid_reports_prior_pid(wp):
     record, action, reclaimed_from = wp.bind_task("job1")
     assert action == "reclaimed"
     assert reclaimed_from == 999999            # 회수한 이전 pid surface(notice 근거)
-    assert record.pid == os.getpid()           # 내 것으로 회수
+    assert record.pid == wp._session_pid()           # 내 것으로 회수
     assert record.prefix == "PAY"              # prefix 는 유지(바인딩이 안 만짐·T-0357 이 변경)
 
 
@@ -8373,10 +8516,10 @@ def test_set_task_prefix_read_by_identity_args_task_prefix(wp):
 
 # ── release_task_pid — task 정상-종료 pid=0 기록 + bind 재분류 (T-0392·핸드오프 "두고 간다") ──
 #
-# task 장부 pid = dump 후 즉사하는 bootstrap subprocess pid(㉑·T-0353)라, pm_handoff 가 종료를 안
-# 기록하면 정상 인계 후 재개도 dead-pid → bind_task `reclaimed`(crash 회수 loud notice)로 상시 오탐
-# 한다(PM 78 실측). release_task_pid 가 pid 를 0(미점유)으로 비우고, bind_task 가 미점유를 `resumed`
-# 로 재분류해 정상 인계 상시 경고를 없앤다 — 진짜 crash(pid>0 잔존)만 회수 경고를 받는다.
+# task 장부 pid = 그 task 를 연 세션 pid(T-0915)라, pm_handoff 가 종료를 안 기록하면 다음 세션의
+# 정상 재개도 dead-pid → bind_task `reclaimed`(crash 회수 loud notice)로 오탐한다(PM 78 실측).
+# release_task_pid 가 pid 를 0(미점유)으로 비우고, bind_task 가 미점유를 `resumed`
+# 로 재분류해 정상 인계 경고를 없앤다 — 진짜 crash(pid>0 잔존)만 회수 경고를 받는다.
 
 
 def test_bind_task_unoccupied_pid_zero_is_resumed_not_reclaimed(wp):
@@ -8386,13 +8529,13 @@ def test_bind_task_unoccupied_pid_zero_is_resumed_not_reclaimed(wp):
     record, action, reclaimed_from = wp.bind_task("job1")
     assert action == "resumed"                  # 미점유는 clean resume(reclaimed 아님)
     assert reclaimed_from is None               # loud notice 근거 없음(정상 인계)
-    assert record.pid == os.getpid()            # 내 것으로 갱신
+    assert record.pid == wp._session_pid()            # 내 것으로 갱신
     assert record.prefix == "PAY"               # prefix 유지(바인딩 무접촉)
 
 
 def test_release_task_pid_sets_pid_zero_and_returns_record(wp):
     """release_task_pid 가 task 레코드 pid 를 0(미점유)으로 세팅하고 갱신 레코드를 돌려준다(정상-종료 기록)."""
-    wp.bind_task("job1")                         # created (pid=os.getpid())
+    wp.bind_task("job1")                         # created (pid=세션 pid)
     updated = wp.release_task_pid("job1")
     assert updated is not None and updated.pid == 0
     assert wp.find_task("job1").pid == 0         # 영속(장부 write)
@@ -8403,12 +8546,12 @@ def test_release_task_pid_then_bind_resumes_clean(wp):
 
     핸드오프가 pid 를 비워 두면 다음 부트스트랩이 dead-pid 회수(crash 경고)가 아니라 clean resume 으로
     진입한다(PM 78 정상 인계 상시 crash 경고 해소). 정상 경로 상시 경보를 없애 진짜 경보만 남긴다."""
-    wp.bind_task("job1")                         # created (pid=os.getpid())
+    wp.bind_task("job1")                         # created (pid=세션 pid)
     released = wp.release_task_pid("job1")        # 정상-종료 → pid=0(미점유)
     assert released is not None and released.pid == 0
     record, action, reclaimed_from = wp.bind_task("job1")   # 재개
     assert action == "resumed" and reclaimed_from is None    # clean resume·회수 경고 없음
-    assert record.pid == os.getpid()             # 내 것으로 갱신
+    assert record.pid == wp._session_pid()             # 내 것으로 갱신
 
 
 def test_release_task_pid_missing_task_returns_none(wp):
@@ -8553,19 +8696,19 @@ def test_create_task_then_bind_task_is_clean_resume(wp):
     record, action, reclaimed_from = wp.bind_task("job1")
 
     assert action == "resumed" and reclaimed_from is None
-    assert record.pid == os.getpid()
+    assert record.pid == wp._session_pid()
     assert len(json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))["tasks"]) == 1
 
 
 def test_create_task_duplicate_returns_none_without_ledger_change(wp):
     """이미 있는 이름은 `None` — 장부 바이트 불변(재개는 bootstrap 몫·pid 무접촉)."""
-    wp.bind_task("job1")                       # pid = 이 프로세스
+    wp.bind_task("job1")                       # pid = 이 세션
     before = wp.LEASES_FILE.read_bytes()
 
     assert wp.create_task("job1") is None
 
     assert wp.LEASES_FILE.read_bytes() == before
-    assert wp.find_task("job1").pid == os.getpid()
+    assert wp.find_task("job1").pid == wp._session_pid()
 
 
 def test_create_task_refuses_archived_identity_without_side_effects(wp):
@@ -10178,7 +10321,9 @@ def test_real_git_rebase_onto_explicit_uses_given_ref_not_stale_origin(proj, tmp
     # 전제 — origin/release 는 R0 에 동결, 로컬 release 는 R1(local_tip)로 앞섬.
     assert _git(bare, "rev-parse", "refs/remotes/origin/release").stdout.strip() != local_tip
 
-    lease = wp.create_slot("A", base="release", session="me", init_submodules=False)
+    wp.create_slot("A", base="release", session="me", init_submodules=False)
+    # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
+    lease = wp.alloc("A", session="me")
     slot_dir = wp.slot_path(lease.slot)
     real_runner = wp._real_git_runner(slot_dir)
     spy, calls = _spy_runner(real_runner)
@@ -10201,7 +10346,9 @@ def test_real_git_rebase_no_onto_prefers_local_when_origin_stale(proj, tmp_path,
     origin, bare = _mk_release_family(tmp_path, wp)
     local_tip = _push_local_only_commit(tmp_path, bare, "release", label="r1")
 
-    lease = wp.create_slot("A", base="release", session="me", init_submodules=False)
+    wp.create_slot("A", base="release", session="me", init_submodules=False)
+    # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
+    lease = wp.alloc("A", session="me")
     slot_dir = wp.slot_path(lease.slot)
     real_runner = wp._real_git_runner(slot_dir)
     spy, calls = _spy_runner(real_runner)
@@ -10224,7 +10371,9 @@ def test_real_git_rebase_no_onto_prefers_local_when_origin_stale_stderr(proj, tm
     origin, bare = _mk_release_family(tmp_path, wp)
     _push_local_only_commit(tmp_path, bare, "release", label="r1")
 
-    lease = wp.create_slot("A", base="release", session="me", init_submodules=False)
+    wp.create_slot("A", base="release", session="me", init_submodules=False)
+    # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
+    lease = wp.alloc("A", session="me")
     slot_dir = wp.slot_path(lease.slot)
     spy, _calls = _spy_runner(wp._real_git_runner(slot_dir))
 
@@ -10248,7 +10397,9 @@ def test_real_git_rebase_no_onto_diverged_prefers_local_and_reports_two_counts(
     monkeypatch.setattr(wp, "_default_session", lambda: "me")
 
     origin, bare = _mk_release_family(tmp_path, wp)
-    lease = wp.create_slot("A", base="release", session="me", init_submodules=False)
+    wp.create_slot("A", base="release", session="me", init_submodules=False)
+    # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
+    lease = wp.alloc("A", session="me")
     slot_dir = wp.slot_path(lease.slot)
 
     # 로컬(=bare 의 refs/heads/release)을 2 커밋 전진 — origin 은 안 건드림.
@@ -10291,7 +10442,9 @@ def test_real_git_rebase_no_onto_prefers_origin_when_advanced(proj, tmp_path, mo
     monkeypatch.setattr(wp, "_default_session", lambda: "me")
 
     origin, bare = _mk_release_family(tmp_path, wp)
-    lease = wp.create_slot("A", base="release", session="me", init_submodules=False)
+    wp.create_slot("A", base="release", session="me", init_submodules=False)
+    # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
+    lease = wp.alloc("A", session="me")
     slot_dir = wp.slot_path(lease.slot)
 
     # origin 을 로컬(bare refs/heads/release)보다 앞서게 — origin 은 non-bare 워킹 repo 라 직접 커밋.

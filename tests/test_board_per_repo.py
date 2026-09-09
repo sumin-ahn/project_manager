@@ -16,6 +16,7 @@ areas.md·local.conf 를 절대 읽거나 쓰지 않는다 (test_board_multipm.p
 from __future__ import annotations
 
 import importlib.util
+import shutil
 from pathlib import Path
 
 import pytest
@@ -862,7 +863,7 @@ def _load_wp_for_board(board):
 def test_default_session_e2e_env_binding_match(board, monkeypatch):
     """END-TO-END must-fix 핀 — env 바인딩(`PM_SESSION_NAME=foo`):
 
-    worktree_pool.create_slot(session 미지정) → lease.session=foo 로 저장 →
+    worktree_pool.create_slot(session 미지정) + alloc → lease.session=foo 로 저장 →
     board._active_slot_test_cmd()(session_name→foo 매칭) 가 그 슬롯 test_cmd 반환.
     두 모듈의 해소 층이 어긋나면(한쪽만 다른 값으로 해소) 매칭이 깨져 None 이 된다.
     """
@@ -872,6 +873,10 @@ def test_default_session_e2e_env_binding_match(board, monkeypatch):
     wp = _load_wp_for_board(board)
     (board._tmp / ".repos").mkdir(parents=True, exist_ok=True)
     wp.bare_repo_path("A").mkdir(parents=True, exist_ok=True)  # bare 부재 가드 통과
+    # 대여는 slot-mode pm_state 를 만든다 — 그 원천(공용 template)을 tmp 트리에 실물로 둔다.
+    template = wp._task_pm_state_template_file()
+    template.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(REPO / ".project_manager" / "wiki" / "pm_state.template.md", template)
 
     class _FakeGit:
         def __call__(self, argv):
@@ -882,7 +887,11 @@ def test_default_session_e2e_env_binding_match(board, monkeypatch):
                 return (0, "0123abc\n")
             return (0, "")
 
-    wp.create_slot("A", git_runner=_FakeGit(), test_cmd="make hil2")  # session 미지정 → _default_session
+    git = _FakeGit()
+    wp.create_slot("A", git_runner=git, test_cmd="make hil2")  # 생성 = 무소유 idle pool 슬롯
+    # 생성은 풀 확장이고 점유는 대여다(T-0915) — 대여가 그 슬롯을 이 세션 명의로 만든다
+    # (session 미지정 → 저장측도 `_default_session` 으로 해소).
+    wp.alloc("A", git_runner=git)
     # 매칭측: board.session_name() 도 env → foo 로 해소돼야 슬롯이 매칭된다.
     assert board.session_name() == "foo"
     assert board._active_slot_test_cmd() == "make hil2"

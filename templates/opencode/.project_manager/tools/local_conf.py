@@ -378,16 +378,22 @@ class KeySpec:
 
     `required` 는 **반드시 명시**한다(기본값 없음) — 새 키를 적으면서 필수 여부를 빠뜨리면
     import 시점에 `TypeError` 로 멈춘다.
+
+    `choices` 는 이 키가 고르는 **값의 축 이름**(`harness`·`model`·`reasoning` = `_ROLE_SUFFIXES`)
+    이고 목록 자체는 담지 않는다 — 목록의 정본은 형제 선언(`pm_relay.HARNESS_CHOICES`·
+    `REASONING_ALLOWED`·`MODEL_SOURCE`)이라 여기 복제하면 두 자리가 갈린다. 고를 목록이 없는 키는
+    `None` 이고, 선택지는 **검증이 아니다**(harness·reasoning 은 닫힌 집합, model 은 자유 문자열).
     """
 
-    __slots__ = ("description", "default", "required", "group")
+    __slots__ = ("description", "default", "required", "group", "choices")
 
     def __init__(self, description: str, *, default: str | None,
-                 required: bool, group: str) -> None:
+                 required: bool, group: str, choices: str | None = None) -> None:
         self.description = description
         self.default = default
         self.required = required
         self.group = group
+        self.choices = choices
 
     def __repr__(self) -> str:                                   # 진단 표면(테스트 실패 메시지)
         return (f"KeySpec(default={self.default!r}, required={self.required!r}, "
@@ -417,6 +423,22 @@ PLATFORM_TEST_PATTERN = "test.<platform>.cmd"
 # diff 서킷브레이커 상한 — 값이 estimate 마다 달라 군 선언 한 칸에 담기지 않는다. 이 표가
 # estimate 목록의 정본이기도 하다(`_matches_pattern` 이 여기서 이름을 읽는다).
 DIFF_CAP_DEFAULTS: dict[str, str] = {"small": "300", "medium": "1000", "large": "2500"}
+
+# 역할 위임의 **권장 조합** — 키는 `"<role><tier>"`(`_DELEGATE_TIERS` 표기 그대로), 값은 접미
+# (`_ROLE_SUFFIXES`)별 권장값이다. 권장값은 **기본값이 아니다**: 저장 전에는 아무 효과가 없고
+# (`default` 는 계속 None) 빈 위임 설정은 그대로 fail-loud 다 — 고르기 쉽게 하는 값일 뿐이다.
+#
+# 근거 없는 자리는 비운다(지어내지 않는다): `.fallback` 티어는 "인프라 실패 1회 대체" 에 무엇을
+# 권할지가 실측이 아니라 결정이라 없고, `additional_reviewer.*` 는 실측 model 이 버전 붙은 라이브
+# 모델 ID 라 엔진에 박으면 반드시 drift 한다. 여기 값이 안전한 이유는 별칭(그 CLI 가 "최신 모델의
+# 별칭" 으로 계약한 이름)이기 때문이다.
+DELEGATE_RECOMMENDED: dict[str, dict[str, str]] = {
+    "developer": {"harness": "claude", "model": "sonnet", "reasoning": "high"},
+    "developer.hard": {"harness": "claude", "model": "opus", "reasoning": "high"},
+    "researcher": {"harness": "claude", "model": "sonnet", "reasoning": "medium"},
+    "architect": {"harness": "claude", "model": "opus", "reasoning": "xhigh"},
+    "code-reviewer": {"harness": "claude", "model": "opus", "reasoning": "xhigh"},
+}
 
 # 표시 묶음 — `--keys` 출력과 설정 화면이 쓰는 절 이름이다(선언 순서 = 표시 순서).
 KEY_GROUPS: tuple[str, ...] = (
@@ -490,13 +512,14 @@ KEY_REGISTRY: dict[str, KeySpec] = {
         default="3", required=False, group="delegate"),
     "additional_reviewer.harness": KeySpec(
         "추가 리뷰어를 실행할 하네스. `model`·`reasoning` 과 세트로 쓴다(없으면 fail-loud).",
-        default=None, required=False, group="additional_reviewer"),
+        default=None, required=False, group="additional_reviewer", choices="harness"),
     "additional_reviewer.model": KeySpec(
         "추가 리뷰어 모델 — 그 하네스가 인정하는 표기를 그대로 쓴다.",
-        default=None, required=False, group="additional_reviewer"),
+        default=None, required=False, group="additional_reviewer", choices="model"),
     "additional_reviewer.reasoning": KeySpec(
-        "추가 리뷰어 추론 강도 (codex 는 low/medium/high/xhigh).",
-        default=None, required=False, group="additional_reviewer"),
+        "추가 리뷰어 추론 강도. 허용값은 하네스마다 다르며 `pm_relay.REASONING_ALLOWED` 가 "
+        "소유한다 — `harness`·`model` 과 세트로 쓴다(없으면 fail-loud).",
+        default=None, required=False, group="additional_reviewer", choices="reasoning"),
     "additional_reviewer.rounds_max": KeySpec(
         "게이트 하나의 리뷰 라운드 수렴 상한 — 호출 횟수가 아니라 must_fix 추이로 본다.",
         default="2", required=False, group="additional_reviewer"),
@@ -561,6 +584,11 @@ def key_spec(key: str) -> KeySpec | None:
         # 상한이 estimate 마다 다르다 — 군 선언은 값을 담지 못하므로 이 키의 값으로 채워 준다.
         return KeySpec(spec.description, default=DIFF_CAP_DEFAULTS[key.split(".")[1]],
                        required=spec.required, group=spec.group)
+    if pattern == DELEGATE_ROLE_PATTERN:
+        # 축이 멤버마다 다르다(harness/model/reasoning) — 군 한 칸에 담기지 않으므로 이 키의
+        # 접미로 채워 준다(`_delegate_pattern_for` 가 그 접미를 `_ROLE_SUFFIXES` 로 이미 닫았다).
+        return KeySpec(spec.description, default=spec.default, required=spec.required,
+                       group=spec.group, choices=key.rsplit(".", 1)[1])
     return spec
 
 
@@ -568,6 +596,18 @@ def default_for(key: str) -> str | None:
     """이 키의 엔진 기본값(conf 표기 그대로) — 선언이 없거나 모르는 키면 None."""
     spec = key_spec(key)
     return None if spec is None else spec.default
+
+
+def recommended_for(key: str) -> str | None:
+    """이 키의 **권장값** — 근거가 있는 자리만 값이 있고 나머지는 None (기본값이 아니다).
+
+    `default_for` 와 다른 축이다: 기본값은 미설정 시 엔진이 실제로 쓰는 값이고, 권장값은 채택자가
+    저장해야 효과가 나는 제안이다. 표는 역할 위임 키만 담는다(`DELEGATE_RECOMMENDED`).
+    """
+    if pattern_for(key) != DELEGATE_ROLE_PATTERN:
+        return None
+    role_tier, _, suffix = key[len("delegate."):].rpartition(".")
+    return DELEGATE_RECOMMENDED.get(role_tier, {}).get(suffix)
 
 
 def required_keys() -> tuple[str, ...]:
@@ -656,11 +696,53 @@ def render_key_table() -> str:
 
 
 # ── 키 표의 기계 표면 (`--keys --json`) ──────────────────────────────────
-# 사람 표(`render_key_table`)와 **같은 레지스트리·같은 순서**를 낸다. 다른 점은 둘뿐이다:
+# 사람 표(`render_key_table`)와 **같은 레지스트리·같은 순서**를 낸다. 다른 점은 셋이다:
 # 표시용 합성 표기(`_default_display` 의 `small 300 · medium 1000 · …`)를 싣지 않고, 패턴 키군의
-# 전개된 실명을 `members` 로 함께 낸다. 소비자는 관리자 화면이고, 화면은 **그 프로젝트 사본의**
-# 이 산출을 읽는다(세대가 다르면 키 집합이 다르므로 남의 레지스트리로 대신 그리지 않는다).
-KEY_JSON_SCHEMA = 1
+# 전개된 실명을 `members` 로 함께 내며, 행마다 `choices`(고를 수 있는 값)·`recommended`(권장값)를
+# 싣는다. 소비자는 관리자 화면이고, 화면은 **그 프로젝트 사본의** 이 산출을 읽는다(세대가 다르면
+# 키 집합이 다르므로 남의 레지스트리로 대신 그리지 않는다).
+#
+# schema 2 = 1 + `choices`·`recommended`. `keys[]`·`members[]` 의 **모든 행**이 두 키를 갖고(없으면
+# null) 사람 표는 바이트 그대로다 — 새 필드는 이 기계 표면에만 산다.
+KEY_JSON_SCHEMA = 2
+
+# 모델 목록을 불러오는 조회 명령 — 화면은 `arg` 이름의 플래그에 버킷 값을 실어 부른다
+# (`pm-config delegate models --harness <값> --json`). 명령 이름의 자리는 여기 하나다.
+_MODEL_FETCH: dict[str, str] = {"command": "delegate models", "arg": "harness"}
+
+
+def _axis_values(axis: str) -> dict[str, list[str]]:
+    """값의 축 이름 → `{버킷: 고를 수 있는 값}`. 목록은 형제 선언에서 읽는다(여기 복제 0).
+
+    `harness` 는 버킷이 없어 `""` 한 칸이고, `reasoning` 은 CLI 마다 ladder 가 달라 하네스가
+    버킷이다. `model` 은 닫힌 목록이 없다(자유 문자열 + 조회 명령) — 빈 표다.
+    """
+    if axis == "harness":
+        return {"": list(_harness_names())}
+    if axis == "reasoning":
+        return {harness: list(values) for harness, values in _reasoning_ladders().items()}
+    return {}
+
+
+def _choices_json(key: str) -> dict | None:
+    """이 키가 고를 수 있는 값 — 화면이 읽는 규칙 한 벌 (축이 없는 키는 None).
+
+    화면이 쓰는 규칙은 셋이다. 첫째 `bucket = depends_on ? (그 키의 현재 값 ?? "") : ""`,
+    둘째 `list = values[bucket] ?? []`, 셋째 `fetch` 가 있으면 그 명령으로 받은 목록이 `list` 를
+    대신하고 `free_text` 면 직접 입력도 연다. 판별자(`kind`)를 두지 않아 화면에 분기가 생기지
+    않는다. 종속 키는 같은 세트의 `harness` 키다 — 세트를 통째로 쓰는 위임 키와 추가 리뷰어 키가
+    같은 규칙으로 읽힌다.
+    """
+    spec = key_spec(key)
+    axis = None if spec is None else spec.choices
+    if axis is None:
+        return None
+    return {
+        "depends_on": None if axis == "harness" else f"{key.rsplit('.', 1)[0]}.harness",
+        "values": _axis_values(axis),
+        "fetch": dict(_MODEL_FETCH) if axis == "model" else None,
+        "free_text": axis == "model",
+    }
 
 
 def _pattern_members(pattern: str) -> list[dict[str, str | None]]:
@@ -681,7 +763,9 @@ def _pattern_members(pattern: str) -> list[dict[str, str | None]]:
         keys = [f"diff_cap.{name}" for name in DIFF_CAP_DEFAULTS]
     else:
         keys = []
-    return [{"key": key, "default": default_for(key)} for key in keys]
+    return [{"key": key, "default": default_for(key),
+             "choices": _choices_json(key), "recommended": recommended_for(key)}
+            for key in keys]
 
 
 def key_registry_json() -> dict:
@@ -693,13 +777,15 @@ def key_registry_json() -> dict:
     keys: list[dict] = [
         {"key": key, "group": spec.group, "description": spec.description,
          "default": spec.default, "required": spec.required,
-         "kind": "key", "members": None}
+         "kind": "key", "members": None,
+         "choices": _choices_json(key), "recommended": recommended_for(key)}
         for key, spec in KEY_REGISTRY.items()
     ]
     keys.extend(
         {"key": pattern, "group": spec.group, "description": spec.description,
          "default": spec.default, "required": spec.required,
-         "kind": "pattern", "members": _pattern_members(pattern)}
+         "kind": "pattern", "members": _pattern_members(pattern),
+         "choices": None, "recommended": None}
         for pattern, spec in PATTERN_REGISTRY.items()
     )
     return {"schema": KEY_JSON_SCHEMA, "groups": list(KEY_GROUPS), "keys": keys}
@@ -1038,20 +1124,25 @@ def _harness_names() -> tuple[str, ...]:
     return _sibling_sequence("pm_relay.py", "HARNESS_CHOICES")
 
 
-_SEQUENCE_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
+def _reasoning_ladders() -> dict[str, tuple[str, ...]]:
+    """하네스별 추론 강도 허용집합 — `pm_relay.REASONING_ALLOWED` 파생."""
+    return _sibling_mapping("pm_relay.py", "REASONING_ALLOWED")
 
 
-def _sibling_sequence(filename: str, attribute: str) -> tuple[str, ...]:
-    """형제 모듈 선언에서 목록을 읽는다 — **소스 텍스트만** 본다(import 0·순환 0).
+_LITERAL_CACHE: dict[tuple[str, str], object] = {}
+
+
+def _sibling_literal(filename: str, attribute: str):
+    """형제 모듈의 최상위 리터럴 대입 하나 — **소스 텍스트만** 본다(import 0·순환 0).
 
     형제를 실행 import 하면 그 형제가 다시 conf 를 읽어 로드 순환이 된다. 필요한 것은 리터럴
-    목록 하나뿐이라 `ast` 로 해당 최상위 대입만 평가한다. 실패(부재·구형 사본·비리터럴)는 빈
-    목록이고, 호출부는 그 키를 advisory 대상으로 남긴다(막는 것이 없다).
+    하나뿐이라 `ast` 로 해당 최상위 대입만 평가한다. 실패(부재·구형 사본·비리터럴)는 None 이고
+    호출부가 빈 값으로 강등한다(막는 것이 없다 — 소비자는 advisory 판정과 표시용 선택지다).
     """
     cache_key = (filename, attribute)
-    if cache_key in _SEQUENCE_CACHE:
-        return _SEQUENCE_CACHE[cache_key]
-    names: tuple[str, ...] = ()
+    if cache_key in _LITERAL_CACHE:
+        return _LITERAL_CACHE[cache_key]
+    literal = None
     try:
         import ast as _ast
 
@@ -1064,16 +1155,37 @@ def _sibling_sequence(filename: str, attribute: str) -> tuple[str, ...]:
                 targets = [node.target]
             if not any(t.id == attribute for t in targets) or node.value is None:
                 continue
-            value = _ast.literal_eval(node.value)
-            if isinstance(value, dict):
-                names = tuple(str(k) for k in value)
-            elif isinstance(value, (list, tuple, set, frozenset)):
-                names = tuple(str(v) for v in value)
+            literal = _ast.literal_eval(node.value)
             break
     except Exception:  # noqa: BLE001 — 부재/손상/구형 사본은 advisory 판정의 정상 입력이다.
-        names = ()
-    _SEQUENCE_CACHE[cache_key] = names
-    return names
+        literal = None
+    _LITERAL_CACHE[cache_key] = literal
+    return literal
+
+
+def _sibling_sequence(filename: str, attribute: str) -> tuple[str, ...]:
+    """형제 선언의 목록(표면 매핑이면 그 키) → 이름 tuple. 못 읽으면 빈 목록."""
+    value = _sibling_literal(filename, attribute)
+    if isinstance(value, dict):
+        return tuple(str(key) for key in value)
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return tuple(str(item) for item in value)
+    return ()
+
+
+def _sibling_mapping(filename: str, attribute: str) -> dict[str, tuple[str, ...]]:
+    """형제 선언의 표 → `{키: 값 tuple}`. 표가 아니거나 못 읽으면 빈 표.
+
+    값이 목록인 칸만 싣는다. `frozenset({...})` 같은 **Call 노드**는 리터럴이 아니라 표 전체가 빈
+    표로 강등되고 그 강등은 조용하다(선택지가 사라질 뿐 아무것도 막지 않는다) — 이 표로 읽히려는
+    형제 선언이 리터럴이어야 하는 이유다(`pm_relay.REASONING_ALLOWED` 가 tuple 인 근거).
+    """
+    value = _sibling_literal(filename, attribute)
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): tuple(str(item) for item in values)
+            for key, values in value.items()
+            if isinstance(values, (list, tuple, set, frozenset))}
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):

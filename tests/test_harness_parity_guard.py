@@ -112,8 +112,6 @@ CONDITION_BRANCHES: dict[LedgerKey, Site] = {
 HARNESS_TABLES: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
     ("additional_reviewer.py", "_REVIEWER_PROGRESS_CONTRACTS"): (
         "CLI 형식 — 하네스마다 실행 파일과 진행 신호 옵션 계약이 다르다", HARNESS_NAMES),
-    ("pm_config.py", "_DELEGATE_MODEL_FORMAT_HINTS"): (
-        "안내 문구 — 하네스마다 모델 값 형식과 조회 수단이 다르다", HARNESS_NAMES),
     ("pm_delegate.py", "_HARNESS_AUTH_ENV"): (
         "CLI 인증 — 하네스마다 자기 CLI 가 읽는 인증 env 이름이 다르다", HARNESS_NAMES),
     ("pm_delegate.py", "_READ_TMP_ARGV_MODE_BY_HARNESS"): (
@@ -152,6 +150,8 @@ HARNESS_TABLES: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
         "CLI 형식 — 세션 재개 플래그 보유 여부 실측값", HARNESS_NAMES),
     ("pm_relay.py", "HARNESS_SESSION_MARKERS"): (
         "CLI 형식 — 세션 감지 마커 env 이름이 하네스마다 다르다", HARNESS_NAMES),
+    ("pm_relay.py", "MODEL_SOURCE"): (
+        "CLI 형식 — 모델 값의 원천(별칭·사용자 config·실조회)이 CLI 마다 다르다", HARNESS_NAMES),
     ("pm_relay.py", "REASONING_ALLOWED"): (
         "CLI 형식 — reasoning 허용집합이 CLI 마다 다르다(미지원값 fail-loud 용)", HARNESS_NAMES),
     ("pm_relay.py", "_RUNTIME_ROLE_CONFIG_BUILDERS"): (

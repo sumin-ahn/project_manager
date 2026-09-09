@@ -98,8 +98,9 @@ def test_the_fixture_carries_every_status_dot_case(sample):
                and slot["role"] != "readonly" for slot in slots)
 
 
-def test_the_fixture_carries_no_personal_path():
-    text = FIXTURE.read_text(encoding="utf-8")
+@pytest.mark.parametrize("fixture", [FIXTURE, KEYS_FIXTURE])
+def test_the_fixture_carries_no_personal_path(fixture):
+    text = fixture.read_text(encoding="utf-8")
 
     assert "/home/" not in text and "/Users/" not in text
 
@@ -119,11 +120,51 @@ def live_keys(tmp_path_factory) -> dict:
     return json.loads(completed.stdout)
 
 
+def _member_rows(document: dict) -> list[dict]:
+    """패턴 키군에서 전개된 실명 행 전수 — 실명 키(`members is None`)는 셀 것이 없다."""
+    return [member for row in document["keys"] for member in row["members"] or []]
+
+
+def _mismatched_fields(sample: dict, live: dict) -> list[str]:
+    """픽스처와 실 산출이 갈린 자리를 `<키>[.<멤버>].<필드>` 로 짚는다(실패 메시지용).
+
+    문서 전체를 통째로 비교하면 red 는 뜨지만 어느 행이 어긋났는지 눈으로 찾아야 한다 —
+    어긋난 좌표를 값으로 적어 재생성 대상이 바로 읽히게 한다.
+    """
+    out: list[str] = []
+    for axis in ("schema", "groups"):
+        if sample.get(axis) != live.get(axis):
+            out.append(axis)
+    sample_keys = {row["key"]: row for row in sample["keys"]}
+    live_keys_by_name = {row["key"]: row for row in live["keys"]}
+    for key in sorted(set(sample_keys) | set(live_keys_by_name)):
+        sample_row, live_row = sample_keys.get(key, {}), live_keys_by_name.get(key, {})
+        for field in sorted(set(sample_row) | set(live_row)):
+            if field == "members":
+                sample_members = {m["key"]: m for m in sample_row.get("members") or []}
+                live_members = {m["key"]: m for m in live_row.get("members") or []}
+                for member in sorted(set(sample_members) | set(live_members)):
+                    sample_member = sample_members.get(member, {})
+                    live_member = live_members.get(member, {})
+                    out += [f"{key}.{member}.{name}"
+                            for name in sorted(set(sample_member) | set(live_member))
+                            if sample_member.get(name) != live_member.get(name)]
+            elif sample_row.get(field) != live_row.get(field):
+                out.append(f"{key}.{field}")
+    return out
+
+
 def test_the_key_fixture_is_the_engines_own_registry(live_keys):
-    """설정 화면 픽스처가 현행 레지스트리와 같은 키·같은 필드인지 (손으로 적은 목록 0)."""
+    """설정 화면 픽스처가 현행 레지스트리와 **문서 전체로** 같은지 (손으로 적은 목록 0).
+
+    키·필드 이름 집합만 대조하면 필드 **값**(설명·기본값·선택지·권장값)이 갈려도 green 이라,
+    화면 회귀 전부가 엔진이 더는 내지 않는 값 위에서 돈다 — 실제로 `additional_reviewer.reasoning`
+    의 설명이 어긋난 채 통과했다. 재생성은 이 픽스처를 만든 것과 같은 명령이다
+    (`local_conf.py --keys --json` 산출을 그대로 저장).
+    """
     sample = json.loads(KEYS_FIXTURE.read_text(encoding="utf-8"))
 
-    assert sample["schema"] == live_keys["schema"]
-    assert sample["groups"] == live_keys["groups"]
-    assert [row["key"] for row in sample["keys"]] == [row["key"] for row in live_keys["keys"]]
-    assert _row_keys(sample["keys"]) == _row_keys(live_keys["keys"])
+    assert _member_rows(live_keys), "실 산출에 멤버 행이 없으면 대조가 무의미하다"
+    assert sample == live_keys, (
+        "픽스처가 실 레지스트리와 갈렸다 — 어긋난 자리: "
+        f"{_mismatched_fields(sample, live_keys)}")

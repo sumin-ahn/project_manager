@@ -32,6 +32,21 @@ const EDITED: AdapterFile = {
   distance: 3,
 };
 
+/** 선언된 대상인데 판정이 없는 행 — 엔진이 status·diff_lines 두 칸을 전부 널로 낸다(X-3). */
+const UNJUDGED: AdapterFile = {
+  ...CHANNEL,
+  path: ".claude/settings.local.json",
+  status: null,
+  template_rev: undefined,
+  diff_lines: { added: null, removed: null },
+  // 엔진은 이 행의 `diff_vs_baseline` 도 널로 낸다 — api.ts 타입이 아직 `string | undefined` 라
+  // 이 픽스처는 undefined 로 둔다(그 칸의 타입 정정은 이 라운드 범위 밖).
+  diff_vs_baseline: undefined,
+  diff_vs_latest: "",
+  features: [],
+  distance: 0,
+};
+
 const EDITED_DOCUMENT: AdapterResponse = {
   source: "/projects/framework", files: [EDITED, DOCUMENT], conf: CONF,
 };
@@ -85,6 +100,21 @@ describe("어댑터 절", () => {
     expect(row).toHaveTextContent("채택자 편집");
     expect(row).toHaveTextContent(EDITED.template_rev!.slice(0, 8));
     expect(row).toHaveTextContent("최신과 3개 다름 · 편집 +1/-15");
+  });
+
+  it("판정 없는 행은 널을 그리지 않고 [수용] 도 닫는다", async () => {
+    const bridge = makeBridge({
+      adapters: vi.fn(async () => ({
+        source: "/projects/framework", files: [UNJUDGED], conf: CONF })),
+    });
+    render(<AdapterSection bridge={bridge} path={DEMO} onConfLoaded={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("adapter-load"));
+
+    const row = await screen.findByTestId(`adapter-${UNJUDGED.path}`);
+    expect(row).toHaveTextContent("파일 없음");
+    expect(row.textContent).not.toContain("편집");
+    expect(row.textContent).not.toContain("null");
+    expect(screen.getByText("수용")).toBeDisabled();
   });
 
   it("[기능 보기] 는 같음/없음/다름/폐지됨 넷을 그대로 보인다", async () => {

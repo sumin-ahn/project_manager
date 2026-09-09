@@ -22,12 +22,34 @@ from pathlib import Path
 import pytest
 
 from _manager_home import git_required, make_bare_with_tags
+from _session_chain import live_harness_session, real_process_table_supported
 
 from manager import bridge_update, load_engine_module, registry
 from manager.bridge import Api
 from manager.bridge_update import bundle_root, import_argv, init_argv
 
 pytestmark = git_required
+
+REPO = Path(__file__).resolve().parents[1]
+
+_real_chain = pytest.mark.skipif(
+    not real_process_table_supported(),
+    reason="실 프로세스 사슬 단언은 POSIX `ps` 표가 있는 환경에서만 돈다",
+)
+
+# 더미 하네스 세션 아래에서 적용 한 번을 돌리는 손자 프로세스 — 사슬 밖에서 값을 짓지 않는다.
+_APPLY_SOURCE = '''\
+import sys
+
+sys.path.insert(0, sys.argv[1])          # 이 repo 루트 — `manager` 패키지가 여기 있다.
+from manager.bridge import Api
+
+dest, upstream, registry_file = sys.argv[2], sys.argv[3], sys.argv[4]
+api = Api(folder_picker=lambda: None, registry_file=registry_file)
+response = api.apply_new(dest, "claude", "applied", "", "", "", upstream, "")
+raise SystemExit(0 if response.get("ok") else 1)
+'''
+
 
 # 적용 한 번의 단계 이름 — 화면의 진행 로그가 이 순서를 그대로 그린다.
 STEP_ORDER = ["import", "init", "register"]
@@ -98,15 +120,28 @@ def test_the_step_log_carries_the_engines_own_lines(api, dest, upstream):
     assert str(dest) in steps["register"]["stdout"]
 
 
-def test_the_applied_project_answers_the_manager_and_joins_the_list(api, dest, upstream):
-    _apply(api, dest, upstream)
+@_real_chain
+def test_the_applied_project_answers_the_manager_and_joins_the_list(
+        api, dest, upstream, tmp_path, registry_file):
+    """적용 직후의 `.` 슬롯은 **적용을 부른 세션** 명의로 leased 이고 그 세션은 살아 있다.
 
-    assert api.list_projects()["projects"] == [{"path": str(dest), "name": dest.name}]
-    document = api.status(str(dest))
-    # 적용 직후의 `.` 슬롯은 leased + alive false(init 프로세스)다 — 엔진의 정상 산출이고
-    # "진행 중인 세션" 경고(leased + alive true)의 입력에 걸리지 않는다.
-    assert [(row["slot"], row["state"], row["alive"]) for row in document["slots"]] == [
-        (".", "leased", False)]
+    값이 주변 프로세스 사슬에 달리지 않게 세션을 테스트가 직접 띄운다 — 하네스 이름 심링크로
+    만든 더미 조상 아래에서 적용을 돌리고, 기록 pid 가 **그 더미 세션의 pid** 인지 잰다
+    (T-0915). 주변에 하네스가 없으면 적용은 엔진이 엔진을 띄우는 사슬(`pm_import` →
+    `pm_config init`)의 직계 부모로 떨어지고 그 부모는 명령과 함께 죽는다.
+    """
+    applier = tmp_path / "apply.py"
+    applier.write_text(_APPLY_SOURCE, encoding="utf-8")
+
+    with live_harness_session(tmp_path, [
+        sys.executable, str(applier), str(REPO), str(dest), str(upstream), str(registry_file),
+    ]) as session:
+        assert session.rc == 0, session.stderr
+
+        assert api.list_projects()["projects"] == [{"path": str(dest), "name": dest.name}]
+        document = api.status(str(dest))
+        assert [(row["slot"], row["state"], row["pid"], row["alive"])
+                for row in document["slots"]] == [(".", "leased", session.pid, True)]
 
 
 def test_the_harness_choice_reaches_the_engine(api, dest, upstream):

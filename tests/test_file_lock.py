@@ -2341,9 +2341,10 @@ SHARED_READ_EXCEPTIONS: dict[tuple[str, str], str] = {
         "conf 판독은 형제 없이도 떠야 한다 — 모든 도구가 conf 를 읽는 지점에서 이 leaf 파서를 "
         "로드하므로, seam 부재를 예외로 올리면 부분 동기 트리에서 전 명령이 동시에 죽는다"
     ),
-    ("local_conf.py", "_sibling_sequence"): (
-        "레지스트리 패턴 전개가 형제 **소스 선언**을 AST 로 읽는 자리다 — 상태 파일이 아니라 "
-        "코드 텍스트라 원자 교체 경합의 대상이 아니고, 판정의 소비자는 never-block advisory 다"
+    ("local_conf.py", "_sibling_literal"): (
+        "레지스트리 패턴 전개·선택지 파생이 형제 **소스 선언**을 AST 로 읽는 자리다 — 상태 파일이 "
+        "아니라 코드 텍스트라 원자 교체 경합의 대상이 아니고, 판정의 소비자는 never-block advisory "
+        "와 표시용 선택지다"
     ),
     ("identity_args.py", "_read_text_shared"): (
         "board 가 import 시점에 로드하는 leaf point-reader 의 강등 분기 — 판독 계약이 "

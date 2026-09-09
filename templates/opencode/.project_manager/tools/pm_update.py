@@ -5282,6 +5282,43 @@ def _mask_jsonc_comments(text: str) -> str:
     return "".join(out)
 
 
+def _strip_jsonc_trailing_commas(text: str) -> str:
+    """`}`/`]` 앞의 후행 쉼표를 공백 1글자로 치환 — **길이 보존**(원본과 1:1).
+
+    jsonc 는 후행 쉼표를 허용하지만 `json.loads` 는 거부한다. 채택자가 배열·객체에서 항목 하나를
+    손으로 지우면 바로 그 형상이 되고, 그 파일이 통째로 빈 문서로 읽히면 선언 키가 전부 없는
+    것으로 실린다(유효한 파일을 오판).
+
+    문자열 리터럴은 존중한다 — 문자열 안의 `,` 는 문법 쉼표가 아니다. 주석은 마스킹
+    (`_mask_jsonc_comments`)이 이미 같은 길이 공백으로 바꾼 뒤라 공백 건너뛰기에 흡수된다.
+    치환이 1:1 이라 마스킹의 오프셋 보존 계약이 이 변환 뒤에도 그대로다."""
+    out = list(text)
+    i, n = 0, len(text)
+    in_str = False
+    comma: int | None = None            # 뒤 문자를 아직 못 본 최근 쉼표 위치
+    while i < n:
+        char = text[i]
+        if in_str:
+            if char == "\\" and i + 1 < n:   # escape — 다음 문자를 짝으로 소비
+                i += 2
+                continue
+            if char == '"':
+                in_str = False
+            i += 1
+            continue
+        if char == '"':
+            in_str = True
+            comma = None
+        elif char == ",":
+            comma = i
+        elif not char.isspace():
+            if char in "}]" and comma is not None:
+                out[comma] = " "
+            comma = None
+        i += 1
+    return "".join(out)
+
+
 def _scan_array_end(masked: str, body_start: int) -> int:
     """배열 `[` 직후 body_start 부터 매칭되는 `]` 위치를 문자열/중첩 존중으로 찾는다(배열 body 끝).
 

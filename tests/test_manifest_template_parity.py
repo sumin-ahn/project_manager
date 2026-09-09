@@ -246,6 +246,23 @@ def test_reviewer_executable_has_only_the_new_physical_name_in_all_shipping_tree
     assert tracked_old == [], f"구 물리 파일명 잔존: {tracked_old}"
 
 
+def test_the_v1711_bridge_command_targets_a_manifest_owned_path_in_every_tree():
+    """출하 문서가 지정한 RUN1 경로가 4벌 manifest **등재분**이다.
+
+    구 물리 파일명이 출하 트리에 0 개라(형제 가드 둘) v1.7.11 이하 사본의 갱신 경로는 그 두 단계
+    bridge 하나뿐이다. 그 1회차는 `--paths` 스코프인데, 지정 경로가 등재분이 아니면 `[미등재]`
+    로 거부돼(등재 밖 요청 차단) 문서가 시키는 절차 자체가 실행 불가가 된다 — 문서와 manifest 가
+    같은 경로를 말한다는 사실을 여기서 못박는다."""
+    updater = ".project_manager/tools/pm_update.py"
+    details = (REPO / ".claude" / "skills" / "pm-update" / "references"
+               / "operational-details.md").read_text(encoding="utf-8")
+
+    assert f"--paths {updater}" in details, "출하 문서의 RUN1 경로 표기가 바뀌었다"
+    for manifest in (ROOT_MANIFEST, CC_MANIFEST, OC_MANIFEST, CODEX_MANIFEST):
+        assert updater in _manifest_path_set(manifest), \
+            f"{manifest}: RUN1 경로가 등재분이 아니다(그 명령이 거부된다)"
+
+
 def test_pm_update_operational_details_ship_the_v171_rename_bridge():
     """4개 운영 상세가 updater-only RUN1과 신 updater full RUN2를 같은 계약으로 출하한다."""
     details = (

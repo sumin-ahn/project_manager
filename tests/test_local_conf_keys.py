@@ -21,7 +21,9 @@ from __future__ import annotations
 import argparse
 import ast
 import importlib.util
+import inspect
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -698,7 +700,7 @@ def keys_document() -> dict:
 
 def test_keys_json_carries_both_registries_split_by_kind(conf_module, keys_document):
     """실명 레지스트리와 패턴 레지스트리가 `kind` 로 갈려 **선언 순서 그대로** 실린다."""
-    assert keys_document["schema"] == conf_module.KEY_JSON_SCHEMA == 1
+    assert keys_document["schema"] == conf_module.KEY_JSON_SCHEMA == 2
     assert keys_document["groups"] == list(conf_module.KEY_GROUPS)
 
     named = [row for row in keys_document["keys"] if row["kind"] == "key"]
@@ -712,6 +714,9 @@ def test_keys_json_carries_both_registries_split_by_kind(conf_module, keys_docum
         assert row["required"] == spec.required
         assert row["group"] == spec.group
         assert row["members"] is None, row["key"]     # 실명 키에는 전개할 축이 없다
+    for row in patterns:
+        assert row["choices"] is None, row["key"]     # 군 자체는 고를 값을 갖지 않는다
+        assert row["recommended"] is None, row["key"]
     assert all(row["group"] in keys_document["groups"] for row in keys_document["keys"])
 
 
@@ -723,9 +728,9 @@ def test_pattern_members_take_the_registry_default_not_the_table_string(
 
     assert diff_cap["default"] is None                # 군 자체는 한 값을 갖지 않는다
     assert diff_cap["members"] == [
-        {"key": "diff_cap.small", "default": "300"},
-        {"key": "diff_cap.medium", "default": "1000"},
-        {"key": "diff_cap.large", "default": "2500"},
+        {"key": "diff_cap.small", "default": "300", "choices": None, "recommended": None},
+        {"key": "diff_cap.medium", "default": "1000", "choices": None, "recommended": None},
+        {"key": "diff_cap.large", "default": "2500", "choices": None, "recommended": None},
     ]
     composed = conf_module._default_display(
         conf_module.DIFF_CAP_PATTERN, conf_module.PATTERN_REGISTRY[conf_module.DIFF_CAP_PATTERN])
@@ -796,3 +801,207 @@ def test_readme_catalog_retired(board, monkeypatch, tmp_path):
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
     detail = board.lint_local_conf_keys()[0][2]
     assert "local_conf.py --keys" in detail and "README" not in detail
+# ── ⑨ 선택지·권장값 (schema 2 · T-0916) ─────────────────────────────────────
+# 설정 화면이 "고를 수 있는 값" 과 "권장값" 을 엔진에서 받는다. 목록의 정본은 형제 선언
+# (`pm_relay.HARNESS_CHOICES`·`REASONING_ALLOWED`·`MODEL_SOURCE`)이고 레지스트리는 그것을
+# **파생**한다 — 복제본이 생기면 두 자리가 갈리므로 아래 단언이 그 파생을 유일한 관측점으로 삼는다.
+# 선택지는 **검증이 아니다**: harness·reasoning 은 닫힌 집합, model 은 자유 문자열 그대로다.
+
+RELAY_PY = TOOLS / "pm_relay.py"
+
+
+@pytest.fixture(scope="module")
+def relay_module():
+    return _load_module("relay_for_local_conf_keys", RELAY_PY)
+
+
+def _rows(document: dict) -> list[dict]:
+    """`keys[]` + 전개된 `members[]` — 화면이 실제로 그리는 행 전부."""
+    rows = list(document["keys"])
+    rows.extend(member for row in document["keys"] for member in (row["members"] or []))
+    return rows
+
+
+def _choice_rows(document: dict, axis: str) -> list[dict]:
+    """마지막 세그먼트가 `axis` 인 행 중 선택지를 든 것 (harness·model·reasoning)."""
+    return [row for row in _rows(document)
+            if row["choices"] is not None and row["key"].rsplit(".", 1)[-1] == axis]
+
+
+def test_every_row_carries_the_choices_and_recommended_keys(keys_document):
+    """모든 행의 모양이 같다 — 화면이 행마다 분기하지 않게 두 키를 항상 싣는다(없으면 null)."""
+    rows = _rows(keys_document)
+
+    assert len(rows) == 29 + 5 + 12 + 48 + 3      # 실명 29 · 군 5 · 하네스 12 · 위임 48 · 상한 3
+    for row in rows:
+        assert "choices" in row and "recommended" in row, row["key"]
+
+
+def test_harness_choices_are_the_relay_declaration_in_declaration_order(
+        keys_document, relay_module):
+    """하네스 선택지는 `pm_relay.HARNESS_CHOICES` 그대로다 — 순서까지 같다(복제 0)."""
+    rows = _choice_rows(keys_document, "harness")
+
+    assert len(rows) == 1 + 16, [row["key"] for row in rows]   # 추가 리뷰어 1 · 역할×티어 16
+    for row in rows:
+        assert row["choices"]["depends_on"] is None            # 하네스는 무엇에도 종속하지 않는다
+        assert row["choices"]["values"] == {"": list(relay_module.HARNESS_CHOICES)}
+        assert row["choices"]["fetch"] is None
+        assert row["choices"]["free_text"] is False
+
+
+def test_reasoning_choices_are_the_relay_allowed_sets_bucketed_by_harness(
+        keys_document, relay_module):
+    """추론 강도 선택지는 `pm_relay.REASONING_ALLOWED` 와 하네스마다 **집합으로 같다**."""
+    rows = _choice_rows(keys_document, "reasoning")
+    expected = {harness: set(values)
+                for harness, values in relay_module.REASONING_ALLOWED.items()}
+
+    assert expected and all(expected.values()), "허용집합이 비었다 — 파생이 조용히 강등됐다"
+    assert len(rows) == 1 + 16, [row["key"] for row in rows]
+    for row in rows:
+        values = row["choices"]["values"]
+        assert {harness: set(listed) for harness, listed in values.items()} == expected
+        assert row["choices"]["fetch"] is None
+        assert row["choices"]["free_text"] is False
+
+
+def test_reasoning_descriptions_point_at_the_owner_instead_of_copying_the_ladder(
+        conf_module, keys_document, relay_module):
+    """추론 강도 키의 **설명**은 허용집합을 복제하지 않고 소유자를 가리킨다(T-0918·X-4).
+
+    복제한 목록은 반드시 갈린다 — 설명이 `codex 는 low/medium/high/xhigh` 라고 적어 둔 동안
+    선언은 이미 `max` 를 갖고 있었다(설명만 보고 고른 값이 소비 지점에서 거부된다).
+    """
+    ladder = {value for values in relay_module.REASONING_ALLOWED.values()
+              for value in values}
+    assert ladder, "허용집합이 비었다(공허 가드)"
+    pattern = re.compile(r"\b(" + "|".join(sorted(ladder, key=len, reverse=True)) + r")\b")
+    keys = [row["key"] for row in _rows(keys_document)
+            if row["key"].rsplit(".", 1)[-1] == "reasoning"]
+    assert len(keys) == 1 + 16, keys
+
+    for key in keys:
+        description = conf_module.key_spec(key).description
+        copied = pattern.findall(description)
+        assert copied == [], f"{key}: 설명이 허용값을 복제한다 {copied}"
+    owner = conf_module.key_spec("additional_reviewer.reasoning").description
+    assert "pm_relay.REASONING_ALLOWED" in owner, owner
+
+
+def test_model_rows_open_free_text_and_point_at_the_query_command(keys_document):
+    """모델은 닫힌 목록이 없다 — 자유 입력 + 조회 명령(`delegate models`)을 함께 연다."""
+    rows = _choice_rows(keys_document, "model")
+
+    assert len(rows) == 1 + 16, [row["key"] for row in rows]
+    for row in rows:
+        assert row["choices"]["values"] == {}                  # 박아 둔 목록 0
+        assert row["choices"]["fetch"] == {"command": "delegate models", "arg": "harness"}
+        assert row["choices"]["free_text"] is True
+
+
+def test_every_dependent_choice_names_a_declared_sibling_key(conf_module, keys_document):
+    """종속 키는 **같은 세트의 harness 키**이고 그 키는 레지스트리가 아는 이름이다.
+
+    화면은 `depends_on` 의 현재 값을 버킷으로 읽는다 — 그 이름이 이 사본에 없는 키면 버킷이 항상
+    비어 목록이 사라진다(조용한 빈 목록). 왕복이 그 어긋남의 유일한 관측점이다.
+    """
+    dependents = [row for row in _rows(keys_document)
+                  if row["choices"] is not None and row["choices"]["depends_on"]]
+
+    assert len(dependents) == 2 * (1 + 16), [row["key"] for row in dependents]
+    for row in dependents:
+        depends_on = row["choices"]["depends_on"]
+        assert depends_on == row["key"].rsplit(".", 1)[0] + ".harness"
+        assert conf_module.key_spec(depends_on) is not None, depends_on
+
+
+def test_the_listed_choices_all_pass_the_unchanged_validators(keys_document, relay_module):
+    """선택지는 고르기 쉽게 하는 값이지 통과를 막는 값이 아니다 — 검증 규칙은 그대로다."""
+    harness_row = _choice_rows(keys_document, "harness")[0]
+    for harness in harness_row["choices"]["values"][""]:
+        assert relay_module.validate_harness(harness) == harness
+
+    reasoning_row = _choice_rows(keys_document, "reasoning")[0]
+    for harness, values in reasoning_row["choices"]["values"].items():
+        for value in values:
+            assert relay_module.validate_reasoning(harness, value) == value
+    with pytest.raises(relay_module.HarnessContractError):
+        relay_module.validate_reasoning("codex", "nope")      # 닫힌 집합은 여전히 닫혀 있다
+
+
+def test_recommended_is_declared_only_where_there_is_evidence(conf_module, keys_document):
+    """권장값은 근거(adopter 실측 별칭)가 있는 자리에만 있다 — 없는 자리는 지어내지 않는다.
+
+    `.fallback` 티어는 "인프라 실패 1회 대체" 에 무엇을 권할지가 결정이라 없고,
+    `additional_reviewer.*` 는 실측 model 이 버전 붙은 라이브 ID 라 엔진에 박으면 drift 한다.
+    """
+    carried = {row["key"] for row in _rows(keys_document) if row["recommended"] is not None}
+    expected = {f"delegate.{role_tier}.{suffix}"
+                for role_tier, values in conf_module.DELEGATE_RECOMMENDED.items()
+                for suffix in values}
+
+    assert carried == expected
+    assert len(carried) == 5 * 3                              # 역할·티어 5 × 접미 3
+    assert not [key for key in carried if ".fallback." in key]
+    assert not [key for key in carried if key.startswith("additional_reviewer.")]
+
+
+def test_recommended_values_are_inside_their_own_choices(conf_module, keys_document):
+    """권장 harness·reasoning 은 그 키의 선택지 안이고, model 은 자유 문자열이다."""
+    rows = {row["key"]: row for row in _rows(keys_document) if row["recommended"] is not None}
+
+    for key, row in rows.items():
+        suffix = key.rsplit(".", 1)[-1]
+        recommended_harness = rows[f"{key.rsplit('.', 1)[0]}.harness"]["recommended"]
+        if suffix == "harness":
+            assert row["recommended"] in row["choices"]["values"][""]
+        elif suffix == "reasoning":
+            assert row["recommended"] in row["choices"]["values"][recommended_harness]
+        else:
+            assert row["choices"]["free_text"] and row["recommended"].strip()
+
+
+def test_recommended_keys_are_real_role_and_tier_combinations(conf_module):
+    """권장 표의 키는 `<role><tier>` 실조합이다 — 없는 역할·티어에 권장을 달지 않는다."""
+    combinations = {f"{role}{tier}" for role in conf_module._role_names()
+                    for tier in conf_module._DELEGATE_TIERS}
+
+    assert conf_module._role_names(), "역할 축을 못 읽었다 — 파생이 강등됐다"
+    assert set(conf_module.DELEGATE_RECOMMENDED) <= combinations
+    for values in conf_module.DELEGATE_RECOMMENDED.values():
+        assert set(values) == set(conf_module._ROLE_SUFFIXES)   # 세트를 통째로 쓴다
+
+
+def test_recommended_for_is_not_a_default(conf_module):
+    """권장값은 기본값이 아니다 — `default_for` 는 계속 None 이고 저장 전엔 효과가 없다."""
+    assert conf_module.recommended_for("delegate.developer.model") == "sonnet"
+    assert conf_module.default_for("delegate.developer.model") is None
+    assert conf_module.recommended_for("delegate.developer.fallback.model") is None
+    assert conf_module.recommended_for("additional_reviewer.model") is None
+    assert conf_module.recommended_for("nope.nope") is None
+
+
+def test_the_human_table_does_not_read_the_new_json_fields(conf_module):
+    """사람 표는 새 필드를 소비하지 않는다 — 바이트 불변의 구조적 근거.
+
+    바이트 동일성 테스트는 같은 함수끼리 비교라 새 필드 누출을 못 잡는다. 표를 만드는 두 함수의
+    소스에 그 이름이 아예 없음을 못박아 "JSON 표면에만 산다" 를 직접 확인한다.
+    """
+    rendered = inspect.getsource(conf_module.render_key_table)
+    displayed = inspect.getsource(conf_module._default_display)
+
+    for token in ("choices", "recommended"):
+        assert token not in rendered, token
+        assert token not in displayed, token
+
+
+def test_sibling_mapping_reads_the_declaration_and_degrades_to_an_empty_table(
+        conf_module, relay_module):
+    """형제 표 파생은 실 선언을 읽고, 못 읽는 형상에서는 빈 표로 강등한다(막는 것 0)."""
+    mapping = conf_module._sibling_mapping("pm_relay.py", "REASONING_ALLOWED")
+
+    assert mapping == {harness: tuple(values)
+                       for harness, values in relay_module.REASONING_ALLOWED.items()}
+    assert conf_module._sibling_mapping("pm_relay.py", "NO_SUCH_DECLARATION") == {}
+    assert conf_module._sibling_mapping("no_such_sibling.py", "REASONING_ALLOWED") == {}

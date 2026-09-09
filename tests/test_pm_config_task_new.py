@@ -164,7 +164,7 @@ def test_task_new_then_bind_task_is_clean_resume(pc, wp, capsys):
 
     assert action == "resumed", "pid 0(미점유) 재개인데 created/reclaimed 로 분류됐다"
     assert reclaimed_from is None, "정상 인계인데 crash 회수 경고 대상이 됐다"
-    assert record.pid == os.getpid()
+    assert record.pid == wp._session_pid()
     assert len(_ledger_rows(wp)) == 1, "재개가 두 번째 행을 만들었다"
 
 
@@ -187,13 +187,13 @@ def test_task_new_duplicate_name_refused_without_ledger_change(pc, wp, capsys):
 
 def test_task_new_live_task_pid_is_not_touched_by_duplicate_refusal(pc, wp, capsys):
     """살아 있는 task(pid>0) 이름도 rc1 이고 그 pid 를 만지지 않는다."""
-    wp.bind_task("busy")            # pid = 이 프로세스(살아 있음)
+    wp.bind_task("busy")            # pid = 이 세션(살아 있음)
     capsys.readouterr()
     before = wp.LEASES_FILE.read_bytes()
 
     assert _run_new(pc, wp, "busy") == 1
     assert wp.LEASES_FILE.read_bytes() == before
-    assert wp.find_task("busy").pid == os.getpid()
+    assert wp.find_task("busy").pid == wp._session_pid()
 
 
 def test_task_new_archived_name_refused_with_reopen_hint(pc, wp, capsys):
