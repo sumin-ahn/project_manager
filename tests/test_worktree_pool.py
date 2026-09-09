@@ -1427,7 +1427,8 @@ def test_create_slot_provisional_records_the_resolved_session_pid(wp, monkeypatc
     lease = wp.create_slot("A", branch="a1", session="me", git_runner=git)
 
     assert seen["provisional"] == [("creating", 424245)]
-    assert lease.state == "leased" and lease.pid == 424245
+    # 확정은 무소유 idle 이라 세션 pid 는 provisional 구간에만 남는다(생성 ≠ 점유).
+    assert lease.state == "idle" and lease.pid == 0
 
 
 def test_session_pid_resolution_failure_leaves_the_ledger_untouched(wp, monkeypatch):
@@ -1480,12 +1481,12 @@ def test_force_release_unknown_slot_returns_none(wp):
 
 
 def test_create_slot_adds_worktree_and_submodule_init(wp):
-    """create_slot — worktree add + submodule init + 장부 leased 등록(번호 자동)."""
+    """create_slot — worktree add + submodule init + 장부 idle 등록(번호 자동)."""
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
     lease = wp.create_slot("A", branch="a1", session="me", git_runner=git)
     assert lease.slot == "work/A_1"
-    assert lease.state == "leased"
+    assert lease.state == "idle"
     # branch 파라미터는 worktree add `-B <branch>` 를 구동(checkout)하지만 장부엔 저장하지
     # 않는다(ADR-0013 amend T-0072 — git=진실). worktree add 가 `-B a1` 로 불렸는지 검증.
     assert git.did("worktree", "add", "-B", "a1")
@@ -1582,7 +1583,7 @@ def test_create_slot_submodule_init_failure_raises_before_register(wp):
 
 
 def test_create_slot_submodule_init_success_registers(wp):
-    """sensitivity 대조 — submodule rc0(성공)이면 슬롯이 정상 leased 등록된다.
+    """sensitivity 대조 — submodule rc0(성공)이면 슬롯이 정상 등록된다(무소유 idle).
 
     위 failure negative 와 대조: 같은 경로에서 rc 만 0/1 로 갈려 등록/raise 가 갈린다 →
     rc 확인이 유일한 방어선임을 보인다(가드 제거 시 failure case 도 등록돼 negative fail).
@@ -1593,7 +1594,7 @@ def test_create_slot_submodule_init_success_registers(wp):
             return (0, "true\n")   # 유효 bare 로 가드 통과(T-0294).
         return (0, "")  # worktree add·submodule 모두 성공
     lease = wp.create_slot("A", branch="a1", session="me", git_runner=succeeding)
-    assert lease.state == "leased"
+    assert lease.state == "idle"
     assert len(wp.list_leases()) == 1
 
 
@@ -1649,7 +1650,7 @@ def test_create_slot_valid_bare_passes_guard(wp):
     git = FakeGit(is_bare=True)
     lease = wp.create_slot("A", branch="a1", session="me", git_runner=git)
     assert lease.slot == "work/A_1"
-    assert lease.state == "leased"
+    assert lease.state == "idle"
     # 가드가 rev-parse 로 실 bare 를 판정했다(경로 존재만이 아님).
     assert git.did("-C", str(wp.bare_repo_path("A")), "rev-parse", "--is-bare-repository")
     assert git.did("worktree", "add")   # 유효 → worktree add 까지 도달
@@ -1717,7 +1718,7 @@ def test_create_slot_bare_validation_uses_injected_runner(wp):
     # 유효 mock → 통과.
     ok = FakeGit(is_bare=True)
     lease = wp.create_slot("A", branch="a1", session="me", git_runner=ok)
-    assert lease.state == "leased"
+    assert lease.state == "idle"
     # 같은 placeholder, 무효 mock → fail-loud (판정이 mock 에서 옴·경로는 동일).
     bad = FakeGit(is_bare=False)
     with pytest.raises(wp.BareRepoMissing):
@@ -2387,6 +2388,21 @@ def test_default_session_pool_row_present_falls_back_host_pid_despite_single_reg
     assert wp._default_session() == f"{socket.gethostname()}-{os.getpid()}"
 
 
+def _provisional_sessions(wp, seen):
+    """worktree add 시점의 disk 장부 session 값을 잡아 두는 git runner.
+
+    확정된 pool 슬롯은 무소유(session 빈 문자열)라, `_default_session()` 해소값이 실리는 자리는
+    provisional 마커 하나다 — 그 자리를 그대로 관측한다(값을 사후 재계산하지 않는다).
+    """
+    def git(argv):
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return (0, "true\n")
+        if argv[:2] == ["worktree", "add"]:
+            seen["sessions"] = [l.session for l in wp._read_ledger()]
+        return (0, "")
+    return git
+
+
 def test_create_slot_default_session_uses_home_row_when_registered(wp, proj, monkeypatch):
     """전이 일관성: 홈이 슬롯 행으로 등록돼 있으면 create_slot 이 그 행의 session 을 상속한다 —
     저장측(worktree_pool)과 매칭측(board.session_name)이 같은 장부 행 하나를 본다."""
@@ -2395,13 +2411,15 @@ def test_create_slot_default_session_uses_home_row_when_registered(wp, proj, mon
     monkeypatch.setattr(wp, "_load_board", lambda: _board_stub({"A"}, repo_path=proj))
     _seed(wp, _lease(wp, slot=".", repo="A", session="A_1", state="leased"))
     _mk_bare_placeholder(wp, "A")
-    git = FakeGit()
-    lease = wp.create_slot("A", git_runner=git, test_cmd="make hil2")  # session 미지정
-    assert lease.session == "A_1"
+    seen = {}
+    lease = wp.create_slot("A", git_runner=_provisional_sessions(wp, seen),
+                           test_cmd="make hil2")  # session 미지정
+    assert seen["sessions"] == ["A_1", "A_1"]     # 홈 행 + 방금 만든 provisional
+    assert lease.session == ""                    # 확정은 무소유 pool 슬롯
 
 
 def test_create_slot_default_session_uses_env_binding(wp, proj, monkeypatch):
-    """END-TO-END: env 바인딩 → create_slot 이 lease.session 을 그 값으로 저장.
+    """END-TO-END: env 바인딩 → create_slot 이 그 값을 provisional 마커에 저장.
 
     저장측(이 모듈)과 매칭측(board.session_name)이 같은 층을 읽어야 per-slot test_cmd·claim
     소유권이 맞는다. conf 폴백이 사라진 뒤 남은 명시 층이 env 다.
@@ -2410,9 +2428,11 @@ def test_create_slot_default_session_uses_env_binding(wp, proj, monkeypatch):
     monkeypatch.setenv("PM_SESSION_NAME", "foo")
     _write_local_conf(proj, "session=ignored\n")   # 읽는 층 없음
     _mk_bare_placeholder(wp, "A")
-    git = FakeGit()
-    lease = wp.create_slot("A", git_runner=git, test_cmd="make hil2")  # session 미지정
-    assert lease.session == "foo"
+    seen = {}
+    lease = wp.create_slot("A", git_runner=_provisional_sessions(wp, seen),
+                           test_cmd="make hil2")  # session 미지정
+    assert seen["sessions"] == ["foo"]
+    assert lease.session == ""                    # 확정은 무소유 pool 슬롯
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -3357,7 +3377,7 @@ def test_create_slot_worktree_add_injected_runner_preserves_di_seam(wp, monkeypa
     monkeypatch.setattr(wp, "_real_git_runner_interactive", trap)
     git = FakeGit()
     lease = wp.create_slot("A", branch="a1", session="me", git_runner=git)
-    assert lease.state == "leased"
+    assert lease.state == "idle"
     # 주입 runner 가 worktree add·submodule 둘 다 처리(인터랙티브 우회).
     assert git.did("worktree", "add", "-B", "a1")
     assert git.did("submodule", "update", "--init", "--recursive", "--force")
@@ -3728,8 +3748,8 @@ def test_create_slot_writes_provisional_before_worktree_add(wp):
     lease = wp.create_slot("A", session="me", git_runner=git)
     assert seen["at_add"] == [("work/A_1", "creating")], \
         "provisional('creating')이 worktree add 전에 disk 장부에 없음(SIGKILL 흔적 상실)"
-    assert lease.state == "leased"
-    assert [(l.slot, l.state) for l in wp.list_leases()] == [("work/A_1", "leased")]
+    assert lease.state == "idle"
+    assert [(l.slot, l.state) for l in wp.list_leases()] == [("work/A_1", "idle")]
 
 
 def test_create_slot_keyboard_interrupt_rolls_back_and_removes_provisional(wp):
@@ -10301,7 +10321,9 @@ def test_real_git_rebase_onto_explicit_uses_given_ref_not_stale_origin(proj, tmp
     # 전제 — origin/release 는 R0 에 동결, 로컬 release 는 R1(local_tip)로 앞섬.
     assert _git(bare, "rev-parse", "refs/remotes/origin/release").stdout.strip() != local_tip
 
-    lease = wp.create_slot("A", base="release", session="me", init_submodules=False)
+    wp.create_slot("A", base="release", session="me", init_submodules=False)
+    # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
+    lease = wp.alloc("A", session="me")
     slot_dir = wp.slot_path(lease.slot)
     real_runner = wp._real_git_runner(slot_dir)
     spy, calls = _spy_runner(real_runner)
@@ -10324,7 +10346,9 @@ def test_real_git_rebase_no_onto_prefers_local_when_origin_stale(proj, tmp_path,
     origin, bare = _mk_release_family(tmp_path, wp)
     local_tip = _push_local_only_commit(tmp_path, bare, "release", label="r1")
 
-    lease = wp.create_slot("A", base="release", session="me", init_submodules=False)
+    wp.create_slot("A", base="release", session="me", init_submodules=False)
+    # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
+    lease = wp.alloc("A", session="me")
     slot_dir = wp.slot_path(lease.slot)
     real_runner = wp._real_git_runner(slot_dir)
     spy, calls = _spy_runner(real_runner)
@@ -10347,7 +10371,9 @@ def test_real_git_rebase_no_onto_prefers_local_when_origin_stale_stderr(proj, tm
     origin, bare = _mk_release_family(tmp_path, wp)
     _push_local_only_commit(tmp_path, bare, "release", label="r1")
 
-    lease = wp.create_slot("A", base="release", session="me", init_submodules=False)
+    wp.create_slot("A", base="release", session="me", init_submodules=False)
+    # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
+    lease = wp.alloc("A", session="me")
     slot_dir = wp.slot_path(lease.slot)
     spy, _calls = _spy_runner(wp._real_git_runner(slot_dir))
 
@@ -10371,7 +10397,9 @@ def test_real_git_rebase_no_onto_diverged_prefers_local_and_reports_two_counts(
     monkeypatch.setattr(wp, "_default_session", lambda: "me")
 
     origin, bare = _mk_release_family(tmp_path, wp)
-    lease = wp.create_slot("A", base="release", session="me", init_submodules=False)
+    wp.create_slot("A", base="release", session="me", init_submodules=False)
+    # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
+    lease = wp.alloc("A", session="me")
     slot_dir = wp.slot_path(lease.slot)
 
     # 로컬(=bare 의 refs/heads/release)을 2 커밋 전진 — origin 은 안 건드림.
@@ -10414,7 +10442,9 @@ def test_real_git_rebase_no_onto_prefers_origin_when_advanced(proj, tmp_path, mo
     monkeypatch.setattr(wp, "_default_session", lambda: "me")
 
     origin, bare = _mk_release_family(tmp_path, wp)
-    lease = wp.create_slot("A", base="release", session="me", init_submodules=False)
+    wp.create_slot("A", base="release", session="me", init_submodules=False)
+    # 생성은 풀 확장이고 점유는 대여다 — rebase 는 내 명의 leased 슬롯에서만 돈다(T-0915).
+    lease = wp.alloc("A", session="me")
     slot_dir = wp.slot_path(lease.slot)
 
     # origin 을 로컬(bare refs/heads/release)보다 앞서게 — origin 은 non-bare 워킹 repo 라 직접 커밋.

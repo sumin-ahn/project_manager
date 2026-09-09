@@ -264,7 +264,7 @@
     {
       "key": "additional_reviewer.reasoning",
       "group": "additional_reviewer",
-      "description": "추가 리뷰어 추론 강도 (codex 는 low/medium/high/xhigh).",
+      "description": "추가 리뷰어 추론 강도. 허용값은 하네스마다 다르며 `pm_relay.REASONING_ALLOWED` 가 소유한다 — `harness`·`model` 과 세트로 쓴다(없으면 fail-loud).",
       "default": null,
       "required": false,
       "kind": "key",

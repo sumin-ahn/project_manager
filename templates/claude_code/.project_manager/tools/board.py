@@ -18555,7 +18555,18 @@ def lint_adapter_drift() -> list[tuple[str, str, str]]:
         표면화한다. advisory 라 `--gate` 미차단·1줄이라 flood 아님.
     """
     findings: list[tuple[str, str, str]] = []
-    conf = local_config()
+    # conf 판독은 lint 조회면의 seam 하나(`_lint_local_conf_read`)로 한다 — 값 소비 계약
+    # (`local_config` → `load_checked_readable`)으로 읽으면 판독 실패가 여기서 traceback 이 되어
+    # lint 전체가 죽는다(그 상태를 말해 줄 `lint_local_conf_readable` 까지 함께 사라진다).
+    # 파일 부재·판독 실패는 빈 목록이고, 못 읽은 사실은 그 한 자리가 1건으로 말한다.
+    try:
+        read = _lint_local_conf_read()
+    except LocalConfUnreadable:
+        return findings
+    if read is None:
+        return findings
+    _module, result = read
+    conf = result.values
 
     # non-adopter — upstream 자체가 없으면 비교할 대상이 없다 (graceful).
     if not (conf.get("upstream.path") or "").strip():

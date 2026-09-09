@@ -3431,15 +3431,19 @@ def create_slot(
     test_cmd: str | None = None,
     readonly: bool = False,
 ) -> Lease:
-    """새 슬롯을 *생성*하고 leased 로 리스한다 — 풀 확장 (NeedsCreate 게이트 통과 후).
+    """새 슬롯을 *생성*한다 — 풀 확장 (NeedsCreate 게이트 통과 후).
+
+    확정 상태는 세 갈래다: task 명의 생성은 그 task 명의 `leased`, `readonly` 는 무소유
+    공유 슬롯(leased·session/pid 없음), 그 밖은 **무소유 `idle`**(풀에 들어가는 슬롯 —
+    점유는 `alloc`/`bind_slot` 이 한다).
 
     **task-명의 생성 (`owner_task` 주어짐)**: 풀 소진 시 `worktree add <repo> --task
     <이름>` 이 새 슬롯을 만들고 **생성 직후 그 슬롯을** task 명의로 대여한다(min-idle 재탐색의
     오슬롯 리스크 없이 생성분 직결). lease.session=owner_task — 그 슬롯의 reclaim/재부착 보호는
     `bound` 이 아니라 **tasks 장부 조인**이 담당한다
     lease 통합·마이그레이션 0). owner_task 는 기바인딩 task 요구(cmd 층 `find_task`)라 항상 tasks
-    장부에 있다. readonly 와는 상호배타(readonly=무소유 공유 슬롯). owner_task 미지정은 현행(session=
-    도착 세션·pool 슬롯).
+    장부에 있다. readonly 와는 상호배타(readonly=무소유 공유 슬롯). owner_task 미지정은 무소유
+    idle pool 슬롯이다 — `session` 인자는 그동안의 provisional 마커에만 실린다(누가 만들다 말았는지).
 
     `test_cmd` 가 주어지면 그 슬롯 리스에 회귀/빌드명령을 바인딩한다(
     amend) — 같은 repo 의 슬롯들이 서로 다른 빌드 타깃(HIL config 등)을 가질 수 있게.
@@ -3467,7 +3471,7 @@ def create_slot(
          §8-4(d)) → `git submodule update --init --recursive --force`(슬롯 worktree cwd).
          `--force` 는 worktree+submodule edge(bare 에서 만든 fresh 슬롯)서 plain `--init` 이
          체크아웃 못 하는 상태를 강제 init — fresh 슬롯이라 잃을 로컬 변경 0.
-      5. 장부에 leased 엔트리 등록.
+      5. 장부 엔트리 확정(위 세 갈래 — task 명의 leased · readonly 무소유 leased · 그 밖 idle).
 
     **`readonly=True`**: research 전용 read-only 공유 슬롯을 만든다 —
     슬롯 전용 브랜치를 파지 않고 `git worktree add --detach <path> <base sha>` 로 **detached
@@ -3482,7 +3486,7 @@ def create_slot(
     submodule init.
     """
     # task-명의 생성이면 session=task 이름(reclaim/재부착 보호는 tasks 장부 조인이 담당·
-    # bound 아님). owner_task 미지정은 현행(session=도착 세션).
+    # bound 아님). owner_task 미지정이면 이 값은 provisional 마커에만 실리고 확정은 무소유 idle 이다.
     task_created = owner_task is not None
     # owner_task + readonly 는 모순(무소유 공유 자산 vs task 명의 배타 대여) — CLI 가드만 믿지 않고
     # 엔진 자체에서 fail-loud(codex suggestion·타 호출부/미래 경로 방어). 부작용(worktree add) 이전.
@@ -3759,6 +3763,13 @@ def create_slot(
 
             # 성공 — provisional 을 leased 로 **확정**한다(2차 write·branch 는 장부 미저장
             # git=진실·조회는 live current_branch). provisional 을 그대로 반환(같은 필드).
+            # 단, leased 는 **명의가 있을 때**다: owner_task 는 그 task 명의로, readonly 는
+            # 무소유 공유로 확정한다. 명의가 없는 생성(그 밖)은 leased 가 아니라 **idle** 이다 —
+            # 기록 pid 가 세션이 된 뒤로 만든 세션 명의 leased 로 남기면 그 세션이 사는 동안
+            # 살아 있는 대여라, 같은 세션의 다음 `alloc` 이 "idle 슬롯 없음"(풀 소진)으로 막히고
+            # 관리자에서는 그 행의 반납·제거·대여가 전부 닫힌다(회복 경로 없음). 생성은 풀
+            # 확장이고 점유는 alloc/bind 가 한다 — CLI 안내("다음 스텝: 이 슬롯을 세션에
+            # 바인딩")와도 같은 뜻이다.
             provisional.state = "leased"
             if readonly:
                 # readonly 공유 슬롯 — 무소유 확정: session/pid 를 비우고 role 을 박는다.
@@ -3767,6 +3778,12 @@ def create_slot(
                 provisional.session = ""
                 provisional.pid = 0
                 provisional.role = "readonly"
+            elif not task_created:
+                # 풀 슬롯 — 무소유 idle 확정: readonly 와 같은 "무소유" 표현(session 빈 문자열·
+                # pid 0)을 쓰고 state 만 idle 이라 alloc 의 idle-탐색이 곧바로 집는다.
+                provisional.state = "idle"
+                provisional.session = ""
+                provisional.pid = 0
             # create git 스냅— base 를 아는 유일 지점이다(base_branch=base·
             # commit=방금 파생된 fresh 슬롯 tip). base 미지정(branch·else 경로)이면 base 는 미기록
             # (drift 감지는 사용자 set-base 후 활성). fail-soft — 스냅 실패가 create 를 안 막는다.

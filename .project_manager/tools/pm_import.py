@@ -6425,8 +6425,10 @@ class AdapterConfigReport(NamedTuple):
     크기이고(`added`/`removed` 도 그 축), `diff_vs_latest` 는 현재 파일 → 최신 template 이라
     **상류 변경**이다. 기준을 해소하지 못하면 `None` 이다(빈 문자열 = 차이 없음과 구분한다).
 
-    `status is None` = **선언된 대상인데 dest 에 파일이 없다**. 부재를 행이 사라지는 것으로 말하지
-    않는 축이라(관측 인벤토리는 전수) 같은 사실을 재진술하는 `present` 필드는 두지 않는다.
+    `status is None` = **선언된 대상인데 판정이 없다**(대개 dest 파일 부재 · template 를 읽지 못한
+    report 대상 포함). 부재를 행이 사라지는 것으로 말하지 않는 축이라(관측 인벤토리는 전수) 같은
+    사실을 재진술하는 `present` 필드는 두지 않는다 — dest 존재 확인도 여기서 하지 않는다.
+    그 행은 `added`/`removed` 도 널이다(잴 기준이 없다 — 0 은 "차이 없음" 이라 다른 사실이다).
     """
     relpath: str
     harness: str

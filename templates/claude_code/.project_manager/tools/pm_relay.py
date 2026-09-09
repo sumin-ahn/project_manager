@@ -443,6 +443,11 @@ def _windows_process_table() -> "list[tuple[int, int, str]]":
     Toolhelp32 열거는 그 모듈이 단일 소유한다(두 번째 열거 0). 이름만 돌려주는
     `console_encoding._parent_process_name` 은 다른 소비자라 호출하지 않는다. 실패 시 빈 목록을
     주는 fail-soft 이므로 그 결과는 `session_pid` 가 해소 실패로 올린다.
+
+    이름은 실행 파일 확장자를 벗긴 소문자 basename 이다(`…\\Claude.EXE` → `claude`) — Toolhelp
+    `szExeFile` 은 이미지 파일명이라 늘 확장자를 달고 오는데, POSIX `comm` 은 달지 않는다. 두
+    플랫폼의 이름 축을 여기서 같게 맞춰야 `session_pid` 의 완전 일치 판정이 한 규칙으로 선다
+    (판정 쪽에 접미 목록을 두면 규칙이 둘로 갈린다).
     """
     console_encoding_path = Path(__file__).resolve().parent / "console_encoding.py"
     _require_engine_sibling(console_encoding_path, "console_encoding.py")
@@ -451,7 +456,7 @@ def _windows_process_table() -> "list[tuple[int, int, str]]":
         verifier=_verify_engine_rev, cache=True,
     )
     return [
-        (pid, parent_pid, ntpath.basename(exe).lower())
+        (pid, parent_pid, ntpath.splitext(ntpath.basename(exe))[0].lower())
         for pid, parent_pid, exe in console_encoding._toolhelp_processes()
     ]
 

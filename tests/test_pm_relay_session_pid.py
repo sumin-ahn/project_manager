@@ -198,30 +198,53 @@ def test_ancestor_walk_breaks_cycles(relay):
 # ── ③ Windows 분기 ───────────────────────────────────────────────────────────
 
 
-def test_windows_branch_walks_the_same_chain(relay):
-    """Windows 도 같은 순회·같은 판정이다(비-Windows 회귀에서 `_platform_name` 주입으로 검증)."""
-    table = [
-        (os.getpid(), 7001, "python.exe"),
-        (7001, 7002, "claude"),
-        (7002, 1, "powershell.exe"),
-    ]
+def _toolhelp_rows(relay, monkeypatch, rows):
+    """Toolhelp 열거를 **실제 모양**(전체 경로 + 실행 파일 확장자)으로 갈아끼운다.
 
-    assert relay.session_pid(_platform_name="nt", _process_table=table) == 7001
-
-
-def test_windows_process_table_reuses_the_toolhelp_enumeration(relay, monkeypatch):
-    """Windows 표는 `console_encoding._toolhelp_processes` 하나에서 온다(두 번째 열거 0)."""
+    접미 없는 이름을 주입하면 이름 정규화 자리를 건너뛰어, Windows 에서 어떤 하네스 조상도
+    인정되지 않던 어긋남을 회귀가 못 본다 — `szExeFile` 이 실제로 싣는 모양 그대로 준다.
+    """
     console_encoding = relay._load_module_from_path(
         TOOLS / "console_encoding.py", "console_encoding.py",
         verifier=relay._verify_engine_rev, cache=True,
     )
-    monkeypatch.setattr(
-        console_encoding, "_toolhelp_processes",
-        lambda: [(11, 12, r"C:\\Users\\me\\AppData\\Local\\bin\\Claude.EXE"),
-                 (12, 1, r"C:\\Windows\\System32\\cmd.exe")],
-    )
+    monkeypatch.setattr(console_encoding, "_toolhelp_processes", lambda: list(rows))
 
-    assert relay._windows_process_table() == [(11, 12, "claude.exe"), (12, 1, "cmd.exe")]
+
+def test_windows_branch_walks_the_same_chain(relay, monkeypatch):
+    """Windows 도 같은 순회·같은 판정이다(비-Windows 회귀에서 `_platform_name` 주입으로 검증)."""
+    _toolhelp_rows(relay, monkeypatch, [
+        (os.getpid(), 7001, r"C:\\Python312\\python.exe"),
+        (7001, 7002, r"C:\\Users\\me\\AppData\\Local\\bin\\Claude.EXE"),
+        (7002, 1, r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"),
+    ])
+
+    assert relay.session_pid(_platform_name="nt") == 7001
+
+
+def test_windows_claude_desktop_ancestor_is_not_a_harness(relay, monkeypatch):
+    """확장자를 벗겨도 인정은 완전 일치뿐이다 — 상주 `claude-desktop.exe` 는 세션이 아니다."""
+    _toolhelp_rows(relay, monkeypatch, [
+        (os.getpid(), 7101, r"C:\\Python312\\python.exe"),
+        (7101, 7102, r"C:\\Users\\me\\AppData\\Local\\Claude\\claude-desktop.exe"),
+        (7102, 1, r"C:\\Windows\\System32\\cmd.exe"),
+    ])
+
+    assert relay.session_pid(_platform_name="nt") == os.getppid()
+
+
+def test_windows_process_table_reuses_the_toolhelp_enumeration(relay, monkeypatch):
+    """Windows 표는 `console_encoding._toolhelp_processes` 하나에서 온다(두 번째 열거 0).
+
+    이름 축은 POSIX `comm` 과 같다 — 실행 파일 확장자를 벗긴 소문자 basename(`Claude.EXE` →
+    `claude`). 접미가 남으면 `HARNESS_CHOICES` 완전 일치가 Windows 에서 언제나 실패한다.
+    """
+    _toolhelp_rows(relay, monkeypatch, [
+        (11, 12, r"C:\\Users\\me\\AppData\\Local\\bin\\Claude.EXE"),
+        (12, 1, r"C:\\Windows\\System32\\cmd.exe"),
+    ])
+
+    assert relay._windows_process_table() == [(11, 12, "claude"), (12, 1, "cmd")]
 
 
 def test_relay_does_not_enumerate_processes_itself(relay):

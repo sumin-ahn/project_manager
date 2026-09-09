@@ -35,6 +35,13 @@ function label(status: string | null): string {
   return status === null ? "파일 없음" : STATUS_LABEL[status] ?? status;
 }
 
+/** 편집 줄 수는 **둘 다 숫자일 때만** 뜻이 있다 — 판정 없는 행은 두 칸이 널이라 그리지 않는다. */
+function editedLines(file: AdapterFile): string {
+  const { added, removed } = file.diff_lines ?? {};
+  return typeof added === "number" && typeof removed === "number"
+    ? ` · 편집 +${added}/-${removed}` : "";
+}
+
 function shown(value: AdapterFile["distance"]): string {
   return value === undefined ? "" : `최신과 ${value}개 다름`;
 }
@@ -134,14 +141,15 @@ export default function AdapterSection({ bridge, path, onConfLoaded }:
                     </td>
                     <td className="py-0.5 text-[11px] text-slate-500 whitespace-nowrap">
                       {shown(file.distance)}
-                      {file.diff_lines && ` · 편집 +${file.diff_lines.added}/-${file.diff_lines.removed}`}
+                      {editedLines(file)}
                     </td>
                     <td className="w-56 py-0.5 text-right text-[11px] whitespace-nowrap">
                       <button type="button" onClick={() => toggle(file.path, "features")}
                               className="rounded border border-slate-200 px-1">기능 보기</button>
                       <button type="button" onClick={() => toggle(file.path, "diff")}
                               className="ml-1 rounded border border-slate-200 px-1">차이</button>
-                      <button type="button" disabled={busy}
+                      {/* 판정 없는 행(대개 dest 파일 부재)에 수용은 무대상 — 버튼을 닫는다. */}
+                      <button type="button" disabled={busy || file.status === null}
                               onClick={() => void accept(file.path)}
                               className="ml-1 rounded border border-slate-200 px-1">수용</button>
                     </td>

@@ -4699,7 +4699,9 @@ def cmd_delegate_models(args, *, models_runner=None) -> int:
 
     응답은 `{"harness", "kind", "models"}` 하나다. `free_text`(모델은 검증상 언제나 자유 문자열)는
     싣지 않는다 — 그 사실은 키 레지스트리의 `choices.free_text` 가 소유하고, 두 자리에 두면 갈린다.
-    rc: 0 성공 · 2 `--harness`/`--json` 미지정·미지원 · 3 조회 실패(사유는 stderr 한 줄).
+    rc: 0 성공 · 1 엔진 사본 부재(`pm_relay.py` 없음 — 원천 표 자체를 못 읽음) · 2
+    `--harness`/`--json` 미지정·미지원 · 3 조회 실패(사유는 stderr 한 줄). 1 과 3 은 다른
+    사실이다 — 물어볼 표가 없는 것과 표대로 물었는데 답을 못 얻은 것.
     """
     table = _load_model_source_table()
     if table is None:

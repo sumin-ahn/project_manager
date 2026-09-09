@@ -88,10 +88,8 @@ def cycle(tmp_path_factory) -> Cycle:
     run.run("task new", ["task", "new", TASK])
     run.run("worktree add without ack", ["worktree", "add", REPO_NAME])
     run.run("worktree add", ["worktree", "add", REPO_NAME, "--user-ack", REPO_NAME])
-    # 갓 만든 슬롯은 만든 **세션** 명의로 대여된 채다(T-0915 — 적힌 pid 가 그 세션이라 살아
-    # 있고, 죽은 pid 로 자동 회수되지 않는다). 풀에서 task 명의로 다시 대여하려면 먼저
-    # 반납한다 — 화면에서도 [반납] 다음 [대여] 두 동작이다.
-    run.run("release created", ["release", _work_slot(run.steps["worktree add"]["status"])])
+    # 갓 만든 슬롯은 무소유 idle 이다(T-0915 — 생성은 풀 확장이고 점유는 대여다). 같은 세션의
+    # 다음 대여가 그 슬롯을 그대로 집는다 — 사이에 반납 단계가 없다.
     run.run("alloc", ["alloc", REPO_NAME, "--task", TASK])
     run.run("task prefix without ack", ["task", "prefix", TASK, PREFIX])
     run.run("task prefix", ["task", "prefix", TASK, PREFIX, "--user-ack", PREFIX])
@@ -151,12 +149,11 @@ def test_worktree_add_creates_a_slot_and_alloc_binds_it_to_the_task(cycle):
     assert cycle.steps["worktree add"]["rc"] == 0
     assert len(created) == 1
     slot = created.pop()
-    # 갓 만든 슬롯은 만든 **세션** 명의로 대여된 채이고 그 세션은 살아 있다(T-0915).
+    # 갓 만든 슬롯은 무소유 idle 로 풀에 들어간다(T-0915) — 세션 명의로 남으면 그 세션이 사는
+    # 동안 살아 있는 대여라 같은 세션의 alloc 이 풀 소진으로 막히고 화면에도 복구 경로가 없다.
     assert after[slot]["role"] == "work"
-    assert (after[slot]["state"], after[slot]["alive"]) == ("leased", True)
-    # 반납하면 풀로 돌아가고, 그제야 task 명의 대여가 그 슬롯을 집는다.
-    assert _slots(cycle.steps["release created"]["status"])[slot]["state"] == "idle"
-
+    assert (after[slot]["state"], after[slot]["session"], after[slot]["pid"]) == ("idle", None, 0)
+    # 그래서 그 다음 대여(같은 세션)가 반납 없이 바로 그 슬롯을 집는다.
     leased = _slots(cycle.steps["alloc"]["status"])[slot]
     assert cycle.steps["alloc"]["rc"] == 0
     assert leased["state"] == "leased" and leased["session"] == TASK

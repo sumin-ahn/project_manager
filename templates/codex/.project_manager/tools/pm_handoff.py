@@ -3266,8 +3266,8 @@ class PmHandoff:
     def _release_task_pid(self, task: str) -> bool:
         """task handoff intent를 장부 `pid=0`으로 기록한다 — 성공 여부 반환.
 
-        핸드오프 기록(log·pm_state) 전 task 모드에서 호출한다. task 장부 pid 는 dump 후 즉사하는
-        bootstrap subprocess pid라, 종료를 안 기록하면 **정상 인계 후 재개도** dead-pid →
+        핸드오프 기록(log·pm_state) 전 task 모드에서 호출한다. task 장부 pid 는 그 task 를 연
+        세션 pid라, 종료(intent)를 안 기록하면 **다음 세션의 정상 재개도** dead-pid →
         `bind_task` 가 `reclaimed`("재개(회수·이전 세션 crash)" + "⚠️ 회수 진입")로 상시 오탐한다
         write 프리미티브 `worktree_pool.release_task_pid(task)` 만 호출해 pid 를 0 으로
         비워, 차기 부트스트랩이 clean `resumed`(경고 없음)로 재개하게 한다 — 진짜 crash(핸드오프 없이

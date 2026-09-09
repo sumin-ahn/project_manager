@@ -5,8 +5,8 @@
 
   - 응답은 `{"harness", "kind", "models"}` 한 줄이다. `free_text` 는 싣지 않는다 — 그 사실은 키
     레지스트리의 `choices.free_text` 가 소유하고, 두 자리에 두면 갈린다.
-  - rc 는 0(성공) · 2(`--harness`/`--json` 미지정·미지원) · 3(조회 실패) 이다. **빈 목록 성공은
-    없다** — 0개면 실패이고 사유가 stderr 로 나온다.
+  - rc 는 0(성공) · 1(엔진 사본 부재 — 원천 표를 못 읽음) · 2(`--harness`/`--json` 미지정·미지원) ·
+    3(조회 실패) 이다. **빈 목록 성공은 없다** — 0개면 실패이고 사유가 stderr 로 나온다.
   - 조회는 읽기 전용이다. 실행 전후로 트리가 한 바이트도 바뀌지 않는다.
 
 opencode(`kind="live"`)는 **실 subprocess 층**으로 친다: 조회 seam(`pm_import._real_models_runner`)
@@ -19,6 +19,7 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -222,6 +223,29 @@ def test_the_command_takes_only_the_declared_shape(argv):
 
     assert completed.returncode == 2, completed.stdout
     assert completed.stdout == ""
+
+
+# ── ④\' 원천 표 자체를 못 읽는 사본 — rc 1 ─────────────────────────────────
+
+
+def test_a_copy_without_the_relay_engine_fails_with_its_own_return_code(tmp_path):
+    """`pm_relay.py` 가 없는 사본은 rc 1 이다 — 조회 실패(3)와 다른 사실이라 값도 다르다.
+
+    표를 물어볼 자리 자체가 없는 상태다(부분 사본·중단된 갱신). 이 자리를 3 으로 접으면
+    "표대로 물었는데 답을 못 얻었다" 와 구별되지 않는다.
+    """
+    tools = tmp_path / "copy" / ".project_manager" / "tools"
+    shutil.copytree(TOOLS, tools)
+    (tools / "pm_relay.py").unlink()
+
+    completed = subprocess.run(
+        [sys.executable, str(tools / "pm_config.py"), *MODELS_ARGV,
+         "--harness", "claude", "--json"],
+        capture_output=True, text=True, encoding="utf-8", env=utf8_child_env())
+
+    assert completed.returncode == 1, completed.stdout
+    assert completed.stdout == ""
+    assert "pm_relay.py" in completed.stderr
 
 
 # ── ⑤ 읽기 전용 — 조회는 아무것도 쓰지 않는다 ──────────────────────────────

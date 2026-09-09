@@ -133,7 +133,8 @@ export type AdapterFeature = {
  * 어댑터 파일 한 행 — 모양이 **둘**이다. 채널 있는 파일은 아래 필드 전부를 들고, 인스턴스 소유
  * 문서(`CLAUDE.md`·`AGENTS.md`)는 `path`·`ownership`·`status` 셋뿐이다(나머지는 null 이 아니라
  * **키가 없다**). 화면은 `"mode" in file` 로 가른다.
- * `status: null` = 선언된 대상인데 그 파일이 없다(행은 전수라 사라지지 않는다).
+ * `status: null` = 선언된 대상인데 **판정이 없다**(대개 dest 파일 부재 · template 를 읽지 못한
+ * report 대상 포함). 행은 전수라 사라지지 않는다 — 그 행은 `diff_lines` 두 칸도 널이다.
  */
 export type AdapterFile = {
   path: string;
@@ -142,7 +143,7 @@ export type AdapterFile = {
   harness?: string;
   mode?: "managed" | "report";
   template_rev?: string;
-  diff_lines?: { added: number; removed: number };
+  diff_lines?: { added: number | null; removed: number | null };
   diff_vs_baseline?: string;
   diff_vs_latest?: string;
   features?: AdapterFeature[];
