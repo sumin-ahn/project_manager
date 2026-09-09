@@ -112,8 +112,8 @@ def test_the_readonly_slot_really_looks_like_a_reclaim_candidate(rows):
 def test_only_a_live_session_closes_the_change_actions(rows):
     assert _verdict(rows["idle"])["actions"] == "change"
     assert _verdict(rows["task"])["actions"] == "change"          # pid 0 인 task
-    # 회수 대기 행은 반납이 열린다 — 화면에서 대여한 슬롯은 브리지 서브프로세스가 끝나는
-    # 순간 이 상태가 되고(lease.pid 는 그 프로세스), 그 행의 반납이 대여의 역이다.
+    # 회수 대기 행은 반납이 열린다 — 그 행을 적은 세션이 이미 끝난 것이라(그 창이 닫혔다)
+    # 잡고 있는 주체가 없고, 그 행의 반납이 대여의 역이다.
     assert _verdict(rows["reclaim"])["actions"] == "change"
     assert _verdict(rows["readonly"])["actions"] == "refresh"     # 변경 축이 아니다
 
