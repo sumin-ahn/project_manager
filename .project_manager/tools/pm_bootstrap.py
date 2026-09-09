@@ -4382,9 +4382,9 @@ class PmBootstrap:
         lines.append(
             f"- 당신은 **task `{name}`** PM · prefix={prefix_display} · 상태={action_label}."
         )
-        # loud notice — dead-pid 회수(reclaimed)는 crash 재개가 다수지만, 기록 pid=부트스트랩
-        # 프로세스라 "다른 창이 아직 살아 작업 중"인 경우도 못 가른다(pid 는 이미 죽음). 감지=기계·
-        # 해소=사용자로 명시 경고한다(차단 아님·조상추적 비채택 근거는 bind_task docstring).
+        # loud notice — 기록 pid 는 그 task 를 연 세션(`worktree_pool._session_pid`)이라
+        # reclaimed = 이전 세션이 종료(핸드오프) 기록 없이 죽었다는 뜻이다. 감지=기계·
+        # 해소=사용자로 명시 경고한다(차단 아님).
         reclaimed_from = task_info.get("reclaimed_from_pid")
         if action == "reclaimed" and reclaimed_from:
             started = task_info.get("started") or "(미상)"

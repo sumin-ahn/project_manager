@@ -103,10 +103,10 @@ def test_the_applied_project_answers_the_manager_and_joins_the_list(api, dest, u
 
     assert api.list_projects()["projects"] == [{"path": str(dest), "name": dest.name}]
     document = api.status(str(dest))
-    # 적용 직후의 `.` 슬롯은 leased + alive false(init 프로세스)다 — 엔진의 정상 산출이고
-    # "진행 중인 세션" 경고(leased + alive true)의 입력에 걸리지 않는다.
+    # 적용 직후의 `.` 슬롯은 leased + alive true 다 — 적용을 실행한 **세션**이 그 홈을
+    # 잡고 있고 그 세션은 아직 살아 있다(T-0915). 값이 뒤집혀도 이 화면은 등록만 한다.
     assert [(row["slot"], row["state"], row["alive"]) for row in document["slots"]] == [
-        (".", "leased", False)]
+        (".", "leased", True)]
 
 
 def test_the_harness_choice_reaches_the_engine(api, dest, upstream):

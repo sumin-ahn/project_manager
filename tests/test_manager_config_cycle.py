@@ -88,6 +88,10 @@ def cycle(tmp_path_factory) -> Cycle:
     run.run("task new", ["task", "new", TASK])
     run.run("worktree add without ack", ["worktree", "add", REPO_NAME])
     run.run("worktree add", ["worktree", "add", REPO_NAME, "--user-ack", REPO_NAME])
+    # 갓 만든 슬롯은 만든 **세션** 명의로 대여된 채다(T-0915 — 적힌 pid 가 그 세션이라 살아
+    # 있고, 죽은 pid 로 자동 회수되지 않는다). 풀에서 task 명의로 다시 대여하려면 먼저
+    # 반납한다 — 화면에서도 [반납] 다음 [대여] 두 동작이다.
+    run.run("release created", ["release", _work_slot(run.steps["worktree add"]["status"])])
     run.run("alloc", ["alloc", REPO_NAME, "--task", TASK])
     run.run("task prefix without ack", ["task", "prefix", TASK, PREFIX])
     run.run("task prefix", ["task", "prefix", TASK, PREFIX, "--user-ack", PREFIX])
@@ -147,9 +151,11 @@ def test_worktree_add_creates_a_slot_and_alloc_binds_it_to_the_task(cycle):
     assert cycle.steps["worktree add"]["rc"] == 0
     assert len(created) == 1
     slot = created.pop()
-    # 갓 만든 슬롯은 만든 프로세스 명의로 대여된 채이고 그 pid 는 이미 죽었다(엔진 정상 산출).
+    # 갓 만든 슬롯은 만든 **세션** 명의로 대여된 채이고 그 세션은 살아 있다(T-0915).
     assert after[slot]["role"] == "work"
-    assert (after[slot]["state"], after[slot]["alive"]) == ("leased", False)
+    assert (after[slot]["state"], after[slot]["alive"]) == ("leased", True)
+    # 반납하면 풀로 돌아가고, 그제야 task 명의 대여가 그 슬롯을 집는다.
+    assert _slots(cycle.steps["release created"]["status"])[slot]["state"] == "idle"
 
     leased = _slots(cycle.steps["alloc"]["status"])[slot]
     assert cycle.steps["alloc"]["rc"] == 0

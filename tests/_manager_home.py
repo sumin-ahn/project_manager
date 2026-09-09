@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -19,6 +20,9 @@ TOOLS = REPO / ".project_manager" / "tools"
 
 # 실 PM 홈·실 bare 를 만드는 픽스처는 전부 git 을 부른다(엔진이 부른다).
 git_required = pytest.mark.skipif(shutil.which("git") is None, reason="git 바이너리 없음")
+
+# 끝난 세션이 남긴 대여를 만들 때 쓰는 pid — 이 값이 정말 죽어 있는지 엔진 seam 으로 확인한다.
+DEAD_SESSION_PID = 999999
 
 # `--json` 을 모르는 옛 세대 사본의 실제 등가물(실측 rc 2 · argparse usage error).
 OLD_GENERATION_SCRIPT = '''#!/usr/bin/env python3
@@ -171,3 +175,31 @@ def make_upstream_checkout(root: Path, *, rev: str = "v9.9.9") -> Path:
     _git("-C", str(checkout), "commit", "-qam", f"engine rev {rev}")
     _git("-C", str(checkout), "tag", rev)
     return checkout
+
+
+def load_pool(pm_home: Path):
+    """그 홈 사본의 `worktree_pool` 을 로드한다 — 경로 전역이 그 홈으로 굳는다(재배선 0)."""
+    target = pm_home / ".project_manager" / "tools" / "worktree_pool.py"
+    specification = importlib.util.spec_from_file_location(
+        f"_worktree_pool_manager_home:{pm_home}", target)
+    pool = importlib.util.module_from_spec(specification)
+    sys.modules[specification.name] = pool
+    specification.loader.exec_module(pool)
+    return pool
+
+
+def end_session(pool, session: str) -> None:
+    """그 세션이 끝난 상태를 장부에 만든다 — 대여는 남고 pid 만 죽는다.
+
+    장부에 적히는 pid 는 그 행을 만든 **세션**이라(T-0915), "회수 대기" 행은 세션이 끝나야
+    생긴다. 테스트 프로세스가 자기 세션을 끝낼 수는 없으므로 그 세션이 잡은 행의 pid 만 죽은
+    값으로 바꾼다 — 장부 IO 는 엔진 것을 그대로 쓴다(손으로 JSON 을 쓰지 않는다).
+    """
+    assert pool._pid_alive(DEAD_SESSION_PID) is False, "픽스처 전제: 이 pid 는 죽어 있어야 한다"
+    with pool._lease_lock():
+        leases = pool._read_ledger_strict()
+        ended = [lease for lease in leases if lease.session == session]
+        assert ended, f"세션 {session!r} 이 잡은 행이 장부에 없다"
+        for lease in ended:
+            lease.pid = DEAD_SESSION_PID
+        pool._write_ledger(leases)

@@ -36,6 +36,7 @@ from pathlib import Path
 import pytest
 
 from _git_fixture import remove_git_tree
+from _session_chain import live_harness_session, real_process_table_supported
 # T-0908 의 URL 캐시 픽스처(로컬 bare + `file://` · 네트워크 0)를 그대로 쓴다 — 캐시 자리·
 # 형상 판정을 두 벌로 만들지 않는다.
 from test_pm_update_url_cache import (  # noqa: E402
@@ -51,6 +52,24 @@ _git_required = pytest.mark.skipif(_GIT is None, reason="git 바이너리 없음
 
 # 이 pid 는 죽어 있어야 한다 — 테스트가 그 사실을 엔진 seam 으로 먼저 확인한다(우연 통과 차단).
 _DEAD_PID = 999999
+
+_real_chain = pytest.mark.skipif(
+    not real_process_table_supported(),
+    reason="실 세션 사슬 단언은 POSIX `ps` 표가 있는 환경에서만 돈다",
+)
+
+# 더미 세션 아래에서 홈 사본 엔진으로 task·슬롯을 바인딩한다 — 기록 pid 를 테스트가 조립하지
+# 않고 엔진이 정하게 둔다(T-0915).
+_BIND_SOURCE = '''\
+import importlib.util, json, sys
+
+spec = importlib.util.spec_from_file_location("worktree_pool_session_bind", sys.argv[1])
+worktree_pool = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(worktree_pool)
+task, _action, _reclaimed_from = worktree_pool.bind_task("main")
+lease = worktree_pool.bind_slot(sys.argv[2], "app", "main")
+print(json.dumps({"task_pid": task.pid, "lease_pid": lease.pid}))
+'''
 
 
 # ── 모듈 로드 ────────────────────────────────────────────────────────────────
@@ -238,6 +257,43 @@ def test_status_json_alive_matches_pid_seam(home, wp):
     assert rows[slot_readonly]["alive"] is False
     for slot, row in rows.items():
         assert row["alive"] == wp._pid_alive(row["pid"]), slot
+
+
+@_git_required
+@_real_chain
+def test_status_json_alive_tracks_the_session_that_wrote_the_row(home, wp, tmp_path):
+    """`alive` 는 그 행을 만든 세션의 생존이다 — 세션이 살아 있으면 true, 끝나면 false.
+
+    엔진 프로세스 pid 를 적던 시절엔 bind 가 끝나는 순간 죽어 slots/tasks 가 늘 회수 대기로
+    보였다(관리자 현황 탭). 여기서는 더미 하네스 세션을 띄워 그 아래에서 bind 를 돌리고,
+    같은 장부를 세션 생존 중과 종료 후 두 번 읽는다.
+    """
+    slot = _make_slot(home, "app", 1, "feat/x")
+    template = home / ".project_manager" / "wiki" / "pm_state.template.md"
+    template.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(REPO / ".project_manager" / "wiki" / "pm_state.template.md", template)
+    binder = tmp_path / "bind.py"
+    binder.write_text(_BIND_SOURCE, encoding="utf-8")
+    tools = home / ".project_manager" / "tools" / "worktree_pool.py"
+
+    with live_harness_session(
+        tmp_path, [sys.executable, str(binder), str(tools), slot],
+    ) as session:
+        assert session.rc == 0, session.stderr
+        recorded = json.loads(session.stdout)
+        assert recorded == {"task_pid": session.pid, "lease_pid": session.pid}
+
+        live = _status_json(home)
+        live_slot = live["slots"][0]
+        live_task = live["tasks"][0]
+        assert live_slot["pid"] == session.pid and live_slot["alive"] is True
+        assert live_task["pid"] == session.pid and live_task["alive"] is True
+        assert live_slot["task"] == "main"
+
+    dead = _status_json(home)
+    assert dead["slots"][0]["pid"] == session.pid and dead["slots"][0]["alive"] is False
+    assert dead["tasks"][0]["pid"] == session.pid and dead["tasks"][0]["alive"] is False
+    assert wp._pid_alive(session.pid) is False, "판정은 여전히 `_pid_alive` 하나다"
 
 
 @_git_required

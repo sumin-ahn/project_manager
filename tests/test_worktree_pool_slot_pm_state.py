@@ -212,7 +212,7 @@ def test_bind_slot_creates_state_and_preserves_lease_bound_contract(wp):
     assert lease.repo == "A"
     assert lease.session == "A_1"
     assert lease.state == "leased"
-    assert lease.pid == os.getpid()
+    assert lease.pid == wp._session_pid()
     assert lease.bound is True
     recorded = wp.read_lease_strict("work/A_1")
     assert recorded is not None
@@ -255,7 +255,7 @@ def test_bind_slot_rebind_keeps_existing_state_bytes_and_lease_markers(wp):
     assert target.read_bytes() == original
     assert rebound.session == "A_1"
     assert rebound.state == "leased"
-    assert rebound.pid == os.getpid()
+    assert rebound.pid == wp._session_pid()
     assert rebound.started != "before"
     assert rebound.bound is True
     assert rebound.test_cmd == "pytest -q"

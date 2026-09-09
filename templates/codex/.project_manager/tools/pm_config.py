@@ -2387,9 +2387,10 @@ def _write_machine_line(text: str) -> None:
 def _status_json_slots(wp, leases, task_names: set) -> list[dict]:
     """슬롯 축 — 리스 장부 + 슬롯당 git 요약. 판정은 전부 `worktree_pool` 것을 그대로 싣는다.
 
-    `alive` 는 `_pid_alive`(→ `pm_relay.pid_is_alive`) 그대로다(생존 판정 재구현 0). `role` 은
-    장부에 키가 없는 행이 있어 `work`/`readonly` 두 값으로 정규화한다 — 표시 축이 아니라 판정
-    축이라 빈 값을 남기지 않는다.
+    `alive` 는 `_pid_alive`(→ `pm_relay.pid_is_alive`) 그대로다(생존 판정 재구현 0). 장부의 `pid`
+    는 그 행을 만든 **세션**(`worktree_pool._session_pid`)이라 `alive` 는 그 세션이 살아 있는
+    동안 참이다. `role` 은 장부에 키가 없는 행이 있어 `work`/`readonly` 두 값으로 정규화한다 —
+    표시 축이 아니라 판정 축이라 빈 값을 남기지 않는다.
     """
     rows: list[dict] = []
     for lease in leases:
@@ -3180,7 +3181,7 @@ def cmd_alloc(
     **항상 신규 대여**: 같은 task 가 이미 이 repo 슬롯을 보유해도 그걸 재반환하지 않고
     다른 idle 슬롯을 대여해 **같은 repo 복수 보유**(병렬 dev 격리
     등)를 자연 지원한다. 대여한 lease 의 reclaim/재부착 보호는 **tasks 장부 조인**(session ∈ tasks
-    장부)이 담당한다 — 즉사 CLI pid 로도 회수되지 않는다. idle 슬롯이 없으면 NeedsCreate → **대여 실패 + 사용자 생성 요청**
+    장부)이 담당한다 — 세션 pid 가 죽어도 회수되지 않는다. idle 슬롯이 없으면 NeedsCreate → **대여 실패 + 사용자 생성 요청**
     (자동 생성 금지·`worktree add --task` 안내로 생성+대여 한 흐름). 새 슬롯은 디스크(코드 전체
     사본×슬롯)라 물리층이고 사용자 승인(`worktree add`)이 게이트다 — alloc/release=PM 자율(논리
     층)·create/remove=사용자 승인(물리층)의 2층 분리를 CLI 로 표면화한다.

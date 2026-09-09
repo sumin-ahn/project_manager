@@ -15,7 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from _manager_home import git_required, make_bare_with_tags, make_pm_home, pm_config
+from _manager_home import (
+    end_session, git_required, make_bare_with_tags, make_pm_home, pm_config,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 RULES_FILE = REPO / "manager" / "ui" / "src" / "lib" / "status-dots.json"
@@ -48,7 +50,7 @@ def slots(tmp_path_factory) -> dict[str, dict]:
     home = make_pm_home(root / "demo")
     pm_config(home, "repo", "add", "app", "--git", str(bare))
     pm_config(home, "worktree", "add", "app", "--readonly", "--user-ack", "app")  # 파랑
-    for slot in ("work/app_2", "work/app_3"):
+    for slot in ("work/app_2", "work/app_3", "work/app_4"):
         pm_config(home, "worktree", "add", "app", "--user-ack", "app")
         pm_config(home, "release", slot)                                          # 회색
     pm_config(home, "task", "new", "idle-task")
@@ -61,6 +63,9 @@ def slots(tmp_path_factory) -> dict[str, dict]:
     specification.loader.exec_module(pool)
     pool.alloc("app", session="demo_2")                                           # 주황
     pool.bind_task("live-task", pid=os.getpid())
+    # 빨강 — 세션이 끝난 뒤 남은 대여. 장부 pid 는 그 세션이라(T-0915) 세션이 죽어야 이 형태가 된다.
+    pool.alloc("app", session="demo_3")
+    end_session(pool, "demo_3")
 
     completed = subprocess.run(
         [sys.executable, str(home / ".project_manager" / "tools" / "pm_config.py"),

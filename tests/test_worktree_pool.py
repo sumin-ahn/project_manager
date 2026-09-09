@@ -262,7 +262,7 @@ def test_alloc_idle_slot_leases_it(wp):
     assert lease.slot == "work/A_1"
     assert lease.state == "leased"
     assert lease.session == "me"
-    assert lease.pid == os.getpid()
+    assert lease.pid == wp._session_pid()
     # 장부에 반영됐는지.
     assert wp.list_leases()[0].state == "leased"
 
@@ -1323,6 +1323,129 @@ def test_shared_pid_alive_windows_uses_query_handle_and_absorbs_oserror(wp):
 
 
 # ════════════════════════════════════════════════════════════════════════
+# 세션 pid 기록 (T-0915) — 장부에 적히는 pid = 명령을 부른 하네스 세션
+# 엔진 프로세스 pid 를 적으면 명령이 끝나는 순간 죽어 `status --json` 의 alive 가 늘 false 다.
+# 기록 자리는 전부 `_session_pid()` 하나를 지나고, 생존 판정(`_pid_alive`)은 그대로다.
+# ════════════════════════════════════════════════════════════════════════
+
+_PID_RECORDING_FUNCTIONS = (
+    "bind_task", "alloc", "create_slot", "bind_slot", "register_home_slot",
+)
+# `os.getpid()` 가 남아도 되는 유일한 자리 — 세션 *이름* 조립(점유 pid 가 아니다).
+_SELF_PID_ALLOWED_FUNCTIONS = ("_default_session",)
+
+
+def _calls_named(node, name: str) -> list:
+    """`node` 아래에서 `name()`/`x.name()` 호출을 모은다(docstring 언급은 안 센다)."""
+    return [
+        call for call in ast.walk(node)
+        if isinstance(call, ast.Call)
+        and ((isinstance(call.func, ast.Name) and call.func.id == name)
+             or (isinstance(call.func, ast.Attribute) and call.func.attr == name))
+    ]
+
+
+def test_session_pid_seam_delegates_to_the_shared_relay(wp):
+    """`_session_pid` 는 `_pid_alive` 와 같은 한 줄 위임 seam이다(판정/해소 재구현 0)."""
+    assert wp._session_pid() == wp._load_relay().session_pid()
+
+    tree = ast.parse((TOOLS / "worktree_pool.py").read_text(encoding="utf-8"))
+    seam = next(node for node in tree.body
+                if isinstance(node, ast.FunctionDef) and node.name == "_session_pid")
+    body = [node for node in seam.body if not (isinstance(node, ast.Expr)
+                                               and isinstance(node.value, ast.Constant))]
+    assert len(body) == 1 and isinstance(body[0], ast.Return)
+    assert _calls_named(body[0], "session_pid")
+
+
+def test_pid_recording_sites_call_the_session_seam_and_never_os_getpid():
+    """기록 자리 다섯 함수는 `_session_pid()` 만 부른다 — 자기 pid 를 적는 자리는 0 이다."""
+    tree = ast.parse((TOOLS / "worktree_pool.py").read_text(encoding="utf-8"))
+    functions = {node.name: node for node in ast.walk(tree)
+                 if isinstance(node, ast.FunctionDef)}
+
+    for name in _PID_RECORDING_FUNCTIONS:
+        function = functions[name]
+        assert _calls_named(function, "_session_pid"), f"{name} 이 세션 pid seam 을 안 쓴다"
+        assert _calls_named(function, "getpid") == [], f"{name} 이 자기 pid 를 기록한다"
+
+    owners = {}
+    for owner in ast.walk(tree):
+        if isinstance(owner, ast.FunctionDef):
+            for call in _calls_named(owner, "getpid"):
+                owners[owner.name] = owners.get(owner.name, 0) + 1
+    assert set(owners) == set(_SELF_PID_ALLOWED_FUNCTIONS), (
+        f"`os.getpid()` 허용 자리 밖 사용: {sorted(set(owners) - set(_SELF_PID_ALLOWED_FUNCTIONS))}"
+    )
+
+
+def test_bind_task_records_the_resolved_session_pid(wp, monkeypatch):
+    """task 장부 pid = 해소된 세션 pid — seam 을 바꾸면 기록도 따라 바뀐다."""
+    monkeypatch.setattr(wp, "_session_pid", lambda: 424242)
+
+    record, action, _reclaimed_from = wp.bind_task("job1")
+
+    assert action == "created"
+    assert record.pid == 424242
+    assert wp.find_task("job1").pid == 424242
+
+
+def test_alloc_records_the_resolved_session_pid(wp, monkeypatch):
+    """idle 슬롯 대여도 같은 seam 을 지난다(장부 스키마 무변경·pid 의미만 세션)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", pid=0, state="idle"))
+    monkeypatch.setattr(wp, "_session_pid", lambda: 424243)
+
+    lease = wp.alloc("A", session="me", git_runner=FakeGit())
+
+    assert lease.pid == 424243
+    assert wp.list_leases()[0].pid == 424243
+
+
+def test_bind_slot_records_the_resolved_session_pid(wp, monkeypatch):
+    """사람 발의 직접 바인딩도 같은 seam 을 지난다(신규 append·기존 갱신 둘 다)."""
+    monkeypatch.setattr(wp, "_session_pid", lambda: 424244)
+
+    assert wp.bind_slot("work/A_2", "A", "A_2").pid == 424244
+
+    _seed(wp, _lease(wp, slot="work/A_3", repo="A", session="", pid=0, state="idle"))
+    assert wp.bind_slot("work/A_3", "A", "A_3").pid == 424244
+
+
+def test_create_slot_provisional_records_the_resolved_session_pid(wp, monkeypatch):
+    """provisional('creating')도 같은 세션 pid 다 — 중단 흔적 성질은 state 가 진다."""
+    _mk_bare_placeholder(wp, "A")
+    monkeypatch.setattr(wp, "_session_pid", lambda: 424245)
+    seen = {}
+
+    def git(argv):
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return (0, "true\n")
+        if argv[:2] == ["worktree", "add"]:
+            seen["provisional"] = [(l.state, l.pid) for l in wp._read_ledger()]
+        return (0, "")
+
+    lease = wp.create_slot("A", branch="a1", session="me", git_runner=git)
+
+    assert seen["provisional"] == [("creating", 424245)]
+    assert lease.state == "leased" and lease.pid == 424245
+
+
+def test_session_pid_resolution_failure_leaves_the_ledger_untouched(wp, monkeypatch):
+    """세션 pid 해소 실패는 기록 없이 터진다 — 자기 pid 로 조용히 내려가지 않는다."""
+    relay = wp._load_relay()
+
+    def unresolved():
+        raise relay.SessionPidUnresolved("세션 pid 를 해소하지 못했다 — 표 없음")
+
+    monkeypatch.setattr(wp, "_session_pid", unresolved)
+    with pytest.raises(relay.SessionPidUnresolved):
+        wp.bind_task("job1")
+
+    assert wp.list_tasks() == []
+    assert not wp.LEASES_FILE.exists() or wp.list_leases() == []
+
+
+# ════════════════════════════════════════════════════════════════════════
 # force_release
 # ════════════════════════════════════════════════════════════════════════
 
@@ -1954,7 +2077,7 @@ def test_bind_slot_new_slot_appends_leased(wp):
     assert lease.repo == "A"
     assert lease.session == "A_2"
     assert lease.state == "leased"
-    assert lease.pid == os.getpid()
+    assert lease.pid == wp._session_pid()
     # 장부에 정확히 한 엔트리 등록.
     leases = wp.list_leases()
     assert len(leases) == 1
@@ -1969,7 +2092,7 @@ def test_bind_slot_existing_slot_updates_session_state(wp):
     assert lease.slot == "work/A_1"
     assert lease.session == "A_1"     # 갱신됨
     assert lease.state == "leased"    # idle → leased 전이
-    assert lease.pid == os.getpid()
+    assert lease.pid == wp._session_pid()
     # 슬롯이 두 개로 늘지 않음(update-in-place).
     leases = wp.list_leases()
     assert len(leases) == 1
@@ -8175,7 +8298,7 @@ def test_bind_task_creates_new_record_with_zero_workspaces(wp):
     record, action, reclaimed_from = wp.bind_task("newjob")
     assert action == "created" and reclaimed_from is None
     assert record.name == "newjob" and record.prefix is None
-    assert record.pid == os.getpid()
+    assert record.pid == wp._session_pid()
     # 장부에 영속 + task 연속성 state 즉시 생성(첫 handoff까지 지연 금지).
     assert wp.find_task("newjob").name == "newjob"
     assert wp.task_dir("newjob").exists()
@@ -8221,10 +8344,10 @@ def test_bind_task_refuses_archived_identity_without_creating_state(wp):
 
 def test_bind_task_resume_same_pid(wp):
     """기존 task 를 내 pid 로 재개 = resumed(crash 전 나·재진입)."""
-    wp.bind_task("job1")                             # created (pid=os.getpid())
+    wp.bind_task("job1")                             # created (pid=세션 pid)
     record, action, reclaimed_from = wp.bind_task("job1")  # 같은 프로세스 재호출
     assert action == "resumed" and reclaimed_from is None
-    assert record.pid == os.getpid()
+    assert record.pid == wp._session_pid()
 
 
 def test_bind_task_resume_backfills_missing_task_state(wp):
@@ -8237,7 +8360,7 @@ def test_bind_task_resume_backfills_missing_task_state(wp):
     record, action, reclaimed_from = wp.bind_task("job1")
 
     assert action == "resumed" and reclaimed_from is None
-    assert record.pid == os.getpid()
+    assert record.pid == wp._session_pid()
     assert wp.task_pm_state_file("job1").exists()
 
 
@@ -8248,7 +8371,7 @@ def test_bind_task_reclaims_dead_pid_reports_prior_pid(wp):
     record, action, reclaimed_from = wp.bind_task("job1")
     assert action == "reclaimed"
     assert reclaimed_from == 999999            # 회수한 이전 pid surface(notice 근거)
-    assert record.pid == os.getpid()           # 내 것으로 회수
+    assert record.pid == wp._session_pid()           # 내 것으로 회수
     assert record.prefix == "PAY"              # prefix 는 유지(바인딩이 안 만짐·T-0357 이 변경)
 
 
@@ -8373,10 +8496,10 @@ def test_set_task_prefix_read_by_identity_args_task_prefix(wp):
 
 # ── release_task_pid — task 정상-종료 pid=0 기록 + bind 재분류 (T-0392·핸드오프 "두고 간다") ──
 #
-# task 장부 pid = dump 후 즉사하는 bootstrap subprocess pid(㉑·T-0353)라, pm_handoff 가 종료를 안
-# 기록하면 정상 인계 후 재개도 dead-pid → bind_task `reclaimed`(crash 회수 loud notice)로 상시 오탐
-# 한다(PM 78 실측). release_task_pid 가 pid 를 0(미점유)으로 비우고, bind_task 가 미점유를 `resumed`
-# 로 재분류해 정상 인계 상시 경고를 없앤다 — 진짜 crash(pid>0 잔존)만 회수 경고를 받는다.
+# task 장부 pid = 그 task 를 연 세션 pid(T-0915)라, pm_handoff 가 종료를 안 기록하면 다음 세션의
+# 정상 재개도 dead-pid → bind_task `reclaimed`(crash 회수 loud notice)로 오탐한다(PM 78 실측).
+# release_task_pid 가 pid 를 0(미점유)으로 비우고, bind_task 가 미점유를 `resumed`
+# 로 재분류해 정상 인계 경고를 없앤다 — 진짜 crash(pid>0 잔존)만 회수 경고를 받는다.
 
 
 def test_bind_task_unoccupied_pid_zero_is_resumed_not_reclaimed(wp):
@@ -8386,13 +8509,13 @@ def test_bind_task_unoccupied_pid_zero_is_resumed_not_reclaimed(wp):
     record, action, reclaimed_from = wp.bind_task("job1")
     assert action == "resumed"                  # 미점유는 clean resume(reclaimed 아님)
     assert reclaimed_from is None               # loud notice 근거 없음(정상 인계)
-    assert record.pid == os.getpid()            # 내 것으로 갱신
+    assert record.pid == wp._session_pid()            # 내 것으로 갱신
     assert record.prefix == "PAY"               # prefix 유지(바인딩 무접촉)
 
 
 def test_release_task_pid_sets_pid_zero_and_returns_record(wp):
     """release_task_pid 가 task 레코드 pid 를 0(미점유)으로 세팅하고 갱신 레코드를 돌려준다(정상-종료 기록)."""
-    wp.bind_task("job1")                         # created (pid=os.getpid())
+    wp.bind_task("job1")                         # created (pid=세션 pid)
     updated = wp.release_task_pid("job1")
     assert updated is not None and updated.pid == 0
     assert wp.find_task("job1").pid == 0         # 영속(장부 write)
@@ -8403,12 +8526,12 @@ def test_release_task_pid_then_bind_resumes_clean(wp):
 
     핸드오프가 pid 를 비워 두면 다음 부트스트랩이 dead-pid 회수(crash 경고)가 아니라 clean resume 으로
     진입한다(PM 78 정상 인계 상시 crash 경고 해소). 정상 경로 상시 경보를 없애 진짜 경보만 남긴다."""
-    wp.bind_task("job1")                         # created (pid=os.getpid())
+    wp.bind_task("job1")                         # created (pid=세션 pid)
     released = wp.release_task_pid("job1")        # 정상-종료 → pid=0(미점유)
     assert released is not None and released.pid == 0
     record, action, reclaimed_from = wp.bind_task("job1")   # 재개
     assert action == "resumed" and reclaimed_from is None    # clean resume·회수 경고 없음
-    assert record.pid == os.getpid()             # 내 것으로 갱신
+    assert record.pid == wp._session_pid()             # 내 것으로 갱신
 
 
 def test_release_task_pid_missing_task_returns_none(wp):
@@ -8553,19 +8676,19 @@ def test_create_task_then_bind_task_is_clean_resume(wp):
     record, action, reclaimed_from = wp.bind_task("job1")
 
     assert action == "resumed" and reclaimed_from is None
-    assert record.pid == os.getpid()
+    assert record.pid == wp._session_pid()
     assert len(json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))["tasks"]) == 1
 
 
 def test_create_task_duplicate_returns_none_without_ledger_change(wp):
     """이미 있는 이름은 `None` — 장부 바이트 불변(재개는 bootstrap 몫·pid 무접촉)."""
-    wp.bind_task("job1")                       # pid = 이 프로세스
+    wp.bind_task("job1")                       # pid = 이 세션
     before = wp.LEASES_FILE.read_bytes()
 
     assert wp.create_task("job1") is None
 
     assert wp.LEASES_FILE.read_bytes() == before
-    assert wp.find_task("job1").pid == os.getpid()
+    assert wp.find_task("job1").pid == wp._session_pid()
 
 
 def test_create_task_refuses_archived_identity_without_side_effects(wp):
