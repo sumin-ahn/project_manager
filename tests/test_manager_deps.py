@@ -55,7 +55,7 @@ def test_a_missing_gtk_webkit_prints_two_install_lines_and_stops(tmp_path):
                              extra_path=stub)
 
     assert completed.returncode == 3, completed.stdout + completed.stderr
-    lines = completed.stderr.strip().splitlines()
+    lines = completed.stdout.strip().splitlines()
     assert len(lines) == 3, lines
     assert "sudo apt install" in lines[1]
     assert "sudo dnf install" in lines[2]
@@ -66,10 +66,11 @@ def test_a_missing_gtk_webkit_prints_two_install_lines_and_stops(tmp_path):
 def test_the_macos_branch_names_the_missing_binding():
     from manager import deps
 
-    message = deps.missing_renderer_message(system="Darwin")
+    message, rc = deps.missing_renderer_message(system="Darwin")
 
     assert message is not None
     assert "pip install" in message
+    assert rc == deps.MISSING_RENDERER_RC
 
 
 def _absent_key(_hive: str, _subkey: str) -> str:
@@ -81,7 +82,7 @@ def test_a_missing_webview2_runtime_prints_the_download_line_and_stops():
     """Windows 도 같은 계약이다 — 안내 두 줄 + rc 3, 대체 렌더러 0."""
     from manager import deps
 
-    message = deps.missing_renderer_message(
+    message, rc = deps.missing_renderer_message(
         system="Windows", read_registry_version=_absent_key)
 
     assert message is not None
@@ -90,6 +91,7 @@ def test_a_missing_webview2_runtime_prints_the_download_line_and_stops():
     assert "https://developer.microsoft.com/microsoft-edge/webview2/" in lines[1]
     assert "winget install" in lines[2]
     assert deps.MISSING_RENDERER_RC == 3
+    assert rc == deps.MISSING_RENDERER_RC
 
 
 @pytest.mark.parametrize("installed_at", range(3))
@@ -105,18 +107,19 @@ def test_an_installed_runtime_passes_from_any_of_the_three_registry_places(insta
             return "142.0.3595.94"
         raise FileNotFoundError(2, "지정된 파일을 찾을 수 없습니다")
 
-    assert deps.missing_renderer_message(system="Windows", read_registry_version=read) is None
+    assert deps.missing_renderer_message(system="Windows", read_registry_version=read) == (None, 0)
 
 
 def test_the_uninstalled_marker_version_is_not_an_installed_runtime():
     """런타임을 지우면 키는 남고 값만 `0.0.0.0` 이 된다 — 설치로 세지 않는다."""
     from manager import deps
 
-    message = deps.missing_renderer_message(
+    message, rc = deps.missing_renderer_message(
         system="Windows",
         read_registry_version=lambda hive, subkey: deps.WEBVIEW2_UNINSTALLED_VERSION)
 
     assert message is not None
+    assert rc == deps.MISSING_RENDERER_RC
 
 
 def test_every_registry_place_is_looked_at_before_the_absence_is_declared():
@@ -169,4 +172,6 @@ def test_smoke_opens_the_window_and_answers(tmp_path):
     completed = _run_manager("--smoke", "--registry", str(registry_file), launcher=launcher)
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert "smoke ok" in completed.stdout
+    lines = completed.stdout.strip().splitlines()
+    assert len(lines) == 1, lines  # T-0922 이후에도 정상 경로는 문장을 더하지 않는다
+    assert lines[0].startswith("smoke ok")

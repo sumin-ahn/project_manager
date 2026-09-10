@@ -27,10 +27,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"pm-manager {engine_rev()}")
         return 0
 
-    message = deps.missing_renderer_message()
+    message, rc = deps.missing_renderer_message()
     if message is not None:
-        print(message, file=sys.stderr)
-        return deps.MISSING_RENDERER_RC
+        print(message)
+        return rc
 
     # 창을 여는 모듈은 여기서 지연 import 한다 — pywebview 가 없을 때도 위 안내가 먼저 나와야 한다.
     if args.smoke:

@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import webview
@@ -67,7 +66,7 @@ def open_window(*, registry_file: Path | str | None = None) -> int:
     """관리자 창 — 화면 산출물이 없으면 rc 1."""
     message = missing_screen_message()
     if message is not None:
-        print(message, file=sys.stderr)
+        print(message)
         return 1
     ManagerWindow(registry_file=registry_file).start()
     return 0

@@ -22,7 +22,7 @@ def run(*, registry_file: Path | str | None = None) -> int:
     """rc 0 = 창이 열리고 화면이 로드됐고 브리지가 답했다."""
     message = window.missing_screen_message()
     if message is not None:
-        print(message, file=sys.stderr)
+        print(message)
         return 1
 
     manager_window = window.ManagerWindow(registry_file=registry_file)
