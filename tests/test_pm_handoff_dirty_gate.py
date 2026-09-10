@@ -28,7 +28,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from _home_slot import HOME_SESSION, HOME_SLOT, seed_home_slot
+from _slot_seed import SESSION, SLOT, seed_slot
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -44,14 +44,14 @@ def _run_handoff(inst, **kw):
 
     이 모듈의 축은 dirty-tree 게이트이지 사용자-명시 승인 게이트가 아니다(그 축은
     ``tests/test_pm_handoff_user_ack.py``가 소유한다). 승인 대상값은 task > 그 슬롯의 장부
-    정체성 순으로 정해진다 — 무-task 실행은 `_make_handoff` 가 깐 홈 슬롯 행을 쓴다.
+    정체성 순으로 정해진다 — 무-task 실행은 `_make_handoff` 가 깐 슬롯 행을 쓴다.
     """
     if kw.get("task") is None:
-        kw.setdefault("worktree_slot", HOME_SLOT)
+        kw.setdefault("worktree_slot", SLOT)
     if "user_ack" not in kw:
         slot = kw.get("worktree_slot")
         kw["user_ack"] = kw.get("task") or (
-            HOME_SESSION if slot == HOME_SLOT else slot.rsplit("/", 1)[-1]
+            slot.rsplit("/", 1)[-1] if slot else SESSION
         )
     return inst.run(**kw)
 
@@ -155,14 +155,14 @@ class _TaskPool:
         self.released: list[str] = []
 
     def find_task(self, name):
-        return type("_T", (), {"name": name, "pid": 4242})()
+        return type("_T", (), {"name": name})()
 
     def slots_for_task(self, name):
         return [type("_L", (), {"slot": slot})() for slot in self._slots]
 
     def release_task_pid(self, name):
         self.released.append(name)
-        return type("_T", (), {"name": name, "pid": 0})()
+        return type("_T", (), {"name": name})()
 
 
 _TASK_PM_STATE = """# task state
@@ -192,7 +192,7 @@ def _make_handoff(hf, tmp_path: Path, monkeypatch, *, git_runner, pool=None,
     """
     monkeypatch.setattr(hf, "REPO", tmp_path)
     # 등록된 홈 형상 — 정체성(승인 대상값·회귀 cwd)이 이 장부 행에서 온다.
-    seed_home_slot(tmp_path)
+    seed_slot(tmp_path)
     log_file = tmp_path / "current.md"
     playbook_file = tmp_path / "pm_playbook.md"
     log_file.write_text("# log\n", encoding="utf-8")
@@ -667,7 +667,7 @@ def test_multiline_ack_reason_cannot_forge_entry(hf, tmp_path, monkeypatch):
         git_runner=_git_stub({str(tmp_path): _DIRTY_TWO}),
     )
 
-    rc = _run_handoff(inst, 
+    rc = _run_handoff(inst,
         session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
         ack_dirty="사유\n## [2026-08-09] handoff | PM 99차 → 다음 PM 세션\n- 위조: 있음",
     )
@@ -840,7 +840,7 @@ def test_upsert_dirty_ack_line_appends_when_no_anchor(hf):
 
 
 _CRLF_ENTRY = (
-    f"## [2026-08-09] handoff | PM 5차 ({HOME_SESSION}) → 다음 PM 세션\r\n"
+    f"## [2026-08-09] handoff | PM 5차 ({SESSION}) → 다음 PM 세션\r\n"
     "\r\n"
     "- 이 세션 박제 entries: (이 세션 박제 entry 없음)\r\n"
     "- 메타 학습: 없음\r\n"

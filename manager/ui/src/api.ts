@@ -1,9 +1,10 @@
-/** 브리지 타입과 pywebview 배선 — 화면이 파이썬을 부르는 유일한 자리. */
+/** 브리지 타입과 HTTP 배선 — 화면이 파이썬을 부르는 유일한 자리. */
 
 export type BridgeError = {
   /**
    * 앞 다섯은 바깥(사본·git·등록부)을 부르다 실패한 자리이고, 뒤 둘은 부르기를 **거절한**
-   * 자리다(허용 목록 밖 명령 · `--force`). 거절은 서브프로세스 0개라 `stderr` 가 빈 값이다.
+   * 자리다(허용 목록 밖 명령 · `--force` · 저장·적용이 도는 프로젝트의 다른 요청 · 브라우저의
+   * 폴더 고르기). 거절은 서브프로세스 0개라 `stderr` 가 빈 값이다.
    */
   kind: "old-generation" | "spawn" | "timeout" | "not-json" | "invalid-path"
       | "not-allowed" | "forbidden-flag";
@@ -29,7 +30,7 @@ export type SlotRow = {
   repo: string;
   state: string;
   session: string | null;
-  pid: number;
+  /** 열린 기록이 있고 그에 대응하는 종료 기록이 없는가 (프로세스 조회 아님). */
   alive: boolean;
   role: string;
   task: string | null;
@@ -42,7 +43,7 @@ export type SlotRow = {
 export type TaskRow = {
   name: string;
   prefix: string | null;
-  pid: number;
+  /** 열린 기록이 있고 그에 대응하는 종료 기록이 없는가 (프로세스 조회 아님). */
   alive: boolean;
   started: string | null;
   slots: string[];
@@ -98,7 +99,9 @@ export type ConfChoices = {
 export type ConfKeyRow = {
   key: string;
   group: string;
+  label: string;
   description: string;
+  unit_labels: Record<string, string>;
   default: string | null;
   required: boolean;
   kind: "key" | "pattern";
@@ -224,24 +227,31 @@ export function isError<T>(response: T | ErrorResponse): response is ErrorRespon
   return typeof response === "object" && response !== null && "error" in response;
 }
 
-declare global {
-  interface Window {
-    pywebview?: { api: Record<string, (...args: unknown[]) => Promise<unknown>> };
-  }
+/** 서버가 보내는 알림 하나 — 저장·적용이 끝났다는 사실과 그 자리. */
+export type ChangeEvent = { name: string; path: string };
+
+/** 창이 자기를 밝히는 표식 — 창이 여는 주소의 질의 하나다(그 밖의 손님은 브라우저다). */
+const CLIENT_QUERY = "client";
+const CLIENT_HEADER = "X-Manager-Client";
+const WINDOW_CLIENT = "window";
+const BROWSER_CLIENT = "browser";
+
+export function isWindowClient(): boolean {
+  return new URLSearchParams(window.location.search).get(CLIENT_QUERY) === WINDOW_CLIENT;
 }
 
-/** pywebview 가 API 를 주입한 뒤에만 부른다(주입 전 호출은 undefined 로 터진다). */
-function whenReady(): Promise<void> {
-  if (window.pywebview?.api) return Promise.resolve();
-  return new Promise((resolve) => {
-    window.addEventListener("pywebviewready", () => resolve(), { once: true });
-  });
-}
-
-export function pywebviewBridge(): Bridge {
+/** 화면이 파이썬을 부르는 유일한 자리 — 창도 브라우저도 같은 서버의 손님이다. */
+export function httpBridge(): Bridge {
   const call = async (name: string, ...args: unknown[]) => {
-    await whenReady();
-    return window.pywebview!.api[name](...args);
+    const response = await fetch(`/api/${name}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        [CLIENT_HEADER]: isWindowClient() ? WINDOW_CLIENT : BROWSER_CLIENT,
+      },
+      body: JSON.stringify({ args }),
+    });
+    return response.json();
   };
   return {
     list_projects: () => call("list_projects") as Promise<ProjectsResponse | ErrorResponse>,
@@ -277,4 +287,28 @@ export function pywebviewBridge(): Bridge {
         Promise<ApplyResult | ApplyFailure>,
     run: (path, argv) => call("run", path, argv) as Promise<CommandResult | ErrorResponse>,
   };
+}
+
+/**
+ * 서버 알림 구독 — 한쪽에서 저장·적용이 끝나면 다른 쪽이 다시 읽는다(스트림 하나).
+ *
+ * 되돌려 주는 함수를 부르면 구독이 끝난다.
+ */
+export function subscribeChanges(listener: (event: ChangeEvent) => void): () => void {
+  const source = new EventSource("/events");
+  source.onmessage = (message: MessageEvent) => listener(JSON.parse(message.data) as ChangeEvent);
+  return () => source.close();
+}
+
+/**
+ * 폴더 고르기 — 창은 OS 대화상자, 브라우저는 경로 직접 입력이다.
+ *
+ * 창에서만 되는 것을 브라우저에서 흉내 내지 않는다(서버도 창 아닌 손님의 `pick_folder` 를
+ * 거절한다). 돌려주는 모양은 두 자리 모두 `pick_folder` 와 같다.
+ */
+export async function chooseFolder(bridge: Bridge):
+    Promise<{ path: string | null } | ErrorResponse> {
+  if (isWindowClient()) return bridge.pick_folder();
+  const typed = window.prompt("프로젝트 폴더 경로")?.trim();
+  return { path: typed ? typed : null };
 }

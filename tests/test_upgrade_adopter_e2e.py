@@ -740,7 +740,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   줄어든 것은 그 실행이 부르지 않던 코드뿐이다. 현재화한 것은 기대 SHA 하나뿐이다.
 #   같은 티켓의 수정 라운드에서 한 번 더 이동했다 — `plan()` docstring 의 낱말 하나("모듈 밖
 #   호출부")뿐이고 실행 코드·배달 경계는 무편집이다.
-_T0585_PM_UPDATE_SHA256 = "6d81eb32ee13b0d9f682ded800dd2d463407b0206e8f7edc335f4e662d770d47"
+_T0585_PM_UPDATE_SHA256 = "bbf7ff554734b944cb9cdcef52da0632603cc52caf47b00a9c78f6208106bdfe"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -885,20 +885,21 @@ def _t0585_pm_update_source() -> str:
     세대로 합성본을 각각 만들어 대조하면 6,603줄 중 13줄이 같은 빈 괄호 제거뿐이다 — 현재화한
     것은 기대 SHA 하나뿐이다.
 
-    T-0793 — 솔로 모드 폐지가 self-update 흡수 말미에 새 최상위 함수
-    `register_home_slot(effective_dest, *, write)` 와 그 호출 3곳(`_main`의 `do_migrate` 세 분기 —
-    실 write·dry-run 판정·write=False 안내, 모두 기존 `migrate_entry_doc(...)` 호출 바로 다음)을
-    더했다. 이 함수는 방금 착지한 dest 사본의 `pm_config.register_home_slot` 을 형제 로드해
-    위임할 뿐이고, 그 형제가 없거나(구세대 dest) 로드 실패면 `None`(무출력)으로 접는다 — 등재
-    사유는 새 함수 자신의 docstring("부재/로드 실패/구버전은 None"). 역적용 delta 의 네 anchor는
-    전부 `sync_adapter_configs`/훅 세트 게이트 쪽이라 이 추가와 겹치지 않고 그대로 유일 해소된다
-    (marker assert 선통과). 배달 경계(source/manifest planning → apply → self-update 순서)도
-    불변이다 — 새 호출은 기존 `do_migrate` 분기 안에 얹힌 부수 이행일 뿐 그 순서·조건을 바꾸지
-    않는다. 이 fixture(RUN1)는 `effective_dest`가 이 합성 T-0585 세대 소스로 self-update 하는
-    쪽이라 `register_home_slot` 호출 시점의 dest `pm_config.py`가 이 새 함수를 아직 모르는 구세대
-    사본이고(방어적 `getattr(module, "register_home_slot", None)` 이 `None` 을 만나 조용히
-    되돌린다), 실제로 재실행해도(위 절차대로 SHA만 현재화) 이 함수 회귀의 다른 단언은 전혀
-    안 흔들렸다 — 현재화한 것은 기대 SHA 하나뿐이다.
+    T-0919 — 홈 자신을 작업 폴더로 등재하던 경로를 지우면서, 흡수 말미의 그 등재 호출
+    (홈 자신 등재)이 옛 행 제거 마이그레이션(`drop_self_lease_rows`)으로 **자리 그대로**
+    바뀌었다(호출 3곳 = `_main` 의 `do_migrate` 세 분기 · 전부 기존 `migrate_entry_doc(...)` 바로
+    다음). 새 함수는 dest 의 리스 장부에서 `slot="."` 행만 지우고, 지울 행이 없으면 읽기만 한다
+    (멱등). 역적용 delta 의 네 anchor 는 전부 `sync_adapter_configs`/훅 세트 게이트 쪽이라 이
+    치환과 겹치지 않고 그대로 유일 해소된다(marker assert 선통과). 배달 경계(source/manifest
+    planning → apply → self-update 순서)도 불변이다 — 호출 자리 수·조건·순서가 그대로다.
+    현재화한 것은 기대 SHA 하나뿐이다.
+
+    T-0919 수정 라운드 — 같은 `drop_self_lease_rows` 의 읽기·판정·쓰기를 dest 의
+    `worktree-leases.lock` 배타락 안으로 넣고 쓰기를 tmp → 원자 교체로 바꿨다(엔진
+    `worktree_pool._lease_lock`·`_write_ledger_raw` 와 같은 직렬화 구간). 함수 하나의 내부만
+    바뀌었고 호출 자리 수·조건·순서는 그대로다. 역적용 delta 의 marker 는 전부
+    `sync_adapter_configs`/퇴역 경로 쪽이라 이 편집과 겹치지 않고 그대로 유일 해소된다
+    (marker assert 선통과). 현재화한 것은 기대 SHA 하나뿐이다.
 
     T-0861 — 릴리즈 게이트 drift 판정(`board.py livegate record`)이 `pm_update.py` 의 self-update
     계획 계산을 재사용하도록, `_main()` 의 manifest 자기치유 → notation 템플릿 해소 → guest
@@ -1066,7 +1067,7 @@ def _install_t0585_updater(dest: Path) -> None:
 # T-0887: 온보딩 opt-in 일습 삭제로 역적용 delta 의 exact-marker 목록이 두 항목으로 줄고
 # (되돌릴 원문이 사라졌다) 그만큼 historical 전문 SHA 도 이동했다. 퇴역 경로 delta 의 marker 는
 # 전부 그 절 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "3856f831fd6db553d05091265b6268c67a2601d658423c10fb937bbd8859b21f"
+_PRE_T0876_PM_UPDATE_SHA256 = "e518e7e7ef7bc7624287365dc35d27a16d34ecfca6e905ca8e9ab43366ca21f6"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -1895,3 +1896,47 @@ def test_public_update_procedure_documents_the_mandatory_zero_change_run2():
     assert "RUN1" in section and "RUN2" in section
     assert "변경 0" in section
     assert section.count("./pm-update.sh") >= 3      # dry-run + RUN1 + RUN2
+
+
+# ── 옛 홈 자신 행 제거 (T-0919 마이그레이션) ──────────────────────────────────
+# 옛 엔진은 홈 자신을 첫 슬롯 행(`slot="."`)으로 등재했다. 그 경로를 지우면서 이미 박힌 행도
+# 흡수가 지운다 — 지우기만 하면 관리자 화면에 작업 폴더 `.` 로 계속 보인다(사용자 발견 증상).
+
+
+def _seed_legacy_home_row(dest: Path) -> Path:
+    """옛 홈 형상 — 홈 자신 행(`.`) + 작업 폴더 행 1개."""
+    ledger = dest / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(json.dumps({"leases": [
+        {"slot": ".", "repo": "demo", "session": "demo_1", "started": "2026-08-22T00:00:00+00:00", "state": "leased", "bound": True},
+        {"slot": "work/demo_1", "repo": "demo", "session": "demo_1", "state": "leased"},
+    ], "tasks": []}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return ledger
+
+
+def _lease_slots(ledger: Path) -> list[str]:
+    return [row["slot"]
+            for row in json.loads(ledger.read_text(encoding="utf-8"))["leases"]]
+
+
+def test_upgrade_adopter_drops_the_legacy_home_row_on_sync(tmp_path):
+    """흡수가 옛 홈 자신 행을 지운다 — 작업 폴더 행은 그대로 · 재실행은 byte 불변(멱등)."""
+    dest = tmp_path / "legacy-home-row"
+    assert _PM_IMPORT.main(
+        ["--new", str(dest), "--harness", "claude", "--name", _ADOPTER_NAME, "--fill", "manual"]
+    ) == 0
+    _prime_engine_to_canonical(dest)
+    ledger = _seed_legacy_home_row(dest)
+
+    # dry-run 은 판정만 — 장부 byte 불변.
+    before = ledger.read_bytes()
+    preview = _run_pm_update(dest, "--dry-run")
+    assert ledger.read_bytes() == before, "dry-run 이 장부를 고쳤다"
+    assert "PM 홈 자신 행" in _combined_output(preview), _combined_output(preview)
+
+    _run_pm_update(dest)
+    assert _lease_slots(ledger) == ["work/demo_1"], _lease_slots(ledger)
+
+    after = ledger.read_bytes()
+    _run_pm_update(dest)
+    assert ledger.read_bytes() == after, "지울 행이 없는데 재흡수가 장부를 다시 썼다(비멱등)"

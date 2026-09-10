@@ -105,7 +105,7 @@ tickets/
 3. 활성 슬롯 lease 가 정확히 1개면 그 세션 (단일-lease 유도)
 4. 미해소 — 귀속 쓰기(claim 등)는 `--repo <repo> --slot <N>` 명시 요구 (fail-loud)
 
-lease 장부에 행이 0개면 이 홈은 아직 슬롯으로 등록되지 않은 것이라 같은 fail-loud 로 떨어진다 — 엔진 흡수(`pm-config update`) 1회가 등록 repo 1개인 홈을 첫 슬롯 행 `<repo>_1` 로 등록한다.
+lease 장부에 행이 0개면 이 홈엔 아직 작업 폴더가 없는 것이라 같은 fail-loud 로 떨어진다 — `pm-config worktree add <repo> --user-ack <repo>` 로 작업 폴더를 먼저 만든다.
 
 ## 보드 새로고침
 

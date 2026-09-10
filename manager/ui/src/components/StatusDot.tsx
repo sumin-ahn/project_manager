@@ -4,7 +4,6 @@ const COLOR: Record<Dot, string> = {
   blue: "bg-sky-500",
   gray: "bg-slate-300",
   orange: "bg-amber-500",
-  red: "bg-red-500",
 };
 
 /** 색 점 하나 — 문장으로 풀지 않고 점 + 짧은 배지로만 표현한다(§6.4). */

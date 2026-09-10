@@ -633,7 +633,9 @@ def test_timeout_keys_declare_no_scalar_default_and_name_the_profile_table(conf_
                 "additional_reviewer.timeout", "additional_reviewer.idle_timeout"):
         spec = conf_module.key_spec(key)
         assert spec.default is None, key
-        assert "HARNESS_PROFILES" in spec.description, key
+        # 설명은 화면에 그대로 나가는 사람 말이라 코드 식별자를 담지 않는다 — 대신 값을 지어내지
+        # 않았다는 사실(기본값 부재)과 "비우면 하네스별 기본값"이라는 안내를 잰다.
+        assert "하네스별" in spec.description, key
 
 
 @pytest.mark.parametrize("values,missing", (
@@ -700,7 +702,7 @@ def keys_document() -> dict:
 
 def test_keys_json_carries_both_registries_split_by_kind(conf_module, keys_document):
     """실명 레지스트리와 패턴 레지스트리가 `kind` 로 갈려 **선언 순서 그대로** 실린다."""
-    assert keys_document["schema"] == conf_module.KEY_JSON_SCHEMA == 2
+    assert keys_document["schema"] == conf_module.KEY_JSON_SCHEMA == 3
     assert keys_document["groups"] == list(conf_module.KEY_GROUPS)
 
     named = [row for row in keys_document["keys"] if row["kind"] == "key"]
@@ -885,8 +887,8 @@ def test_reasoning_descriptions_point_at_the_owner_instead_of_copying_the_ladder
         description = conf_module.key_spec(key).description
         copied = pattern.findall(description)
         assert copied == [], f"{key}: 설명이 허용값을 복제한다 {copied}"
-    owner = conf_module.key_spec("additional_reviewer.reasoning").description
-    assert "pm_relay.REASONING_ALLOWED" in owner, owner
+    # 값을 복제하지 않는다는 것이 이 가드의 목적이고, 그것은 위 루프가 이미 전수로 잰다.
+    # 정본의 자리(코드 식별자)는 화면 문구에 싣지 않는다 — 설명은 사람이 읽는 자리다.
 
 
 def test_model_rows_open_free_text_and_point_at_the_query_command(keys_document):

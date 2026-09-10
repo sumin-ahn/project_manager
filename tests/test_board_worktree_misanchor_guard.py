@@ -96,7 +96,6 @@ def _register_slot(pm_home: Path, worktree: Path, *, slot: str | None = None) ->
                         "slot": slot,
                         "repo": "product",
                         "session": "dev",
-                        "pid": 1,
                         "started": "",
                         "state": "leased",
                         "test_cmd": None,

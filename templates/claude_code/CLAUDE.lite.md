@@ -27,7 +27,7 @@
 **현재 진실:** [`architecture.md`](.project_manager/wiki/architecture.md)는 현재 아키텍처 단일
 진실이며, 옛 ADR 또는 현재 의도·실측과 충돌하면 기준으로 따른다. 바뀐 것은 읽는 시점뿐이다.
 
-> 세션명 canonical = `<repo>_<N>`. `claim` 에 `--repo <repo> --slot <N>` 으로 전달하며 활성 lease 1개면 생략 가능. 우선순위: `--repo`/`--slot` > `$PM_SESSION_NAME`(구 `$CLAUDE_SESSION_NAME` alias) > 활성 슬롯 lease 1개면 그 세션(단일-lease 유도) > 미해소(귀속 쓰기 fail-loud). lease 행 0개면 아직 등록 전이라 `/pm-update` 1회로 홈이 첫 슬롯 행 `<repo>_1` 이 된다.
+> 세션명 canonical = `<repo>_<N>`. `claim` 에 `--repo <repo> --slot <N>` 으로 전달하며 활성 lease 1개면 생략 가능. 우선순위: `--repo`/`--slot` > `$PM_SESSION_NAME`(구 `$CLAUDE_SESSION_NAME` alias) > 활성 슬롯 lease 1개면 그 세션(단일-lease 유도) > 미해소(귀속 쓰기 fail-loud). lease 행 0개면 아직 작업 폴더가 없는 것이라 `pm-config worktree add <repo> --user-ack <repo>` 로 먼저 만든다.
 > 첫 turn 권장 보고: board 1줄 + 직전 세션 요약 3~5줄 + 다음 옵션 + 결정 요청(*무엇부터?*).
 
 ## 2. 작업 원칙 (반드시)

@@ -963,9 +963,10 @@ HANDOFF_TASK_MODE_IDENTITY_SOURCES = frozenset({
 def resolve_snapshot_identity(pm_home: Path, cwd: Path) -> tuple[str | None, str]:
     """cwd lease → 단일 활성 task 순으로 snapshot 정체성을 해소한다.
 
-    두 층이 전부다. 슬롯을 하나만 쓰는 홈도 그 홈 자신이 lease 행이라 cwd 가 그 행 안에 있고,
-    첫 층이 답을 준다 — "장부가 아무 말도 없으면 이 홈은 단일 정체성"이라는 층은 없다(그
-    추론은 실제로 슬롯을 여럿 쓰는 홈에서 오귀속이었다).
+    두 층이 전부다 — "장부가 아무 말도 없으면 이 홈은 단일 정체성"이라는 층은 없다(그 추론은
+    실제로 슬롯을 여럿 쓰는 홈에서 오귀속이었다). 세션은 자기 작업 폴더에서 돌고 그 폴더가 곧
+    lease 행이라 첫 층이 답을 준다. 작업 폴더가 없는 홈 루트 세션은 이름 붙일 세션이 없으므로
+    미해소가 정답이고, 그 사실을 경고로 말한다(조용한 생략 아님).
 
     per-clone ``local.conf``의 ``session=``은 층이 아니다 — slot 종속 값이 프로젝트 공용
     conf 에 있던 범위 오류라 엔진 어디서도 읽지 않는다."""
@@ -1639,7 +1640,11 @@ def build_snapshot(
     started = monotonic()
     identity_name, source = resolve_snapshot_identity(pm_home, cwd)
     if identity_name is None:
-        return None, "[pm-snapshot] 정체성 미해소 — cwd lease 불일치·활성 task 비단일; 재주입 생략"
+        # 처방은 부트스트랩·귀속 쓰기 거부와 **같은 한 문장**이다(문구 사본 0).
+        return None, (
+            "[pm-snapshot] 정체성 미해소 — cwd lease 불일치·활성 task 비단일; 재주입 생략. "
+            + _load_identity_args().NO_WORK_FOLDER_REMEDY
+        )
     task, session = _checkpoint_identity_axes(pm_home, cwd, identity_name, source)
     identity = _identity_section(pm_home, cwd, identity_name, source)
     sections: list[str] = []

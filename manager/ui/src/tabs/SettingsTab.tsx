@@ -6,7 +6,18 @@ import type {
 import { isError } from "../api";
 import AdapterSection from "../components/AdapterSection";
 import QuestionMode from "../components/QuestionMode";
-import { foldable, markedKeys, ROW_UNIT_FAMILY } from "../lib/settings-rows";
+import { foldable, markedKeys, ROW_UNIT_FAMILY, unsetHint } from "../lib/settings-rows";
+
+/** 설정 안 함 행을 보일지 — 화면 전체에 하나이고 다음에 열 때도 유지한다. */
+const SHOW_UNSET_KEY = "pm.settings.showUnset";
+
+function readShowUnset(): boolean {
+  return window.localStorage.getItem(SHOW_UNSET_KEY) === "1";
+}
+
+function writeShowUnset(value: boolean): void {
+  window.localStorage.setItem(SHOW_UNSET_KEY, value ? "1" : "0");
+}
 
 /**
  * 설정 탭 — 왼쪽 목록 + 고른 절의 행(편집형·질문형) + 설정 완전성 다섯 목록 + 어댑터 파일 절.
@@ -40,6 +51,7 @@ export const ADAPTER_NAV = "어댑터 파일";
 export type Row = {
   key: string;
   group: string;
+  label: string;
   description: string;
   default: string | null;
   required: boolean;
@@ -58,14 +70,16 @@ function registryRows(keys: ConfKeysDocument): Row[] {
   const rows: Row[] = [];
   for (const entry of keys.keys) {
     if (entry.kind === "key") {
-      rows.push({ key: entry.key, group: entry.group, description: entry.description,
+      rows.push({ key: entry.key, group: entry.group,
+                  label: entry.label, description: entry.description,
                   default: entry.default, required: entry.required,
                   family: null, registered: true,
                   choices: entry.choices, recommended: entry.recommended });
       continue;
     }
     for (const member of entry.members ?? []) {
-      rows.push({ key: member.key, group: entry.group, description: entry.description,
+      rows.push({ key: member.key, group: entry.group,
+                  label: entry.label, description: entry.description,
                   default: member.default, required: entry.required,
                   family: entry.key, registered: true,
                   choices: member.choices, recommended: member.recommended });
@@ -88,7 +102,7 @@ export function buildSections(keys: ConfKeysDocument, values: Record<string, str
     freeInputFamily: families.get(FREE_INPUT_FAMILY) === group ? FREE_INPUT_FAMILY : null,
   })).filter((section) => section.rows.length > 0 || section.freeInputFamily !== null);
   const extra = Object.keys(values).filter((key) => !known.has(key)).map((key) => ({
-    key, group: EXTRA_GROUP, description: "", default: null, required: false,
+    key, group: EXTRA_GROUP, label: key, description: "", default: null, required: false,
     family: null, registered: false, choices: null, recommended: null,
   }));
   return extra.length > 0
@@ -163,6 +177,7 @@ const MANUAL_OPTION = "직접 입력";
 
 const INPUT = "w-full rounded border border-slate-200 px-1 font-mono text-[11px]";
 
+
 /**
  * 값 하나를 고치는 칸 — 모양은 그 키의 `choices` 가 정한다(화면 판정 0).
  *
@@ -180,6 +195,7 @@ function ValueField({ row, value, options, dependsValue, fetched, fetchError, ma
   if (choices === null) {
     return (
       <input aria-label={row.key} value={value} className={INPUT}
+             placeholder={unsetHint(row)}
              onChange={(event) => onChange(event.target.value)} />
     );
   }
@@ -193,6 +209,7 @@ function ValueField({ row, value, options, dependsValue, fetched, fetchError, ma
     return (
       <span className="flex items-center gap-1">
         <input aria-label={row.key} value={value} className={INPUT}
+               placeholder={unsetHint(row)}
                onChange={(event) => onChange(event.target.value)} />
         {/* 안내는 버튼 위에 둔다 — 같은 줄의 선택 칸이 그 문구를 이미 눈에 보이게 낸다. */}
         <button type="button" data-testid={`models-${row.key}`} disabled={blocked || busy}
@@ -216,7 +233,7 @@ function ValueField({ row, value, options, dependsValue, fetched, fetchError, ma
                 if (fetched !== null && event.target.value === MANUAL_OPTION) onManual();
                 else onChange(event.target.value);
               }}>
-        <option value="">(설정 안 함)</option>
+        <option value="">{unsetHint(row)}</option>
         {listed(items).map((item) => <option key={item} value={item}>{item}</option>)}
         {fetched !== null && <option value={MANUAL_OPTION}>{MANUAL_OPTION}</option>}
       </select>
@@ -245,7 +262,8 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
   const [models, setModels] = useState<Record<string, DelegateModelsDocument>>({});
   const [modelErrors, setModelErrors] = useState<Record<string, BridgeError>>({});
   const [manual, setManual] = useState<Record<string, boolean>>({});
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  // 설정 안 함 행을 보일지는 화면 전체에 하나다 — 절마다 다시 누르지 않는다.
+  const [showUnset, setShowUnset] = useState<boolean>(() => readShowUnset());
   const [selectedNav, setSelectedNav] = useState<string | null>(null);
 
   // 갓 적용한 프로젝트는 질문형으로 열린다 — 그 프로젝트를 고른 순간의 표시 모드다.
@@ -261,7 +279,6 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     setModels({});
     setModelErrors({});
     setManual({});
-    setExpanded({});
     setSelectedNav(null);
   }, [path]);
 
@@ -346,6 +363,8 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
   const conf: ConfSection = adapterConf === null ? verdict
     : { ...verdict, missing_for_latest: adapterConf.missing_for_latest };
   const rowsInOrder = sections.flatMap((section) => section.rows);
+  const unitLabels: Record<string, string> = Object.assign(
+    {}, ...keys.keys.map((entry) => entry.unit_labels ?? {}));
   const valueOf = (key: string) => edits[key] ?? values[key] ?? "";
   const marked = markedKeys(conf);
   const folds = (row: Row) => foldable(row, valueOf(row.key), marked);
@@ -366,7 +385,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
   const section = sections.find((entry) => entry.group === current) ?? null;
   const items = section === null ? [] : buildDelegateRows(section.rows);
   const folded = items.filter(foldedItem);
-  const shown = expanded[current ?? ""] ? items : items.filter((item) => !foldedItem(item));
+  const shown = showUnset ? items : items.filter((item) => !foldedItem(item));
 
   const field = (row: Row) => {
     const choices = row.choices;
@@ -394,13 +413,22 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     );
   };
 
+  // 이름을 크게, 키 문자열과 설명은 그 아래 작은 글씨 한 줄 — 옆에 붙이면 잘려서 안 읽힌다
+  // 문구의 단일 소유는 엔진 키 목록이고 화면은 받아 그리기만 한다.
+  const nameCell = (label: string, key: string, description: string) => (
+    <td className="w-72 py-1 pr-3 align-top">
+      <div className="truncate" title={label}>{label}</div>
+      <div className="truncate text-[11px] text-slate-500" title={`${key} · ${description}`}>
+        <span className="font-mono">{key}</span>
+        {description && <span> · {description}</span>}
+      </div>
+    </td>
+  );
+
   const keyRow = (row: Row) => (
     <tr key={row.key} data-testid={`conf-${row.key}`}>
-      <td title={row.key} className="w-52 truncate py-0.5 pr-2 font-mono text-[11px]">{row.key}</td>
+      {nameCell(row.label, row.key, row.description)}
       <td className="py-0.5 pr-2">{field(row)}</td>
-      <td className="w-16 truncate py-0.5 pr-2 text-[11px] text-slate-500">
-        {row.default !== null && <span>기본 {row.default}</span>}
-      </td>
       <td className="w-32 py-0.5 pr-2 text-[11px]">
         <span className="flex gap-1 overflow-hidden whitespace-nowrap">
           <RowMarks row={row} conf={conf} />
@@ -410,14 +438,12 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
           )}
         </span>
       </td>
-      <td title={row.description}
-          className="w-40 truncate py-0.5 text-[11px] text-slate-500">{row.description}</td>
     </tr>
   );
 
   const roleRow = (role: RoleRow) => (
     <tr key={role.row} data-testid={`role-${role.row}`}>
-      <td title={role.row} className="w-52 truncate py-0.5 pr-2 font-mono text-[11px]">{role.row}</td>
+      {nameCell(unitLabels[role.row] ?? role.row, role.row, "")}
       {role.cells.map((cell) => (
         <td key={cell.key} data-testid={`conf-${cell.key}`} className="py-0.5 pr-2">
           <span className="flex items-center gap-1">
@@ -442,6 +468,16 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center gap-3 border-b border-slate-200 px-4 py-2">
         <span data-testid="settings-banner" className="font-medium">{bannerText(conf)}</span>
+        {!asking && (
+          <label className="flex items-center gap-1 text-slate-600">
+            <input type="checkbox" data-testid="show-unset" checked={showUnset}
+                   onChange={(event) => {
+                     setShowUnset(event.target.checked);
+                     writeShowUnset(event.target.checked);
+                   }} />
+            설정 안 함 항목 보기
+          </label>
+        )}
         <button type="button" onClick={() => setAsking((value) => !value)}
                 className="rounded border border-slate-200 px-2 py-0.5">
           {asking ? "편집형으로" : "질문형으로"}
@@ -522,13 +558,11 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
                   </table>
                 )))}
 
-                {folded.length > 0 && !expanded[section.group] && (
-                  <button type="button" data-testid={`folded-${section.group}`}
-                          onClick={() => setExpanded((previous) => ({
-                            ...previous, [section.group]: true }))}
-                          className="mt-1 rounded border border-slate-200 px-2 py-0.5 text-[11px] text-slate-500">
-                    설정 안 함 {folded.length}개 · 펼치기
-                  </button>
+                {folded.length > 0 && !showUnset && (
+                  <p data-testid={`folded-${section.group}`}
+                     className="mt-1 text-[11px] text-slate-400">
+                    설정 안 함 {folded.length}개 숨김
+                  </p>
                 )}
 
                 {section.freeInputFamily && (
@@ -552,7 +586,8 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
                               // 갓 만든 행은 아직 값이 없어 접기 규칙에 걸린다 — 그 행이 서는
                               // 절로 옮기고 펼쳐, 만든 자리에서 바로 값을 칠 수 있게 한다.
                               setSelectedNav(EXTRA_GROUP);
-                              setExpanded((previous) => ({ ...previous, [EXTRA_GROUP]: true }));
+                              setShowUnset(true);
+                              writeShowUnset(true);
                             }}
                             className="rounded border border-slate-200 px-1">
                       항목 추가

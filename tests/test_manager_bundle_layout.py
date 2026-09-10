@@ -246,6 +246,41 @@ def test_the_mapping_is_a_pure_function_of_the_root():
     assert entries[0][0].startswith(str(Path("/없는-루트")))
 
 
+# ── ⑥ 창이 여는 것 (T-0921 AT-004) ──────────────────────────────────────────
+
+
+def test_the_window_opens_the_local_server_address_instead_of_a_file():
+    """창도 서버의 손님이다 — 파일 경로·`file://`·주입 인자가 남으면 데이터 경로가 둘이 된다."""
+    source = (REPO / "manager" / "window.py").read_text(encoding="utf-8")
+    call = source[source.index("webview.create_window("):]
+    call = call[:call.index(")")]
+
+    assert "js_api" not in call, "창에 파이썬 묶음을 주입하는 인자가 남아 있다"
+    assert "http://127.0.0.1" in source or "self.server.url" in call
+    assert "dist_index()" not in call and "file://" not in source
+    assert "self.server.start()" in source, "창을 열기 전에 서버를 띄우는 자리가 없다"
+
+
+def test_the_screen_bundle_is_what_the_server_serves():
+    from manager.server import ManagerServer
+
+    server = ManagerServer(object(), port=0)
+    try:
+        assert server.dist == PACKAGE_ROOT / "ui" / "dist"
+        assert server.dist.relative_to(REPO_ROOT).as_posix() in _destinations()
+        assert server.url.startswith("http://127.0.0.1:")
+    finally:
+        server.stop()
+
+
+def test_the_smoke_run_goes_through_the_same_server_as_the_window():
+    """`--smoke` 가 파일을 직접 열면 경로가 둘로 갈린다 — 창 하나를 그대로 쓴다."""
+    source = (REPO / "manager" / "smoke.py").read_text(encoding="utf-8")
+
+    assert "window.ManagerWindow(" in source
+    assert "create_window" not in source and "dist_index()" not in source
+
+
 def test_the_python_regression_does_not_need_the_build_toolchain():
     """이 파일은 Node·PyInstaller 없이 돈다(불변식 4) — 규칙만 읽고 빌드는 부르지 않는다."""
     assert "PyInstaller" not in sys.modules

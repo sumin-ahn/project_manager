@@ -1,6 +1,7 @@
 """`--smoke` — 창이 실제로 열리는지 사람 없이 확인한다.
 
-창 생성 → `dist/index.html` 로드(pywebview 의 `loaded` 신호) → 브리지 `list_projects` 1회 →
+창 생성 → 같은 프로세스 서버의 로컬 주소 로드(pywebview 의 `loaded` 신호) → 브리지
+`list_projects` 1회 →
 창 닫고 rc 0. 등록부는 호출자가 준 파일만 쓴다(사용자 등록부를 건드리지 않는다). Linux
 headless 는 `Gtk.init_check` 가 False 라 `xvfb-run -a` 아래에서 돌려야 한다.
 
@@ -18,14 +19,14 @@ from . import window
 SMOKE_TIMEOUT_SECONDS = 5
 
 
-def run(*, registry_file: Path | str | None = None) -> int:
+def run(*, registry_file: Path | str | None = None, port: int = 0) -> int:
     """rc 0 = 창이 열리고 화면이 로드됐고 브리지가 답했다."""
     message = window.missing_screen_message()
     if message is not None:
-        print(message, file=sys.stderr)
+        print(message)
         return 1
 
-    manager_window = window.ManagerWindow(registry_file=registry_file)
+    manager_window = window.ManagerWindow(registry_file=registry_file, port=port)
     outcome: dict = {}
 
     def probe(created) -> None:

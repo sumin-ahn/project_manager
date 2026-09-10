@@ -40,8 +40,8 @@ function mount(bridge: Bridge, latestTag: string | null, light: Entry | undefine
 afterEach(cleanup);
 
 describe("진행 중 세션 수", () => {
-  it("리스를 쥔 살아 있는 행만 센다 — readonly(pid 0)와 idle 은 빠진다", () => {
-    expect(busySessionCount(document_.slots)).toBe(1);
+  it("열린 기록을 쥔 행만 센다 — readonly(세션 없음)와 idle 은 빠진다", () => {
+    expect(busySessionCount(document_.slots)).toBe(2);
     expect(busySessionCount(document_.slots.filter((row) => row.role === "readonly"))).toBe(0);
     expect(busySessionCount([])).toBe(0);
   });
@@ -157,7 +157,7 @@ describe("적용", () => {
 
     fireEvent.click(screen.getByTestId("update-apply"));
 
-    expect(screen.getByTestId("busy-confirm")).toHaveTextContent("진행 중인 세션 1 — 계속?");
+    expect(screen.getByTestId("busy-confirm")).toHaveTextContent("진행 중인 세션 2 — 계속?");
     expect(bridge.update_apply).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByTestId("busy-continue"));

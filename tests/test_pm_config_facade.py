@@ -70,13 +70,12 @@ def _fake_bare_root(tmp_path, monkeypatch):
 class FakeLease:
     """worktree_pool.Lease 의 최소 대역 — 배선 검증에 필요한 필드만."""
 
-    def __init__(self, slot, repo, branch=None, session="s1", pid=1, state="leased",
+    def __init__(self, slot, repo, branch=None, session="s1", state="leased",
                  test_cmd=None, role="work"):
         self.slot = slot
         self.repo = repo
         self.branch = branch
         self.session = session
-        self.pid = pid
         self.state = state
         self.test_cmd = test_cmd  # T-0066 — 슬롯 바인딩 회귀명령(파사드 print surface)
         self.role = role          # ⑬·T-0358 — work | readonly (cmd_status role surface)
@@ -138,10 +137,9 @@ class FakeWorktreePool:
             super().__init__(f"task {name!r} reopen 거부 — {reason}")
 
     class TaskEndRefused(Exception):
-        def __init__(self, name, reason="durable handoff intent(pid=0)가 없음", *, pid=1):
+        def __init__(self, name, reason="종료 기록이 없음(세션이 열린 채로 남아 있음)"):
             self.name = name
             self.reason = reason
-            self.pid = pid
             super().__init__(reason)
 
     class ReadonlySlotNotLeasable(RuntimeError):
@@ -238,6 +236,10 @@ class FakeWorktreePool:
         if self._bare_present:
             path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def lease_is_open(self, lease):
+        """열림 판정은 엔진 규칙 그대로 — 열림 기록(leased + session)이면 열림."""
+        return getattr(lease, "state", None) == "leased" and bool(getattr(lease, "session", ""))
 
     def list_leases(self):
         self.calls.append(("list_leases",))
@@ -341,7 +343,7 @@ class FakeWorktreePool:
             name=name,
             moved_from=Path("_ended") / f"{name}-20260827",
             moved_to=Path("tasks") / name,
-            task=SimpleNamespace(prefix=None, pid=0, started="2026-08-27T00:00:00+00:00"),
+            task=SimpleNamespace(prefix=None, open=False, started="2026-08-27T00:00:00+00:00"),
         )
 
     def set_task_prefix(self, name, prefix):
@@ -1434,14 +1436,14 @@ def test_repo_add_invalid_name_rejected_no_side_effects(pc, tmp_path, capsys, ba
 
 def test_repo_add_unbound_session_owner_fail_loud_no_side_effects(
         pc, tmp_path, monkeypatch, capsys):
-    """미바인딩 세션 + --owner 미지정 → owner 미해소 fail-loud(rc 1)·부작용 0 (ADR-0040 D1).
+    """user 정체성 미해소 + --owner 미지정 → owner 미해소 fail-loud(rc 1)·부작용 0.
 
-    _default_session None(leased ≥2·무바인딩)을 그대로 areas_append 에 넘기면 board 가 owner 를
-    문자열 "None" 으로 areas.md 에 기록(귀속 쓰기 누출) — 그 전에 clone/등록/훅 없이 차단한다
-    (board.cmd_init owner required=True 와 동형). status/whoami surface 테스트가 못 잡던 *쓰기*
-    경로 회귀 핀(codex must-fix).
+    None 을 그대로 areas_append 에 넘기면 board 가 owner 를 문자열 "None" 으로 areas.md 에
+    기록(귀속 쓰기 누출) — 그 전에 clone/등록/훅 없이 차단한다(board.cmd_init owner
+    required=True 와 동형). status/whoami surface 테스트가 못 잡던 *쓰기* 경로 회귀 핀.
     """
-    _bind_tmp_repo(pc, monkeypatch, tmp_path)   # local.conf·장부 없음 → _default_session None
+    _bind_tmp_repo(pc, monkeypatch, tmp_path)   # local.conf 없음 → identity.user 없음
+    monkeypatch.setattr(pc, "_git_config_email", lambda: None)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     board = FakeBoard(registered=())
@@ -3698,8 +3700,8 @@ def test_main_routes_task_end_to_engine(pc, monkeypatch):
     assert wp.did("end_task")
 
 
-def test_task_end_handoff_intent_gate_is_rc1(pc, capsys):
-    refusal = FakeWorktreePool.TaskEndRefused("job", pid=77)
+def test_task_end_close_record_gate_is_rc1(pc, capsys):
+    refusal = FakeWorktreePool.TaskEndRefused("job")
     wp = FakeWorktreePool(end_raises=refusal)
     rc = pc.cmd_task_end(
         argparse.Namespace(name="job"), worktree_pool=wp,
@@ -3707,7 +3709,7 @@ def test_task_end_handoff_intent_gate_is_rc1(pc, capsys):
     )
     assert rc == 1
     err = capsys.readouterr().err
-    assert "pid=0" in err and "durable" in err
+    assert "종료 기록" in err and "task close" in err
 
 
 def test_task_reopen_forwards_archive_and_prints_bootstrap_prescription(pc, capsys):
@@ -3718,7 +3720,7 @@ def test_task_reopen_forwards_archive_and_prints_bootstrap_prescription(pc, caps
     assert rc == 0
     assert ("reopen_task", "job", "job-20260827") in wp.calls
     out = capsys.readouterr().out
-    assert "prefix=None" in out and "pid=0" in out
+    assert "prefix=None" in out and "닫힘" in out
     assert f"{pc._runtime_skill_entry('pm-bootstrap')} --task job" in out
 
 

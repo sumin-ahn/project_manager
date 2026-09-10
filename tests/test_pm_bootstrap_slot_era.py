@@ -21,6 +21,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from _slot_seed import fake_slot_path
+
 
 def _idle_lease(slot: str):
     """0단계(T-0351) 실재 검사 통과용 idle 리스 시드 — phase-0 는 slot/state/session/extra 만 읽는다."""
@@ -97,6 +99,10 @@ class _EraPool:
     def alloc(self, repo, *, branch=None, resume=None, **_kw):
         return _FakeLease(self._slot, repo)
 
+    def lease_is_open(self, lease):
+        """열림 판정은 엔진 규칙 그대로 — 열림 기록(leased + session)이면 열림."""
+        return getattr(lease, "state", None) == "leased" and bool(getattr(lease, "session", ""))
+
     def list_leases(self):
         # 0단계 실재 검사(T-0351) 통과용 idle 시드(회귀 0·idle=점유 아님).
         return [_idle_lease(self._slot)]
@@ -109,7 +115,7 @@ class _EraPool:
         return self._branch
 
     def slot_path(self, slot):
-        return Path("/tmp/multipm") / slot
+        return fake_slot_path(slot)
 
     def slot_status(self, slot, *, git_runner=None):
         return None  # 슬롯 상태는 이 테스트 무관(절 생략).

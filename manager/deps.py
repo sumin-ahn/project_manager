@@ -7,6 +7,11 @@ EdgeUpdate 가 남기는 레지스트리 키로 본다.
 
 어느 쪽이든 없으면 사람이 그대로 실행할 설치 명령을 찍고 rc 3 으로 멈춘다 — 대체 렌더러로
 갈아타는 경로는 두지 않는다.
+
+Linux 는 백엔드 모듈이 있어도 창을 붙일 화면을 열지 못할 수 있다(변수가 빈 세션 · 살아 있지
+않은 X 서버 · 끊긴 소켓 — 이 경우는 라이브러리가 예외 없이 프로세스를 끝내므로 여기서 미리
+걸러야 한다). 그 판정은 `Gtk.init_check()` 로 하고 문장도 그 결과까지만 말한다(원인은 관측하지
+않는다) — rc 1(화면 산출물 없음과 같은 값 · 설치 문제가 아니다).
 """
 from __future__ import annotations
 
@@ -14,6 +19,7 @@ import importlib
 import platform
 
 MISSING_RENDERER_RC = 3
+NO_DISPLAY_RC = 1
 LINUX_BACKEND_MODULE = "webview.platforms.gtk"
 MACOS_BACKEND_MODULE = "webview.platforms.cocoa"
 LINUX_INSTALL_LINES = (
@@ -73,24 +79,42 @@ def missing_webview2_message(read_registry_version=None) -> str | None:
     ])
 
 
+def _linux_has_display() -> bool:
+    """`Gtk.init_check()` — 붙일 화면이 있으면 True (백엔드 모듈 import 뒤에만 부른다)."""
+    from gi.repository import Gtk  # LINUX_BACKEND_MODULE import 가 이미 버전을 정해 두었다.
+
+    ok, _ = Gtk.init_check([])
+    return ok
+
+
 def missing_renderer_message(*, system: str | None = None,
-                             read_registry_version=None) -> str | None:
-    """웹뷰를 못 쓰면 안내 문구, 쓸 수 있으면 None."""
+                             read_registry_version=None) -> tuple[str | None, int]:
+    """웹뷰를 못 쓰거나 창을 붙일 화면이 없으면 (안내 문구, rc), 정상이면 (None, 0)."""
     system = platform.system() if system is None else system
     if system == "Windows":
-        return missing_webview2_message(read_registry_version)
+        message = missing_webview2_message(read_registry_version)
+        return (message, MISSING_RENDERER_RC) if message is not None else (None, 0)
     if system == "Linux":
         module_name, install_lines = LINUX_BACKEND_MODULE, LINUX_INSTALL_LINES
     elif system == "Darwin":
         module_name, install_lines = MACOS_BACKEND_MODULE, MACOS_INSTALL_LINES
     else:
-        return None
+        return None, 0
     try:
         importlib.import_module(module_name)
     except (ImportError, ValueError) as exc:
         # ValueError 는 `gi.require_version` 이 없는 typelib 을 만났을 때 나온다.
-        return "\n".join([
+        message = "\n".join([
             f"[중단] 창을 열 웹뷰가 없다 ({module_name}: {exc}). 아래 중 하나로 설치하라:",
             *install_lines,
         ])
-    return None
+        return message, MISSING_RENDERER_RC
+    if system == "Linux" and not _linux_has_display():
+        # 판정한 것은 `Gtk.init_check()` 의 결과 하나다 — 원인(변수가 비었다·서버가 죽었다·
+        # xauth 부재)은 관측하지 않았으므로 문장에 적지 않는다.
+        message = "\n".join([
+            "[중단] 창을 붙일 화면을 열지 못했다 (GTK 가 화면 연결에 실패했다).",
+            "  X 서버가 있는 세션에서 실행하거나, 확인만 할 때는 `xvfb-run -a` 아래에서 돌려라.",
+        ])
+        return message, NO_DISPLAY_RC
+    return None, 0

@@ -49,8 +49,8 @@ describe("현황 탭 읽기 부분", () => {
     expect(screen.getByTestId("slot-dot-work/app_1")).toHaveAttribute("data-dot", "blue");
     expect(screen.getByTestId("slot-dot-work/app_2")).toHaveAttribute("data-dot", "orange");
     expect(screen.getByTestId("slot-dot-work/app_3")).toHaveAttribute("data-dot", "gray");
-    expect(screen.getByTestId("slot-dot-.")).toHaveAttribute("data-dot", "red");
-    expect(screen.getByTestId("slot-.")).toHaveTextContent("다음 bootstrap 이 회수");
+    expect(screen.getByTestId("slot-dot-.")).toHaveAttribute("data-dot", "orange");
+    expect(screen.getByTestId("slot-.")).toHaveTextContent("작업 중");
   });
 
   it("보드 counts·lint 수는 무거운 절이 왔을 때만 보인다", () => {
@@ -64,9 +64,9 @@ describe("현황 탭 읽기 부분", () => {
     expect(screen.getByTestId("board-counts")).toHaveTextContent("lint 22");
   });
 
-  it("task 행은 pid·prefix 를 그대로 보인다", () => {
+  it("task 행은 열림 표시·prefix 를 그대로 보인다", () => {
     renderTab({ light: { status: document_ }, heavy: { status: document_ } });
-    expect(screen.getByTestId("task-demo")).toHaveTextContent("pid 없음");
+    expect(screen.getByTestId("task-demo")).toHaveTextContent("닫힘");
     expect(screen.getByTestId("task-demo")).toHaveTextContent("prefix 없음");
     expect(screen.getByTestId("task-live")).toHaveTextContent("작업 중");
   });
@@ -78,7 +78,7 @@ describe("현황 탭 읽기 부분", () => {
     // 아이들이 둘(work/app_3·work/app_4)이라도 [대여] 는 repo 축 하나다.
     expect(screen.getAllByTestId("alloc")).toHaveLength(1);
     expect(screen.getByTestId("release-work/app_2")).toBeDisabled();   // 작업 중
-    expect(screen.getByTestId("release-.")).toBeInTheDocument();       // 회수 대기
+    expect(screen.getByTestId("release-.")).toBeDisabled();            // 열린 기록
   });
 
   it("회귀·게이트는 사람이 읽는 한 줄이고 원문은 접혀 있다", () => {

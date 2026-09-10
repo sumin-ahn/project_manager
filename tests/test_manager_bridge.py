@@ -1,12 +1,18 @@
-"""JS 브리지 — 화면이 보는 표면과 오류 dict (T-0910 AT-004).
+"""JS 브리지 — 화면이 보는 표면과 오류 dict (T-0910 AT-004 · T-0921 AT-002).
 
 정상은 엔진 JSON 그대로이고(감싸지 않는다), 실패는 `{"error": {kind, message, stderr, rc}}` 다.
 합성 클래스 `Api` 의 MRO 에 탭별 mixin 셋이 들어 있는지도 여기서 고정한다(묶음 분할의 계약).
+
+손님이 둘(창·브라우저)이어도 브리지 인스턴스는 하나다 — 그 사실과 폴더 고르기의 창 전용
+거절, 저장 뒤 알림을 이 파일 끝에서 잰다.
 """
 from __future__ import annotations
 
 import inspect
+import json
 import shutil
+import threading
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -16,6 +22,7 @@ from _manager_home import (
 )
 
 from manager import CallError, registry
+from manager.server import BROWSER_CLIENT, CLIENT_HEADER, WINDOW_CLIENT, ManagerServer
 from manager.bridge import Api, BaseApi
 from manager.bridge_run import RunApi
 from manager.bridge_settings import SettingsApi
@@ -183,3 +190,89 @@ def test_the_error_kinds_are_a_closed_set():
 
     with pytest.raises(ValueError):
         CallError("something-else", "새 종류를 브리지 밖에서 만들 수 없다")
+
+
+# ── 손님이 둘일 때의 브리지 하나 (T-0921) ───────────────────────────────────
+
+EVENT_TIMEOUT_SECONDS = 10
+
+
+@pytest.fixture
+def served(api, tmp_path):
+    """같은 프로세스 서버 하나 — 창이 붙는 그 `Api` 인스턴스에 그대로 붙는다."""
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html>화면</html>", encoding="utf-8")
+    server = ManagerServer(api, dist=dist)
+    server.start()
+    try:
+        yield server
+    finally:
+        server.stop()
+
+
+def _post(server: ManagerServer, name: str, *args, client: str = BROWSER_CLIENT) -> dict:
+    request = urllib.request.Request(
+        f"{server.url}/api/{name}",
+        data=json.dumps({"args": list(args)}).encode("utf-8"),
+        headers={"Content-Type": "application/json", CLIENT_HEADER: client})
+    with urllib.request.urlopen(request, timeout=EVENT_TIMEOUT_SECONDS) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _listen(server: ManagerServer, seen: list, ready: threading.Event) -> None:
+    with urllib.request.urlopen(f"{server.url}/events", timeout=EVENT_TIMEOUT_SECONDS) as stream:
+        ready.set()
+        for raw in stream:
+            line = raw.decode("utf-8").strip()
+            if line.startswith("data: "):
+                seen.append(json.loads(line[len("data: "):]))
+                return
+
+
+def test_the_window_and_the_http_guest_share_one_bridge_instance(served, api, pm_home):
+    """HTTP 로 등록한 프로젝트를 창 쪽 브리지가 그 자리에서 본다(값이 갈리지 않는다)."""
+    added = _post(served, "add_project", str(pm_home))
+
+    assert added == {"projects": [{"path": str(pm_home.resolve()), "name": pm_home.name}]}
+    assert api.list_projects() == added
+
+
+def test_the_folder_dialog_is_refused_for_a_guest_that_is_not_the_window(served, picked, pm_home):
+    picked["value"] = str(pm_home)
+
+    refused = _post(served, "pick_folder")
+
+    assert refused["error"]["kind"] == "not-allowed"
+    assert refused["error"]["message"]
+    assert _post(served, "pick_folder", client=WINDOW_CLIENT) == {"path": str(pm_home)}
+
+
+def test_the_folder_dialog_name_stays_in_the_set_even_though_it_is_window_only(served, api):
+    from manager.server import api_names
+
+    assert "pick_folder" in api_names(api)
+
+
+def test_a_finished_save_shows_up_on_the_one_event_stream(served, api, tmp_path, monkeypatch):
+    monkeypatch.setattr(type(api), "conf_save",
+                        lambda _self, path, updates: {"changed": True, "conf": {}}, raising=True)
+    seen: list = []
+    ready = threading.Event()
+    listener = threading.Thread(target=_listen, args=(served, seen, ready), daemon=True)
+    listener.start()
+    assert ready.wait(EVENT_TIMEOUT_SECONDS)
+
+    _post(served, "conf_save", str(tmp_path), {"delegate.model": "opus"})
+
+    listener.join(EVENT_TIMEOUT_SECONDS)
+    assert seen == [{"name": "conf_save", "path": str(tmp_path)}]
+
+
+def test_the_server_does_not_add_a_second_lock_around_the_engine_call():
+    """엔진 호출 직렬화는 `manager/__init__.py` 의 잠금 하나다 — 서버는 그것을 다시 감싸지 않는다."""
+    source = (Path(__file__).resolve().parents[1] / "manager" / "server.py").read_text(
+        encoding="utf-8")
+
+    assert "with ENGINE_LOCK" not in source and "import ENGINE_LOCK" not in source
+    assert "RLock" not in source

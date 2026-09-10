@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from _home_slot import seed_home_slot
+from _slot_seed import seed_slot
 from _hook_commands import powershell_native_arguments
 from _win_skip import posix_bash_supported
 
@@ -1207,7 +1207,9 @@ def _equivalence_inputs(schemas: dict, event: str) -> list[tuple[str, str]]:
 
 @pytest.mark.skipif(not posix_bash_supported(),
                     reason="POSIX bash wrapper 실행 환경이 아님")
-@pytest.mark.parametrize("event", _MIGRATED_EVENTS)
+# PostCompact 는 동치 대조 대상이 아니다 — 아래 `test_post_compact_names_the_unresolved_
+# identity_that_the_old_wiring_hid` 가 그 이벤트의 값(옛=침묵 / 새=미해소 명시)을 따로 박제한다.
+@pytest.mark.parametrize("event", ("SubagentStart", "PreCompact"))
 def test_migrated_event_answers_exactly_what_the_old_direct_wiring_answered(
         tmp_path, hook_io_schema, event):
     """이관 전/후가 **같은 입력에 같은 답**을 낸다 (rc·stdout 엔벨로프 값 대조).
@@ -1222,7 +1224,7 @@ def test_migrated_event_answers_exactly_what_the_old_direct_wiring_answered(
     legacy_root = _adopter_tree(tmp_path / "legacy", conf_lines=_CROSS_CONF)
     new_root = _adopter_tree(tmp_path / "new", conf_lines=_CROSS_CONF)
     for tree in (legacy_root, new_root):
-        seed_home_slot(tree)
+        seed_slot(tree)
     entrypoint = _entry_handler(event)["command"]
 
     def _tree_agnostic(out: str, root: Path) -> dict:
@@ -1242,16 +1244,49 @@ def test_migrated_event_answers_exactly_what_the_old_direct_wiring_answered(
 
 @pytest.mark.skipif(not posix_bash_supported(),
                     reason="POSIX bash wrapper 실행 환경이 아님")
+def test_post_compact_names_the_unresolved_identity_that_the_old_wiring_hid(
+        guard, tmp_path, hook_io_schema):
+    """PostCompact 만 옛 배선과 값이 갈린다 — 옛것은 침묵, 새것은 미해소를 이름으로 말한다.
+
+    옛 직결 커맨드는 snapshot 실패를 `|| printf '{"suppressOutput":true}'` 로 덮어 압축마다
+    기록 0건이 성공처럼 보였다. 홈 루트 세션은 이름 붙일 세션이 없는 것이 사실이고(작업 폴더
+    행이 곧 세션 정체성), 그 사실을 마커와 처방으로 남기는 것이 이 이관의 값이다.
+    """
+    legacy_root = _adopter_tree(tmp_path / "legacy", conf_lines=_CROSS_CONF)
+    new_root = _adopter_tree(tmp_path / "new", conf_lines=_CROSS_CONF)
+    for tree in (legacy_root, new_root):
+        seed_slot(tree)
+    payload = json.dumps(_synth_payload(hook_io_schema, "PostCompact"))
+
+    legacy_rc, legacy_out = _run_command_in_tree(
+        _LEGACY_DIRECT_COMMANDS["PostCompact"], legacy_root, payload)
+    new_rc, new_out = _run_command_in_tree(
+        _entry_handler("PostCompact")["command"], new_root, payload)
+
+    assert legacy_rc == 0 and new_rc == 0
+    assert json.loads(legacy_out) == {"suppressOutput": True}, legacy_out
+    assert guard.CODEX_ADAPTER_FALLBACK_MARKER in new_out, new_out
+    assert "pm-config worktree add" in new_out, new_out
+
+
+
+
+@pytest.mark.skipif(not posix_bash_supported(),
+                    reason="POSIX bash wrapper 실행 환경이 아님")
 @pytest.mark.parametrize("event", ("PreCompact", "PostCompact"))
-def test_compaction_normal_traffic_emits_no_adapter_fallback_warning(
+def test_compaction_normal_traffic_warns_only_where_identity_is_unresolved(
         guard, tmp_path, hook_io_schema, event):
-    """정상 트래픽에서 압축 훅 출력에 `adapter-fallback` 이 **0줄**이다.
+    """정상 트래픽의 압축 훅 출력 — PreCompact 는 조용하고, PostCompact 는 정체성을 말한다.
 
     부작용 단계(checkpoint)는 사람글을 stdout 에 내고 rc 도 0/1/2 를 낸다 — 그 자식을 기본
-    자식 계약("rc0 + JSON dict")으로 옮기면 모든 압축마다 없던 경고가 새로 나간다. 옛 배선의
-    침묵이 값 그대로 보존됐는지를 실 출하 커맨드 실행으로 본다."""
+    자식 계약("rc0 + JSON dict")으로 옮기면 모든 압축마다 없던 경고가 새로 나간다. 그 침묵이
+    값 그대로 보존됐는지를 실 출하 커맨드 실행으로 본다(PreCompact).
+
+    PostCompact 의 snapshot 은 세션 정체성을 요구한다. 이 홈은 작업 폴더 행이 있어도 세션이
+    **홈 루트**에서 도는 형상이라 어느 작업 폴더 안도 아니다 — 이름 붙일 세션이 없으므로
+    미해소가 정답이고, 디스패처가 그 사실을 마커로 남긴다(조용한 통과 아님·rc 0 유지)."""
     root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF)
-    seed_home_slot(root)
+    seed_slot(root)
     entrypoint = _entry_handler(event)["command"]
 
     for trigger in ("auto", "manual"):
@@ -1261,7 +1296,13 @@ def test_compaction_normal_traffic_emits_no_adapter_fallback_warning(
         assert returncode == 0, stdout
         envelope = json.loads(stdout)
         rendered = json.dumps(envelope, ensure_ascii=False)
-        assert guard.CODEX_ADAPTER_FALLBACK_MARKER not in rendered, (trigger, rendered)
+        if event == "PostCompact":
+            assert guard.CODEX_ADAPTER_FALLBACK_MARKER in rendered, (trigger, rendered)
+            assert "compaction-snapshot" in rendered, (trigger, rendered)
+            # 사람이 다음에 칠 명령이 그 경고 안에 있다(문구 단일 진실 재사용).
+            assert "pm-config worktree add" in rendered, (trigger, rendered)
+        else:
+            assert guard.CODEX_ADAPTER_FALLBACK_MARKER not in rendered, (trigger, rendered)
         assert guard.CODEX_SUPERVISOR_FALLBACK_MARKER not in rendered, trigger
         assert "decision" not in envelope and "continue" not in envelope, trigger
 
@@ -1439,7 +1480,7 @@ def test_legacy_wiring_adopter_is_told_future_guards_not_current_ones(
     같은 트리에서 옛 커맨드를 태우면 가드가 정상 엔벨로프를 낸다. 처방이 거짓 사실을 근거로
     들면 채택자는 그 처방을 안 믿는다."""
     root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF)
-    seed_home_slot(root)
+    seed_slot(root)
     (root / ".project_manager").mkdir(exist_ok=True)
     (root / ".project_manager" / "install.json").write_text(
         '{"schema": 1, "harnesses": ["codex"]}\n', encoding="utf-8")
@@ -1503,9 +1544,10 @@ def test_live_compaction_capture_matches_the_extracted_input_schema(
 @pytest.mark.parametrize("event", ("PreCompact", "PostCompact"))
 def test_live_compaction_payload_runs_through_the_shipped_entrypoint(
         guard, tmp_path, event):
-    """라이브에서 실제로 온 payload 를 출하 진입점에 그대로 먹여도 경고 0줄이다."""
+    """라이브에서 실제로 온 payload 를 출하 진입점에 먹인다 — PreCompact 침묵 · PostCompact 는
+    홈 루트 세션의 정체성 미해소를 마커로 말한다(rc 0·압축은 막지 않는다)."""
     root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF)
-    seed_home_slot(root)
+    seed_slot(root)
 
     returncode, stdout = _run_command_in_tree(
         _entry_handler(event)["command"], root,
@@ -1514,8 +1556,11 @@ def test_live_compaction_payload_runs_through_the_shipped_entrypoint(
     assert returncode == 0, stdout
     envelope = json.loads(stdout)
     assert isinstance(envelope, dict) and envelope
-    assert guard.CODEX_ADAPTER_FALLBACK_MARKER not in json.dumps(envelope,
-                                                                ensure_ascii=False)
+    rendered = json.dumps(envelope, ensure_ascii=False)
+    if event == "PostCompact":
+        assert guard.CODEX_ADAPTER_FALLBACK_MARKER in rendered, rendered
+    else:
+        assert guard.CODEX_ADAPTER_FALLBACK_MARKER not in rendered, rendered
 
 
 @pytest.mark.skipif(not posix_bash_supported(),

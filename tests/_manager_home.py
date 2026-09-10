@@ -21,9 +21,6 @@ TOOLS = REPO / ".project_manager" / "tools"
 # 실 PM 홈·실 bare 를 만드는 픽스처는 전부 git 을 부른다(엔진이 부른다).
 git_required = pytest.mark.skipif(shutil.which("git") is None, reason="git 바이너리 없음")
 
-# 끝난 세션이 남긴 대여를 만들 때 쓰는 pid — 이 값이 정말 죽어 있는지 엔진 seam 으로 확인한다.
-DEAD_SESSION_PID = 999999
-
 # `--json` 을 모르는 옛 세대 사본의 실제 등가물(실측 rc 2 · argparse usage error).
 OLD_GENERATION_SCRIPT = '''#!/usr/bin/env python3
 """옛 세대 pm_config.py — `status` 는 알지만 `--json` 은 모른다."""
@@ -214,18 +211,13 @@ def load_pool(pm_home: Path):
     return pool
 
 
-def end_session(pool, session: str) -> None:
-    """그 세션이 끝난 상태를 장부에 만든다 — 대여는 남고 pid 만 죽는다.
+def close_session(pool, session: str) -> None:
+    """그 세션의 기록을 닫는다 — 종료 기록(release)이 곧 닫힘이다.
 
-    장부에 적히는 pid 는 그 행을 만든 **세션**이라(T-0915), "회수 대기" 행은 세션이 끝나야
-    생긴다. 테스트 프로세스가 자기 세션을 끝낼 수는 없으므로 그 세션이 잡은 행의 pid 만 죽은
-    값으로 바꾼다 — 장부 IO 는 엔진 것을 그대로 쓴다(손으로 JSON 을 쓰지 않는다).
+    프로세스 번호로 죽음을 흉내 내던 자리다. 이제 열림/닫힘은 기록 축이라 엔진의 반납
+    프리미티브를 그대로 부른다(손으로 JSON 을 쓰지 않는다).
     """
-    assert pool._pid_alive(DEAD_SESSION_PID) is False, "픽스처 전제: 이 pid 는 죽어 있어야 한다"
-    with pool._lease_lock():
-        leases = pool._read_ledger_strict()
-        ended = [lease for lease in leases if lease.session == session]
-        assert ended, f"세션 {session!r} 이 잡은 행이 장부에 없다"
-        for lease in ended:
-            lease.pid = DEAD_SESSION_PID
-        pool._write_ledger(leases)
+    held = [lease.slot for lease in pool.list_leases() if lease.session == session]
+    assert held, f"세션 {session!r} 이 잡은 행이 장부에 없다"
+    for slot in held:
+        pool.force_release(slot)

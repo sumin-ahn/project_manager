@@ -8,8 +8,8 @@
      같은 task 가 같은 repo 2슬롯 보유(집합 성장) → 재부트스트랩이 "보유 2 — 전수 검증" 열거.
   ③ 작업(한 슬롯 커밋·다른 슬롯 무변경) 후 핸드오프 — **변경 슬롯만 회귀**(무변경 슬롯 skip)·
      **전 슬롯 재스냅**(집합 전체 두고 간다·T-0388 루프)·**트리거 `--task`**(T-0394)·정상-종료
-     task pid=0(T-0392).
-  ④ 트리거 그대로 재개 — clean `resumed`(회수 경고 없음·pid=0 재개)·집합 재수령(보유 2)·
+     task 종료 기록(닫힘).
+  ④ 트리거 그대로 재개 — 닫힌 기록 `resumed`·집합 재수령(보유 2)·
      0단계 record↔live ✓(재스냅이 diverged 오탐을 닫음·PM 78 실증).
 
 release-marked — 릴리즈마다 "단위게이트 green·사이클 단절"(PM 78 실증) 클래스를 기계 차단한다
@@ -189,7 +189,7 @@ _TRIGGER_PLAYBOOK = (
 def test_task_new_identity_then_bootstrap_resumes(tmp_path, capsys):
     """`task new`(정체성만) → 부트스트랩이 **resume 으로 이어받는다** (T-0909·사이클 앞단 분리).
 
-    생성 진입점이 둘이 된 뒤에도 사이클이 끊기지 않는지 재는 축이다 — 정체성만 만든 task(`pid 0`·
+    생성 진입점이 둘이 된 뒤에도 사이클이 끊기지 않는지 재는 축이다 — 정체성만 만든 task(닫힘·
     슬롯 0)에 `--task` 로 진입하면 신규 생성(`created`)이 아니라 clean `resumed` 여야 한다(회수 경고
     없음·행 1개). 실 장부·실 pm_state·실 엔진(worktree_pool·pm_bootstrap)으로 판정한다.
     """
@@ -205,9 +205,9 @@ def test_task_new_identity_then_bootstrap_resumes(tmp_path, capsys):
     bootstrap_mod = _load_module("pm_bootstrap")
     task = "idle-made"
 
-    # ① 정체성만 생성 — 세션에 묶지 않는다(pid 0·슬롯 0·pm_state 즉시 생성).
+    # ① 정체성만 생성 — 세션에 묶지 않는다(닫힘·슬롯 0·pm_state 즉시 생성).
     created = wp.create_task(task)
-    assert created is not None and created.pid == 0 and created.prefix is None
+    assert created is not None and created.open is False and created.prefix is None
     state_after_create = wp.task_pm_state_file(task).read_bytes()
 
     # ② 그 정체성으로 부트스트랩 진입 — created 가 아니라 resumed 여야 한다.
@@ -220,15 +220,15 @@ def test_task_new_identity_then_bootstrap_resumes(tmp_path, capsys):
         "정체성만 만든 task 진입인데 clean resume 으로 분류되지 않았다"
     )
     assert "상태=신규 task" not in out, "이미 만든 정체성인데 신규 생성으로 분류됐다"
-    assert "회수 진입" not in out, "pid 0(미점유) 재개인데 crash 회수 경고 오탐"
+    assert "회수 진입" not in out, "닫힌 기록 재개인데 회수 경고 오탐"
     assert "작업공간: (없음)" in out, "슬롯 0 진입 열거가 사라졌다"
 
-    # ③ 장부는 행 하나(중복 생성 없음)이고 pid 만 세션 것으로 바뀐다. pm_state 는 재개가 덮지 않는다.
+    # ③ 장부는 행 하나(중복 생성 없음)이고 열림 표시만 바뀐다. pm_state 는 재개가 덮지 않는다.
     rows = json.loads(
         (proj / ".project_manager" / ".local" / "worktree-leases.json").read_text(encoding="utf-8")
     )["tasks"]
     assert [row["name"] for row in rows] == [task]
-    assert rows[0]["pid"] != 0 and rows[0]["prefix"] is None
+    assert rows[0]["open"] is True and rows[0]["prefix"] is None
     assert wp.task_pm_state_file(task).read_bytes() == state_after_create
 
 
@@ -285,7 +285,8 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, capsys):
     wp.record_git_snapshot("work/app_2")
 
     # 성장한 집합이 재부트스트랩에서 전수 열거된다("보유 2 — 전수 검증"·전부 ✓·record↔live match).
-    rc = _make_bootstrap(bootstrap_mod, wp, tmp_path).run(task=task)
+    # ①이 연 기록이 아직 열려 있다(핸드오프 전) — 이어받기는 사용자 응답(`--force`)이다.
+    rc = _make_bootstrap(bootstrap_mod, wp, tmp_path).run(task=task, force=True)
     assert rc == 0
     out2 = capsys.readouterr().out
     assert "보유 2 — 전수 검증" in out2, "성장한 집합(2슬롯)이 열거되지 않음(I2)"
@@ -341,9 +342,9 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, capsys):
     expected_trigger = handoff_mod._runtime_skill_entry("pm-bootstrap") + f" --task {task}"
     assert expected_trigger in out3, "인계 트리거에 --task 앵커 없음"
 
-    # (d) 정상-종료 task pid=0(T-0392) — 차기 재개가 clean resume 이 되도록.
+    # (d) 정상 종료 기록(닫힘) — 차기 재개가 묻지 않고 이어지도록.
     task_rec = next(t for t in wp.list_tasks() if t.name == task)
-    assert task_rec.pid == 0, "정상-종료 task pid=0 미기록(T-0392)"
+    assert task_rec.open is False, "정상 종료 기록 미기록(다음 진입이 거부된다)"
 
     # ── ④ 트리거 그대로 재부트스트랩 — clean resume·집합 재수령·0단계 green ─────────
     rc = _make_bootstrap(bootstrap_mod, wp, tmp_path).run(task=task)
@@ -353,6 +354,6 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, capsys):
     assert "보유 2 — 전수 검증" in out4, "재개 시 집합 재수령 실패(I2)"
     assert "기록↔live ✓" in out4, "재스냅 후 0단계 record↔live match 아님(PM 78 오탐 재발)"
     assert "diverged" not in out4, "외부-개입 오탐 재발(재스냅 실패)"
-    # clean resume — pid=0(정상 인계) 재개라 회수 경고 없음(T-0392).
-    assert "재개(resume)" in out4, "clean resume 아님(pid=0 재개 미표기)"
+    # 닫힌 기록 재개 — 묻지 않고 이어진다.
+    assert "재개(resume)" in out4, "clean resume 아님(닫힌 기록 재개 미표기)"
     assert "회수" not in out4, "정상 인계인데 crash 회수 경고 오탐(T-0392)"

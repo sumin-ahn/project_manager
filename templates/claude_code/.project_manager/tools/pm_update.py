@@ -51,6 +51,7 @@ import datetime
 import filecmp
 import hashlib
 import inspect
+import json
 import os
 import re
 import shutil
@@ -5445,36 +5446,51 @@ def _entry_doc_backup(dest_root: Path, rel: str, backup_root: Path) -> None:
     shutil.copy2(src, dst)
 
 
-def register_home_slot(effective_dest: Path, *, write: bool) -> str | None:
-    """흡수 말미 1회 — 이 홈이 아직 슬롯 행이 없으면 홈 자신을 첫 행으로 등록한다.
+def drop_self_lease_rows(effective_dest: Path, *, write: bool) -> int:
+    """흡수 말미 1회 — 리스 장부에서 **PM 홈 자신을 가리키던 행**(`slot="."`)을 지운다.
 
-    정체성이 장부 행에서 오므로, 행이 하나도 없는 기존 채택 홈은 엔진을 흡수한 뒤 귀속 조작이
-    미해소로 떨어진다. 그 이행을 채택자에게 손으로 시키지 않고 흡수가 1회 수행한다 — 조건이
-    "등록 repo 1개 && 행 0" 이라 풀 홈(행 ≥1)에서는 무기록이고 재실행도 무기록이다(멱등).
+    옛 엔진은 홈 자신을 첫 슬롯 행으로 등재했다. 그 행은 작업 폴더가 아니라 홈이라,
+    관리자 화면·슬롯 목록에 작업 폴더 `.` 로 보이고 소비자마다 예외 분기를 갖게 했다. 그
+    경로를 폐기하면서 이미 박힌 행도 함께 지운다 — 옛 값을 남기지 않는다.
 
-    등록·안내는 방금 착지한 **dest 사본**의 `pm_config` 가 수행한다(장부 writer 규약과 문구를
-    한 곳이 소유). 사본 부재/로드 실패/구버전은 `None`(안내 생략) — 파일 동기 자체는 이미
-    끝났고 이 단계는 그 위의 부수 이행이다. `write=False`(dry-run)면 판정만 한다.
+    지울 행이 없으면 장부를 **읽기만** 한다(멱등 — 재실행이 byte 를 바꾸지 않는다).
+    `write=False`(dry-run)면 판정만 한다. 반환값은 지운(지울) 행 수다.
+
+    읽기·판정·쓰기 전부를 dest 의 `worktree-leases.lock` 배타락 안에서 한다 —
+    엔진(`worktree_pool._lease_lock`)이 선언한 "장부의 모든 read-modify-write 는 이 한
+    구간" 계약과 같은 직렬화 구간이다. 쓰기도 엔진과 같이 tmp → 원자 교체를 지난다.
     """
-    entry = Path(effective_dest) / ".project_manager" / "tools" / "pm_config.py"
-    if not entry.exists():
-        return None
-    try:
-        module = _load_module_from_path(entry, "pm_config.py", allow_unverified=True)
-    except Exception as exc:  # noqa: BLE001 — 부수 이행 실패가 동기 결과를 뒤집지 않는다.
-        if _is_engine_rev_skew(exc):
-            raise  # marked 사본 skew 는 삼키지 않는다(fail-loud).
-        return None
-    register = getattr(module, "register_home_slot", None)
-    if register is None:
-        return None
-    try:
-        return register(write=write)
-    except Exception as exc:  # noqa: BLE001 — 장부 손상 등은 안내로 강등(동기는 이미 성공).
-        if _is_engine_rev_skew(exc):
-            raise  # marked 사본 skew 는 삼키지 않는다(fail-loud).
-        print(f"  ⚠ 홈 슬롯 등록 건너뜀 — {exc}", file=sys.stderr)
-        return None
+    ledger = (Path(effective_dest) / ".project_manager" / ".local"
+              / "worktree-leases.json")
+    if not ledger.is_file():
+        return 0
+    seam = _load_file_lock()
+    section = getattr(seam, "exclusive_file_lock", None)
+    replace = getattr(seam, "atomic_replace", None)
+    if not callable(section) or not callable(replace):
+        raise RuntimeError(
+            "리스 장부 마이그레이션에 필요한 file_lock seam"
+            "(exclusive_file_lock·atomic_replace)을 쓸 수 없음"
+        )
+    with section(ledger.parent / "worktree-leases.lock"):
+        data = json.loads(_read_text_shared(ledger, encoding="utf-8"))
+        leases = data.get("leases") or []
+        kept = [row for row in leases if row.get("slot") != "."]
+        dropped = len(leases) - len(kept)
+        if dropped == 0:
+            return 0
+        prefix = "[dry-run] " if not write else "  ✓ "
+        print(f"{prefix}작업 폴더 목록에서 PM 홈 자신 행 {dropped}개 제거"
+              f"{' 예정' if not write else ''} — 홈은 작업 폴더가 아니다.")
+        if write:
+            data["leases"] = kept
+            tmp = ledger.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8", newline="\n",
+            )
+            replace(tmp, ledger)
+    return dropped
 
 
 def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -> dict:
@@ -6914,7 +6930,7 @@ def _main(argv: list[str] | None = None) -> int:
             result = migrate_entry_doc(
                 effective_dest, source_root, write=not args.dry_run)
             _print_entry_doc_migration_finding(result, dry_run=args.dry_run)
-            register_home_slot(effective_dest, write=not args.dry_run)
+            drop_self_lease_rows(effective_dest, write=not args.dry_run)
         if do_reinstall:
             # **업그레이드 배달 다음 실행이 여기로 온다**(dest 는 신 엔진·changes 0) — 훅이
             # 실제로 깔리는 지점이므로 migrate 와 동형으로 write 한다(정합이면 무출력).
@@ -6978,7 +6994,7 @@ def _main(argv: list[str] | None = None) -> int:
         if do_migrate:  # 판정만(write=False·무부작용).
             result = migrate_entry_doc(effective_dest, source_root, write=False)
             _print_entry_doc_migration_finding(result, dry_run=True)
-            register_home_slot(effective_dest, write=False)
+            drop_self_lease_rows(effective_dest, write=False)
         if do_reinstall:  # 대상 해소만(write=False·무부작용).
             hooks = reinstall_protected_hooks(effective_dest, write=False)
             _print_protected_hook_reinstall_finding(hooks, dry_run=True)
@@ -7012,7 +7028,7 @@ def _main(argv: list[str] | None = None) -> int:
         # 전환 write 는 apply(changes) 성공 이후 — 반쪽 상태 방지.
         result = migrate_entry_doc(effective_dest, source_root, write=True)
         _print_entry_doc_migration_finding(result, dry_run=False)
-        register_home_slot(effective_dest, write=True)
+        drop_self_lease_rows(effective_dest, write=True)
 
     if do_reinstall:
         # apply 이후 — 방금 착지한 *새* 엔진 사본에서 훅 본문을 읽어 배포한다. 단

@@ -935,7 +935,7 @@ def _pm_state_path(
     if slot is None:
         raise identity_args.SlotResolutionError(
             "슬롯 정체성 미해소 — pm_state 를 어디에 읽고 쓸지 결정할 수 없다. "
-            f"`--repo <repo> --slot <N>` 으로 명시하라. {identity_args.UNREGISTERED_HOME_REMEDY}"
+            f"`--repo <repo> --slot <N>` 으로 명시하라. {identity_args.NO_WORK_FOLDER_REMEDY}"
         )
     if migrate:
         _backfill_divergent_slot_dir(slot)
@@ -1948,10 +1948,10 @@ def infer_next_task_session_num(
     """task의 다음 차수를 state와 task-tagged log에서 함께 복구한다.
 
     state 세션 window의 최고차+1과 `log/current.md`의 동일 `(task:<name>)` handoff를 함께
-    본다. 정상 handoff가 task 장부 pid를 0으로 release한 뒤 bootstrap 없이 재실행된 경우
+    본다. 정상 handoff가 task 장부에 종료 기록(open=False)을 남긴 뒤 bootstrap 없이 재실행된 경우
     (`task_released=True`)에는 마지막 log 차수를 그대로 반환해 같은 세션 갱신 모드로 들어간다.
     release가 log보다 먼저 영속되므로 log append 뒤 state 기록 전에 중단된 반쪽 상태도 같은
-    경로로 복구된다. 다음 정상 세션은 bootstrap의 `bind_task`가 pid를 다시 채우므로 N+1이다.
+    경로로 복구된다. 다음 정상 세션은 bootstrap의 `bind_task`가 기록을 다시 열므로 N+1이다.
     따라서 `task_released=False`인 bootstrap/read 경로는 state가 뒤처져도 log N을 새 세션
     N+1로 해석한다. 둘 다 미해소면 state 추론의 placeholder 규격을 보존한다.
 
@@ -1970,7 +1970,7 @@ def infer_next_task_session_num(
     candidates = [value for value in (state_next,) if isinstance(value, int)]
     if log_nums:
         log_highest = max(log_nums)
-        # 정상 종료 또는 log 전 intent 기록(pid=0) 뒤 bootstrap을 다시 거치지 않은 호출은
+        # 정상 종료 또는 log 전 종료 기록(open=False) 뒤 bootstrap을 다시 거치지 않은 호출은
         # 같은 세션 재실행이다. bootstrap/read 경로(task_released=False)는 언제나 log N의
         # 다음 차수 N+1로 전진해야 한다.
         if task_released:
@@ -2595,7 +2595,7 @@ def _module_run_git(args: list[str]) -> tuple[int, str]:
 # 완결·커밋·push 됐고 다음 세션 부트스트랩이 뒤늦게 발견했다 — [6/7] git status dump 가 그 사실을
 # *보여주기만* 하고 차단하지 않았기 때문이다.
 #
-# 그래서 판정을 **어떤 mutation 보다 앞**([2/7] log append·task state 보장·task pid=0 기록 앞)으로
+# 그래서 판정을 **어떤 mutation 보다 앞**([2/7] log append·task state 보장·task 종료 기록 앞)으로
 # 끌어올려 조기 중단으로 승격한다. [6/7] 시점 차단은 log entry 가 이미 append 된 뒤라 재실행이
 # 중복 entry 를 만든다(위임 기록 게이트에서 확인된 순서 문제와 같은 클래스·같은 해법). 회귀
 # ([1/7])보다도 앞에 두는 이유는 비용이다 — 판정은 git 조회 몇 번인데 회귀는 수 분이다.
@@ -3028,7 +3028,7 @@ class PmHandoff:
         # task handoff 시작 시 영속 변경 전에 한 번 해소한 보유 슬롯 스냅샷. 회귀/출하/재스냅이
         # 같은 집합을 재사용해 후반 재조회 실패가 이미 기록된 handoff를 false-green으로 끝내지 않게 한다.
         self._task_slots_snapshot: tuple[str, tuple[str, ...]] | None = None
-        # membership gate가 읽은 task record 스냅샷. 정상 handoff가 pid=0으로 release한 뒤
+        # membership gate가 읽은 task record 스냅샷. 정상 handoff가 종료 기록을 남긴 뒤
         # bootstrap 없이 같은 CLI를 재실행했는지 차수 추론에서 구분한다.
         self._task_record_snapshot: tuple[str, object] | None = None
 
@@ -3263,45 +3263,67 @@ class PmHandoff:
                     return False
         return True
 
-    def _release_task_pid(self, task: str) -> bool:
-        """task handoff intent를 장부 `pid=0`으로 기록한다 — 성공 여부 반환.
+    def _close_session_records(self, task: "str | None", slot: "str | None") -> bool:
+        """이 세션이 연 기록을 **한 자리에서** 전부 닫는다 — 성공 여부 반환.
 
-        핸드오프 기록(log·pm_state) 전 task 모드에서 호출한다. task 장부 pid 는 그 task 를 연
-        세션 pid라, 종료(intent)를 안 기록하면 **다음 세션의 정상 재개도** dead-pid →
-        `bind_task` 가 `reclaimed`("재개(회수·이전 세션 crash)" + "⚠️ 회수 진입")로 상시 오탐한다
-        write 프리미티브 `worktree_pool.release_task_pid(task)` 만 호출해 pid 를 0 으로
-        비워, 차기 부트스트랩이 clean `resumed`(경고 없음)로 재개하게 한다 — 진짜 crash(핸드오프 없이
-        죽어 pid>0 잔존)만 회수 경고를 받는다.
+        핸드오프 기록(log·pm_state) 전에 호출한다. 세션이 끝나는 자리에서 그 세션이 연 기록을
+        닫지 않으면 같은 사실이 두 곳에서 다르게 읽힌다 — 다음 진입이 그 자리를 "열려 있음"으로
+        보고 매번 강제 확인을 요구한다. 닫는 축은 둘이고 기존 write 프리미티브만 부른다:
+          - task 모드: `worktree_pool.release_task_pid(task)` → 장부 task 행 `open=False`.
+          - 슬롯 모드: `worktree_pool.close_slot_session(slot)` → 그 슬롯 행의 `session` 비움.
+        **대여는 그대로 둔다** — 슬롯 반납(`--done` 의 `release`)과는 다른 축이다. 닫히는 것은
+        "지금 세션이 열려 있다"는 표시뿐이고 슬롯은 두고 간다.
+
+        task 모드에서 그 task 가 보유한 슬롯의 session 은 **task 이름**(소유 축)이라 건드리지
+        않는다 — 그 세션의 열림/닫힘은 task 행 하나가 말한다.
 
         같은-session 재실행 판정이 이 durable 신호에 의존하므로 더는 보조 fail-soft 기록이 아니다.
         step2 log write **전**에 성공해야 하며, 엔진/primitive/record 부재·예외는 fail-loud(False)다.
-        성공 뒤 후속 단계가 중단돼도 pid=0이 남아 재실행이 같은 차수로 복구된다."""
+        성공 뒤 후속 단계가 중단돼도 종료 기록이 남아 재실행이 같은 차수로 복구된다."""
+        if task is None and slot is None:
+            return True                # 닫을 기록이 없다(슬롯 미해소 세션).
         wp = self._worktree_pool or _load_worktree_pool()
         if wp is None:
-            print("  [중단] worktree_pool 미배선 — task handoff intent를 기록할 수 없다.",
+            print("  [중단] worktree_pool 미배선 — 세션 종료 기록을 남길 수 없다.",
                   file=sys.stderr)
             return False
-        primitive = getattr(wp, "release_task_pid", None)
-        if primitive is None:
-            print("  [중단] worktree_pool 구버전(release_task_pid 부재) — "
-                  "멱등성 신호를 기록할 수 없다.",
-                  file=sys.stderr)
-            return False
-        try:
-            task_rec = primitive(task)
-        except Exception as exc:  # noqa: BLE001 — load-bearing intent 기록 실패는 차단.
-            if _is_engine_rev_skew(exc):
-                raise
-            print(f"  [중단] task handoff intent(pid=0) 기록 실패 — {exc}.", file=sys.stderr)
-            return False
-        if task_rec is None:
-            print(f"  [중단] task {task!r} 장부에 없음 — 멱등성 신호를 기록하지 못했다.",
-                  file=sys.stderr)
-            return False
-        print(
-            f"  ✓ task handoff intent 기록: {task} → pid=0(미점유) "
-            "(재실행=같은 차수·다음 bootstrap=새 pid/N+1)"
-        )
+        if task is not None:
+            primitive = getattr(wp, "release_task_pid", None)
+            if primitive is None:
+                print("  [중단] worktree_pool 구버전(release_task_pid 부재) — "
+                      "멱등성 신호를 기록할 수 없다.",
+                      file=sys.stderr)
+                return False
+            try:
+                task_rec = primitive(task)
+            except Exception as exc:  # noqa: BLE001 — load-bearing intent 기록 실패는 차단.
+                if _is_engine_rev_skew(exc):
+                    raise
+                print(f"  [중단] task 종료 기록 실패 — {exc}.", file=sys.stderr)
+                return False
+            if task_rec is None:
+                print(f"  [중단] task {task!r} 장부에 없음 — 멱등성 신호를 기록하지 못했다.",
+                      file=sys.stderr)
+                return False
+            print(
+                f"  ✓ task 종료 기록: {task} → 닫힘 "
+                "(재실행=같은 차수·다음 bootstrap=재개/N+1)"
+            )
+        if slot is not None:
+            closer = getattr(wp, "close_slot_session", None)
+            if closer is None:
+                print("  [중단] worktree_pool 구버전(close_slot_session 부재) — "
+                      "슬롯 종료 기록을 남길 수 없다.",
+                      file=sys.stderr)
+                return False
+            try:
+                closer(slot)
+            except Exception as exc:  # noqa: BLE001 — load-bearing 종료 기록 실패는 차단.
+                if _is_engine_rev_skew(exc):
+                    raise
+                print(f"  [중단] 슬롯 종료 기록 실패 — {exc}.", file=sys.stderr)
+                return False
+            print(f"  ✓ 슬롯 종료 기록: {slot} → 닫힘 (대여는 그대로·다음 진입=확인 없이 재개)")
         return True
 
     # ── 기본 subprocess 구현 (실제 실행) ──────────────────────────────────────
@@ -4130,7 +4152,7 @@ class PmHandoff:
                     "\n[중단] 실행 슬롯 미해소 — pm_state 를 어디에 쓸지 결정할 수 없다. "
                     "`--repo <repo> --slot <N>` 으로 명시하라 "
                     "(log/current.md·pm_state.md 어떤 것도 건드리지 않는다). "
-                    f"{identity_args.UNREGISTERED_HOME_REMEDY}",
+                    f"{identity_args.NO_WORK_FOLDER_REMEDY}",
                     file=sys.stderr,
                 )
                 return 1
@@ -4145,7 +4167,7 @@ class PmHandoff:
 
         # ── 0. dirty-tree 게이트 (조기 중단) ──────────────────────────────────
         # "핸드오프 시작 시점 tree 는 clean" 불변식의 기계 차단. 위치가 load-bearing 이다 —
-        # 어떤 mutation(task state 보장·task pid=0 기록·[2/7] log append)보다도 앞이라 차단돼도
+        # 어떤 mutation(task state 보장·task 종료 기록·[2/7] log append)보다도 앞이라 차단돼도
         # 재실행이 중복 entry 를 만들지 않는다. 회귀([1/7]) **앞**에 두는 이유는 비용이다:
         # 판정은 git 조회 몇 번(초 단위)인데 회귀는 수 분이라, 뒤에 두면 커밋만 하면 될 PM 이
         # 회귀 한 판을 통째로 기다린 뒤에야 차단 사유를 본다.
@@ -4246,7 +4268,7 @@ class PmHandoff:
                 task_released=(
                     self._task_record_snapshot is not None
                     and self._task_record_snapshot[0] == task
-                    and getattr(self._task_record_snapshot[1], "pid", None) == 0
+                    and getattr(self._task_record_snapshot[1], "open", None) is False
                 ),
             )
             if not isinstance(inferred, int):
@@ -4259,14 +4281,19 @@ class PmHandoff:
             session_num = inferred
             print(f"  ✓ task state+log 차수 자동 복구: {session_num}차")
 
-        # task의 pid=0은 이제 같은-session 재실행을 판별하는 load-bearing handoff intent다.
-        # log/state/dashboard 어떤 handoff write보다 먼저 기록해, 이후 단계가 중단돼도 재실행이
-        # 같은 차수로 복구되게 한다. dry-run은 예고만 하고 장부를 쓰지 않는다.
-        if task_mode:
-            print("\n[task] handoff intent pid=0 기록 (log write 전)...")
+        # 세션 종료 기록(닫힘)은 같은-session 재실행을 판별하는 load-bearing 신호이자, 다음
+        # 진입이 이 자리를 "열려 있음"으로 오독하지 않게 하는 값이다. log/state/dashboard 어떤
+        # handoff write보다 먼저 기록해, 이후 단계가 중단돼도 재실행이 같은 차수로 복구되게 한다.
+        # 닫는 축은 모드가 가른다: task 모드는 task 행, 슬롯 모드는 그 슬롯 행(대여는 유지).
+        # dry-run은 예고만 하고 장부를 쓰지 않는다.
+        closing_task = task if task_mode else None
+        closing_slot = None if task_mode else worktree_slot
+        if closing_task is not None or closing_slot is not None:
+            print("\n[세션] 종료 기록(닫힘) (log write 전)...")
             if dry_run:
-                print(f"  [dry-run] task pid=0(미점유) 기록 예고: {task} (실행 생략).")
-            elif not self._release_task_pid(task):
+                print(f"  [dry-run] 종료 기록 예고: "
+                      f"{closing_task or closing_slot} (실행 생략).")
+            elif not self._close_session_records(closing_task, closing_slot):
                 return 1
 
         # ── 2. log/current.md handoff entry append / 같은-세션 갱신 ────────────────────
@@ -4700,7 +4727,7 @@ def require_handoff_user_ack(
         print(
             f"[dry-run] 쓰기 0 미리보기는 사용자 ack 없이 허용한다. 실제 {description} "
             "핸드오프에는 승인 대상값이 필요하니 `--repo <repo> --slot <N>` 또는 "
-            f"`--task <이름>` 으로 대상을 명시하라. {identity_args.UNREGISTERED_HOME_REMEDY}"
+            f"`--task <이름>` 으로 대상을 명시하라. {identity_args.NO_WORK_FOLDER_REMEDY}"
         )
         return True
     if target is None:
@@ -4708,7 +4735,7 @@ def require_handoff_user_ack(
         print(
             f"[중단] pm_handoff {description}: 승인 대상값을 해소할 수 없다. "
             "`--repo <repo> --slot <N>` 또는 `--task <이름>` 으로 대상을 명시하라. "
-            f"{identity_args.UNREGISTERED_HOME_REMEDY}",
+            f"{identity_args.NO_WORK_FOLDER_REMEDY}",
             file=sys.stderr,
         )
         return False

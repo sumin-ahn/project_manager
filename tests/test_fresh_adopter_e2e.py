@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from _git_fixture import init_git_repo
+from _git_fixture import git as _git_cmd, init_git_repo
 
 from _test_exec import python_argv_command
 from _settings_portability import portability_failures, referenced_hook_paths
@@ -488,6 +488,8 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
     # commit 으로 해소되지 않는다. 채택자의 실제 형상(커밋 있는 홈)을 만들어 준다.
     _git(["-c", "advice.addEmbeddedRepo=false", "add", "-A"], dest)
     assert _git(["commit", "-qm", "adopter home seed"], dest).returncode == 0
+    # 작업 폴더 행 1개 — 귀속 조작(claim·묶음 종결)의 정체성은 그 행에서 온다.
+    _seed_work_slot(dest, tree="worktree")
     board_tickets = dest / ".project_manager" / "board" / "tickets"
 
     # 1단계 — new: 제목만 있는 미충전 본문은 board-git 활성 하에서 draft 로 격리된다(open/ 창 0).
@@ -517,8 +519,8 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
     assert not list((board_tickets / ".drafts").glob(f"{tid}-*.md")), "promote 후에도 draft 잔존"
 
     # 3단계 — claim: open/ → claimed/. 대상 정확히 1개·출발(open/) 0개까지 단언한다(F-003 —
-    # 존재만 보면 copy-without-delete 회귀도 green 이 된다). 정체성은 import 가 등록한 홈
-    # 슬롯 행이다 — 4단계 묶음 종결이 같은 행으로 코드 트리와 소유를 해소하므로 두 단계의
+    # 존재만 보면 copy-without-delete 회귀도 green 이 된다). 정체성은 그 홈의 작업 폴더
+    # 행이다 — 4단계 묶음 종결이 같은 행으로 코드 트리와 소유를 해소하므로 두 단계의
     # 정체성 축이 하나여야 한다(명시 `--repo/--slot` claim 은 bare-claim 케이스가 따로 덮는다).
     claim = _board(dest, "claim", tid)
     assert claim.returncode == 0, f"claim 실패: {claim.stderr}"
@@ -559,18 +561,91 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
         f"종결 뒤에도 장부가 닫히지 않았다:\n{ledger.read_text(encoding='utf-8')}")
 
 
-# ── bare 귀속 조작(홈 슬롯 행) ────────────────────────────────────────────
-# 위 lifecycle 은 `claim tid --repo pilot --slot 1`(명시)로 돈다 — 카드가 지시하는 **bare**
-# 형태(`board.py claim T-NNNN`)를 기계층이 한 번도 안 밟는 구조적 사각이었다. fresh 채택자는
-# import 가 홈 자신을 첫 슬롯 행으로 등록하므로, 카드 형태 그대로 첫 시도가 그 행의 정체성으로
-# rc0 임을 여기서 못박는다.
+# ── 작업 폴더 없는 fresh 홈 · bare 귀속 조작 ──────────────────────────────
+# fresh import 는 슬롯 행을 만들지 않는다(T-0919 — 홈 자신을 작업 폴더로 등재하던 경로 삭제).
+# 그 상태의 무인자 부트스트랩은 "작업 폴더를 먼저 만들라"고 그 명령과 함께 멈추고, 작업 폴더
+# 행이 하나 생기면 카드가 지시하는 bare 형태(`board.py claim T-NNNN`)가 그 행으로 해소된다.
 
 
-def test_fresh_adopter_bare_claim_resolves_via_home_slot_row(pm_import, tmp_path, monkeypatch):
-    """fresh 채택자(등록 repo 1개)에서 명시 플래그 없는 bare `claim` 이 홈 슬롯 행으로 rc0.
+def _seed_work_slot(dest: Path, *, number: int = 1, tree: str | None = None) -> str:
+    """`pm-config worktree add` 가 남기는 형상의 최소 재현 — 슬롯 행 + (선택)작업 폴더.
 
-    import 가 홈 자신을 첫 슬롯 행(`slot="."`·`session=<repo>_1`)으로 등록하므로 정체성은
-    장부 행에서 온다 — "행이 없다"에서 유도하지 않는다.
+    `tree="standalone"` 은 독립 git 트리(커밋 있는 홈이 필요 없는 경우), `tree="worktree"` 는
+    홈 repo 의 실제 worktree(코드 산출·묶음 종결이 홈 이력과 같은 repo 여야 하는 경우)다.
+    """
+    slot = f"work/{dest.name}_{number}"
+    leases_file = dest / ".project_manager" / ".local" / "worktree-leases.json"
+    leases_file.parent.mkdir(parents=True, exist_ok=True)
+    rows = []
+    if leases_file.is_file():
+        rows = json.loads(leases_file.read_text(encoding="utf-8")).get("leases") or []
+    rows.append({"slot": slot, "repo": dest.name,
+                 "session": f"{dest.name}_{number}", "state": "leased"})
+    leases_file.write_text(json.dumps({"leases": rows, "tasks": []}), encoding="utf-8")
+    if tree == "standalone":
+        init_git_repo(dest / slot, commit="probe")
+        _git_cmd(dest / slot, "checkout", "-q", "-b", f"task/{dest.name}_{number}")
+    elif tree == "worktree":
+        added = _git(["worktree", "add", "-b", f"task/{dest.name}_{number}", slot], dest)
+        assert added.returncode == 0, f"worktree add 실패: {added.stderr}"
+    return slot
+
+
+def test_fresh_adopter_without_a_work_folder_stops_with_the_create_command(
+        pm_import, tmp_path, monkeypatch):
+    """작업 폴더 0개 홈의 무인자 부트스트랩 — rc≠0 · 부분 dump 0 · 만드는 명령을 실값으로 안내."""
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    dest = tmp_path / "adopter-no-work-folder"
+    assert pm_import.main(
+        ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"]
+    ) == 0
+    leases_file = dest / ".project_manager" / ".local" / "worktree-leases.json"
+    rows = (json.loads(leases_file.read_text(encoding="utf-8")).get("leases") or []
+            if leases_file.is_file() else [])
+    assert rows == [], f"import 가 슬롯 행을 만들었다: {rows}"
+
+    got = _tool(dest, "pm_bootstrap.py")
+
+    assert got.returncode != 0, f"작업 폴더 0개인데 부트스트랩이 통과했다:\n{got.stdout}"
+    assert got.stdout == "", f"실패인데 부분 dump 가 났다:\n{got.stdout}"
+    assert "작업 폴더가 없다" in got.stderr, got.stderr
+    assert f"pm-config worktree add {dest.name} --user-ack {dest.name}" in got.stderr, got.stderr
+    assert "pm-update" not in got.stderr, (
+        f"엉뚱한 명령(pm-update)을 여전히 안내한다:\n{got.stderr}")
+    assert rows == [], "안내만 해야 하는 자리에서 부트스트랩이 행을 만들었다"
+
+
+def test_fresh_adopter_bootstrap_passes_once_a_work_folder_exists(
+        pm_import, tmp_path, monkeypatch):
+    """작업 폴더를 하나 만든 뒤 같은 명령은 rc 0 + 정상 dump — 과차단 0."""
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    dest = tmp_path / "adopter-one-work-folder"
+    assert pm_import.main(
+        ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"]
+    ) == 0
+    slot = _seed_work_slot(dest, tree="standalone")
+
+    # 심은 행은 **열린 기록**(leased + session)이다 — 그 자리의 부트스트랩은 먼저 묻는다.
+    asked = _tool(dest, "pm_bootstrap.py")
+    assert asked.returncode != 0, f"열린 기록인데 그냥 진행했다:\n{asked.stdout}"
+    assert asked.stdout == "", f"거부인데 부분 dump 가 났다:\n{asked.stdout}"
+    assert "열린 세션 기록" in asked.stderr and "--force" in asked.stderr, asked.stderr
+
+    got = _tool(dest, "pm_bootstrap.py", "--force")
+
+    assert got.returncode == 0, f"작업 폴더가 있는데 막혔다:\n{got.stderr}"
+    assert "이전 세션이 하던 것" in got.stderr, f"강제 인계인데 복원 표시가 없다:\n{got.stderr}"
+    assert len(got.stdout.splitlines()) >= 100, (
+        f"rc 0 인데 dump 가 비었다({len(got.stdout.splitlines())}행):\n{got.stdout}")
+    assert f"slot={slot}" in got.stdout or slot in got.stdout, got.stdout
+
+
+def test_fresh_adopter_bare_claim_resolves_via_the_work_slot_row(pm_import, tmp_path, monkeypatch):
+    """작업 폴더 행이 하나인 채택자에서 명시 플래그 없는 bare `claim` 이 그 행으로 rc0.
+
+    정체성은 장부 행에서 온다 — "행이 없다"에서 유도하지 않는다.
 
     env `PM_SESSION_NAME`/`CLAUDE_SESSION_NAME` 누출을 monkeypatch 로 제거하고 실행한다(부모
     pytest 프로세스가 우연히 값을 들고 있어도 이 서브프로세스가 그걸 상속해 오검출하지 않게 —
@@ -583,12 +658,12 @@ def test_fresh_adopter_bare_claim_resolves_via_home_slot_row(pm_import, tmp_path
         ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"]
     )
     assert rc == 0, f"import 실패 (rc={rc})"
+    _seed_work_slot(dest)
     ledger = dest / ".project_manager" / ".local" / "worktree-leases.json"
-    assert ledger.exists(), "fresh import 가 홈 슬롯 행을 등록해야 한다(등록 지점)"
     rows = json.loads(ledger.read_text(encoding="utf-8"))["leases"]
     assert [(row["slot"], row["session"], row["state"]) for row in rows] == [
-        (".", f"{dest.name}_1", "leased")
-    ], f"홈 행이 canonical 값이 아니다: {rows}"
+        (f"work/{dest.name}_1", f"{dest.name}_1", "leased")
+    ], f"슬롯 행이 canonical 값이 아니다: {rows}"
 
     new = _board(dest, "new", "bare claim probe", "--touches", "README.md")
     assert new.returncode == 0, f"`board.py new` 실패: {new.stderr}"
@@ -601,16 +676,16 @@ def test_fresh_adopter_bare_claim_resolves_via_home_slot_row(pm_import, tmp_path
     # 카드 형태 그대로 — 명시 --repo/--slot 없이 bare claim.
     claim = _board(dest, "claim", tid)
     assert claim.returncode == 0, (
-        f"카드 형태 bare `board.py claim {tid}` 실패(rc={claim.returncode}) — 홈 슬롯 행 "
+        f"카드 형태 bare `board.py claim {tid}` 실패(rc={claim.returncode}) — 슬롯 행 "
         f"해소 회귀.\n--- stdout ---\n{claim.stdout}\n--- stderr ---\n{claim.stderr}"
     )
     assert f"{dest.name}_1" in claim.stdout, (
-        f"claim 귀속이 홈 행의 session 값이 아니다:\n{claim.stdout}")
+        f"claim 귀속이 슬롯 행의 session 값이 아니다:\n{claim.stdout}")
 
 
 def test_fresh_adopter_bare_claim_stays_unresolved_when_a_second_slot_is_leased(
         pm_import, tmp_path, monkeypatch):
-    """역가드: 활성 슬롯이 2개면(홈 행 + 타 슬롯) bare claim 은 fail-loud — 해소가 "활성 lease
+    """역가드: 활성 슬롯이 2개면 bare claim 은 fail-loud — 해소가 "활성 lease
     정확히 1개" 를 넘어 느슨해지지 않았음을 fresh 채택자 실 import 산출물에서 못박는다
     (adopter#0/multi-PM 형상 축소판)."""
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
@@ -628,15 +703,10 @@ def test_fresh_adopter_bare_claim_stays_unresolved_when_a_second_slot_is_leased(
     assert m, f"발행된 ticket 을 list --all 에서 못 찾음:\n{listing.stdout}"
     tid = m.group(0)
 
-    # 풀 형상 시뮬 — 등록된 홈 행 옆에 다른 세션(타 슬롯)의 leased 행 1개를 장부에 직접 심는다
-    # (장부 writer 규약과 무관하게 "활성 슬롯 2개" 만 검증하면 되므로 최소 스키마 직접 write).
-    leases_file = dest / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger = json.loads(leases_file.read_text(encoding="utf-8"))
-    ledger["leases"].append(
-        {"slot": f"work/{dest.name}_2", "repo": dest.name,
-         "session": f"{dest.name}_2", "state": "leased"}
-    )
-    leases_file.write_text(json.dumps(ledger), encoding="utf-8")
+    # 풀 형상 시뮬 — 작업 슬롯 행 2개를 장부에 직접 심는다(장부 writer 규약과 무관하게
+    # "활성 슬롯 2개" 만 검증하면 되므로 최소 스키마 직접 write).
+    _seed_work_slot(dest, number=1)
+    _seed_work_slot(dest, number=2)
 
     claim = _board(dest, "claim", tid)
     assert claim.returncode != 0, (

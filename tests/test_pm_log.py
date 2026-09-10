@@ -374,7 +374,7 @@ def _freeform_task_checkpoint(mod, monkeypatch, tmp_path, *, register_task: bool
         }],
     }
     if register_task:
-        payload["tasks"] = [{"name": "foo_1", "prefix": None, "pid": 0, "started": "t"}]
+        payload["tasks"] = [{"name": "foo_1", "prefix": None, "started": "t"}]
     ledger.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setattr(mod, "_registered_repos", lambda: set())
 
@@ -1378,6 +1378,27 @@ def test_snapshot_single_active_task_fallback_and_multi_task_skip(tmp_path):
     text2, warning2 = mod.build_snapshot(pm_home2, outside)
     assert text2 is None and warning2.count("\n") == 0
     assert "정체성 미해소" in warning2
+
+
+def test_unresolved_snapshot_warning_carries_the_work_folder_remedy(tmp_path):
+    """정체성 미해소 경고는 다음에 칠 명령을 싣는다 — 작업 폴더가 있는 홈은 종전대로 조용하다.
+
+    문구는 부트스트랩·귀속 쓰기 거부와 **같은 한 문장**(`identity_args` 단일 진실)이다.
+    """
+    mod = _load_module()
+    identity_args = mod._load_identity_args()
+    pm_home, cwd = _snapshot_home(tmp_path / "home", tasks=("a", "b"), lease_session="product_1")
+
+    # 홈 루트 세션 — 어느 작업 폴더 안도 아니고 활성 task 도 여럿이라 이름 붙일 세션이 없다.
+    text, warning = mod.build_snapshot(pm_home, pm_home)
+    assert text is None
+    assert "정체성 미해소" in warning
+    assert identity_args.NO_WORK_FOLDER_REMEDY in warning
+    assert "pm-config worktree add" in warning
+
+    # 같은 홈이라도 작업 폴더 안에서 돌면 해소된다 — 과잉 경고 0.
+    resolved_text, resolved_warning = mod.build_snapshot(pm_home, cwd)
+    assert resolved_warning is None and resolved_text
 
 
 def test_single_active_task_identity_emits_snapshot_and_records_compaction_checkpoint(

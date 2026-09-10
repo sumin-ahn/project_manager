@@ -32,6 +32,8 @@ from pathlib import Path
 
 import pytest
 
+from _slot_seed import fake_slot_path
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -550,6 +552,10 @@ class _FakeWorktreePool:
         self._bound.append(slot)
         return _FakeLease(slot, repo, self._branch)
 
+    def lease_is_open(self, lease):
+        """열림 판정은 엔진 규칙 그대로 — 열림 기록(leased + session)이면 열림."""
+        return getattr(lease, "state", None) == "leased" and bool(getattr(lease, "session", ""))
+
     def list_leases(self):
         # 0단계 실재 검사(T-0351) 통과용 idle 시드 — phase-0 는 slot/state/session/extra 만 읽는다.
         from types import SimpleNamespace
@@ -559,7 +565,7 @@ class _FakeWorktreePool:
         return self._branch
 
     def slot_path(self, slot):
-        return Path("/tmp/multipm") / slot
+        return fake_slot_path(slot)
 
 
 def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None):

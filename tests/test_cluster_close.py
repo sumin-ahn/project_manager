@@ -31,7 +31,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from _home_slot import HOME_SLOT, seed_home_slot
+from _slot_seed import seed_slot
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -627,8 +627,7 @@ def _build_close_env(tf, base: Path, monkeypatch) -> _CloseEnv:
     # 리스 장부 — 종결이 반납할 슬롯.
     (home / ".project_manager" / ".local" / "worktree-leases.json").write_text(
         json.dumps({"leases": [{
-            "slot": _SLOT, "repo": "code", "session": "t", "pid": 0,
-            "started": _FIXTURE_STAMP, "state": "leased",
+            "slot": _SLOT, "repo": "code", "session": "t", "started": _FIXTURE_STAMP, "state": "leased",
         }]}, ensure_ascii=False), encoding="utf-8")
 
     # 이 픽스처의 실행 세션은 리스 장부·`claimed_by` 와 같은 `t` 다. 선검사가 board 의 소유
@@ -920,7 +919,7 @@ def test_reconcile_integrated_is_idempotent_and_preserves_other_dirty_slots(
     leases = json.loads(lease_path.read_text(encoding="utf-8"))
     leases["leases"].append({
         "slot": "work/code_2", "repo": "code", "session": "other",
-        "pid": 0, "started": _FIXTURE_STAMP, "state": "leased",
+        "started": _FIXTURE_STAMP, "state": "leased",
     })
     lease_path.write_text(json.dumps(leases), encoding="utf-8")
     lease_before = lease_path.read_bytes()
@@ -1637,33 +1636,6 @@ def test_close_refuses_to_release_a_dirty_slot(close_env, capsys):
 
 
 @requires_git
-def test_close_does_not_release_the_home_slot_row(close_env, capsys):
-    """PM 홈 자신인 행(`slot="."`)은 반납 대상이 아니다 — 그 행은 자원이 아니라 정체성이다.
-
-    반납하면 그 홈의 세션 정체성이 지워져 claim·complete·checkpoint·snapshot 이 전부
-    "미해소" 로 막힌다(2026-09-02 실측). 대역은 진짜 반납으로 이어지므로 무대상 판정이
-    사라지면 호출 기록과 장부 행이 함께 바뀐다.
-    """
-    env = close_env
-    seed_home_slot(env.home, repo="code", session="t")
-    before = _lease_rows(env.home)
-    released: list[str] = []
-
-    def _release(slot: str) -> tuple[bool, str]:
-        released.append(slot)
-        return closer._default_release(slot)
-
-    closer = env.closer(slot=HOME_SLOT, release_fn=_release)
-
-    block = closer._step_release()
-
-    assert block is None
-    assert released == []
-    assert _lease_rows(env.home) == before
-    assert "PM 홈 자신" in capsys.readouterr().out
-
-
-@requires_git
 def test_close_dry_run_changes_nothing(close_env, capsys):
     """계획만 출력한다 — board·git·장부 어디에도 부작용이 없다."""
     env = close_env
@@ -2175,7 +2147,7 @@ def _unborn_repo(tf, tmp_path: Path, monkeypatch, *,
     _git(root, "config", "user.name", "t")
     if head_branch is not None:
         _git(root, "symbolic-ref", "HEAD", f"refs/heads/{head_branch}")
-    seed_home_slot(root, repo="home", session="t")
+    seed_slot(root, repo="home", session="t")
     _write_ticket(board_dir, _MEMBER_A, claimed_rev="null", touches=(_TOUCH_A,))
     _write_cluster_ledger(board_dir, tickets=(_MEMBER_A,),
                           base_branch=_UNBORN_BRANCH, branch=None)
@@ -2268,7 +2240,7 @@ def test_fresh_single_clone_home_closes_on_the_first_call(
         affected_domain_fn=lambda tid: None,
     )
     closer = tf.ClusterCloser(
-        _CLUSTER, finisher=finisher, board_py=board_py, slot=HOME_SLOT,
+        _CLUSTER, finisher=finisher, board_py=board_py,
         run_delegate_fn=lambda args: (0, ""),
     )
 
@@ -2280,7 +2252,7 @@ def test_fresh_single_clone_home_closes_on_the_first_call(
     assert list((board_dir / "tickets" / "done").glob(f"{_MEMBER_A}*.md"))
     assert _git(root, "rev-parse", "--verify", "--quiet", "HEAD").returncode == 0
     assert _git(root, "log", "--format=%s").stdout.splitlines() == ["종결 픽스처"]
-    assert _lease_rows(root)[0]["session"] == "t"      # 홈 정체성이 살아 있다
+    assert _lease_rows(root)[0]["session"] == "t"      # 슬롯 행이 그대로다
 
 
 def test_status_seam_is_strict_and_the_non_blocking_report_absorbs_it(

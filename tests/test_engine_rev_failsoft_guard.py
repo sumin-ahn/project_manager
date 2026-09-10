@@ -1038,9 +1038,9 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   아니라 그 사본을 읽을 이유가 없어진 것이고(같은 장부를 두 번 해석하던 중복), 남은 세션-entry
     #   경계들은 종전대로 마킹된 skew 를 re-raise 한다.
     # 231 = 230 − 1(등록 유도가 사라지며 `pm_config._registered_repos_for_session` 소멸)
-    #   + 2(엔진 흡수 말미 홈 슬롯 등록 `pm_update.register_home_slot` 의 dest 사본 로드·호출
-    #   두 경계). 등록은 파일 동기가 이미 끝난 뒤의 부수 이행이라 실패를 안내 한 줄로 접되,
-    #   마킹된 사본 skew 는 두 경계 모두 그대로 re-raise 한다(동기 성공이 skew 를 덮지 않는다).
+    #   + 2(엔진 흡수 말미 홈 슬롯 등록의 dest 사본 로드·호출 두 경계). 등록은 파일 동기가
+    #   이미 끝난 뒤의 부수 이행이라 실패를 안내 한 줄로 접되, 마킹된 사본 skew 는 두 경계
+    #   모두 그대로 re-raise 한다(동기 성공이 skew 를 덮지 않는다).
     # 232 = 231 + T-0776 promote 내용 검토 게이트의 좌표 정규화 형제 로더 한 경계
     #   (`board._load_repo_coordinates`). touches/인용 좌표를 소유 트리 기준으로 접는 규칙이
     #   `repo_coordinates.py` 에 있고 board 는 그 형제를 지연 로드해 소비만 한다(규칙 사본 0) —
@@ -1160,7 +1160,16 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   그대로 올려 엔진 사본 불일치를 일반적인 "티켓 읽기 실패"로 숨기지 않는다.
     # 269 = 271 − T-0887 이 지운 두 경계(추가 리뷰어 격리 컨테이너의 부분 정리 · 임시 홈 정화).
     #   컨테이너 자체가 없어져 접을 곳이 사라졌다 — 래칫은 제거 방향으로만 움직인다.
-    assert len(report.boundaries) == 269, "propagation sweep boundary ratchet changed"
+    # 266 = 269 − T-0919 가 지운 세 경계: 홈 자신 등재가 사라지며 흡수 말미의 dest 사본 로드·
+    #   호출 두 경계와, 그 등재의 대상 판정 입력이던 `worktree_pool._registered_repos_for_
+    #   session` 의 board 형제 로드 한 경계. 자리를 대신한 옛 행 제거 마이그레이션
+    #   (`pm_update.drop_self_lease_rows`)은 장부를 직접 읽고 쓰므로 접을 예외가 없다.
+    # 271 = 266 + T-0920 의 인계 표시 다섯 경계(`pm_bootstrap._handover_*`). 인계 표시는 **읽기
+    #   전용 부가 정보**라 조회 실패가 진입을 막지 않지만, marked skew 만은 그대로 올린다
+    #   (형제 사본 불일치를 "표시할 게 없음"으로 숨기지 않는다).
+    # 272 = 271 + 슬롯 종료 기록 한 경계(`pm_handoff._close_session_records` 의 슬롯 축).
+    #   기록 실패는 서사를 쓰기 전에 False 로 차단하고, marked skew 만 그대로 올린다.
+    assert len(report.boundaries) == 272, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1795,10 +1804,11 @@ def test_runtime_status_slot_git_callable_rethrows_marked_skew(monkeypatch):
     module = _runtime_tool("pm_config.py")
     skew = _marked_skew()
     lease = SimpleNamespace(
-        slot="work/repo_1", repo="repo", state="idle", session=None, pid=0, role="work",
+        slot="work/repo_1", repo="repo", state="idle", session=None, role="work",
     )
     worktree_pool = SimpleNamespace(
         list_leases=lambda: [lease],
+        lease_is_open=lambda _lease: False,
         current_branch=lambda _slot: "feature",
         list_tasks=lambda: [],
         slots_for_task=lambda _task: [],

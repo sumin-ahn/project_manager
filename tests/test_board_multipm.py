@@ -1236,8 +1236,8 @@ def test_session_name_required_fail_loud_carries_explicit_identity_remedy(board,
         board.session_name(required=True)
     assert str(exc.value) == board.UNREGISTERED_SESSION_ABORT
     assert "--repo <repo> --slot <N>" in str(exc.value)
-    # 미등록 홈(행 0)에는 마이그레이션 처방이 함께 나온다 — 조용한 폴백이 없으므로 처방이 필수다.
-    assert "pm-update" in str(exc.value)
+    # 작업 폴더가 없는 홈에는 만드는 명령이 함께 나온다 — 조용한 폴백이 없으므로 처방이 필수다.
+    assert "pm-config worktree add" in str(exc.value)
 
 
 def test_session_name_solo_unbound_returns_none(board, monkeypatch):

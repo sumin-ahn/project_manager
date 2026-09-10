@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from _home_slot import seed_home_slot
+from _slot_seed import fake_slot_path, seed_slot
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -117,10 +117,7 @@ class _NeedsCreate(Exception):
 class _FakePool:
     """worktree_pool DI mock — 0단계 슬롯 검사(실재·점유·기록정합)를 구동한다(실 부작용 0).
 
-    `HOME_SLOT` 은 실 풀이 이름 붙인 상수의 미러(`NeedsCreate` 동형) — 작업 슬롯 전제 검사
-    (main-참조·기록↔live)가 PM 홈 행을 이 값으로 배제한다."""
-
-    HOME_SLOT = "."
+    `NeedsCreate` 는 실 풀이 이름 붙인 예외의 미러다."""
 
     def __init__(self, *, leases=None, branch="feature-x", compare_result=None,
                  upstream_ok=False, upstream=None):
@@ -138,8 +135,12 @@ class _FakePool:
         self.list_leases_calls += 1
         return list(self._leases)
 
+    def lease_is_open(self, lease):
+        """열림 판정은 엔진 규칙 그대로 — 열림 기록(leased+session)이면 열림."""
+        return getattr(lease, "state", None) == "leased" and bool(getattr(lease, "session", ""))
+
     def slot_path(self, slot):
-        return Path("/tmp/multipm-phase0-absent") / slot  # 미존재(실재 검사=장부 시드로만 통과)
+        return fake_slot_path(slot)   # 실재하는 작업 폴더(0단계 실재 검사의 전제)
 
     def current_branch(self, slot, *, git_runner=None):
         return self._branch
@@ -282,9 +283,18 @@ def test_solo_no_op_skips_slot_checks(bootstrap, tmp_path, capsys):
 
 
 def test_missing_workspace_rejects(bootstrap, tmp_path, capsys):
-    """lean 슬롯이 장부에도 폴더에도 없으면 거부(phantom 바인딩 방지) — rc 1 · dump 없음."""
+    """작업 폴더가 없으면 거부(phantom 바인딩 방지) — rc 1 · dump 없음.
+
+    장부 행이 있어도 마찬가지다: 폴더 없는 행으로 진입하면 뒤의 git 프로브가 없는 경로에서
+    죽는다(T-0919 실측). 여기서는 폴더도 행도 없는 형상으로 그 거부를 고정한다.
+    """
     board = _FakeBoard(anchor_pm_home=None)
-    pool = _FakePool(leases=[])  # 장부 비어있음 + slot_path 미존재.
+
+    class _NoFolderPool(_FakePool):
+        def slot_path(self, slot):
+            return tmp_path / "absent" / slot   # 만들지 않는다 — 미실재 축.
+
+    pool = _NoFolderPool(leases=[])
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
     rc = inst.run(repo="X", slot=2)
     assert rc == 1
@@ -307,8 +317,8 @@ def test_present_idle_workspace_passes(bootstrap, tmp_path, capsys):
 # ── 4. 타 점유자 (readonly carve-out) ─────────────────────────────────────────
 
 
-def test_other_session_holder_rejects(bootstrap, tmp_path, capsys):
-    """다른 세션이 그 슬롯을 leased 로 점유 중이면 거부(결정 ③) — rc 1 · dump 없음 · 점유자 안내."""
+def test_open_record_asks_before_entering(bootstrap, tmp_path, capsys):
+    """열린 기록이 있으면 거부 — rc 1 · dump 없음 · 그 기록의 정체와 택1 안내."""
     board = _FakeBoard(anchor_pm_home=None)
     pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="leased", session="X_9")])
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
@@ -316,16 +326,52 @@ def test_other_session_holder_rejects(bootstrap, tmp_path, capsys):
     assert rc == 1
     cap = capsys.readouterr()
     assert cap.out == ""
-    assert "X_9" in cap.err and "점유" in cap.err
+    assert "X_9" in cap.err and "열린 세션 기록" in cap.err
+    assert "--force" in cap.err                      # 응답 자리를 안내한다
     assert pool.bind_calls == []
 
 
-def test_my_session_holder_passes(bootstrap, tmp_path, capsys):
-    """내 세션(`X_2`)이 이미 leased(crash 후 재개)면 점유 아님 — 통과."""
+def test_my_own_session_name_is_not_a_free_pass(bootstrap, tmp_path, capsys):
+    """세션명이 나와 같아도 열림은 열림이다 — 이름으로 가르는 분기가 없다(프로세스 조회 폐기 귀결)."""
     board = _FakeBoard(anchor_pm_home=None, protected=[])
     pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="leased", session="X_2")])
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
+    assert inst.run(repo="X", slot=2) == 1
+    assert "열린 세션 기록" in capsys.readouterr().err
+
+
+def test_force_takes_over_the_open_record_and_shows_the_handover(bootstrap, tmp_path, capsys):
+    """`--force` 는 사용자 응답이다 — 인계 표시(이전 세션이 하던 것)를 찍고 진입한다."""
+    board = _FakeBoard(anchor_pm_home=None, protected=[])
+    pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="leased", session="X_9")])
+    inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
+    assert inst.run(repo="X", slot=2, force=True) == 0
+    err = capsys.readouterr().err
+    assert "강제 인계" in err and "이전 세션이 하던 것" in err
+    assert "보유 작업 폴더: work/X_2" in err
+    assert pool.bind_calls == ["work/X_2"]
+
+
+def test_closed_record_enters_without_asking(bootstrap, tmp_path, capsys):
+    """종료 기록이 남은 자리(idle)는 묻지 않는다 — 열림 기록이 없기 때문이다."""
+    board = _FakeBoard(anchor_pm_home=None, protected=[])
+    pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="idle", session="")])
+    inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
     assert inst.run(repo="X", slot=2) == 0
+
+
+def test_a_handed_off_slot_reenters_without_force(bootstrap, tmp_path, capsys):
+    """핸드오프가 닫고 간 자리(대여는 유지·session 비움)는 `--force` 없이 그대로 이어진다.
+
+    핸드오프가 슬롯 기록을 닫지 않으면 매 세션이 강제 확인을 요구한다 — 그 자리를 닫았는지
+    재는 축이다(대여는 그대로라 state 는 leased 다)."""
+    board = _FakeBoard(anchor_pm_home=None, protected=[])
+    pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="leased", session="")])
+    inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
+
+    assert inst.run(repo="X", slot=2) == 0
+    assert "열린 세션 기록" not in capsys.readouterr().err
+    assert pool.bind_calls == ["work/X_2"]
 
 
 def test_readonly_slot_bind_refused(bootstrap, tmp_path, capsys):
@@ -378,12 +424,15 @@ def test_creating_slot_not_exempted_by_readonly(bootstrap, tmp_path, capsys):
 
 
 def test_leased_and_idle_states_not_treated_as_creating(bootstrap, tmp_path, capsys):
-    """creating 검사 sensitivity — idle·leased(내 세션 재개)는 creating 아님(기존 거동 회귀 유지)."""
+    """creating 검사 sensitivity — idle·leased(열린 기록·강제 인계)는 creating 아님.
+
+    두 경우 다 creating 차단 문구가 아니어야 한다 — 열린 기록은 `--force` 로 통과하고,
+    idle 은 묻지 않고 통과한다."""
     board = _FakeBoard(anchor_pm_home=None, protected=[])
     for state, session in (("idle", ""), ("leased", "X_2")):
         pool = _FakePool(leases=[_LeaseEntry("work/X_2", state=state, session=session)])
         inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
-        assert inst.run(repo="X", slot=2) == 0, f"{state} 를 creating 으로 오차단"
+        assert inst.run(repo="X", slot=2, force=True) == 0, f"{state} 를 creating 으로 오차단"
 
 
 # ── 5. main-참조(보호브랜치/origin-추적) = 진입 거부 (T-0360·⑧·§F9·부분 dump 금지) ──
@@ -643,110 +692,41 @@ def test_record_vs_live_old_pool_no_compare_failsoft(bootstrap, tmp_path, capsys
     assert inst.run(repo="X", slot=2) == 0
 
 
-# ── 7. 홈 슬롯 예외 — 작업 슬롯 전제 검사(4·5)는 PM 홈에 걸지 않는다 ─────────────
+# ── 7. 작업 슬롯 전제 검사(4·5)는 모든 슬롯 행에 걸린다 ──────────────────────
 #
-# 슬롯을 하나만 쓰는 홈도 장부의 N=1 행(`slot="."`)이라 0단계가 그 행을 검사 대상으로 본다.
-# 4(main-참조 거부)·5(기록↔live)는 "작업 슬롯에서 보호 브랜치에 커밋" 을 막는 검사인데, PM 홈은
-# board/wiki 가 사는 트리라 그 브랜치가 main/master 인 것이 정상 채택자 형상이다(홈의 보호는 push
-# 보호 훅). 배제하지 않으면 채택자의 **첫 부트스트랩**이 rc 1 로 막힌다. 배제 판별은 풀이 이름
-# 붙인 상수(`HOME_SLOT`)와의 값 비교 하나뿐이고, 작업 슬롯엔 두 검사가 그대로 발화한다(과배제 0).
+# 예외는 readonly 하나뿐이다. 장부에 PM 홈 자신을 가리키는 행이 없으므로(T-0919 로 그 등재
+# 경로를 삭제) "홈이냐 아니냐" 로 갈리는 자리도 없다.
 
 
-def test_home_slot_exempt_from_main_reference_reject(bootstrap, tmp_path):
-    """홈 행(`HOME_SLOT`)은 보호 브랜치 직접 체크아웃이어도 통과 · 같은 풀의 작업 슬롯은 거부."""
+def test_work_slot_keeps_both_gates(bootstrap, tmp_path):
+    """작업 슬롯은 4(main-참조)·5(기록↔live)가 그대로 발화한다 — 배제 삭제 전후 불변."""
     board = _FakeBoard(anchor_pm_home=None, protected=["main", "master"])
-    pool = _FakePool(branch="master")
-    inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
-    home_lease = _LeaseEntry(pool.HOME_SLOT, state="leased", session="X_1")
-    assert inst._phase0_protected_reject(
-        pool, "X", pool.HOME_SLOT, "X_1", home_lease) == 0, (
-        "보호 브랜치 홈이 거부됐다 — 채택자 첫 부트스트랩이 막힌다")
-    work_lease = _LeaseEntry("work/X_2", state="leased", session="X_2")
-    assert inst._phase0_protected_reject(pool, "X", "work/X_2", "X_2", work_lease) == 1, (
-        "작업 슬롯의 main-참조 거부까지 배제됐다(과배제)")
-
-
-def test_home_slot_exempt_from_record_vs_live(bootstrap, tmp_path):
-    """홈 행은 기록↔live diverged 여도 통과(compare 미호출) · 같은 풀의 작업 슬롯은 FAIL-LOUD."""
-    board = _FakeBoard(anchor_pm_home=None, protected=[])
     cmp = _FakeCompare(fail_loud=True, head_relation="diverged", branch_match=False,
                        recorded={"branch": "a1", "head": "aaa"},
                        live={"branch": "master", "head": "bbb"})
-    pool = _FakePool(compare_result=cmp)
+    pool = _FakePool(branch="master", compare_result=cmp)
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
-    assert inst._phase0_record_vs_live(pool, pool.HOME_SLOT) == 0, (
-        "홈 행이 기록↔live 로 막혔다 — 4 만 배제하면 브랜치를 옮긴 홈이 여기서 다시 막힌다")
-    assert pool.compare_calls == [], "배제인데 compare_slot_git 을 호출했다"
-    assert inst._phase0_record_vs_live(pool, "work/X_2") == 1, (
-        "작업 슬롯의 기록↔live 거부까지 배제됐다(과배제)")
+    lease = _LeaseEntry("work/X_2", state="leased", session="X_2")
+
+    assert inst._phase0_protected_reject(pool, "X", "work/X_2", "X_2", lease) == 1
+    assert inst._phase0_record_vs_live(pool, "work/X_2") == 1
     assert pool.compare_calls == ["work/X_2"]
 
 
-def test_home_slot_exception_consumes_pool_constant(bootstrap, tmp_path):
-    """배제 판별은 **풀이 이름 붙인 상수**와의 값 비교다 — `"."` 리터럴 하드코딩이 아니다.
-
-    상수 값을 바꾼 풀에서는 그 값이 배제되고 `"."` 은 검사 대상이 된다(재구현/추론 0)."""
-    class _RenamedHomePool(_FakePool):
-        HOME_SLOT = "home-root"
-
-    board = _FakeBoard(anchor_pm_home=None, protected=["master"])
-    pool = _RenamedHomePool(branch="master")
-    inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
-    lease = _LeaseEntry("home-root", state="leased", session="X_1")
-    assert inst._phase0_protected_reject(pool, "X", "home-root", "X_1", lease) == 0
-    assert inst._phase0_protected_reject(
-        pool, "X", ".", "X_1", _LeaseEntry(".", state="leased", session="X_1")) == 1
-
-
-def test_old_pool_without_home_slot_constant_keeps_gates(bootstrap, tmp_path):
-    """상수 부재 풀(구버전·mock)은 배제가 성립하지 않아 두 검사가 종전대로 돈다(과배제 0)."""
-    class _NoConstantPool(_FakePool):
-        HOME_SLOT = None  # 상수 미노출 풀 — getattr 기본값과 같은 자리.
-
-    board = _FakeBoard(anchor_pm_home=None, protected=["master"])
-    cmp = _FakeCompare(fail_loud=True, head_relation="diverged")
-    pool = _NoConstantPool(branch="master", compare_result=cmp)
-    inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
-    lease = _LeaseEntry(".", state="leased", session="X_1")
-    assert inst._phase0_protected_reject(pool, "X", ".", "X_1", lease) == 1
-    assert inst._phase0_record_vs_live(pool, ".") == 1
-
-
-def test_old_pool_without_home_slot_constant_keeps_gates_for_none_slot_id(bootstrap, tmp_path):
-    """상수 부재 풀 + `slot_id=None` — 상수 부재와 슬롯 값 None 을 접으면 홈으로 오인된다."""
-    class _NoConstantPool(_FakePool):
-        # 상수를 실제로 미노출 — getattr 이 기본값(None) 으로 떨어지는 구버전 풀 재현.
-        @property
-        def HOME_SLOT(self):
-            raise AttributeError("HOME_SLOT")
-
-    board = _FakeBoard(anchor_pm_home=None, protected=["master"])
-    cmp = _FakeCompare(fail_loud=True, head_relation="diverged")
-    pool = _NoConstantPool(branch="master", compare_result=cmp)
-    inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
-    lease = _LeaseEntry(None, state="leased", session="X_1")
-    assert inst._phase0_is_home_slot(pool, None) is False
-    assert inst._phase0_protected_reject(pool, "X", None, "X_1", lease) == 1
-    assert inst._phase0_record_vs_live(pool, None) == 1
-
-
-def test_registered_home_bare_bootstrap_passes_phase0_and_dumps(
+def test_registered_slot_bare_bootstrap_passes_phase0_and_dumps(
         bootstrap, tmp_path, monkeypatch, capsys):
-    """등록된 홈(N=1 행)의 첫 부트스트랩 — 보호 브랜치·미기록 스냅이어도 rc 0 + 정상 dump.
-
-    채택자 pristine 재현의 hermetic 짝: `pm_import` 직후 홈은 `master` 체크아웃이고 슬롯 git 스냅이
-    없다. 두 검사가 걸리면 out-of-box 첫 실행이 rc 1 로 막힌다(이 티켓 §PM 비준)."""
+    """작업 폴더 1개인 홈의 부트스트랩 — 그 슬롯이 정상이면 rc 0 + 정상 dump."""
     monkeypatch.setattr(bootstrap, "REPO", tmp_path)
-    seed_home_slot(tmp_path, repo="X", session="X_1")
+    seed_slot(tmp_path, repo="X", session="X_1", slot="work/X_1")
     board = _FakeBoard(anchor_pm_home=None, protected=["main", "master"])
-    cmp = _FakeCompare(fail_loud=True, head_relation="diverged", branch_match=False)
-    pool = _FakePool(leases=[_LeaseEntry(".", state="leased", session="X_1")],
-                     branch="master", compare_result=cmp)
+    pool = _FakePool(leases=[_LeaseEntry("work/X_1", state="leased", session="X_1")],
+                     branch="feature-x")
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
-    rc = inst.run(repo="X", slot=1)
+
+    rc = inst.run(repo="X", slot=1, force=True)   # 열린 기록을 이어받는다(사용자 응답)
+
     cap = capsys.readouterr()
-    assert rc == 0, f"등록된 홈의 첫 부트스트랩이 막혔다: {cap.err}"
+    assert rc == 0, f"작업 폴더가 있는 홈의 부트스트랩이 막혔다: {cap.err}"
     assert cap.out != "", "rc 0 인데 dump 가 비었다"
     assert "0단계" not in cap.err
-    assert pool.bind_calls == ["."], "홈 행 경로(장부 값)로 바인딩하지 않았다"
-
+    assert pool.bind_calls == ["work/X_1"], "장부 행 값으로 바인딩하지 않았다"

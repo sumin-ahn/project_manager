@@ -64,7 +64,8 @@ class FakeBoard:
     def areas_append(self, prefix, area, owner, *, repo=None, git=None,
                      test_cmd=None, base=None, protected=None, area_owner=None):
         self.append_calls.append({"prefix": prefix, "repo": repo, "git": git,
-                                  "base": base, "area_owner": area_owner})
+                                  "base": base, "owner": owner,
+                                  "area_owner": area_owner})
 
     def _repo_protected(self, repo):
         return ["main", "master", "develop"]
@@ -691,11 +692,15 @@ def test_real_clone_sets_default_branch_upstream_tracking(pc, tmp_path):
 # 뿐이라, remedy 는 그것만 가리켜야 한다(플래그 통일 wave 로 근본 소멸·ADR-0057).
 
 
-def _bind_tmp_repo_for_owner(pc, monkeypatch, tmp_path):
-    """`pc.REPO` 를 tmp 로 재지정 — `_default_session` 이 실 루트 local.conf/리스장부를
-    읽지 않게(hermetic). local.conf·리스장부 둘 다 부재 → `_default_session()` None(미바인딩)."""
+def _bind_tmp_repo_for_owner(pc, monkeypatch, tmp_path, *, git_email=None):
+    """`pc.REPO` 를 tmp 로 재지정 — owner 축(`identity.user` > git user.email)을 hermetic 하게 만든다.
+
+    local.conf 부재 → `identity.user` 없음. git user.email 은 `git_email` 로 명시 주입한다
+    (환경의 실 git 설정이 판정에 새지 않게).
+    """
     (tmp_path / ".project_manager").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(pc, "REPO", tmp_path)
+    monkeypatch.setattr(pc, "_git_config_email", lambda: git_email)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
 
@@ -704,7 +709,8 @@ def test_repo_add_owner_unresolved_hint_omits_nonexistent_session_flag(
         pc, tmp_path, monkeypatch, capsys):
     """owner 미해소 remedy 힌트가 존재하지 않는 `--session` 을 더 이상 안내하지 않는다
     (T-0313 pm_config 분 fix) — `repo add` 의 실 정체성 플래그(`--owner`)만 안내한다.
-    부작용 0(clone/등록 안 함)도 함께 확인한다.
+    부작용 0(clone/등록 안 함)도 함께 확인한다. 미해소 조건은 `identity.user`·git user.email
+    둘 다 없음이다(슬롯 세션은 이 축의 입력이 아니다).
     """
     _bind_tmp_repo_for_owner(pc, monkeypatch, tmp_path)
     board = FakeBoard(registered=())
@@ -719,6 +725,25 @@ def test_repo_add_owner_unresolved_hint_omits_nonexistent_session_flag(
     assert "owner 미해소" in err
     assert "--session" not in err       # T-0313: 존재하지 않는 플래그 안내 제거
     assert "--owner" in err             # 실 존재하는 유일한 정체성 플래그로 안내
+
+
+def test_repo_add_owner_comes_from_the_user_identity_not_a_slot_session(
+        pc, tmp_path, monkeypatch):
+    """작업 폴더가 하나도 없는 fresh 홈에서도 `repo add` 가 owner 를 채운다 — 값은 사람 축이다.
+
+    등록은 어느 슬롯에서 쳤는지와 무관하고, 첫 등록 시점엔 슬롯이 아예 없다. owner 의 단일
+    진실은 `identity.user`(없으면 git user.email)라 슬롯 행 0개에서도 해소된다.
+    """
+    _bind_tmp_repo_for_owner(pc, monkeypatch, tmp_path, git_email="me@example.invalid")
+    board = FakeBoard(registered=())
+    gitr = GitFake()
+
+    rc = pc.cmd_repo_add(
+        _args(owner=None), board=board, clone_runner=gitr, repos_dir=tmp_path / ".repos",
+    )
+
+    assert rc == 0
+    assert [call["owner"] for call in board.append_calls] == ["me@example.invalid"]
 
 
 def test_repo_add_owner_explicit_bypasses_unresolved_session(pc, tmp_path, monkeypatch):

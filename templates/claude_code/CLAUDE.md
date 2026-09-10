@@ -32,8 +32,8 @@
 
 세션명 canonical은 `<repo>_<N>`이다. 식별 우선순위는 `--repo`/`--slot` >
 `$PM_SESSION_NAME` > 활성 슬롯 lease가 정확히 1개면 그 세션(단일-lease 유도) > 미해소다.
-미해소 귀속 쓰기는 fail-loud한다. lease 행이 0개인 홈은 아직 등록 전이며 `/pm-update` 1회가
-등록 repo 1개인 홈을 첫 슬롯 행 `<repo>_1` 로 등록한다.
+미해소 귀속 쓰기는 fail-loud한다. lease 행이 0개인 홈은 아직 작업 폴더가 없는 것이며
+`pm-config worktree add <repo> --user-ack <repo>` 로 먼저 만든다.
 
 외부 의존이 없고 다른 세션이 claim하지 않은 ticket을 고른다:
 
@@ -57,7 +57,7 @@ ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크**만
 - `areas.md`(공유 레지스트리) prefix 등록 + `local.conf`(per-clone·git-ignored) 생성 + `pm_state.md` 로컬 생성.
 - 이후 `board.py new` 는 영역별 네임스페이스 `T-pay-NNN` 으로 발행한다.
 - **3계층:** 엔진(upstream) / 공유상태(main: board·status·log·ADR) / per-clone 로컬(pm_state·local.conf).
-- **repo 1개:** `pm-config init`(prefix 없이) → areas 행·홈 슬롯 행·pre-push 회귀 훅·`T-NNNN` setup. 등록 전에도 `board.py new` 는 동작하지만 귀속 조작(claim 등)은 슬롯 행이 있어야 한다.
+- **repo 1개:** `pm-config init`(prefix 없이) → areas 행·pre-push 회귀 훅·`T-NNNN` setup. 그 다음 `pm-config worktree add <repo> --user-ack <repo>` 로 작업 폴더를 만든다 — 등록 전에도 `board.py new` 는 동작하지만 귀속 조작(claim 등)은 작업 폴더 행이 있어야 한다.
 
 ## 작업이 끝나면
 

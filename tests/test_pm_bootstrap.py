@@ -21,6 +21,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from _slot_seed import fake_slot_path
+
 
 def _idle_lease(slot: str):
     """0단계(T-0351) 실재 검사 통과용 idle 리스 시드 — phase-0 는 slot/state/session/extra 만 읽는다."""
@@ -243,6 +245,10 @@ class FakePool:
     def alloc(self, repo, *, branch=None, resume=None, **_kw):
         return _FakeLease(self._slot, repo)
 
+    def lease_is_open(self, lease):
+        """열림 판정은 엔진 규칙 그대로 — 열림 기록(leased + session)이면 열림."""
+        return getattr(lease, "state", None) == "leased" and bool(getattr(lease, "session", ""))
+
     def list_leases(self):
         # 0단계 실재 검사(T-0351)가 통과하도록 이 슬롯을 idle 리스로 시드(회귀 0·idle=점유 아님).
         return [_idle_lease(self._slot)]
@@ -251,7 +257,7 @@ class FakePool:
         return self._branch
 
     def slot_path(self, slot):
-        return Path("/tmp/multipm") / slot
+        return fake_slot_path(slot)
 
     def slot_status(self, slot, *, git_runner=None):
         self.slot_status_calls.append(slot)
@@ -264,6 +270,10 @@ class FakePoolNoStatus:
     def bind_slot(self, slot, repo, session, *, git_runner=None):
         return _FakeLease(slot, repo)
 
+    def lease_is_open(self, lease):
+        """열림 판정은 엔진 규칙 그대로 — 열림 기록(leased + session)이면 열림."""
+        return getattr(lease, "state", None) == "leased" and bool(getattr(lease, "session", ""))
+
     def list_leases(self):
         # 0단계 실재 검사(T-0351) 통과용 idle 시드 — 이 풀은 lean(work/A_1) 테스트가 쓴다.
         return [_idle_lease("work/A_1")]
@@ -272,7 +282,7 @@ class FakePoolNoStatus:
         return "a5"
 
     def slot_path(self, slot):
-        return Path("/tmp/multipm") / slot
+        return fake_slot_path(slot)
 
 
 def _slot_status_obj(wp, *, upstream="origin/a5", upstream_ok=True, submodules=None):

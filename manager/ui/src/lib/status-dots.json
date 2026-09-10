@@ -1,10 +1,9 @@
 {
-  "note": "상태 점 + 변경 동작 판정 — 위에서부터 첫 일치가 이긴다. 값은 status --json 의 필드 그대로이고 관리자 쪽 판정 코드는 없다. readonly 가 맨 앞인 이유: 실제 `worktree add --readonly` 슬롯은 leased·pid 0·alive false 라 순서가 없으면 전부 '회수 대기' 빨강으로 오표시된다. actions 는 그 행에서 여는 동작이다 — change=변경 동작 가능 · disabled=비활성(사유 표시) · refresh=재조회만. 회수 대기(leased·alive false)가 change 인 이유: 그 행을 적은 세션이 이미 끝난 것이라(그 창이 닫혔다) 잡고 있는 주체가 없고, 그 행의 반납이 대여의 역이다. 회수를 기다릴 수도 있다(다음 bootstrap).",
+  "note": "상태 점 + 변경 동작 판정 — 위에서부터 첫 일치가 이긴다. 값은 status --json 의 필드 그대로이고 관리자 쪽 판정 코드는 없다. readonly 가 맨 앞인 이유: 실제 `worktree add --readonly` 슬롯은 leased 이지만 세션이 없어 alive false 라, 순서가 없으면 '닫힘'으로 뭉뚱그려진다. alive = 열린 기록이 있고 그에 대응하는 종료 기록이 없음(프로세스 조회 아님). actions 는 그 행에서 여는 동작이다 — change=변경 동작 가능 · disabled=비활성(사유 표시) · refresh=재조회만. 닫힘(종료 기록 있음)이 change 인 이유: 잡고 있는 주체가 없어 그 행의 반납·변경이 안전하다.",
   "rules": [
     { "field": "role", "equals": "readonly", "dot": "blue", "label": "readonly", "actions": "refresh" },
     { "field": "state", "equals": "idle", "dot": "gray", "label": "아이들", "actions": "change" },
-    { "field": "pid", "equals": 0, "dot": "gray", "label": "아이들", "actions": "change" },
     { "field": "alive", "equals": true, "dot": "orange", "label": "작업 중", "actions": "disabled" },
-    { "field": "alive", "equals": false, "dot": "red", "label": "회수 대기", "actions": "change" }
+    { "field": "alive", "equals": false, "dot": "gray", "label": "닫힘", "actions": "change" }
   ]
 }

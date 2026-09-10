@@ -1,10 +1,19 @@
 {
-  "note": "설정 행 접기 판정 — 화면(SettingsTab.tsx)과 파이썬 테스트(tests/test_manager_settings_rule.py)가 같은 이 파일을 읽는다. 네 축이 전부 참인 행만 접힌다: 값 없음(fold.value) · 필수 아님(fold.required) · 기본값 없음(fold.default) · 배지 없음(fold.marks 목록 어디에도 그 키가 없음). 접힘은 숨김이 아니다 — 그룹 끝의 '설정 안 함 N개'를 펼치면 같은 행이 그대로 나온다. row_unit_family 는 칸을 한 줄로 묶어 접는 키군 이름이고(위임: 역할×티어 한 줄), 그 행은 세 칸이 모두 접힐 때만 접힌다. 값은 엔진 레지스트리에 실재하는 패턴 키 이름이어야 한다(테스트가 실 산출과 대조).",
+  "note": "설정 행 접기 판정 — 화면(SettingsTab.tsx)과 파이썬 테스트(tests/test_manager_settings_rule.py)가 같은 이 파일을 읽는다. 네 축이 전부 참인 행만 접힌다: 값 없음(fold.value) · 필수 아님(fold.required) · 기본값 없음(fold.default) · 배지 없음(fold.marks 목록 어디에도 그 키가 없음). 접힘은 숨김이 아니다 — 그룹 끝의 '설정 안 함 N개'를 펼치면 같은 행이 그대로 나온다. row_unit_family 는 칸을 한 줄로 묶어 접는 키군 이름이고(위임: 역할×티어 한 줄), 그 행은 세 칸이 모두 접힐 때만 접힌다. 값은 엔진 레지스트리에 실재하는 패턴 키 이름이어야 한다(테스트가 실 산출과 대조). unset_hint 는 값을 비웠을 때 칸에 뜨는 문구다 — 기본값이 있으면 with_default 의 {default} 자리에 그 값이 들어가고(안 써도 그 값이 적용된다), 없으면 none 이 그대로 뜬다.",
   "fold": {
     "value": "",
     "required": false,
     "default": null,
-    "marks": ["missing_required", "legacy", "unknown", "missing_for_latest"]
+    "marks": [
+      "missing_required",
+      "legacy",
+      "unknown",
+      "missing_for_latest"
+    ]
   },
-  "row_unit_family": "delegate.<role>[.hard][.fallback].{harness,model,reasoning}"
+  "row_unit_family": "delegate.<role>[.hard][.fallback].{harness,model,reasoning}",
+  "unset_hint": {
+    "with_default": "{default} (안 쓰면 이 값)",
+    "none": "설정 안 함"
+  }
 }

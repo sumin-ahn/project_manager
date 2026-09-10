@@ -2516,7 +2516,7 @@ except Exception as exc:  # noqa: BLE001 — 직접 CLI는 import 단계 skew도
 UNREGISTERED_SESSION_ABORT = (
     "[중단] 세션 미해소 — 활성 슬롯이 여럿이거나 바인딩이 없다. 귀속 조작은 "
     "`--repo <repo> --slot <N>` 로 세션을 명시하라 (예: `--repo project_manager --slot 1`). "
-    + identity_args.UNREGISTERED_HOME_REMEDY
+    + identity_args.NO_WORK_FOLDER_REMEDY
 )
 
 
@@ -9049,7 +9049,7 @@ def _livegate_cwd(override: str | None = None, session: str | None = None) -> st
         "여럿이거나 이 홈이 아직 슬롯 행으로 등록되지 않았다). PM 홈으로 침묵 폴백하면 "
         "tests 없는 트리에서 broken slot 을 수집해 false fail 이 되므로 거부한다. "
         "`--repo <repo> --slot <N>` 로 슬롯을 명시하거나 `--cwd <worktree 절대경로>` 로 직접 "
-        f"지정하라 (예: `--repo project_manager --slot 1`). {identity_args.UNREGISTERED_HOME_REMEDY}"
+        f"지정하라 (예: `--repo project_manager --slot 1`). {identity_args.NO_WORK_FOLDER_REMEDY}"
     )
 
 
@@ -12015,12 +12015,12 @@ def cmd_init(args: argparse.Namespace) -> int:
         idfmt = f"T-{issued}-NNN" if issued else "T-NNNN (none 카테고리)"
         id_line = f"`board.py new` 로 {idfmt} 발행"
     print(INIT_GUIDE.format(mode=mode, id_line=id_line))
-    # 이 도구는 lease 장부의 writer 가 아니다(단일 writer 규약) — 홈을 첫 슬롯 행으로 등록하는
-    # 것은 `pm-config init` 이 한다. 직접 호출한 채택자가 등록 없이 남지 않도록 상태만 알린다.
+    # 이 도구는 lease 장부의 writer 가 아니다(단일 writer 규약) — 작업 폴더를 만드는 것은
+    # `pm-config worktree add` 다. 채택자가 그 다음 순서를 모른 채 남지 않도록 상태만 알린다.
     if not identity_args.leased_sessions(LEASES_FILE):
         print(
-            "  ⚠ 이 홈은 아직 슬롯 행이 없다 — 귀속 조작(claim·complete)이 세션 미해소로 "
-            "중단된다. `pm-config init`(또는 `pm-update`)을 1회 실행해 등록을 마쳐라.",
+            "  ⚠ 이 홈은 아직 작업 폴더가 없다 — 귀속 조작(claim·complete)이 세션 미해소로 "
+            "중단된다. `pm-config worktree add <repo> --user-ack <repo>` 로 먼저 만들어라.",
             file=sys.stderr,
         )
     return 0

@@ -264,7 +264,7 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 세션명·ticket prefix는 저장하지 않고 다음 순서로 유도한다:
 `명시(--repo/--slot·--prefix) > $PM_SESSION_NAME(env·CLAUDE_SESSION_NAME alias) > lease 장부에 leased 슬롯이 정확히 1개면 그 세션(count-based 유도)`. prefix 는 세션 repo → areas 레지스트리로 해소한다.
 
-lease 장부에 행이 하나도 없는 홈은 **아직 슬롯으로 등록되지 않은 것**이라 귀속 조작이 fail-loud 한다. `/pm-update` 를 1회 실행하면 등록 repo 가 1개인 홈이 자기 자신을 첫 슬롯 행(`<repo>_1`)으로 등록한다(신규 채택은 `pm-config init` 이 그 자리에서 등록한다).
+lease 장부에 행이 하나도 없는 홈은 **아직 작업 폴더가 없는 것**이라 귀속 조작이 fail-loud 한다. `pm-config worktree add <repo> --user-ack <repo>` 로 작업 폴더를 먼저 만든다(순서: 작업 폴더 생성 → 부트스트랩).
 
 `local.conf session=`/`prefix=` 폴백은 폐지되었다 — 진실은 lease 장부와 areas 레지스트리다. 기존 채택자는 conf 에서 두 키를 제거하고 `board init` 재실행으로 이 clone 의 repo 행 등록을 갱신한다. 모호(leased ≥2·무명시)한 귀속 조작(claim/complete/unclaim/release/new owner)은 **fail-loud**하며 `--repo <repo> --slot <N>` 명시를 요구한다. 조회 whoami/status는 `(비바인딩)`을 표시한다. 동적 세션 목록은 [`pm_state.md`](pm_state.md) §"세션 식별 (현재까지 사용된 이름)"에 있고 `/pm-handoff`가 갱신한다.
 

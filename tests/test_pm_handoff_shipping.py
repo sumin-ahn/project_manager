@@ -29,7 +29,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from _home_slot import HOME_SESSION, HOME_SLOT, seed_areas, seed_home_slot
+from _slot_seed import SESSION, SLOT, seed_areas, seed_slot
 
 from _repo_owned_inventory import TRACKED_ONLY, repo_owned_paths
 
@@ -49,15 +49,15 @@ def _run_handoff(inst, **kw):
 
     이 모듈의 축은 승인 게이트가 아니다(그 축은 ``tests/test_pm_handoff_user_ack.py``가
     소유한다). 승인 대상값은 task > 그 슬롯의 장부 정체성이다 — pm_state 명시 주입 인스턴스는
-    run() 이 슬롯 자동해소를 건너뛰므로 등록된 홈 슬롯을 실어 준다.
+    run() 이 슬롯 자동해소를 건너뛰므로 등록된 슬롯 행을 실어 준다.
     """
     if (kw.get("task") is None and "worktree_slot" not in kw
             and getattr(inst, "_pm_state_file_explicit", False)):
-        kw["worktree_slot"] = HOME_SLOT
+        kw["worktree_slot"] = SLOT
     if "user_ack" not in kw:
         slot = kw.get("worktree_slot")
         kw["user_ack"] = kw.get("task") or (
-            slot.rsplit("/", 1)[-1] if slot and slot != HOME_SLOT else HOME_SESSION
+            slot.rsplit("/", 1)[-1] if slot else SESSION
         )
     return inst.run(**kw)
 
@@ -78,7 +78,7 @@ def _registered_home(hf, tmp_path, monkeypatch):
     """기본 형상 = 등록된 홈(N=1 슬롯 행) — 정체성·회귀 cwd 가 이 장부 행에서 온다."""
     monkeypatch.setattr(hf, "REPO", tmp_path)
     seed_areas(tmp_path)
-    seed_home_slot(tmp_path)
+    seed_slot(tmp_path)
 
 
 # ── git_runner stub 빌더 ──────────────────────────────────────────────────────

@@ -207,7 +207,7 @@ def test_task_rows_come_from_the_engine(copied_home):
     tasks = runner.status(copied_home)["tasks"]
 
     assert [task["name"] for task in tasks] == ["demo"]
-    assert tasks[0]["pid"] == 0 and tasks[0]["alive"] is False
+    assert tasks[0]["alive"] is False and "pid" not in tasks[0]
 
 
 CONCURRENT_PROBE = """

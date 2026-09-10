@@ -1,7 +1,7 @@
 import { X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { ApplyDefaults, ApplyStep, Bridge, BridgeError } from "../api";
-import { isError } from "../api";
+import { chooseFolder, isError } from "../api";
 
 /**
  * 새 프로젝트 적용 — 일곱 값을 받아 `pm_import.py --new` → `pm-config init` → 등록을 부른다.
@@ -65,7 +65,7 @@ export default function NewProjectDialog({ bridge, onClose, onApplied }: {
   }, [bridge]);
 
   const pick = useCallback(async () => {
-    const picked = await bridge.pick_folder();
+    const picked = await chooseFolder(bridge);
     if (isError(picked) || picked.path === null) return;
     setDest(picked.path);
     setName(folderName(picked.path));

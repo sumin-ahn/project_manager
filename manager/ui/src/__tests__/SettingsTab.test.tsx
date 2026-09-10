@@ -95,6 +95,8 @@ function openGroup(group: string) {
 }
 
 afterEach(cleanup);
+// 보기 선택은 다음 실행까지 남는 값이라 테스트 사이로 새면 안 된다.
+afterEach(() => window.localStorage.clear());
 
 describe("항목 목록 구성", () => {
   it("패턴 키군은 전개된 실명으로 펼쳐지고 conf 에만 있는 키는 따로 모인다", () => {
@@ -235,9 +237,13 @@ describe("다섯 목록의 배너와 행 표시", () => {
     await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1));
     // 버튼은 사본이 "표준과 다름" 이라 한 행에만 있다 — 기본값 없는 키도, 판정 밖 키도 없다.
     expect(screen.getByTestId("conf-ctx.stop_pct").querySelector("button")).toBeNull();
-    expect(screen.getByTestId("conf-ctx.window_tokens")).toHaveTextContent("기본 200000");
+    // 기본값은 따로 선 칸이 아니라 빈 칸 안에 있다 — 안 쓰면 무슨 값이 되는지가 칸에서 읽힌다.
+    expect(screen.getByLabelText("ctx.window_tokens"))
+      .toHaveAttribute("placeholder", "200000 (안 쓰면 이 값)");
     openGroup("project");
-    fireEvent.click(screen.getByTestId("folded-project"));       // 접힘은 숨김이 아니다
+    fireEvent.click(screen.getByTestId("show-unset"));           // 접힘은 숨김이 아니다
+    expect(screen.getByLabelText("project.name"))
+      .toHaveAttribute("placeholder", "설정 안 함");
     expect(screen.getByTestId("conf-project.name").querySelector("button")).toBeNull();
   });
 });
@@ -338,7 +344,7 @@ describe("위임 절", () => {
   it("하네스가 비면 고를 목록이 없고 그 자리에 무엇을 먼저 고를지 나온다", () => {
     mounted(makeBridge(), false, null, settingsEntry({}));   // 값이 하나도 없는 사본
     openGroup(DELEGATE.group);
-    fireEvent.click(screen.getByTestId(`folded-${DELEGATE.group}`));
+    fireEvent.click(screen.getByTestId("show-unset"));
 
     const reasoning = screen.getByLabelText(REASONING_CELL.key) as HTMLSelectElement;
     expect([...reasoning.querySelectorAll("option")].filter((option) => option.value !== ""))
@@ -408,15 +414,31 @@ describe("설정 안 함 접기", () => {
     expect(screen.getByTestId(`folded-${DELEGATE.group}`)).toHaveTextContent("설정 안 함");
   });
 
-  it("접힌 절을 펼치면 지금 행이 그대로 나온다", () => {
+  it("보기를 켜면 접혔던 행이 그대로 나오고 절마다 다시 누르지 않는다", () => {
     mounted(makeBridge());
     openGroup(DELEGATE.group);
     const other = CELLS.find((cell) => rowNameOf(cell.key) !== ROW_NAME)!;
 
-    fireEvent.click(screen.getByTestId(`folded-${DELEGATE.group}`));
+    fireEvent.click(screen.getByTestId("show-unset"));
 
     expect(screen.getByTestId(`role-${rowNameOf(other.key)}`)).toBeInTheDocument();
     expect(screen.getByLabelText(other.key)).toBeInTheDocument();
+    expect(screen.queryByTestId(`folded-${DELEGATE.group}`)).toBeNull();
+
+    // 다른 절로 옮겨도 켠 상태가 따라간다 — 같은 조작을 반복하지 않는다.
+    openGroup("project");
+    expect(screen.queryByTestId("folded-project")).toBeNull();
+  });
+
+  it("보기 선택은 다음에 열 때도 유지된다", () => {
+    mounted(makeBridge());
+    openGroup(DELEGATE.group);
+    fireEvent.click(screen.getByTestId("show-unset"));
+    cleanup();
+
+    mounted(makeBridge());
+    openGroup(DELEGATE.group);
+    expect((screen.getByTestId("show-unset") as HTMLInputElement).checked).toBe(true);
     expect(screen.queryByTestId(`folded-${DELEGATE.group}`)).toBeNull();
   });
 });

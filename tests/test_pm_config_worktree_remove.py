@@ -174,7 +174,7 @@ def _seed(wp, *leases, tree=True):
 
 def _lease(wp, *, slot, repo, session="s1", pid=None, state="leased"):
     return wp.Lease(slot=slot, repo=repo, session=session,
-                    pid=os.getpid() if pid is None else pid, started="t", state=state)
+                    started="t", state=state)
 
 
 def test_remove_slot_normal_removes_and_deletes_merged_branch(wp):
@@ -537,26 +537,6 @@ def test_remove_slot_excludes_protected_bare_head_and_other_slot_base(wp, monkey
         assert expected_reason in result.branch_reason, (branch, result.branch_reason)
         assert not git.did("branch", "-d"), f"{branch} 에 삭제를 시도했다"
         assert not any(c[:2] == ["branch", "-D"] for c in git.calls)
-
-
-def test_remove_slot_home_slot_is_refused_without_touching_repo(wp, proj):
-    """AT-006 — PM 홈 자신을 가리키는 행 제거는 거부되고 REPO 디렉터리가 그대로 남는다.
-
-    `slot_path(HOME_SLOT)` 는 REPO 자신이다. 제거 *전에* 트리를 지우는 처방을 택했다면 이
-    호출이 PM 홈을 통째로 날린다 — 그 처방을 기각한 근거의 회귀 박제다. 등록 조회가 판정
-    입력이고(홈은 bare 의 worktree 가 아니다) pool 슬롯 자리도 아니라 아무것도 지우지 않는다.
-    """
-    marker = proj / "keep-me.txt"
-    marker.write_text("home\n", encoding="utf-8")
-    _seed(wp, _lease(wp, slot=wp.HOME_SLOT, repo="A", state="idle"))
-    git = RemoveFakeGit(wp, slot=wp.HOME_SLOT, registered=False, head="main")
-
-    with pytest.raises(RuntimeError):
-        wp.remove_slot(wp.HOME_SLOT, git_runner=git)
-
-    assert proj.is_dir() and marker.is_file(), "PM 홈(REPO)이 지워졌다"
-    assert wp.slot_path(wp.HOME_SLOT) == proj      # 홈 슬롯 경로 = REPO 자신(전제 박제).
-    assert wp.list_leases()[0].slot == wp.HOME_SLOT  # 장부도 그대로.
 
 
 def test_remove_slot_removes_branch_before_ledger_sensitivity(wp):

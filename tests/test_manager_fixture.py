@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from _manager_home import git_required, make_pm_home, pm_config
+from _manager_home import git_required, make_bare_with_tags, make_pm_home, pm_config
 
 REPO = Path(__file__).resolve().parents[1]
 FIXTURES = REPO / "manager" / "ui" / "src" / "fixtures"
@@ -34,7 +34,12 @@ def sample() -> dict:
 @pytest.fixture(scope="module")
 def live(tmp_path_factory) -> dict:
     """그 자리에서 만든 실 PM 홈의 실 산출 — 무거운 절 둘 다 붙인다."""
-    home = make_pm_home(tmp_path_factory.mktemp("fixture-home") / "demo")
+    root = tmp_path_factory.mktemp("fixture-home")
+    bare = make_bare_with_tags(root / "remote")
+    home = make_pm_home(root / "demo")
+    # 슬롯 절은 작업 폴더가 있어야 행이 생긴다 — 실 명령으로 하나 만든다.
+    pm_config(home, "repo", "add", "app", "--git", str(bare))
+    pm_config(home, "worktree", "add", "app", "--user-ack", "app")
     pm_config(home, "task", "new", "demo")
     subprocess.run(
         [sys.executable, str(home / ".project_manager" / "tools" / "board.py"), "new",
@@ -88,14 +93,13 @@ def test_the_fixture_is_a_real_engine_document(sample):
 
 
 def test_the_fixture_carries_every_status_dot_case(sample):
-    """화면 테스트가 네 색을 전부 태울 수 있어야 한다(회색·주황·빨강·파랑)."""
+    """화면 테스트가 세 색과 닫힌 task 를 전부 태울 수 있어야 한다(회색·주황·파랑)."""
     slots = sample["slots"]
 
     assert any(slot["role"] == "readonly" for slot in slots)
     assert any(slot["state"] == "idle" for slot in slots)
     assert any(slot["state"] == "leased" and slot["alive"] for slot in slots)
-    assert any(slot["state"] == "leased" and not slot["alive"]
-               and slot["role"] != "readonly" for slot in slots)
+    assert any(not task["alive"] for task in sample["tasks"])       # 닫힌 기록
 
 
 @pytest.mark.parametrize("fixture", [FIXTURE, KEYS_FIXTURE])

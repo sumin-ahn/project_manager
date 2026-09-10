@@ -14,7 +14,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
-from _home_slot import HOME_SESSION, HOME_SLOT, seed_areas, seed_home_slot
+from _slot_seed import SESSION, SLOT, seed_areas, seed_slot
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -28,15 +28,15 @@ def _run_handoff(inst, **kw):
     소유한다). 승인 대상값은 task > 그 슬롯의 장부 정체성이다.
 
     pm_state 를 명시 주입한 hermetic 인스턴스는 run() 이 슬롯 자동해소를 건너뛰므로, 그 경우에만
-    등록된 홈 슬롯을 실어 준다 — bare 진입(자동해소 경로)을 검증하는 테스트는 그대로 둔다.
+    등록된 슬롯 행을 실어 준다 — bare 진입(자동해소 경로)을 검증하는 테스트는 그대로 둔다.
     """
     if (kw.get("task") is None and "worktree_slot" not in kw
             and getattr(inst, "_pm_state_file_explicit", False)):
-        kw["worktree_slot"] = HOME_SLOT
+        kw["worktree_slot"] = SLOT
     if "user_ack" not in kw:
         slot = kw.get("worktree_slot")
         kw["user_ack"] = kw.get("task") or (
-            slot.rsplit("/", 1)[-1] if slot and slot != HOME_SLOT else HOME_SESSION
+            slot.rsplit("/", 1)[-1] if slot else SESSION
         )
     return inst.run(**kw)
 
@@ -60,7 +60,7 @@ def _registered_home(handoff, tmp_path, monkeypatch):
     """
     monkeypatch.setattr(handoff, "REPO", tmp_path)
     seed_areas(tmp_path)
-    seed_home_slot(tmp_path)
+    seed_slot(tmp_path)
 
 
 def _make_handoff_missing_state(handoff, tmp_path: Path):
@@ -95,7 +95,7 @@ def test_handoff_skips_when_pm_state_absent(handoff, tmp_path):
     inst, _, missing_state = _make_handoff_missing_state(handoff, tmp_path)
     assert not missing_state.exists()  # 전제: pm_state 부재.
 
-    rc = _run_handoff(inst, 
+    rc = _run_handoff(inst,
         session_num=5,
         wave_summary="x",
         dry_run=False,
@@ -366,18 +366,19 @@ def test_run_idle_slot1_threads_to_leased_slot2(handoff, tmp_path, monkeypatch):
     assert "slot=`work/project_manager_2`" in log_file.read_text(encoding="utf-8")
 
 
-def test_run_home_row_threads_home_slot_and_repo_cwd(handoff, tmp_path):
-    """등록된 홈(N=1 행) → 실행 슬롯 = 홈 행의 `slot` · 회귀cwd = PM 홈 자신.
+def test_run_single_slot_row_threads_that_slot_and_its_cwd(handoff, tmp_path):
+    """슬롯 행 1개인 홈 → 실행 슬롯 = 그 행의 `slot` · 회귀cwd = 그 작업 폴더.
 
-    "행이 없으니 이 트리겠지" 폴백이 아니라 **행이 홈을 가리켜서** 같은 값이 나온다 — 값의
-    출처가 바뀌었고 결과는 종전과 같다."""
+    "행이 없으니 이 트리겠지" 폴백이 아니라 **행이 그 폴더를 가리켜서** 값이 나온다."""
+    # L1(ADR-0057 라이더) — worktree 디렉토리 부재 시 REPO 폴백을 피하려고 실제로 만든다.
+    (tmp_path / SLOT).mkdir(parents=True, exist_ok=True)
     inst, log_file, captured = _bare_handoff_capturing_cwd(handoff, tmp_path)
 
     rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
 
     assert rc == 0
-    assert inst._worktree_slot == HOME_SLOT
-    assert captured["cwd"] == str(tmp_path)
+    assert inst._worktree_slot == SLOT
+    assert captured["cwd"] == str(tmp_path / SLOT)
 
 
 # ── 앵커 부재 fail-soft — step3 만 스킵, 핸드오프 완주 (T-0243·finance_dev D3) ──────

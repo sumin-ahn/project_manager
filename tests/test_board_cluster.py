@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from _home_slot import HOME_REPO, home_lease_row, seed_home_slot
+from _slot_seed import SLOT, SLOT_REPO, lease_row, seed_slot
 from conftest import anchor_board_module
 
 REPO = Path(__file__).resolve().parents[1]
@@ -120,7 +120,7 @@ def board(tmp_path, monkeypatch):
     monkeypatch.setattr(
         mod, "LEASES_FILE",
         tmp_path / ".project_manager" / ".local" / "worktree-leases.json")
-    seed_home_slot(tmp_path)
+    seed_slot(tmp_path)
     mod.BOARD_FILE.parent.mkdir(parents=True, exist_ok=True)
     mod.BOARD_FILE.touch()
     for key, val in _GIT_IDENTITY.items():
@@ -135,6 +135,10 @@ def env(board, tmp_path):
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
     _make_code_git(tmp_path)
+    # 장부가 가리키는 작업 폴더에도 같은 기점의 코드 git 을 둔다 — 명시 정체성(`--repo`)은 그
+    # 슬롯 트리로 해소되고, 인자 전무 경로는 종전대로 PM 홈 트리를 본다.
+    (tmp_path / SLOT).mkdir(parents=True, exist_ok=True)
+    _make_code_git(tmp_path / SLOT)
     return board, board_dir
 
 
@@ -162,14 +166,14 @@ def split_env(board, tmp_path):
     (tmp_path / "home.txt").write_text("home\n", encoding="utf-8", newline="\n")
     _git(["add", "--", "home.txt"], tmp_path)
     _git(["commit", "-qm", "home seed"], tmp_path)
-    slots = [tmp_path / "work" / f"{HOME_REPO}_{n}"
+    slots = [tmp_path / "work" / f"{SLOT_REPO}_{n}"
              for n in range(1, _SPLIT_SLOT_COUNT + 1)]
     for slot in slots:
         slot.mkdir(parents=True)
         _make_code_git(slot)
     board.LEASES_FILE.write_text(
         json.dumps({"leases": [
-            home_lease_row(slot=f"work/{HOME_REPO}_{n}", session=_SPLIT_SESSION)
+            lease_row(slot=f"work/{SLOT_REPO}_{n}", session=_SPLIT_SESSION)
             for n in range(1, _SPLIT_SLOT_COUNT + 1)
         ]}, ensure_ascii=False), encoding="utf-8")
     return board, board_dir, slots[0]
@@ -203,7 +207,7 @@ def _cluster_args(action: str, name: str, **kwargs) -> argparse.Namespace:
     (`repo=None` 을 명시적으로 넘긴다).
     """
     values = dict(cluster_cmd=action, name=name, tickets=None, spike=None,
-                  repo=HOME_REPO, slot=None, task=None)
+                  repo=SLOT_REPO, slot=None, task=None)
     values.update(kwargs)
     return argparse.Namespace(**values)
 
@@ -289,10 +293,11 @@ def test_cluster_new_writes_ledger_branch_and_membership(env, capsys):
     # 장부 파일은 STATUS_DIRS 밖 sibling 이다(상태 순회에 섞이지 않는다).
     assert board.cluster_ledger_path("C-wave") == (
         board_dir / "tickets" / "clusters" / "C-wave.md")
-    # 통합 브랜치가 코드 git 에 실재하고 기점과 같은 커밋을 가리킨다.
-    assert board._cluster_branch_state(str(board.REPO), "task/wave") is True
-    tip = _git(["rev-parse", "task/wave"], board.REPO).stdout.strip()
-    base_tip = _git(["rev-parse", _BASE_BRANCH], board.REPO).stdout.strip()
+    # 통합 브랜치가 (명시 정체성이 가리킨) 작업 폴더 코드 git 에 실재하고 기점과 같다.
+    code = board.REPO / SLOT
+    assert board._cluster_branch_state(str(code), "task/wave") is True
+    tip = _git(["rev-parse", "task/wave"], code).stdout.strip()
+    base_tip = _git(["rev-parse", _BASE_BRANCH], code).stdout.strip()
     assert tip == base_tip
     # 멤버 티켓 frontmatter 가 같은 묶음을 가리킨다.
     assert _ticket_fm(board, first)["cluster"] == "C-wave"
@@ -316,7 +321,7 @@ def test_cluster_new_puts_the_branch_in_the_declared_code_tree(split_env, capsys
     capsys.readouterr()
 
     rc = board.cmd_cluster(_cluster_args(
-        "new", "split", tickets=first, repo=HOME_REPO, slot=1))
+        "new", "split", tickets=first, repo=SLOT_REPO, slot=1))
 
     assert rc == 0
     ledger = board.load_cluster("C-split")
@@ -822,7 +827,7 @@ def test_lint_clusters_reads_only_the_ledger(split_env, capsys):
     first = _issue_ticket(board, "장부만 읽는다")
     capsys.readouterr()
     assert board.cmd_cluster(_cluster_args(
-        "new", "ledger", tickets=first, repo=HOME_REPO, slot=1)) == 0
+        "new", "ledger", tickets=first, repo=SLOT_REPO, slot=1)) == 0
     capsys.readouterr()
     assert board._cluster_branch_state(str(code), "task/ledger") is True
     # 코드 트리에서 통합 브랜치를 지우고, 멤버 부재 축은 살려 둔다(입력이 장부 안에 있다).

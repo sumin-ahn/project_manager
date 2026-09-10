@@ -4,7 +4,7 @@
 `.local/tasks/<이름>/pm_state.md` 를 만들게 하고 그 파일의 내용·바이트를 읽어 단언한다(장부/락을
 흉내 내는 대역 금지). 커버:
 
-  - 생성 성공: 장부 행 `pid == 0`·`prefix is None` · pm_state 즉시 생성 · 다음 단계 안내 출력.
+  - 생성 성공: 장부 행 `open is False`(닫힘)·`prefix is None` · pm_state 즉시 생성 · 다음 단계 안내.
   - pm_state 동일성: `create_task` 산출이 `bind_task` 신규 생성분과 **바이트 동일**(같은
     `ensure_task_pm_state`).
   - 이어받기: 생성 뒤 `bind_task(같은 이름)` 이 **resumed**(신규 생성 아님·회수 경고 없음).
@@ -115,13 +115,13 @@ def _ledger_rows(wp) -> list[dict]:
 
 
 def test_task_new_writes_unoccupied_ledger_row_and_pm_state(pc, wp, capsys):
-    """`task new` = 정체성만 — 장부 행 `pid 0`·`prefix None` + pm_state 즉시 생성 + 슬롯 0."""
+    """`task new` = 정체성만 — 장부 행 닫힘·`prefix None` + pm_state 즉시 생성 + 슬롯 0."""
     rc = _run_new(pc, wp, "job")
     assert rc == 0
 
     rows = _ledger_rows(wp)
     assert [row["name"] for row in rows] == ["job"]
-    assert rows[0]["pid"] == 0, "세션에 묶지 않았는데 pid 가 0 이 아니다"
+    assert rows[0]["open"] is False, "세션에 묶지 않았는데 열림으로 기록됐다"
     assert rows[0]["prefix"] is None, "`--prefix` 없는 생성인데 prefix 가 붙었다"
     assert rows[0]["started"]
 
@@ -132,7 +132,7 @@ def test_task_new_writes_unoccupied_ledger_row_and_pm_state(pc, wp, capsys):
 
     out = capsys.readouterr().out
     assert "✓ task 생성" in out and "job" in out
-    assert "pid 0" in out and "슬롯 0" in out
+    assert "닫힘" in out and "슬롯 0" in out
     assert "pm-bootstrap --task job" in out, "다음 진입(resume) 안내 없음"
     assert "task prefix job" in out, "prefix 지정 경로 안내 없음(`--prefix` 미제공의 짝)"
 
@@ -145,7 +145,7 @@ def test_task_new_pm_state_is_byte_identical_to_bind_task_output(pc, tmp_path, c
     wp_bind = _load_wp_bound(home_bind)
 
     assert _run_new(pc, wp_new, "twin") == 0
-    record, action, _ = wp_bind.bind_task("twin")
+    record, action = wp_bind.bind_task("twin")
     assert action == "created"
 
     assert (
@@ -160,11 +160,10 @@ def test_task_new_then_bind_task_is_clean_resume(pc, wp, capsys):
     assert _run_new(pc, wp, "job") == 0
     capsys.readouterr()
 
-    record, action, reclaimed_from = wp.bind_task("job")
+    record, action = wp.bind_task("job")
 
-    assert action == "resumed", "pid 0(미점유) 재개인데 created/reclaimed 로 분류됐다"
-    assert reclaimed_from is None, "정상 인계인데 crash 회수 경고 대상이 됐다"
-    assert record.pid == wp._session_pid()
+    assert action == "resumed", "닫힌 기록 재개인데 created 로 분류됐다"
+    assert record.open is True
     assert len(_ledger_rows(wp)) == 1, "재개가 두 번째 행을 만들었다"
 
 
@@ -185,15 +184,15 @@ def test_task_new_duplicate_name_refused_without_ledger_change(pc, wp, capsys):
     assert "이미 있다" in err and "pm-bootstrap --task job" in err
 
 
-def test_task_new_live_task_pid_is_not_touched_by_duplicate_refusal(pc, wp, capsys):
-    """살아 있는 task(pid>0) 이름도 rc1 이고 그 pid 를 만지지 않는다."""
-    wp.bind_task("busy")            # pid = 이 세션(살아 있음)
+def test_task_new_open_task_record_is_not_touched_by_duplicate_refusal(pc, wp, capsys):
+    """열린 기록이 있는 이름도 rc1 이고 그 기록을 만지지 않는다."""
+    wp.bind_task("busy")            # 열림 기록
     capsys.readouterr()
     before = wp.LEASES_FILE.read_bytes()
 
     assert _run_new(pc, wp, "busy") == 1
     assert wp.LEASES_FILE.read_bytes() == before
-    assert wp.find_task("busy").pid == wp._session_pid()
+    assert wp.find_task("busy").open is True
 
 
 def test_task_new_archived_name_refused_with_reopen_hint(pc, wp, capsys):
@@ -240,7 +239,7 @@ def test_task_new_survives_board_absence_with_traversal_still_blocked(pc, wp, ca
         pass
 
     assert _run_new(pc, wp, "job", board=BoardWithoutRegistry()) == 0
-    assert _ledger_rows(wp)[0]["pid"] == 0
+    assert _ledger_rows(wp)[0]["open"] is False
     capsys.readouterr()
     assert _run_new(pc, wp, "../evil", board=BoardWithoutRegistry()) == 1
 
@@ -320,7 +319,7 @@ def test_task_new_has_no_prefix_flag(pc):
 def test_task_group_help_lists_new(pc):
     """`task` 그룹 help 가 `new` 를 표면화한다(진입점이 둘이 된 사실)."""
     help_text = pc.build_parser().format_help()
-    assert "task 정체성 관리 (new·prefix·end·reopen)" in help_text
+    assert "task 정체성 관리 (new·prefix·close·end·reopen)" in help_text
 
 
 # ── 실 서브프로세스 (파서 배선 + 엔진 로드까지 실제로 태운다) ─────────────────
@@ -358,7 +357,7 @@ def test_task_new_real_cli_creates_identity_and_refuses_rerun(tmp_path):
     ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
     rows = json.loads(ledger.read_text(encoding="utf-8"))["tasks"]
     assert [row["name"] for row in rows] == ["demo"]
-    assert rows[0]["pid"] == 0 and rows[0]["prefix"] is None
+    assert rows[0]["open"] is False and rows[0]["prefix"] is None
     state = home / ".project_manager" / ".local" / "tasks" / "demo" / "pm_state.md"
     assert state.exists()
 
