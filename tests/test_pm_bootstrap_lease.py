@@ -2072,16 +2072,26 @@ def test_task_first_session_pointer_announced_on_windows_path(bootstrap, tmp_pat
 
 
 def _handover_home(bootstrap, tmp_path, monkeypatch):
-    """인계 표시의 여섯 재료를 실값으로 갖춘 PM 홈 + 그 홈을 앵커로 하는 부트스트랩."""
-    monkeypatch.setattr(bootstrap, "REPO", tmp_path)
-    run_dir = (tmp_path / ".project_manager" / ".local" / "delegate-ticket-copies"
-               / "C-wave" / "abc123" / "T-0777")
-    (run_dir / "rounds").mkdir(parents=True)
-    (run_dir / "rounds" / "01-architect.md").write_text("설계\n", encoding="utf-8")
-    (run_dir / "rounds" / "02-developer.md").write_text("구현\n", encoding="utf-8")
+    """인계 표시의 여섯 재료를 실값으로 갖춘 PM 홈 + 그 홈을 앵커로 하는 부트스트랩.
 
+    위임 준비 사본은 **그 세션이 잡고 있던 슬롯 안**에 둔다(실제 위임의 cwd 가 슬롯이다).
+    PM 홈(`REPO`) 아래에는 준비 사본을 하나도 두지 않는다 — 뿌리를 홈으로 잡으면 이 자리가
+    빈다.
+    """
+    monkeypatch.setattr(bootstrap, "REPO", tmp_path)
     wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks")
     wp._extra_leases = [_FakeLeaseEntry("work/X_7", "X", "job1", state="leased")]
+    run_dir = (wp.slot_path("work/X_7") / ".project_manager" / ".local"
+               / "delegate-ticket-copies" / "C-wave" / "abc123" / "T-0777")
+    if (run_dir / "rounds").is_dir():
+        for stale in (run_dir / "rounds").iterdir():
+            stale.unlink()
+    (run_dir / "rounds").mkdir(parents=True, exist_ok=True)
+    (run_dir / "rounds" / "01-architect.md").write_text("설계\n", encoding="utf-8")
+    (run_dir / "rounds" / "02-developer.md").write_text("구현\n", encoding="utf-8")
+    assert not (tmp_path / ".project_manager" / ".local"
+                / "delegate-ticket-copies").exists(), "PM 홈 아래에는 준비 사본이 없다"
+
     wp.live_branch_override["work/X_7"] = "task/x-7"
     wp.task_pm_state_file = lambda name: tmp_path / "tasks" / name / "pm_state.md"
     wp.slot_pm_state_file = lambda slot: tmp_path / "slots" / slot / "pm_state.md"
@@ -2110,6 +2120,49 @@ def test_handover_shows_the_six_materials_with_real_values(bootstrap, tmp_path, 
     assert "tasks/job1/pm_state.md" in text.replace("\\", "/")  # 서술 pm_state
     assert "PM 12차 (task:job1) → 다음 PM 세션" in text          # 마지막 기록 항목
     assert "work/X_7 (갈래: task/x-7)" in text                  # 보유 작업 폴더와 갈래
+
+
+def test_handover_delegate_runs_read_the_held_slot_not_the_pm_home(
+    bootstrap, tmp_path, monkeypatch,
+):
+    """미회수 위임 준비는 **보유 슬롯** 아래를 읽는다 — PM 홈 아래 사본은 그 세션 것이 아니다."""
+    inst, run_dir = _handover_home(bootstrap, tmp_path, monkeypatch)
+    decoy = (tmp_path / ".project_manager" / ".local" / "delegate-ticket-copies"
+             / "C-other" / "zzz999" / "T-9999" / "rounds")
+    decoy.mkdir(parents=True)
+    (decoy / "01-architect.md").write_text("남의 것\n", encoding="utf-8")
+
+    text = inst._render_handover(session="job1", task="job1")
+
+    assert "T-0777" in text and "02-developer.md" in text
+    assert str(run_dir.parent.parent) in text or "abc123" in text
+    assert "T-9999" not in text, "PM 홈 아래 사본이 그 세션 것으로 실렸다"
+
+
+def test_handover_claimed_lens_is_the_session_that_held_the_place(
+    bootstrap, tmp_path, monkeypatch,
+):
+    """claim 조회 렌즈 — 슬롯 진입은 그 슬롯 정체성, task 진입은 task. 전역 `--mine` 아님."""
+    inst, _run_dir = _handover_home(bootstrap, tmp_path, monkeypatch)
+    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(json.dumps({"leases": [
+        {"slot": "work/X_7", "repo": "X", "session": "X_7", "state": "leased"},
+    ]}, ensure_ascii=False), encoding="utf-8")
+    seen: list[list[str]] = []
+
+    def record_board(argv):
+        seen.append(list(argv))
+        return 0, "  [claimed] T-0777  진행 중이던 일  me  tag\n"
+
+    inst._run_board_fn = record_board
+
+    assert inst._handover_claimed_tickets(None, "X_7") == ["T-0777"]
+    assert seen[-1] == ["list", "--status", "claimed", "--repo", "X", "--slot", "7"]
+    inst._handover_claimed_tickets("job1", "job1")
+    assert seen[-1] == ["list", "--status", "claimed", "--task", "job1"]
+    inst._handover_claimed_tickets(None, None)
+    assert seen[-1] == ["list", "--status", "claimed", "--mine"]
 
 
 def test_handover_only_reads(bootstrap, tmp_path, monkeypatch):

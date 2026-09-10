@@ -20,7 +20,9 @@ import pytest
 
 from manager import server as manager_server
 from manager.bridge import Api
-from manager.server import CLIENT_HEADER, HOST, WINDOW_CLIENT, ManagerServer
+from manager.server import (
+    BROWSER_CLIENT, CLIENT_HEADER, HOST, URL_NOTICE_PREFIX, WINDOW_CLIENT, ManagerServer,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 MANAGER_SOURCES = sorted((REPO / "manager").glob("*.py"))
@@ -99,11 +101,18 @@ def running(api, dist):
         server.stop()
 
 
-def post(server: ManagerServer, name: str, *args, client: str = "", host: str | None = None):
+def post(server: ManagerServer, name: str, *args, client: str | None = BROWSER_CLIENT,
+         host: str | None = None, content_type: str = "application/json",
+         origin: str | None = None):
+    """화면이 보내는 모양 그대로 — 표식 머리를 뺄 때만 `client=None`."""
+    headers = {"Content-Type": content_type}
+    if client is not None:
+        headers[CLIENT_HEADER] = client
+    if origin is not None:
+        headers["Origin"] = origin
     request = urllib.request.Request(
         f"http://{host or HOST}:{server.port}/api/{name}",
-        data=json.dumps({"args": list(args)}).encode("utf-8"),
-        headers={"Content-Type": "application/json", CLIENT_HEADER: client})
+        data=json.dumps({"args": list(args)}).encode("utf-8"), headers=headers)
     with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
         return json.loads(response.read().decode("utf-8"))
 
@@ -158,6 +167,77 @@ def test_the_name_set_is_not_written_down_anywhere_in_the_manager(running):
     assert listed == []
 
 
+# ── 표식 요구 (화면만 부른다) ────────────────────────────────────────────────
+
+
+def test_a_post_without_the_client_marker_is_refused_before_the_method_runs(running, api):
+    """머리 없는 요청 — 브라우저가 preflight 없이 보내는 모양(text/plain · 다른 출처)."""
+    refused = post(running, "conf_save", "/projects/demo", {"delegate.model": "opus"},
+                   client=None, content_type="text/plain",
+                   origin="http://evil.example")
+
+    assert refused["error"]["kind"] == "not-allowed"
+    assert CLIENT_HEADER in refused["error"]["message"]
+    assert api.saved == [], "표식이 없는데 브리지를 불렀다"
+
+
+def test_an_unknown_client_marker_is_refused_too(running, api):
+    refused = post(running, "conf_save", "/projects/demo", {}, client="curl")
+
+    assert refused["error"]["kind"] == "not-allowed"
+    assert api.saved == []
+
+
+def test_the_two_markers_the_screen_sends_are_the_ones_that_pass(running, api):
+    """창과 브라우저 둘 다 그대로 통과한다 — 화면이 싣는 값이 그 둘이다."""
+    for client in (WINDOW_CLIENT, BROWSER_CLIENT):
+        assert post(running, "status", "/projects/demo",
+                    client=client)["pm_home"] == "/projects/demo"
+    assert post(running, "conf_save", "/projects/demo", {}, client=BROWSER_CLIENT) == {
+        "changed": True, "conf": {}}
+    assert api.saved == [("/projects/demo", {})]
+
+
+def test_the_folder_dialog_stays_window_only_under_the_marker_requirement(running):
+    """표식 요구가 창 전용 판정을 덮지 않는다 — 브라우저는 여전히 폴더 고르기를 못 연다."""
+    refused = post(running, "pick_folder", client=BROWSER_CLIENT)
+
+    assert refused["error"]["kind"] == "not-allowed"
+    assert "창에서만" in refused["error"]["message"]
+    assert post(running, "pick_folder", client=WINDOW_CLIENT) == {"path": "/골라진/폴더"}
+
+
+# ── 쓰기·읽기 분류 (손 목록이 조용히 뒤처지지 않게) ──────────────────────────
+
+
+def test_every_bridge_name_is_classified_as_a_write_or_a_read(api):
+    """이름이 늘면 분류를 강제로 고르게 한다 — 분류 누락이 red 다.
+
+    쓰기(저장·적용) 집합만 구현이 소유하고(`WRITE_NAMES` — 동시 변경 거절이 그 값을 읽는다),
+    읽기 쪽은 이 파일의 **기대값**이다(`EXPECTED_NAMES` 와 같은 층). 구현 안에 두 벌째 목록을
+    두지 않는다 — 이름 목록을 manager 안에 적지 않는다는 계약이 그 위에 있다.
+    """
+    names = set(manager_server.api_names(api))
+    writes = set(manager_server.WRITE_NAMES)
+    reads = EXPECTED_NAMES - writes
+
+    assert writes <= names, f"쓰기 목록에만 있는 이름: {sorted(writes - names)}"
+    assert writes & reads == set()
+    unclassified = names - writes - reads
+    assert unclassified == set(), f"쓰기·읽기 어느 쪽에도 없는 이름: {sorted(unclassified)}"
+
+
+def test_a_new_bridge_method_that_nobody_classified_turns_the_guard_red(dist):
+    """브리지에 쓰기 메서드가 하나 늘면 그 이름은 어느 분류에도 없다 — 그 자리가 red 다."""
+    class WithOneMore(FakeApi):
+        def board_write(self, path: str) -> dict:
+            return {"path": path}
+
+    names = set(manager_server.api_names(WithOneMore()))
+
+    assert names - set(manager_server.WRITE_NAMES) - EXPECTED_NAMES == {"board_write"}
+
+
 def test_an_unknown_name_is_refused_with_a_reason(running):
     response = post(running, "rm_rf")
 
@@ -210,6 +290,19 @@ def test_a_given_port_is_the_port_and_an_omitted_one_is_chosen_free(api, dist):
     finally:
         first.stop()
         second.stop()
+
+
+def test_the_running_server_says_its_address_once_on_stdout(api, dist, capsys):
+    """주소를 내는 자리는 `start()` 하나다 — 없으면 브라우저로 붙을 방법이 값으로 없다."""
+    server = ManagerServer(api, dist=dist)
+    server.start()
+    try:
+        printed = capsys.readouterr().out.strip().splitlines()
+    finally:
+        server.stop()
+
+    assert printed == [f"{URL_NOTICE_PREFIX}{server.url}"]
+    assert f":{server.port}" in printed[0]
 
 
 # ── 화면 산출물 ──────────────────────────────────────────────────────────────

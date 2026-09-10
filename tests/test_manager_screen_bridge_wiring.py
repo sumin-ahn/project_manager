@@ -109,9 +109,11 @@ def test_the_window_marker_decides_one_thing_only():
     assert screen.count("if (isWindowClient())") == 1
     assert "chooseFolder" in screen[screen.index("if (isWindowClient())") - 400:]
 
+    # 갈리는 자리 = 표식 값으로 **분기하는** 줄. 값 선언(`WINDOW_CLIENT`·부를 수 있는 표식
+    # 집합 `API_CLIENTS`)은 갈림이 아니라 그 분기가 읽는 값이다.
     server = (REPO / "manager" / "server.py").read_text(encoding="utf-8")
     deciding = [line for line in server.splitlines()
-                if "WINDOW_CLIENT" in line and not line.startswith("WINDOW_CLIENT")]
+                if "WINDOW_CLIENT" in line and line.strip().startswith("if ")]
     assert len(deciding) == 1, deciding
     assert "pick_folder" in deciding[0]
 

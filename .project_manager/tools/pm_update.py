@@ -5455,26 +5455,41 @@ def drop_self_lease_rows(effective_dest: Path, *, write: bool) -> int:
 
     지울 행이 없으면 장부를 **읽기만** 한다(멱등 — 재실행이 byte 를 바꾸지 않는다).
     `write=False`(dry-run)면 판정만 한다. 반환값은 지운(지울) 행 수다.
+
+    읽기·판정·쓰기 전부를 dest 의 `worktree-leases.lock` 배타락 안에서 한다 —
+    엔진(`worktree_pool._lease_lock`)이 선언한 "장부의 모든 read-modify-write 는 이 한
+    구간" 계약과 같은 직렬화 구간이다. 쓰기도 엔진과 같이 tmp → 원자 교체를 지난다.
     """
     ledger = (Path(effective_dest) / ".project_manager" / ".local"
               / "worktree-leases.json")
     if not ledger.is_file():
         return 0
-    data = json.loads(_read_text_shared(ledger, encoding="utf-8"))
-    leases = data.get("leases") or []
-    kept = [row for row in leases if row.get("slot") != "."]
-    dropped = len(leases) - len(kept)
-    if dropped == 0:
-        return 0
-    prefix = "[dry-run] " if not write else "  ✓ "
-    print(f"{prefix}작업 폴더 목록에서 PM 홈 자신 행 {dropped}개 제거"
-          f"{' 예정' if not write else ''} — 홈은 작업 폴더가 아니다.")
-    if write:
-        data["leases"] = kept
-        ledger.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8", newline="\n",
+    seam = _load_file_lock()
+    section = getattr(seam, "exclusive_file_lock", None)
+    replace = getattr(seam, "atomic_replace", None)
+    if not callable(section) or not callable(replace):
+        raise RuntimeError(
+            "리스 장부 마이그레이션에 필요한 file_lock seam"
+            "(exclusive_file_lock·atomic_replace)을 쓸 수 없음"
         )
+    with section(ledger.parent / "worktree-leases.lock"):
+        data = json.loads(_read_text_shared(ledger, encoding="utf-8"))
+        leases = data.get("leases") or []
+        kept = [row for row in leases if row.get("slot") != "."]
+        dropped = len(leases) - len(kept)
+        if dropped == 0:
+            return 0
+        prefix = "[dry-run] " if not write else "  ✓ "
+        print(f"{prefix}작업 폴더 목록에서 PM 홈 자신 행 {dropped}개 제거"
+              f"{' 예정' if not write else ''} — 홈은 작업 폴더가 아니다.")
+        if write:
+            data["leases"] = kept
+            tmp = ledger.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8", newline="\n",
+            )
+            replace(tmp, ledger)
     return dropped
 
 

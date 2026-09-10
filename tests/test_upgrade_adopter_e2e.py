@@ -740,7 +740,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   줄어든 것은 그 실행이 부르지 않던 코드뿐이다. 현재화한 것은 기대 SHA 하나뿐이다.
 #   같은 티켓의 수정 라운드에서 한 번 더 이동했다 — `plan()` docstring 의 낱말 하나("모듈 밖
 #   호출부")뿐이고 실행 코드·배달 경계는 무편집이다.
-_T0585_PM_UPDATE_SHA256 = "cf8a94affc299b214e54b9c686784f9b78f6d06d86d238cbd5d8ee5cf2425a08"
+_T0585_PM_UPDATE_SHA256 = "bbf7ff554734b944cb9cdcef52da0632603cc52caf47b00a9c78f6208106bdfe"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -893,6 +893,13 @@ def _t0585_pm_update_source() -> str:
     치환과 겹치지 않고 그대로 유일 해소된다(marker assert 선통과). 배달 경계(source/manifest
     planning → apply → self-update 순서)도 불변이다 — 호출 자리 수·조건·순서가 그대로다.
     현재화한 것은 기대 SHA 하나뿐이다.
+
+    T-0919 수정 라운드 — 같은 `drop_self_lease_rows` 의 읽기·판정·쓰기를 dest 의
+    `worktree-leases.lock` 배타락 안으로 넣고 쓰기를 tmp → 원자 교체로 바꿨다(엔진
+    `worktree_pool._lease_lock`·`_write_ledger_raw` 와 같은 직렬화 구간). 함수 하나의 내부만
+    바뀌었고 호출 자리 수·조건·순서는 그대로다. 역적용 delta 의 marker 는 전부
+    `sync_adapter_configs`/퇴역 경로 쪽이라 이 편집과 겹치지 않고 그대로 유일 해소된다
+    (marker assert 선통과). 현재화한 것은 기대 SHA 하나뿐이다.
 
     T-0861 — 릴리즈 게이트 drift 판정(`board.py livegate record`)이 `pm_update.py` 의 self-update
     계획 계산을 재사용하도록, `_main()` 의 manifest 자기치유 → notation 템플릿 해소 → guest
@@ -1060,7 +1067,7 @@ def _install_t0585_updater(dest: Path) -> None:
 # T-0887: 온보딩 opt-in 일습 삭제로 역적용 delta 의 exact-marker 목록이 두 항목으로 줄고
 # (되돌릴 원문이 사라졌다) 그만큼 historical 전문 SHA 도 이동했다. 퇴역 경로 delta 의 marker 는
 # 전부 그 절 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "3d10bf812c6688ca6e7476068b26e7c789c68532d9c51c372e33bd39c6ef123a"
+_PRE_T0876_PM_UPDATE_SHA256 = "e518e7e7ef7bc7624287365dc35d27a16d34ecfca6e905ca8e9ab43366ca21f6"
 
 
 def _pre_t0876_pm_update_source() -> str:

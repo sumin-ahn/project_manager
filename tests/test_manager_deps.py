@@ -173,5 +173,8 @@ def test_smoke_opens_the_window_and_answers(tmp_path):
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
     lines = completed.stdout.strip().splitlines()
-    assert len(lines) == 1, lines  # T-0922 이후에도 정상 경로는 문장을 더하지 않는다
-    assert lines[0].startswith("smoke ok")
+    # 정상 경로의 문장은 둘이다 — 서버가 뜬 주소 한 줄(T-0921·브라우저 손님의 진입점)과
+    # smoke 결과 한 줄. 그 밖의 문장은 더하지 않는다.
+    assert len(lines) == 2, lines
+    assert lines[0].startswith("관리자 주소: http://127.0.0.1:")
+    assert lines[1].startswith("smoke ok")

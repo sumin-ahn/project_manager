@@ -51,6 +51,20 @@ function TaskSelect({ label, value, onChange }:
   );
 }
 
+/**
+ * 강제 닫기 확인 문구 — `release <slot> --force` 가 실제로 하는 일을 그대로 적는다.
+ *
+ * 그 강제는 dirty 슬롯의 커밋하지 않은 변경을 `git stash push --include-untracked` 로 밀어낸다
+ * (엔진 `worktree_pool.force_release`). 그래서 "변경이 그대로 남는다" 고 적으면 사용자는
+ * 관측하지 않은 사실을 읽고 승인하게 된다. 값(`dirty`)은 엔진 JSON 의 그 행 값이다.
+ */
+export function forceCloseNote(row: SlotRow): string {
+  const stash = row.dirty
+    ? "이 슬롯에는 커밋하지 않은 변경이 있다 — 그 변경은 stash 로 옮겨진다(작업 폴더에는 남지 않는다)."
+    : "커밋하지 않은 변경이 생긴 뒤라면 그 변경은 stash 로 옮겨진다.";
+  return `그 세션이 인계를 남기지 못하고 끝났을 때 쓴다. 아직 그 창이 살아 있으면 그 세션의 기록이 사라진다. 작업 폴더 자체는 남는다. ${stash}`;
+}
+
 /** 변경 동작이 없는 행 — 재조회만. 슬롯 내용 갱신(`pm-worktree refresh`)은 스킬이다. */
 function RefreshOnly({ slot }: { slot: string }) {
   const { onChanged } = useProjectRun();
@@ -94,26 +108,32 @@ function SlotActions({ row }: { row: SlotRow }) {
   const [closing, setClosing] = useState(false);
   const reason = disabledReason(row, verdict);
 
-  // 열린 기록(작업 중) 행 — 그 창이 아직 그 자리를 쥐고 있을 수 있어 [반납]은 사유와 함께
-  // 비활성이다. 다만 세션이 인계를 남기지 못하고 끝나는 일이 있어(창이 그냥 닫히는 경우)
-  // 사람이 그 기록을 닫을 자리는 화면에도 있어야 한다 — [강제 닫기]가 확인을 한 번 받고
-  // `release <slot> --force` 를 부른다. 그 밖(아이들·readonly)에는 되돌릴 것이 없어 재조회만 남는다.
-  if (verdict.actions !== "disabled") {
+  // 가부는 판정표가 낸다 — 화면이 다시 재지 않는다. `change` 인 행(아이들 · 닫힘=종료 기록
+  // 있음)은 잡고 있는 주체가 없어 [반납]이 열리고, `disabled`(열린 기록) 행은 사유와 함께
+  // 비활성이다. 그 행만 [강제 닫기]를 갖는다 — 세션이 인계를 남기지 못하고 끝나는 일이 있어
+  // (창이 그냥 닫히는 경우) 사람이 확인 한 번으로 `release <slot> --force` 를 부른다.
+  // `refresh`(readonly)는 되돌릴 것이 없어 재조회만 남는다.
+  if (verdict.actions === "refresh") {
     return <RefreshOnly slot={row.slot} />;
   }
+  const open = verdict.actions === "change";
   return (
     <span className="inline-flex flex-col items-end gap-1">
       <span className="flex items-center gap-1">
         <Reason reason={reason} />
         <button type="button" data-testid={`release-${row.slot}`} title={reason ?? ""}
-                disabled className={BUTTON}>반납</button>
-        <button type="button" data-testid={`force-close-${row.slot}`} disabled={busy}
-                onClick={() => setClosing(true)} className={BUTTON}>강제 닫기</button>
+                disabled={!open || busy}
+                onClick={() => void call(["release", row.slot])}
+                className={BUTTON}>반납</button>
+        {!open && (
+          <button type="button" data-testid={`force-close-${row.slot}`} disabled={busy}
+                  onClick={() => setClosing(true)} className={BUTTON}>강제 닫기</button>
+        )}
       </span>
       {closing && (
         <ConfirmDialog
           title={`${row.slot} 의 열린 기록을 닫는다 — 계속?`}
-          note="그 세션이 인계를 남기지 못하고 끝났을 때 쓴다. 아직 그 창이 살아 있으면 그 세션의 기록이 사라진다. 작업 폴더와 그 안의 변경은 그대로 남는다."
+          note={forceCloseNote(row)}
           value={row.slot}
           onConfirm={() => {
             setClosing(false);

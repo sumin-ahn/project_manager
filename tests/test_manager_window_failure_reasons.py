@@ -31,6 +31,30 @@ def _run_manager(*argv: str, drop_env: tuple[str, ...] = (),
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="붙일 화면 판정은 Linux 분기(Gtk.init_check)")
+def test_the_no_display_sentence_does_not_claim_the_variables_are_empty(tmp_path):
+    """판정한 것은 `Gtk.init_check()` 결과 하나다 — 원인 단정(변수가 비었다)은 문장에 없다.
+
+    변수가 **비어 있지 않은** 상태(살아 있지 않은 X 서버)로 같은 문장을 받게 한다.
+    """
+    from manager import deps
+
+    completed = subprocess.run(
+        [sys.executable, "-c",
+         "from manager import deps; m, rc = deps.missing_renderer_message();"
+         " print(rc); print(m)"],
+        cwd=str(REPO), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env={**os.environ, "PYTHONPATH": str(REPO), "DISPLAY": ":99", "WAYLAND_DISPLAY": ""},
+        timeout=120)
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    rc_line, _, message = completed.stdout.partition("\n")
+    assert rc_line.strip() == str(deps.NO_DISPLAY_RC), completed.stdout
+    assert "비어 있음" not in message and "DISPLAY·WAYLAND_DISPLAY" not in message, message
+    assert "화면을 열지 못했다" in message
+    assert "xvfb-run" in message          # 다음에 할 일 한 줄은 그대로다
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="붙일 화면 판정은 Linux 분기(Gtk.init_check)")
 def test_no_display_to_attach_to_prints_a_stdout_message_and_stops(tmp_path):
     """실 서브프로세스에서 DISPLAY·WAYLAND_DISPLAY 를 지운다 — 지금은 stdout 이 0 byte 다."""
     completed = _run_manager(

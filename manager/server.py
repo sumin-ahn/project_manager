@@ -34,6 +34,12 @@ EVENTS_PATH = "/events"
 CLIENT_QUERY = "client"
 CLIENT_HEADER = "X-Manager-Client"
 WINDOW_CLIENT = "window"
+BROWSER_CLIENT = "browser"
+# `/api/` 를 부를 수 있는 표식 값 — 화면이 싣는 두 가지뿐이다(창·브라우저). 표식이 없거나 다른
+# 값이면 메서드를 부르기 전에 거절한다: 커스텀 머리는 다른 출처에서 preflight 를 부르고 이
+# 서버는 CORS 응답을 내지 않으므로, 아무 웹페이지가 열어 둔 채로 이 서버의 이름을 부르는 길이
+# 닫힌다(표식을 읽기만 하면 `run`·`conf_save` 가 그대로 돈다).
+API_CLIENTS = frozenset({WINDOW_CLIENT, BROWSER_CLIENT})
 # 저장·적용 — 도는 동안 같은 프로젝트의 다른 요청을 거절하는 호출.
 WRITE_NAMES = frozenset({
     "update_apply", "apply_new", "conf_save", "conf_reset", "adapter_accept", "run"})
@@ -42,6 +48,8 @@ PROJECT_PARAMETERS = ("path", "dest")
 # 거절의 rc — 엔진을 부르지 않았다는 뜻의 관리자 자신의 값이다(`bridge_run.REJECT_RC` 와 같다).
 REJECT_RC = 2
 EVENT_POLL_SECONDS = 0.5
+# 서버가 뜬 자리를 사람에게 알리는 한 줄의 머리 — 주소를 내는 자리는 `start()` 하나다.
+URL_NOTICE_PREFIX = "관리자 주소: "
 
 
 def api_names(api) -> tuple[str, ...]:
@@ -121,10 +129,15 @@ class ManagerServer:
 
     # ── 수명 ──────────────────────────────────────────────────────────────
     def start(self) -> None:
-        """창을 띄우기 **전에** 부른다 — GTK 메인 루프는 돌아오지 않는다(데몬 스레드)."""
+        """창을 띄우기 **전에** 부른다 — GTK 메인 루프는 돌아오지 않는다(데몬 스레드).
+
+        주소 한 줄을 표준 출력에 낸다 — 포트가 빈 자리 자동 선택이라 이 줄이 없으면 브라우저로
+        같은 화면에 붙을 방법이 값으로 없다. 앱이 곧 서버라 창이 뜨는 실행에서도 낸다.
+        """
         self._thread = threading.Thread(target=self._httpd.serve_forever,
                                         name="manager-http", daemon=True)
         self._thread.start()
+        print(f"{URL_NOTICE_PREFIX}{self.url}")
 
     def stop(self) -> None:
         """소켓과 알림을 닫는다 — 아직 돌지 않는 서버는 `shutdown()` 이 돌아오지 않으므로 뺀다."""
@@ -138,6 +151,10 @@ class ManagerServer:
     # ── 호출 ──────────────────────────────────────────────────────────────
     def call(self, name: str, args: list, *, client: str = "") -> dict:
         """이름 하나를 부른다 — 없는 이름·거절도 같은 `{"error": {...}}` 모양이다."""
+        if client not in API_CLIENTS:
+            return _rejected(
+                f"{CLIENT_HEADER} 머리가 없거나 모르는 값이라 부르지 않았다 — 이 서버의 "
+                f"이름은 관리자 화면(창·브라우저)만 부른다.")
         if name not in api_names(self.api):
             return _rejected(f"화면이 부르는 브리지 이름이 아니다: {name!r}")
         method = getattr(self.api, name)

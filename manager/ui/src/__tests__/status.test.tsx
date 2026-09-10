@@ -64,6 +64,6 @@ describe("버전 비교", () => {
 
 describe("슬롯 요약", () => {
   it("상태별 개수를 촘촘한 한 줄로 낸다", () => {
-    expect(slotSummary(slots)).toBe("2 작업 중 · 1 readonly · 2 아이들");
+    expect(slotSummary(slots)).toBe("2 작업 중 · 1 readonly · 2 아이들 · 1 닫힘");
   });
 });

@@ -34,3 +34,15 @@ export function foldable(row: FoldRow, value: string, marked: Set<string>): bool
     && row.default === rule.fold.default
     && !marked.has(row.key);
 }
+
+/**
+ * 그 칸을 비워 뒀을 때 실제로 쓰이는 값 — 빈 칸이 "아무 일도 안 일어난다" 로 읽히지 않게 한다.
+ *
+ * 기본값 선언의 주인은 엔진 키 목록(`default` = 미설정 시 엔진이 쓰는 값)이고 문구의 주인은
+ * 규칙표다. 화면은 받아 그리기만 한다.
+ */
+export function unsetHint(row: { default: string | null }): string {
+  return row.default === null
+    ? rule.unset_hint.none
+    : rule.unset_hint.with_default.replace("{default}", row.default);
+}

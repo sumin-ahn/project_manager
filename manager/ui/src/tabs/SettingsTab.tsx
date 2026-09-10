@@ -6,7 +6,7 @@ import type {
 import { isError } from "../api";
 import AdapterSection from "../components/AdapterSection";
 import QuestionMode from "../components/QuestionMode";
-import { foldable, markedKeys, ROW_UNIT_FAMILY } from "../lib/settings-rows";
+import { foldable, markedKeys, ROW_UNIT_FAMILY, unsetHint } from "../lib/settings-rows";
 
 /** 설정 안 함 행을 보일지 — 화면 전체에 하나이고 다음에 열 때도 유지한다. */
 const SHOW_UNSET_KEY = "pm.settings.showUnset";
@@ -177,6 +177,7 @@ const MANUAL_OPTION = "직접 입력";
 
 const INPUT = "w-full rounded border border-slate-200 px-1 font-mono text-[11px]";
 
+
 /**
  * 값 하나를 고치는 칸 — 모양은 그 키의 `choices` 가 정한다(화면 판정 0).
  *
@@ -194,6 +195,7 @@ function ValueField({ row, value, options, dependsValue, fetched, fetchError, ma
   if (choices === null) {
     return (
       <input aria-label={row.key} value={value} className={INPUT}
+             placeholder={unsetHint(row)}
              onChange={(event) => onChange(event.target.value)} />
     );
   }
@@ -207,6 +209,7 @@ function ValueField({ row, value, options, dependsValue, fetched, fetchError, ma
     return (
       <span className="flex items-center gap-1">
         <input aria-label={row.key} value={value} className={INPUT}
+               placeholder={unsetHint(row)}
                onChange={(event) => onChange(event.target.value)} />
         {/* 안내는 버튼 위에 둔다 — 같은 줄의 선택 칸이 그 문구를 이미 눈에 보이게 낸다. */}
         <button type="button" data-testid={`models-${row.key}`} disabled={blocked || busy}
@@ -230,7 +233,7 @@ function ValueField({ row, value, options, dependsValue, fetched, fetchError, ma
                 if (fetched !== null && event.target.value === MANUAL_OPTION) onManual();
                 else onChange(event.target.value);
               }}>
-        <option value="">(설정 안 함)</option>
+        <option value="">{unsetHint(row)}</option>
         {listed(items).map((item) => <option key={item} value={item}>{item}</option>)}
         {fetched !== null && <option value={MANUAL_OPTION}>{MANUAL_OPTION}</option>}
       </select>
@@ -426,9 +429,6 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     <tr key={row.key} data-testid={`conf-${row.key}`}>
       {nameCell(row.label, row.key, row.description)}
       <td className="py-0.5 pr-2">{field(row)}</td>
-      <td className="w-16 truncate py-0.5 pr-2 text-[11px] text-slate-500">
-        {row.default !== null && <span>기본 {row.default}</span>}
-      </td>
       <td className="w-32 py-0.5 pr-2 text-[11px]">
         <span className="flex gap-1 overflow-hidden whitespace-nowrap">
           <RowMarks row={row} conf={conf} />

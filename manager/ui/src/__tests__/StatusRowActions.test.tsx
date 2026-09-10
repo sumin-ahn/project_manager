@@ -3,13 +3,15 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Bridge, CommandResult, ErrorResponse, SlotRow, StatusDocument, TaskRow } from "../api";
 import fixture from "../fixtures/status.sample.json";
-import StatusRowActions, { SlotTableAllocate } from "../components/StatusRowActions";
+import StatusRowActions, { SlotTableAllocate, forceCloseNote } from "../components/StatusRowActions";
 import { ProjectRunContext } from "../lib/run";
+import { rowDot } from "../lib/status";
 
 /**
  * 현황 탭 동작 — 아이들 규칙(비활성 + 사유)·대여와 반납의 자리·확인 대화의 값 결속.
  *
- * 행은 실 엔진 산출(`status --json`) 픽스처의 세 형태다: 아이들 · 작업 중(열린 기록) · readonly.
+ * 행은 실 엔진 산출(`status --json`) 픽스처의 네 형태다: 아이들 · 작업 중(열린 기록) ·
+ * 닫힘(대여 중이나 종료 기록 있음) · readonly.
  * [대여]는 행이 아니라 슬롯 표 머리에 있다 — `alloc` 이 repo 축이라 어느 idle 슬롯이 나갈지는
  * 엔진이 고르고(최소 번호), 아이들이 둘 이상이면 누른 행과 대여되는 행이 달라진다.
  */
@@ -60,12 +62,9 @@ describe("대여는 repo 단위 한 자리다", () => {
   });
 
   it("아이들 행에는 대여 버튼이 없다 — 누른 행과 대여되는 행이 갈리지 않는다", () => {
-    const { run, onChanged } = renderRow(slotOf("work/app_3"));
+    const { run } = renderRow(slotOf("work/app_3"));
 
     expect(screen.queryByTestId("alloc-work/app_3")).toBeNull();
-    expect(screen.queryByTestId("release-work/app_3")).toBeNull();
-    fireEvent.click(screen.getByTestId("refresh-work/app_3"));
-    expect(onChanged).toHaveBeenCalledTimes(1);
     expect(run).not.toHaveBeenCalled();
   });
 });
@@ -97,12 +96,44 @@ describe("아이들 규칙", () => {
     expect(run.mock.calls[0][1]).toEqual(["release", ".", "--force"]);
   });
 
+  it("강제 닫기 문구가 stash 로 옮겨진다는 사실을 값으로 말한다", () => {
+    const dirty = slotOf(".");
+    expect(dirty.dirty).toBe(true);
+    renderRow(dirty);
+
+    fireEvent.click(screen.getByTestId("force-close-."));
+
+    const note = screen.getByTestId("confirm-dialog");
+    expect(note).toHaveTextContent(forceCloseNote(dirty));
+    expect(note).toHaveTextContent("stash 로 옮겨진다");
+    expect(note).not.toHaveTextContent("변경은 그대로 남는다");
+    // clean 행 문구도 같은 사실을 말한다 — "그대로 남는다" 단정은 어느 쪽에도 없다.
+    expect(forceCloseNote({ ...dirty, dirty: false })).toContain("stash 로 옮겨진다");
+  });
+
   it("작업 중 행은 비활성이고 사유가 세션 이름이다", () => {
     renderRow(slotOf("work/app_2"));
 
     expect(screen.getByTestId("release-work/app_2")).toBeDisabled();
     expect(screen.queryByLabelText("work/app_2 반납 task")).toBeNull();
     expect(screen.getByTestId("row-reason")).toHaveTextContent("세션 proj1_2 이 잡고 있음");
+  });
+
+  it("판정표가 change 라고 한 행은 반납이 열린다 — 아이들과 닫힘 둘 다", async () => {
+    const idle = renderRow(slotOf("work/app_3"));
+    expect(screen.getByTestId("release-work/app_3")).toBeEnabled();
+    expect(screen.queryByTestId("force-close-work/app_3")).toBeNull();  // 닫을 기록이 없다
+    fireEvent.click(screen.getByTestId("release-work/app_3"));
+    await waitFor(() => expect(idle.run).toHaveBeenCalledWith(DEMO, ["release", "work/app_3"]));
+    cleanup();
+
+    // 닫힘 = 대여 중이나 종료 기록이 있는 행(핸드오프·task close 뒤의 상태).
+    const closed = renderRow(slotOf("work/app_5"));
+    expect(rowDot(slotOf("work/app_5")).actions).toBe("change");
+    expect(screen.getByTestId("release-work/app_5")).toBeEnabled();
+    expect(screen.queryByTestId("row-reason")).toBeNull();
+    fireEvent.click(screen.getByTestId("release-work/app_5"));
+    await waitFor(() => expect(closed.run).toHaveBeenCalledWith(DEMO, ["release", "work/app_5"]));
   });
 
   it("readonly 행은 새로고침만 있고 변경 동작이 없다", () => {

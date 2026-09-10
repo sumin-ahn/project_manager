@@ -22,7 +22,7 @@ from _manager_home import (
 )
 
 from manager import CallError, registry
-from manager.server import CLIENT_HEADER, WINDOW_CLIENT, ManagerServer
+from manager.server import BROWSER_CLIENT, CLIENT_HEADER, WINDOW_CLIENT, ManagerServer
 from manager.bridge import Api, BaseApi
 from manager.bridge_run import RunApi
 from manager.bridge_settings import SettingsApi
@@ -211,7 +211,7 @@ def served(api, tmp_path):
         server.stop()
 
 
-def _post(server: ManagerServer, name: str, *args, client: str = "") -> dict:
+def _post(server: ManagerServer, name: str, *args, client: str = BROWSER_CLIENT) -> dict:
     request = urllib.request.Request(
         f"{server.url}/api/{name}",
         data=json.dumps({"args": list(args)}).encode("utf-8"),

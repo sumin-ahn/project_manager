@@ -76,6 +76,20 @@
       "base": null,
       "behind": null,
       "dirty": false
+    },
+    {
+      "slot": "work/app_5",
+      "repo": "app",
+      "state": "leased",
+      "session": "app_5",
+      "alive": false,
+      "role": "work",
+      "task": null,
+      "branch": "app_5",
+      "head": "ea647d3cd6aadae80919108ac6315487c5b0c9b2",
+      "base": null,
+      "behind": null,
+      "dirty": true
     }
   ],
   "tasks": [

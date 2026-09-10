@@ -35,7 +35,7 @@ _ENGINE_COPY_ROOTS = (
 
 # 프로젝트 밖 임시 경로 리터럴 — POSIX 관례 자리와 Windows 시스템 Temp.
 _OUT_OF_PROJECT_TEMP = re.compile(
-    r"(^|[\s\"'=:(])(/tmp|/var/tmp|/var/folders|/private/var/folders)(/|$|[\s\"'),])"
+    r"(^|[\s\"'=:(,])(/tmp|/var/tmp|/var/folders|/private/var/folders)(/|$|[\s\"'),])"
     r"|[A-Za-z]:\\+(Temp|Windows\\+Temp)",
     re.IGNORECASE,
 )

@@ -8,9 +8,10 @@ EdgeUpdate 가 남기는 레지스트리 키로 본다.
 어느 쪽이든 없으면 사람이 그대로 실행할 설치 명령을 찍고 rc 3 으로 멈춘다 — 대체 렌더러로
 갈아타는 경로는 두지 않는다.
 
-Linux 는 백엔드 모듈이 있어도 창을 붙일 화면이 없을 수 있다(DISPLAY·WAYLAND_DISPLAY 모두 비어
-있는 세션 — 이 경우는 라이브러리가 예외 없이 프로세스를 끝내므로 여기서 미리 걸러야 한다).
-그 판정은 `Gtk.init_check()` 로 한다 — rc 1(화면 산출물 없음과 같은 값 · 설치 문제가 아니다).
+Linux 는 백엔드 모듈이 있어도 창을 붙일 화면을 열지 못할 수 있다(변수가 빈 세션 · 살아 있지
+않은 X 서버 · 끊긴 소켓 — 이 경우는 라이브러리가 예외 없이 프로세스를 끝내므로 여기서 미리
+걸러야 한다). 그 판정은 `Gtk.init_check()` 로 하고 문장도 그 결과까지만 말한다(원인은 관측하지
+않는다) — rc 1(화면 산출물 없음과 같은 값 · 설치 문제가 아니다).
 """
 from __future__ import annotations
 
@@ -109,8 +110,10 @@ def missing_renderer_message(*, system: str | None = None,
         ])
         return message, MISSING_RENDERER_RC
     if system == "Linux" and not _linux_has_display():
+        # 판정한 것은 `Gtk.init_check()` 의 결과 하나다 — 원인(변수가 비었다·서버가 죽었다·
+        # xauth 부재)은 관측하지 않았으므로 문장에 적지 않는다.
         message = "\n".join([
-            "[중단] 창을 붙일 화면이 없다 (DISPLAY·WAYLAND_DISPLAY 모두 비어 있음).",
+            "[중단] 창을 붙일 화면을 열지 못했다 (GTK 가 화면 연결에 실패했다).",
             "  X 서버가 있는 세션에서 실행하거나, 확인만 할 때는 `xvfb-run -a` 아래에서 돌려라.",
         ])
         return message, NO_DISPLAY_RC

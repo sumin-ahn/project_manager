@@ -520,7 +520,10 @@ ENGINE_REV = "v1.7.13"
 
 # _load_tool(generic)이 이름으로 로드하는 stamped 형제. deep-import AST 가드는 클래스 메서드와
 # 중첩 함수까지 포함해 실제 호출 target을 측정하고, 그 집합이 이 리터럴에 포함되는지 단언한다.
-_STAMPED_SIBLINGS = frozenset({"file_lock.py", "pm_handoff.py", "pm_bootstrap.py", "pm_config.py", "pm_log.py"})
+_STAMPED_SIBLINGS = frozenset({
+    "file_lock.py", "pm_handoff.py", "pm_bootstrap.py", "pm_config.py", "pm_log.py",
+    "pm_delegate.py",
+})
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -3767,15 +3770,14 @@ class PmBootstrap:
         # 검사 대상 슬롯의 **경로**는 장부 행 값이다(재조립 금지·리뷰 F-001) — 재조립하면 장부가
         # `slot="."`·`nested/X_1` 로 들고 있는 슬롯이 "장부·폴더 어디에도 없음"으로 오판된다.
         # 반면 **세션**(`<repo>_<N>`)은 이 명시 진입이 *선언하는* 정체성이라 종전 그대로다 —
-        # 점유 검사(`_phase0_other_holder`)가 "그 슬롯을 지금 누가 들고 있나"를 이 선언값과
-        # 대조한다.
+        # 아래 보호브랜치 검사가 이 선언값을 쓴다. "그 슬롯을 지금 누가 들고 있나"는 세션
+        # 대조가 아니라 **열림 기록 검사**(`_phase0_open_record`)가 판정한다.
         try:
             slot_id = _explicit_slot_path(repo, slot, self._leases_file())
         except SlotResolutionError as exc:
             print(f"[중단·0단계] {exc}", file=sys.stderr)
             return 1
         session = f"{repo}_{slot}"
-        self_session = session
         wp = self._resolve_worktree_pool()  # multi-PM 인데 풀 부재면 명시 에러(SystemExit·dump 이전).
         lease = self._phase0_find_lease(wp, slot_id)
         # 2. 작업공간 실재 (폴더). 장부 행이 있어도 폴더가 없으면 진입 불가다 — 그 상태로
@@ -3925,8 +3927,8 @@ class PmBootstrap:
         흔적). 이 상태 슬롯은 아무도 안전히 진입 불가하다: bind_slot 은 기존 엔트리를 무조건 leased 로
         덮고(in-flight/중단 create 훼손)·alloc 은 creating
         재부착 제외. 그래서 **세션 동일 여부·readonly 무관** 차단한다(내 중단 흔적이든 타 세션 in-flight
-        든 슬롯이 불완전한 건 동일). lease None/미상 state 는 False(fail-soft·`_phase0_other_holder` 와
-        분리 — 그 함수는 'leased by other' 의미를 유지한다)."""
+        든 슬롯이 불완전한 건 동일). lease None/미상 state 는 False(fail-soft·열림 기록 검사
+        (`_phase0_open_record`)와 분리 — 그쪽은 '지금 열린 기록이 있나'만 본다)."""
         if lease is None:
             return False
         return getattr(lease, "state", None) == "creating"
@@ -4291,14 +4293,32 @@ class PmBootstrap:
                 raise
             pass
 
-    # 위임 준비 사본 루트 — 미회수 준비/라운드 단계를 읽는 자리(경로는 pm_delegate 와 같은 규약).
-    _HANDOVER_COPY_ROOT = Path(".project_manager") / ".local" / "delegate-ticket-copies"
     # 인계 표시에 싣는 항목 상한 — 목록이 길어도 화면이 한 눈에 들어와야 한다.
     _HANDOVER_MAX_ITEMS = 5
 
-    def _handover_claimed_tickets(self, task: str | None) -> list[str]:
-        """이 정체성 명의로 claim 중인 티켓 id — board 조회(읽기만)."""
-        lens = ["--task", task] if task else ["--mine"]
+    def _handover_board_lens(self, task: str | None, session: str | None) -> list[str]:
+        """인계 표시의 board 조회 렌즈 — **그 자리를 잡고 있던 정체성**으로 좁힌다.
+
+        task 진입은 task 축이고, 슬롯 진입은 그 슬롯을 잡고 있던 세션이다. 슬롯 세션
+        (`<repo>_<N>`)은 `--task` 가 거부하는 예약명이라 같은 정체성의 슬롯 축
+        (`--repo`/`--slot`)으로 준다 — 좌표는 장부 행이 소유한다
+        (`identity_args.session_coordinates`). 정체성이 없을 때만 사용자 전역 렌즈로 물러난다.
+        """
+        if task:
+            return ["--task", task]
+        if not session:
+            return ["--mine"]
+        ia = _load_identity_args()
+        if ia is not None:
+            repo, number = ia.session_coordinates(session, self._leases_file())
+            if repo and number is not None and f"{repo}_{number}" == session:
+                return ["--repo", repo, "--slot", str(number)]
+        return ["--task", session]
+
+    def _handover_claimed_tickets(self, task: str | None,
+                                  session: str | None = None) -> list[str]:
+        """그 자리를 잡고 있던 정체성 명의로 claim 중인 티켓 id — board 조회(읽기만)."""
+        lens = self._handover_board_lens(task, session)
         try:
             rc, output = self._run_board_fn(["list", "--status", "claimed", *lens])
         except Exception as exc:  # noqa: BLE001 — 인계 표시는 조회 실패로 진입을 막지 않는다.
@@ -4313,23 +4333,38 @@ class PmBootstrap:
                 seen.append(match.group(0))
         return seen
 
-    def _handover_delegate_runs(self) -> list[str]:
-        """미회수 위임 준비와 그 라운드 단계 — 준비 사본 디렉터리를 읽어 실값으로 낸다."""
-        root = REPO / self._HANDOVER_COPY_ROOT
-        if not root.is_dir():
+    def _handover_delegate_runs(self, slots: list[str]) -> list[str]:
+        """미회수 위임 준비와 그 라운드 단계 — 준비 사본 디렉터리를 읽어 실값으로 낸다.
+
+        준비 사본은 **그 세션이 잡고 있던 작업 폴더 안**에 생긴다(위임의 cwd 가 슬롯이다) —
+        PM 홈 아래가 아니다. 그래서 뿌리는 `slots`(보유 작업 폴더 목록)이 준다. 상대 루트는
+        준비 사본을 만드는 쪽(`pm_delegate.TICKET_COPY_REL_ROOT`)이 소유한다.
+        """
+        wp = self._worktree_pool or _load_worktree_pool()
+        delegate = _load_tool("pm_delegate")
+        if wp is None or delegate is None:
             return []
         rows: list[str] = []
-        for ticket_dir in sorted(root.glob("*/*/*")):
-            if not ticket_dir.is_dir():
+        for slot in slots:
+            root = wp.slot_path(slot) / delegate.TICKET_COPY_REL_ROOT
+            if not root.is_dir():
                 continue
-            rounds = sorted(p.name for p in (ticket_dir / "rounds").glob("*.md")) \
-                if (ticket_dir / "rounds").is_dir() else []
-            stage = rounds[-1] if rounds else "(라운드 파일 없음 = 1라운드)"
-            rows.append(f"{_display_path_text(ticket_dir)} · 라운드 단계: {stage}")
+            for ticket_dir in sorted(root.glob("*/*/*")):
+                if not ticket_dir.is_dir():
+                    continue
+                rounds = sorted(p.name for p in (ticket_dir / "rounds").glob("*.md")) \
+                    if (ticket_dir / "rounds").is_dir() else []
+                stage = rounds[-1] if rounds else "(라운드 파일 없음 = 1라운드)"
+                rows.append(f"{_display_path_text(ticket_dir)} · 라운드 단계: {stage}")
         return rows
 
-    def _handover_slots(self, session: str | None, task: str | None) -> list[str]:
-        """보유 작업 폴더와 그 갈래 — 장부 행(session 귀속) + live 브랜치."""
+    def _handover_slots(self, session: str | None,
+                        task: str | None) -> list[tuple[str, str]]:
+        """보유 작업 폴더와 그 갈래 — 장부 행(session 귀속) + live 브랜치.
+
+        반환은 `(슬롯, 표시 문자열)` 쌍이다 — 같은 목록을 위임 준비 뿌리로도 쓴다(조회 축을
+        하나 더 열지 않는다).
+        """
         wp = self._worktree_pool or _load_worktree_pool()
         if wp is None or not session:
             return []
@@ -4340,7 +4375,7 @@ class PmBootstrap:
             if _is_engine_rev_skew(exc):
                 raise
             return []
-        rows: list[str] = []
+        rows: list[tuple[str, str]] = []
         for lease in leases:
             try:
                 branch = wp.current_branch(lease.slot)
@@ -4348,7 +4383,9 @@ class PmBootstrap:
                 if _is_engine_rev_skew(exc):
                     raise
                 branch = None
-            rows.append(f"{lease.slot} (갈래: {branch or '(미상·detached)'})")
+            rows.append(
+                (lease.slot, f"{lease.slot} (갈래: {branch or '(미상·detached)'})")
+            )
         return rows
 
     def _handover_pm_state(self, session: str | None, task: str | None) -> str | None:
@@ -4393,9 +4430,10 @@ class PmBootstrap:
         준비와 그 라운드 단계 · 서술 pm_state · 마지막 기록 항목 · 보유 작업 폴더와 갈래.
         거부(묻는 자리)와 강제 인계가 같은 renderer 를 쓴다 — 표시 자리는 하나다.
         """
-        claimed = self._handover_claimed_tickets(task)
-        runs = self._handover_delegate_runs()
-        slots = self._handover_slots(session, task)
+        claimed = self._handover_claimed_tickets(task, session)
+        slot_rows = self._handover_slots(session, task)
+        runs = self._handover_delegate_runs([slot for slot, _text in slot_rows])
+        slots = [text for _slot, text in slot_rows]
         pm_state = self._handover_pm_state(session, task)
         last_log = self._handover_last_log()
 
