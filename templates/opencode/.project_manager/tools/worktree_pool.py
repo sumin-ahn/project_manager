@@ -2489,6 +2489,31 @@ def set_task_prefix(name: str, prefix: "str | None") -> "Task | None":
         return target
 
 
+def close_slot_session(slot: str) -> "Lease | None":
+    """슬롯의 **세션 열림 표시만** 내린다 — `session=""`(종료 기록). 대여는 그대로 둔다.
+
+    핸드오프가 서사를 쓰기 전에 부르는 종료 기록의 슬롯 축이다(task 축 짝 = `release_task_pid`).
+    세션이 끝나는 자리에서 그 세션이 연 기록을 닫지 않으면, 다음 진입이 같은 자리를 "열려 있음"
+    으로 읽어 매번 강제 확인을 요구한다.
+
+    **반납(`release`)과 다르다** — 여기서는 `state`(leased)·git 스냅·`test_cmd`·`bound` 를 건드리지
+    않는다. 슬롯은 그대로 두고 가고(연속성), 닫히는 것은 "지금 세션이 열려 있다"는 표시뿐이다.
+    이미 닫혀 있거나(session 빈 문자열·readonly) 장부에 없는 슬롯은 바꿀 것이 없어 그대로 둔다
+    (반환은 그 lease 또는 `None`·부작용 0).
+
+    **장부 IO 는 이 모듈이 단일 소유**(직접 JSON 금지·flock/스키마) — `_lease_lock` 아래
+    `_read_ledger`/`_write_ledger` 로 atomic 갱신한다.
+    """
+    with _lease_lock():
+        leases = _read_ledger_strict()
+        target = next((lease for lease in leases if lease.slot == slot), None)
+        if target is None or not lease_is_open(target):
+            return target
+        target.session = ""        # 종료 기록 — 대여(state/git/test_cmd/bound)는 불변.
+        _write_ledger(leases)
+        return target
+
+
 def release_task_pid(name: str) -> "Task | None":
     """task 종료 기록 — 장부 task 레코드 `open=False` 세팅.
 

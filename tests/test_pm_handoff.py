@@ -2542,6 +2542,7 @@ class _SnapPool:
     def __init__(self, *, lease_git=None, before_git=None, return_none=False):
         self.snap_calls: list[tuple] = []
         self.release_calls: list[tuple] = []
+        self.closed_slots: list[str] = []      # close_slot_session(세션 종료 기록) 호출 기록
         self._lease_git = lease_git or {"branch": "v1.3.3", "head": "f0cd6cf"}
         # 재스냅 *전* lease.git (실갱신/무변경 판별·T-0391). 기본은 after 와 달라 실갱신으로 읽힌다.
         self._before_git = before_git or {"branch": "v1.3.2", "head": "old0000"}
@@ -2558,6 +2559,11 @@ class _SnapPool:
         if self._return_none:
             return None
         return type("_L", (), {"git": self._lease_git})()
+
+    def close_slot_session(self, slot):
+        """세션 열림 표시만 내린다 — 대여는 그대로(엔진 프리미티브 대역)."""
+        self.closed_slots.append(slot)
+        return type("_L", (), {"slot": slot, "state": "leased", "session": ""})()
 
     def release(self, slot, **kwargs):
         self.release_calls.append((slot, kwargs))
@@ -3302,7 +3308,7 @@ def test_run_task_mode_records_task_close_before_log_bookkeeping(hf, tmp_path, m
     assert rc == 0
     assert pool.task_pid_calls == ["mytask"]
     out = capsys.readouterr().out
-    assert out.index("[task] 종료 기록(닫힘)") < out.index("[2/7]")
+    assert out.index("[세션] 종료 기록(닫힘)") < out.index("[2/7]")
     assert "task 종료 기록: mytask → 닫힘" in out
 
 
@@ -3315,7 +3321,7 @@ def test_run_task_mode_dry_run_previews_task_pid_without_call(hf, tmp_path, monk
     )
     assert rc == 0
     assert pool.task_pid_calls == []
-    assert "[dry-run] task 종료 기록 예고: mytask" in capsys.readouterr().out
+    assert "[dry-run] 종료 기록 예고: mytask" in capsys.readouterr().out
 
 
 def test_run_task_mode_blocks_before_log_when_task_intent_record_absent(

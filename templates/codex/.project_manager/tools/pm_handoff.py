@@ -3263,43 +3263,67 @@ class PmHandoff:
                     return False
         return True
 
-    def _release_task_pid(self, task: str) -> bool:
-        """task 종료 기록을 장부에 남긴다(`open=False`) — 성공 여부 반환.
+    def _close_session_records(self, task: "str | None", slot: "str | None") -> bool:
+        """이 세션이 연 기록을 **한 자리에서** 전부 닫는다 — 성공 여부 반환.
 
-        핸드오프 기록(log·pm_state) 전 task 모드에서 호출한다. 이 기록이 없으면 다음
-        부트스트랩이 그 task 를 "열려 있음"으로 보고 거부한다(사용자가 `task close` 로 닫거나
-        `--force` 로 이어받아야 한다). write 프리미티브
-        `worktree_pool.release_task_pid(task)` 만 호출해 닫는다.
+        핸드오프 기록(log·pm_state) 전에 호출한다. 세션이 끝나는 자리에서 그 세션이 연 기록을
+        닫지 않으면 같은 사실이 두 곳에서 다르게 읽힌다 — 다음 진입이 그 자리를 "열려 있음"으로
+        보고 매번 강제 확인을 요구한다. 닫는 축은 둘이고 기존 write 프리미티브만 부른다:
+          - task 모드: `worktree_pool.release_task_pid(task)` → 장부 task 행 `open=False`.
+          - 슬롯 모드: `worktree_pool.close_slot_session(slot)` → 그 슬롯 행의 `session` 비움.
+        **대여는 그대로 둔다** — 슬롯 반납(`--done` 의 `release`)과는 다른 축이다. 닫히는 것은
+        "지금 세션이 열려 있다"는 표시뿐이고 슬롯은 두고 간다.
+
+        task 모드에서 그 task 가 보유한 슬롯의 session 은 **task 이름**(소유 축)이라 건드리지
+        않는다 — 그 세션의 열림/닫힘은 task 행 하나가 말한다.
 
         같은-session 재실행 판정이 이 durable 신호에 의존하므로 더는 보조 fail-soft 기록이 아니다.
         step2 log write **전**에 성공해야 하며, 엔진/primitive/record 부재·예외는 fail-loud(False)다.
         성공 뒤 후속 단계가 중단돼도 종료 기록이 남아 재실행이 같은 차수로 복구된다."""
+        if task is None and slot is None:
+            return True                # 닫을 기록이 없다(슬롯 미해소 세션).
         wp = self._worktree_pool or _load_worktree_pool()
         if wp is None:
-            print("  [중단] worktree_pool 미배선 — task 종료 기록을 남길 수 없다.",
+            print("  [중단] worktree_pool 미배선 — 세션 종료 기록을 남길 수 없다.",
                   file=sys.stderr)
             return False
-        primitive = getattr(wp, "release_task_pid", None)
-        if primitive is None:
-            print("  [중단] worktree_pool 구버전(release_task_pid 부재) — "
-                  "멱등성 신호를 기록할 수 없다.",
-                  file=sys.stderr)
-            return False
-        try:
-            task_rec = primitive(task)
-        except Exception as exc:  # noqa: BLE001 — load-bearing intent 기록 실패는 차단.
-            if _is_engine_rev_skew(exc):
-                raise
-            print(f"  [중단] task 종료 기록 실패 — {exc}.", file=sys.stderr)
-            return False
-        if task_rec is None:
-            print(f"  [중단] task {task!r} 장부에 없음 — 멱등성 신호를 기록하지 못했다.",
-                  file=sys.stderr)
-            return False
-        print(
-            f"  ✓ task 종료 기록: {task} → 닫힘 "
-            "(재실행=같은 차수·다음 bootstrap=재개/N+1)"
-        )
+        if task is not None:
+            primitive = getattr(wp, "release_task_pid", None)
+            if primitive is None:
+                print("  [중단] worktree_pool 구버전(release_task_pid 부재) — "
+                      "멱등성 신호를 기록할 수 없다.",
+                      file=sys.stderr)
+                return False
+            try:
+                task_rec = primitive(task)
+            except Exception as exc:  # noqa: BLE001 — load-bearing intent 기록 실패는 차단.
+                if _is_engine_rev_skew(exc):
+                    raise
+                print(f"  [중단] task 종료 기록 실패 — {exc}.", file=sys.stderr)
+                return False
+            if task_rec is None:
+                print(f"  [중단] task {task!r} 장부에 없음 — 멱등성 신호를 기록하지 못했다.",
+                      file=sys.stderr)
+                return False
+            print(
+                f"  ✓ task 종료 기록: {task} → 닫힘 "
+                "(재실행=같은 차수·다음 bootstrap=재개/N+1)"
+            )
+        if slot is not None:
+            closer = getattr(wp, "close_slot_session", None)
+            if closer is None:
+                print("  [중단] worktree_pool 구버전(close_slot_session 부재) — "
+                      "슬롯 종료 기록을 남길 수 없다.",
+                      file=sys.stderr)
+                return False
+            try:
+                closer(slot)
+            except Exception as exc:  # noqa: BLE001 — load-bearing 종료 기록 실패는 차단.
+                if _is_engine_rev_skew(exc):
+                    raise
+                print(f"  [중단] 슬롯 종료 기록 실패 — {exc}.", file=sys.stderr)
+                return False
+            print(f"  ✓ 슬롯 종료 기록: {slot} → 닫힘 (대여는 그대로·다음 진입=확인 없이 재개)")
         return True
 
     # ── 기본 subprocess 구현 (실제 실행) ──────────────────────────────────────
@@ -4257,14 +4281,19 @@ class PmHandoff:
             session_num = inferred
             print(f"  ✓ task state+log 차수 자동 복구: {session_num}차")
 
-        # task 의 종료 기록(open=False)은 같은-session 재실행을 판별하는 load-bearing 신호다.
-        # log/state/dashboard 어떤 handoff write보다 먼저 기록해, 이후 단계가 중단돼도 재실행이
-        # 같은 차수로 복구되게 한다. dry-run은 예고만 하고 장부를 쓰지 않는다.
-        if task_mode:
-            print("\n[task] 종료 기록(닫힘) (log write 전)...")
+        # 세션 종료 기록(닫힘)은 같은-session 재실행을 판별하는 load-bearing 신호이자, 다음
+        # 진입이 이 자리를 "열려 있음"으로 오독하지 않게 하는 값이다. log/state/dashboard 어떤
+        # handoff write보다 먼저 기록해, 이후 단계가 중단돼도 재실행이 같은 차수로 복구되게 한다.
+        # 닫는 축은 모드가 가른다: task 모드는 task 행, 슬롯 모드는 그 슬롯 행(대여는 유지).
+        # dry-run은 예고만 하고 장부를 쓰지 않는다.
+        closing_task = task if task_mode else None
+        closing_slot = None if task_mode else worktree_slot
+        if closing_task is not None or closing_slot is not None:
+            print("\n[세션] 종료 기록(닫힘) (log write 전)...")
             if dry_run:
-                print(f"  [dry-run] task 종료 기록 예고: {task} (실행 생략).")
-            elif not self._release_task_pid(task):
+                print(f"  [dry-run] 종료 기록 예고: "
+                      f"{closing_task or closing_slot} (실행 생략).")
+            elif not self._close_session_records(closing_task, closing_slot):
                 return 1
 
         # ── 2. log/current.md handoff entry append / 같은-세션 갱신 ────────────────────

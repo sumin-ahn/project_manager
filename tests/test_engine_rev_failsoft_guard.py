@@ -1167,7 +1167,9 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 271 = 266 + T-0920 의 인계 표시 다섯 경계(`pm_bootstrap._handover_*`). 인계 표시는 **읽기
     #   전용 부가 정보**라 조회 실패가 진입을 막지 않지만, marked skew 만은 그대로 올린다
     #   (형제 사본 불일치를 "표시할 게 없음"으로 숨기지 않는다).
-    assert len(report.boundaries) == 271, "propagation sweep boundary ratchet changed"
+    # 272 = 271 + 슬롯 종료 기록 한 경계(`pm_handoff._close_session_records` 의 슬롯 축).
+    #   기록 실패는 서사를 쓰기 전에 False 로 차단하고, marked skew 만 그대로 올린다.
+    assert len(report.boundaries) == 272, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

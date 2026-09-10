@@ -360,6 +360,20 @@ def test_closed_record_enters_without_asking(bootstrap, tmp_path, capsys):
     assert inst.run(repo="X", slot=2) == 0
 
 
+def test_a_handed_off_slot_reenters_without_force(bootstrap, tmp_path, capsys):
+    """핸드오프가 닫고 간 자리(대여는 유지·session 비움)는 `--force` 없이 그대로 이어진다.
+
+    핸드오프가 슬롯 기록을 닫지 않으면 매 세션이 강제 확인을 요구한다 — 그 자리를 닫았는지
+    재는 축이다(대여는 그대로라 state 는 leased 다)."""
+    board = _FakeBoard(anchor_pm_home=None, protected=[])
+    pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="leased", session="")])
+    inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
+
+    assert inst.run(repo="X", slot=2) == 0
+    assert "열린 세션 기록" not in capsys.readouterr().err
+    assert pool.bind_calls == ["work/X_2"]
+
+
 def test_readonly_slot_bind_refused(bootstrap, tmp_path, capsys):
     """readonly 슬롯(⑬·role="readonly")은 **바인딩(점유) 거부** — 무소유 공유 자산(should-fix·T-0358).
 

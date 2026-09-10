@@ -96,6 +96,8 @@ def cycle(tmp_path_factory) -> Cycle:
     slot = _work_slot(run.steps["alloc"]["status"])
     run.run("release other task", ["release", slot, "--task", OTHER_TASK])
     run.run("release", ["release", slot, "--task", TASK])
+    # 열린 채 남은 기록을 닫는 자리 — 이 사이클의 task 는 이미 닫혀 있어 바꿀 것이 없다(무해).
+    run.run("task close", ["task", "close", TASK])
     run.run("task end", ["task", "end", TASK])
     run.run("task reopen", ["task", "reopen", TASK])
     run.run("worktree remove", ["worktree", "remove", slot])
@@ -111,7 +113,7 @@ def cycle(tmp_path_factory) -> Cycle:
 
 
 def test_every_command_of_the_screen_runs_through_the_bridge(cycle):
-    """화면이 부르는 14개가 전부 실제 인자 형식으로 통과했다 — 허용 목록이 정상 명령을 막지 않는다."""
+    """화면이 부르는 15개가 전부 실제 인자 형식으로 통과했다 — 허용 목록이 정상 명령을 막지 않는다."""
     called = {matched_command(step["argv"]) for step in cycle.steps.values()}
 
     assert called == set(ALLOWED_COMMANDS)

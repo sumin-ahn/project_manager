@@ -28,7 +28,7 @@ from manager.bridge_run import (
 REPO = Path(__file__).resolve().parents[1]
 REPO_NAME = "app"
 
-# 화면이 실제로 만드는 argv 14개(구성 탭·행 동작이 내는 것과 같은 형식).
+# 화면이 실제로 만드는 argv 15개(구성 탭·행 동작이 내는 것과 같은 형식).
 SCREEN_ARGV: dict[tuple[str, ...], list[str]] = {
     ("status",): ["status", "--json"],
     ("repo", "list"): ["repo", "list"],
@@ -41,6 +41,7 @@ SCREEN_ARGV: dict[tuple[str, ...], list[str]] = {
     ("alloc",): ["alloc", REPO_NAME, "--task", "t1"],
     ("release",): ["release", "work/app_1", "--task", "t1"],
     ("task", "new"): ["task", "new", "t1"],
+    ("task", "close"): ["task", "close", "t1"],
     ("task", "prefix"): ["task", "prefix", "t1", "dm", "--user-ack", "dm"],
     ("task", "end"): ["task", "end", "t1"],
     ("task", "reopen"): ["task", "reopen", "t1"],
@@ -104,7 +105,7 @@ def no_spawn(monkeypatch):
 
 
 def test_the_allowlist_is_a_set_of_leading_token_tuples(api):
-    assert len(ALLOWED_COMMANDS) == 14
+    assert len(ALLOWED_COMMANDS) == 15
     assert ("whoami",) not in ALLOWED_COMMANDS      # 부르는 곳 없는 표면을 두지 않는다
     assert all(isinstance(command, tuple) for command in ALLOWED_COMMANDS)
     # 한 축에 두 낱말이 필요한 것과 한 낱말짜리가 같은 집합에 있다.
@@ -112,8 +113,8 @@ def test_the_allowlist_is_a_set_of_leading_token_tuples(api):
     assert ("alloc",) in ALLOWED_COMMANDS
 
 
-def test_the_screen_argv_of_all_fourteen_commands_passes_the_gate():
-    """정상 명령이 막히지 않는다 — 14개 각각의 실제 인자 형식으로 맞춘다."""
+def test_the_screen_argv_of_all_commands_passes_the_gate():
+    """정상 명령이 막히지 않는다 — 15개 각각의 실제 인자 형식으로 맞춘다."""
     assert set(SCREEN_ARGV) == set(ALLOWED_COMMANDS)
     for command, argv in SCREEN_ARGV.items():
         assert matched_command(argv) == command, argv
@@ -129,7 +130,7 @@ def test_a_command_outside_the_list_never_spawns(api, pm_home, no_spawn, argv):
 
 
 def test_release_stays_in_the_list_because_the_screen_calls_it(api, pm_home, spawned):
-    """현황 탭의 회수 대기 행이 부르는 자리다 — 목록에서 빼면 그 [반납] 이 거절로 죽는다."""
+    """현황 탭의 반납이 부르는 자리다 — 목록에서 빼면 그 [반납] 이 거절로 죽는다."""
     assert ("release",) in ALLOWED_COMMANDS
     argv = SCREEN_ARGV[("release",)]
     assert matched_command(argv) == ("release",)
@@ -152,8 +153,8 @@ def test_the_first_token_alone_does_not_open_the_family(api, pm_home, no_spawn):
 
 
 @pytest.mark.parametrize("argv", [
-    ["release", "work/app_1", "--force"],
-    ["release", "--force", "work/app_1"],
+    ["worktree", "remove", "work/app_1", "--force"],
+    ["worktree", "remove", "--force", "work/app_1"],
     ["worktree", "remove", "work/app_1", "--force=1"],
     ["repo", "remove", "--force"],
 ])
@@ -180,11 +181,25 @@ def test_the_screen_never_writes_the_force_flag():
 
 
 def test_the_force_scan_reads_value_forms_too():
-    assert forbidden_flag(["release", "x"]) is None
-    assert forbidden_flag(["release", "--force"]) == "--force"
-    assert forbidden_flag(["release", "--force=1"]) == "--force=1"
+    assert forbidden_flag(["worktree", "remove", "x"]) is None
+    assert forbidden_flag(["worktree", "remove", "--force"]) == "--force"
+    assert forbidden_flag(["worktree", "remove", "--force=1"]) == "--force=1"
     # 이름이 비슷한 다른 플래그까지 막지는 않는다.
-    assert forbidden_flag(["release", "--forced-note"]) is None
+    assert forbidden_flag(["worktree", "remove", "--forced-note"]) is None
+
+
+def test_closing_an_open_record_by_force_is_a_screen_place(api, pm_home, spawned):
+    """열린 채 남은 기록을 닫는 강제는 화면 자리다 — 사용자 결정의 그 자리가 브리지에 있다.
+
+    파괴적 제거(`worktree remove --force`)만 막고, 기록을 닫는 둘(`release --force`·
+    `task close`)은 목록을 지나 사본이 답한다."""
+    assert forbidden_flag(["release", "work/app_1", "--force"]) is None
+    assert matched_command(["task", "close", "t1"]) == ("task", "close")
+
+    response = api.run(str(pm_home), ["release", "work/app_1", "--force"])
+
+    assert response.get("error", {}).get("kind") != "forbidden-flag"
+    assert spawned, "허용 목록을 지났는데 서브프로세스가 뜨지 않았다"
 
 
 def test_rejections_leave_the_project_tree_untouched(api, pm_home, tmp_path):
@@ -193,7 +208,7 @@ def test_rejections_leave_the_project_tree_untouched(api, pm_home, tmp_path):
     shutil.copytree(pm_home, home, symlinks=True)
     before = tree_snapshot(home)
 
-    for argv in [*OUT_OF_LIST, ["release", "work/app_1", "--force"]]:
+    for argv in [*OUT_OF_LIST, ["worktree", "remove", "work/app_1", "--force"]]:
         assert "error" in api.run(str(home), argv)
 
     assert tree_snapshot(home) == before

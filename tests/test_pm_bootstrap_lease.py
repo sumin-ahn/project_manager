@@ -202,6 +202,7 @@ class FakeWorktreePool:
         self.alloc_calls: list[dict] = []
         self.bind_calls: list[dict] = []
         self.release_calls: list[dict] = []
+        self.closed_slots: list[str] = []
         self.current_branch_calls: list[str] = []
         self.release_raises_keyerror = False
         # 0단계(T-0351) 실재 검사가 통과하도록 사전 시드하는 **idle** 슬롯 — lean 테스트는 실재하는
@@ -321,6 +322,11 @@ class FakeWorktreePool:
                 encoding="utf-8",
             )
         return (_FakeTaskRecord(name, self._task_prefix), self._task_action)
+
+    def close_slot_session(self, slot):
+        """세션 열림 표시만 내리는 엔진 프리미티브 대역 — 대여는 그대로."""
+        self.closed_slots.append(slot)
+        return _FakeLease(slot, "A", "a5")
 
     def release(self, slot, *, require_clean=True, **_kw):
         self.release_calls.append({"slot": slot, "require_clean": require_clean})

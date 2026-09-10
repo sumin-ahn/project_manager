@@ -283,23 +283,29 @@ def test_handoff_prompt_template_is_lean(handoff):
     assert "board 상태 / 진행 중 작업" not in template, "옛 'board 상태' 재열거 유도 잔존"
 
 
-# ── 5. task 핸드오프 intent — 장부 pid 0 기록 (거동 불변 핀) ──────────────────
-# task 장부 pid 는 **그 task 를 연 세션 pid** 다. 핸드오프가 종료 intent 를 기록하지 않으면 다음
-# 세션의 정상 재개도 dead-pid 로 읽혀 `bind_task` 가 회수(이전 세션 crash)로 상시 오탐한다 —
-# 그래서 이 기록은 log 쓰기 **전에** 성공해야 하는 load-bearing 신호다. 기록 자리는 worktree_pool
-# 의 write 프리미티브 하나이고 핸드오프는 장부를 직접 쓰지 않는다.
+# ── 5. 세션 종료 기록 — 이 세션이 연 기록을 한 자리에서 닫는다 (거동 핀) ──────────
+# 판정 축이 "세션이 열려 있나"라, 세션이 끝나는 자리(핸드오프)는 그 세션이 연 기록을 전부 닫아야
+# 한다 — task 행(`open=False`)과 슬롯 행(`session` 비움)이다. 안 닫으면 다음 진입이 같은 자리를
+# "열려 있음"으로 읽어 매번 확인을 요구한다. 그래서 이 기록은 log 쓰기 **전에** 성공해야 하는
+# load-bearing 신호다. 기록 자리는 worktree_pool 의 write 프리미티브 둘이고 핸드오프는 장부를
+# 직접 쓰지 않는다. **대여는 닫지 않는다** — 슬롯은 두고 간다(반납은 `--done` 축).
 
 
 class _TaskLedgerStub:
-    """`release_task_pid` 만 흉내내는 최소 대역 — 호출 인자와 반환을 남긴다."""
+    """종료 기록 프리미티브 둘만 흉내내는 최소 대역 — 호출 인자와 반환을 남긴다."""
 
     def __init__(self, record) -> None:
         self.calls: list[str] = []
+        self.closed_slots: list[str] = []
         self._record = record
 
     def release_task_pid(self, name: str):
         self.calls.append(name)
         return self._record
+
+    def close_slot_session(self, slot: str):
+        self.closed_slots.append(slot)
+        return SimpleNamespace(slot=slot, state="leased", session="")
 
 
 def test_task_handoff_closes_the_record_through_the_pool_primitive(handoff, capsys):
@@ -307,9 +313,21 @@ def test_task_handoff_closes_the_record_through_the_pool_primitive(handoff, caps
     pool = _TaskLedgerStub(SimpleNamespace(name="t1", open=False))
     tool = handoff.PmHandoff(worktree_pool=pool)
 
-    assert tool._release_task_pid("t1") is True
+    assert tool._close_session_records("t1", None) is True
     assert pool.calls == ["t1"], "장부 write 는 그 프리미티브 한 번뿐이다"
+    assert pool.closed_slots == [], "task 보유 슬롯의 소유(session)는 건드리지 않는다"
     assert "닫힘" in capsys.readouterr().out
+
+
+def test_slot_handoff_closes_the_slot_record_and_keeps_the_lease(handoff, capsys):
+    """슬롯 모드는 그 슬롯의 세션 표시만 닫는다 — 반납(release)은 부르지 않는다."""
+    pool = _TaskLedgerStub(SimpleNamespace(name="t1", open=False))
+    tool = handoff.PmHandoff(worktree_pool=pool)
+
+    assert tool._close_session_records(None, "work/app_1") is True
+    assert pool.closed_slots == ["work/app_1"]
+    assert pool.calls == [], "슬롯 모드에서 task 프리미티브를 부르지 않는다"
+    assert "대여는 그대로" in capsys.readouterr().out
 
 
 def test_task_handoff_intent_without_a_task_record_is_fail_loud(handoff, capsys):
@@ -317,7 +335,7 @@ def test_task_handoff_intent_without_a_task_record_is_fail_loud(handoff, capsys)
     pool = _TaskLedgerStub(None)
     tool = handoff.PmHandoff(worktree_pool=pool)
 
-    assert tool._release_task_pid("t1") is False
+    assert tool._close_session_records("t1", None) is False
     assert pool.calls == ["t1"]
     assert "장부에 없음" in capsys.readouterr().err
 
@@ -326,8 +344,16 @@ def test_task_handoff_intent_requires_the_pool_write_primitive(handoff, capsys):
     """프리미티브가 없는 구버전 사본에서도 조용히 넘어가지 않는다(멱등성 신호 상실 = 중단)."""
     tool = handoff.PmHandoff(worktree_pool=SimpleNamespace())
 
-    assert tool._release_task_pid("t1") is False
+    assert tool._close_session_records("t1", None) is False
     assert "release_task_pid" in capsys.readouterr().err
+
+
+def test_slot_close_requires_the_pool_write_primitive(handoff, capsys):
+    """슬롯 축도 같다 — 프리미티브가 없으면 서사를 쓰기 전에 터진다(실패는 실패)."""
+    tool = handoff.PmHandoff(worktree_pool=SimpleNamespace())
+
+    assert tool._close_session_records(None, "work/app_1") is False
+    assert "close_slot_session" in capsys.readouterr().err
 
 
 def test_no_stale_handoff_guidance_across_tree():
