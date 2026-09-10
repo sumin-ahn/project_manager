@@ -8240,8 +8240,7 @@ def _regression_run_slot(args: argparse.Namespace, session: str, cwd: str) -> in
     return 0 if status == "pass" else (rc or 1)
 
 
-def _slot_state_label(session: str, state: str, rc: int | str | None,
-                      collected: int | None = None) -> str:
+def _slot_state_label(session: str, state: str, rc: int | str | None) -> str:
     """미검증 슬롯 라벨 — `<session>=<state>(rc=N·수집0)` (rc None 이면 상태만·codex sug).
 
     check 실패 메시지에 슬롯별 rc 를 실어 단일-슬롯 진단과 균질화한다 — 특히 rc5(수집 0)는
@@ -8251,7 +8250,7 @@ def _slot_state_label(session: str, state: str, rc: int | str | None,
     if rc is None:
         return f"{session}={state}"
     if rc == REGRESSION_RC_UNVERIFIED_COLLECTION:
-        hint = f"·수집수 미확인({'?' if collected is None else collected})"
+        hint = "·수집수 미확인"
     else:
         hint = "·수집0" if rc == 5 else ""
     return f"{session}={state}(rc={rc}{hint})"
@@ -8268,8 +8267,8 @@ def _regression_multi_check(sessions: list[str]) -> int:
         cwd = _active_slot_path(session) or str(REPO)
         slot_state = _regression_slot_state(session, cwd)
         if slot_state.state != "green":
-            not_green.append(_slot_state_label(session, slot_state.state, slot_state.rc,
-                                               slot_state.collected))
+            not_green.append(
+                _slot_state_label(session, slot_state.state, slot_state.rc))
     if not_green:
         print(f"regression(M={len(sessions)}): 미검증 슬롯 [{', '.join(not_green)}] "
               "— `regression run` 필요 (push 차단).", file=sys.stderr)

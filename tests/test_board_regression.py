@@ -1172,7 +1172,11 @@ def test_multi_run_records_delta_per_slot_without_blocking(
 
 
 def test_multi_check_label_shows_the_unverified_hint(multi_board, capsys):
-    """check 라벨에 수집수 검증 불가 사유 — `B_1=red(rc=unverified-collection·수집수 미확인(?))`."""
+    """check 라벨에 수집수 검증 불가 사유 — `B_1=red(rc=unverified-collection·수집수 미확인)`.
+
+    괄호는 없다 — 그 자리는 하한 시절 기록값을 싣던 곳이고, 하한이 사라진 뒤로는 실경로에서
+    언제나 물음표만 나오던 장식이었다.
+    """
     b = multi_board
     for session, head, payload in (
             ("A_1", "HEAD_A", {"status": "pass", "rc": 0, "collected": 7577}),
@@ -1187,8 +1191,27 @@ def test_multi_check_label_shows_the_unverified_hint(multi_board, capsys):
                         encoding="utf-8")
     assert b.cmd_regression(argparse.Namespace(action="check")) == 1
     err = capsys.readouterr().err
-    assert "B_1=red(rc=unverified-collection·수집수 미확인(?))" in err
+    assert "B_1=red(rc=unverified-collection·수집수 미확인)" in err
+    assert "(?)" not in err
     assert "A_1" not in err          # 수집수가 적어도 green 은 green 이다.
+
+
+def test_multi_check_label_keeps_the_other_rc_branches(multi_board, capsys):
+    """다른 rc 갈래의 라벨은 그대로다 — rc5 는 수집 0 힌트, rc 미기록은 상태-only.
+
+    `unverified-collection` 힌트에서 인자를 뺀 변경이 옆 갈래를 함께 지우지 않았는지 본다.
+    """
+    b = multi_board
+    flag = b._regression_flag_for("A_1")
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    flag.write_text(json.dumps({"head": "HEAD_A", "status": "fail", "rc": 5,
+                                "scope": "full", "collected": None, "session": "A_1",
+                                "ts": "2026-08-07T00:00:00+00:00"}), encoding="utf-8")
+    # B_1 = 기록 없음(missing) → rc 를 모르므로 상태만 적는다.
+    assert b.cmd_regression(argparse.Namespace(action="check")) == 1
+    err = capsys.readouterr().err
+    assert "A_1=red(rc=5·수집0)" in err
+    assert "B_1=missing" in err and "B_1=missing(" not in err
 
 
 def test_multi_run_skips_green_slots_regardless_of_collection_size(
