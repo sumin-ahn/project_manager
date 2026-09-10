@@ -1857,7 +1857,7 @@ def test_upgrade_adopter_legacy_conf_is_guided_then_replaced_then_gates_run(tmp_
     planned = _raw_pm_update(dest, "--from", str(REPO), "--dry-run")
     assert planned.returncode == 0, planned.stderr
     assert "위임 기본값이 허용으로 바뀝니다" in planned.stdout
-    assert "`regression_min_collected` → `regression.min_collected`" in planned.stdout
+    assert "`regression_min_collected` → 제거(대체 키 없음)" in planned.stdout
     assert conf.read_text(encoding="utf-8") == before, "dry-run 이 채택자 conf 를 고쳤다"
 
     # (3) RUN1(배달) → RUN2(변경 0) — 공개 절차가 요구하는 두 실행 **모두** 안내를 낸다.

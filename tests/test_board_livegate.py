@@ -165,8 +165,7 @@ def _platform_conf(live_board, command="run-windows") -> None:
     가리키는 작업 폴더)를 선언 좌표로 읽는다. 두 좌표가 갈리는 것이 슬롯 형상의 평시다.
     """
     text = ("qa.platforms=windows\n"
-            f"test.windows.cmd={command}\n"
-            "regression.min_collected=2\n")
+            f"test.windows.cmd={command}\n")
     for conf in (live_board.LOCAL_CONF,
                  live_board._proj / SLOT / ".project_manager" / "local.conf"):
         conf.parent.mkdir(parents=True, exist_ok=True)
@@ -178,7 +177,8 @@ def _platform_regression_record(live_board, *, status="pass", head=None,
     head = head or "cafef00dcafef00d0011223344556677"
     record = {
         "head": head, "status": status, "rc": 0, "scope": "full",
-        "collected": 3, "floor": 2, "conf_anchor": str(live_board._proj.resolve()),
+        "collected": 3, "previous_collected": None,
+        "conf_anchor": str(live_board._proj.resolve()),
         "ts": "2026-08-28T00:00:00+00:00",
         "platforms": [{
             "name": "windows", "command": command, "head": head,
@@ -521,7 +521,6 @@ def test_declared_platform_unverified_core_blocks_before_release(
     record = _platform_regression_record(live_board, status="fail")
     record["rc"] = live_board.REGRESSION_RC_UNVERIFIED_COLLECTION
     record["collected"] = None
-    record["floor"] = 0
     record["platforms"][0].update({
         "status": "not-run", "rc": "core-red", "collected": None,
     })
@@ -545,8 +544,8 @@ def test_declared_platform_valid_same_head_evidence_is_snapshotted_without_rerun
     assert shell_calls[0]["args"][0] == live_board.LIVEGATE_TEST_CMD
     data = _read_flag(live_board)
     assert set(data) == {
-        "head", "status", "n", "rc", "ts", "scope", "collected", "floor",
-        "conf_anchor", "platforms",
+        "head", "status", "n", "rc", "ts", "scope", "collected",
+        "previous_collected", "conf_anchor", "platforms",
     }
     assert data["platforms"] == regression["platforms"]
     assert live_board.cmd_livegate(_chk_args(rev=data["head"])) == 0
@@ -587,7 +586,7 @@ def test_platform_livegate_check_translates_legacy_conf_key_without_traceback(
 
 
 @pytest.mark.parametrize("damage", (
-    "rc", "scope", "collected-bool", "collected-low", "timestamp", "schema",
+    "rc", "scope", "collected-bool", "previous-bad", "timestamp", "schema",
 ))
 def test_declared_platform_corrupt_core_evidence_blocks_record_and_check(
         live_board, monkeypatch, damage):
@@ -601,8 +600,8 @@ def test_declared_platform_corrupt_core_evidence_blocks_record_and_check(
             record["scope"] = "targeted"
         elif damage == "collected-bool":
             record["collected"] = True
-        elif damage == "collected-low":
-            record["collected"] = 1
+        elif damage == "previous-bad":
+            record["previous_collected"] = "많음"
         elif damage == "timestamp":
             record["ts"] = ""
         else:
@@ -618,7 +617,7 @@ def test_declared_platform_corrupt_core_evidence_blocks_record_and_check(
     valid = _platform_regression_record(live_board)
     assert live_board.cmd_livegate(_rec_args()) == 0
     snapshot = _read_flag(live_board)
-    for key in ("scope", "collected", "floor"):
+    for key in ("scope", "collected", "previous_collected"):
         assert snapshot[key] == valid[key]
     corrupt(snapshot)
     live_board.LIVEGATE_FLAG.write_text(json.dumps(snapshot), encoding="utf-8")

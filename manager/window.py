@@ -20,6 +20,11 @@ WINDOW_WIDTH = 1180
 WINDOW_HEIGHT = 760
 
 
+def window_icon() -> Path:
+    """창 아이콘 — 실행 파일·화면 탭과 같은 자리에서 온다(`manager/assets`)."""
+    return PACKAGE_ROOT / "assets" / "icon-256.png"
+
+
 def dist_index() -> Path:
     """창이 여는 화면 산출물 — `npm run build` 산출(git-ignored)."""
     return PACKAGE_ROOT / "ui" / "dist" / "index.html"
@@ -70,7 +75,8 @@ class ManagerWindow:
         """
         self.create()
         try:
-            webview.start(func, self._window, private_mode=False)
+            webview.start(func, self._window, private_mode=False,
+                          icon=str(window_icon()))
         finally:
             self.server.stop()
 

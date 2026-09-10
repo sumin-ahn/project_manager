@@ -147,7 +147,8 @@ export type AdapterFile = {
   mode?: "managed" | "report";
   template_rev?: string;
   diff_lines?: { added: number | null; removed: number | null };
-  diff_vs_baseline?: string;
+  // 엔진은 기준 사본을 모르는 행에서 이 값을 널로 낸다(`pm_import.AdapterConfigReport`).
+  diff_vs_baseline?: string | null;
   diff_vs_latest?: string;
   features?: AdapterFeature[];
   distance?: number;

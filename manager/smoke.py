@@ -11,12 +11,37 @@ headless 는 `Gtk.init_check` 가 False 라 `xvfb-run -a` 아래에서 돌려야
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 from . import window
 
-SMOKE_TIMEOUT_SECONDS = 5
+# 창이 뜨고 화면이 로드되기를 기다리는 한도. 이 값은 앱이 얼마나 빨라야 하는가가 아니라
+# **얼마나 기다렸다가 실패라고 말할 것인가**다 — 신호가 오면 즉시 돌아오므로 넉넉해도 느려지지
+# 않는다. 5초였을 때 이 머신에서 pywebview 가 창을 띄우는 데 25초가 걸려(같은 GTK·WebKit 을
+# 라이브러리 없이 직접 띄우면 0.8초) 확인이 늘 실패했다.
+SMOKE_TIMEOUT_SECONDS = 60
+
+
+def _close(created, outcome: dict) -> None:
+    """창을 닫는다 — 닫지 못하면 그 사실을 말하고 프로세스를 끝낸다.
+
+    창이 끝내 뜨지 않으면 이 라이브러리의 닫기가 "창이 시작되지 못했다" 로 실패한다. 그
+    예외가 이 스레드 밖으로 새면 창 루프가 그대로 남아 `--smoke` 가 **아무 말 없이 매달린다**
+    (바깥 타임아웃이 끊어 줄 때까지). 그래서 여기서 받아 사유를 내고 프로세스를 끝낸다 —
+    닫을 창이 없는 상태라 정상 종료 경로가 남아 있지 않다.
+    """
+    try:
+        created.destroy()
+    except Exception as exc:  # noqa: BLE001
+        # 창이 열리지 않은 사유는 표준 출력으로 낸다(T-0922 결정) — 실행 방식에 따라
+        # 오류 출력이 사라지는 자리가 있어 그 결정이 섰다.
+        print(f"[중단] 창을 닫지 못했다: {type(exc).__name__}: {exc}")
+        if not outcome.get("shown"):
+            print(f"[중단] {SMOKE_TIMEOUT_SECONDS}초 안에 창이 뜨지 않았다.")
+        sys.stdout.flush()
+        os._exit(1)
 
 
 def run(*, registry_file: Path | str | None = None, port: int = 0) -> int:
@@ -31,20 +56,23 @@ def run(*, registry_file: Path | str | None = None, port: int = 0) -> int:
 
     def probe(created) -> None:
         try:
-            outcome["loaded"] = created.events.loaded.wait(SMOKE_TIMEOUT_SECONDS)
+            outcome["shown"] = created.events.shown.wait(SMOKE_TIMEOUT_SECONDS)
+            outcome["loaded"] = (created.events.loaded.wait(SMOKE_TIMEOUT_SECONDS)
+                                 if outcome["shown"] else False)
             if outcome["loaded"]:
                 outcome["projects"] = manager_window.api.list_projects()
         except Exception as exc:  # noqa: BLE001
             # 삼키지 않는다 — 창 스레드에서 올라온 원문을 rc≠0 의 사유로 그대로 낸다.
-            # (여기서 다시 던지면 창이 닫히지 않아 `--smoke` 가 매달린다.)
             outcome["failure"] = f"{type(exc).__name__}: {exc}"
-        finally:
-            created.destroy()
+        _close(created, outcome)
 
     manager_window.start(probe)
 
     if "failure" in outcome:
         print(f"[중단] 창은 열렸으나 확인에 실패했다: {outcome['failure']}", file=sys.stderr)
+        return 1
+    if not outcome.get("shown"):
+        print(f"[중단] {SMOKE_TIMEOUT_SECONDS}초 안에 창이 뜨지 않았다.")
         return 1
     if not outcome.get("loaded"):
         print(f"[중단] {SMOKE_TIMEOUT_SECONDS}초 안에 화면이 로드되지 않았다.", file=sys.stderr)

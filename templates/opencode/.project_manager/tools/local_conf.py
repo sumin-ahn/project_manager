@@ -261,8 +261,8 @@ LEGACY_KEY_MAP: dict[str, str | None] = {
     "ctx_nudge_pct": "ctx.nudge_pct",
     "ctx_stop_pct": "ctx.stop_pct",
     "ctx_window_tokens": "ctx.window_tokens",
-    # 회귀 가드
-    "regression_min_collected": "regression.min_collected",
+    # 제거 — 회귀 수집 하한 폐지(대체 키 없음: 수집수는 직전 기록 대비 증감으로 표시만 한다)
+    "regression_min_collected": None,
     # upstream 좌표
     "upstream": "upstream.path",
     "upstream_rev": "upstream.rev",
@@ -481,10 +481,6 @@ KEY_REGISTRY: dict[str, KeySpec] = {
     "qa.platforms": KeySpec(
         "검증 플랫폼 목록",
         "쉼표로 구분한 이름 목록, 적으면 이름마다 별도 테스트 명령이 필요하고 적은 순서대로 이어서 실행, 비우면 기본 하나만",
-        default=None, required=False, group="runtime"),
-    "regression.min_collected": KeySpec(
-        "회귀 최소 테스트 개수",
-        "테스트가 이 개수보다 적게 모이면 실패 처리, 비우면 개수를 보지 않음",
         default=None, required=False, group="runtime"),
     "identity.user": KeySpec(
         "내 계정",

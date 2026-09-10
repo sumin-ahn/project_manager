@@ -5,6 +5,8 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   base: "./",
+  // 아이콘 원본 자리는 `manager/assets` 하나다 — 화면이 자기 사본을 들지 않는다.
+  publicDir: "../assets",
   build: { outDir: "dist", emptyOutDir: true },
   test: {
     environment: "jsdom",

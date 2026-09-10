@@ -155,7 +155,8 @@ def _platform_regression_record(anchor: Path) -> dict:
     )
     return {
         "head": _HEAD_SHA, "status": "pass", "rc": 0, "scope": "full",
-        "collected": 3, "floor": 0, "conf_anchor": str(anchor.resolve()),
+        "collected": 3, "previous_collected": None,
+        "conf_anchor": str(anchor.resolve()),
         "ts": "2026-08-29T00:00:00+00:00",
         "platforms": [{
             "name": "windows", "command": "run-windows", "head": _HEAD_SHA,

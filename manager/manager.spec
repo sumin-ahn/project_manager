@@ -53,6 +53,7 @@ exe = EXE(  # noqa: F821
     analysis.binaries,
     analysis.datas,
     name=build.executable_stem(),
+    icon=str(build.icon_path(_REPO_ROOT, build.EXECUTABLE_ICON)),
     console=True,
     strip=False,
     upx=False,
