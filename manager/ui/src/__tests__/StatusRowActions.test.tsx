@@ -81,6 +81,22 @@ describe("아이들 규칙", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it("열린 기록 행에는 강제 닫기가 있고 확인을 받은 뒤에만 부른다", async () => {
+    const { run } = renderRow(slotOf("."));
+
+    fireEvent.click(screen.getByTestId("force-close-."));
+    expect(run).not.toHaveBeenCalled();          // 확인 전에는 부르지 않는다
+
+    fireEvent.click(screen.getByTestId("confirm-cancel"));
+    expect(run).not.toHaveBeenCalled();          // 취소도 부르지 않는다
+
+    fireEvent.click(screen.getByTestId("force-close-."));
+    fireEvent.click(screen.getByTestId("confirm-approve"));
+
+    await waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    expect(run.mock.calls[0][1]).toEqual(["release", ".", "--force"]);
+  });
+
   it("작업 중 행은 비활성이고 사유가 세션 이름이다", () => {
     renderRow(slotOf("work/app_2"));
 

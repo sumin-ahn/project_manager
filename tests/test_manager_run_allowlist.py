@@ -168,16 +168,24 @@ def test_the_force_flag_is_refused_before_any_spawn(api, pm_home, no_spawn, argv
         assert FORBIDDEN_FLAG in response["error"]["message"]
 
 
-def test_the_screen_never_writes_the_force_flag():
-    """노출 0 — 화면 소스 어디에도 그 토큰을 넘기는 문자열이 없다(설명 문장은 인용부호 밖이다)."""
+def test_the_screen_writes_the_force_flag_only_to_close_an_open_record():
+    """화면이 그 토큰을 넘기는 자리는 하나다 — 열린 기록을 닫는 `release`.
+
+    엔진 쪽 금지도 파괴적 제거(`worktree remove`) 하나로 좁혔다. 화면에서 끝난 세션을 닫을
+    자리가 있어야 한다는 사용자 결정의 짝이라, 여기서도 "노출 0" 이 아니라 "그 한 자리뿐"을
+    잰다. 다른 명령에 이 토큰이 붙으면 red 다(설명 문장은 인용부호 밖이라 세지 않는다).
+    """
     sources = [path for path in repo_owned_paths(REPO, "manager/ui/src", mode=OWNED)
                if path.suffix in {".ts", ".tsx"} and "__tests__" not in path.parts]
 
     assert sources
+    carriers = []
     for source in sources:
-        text = source.read_text(encoding="utf-8")
-        for literal in (f'"{FORBIDDEN_FLAG}"', f"'{FORBIDDEN_FLAG}'"):
-            assert literal not in text, f"{source.name} 이 {FORBIDDEN_FLAG} 를 넘긴다"
+        for number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1):
+            if f'"{FORBIDDEN_FLAG}"' in line or f"'{FORBIDDEN_FLAG}'" in line:
+                assert '"release"' in line, f"{source.name}:{number} 이 release 밖에서 넘긴다"
+                carriers.append(f"{source.name}:{number}")
+    assert len(carriers) == 1, f"넘기는 자리는 하나여야 한다: {carriers}"
 
 
 def test_the_force_scan_reads_value_forms_too():

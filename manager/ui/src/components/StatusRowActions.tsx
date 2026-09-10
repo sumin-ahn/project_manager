@@ -90,12 +90,14 @@ export function SlotTableAllocate() {
 
 function SlotActions({ row }: { row: SlotRow }) {
   const verdict = rowDot(row);
-  const { outcome } = useCommand();
+  const { outcome, busy, call } = useCommand();
+  const [closing, setClosing] = useState(false);
   const reason = disabledReason(row, verdict);
 
-  // [반납]이 뜨는 행은 열린 기록(작업 중)뿐이고, 그 창이 아직 그 자리를 쥐고 있을 수 있어
-  // 사유와 함께 비활성이다(닫는 것은 사용자 행위 — `pm-config release <slot> --force`).
-  // 그 밖(아이들·readonly)에는 되돌릴 것이 없어 재조회만 남는다.
+  // 열린 기록(작업 중) 행 — 그 창이 아직 그 자리를 쥐고 있을 수 있어 [반납]은 사유와 함께
+  // 비활성이다. 다만 세션이 인계를 남기지 못하고 끝나는 일이 있어(창이 그냥 닫히는 경우)
+  // 사람이 그 기록을 닫을 자리는 화면에도 있어야 한다 — [강제 닫기]가 확인을 한 번 받고
+  // `release <slot> --force` 를 부른다. 그 밖(아이들·readonly)에는 되돌릴 것이 없어 재조회만 남는다.
   if (verdict.actions !== "disabled") {
     return <RefreshOnly slot={row.slot} />;
   }
@@ -105,7 +107,21 @@ function SlotActions({ row }: { row: SlotRow }) {
         <Reason reason={reason} />
         <button type="button" data-testid={`release-${row.slot}`} title={reason ?? ""}
                 disabled className={BUTTON}>반납</button>
+        <button type="button" data-testid={`force-close-${row.slot}`} disabled={busy}
+                onClick={() => setClosing(true)} className={BUTTON}>강제 닫기</button>
       </span>
+      {closing && (
+        <ConfirmDialog
+          title={`${row.slot} 의 열린 기록을 닫는다 — 계속?`}
+          note="그 세션이 인계를 남기지 못하고 끝났을 때 쓴다. 아직 그 창이 살아 있으면 그 세션의 기록이 사라진다. 작업 폴더와 그 안의 변경은 그대로 남는다."
+          value={row.slot}
+          onConfirm={() => {
+            setClosing(false);
+            void call(["release", row.slot, "--force"]);
+          }}
+          onCancel={() => setClosing(false)}
+        />
+      )}
       <CommandOutput outcome={outcome} />
     </span>
   );
