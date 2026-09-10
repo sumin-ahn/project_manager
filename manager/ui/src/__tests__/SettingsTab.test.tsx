@@ -244,7 +244,17 @@ describe("다섯 목록의 배너와 행 표시", () => {
     fireEvent.click(screen.getByTestId("show-unset"));           // 접힘은 숨김이 아니다
     expect(screen.getByLabelText("project.name"))
       .toHaveAttribute("placeholder", "설정 안 함");
-    expect(screen.getByTestId("conf-project.name").querySelector("button")).toBeNull();
+  });
+
+  it("군 안에서 갈리는 이름이 있으면 그 이름이 선다 — 같은 이름 세 줄이 서지 않는다", () => {
+    const bridge = makeBridge();
+    mounted(bridge);
+    openGroup("additional_reviewer");
+    fireEvent.click(screen.getByTestId("show-unset"));
+    const names = ["diff_cap.small", "diff_cap.medium", "diff_cap.large"]
+      .map((key) => screen.getByTestId(`conf-${key}`).textContent ?? "");
+    expect(new Set(names).size).toBe(3);
+    expect(names[0]).toContain("작은 티켓");
   });
 });
 

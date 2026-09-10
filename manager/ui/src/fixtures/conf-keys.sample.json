@@ -1616,7 +1616,11 @@
           "recommended": null
         }
       ],
-      "unit_labels": {},
+      "unit_labels": {
+        "diff_cap.small": "티켓 크기별 변경량 상한 (작은 티켓)",
+        "diff_cap.medium": "티켓 크기별 변경량 상한 (보통 티켓)",
+        "diff_cap.large": "티켓 크기별 변경량 상한 (큰 티켓)"
+      },
       "choices": null,
       "recommended": null
     },
