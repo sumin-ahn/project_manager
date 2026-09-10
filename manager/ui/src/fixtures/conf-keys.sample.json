@@ -103,19 +103,6 @@
       "recommended": null
     },
     {
-      "key": "regression.min_collected",
-      "group": "runtime",
-      "label": "회귀 최소 테스트 개수",
-      "description": "테스트가 이 개수보다 적게 모이면 실패 처리, 비우면 개수를 보지 않음",
-      "default": null,
-      "required": false,
-      "kind": "key",
-      "members": null,
-      "unit_labels": {},
-      "choices": null,
-      "recommended": null
-    },
-    {
       "key": "identity.user",
       "group": "identity",
       "label": "내 계정",

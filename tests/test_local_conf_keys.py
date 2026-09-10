@@ -477,7 +477,7 @@ _KEYS_BEFORE_THE_REGISTRY = frozenset({
     "additional_reviewer.paths", "additional_reviewer.timeout",
     "additional_reviewer.idle_timeout", "additional_reviewer.progress_signal",
     "ctx.nudge_pct", "ctx.stop_pct", "ctx.window_tokens",
-    "qa.platforms", "regression.min_collected",
+    "qa.platforms",
     "upstream.path", "upstream.rev", "upstream.seen_rev",
     "project.name", "project.tagline", "project.root", "project.date",
     "runtime.py", "test.cmd", "identity.user",
@@ -491,7 +491,7 @@ def test_known_keys_is_derived_from_the_registry_and_keeps_its_members(conf_modu
 
 
 def test_every_registered_key_declares_description_default_and_required(conf_module):
-    """실명 29키 전부가 설명·기본값 표현·필수 bool·표시 묶음을 갖는다 (완전성)."""
+    """실명 28키 전부가 설명·기본값 표현·필수 bool·표시 묶음을 갖는다 (완전성)."""
     for key, spec in conf_module.KEY_REGISTRY.items():
         assert spec.description.strip(), key
         assert spec.default is None or isinstance(spec.default, str), key
@@ -666,7 +666,7 @@ def test_nonstandard_compares_only_keys_that_declare_a_default(conf_module):
 
 
 def test_keys_cli_lists_all_keys(conf_module):
-    """`local_conf.py --keys` 가 실명 29키·패턴 군·기본값을 사람 표면 하나로 낸다."""
+    """`local_conf.py --keys` 가 실명 28키·패턴 군·기본값을 사람 표면 하나로 낸다."""
     proc = subprocess.run(
         [sys.executable, str(LOCAL_CONF_PY), "--keys"],
         capture_output=True, text=True, encoding="utf-8", env=utf8_child_env(),
@@ -834,7 +834,7 @@ def test_every_row_carries_the_choices_and_recommended_keys(keys_document):
     """모든 행의 모양이 같다 — 화면이 행마다 분기하지 않게 두 키를 항상 싣는다(없으면 null)."""
     rows = _rows(keys_document)
 
-    assert len(rows) == 29 + 5 + 12 + 48 + 3      # 실명 29 · 군 5 · 하네스 12 · 위임 48 · 상한 3
+    assert len(rows) == 28 + 5 + 12 + 48 + 3      # 실명 28 · 군 5 · 하네스 12 · 위임 48 · 상한 3
     for row in rows:
         assert "choices" in row and "recommended" in row, row["key"]
 

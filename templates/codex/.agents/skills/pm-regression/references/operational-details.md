@@ -2,19 +2,21 @@
 
 > 아래 절은 상시 카드에서 분리한 원문이다. 해당 상황에서만 읽는다.
 
-## 수집 하한 (부분수집 false-green 차단·선택)
+## 수집 개수 증감 (직전 회귀 대비 표시)
 
-rc0 인데 스위트 *일부만* 수집되는 파손(cwd/pythonpath)은 rc 로는 안 잡힌다. per-clone
-`local.conf` 에 하한을 선언하면 FULL 게이트가 그 미만 수집을 fail 로 기록해 push 를 막는다.
+rc0 인데 스위트 *일부만* 수집되는 파손(cwd/pythonpath)은 rc 로는 안 잡힌다. FULL 게이트는
+직전 회귀 기록의 수집수와 이번 수집수의 증감을 회귀 줄에 함께 낸다.
 
-```conf
-# .project_manager/local.conf — 회귀가 도는 트리(worktree)의 conf 가 기준
-regression.min_collected=7000   # 기본 0 = 가드 off. 자기 수집수보다 여유 있게 낮춰 잡는다.
+```
+regression: pass (rc=0) (직전 13323 · +177 · 1.3% ⚠) @ e4f2436f
 ```
 
-- FULL 게이트 한정이다 — `--ticket`/`--touches` 스코프 실행은 대상이 아니다(매칭분만 도는 게 정상).
-- 하한 미만 = `partial-collection` · 요약행을 못 읽어 검증 불가 = `unverified-collection` 으로
-  기록되고 `regression check` 가 사유와 함께 push 를 막는다. 하한을 올리면 옛 green 기록도 무효화된다.
+- **막지 않는다.** 증가든 감소든 rc 를 바꾸지 않는다. 변화율 1% 이상이면 `⚠` 로 눈에 띄게
+  적을 뿐이고, 적절한 변경인지는 사람이 판단한다. 설정 키는 없다.
+- 비교할 직전 기록이 없거나(첫 실행) 수집수를 못 읽으면 증감 문장이 비어 있다(추정 없음).
+- FULL 게이트 기록 한정이다 — `--ticket`/`--touches` 스코프 실행은 기록을 읽지도 쓰지도 않는다.
+- 수집 0(rc=5)은 그대로 red 다. 선언 platform 에서 요약행을 못 읽으면
+  `unverified-collection` 으로 기록되고 `regression check` 가 사유와 함께 push 를 막는다.
 
 ## 티켓별 빠른 루프
 

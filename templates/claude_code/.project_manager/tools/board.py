@@ -2264,7 +2264,7 @@ def local_config(repo: Path | None = None) -> dict[str, str]:
     """Per-clone local config (`.project_manager/local.conf`, git-ignored).
 
     `repo` 를 주면 **그 트리의** conf 를 읽는다(`<repo>/.project_manager/local.conf`) —
-    이 board.py 사본의 `REPO` 가 아니라 판정 대상 트리가 앵커여야 하는 소비처(회귀 수집 하한 —
+    이 board.py 사본의 `REPO` 가 아니라 판정 대상 트리가 앵커여야 하는 소비처(회귀 수집 증감 —
     스위트는 실행 cwd 트리의 것이다)를 위한 seam. 미지정은 현행 `LOCAL_CONF`(무변경).
     `additional_reviewer.local_config(repo)` 와 동형 시그니처.
 
@@ -7459,21 +7459,22 @@ def _quarantine_args() -> str:
     return " ".join(f"--deselect {i}" for i in ids)
 
 
-# ── FULL 게이트 수집 하한 (부분수집 false-green 차단) ─────────────────────
-# rc5(수집 0)만 결함 신호로 보면 **부분 수집**(rc0 인데 스위트 일부만 돎 — cwd/pythonpath 파손)이
-# pass 로 기록된다. 하한은 스위트 규모의 함수라 엔진이 보편값을 정할 수 없으므로 채택자 opt-in
-# (local.conf `regression.min_collected`·기본 0 = 가드 off)으로 선언받고, FULL 게이트 결과가 rc0
-# 인데 실행 수가 하한 미만이면 fail 로 강등한다. 강등 rc 는 전용 라벨이라 실 red(rc≠0)·
-# rc5(수집 0)와 사유가 구분된다(check/훅 메시지 진단 가능).
-REGRESSION_MIN_COLLECTED_KEY = "regression.min_collected"
-REGRESSION_RC_PARTIAL_COLLECTION = "partial-collection"    # 수집 < 하한 (비-0·전용 라벨)
-REGRESSION_RC_UNVERIFIED_COLLECTION = "unverified-collection"  # 하한 활성인데 검증 불가
+# ── FULL 게이트 수집 증감 (직전 기록 대비 · 막지 않는다) ─────────────────
+# 채택자가 선언하던 수집 하한은 폐지했다 — 스위트 규모의 함수라 선언값이
+# 실측의 절반에 머물러 스위트 절반이 사라져도 통과했다(느슨한 안심). 대신 직전 회귀 기록의
+# 수집수와 이번 수집수의 증감을 회귀 줄에 함께 낸다. 변화율이 `COLLECTION_DELTA_ALERT_PCT`
+# 이상이면 눈에 띄게 표시하되 **rc 는 바꾸지 않는다** — 적절한 변경인지는 사람이 판단한다.
+# rc5(수집 0)는 그대로 red 다(하한이 아니라 "테스트가 한 개도 안 돌았다"는 별개 사실).
+COLLECTION_DELTA_ALERT_PCT = 0.01          # 이 비율 이상이면 증감 문장에 경고 표기를 단다.
+# 선언 platform aggregate 는 "수집수는 정수" 라는 저장 계약을 갖는다 — 그 검증 불가는 여전히
+# 전용 라벨의 fail 이다(하한과 무관한 축이라 증감 전환 뒤에도 남는다).
+REGRESSION_RC_UNVERIFIED_COLLECTION = "unverified-collection"  # 수집수를 못 읽어 검증 불가
 
 
 # ── pytest 요약행 파서 (엔진 공용 seam) ────────────────────────────────────
 # 요약행은 **끝에서부터** 줄 단위로 찾는다. 캡처된 pytest 출력에는 테스트 자신이 찍은
 # `3 passed` 류 로그가 섞이고, 출력 전체를 `re.search` 하면 그 로그를 요약으로 오판한다.
-# 도구마다 복제돼 있던 첫-매칭 파서를 여기로 승격했다 — 수집 하한 가드·릴리즈 라이브 게이트
+# 도구마다 복제돼 있던 첫-매칭 파서를 여기로 승격했다 — 수집 증감 표시·릴리즈 라이브 게이트
 # (이 파일)·부트스트랩 회귀 dump·ticket 마감 회귀 판정·핸드오프 회귀 1줄이 모두 이 seam 을
 # 쓴다. 다른 도구는 각자 이미 가진 board 형제 로더로 읽는다 — **로컬 사본 금지**(사본은
 # 첫-매칭 오판을 그대로 되살린다).
@@ -7507,7 +7508,7 @@ def _pytest_outcome_counts(line: str,
                            kinds: tuple[str, ...] = _PYTEST_OUTCOME_KINDS) -> list[int]:
     """한 줄에서 pytest outcome 카운트를 뽑는다 (`7577 passed, 12 skipped …` → [7577, 12]).
 
-    `kinds` 로 셀 종류를 좁힌다 — 소비처마다 *무엇을 실행으로 보는지* 가 다르다(수집 하한은
+    `kinds` 로 셀 종류를 좁힌다 — 소비처마다 *무엇을 실행으로 보는지* 가 다르다(수집 증감 표시는
     6종 전부·릴리즈 라이브 게이트는 마커 안에서 돈 3종).
     """
     counts: list[int] = []
@@ -7520,7 +7521,7 @@ def _pytest_outcome_counts(line: str,
 
 # 요약행 **전체 문법** — outcome 목록 + `in <소요시간>` 종결. 끝에서-탐색만으로는 부족하다:
 # 실제 요약 *뒤에* wrapper/자식 하네스가 `child harness: 5 passed in 1.00s` 류를 찍으면(소비처는
-# stdout+stderr 병합 출력을 먹인다) 그게 마지막 카운트 줄이라 요약으로 뽑혀 하한·릴리즈 pin 이
+# stdout+stderr 병합 출력을 먹인다) 그게 마지막 카운트 줄이라 요약으로 뽑혀 증감·릴리즈 pin 이
 # 우회된다. 실측된 그 오염 줄은 `in X.XXs` 종결까지 갖췄으므로 **줄머리 앵커가 필수**다 — 판정을
 # "카운트를 포함한다"가 아니라 "요약행 문법에 완전히 일치한다"로 세운다. 허용 형태: 구분선
 # 장식(`==== … ====`)·긴 실행의 `(0:06:28)` 꼬리·구 pytest 의 `in 0.30 seconds`.
@@ -7562,8 +7563,8 @@ def _collected_count(output: str) -> int | None:
     """pytest 요약행에서 *실제 실행된* 테스트 수를 센다 (파싱 실패 시 None).
 
     N = passed + failed + error(s) + skipped + xfailed + xpassed. 요약행이 없으면
-    (수집 0 "no tests ran"·비-pytest test_cmd) None — 하한 가드는 그때 판정을 건너뛴다
-    (fail-soft·현행 rc 신호에 맡김).
+    (수집 0 "no tests ran"·비-pytest test_cmd) None — 그때는 증감 문장이 비고 판정은
+    현행 rc 신호에 맡긴다(fail-soft).
     """
     line = _pytest_summary_line(output)
     if line is None:
@@ -7584,53 +7585,67 @@ def _pytest_summary_tail(output: str, kind: str = "passed") -> str | None:
     return line[match.start():].strip() if match else None
 
 
-def _regression_min_collected(cwd: str | None = None) -> int:
-    """FULL 게이트 수집 하한 — **회귀를 도는 트리**(run cwd)의 local.conf 에서 해소한다.
+def collection_delta_text(collected: int | None, previous: int | None) -> str:
+    """직전 회귀 기록 대비 수집수 증감 문장 — ` (직전 N · +D[ · P% ⚠])` (비교 불가면 빈 문자열).
 
-    앵커가 run cwd 인 이유: 하한은 *그 트리 스위트* 규모의 함수다. 호출된 board.py 사본의
-    `REPO`(두-git 형상에선 tests/ 가 없는 PM 홈·multi-repo 홈에선 남의 repo)에서 읽으면 다른
-    트리의 선언이 새어 들어와 엉뚱한 스위트를 강등한다 — 실제로 개발 머신 local.conf 가 tmp
-    스텁 회귀(수집 1)를 강등시킨 누출이 있었다. cwd 미지정은 현행 `REPO` 앵커.
+    막는 판정이 아니라 표시다. 스위트가 갑자기 줄었는지(수집 경로 파손·대량 skip) 늘었는지를
+    회귀 줄에서 바로 보고 사람이 판단한다 — 어떤 증감도 rc 를 바꾸지 않는다.
 
-    엔진 기본값은 0(off)이고 채택자가 자기 수집수 기준으로 선언한다. 비정수/음수는 0(off)로
-    폴백하되 **경고 1줄**을 낸다 — 오타로 게이트가 조용히 무력화되면 이 가드가 막으려던
-    false-green 이 그대로 돌아온다.
+    둘 중 하나라도 정수가 아니면(첫 실행·기록 손상·수집수 파싱 실패) 빈 문자열이다. 증감을
+    지어내지 않는다. 직전이 0 이면 비율을 내지 않고 차이만 낸다(0 나눗셈 금지). 변화율이
+    `COLLECTION_DELTA_ALERT_PCT` 이상이면 비율과 경고 표기를 덧붙인다.
     """
-    conf = local_config(Path(cwd)) if cwd else local_config()
-    raw = conf.get(REGRESSION_MIN_COLLECTED_KEY)
-    if raw is None:
-        return 0
+    if not isinstance(collected, int) or isinstance(collected, bool):
+        return ""
+    if not isinstance(previous, int) or isinstance(previous, bool):
+        return ""
+    diff = collected - previous
+    body = f" (직전 {previous} · {diff:+d}"
+    if previous and abs(diff) / previous >= COLLECTION_DELTA_ALERT_PCT:
+        return body + f" · {abs(diff) / previous * 100:.1f}% ⚠)"
+    return body + ")"
+
+
+def _write_regression_flag(flag: Path, record: dict) -> None:
+    """회귀 기록의 **단일 쓰기 지점** — 직전 수집수를 이어 붙이고 원자로 교체한다.
+
+    run 경로(단일-슬롯·M>1 슬롯·platform 유무·실패 조기반환)마다 dict 리터럴을 따로 쓰던 아홉
+    자리를 여기로 모았다. 승계 규칙이 한 자리에만 있어야 경로마다 기준점이 갈리지 않는다.
+
+    승계는 직전 기록의 `collected`(정수일 때)이고, 직전이 정수를 못 담았으면(실패 기록·파싱
+    실패) 그 기록의 `previous_collected` 를 그대로 잇는다 — 안 그러면 실패 한 번에 기준점이
+    영구히 사라진다. 어느 쪽도 없으면 None 이다(0 으로 지어내지 않는다).
+
+    `previous_collected` 는 **항상** 실린다(값이 None 이어도 키는 있다) — platform aggregate 의
+    스키마 완전일치 검사가 키 집합을 그대로 대조한다. `record` 는 제자리에서 갱신되므로
+    호출부가 승계값을 그대로 읽어 증감 문장에 쓴다.
+    """
+    record["previous_collected"] = _previous_collected(flag)
+    _write_json_atomic(flag, record)
+
+
+def _previous_collected(flag: Path) -> int | None:
+    """덮어쓰기 전 기록에서 이어받을 수집수 (없거나 손상이면 None)."""
     try:
-        value: int | None = int(str(raw).strip())
-    except ValueError:
-        value = None
-    if value is None or value < 0:
-        print(f"regression: 경고 — local.conf `{REGRESSION_MIN_COLLECTED_KEY}={raw}` 가 "
-              "비정수/음수 — 수집 하한 가드 off.", file=sys.stderr)
-        return 0
-    return value
-
-
-def _collection_shortfall_text(collected: int | None, floor: int | None) -> str:
-    """부분수집 사유의 공용 표기 — `수집 N<하한 M` (run·check 세 surface 가 공유).
-
-    두 값 모두 **플래그에 기록된 실행 당시 값**을 받는다 — check 시점에 conf 를 다시 읽으면
-    그 사이 바뀐 하한으로 과거 기록을 설명하게 된다. 미기록(옛 플래그)은 `?`.
-    """
-    shown = "?" if collected is None else collected
-    limit = "?" if floor is None else floor
-    return f"수집 {shown}<하한 {limit}"
+        data = json.loads(file_lock.read_text_shared(flag, encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    carried = _flag_collected(data)
+    if carried is not None:
+        return carried
+    inherited = data.get("previous_collected")
+    return inherited if isinstance(inherited, int) and not isinstance(inherited, bool) else None
 
 
 def _flag_conf_anchor(data: dict, fallback: str | None) -> str | None:
     """플래그에 기록된 **conf 앵커**(실행 당시 cwd) — 미기록/손상이면 `fallback`.
 
-    하한은 *실행 트리* 의 선언이다. `run --cwd <tree>` 로 핀해 돈 결과를 pre-push 훅이
-    `check`(훅은 `--cwd` 를 못 넘긴다)로 검증할 때, check 가 **자기** cwd 로 하한을 재해소하면
-    실행 때와 다른 local.conf 를 읽어 실행 트리의 하한 상향을 놓치거나(false-green) 무관한
-    하한으로 막는다(false-RED). 그래서 run 이 앵커를 기록하고 check 는 그 앵커로 해소한다.
-    앵커 트리가 사라졌으면 conf 부재 → 하한 0 으로 흐른다(fail-soft·HEAD 대조가 별도로 stale
-    을 잡는다). 미기록(옛 플래그)은 호출부 해소값으로 폴백해 후방호환.
+    선언(test_cmd·platform 목록)은 *실행 트리* 의 것이다. `run --cwd <tree>` 로 핀해 돈 결과를
+    pre-push 훅이 `check`(훅은 `--cwd` 를 못 넘긴다)로 검증할 때 check 가 **자기** cwd 로
+    선언을 재해소하면 실행 때와 다른 local.conf 를 읽는다(false-green/false-RED). 그래서 run 이
+    앵커를 기록하고 check 는 그 앵커로 해소한다. 미기록(옛 플래그)은 호출부 해소값으로 폴백.
     """
     anchor = data.get("conf_anchor")
     return anchor if isinstance(anchor, str) and anchor else fallback
@@ -7639,23 +7654,21 @@ def _flag_conf_anchor(data: dict, fallback: str | None) -> str | None:
 def _flag_collected(data: dict) -> int | None:
     """플래그의 `collected` 를 정수로 정규화 — 손상값(문자열·리스트·bool)은 None.
 
-    None 은 "검증 불가" 로 흘러 하한 활성 시 stale 강등이 된다(재실행 유도). 정규화 없이
-    손상값이 `_green_floor_stale` 의 `<` 비교에 들어가면 TypeError 로 **게이트 자체가 죽는다** —
-    장부 손상이 회귀 해소를 깨면 안 된다는 기존 fail-soft 규율과 같은 축이다.
+    None 은 "수집수 모름" 이다 — 증감 문장이 비고(지어내지 않는다) 선언 platform aggregate
+    에서는 검증 불가로 fail 이 된다. 정규화 없이 손상값이 산술에 들어가면 TypeError 로
+    **게이트 자체가 죽는다** — 장부 손상이 회귀 해소를 깨면 안 된다는 fail-soft 규율과 같은 축이다.
     """
     value = data.get("collected")
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _flag_blocks_push(data: dict, anchor: str | None) -> bool:
-    """이 기록이 push 를 막는 상태인가 — fail 기록 또는 하한 미달 green(재실행 요구).
+def _flag_blocks_push(data: dict) -> bool:
+    """이 기록이 push 를 막는 상태인가 — fail 기록(RED).
 
-    `check` 의 두 차단 갈래(RED / 하한 신규·상향 stale)와 **같은 판정 프리미티브**를 쓴다
-    (판정 두 벌 금지). HEAD 불일치는 여기 없다 — 그건 커밋마다 생기는 정상 재실행 사유다.
+    `check` 의 차단 갈래와 **같은 판정 프리미티브**를 쓴다(판정 두 벌 금지). HEAD 불일치는
+    여기 없다 — 그건 커밋마다 생기는 정상 재실행 사유다.
     """
-    if data.get("status") != "pass":
-        return True
-    return _green_floor_stale(_flag_collected(data), _regression_min_collected(anchor))
+    return data.get("status") != "pass"
 
 
 def _inherit_flag_anchor(default_cwd: str, flag: Path | None = None) -> str:
@@ -7682,7 +7695,7 @@ def _inherit_flag_anchor(default_cwd: str, flag: Path | None = None) -> str:
     anchor = _flag_conf_anchor(data, None)
     if not anchor or os.path.abspath(anchor) == default_cwd:
         return default_cwd
-    if not _flag_blocks_push(data, anchor):
+    if not _flag_blocks_push(data):
         return default_cwd
     if not Path(anchor).is_dir():
         print(f"regression: 직전 차단 기록의 앵커({anchor})가 없어 기본 트리에서 재실행 — "
@@ -7693,69 +7706,29 @@ def _inherit_flag_anchor(default_cwd: str, flag: Path | None = None) -> str:
     return os.path.abspath(anchor)
 
 
-def _green_floor_stale(collected: int | None, floor_now: int) -> bool:
-    """기록된 green 이 **현재** 하한을 못 만족하나 — green 재사용(HEAD+status)의 산술 보강.
+def _require_collected_count(rc: int, status: str, collected: int | None, *,
+                             require_collected: bool = False,
+                             ) -> tuple[str, int | str, str]:
+    """선언 platform aggregate 의 "수집수는 정수" 저장 계약 — `(status, 기록 rc, 진단 note)`.
 
-    HEAD·status 만 보면 하한을 켜거나 올린 뒤에도 옛 green 이 그대로 통과하고(check) M>1 run
-    조차 그 슬롯을 skip 해 새 하한이 영영 적용되지 않는다. 기록 증거가 현재 하한을 만족하지
-    못하면 **stale**(재실행 유도)로 강등한다:
-      - 수집수 < 하한 → stale. 하한을 *낮춘* 경우엔 증거가 이미 충족하므로 green 유지
-        (불필요한 full 재실행 0 — 판정이 산술로 닫힌다).
-      - 수집수 미기록(옛 플래그·하한 0 시절 기록) + 하한 활성 → 검증 불가라 stale.
-    무한 재실행은 없다: 재실행 시 파싱이 또 실패하면 그때는 `fail`(unverified)로 기록돼
-    다음 check 가 stale 이 아니라 RED 로 끝난다.
+    선언 platform 은 cell 마다 수집수를 대조하므로 core 수집수를 못 읽으면 그 대조가 통째로
+    성립하지 않는다. 그래서 rc0 이라도 파싱 실패면 `fail`(`unverified-collection`)로 기록한다 —
+    경고만 내고 pass 로 기록하면 검증하지 못한 결과가 push 를 통과한다. 비-pytest `test_cmd`
+    (요약행 규약 밖)로 platform 을 쓰려면 요약행 호환 러너가 필요하다(remedy 를 메시지에 싣는다).
+
+    platform 미선언이면 no-op 이다 — 수집수는 증감 표시에만 쓰이고 아무것도 막지 않는다.
     """
-    if floor_now <= 0:
-        return False
-    return collected is None or collected < floor_now
-
-
-def _apply_collection_floor(rc: int, status: str, collected: int | None,
-                            floor: int, *, require_collected: bool = False,
-                            ) -> tuple[str, int | str, str]:
-    """FULL 게이트 수집 하한 판정 — `(status, 기록 rc, 진단 note)` 로 강등을 반영한다.
-
-    rc0(green) 인데 실행 수가 하한 미만이면 부분 수집(cwd/pythonpath 파손으로 스위트 일부만
-    돎)을 의심해 status 를 `fail`, 기록 rc 를 전용 라벨 `partial-collection` 으로 강등한다.
-    하한 0(기본·미설정)이면 기본적으로 현행 동작 그대로다(no-op — 파싱 실패도 조용히
-    skip). 단 선언 platform aggregate는 수집수가 정수라는 저장 계약을 가지므로 호출부가
-    `require_collected=True`를 넘겨 하한 0에서도 파싱 실패를 fail-closed로 기록한다.
-
-    **하한이 활성됐거나 선언 platform이 수집수를 요구하는데 못 읽으면(파싱 실패)
-    `fail`(`unverified-collection`)이다** —
-    경고만 내고 pass 로 기록하면 "설정된 하한을 검증하지 못한 결과"가 push 를 통과해 이 가드가
-    막으려던 false-green 이 그대로 재도입된다. 비-pytest `test_cmd`(요약행 규약 밖)로 하한을
-    쓰려면 하한을 해제하거나 요약행 호환 러너를 써야 한다(remedy 를 메시지에 싣는다).
-
-    `floor` 는 호출부가 **run cwd 앵커**로 해소해 넘긴다(`_regression_min_collected(cwd)`) —
-    이 판정 안에서 conf 를 다시 읽지 않는다(앵커 이원화 금지). run 두 경로(단일-슬롯·M>1
-    `_regression_run_slot`)가 공유하는 단일 판정 지점이다.
-    """
-    if rc != 0:
+    if rc != 0 or not require_collected or collected is not None:
         return status, rc, ""
-    if collected is None:
-        if floor <= 0 and not require_collected:
-            return status, rc, ""
-        if require_collected and floor <= 0:
-            return ("fail", REGRESSION_RC_UNVERIFIED_COLLECTION,
-                    " · 수집수 파싱 실패 — 선언 platform aggregate 검증 불가"
-                    "(요약행 호환 test_cmd 필요)")
-        return ("fail", REGRESSION_RC_UNVERIFIED_COLLECTION,
-                f" · 수집수 파싱 실패 — 하한 {floor} 검증 불가"
-                "(요약행 없는 test_cmd 면 하한 해제 필요)")
-    if floor <= 0:
-        return status, rc, ""
-    if collected >= floor:
-        return status, rc, ""
-    return ("fail", REGRESSION_RC_PARTIAL_COLLECTION,
-            f" · {_collection_shortfall_text(collected, floor)} — 부분 수집 의심"
-            "(테스트 루트/cwd 확인)")
+    return ("fail", REGRESSION_RC_UNVERIFIED_COLLECTION,
+            " · 수집수 파싱 실패 — 선언 platform aggregate 검증 불가"
+            "(요약행 호환 test_cmd 필요)")
 
 
 def _tee_stream(stream, echo: Callable[[str], None]) -> str:
     """자식 스트림을 줄 단위로 **실시간 echo 하면서 동시에** 전체를 모아 돌려준다.
 
-    수집 하한 가드는 pytest 요약행을 읽어야 해서 출력을 버퍼에 담아야 하는데, 캡처만 하면
+    수집 증감 표시는 pytest 요약행을 읽어야 해서 출력을 버퍼에 담아야 하는데, 캡처만 하면
     `git push` 회귀(pre-push 훅)가 수 분 동안 **완전 무출력**으로 멈춰 있는 것처럼 보인다
     (실측 367s). tee 로 진행을 그대로 흘리면서 파싱용 버퍼를 유지해 둘 다 만족한다.
     스트림 미개방(None)은 빈 문자열.
@@ -7773,7 +7746,7 @@ def _run_regression_cmd(cmd: str, cwd: str,
                         env: dict[str, str]) -> tuple[int, str, str]:
     """회귀 test_cmd 를 실행하고 `(rc, stdout, stderr)` 를 돌려준다 — run 두 경로 공용 단일 지점.
 
-    출력을 버퍼에 담는 이유는 수집 하한 가드가 pytest 요약행을 읽어야 하기 때문이다(별도
+    출력을 버퍼에 담는 이유는 수집 증감 표시가 pytest 요약행을 읽어야 하기 때문이다(별도
     `--co -q` 재실행 대신 *이미 돈* 실행의 요약을 쓴다·자식 1회). 동시에 `_tee_stream` 으로
     실시간 echo 해 캡처 이전의 가시성을 그대로 유지한다(무출력 대기 근절).
 
@@ -7810,12 +7783,12 @@ _PLATFORM_CELL_KEYS = {
     "name", "command", "head", "status", "rc", "collected", "ts",
 }
 _PLATFORM_REGRESSION_KEYS = {
-    "head", "status", "rc", "scope", "collected", "floor", "conf_anchor", "ts",
-    "platforms",
+    "head", "status", "rc", "scope", "collected", "previous_collected",
+    "conf_anchor", "ts", "platforms",
 }
 _PLATFORM_LIVEGATE_KEYS = {
-    "head", "status", "n", "rc", "scope", "collected", "floor", "conf_anchor", "ts",
-    "platforms",
+    "head", "status", "n", "rc", "scope", "collected", "previous_collected",
+    "conf_anchor", "ts", "platforms",
 }
 
 
@@ -7872,7 +7845,7 @@ def _platform_marker(stdout: str) -> tuple[dict | None, str | None]:
 
 
 def _run_platform_cells(commands: tuple[tuple[str, str], ...], cwd: str,
-                        expected_head: str, floor: int,
+                        expected_head: str,
                         env: dict[str, str], *, core_passed: bool,
                         head_after_core: str) -> tuple[list[dict], bool, int | str]:
     """선언 platform을 순서대로 실행하고 ordered record cell과 aggregate 판정을 돌린다."""
@@ -7903,7 +7876,7 @@ def _run_platform_cells(commands: tuple[tuple[str, str], ...], cwd: str,
         collected = payload.get("collected") if payload is not None else None
         valid_collected = (
             isinstance(collected, int) and not isinstance(collected, bool)
-            and collected > 0 and collected >= floor
+            and collected > 0
         )
         passed = (
             aggregate_pass and rc == 0 and marker_problem is None
@@ -7939,7 +7912,7 @@ def _run_platform_cells(commands: tuple[tuple[str, str], ...], cwd: str,
                 note = f"marker status={payload.get('status')!r}"
             else:
                 recorded_rc = "collection-invalid"
-                note = f"marker collected={collected!r}, floor={floor}"
+                note = f"marker collected={collected!r}"
             aggregate_pass = False
             aggregate_rc = recorded_rc
         cells.append({
@@ -7987,15 +7960,13 @@ def _platform_record_problem(data: dict, cwd: str, expected_head: str,
         return "aggregate rc mismatch"
     if data.get("scope") != "full":
         return "aggregate scope mismatch"
-    floor = _regression_min_collected(cwd)
     collected = data.get("collected")
-    if (not isinstance(collected, int) or isinstance(collected, bool)
-            or collected < floor):
+    if not isinstance(collected, int) or isinstance(collected, bool):
         return "aggregate collected mismatch"
-    recorded_floor = data.get("floor")
-    if (not isinstance(recorded_floor, int) or isinstance(recorded_floor, bool)
-            or recorded_floor < 0):
-        return "aggregate floor mismatch"
+    previous = data.get("previous_collected")
+    if previous is not None and (not isinstance(previous, int)
+                                 or isinstance(previous, bool)):
+        return "aggregate previous_collected mismatch"
     if not isinstance(data.get("ts"), str) or not data.get("ts"):
         return "aggregate timestamp missing"
     if session is not None and data.get("session") != session:
@@ -8021,7 +7992,7 @@ def _platform_record_problem(data: dict, cwd: str, expected_head: str,
             or cell.get("head") != expected_head or cell.get("status") != "pass"
             or cell.get("rc") != 0
             or not isinstance(collected, int) or isinstance(collected, bool)
-            or collected <= 0 or collected < floor
+            or collected <= 0
             or not isinstance(cell.get("ts"), str) or not cell.get("ts")
         ):
             return f"platform[{name}] evidence mismatch/red"
@@ -8140,15 +8111,14 @@ def _regression_flag_for(session: str | None, *, local_dir: Path | None = None) 
 
 
 class _SlotRegressionState(NamedTuple):
-    """슬롯 회귀 상태 판정 결과 — 상태 + 진단에 쓰는 기록값(rc·수집수·실행 당시 하한)."""
+    """슬롯 회귀 상태 판정 결과 — 상태 + 진단에 쓰는 기록값(rc·수집수)."""
     state: str                    # green | stale | red | missing
     rc: int | str | None
     collected: int | None
-    floor: int | None
 
 
 def _regression_slot_state(session: str, cwd: str) -> _SlotRegressionState:
-    """슬롯별 회귀 플래그를 읽어 상태를 판정 — (`'green'|'stale'|'red'|'missing'`, rc, 수집수, 하한).
+    """슬롯별 회귀 플래그를 읽어 상태를 판정 — (`'green'|'stale'|'red'|'missing'`, rc, 수집수).
 
     all-or-nothing check-first 의 저비용 판정 (pytest 미실행): per-slot 플래그
     (`_regression_flag_for(session)`)를 읽고 그 슬롯 worktree HEAD(`_git_head_at(cwd)`·각 슬롯은
@@ -8156,52 +8126,42 @@ def _regression_slot_state(session: str, cwd: str) -> _SlotRegressionState:
     (stale=HEAD 불일치·red=fail·missing=기록없음/손상)는 run 대상. 손상 플래그는 missing 강등
     (fail-soft — 장부 손상이 회귀해소를 깨면 안 된다·`_regression_slot_state` 는 재실행을 유도).
 
-    rc 는 기록값 그대로다 — 강등이면 전용 라벨(`partial-collection`/`unverified-collection`·
-    정수 아님)이라 기록된 수집수·하한과 함께 라벨에 사유를 실을 수 있다.
-
-    **green 은 HEAD·status 만으로 재사용하지 않는다**: 하한을 켜거나 올린 뒤에도 옛 green 이
-    통과하면(그리고 M>1 run 이 그 슬롯을 skip 하면) 새 하한이 영영 적용되지 않는다 —
-    `_green_floor_stale` 로 기록 증거를 **그 슬롯 cwd 앵커의 현재 하한**과 대조해 stale 강등한다.
+    rc 는 기록값 그대로다 — 강등이면 전용 라벨(`unverified-collection`·정수 아님)이라 기록된
+    수집수와 함께 라벨에 사유를 실을 수 있다.
     """
     flag = _regression_flag_for(session)
     if not flag.exists():
-        return _SlotRegressionState("missing", None, None, None)
+        return _SlotRegressionState("missing", None, None)
     try:
         data = json.loads(file_lock.read_text_shared(flag, encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return _SlotRegressionState("missing", None, None, None)
+        return _SlotRegressionState("missing", None, None)
     if not isinstance(data, dict):
-        return _SlotRegressionState("missing", None, None, None)
-    collected, floor = _flag_collected(data), data.get("floor")
+        return _SlotRegressionState("missing", None, None)
+    collected = _flag_collected(data)
     current_head = _git_head_at(cwd)
     if data.get("head") != current_head:
-        return _SlotRegressionState("stale", data.get("rc"), collected, floor)
+        return _SlotRegressionState("stale", data.get("rc"), collected)
     try:
         platform_commands = _platform_test_commands(cwd)
     except PlatformConfigError:
-        return _SlotRegressionState("red", "platform-config", collected, floor)
+        return _SlotRegressionState("red", "platform-config", collected)
     if data.get("status") != "pass":
-        return _SlotRegressionState("red", data.get("rc"), collected, floor)
+        return _SlotRegressionState("red", data.get("rc"), collected)
     if platform_commands:
         if _platform_record_problem(
                 data, cwd, current_head, platform_commands, session=session) is not None:
-            return _SlotRegressionState("stale", data.get("rc"), collected, floor)
+            return _SlotRegressionState("stale", data.get("rc"), collected)
     elif "platforms" in data:
-        return _SlotRegressionState("stale", data.get("rc"), collected, floor)
-    # 현재 하한은 **기록된 conf 앵커**(그 실행이 돈 트리)로 해소한다 — 슬롯 cwd 와 다를 수 있다
-    # (`--cwd` 핀 실행). 미기록 플래그는 슬롯 cwd 폴백(후방호환).
-    if _green_floor_stale(collected,
-                          _regression_min_collected(_flag_conf_anchor(data, cwd))):
-        # 기록은 green 이지만 현재 하한을 못 만족 → 재실행 대상(stale). rc/수집수는 기록값 유지.
-        return _SlotRegressionState("stale", data.get("rc"), collected, floor)
-    return _SlotRegressionState("green", data.get("rc"), collected, floor)
+        return _SlotRegressionState("stale", data.get("rc"), collected)
+    return _SlotRegressionState("green", data.get("rc"), collected)
 
 
 def _regression_run_slot(args: argparse.Namespace, session: str, cwd: str) -> int:
     """한 슬롯의 회귀를 pytest 로 측정·기록(슬롯별 플래그) — rc 반환.
 
-    단일-슬롯 run 본체와 동형(같은 env·shell·인코딩·rc0 만 pass·rc5 vacuous 근절·수집 하한
-    가드)이되, cwd/test_cmd/플래그/HEAD 를 슬롯별로 해소한다. 스코프(touches)는 훅 M>1 경로엔
+    단일-슬롯 run 본체와 동형(같은 env·shell·인코딩·rc0 만 pass·rc5 vacuous 근절·수집 증감
+    표시)이되, cwd/test_cmd/플래그/HEAD 를 슬롯별로 해소한다. 스코프(touches)는 훅 M>1 경로엔
     없으므로 full 만(플래그는 push 게이트 대상). 플래그 키는 그 슬롯 worktree HEAD 다
     (`_git_head_at`).
 
@@ -8213,11 +8173,10 @@ def _regression_run_slot(args: argparse.Namespace, session: str, cwd: str) -> in
         platform_commands = _platform_test_commands(cwd)
     except PlatformConfigError as exc:
         head = _git_head_at(cwd)
-        floor = _regression_min_collected(cwd)
         LOCAL_DIR.mkdir(parents=True, exist_ok=True)
-        _write_json_atomic(_regression_flag_for(session), {
+        _write_regression_flag(_regression_flag_for(session), {
             "head": head, "status": "fail", "rc": "platform-config",
-            "scope": "full", "collected": None, "floor": floor,
+            "scope": "full", "collected": None,
             "conf_anchor": cwd, "session": session, "ts": now_utc(),
             "platforms": [],
         })
@@ -8230,69 +8189,69 @@ def _regression_run_slot(args: argparse.Namespace, session: str, cwd: str) -> in
     expected_head = _git_head_at(cwd) if platform_commands else ""
     if platform_commands and not expected_head:
         cells, _passed, reason = _run_platform_cells(
-            platform_commands, cwd, expected_head, _regression_min_collected(cwd), env,
+            platform_commands, cwd, expected_head, env,
             core_passed=False, head_after_core="",
         )
         LOCAL_DIR.mkdir(parents=True, exist_ok=True)
-        _write_json_atomic(_regression_flag_for(session), {
+        _write_regression_flag(_regression_flag_for(session), {
             "head": expected_head, "status": "fail", "rc": reason,
-            "scope": "full", "collected": None,
-            "floor": _regression_min_collected(cwd), "conf_anchor": cwd,
+            "scope": "full", "collected": None, "conf_anchor": cwd,
             "session": session, "ts": now_utc(), "platforms": cells,
         })
         return 1
     rc, out, _err = _run_regression_cmd(cmd, cwd, env)
     status = "pass" if rc == 0 else "fail"
     collected = _collected_count(out)        # 파싱은 stdout 단독(stderr 로그 오염 차단).
-    floor = _regression_min_collected(cwd)   # 앵커 = 이 슬롯이 회귀를 도는 트리.
-    status, recorded_rc, floor_note = _apply_collection_floor(
-        rc, status, collected, floor, require_collected=bool(platform_commands),
+    status, recorded_rc, collect_note = _require_collected_count(
+        rc, status, collected, require_collected=bool(platform_commands),
     )
     head = _git_head_at(cwd)
-    note = (" · 수집 0 — 테스트 루트/cwd 확인" if rc == 5 else "") + floor_note
+    note = (" · 수집 0 — 테스트 루트/cwd 확인" if rc == 5 else "") + collect_note
     LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    flag = _regression_flag_for(session)
     if platform_commands:
         cells, platforms_passed, platform_rc = _run_platform_cells(
-            platform_commands, cwd, expected_head, floor, env,
+            platform_commands, cwd, expected_head, env,
             core_passed=status == "pass", head_after_core=head,
         )
         if not platforms_passed:
             status = "fail"
             if recorded_rc == 0:
                 recorded_rc = platform_rc
-        _write_json_atomic(_regression_flag_for(session), {
+        record = {
             "head": expected_head, "status": status, "rc": recorded_rc,
-            "scope": "full", "collected": collected, "floor": floor,
+            "scope": "full", "collected": collected,
             "conf_anchor": cwd, "session": session, "ts": now_utc(),
             "platforms": cells,
-        })
-        print(f"regression[{session}]: {status} (rc={recorded_rc}{note}) "
+        }
+        _write_regression_flag(flag, record)
+        print(f"regression[{session}]: {status} (rc={recorded_rc}{note})"
+              f"{collection_delta_text(collected, record['previous_collected'])} "
               f"@ {expected_head[:8] or '?'}")
         return 0 if status == "pass" else (rc or 1)
-    _write_json_atomic(_regression_flag_for(session),
-                       {"head": head, "status": status, "rc": recorded_rc, "scope": "full",
-                        "collected": collected, "floor": floor, "conf_anchor": cwd,
-                        "session": session, "ts": now_utc()})
-    print(f"regression[{session}]: {status} (rc={recorded_rc}{note}) @ {head[:8] or '?'}")
-    # 반환은 게이트 판정 — 부분수집 강등(pytest rc0)도 비-0 이어야 M>1 순회가 red 로 센다.
+    record = {"head": head, "status": status, "rc": recorded_rc, "scope": "full",
+              "collected": collected, "conf_anchor": cwd,
+              "session": session, "ts": now_utc()}
+    _write_regression_flag(flag, record)
+    print(f"regression[{session}]: {status} (rc={recorded_rc}{note})"
+          f"{collection_delta_text(collected, record['previous_collected'])} "
+          f"@ {head[:8] or '?'}")
+    # 반환은 게이트 판정 — 수집수 검증 불가 강등(pytest rc0)도 비-0 이어야 M>1 순회가 red 로 센다.
     return 0 if status == "pass" else (rc or 1)
 
 
 def _slot_state_label(session: str, state: str, rc: int | str | None,
-                      collected: int | None = None, floor: int | None = None) -> str:
+                      collected: int | None = None) -> str:
     """미검증 슬롯 라벨 — `<session>=<state>(rc=N·수집0)` (rc None 이면 상태만·codex sug).
 
     check 실패 메시지에 슬롯별 rc 를 실어 단일-슬롯 진단과 균질화한다 — 특히 rc5(수집 0)는
     테스트 루트/cwd 결함 신호이므로 힌트를 붙인다(`_regression_slot_state` 가 이미 rc 반환·저비용).
-    수집 하한 강등(`partial-collection`/`unverified-collection`)도 같은 자리에 기록값 기반 사유를
-    붙인다(rc5 힌트와 동형).
+    선언 platform 의 수집수 검증 불가(`unverified-collection`)도 같은 자리에 사유를 붙인다.
     """
     if rc is None:
         return f"{session}={state}"
-    if rc == REGRESSION_RC_PARTIAL_COLLECTION:
-        hint = "·" + _collection_shortfall_text(collected, floor)
-    elif rc == REGRESSION_RC_UNVERIFIED_COLLECTION:
-        hint = f"·수집수 미확인(하한 {'?' if floor is None else floor})"
+    if rc == REGRESSION_RC_UNVERIFIED_COLLECTION:
+        hint = f"·수집수 미확인({'?' if collected is None else collected})"
     else:
         hint = "·수집0" if rc == 5 else ""
     return f"{session}={state}(rc={rc}{hint})"
@@ -8310,7 +8269,7 @@ def _regression_multi_check(sessions: list[str]) -> int:
         slot_state = _regression_slot_state(session, cwd)
         if slot_state.state != "green":
             not_green.append(_slot_state_label(session, slot_state.state, slot_state.rc,
-                                               slot_state.collected, slot_state.floor))
+                                               slot_state.collected))
     if not_green:
         print(f"regression(M={len(sessions)}): 미검증 슬롯 [{', '.join(not_green)}] "
               "— `regression run` 필요 (push 차단).", file=sys.stderr)
@@ -8421,11 +8380,10 @@ def cmd_regression(args: argparse.Namespace) -> int:
                 platform_commands = _platform_test_commands(cwd)
             except PlatformConfigError as exc:
                 head = _git_head_at(cwd)
-                floor = _regression_min_collected(cwd)
                 regression_flag.parent.mkdir(parents=True, exist_ok=True)
-                _write_json_atomic(regression_flag, {
+                _write_regression_flag(regression_flag, {
                     "head": head, "status": "fail", "rc": "platform-config",
-                    "scope": "full", "collected": None, "floor": floor,
+                    "scope": "full", "collected": None,
                     "conf_anchor": cwd, "ts": now_utc(), "platforms": [],
                 })
                 print(f"regression: platform 설정 오류 — {exc}", file=sys.stderr)
@@ -8458,11 +8416,10 @@ def cmd_regression(args: argparse.Namespace) -> int:
                     platform_commands = _platform_test_commands(cwd)
                 except PlatformConfigError as exc:
                     head = _git_head_at(cwd)
-                    floor = _regression_min_collected(cwd)
                     regression_flag.parent.mkdir(parents=True, exist_ok=True)
-                    _write_json_atomic(regression_flag, {
+                    _write_regression_flag(regression_flag, {
                         "head": head, "status": "fail", "rc": "platform-config",
-                        "scope": "full", "collected": None, "floor": floor,
+                        "scope": "full", "collected": None,
                         "conf_anchor": cwd, "ts": now_utc(), "platforms": [],
                     })
                     print(f"regression: platform 설정 오류 — {exc}", file=sys.stderr)
@@ -8495,15 +8452,14 @@ def cmd_regression(args: argparse.Namespace) -> int:
         # 인용에서 실행한 것처럼 읽힌다(거부 문구가 스스로 '측정·기록 안 함'을 말하는 것과 같은 축).
         expected_head = _git_head_at(cwd) if platform_commands else ""
         if platform_commands and not expected_head:
-            floor = _regression_min_collected(cwd)
             cells, _passed, reason = _run_platform_cells(
-                platform_commands, cwd, expected_head, floor, env,
+                platform_commands, cwd, expected_head, env,
                 core_passed=False, head_after_core="",
             )
             regression_flag.parent.mkdir(parents=True, exist_ok=True)
-            _write_json_atomic(regression_flag, {
+            _write_regression_flag(regression_flag, {
                 "head": expected_head, "status": "fail", "rc": reason,
-                "scope": "full", "collected": None, "floor": floor,
+                "scope": "full", "collected": None,
                 "conf_anchor": cwd, "ts": now_utc(), "platforms": cells,
             })
             print("regression: platform FULL 시작 HEAD 해소 실패", file=sys.stderr)
@@ -8518,46 +8474,48 @@ def cmd_regression(args: argparse.Namespace) -> int:
         rc5_note = _regression_rc5_note(rc, cwd, getattr(args, "cwd", None))
         if scoped:
             # 스코프 실행 = dev 빠른 피드백 (advisory). full 만 push 게이트 → 게이트 플래그 안 씀.
-            # 수집 하한도 FULL 게이트 전용이다 — 스코프는 touches 매칭분만 도는 게 정상이라
-            # 하한을 대면 상시 false-RED 가 된다.
+            # 수집 증감도 FULL 게이트 기록의 축이다 — 스코프는 touches 매칭분만 도는 게
+            # 정상이라 FULL 기록과 견주면 상시 가짜 증감이 된다(기록을 쓰지도 읽지도 않는다).
             print(f"regression(scoped, {len(touches)} touches): {status} (rc={rc}{rc5_note}) "
                   "— dev 피드백 · push 게이트 아님")
             return 0 if status == "pass" else 1
-        # FULL 게이트 = push 게이트. rc0 라도 실행 수가 하한 미만이면 부분 수집으로 강등한다.
-        # 하한 앵커는 **회귀를 도는 트리**(cwd) — 호출 사본의 REPO 가 아니다.
-        floor = _regression_min_collected(cwd)
-        status, recorded_rc, floor_note = _apply_collection_floor(
-            rc, status, collected, floor, require_collected=bool(platform_commands),
+        # FULL 게이트 = push 게이트. 수집수는 막지 않고 직전 기록 대비 증감으로 표시한다.
+        status, recorded_rc, collect_note = _require_collected_count(
+            rc, status, collected, require_collected=bool(platform_commands),
         )
         head = _git_head_at(cwd)
         if not head:
             status = "fail"
             recorded_rc = rc or 1
-            floor_note += " · Git HEAD 해소 실패"
-        detail = f"{status} (rc={recorded_rc}{rc5_note}{floor_note})"
+            collect_note += " · Git HEAD 해소 실패"
+        detail = f"{status} (rc={recorded_rc}{rc5_note}{collect_note})"
         regression_flag.parent.mkdir(parents=True, exist_ok=True)
         if platform_commands:
             cells, platforms_passed, platform_rc = _run_platform_cells(
-                platform_commands, cwd, expected_head, floor, env,
+                platform_commands, cwd, expected_head, env,
                 core_passed=status == "pass", head_after_core=head,
             )
             if not platforms_passed:
                 status = "fail"
                 if recorded_rc == 0:
                     recorded_rc = platform_rc
-            detail = f"{status} (rc={recorded_rc}{rc5_note}{floor_note})"
-            _write_json_atomic(regression_flag, {
+            detail = f"{status} (rc={recorded_rc}{rc5_note}{collect_note})"
+            record = {
                 "head": expected_head, "status": status, "rc": recorded_rc,
-                "scope": "full", "collected": collected, "floor": floor,
+                "scope": "full", "collected": collected,
                 "conf_anchor": cwd, "ts": now_utc(), "platforms": cells,
-            })
-            print(f"regression: {detail} @ {expected_head[:8] or '?'}")
+            }
+            _write_regression_flag(regression_flag, record)
+            print(f"regression: {detail}"
+                  f"{collection_delta_text(collected, record['previous_collected'])} "
+                  f"@ {expected_head[:8] or '?'}")
             return 0 if status == "pass" else 1
-        regression_flag.write_text(json.dumps(
-            {"head": head, "status": status, "rc": recorded_rc, "scope": "full",
-             "collected": collected, "floor": floor, "conf_anchor": cwd,
-             "ts": now_utc()}), encoding="utf-8", newline="\n")
-        print(f"regression: {detail} @ {head[:8] or '?'}")
+        record = {"head": head, "status": status, "rc": recorded_rc, "scope": "full",
+                  "collected": collected, "conf_anchor": cwd, "ts": now_utc()}
+        _write_regression_flag(regression_flag, record)
+        print(f"regression: {detail}"
+              f"{collection_delta_text(collected, record['previous_collected'])} "
+              f"@ {head[:8] or '?'}")
         return 0 if status == "pass" else 1
     # action == "check" — pre-push 게이트
     check_cwd = getattr(args, "cwd", None) or str(REPO)
@@ -8607,17 +8565,10 @@ def cmd_regression(args: argparse.Namespace) -> int:
         rc = data.get("rc")
         # rc5(수집 0)는 fail 로 기록된다— RED 사유를 push 게이트에서 드러내
         # "테스트가 안 돌았는데 green" 이던 침묵 폴백을 진단 가능하게 한다(run/check 일관).
-        # 수집 하한 강등도 같은 자리에 기록값 기반 사유를 실어 실 red 와 구분한다.
-        if rc == REGRESSION_RC_PARTIAL_COLLECTION:
-            extra = (f" · {_collection_shortfall_text(_flag_collected(data), data.get('floor'))} "
-                     "— 부분 수집 의심(테스트 루트/cwd 확인)")
-        elif rc == REGRESSION_RC_UNVERIFIED_COLLECTION:
-            if platform_commands:
-                extra = (" · 수집수 파싱 실패 — 선언 platform aggregate 검증 불가"
-                         "(요약행 호환 test.cmd 필요)")
-            else:
-                extra = (f" · 수집수 파싱 실패 — 하한 {data.get('floor')} 검증 불가"
-                         "(요약행 없는 test_cmd 면 하한 해제 필요)")
+        # 선언 platform 의 수집수 검증 불가도 같은 자리에 사유를 실어 실 red 와 구분한다.
+        if rc == REGRESSION_RC_UNVERIFIED_COLLECTION:
+            extra = (" · 수집수 파싱 실패 — 선언 platform aggregate 검증 불가"
+                     "(요약행 호환 test.cmd 필요)")
         else:
             extra = " · 수집 0 — 테스트 루트/cwd 확인" if rc == 5 else ""
         print(f"regression: RED @ {head[:8]} (rc={rc}){extra} — push 차단.",
@@ -8633,17 +8584,10 @@ def cmd_regression(args: argparse.Namespace) -> int:
         print("regression: stale (현재는 platform 미선언이나 기록에 platform snapshot 존재) "
               "— FULL 재실행 필요.", file=sys.stderr)
         return 1
-    # green 기록이라도 **현재** 하한을 못 만족하면 재사용하지 않는다 — 하한을 켜거나 올린 뒤
-    # 옛 green 이 그대로 통과하면 새 하한이 영영 미적용이다(run 쪽 강등과 산술 대칭).
-    # 하한 해소 앵커 = **그 실행이 기록한 conf 앵커**. 훅은 `--cwd` 를 못 넘기므로 여기서
-    # 재해소하면 `run --cwd <tree>` 와 다른 local.conf 를 읽는다(false-green/false-RED).
-    recorded_collected = _flag_collected(data)
-    floor_now = _regression_min_collected(anchor)
-    if _green_floor_stale(recorded_collected, floor_now):
-        print(f"regression: stale (기록 수집 {recorded_collected} < 현재 하한 {floor_now} "
-              "— 하한 신규/상향) — 재실행 필요.", file=sys.stderr)
-        return 1
-    print(f"regression: green @ {head[:8]} ✓")
+    # green 줄에도 그 기록이 담은 직전 대비 증감을 붙인다 — 막지 않는 표시다(기록을 읽는
+    # 자리이므로 같은 축의 수집수끼리 견준다).
+    delta = collection_delta_text(_flag_collected(data), data.get("previous_collected"))
+    print(f"regression: green @ {head[:8]}{delta} ✓")
     return 0
 
 
@@ -9197,7 +9141,8 @@ def _livegate_record(args: argparse.Namespace) -> int:
             return 1
         regression_snapshot = [dict(cell) for cell in regression_data["platforms"]]
         regression_core_snapshot = {
-            key: regression_data[key] for key in ("scope", "collected", "floor")
+            key: regression_data[key]
+            for key in ("scope", "collected", "previous_collected")
         }
         if regression_session is not None:
             regression_core_snapshot["session"] = regression_session

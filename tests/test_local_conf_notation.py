@@ -154,8 +154,8 @@ def test_legacy_keys_stop_the_consumer_instead_of_silently_defaulting(tmp_path, 
     """구표기 conf 를 **읽는 지점**이 멈춘다 — 조용히 엔진 기본값으로 떨어지지 않는다.
 
     `conf.get(key, default)` 로 읽던 값들이라 개칭 즉시 가드가 약해지는 방향으로 강등된다
-    (`regression.min_collected` 는 0 수집 false-green 차단, `delegate.enabled` 는 기본이
-    permissive 로 뒤집힌다).
+    (`delegate.enabled` 는 기본이 permissive 로 뒤집힌다). 폐지된 이름
+    (`regression_min_collected`)도 같은 자리에서 멈춘다 — 대체 키가 없다고 말해줘야 한다.
     """
     _write_conf(tmp_path, _LEGACY_CONF)
     module = _load(name, f"legacy_{name}")
@@ -272,6 +272,25 @@ def test_the_round_limit_axis_is_named_as_removed_not_renamed(conf_module):
     external = _load("additional_reviewer", "round_limit_external")
     assert not hasattr(external, "_round_limit")
     assert ".round_limit" not in (REPO / "README.md").read_text(encoding="utf-8")
+
+
+def test_the_collection_floor_axis_is_named_as_removed_not_renamed(conf_module, tmp_path):
+    """수집 하한 구키는 '대체 없이 제거'다 — 신키를 만들지 않았고 신표기는 차단도 아니다.
+
+    개칭이면 안내가 새 이름을 지목하고 채택자는 그 이름으로 옮긴다. 이 축은 사라졌으므로
+    구표기는 "제거" 로 지목하고, 이미 dot 표기로 옮겨 적어 둔 채택자의 남은 한 줄은
+    never-block advisory 로만 떨어져야 한다(그 줄 때문에 전 명령이 서면 안 된다).
+    """
+    assert conf_module.LEGACY_KEY_MAP["regression_min_collected"] is None
+    assert "`regression_min_collected` → 제거(대체 키 없음)" in "\n".join(
+        conf_module.migration_lines({"regression_min_collected": None}))
+    assert [key for key in conf_module.KNOWN_KEYS if key.startswith("regression.")] == []
+
+    path = _write_conf(tmp_path, "test.cmd=pytest -q\nregression.min_collected=7000\n")
+    result = conf_module.load(path)
+    assert result.legacy == {}                      # dot 표기는 구표기가 아니다
+    conf_module.assert_no_legacy(result)            # raise 하지 않는다(차단 0)
+    assert "regression.min_collected" in result.unknown   # advisory 로만 지목된다
 
 
 # ── ③ 전수 매핑표 ↔ 코드 (양방향) ─────────────────────────────────────────

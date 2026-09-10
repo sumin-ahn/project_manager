@@ -158,6 +158,21 @@ def _mismatched_fields(sample: dict, live: dict) -> list[str]:
     return out
 
 
+def test_the_key_fixture_no_longer_offers_a_retired_runtime_key(live_keys):
+    """설정 화면이 더는 없는 키를 항목으로 내놓지 않는다 — 재생성 누락이면 red.
+
+    화면은 이 문서 하나로 항목을 그린다. 엔진에서 사라진 키가 픽스처에만 남으면 채택자가
+    적을 수 없는 값을 화면에서 적게 되고, 그 값은 어디에서도 읽히지 않는다. 회귀 수집 하한
+    (`regression.min_collected`)이 폐지된 축이라 실 산출·픽스처 양쪽에서 0건이어야 한다.
+    """
+    sample = json.loads(KEYS_FIXTURE.read_text(encoding="utf-8"))
+
+    for document, origin in ((live_keys, "실 레지스트리"), (sample, "픽스처")):
+        retired = [row["key"] for row in document["keys"]
+                   if row["key"].startswith("regression.")]
+        assert retired == [], f"{origin} 에 폐지한 회귀 축 키가 남았다: {retired}"
+
+
 def test_the_key_fixture_is_the_engines_own_registry(live_keys):
     """설정 화면 픽스처가 현행 레지스트리와 **문서 전체로** 같은지 (손으로 적은 목록 0).
 
