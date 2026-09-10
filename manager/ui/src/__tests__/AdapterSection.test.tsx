@@ -39,9 +39,8 @@ const UNJUDGED: AdapterFile = {
   status: null,
   template_rev: undefined,
   diff_lines: { added: null, removed: null },
-  // 엔진은 이 행의 `diff_vs_baseline` 도 널로 낸다 — api.ts 타입이 아직 `string | undefined` 라
-  // 이 픽스처는 undefined 로 둔다(그 칸의 타입 정정은 이 라운드 범위 밖).
-  diff_vs_baseline: undefined,
+  // 엔진은 기준 사본을 모르는 행에서 널을 낸다 — 화면이 그 값을 그대로 받는다.
+  diff_vs_baseline: null,
   diff_vs_latest: "",
   features: [],
   distance: 0,

@@ -45,6 +45,7 @@ BUNDLED_TREES = (
     "templates/codex",
     "templates/opencode",
     "manager/ui/dist",
+    "manager/assets",
 )
 # 번들에 실을 것이 아닌 개발 잔재 — 트리를 훑는 것은 PyInstaller 의 `Tree` 다.
 BUNDLE_EXCLUDES = ("__pycache__", "*.pyc", "node_modules")
@@ -83,6 +84,20 @@ def executable_filename(*, system: str | None = None, machine: str | None = None
     system = platform.system() if system is None else system
     stem = executable_stem(system=system, machine=machine)
     return stem + WINDOWS_SUFFIX if system == "Windows" else stem
+
+
+# 앱 아이콘 원본 — 창(png)·Windows 실행 파일(ico)·화면 탭(svg)이 같은 자리에서 가져간다.
+ICON_DIR = "manager/assets"
+WINDOW_ICON = "icon-256.png"
+EXECUTABLE_ICON = "icon.ico"
+
+
+def icon_path(repo_root: Path | str, name: str) -> Path:
+    """아이콘 파일 하나의 절대경로 — 없으면 그 자리에서 실패한다(조용한 무-아이콘 금지)."""
+    path = Path(repo_root) / ICON_DIR / name
+    if not path.is_file():
+        raise FileNotFoundError(f"아이콘 파일이 없다: {path}")
+    return path
 
 
 def bundle_data_entries(repo_root: Path | str) -> tuple[tuple[str, str], ...]:
