@@ -1886,11 +1886,10 @@ def test_pm_relay_is_cycle_free(relay):
     loads = {name for name in _sibling_loads("pm_relay.py") if (TOOLS / name).is_file()}
     assert "pm_delegate.py" not in loads
     assert "additional_reviewer.py" not in loads
-    # 형제는 부트스트랩 로더·공용 파일락·콘솔 인코딩 셋뿐이고, 셋 다 아무것도 되로드하지 않는
-    # leaf 다 — 어느 표면이 relay 를 deep-import 해도 순환이 생기지 않는다. `console_encoding` 은
-    # Windows 프로세스 표(`_toolhelp_processes`)의 단일 소유자라 `session_pid` 가 그걸 그대로
-    # 쓴다(두 번째 열거를 두지 않는다·T-0915).
-    assert loads == {"console_encoding.py", "file_lock.py", "repo_owned_files.py"}
+    # 형제는 공용 파일락과 소유 파일 목록 둘뿐이고, 둘 다 아무것도 되로드하지 않는 leaf 다 —
+    # 어느 표면이 relay 를 deep-import 해도 순환이 생기지 않는다. (Windows 프로세스 표를 쓰던
+    # `console_encoding` 로드는 세션 pid 해소와 함께 사라졌다.)
+    assert loads == {"file_lock.py", "repo_owned_files.py"}
     for leaf in sorted(loads):
         assert {name for name in _sibling_loads(leaf) if (TOOLS / name).is_file()} == set()
     assert Path(relay._load_file_lock().__file__).name == "file_lock.py"

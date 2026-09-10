@@ -92,7 +92,6 @@ def _lease(wp, *, slot="work/A_1", session="A_1", state="leased", role="work"):
         slot=slot,
         repo="A",
         session=session,
-        pid=os.getpid(),
         started="before",
         state=state,
         role=role,
@@ -106,7 +105,7 @@ def _seed(wp, *leases) -> None:
 
 def _seed_tasks(wp, *names: str) -> None:
     with wp._lease_lock():
-        wp._write_tasks([wp.Task(name=name, pid=1, started="before") for name in names])
+        wp._write_tasks([wp.Task(name=name, started="before") for name in names])
 
 
 def _snapshot_git(argv: list[str]) -> tuple[int, str]:
@@ -212,7 +211,7 @@ def test_bind_slot_creates_state_and_preserves_lease_bound_contract(wp):
     assert lease.repo == "A"
     assert lease.session == "A_1"
     assert lease.state == "leased"
-    assert lease.pid == wp._session_pid()
+    assert wp.lease_is_open(lease) is True
     assert lease.bound is True
     recorded = wp.read_lease_strict("work/A_1")
     assert recorded is not None
@@ -222,7 +221,6 @@ def test_bind_slot_creates_state_and_preserves_lease_bound_contract(wp):
 
 def test_bind_slot_template_failure_leaves_ledger_and_state_unchanged(wp):
     existing = _lease(wp, session="", state="idle")
-    existing.pid = 0
     _seed(wp, existing)
     ledger_before = wp.LEASES_FILE.read_bytes()
     (wp.REPO / ".project_manager" / "wiki" / "pm_state.template.md").unlink()
@@ -242,7 +240,6 @@ def test_bind_slot_template_failure_leaves_ledger_and_state_unchanged(wp):
 
 def test_bind_slot_rebind_keeps_existing_state_bytes_and_lease_markers(wp):
     existing = _lease(wp, session="old", state="idle")
-    existing.pid = 0
     existing.test_cmd = "pytest -q"
     _seed(wp, existing)
     target = wp.slot_pm_state_file("work/A_1")
@@ -255,7 +252,7 @@ def test_bind_slot_rebind_keeps_existing_state_bytes_and_lease_markers(wp):
     assert target.read_bytes() == original
     assert rebound.session == "A_1"
     assert rebound.state == "leased"
-    assert rebound.pid == wp._session_pid()
+    assert wp.lease_is_open(rebound) is True
     assert rebound.started != "before"
     assert rebound.bound is True
     assert rebound.test_cmd == "pytest -q"
@@ -277,7 +274,6 @@ def test_alloc_slot_mode_creates_state(wp):
 
 def test_alloc_template_failure_leaves_idle_ledger_and_state_unchanged(wp):
     existing = _lease(wp, session="", state="idle")
-    existing.pid = 0
     _seed(wp, existing)
     ledger_before = wp.LEASES_FILE.read_bytes()
     (wp.REPO / ".project_manager" / "wiki" / "pm_state.template.md").unlink()
@@ -335,7 +331,7 @@ def test_create_readonly_slot_does_not_create_slot_state(wp):
     )
 
     assert lease.role == "readonly"
-    assert lease.session == "" and lease.pid == 0
+    assert lease.session == "" and wp.lease_is_open(lease) is False
     assert not wp.slot_pm_state_file(lease.slot).exists()
 
 
@@ -416,7 +412,7 @@ def test_first_bootstrap_run_binds_before_context_and_renders_seeded_state(
         board=SimpleNamespace(_repo_protected=lambda _repo: []),
         pm_state_file=state,
     )
-    instance._phase0_preflight = lambda _repo, _slot: 0
+    instance._phase0_preflight = lambda _repo, _slot, _force=False: 0
     instance._collect_freshness = lambda: []
     instance._collect_board = lambda: {
         "counts": {"done": 0, "open": 0, "claimed": 0, "blocked": 0},

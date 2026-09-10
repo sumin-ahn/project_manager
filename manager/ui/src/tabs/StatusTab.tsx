@@ -79,7 +79,7 @@ export default function StatusTab({ light, heavy }:
                   <td className="py-0.5">{task.name}</td>
                   <td className="py-0.5 text-slate-500">{verdict.label}</td>
                   <td className="py-0.5 font-mono text-[11px] text-slate-500">
-                    {task.pid === 0 ? "pid 없음" : `pid ${task.pid}`}
+                    {task.alive ? "열림" : "닫힘"}
                     {task.prefix ? ` · prefix ${task.prefix}` : " · prefix 없음"}
                   </td>
                   <td className="py-0.5 text-right"><StatusRowActions row={task} /></td>
@@ -107,7 +107,6 @@ export default function StatusTab({ light, heavy }:
                   <td className="py-0.5 font-mono">{slot.slot}</td>
                   <td className="py-0.5 text-slate-500">
                     {verdict.label}
-                    {verdict.dot === "red" && " · 다음 bootstrap 이 회수"}
                   </td>
                   <td className="py-0.5 font-mono text-[11px] text-slate-500">
                     {slot.session ?? "세션 없음"}{slot.branch ? ` · ${slot.branch}` : ""}

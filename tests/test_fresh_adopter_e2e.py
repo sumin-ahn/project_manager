@@ -627,9 +627,16 @@ def test_fresh_adopter_bootstrap_passes_once_a_work_folder_exists(
     ) == 0
     slot = _seed_work_slot(dest, tree="standalone")
 
-    got = _tool(dest, "pm_bootstrap.py")
+    # 심은 행은 **열린 기록**(leased + session)이다 — 그 자리의 부트스트랩은 먼저 묻는다.
+    asked = _tool(dest, "pm_bootstrap.py")
+    assert asked.returncode != 0, f"열린 기록인데 그냥 진행했다:\n{asked.stdout}"
+    assert asked.stdout == "", f"거부인데 부분 dump 가 났다:\n{asked.stdout}"
+    assert "열린 세션 기록" in asked.stderr and "--force" in asked.stderr, asked.stderr
+
+    got = _tool(dest, "pm_bootstrap.py", "--force")
 
     assert got.returncode == 0, f"작업 폴더가 있는데 막혔다:\n{got.stderr}"
+    assert "이전 세션이 하던 것" in got.stderr, f"강제 인계인데 복원 표시가 없다:\n{got.stderr}"
     assert len(got.stdout.splitlines()) >= 100, (
         f"rc 0 인데 dump 가 비었다({len(got.stdout.splitlines())}행):\n{got.stdout}")
     assert f"slot={slot}" in got.stdout or slot in got.stdout, got.stdout

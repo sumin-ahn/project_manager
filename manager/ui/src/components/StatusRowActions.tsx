@@ -24,9 +24,6 @@ import ConfirmDialog from "./ConfirmDialog";
 const BUTTON = "rounded border border-slate-200 px-2 py-0.5 disabled:opacity-40";
 const FIELD = "w-24 rounded border border-slate-200 px-1 font-mono text-[11px]";
 const SELECT = "rounded border border-slate-200 px-1 text-[11px]";
-/** 반납이 열리는 행의 점 — 회수 대기다(판정표가 낸 값이고 여기서 다시 재지 않는다). */
-const RECLAIM_DOT = "red";
-
 /** 비활성 사유 한 줄 — 값은 엔진 JSON 에서 오고 문장만 화면 것이다. */
 export function disabledReason(row: SlotRow | TaskRow, verdict: DotVerdict): string | null {
   if (verdict.actions !== "disabled") return null;
@@ -93,25 +90,21 @@ export function SlotTableAllocate() {
 
 function SlotActions({ row }: { row: SlotRow }) {
   const verdict = rowDot(row);
-  const { outcome, busy, call } = useCommand();
-  const [task, setTask] = useState("");
+  const { outcome } = useCommand();
   const reason = disabledReason(row, verdict);
 
-  // [반납]이 뜨는 행은 둘이다 — 회수 대기(누를 수 있다)와 작업 중(사유와 함께 비활성).
+  // [반납]이 뜨는 행은 열린 기록(작업 중)뿐이고, 그 창이 아직 그 자리를 쥐고 있을 수 있어
+  // 사유와 함께 비활성이다(닫는 것은 사용자 행위 — `pm-config release <slot> --force`).
   // 그 밖(아이들·readonly)에는 되돌릴 것이 없어 재조회만 남는다.
-  if (verdict.dot !== RECLAIM_DOT && verdict.actions !== "disabled") {
+  if (verdict.actions !== "disabled") {
     return <RefreshOnly slot={row.slot} />;
   }
-  const open = verdict.actions === "change";
   return (
     <span className="inline-flex flex-col items-end gap-1">
       <span className="flex items-center gap-1">
         <Reason reason={reason} />
-        {open && <TaskSelect label={`${row.slot} 반납 task`} value={task} onChange={setTask} />}
         <button type="button" data-testid={`release-${row.slot}`} title={reason ?? ""}
-                disabled={!open || busy || task === ""}
-                onClick={() => void call(["release", row.slot, "--task", task])}
-                className={BUTTON}>반납</button>
+                disabled className={BUTTON}>반납</button>
       </span>
       <CommandOutput outcome={outcome} />
     </span>

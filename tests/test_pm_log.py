@@ -374,7 +374,7 @@ def _freeform_task_checkpoint(mod, monkeypatch, tmp_path, *, register_task: bool
         }],
     }
     if register_task:
-        payload["tasks"] = [{"name": "foo_1", "prefix": None, "pid": 0, "started": "t"}]
+        payload["tasks"] = [{"name": "foo_1", "prefix": None, "started": "t"}]
     ledger.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setattr(mod, "_registered_repos", lambda: set())
 

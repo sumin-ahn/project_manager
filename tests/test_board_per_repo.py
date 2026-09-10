@@ -685,7 +685,7 @@ def _write_ledger(board, *leases):
 
 def _lease_row(*, slot, repo, session, state="leased", test_cmd=None):
     return {"slot": slot, "repo": repo, "branch": None, "session": session,
-            "pid": 1, "started": "t", "state": state, "test_cmd": test_cmd}
+            "started": "t", "state": state, "test_cmd": test_cmd}
 
 
 def test_active_slot_test_cmd_matches_session_leased(board, monkeypatch):

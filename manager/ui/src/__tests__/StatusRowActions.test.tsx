@@ -9,7 +9,7 @@ import { ProjectRunContext } from "../lib/run";
 /**
  * 현황 탭 동작 — 아이들 규칙(비활성 + 사유)·대여와 반납의 자리·확인 대화의 값 결속.
  *
- * 행은 실 엔진 산출(`status --json`) 픽스처의 네 형태다: 아이들 · 작업 중 · 회수 대기 · readonly.
+ * 행은 실 엔진 산출(`status --json`) 픽스처의 세 형태다: 아이들 · 작업 중(열린 기록) · readonly.
  * [대여]는 행이 아니라 슬롯 표 머리에 있다 — `alloc` 이 repo 축이라 어느 idle 슬롯이 나갈지는
  * 엔진이 고르고(최소 번호), 아이들이 둘 이상이면 누른 행과 대여되는 행이 달라진다.
  */
@@ -71,21 +71,11 @@ describe("대여는 repo 단위 한 자리다", () => {
 });
 
 describe("아이들 규칙", () => {
-  it("회수 대기 행은 반납이 열린다 — 화면에서 대여한 슬롯이 곧 이 상태다", async () => {
-    const { run, onChanged } = renderRow(slotOf("."));
-
-    expect(screen.queryByTestId("row-reason")).toBeNull();       // 비활성 사유가 없는 행이다
-    fireEvent.change(screen.getByLabelText(". 반납 task"), { target: { value: "demo" } });
-    expect(screen.getByTestId("release-.")).toBeEnabled();
-    fireEvent.click(screen.getByTestId("release-."));
-
-    await waitFor(() => expect(run).toHaveBeenCalledWith(DEMO, ["release", ".", "--task", "demo"]));
-    await waitFor(() => expect(onChanged).toHaveBeenCalled());
-  });
-
-  it("반납도 task 를 고르기 전에는 나가지 않는다 — 그 값을 화면이 지어내지 않는다", () => {
+  it("열린 기록 행은 반납이 비활성이고 사유가 세션 이름이다 — 닫는 것은 사용자 행위다", async () => {
     const { run } = renderRow(slotOf("."));
 
+    expect(screen.getByTestId("release-.")).toBeDisabled();
+    expect(screen.getByTestId("row-reason")).toHaveTextContent("세션 proj1_1 이 잡고 있음");
     fireEvent.click(screen.getByTestId("release-."));
 
     expect(run).not.toHaveBeenCalled();
@@ -155,11 +145,10 @@ describe("확인 대화와 승인 토큰", () => {
 
 describe("엔진 산출", () => {
   it("rc≠0 이면 stderr 원문이 빨간 박스로 그대로 보인다", async () => {
-    const refusal = "[중단] 슬롯 '.' 은 task 'other' 소유가 아니다 — 반납 거부";
-    const { run } = renderRow(slotOf("."), { rc: 1, stdout: "", stderr: refusal });
+    const refusal = "[중단] task 'demo' 에 claimed 인 티켓이 남아있다 — 종료 거부";
+    const { run } = renderRow(taskOf("demo"), { rc: 1, stdout: "", stderr: refusal });
 
-    fireEvent.change(screen.getByLabelText(". 반납 task"), { target: { value: "demo" } });
-    fireEvent.click(screen.getByTestId("release-."));
+    fireEvent.click(screen.getByTestId("end-demo"));
 
     await screen.findByTestId("command-failed");
     expect(screen.getByTestId("command-stderr")).toHaveTextContent(refusal);

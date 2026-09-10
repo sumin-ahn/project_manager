@@ -16,9 +16,10 @@ from pathlib import Path
 import pytest
 
 from _manager_home import (
-    end_session, git_required, load_pool, make_bare_with_tags, make_pm_home,
+    close_session, git_required, load_pool, make_bare_with_tags, make_pm_home,
 )
 from _repo_owned_inventory import OWNED, repo_owned_paths
+from test_session_alive_from_records import _RETIRED_IDENTIFIERS as RETIRED_IDENTIFIERS
 
 from manager.bridge import Api
 
@@ -54,7 +55,7 @@ def _verdict(row: dict, rules: list[dict] | None = None) -> dict:
 
 @pytest.fixture(scope="module")
 def rows(tmp_path_factory) -> dict[str, dict]:
-    """세 종류 슬롯 행과 아이들 task 행 — 브리지 `run` 이 만들고, 회수 대기 행만 엔진 API 로 만든다."""
+    """세 종류 슬롯 행과 닫힌 task 행 — 브리지 `run` 이 만들고, 열린 대여만 엔진 API 로 만든다."""
     root = tmp_path_factory.mktemp("idle-rule")
     bare = make_bare_with_tags(root / "remote")
     home = make_pm_home(root / "demo", upstream=REPO)
@@ -76,20 +77,18 @@ def rows(tmp_path_factory) -> dict[str, dict]:
                     if row["role"] == "work" and row["slot"] != "."]:
         run(["release", created])
 
-    # 회수 대기 행 = 끝난 세션이 잡은 채 남은 대여. 장부 pid 는 그 행을 만든 세션이라
-    # (T-0915) 세션이 죽어야 이 형태가 된다 — 반납한 슬롯 하나를 다른 세션 이름으로 잡고
-    # 그 세션을 끝낸다(장부 IO 는 엔진 것을 그대로 쓴다).
+    # 열린 대여 행 = 종료 기록 없이 남은 대여. 반납한 슬롯 하나를 세션 이름으로 다시 잡는다
+    # (장부 IO 는 엔진 것을 그대로 쓴다).
     pool = load_pool(home)
     pool.alloc(REPO_NAME, session="demo_9")
-    end_session(pool, "demo_9")
 
     document = api.status(str(home))
     slots = document["slots"]
     return {
         "idle": next(row for row in slots if row["state"] == "idle"),
-        "reclaim": next(row for row in slots
-                        if row["state"] == "leased" and not row["alive"]
-                        and row["role"] != "readonly"),
+        "open": next(row for row in slots
+                     if row["state"] == "leased" and row["alive"]
+                     and row["role"] != "readonly"),
         "readonly": next(row for row in slots if row["role"] == "readonly"),
         "task": next(row for row in document["tasks"] if row["name"] == "t1"),
     }
@@ -98,12 +97,15 @@ def rows(tmp_path_factory) -> dict[str, dict]:
 # ── ① 실제 행의 형태 ────────────────────────────────────────────────────────
 
 
-def test_the_readonly_slot_really_looks_like_a_reclaim_candidate(rows):
-    """함정이 실재하는지 먼저 본다 — 이 형태가 아니면 아래 판정은 우연히 통과한다."""
+def test_the_readonly_slot_really_looks_closed(rows):
+    """함정이 실재하는지 먼저 본다 — 이 형태가 아니면 아래 판정은 우연히 통과한다.
+
+    readonly 는 세션이 없어 닫힘으로 읽힌다(죽은 세션이 아니라 세션이 *없는* 행)."""
     readonly = rows["readonly"]
 
     assert (readonly["role"], readonly["state"]) == ("readonly", "leased")
-    assert (readonly["pid"], readonly["alive"]) == (0, False)
+    assert readonly["alive"] is False and readonly["session"] is None
+    assert "pid" not in readonly
 
 
 # ── ② 아이들 규칙 ───────────────────────────────────────────────────────────
@@ -111,23 +113,22 @@ def test_the_readonly_slot_really_looks_like_a_reclaim_candidate(rows):
 
 def test_only_a_live_session_closes_the_change_actions(rows):
     assert _verdict(rows["idle"])["actions"] == "change"
-    assert _verdict(rows["task"])["actions"] == "change"          # pid 0 인 task
-    # 회수 대기 행은 반납이 열린다 — 그 행을 적은 세션이 이미 끝난 것이라(그 창이 닫혔다)
-    # 잡고 있는 주체가 없고, 그 행의 반납이 대여의 역이다.
-    assert _verdict(rows["reclaim"])["actions"] == "change"
+    assert _verdict(rows["task"])["actions"] == "change"          # 닫힌 task
+    # 열린 기록은 변경 동작이 닫힌다 — 그 창이 아직 그 자리를 쥐고 있을 수 있다.
+    assert _verdict(rows["open"])["actions"] == "disabled"
     assert _verdict(rows["readonly"])["actions"] == "refresh"     # 변경 축이 아니다
 
 
 def test_a_live_session_row_is_disabled_by_the_same_table():
-    """작업 중(`alive=true`)은 실 pid 없이도 판정표 한 줄이다 — 관리자 쪽 생존 조회가 없다."""
-    live = {"slot": "work/app_9", "state": "leased", "pid": 4321, "alive": True, "role": "work"}
+    """작업 중(`alive=true`)은 판정표 한 줄이다 — 관리자 쪽 판정 코드가 없다."""
+    live = {"slot": "work/app_9", "state": "leased", "alive": True, "role": "work"}
 
     assert _verdict(live)["actions"] == "disabled"
     assert _verdict(live)["dot"] == "orange"
 
 
-def test_the_readonly_row_must_win_before_the_reclaim_rule(rows):
-    """순서가 없으면 공유 슬롯이 회수 대기로 오표시되고 사유가 거짓이 된다."""
+def test_the_readonly_row_must_win_before_the_closed_rule(rows):
+    """순서가 없으면 공유 슬롯이 그냥 '닫힘'으로 뭉뚱그려지고 사유가 거짓이 된다."""
     rules = _rules()
     readonly = rows["readonly"]
 
@@ -140,7 +141,7 @@ def test_the_readonly_row_must_win_before_the_reclaim_rule(rows):
 def test_every_rule_carries_an_action_column(rows):
     """판정표의 셋째 칼럼이 비면 화면이 다시 계산해야 한다 — 그 자리를 만들지 않는다."""
     assert [rule["actions"] for rule in _rules()] == [
-        "refresh", "change", "change", "disabled", "change"]
+        "refresh", "change", "disabled", "change"]
 
 
 def test_a_row_without_a_matching_rule_stops_instead_of_defaulting():
@@ -152,14 +153,17 @@ def test_a_row_without_a_matching_rule_stops_instead_of_defaulting():
 
 
 def test_the_manager_never_looks_up_pid_liveness_itself():
-    """`alive` 는 엔진 JSON 값 하나다 — 관리자 쪽 조회 코드가 있으면 두 판정이 갈린다."""
+    """`alive` 는 엔진 JSON 값 하나다 — 관리자 쪽 조회 코드가 있으면 두 판정이 갈린다.
+
+    폐기된 세션 pid 해소 식별자는 그 목록의 단일 진실(`test_session_alive_from_records`)에서
+    가져온다 — 같은 목록을 두 벌로 적으면 한쪽만 늘어난다."""
     sources = [path for path in repo_owned_paths(REPO, "manager", mode=OWNED)
                if path.suffix == ".py"]
 
     assert sources
     for source in sources:
         text = source.read_text(encoding="utf-8")
-        for token in ("os.kill", "psutil", "_pid_alive", "pid_is_alive"):
+        for token in ("os.kill", "psutil", "_pid_alive", "pid_is_alive", *RETIRED_IDENTIFIERS):
             assert token not in text, f"{source.name} 이 생존을 직접 조회한다: {token}"
 
 

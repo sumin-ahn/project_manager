@@ -1,8 +1,8 @@
 """상태 점 판정 순서 — 실 슬롯이 만든 JSON 으로 잰다 (T-0910 AT-006).
 
 판정표는 화면과 이 테스트가 **같은 파일**(`manager/ui/src/lib/status-dots.json`)을 읽는다 —
-위에서부터 첫 일치가 이긴다. 실 `worktree add --readonly` 슬롯은 `leased`+`pid 0`+`alive false`
-+`role readonly` 라, readonly 가 맨 앞이 아니면 공유 슬롯이 전부 "회수 대기" 빨강이 된다.
+위에서부터 첫 일치가 이긴다. 실 `worktree add --readonly` 슬롯은 `leased`+세션 없음이라
+`alive false`(닫힘)로 읽히는데, readonly 가 맨 앞이 아니면 공유 슬롯이 그냥 닫힘으로 뭉뚱그려진다.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from _manager_home import (
-    end_session, git_required, make_bare_with_tags, make_pm_home, pm_config,
+    close_session, git_required, make_bare_with_tags, make_pm_home, pm_config,
 )
 
 REPO = Path(__file__).resolve().parents[1]
@@ -44,7 +44,7 @@ def _dot(row: dict, rules: list[dict] | None = None) -> str:
 
 @pytest.fixture(scope="module")
 def slots(tmp_path_factory) -> dict[str, dict]:
-    """실 슬롯 네 형태를 실 명령으로 만든 뒤 실 `status --json` 으로 읽는다."""
+    """실 슬롯 세 형태 + task 두 형태를 실 명령으로 만든 뒤 실 `status --json` 으로 읽는다."""
     root = tmp_path_factory.mktemp("dot-rule")
     bare = make_bare_with_tags(root / "remote")
     home = make_pm_home(root / "demo")
@@ -62,10 +62,10 @@ def slots(tmp_path_factory) -> dict[str, dict]:
     sys.modules[specification.name] = pool
     specification.loader.exec_module(pool)
     pool.alloc("app", session="demo_2")                                           # 주황
-    pool.bind_task("live-task", pid=os.getpid())
-    # 빨강 — 세션이 끝난 뒤 남은 대여. 장부 pid 는 그 세션이라(T-0915) 세션이 죽어야 이 형태가 된다.
+    pool.bind_task("live-task")
+    # 닫힘 — 종료 기록(반납)이 남은 대여는 idle 로 돌아간다(회색).
     pool.alloc("app", session="demo_3")
-    end_session(pool, "demo_3")
+    close_session(pool, "demo_3")
 
     completed = subprocess.run(
         [sys.executable, str(home / ".project_manager" / "tools" / "pm_config.py"),
@@ -80,26 +80,24 @@ def slots(tmp_path_factory) -> dict[str, dict]:
     rows["readonly"] = next(row for row in slot_rows if row["role"] == "readonly")
     rows["idle"] = next(row for row in slot_rows if row["state"] == "idle")
     rows["working"] = next(row for row in slot_rows if row["state"] == "leased" and row["alive"])
-    rows["reclaim"] = next(row for row in slot_rows if row["state"] == "leased"
-                           and not row["alive"] and row["role"] != "readonly")
     return rows
 
 
-def test_the_readonly_slot_really_looks_like_a_reclaim_candidate(slots):
+def test_the_readonly_slot_really_looks_closed(slots):
     """함정이 실재하는지 먼저 확인한다 — 이 형태가 아니면 아래 판정은 우연히 통과한다."""
     readonly = slots["readonly"]
 
     assert readonly["role"] == "readonly"
     assert readonly["state"] == "leased"
-    assert readonly["pid"] == 0
+    assert readonly["session"] is None
     assert readonly["alive"] is False
+    assert "pid" not in readonly
 
 
-def test_the_four_states_map_to_the_four_colours(slots):
+def test_the_states_map_to_the_colours(slots):
     assert _dot(slots["readonly"]) == "blue", "공유(readonly) 슬롯"
-    assert _dot(slots["idle"]) == "gray", "반납된 idle 슬롯"
-    assert _dot(slots["working"]) == "orange", "살아 있는 세션이 잡은 슬롯"
-    assert _dot(slots["reclaim"]) == "red", "죽은 pid 가 잡은 채 남은 슬롯"
+    assert _dot(slots["idle"]) == "gray", "반납된(종료 기록) idle 슬롯"
+    assert _dot(slots["working"]) == "orange", "열린 기록이 잡은 슬롯"
 
 
 def test_task_rows_use_the_same_rules(slots):
@@ -112,13 +110,9 @@ def test_the_order_is_load_bearing(slots):
     rules = _rules()
     readonly = slots["readonly"]
 
-    # ① role 규칙을 맨 뒤로 미루면 더 이상 공유 슬롯으로 보이지 않는다(pid 0 이 먼저 잡는다).
+    # role 규칙을 맨 뒤로 미루면 더 이상 공유 슬롯으로 보이지 않는다(닫힘 규칙이 먼저 잡는다).
     role_last = [rule for rule in rules if rule["field"] != "role"] + [rules[0]]
     assert _dot(readonly, role_last) == "gray"
-
-    # ② spike §6.4 표 순서 그대로(아이들=슬롯 state=idle · readonly 가 맨 아래)면 빨강 오표시다.
-    table_order = [rule for rule in rules if rule["field"] not in {"role", "pid"}] + [rules[0]]
-    assert _dot(readonly, table_order) == "red"
 
     assert _dot(readonly, rules) == "blue"
 
@@ -133,4 +127,4 @@ def test_the_screen_reads_the_same_rule_file():
     source = (REPO / "manager" / "ui" / "src" / "lib" / "status.ts").read_text(encoding="utf-8")
 
     assert 'from "./status-dots.json"' in source
-    assert [rule["dot"] for rule in _rules()] == ["blue", "gray", "gray", "orange", "red"]
+    assert [rule["dot"] for rule in _rules()] == ["blue", "gray", "orange", "gray"]

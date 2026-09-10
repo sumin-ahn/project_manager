@@ -106,6 +106,10 @@ class FakeWorktreePool:
         self.leases = leases or []
         self.calls: list[tuple] = []
 
+    def lease_is_open(self, lease):
+        """열림 판정은 엔진 규칙 그대로 — 열림 기록(leased + session)이면 열림."""
+        return getattr(lease, "state", None) == "leased" and bool(getattr(lease, "session", ""))
+
     def list_leases(self):
         self.calls.append(("list_leases",))
         return self.leases

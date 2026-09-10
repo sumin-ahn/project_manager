@@ -627,8 +627,7 @@ def _build_close_env(tf, base: Path, monkeypatch) -> _CloseEnv:
     # 리스 장부 — 종결이 반납할 슬롯.
     (home / ".project_manager" / ".local" / "worktree-leases.json").write_text(
         json.dumps({"leases": [{
-            "slot": _SLOT, "repo": "code", "session": "t", "pid": 0,
-            "started": _FIXTURE_STAMP, "state": "leased",
+            "slot": _SLOT, "repo": "code", "session": "t", "started": _FIXTURE_STAMP, "state": "leased",
         }]}, ensure_ascii=False), encoding="utf-8")
 
     # 이 픽스처의 실행 세션은 리스 장부·`claimed_by` 와 같은 `t` 다. 선검사가 board 의 소유
@@ -920,7 +919,7 @@ def test_reconcile_integrated_is_idempotent_and_preserves_other_dirty_slots(
     leases = json.loads(lease_path.read_text(encoding="utf-8"))
     leases["leases"].append({
         "slot": "work/code_2", "repo": "code", "session": "other",
-        "pid": 0, "started": _FIXTURE_STAMP, "state": "leased",
+        "started": _FIXTURE_STAMP, "state": "leased",
     })
     lease_path.write_text(json.dumps(leases), encoding="utf-8")
     lease_before = lease_path.read_bytes()

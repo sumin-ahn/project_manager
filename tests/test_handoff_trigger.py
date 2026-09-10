@@ -302,14 +302,14 @@ class _TaskLedgerStub:
         return self._record
 
 
-def test_task_handoff_intent_writes_pid_zero_through_the_pool_primitive(handoff, capsys):
-    """task 모드는 그 task 레코드의 pid 를 0(미점유)으로 비우고 성공을 보고한다."""
-    pool = _TaskLedgerStub(SimpleNamespace(name="t1", pid=0))
+def test_task_handoff_closes_the_record_through_the_pool_primitive(handoff, capsys):
+    """task 모드는 그 task 레코드를 닫고(open=False) 성공을 보고한다."""
+    pool = _TaskLedgerStub(SimpleNamespace(name="t1", open=False))
     tool = handoff.PmHandoff(worktree_pool=pool)
 
     assert tool._release_task_pid("t1") is True
     assert pool.calls == ["t1"], "장부 write 는 그 프리미티브 한 번뿐이다"
-    assert "pid=0" in capsys.readouterr().out
+    assert "닫힘" in capsys.readouterr().out
 
 
 def test_task_handoff_intent_without_a_task_record_is_fail_loud(handoff, capsys):

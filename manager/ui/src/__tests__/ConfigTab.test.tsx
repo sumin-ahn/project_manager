@@ -96,11 +96,10 @@ describe("슬롯 절", () => {
     const { run } = renderTab();
 
     expect(screen.getByTestId("slot-remove-work/app_2")).toBeDisabled();   // 작업 중
-    // 회수 대기 행은 판정표가 변경 동작을 여는 자리다(현황 탭의 [반납]과 같은 한 줄) — 이
-    // 명령의 가부는 엔진이 판정하고 거부 문구를 그대로 낸다.
-    expect(screen.getByTestId("slot-remove-.")).toBeEnabled();
+    // 열린 기록 행도 같은 한 줄로 닫힌다(그 창이 아직 그 자리를 쥐고 있을 수 있다).
+    expect(screen.getByTestId("slot-remove-.")).toBeDisabled();
     expect(screen.queryByTestId("slot-remove-work/app_1")).toBeNull();     // readonly
-    fireEvent.click(screen.getByTestId("slot-remove-work/app_3"));
+    fireEvent.click(screen.getByTestId("slot-remove-work/app_3"));         // 아이들 행은 열린다
 
     await waitFor(() => expect(run).toHaveBeenCalledWith(
       DEMO, ["worktree", "remove", "work/app_3"]));

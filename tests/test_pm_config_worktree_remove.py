@@ -174,7 +174,7 @@ def _seed(wp, *leases, tree=True):
 
 def _lease(wp, *, slot, repo, session="s1", pid=None, state="leased"):
     return wp.Lease(slot=slot, repo=repo, session=session,
-                    pid=os.getpid() if pid is None else pid, started="t", state=state)
+                    started="t", state=state)
 
 
 def test_remove_slot_normal_removes_and_deletes_merged_branch(wp):

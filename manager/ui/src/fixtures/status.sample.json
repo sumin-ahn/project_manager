@@ -9,8 +9,7 @@
       "repo": "proj1",
       "state": "leased",
       "session": "proj1_1",
-      "pid": 232958,
-      "alive": false,
+      "alive": true,
       "role": "work",
       "task": null,
       "branch": "master",
@@ -24,7 +23,6 @@
       "repo": "app",
       "state": "leased",
       "session": null,
-      "pid": 0,
       "alive": false,
       "role": "readonly",
       "task": null,
@@ -42,7 +40,6 @@
       "repo": "app",
       "state": "leased",
       "session": "proj1_2",
-      "pid": 259842,
       "alive": true,
       "role": "work",
       "task": null,
@@ -57,7 +54,6 @@
       "repo": "app",
       "state": "idle",
       "session": null,
-      "pid": 0,
       "alive": false,
       "role": "work",
       "task": null,
@@ -72,7 +68,6 @@
       "repo": "app",
       "state": "idle",
       "session": null,
-      "pid": 0,
       "alive": false,
       "role": "work",
       "task": null,
@@ -87,7 +82,6 @@
     {
       "name": "demo",
       "prefix": null,
-      "pid": 0,
       "alive": false,
       "started": "2026-09-07T14:57:50+00:00",
       "slots": []
@@ -95,7 +89,6 @@
     {
       "name": "live",
       "prefix": null,
-      "pid": 259842,
       "alive": true,
       "started": "2026-09-07T14:59:02+00:00",
       "slots": []

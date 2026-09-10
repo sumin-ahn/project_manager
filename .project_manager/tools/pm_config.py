@@ -20,7 +20,8 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config status | whoami                              # 풀/리스 + 이 세션 repo/슬롯/branch
     pm-config alloc <repo> --task <이름>                    # task 명의로 idle 최소 번호 슬롯 대여 (자동 생성 안 함)
     pm-config release <slot> [--task <이름>] [--force]      # 작업완료 반납 (--task 소유검사) / 수동 강제(백스톱)
-    pm-config task new <이름>                               # task 정체성 생성 — 장부 행(pid 0)+pm_state (세션 묶기 없음·진입은 부트스트랩)
+    pm-config task new <이름>                               # task 정체성 생성 — 장부 행(닫힘)+pm_state (세션 묶기 없음·진입은 부트스트랩)
+    pm-config task close <이름>                             # 열린 채 남은 task 세션 기록 닫기 (기록만·복원 없음)
     pm-config task prefix <이름> <p|none> [--user-ack <p>] # 신규 prefix 사용자 승인값 결속·변경/해제 (`none`=해제)
     pm-config task end <이름>                               # task 종료 — claimed 소진 게이트·dirty 게이트·일괄 반납 + _ended 아카이브
     pm-config task reopen <이름> [--archive <basename>]     # 종료 archive를 동일 task 정체성으로 복원
@@ -2238,7 +2239,7 @@ def cmd_worktree_add(
     base = _resolve_repo_base(args.repo, board=board)
 
     # readonly 공유 슬롯 — research 전용 read-only 기준면. detached HEAD·role="readonly"·
-    # session/pid 없음. 생성 자체는 사용자 승인 flow(디스크=코드 전체 사본).
+    # session 없음. 생성 자체는 사용자 승인 flow(디스크=코드 전체 사본).
     readonly = getattr(args, "readonly", False)
 
     # --task <이름> (ⓓB) — 새 슬롯을 만들고 **생성 직후 그 슬롯을** task 명의로 대여한다
@@ -2249,7 +2250,7 @@ def cmd_worktree_add(
         if readonly:
             print(
                 "[중단] `--readonly` 와 `--task` 는 함께 쓸 수 없다 — readonly 공유 슬롯은 무소유"
-                "(session/pid 없음·배타 대여 없음)라 task 명의 대여 대상이 아니다.",
+                "(session 없음·배타 대여 없음)라 task 명의 대여 대상이 아니다.",
                 file=sys.stderr,
             )
             return 1
@@ -2285,7 +2286,7 @@ def cmd_worktree_add(
         # readonly 공유 슬롯 — 세션 바인딩 없음(무소유·공유 자산). 갱신은 refresh 로만.
         print(
             f"✓ readonly 공유 슬롯 생성: {lease.slot} (repo={lease.repo}·role=readonly) → {slot_path}\n"
-            "  research 전용 read-only 기준면(detached HEAD·배타 대여 없음·session/pid 없음). 코드를\n"
+            "  research 전용 read-only 기준면(detached HEAD·배타 대여 없음·session 없음). 코드를\n"
             "  *읽어* PM 홈 wiki(domain·architecture·status)를 쓰는 역할의 읽기 기준면이다.\n"
             f"  갱신은 `{_runtime_skill_entry('pm-worktree')} refresh "
             f"{lease.repo}_{slot_num}` 로만(fetch→detach 이동·dirty=거부). "
@@ -2395,9 +2396,9 @@ def _write_machine_line(text: str) -> None:
 def _status_json_slots(wp, leases, task_names: set) -> list[dict]:
     """슬롯 축 — 리스 장부 + 슬롯당 git 요약. 판정은 전부 `worktree_pool` 것을 그대로 싣는다.
 
-    `alive` 는 `_pid_alive`(→ `pm_relay.pid_is_alive`) 그대로다(생존 판정 재구현 0). 장부의 `pid`
-    는 그 행을 만든 **세션**(`worktree_pool._session_pid`)이라 `alive` 는 그 세션이 살아 있는
-    동안 참이다. `role` 은 장부에 키가 없는 행이 있어 `work`/`readonly` 두 값으로 정규화한다 —
+    `alive` 는 `worktree_pool.lease_is_open` 그대로다(판정 재구현 0) — 열림 기록(leased +
+    session)이 있고 그에 대응하는 종료 기록(release/force_release/end_task 의 idle+session 비움)이
+    없으면 참이다. 프로세스 조회는 0회다. `role` 은 장부에 키가 없는 행이 있어 `work`/`readonly` 두 값으로 정규화한다 —
     표시 축이 아니라 판정 축이라 빈 값을 남기지 않는다.
     """
     rows: list[dict] = []
@@ -2408,8 +2409,7 @@ def _status_json_slots(wp, leases, task_names: set) -> list[dict]:
             "repo": lease.repo,
             "state": lease.state,
             "session": lease.session or None,
-            "pid": lease.pid,
-            "alive": bool(wp._pid_alive(lease.pid)),
+            "alive": bool(wp.lease_is_open(lease)),
             "role": getattr(lease, "role", "work") or "work",
             "task": lease.session if (lease.session and lease.session in task_names) else None,
             "branch": git.get("branch"),
@@ -2422,12 +2422,14 @@ def _status_json_slots(wp, leases, task_names: set) -> list[dict]:
 
 
 def _status_json_tasks(wp, tasks) -> list[dict]:
-    """task 축 — 정체성 + 보유 슬롯(`slots_for_task` · session 축 귀속)."""
+    """task 축 — 정체성 + 보유 슬롯(`slots_for_task` · session 축 귀속).
+
+    `alive` = 장부 task 행의 열림 기록(`open`) 그대로다 — 프로세스 조회 0회.
+    """
     return [{
         "name": task.name,
         "prefix": getattr(task, "prefix", None) or None,
-        "pid": task.pid,
-        "alive": bool(wp._pid_alive(task.pid)),
+        "alive": bool(task.open),
         "started": getattr(task, "started", "") or None,
         "slots": [lease.slot for lease in (wp.slots_for_task(task.name) or [])],
     } for task in tasks]
@@ -2773,12 +2775,13 @@ def cmd_status(
     if not leases:
         print("  (리스 없음 — 아직 worktree 슬롯이 생성되지 않음)")
     for l in leases:
-        # role(work/readonly) — readonly 공유 슬롯은 무소유(session/pid 없음)·detached.
+        # role(work/readonly) — readonly 공유 슬롯은 무소유(session 없음)·detached.
         role = getattr(l, "role", "work")
         role_str = f" · role={role}" if role != "work" else ""
         print(
             f"  - {l.slot} · repo={l.repo} · branch={_live_branch(l.slot)} · "
-            f"state={l.state} · session={l.session or '-'} · pid={l.pid}{role_str}"
+            f"state={l.state} · session={l.session or '-'} · "
+            f"{'열림' if wp.lease_is_open(l) else '닫힘'}{role_str}"
         )
         # 보유 task 귀속(장부 축) — lease.session 이 task 명이면 그 task 가 이 슬롯을 보유(session
         # 축). slot-모드/idle 슬롯(session 이 task 명 아님/빈값)은 `-`. **장부 유래라 항상 출력** —
@@ -3189,7 +3192,7 @@ def cmd_alloc(
     **항상 신규 대여**: 같은 task 가 이미 이 repo 슬롯을 보유해도 그걸 재반환하지 않고
     다른 idle 슬롯을 대여해 **같은 repo 복수 보유**(병렬 dev 격리
     등)를 자연 지원한다. 대여한 lease 의 reclaim/재부착 보호는 **tasks 장부 조인**(session ∈ tasks
-    장부)이 담당한다 — 세션 pid 가 죽어도 회수되지 않는다. idle 슬롯이 없으면 NeedsCreate → **대여 실패 + 사용자 생성 요청**
+    장부)이 담당한다 — 자동 회수는 없다. idle 슬롯이 없으면 NeedsCreate → **대여 실패 + 사용자 생성 요청**
     (자동 생성 금지·`worktree add --task` 안내로 생성+대여 한 흐름). 새 슬롯은 디스크(코드 전체
     사본×슬롯)라 물리층이고 사용자 승인(`worktree add`)이 게이트다 — alloc/release=PM 자율(논리
     층)·create/remove=사용자 승인(물리층)의 2층 분리를 CLI 로 표면화한다.
@@ -3261,11 +3264,11 @@ def cmd_task_new(
     worktree_pool=None,
     board=None,
 ) -> int:
-    """`task new <이름>` — task 정체성만 생성(세션 묶기 없음·`pid 0`·슬롯 0).
+    """`task new <이름>` — task 정체성만 생성(세션 묶기 없음·닫힘·슬롯 0).
 
-    `worktree_pool.create_task` 로 장부 `tasks[]` 행(`prefix=None`·`pid=0`)과 서술 pm_state 를
+    `worktree_pool.create_task` 로 장부 `tasks[]` 행(`prefix=None`·닫힘)과 서술 pm_state 를
     만든다 — 관리자/사용자가 아이들 상태에서 task 목록을 조정하는 진입이다. 세션에 묶는 것은
-    부트스트랩 몫이고, `pid 0` 은 미점유 표현이라 이어지는 `/pm-bootstrap --task <이름>` 이
+    부트스트랩 몫이고, 닫힘은 종료 기록과 같은 값이라 이어지는 `/pm-bootstrap --task <이름>` 이
     **resume** 으로 이어받는다(신규 생성 아님).
 
     `--prefix` 는 두지 않는다 — 새 prefix 신설은 `task prefix` 의 `--user-ack` 승인 게이트
@@ -3274,7 +3277,7 @@ def cmd_task_new(
 
     거부(각각 rc1·장부 무변경): 부적합 이름(`InvalidTaskName` — traversal·`<repo>_<N>` 예약) ·
     동명 종료 archive(`TaskArchived` — `task reopen` 안내) · **이미 있는 이름**(재개는 bootstrap
-    몫이라 여기서 pid 를 만지지 않는다).
+    몫이라 여기서 열림 표시를 만지지 않는다).
 
     worktree_pool/board 주입으로 hermetic 테스트. 예약패턴 판별 근거는 `_registered_repos` 가
     해소한다(부재면 None → traversal 검증만·`cmd_alloc` 과 같은 한 자리).
@@ -3319,7 +3322,7 @@ def cmd_task_new(
         )
         return 1
 
-    print(f"✓ task 생성: {name!r} (pid 0 · 슬롯 0) — 정체성만 만들었다(세션 묶기 없음).")
+    print(f"✓ task 생성: {name!r} (닫힘 · 슬롯 0) — 정체성만 만들었다(세션 묶기 없음).")
     print(
         f"  다음 진입: `{_runtime_skill_entry('pm-bootstrap')} --task {name}` "
         "(이 정체성을 재개로 이어받는다)."
@@ -3327,6 +3330,49 @@ def cmd_task_new(
     print(
         f"  슬롯 대여: `pm-config alloc <repo> --task {name}` · "
         f"prefix 지정: `pm-config task prefix {name} <p>`."
+    )
+    return 0
+
+
+def cmd_task_close(
+    args: argparse.Namespace,
+    *,
+    worktree_pool=None,
+) -> int:
+    """`task close <이름>` — 종료 기록 없이 열린 채 남은 task 세션 기록을 닫는다.
+
+    **기록만 닫는다** — 복원(claim 티켓·라운드 단계 등)은 이 경로의 관심사가 아니다(그건
+    부트스트랩 `--force` 인계 몫). 세션이 핸드오프 없이 끝나면 장부 task 행이 열린 채 남아
+    다음 부트스트랩이 거부하는데, 그것을 닫는 것은 **사용자 행위**다(엔진 자동 회수·만료 시각
+    없음). 작업 폴더 쪽 짝은 기존 `pm-config release <slot> --force` 다 — 새로 만들지 않았다.
+
+    write 는 기존 프리미티브 `worktree_pool.release_task_pid` 하나만 부른다(장부 write 재구현 0).
+    값은 열림/닫힘 둘뿐이라 세 번째 상태값도, 만료/유예 인자도 없다.
+    """
+    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
+    if wp is None:
+        print(
+            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — task close 불가 "
+            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
+            file=sys.stderr,
+        )
+        return 1
+    name = args.name
+    try:
+        record = wp.find_task(name)
+    except wp.InvalidTaskName as exc:
+        print(f"[중단] 부적합 task 명 {name!r} — {exc.reason}.", file=sys.stderr)
+        return 1
+    if record is None:
+        print(f"[중단] 등록 task 가 아니다 — {name!r}.", file=sys.stderr)
+        return 1
+    if not record.open:
+        print(f"  task {name!r} 은 이미 닫혀 있다 — 바꿀 기록 없음(무해).")
+        return 0
+    wp.release_task_pid(name)
+    print(f"✓ task {name!r} 세션 기록을 닫았다 (열림 → 닫힘) — 복원 없음(기록만).")
+    print(
+        f"  이어서 진입하려면: `{_runtime_skill_entry('pm-bootstrap')} --task {name}`."
     )
     return 0
 
@@ -3413,7 +3459,7 @@ def cmd_task_end(
     except wp.TaskEndRefused as exc:
         print(
             f"[중단] task {name!r} 종료 거부 — {exc.reason}. "
-            "task end는 handoff 진입이 남긴 durable intent(pid=0) 뒤에만 허용된다.",
+            "task end 는 종료 기록(핸드오프 또는 `task close`) 뒤에만 허용된다.",
             file=sys.stderr,
         )
         return 1
@@ -3486,7 +3532,7 @@ def cmd_task_reopen(
 
     print(f"✓ task {args.name!r} 동일 정체성 복원: {result.moved_from} → {result.moved_to}")
     print(
-        "  장부 재등록: prefix=None(reset) · pid=0(durable handoff intent 상태) · "
+        "  장부 재등록: prefix=None(reset) · 닫힘(종료 기록 상태) · "
         f"started={result.task.started}"
     )
     print(
@@ -4861,7 +4907,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_wt_add.add_argument(
         "--readonly", action="store_true",
         help="research 전용 read-only 공유 슬롯 생성 (detached HEAD·role=readonly·"
-             "session/pid 없음·배타 대여 없음). 코드를 읽어 PM 홈 wiki 를 쓰는 읽기 기준면. "
+             "session 없음·배타 대여 없음). 코드를 읽어 PM 홈 wiki 를 쓰는 읽기 기준면. "
              f"갱신은 `{_runtime_skill_entry('pm-worktree')} refresh` 로만·"
              "set-base/rebase/dev/sync 는 거부.",
     )
@@ -4963,13 +5009,13 @@ def build_parser() -> argparse.ArgumentParser:
                            help="dirty/leased 무시 강제 idle 화 (dirty 는 stash 보존 시도·--task 소유검사도 우회)")
     p_release.set_defaults(func=cmd_release)
 
-    # task new <이름> — 정체성만 생성(pid 0·세션 묶기 없음) / task end <이름> — task 종료:
+    # task new <이름> — 정체성만 생성(닫힘·세션 묶기 없음) / task end <이름> — task 종료:
     # claimed 소진 게이트·dirty 게이트·clean 시 일괄 반납 + 아카이브 이동
-    p_task = sub.add_parser("task", help="task 정체성 관리 (new·prefix·end·reopen)")
+    p_task = sub.add_parser("task", help="task 정체성 관리 (new·prefix·close·end·reopen)")
     task_sub = p_task.add_subparsers(dest="task_command", metavar="<task-command>")
     p_task_new = task_sub.add_parser(
         "new",
-        help="task 정체성 생성 — 장부 행(pid 0)+pm_state 만 만들고 세션에 안 묶는다"
+        help="task 정체성 생성 — 장부 행(닫힘)+pm_state 만 만들고 세션에 안 묶는다"
              f"(진입은 `{_runtime_skill_entry('pm-bootstrap')} --task <이름>` 이 resume 으로 이어받음)",
     )
     p_task_new.add_argument("name", help="생성할 task 이름")
@@ -4982,6 +5028,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_task_end.add_argument("name", help="종료할 task 이름")
     p_task_end.set_defaults(func=cmd_task_end)
+
+    # task close <이름> — 종료 기록 없이 남은 세션을 사용자가 닫는다(기록만·복원 없음).
+    p_task_close = task_sub.add_parser(
+        "close",
+        help="열린 채 남은 task 세션 기록을 닫는다 — 기록만 닫고 복원하지 않는다"
+             "(작업 폴더 쪽 짝은 `release <slot> --force`)",
+    )
+    p_task_close.add_argument("name", help="기록을 닫을 task 이름")
+    p_task_close.set_defaults(func=cmd_task_close)
 
     p_task_reopen = task_sub.add_parser(
         "reopen",

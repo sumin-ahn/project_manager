@@ -29,7 +29,7 @@ export type SlotRow = {
   repo: string;
   state: string;
   session: string | null;
-  pid: number;
+  /** 열린 기록이 있고 그에 대응하는 종료 기록이 없는가 (프로세스 조회 아님). */
   alive: boolean;
   role: string;
   task: string | null;
@@ -42,7 +42,7 @@ export type SlotRow = {
 export type TaskRow = {
   name: string;
   prefix: string | null;
-  pid: number;
+  /** 열린 기록이 있고 그에 대응하는 종료 기록이 없는가 (프로세스 조회 아님). */
   alive: boolean;
   started: string | null;
   slots: string[];

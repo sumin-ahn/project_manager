@@ -57,13 +57,15 @@ def hf():
 
 
 class _RegisteredTaskPool:
-    """task membership만 양성으로 답하는 최소 handoff 테스트 seam."""
+    """task membership만 양성으로 답하는 최소 handoff 테스트 seam.
 
-    def __init__(self, *, pid=12345):
-        self.pid = pid
+    `open` = 그 task 행의 열림 기록(True=열린 세션·False=종료 기록이 이미 남음)."""
+
+    def __init__(self, *, open=True):
+        self._open = open
 
     def find_task(self, name):
-        return type("_T", (), {"name": name, "pid": self.pid})()
+        return type("_T", (), {"name": name, "open": self._open})()
 
     @staticmethod
     def _validate_task_name(_name, _registered_repos=None):
@@ -2364,9 +2366,9 @@ def test_run_task_recovers_log_only_interrupt_as_same_session_and_ignores_999(
         pm_playbook_file=playbook,
         pm_state_file=pm_state,
         dashboard_file=dashboard_file,
-        # log-only 반쪽 상태는 log보다 먼저 남는 handoff intent(pid=0)가
-        # 반드시 있다. 새 bootstrap이 bind한 pid>0이면 log 3 다음 4차가 맞다.
-        worktree_pool=_RegisteredTaskPool(pid=0),
+        # log-only 반쪽 상태는 log보다 먼저 남는 종료 기록(닫힘)이 반드시 있다.
+        # 새 bootstrap 이 다시 연 상태(열림)라면 log 3 다음 4차가 맞다.
+        worktree_pool=_RegisteredTaskPool(open=False),
     )
 
     rc = handoff.run(
@@ -2474,13 +2476,13 @@ def test_run_task_records_precreated_pm_state(hf, tmp_path, capsys, monkeypatch)
     # lease 유지 증거 — release 가 불리면 fail 하는 sentinel worktree_pool(done=False 라 미호출 기대).
     class _NoReleasePool:
         def find_task(self, name):
-            return type("_T", (), {"name": name, "pid": 12345})()
+            return type("_T", (), {"name": name})()
 
         def slots_for_task(self, name):
             return []
 
         def release_task_pid(self, name):
-            return type("_T", (), {"name": name, "pid": 0})()
+            return type("_T", (), {"name": name})()
 
         def release(self, *a, **k):  # noqa: ANN002 ANN003
             raise AssertionError("task 세션 종료가 lease 를 release 하면 안 된다(F7·세션종료≠task종료)")
@@ -3180,7 +3182,7 @@ def test_snapshot_updates_lease_and_next_phase0_passes(hf, tmp_path):
 
     # 리스 seed + arrival 스냅(v1.3.2@c1·base 기록) — 부트스트랩 bind 도착 시점 모사.
     lease = wp.Lease(slot="work/project_manager_1", repo="project_manager",
-                     session="project_manager_1", pid=os.getpid(), started="t", state="leased")
+                     session="project_manager_1", started="t", state="leased")
     with wp._lease_lock():
         wp._write_ledger([lease])
     wp.record_git_snapshot("work/project_manager_1", base_branch="v1.3.2")
@@ -3261,7 +3263,7 @@ class _TaskPidPool(_SnapPool):
             raise OSError("ledger unavailable")
         if self._task_pid_none:
             return None
-        return type("_T", (), {"name": name, "pid": 0})()
+        return type("_T", (), {"name": name})()
 
     def slots_for_task(self, name):
         return []
@@ -3290,8 +3292,8 @@ def _task_mode_handoff(hf, tmp_path, monkeypatch, pool):
     )
 
 
-def test_run_task_mode_records_task_pid_before_log_bookkeeping(hf, tmp_path, monkeypatch, capsys):
-    """task pid=0 intent는 log보다 먼저 기록돼 이후 중단도 같은 차수로 복구된다."""
+def test_run_task_mode_records_task_close_before_log_bookkeeping(hf, tmp_path, monkeypatch, capsys):
+    """task 종료 기록은 log보다 먼저 남아 이후 중단도 같은 차수로 복구된다."""
     pool = _TaskPidPool()
     handoff = _task_mode_handoff(hf, tmp_path, monkeypatch, pool)
     rc = handoff.run(
@@ -3300,12 +3302,12 @@ def test_run_task_mode_records_task_pid_before_log_bookkeeping(hf, tmp_path, mon
     assert rc == 0
     assert pool.task_pid_calls == ["mytask"]
     out = capsys.readouterr().out
-    assert out.index("[task] handoff intent pid=0 기록") < out.index("[2/7]")
-    assert "task handoff intent 기록: mytask → pid=0" in out
+    assert out.index("[task] 종료 기록(닫힘)") < out.index("[2/7]")
+    assert "task 종료 기록: mytask → 닫힘" in out
 
 
 def test_run_task_mode_dry_run_previews_task_pid_without_call(hf, tmp_path, monkeypatch, capsys):
-    """dry_run task 모드 — pid=0 기록 예고만 출력·write 프리미티브 미호출(미리보기)."""
+    """dry_run task 모드 — 종료 기록 예고만 출력·write 프리미티브 미호출(미리보기)."""
     pool = _TaskPidPool()
     handoff = _task_mode_handoff(hf, tmp_path, monkeypatch, pool)
     rc = handoff.run(
@@ -3313,7 +3315,7 @@ def test_run_task_mode_dry_run_previews_task_pid_without_call(hf, tmp_path, monk
     )
     assert rc == 0
     assert pool.task_pid_calls == []
-    assert "[dry-run] task pid=0(미점유) 기록 예고: mytask" in capsys.readouterr().out
+    assert "[dry-run] task 종료 기록 예고: mytask" in capsys.readouterr().out
 
 
 def test_run_task_mode_blocks_before_log_when_task_intent_record_absent(
@@ -4081,13 +4083,13 @@ def test_task_handoff_real_git_changed_slot_regressed_all_resnapped(hf, tmp_path
     # 리스 seed(둘 다 session="mytask"·slots_for_task 대상) + arrival 스냅(도착 시점 모사).
     leases = [
         wp.Lease(slot="work/a_1", repo="a", session="mytask",
-                 pid=os.getpid(), started="t", state="leased"),
+                 started="t", state="leased"),
         wp.Lease(slot="work/b_1", repo="b", session="mytask",
-                 pid=os.getpid(), started="t", state="leased"),
+                 started="t", state="leased"),
     ]
     with wp._lease_lock():
         wp._write_ledger(leases)
-        wp._write_tasks([wp.Task("mytask", pid=os.getpid(), started="t")])
+        wp._write_tasks([wp.Task("mytask", started="t")])
     wp.record_git_snapshot("work/a_1", base_branch="main")
     wp.record_git_snapshot("work/b_1", base_branch="main")
     a_head = ga("rev-parse", "HEAD").stdout.strip()   # a_1 은 이후 불변.
@@ -4170,7 +4172,6 @@ def _raw_record(index: int, *, finished: bool) -> dict:
         "model": "gpt-x",
         "role": "developer",
         "attempt": "primary",
-        "pid": 4242,
         "started_at": f"2026-08-0{index % 8 + 1}T01:02:03.000000+00:00",
         "raw_path": f"/tmp/raw/pm_delegate_codex_{index}.txt",
     }

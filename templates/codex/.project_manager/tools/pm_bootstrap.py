@@ -3481,6 +3481,7 @@ class PmBootstrap:
         resume: str | None = None,
         slot: int | None = None,
         task: str | None = None,
+        force: bool = False,
     ) -> int:
         """부트스트랩 정보를 수집해 출력한다.
 
@@ -3493,6 +3494,9 @@ class PmBootstrap:
                      `bind_slot("work/<repo>_<N>", repo, "<repo>_<N>")` 로 **직접 바인딩**
                      하고, 다른 활성 PM 현황(상태점검)도 surface 한다. None 이면 기존
                      `--repo` alloc 경로(현행 보존).
+
+        force:       열린 기록(작업 폴더·task)을 이어받겠다는 **사용자 응답**. 기본 False —
+                     자동 승낙 값(환경변수·설정 키·기본 True 인자)은 없다.
 
         반환: 0=성공, 1=실패 (sys.exit 로 중단할 수도 있음).
         """
@@ -3538,12 +3542,12 @@ class PmBootstrap:
         # 이전에 즉시 중단한다. 엔진 앵커(무조건)+슬롯 실재·점유·기록정합(lean 조건)+main-참조 거부.
         # 무인자(repo None)/alloc(slot None)는 슬롯 검사 자연 no-op·앵커만 무조건(결정 2).
         # alloc 앞단에 둬 앵커 거부 시 신규 lease 잔존을 예방한다.
-        preflight_rc = self._phase0_preflight(repo, slot)
+        preflight_rc = self._phase0_preflight(repo, slot, force)
         if preflight_rc != 0:
             return preflight_rc
 
         # ── task 바인딩 — 0단계 통과 *후* 진입. `--task <이름>`
-        # 이면 신규/resume 바인딩하고 동시 세션(살아있는 다른 pid)은 거부한다. 거부는 dump 이전에
+        # 이면 신규/resume 바인딩하고 열린 기록(종료 기록 없음)은 거부한다. 거부는 dump 이전에
         # 중단(부분 dump 금지 = 0단계와 동형 — dump 가 뜨면 PM 이 그것을 세션 진실로 믿는다).
         # task는 진입 정체성의 단일 축이다. 위 혼합 가드 때문에 task 모드에서는 alloc/lean
         # (`--repo/--slot`) 경로가 비활성이고, 보유 슬롯 집합은 아래 W3에서 자동 수령한다.
@@ -3556,7 +3560,7 @@ class PmBootstrap:
             task_slot_leases = self._resolve_task_slot_leases(task)
             if task_slot_leases is None:
                 return 1
-            task_info = self._bind_task_or_reject(task)
+            task_info = self._bind_task_or_reject(task, force=force)
             if task_info is None:
                 return 1  # 살아있는 다른 세션 점유 — 거부(부분 dump 금지).
             # task 정체성을 인스턴스에 확정한다 — 이후 모든 수집(log_entry/handoff_ctx/
@@ -3725,8 +3729,11 @@ class PmBootstrap:
     # +main-참조 거부(보호브랜치/origin-추적). 판정 근거는 전부 기계(장부·git·compare 프리미티브)이고 로직 중복은 없다 —
     # 엔진 앵커는 board 가드를, 기록 vs live 는 worktree_pool compare를 **소비만**한다.
 
-    def _phase0_preflight(self, repo: str | None, slot: int | None) -> int:
+    def _phase0_preflight(self, repo: str | None, slot: int | None, force: bool = False) -> int:
         """0단계 — dump/alloc 이전 위치·소유·상태 검증. 0=통과·비-0=거부(FAIL-LOUD).
+
+        `force` = 사용자가 열린 기록을 이어받겠다고 준 응답(`--force`). 기본은 False 이고
+        환경변수·설정 키로 켜는 자동 승낙 값은 없다.
 
         검사:
           1. **엔진 앵커** (무조건·cwd 무관) — REPO(엔진 파일 위치)가 PM 홈이 아니라 worktree
@@ -3735,7 +3742,8 @@ class PmBootstrap:
           2~5 **슬롯 검사** — 슬롯이 명시된 lean 경로(`--repo --slot`·무인자 자동해소 포함)만 돈다.
              무인자(repo None)·alloc(slot None)는 슬롯이 없어 자연 no-op(결정 2).
             2. **작업공간 실재** — 폴더가 없으면 거부(phantom 슬롯 바인딩 방지).
-            3. **타 점유자** — 다른 세션이 그 슬롯을 leased 로 보유하면 거부(readonly 예외).
+            3. **열린 기록** — 종료 기록 없이 열려 있으면 정체를 찍고 거부(readonly 예외).
+               `--force` 면 인계 표시 후 진행한다(자동 승낙 없음).
             4. **보호브랜치/origin-추적** — main-참조(보호브랜치 직접 checkout 또는 upstream 설정)면
                **거부**(부분 dump 금지·readonly 예외).
             5. **기록 vs live** — `compare_slot_git` 소비(불일치=FAIL-LOUD·미기록=loud+질의 훅).
@@ -3785,8 +3793,8 @@ class PmBootstrap:
             return 1
         # 2b. 불완전 생성(creating) — **세션 동일 여부·role 무관** 차단(별도 조건). readonly 든
         #     아니든 반쯤 만든 슬롯은 못 쓴다. bind_slot 이 기존 엔트리를 무조건 leased 로 덮어
-        #     "점유 메타만 갱신·reclaim 안 거침") in-flight/중단 create 를 훼손하고, reclaim_stale 은
-        #     creating 을 무시·alloc 은 creating 재부착 제외 — 아무도 안전히 진입 불가한 불완전 상태다.
+        #     "점유 메타만 갱신") in-flight/중단 create 를 훼손하고, alloc 은 creating 재부착
+        #     제외 — 아무도 안전히 진입 불가한 불완전 상태다.
         if self._phase0_incomplete_create(lease):
             print(
                 f"[중단·0단계] 슬롯 {slot_id} 이(가) 생성 중/중단된 불완전 상태입니다(state=creating) — "
@@ -3798,7 +3806,7 @@ class PmBootstrap:
             )
             return 1
         # 2c. readonly 공유 슬롯(should-fix)은 **바인딩(점유) 대상이 아니다** — `/pm-bootstrap
-        #     --slot N` 오지정 방어. readonly 는 무소유 공유 자산(session/pid 없음·배타 대여 없음)이고,
+        #     --slot N` 오지정 방어. readonly 는 무소유 공유 자산(session 없음·배타 대여 없음)이고,
         #     0단계 carve-out이 readonly 를 *조회 지칭*엔 허용하지만 bind 는 *점유*라 의미가 다르다.
         #     bind_slot 엔진 불변식(`ReadonlySlotNotLeasable`)과 동형이되 여기서 fail-loud user-facing 으로
         #     닫는다(엔진 raise 가 부트스트랩 flow 로 새어 traceback 나는 것 방지). 이 거부가 있으면 아래
@@ -3814,16 +3822,33 @@ class PmBootstrap:
                 file=sys.stderr,
             )
             return 1
-        # 3. 타 점유자 — readonly 는 2c 에서 이미 거부돼 여기 도달 시 항상 work 슬롯.
-        holder = self._phase0_other_holder(lease, self_session)
+        # 3. 열린 기록 — readonly 는 2c 에서 이미 거부돼 여기 도달 시 항상 work 슬롯.
+        #    열려 있으면 **묻는다**: 그 기록의 정체를 찍고 강제 여부를 사용자에게 확인한다
+        #    (자동 승낙 값 없음). `--force` 가 그 응답이고, 그때만 인계 표시 후 진행한다.
+        holder = self._phase0_open_record(wp, lease)
         if holder is not None:
+            started = getattr(lease, "started", "") or "(미상)"
+            if not force:
+                print(
+                    f"[중단·0단계] 슬롯 {slot_id} 에 **열린 세션 기록**이 있습니다 — "
+                    f"세션 `{holder}` 이(가) {started} 에 열고 종료 기록을 남기지 않았습니다.\n"
+                    f"  그 창이 아직 살아 있는지는 기계가 알 수 없습니다(프로세스 번호로는 판정하지 "
+                    f"않습니다) — 사용자에게 확인하세요.\n"
+                    f"{self._render_handover(session=holder, task=None, indent='  ')}\n"
+                    f"  → 택1 (사용자 응답 필요):\n"
+                    f"     (a) 그 창을 쓰거나 다른 슬롯을 쓰세요.\n"
+                    f"     (b) 그 세션이 끝난 것이면 기록을 닫으세요: "
+                    f"{_CARD_TOOL_INVOKE}/pm_config.py release {slot_id} --force\n"
+                    f"     (c) 이어받으려면 같은 명령에 `--force` 를 붙여 다시 실행하세요.",
+                    file=sys.stderr,
+                )
+                return 1
             print(
-                f"[중단·0단계] 슬롯 {slot_id} 을(를) 다른 세션 `{holder}` 이(가) 점유 중입니다 "
-                f"(leased) — 남의 작업공간에 바인딩할 수 없습니다.\n"
-                f"  → 그 세션의 완료를 기다리거나, 다른 슬롯을 쓰거나, 새 슬롯을 alloc 하세요.",
+                f"[강제 인계] 슬롯 {slot_id} 의 열린 기록(세션 `{holder}` · {started})을 "
+                f"이어받습니다 — 이전 세션이 하던 것:\n"
+                f"{self._render_handover(session=holder, task=None, indent='  ')}",
                 file=sys.stderr,
             )
-            return 1
         # 4. main-참조(보호브랜치 직접 checkout / origin-추적 upstream) = 진입 거부.
         if self._phase0_protected_reject(wp, repo, slot_id, session, lease):
             return 1
@@ -3881,7 +3906,7 @@ class PmBootstrap:
     def _phase0_is_readonly(self, lease) -> bool:
         """그 슬롯이 readonly 공유 자산(`role="readonly"`)인가 — 0단계 **바인딩 거부** 판별.
 
-        readonly 슬롯은 무소유 공유 자산(session/pid 없음·배타 대여 없음)이라 `/pm-bootstrap --slot N`
+        readonly 슬롯은 무소유 공유 자산(session 없음·배타 대여 없음)이라 `/pm-bootstrap --slot N`
         바인딩(점유) 대상이 아니다 — 0단계가 이를 fail-loud 로 거부한다(should-fix·bind_slot 엔진 불변식
         `ReadonlySlotNotLeasable` 의 user-facing 짝). 0단계 carve-out(identity_args)이 readonly 를
         *조회 지칭*엔 허용하지만 bind 는 *점유*라 의미가 다르다. 판별 축은 canonical `lease.role`
@@ -3898,7 +3923,7 @@ class PmBootstrap:
 
         creating 은 create_slot 의 provisional 마커(worktree add *전* 선기록·확정 시 leased·중단 시
         흔적). 이 상태 슬롯은 아무도 안전히 진입 불가하다: bind_slot 은 기존 엔트리를 무조건 leased 로
-        덮고(in-flight/중단 create 훼손)·reclaim_stale 는 creating 을 무시(leased 만)·alloc 은 creating
+        덮고(in-flight/중단 create 훼손)·alloc 은 creating
         재부착 제외. 그래서 **세션 동일 여부·readonly 무관** 차단한다(내 중단 흔적이든 타 세션 in-flight
         든 슬롯이 불완전한 건 동일). lease None/미상 state 는 False(fail-soft·`_phase0_other_holder` 와
         분리 — 그 함수는 'leased by other' 의미를 유지한다)."""
@@ -3906,20 +3931,18 @@ class PmBootstrap:
             return False
         return getattr(lease, "state", None) == "creating"
 
-    def _phase0_other_holder(self, lease, session: str) -> str | None:
-        """그 슬롯을 **다른 세션**이 leased 로 점유 중이면 그 세션명, 아니면 None.
+    def _phase0_open_record(self, wp, lease) -> str | None:
+        """그 슬롯에 **열린 기록**이 있으면 그 기록의 세션명, 아니면 None.
 
-        내 세션(`session`)이 이미 잡은 것(crash 후 재개)·idle·미기록은 점유 아님(None). state 가
-        `leased` 이고 session 이 나와 다를 때만 타 점유자다. **creating 은 여기서 다루지 않는다** —
-        불완전 생성은 `_phase0_incomplete_create` 가 세션·readonly 무관으로 별도 차단한다(2b)."""
+        판정은 엔진 단일 지점 `worktree_pool.lease_is_open`(열림 기록 있고 종료 기록 없음)을
+        소비만 한다 — 프로세스 조회 0회. **세션명이 나와 같아도 열림은 열림이다**: 프로세스
+        번호를 버린 뒤로는 같은 이름의 다른 창인지 내 이전 세션의 잔존 기록인지 기계가 가를 수
+        없다. 그래서 이름 비교 분기를 두지 않고 사용자에게 묻는다(강제=`--force`).
+        **creating 은 여기서 다루지 않는다** — `_phase0_incomplete_create` 가 별도 차단한다(2b).
+        미기록(lease None)은 열린 기록 없음이다."""
         if lease is None:
             return None
-        if getattr(lease, "state", None) != "leased":
-            return None
-        holder = getattr(lease, "session", None)
-        if holder and holder != session:
-            return holder
-        return None
+        return getattr(lease, "session", None) if wp.lease_is_open(lease) else None
 
     def _phase0_protected_reject(self, wp, repo: str, slot_id: str, session: str, lease) -> int:
         """슬롯 live 상태가 main-참조(보호브랜치 직접 checkout 또는 origin-추적 upstream)면 **진입 거부**.
@@ -4268,20 +4291,159 @@ class PmBootstrap:
                 raise
             pass
 
-    def _bind_task_or_reject(self, task: str) -> dict | None:
-        """`--task` 신규/resume 바인딩. 동시 세션(살아있는 다른 pid)이면 None(거부).
+    # 위임 준비 사본 루트 — 미회수 준비/라운드 단계를 읽는 자리(경로는 pm_delegate 와 같은 규약).
+    _HANDOVER_COPY_ROOT = Path(".project_manager") / ".local" / "delegate-ticket-copies"
+    # 인계 표시에 싣는 항목 상한 — 목록이 길어도 화면이 한 눈에 들어와야 한다.
+    _HANDOVER_MAX_ITEMS = 5
 
-        `worktree_pool.bind_task` 로 신규/resume/reclaim 을 처리한다 — 살아있는 다른 세션 점유는
-        `TaskActiveElsewhere` → 여기서 stderr 안내 + None(caller 가 dump 이전 중단). 성공 시
-        surface 용 dict(name·prefix·action·서술 pm_state 경로/존재)를 반환한다. task 는 슬롯 축과
-        직교라 이 바인딩은 `.local/slots/` 를 건드리지 않는다.
+    def _handover_claimed_tickets(self, task: str | None) -> list[str]:
+        """이 정체성 명의로 claim 중인 티켓 id — board 조회(읽기만)."""
+        lens = ["--task", task] if task else ["--mine"]
+        try:
+            rc, output = self._run_board_fn(["list", "--status", "claimed", *lens])
+        except Exception as exc:  # noqa: BLE001 — 인계 표시는 조회 실패로 진입을 막지 않는다.
+            if _is_engine_rev_skew(exc):
+                raise      # 형제 사본 skew 는 표시 생략으로 접지 않는다(fail-loud).
+            return []
+        if rc != 0:
+            return []
+        seen: list[str] = []
+        for match in re.finditer(r"\b(?:[a-z0-9_]+-)?T-\d+\b", output):
+            if match.group(0) not in seen:
+                seen.append(match.group(0))
+        return seen
+
+    def _handover_delegate_runs(self) -> list[str]:
+        """미회수 위임 준비와 그 라운드 단계 — 준비 사본 디렉터리를 읽어 실값으로 낸다."""
+        root = REPO / self._HANDOVER_COPY_ROOT
+        if not root.is_dir():
+            return []
+        rows: list[str] = []
+        for ticket_dir in sorted(root.glob("*/*/*")):
+            if not ticket_dir.is_dir():
+                continue
+            rounds = sorted(p.name for p in (ticket_dir / "rounds").glob("*.md")) \
+                if (ticket_dir / "rounds").is_dir() else []
+            stage = rounds[-1] if rounds else "(라운드 파일 없음 = 1라운드)"
+            rows.append(f"{_display_path_text(ticket_dir)} · 라운드 단계: {stage}")
+        return rows
+
+    def _handover_slots(self, session: str | None, task: str | None) -> list[str]:
+        """보유 작업 폴더와 그 갈래 — 장부 행(session 귀속) + live 브랜치."""
+        wp = self._worktree_pool or _load_worktree_pool()
+        if wp is None or not session:
+            return []
+        try:
+            leases = [l for l in wp.list_leases()
+                      if wp.lease_is_open(l) and l.session == session]
+        except Exception as exc:  # noqa: BLE001 — 인계 표시 조회 실패는 진입을 막지 않는다.
+            if _is_engine_rev_skew(exc):
+                raise
+            return []
+        rows: list[str] = []
+        for lease in leases:
+            try:
+                branch = wp.current_branch(lease.slot)
+            except Exception as exc:  # noqa: BLE001 — 갈래 조회 실패는 표시만 비운다.
+                if _is_engine_rev_skew(exc):
+                    raise
+                branch = None
+            rows.append(f"{lease.slot} (갈래: {branch or '(미상·detached)'})")
+        return rows
+
+    def _handover_pm_state(self, session: str | None, task: str | None) -> str | None:
+        """그 세션의 서술 파일 경로 — task 면 task pm_state, 슬롯이면 슬롯 pm_state."""
+        wp = self._worktree_pool or _load_worktree_pool()
+        if wp is None:
+            return None
+        try:
+            if task:
+                return _display_path_text(wp.task_pm_state_file(task))
+            slots = [l.slot for l in wp.list_leases()
+                     if wp.lease_is_open(l) and l.session == session]
+            if not slots:
+                return None
+            return _display_path_text(wp.slot_pm_state_file(slots[0]))
+        except Exception as exc:  # noqa: BLE001 — 경로 해소 실패는 표시만 비운다.
+            if _is_engine_rev_skew(exc):
+                raise
+            return None
+
+    def _handover_last_log(self) -> str | None:
+        """기록(log/current.md)의 마지막 entry 제목."""
+        if not self._log_file.exists():
+            return None
+        try:
+            entry = parse_log_last_entry(
+                _load_file_lock().read_text_shared(self._log_file, encoding="utf-8")
+            )
+        except Exception as exc:  # noqa: BLE001 — log 읽기 실패는 표시만 비운다.
+            if _is_engine_rev_skew(exc):
+                raise
+            return None
+        if entry is None:
+            return None
+        return f"[{entry.get('date', '')}] {entry.get('type', '')} | {entry.get('title', '')}"
+
+    def _render_handover(self, *, session: str | None, task: str | None,
+                         indent: str = "  ") -> str:
+        """이전 세션이 하던 것 — **읽기만** 한다(장부·log·board 를 쓰지 않는다).
+
+        재료는 전부 이미 조회 가능한 것들이다(새 기록 파일 0): claim 중인 티켓 · 미회수 위임
+        준비와 그 라운드 단계 · 서술 pm_state · 마지막 기록 항목 · 보유 작업 폴더와 갈래.
+        거부(묻는 자리)와 강제 인계가 같은 renderer 를 쓴다 — 표시 자리는 하나다.
+        """
+        claimed = self._handover_claimed_tickets(task)
+        runs = self._handover_delegate_runs()
+        slots = self._handover_slots(session, task)
+        pm_state = self._handover_pm_state(session, task)
+        last_log = self._handover_last_log()
+
+        def _join(values: list[str]) -> str:
+            if not values:
+                return "(없음)"
+            head = values[: self._HANDOVER_MAX_ITEMS]
+            more = "" if len(values) <= self._HANDOVER_MAX_ITEMS else \
+                f" 외 {len(values) - self._HANDOVER_MAX_ITEMS}건"
+            return ", ".join(head) + more
+
+        lines = [
+            f"{indent}이전 세션이 하던 것(읽기만·복원 표시):",
+            f"{indent}- claim 중인 티켓: {_join(claimed)}",
+            f"{indent}- 미회수 위임 준비: {_join(runs)}",
+            f"{indent}- 서술 pm_state: {pm_state or '(없음)'}",
+            f"{indent}- 마지막 기록: {last_log or '(없음)'}",
+            f"{indent}- 보유 작업 폴더: {_join(slots)}",
+        ]
+        return "\n".join(lines)
+
+    def _bind_task_or_reject(self, task: str, *, force: bool = False) -> dict | None:
+        """`--task` 신규/resume 바인딩. 열린 기록이 있고 `--force` 가 없으면 None(거부).
+
+        `worktree_pool.bind_task` 로 신규/resume 을 처리한다 — 열린 기록(종료 기록 없음)은
+        `TaskActiveElsewhere` → 여기서 그 기록의 정체와 이전 세션이 하던 것을 찍고 강제 여부를
+        **묻는다**(None → caller 가 dump 이전 중단). `force` 면 기록을 먼저 닫고
+        (`release_task_pid` — 기존 프리미티브) 같은 bind 경로를 그대로 탄다: 강제 전용 분기도,
+        자동 승낙 값도 없다. 성공 시 surface 용 dict(name·prefix·action·서술 pm_state 경로/존재)를
+        반환한다. task 는 슬롯 축과 직교라 이 바인딩은 `.local/slots/` 를 건드리지 않는다.
         """
         wp = self._resolve_worktree_pool()
+        if force:
+            record = wp.find_task(task)
+            if record is not None and record.open:
+                print(
+                    f"[강제 인계] task {task!r} 의 열린 기록(task 시작: "
+                    f"{getattr(record, 'started', '') or '(미상)'})을 이어받습니다 — "
+                    f"이전 세션이 하던 것:\n"
+                    f"{self._render_handover(session=task, task=task, indent='  ')}",
+                    file=sys.stderr,
+                )
+                wp.release_task_pid(task)   # 종료 기록을 남기고 아래 공통 bind 경로로 재개.
         try:
             # 등록 repo 집합을 넘겨 예약명(<repo>_<N>)을 엔진 진입점에서도 방어(primitive 자기완결·
             # should-fix) — CLI 의 빠른 거부(main)와 이중화. 명 검증(traversal/절대경로/빈 이름·
             # must-fix)은 registered_repos 무관하게 엔진에서 항상 돈다.
-            record, action, reclaimed_from = wp.bind_task(
+            record, action = wp.bind_task(
                 task, registered_repos=_registered_repos(self._areas_file)
             )
         except getattr(wp, "TaskArchived", ()) as exc:
@@ -4297,10 +4459,16 @@ class PmBootstrap:
             return None
         except wp.TaskActiveElsewhere as exc:
             print(
-                f"[중단] task {task!r} 이(가) 다른 살아있는 세션(pid {exc.pid})에서 열려 "
-                f"있습니다 — 같은 task 를 두 창에서 동시에 열 수 없습니다.\n"
-                f"  → 그 창을 쓰거나, 그 세션이 끝난 뒤 다시 여세요. (그 세션이 비정상 종료됐다면 "
-                f"pid 가 죽어 자동 회수되니 잠시 후 재시도.)",
+                f"[중단] task {task!r} 에 **열린 세션 기록**이 있습니다 "
+                f"(task 시작: {exc.started or '(미상)'}) — 종료 기록이 없습니다. 그 창이 아직 "
+                f"살아 있는지는 기계가 알 수 없습니다(프로세스 번호로는 판정하지 않습니다) — "
+                f"사용자에게 확인하세요.\n"
+                f"{self._render_handover(session=task, task=task, indent='  ')}\n"
+                f"  → 택1 (사용자 응답 필요):\n"
+                f"     (a) 그 창을 쓰세요.\n"
+                f"     (b) 그 세션이 끝난 것이면 기록을 닫으세요: "
+                f"{_CARD_TOOL_INVOKE}/pm_config.py task close {task}\n"
+                f"     (c) 이어받으려면 같은 명령에 `--force` 를 붙여 다시 실행하세요.",
                 file=sys.stderr,
             )
             return None
@@ -4332,10 +4500,8 @@ class PmBootstrap:
         return {
             "name": record.name,
             "prefix": record.prefix,          # None = prefix 없음(기본)
-            "action": action,                 # created | resumed | reclaimed
+            "action": action,                 # created | resumed
             "started": getattr(record, "started", None),
-            # 회수한 이전 pid(>0 이면 loud notice — 다른 창이 아직 작업 중일 수 있음).
-            "reclaimed_from_pid": reclaimed_from,
             # 표기는 POSIX 단일(`_display_path_text`) — 이 값은 identity surface·`--json` 으로
             # 나가 문자열로 대조된다. 파일시스템 소비자는 `Path(...)` 로 되읽는데, Windows 의
             # `Path("C:/…")` 는 `WindowsPath` 로 정상 해석되므로 read 경로는 무변경이다.
@@ -4357,7 +4523,6 @@ class PmBootstrap:
         action_label = {
             "created": "신규 task",
             "resumed": "재개(resume)",
-            "reclaimed": "재개(회수·이전 세션 crash)",
         }.get(action, action or "")
         pm_state_path = task_info.get("pm_state_path")
 
@@ -4366,17 +4531,6 @@ class PmBootstrap:
         lines.append(
             f"- 당신은 **task `{name}`** PM · prefix={prefix_display} · 상태={action_label}."
         )
-        # loud notice — 기록 pid 는 그 task 를 연 세션(`worktree_pool._session_pid`)이라
-        # reclaimed = 이전 세션이 종료(핸드오프) 기록 없이 죽었다는 뜻이다. 감지=기계·
-        # 해소=사용자로 명시 경고한다(차단 아님).
-        reclaimed_from = task_info.get("reclaimed_from_pid")
-        if action == "reclaimed" and reclaimed_from:
-            started = task_info.get("started") or "(미상)"
-            lines.append(
-                f"- ⚠️ **회수 진입** — 이 task 는 다른 프로세스(pid {reclaimed_from})가 열어 두고 "
-                f"종료(핸드오프) 기록 없이 회수됐습니다 (task 시작: {started}). **다른 창에서 아직 "
-                f"작업 중일 수 있습니다** — 그 창이 살아 있으면 한쪽을 닫으세요(중복 작업 방지)."
-            )
         lines.append(
             f"- **prefix 상태 = {prefix_display}** (기본=없음) — 사용자와 확인. "
             "변경은 `task prefix`."
@@ -4694,7 +4848,7 @@ class PmBootstrap:
           번호에 대해 들고 있는 경로**(`_explicit_slot_path` — 재조립 금지·리뷰 F-001. 장부가
           답을 못 주면 canonical `work/<repo>_<N>`).
         - `worktree_pool.bind_slot(slot_id, repo, session)` 호출 → Lease. **pool alloc 아님**
-          (직접 바인딩·`NeedsCreate` 게이트 없음·`reclaim_stale` 안 거침).
+          (직접 바인딩·`NeedsCreate` 게이트 없음·자동 회수 없음).
         - branch 는 `worktree_pool.current_branch(slot_id)` live 조회(git=진실
           ). detached/조회불가/슬롯 폴더 부재는 None → surface 가 "(미지정)".
         - **상태점검**: `list_leases()` 에서 *이 세션(=bind 명의) 제외* 다른 활성(leased) 리스를 모아
@@ -5572,7 +5726,7 @@ class PmBootstrap:
     ) -> str:
         """readonly 공유 슬롯(role=readonly) 커맨드 카드 — 조회/갱신만 dump.
 
-        readonly 는 무소유 공유 자산(session/pid 없음·배타 대여 없음·detached HEAD)이라 board
+        readonly 는 무소유 공유 자산(session 없음·배타 대여 없음·detached HEAD)이라 board
         claim/complete·set-base/rebase/dev/sync 는 의미가 없다(거부) — 조회(`status`)와 released
         최신화(`refresh`)만 뿌린다. worktree_pool 엔진은 build_parser 가 없어 CLI 강등 줄을 짓지
         않고 `/pm-worktree` 스킬 + 평문 note 로만 표기(카드↔CLI 정합 대상은 파서-backed 도구만).
@@ -5670,6 +5824,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="output_json",
         help="기계 파싱용 JSON 출력 (기본: markdown).",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "열린 기록(종료 기록 없이 남은 작업 폴더·task)을 이어받는다 — 사용자 응답 자리다. "
+            "기본은 거부이고 자동 승낙 값은 없다."
+        ),
     )
     parser.add_argument(
         "--with-pytest",
@@ -5793,6 +5955,7 @@ def _main(argv: list[str] | None = None) -> int:
         resume=args.resume,
         slot=args.slot,
         task=getattr(args, "task", None),
+        force=args.force,
     )
 
 

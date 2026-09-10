@@ -127,7 +127,7 @@ def home(tmp_path, monkeypatch) -> Home:
 
 def _pool_row(repo: str, number: int, session: str, **extra) -> dict:
     row = {"slot": f"work/{repo}_{number}", "repo": repo, "session": session,
-           "pid": 100 + number, "started": "t", "state": "leased", "test_cmd": None}
+           "started": "t", "state": "leased", "test_cmd": None}
     row.update(extra)
     return row
 
@@ -145,7 +145,7 @@ def _adopter0_shape(home: Home) -> None:
         _pool_row(_ADOPTER_REPO, 7, "", pid=0, state="idle"),
     ]
     home.write_ledger(rows, tasks=[{"name": _TASK_SESSION, "prefix": None,
-                                    "pid": 0, "started": "t"}])
+                                    "started": "t"}])
     home.write_areas([_ADOPTER_REPO])
     home.mkslot(*[f"work/{_ADOPTER_REPO}_{n}" for n in range(1, 8)])
     home.mktask_dir(_TASK_SESSION)
@@ -243,8 +243,7 @@ def test_single_slot_shape_resolves_to_ledger_row(home):
 
 def _mismatch_shape(home: Home) -> None:
     """장부가 `work/A_1` 슬롯을 세션 `B_7` 로 등록한 형상 — 경로 이름과 정체성이 갈린다."""
-    home.write_ledger([{"slot": "work/A_1", "repo": "A", "session": "B_7", "pid": 9,
-                        "started": "t", "state": "leased", "test_cmd": "pytest -q"}])
+    home.write_ledger([{"slot": "work/A_1", "repo": "A", "session": "B_7", "started": "t", "state": "leased", "test_cmd": "pytest -q"}])
     home.write_areas(["A"])
     home.mkslot("work/A_1")
 
@@ -287,7 +286,7 @@ def test_actor_resolution_returns_task_name_session(home):
     (`session_name` 단일-lease 층)와 갈리는 값이었다.
     """
     home.write_ledger([_pool_row(_ADOPTER_REPO, 1, _TASK_SESSION)],
-                      tasks=[{"name": _TASK_SESSION, "prefix": None, "pid": 0, "started": "t"}])
+                      tasks=[{"name": _TASK_SESSION, "prefix": None, "started": "t"}])
     home.write_areas([_ADOPTER_REPO])
     home.mkslot(f"work/{_ADOPTER_REPO}_1")
     assert home.ia.resolve_actor_slot(_ADOPTER_REPO, home.ledger) == _TASK_SESSION
@@ -300,8 +299,7 @@ def test_actor_resolution_returns_task_name_session(home):
 
 def _home_row_shape(home: Home, repo: str = "adopter") -> str:
     """PM 홈 자신을 가리키는 행(`slot="."`)을 실 장부 파일로 세운다 — 읽기 해소만 검증한다."""
-    home.write_ledger([{"slot": ".", "repo": repo, "session": f"{repo}_1", "pid": 0,
-                        "started": "t", "state": "leased", "test_cmd": None,
+    home.write_ledger([{"slot": ".", "repo": repo, "session": f"{repo}_1", "started": "t", "state": "leased", "test_cmd": None,
                         "bound": True}])
     home.write_areas([repo])
     return f"{repo}_1"
@@ -470,8 +468,7 @@ def test_trio_single_lease_layer_is_identical(home, trio):
 def test_trio_home_row_layer_is_identical(home, trio):
     """홈 슬롯 행 — 홈 자신을 가리키는 N=1 행 하나로 세 모듈이 같은 세션을 해소한다."""
     home.write_areas(["A"])
-    home.write_ledger([{"slot": ".", "repo": "A", "session": "A_1", "pid": 0,
-                        "started": "2026-08-22T00:00:00+00:00", "state": "leased",
+    home.write_ledger([{"slot": ".", "repo": "A", "session": "A_1", "started": "2026-08-22T00:00:00+00:00", "state": "leased",
                         "test_cmd": None, "bound": True}])
     assert _trio_sessions(trio) == ("A_1",) * 3
 
@@ -537,8 +534,7 @@ def test_trio_ignores_per_clone_conf_session_key(home, trio):
 
 def _home_row_A(home: Home) -> None:
     """리뷰가 재현에 쓴 실 장부 반례 그대로 — PM 홈 자신을 가리키는 행."""
-    home.write_ledger([{"slot": ".", "repo": "A", "session": "A_1", "pid": 0,
-                        "started": "t", "state": "leased", "test_cmd": None,
+    home.write_ledger([{"slot": ".", "repo": "A", "session": "A_1", "started": "t", "state": "leased", "test_cmd": None,
                         "bound": True}])
     home.write_areas(["A"])
 
@@ -574,7 +570,9 @@ def test_entry_bootstrap_phase0_admits_the_ledger_row(home, capsys):
     """
     _home_row_A(home)
     bootstrap = home.bp.PmBootstrap(worktree_pool=home.wp, areas_file=home.areas)
-    assert bootstrap._phase0_preflight("A", 1) == 0
+    # 그 행은 열린 기록이라 이어받기(사용자 응답 `--force`)로 진입한다 — 여기서 재는 것은
+    # 그 행의 **경로 인정**이다(재조립하면 "어디에도 없습니다"로 막힌다).
+    assert bootstrap._phase0_preflight("A", 1, True) == 0
     assert "장부·폴더 어디에도 없습니다" not in capsys.readouterr().out
 
 
@@ -678,7 +676,7 @@ def test_unresolvable_coordinates_render_no_explicit_trigger(home):
     """장부가 좌표를 주지 못하면 명시 트리거를 **만들지 않는다**(틀린 지시를 내느니 bare 유지)."""
     # 홈 행을 task 명의로 대여 — 경로에도 session 에도 repo 기준 번호가 없다.
     home.write_ledger([{"slot": ".", "repo": "A", "session": "job1", "state": "leased"}],
-                      tasks=[{"name": "job1", "prefix": None, "pid": 0, "started": "t"}])
+                      tasks=[{"name": "job1", "prefix": None, "started": "t"}])
     home.write_areas(["A"])
     assert home.hf._parse_worktree_slot(".") is None
     assert _rendered_trigger(home, ".") is None
@@ -877,8 +875,8 @@ def test_normal_shapes_are_not_judged_conflicting(home):
     # 다중 task — 같은 task 명의가 슬롯 여러 개, 슬롯마다 행 1개(정상 형상).
     home.write_ledger([_pool_row("A", 1, "job1"), _pool_row("A", 2, "job1"),
                        _pool_row("B", 1, "job2")],
-                      tasks=[{"name": "job1", "prefix": None, "pid": 0, "started": "t"},
-                             {"name": "job2", "prefix": None, "pid": 0, "started": "t"}])
+                      tasks=[{"name": "job1", "prefix": None, "started": "t"},
+                             {"name": "job2", "prefix": None, "started": "t"}])
     home.write_areas(["A", "B"])
     for slot, key in (("work/A_1", "A_1"), ("work/A_2", "A_2"), ("work/B_1", "B_1")):
         resolution = home.ia.slot_identity_resolution(slot, home.ledger)

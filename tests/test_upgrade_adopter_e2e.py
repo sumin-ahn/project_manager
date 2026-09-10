@@ -1901,8 +1901,7 @@ def _seed_legacy_home_row(dest: Path) -> Path:
     ledger = dest / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True, exist_ok=True)
     ledger.write_text(json.dumps({"leases": [
-        {"slot": ".", "repo": "demo", "session": "demo_1", "pid": 0,
-         "started": "2026-08-22T00:00:00+00:00", "state": "leased", "bound": True},
+        {"slot": ".", "repo": "demo", "session": "demo_1", "started": "2026-08-22T00:00:00+00:00", "state": "leased", "bound": True},
         {"slot": "work/demo_1", "repo": "demo", "session": "demo_1", "state": "leased"},
     ], "tasks": []}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return ledger

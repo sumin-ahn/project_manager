@@ -99,6 +99,10 @@ class _EraPool:
     def alloc(self, repo, *, branch=None, resume=None, **_kw):
         return _FakeLease(self._slot, repo)
 
+    def lease_is_open(self, lease):
+        """열림 판정은 엔진 규칙 그대로 — 열림 기록(leased + session)이면 열림."""
+        return getattr(lease, "state", None) == "leased" and bool(getattr(lease, "session", ""))
+
     def list_leases(self):
         # 0단계 실재 검사(T-0351) 통과용 idle 시드(회귀 0·idle=점유 아님).
         return [_idle_lease(self._slot)]

@@ -2,14 +2,13 @@
 import type { TagsResponse } from "../api";
 import dotRules from "./status-dots.json";
 
-export type Dot = "blue" | "gray" | "orange" | "red";
+export type Dot = "blue" | "gray" | "orange";
 
 /** 그 행에서 여는 동작 — 판정표의 셋째 칼럼이고 관리자가 따로 계산하지 않는다. */
 export type RowActionMode = "change" | "disabled" | "refresh";
 
 export type StatusRow = {
   state?: string;
-  pid?: number;
   alive?: boolean;
   role?: string;
 };
@@ -20,7 +19,7 @@ export type DotVerdict = { dot: Dot; label: string; actions: RowActionMode };
  * 슬롯·task 행 하나의 판정 — 규칙표(`status-dots.json`)의 첫 일치가 이긴다.
  *
  * 점·라벨과 **변경 동작 가부가 같은 한 줄**에서 나온다. 아이들 규칙(§4.5)을 두 번째 순회로
- * 다시 재면 readonly 우선 순서가 두 벌이 되고, 한쪽만 고쳐지는 날 공유 슬롯이 회수 대기로
+ * 다시 재면 readonly 우선 순서가 두 벌이 되고, 한쪽만 고쳐지는 날 공유 슬롯이 닫힘으로
  * 오표시된다.
  */
 export function rowDot(row: StatusRow): DotVerdict {
@@ -34,14 +33,12 @@ export function rowDot(row: StatusRow): DotVerdict {
 }
 
 /**
- * 프로젝트 목록의 점 — 작업 중 행이 하나라도 있으면 주황, 회수 대기가 있으면 빨강, 아니면 회색.
- * readonly 는 회수 축이 아니라 목록 점에 영향을 주지 않는다.
+ * 프로젝트 목록의 점 — 열린 기록(작업 중) 행이 하나라도 있으면 주황, 아니면 회색.
+ * readonly 는 무소유 공유 자산이라 목록 점에 영향을 주지 않는다.
  */
 export function projectDot(rows: StatusRow[]): Dot {
   const dots = rows.map((row) => rowDot(row).dot);
-  if (dots.includes("orange")) return "orange";
-  if (dots.includes("red")) return "red";
-  return "gray";
+  return dots.includes("orange") ? "orange" : "gray";
 }
 
 const RELEASE_TAG = /^v(\d+)\.(\d+)\.(\d+)$/;

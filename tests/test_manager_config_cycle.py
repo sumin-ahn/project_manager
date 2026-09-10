@@ -149,10 +149,10 @@ def test_worktree_add_creates_a_slot_and_alloc_binds_it_to_the_task(cycle):
     assert cycle.steps["worktree add"]["rc"] == 0
     assert len(created) == 1
     slot = created.pop()
-    # 갓 만든 슬롯은 무소유 idle 로 풀에 들어간다(T-0915) — 세션 명의로 남으면 그 세션이 사는
-    # 동안 살아 있는 대여라 같은 세션의 alloc 이 풀 소진으로 막히고 화면에도 복구 경로가 없다.
+    # 갓 만든 슬롯은 무소유 idle 로 풀에 들어간다 — 세션 명의로 남으면 열린 기록이라 같은
+    # 세션의 alloc 이 풀 소진으로 막히고 화면에도 복구 경로가 없다.
     assert after[slot]["role"] == "work"
-    assert (after[slot]["state"], after[slot]["session"], after[slot]["pid"]) == ("idle", None, 0)
+    assert (after[slot]["state"], after[slot]["session"], after[slot]["alive"]) == ("idle", None, False)
     # 그래서 그 다음 대여(같은 세션)가 반납 없이 바로 그 슬롯을 집는다.
     leased = _slots(cycle.steps["alloc"]["status"])[slot]
     assert cycle.steps["alloc"]["rc"] == 0
@@ -186,7 +186,7 @@ def test_task_end_drops_the_row_and_reopen_restores_it_reset(cycle):
     restored = cycle.steps["task reopen"]["status"]["tasks"]
     assert cycle.steps["task reopen"]["rc"] == 0
     assert [row["name"] for row in restored] == [TASK]
-    assert restored[0]["prefix"] is None and restored[0]["pid"] == 0
+    assert restored[0]["prefix"] is None and restored[0]["alive"] is False
 
 
 def test_worktree_remove_and_prune_stale_clear_the_ledger(cycle):
@@ -204,7 +204,7 @@ def test_readonly_slot_and_add_harness_land_in_the_status_document(cycle):
     slot = next(row for row in readonly["status"]["slots"] if row["role"] == "readonly")
 
     assert readonly["rc"] == 0
-    assert (slot["state"], slot["pid"], slot["alive"]) == ("leased", 0, False)
+    assert (slot["state"], slot["session"], slot["alive"]) == ("leased", None, False)
     assert cycle.steps["add-harness"]["rc"] == 0
     assert cycle.steps["add-harness"]["status"]["harnesses"] == ["claude", "codex"]
 

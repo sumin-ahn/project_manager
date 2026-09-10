@@ -319,7 +319,6 @@ def test_readonly_slot_uses_same_real_strict_ledger_resolution(
                         "slot": "work/A_3",
                         "repo": "A",
                         "session": "",
-                        "pid": 0,
                         "started": "2026-07-27T00:00:00+09:00",
                         "state": "idle",
                         "test_cmd": None,

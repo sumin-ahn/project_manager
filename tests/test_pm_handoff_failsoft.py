@@ -95,7 +95,7 @@ def test_handoff_skips_when_pm_state_absent(handoff, tmp_path):
     inst, _, missing_state = _make_handoff_missing_state(handoff, tmp_path)
     assert not missing_state.exists()  # 전제: pm_state 부재.
 
-    rc = _run_handoff(inst, 
+    rc = _run_handoff(inst,
         session_num=5,
         wave_summary="x",
         dry_run=False,

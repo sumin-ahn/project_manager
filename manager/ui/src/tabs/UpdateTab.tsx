@@ -16,7 +16,7 @@ import { updateAvailable } from "../lib/status";
 export const DRIFT_LINE = /^→ 어댑터 config drift/;
 export const WARNING_LINE = /^⚠️/;
 
-/** 진행 중인 세션 수 — 리스를 쥔 살아 있는 프로세스만 센다(readonly 는 pid 0 이라 빠진다). */
+/** 진행 중인 세션 수 — 열린 기록을 쥔 행만 센다(readonly 는 세션이 없어 빠진다). */
 export function busySessionCount(rows: SlotRow[]): number {
   return rows.filter((row) => row.state === "leased" && row.alive).length;
 }

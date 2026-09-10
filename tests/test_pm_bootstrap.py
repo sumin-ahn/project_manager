@@ -245,6 +245,10 @@ class FakePool:
     def alloc(self, repo, *, branch=None, resume=None, **_kw):
         return _FakeLease(self._slot, repo)
 
+    def lease_is_open(self, lease):
+        """열림 판정은 엔진 규칙 그대로 — 열림 기록(leased + session)이면 열림."""
+        return getattr(lease, "state", None) == "leased" and bool(getattr(lease, "session", ""))
+
     def list_leases(self):
         # 0단계 실재 검사(T-0351)가 통과하도록 이 슬롯을 idle 리스로 시드(회귀 0·idle=점유 아님).
         return [_idle_lease(self._slot)]
@@ -265,6 +269,10 @@ class FakePoolNoStatus:
 
     def bind_slot(self, slot, repo, session, *, git_runner=None):
         return _FakeLease(slot, repo)
+
+    def lease_is_open(self, lease):
+        """열림 판정은 엔진 규칙 그대로 — 열림 기록(leased + session)이면 열림."""
+        return getattr(lease, "state", None) == "leased" and bool(getattr(lease, "session", ""))
 
     def list_leases(self):
         # 0단계 실재 검사(T-0351) 통과용 idle 시드 — 이 풀은 lean(work/A_1) 테스트가 쓴다.

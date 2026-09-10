@@ -63,7 +63,7 @@ def _write_ledger(mod, *leases):
 
 def _lease_row(*, slot, repo, state="leased", session="s"):
     return {"slot": slot, "repo": repo, "branch": None, "session": session,
-            "pid": 1, "started": "t", "state": state, "test_cmd": None}
+            "started": "t", "state": state, "test_cmd": None}
 
 
 def _register_slot(root: Path, *, slot: str = "work/demo_1", repo: str = "demo") -> Path:

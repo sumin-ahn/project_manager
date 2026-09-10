@@ -135,6 +135,10 @@ class _FakePool:
         self.list_leases_calls += 1
         return list(self._leases)
 
+    def lease_is_open(self, lease):
+        """열림 판정은 엔진 규칙 그대로 — 열림 기록(leased+session)이면 열림."""
+        return getattr(lease, "state", None) == "leased" and bool(getattr(lease, "session", ""))
+
     def slot_path(self, slot):
         return fake_slot_path(slot)   # 실재하는 작업 폴더(0단계 실재 검사의 전제)
 
@@ -313,8 +317,8 @@ def test_present_idle_workspace_passes(bootstrap, tmp_path, capsys):
 # ── 4. 타 점유자 (readonly carve-out) ─────────────────────────────────────────
 
 
-def test_other_session_holder_rejects(bootstrap, tmp_path, capsys):
-    """다른 세션이 그 슬롯을 leased 로 점유 중이면 거부(결정 ③) — rc 1 · dump 없음 · 점유자 안내."""
+def test_open_record_asks_before_entering(bootstrap, tmp_path, capsys):
+    """열린 기록이 있으면 거부 — rc 1 · dump 없음 · 그 기록의 정체와 택1 안내."""
     board = _FakeBoard(anchor_pm_home=None)
     pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="leased", session="X_9")])
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
@@ -322,14 +326,36 @@ def test_other_session_holder_rejects(bootstrap, tmp_path, capsys):
     assert rc == 1
     cap = capsys.readouterr()
     assert cap.out == ""
-    assert "X_9" in cap.err and "점유" in cap.err
+    assert "X_9" in cap.err and "열린 세션 기록" in cap.err
+    assert "--force" in cap.err                      # 응답 자리를 안내한다
     assert pool.bind_calls == []
 
 
-def test_my_session_holder_passes(bootstrap, tmp_path, capsys):
-    """내 세션(`X_2`)이 이미 leased(crash 후 재개)면 점유 아님 — 통과."""
+def test_my_own_session_name_is_not_a_free_pass(bootstrap, tmp_path, capsys):
+    """세션명이 나와 같아도 열림은 열림이다 — 이름으로 가르는 분기가 없다(프로세스 조회 폐기 귀결)."""
     board = _FakeBoard(anchor_pm_home=None, protected=[])
     pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="leased", session="X_2")])
+    inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
+    assert inst.run(repo="X", slot=2) == 1
+    assert "열린 세션 기록" in capsys.readouterr().err
+
+
+def test_force_takes_over_the_open_record_and_shows_the_handover(bootstrap, tmp_path, capsys):
+    """`--force` 는 사용자 응답이다 — 인계 표시(이전 세션이 하던 것)를 찍고 진입한다."""
+    board = _FakeBoard(anchor_pm_home=None, protected=[])
+    pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="leased", session="X_9")])
+    inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
+    assert inst.run(repo="X", slot=2, force=True) == 0
+    err = capsys.readouterr().err
+    assert "강제 인계" in err and "이전 세션이 하던 것" in err
+    assert "보유 작업 폴더: work/X_2" in err
+    assert pool.bind_calls == ["work/X_2"]
+
+
+def test_closed_record_enters_without_asking(bootstrap, tmp_path, capsys):
+    """종료 기록이 남은 자리(idle)는 묻지 않는다 — 열림 기록이 없기 때문이다."""
+    board = _FakeBoard(anchor_pm_home=None, protected=[])
+    pool = _FakePool(leases=[_LeaseEntry("work/X_2", state="idle", session="")])
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
     assert inst.run(repo="X", slot=2) == 0
 
@@ -384,12 +410,15 @@ def test_creating_slot_not_exempted_by_readonly(bootstrap, tmp_path, capsys):
 
 
 def test_leased_and_idle_states_not_treated_as_creating(bootstrap, tmp_path, capsys):
-    """creating 검사 sensitivity — idle·leased(내 세션 재개)는 creating 아님(기존 거동 회귀 유지)."""
+    """creating 검사 sensitivity — idle·leased(열린 기록·강제 인계)는 creating 아님.
+
+    두 경우 다 creating 차단 문구가 아니어야 한다 — 열린 기록은 `--force` 로 통과하고,
+    idle 은 묻지 않고 통과한다."""
     board = _FakeBoard(anchor_pm_home=None, protected=[])
     for state, session in (("idle", ""), ("leased", "X_2")):
         pool = _FakePool(leases=[_LeaseEntry("work/X_2", state=state, session=session)])
         inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
-        assert inst.run(repo="X", slot=2) == 0, f"{state} 를 creating 으로 오차단"
+        assert inst.run(repo="X", slot=2, force=True) == 0, f"{state} 를 creating 으로 오차단"
 
 
 # ── 5. main-참조(보호브랜치/origin-추적) = 진입 거부 (T-0360·⑧·§F9·부분 dump 금지) ──
@@ -680,7 +709,7 @@ def test_registered_slot_bare_bootstrap_passes_phase0_and_dumps(
                      branch="feature-x")
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=pool)
 
-    rc = inst.run(repo="X", slot=1)
+    rc = inst.run(repo="X", slot=1, force=True)   # 열린 기록을 이어받는다(사용자 응답)
 
     cap = capsys.readouterr()
     assert rc == 0, f"작업 폴더가 있는 홈의 부트스트랩이 막혔다: {cap.err}"

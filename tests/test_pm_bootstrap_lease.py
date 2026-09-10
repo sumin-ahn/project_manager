@@ -18,6 +18,7 @@ import importlib.util
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path, PureWindowsPath
 
@@ -25,26 +26,18 @@ import pytest
 
 from _slot_seed import fake_slot_path
 
-from _session_chain import live_harness_session, real_process_table_supported
-
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
-_real_chain = pytest.mark.skipif(
-    not real_process_table_supported(),
-    reason="실 세션 사슬 단언은 POSIX `ps` 표가 있는 환경에서만 돈다",
-)
-
-# 더미 세션 아래에서 홈 사본 엔진으로 task 를 바인딩한다 — 기록 pid 를 테스트가 조립하지 않고
-# 엔진이 정하게 둔다(T-0915).
+# 홈 사본 엔진으로 task 를 바인딩하는 실 서브프로세스 — 명령이 끝나도 열림 기록은 남는다.
 _BIND_TASK_SOURCE = '''\
 import importlib.util, json, sys
 
 spec = importlib.util.spec_from_file_location("worktree_pool_session_bind", sys.argv[1])
 worktree_pool = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(worktree_pool)
-record, action, _reclaimed_from = worktree_pool.bind_task(sys.argv[2])
-print(json.dumps({"pid": record.pid, "action": action}))
+record, action = worktree_pool.bind_task(sys.argv[2])
+print(json.dumps({"open": record.open, "action": action}))
 '''
 
 
@@ -144,11 +137,11 @@ class _FakeNeedsCreate(Exception):
 
 
 class _FakeTaskActiveElsewhere(Exception):
-    """worktree_pool.TaskActiveElsewhere 대역 (T-0353·㉑ 동시 세션 거부)."""
+    """worktree_pool.TaskActiveElsewhere 대역 — 열림 기록 거부(정체 표시용 시작 시각)."""
 
-    def __init__(self, name: str, pid: int):
+    def __init__(self, name: str, started: str = ""):
         self.name = name
-        self.pid = pid
+        self.started = started
         super().__init__(name)
 
 
@@ -162,11 +155,13 @@ class _FakeInvalidTaskName(Exception):
 
 
 class _FakeTaskRecord:
-    """bind_task 반환 Task 대역 — surface 가 읽는 name·prefix·started."""
+    """bind_task 반환 Task 대역 — surface 가 읽는 name·prefix·open·started."""
 
-    def __init__(self, name: str, prefix: "str | None", started: str = "2026-07-18T00:00:00+00:00"):
+    def __init__(self, name: str, prefix: "str | None", open: bool = True,
+                 started: str = "2026-07-18T00:00:00+00:00"):
         self.name = name
         self.prefix = prefix
+        self.open = open
         self.started = started
 
 
@@ -186,8 +181,7 @@ class FakeWorktreePool:
                  task_dir_root: "Path | None" = None,
                  task_prefix: "str | None" = None,
                  task_action: str = "created",
-                 task_raises_pid: "int | None" = None,
-                 task_reclaimed_from: "int | None" = None,
+                 task_open_started: "str | None" = None,
                  task_invalid_reason: "str | None" = None):
         self.NeedsCreate = _FakeNeedsCreate
         # task 축(T-0353·F1) — bind_task/task_dir/TaskActiveElsewhere/InvalidTaskName 대역.
@@ -195,11 +189,12 @@ class FakeWorktreePool:
         self.InvalidTaskName = _FakeInvalidTaskName
         self._task_dir_root = task_dir_root       # None=미설정(테스트가 세팅)
         self._task_prefix = task_prefix           # bind_task 반환 prefix(기본 None=없음)
-        self._task_action = task_action           # created|resumed|reclaimed
-        self._task_raises_pid = task_raises_pid   # 설정 시 bind_task 가 거부(㉑ alive)
-        self._task_reclaimed_from = task_reclaimed_from  # reclaimed 시 회수한 이전 pid(loud notice)
+        self._task_action = task_action           # created|resumed
+        # 설정 시 bind_task 가 열림 기록으로 거부하고 그 시작 시각을 싣는다.
+        self._task_open_started = task_open_started
         self._task_invalid_reason = task_invalid_reason  # 설정 시 InvalidTaskName(명 검증 거부)
         self.bind_task_calls: list[dict] = []
+        self.closed_tasks: list[str] = []        # release_task_pid(종료 기록) 호출 기록
         self._alloc_raises = alloc_raises_needs_create
         self._alloc_slot = alloc_slot
         self._alloc_branch = alloc_branch
@@ -234,6 +229,10 @@ class FakeWorktreePool:
         if slot not in self._live_branch and slot not in self.live_branch_override:
             self._live_branch[slot] = self._alloc_branch
         return _FakeLease(slot, repo, self._live_branch.get(slot))
+
+    def lease_is_open(self, lease):
+        """열림 판정은 엔진 규칙 그대로 — 열림 기록(leased + session)이면 열림."""
+        return getattr(lease, "state", None) == "leased" and bool(getattr(lease, "session", ""))
 
     def list_leases(self):
         # 상태점검 surface — bind 된 슬롯(이 세션) + 미리 심은 다른 활성 리스 + 0단계 실재 검사용
@@ -291,14 +290,28 @@ class FakeWorktreePool:
         root = self._task_dir_root or (Path("/tmp/multipm") / "tasks")
         return root / name
 
-    def bind_task(self, name, *, pid=None, registered_repos=None):
-        # F1 task 바인딩 대역 — 명 검증 거부(InvalidTaskName)/alive 점유 거부(㉑), 아니면
-        # (record, action, reclaimed_from) 3-튜플 반환 + task state 즉시 생성.
+    def find_task(self, name):
+        # 강제 인계 경로가 읽는 자리 — 열림 기록이 설정돼 있으면 그 행을 돌려준다.
+        if self._task_open_started is None:
+            return None
+        return _FakeTaskRecord(name, self._task_prefix, open=True,
+                               started=self._task_open_started)
+
+    def release_task_pid(self, name):
+        """종료 기록 프리미티브 대역 — 닫은 뒤에는 열림 기록이 없다."""
+        self.closed_tasks.append(name)
+        self._task_open_started = None
+        self._task_action = "resumed"
+        return _FakeTaskRecord(name, self._task_prefix)
+
+    def bind_task(self, name, *, registered_repos=None):
+        # F1 task 바인딩 대역 — 명 검증 거부(InvalidTaskName)/열림 기록 거부, 아니면
+        # (record, action) 2-튜플 반환 + task state 즉시 생성.
         self.bind_task_calls.append({"name": name, "registered_repos": registered_repos})
         if self._task_invalid_reason is not None:
             raise self.InvalidTaskName(name, self._task_invalid_reason)
-        if self._task_raises_pid is not None:
-            raise self.TaskActiveElsewhere(name, self._task_raises_pid)
+        if self._task_open_started is not None:
+            raise self.TaskActiveElsewhere(name, self._task_open_started)
         self.task_dir(name).mkdir(parents=True, exist_ok=True)
         state = self.task_dir(name) / "pm_state.md"
         if not state.exists():
@@ -307,8 +320,7 @@ class FakeWorktreePool:
                 "  - (아직 완료된 task 세션 없음)\n",
                 encoding="utf-8",
             )
-        return (_FakeTaskRecord(name, self._task_prefix),
-                self._task_action, self._task_reclaimed_from)
+        return (_FakeTaskRecord(name, self._task_prefix), self._task_action)
 
     def release(self, slot, *, require_clean=True, **_kw):
         self.release_calls.append({"slot": slot, "require_clean": require_clean})
@@ -616,18 +628,20 @@ def test_bootstrap_readonly_slot_bind_refused(bootstrap, tmp_path, capsys):
     assert wp.bind_calls == [], "readonly bind 거부인데 bind_slot 이 불렸다"
 
 
-def test_bootstrap_work_slot_other_holder_rejected_sensitivity(bootstrap, tmp_path, capsys):
-    """sensitivity 대조 — 같은 슬롯이 role="work"(비-readonly)면 타 세션 점유로 0단계 rc1 거부(다른 사유).
+def test_bootstrap_work_slot_open_record_rejected_sensitivity(bootstrap, tmp_path, capsys):
+    """sensitivity 대조 — 같은 슬롯이 role="work" 면 열린 기록 사유로 0단계 rc1 거부(다른 사유).
 
-    readonly 는 bind 거부(readonly 사유)·work 는 other-holder 거부(다른 세션 사유) — 둘의 사유가 갈려야
-    role 판별이 실제로 작동함을 입증(양쪽 rc1 이되 메시지 다름)."""
+    readonly 는 bind 거부(readonly 사유)·work 는 열린 기록 거부 — 둘의 사유가 갈려야 role 판별이
+    실제로 작동함을 입증(양쪽 rc1 이되 메시지 다름)."""
     wp = FakeWorktreePool(present_slots=())
     wp._extra_leases = [_FakeLeaseEntry("work/X_2", "X", "other_sess",
                                         state="leased", role="work")]
     inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
     rc = inst.run(repo="X", slot=2)
     assert rc == 1
-    assert "다른 세션" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "열린 세션 기록" in err and "other_sess" in err
+    assert "readonly" not in err
 
 
 def test_bootstrap_slot_surfaces_other_active_pms(bootstrap, tmp_path, capsys):
@@ -1687,17 +1701,35 @@ def test_bootstrap_task_resume_reads_pm_state_pointer(bootstrap, tmp_path, capsy
         tmp_path / "tasks" / "job1" / "pm_state.md") in out
 
 
-def test_bootstrap_task_active_elsewhere_rejects_before_dump(bootstrap, tmp_path, capsys):
-    """㉑ — 살아있는 다른 세션 점유면 rc1 로 거부하고 **부분 dump 도 금지**(⑧ 동형)."""
-    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_raises_pid=4242)
+def test_bootstrap_task_open_record_asks_before_dump(bootstrap, tmp_path, capsys):
+    """열린 기록이면 rc1 로 묻고 **부분 dump 도 금지**(⑧ 동형) — 정체·복원·택1 을 싣는다."""
+    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks",
+                          task_open_started="2026-09-09T01:02:03+00:00")
     inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
     rc = inst.run(task="job1")
     assert rc == 1
     captured = capsys.readouterr()
-    # stderr 에 거부 안내(pid) — stdout(dump)엔 board/task surface 가 없다(부분 dump 금지).
-    assert "다른 살아있는 세션" in captured.err and "4242" in captured.err
+    # stderr 에 그 기록의 정체(언제 열렸나)와 응답 자리 — stdout(dump)은 비었다(부분 dump 금지).
+    assert "열린 세션 기록" in captured.err and "2026-09-09T01:02:03+00:00" in captured.err
+    assert "이전 세션이 하던 것" in captured.err
+    assert "task close job1" in captured.err and "--force" in captured.err
     assert "task identity surface" not in captured.out
     assert "board" not in captured.out.lower() or captured.out.strip() == ""
+
+
+def test_bootstrap_task_force_closes_the_record_and_hands_over(bootstrap, tmp_path, capsys):
+    """`--force` 가 사용자 응답이다 — 기록을 닫고(기존 프리미티브) 인계 표시 뒤 진입한다."""
+    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks",
+                          task_open_started="2026-09-09T01:02:03+00:00")
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+
+    rc = inst.run(task="job1", force=True)
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    assert wp.closed_tasks == ["job1"], "강제 인계가 기존 종료 기록 프리미티브를 부르지 않았다"
+    assert "강제 인계" in captured.err and "이전 세션이 하던 것" in captured.err
+    assert "task identity surface" in captured.out
 
 
 @pytest.mark.parametrize(
@@ -1748,22 +1780,9 @@ def test_bootstrap_no_task_omits_task_surface(bootstrap, tmp_path, capsys):
     assert wp.bind_task_calls == []
 
 
-def test_bootstrap_task_reclaimed_emits_loud_notice(bootstrap, tmp_path, capsys):
-    """㉑ 정직화 — dead-pid 회수(reclaimed·이전 pid>0) 진입 시 loud notice(다른 창 작업중 가능)."""
-    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks",
-                          task_action="reclaimed", task_reclaimed_from=54321)
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    inst.run(task="job1")
-    out = capsys.readouterr().out
-    assert "회수 진입" in out
-    assert "54321" in out
-    assert "다른 창에서 아직" in out
-
-
-def test_bootstrap_task_created_has_no_reclaim_notice(bootstrap, tmp_path, capsys):
-    """created/resumed(회수 아님)엔 notice 가 안 뜬다(오탐 0·reclaimed_from None)."""
-    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks",
-                          task_action="created", task_reclaimed_from=None)
+def test_bootstrap_task_entry_has_no_reclaim_notice(bootstrap, tmp_path, capsys):
+    """자동 회수 개념이 사라졌다 — 진입 표면에 회수 문구가 없다(대체 장치 0)."""
+    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_action="created")
     inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
     inst.run(task="job1")
     out = capsys.readouterr().out
@@ -1810,35 +1829,33 @@ def _load_pool(home: Path):
     return module
 
 
-@_real_chain
-def test_bind_task_refuses_a_task_held_by_a_live_session(pool_home, tmp_path):
-    """살아 있는 다른 세션이 연 task 는 `TaskActiveElsewhere` — 그 세션이 끝나면 reclaimed.
+def test_bind_task_refuses_a_task_with_an_open_record(pool_home, tmp_path):
+    """실 서브프로세스가 연 task 는 그 명령이 끝난 뒤에도 `TaskActiveElsewhere` 로 거부된다.
 
-    기록 pid 가 엔진 프로세스이던 시절엔 bind 직후 죽어 거부가 사실상 발화하지 못했다
-    (두 부트스트랩이 같은 순간에 도는 창에서만). 이제 그 pid 는 세션이라 다른 창이 열려
-    있는 동안 거부가 발화하고, 그 창이 닫히면 예전처럼 회수 진입한다.
+    프로세스 번호를 보던 시절엔 bind 직후 그 번호가 죽어 거부가 사실상 발화하지 못했다.
+    이제 판정 재료가 기록이라, 종료 기록이 남기 전에는 두 번째 진입이 막힌다 — 닫는 것은
+    사용자 행위(`task close`)다.
     """
     binder = tmp_path / "bind_task.py"
     binder.write_text(_BIND_TASK_SOURCE, encoding="utf-8")
     tools = pool_home / ".project_manager" / "tools" / "worktree_pool.py"
     pool = _load_pool(pool_home)
 
-    with live_harness_session(
-        tmp_path, [sys.executable, str(binder), str(tools), "job1"],
-    ) as session:
-        assert session.rc == 0, session.stderr
-        assert json.loads(session.stdout) == {"pid": session.pid, "action": "created"}
-        assert pool.find_task("job1").pid == session.pid
+    done = subprocess.run([sys.executable, str(binder), str(tools), "job1"],
+                          capture_output=True, text=True, encoding="utf-8")
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == {"open": True, "action": "created"}
+    assert pool.find_task("job1").open is True
 
-        with pytest.raises(pool.TaskActiveElsewhere) as refused:
-            pool.bind_task("job1")
-        assert refused.value.pid == session.pid
+    with pytest.raises(pool.TaskActiveElsewhere) as refused:
+        pool.bind_task("job1")
+    assert refused.value.started == pool.find_task("job1").started
 
-    record, action, reclaimed_from = pool.bind_task("job1")
+    pool.release_task_pid("job1")            # 사용자가 닫는다(`pm-config task close`)
+    record, action = pool.bind_task("job1")
 
-    assert action == "reclaimed", "죽은 세션 pid 는 예전처럼 회수 진입이어야 한다"
-    assert reclaimed_from == session.pid
-    assert record.pid == pool._session_pid()
+    assert action == "resumed", "닫힌 기록은 그대로 재개다"
+    assert record.open is True
 
 
 # ── F7 resume-read 소비 배선 (task 태그 귀속·task pm_state 본문 dump·T-0374) ──────
@@ -2041,3 +2058,64 @@ def test_task_first_session_pointer_announced_on_windows_path(bootstrap, tmp_pat
     # 첫-turn 안내(`_pm_state_display_path` 소비 2줄)도 같은 POSIX 표기를 쓴다.
     assert inst._pm_state_display_path() == f"{_WINDOWS_TASK_ROOT}/job1/pm_state.md"
     assert "tasks\\job1" not in out
+
+
+# ── F1c 인계 표시 (T-0920) — 이전 세션이 하던 것을 **읽기만** 해서 보여 준다 ─────────
+# 재료 여섯은 전부 이미 조회 가능한 것들이다(새 기록 파일 0): claim 티켓 · 미회수 위임 준비와
+# 그 라운드 단계 · 서술 pm_state · 마지막 기록 항목 · 보유 작업 폴더와 갈래.
+
+
+def _handover_home(bootstrap, tmp_path, monkeypatch):
+    """인계 표시의 여섯 재료를 실값으로 갖춘 PM 홈 + 그 홈을 앵커로 하는 부트스트랩."""
+    monkeypatch.setattr(bootstrap, "REPO", tmp_path)
+    run_dir = (tmp_path / ".project_manager" / ".local" / "delegate-ticket-copies"
+               / "C-wave" / "abc123" / "T-0777")
+    (run_dir / "rounds").mkdir(parents=True)
+    (run_dir / "rounds" / "01-architect.md").write_text("설계\n", encoding="utf-8")
+    (run_dir / "rounds" / "02-developer.md").write_text("구현\n", encoding="utf-8")
+
+    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks")
+    wp._extra_leases = [_FakeLeaseEntry("work/X_7", "X", "job1", state="leased")]
+    wp.live_branch_override["work/X_7"] = "task/x-7"
+    wp.task_pm_state_file = lambda name: tmp_path / "tasks" / name / "pm_state.md"
+    wp.slot_pm_state_file = lambda slot: tmp_path / "slots" / slot / "pm_state.md"
+
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    inst._log_file.write_text(
+        "# log\n\n## [2026-09-09] handoff | PM 12차 (task:job1) → 다음 PM 세션\n\n본문\n",
+        encoding="utf-8",
+    )
+    inst._run_board_fn = lambda argv: (
+        (0, "  [claimed] T-0777  진행 중이던 일  me  tag\n")
+        if argv[:3] == ["list", "--status", "claimed"] else (0, "")
+    )
+    return inst, run_dir
+
+
+def test_handover_shows_the_six_materials_with_real_values(bootstrap, tmp_path, monkeypatch):
+    """강제 인계 표시 여섯 항목이 실값으로 나온다 — 지어낸 값이 아니라 조회 결과다."""
+    inst, run_dir = _handover_home(bootstrap, tmp_path, monkeypatch)
+
+    text = inst._render_handover(session="job1", task="job1")
+
+    assert "T-0777" in text                                   # claim 중인 티켓
+    assert str(run_dir) in text or run_dir.name in text        # 미회수 위임 준비(run-dir)
+    assert "02-developer.md" in text                           # 라운드 단계(마지막 순번)
+    assert "tasks/job1/pm_state.md" in text.replace("\\", "/")  # 서술 pm_state
+    assert "PM 12차 (task:job1) → 다음 PM 세션" in text          # 마지막 기록 항목
+    assert "work/X_7 (갈래: task/x-7)" in text                  # 보유 작업 폴더와 갈래
+
+
+def test_handover_only_reads(bootstrap, tmp_path, monkeypatch):
+    """복원은 읽기만 한다 — log·장부·준비 사본 어느 것도 1바이트 바뀌지 않는다."""
+    inst, run_dir = _handover_home(bootstrap, tmp_path, monkeypatch)
+    watched = [inst._log_file, run_dir / "rounds" / "02-developer.md"]
+    before = {path: path.read_bytes() for path in watched}
+    rounds_before = sorted(path.name for path in (run_dir / "rounds").iterdir())
+
+    inst._render_handover(session="job1", task="job1")
+
+    for path, blob in before.items():
+        assert path.read_bytes() == blob, f"복원이 {path.name} 을 썼다"
+    assert sorted(path.name for path in (run_dir / "rounds").iterdir()) == rounds_before, (
+        "복원이 라운드 자리에 파일을 만들었다")

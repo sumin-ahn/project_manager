@@ -1164,7 +1164,10 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   호출 두 경계와, 그 등재의 대상 판정 입력이던 `worktree_pool._registered_repos_for_
     #   session` 의 board 형제 로드 한 경계. 자리를 대신한 옛 행 제거 마이그레이션
     #   (`pm_update.drop_self_lease_rows`)은 장부를 직접 읽고 쓰므로 접을 예외가 없다.
-    assert len(report.boundaries) == 266, "propagation sweep boundary ratchet changed"
+    # 271 = 266 + T-0920 의 인계 표시 다섯 경계(`pm_bootstrap._handover_*`). 인계 표시는 **읽기
+    #   전용 부가 정보**라 조회 실패가 진입을 막지 않지만, marked skew 만은 그대로 올린다
+    #   (형제 사본 불일치를 "표시할 게 없음"으로 숨기지 않는다).
+    assert len(report.boundaries) == 271, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1799,10 +1802,11 @@ def test_runtime_status_slot_git_callable_rethrows_marked_skew(monkeypatch):
     module = _runtime_tool("pm_config.py")
     skew = _marked_skew()
     lease = SimpleNamespace(
-        slot="work/repo_1", repo="repo", state="idle", session=None, pid=0, role="work",
+        slot="work/repo_1", repo="repo", state="idle", session=None, role="work",
     )
     worktree_pool = SimpleNamespace(
         list_leases=lambda: [lease],
+        lease_is_open=lambda _lease: False,
         current_branch=lambda _slot: "feature",
         list_tasks=lambda: [],
         slots_for_task=lambda _task: [],

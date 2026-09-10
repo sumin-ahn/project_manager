@@ -8,8 +8,8 @@
 
 커버:
   - 가벼운 절 전수(schema·engine_rev·pm_home·generated_at·slots·tasks·git·repos·harnesses·conf).
-  - `alive` 세 형태 — 살아 있는 pid(이 테스트 프로세스)·죽은 pid·readonly 슬롯 pid 0. 값은
-    `worktree_pool._pid_alive` 와 같아야 한다(판정 재구현 0).
+  - `alive` 세 형태 — 열린 기록(leased+session)·닫힌 기록(idle)·readonly(세션 없음). 값은
+    `worktree_pool.lease_is_open` 과 같아야 한다(판정 재구현 0·프로세스 조회 0회).
   - `role` 정규화(장부에 키가 없는 행 → `work` · readonly 행 → `readonly`)와 task 귀속.
   - `conf` 다섯 목록(필수 누락·폐지·미지·표준과 다름·최신 기준 누락 — 마지막은 소스 레지스트리).
   - `--with-board`: `STATUS_DIRS` 다섯 축 counts(초안 미집계)·open 목록·lint 목록(이슈가 있어도
@@ -36,7 +36,6 @@ from pathlib import Path
 import pytest
 
 from _git_fixture import remove_git_tree
-from _session_chain import live_harness_session, real_process_table_supported
 # T-0908 의 URL 캐시 픽스처(로컬 bare + `file://` · 네트워크 0)를 그대로 쓴다 — 캐시 자리·
 # 형상 판정을 두 벌로 만들지 않는다.
 from test_pm_update_url_cache import (  # noqa: E402
@@ -50,25 +49,17 @@ TEMPLATES = REPO / "templates"
 _GIT = shutil.which("git")
 _git_required = pytest.mark.skipif(_GIT is None, reason="git 바이너리 없음")
 
-# 이 pid 는 죽어 있어야 한다 — 테스트가 그 사실을 엔진 seam 으로 먼저 확인한다(우연 통과 차단).
-_DEAD_PID = 999999
 
-_real_chain = pytest.mark.skipif(
-    not real_process_table_supported(),
-    reason="실 세션 사슬 단언은 POSIX `ps` 표가 있는 환경에서만 돈다",
-)
-
-# 더미 세션 아래에서 홈 사본 엔진으로 task·슬롯을 바인딩한다 — 기록 pid 를 테스트가 조립하지
-# 않고 엔진이 정하게 둔다(T-0915).
+# 홈 사본 엔진으로 task·슬롯을 바인딩한다 — 열림 기록을 테스트가 조립하지 않고 엔진이 남긴다.
 _BIND_SOURCE = '''\
 import importlib.util, json, sys
 
 spec = importlib.util.spec_from_file_location("worktree_pool_session_bind", sys.argv[1])
 worktree_pool = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(worktree_pool)
-task, _action, _reclaimed_from = worktree_pool.bind_task("main")
+task, _action = worktree_pool.bind_task("main")
 lease = worktree_pool.bind_slot(sys.argv[2], "app", "main")
-print(json.dumps({"task_pid": task.pid, "lease_pid": lease.pid}))
+print(json.dumps({"task_open": task.open, "lease_open": worktree_pool.lease_is_open(lease)}))
 '''
 
 
@@ -200,10 +191,9 @@ def test_status_json_light_sections_from_real_ledger(home, pc, wp):
     _write(home / "CLAUDE.md", "# demo\n")
     (home / ".claude").mkdir(exist_ok=True)
     _ledger(home, [{
-        "slot": slot, "repo": "app", "session": "main", "pid": os.getpid(),
-        "started": "2026-09-07T00:00:00+00:00", "state": "leased",
+        "slot": slot, "repo": "app", "session": "main", "started": "2026-09-07T00:00:00+00:00", "state": "leased",
         "test_cmd": "pytest -q",
-    }], [{"name": "main", "prefix": "app", "pid": os.getpid(),
+    }], [{"name": "main", "prefix": "app", "open": True,
           "started": "2026-09-07T00:00:00+00:00"}])
 
     document = _status_json(home)
@@ -217,14 +207,14 @@ def test_status_json_light_sections_from_real_ledger(home, pc, wp):
     assert [row["slot"] for row in document["slots"]] == [slot]
     row = document["slots"][0]
     assert row["repo"] == "app" and row["state"] == "leased" and row["session"] == "main"
-    assert row["pid"] == os.getpid() and row["alive"] is True
+    assert row["alive"] is True and "pid" not in row
     assert row["role"] == "work" and row["task"] == "main"
     assert row["branch"] == "feat/x"
     assert row["head"] == _git(home / slot, "rev-parse", "HEAD").stdout.strip()
     assert row["base"] is None and row["behind"] is None and row["dirty"] is False
 
     assert document["tasks"] == [{
-        "name": "main", "prefix": "app", "pid": os.getpid(), "alive": True,
+        "name": "main", "prefix": "app", "alive": True,
         "started": "2026-09-07T00:00:00+00:00", "slots": [slot],
     }]
     assert document["harnesses"] == ["claude"]
@@ -235,38 +225,36 @@ def test_status_json_light_sections_from_real_ledger(home, pc, wp):
 
 
 @_git_required
-def test_status_json_alive_matches_pid_seam(home, wp):
-    """`alive` 는 `_pid_alive` 와 같은 값이다 — 살아 있는 pid·죽은 pid·readonly pid 0 셋 다."""
-    assert wp._pid_alive(_DEAD_PID) is False, "픽스처 전제: 이 pid 는 죽어 있어야 한다"
-    slot_live = _make_slot(home, "app", 1, "live")
-    slot_dead = _make_slot(home, "app", 2, "dead")
+def test_status_json_alive_is_the_open_record(home, wp):
+    """`alive` 는 열림 기록이다 — 열림(leased+session)·닫힘(idle)·readonly(세션 없음) 셋."""
+    slot_open = _make_slot(home, "app", 1, "live")
+    slot_closed = _make_slot(home, "app", 2, "closed")
     slot_readonly = _make_slot(home, "app", 3, "readonly")
     _ledger(home, [
-        {"slot": slot_live, "repo": "app", "session": "main", "pid": os.getpid(),
-         "started": "s", "state": "leased", "test_cmd": None},
-        {"slot": slot_dead, "repo": "app", "session": "gone", "pid": _DEAD_PID,
-         "started": "s", "state": "leased", "test_cmd": None},
-        {"slot": slot_readonly, "repo": "app", "session": "", "pid": 0,
-         "started": "s", "state": "leased", "test_cmd": None, "role": "readonly"},
+        {"slot": slot_open, "repo": "app", "session": "main", "started": "s", "state": "leased", "test_cmd": None},
+        {"slot": slot_closed, "repo": "app", "session": "", "started": "s", "state": "idle", "test_cmd": None},
+        {"slot": slot_readonly, "repo": "app", "session": "", "started": "s", "state": "leased", "test_cmd": None, "role": "readonly"},
     ])
 
     rows = {row["slot"]: row for row in _status_json(home)["slots"]}
 
-    assert rows[slot_live]["alive"] is True
-    assert rows[slot_dead]["alive"] is False
+    assert rows[slot_open]["alive"] is True
+    assert rows[slot_closed]["alive"] is False
     assert rows[slot_readonly]["alive"] is False
     for slot, row in rows.items():
-        assert row["alive"] == wp._pid_alive(row["pid"]), slot
+        assert "pid" not in row, slot                 # 옛 필드 제거
+        lease = wp.Lease(slot=slot, repo="app", session=row["session"] or "",
+                         started="s", state=row["state"])
+        assert row["alive"] == wp.lease_is_open(lease), slot   # 판정 재구현 0
 
 
 @_git_required
-@_real_chain
-def test_status_json_alive_tracks_the_session_that_wrote_the_row(home, wp, tmp_path):
-    """`alive` 는 그 행을 만든 세션의 생존이다 — 세션이 살아 있으면 true, 끝나면 false.
+def test_status_json_alive_follows_the_records_a_real_session_left(home, wp, tmp_path):
+    """실 서브프로세스가 남긴 기록을 그대로 읽는다 — bind 뒤 열림, 닫은 뒤 닫힘.
 
     엔진 프로세스 pid 를 적던 시절엔 bind 가 끝나는 순간 죽어 slots/tasks 가 늘 회수 대기로
-    보였다(관리자 현황 탭). 여기서는 더미 하네스 세션을 띄워 그 아래에서 bind 를 돌리고,
-    같은 장부를 세션 생존 중과 종료 후 두 번 읽는다.
+    보였다(관리자 현황 탭). 이제 판정 재료는 프로세스가 아니라 기록이라, 명령이 끝난 뒤에도
+    열림으로 남고 **닫는 명령**을 받아야 닫힌다.
     """
     slot = _make_slot(home, "app", 1, "feat/x")
     template = home / ".project_manager" / "wiki" / "pm_state.template.md"
@@ -276,24 +264,22 @@ def test_status_json_alive_tracks_the_session_that_wrote_the_row(home, wp, tmp_p
     binder.write_text(_BIND_SOURCE, encoding="utf-8")
     tools = home / ".project_manager" / "tools" / "worktree_pool.py"
 
-    with live_harness_session(
-        tmp_path, [sys.executable, str(binder), str(tools), slot],
-    ) as session:
-        assert session.rc == 0, session.stderr
-        recorded = json.loads(session.stdout)
-        assert recorded == {"task_pid": session.pid, "lease_pid": session.pid}
+    done = subprocess.run([sys.executable, str(binder), str(tools), slot],
+                          capture_output=True, text=True, encoding="utf-8")
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == {"task_open": True, "lease_open": True}
 
-        live = _status_json(home)
-        live_slot = live["slots"][0]
-        live_task = live["tasks"][0]
-        assert live_slot["pid"] == session.pid and live_slot["alive"] is True
-        assert live_task["pid"] == session.pid and live_task["alive"] is True
-        assert live_slot["task"] == "main"
+    live = _status_json(home)
+    assert live["slots"][0]["alive"] is True          # 명령 프로세스는 이미 죽었다
+    assert live["tasks"][0]["alive"] is True
+    assert live["slots"][0]["task"] == "main"
 
-    dead = _status_json(home)
-    assert dead["slots"][0]["pid"] == session.pid and dead["slots"][0]["alive"] is False
-    assert dead["tasks"][0]["pid"] == session.pid and dead["tasks"][0]["alive"] is False
-    assert wp._pid_alive(session.pid) is False, "판정은 여전히 `_pid_alive` 하나다"
+    assert _run_cli(home, "release", slot, "--force").returncode == 0
+    assert _run_cli(home, "task", "close", "main").returncode == 0
+
+    closed = _status_json(home)
+    assert closed["slots"][0]["alive"] is False       # 종료 기록
+    assert closed["tasks"][0]["alive"] is False
 
 
 @_git_required
@@ -302,11 +288,9 @@ def test_status_json_normalizes_role_and_task_attribution(home):
     work_slot = _make_slot(home, "app", 1, "w")
     readonly_slot = _make_slot(home, "app", 2, "r")
     _ledger(home, [
-        {"slot": work_slot, "repo": "app", "session": "solo", "pid": 0,
-         "started": "s", "state": "idle", "test_cmd": None},
-        {"slot": readonly_slot, "repo": "app", "session": "", "pid": 0,
-         "started": "s", "state": "leased", "test_cmd": None, "role": "readonly"},
-    ], [{"name": "other", "prefix": None, "pid": 0, "started": "s"}])
+        {"slot": work_slot, "repo": "app", "session": "solo", "started": "s", "state": "idle", "test_cmd": None},
+        {"slot": readonly_slot, "repo": "app", "session": "", "started": "s", "state": "leased", "test_cmd": None, "role": "readonly"},
+    ], [{"name": "other", "prefix": None, "started": "s"}])
 
     rows = {row["slot"]: row for row in _status_json(home)["slots"]}
 
@@ -371,8 +355,7 @@ def test_status_json_git_section_reports_detached_head_as_null_branch(home):
     읽는 쪽이 detached 와 'HEAD 라는 이름의 브랜치' 를 구분할 수 없게 만든다."""
     slot = _make_slot(home, "app", 1, "feat/x")
     _git(home / slot, "checkout", "-q", "--detach")
-    _ledger(home, [{"slot": slot, "repo": "app", "session": "main", "pid": os.getpid(),
-                    "started": "s", "state": "leased", "test_cmd": None}])
+    _ledger(home, [{"slot": slot, "repo": "app", "session": "main", "started": "s", "state": "leased", "test_cmd": None}])
     _write(home / ".gitignore", ".project_manager/\nwork/\n.repos/\n.origin/\n")
     _git(home, "add", "-A")
     _git(home, "commit", "-q", "-m", "tree")
@@ -800,8 +783,7 @@ def test_json_path_writes_nothing(tmp_path):
     """JSON 경로가 `.project_manager/` 아래 어떤 파일도 만들지 않고 고치지 않는다(AT-004)."""
     home = _adapter_home(tmp_path / "home")
     slot = _make_slot(home, "app", 1, "feat")
-    _ledger(home, [{"slot": slot, "repo": "app", "session": "main", "pid": os.getpid(),
-                    "started": "s", "state": "leased", "test_cmd": None}])
+    _ledger(home, [{"slot": slot, "repo": "app", "session": "main", "started": "s", "state": "leased", "test_cmd": None}])
     _ticket(home, "open", "T-0001", "열린 것")
     # 텍스트 경로를 먼저 한 번 돌려 공유 읽기 seam(리스 락 파일)을 만든 상태를 기준으로 삼는다 —
     # JSON 이 **텍스트 경로보다 더** 쓰지 않음을 재는 것이 이 단언의 축이다.

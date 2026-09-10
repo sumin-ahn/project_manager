@@ -137,7 +137,7 @@ class _TaskPool:
         self._bound_extra: list[str] = []
 
     # task 축
-    def bind_task(self, name, *, pid=None, registered_repos=None):
+    def bind_task(self, name, *, registered_repos=None):
         self.bind_task_calls.append({"name": name, "registered_repos": registered_repos})
         self.task_dir(name).mkdir(parents=True, exist_ok=True)
         (self.task_dir(name) / "pm_state.md").write_text(
@@ -145,7 +145,7 @@ class _TaskPool:
             "  - (아직 완료된 task 세션 없음)\n",
             encoding="utf-8",
         )
-        return (_TaskRecord(name), "created", None)
+        return (_TaskRecord(name), "created")
 
     def task_dir(self, name):
         return self._task_dir_root / name
@@ -184,6 +184,10 @@ class _TaskPool:
                 "head": self._heads.get(slot), "dirty": self._dirty.get(slot, False)}
 
     # T-0390 편입 경로
+    def lease_is_open(self, lease):
+        """열림 판정은 엔진 규칙 그대로 — 열림 기록(leased + session)이면 열림."""
+        return getattr(lease, "state", None) == "leased" and bool(getattr(lease, "session", ""))
+
     def list_leases(self):
         leased = []
         for s in self._task_slots:

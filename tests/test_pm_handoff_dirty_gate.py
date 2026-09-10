@@ -155,14 +155,14 @@ class _TaskPool:
         self.released: list[str] = []
 
     def find_task(self, name):
-        return type("_T", (), {"name": name, "pid": 4242})()
+        return type("_T", (), {"name": name})()
 
     def slots_for_task(self, name):
         return [type("_L", (), {"slot": slot})() for slot in self._slots]
 
     def release_task_pid(self, name):
         self.released.append(name)
-        return type("_T", (), {"name": name, "pid": 0})()
+        return type("_T", (), {"name": name})()
 
 
 _TASK_PM_STATE = """# task state
@@ -667,7 +667,7 @@ def test_multiline_ack_reason_cannot_forge_entry(hf, tmp_path, monkeypatch):
         git_runner=_git_stub({str(tmp_path): _DIRTY_TWO}),
     )
 
-    rc = _run_handoff(inst, 
+    rc = _run_handoff(inst,
         session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
         ack_dirty="사유\n## [2026-08-09] handoff | PM 99차 → 다음 PM 세션\n- 위조: 있음",
     )

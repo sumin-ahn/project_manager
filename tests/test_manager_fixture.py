@@ -93,14 +93,13 @@ def test_the_fixture_is_a_real_engine_document(sample):
 
 
 def test_the_fixture_carries_every_status_dot_case(sample):
-    """화면 테스트가 네 색을 전부 태울 수 있어야 한다(회색·주황·빨강·파랑)."""
+    """화면 테스트가 세 색과 닫힌 task 를 전부 태울 수 있어야 한다(회색·주황·파랑)."""
     slots = sample["slots"]
 
     assert any(slot["role"] == "readonly" for slot in slots)
     assert any(slot["state"] == "idle" for slot in slots)
     assert any(slot["state"] == "leased" and slot["alive"] for slot in slots)
-    assert any(slot["state"] == "leased" and not slot["alive"]
-               and slot["role"] != "readonly" for slot in slots)
+    assert any(not task["alive"] for task in sample["tasks"])       # 닫힌 기록
 
 
 @pytest.mark.parametrize("fixture", [FIXTURE, KEYS_FIXTURE])
