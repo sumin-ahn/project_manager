@@ -199,6 +199,7 @@ def test_bootstrap_readonly_stop_uses_codex_notation(monkeypatch, capsys):
     monkeypatch.setattr(inst, "_reject_worktree_copy_anchor", lambda: False)
     monkeypatch.setattr(inst, "_reconcile_protected_sidecar", lambda _repo: None)
     monkeypatch.setattr(inst, "_resolve_worktree_pool", lambda: object())
+    monkeypatch.setattr(inst, "_phase0_slot_folder_exists", lambda _wp, _slot: True)
     monkeypatch.setattr(inst, "_phase0_find_lease", lambda _wp, _slot: lease)
     monkeypatch.setattr(inst, "_phase0_incomplete_create", lambda _lease: False)
     monkeypatch.setattr(inst, "_phase0_is_readonly", lambda _lease: True)

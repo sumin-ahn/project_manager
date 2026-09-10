@@ -844,6 +844,20 @@ class SlotResolutionError(Exception):
     """
 
 
+def _no_work_folder_remedy(repo: str) -> str:
+    """작업 폴더 부재 처방 한 줄 — 문구 단일 진실(`identity_args`)에서 가져온다.
+
+    형제 사본을 못 읽으면 문구를 지어내지 않는다(사본 0) — 판독 실패는 그대로 올린다.
+    """
+    ia = _load_identity_args()
+    if ia is None:
+        raise SlotResolutionError(
+            f"identity_args 사본을 로드할 수 없어 안내 문구를 해소하지 못했다 "
+            f"({TOOLS_DIR / 'identity_args.py'}) — `pm-update` 로 엔진 사본을 재동기하라."
+        )
+    return ia.no_work_folder_remedy(repo)
+
+
 def _resolve_session_slot(
     areas_file: Path | None = None,
     leases_file: Path = LEASES_FILE,
@@ -883,12 +897,10 @@ def _resolve_session_slot(
     repo = repos[0]
     slot_nums = _repo_slot_numbers(repo, leases_file)
     if not slot_nums:
-        # 장부 부재/깨짐(None) 또는 그 repo 슬롯 0개([]) — 이 홈은 아직 슬롯 행이 없다.
+        # 장부 부재/깨짐(None) 또는 그 repo 슬롯 0개([]) — 이 홈엔 아직 작업 폴더가 없다.
         # 조용히 폴백하면 어느 슬롯의 연속성인지 모른 채 로그·pm_state 를 쓰게 된다.
         raise SlotResolutionError(
-            f"repo '{repo}' 의 활성 슬롯 0개 — 이 홈이 아직 슬롯 행으로 등록되지 않았거나 "
-            f"장부를 읽을 수 없다. `pm-update` 를 1회 실행해 등록을 마치거나 "
-            f"`--repo <name> --slot <N>` 으로 명시하라."
+            f"[중단] repo '{repo}' 의 활성 슬롯 0개 — " + _no_work_folder_remedy(repo)
         )
     if 1 in slot_nums:
         return repo, 1  # slot 1 존재 → default-1(`{1}`·`{1,2}` 등).
@@ -3722,14 +3734,11 @@ class PmBootstrap:
              이 클래스에 무방비였다).
           2~5 **슬롯 검사** — 슬롯이 명시된 lean 경로(`--repo --slot`·무인자 자동해소 포함)만 돈다.
              무인자(repo None)·alloc(slot None)는 슬롯이 없어 자연 no-op(결정 2).
-            2. **작업공간 실재** — 장부 lease 도 없고 폴더도 없으면 거부(phantom 슬롯 바인딩 방지).
+            2. **작업공간 실재** — 폴더가 없으면 거부(phantom 슬롯 바인딩 방지).
             3. **타 점유자** — 다른 세션이 그 슬롯을 leased 로 보유하면 거부(readonly 예외).
             4. **보호브랜치/origin-추적** — main-참조(보호브랜치 직접 checkout 또는 upstream 설정)면
-               **거부**(부분 dump 금지·readonly 예외·홈 예외).
-            5. **기록 vs live** — `compare_slot_git` 소비(불일치=FAIL-LOUD·미기록=loud+질의 훅·홈 예외).
-
-        4·5 는 **작업 슬롯** 전제 검사라 PM 홈 자신(`HOME_SLOT` 행)엔 걸지 않는다
-        (`_phase0_is_home_slot`). 2·3(실재·점유)은 홈에도 그대로 적용된다.
+               **거부**(부분 dump 금지·readonly 예외).
+            5. **기록 vs live** — `compare_slot_git` 소비(불일치=FAIL-LOUD·미기록=loud+질의 훅).
 
         task 진입은 이 함수 앞에서 repo/slot 혼합을 거부한다. task 보유 슬롯은 별도
         `_validate_task_slot_set` 전수 검증이 담당한다.
@@ -3761,14 +3770,15 @@ class PmBootstrap:
         self_session = session
         wp = self._resolve_worktree_pool()  # multi-PM 인데 풀 부재면 명시 에러(SystemExit·dump 이전).
         lease = self._phase0_find_lease(wp, slot_id)
-        # 2. 작업공간 실재 (장부·폴더).
-        if lease is None and not self._phase0_slot_folder_exists(wp, slot_id):
+        # 2. 작업공간 실재 (폴더). 장부 행이 있어도 폴더가 없으면 진입 불가다 — 그 상태로
+        #    통과시키면 뒤의 git 프로브가 없는 경로에서 죽는다(부분 dump·traceback).
+        if not self._phase0_slot_folder_exists(wp, slot_id):
             print(
-                f"[중단·0단계] 슬롯 {slot_id} 이(가) 장부·폴더 어디에도 없습니다 — 미생성 슬롯을 "
-                f"바인딩하면 phantom 작업공간에 세션을 dump 합니다.\n"
-                f"  → 먼저 사용자에게 repo {repo!r} 슬롯 생성 승인을 요청하세요. 승인한 사용자만:\n"
-                f"    {_CARD_TOOL_INVOKE}/pm_config.py worktree add {repo} --user-ack {repo}\n"
-                f"    (사용자가 직접 실행·세션 자동 실행 금지)\n"
+                f"[중단·0단계] 슬롯 {slot_id} 의 작업 폴더가 없습니다 — 미생성 슬롯을 바인딩하면 "
+                f"phantom 작업공간에 세션을 dump 합니다.\n"
+                f"  → 먼저 사용자에게 슬롯 생성 승인을 요청하세요 "
+                f"(사용자가 직접 실행·세션 자동 실행 금지):\n"
+                f"    {_no_work_folder_remedy(repo)}\n"
                 f"    (또는 `--slot` 번호를 실재하는 슬롯으로 맞추세요.)",
                 file=sys.stderr,
             )
@@ -3861,11 +3871,12 @@ class PmBootstrap:
         return None
 
     def _phase0_slot_folder_exists(self, wp, slot_id: str) -> bool:
-        """슬롯 worktree 폴더가 실재하는가 (`slot_path(slot).exists()`·조회 실패는 False)."""
-        try:
-            return wp.slot_path(slot_id).exists()
-        except Exception:  # noqa: BLE001 — fail-soft: 경로 해소 실패는 미실재로 취급(보수적).
-            return False
+        """슬롯 worktree 폴더가 실재하는가 (`slot_path(slot).exists()`).
+
+        **없는 것**(False)과 **못 읽는 것**(경로 해소 실패)을 섞지 않는다 — 해소 실패는 판정
+        불능이라 그대로 올린다(미실재로 위장하면 생성 안내가 엉뚱한 처방이 된다).
+        """
+        return wp.slot_path(slot_id).exists()
 
     def _phase0_is_readonly(self, lease) -> bool:
         """그 슬롯이 readonly 공유 자산(`role="readonly"`)인가 — 0단계 **바인딩 거부** 판별.
@@ -3881,19 +3892,6 @@ class PmBootstrap:
         if lease is None:
             return False
         return getattr(lease, "role", "work") == "readonly"
-
-    def _phase0_is_home_slot(self, wp, slot_id: str) -> bool:
-        """그 슬롯이 PM 홈 자신(`worktree_pool.HOME_SLOT`)인가 — **작업 슬롯 전제** 검사의 배제 판별.
-
-        main-참조 거부(4)와 기록↔live 정합(5)은 "작업 슬롯에서 보호 브랜치에 커밋" 을 막는 검사다.
-        PM 홈은 작업 슬롯이 아니라 board/wiki 가 사는 트리이고, 그 브랜치가 `main`/`master` 인 것이
-        정상 채택자 형상이라 전제가 성립하지 않는다(홈의 보호는 push 보호 훅이 한다). 판별은 풀이
-        이름 붙인 상수와의 값 비교 하나뿐 — 형상 추론이 아니다. 상수 부재 풀(구버전·mock)은 배제
-        자체가 성립하지 않아 항상 False 이므로 검사가 종전대로 돈다(과배제 0). 상수 부재와 슬롯 값
-        `None` 을 같은 sentinel 로 접으면 미노출 풀에서 `slot_id=None` 이 홈으로 오인돼 두 검사가
-        통째로 배제되므로, 상수 부재를 먼저 분리한다."""
-        home_slot = getattr(wp, "HOME_SLOT", None)
-        return home_slot is not None and slot_id == home_slot
 
     def _phase0_incomplete_create(self, lease) -> bool:
         """그 슬롯이 불완전 생성(`state="creating"`·provisional/중단 마커)인가 — 0단계 차단 대상.
@@ -3932,10 +3930,6 @@ class PmBootstrap:
         진입 시점으로 앞당긴다. 실패 시 **부분 dump 도 금지**(0단계 계약 — dump 가 뜨면 PM 이 그것을
         세션 진실로 믿는다). 판정 두 축은 `_phase0_main_reference_reason` 가 소비만 한다(중복 로직 0).
 
-        **홈 예외**: PM 홈 자신(`HOME_SLOT` 행)은 이 검사의 전제인 작업 슬롯이 아니다 —
-        board/wiki 트리가 `main`/`master` 인 것이 정상 채택자 형상이고, 홈에서의 보호는 이 게이트가
-        아니라 push 보호 훅이 한다. 배제하지 않으면 채택자의 첫 부트스트랩이 곧바로 막힌다.
-
         **readonly 예외**: readonly 공유 슬롯(role="readonly")은 detached(브랜치 없음·upstream
         없음)라 두 축에 자연 미해당하지만, role 로도 명시 carve-out 한다 — main-참조 역할을 이전받는
         슬롯이 곧 readonly 이므로 그 자체가 거부되면 자기충돌. (bind flow 에선 2c 가
@@ -3943,9 +3937,6 @@ class PmBootstrap:
 
         반환 0=통과·1=거부(FAIL-LOUD·부분 dump 금지). 거부 메시지엔 해소 2택(readonly 생성 / 작업
         브랜치 전환)을 **실값**으로 싣는다."""
-        # 홈 예외 — PM 홈은 작업 슬롯이 아니라 이 검사의 전제(작업 슬롯 커밋)가 성립하지 않는다.
-        if self._phase0_is_home_slot(wp, slot_id):
-            return 0
         # readonly 예외 — 무브랜치 공유 자산은 main-참조 판정 대상이 아니다(역할 이전 대상 자기보호).
         if self._phase0_is_readonly(lease):
             return 0
@@ -4155,14 +4146,7 @@ class PmBootstrap:
         submodule 만 본다(base=recorded-only breadcrumb). base 불일치 FAIL·"base 대비 N behind"
         판정은 rebase 으로 이월된다(reviewer 추적성).
         `compare_slot_git` 미구현 풀(구버전·mock)·예외는 fail-soft(정합 검사 생략·통과) — 소프트 진단.
-        **홈 예외**(main-참조 거부와 같은 축): PM 홈은 세션이 두고 가는 작업 트리가 아니라
-        `_phase0_is_home_slot` 이면 검사하지 않는다.
         반환 0=통과·1=FAIL-LOUD 거부."""
-        # 홈 예외 — 게이트 4 와 같은 전제(작업 슬롯). 홈은 세션이 두고 가는 작업 트리가 아니라
-        # 브랜치·head 가 채택자 평시 운영으로 움직이므로 "두고 간 기록과 다름" 이 외부 개입 신호가
-        # 아니다. 4 만 배제하면 홈이 브랜치를 옮긴 뒤 여기서 다시 막힌다.
-        if self._phase0_is_home_slot(wp, slot_id):
-            return 0
         compare = getattr(wp, "compare_slot_git", None)
         if compare is None:
             return 0  # 구버전 풀 — 정합 검사 비활성(fail-soft·소프트 진단).

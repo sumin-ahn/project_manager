@@ -935,7 +935,7 @@ def _pm_state_path(
     if slot is None:
         raise identity_args.SlotResolutionError(
             "슬롯 정체성 미해소 — pm_state 를 어디에 읽고 쓸지 결정할 수 없다. "
-            f"`--repo <repo> --slot <N>` 으로 명시하라. {identity_args.UNREGISTERED_HOME_REMEDY}"
+            f"`--repo <repo> --slot <N>` 으로 명시하라. {identity_args.NO_WORK_FOLDER_REMEDY}"
         )
     if migrate:
         _backfill_divergent_slot_dir(slot)
@@ -4130,7 +4130,7 @@ class PmHandoff:
                     "\n[중단] 실행 슬롯 미해소 — pm_state 를 어디에 쓸지 결정할 수 없다. "
                     "`--repo <repo> --slot <N>` 으로 명시하라 "
                     "(log/current.md·pm_state.md 어떤 것도 건드리지 않는다). "
-                    f"{identity_args.UNREGISTERED_HOME_REMEDY}",
+                    f"{identity_args.NO_WORK_FOLDER_REMEDY}",
                     file=sys.stderr,
                 )
                 return 1
@@ -4700,7 +4700,7 @@ def require_handoff_user_ack(
         print(
             f"[dry-run] 쓰기 0 미리보기는 사용자 ack 없이 허용한다. 실제 {description} "
             "핸드오프에는 승인 대상값이 필요하니 `--repo <repo> --slot <N>` 또는 "
-            f"`--task <이름>` 으로 대상을 명시하라. {identity_args.UNREGISTERED_HOME_REMEDY}"
+            f"`--task <이름>` 으로 대상을 명시하라. {identity_args.NO_WORK_FOLDER_REMEDY}"
         )
         return True
     if target is None:
@@ -4708,7 +4708,7 @@ def require_handoff_user_ack(
         print(
             f"[중단] pm_handoff {description}: 승인 대상값을 해소할 수 없다. "
             "`--repo <repo> --slot <N>` 또는 `--task <이름>` 으로 대상을 명시하라. "
-            f"{identity_args.UNREGISTERED_HOME_REMEDY}",
+            f"{identity_args.NO_WORK_FOLDER_REMEDY}",
             file=sys.stderr,
         )
         return False

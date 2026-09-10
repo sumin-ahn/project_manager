@@ -23,6 +23,8 @@ from pathlib import Path, PureWindowsPath
 
 import pytest
 
+from _slot_seed import fake_slot_path
+
 from _session_chain import live_harness_session, real_process_table_supported
 
 REPO = Path(__file__).resolve().parents[1]
@@ -283,7 +285,7 @@ class FakeWorktreePool:
         return self._live_branch.get(slot)
 
     def slot_path(self, slot):
-        return Path("/tmp/multipm") / slot
+        return fake_slot_path(slot)
 
     def task_dir(self, name):
         root = self._task_dir_root or (Path("/tmp/multipm") / "tasks")
@@ -438,7 +440,8 @@ def test_bootstrap_repo_reports_slot_cwd(bootstrap, tmp_path, capsys):
     out = capsys.readouterr().out
     # cwd(작업 슬롯) 경로가 보고된다 (slot_path 산출). 엔진 표시는 OS-네이티브라
     # Windows 에선 역슬래시 — 경로 구분자만 정규화해 비교(POSIX 무변경·os.sep="/").
-    assert "/tmp/multipm/work/A_2" in out.replace(os.sep, "/")
+    expected = str(fake_slot_path("work/A_2")).replace(os.sep, "/")
+    assert expected in out.replace(os.sep, "/")
 
 
 def test_bootstrap_repo_identity_lists_registered_areas(bootstrap, tmp_path, capsys):
@@ -1247,10 +1250,11 @@ def test_resolve_session_slot_zero_repos_fails_loud(bootstrap, tmp_path):
 
 
 def test_resolve_session_slot_repo1_no_slots_fails_loud(bootstrap, tmp_path):
-    """repo 1개지만 그 repo 슬롯 0개 → SlotResolutionError(미등록 홈·마이그레이션 안내)."""
+    """repo 1개지만 그 repo 슬롯 0개 → SlotResolutionError(작업 폴더 생성 안내)."""
     with pytest.raises(bootstrap.SlotResolutionError) as exc:
         _resolve(bootstrap, tmp_path, ["project_manager"], [])
-    assert "활성 슬롯 0개" in str(exc.value) and "pm-update" in str(exc.value)
+    assert "작업 폴더가 없다" in str(exc.value)
+    assert "pm-config worktree add project_manager --user-ack project_manager" in str(exc.value)
 
 
 def test_resolve_session_slot_missing_leases_fails_loud(bootstrap, tmp_path):

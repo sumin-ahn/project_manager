@@ -50,7 +50,7 @@ env prefix 없이 호출한다:
   ```bash
   {{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 예: --repo myproj --slot 1
   ```
-  `--repo`가 repo prefix를 유도한다. 활성 슬롯 lease가 1개면 `--repo/--slot` 생략 가능하다. 식별 우선순위는 `--repo`/`--slot` > `$PM_SESSION_NAME`(구 `$CLAUDE_SESSION_NAME` deprecated alias) > 활성 슬롯 lease가 정확히 1개면 그 세션(단일-lease 유도) > 미해소면 귀속 쓰기 fail-loud 및 `--repo <repo> --slot <N>` 요구. lease 장부에 행이 하나도 없는 홈은 아직 슬롯으로 등록되지 않은 것이라 같은 fail-loud 로 떨어지며, `/pm-update` 1회가 등록 repo 1개인 홈을 첫 슬롯 행 `<repo>_1` 로 등록한다.
+  `--repo`가 repo prefix를 유도한다. 활성 슬롯 lease가 1개면 `--repo/--slot` 생략 가능하다. 식별 우선순위는 `--repo`/`--slot` > `$PM_SESSION_NAME`(구 `$CLAUDE_SESSION_NAME` deprecated alias) > 활성 슬롯 lease가 정확히 1개면 그 세션(단일-lease 유도) > 미해소면 귀속 쓰기 fail-loud 및 `--repo <repo> --slot <N>` 요구. lease 장부에 행이 하나도 없는 홈은 아직 작업 폴더가 없는 것이라 같은 fail-loud 로 떨어지며, `pm-config worktree add <repo> --user-ack <repo>` 로 작업 폴더를 먼저 만든다.
 - 위임 식별 라벨: `orch-dev-TNNNN` / `orch-review-TNNNN`(위임 규약은 하네스 네이티브 채널).
 
 ### 첫 turn 권장 보고 (부트스트랩 직후)

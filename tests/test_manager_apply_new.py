@@ -123,12 +123,11 @@ def test_the_step_log_carries_the_engines_own_lines(api, dest, upstream):
 @_real_chain
 def test_the_applied_project_answers_the_manager_and_joins_the_list(
         api, dest, upstream, tmp_path, registry_file):
-    """적용 직후의 `.` 슬롯은 **적용을 부른 세션** 명의로 leased 이고 그 세션은 살아 있다.
+    """적용 직후 프로젝트가 목록에 들어오고, 작업 폴더 목록은 **비어 있다**.
 
-    값이 주변 프로세스 사슬에 달리지 않게 세션을 테스트가 직접 띄운다 — 하네스 이름 심링크로
-    만든 더미 조상 아래에서 적용을 돌리고, 기록 pid 가 **그 더미 세션의 pid** 인지 잰다
-    (T-0915). 주변에 하네스가 없으면 적용은 엔진이 엔진을 띄우는 사슬(`pm_import` →
-    `pm_config init`)의 직계 부모로 떨어지고 그 부모는 명령과 함께 죽는다.
+    적용은 작업 폴더를 만들지 않는다(T-0919 — 홈 자신을 작업 폴더로 등재하던 경로 삭제).
+    폴더는 사람이 `pm-config worktree add` 로 만들고, 그 전까지 화면의 슬롯 표는 빈 표다.
+    세션은 테스트가 직접 띄운다 — 적용이 주변 프로세스 사슬에 의존하지 않음을 유지한다.
     """
     applier = tmp_path / "apply.py"
     applier.write_text(_APPLY_SOURCE, encoding="utf-8")
@@ -140,8 +139,8 @@ def test_the_applied_project_answers_the_manager_and_joins_the_list(
 
         assert api.list_projects()["projects"] == [{"path": str(dest), "name": dest.name}]
         document = api.status(str(dest))
-        assert [(row["slot"], row["state"], row["pid"], row["alive"])
-                for row in document["slots"]] == [(".", "leased", session.pid, True)]
+        assert document["slots"] == [], (
+            f"적용이 작업 폴더 행을 지어냈다: {document['slots']}")
 
 
 def test_the_harness_choice_reaches_the_engine(api, dest, upstream):

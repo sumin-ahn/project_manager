@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 from _git_fixture import init_git_repo
-from _home_slot import seed_home_slot
+from _slot_seed import SLOT, seed_slot
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -60,13 +60,13 @@ def _load_pm_render():
 def live_board(tmp_path, monkeypatch):
     """fresh board 모듈 + livegate IO 전역을 tmp 로 재지정한 hermetic 인스턴스.
 
-    장부에는 **홈 N=1 슬롯 행**(`slot="."`)을 깐다 → `_active_slot_path` 가 홈 자신(=tmp proj)을
-    낸다. 라이브 게이트 cwd 는 이제 "행이 없으니 이 트리겠지" 폴백이 아니라 행이 가리키는
-    경로다(등록 안 된 홈은 fail-loud). worktree HEAD 는 `_git_head_at` 대역으로 고정.
+    장부에는 **작업 폴더 행** 하나를 깐다 → `_active_slot_path` 가 그 슬롯 트리를 낸다. 라이브
+    게이트 cwd 는 "행이 없으니 이 트리겠지" 폴백이 아니라 행이 가리키는 경로다(작업 폴더가
+    없는 홈은 fail-loud). worktree HEAD 는 `_git_head_at` 대역으로 고정.
     """
     proj = tmp_path / "proj"
     local = proj / ".project_manager" / ".local"
-    seed_home_slot(proj)
+    seed_slot(proj)
     # 픽스처가 자기 저장소라고 선언한다 — 선언이 없으면 `_resolve_livegate_flag` 의
     # `git config core.hooksPath` 가 이 저장소를 답해 실 PM 홈의 livegate.json 을 쓴다.
     init_git_repo(proj)
@@ -159,13 +159,18 @@ def _chk_args(rev=None):
 
 
 def _platform_conf(live_board, command="run-windows") -> None:
-    live_board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
-    live_board.LOCAL_CONF.write_text(
-        "qa.platforms=windows\n"
-        f"test.windows.cmd={command}\n"
-        "regression.min_collected=2\n",
-        encoding="utf-8",
-    )
+    """platform 선언을 좌표 둘 다에 깐다 — 홈(기록의 conf_anchor)과 실행 cwd(슬롯 트리).
+
+    게이트는 platform 증거가 있으면 그 기록의 `conf_anchor`(홈)를, 없으면 실행 cwd(장부 행이
+    가리키는 작업 폴더)를 선언 좌표로 읽는다. 두 좌표가 갈리는 것이 슬롯 형상의 평시다.
+    """
+    text = ("qa.platforms=windows\n"
+            f"test.windows.cmd={command}\n"
+            "regression.min_collected=2\n")
+    for conf in (live_board.LOCAL_CONF,
+                 live_board._proj / SLOT / ".project_manager" / "local.conf"):
+        conf.parent.mkdir(parents=True, exist_ok=True)
+        conf.write_text(text, encoding="utf-8")
 
 
 def _platform_regression_record(live_board, *, status="pass", head=None,

@@ -1182,7 +1182,13 @@ def _run_hook_feature(feature: CodexHookFeature, payload_bytes: bytes, root: Pat
         )
         returncode = getattr(completed, "returncode", None)
         if returncode != 0:
-            raise ValueError(f"기능 rc={returncode}")
+            # 자식의 마지막 진단 한 줄을 함께 싣는다 — rc 숫자만 남기면 사람이 다음에 무엇을
+            # 해야 하는지(예: 작업 폴더 생성)를 이 경고에서 알 수 없다.
+            diagnosis = [line.strip() for line
+                         in (getattr(completed, "stderr", b"") or b"").decode(
+                             "utf-8", "replace").splitlines() if line.strip()]
+            raise ValueError(
+                f"기능 rc={returncode}" + (f" · {diagnosis[-1]}" if diagnosis else ""))
         envelope = json.loads((getattr(completed, "stdout", b"") or b"").decode("utf-8"))
         if not isinstance(envelope, dict):
             raise ValueError("엔벨로프가 JSON 객체가 아님")

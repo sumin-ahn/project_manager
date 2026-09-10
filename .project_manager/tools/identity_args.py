@@ -455,14 +455,22 @@ def _load_lease_rows(leases_file: Path) -> list[dict] | None:
     return rows
 
 
-# 장부에 행이 하나도 없는 홈(= 아직 슬롯으로 등록되지 않은 홈)이 정체성 해소에 실패했을 때
-# 붙이는 처방 한 줄. 미해소를 조용한 폴백으로 덮지 않으므로, 사용자가 무엇을 하면 되는지는
-# 메시지가 말해야 한다. 문구를 재타이핑하지 않도록 이 모듈이 단일 진실로 들고, 정체성을
-# 해소하는 모듈들이 여기서 가져다 쓴다.
-UNREGISTERED_HOME_REMEDY = (
-    "이 홈의 lease 장부에 행이 하나도 없으면 아직 슬롯 등록 전이다 — `pm-update` 를 1회 "
-    "실행하면 등록 repo 가 1개일 때 홈 자신이 첫 슬롯 행으로 등록된다."
-)
+# 장부에 행이 하나도 없는 홈(= 아직 작업 폴더가 없는 홈)이 정체성 해소에 실패했을 때 붙이는
+# 처방 한 줄. 미해소를 조용한 폴백으로 덮지 않으므로, 사용자가 무엇을 하면 되는지는 메시지가
+# 말해야 한다. 문구를 재타이핑하지 않도록 이 모듈이 단일 진실로 들고, 정체성을 해소하는
+# 모듈들이 여기서 가져다 쓴다.
+def no_work_folder_remedy(repo: str | None = None) -> str:
+    """작업 폴더가 없는 홈에 붙이는 처방 한 줄 — 모든 소비자가 이 한 문장을 쓴다.
+
+    repo 를 알면 실 명령으로, 모르면 `<repo>` 자리표시자로 낸다. 부트스트랩·0단계 게이트·
+    snapshot 경고·귀속 쓰기 거부가 같은 문장을 낸다(문구 사본 0).
+    """
+    name = repo or "<repo>"
+    return (f"작업 폴더가 없다 — `pm-config worktree add {name} --user-ack {name}` 로 "
+            "먼저 만들어라.")
+
+
+NO_WORK_FOLDER_REMEDY = "이 홈의 lease 장부에 행이 하나도 없으면 " + no_work_folder_remedy()
 
 
 # 장부 읽기 축의 판정값 — "못 읽었다"를 **부재**와 **손상**으로 가른다(합치면 실제로 행을
@@ -656,9 +664,8 @@ def repo_slot_numbers(repo: str, leases_file: Path) -> list[int] | None:
     """`leases_file` 장부에서 `repo` 의 **활성(leased)** 슬롯이 점유한 번호 집합.
 
     번호는 **장부 행의 값**에서 계상한다 — 행의 slot 경로(`work/<repo>_<N>`)와 행의 session
-    (`<repo>_<N>`) 양쪽(`_row_slot_numbers`). 경로에 번호가 없는 행(PM 홈 자신을 가리키는
-    `slot="."` 행 등)도 session 값으로 자기 번호를 점유하므로, 번호 조회/충돌 회피가 그 행을
-    빠뜨리지 않는다. `state` 가 `"leased"` 인 엔트리만 센다 — **`state` 키 부재는 `"leased"` 로
+    (`<repo>_<N>`) 양쪽(`_row_slot_numbers`). 경로에 번호가 없는 행도 session 값으로 자기
+    번호를 점유하므로, 번호 조회/충돌 회피가 그 행을 빠뜨리지 않는다. `state` 가 `"leased"` 인 엔트리만 센다 — **`state` 키 부재는 `"leased"` 로
     back-compat**(`worktree_pool.from_dict` default 동형·`leased_sessions` 와의 의도된 비대칭은
     위 docstring 참고). 같은 번호의 중복 장부 엔트리는 dedup(정렬된 unique 목록).
 
@@ -897,7 +904,7 @@ def resolve_actor_slot(repo: str, leases_file: Path) -> str | None:
 # 슬롯의 **정체성 키**(`.local/slots/<키>/pm_state.md` 디렉토리 · log 헤더 태그 `(<키>)` ·
 # handoff ack 토큰)를 한 지점에서 해소한다. 지금까지는 소비 지점마다 경로 basename 을 각자
 # 파싱했고(`pm_handoff._parse_worktree_slot`·`worktree_pool.slot_pm_state_file`), 그래서 경로에
-# 이름이 없는 슬롯(PM 홈 자신을 가리키는 행 `slot="."`)은 어느 소비자도 해소하지 못했다.
+# 이름이 없는 슬롯(경로 마디가 없는 행)은 어느 소비자도 해소하지 못했다.
 
 IDENTITY_FROM_LEDGER_SESSION = "ledger-session"   # 장부 행 session 값이 정체성을 줬다.
 IDENTITY_FROM_SLOT_PATH = "slot-path"             # 장부 정체성 부재 — pool 명명 규약(경로 마디).

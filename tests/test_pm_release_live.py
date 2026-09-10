@@ -687,8 +687,10 @@ def test_scenario_backbone_without_env_is_not_green(tmp_path):
     skip → 수집 passed 0≠pin → `status:fail` → not green. prefix 가 판정을 실제로 가름을 확인한다(이게
     없으면 LLM 이 prefix 를 빠뜨려도 green 나는 사용성 false-green). positive-control(위)의 대(對)."""
     home = _setup_home(tmp_path, "claude")
+    readonly = _prepare_release_readonly(home)
     pin = _home_livegate_pin(home)
-    proc = _run_livegate_record(home, live_env=False)
+    # 좌표는 positive-control 과 같게 명시한다 — 가르는 축은 env prefix 하나다.
+    proc = _run_livegate_record(home, live_env=False, release_cwd=readonly)
     lg = _read_livegate(home)
     assert not _livegate_is_green(home, pin), (
         f"prefix 없이도 green 이 나옴(prefix gate 미작동·사용성 false-green 미차단) — 기록={lg}.\n"

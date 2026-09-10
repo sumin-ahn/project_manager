@@ -21,6 +21,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from _slot_seed import fake_slot_path
+
 
 def _idle_lease(slot: str):
     """0단계(T-0351) 실재 검사 통과용 idle 리스 시드 — phase-0 는 slot/state/session/extra 만 읽는다."""
@@ -251,7 +253,7 @@ class FakePool:
         return self._branch
 
     def slot_path(self, slot):
-        return Path("/tmp/multipm") / slot
+        return fake_slot_path(slot)
 
     def slot_status(self, slot, *, git_runner=None):
         self.slot_status_calls.append(slot)
@@ -272,7 +274,7 @@ class FakePoolNoStatus:
         return "a5"
 
     def slot_path(self, slot):
-        return Path("/tmp/multipm") / slot
+        return fake_slot_path(slot)
 
 
 def _slot_status_obj(wp, *, upstream="origin/a5", upstream_ok=True, submodules=None):

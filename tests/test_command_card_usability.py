@@ -103,11 +103,11 @@ _HELP_FLAG_RE = re.compile(r"(?<![\w-])(?:--help|-h)(?![\w-])")
 
 
 # ── 부트스트랩 카드 렌더 (LLM 아님·순수 엔진 재현) ──────────────────────────────
-def _home_slot_identity(home: Path) -> dict | None:
+def _slot_identity(home: Path) -> dict | None:
     """home 의 lease 장부 행 → 카드 정체성 dict (행이 없으면 None).
 
-    fresh 채택자는 import 가 홈 자신을 첫 슬롯 행으로 등록하므로, 라이브 프롬프트가 받는 카드도
-    **그 행의 실값**으로 렌더돼야 실제 채택자가 보는 카드와 같다(정체성을 지어내지 않는다).
+    라이브 프롬프트가 받는 카드도 장부 **행의 실값**으로 렌더돼야 실제 채택자가 보는 카드와
+    같다(정체성을 지어내지 않는다). 행이 없으면 미해소 형태 그대로 렌더한다.
     """
     ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
     if not ledger.is_file():
@@ -140,7 +140,7 @@ def _render_command_card(home: Path) -> str:
     spec = importlib.util.spec_from_file_location(f"_card_bootstrap_{abs(hash(str(path)))}", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.PmBootstrap()._build_command_card_markdown(_home_slot_identity(home))
+    return mod.PmBootstrap()._build_command_card_markdown(_slot_identity(home))
 
 
 def _usability_prompt(card: str) -> str:

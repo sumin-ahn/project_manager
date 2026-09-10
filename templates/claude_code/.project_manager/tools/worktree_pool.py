@@ -1230,11 +1230,6 @@ def _frozen_fallback_label(ref: str) -> str:
 
 # ── 슬롯 네이밍 ──────────────────────────────────────────────────────────────
 
-# PM 홈 자신을 가리키는 슬롯 값. `Path(REPO) / "."` 를 pathlib 이 `REPO` 로 접으므로 경로를
-# 내는 소비자(회귀 cwd·라이브 게이트 cwd·prune 의 dir 존재 검사)가 홈 자신을 얻는다. 슬롯을
-# 하나만 쓰는 홈은 이 값으로 등록된 N=1 슬롯이고, 그 위에 별도 형상 개념이 없다.
-HOME_SLOT = "."
-
 
 def _slot_for(repo: str, n: int) -> str:
     """슬롯 식별자 `work/<repo>_<N>`."""
@@ -3880,81 +3875,6 @@ def bind_slot(slot: str, repo: str, session: str, *, git_runner: GitRunner | Non
         return target
 
 
-# `register_home_slot` 판정값 — 호출부(init·엔진 흡수)가 안내 문구를 고르는 축.
-HOME_SLOT_REGISTERED = "registered"      # 이번 호출이 홈 행을 기록했다.
-HOME_SLOT_ROWS_PRESENT = "rows-present"  # 이미 행이 있다 — 무기록(멱등).
-HOME_SLOT_REPOS_NOT_ONE = "repos-not-one"  # 등록 repo 가 1개가 아니라 대상을 특정할 수 없다.
-
-
-def register_home_slot(*, board=None, write: bool = True) -> "tuple[str, str]":
-    """PM 홈 자신을 `HOME_SLOT` 행으로 등록한다 — `(판정, 상세)`.
-
-    슬롯을 하나만 쓰는 홈도 다른 홈과 같은 장부 행으로 자기 정체성을 갖는다. 행이 없으면
-    정체성 해소가 미등록으로 떨어지고, 소비자마다 "행이 없으니 이 홈일 것"이라는 추론이
-    필요해진다 — 그 추론 대신 행 하나를 둔다.
-
-    발화 조건은 **등록 repo 정확히 1개 && 장부 행 0개** 다. 행이 이미 있으면(어떤 상태든)
-    장부를 **읽기만** 한다(멱등 — 재실행이 byte 를 바꾸지 않는다). 등록 repo 가 0개/2개 이상
-    이면 어느 repo 의 슬롯인지 지어낼 수 없으므로 무기록하고 그 사실을 돌려준다.
-
-    세션 값은 `<repo>_1` — 슬롯 1번의 canonical 키다. `bound=True` 는 `reclaim_stale` 제외
-    마커다: 등록을 수행한 세션이 끝나면 그 pid 도 죽으므로, 마커가 없으면 다음 `alloc` 이 이
-    행을 stale 로 오판해 idle 화한다. 장부 손상은 `_read_ledger_strict` 가 전파한다(조용한
-    덮어쓰기 금지).
-
-    `write=False` 는 같은 판정을 내되 장부를 건드리지 않는다(미리보기 — 판정과 write 를 다른
-    규칙으로 두면 미리보기가 실제와 갈린다).
-    """
-    repos = sorted(_registered_repos_for_session(board=board))
-    if len(repos) != 1:
-        return HOME_SLOT_REPOS_NOT_ONE, ", ".join(repos) or "(없음)"
-    repo = repos[0]
-    session = f"{repo}_1"
-    with _lease_lock():
-        existing = _read_ledger_strict()
-        if existing:
-            return HOME_SLOT_ROWS_PRESENT, ", ".join(sorted(l.slot for l in existing))
-        if write:
-            lease = Lease(
-                slot=HOME_SLOT,
-                repo=repo,
-                session=session,
-                pid=_session_pid(),
-                started=_now_utc(),
-                state="leased",
-                bound=True,
-            )
-            _write_ledger([lease])
-    return HOME_SLOT_REGISTERED, session
-
-
-def home_slot_registration_note(status: str, detail: str, *,
-                                write: bool = True) -> "tuple[str, bool] | None":
-    """`register_home_slot` 판정 → `(사람이 읽는 한 줄, stderr 여부)` · 무소식이면 `None`.
-
-    문구를 호출부(셋업·엔진 흡수)마다 다시 쓰지 않도록 판정 생산자가 함께 소유한다. 이미
-    행이 있는 홈은 정상 흐름이라 조용하다.
-    """
-    if status == HOME_SLOT_REGISTERED:
-        if not write:
-            return (
-                f"[dry-run] 이 홈을 첫 슬롯 행으로 등록 예정 (session={detail}).",
-                False,
-            )
-        return (
-            f"✓ 이 홈을 첫 슬롯 행으로 등록했다 (session={detail}) — 세션 정체성이 장부 "
-            "행에서 온다.",
-            False,
-        )
-    if status == HOME_SLOT_REPOS_NOT_ONE:
-        return (
-            f"  ⚠ 홈 슬롯 미등록 — areas.md 등록 repo 가 1개가 아니다({detail}). 귀속 조작은 "
-            "`--repo <repo> --slot <N>` 로 세션을 명시하라.",
-            True,
-        )
-    return None
-
-
 def list_leases() -> list[Lease]:
     """현재 리스 장부 전체를 읽어 반환한다 (조회·진단용·pm-config status)."""
     with _lease_lock():
@@ -5457,8 +5377,8 @@ def _branch_checked_out_elsewhere(branch: str, slot: str, *,
     git_runner(슬롯이 속한 repo 전체를 보는 `worktree list`라 어느 worktree cwd 로 불러도 같은
     목록이 나온다·DI seam 유지)로 조회해, 대상 브랜치를 보유한 bare-아닌 엔트리 중 **self 가
     아닌** 것을 찾는다. self 판정은 슬롯 id 가 아니라 **경로 값**(`slot_path(slot)` vs porcelain
-    경로, 둘 다 `resolve()`)으로 한다 — `HOME_SLOT="."` 채택자(`slot_path(".")` = `REPO`)가
-    `_slot_from_worktree_path` 로는 슬롯 식별이 안 돼도 값 비교로는 정확히 self 로 잡힌다.
+    경로, 둘 다 `resolve()`)으로 한다 — 장부 슬롯 값이 `_slot_from_worktree_path` 로 되짚어지지
+    않는 경우에도 값 비교로는 정확히 self 로 잡힌다.
 
     fail-open: `worktree list` 호출 실패·rc≠0·예외는 None(판정 생략) — 이 선-검사가 fail-open
     해도 `_checkout` 프리미티브(`-b` 고정)가 기존 브랜치 리셋을 막는 최종 방어선이다(불변식 4·
@@ -6005,35 +5925,6 @@ def _leased_sessions() -> list[str]:
             if sess:
                 sessions.append(sess)
     return sessions
-
-
-def _registered_repos_for_session(*, board=None) -> "set[str]":
-    """areas.md 등록 repo 집합 — 홈 슬롯 등록(`register_home_slot`)의 대상 판정 입력.
-
-    `_load_board()`(보호목록 조회 `_resolve_protected` 와 동형의 단방향 sibling 로더)로 조회한다
-    — board 부재/`registered_repos` 헬퍼 부재/파싱 실패는 빈 set(fail-soft — 등록이 안전하게
-    무기록으로 접힌다. 확정 오류로 호출 전체를 죽이지 않는다).
-
-    hermetic 테스트가 이 모듈의 `REPO` 만 tmp 로 재배선하고 `board` 를 주입하지 않으면, 동적
-    로드된 실 board.py 는 **자신의** `__file__` 기준 REPO(=이 저장소의 실 루트)를 써서 tmp REPO
-    와 갈린다 — 그 상태로 `registered_repos()` 를 부르면 실 areas.md 가 hermetic 테스트로
-    샌다. REPO 불일치 시 빈 set 으로 접어 그 오염을 막는다(`pm_config.
-    _refresh_protected_gate_contracts` 의 동일 REPO 대조 가드와 동형).
-    """
-
-    board_mod = board if board is not None else _load_board()
-    registered = getattr(board_mod, "registered_repos", None) if board_mod else None
-    if registered is None:
-        return set()
-    board_repo = getattr(board_mod, "REPO", REPO)
-    if Path(board_repo).resolve() != REPO.resolve():
-        return set()
-    try:
-        return set(registered())
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 유도 실패는 미발화(다음 tail 로).
-        if _is_engine_rev_skew(exc):
-            raise
-        return set()
 
 
 def _default_session() -> str:

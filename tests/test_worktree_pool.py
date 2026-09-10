@@ -1329,7 +1329,7 @@ def test_shared_pid_alive_windows_uses_query_handle_and_absorbs_oserror(wp):
 # ════════════════════════════════════════════════════════════════════════
 
 _PID_RECORDING_FUNCTIONS = (
-    "bind_task", "alloc", "create_slot", "bind_slot", "register_home_slot",
+    "bind_task", "alloc", "create_slot", "bind_slot",
 )
 # `os.getpid()` 가 남아도 되는 유일한 자리 — 세션 *이름* 조립(점유 pid 가 아니다).
 _SELF_PID_ALLOWED_FUNCTIONS = ("_default_session",)
@@ -2308,46 +2308,6 @@ def _board_stub(repo_names, *, repo_path):
         "REPO": repo_path,
         "registered_repos": staticmethod(lambda: names),
     })()
-
-
-def test_registered_repos_for_session_reads_board_registered_repos(wp, proj):
-    board = _board_stub({"A"}, repo_path=proj)
-    assert wp._registered_repos_for_session(board=board) == {"A"}
-
-
-def test_registered_repos_for_session_repo_mismatch_returns_empty(wp, proj, tmp_path):
-    """hermetic 오염 가드 — board 대역의 REPO 가 이 모듈의 REPO(=proj)와 다르면 빈 set.
-
-    실 board.py 를 `_load_board()` 로 동적 로드하면 그 board 는 **자신의** `__file__` 기준
-    REPO(=이 저장소 실 루트)를 쓴다 — `wp.REPO` 만 tmp 로 재배선한 hermetic 테스트에서 이 가드가
-    없으면 실 areas.md 가 샌다."""
-    board = _board_stub({"A"}, repo_path=tmp_path / "other-root")
-    assert wp._registered_repos_for_session(board=board) == set()
-
-
-def test_registered_repos_for_session_board_absent_returns_empty(wp, monkeypatch):
-    monkeypatch.setattr(wp, "_load_board", lambda: None)
-    assert wp._registered_repos_for_session() == set()
-
-
-def test_registered_repos_for_session_ordinary_failure_returns_empty(wp, proj):
-    board = type("_BoomBoard", (), {
-        "REPO": proj,
-        "registered_repos": staticmethod(
-            lambda: (_ for _ in ()).throw(RuntimeError("areas parse failure"))),
-    })()
-    assert wp._registered_repos_for_session(board=board) == set()
-
-
-def test_registered_repos_for_session_rethrows_marked_engine_rev_skew(wp, proj):
-    skew = RuntimeError("injected engine rev skew")
-    skew._engine_rev_skew = True
-    board = type("_SkewBoard", (), {
-        "REPO": proj,
-        "registered_repos": staticmethod(lambda: (_ for _ in ()).throw(skew)),
-    })()
-    with pytest.raises(RuntimeError, match="engine rev skew"):
-        wp._registered_repos_for_session(board=board)
 
 
 def test_default_session_no_rows_does_not_derive_from_registration(wp, proj, monkeypatch):
@@ -7166,19 +7126,6 @@ def test_switch_self_held_branch_passes_hermetic(wp):
     git = _SwitchGit(head="task/main", head_sha=_NEW_SHA, refs=["task/main"],
                      worktree_list_porcelain=porc)
     result = wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
-    assert result.created is False
-    assert wp.list_leases()[0].git["branch"] == "task/main"
-
-
-def test_switch_home_slot_self_held_branch_passes_hermetic(wp):
-    """(항목2) `HOME_SLOT="."` 채택자가 이미 보유한 브랜치로의 재-switch 통과 — 슬롯 id 가 아니라
-    `slot_path(slot)` 경로 값으로 self 판정(`_slot_from_worktree_path` 는 홈을 None 으로 돌려
-    슬롯 id 비교였다면 false-block 이 났을 형상)."""
-    _switch_lease(wp, slot=".", branch="task/main", head="task/main")
-    porc = _porcelain((str(wp.REPO), "task/main"))
-    git = _SwitchGit(head="task/main", head_sha=_NEW_SHA, refs=["task/main"],
-                     worktree_list_porcelain=porc)
-    result = wp.switch(".", "task/main", protected=["main"], git_runner=git)
     assert result.created is False
     assert wp.list_leases()[0].git["branch"] == "task/main"
 

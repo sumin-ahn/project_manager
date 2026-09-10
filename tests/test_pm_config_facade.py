@@ -1434,14 +1434,14 @@ def test_repo_add_invalid_name_rejected_no_side_effects(pc, tmp_path, capsys, ba
 
 def test_repo_add_unbound_session_owner_fail_loud_no_side_effects(
         pc, tmp_path, monkeypatch, capsys):
-    """미바인딩 세션 + --owner 미지정 → owner 미해소 fail-loud(rc 1)·부작용 0 (ADR-0040 D1).
+    """user 정체성 미해소 + --owner 미지정 → owner 미해소 fail-loud(rc 1)·부작용 0.
 
-    _default_session None(leased ≥2·무바인딩)을 그대로 areas_append 에 넘기면 board 가 owner 를
-    문자열 "None" 으로 areas.md 에 기록(귀속 쓰기 누출) — 그 전에 clone/등록/훅 없이 차단한다
-    (board.cmd_init owner required=True 와 동형). status/whoami surface 테스트가 못 잡던 *쓰기*
-    경로 회귀 핀(codex must-fix).
+    None 을 그대로 areas_append 에 넘기면 board 가 owner 를 문자열 "None" 으로 areas.md 에
+    기록(귀속 쓰기 누출) — 그 전에 clone/등록/훅 없이 차단한다(board.cmd_init owner
+    required=True 와 동형). status/whoami surface 테스트가 못 잡던 *쓰기* 경로 회귀 핀.
     """
-    _bind_tmp_repo(pc, monkeypatch, tmp_path)   # local.conf·장부 없음 → _default_session None
+    _bind_tmp_repo(pc, monkeypatch, tmp_path)   # local.conf 없음 → identity.user 없음
+    monkeypatch.setattr(pc, "_git_config_email", lambda: None)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     board = FakeBoard(registered=())

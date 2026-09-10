@@ -1682,18 +1682,18 @@ def cmd_repo_add(
             )
             return 1
 
-    # owner = areas.md 등록 식별자(registrant·**귀속 쓰기**) — 미해소면 fail-loud
-    # (**어떤 부작용(bare clone·areas_append·훅 설치)보다 앞에서**·board.cmd_init owner 와 동형·
-    # _default_session 이 미바인딩(leased ≥2·무바인딩)에서 None 을 돌려주므로,
-    # 그대로 areas_append 에 넘기면 board 가 owner 를 문자열 "None" 으로 areas.md 에 누출한다 —
-    # 그 전에 차단한다. `repo add` 의 정체성 인자는 `--owner <id>` 뿐
-    # 존재하지 않는 `--session` 을 안내하던 오안내를 제거) — 명시하거나 세션을 바인딩하라.
-    owner = args.owner or _default_session()
+    # owner = areas.md 등록 식별자(registrant) — **사람** 차원이다. 슬롯 세션에서 유도하지
+    # 않는다: 등록은 어느 슬롯에서 쳤는지와 무관하고, 작업 폴더가 아직 없는 홈(첫 등록)에서는
+    # 세션이 아예 없다. 값의 단일 진실은 `identity.user`(없으면 git user.email)이고 그 선언을
+    # 그대로 쓴다(`_default_user`·`board.user_name` 동형). `--owner` 명시는 종전대로 이긴다.
+    # 미해소면 fail-loud — **어떤 부작용(bare clone·areas_append·훅 설치)보다 앞에서** 차단한다
+    # (그대로 넘기면 board 가 owner 를 문자열 "None" 으로 areas.md 에 누출한다).
+    owner = args.owner or _default_user()
     if not owner:
         print(
-            "[중단] 등록 owner 미해소 — 활성 슬롯이 여럿이거나 세션 바인딩이 없다. "
-            "`--owner <id>` 로 등록 식별자를 명시하거나 세션을 바인딩(단일 활성 슬롯/"
-            "`$PM_SESSION_NAME`)하라 (clone/등록/훅 전혀 하지 않았다).",
+            "[중단] 등록 owner 미해소 — `identity.user` 도 git user.email 도 없다. "
+            "`--owner <id>` 로 등록 식별자를 명시하거나 `local.conf` 에 `identity.user=` 를 "
+            "적어라 (clone/등록/훅 전혀 하지 않았다).",
             file=sys.stderr,
         )
         return 1
@@ -3835,31 +3835,7 @@ def cmd_init(
     # 에서 "pm-config init" 로 자동 파생돼 에이전트가 칠 실 커맨드와 정합(파일명 leak 0).
     with _forwarded_prog({"board.py": _FACADE_PROG}):
         rc = board_mod.main(["init", *forward_args])
-    if rc != 0:
-        return rc
-    # 셋업 말미에 이 홈 자신을 첫 슬롯 행으로 등록한다 — 정체성이 장부 행에서 오므로,
-    # 슬롯을 하나만 쓰는 홈도 그 행이 있어야 세션이 해소된다. 멱등(행이 있으면 무기록).
-    register_home_slot()
-    return 0
-
-
-def register_home_slot(*, worktree_pool=None, write: bool = True) -> str | None:
-    """홈 슬롯 등록 위임 + 안내 1줄 — 장부 writer 는 worktree_pool 단일 진실이다.
-
-    판정 문구도 그 모듈이 소유한다(호출부 재타이핑 0). 엔진 사본 부재/로드 실패/구버전
-    사본은 `None`(안내 생략) — 셋업·흡수의 부수 단계이지 그 자체가 실패 사유는 아니다.
-    반환값은 낸 판정(테스트가 무엇이 일어났는지 대조하는 축)이다.
-    """
-    pool = worktree_pool if worktree_pool is not None else _load_module(
-        "worktree_pool", "worktree_pool.py")
-    if pool is None or not hasattr(pool, "register_home_slot"):
-        return None
-    status, detail = pool.register_home_slot(write=write)
-    note = pool.home_slot_registration_note(status, detail, write=write)
-    if note is not None:
-        text, to_stderr = note
-        print(text, file=sys.stderr if to_stderr else sys.stdout)
-    return status
+    return rc
 
 
 def cmd_add_harness(

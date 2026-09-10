@@ -32,6 +32,8 @@ from pathlib import Path
 
 import pytest
 
+from _slot_seed import fake_slot_path
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -559,7 +561,7 @@ class _FakeWorktreePool:
         return self._branch
 
     def slot_path(self, slot):
-        return Path("/tmp/multipm") / slot
+        return fake_slot_path(slot)
 
 
 def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None):

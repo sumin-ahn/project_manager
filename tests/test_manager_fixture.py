@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from _manager_home import git_required, make_pm_home, pm_config
+from _manager_home import git_required, make_bare_with_tags, make_pm_home, pm_config
 
 REPO = Path(__file__).resolve().parents[1]
 FIXTURES = REPO / "manager" / "ui" / "src" / "fixtures"
@@ -34,7 +34,12 @@ def sample() -> dict:
 @pytest.fixture(scope="module")
 def live(tmp_path_factory) -> dict:
     """그 자리에서 만든 실 PM 홈의 실 산출 — 무거운 절 둘 다 붙인다."""
-    home = make_pm_home(tmp_path_factory.mktemp("fixture-home") / "demo")
+    root = tmp_path_factory.mktemp("fixture-home")
+    bare = make_bare_with_tags(root / "remote")
+    home = make_pm_home(root / "demo")
+    # 슬롯 절은 작업 폴더가 있어야 행이 생긴다 — 실 명령으로 하나 만든다.
+    pm_config(home, "repo", "add", "app", "--git", str(bare))
+    pm_config(home, "worktree", "add", "app", "--user-ack", "app")
     pm_config(home, "task", "new", "demo")
     subprocess.run(
         [sys.executable, str(home / ".project_manager" / "tools" / "board.py"), "new",
