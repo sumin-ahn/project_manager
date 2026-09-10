@@ -1,9 +1,9 @@
-"""회귀 FULL 게이트 수집 하한 가드 (T-0581) — 부분수집 false-green 차단.
+"""회귀 FULL 게이트 수집 개수 — 직전 기록 대비 증감 표시(T-project_manager-004).
 
-엔진 회귀 게이트는 rc5(수집 0)만 결함 신호로 봤고, **부분 수집**(rc0 인데 cwd/pythonpath 파손으로
-스위트 일부만 돎)은 pass 로 기록했다. 채택자가 로컬 패치로 유지하던 하한 가드를 엔진이 흡수한다 —
-local.conf `regression.min_collected`(기본 0 = off) 미만이면 FULL 게이트를 `fail` + 전용 라벨
-`partial-collection` 으로 강등하고, check(pre-push)가 그 사유를 실어 push 를 막는다.
+선언 하한(`regression.min_collected`)은 폐지했다. 채택자 선언값이 실측의 절반에 머물러 스위트
+절반이 사라져도 통과하던 느슨한 안심을 버리고, FULL 게이트가 직전 회귀 기록의 수집수와 이번
+수집수의 증감을 회귀 줄에 함께 낸다 — 변화율 1% 이상이면 눈에 띄게 적되 **아무것도 막지
+않는다**(판단은 사람이 한다). 수집 0(rc=5)과 선언 platform 의 수집수 검증 불가는 그대로 red 다.
 
 **hermetic 필수**: board.py 의 경로 전역(`REPO`·`LOCAL_CONF`·`LOCAL_DIR`·`REGRESSION_FLAG`·
 `LEASES_FILE`)은 import 시점에 실 repo 절대경로로 굳는다 — tmp 프로젝트로 monkeypatch 재지정해
@@ -151,7 +151,7 @@ class _FakeProc:
 class _FakeRun:
     """board.subprocess.Popen 대역 — 고정 rc + 스트림 출력을 돌려주고 호출 kwargs 를 기록한다.
 
-    수집 하한 가드는 *실행 출력의 pytest 요약행*을 읽으므로 대역도 stdout 을 실어야 한다
+    수집 증감 표시는 *실행 출력의 pytest 요약행*을 읽으므로 대역도 stdout 을 실어야 한다
     (실 pytest 미기동). `stderr` 는 **파싱이 stdout 단독인지** 보는 함정용이다 — 합쳐서 읽으면
     stderr 로그의 카운트 문자열이 요약행 행세를 해 수집수를 오염시킨다. cwd 별 rc/출력 분기는
     M>1 슬롯 순회 테스트가 쓴다.
@@ -177,21 +177,11 @@ def _run_args(**over):
     return argparse.Namespace(**base)
 
 
-def _set_floor(board, value, tree: Path | None = None) -> None:
-    """수집 하한을 선언한다 — 기본은 이 board 사본의 `LOCAL_CONF`, `tree` 주면 그 트리의 conf.
-
-    회귀가 도는 트리(run cwd)가 앵커이므로, 앵커 검증 테스트는 `tree` 로 다른 트리에 심는다.
-    """
-    conf = (tree / ".project_manager" / "local.conf") if tree else board.LOCAL_CONF
-    conf.parent.mkdir(parents=True, exist_ok=True)
-    conf.write_text(f"regression.min_collected={value}\n", encoding="utf-8")
-
-
 def _flag(board) -> dict:
     return json.loads(board.REGRESSION_FLAG.read_text(encoding="utf-8"))
 
 
-def _write_flag(board, *, status: str, rc, collected=None, floor=None,
+def _write_flag(board, *, status: str, rc, collected=None, previous_collected=None,
                 head: str = "deadbeef01234567", **extra) -> None:
     """공유 회귀 플래그를 직접 심는다 (check 판정의 baseline 주입).
 
@@ -200,7 +190,7 @@ def _write_flag(board, *, status: str, rc, collected=None, floor=None,
     board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
     board.REGRESSION_FLAG.write_text(json.dumps(
         {"head": head, "status": status, "rc": rc, "scope": "full",
-         "collected": collected, "floor": floor,
+         "collected": collected, "previous_collected": previous_collected,
          "ts": "2026-08-07T00:00:00+00:00", **extra}), encoding="utf-8")
 
 
@@ -217,7 +207,7 @@ def _without_suite(board) -> None:
 
 
 def _set_platforms(board, declaration="windows", **commands) -> None:
-    lines = [f"qa.platforms={declaration}", "regression.min_collected=2"]
+    lines = [f"qa.platforms={declaration}"]
     lines.extend(f"test.{name}.cmd={command}" for name, command in commands.items())
     board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
     board.LOCAL_CONF.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -260,7 +250,8 @@ def test_no_platform_full_keeps_one_child_and_legacy_flat_record_shape(
     assert board.cmd_regression(_run_args(final=True)) == 0
     assert len(calls) == 1
     assert set(_flag(board)) == {
-        "head", "status", "rc", "scope", "collected", "floor", "conf_anchor", "ts",
+        "head", "status", "rc", "scope", "collected", "previous_collected",
+        "conf_anchor", "ts",
     }
 
 
@@ -287,8 +278,8 @@ def test_declared_platforms_run_after_core_in_order_with_exact_env_and_record(
             for call in calls[1:]] == [("linux-arm", head), ("windows", head)]
     evidence = _flag(board)
     assert set(evidence) == {
-        "head", "status", "rc", "scope", "collected", "floor", "conf_anchor", "ts",
-        "platforms",
+        "head", "status", "rc", "scope", "collected", "previous_collected",
+        "conf_anchor", "ts", "platforms",
     }
     assert [cell["name"] for cell in evidence["platforms"]] == ["linux-arm", "windows"]
     assert evidence["status"] == "pass"
@@ -304,7 +295,7 @@ def test_platform_record_validator_owns_top_level_status_check(board):
     commands = board._platform_test_commands(str(board.REPO))
     record = {
         "head": "deadbeef01234567", "status": "fail", "rc": 0,
-        "scope": "full", "collected": 3, "floor": 2,
+        "scope": "full", "collected": 3, "previous_collected": None,
         "conf_anchor": str(board.REPO.resolve()),
         "ts": "2026-08-29T00:00:00+00:00",
         "platforms": [{
@@ -319,7 +310,7 @@ def test_platform_record_validator_owns_top_level_status_check(board):
     ) == "aggregate status mismatch"
 
 
-def test_platform_core_without_summary_is_unverified_even_when_floor_is_off(
+def test_platform_core_without_summary_is_unverified(
         board, monkeypatch, capsys):
     board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
     board.LOCAL_CONF.write_text(
@@ -337,7 +328,7 @@ def test_platform_core_without_summary_is_unverified_even_when_floor_is_off(
     evidence = _flag(board)
     assert evidence["status"] == "fail"
     assert evidence["rc"] == board.REGRESSION_RC_UNVERIFIED_COLLECTION
-    assert evidence["collected"] is None and evidence["floor"] == 0
+    assert evidence["collected"] is None and evidence["previous_collected"] is None
     assert evidence["platforms"][0]["status"] == "not-run"
 
     capsys.readouterr()
@@ -375,7 +366,7 @@ def test_multi_slot_platform_core_without_summary_uses_the_same_unverified_contr
 
 @pytest.mark.parametrize(("core_rc", "core_stdout", "expected_rc"), (
     (5, "no tests ran in 0.01s\n", 5),
-    (0, "1 passed in 0.01s\n", "partial-collection"),
+    (1, "1 failed, 2 passed in 0.01s\n", 1),
 ))
 def test_platform_core_red_preserves_core_reason_in_run_and_check(
         board, monkeypatch, capsys, core_rc, core_stdout, expected_rc):
@@ -441,7 +432,7 @@ def test_duplicate_platform_marker_member_is_invalid_for_run_and_check(
 
 
 @pytest.mark.parametrize("damage", (
-    "rc", "scope", "collected-bool", "collected-low", "timestamp", "schema",
+    "rc", "scope", "collected-bool", "previous-bad", "timestamp", "schema",
 ))
 def test_platform_check_rejects_corrupt_full_core_aggregate(
         board, monkeypatch, damage):
@@ -460,8 +451,8 @@ def test_platform_check_rejects_corrupt_full_core_aggregate(
         evidence["scope"] = "targeted"
     elif damage == "collected-bool":
         evidence["collected"] = True
-    elif damage == "collected-low":
-        evidence["collected"] = 1
+    elif damage == "previous-bad":
+        evidence["previous_collected"] = "많음"
     elif damage == "timestamp":
         evidence["ts"] = ""
     else:
@@ -542,7 +533,7 @@ def test_declaration_forces_implicit_full_instead_of_review_cycle_downgrade(
 
 
 def test_check_rejects_legacy_record_and_command_drift_after_declaration(board, monkeypatch):
-    _write_flag(board, status="pass", rc=0, collected=3, floor=0,
+    _write_flag(board, status="pass", rc=0, collected=3,
                 conf_anchor=str(board.REPO))
     _set_platforms(board, windows="run-windows")
     assert board.cmd_regression(argparse.Namespace(action="check")) == 1
@@ -612,7 +603,7 @@ def test_single_check_fails_closed_for_present_invalid_anchor(
         anchor = str(nongit)
     # empty anchor + empty fallback HEAD 동치도 green이 아니어야 한다.
     recorded_head = board._git_head() if anchor_kind == "empty" else target_head
-    _write_flag(board, status="pass", rc=0, collected=1, floor=0,
+    _write_flag(board, status="pass", rc=0, collected=1,
                 head=recorded_head, conf_anchor=anchor)
 
     assert board.cmd_regression(argparse.Namespace(action="check")) == 1
@@ -620,7 +611,7 @@ def test_single_check_fails_closed_for_present_invalid_anchor(
 
 
 def test_single_check_legacy_flag_without_conf_anchor_falls_back_to_repo(board):
-    _write_flag(board, status="pass", rc=0, collected=1, floor=0)
+    _write_flag(board, status="pass", rc=0, collected=1)
     assert "conf_anchor" not in _flag(board)
     assert board.cmd_regression(argparse.Namespace(action="check")) == 0
 
@@ -628,7 +619,7 @@ def test_single_check_legacy_flag_without_conf_anchor_falls_back_to_repo(board):
 def test_single_check_fails_closed_when_legacy_repo_head_is_unresolvable(
         board, monkeypatch, capsys):
     monkeypatch.setattr(board, "_git_head", lambda: "")
-    _write_flag(board, status="pass", rc=0, collected=1, floor=0, head="")
+    _write_flag(board, status="pass", rc=0, collected=1, head="")
     assert "conf_anchor" not in _flag(board)
 
     assert board.cmd_regression(argparse.Namespace(action="check")) == 1
@@ -714,121 +705,115 @@ def test_collected_count_none_when_no_summary(board):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ② conf 키 — 기본 0(off) · 채택자 opt-in · 비정수는 경고 후 off
+# ② 증감 문장 — 직전 기록 대비 (막지 않는 표시)
 # ════════════════════════════════════════════════════════════════════════
 
-def test_min_collected_default_off(board):
-    """local.conf 미설정 → 0 (가드 off·엔진은 보편 하한을 정하지 않는다)."""
-    assert board._regression_min_collected() == 0
+def test_collection_delta_text_is_empty_without_a_comparable_previous(board):
+    """직전 기록이 없거나 수집수를 못 읽으면 문장이 빈다 — 증감을 지어내지 않는다."""
+    assert board.collection_delta_text(13323, None) == ""
+    assert board.collection_delta_text(None, 13323) == ""
+    assert board.collection_delta_text(None, None) == ""
+    assert board.collection_delta_text(13323, True) == ""     # bool 은 정수 취급 금지.
 
 
-def test_min_collected_reads_conf(board):
-    """`regression.min_collected=7000` → 7000 (채택자가 자기 스위트 규모로 선언)."""
-    _set_floor(board, 7000)
-    assert board._regression_min_collected() == 7000
+def test_collection_delta_text_from_zero_previous_shows_difference_only(board):
+    """직전 0 이면 비율을 내지 않고 차이만 낸다 (0 나눗셈 금지)."""
+    assert board.collection_delta_text(12, 0) == " (직전 0 · +12)"
 
 
-def test_min_collected_malformed_warns_and_disables(board, capsys):
-    """비정수/음수 값 → 0(off) + 경고 1줄 (오타로 게이트가 조용히 죽지 않게)."""
-    _set_floor(board, "seven-thousand")
-    assert board._regression_min_collected() == 0
-    assert "regression.min_collected" in capsys.readouterr().err
-    _set_floor(board, -5)
-    assert board._regression_min_collected() == 0
-    assert "비정수/음수" in capsys.readouterr().err
+def test_collection_delta_text_below_threshold_has_no_alert(board):
+    """1% 미만 증감은 숫자만 — 정상 범위의 테스트 add/remove 에 소음을 내지 않는다."""
+    assert board.collection_delta_text(13334, 13323) == " (직전 13323 · +11)"
+    assert board.collection_delta_text(13312, 13323) == " (직전 13323 · -11)"
+
+
+def test_collection_delta_text_marks_one_percent(board):
+    """1% 이상 증감(증가·감소 모두)은 비율과 경고 표기를 단다 — 임계값은 상수 하나가 소유."""
+    assert board.COLLECTION_DELTA_ALERT_PCT == 0.01
+    assert board.collection_delta_text(13500, 13323) == " (직전 13323 · +177 · 1.3% ⚠)"
+    assert board.collection_delta_text(13300, 13500) == " (직전 13500 · -200 · 1.5% ⚠)"
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ③ FULL 게이트 run 강등 — rc0 인데 수집 < 하한 → fail(partial-collection)
+# ③ FULL 게이트 run — 증감을 표시하되 rc 는 바꾸지 않는다
 # ════════════════════════════════════════════════════════════════════════
 
-def test_run_below_floor_records_fail_and_check_blocks_push(
+def test_run_shows_delta_against_previous_record_without_blocking(
         board, monkeypatch, capsys):
-    """rc0 + 수집수 < 하한 → status fail 기록 · run rc1 · 후속 check rc1 (push 차단·DoD).
+    """직전 기록 대비 1% 이상 감소해도 rc0·pass 그대로이고 회귀 줄에만 증감이 붙는다.
 
-    부분 수집(cwd/pythonpath 파손으로 스위트 일부만 돎)이 pass 로 기록되던 false-green 을 닫는다.
+    하한 차단을 대체한 표시다 — 스위트가 줄어든 사실은 드러내되 판단은 사람이 한다.
     """
-    _set_floor(board, 7000)
+    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
+    assert board.cmd_regression(_run_args()) == 0
+    capsys.readouterr()
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="12 passed in 0.30s\n"))
-    assert board.cmd_regression(_run_args()) == 1
+
+    assert board.cmd_regression(_run_args()) == 0, "증감이 rc 를 바꿨다"
     data = _flag(board)
-    assert data["status"] == "fail", f"부분 수집이 pass 로 기록됨: {data!r}"
-    assert data["rc"] == board.REGRESSION_RC_PARTIAL_COLLECTION
-    assert data["collected"] == 12
+    assert data["status"] == "pass" and data["rc"] == 0
+    assert data["collected"] == 12 and data["previous_collected"] == 7577
     out = capsys.readouterr().out
-    assert "수집 12<하한 7000" in out
-    # pre-push 훅 채널 — 기록된 fail 을 check 가 RED 로 차단하고 사유를 드러낸다.
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
-    err = capsys.readouterr().err
-    assert "RED" in err
-    assert "rc=partial-collection" in err
-    assert "수집 12<하한 7000" in err
-    assert "push 차단" in err
-
-
-def test_run_at_floor_passes(board, monkeypatch):
-    """수집수 == 하한 → pass (경계는 `<` — 정당한 테스트 add/remove 에 false-RED 금지)."""
-    _set_floor(board, 7000)
-    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7000 passed in 140.00s\n"))
-    assert board.cmd_regression(_run_args()) == 0
-    data = _flag(board)
-    assert data["status"] == "pass"
-    assert data["rc"] == 0
-    assert data["collected"] == 7000
-
-
-def test_run_floor_zero_default_leaves_behavior_unchanged(board, monkeypatch, capsys):
-    """하한 0(기본·미설정) → 수집수가 아무리 적어도 현행 동작 무변경 (DoD).
-
-    엔진 기본은 off 다 — 하한은 스위트 규모의 함수라 보편값을 정할 수 없다.
-    """
-    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="3 passed in 0.10s\n"))
-    assert board.cmd_regression(_run_args()) == 0
-    data = _flag(board)
-    assert data["status"] == "pass"
-    assert data["rc"] == 0
-    assert data["collected"] == 3        # 진단용 기록은 하되 판정엔 안 쓴다.
-    out, err = capsys.readouterr()
-    assert "pass (rc=0)" in out
-    assert "하한" not in out and "하한" not in err
+    assert "pass (rc=0) (직전 7577 · -7565 · 99.8% ⚠)" in out
     assert board.cmd_regression(argparse.Namespace(action="check")) == 0
 
 
-def test_run_parse_failure_with_floor_records_unverified_and_blocks(
-        board, monkeypatch, capsys):
-    """파싱 실패 + 하한>0 → `unverified-collection` fail 기록·check 차단 (검증 못 한 결과는 pass 아님).
-
-    경고만 내고 pass 로 기록하면 "설정된 하한을 검증하지 못한 결과"가 push 를 통과해 이 가드가
-    막으려던 false-green 이 그대로 재도입된다(codex must-fix — 원 결정 뒤집음).
-    """
-    _set_floor(board, 7000)
-    _install_run(board, monkeypatch,
-                 _FakeRun(rc=0, stdout="[custom runner] everything ok\n"))
-    assert board.cmd_regression(_run_args()) == 1
+def test_run_without_previous_record_shows_no_delta(board, monkeypatch, capsys):
+    """첫 실행은 비교 대상이 없다 — 증감 문장 없이 현행 줄 그대로."""
+    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="3 passed in 0.10s\n"))
+    assert board.cmd_regression(_run_args()) == 0
     data = _flag(board)
-    assert data["status"] == "fail"
-    assert data["rc"] == board.REGRESSION_RC_UNVERIFIED_COLLECTION
-    assert data["collected"] is None
-    assert data["floor"] == 7000
-    assert "하한 7000 검증 불가" in capsys.readouterr().out
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
-    err = capsys.readouterr().err
-    assert "rc=unverified-collection" in err and "검증 불가" in err
+    assert data["status"] == "pass" and data["rc"] == 0
+    assert data["collected"] == 3 and data["previous_collected"] is None
+    out, err = capsys.readouterr()
+    assert "pass (rc=0) @" in out
+    assert "직전" not in out and "직전" not in err
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 0
 
 
-def test_run_parse_failure_without_floor_is_unchanged(board, monkeypatch, capsys):
-    """하한 off(기본)면 파싱 실패는 현행대로 pass — 미설정 채택자 동작·소음 0."""
+def test_two_consecutive_records_chain_the_previous_collected(board, monkeypatch):
+    """실 기록 파일 두 번 이어쓰기 — 뒤 기록의 `previous_collected` = 앞 기록의 `collected`."""
+    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
+    assert board.cmd_regression(_run_args()) == 0
+    first = _flag(board)
+    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7600 passed in 141.00s\n"))
+    assert board.cmd_regression(_run_args()) == 0
+    second = _flag(board)
+
+    assert first["collected"] == 7577 and first["previous_collected"] is None
+    assert second["collected"] == 7600
+    assert second["previous_collected"] == first["collected"]
+
+
+def test_failed_record_in_between_keeps_the_last_known_collected(board, monkeypatch):
+    """수집수를 못 담은 기록(실패)이 끼어도 기준점은 그 앞 성공값을 잇는다.
+
+    승계가 끊기면 실패 한 번에 기준점이 영구히 사라진다.
+    """
+    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
+    assert board.cmd_regression(_run_args()) == 0
+    _install_run(board, monkeypatch, _FakeRun(rc=1, stdout="[custom runner] boom\n"))
+    assert board.cmd_regression(_run_args()) == 1
+    middle = _flag(board)
+    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7600 passed in 141.00s\n"))
+    assert board.cmd_regression(_run_args()) == 0
+
+    assert middle["collected"] is None and middle["previous_collected"] == 7577
+    assert _flag(board)["previous_collected"] == 7577
+
+
+def test_run_parse_failure_is_pass_without_declared_platforms(board, monkeypatch, capsys):
+    """수집수를 못 읽어도 platform 미선언이면 현행대로 pass — 증감 문장만 빈다."""
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="[custom runner] ok\n"))
     assert board.cmd_regression(_run_args()) == 0
     data = _flag(board)
-    assert data["status"] == "pass" and data["collected"] is None and data["floor"] == 0
+    assert data["status"] == "pass" and data["collected"] is None
     out, err = capsys.readouterr()
-    assert "검증 불가" not in out + err
+    assert "검증 불가" not in out + err and "직전" not in out + err
 
 
 def test_run_real_red_keeps_its_rc(board, monkeypatch):
-    """실 red(rc≠0)는 하한 판정 대상이 아니다 — 기록 rc 는 그 rc 그대로(사유 구분 유지)."""
-    _set_floor(board, 7000)
+    """실 red(rc≠0)의 기록 rc 는 그 rc 그대로다 — 수집수는 판정에 관여하지 않는다."""
     _install_run(board, monkeypatch,
                  _FakeRun(rc=1, stdout="1 failed, 11 passed in 0.40s\n"))
     assert board.cmd_regression(_run_args()) == 1
@@ -837,138 +822,59 @@ def test_run_real_red_keeps_its_rc(board, monkeypatch):
     assert data["rc"] == 1
 
 
-def test_scoped_run_is_not_gated_by_floor(board, monkeypatch, capsys):
-    """스코프(touches) 실행은 하한 대상이 아니다 — 매칭분만 도는 게 정상(상시 false-RED 방지).
+def test_run_zero_collection_stays_red(board, monkeypatch, capsys):
+    """수집 0(rc=5)은 하한 폐지와 무관하게 그대로 red — 한 개도 안 돌았다는 별개 사실."""
+    _install_run(board, monkeypatch, _FakeRun(rc=5, stdout="no tests ran in 0.01s\n"))
+    assert board.cmd_regression(_run_args()) == 1
+    assert _flag(board)["status"] == "fail"
+    assert "수집 0" in capsys.readouterr().out
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
 
-    스코프는 dev 피드백 advisory 라 push 게이트 플래그도 안 쓴다(현행 유지).
-    """
-    _set_floor(board, 7000)
+
+def test_scoped_run_writes_no_record_and_no_delta(board, monkeypatch, capsys):
+    """스코프(touches) 실행은 기록을 읽지도 쓰지도 않는다 — 다른 축의 수집수를 빼지 않는다."""
+    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
+    assert board.cmd_regression(_run_args()) == 0
+    capsys.readouterr()
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
     assert board.cmd_regression(_run_args(touches="tests/test_board_regression.py")) == 0
-    assert not board.REGRESSION_FLAG.exists()
+
     out = capsys.readouterr().out
     assert "push 게이트 아님" in out
-    assert "하한" not in out
+    assert "직전" not in out
+    assert _flag(board)["collected"] == 7577, "스코프 실행이 FULL 기록을 덮었다"
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ③-b 하한 앵커 = 회귀를 도는 트리(run cwd) — 호출 사본 REPO 의 conf 가 새면 안 된다
+# ③-b check green 줄 — 기록을 읽는 자리라 같은 축끼리 견준다
 # ════════════════════════════════════════════════════════════════════════
 
-def test_floor_anchors_on_run_cwd_not_module_repo(board, monkeypatch, tmp_path, capsys):
-    """모듈 REPO conf 의 하한은 **다른 트리**의 회귀에 적용되지 않는다 (누출 차단).
-
-    두-git/multi-repo 홈에서 호출 사본 REPO 는 tests/ 없는 PM 홈이거나 남의 repo다 — 그 선언이
-    실행 트리에 새면 엉뚱한 스위트를 강등한다(개발 머신 conf 가 tmp 스텁 회귀를 깨뜨린 실측).
-    """
-    other_tree = tmp_path / "other"
-    other_tree.mkdir()
-    _set_floor(board, 999999)                        # 호출 사본(REPO) conf — 적용되면 안 됨.
-    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="12 passed in 0.30s\n"))
-    assert board.cmd_regression(_run_args(cwd=str(other_tree))) == 0
-    data = _flag(board)
-    assert data["status"] == "pass"
-    assert data["floor"] == 0                        # 실행 트리엔 선언이 없다.
-
-
-def test_floor_reads_declaration_of_the_tree_that_runs(board, monkeypatch, tmp_path):
-    """반대 방향 — 실행 트리(run cwd)의 선언은 REPO 에 없어도 적용된다."""
-    run_tree = tmp_path / "suite"
-    run_tree.mkdir()
-    _set_floor(board, 7000, tree=run_tree)           # 실행 트리에만 선언.
-    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="12 passed in 0.30s\n"))
-    assert board.cmd_regression(_run_args(cwd=str(run_tree))) == 1
-    data = _flag(board)
-    assert data["status"] == "fail"
-    assert data["rc"] == board.REGRESSION_RC_PARTIAL_COLLECTION
-    assert data["floor"] == 7000                     # 실행 당시 하한을 기록.
-
-
-# ════════════════════════════════════════════════════════════════════════
-# ③-c green 재사용 무효화 — 하한 신규/상향은 옛 green 을 통과시키지 않는다
-# ════════════════════════════════════════════════════════════════════════
-
-def test_check_invalidates_green_when_floor_raised(board, capsys):
-    """green 기록(수집 12) + 하한 신규 7000 → check 가 stale 로 재실행 요구 (통과 금지).
-
-    HEAD·status 만 보면 하한을 켠 뒤에도 옛 green 이 통과해 새 하한이 영영 미적용이다.
-    """
-    _write_flag(board, status="pass", rc=0, collected=12, floor=0)
-    _set_floor(board, 7000)
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
-    err = capsys.readouterr().err
-    assert "stale" in err and "현재 하한 7000" in err
-
-
-def test_check_keeps_green_when_evidence_satisfies_lowered_floor(board):
-    """기록 수집수가 현재 하한을 이미 만족하면 green 유지 — 하한 하향에 불필요한 재실행 0."""
-    _write_flag(board, status="pass", rc=0, collected=7577, floor=7500)
-    _set_floor(board, 7000)
+def test_check_green_line_shows_the_recorded_delta(board, capsys):
+    """check green 은 기록이 담은 증감을 그대로 낸다(재계산·재해소 없음)."""
+    _write_flag(board, status="pass", rc=0, collected=13500, previous_collected=13323)
     assert board.cmd_regression(argparse.Namespace(action="check")) == 0
+    assert "green @ deadbeef (직전 13323 · +177 · 1.3% ⚠) ✓" in capsys.readouterr().out
 
 
-def test_check_invalidates_green_without_collected_when_floor_active(board, capsys):
-    """수집수 미기록(옛 플래그) + 하한 활성 → 검증 불가라 stale (무한 재실행 없음: 재run 은 fail 기록)."""
-    _write_flag(board, status="pass", rc=0, collected=None, floor=None)
-    _set_floor(board, 7000)
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
-    assert "stale" in capsys.readouterr().err
-
-
-def test_check_old_flag_without_collected_passes_when_floor_off(board):
-    """하한 off 면 옛 플래그(수집수 필드 없음)도 그대로 green — 후방호환."""
-    _write_flag(board, status="pass", rc=0, collected=None, floor=None)
+def test_check_green_without_previous_has_no_delta(board, capsys):
+    """비교 대상이 없는 기록의 green 줄은 현행 모양 그대로."""
+    _write_flag(board, status="pass", rc=0, collected=13500)
     assert board.cmd_regression(argparse.Namespace(action="check")) == 0
+    out = capsys.readouterr().out
+    assert "green @ deadbeef ✓" in out and "직전" not in out
 
 
-def test_check_resolves_floor_from_recorded_anchor_not_check_cwd(
-        board, monkeypatch, tmp_path, capsys):
-    """`run --cwd A` 뒤의 check 는 **A 의** 하한으로 판정한다 — 훅은 `--cwd` 를 못 넘긴다.
-
-    check 가 자기 cwd 로 재해소하면 실행 트리(A)의 하한 상향을 놓쳐 옛 green 이 통과한다
-    (false-green·codex must-fix).
-    """
-    tree_a = tmp_path / "A"
-    tree_a.mkdir()
-    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="12 passed in 0.30s\n"))
-    assert board.cmd_regression(_run_args(cwd=str(tree_a))) == 0   # A 하한 0 → green.
-    assert _flag(board)["conf_anchor"] == str(tree_a)
-    _set_floor(board, 7000, tree=tree_a)      # 실행 트리(A)만 상향. check cwd(REPO)는 하한 0.
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
-    assert "현재 하한 7000" in capsys.readouterr().err
-
-
-def test_check_ignores_unrelated_floor_of_its_own_cwd(board, monkeypatch, tmp_path):
-    """반대 방향 — check 트리에만 있는 무관한 하한으로 막지 않는다(false-RED 차단)."""
-    tree_a = tmp_path / "A"
-    tree_a.mkdir()
-    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="12 passed in 0.30s\n"))
-    assert board.cmd_regression(_run_args(cwd=str(tree_a))) == 0
-    _set_floor(board, 9999)                   # check 자기 트리(REPO)에만 선언 — 무관.
+def test_check_old_flag_without_collected_is_green(board):
+    """수집수 없는 옛 플래그도 그대로 green — 수집수는 아무것도 막지 않는다."""
+    _write_flag(board, status="pass", rc=0, collected=None)
     assert board.cmd_regression(argparse.Namespace(action="check")) == 0
-
-
-def test_slot_state_uses_recorded_anchor_over_slot_cwd(multi_board, tmp_path):
-    """슬롯 판정도 기록된 conf 앵커를 우선한다 — 슬롯 cwd 와 다른 트리에서 돈 기록(`--cwd` 핀)."""
-    b = multi_board
-    pinned = tmp_path / "pinned"
-    pinned.mkdir()
-    _set_floor(b, 7000, tree=pinned)          # 앵커 트리만 상향.
-    flag = b._regression_flag_for("A_1")
-    flag.parent.mkdir(parents=True, exist_ok=True)
-    flag.write_text(json.dumps(
-        {"head": "HEAD_A", "status": "pass", "rc": 0, "scope": "full", "collected": 12,
-         "floor": 0, "conf_anchor": str(pinned), "session": "A_1",
-         "ts": "2026-08-07T00:00:00+00:00"}), encoding="utf-8")
-    assert b._regression_slot_state("A_1", _slot_cwd(b, "A_1")).state == "stale"
 
 
 def _seed_anchor_flag(board, anchor: Path, *, status="fail",
-                      rc=None, collected=12, floor=7000) -> None:
+                      rc=1, collected=12) -> None:
     """앵커가 박힌 공유 플래그를 심는다 (훅 `check || run` 재실행의 baseline)."""
-    _write_flag(board, status=status,
-                rc=(board.REGRESSION_RC_PARTIAL_COLLECTION if rc is None else rc),
-                collected=collected, floor=floor, conf_anchor=str(anchor))
+    _write_flag(board, status=status, rc=rc,
+                collected=collected, conf_anchor=str(anchor))
 
 
 def test_run_inherits_anchor_of_blocking_record(board, monkeypatch, tmp_path):
@@ -986,22 +892,11 @@ def test_run_inherits_anchor_of_blocking_record(board, monkeypatch, tmp_path):
     assert _flag(board)["conf_anchor"] == str(tree_a)   # 갱신도 같은 앵커.
 
 
-def test_run_inherits_anchor_of_floor_stale_green(board, monkeypatch, tmp_path):
-    """하한 미달 green(=check 가 stale 로 막는 기록)도 차단 기록 — 같은 앵커에서 재실행."""
-    tree_a = tmp_path / "A"
-    (tree_a / "tests").mkdir(parents=True)      # 그 트리가 회귀를 돌던 코드 트리다
-    _set_floor(board, 7000, tree=tree_a)
-    _seed_anchor_flag(board, tree_a, status="pass", rc=0, collected=12, floor=0)
-    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
-    assert board.cmd_regression(_run_args()) == 0
-    assert fake.calls[0]["kwargs"]["cwd"] == str(tree_a)
-
-
 def test_run_does_not_inherit_anchor_of_green_record(board, monkeypatch, tmp_path):
     """차단 기록이 아니면 이어받지 않는다 — 릴리즈 `--cwd <readonly>` 핀이 눌러붙지 않게."""
     tree_a = tmp_path / "A"
     tree_a.mkdir()
-    _seed_anchor_flag(board, tree_a, status="pass", rc=0, collected=7577, floor=0)
+    _seed_anchor_flag(board, tree_a, status="pass", rc=0, collected=7577)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
     assert board.cmd_regression(_run_args()) == 0
     assert fake.calls[0]["kwargs"]["cwd"] == str(board.REPO)
@@ -1038,15 +933,14 @@ def test_recorded_anchor_is_absolute(board, monkeypatch, tmp_path):
 
 
 def test_corrupt_collected_degrades_instead_of_crashing(board, monkeypatch, capsys):
-    """손상된 `collected`(문자열)는 비교에서 죽지 않고 검증 불가로 강등된다 (fail-soft).
+    """손상된 `collected`(문자열)는 산술에서 죽지 않고 증감 문장이 비는 것으로 끝난다.
 
-    정규화 없이 `<` 비교에 들어가면 TypeError 로 게이트 자체가 죽는다 — 장부 손상이 회귀
+    정규화 없이 뺄셈에 들어가면 TypeError 로 게이트 자체가 죽는다 — 장부 손상이 회귀
     해소를 깨면 안 된다는 기존 규율과 같은 축(codex suggestion).
     """
-    _set_floor(board, 7000)
-    _write_flag(board, status="pass", rc=0, collected="많음", floor=7000)
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1   # TypeError 아님.
-    assert "stale" in capsys.readouterr().err
+    _write_flag(board, status="pass", rc=0, collected="많음", previous_collected=7000)
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 0   # TypeError 아님.
+    assert "직전" not in capsys.readouterr().out
     # 슬롯 경로도 동형 — 손상값이 green 판정에 들어가지 않는다.
     assert board._flag_collected({"collected": ["12"]}) is None
     assert board._flag_collected({"collected": True}) is None   # bool 은 정수 취급 금지.
@@ -1124,13 +1018,11 @@ def test_stderr_counts_do_not_pollute_parsing(board, monkeypatch):
     두 스트림을 합쳐 읽으면 stderr 로그가 "마지막 요약행" 행세를 해 수집수가 오염된다
     (false-green/false-RED 양방향). pytest 요약은 stdout 에만 나오므로 파싱은 stdout 단독이다.
     """
-    _set_floor(board, 7000)
     fake = _install_run(board, monkeypatch, _FakeRun(
         rc=0, stdout="12 passed in 0.30s\n", stderr="8000 passed in 900.00s\n"))
-    assert board.cmd_regression(_run_args()) == 1
+    assert board.cmd_regression(_run_args()) == 0
     data = _flag(board)
     assert data["collected"] == 12, "stderr 의 카운트 문자열이 수집수를 오염시켰다"
-    assert data["rc"] == board.REGRESSION_RC_PARTIAL_COLLECTION
     # 메커니즘 핀 — 두 스트림을 합치는 형태로 되돌리면 위 오염이 되살아난다.
     kwargs = fake.calls[0]["kwargs"]
     assert kwargs.get("stdout") is board.subprocess.PIPE
@@ -1168,7 +1060,8 @@ def test_multi_slot_regression_keeps_per_slot_head_seam(multi_board):
         flag = board._regression_flag_for(session)
         flag.write_text(json.dumps({
             "head": head, "status": "pass", "rc": 0, "scope": "full",
-            "collected": 1, "floor": 0, "conf_anchor": _slot_cwd(board, session),
+            "collected": 1, "previous_collected": None,
+            "conf_anchor": _slot_cwd(board, session),
             "session": session, "ts": "2026-08-25T00:00:00+00:00",
         }), encoding="utf-8")
     assert board._regression_slot_state("A_1", _slot_cwd(board, "A_1")).state == "green"
@@ -1180,11 +1073,6 @@ def test_multi_slot_regression_keeps_per_slot_head_seam(multi_board):
     assert board._regression_slot_state("B_1", _slot_cwd(board, "B_1")).state == "green"
 
 
-def _set_slot_floor(board, session: str, value) -> None:
-    """그 슬롯 worktree 트리에 하한을 선언한다 (슬롯별 앵커 = 그 슬롯이 회귀를 도는 트리)."""
-    _set_floor(board, value, tree=Path(_slot_cwd(board, session)))
-
-
 def test_multi_slot_platform_matrix_uses_each_slot_config_and_is_all_or_nothing(
         multi_board, monkeypatch):
     board = multi_board
@@ -1194,8 +1082,7 @@ def test_multi_slot_platform_matrix_uses_each_slot_config_and_is_all_or_nothing(
         conf.parent.mkdir(parents=True, exist_ok=True)
         conf.write_text(
             "qa.platforms=windows\n"
-            f"test.windows.cmd=run-{session}\n"
-            "regression.min_collected=2\n",
+            f"test.windows.cmd=run-{session}\n",
             encoding="utf-8",
         )
     calls = []
@@ -1234,13 +1121,12 @@ def test_multi_slot_platform_record_rejects_red_or_partial_core_aggregate(
     conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text(
         "qa.platforms=windows\n"
-        "test.windows.cmd=run-A_1\n"
-        "regression.min_collected=2\n",
+        "test.windows.cmd=run-A_1\n",
         encoding="utf-8",
     )
     record = {
         "head": "HEAD_A", "status": "pass", "rc": 0, "scope": "full",
-        "collected": 3, "floor": 2, "conf_anchor": str(tree),
+        "collected": 3, "previous_collected": None, "conf_anchor": str(tree),
         "session": session, "ts": "2026-08-28T00:00:00+00:00",
         "platforms": [{
             "name": "windows", "command": "run-A_1", "head": "HEAD_A",
@@ -1259,50 +1145,44 @@ def test_multi_slot_platform_record_rejects_red_or_partial_core_aggregate(
     assert board._regression_slot_state(session, str(tree)).state == expected
 
 
-def test_multi_run_below_floor_blocks_and_records(multi_board, monkeypatch, capsys):
-    """M>1 순회에서도 rc0+부분수집 슬롯은 fail(partial-collection) 기록 + rc1 (all-or-nothing)."""
+def test_multi_run_records_delta_per_slot_without_blocking(
+        multi_board, monkeypatch, capsys):
+    """M>1 순회도 슬롯마다 자기 직전 기록과 견준다 — 크게 줄어도 rc0(막지 않는다)."""
     b = multi_board
-    _set_slot_floor(b, "A_1", 7000)
-    _set_slot_floor(b, "B_1", 7000)
+    for session, head, collected in (("A_1", "HEAD_A", 7577), ("B_1", "HEAD_B", 7000)):
+        flag = b._regression_flag_for(session)
+        flag.parent.mkdir(parents=True, exist_ok=True)
+        flag.write_text(json.dumps(
+            {"head": "OLD_HEAD", "status": "pass", "rc": 0, "scope": "full",
+             "collected": collected, "previous_collected": None, "session": session,
+             "ts": "2026-08-07T00:00:00+00:00"}), encoding="utf-8")
     _install_run(b, monkeypatch, _FakeRun(by_cwd={
         _slot_cwd(b, "A_1"): (0, "7577 passed in 140.00s\n"),
-        _slot_cwd(b, "B_1"): (0, "12 passed in 0.30s\n"),      # 부분 수집
+        _slot_cwd(b, "B_1"): (0, "12 passed in 0.30s\n"),      # 크게 줄어든 슬롯
     }))
-    assert b.cmd_regression(_run_args()) == 1
+    assert b.cmd_regression(_run_args()) == 0, "증감이 M>1 순회의 rc 를 바꿨다"
     a_flag = json.loads(b._regression_flag_for("A_1").read_text(encoding="utf-8"))
     b_flag = json.loads(b._regression_flag_for("B_1").read_text(encoding="utf-8"))
-    assert a_flag["status"] == "pass" and a_flag["collected"] == 7577
-    assert b_flag["status"] == "fail"
-    assert b_flag["rc"] == b.REGRESSION_RC_PARTIAL_COLLECTION
-    assert b_flag["collected"] == 12
-    err = capsys.readouterr().err
-    assert "RED" in err and "B_1" in err
+    assert a_flag["status"] == "pass" and a_flag["previous_collected"] == 7577
+    assert b_flag["status"] == "pass" and b_flag["collected"] == 12
+    assert b_flag["previous_collected"] == 7000
+    out = capsys.readouterr().out
+    assert "regression[B_1]: pass (rc=0) (직전 7000 · -6988 · 99.8% ⚠)" in out
+    assert "regression[A_1]: pass (rc=0) (직전 7577 · +0)" in out
 
 
-def test_check_hint_uses_recorded_floor_not_current_conf(board, capsys):
-    """강등 기록 후 conf 하한이 바뀌어도 check 사유는 **기록된** 하한으로 설명한다.
+def test_multi_check_label_shows_the_unverified_hint(multi_board, capsys):
+    """check 라벨에 수집수 검증 불가 사유 — `B_1=red(rc=unverified-collection·수집수 미확인)`.
 
-    check 시점 conf 를 다시 읽으면 과거 기록을 지금 값으로 설명하는 오보가 된다.
+    괄호는 없다 — 그 자리는 하한 시절 기록값을 싣던 곳이고, 하한이 사라진 뒤로는 실경로에서
+    언제나 물음표만 나오던 장식이었다.
     """
-    _write_flag(board, status="fail", rc=board.REGRESSION_RC_PARTIAL_COLLECTION,
-                collected=12, floor=7000)
-    _set_floor(board, 9000)          # 기록 이후 하한 변경.
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
-    err = capsys.readouterr().err
-    assert "수집 12<하한 7000" in err   # 기록값 기준(9000 아님).
-
-
-def test_multi_check_label_carries_shortfall_hint(multi_board, capsys):
-    """check 라벨에 부분수집 사유 — `B_1=red(rc=partial-collection·수집 N<하한 M)` (rc5 힌트와 동형)."""
     b = multi_board
-    _set_slot_floor(b, "A_1", 7000)
-    _set_slot_floor(b, "B_1", 7000)
     for session, head, payload in (
-            # A_1 = green(증거가 하한 충족) · B_1 = 부분수집 강등 기록.
-            ("A_1", "HEAD_A", {"status": "pass", "rc": 0, "collected": 7577, "floor": 7000}),
+            ("A_1", "HEAD_A", {"status": "pass", "rc": 0, "collected": 7577}),
             ("B_1", "HEAD_B", {"status": "fail",
-                               "rc": b.REGRESSION_RC_PARTIAL_COLLECTION,
-                               "collected": 12, "floor": 7000}),
+                               "rc": b.REGRESSION_RC_UNVERIFIED_COLLECTION,
+                               "collected": None}),
     ):
         flag = b._regression_flag_for(session)
         flag.parent.mkdir(parents=True, exist_ok=True)
@@ -1311,32 +1191,44 @@ def test_multi_check_label_carries_shortfall_hint(multi_board, capsys):
                         encoding="utf-8")
     assert b.cmd_regression(argparse.Namespace(action="check")) == 1
     err = capsys.readouterr().err
-    assert "B_1=red(rc=partial-collection·수집 12<하한 7000)" in err
-    assert "A_1" not in err          # 증거가 하한을 충족한 슬롯은 green 유지.
+    assert "B_1=red(rc=unverified-collection·수집수 미확인)" in err
+    assert "(?)" not in err
+    assert "A_1" not in err          # 수집수가 적어도 green 은 green 이다.
 
 
-def test_multi_run_reruns_green_slot_when_floor_raised(multi_board, monkeypatch, capsys):
-    """green 기록 슬롯도 하한 상향 뒤엔 check-first skip 대상이 아니다 — 재실행돼 새 하한 적용.
+def test_multi_check_label_keeps_the_other_rc_branches(multi_board, capsys):
+    """다른 rc 갈래의 라벨은 그대로다 — rc5 는 수집 0 힌트, rc 미기록은 상태-only.
 
-    skip 되면 M>1 명시 run 으로도 새 하한이 영영 적용되지 않는다(codex must-fix A).
+    `unverified-collection` 힌트에서 인자를 뺀 변경이 옆 갈래를 함께 지우지 않았는지 본다.
     """
+    b = multi_board
+    flag = b._regression_flag_for("A_1")
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    flag.write_text(json.dumps({"head": "HEAD_A", "status": "fail", "rc": 5,
+                                "scope": "full", "collected": None, "session": "A_1",
+                                "ts": "2026-08-07T00:00:00+00:00"}), encoding="utf-8")
+    # B_1 = 기록 없음(missing) → rc 를 모르므로 상태만 적는다.
+    assert b.cmd_regression(argparse.Namespace(action="check")) == 1
+    err = capsys.readouterr().err
+    assert "A_1=red(rc=5·수집0)" in err
+    assert "B_1=missing" in err and "B_1=missing(" not in err
+
+
+def test_multi_run_skips_green_slots_regardless_of_collection_size(
+        multi_board, monkeypatch, capsys):
+    """수집수는 green 재사용을 무효화하지 않는다 — HEAD 일치 green 슬롯은 전부 skip."""
     b = multi_board
     for session, head in (("A_1", "HEAD_A"), ("B_1", "HEAD_B")):
         flag = b._regression_flag_for(session)
         flag.parent.mkdir(parents=True, exist_ok=True)
         flag.write_text(json.dumps(
             {"head": head, "status": "pass", "rc": 0, "scope": "full",
-             "collected": 12, "floor": 0, "session": session,
+             "collected": 12, "previous_collected": 7577, "session": session,
              "ts": "2026-08-07T00:00:00+00:00"}), encoding="utf-8")
-    _set_slot_floor(b, "A_1", 7000)          # A_1 만 하한 신규 → 재실행 대상.
     fake = _install_run(b, monkeypatch, _FakeRun(rc=0, stdout="12 passed in 0.30s\n"))
-    assert b.cmd_regression(_run_args()) == 1
-    assert fake.calls, "green skip 으로 재실행이 아예 없었다"
-    assert [c["kwargs"]["cwd"] for c in fake.calls] == [_slot_cwd(b, "A_1")]
-    a_flag = json.loads(b._regression_flag_for("A_1").read_text(encoding="utf-8"))
-    assert a_flag["status"] == "fail"
-    assert a_flag["rc"] == b.REGRESSION_RC_PARTIAL_COLLECTION
-    assert "skip(green) 1 · run 1" in capsys.readouterr().err   # B_1 만 skip.
+    assert b.cmd_regression(_run_args()) == 0
+    assert not fake.calls, "green 슬롯을 수집수 때문에 재실행했다"
+    assert "skip(green) 2 · run 0" in capsys.readouterr().out
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -3001,3 +2893,104 @@ def test_the_lint_gate_refusal_carries_the_neutral_prefix(
     err = capsys.readouterr().err
     assert err.startswith(board.PM_HOOK_NOTICE_PREFIX)
     assert "regression:" not in err
+
+
+# ════════════════════════════════════════════════════════════════════════
+# ⑦ 하한 폐지의 자취 — 소스에 옛 경로가 남지 않았고 쓰는 자리는 하나다
+# ════════════════════════════════════════════════════════════════════════
+
+_TOOL_SOURCES = tuple(sorted(TOOLS.glob("*.py")))
+# 폐지한 하한 축의 식별자 — 어느 도구에도 남으면 옛 경로가 살아 있는 것이다.
+_ABOLISHED_FLOOR_NAMES = (
+    "regression.min_collected", "REGRESSION_MIN_COLLECTED_KEY",
+    "_regression_min_collected", "_green_floor_stale", "_collection_shortfall_text",
+    "REGRESSION_RC_PARTIAL_COLLECTION", "partial-collection",
+)
+
+
+def test_the_collection_floor_left_no_path_behind():
+    """하한 식별자·전용 라벨이 `tools/` 전역에서 0건 (설정 있으면 옛날대로 하는 분기 없음)."""
+    assert _TOOL_SOURCES
+    for path in _TOOL_SOURCES:
+        text = path.read_text(encoding="utf-8")
+        for name in _ABOLISHED_FLOOR_NAMES:
+            assert name not in text, f"{path.name} 에 폐지한 하한 축이 남았다: {name}"
+
+
+def test_the_unverified_collection_label_stays_for_the_platform_contract(board, monkeypatch):
+    """존치 라벨 — 선언 platform 의 "수집수는 정수" 계약은 하한과 다른 축이라 그대로 동작한다."""
+    assert board.REGRESSION_RC_UNVERIFIED_COLLECTION == "unverified-collection"
+    _set_platforms(board, windows="run-windows")
+    monkeypatch.setattr(board, "_run_regression_cmd",
+                        lambda cmd, cwd, env: (0, "[custom runner] ok\n", ""))
+
+    assert board.cmd_regression(_run_args(final=True)) == 1
+    assert _flag(board)["rc"] == board.REGRESSION_RC_UNVERIFIED_COLLECTION
+
+
+def test_the_regression_record_has_exactly_one_writer():
+    """회귀 기록을 쓰는 자리는 `_write_regression_flag` 하나이고 그 자리가 원자로 쓴다."""
+    source = (TOOLS / "board.py").read_text(encoding="utf-8")
+    body = source[source.index("def _write_regression_flag("):
+                  source.index("def _previous_collected(")]
+
+    assert "_write_json_atomic(flag, record)" in body
+    assert 'record["previous_collected"] = _previous_collected(flag)' in body
+    # 다른 자리의 직접 쓰기 0 — 플래그 경로를 받는 raw/atomic 쓰기가 남으면 승계가 갈린다.
+    assert "regression_flag.write_text" not in source
+    assert "_write_json_atomic(regression_flag" not in source
+    assert "_write_json_atomic(_regression_flag_for(" not in source
+    assert source.count("_write_regression_flag(") == 1 + 9   # 정의 1 + 호출 9자리
+
+
+def test_the_delta_is_only_attached_where_the_record_is_read():
+    """증감 문장은 기록을 읽는 다섯 자리(run 4 · check 1)에만 붙는다.
+
+    부트스트랩·핸드오프는 기록을 읽지도 쓰지도 않고 자기 pytest 출력의 `passed+failed` 를 쓴다 —
+    기록의 `collected`(skipped 포함)와 축이 달라 그대로 빼면 가짜 증감이 상시 뜬다.
+    """
+    source = (TOOLS / "board.py").read_text(encoding="utf-8")
+    call_sites = source.count("collection_delta_text(")
+    assert call_sites == 1 + 5, f"증감 표시 자리가 5곳이 아니다(정의 1 + 호출 {call_sites - 1})"
+    for name in ("pm_bootstrap.py", "pm_handoff.py"):
+        text = (TOOLS / name).read_text(encoding="utf-8")
+        assert "collection_delta_text" not in text, f"{name} 이 다른 축의 숫자로 증감을 냈다"
+        assert "previous_collected" not in text
+
+
+@requires_git
+def test_leftover_floor_declaration_no_longer_blocks_a_real_run(tmp_path):
+    """하한 값이 남은 `local.conf` 로도 실 회귀가 막히지 않는다 (마이그레이션·실 서브프로세스).
+
+    옛 키는 이제 레지스트리 밖이라 never-block advisory 로만 떨어진다 — 채택자 conf 를 손보기
+    전에도 게이트가 그대로 돈다.
+    """
+    from _git import commit_env
+    from _manager_home import make_pm_home
+
+    home = make_pm_home(tmp_path / "adopter")
+    (home / "tests").mkdir(exist_ok=True)
+    conf = home / ".project_manager" / "local.conf"
+    conf.write_text(
+        conf.read_text(encoding="utf-8")
+        + "\nregression.min_collected=7000\n"
+        + "test.cmd=python3 -c \"print('12 passed in 0.30s')\" tests/\n",
+        encoding="utf-8")
+    env = commit_env()
+    for argv in (["git", "init", "-q"], ["git", "add", "-A"],
+                 ["git", "commit", "-qm", "seed"]):
+        subprocess.run(argv, cwd=home, env=env, check=True,
+                       capture_output=True, text=True, encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, str(home / ".project_manager" / "tools" / "board.py"),
+         "regression", "run", "--final"],
+        cwd=home, env=env, capture_output=True, text=True,
+        encoding="utf-8", errors="replace")
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    record = json.loads(
+        (home / ".project_manager" / ".local" / "regression.json").read_text(encoding="utf-8"))
+    assert record["status"] == "pass" and record["collected"] == 12
+    assert "floor" not in record and record["previous_collected"] is None
+    assert "하한" not in completed.stdout + completed.stderr

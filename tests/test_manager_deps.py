@@ -37,6 +37,16 @@ def _run_manager(*argv: str, extra_path: Path | None = None,
         env={**os.environ, "PYTHONPATH": search_path}, timeout=120)
 
 
+# 라이브러리가 스스로 찍는 줄 — 앱이 한 말이 아니다. 판정은 접두 하나로 한다(목록 아님).
+_LIBRARY_NOISE = "** ("
+
+
+def _app_lines(output: str) -> list[str]:
+    """앱이 한 말만 남긴다 — 빈 줄과 라이브러리 경고를 걷어낸다."""
+    return [line for line in output.strip().splitlines()
+            if line.strip() and not line.lstrip().startswith(_LIBRARY_NOISE)]
+
+
 def test_version_needs_no_window():
     completed = _run_manager("--version")
 
@@ -172,9 +182,10 @@ def test_smoke_opens_the_window_and_answers(tmp_path):
     completed = _run_manager("--smoke", "--registry", str(registry_file), launcher=launcher)
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    lines = completed.stdout.strip().splitlines()
-    # 정상 경로의 문장은 둘이다 — 서버가 뜬 주소 한 줄(T-0921·브라우저 손님의 진입점)과
-    # smoke 결과 한 줄. 그 밖의 문장은 더하지 않는다.
+    lines = _app_lines(completed.stdout)
+    # 정상 경로에서 **앱이** 하는 말은 둘이다 — 서버가 뜬 주소 한 줄(브라우저 손님의 진입점)과
+    # smoke 결과 한 줄. 그 밖의 문장은 더하지 않는다. GTK·AT-SPI 가 스스로 찍는 경고는 앱의
+    # 말이 아니고 그 자리에 있고 없고가 환경마다 갈리므로 세지 않는다.
     assert len(lines) == 2, lines
     assert lines[0].startswith("관리자 주소: http://127.0.0.1:")
     assert lines[1].startswith("smoke ok")

@@ -85,7 +85,6 @@ def test_full_core_and_platform_same_head_use_project_full_commands_not_a_test_a
             f"test.cmd={full_test_cmd}",
             "qa.platforms=windows",
             f"test.windows.cmd={platform_cmd}",
-            "regression.min_collected=2",
         )) + "\n",
         encoding="utf-8",
     )
