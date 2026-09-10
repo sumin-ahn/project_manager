@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type {
   Bridge, BridgeError, ConfKeysDocument, Project, StatusDocument, TagsResponse,
 } from "./api";
-import { isError } from "./api";
+import { chooseFolder, isError, subscribeChanges } from "./api";
 import AdapterMatrix from "./components/AdapterMatrix";
 import Header from "./components/Header";
 import NewProjectDialog from "./components/NewProjectDialog";
@@ -32,45 +32,23 @@ export type SettingsEntry = {
 
 type Busy = { light: boolean; heavy: boolean; tags: boolean };
 
+/**
+ * 마지막 값 한 칸의 갱신 — 실패를 화면에 말하는 자리는 **사람이 누른 조회**뿐이다.
+ *
+ * 배경 조회(주기·창 복귀·서버 알림)는 실패해도 마지막 값을 그대로 둔다. 저장·적용이 도는
+ * 프로젝트의 배경 조회는 서버가 거절하는데, 그것을 사람에게 경고로 띄우면 성공하는 갱신이
+ * 실패로 보인다(§6.5 재조회 규칙).
+ */
 function merged(previous: Entry | undefined, response: StatusDocument | { error: BridgeError },
-                at: number): Entry {
-  if (isError(response)) return { status: previous?.status, error: response.error, at };
+                at: number, explicit: boolean): Entry {
+  if (isError(response)) {
+    if (!explicit) return previous ?? {};
+    return { status: previous?.status, error: response.error, at };
+  }
   return { status: response, at };
 }
 
-/**
- * 쓰기 동작(`update_apply`·`apply_new`·`run`)이 도는 프로젝트를 세는 배선 — 세 호출 모두 첫
- * 인자가 그 프로젝트 폴더다.
- *
- * `pm-config update` 는 그 사본의 엔진 파일을 교체하는 중이라, 그 구간에 시작한 주기 조회는
- * rc≠0(부분 사본)으로 끝나 **성공하는 갱신이** '먼저 갱신'·'조회 실패' 로 보인다. 실패를
- * 숨기는 것이 아니라 그 동안 그 사본을 부르지 않는다 — 동작 뒤 재조회는 명시 호출 그대로다.
- */
-function trackWrites(bridge: Bridge, inFlight: Map<string, number>): Bridge {
-  const counted = <Arguments extends unknown[], Result>(
-    call: (...args: Arguments) => Promise<Result>) => async (...args: Arguments) => {
-      const path = String(args[0]);
-      inFlight.set(path, (inFlight.get(path) ?? 0) + 1);
-      try {
-        return await call(...args);
-      } finally {
-        const running = (inFlight.get(path) ?? 1) - 1;
-        if (running > 0) inFlight.set(path, running);
-        else inFlight.delete(path);
-      }
-    };
-  return {
-    ...bridge,
-    update_apply: counted(bridge.update_apply),
-    apply_new: counted(bridge.apply_new),
-    run: counted(bridge.run),
-  };
-}
-
-export default function App({ bridge: given }: { bridge: Bridge }) {
-  // 쓰기 동작이 도는 프로젝트와 그 동작 수 — 화면에 보이는 값이 아니라 주기 조회의 제외 목록이다.
-  const writing = useRef(new Map<string, number>()).current;
-  const bridge = useMemo(() => trackWrites(given, writing), [given, writing]);
+export default function App({ bridge }: { bridge: Bridge }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [listError, setListError] = useState<BridgeError | null>(null);
   const [light, setLight] = useState<Record<string, Entry>>({});
@@ -101,7 +79,7 @@ export default function App({ bridge: given }: { bridge: Bridge }) {
     return response.projects;
   }, [bridge]);
 
-  const refreshLight = useCallback(async (paths: string[]) => {
+  const refreshLight = useCallback(async (paths: string[], explicit = true) => {
     if (paths.length === 0) return;
     setBusy((current) => ({ ...current, light: true }));
     const results = await Promise.all(
@@ -109,27 +87,32 @@ export default function App({ bridge: given }: { bridge: Bridge }) {
     const at = Date.now();
     setLight((previous) => {
       const next = { ...previous };
-      for (const [path, response] of results) next[path] = merged(previous[path], response, at);
+      for (const [path, response] of results) {
+        next[path] = merged(previous[path], response, at, explicit);
+      }
       return next;
     });
     setBusy((current) => ({ ...current, light: false }));
   }, [bridge]);
 
-  const refreshHeavy = useCallback(async (path: string) => {
+  const refreshHeavy = useCallback(async (path: string, explicit = true) => {
     setBusy((current) => ({ ...current, heavy: true }));
     const response = await bridge.status(path, true, false);
     const at = Date.now();
-    setHeavy((previous) => ({ ...previous, [path]: merged(previous[path], response, at) }));
+    setHeavy((previous) => ({ ...previous,
+                              [path]: merged(previous[path], response, at, explicit) }));
     setBusy((current) => ({ ...current, heavy: false }));
   }, [bridge]);
 
   // 설정 두 조회 — 키 레지스트리와 값 파일이다(판정은 가벼운 절의 `conf` 절이라 여기서 안 부른다).
-  const refreshSettings = useCallback(async (path: string) => {
+  const refreshSettings = useCallback(async (path: string, explicit = true) => {
     const [keys, values] = await Promise.all([bridge.conf_keys(path), bridge.conf_values(path)]);
     const failure = isError(keys) ? keys.error : isError(values) ? values.error : undefined;
     const at = Date.now();
     setSettings((previous) => {
       const last = previous[path];
+      // 배경 조회의 실패는 말하지 않는다 — 마지막 값 그대로.
+      if (failure !== undefined && !explicit) return previous;
       return { ...previous,
                [path]: { keys: isError(keys) ? last?.keys : keys,
                          values: isError(values) ? last?.values : values.values,
@@ -162,22 +145,21 @@ export default function App({ bridge: given }: { bridge: Bridge }) {
     const onVisibility = () => {
       const nowVisible = document.visibilityState === "visible";
       setVisible(nowVisible);
-      if (nowVisible) void refreshLight(projects.map((project) => project.path));
+      if (nowVisible) void refreshLight(projects.map((project) => project.path), false);
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, [projects, refreshLight]);
 
-  // 주기 조회 — 창이 보이지 않으면 걸지 않고, 쓰기 동작이 도는 프로젝트는 그 동작이 끝날
-  // 때까지 뺀다(다른 프로젝트의 주기와 실패 격리는 그대로다).
+  // 주기 조회 — 창이 보이지 않으면 걸지 않는다. 저장·적용이 도는 프로젝트를 빼는 판정은
+  // 서버가 한다(손님이 둘이라 화면이 세면 값이 틀린다) — 그 동안의 조회는 거절로 돌아온다.
   useEffect(() => {
     if (!visible || projects.length === 0) return;
     const timer = setInterval(() => {
-      void refreshLight(projects.map((project) => project.path)
-        .filter((path) => !writing.has(path)));
+      void refreshLight(projects.map((project) => project.path), false);
     }, LIGHT_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [visible, projects, refreshLight, writing]);
+  }, [visible, projects, refreshLight]);
 
   // 선택한 프로젝트만 무거운 절 1회 + 설정 두 조회 선읽기(탭을 열기 전에 채워 둔다).
   useEffect(() => {
@@ -186,8 +168,17 @@ export default function App({ bridge: given }: { bridge: Bridge }) {
     void refreshSettings(selected);
   }, [selected, refreshHeavy, refreshSettings]);
 
+  // 다른 손님(창·브라우저)이 저장·적용을 끝내면 서버가 알린다 — 그 신호로 다시 읽는다.
+  useEffect(() => subscribeChanges(() => {
+    void refreshLight(projects.map((project) => project.path), false);
+    if (selected !== null) {
+      void refreshHeavy(selected, false);
+      void refreshSettings(selected, false);
+    }
+  }), [projects, selected, refreshLight, refreshHeavy, refreshSettings]);
+
   const addProject = useCallback(async () => {
-    const picked = await bridge.pick_folder();
+    const picked = await chooseFolder(bridge);
     if (isError(picked) || picked.path === null) return;
     const before = new Set(projects.map((project) => project.path));
     const response = await bridge.add_project(picked.path);   // 선택 대화의 표기는 등록 인자로만

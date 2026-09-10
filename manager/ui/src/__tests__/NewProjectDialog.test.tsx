@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplyStep, Bridge } from "../api";
 import NewProjectDialog, { folderName } from "../components/NewProjectDialog";
 
@@ -38,6 +38,9 @@ async function mounted(bridge: Bridge, onApplied = vi.fn(), onClose = vi.fn()) {
 }
 
 afterEach(cleanup);
+
+// 이 화면 회귀는 창 손님을 잰다 — 폴더 고르기가 OS 대화상자로 가는 자리다.
+beforeEach(() => { window.history.replaceState({}, "", "/?client=window"); });
 
 describe("대화의 기본값", () => {
   it("하네스 라디오와 upstream 은 번들이 답한 값으로 채워진다", async () => {

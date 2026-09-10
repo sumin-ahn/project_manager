@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App, { LIGHT_INTERVAL_MS } from "../App";
 import type { Bridge, BridgeError, ConfKeysDocument, StatusDocument } from "../api";
 import confKeys from "../fixtures/conf-keys.sample.json";
@@ -36,6 +36,12 @@ function settingsCalls(bridge: Bridge) {
   return (bridge.conf_keys as ReturnType<typeof vi.fn>).mock.calls.length;
 }
 
+/** 화면이 연 알림 스트림 — 테스트 대역(`vitest.setup.ts`)이 모아 둔 마지막 것. */
+function openedStream(): EventTarget {
+  const opened = (globalThis.EventSource as unknown as { opened: EventTarget[] }).opened;
+  return opened[opened.length - 1];
+}
+
 function setVisibility(value: "visible" | "hidden") {
   Object.defineProperty(document, "visibilityState", { configurable: true, get: () => value });
   act(() => { document.dispatchEvent(new Event("visibilitychange")); });
@@ -50,6 +56,9 @@ function lightCallsFor(bridge: Bridge, path: string) {
   return (bridge.status as ReturnType<typeof vi.fn>).mock.calls
     .filter((call) => call[0] === path && call[1] === false).length;
 }
+
+// 이 화면 회귀는 창 손님을 잰다 — 폴더 고르기가 OS 대화상자로 가는 자리다.
+beforeEach(() => { window.history.replaceState({}, "", "/?client=window"); });
 
 afterEach(() => {
   cleanup();
@@ -147,15 +156,15 @@ describe("등록", () => {
 });
 
 describe("쓰기 동작 중의 주기 조회", () => {
-  it("갱신이 도는 프로젝트는 끝날 때까지 주기 조회에서 빠지고, 끝나면 돌아온다", async () => {
+  it("화면은 쓰기 동작을 세지 않는다 — 주기 조회는 그대로 돌고 제외 판정은 서버가 한다", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    let finish: (result: { rc: number; stdout: string; stderr: string }) => void = () => {};
     const bridge = makeBridge({
       list_projects: vi.fn(async () => ({
         projects: [{ path: DEMO, name: "demo" }, { path: OTHER, name: "other" }],
       })),
       update_preview: vi.fn(async () => ({ rc: 0, stdout: "", stderr: "" })),
-      update_apply: vi.fn(() => new Promise((resolve) => { finish = resolve; })),
+      update_apply: vi.fn(() => new Promise<{ rc: number; stdout: string; stderr: string }>(
+        () => {})),
     } as Partial<Bridge>);
     render(<App bridge={bridge} />);
     await waitFor(() => expect(lightCallsFor(bridge, DEMO)).toBe(1));
@@ -167,17 +176,50 @@ describe("쓰기 동작 중의 주기 조회", () => {
 
     await act(async () => { await vi.advanceTimersByTimeAsync(LIGHT_INTERVAL_MS * 2); });
 
-    // 교체 중인 사본을 부르지 않는다 — 다른 프로젝트의 주기는 그대로 돈다.
-    expect(lightCallsFor(bridge, DEMO)).toBe(1);
+    // 손님이 둘이라 화면에서 세면 값이 틀린다 — 두 프로젝트 모두 주기가 그대로 돈다.
+    expect(lightCallsFor(bridge, DEMO)).toBeGreaterThanOrEqual(3);
     expect(lightCallsFor(bridge, OTHER)).toBeGreaterThanOrEqual(3);
+  });
+});
 
-    await act(async () => { finish({ rc: 0, stdout: "✓ 동기화", stderr: "" }); });
-    await waitFor(() => expect(lightCallsFor(bridge, DEMO)).toBe(2));   // 동작 직후 명시 재조회
-    const afterAction = lightCallsFor(bridge, DEMO);
+describe("서버 알림", () => {
+  it("다른 손님이 저장·적용을 끝내면 그 신호로 다시 읽는다", async () => {
+    const bridge = makeBridge();
+    render(<App bridge={bridge} />);
+    await waitFor(() => expect(lightCallsFor(bridge, DEMO)).toBe(1));
+    const before = settingsCalls(bridge);
 
-    await act(async () => { await vi.advanceTimersByTimeAsync(LIGHT_INTERVAL_MS); });
+    act(() => { openedStream().dispatchEvent(
+      new MessageEvent("message", { data: JSON.stringify({ name: "conf_save", path: DEMO }) })); });
 
-    expect(lightCallsFor(bridge, DEMO)).toBe(afterAction + 1);          // 주기 조회 복귀
+    await waitFor(() => expect(lightCallsFor(bridge, DEMO)).toBe(2));
+    await waitFor(() => expect(settingsCalls(bridge)).toBe(before + 1));
+  });
+});
+
+describe("배경 조회의 실패", () => {
+  it("저장·적용 중 거절돼도 경고를 띄우지 않고 마지막 값이 그대로다", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const busy: BridgeError = {
+      kind: "not-allowed",
+      message: "/projects/demo 에 저장·적용(update_apply)이 도는 중이라 이 요청은 부르지 않았다.",
+      stderr: "",
+      rc: 2,
+    };
+    const status = vi.fn()
+      .mockResolvedValueOnce(document_)        // 가벼운 절 1회차
+      .mockResolvedValueOnce(document_)        // 무거운 절 1회차
+      .mockResolvedValue({ error: busy });     // 그 뒤 배경 조회는 서버가 거절한다
+    const bridge = makeBridge({ status } as Partial<Bridge>);
+    render(<App bridge={bridge} />);
+    await waitFor(() => expect(screen.getAllByText("v1.7.13").length).toBeGreaterThan(0));
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(LIGHT_INTERVAL_MS * 2); });
+
+    expect(screen.queryByText("조회 실패 (마지막 값 유지)")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getAllByText("v1.7.13").length).toBeGreaterThan(0);
+    expect(screen.getByTestId("dot-demo")).toHaveAttribute("data-dot", "orange");
   });
 });
 

@@ -1,7 +1,7 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
-// 화면은 정적 산출물 하나다 — pywebview 가 `dist/index.html` 을 파일로 연다(dev 서버 없음).
+// 화면은 정적 산출물 하나다 — 같은 프로세스 서버가 `dist` 를 내고 창도 그 손님이다(dev 서버 없음).
 export default defineConfig({
   plugins: [react()],
   base: "./",
