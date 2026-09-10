@@ -137,7 +137,9 @@ class ManagerServer:
         self._thread = threading.Thread(target=self._httpd.serve_forever,
                                         name="manager-http", daemon=True)
         self._thread.start()
-        print(f"{URL_NOTICE_PREFIX}{self.url}")
+        # 창이 뜨는 실행은 그대로 서 있으므로 버퍼가 비워지지 않는다 — 파이프·기록으로 받는
+        # 사람에게 주소가 늦게 도착하면 그 한 줄이 없는 것과 같다.
+        print(f"{URL_NOTICE_PREFIX}{self.url}", flush=True)
 
     def stop(self) -> None:
         """소켓과 알림을 닫는다 — 아직 돌지 않는 서버는 `shutdown()` 이 돌아오지 않으므로 뺀다."""
