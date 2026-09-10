@@ -582,7 +582,7 @@ def test_board_init_leaves_the_codex_budget_key_to_the_docs(tmp_path, monkeypatc
     assert not [key for key in parsed if key.startswith("harness.")]
     # 설명은 레지스트리가 소유한다 — 키가 사라진 게 아니라 자리를 옮겼다.
     spec = board._load_local_conf().key_spec("harness.codex.ctx_window_tokens")
-    assert spec is not None and "ctx.window_tokens" in spec.description
+    assert spec is not None and "대화 여유 기준" in spec.description
 
 
 # ── 4. 세션 안 ctx 넛지 (T-0770 · claude 미러) ────────────────────────────────

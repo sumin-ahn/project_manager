@@ -246,7 +246,7 @@ def test_harness_ctx_override_is_documented_in_the_registry(board):
     conf_module = board._load_local_conf()
     override = conf_module.key_spec("harness.claude.ctx_window_tokens")
     assert override is not None and override.description
-    assert "ctx.window_tokens" in override.description        # 생략 시 무엇으로 떨어지는지
+    assert "대화 여유 기준" in override.description            # 생략 시 무엇으로 떨어지는지
     assert conf_module.key_spec("ctx.window_tokens").default == "200000"
 
 

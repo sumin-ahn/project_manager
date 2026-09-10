@@ -98,7 +98,9 @@ export type ConfChoices = {
 export type ConfKeyRow = {
   key: string;
   group: string;
+  label: string;
   description: string;
+  unit_labels: Record<string, string>;
   default: string | null;
   required: boolean;
   kind: "key" | "pattern";

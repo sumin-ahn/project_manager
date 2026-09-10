@@ -2025,7 +2025,7 @@ def test_harness_budget_keys_are_documented_in_the_registry(board, relay):
         for harness in relay.HARNESS_PROFILES:
             spec = conf_module.key_spec(f"harness.{harness}.{suffix}")
             assert spec is not None and spec.description, (harness, suffix)
-            assert "미설정이어도 안전" in spec.description   # 기본값이 안전하다는 사실도 알린다
+            assert "비우면 그 도구의 기본값" in spec.description   # 안 채워도 되는 값임을 알린다
     table = conf_module.render_key_table()
     assert "idle_timeout,wall_timeout" in table
 

@@ -53,9 +53,14 @@ class ManagerWindow:
         return self._window
 
     def start(self, func=None) -> None:
-        """창을 띄우고 닫힐 때까지 돈다(메인 스레드)."""
+        """창을 띄우고 닫힐 때까지 돈다(메인 스레드).
+
+        `private_mode=False` — 기본값 True 는 창을 닫을 때 화면 저장소를 버려서, 화면이 기억하기로
+        한 선택(설정 안 함 항목 보기 등)이 다음 실행에 남지 않는다(실측). 저장 위치는 이 라이브러리가
+        정하는 자리를 그대로 쓴다 — 관리자는 파일을 만들지 않는다.
+        """
         self.create()
-        webview.start(func, self._window)
+        webview.start(func, self._window, private_mode=False)
 
 
 def open_window(*, registry_file: Path | str | None = None) -> int:

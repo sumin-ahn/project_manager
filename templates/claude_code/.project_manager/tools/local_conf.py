@@ -385,10 +385,14 @@ class KeySpec:
     `None` 이고, 선택지는 **검증이 아니다**(harness·reasoning 은 닫힌 집합, model 은 자유 문자열).
     """
 
-    __slots__ = ("description", "default", "required", "group", "choices")
+    __slots__ = ("label", "description", "default", "required", "group", "choices")
 
-    def __init__(self, description: str, *, default: str | None,
+    def __init__(self, label: str, description: str, *, default: str | None,
                  required: bool, group: str, choices: str | None = None) -> None:
+        # `label` = 사람이 읽는 이름(명사구·키 문자열을 옮겨 적지 않는다), `description` = 그 값이
+        # 무엇을 바꾸는지 한 줄. 둘 다 종결형 어미를 쓰지 않는다 — 설정 화면 문구의 단일 소유가
+        # 여기이고, 화면은 받아 그리기만 한다.
+        self.label = label
         self.description = description
         self.default = default
         self.required = required
@@ -396,8 +400,8 @@ class KeySpec:
         self.choices = choices
 
     def __repr__(self) -> str:                                   # 진단 표면(테스트 실패 메시지)
-        return (f"KeySpec(default={self.default!r}, required={self.required!r}, "
-                f"group={self.group!r})")
+        return (f"KeySpec(label={self.label!r}, default={self.default!r}, "
+                f"required={self.required!r}, group={self.group!r})")
 
 
 # 패턴 키군 — `<name>` 자리에 들어갈 목록은 **코드가 소유**한다(손열거 0). 전개는 형제 모듈의
@@ -451,119 +455,144 @@ _HARNESS_PROFILE_NOTE = "미설정이면 하네스 프로필(`pm_relay.HARNESS_P
 
 KEY_REGISTRY: dict[str, KeySpec] = {
     "project.name": KeySpec(
-        "어댑터 문서 렌더에 쓰는 프로젝트 이름 (빈값 허용).",
+        "프로젝트 이름",
+        "어댑터 문서에 찍히는 이름",
         default=None, required=False, group="project"),
     "project.tagline": KeySpec(
-        "어댑터 문서 렌더 토큰 — 프로젝트 한 줄 소개.",
+        "한 줄 소개",
+        "어댑터 문서 첫머리에 들어가는 소개 문구",
         default=None, required=False, group="project"),
     "project.root": KeySpec(
-        "어댑터 문서 렌더 토큰 — 문서가 가리키는 루트 경로.",
+        "문서가 가리킬 루트 경로",
+        "어댑터 문서 안의 경로 표기 기준",
         default=None, required=False, group="project"),
     "project.date": KeySpec(
-        "어댑터 문서 렌더 토큰 — 기준 날짜.",
+        "문서 기준 날짜",
+        "어댑터 문서에 찍히는 날짜",
         default=None, required=False, group="project"),
     "runtime.py": KeySpec(
-        "이 clone 의 python 인터프리터 (`board.py init` 이 실행검증으로 채운다).",
+        "파이썬 실행 파일",
+        "이 사본에서 엔진을 돌릴 인터프리터, 첫 설치 때 실행해 보고 채움",
         default=None, required=True, group="runtime"),
     "test.cmd": KeySpec(
-        "회귀 게이트가 그대로 실행하는 프로젝트 test 명령 "
-        "(`board.py init` 이 탐지한 인터프리터로 채운다).",
+        "테스트 명령",
+        "회귀에서 그대로 실행할 명령",
         default=None, required=True, group="runtime"),
     "qa.platforms": KeySpec(
-        "opt-in platform 이름 목록(쉼표 구분). 선언하면 platform 마다 `test.<name>.cmd` 가 "
-        "필요하고, 무인자 FULL 이 core 뒤 선언 순서로 직렬 실행한다.",
+        "검증 플랫폼 목록",
+        "쉼표로 구분한 이름 목록, 적으면 이름마다 별도 테스트 명령이 필요하고 적은 순서대로 이어서 실행, 비우면 기본 하나만",
         default=None, required=False, group="runtime"),
     "regression.min_collected": KeySpec(
-        "FULL 회귀 수집 하한 (부분 수집 false-green 차단). 미설정이면 하한 검사를 하지 않는다.",
+        "회귀 최소 테스트 개수",
+        "테스트가 이 개수보다 적게 모이면 실패 처리, 비우면 개수를 보지 않음",
         default=None, required=False, group="runtime"),
     "identity.user": KeySpec(
-        "이 clone 에서 나는 누구인가 (slot·task 무관). 미설정이면 `git config user.email`.",
+        "내 계정",
+        "작업 기록에 남는 사람, 비우면 git 설정의 이메일",
         default=None, required=False, group="identity"),
     "upstream.path": KeySpec(
-        "`pm-update` 가 기본 source 로 쓰는 프레임워크 경로/URL.",
+        "프레임워크 원본 위치",
+        "갱신할 때 받아올 폴더 경로나 주소",
         default=None, required=False, group="upstream"),
     "upstream.rev": KeySpec(
-        "drift-lint 의 baseline rev (엔진이 기록한다).",
+        "마지막으로 받은 지점",
+        "갱신 차이를 재는 기준, 엔진이 적음",
         default=None, required=False, group="upstream"),
     "upstream.seen_rev": KeySpec(
-        "마지막으로 관찰한 upstream rev (엔진이 기록한다).",
+        "마지막으로 확인한 지점",
+        "원본에서 마지막으로 본 지점, 엔진이 적음",
         default=None, required=False, group="upstream"),
     "ctx.nudge_pct": KeySpec(
-        "잔여 컨텍스트 % 넛지 임계 — 이 값 이하면 checkpoint 를 권고한다(일은 계속).",
+        "기록 권고 시점",
+        "남은 대화 여유가 이 비율 아래로 내려가면 중간 기록을 권함, 일은 계속",
         default="30", required=False, group="ctx"),
     "ctx.stop_pct": KeySpec(
-        "잔여 컨텍스트 % 정지 임계 — 이 값 이하면 정지·핸드오프.",
+        "정지 시점",
+        "남은 대화 여유가 이 비율 아래로 내려가면 멈추고 인계",
         default="20", required=False, group="ctx"),
     "ctx.window_tokens": KeySpec(
-        "하네스별 값이 없을 때의 컨텍스트 예산(핸드오프 판정의 분모). 물리 window 가 커도 낮게 "
-        "두면 이른 핸드오프 = 토큰 경제라 기본은 200K 다.",
+        "대화 여유 기준값",
+        "하네스별 값이 없을 때 쓰는 기준, 실제 한도가 커도 낮게 두면 더 일찍 인계",
         default="200000", required=False, group="ctx"),
     "delegate.enabled": KeySpec(
-        "위임 마스터 스위치(채널 무관) — `false` 면 위임 실행이 거부된다.",
+        "위임 켜기",
+        "끄면 다른 세션에 일을 맡기지 않음",
         default="true", required=False, group="delegate"),
     "delegate.timeout": KeySpec(
-        f"위임 실행의 벽시계 백스톱(초) — {_HARNESS_PROFILE_NOTE}(하네스별 키가 이긴다).",
+        "위임 최대 시간(초)",
+        "이 시간이 지나면 끊음, 비우면 하네스별 기본값",
         default=None, required=False, group="delegate"),
     "delegate.idle_timeout": KeySpec(
-        f"위임 실행의 무진행 판정 상한(초) — {_HARNESS_PROFILE_NOTE}(하네스별 키가 이긴다).",
+        "위임 무응답 한계(초)",
+        "진행이 이만큼 없으면 멈춘 것으로 봄, 비우면 하네스별 기본값",
         default=None, required=False, group="delegate"),
     "delegate.code-reviewer.rounds_max": KeySpec(
-        "내부 code-reviewer 라운드 수렴 상한 (추가 리뷰어 예산과 별개 축·과금 없음).",
+        "검토 반복 상한",
+        "같은 건을 검토하는 최대 횟수",
         default="3", required=False, group="delegate"),
     "additional_reviewer.harness": KeySpec(
-        "추가 리뷰어를 실행할 하네스. `model`·`reasoning` 과 세트로 쓴다(없으면 fail-loud).",
+        "교차 검토 도구",
+        "다른 모델로 한 번 더 볼 때 쓸 도구, 모델·추론 강도와 함께 채움",
         default=None, required=False, group="additional_reviewer", choices="harness"),
     "additional_reviewer.model": KeySpec(
-        "추가 리뷰어 모델 — 그 하네스가 인정하는 표기를 그대로 쓴다.",
+        "교차 검토 모델",
+        "그 도구가 인정하는 표기 그대로",
         default=None, required=False, group="additional_reviewer", choices="model"),
     "additional_reviewer.reasoning": KeySpec(
-        "추가 리뷰어 추론 강도. 허용값은 하네스마다 다르며 `pm_relay.REASONING_ALLOWED` 가 "
-        "소유한다 — `harness`·`model` 과 세트로 쓴다(없으면 fail-loud).",
+        "교차 검토 추론 강도",
+        "고를 수 있는 값은 도구마다 다름",
         default=None, required=False, group="additional_reviewer", choices="reasoning"),
     "additional_reviewer.rounds_max": KeySpec(
-        "게이트 하나의 리뷰 라운드 수렴 상한 — 호출 횟수가 아니라 must_fix 추이로 본다.",
+        "교차 검토 반복 상한",
+        "한 건을 다시 볼 최대 횟수",
         default="2", required=False, group="additional_reviewer"),
     "additional_reviewer.incomplete_rounds_max": KeySpec(
-        "판정 없이 끝난 호출(타임아웃·중단·오염 무효화)의 재시도 상한.",
+        "교차 검토 재시도 상한",
+        "판정 없이 끝난 호출을 다시 부를 최대 횟수",
         default="2", required=False, group="additional_reviewer"),
     "additional_reviewer.wave_budget": KeySpec(
-        "wave(세션) 단위 총 라운드 예산 — 게이트별 상한과 별개 축이다.",
+        "교차 검토 총 예산",
+        "한 세션에서 쓸 수 있는 전체 횟수",
         default="24", required=False, group="additional_reviewer"),
     "additional_reviewer.paths": KeySpec(
-        "리뷰 대상 경로 목록 (쉼표 또는 공백 구분).",
+        "교차 검토 대상 경로",
+        "쉼표나 공백으로 구분한 경로 목록",
         default="src/,tests/,scripts/,.project_manager/tools/",
         required=False, group="additional_reviewer"),
     "additional_reviewer.timeout": KeySpec(
-        f"리뷰어 실행의 벽시계 백스톱(초) — {_HARNESS_PROFILE_NOTE}(하네스별 키가 이긴다).",
+        "교차 검토 최대 시간(초)",
+        "이 시간이 지나면 끊음, 비우면 하네스별 기본값",
         default=None, required=False, group="additional_reviewer"),
     "additional_reviewer.idle_timeout": KeySpec(
-        f"리뷰어 실행의 무진행 판정 상한(초) — {_HARNESS_PROFILE_NOTE}(하네스별 키가 이긴다).",
+        "교차 검토 무응답 한계(초)",
+        "진행이 이만큼 없으면 멈춘 것으로 봄, 비우면 하네스별 기본값",
         default=None, required=False, group="additional_reviewer"),
     "additional_reviewer.progress_signal": KeySpec(
-        "리뷰어 진행 신호 형식 — 미설정이면 해소된 리뷰어 CLI 의 옵션 계약에서 파생한다.",
+        "교차 검토 진행 표시 방식",
+        "비우면 그 도구의 옵션에서 자동으로 정함",
         default=None, required=False, group="additional_reviewer"),
 }
 
 PATTERN_REGISTRY: dict[str, KeySpec] = {
     HARNESS_PATTERN: KeySpec(
-        "하네스별 실행 예산·모델. `idle_timeout`(무진행 판정·주)·`wall_timeout`(벽시계 백스톱)은 "
-        f"{_HARNESS_PROFILE_NOTE} — 미설정이어도 안전하다. `ctx_window_tokens` 는 그 하네스의 "
-        "컨텍스트 예산(미설정이면 `ctx.window_tokens`), `pro_model` 은 어댑터 카드 렌더 모델이다.",
+        "하네스별 실행 예산·모델",
+        "도구마다 따로 정하는 값, 최대 시간과 무응답 한계는 비우면 그 도구의 기본값, 대화 여유 기준과 어댑터 문서에 찍을 모델 이름",
         default=None, required=False, group="harness"),
     DELEGATE_ROLE_PATTERN: KeySpec(
-        "역할→하네스/모델/추론 강도 매핑. 세트를 통째로 쓴다(티어 간 상속 없음). `.hard` 는 난제 "
-        "티어, `.fallback` 은 인프라 실패(스폰 실패·타임아웃·한도/인증) 1회 대체다.",
+        "역할별 위임 대상",
+        "역할마다 도구·모델·추론 강도를 한 세트로, 어려움 티어와 실패 시 대체를 따로 둘 수 있고 세트 사이에 물려받기는 없음",
         default=None, required=False, group="delegate"),
     DELEGATE_ALIAS_PATTERN: KeySpec(
-        "모델 별칭 — 역할 키의 `model` 값에 이 이름을 적으면 여기 선언한 값으로 해소한다.",
+        "모델 별칭",
+        "모델 칸에 이 이름을 적으면 여기 정한 값으로 바꿔 씀",
         default=None, required=False, group="delegate"),
     DIFF_CAP_PATTERN: KeySpec(
-        "티켓 `estimate` 별 diff 총량(추가+삭제) 상한. 엔진이 모르는 estimate 는 상한을 지어내지 "
-        "않는다(가드 off).",
+        "티켓 크기별 변경량 상한",
+        "티켓 크기마다 허용할 추가·삭제 줄 수 합계, 모르는 크기에는 상한을 두지 않음",
         default=None, required=False, group="additional_reviewer"),
     PLATFORM_TEST_PATTERN: KeySpec(
-        "`qa.platforms` 에 선언한 platform 의 host-side wrapper 명령 (선언 없는 platform 키는 "
-        "모르는 키로 뜬다).",
+        "플랫폼별 테스트 명령",
+        "검증 플랫폼 목록에 적은 이름마다 하나씩, 목록에 없는 이름은 모르는 항목으로 표시",
         default=None, required=False, group="runtime"),
 }
 
@@ -582,12 +611,13 @@ def key_spec(key: str) -> KeySpec | None:
     spec = PATTERN_REGISTRY[pattern]
     if pattern == DIFF_CAP_PATTERN:
         # 상한이 estimate 마다 다르다 — 군 선언은 값을 담지 못하므로 이 키의 값으로 채워 준다.
-        return KeySpec(spec.description, default=DIFF_CAP_DEFAULTS[key.split(".")[1]],
+        return KeySpec(spec.label, spec.description, default=DIFF_CAP_DEFAULTS[key.split(".")[1]],
                        required=spec.required, group=spec.group)
     if pattern == DELEGATE_ROLE_PATTERN:
         # 축이 멤버마다 다르다(harness/model/reasoning) — 군 한 칸에 담기지 않으므로 이 키의
         # 접미로 채워 준다(`_delegate_pattern_for` 가 그 접미를 `_ROLE_SUFFIXES` 로 이미 닫았다).
-        return KeySpec(spec.description, default=spec.default, required=spec.required,
+        return KeySpec(spec.label, spec.description,
+                       default=spec.default, required=spec.required,
                        group=spec.group, choices=key.rsplit(".", 1)[1])
     return spec
 
@@ -704,7 +734,9 @@ def render_key_table() -> str:
 #
 # schema 2 = 1 + `choices`·`recommended`. `keys[]`·`members[]` 의 **모든 행**이 두 키를 갖고(없으면
 # null) 사람 표는 바이트 그대로다 — 새 필드는 이 기계 표면에만 산다.
-KEY_JSON_SCHEMA = 2
+# schema 3 = 2 + `label`(사람이 읽는 이름). 화면이 키 문자열을 행 이름으로 쓰지 않게 하려는 것이고,
+# 문구의 단일 소유는 계속 이 파일이다(화면 상수 0).
+KEY_JSON_SCHEMA = 3
 
 # 모델 목록을 불러오는 조회 명령 — 화면은 `arg` 이름의 플래그에 버킷 값을 실어 부른다
 # (`pm-config delegate models --harness <값> --json`). 명령 이름의 자리는 여기 하나다.
@@ -745,6 +777,30 @@ def _choices_json(key: str) -> dict | None:
     }
 
 
+# 한 줄로 묶이는 키군의 **줄 이름** — 화면이 `delegate.developer.hard` 같은 키를 그대로 이름으로
+# 쓰지 않게 한다. 축(역할·티어)은 이 모듈이 이미 소유하고, 여기서는 그 축의 사람 말 이름만 준다.
+_ROLE_LABELS = {
+    "developer": "구현",
+    "researcher": "조사",
+    "architect": "설계",
+    "code-reviewer": "검토",
+}
+_TIER_LABELS = {
+    "": "보통",
+    ".hard": "어려움",
+    ".fallback": "대체",
+    ".hard.fallback": "어려움 대체",
+}
+
+
+def _pattern_unit_labels(pattern: str) -> dict[str, str]:
+    """한 줄로 묶이는 키군의 `<줄 키> → 사람이 읽는 이름`. 묶지 않는 군은 빈 표다."""
+    if pattern != DELEGATE_ROLE_PATTERN:
+        return {}
+    return {f"delegate.{role}{tier}": f"{_ROLE_LABELS[role]}({_TIER_LABELS[tier]})"
+            for role in _role_names() for tier in _DELEGATE_TIERS}
+
+
 def _pattern_members(pattern: str) -> list[dict[str, str | None]]:
     """패턴 키군의 전개된 실명과 각 기본값 — 축은 이 모듈이 이미 소유한 선언에서 온다.
 
@@ -775,16 +831,19 @@ def key_registry_json() -> dict:
     `groups` 는 `KEY_GROUPS` 순서 그대로이고 그것이 화면의 절 순서다.
     """
     keys: list[dict] = [
-        {"key": key, "group": spec.group, "description": spec.description,
+        {"key": key, "group": spec.group, "label": spec.label,
+         "description": spec.description,
          "default": spec.default, "required": spec.required,
-         "kind": "key", "members": None,
+         "kind": "key", "members": None, "unit_labels": {},
          "choices": _choices_json(key), "recommended": recommended_for(key)}
         for key, spec in KEY_REGISTRY.items()
     ]
     keys.extend(
-        {"key": pattern, "group": spec.group, "description": spec.description,
+        {"key": pattern, "group": spec.group, "label": spec.label,
+         "description": spec.description,
          "default": spec.default, "required": spec.required,
          "kind": "pattern", "members": _pattern_members(pattern),
+         "unit_labels": _pattern_unit_labels(pattern),
          "choices": None, "recommended": None}
         for pattern, spec in PATTERN_REGISTRY.items()
     )
