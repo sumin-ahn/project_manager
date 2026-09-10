@@ -793,12 +793,25 @@ _TIER_LABELS = {
 }
 
 
+# 티켓 크기 세 값의 사람 이름 — 이름이 셋 다 같으면 화면에서 어느 줄인지 갈리지 않는다.
+_ESTIMATE_LABELS = {"small": "작은 티켓", "medium": "보통 티켓", "large": "큰 티켓"}
+
+
 def _pattern_unit_labels(pattern: str) -> dict[str, str]:
-    """한 줄로 묶이는 키군의 `<줄 키> → 사람이 읽는 이름`. 묶지 않는 군은 빈 표다."""
-    if pattern != DELEGATE_ROLE_PATTERN:
-        return {}
-    return {f"delegate.{role}{tier}": f"{_ROLE_LABELS[role]}({_TIER_LABELS[tier]})"
-            for role in _role_names() for tier in _DELEGATE_TIERS}
+    """키군 안에서 줄·행마다 갈리는 이름 `<키> → 사람이 읽는 이름`. 안 갈리는 군은 빈 표다.
+
+    군 선언의 이름 하나가 멤버 전부에 그대로 붙으면 같은 이름이 여러 줄에 서서 어느 줄이
+    무엇인지 갈리지 않는다. 축을 이 모듈이 소유한 군만 여기서 갈라 준다 — 채택자가 이름을
+    정하는 군(`harness.<name>`·`test.<platform>`·`delegate.model_alias.<name>`)은 그 이름
+    자체가 이미 갈라 주므로 지어내지 않는다.
+    """
+    if pattern == DELEGATE_ROLE_PATTERN:
+        return {f"delegate.{role}{tier}": f"{_ROLE_LABELS[role]}({_TIER_LABELS[tier]})"
+                for role in _role_names() for tier in _DELEGATE_TIERS}
+    if pattern == DIFF_CAP_PATTERN:
+        return {f"diff_cap.{name}": f"{PATTERN_REGISTRY[pattern].label} ({label})"
+                for name, label in _ESTIMATE_LABELS.items()}
+    return {}
 
 
 def _pattern_members(pattern: str) -> list[dict[str, str | None]]:

@@ -425,9 +425,11 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     </td>
   );
 
+  // 군 이름 하나가 멤버 전부에 붙으면 같은 이름이 여러 줄에 선다 — 갈리는 이름이 있으면 그것을
+  // 쓴다. 갈리는지 아닌지의 주인은 엔진 키 목록(`unit_labels`)이고 화면은 있으면 쓸 뿐이다.
   const keyRow = (row: Row) => (
     <tr key={row.key} data-testid={`conf-${row.key}`}>
-      {nameCell(row.label, row.key, row.description)}
+      {nameCell(unitLabels[row.key] ?? row.label, row.key, row.description)}
       <td className="py-0.5 pr-2">{field(row)}</td>
       <td className="w-32 py-0.5 pr-2 text-[11px]">
         <span className="flex gap-1 overflow-hidden whitespace-nowrap">
