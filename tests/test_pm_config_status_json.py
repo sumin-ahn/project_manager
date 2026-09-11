@@ -419,7 +419,8 @@ def test_status_json_missing_for_latest_reads_source_registry(home, tmp_path):
         source_conf.read_text(encoding="utf-8")
         + '\nKEY_REGISTRY["future.knob"] = KeySpec(\n'
           '    "다음 세대 키", "다음 세대가 요구하는 값",\n'
-          '    default=None, required=True, group=KEY_GROUPS[0])\n',
+          '    default=None, required=True, group=KEY_GROUPS[0],\n'
+          '    unset="다음 세대 없음")\n',
         encoding="utf-8")
     _ledger(home, [])
     _write(home / ".project_manager" / "local.conf", "project.name=demo\n")
