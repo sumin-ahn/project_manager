@@ -237,9 +237,9 @@ describe("다섯 목록의 배너와 행 표시", () => {
     await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1));
     // 버튼은 사본이 "표준과 다름" 이라 한 행에만 있다 — 기본값 없는 키도, 판정 밖 키도 없다.
     expect(screen.getByTestId("conf-ctx.stop_pct").querySelector("button")).toBeNull();
-    // 기본값은 따로 선 칸이 아니라 빈 칸 안에 있다 — 안 쓰면 무슨 값이 되는지가 칸에서 읽힌다.
-    expect(screen.getByLabelText("ctx.window_tokens"))
-      .toHaveAttribute("placeholder", "200000 (안 쓰면 이 값)");
+    // 안 쓴 칸은 비어 있지 않다 — 안 쓰면 적용되는 값이 그 칸에 채워져 있고 표식이 붙는다.
+    expect(screen.getByLabelText("ctx.window_tokens")).toHaveValue("200000");
+    expect(screen.getByTestId("conf-ctx.window_tokens")).toHaveTextContent("안 씀");
     openGroup("project");
     fireEvent.click(screen.getByTestId("show-unset"));           // 접힘은 숨김이 아니다
     expect(screen.getByLabelText("project.name"))

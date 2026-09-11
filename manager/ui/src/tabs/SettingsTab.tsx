@@ -6,7 +6,8 @@ import type {
 import { isError } from "../api";
 import AdapterSection from "../components/AdapterSection";
 import QuestionMode from "../components/QuestionMode";
-import { foldable, markedKeys, ROW_UNIT_FAMILY, unsetHint } from "../lib/settings-rows";
+import { foldable, markedKeys, ROW_UNIT_FAMILY, unsetFilled, unsetHint, unsetLabel,
+         unsetPlaceholder, UNSET_MARK } from "../lib/settings-rows";
 
 /** 설정 안 함 행을 보일지 — 화면 전체에 하나이고 다음에 열 때도 유지한다. */
 const SHOW_UNSET_KEY = "pm.settings.showUnset";
@@ -176,6 +177,8 @@ function RowMarks({ row, conf }: { row: Row; conf: ConfSection }) {
 const MANUAL_OPTION = "직접 입력";
 
 const INPUT = "w-full rounded border border-slate-200 px-1 font-mono text-[11px]";
+// 기본값이 서 있는 칸 — 사용자가 쓴 값과 같은 굵기면 둘을 눈으로 가를 수 없다.
+const INPUT_UNSET = `${INPUT} text-slate-400`;
 
 
 /**
@@ -184,6 +187,10 @@ const INPUT = "w-full rounded border border-slate-200 px-1 font-mono text-[11px]
  *   선택지 없음      → 텍스트 입력
  *   목록 조회 칸     → 텍스트 입력 + [목록 불러오기](누르기 전 조회 0 · 실패는 사유 그대로)
  *   그 밖의 선택지   → `<select>`(고른 값이 목록 밖이면 그 값도 항목으로 남긴다)
+ *
+ * 값을 비워 둔 칸은 비워 두지 않는다 — 안 써도 실제로 적용되는 기본값을 그 자리에 채우고 표식을
+ * 붙인다. 채운 값은 `edits` 에 들어가지 않으므로 저장 대상이 아니다(저장은 고친 칸만 쓴다).
+ * 채울지 여부와 문구는 규칙표가 소유한다.
  */
 function ValueField({ row, value, options, dependsValue, fetched, fetchError, manual, busy,
                       onChange, onFetch, onManual }: {
@@ -192,11 +199,20 @@ function ValueField({ row, value, options, dependsValue, fetched, fetchError, ma
   busy: boolean; onChange: (value: string) => void; onFetch: () => void; onManual: () => void;
 }) {
   const choices = row.choices;
+  const filled = unsetFilled(row, value);
+  const shown = filled ? unsetHint(row) : value;
+  const blank = unsetPlaceholder(row);
+  const mark = filled
+    ? <span className="whitespace-nowrap text-[11px] text-slate-400">{UNSET_MARK}</span>
+    : null;
   if (choices === null) {
     return (
-      <input aria-label={row.key} value={value} className={INPUT}
-             placeholder={unsetHint(row)}
-             onChange={(event) => onChange(event.target.value)} />
+      <span className="flex items-center gap-1">
+        <input aria-label={row.key} value={shown} className={filled ? INPUT_UNSET : INPUT}
+               placeholder={blank}
+               onChange={(event) => onChange(event.target.value)} />
+        {mark}
+      </span>
     );
   }
   // 고른 값이 목록에 없으면(사람이 직접 친 값·다른 세대의 값) 그 값을 지우지 않고 항목으로 남긴다.
@@ -208,9 +224,10 @@ function ValueField({ row, value, options, dependsValue, fetched, fetchError, ma
   if (choices.fetch !== null && (fetched === null || manual)) {
     return (
       <span className="flex items-center gap-1">
-        <input aria-label={row.key} value={value} className={INPUT}
-               placeholder={unsetHint(row)}
+        <input aria-label={row.key} value={shown} className={filled ? INPUT_UNSET : INPUT}
+               placeholder={blank}
                onChange={(event) => onChange(event.target.value)} />
+        {mark}
         {/* 안내는 버튼 위에 둔다 — 같은 줄의 선택 칸이 그 문구를 이미 눈에 보이게 낸다. */}
         <button type="button" data-testid={`models-${row.key}`} disabled={blocked || busy}
                 title={hint ?? undefined} onClick={onFetch}
@@ -228,12 +245,12 @@ function ValueField({ row, value, options, dependsValue, fetched, fetchError, ma
   const items = fetched === null ? options : fetched.models;
   return (
     <span className="flex items-center gap-1">
-      <select aria-label={row.key} value={value} className={INPUT}
+      <select aria-label={row.key} value={value} className={filled ? INPUT_UNSET : INPUT}
               onChange={(event) => {
                 if (fetched !== null && event.target.value === MANUAL_OPTION) onManual();
                 else onChange(event.target.value);
               }}>
-        <option value="">{unsetHint(row)}</option>
+        <option value="">{unsetLabel(row)}</option>
         {listed(items).map((item) => <option key={item} value={item}>{item}</option>)}
         {fetched !== null && <option value={MANUAL_OPTION}>{MANUAL_OPTION}</option>}
       </select>

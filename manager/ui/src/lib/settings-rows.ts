@@ -35,14 +35,39 @@ export function foldable(row: FoldRow, value: string, marked: Set<string>): bool
     && !marked.has(row.key);
 }
 
+/** 사용자가 쓴 값이 아니라 기본값이 서 있다는 표식 문구. */
+export const UNSET_MARK: string = rule.unset_hint.mark;
+
 /**
- * 그 칸을 비워 뒀을 때 실제로 쓰이는 값 — 빈 칸이 "아무 일도 안 일어난다" 로 읽히지 않게 한다.
+ * 그 칸을 비워 뒀을 때 실제로 쓰이는 값 — 빈 칸을 비워 두지 않고 **그 값으로 채운다**.
  *
  * 기본값 선언의 주인은 엔진 키 목록(`default` = 미설정 시 엔진이 쓰는 값)이고 문구의 주인은
- * 규칙표다. 화면은 받아 그리기만 한다.
+ * 규칙표다. 화면은 받아 그리기만 한다. 기본값이 없는 키는 채울 값이 없어 빈 칸 안내가 온다.
  */
 export function unsetHint(row: { default: string | null }): string {
   return row.default === null
     ? rule.unset_hint.none
     : rule.unset_hint.with_default.replace("{default}", row.default);
+}
+
+/**
+ * 그 칸에 기본값이 채워져 서는가 — 사용자가 쓴 값이 없고 채울 기본값이 있을 때.
+ *
+ * 이 판정도 규칙표 쪽이 소유한다. 화면이 `default === null` 을 다시 적으면 두 벌이 되어
+ * 한쪽만 고쳐지는 날 갈린다(접기 판정과 같은 이유).
+ */
+export function unsetFilled(row: { default: string | null }, value: string): boolean {
+  return value === "" && row.default !== null;
+}
+
+/** 채울 값이 없는 칸의 빈 칸 안내 — 채울 값이 있으면 안내가 아니라 값이 선다. */
+export function unsetPlaceholder(row: { default: string | null }): string | undefined {
+  return unsetFilled(row, "") ? undefined : rule.unset_hint.none;
+}
+
+/** 목록 칸에서 그 자리를 고를 때 보이는 한 줄 — 채운 값 + 표식이 한 항목에 들어간다. */
+export function unsetLabel(row: { default: string | null }): string {
+  return row.default === null
+    ? rule.unset_hint.none
+    : `${unsetHint(row)} (${UNSET_MARK})`;
 }
