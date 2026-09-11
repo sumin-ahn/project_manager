@@ -2617,6 +2617,60 @@ def test_force_rmtree_retries_then_gives_up_with_the_last_error(
     assert "다른 프로세스가 파일을 사용 중" in str(exc.value)
 
 
+_DIR_FD_RMTREE_SUPPORTED = (
+    hasattr(os, "O_DIRECTORY")
+    and os.open in getattr(os, "supports_dir_fd", frozenset())
+    and os.unlink in getattr(os, "supports_dir_fd", frozenset())
+)
+
+
+@pytest.mark.skipif(
+    not _DIR_FD_RMTREE_SUPPORTED or not posix_mode_supported()
+    or getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="dir_fd 결속 삭제 + mode 로 만든 읽기 전용 하위가 필요한 비-root POSIX 환경",
+)
+def test_force_rmtree_bound_to_a_parent_fd_clears_a_read_only_subtree(
+    file_lock, tmp_path,
+):
+    """부모 fd 에 결속한 삭제도 read-only 하위를 푼다 — 결속을 잃지 않고 잔재도 남기지 않는다.
+
+    맨 `shutil.rmtree(name, dir_fd=fd)` 는 같은 트리에서 `PermissionError [Errno 13] ...
+    'inner.txt'` 로 실패한다(실측). 에러 훅이 받는 경로는 그 fd 기준 상대경로라, 속성 해제와
+    재시도를 프로세스 cwd 기준으로 하면 `FileNotFoundError [Errno 2] ... 'c4/ro'` 로 죽는다.
+    """
+    attempt = tmp_path / "attempt"
+    read_only = attempt / "pytest_full" / "ro"
+    read_only.mkdir(parents=True)
+    (read_only / "inner.txt").write_text("green", encoding="utf-8")
+    read_only.chmod(0o500)
+    parent_fd = os.open(str(tmp_path), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(PermissionError):
+            shutil.rmtree(attempt.name, dir_fd=parent_fd)   # 픽스처가 실패를 재현한다
+        assert attempt.exists()
+
+        file_lock.force_rmtree(attempt, dir_fd=parent_fd)
+
+        assert not attempt.exists(), "force_rmtree 뒤에도 트리가 남음"
+    finally:
+        os.close(parent_fd)
+        if read_only.exists():
+            read_only.chmod(0o700)
+
+
+@pytest.mark.skipif(
+    not _DIR_FD_RMTREE_SUPPORTED, reason="dir_fd 결속 삭제가 없는 플랫폼")
+def test_force_rmtree_bound_to_a_parent_fd_treats_absence_as_success(
+    file_lock, tmp_path,
+):
+    """결속 삭제에서도 부재는 성공이다 — 경쟁 삭제가 목적(없다)을 먼저 이룬 경우."""
+    parent_fd = os.open(str(tmp_path), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        file_lock.force_rmtree(tmp_path / "never-existed", dir_fd=parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
 def test_force_unlink_removes_a_file_a_plain_unlink_cannot(file_lock, tmp_path):
     """쓰기 권한 없는 디렉토리 안의 read-only 파일도 지운다 (맨 unlink 는 거부된다)."""
     tree = _read_only_tree(tmp_path / "tree")

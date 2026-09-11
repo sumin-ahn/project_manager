@@ -765,7 +765,7 @@ FORCE_DELETE_RETRIES = 3
 FORCE_DELETE_RETRY_SLEEP_SECONDS = 0.05
 
 
-def _clear_delete_block(path: Path) -> None:
+def _clear_delete_block(path: Path | str, *, dir_fd: int | None = None) -> None:
     """삭제를 막는 read-only 속성을 **대상과 그 부모**에서 푼다 (best-effort).
 
     두 플랫폼의 규칙이 달라 둘 다 푼다 — Windows 는 *그 파일 자신*의 read-only 속성이 unlink 를
@@ -774,10 +774,15 @@ def _clear_delete_block(path: Path) -> None:
 
     symlink 는 건너뛴다 — `os.chmod` 가 링크를 따라가 **대상**의 권한을 바꾸는데, 링크 삭제에는
     대상 권한이 필요 없다(정리하다 남의 파일 권한을 바꾸지 않는다).
+
+    `dir_fd` 를 받으면 경로를 그 디렉토리 fd 기준으로 해소한다 — fd 결속 삭제의 에러 훅이 주는
+    경로가 fd 기준 상대경로라, 프로세스 cwd 기준으로 풀면 다른 자리를 만지거나 `FileNotFoundError`
+    로 죽는다. `os.lstat` 은 `dir_fd` 를 받지 않으므로 같은 뜻의 `os.stat(follow_symlinks=False)` 다.
     """
-    for target in (path.parent, path):
+    target_path = Path(path)
+    for target in (target_path.parent, target_path):
         try:
-            info = os.lstat(target)
+            info = os.stat(target, dir_fd=dir_fd, follow_symlinks=False)
         except OSError:
             continue
         if stat.S_ISLNK(info.st_mode):
@@ -786,10 +791,16 @@ def _clear_delete_block(path: Path) -> None:
         if stat.S_ISDIR(info.st_mode):
             mode |= stat.S_IXUSR  # 디렉토리는 탐색 권한이 있어야 안의 항목에 닿는다.
         with contextlib.suppress(OSError):
-            os.chmod(target, mode)
+            os.chmod(target, mode, dir_fd=dir_fd)
 
 
-def _rmtree_clearing_readonly(target: Path) -> None:
+# fd 결속 삭제에서 에러 훅이 준 항목을 **같은 기준으로** 다시 부를 수 있는 primitive.
+# `os.scandir`/`os.path.islink` 는 `dir_fd` 를 받지 않는다 — 그 실패는 다른 기준으로 재시도하지
+# 않고 원인을 그대로 올린다(열거 재시도는 삭제 진행에 기여하지도 않는다).
+_DIR_FD_RETRYABLE = (os.unlink, os.rmdir, os.open, os.stat)
+
+
+def _rmtree_clearing_readonly(target: Path | str, *, dir_fd: int | None = None) -> None:
     """`shutil.rmtree` 한 번 — 항목별 실패마다 read-only 를 풀고 그 항목만 즉시 재시도한다.
 
     fd 기반 순회(`shutil.rmtree.avoids_symlink_attacks`)를 잃지 않으려고 직접 순회를 다시 짜지
@@ -797,20 +808,30 @@ def _rmtree_clearing_readonly(target: Path) -> None:
     (func, path, exc) 로 갈렸고 옛 이름은 DeprecationWarning 이라 버전으로 갈라 부른다
     (엔진 지원 하한은 3.11).
     """
-    def _retry_after_unlock(func, failed_path, _exc) -> None:
-        _clear_delete_block(Path(failed_path))
-        func(failed_path)   # 이 재시도의 실패는 그대로 올라간다 — 바깥 루프가 받는다.
+    def _retry_after_unlock(func, failed_path, exc) -> None:
+        _clear_delete_block(failed_path, dir_fd=dir_fd)
+        # 이 재시도의 실패는 그대로 올라간다 — 바깥 루프가 받는다.
+        if dir_fd is None:
+            func(failed_path)
+        elif func in _DIR_FD_RETRYABLE:
+            func(failed_path, dir_fd=dir_fd)
+        else:
+            raise exc
 
     if sys.version_info >= (3, 12):
-        shutil.rmtree(target, onexc=_retry_after_unlock)
+        shutil.rmtree(target, dir_fd=dir_fd, onexc=_retry_after_unlock)
     else:
         shutil.rmtree(
             target,
+            dir_fd=dir_fd,
             onerror=lambda func, p, excinfo: _retry_after_unlock(func, p, excinfo[1]),
         )
 
 
-def force_rmtree(path: Path | str, *, retries: int = FORCE_DELETE_RETRIES) -> None:
+def force_rmtree(
+    path: Path | str, *, dir_fd: int | None = None,
+    retries: int = FORCE_DELETE_RETRIES,
+) -> None:
     """디렉토리 트리를 **실제로** 지운다 — 못 지우면 조용히 넘어가지 않고 예외를 올린다.
 
     read-only 항목은 속성을 풀어 그 자리에서 재시도하고, 그래도 실패하면 짧게 기다렸다 트리
@@ -818,15 +839,22 @@ def force_rmtree(path: Path | str, *, retries: int = FORCE_DELETE_RETRIES) -> No
     호출부는 그 실패를 사용자가 볼 수 있는 조치 문구로 번역하거나 그대로 올린다.
 
     **부재는 성공**이다(정리의 목적은 "없다"이고 경쟁 삭제도 그 목적을 이룬다).
+
+    `dir_fd` 를 주면 삭제를 그 디렉토리 fd 에 결속한다 — 대상은 **그 fd 의 직계 이름**으로만
+    해소되므로 도중에 부모 경로가 바뀌어도 다른 자리를 지우지 않는다. 호출부는 언제나 전체
+    경로를 주고(진단 문구가 그 값이다) 이름 변환은 이 seam 이 한다.
     """
     target = Path(path)
+    resolved = target.name if dir_fd is not None else target
     attempts = max(1, retries)
     last_error: OSError | None = None
     for attempt in range(attempts):
-        if not os.path.lexists(target):
-            return
         try:
-            _rmtree_clearing_readonly(target)
+            os.stat(resolved, dir_fd=dir_fd, follow_symlinks=False)
+        except OSError:
+            return                      # 부재(또는 닿을 수 없음) — 목적은 "없다"다.
+        try:
+            _rmtree_clearing_readonly(resolved, dir_fd=dir_fd)
             return
         except FileNotFoundError:
             return                      # 경쟁 삭제 — 목적(부재)은 달성됐다.
