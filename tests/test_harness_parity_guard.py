@@ -73,8 +73,6 @@ CONDITION_BRANCHES: dict[LedgerKey, Site] = {
         "CLI 형식 — opencode 만 프롬프트를 stdin 이 아니라 `--file` 첨부로 받는다"),
     ("delegate_channel_guard.py", "decide", "claude"): Site(
         "CLI 형식 — claude 네이티브 Task tool 이 있는 세션에서만 네이티브 경로를 고른다"),
-    ("pm_config.py", "_print_delegate_model_guidance", "opencode"): Site(
-        "안내 문구 — opencode 만 로컬 GPU 모델 표기를 별도로 안내한다"),
     ("pm_delegate.py", "_build_target_argv", "codex"): Site(
         "argv 조립 — codex 빌더 분기(형식 계약은 pm_relay 소유)"),
     ("pm_delegate.py", "_build_target_argv", "claude"): Site(
@@ -90,8 +88,6 @@ CONDITION_BRANCHES: dict[LedgerKey, Site] = {
         "어댑터 설치 — 라이브 스모크 러너의 codex CLI argv"),
     ("pm_import.py", "_build_runner_argv", "opencode"): Site(
         "어댑터 설치 — 라이브 스모크 러너의 opencode CLI argv"),
-    ("pm_import.py", "_real_models_runner", "opencode"): Site(
-        "어댑터 설치 — opencode 만 실 모델 목록을 CLI 로 조회한다"),
     ("pm_import.py", "add_harness", "claude"): Site(
         "어댑터 설치 — claude 타깃의 어댑터 디렉터리 배치"),
     ("pm_import.py", "add_harness", "codex"): Site(

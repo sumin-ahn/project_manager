@@ -9,10 +9,10 @@
     3(조회 실패) 이다. **빈 목록 성공은 없다** — 0개면 실패이고 사유가 stderr 로 나온다.
   - 조회는 읽기 전용이다. 실행 전후로 트리가 한 바이트도 바뀌지 않는다.
 
-opencode(`kind="live"`)는 **실 subprocess 층**으로 친다: 조회 seam(`pm_import._real_models_runner`)
-을 가짜로 갈아끼우지 않고, `opencode` 가 없는 격리 PATH 로 자식을 돌려 `shutil.which` 분기가 실제로
-도는 것을 본다(라이브 CLI 의존 0 — 있는 환경 전용 단언은 두지 않는다). codex(`kind="config"`)는
-`CODEX_HOME`/홈 아래 config 를 tmp 로 돌려 hermetic 하다.
+live 원천(codex·opencode)은 **실 subprocess 층**으로 친다: 조회 seam(`pm_import._real_models_runner`)
+을 가짜로 갈아끼우지 않고, 그 실행 파일이 없는 격리 PATH 로 자식을 돌려 `shutil.which` 분기가 실제로
+도는 것을 본다(라이브 CLI 의존 0 — 있는 환경 전용 단언은 두지 않는다). 두 하네스가 다른 것은 원천
+표의 `command`·`parse` 값뿐이라 판정이 하네스 이름이 아니라 kind 로만 갈린다.
 """
 from __future__ import annotations
 
