@@ -73,15 +73,6 @@ def _payload(completed: subprocess.CompletedProcess) -> dict:
     return json.loads(completed.stdout)
 
 
-def _codex_home(tmp_path: Path, body: str | None) -> dict:
-    """tmp `CODEX_HOME` — 본문을 주면 `config.toml` 을 깐다(없으면 빈 홈)."""
-    home = tmp_path / "codex-home"
-    home.mkdir(exist_ok=True)
-    if body is not None:
-        (home / "config.toml").write_text(body, encoding="utf-8")
-    return {"CODEX_HOME": str(home)}
-
-
 def _empty_path(tmp_path: Path) -> dict:
     """실행 파일이 하나도 없는 PATH — `shutil.which` 가 실제로 부재를 만난다."""
     empty = tmp_path / "empty-bin"
@@ -105,58 +96,37 @@ def test_an_alias_harness_answers_from_the_declared_table(relay):
                         "models": list(relay.MODEL_SOURCE["claude"].values)}
 
 
-def test_the_response_never_carries_the_free_text_axis(tmp_path):
-    """응답 키는 셋뿐이다 — `free_text` 는 레지스트리 `choices` 가 소유한다(두 자리 금지)."""
-    alias = _payload(_run(*MODELS_ARGV, "--harness", "claude", "--json"))
-    config = _payload(_run(*MODELS_ARGV, "--harness", "codex", "--json",
-                           env_extra=_codex_home(tmp_path, 'model = "gpt-tmp-1"\n')))
+def test_the_response_never_carries_the_free_text_axis(pc, capsys):
+    """응답 키는 셋뿐이다 — `free_text` 는 레지스트리 `choices` 가 소유한다(두 자리 금지).
 
-    for document in (alias, config):
+    두 kind 를 다 본다: alias 는 실 서브프로세스로, live 는 조회 seam 주입으로(라이브 CLI 를
+    테스트 통과 조건으로 삼지 않는다).
+    """
+    alias = _payload(_run(*MODELS_ARGV, "--harness", "claude", "--json"))
+
+    rc = pc.cmd_delegate_models(SimpleNamespace(harness="opencode", json=True),
+                                models_runner=lambda source=None: (True, ["provider/model"]))
+    live = json.loads(capsys.readouterr().out.strip())
+
+    assert rc == 0
+    for document in (alias, live):
         assert set(document) == {"harness", "kind", "models"}, document
 
 
-# ── ② config 원천(codex) — 경로는 표가 정한다 ──────────────────────────────
+# ── ② live 원천(codex·opencode) — 실 subprocess 층 ─────────────────────────
 
 
-def test_a_config_harness_reads_the_model_declared_under_the_env_home(tmp_path):
-    """`CODEX_HOME` 이 있으면 그 아래 config 의 최상위 `model` 이 현재 값이다."""
-    document = _payload(_run(*MODELS_ARGV, "--harness", "codex", "--json",
-                             env_extra=_codex_home(tmp_path, 'model = "gpt-tmp-1"\n')))
+def test_the_codex_source_is_a_catalog_query_not_a_config_read(relay):
+    """codex 는 현재 값 하나가 아니라 카탈로그를 준다 — `codex debug models` 실측(0.02~0.34초).
 
-    assert document == {"harness": "codex", "kind": "config", "models": ["gpt-tmp-1"]}
+    옛 선언은 `~/.codex/config.toml` 의 `model` 한 줄을 읽어 **설정된 값 하나**만 냈고, 그래서
+    설정 화면 모델 칸에 고를 것이 하나뿐이었다. 열거 수단이 없다는 전제가 틀렸다.
+    """
+    source = relay.MODEL_SOURCE["codex"]
 
-
-def test_a_config_harness_falls_back_to_the_home_path_without_the_env(tmp_path, relay):
-    """env 가 없으면 홈 아래 선언 경로를 읽는다 — 두 자리 다 표에서 온다."""
-    home = tmp_path / "home"
-    config = home / relay.MODEL_SOURCE["codex"].config_home
-    config.parent.mkdir(parents=True)
-    config.write_text('model = "gpt-home-1"\n', encoding="utf-8")
-
-    document = _payload(_run(
-        *MODELS_ARGV, "--harness", "codex", "--json", drop=("CODEX_HOME",),
-        env_extra={"HOME": str(home), "USERPROFILE": str(home)}))
-
-    assert document == {"harness": "codex", "kind": "config", "models": ["gpt-home-1"]}
-
-
-@pytest.mark.parametrize("body", [
-    pytest.param(None, id="config-absent"),
-    pytest.param("other = 1\n", id="key-absent"),
-    pytest.param("model = 3\n", id="not-a-string"),
-    pytest.param('model = "   "\n', id="blank"),
-])
-def test_a_config_that_declares_no_model_is_a_failure_not_an_empty_list(tmp_path, body):
-    """읽지 못한 자리에 값을 지어내지 않는다 — 부재·키 없음·문자열 아님은 전부 rc 3 이다."""
-    completed = _run(*MODELS_ARGV, "--harness", "codex", "--json",
-                     env_extra=_codex_home(tmp_path, body))
-
-    assert completed.returncode == 3, completed.stdout
-    assert completed.stdout == ""
-    assert "config.toml" in completed.stderr and "codex" in completed.stderr
-
-
-# ── ③ live 원천(opencode) — 실 subprocess 층 ───────────────────────────────
+    assert source.kind == "live"
+    assert source.command == ("codex", "debug", "models")
+    assert source.parse == "json-slug"
 
 
 def test_a_live_harness_without_its_binary_fails_loudly(tmp_path):
@@ -187,7 +157,7 @@ def test_an_empty_live_list_is_never_a_success(pc, relay):
     """조회가 0개를 주면 성공이 아니다 — 빈 목록을 성공으로 위장하지 않는다."""
     args = SimpleNamespace(harness="opencode", json=True)
 
-    rc = pc.cmd_delegate_models(args, models_runner=lambda: (True, []))
+    rc = pc.cmd_delegate_models(args, models_runner=lambda source=None: (True, []))
 
     assert rc == 3
 
@@ -196,8 +166,8 @@ def test_an_unknown_source_kind_is_fail_loud(pc):
     """표에 없는 `kind` 는 선언과 판정이 갈린 것이다 — 조용히 빈 목록으로 내려가지 않는다."""
     with pytest.raises(ValueError):
         pc._delegate_models(SimpleNamespace(
-            kind="nope", values=(), config_env=None, config_home=None,
-            config_key=None, value_format="", how_to_check=""))
+            kind="nope", values=(), command=None, parse=None,
+            value_format="", how_to_check=""))
 
 
 # ── ④ 받는 모양 — rc 2 ─────────────────────────────────────────────────────
@@ -257,12 +227,11 @@ def test_a_lookup_writes_nothing(tmp_path):
     (project / ".project_manager").mkdir(parents=True)
     (project / ".project_manager" / "local.conf").write_text(
         "runtime.py=python3\n", encoding="utf-8")
-    env_extra = _codex_home(tmp_path, 'model = "gpt-tmp-1"\n')
-    env_extra.update(_empty_path(tmp_path))
-    before = (tree_snapshot(project), tree_snapshot(tmp_path / "codex-home"))
+    env_extra = _empty_path(tmp_path)
+    before = tree_snapshot(project)
 
     for harness in ("claude", "codex", "opencode"):
         _run(*MODELS_ARGV, "--harness", harness, "--json",
              env_extra=env_extra, cwd=project)
 
-    assert (tree_snapshot(project), tree_snapshot(tmp_path / "codex-home")) == before
+    assert tree_snapshot(project) == before

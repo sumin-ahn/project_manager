@@ -421,19 +421,6 @@ def test_an_alias_harness_comes_back_as_the_copys_own_table(api, pm_home):
     assert response == {"harness": name, "kind": "alias", "models": list(source.values)}
 
 
-def test_a_config_harness_comes_back_as_the_declared_model(api, pm_home, tmp_path, monkeypatch):
-    name, source = _harness_of(pm_home, "config")
-    declared = tmp_path / "cli-home"
-    declared.mkdir()
-    (declared / Path(source.config_home).name).write_text(
-        f'{source.config_key} = "model-in-config"\n', encoding="utf-8")
-    monkeypatch.setenv(source.config_env, str(declared))
-
-    response = api.delegate_models(str(pm_home), name)
-
-    assert response == {"harness": name, "kind": "config", "models": ["model-in-config"]}
-
-
 def test_a_live_query_that_fails_is_an_error_dict_not_an_empty_list(api, pm_home, tmp_path,
                                                                     monkeypatch):
     """조회 실패는 실패다 — 0개를 성공으로 접으면 화면이 "고를 것이 없다" 로 보인다."""

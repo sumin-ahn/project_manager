@@ -430,7 +430,8 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     return (
       <ValueField
         row={row} value={valueOf(row.key)} options={bucket} dependsValue={dependsValue}
-        fetched={choices?.fetch && harness !== "" ? models[harness] ?? null : null}
+        fetched={choices?.fetch && harness !== ""
+                 ? models[harness] ?? settings?.models?.[harness] ?? null : null}
         fetchError={choices?.fetch && harness !== "" ? modelErrors[harness] ?? null : null}
         manual={manual[row.key] === true} busy={busy} on={isOn(row.key)}
         onChange={(next) => setEdits((previous) => ({ ...previous, [row.key]: next }))}

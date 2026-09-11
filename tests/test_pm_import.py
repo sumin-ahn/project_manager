@@ -134,7 +134,7 @@ def _hermetic_opencode_models(request, pm_import, monkeypatch):
     """
     if request.function.__name__.startswith("test_real_models_runner"):
         return
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
+    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source=None: (False, []))
 
 
 def _consumption_time_token_owners(pm_import) -> dict[str, frozenset]:
@@ -3293,7 +3293,7 @@ def _stub_models_runner(ok=True, models=None):
     """`opencode models` 조회 seam stub — 라이브 CLI 미실행. (ok, models) 고정 반환."""
     payload = list(models) if models is not None else list(_FAKE_MODELS)
 
-    def _runner():
+    def _runner(source=None):
         return ok, payload
     return _runner
 
@@ -3796,6 +3796,16 @@ def test_substitute_model_token_scoped_to_copied(pm_import, tmp_path):
         "_substitute_model_token 이 copied_relpaths 밖 파일을 치환함(비파괴 위반)."
 
 
+class _LiveSource:
+    """조회 원천 모사 — 러너가 보는 필드만(`command`·`parse`). 표의 실값과 같은 모양이다."""
+
+    command = ("opencode", "models")
+    parse = "lines"
+
+
+_LIVE_SOURCE = _LiveSource()
+
+
 def test_real_models_runner_no_binary_fail_soft(pm_import, monkeypatch):
     """_real_models_runner: opencode 바이너리 부재(which None) → (False, []) fail-soft.
 
@@ -3806,7 +3816,7 @@ def test_real_models_runner_no_binary_fail_soft(pm_import, monkeypatch):
         pm_import.subprocess, "run",
         lambda *a, **k: pytest.fail("which None 인데 subprocess 가 호출됨 — 라이브 CLI 위험."),
     )
-    ok, models = pm_import._real_models_runner()
+    ok, models = pm_import._real_models_runner(_LIVE_SOURCE)
     assert ok is False and models == []
 
 
@@ -3826,7 +3836,7 @@ class _FakeResult:
 def test_real_models_runner_no_binary_surfaces_reason(pm_import, monkeypatch, capsys):
     """which None → (False, []) 유지 + stderr 에 PATH 부재 사유 surface."""
     monkeypatch.setattr(pm_import.shutil, "which", lambda b: None)
-    ok, models = pm_import._real_models_runner()
+    ok, models = pm_import._real_models_runner(_LIVE_SOURCE)
     assert ok is False and models == []
     err = capsys.readouterr().err
     assert "PATH 부재" in err
@@ -3839,7 +3849,7 @@ def test_real_models_runner_nonzero_rc_surfaces_reason(pm_import, monkeypatch, c
         pm_import.subprocess, "run",
         lambda *a, **k: _FakeResult(returncode=2, stdout="", stderr="boom failure detail"),
     )
-    ok, models = pm_import._real_models_runner()
+    ok, models = pm_import._real_models_runner(_LIVE_SOURCE)
     assert ok is False and models == []
     err = capsys.readouterr().err
     assert "rc=2" in err
@@ -3854,7 +3864,7 @@ def test_real_models_runner_nonzero_rc_truncates_stderr(pm_import, monkeypatch, 
         pm_import.subprocess, "run",
         lambda *a, **k: _FakeResult(returncode=1, stdout="", stderr=long_detail),
     )
-    pm_import._real_models_runner()
+    pm_import._real_models_runner(_LIVE_SOURCE)
     err = capsys.readouterr().err
     assert "x" * 200 in err
     assert "x" * 201 not in err
@@ -3869,7 +3879,7 @@ def test_real_models_runner_timeout_surfaces_reason(pm_import, monkeypatch, caps
         raise pm_import.subprocess.TimeoutExpired(cmd="opencode models", timeout=60)
 
     monkeypatch.setattr(pm_import.subprocess, "run", _raise_timeout)
-    ok, models = pm_import._real_models_runner()
+    ok, models = pm_import._real_models_runner(_LIVE_SOURCE)
     assert ok is False and models == []
     err = capsys.readouterr().err
     assert "60s timeout 초과" in err
@@ -3884,7 +3894,7 @@ def test_real_models_runner_exception_surfaces_reason(pm_import, monkeypatch, ca
         raise RuntimeError("unexpected explosion")
 
     monkeypatch.setattr(pm_import.subprocess, "run", _raise)
-    ok, models = pm_import._real_models_runner()
+    ok, models = pm_import._real_models_runner(_LIVE_SOURCE)
     assert ok is False and models == []
     err = capsys.readouterr().err
     assert "예외" in err
@@ -3899,7 +3909,7 @@ def test_real_models_runner_parse_zero_surfaces_reason(pm_import, monkeypatch, c
         pm_import.subprocess, "run",
         lambda *a, **k: _FakeResult(returncode=0, stdout="banner line\nno slash here\n"),
     )
-    ok, models = pm_import._real_models_runner()
+    ok, models = pm_import._real_models_runner(_LIVE_SOURCE)
     assert ok is True and models == []
     err = capsys.readouterr().err
     assert "모델 0개 파싱" in err
@@ -3914,7 +3924,7 @@ def test_real_models_runner_success_no_reason(pm_import, monkeypatch, capsys):
             returncode=0, stdout="ollama/gemma4:26b\nopencode/big-pickle\n"
         ),
     )
-    ok, models = pm_import._real_models_runner()
+    ok, models = pm_import._real_models_runner(_LIVE_SOURCE)
     assert ok is True
     assert models == ["ollama/gemma4:26b", "opencode/big-pickle"]
     assert capsys.readouterr().err == ""
@@ -3965,7 +3975,7 @@ def test_real_models_runner_uses_resolved_timeout(pm_import, monkeypatch):
         return _FakeResult(returncode=0, stdout="ollama/gemma4:26b\n")
 
     monkeypatch.setattr(pm_import.subprocess, "run", _capture)
-    pm_import._real_models_runner()
+    pm_import._real_models_runner(_LIVE_SOURCE)
     assert seen["timeout"] == 200
 
 
@@ -6239,3 +6249,32 @@ def test_sync_adapter_config_accept_reports_failure_rc_without_success_claim(
     assert rc == 1, "원장 기록 실패인데 성공 rc"
     assert "ledger-failed" in captured.err, captured.err
     assert "자동 갱신 궤도" not in captured.out, f"거짓 성공 안내: {captured.out!r}"
+
+
+def test_the_json_catalog_parser_takes_slugs_and_nothing_else(pm_import):
+    """`codex debug models` 산출 판독 — `models[].slug` 만 모은다(빈 값·비문자열 제외).
+
+    카탈로그는 slug 말고도 설명·추론 등급을 잔뜩 싣는다. 그 중 모델 칸에 적을 수 있는 값은
+    slug 뿐이라 나머지를 끌고 오면 화면이 고를 수 없는 값을 보인다.
+    """
+    output = json.dumps({"models": [
+        {"slug": "gpt-6-astra", "display_name": "GPT-6-Astra"},
+        {"slug": "  ", "display_name": "공백"},
+        {"display_name": "slug 없음"},
+        {"slug": 3},
+        {"slug": "gpt-5.6-sol"},
+    ]})
+
+    assert pm_import._parse_models("json-slug", output) == ["gpt-6-astra", "gpt-5.6-sol"]
+
+
+def test_a_catalog_that_is_not_json_parses_to_nothing(pm_import):
+    """판독 실패는 빈 목록이다 — 러너가 그것을 '0개 파싱' 으로 loud 하게 만든다(성공 위장 0)."""
+    assert pm_import._parse_models("json-slug", "not json at all") == []
+    assert pm_import._parse_models("json-slug", '{"models": "wrong shape"}') == []
+
+
+def test_an_undeclared_parse_name_yields_nothing(pm_import):
+    """표가 모르는 판독 이름은 조용히 아무 형식으로나 읽지 않는다."""
+    assert pm_import._parse_models(None, "anything") == []
+    assert pm_import._parse_models("nope", "anything") == []

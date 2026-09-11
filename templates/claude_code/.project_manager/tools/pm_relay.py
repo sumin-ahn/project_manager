@@ -1087,17 +1087,16 @@ class ModelSource(NamedTuple):
     모델은 자주 바뀌므로 하드코딩은 곧 stale 이다. `kind` 가 읽는 방식을 정하고 소비자는 그 값으로만
     갈린다(하네스 이름 분기 0):
       · `alias`  — CLI 가 계약한 별칭이 `values` 에 있다(그 CLI `--help` 실측).
-      · `config` — 사용자 config 파일의 키 하나가 현재 값이다(`config_env`·`config_home`·`config_key`).
-      · `live`   — CLI 조회 명령이 목록을 준다(조회 seam 은 `pm_import._real_models_runner`).
+      · `live`   — `command` 가 목록을 준다. 산출 형식은 CLI 마다 달라 `parse` 가 **값으로**
+                   고른다(하네스 이름 분기 0 · 조회 seam 은 `pm_import._real_models_runner`).
 
     `value_format`·`how_to_check` 는 사람 안내 문구다(`pm_config` 의 `[m]` 위임 모델 안내).
     """
 
     kind: str
     values: tuple[str, ...]
-    config_env: str | None
-    config_home: str | None
-    config_key: str | None
+    command: tuple[str, ...] | None    # `live` 의 조회 명령 (alias 는 None)
+    parse: str | None                  # 그 산출을 읽는 방식 이름 (alias 는 None)
     value_format: str
     how_to_check: str
 
@@ -1107,14 +1106,13 @@ class ModelSource(NamedTuple):
 MODEL_SOURCE: dict[str, ModelSource] = {
     # `claude --help` 실측: "Provide an alias for the latest model (e.g. 'fable', 'opus', or
     # 'sonnet') or a model's full name (e.g. 'claude-fable-5')."
-    "claude": ModelSource("alias", ("fable", "opus", "sonnet"), None, None, None,
+    "claude": ModelSource("alias", ("fable", "opus", "sonnet"), None, None,
                           "별칭 또는 풀네임", "`claude --help` 의 모델 옵션 설명"),
-    # codex 는 목록 서브커맨드가 없다 — `-c/--config` 도움말이 기본 경로로 명시하는
-    # `~/.codex/config.toml`(env `CODEX_HOME` 이 있으면 그 아래)의 최상위 `model` 이 현재 값이다.
-    "codex": ModelSource("config", (), "CODEX_HOME", ".codex/config.toml", "model",
-                         "사용자 codex config 가 인정하는 문자열",
-                         "사용자 codex config 의 모델 설정"),
-    "opencode": ModelSource("live", (), None, None, None,
+    # `codex debug models` 가 카탈로그를 JSON 으로 낸다(`{"models":[{"slug":…}]}`). 카탈로그는
+    # 바이너리에 번들돼 있어 사실상 로컬 조회다 — 실측 0.34초(cold) · 0.02초(warm).
+    "codex": ModelSource("live", (), ("codex", "debug", "models"), "json-slug",
+                         "카탈로그의 slug 또는 풀네임", "`codex debug models`"),
+    "opencode": ModelSource("live", (), ("opencode", "models"), "lines",
                             "provider/model", "`opencode models`"),
 }
 

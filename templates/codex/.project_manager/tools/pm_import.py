@@ -420,8 +420,6 @@ FREE_FORM_TOKENS = (
 OPENCODE_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
 
 # `opencode models` 조회 명령 — 가용 모델의 단일 진실(LLM 추측 아님). 줄당 `provider/model`.
-OPENCODE_MODELS_CMD = ("opencode", "models")
-
 # fill 실 하니스 구동 게이트 환경변수(호출 횟수 축 — 무엇을 보여줄지가 아니라 몇 번 부를지다).
 # PM_IMPORT_LIVE_HARNESS=1
 # AND --fill auto 동시 충족 시만 실 runner 호출 — 둘 중 하나라도 없으면 stub/manual 강제.
@@ -3797,25 +3795,30 @@ class ModelResolveResult:
                 f"model={self.model!r}, changed={self.changed!r})")
 
 
-def _real_models_runner() -> tuple[bool, list[str]]:
-    """실 `opencode models` 를 subprocess 로 조회(fail-soft). 반환: (성공 여부, 모델 목록).
+def _real_models_runner(source) -> tuple[bool, list[str]]:
+    """표가 선언한 조회 명령을 subprocess 로 돌린다(fail-soft). 반환: (성공 여부, 모델 목록).
 
-    _real_harness_runner 선례 — 예외를 raise 하지 않고 (False, []) 로 감싼다. opencode 바이너리가
-    PATH 에 없으면(shutil.which 부재) subprocess 도 안 띄우고 즉시 (False, []) — fail-soft.
-    stdout 은 _parse_opencode_models 로 줄단위 provider/model 파싱한다.
+    명령과 산출 판독 방식은 `pm_relay.MODEL_SOURCE` 의 `command`·`parse` 가 **값으로** 정한다 —
+    이 함수에 하네스 이름 분기는 없다. _real_harness_runner 선례대로 예외를 raise 하지 않고
+    (False, []) 로 감싼다. 바이너리가 PATH 에 없으면 subprocess 도 안 띄우고 즉시 (False, []).
 
-    fail-soft 는 유지(import 안 깸)하되 *침묵*은 제거한다 — 각 실패 분기에서 stderr 로
-    사유 1줄을 surface 해 사용자가 다음 실행 때 왜 자동해소가 실패했는지(PATH/rc/timeout/parse)를
-    본다. 타임아웃은 _opencode_models_timeout()
-    (env PM_OPENCODE_MODELS_TIMEOUT > 기본 60)으로 해소한다.
+    fail-soft 는 유지(import 안 깸)하되 *침묵*은 제거한다 — 각 실패 분기에서 stderr 로 사유
+    1줄을 surface 해 왜 자동해소가 실패했는지(PATH/rc/timeout/parse)를 남긴다. 타임아웃은
+    _opencode_models_timeout()(env PM_OPENCODE_MODELS_TIMEOUT > 기본 60) 하나다 — 조회 축이
+    하나라 노브도 하나다.
     """
-    if shutil.which("opencode") is None:
-        print("opencode 바이너리 PATH 부재 — 모델 자동해소 skip", file=sys.stderr)
+    command = list(getattr(source, "command", None) or ())
+    if not command:
+        print("조회 명령이 선언되지 않은 모델 원천 — 자동해소 skip", file=sys.stderr)
+        return False, []
+    shown = " ".join(command)
+    if shutil.which(command[0]) is None:
+        print(f"{command[0]} 바이너리 PATH 부재 — 모델 자동해소 skip", file=sys.stderr)
         return False, []
     timeout = _opencode_models_timeout()
     try:
         result = subprocess.run(
-            list(OPENCODE_MODELS_CMD),
+            command,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -3824,28 +3827,43 @@ def _real_models_runner() -> tuple[bool, list[str]]:
         )
         if result.returncode != 0:
             print(
-                f"opencode models 실패 rc={result.returncode}: "
+                f"{shown} 실패 rc={result.returncode}: "
                 f"{(result.stderr or '').strip()[:200]}",
                 file=sys.stderr,
             )
             return False, []
-        models = _parse_opencode_models(result.stdout or "")
+        models = _parse_models(getattr(source, "parse", None), result.stdout or "")
         if not models:
-            print("opencode models 출력에서 모델 0개 파싱 — 형식 확인", file=sys.stderr)
+            print(f"{shown} 출력에서 모델 0개 파싱 — 형식 확인", file=sys.stderr)
         return True, models
     except subprocess.TimeoutExpired:
         print(
-            f"opencode models {timeout}s timeout 초과 — "
+            f"{shown} {timeout}s timeout 초과 — "
             "PM_OPENCODE_MODELS_TIMEOUT 로 늘리세요",
             file=sys.stderr,
         )
         return False, []
-    except FileNotFoundError as exc:
-        print(f"opencode models 예외: {exc}", file=sys.stderr)
-        return False, []
     except Exception as exc:  # noqa: BLE001 — fail-soft: 어떤 예외도 import 를 깨지 않는다.
-        print(f"opencode models 예외: {exc}", file=sys.stderr)
+        print(f"{shown} 예외: {exc}", file=sys.stderr)
         return False, []
+
+
+def _parse_models(parse: str | None, output: str) -> list[str]:
+    """조회 산출 → 모델 목록. 방식 이름의 주인은 `pm_relay.MODEL_SOURCE.parse` 다."""
+    if parse == "json-slug":
+        try:
+            document = json.loads(output)
+        except ValueError:
+            return []
+        entries = document.get("models") if isinstance(document, dict) else None
+        if not isinstance(entries, list):
+            return []
+        return [entry["slug"] for entry in entries
+                if isinstance(entry, dict) and isinstance(entry.get("slug"), str)
+                and entry["slug"].strip()]
+    if parse == "lines":
+        return _parse_opencode_models(output)
+    return []
 
 
 def _parse_opencode_models(output: str) -> list[str]:

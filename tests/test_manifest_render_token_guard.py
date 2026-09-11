@@ -79,7 +79,7 @@ def _load(name: str, alias: str | None = None):
 def pm_import():
     mod = _load("pm_import")
     # hermetic — 라이브 `opencode models` CLI 미호출(미설치 동치).
-    mod._real_models_runner = lambda: (False, [])
+    mod._real_models_runner = lambda source=None: (False, [])
     return mod
 
 

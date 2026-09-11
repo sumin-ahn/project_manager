@@ -56,7 +56,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
                   (복사 스코프+인터페이스 예외 번역+소스 해소는 pm_import 단일 진실·
                   중복 0). `--from` 생략 시 dest local.conf upstream.path 자동 해소(imported 인스턴스).
   - delegate models → pm_relay.MODEL_SOURCE(모델 원천 표 단일 진실)의 `kind` 로만 갈린다:
-                  별칭 표 그대로 / 사용자 config 의 현재 값 / pm_import._real_models_runner 실조회.
+                  별칭 표 그대로 / 표가 선언한 조회 명령(pm_import._real_models_runner 실행).
                   읽기 전용이고 조회 실패는 빈 목록이 아니라 rc 3 이다(사유는 stderr 한 줄).
   - sync-adapter-config → pm_import.judge_adapter_configs(조회) / accept_adapter_config(수용·백업
                   후 template 채택 + 원장 기록). manifest 밖 instance-owned config 는 동기가 무편집
@@ -4611,10 +4611,10 @@ def _print_delegate_model_guidance(
         source = model_source[harness]
         value_format, how_to_check = source.value_format, source.how_to_check
         print(f"  - {harness}: 값 형식 {value_format} · 확인 {how_to_check}")
-        if harness != "opencode":
+        if source.kind != "live":
             continue
         runner = models_runner or pm_import_mod._real_models_runner
-        ok, models = runner()
+        ok, models = runner(source)
         if not ok or not models:
             print(
                 "      ⚠ 목록 조회 실패 — 위 형식 안내로 강등한다(사유는 위 stderr 한 줄). "
@@ -4669,28 +4669,6 @@ def _load_model_source_table():
     return relay.MODEL_SOURCE
 
 
-def _config_declared_model(source) -> tuple[list[str], str | None]:
-    """`kind="config"` — 사용자 config 파일에 선언된 현재 모델 1개 (실패면 (빈 목록, 사유)).
-
-    경로는 표가 정한다: env(`config_env`)가 있으면 그 아래, 없으면 홈 아래 `config_home`.
-    파일 부재·키 없음·문자열 아님은 전부 실패다(읽지 못한 자리에 값을 지어내지 않는다).
-    """
-    declared_home = os.environ.get(source.config_env, "").strip() if source.config_env else ""
-    path = (Path(declared_home) / Path(source.config_home).name if declared_home
-            else Path.home() / source.config_home)
-    if not path.is_file():
-        return [], f"{path} 부재"
-    try:
-        parsed = tomllib.loads(
-            _load_file_lock().read_text_shared(path, encoding="utf-8"))
-    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
-        return [], f"{path} 를 읽지 못했다 ({exc})"
-    declared = parsed.get(source.config_key)
-    if not isinstance(declared, str) or not declared.strip():
-        return [], f"{path} 에 최상위 `{source.config_key}` 문자열이 없다"
-    return [declared.strip()], None
-
-
 def _delegate_models(source, *, models_runner=None) -> tuple[list[str], str | None]:
     """모델 원천 한 행 → (모델 목록, 실패 사유). 갈림은 `kind` 뿐이다.
 
@@ -4699,8 +4677,6 @@ def _delegate_models(source, *, models_runner=None) -> tuple[list[str], str | No
     """
     if source.kind == "alias":
         return list(source.values), None
-    if source.kind == "config":
-        return _config_declared_model(source)
     if source.kind == "live":
         runner = models_runner
         if runner is None:
@@ -4708,7 +4684,7 @@ def _delegate_models(source, *, models_runner=None) -> tuple[list[str], str | No
             if pm_import_mod is None:
                 return [], f"{TOOLS_DIR / 'pm_import.py'} 부재 또는 로드 실패"
             runner = pm_import_mod._real_models_runner
-        ok, models = runner()
+        ok, models = runner(source)
         if not ok or not models:
             return [], f"{source.how_to_check} 조회 실패 (사유는 위 stderr 한 줄)"
         return models, None

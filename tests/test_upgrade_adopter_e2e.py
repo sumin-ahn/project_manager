@@ -120,7 +120,7 @@ def _engine_pm_import():
 
     `_load_pm_import` 는 호출마다 새 모듈 객체를 만드므로 이 stub 은 이 파일 안에만 남는다."""
     module = _load_pm_import()
-    module._real_models_runner = lambda: (False, [])
+    module._real_models_runner = lambda source=None: (False, [])
     return module
 
 

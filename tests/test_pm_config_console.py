@@ -885,7 +885,7 @@ class _FakePmImport:
     def _harness_binary_available(self, harness):
         return harness in self._installed
 
-    def _real_models_runner(self):
+    def _real_models_runner(self, source=None):
         self.queried += 1
         return True, ["provider/real-a", "provider/real-b"]
 
@@ -918,7 +918,7 @@ def test_model_guidance_truncates_long_lists_and_points_at_the_query(pc, capsys)
     total = pc._DELEGATE_MODEL_LIST_LIMIT + 3
     models = [f"provider/model-{index}" for index in range(total)]
     fake = _FakePmImport(installed=("opencode",))
-    fake._real_models_runner = lambda: (True, models)
+    fake._real_models_runner = lambda source=None: (True, models)
 
     pc._print_delegate_model_guidance(pm_import=fake, conf={})
     out = capsys.readouterr().out
@@ -933,7 +933,7 @@ def test_model_guidance_truncates_long_lists_and_points_at_the_query(pc, capsys)
 def test_model_guidance_degrades_loudly_when_the_query_fails(pc, capsys, outcome):
     """조회 실패·빈 목록은 형식 안내로 **강등**하되 그 사실을 말한다(조용한 강등 금지)."""
     fake = _FakePmImport(installed=("opencode",))
-    fake._real_models_runner = lambda: outcome
+    fake._real_models_runner = lambda source=None: outcome
 
     pc._print_delegate_model_guidance(pm_import=fake, conf={})
     out = capsys.readouterr().out

@@ -151,7 +151,7 @@ def _load_pm_import():
 def pm_import():
     mod = _load_pm_import()
     # opencode import 가 라이브 `opencode models` 를 호출하지 않게 고정 — hermetic(설치 여부 무관·토큰 0).
-    mod._real_models_runner = lambda: (False, [])
+    mod._real_models_runner = lambda source=None: (False, [])
     return mod
 
 

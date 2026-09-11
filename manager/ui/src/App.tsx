@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type {
-  Bridge, BridgeError, ConfKeysDocument, Project, StatusDocument, TagsResponse,
-} from "./api";
+  Bridge, BridgeError, ConfKeysDocument, DelegateModelsDocument, Project, StatusDocument,
+  TagsResponse } from "./api";
 import { chooseFolder, isError, subscribeChanges } from "./api";
 import AdapterMatrix from "./components/AdapterMatrix";
 import Header from "./components/Header";
@@ -26,6 +26,8 @@ export type Entry = { status?: StatusDocument; error?: BridgeError; at?: number 
 export type SettingsEntry = {
   keys?: ConfKeysDocument;
   values?: Record<string, string>;
+  /** 하네스별 모델 목록 — 프로젝트를 고를 때 배경으로 받아 둔다(설정 탭 진입 호출 0 유지). */
+  models?: Record<string, DelegateModelsDocument>;
   error?: BridgeError;
   at?: number;
 };
@@ -104,6 +106,41 @@ export default function App({ bridge }: { bridge: Bridge }) {
     setBusy((current) => ({ ...current, heavy: false }));
   }, [bridge]);
 
+  /**
+   * 모델 목록 배경 선읽기 — 기다리지 않는다.
+   *
+   * 설정 탭은 진입 때 사본을 부르지 않는다는 계약이라(T-0917) 목록도 그 계약 안에서 받아야
+   * 한다. 프로젝트를 고르는 시점에 **await 없이** 던져 두면 도착하는 대로 모델 칸이
+   * 드롭다운이 되고, 도착 전에는 지금처럼 텍스트 칸 + [목록 불러오기] 다. 어느 하네스를
+   * 물을지는 키 레지스트리가 정한다(`choices.fetch` 가 있는 행의 `depends_on` 현재 값) —
+   * 화면이 하네스 이름을 들지 않는다.
+   */
+  const prefetchModels = useCallback((
+    path: string, keys: ConfKeysDocument, values: Record<string, string>,
+  ) => {
+    const wanted = new Set<string>();
+    for (const entry of keys.keys) {
+      const rows = entry.kind === "key" ? [entry] : (entry.members ?? []);
+      for (const row of rows) {
+        const axis = row.choices;
+        if (axis === null || axis.fetch === null || axis.depends_on === null) continue;
+        const harness = values[axis.depends_on] ?? "";
+        if (harness !== "") wanted.add(harness);
+      }
+    }
+    for (const harness of wanted) {
+      void bridge.delegate_models(path, harness).then((response) => {
+        if (isError(response)) return;          // 배경 조회의 실패는 말하지 않는다.
+        setSettings((previous) => {
+          const entry = previous[path];
+          if (entry === undefined) return previous;
+          return { ...previous,
+                   [path]: { ...entry, models: { ...entry.models, [harness]: response } } };
+        });
+      });
+    }
+  }, [bridge]);
+
   // 설정 두 조회 — 키 레지스트리와 값 파일이다(판정은 가벼운 절의 `conf` 절이라 여기서 안 부른다).
   const refreshSettings = useCallback(async (path: string, explicit = true) => {
     const [keys, values] = await Promise.all([bridge.conf_keys(path), bridge.conf_values(path)]);
@@ -116,9 +153,10 @@ export default function App({ bridge }: { bridge: Bridge }) {
       return { ...previous,
                [path]: { keys: isError(keys) ? last?.keys : keys,
                          values: isError(values) ? last?.values : values.values,
-                         error: failure, at } };
+                         models: last?.models, error: failure, at } };
     });
-  }, [bridge]);
+    if (!isError(keys) && !isError(values)) prefetchModels(path, keys, values.values);
+  }, [bridge, prefetchModels]);
 
   const refreshTags = useCallback(async () => {
     setBusy((current) => ({ ...current, tags: true }));
