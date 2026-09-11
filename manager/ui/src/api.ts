@@ -103,6 +103,8 @@ export type ConfKeyRow = {
   description: string;
   unit_labels: Record<string, string>;
   default: string | null;
+  /** 안 채웠을 때 실제로 적용되는 상태 한 낱말 — 기본값이 있으면 null(그 값이 답이다). */
+  unset: string | null;
   required: boolean;
   kind: "key" | "pattern";
   choices: ConfChoices | null;
@@ -114,6 +116,7 @@ export type ConfKeyRow = {
 export type ConfKeyMember = {
   key: string;
   default: string | null;
+  unset: string | null;
   choices: ConfChoices | null;
   recommended: string | null;
 };

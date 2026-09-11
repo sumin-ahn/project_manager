@@ -97,7 +97,7 @@ def _values(pm_home: Path) -> dict[str, str]:
 def test_conf_keys_comes_from_the_project_copy_registry(api, pm_home):
     document = api.conf_keys(str(pm_home))
 
-    assert document["schema"] == 3
+    assert document["schema"] == 4
     assert document["groups"][0] == "project" and "harness" in document["groups"]
     kinds = {row["kind"] for row in document["keys"]}
     assert kinds == {"key", "pattern"}
@@ -131,7 +131,7 @@ def test_a_registry_without_the_choice_fields_is_an_old_generation(api, pm_home)
 
     assert response["error"]["kind"] == "old-generation"
     assert "schema 1" in response["error"]["message"]
-    assert "schema 3" in response["error"]["message"]
+    assert "schema 4" in response["error"]["message"]
 
 
 # ── ② 현재값과 설정 완전성 다섯 목록 ─────────────────────────────────────────

@@ -702,7 +702,7 @@ def keys_document() -> dict:
 
 def test_keys_json_carries_both_registries_split_by_kind(conf_module, keys_document):
     """실명 레지스트리와 패턴 레지스트리가 `kind` 로 갈려 **선언 순서 그대로** 실린다."""
-    assert keys_document["schema"] == conf_module.KEY_JSON_SCHEMA == 3
+    assert keys_document["schema"] == conf_module.KEY_JSON_SCHEMA == 4
     assert keys_document["groups"] == list(conf_module.KEY_GROUPS)
 
     named = [row for row in keys_document["keys"] if row["kind"] == "key"]
@@ -729,10 +729,14 @@ def test_pattern_members_take_the_registry_default_not_the_table_string(
     diff_cap = families[conf_module.DIFF_CAP_PATTERN]
 
     assert diff_cap["default"] is None                # 군 자체는 한 값을 갖지 않는다
+    # `unset` 은 기본값이 있는 행에선 None 이다 — 안 채웠을 때의 답을 그 값이 이미 한다.
     assert diff_cap["members"] == [
-        {"key": "diff_cap.small", "default": "300", "choices": None, "recommended": None},
-        {"key": "diff_cap.medium", "default": "1000", "choices": None, "recommended": None},
-        {"key": "diff_cap.large", "default": "2500", "choices": None, "recommended": None},
+        {"key": "diff_cap.small", "default": "300", "unset": None,
+         "choices": None, "recommended": None},
+        {"key": "diff_cap.medium", "default": "1000", "unset": None,
+         "choices": None, "recommended": None},
+        {"key": "diff_cap.large", "default": "2500", "unset": None,
+         "choices": None, "recommended": None},
     ]
     composed = conf_module._default_display(
         conf_module.DIFF_CAP_PATTERN, conf_module.PATTERN_REGISTRY[conf_module.DIFF_CAP_PATTERN])

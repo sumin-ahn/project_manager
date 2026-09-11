@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Row } from "../tabs/SettingsTab";
+import { unsetHint } from "../lib/settings-rows";
 
 /**
  * 질문형 — 편집형과 **같은 항목 목록**을 한 번에 하나씩 묻는다(별도 화면이 아니라 표시 모드다).
@@ -77,7 +78,7 @@ export default function QuestionMode({ rows, values, onFinish }: {
           className="w-[36rem] rounded border border-slate-200 px-1"
         />
         <span className="text-[11px] text-slate-500">
-          {row.default === null ? "기본값 없음" : `기본 ${row.default}`}
+          {`안 쓰면 ${unsetHint(row)}`}
           {row.required && " · 필수"}
           {row.recommended !== null && ` · 권장 ${row.recommended}`}
         </span>

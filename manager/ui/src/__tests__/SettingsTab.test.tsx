@@ -242,8 +242,9 @@ describe("다섯 목록의 배너와 행 표시", () => {
     expect(screen.getByTestId("conf-ctx.window_tokens")).toHaveTextContent("안 씀");
     openGroup("project");
     fireEvent.click(screen.getByTestId("show-unset"));           // 접힘은 숨김이 아니다
-    expect(screen.getByLabelText("project.name"))
-      .toHaveAttribute("placeholder", "설정 안 함");
+    // 기본값이 없는 키도 빈 칸이 아니다 — 안 채웠을 때의 상태가 그 자리에 선다.
+    expect(screen.getByLabelText("project.name")).toHaveValue("어댑터 문서 없음");
+    expect(screen.getByTestId("conf-project.name")).toHaveTextContent("안 씀");
   });
 
   it("군 안에서 갈리는 이름이 있으면 그 이름이 선다 — 같은 이름 세 줄이 서지 않는다", () => {
@@ -331,7 +332,8 @@ describe("위임 절", () => {
 
     const role = screen.getByTestId(`role-${ROW_NAME}`);
     expect(role).toHaveTextContent(ROW_NAME);              // 행 라벨은 키 문자열 그대로다
-    const labels = [...role.querySelectorAll("input,select")]
+    // 체크박스는 "직접 정함" 축이라 값 칸 열거에서 뺀다.
+    const labels = [...role.querySelectorAll("input:not([type=checkbox]),select")]
       .map((field) => field.getAttribute("aria-label"));
     expect(labels).toEqual(IN_ROW.map((cell) => cell.key));
   });

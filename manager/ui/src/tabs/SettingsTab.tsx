@@ -7,7 +7,7 @@ import { isError } from "../api";
 import AdapterSection from "../components/AdapterSection";
 import QuestionMode from "../components/QuestionMode";
 import { foldable, markedKeys, ROW_UNIT_FAMILY, unsetFilled, unsetHint, unsetLabel,
-         unsetPlaceholder, UNSET_MARK } from "../lib/settings-rows";
+         SET_TOGGLE, UNSET_MARK } from "../lib/settings-rows";
 
 /** 설정 안 함 행을 보일지 — 화면 전체에 하나이고 다음에 열 때도 유지한다. */
 const SHOW_UNSET_KEY = "pm.settings.showUnset";
@@ -55,6 +55,7 @@ export type Row = {
   label: string;
   description: string;
   default: string | null;
+  unset: string | null;      // 안 채웠을 때의 상태 (엔진 레지스트리 · 기본값이 있으면 null)
   required: boolean;
   family: string | null;      // 패턴 키군에서 전개된 행이면 그 군 이름
   registered: boolean;        // 레지스트리가 아는 키인가 (아니면 conf 에만 있는 행)
@@ -73,7 +74,7 @@ function registryRows(keys: ConfKeysDocument): Row[] {
     if (entry.kind === "key") {
       rows.push({ key: entry.key, group: entry.group,
                   label: entry.label, description: entry.description,
-                  default: entry.default, required: entry.required,
+                  default: entry.default, unset: entry.unset, required: entry.required,
                   family: null, registered: true,
                   choices: entry.choices, recommended: entry.recommended });
       continue;
@@ -81,7 +82,7 @@ function registryRows(keys: ConfKeysDocument): Row[] {
     for (const member of entry.members ?? []) {
       rows.push({ key: member.key, group: entry.group,
                   label: entry.label, description: entry.description,
-                  default: member.default, required: entry.required,
+                  default: member.default, unset: member.unset, required: entry.required,
                   family: entry.key, registered: true,
                   choices: member.choices, recommended: member.recommended });
     }
@@ -104,7 +105,7 @@ export function buildSections(keys: ConfKeysDocument, values: Record<string, str
   })).filter((section) => section.rows.length > 0 || section.freeInputFamily !== null);
   const extra = Object.keys(values).filter((key) => !known.has(key)).map((key) => ({
     key, group: EXTRA_GROUP, label: key, description: "", default: null, required: false,
-    family: null, registered: false, choices: null, recommended: null,
+    family: null, registered: false, choices: null, recommended: null, unset: null,
   }));
   return extra.length > 0
     ? [...sections, { group: EXTRA_GROUP, rows: extra, freeInputFamily: null }]
@@ -192,24 +193,31 @@ const INPUT_UNSET = `${INPUT} text-slate-400`;
  * 붙인다. 채운 값은 `edits` 에 들어가지 않으므로 저장 대상이 아니다(저장은 고친 칸만 쓴다).
  * 채울지 여부와 문구는 규칙표가 소유한다.
  */
-function ValueField({ row, value, options, dependsValue, fetched, fetchError, manual, busy,
-                      onChange, onFetch, onManual }: {
-  row: Row; value: string; options: string[]; dependsValue: string | null;
+function ValueField({ row, value, on, options, dependsValue, fetched, fetchError, manual, busy,
+                      onChange, onToggle, onFetch, onManual }: {
+  row: Row; value: string; on: boolean; options: string[]; dependsValue: string | null;
   fetched: DelegateModelsDocument | null; fetchError: BridgeError | null; manual: boolean;
-  busy: boolean; onChange: (value: string) => void; onFetch: () => void; onManual: () => void;
+  busy: boolean; onChange: (value: string) => void; onToggle: (next: boolean) => void;
+  onFetch: () => void; onManual: () => void;
 }) {
   const choices = row.choices;
-  const filled = unsetFilled(row, value);
+  const filled = unsetFilled(row, on);
   const shown = filled ? unsetHint(row) : value;
-  const blank = unsetPlaceholder(row);
   const mark = filled
     ? <span className="whitespace-nowrap text-[11px] text-slate-400">{UNSET_MARK}</span>
     : null;
+  // 축 둘을 칸 하나에 겹쳐 두면 "빈 칸"이 미설정인지 빈 값인지 읽히지 않는다 — 체크박스가
+  // "직접 정한다"를 들고, 칸은 값만 든다. 끄면 안 썼을 때 적용되는 것이 회색으로 선다.
+  const toggle = (
+    <input type="checkbox" aria-label={`${row.key} ${SET_TOGGLE}`} checked={on} disabled={busy}
+           onChange={(event) => onToggle(event.target.checked)} />
+  );
   if (choices === null) {
     return (
       <span className="flex items-center gap-1">
-        <input aria-label={row.key} value={shown} className={filled ? INPUT_UNSET : INPUT}
-               placeholder={blank}
+        {toggle}
+        <input aria-label={row.key} value={shown} disabled={!on}
+               className={filled ? INPUT_UNSET : INPUT}
                onChange={(event) => onChange(event.target.value)} />
         {mark}
       </span>
@@ -224,8 +232,9 @@ function ValueField({ row, value, options, dependsValue, fetched, fetchError, ma
   if (choices.fetch !== null && (fetched === null || manual)) {
     return (
       <span className="flex items-center gap-1">
-        <input aria-label={row.key} value={shown} className={filled ? INPUT_UNSET : INPUT}
-               placeholder={blank}
+        {toggle}
+        <input aria-label={row.key} value={shown} disabled={!on}
+               className={filled ? INPUT_UNSET : INPUT}
                onChange={(event) => onChange(event.target.value)} />
         {mark}
         {/* 안내는 버튼 위에 둔다 — 같은 줄의 선택 칸이 그 문구를 이미 눈에 보이게 낸다. */}
@@ -245,7 +254,9 @@ function ValueField({ row, value, options, dependsValue, fetched, fetchError, ma
   const items = fetched === null ? options : fetched.models;
   return (
     <span className="flex items-center gap-1">
-      <select aria-label={row.key} value={value} className={filled ? INPUT_UNSET : INPUT}
+      {toggle}
+      <select aria-label={row.key} value={value} disabled={!on}
+              className={filled ? INPUT_UNSET : INPUT}
               onChange={(event) => {
                 if (fetched !== null && event.target.value === MANUAL_OPTION) onManual();
                 else onChange(event.target.value);
@@ -277,6 +288,10 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
   const [asking, setAsking] = useState(startAsking);
   // [목록 불러오기] 가 받아 온 것 — 하네스별 최근 응답 하나이고 주기 조회로는 다시 부르지 않는다.
   const [models, setModels] = useState<Record<string, DelegateModelsDocument>>({});
+  // "직접 정함" 을 이 화면에서 껐다 켠 행 — 판정의 기본은 conf 에 값이 있느냐이고, 이 표는
+  // 그 위의 명시 조작이다. 값으로만 판정하면 기본값 없는 키를 켜는 순간 빈 값이라 다시
+  // 꺼진 것으로 읽혀 칸이 잠긴다.
+  const [setKeys, setSetKeys] = useState<Record<string, boolean>>({});
   const [modelErrors, setModelErrors] = useState<Record<string, BridgeError>>({});
   const [manual, setManual] = useState<Record<string, boolean>>({});
   // 설정 안 함 행을 보일지는 화면 전체에 하나다 — 절마다 다시 누르지 않는다.
@@ -295,6 +310,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     setUpstreamDraft(null);
     setModels({});
     setModelErrors({});
+    setSetKeys({});
     setManual({});
     setSelectedNav(null);
   }, [path]);
@@ -383,6 +399,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
   const unitLabels: Record<string, string> = Object.assign(
     {}, ...keys.keys.map((entry) => entry.unit_labels ?? {}));
   const valueOf = (key: string) => edits[key] ?? values[key] ?? "";
+  const isOn = (key: string) => setKeys[key] ?? valueOf(key) !== "";
   const marked = markedKeys(conf);
   const folds = (row: Row) => foldable(row, valueOf(row.key), marked);
   const foldedItem = (item: GroupItem) => (item.kind === "key"
@@ -415,8 +432,14 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
         row={row} value={valueOf(row.key)} options={bucket} dependsValue={dependsValue}
         fetched={choices?.fetch && harness !== "" ? models[harness] ?? null : null}
         fetchError={choices?.fetch && harness !== "" ? modelErrors[harness] ?? null : null}
-        manual={manual[row.key] === true} busy={busy}
+        manual={manual[row.key] === true} busy={busy} on={isOn(row.key)}
         onChange={(next) => setEdits((previous) => ({ ...previous, [row.key]: next }))}
+        onToggle={(next) => {
+          // 켜면 기본값을 넣어 두고(없으면 빈 칸이라 입력을 요구), 끄면 값을 비운다.
+          // 끈다고 local.conf 줄을 지우지는 않는다 — 저장이 그 칸을 빈 값으로 쓸 뿐이다.
+          setSetKeys((previous) => ({ ...previous, [row.key]: next }));
+          setEdits((previous) => ({ ...previous, [row.key]: next ? row.default ?? "" : "" }));
+        }}
         onFetch={() => {
           setManual((previous) => {
             const next = { ...previous };

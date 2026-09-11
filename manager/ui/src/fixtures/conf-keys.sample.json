@@ -1,5 +1,5 @@
 {
-  "schema": 3,
+  "schema": 4,
   "groups": [
     "project",
     "runtime",
@@ -17,6 +17,7 @@
       "label": "프로젝트 이름",
       "description": "어댑터 문서에 찍히는 이름",
       "default": null,
+      "unset": "어댑터 문서 없음",
       "required": false,
       "kind": "key",
       "members": null,
@@ -30,6 +31,7 @@
       "label": "한 줄 소개",
       "description": "어댑터 문서 첫머리에 들어가는 소개 문구",
       "default": null,
+      "unset": "어댑터 문서 없음",
       "required": false,
       "kind": "key",
       "members": null,
@@ -43,6 +45,7 @@
       "label": "문서가 가리킬 루트 경로",
       "description": "어댑터 문서 안의 경로 표기 기준",
       "default": null,
+      "unset": "어댑터 문서 없음",
       "required": false,
       "kind": "key",
       "members": null,
@@ -56,6 +59,7 @@
       "label": "문서 기준 날짜",
       "description": "어댑터 문서에 찍히는 날짜",
       "default": null,
+      "unset": "어댑터 문서 없음",
       "required": false,
       "kind": "key",
       "members": null,
@@ -69,6 +73,7 @@
       "label": "파이썬 실행 파일",
       "description": "이 사본에서 엔진을 돌릴 인터프리터, 첫 설치 때 실행해 보고 채움",
       "default": null,
+      "unset": "OS 기본 인터프리터",
       "required": true,
       "kind": "key",
       "members": null,
@@ -82,6 +87,7 @@
       "label": "테스트 명령",
       "description": "회귀에서 그대로 실행할 명령",
       "default": null,
+      "unset": "회귀 없음",
       "required": true,
       "kind": "key",
       "members": null,
@@ -95,6 +101,7 @@
       "label": "검증 플랫폼 목록",
       "description": "쉼표로 구분한 이름 목록, 적으면 이름마다 별도 테스트 명령이 필요하고 적은 순서대로 이어서 실행, 비우면 기본 하나만",
       "default": null,
+      "unset": "기본 하나만",
       "required": false,
       "kind": "key",
       "members": null,
@@ -108,6 +115,7 @@
       "label": "내 계정",
       "description": "작업 기록에 남는 사람, 비우면 git 설정의 이메일",
       "default": null,
+      "unset": "git 설정의 이메일",
       "required": false,
       "kind": "key",
       "members": null,
@@ -121,6 +129,7 @@
       "label": "프레임워크 원본 위치",
       "description": "갱신할 때 받아올 폴더 경로나 주소",
       "default": null,
+      "unset": "갱신 없음",
       "required": false,
       "kind": "key",
       "members": null,
@@ -134,6 +143,7 @@
       "label": "마지막으로 받은 지점",
       "description": "갱신 차이를 재는 기준, 엔진이 적음",
       "default": null,
+      "unset": "엔진이 적음",
       "required": false,
       "kind": "key",
       "members": null,
@@ -147,6 +157,7 @@
       "label": "마지막으로 확인한 지점",
       "description": "원본에서 마지막으로 본 지점, 엔진이 적음",
       "default": null,
+      "unset": "엔진이 적음",
       "required": false,
       "kind": "key",
       "members": null,
@@ -160,6 +171,7 @@
       "label": "기록 권고 시점",
       "description": "남은 대화 여유가 이 비율 아래로 내려가면 중간 기록을 권함, 일은 계속",
       "default": "30",
+      "unset": null,
       "required": false,
       "kind": "key",
       "members": null,
@@ -173,6 +185,7 @@
       "label": "정지 시점",
       "description": "남은 대화 여유가 이 비율 아래로 내려가면 멈추고 인계",
       "default": "20",
+      "unset": null,
       "required": false,
       "kind": "key",
       "members": null,
@@ -186,6 +199,7 @@
       "label": "대화 여유 기준값",
       "description": "하네스별 값이 없을 때 쓰는 기준, 실제 한도가 커도 낮게 두면 더 일찍 인계",
       "default": "200000",
+      "unset": null,
       "required": false,
       "kind": "key",
       "members": null,
@@ -199,6 +213,7 @@
       "label": "위임 켜기",
       "description": "끄면 다른 세션에 일을 맡기지 않음",
       "default": "true",
+      "unset": null,
       "required": false,
       "kind": "key",
       "members": null,
@@ -212,6 +227,7 @@
       "label": "위임 최대 시간(초)",
       "description": "이 시간이 지나면 끊음, 비우면 하네스별 기본값",
       "default": null,
+      "unset": "하네스 기본값",
       "required": false,
       "kind": "key",
       "members": null,
@@ -225,6 +241,7 @@
       "label": "위임 무응답 한계(초)",
       "description": "진행이 이만큼 없으면 멈춘 것으로 봄, 비우면 하네스별 기본값",
       "default": null,
+      "unset": "하네스 기본값",
       "required": false,
       "kind": "key",
       "members": null,
@@ -238,6 +255,7 @@
       "label": "검토 반복 상한",
       "description": "같은 건을 검토하는 최대 횟수",
       "default": "3",
+      "unset": null,
       "required": false,
       "kind": "key",
       "members": null,
@@ -251,6 +269,7 @@
       "label": "교차 검토 도구",
       "description": "다른 모델로 한 번 더 볼 때 쓸 도구, 모델·추론 강도와 함께 채움",
       "default": null,
+      "unset": "교차 검토 없음",
       "required": false,
       "kind": "key",
       "members": null,
@@ -275,6 +294,7 @@
       "label": "교차 검토 모델",
       "description": "그 도구가 인정하는 표기 그대로",
       "default": null,
+      "unset": "교차 검토 없음",
       "required": false,
       "kind": "key",
       "members": null,
@@ -296,6 +316,7 @@
       "label": "교차 검토 추론 강도",
       "description": "고를 수 있는 값은 도구마다 다름",
       "default": null,
+      "unset": "교차 검토 없음",
       "required": false,
       "kind": "key",
       "members": null,
@@ -336,6 +357,7 @@
       "label": "교차 검토 반복 상한",
       "description": "한 건을 다시 볼 최대 횟수",
       "default": "2",
+      "unset": null,
       "required": false,
       "kind": "key",
       "members": null,
@@ -349,6 +371,7 @@
       "label": "교차 검토 재시도 상한",
       "description": "판정 없이 끝난 호출을 다시 부를 최대 횟수",
       "default": "2",
+      "unset": null,
       "required": false,
       "kind": "key",
       "members": null,
@@ -362,6 +385,7 @@
       "label": "교차 검토 총 예산",
       "description": "한 세션에서 쓸 수 있는 전체 횟수",
       "default": "24",
+      "unset": null,
       "required": false,
       "kind": "key",
       "members": null,
@@ -375,6 +399,7 @@
       "label": "교차 검토 대상 경로",
       "description": "쉼표나 공백으로 구분한 경로 목록",
       "default": "src/,tests/,scripts/,.project_manager/tools/",
+      "unset": null,
       "required": false,
       "kind": "key",
       "members": null,
@@ -388,6 +413,7 @@
       "label": "교차 검토 최대 시간(초)",
       "description": "이 시간이 지나면 끊음, 비우면 하네스별 기본값",
       "default": null,
+      "unset": "하네스 기본값",
       "required": false,
       "kind": "key",
       "members": null,
@@ -401,6 +427,7 @@
       "label": "교차 검토 무응답 한계(초)",
       "description": "진행이 이만큼 없으면 멈춘 것으로 봄, 비우면 하네스별 기본값",
       "default": null,
+      "unset": "하네스 기본값",
       "required": false,
       "kind": "key",
       "members": null,
@@ -414,6 +441,7 @@
       "label": "교차 검토 진행 표시 방식",
       "description": "비우면 그 도구의 옵션에서 자동으로 정함",
       "default": null,
+      "unset": "도구 옵션에서 판정",
       "required": false,
       "kind": "key",
       "members": null,
@@ -427,78 +455,91 @@
       "label": "하네스별 실행 예산·모델",
       "description": "도구마다 따로 정하는 값, 최대 시간과 무응답 한계는 비우면 그 도구의 기본값, 대화 여유 기준과 어댑터 문서에 찍을 모델 이름",
       "default": null,
+      "unset": "하네스 기본값",
       "required": false,
       "kind": "pattern",
       "members": [
         {
           "key": "harness.claude.idle_timeout",
           "default": null,
+          "unset": "하네스 기본값",
           "choices": null,
           "recommended": null
         },
         {
           "key": "harness.claude.wall_timeout",
           "default": null,
+          "unset": "하네스 기본값",
           "choices": null,
           "recommended": null
         },
         {
           "key": "harness.claude.ctx_window_tokens",
           "default": null,
+          "unset": "대화 여유 기준값",
           "choices": null,
           "recommended": null
         },
         {
           "key": "harness.claude.pro_model",
           "default": null,
+          "unset": "어댑터 문서 없음",
           "choices": null,
           "recommended": null
         },
         {
           "key": "harness.codex.idle_timeout",
           "default": null,
+          "unset": "하네스 기본값",
           "choices": null,
           "recommended": null
         },
         {
           "key": "harness.codex.wall_timeout",
           "default": null,
+          "unset": "하네스 기본값",
           "choices": null,
           "recommended": null
         },
         {
           "key": "harness.codex.ctx_window_tokens",
           "default": null,
+          "unset": "대화 여유 기준값",
           "choices": null,
           "recommended": null
         },
         {
           "key": "harness.codex.pro_model",
           "default": null,
+          "unset": "어댑터 문서 없음",
           "choices": null,
           "recommended": null
         },
         {
           "key": "harness.opencode.idle_timeout",
           "default": null,
+          "unset": "하네스 기본값",
           "choices": null,
           "recommended": null
         },
         {
           "key": "harness.opencode.wall_timeout",
           "default": null,
+          "unset": "하네스 기본값",
           "choices": null,
           "recommended": null
         },
         {
           "key": "harness.opencode.ctx_window_tokens",
           "default": null,
+          "unset": "대화 여유 기준값",
           "choices": null,
           "recommended": null
         },
         {
           "key": "harness.opencode.pro_model",
           "default": null,
+          "unset": "어댑터 문서 없음",
           "choices": null,
           "recommended": null
         }
@@ -513,12 +554,14 @@
       "label": "역할별 위임 대상",
       "description": "역할마다 도구·모델·추론 강도를 한 세트로, 어려움 티어와 실패 시 대체를 따로 둘 수 있고 세트 사이에 물려받기는 없음",
       "default": null,
+      "unset": "위임 없음",
       "required": false,
       "kind": "pattern",
       "members": [
         {
           "key": "delegate.developer.harness",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": null,
             "values": {
@@ -536,6 +579,7 @@
         {
           "key": "delegate.developer.model",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.developer.harness",
             "values": {},
@@ -550,6 +594,7 @@
         {
           "key": "delegate.developer.reasoning",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.developer.harness",
             "values": {
@@ -583,6 +628,7 @@
         {
           "key": "delegate.developer.hard.harness",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": null,
             "values": {
@@ -600,6 +646,7 @@
         {
           "key": "delegate.developer.hard.model",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.developer.hard.harness",
             "values": {},
@@ -614,6 +661,7 @@
         {
           "key": "delegate.developer.hard.reasoning",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.developer.hard.harness",
             "values": {
@@ -647,6 +695,7 @@
         {
           "key": "delegate.developer.fallback.harness",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": null,
             "values": {
@@ -664,6 +713,7 @@
         {
           "key": "delegate.developer.fallback.model",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.developer.fallback.harness",
             "values": {},
@@ -678,6 +728,7 @@
         {
           "key": "delegate.developer.fallback.reasoning",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.developer.fallback.harness",
             "values": {
@@ -711,6 +762,7 @@
         {
           "key": "delegate.developer.hard.fallback.harness",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": null,
             "values": {
@@ -728,6 +780,7 @@
         {
           "key": "delegate.developer.hard.fallback.model",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.developer.hard.fallback.harness",
             "values": {},
@@ -742,6 +795,7 @@
         {
           "key": "delegate.developer.hard.fallback.reasoning",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.developer.hard.fallback.harness",
             "values": {
@@ -775,6 +829,7 @@
         {
           "key": "delegate.researcher.harness",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": null,
             "values": {
@@ -792,6 +847,7 @@
         {
           "key": "delegate.researcher.model",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.researcher.harness",
             "values": {},
@@ -806,6 +862,7 @@
         {
           "key": "delegate.researcher.reasoning",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.researcher.harness",
             "values": {
@@ -839,6 +896,7 @@
         {
           "key": "delegate.researcher.hard.harness",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": null,
             "values": {
@@ -856,6 +914,7 @@
         {
           "key": "delegate.researcher.hard.model",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.researcher.hard.harness",
             "values": {},
@@ -870,6 +929,7 @@
         {
           "key": "delegate.researcher.hard.reasoning",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.researcher.hard.harness",
             "values": {
@@ -903,6 +963,7 @@
         {
           "key": "delegate.researcher.fallback.harness",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": null,
             "values": {
@@ -920,6 +981,7 @@
         {
           "key": "delegate.researcher.fallback.model",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.researcher.fallback.harness",
             "values": {},
@@ -934,6 +996,7 @@
         {
           "key": "delegate.researcher.fallback.reasoning",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.researcher.fallback.harness",
             "values": {
@@ -967,6 +1030,7 @@
         {
           "key": "delegate.researcher.hard.fallback.harness",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": null,
             "values": {
@@ -984,6 +1048,7 @@
         {
           "key": "delegate.researcher.hard.fallback.model",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.researcher.hard.fallback.harness",
             "values": {},
@@ -998,6 +1063,7 @@
         {
           "key": "delegate.researcher.hard.fallback.reasoning",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.researcher.hard.fallback.harness",
             "values": {
@@ -1031,6 +1097,7 @@
         {
           "key": "delegate.architect.harness",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1048,6 +1115,7 @@
         {
           "key": "delegate.architect.model",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.architect.harness",
             "values": {},
@@ -1062,6 +1130,7 @@
         {
           "key": "delegate.architect.reasoning",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.architect.harness",
             "values": {
@@ -1095,6 +1164,7 @@
         {
           "key": "delegate.architect.hard.harness",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1112,6 +1182,7 @@
         {
           "key": "delegate.architect.hard.model",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.architect.hard.harness",
             "values": {},
@@ -1126,6 +1197,7 @@
         {
           "key": "delegate.architect.hard.reasoning",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.architect.hard.harness",
             "values": {
@@ -1159,6 +1231,7 @@
         {
           "key": "delegate.architect.fallback.harness",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1176,6 +1249,7 @@
         {
           "key": "delegate.architect.fallback.model",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.architect.fallback.harness",
             "values": {},
@@ -1190,6 +1264,7 @@
         {
           "key": "delegate.architect.fallback.reasoning",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.architect.fallback.harness",
             "values": {
@@ -1223,6 +1298,7 @@
         {
           "key": "delegate.architect.hard.fallback.harness",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1240,6 +1316,7 @@
         {
           "key": "delegate.architect.hard.fallback.model",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.architect.hard.fallback.harness",
             "values": {},
@@ -1254,6 +1331,7 @@
         {
           "key": "delegate.architect.hard.fallback.reasoning",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.architect.hard.fallback.harness",
             "values": {
@@ -1287,6 +1365,7 @@
         {
           "key": "delegate.code-reviewer.harness",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1304,6 +1383,7 @@
         {
           "key": "delegate.code-reviewer.model",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.code-reviewer.harness",
             "values": {},
@@ -1318,6 +1398,7 @@
         {
           "key": "delegate.code-reviewer.reasoning",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.code-reviewer.harness",
             "values": {
@@ -1351,6 +1432,7 @@
         {
           "key": "delegate.code-reviewer.hard.harness",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1368,6 +1450,7 @@
         {
           "key": "delegate.code-reviewer.hard.model",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.code-reviewer.hard.harness",
             "values": {},
@@ -1382,6 +1465,7 @@
         {
           "key": "delegate.code-reviewer.hard.reasoning",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.code-reviewer.hard.harness",
             "values": {
@@ -1415,6 +1499,7 @@
         {
           "key": "delegate.code-reviewer.fallback.harness",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1432,6 +1517,7 @@
         {
           "key": "delegate.code-reviewer.fallback.model",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.code-reviewer.fallback.harness",
             "values": {},
@@ -1446,6 +1532,7 @@
         {
           "key": "delegate.code-reviewer.fallback.reasoning",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.code-reviewer.fallback.harness",
             "values": {
@@ -1479,6 +1566,7 @@
         {
           "key": "delegate.code-reviewer.hard.fallback.harness",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1496,6 +1584,7 @@
         {
           "key": "delegate.code-reviewer.hard.fallback.model",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.code-reviewer.hard.fallback.harness",
             "values": {},
@@ -1510,6 +1599,7 @@
         {
           "key": "delegate.code-reviewer.hard.fallback.reasoning",
           "default": null,
+          "unset": "위임 없음",
           "choices": {
             "depends_on": "delegate.code-reviewer.hard.fallback.harness",
             "values": {
@@ -1568,6 +1658,7 @@
       "label": "모델 별칭",
       "description": "모델 칸에 이 이름을 적으면 여기 정한 값으로 바꿔 씀",
       "default": null,
+      "unset": "별칭 없음",
       "required": false,
       "kind": "pattern",
       "members": [],
@@ -1581,24 +1672,28 @@
       "label": "티켓 크기별 변경량 상한",
       "description": "티켓 크기마다 허용할 추가·삭제 줄 수 합계, 모르는 크기에는 상한을 두지 않음",
       "default": null,
+      "unset": "상한 없음",
       "required": false,
       "kind": "pattern",
       "members": [
         {
           "key": "diff_cap.small",
           "default": "300",
+          "unset": null,
           "choices": null,
           "recommended": null
         },
         {
           "key": "diff_cap.medium",
           "default": "1000",
+          "unset": null,
           "choices": null,
           "recommended": null
         },
         {
           "key": "diff_cap.large",
           "default": "2500",
+          "unset": null,
           "choices": null,
           "recommended": null
         }
@@ -1617,6 +1712,7 @@
       "label": "플랫폼별 테스트 명령",
       "description": "검증 플랫폼 목록에 적은 이름마다 하나씩, 목록에 없는 이름은 모르는 항목으로 표시",
       "default": null,
+      "unset": "그 플랫폼 테스트 없음",
       "required": false,
       "kind": "pattern",
       "members": [],

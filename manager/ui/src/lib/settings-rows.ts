@@ -35,39 +35,33 @@ export function foldable(row: FoldRow, value: string, marked: Set<string>): bool
     && !marked.has(row.key);
 }
 
-/** 사용자가 쓴 값이 아니라 기본값이 서 있다는 표식 문구. */
-export const UNSET_MARK: string = rule.unset_hint.mark;
+/** 켜지 않은 칸에 붙는 표식 문구 — 그 값이 사용자가 쓴 것이 아님을 말한다. */
+export const UNSET_MARK: string = rule.unset.mark;
+
+/** 그 키를 직접 정하겠다는 체크박스의 이름. */
+export const SET_TOGGLE: string = rule.unset.toggle;
+
+/** 안 채웠을 때 그 칸에 서는 것 — 엔진 기본값이 있으면 그 값, 없으면 그때의 상태 낱말. */
+export type UnsetRow = { default: string | null; unset: string | null };
 
 /**
- * 그 칸을 비워 뒀을 때 실제로 쓰이는 값 — 빈 칸을 비워 두지 않고 **그 값으로 채운다**.
+ * 켜지 않은 칸에 채워 보일 문구.
  *
- * 기본값 선언의 주인은 엔진 키 목록(`default` = 미설정 시 엔진이 쓰는 값)이고 문구의 주인은
- * 규칙표다. 화면은 받아 그리기만 한다. 기본값이 없는 키는 채울 값이 없어 빈 칸 안내가 온다.
+ * 주인은 엔진 키 레지스트리다(`default` = 미설정 시 쓰는 값 · `unset` = 그때의 상태). schema 4
+ * 는 둘 중 하나가 항상 값이라고 보장하므로 화면에 빈 칸이 생기지 않는다. 레지스트리 밖 키
+ * (conf 에만 있는 행)만 둘 다 없고, 그 행은 애초에 사람이 이미 값을 적은 행이다.
  */
-export function unsetHint(row: { default: string | null }): string {
-  return row.default === null
-    ? rule.unset_hint.none
-    : rule.unset_hint.with_default.replace("{default}", row.default);
+export function unsetHint(row: UnsetRow): string {
+  return row.default ?? row.unset ?? "";
 }
 
-/**
- * 그 칸에 기본값이 채워져 서는가 — 사용자가 쓴 값이 없고 채울 기본값이 있을 때.
- *
- * 이 판정도 규칙표 쪽이 소유한다. 화면이 `default === null` 을 다시 적으면 두 벌이 되어
- * 한쪽만 고쳐지는 날 갈린다(접기 판정과 같은 이유).
- */
-export function unsetFilled(row: { default: string | null }, value: string): boolean {
-  return value === "" && row.default !== null;
-}
-
-/** 채울 값이 없는 칸의 빈 칸 안내 — 채울 값이 있으면 안내가 아니라 값이 선다. */
-export function unsetPlaceholder(row: { default: string | null }): string | undefined {
-  return unsetFilled(row, "") ? undefined : rule.unset_hint.none;
+/** 그 칸이 "안 쓴 상태"로 서는가 — 켜지 않았고 보일 것이 있을 때. */
+export function unsetFilled(row: UnsetRow, on: boolean): boolean {
+  return !on && unsetHint(row) !== "";
 }
 
 /** 목록 칸에서 그 자리를 고를 때 보이는 한 줄 — 채운 값 + 표식이 한 항목에 들어간다. */
-export function unsetLabel(row: { default: string | null }): string {
-  return row.default === null
-    ? rule.unset_hint.none
-    : `${unsetHint(row)} (${UNSET_MARK})`;
+export function unsetLabel(row: UnsetRow): string {
+  const hint = unsetHint(row);
+  return hint === "" ? UNSET_MARK : `${hint} (${UNSET_MARK})`;
 }
