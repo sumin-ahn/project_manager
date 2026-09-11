@@ -2671,6 +2671,127 @@ def test_force_rmtree_bound_to_a_parent_fd_treats_absence_as_success(
         os.close(parent_fd)
 
 
+@pytest.mark.skipif(
+    not _DIR_FD_RMTREE_SUPPORTED or not posix_mode_supported()
+    or getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="dir_fd 결속 삭제 + mode 로 만든 읽기 전용 하위가 필요한 비-root POSIX 환경",
+)
+def test_force_rmtree_bound_to_a_parent_fd_clears_an_unreadable_subdirectory(
+    file_lock, tmp_path,
+):
+    """읽을 수 없는 하위 디렉토리(0o000)가 있어도 정리가 끝난다 — 끝은 성공이거나 `OSError` 다.
+
+    `shutil` 은 그 디렉토리를 **열지 못한** 실패를 `os.open` 으로 에러 훅에 넘긴다. 훅이 그
+    함수를 같은 인자로 다시 부르면 flags 가 없어 `TypeError` 이고, 그 예외는 정리 실패를
+    `OSError` 로 받는 호출부를 지나쳐 rc=0 결과를 덮는다(잔재는 남은 채). 그래서 훅이 되부르는
+    함수는 삭제 primitive 둘뿐이고, 나머지는 권한만 풀고 원인을 올려 바깥 재시도로 간다.
+    """
+    attempt = tmp_path / "attempt"
+    unreadable = attempt / "pytest_full" / "unreadable"
+    unreadable.mkdir(parents=True)
+    (unreadable / "inner.txt").write_text("green", encoding="utf-8")
+    unreadable.chmod(0o000)
+    parent_fd = os.open(str(tmp_path), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(PermissionError):
+            shutil.rmtree(attempt.name, dir_fd=parent_fd)   # 픽스처가 실패를 재현한다
+        assert attempt.exists()
+
+        file_lock.force_rmtree(attempt, dir_fd=parent_fd)
+
+        assert not attempt.exists(), "force_rmtree 뒤에도 트리가 남음"
+    finally:
+        os.close(parent_fd)
+        if unreadable.exists():
+            unreadable.chmod(0o700)
+
+
+# 중간 성분 symlink 를 **따라가지 않고 거부한** errno. Linux 는 `O_DIRECTORY` 가 함께 걸리면
+# `ENOTDIR` 로, 그 밖의 POSIX 는 `ELOOP` 로 같은 거부를 보고한다(실측: 같은 링크를 `O_NOFOLLOW`
+# 단독으로 열면 `ELOOP`, `O_DIRECTORY` 를 얹으면 `ENOTDIR`).
+_REFUSED_TO_FOLLOW_ERRNOS = {"ENOTDIR", "ELOOP"}
+
+
+@pytest.mark.skipif(
+    not _DIR_FD_RMTREE_SUPPORTED or not posix_mode_supported()
+    or getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="dir_fd 결속 삭제 + mode 로 만든 읽기 전용 하위가 필요한 비-root POSIX 환경",
+)
+def test_force_rmtree_bound_to_a_parent_fd_does_not_follow_a_swapped_intermediate_symlink(
+    file_lock, tmp_path, monkeypatch,
+):
+    """훅이 받은 다단 경로의 **중간** 성분이 바꿔치기돼도 트리 밖을 지우거나 만지지 않는다.
+
+    격리 폴더에 쓰기 권한을 가진 남의 프로세스가 정리와 겹친 형상이다 — 훅이 불린 시점에
+    `attempt/x` 가 트리 밖을 가리키는 symlink 로 바뀐다. 그 다단 경로를 부모 fd 기준으로 **한
+    번에** 해소하면 마지막 성분만 nofollow 라 링크를 따라가고, 남의 파일이 지워진 채 정리는
+    성공으로 보고된다. 성분마다 여는 지금 형태는 그 자리에서 `ELOOP` 로 끝나고 바깥 재시도가
+    fd 순회로 다시 돈다.
+    """
+    attempt = tmp_path / "attempt"
+    read_only = attempt / "x" / "ro"
+    read_only.mkdir(parents=True)
+    (read_only / "inner.txt").write_text("green", encoding="utf-8")
+    read_only.chmod(0o500)
+
+    outside = tmp_path / "victim"
+    (outside / "ro").mkdir(parents=True)
+    (outside / "ro" / "inner.txt").write_text("남의 파일", encoding="utf-8")
+    outside_mode = stat.S_IMODE((outside / "ro").stat().st_mode)
+
+    stash = tmp_path / "stash"
+    swaps: list[str] = []
+    hook_errors: list[str] = []
+    walks: list[str] = []
+    real_rmtree = file_lock.shutil.rmtree
+
+    def _swap_intermediate_component() -> None:
+        """진짜 중간 디렉토리를 트리 밖으로 옮기고 그 이름에 남의 트리로 가는 링크를 건다."""
+        os.rename(attempt / "x", stash)
+        os.symlink(outside, attempt / "x")
+        swaps.append(os.readlink(attempt / "x"))
+
+    def _swapping_hook(hook):
+        def _wrapped(*hook_args):
+            if not swaps:               # 훅이 **처음 불린 시점**에 한 번만 바꿔치기한다
+                _swap_intermediate_component()
+            try:
+                return hook(*hook_args)
+            except OSError as exc:
+                hook_errors.append(errno.errorcode.get(exc.errno, str(exc.errno)))
+                raise
+        return _wrapped
+
+    def _rmtree_with_swapping_hook(*args, **kwargs):
+        walks.append(str(args[0]))      # 이 호출 횟수가 곧 바깥 재시도 횟수다
+        for hook_name in ("onexc", "onerror"):
+            if kwargs.get(hook_name) is not None:
+                kwargs[hook_name] = _swapping_hook(kwargs[hook_name])
+        return real_rmtree(*args, **kwargs)
+
+    monkeypatch.setattr(file_lock.shutil, "rmtree", _rmtree_with_swapping_hook)
+    parent_fd = os.open(str(tmp_path), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        outcome = "정리 완료"
+        try:
+            file_lock.force_rmtree(attempt, dir_fd=parent_fd)
+        except OSError as exc:          # 못 지우고 끝나는 것도 계약이다 — 지킬 것은 트리 밖이다
+            outcome = type(exc).__name__
+
+        assert swaps, "픽스처가 중간 성분을 바꿔치기하지 못했다"
+        assert hook_errors[:1] and hook_errors[0] in _REFUSED_TO_FOLLOW_ERRNOS, (
+            f"중간 성분 symlink 를 따라갔다: hook={hook_errors} · 결과={outcome}")
+        assert len(walks) >= 2, f"바깥 재시도로 가지 않았다: {walks}"
+        assert (outside / "ro" / "inner.txt").exists(), "트리 밖 파일이 지워짐"
+        assert stat.S_IMODE((outside / "ro").stat().st_mode) == outside_mode, \
+            "트리 밖 디렉토리 권한이 바뀜"
+    finally:
+        os.close(parent_fd)
+        leftover = stash / "ro" if stash.exists() else read_only
+        if leftover.is_dir():
+            leftover.chmod(0o700)
+
+
 def test_force_unlink_removes_a_file_a_plain_unlink_cannot(file_lock, tmp_path):
     """쓰기 권한 없는 디렉토리 안의 read-only 파일도 지운다 (맨 unlink 는 거부된다)."""
     tree = _read_only_tree(tmp_path / "tree")

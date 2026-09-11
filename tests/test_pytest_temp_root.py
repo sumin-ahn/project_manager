@@ -254,11 +254,15 @@ def test_engine_copies_resolve_the_os_temp_dir_only_in_the_declared_seam():
     ) == []
 
 
-def test_read_role_temp_place_passes_the_project_anchor(monkeypatch):
+def test_read_role_temp_place_passes_the_project_anchor(monkeypatch, tmp_path):
     """`mkdir` 로 여는 유일한 임시 자리(read 역할 격리)도 앵커 seam 을 지나야 통과한다.
 
     이 자리는 `tempfile.*` 을 타지 않아 `dir=` 축이 원리적으로 볼 수 없다 — 그래서 부모가
-    `pm_relay.temp_root` 를 지나는지를 값으로 잰다(세 하네스 전부).
+    `pm_relay.temp_root` 를 지나는지를 값으로 잰다(세 하네스 전부). 앵커는 **주입한 PM 홈**
+    이고 OS 임시 폴더는 그 홈 밖으로 돌린다. 기본 실행의 `tempfile.gettempdir()` 는 회귀 자신이
+    저장소 안으로 돌려놓은 값이라(`conftest._forbid_real_tempdir_project_outputs`), 실제 저장소를
+    앵커로 쓰면 옛 형태(`Path(_gettempdir())`)로 되돌려도 단언이 참으로 남아 아무것도 지키지
+    못한다. 주입은 실제 저장소 트리에 쓰지 않는다는 요건도 함께 만족한다.
     """
     delegate = importlib.util.module_from_spec(
         importlib.util.spec_from_file_location(
@@ -270,19 +274,24 @@ def test_read_role_temp_place_passes_the_project_anchor(monkeypatch):
             "pm_relay_temp_place_contract", TOOLS / "pm_relay.py")
     )
     relay.__spec__.loader.exec_module(relay)
-    anchor = relay.temp_root(delegate.REPO)
+
+    pm_home = tmp_path / "pmhome"
+    (pm_home / ".project_manager" / "tools").mkdir(parents=True)
+    outside_the_pm_home = tmp_path / "os-temp"
+    outside_the_pm_home.mkdir()
+    monkeypatch.setattr(delegate, "REPO", pm_home)
+    monkeypatch.setattr(delegate, "_CONFIG_REPO_OVERRIDE", None)
+    monkeypatch.setattr(delegate, "_gettempdir", lambda: str(outside_the_pm_home))
+    anchor = relay.temp_root(pm_home).resolve()
 
     for harness in ("codex", "claude", "opencode"):
         temp_parent, _component = delegate._read_tmp_parent(harness)
         assert anchor == temp_parent or anchor in temp_parent.parents, (
             f"{harness} 격리 자리가 앵커 밖이다: {temp_parent}")
 
-    # 민감도 — 앵커를 지나지 않는 자리로 되돌리면 같은 단언이 red 다(옛 형상: OS 임시 폴더).
-    # 이 세션의 `tempfile.gettempdir()` 는 회귀 자신이 프로젝트 안으로 돌려놓은 값이라
-    # (`conftest._forbid_real_tempdir_project_outputs`) 음성 사례로 쓸 수 없다.
-    outside = ROOT.parent / "outside-the-project"
-    monkeypatch.setattr(delegate, "_read_tmp_root", lambda: outside)
-    reverted, _component = delegate._read_tmp_parent("codex")
+    # 민감도 — 옛 형태(`Path(_gettempdir())`)가 내는 값은 이 앵커 밖이다. 그 형태로 되돌리면
+    # 위 단언이 red 라는 뜻이고, 그래서 위 통과가 공허하지 않다.
+    reverted = Path(delegate._gettempdir()).resolve()
     assert anchor != reverted and anchor not in reverted.parents
 
 
