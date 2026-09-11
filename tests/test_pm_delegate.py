@@ -1619,11 +1619,11 @@ def test_read_role_permission_axis(pd):
 def test_codex_read_attempt_reanchors_execution_root_env_preamble_and_cleanup(
         pd, monkeypatch, tmp_path):
     """Codex read attempt는 workspace root를 tmp로 옮겨 원 worktree write를 열지 않는다."""
-    temp_root = tmp_path / "system-temp"
+    temp_root = tmp_path / "pm-home-temp"
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     _init_codex_read_role_repo(cwd)
-    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
     seen = {}
 
     def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
@@ -1680,13 +1680,13 @@ def test_codex_read_attempt_reanchors_execution_root_env_preamble_and_cleanup(
 def test_codex_live_sandbox_tmp_write_and_worktree_open_denied(
         pd, monkeypatch, tmp_path):
     """실 Codex sandbox에서 0-byte write까지 tmp=성공/worktree=open 거부를 단언한다."""
-    system_temp = tmp_path / "system-temp"
+    pm_home_temp = tmp_path / "pm-home-temp"
     worktree = tmp_path / "worktree"
-    system_temp.mkdir()
+    pm_home_temp.mkdir()
     worktree.mkdir()
     target = worktree / "tracked.py"
     target.write_text("sentinel = 1\n", encoding="utf-8")
-    monkeypatch.setattr(pd, "_gettempdir", lambda: str(system_temp))
+    monkeypatch.setattr(pd, "_read_tmp_root", lambda: pm_home_temp)
     read_tmp = pd._create_read_role_temp("codex", worktree)
     assert read_tmp is not None
     temp_probe = read_tmp.path / "probe"
@@ -1754,11 +1754,11 @@ def test_codex_live_sandbox_tmp_write_and_worktree_open_denied(
 
 def test_claude_read_attempt_add_dir_and_cleanup(pd, monkeypatch, tmp_path):
     """Claude 2.1.227 등가 수단은 같은 attempt tmp를 --add-dir와 env에 연결한다."""
-    temp_root = tmp_path / "system-temp"
+    temp_root = tmp_path / "pm-home-temp"
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     cwd.mkdir()
-    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
     seen = {}
 
     def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
@@ -1785,11 +1785,11 @@ def test_claude_read_attempt_add_dir_and_cleanup(pd, monkeypatch, tmp_path):
 def test_opencode_read_attempt_uses_measured_allowed_tmp_and_shared_cleanup(
         pd, monkeypatch, tmp_path):
     """OpenCode read 역할의 실측 `${TMPDIR}/opencode/*`와 wire 사본을 한 cleanup seam이 회수한다."""
-    temp_root = tmp_path / "system-temp"
+    temp_root = tmp_path / "pm-home-temp"
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     cwd.mkdir()
-    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
     seen = {}
 
     def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
@@ -1843,11 +1843,11 @@ def acl_platform(pd, monkeypatch):
 
 def _acl_read_attempt(pd, monkeypatch, tmp_path, harness, model, stdout_fn):
     """ACL 수단으로 read 역할 attempt 1회를 돌리고 관측값을 돌려준다."""
-    temp_root = tmp_path / "system-temp"
+    temp_root = tmp_path / "pm-home-temp"
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     _init_codex_read_role_repo(cwd)
-    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
     seen = {}
 
     def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
@@ -1915,11 +1915,11 @@ def test_acl_platform_opencode_read_attempt_keeps_measured_allowed_tmp(
 def test_acl_platform_read_tmp_uses_shared_owner_and_delete_seams(
         pd, monkeypatch, tmp_path, acl_platform):
     """소유자 제한·회수를 공용 seam(file_lock)에 위임한다 — mode 인자 무효 플랫폼 등가 보장."""
-    temp_root = tmp_path / "system-temp"
+    temp_root = tmp_path / "pm-home-temp"
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     cwd.mkdir()
-    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
     file_lock = pd._load_file_lock()
     restricted: list[Path] = []
     removed: list[Path] = []
@@ -1948,11 +1948,11 @@ def test_acl_platform_read_tmp_uses_shared_owner_and_delete_seams(
 def test_acl_platform_read_tmp_cleanup_on_runner_exception(
         pd, monkeypatch, tmp_path, acl_platform):
     """runner 예외 뒤에도 ACL 수단의 잔여는 0이다(부분 산출물 포함)."""
-    temp_root = tmp_path / "system-temp"
+    temp_root = tmp_path / "pm-home-temp"
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     cwd.mkdir()
-    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
 
     def _explode(argv, *, stdin_text, cwd, env, timeout, harness):
         (Path(env["TMP"]) / "runner-artifact").write_text("partial", encoding="utf-8")
@@ -2099,11 +2099,11 @@ def test_env_resolution_failure_leaves_no_attempt_residue(
     필수 키 목록은 **플랫폼마다 다른 tuple** 이라 한쪽에만 누락 키를 주입하면 다른 플랫폼에서
     주입이 no-op 이 되고, env 해소가 성공해 스폰이 실제로 돈다(Windows 실측). 두 축을 모두 태우고
     주입이 이 실행 경로에 실제로 걸렸는지 먼저 단언한다."""
-    temp_root = tmp_path / "system-temp"
+    temp_root = tmp_path / "pm-home-temp"
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     cwd.mkdir()
-    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
     monkeypatch.setattr(pd, "_running_on_windows", lambda: windows)
     # Windows 축을 POSIX 에서도 재현: 이 플랫폼 필수 키가 부모 env 에 실재해야 주입한 누락 키
     # 하나만으로 해소가 실패한다(그 키들까지 없으면 다른 사유로 멈춰 이 회귀가 시험되지 않는다).
@@ -2236,11 +2236,11 @@ def test_read_tmp_unsupported_platform_preamble_is_explicit(
 def test_acl_platform_preamble_is_the_real_path_not_the_unavailable_note(
         pd, monkeypatch, tmp_path, acl_platform):
     """fd 결속만 없는 플랫폼(Windows)의 정본은 실 경로 preamble 이다 — 회귀-불가 문구가 아니다."""
-    temp_root = tmp_path / "system-temp"
+    temp_root = tmp_path / "pm-home-temp"
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     _init_codex_read_role_repo(cwd)
-    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
     seen = {}
 
     def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
@@ -2260,11 +2260,11 @@ def test_acl_platform_preamble_is_the_real_path_not_the_unavailable_note(
 
 def test_read_tmp_cleanup_on_runner_exception(pd, monkeypatch, tmp_path):
     """runner가 예상 밖 예외를 올려도 finally가 read tmp 하위 산출물까지 잔여 0으로 만든다."""
-    temp_root = tmp_path / "system-temp"
+    temp_root = tmp_path / "pm-home-temp"
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     cwd.mkdir()
-    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
 
     def _explode(argv, *, stdin_text, cwd, env, timeout, harness):
         read_tmp = Path(env["TMPDIR"])
@@ -2284,11 +2284,11 @@ def test_read_tmp_cleanup_on_runner_exception(pd, monkeypatch, tmp_path):
 
 def test_read_tmp_cleanup_on_timeout_child_kill_result(pd, monkeypatch, tmp_path):
     """watchdog timeout/child-kill 결과가 돌아온 뒤에도 read tmp 잔여는 0이다."""
-    temp_root = tmp_path / "system-temp"
+    temp_root = tmp_path / "pm-home-temp"
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     cwd.mkdir()
-    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
 
     def _timed_out(argv, *, stdin_text, cwd, env, timeout, harness):
         read_tmp = Path(env["TMPDIR"])
@@ -2312,11 +2312,11 @@ def test_read_tmp_cleanup_on_timeout_child_kill_result(pd, monkeypatch, tmp_path
 def test_read_tmp_cleanup_on_raw_reservation_failure(
         pd, monkeypatch, tmp_path):
     """transport 준비 뒤 raw 예약 실패도 runner 전에 read tmp를 잔여 0으로 되감는다."""
-    temp_root = tmp_path / "system-temp"
+    temp_root = tmp_path / "pm-home-temp"
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     cwd.mkdir()
-    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
     monkeypatch.setattr(
         pd, "_reserve_raw_output",
         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("raw reserve failed")),
@@ -2332,6 +2332,184 @@ def test_read_tmp_cleanup_on_raw_reservation_failure(
         )
 
     assert list(temp_root.iterdir()) == []
+
+
+# ── 격리 자리 = 프로젝트 안 (T-project_manager-005) ─────────────────────────
+
+
+def _pm_home_tree(tmp_path: Path) -> Path:
+    """엔진 사본이 설치된 형상의 PM 홈 하나 — 임시 루트 앵커(`.project_manager`)가 있다."""
+    home = tmp_path / "pmhome"
+    (home / ".project_manager" / "tools").mkdir(parents=True)
+    return home
+
+
+def test_read_role_temp_place_is_the_project_temp_root(pd, monkeypatch, tmp_path):
+    """세 하네스의 격리 자리가 PM 홈 임시 루트 아래다 — 부모 이름 규칙과 보호는 그대로.
+
+    옮기기 전에는 이 자리가 OS 임시 폴더(`_read_tmp_parent('codex')` = `/tmp`)였고, 그 트리는
+    이 저장소가 재는 대상 밖이라 잔존물이 200MB 단위로 쌓여도 보이지 않았다.
+    """
+    pm_home = _pm_home_tree(tmp_path)
+    cwd = tmp_path / "worktree"
+    cwd.mkdir()
+    monkeypatch.setattr(pd, "REPO", pm_home)
+    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", None)
+    anchor = pd._load_relay().temp_root(pm_home)
+
+    for harness in ("codex", "claude", "opencode"):
+        temp_parent, component = pd._read_tmp_parent(harness)
+
+        assert anchor == temp_parent or anchor in temp_parent.parents
+        # 하네스별 부모 이름 규칙은 자리를 옮겨도 불변이다.
+        assert component == pd._READ_TMP_PARENT_COMPONENT_BY_HARNESS[harness]
+        assert temp_parent == (anchor / component if component else anchor)
+
+        read_tmp = pd._create_read_role_temp(harness, cwd)
+        assert read_tmp is not None
+        try:
+            # 격리 보호 셋이 옮긴 자리에서도 같은 단언으로 성립한다.
+            if posix_mode_supported():
+                assert stat.S_IMODE(read_tmp.path.stat().st_mode) == 0o700
+            assert (read_tmp.parent_fd is not None) == pd._READ_TMP_FD_SUPPORTED
+            assert not read_tmp.path.is_symlink()
+            assert read_tmp.path.parent == temp_parent
+            # 검토 프롬프트가 처방하는 `--basetemp` 도 그 자리 안이다.
+            preamble = pd._reanchor_exec_root_preamble(
+                cwd, read_tmp.path, read_tmp.writable_path)
+            basetemp = Path(preamble.split("--basetemp")[1].split()[0])
+            assert anchor in basetemp.parents
+        finally:
+            pd._cleanup_read_role_temp(read_tmp)
+        assert not read_tmp.path.exists()
+
+
+def test_read_role_temp_survives_a_cwd_that_owns_the_temp_root(
+        pd, monkeypatch, tmp_path):
+    """cwd 가 PM 홈(또는 그 상위)인 형상에서도 read 역할 위임이 산다 — 판정은 검토 표면이다.
+
+    옮기기 전 판정("attempt 가 cwd 트리 안이면 거부")이면 이 입력은 죽는다. clone-local 런타임
+    접두(`.project_manager/.local/`)는 gitignore·잔여 인구 제외·pytest 수집 제외가 걸린 자리라
+    같은 트리 안이어도 검토 표면이 아니다. 표면 **안**으로 해소되는 자리는 여전히 거부다.
+    """
+    pm_home = _pm_home_tree(tmp_path)
+    monkeypatch.setattr(pd, "REPO", pm_home)
+    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", None)
+
+    read_tmp = pd._create_read_role_temp("claude", pm_home)   # cwd == PM 홈
+    assert read_tmp is not None
+    try:
+        assert read_tmp.path.is_relative_to(pm_home)          # cwd 트리 **안**인데 통과한다
+        assert read_tmp.path.is_relative_to(
+            pm_home.joinpath(*pd._LOCAL_RUNTIME_PREFIX_PARTS))
+    finally:
+        pd._cleanup_read_role_temp(read_tmp)
+
+    # 역방향 — 같은 cwd 라도 추적 표면으로 해소되면 거부한다(옛 판정의 보호는 그대로다).
+    tracked_root = pm_home / "scratch"
+    tracked_root.mkdir()
+    monkeypatch.setattr(pd, "_read_tmp_root", lambda: tracked_root)
+    with pytest.raises(pd.DelegateError, match="검토 표면 안으로 해소되어 거부"):
+        pd._create_read_role_temp("claude", pm_home)
+    assert list(tracked_root.iterdir()) == []                 # 거부 뒤 잔여 0
+
+
+@pytest.mark.skipif(
+    not posix_mode_supported() or getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="읽기 전용 하위를 mode 로 만들 수 있는 비-root POSIX 환경 필요",
+)
+def test_read_tmp_cleanup_removes_a_read_only_subtree(pd, monkeypatch, tmp_path):
+    """리뷰어 회귀가 남기는 0o500 하위가 있어도 정리가 끝난다 — 강제 삭제 경로를 지난다.
+
+    맨 `shutil.rmtree` 는 같은 트리에서 `PermissionError [Errno 13] ... 'inner.txt'` 로 실패한다
+    (실측). 이 스위트 자신이 그런 디렉터리를 만들므로 도달 가능한 경로다.
+    """
+    temp_root = tmp_path / "pm-home-temp"
+    cwd = tmp_path / "worktree"
+    temp_root.mkdir()
+    cwd.mkdir()
+    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
+
+    def _leave_read_only_tree(argv, *, stdin_text, cwd, env, timeout, harness):
+        artifact = Path(env["TMPDIR"]) / "pytest_full" / "read-only"
+        artifact.mkdir(parents=True)
+        (artifact / "inner.txt").write_text("green", encoding="utf-8")
+        artifact.chmod(0o500)
+        return {"returncode": 0, "stdout": _claude_stdout("검토 완료"),
+                "stderr": "", "timed_out": False}
+
+    attempt = pd._execute_attempt(
+        harness="claude", model="opus", reasoning=None,
+        role="code-reviewer", cwd=cwd, prompt="review", timeout=30,
+        output_dir=tmp_path / "raw", run_fn=_leave_read_only_tree,
+        attempt="primary",
+    )
+
+    assert attempt.result["returncode"] == 0        # 정리가 끝났으니 실행은 성공이다
+    assert list(temp_root.iterdir()) == []
+
+
+def test_read_tmp_that_cannot_be_removed_fails_the_attempt(
+        pd, monkeypatch, tmp_path, capsys):
+    """끝내 못 지우면 경고로 끝내지 않고 rc≠0 으로 낸다 — 주 결과를 예외로 덮지도 않는다."""
+    temp_root = tmp_path / "pm-home-temp"
+    cwd = tmp_path / "worktree"
+    temp_root.mkdir()
+    cwd.mkdir()
+    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
+    file_lock = pd._load_file_lock()
+    monkeypatch.setattr(
+        file_lock, "force_rmtree",
+        lambda path, **kwargs: (_ for _ in ()).throw(
+            OSError("디렉토리 정리 실패 — 3회 시도 후에도 남아 있습니다")),
+    )
+
+    def _succeed(argv, *, stdin_text, cwd, env, timeout, harness):
+        return {"returncode": 0, "stdout": _claude_stdout("검토 완료"),
+                "stderr": "", "timed_out": False}
+
+    attempt = pd._execute_attempt(
+        harness="claude", model="opus", reasoning=None,
+        role="code-reviewer", cwd=cwd, prompt="review", timeout=30,
+        output_dir=tmp_path / "raw", run_fn=_succeed, attempt="primary",
+    )
+
+    assert attempt.result["returncode"] != 0
+    assert "정리 실패" in attempt.result["stderr"]
+    residue = next(iter(temp_root.iterdir()))
+    assert str(residue) in attempt.result["stderr"]     # 잔존 경로가 사유에 실린다
+    assert "경고: read 역할 임시 디렉터리 정리 실패" in capsys.readouterr().err
+    # 인프라 실패 분류가 아니므로 유료 폴백을 부르지 않는다.
+    assert pd.classify_infrastructure_failure(attempt.result) is None
+    shutil.rmtree(residue)
+
+
+# 잔존 트리 실측 최장 꼬리 — attempt 루트 아래 리뷰어 회귀 산출물 경로(158자).
+_MEASURED_READ_TMP_TAIL = (
+    "pytest_full/popen-gw6/test_opencode_transport_prompt0/sandbox/"
+    ".project_manager/.local/delegate/pm_delegate_1234567_"
+    + "a" * 32 + "/prompt.md"
+)
+# Windows MAX_PATH — 긴 경로 지원은 회귀 픽스처 사유이지 제품 요구가 아니다.
+_WINDOWS_MAX_PATH = 259
+
+
+def test_read_tmp_attempt_name_fits_the_windows_path_budget(pd):
+    """attempt 이름 예산 — 프로젝트 안 접두 + 실측 꼬리가 MAX_PATH 안에 든다.
+
+    격리 자리가 OS 임시 폴더에서 PM 홈 임시 루트로 오면서 접두가 33자에서 62자로 늘었다.
+    16진 꼬리를 32자로 두면 279자로 넘고, 12자면 259자 예산 안이다. 유일성은 엔트로피가 아니라
+    배타 `mkdir`(선점된 이름이면 FileExistsError)이 소유한다.
+    """
+    windows_temp_root = (
+        r"C:\Users\smahn\project_manager_dev\.project_manager\.local\tmp"
+    )
+    name = pd._read_tmp_attempt_name()
+    total = len(windows_temp_root) + 1 + len(name) + 1 + len(_MEASURED_READ_TMP_TAIL)
+
+    assert total <= _WINDOWS_MAX_PATH, f"경로 예산 초과: {total}자"
+    assert name.startswith(pd._READ_TMP_PREFIX)
+    assert pd._read_tmp_attempt_name() != name      # 겹친 attempt 가 서로를 선점하지 않는다
 
 
 # ══ ⑧ 쓰기-타깃 axis 재앵커 (§4.6) ════════════════════════════════════════════

@@ -765,7 +765,7 @@ FORCE_DELETE_RETRIES = 3
 FORCE_DELETE_RETRY_SLEEP_SECONDS = 0.05
 
 
-def _clear_delete_block(path: Path) -> None:
+def _clear_delete_block(path: Path | str, *, dir_fd: int | None = None) -> None:
     """삭제를 막는 read-only 속성을 **대상과 그 부모**에서 푼다 (best-effort).
 
     두 플랫폼의 규칙이 달라 둘 다 푼다 — Windows 는 *그 파일 자신*의 read-only 속성이 unlink 를
@@ -774,10 +774,17 @@ def _clear_delete_block(path: Path) -> None:
 
     symlink 는 건너뛴다 — `os.chmod` 가 링크를 따라가 **대상**의 권한을 바꾸는데, 링크 삭제에는
     대상 권한이 필요 없다(정리하다 남의 파일 권한을 바꾸지 않는다).
+
+    `dir_fd` 를 받으면 경로를 그 디렉토리 fd 기준으로 해소한다 — fd 결속 삭제의 에러 훅은 이
+    함수에 **성분마다 nofollow 로 연 부모 fd 와 그 직계 이름 하나**를 준다(다단 상대경로를 한
+    번에 해소하면 중간 성분의 symlink 를 따라간다). 그래서 여기서 푸는 자리는 그 이름과 부모
+    (`.`) 둘뿐이다. `os.lstat` 은 `dir_fd` 를 받지 않으므로 같은 뜻의
+    `os.stat(follow_symlinks=False)` 다.
     """
-    for target in (path.parent, path):
+    target_path = Path(path)
+    for target in (target_path.parent, target_path):
         try:
-            info = os.lstat(target)
+            info = os.stat(target, dir_fd=dir_fd, follow_symlinks=False)
         except OSError:
             continue
         if stat.S_ISLNK(info.st_mode):
@@ -786,10 +793,47 @@ def _clear_delete_block(path: Path) -> None:
         if stat.S_ISDIR(info.st_mode):
             mode |= stat.S_IXUSR  # 디렉토리는 탐색 권한이 있어야 안의 항목에 닿는다.
         with contextlib.suppress(OSError):
-            os.chmod(target, mode)
+            os.chmod(target, mode, dir_fd=dir_fd)
 
 
-def _rmtree_clearing_readonly(target: Path) -> None:
+# 에러 훅이 **다시 부를 수 있는** 함수 — 삭제 primitive 둘뿐이다. `shutil` 은 열기(`os.open`)·
+# 열거(`os.scandir`)·판독(`os.lstat`·`os.path.islink`)·닫기(`os.close`) 실패도 같은 훅에 넘기는데,
+# 그 호출들은 같은 인자로 다시 부를 수 없거나(`os.open` 은 flags 가 필수다) 불러도 삭제를
+# 진행시키지 못한다. 그 실패는 권한만 풀고 원래 `OSError` 를 그대로 올려 `force_rmtree` 의 바깥
+# 재시도가 트리를 처음부터 다시 돌게 한다 — 그래야 정리 실패가 언제나 `OSError` 로 끝난다.
+_RETRYABLE_DELETE_CALLS = (os.unlink, os.rmdir)
+
+
+@contextlib.contextmanager
+def _last_component_at_parent_fd(
+    relative: Path | str, *, dir_fd: int,
+) -> Iterator[tuple[int, str]]:
+    """fd 기준 상대경로를 **한 성분씩** 따라가 마지막 이름과 그 부모 fd 를 내준다.
+
+    에러 훅이 받는 경로는 `attempt/x/ro/inner.txt` 같은 다단 상대경로다(stdlib 이 진단용으로
+    이어 붙인 값이고, `force_rmtree` 가 언제나 fd 의 직계 이름을 주므로 그 기준은 이 fd 다).
+    그걸 부모 fd 기준으로 **한 번에** 해소하면 마지막 성분만 nofollow 이고 중간 성분의 symlink
+    는 따라간다 — 정리와 겹친 남의 프로세스가 중간 디렉토리를 바꿔치기하면 트리 밖을 지운다.
+    성분마다 `O_DIRECTORY | O_NOFOLLOW` 로 한 단계씩 열어 그 여지를 없앤다: 중간 성분이 symlink
+    이거나 디렉토리가 아니면 `OSError` 로 끝나고 바깥 재시도가 fd 순회로 다시 돈다.
+    """
+    parts = Path(relative).parts
+    opened: list[int] = []
+    parent_fd = dir_fd
+    try:
+        for part in parts[:-1]:
+            parent_fd = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd,
+            )
+            opened.append(parent_fd)
+        yield parent_fd, parts[-1]
+    finally:
+        for fd in reversed(opened):
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+def _rmtree_clearing_readonly(target: Path | str, *, dir_fd: int | None = None) -> None:
     """`shutil.rmtree` 한 번 — 항목별 실패마다 read-only 를 풀고 그 항목만 즉시 재시도한다.
 
     fd 기반 순회(`shutil.rmtree.avoids_symlink_attacks`)를 잃지 않으려고 직접 순회를 다시 짜지
@@ -797,20 +841,36 @@ def _rmtree_clearing_readonly(target: Path) -> None:
     (func, path, exc) 로 갈렸고 옛 이름은 DeprecationWarning 이라 버전으로 갈라 부른다
     (엔진 지원 하한은 3.11).
     """
-    def _retry_after_unlock(func, failed_path, _exc) -> None:
-        _clear_delete_block(Path(failed_path))
-        func(failed_path)   # 이 재시도의 실패는 그대로 올라간다 — 바깥 루프가 받는다.
+    def _retry_after_unlock(func, failed_path, exc) -> None:
+        retryable = func in _RETRYABLE_DELETE_CALLS
+        if dir_fd is None:
+            _clear_delete_block(failed_path)
+            if not retryable:
+                raise exc
+            func(failed_path)   # 이 재시도의 실패는 그대로 올라간다 — 바깥 루프가 받는다.
+            return
+        with _last_component_at_parent_fd(failed_path, dir_fd=dir_fd) as (
+            component_fd, name,
+        ):
+            _clear_delete_block(name, dir_fd=component_fd)
+            if not retryable:
+                raise exc
+            func(name, dir_fd=component_fd)
 
     if sys.version_info >= (3, 12):
-        shutil.rmtree(target, onexc=_retry_after_unlock)
+        shutil.rmtree(target, dir_fd=dir_fd, onexc=_retry_after_unlock)
     else:
         shutil.rmtree(
             target,
+            dir_fd=dir_fd,
             onerror=lambda func, p, excinfo: _retry_after_unlock(func, p, excinfo[1]),
         )
 
 
-def force_rmtree(path: Path | str, *, retries: int = FORCE_DELETE_RETRIES) -> None:
+def force_rmtree(
+    path: Path | str, *, dir_fd: int | None = None,
+    retries: int = FORCE_DELETE_RETRIES,
+) -> None:
     """디렉토리 트리를 **실제로** 지운다 — 못 지우면 조용히 넘어가지 않고 예외를 올린다.
 
     read-only 항목은 속성을 풀어 그 자리에서 재시도하고, 그래도 실패하면 짧게 기다렸다 트리
@@ -818,15 +878,22 @@ def force_rmtree(path: Path | str, *, retries: int = FORCE_DELETE_RETRIES) -> No
     호출부는 그 실패를 사용자가 볼 수 있는 조치 문구로 번역하거나 그대로 올린다.
 
     **부재는 성공**이다(정리의 목적은 "없다"이고 경쟁 삭제도 그 목적을 이룬다).
+
+    `dir_fd` 를 주면 삭제를 그 디렉토리 fd 에 결속한다 — 대상은 **그 fd 의 직계 이름**으로만
+    해소되므로 도중에 부모 경로가 바뀌어도 다른 자리를 지우지 않는다. 호출부는 언제나 전체
+    경로를 주고(진단 문구가 그 값이다) 이름 변환은 이 seam 이 한다.
     """
     target = Path(path)
+    resolved = target.name if dir_fd is not None else target
     attempts = max(1, retries)
     last_error: OSError | None = None
     for attempt in range(attempts):
-        if not os.path.lexists(target):
-            return
         try:
-            _rmtree_clearing_readonly(target)
+            os.stat(resolved, dir_fd=dir_fd, follow_symlinks=False)
+        except OSError:
+            return                      # 부재(또는 닿을 수 없음) — 목적은 "없다"다.
+        try:
+            _rmtree_clearing_readonly(resolved, dir_fd=dir_fd)
             return
         except FileNotFoundError:
             return                      # 경쟁 삭제 — 목적(부재)은 달성됐다.

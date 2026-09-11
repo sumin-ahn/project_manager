@@ -1325,10 +1325,15 @@ def test_driver_return_before_raw_write_failure_still_consumes_round(
         raise OSError("raw write failed")
 
     monkeypatch.setattr(pd, "_write_reserved_raw", fail_raw)
+    # cwd는 `pd` fixture가 만드는 `pm-home`(격리 임시 루트의 앵커)의 형제 디렉터리여야 한다 —
+    # 같은 tmp_path를 cwd로 쓰면 격리 자리가 그 cwd 트리 안(pm-home/...)으로 해소돼 검토 표면
+    # 판정에 거부당한다(read tmp 앵커는 이제 REPO/`_CONFIG_REPO_OVERRIDE`를 탄다).
+    cwd = tmp_path / "worktree"
+    cwd.mkdir()
     with pytest.raises(OSError, match="raw write failed"):
         pd._execute_attempt(
             harness="claude", model="opus", reasoning=None,
-            role="code-reviewer", cwd=tmp_path, prompt="review",
+            role="code-reviewer", cwd=cwd, prompt="review",
             timeout=30, output_dir=tmp_path / "raw", run_fn=run_fn,
             attempt="primary", internal_trace=trace,
         )

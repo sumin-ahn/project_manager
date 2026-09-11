@@ -1972,10 +1972,10 @@ def _plan_for(pd, tmp_path: Path, ticket: str, run_hex: str):
 
 def test_codex_reviewer_opens_the_legacy_row_run_dir(pd, monkeypatch, tmp_path):
     """묶음 키 없는 옛 행 형상(`<루트>/<티켓>/<run>/`)도 그 run-dir 전체를 그대로 연다."""
-    temp_root = tmp_path / "system-temp"
+    temp_root = tmp_path / "pm-home-temp"
     temp_root.mkdir()
     copy = _plan_for(pd, tmp_path, "T-2001", "a" * 32)
-    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
     argv, _stdin, prompt_path, read_tmp = pd._prepare_attempt_transport(
         "codex", "gpt-x", None, "code-reviewer", tmp_path / "worktree", "review",
         cluster_run_dir=copy.parent,
@@ -1984,6 +1984,7 @@ def test_codex_reviewer_opens_the_legacy_row_run_dir(pd, monkeypatch, tmp_path):
         assert argv[argv.index("-s") + 1] == "workspace-write"
         assert argv[argv.index("--add-dir") + 1] == str(copy.parent)
         assert argv[argv.index("-C") + 1] == str(read_tmp.path)
+        assert temp_root in read_tmp.path.parents      # 주입한 임시 루트에 붙었다
     finally:
         pd._cleanup_attempt_transport(prompt_path, read_tmp)
 
@@ -2004,9 +2005,9 @@ def test_codex_reviewer_opens_the_whole_cluster_run_dir(
         cluster="C-wave", tickets=("T-7101", "T-7102"), role="code-reviewer",
         cwd=slot, pm_home=pm_home,
     )
-    temp_root = tmp_path / "system-temp"
+    temp_root = tmp_path / "pm-home-temp"
     temp_root.mkdir()
-    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
 
     argv, _stdin, prompt_path, read_tmp = pd._prepare_attempt_transport(
         "codex", "gpt-x", None, "code-reviewer", slot, "review",
@@ -2016,6 +2017,7 @@ def test_codex_reviewer_opens_the_whole_cluster_run_dir(
     try:
         opened = argv[argv.index("--add-dir") + 1]
         assert opened == str(plan.run_dir)
+        assert temp_root in read_tmp.path.parents      # 주입한 임시 루트에 붙었다
         # 자리 하나가 아니라 run 전체다 — 두 티켓 자리가 그 아래 산다.
         assert sorted(item.name for item in Path(opened).iterdir()) == [
             "T-7101", "T-7102"]
@@ -2045,16 +2047,17 @@ def test_a_plan_without_the_run_dir_coordinate_is_loud(pd, tmp_path):
 @pytest.mark.parametrize("harness,model", [("claude", "sonnet"), ("opencode", "prov/m")])
 def test_non_codex_reviewer_warns_and_keeps_selected_target(
         pd, monkeypatch, tmp_path, capsys, harness, model):
-    temp_root = tmp_path / "system-temp"
+    temp_root = tmp_path / "pm-home-temp"
     temp_root.mkdir()
     copy = _plan_for(pd, tmp_path, "T-2002", "b" * 32)
-    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
     argv, _stdin, prompt_path, read_tmp = pd._prepare_attempt_transport(
         harness, model, None, "code-reviewer", tmp_path / "worktree", "review",
         cluster_run_dir=copy.parent,
     )
     try:
         assert argv[0] == harness
+        assert temp_root in read_tmp.path.parents      # 주입한 임시 루트에 붙었다
         if harness == "opencode":
             assert argv[argv.index("--agent") + 1] == "code-reviewer"
         warning = capsys.readouterr().err

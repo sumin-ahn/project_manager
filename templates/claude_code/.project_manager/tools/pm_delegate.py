@@ -583,6 +583,16 @@ _CODEX_READ_TMP_PROFILE = "pm_delegate_read_tmp"
 _OPENCODE_READ_TMP_PARENT = "opencode"
 _OPENCODE_ALLOWED_TMP_COMPONENT = "opencode"
 _READ_TMP_PREFIX = "pm_delegate_read_"
+# attempt 이름의 16진 꼬리 길이. 유일성은 엔트로피가 아니라 **배타 mkdir**(선점된 이름이면
+# FileExistsError 로 끝난다)이 소유하므로 이름은 짧게 유지한다 — 격리 자리가 프로젝트 안으로
+# 들어오면서 접두가 길어졌고(Windows 실측: `%TEMP%` 33자 → PM 홈 임시 루트 49~62자), 잔존 트리
+# 실측 꼬리 158자 기준으로 32자 이름은 MAX_PATH(259)를 넘겼다. 12자면 그 예산 안에 든다
+# (같은 파일의 `_WRITE_PROBE_SUFFIX_HEX` 와 같은 사유).
+_READ_TMP_SUFFIX_HEX = 12
+# 정리가 끝내 실패해 잔존 트리가 남은 실행의 rc. 하네스 turn 이 성공(rc=0)이어도 그 실행은
+# 실패다. 인프라 실패 분류(폴백 대상)를 타지 않는 엔진 측 실패라 `_midrun_failure_result` 와
+# 같은 1 이다.
+_READ_TMP_RESIDUE_RC = 1
 _READ_TMP_ENV_KEYS: tuple[str, ...] = ("TMPDIR", "TMP", "TEMP")
 # 하네스별 차이는 orchestration 함수 안의 이름 분기가 아니라 이 측정 선언이 소유한다.
 _READ_TMP_PARENT_COMPONENT_BY_HARNESS: dict[str, str | None] = {
@@ -9447,13 +9457,16 @@ def check_write_target_reanchor(role: str, cwd: Path, prompt: str) -> Path | Non
 # ── 결과 박제 (O_EXCL·0600·PID/UUID) ─────────────────────────────────────
 
 def _gettempdir() -> str:
-    """OS 임시 디렉터리 — **자식 프로세스 env 채우기와 read 역할 격리 자리 전용**이다.
+    """OS 임시 디렉터리 — 소비자는 `_with_resolved_child_env` **하나**다(자식 env 의 임시 축).
 
-    엔진이 자기 작업용으로 만드는 임시물의 자리는 `pm_relay.temp_root`(프로젝트 안) 하나이고,
-    여기 남은 두 소비자는 그 규칙의 대상이 아니다: (1) 정제 env 에 임시 키가 하나도 없을 때
-    스폰되는 하네스 CLI 에게 줄 값이 필요하고(그 자식의 임시물 전체 표면은 이 엔진 소유가
-    아니다), (2) read 역할 위임의 격리 자리는 소유자 ACL·fd 결속·symlink 재검증으로 짜인
-    시스템 temp 트리다. 새 소비자를 여기 붙이지 마라 — 엔진 자기 임시물이면 `temp_root` 다.
+    엔진이 만드는 임시물의 자리는 `pm_relay.temp_root`(프로젝트 안) 하나다. 이 값은 엔진이
+    만드는 자리가 아니라 **스폰하는 자식에게 넘기는 env 값**이라 남는다. 근거 둘(실측):
+    (1) 받는 쪽이 하네스 CLI 와 그 자식 전부(node·npm·git·pytest)인데 엔진에 그 임시물의 목록도
+    회수 훅도 없다 — 프로젝트 안을 주면 주인 없는 산출이 저장소에 쌓인다(격리 트리 실측
+    205M·243M·197M). (2) codex 정책의 `exclude_tmpdir_env_var` 때문에 `$TMPDIR` 은 workspace-write
+    의 쓰기 루트에 자동으로 들어간다 — 프로젝트 안을 주면 남의 도구의 쓰기 권한이 우리 트리로
+    넓어진다. 새 소비자를 여기 붙이지 마라 — 엔진 자기 임시물이면 `temp_root` 다
+    (회귀가 이 소비자 하나만 통과시킨다: `tests/test_pytest_temp_root.py`).
     """
     import tempfile
     return tempfile.gettempdir()
@@ -10819,14 +10832,63 @@ def _open_fixed_directory(path: Path, *, label: str) -> int:
     return fd
 
 
+def _read_tmp_root() -> Path:
+    """read 역할 격리 자리의 루트 — PM 홈이 소유한 프로젝트 안 임시 루트 하나다.
+
+    자리 규약을 여기 다시 적지 않고 `pm_relay.temp_root` 를 그대로 쓴다(원자 쓰기를 뺀 엔진의
+    모든 임시물이 같은 부모를 쓴다). 앵커는 raw 박제와 같은 소유자다 — 위임 산출과 그 실행의
+    임시물이 다른 clone 으로 흩어지지 않는다. 테스트는 이 함수 하나를 주입해 자리를 옮긴다.
+    """
+    return _load_relay().temp_root(_CONFIG_REPO_OVERRIDE or REPO)
+
+
+def _read_tmp_attempt_name() -> str:
+    """attempt 디렉터리 이름 하나 — 접두 + pid + 짧은 16진 꼬리(폭은 `_READ_TMP_SUFFIX_HEX`)."""
+    return f"{_READ_TMP_PREFIX}{os.getpid()}_{uuid.uuid4().hex[:_READ_TMP_SUFFIX_HEX]}"
+
+
 def _read_tmp_parent(harness: str) -> tuple[Path, str | None]:
     """attempt 생성 부모를 반환한다(opencode는 공유 골격 아래에서 호출별 root를 만든다)."""
-    temp_root = Path(_gettempdir()).resolve()
+    temp_root = _read_tmp_root().resolve()
     component = _READ_TMP_PARENT_COMPONENT_BY_HARNESS[harness]
     return (
         (temp_root / component, component)
         if component is not None
         else (temp_root, None)
+    )
+
+
+# 검토 표면 밖 판정의 접두 — clone-local 런타임 자리. gitignore(`.project_manager/.gitignore` 의
+# `.local/`)·잔여 인구 제외(`ticket_finish._is_local_runtime_path`)·pytest 수집 제외가 **이미** 이
+# 접두에 걸려 있다. 새 접두를 만들면 같은 뜻의 제외를 세 곳에 더 달아야 한다.
+_LOCAL_RUNTIME_PREFIX_PARTS: tuple[str, ...] = (".project_manager", ".local")
+
+
+def _assert_read_tmp_outside_review_surface(attempt_path: Path, cwd: Path) -> None:
+    """격리 자리가 검토 대상의 **추적 표면** 안이면 거부한다.
+
+    판정 주어는 "cwd 트리 밖"이 아니라 "검토 표면 밖"이다. 격리 요건은 리뷰 실행 root 에
+    검토 대상의 source·index·산출이 섞이지 않는 것이고, clone-local 런타임 접두
+    (`.project_manager/.local/`)에는 gitignore·잔여 인구 제외·pytest 수집 제외가 이미 걸려 있어
+    같은 트리 안이어도 검토 표면이 아니다(묶음 run-dir 이 이미 그 접두를 쓰고 codex `--add-dir`
+    로 열린다). 주어를 cwd 트리로 두면 cwd 가 PM 홈이거나 그 하위인 형상(단일 clone 채택자·
+    PM 문서 검토)에서 read 역할 위임이 전부 죽는다.
+    """
+    try:
+        resolved_cwd = cwd.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise DelegateError(
+            f"read 역할 worktree 실경로 해소 실패: {cwd}: {exc}"
+        ) from exc
+    resolved_attempt = attempt_path.resolve()
+    if not _is_relative_to(resolved_attempt, resolved_cwd):
+        return
+    relative = resolved_attempt.relative_to(resolved_cwd).parts
+    if relative[:len(_LOCAL_RUNTIME_PREFIX_PARTS)] == _LOCAL_RUNTIME_PREFIX_PARTS:
+        return
+    raise DelegateError(
+        f"read 역할 temp가 검토 표면 안으로 해소되어 거부: {resolved_attempt} "
+        f"(worktree={resolved_cwd})"
     )
 
 
@@ -10845,18 +10907,14 @@ def _read_tmp_strategy() -> str | None:
 
 
 def _remove_read_tmp_tree(path: Path, *, parent_fd: int | None) -> None:
-    """attempt 트리를 회수한다 — fd 결속이 있으면 그 위에서, 없으면 공용 삭제 seam 으로.
+    """attempt 트리를 회수한다 — 강제 삭제 seam 하나에 fd 결속을 실어 보낸다.
 
-    `shutil.rmtree(dir_fd=...)` 는 `os.supports_dir_fd` 가 있는 플랫폼 전용이라 Windows 에서
-    NotImplementedError 로 끝난다. 그 자리를 `file_lock.force_rmtree` 가 대신한다 — read-only
-    속성을 풀고 재시도하되 끝내 남으면 예외를 올려 **같은 보장**(잔여 0 또는 loud)을 낸다.
+    맨 `shutil.rmtree` 는 read-only 하위가 하나만 있어도 남긴다(실측: 리뷰어 회귀가 만드는
+    0o500 디렉터리에서 `PermissionError [Errno 13] ... 'inner.txt'`). `file_lock.force_rmtree` 는
+    속성을 풀고 그 항목만 재시도하되 끝내 남으면 예외를 올리고, `dir_fd` 를 받으면 삭제를 고정
+    부모 fd 에 결속해 symlink 공격 회피도 그대로 유지한다.
     """
-    if parent_fd is not None and bool(
-        getattr(shutil.rmtree, "avoids_symlink_attacks", False)
-    ):
-        shutil.rmtree(path.name, dir_fd=parent_fd)
-        return
-    _load_file_lock().force_rmtree(path)
+    _load_file_lock().force_rmtree(path, dir_fd=parent_fd)
 
 
 def _restrict_read_tmp_to_owner(path: Path) -> None:
@@ -10883,14 +10941,14 @@ def _create_read_role_temp_owner_acl(harness: str, cwd: Path) -> _ReadRoleTemp:
         temp_parent.parent if optional_parent_name is not None else temp_parent
     )
     if not temp_root.is_dir():
-        raise DelegateError(f"read 역할 시스템 temp 루트가 없음: {temp_root}")
+        raise DelegateError(f"read 역할 임시 루트가 없음: {temp_root}")
 
     created_parent: tuple[int | None, str, Path, tuple[int, int]] | None = None
     attempt_created = False
-    attempt_name = f"{_READ_TMP_PREFIX}{os.getpid()}_{uuid.uuid4().hex}"
+    attempt_name = _read_tmp_attempt_name()
     attempt_path = temp_parent / attempt_name
     try:
-        _assert_path_entry_not_symlink(temp_root, label="read 역할 시스템 temp 루트")
+        _assert_path_entry_not_symlink(temp_root, label="read 역할 임시 루트")
         if optional_parent_name is not None:
             try:
                 temp_parent.mkdir(mode=0o700)
@@ -10923,17 +10981,7 @@ def _create_read_role_temp_owner_acl(harness: str, cwd: Path) -> _ReadRoleTemp:
         attempt_stat = os.stat(attempt_path, follow_symlinks=False)
         attempt_identity = (attempt_stat.st_dev, attempt_stat.st_ino)
         _assert_attempt_child_path(temp_parent, attempt_path, label="read 역할 temp")
-        try:
-            resolved_cwd = cwd.resolve()
-        except (OSError, RuntimeError) as exc:
-            raise DelegateError(
-                f"read 역할 worktree 실경로 해소 실패: {cwd}: {exc}"
-            ) from exc
-        if _is_relative_to(attempt_path.resolve(), resolved_cwd):
-            raise DelegateError(
-                f"read 역할 temp가 worktree 안으로 해소되어 거부: {attempt_path} "
-                f"(worktree={resolved_cwd})"
-            )
+        _assert_read_tmp_outside_review_surface(attempt_path, cwd)
         writable_path = attempt_path
         writable_component = _READ_TMP_WRITABLE_COMPONENT_BY_HARNESS[harness]
         if writable_component is not None:
@@ -10986,17 +11034,17 @@ def _create_read_role_temp(harness: str, cwd: Path) -> _ReadRoleTemp | None:
         temp_parent.parent if optional_parent_name is not None else temp_parent
     )
     if not temp_root.is_dir():
-        raise DelegateError(f"read 역할 시스템 temp 루트가 없음: {temp_root}")
+        raise DelegateError(f"read 역할 임시 루트가 없음: {temp_root}")
 
     owned_fds: list[int] = []
     created_parent: tuple[int, str, Path, tuple[int, int]] | None = None
     attempt_created = False
     attempt_identity: tuple[int, int] | None = None
     parent_fd: int | None = None
-    attempt_name = f"{_READ_TMP_PREFIX}{os.getpid()}_{uuid.uuid4().hex}"
+    attempt_name = _read_tmp_attempt_name()
     attempt_path = temp_parent / attempt_name
     try:
-        root_fd = _open_fixed_directory(temp_root, label="read 역할 시스템 temp 루트")
+        root_fd = _open_fixed_directory(temp_root, label="read 역할 임시 루트")
         owned_fds.append(root_fd)
         parent_fd = root_fd
         if optional_parent_name is not None:
@@ -11048,17 +11096,7 @@ def _create_read_role_temp(harness: str, cwd: Path) -> _ReadRoleTemp | None:
         )
         attempt_identity = (attempt_stat.st_dev, attempt_stat.st_ino)
         _assert_attempt_child_path(temp_parent, attempt_path, label="read 역할 temp")
-        try:
-            resolved_cwd = cwd.resolve()
-        except (OSError, RuntimeError) as exc:
-            raise DelegateError(
-                f"read 역할 worktree 실경로 해소 실패: {cwd}: {exc}"
-            ) from exc
-        if _is_relative_to(attempt_path.resolve(), resolved_cwd):
-            raise DelegateError(
-                f"read 역할 temp가 worktree 안으로 해소되어 거부: {attempt_path} "
-                f"(worktree={resolved_cwd})"
-            )
+        _assert_read_tmp_outside_review_surface(attempt_path, cwd)
         writable_path = attempt_path
         writable_component = _READ_TMP_WRITABLE_COMPONENT_BY_HARNESS[harness]
         if writable_component is not None:
@@ -11106,17 +11144,18 @@ def _create_read_role_temp(harness: str, cwd: Path) -> _ReadRoleTemp | None:
 
 def _warn_read_tmp_cleanup_failure(
     path: Path, exc: OSError | RuntimeError, *, engine_rev_skew: bool = False,
-) -> None:
-    """read tmp 정리 실패를 주 결과를 덮지 않고 loud 하게 남긴다.
+) -> str:
+    """read tmp 정리 실패를 주 결과를 덮지 않고 loud 하게 남기고, 같은 사유를 돌려준다.
 
     `engine_rev_skew` 면 원인을 사본 불일치로 명시한다 — 삭제 수단이 형제 모듈이라 이 경계에
     도달할 수 있는데, 일반 정리 실패와 같은 문구로 뭉개면 재동기 처방이 사라진다.
+
+    반환값은 실행 결과를 실패로 내릴 때 그대로 싣는 사유다(문구를 두 번 쓰지 않는다).
     """
     cause = f"엔진 사본 불일치 — {exc}" if engine_rev_skew else f"{exc}"
-    print(
-        f"경고: read 역할 임시 디렉터리 정리 실패 — 잔존 가능 경로: {path} · 오류: {cause}",
-        file=sys.stderr,
-    )
+    reason = f"read 역할 임시 디렉터리 정리 실패 — 잔존 가능 경로: {path} · 오류: {cause}"
+    print(f"경고: {reason}", file=sys.stderr)
+    return reason
 
 
 def _cleanup_owned_read_tmp_parent(
@@ -11150,10 +11189,15 @@ def _cleanup_owned_read_tmp_parent(
         _warn_read_tmp_cleanup_failure(parent_path, exc)
 
 
-def _cleanup_read_role_temp(read_tmp: _ReadRoleTemp | None) -> None:
-    """고정 parent fd와 inode를 재검증한 뒤 attempt 트리만 symlink-safe 회수한다."""
+def _cleanup_read_role_temp(read_tmp: _ReadRoleTemp | None) -> str | None:
+    """고정 parent fd와 inode를 재검증한 뒤 attempt 트리만 symlink-safe 회수한다.
+
+    끝내 지우지 못하면 사유를 돌려준다 — 호출부가 그 실행의 결과를 실패로 내린다. 이 자리는
+    `finally` 안에서 불리므로 여기서 raise 하면 주 결과와 전파 중인 예외를 덮는다.
+    """
     if read_tmp is None:
-        return
+        return None
+    residue: str | None = None
     try:
         try:
             current = (
@@ -11178,11 +11222,13 @@ def _cleanup_read_role_temp(read_tmp: _ReadRoleTemp | None) -> None:
             _cleanup_owned_read_tmp_parent(read_tmp.created_parent)
     except (OSError, RuntimeError) as exc:
         skew = _absorb_engine_rev_skew_for_recovery(exc, "read_role_temp_cleanup")
-        _warn_read_tmp_cleanup_failure(read_tmp.path, exc, engine_rev_skew=skew)
+        residue = _warn_read_tmp_cleanup_failure(
+            read_tmp.path, exc, engine_rev_skew=skew)
     finally:
         for fd in reversed(read_tmp.owned_fds):
             _close_transport_fd(fd)
         read_tmp.owned_fds.clear()
+    return residue
 
 
 def _warn_transport_cleanup_failure(
@@ -11211,18 +11257,20 @@ def _close_transport_fd(fd: int | None) -> None:
 def _cleanup_attempt_transport(
     prompt: _OpenCodeTransportPrompt | None,
     read_tmp: _ReadRoleTemp | None = None,
-) -> None:
+) -> str | None:
     """attempt wire 사본·read tmp를 한 소유권 seam에서 되감는다.
 
     prompt 삭제가 실패하면 자기-은닉 ignore를 보존해 민감 사본이 untracked로 노출되지 않게 한다.
     정상 삭제 뒤에는 ignore→고유 attempt 디렉터리→delegate/.local/.project_manager를 역순
     제거한다. 겹친 attempt가 사용하는 공유 골격은 ENOTEMPTY로 자연스럽게 보존된다.
+
+    반환값은 read tmp 잔존 사유다(없으면 None) — 실행 경로가 그 값으로 결과를 실패로 내린다.
     """
     # read tmp는 pytest가 만든 임의 하위 트리까지 회수한다. prompt 정리 실패와 서로 독립적으로
     # 시도해야 둘 중 하나가 다른 하나의 잔여 0 보장을 가리지 않는다.
-    _cleanup_read_role_temp(read_tmp)
+    read_tmp_residue = _cleanup_read_role_temp(read_tmp)
     if prompt is None:
-        return
+        return read_tmp_residue
     prompt_path = prompt.path
     cleanup_structure = True
     try:
@@ -11258,6 +11306,7 @@ def _cleanup_attempt_transport(
                     _warn_transport_cleanup_failure(
                         cleanup_path, exc, action="전달 디렉터리 정리",
                     )
+    return read_tmp_residue
 
 
 def _assert_path_entry_not_symlink(path: Path, *, label: str) -> None:
@@ -11567,7 +11616,9 @@ def _reanchor_exec_root_preamble(
         "[격리 실행 좌표 — 엔진 값]\n"
         f"검토 대상(diff·git 상태·회귀 소스) 절대경로: {cwd}\n"
         f"이 프로세스의 실행 root(-C): {exec_root} — 이 경로는 검토 대상이 아니다"
-        "(격리를 위해 새로 만든 빈 디렉터리다 — source·git index·tests가 없다).\n"
+        "(격리를 위해 매번 새로 만드는 빈 디렉터리다 — 검토 대상의 source·tests가 없다).\n"
+        "다만 그 자리는 저장소 안의 무시되는 런타임 폴더라 `-C` 없는 git 명령은 검토 대상이 "
+        "아닌 저장소로 해소될 수 있다 — git 은 아래처럼 항상 `-C <절대경로>`로 실행하라.\n"
         f"쓰기 가능 임시 경로: {writable_path}\n"
         "pwd를 가정하지 말고 절대경로 플래그로 명령하라 — 예:\n"
         f"  {git_status_cmd}\n"
@@ -11578,12 +11629,13 @@ def _reanchor_exec_root_preamble(
 
 
 def _predict_read_tmp_paths(harness: str) -> tuple[Path, Path]:
-    """dry-run 전용 · 부작용 0 — `_create_read_role_temp`와 같은 이름 규칙(`_READ_TMP_PREFIX`+pid+
-    uuid4)으로 대표 경로만 계산한다(mkdir 없음). dry-run 은 실행하지 않으므로 이 값이 이후 실행의
-    read_tmp와 같은 문자열일 필요는 없다 — 이번 invocation이 실행됐다면 만들었을 이름 규칙의
-    진짜 값(placeholder 아님)을 보여주는 게 목적이다."""
+    """dry-run 전용 — `_create_read_role_temp`와 같은 이름 규칙(`_read_tmp_attempt_name`)으로
+    대표 경로만 계산한다(attempt 자리는 만들지 않는다 · 공유 임시 루트는 앵커 seam 이 소유한다).
+    dry-run 은 실행하지 않으므로 이 값이 이후 실행의 read_tmp와 같은 문자열일 필요는 없다 —
+    이번 invocation이 실행됐다면 만들었을 이름 규칙의 진짜 값(placeholder 아님)을 보여주는 게
+    목적이다."""
     temp_parent, _optional_parent_name = _read_tmp_parent(harness)
-    attempt_path = temp_parent / f"{_READ_TMP_PREFIX}{os.getpid()}_{uuid.uuid4().hex}"
+    attempt_path = temp_parent / _read_tmp_attempt_name()
     writable_component = _READ_TMP_WRITABLE_COMPONENT_BY_HARNESS[harness]
     writable_path = (
         attempt_path / writable_component
@@ -12009,11 +12061,19 @@ def _execute_attempt(
         # 이 finally는 runner 예외와 watchdog timeout/child-kill을 모두 회수한다. 다만 OS kill -9,
         # host crash 등 pm_delegate 프로세스 자체가 강제 종료되면 사용자 공간 finally는 실행될 수
         # 없으므로 그 경우의 잔여 0까지 보장하지 않는다.
-        _cleanup_attempt_transport(prompt_path, read_tmp)
+        cleanup_residue = _cleanup_attempt_transport(prompt_path, read_tmp)
 
     rc = result.get("returncode", 1)
     stdout = result.get("stdout", "")
     stderr = result.get("stderr", "")
+    if cleanup_residue is not None:
+        # 잔존 트리를 남긴 실행은 실패다 — 경고만 찍고 rc=0 으로 끝내면 200MB 단위 잔재가
+        # 저장소에 쌓이는 동안 호출부는 정상으로 읽는다. 위 `finally` 안에서 raise 하면 주
+        # 결과와 전파 중인 예외를 덮으므로, 여기서 결과 자체를 실패로 내린다(분류 신호는
+        # 붙이지 않는다 — 인프라 실패가 아니므로 폴백 대상이 아니다).
+        rc = rc if rc != 0 else _READ_TMP_RESIDUE_RC
+        stderr = f"{stderr}\n{cleanup_residue}" if stderr else cleanup_residue
+        result = {**result, "returncode": rc, "stderr": stderr}
     _write_reserved_raw(
         raw_path,
         _format_meta(
