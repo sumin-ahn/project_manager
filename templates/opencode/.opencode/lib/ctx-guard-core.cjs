@@ -14,7 +14,7 @@
 //
 // 모델: 사전 checkpoint 넛지 → native compaction → 사후 checkpoint 넛지.
 //
-// 임계값(엔진 상향 조정 이력 반영): local.conf `ctx.nudge_pct`/`ctx.stop_pct`(기본 30/20) = "잔여 컨텍스트 %".
+// 임계값(엔진 상향 조정 이력 반영): local.conf `ctx.checkpoint_pct`/`ctx.precompact_pct`(기본 30/20) = "잔여 컨텍스트 %".
 //   잔여% = (1 - used/limit) * 100. computeCtxState 의 stop 반환은 파리티를 위해 유지하고,
 //   plugin 은 stop 밴드를 최종 checkpoint 안내로만 흡수한다(차단·marker 없음).
 //   plugin 은 local.conf 를 직접 파싱(의존 적음·board.py shell-out 회피).
@@ -84,6 +84,8 @@ const LEGACY_CONF_KEYS = [
   "additional_reviewer_incomplete_round_limit",
   "additional_reviewer_round_limit",
   "additional_reviewer_wave_budget",
+  "ctx.nudge_pct",
+  "ctx.stop_pct",
   "ctx_nudge_pct",
   "ctx_stop_pct",
   "ctx_window_tokens",
@@ -164,8 +166,8 @@ function resolveThresholds(conf) {
     const n = Number.parseInt(String(raw).trim(), 10);
     return Number.isNaN(n) ? dflt : n;
   };
-  let nudge = readPct("ctx.nudge_pct", NUDGE_PCT_DEFAULT);
-  let stop = readPct("ctx.stop_pct", STOP_PCT_DEFAULT);
+  let nudge = readPct("ctx.checkpoint_pct", NUDGE_PCT_DEFAULT);
+  let stop = readPct("ctx.precompact_pct", STOP_PCT_DEFAULT);
   // sanity: 잔여% 임계는 0 < stop ≤ nudge ≤ 100 이어야 의미 있다.
   const sane =
     Number.isInteger(nudge) &&

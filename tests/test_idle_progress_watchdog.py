@@ -3041,8 +3041,8 @@ def _conf_with_init_defaults(board, extra: str) -> str:
     """
     return (
         "session=pm\nruntime.py=python3\ntest.cmd=pytest -q\nproject.name=\n"
-        f"ctx.nudge_pct={board._conf_default_int('ctx.nudge_pct')}\n"
-        f"ctx.stop_pct={board._conf_default_int('ctx.stop_pct')}\n"
+        f"ctx.checkpoint_pct={board._conf_default_int('ctx.checkpoint_pct')}\n"
+        f"ctx.precompact_pct={board._conf_default_int('ctx.precompact_pct')}\n"
         f"ctx.window_tokens={board._conf_default_int('ctx.window_tokens')}\n" + extra)
 
 

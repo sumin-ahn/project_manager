@@ -310,15 +310,15 @@ describe("설정 선읽기", () => {
 
     fireEvent.mouseDown(screen.getByRole("tab", { name: "설정" }));
     fireEvent.click(await screen.findByTestId("nav-ctx"));
-    fireEvent.change(screen.getByLabelText("ctx.nudge_pct"), { target: { value: "26" } });
+    fireEvent.change(screen.getByLabelText("ctx.checkpoint_pct"), { target: { value: "26" } });
     fireEvent.click(screen.getByTestId("save"));
 
     await waitFor(() => expect(bridge.conf_save)
-      .toHaveBeenCalledWith(DEMO, { "ctx.nudge_pct": "26" }));
+      .toHaveBeenCalledWith(DEMO, { "ctx.checkpoint_pct": "26" }));
     await waitFor(() => expect(settingsCalls(bridge)).toBe(2));
     // 저장 직후 판정도 다시 읽는다(가벼운 절) — 배지는 사본이 낸 것이다.
     expect(lightCalls(bridge)).toBeGreaterThan(1);
-    await waitFor(() => expect(screen.getByLabelText("ctx.nudge_pct")).toHaveValue("26"));
+    await waitFor(() => expect(screen.getByLabelText("ctx.checkpoint_pct")).toHaveValue("26"));
   });
 });
 

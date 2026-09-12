@@ -156,24 +156,24 @@ def test_ctx_threshold_defaults(board, monkeypatch):
     monkeypatch.setattr(board, "local_config", lambda: {})
     th = board.ctx_thresholds()
     assert th == {"nudge_pct": 30, "stop_pct": 20}
-    assert board._conf_default_int("ctx.nudge_pct") == 30
-    assert board._conf_default_int("ctx.stop_pct") == 20
+    assert board._conf_default_int("ctx.checkpoint_pct") == 30
+    assert board._conf_default_int("ctx.precompact_pct") == 20
 
 
 def test_ctx_threshold_reads_local_conf(board, monkeypatch):
-    monkeypatch.setattr(board, "local_config", lambda: {"ctx.nudge_pct": "30", "ctx.stop_pct": "5"})
+    monkeypatch.setattr(board, "local_config", lambda: {"ctx.checkpoint_pct": "30", "ctx.precompact_pct": "5"})
     assert board.ctx_thresholds() == {"nudge_pct": 30, "stop_pct": 5}
 
 
 def test_ctx_threshold_invalid_falls_back(board, monkeypatch):
     """비정수 값은 무시하고 기본으로 fallback (config 오타에 robust)."""
-    monkeypatch.setattr(board, "local_config", lambda: {"ctx.nudge_pct": "abc"})
+    monkeypatch.setattr(board, "local_config", lambda: {"ctx.checkpoint_pct": "abc"})
     th = board.ctx_thresholds()
     assert th["nudge_pct"] == 30 and th["stop_pct"] == 20
 
 
 def test_board_init_writes_ctx_defaults(board, tmp_path, monkeypatch):
-    """board.py init 가 local.conf 에 ctx.nudge_pct=30·ctx.stop_pct=20 을 기록한다 (T-0207)."""
+    """board.py init 가 local.conf 에 ctx.checkpoint_pct=30·ctx.precompact_pct=20 을 기록한다 (T-0207)."""
     conf_path = tmp_path / "local.conf"
     state_path = tmp_path / "pm_state.md"
     monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
@@ -197,8 +197,8 @@ def test_board_init_writes_ctx_defaults(board, tmp_path, monkeypatch):
 
     assert rc == 0
     conf_text = conf_path.read_text(encoding="utf-8")
-    assert "ctx.nudge_pct=30" in conf_text
-    assert "ctx.stop_pct=20" in conf_text
+    assert "ctx.checkpoint_pct=30" in conf_text
+    assert "ctx.precompact_pct=20" in conf_text
 
 
 # ── 4. 대화형 경로 회귀 불변 (기존 동작 보존) ──────────────────────────────────

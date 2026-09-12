@@ -5,7 +5,7 @@ statusLine 과 PreToolUse/UserPromptSubmit 넛지가 **같은 임계 로직**을
 두 진입점(``ctx_statusline.py`` · ``ctx_stop_hook.py``)이 여기 함수를 호출한다.
 
 엔진 계약 (임계 상향):
-  - 임계값 = local.conf ``ctx.nudge_pct`` / ``ctx.stop_pct`` (없으면 엔진 기본 30/20).
+  - 임계값 = local.conf ``ctx.checkpoint_pct`` / ``ctx.precompact_pct`` (없으면 엔진 기본 30/20).
     훅/statusline 은 board.py 를 import 하지 않고 **local.conf 를 직접 파싱**한다
     (어댑터는 엔진 사본 경로에 묶이지 않게 — ticket §인터페이스 "local.conf 직접 파싱 권장").
   - ``stop`` 분류는 statusline/relay 소비를 위해 유지하지만 훅에서는 최종 비차단 넛지로 소비한다.
@@ -58,6 +58,8 @@ LEGACY_CONF_KEYS = (
     "additional_reviewer_incomplete_round_limit",
     "additional_reviewer_round_limit",
     "additional_reviewer_wave_budget",
+    "ctx.nudge_pct",
+    "ctx.stop_pct",
     "ctx_nudge_pct",
     "ctx_stop_pct",
     "ctx_window_tokens",
@@ -159,8 +161,8 @@ def ctx_thresholds(conf: dict[str, str]) -> dict[str, int]:
 
     codex 인계: nudge/stop 이 비정상(음수·범위 밖·stop>nudge)이면 엔진 기본 폴백.
     """
-    nudge = _int_conf(conf, "ctx.nudge_pct", CTX_NUDGE_PCT_DEFAULT)
-    stop = _int_conf(conf, "ctx.stop_pct", CTX_STOP_PCT_DEFAULT)
+    nudge = _int_conf(conf, "ctx.checkpoint_pct", CTX_NUDGE_PCT_DEFAULT)
+    stop = _int_conf(conf, "ctx.precompact_pct", CTX_STOP_PCT_DEFAULT)
     # sanity: 0 < stop <= nudge < 100. 위반 시 기본으로 폴백 (오타·역전에 robust).
     if not (0 < stop <= nudge < 100):
         nudge, stop = CTX_NUDGE_PCT_DEFAULT, CTX_STOP_PCT_DEFAULT

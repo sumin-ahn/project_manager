@@ -1169,7 +1169,11 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   (형제 사본 불일치를 "표시할 게 없음"으로 숨기지 않는다).
     # 272 = 271 + 슬롯 종료 기록 한 경계(`pm_handoff._close_session_records` 의 슬롯 축).
     #   기록 실패는 서사를 쓰기 전에 False 로 차단하고, marked skew 만 그대로 올린다.
-    assert len(report.boundaries) == 272, "propagation sweep boundary ratchet changed"
+    # 273 = 272 + 갱신 시점 conf 키 이관 한 경계(`pm_update.migrate_renamed_conf_keys`). 이 단계는
+    #   apply **이후**라 형제 사본 rev 혼합으로 죽으면 채택자가 새 엔진을 받은 채 동기가
+    #   traceback 으로 끝난 트리를 갖는다. 이동은 멱등이라 건너뛴 몫을 다음 실행이 그대로 하고,
+    #   marked skew 만은 그대로 올린다.
+    assert len(report.boundaries) == 273, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

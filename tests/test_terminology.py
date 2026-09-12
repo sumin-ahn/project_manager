@@ -479,7 +479,7 @@ _V160_RETIRED_CTX_TERMS: tuple[_RetiredCtxTerm, ...] = (
         "ctx" + "-stop", (("ctx",), ("stop", "스톱")),
         separator_chars=_SEPARATORS_PROSE_ONLY,
         underscore_exemption_reason=(
-            "live 런타임 이름 ctx.stop_pct·ctx_stop_hook.py 와 겹친다"
+            "live 런타임 이름 ctx_stop_hook.py·stop_marker_present 와 겹친다"
         ),
         # JS 어댑터는 같은 마커를 `path.join(".project_manager", ".local", "ctx-stop")` 으로
         # 조립하고 상수 이름·주석으로 그 디렉터리를 지목한다 — 파이썬 판과 같은 런타임 문맥이다.
@@ -675,7 +675,7 @@ _V160_VARIANT_RED_SAMPLES = (
 # 매칭이 이걸 잡기 시작하면 가드가 코드 식별자 규칙까지 지배하는 것이라 오탐이 구조적이 된다.
 _V160_RUNTIME_IDENTIFIER_LINES = (
     "CTX_STOP_PCT_DEFAULT = 20   # 잔여 ≤ 이 % → 정지·핸드오프 트리거 임계.",
-    '"stop_pct": _ctx_pct("ctx.stop_pct", CTX_STOP_PCT_DEFAULT),',
+    '"stop_pct": _ctx_pct("ctx.precompact_pct"),',
     "def stop_marker_present(root: Path, session_id: str) -> bool:",
     'exec "$py" "$hook_dir/ctx_stop_hook.py" "$@"',
     'MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"',
@@ -853,7 +853,7 @@ def test_v160_guard_tolerates_runtime_snake_case_identifiers(
         line, tmp_path, monkeypatch):
     """snake_case 런타임 이름·marker 경로는 변형 매칭의 대상이 아니다 (경계 못박기).
 
-    `ctx.stop_pct`·`stop_marker_present`·`ctx_stop_hook.py` 는 v1.6.0 이 남긴 live 식별자고,
+    `stop_pct`·`stop_marker_present`·`ctx_stop_hook.py` 는 v1.6.0 이 남긴 live 식별자고,
     `.local/ctx-stop` marker 경로는 런타임 호환 경로다. 그 두 항목의 구분자에 `_` 를 넣거나
     런타임 허용을 지우면 이 테스트가 먼저 red 로 알린다.
     """

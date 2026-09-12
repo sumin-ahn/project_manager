@@ -904,10 +904,10 @@ def test_prose_does_not_claim_first_turn_coverage(codex_ctx):
 
 @pytest.mark.parametrize("conf", (
     {},
-    {"ctx.nudge_pct": "40", "ctx.stop_pct": "25"},
-    {"ctx.nudge_pct": "10", "ctx.stop_pct": "20"},   # 역전 → 둘 다 엔진 기본 폴백.
-    {"ctx.stop_pct": "0"},                            # 범위 밖 → 폴백.
-    {"ctx.nudge_pct": "abc", "ctx.stop_pct": "  25 "},
+    {"ctx.checkpoint_pct": "40", "ctx.precompact_pct": "25"},
+    {"ctx.checkpoint_pct": "10", "ctx.precompact_pct": "20"},   # 역전 → 둘 다 엔진 기본 폴백.
+    {"ctx.precompact_pct": "0"},                            # 범위 밖 → 폴백.
+    {"ctx.checkpoint_pct": "abc", "ctx.precompact_pct": "  25 "},
 ))
 def test_thresholds_mirror_claude_keys_and_sanity(codex_ctx, claude_ctx, conf):
     """`ctx_nudge_pct`/`ctx_stop_pct` 해소와 sanity 폴백이 claude 와 값으로 같다."""
@@ -935,7 +935,7 @@ def test_budget_precedence_values_are_pinned(codex_ctx):
 
 
 @pytest.mark.parametrize("conf", (
-    {}, {"ctx.nudge_pct": "40", "ctx.stop_pct": "25"}, {"ctx.stop_pct": "5"},
+    {}, {"ctx.checkpoint_pct": "40", "ctx.precompact_pct": "25"}, {"ctx.precompact_pct": "5"},
 ))
 def test_band_classification_mirrors_claude_for_every_used_pct(codex_ctx, claude_ctx, conf):
     """0~100% 전 구간에서 밴드 이름이 claude 와 같다 — codex 전용 경계 신설 0."""

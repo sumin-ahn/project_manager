@@ -258,9 +258,14 @@ LEGACY_KEY_MAP: dict[str, str | None] = {
     # 하네스 축
     "opencode_pro_model": "harness.opencode.pro_model",
     # ctx 임계
-    "ctx_nudge_pct": "ctx.nudge_pct",
-    "ctx_stop_pct": "ctx.stop_pct",
+    "ctx_nudge_pct": "ctx.checkpoint_pct",
+    "ctx_stop_pct": "ctx.precompact_pct",
     "ctx_window_tokens": "ctx.window_tokens",
+    # 이름이 하는 일과 갈렸던 두 축(v1.8.0) — `stop` 은 아무것도 멈추지 않았고 `nudge` 는
+    # 무엇을 권하는지 말하지 않았다. 잔여 컨텍스트가 임계 아래일 때 하는 일 그대로 적는다:
+    # 중간 기록 권고 / 자동 압축 임박 최종 안내. 갱신이 옮긴다(`pm_update` 이관 단계).
+    "ctx.nudge_pct": "ctx.checkpoint_pct",
+    "ctx.stop_pct": "ctx.precompact_pct",
     # 제거 — 회귀 수집 하한 폐지(대체 키 없음: 수집수는 직전 기록 대비 증감으로 표시만 한다)
     "regression_min_collected": None,
     # upstream 좌표
@@ -507,11 +512,11 @@ KEY_REGISTRY: dict[str, KeySpec] = {
         "마지막으로 확인한 지점",
         "원본에서 마지막으로 본 지점, 엔진이 적음",
         default=None, unset="엔진이 적음", required=False, group="upstream"),
-    "ctx.nudge_pct": KeySpec(
+    "ctx.checkpoint_pct": KeySpec(
         "기록 권고 시점",
         "남은 대화 여유가 이 비율 아래로 내려가면 중간 기록을 권함, 일은 계속",
         default="30", required=False, group="ctx"),
-    "ctx.stop_pct": KeySpec(
+    "ctx.precompact_pct": KeySpec(
         "정지 시점",
         "남은 대화 여유가 이 비율 아래로 내려가면 멈추고 인계",
         default="20", required=False, group="ctx"),
@@ -1005,6 +1010,32 @@ def legacy_error_message(legacy: dict[str, str | None], path: Path | None = None
     return "\n".join(lines)
 
 
+def rename_updates(result: ConfResult) -> dict[str, str | None]:
+    """이름만 바뀐 구표기 키를 신표기로 옮기는 **conf writer 입력** (값은 그대로 간다).
+
+    이름을 바꾼 것은 갱신이지 채택자가 아니다 — 바꾼 쪽이 옮긴다. 갱신은 엔진 파일을
+    배달하면서 이 계획도 함께 실행하므로(`pm_update` 이관 단계), 채택자가 손으로 두 줄을
+    고칠 때까지 그 값을 쓰는 명령이 멈춰 서 있지 않는다.
+
+    담지 **않는** 것 둘:
+      - 대체 키가 없는 폐지 키(`None`) — 값이 갈 자리가 없어 옮기는 것이 곧 버리는 것이다.
+        무엇을 버릴지는 사람이 정한다(교체 안내가 계속 지목한다).
+      - 신표기에 이미 값이 있는 키 — 사람이 새 이름으로 명시한 값이 이긴다. 그때는 옛 줄만
+        지운다(옛 값이 새 값을 덮어쓰지 않게).
+
+    반환은 `{키: 값 또는 None}` 이고 `None` 은 그 줄을 지우라는 뜻이다. 옮길 것이 없으면 빈
+    dict — 호출부가 그것을 "무대상" 으로 읽어 파일을 건드리지 않는다(멱등).
+    """
+    updates: dict[str, str | None] = {}
+    for old, new in result.legacy.items():
+        if new is None:
+            continue
+        updates[old] = None
+        if new not in result.values:
+            updates[new] = result.values[old]
+    return updates
+
+
 def migration_lines(legacy: dict[str, str | None]) -> list[str]:
     """구표기 → 신표기 지목 줄(안내 표면 공용 · 정렬은 선언 순서)."""
     out: list[str] = []
@@ -1041,20 +1072,27 @@ def adopter_pointer_lines() -> list[str]:
 def migration_notice(result: ConfResult) -> list[str]:
     """이 conf 가 받아야 할 교체 안내 — 기본값 1줄 + (구표기가 있으면) 키 단위 지목.
 
-    자동 이관은 하지 않는다. 특히 **모델 값**은 하네스·모델 조합이 환경마다 달라 잘못 옮기면
-    조용히 틀린 모델로 돌기 때문에, 채택자가 자기 PM 과 합의해 수동으로 설정한다.
+    **이름만 바뀐 키는 갱신이 옮긴다**(`pm_update` 이관 단계 · `rename_updates`) — 여기서는
+    무엇이 옮겨졌는지 알릴 뿐 사람에게 시키지 않는다. 이름을 바꾼 것이 갱신이기 때문이다.
+
+    사람이 정할 것은 대체 키가 없는 폐지 키뿐이다 — 값이 갈 자리가 없어 옮기는 것이 곧 값을
+    버리는 것이라, 무엇을 버릴지는 기계가 정하지 않는다.
     """
     lines = [DELEGATE_DEFAULT_CHANGE_NOTICE]
     if not result.legacy:
         return lines
     where = f" ({result.path})" if result.path is not None else ""
-    lines.append(
-        f"local.conf 표기가 통일됐습니다{where} — 아래 키를 바꾸세요(엔진은 채택자 conf 를 "
-        "대신 고쳐 쓰지 않습니다). 바꾸기 전까지 그 값을 소비하는 명령은 fail-loud 로 멈춥니다.")
-    lines.extend(migration_lines(result.legacy))
-    lines.append(
-        "모델 값은 자동으로 옮기지 않습니다 — 하네스·모델 조합은 환경마다 다르므로 PM 과 "
-        "합의해 수동으로 설정하십시오.")
+    renamed = {old: new for old, new in result.legacy.items() if new is not None}
+    retired = {old: new for old, new in result.legacy.items() if new is None}
+    if renamed:
+        lines.append(
+            f"local.conf 키 이름이 바뀌었습니다{where} — 갱신이 값을 그대로 옮깁니다.")
+        lines.extend(migration_lines(renamed))
+    if retired:
+        lines.append(
+            f"아래 키는 대체가 없어 갱신이 옮기지 못합니다{where} — 지울지는 직접 정하세요. "
+            "남아 있는 동안 그 값을 소비하는 명령은 fail-loud 로 멈춥니다.")
+        lines.extend(migration_lines(retired))
     lines.extend(adopter_pointer_lines())
     return lines
 

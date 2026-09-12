@@ -166,7 +166,7 @@
       "recommended": null
     },
     {
-      "key": "ctx.nudge_pct",
+      "key": "ctx.checkpoint_pct",
       "group": "ctx",
       "label": "기록 권고 시점",
       "description": "남은 대화 여유가 이 비율 아래로 내려가면 중간 기록을 권함, 일은 계속",
@@ -180,7 +180,7 @@
       "recommended": null
     },
     {
-      "key": "ctx.stop_pct",
+      "key": "ctx.precompact_pct",
       "group": "ctx",
       "label": "정지 시점",
       "description": "남은 대화 여유가 이 비율 아래로 내려가면 멈추고 인계",

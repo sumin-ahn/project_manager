@@ -234,8 +234,8 @@ def test_known_keys_comments_and_blank_lines_produce_no_finding(board, monkeypat
         "delegate.developer.hard.fallback.model=gpt-x\n"
         "delegate.model_alias.mymodel=gpt-x\n"
         "additional_reviewer.enabled=false\n"
-        "ctx.nudge_pct=30\n"
-        "ctx.stop_pct=20\n"
+        "ctx.checkpoint_pct=30\n"
+        "ctx.precompact_pct=20\n"
         "ctx.window_tokens=200000\n"
         "harness.opencode.pro_model=foo\n"
         "harness.codex.idle_timeout=600\n"
@@ -476,7 +476,7 @@ _KEYS_BEFORE_THE_REGISTRY = frozenset({
     "additional_reviewer.wave_budget", "additional_reviewer.rounds_max",
     "additional_reviewer.paths", "additional_reviewer.timeout",
     "additional_reviewer.idle_timeout", "additional_reviewer.progress_signal",
-    "ctx.nudge_pct", "ctx.stop_pct", "ctx.window_tokens",
+    "ctx.checkpoint_pct", "ctx.precompact_pct", "ctx.window_tokens",
     "qa.platforms",
     "upstream.path", "upstream.rev", "upstream.seen_rev",
     "project.name", "project.tagline", "project.root", "project.date",
@@ -575,10 +575,10 @@ def test_required_is_only_what_the_core_commands_cannot_run_without(conf_module)
 
 
 _MOVED_DEFAULTS = (
-    pytest.param("ctx.nudge_pct", "30",
+    pytest.param("ctx.checkpoint_pct", "30",
                  lambda c: c.board.ctx_thresholds()["nudge_pct"], 30,
                  id="board-ctx-nudge-pct"),
-    pytest.param("ctx.stop_pct", "20",
+    pytest.param("ctx.precompact_pct", "20",
                  lambda c: c.board.ctx_thresholds()["stop_pct"], 20,
                  id="board-ctx-stop-pct"),
     pytest.param("ctx.window_tokens", "200000",
@@ -654,7 +654,7 @@ def test_nonstandard_compares_only_keys_that_declare_a_default(conf_module):
     deviation = conf_module.nonstandard({
         "ctx.window_tokens": "300000",       # 선언된 기본과 다름 → 편차
         "diff_cap.large": "20000",           # 패턴 키도 멤버 기본과 비교한다
-        "ctx.stop_pct": "20",                # 기본과 같음 → 편차 아님
+        "ctx.precompact_pct": "20",                # 기본과 같음 → 편차 아님
         "runtime.py": "python3",             # 기본 선언 없음 → 비교 대상 아님
         "additional_reviewer.timeout": "900",  # 하네스 표가 정본 → 비교 대상 아님
         "nope.nope": "1",                    # 모르는 키 → 비교 대상 아님

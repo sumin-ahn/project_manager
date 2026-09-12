@@ -135,32 +135,32 @@ def test_thresholds_defaults(guard):
 
 
 def test_thresholds_reads_conf(guard):
-    th = guard.ctx_thresholds({"ctx.nudge_pct": "30", "ctx.stop_pct": "5"})
+    th = guard.ctx_thresholds({"ctx.checkpoint_pct": "30", "ctx.precompact_pct": "5"})
     assert th == {"nudge_pct": 30, "stop_pct": 5}
 
 
 def test_thresholds_sanity_fallback(guard):
     # stop > nudge (역전) → 기본 폴백.
-    assert guard.ctx_thresholds({"ctx.nudge_pct": "5", "ctx.stop_pct": "30"}) == {
+    assert guard.ctx_thresholds({"ctx.checkpoint_pct": "5", "ctx.precompact_pct": "30"}) == {
         "nudge_pct": 30, "stop_pct": 20
     }
     # 음수 → 기본 폴백.
-    assert guard.ctx_thresholds({"ctx.stop_pct": "-3"}) == {"nudge_pct": 30, "stop_pct": 20}
+    assert guard.ctx_thresholds({"ctx.precompact_pct": "-3"}) == {"nudge_pct": 30, "stop_pct": 20}
     # 비정수 → 기본 폴백.
-    assert guard.ctx_thresholds({"ctx.nudge_pct": "abc"}) == {"nudge_pct": 30, "stop_pct": 20}
+    assert guard.ctx_thresholds({"ctx.checkpoint_pct": "abc"}) == {"nudge_pct": 30, "stop_pct": 20}
     # 100 이상 → 기본 폴백.
-    assert guard.ctx_thresholds({"ctx.nudge_pct": "100"}) == {"nudge_pct": 30, "stop_pct": 20}
+    assert guard.ctx_thresholds({"ctx.checkpoint_pct": "100"}) == {"nudge_pct": 30, "stop_pct": 20}
 
 
 def test_load_local_config_parses(guard, tmp_path):
     pm = tmp_path / ".project_manager"
     pm.mkdir()
     (pm / "local.conf").write_text(
-        "# comment\nctx.nudge_pct=25\n\nctx.stop_pct = 8\nprefix=PAY\n", encoding="utf-8"
+        "# comment\nctx.checkpoint_pct=25\n\nctx.precompact_pct = 8\nprefix=PAY\n", encoding="utf-8"
     )
     conf = guard.load_local_config(tmp_path)
-    assert conf["ctx.nudge_pct"] == "25"
-    assert conf["ctx.stop_pct"] == "8"
+    assert conf["ctx.checkpoint_pct"] == "25"
+    assert conf["ctx.precompact_pct"] == "8"
     assert conf["prefix"] == "PAY"
 
 

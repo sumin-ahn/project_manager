@@ -319,8 +319,8 @@ def test_plugin_subscribes_compaction_events_with_local_observation_count():
 def test_plugin_reads_thresholds_from_local_conf():
     """임계값을 엔진 local.conf 의 ctx_*_pct 에서 읽는다 (T-0013 계약)."""
     src = _plugin_src()
-    assert "ctx.nudge_pct" in src, "ctx.nudge_pct 임계 참조 없음"
-    assert "ctx.stop_pct" in src, "ctx.stop_pct 임계 참조 없음"
+    assert "ctx.checkpoint_pct" in src, "ctx.checkpoint_pct 임계 참조 없음"
+    assert "ctx.precompact_pct" in src, "ctx.precompact_pct 임계 참조 없음"
     assert "local.conf" in src, "local.conf 직접 파싱 경로 참조 없음"
 
 
@@ -1964,9 +1964,9 @@ for (const fn of ["parseLocalConf","resolveThresholds","accumulateTokens","compu
 
 // 임계 해석 + sanity 폴백 (엔진 기본 30/20 · T-0207).
 assert.deepStrictEqual(m.resolveThresholds({}), {nudge_pct:30, stop_pct:20});                       // 미설정→기본
-assert.deepStrictEqual(m.resolveThresholds({"ctx.nudge_pct":"25","ctx.stop_pct":"12"}), {nudge_pct:25, stop_pct:12});
-assert.deepStrictEqual(m.resolveThresholds({"ctx.nudge_pct":"5","ctx.stop_pct":"30"}), {nudge_pct:30, stop_pct:20}); // stop>nudge→폴백
-assert.deepStrictEqual(m.resolveThresholds({"ctx.nudge_pct":"-5","ctx.stop_pct":"3"}), {nudge_pct:30, stop_pct:20}); // 음수→폴백
+assert.deepStrictEqual(m.resolveThresholds({"ctx.checkpoint_pct":"25","ctx.precompact_pct":"12"}), {nudge_pct:25, stop_pct:12});
+assert.deepStrictEqual(m.resolveThresholds({"ctx.checkpoint_pct":"5","ctx.precompact_pct":"30"}), {nudge_pct:30, stop_pct:20}); // stop>nudge→폴백
+assert.deepStrictEqual(m.resolveThresholds({"ctx.checkpoint_pct":"-5","ctx.precompact_pct":"3"}), {nudge_pct:30, stop_pct:20}); // 음수→폴백
 
 // 토큰 누적.
 assert.strictEqual(m.accumulateTokens({input:100,output:20,reasoning:5,cache:{read:10,write:3}}), 138);

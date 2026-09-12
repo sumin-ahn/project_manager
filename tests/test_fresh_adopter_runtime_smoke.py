@@ -384,8 +384,8 @@ def _force_nudge_band_conf(dest: Path, harness: str) -> None:
     with conf_path.open("a", encoding="utf-8") as fh:
         fh.write(
             "\n# T-0286 nudge 밴드 강제 (격리·per-harness 키·generic ctx_window_tokens 미변경)\n"
-            "ctx.nudge_pct=99\n"
-            "ctx.stop_pct=1\n"
+            "ctx.checkpoint_pct=99\n"
+            "ctx.precompact_pct=1\n"
             f"harness.{harness}.ctx_window_tokens=500000\n"
         )
 

@@ -68,6 +68,8 @@ LEGACY_CONF_KEYS = (
     "additional_reviewer_incomplete_round_limit",
     "additional_reviewer_round_limit",
     "additional_reviewer_wave_budget",
+    "ctx.nudge_pct",
+    "ctx.stop_pct",
     "ctx_nudge_pct",
     "ctx_stop_pct",
     "ctx_window_tokens",
@@ -157,7 +159,7 @@ def resolve_ctx_budget(conf: dict[str, str]) -> int:
 
 def resolve_stop_pct(conf: dict[str, str]) -> int:
     """잔여 ctx 정지 %를 해소한다. 비정상 값은 기본 20으로 폴백한다."""
-    raw = conf.get("ctx.stop_pct")
+    raw = conf.get("ctx.precompact_pct")
     if raw is None:
         return CTX_STOP_PCT_DEFAULT
     try:

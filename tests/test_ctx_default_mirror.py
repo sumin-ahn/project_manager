@@ -47,7 +47,7 @@ def _engine(key: str) -> int:
 
 
 def test_ctx_nudge_default_mirrors_across_all_sites():
-    engine = _engine("ctx.nudge_pct")
+    engine = _engine("ctx.checkpoint_pct")
     claude = _grab(CLAUDE_GUARD, r"CTX_NUDGE_PCT_DEFAULT\s*=\s*(\d+)")
     opencode = _grab(OPENCODE_GUARD, r"const\s+NUDGE_PCT_DEFAULT\s*=\s*(\d+)")
     codex = _grab(CODEX_GUARD, r"CTX_NUDGE_PCT_DEFAULT\s*=\s*(\d+)")
@@ -58,7 +58,7 @@ def test_ctx_nudge_default_mirrors_across_all_sites():
 
 
 def test_ctx_stop_default_mirrors_across_all_sites():
-    engine = _engine("ctx.stop_pct")
+    engine = _engine("ctx.precompact_pct")
     claude = _grab(CLAUDE_GUARD, r"CTX_STOP_PCT_DEFAULT\s*=\s*(\d+)")
     opencode = _grab(OPENCODE_GUARD, r"const\s+STOP_PCT_DEFAULT\s*=\s*(\d+)")
     codex = _grab(CODEX_GUARD, r"CTX_STOP_PCT_DEFAULT\s*=\s*(\d+)")
@@ -101,8 +101,8 @@ def test_ctx_nudge2_margin_mirrors_across_adapter_sites():
 def test_ctx_default_sanity_stop_below_nudge():
     """디폴트 자체가 sanity(0 < stop <= nudge < 100)를 만족 — 어댑터 sanity 폴백이
     엔진 기본으로 떨어질 때 무한/역전이 없도록."""
-    nudge = _engine("ctx.nudge_pct")
-    stop = _engine("ctx.stop_pct")
+    nudge = _engine("ctx.checkpoint_pct")
+    stop = _engine("ctx.precompact_pct")
     assert 0 < stop <= nudge < 100, f"디폴트 sanity 위반: nudge={nudge} stop={stop}"
 
 

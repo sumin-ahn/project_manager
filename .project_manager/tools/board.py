@@ -7010,7 +7010,7 @@ def default_pytest_cmd(py: str | None = None) -> str:
 
 # ── ctx 임계 (context 정지-핸드오프) ──────────────────────────────
 # 세 하네스 어댑터 훅(claude·opencode·codex)이 컨텍스트 잔여 비율로 nudge/stop 을 판정할 기본값의
-# 정본은 **레지스트리**다(`local_conf.KEY_REGISTRY` 의 `ctx.nudge_pct`·`ctx.stop_pct`·
+# 정본은 **레지스트리**다(`local_conf.KEY_REGISTRY` 의 `ctx.checkpoint_pct`·`ctx.precompact_pct`·
 # `ctx.window_tokens`) — board 는 그 값을 읽어 판정하고 init 이 local.conf 에 기록한다.
 # local.conf 로 per-clone 조정 가능. 잔여 10% 정지는 rich 핸드오프 돌릴 컨텍스트가 아슬.
 # 어댑터 사본 3파일(claude `.claude/ctx_guard.py`·opencode `.opencode/lib/ctx-guard-core.cjs`·
@@ -7043,8 +7043,8 @@ def ctx_thresholds() -> dict[str, int]:
     반환: {"nudge_pct": N, "stop_pct": M}. local.conf 우선·없으면 레지스트리 기본값.
     """
     return {
-        "nudge_pct": _ctx_pct("ctx.nudge_pct"),
-        "stop_pct": _ctx_pct("ctx.stop_pct"),
+        "nudge_pct": _ctx_pct("ctx.checkpoint_pct"),
+        "stop_pct": _ctx_pct("ctx.precompact_pct"),
     }
 
 
@@ -11705,8 +11705,8 @@ def _write_init_local_conf() -> None:
                 f"runtime.py={detected_py}\n"
                 f"test.cmd={detected_test_cmd}\n"
                 "project.name=\n"
-                f"ctx.nudge_pct={_conf_default_int('ctx.nudge_pct')}\n"
-                f"ctx.stop_pct={_conf_default_int('ctx.stop_pct')}\n"
+                f"ctx.checkpoint_pct={_conf_default_int('ctx.checkpoint_pct')}\n"
+                f"ctx.precompact_pct={_conf_default_int('ctx.precompact_pct')}\n"
                 f"ctx.window_tokens={_conf_default_int('ctx.window_tokens')}\n"
             )
             LOCAL_CONF.write_text(conf, encoding="utf-8", newline="\n")
@@ -11722,8 +11722,8 @@ def _write_init_local_conf() -> None:
             "runtime.py": detected_py,
             "test.cmd": detected_test_cmd,
             "project.name": "",
-            "ctx.nudge_pct": str(_conf_default_int("ctx.nudge_pct")),
-            "ctx.stop_pct": str(_conf_default_int("ctx.stop_pct")),
+            "ctx.checkpoint_pct": str(_conf_default_int("ctx.checkpoint_pct")),
+            "ctx.precompact_pct": str(_conf_default_int("ctx.precompact_pct")),
             "ctx.window_tokens": str(_conf_default_int("ctx.window_tokens")),
         }
         for key, value in defaults.items():

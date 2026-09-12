@@ -51,9 +51,9 @@ CODEX_BIN = "codex"
 TURN_TIMEOUT_SEC = 600  # subprocess 당 hard hang 가드(상한 — 한 turn 이 길 수 있음·codex reasoning).
 
 # ── ctx 기계 가드 상수 (엔진 ctx_guard 미러) ──────────
-# 엔진 밴드 "잔여 <= ctx.stop_pct" 는 세션 안에서 최종 checkpoint 넛지(비차단)로 소비된다 — relay
+# 엔진 밴드 "잔여 <= ctx.precompact_pct" 는 세션 안에서 최종 checkpoint 넛지(비차단)로 소비된다 — relay
 # 경로는 그 같은 경계에서 driver 가 usage 로 **회전** 한다(post-turn marker → Supervisor 가 새 세션
-# 으로 교체·실보호는 회전이 한다). 임계는 local.conf `ctx.stop_pct` override 해소(기본 20·아래
+# 으로 교체·실보호는 회전이 한다). 임계는 local.conf `ctx.precompact_pct` override 해소(기본 20·아래
 # resolve_stop_pct·claude ctx_guard.ctx_thresholds 대칭). 잔여 20% 회전 ⟺ 사용률 80%.
 CTX_STOP_PCT_DEFAULT = 20  # 잔여 회전 임계(%) — claude ctx_guard.CTX_STOP_PCT_DEFAULT 미러.
 # 세션 안 1단 넛지 임계(잔여 %) — claude ctx_guard.CTX_NUDGE_PCT_DEFAULT·opencode
@@ -101,6 +101,8 @@ LEGACY_CONF_KEYS = (
     "additional_reviewer_incomplete_round_limit",
     "additional_reviewer_round_limit",
     "additional_reviewer_wave_budget",
+    "ctx.nudge_pct",
+    "ctx.stop_pct",
     "ctx_nudge_pct",
     "ctx_stop_pct",
     "ctx_window_tokens",
@@ -196,11 +198,11 @@ def resolve_ctx_budget(conf: dict[str, str]) -> int:
 
 
 def resolve_stop_pct(conf: dict[str, str]) -> int:
-    """회전 임계(잔여 %)를 conf `ctx.stop_pct` 로 해소 — 없으면/비정상이면 기본 20.
+    """회전 임계(잔여 %)를 conf `ctx.precompact_pct` 로 해소 — 없으면/비정상이면 기본 20.
 
     claude `ctx_guard.ctx_thresholds` 의 stop 축과 대칭(sanity: 0 < stop < 100·위반 시 기본 폴백).
     relay 기계 가드는 회전 시점만 판정하므로 nudge 축은 불요 — driver 는 이 하나로 회전 경계를 잡는다."""
-    raw = conf.get("ctx.stop_pct")
+    raw = conf.get("ctx.precompact_pct")
     if raw is None:
         return CTX_STOP_PCT_DEFAULT
     try:
@@ -320,7 +322,7 @@ class CodexCliDriver:
             or (lambda sid, reply: (sid, reply))
         )
         self._ctx_budget = ctx_budget
-        self._stop_pct = stop_pct  # 잔여 정지 임계(%) — main 이 local.conf ctx.stop_pct 로 해소해 주입.
+        self._stop_pct = stop_pct  # 잔여 정지 임계(%) — main 이 local.conf ctx.precompact_pct 로 해소해 주입.
         self._root = Path(root) if root is not None else None
         self.codex_bin = codex_bin
         self.timeout = timeout
@@ -507,13 +509,13 @@ def _int_conf(conf: dict[str, str], key: str, default: int) -> int:
 
 
 def ctx_thresholds(conf: dict[str, str]) -> dict[str, int]:
-    """넛지 밴드 임계(잔여 %) — `ctx.nudge_pct`/`ctx.stop_pct` (claude ctx_thresholds 미러).
+    """넛지 밴드 임계(잔여 %) — `ctx.checkpoint_pct`/`ctx.precompact_pct` (claude ctx_thresholds 미러).
 
     sanity 0 < stop <= nudge < 100 위반이면 **둘 다** 엔진 기본으로 폴백한다(오타·역전에 robust).
     relay 회전 축의 `resolve_stop_pct` 와 키는 같고, 이쪽은 nudge 축까지 있어 claude 와 같은
     교차 sanity 를 쓴다."""
-    nudge = _int_conf(conf, "ctx.nudge_pct", CTX_NUDGE_PCT_DEFAULT)
-    stop = _int_conf(conf, "ctx.stop_pct", CTX_STOP_PCT_DEFAULT)
+    nudge = _int_conf(conf, "ctx.checkpoint_pct", CTX_NUDGE_PCT_DEFAULT)
+    stop = _int_conf(conf, "ctx.precompact_pct", CTX_STOP_PCT_DEFAULT)
     if not (0 < stop <= nudge < 100):
         nudge, stop = CTX_NUDGE_PCT_DEFAULT, CTX_STOP_PCT_DEFAULT
     return {"nudge_pct": nudge, "stop_pct": stop}

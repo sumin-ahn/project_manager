@@ -3229,14 +3229,18 @@ def run_board_init(dest_root: Path) -> int:
     return result.returncode
 
 
-def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
-    """local.conf 텍스트에서 지정 키를 유일한 한 줄로 정규화한다.
+def _set_conf_keys(text: str, updates: dict[str, str | None]) -> str:
+    """local.conf 텍스트에서 지정 키를 유일한 한 줄로 정규화한다(값 `None` 은 그 키를 지운다).
 
     첫 등장 자리에 `key=value`를 기록하고 뒤의 활성 중복은 제거한다. 없으면 끝에
     추가하며, 갱신하지 않는 줄·주석은 그대로 보존한다. reader들이 모두 last-wins이므로
     갱신 뒤 옛 중복이 실효값을 되돌리지 않게 하는 일반 set-or-replace 규칙이다.
+
+    값이 `None` 이면 그 키의 줄을 **지운다**(중복 줄도 함께·없으면 무변경). 이름이 바뀐 키를
+    옮길 때 새 줄만 쓰고 옛 줄을 남기면 값을 소비하는 지점이 구표기 잔존으로 멈추므로, 쓰기와
+    지우기가 같은 교체 안에서 끝나야 반쪽 상태가 생기지 않는다.
     """
-    remaining = dict(updates)
+    remaining = {key: value for key, value in updates.items() if value is not None}
     lines = text.splitlines(keepends=True)
     out: list[str] = []
     for line in lines:
@@ -3525,8 +3529,8 @@ def _local_conf_write_lock(conf_path: Path):
         yield lock
 
 
-def _write_conf_keys(path: Path, updates: dict[str, str]) -> bool:
-    """local.conf 키들을 중복 없이 atomic 기록하고 실효값을 검증한다.
+def _write_conf_keys(path: Path, updates: dict[str, str | None]) -> bool:
+    """local.conf 키들을 중복 없이 atomic 기록하고 실효값을 검증한다(값 `None` 은 삭제).
 
     `_set_conf_keys`로 모든 갱신 키를 유일화한 뒤 같은 디렉터리의 임시파일을
     원자 교체하여 부분 쓰기를 막는다. 변경이 없어도 reader와 같은 last-wins 파서로
@@ -3578,7 +3582,7 @@ def _atomic_replace_conf(tmp: Path, path: Path) -> None:
     os.replace(tmp, path)
 
 
-def _write_conf_keys_locked(path: Path, updates: dict[str, str]) -> bool:
+def _write_conf_keys_locked(path: Path, updates: dict[str, str | None]) -> bool:
     """`_write_conf_keys` 의 임계 구간 본문 — 락을 **이미 쥔** 호출부 전용."""
     text = _read_text_shared(path, encoding="utf-8")
     new_text = _set_conf_keys(text, updates)
@@ -3588,14 +3592,21 @@ def _write_conf_keys_locked(path: Path, updates: dict[str, str]) -> bool:
         tmp.write_text(new_text, encoding="utf-8", newline="\n")
         _atomic_replace_conf(tmp, path)
     effective = _parse_conf_keys(_read_text_shared(path, encoding="utf-8"))
+
+    def _mismatched(key: str, value: str | None) -> bool:
+        # 삭제 요청(`None`)의 실효 조건은 값 일치가 아니라 **그 키가 없음** 이다.
+        if value is None:
+            return key in effective
+        return effective.get(key) != value.strip()
+
     mismatches = {
         key: (value, effective.get(key))
         for key, value in updates.items()
-        if effective.get(key) != value.strip()
+        if _mismatched(key, value)
     }
     if mismatches:
         detail = ", ".join(
-            f"{key}: 요청={requested!r}, 실효={actual!r}"
+            f"{key}: 요청={'삭제' if requested is None else repr(requested)}, 실효={actual!r}"
             for key, (requested, actual) in mismatches.items()
         )
         raise RuntimeError(f"local.conf 기록 후 실효값 불일치 — {detail}; 파일={path}")

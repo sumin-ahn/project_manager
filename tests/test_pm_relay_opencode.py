@@ -531,11 +531,11 @@ def test_opencode_resolve_ctx_budget_precedence(driver_mod):
 
 def test_opencode_resolve_stop_pct(driver_mod):
     resolve = driver_mod.resolve_stop_pct
-    assert resolve({"ctx.stop_pct": "15"}) == 15
+    assert resolve({"ctx.precompact_pct": "15"}) == 15
     assert resolve({}) == driver_mod.CTX_STOP_PCT_DEFAULT
-    assert resolve({"ctx.stop_pct": "bad"}) == driver_mod.CTX_STOP_PCT_DEFAULT
-    assert resolve({"ctx.stop_pct": "0"}) == driver_mod.CTX_STOP_PCT_DEFAULT
-    assert resolve({"ctx.stop_pct": "100"}) == driver_mod.CTX_STOP_PCT_DEFAULT
+    assert resolve({"ctx.precompact_pct": "bad"}) == driver_mod.CTX_STOP_PCT_DEFAULT
+    assert resolve({"ctx.precompact_pct": "0"}) == driver_mod.CTX_STOP_PCT_DEFAULT
+    assert resolve({"ctx.precompact_pct": "100"}) == driver_mod.CTX_STOP_PCT_DEFAULT
 
 
 def test_opencode_main_forwards_task_and_budget(driver_mod, monkeypatch, tmp_path):
@@ -573,7 +573,7 @@ def test_opencode_main_forwards_task_and_budget(driver_mod, monkeypatch, tmp_pat
 
     (tmp_path / ".project_manager").mkdir()
     (tmp_path / ".project_manager" / "local.conf").write_text(
-        "harness.opencode.ctx_window_tokens=333000\nctx.window_tokens=444000\nctx.stop_pct=15\n",
+        "harness.opencode.ctx_window_tokens=333000\nctx.window_tokens=444000\nctx.precompact_pct=15\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
@@ -603,7 +603,7 @@ def test_opencode_main_rejects_unsafe_budget_before_supervisor(
 
     (tmp_path / ".project_manager").mkdir()
     (tmp_path / ".project_manager" / "local.conf").write_text(
-        "harness.opencode.ctx_window_tokens=50500\nctx.stop_pct=20\n", encoding="utf-8",
+        "harness.opencode.ctx_window_tokens=50500\nctx.precompact_pct=20\n", encoding="utf-8",
     )
     monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
     with pytest.raises(ValueError, match="즉시 세션 회전 위험"):

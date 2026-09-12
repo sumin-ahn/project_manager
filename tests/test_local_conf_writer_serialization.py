@@ -106,6 +106,8 @@ LOCAL_CONF_WRITERS: dict[tuple[str, str], tuple[str, str]] = {
         (HOLDS_LOCK, "init 최초 전체 생성 + 비파괴 병합(read→merge→write_text)"),
     ("pm_update.py", "record_upstream_revs"):
         (HOLDS_LOCK, "형상 판정(upstream=)→updates 계획→키 write→검증이 한 구간"),
+    ("pm_update.py", "migrate_renamed_conf_keys"):
+        (HOLDS_LOCK, "구표기 판정→이름 이동 계획→키 write+옛 줄 삭제가 한 구간"),
     ("pm_import.py", "_write_conf_keys"):
         (HOLDS_LOCK, "키 단위 RMW 백엔드(pm_import·pm_update·pm_config 공용)"),
     ("pm_import.py", "_write_conf_keys_locked"):

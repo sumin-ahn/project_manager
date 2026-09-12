@@ -147,7 +147,7 @@ def test_init_conf_carries_values_only(board):
     parsed = board.local_config()
     assert not [key for key in parsed if key.startswith("delegate.")], parsed
     for key in ("runtime.py", "test.cmd", "project.name",
-                "ctx.nudge_pct", "ctx.stop_pct", "ctx.window_tokens"):
+                "ctx.checkpoint_pct", "ctx.precompact_pct", "ctx.window_tokens"):
         assert key in parsed, f"init 이 실값 키를 안 썼다: {key}"
 
 

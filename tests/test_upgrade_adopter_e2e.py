@@ -740,7 +740,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   줄어든 것은 그 실행이 부르지 않던 코드뿐이다. 현재화한 것은 기대 SHA 하나뿐이다.
 #   같은 티켓의 수정 라운드에서 한 번 더 이동했다 — `plan()` docstring 의 낱말 하나("모듈 밖
 #   호출부")뿐이고 실행 코드·배달 경계는 무편집이다.
-_T0585_PM_UPDATE_SHA256 = "bbf7ff554734b944cb9cdcef52da0632603cc52caf47b00a9c78f6208106bdfe"
+_T0585_PM_UPDATE_SHA256 = "c6fdc67ace1d30fc0ec011beffbfc299c7e14beaa5f289ba0c9449be11253bee"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -944,6 +944,12 @@ def _t0585_pm_update_source() -> str:
     ("모듈 밖 호출부"). 실행 코드·배달 경계(source/manifest planning → apply → self-update 순서)·
     `sync_adapter_configs`·`_adapter_config_gate_failed`·`apply` 는 무편집이고, 역델타 marker 4곳과
     anachronism 부재 단언 2건도 그대로 통과했다 — 현재화한 것은 기대 SHA 하나뿐이다.
+    v1.8.0 — ctx 임계 두 키를 하는 일에 맞춰 개칭하고(`ctx.nudge_pct`→`ctx.checkpoint_pct` ·
+    `ctx.stop_pct`→`ctx.precompact_pct`) 그것을 **갱신이 옮기는** 이관 단계
+    (`migrate_renamed_conf_keys` · 흡수 사유 등재 1건)를 `pm_update.py` 에 더했다. 이 fixture 가
+    역적용하는 T-0591 delta 와 겹치지 않아 exact-marker 는 모두 그대로 유일 해소됐고(marker
+    assert 선통과), RUN1 이 검증하는 배달 경계(source/manifest planning → apply → self-update
+    순서)는 무편집이다 — 합성본 bytes 차이만 SHA 에 반영했다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -1067,7 +1073,7 @@ def _install_t0585_updater(dest: Path) -> None:
 # T-0887: 온보딩 opt-in 일습 삭제로 역적용 delta 의 exact-marker 목록이 두 항목으로 줄고
 # (되돌릴 원문이 사라졌다) 그만큼 historical 전문 SHA 도 이동했다. 퇴역 경로 delta 의 marker 는
 # 전부 그 절 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "e518e7e7ef7bc7624287365dc35d27a16d34ecfca6e905ca8e9ab43366ca21f6"
+_PRE_T0876_PM_UPDATE_SHA256 = "14c5a6003be86ec2e44ef9257f1debb0cff23e5108365ed700dd6973f7d75f1b"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -1096,6 +1102,10 @@ def _pre_t0876_pm_update_source() -> str:
     검증하는 배달 경계(신 reviewer 설치 → 두 번째 실행의 구 파일 퇴역)도 무편집이므로 합성본
     bytes 차이만 SHA 에 반영했다. 같은 티켓의 수정 라운드에서 `plan()` docstring 한 줄의 낱말이
     바뀌어("모듈 밖 호출부") 다시 이동했다 — 역적용 marker 는 그 줄과 겹치지 않는다.
+    v1.8.0 — 위와 같은 ctx 키 개칭과 conf 키 이관 단계 추가다. 이 fixture 가 역적용하는
+    T-0878·T-0876 delta(retired-path 선언 검증·legacy flavor 선택 판정)와 겹치지 않아 exact-marker
+    는 모두 그대로 유일 해소됐고(marker assert 선통과), RUN1 이 검증하는 배달 경계도 무편집이라
+    합성본 bytes 차이만 SHA 에 반영했다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -1814,6 +1824,17 @@ _LEGACY_AXES_CONF = (
 )
 
 
+def _parse_conf(path: Path) -> dict[str, str]:
+    """local.conf 활성 키만 (주석 제외·last-wins) — 이관 결과를 값으로 확인한다."""
+    conf: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key, _, value = stripped.partition("=")
+            conf[key.strip()] = value.strip()
+    return conf
+
+
 def _raw_pm_update(dest: Path, *args: str) -> subprocess.CompletedProcess:
     """rc 를 판정하지 않는 pm_update 실행 — 실패 경로의 출력까지 본다."""
     return subprocess.run(
@@ -1849,7 +1870,11 @@ def test_upgrade_adopter_legacy_conf_is_guided_then_replaced_then_gates_run(tmp_
     assert "위임 기본값이 허용으로 바뀝니다" in unresolved.stdout
     assert "`upstream` → `upstream.path`" in unresolved.stdout
     assert "`delegate_enabled` → `delegate.enabled`" in unresolved.stdout
-    assert "모델 값은 자동으로 옮기지 않습니다" in unresolved.stdout
+    # 이름이 바뀐 키는 갱신이 옮긴다 — 안내는 그 사실을 알리고, 사람에게 남기는 것은
+    # 대체가 없어 옮길 자리가 없는 키뿐이다(옛 안내의 "모델 값은…" 변명은 지워졌다).
+    assert "갱신이 값을 그대로 옮깁니다" in unresolved.stdout
+    assert "제거(대체 키 없음)" in unresolved.stdout
+    assert "모델 값은 자동으로 옮기지 않습니다" not in unresolved.stdout
     assert ".codex/config.toml" in unresolved.stdout          # 엔진이 못 고치는 파일 지목
 
     # (2) dry-run 도 성공 반환 전에 같은 안내를 낸다(무write 실행이라 더더욱 여기서 들어야 한다).
@@ -1866,11 +1891,18 @@ def test_upgrade_adopter_legacy_conf_is_guided_then_replaced_then_gates_run(tmp_
     assert run1.returncode == 0, run1.stderr
     assert "파일 동기화" in run1.stdout and "위임 기본값이 허용으로 바뀝니다" in run1.stdout
     assert stale.read_bytes() == (REPO / ".project_manager/tools/domain.py").read_bytes()
+    # 이름이 바뀐 키는 이 실행이 **옮긴다** — 지목하고 끝나지 않는다.
+    assert "`ctx_window_tokens_claude` → `harness.claude.ctx_window_tokens`" in run1.stdout
+    assert "개 이동 — 갱신이 바꾼 이름이라 갱신이 옮긴다" in run1.stdout
+    assert _parse_conf(conf)["harness.claude.ctx_window_tokens"] == "54321"
+
     run2 = _raw_pm_update(dest, "--from", str(REPO))
     assert run2.returncode == 0, run2.stderr
     assert "최신 — 변경 없음." in run2.stdout
     assert "위임 기본값이 허용으로 바뀝니다" in run2.stdout
-    assert "`ctx_window_tokens_claude` → `harness.claude.ctx_window_tokens`" in run2.stdout
+    # 옮긴 뒤엔 그 키를 다시 지목하지 않는다(멱등) — 남는 지목은 대체 없는 폐지 키뿐이다.
+    assert "`ctx_window_tokens_claude`" not in run2.stdout
+    assert "`regression_min_collected` → 제거(대체 키 없음)" in run2.stdout
 
     # (4) 교체 전 게이트는 멈춘다 — 조용히 엔진 기본값으로 돌지 않는다.
     blocked = _run_adopter_tool(dest, "board.py", "list")

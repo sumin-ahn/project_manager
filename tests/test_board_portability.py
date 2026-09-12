@@ -214,7 +214,7 @@ def test_init_writes_ctx_window_tokens_budget(board, monkeypatch, tmp_path):
     assert f"ctx.window_tokens={board._conf_default_int('ctx.window_tokens')}" in conf_text
     assert board._conf_default_int("ctx.window_tokens") == 200000
     # nudge/stop pct 옆에 배치됐는지 (기존 ctx 임계와 한 블록).
-    assert "ctx.nudge_pct=" in conf_text and "ctx.stop_pct=" in conf_text
+    assert "ctx.checkpoint_pct=" in conf_text and "ctx.precompact_pct=" in conf_text
 
 
 def test_init_ctx_budget_is_a_value_not_an_explanation(board, monkeypatch, tmp_path):
@@ -260,7 +260,7 @@ _CUSTOM_CONF = (
     "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
     "session=my-pm\n"
     "runtime.py=python3\ntest.cmd=pytest -q\nproject.name=myproj\n"
-    "ctx.nudge_pct=20\nctx.stop_pct=10\n"
+    "ctx.checkpoint_pct=20\nctx.precompact_pct=10\n"
     "ctx.window_tokens=5000\n"
     "# 추가 리뷰어 코드리뷰 (ADR-0004)\n"
     "additional_reviewer.harness=codex\n"
@@ -292,8 +292,8 @@ def test_init_rerun_preserves_custom_operational_keys(board, monkeypatch, tmp_pa
     assert "identity.user=me@example.com" in conf_text
     # T-0207: 기존 클론의 ctx 임계(20/10)는 디폴트 상향(30/20)이 있어도 불변 —
     # init 은 '없을 때만 추가'라 이미 기록된 값을 덮지 않는다(마이그레이션 영향 0).
-    assert "ctx.nudge_pct=20" in conf_text and "ctx.stop_pct=10" in conf_text
-    assert "ctx.nudge_pct=30" not in conf_text and "ctx.stop_pct=20" not in conf_text
+    assert "ctx.checkpoint_pct=20" in conf_text and "ctx.precompact_pct=10" in conf_text
+    assert "ctx.checkpoint_pct=30" not in conf_text and "ctx.precompact_pct=20" not in conf_text
 
 
 def test_init_rerun_preserves_custom_ctx_window_tokens(board, monkeypatch, tmp_path):
@@ -326,7 +326,7 @@ def test_init_absent_writes_full_default(board, monkeypatch, tmp_path):
     assert "runtime.py=" in conf_text
     assert f"test.cmd={board.default_pytest_cmd(board._detect_py())}" in conf_text
     assert f"ctx.window_tokens={board._conf_default_int('ctx.window_tokens')}" in conf_text
-    assert "ctx.nudge_pct=" in conf_text and "ctx.stop_pct=" in conf_text
+    assert "ctx.checkpoint_pct=" in conf_text and "ctx.precompact_pct=" in conf_text
 
 
 def test_init_rerun_explicit_identity_registers_that_repo_and_preserves_conf(
@@ -358,7 +358,7 @@ _NO_TRAILING_NL_CONF = (
     "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
     "session=my-pm\n"
     "runtime.py=python3\ntest.cmd=pytest -q\nproject.name=myproj\n"
-    "ctx.nudge_pct=20\nctx.stop_pct=10\n"
+    "ctx.checkpoint_pct=20\nctx.precompact_pct=10\n"
     "ctx.window_tokens=5000"  # ← 마지막 줄·개행 없음(intentional)
 )
 

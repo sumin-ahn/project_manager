@@ -32,7 +32,7 @@ const REASONING = REASONING_CELL.choices!.values;
 const DEMO = "/projects/demo";
 const VALUES: Record<string, string> = {
   "runtime.py": "python3",
-  "ctx.nudge_pct": "25",
+  "ctx.checkpoint_pct": "25",
   "delegate_enabled": "true",
   "nope.nope": "1",
   "upstream.path": "/projects/framework",
@@ -42,7 +42,7 @@ const CONF: ConfSection = {
   missing_required: ["test.cmd"],
   legacy: [{ key: "delegate_enabled", replacement: "delegate.enabled" }],
   unknown: ["nope.nope"],
-  nonstandard: [{ key: "ctx.nudge_pct", value: "25", default: "30" }],
+  nonstandard: [{ key: "ctx.checkpoint_pct", value: "25", default: "30" }],
   // 값·판정을 늘 나르는 두 조회(가벼운/무거운 절)는 소스를 해소하지 않아 이 축이 null 이다.
   missing_for_latest: null,
 };
@@ -165,12 +165,12 @@ describe("왼쪽 목록", () => {
 
     expect(screen.getByTestId("group-runtime")).toBeInTheDocument();
     expect(screen.getByTestId("conf-test.cmd")).toBeInTheDocument();
-    expect(screen.queryByTestId("conf-ctx.nudge_pct")).toBeNull();
+    expect(screen.queryByTestId("conf-ctx.checkpoint_pct")).toBeNull();
 
     openGroup("ctx");
 
     expect(screen.queryByTestId("group-runtime")).toBeNull();
-    expect(screen.getByTestId("conf-ctx.nudge_pct")).toBeInTheDocument();
+    expect(screen.getByTestId("conf-ctx.checkpoint_pct")).toBeInTheDocument();
   });
 
   it("설정 탭을 열고 절을 옮겨도 사본을 부르지 않는다 — 두 조회는 미리 받아 온 것이다", () => {
@@ -232,11 +232,11 @@ describe("다섯 목록의 배너와 행 표시", () => {
     const { onReload } = mounted(bridge);
     openGroup("ctx");
 
-    fireEvent.click(screen.getByTestId("conf-ctx.nudge_pct").querySelector("button")!);
-    await waitFor(() => expect(bridge.conf_reset).toHaveBeenCalledWith(DEMO, "ctx.nudge_pct"));
+    fireEvent.click(screen.getByTestId("conf-ctx.checkpoint_pct").querySelector("button")!);
+    await waitFor(() => expect(bridge.conf_reset).toHaveBeenCalledWith(DEMO, "ctx.checkpoint_pct"));
     await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1));
     // 버튼은 사본이 "표준과 다름" 이라 한 행에만 있다 — 기본값 없는 키도, 판정 밖 키도 없다.
-    expect(screen.getByTestId("conf-ctx.stop_pct").querySelector("button")).toBeNull();
+    expect(screen.getByTestId("conf-ctx.precompact_pct").querySelector("button")).toBeNull();
     // 안 쓴 칸은 비어 있지 않다 — 안 쓰면 적용되는 값이 그 칸에 채워져 있고 표식이 붙는다.
     expect(screen.getByLabelText("ctx.window_tokens")).toHaveValue("200000");
     expect(screen.getByTestId("conf-ctx.window_tokens")).toHaveTextContent("안 씀");
@@ -266,22 +266,22 @@ describe("저장", () => {
     openGroup("ctx");
     expect(screen.getByTestId("save")).toBeDisabled();
 
-    fireEvent.change(screen.getByLabelText("ctx.nudge_pct"), { target: { value: "26" } });
+    fireEvent.change(screen.getByLabelText("ctx.checkpoint_pct"), { target: { value: "26" } });
     expect(screen.getByTestId("save")).toHaveTextContent("저장 (1 변경)");
     fireEvent.click(screen.getByTestId("save"));
 
     await waitFor(() => expect(bridge.conf_save)
-      .toHaveBeenCalledWith(DEMO, { "ctx.nudge_pct": "26" }));
+      .toHaveBeenCalledWith(DEMO, { "ctx.checkpoint_pct": "26" }));
     await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1));
     expect(bridge.conf_values).not.toHaveBeenCalled();   // 재조회는 이 탭이 부르지 않는다
 
     // 화면 값은 타이핑한 26 이 아니라 재조회가 준 27 이다(낙관적 갱신 없음).
     view.rerender(
       <SettingsTab bridge={bridge} path={DEMO} light={lightEntry()}
-                   settings={settingsEntry({ ...VALUES, "ctx.nudge_pct": "27" })}
+                   settings={settingsEntry({ ...VALUES, "ctx.checkpoint_pct": "27" })}
                    onReload={onReload} startAsking={false}
                    adapterConf={null} onAdapterConf={vi.fn()} />);
-    await waitFor(() => expect(screen.getByLabelText("ctx.nudge_pct")).toHaveValue("27"));
+    await waitFor(() => expect(screen.getByLabelText("ctx.checkpoint_pct")).toHaveValue("27"));
   });
 
   it("[되돌리기] 는 저장을 부르지 않고 편집을 지운다", () => {
@@ -289,10 +289,10 @@ describe("저장", () => {
     mounted(bridge);
     openGroup("ctx");
 
-    fireEvent.change(screen.getByLabelText("ctx.nudge_pct"), { target: { value: "26" } });
+    fireEvent.change(screen.getByLabelText("ctx.checkpoint_pct"), { target: { value: "26" } });
     fireEvent.click(screen.getByText("되돌리기"));
 
-    expect(screen.getByLabelText("ctx.nudge_pct")).toHaveValue("25");
+    expect(screen.getByLabelText("ctx.checkpoint_pct")).toHaveValue("25");
     expect(bridge.conf_save).not.toHaveBeenCalled();
   });
 

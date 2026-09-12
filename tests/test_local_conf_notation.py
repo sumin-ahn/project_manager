@@ -491,9 +491,15 @@ def test_adapter_parsers_read_the_new_per_harness_key(conf_module):
 # ── ⑤ 교체 안내 (키 단위 지목 · 자동 이관 없음) ────────────────────────────
 
 
-def test_migration_notice_names_every_key_and_refuses_auto_migration(
+def test_migration_notice_splits_what_update_moves_from_what_you_decide(
         conf_module, tmp_path):
-    """안내는 키 단위로 지목하고, 모델 값은 옮기지 않는다고 못 박는다(전수 매핑 기반)."""
+    """안내는 두 묶음으로 갈린다 — 갱신이 옮기는 이름과 사람이 정할 폐지 키(전수 매핑 기반).
+
+    이름을 바꾼 것은 갱신이므로 갱신이 옮긴다(`rename_updates`). 사람에게 남는 것은 대체가
+    없어 옮길 자리가 없는 키뿐이다 — 그건 옮기는 것이 곧 값을 버리는 것이라 기계가 정하지
+    않는다. 옛 안내의 "모델 값은 자동으로 옮기지 않습니다" 는 이제 사실이 아니라 지웠다:
+    같은 값이 같은 하네스의 새 이름으로 갈 뿐이라 그 변명이 가리키던 위험이 없다.
+    """
     path = _write_conf(tmp_path, _LEGACY_CONF + "reviewer_cmd=codex exec\n")
     lines = conf_module.migration_notice(conf_module.load(path))
     text = "\n".join(lines)
@@ -503,7 +509,9 @@ def test_migration_notice_names_every_key_and_refuses_auto_migration(
                 "regression_min_collected", "ctx_window_tokens_claude"):
         assert f"`{key}`" in text, key
     assert "`reviewer_cmd` → 제거(대체 키 없음)" in text
-    assert "모델 값은 자동으로 옮기지 않습니다" in text
+    assert "갱신이 값을 그대로 옮깁니다" in text            # 이름이 바뀐 묶음
+    assert "지울지는 직접 정하세요" in text                 # 사람이 정할 묶음
+    assert "모델 값은 자동으로 옮기지 않습니다" not in text
     assert str(path) in text                                   # 어느 파일인지
     assert ".codex/config.toml" in text                        # 채택자 소유 파일도 지목
 
@@ -749,8 +757,8 @@ _ADAPTER_LEGACY_CONF = (
     "test_cmd=false\n"
 )
 _ADAPTER_NEW_CONF = (
-    "ctx.nudge_pct=91\n"
-    "ctx.stop_pct=90\n"
+    "ctx.checkpoint_pct=91\n"
+    "ctx.precompact_pct=90\n"
     "ctx.window_tokens=12345\n"
     "harness.claude.ctx_window_tokens=54321\n"
     "test.cmd=false\n"
