@@ -91,7 +91,8 @@ export type ConfSection = {
 export type ConfChoices = {
   depends_on: string | null;
   values: Record<string, string[]>;
-  fetch: { command: string; arg: string } | null;
+  /** `value` 는 조회 대상이 키에 이미 박혀 있을 때다(하네스 군) — 종속 키를 볼 것이 없다. */
+  fetch: { command: string; arg: string; value?: string } | null;
   free_text: boolean;
 };
 
@@ -102,6 +103,8 @@ export type ConfKeyRow = {
   label: string;
   description: string;
   unit_labels: Record<string, string>;
+  /** 한 줄로 묶는 키군의 칸 이름 `<접미사> → 사람이 읽는 이름` (그 밖의 행은 빈 표). */
+  field_labels: Record<string, string>;
   default: string | null;
   /** 안 채웠을 때 실제로 적용되는 상태 한 낱말 — 기본값이 있으면 null(그 값이 답이다). */
   unset: string | null;
@@ -121,7 +124,13 @@ export type ConfKeyMember = {
   recommended: string | null;
 };
 
-export type ConfKeysDocument = { schema: number; groups: string[]; keys: ConfKeyRow[] };
+export type ConfKeysDocument = {
+  schema: number;
+  groups: string[];
+  /** 절 이름의 사람 말 — 묶음 id 는 코드 좌표라 화면에 그대로 세우지 않는다. */
+  group_labels: Record<string, string>;
+  keys: ConfKeyRow[];
+};
 /** 값 파일 그대로 — 판정(다섯 목록)은 가벼운 현황 조회의 `conf` 절이 나른다(조회 1회). */
 export type ConfValuesDocument = { values: Record<string, string> };
 export type ConfSaveResult = { changed: boolean; conf: ConfSection };

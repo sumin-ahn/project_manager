@@ -151,7 +151,8 @@ describe("왼쪽 목록", () => {
 
     const labels = [...screen.getByTestId("settings-nav").querySelectorAll("button")]
       .map((button) => button.textContent);
-    const groups = buildSections(KEYS, VALUES).map((section) => section.group);
+    const groups = buildSections(KEYS, VALUES)
+      .map((section) => KEYS.group_labels[section.group] ?? section.group);
     expect(labels.map((label) => label!.replace(/\d+$/, "")))
       .toEqual([...groups, ADAPTER_NAV]);
     // 배지 수는 그 절에서 손봐야 할 행 수다 — 필수 누락 1(runtime) · 폐지 1 + 레지스트리 밖 1.
@@ -243,7 +244,8 @@ describe("다섯 목록의 배너와 행 표시", () => {
     openGroup("project");
     fireEvent.click(screen.getByTestId("show-unset"));           // 접힘은 숨김이 아니다
     // 기본값이 없는 키도 빈 칸이 아니다 — 안 채웠을 때의 상태가 그 자리에 선다.
-    expect(screen.getByLabelText("project.name")).toHaveValue("어댑터 문서 없음");
+    expect(screen.getByLabelText("project.name")).toHaveValue(
+      KEYS.keys.find((entry) => entry.key === "project.name")!.unset!);
     expect(screen.getByTestId("conf-project.name")).toHaveTextContent("안 씀");
   });
 
@@ -255,9 +257,20 @@ describe("다섯 목록의 배너와 행 표시", () => {
     const names = ["diff_cap.small", "diff_cap.medium", "diff_cap.large"]
       .map((key) => screen.getByTestId(`conf-${key}`).textContent ?? "");
     expect(new Set(names).size).toBe(3);
-    expect(names[0]).toContain("작은 티켓");
+    expect(names[0]).toContain(
+      KEYS.keys.find((entry) => entry.key.startsWith("diff_cap."))!
+        .unit_labels["diff_cap.small"]);
   });
 });
+
+  it("행은 자기 키 문자열을 글자로 세우지 않는다 — 코드 좌표는 툴팁에만 남는다", () => {
+    mounted(makeBridge());
+    fireEvent.click(screen.getByTestId("show-unset"));
+
+    for (const key of ["test.cmd", "qa.platforms"]) {
+      expect(screen.getByTestId(`conf-${key}`)).not.toHaveTextContent(key);
+    }
+  });
 
 describe("저장", () => {
   it("변경 수를 세고 바뀐 키만 보낸 뒤 **재조회** 값을 보인다", async () => {
@@ -312,7 +325,8 @@ describe("저장", () => {
 
     const inputs = screen.getAllByTestId("new-key-input");
     expect(inputs).toHaveLength(1);
-    expect(screen.getByTestId("new-key-runtime")).toHaveTextContent(FREE_INPUT_FAMILY);
+    expect(screen.getByTestId("new-key-runtime")).toHaveTextContent(
+      KEYS.keys.find((entry) => entry.key === FREE_INPUT_FAMILY)!.label);
 
     fireEvent.change(inputs[0], { target: { value: "windows" } });
     fireEvent.click(screen.getByText("항목 추가"));
@@ -331,7 +345,8 @@ describe("위임 절", () => {
     openGroup(DELEGATE.group);
 
     const role = screen.getByTestId(`role-${ROW_NAME}`);
-    expect(role).toHaveTextContent(ROW_NAME);              // 행 라벨은 키 문자열 그대로다
+    expect(role).toHaveTextContent(DELEGATE.unit_labels[ROW_NAME]);  // 엔진이 준 줄 이름
+    expect(role).not.toHaveTextContent(ROW_NAME);          // 키 문자열은 화면에 없다
     // 체크박스는 "직접 정함" 축이라 값 칸 열거에서 뺀다.
     const labels = [...role.querySelectorAll("input:not([type=checkbox]),select")]
       .map((field) => field.getAttribute("aria-label"));

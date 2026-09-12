@@ -47,7 +47,7 @@ export type UnsetRow = { default: string | null; unset: string | null };
 /**
  * 켜지 않은 칸에 채워 보일 문구.
  *
- * 주인은 엔진 키 레지스트리다(`default` = 미설정 시 쓰는 값 · `unset` = 그때의 상태). schema 4
+ * 주인은 엔진 키 레지스트리다(`default` = 미설정 시 쓰는 값 · `unset` = 그때의 상태). schema 5
  * 는 둘 중 하나가 항상 값이라고 보장하므로 화면에 빈 칸이 생기지 않는다. 레지스트리 밖 키
  * (conf 에만 있는 행)만 둘 다 없고, 그 행은 애초에 사람이 이미 값을 적은 행이다.
  */

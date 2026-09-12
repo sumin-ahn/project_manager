@@ -634,8 +634,9 @@ def test_timeout_keys_declare_no_scalar_default_and_name_the_profile_table(conf_
         spec = conf_module.key_spec(key)
         assert spec.default is None, key
         # 설명은 화면에 그대로 나가는 사람 말이라 코드 식별자를 담지 않는다 — 대신 값을 지어내지
-        # 않았다는 사실(기본값 부재)과 "비우면 하네스별 기본값"이라는 안내를 잰다.
-        assert "하네스별" in spec.description, key
+        # 않았다는 사실(기본값 부재)과 "비우면 도구마다 정해진 기본값"이라는 안내를 잰다.
+        # (`하네스` 는 내부 용어라 화면 문구에서 `도구` 로 바뀌었다 — 재는 사실은 그대로다.)
+        assert "도구마다" in spec.description, key
 
 
 @pytest.mark.parametrize("values,missing", (
@@ -702,7 +703,7 @@ def keys_document() -> dict:
 
 def test_keys_json_carries_both_registries_split_by_kind(conf_module, keys_document):
     """실명 레지스트리와 패턴 레지스트리가 `kind` 로 갈려 **선언 순서 그대로** 실린다."""
-    assert keys_document["schema"] == conf_module.KEY_JSON_SCHEMA == 4
+    assert keys_document["schema"] == conf_module.KEY_JSON_SCHEMA == 5
     assert keys_document["groups"] == list(conf_module.KEY_GROUPS)
 
     named = [row for row in keys_document["keys"] if row["kind"] == "key"]

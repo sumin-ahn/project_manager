@@ -30,6 +30,9 @@
 
 - **컨텍스트 임계 두 키의 이름을 하는 일에 맞췄다** — `ctx.stop_pct` → `ctx.precompact_pct`, `ctx.nudge_pct` → `ctx.checkpoint_pct`. 옛 이름은 하는 일과 달랐다: `stop` 은 아무것도 멈추지 않는다(작업도 세션도 그대로다). 남은 컨텍스트가 그 비율 이하가 되면 자동 압축이 임박했다고 보고 압축 뒤 이어가기 위한 중간 기록을 남기라는 **마지막 안내**를 낼 뿐이다. `nudge` 는 무엇을 권하는지 이름이 말하지 않았다. 설정 화면 이름도 각각 `압축 임박 경고 (%)`·`중간 기록 권고 (%)` 다. 옛 이름이 있는 `local.conf` 는 갱신이 값을 그대로 옮긴다.
 
+- **설정 화면이 코드가 아니라 사람 말로 말한다** — 절 이름·줄 이름·칸 이름·안 채웠을 때의 상태를 전부 엔진 키 레지스트리가 소유한다(schema 5: `group_labels`·`field_labels` 추가, 도구별 키군의 `unit_labels` 전개). 화면에서 키 문자열·키군 패턴 문자열(`delegate.<role>[.hard][.fallback].{harness,model,reasoning}`)·영문 접미사(`harness`·`model`·`reasoning`)·영문 절 이름(`runtime`·`ctx`)을 지웠다 — 키는 마우스를 올렸을 때만 보인다. 같은 이름이 12줄 반복되던 도구별 절은 줄마다 이름이 갈린다(`codex 최대 실행 시간 (초)`). 문구의 내부 용어도 일반 용어로 바꿨다: 하네스→도구, 어댑터 문서→안내 문서, 회귀→테스트, 대화 여유→컨텍스트, 검증 플랫폼→테스트할 운영체제, 티켓 크기→작업 크기, 추론 강도→생각 깊이. 화면에 서는 문구에서 그 낱말은 0회다.
+- **직접 적던 칸 둘이 목록이 됐다** — `harness.<name>.pro_model` 은 키에 도구 이름이 박혀 있어 종속 칸 없이 그 도구의 모델을 조회하고(`choices.fetch.value`), `additional_reviewer.progress_signal` 은 세 값(`event-stream`·`plaintext`·`none`) 중에서 고른다. 두 목록 다 값의 주인은 엔진이다 — 화면에 목록 상수가 없다.
+
 ### Removed
 
 - **모델 원천의 `config` 종류** — 사용자 config 파일에서 현재 값 한 줄을 읽어 그것을 "고를 수 있는 모델"로 내놓던 자리다. codex 가 유일한 사용처였는데 그 CLI 에 카탈로그 조회(`codex debug models`)가 있어 값 하나만 보이던 것 자체가 잘못이었다. `ModelSource` 의 `config_env`·`config_home`·`config_key` 와 그 판독 코드가 함께 사라지고, 조회 명령과 산출 판독 방식이 표의 값(`command`·`parse`)이 됐다. 하네스 이름으로 갈리던 분기 하나도 그 값으로 대체됐다.

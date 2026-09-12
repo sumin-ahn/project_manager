@@ -4827,7 +4827,7 @@ def test_fallback_is_documented_in_the_registry_not_seeded_into_conf(pd):
     """
     conf_module = pd._load_local_conf()
     spec = conf_module.key_spec("delegate.developer.hard.fallback.model")
-    assert spec is not None and "실패 시 대체" in spec.description, "대체 축 설명이 없다"
+    assert spec is not None and "실패 시 대신 쓸" in spec.description, "대체 축 설명이 없다"
     assert spec.default is None, "폴백은 엔진 기본값을 갖지 않는다"
     board_source = (TOOLS / "board.py").read_text(encoding="utf-8")
     assert "delegate.developer.fallback." not in board_source, "init 시드에 폴백 예시 잔존"

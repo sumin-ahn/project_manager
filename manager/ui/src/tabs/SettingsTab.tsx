@@ -407,11 +407,23 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
   const marksOf = (section: Section) =>
     section.rows.filter((row) => marked.has(row.key)).length;
 
+  // 이름은 전부 엔진 키 목록에서 꺼낸다 — 화면이 짓는 이름은 없다.
+  const labelOfKey = (key: string) =>
+    keys.keys.find((entry) => entry.key === key)?.label ?? key;
+  const labelOfFamily = labelOfKey;
+  const rowUnitLabel = labelOfKey(ROW_UNIT_FAMILY);
+  const fieldLabels =
+    keys.keys.find((entry) => entry.key === ROW_UNIT_FAMILY)?.field_labels ?? {};
+
   // upstream 절이 서는 자리는 그 키가 속한 그룹이다 — 절 이름을 화면이 새로 짓지 않는다.
   const upstreamGroup = keys.keys.find((entry) => entry.key === UPSTREAM_PATH_KEY)?.group ?? null;
   const navItems = [
-    ...sections.map((section) => ({ id: section.group, marks: marksOf(section) })),
-    { id: ADAPTER_NAV, marks: 0 },
+    ...sections.map((section) => ({
+      id: section.group,
+      label: keys.group_labels[section.group] ?? section.group,
+      marks: marksOf(section),
+    })),
+    { id: ADAPTER_NAV, label: ADAPTER_NAV, marks: 0 },
   ];
   // 첫 진입은 손볼 것이 있는 첫 절이다(없으면 첫 절).
   const current = selectedNav
@@ -426,7 +438,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     const dependsValue = choices?.depends_on ? valueOf(choices.depends_on) : null;
     const bucket = choices === null ? []
       : choices.values[choices.depends_on === null ? "" : (dependsValue ?? "")] ?? [];
-    const harness = dependsValue ?? "";
+    const harness = choices?.fetch?.value ?? dependsValue ?? "";
     return (
       <ValueField
         row={row} value={valueOf(row.key)} options={bucket} dependsValue={dependsValue}
@@ -460,8 +472,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     <td className="w-72 py-1 pr-3 align-top">
       <div className="truncate" title={label}>{label}</div>
       <div className="truncate text-[11px] text-slate-500" title={`${key} · ${description}`}>
-        <span className="font-mono">{key}</span>
-        {description && <span> · {description}</span>}
+        {description}
       </div>
     </td>
   );
@@ -562,7 +573,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
                       onClick={() => setSelectedNav(item.id)}
                       className={`flex w-full items-center justify-between px-3 py-1 text-left ${
                         item.id === current ? "bg-slate-100 font-medium" : "hover:bg-slate-50"}`}>
-                <span className="truncate">{item.id}</span>
+                <span className="truncate">{item.label}</span>
                 {item.marks > 0 && (
                   <span data-testid={`nav-marks-${item.id}`}
                         className="rounded bg-amber-100 px-1 text-[11px] text-amber-700">
@@ -589,9 +600,11 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
                     <thead>
                       <tr className="text-left text-[11px] text-slate-500">
                         <th title={ROW_UNIT_FAMILY}
-                            className="w-52 truncate font-normal">{ROW_UNIT_FAMILY}</th>
+                            className="w-52 truncate font-normal">{rowUnitLabel}</th>
                         {(run[0] as { role: RoleRow }).role.cells.map((cell) => (
-                          <th key={cell.key} className="font-normal">{fieldOf(cell.key)}</th>
+                          <th key={cell.key} className="font-normal">
+                            {fieldLabels[fieldOf(cell.key)] ?? fieldOf(cell.key)}
+                          </th>
                         ))}
                       </tr>
                     </thead>
@@ -610,8 +623,8 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
 
                 {section.freeInputFamily && (
                   <div data-testid={`new-key-${section.group}`} className="mt-2 flex items-center gap-1">
-                    <span className="font-mono text-[11px] text-slate-500">
-                      {section.freeInputFamily}
+                    <span className="text-[11px] text-slate-500">
+                      {labelOfFamily(section.freeInputFamily)}
                     </span>
                     <input
                       data-testid="new-key-input"
@@ -641,8 +654,8 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
                 {section.group === upstreamGroup && (
                   <div className="mt-3 border-t border-slate-200 pt-2">
                     <p className="text-[11px] text-slate-500">
-                      {UPSTREAM_PATH_KEY} 는 값 자체가 도달성 계약이라 사본의 `upstream set` 이
-                      검증하고 기록한다.
+                      {labelOfKey(UPSTREAM_PATH_KEY)} 는 값 자체가 도달성 계약이라 사본의
+                      `upstream set` 이 검증하고 기록한다.
                     </p>
                     <div className="flex items-center gap-1">
                       <input aria-label="upstream 값"
