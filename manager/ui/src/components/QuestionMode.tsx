@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Row } from "../tabs/SettingsTab";
-import { unsetHint } from "../lib/settings-rows";
+import { offReason, unsetHint } from "../lib/settings-rows";
 
 /**
  * 질문형 — 편집형과 **같은 항목 목록**을 한 번에 하나씩 묻는다(별도 화면이 아니라 표시 모드다).
@@ -9,6 +9,8 @@ import { unsetHint } from "../lib/settings-rows";
  * 값이 없는 항목은 엔진이 준 권장값(`recommended`)으로 미리 채운다 — 사람이 이미 정한 값은
  * 덮지 않는다. [권장값으로 모두 채우기] 는 그 미리 채운 값들을 한꺼번에 같은 저장 경로로 보낸다
  * (새 저장 경로 0 · `conf_save` 1회).
+ *
+ * 그 절을 켜는 스위치가 꺼진 항목은 묻지 않는다 — 앞에서 "위임 사용" 을 끄면 위임 칸은 건너뛴다.
  */
 
 /** 그 행에 미리 채울 값 — 값이 없을 때만 권장값이 들어간다. */
@@ -28,12 +30,28 @@ export function recommendedUpdates(rows: Row[], values: Record<string, string>):
   return updates;
 }
 
+/**
+ * `from` 부터 물을 첫 항목의 자리 — 지금까지의 답으로 스위치가 꺼진 항목은 건너뛴다.
+ * 스위치 항목이 목록에 없으면(기본값을 모른다) 건너뛰지 않는다 — 모르는 채로 묻지 않으면 빠진다.
+ */
+export function nextAsked(rows: Row[], from: number, current: Record<string, string>): number {
+  let index = from;
+  while (index < rows.length) {
+    const governor = rows[index].governed_by;
+    const master = governor === null ? undefined : rows.find((row) => row.key === governor.key);
+    if (governor === null || master === undefined
+        || offReason(governor, current[governor.key] ?? "", master.default) === null) break;
+    index += 1;
+  }
+  return index;
+}
+
 export default function QuestionMode({ rows, values, onFinish }: {
   rows: Row[];
   values: Record<string, string>;
   onFinish: (updates: Record<string, string>) => void;
 }) {
-  const [index, setIndex] = useState(0);
+  const [index, setIndex] = useState(() => nextAsked(rows, 0, values));
   const [draft, setDraft] = useState("");
   const [updates, setUpdates] = useState<Record<string, string>>({});
   const row = rows[index];
@@ -48,7 +66,8 @@ export default function QuestionMode({ rows, values, onFinish }: {
     const before = values[row.key] ?? "";
     const next = draft === before ? updates : { ...updates, [row.key]: draft };
     setUpdates(next);
-    if (index + 1 < rows.length) setIndex(index + 1);
+    const following = nextAsked(rows, index + 1, { ...values, ...next });
+    if (following < rows.length) setIndex(following);
     else onFinish(next);
   };
 
@@ -66,7 +85,7 @@ export default function QuestionMode({ rows, values, onFinish }: {
           권장값으로 모두 채우기 ({Object.keys(filled).length}개)
         </button>
       )}
-      <p data-testid="question-key" className="font-mono">{row.key}</p>
+      <p data-testid="question-key" title={row.key}>{row.label}</p>
       <p className="text-[11px] text-slate-500">{row.description}</p>
       <div className="flex items-center gap-2">
         <input
@@ -78,7 +97,7 @@ export default function QuestionMode({ rows, values, onFinish }: {
           className="w-[36rem] rounded border border-slate-200 px-1"
         />
         <span className="text-[11px] text-slate-500">
-          {`안 쓰면 ${unsetHint(row)}`}
+          {unsetHint(row)}
           {row.required && " · 필수"}
           {row.recommended !== null && ` · 권장 ${row.recommended}`}
         </span>

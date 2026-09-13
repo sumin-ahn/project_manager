@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Entry, SettingsEntry } from "../App";
 import type {
-  Bridge, BridgeError, ConfChoices, ConfKeysDocument, ConfSection, DelegateModelsDocument,
+  Bridge, BridgeError, ConfChoices, ConfGovernor, ConfKeysDocument, ConfSection,
+  DelegateModelsDocument,
 } from "../api";
 import { isError } from "../api";
 import AdapterSection from "../components/AdapterSection";
 import QuestionMode from "../components/QuestionMode";
-import { foldable, markedKeys, ROW_UNIT_FAMILY, unsetFilled, unsetHint, unsetLabel,
-         SET_TOGGLE, UNSET_MARK } from "../lib/settings-rows";
+import { foldable, markedKeys, offReason, PICK, SET_TOGGLE, unsetHint } from "../lib/settings-rows";
 
 /** 설정 안 함 행을 보일지 — 화면 전체에 하나이고 다음에 열 때도 유지한다. */
 const SHOW_UNSET_KEY = "pm.settings.showUnset";
@@ -24,8 +24,9 @@ function writeShowUnset(value: boolean): void {
  * 설정 탭 — 왼쪽 목록 + 고른 절의 행(편집형·질문형) + 설정 완전성 다섯 목록 + 어댑터 파일 절.
  *
  * 항목 목록의 정본은 **그 사본의** 키 레지스트리이고 판정은 그 사본의 `status --json` 의 `conf`
- * 절이다. 화면은 둘을 겹쳐 그릴 뿐 값을 스스로 판정하지 않는다 — 선택지·권장값·모델 목록도
- * 전부 엔진 산출이고, 접기 판정은 규칙표(`lib/settings-rows.json`) 하나가 소유한다.
+ * 절이다. 화면은 둘을 겹쳐 그릴 뿐 값을 스스로 판정하지 않는다 — 선택지·권장값·모델 목록·
+ * 한 줄로 묶는 세트·절을 켜는 스위치도 전부 엔진 산출이고, 접기 판정은 규칙표
+ * (`lib/settings-rows.json`) 하나가 소유한다.
  *
  * 두 조회(`conf_keys`·`conf_values`)는 이 탭이 부르지 않는다. 프로젝트를 고를 때 App 이 미리
  * 받아 프로젝트별로 들고 있고, 이 탭은 그 값을 받아 그린다(탭 진입 호출 0). 다시 읽는 때는
@@ -36,15 +37,15 @@ function writeShowUnset(value: boolean): void {
 export const FREE_INPUT_FAMILY = "test.<platform>.cmd";
 
 /**
- * 표에도 질문형에도 행이 없는 키 — 값 자체가 도달성 계약이라 그 자리는 upstream 절
- * (`pm-config upstream set`) 하나다. 이 표의 저장 경로(conf writer)는 그 키를 거부한다.
+ * 표에도 질문형에도 행이 없는 키 — 값을 받아올 수 있는지 확인하고 적어야 해서 그 자리는 원본
+ * 위치 절(`pm-config upstream set`) 하나다. 이 표의 저장 경로(conf writer)는 그 키를 거부한다.
  */
 export const UPSTREAM_PATH_KEY = "upstream.path";
 
-/** 어댑터 카드 렌더에 박히는 키 — 저장해도 카드는 갱신 탭 [적용] 이 다시 낸다. */
+/** 안내 문서 렌더에 박히는 키 — 저장해도 문서는 갱신 탭 [적용] 이 다시 그린다. */
 const ADAPTER_CARD_KEY = /^(project\.|runtime\.py$|test\.cmd$|delegate\..+\.model$|harness\..+\.pro_model$)/;
 
-const ADAPTER_CARD_NOTE = "어댑터 카드는 이 저장으로 다시 그려지지 않는다 — 갱신 탭의 [적용] 이 다시 낸다.";
+const ADAPTER_CARD_NOTE = "안내 문서는 이 저장으로 다시 그려지지 않는다 — 갱신 탭의 [적용] 이 다시 그린다.";
 
 /** 왼쪽 목록의 마지막 항목 — 레지스트리 그룹이 아니라 버튼으로만 도는 어댑터 파일 절이다. */
 export const ADAPTER_NAV = "어댑터 파일";
@@ -55,18 +56,24 @@ export type Row = {
   label: string;
   description: string;
   default: string | null;
-  unset: string | null;      // 안 채웠을 때의 상태 (엔진 레지스트리 · 기본값이 있으면 null)
+  unset: string | null;      // 안 채웠을 때 일어나는 일 (엔진 레지스트리 · 기본값이 있으면 null)
   required: boolean;
   family: string | null;      // 패턴 키군에서 전개된 행이면 그 군 이름
   registered: boolean;        // 레지스트리가 아는 키인가 (아니면 conf 에만 있는 행)
   choices: ConfChoices | null;   // 고를 수 있는 값 (엔진 레지스트리 산출)
   recommended: string | null;    // 권장값 (질문형이 미리 채운다)
+  unit: string | null;           // 한 세트로 읽히는 묶음 이름 — 체크박스가 하나다
+  governed_by: ConfGovernor | null;  // 이 행을 쓰게 만드는 스위치
+  readonly: boolean;             // 엔진이 적는 키
 };
 
 /** 그룹별 절 하나 — 레지스트리 순서 그대로이고, 마지막 절은 conf 에만 있는 키다. */
 export type Section = { group: string; rows: Row[]; freeInputFamily: string | null };
 
 export const EXTRA_GROUP = "그 밖의 키";
+
+/** 편집 중인 값 — null 은 저장할 때 그 줄을 지운다. */
+export type Edits = Record<string, string | null>;
 
 function registryRows(keys: ConfKeysDocument): Row[] {
   const rows: Row[] = [];
@@ -76,7 +83,8 @@ function registryRows(keys: ConfKeysDocument): Row[] {
                   label: entry.label, description: entry.description,
                   default: entry.default, unset: entry.unset, required: entry.required,
                   family: null, registered: true,
-                  choices: entry.choices, recommended: entry.recommended });
+                  choices: entry.choices, recommended: entry.recommended,
+                  unit: entry.unit, governed_by: entry.governed_by, readonly: entry.readonly });
       continue;
     }
     for (const member of entry.members ?? []) {
@@ -84,14 +92,15 @@ function registryRows(keys: ConfKeysDocument): Row[] {
                   label: entry.label, description: entry.description,
                   default: member.default, unset: member.unset, required: entry.required,
                   family: entry.key, registered: true,
-                  choices: member.choices, recommended: member.recommended });
+                  choices: member.choices, recommended: member.recommended,
+                  unit: member.unit, governed_by: member.governed_by, readonly: member.readonly });
     }
   }
   return rows;
 }
 
 /** 레지스트리 행 + conf 에만 있는 행(폐지 키·레지스트리 밖 키·전개되지 않는 군의 실키). */
-export function buildSections(keys: ConfKeysDocument, values: Record<string, string>): Section[] {
+export function buildSections(keys: ConfKeysDocument, values: Record<string, unknown>): Section[] {
   const registered = registryRows(keys);
   const known = new Set(registered.map((row) => row.key));
   // 레지스트리가 아는 키이므로 "그 밖의 키" 로 내려가지 않고, 행으로만 그리지 않는다.
@@ -103,46 +112,42 @@ export function buildSections(keys: ConfKeysDocument, values: Record<string, str
     rows: rows.filter((row) => row.group === group),
     freeInputFamily: families.get(FREE_INPUT_FAMILY) === group ? FREE_INPUT_FAMILY : null,
   })).filter((section) => section.rows.length > 0 || section.freeInputFamily !== null);
-  const extra = Object.keys(values).filter((key) => !known.has(key)).map((key) => ({
+  const extra: Row[] = Object.keys(values).filter((key) => !known.has(key)).map((key) => ({
     key, group: EXTRA_GROUP, label: key, description: "", default: null, required: false,
     family: null, registered: false, choices: null, recommended: null, unset: null,
+    unit: null, governed_by: null, readonly: false,
   }));
   return extra.length > 0
     ? [...sections, { group: EXTRA_GROUP, rows: extra, freeInputFamily: null }]
     : sections;
 }
 
-/** 한 줄로 묶어 그리는 키군의 행 — 이름은 키의 마지막 점 앞이고, 칸은 엔진 전개 순서 그대로다. */
-export type RoleRow = { row: string; cells: Row[] };
-export type GroupItem = { kind: "key"; row: Row } | { kind: "role"; role: RoleRow };
+/** 한 줄로 묶어 그리는 세트 — 이름은 엔진이 준 묶음 이름이고, 칸은 엔진 전개 순서 그대로다. */
+export type UnitRow = { unit: string; cells: Row[] };
+export type GroupItem = { kind: "key"; row: Row } | { kind: "unit"; unit: UnitRow };
 
 /** 키의 마지막 점 뒤 — 그 칸의 이름(엔진이 전개한 접미사 그대로). */
 export function fieldOf(key: string): string {
   return key.slice(key.lastIndexOf(".") + 1);
 }
 
-/**
- * 그룹의 행을 그리는 단위로 접는다 — 규칙표의 `row_unit_family` 만 역할×티어 한 줄이 된다.
- *
- * 행 이름과 칸 이름은 **키 문자열의 마지막 점**에서만 갈린다(역할·티어 목록을 화면이 들지 않는다).
- */
-export function buildDelegateRows(rows: Row[]): GroupItem[] {
+/** 그룹의 행을 그리는 단위로 접는다 — 엔진이 같은 `unit` 을 준 행이 한 줄이 된다. */
+export function buildItems(rows: Row[]): GroupItem[] {
   const items: GroupItem[] = [];
-  const roles = new Map<string, RoleRow>();
+  const units = new Map<string, UnitRow>();
   for (const row of rows) {
-    if (row.family !== ROW_UNIT_FAMILY) {
+    if (row.unit === null) {
       items.push({ kind: "key", row });
       continue;
     }
-    const name = row.key.slice(0, row.key.lastIndexOf("."));
-    const existing = roles.get(name);
+    const existing = units.get(row.unit);
     if (existing) {
       existing.cells.push(row);
       continue;
     }
-    const role: RoleRow = { row: name, cells: [row] };
-    roles.set(name, role);
-    items.push({ kind: "role", role });
+    const unit: UnitRow = { unit: row.unit, cells: [row] };
+    units.set(row.unit, unit);
+    items.push({ kind: "unit", unit });
   }
   return items;
 }
@@ -166,7 +171,7 @@ function RowMarks({ row, conf }: { row: Row; conf: ConfSection }) {
           폐지 · {legacy.replacement ? `대체 ${legacy.replacement}` : "대체 키 없음"}
         </span>
       )}
-      {conf.unknown.includes(row.key) && <span className="text-amber-700">레지스트리 밖</span>}
+      {conf.unknown.includes(row.key) && <span className="text-amber-700">모르는 항목</span>}
       {conf.missing_for_latest?.includes(row.key) && (
         <span className="rounded bg-amber-100 px-1 text-amber-700">갱신하면 필요</span>
       )}
@@ -178,65 +183,41 @@ function RowMarks({ row, conf }: { row: Row; conf: ConfSection }) {
 const MANUAL_OPTION = "직접 입력";
 
 const INPUT = "w-full rounded border border-slate-200 px-1 font-mono text-[11px]";
-// 기본값이 서 있는 칸 — 사용자가 쓴 값과 같은 굵기면 둘을 눈으로 가를 수 없다.
-const INPUT_UNSET = `${INPUT} text-slate-400`;
+// 직접 정하지 않은 칸·스위치가 꺼진 칸 — 사용자가 쓴 값과 같은 굵기면 둘을 눈으로 가를 수 없다.
+const GREY = "block truncate text-[11px] text-slate-400";
 
 
 /**
- * 값 하나를 고치는 칸 — 모양은 그 키의 `choices` 가 정한다(화면 판정 0).
+ * 값 하나를 고치는 칸 — 모양은 그 키의 `choices` 가 정한다(화면 판정 0). 켠 칸에만 선다.
  *
  *   선택지 없음      → 텍스트 입력
  *   목록 조회 칸     → 텍스트 입력 + [목록 불러오기](누르기 전 조회 0 · 실패는 사유 그대로)
  *   그 밖의 선택지   → `<select>`(고른 값이 목록 밖이면 그 값도 항목으로 남긴다)
- *
- * 값을 비워 둔 칸은 비워 두지 않는다 — 안 써도 실제로 적용되는 기본값을 그 자리에 채우고 표식을
- * 붙인다. 채운 값은 `edits` 에 들어가지 않으므로 저장 대상이 아니다(저장은 고친 칸만 쓴다).
- * 채울지 여부와 문구는 규칙표가 소유한다.
  */
-function ValueField({ row, value, on, options, dependsValue, fetched, fetchError, manual, busy,
-                      onChange, onToggle, onFetch, onManual }: {
-  row: Row; value: string; on: boolean; options: string[]; dependsValue: string | null;
+function ValueField({ row, value, options, dependsValue, dependsLabel, fetched, fetchError, manual,
+                      busy, onChange, onFetch, onManual }: {
+  row: Row; value: string; options: string[]; dependsValue: string | null; dependsLabel: string;
   fetched: DelegateModelsDocument | null; fetchError: BridgeError | null; manual: boolean;
-  busy: boolean; onChange: (value: string) => void; onToggle: (next: boolean) => void;
-  onFetch: () => void; onManual: () => void;
+  busy: boolean; onChange: (value: string) => void; onFetch: () => void; onManual: () => void;
 }) {
   const choices = row.choices;
-  const filled = unsetFilled(row, on);
-  const shown = filled ? unsetHint(row) : value;
-  const mark = filled
-    ? <span className="whitespace-nowrap text-[11px] text-slate-400">{UNSET_MARK}</span>
-    : null;
-  // 축 둘을 칸 하나에 겹쳐 두면 "빈 칸"이 미설정인지 빈 값인지 읽히지 않는다 — 체크박스가
-  // "직접 정한다"를 들고, 칸은 값만 든다. 끄면 안 썼을 때 적용되는 것이 회색으로 선다.
-  const toggle = (
-    <input type="checkbox" aria-label={`${row.key} ${SET_TOGGLE}`} checked={on} disabled={busy}
-           onChange={(event) => onToggle(event.target.checked)} />
-  );
   if (choices === null) {
     return (
-      <span className="flex items-center gap-1">
-        {toggle}
-        <input aria-label={row.key} value={shown} disabled={!on}
-               className={filled ? INPUT_UNSET : INPUT}
-               onChange={(event) => onChange(event.target.value)} />
-        {mark}
-      </span>
+      <input aria-label={row.key} value={value} className={INPUT}
+             onChange={(event) => onChange(event.target.value)} />
     );
   }
   // 고른 값이 목록에 없으면(사람이 직접 친 값·다른 세대의 값) 그 값을 지우지 않고 항목으로 남긴다.
   const listed = (items: string[]) => (value === "" || items.includes(value)
     ? items : [value, ...items]);
   const blocked = choices.depends_on !== null && dependsValue === "";
-  const hint = blocked ? `먼저 ${fieldOf(choices.depends_on!)} 를 고르세요` : null;
+  const hint = blocked ? `먼저 ${dependsLabel} 를 고르세요` : null;
 
   if (choices.fetch !== null && (fetched === null || manual)) {
     return (
       <span className="flex items-center gap-1">
-        {toggle}
-        <input aria-label={row.key} value={shown} disabled={!on}
-               className={filled ? INPUT_UNSET : INPUT}
+        <input aria-label={row.key} value={value} className={INPUT}
                onChange={(event) => onChange(event.target.value)} />
-        {mark}
         {/* 안내는 버튼 위에 둔다 — 같은 줄의 선택 칸이 그 문구를 이미 눈에 보이게 낸다. */}
         <button type="button" data-testid={`models-${row.key}`} disabled={blocked || busy}
                 title={hint ?? undefined} onClick={onFetch}
@@ -254,14 +235,12 @@ function ValueField({ row, value, on, options, dependsValue, fetched, fetchError
   const items = fetched === null ? options : fetched.models;
   return (
     <span className="flex items-center gap-1">
-      {toggle}
-      <select aria-label={row.key} value={value} disabled={!on}
-              className={filled ? INPUT_UNSET : INPUT}
+      <select aria-label={row.key} value={value} className={INPUT}
               onChange={(event) => {
                 if (fetched !== null && event.target.value === MANUAL_OPTION) onManual();
                 else onChange(event.target.value);
               }}>
-        <option value="">{unsetLabel(row)}</option>
+        <option value="">{PICK}</option>
         {listed(items).map((item) => <option key={item} value={item}>{item}</option>)}
         {fetched !== null && <option value={MANUAL_OPTION}>{MANUAL_OPTION}</option>}
       </select>
@@ -279,7 +258,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     settings: SettingsEntry | undefined; onReload: () => void; startAsking: boolean;
     adapterConf: ConfSection | null; onAdapterConf: (conf: ConfSection) => void }) {
   const [error, setError] = useState<BridgeError | null>(null);
-  const [edits, setEdits] = useState<Record<string, string>>({});
+  const [edits, setEdits] = useState<Edits>({});
   const [newKey, setNewKey] = useState("");
   const [upstreamDraft, setUpstreamDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -288,8 +267,8 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
   const [asking, setAsking] = useState(startAsking);
   // [목록 불러오기] 가 받아 온 것 — 하네스별 최근 응답 하나이고 주기 조회로는 다시 부르지 않는다.
   const [models, setModels] = useState<Record<string, DelegateModelsDocument>>({});
-  // "직접 정함" 을 이 화면에서 껐다 켠 행 — 판정의 기본은 conf 에 값이 있느냐이고, 이 표는
-  // 그 위의 명시 조작이다. 값으로만 판정하면 기본값 없는 키를 켜는 순간 빈 값이라 다시
+  // "직접 정함" 을 이 화면에서 껐다 켠 행·세트 — 판정의 기본은 conf 에 그 줄이 있느냐이고, 이
+  // 표는 그 위의 명시 조작이다. 줄로만 판정하면 기본값 없는 키를 켜는 순간 아직 줄이 없어 다시
   // 꺼진 것으로 읽혀 칸이 잠긴다.
   const [setKeys, setSetKeys] = useState<Record<string, boolean>>({});
   const [modelErrors, setModelErrors] = useState<Record<string, BridgeError>>({});
@@ -325,7 +304,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     [keys, values, edits]);
   const changedCount = Object.keys(edits).length;
 
-  const save = useCallback(async (updates: Record<string, string>) => {
+  const save = useCallback(async (updates: Edits) => {
     if (path === null || Object.keys(updates).length === 0) return;
     setBusy(true);
     const response = await bridge.conf_save(path, updates);
@@ -333,6 +312,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     else {
       setError(null);
       setEdits({});
+      setSetKeys({});
       setNote(Object.keys(updates).some((key) => ADAPTER_CARD_KEY.test(key))
         ? ADAPTER_CARD_NOTE : null);
       onReload();                // 화면 값은 저장 직후 **재조회** 결과다
@@ -398,24 +378,28 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
   const rowsInOrder = sections.flatMap((section) => section.rows);
   const unitLabels: Record<string, string> = Object.assign(
     {}, ...keys.keys.map((entry) => entry.unit_labels ?? {}));
-  const valueOf = (key: string) => edits[key] ?? values[key] ?? "";
-  const isOn = (key: string) => setKeys[key] ?? valueOf(key) !== "";
+  const valueOf = (key: string) => (key in edits ? edits[key] ?? "" : values[key] ?? "");
+  // conf 에 그 줄이 있느냐 — 세트는 줄이 하나라도 있으면 엔진이 나머지를 요구한다.
+  const present = (key: string) => (key in edits ? edits[key] !== null : key in values);
   const marked = markedKeys(conf);
-  const folds = (row: Row) => foldable(row, valueOf(row.key), marked);
+  // 절을 켜는 스위치 — 이것이 접히면 "켜야 쓰임" 한 줄만 남고 켤 자리가 보이지 않는다.
+  const switches = new Set(rowsInOrder.flatMap((row) => (row.governed_by ? [row.governed_by.key] : [])));
+  // 편집 중인 행은 접지 않는다 — 끈 행이 저장 전에 눈앞에서 사라지지 않게.
+  const folds = (row: Row) => !(row.key in edits) && !switches.has(row.key)
+    && foldable(row, valueOf(row.key), marked);
   const foldedItem = (item: GroupItem) => (item.kind === "key"
-    ? folds(item.row) : item.role.cells.every(folds));
+    ? folds(item.row) : item.unit.cells.every(folds));
   const marksOf = (section: Section) =>
     section.rows.filter((row) => marked.has(row.key)).length;
+  const defaultOf = (key: string) => rowsInOrder.find((row) => row.key === key)?.default ?? null;
+  const switchedOff = (row: Row) => (row.governed_by === null ? null
+    : offReason(row.governed_by, valueOf(row.governed_by.key), defaultOf(row.governed_by.key)));
 
   // 이름은 전부 엔진 키 목록에서 꺼낸다 — 화면이 짓는 이름은 없다.
   const labelOfKey = (key: string) =>
     keys.keys.find((entry) => entry.key === key)?.label ?? key;
-  const labelOfFamily = labelOfKey;
-  const rowUnitLabel = labelOfKey(ROW_UNIT_FAMILY);
-  const fieldLabels =
-    keys.keys.find((entry) => entry.key === ROW_UNIT_FAMILY)?.field_labels ?? {};
 
-  // upstream 절이 서는 자리는 그 키가 속한 그룹이다 — 절 이름을 화면이 새로 짓지 않는다.
+  // 원본 위치 절이 서는 자리는 그 키가 속한 그룹이다 — 절 이름을 화면이 새로 짓지 않는다.
   const upstreamGroup = keys.keys.find((entry) => entry.key === UPSTREAM_PATH_KEY)?.group ?? null;
   const navItems = [
     ...sections.map((section) => ({
@@ -429,9 +413,43 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
   const current = selectedNav
     ?? navItems.find((item) => item.marks > 0)?.id ?? navItems[0]?.id ?? null;
   const section = sections.find((entry) => entry.group === current) ?? null;
-  const items = section === null ? [] : buildDelegateRows(section.rows);
+  const items = section === null ? [] : buildItems(section.rows);
   const folded = items.filter(foldedItem);
   const shown = showUnset ? items : items.filter((item) => !foldedItem(item));
+  const offReasons = section === null ? []
+    : [...new Set(section.rows.map(switchedOff).filter((reason) => reason !== null))];
+
+  /**
+   * "직접 정함" 을 켜고 끈다 — 행 하나든 세트든 같은 규칙이다.
+   * 끄면 저장이 그 줄을 **지운다**(빈 값을 적으면 줄이 남아 "설정함"으로 읽히는 키가 있다).
+   * 켜면 기본값이 있는 키만 그 값을 넣어 두고, 없으면 칸만 열어 입력을 기다린다.
+   */
+  const toggle = (flag: string, rows: Row[], next: boolean) => {
+    setSetKeys((previous) => ({ ...previous, [flag]: next }));
+    setEdits((previous) => {
+      const updated = { ...previous };
+      for (const row of rows) {
+        delete updated[row.key];
+        if (!next && row.key in values) updated[row.key] = null;
+        if (next && !(row.key in values) && row.default !== null) updated[row.key] = row.default;
+      }
+      return updated;
+    });
+  };
+
+  const checkbox = (flag: string, rows: Row[], on: boolean, off: boolean) => (
+    <input type="checkbox" aria-label={`${flag} ${SET_TOGGLE}`} checked={on}
+           disabled={busy || off} onChange={(event) => toggle(flag, rows, event.target.checked)} />
+  );
+
+  /**
+   * 직접 정하지 않았거나 스위치가 꺼진 칸 — 값이 있으면 그 값, 없으면 안 정했을 때 일어나는 일.
+   * 엔진이 적는 키는 사람이 정할 자리가 아니라 "안 정하면" 없이 그 상태만 말한다.
+   */
+  const grey = (row: Row, on: boolean) => {
+    const text = on ? valueOf(row.key) : row.readonly ? row.unset ?? "" : unsetHint(row);
+    return <span className={GREY} title={text}>{text}</span>;
+  };
 
   const field = (row: Row) => {
     const choices = row.choices;
@@ -439,20 +457,16 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     const bucket = choices === null ? []
       : choices.values[choices.depends_on === null ? "" : (dependsValue ?? "")] ?? [];
     const harness = choices?.fetch?.value ?? dependsValue ?? "";
+    const depends = choices?.depends_on ?? null;
     return (
       <ValueField
         row={row} value={valueOf(row.key)} options={bucket} dependsValue={dependsValue}
+        dependsLabel={depends === null ? "" : keys.unit_fields[fieldOf(depends)] ?? labelOfKey(depends)}
         fetched={choices?.fetch && harness !== ""
                  ? models[harness] ?? settings?.models?.[harness] ?? null : null}
         fetchError={choices?.fetch && harness !== "" ? modelErrors[harness] ?? null : null}
-        manual={manual[row.key] === true} busy={busy} on={isOn(row.key)}
+        manual={manual[row.key] === true} busy={busy}
         onChange={(next) => setEdits((previous) => ({ ...previous, [row.key]: next }))}
-        onToggle={(next) => {
-          // 켜면 기본값을 넣어 두고(없으면 빈 칸이라 입력을 요구), 끄면 값을 비운다.
-          // 끈다고 local.conf 줄을 지우지는 않는다 — 저장이 그 칸을 빈 값으로 쓸 뿐이다.
-          setSetKeys((previous) => ({ ...previous, [row.key]: next }));
-          setEdits((previous) => ({ ...previous, [row.key]: next ? row.default ?? "" : "" }));
-        }}
         onFetch={() => {
           setManual((previous) => {
             const next = { ...previous };
@@ -466,7 +480,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     );
   };
 
-  // 이름을 크게, 키 문자열과 설명은 그 아래 작은 글씨 한 줄 — 옆에 붙이면 잘려서 안 읽힌다
+  // 이름을 크게, 설명은 그 아래 작은 글씨 한 줄 — 옆에 붙이면 잘려서 안 읽힌다.
   // 문구의 단일 소유는 엔진 키 목록이고 화면은 받아 그리기만 한다.
   const nameCell = (label: string, key: string, description: string) => (
     <td className="w-72 py-1 pr-3 align-top">
@@ -479,38 +493,53 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
 
   // 군 이름 하나가 멤버 전부에 붙으면 같은 이름이 여러 줄에 선다 — 갈리는 이름이 있으면 그것을
   // 쓴다. 갈리는지 아닌지의 주인은 엔진 키 목록(`unit_labels`)이고 화면은 있으면 쓸 뿐이다.
-  const keyRow = (row: Row) => (
-    <tr key={row.key} data-testid={`conf-${row.key}`}>
-      {nameCell(unitLabels[row.key] ?? row.label, row.key, row.description)}
-      <td className="py-0.5 pr-2">{field(row)}</td>
-      <td className="w-32 py-0.5 pr-2 text-[11px]">
-        <span className="flex gap-1 overflow-hidden whitespace-nowrap">
-          <RowMarks row={row} conf={conf} />
-          {conf.nonstandard.some((entry) => entry.key === row.key) && (
-            <button type="button" disabled={busy} onClick={() => void reset(row.key)}
-                    className="rounded border border-slate-200 px-1">기본값으로</button>
-          )}
-        </span>
-      </td>
-    </tr>
-  );
-
-  const roleRow = (role: RoleRow) => (
-    <tr key={role.row} data-testid={`role-${role.row}`}>
-      {nameCell(unitLabels[role.row] ?? role.row, role.row, "")}
-      {role.cells.map((cell) => (
-        <td key={cell.key} data-testid={`conf-${cell.key}`} className="py-0.5 pr-2">
-          <span className="flex items-center gap-1">
-            <span className="min-w-0 flex-1">{field(cell)}</span>
-            <RowMarks row={cell} conf={conf} />
+  const keyRow = (row: Row) => {
+    const on = setKeys[row.key] ?? present(row.key);
+    const off = switchedOff(row) !== null;
+    return (
+      <tr key={row.key} data-testid={`conf-${row.key}`}>
+        {nameCell(unitLabels[row.key] ?? row.label, row.key, row.description)}
+        <td className="w-6 py-0.5">{!row.readonly && checkbox(row.key, [row], on, off)}</td>
+        <td className="py-0.5 pr-2">
+          {on && !off && !row.readonly ? field(row) : grey(row, on)}
+        </td>
+        <td className="w-32 py-0.5 pr-2 text-[11px]">
+          <span className="flex gap-1 overflow-hidden whitespace-nowrap">
+            <RowMarks row={row} conf={conf} />
+            {conf.nonstandard.some((entry) => entry.key === row.key) && (
+              <button type="button" disabled={busy} onClick={() => void reset(row.key)}
+                      className="rounded border border-slate-200 px-1">기본값으로</button>
+            )}
           </span>
         </td>
-      ))}
-    </tr>
-  );
+      </tr>
+    );
+  };
+
+  const unitRow = ({ unit, cells }: UnitRow) => {
+    const on = setKeys[unit] ?? cells.some((cell) => present(cell.key));
+    const off = switchedOff(cells[0]) !== null;
+    return (
+      <tr key={unit} data-testid={`unit-${unit}`}>
+        {nameCell(keys.units[unit] ?? unit, unit, "")}
+        <td className="w-6 py-0.5">{checkbox(unit, cells, on, off)}</td>
+        {on ? cells.map((cell) => (
+          <td key={cell.key} data-testid={`conf-${cell.key}`} className="py-0.5 pr-2">
+            <span className="flex items-center gap-1">
+              <span className="min-w-0 flex-1">{off ? grey(cell, on) : field(cell)}</span>
+              <RowMarks row={cell} conf={conf} />
+            </span>
+          </td>
+        )) : (
+          // 세트는 통째로 읽힌다 — 안 정했을 때 일어나는 일도 칸마다가 아니라 한 줄이다.
+          <td colSpan={cells.length} className="py-0.5 pr-2">{grey(cells[0], on)}</td>
+        )}
+      </tr>
+    );
+  };
 
   // 같은 모양의 행이 이어지는 만큼씩 표 하나로 낸다 — 레지스트리 순서를 지키면서 칸 폭이
-  // 행마다 흔들리지 않는다(위임 절은 칸 이름을 표 머리에 한 번만 적는다).
+  // 행마다 흔들리지 않는다(세트 표는 칸 이름을 표 머리에 한 번, 설명을 표 위에 한 번 적는다).
   const runs: GroupItem[][] = [];
   for (const item of shown) {
     const last = runs[runs.length - 1];
@@ -539,7 +568,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
         {!asking && (
           <>
             <button type="button" disabled={changedCount === 0 || busy}
-                    onClick={() => setEdits({})}
+                    onClick={() => { setEdits({}); setSetKeys({}); }}
                     className="rounded border border-slate-200 px-2 py-0.5">되돌리기</button>
             <button type="button" data-testid="save" disabled={changedCount === 0 || busy}
                     onClick={() => void save(edits)}
@@ -562,7 +591,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
 
       {asking ? (
         <div className="px-4 py-3">
-          <QuestionMode rows={rowsInOrder} values={values}
+          <QuestionMode rows={rowsInOrder.filter((row) => !row.readonly)} values={values}
                         onFinish={(updates) => { setAsking(false); void save(updates); }} />
         </div>
       ) : (
@@ -589,6 +618,12 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
               <AdapterSection bridge={bridge} path={path} onConfLoaded={onAdapterConf} />
             ) : section === null ? null : (
               <section data-testid={`group-${section.group}`}>
+                {offReasons.map((reason) => (
+                  <p key={reason} data-testid={`switched-off-${section.group}`}
+                     className="mb-1 text-[11px] text-slate-500">
+                    회색 칸은 지금 쓰이지 않는다 — {reason}
+                  </p>
+                ))}
                 {runs.map((run) => (run[0].kind === "key" ? (
                   <table key={run[0].kind + run[0].row.key} className="w-full table-fixed">
                     <tbody>
@@ -596,20 +631,23 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
                     </tbody>
                   </table>
                 ) : (
-                  <table key={run[0].kind + run[0].role.row} className="w-full table-fixed">
+                  <table key={run[0].kind + run[0].unit.unit} className="w-full table-fixed">
+                    <caption className="caption-top truncate text-left text-[11px] text-slate-500">
+                      {run[0].unit.cells[0].description}
+                    </caption>
                     <thead>
                       <tr className="text-left text-[11px] text-slate-500">
-                        <th title={ROW_UNIT_FAMILY}
-                            className="w-52 truncate font-normal">{rowUnitLabel}</th>
-                        {(run[0] as { role: RoleRow }).role.cells.map((cell) => (
+                        <th className="w-72" />
+                        <th className="w-6" />
+                        {run[0].unit.cells.map((cell) => (
                           <th key={cell.key} className="font-normal">
-                            {fieldLabels[fieldOf(cell.key)] ?? fieldOf(cell.key)}
+                            {keys.unit_fields[fieldOf(cell.key)] ?? fieldOf(cell.key)}
                           </th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {run.map((item) => roleRow((item as { role: RoleRow }).role))}
+                      {run.map((item) => unitRow((item as { unit: UnitRow }).unit))}
                     </tbody>
                   </table>
                 )))}
@@ -624,12 +662,12 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
                 {section.freeInputFamily && (
                   <div data-testid={`new-key-${section.group}`} className="mt-2 flex items-center gap-1">
                     <span className="text-[11px] text-slate-500">
-                      {labelOfFamily(section.freeInputFamily)}
+                      {labelOfKey(section.freeInputFamily)}
                     </span>
                     <input
                       data-testid="new-key-input"
                       aria-label={`${section.freeInputFamily} 이름`}
-                      placeholder="platform 이름 (예: windows)"
+                      placeholder="운영체제 이름 (예: windows)"
                       value={newKey}
                       onChange={(event) => setNewKey(event.target.value)}
                       className="rounded border border-slate-200 px-1"
@@ -639,11 +677,8 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
                               setEdits((previous) => ({
                                 ...previous, [`test.${newKey.trim()}.cmd`]: "" }));
                               setNewKey("");
-                              // 갓 만든 행은 아직 값이 없어 접기 규칙에 걸린다 — 그 행이 서는
-                              // 절로 옮기고 펼쳐, 만든 자리에서 바로 값을 칠 수 있게 한다.
+                              // 갓 만든 행이 서는 절로 옮겨, 만든 자리에서 바로 값을 칠 수 있게 한다.
                               setSelectedNav(EXTRA_GROUP);
-                              setShowUnset(true);
-                              writeShowUnset(true);
                             }}
                             className="rounded border border-slate-200 px-1">
                       항목 추가
@@ -654,11 +689,10 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
                 {section.group === upstreamGroup && (
                   <div className="mt-3 border-t border-slate-200 pt-2">
                     <p className="text-[11px] text-slate-500">
-                      {labelOfKey(UPSTREAM_PATH_KEY)} 는 값 자체가 도달성 계약이라 사본의
-                      `upstream set` 이 검증하고 기록한다.
+                      {labelOfKey(UPSTREAM_PATH_KEY)} 는 실제로 받아올 수 있는지 확인한 뒤에 적는다.
                     </p>
                     <div className="flex items-center gap-1">
-                      <input aria-label="upstream 값"
+                      <input aria-label={labelOfKey(UPSTREAM_PATH_KEY)}
                              value={upstreamDraft ?? values[UPSTREAM_PATH_KEY] ?? ""}
                              onChange={(event) => setUpstreamDraft(event.target.value)}
                              className="w-[36rem] rounded border border-slate-200 px-1 font-mono text-[11px]" />
@@ -666,7 +700,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
                               onClick={() => void setUpstream(
                                 upstreamDraft ?? values[UPSTREAM_PATH_KEY] ?? "")}
                               className="rounded border border-slate-200 px-2">
-                        upstream 설정
+                        확인하고 저장
                       </button>
                     </div>
                   </div>

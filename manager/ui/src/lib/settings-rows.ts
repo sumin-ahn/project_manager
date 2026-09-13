@@ -1,9 +1,6 @@
 /** 설정 행 접기 판정 — 규칙표(`settings-rows.json`)만 읽고 화면이 새로 계산하지 않는다. */
-import type { ConfSection } from "../api";
+import type { ConfGovernor, ConfSection } from "../api";
 import rule from "./settings-rows.json";
-
-/** 칸을 한 줄로 묶어 접는 키군 — 위임 절의 역할×티어 한 줄이 이 군에서 나온다. */
-export const ROW_UNIT_FAMILY: string = rule.row_unit_family;
 
 /** 접기 판정이 보는 행의 축 셋(넷째 축인 배지는 `markedKeys` 가 잰다). */
 export type FoldRow = { key: string; default: string | null; required: boolean };
@@ -35,33 +32,38 @@ export function foldable(row: FoldRow, value: string, marked: Set<string>): bool
     && !marked.has(row.key);
 }
 
-/** 켜지 않은 칸에 붙는 표식 문구 — 그 값이 사용자가 쓴 것이 아님을 말한다. */
-export const UNSET_MARK: string = rule.unset.mark;
-
 /** 그 키를 직접 정하겠다는 체크박스의 이름. */
 export const SET_TOGGLE: string = rule.unset.toggle;
 
-/** 안 채웠을 때 그 칸에 서는 것 — 엔진 기본값이 있으면 그 값, 없으면 그때의 상태 낱말. */
+/** 켠 목록 칸에서 아직 아무것도 고르지 않았을 때의 항목. */
+export const PICK: string = rule.unset.pick;
+
+/** 안 채웠을 때 일어나는 일 — 엔진 기본값이 있으면 그 값, 없으면 엔진이 준 문장. */
 export type UnsetRow = { default: string | null; unset: string | null };
 
 /**
- * 켜지 않은 칸에 채워 보일 문구.
+ * 켜지 않은 칸에 서는 한 줄.
  *
- * 주인은 엔진 키 레지스트리다(`default` = 미설정 시 쓰는 값 · `unset` = 그때의 상태). schema 5
- * 는 둘 중 하나가 항상 값이라고 보장하므로 화면에 빈 칸이 생기지 않는다. 레지스트리 밖 키
- * (conf 에만 있는 행)만 둘 다 없고, 그 행은 애초에 사람이 이미 값을 적은 행이다.
+ * 주인은 엔진 키 레지스트리다(`default` = 미설정 시 쓰는 값 · `unset` = 그때 일어나는 일).
+ * schema 6 은 둘 중 하나가 항상 값이라고 보장한다. 레지스트리 밖 키(conf 에만 있는 행)만 둘 다
+ * 없고, 그 행은 애초에 사람이 이미 값을 적은 행이다.
  */
 export function unsetHint(row: UnsetRow): string {
-  return row.default ?? row.unset ?? "";
+  const said = row.default !== null ? `${rule.unset.default} ${row.default}` : row.unset;
+  return said === null ? "" : `${rule.unset.lead}: ${said}`;
 }
 
-/** 그 칸이 "안 쓴 상태"로 서는가 — 켜지 않았고 보일 것이 있을 때. */
-export function unsetFilled(row: UnsetRow, on: boolean): boolean {
-  return !on && unsetHint(row) !== "";
-}
-
-/** 목록 칸에서 그 자리를 고를 때 보이는 한 줄 — 채운 값 + 표식이 한 항목에 들어간다. */
-export function unsetLabel(row: UnsetRow): string {
-  const hint = unsetHint(row);
-  return hint === "" ? UNSET_MARK : `${hint} (${UNSET_MARK})`;
+/**
+ * 그 절을 켜는 스위치가 꺼져 있으면 그 한 줄(엔진이 준 문구), 켜져 있으면 null.
+ *
+ * 켜짐 판정의 주인은 엔진이다 — `on` 이 null 이면 "값이 있으면 켜짐", 목록이면 그 안의 값만
+ * 켜짐이다. 빈 값은 스위치의 기본값으로 읽는다(값을 지운 줄이 스위치를 조용히 끄지 않는다).
+ * 대소문자·앞뒤 공백을 무시하는 것은 엔진 판정(`pm_delegate._is_enabled`)과 같다.
+ */
+export function offReason(governor: ConfGovernor | null, value: string,
+                          fallback: string | null): string | null {
+  if (governor === null) return null;
+  const effective = (value.trim() === "" ? fallback ?? "" : value).trim().toLowerCase();
+  const on = governor.on === null ? effective !== "" : governor.on.includes(effective);
+  return on ? null : governor.reason;
 }

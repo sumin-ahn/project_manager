@@ -1,5 +1,5 @@
 {
-  "schema": 5,
+  "schema": 6,
   "groups": [
     "project",
     "runtime",
@@ -20,6 +20,24 @@
     "delegate": "작업 위임",
     "additional_reviewer": "교차 검토"
   },
+  "units": {
+    "delegate.developer": "구현(보통)",
+    "delegate.developer.hard": "구현(어려움)",
+    "delegate.developer.fallback": "구현(대체)",
+    "delegate.developer.hard.fallback": "구현(어려움 대체)",
+    "delegate.researcher": "조사(보통)",
+    "delegate.researcher.fallback": "조사(대체)",
+    "delegate.architect": "설계(보통)",
+    "delegate.architect.fallback": "설계(대체)",
+    "delegate.code-reviewer": "검토(보통)",
+    "delegate.code-reviewer.fallback": "검토(대체)",
+    "additional_reviewer": "교차 검토"
+  },
+  "unit_fields": {
+    "harness": "도구",
+    "model": "모델",
+    "reasoning": "생각 깊이"
+  },
   "keys": [
     {
       "key": "project.name",
@@ -27,14 +45,16 @@
       "label": "프로젝트 이름",
       "description": "안내 문서(CLAUDE.md 등)에 들어갈 이름",
       "default": null,
-      "unset": "안내 문서 안 만듦",
+      "unset": "평소엔 영향 없음, 안내 문서를 다시 그릴 때 이 자리가 남아 있으면 채우라며 멈춤",
       "required": false,
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": null,
+      "readonly": false
     },
     {
       "key": "project.tagline",
@@ -42,14 +62,16 @@
       "label": "한 줄 소개",
       "description": "안내 문서 첫머리에 들어갈 소개",
       "default": null,
-      "unset": "안내 문서 안 만듦",
+      "unset": "평소엔 영향 없음, 안내 문서를 다시 그릴 때 이 자리가 남아 있으면 채우라며 멈춤",
       "required": false,
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": null,
+      "readonly": false
     },
     {
       "key": "project.root",
@@ -57,14 +79,16 @@
       "label": "기준 경로",
       "description": "안내 문서에 적을 경로의 기준",
       "default": null,
-      "unset": "안내 문서 안 만듦",
+      "unset": "평소엔 영향 없음, 안내 문서를 다시 그릴 때 이 자리가 남아 있으면 채우라며 멈춤",
       "required": false,
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": null,
+      "readonly": false
     },
     {
       "key": "project.date",
@@ -72,14 +96,16 @@
       "label": "기준 날짜",
       "description": "안내 문서에 적을 날짜",
       "default": null,
-      "unset": "안내 문서 안 만듦",
+      "unset": "평소엔 영향 없음, 안내 문서를 다시 그릴 때 이 자리가 남아 있으면 채우라며 멈춤",
       "required": false,
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": null,
+      "readonly": false
     },
     {
       "key": "runtime.py",
@@ -87,14 +113,16 @@
       "label": "파이썬 실행 파일",
       "description": "엔진을 실행할 파이썬 (예: python3, Windows 는 py -3.12), 첫 설치 때 실행해 보고 채움",
       "default": null,
-      "unset": "시스템 기본 파이썬",
+      "unset": "운영체제 기본 파이썬(python3, Windows 는 py -3)을 씀",
       "required": true,
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": null,
+      "readonly": false
     },
     {
       "key": "test.cmd",
@@ -102,14 +130,16 @@
       "label": "테스트 명령",
       "description": "테스트를 돌릴 때 그대로 실행할 명령",
       "default": null,
-      "unset": "테스트 안 함",
+      "unset": "파이썬 기본 테스트 명령(python -m pytest tests/ -q)을 씀",
       "required": true,
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": null,
+      "readonly": false
     },
     {
       "key": "qa.platforms",
@@ -117,29 +147,33 @@
       "label": "테스트할 운영체제 목록",
       "description": "쉼표로 구분 (예: linux, windows), 적으면 운영체제마다 테스트 명령을 따로 정해야 하고 적은 순서대로 실행",
       "default": null,
-      "unset": "테스트 명령 하나만",
+      "unset": "운영체제 구분 없이 테스트 명령 하나만 돎",
       "required": false,
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": null,
+      "readonly": false
     },
     {
       "key": "identity.user",
       "group": "identity",
       "label": "내 계정",
-      "description": "작업 기록에 남길 이름, 비우면 git 설정의 이메일",
+      "description": "작업 기록에 남길 이름",
       "default": null,
-      "unset": "git 설정의 이메일",
+      "unset": "git 설정의 이메일을 씀, 그것도 없으면 이름 없이 기록",
       "required": false,
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": null,
+      "readonly": false
     },
     {
       "key": "upstream.path",
@@ -147,44 +181,50 @@
       "label": "원본 위치",
       "description": "업데이트를 받아올 폴더 경로나 주소",
       "default": null,
-      "unset": "업데이트 안 함",
+      "unset": "받아올 곳이 없어 업데이트가 멈춤",
       "required": false,
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": null,
+      "readonly": false
     },
     {
       "key": "upstream.rev",
       "group": "upstream",
       "label": "마지막으로 받은 커밋",
-      "description": "업데이트 차이를 재는 기준, 엔진이 자동으로 적음",
+      "description": "업데이트 차이를 재는 기준, 업데이트가 적음",
       "default": null,
-      "unset": "자동 기록",
+      "unset": "아직 업데이트를 받은 적 없음",
       "required": false,
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": null,
+      "readonly": true
     },
     {
       "key": "upstream.seen_rev",
       "group": "upstream",
       "label": "마지막으로 확인한 커밋",
-      "description": "원본에서 마지막으로 본 커밋, 엔진이 자동으로 적음",
+      "description": "원본에서 마지막으로 본 커밋, 업데이트가 적음",
       "default": null,
-      "unset": "자동 기록",
+      "unset": "아직 원본을 확인한 적 없음",
       "required": false,
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": null,
+      "readonly": true
     },
     {
       "key": "ctx.checkpoint_pct",
@@ -197,9 +237,11 @@
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": null,
+      "readonly": false
     },
     {
       "key": "ctx.precompact_pct",
@@ -212,9 +254,11 @@
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": null,
+      "readonly": false
     },
     {
       "key": "ctx.window_tokens",
@@ -227,9 +271,11 @@
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": null,
+      "readonly": false
     },
     {
       "key": "delegate.enabled",
@@ -242,39 +288,63 @@
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": null,
+      "readonly": false
     },
     {
       "key": "delegate.timeout",
       "group": "delegate",
       "label": "위임 최대 실행 시간 (초)",
-      "description": "이 시간을 넘으면 중단, 비우면 도구마다 정해진 기본값",
+      "description": "이 시간을 넘으면 중단",
       "default": null,
-      "unset": "도구 기본값",
+      "unset": "도구마다 정해진 기본 시간을 씀",
       "required": false,
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": {
+        "key": "delegate.enabled",
+        "on": [
+          "true",
+          "1",
+          "yes",
+          "on"
+        ],
+        "reason": "위임 사용이 켜져 있어야 쓰임"
+      },
+      "readonly": false
     },
     {
       "key": "delegate.idle_timeout",
       "group": "delegate",
       "label": "위임 응답 없을 때 대기 (초)",
-      "description": "이만큼 출력이 없으면 멈춘 것으로 봄, 비우면 도구마다 정해진 기본값",
+      "description": "이만큼 출력이 없으면 멈춘 것으로 봄",
       "default": null,
-      "unset": "도구 기본값",
+      "unset": "도구마다 정해진 기본 시간을 씀",
       "required": false,
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": {
+        "key": "delegate.enabled",
+        "on": [
+          "true",
+          "1",
+          "yes",
+          "on"
+        ],
+        "reason": "위임 사용이 켜져 있어야 쓰임"
+      },
+      "readonly": false
     },
     {
       "key": "delegate.code-reviewer.rounds_max",
@@ -287,22 +357,32 @@
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": {
+        "key": "delegate.enabled",
+        "on": [
+          "true",
+          "1",
+          "yes",
+          "on"
+        ],
+        "reason": "위임 사용이 켜져 있어야 쓰임"
+      },
+      "readonly": false
     },
     {
       "key": "additional_reviewer.harness",
       "group": "additional_reviewer",
       "label": "교차 검토 도구",
-      "description": "다른 모델로 한 번 더 볼 때 쓸 CLI 도구, 모델·생각 깊이와 함께 채움",
+      "description": "다른 모델로 한 번 더 검토할 때 쓸 도구, 모델과 함께 채움",
       "default": null,
-      "unset": "교차 검토 안 함",
+      "unset": "교차 검토를 하지 않음",
       "required": false,
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": {
         "depends_on": null,
         "values": {
@@ -315,7 +395,10 @@
         "fetch": null,
         "free_text": false
       },
-      "recommended": null
+      "recommended": null,
+      "unit": "additional_reviewer",
+      "governed_by": null,
+      "readonly": false
     },
     {
       "key": "additional_reviewer.model",
@@ -323,12 +406,11 @@
       "label": "교차 검토 모델",
       "description": "그 도구가 받는 표기 그대로",
       "default": null,
-      "unset": "교차 검토 안 함",
+      "unset": "교차 검토를 하지 않음",
       "required": false,
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": {
         "depends_on": "additional_reviewer.harness",
         "values": {},
@@ -338,7 +420,10 @@
         },
         "free_text": true
       },
-      "recommended": null
+      "recommended": null,
+      "unit": "additional_reviewer",
+      "governed_by": null,
+      "readonly": false
     },
     {
       "key": "additional_reviewer.reasoning",
@@ -346,12 +431,11 @@
       "label": "교차 검토 생각 깊이",
       "description": "고를 수 있는 값은 도구마다 다름",
       "default": null,
-      "unset": "교차 검토 안 함",
+      "unset": "교차 검토를 하지 않음",
       "required": false,
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": {
         "depends_on": "additional_reviewer.harness",
         "values": {
@@ -380,7 +464,10 @@
         "fetch": null,
         "free_text": false
       },
-      "recommended": null
+      "recommended": null,
+      "unit": "additional_reviewer",
+      "governed_by": null,
+      "readonly": false
     },
     {
       "key": "additional_reviewer.rounds_max",
@@ -393,9 +480,15 @@
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": {
+        "key": "additional_reviewer.harness",
+        "on": null,
+        "reason": "교차 검토 도구를 정해야 쓰임"
+      },
+      "readonly": false
     },
     {
       "key": "additional_reviewer.incomplete_rounds_max",
@@ -408,9 +501,15 @@
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": {
+        "key": "additional_reviewer.harness",
+        "on": null,
+        "reason": "교차 검토 도구를 정해야 쓰임"
+      },
+      "readonly": false
     },
     {
       "key": "additional_reviewer.wave_budget",
@@ -423,9 +522,15 @@
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": {
+        "key": "additional_reviewer.harness",
+        "on": null,
+        "reason": "교차 검토 도구를 정해야 쓰임"
+      },
+      "readonly": false
     },
     {
       "key": "additional_reviewer.paths",
@@ -438,52 +543,69 @@
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": {
+        "key": "additional_reviewer.harness",
+        "on": null,
+        "reason": "교차 검토 도구를 정해야 쓰임"
+      },
+      "readonly": false
     },
     {
       "key": "additional_reviewer.timeout",
       "group": "additional_reviewer",
       "label": "교차 검토 최대 실행 시간 (초)",
-      "description": "이 시간을 넘으면 중단, 비우면 도구마다 정해진 기본값",
+      "description": "이 시간을 넘으면 중단",
       "default": null,
-      "unset": "도구 기본값",
+      "unset": "도구마다 정해진 기본 시간을 씀",
       "required": false,
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": {
+        "key": "additional_reviewer.harness",
+        "on": null,
+        "reason": "교차 검토 도구를 정해야 쓰임"
+      },
+      "readonly": false
     },
     {
       "key": "additional_reviewer.idle_timeout",
       "group": "additional_reviewer",
       "label": "교차 검토 응답 없을 때 대기 (초)",
-      "description": "이만큼 출력이 없으면 멈춘 것으로 봄, 비우면 도구마다 정해진 기본값",
+      "description": "이만큼 출력이 없으면 멈춘 것으로 봄",
       "default": null,
-      "unset": "도구 기본값",
+      "unset": "도구마다 정해진 기본 시간을 씀",
       "required": false,
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": {
+        "key": "additional_reviewer.harness",
+        "on": null,
+        "reason": "교차 검토 도구를 정해야 쓰임"
+      },
+      "readonly": false
     },
     {
       "key": "additional_reviewer.progress_signal",
       "group": "additional_reviewer",
       "label": "교차 검토 진행 출력 형식",
-      "description": "그 도구가 진행 상황을 어떤 모양으로 내는지, 비우면 도구에 맞춰 자동",
+      "description": "그 도구가 진행 상황을 어떤 모양으로 내는지",
       "default": null,
-      "unset": "도구에 맞춰 자동",
+      "unset": "도구에 맞춰 자동으로 고름",
       "required": false,
       "kind": "key",
       "members": null,
       "unit_labels": {},
-      "field_labels": {},
       "choices": {
         "depends_on": null,
         "values": {
@@ -496,117 +618,119 @@
         "fetch": null,
         "free_text": false
       },
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": {
+        "key": "additional_reviewer.harness",
+        "on": null,
+        "reason": "교차 검토 도구를 정해야 쓰임"
+      },
+      "readonly": false
     },
     {
       "key": "harness.<name>.{idle_timeout,wall_timeout,ctx_window_tokens,pro_model}",
       "group": "harness",
       "label": "도구마다 따로 정하는 값",
-      "description": "실행 시간·대기 시간·컨텍스트 크기와 안내 문서에 적을 모델 이름, 비우면 그 도구의 기본값",
+      "description": "실행 시간·대기 시간·컨텍스트 크기와 안내 문서에 적을 모델 이름",
       "default": null,
-      "unset": "도구 기본값",
+      "unset": "도구마다 정해진 기본 시간을 씀",
       "required": false,
       "kind": "pattern",
       "members": [
         {
           "key": "harness.claude.idle_timeout",
           "default": null,
-          "unset": "도구 기본값",
+          "unset": "도구마다 정해진 기본 시간을 씀",
           "choices": null,
-          "recommended": null
+          "recommended": null,
+          "unit": null,
+          "governed_by": null,
+          "readonly": false
         },
         {
           "key": "harness.claude.wall_timeout",
           "default": null,
-          "unset": "도구 기본값",
+          "unset": "도구마다 정해진 기본 시간을 씀",
           "choices": null,
-          "recommended": null
+          "recommended": null,
+          "unit": null,
+          "governed_by": null,
+          "readonly": false
         },
         {
           "key": "harness.claude.ctx_window_tokens",
           "default": null,
-          "unset": "공통 컨텍스트 크기",
+          "unset": "위 공통 컨텍스트 크기를 씀",
           "choices": null,
-          "recommended": null
-        },
-        {
-          "key": "harness.claude.pro_model",
-          "default": null,
-          "unset": "안내 문서 안 만듦",
-          "choices": {
-            "depends_on": null,
-            "values": {},
-            "fetch": {
-              "command": "delegate models",
-              "arg": "harness",
-              "value": "claude"
-            },
-            "free_text": true
-          },
-          "recommended": null
+          "recommended": null,
+          "unit": null,
+          "governed_by": null,
+          "readonly": false
         },
         {
           "key": "harness.codex.idle_timeout",
           "default": null,
-          "unset": "도구 기본값",
+          "unset": "도구마다 정해진 기본 시간을 씀",
           "choices": null,
-          "recommended": null
+          "recommended": null,
+          "unit": null,
+          "governed_by": null,
+          "readonly": false
         },
         {
           "key": "harness.codex.wall_timeout",
           "default": null,
-          "unset": "도구 기본값",
+          "unset": "도구마다 정해진 기본 시간을 씀",
           "choices": null,
-          "recommended": null
+          "recommended": null,
+          "unit": null,
+          "governed_by": null,
+          "readonly": false
         },
         {
           "key": "harness.codex.ctx_window_tokens",
           "default": null,
-          "unset": "공통 컨텍스트 크기",
+          "unset": "위 공통 컨텍스트 크기를 씀",
           "choices": null,
-          "recommended": null
-        },
-        {
-          "key": "harness.codex.pro_model",
-          "default": null,
-          "unset": "안내 문서 안 만듦",
-          "choices": {
-            "depends_on": null,
-            "values": {},
-            "fetch": {
-              "command": "delegate models",
-              "arg": "harness",
-              "value": "codex"
-            },
-            "free_text": true
-          },
-          "recommended": null
+          "recommended": null,
+          "unit": null,
+          "governed_by": null,
+          "readonly": false
         },
         {
           "key": "harness.opencode.idle_timeout",
           "default": null,
-          "unset": "도구 기본값",
+          "unset": "도구마다 정해진 기본 시간을 씀",
           "choices": null,
-          "recommended": null
+          "recommended": null,
+          "unit": null,
+          "governed_by": null,
+          "readonly": false
         },
         {
           "key": "harness.opencode.wall_timeout",
           "default": null,
-          "unset": "도구 기본값",
+          "unset": "도구마다 정해진 기본 시간을 씀",
           "choices": null,
-          "recommended": null
+          "recommended": null,
+          "unit": null,
+          "governed_by": null,
+          "readonly": false
         },
         {
           "key": "harness.opencode.ctx_window_tokens",
           "default": null,
-          "unset": "공통 컨텍스트 크기",
+          "unset": "위 공통 컨텍스트 크기를 씀",
           "choices": null,
-          "recommended": null
+          "recommended": null,
+          "unit": null,
+          "governed_by": null,
+          "readonly": false
         },
         {
           "key": "harness.opencode.pro_model",
           "default": null,
-          "unset": "안내 문서 안 만듦",
+          "unset": "안내 문서의 모델 자리를 TODO 로 남김",
           "choices": {
             "depends_on": null,
             "values": {},
@@ -617,41 +741,44 @@
             },
             "free_text": true
           },
-          "recommended": null
+          "recommended": null,
+          "unit": null,
+          "governed_by": null,
+          "readonly": false
         }
       ],
       "unit_labels": {
         "harness.claude.idle_timeout": "claude 응답 없을 때 대기 (초)",
         "harness.claude.wall_timeout": "claude 최대 실행 시간 (초)",
         "harness.claude.ctx_window_tokens": "claude 컨텍스트 크기 (토큰)",
-        "harness.claude.pro_model": "claude 안내 문서에 적을 모델",
         "harness.codex.idle_timeout": "codex 응답 없을 때 대기 (초)",
         "harness.codex.wall_timeout": "codex 최대 실행 시간 (초)",
         "harness.codex.ctx_window_tokens": "codex 컨텍스트 크기 (토큰)",
-        "harness.codex.pro_model": "codex 안내 문서에 적을 모델",
         "harness.opencode.idle_timeout": "opencode 응답 없을 때 대기 (초)",
         "harness.opencode.wall_timeout": "opencode 최대 실행 시간 (초)",
         "harness.opencode.ctx_window_tokens": "opencode 컨텍스트 크기 (토큰)",
         "harness.opencode.pro_model": "opencode 안내 문서에 적을 모델"
       },
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": null,
+      "readonly": false
     },
     {
       "key": "delegate.<role>[.hard][.fallback].{harness,model,reasoning}",
       "group": "delegate",
       "label": "역할별 담당 도구",
-      "description": "역할마다 도구·모델·생각 깊이를 한 묶음으로, 어려운 작업용과 실패 시 대신 쓸 묶음을 따로 둘 수 있고 비운 칸은 보통 묶음을 따라가지 않음",
+      "description": "역할마다 도구·모델·생각 깊이를 한 묶음으로 정함, 실패 시 대신 쓸 묶음을 따로 둘 수 있음 (어려운 작업용 묶음은 구현만)",
       "default": null,
-      "unset": "위임 안 함",
+      "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
       "required": false,
       "kind": "pattern",
       "members": [
         {
           "key": "delegate.developer.harness",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
           "choices": {
             "depends_on": null,
             "values": {
@@ -664,12 +791,24 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": "claude"
+          "recommended": "claude",
+          "unit": "delegate.developer",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.developer.model",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
           "choices": {
             "depends_on": "delegate.developer.harness",
             "values": {},
@@ -679,12 +818,24 @@
             },
             "free_text": true
           },
-          "recommended": "sonnet"
+          "recommended": "sonnet",
+          "unit": "delegate.developer",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.developer.reasoning",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
           "choices": {
             "depends_on": "delegate.developer.harness",
             "values": {
@@ -713,12 +864,24 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": "high"
+          "recommended": "high",
+          "unit": "delegate.developer",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.developer.hard.harness",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "어려운 작업 위임이 멈춤, 보통 묶음으로 대신하지 않음",
           "choices": {
             "depends_on": null,
             "values": {
@@ -731,12 +894,24 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": "claude"
+          "recommended": "claude",
+          "unit": "delegate.developer.hard",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.developer.hard.model",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "어려운 작업 위임이 멈춤, 보통 묶음으로 대신하지 않음",
           "choices": {
             "depends_on": "delegate.developer.hard.harness",
             "values": {},
@@ -746,12 +921,24 @@
             },
             "free_text": true
           },
-          "recommended": "opus"
+          "recommended": "opus",
+          "unit": "delegate.developer.hard",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.developer.hard.reasoning",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "어려운 작업 위임이 멈춤, 보통 묶음으로 대신하지 않음",
           "choices": {
             "depends_on": "delegate.developer.hard.harness",
             "values": {
@@ -780,12 +967,24 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": "high"
+          "recommended": "high",
+          "unit": "delegate.developer.hard",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.developer.fallback.harness",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
           "choices": {
             "depends_on": null,
             "values": {
@@ -798,12 +997,24 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": null
+          "recommended": null,
+          "unit": "delegate.developer.fallback",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.developer.fallback.model",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
           "choices": {
             "depends_on": "delegate.developer.fallback.harness",
             "values": {},
@@ -813,12 +1024,24 @@
             },
             "free_text": true
           },
-          "recommended": null
+          "recommended": null,
+          "unit": "delegate.developer.fallback",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.developer.fallback.reasoning",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
           "choices": {
             "depends_on": "delegate.developer.fallback.harness",
             "values": {
@@ -847,12 +1070,24 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": null
+          "recommended": null,
+          "unit": "delegate.developer.fallback",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.developer.hard.fallback.harness",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
           "choices": {
             "depends_on": null,
             "values": {
@@ -865,12 +1100,24 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": null
+          "recommended": null,
+          "unit": "delegate.developer.hard.fallback",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.developer.hard.fallback.model",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
           "choices": {
             "depends_on": "delegate.developer.hard.fallback.harness",
             "values": {},
@@ -880,12 +1127,24 @@
             },
             "free_text": true
           },
-          "recommended": null
+          "recommended": null,
+          "unit": "delegate.developer.hard.fallback",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.developer.hard.fallback.reasoning",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
           "choices": {
             "depends_on": "delegate.developer.hard.fallback.harness",
             "values": {
@@ -914,12 +1173,24 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": null
+          "recommended": null,
+          "unit": "delegate.developer.hard.fallback",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.researcher.harness",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
           "choices": {
             "depends_on": null,
             "values": {
@@ -932,12 +1203,24 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": "claude"
+          "recommended": "claude",
+          "unit": "delegate.researcher",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.researcher.model",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
           "choices": {
             "depends_on": "delegate.researcher.harness",
             "values": {},
@@ -947,12 +1230,24 @@
             },
             "free_text": true
           },
-          "recommended": "sonnet"
+          "recommended": "sonnet",
+          "unit": "delegate.researcher",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.researcher.reasoning",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
           "choices": {
             "depends_on": "delegate.researcher.harness",
             "values": {
@@ -981,79 +1276,24 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": "medium"
-        },
-        {
-          "key": "delegate.researcher.hard.harness",
-          "default": null,
-          "unset": "위임 안 함",
-          "choices": {
-            "depends_on": null,
-            "values": {
-              "": [
-                "claude",
-                "codex",
-                "opencode"
-              ]
-            },
-            "fetch": null,
-            "free_text": false
+          "recommended": "medium",
+          "unit": "delegate.researcher",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
           },
-          "recommended": null
-        },
-        {
-          "key": "delegate.researcher.hard.model",
-          "default": null,
-          "unset": "위임 안 함",
-          "choices": {
-            "depends_on": "delegate.researcher.hard.harness",
-            "values": {},
-            "fetch": {
-              "command": "delegate models",
-              "arg": "harness"
-            },
-            "free_text": true
-          },
-          "recommended": null
-        },
-        {
-          "key": "delegate.researcher.hard.reasoning",
-          "default": null,
-          "unset": "위임 안 함",
-          "choices": {
-            "depends_on": "delegate.researcher.hard.harness",
-            "values": {
-              "codex": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max"
-              ],
-              "claude": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max"
-              ],
-              "opencode": [
-                "minimal",
-                "low",
-                "medium",
-                "high",
-                "max"
-              ]
-            },
-            "fetch": null,
-            "free_text": false
-          },
-          "recommended": null
+          "readonly": false
         },
         {
           "key": "delegate.researcher.fallback.harness",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1066,12 +1306,24 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": null
+          "recommended": null,
+          "unit": "delegate.researcher.fallback",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.researcher.fallback.model",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
           "choices": {
             "depends_on": "delegate.researcher.fallback.harness",
             "values": {},
@@ -1081,12 +1333,24 @@
             },
             "free_text": true
           },
-          "recommended": null
+          "recommended": null,
+          "unit": "delegate.researcher.fallback",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.researcher.fallback.reasoning",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
           "choices": {
             "depends_on": "delegate.researcher.fallback.harness",
             "values": {
@@ -1115,79 +1379,24 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": null
-        },
-        {
-          "key": "delegate.researcher.hard.fallback.harness",
-          "default": null,
-          "unset": "위임 안 함",
-          "choices": {
-            "depends_on": null,
-            "values": {
-              "": [
-                "claude",
-                "codex",
-                "opencode"
-              ]
-            },
-            "fetch": null,
-            "free_text": false
+          "recommended": null,
+          "unit": "delegate.researcher.fallback",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
           },
-          "recommended": null
-        },
-        {
-          "key": "delegate.researcher.hard.fallback.model",
-          "default": null,
-          "unset": "위임 안 함",
-          "choices": {
-            "depends_on": "delegate.researcher.hard.fallback.harness",
-            "values": {},
-            "fetch": {
-              "command": "delegate models",
-              "arg": "harness"
-            },
-            "free_text": true
-          },
-          "recommended": null
-        },
-        {
-          "key": "delegate.researcher.hard.fallback.reasoning",
-          "default": null,
-          "unset": "위임 안 함",
-          "choices": {
-            "depends_on": "delegate.researcher.hard.fallback.harness",
-            "values": {
-              "codex": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max"
-              ],
-              "claude": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max"
-              ],
-              "opencode": [
-                "minimal",
-                "low",
-                "medium",
-                "high",
-                "max"
-              ]
-            },
-            "fetch": null,
-            "free_text": false
-          },
-          "recommended": null
+          "readonly": false
         },
         {
           "key": "delegate.architect.harness",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1200,12 +1409,24 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": "claude"
+          "recommended": "claude",
+          "unit": "delegate.architect",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.architect.model",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
           "choices": {
             "depends_on": "delegate.architect.harness",
             "values": {},
@@ -1215,12 +1436,24 @@
             },
             "free_text": true
           },
-          "recommended": "opus"
+          "recommended": "opus",
+          "unit": "delegate.architect",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.architect.reasoning",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
           "choices": {
             "depends_on": "delegate.architect.harness",
             "values": {
@@ -1249,79 +1482,24 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": "xhigh"
-        },
-        {
-          "key": "delegate.architect.hard.harness",
-          "default": null,
-          "unset": "위임 안 함",
-          "choices": {
-            "depends_on": null,
-            "values": {
-              "": [
-                "claude",
-                "codex",
-                "opencode"
-              ]
-            },
-            "fetch": null,
-            "free_text": false
+          "recommended": "xhigh",
+          "unit": "delegate.architect",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
           },
-          "recommended": null
-        },
-        {
-          "key": "delegate.architect.hard.model",
-          "default": null,
-          "unset": "위임 안 함",
-          "choices": {
-            "depends_on": "delegate.architect.hard.harness",
-            "values": {},
-            "fetch": {
-              "command": "delegate models",
-              "arg": "harness"
-            },
-            "free_text": true
-          },
-          "recommended": null
-        },
-        {
-          "key": "delegate.architect.hard.reasoning",
-          "default": null,
-          "unset": "위임 안 함",
-          "choices": {
-            "depends_on": "delegate.architect.hard.harness",
-            "values": {
-              "codex": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max"
-              ],
-              "claude": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max"
-              ],
-              "opencode": [
-                "minimal",
-                "low",
-                "medium",
-                "high",
-                "max"
-              ]
-            },
-            "fetch": null,
-            "free_text": false
-          },
-          "recommended": null
+          "readonly": false
         },
         {
           "key": "delegate.architect.fallback.harness",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1334,12 +1512,24 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": null
+          "recommended": null,
+          "unit": "delegate.architect.fallback",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.architect.fallback.model",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
           "choices": {
             "depends_on": "delegate.architect.fallback.harness",
             "values": {},
@@ -1349,12 +1539,24 @@
             },
             "free_text": true
           },
-          "recommended": null
+          "recommended": null,
+          "unit": "delegate.architect.fallback",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.architect.fallback.reasoning",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
           "choices": {
             "depends_on": "delegate.architect.fallback.harness",
             "values": {
@@ -1383,79 +1585,24 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": null
-        },
-        {
-          "key": "delegate.architect.hard.fallback.harness",
-          "default": null,
-          "unset": "위임 안 함",
-          "choices": {
-            "depends_on": null,
-            "values": {
-              "": [
-                "claude",
-                "codex",
-                "opencode"
-              ]
-            },
-            "fetch": null,
-            "free_text": false
+          "recommended": null,
+          "unit": "delegate.architect.fallback",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
           },
-          "recommended": null
-        },
-        {
-          "key": "delegate.architect.hard.fallback.model",
-          "default": null,
-          "unset": "위임 안 함",
-          "choices": {
-            "depends_on": "delegate.architect.hard.fallback.harness",
-            "values": {},
-            "fetch": {
-              "command": "delegate models",
-              "arg": "harness"
-            },
-            "free_text": true
-          },
-          "recommended": null
-        },
-        {
-          "key": "delegate.architect.hard.fallback.reasoning",
-          "default": null,
-          "unset": "위임 안 함",
-          "choices": {
-            "depends_on": "delegate.architect.hard.fallback.harness",
-            "values": {
-              "codex": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max"
-              ],
-              "claude": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max"
-              ],
-              "opencode": [
-                "minimal",
-                "low",
-                "medium",
-                "high",
-                "max"
-              ]
-            },
-            "fetch": null,
-            "free_text": false
-          },
-          "recommended": null
+          "readonly": false
         },
         {
           "key": "delegate.code-reviewer.harness",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1468,12 +1615,24 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": "claude"
+          "recommended": "claude",
+          "unit": "delegate.code-reviewer",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.code-reviewer.model",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
           "choices": {
             "depends_on": "delegate.code-reviewer.harness",
             "values": {},
@@ -1483,12 +1642,24 @@
             },
             "free_text": true
           },
-          "recommended": "opus"
+          "recommended": "opus",
+          "unit": "delegate.code-reviewer",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.code-reviewer.reasoning",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
           "choices": {
             "depends_on": "delegate.code-reviewer.harness",
             "values": {
@@ -1517,79 +1688,24 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": "xhigh"
-        },
-        {
-          "key": "delegate.code-reviewer.hard.harness",
-          "default": null,
-          "unset": "위임 안 함",
-          "choices": {
-            "depends_on": null,
-            "values": {
-              "": [
-                "claude",
-                "codex",
-                "opencode"
-              ]
-            },
-            "fetch": null,
-            "free_text": false
+          "recommended": "xhigh",
+          "unit": "delegate.code-reviewer",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
           },
-          "recommended": null
-        },
-        {
-          "key": "delegate.code-reviewer.hard.model",
-          "default": null,
-          "unset": "위임 안 함",
-          "choices": {
-            "depends_on": "delegate.code-reviewer.hard.harness",
-            "values": {},
-            "fetch": {
-              "command": "delegate models",
-              "arg": "harness"
-            },
-            "free_text": true
-          },
-          "recommended": null
-        },
-        {
-          "key": "delegate.code-reviewer.hard.reasoning",
-          "default": null,
-          "unset": "위임 안 함",
-          "choices": {
-            "depends_on": "delegate.code-reviewer.hard.harness",
-            "values": {
-              "codex": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max"
-              ],
-              "claude": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max"
-              ],
-              "opencode": [
-                "minimal",
-                "low",
-                "medium",
-                "high",
-                "max"
-              ]
-            },
-            "fetch": null,
-            "free_text": false
-          },
-          "recommended": null
+          "readonly": false
         },
         {
           "key": "delegate.code-reviewer.fallback.harness",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1602,12 +1718,24 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": null
+          "recommended": null,
+          "unit": "delegate.code-reviewer.fallback",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.code-reviewer.fallback.model",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
           "choices": {
             "depends_on": "delegate.code-reviewer.fallback.harness",
             "values": {},
@@ -1617,12 +1745,24 @@
             },
             "free_text": true
           },
-          "recommended": null
+          "recommended": null,
+          "unit": "delegate.code-reviewer.fallback",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
+          },
+          "readonly": false
         },
         {
           "key": "delegate.code-reviewer.fallback.reasoning",
           "default": null,
-          "unset": "위임 안 함",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
           "choices": {
             "depends_on": "delegate.code-reviewer.fallback.harness",
             "values": {
@@ -1651,124 +1791,61 @@
             "fetch": null,
             "free_text": false
           },
-          "recommended": null
-        },
-        {
-          "key": "delegate.code-reviewer.hard.fallback.harness",
-          "default": null,
-          "unset": "위임 안 함",
-          "choices": {
-            "depends_on": null,
-            "values": {
-              "": [
-                "claude",
-                "codex",
-                "opencode"
-              ]
-            },
-            "fetch": null,
-            "free_text": false
+          "recommended": null,
+          "unit": "delegate.code-reviewer.fallback",
+          "governed_by": {
+            "key": "delegate.enabled",
+            "on": [
+              "true",
+              "1",
+              "yes",
+              "on"
+            ],
+            "reason": "위임 사용이 켜져 있어야 쓰임"
           },
-          "recommended": null
-        },
-        {
-          "key": "delegate.code-reviewer.hard.fallback.model",
-          "default": null,
-          "unset": "위임 안 함",
-          "choices": {
-            "depends_on": "delegate.code-reviewer.hard.fallback.harness",
-            "values": {},
-            "fetch": {
-              "command": "delegate models",
-              "arg": "harness"
-            },
-            "free_text": true
-          },
-          "recommended": null
-        },
-        {
-          "key": "delegate.code-reviewer.hard.fallback.reasoning",
-          "default": null,
-          "unset": "위임 안 함",
-          "choices": {
-            "depends_on": "delegate.code-reviewer.hard.fallback.harness",
-            "values": {
-              "codex": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max"
-              ],
-              "claude": [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max"
-              ],
-              "opencode": [
-                "minimal",
-                "low",
-                "medium",
-                "high",
-                "max"
-              ]
-            },
-            "fetch": null,
-            "free_text": false
-          },
-          "recommended": null
+          "readonly": false
         }
       ],
-      "unit_labels": {
-        "delegate.developer": "구현(보통)",
-        "delegate.developer.hard": "구현(어려움)",
-        "delegate.developer.fallback": "구현(대체)",
-        "delegate.developer.hard.fallback": "구현(어려움 대체)",
-        "delegate.researcher": "조사(보통)",
-        "delegate.researcher.hard": "조사(어려움)",
-        "delegate.researcher.fallback": "조사(대체)",
-        "delegate.researcher.hard.fallback": "조사(어려움 대체)",
-        "delegate.architect": "설계(보통)",
-        "delegate.architect.hard": "설계(어려움)",
-        "delegate.architect.fallback": "설계(대체)",
-        "delegate.architect.hard.fallback": "설계(어려움 대체)",
-        "delegate.code-reviewer": "검토(보통)",
-        "delegate.code-reviewer.hard": "검토(어려움)",
-        "delegate.code-reviewer.fallback": "검토(대체)",
-        "delegate.code-reviewer.hard.fallback": "검토(어려움 대체)"
-      },
-      "field_labels": {
-        "harness": "도구",
-        "model": "모델",
-        "reasoning": "생각 깊이"
-      },
+      "unit_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": {
+        "key": "delegate.enabled",
+        "on": [
+          "true",
+          "1",
+          "yes",
+          "on"
+        ],
+        "reason": "위임 사용이 켜져 있어야 쓰임"
+      },
+      "readonly": false
     },
     {
       "key": "delegate.model_alias.<name>",
       "group": "delegate",
       "label": "모델 별칭",
-      "description": "모델 칸에 이 이름을 적으면 여기 정한 값으로 바꿔 씀",
+      "description": "같은 모델의 다른 표기를 한 이름으로 묶음, 구현과 검토가 같은 모델인지 볼 때만 씀",
       "default": null,
-      "unset": "별칭 없음",
+      "unset": "표기가 다르면 다른 모델로 봄",
       "required": false,
       "kind": "pattern",
       "members": [],
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": null,
+      "readonly": false
     },
     {
       "key": "diff_cap.<estimate>",
       "group": "additional_reviewer",
       "label": "작업 크기별 변경 줄 수 상한",
-      "description": "작업 크기마다 허용할 추가·삭제 줄 수 합계, 모르는 크기에는 제한을 두지 않음",
+      "description": "작업을 마칠 때와 교차 검토 전에 확인, 추가·삭제 줄 수 합계가 넘으면 멈춤, 모르는 크기에는 제한을 두지 않음",
       "default": null,
-      "unset": "제한 없음",
+      "unset": "제한을 두지 않음",
       "required": false,
       "kind": "pattern",
       "members": [
@@ -1777,21 +1854,30 @@
           "default": "300",
           "unset": null,
           "choices": null,
-          "recommended": null
+          "recommended": null,
+          "unit": null,
+          "governed_by": null,
+          "readonly": false
         },
         {
           "key": "diff_cap.medium",
           "default": "1000",
           "unset": null,
           "choices": null,
-          "recommended": null
+          "recommended": null,
+          "unit": null,
+          "governed_by": null,
+          "readonly": false
         },
         {
           "key": "diff_cap.large",
           "default": "2500",
           "unset": null,
           "choices": null,
-          "recommended": null
+          "recommended": null,
+          "unit": null,
+          "governed_by": null,
+          "readonly": false
         }
       ],
       "unit_labels": {
@@ -1799,9 +1885,11 @@
         "diff_cap.medium": "작업 크기별 변경 줄 수 상한 (보통 작업)",
         "diff_cap.large": "작업 크기별 변경 줄 수 상한 (큰 작업)"
       },
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": null,
+      "readonly": false
     },
     {
       "key": "test.<platform>.cmd",
@@ -1809,14 +1897,16 @@
       "label": "운영체제별 테스트 명령",
       "description": "위 '테스트할 운영체제 목록' 에 적은 이름마다 하나씩, 목록에 없는 이름은 모르는 항목으로 표시",
       "default": null,
-      "unset": "그 운영체제는 테스트 안 함",
+      "unset": "목록에 적은 운영체제면 테스트가 멈춤",
       "required": false,
       "kind": "pattern",
       "members": [],
       "unit_labels": {},
-      "field_labels": {},
       "choices": null,
-      "recommended": null
+      "recommended": null,
+      "unit": null,
+      "governed_by": null,
+      "readonly": false
     }
   ]
 }

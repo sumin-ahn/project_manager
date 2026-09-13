@@ -310,6 +310,8 @@ describe("설정 선읽기", () => {
 
     fireEvent.mouseDown(screen.getByRole("tab", { name: "설정" }));
     fireEvent.click(await screen.findByTestId("nav-ctx"));
+    // 값이 없는 사본이라 칸이 닫혀 있다 — 직접 정함을 켜야 입력 칸이 선다.
+    fireEvent.click(screen.getByLabelText("ctx.checkpoint_pct 직접 정함"));
     fireEvent.change(screen.getByLabelText("ctx.checkpoint_pct"), { target: { value: "26" } });
     fireEvent.click(screen.getByTestId("save"));
 

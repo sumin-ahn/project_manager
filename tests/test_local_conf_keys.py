@@ -539,7 +539,8 @@ def test_declared_groups_is_a_single_key_groups_order_filter(conf_module):
 _PATTERN_SAMPLES = (
     ("delegate.developer.harness", "delegate"),
     ("delegate.developer.hard.model", "delegate"),
-    ("delegate.architect.hard.fallback.reasoning", "delegate"),
+    ("delegate.developer.hard.fallback.reasoning", "delegate"),
+    ("delegate.architect.fallback.reasoning", "delegate"),
     ("delegate.model_alias.mymodel", "delegate"),
     ("harness.opencode.pro_model", "harness"),
     ("harness.codex.idle_timeout", "harness"),
@@ -563,6 +564,24 @@ def test_every_pattern_family_declares_a_spec_and_resolves_its_members(conf_modu
     for miss in ("delegate.no_such_role.model", "harness.no_such.idle_timeout",
                  "diff_cap.huge", "test.windows.exe", "nope.nope"):
         assert conf_module.key_spec(miss) is None, miss
+
+
+def test_no_row_exists_that_nothing_reads(conf_module):
+    """어디서도 안 읽히는 칸은 레지스트리에 없다 — 화면에 서면 채워도 아무 일이 없다.
+
+    hard 티어는 `pm_delegate.TIERED_ROLES` 역할만 읽고(나머지 역할의 `--tier` 는 usage error),
+    안내 문서 모델 칸은 렌더 표(`pm_render._OPERATIONAL_CONF_KEYS`)에 토큰이 있는 도구만 읽는다.
+    """
+    tiered = conf_module._tiered_roles()
+    assert tiered == ("developer",), "티어 역할을 pm_delegate 에서 못 읽었다"
+    for role in conf_module._role_names():
+        for key in (f"delegate.{role}.hard.model", f"delegate.{role}.hard.fallback.harness"):
+            expected = conf_module.DELEGATE_ROLE_PATTERN if role in tiered else None
+            assert conf_module.pattern_for(key) == expected, key
+    rendered = conf_module._sibling_literal("pm_render.py", "_OPERATIONAL_CONF_KEYS").values()
+    for name in conf_module._harness_names():
+        key = f"harness.{name}.pro_model"
+        assert (conf_module.pattern_for(key) is not None) == (key in rendered), key
 
 
 def test_required_is_only_what_the_core_commands_cannot_run_without(conf_module):
@@ -633,10 +652,10 @@ def test_timeout_keys_declare_no_scalar_default_and_name_the_profile_table(conf_
                 "additional_reviewer.timeout", "additional_reviewer.idle_timeout"):
         spec = conf_module.key_spec(key)
         assert spec.default is None, key
-        # 설명은 화면에 그대로 나가는 사람 말이라 코드 식별자를 담지 않는다 — 대신 값을 지어내지
-        # 않았다는 사실(기본값 부재)과 "비우면 도구마다 정해진 기본값"이라는 안내를 잰다.
+        # 문구는 화면에 그대로 나가는 사람 말이라 코드 식별자를 담지 않는다 — 대신 값을 지어내지
+        # 않았다는 사실(기본값 부재)과 안 채웠을 때 "도구마다 정해진 기본 시간을 씀"을 잰다.
         # (`하네스` 는 내부 용어라 화면 문구에서 `도구` 로 바뀌었다 — 재는 사실은 그대로다.)
-        assert "도구마다" in spec.description, key
+        assert "도구마다" in spec.unset, key
 
 
 @pytest.mark.parametrize("values,missing", (
@@ -703,7 +722,7 @@ def keys_document() -> dict:
 
 def test_keys_json_carries_both_registries_split_by_kind(conf_module, keys_document):
     """실명 레지스트리와 패턴 레지스트리가 `kind` 로 갈려 **선언 순서 그대로** 실린다."""
-    assert keys_document["schema"] == conf_module.KEY_JSON_SCHEMA == 5
+    assert keys_document["schema"] == conf_module.KEY_JSON_SCHEMA == 6
     assert keys_document["groups"] == list(conf_module.KEY_GROUPS)
 
     named = [row for row in keys_document["keys"] if row["kind"] == "key"]
@@ -731,13 +750,12 @@ def test_pattern_members_take_the_registry_default_not_the_table_string(
 
     assert diff_cap["default"] is None                # 군 자체는 한 값을 갖지 않는다
     # `unset` 은 기본값이 있는 행에선 None 이다 — 안 채웠을 때의 답을 그 값이 이미 한다.
+    plain = {"choices": None, "recommended": None,
+             "unit": None, "governed_by": None, "readonly": False}
     assert diff_cap["members"] == [
-        {"key": "diff_cap.small", "default": "300", "unset": None,
-         "choices": None, "recommended": None},
-        {"key": "diff_cap.medium", "default": "1000", "unset": None,
-         "choices": None, "recommended": None},
-        {"key": "diff_cap.large", "default": "2500", "unset": None,
-         "choices": None, "recommended": None},
+        {"key": "diff_cap.small", "default": "300", "unset": None, **plain},
+        {"key": "diff_cap.medium", "default": "1000", "unset": None, **plain},
+        {"key": "diff_cap.large", "default": "2500", "unset": None, **plain},
     ]
     composed = conf_module._default_display(
         conf_module.DIFF_CAP_PATTERN, conf_module.PATTERN_REGISTRY[conf_module.DIFF_CAP_PATTERN])
@@ -757,10 +775,68 @@ def test_every_expanded_member_resolves_back_to_its_own_family(conf_module, keys
     families = {row["key"]: row for row in keys_document["keys"] if row["kind"] == "pattern"}
     expanded = [(family, member["key"])
                 for family, row in families.items() for member in row["members"]]
-    assert len(expanded) == 12 + 48 + 3, expanded    # 하네스 3×4 · 역할 4×4×3 · estimate 3
+    # 하네스 3×3 + opencode 모델 1 · 역할 (구현 4티어 + 나머지 3역할×2티어)×3 · estimate 3
+    assert len(expanded) == 10 + 30 + 3, expanded
     for family, key in expanded:
         assert conf_module.pattern_for(key) == family, key
         assert key not in conf_module.KEY_REGISTRY, key
+
+
+def test_every_row_carries_unit_switch_and_readonly(conf_module, keys_document):
+    """schema 6 축 셋이 모든 행에 있고, 선언과 소비자가 말하는 것과 같다."""
+    rows = _rows(keys_document)
+    assert rows and all({"unit", "governed_by", "readonly"} <= set(row) for row in rows)
+
+    # 세트 — 역할 묶음과 교차 검토 묶음만, 이름은 문서의 `units` 에 있다.
+    units = {row["unit"] for row in rows if row["unit"] is not None}
+    assert units == set(keys_document["units"])
+    reviewer = [row["key"] for row in rows if row["unit"] == conf_module._REVIEWER_UNIT]
+    assert reviewer == [f"additional_reviewer.{suffix}" for suffix in conf_module._ROLE_SUFFIXES]
+    assert keys_document["unit_fields"] == conf_module._ROLE_FIELD_LABELS
+
+    # 스위치 — 가리키는 키는 레지스트리에 있고 그 자신은 스위치에 묶이지 않는다.
+    switches = {row["governed_by"]["key"] for row in rows if row["governed_by"]}
+    assert switches == set(conf_module._MASTER_SWITCHES)
+    for key in switches:
+        assert key in conf_module.KEY_REGISTRY and conf_module.key_spec(key).governed_by is None
+    # 교차 검토 세트 멤버는 스위치가 아니라 세트 체크박스 하나로 켠다.
+    assert all(conf_module.key_spec(key).governed_by is None for key in reviewer)
+    # 작업 크기 상한은 작업을 마칠 때도 읽혀서 교차 검토 스위치에 묶이지 않는다.
+    assert all(row["governed_by"] is None for row in rows if row["key"].startswith("diff_cap."))
+
+    assert [row["key"] for row in rows if row["readonly"]] == [
+        "upstream.rev", "upstream.seen_rev"]
+
+
+def test_the_delegate_switch_on_values_are_the_engine_verdict(conf_module, keys_document):
+    """화면이 쓰는 켜짐 목록이 `pm_delegate._is_enabled` 판정과 같다 (목록 복제 0)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("pm_delegate_for_switch", TOOLS / "pm_delegate.py")
+    delegate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(delegate)
+    governor = next(row["governed_by"] for row in _rows(keys_document)
+                    if row["governed_by"] and row["governed_by"]["on"] is not None)
+
+    assert governor["key"] == delegate.DELEGATE_ENABLED_KEY
+    assert governor["on"] == list(delegate.DELEGATE_ENABLED_VALUES)
+    for value in governor["on"]:
+        assert delegate._is_enabled({governor["key"]: value.upper()})
+    for value in ("false", "0", "no", "off"):
+        assert not delegate._is_enabled({governor["key"]: value})
+        assert value not in governor["on"]
+
+
+def test_unset_says_what_happens_as_a_sentence(conf_module, keys_document):
+    """안 채웠을 때의 문구는 낱말이 아니라 일어나는 일이다 — 세트 멤버는 티어마다 다르다."""
+    rows = {row["key"]: row for row in _rows(keys_document)}
+    for key, row in rows.items():
+        assert (row["default"] is None) == (row["unset"] is not None), key
+    assert rows["delegate.developer.model"]["unset"] != rows["delegate.developer.hard.model"]["unset"]
+    assert rows["delegate.developer.fallback.model"]["unset"] == \
+        rows["delegate.developer.hard.fallback.model"]["unset"]
+    cells = [row for row in rows.values() if row["unit"] == "delegate.developer.hard"]
+    assert len({row["unset"] for row in cells}) == 1, "한 세트 안에서 문구가 갈린다"
 
 
 def test_families_without_a_code_owned_axis_expand_to_nothing(conf_module, keys_document):
@@ -839,7 +915,7 @@ def test_every_row_carries_the_choices_and_recommended_keys(keys_document):
     """모든 행의 모양이 같다 — 화면이 행마다 분기하지 않게 두 키를 항상 싣는다(없으면 null)."""
     rows = _rows(keys_document)
 
-    assert len(rows) == 28 + 5 + 12 + 48 + 3      # 실명 28 · 군 5 · 하네스 12 · 위임 48 · 상한 3
+    assert len(rows) == 28 + 5 + 10 + 30 + 3      # 실명 28 · 군 5 · 하네스 10 · 위임 30 · 상한 3
     for row in rows:
         assert "choices" in row and "recommended" in row, row["key"]
 
@@ -849,7 +925,7 @@ def test_harness_choices_are_the_relay_declaration_in_declaration_order(
     """하네스 선택지는 `pm_relay.HARNESS_CHOICES` 그대로다 — 순서까지 같다(복제 0)."""
     rows = _choice_rows(keys_document, "harness")
 
-    assert len(rows) == 1 + 16, [row["key"] for row in rows]   # 추가 리뷰어 1 · 역할×티어 16
+    assert len(rows) == 1 + 10, [row["key"] for row in rows]   # 추가 리뷰어 1 · 역할×티어 10
     for row in rows:
         assert row["choices"]["depends_on"] is None            # 하네스는 무엇에도 종속하지 않는다
         assert row["choices"]["values"] == {"": list(relay_module.HARNESS_CHOICES)}
@@ -865,7 +941,7 @@ def test_reasoning_choices_are_the_relay_allowed_sets_bucketed_by_harness(
                 for harness, values in relay_module.REASONING_ALLOWED.items()}
 
     assert expected and all(expected.values()), "허용집합이 비었다 — 파생이 조용히 강등됐다"
-    assert len(rows) == 1 + 16, [row["key"] for row in rows]
+    assert len(rows) == 1 + 10, [row["key"] for row in rows]
     for row in rows:
         values = row["choices"]["values"]
         assert {harness: set(listed) for harness, listed in values.items()} == expected
@@ -886,7 +962,7 @@ def test_reasoning_descriptions_point_at_the_owner_instead_of_copying_the_ladder
     pattern = re.compile(r"\b(" + "|".join(sorted(ladder, key=len, reverse=True)) + r")\b")
     keys = [row["key"] for row in _rows(keys_document)
             if row["key"].rsplit(".", 1)[-1] == "reasoning"]
-    assert len(keys) == 1 + 16, keys
+    assert len(keys) == 1 + 10, keys
 
     for key in keys:
         description = conf_module.key_spec(key).description
@@ -900,7 +976,7 @@ def test_model_rows_open_free_text_and_point_at_the_query_command(keys_document)
     """모델은 닫힌 목록이 없다 — 자유 입력 + 조회 명령(`delegate models`)을 함께 연다."""
     rows = _choice_rows(keys_document, "model")
 
-    assert len(rows) == 1 + 16, [row["key"] for row in rows]
+    assert len(rows) == 1 + 10, [row["key"] for row in rows]
     for row in rows:
         assert row["choices"]["values"] == {}                  # 박아 둔 목록 0
         assert row["choices"]["fetch"] == {"command": "delegate models", "arg": "harness"}
@@ -916,7 +992,7 @@ def test_every_dependent_choice_names_a_declared_sibling_key(conf_module, keys_d
     dependents = [row for row in _rows(keys_document)
                   if row["choices"] is not None and row["choices"]["depends_on"]]
 
-    assert len(dependents) == 2 * (1 + 16), [row["key"] for row in dependents]
+    assert len(dependents) == 2 * (1 + 10), [row["key"] for row in dependents]
     for row in dependents:
         depends_on = row["choices"]["depends_on"]
         assert depends_on == row["key"].rsplit(".", 1)[0] + ".harness"
@@ -972,7 +1048,7 @@ def test_recommended_values_are_inside_their_own_choices(conf_module, keys_docum
 def test_recommended_keys_are_real_role_and_tier_combinations(conf_module):
     """권장 표의 키는 `<role><tier>` 실조합이다 — 없는 역할·티어에 권장을 달지 않는다."""
     combinations = {f"{role}{tier}" for role in conf_module._role_names()
-                    for tier in conf_module._DELEGATE_TIERS}
+                    for tier in conf_module._role_tiers(role)}
 
     assert conf_module._role_names(), "역할 축을 못 읽었다 — 파생이 강등됐다"
     assert set(conf_module.DELEGATE_RECOMMENDED) <= combinations

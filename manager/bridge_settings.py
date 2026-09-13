@@ -103,7 +103,7 @@ class SettingsApi:
                 raise CallError(
                     "old-generation",
                     f"이 사본의 키 레지스트리는 schema {schema} 다 — 화면이 읽는 것은 "
-                    f"schema {expected}(선택지·권장값·안 채웠을 때의 상태)이니 먼저 갱신하라.",
+                    f"schema {expected}(선택지·권장값·안 채웠을 때 일어나는 일·한 세트 묶음·절 스위치)이니 먼저 갱신하라.",
                     stderr=completed.stderr, rc=completed.returncode)
             return document
         except CallError as exc:

@@ -71,3 +71,59 @@ describe("질문형 권장값", () => {
     expect(updates[kept.key]).toBeUndefined();
   });
 });
+
+/**
+ * Enter 만 눌러 끝까지 넘기며 물은 키(항목 제목의 툴팁)를 순서대로 모은다.
+ * 끝은 `onFinish` 가 불린 때다 — 단독 렌더는 끝나도 마지막 항목이 화면에 남는다.
+ */
+function askAll(finished: () => boolean): string[] {
+  const asked: string[] = [];
+  for (let step = 0; step <= ROWS.length && !finished(); step += 1) {
+    asked.push(screen.getByTestId("question-key").getAttribute("title")!);
+    fireEvent.keyDown(screen.getByTestId("question-mode").querySelector("input")!,
+                      { key: "Enter" });
+  }
+  expect(finished()).toBe(true);
+  return asked;
+}
+
+describe("질문형이 묻지 않는 항목", () => {
+  /** 켜짐 목록을 가진 스위치(위임 사용)와 그 스위치가 잠그는 항목 — 이름은 픽스처에서 꺼낸다. */
+  const GOVERNED = ROWS.filter((row) => row.governed_by?.on);
+  const MASTER = GOVERNED[0].governed_by!.key;
+
+  it("항목 제목은 사람 말 이름이고 키 문자열은 툴팁에만 있다", () => {
+    render(<QuestionMode rows={ROWS} values={{}} onFinish={vi.fn()} />);
+
+    expect(screen.getByTestId("question-key")).toHaveTextContent(ROWS[0].label);
+    expect(screen.getByTestId("question-key")).not.toHaveTextContent(ROWS[0].key);
+  });
+
+  it("스위치를 끄는 답을 하면 그 스위치가 잠그는 항목은 건너뛴다", () => {
+    const onFinish = vi.fn();
+    render(<QuestionMode rows={ROWS} values={{ [MASTER]: "false" }} onFinish={onFinish} />);
+
+    const asked = askAll(() => onFinish.mock.calls.length > 0);
+
+    expect(asked).toContain(MASTER);
+    expect(GOVERNED.filter((row) => asked.includes(row.key))).toEqual([]);
+    expect(onFinish).toHaveBeenCalledTimes(1);
+  });
+
+  it("스위치가 기본값(켜짐)이면 그 항목들을 묻는다", () => {
+    const onFinish = vi.fn();
+    render(<QuestionMode rows={ROWS} values={{}} onFinish={onFinish} />);
+
+    expect(askAll(() => onFinish.mock.calls.length > 0))
+      .toEqual(expect.arrayContaining(GOVERNED.map((row) => row.key)));
+  });
+
+  it("엔진이 적는 항목은 설정 탭의 질문형 목록에 없다", () => {
+    mountTab(makeBridge(), {});
+
+    const readonly = ROWS.filter((row) => row.readonly).map((row) => row.key);
+    expect(readonly.length).toBeGreaterThan(0);
+    const asked = askAll(() => screen.queryByTestId("question-mode") === null);
+    expect(asked.filter((key) => readonly.includes(key))).toEqual([]);
+  });
+});

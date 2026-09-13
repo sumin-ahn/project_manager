@@ -307,6 +307,9 @@ BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 HARNESS_CHOICES: tuple[str, ...] = ("claude", "codex", "opencode")
 ROLE_CHOICES: tuple[str, ...] = ("developer", "researcher", "architect", "code-reviewer")
 TIER_CHOICES: tuple[str, ...] = ("normal", "hard")
+# 티어(`--tier`·`delegate.<role>.hard.*`)를 갖는 역할 — 나머지 역할은 늘 normal 이다. 설정 키
+# 레지스트리(`local_conf`)도 이 표에서 hard 칸을 전개하므로 여기 말고 적는 자리가 없다.
+TIERED_ROLES: tuple[str, ...] = ("developer",)
 
 INTERNAL_REVIEW_ROLE = "code-reviewer"
 # 추가 리뷰어(additional_reviewer) 산출이 회수되는 역할. 하네스로 위임되는 역할이 아니라 엔진이
@@ -702,6 +705,8 @@ OPENCODE_STALL_MARKER = "[opencode 첫-이벤트 stall:"
 # 위임 마스터 스위치 키(per-clone·**기본 ON**). "PM 이 위임을 해도 되는가" 하나만 판정하며 채널
 # (native/cross)로 갈리지 않는다 — 호출을 별도 동의 축으로 게이트하지 않는다.
 DELEGATE_ENABLED_KEY = "delegate.enabled"
+# 켜진 것으로 치는 값(소문자·앞뒤 공백 제거 뒤) — 빈 값은 미설정이라 기본 ON 이다(`_is_enabled`).
+DELEGATE_ENABLED_VALUES: tuple[str, ...] = ("true", "1", "yes", "on")
 
 # 표면-flat legacy 시간 노브(하네스 무관·기존 채택자 설정 보존). 하네스별 키
 # `harness.<name>.wall_timeout`/`.idle_timeout` 이 설정돼 있으면 그쪽이 이긴다(더 구체적인 선언).
@@ -8508,7 +8513,7 @@ def _is_enabled(conf: dict[str, str]) -> bool:
     raw = conf.get(DELEGATE_ENABLED_KEY, "").strip().lower()
     if not raw:
         return True
-    return raw in ("true", "1", "yes", "on")
+    return raw in DELEGATE_ENABLED_VALUES
 
 
 # ── config 해소 (원자 tuple) ────────────────────────────────────────────
@@ -13335,7 +13340,7 @@ def _cmd_ticket(argv: list[str]) -> int:
                 parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
             if args.cluster and not _is_valid_cluster_id(args.cluster):
                 parser.error("--cluster는 board 클러스터 장부 id 형식이어야 합니다")
-            tier = args.tier if (args.role == "developer" and args.tier) else "normal"
+            tier = args.tier if (args.role in TIERED_ROLES and args.tier) else "normal"
             _reject_cross_role_prepare(args.role, tier, owner_conf)
             if args.reopen_ordinal is not None and args.reopen_ordinal < 1:
                 parser.error(
@@ -14754,7 +14759,7 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         ) from exc
     if resolved_cwd == resolved_cwd.parent:  # 파일시스템 루트(`/`·`C:\`)
         parser.error("--cwd 는 파일시스템 루트일 수 없다(작업공간 절대경로 요구·containment 우회 차단).")
-    if args.tier is not None and args.role != "developer":
+    if args.tier is not None and args.role not in TIERED_ROLES:
         parser.error("--tier 는 developer 전용이다(비-개발 역할 지정 = usage error·무시 아님).")
     if args.cluster is not None:
         if args.role != INTERNAL_REVIEW_ROLE:
@@ -15028,7 +15033,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
         args.gate if args.role == INTERNAL_REVIEW_ROLE else None
     )
 
-    tier = args.tier if (args.role == "developer" and args.tier) else "normal"
+    tier = args.tier if (args.role in TIERED_ROLES and args.tier) else "normal"
     profile_source = "cli-override" if (args.harness and args.model) else "local-conf"
 
     # --cwd는 실행 타깃뿐 아니라 config/board 소유자를 정하는 명시 입력이다. 먼저 git 루트를

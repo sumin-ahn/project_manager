@@ -390,20 +390,26 @@ class KeySpec:
     `None` 이고, 선택지는 **검증이 아니다**(harness·reasoning 은 닫힌 집합, model 은 자유 문자열).
     """
 
-    __slots__ = ("label", "description", "default", "required", "group", "choices", "unset")
+    __slots__ = ("label", "description", "default", "required", "group", "choices", "unset",
+                 "governed_by", "readonly")
 
     def __init__(self, label: str, description: str, *, default: str | None,
                  required: bool, group: str, choices: str | None = None,
-                 unset: str | None = None) -> None:
+                 unset: str | None = None, governed_by: str | None = None,
+                 readonly: bool = False) -> None:
         # `label` = 사람이 읽는 이름(명사구·키 문자열을 옮겨 적지 않는다), `description` = 그 값이
         # 무엇을 바꾸는지 한 줄. 둘 다 종결형 어미를 쓰지 않는다 — 설정 화면 문구의 단일 소유가
         # 여기이고, 화면은 받아 그리기만 한다.
-        # `unset` = 이 키를 **안 채웠을 때 실제로 적용되는 상태**를 한 낱말로(`위임 안 함`).
-        # 기본값이 있으면 그 값이 곧 답이라 None 이고, 없으면 반드시 채운다 — 아래 불변식이
-        # 강제한다. 설정 화면의 빈 칸을 없애려는 축이다: 모든 칸은 값이거나 상태다.
+        # `unset` = 이 키를 **안 채웠을 때 실제로 일어나는 일** 한 문장이다. 셋 중 하나로 쓴다:
+        # 다른 값을 씀(`운영체제 기본 파이썬을 씀`) · 그 기능이 돌지 않음(`교차 검토를 하지 않음`) ·
+        # 그 명령이 멈춤(`이 역할로 위임하면 설정이 없다며 멈춤`). 기본값이 있으면 그 값이 곧 답이라
+        # None 이고, 없으면 반드시 채운다 — 아래 불변식이 강제한다(설정 화면에 빈 칸이 없다).
+        # `governed_by` = 이 키를 쓰게 만드는 스위치 키(`_MASTER_SWITCHES`). 그 스위치가 꺼져
+        # 있으면 이 키는 아무 효과가 없고 화면은 칸을 잠근다.
+        # `readonly` = 엔진이 적는 키 — 사람이 고칠 자리가 아니다.
         if default is None and unset is None:
             raise TypeError(
-                f"{label}: 기본값이 없는 키는 `unset`(안 채웠을 때의 상태)을 반드시 선언한다 — "
+                f"{label}: 기본값이 없는 키는 `unset`(안 채웠을 때 일어나는 일)을 반드시 선언한다 — "
                 "빈 칸을 화면에 남기지 않는다")
         self.unset = unset
         self.label = label
@@ -412,6 +418,8 @@ class KeySpec:
         self.required = required
         self.group = group
         self.choices = choices
+        self.governed_by = governed_by
+        self.readonly = readonly
 
     def __repr__(self) -> str:                                   # 진단 표면(테스트 실패 메시지)
         return (f"KeySpec(label={self.label!r}, default={self.default!r}, "
@@ -480,51 +488,74 @@ GROUP_LABELS: dict[str, str] = {
 # 시간 예산 키의 기본은 **하네스별 표**라 한 칸에 담기지 않는다 — 설명이 정본의 자리를 말한다.
 _HARNESS_PROFILE_NOTE = "미설정이면 하네스 프로필(`pm_relay.HARNESS_PROFILES`)이 정본이다"
 
+# 절을 켜는 키 → 꺼져 있을 때 그 절의 나머지 칸에 붙는 한 줄. 켜짐 판정은 소비자 것이다:
+# 교차 검토 도구는 값이 있으면 켜짐(`additional_reviewer.resolve_reviewer_target`), 위임 사용은
+# 빈 값이면 기본 ON 이고 그 밖에는 `pm_delegate.DELEGATE_ENABLED_VALUES` 안이어야 켜짐이다.
+_MASTER_SWITCHES: dict[str, str] = {
+    "additional_reviewer.harness": "교차 검토 도구를 정해야 쓰임",
+    "delegate.enabled": "위임 사용이 켜져 있어야 쓰임",
+}
+
+# 도구·모델·생각 깊이를 한 세트로 읽는 교차 검토 묶음의 이름(`ADDITIONAL_REVIEWER_KEYS` 의 접두).
+_REVIEWER_UNIT = "additional_reviewer"
+
+# 기본 시간을 도구마다 따로 가진 키가 안 채워졌을 때.
+_TOOL_DEFAULT_TIME = "도구마다 정해진 기본 시간을 씀"
+# 안내 문서에 박히는 키가 안 채워졌을 때 — 출하 안내 문서는 설치 때 이미 값이 박혀 평소엔
+# 이 키를 다시 읽지 않는다. 그 자리가 남은 원본을 다시 그릴 때만 채우라며 멈춘다
+# (`pm_render._assert_no_leak`).
+_RENDER_ONLY_UNSET = "평소엔 영향 없음, 안내 문서를 다시 그릴 때 이 자리가 남아 있으면 채우라며 멈춤"
+
 KEY_REGISTRY: dict[str, KeySpec] = {
     "project.name": KeySpec(
         "프로젝트 이름",
         "안내 문서(CLAUDE.md 등)에 들어갈 이름",
-        default=None, unset="안내 문서 안 만듦", required=False, group="project"),
+        default=None, unset=_RENDER_ONLY_UNSET, required=False, group="project"),
     "project.tagline": KeySpec(
         "한 줄 소개",
         "안내 문서 첫머리에 들어갈 소개",
-        default=None, unset="안내 문서 안 만듦", required=False, group="project"),
+        default=None, unset=_RENDER_ONLY_UNSET, required=False, group="project"),
     "project.root": KeySpec(
         "기준 경로",
         "안내 문서에 적을 경로의 기준",
-        default=None, unset="안내 문서 안 만듦", required=False, group="project"),
+        default=None, unset=_RENDER_ONLY_UNSET, required=False, group="project"),
     "project.date": KeySpec(
         "기준 날짜",
         "안내 문서에 적을 날짜",
-        default=None, unset="안내 문서 안 만듦", required=False, group="project"),
+        default=None, unset=_RENDER_ONLY_UNSET, required=False, group="project"),
     "runtime.py": KeySpec(
         "파이썬 실행 파일",
         "엔진을 실행할 파이썬 (예: python3, Windows 는 py -3.12), 첫 설치 때 실행해 보고 채움",
-        default=None, unset="시스템 기본 파이썬", required=True, group="runtime"),
+        default=None, unset="운영체제 기본 파이썬(python3, Windows 는 py -3)을 씀",
+        required=True, group="runtime"),
     "test.cmd": KeySpec(
         "테스트 명령",
         "테스트를 돌릴 때 그대로 실행할 명령",
-        default=None, unset="테스트 안 함", required=True, group="runtime"),
+        default=None, unset="파이썬 기본 테스트 명령(python -m pytest tests/ -q)을 씀",
+        required=True, group="runtime"),
     "qa.platforms": KeySpec(
         "테스트할 운영체제 목록",
         "쉼표로 구분 (예: linux, windows), 적으면 운영체제마다 테스트 명령을 따로 정해야 하고 적은 순서대로 실행",
-        default=None, unset="테스트 명령 하나만", required=False, group="runtime"),
+        default=None, unset="운영체제 구분 없이 테스트 명령 하나만 돎", required=False, group="runtime"),
     "identity.user": KeySpec(
         "내 계정",
-        "작업 기록에 남길 이름, 비우면 git 설정의 이메일",
-        default=None, unset="git 설정의 이메일", required=False, group="identity"),
+        "작업 기록에 남길 이름",
+        default=None, unset="git 설정의 이메일을 씀, 그것도 없으면 이름 없이 기록",
+        required=False, group="identity"),
     "upstream.path": KeySpec(
         "원본 위치",
         "업데이트를 받아올 폴더 경로나 주소",
-        default=None, unset="업데이트 안 함", required=False, group="upstream"),
+        default=None, unset="받아올 곳이 없어 업데이트가 멈춤", required=False, group="upstream"),
     "upstream.rev": KeySpec(
         "마지막으로 받은 커밋",
-        "업데이트 차이를 재는 기준, 엔진이 자동으로 적음",
-        default=None, unset="자동 기록", required=False, group="upstream"),
+        "업데이트 차이를 재는 기준, 업데이트가 적음",
+        default=None, unset="아직 업데이트를 받은 적 없음", required=False, group="upstream",
+        readonly=True),
     "upstream.seen_rev": KeySpec(
         "마지막으로 확인한 커밋",
-        "원본에서 마지막으로 본 커밋, 엔진이 자동으로 적음",
-        default=None, unset="자동 기록", required=False, group="upstream"),
+        "원본에서 마지막으로 본 커밋, 업데이트가 적음",
+        default=None, unset="아직 원본을 확인한 적 없음", required=False, group="upstream",
+        readonly=True),
     "ctx.checkpoint_pct": KeySpec(
         "중간 기록 권고 (%)",
         "남은 컨텍스트가 이 비율 이하가 되면 중간 기록을 권함, 작업은 계속",
@@ -543,81 +574,92 @@ KEY_REGISTRY: dict[str, KeySpec] = {
         default="true", required=False, group="delegate"),
     "delegate.timeout": KeySpec(
         "위임 최대 실행 시간 (초)",
-        "이 시간을 넘으면 중단, 비우면 도구마다 정해진 기본값",
-        default=None, unset="도구 기본값", required=False, group="delegate"),
+        "이 시간을 넘으면 중단",
+        default=None, unset=_TOOL_DEFAULT_TIME, required=False, group="delegate",
+        governed_by="delegate.enabled"),
     "delegate.idle_timeout": KeySpec(
         "위임 응답 없을 때 대기 (초)",
-        "이만큼 출력이 없으면 멈춘 것으로 봄, 비우면 도구마다 정해진 기본값",
-        default=None, unset="도구 기본값", required=False, group="delegate"),
+        "이만큼 출력이 없으면 멈춘 것으로 봄",
+        default=None, unset=_TOOL_DEFAULT_TIME, required=False, group="delegate",
+        governed_by="delegate.enabled"),
     "delegate.code-reviewer.rounds_max": KeySpec(
         "검토 최대 횟수",
         "같은 작업을 다시 검토할 최대 횟수",
-        default="3", required=False, group="delegate"),
+        default="3", required=False, group="delegate", governed_by="delegate.enabled"),
     "additional_reviewer.harness": KeySpec(
         "교차 검토 도구",
-        "다른 모델로 한 번 더 볼 때 쓸 CLI 도구, 모델·생각 깊이와 함께 채움",
-        default=None, unset="교차 검토 안 함", required=False, group="additional_reviewer", choices="harness"),
+        "다른 모델로 한 번 더 검토할 때 쓸 도구, 모델과 함께 채움",
+        default=None, unset="교차 검토를 하지 않음", required=False, group="additional_reviewer",
+        choices="harness"),
     "additional_reviewer.model": KeySpec(
         "교차 검토 모델",
         "그 도구가 받는 표기 그대로",
-        default=None, unset="교차 검토 안 함", required=False, group="additional_reviewer", choices="model"),
+        default=None, unset="교차 검토를 하지 않음", required=False, group="additional_reviewer",
+        choices="model"),
     "additional_reviewer.reasoning": KeySpec(
         "교차 검토 생각 깊이",
         "고를 수 있는 값은 도구마다 다름",
-        default=None, unset="교차 검토 안 함", required=False, group="additional_reviewer", choices="reasoning"),
+        default=None, unset="교차 검토를 하지 않음", required=False, group="additional_reviewer",
+        choices="reasoning"),
     "additional_reviewer.rounds_max": KeySpec(
         "교차 검토 최대 횟수",
         "한 건을 다시 볼 최대 횟수",
-        default="2", required=False, group="additional_reviewer"),
+        default="2", required=False, group="additional_reviewer",
+        governed_by="additional_reviewer.harness"),
     "additional_reviewer.incomplete_rounds_max": KeySpec(
         "교차 검토 재시도 횟수",
         "결과 없이 끝난 호출을 다시 부를 최대 횟수",
-        default="2", required=False, group="additional_reviewer"),
+        default="2", required=False, group="additional_reviewer",
+        governed_by="additional_reviewer.harness"),
     "additional_reviewer.wave_budget": KeySpec(
         "교차 검토 세션당 총 횟수",
         "한 세션에서 쓸 수 있는 전체 호출 수",
-        default="24", required=False, group="additional_reviewer"),
+        default="24", required=False, group="additional_reviewer",
+        governed_by="additional_reviewer.harness"),
     "additional_reviewer.paths": KeySpec(
         "교차 검토할 폴더",
         "쉼표나 공백으로 구분한 경로 목록",
         default="src/,tests/,scripts/,.project_manager/tools/",
-        required=False, group="additional_reviewer"),
+        required=False, group="additional_reviewer", governed_by="additional_reviewer.harness"),
     "additional_reviewer.timeout": KeySpec(
         "교차 검토 최대 실행 시간 (초)",
-        "이 시간을 넘으면 중단, 비우면 도구마다 정해진 기본값",
-        default=None, unset="도구 기본값", required=False, group="additional_reviewer"),
+        "이 시간을 넘으면 중단",
+        default=None, unset=_TOOL_DEFAULT_TIME, required=False, group="additional_reviewer",
+        governed_by="additional_reviewer.harness"),
     "additional_reviewer.idle_timeout": KeySpec(
         "교차 검토 응답 없을 때 대기 (초)",
-        "이만큼 출력이 없으면 멈춘 것으로 봄, 비우면 도구마다 정해진 기본값",
-        default=None, unset="도구 기본값", required=False, group="additional_reviewer"),
+        "이만큼 출력이 없으면 멈춘 것으로 봄",
+        default=None, unset=_TOOL_DEFAULT_TIME, required=False, group="additional_reviewer",
+        governed_by="additional_reviewer.harness"),
     "additional_reviewer.progress_signal": KeySpec(
         "교차 검토 진행 출력 형식",
-        "그 도구가 진행 상황을 어떤 모양으로 내는지, 비우면 도구에 맞춰 자동",
-        default=None, unset="도구에 맞춰 자동", required=False, group="additional_reviewer",
-        choices="progress_signal"),
+        "그 도구가 진행 상황을 어떤 모양으로 내는지",
+        default=None, unset="도구에 맞춰 자동으로 고름", required=False, group="additional_reviewer",
+        choices="progress_signal", governed_by="additional_reviewer.harness"),
 }
 
 PATTERN_REGISTRY: dict[str, KeySpec] = {
     HARNESS_PATTERN: KeySpec(
         "도구마다 따로 정하는 값",
-        "실행 시간·대기 시간·컨텍스트 크기와 안내 문서에 적을 모델 이름, 비우면 그 도구의 기본값",
-        default=None, unset="도구 기본값", required=False, group="harness"),
+        "실행 시간·대기 시간·컨텍스트 크기와 안내 문서에 적을 모델 이름",
+        default=None, unset=_TOOL_DEFAULT_TIME, required=False, group="harness"),
     DELEGATE_ROLE_PATTERN: KeySpec(
         "역할별 담당 도구",
-        "역할마다 도구·모델·생각 깊이를 한 묶음으로, 어려운 작업용과 실패 시 대신 쓸 묶음을 따로 둘 수 있고 비운 칸은 보통 묶음을 따라가지 않음",
-        default=None, unset="위임 안 함", required=False, group="delegate"),
+        "역할마다 도구·모델·생각 깊이를 한 묶음으로 정함, 실패 시 대신 쓸 묶음을 따로 둘 수 있음 (어려운 작업용 묶음은 구현만)",
+        default=None, unset="이 역할로 위임하면 설정이 없다며 멈춤", required=False,
+        group="delegate", governed_by="delegate.enabled"),
     DELEGATE_ALIAS_PATTERN: KeySpec(
         "모델 별칭",
-        "모델 칸에 이 이름을 적으면 여기 정한 값으로 바꿔 씀",
-        default=None, unset="별칭 없음", required=False, group="delegate"),
+        "같은 모델의 다른 표기를 한 이름으로 묶음, 구현과 검토가 같은 모델인지 볼 때만 씀",
+        default=None, unset="표기가 다르면 다른 모델로 봄", required=False, group="delegate"),
     DIFF_CAP_PATTERN: KeySpec(
         "작업 크기별 변경 줄 수 상한",
-        "작업 크기마다 허용할 추가·삭제 줄 수 합계, 모르는 크기에는 제한을 두지 않음",
-        default=None, unset="제한 없음", required=False, group="additional_reviewer"),
+        "작업을 마칠 때와 교차 검토 전에 확인, 추가·삭제 줄 수 합계가 넘으면 멈춤, 모르는 크기에는 제한을 두지 않음",
+        default=None, unset="제한을 두지 않음", required=False, group="additional_reviewer"),
     PLATFORM_TEST_PATTERN: KeySpec(
         "운영체제별 테스트 명령",
         "위 '테스트할 운영체제 목록' 에 적은 이름마다 하나씩, 목록에 없는 이름은 모르는 항목으로 표시",
-        default=None, unset="그 운영체제는 테스트 안 함", required=False, group="runtime"),
+        default=None, unset="목록에 적은 운영체제면 테스트가 멈춤", required=False, group="runtime"),
 }
 
 # 기존 호출부(`unknown_keys`·`_matches_pattern`)가 그대로 도는 파생 튜플 — 레지스트리가 정본이다.
@@ -625,12 +667,21 @@ KNOWN_KEYS: tuple[str, ...] = tuple(KEY_REGISTRY)
 
 
 # `harness.<name>.*` 의 미설정 동작은 접미마다 다르다 — 시간 두 축은 하네스 프로필이 받고,
-# 대화 여유는 공용 기준값(`ctx.window_tokens`)으로 흘러가며, 모델 이름은 어댑터 렌더가 요구한다.
+# 컨텍스트 크기는 공용 기준값(`ctx.window_tokens`)으로 흘러가며, 모델 이름은 안내 문서 렌더가
+# 자리를 TODO 로 남긴다(`pm_render.neutralize_model_todo`).
 _HARNESS_MEMBER_UNSET: dict[str, str] = {
-    "idle_timeout": "도구 기본값",
-    "wall_timeout": "도구 기본값",
-    "ctx_window_tokens": "공통 컨텍스트 크기",
-    "pro_model": "안내 문서 안 만듦",
+    "idle_timeout": _TOOL_DEFAULT_TIME,
+    "wall_timeout": _TOOL_DEFAULT_TIME,
+    "ctx_window_tokens": "위 공통 컨텍스트 크기를 씀",
+    "pro_model": "안내 문서의 모델 자리를 TODO 로 남김",
+}
+
+# 역할 묶음이 안 채워졌을 때 — 티어마다 다르다(`pm_delegate.resolve_delegate`·`resolve_fallback`).
+_DELEGATE_TIER_UNSET: dict[str, str] = {
+    "": "이 역할로 위임하면 설정이 없다며 멈춤",
+    ".hard": "어려운 작업 위임이 멈춤, 보통 묶음으로 대신하지 않음",
+    ".fallback": "실패하면 대신 쓰지 않고 실패로 끝남",
+    ".hard.fallback": "실패하면 대신 쓰지 않고 실패로 끝남",
 }
 
 
@@ -650,10 +701,13 @@ def key_spec(key: str) -> KeySpec | None:
     if pattern == DELEGATE_ROLE_PATTERN:
         # 축이 멤버마다 다르다(harness/model/reasoning) — 군 한 칸에 담기지 않으므로 이 키의
         # 접미로 채워 준다(`_delegate_pattern_for` 가 그 접미를 `_ROLE_SUFFIXES` 로 이미 닫았다).
+        # 안 채웠을 때 일어나는 일은 티어마다 다르다(`_DELEGATE_TIER_UNSET`).
+        role, _, rest = key[len("delegate."):].partition(".")
+        tier = "." + rest.rpartition(".")[0] if "." in rest else ""
         return KeySpec(spec.label, spec.description,
                        default=spec.default, required=spec.required,
                        group=spec.group, choices=key.rsplit(".", 1)[1],
-                       unset=spec.unset)
+                       unset=_DELEGATE_TIER_UNSET[tier], governed_by=spec.governed_by)
     if pattern == HARNESS_PATTERN:
         suffix = key.rsplit(".", 1)[1]
         return KeySpec(spec.label, spec.description,
@@ -791,7 +845,12 @@ def render_key_table() -> str:
 # schema 5 = 4 + `group_labels`(절 이름) · `field_labels`(한 줄로 묶는 군의 칸 이름) · 하네스
 # 군의 `unit_labels` 전개 · 하네스가 키에 박힌 모델 칸의 조회 대상(`choices.fetch.value`). 화면에 영문 묶음 이름·같은 이름 12줄·
 # 손입력 모델 칸이 남지 않게 하려는 것이고, 셋 다 이름의 주인이 이 표라는 같은 규칙이다.
-KEY_JSON_SCHEMA = 5
+# schema 6 = 5 + 행마다 `unit`(도구·모델·생각 깊이를 한 세트로 읽는 묶음 이름)·`governed_by`(그 절을
+# 켜는 스위치와 꺼졌을 때의 한 줄)·`readonly`(엔진이 적는 키) · 문서에 `units`(묶음 이름)·
+# `unit_fields`(묶음 칸 이름). 역할 군의 `field_labels` 와 줄 이름 `unit_labels` 는 `units` 로
+# 옮겨 지웠고, `unset` 은 낱말이 아니라 안 채웠을 때 일어나는 일 한 문장이다. 없는 칸(설계·조사·
+# 검토의 어려운 작업용, opencode 밖의 안내 문서 모델)은 전개하지 않는다.
+KEY_JSON_SCHEMA = 6
 
 # 모델 목록을 불러오는 조회 명령 — 화면은 `arg` 이름의 플래그에 버킷 값을 실어 부른다
 # (`pm-config delegate models --harness <값> --json`). 명령 이름의 자리는 여기 하나다.
@@ -896,36 +955,27 @@ _HARNESS_SUFFIX_LABELS = {
 _ESTIMATE_LABELS = {"small": "작은 작업", "medium": "보통 작업", "large": "큰 작업"}
 
 
-def _pattern_field_labels(pattern: str) -> dict[str, str]:
-    """한 줄로 묶이는 군의 칸 이름 `<접미사> → 사람이 읽는 이름` (한 줄로 안 묶는 군은 빈 표)."""
-    return dict(_ROLE_FIELD_LABELS) if pattern == DELEGATE_ROLE_PATTERN else {}
-
-
 def _pattern_unit_labels(pattern: str) -> dict[str, str]:
-    """키군 안에서 줄·행마다 갈리는 이름 `<키> → 사람이 읽는 이름`. 안 갈리는 군은 빈 표다.
+    """키군 안에서 행마다 갈리는 이름 `<키> → 사람이 읽는 이름`. 안 갈리는 군은 빈 표다.
 
     군 선언의 이름 하나가 멤버 전부에 그대로 붙으면 같은 이름이 여러 줄에 서서 어느 줄이
     무엇인지 갈리지 않는다. 축을 이 모듈이 소유한 군만 여기서 갈라 준다 — 채택자가 이름을
     정하는 군(`test.<platform>`·`delegate.model_alias.<name>`)은 그 이름 자체가 이미 갈라
-    주므로 지어내지 않는다.
+    주므로 지어내지 않는다. 한 줄로 묶이는 역할 군의 줄 이름은 여기가 아니라 `_units_json` 이다.
 
-    `harness.<name>` 은 이름이 채택자 것이어도 **그 아래 네 칸은 엔진이 정한 닫힌 집합**이라
-    여기서 갈라 준다 — 안 갈라 주면 하네스마다 같은 군 이름이 네 줄씩 선다.
+    `harness.<name>` 은 이름이 채택자 것이어도 **그 아래 칸은 엔진이 정한 닫힌 집합**이라
+    여기서 갈라 준다 — 안 갈라 주면 하네스마다 같은 군 이름이 여러 줄씩 선다.
     """
-    if pattern == DELEGATE_ROLE_PATTERN:
-        return {f"delegate.{role}{tier}": f"{_ROLE_LABELS[role]}({_TIER_LABELS[tier]})"
-                for role in _role_names() for tier in _DELEGATE_TIERS}
     if pattern == HARNESS_PATTERN:
-        return {f"harness.{name}.{suffix}": f"{name} {label}"
-                for name in _harness_names()
-                for suffix, label in _HARNESS_SUFFIX_LABELS.items()}
+        return {f"harness.{name}.{suffix}": f"{name} {_HARNESS_SUFFIX_LABELS[suffix]}"
+                for name in _harness_names() for suffix in _harness_suffixes(name)}
     if pattern == DIFF_CAP_PATTERN:
         return {f"diff_cap.{name}": f"{PATTERN_REGISTRY[pattern].label} ({label})"
                 for name, label in _ESTIMATE_LABELS.items()}
     return {}
 
 
-def _pattern_members(pattern: str) -> list[dict[str, str | None]]:
+def _pattern_members(pattern: str) -> list[dict]:
     """패턴 키군의 전개된 실명과 각 기본값 — 축은 이 모듈이 이미 소유한 선언에서 온다.
 
     코드가 축을 갖지 않는 군은 빈 목록이다(지어내지 않는다): `test.<platform>.cmd` 의 축은 그
@@ -934,18 +984,62 @@ def _pattern_members(pattern: str) -> list[dict[str, str | None]]:
     """
     if pattern == HARNESS_PATTERN:
         keys = [f"harness.{name}.{suffix}"
-                for name in _harness_names() for suffix in _HARNESS_SUFFIXES]
+                for name in _harness_names() for suffix in _harness_suffixes(name)]
     elif pattern == DELEGATE_ROLE_PATTERN:
         keys = [f"delegate.{role}{tier}.{suffix}"
-                for role in _role_names() for tier in _DELEGATE_TIERS
+                for role in _role_names() for tier in _role_tiers(role)
                 for suffix in _ROLE_SUFFIXES]
     elif pattern == DIFF_CAP_PATTERN:
         keys = [f"diff_cap.{name}" for name in DIFF_CAP_DEFAULTS]
     else:
         keys = []
     return [{"key": key, "default": default_for(key), "unset": unset_for(key),
-             "choices": _choices_json(key), "recommended": recommended_for(key)}
+             "choices": _choices_json(key), "recommended": recommended_for(key),
+             **_row_axes(key)}
             for key in keys]
+
+
+def _row_axes(key: str) -> dict:
+    """행마다 싣는 schema 6 축 셋 — 묶음 이름·스위치·엔진이 적는 키인지."""
+    spec = key_spec(key)
+    return {"unit": unit_of(key), "governed_by": _governed_json(spec),
+            "readonly": spec is not None and spec.readonly}
+
+
+def unit_of(key: str) -> str | None:
+    """도구·모델·생각 깊이를 **한 세트로 읽는** 묶음이면 그 이름(키의 마지막 점 앞), 아니면 None.
+
+    세트는 통째로 읽힌다 — 역할 묶음은 `pm_delegate.resolve_delegate`, 교차 검토 묶음은
+    `additional_reviewer.resolve_reviewer_target` 이 셋 중 하나만 있어도 나머지를 요구한다. 그래서
+    화면은 이 묶음에 체크박스를 하나만 둔다(칸마다 두면 한 칸만 켠 반쪽 세트가 저장된다).
+    """
+    prefix, _, suffix = key.rpartition(".")
+    if suffix not in _ROLE_SUFFIXES:
+        return None
+    if prefix == _REVIEWER_UNIT or pattern_for(key) == DELEGATE_ROLE_PATTERN:
+        return prefix
+    return None
+
+
+def _units_json() -> dict[str, str]:
+    """묶음 이름 → 줄 이름 (화면이 `delegate.developer.hard` 같은 키를 이름으로 세우지 않게)."""
+    units = {f"delegate.{role}{tier}": f"{_ROLE_LABELS[role]}({_TIER_LABELS[tier]})"
+             for role in _role_names() for tier in _role_tiers(role)}
+    units[_REVIEWER_UNIT] = GROUP_LABELS[_REVIEWER_UNIT]
+    return units
+
+
+def _governed_json(spec: KeySpec | None) -> dict | None:
+    """그 절을 켜는 스위치 — `on` 은 켜진 것으로 치는 값 목록이고 None 이면 "값이 있으면 켜짐".
+
+    빈 값은 그 스위치의 기본값으로 읽는다(위임 사용은 기본 ON). 목록은 소비자 선언에서 읽는다.
+    """
+    if spec is None or spec.governed_by is None:
+        return None
+    master = spec.governed_by
+    on = (list(_sibling_sequence("pm_delegate.py", "DELEGATE_ENABLED_VALUES"))
+          if master == "delegate.enabled" else None)
+    return {"key": master, "on": on, "reason": _MASTER_SWITCHES[master]}
 
 
 def key_registry_json() -> dict:
@@ -958,8 +1052,8 @@ def key_registry_json() -> dict:
         {"key": key, "group": spec.group, "label": spec.label,
          "description": spec.description,
          "default": spec.default, "unset": spec.unset, "required": spec.required,
-         "kind": "key", "members": None, "unit_labels": {}, "field_labels": {},
-         "choices": _choices_json(key), "recommended": recommended_for(key)}
+         "kind": "key", "members": None, "unit_labels": {},
+         "choices": _choices_json(key), "recommended": recommended_for(key), **_row_axes(key)}
         for key, spec in KEY_REGISTRY.items()
     ]
     keys.extend(
@@ -968,12 +1062,13 @@ def key_registry_json() -> dict:
          "default": spec.default, "unset": spec.unset, "required": spec.required,
          "kind": "pattern", "members": _pattern_members(pattern),
          "unit_labels": _pattern_unit_labels(pattern),
-         "field_labels": _pattern_field_labels(pattern),
-         "choices": None, "recommended": None}
+         "choices": None, "recommended": None,
+         "unit": None, "governed_by": _governed_json(spec), "readonly": spec.readonly}
         for pattern, spec in PATTERN_REGISTRY.items()
     )
     return {"schema": KEY_JSON_SCHEMA, "groups": list(KEY_GROUPS),
             "group_labels": {group: GROUP_LABELS[group] for group in KEY_GROUPS},
+            "units": _units_json(), "unit_fields": dict(_ROLE_FIELD_LABELS),
             "keys": keys}
 
 
@@ -1262,7 +1357,7 @@ def pattern_for(key: str) -> str | None:
     if head == "harness":
         return HARNESS_PATTERN if (
             len(segments) == 3 and segments[1] in _harness_names()
-            and segments[2] in _HARNESS_SUFFIXES) else None
+            and segments[2] in _harness_suffixes(segments[1])) else None
     if head == "delegate":
         return _delegate_pattern_for(segments[1:])
     if head == "test":
@@ -1326,6 +1421,8 @@ def _delegate_pattern_for(rest: list[str]) -> str | None:
         return None
     tail = rest[1:]
     if tail and tail[0] == "hard":
+        if rest[0] not in _tiered_roles():
+            return None                         # 티어가 없는 역할의 hard 칸은 어디서도 안 읽힌다
         tail = tail[1:]
     if tail and tail[0] == "fallback":
         tail = tail[1:]
@@ -1336,6 +1433,30 @@ def _delegate_pattern_for(rest: list[str]) -> str | None:
 def _role_names() -> tuple[str, ...]:
     """역할 목록 — `pm_delegate.ROLE_CHOICES` 파생(못 읽으면 빈 목록 → 모양 판정 강등)."""
     return _sibling_sequence("pm_delegate.py", "ROLE_CHOICES")
+
+
+def _tiered_roles() -> tuple[str, ...]:
+    """hard 티어를 갖는 역할 — `pm_delegate.TIERED_ROLES` 파생."""
+    return _sibling_sequence("pm_delegate.py", "TIERED_ROLES")
+
+
+def _role_tiers(role: str) -> tuple[str, ...]:
+    """그 역할에 실제로 있는 티어 조합 (`_DELEGATE_TIERS` 표기) — 티어 없는 역할은 hard 를 뺀다."""
+    if role in _tiered_roles():
+        return _DELEGATE_TIERS
+    return tuple(tier for tier in _DELEGATE_TIERS if ".hard" not in tier)
+
+
+def _harness_suffixes(name: str) -> tuple[str, ...]:
+    """그 도구에서 실제로 읽히는 접미 — 안내 문서 모델 칸은 렌더가 그 도구 토큰을 가질 때만 있다.
+
+    모델 칸의 소비자는 안내 문서 렌더 하나다(`pm_render._OPERATIONAL_CONF_KEYS`). 그 표에 없는
+    도구의 모델 칸은 적어도 어디서도 읽히지 않는다.
+    """
+    rendered = _sibling_literal("pm_render.py", "_OPERATIONAL_CONF_KEYS")
+    rendered_keys = set(rendered.values()) if isinstance(rendered, dict) else set()
+    return tuple(suffix for suffix in _HARNESS_SUFFIXES
+                 if suffix != "pro_model" or f"harness.{name}.pro_model" in rendered_keys)
 
 
 def _harness_names() -> tuple[str, ...]:

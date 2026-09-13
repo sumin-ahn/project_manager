@@ -1,5 +1,5 @@
 {
-  "note": "설정 행 접기 판정 — 화면(SettingsTab.tsx)과 파이썬 테스트(tests/test_manager_settings_rule.py)가 같은 이 파일을 읽는다. 네 축이 전부 참인 행만 접힌다: 값 없음(fold.value) · 필수 아님(fold.required) · 기본값 없음(fold.default) · 배지 없음(fold.marks 목록 어디에도 그 키가 없음). 접힘은 숨김이 아니다 — 그룹 끝의 '설정 안 함 N개'를 펼치면 같은 행이 그대로 나온다. row_unit_family 는 칸을 한 줄로 묶어 접는 키군 이름이고(위임: 역할×티어 한 줄), 그 행은 세 칸이 모두 접힐 때만 접힌다. 값은 엔진 레지스트리에 실재하는 패턴 키 이름이어야 한다(테스트가 실 산출과 대조). unset 은 '직접 정함' 체크박스가 꺼진 칸의 표기다 — 칸에는 엔진이 준 값(default)이나 안 채웠을 때의 상태(unset)가 회색으로 서고 옆에 mark 가 붙는다. 둘 중 하나는 엔진이 항상 주므로(키 레지스트리 schema 5 불변식) 빈 칸이 생기지 않는다. 끈다고 local.conf 줄을 지우지 않는다 — 저장은 켜져 있고 실제로 고친 칸만 쓴다.",
+  "note": "설정 행 접기 판정 — 화면(SettingsTab.tsx)과 파이썬 테스트(tests/test_manager_settings_rule.py)가 같은 이 파일을 읽는다. 네 축이 전부 참인 행만 접힌다: 값 없음(fold.value) · 필수 아님(fold.required) · 기본값 없음(fold.default) · 배지 없음(fold.marks 목록 어디에도 그 키가 없음). 접힘은 숨김이 아니다 — 그룹 끝의 '설정 안 함 N개'를 펼치면 같은 행이 그대로 나온다. 한 줄로 묶는 행은 엔진이 행마다 준 unit(도구·모델·생각 깊이를 한 세트로 읽는 묶음)에서 나오고, 그 줄은 칸이 모두 접힐 때만 접힌다. unset 은 '직접 정함' 체크박스가 꺼진 칸의 표기다 — 칸 대신 '안 정하면: ' 뒤에 기본값(default 앞에 unset.default)이나 엔진이 준 문장(안 채웠을 때 일어나는 일)이 회색으로 선다. 둘 중 하나는 엔진이 항상 준다(키 레지스트리 schema 6 불변식). 체크박스를 끄면 저장이 local.conf 에서 그 줄을 지운다 — 빈 값을 적지 않는다(값이 있는 줄은 빈 값이어도 '설정함'으로 읽히는 키가 있다).",
   "fold": {
     "value": "",
     "required": false,
@@ -11,9 +11,10 @@
       "missing_for_latest"
     ]
   },
-  "row_unit_family": "delegate.<role>[.hard][.fallback].{harness,model,reasoning}",
   "unset": {
-    "mark": "안 씀",
-    "toggle": "직접 정함"
+    "lead": "안 정하면",
+    "default": "기본값",
+    "toggle": "직접 정함",
+    "pick": "고르세요"
   }
 }

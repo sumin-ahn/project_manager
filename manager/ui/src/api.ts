@@ -103,16 +103,29 @@ export type ConfKeyRow = {
   label: string;
   description: string;
   unit_labels: Record<string, string>;
-  /** 한 줄로 묶는 키군의 칸 이름 `<접미사> → 사람이 읽는 이름` (그 밖의 행은 빈 표). */
-  field_labels: Record<string, string>;
   default: string | null;
-  /** 안 채웠을 때 실제로 적용되는 상태 한 낱말 — 기본값이 있으면 null(그 값이 답이다). */
+  /** 안 채웠을 때 일어나는 일 한 문장 — 기본값이 있으면 null(그 값이 답이다). */
   unset: string | null;
   required: boolean;
   kind: "key" | "pattern";
   choices: ConfChoices | null;
   recommended: string | null;
   members: ConfKeyMember[] | null;
+} & ConfRowAxes;
+
+/**
+ * 그 절을 켜는 스위치 — 꺼져 있으면 이 행은 아무 효과가 없다.
+ * `on` 은 켜진 것으로 치는 값이고 null 이면 "값이 있으면 켜짐"이다.
+ */
+export type ConfGovernor = { key: string; on: string[] | null; reason: string };
+
+/** 행마다 붙는 축 셋 (schema 6). */
+export type ConfRowAxes = {
+  /** 도구·모델·생각 깊이를 한 세트로 읽는 묶음 이름 — 체크박스가 하나다. */
+  unit: string | null;
+  governed_by: ConfGovernor | null;
+  /** 엔진이 적는 키 — 고칠 자리가 없다. */
+  readonly: boolean;
 };
 
 /** 패턴 키군에서 전개된 실명 한 행 — 선택지·권장값을 각자 든다. */
@@ -122,13 +135,17 @@ export type ConfKeyMember = {
   unset: string | null;
   choices: ConfChoices | null;
   recommended: string | null;
-};
+} & ConfRowAxes;
 
 export type ConfKeysDocument = {
   schema: number;
   groups: string[];
   /** 절 이름의 사람 말 — 묶음 id 는 코드 좌표라 화면에 그대로 세우지 않는다. */
   group_labels: Record<string, string>;
+  /** 묶음 이름 → 줄 이름. */
+  units: Record<string, string>;
+  /** 묶음 칸 이름 `<접미사> → 사람이 읽는 이름`. */
+  unit_fields: Record<string, string>;
   keys: ConfKeyRow[];
 };
 /** 값 파일 그대로 — 판정(다섯 목록)은 가벼운 현황 조회의 `conf` 절이 나른다(조회 1회). */
@@ -216,7 +233,8 @@ export type Bridge = {
   pick_folder(): Promise<{ path: string | null } | ErrorResponse>;
   conf_keys(path: string): Promise<ConfKeysDocument | ErrorResponse>;
   conf_values(path: string): Promise<ConfValuesDocument | ErrorResponse>;
-  conf_save(path: string, updates: Record<string, string>):
+  /** 값 null 은 그 줄을 지운다(엔진 conf writer 의 삭제). */
+  conf_save(path: string, updates: Record<string, string | null>):
     Promise<ConfSaveResult | ErrorResponse>;
   conf_reset(path: string, key: string): Promise<ConfSaveResult | ErrorResponse>;
   delegate_models(path: string, harness: string):
