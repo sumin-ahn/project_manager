@@ -465,7 +465,8 @@ describe("위임 절", () => {
     const select = await screen.findByLabelText(MODEL_CELL.key);
     expect([...(select as HTMLSelectElement).querySelectorAll("option")]
       .map((option) => option.value)).toEqual(["", ...MODELS, "직접 입력"]);
-    expect(screen.getByTestId(`conf-${MODEL_CELL.key}`)).toHaveTextContent("alias");
+    // 목록 원천의 종류(엔진 낱말)는 화면에 세우지 않는다 — 고르는 사람에게 쓸모가 없다.
+    expect(screen.getByTestId(`conf-${MODEL_CELL.key}`)).not.toHaveTextContent("alias");
   });
 
   it("모델 목록 조회 실패는 사본의 사유를 그대로 보인다", async () => {

@@ -244,9 +244,6 @@ function ValueField({ row, value, options, dependsValue, dependsLabel, fetched, 
         {listed(items).map((item) => <option key={item} value={item}>{item}</option>)}
         {fetched !== null && <option value={MANUAL_OPTION}>{MANUAL_OPTION}</option>}
       </select>
-      {fetched !== null && (
-        <span className="whitespace-nowrap text-[11px] text-slate-500">{fetched.kind}</span>
-      )}
       {hint && <span className="truncate text-[11px] text-slate-500">{hint}</span>}
     </span>
   );
@@ -689,7 +686,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
                 {section.group === upstreamGroup && (
                   <div className="mt-3 border-t border-slate-200 pt-2">
                     <p className="text-[11px] text-slate-500">
-                      {labelOfKey(UPSTREAM_PATH_KEY)} 는 실제로 받아올 수 있는지 확인한 뒤에 적는다.
+                      {labelOfKey(UPSTREAM_PATH_KEY)}: 실제로 받아올 수 있는지 확인한 뒤에 적는다.
                     </p>
                     <div className="flex items-center gap-1">
                       <input aria-label={labelOfKey(UPSTREAM_PATH_KEY)}
