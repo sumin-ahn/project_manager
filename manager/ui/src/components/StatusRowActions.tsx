@@ -24,11 +24,20 @@ import ConfirmDialog from "./ConfirmDialog";
 const BUTTON = "rounded border border-slate-200 px-2 py-0.5 disabled:opacity-40";
 const FIELD = "w-24 rounded border border-slate-200 px-1 font-mono text-[11px]";
 const SELECT = "rounded border border-slate-200 px-1 text-[11px]";
+/**
+ * 슬롯을 잡은 쪽 — task 로 연 슬롯은 task 이름, 슬롯 세션(`<repo>_<N>`)은 세션 이름이다.
+ * task 로 연 슬롯도 엔진 JSON 의 `session` 에 task 이름이 들어오므로 `task` 를 먼저 본다.
+ */
+export function holderLabel(row: SlotRow): string | null {
+  if (row.task) return `task ${row.task}`;
+  return row.session ? `세션 ${row.session}` : null;
+}
+
 /** 비활성 사유 한 줄 — 값은 엔진 JSON 에서 오고 문장만 화면 것이다. */
 export function disabledReason(row: SlotRow | TaskRow, verdict: DotVerdict): string | null {
   if (verdict.actions !== "disabled") return null;
-  const holder = "slot" in row ? row.session ?? row.slot : row.name;
-  return `세션 ${holder} 이 잡고 있음`;
+  const holder = "slot" in row ? holderLabel(row) ?? row.slot : `task ${row.name}`;
+  return `${holder} 사용 중`;
 }
 
 function Reason({ reason }: { reason: string | null }) {

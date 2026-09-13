@@ -74,7 +74,7 @@ describe("아이들 규칙", () => {
     const { run } = renderRow(slotOf("."));
 
     expect(screen.getByTestId("release-.")).toBeDisabled();
-    expect(screen.getByTestId("row-reason")).toHaveTextContent("세션 proj1_1 이 잡고 있음");
+    expect(screen.getByTestId("row-reason")).toHaveTextContent("세션 proj1_1 사용 중");
     fireEvent.click(screen.getByTestId("release-."));
 
     expect(run).not.toHaveBeenCalled();
@@ -116,7 +116,16 @@ describe("아이들 규칙", () => {
 
     expect(screen.getByTestId("release-work/app_2")).toBeDisabled();
     expect(screen.queryByLabelText("work/app_2 반납 task")).toBeNull();
-    expect(screen.getByTestId("row-reason")).toHaveTextContent("세션 proj1_2 이 잡고 있음");
+    expect(screen.getByTestId("row-reason")).toHaveTextContent("세션 proj1_2 사용 중");
+  });
+
+  it("task 로 연 슬롯은 사유가 task 이름이다 — 엔진이 session 에도 task 이름을 싣는다", () => {
+    // ② 실산출 형태: task 모드로 대여한 슬롯은 `session` 과 `task` 가 같은 이름이다.
+    const held = { ...slotOf("work/app_2"), session: "hermes", task: "hermes" };
+    renderRow(held);
+
+    expect(screen.getByTestId("row-reason")).toHaveTextContent("task hermes 사용 중");
+    expect(screen.getByTestId("row-reason")).not.toHaveTextContent("세션");
   });
 
   it("판정표가 change 라고 한 행은 반납이 열린다 — 아이들과 닫힘 둘 다", async () => {
@@ -151,7 +160,7 @@ describe("아이들 규칙", () => {
 
     expect(screen.getByTestId("prefix-live")).toBeDisabled();
     expect(screen.getByTestId("end-live")).toBeDisabled();
-    expect(screen.getByTestId("row-reason")).toHaveTextContent("세션 live 이 잡고 있음");
+    expect(screen.getByTestId("row-reason")).toHaveTextContent("task live 사용 중");
   });
 });
 

@@ -1,7 +1,7 @@
 import type { Entry } from "../App";
 import { rowDot } from "../lib/status";
 import StatusDot from "../components/StatusDot";
-import StatusRowActions, { SlotTableAllocate } from "../components/StatusRowActions";
+import StatusRowActions, { holderLabel, SlotTableAllocate } from "../components/StatusRowActions";
 
 /**
  * 기계 기록 한 줄 — 판정(`status`) · 수집 수 · 시각. 값은 엔진 sidecar 그대로 고르고 여기서
@@ -109,7 +109,7 @@ export default function StatusTab({ light, heavy }:
                     {verdict.label}
                   </td>
                   <td className="py-0.5 font-mono text-[11px] text-slate-500">
-                    {slot.session ?? "세션 없음"}{slot.branch ? ` · ${slot.branch}` : ""}
+                    {holderLabel(slot) ?? "비어 있음"}{slot.branch ? ` · ${slot.branch}` : ""}
                     {slot.head ? ` @${slot.head.slice(0, 8)}` : ""}
                   </td>
                   <td className="py-0.5 text-right"><StatusRowActions row={slot} /></td>
