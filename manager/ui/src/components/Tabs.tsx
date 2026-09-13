@@ -15,10 +15,11 @@ const TRIGGER =
 const QUESTION_TAB = "settings";
 
 /** 가운데 칸 탭 넷 — 현황 탭의 읽기 부분, 설정 탭, 구성 탭, 갱신 탭. */
-export default function Tabs({ bridge, path, light, heavy, settings, latestTag, onOpenUpdate,
-                              onApplied, onChanged, onReloadSettings, startAsking }:
+export default function Tabs({ bridge, path, light, heavy, remote, settings, latestTag,
+                              onOpenUpdate, onApplied, onChanged, onReloadSettings, startAsking }:
   { bridge: Bridge; path: string | null; light: Entry | undefined;
-    heavy: Entry | undefined; settings: SettingsEntry | undefined; latestTag: string | null;
+    heavy: Entry | undefined; remote: Entry | undefined;
+    settings: SettingsEntry | undefined; latestTag: string | null;
     onOpenUpdate: () => void; onApplied: () => void; onChanged: () => void;
     onReloadSettings: () => void; startAsking: boolean }) {
   const [tab, setTab] = useState("status");
@@ -50,7 +51,7 @@ export default function Tabs({ bridge, path, light, heavy, settings, latestTag, 
       </RadixTabs.List>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <ProjectRunContext.Provider value={run}>
-          <RadixTabs.Content value="status"><StatusTab light={light} heavy={heavy} /></RadixTabs.Content>
+          <RadixTabs.Content value="status"><StatusTab light={light} heavy={heavy} remote={remote} /></RadixTabs.Content>
           <RadixTabs.Content value="settings">
             <SettingsTab bridge={bridge} path={path} light={light} settings={settings}
                          onReload={onReloadSettings} startAsking={startAsking}

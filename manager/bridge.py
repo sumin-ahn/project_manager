@@ -48,9 +48,11 @@ class BaseApi:
             return exc.as_error_dict()
 
     # ── 프로젝트 사본 조회 ────────────────────────────────────────────────
-    def status(self, path: str, with_board: bool = False, with_adapters: bool = False) -> dict:
+    def status(self, path: str, with_board: bool = False, with_adapters: bool = False,
+               with_remote: bool = False) -> dict:
         try:
-            return runner.status(path, with_board=with_board, with_adapters=with_adapters)
+            return runner.status(path, with_board=with_board, with_adapters=with_adapters,
+                                 with_remote=with_remote)
         except CallError as exc:
             return exc.as_error_dict()
 

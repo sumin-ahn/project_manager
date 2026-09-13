@@ -66,8 +66,8 @@ def upstream(pm_home: Path | str) -> str | None:
     return value
 
 
-def status(pm_home: Path | str, *, with_board: bool = False,
-           with_adapters: bool = False, source: Path | str | None = None) -> dict:
+def status(pm_home: Path | str, *, with_board: bool = False, with_adapters: bool = False,
+           with_remote: bool = False, source: Path | str | None = None) -> dict:
     """그 사본의 `pm-config status --json` 산출. 실패는 `CallError` 로 올린다."""
     # cwd 를 그 홈으로 옮겨 부르므로 경로를 먼저 절대화한다 — 상대 경로를 그대로 쓰면 자식이
     # 새 cwd 기준으로 다시 풀어 엉뚱한 자리를 가리킨다(실측: 경로가 두 번 붙는다).
@@ -80,9 +80,12 @@ def status(pm_home: Path | str, *, with_board: bool = False,
         argv.append("--with-board")
     if with_adapters:
         argv.append("--with-adapters")
+    if with_remote:
+        argv.append("--with-remote")          # repo 마다 원격 HEAD 브랜치를 fetch 한다(네트워크)
     if source is not None:
         argv += ["--from", str(source)]
-    timeout = HEAVY_TIMEOUT_SECONDS if (with_board or with_adapters) else LIGHT_TIMEOUT_SECONDS
+    timeout = (HEAVY_TIMEOUT_SECONDS if (with_board or with_adapters or with_remote)
+               else LIGHT_TIMEOUT_SECONDS)
     try:
         completed = subprocess.run(
             argv, cwd=str(home), capture_output=True, text=True, encoding="utf-8",

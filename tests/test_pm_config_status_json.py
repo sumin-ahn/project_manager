@@ -219,9 +219,63 @@ def test_status_json_light_sections_from_real_ledger(home, pc, wp):
     }]
     assert document["harnesses"] == ["claude"]
     assert document["repos"] == [{
-        "repo": "app", "prefix": None, "base": "trunk", "protected": "main",
-        "test_cmd": "pytest -q", "area_owner": "me",
+        "repo": "app", "prefix": None, "git": "git@example.invalid:app.git", "base": "trunk",
+        "protected": "main", "test_cmd": "pytest -q", "area_owner": "me",
     }]
+    assert row["remote"] is None                  # 네트워크 절은 `--with-remote` 로 부를 때만
+
+
+_AREAS_TABLE = (
+    "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
+    "|---|---|---|---|---|---|---|---|\n"
+    "| app |  | git@example.invalid:app.git |  | me | trunk |  | me |\n")
+
+
+def test_status_json_repos_reads_the_registry_inside_a_separate_board(home):
+    """보드가 별도 저장소인 홈은 레지스트리가 `board/areas.md` 다 — 고정 경로로 읽으면 빈 목록이었다."""
+    (home / ".project_manager" / "board" / "tickets").mkdir(parents=True)
+    _write(home / ".project_manager" / "board" / "areas.md", _AREAS_TABLE)
+    _ledger(home, [])
+
+    repos = _status_json(home)["repos"]
+
+    assert [(row["repo"], row["git"]) for row in repos] == [("app", "git@example.invalid:app.git")]
+
+
+@_git_required
+def test_status_json_with_remote_counts_each_slot_against_the_origin_head(home):
+    """`--with-remote` — origin 기본 브랜치를 fetch 해 슬롯마다 앞/뒤 커밋 수와 origin 주소를 싣는다."""
+    slot = _make_slot(home, "app", 1, "feat/x")
+    _ledger(home, [{"slot": slot, "repo": "app", "session": "", "started": "s",
+                    "state": "idle", "test_cmd": None}])
+    origin = home / ".origin"
+    _write(origin / "UPSTREAM.md", "upstream\n")
+    _git(origin, "add", "UPSTREAM.md")
+    _git(origin, "commit", "-q", "-m", "upstream")          # 원격 HEAD 가 한 커밋 앞선다
+    _write(home / slot / "LOCAL.md", "local\n")
+    _git(home / slot, "add", "LOCAL.md")
+    _git(home / slot, "commit", "-q", "-m", "local")        # 슬롯이 한 커밋 앞선다
+
+    remote = _status_json(home, "--with-remote")["slots"][0]["remote"]
+
+    assert remote == {
+        "url": str(origin), "head_branch": "trunk",
+        "head": _git(origin, "rev-parse", "HEAD").stdout.strip(), "ahead": 1, "behind": 1,
+    }
+
+
+@_git_required
+def test_status_json_with_remote_stops_without_a_partial_document(home):
+    """원격에 닿지 못하면 빈 값으로 접지 않고 rc 1 · 표준 출력 없음이다."""
+    slot = _make_slot(home, "app", 1, "feat/x")
+    _ledger(home, [{"slot": slot, "repo": "app", "session": "", "started": "s",
+                    "state": "idle", "test_cmd": None}])
+    shutil.rmtree(home / ".origin")
+
+    done = _run_cli(home, "status", "--json", "--with-remote")
+
+    assert done.returncode == 1 and done.stdout.strip() == ""
+    assert "원격 대조 실패" in done.stderr
 
 
 @_git_required

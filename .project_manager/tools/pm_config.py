@@ -474,8 +474,14 @@ def _areas_rows() -> list[dict[str, str]]:
     (정체성 posture)와 기계 조회(`status --json` 의 `repos`)가 이 파서 하나를 공유한다 — 같은
     파일을 두 번 파싱하지 않는다. 구분선(`|---|`)은 건너뛰고 첫 table row 를 헤더로 본다.
     파일 부재·읽기 실패·손상 UTF-8 은 빈 목록(fail-soft — 조회가 크래시하지 않는다).
+
+    자리는 `board.areas_file` 과 같은 판정이다 — 보드가 별도 저장소(`.project_manager/board/tickets`
+    실재)면 그 안, 아니면 `.project_manager/areas.md`. 고정 경로로 읽던 때는 보드 분리 홈에서
+    `repos` 가 늘 빈 목록이었다.
     """
-    areas_file = REPO / ".project_manager" / "areas.md"
+    board_dir = REPO / ".project_manager" / "board"
+    areas_file = (board_dir / "areas.md" if (board_dir / "tickets").is_dir()
+                  else REPO / ".project_manager" / "areas.md")
     try:
         lines = _load_file_lock().read_text_shared(areas_file, encoding="utf-8").splitlines()
     except (OSError, UnicodeError):
@@ -2048,9 +2054,9 @@ def cmd_repo_protected(
     return 0
 
 
-# `repo list` 표 칼럼 — areas.md 레지스트리에서 *PM 이 실제로 조정하는* 값만 고른 뷰
-# (git URL·owner 는 등록 시점 메타라 제외). 헤더 라벨 = areas.md 칼럼명 그대로.
-_REPO_LIST_COLUMNS = ("repo", "prefix", "base", "protected", "test_cmd", "area_owner")
+# `repo list` 표 칼럼 — areas.md 레지스트리에서 PM 이 조정하는 값 + 그 repo 가 어느 원격에
+# 붙어 있는지(`git`). owner 는 등록 시점 메타라 제외. 헤더 라벨 = areas.md 칼럼명 그대로.
+_REPO_LIST_COLUMNS = ("repo", "prefix", "git", "base", "protected", "test_cmd", "area_owner")
 
 
 def _display_width(text: str) -> int:
@@ -2393,8 +2399,63 @@ def _write_machine_line(text: str) -> None:
     console_encoding.write_machine_line(text)
 
 
-def _status_json_slots(wp, leases, task_names: set) -> list[dict]:
+class RemoteCheckError(RuntimeError):
+    """`--with-remote` 의 원격 대조를 끝내지 못했다 — 반쪽 대조를 싣지 않고 조회를 멈춘다."""
+
+
+def _git_ok(git_runner: GitRunner, argv: list, what: str) -> str:
+    """git 한 번 — rc≠0 이면 무엇을 하다 실패했는지 말하며 멈춘다."""
+    rc, out = git_runner(argv)
+    if rc != 0:
+        raise RemoteCheckError(f"{what} 실패 (rc={rc}): {out.strip()[:300]}")
+    return out.strip()
+
+
+def _status_json_remote(wp, leases, git_runner: GitRunner) -> dict[str, dict]:
+    """슬롯별 원격 대조 — origin 기본 브랜치(원격 HEAD) 끝과 슬롯 커밋의 앞/뒤 커밋 수.
+
+    repo 마다 원격 HEAD 가 가리키는 브랜치를 묻고(`ls-remote --symref`) 그 브랜치 하나만
+    `refs/remotes/origin/<브랜치>` 로 fetch 한다(repo 당 1회 — 슬롯들이 git 저장소를 공유한다).
+    원격 추적 ref 를 명시해 받으므로 저장소의 fetch 설정과 무관하게 같은 ref 를 비교한다.
+    슬롯마다 실제 origin 주소(`remote get-url`)와 `rev-list --left-right --count` 를 싣는다 —
+    `ahead` = 슬롯에만 있는 커밋 수, `behind` = 원격 HEAD 에만 있는 커밋 수. 둘 다 0 이면 같은 커밋이다.
+    하나라도 실패하면 `RemoteCheckError` 다(네트워크·인증·origin 부재를 빈 값으로 접지 않는다).
+    """
+    heads: dict[str, tuple[str, str]] = {}
+    rows: dict[str, dict] = {}
+    for lease in leases:
+        path = str(wp.slot_path(lease.slot))
+        if lease.repo not in heads:
+            listed = _git_ok(git_runner, ["-C", path, "ls-remote", "--symref", "origin", "HEAD"],
+                             f"{lease.slot}: 원격 HEAD 조회")
+            first = listed.splitlines()[0] if listed else ""
+            if not first.startswith("ref: refs/heads/"):
+                raise RemoteCheckError(f"{lease.slot}: 원격 HEAD 가 브랜치를 가리키지 않는다: {listed!r}")
+            branch = first[len("ref: refs/heads/"):].split("\t", 1)[0]
+            tracking = f"refs/remotes/origin/{branch}"
+            _git_ok(git_runner, ["-C", path, "fetch", "origin", f"+refs/heads/{branch}:{tracking}"],
+                    f"{lease.slot}: git fetch origin {branch}")
+            heads[lease.repo] = (branch, _git_ok(git_runner, ["-C", path, "rev-parse", tracking],
+                                                 f"{lease.slot}: {tracking} 해소"))
+        branch, head = heads[lease.repo]
+        counts = _git_ok(git_runner, ["-C", path, "rev-list", "--left-right", "--count",
+                                      f"HEAD...refs/remotes/origin/{branch}"],
+                         f"{lease.slot}: 원격 HEAD 대비 커밋 수")
+        ahead, behind = (int(part) for part in counts.split())
+        rows[lease.slot] = {
+            "url": _git_ok(git_runner, ["-C", path, "remote", "get-url", "origin"],
+                           f"{lease.slot}: origin 주소"),
+            "head_branch": branch, "head": head, "ahead": ahead, "behind": behind,
+        }
+    return rows
+
+
+def _status_json_slots(wp, leases, task_names: set,
+                       remote: dict[str, dict] | None = None) -> list[dict]:
     """슬롯 축 — 리스 장부 + 슬롯당 git 요약. 판정은 전부 `worktree_pool` 것을 그대로 싣는다.
+
+    `remote` 는 `--with-remote` 로 부른 때만 슬롯마다 원격 대조(`_status_json_remote`)이고 그
+    밖에는 null 이다(네트워크를 쓰는 절이라 가벼운 조회에 넣지 않는다).
 
     `alive` 는 `worktree_pool.lease_is_open` 그대로다(판정 재구현 0) — 열림 기록(leased +
     session)이 있고 그에 대응하는 종료 기록(release/force_release/end_task 의 idle+session 비움)이
@@ -2417,6 +2478,7 @@ def _status_json_slots(wp, leases, task_names: set) -> list[dict]:
             "base": git.get("base"),
             "behind": git.get("behind"),
             "dirty": bool(git.get("dirty")),
+            "remote": None if remote is None else remote[lease.slot],
         })
     return rows
 
@@ -2549,12 +2611,14 @@ def _status_json_document(args, wp, *, board_mod, pm_import_mod,
     leases = wp.list_leases()
     tasks = wp.list_tasks() or []
     task_names = {name for name in (getattr(task, "name", None) for task in tasks) if name}
+    remote = (_status_json_remote(wp, leases, git_runner)
+              if getattr(args, "with_remote", False) else None)
     return {
         "schema": STATUS_JSON_SCHEMA,
         "engine_rev": ENGINE_REV,
         "pm_home": str(REPO.resolve()),
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "slots": _status_json_slots(wp, leases, task_names),
+        "slots": _status_json_slots(wp, leases, task_names, remote),
         "tasks": _status_json_tasks(wp, tasks),
         "git": _status_json_git(git_runner),
         "repos": _status_json_repos(),
@@ -2608,6 +2672,9 @@ def _emit_status_json(args, wp, *, board=None, pm_import=None,
         # 어댑터 판정 채널이 unavailable 인 경우. 그 밖의 실패는 삼키지 않는다(정상 산출로 위장 금지).
         print(f"[중단] 현황 JSON 조회 실패: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
+    except RemoteCheckError as exc:
+        print(f"[중단] 원격 대조 실패 — {exc}", file=sys.stderr)
+        return 1
     _write_machine_line(json.dumps(document, ensure_ascii=False))
     return 0
 
@@ -2620,7 +2687,7 @@ def _status_json_usage_error(args) -> str | None:
     """
     given = [flag for flag, attribute in (
         ("--with-board", "with_board"), ("--with-adapters", "with_adapters"),
-        ("--from", "source")) if getattr(args, attribute, None)]
+        ("--with-remote", "with_remote"), ("--from", "source")) if getattr(args, attribute, None)]
     if not given or getattr(args, "json", False):
         return None
     return (f"[중단] {' · '.join(given)} 은 `--json` 과 함께만 쓴다 — 텍스트 출력에는 그 절이 "
@@ -4942,6 +5009,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--with-adapters", action="store_true",
         help="어댑터 config 파일별 판정·기준/최신 diff·기능 표를 함께 낸다 (`--json` 필요·"
              "소스 checkout 필요). 소스를 못 잡으면 부분 산출 없이 오류다.",
+    )
+    p_status.add_argument(
+        "--with-remote", action="store_true",
+        help="슬롯마다 origin 주소와 원격 HEAD(기본 브랜치) 대비 앞/뒤 커밋 수를 함께 낸다 "
+             "(`--json` 필요·repo 마다 그 브랜치를 fetch 한다·실패하면 부분 산출 없이 오류다).",
     )
     p_status.add_argument(
         "--from", dest="source", metavar="SOURCE", default=None,

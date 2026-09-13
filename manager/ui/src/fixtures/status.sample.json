@@ -16,7 +16,8 @@
       "head": null,
       "base": null,
       "behind": null,
-      "dirty": true
+      "dirty": true,
+      "remote": null
     },
     {
       "slot": "work/app_1",
@@ -33,7 +34,8 @@
         "commit": "ea647d3cd6aadae80919108ac6315487c5b0c9b2"
       },
       "behind": 0,
-      "dirty": false
+      "dirty": false,
+      "remote": null
     },
     {
       "slot": "work/app_2",
@@ -47,7 +49,8 @@
       "head": "ea647d3cd6aadae80919108ac6315487c5b0c9b2",
       "base": null,
       "behind": null,
-      "dirty": false
+      "dirty": false,
+      "remote": null
     },
     {
       "slot": "work/app_3",
@@ -61,7 +64,8 @@
       "head": "ea647d3cd6aadae80919108ac6315487c5b0c9b2",
       "base": null,
       "behind": null,
-      "dirty": false
+      "dirty": false,
+      "remote": null
     },
     {
       "slot": "work/app_4",
@@ -75,7 +79,8 @@
       "head": "ea647d3cd6aadae80919108ac6315487c5b0c9b2",
       "base": null,
       "behind": null,
-      "dirty": false
+      "dirty": false,
+      "remote": null
     },
     {
       "slot": "work/app_5",
@@ -89,7 +94,8 @@
       "head": "ea647d3cd6aadae80919108ac6315487c5b0c9b2",
       "base": null,
       "behind": null,
-      "dirty": true
+      "dirty": true,
+      "remote": null
     }
   ],
   "tasks": [
@@ -117,6 +123,7 @@
     {
       "repo": "proj1",
       "prefix": null,
+      "git": null,
       "base": null,
       "protected": null,
       "test_cmd": null,
@@ -125,6 +132,7 @@
     {
       "repo": "app",
       "prefix": null,
+      "git": "/projects/remote/app.git",
       "base": "master",
       "protected": null,
       "test_cmd": null,

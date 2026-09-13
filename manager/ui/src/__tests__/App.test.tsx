@@ -47,14 +47,21 @@ function setVisibility(value: "visible" | "hidden") {
   act(() => { document.dispatchEvent(new Event("visibilitychange")); });
 }
 
+/** 가벼운 절 — 보드·원격 대조를 붙이지 않은 조회. */
 function lightCalls(bridge: Bridge) {
   return (bridge.status as ReturnType<typeof vi.fn>).mock.calls
-    .filter((call) => call[1] === false).length;
+    .filter((call) => call[1] === false && call[3] !== true).length;
 }
 
 function lightCallsFor(bridge: Bridge, path: string) {
   return (bridge.status as ReturnType<typeof vi.fn>).mock.calls
-    .filter((call) => call[0] === path && call[1] === false).length;
+    .filter((call) => call[0] === path && call[1] === false && call[3] !== true).length;
+}
+
+/** 원격 대조(fetch) 조회 — 네 번째 인자가 참인 호출. */
+function remoteCalls(bridge: Bridge) {
+  return (bridge.status as ReturnType<typeof vi.fn>).mock.calls
+    .filter((call) => call[3] === true).length;
 }
 
 // 이 화면 회귀는 창 손님을 잰다 — 폴더 고르기가 OS 대화상자로 가는 자리다.
@@ -265,10 +272,14 @@ describe("수동 새로고침", () => {
     render(<App bridge={bridge} />);
     await waitFor(() => expect(bridge.latest_tags).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(settingsCalls(bridge)).toBe(1));
+    // 원격 대조는 시작 때 1회다(네트워크라 주기 조회에 넣지 않는다).
+    await waitFor(() => expect(remoteCalls(bridge)).toBe(1));
+    expect(bridge.status).toHaveBeenCalledWith(DEMO, false, false, true);
 
     fireEvent.click(screen.getByLabelText("새로고침"));
 
     await waitFor(() => expect(bridge.latest_tags).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(remoteCalls(bridge)).toBe(2));
     expect(lightCalls(bridge)).toBe(2);
     expect((bridge.status as ReturnType<typeof vi.fn>).mock.calls
       .filter((call) => call[1] === true).length).toBe(2);

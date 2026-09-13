@@ -55,6 +55,8 @@ export default function App({ bridge }: { bridge: Bridge }) {
   const [listError, setListError] = useState<BridgeError | null>(null);
   const [light, setLight] = useState<Record<string, Entry>>({});
   const [heavy, setHeavy] = useState<Record<string, Entry>>({});
+  // 원격 대조(fetch) — 네트워크라 시작·수동 새로고침 때만 돈다(주기 조회 0).
+  const [remote, setRemote] = useState<Record<string, Entry>>({});
   const [settings, setSettings] = useState<Record<string, SettingsEntry>>({});
   const [tags, setTags] = useState<TagsResponse | null>(null);
   const [tagsError, setTagsError] = useState<BridgeError | null>(null);
@@ -158,6 +160,17 @@ export default function App({ bridge }: { bridge: Bridge }) {
     if (!isError(keys) && !isError(values)) prefetchModels(path, keys, values.values);
   }, [bridge, prefetchModels]);
 
+  const refreshRemote = useCallback(async (paths: string[]) => {
+    const results = await Promise.all(
+      paths.map(async (path) => [path, await bridge.status(path, false, false, true)] as const));
+    const at = Date.now();
+    setRemote((previous) => {
+      const next = { ...previous };
+      for (const [path, response] of results) next[path] = merged(previous[path], response, at, true);
+      return next;
+    });
+  }, [bridge]);
+
   const refreshTags = useCallback(async () => {
     setBusy((current) => ({ ...current, tags: true }));
     const response = await bridge.latest_tags();
@@ -170,13 +183,14 @@ export default function App({ bridge }: { bridge: Bridge }) {
     setBusy((current) => ({ ...current, tags: false }));
   }, [bridge]);
 
-  // 시작 — 목록 1회 + 가벼운 절 전부 + 네트워크 1회.
+  // 시작 — 목록 1회 + 가벼운 절 전부 + 네트워크 1회(최신 태그 · 원격 대조).
   useEffect(() => {
     void (async () => {
       const loaded = await loadProjects();
-      await Promise.all([refreshLight(loaded.map((project) => project.path)), refreshTags()]);
+      const paths = loaded.map((project) => project.path);
+      await Promise.all([refreshLight(paths), refreshTags(), refreshRemote(paths)]);
     })();
-  }, [loadProjects, refreshLight, refreshTags]);
+  }, [loadProjects, refreshLight, refreshTags, refreshRemote]);
 
   // 창이 앞으로 올 때 즉시 1회 · 뒤로 가면 주기 정지.
   useEffect(() => {
@@ -262,8 +276,8 @@ export default function App({ bridge }: { bridge: Bridge }) {
   const refreshSelected = useCallback(async () => {
     if (selected === null) return;
     await Promise.all([refreshLight([selected]), refreshHeavy(selected), refreshTags(),
-                       refreshSettings(selected)]);
-  }, [selected, refreshLight, refreshHeavy, refreshTags, refreshSettings]);
+                       refreshSettings(selected), refreshRemote([selected])]);
+  }, [selected, refreshLight, refreshHeavy, refreshTags, refreshSettings, refreshRemote]);
 
   // 설정을 저장한 직후 — 값(설정 조회)과 판정(가벼운 절)을 다시 읽는다. 낙관적 갱신은 없다.
   const reloadSettings = useCallback(() => {
@@ -302,6 +316,7 @@ export default function App({ bridge }: { bridge: Bridge }) {
           onRefresh={refreshSelected}
         />
         <Tabs bridge={bridge} path={selected} light={selectedLight} heavy={selectedHeavy}
+              remote={selected === null ? undefined : remote[selected]}
               settings={selected === null ? undefined : settings[selected]}
               latestTag={selected === null ? null : latestTagOf(tags, selected)}
               onOpenUpdate={refreshTags} onApplied={refreshSelected}

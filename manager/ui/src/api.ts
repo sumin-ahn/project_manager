@@ -19,6 +19,8 @@ export type ErrorResponse = { error: BridgeError };
 export type RepoRow = {
   repo: string;
   prefix: string | null;
+  /** 등록된 원격 주소. */
+  git: string | null;
   base: string | null;
   protected: string | null;
   test_cmd: string | null;
@@ -38,6 +40,17 @@ export type SlotRow = {
   head: string | null;
   behind: number | null;
   dirty: boolean;
+  /** `--with-remote` 로 부른 조회에서만 값이 있다(네트워크). */
+  remote: SlotRemote | null;
+};
+
+/** 슬롯의 원격 대조 — origin 주소와 원격 HEAD(기본 브랜치) 끝 대비 앞/뒤 커밋 수. */
+export type SlotRemote = {
+  url: string;
+  head_branch: string;
+  head: string;
+  ahead: number;
+  behind: number;
 };
 
 export type TaskRow = {
@@ -227,7 +240,7 @@ export type Bridge = {
   list_projects(): Promise<ProjectsResponse | ErrorResponse>;
   add_project(path: string): Promise<ProjectsResponse | ErrorResponse>;
   remove_project(path: string): Promise<ProjectsResponse | ErrorResponse>;
-  status(path: string, withBoard: boolean, withAdapters: boolean):
+  status(path: string, withBoard: boolean, withAdapters: boolean, withRemote?: boolean):
     Promise<StatusDocument | ErrorResponse>;
   latest_tags(): Promise<TagsResponse | ErrorResponse>;
   pick_folder(): Promise<{ path: string | null } | ErrorResponse>;
@@ -289,8 +302,9 @@ export function httpBridge(): Bridge {
     add_project: (path) => call("add_project", path) as Promise<ProjectsResponse | ErrorResponse>,
     remove_project: (path) =>
       call("remove_project", path) as Promise<ProjectsResponse | ErrorResponse>,
-    status: (path, withBoard, withAdapters) =>
-      call("status", path, withBoard, withAdapters) as Promise<StatusDocument | ErrorResponse>,
+    status: (path, withBoard, withAdapters, withRemote = false) =>
+      call("status", path, withBoard, withAdapters, withRemote) as
+        Promise<StatusDocument | ErrorResponse>,
     latest_tags: () => call("latest_tags") as Promise<TagsResponse | ErrorResponse>,
     pick_folder: () => call("pick_folder") as Promise<{ path: string | null } | ErrorResponse>,
     conf_keys: (path) => call("conf_keys", path) as Promise<ConfKeysDocument | ErrorResponse>,
