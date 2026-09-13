@@ -57,7 +57,7 @@ export default function Tabs({ bridge, path, light, heavy, remote, settings, lat
                          onReload={onReloadSettings} startAsking={startAsking}
                          adapterConf={adapterConf} onAdapterConf={setAdapterConf} />
           </RadixTabs.Content>
-          <RadixTabs.Content value="config"><ConfigTab /></RadixTabs.Content>
+          <RadixTabs.Content value="config"><ConfigTab remote={remote} /></RadixTabs.Content>
           <RadixTabs.Content value="update">
             <UpdateTab bridge={bridge} path={path} light={light} adapterConf={adapterConf}
                        latestTag={latestTag} onApplied={onApplied} />

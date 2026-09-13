@@ -3,37 +3,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Bridge, StatusDocument } from "../api";
 import fixture from "../fixtures/status.sample.json";
 import { ProjectRunContext } from "../lib/run";
-import StatusTab, { recordLine, remoteLine } from "../tabs/StatusTab";
+import StatusTab, { recordLine } from "../tabs/StatusTab";
 
 const document_ = fixture as unknown as StatusDocument;
 
-describe("슬롯의 원격 대조 한 줄", () => {
-  const value = { url: "git@example.invalid:app.git", head_branch: "main",
-                  head: "e4f2436f55d79f70147d19fd65187f88fd3650be", ahead: 0, behind: 0 };
-
-  it("origin 주소 · 원격 HEAD 브랜치@커밋 · 앞뒤 관계를 엔진이 센 그대로 말한다", () => {
-    expect(remoteLine(value, undefined))
-      .toBe("git@example.invalid:app.git · main@e4f2436f · 원격 HEAD 와 같음");
-    expect(remoteLine({ ...value, behind: 3 }, undefined)).toContain("원격 HEAD 보다 3 커밋 뒤");
-    expect(remoteLine({ ...value, ahead: 2 }, undefined)).toContain("원격 HEAD 보다 2 커밋 앞");
-    expect(remoteLine({ ...value, ahead: 2, behind: 3 }, undefined))
-      .toContain("원격 HEAD 와 갈라짐 (앞 2 · 뒤 3)");
-  });
-
-  it("대조가 아직 없거나 실패하면 그 사실을 말한다 — 값을 지어내지 않는다", () => {
-    expect(remoteLine(null, undefined)).toBe("원격 확인 전");
-    expect(remoteLine(null, { error: { kind: "timeout", message: "git fetch origin main 실패",
-                                       stderr: "", rc: 1 } }))
-      .toBe("원격 확인 실패 — git fetch origin main 실패");
-  });
-
+describe("슬롯의 원격 대조", () => {
   it("슬롯 행 아래에 그 슬롯의 대조가 선다", () => {
     const slot = document_.slots[0];
+    const value = { url: "git@example.invalid:app.git", head_branch: "main",
+                    head: "e4f2436f55d79f70147d19fd65187f88fd3650be", ahead: 0, behind: 1, upstream: null };
     const remote = { status: { ...document_, slots: document_.slots.map((row) => (
-      row.slot === slot.slot ? { ...row, remote: { ...value, behind: 1 } } : row)) } };
+      row.slot === slot.slot ? { ...row, remote: value } : row)) } };
     renderTab({ light: { status: document_ }, heavy: undefined, remote });
 
-    expect(screen.getByTestId(`slot-remote-${slot.slot}`)).toHaveTextContent("원격 HEAD 보다 1 커밋 뒤");
+    expect(screen.getByTestId(`slot-remote-${slot.slot}`))
+      .toHaveTextContent("원격 HEAD origin/main@e4f2436f · 1 커밋 뒤");
     cleanup();
   });
 });

@@ -1,6 +1,6 @@
 import type { Entry } from "../App";
-import type { SlotRemote } from "../api";
 import { rowDot } from "../lib/status";
+import SlotRemote from "../components/SlotRemote";
 import StatusDot from "../components/StatusDot";
 import StatusRowActions, { holderLabel, SlotTableAllocate } from "../components/StatusRowActions";
 
@@ -36,26 +36,9 @@ function MachineRecord({ name, label, record }:
   );
 }
 
-/**
- * 슬롯의 원격 대조 한 줄 — origin 주소 · 원격 HEAD 브랜치@커밋 · 슬롯이 그보다 앞/뒤 몇 커밋인지.
- * 값은 엔진(`status --json --with-remote`)이 센 그대로이고, 대조가 아직 없거나 실패하면 그 사실을 말한다.
- */
-export function remoteLine(value: SlotRemote | null | undefined, entry: Entry | undefined): string {
-  if (value) {
-    const relation = value.ahead === 0 && value.behind === 0 ? "원격 HEAD 와 같음"
-      : value.ahead === 0 ? `원격 HEAD 보다 ${value.behind} 커밋 뒤`
-      : value.behind === 0 ? `원격 HEAD 보다 ${value.ahead} 커밋 앞`
-      : `원격 HEAD 와 갈라짐 (앞 ${value.ahead} · 뒤 ${value.behind})`;
-    return `${value.url} · ${value.head_branch}@${value.head.slice(0, 8)} · ${relation}`;
-  }
-  return entry?.error ? `원격 확인 실패 — ${entry.error.message}` : "원격 확인 전";
-}
-
 /** 현황 탭의 읽기 부분 — 보드 counts · task 표 · 슬롯 표 · 회귀/게이트 · lint 수. */
 export default function StatusTab({ light, heavy, remote }:
   { light: Entry | undefined; heavy: Entry | undefined; remote?: Entry | undefined }) {
-  const remoteOf = (slot: string) =>
-    remote?.status?.slots.find((row) => row.slot === slot)?.remote;
   const document_ = light?.status;
   const board = heavy?.status?.board ?? null;
   if (!document_) {
@@ -129,9 +112,7 @@ export default function StatusTab({ light, heavy, remote }:
                   <td className="py-0.5 font-mono text-[11px] text-slate-500">
                     {holderLabel(slot) ?? "비어 있음"}{slot.branch ? ` · ${slot.branch}` : " · 브랜치 없음"}
                     {slot.head ? ` @${slot.head.slice(0, 8)}` : ""}
-                    <div data-testid={`slot-remote-${slot.slot}`}>
-                      {remoteLine(remoteOf(slot.slot), remote)}
-                    </div>
+                    <SlotRemote slot={slot.slot} remote={remote} />
                   </td>
                   <td className="py-0.5 text-right"><StatusRowActions row={slot} /></td>
                 </tr>

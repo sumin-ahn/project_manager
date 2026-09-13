@@ -2411,41 +2411,92 @@ def _git_ok(git_runner: GitRunner, argv: list, what: str) -> str:
     return out.strip()
 
 
-def _status_json_remote(wp, leases, git_runner: GitRunner) -> dict[str, dict]:
-    """슬롯별 원격 대조 — origin 기본 브랜치(원격 HEAD) 끝과 슬롯 커밋의 앞/뒤 커밋 수.
+_UPSTREAM_FORMAT = "%(upstream)%09%(upstream:short)%09%(upstream:remotename)%09%(upstream:remoteref)"
 
-    repo 마다 원격 HEAD 가 가리키는 브랜치를 묻고(`ls-remote --symref`) 그 브랜치 하나만
-    `refs/remotes/origin/<브랜치>` 로 fetch 한다(repo 당 1회 — 슬롯들이 git 저장소를 공유한다).
-    원격 추적 ref 를 명시해 받으므로 저장소의 fetch 설정과 무관하게 같은 ref 를 비교한다.
-    슬롯마다 실제 origin 주소(`remote get-url`)와 `rev-list --left-right --count` 를 싣는다 —
-    `ahead` = 슬롯에만 있는 커밋 수, `behind` = 원격 HEAD 에만 있는 커밋 수. 둘 다 0 이면 같은 커밋이다.
-    하나라도 실패하면 `RemoteCheckError` 다(네트워크·인증·origin 부재를 빈 값으로 접지 않는다).
+
+def _ahead_behind(git_runner: GitRunner, path: str, ref: str, what: str) -> tuple[int, int]:
+    """`HEAD...ref` 의 (슬롯에만 있는 커밋 수, ref 에만 있는 커밋 수)."""
+    counts = _git_ok(git_runner, ["-C", path, "rev-list", "--left-right", "--count", f"HEAD...{ref}"],
+                     what)
+    ahead, behind = (int(part) for part in counts.split())
+    return ahead, behind
+
+
+def _status_json_remote(wp, leases, git_runner: GitRunner) -> dict[str, dict]:
+    """슬롯별 원격 대조 — origin 주소 · 추적 원격 브랜치 · 원격 HEAD(origin 기본 브랜치) 대비 앞/뒤.
+
+    `upstream` 은 git 이 슬롯 브랜치에 연결해 둔 원격 브랜치(`@{u}`)다. 브랜치 없이 커밋에 멈춘 슬롯과
+    원격 브랜치에 연결되지 않은 브랜치는 null 이고, 연결은 있는데 원격에서 지워진 브랜치는
+    `head`·`ahead`·`behind` 가 null 이다.
+
+    원격마다 `ls-remote` 1회로 대조할 ref(origin 은 HEAD 와 그것이 가리키는 브랜치, 그리고 슬롯들의
+    추적 원격 브랜치)가 원격에 있는지 묻고, 있는 것만 fetch 1회로 받는다(repo·원격 당 1회 — 슬롯들이
+    git 저장소를 공유한다). 받는 자리를 refspec 으로 명시하므로 저장소의 fetch 설정과 무관하다.
+    `ahead` = 슬롯에만 있는 커밋 수, `behind` = 상대에만 있는 커밋 수.
+    네트워크·인증·origin 부재는 `RemoteCheckError` 다(빈 값으로 접지 않는다).
     """
-    heads: dict[str, tuple[str, str]] = {}
-    rows: dict[str, dict] = {}
+    slots: list[tuple] = []
+    wanted: dict[tuple[str, str], tuple[str, dict[str, str]]] = {}   # (repo, 원격) → (경로, 원격 ref → 받을 자리)
     for lease in leases:
         path = str(wp.slot_path(lease.slot))
-        if lease.repo not in heads:
-            listed = _git_ok(git_runner, ["-C", path, "ls-remote", "--symref", "origin", "HEAD"],
-                             f"{lease.slot}: 원격 HEAD 조회")
-            first = listed.splitlines()[0] if listed else ""
-            if not first.startswith("ref: refs/heads/"):
-                raise RemoteCheckError(f"{lease.slot}: 원격 HEAD 가 브랜치를 가리키지 않는다: {listed!r}")
-            branch = first[len("ref: refs/heads/"):].split("\t", 1)[0]
-            tracking = f"refs/remotes/origin/{branch}"
-            _git_ok(git_runner, ["-C", path, "fetch", "origin", f"+refs/heads/{branch}:{tracking}"],
-                    f"{lease.slot}: git fetch origin {branch}")
-            heads[lease.repo] = (branch, _git_ok(git_runner, ["-C", path, "rev-parse", tracking],
-                                                 f"{lease.slot}: {tracking} 해소"))
-        branch, head = heads[lease.repo]
-        counts = _git_ok(git_runner, ["-C", path, "rev-list", "--left-right", "--count",
-                                      f"HEAD...refs/remotes/origin/{branch}"],
-                         f"{lease.slot}: 원격 HEAD 대비 커밋 수")
-        ahead, behind = (int(part) for part in counts.split())
+        rc, ref = git_runner(["-C", path, "symbolic-ref", "-q", "HEAD"])
+        if rc not in (0, 1):                          # 1 = 브랜치 없이 커밋에 멈춘 슬롯
+            raise RemoteCheckError(f"{lease.slot}: 현재 브랜치 조회 실패 (rc={rc}): {ref.strip()[:300]}")
+        upstream = None
+        if rc == 0:
+            fields = _git_ok(git_runner, ["-C", path, "for-each-ref", f"--format={_UPSTREAM_FORMAT}",
+                                          ref.strip()], f"{lease.slot}: 추적 원격 브랜치 조회").split("\t")
+            if fields[0] and fields[2] != ".":        # "." = 원격이 아닌 로컬 브랜치에 연결
+                upstream = dict(zip(("ref", "name", "remote", "remote_ref"), fields))
+        wanted.setdefault((lease.repo, "origin"), (path, {}))
+        if upstream is not None:
+            wanted.setdefault((lease.repo, upstream["remote"]), (path, {}))[1][upstream["remote_ref"]] = upstream["ref"]
+        slots.append((lease, path, upstream))
+
+    heads: dict[str, str] = {}                        # repo → origin HEAD 가 가리키는 브랜치
+    present: dict[tuple[str, str], set[str]] = {}     # (repo, 원격) → 원격에 있는 추적 대상 ref
+    for (repo, remote), (path, targets) in wanted.items():
+        listed = _git_ok(git_runner, ["-C", path, "ls-remote", "--symref", remote,
+                                      *(["HEAD"] if remote == "origin" else []), *sorted(targets)],
+                         f"{repo}: {remote} 원격 조회")
+        symref, advertised = None, set()
+        for line in listed.splitlines():
+            left, _, name = line.partition("\t")
+            if left.startswith("ref: "):
+                symref = left[len("ref: "):] if name == "HEAD" else symref
+            else:
+                advertised.add(name)
+        refspecs = {}
+        if remote == "origin":
+            if symref is None or not symref.startswith("refs/heads/"):
+                raise RemoteCheckError(f"{repo}: 원격 HEAD 가 브랜치를 가리키지 않는다: {listed!r}")
+            heads[repo] = symref[len("refs/heads/"):]
+            refspecs[f"+{symref}:refs/remotes/origin/{heads[repo]}"] = None
+        present[(repo, remote)] = set(targets) & advertised
+        refspecs.update((f"+{source}:{targets[source]}", None) for source in sorted(present[(repo, remote)]))
+        if refspecs:
+            _git_ok(git_runner, ["-C", path, "fetch", remote, *refspecs], f"{repo}: git fetch {remote}")
+
+    rows: dict[str, dict] = {}
+    for lease, path, upstream in slots:
+        branch = heads[lease.repo]
+        tracking = f"refs/remotes/origin/{branch}"
+        ahead, behind = _ahead_behind(git_runner, path, tracking, f"{lease.slot}: 원격 HEAD 대비 커밋 수")
+        tracked = None
+        if upstream is not None:
+            tracked = {"name": upstream["name"], "head": None, "ahead": None, "behind": None}
+            if upstream["remote_ref"] in present[(lease.repo, upstream["remote"])]:
+                up_ahead, up_behind = _ahead_behind(git_runner, path, upstream["ref"],
+                                                    f"{lease.slot}: 추적 원격 브랜치 대비 커밋 수")
+                tracked.update(head=_git_ok(git_runner, ["-C", path, "rev-parse", upstream["ref"]],
+                                            f"{lease.slot}: {upstream['ref']} 해소"),
+                               ahead=up_ahead, behind=up_behind)
         rows[lease.slot] = {
             "url": _git_ok(git_runner, ["-C", path, "remote", "get-url", "origin"],
                            f"{lease.slot}: origin 주소"),
-            "head_branch": branch, "head": head, "ahead": ahead, "behind": behind,
+            "head_branch": branch,
+            "head": _git_ok(git_runner, ["-C", path, "rev-parse", tracking], f"{lease.slot}: {tracking} 해소"),
+            "ahead": ahead, "behind": behind, "upstream": tracked,
         }
     return rows
 

@@ -1,7 +1,9 @@
 import { useContext, useState } from "react";
 import type { ReactNode } from "react";
+import type { Entry } from "../App";
 import type { RepoRow } from "../api";
 import { rowDot } from "../lib/status";
+import SlotRemote from "../components/SlotRemote";
 import { ProjectRunContext, useCommand, useProjectRun } from "../lib/run";
 import CommandOutput from "../components/CommandOutput";
 import { disabledReason } from "../components/StatusRowActions";
@@ -39,7 +41,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-function ConfigTabBody() {
+function ConfigTabBody({ remote }: { remote: Entry | undefined }) {
   const { status } = useProjectRun();
   const { outcome, busy, call } = useCommand();
   const [repoName, setRepoName] = useState("");
@@ -76,6 +78,7 @@ function ConfigTabBody() {
             {repos.map((repo) => (
               <tr key={repo.repo} data-testid={`repo-${repo.repo}`} className="align-top">
                 <td className="py-0.5 font-mono">{repo.repo}</td>
+                <td className="py-0.5 font-mono text-[11px] text-slate-500">{repo.git ?? "git 주소 없음"}</td>
                 <td className="py-0.5 text-slate-500">{repo.base ?? "base 없음"}</td>
                 <td className="py-0.5">
                   <input aria-label={`${repo.repo} 보호 브랜치`} value={protectedValue(repo)}
@@ -125,6 +128,10 @@ function ConfigTabBody() {
                 <tr key={slot.slot} data-testid={`config-slot-${slot.slot}`} className="align-top">
                   <td className="py-0.5 font-mono">{slot.slot}</td>
                   <td className="py-0.5 text-slate-500">{verdict.label}</td>
+                  <td className="py-0.5 font-mono text-[11px] text-slate-500">
+                    {slot.branch ?? "브랜치 없음"}{slot.head ? ` @${slot.head.slice(0, 8)}` : ""}
+                    <SlotRemote slot={slot.slot} remote={remote} />
+                  </td>
                   <td className="py-0.5 text-right">
                     {verdict.actions === "refresh" ? null : (
                       <button type="button" data-testid={`slot-remove-${slot.slot}`}
@@ -205,7 +212,7 @@ function ConfigTabBody() {
   );
 }
 
-export default function ConfigTab() {
+export default function ConfigTab({ remote }: { remote?: Entry | undefined }) {
   // 프로젝트를 고르기 전에는 부를 사본이 없다 — 본체(훅)를 그리지 않고 안내만 낸다.
   const run = useContext(ProjectRunContext);
   if (run === null) {
@@ -213,5 +220,5 @@ export default function ConfigTab() {
       프로젝트를 고르면 구성이 온다
     </section>;
   }
-  return <ConfigTabBody />;
+  return <ConfigTabBody remote={remote} />;
 }

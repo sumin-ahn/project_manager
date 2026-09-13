@@ -44,13 +44,23 @@ export type SlotRow = {
   remote: SlotRemote | null;
 };
 
-/** 슬롯의 원격 대조 — origin 주소와 원격 HEAD(기본 브랜치) 끝 대비 앞/뒤 커밋 수. */
+/** 슬롯의 원격 대조 — origin 주소 · 추적 원격 브랜치 · 원격 HEAD(기본 브랜치) 끝 대비 앞/뒤 커밋 수. */
 export type SlotRemote = {
   url: string;
   head_branch: string;
   head: string;
   ahead: number;
   behind: number;
+  /** 슬롯 브랜치가 연결된 원격 브랜치 — 브랜치가 없거나 연결하지 않았으면 null. */
+  upstream: SlotUpstream | null;
+};
+
+/** 추적 원격 브랜치 — 원격에서 지워졌으면 이름만 있고 나머지는 null. */
+export type SlotUpstream = {
+  name: string;
+  head: string | null;
+  ahead: number | null;
+  behind: number | null;
 };
 
 export type TaskRow = {

@@ -261,7 +261,48 @@ def test_status_json_with_remote_counts_each_slot_against_the_origin_head(home):
     assert remote == {
         "url": str(origin), "head_branch": "trunk",
         "head": _git(origin, "rev-parse", "HEAD").stdout.strip(), "ahead": 1, "behind": 1,
+        "upstream": None,                                   # 원격 브랜치에 연결하지 않은 브랜치
     }
+
+
+@_git_required
+def test_status_json_with_remote_reports_the_tracked_remote_branch(home):
+    """`--with-remote` — 슬롯 브랜치가 연결된 원격 브랜치의 이름·끝 커밋·앞/뒤를 받아 와 싣는다.
+
+    같은 repo 의 두 슬롯 — 원격에 있는 브랜치에 연결(값 전부), 원격에서 지워진 브랜치에 연결
+    (이름만·나머지 null). 브랜치 없이 커밋에 멈춘 슬롯은 연결 자체가 없어 null 이다.
+    """
+    tracked = _make_slot(home, "app", 1, "feat/x")
+    gone = _make_slot(home, "app", 2, "feat/gone")
+    detached = _make_slot(home, "app", 3, "feat/detached")
+    _ledger(home, [{"slot": slot, "repo": "app", "session": "", "started": "s",
+                    "state": "idle", "test_cmd": None} for slot in (tracked, gone, detached)])
+    origin = home / ".origin"
+    # `clone --bare` 는 원격 브랜치를 받는 자리를 설정하지 않는다 — 보통 clone 의 설정을 준다.
+    _git(home / ".repos" / "app.git", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+    _git(origin, "branch", "feat/x")
+    _git(origin, "branch", "feat/gone")
+    for slot, branch in ((tracked, "feat/x"), (gone, "feat/gone")):
+        _git(home / slot, "config", f"branch.{branch}.remote", "origin")
+        _git(home / slot, "config", f"branch.{branch}.merge", f"refs/heads/{branch}")
+    _git(origin, "branch", "-D", "feat/gone")
+    _git(origin, "checkout", "-q", "feat/x")
+    _write(origin / "UPSTREAM.md", "upstream\n")
+    _git(origin, "add", "UPSTREAM.md")
+    _git(origin, "commit", "-q", "-m", "upstream")          # 연결된 원격 브랜치가 한 커밋 앞선다
+    _git(origin, "checkout", "-q", "trunk")
+    _git(home / detached, "checkout", "-q", "--detach")
+
+    rows = {row["slot"]: row["remote"] for row in _status_json(home, "--with-remote")["slots"]}
+
+    assert rows[tracked]["upstream"] == {
+        "name": "origin/feat/x", "head": _git(origin, "rev-parse", "feat/x").stdout.strip(),
+        "ahead": 0, "behind": 1,
+    }
+    assert rows[gone]["upstream"] == {"name": "origin/feat/gone", "head": None, "ahead": None,
+                                      "behind": None}
+    assert rows[detached]["upstream"] is None
+    assert {row["behind"] for row in rows.values()} == {0}  # 원격 HEAD(trunk)는 그대로다
 
 
 @_git_required

@@ -20,7 +20,7 @@
 - **앱 아이콘** — 창·Windows 실행 파일·브라우저 탭이 같은 자리(`manager/assets`)의 그림 하나를 쓴다.
 
 - **갱신이 바뀐 설정 키 이름을 옮긴다** — 엔진이 키 이름을 바꾸면 `pm-config update` 가 그 프로젝트 `local.conf` 의 옛 줄을 새 이름으로 **값 그대로** 옮기고 옛 줄을 지운다. 이름을 바꾼 것은 갱신이므로 갱신이 옮긴다 — 예전에는 안내만 나가고 채택자가 직접 고칠 때까지 그 값을 쓰는 명령이 멈춰 있었다. 대체 키가 없는 폐지 키는 옮기지 않는다(값이 갈 자리가 없어 옮기는 것이 곧 버리는 것이라, 지울지는 사람이 정한다). 옮길 것이 없으면 파일을 읽기만 하고, 미리보기(`--dry-run`)는 무엇이 옮겨질지만 말한다.
-- **슬롯이 원격 HEAD 와 얼마나 떨어져 있는지 본다** — `pm-config status --json --with-remote` 가 repo 마다 원격 HEAD(origin 기본 브랜치)를 묻고 그 브랜치 하나를 `refs/remotes/origin/<브랜치>` 로 fetch 한 뒤, 슬롯마다 origin 주소와 그 끝 대비 앞/뒤 커밋 수(`remote: {url, head_branch, head, ahead, behind}`)를 싣는다. 원격에 닿지 못하면 반쪽 대조를 싣지 않고 rc 1 이다. 관리자 현황 탭은 앱 시작과 수동 새로고침 때만 이 조회를 돌리고(5초 주기 조회에는 넣지 않는다) 슬롯 행 아래에 `origin 주소 · main@커밋 · 원격 HEAD 보다 N 커밋 뒤` 한 줄을 보인다. `repo list` 와 `status --json` 의 repo 행에 등록된 원격 주소(`git`)도 함께 나온다.
+- **슬롯이 원격 HEAD 와 얼마나 떨어져 있는지 본다** — `pm-config status --json --with-remote` 가 repo·원격마다 `ls-remote` 1회로 원격 HEAD(origin 기본 브랜치)와 슬롯 브랜치가 연결된 원격 브랜치(`@{u}`)의 존재를 묻고, 있는 것만 fetch 1회로 받는다. 슬롯마다 origin 주소, 원격 HEAD 끝 대비 앞/뒤 커밋 수, 추적 원격 브랜치의 이름·끝 커밋·앞/뒤(`remote: {url, head_branch, head, ahead, behind, upstream}`)를 싣는다. 연결이 없거나 브랜치 없이 커밋에 멈춘 슬롯은 `upstream: null`, 원격에서 지워진 연결 브랜치는 이름만 남는다. 원격에 닿지 못하면 반쪽 대조를 싣지 않고 rc 1 이다. 관리자는 앱 시작과 수동 새로고침 때만 이 조회를 돌리고(5초 주기 조회에는 넣지 않는다) 현황·구성 탭 슬롯 행 아래에 `origin 주소` · `추적 원격 브랜치 origin/<브랜치>@커밋 · N 커밋 앞` · `원격 HEAD origin/main@커밋 · N 커밋 뒤` 세 줄을 보인다. 구성 탭 repo 행에는 등록된 git 주소, 슬롯 행에는 브랜치@커밋이 선다. `repo list` 와 `status --json` 의 repo 행에 등록된 원격 주소(`git`)도 함께 나온다.
 
 ### Changed
 

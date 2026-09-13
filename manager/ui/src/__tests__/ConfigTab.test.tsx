@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Bridge, CommandResult, ErrorResponse, StatusDocument } from "../api";
+import type { Entry } from "../App";
 import fixture from "../fixtures/status.sample.json";
 import ConfigTab from "../tabs/ConfigTab";
 import { ProjectRunContext } from "../lib/run";
@@ -9,19 +10,42 @@ import { ProjectRunContext } from "../lib/run";
 const DEMO = "/projects/demo";
 const document_ = fixture as unknown as StatusDocument;
 
-function renderTab(result: CommandResult | ErrorResponse = { rc: 0, stdout: "✓ 됐다", stderr: "" }) {
+function renderTab(result: CommandResult | ErrorResponse = { rc: 0, stdout: "✓ 됐다", stderr: "" },
+                   remote?: Entry) {
   const run = vi.fn(async (_path: string, _argv: string[]) => result);
   const onChanged = vi.fn();
   render(
     <ProjectRunContext.Provider value={{
       bridge: { run } as unknown as Bridge, path: DEMO, status: document_, onChanged,
     }}>
-      <ConfigTab />
+      <ConfigTab remote={remote} />
     </ProjectRunContext.Provider>);
   return { run, onChanged };
 }
 
 afterEach(cleanup);
+
+describe("원격 정보", () => {
+  it("repo 행에 등록된 git 주소, 슬롯 행에 브랜치와 원격 대조가 선다", () => {
+    const upstream = { name: "origin/app_2", head: "ea647d3cd6aadae80919108ac6315487c5b0c9b2",
+                       ahead: 0, behind: 0 };
+    const remote = { status: { ...document_, slots: document_.slots.map((row) => (
+      row.slot === "work/app_2"
+        ? { ...row, remote: { url: "/projects/remote/app.git", head_branch: "main",
+                              head: "ea647d3cd6aadae80919108ac6315487c5b0c9b2", ahead: 0, behind: 0,
+                              upstream } }
+        : row)) } };
+    renderTab(undefined, remote);
+
+    expect(screen.getByTestId("repo-app")).toHaveTextContent("/projects/remote/app.git");
+    expect(screen.getByTestId("repo-proj1")).toHaveTextContent("git 주소 없음");
+    const slot = screen.getByTestId("config-slot-work/app_2");
+    expect(slot).toHaveTextContent("app_2 @ea647d3c");
+    expect(slot).toHaveTextContent("추적 원격 브랜치 origin/app_2@ea647d3c · 같음");
+    expect(slot).toHaveTextContent("원격 HEAD origin/main@ea647d3c · 같음");
+    expect(screen.getByTestId("config-slot-work/app_1")).toHaveTextContent("브랜치 없음");
+  });
+});
 
 describe("repo 절", () => {
   it("이름은 위치 인자이고 URL 은 --git 플래그다", async () => {
