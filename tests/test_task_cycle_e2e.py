@@ -269,11 +269,15 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, capsys):
     assert wp.TASK_PM_STATE_EMPTY_MARKER in task_state.read_text(encoding="utf-8")
 
     # ── ② worktree add --task(생성+편입) + alloc(추가 대여·I3) ───────────────────
-    # add --task = create_slot(owner_task): 새 슬롯 생성 + 그 슬롯을 task 명의 대여(ⓓB).
-    slot1 = wp.create_slot("app", branch="cyc-1", owner_task=task, init_submodules=False)
-    # 추가 대여용 idle 슬롯 seed(생성 후 반납 → idle).
-    wp.create_slot("app", branch="cyc-2", session="seed", init_submodules=False)
-    wp.release("work/app_2")
+    # add --task = create_slot(owner_task): 새 슬롯 생성 + 그 슬롯을 task 명의 대여(ⓓB). 슬롯 브랜치
+    # app_1 은 등록 base(trunk)에서 파고, 작업 브랜치 cyc-1 은 `task branch` 로 부모(trunk)를 기록하며 만든다.
+    slot1 = wp.create_slot("app", base="trunk", owner_task=task, init_submodules=False)
+    made = wp.create_task_branch(slot1.slot, "cyc-1", parent="trunk", owner_task=task,
+                                 protected=_FakeBoard()._repo_protected("app"))
+    assert made.branch == "cyc-1" and wp.current_branch(slot1.slot) == "cyc-1"
+    # 추가 대여용 idle 슬롯 seed — 명의 없는 생성은 곧바로 무소유 idle 이다.
+    seed = wp.create_slot("app", base="trunk", session="seed", init_submodules=False)
+    assert seed.state == "idle"
     # alloc(owner_task) = 항상 신규 idle 대여(I3·멱등 폐기) — 같은 repo 2번째 슬롯을 task 가 보유.
     slot2 = wp.alloc("app", owner_task=task)
     assert slot1.slot == "work/app_1" and slot2.slot == "work/app_2"

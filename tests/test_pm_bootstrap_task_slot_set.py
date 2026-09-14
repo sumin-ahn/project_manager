@@ -46,6 +46,9 @@ class _FakeBoard:
     def _pm_home_worktree_misanchor(self, anchor, **_kw):
         return None  # PM 홈(통과) — 앵커 거부 안 함.
 
+    def _repo_base(self, repo):
+        return "main"   # 등록 base — remedy `task branch --from` 이 싣는다.
+
     def _repo_protected(self, repo):
         return self._protected
 
@@ -180,8 +183,11 @@ class _TaskPool:
         return self._compare.get(slot, _Compare())
 
     def slot_git_status(self, slot, *, git_runner=None):
+        # 신 계약 모양(`parent`/`children`/`stashes`/`submodules`) — 이 스위트는 task 열거 행렬
+        # (branch/head/dirty)만 보므로 parent 없음(None)으로 고정한다.
         return {"slot": slot, "branch": self._branches.get(slot),
-                "head": self._heads.get(slot), "dirty": self._dirty.get(slot, False)}
+                "head": self._heads.get(slot), "parent": None, "children": [],
+                "stashes": 0, "submodules": [], "dirty": self._dirty.get(slot, False)}
 
     # T-0390 편입 경로
     def lease_is_open(self, lease):
@@ -742,7 +748,7 @@ def test_creating_slot_blocks_with_worktree_status_cmd(bootstrap, tmp_path, caps
 
 
 def test_protected_branch_slot_blocks_with_switch_cmd(bootstrap, tmp_path, capsys):
-    """main-참조(보호브랜치 직접 checkout) = fault → 차단 + switch 해소 커맨드(엔진-매개·T-0414)."""
+    """main-참조(보호브랜치 직접 checkout) = fault → 차단 + `task branch` 해소 커맨드(엔진 단일 커맨드)."""
     pool = _TaskPool(
         slot_root=tmp_path / "wt", task_slots=("work/A_1",),
         branches={"work/A_1": "main"},               # 보호브랜치 직접 checkout
@@ -753,9 +759,9 @@ def test_protected_branch_slot_blocks_with_switch_cmd(bootstrap, tmp_path, capsy
     cap = capsys.readouterr()
     assert cap.out == ""
     assert "main-참조" in cap.err
-    # 엔진-매개 단일 커맨드(전환+장부 스냅 재기록 원자·T-0414) — raw git 안내는 해소 직후
-    # '기록↔live diverged' 2차 차단을 유발하므로 더는 싣지 않는다.
-    assert "worktree_pool.py switch work/A_1 mytask" in cap.err
+    # 엔진 단일 커맨드(생성+부모 기록+장부 스냅 재기록) — raw git 안내는 부모 기록을 남기지 않고
+    # 해소 직후 '기록↔live diverged' 2차 차단을 유발하므로 싣지 않는다.
+    assert "pm_config.py task branch mytask work/A_1 mytask --from main" in cap.err
     assert "git -C work/A_1 switch -c" not in cap.err
     # T-0810 — 스트립이 남긴 빈 괄호·circled marker 잔재(`① 오염()`) 정정 확인
     # (실 CLI 출력 값 단언·조립 문자열 금지).

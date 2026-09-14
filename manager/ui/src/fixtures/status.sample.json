@@ -14,8 +14,9 @@
       "task": null,
       "branch": "master",
       "head": null,
-      "base": null,
-      "behind": null,
+      "parent": null,
+      "children": [],
+      "stashes": 0,
       "dirty": true,
       "remote": null
     },
@@ -29,11 +30,9 @@
       "task": null,
       "branch": null,
       "head": "ea647d3cd6aadae80919108ac6315487c5b0c9b2",
-      "base": {
-        "branch": "master",
-        "commit": "ea647d3cd6aadae80919108ac6315487c5b0c9b2"
-      },
-      "behind": 0,
+      "parent": null,
+      "children": [],
+      "stashes": 0,
       "dirty": false,
       "remote": null
     },
@@ -47,8 +46,9 @@
       "task": null,
       "branch": "app_2",
       "head": "ea647d3cd6aadae80919108ac6315487c5b0c9b2",
-      "base": null,
-      "behind": null,
+      "parent": null,
+      "children": [],
+      "stashes": 0,
       "dirty": false,
       "remote": null
     },
@@ -62,8 +62,9 @@
       "task": null,
       "branch": "app_3",
       "head": "ea647d3cd6aadae80919108ac6315487c5b0c9b2",
-      "base": null,
-      "behind": null,
+      "parent": null,
+      "children": [],
+      "stashes": 0,
       "dirty": false,
       "remote": null
     },
@@ -77,8 +78,9 @@
       "task": null,
       "branch": "app_4",
       "head": "ea647d3cd6aadae80919108ac6315487c5b0c9b2",
-      "base": null,
-      "behind": null,
+      "parent": null,
+      "children": [],
+      "stashes": 0,
       "dirty": false,
       "remote": null
     },
@@ -92,8 +94,9 @@
       "task": null,
       "branch": "app_5",
       "head": "ea647d3cd6aadae80919108ac6315487c5b0c9b2",
-      "base": null,
-      "behind": null,
+      "parent": null,
+      "children": [],
+      "stashes": 0,
       "dirty": true,
       "remote": null
     }

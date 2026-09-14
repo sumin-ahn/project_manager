@@ -68,7 +68,8 @@ def _inputs(*lines):
 
 
 class FakeBoardAreas:
-    """board 모듈 대역 — _parse_areas(콘솔 repos 렌더) + _areas_row_for_prefix(표시값 resolve)."""
+    """board 모듈 대역 — _parse_areas(콘솔 repos 렌더) + _areas_row_for_prefix(표시값 resolve)
+    + _repo_base(worktree add 가 슬롯 브랜치 부모로 쓰는 그 repo 행 base)."""
 
     def __init__(self, *, header=None, rows=None):
         self._header = header or ["repo", "prefix", "git", "test_cmd", "owner"]
@@ -82,6 +83,18 @@ class FakeBoardAreas:
             if row.get("prefix") == prefix or row.get("repo") == prefix:
                 return row
         return None
+
+    def _repo_base(self, repo):
+        # board._repo_base 대역 — 그 repo 행의 base 칸. 미등록·빈 칸이면 None(worktree add 거부).
+        for row in self._rows:
+            if row.get("repo") == repo:
+                return row.get("base") or None
+        return None
+
+
+# `[w]` 가 create_slot 까지 가려면 repo 등록 base 가 있어야 한다 — svc 를 base=main 으로 등록한 행.
+_SVC_ROWS = [{"repo": "svc", "prefix": "svc", "git": "git@h:me/svc.git", "test_cmd": "",
+              "owner": "me", "base": "main"}]
 
 
 class FakeLease:
@@ -126,13 +139,13 @@ class FakeWorktreePool:
                 if getattr(l, "state", None) == "leased" and l.session == name]
 
     def slot_git_status(self, slot, *, git_runner=None):
-        # 슬롯 git 요약 대역(T-0361·§F8) — 최소 dict(base 미기록·branch/head 미조회).
+        # 슬롯 git 요약 대역(T-0361·§F8) — 최소 dict(부모 기록 없음·branch/head 미조회).
         self.calls.append(("slot_git_status", slot))
-        return {"slot": slot, "base": None, "branch": None, "head": None,
-                "behind": None, "behind_reason": "기준점 미기록 — `set-base` 로 지정"}
+        return {"slot": slot, "branch": None, "head": None, "parent": None, "children": [],
+                "stashes": 0, "submodules": [], "dirty": False}
 
-    def create_slot(self, repo, *, base=None, test_cmd=None, readonly=False, owner_task=None):
-        # base (T-0075)·owner_task (ⓓB·ADR-0068) — cmd_worktree_add 가 전달한다. 이 콘솔
+    def create_slot(self, repo, *, base, test_cmd=None, readonly=False, owner_task=None):
+        # base(필수·T-0075)·owner_task (ⓓB·ADR-0068) — cmd_worktree_add 가 전달한다. 이 콘솔
         # 테스트는 빌드명령 경로만 검증하므로 base/readonly/owner_task 는 받기만 하고 기록 튜플엔 안 넣는다.
         self.calls.append(("create_slot", repo, test_cmd))
         return FakeLease(f"work/{repo}_1", repo, test_cmd=test_cmd)
@@ -366,7 +379,7 @@ def test_console_w_marked_engine_skew_stops_the_loop(pc):
             raise EOFError()
 
     with pytest.raises(RuntimeError) as raised:
-        pc.run_console(input_fn=reader, board=FakeBoardAreas(rows=[]),
+        pc.run_console(input_fn=reader, board=FakeBoardAreas(rows=_SVC_ROWS),
                        worktree_pool=_SkewWorktreePool())
     assert getattr(raised.value, "_engine_rev_skew", False) is True
     # 메뉴 프롬프트는 skew 를 만난 그 회차 1번뿐 — 그 뒤 회차가 있으면 루프가 계속 돈 것이다.
@@ -383,7 +396,7 @@ def test_console_w_marked_engine_skew_ends_entry_with_guidance_and_rc1(
     (실 clone/worktree 0·라이브 input 0). 메뉴 프롬프트 횟수로 루프 계속 0 도 같이 본다.
     """
     real_load_module = pc._load_module
-    fakes = {"board.py": FakeBoardAreas(rows=[]), "worktree_pool.py": _SkewWorktreePool()}
+    fakes = {"board.py": FakeBoardAreas(rows=_SVC_ROWS), "worktree_pool.py": _SkewWorktreePool()}
 
     def fake_load_module(name, filename):
         # 대역은 콘솔이 로드하는 두 엔진뿐 — 그 밖(console_encoding 등)은 실 로더 그대로.
@@ -636,7 +649,7 @@ def test_console_build_cmd_prompt_abort_graceful(pc, monkeypatch, capsys, exc):
     # 그 뒤 메뉴 'q' 로 종료.
     reader = _inputs_then_exc_resume("w", "svc", "svc", build_exc=exc, after=("q",))
     rc = pc.run_console(input_fn=reader,
-                        board=FakeBoardAreas(rows=[]), worktree_pool=wp)
+                        board=FakeBoardAreas(rows=_SVC_ROWS), worktree_pool=wp)
     assert rc == 0
     # 빌드명령 중단은 None 폴백(크래시 0) — 슬롯 생성은 진행(create_slot test_cmd=None).
     assert ("create_slot", "svc", None) in wp.calls

@@ -22,6 +22,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config release <slot> [--task <이름>] [--force]      # 작업완료 반납 (--task 소유검사) / 수동 강제(백스톱)
     pm-config task new <이름>                               # task 정체성 생성 — 장부 행(닫힘)+pm_state (세션 묶기 없음·진입은 부트스트랩)
     pm-config task close <이름>                             # 열린 채 남은 task 세션 기록 닫기 (기록만·복원 없음)
+    pm-config task branch <이름> <슬롯> <브랜치> --from <부모>     # 슬롯에 새 브랜치 — 부모 최신 커밋에서 만들고 부모·갈라진 커밋 기록
     pm-config task prefix <이름> <p|none> [--user-ack <p>] # 신규 prefix 사용자 승인값 결속·변경/해제 (`none`=해제)
     pm-config task end <이름>                               # task 종료 — claimed 소진 게이트·dirty 게이트·일괄 반납 + _ended 아카이브
     pm-config task reopen <이름> [--archive <basename>]     # 종료 archive를 동일 task 정체성으로 복원
@@ -803,27 +804,18 @@ def _resolve_repo_test_cmd(repo: str, *, board=None) -> str:
 
 
 def _resolve_repo_base(repo: str, *, board=None) -> str | None:
-    """그 repo 의 areas.md `base` 브랜치. 미지정/미등록/구 스키마/board 부재 → None.
+    """그 repo 의 areas.md `base` 브랜치 — 등록 칸이 비었으면 None.
 
-    `cmd_worktree_add` 가 `create_slot(base=)` 로 전달할 값을 resolve 한다 — areas.md 의 그
-    repo base(`pm-config repo add --base`/clone-time bare HEAD 가 기록)를 읽어 슬롯 브랜치
-    `<repo>_<N>` 가 그 base 에서 파생되게 한다. None 폴백이면 create_slot 이 현행 bare HEAD
-    동작(회귀 0).
-
-    board 직접 import 금지 — `_resolve_repo_test_cmd` 와
-    동형으로 `_load_module` DI + board 의 `_repo_base` 헬퍼를 getattr 로 쓴다. board/헬퍼
-    부재(구 board)·파싱 실패는 None 으로 강등(크래시 0·현행 동작 폴백).
+    `cmd_worktree_add` 가 `create_slot(base=)` 로 넘기는 값이자 슬롯 브랜치의 부모다. None 이면 부모를
+    적을 수 없어 호출부가 슬롯을 만들지 않는다. board 로드 실패·areas 판독 실패는 그대로 올린다 —
+    "base 없음" 으로 바꾸면 실제 원인이 가려진다. board 직접 import 금지(`_load_module` DI).
     """
     board_mod = board or _load_module("board", "board.py")
-    repo_base = getattr(board_mod, "_repo_base", None) if board_mod else None
-    if repo_base is None:
-        return None
-    try:
-        return repo_base(repo)
-    except Exception as exc:  # noqa: BLE001 — 일반 areas 파싱 실패만 None 폴백(단 skew 재전파).
-        if _is_engine_rev_skew(exc):
-            raise
-        return None
+    if board_mod is None:
+        raise RuntimeError(
+            f"board.py 를 로드하지 못해 repo {repo!r} 의 base 를 읽을 수 없다 ({TOOLS_DIR / 'board.py'})."
+        )
+    return board_mod._repo_base(repo)
 
 
 # 보호 브랜치 default — board.DEFAULT_PROTECTED 와 *동형* 폴백. board/헬퍼 부재(구
@@ -852,7 +844,7 @@ def _resolve_repo_protected(repo: str, *, board=None) -> list[str]:
     을 읽어 미지정/구 스키마면 default(main/master/develop) 폴백. board 가 권위(areas override
     반영)이고, board/헬퍼 부재·파싱 실패만 여기 default 로 강등한다(크래시 0).
 
-    board 직접 import 금지 — `_resolve_repo_base` 와 동형으로
+    board 직접 import 금지 — `_resolve_repo_test_cmd` 와 동형으로
     `_load_module` DI + board 의 `_repo_protected` 헬퍼를 getattr 로 쓴다.
     """
     board_mod = board or _load_module("board", "board.py")
@@ -2196,8 +2188,8 @@ def cmd_worktree_add(
 
     **base 브랜치**: areas.md 의 그 repo base(`pm-config repo add --base`/clone-time
     bare HEAD 가 기록)를 `_resolve_repo_base` 로 읽어 `create_slot(base=)` 로 전달한다 — 슬롯
-    브랜치 `<repo>_<N>` 가 그 base(develop 등)에서 파생된다. areas 에 base 없으면(구 스키마/
-    미지정) None → create_slot 이 현행 bare HEAD 동작(회귀 0).
+    브랜치 `<repo>_<N>` 가 그 base(develop 등)에서 파생되고 base 가 그 브랜치의 부모로 기록된다.
+    areas 에 base 가 없으면 부모를 적을 수 없어 슬롯을 만들지 않는다(rc 1).
 
     test_cmd(슬롯 리스 바인딩) 해소:
       - `--test "<cmd>"` 명시 → 그 값을 바인딩(현행·CLI 정확작업·CI).
@@ -2239,10 +2231,17 @@ def cmd_worktree_add(
         test_cmd = _prompt_test_cmd(input_fn, default=display_default)
 
     # base 해소 — areas.md 의 그 repo base 를 읽어 create_slot(base=) 로 전달한다.
-    # 슬롯 브랜치 `<repo>_<N>` 가 그 base(repo add 가 기록·develop 등)에서 파생된다. areas 에
-    # base 없으면(구 스키마/미지정) None → create_slot 이 현행 bare HEAD 동작(회귀 0).
+    # 슬롯 브랜치 `<repo>_<N>` 가 그 base 에서 파생되고 base 가 그 브랜치의 부모로 기록된다.
+    # base 가 없으면 부모를 적을 수 없으므로 만들지 않는다.
     # board 직접 import 금지 — 주입/로드된 board 의 `_repo_base` 만 쓴다.
     base = _resolve_repo_base(args.repo, board=board)
+    if base is None:
+        print(
+            f"[중단] repo {args.repo!r} 등록에 base 브랜치가 없다 — 슬롯 브랜치의 부모를 적을 수 "
+            "없어 슬롯을 만들지 않는다. areas.md 의 그 repo 행 `base` 칸을 채운 뒤 다시 실행하라.",
+            file=sys.stderr,
+        )
+        return 1
 
     # readonly 공유 슬롯 — research 전용 read-only 기준면. detached HEAD·role="readonly"·
     # session 없음. 생성 자체는 사용자 승인 flow(디스크=코드 전체 사본).
@@ -2296,7 +2295,7 @@ def cmd_worktree_add(
             "  *읽어* PM 홈 wiki(domain·architecture·status)를 쓰는 역할의 읽기 기준면이다.\n"
             f"  갱신은 `{_runtime_skill_entry('pm-worktree')} refresh "
             f"{lease.repo}_{slot_num}` 로만(fetch→detach 이동·dirty=거부). "
-            "set-base/rebase/dev/sync 는 거부된다."
+            "rebase/dev/sync 는 거부된다."
         )
     elif task is not None:
         # task-명의 생성(ⓓB) — 생성 직후 그 슬롯을 task 명의로 leased(별도 alloc 불요).
@@ -2347,30 +2346,22 @@ def _short_sha(sha: "str | None") -> str:
 def _slot_git_summary(status: dict, *, readonly: bool = False) -> str:
     """슬롯 git 상태 dict(`worktree_pool.slot_git_status`)를 한 줄 요약으로 렌더한다.
 
-    포맷 = `<branch>@<head 단축> (base: <base.branch>@<base.commit 단축> · N behind)`.
-      - behind = base 기록이 있고 계산됐을 때만 정수. 미기록 = `-` + 이유(자동 추론 금지).
-        기록됐으나 ref 미해소(fetch 필요)면 behind=None + reason → `- (<reason>)`.
-      - readonly 슬롯 = branch 축은 `(detached)`(무소유·research 기준면)·base 만 의미.
-    데이터는 전부 `slot_git_status`(live branch/head + 장부 base)에서 파생 — 신설 저장소 없음.
+    포맷 = `<branch>@<head 단축> (부모: <이름>@<갈라진 커밋 단축> · 앞 N · 뒤 M)`.
+      - 부모 기록이 없으면 `(부모 기록 없음)`, 부모 브랜치가 지워졌으면 앞/뒤 대신 `부모 브랜치 없음`.
+      - readonly 슬롯 = branch 축은 `(detached)`·부모는 따라갈 브랜치.
     """
     if readonly:
         branch_disp = "(detached)"
     else:
         branch_disp = status.get("branch") or "(detached/조회불가)"
     head_disp = _short_sha(status.get("head"))
-    base = status.get("base")
-    if base and base.get("branch"):
-        base_part = f"base: {base['branch']}@{_short_sha(base.get('commit'))}"
-        behind = status.get("behind")
-        if behind is not None:
-            behind_part = f"{behind} behind"
-        else:
-            reason = status.get("behind_reason") or "base ref 미해소(fetch 필요)"
-            behind_part = f"- ({reason})"
-        return f"{branch_disp}@{head_disp} ({base_part} · {behind_part})"
-    # base 미기록 — 침묵 추론 금지, 이유를 표기한다(prefix 확인·기준점 질의와 동형).
-    reason = status.get("behind_reason") or "기준점 미기록 — `set-base` 로 지정"
-    return f"{branch_disp}@{head_disp} (base: - · {reason})"
+    parent = status["parent"]
+    if parent is None:
+        return f"{branch_disp}@{head_disp} (부모 기록 없음)"
+    named = f"부모: {parent['name']}@{_short_sha(parent['fork'])}"
+    if parent["ref"] is None:
+        return f"{branch_disp}@{head_disp} ({named} · 부모 브랜치 없음)"
+    return f"{branch_disp}@{head_disp} ({named} · 앞 {parent['ahead']} · 뒤 {parent['behind']})"
 
 
 # ── 기계 현황 계약 (`status --json`) ──────────────────────────────────────────
@@ -2423,17 +2414,16 @@ def _ahead_behind(git_runner: GitRunner, path: str, ref: str, what: str) -> tupl
 
 
 def _status_json_remote(wp, leases, git_runner: GitRunner) -> dict[str, dict]:
-    """슬롯별 원격 대조 — origin 주소 · 추적 원격 브랜치 · 원격 HEAD(origin 기본 브랜치) 대비 앞/뒤.
+    """슬롯별 원격 정보 — origin 주소 · 추적 원격 브랜치(이름·끝 커밋·앞/뒤).
 
     `upstream` 은 git 이 슬롯 브랜치에 연결해 둔 원격 브랜치(`@{u}`)다. 브랜치 없이 커밋에 멈춘 슬롯과
     원격 브랜치에 연결되지 않은 브랜치는 null 이고, 연결은 있는데 원격에서 지워진 브랜치는
     `head`·`ahead`·`behind` 가 null 이다.
 
-    원격마다 `ls-remote` 1회로 대조할 ref(origin 은 HEAD 와 그것이 가리키는 브랜치, 그리고 슬롯들의
-    추적 원격 브랜치)가 원격에 있는지 묻고, 있는 것만 fetch 1회로 받는다(repo·원격 당 1회 — 슬롯들이
-    git 저장소를 공유한다). 받는 자리를 refspec 으로 명시하므로 저장소의 fetch 설정과 무관하다.
-    `ahead` = 슬롯에만 있는 커밋 수, `behind` = 상대에만 있는 커밋 수.
-    네트워크·인증·origin 부재는 `RemoteCheckError` 다(빈 값으로 접지 않는다).
+    원격마다 `ls-remote` 1회로 슬롯들의 추적 원격 브랜치가 원격에 있는지 묻고, 있는 것만 fetch 1회로
+    받는다(repo·원격 당 1회 — 슬롯들이 git 저장소를 공유한다). 받는 자리를 refspec 으로 명시하므로
+    저장소의 fetch 설정과 무관하다. `ahead` = 슬롯에만 있는 커밋 수, `behind` = 원격 브랜치에만 있는
+    커밋 수. 네트워크·인증·origin 부재는 `RemoteCheckError` 다(빈 값으로 접지 않는다).
     """
     slots: list[tuple] = []
     wanted: dict[tuple[str, str], tuple[str, dict[str, str]]] = {}   # (repo, 원격) → (경로, 원격 ref → 받을 자리)
@@ -2448,55 +2438,35 @@ def _status_json_remote(wp, leases, git_runner: GitRunner) -> dict[str, dict]:
                                           ref.strip()], f"{lease.slot}: 추적 원격 브랜치 조회").split("\t")
             if fields[0] and fields[2] != ".":        # "." = 원격이 아닌 로컬 브랜치에 연결
                 upstream = dict(zip(("ref", "name", "remote", "remote_ref"), fields))
-        wanted.setdefault((lease.repo, "origin"), (path, {}))
-        if upstream is not None:
-            wanted.setdefault((lease.repo, upstream["remote"]), (path, {}))[1][upstream["remote_ref"]] = upstream["ref"]
+                wanted.setdefault((lease.repo, upstream["remote"]), (path, {}))[1][upstream["remote_ref"]] = upstream["ref"]
         slots.append((lease, path, upstream))
 
-    heads: dict[str, str] = {}                        # repo → origin HEAD 가 가리키는 브랜치
     present: dict[tuple[str, str], set[str]] = {}     # (repo, 원격) → 원격에 있는 추적 대상 ref
     for (repo, remote), (path, targets) in wanted.items():
-        listed = _git_ok(git_runner, ["-C", path, "ls-remote", "--symref", remote,
-                                      *(["HEAD"] if remote == "origin" else []), *sorted(targets)],
+        listed = _git_ok(git_runner, ["-C", path, "ls-remote", remote, *sorted(targets)],
                          f"{repo}: {remote} 원격 조회")
-        symref, advertised = None, set()
-        for line in listed.splitlines():
-            left, _, name = line.partition("\t")
-            if left.startswith("ref: "):
-                symref = left[len("ref: "):] if name == "HEAD" else symref
-            else:
-                advertised.add(name)
-        refspecs = {}
-        if remote == "origin":
-            if symref is None or not symref.startswith("refs/heads/"):
-                raise RemoteCheckError(f"{repo}: 원격 HEAD 가 브랜치를 가리키지 않는다: {listed!r}")
-            heads[repo] = symref[len("refs/heads/"):]
-            refspecs[f"+{symref}:refs/remotes/origin/{heads[repo]}"] = None
+        advertised = {line.partition("\t")[2] for line in listed.splitlines()}
         present[(repo, remote)] = set(targets) & advertised
-        refspecs.update((f"+{source}:{targets[source]}", None) for source in sorted(present[(repo, remote)]))
-        if refspecs:
-            _git_ok(git_runner, ["-C", path, "fetch", remote, *refspecs], f"{repo}: git fetch {remote}")
+        if present[(repo, remote)]:
+            _git_ok(git_runner, ["-C", path, "fetch", remote,
+                                 *(f"+{source}:{targets[source]}" for source in sorted(present[(repo, remote)]))],
+                    f"{repo}: git fetch {remote}")
 
     rows: dict[str, dict] = {}
     for lease, path, upstream in slots:
-        branch = heads[lease.repo]
-        tracking = f"refs/remotes/origin/{branch}"
-        ahead, behind = _ahead_behind(git_runner, path, tracking, f"{lease.slot}: 원격 HEAD 대비 커밋 수")
         tracked = None
         if upstream is not None:
             tracked = {"name": upstream["name"], "head": None, "ahead": None, "behind": None}
             if upstream["remote_ref"] in present[(lease.repo, upstream["remote"])]:
-                up_ahead, up_behind = _ahead_behind(git_runner, path, upstream["ref"],
-                                                    f"{lease.slot}: 추적 원격 브랜치 대비 커밋 수")
+                ahead, behind = _ahead_behind(git_runner, path, upstream["ref"],
+                                              f"{lease.slot}: 추적 원격 브랜치 대비 커밋 수")
                 tracked.update(head=_git_ok(git_runner, ["-C", path, "rev-parse", upstream["ref"]],
                                             f"{lease.slot}: {upstream['ref']} 해소"),
-                               ahead=up_ahead, behind=up_behind)
+                               ahead=ahead, behind=behind)
         rows[lease.slot] = {
             "url": _git_ok(git_runner, ["-C", path, "remote", "get-url", "origin"],
                            f"{lease.slot}: origin 주소"),
-            "head_branch": branch,
-            "head": _git_ok(git_runner, ["-C", path, "rev-parse", tracking], f"{lease.slot}: {tracking} 해소"),
-            "ahead": ahead, "behind": behind, "upstream": tracked,
+            "upstream": tracked,
         }
     return rows
 
@@ -2526,8 +2496,9 @@ def _status_json_slots(wp, leases, task_names: set,
             "task": lease.session if (lease.session and lease.session in task_names) else None,
             "branch": git.get("branch"),
             "head": git.get("head"),
-            "base": git.get("base"),
-            "behind": git.get("behind"),
+            "parent": git["parent"],
+            "children": git["children"],
+            "stashes": git["stashes"],
             "dirty": bool(git.get("dirty")),
             "remote": None if remote is None else remote[lease.slot],
         })
@@ -3087,7 +3058,7 @@ def cmd_worktree_remove(
         print(
             f"  ⚠ 브랜치 {result.branch} 보존됨 — 같은 번호 슬롯 재생성은 브랜치 잔존을"
             " 선-검출해 명확히 멈춘다(SlotBranchExists). 정리(머지/삭제) 후 새 슬롯 재생성하거나,"
-            f" 그 브랜치 작업을 이어가려면 수동 checkout(`git worktree add <path> {result.branch}`·리셋 없음)."
+            f" 그 브랜치 작업을 이어가려면 다른 슬롯에서 `worktree_pool.py switch <슬롯> {result.branch}`(리셋 없음)."
         )
     return 0
 
@@ -3448,6 +3419,45 @@ def cmd_task_new(
     print(
         f"  슬롯 대여: `pm-config alloc <repo> --task {name}` · "
         f"prefix 지정: `pm-config task prefix {name} <p>`."
+    )
+    return 0
+
+
+def cmd_task_branch(
+    args: argparse.Namespace,
+    *,
+    worktree_pool=None,
+) -> int:
+    """`task branch <이름> <슬롯> <브랜치> --from <부모>` — 슬롯에 새 브랜치를 만들고 부모를 기록한다.
+
+    슬롯 안에서 새 브랜치를 만드는 유일한 명령이다(`switch` 는 기존 브랜치 전환만 한다). 브랜치는
+    부모 브랜치의 최신 커밋에서 만들고, 부모 이름과 갈라진 커밋을 git 저장소 설정에 적는다
+    (`worktree_pool.create_task_branch`). `<이름>` 은 그 슬롯을 쥔 명의다(task 또는 슬롯 세션).
+    슬롯은 늘 적는다(`release <slot>` 과 같은 위치 인자·암묵 선택 없음). 엔진 거부는 사유 문구 그대로 rc 1 이다.
+    """
+    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
+    if wp is None:
+        print(
+            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — 브랜치 생성 불가 "
+            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        slot = wp._normalize_slot(args.slot)
+    except wp.SlotResolutionError as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
+    try:
+        result = wp.create_task_branch(slot, args.branch, parent=args.parent, owner_task=args.name)
+    except (wp.TaskBranchRefused, wp.ReadonlySlotMutation) as exc:
+        if _is_engine_rev_skew(exc):
+            raise
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"✓ 슬롯 {slot} 에 새 브랜치 `{result.branch}` 를 만들었다 — 부모 `{args.parent}` "
+        f"@ {_short_sha(result.head)} 에서 갈라짐(부모 기록 완료)."
     )
     return 0
 
@@ -5003,7 +5013,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="research 전용 read-only 공유 슬롯 생성 (detached HEAD·role=readonly·"
              "session 없음·배타 대여 없음). 코드를 읽어 PM 홈 wiki 를 쓰는 읽기 기준면. "
              f"갱신은 `{_runtime_skill_entry('pm-worktree')} refresh` 로만·"
-             "set-base/rebase/dev/sync 는 거부.",
+             "rebase/dev/sync 는 거부.",
     )
     p_wt_add.add_argument(
         "--task", metavar="<이름>", default=None,
@@ -5063,8 +5073,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_status.add_argument(
         "--with-remote", action="store_true",
-        help="슬롯마다 origin 주소와 원격 HEAD(기본 브랜치) 대비 앞/뒤 커밋 수를 함께 낸다 "
-             "(`--json` 필요·repo 마다 그 브랜치를 fetch 한다·실패하면 부분 산출 없이 오류다).",
+        help="슬롯마다 origin 주소와 추적 원격 브랜치(이름·끝 커밋·앞/뒤)를 함께 낸다 "
+             "(`--json` 필요·원격에 있는 추적 브랜치만 fetch 한다·실패하면 부분 산출 없이 오류다).",
     )
     p_status.add_argument(
         "--from", dest="source", metavar="SOURCE", default=None,
@@ -5110,7 +5120,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # task new <이름> — 정체성만 생성(닫힘·세션 묶기 없음) / task end <이름> — task 종료:
     # claimed 소진 게이트·dirty 게이트·clean 시 일괄 반납 + 아카이브 이동
-    p_task = sub.add_parser("task", help="task 정체성 관리 (new·prefix·close·end·reopen)")
+    p_task = sub.add_parser("task", help="task 정체성 관리 (new·prefix·branch·close·end·reopen)")
     task_sub = p_task.add_subparsers(dest="task_command", metavar="<task-command>")
     p_task_new = task_sub.add_parser(
         "new",
@@ -5164,6 +5174,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="새 prefix 신설에 대한 사용자 승인 토큰(대상 prefix 값과 정확히 결속)",
     )
     p_task_prefix.set_defaults(func=cmd_task_prefix)
+
+    # task branch <이름> <슬롯> <브랜치> --from <부모> — 슬롯 안 새 브랜치의 유일한 생성 경로(부모 기록 동반).
+    p_task_branch = task_sub.add_parser(
+        "branch",
+        help="슬롯에 새 브랜치를 부모 브랜치 최신 커밋에서 만들고 부모를 기록한다 "
+             "(슬롯 안 새 브랜치의 유일한 경로 · 기존 브랜치 전환은 `pm-worktree switch`)",
+    )
+    p_task_branch.add_argument("name", help="슬롯을 쥔 명의(task 이름 또는 슬롯 세션)")
+    p_task_branch.add_argument("slot", help="브랜치를 만들 슬롯(`work/<repo>_<N>` 또는 `<repo>_<N>`)")
+    p_task_branch.add_argument("branch", help="만들 브랜치 이름")
+    p_task_branch.add_argument("--from", dest="parent", required=True, metavar="<부모>",
+                               help="부모 브랜치 — 이 브랜치를 다시 합칠 곳")
+    p_task_branch.set_defaults(func=cmd_task_branch)
 
     # add-harness <harness> [--dry-run] — 라이브 인스턴스에 두 번째 harness 어댑터 비파괴 추가
     # pm_import.add_harness_cli 로 verbatim 위임(cmd_add_harness) — harness 는

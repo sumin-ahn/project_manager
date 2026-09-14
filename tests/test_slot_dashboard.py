@@ -721,6 +721,12 @@ class _AllocPool:
     def current_branch(self, slot, *, git_runner=None):
         return "feat-branch"
 
+    def slot_git_status(self, slot, *, git_runner=None):
+        # `_slot_era_info` 가 슬롯 바인딩마다 부르는 대역 — 이 스위트는 대시보드 수집만
+        # 보므로 parent 없음(None)으로 고정한다(신 계약 모양만 맞춤).
+        return {"slot": slot, "branch": "feat-branch", "head": None, "parent": None,
+                "children": [], "stashes": 0, "submodules": [], "dirty": False}
+
 
 def _stub_bootstrap(bs, tmp_path, pool, *, log_text: str = "# log\n"):
     """DI stub 로 격리된 PmBootstrap(alloc 모드 run 용) — board/git/pytest/log/areas/pm_state 주입."""

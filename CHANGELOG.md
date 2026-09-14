@@ -20,7 +20,8 @@
 - **앱 아이콘** — 창·Windows 실행 파일·브라우저 탭이 같은 자리(`manager/assets`)의 그림 하나를 쓴다.
 
 - **갱신이 바뀐 설정 키 이름을 옮긴다** — 엔진이 키 이름을 바꾸면 `pm-config update` 가 그 프로젝트 `local.conf` 의 옛 줄을 새 이름으로 **값 그대로** 옮기고 옛 줄을 지운다. 이름을 바꾼 것은 갱신이므로 갱신이 옮긴다 — 예전에는 안내만 나가고 채택자가 직접 고칠 때까지 그 값을 쓰는 명령이 멈춰 있었다. 대체 키가 없는 폐지 키는 옮기지 않는다(값이 갈 자리가 없어 옮기는 것이 곧 버리는 것이라, 지울지는 사람이 정한다). 옮길 것이 없으면 파일을 읽기만 하고, 미리보기(`--dry-run`)는 무엇이 옮겨질지만 말한다.
-- **슬롯이 원격 HEAD 와 얼마나 떨어져 있는지 본다** — `pm-config status --json --with-remote` 가 repo·원격마다 `ls-remote` 1회로 원격 HEAD(origin 기본 브랜치)와 슬롯 브랜치가 연결된 원격 브랜치(`@{u}`)의 존재를 묻고, 있는 것만 fetch 1회로 받는다. 슬롯마다 origin 주소, 원격 HEAD 끝 대비 앞/뒤 커밋 수, 추적 원격 브랜치의 이름·끝 커밋·앞/뒤(`remote: {url, head_branch, head, ahead, behind, upstream}`)를 싣는다. 연결이 없거나 브랜치 없이 커밋에 멈춘 슬롯은 `upstream: null`, 원격에서 지워진 연결 브랜치는 이름만 남는다. 원격에 닿지 못하면 반쪽 대조를 싣지 않고 rc 1 이다. 관리자는 앱 시작과 수동 새로고침 때만 이 조회를 돌리고(5초 주기 조회에는 넣지 않는다) 현황·구성 탭 슬롯 행 아래에 `origin 주소` · `추적 원격 브랜치 origin/<브랜치>@커밋 · N 커밋 앞` · `원격 HEAD origin/main@커밋 · N 커밋 뒤` 세 줄을 보인다. 구성 탭 repo 행에는 등록된 git 주소, 슬롯 행에는 브랜치@커밋이 선다. `repo list` 와 `status --json` 의 repo 행에 등록된 원격 주소(`git`)도 함께 나온다.
+- **브랜치마다 부모 브랜치를 기록한다** — 브랜치를 만드는 엔진 명령이 그 자리에서 부모 브랜치 이름과 갈라진 커밋을 공용 git 저장소 설정(`branch.<이름>.pm-parent`·`branch.<이름>.pm-fork`)에 적는다. 슬롯 생성(`worktree add`, 부모 = 등록 base), 묶음 브랜치(`cluster new`, 부모 = 통합 브랜치), 새 명령 `pm-config task branch <명의> <슬롯> <브랜치> --from <부모>` 셋이다. 설정은 브랜치에 붙어 있어 슬롯을 반납하거나 브랜치를 옮겨도 남고, `git branch -m` 은 따라가며 `git branch -d` 는 함께 지운다. rebase 는 이 부모를 기준으로 하고 성공하면 갈라진 커밋을 새로 적는다(`--onto` 면 부모도 바꾼다). readonly 슬롯은 브랜치가 없어 슬롯 장부에 따라갈 브랜치를 두고 refresh 가 그 최신 커밋으로 올린다.
+- **슬롯의 부모·자식 브랜치와 원격 브랜치를 본다** — `pm-config status --json` 슬롯 행이 `parent`(이름·갈라진 커밋·비교 ref·앞/뒤 커밋 수, 기록 없으면 null)·`children`(이 브랜치를 부모로 적은 브랜치)·`stashes`(이 브랜치 이름으로 쌓인 stash 수)를 싣는다. `--with-remote` 는 슬롯마다 origin 주소와 연결된 원격 브랜치(`@{u}`)의 이름·끝 커밋·앞/뒤(`remote: {url, upstream}`)를 싣고, 원격에 있는 추적 브랜치만 원격마다 `ls-remote`·fetch 1회로 받는다. 원격에 닿지 못하면 반쪽 대조 없이 rc 1 이다. 관리자 현황·구성 탭 슬롯 행 아래에 `부모 main@커밋 · N 커밋 앞` · 자식 브랜치 · stash 수 · `origin 주소` · `추적 원격 브랜치` 줄이 서고, 원격 조회는 앱 시작과 수동 새로고침 때만 돈다. 구성 탭 repo 행에는 등록된 git 주소가, 슬롯 행에는 브랜치@커밋이 선다. `repo list` 와 `status --json` 의 repo 행에 등록된 원격 주소(`git`)도 나온다.
 
 ### Changed
 
@@ -40,6 +41,8 @@
 
 ### Removed
 
+- **슬롯 단위 기준점 `set-base` 와 그 기록** — 기준점을 슬롯 장부(`lease.git.base`)에 두던 방식이다. 슬롯을 반납할 때 장부의 git 기록이 통째로 지워져 기준점도 함께 사라졌고(반납 뒤 다시 빌린 슬롯은 기준점이 비었다), 슬롯 안에서 브랜치를 바꾸면 틀린 값이 남았다. 브랜치 단위 부모 기록으로 대체했다. `worktree_pool.py set-base`·`resolve_rebase_base` 가 사라졌고, 부트스트랩 0단계의 기준점 후보 제시도 없어졌다(도착 기록이 없으면 `record` 를 안내한다). 시대차 경고는 부모 브랜치 기준이고 repo 기본값으로 대신 비교하지 않는다.
+- **`switch` 의 새 브랜치 생성과 등록 base 없는 슬롯 생성** — `switch` 는 기존 브랜치 전환만 한다. 새 브랜치는 `pm-config task branch` 로만 만든다(0단계 main-참조 안내도 이 명령이다). `alloc` 도 없는 브랜치를 만들지 않는다. areas.md 에 base 가 없는 repo 는 부모를 적을 수 없어 `worktree add` 가 멈춘다.
 - **모델 원천의 `config` 종류** — 사용자 config 파일에서 현재 값 한 줄을 읽어 그것을 "고를 수 있는 모델"로 내놓던 자리다. codex 가 유일한 사용처였는데 그 CLI 에 카탈로그 조회(`codex debug models`)가 있어 값 하나만 보이던 것 자체가 잘못이었다. `ModelSource` 의 `config_env`·`config_home`·`config_key` 와 그 판독 코드가 함께 사라지고, 조회 명령과 산출 판독 방식이 표의 값(`command`·`parse`)이 됐다. 하네스 이름으로 갈리던 분기 하나도 그 값으로 대체됐다.
 - **설정 키 `regression.min_collected`** — 하한 미달을 실패로 강등하던 검사와 그 전용 rc 라벨(`partial-collection`)이 사라졌다. 수집 0(rc 5)은 여전히 실패다.
 
@@ -48,6 +51,7 @@
 - **v1.7.11 이하 사본의 첫 full sync 가 `[source 에 없음] .project_manager/tools/external_review.py` 로 rc 2 에서 멈추는 것은 정상 동작이다.** 그 세대의 updater 는 퇴역 선언(`pm-retired-path`)을 모르고 구 reviewer 경로를 일반 소유행으로 읽는다 — manifest 나 reviewer 를 손으로 복사하지 마라.
 - 두 명령으로 완주한다: `./pm-update.sh --from <cache-or-path> --paths .project_manager/tools/pm_update.py`(구 updater 가 이미 소유하는 updater 하나만 먼저 배달) 뒤 `./pm-update.sh --from <cache-or-path>`(신 updater 의 full sync 가 `additional_reviewer.py` 를 설치하고 구 파일을 `.pm_import_backups/` 로 옮긴다).
 
+- 이 버전 전에 만든 브랜치에는 부모 기록이 없다. 현황에 `부모 기록 없음` 으로 보이고, 그 브랜치의 rebase 는 `--onto <부모>` 를 줘야 한다(성공하면 부모가 기록된다). 작업 슬롯 장부에 남은 옛 `git.base` 는 다음 도착 기록 때 빠진다.
 - `regression.min_collected` 가 남아 있는 `local.conf` 는 그대로 둬도 회귀가 막히지 않는다(그 키는 이제 읽히지 않는다). 갱신이 그 줄을 지운다.
 - 세션 살아있음 판정이 바뀌어 옛 세대가 남긴 열린 기록은 자동으로 회수되지 않는다. 관리자 화면의 [강제 닫기] 또는 `pm-config release <슬롯> --force` 로 사용자가 닫는다. 그 슬롯에 커밋하지 않은 변경이 있으면 stash 로 보관된다.
 

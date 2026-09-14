@@ -150,14 +150,34 @@ class FakeWorktreePool:
             self.op = op
             super().__init__(f"{slot} readonly {op}")
 
+    class SlotResolutionError(RuntimeError):
+        """슬롯 값 형식 거부 대역 — `task branch` 가 rc1 로 번역하는 예외 타입."""
+
+    class TaskBranchRefused(RuntimeError):
+        # 새 브랜치 생성 거부 대역 — slot/reason/detail 을 실은 엔진 예외 모양.
+        def __init__(self, slot, reason, *, detail=""):
+            self.slot = slot
+            self.reason = reason
+            tail = f" — {detail}" if detail else ""
+            super().__init__(f"슬롯 {slot!r} task branch 거부({reason}){tail}")
+
+    class ReadonlySlotMutation(RuntimeError):
+        # readonly 공유 슬롯 mutation 거부 대역 — `task branch` 도 이 예외로 rc1.
+        def __init__(self, slot, op):
+            self.slot = slot
+            self.op = op
+            super().__init__(f"슬롯 {slot!r} 은 readonly 공유 슬롯이라 `{op}` 를 거부한다")
+
     def __init__(self, *, leases=None, release_raises=None, force_returns="present",
                  set_test_raises=None, live_branches=None, reconcile=None,
                  alloc_returns=None, alloc_raises=None, task_record="__unset__",
                  end_task_result=None, validate_raises=False,
                  set_prefix_result="__unset__", tasks=None, slot_git=None,
                  reopen_result="__unset__", reopen_raises=None, end_raises=None,
-                 bare_present=True):
+                 bare_present=True, task_branch_raises=None):
         self.leases = leases or []
+        # create_task_branch 가 던질 예외 인스턴스(TaskBranchRefused·ReadonlySlotMutation 등) 또는 None.
+        self._task_branch_raises = task_branch_raises
         # 그 repo 의 공유 bare 가 디스크에 있는지([[T-0903]]) — False 면 `bare_repo_path` 가
         # 경로만 답하고 만들지 않아, 규칙 설치가 실패하는 fail-soft 분기를 친다.
         self._bare_present = bare_present
@@ -191,22 +211,41 @@ class FakeWorktreePool:
         # 미지정 → [] (task 없음 절). 각 Task 대역은 name·prefix 필드(SimpleNamespace).
         self._tasks = tasks or []
         # slot → slot_git_status dict(T-0361·§F8·T-0350). 미지정 슬롯은 _live_branches 기반
-        # 최소 dict(base 미기록·behind None)로 합성해 git 요약 배선을 fail-soft 로 친다.
+        # 최소 dict(부모 기록 없음)로 합성해 git 요약 배선을 친다.
         self._slot_git = slot_git or {}
 
-    def create_slot(self, repo, *, base=None, test_cmd=None, readonly=False, owner_task=None):
-        # base (T-0075) — areas 의 그 repo base 를 cmd_worktree_add 가 전달한다(슬롯 브랜치
-        # 파생 base). 호출 인자에 base 를 함께 기록해 배선 검증. (4-tuple 유지 — 기존 assertion 무영향.)
+    def create_slot(self, repo, *, base, test_cmd=None, readonly=False, owner_task=None):
+        # base (T-0075) — areas 의 그 repo base 를 cmd_worktree_add 가 전달한다(슬롯 브랜치의
+        # 부모). 엔진처럼 필수 키워드다. 호출 인자에 base 를 함께 기록해 배선 검증(4-tuple).
         self.calls.append(("create_slot", repo, test_cmd, base))
         # readonly (⑬·T-0358) — --readonly 플래그 전달 배선을 별도 속성으로 기록(4-tuple 불변).
         self.last_readonly = readonly
         # owner_task (ⓓB·ADR-0068) — --task 명의 생성 직결 배선을 별도 속성으로 기록(tuple 불변).
         self.last_create_owner_task = owner_task
         role = "readonly" if readonly else "work"
-        # task-명의 생성이면 그 task session 으로 leased(생성분 직결·bound). 미지정=기본 세션.
-        session = owner_task if owner_task is not None else "s1"
+        # 확정 상태는 엔진과 같은 세 갈래 — task 명의 leased · readonly 무소유 leased · 그 밖 무소유 idle.
+        if readonly:
+            state, session = "leased", ""
+        elif owner_task is not None:
+            state, session = "leased", owner_task
+        else:
+            state, session = "idle", ""
         return FakeLease(slot=f"work/{repo}_1", repo=repo, test_cmd=None if readonly else test_cmd,
-                         role=role, session=session)
+                         role=role, session=session, state=state)
+
+    def _normalize_slot(self, slot_arg):
+        # 슬롯 값 정규화 대역 — 접두 생략(`<repo>_<N>`)에 `work/` 를 붙인다(엔진 정규형). 형식 거부는
+        # 실 엔진 `_normalize_slot` 을 꽂은 테스트가 따로 본다.
+        self.calls.append(("_normalize_slot", slot_arg))
+        return slot_arg if slot_arg.startswith("work/") else f"work/{slot_arg}"
+
+    def create_task_branch(self, slot, branch, *, parent, owner_task):
+        # 슬롯 안 새 브랜치 생성 대역 — 인자(정규화 슬롯·브랜치·부모·명의)를 기록하고 SwitchResult
+        # 모양(branch·head·requested)을 돌려준다. 거부 주입 시 그 예외를 그대로 던진다.
+        self.calls.append(("create_task_branch", slot, branch, parent, owner_task))
+        if self._task_branch_raises is not None:
+            raise self._task_branch_raises
+        return SimpleNamespace(slot=slot, branch=branch, head="abc1234567890", requested=branch)
 
     def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd):
         # 보호 브랜치 pre-push 훅 (재)설치 대역 (T-0076) — repo·protected 목록을 기록해
@@ -264,14 +303,11 @@ class FakeWorktreePool:
 
     def slot_git_status(self, slot, *, git_runner=None):
         # 슬롯 git 요약 대역(T-0361·§F8·T-0350) — 명시 dict 우선, 없으면 live_branches 기반
-        # 최소 dict(base 미기록·behind None)로 합성한다. 실 slot_git_status 반환 shape 동형:
-        # slot·base({branch,commit}|None)·branch·head·behind(int|None)·behind_reason(str|None).
+        # 최소 dict(부모 기록 없음)로 합성한다. 실 slot_git_status 반환 shape 동형.
         self.calls.append(("slot_git_status", slot))
         if slot in self._slot_git:
             return self._slot_git[slot]
-        return {"slot": slot, "base": None, "branch": self._live_branches.get(slot),
-                "head": None, "behind": None,
-                "behind_reason": "기준점 미기록 — `set-base` 로 지정"}
+        return _git_status(branch=self._live_branches.get(slot))
 
     def reconcile_worktrees(self, *, git_runner=None):
         # git worktree × 장부 정합 대역(T-0295) — cmd_status 가 drift 를 surface 하는 배선을
@@ -424,7 +460,7 @@ class FakeBoard:
         )
 
     def _repo_base(self, repo):
-        # board._repo_base 대역 (T-0075) — 매핑에 없으면 None(구 스키마/솔로/미지정 폴백).
+        # board._repo_base 대역 (T-0075) — 매핑에 없으면 None(미등록/base 칸 빔 → worktree add 거부).
         return self._repo_bases.get(repo)
 
     def _areas_git_url(self, repo):
@@ -1366,7 +1402,7 @@ def test_repo_add_base_head_resolution_failure_falls_back_empty(pc, tmp_path):
         board=board, clone_runner=gitr, repos_dir=tmp_path / ".repos",
     )
     assert rc == 0
-    assert board.append_calls[0]["base"] == ""   # 해소 실패 → 빈 base(worktree 가 bare HEAD 폴백)
+    assert board.append_calls[0]["base"] == ""   # 해소 실패 → 빈 base(이후 worktree add 는 base 없음으로 거부)
 
 
 def test_repo_add_already_registered_skips_base_resolution(pc, tmp_path):
@@ -1500,17 +1536,21 @@ def test_repo_add_board_missing_errors_isolated(pc, tmp_path, monkeypatch, capsy
 
 # ── worktree add 배선 — create_slot ──────────────────────────────────────────
 
+# worktree add 는 repo 등록 base 가 있어야 슬롯을 만든다(부모 기록) — 배선 테스트용 등록 base.
+_SVC_BASE = {"svc": "main"}
+
 
 def test_worktree_add_calls_create_slot(pc, capsys):
-    """worktree add <repo> → worktree_pool.create_slot(repo, test_cmd=None, base=None)."""
+    """worktree add <repo> → worktree_pool.create_slot(repo, test_cmd=None, base=<등록 base>)."""
     wp = FakeWorktreePool()
     rc = pc.cmd_worktree_add(
-        argparse.Namespace(repo="svc", test=None, user_ack="svc"), worktree_pool=wp, board=FakeBoard()
+        argparse.Namespace(repo="svc", test=None, user_ack="svc"), worktree_pool=wp,
+        board=FakeBoard(repo_bases=_SVC_BASE),
     )
     assert rc == 0
     assert wp.did("create_slot")
-    # test_cmd 미지정 → None · areas base 없음(FakeBoard 빈 매핑) → base None(현행 bare HEAD).
-    assert ("create_slot", "svc", None, None) in wp.calls
+    # test_cmd 미지정 → None · base 는 areas 등록값(main).
+    assert ("create_slot", "svc", None, "main") in wp.calls
     assert "work/svc_1" in capsys.readouterr().out
 
 
@@ -1522,7 +1562,7 @@ def test_worktree_add_readonly_flag_forwards_readonly(pc, capsys):
     wp = FakeWorktreePool()
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, readonly=True, user_ack="svc"), worktree_pool=wp,
-        board=FakeBoard(),
+        board=FakeBoard(repo_bases=_SVC_BASE),
     )
     assert rc == 0
     assert wp.last_readonly is True                       # --readonly → create_slot(readonly=True)
@@ -1536,7 +1576,8 @@ def test_worktree_add_default_not_readonly(pc, capsys):
     """worktree add <repo>(플래그 없음) → create_slot(readonly=False)·기존 바인딩 다음스텝(sensitivity 대조)."""
     wp = FakeWorktreePool()
     rc = pc.cmd_worktree_add(
-        argparse.Namespace(repo="svc", test=None, user_ack="svc"), worktree_pool=wp, board=FakeBoard()
+        argparse.Namespace(repo="svc", test=None, user_ack="svc"), worktree_pool=wp,
+        board=FakeBoard(repo_bases=_SVC_BASE),
     )
     assert rc == 0
     assert wp.last_readonly is False
@@ -1548,10 +1589,10 @@ def test_worktree_add_test_flag_forwards_test_cmd(pc, capsys):
     wp = FakeWorktreePool()
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test="ctest -R hil2", user_ack="svc"), worktree_pool=wp,
-        board=FakeBoard(),
+        board=FakeBoard(repo_bases=_SVC_BASE),
     )
     assert rc == 0
-    assert ("create_slot", "svc", "ctest -R hil2", None) in wp.calls
+    assert ("create_slot", "svc", "ctest -R hil2", "main") in wp.calls
     out = capsys.readouterr().out
     assert "test_cmd 바인딩" in out and "ctest -R hil2" in out  # 사용자 surface
 
@@ -1565,7 +1606,8 @@ def test_worktree_add_success_output_shows_bootstrap_binding_next_step(pc, capsy
     """
     wp = FakeWorktreePool()   # create_slot → FakeLease(slot="work/svc_1", repo="svc")
     rc = pc.cmd_worktree_add(
-        argparse.Namespace(repo="svc", test=None, user_ack="svc"), worktree_pool=wp, board=FakeBoard()
+        argparse.Namespace(repo="svc", test=None, user_ack="svc"), worktree_pool=wp,
+        board=FakeBoard(repo_bases=_SVC_BASE),
     )
     assert rc == 0
     out = capsys.readouterr().out
@@ -1592,24 +1634,32 @@ def test_worktree_add_passes_areas_base_to_create_slot(pc, capsys):
     assert ("create_slot", "svc", None, "develop") in wp.calls
 
 
-def test_worktree_add_no_areas_base_passes_none(pc, capsys):
-    """areas 에 base 없으면(구 스키마/솔로/미지정) create_slot(base=None) — 현행 회귀 0 (T-0075)."""
+def test_worktree_add_without_registered_base_refuses_before_create_slot(pc, capsys):
+    """areas 에 그 repo base 가 없으면 슬롯을 만들지 않는다 — 부모를 적을 수 없는 브랜치를 파지 않는다.
+
+    create_slot·보호 훅 설치·사본 루트 규칙 설치 어느 것도 부르지 않고 rc 1 + 원인 안내로 끝난다.
+    """
     wp = FakeWorktreePool()
-    board = FakeBoard(repo_bases={})   # 그 repo base 없음 → None 폴백
+    board = FakeBoard(repo_bases={})   # 그 repo base 없음
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, user_ack="svc"), worktree_pool=wp, board=board
     )
-    assert rc == 0
-    assert ("create_slot", "svc", None, None) in wp.calls
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert err.startswith("[중단] repo 'svc' 등록에 base 브랜치가 없다")
+    assert "base" in err and "areas.md" in err
+    assert not wp.did("create_slot")
+    assert not wp.did("install_protected_hook")
+    assert not wp.did("bare_repo_path")
 
 
 def test_worktree_add_missing_test_attr_defaults_none(pc, capsys):
     """Namespace 에 test 속성이 아예 없어도 getattr 폴백으로 None(파사드 직접 호출 견고성)."""
     wp = FakeWorktreePool()
     rc = pc.cmd_worktree_add(argparse.Namespace(repo="svc", user_ack="svc"), worktree_pool=wp,
-                             board=FakeBoard())
+                             board=FakeBoard(repo_bases=_SVC_BASE))
     assert rc == 0
-    assert ("create_slot", "svc", None, None) in wp.calls
+    assert ("create_slot", "svc", None, "main") in wp.calls
 
 
 # ── 보호 브랜치 훅 (재)설치 배선 (T-0076) ─────────────────────────────────────
@@ -1626,7 +1676,7 @@ def _install_hook_call(wp):
 def test_worktree_add_installs_protected_hook(pc, capsys):
     """worktree add → install_protected_hook(repo, protected) (재)설치 호출 (T-0076·자가치유)."""
     wp = FakeWorktreePool()
-    board = FakeBoard(repo_protecteds={"svc": ["main", "develop"]})
+    board = FakeBoard(repo_bases=_SVC_BASE, repo_protecteds={"svc": ["main", "develop"]})
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, user_ack="svc"), worktree_pool=wp, board=board
     )
@@ -1642,7 +1692,7 @@ def test_worktree_add_installs_the_ticket_copy_exclude(pc, tmp_path, capsys):
     두 번 불러도 줄은 하나다(멱등).
     """
     wp = FakeWorktreePool()
-    board = FakeBoard(repo_protecteds={"svc": ["main"]})
+    board = FakeBoard(repo_bases=_SVC_BASE, repo_protecteds={"svc": ["main"]})
     args = argparse.Namespace(repo="svc", test=None, user_ack="svc")
 
     assert pc.cmd_worktree_add(args, worktree_pool=wp, board=board) == 0
@@ -1657,7 +1707,7 @@ def test_worktree_add_installs_the_ticket_copy_exclude(pc, tmp_path, capsys):
 def test_worktree_add_stays_green_when_the_exclude_install_fails(pc, tmp_path, capsys):
     """규칙 설치 실패는 경고일 뿐 슬롯 생성을 막지 않는다 (fail-soft·훅 설치와 같은 계약)."""
     wp = FakeWorktreePool(bare_present=False)
-    board = FakeBoard(repo_protecteds={"svc": ["main"]})
+    board = FakeBoard(repo_bases=_SVC_BASE, repo_protecteds={"svc": ["main"]})
 
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
@@ -1672,7 +1722,7 @@ def test_worktree_add_stays_green_when_the_exclude_install_fails(pc, tmp_path, c
 def test_worktree_add_install_hook_uses_default_protected(pc, capsys):
     """areas 에 protected 미지정 → board default(main/master/develop)로 훅 설치 (T-0076)."""
     wp = FakeWorktreePool()
-    board = FakeBoard(repo_protecteds={})   # 미지정 → FakeBoard._repo_protected default
+    board = FakeBoard(repo_bases=_SVC_BASE, repo_protecteds={})   # 미지정 → FakeBoard._repo_protected default
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, user_ack="svc"), worktree_pool=wp, board=board
     )
@@ -1763,7 +1813,7 @@ def test_ordinary_hook_install_error_does_not_abort_repo_or_worktree_add(
     else:
         rc = pc.cmd_worktree_add(
             argparse.Namespace(repo="svc", test=None, readonly=False, task=None, user_ack="svc"),
-            board=FakeBoard(), worktree_pool=pool,
+            board=FakeBoard(repo_bases=_SVC_BASE), worktree_pool=pool,
         )
     captured = capsys.readouterr()
     assert rc == 0
@@ -2202,11 +2252,11 @@ def test_worktree_add_create_failure_errors(pc, capsys):
     """create_slot 이 RuntimeError(예: worktree add 실패)면 rc 1 + 명시 에러."""
     wp = FakeWorktreePool()
 
-    def boom(repo, *, base=None, test_cmd=None, readonly=False, owner_task=None):
+    def boom(repo, *, base, test_cmd=None, readonly=False, owner_task=None):
         raise RuntimeError("git worktree add failed")
     wp.create_slot = boom
     rc = pc.cmd_worktree_add(argparse.Namespace(repo="svc", test=None, user_ack="svc"), worktree_pool=wp,
-                             board=FakeBoard())
+                             board=FakeBoard(repo_bases=_SVC_BASE))
     assert rc == 1
     assert "슬롯 생성 실패" in capsys.readouterr().err
 
@@ -2225,11 +2275,11 @@ def test_worktree_add_bare_missing_caught_as_runtime_error(pc, capsys):
 
     wp = FakeWorktreePool()
 
-    def bare_missing(repo, *, base=None, test_cmd=None, readonly=False, owner_task=None):
+    def bare_missing(repo, *, base, test_cmd=None, readonly=False, owner_task=None):
         raise wp_mod.BareRepoMissing(repo, TOOLS.parent / ".repos" / f"{repo}.git")
     wp.create_slot = bare_missing
     rc = pc.cmd_worktree_add(argparse.Namespace(repo="svc", test=None, user_ack="svc"), worktree_pool=wp,
-                             board=FakeBoard())
+                             board=FakeBoard(repo_bases=_SVC_BASE))
     assert rc == 1
     assert "슬롯 생성 실패" in capsys.readouterr().err
 
@@ -2370,10 +2420,15 @@ def test_status_engine_missing_errors(pc, monkeypatch, capsys):
 # ── status 2축 cockpit — task 상황 + slot 풀·슬롯당 git 요약 (T-0361·§F8·결정 ⑥⑪) ──
 
 
-def _git_status(*, base=None, branch=None, head=None, behind=None, behind_reason=None):
+def _git_status(*, parent=None, branch=None, head=None):
     """slot_git_status 반환 shape 대역(T-0361·§F8) — 명시 필드로 조립."""
-    return {"slot": "?", "base": base, "branch": branch, "head": head,
-            "behind": behind, "behind_reason": behind_reason}
+    return {"slot": "?", "branch": branch, "head": head, "parent": parent, "children": [],
+            "stashes": 0, "submodules": [], "dirty": False}
+
+
+def _parent_row(name, fork, *, ref, ahead=None, behind=None):
+    """slot_git_status 의 parent 행 — ref None 이면 부모 브랜치가 지워진 경우."""
+    return {"name": name, "fork": fork, "ref": ref, "ahead": ahead, "behind": behind}
 
 
 def test_status_task_axis_lists_named_tasks_and_workspaces(pc, monkeypatch, capsys):
@@ -2414,72 +2469,62 @@ def test_status_task_axis_empty_when_no_named_tasks(pc, capsys):
     assert "task 없음" in out
 
 
-def test_status_slot_git_summary_behind_when_base_recorded(pc, monkeypatch, capsys):
-    """DoD — base 기록 있으면 슬롯 git 요약 = `branch@head (base: b@sha · N behind)` (T-0361·§F8·T-0350)."""
+def test_status_slot_git_summary_shows_parent_ahead_behind(pc, monkeypatch, capsys):
+    """부모 기록이 있으면 슬롯 git 요약 = `branch@head (부모: 이름@갈라진 커밋 · 앞 N · 뒤 M)`."""
     leases = [FakeLease(slot="work/svc_1", repo="svc", session="me", state="leased")]
     slot_git = {
         "work/svc_1": _git_status(
-            base={"branch": "origin/main", "commit": "def6789012345"},
-            branch="feat-x", head="abc1234567890", behind=3, behind_reason=None),
+            parent=_parent_row("main", "def6789012345", ref="origin/main", ahead=1, behind=3),
+            branch="feat-x", head="abc1234567890"),
     }
     wp = FakeWorktreePool(leases=leases, slot_git=slot_git)
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
     assert rc == 0
     out = capsys.readouterr().out
-    # branch@head(단축 8) + base branch@commit(단축 8) + N behind.
-    assert "feat-x@abc12345" in out
-    assert "base: origin/main@def67890" in out
-    assert "3 behind" in out
+    # branch@head(단축 8) + 부모 이름@갈라진 커밋(단축 8) + 앞/뒤.
+    assert "feat-x@abc12345 (부모: main@def67890 · 앞 1 · 뒤 3)" in out
     assert ("slot_git_status", "work/svc_1") in wp.calls
 
 
-def test_status_slot_git_summary_unrecorded_base_shows_reason(pc, monkeypatch, capsys):
-    """DoD — base 미기록이면 behind=`-` + 이유(자동 추론 금지·결정 ⑪·침묵 추론 금지)."""
+def test_status_slot_git_summary_without_parent_record(pc, monkeypatch, capsys):
+    """부모 기록이 없으면 그 사실만 적는다 — 부모를 추측해 앞/뒤를 세지 않는다."""
     leases = [FakeLease(slot="work/svc_1", repo="svc", session="me", state="leased")]
     slot_git = {
-        "work/svc_1": _git_status(
-            base=None, branch="feat-x", head="abc1234567890", behind=None,
-            behind_reason="기준점 미기록 — `set-base` 로 지정"),
+        "work/svc_1": _git_status(parent=None, branch="feat-x", head="abc1234567890"),
     }
     wp = FakeWorktreePool(leases=leases, slot_git=slot_git)
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
     assert rc == 0
     out = capsys.readouterr().out
-    assert "base: -" in out
-    assert "기준점 미기록" in out
-    assert "set-base" in out
+    assert "feat-x@abc12345 (부모 기록 없음)" in out
 
 
-def test_status_slot_git_summary_base_recorded_but_unresolved(pc, monkeypatch, capsys):
-    """base 는 기록됐으나 behind 계산 불가(ref 미해소/fetch 필요) → base 표시 + `- (이유)`."""
+def test_status_slot_git_summary_parent_branch_deleted(pc, monkeypatch, capsys):
+    """부모 브랜치가 지워졌으면(비교 ref 없음) 앞/뒤 대신 `부모 브랜치 없음`."""
     leases = [FakeLease(slot="work/svc_1", repo="svc", session="me", state="leased")]
     slot_git = {
         "work/svc_1": _git_status(
-            base={"branch": "origin/dev", "commit": "0011223344"},
-            branch="feat", head="99887766", behind=None,
-            behind_reason="base.branch 해소 실패(ref 부재/fetch 필요)"),
+            parent=_parent_row("dev", "0011223344", ref=None), branch="feat", head="99887766"),
     }
     wp = FakeWorktreePool(leases=leases, slot_git=slot_git)
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     rc = pc.cmd_status(argparse.Namespace(command="status"), worktree_pool=wp)
     assert rc == 0
     out = capsys.readouterr().out
-    assert "base: origin/dev@00112233" in out
-    assert "해소 실패" in out
-    assert "behind" not in out.split("slot 풀")[1] or "- (" in out.split("slot 풀")[1]
+    assert "feat@99887766 (부모: dev@00112233 · 부모 브랜치 없음)" in out
 
 
 def test_status_readonly_slot_git_shows_detached_and_role(pc, monkeypatch, capsys):
-    """DoD — readonly 슬롯은 role 표시·git 요약 branch `(detached)`·base 만 의미 (T-0361·⑬·T-0358)."""
+    """DoD — readonly 슬롯은 role 표시·git 요약 branch `(detached)`·부모는 따라갈 브랜치 (T-0361·⑬·T-0358)."""
     leases = [
         FakeLease(slot="work/svc_1", repo="svc", session="", state="leased", role="readonly"),
     ]
     slot_git = {
         "work/svc_1": _git_status(
-            base={"branch": "origin/main", "commit": "aabbccdd1122"},
-            branch="feat-live", head="ffee00112233", behind=0, behind_reason=None),
+            parent=_parent_row("main", "aabbccdd1122", ref="origin/main", ahead=0, behind=0),
+            branch="feat-live", head="ffee00112233"),
     }
     wp = FakeWorktreePool(leases=leases, slot_git=slot_git)
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
@@ -2491,7 +2536,7 @@ def test_status_readonly_slot_git_shows_detached_and_role(pc, monkeypatch, capsy
     # readonly = branch 축은 (detached)(무소유 기준면)이라 live branch 를 요약에 안 씌운다.
     assert "(detached)@" in pool
     assert "feat-live@" not in pool          # readonly 는 branch 이름을 요약에 안 실음
-    assert "base: origin/main@aabbccdd" in pool
+    assert "부모: main@aabbccdd" in pool
 
 
 def test_status_slot_git_summary_task_attribution(pc, monkeypatch, capsys):
@@ -2774,11 +2819,12 @@ def test_main_routes_repo_add_to_engine(pc, monkeypatch, tmp_path):
 def test_main_routes_worktree_add_to_engine(pc, monkeypatch):
     """main(["worktree","add","svc"]) 가 cmd_worktree_add → create_slot(test_cmd=None) 로 라우팅."""
     wp = FakeWorktreePool()
+    board = FakeBoard(repo_bases=_SVC_BASE)
     monkeypatch.setattr(pc, "_load_module",
-                        lambda name, filename: wp if name == "worktree_pool" else None)
+                        lambda name, filename: {"worktree_pool": wp, "board": board}.get(name))
     rc = pc.main(["worktree", "add", "svc", "--user-ack", "svc"])
     assert rc == 0
-    assert ("create_slot", "svc", None, None) in wp.calls   # --test 없음 → None(현행 하위호환)
+    assert ("create_slot", "svc", None, "main") in wp.calls   # --test 없음 → None · base 는 로드된 board 등록값
 
 
 def test_main_worktree_add_marked_skew_translates_at_cli_terminal(pc, monkeypatch, capsys):
@@ -2792,8 +2838,9 @@ def test_main_worktree_add_marked_skew_translates_at_cli_terminal(pc, monkeypatc
             raise _marked_skew("worktree_pool.py 사본 불일치")
 
     pool = _SkewPool()
+    board = FakeBoard(repo_bases=_SVC_BASE)
     monkeypatch.setattr(pc, "_load_module",
-                        lambda name, filename: pool if name == "worktree_pool" else None)
+                        lambda name, filename: {"worktree_pool": pool, "board": board}.get(name))
     rc = pc.main(["worktree", "add", "svc", "--test", "pytest -q", "--user-ack", "svc"])
     err = capsys.readouterr().err
     assert rc == 1
@@ -2809,11 +2856,12 @@ def test_main_worktree_add_test_flag_parses_and_forwards(pc, monkeypatch):
     wp 로 create_slot 호출의 test_cmd 인자를 관찰한다(실 worktree add 없이).
     """
     wp = FakeWorktreePool()
+    board = FakeBoard(repo_bases=_SVC_BASE)
     monkeypatch.setattr(pc, "_load_module",
-                        lambda name, filename: wp if name == "worktree_pool" else None)
+                        lambda name, filename: {"worktree_pool": wp, "board": board}.get(name))
     rc = pc.main(["worktree", "add", "svc", "--test", "make hil3", "--user-ack", "svc"])
     assert rc == 0
-    assert ("create_slot", "svc", "make hil3", None) in wp.calls
+    assert ("create_slot", "svc", "make hil3", "main") in wp.calls
 
 
 def test_main_repo_without_add_shows_group_help(pc):
@@ -3051,11 +3099,12 @@ def test_worktree_add_test_flag_skips_prompt(pc):
 
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test="ctest -R hil2", user_ack="svc"),
-        worktree_pool=wp, input_fn=fake_input, is_tty=lambda: True,
+        worktree_pool=wp, board=FakeBoard(repo_bases=_SVC_BASE),
+        input_fn=fake_input, is_tty=lambda: True,
     )
     assert rc == 0
     assert prompted == []  # --test 있으면 프롬프트 안 함
-    assert ("create_slot", "svc", "ctest -R hil2", None) in wp.calls
+    assert ("create_slot", "svc", "ctest -R hil2", "main") in wp.calls
 
 
 def test_worktree_add_no_test_tty_prompts_for_build_cmd(pc, monkeypatch):
@@ -3064,10 +3113,11 @@ def test_worktree_add_no_test_tty_prompts_for_build_cmd(pc, monkeypatch):
     monkeypatch.setattr(pc, "_resolve_repo_test_cmd", lambda repo, **kw: "pytest -q")
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
-        worktree_pool=wp, input_fn=lambda prompt: "make hil3", is_tty=lambda: True,
+        worktree_pool=wp, board=FakeBoard(repo_bases=_SVC_BASE),
+        input_fn=lambda prompt: "make hil3", is_tty=lambda: True,
     )
     assert rc == 0
-    assert ("create_slot", "svc", "make hil3", None) in wp.calls   # 비어있지 않은 입력만 바인딩
+    assert ("create_slot", "svc", "make hil3", "main") in wp.calls   # 비어있지 않은 입력만 바인딩
 
 
 def test_worktree_add_prompt_empty_input_binds_none(pc, monkeypatch):
@@ -3081,12 +3131,13 @@ def test_worktree_add_prompt_empty_input_binds_none(pc, monkeypatch):
     monkeypatch.setattr(pc, "_resolve_repo_test_cmd", lambda repo, **kw: "pytest -q")
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
-        worktree_pool=wp, input_fn=lambda prompt: "", is_tty=lambda: True,
+        worktree_pool=wp, board=FakeBoard(repo_bases=_SVC_BASE),
+        input_fn=lambda prompt: "", is_tty=lambda: True,
     )
     assert rc == 0
-    assert ("create_slot", "svc", None, None) in wp.calls          # 빈입력 → None(슬롯 미바인딩)
+    assert ("create_slot", "svc", None, "main") in wp.calls          # 빈입력 → None(슬롯 미바인딩)
     # 기본값(pytest -q)이 슬롯에 잘못 박히지 않았는지 — areas 폴백 보존의 핵심.
-    assert ("create_slot", "svc", "pytest -q", None) not in wp.calls
+    assert ("create_slot", "svc", "pytest -q", "main") not in wp.calls
 
 
 def test_worktree_add_no_test_non_tty_skips_prompt(pc):
@@ -3100,21 +3151,26 @@ def test_worktree_add_no_test_non_tty_skips_prompt(pc):
 
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
-        worktree_pool=wp, input_fn=fake_input, is_tty=lambda: False,
+        worktree_pool=wp, board=FakeBoard(repo_bases=_SVC_BASE),
+        input_fn=fake_input, is_tty=lambda: False,
     )
     assert rc == 0
     assert prompted == []                                   # 비-tty → 프롬프트 안 함
-    assert ("create_slot", "svc", None, None) in wp.calls         # 현행 None(폴백)
+    assert ("create_slot", "svc", None, "main") in wp.calls         # 현행 None(폴백)
 
 
 class _FakeBoardAreasRow:
-    """board 대역 — _areas_row_for_prefix(prefix) 만 제공(test_cmd resolve 검증용)."""
+    """board 대역 — _areas_row_for_prefix(prefix)(test_cmd resolve 검증용) + _repo_base(repo)."""
 
-    def __init__(self, *, rows=None):
-        self._rows = rows or {}   # prefix → row dict
+    def __init__(self, *, rows=None, bases=None):
+        self._rows = rows or {}    # prefix → row dict
+        self._bases = bases or {}  # repo → base (worktree add 가 슬롯 브랜치 부모로 쓴다)
 
     def _areas_row_for_prefix(self, prefix):
         return self._rows.get(prefix)
+
+    def _repo_base(self, repo):
+        return self._bases.get(repo)
 
 
 def test_resolve_repo_test_cmd_prefers_areas(pc, monkeypatch):
@@ -3143,7 +3199,7 @@ def test_resolve_repo_test_cmd_no_board_falls_back(pc, monkeypatch):
 def test_worktree_add_prompt_displays_resolved_default(pc, monkeypatch):
     """프롬프트 표시값 = 그 repo 의 areas→local.conf→pytest-q resolve (Enter 적용값 투명화)."""
     wp = FakeWorktreePool()
-    board = _FakeBoardAreasRow(rows={"svc": {"test_cmd": "go test ./..."}})
+    board = _FakeBoardAreasRow(rows={"svc": {"test_cmd": "go test ./..."}}, bases=_SVC_BASE)
     prompts = []
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
@@ -3155,20 +3211,20 @@ def test_worktree_add_prompt_displays_resolved_default(pc, monkeypatch):
     # 프롬프트에 그 repo 의 areas 폴백값(go test)이 표시 — Enter 시 적용될 값.
     assert any("go test ./..." in p for p in prompts)
     # 빈입력이라 슬롯엔 안 박힘(must-fix 1·areas 폴백 보존).
-    assert ("create_slot", "svc", None, None) in wp.calls
+    assert ("create_slot", "svc", None, "main") in wp.calls
 
 
 def test_worktree_add_empty_input_does_not_override_areas(pc, monkeypatch):
     """areas 에 repo test_cmd 있어도 빈입력은 그걸 슬롯에 박지 않음(해소 체인 보존·must-fix 1)."""
     wp = FakeWorktreePool()
-    board = _FakeBoardAreasRow(rows={"svc": {"test_cmd": "go test ./..."}})
+    board = _FakeBoardAreasRow(rows={"svc": {"test_cmd": "go test ./..."}}, bases=_SVC_BASE)
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
         worktree_pool=wp, board=board, input_fn=lambda prompt: "", is_tty=lambda: True,
     )
     assert rc == 0
-    assert ("create_slot", "svc", None, None) in wp.calls               # 슬롯 미바인딩
-    assert ("create_slot", "svc", "go test ./...", None) not in wp.calls  # areas 안 덮음
+    assert ("create_slot", "svc", None, "main") in wp.calls               # 슬롯 미바인딩
+    assert ("create_slot", "svc", "go test ./...", "main") not in wp.calls  # areas 안 덮음
 
 
 def test_worktree_add_prompt_eof_falls_back_none(pc, monkeypatch):
@@ -3181,10 +3237,10 @@ def test_worktree_add_prompt_eof_falls_back_none(pc, monkeypatch):
 
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
-        worktree_pool=wp, input_fn=boom, is_tty=lambda: True,
+        worktree_pool=wp, board=FakeBoard(repo_bases=_SVC_BASE), input_fn=boom, is_tty=lambda: True,
     )
     assert rc == 0
-    assert ("create_slot", "svc", None, None) in wp.calls         # EOF → None 폴백
+    assert ("create_slot", "svc", None, "main") in wp.calls         # EOF → None 폴백
 
 
 def test_worktree_add_prompt_keyboardinterrupt_falls_back_none(pc, monkeypatch):
@@ -3197,10 +3253,10 @@ def test_worktree_add_prompt_keyboardinterrupt_falls_back_none(pc, monkeypatch):
 
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
-        worktree_pool=wp, input_fn=boom, is_tty=lambda: True,
+        worktree_pool=wp, board=FakeBoard(repo_bases=_SVC_BASE), input_fn=boom, is_tty=lambda: True,
     )
     assert rc == 0
-    assert ("create_slot", "svc", None, None) in wp.calls
+    assert ("create_slot", "svc", None, "main") in wp.calls
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -3430,7 +3486,7 @@ def test_worktree_add_task_creates_and_leases_and_reenumerates(pc, capsys):
     wp = FakeWorktreePool(leases=leases, live_branches={"work/svc_1": "svc_1"})
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, readonly=False, task="job", user_ack="svc"),
-        worktree_pool=wp, board=FakeBoard()
+        worktree_pool=wp, board=FakeBoard(repo_bases=_SVC_BASE)
     )
     assert rc == 0
     assert wp.last_create_owner_task == "job"   # 생성 직후 그 슬롯 task 명의 대여(ⓓB)
@@ -3444,7 +3500,7 @@ def test_worktree_add_task_and_readonly_mutually_exclusive(pc, capsys):
     wp = FakeWorktreePool()
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, readonly=True, task="job", user_ack="svc"),
-        worktree_pool=wp, board=FakeBoard()
+        worktree_pool=wp, board=FakeBoard(repo_bases=_SVC_BASE)
     )
     assert rc == 1
     assert "함께 쓸 수 없다" in capsys.readouterr().err
@@ -3456,9 +3512,10 @@ def test_worktree_add_task_validates_name(pc, capsys):
     wp = FakeWorktreePool(validate_raises=True)
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, readonly=False, task="../evil", user_ack="svc"),
-        worktree_pool=wp, board=FakeBoard()
+        worktree_pool=wp, board=FakeBoard(repo_bases=_SVC_BASE)
     )
     assert rc == 1
+    assert "부적합 task 명" in capsys.readouterr().err   # base 거부가 아니라 이름 검증에서 멈췄다
     assert not wp.did("create_slot")
 
 
@@ -3467,7 +3524,7 @@ def test_worktree_add_task_requires_prebound(pc, capsys):
     wp = FakeWorktreePool(task_record=None)   # find_task → None(미바인딩)
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, readonly=False, task="job", user_ack="svc"),
-        worktree_pool=wp, board=FakeBoard()
+        worktree_pool=wp, board=FakeBoard(repo_bases=_SVC_BASE)
     )
     assert rc == 1
     assert "pm-bootstrap" in capsys.readouterr().err
@@ -3481,7 +3538,7 @@ def test_worktree_add_task_reserved_name_rejected_via_resolved_board(pc, capsys,
     가 None → 예약패턴 검증이 add 경로만 무력화됐다(alloc 은 board 해소). board 해소로 계약 통일.
     """
     wp = FakeWorktreePool()
-    board = FakeBoard(registered=("svc",))
+    board = FakeBoard(registered=("svc",), repo_bases=_SVC_BASE)
     # board 미주입(main 디스패치처럼) — _load_module 이 board 를 돌려주도록 monkeypatch.
     monkeypatch.setattr(pc, "_load_module",
                         lambda name, filename: board if name == "board" else None)
@@ -3499,7 +3556,7 @@ def test_worktree_add_task_reserved_name_rejected_via_resolved_board(pc, capsys,
 def test_worktree_add_task_forwards_registered_repos_when_injected(pc):
     """board 주입 경로도 registered_repos 전달 — add 예약 검증 계약(alloc 동형·must-fix ①)."""
     wp = FakeWorktreePool()
-    board = FakeBoard(registered=("svc", "acc"))
+    board = FakeBoard(registered=("svc", "acc"), repo_bases=_SVC_BASE)
     pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, readonly=False, task="job", user_ack="svc"),
         worktree_pool=wp, board=board
@@ -3512,7 +3569,8 @@ def test_worktree_add_without_task_no_reenumerate(pc, capsys):
     """--task 미지정 add(현행 경로)는 owner_task=None·재열거 없음(회귀 0)."""
     wp = FakeWorktreePool()
     rc = pc.cmd_worktree_add(
-        argparse.Namespace(repo="svc", test=None, user_ack="svc"), worktree_pool=wp, board=FakeBoard()
+        argparse.Namespace(repo="svc", test=None, user_ack="svc"), worktree_pool=wp,
+        board=FakeBoard(repo_bases=_SVC_BASE)
     )
     assert rc == 0
     assert wp.last_create_owner_task is None
@@ -3925,3 +3983,100 @@ def test_main_task_group_without_sub_shows_help(pc, capsys):
     with pytest.raises(SystemExit):
         # argparse 그룹 --help 는 SystemExit(0) 로 끝난다(repo/worktree 동형 경로).
         pc.main(["task"])
+
+
+# ════════════════════════════════════════════════════════════════════════
+# task branch <이름> <슬롯> <브랜치> --from <부모> — 슬롯 안 새 브랜치의 유일한 생성 경로
+#   슬롯 정규화(`_normalize_slot`) → create_task_branch(slot, branch, parent=, owner_task=이름).
+#   슬롯 형식 거부·엔진 거부(TaskBranchRefused·ReadonlySlotMutation) = rc1 + 엔진 문구 그대로.
+# ════════════════════════════════════════════════════════════════════════
+
+
+def _task_branch_args(*, name="job", slot="svc_1", branch="task/feat", parent="main"):
+    return argparse.Namespace(name=name, slot=slot, branch=branch, parent=parent)
+
+
+def test_build_parser_task_branch_three_positionals_and_required_from(pc, capsys):
+    """파서 모양 — 위치 인자 3개(명의·슬롯·브랜치) + 필수 `--from`. 슬롯은 `--slot` 플래그가 아니다."""
+    parser = pc.build_parser()
+    args = parser.parse_args(["task", "branch", "job", "svc_1", "task/feat", "--from", "main"])
+    assert (args.name, args.slot, args.branch, args.parent) == ("job", "svc_1", "task/feat", "main")
+    assert args.func is pc.cmd_task_branch
+    # `--from` 없이는 받지 않는다 — 부모 없는 새 브랜치는 없다.
+    with pytest.raises(SystemExit):
+        parser.parse_args(["task", "branch", "job", "svc_1", "task/feat"])
+    # 위치 인자가 모자라면 거부한다(슬롯 암묵 선택 없음).
+    with pytest.raises(SystemExit):
+        parser.parse_args(["task", "branch", "job", "task/feat", "--from", "main"])
+    # 슬롯을 `--slot` 플래그로 주는 모양은 없다.
+    with pytest.raises(SystemExit):
+        parser.parse_args(["task", "branch", "job", "task/feat", "--slot", "svc_1", "--from", "main"])
+    capsys.readouterr()
+
+
+def test_task_branch_calls_engine_with_normalized_slot_parent_and_owner(pc, capsys):
+    """성공 경로 — 정규화한 슬롯으로 create_task_branch(slot, branch, parent=, owner_task=이름) 호출 + ✓ 보고."""
+    wp = FakeWorktreePool()
+    rc = pc.cmd_task_branch(_task_branch_args(), worktree_pool=wp)
+    assert rc == 0
+    assert ("_normalize_slot", "svc_1") in wp.calls
+    assert ("create_task_branch", "work/svc_1", "task/feat", "main", "job") in wp.calls
+    captured = capsys.readouterr()
+    assert captured.out.startswith("✓ 슬롯 work/svc_1 에 새 브랜치 `task/feat` 를 만들었다")
+    assert "부모 `main` @ abc12345" in captured.out      # 부모 이름 + 갈라진 커밋(단축 8)
+    assert captured.err == ""
+
+
+def test_main_routes_task_branch_to_engine(pc, monkeypatch):
+    """main(["task","branch",…,"--from",…]) → cmd_task_branch → create_task_branch 라우팅."""
+    wp = FakeWorktreePool()
+    monkeypatch.setattr(pc, "_load_module",
+                        lambda name, filename: wp if name == "worktree_pool" else None)
+    rc = pc.main(["task", "branch", "job", "work/svc_2", "fix/x", "--from", "develop"])
+    assert rc == 0
+    assert ("create_task_branch", "work/svc_2", "fix/x", "develop", "job") in wp.calls
+
+
+def test_task_branch_slot_format_refused_rc1_before_engine(pc, capsys):
+    """슬롯 형식 거부 — 실 엔진 `_normalize_slot` 의 SlotResolutionError 를 rc1 + 그 문구로. 생성 호출 0."""
+    spec = importlib.util.spec_from_file_location("worktree_pool", TOOLS / "worktree_pool.py")
+    engine = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(engine)
+    with pytest.raises(engine.SlotResolutionError) as refused:
+        engine._normalize_slot("../evil")
+
+    wp = FakeWorktreePool()
+    wp._normalize_slot = engine._normalize_slot
+    wp.SlotResolutionError = engine.SlotResolutionError
+    rc = pc.cmd_task_branch(_task_branch_args(slot="../evil"), worktree_pool=wp)
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert captured.err == f"[중단] {refused.value}\n"
+    assert captured.out == ""
+    assert not wp.did("create_task_branch")
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        FakeWorktreePool.TaskBranchRefused("work/svc_1", "dirty", detail="커밋 안 한 변경"),
+        FakeWorktreePool.ReadonlySlotMutation("work/svc_1", "task branch"),
+    ],
+    ids=["task-branch-refused", "readonly-slot"],
+)
+def test_task_branch_engine_refusal_rc1_with_engine_wording(pc, capsys, refusal):
+    """엔진 거부 — TaskBranchRefused·ReadonlySlotMutation 은 rc1 + `[중단] <엔진 문구>` 그대로(가공 없음)."""
+    wp = FakeWorktreePool(task_branch_raises=refusal)
+    rc = pc.cmd_task_branch(_task_branch_args(), worktree_pool=wp)
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert captured.err == f"[중단] {refusal}\n"
+    assert captured.out == ""
+    assert wp.did("create_task_branch")
+
+
+def test_task_branch_other_engine_errors_propagate(pc):
+    """거부 두 타입 밖의 엔진 오류는 잡지 않는다 — rc 로 접지 않고 그대로 올라간다."""
+    wp = FakeWorktreePool(task_branch_raises=OSError("장부 쓰기 실패"))
+    with pytest.raises(OSError, match="장부 쓰기 실패"):
+        pc.cmd_task_branch(_task_branch_args(), worktree_pool=wp)

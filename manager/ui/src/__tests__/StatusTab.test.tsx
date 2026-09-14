@@ -10,14 +10,17 @@ const document_ = fixture as unknown as StatusDocument;
 describe("슬롯의 원격 대조", () => {
   it("슬롯 행 아래에 그 슬롯의 대조가 선다", () => {
     const slot = document_.slots[0];
-    const value = { url: "git@example.invalid:app.git", head_branch: "main",
-                    head: "e4f2436f55d79f70147d19fd65187f88fd3650be", ahead: 0, behind: 1, upstream: null };
+    const value = { url: "git@example.invalid:app.git", upstream: null };
     const remote = { status: { ...document_, slots: document_.slots.map((row) => (
       row.slot === slot.slot ? { ...row, remote: value } : row)) } };
-    renderTab({ light: { status: document_ }, heavy: undefined, remote });
+    const light = { ...document_, slots: document_.slots.map((row) => (
+      row.slot === slot.slot ? { ...row, parent: { name: "main", fork: "e4f2436f55d79f70147d19fd65187f88fd3650be",
+                                                   ref: "origin/main", ahead: 0, behind: 1 } } : row)) };
+    renderTab({ light: { status: light }, heavy: undefined, remote });
 
-    expect(screen.getByTestId(`slot-remote-${slot.slot}`))
-      .toHaveTextContent("원격 HEAD origin/main@e4f2436f · 1 커밋 뒤");
+    const cell = screen.getByTestId(`slot-remote-${slot.slot}`);
+    expect(cell).toHaveTextContent("부모 main@e4f2436f · 1 커밋 뒤");
+    expect(cell).toHaveTextContent("origin git@example.invalid:app.git");
     cleanup();
   });
 });

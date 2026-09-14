@@ -66,7 +66,7 @@ sidecar는 파생 캐시다.
 `--readonly`는 코드 읽기와 PM 홈 wiki(domain·architecture·status) 작성용 공유 기준면이다. detached
 HEAD(released base), role=readonly, session/pid·배타 대여가 없다. 무소유 공유 자산이므로
 **바인딩(`/pm-bootstrap --slot`)·release를 거부**하고, 갱신은 [[pm-worktree]] `refresh`만 허용한다
-(set-base/rebase/dev/sync 거부). 제거는 `worktree remove --force`.
+(rebase/dev/sync 거부). 제거는 `worktree remove --force`.
 
 ## slot status / release / remove
 
@@ -77,9 +77,9 @@ HEAD(released base), role=readonly, session/pid·배타 대여가 없다. 무소
 ```
 
 - status의 **task 상황**은 task별 보유 작업공간(`work/<repo>_<N>`)·prefix(slot-모드 세션 제외), **slot
-  풀**은 슬롯별 state·보유 task·role(work/readonly)와 `<branch>@<head> (base: <b>@<sha> · N behind)`
-  요약이다. behind는 base 기록(`set-base`)이 있을 때만 계산하며, 미기록이면 `-`와 이유를 표시하고 자동
-  추론하지 않는다. readonly는 branch `(detached)`와 base만 의미한다.
+  풀**은 슬롯별 state·보유 task·role(work/readonly)와 `<branch>@<head> (부모: <이름>@<sha> · 앞 N · 뒤 M)`
+  요약이다. 부모 기록이 없으면 `(부모 기록 없음)`을 표시하고 추론하지 않는다. readonly는 branch
+  `(detached)`와 따라갈 브랜치만 의미한다.
 - `release`는 폴더를 유지해 idle로 재사용한다. `remove`는 `git worktree remove`, 슬롯 전용 브랜치
   (`<repo>_<N>`) 정리(머지 완료 시 삭제·미머지 보존·공유 브랜치 스킵), 장부 엔트리 삭제를 수행해 빈
   번호를 재사용한다. dirty/활성 리스는 거부하며 `--force`만 허용하고 dirty는 stash 보존한다.

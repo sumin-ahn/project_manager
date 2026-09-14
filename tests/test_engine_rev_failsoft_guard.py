@@ -1173,7 +1173,14 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   apply **이후**라 형제 사본 rev 혼합으로 죽으면 채택자가 새 엔진을 받은 채 동기가
     #   traceback 으로 끝난 트리를 갖는다. 이동은 멱등이라 건너뛴 몫을 다음 실행이 그대로 하고,
     #   marked skew 만은 그대로 올린다.
-    assert len(report.boundaries) == 273, "propagation sweep boundary ratchet changed"
+    # 271 = 273 − 부모 기록 전환이 지운 네 경계 + 새 두 경계. 지운 넷은 `pm_bootstrap` 의 슬롯 base
+    #   해소·미기록 후보 제시·시대차 계산(base 대신 엔진 `slot_git_status` 의 부모를 그대로 쓴다)과
+    #   `worktree_pool.switch` 의 스냅 재기록 핸들러다. 새 둘은 그 핸들러를 옮긴
+    #   `worktree_pool._rerecord_branch_snapshot`(switch·task branch 공용)과 `pm_config.cmd_task_branch`
+    #   의 엔진 거부 번역이다(둘 다 marked skew 는 그대로 올린다).
+    # 270 = 271 − `pm_config._resolve_repo_base` 의 흡수 경계. base 가 슬롯 브랜치의 부모가 되면서
+    #   board 판독 실패를 None("base 없음")으로 접으면 실제 원인이 가려지므로 예외를 그대로 올린다.
+    assert len(report.boundaries) == 270, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1318,7 +1325,7 @@ def test_guard_sensitivity_s7_blank_recovery_reason_turns_red():
         ("domain.py", "_load_repo_owned_files", 0),
         ("pm_import.py", "_load_repo_owned_files", 0),
         ("worktree_pool.py", "_load_repo_owned_files", 0),
-        ("worktree_pool.py", "switch", 0),
+        ("worktree_pool.py", "_rerecord_branch_snapshot", 0),
     ],
 )
 def test_guard_sensitivity_s1b_each_transforming_handler_turns_red(
@@ -1591,8 +1598,6 @@ def _remove_marker_statement(source: str, function: str, occurrence: int = 0) ->
         ("ticket_finish.py", "TicketFinisher._notify_affected_domain"),
         ("ticket_finish.py", "TicketFinisher._dirty_split"),
         ("pm_bootstrap.py", "PmBootstrap._slot_branch_exists"),
-        ("pm_bootstrap.py", "PmBootstrap._unrecorded_base_candidates"),
-        ("pm_bootstrap.py", "PmBootstrap._slot_era_info"),
     ],
 )
 def test_guard_sensitivity_instance_callable_attribute_plain_absorb_turns_red(
@@ -1741,8 +1746,6 @@ def test_runtime_affected_domain_caller_rethrows_marked_skew(monkeypatch):
     "case",
     [
         "bootstrap_slot_branch_exists",
-        "bootstrap_unrecorded_base_candidates",
-        "bootstrap_slot_era_info",
         "finish_dirty_split",
     ],
 )
@@ -1763,17 +1766,8 @@ def test_runtime_instance_callable_attribute_boundaries_rethrow_marked_skew(case
         instance = object.__new__(module.PmBootstrap)
         instance._bound_slot = None
         instance._run_git_fn = _raiser(skew)
-        if case == "bootstrap_slot_branch_exists":
-            worktree_pool = SimpleNamespace(slot_path=lambda _slot: Path("slot"))
-            invoke = lambda: instance._slot_branch_exists(worktree_pool, "work/repo_1", "feature")
-        elif case == "bootstrap_unrecorded_base_candidates":
-            invoke = lambda: instance._unrecorded_base_candidates("slot")
-        else:
-            instance._resolve_slot_base = lambda _repo: SimpleNamespace(
-                branch="main", source="repo-default", target="origin/main", needs_fetch=False,
-            )
-            instance._worktree_cwd = lambda _slot: "slot"
-            invoke = lambda: instance._slot_era_info("repo", [])
+        worktree_pool = SimpleNamespace(slot_path=lambda _slot: Path("slot"))
+        invoke = lambda: instance._slot_branch_exists(worktree_pool, "work/repo_1", "feature")
     with pytest.raises(RuntimeError) as raised:
         invoke()
     assert raised.value is skew

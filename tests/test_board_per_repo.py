@@ -885,10 +885,13 @@ def test_default_session_e2e_env_binding_match(board, monkeypatch):
                 return (0, "true\n")
             if "rev-parse" in argv and "--verify" in argv and argv[-1] == "HEAD":
                 return (0, "0123abc\n")
+            # 슬롯 브랜치를 판 커밋(부모 기록의 갈라진 커밋) — `rev-parse --verify <ref>^{commit}`.
+            if argv[:2] == ["rev-parse", "--verify"] and argv[-1].endswith("^{commit}"):
+                return (0, "0123abc\n")
             return (0, "")
 
     git = _FakeGit()
-    wp.create_slot("A", git_runner=git, test_cmd="make hil2")  # 생성 = 무소유 idle pool 슬롯
+    wp.create_slot("A", base="main", git_runner=git, test_cmd="make hil2")  # 생성 = 무소유 idle pool 슬롯
     # 생성은 풀 확장이고 점유는 대여다(T-0915) — 대여가 그 슬롯을 이 세션 명의로 만든다
     # (session 미지정 → 저장측도 `_default_session` 으로 해소).
     wp.alloc("A", git_runner=git)

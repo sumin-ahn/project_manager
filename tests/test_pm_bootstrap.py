@@ -263,6 +263,12 @@ class FakePool:
         self.slot_status_calls.append(slot)
         return self._slot_status_ret
 
+    def slot_git_status(self, slot, *, git_runner=None):
+        # `_slot_era_info` 가 슬롯 바인딩마다 부르는 대역 — 이 스위트는 slot_status 표시만 보므로
+        # parent 없음(None)으로 고정한다(신 계약 모양만 맞춤).
+        return {"slot": slot, "branch": self._branch, "head": None, "parent": None,
+                "children": [], "stashes": 0, "submodules": [], "dirty": False}
+
 
 class FakePoolNoStatus:
     """slot_status 미구현 풀(구버전) — `getattr(wp, "slot_status", None)` None 폴백 검증용."""
@@ -283,6 +289,12 @@ class FakePoolNoStatus:
 
     def slot_path(self, slot):
         return fake_slot_path(slot)
+
+    def slot_git_status(self, slot, *, git_runner=None):
+        # `_slot_era_info` 가 슬롯 바인딩마다 부르는 대역 — parent 없음(None)으로 고정
+        # (신 계약 모양만 맞춤·slot_status 부재와는 무관한 별개 프리미티브).
+        return {"slot": slot, "branch": "a5", "head": None, "parent": None,
+                "children": [], "stashes": 0, "submodules": [], "dirty": False}
 
 
 def _slot_status_obj(wp, *, upstream="origin/a5", upstream_ok=True, submodules=None):
@@ -809,10 +821,13 @@ def test_task_resume_not_forced_to_task_first_branch(bootstrap):
 
 
 class _RemedyBoard:
-    """board 대역 — `_repo_protected` 만 소비된다(`_protected_warning` 경유·DI 보존)."""
+    """board 대역 — `_repo_protected`(`_protected_warning` 경유)·`_repo_base`(remedy 부모)를 소비한다."""
 
     def __init__(self, protected=("main", "master", "develop")):
         self._protected = list(protected)
+
+    def _repo_base(self, repo):
+        return "main"   # 등록 base — remedy `task branch --from` 이 싣는다.
 
     def _repo_protected(self, repo):
         return self._protected
@@ -952,8 +967,9 @@ def test_remedy_branch_task_fault_consumes_helper(bootstrap, tmp_path):
     assert fault is not None
     label, _reason, resolve = fault
     assert "main-참조" in label
-    # T-0414 — 엔진-매개 단일 커맨드(전환+장부 스냅 재기록 원자). 브랜치명은 T-0412 헬퍼 산출.
-    assert resolve == "python3 .project_manager/tools/worktree_pool.py switch work/X_1 task/main"
+    # 엔진 단일 커맨드(생성+부모 기록+장부 스냅 재기록). 브랜치명은 T-0412 헬퍼 산출.
+    assert resolve == ("python3 .project_manager/tools/pm_config.py task branch main work/X_1 task/main "
+                       "--from main")
 
 
 def test_remedy_branch_slot_mode_consumes_helper(bootstrap, tmp_path, capsys):
@@ -965,22 +981,23 @@ def test_remedy_branch_slot_mode_consumes_helper(bootstrap, tmp_path, capsys):
     rc = inst._phase0_protected_reject(pool, "X", "work/X_2", "X_2", lease)
     assert rc == 1
     err = capsys.readouterr().err
-    assert "worktree_pool.py switch work/X_2 task/X_2" in err
-    assert "switch work/X_2 X_2" not in err  # 충돌하는 옛 안내가 남아 있지 않다.
+    assert "pm_config.py task branch X_2 work/X_2 task/X_2 --from main" in err
+    assert "work/X_2 X_2 --from" not in err  # 이미 있는 이름을 안내하지 않는다.
 
 
-# ── T-0414: remedy 를 엔진-매개 단일 커맨드로 + 후보 상한 안내 (`_remedy_switch_command`) ──
-# raw `git switch -c` 는 장부 스냅을 안 남겨 해소 **직후** 0단계 '기록↔live diverged' 2차 차단을
-# 부른다(remedy-유발 상태전이·PM 4차 실측 왕복 2회). 안내를 `worktree_pool.py switch`(전환+스냅
-# 재기록 원자)로 바꾸고, 후보 상한 도달 시엔 충돌 이름을 제시하는 대신 직접 지정을 안내한다.
+# ── remedy 를 엔진 단일 커맨드로 + 후보 상한 안내 (`_remedy_branch_command`) ──
+# raw `git switch -c` 는 부모 기록도 장부 스냅도 남기지 않는다(스냅이 없으면 해소 직후 0단계
+# '기록↔live diverged' 2차 차단). 안내는 `pm_config.py task branch`(생성+부모 기록+스냅 재기록)이고,
+# 후보 상한 도달 시엔 충돌 이름을 제시하는 대신 직접 지정을 안내한다.
 
 
-def test_remedy_switch_command_is_engine_mediated(bootstrap, tmp_path):
-    """해소 커맨드 = 엔진-매개 단일 커맨드(raw git 아님·복합 `&&` 아님 — PowerShell 5.x 미지원)."""
+def test_remedy_branch_command_is_engine_mediated(bootstrap, tmp_path):
+    """해소 커맨드 = 엔진 단일 커맨드(raw git 아님·복합 `&&` 아님 — PowerShell 5.x 미지원)."""
     git_fn, _calls = _remedy_git()
     inst = _remedy_inst(bootstrap, git_fn=git_fn)
-    cmd = inst._remedy_switch_command(_RemedyPool(tmp_path), "X", "work/X_1", "main")
-    assert cmd == "python3 .project_manager/tools/worktree_pool.py switch work/X_1 task/main"
+    cmd = inst._remedy_branch_command(_RemedyPool(tmp_path), "X", "work/X_1", "main")
+    assert cmd == ("python3 .project_manager/tools/pm_config.py task branch main work/X_1 task/main "
+                   "--from main")
     assert "&&" not in cmd and not cmd.startswith("git ")
 
 
@@ -1019,14 +1036,14 @@ def test_remedy_branch_skips_invalid_then_takes_valid_variant(bootstrap, wp, tmp
     assert got == "task/a.lock-2"
 
 
-def test_remedy_switch_command_invalid_task_name_asks_explicit_branch(bootstrap, wp, tmp_path):
+def test_remedy_branch_command_invalid_task_name_asks_explicit_branch(bootstrap, wp, tmp_path):
     """무효 task 명은 "브랜치명 직접 지정" 분기로 수렴한다 — 실행 불가 커맨드를 안내하지 않는다."""
     git_fn, _calls = _remedy_git()
     inst = _remedy_inst(bootstrap, git_fn=git_fn)
-    cmd = inst._remedy_switch_command(_remedy_pool(wp, tmp_path), "X", "work/X_1", "fix:bug")
-    assert "worktree_pool.py switch work/X_1 <새-브랜치명>" in cmd
+    cmd = inst._remedy_branch_command(_remedy_pool(wp, tmp_path), "X", "work/X_1", "fix:bug")
+    assert "task branch fix:bug work/X_1 <새-브랜치명> --from main" in cmd
     assert "직접 지정" in cmd
-    assert "fix:bug" not in cmd.split("(")[0]     # 커맨드 인자로는 안 실린다(안내 문구 설명은 별개)
+    assert "task/fix:bug" not in cmd.split("(")[0]   # 브랜치 인자로는 안 실린다(안내 문구 설명은 별개)
 
 
 def test_remedy_branch_valid_name_unaffected_by_ref_filter(bootstrap, wp, tmp_path):
@@ -1062,14 +1079,14 @@ def test_remedy_branch_filter_reuses_worktree_pool_judgment(bootstrap, wp, tmp_p
     assert '"check-ref-format"' not in source                    # ③ 자체 구현 없음(argv 미생성)
 
 
-def test_remedy_switch_command_exhausted_asks_explicit_branch(bootstrap, tmp_path):
+def test_remedy_branch_command_exhausted_asks_explicit_branch(bootstrap, tmp_path):
     """(i-2) 후보 소진 시 안내는 이름 제안 대신 **직접 지정** — 실행 불가 안내 재생산 금지."""
     limit = bootstrap._REMEDY_BRANCH_SUFFIX_LIMIT
     exhausted = ["foo", "task/foo"] + [f"task/foo-{n}" for n in range(2, limit + 1)]
     git_fn, _calls = _remedy_git(*exhausted)
     inst = _remedy_inst(bootstrap, git_fn=git_fn)
-    cmd = inst._remedy_switch_command(_RemedyPool(tmp_path), "X", "work/X_1", "foo")
-    assert "worktree_pool.py switch work/X_1 <새-브랜치명>" in cmd
+    cmd = inst._remedy_branch_command(_RemedyPool(tmp_path), "X", "work/X_1", "foo")
+    assert "task branch foo work/X_1 <새-브랜치명> --from main" in cmd
     assert "직접 지정" in cmd
     # 충돌이 확정된 후보(마지막 이름)를 커맨드 인자로 싣지 않는다.
-    assert f"switch work/X_1 task/foo-{limit}" not in cmd
+    assert f"task/foo-{limit} --from" not in cmd

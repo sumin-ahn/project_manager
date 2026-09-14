@@ -2042,11 +2042,6 @@ def _format_slot_status_lines(status: dict | None) -> list[str]:
 # 있다. identity surface 에 경고 줄을
 # 표면화한다. offline(base fetch 실패)면 판정불가 fail-soft. 없으면(최신·base 미해소) 줄 생략.
 
-# 미기록 슬롯(v1.3.0 이전)의 base 후보 — 0단계 미기록 경로가 `git merge-base HEAD <cand>` 로 제시
-# **만** 한다(자동 채택 없음·추론 금지). 흔한 base 브랜치를 훑어 merge-base
-# 가 해소되는 것만 후보로 보여주고, 사용자가 `set-base` 로 명시 지정한다(엔진=surface·사용자=결정).
-_UNRECORDED_BASE_CANDIDATE_BRANCHES = ("origin/main", "origin/master", "origin/develop")
-
 # main-참조 해소 커맨드가 제시할 **신규 브랜치명** 파생 규칙.
 # 세션/task 명을 브랜치명으로 그대로 보간하면 그 이름이 보호브랜치(`main`)이거나 이미 존재하는
 # 브랜치일 때 **실행 불가능한 자기모순 커맨드**가 된다(PM 4차 실측: task `main` 진입 시
@@ -2057,15 +2052,6 @@ _REMEDY_BRANCH_PREFIX = "task/"
 # `task/<preferred>` 까지 충돌하면 `-2`, `-3` … 로 첫 미충돌을 고른다. 상한은 안내 문자열 생성이
 # 무한 루프에 빠지지 않기 위한 방어(전부 충돌하면 마지막 후보를 그대로 제시·fail-soft).
 _REMEDY_BRANCH_SUFFIX_LIMIT = 20
-
-
-class _ResolvedSlotBase(NamedTuple):
-    """시대차 기준 브랜치와 실제 비교 ref·출처·fetch 필요 여부."""
-
-    branch: str
-    target: str
-    source: str
-    needs_fetch: bool
 
 
 def _phase0_diverge_reason(result) -> str:
@@ -2096,24 +2082,22 @@ def _format_slot_era_warning(info: dict | None) -> str | None:
 
     - `undetermined` True → offline fail-soft("판정불가 — 스냅샷일 수 있음").
     - `behind` > 0 → loud 경고(behind N·권장 액션 1줄).
-    - behind 0/None·info None → None(최신/미해소 → 줄 생략·오탐 0).
+    - behind 0·info None → None(최신/부모 없음 → 줄 생략·오탐 0).
     """
     if not info:
         return None
-    base = info.get("base")
-    source = info.get("source") or "repo-default"
+    base = info["base"]
     if info.get("undetermined"):
         return (
-            f"- ⚠ **슬롯 시대차 판정불가** — base `{base}` [{source}] 최신 fetch 실패(offline) · "
+            f"- ⚠ **슬롯 시대차 판정불가** — 부모 `{base}` 최신 fetch 실패(offline) · "
             "슬롯 HEAD 가 stale 스냅샷일 수 있음 (온라인 시 재부트스트랩 권장)"
         )
-    behind = info.get("behind") or 0
+    behind = info["behind"]
     if behind <= 0:
         return None
-    target = info.get("target") or f"origin/{base}"
     return (
-        f"- ⚠ **슬롯 시대차** — HEAD 가 base `{base}` [{source}] 대비 **behind {behind} 커밋** — "
-        f"옛-시대 코드로 작업할 위험 (`git -C <슬롯> rebase {target}` 또는 최신 base 재분기 검토)"
+        f"- ⚠ **슬롯 시대차** — HEAD 가 부모 `{base}`(`{info['target']}`) 대비 **behind {behind} 커밋** — "
+        f"옛-시대 코드로 작업할 위험 (`{_CARD_TOOL_INVOKE}/worktree_pool.py rebase <슬롯>` 검토)"
     )
 
 
@@ -3661,7 +3645,7 @@ class PmBootstrap:
                     data["worktree"] = alloc_identity  # 위 앞단 alloc 결과 재사용(재-alloc 금지).
                 if data.get("worktree") is not None:
                     # 슬롯 시대차 — freshness fetch 뒤라 origin/<base> 최신 재사용.
-                    data["worktree"]["slot_era"] = self._slot_era_info(repo, freshness)
+                    data["worktree"]["slot_era"] = self._slot_era_info(freshness)
                 if task_info is not None:
                     # 보유 슬롯 전수 열거 행렬 — task-only 진입에서 자동 수령한 집합.
                     task_info["slot_set"] = self._task_slot_set_rows(
@@ -3680,13 +3664,13 @@ class PmBootstrap:
                     # 앞에서 bind해 둔 lean 정체성을 기존 출력 위치에서 surface 한다.
                     identity = lean_identity
                     # 슬롯 시대차 — freshness fetch 뒤라 origin/<base> 최신 재사용.
-                    identity["slot_era"] = self._slot_era_info(repo, freshness)
+                    identity["slot_era"] = self._slot_era_info(freshness)
                     print()
                     print(self._build_slot_identity_markdown(identity))
                 elif multipm_alloc:
                     # 기존 --repo alloc + identity surface (위 앞단 alloc 결과 재사용).
                     identity = alloc_identity
-                    identity["slot_era"] = self._slot_era_info(repo, freshness)
+                    identity["slot_era"] = self._slot_era_info(freshness)
                     print()
                     print(self._build_identity_markdown(identity))
                 # 커맨드 카드 — identity surface 뒤. 이 세션이 쓸 전 커맨드를 정체성
@@ -3968,7 +3952,7 @@ class PmBootstrap:
         reason = self._phase0_main_reference_reason(wp, repo, slot_id)
         if reason is None:
             return 0
-        remedy = self._remedy_switch_command(wp, repo, slot_id, session)
+        remedy = self._remedy_branch_command(wp, repo, slot_id, session)
         print(
             f"[중단·0단계] 슬롯 {slot_id} 이(가) {reason} — main-참조 상태는 진입 거부입니다. "
             f"이 슬롯에서 작업하면 커밋이 canonical/보호 브랜치에 얹혀 공개 제품 오염으로 이어집니다(방어를 "
@@ -3977,8 +3961,8 @@ class PmBootstrap:
             f"     (a) 코드 읽기 기준면이 필요하면 사용자에게 readonly 슬롯 생성 승인을 요청하세요.\n"
             f"         승인한 사용자만 직접 실행: {_CARD_TOOL_INVOKE}/pm_config.py worktree add "
             f"{repo} --readonly --user-ack {repo} (세션 자동 실행 금지)\n"
-            f"     (b) 이 슬롯을 작업 브랜치로 전환하세요(전환+장부 스냅 재기록 원자 —\n"
-            f"         raw `git switch` 는 스냅을 안 남겨 곧바로 diverged 2차 차단을 부릅니다):\n"
+            f"     (b) 이 슬롯에 작업 브랜치를 만드세요(부모 기록 + 장부 스냅 재기록 —\n"
+            f"         raw `git switch -c` 는 둘 다 남기지 않습니다):\n"
             f"         {remedy}",
             file=sys.stderr,
         )
@@ -4041,18 +4025,18 @@ class PmBootstrap:
         보호브랜치이거나 이미 존재하는 브랜치일 때 자기모순 안내가 된다.
         규칙(순서·`_REMEDY_BRANCH_PREFIX`·`_REMEDY_BRANCH_SUFFIX_LIMIT`) — 후보 필터 3종:
           1. `preferred` 가 보호목록(`board._repo_protected`·`_protected_warning` 축) 밖이고,
-             **git 브랜치명으로 유효**(`_remedy_branch_ref_ok` — 실행 쪽 `switch` 와 같은 판정)하며,
+             **git 브랜치명으로 유효**(`_remedy_branch_ref_ok` — 실행 쪽 `create_task_branch` 와 같은 판정)하며,
              그 슬롯에 **미존재** 브랜치면 그대로.
           2. 아니면 `task/<preferred>`(세 검사 재적용).
           3. 그것도 충돌하면 `task/<preferred>-2`, `-3` … 첫 미충돌.
         전 후보 탈락(상한 도달·전부 무효)이면 **None**
         후보(정의상 충돌하는 이름)를 그대로 제시해 안내가 *다시* 실행 불가가 됐다. 이름을 억지로
-        짜내는 대신 호출부가 "브랜치명을 직접 지정하라" 분기로 안내한다(`_remedy_switch_command`).
+        짜내는 대신 호출부가 "브랜치명을 직접 지정하라" 분기로 안내한다(`_remedy_branch_command`).
 
         ⚠ **ref-format 검사가 후보 생성에도 있어야 한다**(codex 게이트 must-fix): task 명
         검증(`identity_args.validate_task_name`)은 `fix:bug`·`fix~1`·`a.lock` 을 통과시키지만
         `git check-ref-format --branch` 는 거부한다 — 제안 쪽에 이 검사가 없으면 remedy 가
-        `switch <slot> fix:bug` 를 안내하고 실행 쪽이 `invalid-ref` 로 튕겨 "실행 가능한 단일 remedy"
+        `task branch … fix:bug` 를 안내하고 실행 쪽이 `invalid-ref` 로 튕겨 "실행 가능한 단일 remedy"
         접두 후보도 같은 검사를 탄다
         (`task/fix:bug` 도 여전히 무효).
         **판정만 한다** — 엔진이 브랜치를 만들지 않는다."""
@@ -4070,9 +4054,9 @@ class PmBootstrap:
         return None
 
     def _remedy_branch_ref_ok(self, wp, slot_id: str, branch: str) -> bool:
-        """후보가 **`switch` 가 받아들일** 브랜치명인가 — worktree_pool 판정 재사용 (규칙 중복 0).
+        """후보가 **`create_task_branch` 가 받아들일** 브랜치명인가 — worktree_pool 판정 재사용 (규칙 중복 0).
 
-        제안 쪽(여기)과 실행 쪽(`worktree_pool.switch`)의 수용 규칙이 갈리면 안내가 곧바로 실행 불가가
+        제안 쪽(여기)과 실행 쪽(`worktree_pool.create_task_branch`)의 수용 규칙이 갈리면 안내가 곧바로 실행 불가가
         된다(codex 게이트 must-fix — 같은 검사의 절반 적용). 그래서 **판정을 다시 구현하지 않고**
         worktree_pool 의 `_normalize_branch_name`(그 규칙의 단일 진실 — `git check-ref-format --branch`
         + 빈/다중줄/공백 방어 + 고정점 확인)을 **슬롯 worktree 바인딩 러너**로 호출한다. 주입/동적로드된
@@ -4112,29 +4096,31 @@ class PmBootstrap:
             return True
         return True if failed else ok
 
-    def _remedy_switch_command(self, wp, repo: str, slot_id: str, preferred: str) -> str:
-        """main-참조 해소 커맨드 문자열 — **엔진-매개 단일 커맨드** (소비처 2곳 공용).
+    def _remedy_branch_command(self, wp, repo: str, slot_id: str, owner: str) -> str:
+        """main-참조 해소 커맨드 문자열 — 엔진이 브랜치를 만들고 부모를 기록하는 단일 커맨드 (소비처 2곳 공용).
 
-        raw `git switch -c <b>` 는 브랜치는 바꾸지만 장부 스냅을 안 남겨서, 사용자가 안내대로
-        해소하면 **곧바로** 0단계 "기록↔live diverged" 차단이 뜬다(왕복 2회 강제).
-        엔진이 매개하는 전환은 전부 스냅을 재기록하는데 remedy 만 엔진 밖 raw git 이던 비대칭을
-        `worktree_pool.py switch`(전환+스냅 재기록 원자)로 닫는다.
+        raw `git switch -c <b>` 는 부모 기록과 장부 스냅을 남기지 않는다. `pm_config.py task branch` 는
+        부모 브랜치 최신 커밋에서 브랜치를 만들고 부모·갈라진 커밋·도착 스냅을 함께 기록한다. 부모는
+        repo 등록 base(areas.md)이고, 등록에 base 가 없으면 `<부모-브랜치>` 자리로 둔다.
 
         브랜치명은 `_remedy_branch_name`이 산출한다(규칙 중복 구현 0). 후보 소진(None)이면
         이름을 제안하지 않고 **직접 지정**을 안내한다 — 상한 후보는 정의상 충돌하므로 그대로 실으면
         실행 불가 안내를 재생산한다.
 
-        복합 문자열(`git … && python3 … record`)은 쓰지 않는다 — **PowerShell 5.x 가 `&&` 미지원**
+        복합 문자열(`git … && python3 …`)은 쓰지 않는다 — **PowerShell 5.x 가 `&&` 미지원**
         (Windows 채택자에서 깨진다·실측)."""
-        branch = self._remedy_branch_name(wp, repo, slot_id, preferred)
-        cmd = f"{_CARD_TOOL_INVOKE}/worktree_pool.py switch {slot_id}"
+        branch = self._remedy_branch_name(wp, repo, slot_id, owner)
+        board_mod = self._board or _load_board()
+        base = board_mod._repo_base(repo) if board_mod else None
+        cmd = f"{_CARD_TOOL_INVOKE}/pm_config.py task branch {owner} {slot_id}"
+        tail = f" --from {base or '<부모-브랜치>'}"
         if branch is None:
             return (
-                f"{cmd} <새-브랜치명>  (제안 후보 소진 — `{preferred}`·`{_REMEDY_BRANCH_PREFIX}"
-                f"{preferred}`·`-2`…`-{_REMEDY_BRANCH_SUFFIX_LIMIT}` 가 모두 보호목록/기존 브랜치와 "
+                f"{cmd} <새-브랜치명>{tail}  (제안 후보 소진 — `{owner}`·`{_REMEDY_BRANCH_PREFIX}"
+                f"{owner}`·`-2`…`-{_REMEDY_BRANCH_SUFFIX_LIMIT}` 가 모두 보호목록/기존 브랜치와 "
                 f"충돌하거나 git 브랜치명으로 부적합합니다. 브랜치명을 직접 지정하세요.)"
             )
-        return f"{cmd} {branch}"
+        return f"{cmd} {branch}{tail}"
 
     def _slot_branch_exists(self, wp, slot_id: str, branch: str) -> bool:
         """그 슬롯 worktree 에 로컬 브랜치 `branch` 가 이미 있는가 (remedy 후보 충돌 검사).
@@ -4163,13 +4149,12 @@ class PmBootstrap:
         compare 프리미티브를 **호출만** 한다(compare/판정 로직 재구현 금지). 판정 정책만 여기서:
           - `fail_loud`(브랜치 변경·head diverged=리셋/비후손) → **FAIL-LOUD**(거부·1). 두고 간
             상태와 다르다 = 외부 개입 신호(submodule drift 재동기 동형·감지=기계·해소=사용자).
-          - `unrecorded`(구 슬롯·git 필드 부재) → **차단 아님·loud 표시**("기준점 미기록 — drift 감지
-            비활성") + 질의 훅(사용자 `set-base` 질의는 같은 0단계 지점에서 채운다).
+          - `unrecorded`(git 필드 부재) → **차단 아님·loud 표시**("도착 기록 없음 — drift 감지
+            비활성") + `record` 안내.
           - `ok`(기록 있고 fail 아님·match/descendant[crash 후 재개 notice]) → 통과. submodule pin
             drift 는 비차단 경고(재동기 검토).
-        ⚠️ **base 대비 drift 는 여기서 감지 안 함** — `compare_slot_git` 의 `fail_loud` 는 branch+head+
-        submodule 만 본다(base=recorded-only breadcrumb). base 불일치 FAIL·"base 대비 N behind"
-        판정은 rebase 으로 이월된다(reviewer 추적성).
+        ⚠️ **부모 브랜치 대비 앞/뒤는 여기서 판정하지 않는다** — `compare_slot_git` 의 `fail_loud` 는
+        branch+head+submodule 만 본다(부모 관계는 `slot_git_status` 조회 축).
         `compare_slot_git` 미구현 풀(구버전·mock)·예외는 fail-soft(정합 검사 생략·통과) — 소프트 진단.
         반환 0=통과·1=FAIL-LOUD 거부."""
         compare = getattr(wp, "compare_slot_git", None)
@@ -4194,19 +4179,15 @@ class PmBootstrap:
                 f"  정당한 외부 변경(의도한 브랜치 전환·릴리즈 등)이면 사용자 판단 후 아래 커맨드로 도착 스냅을 "
                 f"live 로 재동기하세요(감지=기계·해소=사용자·자동 실행 안 함):\n"
                 f"    {_CARD_TOOL_INVOKE}/worktree_pool.py record {slot_id}\n"
-                f"  (submodule pin drift 만이면 별도 — `worktree_pool.py sync`·기준점 변경은 `set-base`.)",
+                f"  (submodule pin drift 만이면 별도 — `worktree_pool.py sync`.)",
                 file=sys.stderr,
             )
             return 1
         if getattr(result, "unrecorded", False):
-            # 미기록(구 슬롯) — 차단 아님·loud 표시 + **후보 제시**(자동 채택 없음).
-            # 후보는 merge-base 로 계산해 *보여주기만* 하고 자동 기록하지 않는다(추론 금지 — 틀려도
-            # 조용한 base 위에서 drift 감지가 도는 것을 원천 차단·[[mechanize-dont-instruct-llm]]).
-            cand_line = self._unrecorded_base_candidate_line(wp, slot_id)
+            # 도착 기록 없음 — 차단 아님·loud 표시. 기록은 사용자가 `record` 로 남긴다(자동 실행 없음).
             print(
-                f"[알림·0단계] 슬롯 {slot_id} 의 기준점이 미기록입니다 — drift 감지 비활성(구 슬롯).\n"
-                f"  기준점을 지정하면(`set-base {slot_id} <branch>[@<commit>]`) 그때부터 정합 감지가 "
-                f"작동합니다.{cand_line}",
+                f"[알림·0단계] 슬롯 {slot_id} 의 도착 기록(branch·head)이 없습니다 — drift 감지 비활성.\n"
+                f"  지금 상태를 기준으로 삼으려면: {_CARD_TOOL_INVOKE}/worktree_pool.py record {slot_id}",
                 file=sys.stderr,
             )
             return 0  # loud 표시만·차단 아님.
@@ -4217,43 +4198,6 @@ class PmBootstrap:
                 file=sys.stderr,
             )
         return 0
-
-    def _unrecorded_base_candidates(self, slot_dir: str) -> list[tuple[str, str]]:
-        """미기록 슬롯의 base 후보 — `git merge-base HEAD <cand>` 가 해소되는 (branch, sha) 목록.
-
-        **제시용일 뿐 자동 채택 없음**(추론 금지). 흔한 base 브랜치
-        (`_UNRECORDED_BASE_CANDIDATE_BRANCHES`)와 HEAD 의 merge-base 를 계산해, 해소되는 것만 후보로
-        모은다(예: "후보: `origin/main`(merge-base `df10dc6`)"). merge-base 실패/미해소 후보는 제외,
-        전부 fail-soft(빈 목록). 기존 freshness fetch 를 재사용하지 않고 로컬 remote-tracking ref 로만
-        계산한다 — *제시*라 stale 여부는 무관(사용자가 `set-base` 로 최종 지정)."""
-        cands: list[tuple[str, str]] = []
-        for br in _UNRECORDED_BASE_CANDIDATE_BRANCHES:
-            try:
-                rc, out = self._run_git_fn(["-C", slot_dir, "merge-base", "HEAD", br])
-            except Exception as exc:  # noqa: BLE001 — fail-soft: 후보 계산 실패는 그 후보만 건너뛴다.
-                if _is_engine_rev_skew(exc):
-                    raise  # 엔진 사본 불일치는 후보 skip 으로 강등하지 않는다(fail-loud).
-                continue
-            sha = (out or "").strip()
-            if rc == 0 and sha:
-                cands.append((br, sha))
-        return cands
-
-    def _unrecorded_base_candidate_line(self, wp, slot_id: str) -> str:
-        """미기록 0단계 후보 제시 줄(`\\n  후보: …`) 또는 빈 문자열 (자동 채택 없음).
-
-        슬롯 경로(`wp.slot_path`)를 얻어 `_unrecorded_base_candidates` 로 후보를 계산하고, 있으면
-        형식("후보: `origin/main`(merge-base `<sha>`)")으로 포맷한다. 후보 없음·경로 해소
-        실패는 빈 문자열(줄 생략·오탐 0). fail-soft(loud 알림 자체를 막지 않는다)."""
-        try:
-            slot_dir = str(wp.slot_path(slot_id))
-        except Exception:  # noqa: BLE001 — fail-soft: 경로 해소 실패는 후보 줄 생략.
-            return ""
-        cands = self._unrecorded_base_candidates(slot_dir)
-        if not cands:
-            return ""
-        shown = " · ".join(f"`{br}`(merge-base `{sha[:12]}`)" for br, sha in cands)
-        return f"\n  후보: {shown} — 자동 채택 안 함(사용자가 `set-base` 로 결정)."
 
     # ── multi-PM 모드: worktree 슬롯 alloc + identity surface (0011) ────
 
@@ -4717,7 +4661,7 @@ class PmBootstrap:
             return (
                 "main-참조 (보호브랜치 직접 checkout / origin-추적)",
                 f"{reason} — 이 슬롯 커밋이 canonical/보호 브랜치로 새면 공유 이력이 오염된다.",
-                self._remedy_switch_command(wp, repo, slot_id, task),
+                self._remedy_branch_command(wp, repo, slot_id, task),
             )
         # 4. 기록↔live diverged.
         compare = getattr(wp, "compare_slot_git", None)
@@ -5147,72 +5091,6 @@ class PmBootstrap:
                 raise
             return None
 
-    def _resolve_slot_base(self, repo: str) -> _ResolvedSlotBase | None:
-        """바운드 슬롯의 시대차 base — lease 기록 우선, areas repo 기본 폴백.
-
-        1층은 `worktree_pool.read_lease_strict(self._bound_slot)` 로 현재 lease 를 읽고
-        `lease.git.base.branch`의 현재 tip을 비교 target으로 사용한다. JSON을 여기서 다시 파싱하지
-        않는다. 모든 기록 경로가 자동 저장하는 `base.commit`은 rebase 계약의 breadcrumb일 뿐
-        시대차 비교에는 참여하지 않는다. `origin/`으로 시작하는 기록만 기존 freshness fetch
-        증명을 요구한다. 로컬 브랜치는 `origin/`을 자동 부가하지 않고 기록 ref를 그대로 비교하므로,
-        그 로컬 ref가 갱신되지 않은 환경에서는 실제 원격 전진을 놓치는 false-negative 한계가 있다.
-
-        2층은 슬롯/`git.base` 미기록 또는 구버전 worktree_pool(strict helper 부재)일 때만 기존
-        board `_repo_base(repo)`(areas.md `base` 칼럼)로 폴백한다. strict 장부 조회 예외나
-        `git.base` 스키마 이상은 areas 값으로 숨기지 않고 None으로 강등한다(시대차 soft 진단).
-        `_repo_protected` default는 여전히 base 폴백에 쓰지 않는다.
-        """
-        wp = self._worktree_pool or _load_worktree_pool()
-        read_lease = getattr(wp, "read_lease_strict", None) if wp is not None else None
-        if self._bound_slot and callable(read_lease):
-            try:
-                lease = read_lease(self._bound_slot)
-            except Exception:  # noqa: BLE001 — strict 장부 실패를 repo default로 오인하지 않음.
-                return None
-            if lease is not None:
-                git = getattr(lease, "git", None)
-                if git is not None and not isinstance(git, dict):
-                    return None
-                recorded = git.get("base") if isinstance(git, dict) else None
-                if recorded is not None and not isinstance(recorded, dict):
-                    return None
-                if isinstance(recorded, dict):
-                    branch = recorded.get("branch")
-                    commit = recorded.get("commit")
-                    if not isinstance(branch, str) or not branch.strip():
-                        return None
-                    if commit is not None and not isinstance(commit, str):
-                        return None
-                    branch = branch.strip()
-                    return _ResolvedSlotBase(
-                        branch,
-                        target=branch,
-                        source="slot-record",
-                        needs_fetch=branch.startswith("origin/"),
-                    )
-
-        board_mod = self._board or _load_board()
-        if not board_mod:
-            return None
-        repo_base = getattr(board_mod, "_repo_base", None)
-        if repo_base is None:
-            return None
-        try:
-            base = repo_base(repo)
-        except Exception as exc:  # noqa: BLE001 — fail-soft: 시대차는 소프트(실패=판정 생략).
-            if _is_engine_rev_skew(exc):
-                raise
-            return None
-        if not isinstance(base, str) or not base.strip():
-            return None
-        base = base.strip()
-        return _ResolvedSlotBase(
-            base,
-            target=f"origin/{base}",
-            source="repo-default",
-            needs_fetch=True,
-        )
-
     def _slot_scope_fetched(self, freshness: list[dict] | None) -> bool | None:
         """freshness 목록에서 현재 슬롯 cwd scope 의 `fetched` 상태.
 
@@ -5235,55 +5113,31 @@ class PmBootstrap:
                 continue
         return None
 
-    def _slot_era_info(self, repo: str, freshness: list[dict] | None) -> dict | None:
-        """슬롯 HEAD 가 해소된 base branch의 현재 tip보다 behind N 커밋인지 판정한다.
+    def _slot_era_info(self, freshness: list[dict] | None) -> dict | None:
+        """슬롯 HEAD 가 부모 브랜치 끝보다 몇 커밋 뒤인지 — `worktree_pool.slot_git_status` 의 parent 그대로.
 
-        areas repo 기본은 기존 freshness fetch로 갱신된 `origin/<base>`를, 슬롯 기록은
-        `git.base.branch` ref 자체를 사용한다. `git.base.commit`은 기록 여부와 무관하게 비교에
-        참여하지 않는다. remote-tracking ref만 fetch 성공을 요구하고 local ref는 네트워크와
-        무관하게 비교한다. 로컬 ref가 stale하면 원격 전진을 놓칠 수 있다. **신규 fetch 안 함**. 반환:
-          - None — base 미해소(areas 미등록) · freshness scope 매칭 실패(fetch 미증명·codex
-            suggestion) · online 인데 rev-list 실패(조용히 생략).
-          - {"base": <br>, "undetermined": True} — 슬롯 cwd scope fetch 실패(offline)라
-            origin/<base> 가 stale → 판정불가(fail-soft).
-          - {"base": <br>, "behind": N} — behind 확정(fetch 증명·N==0 이면 최신·경고 무발화).
-        슬롯 기록을 쓴 반환에는 관측용 `source="slot-record"`와 실제 `target`도 포함한다. areas
-        폴백 반환 형상은 JSON 계약을 유지하고 formatter가 `repo-default`로 표기한다.
+        작업 슬롯은 브랜치에 기록된 부모, readonly 슬롯은 장부의 따라갈 브랜치다. 비교 ref 는 엔진이
+        고른 `parent.ref` 다. 부모 기록이 없거나 부모 브랜치가 지워졌으면 None(그 사실은 status 가
+        보인다). ref 가 remote-tracking(`origin/…`)이면 기존 freshness fetch 성공을 요구한다 —
+        **신규 fetch 안 함**. 반환:
+          - None — 부모 없음 · 부모 브랜치 없음 · freshness scope 매칭 실패(fetch 미증명).
+          - {"base", "source": "slot-parent", "target", "undetermined": True} — 슬롯 scope fetch 실패(offline).
+          - {"base", "source": "slot-parent", "target", "behind": N}.
         """
-        resolved = self._resolve_slot_base(repo)
-        if not resolved:
+        wp = self._worktree_pool or _load_worktree_pool()
+        if not self._bound_slot or wp is None:
             return None
-        base = resolved.branch
-        source = resolved.source
-        target = resolved.target
-        if resolved.needs_fetch:
+        parent = wp.slot_git_status(self._bound_slot)["parent"]
+        if parent is None or parent["ref"] is None:
+            return None
+        result = {"base": parent["name"], "source": "slot-parent", "target": parent["ref"]}
+        if parent["ref"].startswith("origin/"):
             fetched = self._slot_scope_fetched(freshness)
             if fetched is False:
-                # offline — remote-tracking target이 stale 스냅샷이라 behind 실측 불가.
-                result = {"base": base, "undetermined": True}
-                if source != "repo-default":
-                    result.update({"source": source, "target": target})
-                return result
+                return {**result, "undetermined": True}
             if fetched is not True:
-                # freshness scope 매칭 실패(None) — fetch 성공을 증명 못 한 remote ref는 생략.
                 return None
-        d = self._worktree_cwd(self._bound_slot)
-        try:
-            rc, out = self._run_git_fn(["-C", d, "rev-list", "--count", f"HEAD..{target}"])
-        except Exception as exc:  # noqa: BLE001 — 시대차는 소프트 진단(실행 실패=조용히 생략).
-            if _is_engine_rev_skew(exc):
-                raise  # 엔진 사본 불일치는 소프트 생략으로 강등하지 않는다(fail-loud).
-            return None
-        if rc != 0:
-            return None
-        try:
-            behind = int((out or "").strip())
-        except (ValueError, TypeError):
-            return None
-        result = {"base": base, "behind": behind}
-        if source != "repo-default":
-            result.update({"source": source, "target": target})
-        return result
+        return {**result, "behind": parent["behind"]}
 
     def _build_slot_identity_markdown(self, identity: dict) -> str:
         """lean identity + 상태점검 markdown — 세션명·라이브 브랜치·`--repo/--slot` 안내·다른 PM 현황.
@@ -5765,7 +5619,7 @@ class PmBootstrap:
         """readonly 공유 슬롯(role=readonly) 커맨드 카드 — 조회/갱신만 dump.
 
         readonly 는 무소유 공유 자산(session 없음·배타 대여 없음·detached HEAD)이라 board
-        claim/complete·set-base/rebase/dev/sync 는 의미가 없다(거부) — 조회(`status`)와 released
+        claim/complete·rebase/dev/sync 는 의미가 없다(거부) — 조회(`status`)와 released
         최신화(`refresh`)만 뿌린다. worktree_pool 엔진은 build_parser 가 없어 CLI 강등 줄을 짓지
         않고 `/pm-worktree` 스킬 + 평문 note 로만 표기(카드↔CLI 정합 대상은 파서-backed 도구만).
         """
@@ -5779,7 +5633,7 @@ class PmBootstrap:
             "기준면. 배타 대여/세션 바인딩 없음(claim/complete 대상 아님)."
         )
         lines.append(
-            "> readonly 는 조회·갱신(refresh)만 — set-base/rebase/dev/sync·claim/complete 는 거부."
+            "> readonly 는 조회·갱신(refresh)만 — rebase/dev/sync·claim/complete 는 거부."
         )
         lines.append("")
 

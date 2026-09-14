@@ -3148,7 +3148,7 @@ def test_snapshot_updates_lease_and_next_phase0_passes(hf, tmp_path):
 
     도착 스냅(v1.3.2@c1)만 남은 채 세션 중 v1.3.3@c2 로 브랜치가 바뀌면 재스냅 전 0단계 compare
     는 branch 변경 → `diverged` FAIL-LOUD(버그 재현). 핸드오프 재스냅이 lease.git 을 live(v1.3.3@c2)
-    로 갱신(base=v1.3.2@c1 보존)하면 0단계가 `match` 로 통과한다."""
+    로 갱신하면 0단계가 `match` 로 통과한다. 작업 슬롯 스냅은 장부 base 를 두지 않는다(부모는 git 설정)."""
     import importlib.util as _ilu
     import subprocess as _sp
 
@@ -3186,12 +3186,14 @@ def test_snapshot_updates_lease_and_next_phase0_passes(hf, tmp_path):
     _git("commit", "-q", "-m", "c1")
     c1 = _git("rev-parse", "HEAD").stdout.strip()
 
-    # 리스 seed + arrival 스냅(v1.3.2@c1·base 기록) — 부트스트랩 bind 도착 시점 모사.
+    # 리스 seed + arrival 스냅(v1.3.2@c1) — 부트스트랩 bind 도착 시점 모사.
     lease = wp.Lease(slot="work/project_manager_1", repo="project_manager",
                      session="project_manager_1", started="t", state="leased")
     with wp._lease_lock():
         wp._write_ledger([lease])
-    wp.record_git_snapshot("work/project_manager_1", base_branch="v1.3.2")
+    wp.record_git_snapshot("work/project_manager_1")
+    arrival = wp.list_leases()[0].git
+    assert (arrival["branch"], arrival["head"]) == ("v1.3.2", c1)
 
     # 세션 중 브랜치 변경 — v1.3.2 → v1.3.3 (릴리즈 커밋 모사).
     _git("checkout", "-q", "-b", "v1.3.3")
@@ -3227,11 +3229,11 @@ def test_snapshot_updates_lease_and_next_phase0_passes(hf, tmp_path):
     )
     assert rc == 0
 
-    # lease.git 이 live branch/head 로 갱신 + base(v1.3.2@c1)는 보존(base 미전달·arrival 동형).
+    # lease.git 이 live branch/head 로 갱신 — 재스냅이 장부 base 를 되살리지 않는다.
     updated = wp.list_leases()[0]
     assert updated.git["branch"] == "v1.3.3"
     assert updated.git["head"] == c2
-    assert updated.git["base"] == {"branch": "v1.3.2", "commit": c1}
+    assert "base" not in updated.git
 
     # 재스냅 후 — 차기 0단계 compare 통과(match·외부-개입 오탐 폐쇄).
     after = wp.compare_slot_git("work/project_manager_1")
@@ -4096,8 +4098,8 @@ def test_task_handoff_real_git_changed_slot_regressed_all_resnapped(hf, tmp_path
     with wp._lease_lock():
         wp._write_ledger(leases)
         wp._write_tasks([wp.Task("mytask", started="t")])
-    wp.record_git_snapshot("work/a_1", base_branch="main")
-    wp.record_git_snapshot("work/b_1", base_branch="main")
+    wp.record_git_snapshot("work/a_1")
+    wp.record_git_snapshot("work/b_1")
     a_head = ga("rev-parse", "HEAD").stdout.strip()   # a_1 은 이후 불변.
 
     # b_1 만 세션 중 커밋 전진(head descendant = 변경 흔적)·a_1 은 arrival 그대로(무변경).
@@ -4141,8 +4143,8 @@ def test_task_handoff_real_git_changed_slot_regressed_all_resnapped(hf, tmp_path
     updated = {l.slot: l for l in wp.list_leases()}
     assert updated["work/a_1"].git["head"] == a_head       # 무변경이라도 재스냅 대상(live=arrival).
     assert updated["work/b_1"].git["head"] == b_head2      # 변경분 live(c2)로 갱신.
-    # base(arrival main)는 재스냅에서 보존(base 미전달·arrival 동형).
-    assert updated["work/b_1"].git["base"]["branch"] == "main"
+    # 작업 슬롯 재스냅은 장부 base 를 두지 않는다(부모는 git 설정 기록).
+    assert "base" not in updated["work/a_1"].git and "base" not in updated["work/b_1"].git
 
 
 # ── [6/7] 미push ahead 경고 · [6b/7] 미마감 raw sweep · [7/7] push 단계 (T-0596) ──

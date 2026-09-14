@@ -123,6 +123,9 @@ def _create_git(argv: list[str]) -> tuple[int, str]:
         return 0, "true\n"
     if "--verify" in argv and argv[-1] == "HEAD":
         return 0, "a" * 40 + "\n"
+    if argv[:2] == ["rev-parse", "--verify"]:
+        # 파생 ref 의 갈라진 커밋 해소(부모 기록 pm-fork) — HEAD 이외의 `<ref>^{commit}`.
+        return 0, "b" * 40 + "\n"
     if argv == ["rev-parse", "HEAD"]:
         return 0, "a" * 40 + "\n"
     if argv == ["symbolic-ref", "HEAD"]:
@@ -317,7 +320,7 @@ def test_alloc_task_owner_does_not_create_false_slot_state(wp):
 def test_create_task_owned_slot_does_not_create_false_slot_state(wp):
     wp.bare_repo_path("A").mkdir(parents=True)
     lease = wp.create_slot(
-        "A", owner_task="task-alpha", init_submodules=False, git_runner=_create_git
+        "A", base="main", owner_task="task-alpha", init_submodules=False, git_runner=_create_git
     )
 
     assert lease.session == "task-alpha"
@@ -327,7 +330,7 @@ def test_create_task_owned_slot_does_not_create_false_slot_state(wp):
 def test_create_readonly_slot_does_not_create_slot_state(wp):
     wp.bare_repo_path("A").mkdir(parents=True)
     lease = wp.create_slot(
-        "A", readonly=True, init_submodules=False, git_runner=_create_git
+        "A", base="main", readonly=True, init_submodules=False, git_runner=_create_git
     )
 
     assert lease.role == "readonly"
@@ -430,7 +433,7 @@ def test_first_bootstrap_run_binds_before_context_and_renders_seeded_state(
     instance._collect_log_entry = lambda: None
     instance._collect_user_continuity = lambda _log_text: None
     instance._collect_dashboard_others = lambda: None
-    instance._slot_era_info = lambda _repo, _freshness: None
+    instance._slot_era_info = lambda _freshness: None
     instance._safe_command_card = lambda _identity: None
 
     observed: list[dict] = []

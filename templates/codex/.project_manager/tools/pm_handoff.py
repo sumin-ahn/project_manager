@@ -3089,8 +3089,8 @@ class PmHandoff:
         남아 0단계가 `diverged` FAIL-LOUD 로 정당한 자기 진행을 외부-개입 오경보로 차단하기
         때문이다.
 
-        write 프리미티브 `worktree_pool.record_git_snapshot(slot)` 만 호출한다 — base 는
-        미전달(기존 보존·arrival 동형)·판정 로직 재구현 없음. fail-soft: worktree_pool 부재
+        write 프리미티브 `worktree_pool.record_git_snapshot(slot)` 만 호출한다 — 브랜치 부모
+        기록은 git 설정에 있어 건드리지 않는다·판정 로직 재구현 없음. fail-soft: worktree_pool 부재
         (미셋업)·슬롯 미바인딩/장부 부재(record None)·스냅 예외는 무해 skip(핸드오프
         차단 안 함). release(--done·git 정리) 경로는 호출부에서 제외한다.
 

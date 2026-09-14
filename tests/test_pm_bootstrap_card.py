@@ -567,6 +567,11 @@ class _FakeWorktreePool:
     def slot_path(self, slot):
         return fake_slot_path(slot)
 
+    def slot_git_status(self, slot, *, git_runner=None):
+        # `_slot_era_info` 가 슬롯 바인딩마다 부르는 대역 — 카드 통합만 보므로 parent 없음(None).
+        return {"slot": slot, "branch": self._branch, "head": None, "parent": None,
+                "children": [], "stashes": 0, "submodules": [], "dirty": False}
+
 
 def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None):
     """격리된 PmBootstrap — board/git/log/pm_state 는 hermetic stub(실 자산 미접촉)."""

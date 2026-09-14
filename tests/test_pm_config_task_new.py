@@ -319,7 +319,7 @@ def test_task_new_has_no_prefix_flag(pc):
 def test_task_group_help_lists_new(pc):
     """`task` 그룹 help 가 `new` 를 표면화한다(진입점이 둘이 된 사실)."""
     help_text = pc.build_parser().format_help()
-    assert "task 정체성 관리 (new·prefix·close·end·reopen)" in help_text
+    assert "task 정체성 관리 (new·prefix·branch·close·end·reopen)" in help_text
 
 
 # ── 실 서브프로세스 (파서 배선 + 엔진 로드까지 실제로 태운다) ─────────────────

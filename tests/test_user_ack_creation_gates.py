@@ -642,11 +642,14 @@ class _SlotPool:
     def find_task(self, name):
         return SimpleNamespace(name=name, prefix=None)
 
-    def create_slot(self, repo, *, base=None, test_cmd=None, readonly=False, owner_task=None):
+    def create_slot(self, repo, *, base, test_cmd=None, readonly=False, owner_task=None):
         role = "readonly" if readonly else "work"
+        # 확정 상태는 엔진과 같은 세 갈래 — task 명의 leased · readonly 무소유 leased · 그 밖 무소유 idle.
+        state = "leased" if (readonly or owner_task is not None) else "idle"
         lease = SimpleNamespace(
-            slot=f"work/{repo}_1", repo=repo, state="leased", role=role,
-            session=owner_task, pid=None if readonly else 123, test_cmd=test_cmd,
+            slot=f"work/{repo}_1", repo=repo, state=state, role=role,
+            session=owner_task if owner_task is not None else "",
+            pid=None if readonly else 123, test_cmd=test_cmd,
         )
         self.created.append((repo, base, test_cmd, readonly, owner_task, lease))
         return lease
@@ -681,16 +684,16 @@ def test_worktree_add_rejects_ack_bound_to_other_repo(pm_config, capsys):
 
 
 @pytest.mark.parametrize(
-    "readonly,task,expected_role",
+    "readonly,task,expected_role,expected_state",
     [
-        (False, None, "work"),
-        (True, None, "readonly"),
-        (False, "job", "work"),
+        (False, None, "work", "idle"),
+        (True, None, "readonly", "leased"),
+        (False, "job", "work", "leased"),
     ],
     ids=["normal", "readonly-role", "task-leased"],
 )
 def test_worktree_add_bound_ack_preserves_create_slot_semantics(
-    pm_config, monkeypatch, capsys, tmp_path, readonly, task, expected_role,
+    pm_config, monkeypatch, capsys, tmp_path, readonly, task, expected_role, expected_state,
 ):
     pool = _SlotPool(bare_root=tmp_path / ".repos")
     monkeypatch.setattr(pm_config, "_install_protected_hook_reporting", lambda *a, **k: True)
@@ -698,15 +701,17 @@ def test_worktree_add_bound_ack_preserves_create_slot_semantics(
     args = argparse.Namespace(
         repo="svc", test=None, readonly=readonly, task=task, user_ack="svc",
     )
+    # 슬롯 생성은 repo 등록 base 를 부모로 기록한다 — 그 base 만 답하는 board.
+    board = SimpleNamespace(_repo_base={"svc": "main"}.get)
 
     assert pm_config.cmd_worktree_add(
-        args, worktree_pool=pool, board=object(), is_tty=lambda: False,
+        args, worktree_pool=pool, board=board, is_tty=lambda: False,
     ) == 0
 
     assert len(pool.created) == 1
     repo, base, test_cmd, got_readonly, owner_task, lease = pool.created[0]
     assert (repo, base, test_cmd, got_readonly, owner_task) == (
-        "svc", None, None, readonly, task,
+        "svc", "main", None, readonly, task,
     )
-    assert lease.state == "leased" and lease.role == expected_role
+    assert lease.state == expected_state and lease.role == expected_role
     assert "[승인 감사]" in capsys.readouterr().out

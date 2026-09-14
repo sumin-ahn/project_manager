@@ -293,6 +293,7 @@ BOARD_LOCK = LOCAL_DIR / "board.lock"                       # OS file lock — b
 LEASES_FILE = LOCAL_DIR / "worktree-leases.json"            # worktree 리스 장부 (read-only here)
 DOMAIN_PY = REPO / ".project_manager" / "tools" / "domain.py"  # domain lint deep-import (순환 회피·아래 lint_domain)
 PM_DELEGATE_PY = REPO / ".project_manager" / "tools" / "pm_delegate.py"  # delegate lint deep-import (아래 lint_delegate)
+WORKTREE_POOL_PY = REPO / ".project_manager" / "tools" / "worktree_pool.py"  # 묶음 브랜치 부모 기록(_cluster_ensure_branch)
 DELEGATE_CHANNEL_GUARD_PY = REPO / ".project_manager" / "tools" / "delegate_channel_guard.py"
 CODEX_DELEGATE_OBSERVATIONS = (
     LOCAL_DIR / "delegate-channel" / "codex-observations.jsonl"
@@ -13158,7 +13159,18 @@ def _cluster_ensure_branch(tree: str, branch: str, base: str | None) -> str:
     result = _git_run(["branch", branch, base], repo=Path(tree))
     if result is None or result[0] != 0:
         return f"생성 실패(기점 {base} · {tree})"
-    return f"생성됨 (기점 {base} · {tree})"
+    # 만든 자리에서 부모를 적는다 — 기점 브랜치가 부모이고 그 끝 커밋이 갈라진 커밋이다.
+    # 브랜치는 이미 생겼으므로 기록 실패는 조용히 넘기지 않고 올린다.
+    worktree_pool = _load_module_from_path(
+        WORKTREE_POOL_PY, "worktree_pool.py", verifier=_verify_engine_rev,
+    )
+    runner = worktree_pool._real_git_runner(Path(tree))
+    rc, fork = runner(["rev-parse", "--verify", f"{base}^{{commit}}"])
+    if rc != 0:
+        raise worktree_pool.BranchParentError(
+            f"{branch} 를 만들었지만 기점 {base} 커밋을 읽지 못해 부모를 기록하지 못했다: {fork.strip()}")
+    worktree_pool.record_branch_parent(branch, base, fork.strip(), git_runner=runner)
+    return f"생성됨 (기점 {base} · 부모 기록 · {tree})"
 
 
 def _cluster_overlap_material(

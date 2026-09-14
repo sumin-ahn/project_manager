@@ -160,7 +160,11 @@ def test_the_status_json_rows_have_no_pid_key(wp, tmp_path, monkeypatch):
 
     lease = _lease(wp, {"slot": "work/proj_1", "repo": "proj",
                         "session": "proj_1", "state": "leased"})
-    monkeypatch.setattr(wp, "slot_git_status", lambda _slot: {}, raising=False)
+    # 슬롯 git 조회 대역 — 엔진이 worktree 없는 슬롯에 돌려주는 모양 그대로(부모 기록 없음).
+    monkeypatch.setattr(wp, "slot_git_status", lambda slot: {
+        "slot": slot, "branch": None, "head": None, "parent": None, "children": [],
+        "stashes": 0, "submodules": [], "dirty": False,
+    }, raising=False)
     monkeypatch.setattr(wp, "slots_for_task", lambda _name: [], raising=False)
     task = wp.Task(name="proj_1", open=True, started="t")
 

@@ -112,7 +112,7 @@ export default function StatusTab({ light, heavy, remote }:
                   <td className="py-0.5 font-mono text-[11px] text-slate-500">
                     {holderLabel(slot) ?? "비어 있음"}{slot.branch ? ` · ${slot.branch}` : " · 브랜치 없음"}
                     {slot.head ? ` @${slot.head.slice(0, 8)}` : ""}
-                    <SlotRemote slot={slot.slot} remote={remote} />
+                    <SlotRemote slot={slot} remote={remote} />
                   </td>
                   <td className="py-0.5 text-right"><StatusRowActions row={slot} /></td>
                 </tr>

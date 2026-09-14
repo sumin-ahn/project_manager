@@ -211,7 +211,9 @@ def test_status_json_light_sections_from_real_ledger(home, pc, wp):
     assert row["role"] == "work" and row["task"] == "main"
     assert row["branch"] == "feat/x"
     assert row["head"] == _git(home / slot, "rev-parse", "HEAD").stdout.strip()
-    assert row["base"] is None and row["behind"] is None and row["dirty"] is False
+    # 손 git 으로 만든 슬롯 브랜치라 부모 기록이 없다 — 지어내지 않고 null 이다.
+    assert row["parent"] is None and row["children"] == [] and row["stashes"] == 0
+    assert row["dirty"] is False
 
     assert document["tasks"] == [{
         "name": "main", "prefix": "app", "alive": True,
@@ -243,26 +245,15 @@ def test_status_json_repos_reads_the_registry_inside_a_separate_board(home):
 
 
 @_git_required
-def test_status_json_with_remote_counts_each_slot_against_the_origin_head(home):
-    """`--with-remote` — origin 기본 브랜치를 fetch 해 슬롯마다 앞/뒤 커밋 수와 origin 주소를 싣는다."""
+def test_status_json_with_remote_reports_origin_url_without_a_tracked_branch(home):
+    """`--with-remote` — 원격 브랜치에 연결하지 않은 슬롯은 origin 주소만 싣고 `upstream` 은 null 이다."""
     slot = _make_slot(home, "app", 1, "feat/x")
     _ledger(home, [{"slot": slot, "repo": "app", "session": "", "started": "s",
                     "state": "idle", "test_cmd": None}])
-    origin = home / ".origin"
-    _write(origin / "UPSTREAM.md", "upstream\n")
-    _git(origin, "add", "UPSTREAM.md")
-    _git(origin, "commit", "-q", "-m", "upstream")          # 원격 HEAD 가 한 커밋 앞선다
-    _write(home / slot / "LOCAL.md", "local\n")
-    _git(home / slot, "add", "LOCAL.md")
-    _git(home / slot, "commit", "-q", "-m", "local")        # 슬롯이 한 커밋 앞선다
 
     remote = _status_json(home, "--with-remote")["slots"][0]["remote"]
 
-    assert remote == {
-        "url": str(origin), "head_branch": "trunk",
-        "head": _git(origin, "rev-parse", "HEAD").stdout.strip(), "ahead": 1, "behind": 1,
-        "upstream": None,                                   # 원격 브랜치에 연결하지 않은 브랜치
-    }
+    assert remote == {"url": str(home / ".origin"), "upstream": None}
 
 
 @_git_required
@@ -302,7 +293,6 @@ def test_status_json_with_remote_reports_the_tracked_remote_branch(home):
     assert rows[gone]["upstream"] == {"name": "origin/feat/gone", "head": None, "ahead": None,
                                       "behind": None}
     assert rows[detached]["upstream"] is None
-    assert {row["behind"] for row in rows.values()} == {0}  # 원격 HEAD(trunk)는 그대로다
 
 
 @_git_required
@@ -311,6 +301,9 @@ def test_status_json_with_remote_stops_without_a_partial_document(home):
     slot = _make_slot(home, "app", 1, "feat/x")
     _ledger(home, [{"slot": slot, "repo": "app", "session": "", "started": "s",
                     "state": "idle", "test_cmd": None}])
+    _git(home / ".repos" / "app.git", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+    _git(home / slot, "config", "branch.feat/x.remote", "origin")
+    _git(home / slot, "config", "branch.feat/x.merge", "refs/heads/feat/x")  # 원격에 물을 대상이 있다
     shutil.rmtree(home / ".origin")
 
     done = _run_cli(home, "status", "--json", "--with-remote")

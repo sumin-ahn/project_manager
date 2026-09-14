@@ -31,9 +31,7 @@ describe("원격 정보", () => {
                        ahead: 0, behind: 0 };
     const remote = { status: { ...document_, slots: document_.slots.map((row) => (
       row.slot === "work/app_2"
-        ? { ...row, remote: { url: "/projects/remote/app.git", head_branch: "main",
-                              head: "ea647d3cd6aadae80919108ac6315487c5b0c9b2", ahead: 0, behind: 0,
-                              upstream } }
+        ? { ...row, remote: { url: "/projects/remote/app.git", upstream } }
         : row)) } };
     renderTab(undefined, remote);
 
@@ -41,8 +39,8 @@ describe("원격 정보", () => {
     expect(screen.getByTestId("repo-proj1")).toHaveTextContent("git 주소 없음");
     const slot = screen.getByTestId("config-slot-work/app_2");
     expect(slot).toHaveTextContent("app_2 @ea647d3c");
+    expect(slot).toHaveTextContent("부모 기록 없음");
     expect(slot).toHaveTextContent("추적 원격 브랜치 origin/app_2@ea647d3c · 같음");
-    expect(slot).toHaveTextContent("원격 HEAD origin/main@ea647d3c · 같음");
     expect(screen.getByTestId("config-slot-work/app_1")).toHaveTextContent("브랜치 없음");
   });
 });

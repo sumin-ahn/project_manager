@@ -263,6 +263,12 @@ class FakeWorktreePool:
         # 0단계 record-vs-live(T-0350 compare 프리미티브) 대역 — 설정된 결과(없으면 None=검사 no-op).
         return self._compare_result
 
+    def slot_git_status(self, slot, *, git_runner=None):
+        # `_slot_era_info` 가 슬롯 바인딩마다 부르는 브랜치 부모 기록 조회 대역 — 이 스위트는
+        # 시대차 자체를 보지 않으므로 parent 없음(None)으로 고정한다(신 계약 모양만 맞춤).
+        return {"slot": slot, "branch": self._live_branch.get(slot), "head": None,
+                "parent": None, "children": [], "stashes": 0, "submodules": [], "dirty": False}
+
     def alloc(self, repo, *, branch=None, resume=None, **_kw):
         self.alloc_calls.append({"repo": repo, "branch": branch, "resume": resume})
         if self._alloc_raises:

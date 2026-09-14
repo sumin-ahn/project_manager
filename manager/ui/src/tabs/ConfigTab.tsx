@@ -130,7 +130,7 @@ function ConfigTabBody({ remote }: { remote: Entry | undefined }) {
                   <td className="py-0.5 text-slate-500">{verdict.label}</td>
                   <td className="py-0.5 font-mono text-[11px] text-slate-500">
                     {slot.branch ?? "브랜치 없음"}{slot.head ? ` @${slot.head.slice(0, 8)}` : ""}
-                    <SlotRemote slot={slot.slot} remote={remote} />
+                    <SlotRemote slot={slot} remote={remote} />
                   </td>
                   <td className="py-0.5 text-right">
                     {verdict.actions === "refresh" ? null : (

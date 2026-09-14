@@ -38,19 +38,29 @@ export type SlotRow = {
   task: string | null;
   branch: string | null;
   head: string | null;
-  behind: number | null;
+  /** 부모 브랜치 기록 — 기록이 없으면 null. readonly 슬롯은 따라갈 브랜치. */
+  parent: SlotParent | null;
+  /** 이 브랜치를 부모로 기록한 브랜치들. */
+  children: string[];
+  /** 이 브랜치 이름으로 쌓인 stash 수. */
+  stashes: number;
   dirty: boolean;
   /** `--with-remote` 로 부른 조회에서만 값이 있다(네트워크). */
   remote: SlotRemote | null;
 };
 
-/** 슬롯의 원격 대조 — origin 주소 · 추적 원격 브랜치 · 원격 HEAD(기본 브랜치) 끝 대비 앞/뒤 커밋 수. */
+/** 부모 브랜치 — 부모 브랜치가 지워졌으면 `ref`·`ahead`·`behind` 가 null. */
+export type SlotParent = {
+  name: string;
+  fork: string;
+  ref: string | null;
+  ahead: number | null;
+  behind: number | null;
+};
+
+/** 슬롯의 원격 정보 — origin 주소 · 추적 원격 브랜치. */
 export type SlotRemote = {
   url: string;
-  head_branch: string;
-  head: string;
-  ahead: number;
-  behind: number;
   /** 슬롯 브랜치가 연결된 원격 브랜치 — 브랜치가 없거나 연결하지 않았으면 null. */
   upstream: SlotUpstream | null;
 };
