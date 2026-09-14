@@ -174,8 +174,10 @@ class FakeWorktreePool:
                  end_task_result=None, validate_raises=False,
                  set_prefix_result="__unset__", tasks=None, slot_git=None,
                  reopen_result="__unset__", reopen_raises=None, end_raises=None,
-                 bare_present=True, task_branch_raises=None):
+                 bare_present=True, task_branch_raises=None, force_release_raises=None):
         self.leases = leases or []
+        # force_release 가 던질 예외 클래스(커밋 안 한 변경의 ReleaseRefused 등) 또는 None.
+        self._force_release_raises = force_release_raises
         # create_task_branch 가 던질 예외 인스턴스(TaskBranchRefused·ReadonlySlotMutation 등) 또는 None.
         self._task_branch_raises = task_branch_raises
         # 그 repo 의 공유 bare 가 디스크에 있는지([[T-0903]]) — False 면 `bare_repo_path` 가
@@ -316,7 +318,7 @@ class FakeWorktreePool:
         orphans, stale, incomplete = self._reconcile or ([], [], [])
         return SimpleNamespace(orphans=orphans, stale=stale, incomplete=incomplete)
 
-    def release(self, slot, *, owner_task=None, require_clean=True, git_runner=None):
+    def release(self, slot, *, owner_task=None, git_runner=None):
         self.calls.append(("release", slot, owner_task))
         if self._release_raises is not None:
             raise self._release_raises(slot)
@@ -324,6 +326,8 @@ class FakeWorktreePool:
 
     def force_release(self, slot):
         self.calls.append(("force_release", slot))
+        if self._force_release_raises is not None:
+            raise self._force_release_raises(slot)
         if self._force_returns == "absent":
             return None
         return FakeLease(slot=slot, repo="r", state="idle")
@@ -2701,7 +2705,7 @@ def test_worktree_prune_stale_engine_missing_errors(pc, monkeypatch, capsys):
 
 
 def test_release_calls_release(pc, capsys):
-    """release <slot> → worktree_pool.release(slot) (require_clean 기본)."""
+    """release <slot> → worktree_pool.release(slot)."""
     wp = FakeWorktreePool()
     rc = pc.cmd_release(
         argparse.Namespace(slot="work/svc_1", force=False), worktree_pool=wp
@@ -2733,13 +2737,28 @@ def test_release_force_absent_slot_is_harmless(pc, capsys):
 
 
 def test_release_dirty_refused(pc, capsys):
-    """release(비-force) 가 dirty 면 ReleaseRefused → rc 1 + 안내(작업 유실 방지)."""
+    """release(비-force) 가 커밋 안 한 변경이면 ReleaseRefused → rc 1 + 안내(stash 없음·--force 는 점유만)."""
     wp = FakeWorktreePool(release_raises=FakeWorktreePool.ReleaseRefused)
     rc = pc.cmd_release(
         argparse.Namespace(slot="work/svc_1", force=False), worktree_pool=wp
     )
     assert rc == 1
-    assert "dirty" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "커밋 안 한 변경" in err and "stash 하지 않는다" in err
+    assert "점유·소유검사만" in err
+
+
+def test_release_force_uncommitted_changes_refused(pc, capsys):
+    """release --force 도 커밋 안 한 변경이면 ReleaseRefused → rc 1 + 안내(force 는 점유만 넘는다·stash 없음)."""
+    wp = FakeWorktreePool(force_release_raises=FakeWorktreePool.ReleaseRefused)
+    rc = pc.cmd_release(
+        argparse.Namespace(slot="work/svc_1", force=True), worktree_pool=wp
+    )
+    assert rc == 1
+    assert ("force_release", "work/svc_1") in wp.calls
+    captured = capsys.readouterr()
+    assert "강제 반납도 거부" in captured.err and "stash 하지 않는다" in captured.err
+    assert "강제 반납(idle 화)" not in captured.out
 
 
 def test_release_readonly_slot_refused(pc, capsys):

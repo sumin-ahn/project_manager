@@ -4,9 +4,9 @@ repo별 worktree 풀의 슬롯 리스 라이프사이클을 검증한다:
 
   - alloc: idle 슬롯 리스 · idempotent(같은 세션 재진입) · resume/branch 우선 re-alloc ·
     branch 재할당(같은 슬롯 다른 branch) · 풀 소진 NeedsCreate.
-  - release: 작업완료 반납 · dirty+require_clean 거부(ReleaseRefused) · 자동경로 stash.
+  - release: 작업완료 반납 · 커밋 안 한 변경 거부(ReleaseRefused·stash 없음).
   - reclaim_stale: pid 죽은 leased 회수(dirty→stash) · pid 살아있으면 미회수.
-  - force_release: leased/dirty 무시 강제 idle 화.
+  - force_release: 점유 무시 강제 idle 화 · 커밋 안 한 변경은 거부(stash 없음).
   - 리스장부 동시쓰기 안전(공용 `file_lock` seam 배타락·경로 규약만 이 도구 소유) —
     부모 monkeypatch 비상속 자식 spawn.
   - sensitivity: stale 판정(pid)·풀소진 핵심 로직 무력화 시 fail 재현.
@@ -1158,25 +1158,16 @@ def test_release_clean_slot_goes_idle(wp):
     assert wp.lease_is_open(lease) is False      # 종료 기록 — 닫힘
 
 
-def test_release_dirty_require_clean_refused(wp, proj):
-    """dirty + require_clean=True → ReleaseRefused(작업 유실 방지). 슬롯 폴더 존재 전제."""
+def test_release_uncommitted_changes_refused_without_stash(wp, proj):
+    """커밋 안 한 변경 → ReleaseRefused(작업 유실 방지) · 엔진은 stash 하지 않는다. 슬롯 폴더 존재 전제."""
     (proj / "work" / "A_1").mkdir(parents=True, exist_ok=True)  # _is_dirty 가 path.exists 봄
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="me", state="leased"))
     git = FakeGit(dirty=True)
     with pytest.raises(wp.ReleaseRefused):
-        wp.release("work/A_1", require_clean=True, git_runner=git)
-    # 거부됐으니 여전히 leased.
+        wp.release("work/A_1", git_runner=git)
+    # 거부됐으니 여전히 leased·stash 호출 없음.
     assert wp.list_leases()[0].state == "leased"
-
-
-def test_release_dirty_auto_path_stashes(wp, proj):
-    """require_clean=False(자동경로) + dirty → stash 보존 후 idle 화."""
-    (proj / "work" / "A_1").mkdir(parents=True, exist_ok=True)
-    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="me", state="leased"))
-    git = FakeGit(dirty=True)
-    lease = wp.release("work/A_1", require_clean=False, git_runner=git)
-    assert lease.state == "idle"
-    assert git.did("stash", "push")
+    assert not git.did("stash")
 
 
 def test_release_unknown_slot_raises(wp):
@@ -1263,14 +1254,16 @@ def test_force_release_idles_leased_slot(wp):
     assert lease is not None and lease.state == "idle"
 
 
-def test_force_release_dirty_still_idles_with_stash(wp, proj):
-    """force_release — dirty 라도 거부 없이 idle 화하되 stash 로 작업 보존 시도."""
+def test_force_release_uncommitted_changes_refused_without_stash(wp, proj):
+    """force_release — 점유는 무시하지만 커밋 안 한 변경은 거부한다(stash 없음·장부 불변)."""
     (proj / "work" / "A_1").mkdir(parents=True, exist_ok=True)
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="stuck", state="leased"))
     git = FakeGit(dirty=True)
-    lease = wp.force_release("work/A_1", git_runner=git)
-    assert lease.state == "idle"
-    assert git.did("stash", "push")
+    with pytest.raises(wp.ReleaseRefused):
+        wp.force_release("work/A_1", git_runner=git)
+    assert wp.list_leases()[0].state == "leased"
+    assert wp.list_leases()[0].session == "stuck"
+    assert not git.did("stash")
 
 
 def test_force_release_unknown_slot_returns_none(wp):
@@ -8749,7 +8742,7 @@ def test_alloc_idle_relance_clears_bound_marker(wp, proj):
 def test_release_clears_bound_marker(wp):
     """명시 release 는 bind 점유를 종료 — bound 마커를 해제한다(git=None 동형 teardown·T-0389)."""
     wp.bind_slot("work/A_1", "A", "A_1")        # bound=True
-    released = wp.release("work/A_1", require_clean=False)
+    released = wp.release("work/A_1")
     assert released.state == "idle" and released.bound is False
     assert next(l for l in wp.list_leases() if l.slot == "work/A_1").bound is False
 
@@ -10319,15 +10312,3 @@ def test_real_git_parent_record_survives_release(proj, tmp_path):
     assert before is not None and before["name"] == "main"
     assert wp.release(lease.slot).state == "idle"
     assert wp.read_branch_parent("A_1", git_runner=bare_runner) == before
-
-
-@_git_required
-def test_real_git_branch_delete_exclusion_keeps_branch_with_children(proj, tmp_path):
-    """자식 브랜치(부모 기록이 이 브랜치를 가리킴)가 있으면 삭제 대상에서 뺀다 · 없으면 None."""
-    wp, bare, _lease, slot_dir, _runner = _family_slot(proj, tmp_path)
-    bare_runner = wp._real_git_runner(bare)
-    assert wp._branch_delete_exclusion("A_1", repo="A", head_branch="main", git_runner=bare_runner) is None
-    _git(slot_dir, "branch", "child")
-    wp.record_branch_parent("child", "A_1", _head_sha(slot_dir), git_runner=bare_runner)
-    assert wp._branch_delete_exclusion("A_1", repo="A", head_branch="main",
-                                       git_runner=bare_runner) == "자식 브랜치 child"

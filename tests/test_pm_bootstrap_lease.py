@@ -169,7 +169,7 @@ class FakeWorktreePool:
     """worktree_pool 인터페이스를 흉내내는 mock — 호출을 기록만 한다(실 부작용 0).
 
     실 엔진 시그니처: alloc(repo, *, branch, resume) → Lease · slot_path(slot) → Path ·
-    release(slot, *, require_clean) → Lease · NeedsCreate(repo) 예외.
+    release(slot) → Lease · NeedsCreate(repo) 예외.
     """
 
     def __init__(self, *, alloc_raises_needs_create: bool = False,
@@ -334,8 +334,9 @@ class FakeWorktreePool:
         self.closed_slots.append(slot)
         return _FakeLease(slot, "A", "a5")
 
-    def release(self, slot, *, require_clean=True, **_kw):
-        self.release_calls.append({"slot": slot, "require_clean": require_clean})
+    def release(self, slot):
+        # 엔진 시그니처 그대로 — 자동경로 인자(옛 require_clean)를 넘기면 TypeError 로 드러난다.
+        self.release_calls.append({"slot": slot})
         if self.release_raises_keyerror:
             raise KeyError(slot)
         return _FakeLease(slot, "A", "a5")
@@ -900,8 +901,8 @@ def test_handoff_done_releases_slot(handoff, tmp_path, capsys):
         worktree_slot="work/A_2", user_ack="A_2", branch="a5", done=True,
     )
     assert rc == 0
-    # release 가 정확히 슬롯과 함께 호출됐다 (require_clean=False 자동경로).
-    assert wp.release_calls == [{"slot": "work/A_2", "require_clean": False}]
+    # release 가 정확히 슬롯 하나로 호출됐다 (stash 자동경로 인자 없음).
+    assert wp.release_calls == [{"slot": "work/A_2"}]
 
 
 def test_handoff_done_requires_slot(handoff, tmp_path, capsys):

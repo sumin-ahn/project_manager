@@ -100,7 +100,8 @@ def cycle(tmp_path_factory) -> Cycle:
     run.run("task close", ["task", "close", TASK])
     run.run("task end", ["task", "end", TASK])
     run.run("task reopen", ["task", "reopen", TASK])
-    run.run("worktree remove", ["worktree", "remove", slot])
+    run.run("worktree remove without ack", ["worktree", "remove", slot])
+    run.run("worktree remove", ["worktree", "remove", slot, "--user-ack", slot])
     run.run("prune-stale", ["worktree", "prune-stale"])
     run.run("worktree add readonly", ["worktree", "add", REPO_NAME, "--readonly",
                                       "--user-ack", REPO_NAME])
@@ -222,6 +223,17 @@ def test_a_slot_is_not_created_without_the_user_approval_value(cycle):
     assert f"--user-ack {REPO_NAME}" in step["stderr"]
     # 슬롯은 늘지 않았다 — 거부가 곧 부작용 0이다.
     assert _slots(step["status"]).keys() == _slots(cycle.steps["task new"]["status"]).keys()
+
+
+def test_a_slot_is_not_removed_without_the_user_approval_value(cycle):
+    step = cycle.steps["worktree remove without ack"]
+    slot = _work_slot(cycle.steps["release"]["status"])
+
+    assert step["rc"] == 1
+    assert "슬롯 제거에는 사용자 명시 승인이 필요하다" in step["stderr"]
+    assert f"--user-ack {slot}" in step["stderr"]
+    # 슬롯은 그대로다 — 거부가 곧 부작용 0이다.
+    assert slot in _slots(step["status"])
 
 
 def test_alloc_before_the_task_exists_is_refused_in_the_engine_words(cycle):

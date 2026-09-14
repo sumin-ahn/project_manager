@@ -16,8 +16,9 @@ task는 슬롯과 직교하는 작업스트림 정체성이다.
   생성하지 않고 사용자에게 슬롯 생성 승인을 요청하라는 처방으로 멈춘다(승인 후 실행 형태는
   `worktree add <repo> --user-ack <repo>`). create/remove(물리층)는 사용자 승인,
   alloc/release(논리층)는 PM 자율. readonly는 대상이 아니다.
-- `release --task`는 슬롯 session이 해당 task 명의가 아니면 거부한다. dirty도 거부하며,
-  `--force`는 stash 보존 강제·소유검사 우회 백스톱이다. clean이면 폴더를 유지한 채 idle 반납한다.
+- `release --task`는 슬롯 session이 해당 task 명의가 아니면 거부한다. 커밋 안 한 변경도 거부하며(엔진은
+  stash 하지 않는다), `--force`는 점유·소유검사 우회 백스톱이다(커밋 안 한 변경은 그래도 거부).
+  clean이면 폴더를 유지한 채 idle 반납한다.
 - `task end`는 해당 task 명의의 claimed 티켓이 남으면 목록을 내고 거부한다. 사용자가 `board complete`
   또는 `board unclaim`(claimed→open)을 판단하며 자동 실행하지 않는다. 보유 작업공간 dirty도 목록과 함께
   거부한다. 모두 clean이면 슬롯을 삭제하지 않고 일괄 idle 반납, 장부 task 레코드 제거, 서술 폴더를

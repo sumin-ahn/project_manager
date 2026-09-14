@@ -4224,14 +4224,15 @@ class PmBootstrap:
 
         부트스트랩이 alloc(앞단) 후 fail-fast 수집(board/pytest/git)에서 abort 하면 이 신규
         lease 가 stale leased 로 남아 풀 고갈·"다른 활성 PM" 오표시를 낳는다. `worktree_pool.release`
-        로 반납한다 — `require_clean=False`(갓 alloc 한 슬롯은 clean 이나 방어적). 여기서는
-        `_resolve_worktree_pool`(부재 시 SystemExit) 대신 fail-soft 로드(부재→skip)를 쓰고, release
-        자체 실패도 삼킨다 — cleanup 이 원 abort 예외를 **가리지 않게**(re-raise 는 호출부 몫).
+        로 반납한다. 여기서는 `_resolve_worktree_pool`(부재 시 SystemExit) 대신 fail-soft 로드
+        (부재→skip)를 쓰고, release 자체 실패(그 사이 커밋 안 한 변경이 생긴 슬롯의 `ReleaseRefused`
+        포함·엔진은 stash 하지 않는다)도 삼킨다 — cleanup 이 원 abort 예외를 **가리지 않게**(re-raise
+        는 호출부 몫).
         """
         try:
             wp = self._worktree_pool or _load_worktree_pool()
             if wp is not None:
-                wp.release(slot, require_clean=False)
+                wp.release(slot)
         except Exception as exc:  # noqa: BLE001 — 일반 cleanup 실패만 원 abort 를 가리지 않는다.
             if _is_engine_rev_skew(exc):
                 raise

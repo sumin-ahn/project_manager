@@ -114,7 +114,7 @@ describe("슬롯 절", () => {
     expect(screen.queryByTestId("confirm-dialog")).toBeNull();
   });
 
-  it("제거는 판정표가 연 행에만 열리고 readonly 행에는 없다", async () => {
+  it("제거는 판정표가 연 행에만 열리고 확인 대화를 지나 --user-ack 값이 슬롯이다", async () => {
     const { run } = renderTab();
 
     expect(screen.getByTestId("slot-remove-work/app_2")).toBeDisabled();   // 작업 중
@@ -122,9 +122,23 @@ describe("슬롯 절", () => {
     expect(screen.getByTestId("slot-remove-.")).toBeDisabled();
     expect(screen.queryByTestId("slot-remove-work/app_1")).toBeNull();     // readonly
     fireEvent.click(screen.getByTestId("slot-remove-work/app_3"));         // 아이들 행은 열린다
+    expect(run).not.toHaveBeenCalled();
+    expect(screen.getByTestId("confirm-value")).toHaveTextContent("--user-ack work/app_3");
 
+    fireEvent.click(screen.getByTestId("confirm-approve"));
     await waitFor(() => expect(run).toHaveBeenCalledWith(
-      DEMO, ["worktree", "remove", "work/app_3"]));
+      DEMO, ["worktree", "remove", "work/app_3", "--user-ack", "work/app_3"]));
+    expect(screen.queryByTestId("confirm-dialog")).toBeNull();
+  });
+
+  it("제거 확인을 취소하면 부르지 않는다", () => {
+    const { run } = renderTab();
+
+    fireEvent.click(screen.getByTestId("slot-remove-work/app_3"));
+    fireEvent.click(screen.getByTestId("confirm-cancel"));
+
+    expect(run).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("confirm-dialog")).toBeNull();
   });
 
   it("정리는 인자 없는 한 줄이다", async () => {

@@ -4068,15 +4068,15 @@ class ClusterCloser:
     def _default_release(self, slot: str) -> tuple[bool, str]:
         """슬롯을 반납한다 — `(성공, 사람이 읽는 한 줄)`.
 
-        dirty 슬롯은 거부다(`require_clean=True`) — 자동 경로라고 stash 로 밀어 넣으면 종결이
-        산출물을 조용히 치운다. 소유 검사(`owner_task`)도 그대로 태운다.
+        커밋 안 한 변경이 있는 슬롯은 거부다(`ReleaseRefused`·엔진은 stash 하지 않는다) — 종결이
+        산출물을 조용히 치우지 않는다. 소유 검사(`owner_task`)도 그대로 태운다.
         """
         pool = _load_tool_module(TOOLS_DIR / "worktree_pool.py")
         release = getattr(pool, "release", None) if pool is not None else None
         if release is None:
             return False, "worktree_pool 반납 seam 을 로드하지 못했다"
         try:
-            release(slot, require_clean=True, owner_task=self._task)
+            release(slot, owner_task=self._task)
         except Exception as exc:  # noqa: BLE001 — 반납 거부는 사유를 그대로 올린다.
             if _is_engine_rev_skew(exc):
                 raise
@@ -4673,26 +4673,41 @@ class ClusterCloser:
         return None
 
     def _delete_cluster_branch(self, tree: "Path | None", source: str) -> None:
-        """묶음 브랜치 삭제 시도 1회 — 통합 브랜치를 든 트리에서. 결과는 1줄 보고다.
+        """묶음 브랜치 삭제 판정 1회 — 통합 브랜치를 든 트리에서. 결과는 1줄 보고다.
 
         브랜치 수명은 묶음 수명이다. 통합에 들어간 뒤에도 남는 묶음 브랜치가 잔재의 한 무리라,
-        종결이 그 자리에서 삭제를 시도한다. **rc≠0 은 종결을 실패시키지 않는다** — 반납
-        (`release`)은 슬롯의 체크아웃을 바꾸지 않으므로 이 시점에 작업 슬롯이 묶음 브랜치를
-        아직 쥐고 있고, 그때 git 이 거부하는 것이 정상 형상이다(그 자리의 삭제는 슬롯 제거
-        `worktree_pool.remove_slot` 이 맡는다). `git branch -d` 고정 — `-D` 승격은 없다.
+        종결이 그 자리에서 슬롯 제거와 **같은 삭제 규칙**(`worktree_pool.delete_branch_by_rule` —
+        보호·기본 브랜치·자식·부모 기록·합쳐짐·끝 커밋 재확인 뒤 `git branch -D`)을 태운다. 승인값은
+        없다 — 합쳐지지 않은 묶음 브랜치는 보존이다. **보존은 종결을 실패시키지 않는다** — 반납
+        (`release`)은 슬롯의 체크아웃을 바꾸지 않으므로 이 시점에 작업 슬롯이 묶음 브랜치를 아직
+        쥐고 있고, 그때 `git branch -D` 가 거부하는 것이 정상 형상이다(그 자리의 삭제는 슬롯 제거
+        `worktree_pool.remove_slot` 이 맡는다). 보호 목록은 종결 슬롯 리스의 repo 로 읽는다.
+        판정 조회 실패는 관측 실패(정지)다 — 보존으로 접지 않는다.
         """
         if tree is None:
             print(f"  묶음 브랜치 {source} — 통합 트리가 없어 삭제를 시도하지 않는다")
             return
         if self._dry_run:
-            print(f"  [dry-run] cwd={tree} git branch -d {source}")
+            print(f"  [dry-run] cwd={tree} 묶음 브랜치 {source} 삭제 판정"
+                  "(부모 기록·합쳐짐·끝 커밋 재확인 뒤 git branch -D)")
             return
-        rc, out = self._git(tree, ["branch", "-d", source])
-        if rc == 0:
-            print(f"  ✓ 묶음 브랜치 {source} 삭제")
+        pool = _load_tool_module(TOOLS_DIR / "worktree_pool.py")
+        if pool is None:
+            raise _CloseObservationFailure(
+                f"브랜치 삭제 판정 seam 을 로드하지 못했다 ({TOOLS_DIR / 'worktree_pool.py'}) — "
+                "pm-update 로 .project_manager/tools/ 를 재동기하라.")
+        lease = next((row for row in pool.list_leases() if row.slot == self._slot), None)
+        if lease is None:
+            print(f"  묶음 브랜치 {source} — 종결 슬롯 리스가 없어 repo 보호 목록을 알 수 없다 · "
+                  "삭제를 시도하지 않는다")
             return
-        detail = next((line.strip() for line in out.splitlines() if line.strip()), "")
-        print(f"  묶음 브랜치 {source} 보존 — {detail}")
+        try:
+            deletion = pool.delete_branch_by_rule(
+                source, repo=lease.repo, git_runner=lambda args: self._git(tree, args))
+        except pool.BranchParentError as exc:
+            raise _CloseObservationFailure(f"묶음 브랜치 {source} 삭제 판정 실패 — {exc}") from exc
+        mark = "✓ " if deletion.action == pool.BRANCH_DELETED else ""
+        print(f"  {mark}묶음 {deletion.summary()}")
 
     def _step_release(self) -> str | None:
         """슬롯 반납 — dirty 슬롯은 거부다(자동 경로라고 산출물을 치우지 않는다)."""

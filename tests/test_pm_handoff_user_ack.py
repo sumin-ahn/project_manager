@@ -166,7 +166,7 @@ def test_bare_slot_is_resolved_once_and_same_value_binds_ack(
 
     monkeypatch.setattr(handoff, "_resolve_session_worktree_slot", resolve_once)
     runner = handoff.PmHandoff()
-    monkeypatch.setattr(runner, "_dirty_tree_gate", lambda *a, **k: (1, None))
+    monkeypatch.setattr(runner, "_dirty_tree_gate", lambda *a, **k: (1, None, ()))
 
     rc = runner.run(
         session_num=3,
@@ -213,7 +213,7 @@ def test_bare_none_resolution_is_frozen_for_ack_and_downstream(
 
     def stop_after_observing_dirty_trees(*args, **kwargs):
         dirty_trees.extend(runner._dirty_gate_trees(None))
-        return 1, None
+        return 1, None, ()
 
     monkeypatch.setattr(runner, "_dirty_tree_gate", stop_after_observing_dirty_trees)
 
@@ -242,7 +242,7 @@ def test_direct_run_rejects_malformed_worktree_slot_before_ack_or_pipeline(
 
     def dirty_gate(*args, **kwargs):
         pipeline_calls.append((args, kwargs))
-        return 1, None
+        return 1, None, ()
 
     monkeypatch.setattr(runner, "_dirty_tree_gate", dirty_gate)
 

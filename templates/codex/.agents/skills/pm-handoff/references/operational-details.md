@@ -4,7 +4,7 @@
 
 ## CLI 자동 처리 단계
 
-0. **dirty-tree 게이트** — PM 홈 + 활성 worktree 전수에서 미커밋 잔여(tracked 수정 ∪ untracked-unignored·gitignored 제외)를 판정한다. 잔여가 있으면 어떤 파일도 건드리기 전에 rc 1 차단 + 목록 열거 — **세션 산출을 먼저 커밋**하고 재실행한다(불가피하면 `--ack-dirty "<사유>"`). 커밋 0 트리는 untracked 만으로 판정하고, 비-git 트리는 비차단 경고다.
+0. **dirty-tree 게이트** — PM 홈 + 활성 worktree 전수에서 미커밋 잔여(tracked 수정 ∪ untracked-unignored·gitignored 제외)를 판정한다. 잔여가 있으면 어떤 파일도 건드리기 전에 rc 1 차단 + 목록 열거 — **세션 산출을 먼저 커밋**하고 재실행한다(불가피하면 `--ack-dirty "<사유>"`). 핸드오프가 다룰 슬롯에 커밋 안 한 변경이 있으면 사용자에게 "커밋할까요? 강제 핸드오프할까요?" 를 묻는다 — 커밋 뒤 재실행, 또는 `--force-handoff`(기록만·그 슬롯 반납 안 함·entry 에 슬롯 유지 기록). 슬롯 쪽 변경은 `--ack-dirty` 로 넘지 않는다. 커밋 0 트리는 untracked 만으로 판정하고, 비-git 트리는 비차단 경고다.
 1. **회귀 측정** — `pytest tests/ -q`. red 면 즉시 중단·핸드오프 불가 (baseline fix 후 재시도).
 2. **log/current.md handoff entry skeleton append** — `## [YYYY-MM-DD] handoff | PM N차 → 다음 PM 세션` 형식. 본문 = `<PM 손 채움>`.
 3. **pm_state.md sliding window 정리** — §세션 식별 표에 N차 entry 추가 + 가장 오래된 entry 제거. 자세히 → pm_role.md §핸드오프 절차 #4.

@@ -66,30 +66,38 @@ sidecar는 파생 캐시다.
 `--readonly`는 코드 읽기와 PM 홈 wiki(domain·architecture·status) 작성용 공유 기준면이다. detached
 HEAD(released base), role=readonly, session/pid·배타 대여가 없다. 무소유 공유 자산이므로
 **바인딩(`$pm-bootstrap --slot`)·release를 거부**하고, 갱신은 [[pm-worktree]] `refresh`만 허용한다
-(rebase/dev/sync 거부). 제거는 `worktree remove --force`.
+(rebase/dev/sync 거부). 제거는 `worktree remove <slot> --user-ack <slot> --force`.
 
 ## slot status / release / remove
 
 ```bash
 ./pm-config.sh status | whoami        # 2축 cockpit — task 상황 + slot 풀·슬롯당 git 요약
-./pm-config.sh release <slot> [--force]        # 작업완료 반납(idle 화·재사용) / --force=강제 백스톱
-./pm-config.sh worktree remove <slot> [--force] # 슬롯 통째 제거(원자·번호 재사용)
+./pm-config.sh release <slot> [--force]        # 작업완료 반납(idle 화·재사용) / --force=점유·소유검사 무시 백스톱
+./pm-config.sh worktree remove <slot> --user-ack <slot> [--user-ack <브랜치>]... [--force]  # 슬롯 통째 제거(사용자 승인값·번호 재사용)
 ```
 
 - status의 **task 상황**은 task별 보유 작업공간(`work/<repo>_<N>`)·prefix(slot-모드 세션 제외), **slot
   풀**은 슬롯별 state·보유 task·role(work/readonly)와 `<branch>@<head> (부모: <이름>@<sha> · 앞 N · 뒤 M)`
   요약이다. 부모 기록이 없으면 `(부모 기록 없음)`을 표시하고 추론하지 않는다. readonly는 branch
   `(detached)`와 따라갈 브랜치만 의미한다.
-- `release`는 폴더를 유지해 idle로 재사용한다. `remove`는 `git worktree remove`, 슬롯 전용 브랜치
-  (`<repo>_<N>`) 정리(머지 완료 시 삭제·미머지 보존·공유 브랜치 스킵), 장부 엔트리 삭제를 수행해 빈
-  번호를 재사용한다. dirty/활성 리스는 거부하며 `--force`만 허용하고 dirty는 stash 보존한다.
-- 제거 구분: 등록 슬롯=`worktree remove <slot>` / worktree 없는 dangling 장부=`worktree
-  prune-stale` / 장부 없는 orphan worktree=사용자 `git worktree remove`. **사용자 명시 호출 전제**이며
-  PM은 자율 제거하지 않는다.
-- 미머지 전용 브랜치는 보존한다. 같은 번호 재생성은 `SlotBranchExists`로 중단되므로 브랜치를 머지/삭제
-  후 재시도한다. 작업 재개는 **수동 checkout**(`git worktree add <슬롯경로> <브랜치>`·리셋 없음).
-- 활성 슬롯을 `--force` 회수하면 stderr에 `⚠ 강제 회수`; dirty를 stash 보존하면
-  `복구: git stash list/pop (공유 refs/stash)` 안내가 나온다.
+- `release`는 폴더를 유지해 idle로 재사용한다. 커밋 안 한 변경이 있으면 `release`·`release --force` 모두
+  거부한다. 엔진은 stash 하지 않는다 — 사용자에게 물어 커밋하거나, 사용자가 요청할 때만 stash 한다.
+  `--force`는 점유·소유검사만 넘는다.
+- `remove`는 사용자 승인 행위다. `--user-ack` 값에 입력한 슬롯이 그대로 없으면 rc=1 로 거부한다.
+  **세션(LLM)은 이 값을 스스로 붙이지 않는다** — 사용자에게 슬롯 제거 승인을 요청하는 것이 1순위다.
+  순서: 커밋 안 한 변경·git 미등록 트리 거부(`--force` 무관) → `git worktree remove` → 브랜치 삭제
+  판정 → 장부 엔트리 삭제(빈 번호 재사용). `--force`는 점유(활성 리스)만 무시하고, 활성 슬롯을
+  회수하면 stderr에 `⚠ 강제 회수`가 나온다.
+- 브랜치 삭제 판정(슬롯 제거·묶음 종결 공통, 앞에서 걸리면 보존): 보호 브랜치·공용 저장소 기본
+  브랜치 → 자식 브랜치 있음 → 부모 기록 없음·부모 브랜치 없음 → 부모에 합쳐지지 않은 커밋이 있고
+  그 브랜치 이름의 승인값(`--user-ack <브랜치>`)이 없음(커밋 목록·origin 반영 여부 출력) → 그 밖은
+  끝 커밋을 다시 확인한 뒤 삭제. 합쳐지지 않은 브랜치를 지울지는 **제거 전에** 사용자에게 묻는다
+  (제거 뒤에는 같은 슬롯으로 다시 판정할 수 없다).
+- 제거 구분: 등록 슬롯=`worktree remove <slot> --user-ack <slot>` / worktree 없는 dangling 장부=`worktree
+  prune-stale` / 장부 없는 orphan worktree=사용자 `git worktree remove`. git 미등록 잔재 트리는 엔진이
+  지우지 않는다 — 사용자가 경로를 확인·삭제한 뒤 `worktree prune-stale`.
+- 보존된 전용 브랜치가 있으면 같은 번호 재생성은 `SlotBranchExists`로 중단된다. 작업 재개는
+  **수동 checkout**(`git worktree add <슬롯경로> <브랜치>`·리셋 없음).
 
 ## upstream show / switch
 

@@ -15,8 +15,9 @@ repo별 git worktree 풀로 *코드*를 격리한다(병렬 브랜치·나중 gi
   - 리스 = 작업스트림(브랜치) 단위. alloc@bootstrap · release@작업완료(세션종료/회전 ≠
     release). 회전은 리스 유지 + 같은 슬롯 재부착.
   - 열림/닫힘은 기록 축이다 — 자동 회수·만료 시각·하트비트는 없다(닫는 것은 사용자 행위).
-  - git 연동 = DI seam(주입 가능 runner) — `git worktree add/remove`·dirty 검사·stash·
+  - git 연동 = DI seam(주입 가능 runner) — `git worktree add/remove`·dirty 검사·
     submodule init 을 seam 통해 호출 → hermetic 테스트(mock 또는 실 임시 repo).
+  - 커밋 안 한 변경이 있으면 반납·강제 반납·제거가 멈춘다. 엔진은 stash 하지 않는다.
 
 장부 동시쓰기 보호 = **배타 파일락**(공용 `file_lock` seam·경로 규약
 `.local/worktree-leases.lock` 만 이 도구 소유). board.py 의 `board_lock` 과 *같은
@@ -331,32 +332,34 @@ class NeedsCreate(Exception):
 
 
 class ReleaseRefused(Exception):
-    """dirty worktree 를 require_clean=True 로 release 하려 함 (수동 정리 또는 자동경로 stash 필요)."""
+    """커밋 안 한 변경이 있는 슬롯을 반납하려 함 — `release`·`force_release` 모두 거부한다.
+
+    엔진은 stash 하지 않는다. 사용자가 커밋하거나, 사용자가 요청할 때만 stash 한 뒤 다시 반납한다.
+    """
 
     def __init__(self, slot: str):
         self.slot = slot
-        super().__init__(f"refusing to release dirty slot {slot!r} (require_clean=True)")
+        super().__init__(f"refusing to release slot {slot!r} — uncommitted changes")
 
 
 class RemoveRefused(Exception):
-    """dirty 또는 활성(leased/creating) 슬롯을 force=False 로 remove_slot 하려 함 (작업 유실·사용중 슬롯 보호).
+    """remove_slot 거부 — 활성 리스·커밋 안 한 변경·git 미등록 잔재 트리 (사용 중 슬롯·작업 유실 보호).
 
-    `release` 의 dirty 거부 철학과 동형이되, remove 는 슬롯을 *통째로* 없애므로 활성 리스
-    (다른 세션 사용 중·in-flight 생성)까지 거부한다 — force=True 로만 무시(dirty 는 stash
-    보존 후 강제 제거). 정석 흐름은 `release`(→idle) 후 `remove`(idle 슬롯). `reason` ∈
-    {"dirty", "active-lease", "unregistered-tree"}(git 이 등록하지 않는 트리는 dirty 를 물을
-    자리가 없어 삭제 자체가 승인 대상이다)·`state` = active-lease 시 슬롯 상태
-    (leased/creating·진단용).
+    `reason` ∈ {"active-lease", "dirty", "unregistered-tree"}. `force=True` 가 무시하는 것은
+    "active-lease"(점유) 하나뿐이다. 커밋 안 한 변경은 사용자가 커밋(또는 요청한 stash)으로 치운다.
+    git 이 등록하지 않는 트리는 커밋 안 한 변경을 물을 자리가 없어 엔진이 지우지 않는다 — 사용자가
+    `path` 를 직접 확인·삭제한다. `state` = active-lease 시 슬롯 상태(leased/creating·진단용).
     """
 
-    def __init__(self, slot: str, reason: str, *, state: "str | None" = None):
+    def __init__(self, slot: str, reason: str, *, state: "str | None" = None,
+                 path: "Path | None" = None):
         self.slot = slot
         self.reason = reason      # "dirty" | "active-lease" | "unregistered-tree"
         self.state = state        # active-lease 시 슬롯 state (leased/creating)
+        self.path = path          # unregistered-tree 시 사용자가 확인할 트리 경로
         detail = f" (state={state})" if state else ""
-        super().__init__(
-            f"refusing to remove slot {slot!r} — {reason}{detail} (force=True 로 무시)"
-        )
+        where = f" (path={path})" if path else ""
+        super().__init__(f"refusing to remove slot {slot!r} — {reason}{detail}{where}")
 
 
 class TaskActiveElsewhere(Exception):
@@ -551,9 +554,9 @@ class SlotBranchExists(RuntimeError):
         super().__init__(
             f"슬롯 전용 브랜치 {branch!r} 가 이미 존재한다 — base {base!r} 에서 슬롯 {slot!r} 을 재생성할 수 "
             f"없다(`git worktree add` 가 'a branch named {branch!r} already exists' 로 죽는다). 미머지-"
-            f"보존 브랜치(remove_slot 이 작업 유실 방지로 보존) 잔존 가능성 — 다음 중 택1: (1) 그 "
-            f"브랜치를 정리(`git branch -d {branch}` 머지 완료 시·미머지면 `git branch -D {branch}` 로 "
-            f"폐기) 후 새 슬롯 재생성, 또는 (2) 그 브랜치의 미머지 작업을 다른 슬롯에서 "
+            f"보존 브랜치(remove_slot 이 작업 유실 방지로 보존) 잔존 가능성 — 다음 중 택1: (1) 사용자가 "
+            f"터미널에서 그 브랜치를 정리(머지 또는 폐기 — 세션의 손 git 브랜치 삭제는 가드가 거부한다) 후 "
+            f"새 슬롯 재생성, 또는 (2) 그 브랜치의 미머지 작업을 다른 슬롯에서 "
             f"`switch <slot> {branch}` 로 **전환해 재개**(리셋 없이 보존 커밋 tip 에서 checkout). "
             f"(데이터 유실 없음)."
         )
@@ -888,21 +891,11 @@ class RemoveResult:
     """`remove_slot` 결과 — 무엇을 지웠고 그 슬롯의 브랜치를 어떻게 처리했는지 (보고용).
 
     - `slot` — 제거한 슬롯 식별자(`work/<repo>_<N>`).
-    - `branch` — 제거 당시 슬롯 worktree 의 live 브랜치(`current_branch`·None=detached/조회불가).
-    - `branch_action` — 그 브랜치 처리 결과:
-        - "deleted" — `merge_ref` 에 머지돼 삭제(`git branch -d` rc0).
-        - "preserved-unmerged" — `git branch -d` 가 rc≠0 으로 거부해 보존(사유는 `branch_reason`).
-        - "preserved-protected" — 제외 집합(repo 보호목록·bare 기본 브랜치·다른 슬롯의 기준
-          브랜치)에 들어 삭제를 시도하지 않았다(어느 축인지는 `branch_reason`).
-        - "none" — detached/조회불가라 지울 브랜치 판별 불가.
-    - `branch_reason` — 보존 사유 한 줄(`preserved-*` 에만·"deleted"/"none" 은 None). 제외 축
-      이름(protected) 또는 git 출력 첫 줄(unmerged) — 보고가 관측을 그대로 옮기게 하는 값이다.
-    - `merge_ref` — 머지 판정 기준 = bare 기본 브랜치(HEAD) 이름. `git branch -d` 는 이 기준만
-      보므로(로컬 기준이 origin 과 갈라져 있으면 릴리즈된 브랜치도 미머지로 거부된다) 보고가
-      기준을 밝힌다. 브랜치를 판별하지 못했거나 bare HEAD 를 못 읽으면 None.
+    - `branch` — 제거 당시 슬롯 worktree 의 live 브랜치(`current_branch`·None=detached/조회불가/
+      트리 부재).
+    - `branch_deletion` — 그 브랜치의 삭제 판정 결과(`BranchDeletion`·`delete_branch_by_rule`).
+      브랜치를 판별하지 못했으면 None.
     - `tree_cleaned` — git 이 등록만 지우고 남긴 디렉터리 잔재를 엔진이 마저 지웠는가.
-    - `stashed` — force + dirty 라 제거 전 변경을 stash 로 보존 시도했는지(stash 성공 시에만 True·
-      실패면 remove_slot 이 RuntimeError 로 중단하므로 여기 도달 안 함).
     - `forced_state` — `--force` 로 **활성 리스**(leased/creating·사용 중)를 override 하고 제거했을 때
       그 원래 state(예 "leased"·CLI 가 강제 회수 경고 surface). idle 슬롯이었으면 None(정상 제거·경고 불요).
 
@@ -910,23 +903,19 @@ class RemoveResult:
     dataclass 의 forward-ref 해소가 깨진다. 평범한 클래스로 그 결합을 피한다.)
     """
 
-    def __init__(self, slot: str, *, branch: "str | None", branch_action: str,
-                 branch_reason: "str | None", merge_ref: "str | None",
-                 tree_cleaned: bool, stashed: bool, forced_state: "str | None" = None):
+    def __init__(self, slot: str, *, branch: "str | None",
+                 branch_deletion: "BranchDeletion | None", tree_cleaned: bool,
+                 forced_state: "str | None" = None):
         self.slot = slot
         self.branch = branch
-        self.branch_action = branch_action
-        self.branch_reason = branch_reason
-        self.merge_ref = merge_ref
+        self.branch_deletion = branch_deletion
         self.tree_cleaned = tree_cleaned
-        self.stashed = stashed
         self.forced_state = forced_state   # force 로 override 한 활성 state(leased/creating)·None=idle 정상.
 
     def __repr__(self) -> str:
         return (f"RemoveResult(slot={self.slot!r}, branch={self.branch!r}, "
-                f"branch_action={self.branch_action!r}, branch_reason={self.branch_reason!r}, "
-                f"merge_ref={self.merge_ref!r}, tree_cleaned={self.tree_cleaned!r}, "
-                f"stashed={self.stashed!r}, forced_state={self.forced_state!r})")
+                f"branch_deletion={self.branch_deletion!r}, tree_cleaned={self.tree_cleaned!r}, "
+                f"forced_state={self.forced_state!r})")
 
 
 def _now_utc() -> str:
@@ -1193,8 +1182,8 @@ def _is_dirty(slot_path: Path, *, git_runner: GitRunner | None = None) -> bool:
     """슬롯 worktree 에 미커밋 변경(untracked 포함)이 있는지. git 오류 → 보수적으로 dirty.
 
     `git status --porcelain` 의 porcelain 엔트리 라인이 하나라도 있으면 dirty. git 호출
-    실패(rc!=0)는 상태를 모르므로 **보수적으로 dirty 로 본다** — clean 으로 오판해 stash
-    없이 날리는 것보다 안전.
+    실패(rc!=0)는 상태를 모르므로 **보수적으로 dirty 로 본다** — clean 으로 오판해 커밋 안 한
+    변경을 날리는 것보다 안전.
 
     ⚠️ stderr 오탐 방어: `_real_git_runner` 가 stdout+stderr 를 합쳐 반환하게
     바뀌어, status 출력에 stderr 경고(`warning: ...`)가 섞일 수 있다. `out.strip()!=""`
@@ -1206,13 +1195,6 @@ def _is_dirty(slot_path: Path, *, git_runner: GitRunner | None = None) -> bool:
     if rc != 0:
         return True
     return len(_porcelain_status_lines(out)) > 0
-
-
-def _stash(slot_path: Path, *, git_runner: GitRunner | None = None) -> tuple[int, str]:
-    """슬롯 worktree 의 dirty 변경을 stash 보존(untracked 포함). (rc, stdout) 반환."""
-    runner = git_runner or _real_git_runner(slot_path)
-    return runner(["stash", "push", "--include-untracked",
-                   "-m", f"worktree_pool auto-stash {_now_utc()}"])
 
 
 # `fetch origin` 실패 시 폴백 대상 ref 의 정체 — 경고 문구 단일 소스. remote-tracking ref
@@ -2996,14 +2978,13 @@ def slot_state(slot: str) -> "str | None":
 def release(
     slot: str,
     *,
-    require_clean: bool = True,
     owner_task: str | None = None,
     git_runner: GitRunner | None = None,
 ) -> Lease:
     """슬롯을 반납한다 — 작업완료 시. idle 로 전이한 Lease 반환.
 
-    - **dirty + require_clean=True → `ReleaseRefused`** — 수동 정리 요구(작업 유실 방지).
-    - **require_clean=False(자동경로) → dirty 면 stash 보존 후 idle 화** — 자동화에서 막힘 방지.
+    - **커밋 안 한 변경이 있으면 `ReleaseRefused`** — 엔진은 stash 하지 않는다(사용자가 커밋하거나
+      요청한 stash 로 치운 뒤 다시 반납·작업 유실 방지).
     - **owner_task 주면 소유검사** — 그 슬롯의 leased session 이 owner_task 와 다르면
       `NotTaskOwner`(다른 task 의 슬롯 반납 차단). 검사는 dirty 판정보다 먼저(내 것이 아니면
       dirty 여부를 볼 이유가 없다). `--task` 미지정(owner_task=None·slot-only 백스톱)은 안 탄다.
@@ -3023,16 +3004,14 @@ def release(
         if target.role == _LEASE_ROLE_READONLY:
             raise ReadonlySlotNotLeasable(slot, "release")
 
-        # task 소유검사 — dirty/stash 어떤 부작용보다 먼저. 내 task 명의(session)가 아니면
+        # task 소유검사 — dirty 판정보다 먼저. 내 task 명의(session)가 아니면
         # 아무것도 바꾸지 않고 raise(다른 세션 작업을 실수로 idle 화하지 않음).
         if owner_task is not None and target.session != owner_task:
             raise NotTaskOwner(slot, owner_task, target.session)
 
         path = slot_path(slot)
         if path.exists() and _is_dirty(path, git_runner=git_runner):
-            if require_clean:
-                raise ReleaseRefused(slot)
-            _stash(path, git_runner=git_runner)  # 자동경로 — dirty 를 stash 보존.
+            raise ReleaseRefused(slot)
 
         target.state = "idle"
         target.session = ""       # 종료 기록 — 이후 `lease_is_open` 은 닫힘으로 읽는다.
@@ -3043,9 +3022,9 @@ def release(
 
 
 def force_release(slot: str, *, git_runner: GitRunner | None = None) -> Lease | None:
-    """수동 백스톱 — dirty/leased 여부 무시하고 슬롯을 강제로 idle 화.
+    """수동 백스톱 — 점유(leased)·소유 여부를 무시하고 슬롯을 강제로 idle 화.
 
-    dirty 면 stash 로 보존은 시도하되(작업 유실 최소화) 거부하지 않는다. 장부에 슬롯이
+    커밋 안 한 변경이 있으면 force 여도 `ReleaseRefused` 다(stash 하지 않는다). 장부에 슬롯이
     없으면 None 반환(이미 정리됨·무해). `pm-config release --force` 백스톱의 엔진 진입점.
     """
     with _lease_lock():
@@ -3059,7 +3038,7 @@ def force_release(slot: str, *, git_runner: GitRunner | None = None) -> Lease | 
             raise ReadonlySlotNotLeasable(slot, "force-release")
         path = slot_path(slot)
         if path.exists() and _is_dirty(path, git_runner=git_runner):
-            _stash(path, git_runner=git_runner)  # 강제라도 작업은 보존 시도.
+            raise ReleaseRefused(slot)
         target.state = "idle"
         target.session = ""       # 종료 기록 — 사용자가 강제로 닫는 경로(엔진 자동 회수 없음).
         target.git = None    # release 시 정리(force 백스톱도 동일·다음 alloc 이 재스냅).
@@ -3096,95 +3075,52 @@ def _worktree_registered(path: Path, *, git_runner: GitRunner) -> bool:
     return False
 
 
-def _bare_head_branch(*, git_runner: GitRunner) -> str:
-    """bare 의 기본 브랜치(HEAD) 이름 — `git branch -d` 가 머지를 재는 기준.
-
-    full ref(`refs/heads/<name>`)를 받아 그 접두만 정확히 제거한다. `symbolic-ref --short` 는
-    같은 이름의 태그가 있으면 `heads/<name>` 을 돌려줘(실측 · git 2.43) 브랜치명이 아니다 —
-    `current_branch` 가 `--short` 를 버린 것과 같은 이유이고, 여기서는 그 오판이 곧 bare 기본
-    브랜치를 삭제 대상으로 흘려보내는 자리라 더 치명적이다.
-
-    조회 실패(rc≠0)와 브랜치가 아닌 출력(detached bare 의 `HEAD` 등)은 **답이 아니라 판정
-    실패**라 raise 한다(`_worktree_registered` 와 같은 규율). 빈 값으로 접으면 제외 축(bare 기본
-    브랜치)이 조용히 사라지고, 아무 worktree 도 쥐지 않은 bare 기본 브랜치는 `git branch -d` 가
-    rc0 으로 지운다(실측).
-    """
-    rc, out = git_runner(["rev-parse", "--symbolic-full-name", "HEAD"])
-    ref = str(out).strip()
-    if rc != 0 or not ref.startswith(_SYMREF_BRANCH_PREFIX):
-        raise RuntimeError(
-            f"git rev-parse --symbolic-full-name HEAD failed (rc={rc}, out={ref[:200]!r}) — "
-            "머지 판정 기준(bare 기본 브랜치)을 관측하지 못해 브랜치를 지우지 않았다."
-        )
-    return ref[len(_SYMREF_BRANCH_PREFIX):]
-
-
-def _branch_delete_exclusion(
-    branch: str, *, repo: str, head_branch: str, git_runner: GitRunner,
-) -> "str | None":
-    """이 브랜치를 삭제 대상에서 빼는 사유 — 빠질 이유가 없으면 None(=git 판정에 맡긴다).
-
-    축은 셋뿐이다: repo 보호목록(`_resolve_protected`) · bare 기본 브랜치(HEAD) · **자식 브랜치**
-    (부모 기록이 이 브랜치를 가리키는 브랜치·`branch_children`). 셋 다 "이 슬롯의 수명과 함께
-    끝나는 브랜치가 아니다" 를 뜻한다. bare 기본 브랜치는 아무 worktree 도 쥐지 않으면
-    `git branch -d` 가 rc0 으로 지우므로(실측) git 판정에 맡길 수 없다.
-    """
-    if branch in _resolve_protected(repo):
-        return f"{repo} 보호 브랜치"
-    if branch == head_branch:
-        return "bare 기본 브랜치(HEAD)"
-    children = branch_children(branch, git_runner=git_runner)
-    if children:
-        return f"자식 브랜치 {', '.join(children)}"
-    return None
-
-
 def remove_slot(
     slot: str,
     *,
     force: bool = False,
+    acked_branches: "frozenset[str]" = frozenset(),
     git_runner: GitRunner | None = None,
 ) -> "RemoveResult | None":
-    """슬롯을 *통째로* 제거한다 — worktree remove + 브랜치 정리 + 장부 엔트리 삭제 (user-invoked).
+    """슬롯을 *통째로* 제거한다 — worktree remove + 브랜치 삭제 판정 + 장부 엔트리 삭제.
 
     `create_slot` 의 역연산 — 슬롯 lifecycle 에서 *제거 본체*가 수동 `git worktree remove`
     위임이던 gap 을 닫는다(PM 69 footgun 체인: 수동 remove → dangling 장부 → `add` 가 번호
-    skip → 뒤늦은 prune). 이 한 커맨드가 리스 확인 → 등록 조회 → dirty 검사 →
-    `git worktree remove`(+ `git worktree prune`) → 브랜치 정리 → 장부 엔트리 제거를 잇는다.
+    skip → 뒤늦은 prune). 이 한 커맨드가 리스 확인 → 등록 조회 → 커밋 안 한 변경 검사 →
+    `git worktree remove --force`(+ `git worktree prune`) → 브랜치 삭제 판정 → 장부 엔트리 제거를 잇는다.
 
-    **삭제-위임 원칙(사용자 명시 호출 전제)** — PM 이 자율 실행하지 않는다(호출부 CLI 가
-    사용자 명시 `pm-config worktree remove <slot>`). `prune-stale`(worktree 부재 장부만 정리)과
+    **사용자 승인값 전제** — 슬롯 제거는 사용자 승인 행위다. 슬롯 승인값(`--user-ack <슬롯>`)은
+    호출부 CLI(`pm-config worktree remove`)가 엔진을 부르기 전에 확인하고, 합쳐지지 않은 브랜치를
+    지워도 된다는 승인값만 `acked_branches` 로 넘어온다. `prune-stale`(worktree 부재 장부만 정리)과
     달리 실 worktree 를 지운다. orphan worktree(장부 미등록)는 여전히 `git worktree remove`.
 
     시퀀스:
       리스/장부 확인 — 엔트리 없으면 `None` 반환(무해 종료·이미 정리됨·orphan 은 위 참조).
       활성 리스 확인 — `state != "idle"`(leased/creating·사용 중)이면 `RemoveRefused`
-         ("active-lease")·`force=True` 로만 무시(정석은 `release` 먼저·override 시 원래 state 를
+         ("active-lease"). **`force=True` 가 무시하는 것은 이 점유 하나뿐이다**(원래 state 를
          `RemoveResult.forced_state` 에 실어 CLI 가 강제-회수 경고).
       **슬롯 트리 부재** — 지울 디렉터리가 애초에 없으면 `prune` + 장부 정리로 끝낸다
-         (dangling 장부 회수·`branch_action="none"` — 그 트리에서 브랜치를 물을 수 없다).
+         (dangling 장부 회수·브랜치 판정 없음 — 그 트리에서 브랜치를 물을 수 없다).
       **등록 조회**(`_worktree_registered`) — git 이 이 경로를 worktree 로 아는가. **모르는데
          디렉터리가 있으면** 두 갈래다: pool 슬롯 자리가 아니면(PM 홈 자신을 가리키는 행 등)
          지울 자리가 아니므로 파일시스템을 건드리지 않고 `RuntimeError`. pool 슬롯 자리면 git
-         이 등록만 지우고 남긴 잔재이지만 그 트리의 dirty 를 물을 곳이 없으므로
-         `RemoveRefused`("unregistered-tree")로 거부하고, `force=True` 일 때만 `force_rmtree`
-         로 마저 지우고 장부까지 정리한다(`tree_cleaned=True`).
-      **dirty 검사** — dirty 면 `RemoveRefused`("dirty")·`force=True` 면 stash 보존 후 강제.
-         **stash 실패(rc≠0)** 또는 **stash 후에도 여전히 dirty**(submodule 내부 변경 등
-         top-level stash 가 못 담는 잔존)면 제거를 중단(`RuntimeError`·장부/worktree/브랜치
-         미변경) — 어느 경우도 `worktree remove --force` 로 날리는 작업 유실을 막는다.
-      `git worktree remove [--force]`(+ `git worktree prune`) — `.repos/<repo>.git` bare
-         컨텍스트(공유 .git 원). 실패(rc≠0)면 **등록을 다시 물어** 사실대로 갈린다: 등록이
-         남아 있으면 아무것도 파괴되지 않았으므로 `RuntimeError`(git 메시지 그대로), 등록이
-         사라졌으면 git 이 트리만 못 지운 것이라 `force_rmtree` 로 마저 지우고 계속한다
-         (읽기 전용 잔재에서 실측된 형상).
-      브랜치 정리 — 제외 집합(repo 보호목록 · bare 기본 브랜치 · 자식 브랜치가 있는 브랜치)에
-         들면 `preserved-protected`(사유 보고), 아니면 `git branch -d` 로 git 이 판정한다
-         (rc0 `deleted` / rc≠0 `preserved-unmerged` + git 출력 첫 줄). 판정 기준(bare HEAD)은
-         `RemoveResult.merge_ref` 로 함께 보고한다. detached 면 판별 불가(none).
+         이 등록만 지우고 남긴 잔재이지만 그 트리의 커밋 안 한 변경을 물을 곳이 없으므로 force 와
+         무관하게 `RemoveRefused`("unregistered-tree", path=)로 거부한다 — 파일 삭제는 사용자
+         몫이다(직접 확인·삭제 뒤 `pm-config worktree prune-stale` 이 장부를 정리한다).
+      **커밋 안 한 변경** — `_is_dirty` 면 force 와 무관하게 `RemoveRefused`("dirty"). 하위 모듈
+         안의 미추적·수정 파일도 `git status --porcelain` 이 ` M <하위 모듈>` 로 잡는다(실측 git 2.43).
+      `git worktree remove --force <path>`(+ `git worktree prune`) — `.repos/<repo>.git` bare
+         컨텍스트(공유 .git 원). 변경 없음을 엔진이 위에서 확인했으므로 `--force` 가 날리는 작업은
+         없다. `--force` 가 필요한 이유는 하위 모듈이 있는 슬롯이다 — 변경이 없어도 `--force` 없이는
+         rc 128("하위 모듈이 포함된 작업 폴더는 옮기거나 제거할 수 없습니다")이다(실측 git 2.43).
+         실패(rc≠0)면 **등록을 다시 물어** 사실대로 갈린다: 등록이 남아 있으면 아무것도 파괴되지
+         않았으므로 `RuntimeError`(git 메시지 그대로), 등록이 사라졌으면 git 이 판정을 통과시킨 뒤
+         트리만 못 지운 것이라 `force_rmtree` 로 마저 지우고 계속한다(읽기 전용 잔재 실측 형상).
+      브랜치 — `delete_branch_by_rule`(보호·기본 브랜치·자식·부모 기록·합쳐짐·승인값·끝 커밋
+         재확인)의 결과를 `RemoveResult.branch_deletion` 에 싣는다. detached 면 판별 불가(None).
       장부 엔트리 제거 — `add` 가 빈 번호를 **재사용**(번호 skip footgun 종결·이 티켓 핵심).
 
-    ⚠️ **미머지-보존 브랜치 상호작용**: 미머지라 전용
+    ⚠️ **보존 브랜치 상호작용**: 합쳐지지 않았거나 판정할 수 없어 전용
     브랜치 `<repo>_<N>` 를 보존하면, 나중에 같은 번호의 슬롯을 재생성할 수 없다(`-b <repo>_<N>`
     대상 브랜치가 이미 존재). create_slot 은 이를 **선-검출해 fail-loud**(`SlotBranchExists`) —
     정확한 원인(브랜치 잔존) + 두 갈래(그 브랜치 정리[머지/삭제] 후 새 슬롯 재생성 / 다른 슬롯에서
@@ -3222,73 +3158,34 @@ def remove_slot(
         if not path.exists():
             bare_runner(["worktree", "prune"])
             _drop_ledger_row()
-            return RemoveResult(
-                slot=slot, branch=None, branch_action="none", branch_reason=None,
-                merge_ref=None, tree_cleaned=False, stashed=False, forced_state=forced_state,
-            )
+            return RemoveResult(slot=slot, branch=None, branch_deletion=None,
+                                tree_cleaned=False, forced_state=forced_state)
 
-        # 등록 조회 — git 이 이 경로를 worktree 로 아는가(파괴 판단의 입력·dirty 검사보다 먼저).
-        # 모르는데 디렉터리가 있으면 git 에 물을 것이 없다: pool 슬롯 자리면 잔재라 마저 지우고,
-        # 아니면(PM 홈 자신을 가리키는 행 등) 지울 자리가 아니라 파일시스템을 건드리지 않는다.
-        # 잔재를 지우는 것은 **파괴**다 — 등록이 없으면 git 에게 dirty 를 물을 수 없어(그 자리는
-        # 이미 worktree 가 아니다) 미커밋·미추적 내용이 있어도 그대로 사라진다. 그래서 이 갈래는
-        # `worktree remove` 실패 뒤(git 이 자기 dirty 판정을 통과시킨 뒤)와 달리 사용자 승인
-        # (`force`)을 요구한다.
+        # 등록 조회 — git 이 이 경로를 worktree 로 아는가(파괴 판단의 입력·변경 검사보다 먼저).
+        # 모르는데 디렉터리가 있으면 git 에게 커밋 안 한 변경을 물을 수 없다(그 자리는 이미
+        # worktree 가 아니다). 그 트리를 지우면 미커밋·미추적 내용이 그대로 사라지므로 엔진은
+        # 지우지 않는다 — pool 슬롯 자리면 사용자에게 경로를 넘기고, 아니면(PM 홈 자신을 가리키는
+        # 행 등) 지울 자리도 아니다.
         if not _worktree_registered(path, git_runner=bare_runner):
             if not _is_pool_worktree_slot(slot):
                 raise RuntimeError(
                     f"slot {slot!r} 은 git worktree 등록이 없고 그 경로({path})는 pool 슬롯 자리도 "
                     "아니다 — 지울 등록도 지울 자리도 없어 아무것도 하지 않았다(장부/트리 미변경)."
                 )
-            if not force:
-                raise RemoveRefused(slot, "unregistered-tree")
-            file_lock.force_rmtree(path)
-            bare_runner(["worktree", "prune"])
-            _drop_ledger_row()
-            return RemoveResult(
-                slot=slot, branch=None, branch_action="none", branch_reason=None,
-                merge_ref=None, tree_cleaned=True, stashed=False, forced_state=forced_state,
-            )
+            raise RemoveRefused(slot, "unregistered-tree", path=path)
 
-        # dirty 검사 — dirty 면 거부(작업 유실 방지)·force 면 stash 보존 후 강제.
-        stashed = False
+        # 커밋 안 한 변경 — force 와 무관하게 거부(엔진은 stash 하지 않는다).
         if _is_dirty(path, git_runner=git_runner):
-            if not force:
-                raise RemoveRefused(slot, "dirty")
-            # force — dirty 를 stash 보존. **stash 실패(rc≠0)면 제거를 중단**(작업 유실 방지·codex
-            # must-fix): 아직 아무것도 안 지웠으므로 장부/worktree/브랜치 미변경으로 raise 한다.
-            # 이 가드가 없으면 stash 못 뜬 dirty 변경을 `worktree remove --force` 가 날린다.
-            rc_s, out_s = _stash(path, git_runner=git_runner)
-            if rc_s != 0:
-                raise RuntimeError(
-                    f"git stash failed for {slot!r} (rc={rc_s}, out={str(out_s).strip()[:200]!r}) — "
-                    "dirty 변경을 보존하지 못해 제거를 중단한다(작업 유실 방지·장부/worktree/브랜치 "
-                    "미변경). 수동으로 정리/커밋 후 재시도하라."
-                )
-            stashed = True
-            # **stash 성공 후 재검사**: top-level
-            # `git stash push --include-untracked` 는 **submodule 내부 변경을 담지 못한다**. worktree
-            # 풀 슬롯은 submodule init 을 하므로, stash rc0 라도 dirty submodule 작업이
-            # stash 를 빠져나가 `worktree remove --force` 로 유실될 수 있다. submodule 전용 감지 대신
-            # *일반 불변식* 으로 — stash 후에도 여전히 dirty 면(=stash 가 못 담는 변경 잔존) 제거를
-            # 중단한다(장부/worktree/브랜치 미변경·stash 는 이미 생성됐을 수 있음).
-            if _is_dirty(path, git_runner=git_runner):
-                raise RuntimeError(
-                    f"slot {slot!r} 이 stash 후에도 dirty — stash 로 보존 못 하는 변경 잔존"
-                    "(submodule 내부 변경 가능). 제거를 중단한다(작업 유실 방지·장부/worktree/브랜치 "
-                    "미변경·stash 는 이미 생성됐을 수 있음). 해당 worktree 에서 수동 정리(커밋/push) "
-                    "후 재시도하라."
-                )
+            raise RemoveRefused(slot, "dirty")
 
         # 브랜치 판별은 worktree remove *전에* — 제거 후엔 슬롯 HEAD 조회 불가.
         branch = current_branch(slot, git_runner=git_runner)
 
-        # git worktree remove (+ prune) — bare 컨텍스트(공유 .git 원·_rollback_worktree 동형).
-        # force 면 --force(dirty stash 후·submodule/locked 강제). 실패는 등록을 다시 물어 갈린다:
-        # 등록이 남아 있으면 아무것도 파괴되지 않았으므로 raise, 등록이 사라졌으면 git 이 트리만
-        # 못 지운 것이라(읽기 전용 잔재 실측) 잔재를 마저 지우고 계속한다.
-        remove_argv = ["worktree", "remove", str(path)] + (["--force"] if force else [])
-        rc, out = bare_runner(remove_argv)
+        # git worktree remove --force (+ prune) — bare 컨텍스트(공유 .git 원·_rollback_worktree 동형).
+        # 변경 없음은 위에서 확인했다 — `--force` 는 하위 모듈이 있는 깨끗한 슬롯 때문이다. 실패는
+        # 등록을 다시 물어 갈린다: 등록이 남아 있으면 아무것도 파괴되지 않았으므로 raise, 등록이
+        # 사라졌으면 git 이 트리만 못 지운 것이라(읽기 전용 잔재 실측) 잔재를 마저 지우고 계속한다.
+        rc, out = bare_runner(["worktree", "remove", "--force", str(path)])
         tree_cleaned = False
         if rc != 0:
             if _worktree_registered(path, git_runner=bare_runner):
@@ -3300,33 +3197,15 @@ def remove_slot(
             file_lock.force_rmtree(path)
         bare_runner(["worktree", "prune"])  # best-effort 등록 정리(remove 후 dangling admin).
 
-        # 브랜치 정리 — 브랜치 수명은 슬롯 수명이다. 제외 집합(보호목록·bare 기본 브랜치·자식
-        # 브랜치가 있는 브랜치)만 삭제 대상에서 빠지고, 나머지는 `git branch -d` 로 git 이 판정한다.
-        merge_ref = None
-        branch_reason = None
-        if branch is None:
-            branch_action = "none"          # detached/조회불가 — 지울 브랜치 판별 불가.
-        else:
-            merge_ref = _bare_head_branch(git_runner=bare_runner)
-            branch_reason = _branch_delete_exclusion(
-                branch, repo=target.repo, head_branch=merge_ref, git_runner=bare_runner)
-            if branch_reason is not None:
-                branch_action = "preserved-protected"
-            else:
-                rc_b, out_b = bare_runner(["branch", "-d", branch])
-                if rc_b == 0:
-                    branch_action = "deleted"
-                else:
-                    branch_action = "preserved-unmerged"
-                    branch_reason = next(
-                        (line.strip() for line in str(out_b).splitlines() if line.strip()), "")
+        # 브랜치 — 브랜치 수명은 슬롯 수명이다. 삭제 여부는 공용 판정 규칙이 정한다.
+        branch_deletion = None
+        if branch is not None:
+            branch_deletion = delete_branch_by_rule(
+                branch, repo=target.repo, acked_branches=acked_branches, git_runner=bare_runner)
 
         _drop_ledger_row()
-        return RemoveResult(
-            slot=slot, branch=branch, branch_action=branch_action,
-            branch_reason=branch_reason, merge_ref=merge_ref, tree_cleaned=tree_cleaned,
-            stashed=stashed, forced_state=forced_state,
-        )
+        return RemoveResult(slot=slot, branch=branch, branch_deletion=branch_deletion,
+                            tree_cleaned=tree_cleaned, forced_state=forced_state)
 
 
 def create_slot(
@@ -3558,8 +3437,8 @@ def create_slot(
                 if branch_exists_err:
                     branch_hint = (
                         f"슬롯 전용 브랜치 `{repo}_{n}` 가 이미 존재한다(미머지-보존 브랜치 잔존 가능성·"
-                        f"remove_slot) — 그 브랜치를 정리(`git branch -d/-D {repo}_{n}`·머지) 후 "
-                        f"새 슬롯 재생성하거나, 미머지 작업을 이어가려면 다른 슬롯에서 "
+                        f"remove_slot) — 사용자가 터미널에서 그 브랜치를 정리(머지 또는 폐기 — 세션의 손 git "
+                        f"브랜치 삭제는 가드가 거부한다) 후 새 슬롯 재생성하거나, 미머지 작업을 이어가려면 다른 슬롯에서 "
                         f"`switch <slot> {repo}_{n}` 로 전환해 재개하라(리셋 없음). "
                     )
                 else:
@@ -4467,6 +4346,236 @@ def parent_ref(parent: str, *, git_runner: GitRunner) -> "str | None":
     풀 bare 의 로컬 heads 는 `fetch` 로 움직이지 않으므로(갱신 대상은 remote-tracking ref 뿐) origin 에
     정기 push 되는 브랜치는 origin 이 최신이고, origin 에 안 올리는 통합 브랜치에서만 로컬이 최신이다."""
     return _resolve_parent_ref(parent, git_runner=git_runner)[0]
+
+
+# ── 브랜치 삭제 판정 — 슬롯 제거(`remove_slot`)·묶음 종결(`ticket_finish`)이 같은 규칙을 쓴다 ──
+
+BRANCH_DELETED = "deleted"
+BRANCH_PRESERVED = "preserved"
+# 판정 사유 — 보존 8개 + 삭제 근거 2개. CLI·종결 보고가 이 값으로 문구를 고른다.
+BRANCH_REASON_PROTECTED = "protected"            # repo 보호 브랜치
+BRANCH_REASON_DEFAULT = "default-branch"         # 공용 저장소 기본 브랜치
+BRANCH_REASON_CHILDREN = "children"              # 자식 브랜치가 있다
+BRANCH_REASON_NO_PARENT = "no-parent"            # 부모 기록 없음
+BRANCH_REASON_PARENT_GONE = "parent-gone"        # 부모 브랜치가 지워져 합쳐짐을 잴 수 없다
+BRANCH_REASON_UNMERGED = "unmerged"              # 합쳐지지 않은 커밋이 있고 승인값이 없다
+BRANCH_REASON_TIP_MOVED = "tip-moved"            # 판정 뒤 끝 커밋이 바뀌었다
+BRANCH_REASON_DELETE_REFUSED = "delete-refused"  # `git branch -D` rc≠0 (다른 worktree 가 쥠 등)
+BRANCH_REASON_MERGED = "merged"                  # 삭제 근거 — 부모에 다 합쳐짐
+BRANCH_REASON_ACKED = "acked"                    # 삭제 근거 — 합쳐지지 않았으나 사용자 승인값
+# origin 반영 여부 — 합쳐지지 않아 보존할 때만 채운다.
+ORIGIN_NO_BRANCH = "no-branch"                   # refs/remotes/origin/<브랜치> 없음
+ORIGIN_CONTAINS_TIP = "contains-tip"             # origin 브랜치가 끝 커밋을 담고 있다
+ORIGIN_MISSING_TIP = "missing-tip"               # origin 브랜치는 있으나 끝 커밋이 없다
+_IS_ANCESTOR_FALSE_RC = 1      # `merge-base --is-ancestor` 의 "조상 아님" rc.
+_REV_PARSE_MISSING_RC = 1      # `rev-parse --verify --quiet` 의 "그런 ref 없음" rc.
+_ORIGIN_BRANCH_PREFIX = "refs/remotes/origin/"
+
+
+class BranchDeletion:
+    """`delete_branch_by_rule` 결과 — 행동·사유와 사람이 다음 판단에 쓸 근거.
+
+    - `branch` · `action`(BRANCH_DELETED / BRANCH_PRESERVED) · `reason`(BRANCH_REASON_*).
+    - `parent` — 부모 기록의 부모 이름(판정이 그 앞에서 멈췄으면 None).
+    - `parent_ref` — 합쳐짐을 잰 비교 ref(`parent_ref` 결과·재지 않았으면 None).
+    - `children` — 자식 브랜치 목록(children 사유일 때).
+    - `unmerged_commits` — `<parent_ref>..<끝 커밋>` 의 `<짧은 sha> <제목>` 줄 목록(unmerged 보존·
+      acked 삭제·그 뒤 단계에서 멈춘 보존).
+    - `origin` — ORIGIN_* (unmerged 보존일 때만·그 밖 None).
+    - `detail` — git 출력 첫 줄(delete-refused) 또는 끝 커밋 변화(tip-moved).
+
+    (dataclass 미사용 — RemoveResult 와 같은 이유.)
+    """
+
+    def __init__(self, branch: str, *, action: str, reason: str, parent: "str | None" = None,
+                 parent_ref: "str | None" = None, children: "list[str] | None" = None,
+                 unmerged_commits: "list[str] | None" = None, origin: "str | None" = None,
+                 detail: "str | None" = None):
+        self.branch = branch
+        self.action = action
+        self.reason = reason
+        self.parent = parent
+        self.parent_ref = parent_ref
+        self.children = list(children or [])
+        self.unmerged_commits = list(unmerged_commits or [])
+        self.origin = origin
+        self.detail = detail
+
+    def summary(self) -> str:
+        """행동·사유 한 줄 — 슬롯 제거 CLI 와 묶음 종결 보고가 같은 문구를 쓴다."""
+        head = f"브랜치 {self.branch}"
+        count = len(self.unmerged_commits)
+        if self.action == BRANCH_DELETED:
+            if self.reason == BRANCH_REASON_ACKED:
+                return f"{head} 삭제 (합쳐지지 않은 커밋 {count}개 · 사용자 승인값)"
+            return f"{head} 삭제 (부모 {self.parent_ref} 에 다 합쳐짐)"
+        origin_text = {
+            ORIGIN_NO_BRANCH: "origin 에 브랜치 없음",
+            ORIGIN_CONTAINS_TIP: "origin 에 끝 커밋까지 있음",
+            ORIGIN_MISSING_TIP: "origin 브랜치에 끝 커밋 없음",
+        }
+        reason_text = {
+            BRANCH_REASON_PROTECTED: "보호 브랜치",
+            BRANCH_REASON_DEFAULT: "공용 저장소 기본 브랜치",
+            BRANCH_REASON_CHILDREN: f"자식 브랜치 {', '.join(self.children)}",
+            BRANCH_REASON_NO_PARENT: "부모 기록 없음 · 합쳐짐 판정 불가",
+            BRANCH_REASON_PARENT_GONE: f"부모 브랜치 {self.parent} 없음 · 합쳐짐 판정 불가",
+            BRANCH_REASON_UNMERGED: (f"부모 {self.parent_ref} 에 합쳐지지 않은 커밋 {count}개 · "
+                                     f"{origin_text.get(self.origin, self.origin)}"),
+            BRANCH_REASON_TIP_MOVED: f"판정 뒤 끝 커밋이 바뀜 · {self.detail}",
+            BRANCH_REASON_DELETE_REFUSED: f"git branch -D 거부 · {self.detail}",
+        }
+        return f"{head} 보존 ({reason_text[self.reason]})"
+
+    def __repr__(self) -> str:
+        return (f"BranchDeletion(branch={self.branch!r}, action={self.action!r}, "
+                f"reason={self.reason!r}, parent={self.parent!r}, parent_ref={self.parent_ref!r}, "
+                f"children={self.children!r}, unmerged_commits={self.unmerged_commits!r}, "
+                f"origin={self.origin!r}, detail={self.detail!r})")
+
+
+def _shared_default_branch(*, git_runner: GitRunner) -> str:
+    """공용 git 저장소의 기본 브랜치(HEAD) 이름 — worktree 에 묶인 runner 여도 worktree HEAD 가 아니다.
+
+    `rev-parse --git-common-dir` 로 공용 git 디렉터리를 얻고 그 HEAD 를 읽는다(bare 는 `.`).
+    full ref(`refs/heads/<name>`)를 받아 그 접두만 정확히 제거한다 — `symbolic-ref --short` 는
+    같은 이름의 태그가 있으면 `heads/<name>` 을 돌려준다(실측 · git 2.43).
+
+    조회 실패와 브랜치가 아닌 출력(detached HEAD)은 판정 실패라 raise 한다. 빈 값으로 접으면
+    기본 브랜치 보존 축이 조용히 사라진다.
+    """
+    rc, out = git_runner(["rev-parse", "--git-common-dir"])
+    common_dir = str(out).strip()
+    if rc != 0 or not common_dir:
+        raise BranchParentError(
+            f"`git rev-parse --git-common-dir` 실패 (rc={rc}): {common_dir[:200]} — "
+            "공용 저장소 기본 브랜치를 읽지 못해 브랜치를 지우지 않았다."
+        )
+    rc, out = git_runner(["--git-dir", common_dir, "rev-parse", "--symbolic-full-name", "HEAD"])
+    ref = str(out).strip()
+    if rc != 0 or not ref.startswith(_SYMREF_BRANCH_PREFIX):
+        raise BranchParentError(
+            f"`git --git-dir {common_dir} rev-parse --symbolic-full-name HEAD` 실패 (rc={rc}): "
+            f"{ref[:200]} — 공용 저장소 기본 브랜치를 읽지 못해 브랜치를 지우지 않았다."
+        )
+    return ref[len(_SYMREF_BRANCH_PREFIX):]
+
+
+def _branch_tip(branch: str, *, git_runner: GitRunner) -> "str | None":
+    """`refs/heads/<branch>` 의 끝 커밋 sha — 그 브랜치가 없으면 None, 조회 실패는 raise."""
+    rc, out = git_runner(["rev-parse", "--verify", "--quiet",
+                          f"{_SYMREF_BRANCH_PREFIX}{branch}^{{commit}}"])
+    value = str(out).strip()
+    if rc == 0 and value:
+        return value
+    if rc == _REV_PARSE_MISSING_RC and not value:
+        return None
+    raise BranchParentError(
+        f"브랜치 {branch!r} 끝 커밋 조회 실패 — `git rev-parse --verify` (rc={rc}): {value[:200]}"
+    )
+
+
+def _is_ancestor_or_raise(ancestor: str, descendant: str, *, git_runner: GitRunner) -> bool:
+    """`merge-base --is-ancestor` — rc0 참·rc1 거짓·그 밖 raise(판정 실패).
+
+    `_is_ancestor`(head 관계 판정용)는 판정 불가를 False 로 접는다. 삭제 판정에서 그렇게 접으면
+    조회 실패가 "합쳐지지 않음" 보존으로 둔갑하므로 이 판정은 따로 raise 한다."""
+    rc, out = git_runner(["merge-base", "--is-ancestor", ancestor, descendant])
+    if rc == 0:
+        return True
+    if rc == _IS_ANCESTOR_FALSE_RC:
+        return False
+    raise BranchParentError(
+        f"`git merge-base --is-ancestor {ancestor} {descendant}` 실패 (rc={rc}): "
+        f"{str(out).strip()[:200]}"
+    )
+
+
+def _commits_between(base: str, tip: str, *, git_runner: GitRunner) -> "list[str]":
+    """`<base>..<tip>` 커밋의 `<짧은 sha> <제목>` 줄 목록(최신 먼저). 조회 실패는 raise."""
+    rc, out = git_runner(["log", "--format=%h %s", f"{base}..{tip}"])
+    if rc != 0:
+        raise BranchParentError(
+            f"`git log {base}..{tip}` 실패 (rc={rc}): {str(out).strip()[:200]}"
+        )
+    return [line for line in str(out).splitlines() if line.strip()]
+
+
+def _origin_state(branch: str, tip: str, *, git_runner: GitRunner) -> str:
+    """origin 에 이 브랜치의 끝 커밋이 올라가 있는가 — ORIGIN_* 하나."""
+    origin_ref = f"{_ORIGIN_BRANCH_PREFIX}{branch}"
+    if not _ref_exists(origin_ref, git_runner=git_runner):
+        return ORIGIN_NO_BRANCH
+    if _is_ancestor_or_raise(tip, origin_ref, git_runner=git_runner):
+        return ORIGIN_CONTAINS_TIP
+    return ORIGIN_MISSING_TIP
+
+
+def delete_branch_by_rule(
+    branch: str,
+    *,
+    repo: str,
+    acked_branches: "frozenset[str]" = frozenset(),
+    git_runner: GitRunner,
+) -> BranchDeletion:
+    """브랜치 삭제 판정과 삭제 — 슬롯 제거·묶음 종결이 함께 쓰는 단일 규칙.
+
+    차례(앞에서 걸리면 그 자리에서 보존한다):
+      1. repo 보호 브랜치(`_resolve_protected`) 또는 공용 저장소 기본 브랜치 → 보존.
+      2. 자식 브랜치(`branch_children`) 1개 이상 → 보존 + 자식 목록.
+      3. 부모 기록 없음 → 보존. 부모 브랜치가 지워져 비교 ref(`parent_ref`)가 없으면 합쳐짐을 잴 수
+         없어 보존.
+      4. 끝 커밋이 비교 ref 의 조상이 아니고(`merge-base --is-ancestor`) 이 브랜치가 `acked_branches`
+         에 없음 → 보존 + 합쳐지지 않은 커밋 목록 + origin 반영 여부.
+      5. 그 밖(합쳐짐, 또는 승인값 있음) → 판정 때 읽은 끝 커밋과 지금 `refs/heads/<브랜치>` 가 같을
+         때만 `git branch -D`(부모 기록 설정도 git 이 함께 지운다). 다르면 보존, `-D` rc≠0(다른
+         worktree 가 쥠 등)이면 보존 + git 출력 첫 줄.
+
+    `git_runner` 는 그 브랜치가 사는 저장소에 묶인 runner 다(bare 든 worktree 든 — 기본 브랜치는
+    공용 git 디렉터리에서 읽는다). 판정 의미가 아닌 git 실패는 `BranchParentError` 로 올린다 —
+    보존으로 접으면 조회가 깨진 채 "보존" 이 정상 결과처럼 보인다.
+    """
+    def preserved(reason: str, **fields) -> BranchDeletion:
+        return BranchDeletion(branch, action=BRANCH_PRESERVED, reason=reason, **fields)
+
+    if branch in _resolve_protected(repo):
+        return preserved(BRANCH_REASON_PROTECTED)
+    if branch == _shared_default_branch(git_runner=git_runner):
+        return preserved(BRANCH_REASON_DEFAULT)
+    children = branch_children(branch, git_runner=git_runner)
+    if children:
+        return preserved(BRANCH_REASON_CHILDREN, children=children)
+    record = read_branch_parent(branch, git_runner=git_runner)
+    if record is None:
+        return preserved(BRANCH_REASON_NO_PARENT)
+    parent = record["name"]
+    compare_ref = parent_ref(parent, git_runner=git_runner)
+    if compare_ref is None:
+        return preserved(BRANCH_REASON_PARENT_GONE, parent=parent)
+    tip = _branch_tip(branch, git_runner=git_runner)
+    if tip is None:
+        raise BranchParentError(
+            f"브랜치 {branch!r} 가 없다(`refs/heads/{branch}`) — 끝 커밋을 읽지 못해 판정하지 않았다."
+        )
+    judged = {"parent": parent, "parent_ref": compare_ref}
+    unmerged: list[str] = []
+    if not _is_ancestor_or_raise(tip, compare_ref, git_runner=git_runner):
+        unmerged = _commits_between(compare_ref, tip, git_runner=git_runner)
+        if branch not in acked_branches:
+            return preserved(BRANCH_REASON_UNMERGED, unmerged_commits=unmerged,
+                             origin=_origin_state(branch, tip, git_runner=git_runner), **judged)
+    current = _branch_tip(branch, git_runner=git_runner)
+    if current != tip:
+        return preserved(BRANCH_REASON_TIP_MOVED, unmerged_commits=unmerged,
+                         detail=f"판정 때 {tip} → 지금 {current or '브랜치 없음'}", **judged)
+    rc, out = git_runner(["branch", "-D", branch])
+    if rc != 0:
+        first_line = next((line.strip() for line in str(out).splitlines() if line.strip()), "")
+        return preserved(BRANCH_REASON_DELETE_REFUSED, unmerged_commits=unmerged,
+                         detail=f"rc={rc}: {first_line}", **judged)
+    return BranchDeletion(branch, action=BRANCH_DELETED,
+                          reason=BRANCH_REASON_ACKED if unmerged else BRANCH_REASON_MERGED,
+                          unmerged_commits=unmerged, **judged)
 
 
 # ── readonly 공유 슬롯 — role 조회 / mutation 거부 / refresh ──

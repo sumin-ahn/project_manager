@@ -10,7 +10,7 @@ slot 경로:
       [--repo <name> [--slot <N>]] \\
       --wave-summary "<wave 1~3 한 줄 요약>" \\
       --user-ack <repo_N> \\
-      [--dry-run] [--no-pytest] [--ack-dirty "<사유>"]
+      [--dry-run] [--no-pytest] [--ack-dirty "<사유>"] [--force-handoff]
 
     --dry-run 미리보기는 쓰기 0이라 --user-ack 없이 허용한다. 실제 핸드오프는 대상값에
     결속된 사용자 명시 승인 토큰이 필요하다.
@@ -20,6 +20,9 @@ slot 경로:
      **어떤 mutation 보다 먼저·회귀보다도 먼저** 중단(판정은 git 조회 몇 번). override =
      `--ack-dirty "<사유>"`(사유는 entry 에 박제). `--auto-trigger`는 사용자 명시 핸드오프
      호출부의 호환 신호일 뿐 독자 실행 권한이 아니며, ack 계약을 우회하지 않는다.
+     핸드오프가 다룰 슬롯(`--done` 반납 대상·task 보유 슬롯)의 커밋 안 한 변경은 사용자에게
+     "커밋할까요? 강제 핸드오프할까요?" 를 묻고 멈춘다 — 넘는 수단은 `--force-handoff`(기록만·
+     그 슬롯 반납 안 함·entry 에 슬롯 유지 기록) 하나다.
   1. 회귀 측정 — 게이트는 areas.md(prefix 행 > repo 행) > local.conf test.cmd 로 해소하고,
      해소 실패면 pytest tests/ -q. red 면 즉시 중단·핸드오프 불가(비-pytest 게이트는 exit
      code 로 판정 — §회귀 게이트 해소).
@@ -1303,6 +1306,9 @@ HANDOFF_LOG_SKELETON_TEMPLATE = """\
 # (PM 손-채움 `- 회귀/incident:` 줄과 별개 줄·grep 가능한 고정 접두). 같은-세션 재실행의 멱등
 # upsert 도 이 라벨을 앵커로 쓴다(기계 소유 구획 = 이 줄 하나).
 DIRTY_ACK_ENTRY_LABEL = "- incident (dirty-tree ack)"
+# 강제 핸드오프(`--force-handoff`) 기록 문구 — 커밋 안 한 변경을 두고 반납하지 않은 슬롯. dirty-tree
+# ack 줄에 함께 적어 박제 경로(append·같은-세션 upsert)를 하나로 둔다.
+FORCE_HANDOFF_ENTRY_NOTE = "커밋 안 한 변경 있음, 슬롯 유지: {slots}"
 
 # 기존 entry 안의 ack 줄(멱등 upsert 대상). 라벨로 시작하는 한 줄 전체를 잡되 **줄 종결자의 CR 은
 # 따로 캡처**한다 — `[^\n]*` 로 뭉뚱그리면 CR 까지 소비한 자리에 CR 없는 본문을 넣어 CRLF 로그에
@@ -3057,14 +3063,15 @@ class PmHandoff:
     def _release_slot(self, slot: str) -> int:
         """작업완료 시 worktree 슬롯을 release 한다 (--done).
 
-        dirty 면 require_clean=False 자동경로로 stash 보존 후 idle 화(자동화에서 막힘
-        방지). worktree_pool 부재(multi-PM 미배선)면 명시 에러로 중단(rc 1). 반환: 0=성공.
+        커밋 안 한 변경이 있는 슬롯은 [0/7] 게이트가 기록 전에 멈추거나(`--force-handoff` 면 반납
+        대상에서 뺀다) 여기 오지 않는다 — 엔진은 stash 하지 않는다. worktree_pool 부재(multi-PM
+        미배선)면 명시 에러로 중단(rc 1). 반환: 0=성공.
         """
         wp = self._resolve_worktree_pool()
         if wp is None:
             return 1
         try:
-            lease = wp.release(slot, require_clean=False)
+            lease = wp.release(slot)
         except KeyError:
             print(
                 f"  ⚠ slot {slot!r} 리스 장부에 없음 — 이미 release 됐거나 미등록 슬롯. "
@@ -3594,20 +3601,44 @@ class PmHandoff:
                 ordered.append(tree)
         return ordered
 
+    def _handoff_slot_trees(self, task: str | None) -> dict[str, str]:
+        """핸드오프가 다룰 슬롯의 트리 → 슬롯 — 커밋 안 한 변경이면 기록 전에 사용자에게 묻는 대상.
+
+        task 모드는 보유 슬롯 전수(`_task_slots_snapshot`), slot 모드는 실행 슬롯(`self._worktree_slot`
+        — `--done` 이 반납하는 명시 슬롯과 같은 값). 트리 해소는 `_dirty_gate_trees` 와 같은
+        `_regression_cwd` 이고, 디렉터리가 없어 PM 홈으로 폴백한 슬롯은 슬롯 트리가 아니므로 뺀다.
+        """
+        if task is not None:
+            snapshot = self._task_slots_snapshot
+            slots = snapshot[1] if snapshot is not None and snapshot[0] == task else ()
+        else:
+            slots = (self._worktree_slot,) if self._worktree_slot is not None else ()
+        slot_trees: dict[str, str] = {}
+        for slot in slots:
+            tree = _regression_cwd(slot)
+            if tree != str(REPO):
+                slot_trees[tree] = slot
+        return slot_trees
+
     def _dirty_tree_gate(
         self,
         task: str | None,
         *,
         ack_dirty: str | None,
         auto_trigger: bool,
+        force_handoff: bool,
         dry_run: bool,
-    ) -> tuple[int, str | None]:
-        """[0/7] 미커밋 잔여를 **첫 mutation 전에** 판정한다. 반환: (rc, ack 박제 사유).
+    ) -> tuple[int, str | None, tuple[str, ...]]:
+        """[0/7] 미커밋 잔여를 **첫 mutation 전에** 판정한다. 반환: (rc, entry 박제 사유, 유지할 슬롯).
 
-        rc 1 = 차단(어떤 파일도 건드리지 않은 상태). 차단 조건은 "판정 트리 중 하나라도 dirty
-        ∧ override 없음" 하나뿐이다:
-          - `--ack-dirty "<사유>"` → 통과 + 사유를 handoff entry 에 박제.
-          - `--auto-trigger`(사용자 명시 핸드오프 호출부 호환 신호) → 차단 대신 loud 경고 +
+        rc 1 = 차단(어떤 파일도 건드리지 않은 상태). 잔여는 자리에 따라 둘로 갈린다:
+          - **핸드오프가 다룰 슬롯**(`_handoff_slot_trees`)의 커밋 안 한 변경 → 사용자에게 "커밋할까요?
+            강제 핸드오프할까요?" 를 묻게 하고 멈춘다. 넘는 수단은 `--force-handoff` 하나다 — 통과 +
+            그 슬롯을 "유지할 슬롯" 으로 돌려준다(`--done` 이어도 반납하지 않는다) + entry 에
+            `커밋 안 한 변경 있음, 슬롯 유지: <slot>` 을 적는다. `--ack-dirty`·`--auto-trigger` 는
+            슬롯 쪽 변경을 넘지 않는다.
+          - **그 밖**(PM 홈 등) — `--ack-dirty "<사유>"` → 통과 + 사유를 handoff entry 에 박제.
+            `--auto-trigger`(사용자 명시 핸드오프 호출부 호환 신호) → 차단 대신 loud 경고 +
             사유 자동 박제. 이 플래그 자체는 실행 승인이나 자동 핸드오프 트리거가 아니다.
           - `--dry-run` → 판정 결과 미리보기만(차단 없음·기존 dry-run 의미 유지).
         판정 불가 트리(비-git·git 부재)는 비차단 경고 1줄로 stderr surface 한다 — 판정을 못 한
@@ -3667,8 +3698,10 @@ class PmHandoff:
         if not dirty:
             if ack_dirty:
                 print("  --ack-dirty 무시 — 판정 결과 clean(박제할 잔여 없음).")
+            if force_handoff:
+                print("  --force-handoff 무시 — 판정 결과 clean(유지할 슬롯 없음).")
             print(f"  ✓ clean — 미커밋/untracked 없음 (판정 트리 {judged_tree_count}개).")
-            return 0, None
+            return 0, None, ()
 
         print(f"  미커밋 잔여 {dirty_count}건 (판정 트리 {judged_tree_count}개):")
         for tree, paths in dirty:
@@ -3676,38 +3709,63 @@ class PmHandoff:
             for line in _format_dirty_paths(paths):
                 print(line)
 
+        slot_trees = self._handoff_slot_trees(task)
+        dirty_slots = tuple(slot_trees[tree] for tree, _paths in dirty if tree in slot_trees)
+        other_count = sum(len(paths) for tree, paths in dirty if tree not in slot_trees)
+        if force_handoff and not dirty_slots:
+            print("  --force-handoff 무시 — 커밋 안 한 변경이 있는 슬롯 없음(유지할 슬롯 없음).")
+        kept_slots = dirty_slots if force_handoff else ()
+        notes: list[str] = []
+        if kept_slots:
+            notes.append(FORCE_HANDOFF_ENTRY_NOTE.format(slots=", ".join(kept_slots)))
+        if other_count and ack_dirty:
+            notes.append(build_dirty_ack_note(ack_dirty, other_count, auto=False))
+        elif other_count and auto_trigger:
+            notes.append(build_dirty_ack_note("", other_count, auto=True))
+        note = " · ".join(notes) or None
+
         if dry_run:
             # 미리보기 — dry-run 은 아무것도 쓰지 않으므로 차단할 이유가 없다(기존 의미 유지).
             print("  [dry-run] 판정 결과 미리보기 — 차단하지 않는다.")
-            if ack_dirty:
-                return 0, build_dirty_ack_note(ack_dirty, dirty_count, auto=False)
-            if auto_trigger:
-                return 0, build_dirty_ack_note("", dirty_count, auto=True)
-            return 0, None
+            return 0, note, kept_slots
 
-        if ack_dirty:
-            note = build_dirty_ack_note(ack_dirty, dirty_count, auto=False)
+        if dirty_slots and not force_handoff:
+            print(
+                f"\n[중단] 슬롯 {', '.join(dirty_slots)} 에 커밋 안 한 변경이 있다 — 사용자에게 물어라: "
+                "커밋할까요? 강제 핸드오프할까요?\n"
+                "  커밋: 그 슬롯에서 커밋한 뒤 핸드오프를 다시 실행한다(`--done` 이면 반납까지 한다).\n"
+                "  강제 핸드오프: `--force-handoff` 를 붙여 다시 실행한다 — 커밋 없이 핸드오프 기록만 "
+                "하고 그 슬롯은 반납하지 않는다(대여·변경 제자리 유지·entry 에 적는다).\n"
+                "  log/current.md·pm_state.md 어떤 것도 건드리지 않는다.",
+                file=sys.stderr,
+            )
+            return 1, None, ()
+
+        if kept_slots:
+            print(f"  ⚠ --force-handoff — 커밋 안 한 변경을 두고 슬롯을 유지한다(반납 안 함): "
+                  f"{', '.join(kept_slots)}")
+
+        if other_count and ack_dirty:
             print(f"  ⚠ --ack-dirty override — 사유를 handoff entry 에 박제한다: {note}")
-            return 0, note
-
-        if auto_trigger:
-            note = build_dirty_ack_note("", dirty_count, auto=True)
+        elif other_count and auto_trigger:
             print(
                 "  ⚠ 사용자 명시 핸드오프 호환 신호(--auto-trigger) — dirty를 차단하지 않고 "
                 "사유를 자동 박제한다: "
                 f"{note} 다음 세션이 이 잔여를 먼저 처리해야 한다.",
                 file=sys.stderr,
             )
-            return 0, note
-
-        print(
-            f"\n[중단] 핸드오프 시작 시점에 미커밋 잔여 {dirty_count}건 — 핸드오프 불가. "
-            "세션 산출물을 먼저 커밋하라(티켓 산출은 티켓별 커밋이 관례). "
-            "의도적으로 두고 나간다면 `--ack-dirty \"<사유>\"` 로 사유를 남겨라. "
-            "log/current.md·pm_state.md 어떤 것도 건드리지 않는다.",
-            file=sys.stderr,
-        )
-        return 1, None
+        elif other_count:
+            print(
+                f"\n[중단] 핸드오프 시작 시점에 미커밋 잔여 {other_count}건 — 핸드오프 불가. "
+                "세션 산출물을 먼저 커밋하라(티켓 산출은 티켓별 커밋이 관례). "
+                "의도적으로 두고 나간다면 `--ack-dirty \"<사유>\"` 로 사유를 남겨라. "
+                "log/current.md·pm_state.md 어떤 것도 건드리지 않는다.",
+                file=sys.stderr,
+            )
+            return 1, None, ()
+        elif ack_dirty:
+            print("  --ack-dirty 무시 — 슬롯 밖 미커밋 잔여 없음(슬롯 쪽은 --force-handoff 몫).")
+        return 0, note, kept_slots
 
     # ── 미마감 raw sweep step ────────────────
 
@@ -3980,6 +4038,7 @@ class PmHandoff:
         ack_dirty: str | None = None,
         auto_trigger: bool = False,
         user_ack: str | None = None,
+        force_handoff: bool = False,
     ) -> int:
         """PM 핸드오프 7단계 자동화 전체 흐름을 실행한다.
 
@@ -4002,6 +4061,9 @@ class PmHandoff:
             ``user_ack`` 값-결속 계약을 그대로 적용한다.
         user_ack: 사용자 발화에서 받은 핸드오프 대상 승인값. 세션이 만들거나 자동 부착하면
             안 되며, 실제 실행은 해소된 task/slot 대상값과 정확히 일치해야 한다.
+        force_handoff: 사용자가 "강제 핸드오프" 를 고른 경우. 핸드오프가 다룰 슬롯의 커밋 안 한
+            변경을 두고 기록만 하며, 그 슬롯은 반납하지 않고(`--done` 이어도) entry 에
+            `커밋 안 한 변경 있음, 슬롯 유지: <slot>` 을 적는다.
 
         반환: 0=성공, 1=실패 (중단).
         """
@@ -4172,8 +4234,9 @@ class PmHandoff:
         # 판정은 git 조회 몇 번(초 단위)인데 회귀는 수 분이라, 뒤에 두면 커밋만 하면 될 PM 이
         # 회귀 한 판을 통째로 기다린 뒤에야 차단 사유를 본다.
         print("\n[0/7] dirty-tree 게이트 (미커밋 잔여 — 첫 mutation 전 판정)...")
-        dirty_rc, dirty_ack_note = self._dirty_tree_gate(
-            task, ack_dirty=ack_dirty, auto_trigger=auto_trigger, dry_run=dry_run,
+        dirty_rc, dirty_ack_note, kept_slots = self._dirty_tree_gate(
+            task, ack_dirty=ack_dirty, auto_trigger=auto_trigger,
+            force_handoff=force_handoff, dry_run=dry_run,
         )
         if dirty_rc != 0:
             return dirty_rc
@@ -4599,8 +4662,10 @@ class PmHandoff:
         #
         # task 모드: 세션은 보유 슬롯 **집합**을 두고 나가므로 재스냅은 **보유 전
         # 슬롯**(현행 1슬롯 한정 폐지·_record_task_slot_snapshots→slots_for_task 루프). slot 모드
-        # (task None)는 단일 bound 슬롯 재스냅으로 100% 불변.
-        if not done:
+        # (task None)는 단일 bound 슬롯 재스냅으로 100% 불변. `--force-handoff` 로 반납하지 않고
+        # 두고 가는 `--done` 슬롯도 대여가 이어지므로 재스냅 대상이다.
+        keeps_done_slot = done and explicit_worktree_slot in kept_slots
+        if not done or keeps_done_slot:
             if task is not None:
                 if not self._record_task_slot_snapshots(task, dry_run):
                     return 1
@@ -4623,7 +4688,10 @@ class PmHandoff:
                 )
                 return 1
             print("\n[multi-PM] --done 작업완료 — worktree 슬롯 release...")
-            if dry_run:
+            if keeps_done_slot:
+                print(f"  슬롯 {explicit_worktree_slot} 반납 안 함 — 커밋 안 한 변경 있음"
+                      "(--force-handoff·대여 유지).")
+            elif dry_run:
                 print(f"  [dry-run] worktree 슬롯 release 예고: {explicit_worktree_slot} (실행 생략).")
             else:
                 rc = self._release_slot(explicit_worktree_slot)
@@ -4837,6 +4905,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--force-handoff",
+        action="store_true",
+        help=(
+            "핸드오프가 다룰 슬롯에 커밋 안 한 변경이 있을 때 사용자가 강제 핸드오프를 고른 경우 — "
+            "커밋 없이 핸드오프 기록만 하고 그 슬롯은 반납하지 않는다(--done 이어도·대여 유지). "
+            "entry 에 '커밋 안 한 변경 있음, 슬롯 유지: <slot>' 을 적는다."
+        ),
+    )
+    parser.add_argument(
         "--auto-trigger",
         action="store_true",
         help=(
@@ -5043,6 +5120,7 @@ def _main(
         ack_dirty=args.ack_dirty,
         auto_trigger=args.auto_trigger,
         user_ack=args.user_ack,
+        force_handoff=args.force_handoff,
     )
 
 

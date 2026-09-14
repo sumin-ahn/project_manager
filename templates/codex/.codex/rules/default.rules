@@ -2,12 +2,15 @@
 # 일상 PM git 작업은 sandbox 밖(.git protected path)에서도 묻지 않고 실행한다.
 #
 # raw git cwd-anchor 동적 가드: execpolicy prefix_rule은 argv prefix와 decision만
-# 판정하며 프로세스 cwd·등록 slot 장부·양쪽 checkout의 path 실재를 읽거나 모델 context를
-# 주입할 수 없다. 여기서 board.judge_git_anchor의 좁은 동적 deny를 정적 forbidden/prompt로
-# 흉내 내면 정상 PM 홈/worktree commit까지 과차단한다(false-deny 0 위반) — execpolicy 축은
-# 그래서 이 판정을 시도하지 않는다. 대신 codex PreToolUse 훅 축(`.codex/pm_orch_codex.py`의
-# git-anchor 등록 기능)이 claude_code·opencode와 같은 board.judge_git_anchor_command를 호출해,
-# execpolicy가 못 갖는 프로세스 cwd·slot 장부 접근으로 이 gap을 메운다.
+# 판정하며 프로세스 cwd·등록 slot 장부·공용 저장소 형상·양쪽 checkout의 path 실재를 읽거나 모델
+# context를 주입할 수 없다. board.judge_git_anchor의 deny는 모두 대상에 달려 있다 — 슬롯·공용
+# 저장소 대상의 손 git 파괴 형태(브랜치 만들기·지우기·이름 바꾸기, 변경 버리기, 슬롯 지우기,
+# 원격 덮어쓰기)와 PM 홈의 교차 pathspec. 같은 argv가 PM 홈·무관한 저장소에서는 정상이므로 이를
+# 정적 forbidden/prompt로 흉내 내면 과차단한다(false-deny 0 위반) — execpolicy 축은 그래서 이
+# 판정을 시도하지 않고, 아래 규칙은 대상과 무관한 사용자 승인 경계만 둔다. 대신 codex PreToolUse
+# 훅 축(`.codex/pm_orch_codex.py`의 git-anchor 등록 기능)이 claude_code·opencode와 같은
+# board.judge_git_anchor_command를 호출해, execpolicy가 allow한 명령도 대상이 슬롯·공용 저장소면
+# 차단 응답(decision=block)으로 막는다.
 prefix_rule(
     pattern = ["git", "add"],
     decision = "allow",

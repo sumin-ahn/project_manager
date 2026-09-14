@@ -1,9 +1,9 @@
 /**
  * 확인 대화 — 사람이 [승인] 을 누른 **그 값**만 `onConfirm` 으로 돌려준다.
  *
- * 화면에서 `--user-ack <값>` 이 붙는 자리는 이 대화의 반환값 둘뿐이다(`worktree add` 의 repo
- * 이름 · `task prefix` 의 새 prefix). 대화를 지나지 않고 승인 토큰을 만드는 경로는 없다 —
- * 물리 슬롯 생성과 새 카테고리 신설이 사용자 승인 행위라서다.
+ * 화면에서 `--user-ack <값>` 이 붙는 자리는 이 대화의 반환값 셋뿐이다(`worktree add` 의 repo
+ * 이름 · `worktree remove` 의 슬롯 · `task prefix` 의 새 prefix). 대화를 지나지 않고 승인 토큰을
+ * 만드는 경로는 없다 — 물리 슬롯 생성·제거와 새 카테고리 신설이 사용자 승인 행위라서다.
  */
 export default function ConfirmDialog({ title, note, value, onConfirm, onCancel }: {
   title: string;

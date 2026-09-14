@@ -49,6 +49,7 @@ function ConfigTabBody({ remote }: { remote: Entry | undefined }) {
   const [protectedDraft, setProtectedDraft] = useState<Record<string, string>>({});
   const [slotRepo, setSlotRepo] = useState("");
   const [slotDraft, setSlotDraft] = useState<SlotDraft | null>(null);
+  const [removeTarget, setRemoveTarget] = useState<string | null>(null);
   const [harness, setHarness] = useState("");
   const [taskName, setTaskName] = useState("");
 
@@ -137,7 +138,7 @@ function ConfigTabBody({ remote }: { remote: Entry | undefined }) {
                       <button type="button" data-testid={`slot-remove-${slot.slot}`}
                               disabled={busy || verdict.actions !== "change"}
                               title={disabledReason(slot, verdict) ?? ""}
-                              onClick={() => void call(["worktree", "remove", slot.slot])}
+                              onClick={() => { setSlotDraft(null); setRemoveTarget(slot.slot); }}
                               className={BUTTON}>제거</button>
                     )}
                   </td>
@@ -153,10 +154,10 @@ function ConfigTabBody({ remote }: { remote: Entry | undefined }) {
             {repos.map((repo) => <option key={repo.repo} value={repo.repo}>{repo.repo}</option>)}
           </select>
           <button type="button" data-testid="slot-add" disabled={busy || slotRepo === ""}
-                  onClick={() => setSlotDraft({ repo: slotRepo, readonly: false })}
+                  onClick={() => { setRemoveTarget(null); setSlotDraft({ repo: slotRepo, readonly: false }); }}
                   className={PRIMARY}>슬롯 추가</button>
           <button type="button" data-testid="slot-add-readonly" disabled={busy || slotRepo === ""}
-                  onClick={() => setSlotDraft({ repo: slotRepo, readonly: true })}
+                  onClick={() => { setRemoveTarget(null); setSlotDraft({ repo: slotRepo, readonly: true }); }}
                   className={BUTTON}>readonly 슬롯 추가</button>
           <button type="button" data-testid="slot-prune" disabled={busy}
                   onClick={() => void call(["worktree", "prune-stale"])}
@@ -177,6 +178,21 @@ function ConfigTabBody({ remote }: { remote: Entry | undefined }) {
                          ...(draft.readonly ? ["--readonly"] : []), "--user-ack", ack]);
             }}
             onCancel={() => setSlotDraft(null)}
+          />
+        )}
+        {removeTarget !== null && (
+          <ConfirmDialog
+            title={`슬롯 ${removeTarget} 을 제거한다 — 승인?`}
+            note={"worktree 와 장부 행을 지운다. 커밋 안 한 변경이 있거나 사용 중이면 엔진이 거부한다. "
+                  + "합쳐지지 않은 브랜치는 보존된다. 슬롯 제거는 사용자 승인 행위다."}
+            value={removeTarget}
+            onConfirm={(ack) => {
+              const target = removeTarget;
+              setRemoveTarget(null);
+              // `ack` 는 대화가 돌려준 값이다 — 이 자리에서 슬롯 이름을 복사해 붙이지 않는다.
+              void call(["worktree", "remove", target, "--user-ack", ack]);
+            }}
+            onCancel={() => setRemoveTarget(null)}
           />
         )}
       </Section>

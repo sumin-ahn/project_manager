@@ -3138,7 +3138,7 @@ def test_run_done_release_skips_snapshot(hf, tmp_path):
     )
     assert rc == 0
     # release 는 호출·재스냅은 skip(다음 alloc 이 arrival 재스냅으로 덮으므로 무의미+idle git 무결성).
-    assert pool.release_calls == [("work/project_manager_1", {"require_clean": False})]
+    assert pool.release_calls == [("work/project_manager_1", {})]   # stash 자동경로 인자 없음.
     assert pool.snap_calls == []
 
 
@@ -3895,9 +3895,9 @@ def test_task_shipping_surface_per_changed_slot(hf, tmp_path, capsys, monkeypatc
     box[0] = handoff
     rc = handoff.run(
         session_num=7, wave_summary="요약", dry_run=False, skip_pytest=False, task="mytask", user_ack="mytask",
-        # b_1 stub 은 미커밋 변경이라 [1c] dirty-tree 게이트가 차단한다 — 이 테스트의 대상은
-        # [1b] 슬롯별 출하 surface 이므로 사유를 남기고 통과시킨다(게이트 자체는 전용 테스트에서).
-        ack_dirty="출하 surface 검증용 미커밋 stub",
+        # 두 슬롯 stub 은 커밋 안 한 변경이라 [0/7] 게이트가 사용자에게 묻고 멈춘다 — 이 테스트의
+        # 대상은 [1b] 슬롯별 출하 surface 이므로 강제 핸드오프로 통과시킨다(게이트 자체는 전용 테스트에서).
+        force_handoff=True,
     )
     assert rc == 0
     out = capsys.readouterr().out
@@ -3950,8 +3950,8 @@ def test_task_shipping_surface_per_changed_slot_under_no_pytest(hf, tmp_path, ca
     box[0] = handoff
     rc = handoff.run(
         session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True, task="mytask", user_ack="mytask",
-        # b_1 stub = 미커밋 변경 → [1c] dirty-tree 게이트 대상. 여기 대상은 [1b] surface 다.
-        ack_dirty="출하 surface 검증용 미커밋 stub",
+        # 슬롯 stub = 커밋 안 한 변경 → [0/7] 게이트가 묻고 멈추는 대상. 여기 대상은 [1b] surface 다.
+        force_handoff=True,
     )
     assert rc == 0
     assert cwds == []   # --no-pytest — 회귀는 실행되지 않는다(열거만 수행).

@@ -358,8 +358,13 @@ def test_clean_task_run_reaches_pid_release(hf, tmp_path, monkeypatch):
 
 # ── 판정 범위 (PM 홈 + 활성 worktree 전수) ───────────────────────────────────
 
+_ASK_COMMIT_OR_FORCE = (
+    "슬롯 work/app_1 에 커밋 안 한 변경이 있다 — 사용자에게 물어라: 커밋할까요? 강제 핸드오프할까요?"
+)
+
+
 def test_task_mode_gate_covers_held_slots(hf, tmp_path, monkeypatch, capsys):
-    """PM 홈이 clean 이어도 **보유 슬롯**이 dirty 면 차단한다 (task 모드 판정 범위)."""
+    """PM 홈이 clean 이어도 **보유 슬롯**에 커밋 안 한 변경이 있으면 기록 전에 멈추고 사용자에게 묻게 한다."""
     slot_dir = tmp_path / "work" / "app_1"
     slot_dir.mkdir(parents=True)
     pool = _TaskPool(slots=("work/app_1",))
@@ -374,7 +379,8 @@ def test_task_mode_gate_covers_held_slots(hf, tmp_path, monkeypatch, capsys):
 
     assert rc == 1
     captured = capsys.readouterr()
-    assert "핸드오프 시작 시점에 미커밋 잔여" in captured.err   # rc 1 유래 = 게이트.
+    assert _ASK_COMMIT_OR_FORCE in captured.err       # rc 1 유래 = 슬롯 게이트.
+    assert "--force-handoff" in captured.err
     assert str(slot_dir) in captured.out
     assert "src/leftover.py" in captured.out
     assert pool.released == []
@@ -399,7 +405,180 @@ def test_slot_mode_gate_covers_active_worktree(hf, tmp_path, monkeypatch, capsys
     assert rc == 1
     captured = capsys.readouterr()
     assert "untracked-slot-output.md" in captured.out
-    assert "핸드오프 시작 시점에 미커밋 잔여" in captured.err
+    assert _ASK_COMMIT_OR_FORCE in captured.err
+
+
+# ── 핸드오프가 다룰 슬롯의 커밋 안 한 변경 — 묻고 멈춤 / --force-handoff ─────────
+
+class _KeepPool:
+    """slot 모드 완주 흐름용 최소 seam — 세션 종료 기록·재스냅·반납 호출만 기록한다(실 장부 미접촉)."""
+
+    def __init__(self):
+        self.closed: list[str] = []
+        self.snapped: list[str] = []
+        self.released: list[str] = []
+
+    def close_slot_session(self, slot):
+        self.closed.append(slot)
+        return type("_L", (), {"slot": slot, "state": "leased", "session": ""})()
+
+    def read_lease(self, slot):
+        return type("_L", (), {"git": None})()
+
+    def record_git_snapshot(self, slot, **_kwargs):
+        self.snapped.append(slot)
+        return type("_L", (), {"git": {"branch": "app_1", "head": "abc123"}})()
+
+    def release(self, slot):
+        self.released.append(slot)
+        return type("_L", (), {"state": "idle", "git": None})()
+
+    def current_branch(self, slot, **_kwargs):
+        return "app_1"
+
+
+class _TaskKeepPool(_TaskPool):
+    """task 모드 완주 흐름용 — 보유 슬롯 재스냅(소유권 재검증 포함)까지 답한다."""
+
+    def __init__(self, slots):
+        super().__init__(slots=slots)
+        self.snapped: list[str] = []
+
+    def lease_owned_by_task_strict(self, slot, task):
+        return slot in self._slots
+
+    def read_lease(self, slot):
+        return type("_L", (), {"git": None})()
+
+    def record_git_snapshot(self, slot, **_kwargs):
+        self.snapped.append(slot)
+        return type("_L", (), {"git": {"branch": "app_1", "head": "abc123"}})()
+
+
+def _dirty_slot(tmp_path):
+    slot_dir = tmp_path / "work" / "app_1"
+    slot_dir.mkdir(parents=True)
+    return slot_dir
+
+
+def test_ack_dirty_does_not_pass_slot_changes(hf, tmp_path, monkeypatch, capsys):
+    """`--ack-dirty` 는 슬롯 쪽 커밋 안 한 변경을 넘지 않는다 — 여전히 묻고 멈추며 log 무접촉."""
+    slot_dir = _dirty_slot(tmp_path)
+    inst, log_file = _make_handoff(
+        hf, tmp_path, monkeypatch, pool=_KeepPool(),
+        git_runner=_git_stub({str(slot_dir): ([], ["wip.md"])}),
+    )
+    before = log_file.read_bytes()
+
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
+                      worktree_slot="work/app_1", ack_dirty="두고 간다")
+
+    assert rc == 1
+    assert _ASK_COMMIT_OR_FORCE in capsys.readouterr().err
+    assert log_file.read_bytes() == before
+
+
+def test_force_handoff_records_note_and_keeps_done_slot(hf, tmp_path, monkeypatch, capsys):
+    """`--force-handoff` + `--done` — 커밋 없이 기록만 하고 그 슬롯은 반납하지 않는다(재스냅은 한다)."""
+    slot_dir = _dirty_slot(tmp_path)
+    pool = _KeepPool()
+    inst, log_file = _make_handoff(
+        hf, tmp_path, monkeypatch, pool=pool,
+        git_runner=_git_stub({str(slot_dir): (["src/half.py"], [])}),
+    )
+
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
+                      worktree_slot="work/app_1", done=True, force_handoff=True)
+
+    assert rc == 0
+    entry = log_file.read_text(encoding="utf-8")
+    assert f"{hf.DIRTY_ACK_ENTRY_LABEL}: 커밋 안 한 변경 있음, 슬롯 유지: work/app_1" in entry
+    assert pool.released == []                       # 반납하지 않는다(대여 유지).
+    assert pool.snapped == ["work/app_1"]            # 두고 가는 슬롯이라 재스냅한다.
+    out = capsys.readouterr().out
+    assert "슬롯 work/app_1 반납 안 함" in out
+
+
+def test_clean_slot_done_releases_and_ignores_force_handoff(hf, tmp_path, monkeypatch, capsys):
+    """변경이 없으면 현행 흐름 그대로 — `--force-handoff` 는 무시되고 `--done` 슬롯은 반납된다."""
+    _dirty_slot(tmp_path)
+    pool = _KeepPool()
+    inst, log_file = _make_handoff(hf, tmp_path, monkeypatch, pool=pool, git_runner=_git_stub())
+
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
+                      worktree_slot="work/app_1", done=True, force_handoff=True)
+
+    assert rc == 0
+    assert pool.released == ["work/app_1"]
+    assert pool.snapped == []
+    assert "커밋 안 한 변경 있음" not in log_file.read_text(encoding="utf-8")
+    assert "--force-handoff 무시" in capsys.readouterr().out
+
+
+def test_force_handoff_with_home_ack_stamps_both_notes(hf, tmp_path, monkeypatch):
+    """슬롯 변경(`--force-handoff`)과 PM 홈 잔여(`--ack-dirty`)가 함께면 두 사유를 한 줄에 함께 적는다."""
+    slot_dir = _dirty_slot(tmp_path)
+    inst, log_file = _make_handoff(
+        hf, tmp_path, monkeypatch, pool=_KeepPool(),
+        git_runner=_git_stub({str(tmp_path): _DIRTY_TWO, str(slot_dir): ([], ["wip.md"])}),
+    )
+
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
+                      worktree_slot="work/app_1", force_handoff=True, ack_dirty="홈 문서는 다음 세션")
+
+    assert rc == 0
+    entry = log_file.read_text(encoding="utf-8")
+    assert "커밋 안 한 변경 있음, 슬롯 유지: work/app_1 · 홈 문서는 다음 세션 (미커밋 2건" in entry
+
+
+def test_force_handoff_does_not_pass_pm_home_changes(hf, tmp_path, monkeypatch, capsys):
+    """PM 홈 잔여만 있을 때 `--force-handoff` 는 넘는 수단이 아니다 — 무시 안내 + 기존 차단."""
+    inst, log_file = _make_handoff(
+        hf, tmp_path, monkeypatch, pool=_KeepPool(),
+        git_runner=_git_stub({str(tmp_path): _DIRTY_TWO}),
+    )
+    before = log_file.read_bytes()
+
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
+                      force_handoff=True)
+
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "--force-handoff 무시 — 커밋 안 한 변경이 있는 슬롯 없음" in captured.out
+    assert "핸드오프 시작 시점에 미커밋 잔여 2건" in captured.err
+    assert log_file.read_bytes() == before
+
+
+def test_task_force_handoff_keeps_held_slot_and_records_note(hf, tmp_path, monkeypatch):
+    """task 모드 — 보유 슬롯의 커밋 안 한 변경을 두고 `--force-handoff` 로 기록만 하고 대여를 유지한다."""
+    slot_dir = _dirty_slot(tmp_path)
+    pool = _TaskKeepPool(slots=("work/app_1",))
+    inst, log_file = _make_handoff(
+        hf, tmp_path, monkeypatch, pool=pool, task_mode=True,
+        git_runner=_git_stub({str(slot_dir): (["src/half.py"], [])}),
+    )
+
+    rc = _run_handoff(inst, session_num=None, wave_summary="x", dry_run=False, skip_pytest=True,
+                      task="alpha", force_handoff=True)
+
+    assert rc == 0
+    assert "커밋 안 한 변경 있음, 슬롯 유지: work/app_1" in log_file.read_text(encoding="utf-8")
+    assert pool.snapped == ["work/app_1"]
+
+
+def test_cli_force_handoff_flag_defaults_off_and_reaches_run(hf, monkeypatch):
+    """`--force-handoff` 는 명시할 때만 참이고, CLI 가 그 값을 엔진 run() 에 넘긴다."""
+    parser = hf.build_parser()
+    assert parser.parse_args(["--session-seq", "5", "--wave-summary", "x"]).force_handoff is False
+    captured: dict = {}
+
+    def fake_run(self, **kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(hf.PmHandoff, "run", fake_run)
+    assert hf._main(["--task", "alpha", "--force-handoff"]) == 0
+    assert captured["force_handoff"] is True
 
 
 def test_gate_trees_include_solo_auto_resolved_worktree(hf, tmp_path, monkeypatch):

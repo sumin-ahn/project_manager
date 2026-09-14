@@ -603,6 +603,9 @@ def _build_close_env(tf, base: Path, monkeypatch) -> _CloseEnv:
     slot.parent.mkdir(parents=True, exist_ok=True)
     assert _git(code, "worktree", "add", "-q", "-b", _CLUSTER_BRANCH, str(slot),
                 _INTEGRATION_BRANCH).returncode == 0
+    # 묶음 브랜치의 부모 기록 — board `_cluster_ensure_branch` 가 만들 때 남기는 것과 같은 두 키.
+    _git(code, "config", f"branch.{_CLUSTER_BRANCH}.pm-parent", _INTEGRATION_BRANCH)
+    _git(code, "config", f"branch.{_CLUSTER_BRANCH}.pm-fork", _rev(code))
     # 이 작업의 산출 — 슬롯에서 미커밋 상태로 둔다(완료 기록이 stage 하고 종결이 커밋한다).
     (slot / "src" / "app.py").write_text("seed = 1\nwork = 2\n", encoding="utf-8")
 
@@ -1551,14 +1554,14 @@ def test_close_task_identity_is_forwarded_to_resolve_without_ambient_env(
 
 @requires_git
 def test_close_merge_step_attempts_cluster_branch_delete(close_env, capsys):
-    """AT-008 — 머지 단계는 묶음 브랜치 삭제를 시도하고 git 의 판정을 사실대로 보고한다.
+    """AT-008 — 머지 단계는 슬롯 제거와 같은 삭제 판정을 태우고 결과를 사실대로 보고한다.
 
     브랜치 수명은 묶음 수명이다. 세 갈래를 한 자리에서 본다.
-      (1) dry-run — 명령 문구만 내고 실제 `branch -d` 는 발행하지 않는다.
-      (2) 머지 성공 — `branch -d` 를 통합 트리에서 발행한다. 반납은 슬롯의 체크아웃을 바꾸지
-          않으므로 이 시점엔 슬롯이 묶음 브랜치를 쥐고 있고 git 이 거부한다(정상 형상) —
-          그 rc≠0 이 종결을 실패로 뒤집지 않는다.
-      (3) 이미 조상 — 그 경로에서도 삭제를 시도하고, 아무도 쥐지 않으면 실제로 지워진다.
+      (1) dry-run — 판정 문구만 내고 실제 `branch -D` 는 발행하지 않는다.
+      (2) 머지 성공 — 부모(통합 브랜치)에 합쳐졌으므로 `branch -D` 를 통합 트리에서 발행한다. 반납은
+          슬롯의 체크아웃을 바꾸지 않으므로 이 시점엔 슬롯이 묶음 브랜치를 쥐고 있고 git 이 거부한다
+          (정상 형상) — 그 보존이 종결을 실패로 뒤집지 않는다.
+      (3) 이미 조상 — 그 경로에서도 판정하고, 아무도 쥐지 않으면 실제로 지워진다.
     """
     env = close_env
     _commit(env.slot, "cluster work")          # 묶음 브랜치에 머지할 것이 생긴다
@@ -1579,16 +1582,16 @@ def test_close_merge_step_attempts_cluster_branch_delete(close_env, capsys):
     dry_closer, dry_calls = _recording(dry_run=True)
     assert dry_closer._step_merge() is None
     dry_out = capsys.readouterr().out
-    assert f"[dry-run] cwd={env.code} git branch -d {_CLUSTER_BRANCH}" in dry_out
-    assert not any(args[:2] == ["branch", "-d"] for _cwd, args in dry_calls), \
+    assert f"[dry-run] cwd={env.code} 묶음 브랜치 {_CLUSTER_BRANCH} 삭제 판정" in dry_out
+    assert not any(args[:1] == ["branch"] for _cwd, args in dry_calls), \
         "dry-run 이 실제 브랜치 삭제를 발행했다"
 
     # (2) 머지 성공 — 통합 트리에서 삭제 시도. 슬롯이 쥐고 있어 git 이 거부하지만 종결은 산다.
     closer, calls = _recording()
     assert closer._step_merge() is None, "브랜치 삭제 거부가 종결을 실패로 뒤집었다"
     out = capsys.readouterr().out
-    assert (env.code, ["branch", "-d", _CLUSTER_BRANCH]) in calls
-    assert f"묶음 브랜치 {_CLUSTER_BRANCH} 보존" in out
+    assert (env.code, ["branch", "-D", _CLUSTER_BRANCH]) in calls
+    assert f"묶음 브랜치 {_CLUSTER_BRANCH} 보존 (git branch -D 거부" in out
     assert _CLUSTER_BRANCH in _git(env.code, "branch", "--list", _CLUSTER_BRANCH).stdout
     # 머지는 실제로 났다 — 거부된 것은 브랜치 삭제뿐이다(통합 브랜치에 2번 부모가 생긴다).
     assert _git(env.code, "rev-parse", f"{_INTEGRATION_BRANCH}^2").returncode == 0
@@ -1599,8 +1602,8 @@ def test_close_merge_step_attempts_cluster_branch_delete(close_env, capsys):
     assert ancestor_closer._step_merge() is None
     ancestor_out = capsys.readouterr().out
     assert "건너뜀" in ancestor_out
-    assert (env.code, ["branch", "-d", _CLUSTER_BRANCH]) in ancestor_calls
-    assert f"✓ 묶음 브랜치 {_CLUSTER_BRANCH} 삭제" in ancestor_out
+    assert (env.code, ["branch", "-D", _CLUSTER_BRANCH]) in ancestor_calls
+    assert f"✓ 묶음 브랜치 {_CLUSTER_BRANCH} 삭제 (부모 {_INTEGRATION_BRANCH} 에 다 합쳐짐)" in ancestor_out
     assert _git(env.code, "branch", "--list", _CLUSTER_BRANCH).stdout.strip() == "", \
         "머지된 묶음 브랜치가 잔재로 남았다"
 

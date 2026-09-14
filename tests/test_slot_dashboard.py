@@ -710,7 +710,7 @@ class _AllocPool:
         self.leased.add(self._alloc_slot)
         return _AllocLease(self._alloc_slot, repo)
 
-    def release(self, slot, *, require_clean=True, **_):
+    def release(self, slot, **_):
         self.release_calls.append(slot)
         self.leased.discard(slot)
         return _AllocLease(slot, "project_manager")

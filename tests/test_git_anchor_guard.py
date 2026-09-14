@@ -735,7 +735,7 @@ def test_reason_rendering_does_not_rerun_judgments(monkeypatch, topology):
     home, _slot = topology
     judged: list[tuple[str, tuple[str, ...]]] = []
 
-    def fake_judge(cwd, argv, *, runner):
+    def fake_judge(cwd, argv, *, runner, cwd_certain):
         judged.append((cwd, tuple(argv)))
         return {"verdict": "warn", "cwd_identity": "pm-home", "reason": "repeat"}
 
@@ -758,7 +758,7 @@ def test_strongest_renderer_filters_lower_verdicts_without_closing_call_gaps(
         ("warn", "repeat"), ("warn", "repeat"),
     ])
 
-    def filtered_judge(cwd, argv, *, runner):
+    def filtered_judge(cwd, argv, *, runner, cwd_certain):
         verdict, reason = next(verdicts)
         return {"verdict": verdict, "cwd_identity": "pm-home", "reason": reason}
 
@@ -771,7 +771,7 @@ def test_strongest_renderer_filters_lower_verdicts_without_closing_call_gaps(
 
     gap_verdicts = iter([("warn", "repeat"), ("ok", "ok"), ("warn", "repeat")])
 
-    def gapped_judge(cwd, argv, *, runner):
+    def gapped_judge(cwd, argv, *, runner, cwd_certain):
         verdict, reason = next(gap_verdicts)
         return {"verdict": verdict, "cwd_identity": "pm-home", "reason": reason}
 
@@ -953,7 +953,8 @@ def test_shell_if_and_multiple_git_calls_keep_context(topology, path_notation):
     assert "호출 1 [pm-home/warn]" in reversed_calls["reason"]
 
 
-def test_dynamic_cd_is_ambiguous_and_never_blocks(topology):
+def test_dynamic_cd_is_ambiguous_and_blocks_only_destructive_forms(topology):
+    """대상 미확정 호출은 비파괴면 warn 이고, 파괴 형태면 슬롯·공용 저장소일 수 있어 거부한다."""
     board = _load("git_anchor_shell_dynamic_cd", BOARD_PY)
     home, _slot = topology
     got = board.judge_git_anchor_command(
@@ -961,6 +962,11 @@ def test_dynamic_cd_is_ambiguous_and_never_blocks(topology):
     )
     assert got["verdict"] == "warn"
     assert "정적으로 단일 증명할 수 없음" in got["reason"]
+    destructive = board.judge_git_anchor_command(str(home), "cd $TARGET; git branch -D main")
+    assert destructive["verdict"] == "deny"
+    assert "대상을 정적으로 정할 수 없어 슬롯·공용 저장소일 수 있음" in destructive["reason"]
+    non_destructive = board.judge_git_anchor_command(str(home), "cd $TARGET; git push origin main")
+    assert non_destructive["verdict"] == "warn"
 
 
 @pytest.mark.parametrize(
@@ -1151,7 +1157,10 @@ def test_pathspecs_resolve_from_invocation_cwd(topology):
     assert board.judge_git_anchor(str(home / "templates"), ["git", "add", "../tests/shared.txt"])["verdict"] == "deny"
 
 
-def test_work_tree_and_git_dir_overrides_are_never_approved_or_denied(topology):
+def test_work_tree_and_git_dir_overrides_are_never_approved_and_deny_only_destructive_forms(
+    topology,
+):
+    """대상 지정 override 는 승인하지 않는다. 비파괴면 warn, 파괴 형태면 대상 미확정 거부다."""
     board = _load("git_anchor_work_tree_override", BOARD_PY)
     home, slot = topology
     cases = [
@@ -1161,6 +1170,15 @@ def test_work_tree_and_git_dir_overrides_are_never_approved_or_denied(topology):
         (str(slot), [f"GIT_DIR={home / '.git'}", "git", "add", "tests/shared.txt"]),
     ]
     assert all(board.judge_git_anchor(cwd, argv)["verdict"] == "warn" for cwd, argv in cases)
+    destructive = [
+        (str(home), [f"GIT_DIR={slot / '.git'}", "git", "branch", "-D", "main"]),
+        (str(home), ["git", f"--git-dir={home / '.repos' / 'product.git'}", "branch", "-D", "main"]),
+        (str(home), ["git", "--work-tree", str(slot), "reset", "--hard"]),
+    ]
+    for cwd, argv in destructive:
+        got = board.judge_git_anchor(cwd, argv)
+        assert got["verdict"] == "deny", (argv, got)
+        assert got["code"] == board.GIT_DESTRUCTIVE_DENY_CODE
 
 
 def test_git_clean_exclude_values_are_not_pathspecs(topology):
@@ -1362,7 +1380,8 @@ def test_registered_slot_mutation_is_explicitly_allowed(topology):
 
 
 @pytest.mark.parametrize("subcommand", ["rm", "mv", "clean", "apply", "stash"])
-def test_additional_mutations_warn_at_home_and_allow_registered_slot(topology, subcommand):
+def test_additional_mutations_warn_at_home_and_judge_form_in_registered_slot(topology, subcommand):
+    """PM 홈은 종전 판정 그대로다. 슬롯에서는 파괴 형태(`clean` 미리보기 없음)만 거부한다."""
     board = _load(f"git_anchor_mutation_{subcommand}", BOARD_PY)
     home, slot = topology
     argv = ["git", subcommand]
@@ -1380,7 +1399,8 @@ def test_additional_mutations_warn_at_home_and_allow_registered_slot(topology, s
         "rm": "deny", "mv": "deny", "clean": "deny", "apply": "warn", "stash": "warn",
     }
     assert home_got["verdict"] == expected_home[subcommand]
-    assert slot_got["verdict"] == "ok" and slot_got["cwd_identity"] == "slot"
+    assert slot_got["cwd_identity"] == "slot"
+    assert slot_got["verdict"] == ("deny" if subcommand == "clean" else "ok")
 
 
 def test_board_cli_emits_hook_json(topology, capsys):
@@ -2202,3 +2222,398 @@ const repoWithEngine = process.argv[1];
         capture_output=True, text=True, encoding="utf-8",
     )
     assert "GIT_ANCHOR_INSTALL_BLOCK_OK" in result.stdout
+
+
+# ── 손 git 파괴 형태 거부 (슬롯·공용 저장소 대상 · 세 하네스 공통 판정) ─────────────────────────
+# 브랜치·슬롯은 엔진만 만들고 지운다. 명령 표마다 거부 양성, 읽기 전용·기존 브랜치 전환 음성,
+# 옵션 묶음·`--옵션=값`·git alias 풀이, 대상을 정적으로 못 정한 호출의 거부, 무관한 저장소·PM 홈
+# 통과를 고정한다. topology 슬롯 `work/product_1` 의 로컬 브랜치는 `main`·`product_1` 둘이다.
+
+_SLOT_DESTRUCTIVE_CASES = [
+    (["branch", "feature"], "브랜치 만들기"),
+    (["branch", "-f", "feature", "main"], "브랜치 만들기"),
+    # `-v` 는 목록 모드를 켜지 않는다 — git 은 operand 를 새 브랜치 이름으로 읽는다.
+    (["branch", "-v", "feature"], "브랜치 만들기"),
+    (["branch", "-c", "main", "copy"], "브랜치 만들기"),
+    (["checkout", "-b", "feature"], "브랜치 만들기"),
+    (["checkout", "-B", "feature"], "브랜치 만들기"),
+    (["checkout", "-qb", "feature"], "브랜치 만들기"),
+    (["checkout", "--orphan=feature"], "브랜치 만들기"),
+    (["checkout", "-t", "origin/feature"], "브랜치 만들기"),
+    (["switch", "-c", "feature"], "브랜치 만들기"),
+    (["switch", "-C", "feature"], "브랜치 만들기"),
+    (["switch", "--create=feature"], "브랜치 만들기"),
+    (["switch", "feature"], "원격 추적 브랜치로 브랜치 만들기"),
+    (["worktree", "add", "-b", "feature", "../elsewhere"], "브랜치 만들기"),
+    (["worktree", "add", "../brand-new"], "브랜치 만들기"),
+    (["branch", "-d", "main"], "브랜치 지우기"),
+    (["branch", "-D", "main"], "브랜치 지우기"),
+    (["branch", "--delete", "--force", "main"], "브랜치 지우기"),
+    (["branch", "-Dq", "main"], "브랜치 지우기"),
+    (["branch", "--del", "main"], "브랜치 지우기"),
+    (["branch", "-m", "renamed"], "브랜치 이름 바꾸기"),
+    (["branch", "-M", "main", "renamed"], "브랜치 이름 바꾸기"),
+    (["branch", "--move", "main", "renamed"], "브랜치 이름 바꾸기"),
+    (["reset", "--hard"], "변경 버리기"),
+    (["reset", "-q", "--hard", "HEAD"], "변경 버리기"),
+    (["reset", "--har"], "변경 버리기"),
+    (["checkout", "-f", "main"], "변경 버리기"),
+    (["checkout", "--force"], "변경 버리기"),
+    (["checkout", "--", "tests/shared.txt"], "변경 버리기"),
+    (["checkout", "main", "--", "tests/shared.txt"], "변경 버리기"),
+    (["checkout", "tests/shared.txt"], "경로 복원"),
+    (["restore", "tests/shared.txt"], "변경 버리기"),
+    (["restore", "--staged", "--worktree", "tests/shared.txt"], "변경 버리기"),
+    (["restore", "-SW", "tests/shared.txt"], "변경 버리기"),
+    (["restore", "--source=HEAD", "tests/shared.txt"], "변경 버리기"),
+    (["clean", "-f"], "변경 버리기"),
+    (["clean", "-fdx"], "변경 버리기"),
+    (["clean", "--force", "-d"], "변경 버리기"),
+    (["stash", "drop"], "변경 버리기"),
+    (["stash", "drop", "stash@{0}"], "변경 버리기"),
+    (["stash", "clear"], "변경 버리기"),
+    (["worktree", "remove", "--force", "../product_2"], "슬롯 지우기"),
+    (["push", "--force"], "원격 덮어쓰기"),
+    (["push", "-f", "origin", "main"], "원격 덮어쓰기"),
+    (["push", "-uf", "origin", "main"], "원격 덮어쓰기"),
+    (["push", "--force-with-lease", "origin", "main"], "원격 덮어쓰기"),
+    (["push", "--force-with-lease=main:abc123", "origin", "main"], "원격 덮어쓰기"),
+    (["push", "origin", "+main"], "원격 덮어쓰기"),
+    (["push", "--mirror", "origin"], "원격 덮어쓰기"),
+]
+
+_SLOT_ALLOWED_CASES = [
+    ["branch"], ["branch", "--list"], ["branch", "--list", "feat*"], ["branch", "-a"],
+    ["branch", "-r"], ["branch", "-v"], ["branch", "-vv"], ["branch", "--show-current"],
+    ["branch", "--contains", "HEAD"], ["branch", "--merged", "main"],
+    ["branch", "--format=%(refname:short)"], ["branch", "--sort", "-committerdate"],
+    ["branch", "-u", "origin/main"], ["branch", "--unset-upstream"],
+    ["checkout"], ["checkout", "main"], ["checkout", "product_1"], ["checkout", "-"],
+    ["checkout", "--detach", "HEAD"],
+    ["switch", "main"], ["switch", "-"], ["switch", "--detach", "HEAD"], ["switch", "-d", "HEAD"],
+    ["stash"], ["stash", "list"], ["stash", "push", "-m", "drop"], ["stash", "pop"],
+    ["worktree", "list"], ["worktree", "prune"], ["worktree", "add", "--detach", "../detached"],
+    ["worktree", "add", "../main"], ["worktree", "add", "../other", "main"],
+    ["restore", "--staged", "tests/shared.txt"], ["restore", "-S", "tests/shared.txt"],
+    ["clean", "-n"], ["clean", "-nd"], ["clean", "--dry-run", "-x"],
+    ["reset"], ["reset", "--soft", "HEAD"], ["reset", "tests/shared.txt"],
+    ["push"], ["push", "origin", "main"], ["push", "-u", "origin", "product_1"],
+    # 원격 브랜치 삭제는 이번 거부 범위 밖이다.
+    ["push", "--delete", "origin", "old"],
+    ["status"], ["log", "--oneline"],
+]
+
+
+@pytest.fixture(scope="module")
+def destructive_board():
+    return _load("git_destructive_board", BOARD_PY)
+
+
+@pytest.mark.parametrize(
+    ("args", "label"), _SLOT_DESTRUCTIVE_CASES,
+    ids=[" ".join(args) for args, _label in _SLOT_DESTRUCTIVE_CASES],
+)
+def test_slot_destructive_git_forms_are_denied(topology, destructive_board, args, label):
+    _home, slot = topology
+    got = destructive_board.judge_git_anchor(str(slot), ["git", *args])
+    assert got["verdict"] == "deny", got
+    assert got["cwd_identity"] == "slot"
+    assert got["code"] == destructive_board.GIT_DESTRUCTIVE_DENY_CODE
+    assert label in got["reason"]
+    assert f"`git {' '.join(args)}`" in got["reason"]
+
+
+@pytest.mark.parametrize(
+    "args", _SLOT_ALLOWED_CASES, ids=[" ".join(args) for args in _SLOT_ALLOWED_CASES],
+)
+def test_slot_read_only_and_existing_branch_forms_are_not_denied(
+    topology, destructive_board, args,
+):
+    """과차단 음성 — 목록·조회·기존 브랜치 전환·미리보기·index 만 되돌리기는 슬롯에서도 통과."""
+    _home, slot = topology
+    got = destructive_board.judge_git_anchor(str(slot), ["git", *args])
+    assert got["verdict"] == "ok", got
+    assert got["cwd_identity"] == "slot"
+
+
+def test_destructive_deny_reasons_prescribe_the_engine_route(topology, destructive_board):
+    _home, slot = topology
+    expectations = {
+        ("checkout", "-b", "feature"): "`pm-config task branch <명의> <슬롯> <브랜치> --from <부모>`",
+        ("worktree", "remove", "../product_2"): "`pm-config worktree remove <slot> --user-ack <slot>` 로 지운다",
+        ("branch", "-D", "main"): (
+            "엔진이 슬롯 제거(`pm-config worktree remove <slot> --user-ack <slot>`)·묶음 종결 때 판정"
+        ),
+        ("reset", "--hard"): "사용자가 터미널에서 직접 한다",
+        ("push", "--force"): "사용자가 터미널에서 직접 한다",
+    }
+    for args, remedy in expectations.items():
+        reason = destructive_board.judge_git_anchor(str(slot), ["git", *args])["reason"]
+        assert "브랜치·슬롯은 엔진만 만들고 지운다" in reason
+        assert remedy in reason.split("; 대신 ", 1)[1], reason
+
+
+def test_shared_repository_and_unleased_worktree_are_protected_targets(topology):
+    board = _load("git_destructive_shared_repo", BOARD_PY)
+    home, slot = topology
+    bare = home / ".repos" / "product.git"
+    direct = board.judge_git_anchor(str(bare), ["git", "branch", "-D", "main"])
+    assert direct["verdict"] == "deny" and direct["cwd_identity"] == "shared-repo"
+    via_option = board.judge_git_anchor(
+        str(home), ["git", "-C", ".repos/product.git", "worktree", "remove", str(slot)],
+    )
+    assert via_option["verdict"] == "deny" and via_option["cwd_identity"] == "shared-repo"
+    listing = board.judge_git_anchor(str(bare), ["git", "branch"])
+    assert listing["verdict"] == "warn" and listing["cwd_identity"] == "shared-repo"
+    assert board.judge_git_anchor(str(bare), ["git", "fetch"])["verdict"] == "ok"
+
+    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.write_text(json.dumps({"leases": [{"slot": "work/product_1", "repo": "product",
+                                               "state": "idle"}]}) + "\n", encoding="utf-8")
+    idle = board.judge_git_anchor(str(slot), ["git", "stash", "clear"])
+    assert idle["verdict"] == "deny" and idle["cwd_identity"] == "worktree"
+
+
+def test_destructive_forms_outside_slot_and_shared_repository_are_not_denied(
+    topology, tmp_path, destructive_board,
+):
+    home, _slot = topology
+    unrelated = tmp_path / "unrelated"
+    _seed_repo(unrelated)
+    # 실재하지 않는 경로 — 테스트 임시 폴더는 이 저장소 worktree 안이라 실재 폴더는 그 git 으로 풀린다.
+    plain = tmp_path / "not-a-repo"
+    for args in (
+        ["branch", "-D", "main"], ["reset", "--hard"], ["push", "--force"],
+        ["worktree", "remove", "x"], ["checkout", "-b", "x"], ["stash", "clear"], ["clean", "-fd"],
+    ):
+        foreign = destructive_board.judge_git_anchor(str(unrelated), ["git", *args])
+        assert foreign["verdict"] == "warn" and foreign["cwd_identity"] == "foreign", foreign
+        at_home = destructive_board.judge_git_anchor(str(home), ["git", *args])
+        assert at_home["verdict"] == "warn" and at_home["cwd_identity"] == "pm-home", at_home
+        non_repo = destructive_board.judge_git_anchor(str(plain), ["git", *args])
+        assert non_repo["verdict"] == "warn" and non_repo["cwd_identity"] == "non-repo", non_repo
+    shell = destructive_board.judge_git_anchor_command(
+        str(unrelated), "git branch -D main && git push --force",
+    )
+    assert shell["verdict"] == "warn"
+
+
+def test_git_alias_is_resolved_against_the_target_repository(topology):
+    board = _load("git_destructive_alias", BOARD_PY)
+    home, slot = topology
+    _git(slot, "config", "alias.nuke", "branch -D")
+    _git(slot, "config", "alias.chain", "wipe-stash")
+    _git(slot, "config", "alias.wipe-stash", "stash clear")
+
+    repo_alias = board.judge_git_anchor(str(slot), ["git", "nuke", "main"])
+    assert repo_alias["verdict"] == "deny"
+    assert "브랜치 지우기" in repo_alias["reason"] and "`git branch -D main`" in repo_alias["reason"]
+    chained = board.judge_git_anchor(str(slot), ["git", "chain"])
+    assert chained["verdict"] == "deny" and "`git stash clear`" in chained["reason"]
+    inline = board.judge_git_anchor_command(str(slot), "git -c alias.gone='reset --hard' gone")
+    assert inline["verdict"] == "deny" and "`git reset --hard`" in inline["reason"]
+    shell_alias = board.judge_git_anchor_command(
+        str(slot), "git -c alias.wipe='!git clean -fd' wipe",
+    )
+    assert shell_alias["verdict"] == "deny"
+    assert "대상을 정적으로 정할 수 없어" in shell_alias["reason"]
+
+    # git 명령 이름을 가리는 alias 는 git 이 무시한다 — 가드도 풀지 않는다.
+    shadowed = board.judge_git_anchor(str(slot), ["git", "-c", "alias.status=branch -D main", "status"])
+    assert shadowed["verdict"] == "ok"
+    harmless = board.judge_git_anchor(str(slot), ["git", "-c", "alias.lg=log --oneline", "lg"])
+    assert harmless["verdict"] == "ok"
+    # PM 홈은 파괴 형태 거부 대상이 아니므로 alias 도 풀지 않는다(종전 판정).
+    at_home = board.judge_git_anchor(str(home), ["git", "-c", "alias.nuke=branch -D", "nuke", "main"])
+    assert at_home["verdict"] == "ok"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "GIT_DIR={bare} git branch -D main",
+        "export GIT_DIR={bare}; git branch -D main",
+        'git -C "$SLOT" stash drop',
+        "cd $TARGET && git reset --hard",
+        "(cd {slot} && git checkout -b feature)",
+        "echo $(cd {slot} && git branch -D main)",
+        "for b in one two; do git branch -D $b; done",
+        "$WRAPPER git worktree remove ../product_2",
+        "sudo -u root git push --force",
+        "bash -c 'git reset --hard'",
+        'sh -c "cd {slot} && git clean -fd"',
+        "eval git stash clear",
+        "git branch --merged | xargs git branch -d",
+        "find . -name '*.txt' -exec git checkout -- {{}} \\;",
+        "python3 -c \"import os; os.system('git push --force origin main')\"",
+        "alias gbd='git branch -D'; gbd main",
+        "(git branch -D main)",
+        "git branch -D main &",
+    ],
+)
+def test_unresolvable_calls_with_destructive_forms_are_denied(
+    topology, destructive_board, command,
+):
+    """셸 alias·스크립트·GIT_DIR·변수 -C·subshell cd 등 대상을 못 정한 파괴 형태는 PM 홈 cwd 에서도 거부."""
+    home, slot = topology
+    rendered = command.format(slot=slot, bare=home / ".repos" / "product.git")
+    got = destructive_board.judge_git_anchor_command(str(home), rendered)
+    assert got["verdict"] == "deny", got
+    assert "손 git" in got["reason"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "GIT_DIR={bare} git push origin main",
+        "cd $TARGET && git branch",
+        "(cd {slot} && git switch --detach HEAD)",
+        "bash -c 'git status && git log --oneline'",
+        "git branch --merged | xargs git show",
+        "git branch --list &",
+    ],
+)
+def test_unresolvable_calls_without_destructive_forms_keep_the_previous_verdicts(
+    topology, destructive_board, command,
+):
+    home, slot = topology
+    rendered = command.format(slot=slot, bare=home / ".repos" / "product.git")
+    assert destructive_board.judge_git_anchor_command(str(home), rendered)["verdict"] != "deny"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo git branch -D main",
+        "git commit -m 'git reset --hard 는 사용자가 한다'",
+        "grep -rn 'git push --force' docs",
+        "cat <<'EOF'\ngit worktree remove ../product_2\nEOF",
+        "git log --format='%h (%s)' && git checkout main",
+        'git switch main && echo "(done)"',
+    ],
+)
+def test_destructive_git_text_as_data_is_not_denied(topology, destructive_board, command):
+    _home, slot = topology
+    assert destructive_board.judge_git_anchor_command(str(slot), command)["verdict"] != "deny"
+
+
+def test_shell_expansion_in_destructive_capable_arguments(topology, destructive_board):
+    """인자 속 셸 변수는 슬롯에서만 형태 미확정 거부다. 대상이 확정된 PM 홈 push 는 종전 warn."""
+    home, slot = topology
+    judge = destructive_board.judge_git_anchor_command
+    assert judge(str(slot), 'git push origin "$BRANCH"')["verdict"] == "deny"
+    assert judge(str(home), 'git push origin "$BRANCH"')["verdict"] == "warn"
+    assert judge(str(home), "git push origin HEAD && echo $?")["verdict"] == "warn"
+    kept = judge(str(slot), "git branch -D main; echo $HOME")
+    assert kept["verdict"] == "deny"
+    assert kept["code"] == destructive_board.GIT_DESTRUCTIVE_DENY_CODE
+    assert judge(str(slot), 'git commit -m "$MESSAGE"')["verdict"] == "warn"
+
+
+def test_engine_branch_and_slot_commands_are_not_blocked_by_the_git_guard(
+    topology, destructive_board,
+):
+    """엔진 명령은 git 호출이 아니다 — 엔진이 안에서 부르는 git 은 하네스 훅을 거치지 않는다."""
+    home, slot = topology
+    engine = home / ".project_manager" / "tools" / "pm_config.py"
+    for command in (
+        f"python3 {engine} task branch product_1 product_1 feature --from main",
+        f"python3 {engine} worktree remove product_1 --user-ack product_1",
+    ):
+        assert destructive_board.judge_git_anchor_command(str(slot), command)["verdict"] != "deny"
+
+
+def test_claude_hook_denies_destructive_slot_git_with_permission_decision(
+    monkeypatch, topology, capsys,
+):
+    driver = _load("git_destructive_claude", CLAUDE_DRIVER)
+    monkeypatch.setattr(
+        driver, "_load_board", lambda _root: _load("git_destructive_claude_board", BOARD_PY),
+    )
+    home, slot = topology
+    payload = {
+        "session_id": "destructive", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+        "cwd": str(slot), "tool_input": {"command": "git branch -D main"},
+    }
+    monkeypatch.setattr(driver.sys, "stdin", io.StringIO(json.dumps(payload)))
+    assert driver.run_git_anchor_hook(home) == 0
+    output = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+    assert output["permissionDecision"] == "deny"
+    assert output["permissionDecisionReason"].startswith("[git-anchor/deny] 손 git 브랜치 지우기 거부")
+
+    read_only = {**payload, "tool_input": {"command": "git branch --show-current"}}
+    monkeypatch.setattr(driver.sys, "stdin", io.StringIO(json.dumps(read_only)))
+    assert driver.run_git_anchor_hook(home) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_codex_hook_blocks_destructive_slot_git_with_measured_envelope(monkeypatch, topology):
+    dispatcher = _load("git_destructive_codex", CODEX_DISPATCHER)
+    monkeypatch.setattr(
+        dispatcher, "_load_board", lambda _root: _load("git_destructive_codex_board", BOARD_PY),
+    )
+    home, slot = topology
+    payload = _codex_live_bash_event()
+    payload["cwd"] = str(home)
+    payload["tool_input"] = {"command": "git reset --hard", "workdir": str(slot)}
+    stdout = io.StringIO()
+    assert dispatcher.run_git_anchor_hook(
+        home, stdin=io.StringIO(json.dumps(payload)), stdout=stdout,
+    ) == 0
+    envelope = json.loads(stdout.getvalue())
+    reason = envelope["reason"]
+    assert reason.startswith("[git-anchor/deny] 손 git 변경 버리기 거부")
+    assert envelope == {
+        "decision": "block",
+        "reason": reason,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        },
+        "systemMessage": reason,
+        "suppressOutput": False,
+    }
+
+    payload["tool_input"] = {"command": "git stash list", "workdir": str(slot)}
+    assert dispatcher.git_anchor_hook_evaluate(payload, home) == {}
+
+
+def test_opencode_plugin_rejects_destructive_slot_git_through_the_real_board(topology):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node 없음")
+    _home, slot = topology
+    script = r'''
+const assert = require("node:assert");
+const m = require("./git-anchor-core.cjs");
+const [engineRoot, slot] = process.argv.slice(1);
+
+(async () => {
+  const toasts = [];
+  const judge = (_root, cwd, command) => m.judgeCommand(engineRoot, cwd, command);
+  const hooks = await m.makeGitAnchorPlugin(judge)({
+    directory: slot,
+    worktree: slot,
+    client: {tui: {showToast: async (value) => toasts.push(value)}},
+  });
+  await assert.rejects(
+    hooks["tool.execute.before"](
+      {tool:"bash", sessionID:"S"}, {args:{command:"git worktree remove ../product_2", cwd:slot}},
+    ),
+    /\[git-anchor\/deny\] 손 git 슬롯 지우기 거부/,
+  );
+  await hooks["tool.execute.before"](
+    {tool:"bash", sessionID:"S"}, {args:{command:"git worktree list", cwd:slot}},
+  );
+  const context = {system: []};
+  await hooks["experimental.chat.system.transform"]({sessionID:"S"}, context);
+  assert.deepStrictEqual(context.system, []);
+  console.log("GIT_ANCHOR_DESTRUCTIVE_BLOCK_OK");
+})().catch((error) => { console.error(error); process.exit(1); });
+'''
+    result = subprocess.run(
+        [node, "-e", script, str(REPO), str(slot)], cwd=OPEN_CORE.parent, check=True,
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    assert "GIT_ANCHOR_DESTRUCTIVE_BLOCK_OK" in result.stdout

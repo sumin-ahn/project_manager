@@ -16,7 +16,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config repo list                                    # 등록 repo 표 (repo·prefix·base·protected·test_cmd·area_owner)
     pm-config worktree add <repo> --user-ack <repo>        # 사용자 승인값 결속 + 새 슬롯 생성 + submodule init
     pm-config worktree prune-stale                         # worktree 사라진 dangling 장부 엔트리 정리
-    pm-config worktree remove <slot> [--force]             # 슬롯 통째 제거 — worktree+브랜치+장부
+    pm-config worktree remove <slot> --user-ack <slot> [--user-ack <브랜치>]... [--force] # 사용자 승인값 결속 + 슬롯 통째 제거 — worktree+브랜치 판정+장부 (--force=점유만 무시)
     pm-config status | whoami                              # 풀/리스 + 이 세션 repo/슬롯/branch
     pm-config alloc <repo> --task <이름>                    # task 명의로 idle 최소 번호 슬롯 대여 (자동 생성 안 함)
     pm-config release <slot> [--task <이름>] [--force]      # 작업완료 반납 (--task 소유검사) / 수동 강제(백스톱)
@@ -2956,32 +2956,78 @@ def cmd_worktree_prune_stale(
     return 0
 
 
+def _require_worktree_remove_user_ack(args: argparse.Namespace) -> bool:
+    """슬롯 제거에 슬롯 값-결속 사용자 승인 토큰을 요구한다(`_require_worktree_add_user_ack` 와 같은 모양).
+
+    `--user-ack` 는 반복 가능하다. 입력한 slot 인자가 값 중에 그대로 있어야 엔진을 부르고, 값 전부가
+    합쳐지지 않은 브랜치 삭제 승인값으로 엔진에 넘어간다(`remove_slot(acked_branches=)`). 토큰은
+    자가-증언형 감사/마찰 장치이며 적대적 우회까지 막는 보안 경계는 아니다.
+    """
+    slot = args.slot
+    user_acks = list(getattr(args, "user_ack", None) or [])
+    if slot in user_acks:
+        print(f"[승인 감사] worktree remove: 사용자 승인 토큰이 슬롯 {slot!r}에 값-결속됨.")
+        return True
+    mismatch = (
+        f" 제공된 값 {user_acks!r}에 슬롯 {slot!r}이 없다."
+        if user_acks
+        else ""
+    )
+    print(
+        f"[중단] worktree remove {slot!r}: 슬롯 제거에는 사용자 명시 승인이 필요하다.{mismatch}\n"
+        f"  1순위: 사용자에게 슬롯 {slot!r}의 제거 승인을 요청하라.\n"
+        f"  부차 수단: 승인한 사용자만 `--user-ack {slot}`를 대상값 그대로 붙여 실행하라"
+        "(세션 자동 부착 금지). 합쳐지지 않은 브랜치도 지우려면 그 브랜치 이름을 "
+        "`--user-ack <브랜치>` 로 함께 붙인다.",
+        file=sys.stderr,
+    )
+    return False
+
+
+# 슬롯 제거 출력에 싣는 합쳐지지 않은 커밋 줄 상한 — 넘으면 "외 N개" 로 접는다.
+_UNMERGED_COMMITS_SHOWN = 10
+
+
+def _print_branch_deletion(deletion) -> None:
+    """`BranchDeletion` 을 출력한다 — 행동·사유 한 줄 + 근거(합쳐지지 않은 커밋 목록)."""
+    print(f"  {deletion.summary()}")
+    commits = deletion.unmerged_commits
+    for line in commits[:_UNMERGED_COMMITS_SHOWN]:
+        print(f"    {line}")
+    if len(commits) > _UNMERGED_COMMITS_SHOWN:
+        print(f"    … 외 {len(commits) - _UNMERGED_COMMITS_SHOWN}개")
+
+
 def cmd_worktree_remove(
     args: argparse.Namespace,
     *,
     worktree_pool=None,
 ) -> int:
-    """`worktree remove <slot> [--force]` — 슬롯 통째 제거(user-invoked).
+    """`worktree remove <slot> --user-ack <slot> [--user-ack <브랜치> ...] [--force]` — 슬롯 통째 제거.
 
-    worktree_pool.remove_slot(slot, force=) 로 리스 확인 → 등록 조회 → `git worktree remove`
-    → 브랜치 정리 → 장부 엔트리 제거를 한 번에 한다. footgun 체인(수동 remove → dangling
-    장부 → `add` 가 번호 skip → 뒤늦은 prune)을 원천 종결한다 — 장부 엔트리 제거로 `add` 가
-    빈 번호를 재사용한다.
+    worktree_pool.remove_slot(slot, force=, acked_branches=) 로 리스 확인 → 등록 조회 → 커밋 안 한
+    변경 검사 → `git worktree remove` → 브랜치 삭제 판정 → 장부 엔트리 제거를 한 번에 한다.
+    footgun 체인(수동 remove → dangling 장부 → `add` 가 번호 skip → 뒤늦은 prune)을 원천
+    종결한다 — 장부 엔트리 제거로 `add` 가 빈 번호를 재사용한다.
 
-    **사용자 명시 호출 전제** — PM 이 자율 실행하지 않는다(삭제-위임 원칙). `prune-stale`
-    (worktree 부재 장부만 정리)과 달리 **실 worktree 를 지운다**. orphan worktree(장부 미등록)는
-    여전히 `git worktree remove` 로 사용자가.
+    **사용자 승인값 필수** — `--user-ack` 값에 입력한 슬롯이 없으면 엔진을 부르지 않고 rc1
+    (`_require_worktree_remove_user_ack`). `prune-stale`(worktree 부재 장부만 정리)과 달리 **실
+    worktree 를 지운다**. orphan worktree(장부 미등록)는 여전히 `git worktree remove` 로 사용자가.
 
-    - dirty·활성 리스(leased·사용 중)·git 미등록 트리 → 거부(RemoveRefused·rc1). `--force` 가
-      그 파괴를 승인한다(dirty 는 stash 보존 후 강제·미등록 트리는 삭제).
+    - 활성 리스(leased·사용 중) → 거부. `--force` 가 넘는 것은 이 점유 하나뿐이다.
+    - 커밋 안 한 변경·git 미등록 트리 → `--force` 와 무관하게 거부(RemoveRefused·rc1). 엔진은
+      stash 하지 않고 미등록 트리를 지우지 않는다.
     - 장부에 슬롯 없으면 무해 종료(rc0·이미 정리됨).
-    - 브랜치: 제외 집합(보호목록·bare 기본 브랜치·다른 슬롯 기준 브랜치)이면 보존(사유 1줄),
-      아니면 `git branch -d` 판정대로 삭제/보존(판정 기준 `merge_ref` 를 함께 보고).
-    - `git worktree remove` 실패(RuntimeError) → rc1. 그 실패가 무엇을 남겼는지는 엔진이
-      등록을 다시 물어 판정하므로, 여기서 재시도 방법을 지어내지 않는다.
+    - 브랜치: `BranchDeletion` 을 그대로 출력한다(삭제/보존 사유·자식·합쳐지지 않은 커밋·origin).
+      합쳐지지 않은 브랜치는 그 브랜치 이름이 `--user-ack` 값에 있을 때만 지운다.
+    - 엔진 RuntimeError(worktree remove 실패·브랜치 조회 실패) → rc1. 그 실패가 무엇을 남겼는지는
+      엔진이 등록을 다시 물어 판정하므로, 여기서 재시도 방법을 지어내지 않는다.
 
     worktree_pool 주입으로 hermetic 테스트(실 worktree remove·장부 쓰기 없이 배선 검증).
     """
+    if not _require_worktree_remove_user_ack(args):
+        return 1
+
     wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
     if wp is None:
         print(
@@ -2992,19 +3038,27 @@ def cmd_worktree_remove(
         return 1
 
     try:
-        result = wp.remove_slot(args.slot, force=args.force)
+        result = wp.remove_slot(args.slot, force=args.force,
+                                acked_branches=frozenset(args.user_ack))
     except wp.RemoveRefused as exc:
-        if getattr(exc, "reason", None) == "active-lease":
+        if exc.reason == "active-lease":
             print(
                 f"[중단] 슬롯 {args.slot!r} 이 활성(사용 중·state={exc.state}) — 제거 거부. "
-                "먼저 `release` 로 반납하거나 `worktree remove --force`(사용 중 무시).",
+                "먼저 `release` 로 반납하거나 `worktree remove --force`(점유 무시).",
+                file=sys.stderr,
+            )
+        elif exc.reason == "dirty":
+            print(
+                f"[중단] 슬롯 {args.slot!r} 에 커밋 안 한 변경이 있다 — 제거 거부(엔진은 stash 하지 "
+                "않는다). 사용자에게 물어 커밋하거나 사용자가 요청하면 stash 한 뒤 다시 실행하라. "
+                "`--force` 는 이 거부를 넘지 않는다.",
                 file=sys.stderr,
             )
         else:
             print(
-                f"[중단] 슬롯 {args.slot!r} 제거 거부 — {exc.reason}(작업 유실 방지). "
-                "수동 정리 후 재시도하거나 `worktree remove --force`"
-                "(dirty 는 stash 보존 · git 미등록 트리는 삭제 승인).",
+                f"[중단] 슬롯 {args.slot!r} 의 트리 {exc.path} 는 git 이 worktree 로 등록하지 않았다 — "
+                "커밋 안 한 변경을 물을 수 없어 엔진이 지우지 않는다. 사용자가 그 경로를 직접 확인·"
+                "삭제한 뒤 `pm-config worktree prune-stale` 로 장부를 정리하라.",
                 file=sys.stderr,
             )
         return 1
@@ -3030,35 +3084,20 @@ def cmd_worktree_remove(
             file=sys.stderr,
         )
 
-    # 성공 surface — 브랜치 처리 결과 1줄(결정 §브랜치 정리·판정 기준을 함께 밝힌다).
-    if result.branch_action == "deleted":
-        branch_line = f" · 브랜치 {result.branch!r} 삭제(머지 완료) — 기준 {result.merge_ref}"
-    elif result.branch_action == "preserved-unmerged":
-        # `git branch -d` 는 미머지 말고도 거부한다(그 브랜치를 쥔 worktree 등) — 라벨은 축
-        # (git 이 거부했다)만 말하고 사유는 git 출력 그대로인 `branch_reason` 이 말한다.
-        branch_line = (f" · 브랜치 {result.branch} 보존(git 거부) — 기준 {result.merge_ref}"
-                       f": {result.branch_reason}")
-    elif result.branch_action == "preserved-protected":
-        branch_line = f" · 브랜치 {result.branch} 보존({result.branch_reason})"
-    else:
-        branch_line = ""
-    stash_line = " · dirty stash 보존" if result.stashed else ""
-    print(
-        f"✓ 슬롯 {args.slot!r} 제거 — worktree remove + 장부 엔트리 삭제(빈 번호 재사용 가능)"
-        f"{branch_line}{stash_line}."
-    )
+    print(f"✓ 슬롯 {args.slot!r} 제거 — worktree remove + 장부 엔트리 삭제(빈 번호 재사용 가능).")
     # git 이 등록만 지우고 트리를 남긴 형상(읽기 전용 잔재 등) — 엔진이 마저 지웠음을 고지한다.
     if result.tree_cleaned:
         print("  git 이 등록만 지우고 남긴 디렉터리 잔재를 엔진이 마저 정리했다.")
-    # stash 복구 UX(suggestion 1) — 슬롯 worktree 가 사라져도 stash 는 공유 refs/stash 에 남는다.
-    if result.stashed:
-        print("  복구: 아무 worktree 에서 `git stash list` / `git stash pop` (공유 refs/stash).")
-    # 미머지 보존 브랜치 캐비앗(reviewer emergent gap) — 같은 번호 base-경로 재생성이 막힌다.
-    if result.branch_action == "preserved-unmerged":
+    deletion = result.branch_deletion
+    if deletion is None:
+        return 0
+    _print_branch_deletion(deletion)
+    # 보존 브랜치 캐비앗 — 같은 번호 base-경로 재생성이 막힌다(SlotBranchExists 선-검출).
+    if deletion.action == wp.BRANCH_PRESERVED:
         print(
-            f"  ⚠ 브랜치 {result.branch} 보존됨 — 같은 번호 슬롯 재생성은 브랜치 잔존을"
-            " 선-검출해 명확히 멈춘다(SlotBranchExists). 정리(머지/삭제) 후 새 슬롯 재생성하거나,"
-            f" 그 브랜치 작업을 이어가려면 다른 슬롯에서 `worktree_pool.py switch <슬롯> {result.branch}`(리셋 없음)."
+            f"  ⚠ 브랜치 {deletion.branch} 보존됨 — 같은 번호 슬롯 재생성은 브랜치 잔존을"
+            " 선-검출해 명확히 멈춘다(SlotBranchExists). 그 브랜치 작업을 이어가려면 다른 슬롯에서"
+            f" `worktree_pool.py switch <슬롯> {deletion.branch}`(리셋 없음)."
         )
     return 0
 
@@ -3111,13 +3150,13 @@ def cmd_release(
 ) -> int:
     """`release <slot> [--task <이름>] [--force]` — 작업완료 반납 / 수동 강제 백스톱.
 
-    - 기본: worktree_pool.release(slot) — dirty 면 ReleaseRefused(수동 정리 요구).
+    - 기본: worktree_pool.release(slot) — 커밋 안 한 변경이 있으면 ReleaseRefused(엔진은 stash 하지 않는다).
     - `--task <이름>`: 소유검사 — 이 슬롯이 그 task 명의(lease.session)가 아니면 `NotTaskOwner`
       로 거부(다른 task/세션 슬롯을 실수로 idle 화 방지). dirty 판정보다 먼저. `--task` 미지정은
       현행 slot-only 반납(백스톱).
-    - `--force`: worktree_pool.force_release(slot) — dirty/leased **무시 강제** idle 화(dirty 는
-      stash 보존 시도). 장부에 슬롯 없으면 무해 종료. force 는 순수 백스톱이라 `--task` 소유검사도
-      건너뛴다(override 의도).
+    - `--force`: worktree_pool.force_release(slot) — 점유(leased)·소유 **무시 강제** idle 화.
+      커밋 안 한 변경은 force 여도 ReleaseRefused. 장부에 슬롯 없으면 무해 종료. force 는 순수
+      백스톱이라 `--task` 소유검사도 건너뛴다(override 의도).
 
     런타임 alloc/release 자동화는 파사드 비관여(bootstrap/handoff) — 여기는 수동
     반납/강제만. worktree_pool 주입으로 hermetic 테스트.
@@ -3137,10 +3176,17 @@ def cmd_release(
         except getattr(wp, "ReadonlySlotNotLeasable", ()) as exc:
             print(f"[중단] {exc}", file=sys.stderr)   # readonly 공유 슬롯 — 강제 반납도 대상 아님.
             return 1
+        except wp.ReleaseRefused:
+            print(
+                f"[중단] 슬롯 {args.slot!r} 에 커밋 안 한 변경이 있다 — 강제 반납도 거부(엔진은 stash "
+                "하지 않는다). 사용자에게 물어 커밋하거나 사용자가 요청하면 stash 한 뒤 다시 실행하라.",
+                file=sys.stderr,
+            )
+            return 1
         if lease is None:
             print(f"✓ 슬롯 {args.slot!r} 장부에 없음 — 이미 정리됨(무해).")
         else:
-            print(f"✓ 슬롯 {args.slot!r} 강제 반납(idle 화) — dirty 는 stash 보존 시도.")
+            print(f"✓ 슬롯 {args.slot!r} 강제 반납(idle 화).")
         return 0
 
     owner_task = getattr(args, "task", None)
@@ -3162,8 +3208,9 @@ def cmd_release(
         return 1
     except wp.ReleaseRefused:
         print(
-            f"[중단] 슬롯 {args.slot!r} 이 dirty — 반납 거부(작업 유실 방지). "
-            "수동 정리 후 재시도하거나 `release --force`(stash 보존 강제).",
+            f"[중단] 슬롯 {args.slot!r} 에 커밋 안 한 변경이 있다 — 반납 거부(작업 유실 방지·엔진은 "
+            "stash 하지 않는다). 사용자에게 물어 커밋하거나 사용자가 요청하면 stash 한 뒤 다시 "
+            "실행하라. `release --force` 는 점유·소유검사만 넘는다.",
             file=sys.stderr,
         )
         return 1
@@ -3599,7 +3646,7 @@ def cmd_task_end(
         for slot in result.dirty:
             print(f"  - {slot}", file=sys.stderr)
         print(
-            "  각 슬롯에서 커밋/정리(또는 `pm-config release <slot> --force` 로 stash 보존) 후 재시도하라.",
+            "  각 슬롯에서 커밋(또는 사용자가 요청하면 stash) 후 재시도하라.",
             file=sys.stderr,
         )
         return 1
@@ -5034,20 +5081,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="worktree dir 이 사라진 dangling 장부 엔트리 정리 (stale/incomplete·안전)",
     )
     p_wt_prune.set_defaults(func=cmd_worktree_prune_stale)
-    # worktree remove <slot> [--force] — 슬롯 통째 제거(user-invoked).
-    # 리스 확인→등록 조회→git worktree remove→브랜치 정리→장부 엔트리 삭제를 한 번에. prune-stale
-    # (worktree 부재 장부만 정리·안전)과 달리 **실 worktree 를 지운다** — 사용자 명시 호출 전제
-    # (PM 자율 실행 아님·삭제-위임). 장부 엔트리 제거로 `add` 가 빈 번호 재사용(번호 skip footgun 종결).
+    # worktree remove <slot> --user-ack <slot> [--user-ack <브랜치> ...] [--force] — 슬롯 통째 제거.
+    # 리스 확인→등록 조회→커밋 안 한 변경 검사→git worktree remove→브랜치 삭제 판정→장부 엔트리 삭제를
+    # 한 번에. prune-stale(worktree 부재 장부만 정리·안전)과 달리 **실 worktree 를 지운다** — 사용자
+    # 승인값 결속 전제. 장부 엔트리 제거로 `add` 가 빈 번호 재사용(번호 skip footgun 종결).
     p_wt_remove = wt_sub.add_parser(
         "remove",
-        help="슬롯 통째 제거 — worktree remove + 브랜치 정리 + 장부 엔트리 삭제 (사용자 "
-             "명시 호출·prune-stale 과 달리 실 worktree 삭제·번호 재사용). ⚠ 미머지 "
-             "브랜치는 보존되며 같은 번호 base-경로 재생성을 막는다(브랜치 정리 후 재시도).",
+        help="슬롯 통째 제거 — worktree remove + 브랜치 삭제 판정 + 장부 엔트리 삭제 (사용자 "
+             "승인값 필수·prune-stale 과 달리 실 worktree 삭제·번호 재사용). ⚠ 합쳐지지 않은 "
+             "브랜치는 그 이름의 승인값이 없으면 보존되며 같은 번호 base-경로 재생성을 막는다.",
     )
     p_wt_remove.add_argument("slot", help="제거할 슬롯 (work/<repo>_<N>·release 와 동일 식별 방식)")
     p_wt_remove.add_argument(
+        "--user-ack", metavar="<이름>", action="append", default=[],
+        help="사용자 승인 토큰 — 반복 가능. 입력한 슬롯 값이 있어야 제거하고, 합쳐지지 않은 "
+             "브랜치는 그 브랜치 이름이 값에 있을 때만 지운다.",
+    )
+    p_wt_remove.add_argument(
         "--force", action="store_true",
-        help="dirty/활성 리스(사용 중) 무시 강제 제거 (dirty 는 stash 보존 시도)",
+        help="점유(활성 리스·사용 중)만 무시하고 제거 — 커밋 안 한 변경·git 미등록 트리는 그래도 거부",
     )
     p_wt_remove.set_defaults(func=cmd_worktree_remove)
 
@@ -5115,7 +5167,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="task 소유검사 — 이 슬롯이 그 task 명의(session)가 아니면 반납 거부(다른 task 슬롯 보호)",
     )
     p_release.add_argument("--force", action="store_true",
-                           help="dirty/leased 무시 강제 idle 화 (dirty 는 stash 보존 시도·--task 소유검사도 우회)")
+                           help="점유(leased)·--task 소유검사 무시 강제 idle 화 (커밋 안 한 변경은 그래도 거부)")
     p_release.set_defaults(func=cmd_release)
 
     # task new <이름> — 정체성만 생성(닫힘·세션 묶기 없음) / task end <이름> — task 종료:
