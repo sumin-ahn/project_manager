@@ -2045,7 +2045,7 @@ def _format_slot_status_lines(status: dict | None) -> list[str]:
 # main-참조 해소 커맨드가 제시할 **신규 브랜치명** 파생 규칙.
 # 세션/task 명을 브랜치명으로 그대로 보간하면 그 이름이 보호브랜치(`main`)이거나 이미 존재하는
 # 브랜치일 때 **실행 불가능한 자기모순 커맨드**가 된다(PM 4차 실측: task `main` 진입 시
-# `git -C work/project_manager_1 switch -c main` — 지금 체크아웃된 그 보호브랜치를 새로 만들라는 안내).
+# `git -C work/<repo>_<N> switch -c main` — 지금 체크아웃된 그 보호브랜치를 새로 만들라는 안내).
 # 접두는 `task/` 고정 — 슬롯 전용 브랜치 `<repo>_<N>`(worktree_pool 관례)과 네임스페이스가 겹치지
 # 않고, PM 4차가 실측 해소에 실제로 쓴 이름이다(`task/main`).
 _REMEDY_BRANCH_PREFIX = "task/"

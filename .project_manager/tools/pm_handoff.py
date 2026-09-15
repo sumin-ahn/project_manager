@@ -2874,7 +2874,7 @@ def _claimed_tickets_for_session(
             cb = _TICKET_FRONT_CLAIMED_BY_RE.search(head)
             if cb is None:
                 continue
-            # YAML 따옴표 값(`claimed_by: "…/project_manager_1"`) 방어 — surrounding 따옴표를
+            # YAML 따옴표 값(`claimed_by: "…/my_app_1"`) 방어 — surrounding 따옴표를
             # 벗겨 `/` 뒤 세션 파트를 비교한다(현행 무해하나 견고화·codex suggestion).
             if _strip_yaml_scalar(cb.group(1)).rsplit("/", 1)[-1] != session:
                 continue
@@ -2938,8 +2938,8 @@ def upsert_dashboard_section(
       쥔 호출부(`_write_dashboard_section` 의 `_dashboard_lock`)가 read→upsert→write 전체에
       건다(cross-slot lost update 차단·MF-2).
 
-    헤딩 매칭은 정확 줄(`^## <session>$`·trailing 공백 허용)이라 `project_manager_1` 이
-    `project_manager_10` 섹션을 오매치하지 않는다. `session` 은 `_sanitize_dashboard_key` 로
+    헤딩 매칭은 정확 줄(`^## <session>$`·trailing 공백 허용)이라 `my_app_1` 이
+    `my_app_10` 섹션을 오매치하지 않는다. `session` 은 `_sanitize_dashboard_key` 로
     정규화해 검색한다 — render 가 헤딩에 쓰는 것과 **같은 정규화**라 같은 raw 키에 일관 매칭한다.
     """
     core = section if section.endswith("\n") else section + "\n"

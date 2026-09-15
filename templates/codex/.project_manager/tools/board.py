@@ -4031,7 +4031,7 @@ def _repo_from_session(session: str) -> str | None:
     슬롯 세션명은 `{repo}_{N}`(N=숫자 슬롯·worktree_pool `_slot_for`·pm_bootstrap lean
     끝의 `_<숫자>` 마디를 슬롯 번호로 떼고 나머지를 repo 로
     잡는다(`rpartition('_')` — 마지막 `_` 만 분리) — repo 명이 `_` 를 포함해도(예
-    `project_manager_1` → repo `project_manager`·`a_2_3` → `a_2`) 정확히 갈린다. 끝
+    `my_app_1` → repo `my_app`·`a_2_3` → `a_2`) 정확히 갈린다. 끝
     마디가 숫자가 아니거나(커스텀 세션명 `pm`·`my-session`·`foo_bar`) repo 부분이
     비면(`_1`) `<repo>_<N>` 형태가 아니므로 None (유도 skip → id_prefix 가 다음 층으로).
 
@@ -4771,7 +4771,7 @@ def _slot_matches(claimed_by: str, my_slot: str, *, mode: str = "exact") -> bool
     `mode="exact"`(기본·`--mine`/`--repo X --slot N`): 완전 일치 — slot 식별자 전체를 안다.
     `mode="repo"`(`--repo X` 단독·view/actor repo-scope): slot 규칙
     (`work/<repo>_<N>` → 세션 이름 `<repo>_<N>`)상 `my_slot` 이 repo 이름이므로, slot 토큰의
-    repo(`_repo_from_session`·repo 명 `_` 안전·`--repo project` 가 `project_manager_1` 오매칭 안 함)가
+    repo(`_repo_from_session`·repo 명 `_` 안전·`--repo my` 가 `my_app_1` 오매칭 안 함)가
     `my_slot`(그 repo 의 어느 슬롯이든) 이거나 토큰 자체가 `my_slot`(드문 비-숫자
     커스텀 슬롯)이면 매칭한다 — "그 repo 의 내 슬롯 전체".
 

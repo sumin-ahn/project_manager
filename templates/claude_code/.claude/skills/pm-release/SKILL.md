@@ -19,7 +19,7 @@ audience: pm-internal
 livegate record 전에 PM 홈을 worktree canonical에 동기해 stale import 사본의 빈 diff false-green·stale-pin false-block을 막는다. 건너뛰지 않으며 freshness·manifest reconcile·drift 분기는 [[pm-update]]를 따른다.
 
 ```bash
-./pm-update.sh --from <worktree-canonical-경로>     # 예 work/project_manager_1 (upstream=경로면 --from 생략 가능)
+./pm-update.sh --from <worktree-canonical-경로>     # 예 work/<repo>_<N> (upstream=경로면 --from 생략 가능)
 ./pm-config.sh sync-adapter-config --check --from <worktree-canonical-경로>
 ```
 

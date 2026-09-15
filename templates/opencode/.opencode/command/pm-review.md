@@ -39,7 +39,7 @@ additional_reviewer.reasoning=max
 
 ```bash
 # canonical 코드 worktree 에서 실행 (PM 홈 import 사본 금지).
-cd <worktree-canonical-경로>     # 예 work/project_manager_1
+cd <worktree-canonical-경로>     # 예 work/<repo>_<N>
 ```
 
 소유 PM 홈을 해소할 수 없는 위치의 **무인자 실행은 rc=1 로 차단**된다(경고 후 진행 없음). 커밋만 된 변경으로 슬롯을 고르려면 `--base` 앵커를 명시한다. 복구 채널은 `--paths`(절대경로)·유효한 `--ticket` 이다.
