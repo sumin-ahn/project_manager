@@ -441,7 +441,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
 
   /**
    * 직접 정하지 않았거나 스위치가 꺼진 칸 — 값이 있으면 그 값, 없으면 안 정했을 때 일어나는 일.
-   * 엔진이 적는 키는 사람이 정할 자리가 아니라 "안 정하면" 없이 그 상태만 말한다.
+   * 엔진이 적는 키는 사람이 정할 자리가 아니라 "기본값"·"기본 동작" 없이 그 상태만 말한다.
    */
   const grey = (row: Row, on: boolean) => {
     const text = on ? valueOf(row.key) : row.readonly ? row.unset ?? "" : unsetHint(row);

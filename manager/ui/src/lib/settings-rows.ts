@@ -38,7 +38,7 @@ export const SET_TOGGLE: string = rule.unset.toggle;
 /** 켠 목록 칸에서 아직 아무것도 고르지 않았을 때의 항목. */
 export const PICK: string = rule.unset.pick;
 
-/** 안 채웠을 때 일어나는 일 — 엔진 기본값이 있으면 그 값, 없으면 엔진이 준 문장. */
+/** 안 채웠을 때 — 엔진 기본값이 있으면 그 값, 없으면 엔진이 준 동작 문장. */
 export type UnsetRow = { default: string | null; unset: string | null };
 
 /**
@@ -49,8 +49,8 @@ export type UnsetRow = { default: string | null; unset: string | null };
  * 없고, 그 행은 애초에 사람이 이미 값을 적은 행이다.
  */
 export function unsetHint(row: UnsetRow): string {
-  const said = row.default !== null ? `${rule.unset.default} ${row.default}` : row.unset;
-  return said === null ? "" : `${rule.unset.lead}: ${said}`;
+  if (row.default !== null) return `${rule.unset.default}: ${row.default}`;
+  return row.unset === null ? "" : `${rule.unset.behavior}: ${row.unset}`;
 }
 
 /**

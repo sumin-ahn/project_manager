@@ -262,12 +262,12 @@ describe("다섯 목록의 배너와 행 표시", () => {
 
     // 기본값이 있는 키 — 그 값이 쓰인다고 말한다.
     expect(screen.queryByLabelText("ctx.window_tokens")).toBeNull();
-    expect(screen.getByTestId("conf-ctx.window_tokens")).toHaveTextContent("안 정하면: 기본값 200000");
+    expect(screen.getByTestId("conf-ctx.window_tokens")).toHaveTextContent("기본값: 200000");
     openGroup("project");
     fireEvent.click(screen.getByTestId("show-unset"));           // 접힘은 숨김이 아니다
     // 기본값이 없는 키 — 엔진이 준 문장이 그대로 선다.
     expect(screen.getByTestId("conf-project.name")).toHaveTextContent(
-      `안 정하면: ${KEYS.keys.find((entry) => entry.key === "project.name")!.unset!}`);
+      `기본 동작: ${KEYS.keys.find((entry) => entry.key === "project.name")!.unset!}`);
   });
 
   it("군 안에서 갈리는 이름이 있으면 그 이름이 선다 — 같은 이름 세 줄이 서지 않는다", () => {
@@ -337,7 +337,7 @@ describe("저장", () => {
 
     fireEvent.click(toggleOf("ctx.checkpoint_pct"));
     expect(screen.queryByLabelText("ctx.checkpoint_pct")).toBeNull();
-    expect(screen.getByTestId("conf-ctx.checkpoint_pct")).toHaveTextContent("안 정하면: 기본값");
+    expect(screen.getByTestId("conf-ctx.checkpoint_pct")).toHaveTextContent("기본값: ");
     fireEvent.click(screen.getByTestId("save"));
 
     await waitFor(() => expect(bridge.conf_save)
