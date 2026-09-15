@@ -36,7 +36,7 @@ import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("worktree_pool_session_bind", sys.argv[1])
 worktree_pool = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(worktree_pool)
-record, action = worktree_pool.bind_task(sys.argv[2])
+record, action = worktree_pool.bind_task(sys.argv[2], session="s-test")
 print(json.dumps({"open": record.open, "action": action}))
 '''
 
@@ -162,6 +162,7 @@ class _FakeTaskRecord:
         self.name = name
         self.prefix = prefix
         self.open = open
+        self.session = "s-other" if open else ""
         self.started = started
 
 
@@ -194,7 +195,7 @@ class FakeWorktreePool:
         self._task_open_started = task_open_started
         self._task_invalid_reason = task_invalid_reason  # 설정 시 InvalidTaskName(명 검증 거부)
         self.bind_task_calls: list[dict] = []
-        self.closed_tasks: list[str] = []        # release_task_pid(종료 기록) 호출 기록
+        self.closed_tasks: list[str] = []        # close_task_session(종료 기록) 호출 기록
         self._alloc_raises = alloc_raises_needs_create
         self._alloc_slot = alloc_slot
         self._alloc_branch = alloc_branch
@@ -304,14 +305,19 @@ class FakeWorktreePool:
         return _FakeTaskRecord(name, self._task_prefix, open=True,
                                started=self._task_open_started)
 
-    def release_task_pid(self, name):
+    def close_task_session(self, name):
         """종료 기록 프리미티브 대역 — 닫은 뒤에는 열림 기록이 없다."""
         self.closed_tasks.append(name)
         self._task_open_started = None
         self._task_action = "resumed"
         return _FakeTaskRecord(name, self._task_prefix)
 
-    def bind_task(self, name, *, registered_repos=None):
+    NoTaskSessionClaim = type("NoTaskSessionClaim", (Exception,), {})
+
+    def take_task_session_claim(self, name):
+        return "s-test"
+
+    def bind_task(self, name, *, session=None, registered_repos=None):
         # F1 task 바인딩 대역 — 명 검증 거부(InvalidTaskName)/열림 기록 거부, 아니면
         # (record, action) 2-튜플 반환 + task state 즉시 생성.
         self.bind_task_calls.append({"name": name, "registered_repos": registered_repos})
@@ -1861,11 +1867,11 @@ def test_bind_task_refuses_a_task_with_an_open_record(pool_home, tmp_path):
     assert pool.find_task("job1").open is True
 
     with pytest.raises(pool.TaskActiveElsewhere) as refused:
-        pool.bind_task("job1")
+        pool.bind_task("job1", session="s-other")
     assert refused.value.started == pool.find_task("job1").started
 
-    pool.release_task_pid("job1")            # 사용자가 닫는다(`pm-config task close`)
-    record, action = pool.bind_task("job1")
+    pool.close_task_session("job1")            # 사용자가 닫는다(`pm-config task close`)
+    record, action = pool.bind_task("job1", session="s-test")
 
     assert action == "resumed", "닫힌 기록은 그대로 재개다"
     assert record.open is True

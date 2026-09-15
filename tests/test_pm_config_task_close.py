@@ -58,7 +58,7 @@ def _cli(home: Path, *args: str) -> subprocess.CompletedProcess:
 def _open_task(home: Path, name: str) -> None:
     """세션이 연 채 끝난 상태 — 실 엔진으로 열고 종료 기록을 남기지 않는다."""
     pool = load_pool(home)
-    pool.bind_task(name)
+    pool.bind_task(name, session="s-test")
 
 
 # ── ① 기록만 닫는다 ─────────────────────────────────────────────────────────
@@ -68,14 +68,14 @@ def test_close_flips_the_open_record_of_a_real_session(home):
     """실 서브프로세스로 닫는다 — 열림에서 닫힘으로, 그 행 하나만."""
     pm_config(home, "task", "new", "sibling")
     _open_task(home, "job")
-    assert [t["open"] for t in _ledger(home)["tasks"] if t["name"] == "job"] == [True]
+    assert [bool(t["session"]) for t in _ledger(home)["tasks"] if t["name"] == "job"] == [True]
 
     done = _cli(home, "task", "close", "job")
 
     assert done.returncode == 0, done.stderr
     rows = {task["name"]: task for task in _ledger(home)["tasks"]}
-    assert rows["job"]["open"] is False
-    assert rows["sibling"]["open"] is False       # 형제 행 무접촉
+    assert rows["job"]["session"] == ""
+    assert rows["sibling"]["session"] == ""       # 형제 행 무접촉
     assert "복원" not in done.stdout or "복원 없음" in done.stdout
 
 
@@ -133,18 +133,18 @@ def test_closing_an_unknown_task_is_refused(home):
 
 
 def test_close_writes_through_the_existing_primitive(pc, monkeypatch, capsys):
-    """장부 write 를 재구현하지 않는다 — 기존 `release_task_pid` 하나만 부른다."""
+    """장부 write 를 재구현하지 않는다 — 기존 `close_task_session` 하나만 부른다."""
     calls: list[str] = []
 
     class _Pool:
         InvalidTaskName = type("InvalidTaskName", (Exception,), {})
 
         def find_task(self, name):
-            return type("_T", (), {"name": name, "open": True})()
+            return type("_T", (), {"name": name, "session": "s-test", "open": True})()
 
-        def release_task_pid(self, name):
+        def close_task_session(self, name):
             calls.append(name)
-            return type("_T", (), {"name": name, "open": False})()
+            return type("_T", (), {"name": name, "session": "", "open": False})()
 
     rc = pc.cmd_task_close(argparse.Namespace(name="job"), worktree_pool=_Pool())
 
@@ -171,7 +171,7 @@ def test_the_record_has_only_two_values(home):
 
     row = _ledger(home)["tasks"][0]
 
-    assert row["open"] is False
+    assert row["session"] == ""
     assert "pid" not in row and "state" not in row and "expires_at" not in row
 
 

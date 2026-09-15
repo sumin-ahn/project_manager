@@ -3533,7 +3533,7 @@ def cmd_task_close(
     다음 부트스트랩이 거부하는데, 그것을 닫는 것은 **사용자 행위**다(엔진 자동 회수·만료 시각
     없음). 작업 폴더 쪽 짝은 기존 `pm-config release <slot> --force` 다 — 새로 만들지 않았다.
 
-    write 는 기존 프리미티브 `worktree_pool.release_task_pid` 하나만 부른다(장부 write 재구현 0).
+    write 는 기존 프리미티브 `worktree_pool.close_task_session` 하나만 부른다(장부 write 재구현 0).
     값은 열림/닫힘 둘뿐이라 세 번째 상태값도, 만료/유예 인자도 없다.
     """
     wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
@@ -3556,7 +3556,7 @@ def cmd_task_close(
     if not record.open:
         print(f"  task {name!r} 은 이미 닫혀 있다 — 바꿀 기록 없음(무해).")
         return 0
-    wp.release_task_pid(name)
+    wp.close_task_session(name)
     print(f"✓ task {name!r} 세션 기록을 닫았다 (열림 → 닫힘) — 복원 없음(기록만).")
     print(
         f"  이어서 진입하려면: `{_runtime_skill_entry('pm-bootstrap')} --task {name}`."

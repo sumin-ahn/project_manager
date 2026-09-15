@@ -366,7 +366,13 @@ def test_bind_task_rejects_archived_name_with_reopen_prescription(
         class InvalidTaskName(Exception):
             pass
 
-        def bind_task(self, name, registered_repos=None):
+        class NoTaskSessionClaim(Exception):
+            pass
+
+        def take_task_session_claim(self, name):
+            return "s-test"
+
+        def bind_task(self, name, session=None, registered_repos=None):
             raise self.TaskArchived()
 
     inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=ArchivedPool())

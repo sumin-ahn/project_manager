@@ -140,7 +140,12 @@ class _TaskPool:
         self._bound_extra: list[str] = []
 
     # task 축
-    def bind_task(self, name, *, registered_repos=None):
+    NoTaskSessionClaim = type("NoTaskSessionClaim", (Exception,), {})
+
+    def take_task_session_claim(self, name):
+        return "s-test"
+
+    def bind_task(self, name, *, session=None, registered_repos=None):
         self.bind_task_calls.append({"name": name, "registered_repos": registered_repos})
         self.task_dir(name).mkdir(parents=True, exist_ok=True)
         (self.task_dir(name) / "pm_state.md").write_text(

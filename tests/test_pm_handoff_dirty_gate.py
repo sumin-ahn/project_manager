@@ -160,7 +160,7 @@ class _TaskPool:
     def slots_for_task(self, name):
         return [type("_L", (), {"slot": slot})() for slot in self._slots]
 
-    def release_task_pid(self, name):
+    def close_task_session(self, name):
         self.released.append(name)
         return type("_T", (), {"name": name})()
 
@@ -317,7 +317,7 @@ def test_dirty_rerun_after_block_is_still_first_entry(hf, tmp_path, monkeypatch)
 
 # ── task 장부 무접촉 (task_mode 참 구성 · sensitivity 대조군 포함) ────────────
 
-def test_dirty_block_does_not_release_task_pid(hf, tmp_path, monkeypatch, capsys):
+def test_dirty_block_does_not_close_task_session(hf, tmp_path, monkeypatch, capsys):
     """task 모드 차단은 pid=0 기록(첫 장부 mutation) **전**에 멈춘다."""
     pool = _TaskPool()
     inst, log_file = _make_handoff(

@@ -368,8 +368,8 @@ class RemoveRefused(Exception):
 class TaskActiveElsewhere(Exception):
     """같은 task 를 살아있는 다른 세션이 열고 있다 — 동시 세션 거부.
 
-    task 열림 기록 검사(부트스트랩 진입 시): 장부 task 행이 `open=True`(열림 기록이 있고 종료
-    기록이 없음)면 이 예외로 거부한다. 프로세스 조회는 하지 않는다 — 번호 재사용·세션 교체로
+    task 열림 기록 검사(부트스트랩 진입 시): 장부 task 행의 `session` 이 다른 세션
+    ID 면(열림 기록이 있고 종료 기록이 없음) 이 예외로 거부한다. 프로세스 조회는 하지 않는다 — 번호 재사용·세션 교체로
     생존을 알 수 없어서다. 해소는 사용자 행위 둘 중 하나다: 그 창을 쓰거나, 기록을 닫거나
     (`pm-config task close <이름>`), 강제로 이어받는다(부트스트랩 `--force`).
     `started` = 그 기록의 시작 시각(정체 표시용).
@@ -704,9 +704,10 @@ class Lease:
 
 # Task 직렬화 키 분류 (Lease 동형 additive 스키마). canonical 을 각 필드로 소비하고 그
 # 외 미지 키는 `extra` 로 보존해 왕복 무손실(구·신 엔진 skew·향후 additive task 서브키 대비).
-# `pid` 는 옛 이름으로 남겨 둔다 — canonical 에 있어야 `from_dict` 가 그것을 `open` 으로 접고
-# `extra` 로 보존하지 않는다(다시 쓸 때 옛 필드가 되살아나지 않는다·읽기 1회 이주).
-_TASK_CANONICAL_KEYS = frozenset({"name", "prefix", "open", "pid", "started"})
+# `open`·`pid` 는 옛 이름으로 남겨 둔다 — canonical 에 있어야 `from_dict` 가 그것을 `extra` 로
+# 보존하지 않고 버린다(다시 쓸 때 옛 필드가 되살아나지 않는다·읽기 1회 이주). 옛 열림 기록은
+# 어느 세션이 열었는지 모르므로 닫힘으로 읽는다 — 열린 세션은 부트스트랩을 다시 한다.
+_TASK_CANONICAL_KEYS = frozenset({"name", "prefix", "session", "open", "pid", "started"})
 
 
 class Task:
@@ -716,9 +717,10 @@ class Task:
     top-level 컬렉션에 산다(같은 파일·같은 `_lease_lock`/atomic replace 직렬화). 필드:
       - `name`   — task 이름(사람이 정하는 자유 포맷·`<등록 repo>_<N>` 예약 제외·유일성=사람 안).
       - `prefix` — 이 task 세션의 board prefix(기본 None=없음·변경은 `task prefix`).
-      - `open`   — 세션이 열려 있는가(True=열림 기록·False=종료 기록). 값은 이 둘뿐이고
-        중간 상태·만료 시각은 없다. 여는 자리 = `bind_task`, 닫는 자리 = `release_task_pid`
-        (핸드오프·`task close`)·`end_task`.
+      - `session`— 이 task 를 연 하네스 세션 ID(빈 값 = 닫힘). 프로세스 ID 가 아니다 — 재개·압축
+        뒤에도 같은 값이다(세 하네스 실측). 여는 자리 = `bind_task`, 닫는 자리 =
+        `close_task_session`(핸드오프·`task close`)·`end_task`. 슬롯 쓰기 가드가 "이 세션의
+        task" 를 이 값으로 찾는다. `open` 은 이 값에서 파생한 읽기 전용 값이다.
       - `started`— task 레코드 생성 시각(UTC ISO).
 
     저장 위치 = 리스 장부 파일 top-level `tasks`(출처 1개·저장소
@@ -728,16 +730,21 @@ class Task:
     """
 
     def __init__(self, name: str, prefix: "str | None" = None,
-                 open: bool = False, started: str = "", extra: "dict | None" = None):
+                 session: str = "", started: str = "", extra: "dict | None" = None):
         self.name = name
         self.prefix = prefix      # board prefix (None=없음)
-        self.open = bool(open)    # 열림 기록(True) / 종료 기록(False) — 두 값뿐
+        self.session = session    # 연 하네스 세션 ID (빈 값 = 닫힘)
         self.started = started    # 레코드 생성 시각 (UTC ISO)
         self.extra = dict(extra) if extra else {}
 
+    @property
+    def open(self) -> bool:
+        """열림 여부 — `session` 에서 파생한다(따로 저장하지 않는다)."""
+        return bool(self.session)
+
     def __repr__(self) -> str:
         return (f"Task(name={self.name!r}, prefix={self.prefix!r}, "
-                f"open={self.open!r}, started={self.started!r})")
+                f"session={self.session!r}, started={self.started!r})")
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Task):
@@ -748,7 +755,7 @@ class Task:
         d = {
             "name": self.name,
             "prefix": self.prefix,
-            "open": self.open,
+            "session": self.session,
             "started": self.started,
         }
         d.update(self.extra)      # 미지 키 재방출(왕복 무손실·canonical 을 덮을 위험 없음)
@@ -757,12 +764,12 @@ class Task:
     @classmethod
     def from_dict(cls, d: dict) -> "Task":
         extra = {k: v for k, v in d.items() if k not in _TASK_CANONICAL_KEYS}
-        # 읽기 1회 이주 — 옛 장부의 `pid`(>0=열림·0=닫힘)를 `open` 으로 접는다. `to_dict` 는
-        # `pid` 를 다시 내보내지 않으므로 아무 op 한 번이면 옛 필드가 사라진다.
+        # 읽기 1회 이주 — 옛 `open`·`pid` 는 버린다(`to_dict` 가 다시 내보내지 않는다).
+        session = d.get("session", "")
         return cls(
             name=d["name"],
             prefix=d.get("prefix"),
-            open=bool(d.get("open", d.get("pid", 0))),
+            session=session if isinstance(session, str) else "",
             started=d.get("started", ""),
             extra=extra,
         )
@@ -2333,6 +2340,67 @@ def list_tasks() -> list[Task]:
         return _read_tasks()
 
 
+# 하네스 세션 ID 기록 — 부트스트랩 프로세스는 자기 하네스 세션 ID 를 알 수 없다(codex·opencode 는
+# 도구 프로세스 환경에 없다·실측). 세션 ID 를 받는 가드 훅이 `pm_bootstrap.py --task X` 호출을 보고
+# 여기에 적고, 부트스트랩이 가져가(`take_task_session_claim`) task 기록에 쓴다.
+TASK_SESSION_CLAIMS_DIRNAME = "task-session-claims"
+
+
+def _task_session_claim_path(name: str) -> Path:
+    """세션 기록 파일 자리 — `LOCAL_DIR` 을 부를 때마다 읽는다(홈을 바꿔 쓰는 소비자와 같은 자리)."""
+    return LOCAL_DIR / TASK_SESSION_CLAIMS_DIRNAME / f"{name}.json"
+
+
+class NoTaskSessionClaim(Exception):
+    """부트스트랩할 task 의 세션 기록이 없다 — 하네스 밖 실행이거나 가드 훅이 없다."""
+
+    def __init__(self, name: str):
+        self.name = name
+        super().__init__(
+            f"task {name!r} 의 하네스 세션 기록이 없다 — 부트스트랩은 하네스(claude·codex·opencode) "
+            "안에서 셸 도구로 실행해야 가드 훅이 세션 ID 를 남긴다. 훅 설치를 확인하라"
+            f" ({_task_session_claim_path(name)})."
+        )
+
+
+def record_task_session_claim(name: str, session: str) -> Path:
+    """가드 훅 전용 — `name` task 를 `session` 이 부트스트랩하려 한다는 기록을 남긴다."""
+    _validate_task_name(name)
+    if not isinstance(session, str) or not session:
+        raise ValueError(f"task {name!r} 세션 기록에 쓸 세션 ID 가 비어 있다")
+    path = _task_session_claim_path(name)
+    with _lease_lock():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.tmp")
+        tmp.write_text(json.dumps({"task": name, "session": session}, ensure_ascii=False) + "\n",
+                       encoding="utf-8", newline="\n")
+        file_lock.atomic_replace(tmp, path)
+    return path
+
+
+def take_task_session_claim(name: str) -> str:
+    """부트스트랩 전용 — 가드 훅이 남긴 세션 기록을 가져가(지우고) 세션 ID 를 돌려준다."""
+    _validate_task_name(name)
+    path = _task_session_claim_path(name)
+    with _lease_lock():
+        if not path.exists():
+            raise NoTaskSessionClaim(name)
+        data = json.loads(file_lock.read_text_shared(path, encoding="utf-8"))
+        path.unlink()
+    session = data.get("session") if isinstance(data, dict) and data.get("task") == name else None
+    if not isinstance(session, str) or not session:
+        raise NoTaskSessionClaim(name)
+    return session
+
+
+def task_for_session(session: str) -> "Task | None":
+    """이 하네스 세션 ID 로 열린 task — 없으면 None (가드의 "이 세션의 task")."""
+    if not session:
+        return None
+    with _lease_lock():
+        return next((t for t in _read_tasks_strict() if t.session == session), None)
+
+
 def find_task(name: str) -> "Task | None":
     """이름으로 task 레코드를 찾는다 — 없으면 None."""
     with _lease_lock():
@@ -2351,7 +2419,7 @@ def find_task_strict(name: str) -> "Task | None":
     return None
 
 
-def _create_task_locked(tasks: list[Task], name: str, *, open: bool) -> Task:
+def _create_task_locked(tasks: list[Task], name: str, *, session: str) -> Task:
     """task 정체성을 신규 생성해 장부에 기록한다 — **_lease_lock 보유 전제**.
 
     task 생성 진입점 둘(`bind_task` 의 신규 가지 = 세션 진입 겸 생성 · `create_task` = 정체성만
@@ -2359,15 +2427,15 @@ def _create_task_locked(tasks: list[Task], name: str, *, open: bool) -> Task:
     둔다 — 공개 `create_task` 를 `bind_task` 안에서 부르면 같은 락 파일을 두 fd 로 잡아
     (재진입) 블로킹 획득이 그 자리에 멈춘다.
 
-    두 진입점이 갈리는 값은 `open` 하나다 — 세션 진입은 열림, 정체성만 생성은 닫힘
-    (`release_task_pid` 와 같은 값이라 다음 bind 가 그대로 재개한다). 동명 종료
+    두 진입점이 갈리는 값은 `session` 하나다 — 세션 진입은 그 세션 ID, 정체성만 생성은 빈 값(닫힘)
+    (`close_task_session` 와 같은 값이라 다음 bind 가 그대로 재개한다). 동명 종료
     archive 가 있으면 부작용 이전에 `TaskArchived`(복원은 `task reopen`)로 거부하고, pm_state 는
     `ensure_task_pm_state` 가 만든다(템플릿 복제 금지). 장부 write 는 이 함수에서 1회다.
     """
     archives = task_archive_candidates(name)
     if archives:
         raise TaskArchived(name, archives)
-    task = Task(name=name, prefix=None, open=open, started=_now_utc())
+    task = Task(name=name, prefix=None, session=session, started=_now_utc())
     ensure_task_pm_state(name)
     tasks.append(task)
     _write_tasks(tasks)
@@ -2377,16 +2445,16 @@ def _create_task_locked(tasks: list[Task], name: str, *, open: bool) -> Task:
 def create_task(
     name: str, *, registered_repos: "list[str] | set[str] | None" = None
 ) -> "Task | None":
-    """task 정체성만 만든다 — 세션에 묶지 않는다(`open=False`). 이미 있으면 `None`.
+    """task 정체성만 만든다 — 세션에 묶지 않는다(`session` 빈 값). 이미 있으면 `None`.
 
-    `pm-config task new <이름>` 의 write 백엔드다. 장부 `tasks[]` 행(`prefix=None`·`open=False`)과
+    `pm-config task new <이름>` 의 write 백엔드다. 장부 `tasks[]` 행(`prefix=None`·`session` 빈 값)과
     `.local/tasks/<이름>/pm_state.md`(`ensure_task_pm_state` — `bind_task` 신규 생성분과 같은
     산출)까지만 만들고 끝낸다: 슬롯 대여(`alloc` 소관)도 세션 묶기(bootstrap 소관)도 하지
     않는다. 이후 `pm-bootstrap --task <이름>` 이 그 행을 **resumed** 로 이어받는다 — 닫힘
-    (`open=False`)은 `bind_task` 가 그대로 재개하는 값이라 새 상태값이 없다.
+    (`session` 빈 값)은 `bind_task` 가 그대로 재개하는 값이라 새 상태값이 없다.
 
     이미 있는 이름은 `None`(호출부가 rc1 안내)이다 — 재개는 bootstrap 몫이라 여기서 기존
-    레코드의 `open` 을 만지지 않는다(`set_task_prefix` 의 부재-`None` 과 같은 계약·새 예외 0).
+    레코드의 `session` 을 만지지 않는다(`set_task_prefix` 의 부재-`None` 과 같은 계약·새 예외 0).
     동명 종료 archive 는 `TaskArchived`(`task reopen` 안내), 부적합 이름은 `InvalidTaskName`.
 
     **명 검증(must-fix)**: `_validate_task_name` 을 mkdir·장부 write **이전**에 돌린다
@@ -2398,22 +2466,25 @@ def create_task(
         if any(task.name == name for task in tasks):
             return None
         # 닫힘 = 아무 세션도 열지 않음 — 핸드오프 종료 기록과 같은 값.
-        return _create_task_locked(tasks, name, open=False)
+        return _create_task_locked(tasks, name, session="")
 
 
-def bind_task(name: str, *,
+def bind_task(name: str, *, session: str,
               registered_repos: "list[str] | set[str] | None" = None) -> tuple[Task, str]:
     """task 를 신규/resume 바인딩한다 — 명 검증(must-fix) + 열림 기록 거부 + 서술 디렉토리 신설.
 
     반환 `(task, action)` — action ∈ {"created", "resumed"}:
-      - **created**  — 장부에 없던 task 를 신규 생성(prefix=None·기본 없음·open=True·슬롯 0개 시작).
+      - **created**  — 장부에 없던 task 를 신규 생성(prefix=None·기본 없음·session=호출 세션·슬롯 0개 시작).
       - **resumed**  — 닫힌 기록(핸드오프가 남긴 종료 기록·`task close`·`task new` 직후)을 재개.
 
     **명 검증(must-fix)**: `_validate_task_name` 을 mkdir·장부 write **이전**에 돌려 traversal/절대경로/
     빈 이름/예약패턴(`registered_repos` 주면)을 fail-loud(`InvalidTaskName`) — 엔진층 배치
     0357 의 직접 소비도 우회 못 한다.
 
-    **열림 기록 거부**: 장부 행이 `open=True` 면 `TaskActiveElsewhere` 로 거부한다(부트스트랩이
+    **세션**: `session` = 이 부트스트랩을 부른 하네스 세션 ID(가드 훅이 남긴 기록에서 온다 —
+    `take_task_session_claim`). 같은 세션의 재진입은 거부하지 않고 재개한다(압축·재부트스트랩).
+
+    **열림 기록 거부**: 장부 행이 **다른 세션**으로 열려 있으면 `TaskActiveElsewhere` 로 거부한다(부트스트랩이
     dump 이전에 거부·판정에 프로세스 조회 0회). 해소는 사용자 행위다 — 그 창을 쓰거나,
     `pm-config task close <이름>` 으로 기록을 닫거나, 부트스트랩 `--force` 로 이어받는다
     (강제 경로도 기록을 먼저 닫고 이 함수를 그대로 탄다 — 강제 전용 분기 0).
@@ -2424,20 +2495,22 @@ def bind_task(name: str, *,
     slot 유무와 무관한 연속성 앵커이며 첫 handoff까지 생성을 미루지 않는다.
     """
     _validate_task_name(name, registered_repos)   # mkdir·장부 write 이전 fail-loud(부작용 0).
+    if not isinstance(session, str) or not session:
+        raise ValueError(f"task {name!r} 를 열 하네스 세션 ID 가 비어 있다")
     with _lease_lock():
         tasks = _read_tasks_strict()
         existing = next((t for t in tasks if t.name == name), None)
         if existing is None:
             # 생성은 `create_task`(`task new`)와 공유하는 락 안쪽 헬퍼가 한다 — 여기선 열림으로
             # 연다(재진입 없음·공개 create_task 를 부르지 않는다).
-            return _create_task_locked(tasks, name, open=True), "created"
-        # 열림 기록 거부 — 종료 기록 없이 열려 있으면 두 번째 창을 열지 않는다.
-        if existing.open:
+            return _create_task_locked(tasks, name, session=session), "created"
+        # 열림 기록 거부 — 다른 세션이 종료 기록 없이 열어 두었으면 두 번째 창을 열지 않는다.
+        if existing.session and existing.session != session:
             raise TaskActiveElsewhere(name, existing.started)
         # 구 엔진에서 만들어져 task 디렉토리만 있고 state가 없는 레코드도 재개 시 즉시 backfill.
         # state 보장 실패 시 장부를 갱신하지 않아 반쪽 resume을 만들지 않는다.
         ensure_task_pm_state(name)
-        existing.open = True       # 열림 기록 — 종료 기록(핸드오프·task close·end)이 닫는다.
+        existing.session = session  # 열림 기록 — 종료 기록(핸드오프·task close·end)이 닫는다.
         _write_tasks(tasks)
         return existing, "resumed"
 
@@ -2474,7 +2547,7 @@ def set_task_prefix(name: str, prefix: "str | None") -> "Task | None":
 def close_slot_session(slot: str) -> "Lease | None":
     """슬롯의 **세션 열림 표시만** 내린다 — `session=""`(종료 기록). 대여는 그대로 둔다.
 
-    핸드오프가 서사를 쓰기 전에 부르는 종료 기록의 슬롯 축이다(task 축 짝 = `release_task_pid`).
+    핸드오프가 서사를 쓰기 전에 부르는 종료 기록의 슬롯 축이다(task 축 짝 = `close_task_session`).
     세션이 끝나는 자리에서 그 세션이 연 기록을 닫지 않으면, 다음 진입이 같은 자리를 "열려 있음"
     으로 읽어 매번 강제 확인을 요구한다.
 
@@ -2496,8 +2569,8 @@ def close_slot_session(slot: str) -> "Lease | None":
         return target
 
 
-def release_task_pid(name: str) -> "Task | None":
-    """task 종료 기록 — 장부 task 레코드 `open=False` 세팅.
+def close_task_session(name: str) -> "Task | None":
+    """task 종료 기록 — 장부 task 레코드 `session` 을 비운다.
 
     pm_handoff task 모드가 log 쓰기 전 load-bearing 종료 경계로 호출하고, `pm-config task close
     <이름>` 이 같은 프리미티브로 **종료 기록 없이 남은 세션**을 사용자가 닫는다(복원 없음).
@@ -2522,7 +2595,7 @@ def release_task_pid(name: str) -> "Task | None":
         target = next((t for t in tasks if t.name == name), None)
         if target is None:
             return None
-        target.open = False        # 종료 기록 — 다음 부트스트랩이 그대로 재개(resumed).
+        target.session = ""        # 종료 기록 — 다음 부트스트랩이 그대로 재개(resumed).
         _write_tasks(tasks)
         return target
 
@@ -2626,7 +2699,7 @@ def reopen_task(name: str, archive: "str | None" = None) -> ReopenTaskResult:
                     archives=candidates,
                 )
 
-        task = Task(name=name, prefix=None, open=False, started=_now_utc())
+        task = Task(name=name, prefix=None, session="", started=_now_utc())
         try:
             selected.rename(active)
         except OSError as exc:

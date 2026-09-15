@@ -2481,7 +2481,7 @@ def test_run_task_records_precreated_pm_state(hf, tmp_path, capsys, monkeypatch)
         def slots_for_task(self, name):
             return []
 
-        def release_task_pid(self, name):
+        def close_task_session(self, name):
             return type("_T", (), {"name": name})()
 
         def release(self, *a, **k):  # noqa: ANN002 ANN003
@@ -2939,6 +2939,20 @@ def test_task_cli_two_process_rerun_is_idempotent_then_bootstrap_advances(hf, tm
             encoding="utf-8", errors="replace", timeout=300,
         )
 
+    def claim(task):
+        """가드 훅 대역 — 하네스 세션 ID 기록을 남긴다(부트스트랩이 가져간다)."""
+        source = (
+            "import importlib.util, sys\n"
+            "spec = importlib.util.spec_from_file_location('wp_claim', sys.argv[1])\n"
+            "wp = importlib.util.module_from_spec(spec); spec.loader.exec_module(wp)\n"
+            "wp.record_task_session_claim(sys.argv[2], 's-e2e')\n"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", source, str(dest / ".project_manager" / "tools" / "worktree_pool.py"), task],
+            cwd=str(dest), env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        assert done.returncode == 0, done.stderr
+
     install = subprocess.run(
         [
             sys.executable, str(TOOLS / "pm_import.py"), "--new", str(dest),
@@ -2949,6 +2963,7 @@ def test_task_cli_two_process_rerun_is_idempotent_then_bootstrap_advances(hf, tm
     )
     assert install.returncode == 0, install.stdout + install.stderr
 
+    claim("mytask")
     boot1 = run("pm_bootstrap.py", "--task", "mytask", "--json")
     assert boot1.returncode == 0, boot1.stdout + boot1.stderr
     # fresh import 직후의 adopter 트리는 **커밋 0**(scaffold 전량 untracked)이라 [0/7]
@@ -2979,6 +2994,7 @@ def test_task_cli_two_process_rerun_is_idempotent_then_bootstrap_advances(hf, tm
     once_shifted = task_state.read_bytes()
 
     # 진짜 다음 세션은 bootstrap bind가 pid를 다시 채운 뒤 N+1로 전진한다.
+    claim("mytask")
     boot2 = run("pm_bootstrap.py", "--task", "mytask", "--json")
     assert boot2.returncode == 0, boot2.stdout + boot2.stderr
     third = run("pm_handoff.py", "--task", "mytask", "--no-pytest", *ack)
@@ -3251,10 +3267,10 @@ def test_snapshot_updates_lease_and_next_phase0_passes(hf, tmp_path):
 
 
 class _TaskPidPool(_SnapPool):
-    """_SnapPool + release_task_pid 호출 기록 (T-0392 task pid 배선 검증).
+    """_SnapPool + close_task_session 호출 기록 (T-0392 task pid 배선 검증).
 
-    `omit_task_pid` 면 release_task_pid 속성 미노출(구버전 풀·fail-loud 모델).
-    `task_pid_none` 면 release_task_pid 가 None(task 장부 부재) 반환(fail-loud 모델)."""
+    `omit_task_pid` 면 close_task_session 속성 미노출(구버전 풀·fail-loud 모델).
+    `task_pid_none` 면 close_task_session 가 None(task 장부 부재) 반환(fail-loud 모델)."""
 
     def __init__(self, *, omit_task_pid=False, task_pid_none=False,
                  task_pid_error=False, **kwargs):
@@ -3263,9 +3279,9 @@ class _TaskPidPool(_SnapPool):
         self._task_pid_none = task_pid_none
         self._task_pid_error = task_pid_error
         if not omit_task_pid:
-            self.release_task_pid = self._do_release_task_pid
+            self.close_task_session = self._do_close_task_session
 
-    def _do_release_task_pid(self, name):
+    def _do_close_task_session(self, name):
         self.task_pid_calls.append(name)
         if self._task_pid_error:
             raise OSError("ledger unavailable")
@@ -3281,7 +3297,7 @@ def _task_mode_handoff(hf, tmp_path, monkeypatch, pool):
     """task_mode(=명시 pm_state 미주입·--task) 진입 hermetic PmHandoff (T-0392).
 
     task_mode = task not None AND pm_state 미명시 → REPO monkeypatch + task 생성 시 이미 만들어진
-    state로 실 앵커 해소를 태우되 mock pool로 release_task_pid 배선만 격리한다."""
+    state로 실 앵커 해소를 태우되 mock pool로 close_task_session 배선만 격리한다."""
     monkeypatch.setattr(hf, "REPO", tmp_path)
     state = hf._task_pm_state_file("mytask")
     state.parent.mkdir(parents=True, exist_ok=True)
@@ -3329,7 +3345,7 @@ def test_run_task_mode_dry_run_previews_task_pid_without_call(hf, tmp_path, monk
 def test_run_task_mode_blocks_before_log_when_task_intent_record_absent(
     hf, tmp_path, monkeypatch, capsys
 ):
-    """release_task_pid가 None이면 load-bearing intent 부재로 log write 전 차단한다."""
+    """close_task_session가 None이면 load-bearing intent 부재로 log write 전 차단한다."""
     pool = _TaskPidPool(task_pid_none=True)
     handoff = _task_mode_handoff(hf, tmp_path, monkeypatch, pool)
     rc = handoff.run(
@@ -3369,8 +3385,8 @@ def test_run_task_mode_blocks_before_log_when_intent_write_raises(
     assert not handoff._log_file.exists()
 
 
-def test_run_slot_mode_no_task_does_not_release_task_pid(hf, tmp_path):
-    """슬롯 모드(--repo/--slot·--task 없음·task_mode False) — release_task_pid 미호출(무영향·T-0392).
+def test_run_slot_mode_no_task_does_not_close_task_session(hf, tmp_path):
+    """슬롯 모드(--repo/--slot·--task 없음·task_mode False) — close_task_session 미호출(무영향·T-0392).
 
     슬롯 재스냅(T-0388)은 정상 동작하되 task pid 기록은 task 모드 전용이라 건드리지 않는다."""
     pool = _TaskPidPool()
@@ -3384,8 +3400,8 @@ def test_run_slot_mode_no_task_does_not_release_task_pid(hf, tmp_path):
     assert pool.task_pid_calls == []                             # task pid 는 미호출
 
 
-def test_run_slot_without_task_does_not_release_task_pid(hf, tmp_path):
-    """슬롯 모드(--task 없음) — release_task_pid 미호출(task_mode False·무영향·T-0392)."""
+def test_run_slot_without_task_does_not_close_task_session(hf, tmp_path):
+    """슬롯 모드(--task 없음) — close_task_session 미호출(task_mode False·무영향·T-0392)."""
     pool = _TaskPidPool()
     handoff = _hermetic_handoff(hf, tmp_path, pool)
     rc = handoff.run(

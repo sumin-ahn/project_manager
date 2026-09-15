@@ -58,7 +58,7 @@ import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("worktree_pool_session_bind", sys.argv[1])
 worktree_pool = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(worktree_pool)
-task, _action = worktree_pool.bind_task("main")
+task, _action = worktree_pool.bind_task("main", session="s-test")
 lease = worktree_pool.bind_slot(sys.argv[2], "app", "main")
 print(json.dumps({"task_open": task.open, "lease_open": worktree_pool.lease_is_open(lease)}))
 '''
@@ -200,7 +200,7 @@ def test_status_json_light_sections_from_real_ledger(home, pc, wp):
     _ledger(home, [{
         "slot": slot, "repo": "app", "session": "main", "started": "2026-09-07T00:00:00+00:00", "state": "leased",
         "test_cmd": "pytest -q",
-    }], [{"name": "main", "prefix": "app", "open": True,
+    }], [{"name": "main", "prefix": "app", "session": "s-test",
           "started": "2026-09-07T00:00:00+00:00"}])
 
     document = _status_json(home)

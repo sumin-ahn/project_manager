@@ -1954,7 +1954,7 @@ def infer_next_task_session_num(
     """task의 다음 차수를 state와 task-tagged log에서 함께 복구한다.
 
     state 세션 window의 최고차+1과 `log/current.md`의 동일 `(task:<name>)` handoff를 함께
-    본다. 정상 handoff가 task 장부에 종료 기록(open=False)을 남긴 뒤 bootstrap 없이 재실행된 경우
+    본다. 정상 handoff가 task 장부에 종료 기록(`session` 비움)을 남긴 뒤 bootstrap 없이 재실행된 경우
     (`task_released=True`)에는 마지막 log 차수를 그대로 반환해 같은 세션 갱신 모드로 들어간다.
     release가 log보다 먼저 영속되므로 log append 뒤 state 기록 전에 중단된 반쪽 상태도 같은
     경로로 복구된다. 다음 정상 세션은 bootstrap의 `bind_task`가 기록을 다시 열므로 N+1이다.
@@ -1976,7 +1976,7 @@ def infer_next_task_session_num(
     candidates = [value for value in (state_next,) if isinstance(value, int)]
     if log_nums:
         log_highest = max(log_nums)
-        # 정상 종료 또는 log 전 종료 기록(open=False) 뒤 bootstrap을 다시 거치지 않은 호출은
+        # 정상 종료 또는 log 전 종료 기록(`session` 비움) 뒤 bootstrap을 다시 거치지 않은 호출은
         # 같은 세션 재실행이다. bootstrap/read 경로(task_released=False)는 언제나 log N의
         # 다음 차수 N+1로 전진해야 한다.
         if task_released:
@@ -3276,7 +3276,7 @@ class PmHandoff:
         핸드오프 기록(log·pm_state) 전에 호출한다. 세션이 끝나는 자리에서 그 세션이 연 기록을
         닫지 않으면 같은 사실이 두 곳에서 다르게 읽힌다 — 다음 진입이 그 자리를 "열려 있음"으로
         보고 매번 강제 확인을 요구한다. 닫는 축은 둘이고 기존 write 프리미티브만 부른다:
-          - task 모드: `worktree_pool.release_task_pid(task)` → 장부 task 행 `open=False`.
+          - task 모드: `worktree_pool.close_task_session(task)` → 장부 task 행 `session` 비움.
           - 슬롯 모드: `worktree_pool.close_slot_session(slot)` → 그 슬롯 행의 `session` 비움.
         **대여는 그대로 둔다** — 슬롯 반납(`--done` 의 `release`)과는 다른 축이다. 닫히는 것은
         "지금 세션이 열려 있다"는 표시뿐이고 슬롯은 두고 간다.
@@ -3295,9 +3295,9 @@ class PmHandoff:
                   file=sys.stderr)
             return False
         if task is not None:
-            primitive = getattr(wp, "release_task_pid", None)
+            primitive = getattr(wp, "close_task_session", None)
             if primitive is None:
-                print("  [중단] worktree_pool 구버전(release_task_pid 부재) — "
+                print("  [중단] worktree_pool 구버전(close_task_session 부재) — "
                       "멱등성 신호를 기록할 수 없다.",
                       file=sys.stderr)
                 return False

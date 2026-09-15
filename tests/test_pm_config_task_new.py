@@ -7,7 +7,7 @@
   - 생성 성공: 장부 행 `open is False`(닫힘)·`prefix is None` · pm_state 즉시 생성 · 다음 단계 안내.
   - pm_state 동일성: `create_task` 산출이 `bind_task` 신규 생성분과 **바이트 동일**(같은
     `ensure_task_pm_state`).
-  - 이어받기: 생성 뒤 `bind_task(같은 이름)` 이 **resumed**(신규 생성 아님·회수 경고 없음).
+  - 이어받기: 생성 뒤 `bind_task(같은 이름, session="s-test")` 이 **resumed**(신규 생성 아님·회수 경고 없음).
   - 거부(각각 rc≠0·장부 바이트 불변): 중복 이름 · 동명 종료 archive(`task reopen` 안내) ·
     부적합 이름(traversal) · 슬롯 예약패턴(`<repo>_<N>`).
   - 실 서브프로세스: `python <tmp 홈>/.project_manager/tools/pm_config.py task new <이름>` 의
@@ -121,7 +121,7 @@ def test_task_new_writes_unoccupied_ledger_row_and_pm_state(pc, wp, capsys):
 
     rows = _ledger_rows(wp)
     assert [row["name"] for row in rows] == ["job"]
-    assert rows[0]["open"] is False, "세션에 묶지 않았는데 열림으로 기록됐다"
+    assert rows[0]["session"] == "", "세션에 묶지 않았는데 열림으로 기록됐다"
     assert rows[0]["prefix"] is None, "`--prefix` 없는 생성인데 prefix 가 붙었다"
     assert rows[0]["started"]
 
@@ -145,7 +145,7 @@ def test_task_new_pm_state_is_byte_identical_to_bind_task_output(pc, tmp_path, c
     wp_bind = _load_wp_bound(home_bind)
 
     assert _run_new(pc, wp_new, "twin") == 0
-    record, action = wp_bind.bind_task("twin")
+    record, action = wp_bind.bind_task("twin", session="s-test")
     assert action == "created"
 
     assert (
@@ -160,7 +160,7 @@ def test_task_new_then_bind_task_is_clean_resume(pc, wp, capsys):
     assert _run_new(pc, wp, "job") == 0
     capsys.readouterr()
 
-    record, action = wp.bind_task("job")
+    record, action = wp.bind_task("job", session="s-test")
 
     assert action == "resumed", "닫힌 기록 재개인데 created 로 분류됐다"
     assert record.open is True
@@ -186,7 +186,7 @@ def test_task_new_duplicate_name_refused_without_ledger_change(pc, wp, capsys):
 
 def test_task_new_open_task_record_is_not_touched_by_duplicate_refusal(pc, wp, capsys):
     """열린 기록이 있는 이름도 rc1 이고 그 기록을 만지지 않는다."""
-    wp.bind_task("busy")            # 열림 기록
+    wp.bind_task("busy", session="s-test")            # 열림 기록
     capsys.readouterr()
     before = wp.LEASES_FILE.read_bytes()
 
@@ -239,7 +239,7 @@ def test_task_new_survives_board_absence_with_traversal_still_blocked(pc, wp, ca
         pass
 
     assert _run_new(pc, wp, "job", board=BoardWithoutRegistry()) == 0
-    assert _ledger_rows(wp)[0]["open"] is False
+    assert _ledger_rows(wp)[0]["session"] == ""
     capsys.readouterr()
     assert _run_new(pc, wp, "../evil", board=BoardWithoutRegistry()) == 1
 
@@ -357,7 +357,7 @@ def test_task_new_real_cli_creates_identity_and_refuses_rerun(tmp_path):
     ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
     rows = json.loads(ledger.read_text(encoding="utf-8"))["tasks"]
     assert [row["name"] for row in rows] == ["demo"]
-    assert rows[0]["open"] is False and rows[0]["prefix"] is None
+    assert rows[0]["session"] == "" and rows[0]["prefix"] is None
     state = home / ".project_manager" / ".local" / "tasks" / "demo" / "pm_state.md"
     assert state.exists()
 

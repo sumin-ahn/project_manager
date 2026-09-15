@@ -211,6 +211,7 @@ def test_task_new_identity_then_bootstrap_resumes(tmp_path, capsys):
     state_after_create = wp.task_pm_state_file(task).read_bytes()
 
     # ② 그 정체성으로 부트스트랩 진입 — created 가 아니라 resumed 여야 한다.
+    wp.record_task_session_claim(task, "s-e2e")
     rc = _make_bootstrap(bootstrap_mod, wp, tmp_path).run(task=task)
     assert rc == 0
     out = capsys.readouterr().out
@@ -228,7 +229,7 @@ def test_task_new_identity_then_bootstrap_resumes(tmp_path, capsys):
         (proj / ".project_manager" / ".local" / "worktree-leases.json").read_text(encoding="utf-8")
     )["tasks"]
     assert [row["name"] for row in rows] == [task]
-    assert rows[0]["open"] is True and rows[0]["prefix"] is None
+    assert rows[0]["session"] == "s-e2e" and rows[0]["prefix"] is None
     assert wp.task_pm_state_file(task).read_bytes() == state_after_create
 
 
@@ -257,6 +258,7 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, capsys):
     task = "cyc"
 
     # ── ① `--task` 신규 부트스트랩 — 집합 열거(0슬롯) ─────────────────────────────
+    wp.record_task_session_claim(task, "s-e2e")
     rc = _make_bootstrap(bootstrap_mod, wp, tmp_path).run(task=task)
     assert rc == 0
     out1 = capsys.readouterr().out
@@ -290,6 +292,7 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, capsys):
 
     # 성장한 집합이 재부트스트랩에서 전수 열거된다("보유 2 — 전수 검증"·전부 ✓·record↔live match).
     # ①이 연 기록이 아직 열려 있다(핸드오프 전) — 이어받기는 사용자 응답(`--force`)이다.
+    wp.record_task_session_claim(task, "s-e2e")
     rc = _make_bootstrap(bootstrap_mod, wp, tmp_path).run(task=task, force=True)
     assert rc == 0
     out2 = capsys.readouterr().out
@@ -351,6 +354,7 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, capsys):
     assert task_rec.open is False, "정상 종료 기록 미기록(다음 진입이 거부된다)"
 
     # ── ④ 트리거 그대로 재부트스트랩 — clean resume·집합 재수령·0단계 green ─────────
+    wp.record_task_session_claim(task, "s-e2e")
     rc = _make_bootstrap(bootstrap_mod, wp, tmp_path).run(task=task)
     assert rc == 0, "재개 부트스트랩 실패(사이클 단절)"
     out4 = capsys.readouterr().out

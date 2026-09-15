@@ -137,14 +137,14 @@ def test_the_handoff_close_keeps_the_lease_and_flips_the_record(wp, tmp_path, mo
 
 
 def test_the_task_record_has_only_two_values(wp):
-    """task 행의 열림 표시도 두 값뿐이고 옛 `pid` 는 읽는 순간 접힌다(다시 쓰지 않는다)."""
+    """task 행의 열림은 연 세션 ID 에서 파생한다 — 옛 `pid`·`open` 은 어느 세션인지 몰라 닫힘으로 읽는다."""
     migrated = wp.Task.from_dict({"name": "job", "prefix": None,
-                                  "pid": 1613552, "started": "t"})
-    closed = wp.Task.from_dict({"name": "job", "prefix": None, "pid": 0, "started": "t"})
+                                  "pid": 1613552, "open": True, "started": "t"})
+    bound = wp.Task.from_dict({"name": "job", "prefix": None, "session": "ses-1", "started": "t"})
 
-    assert migrated.open is True and closed.open is False
-    assert "pid" not in migrated.to_dict() and "pid" not in closed.to_dict()
-    assert migrated.to_dict()["open"] is True
+    assert migrated.open is False and bound.open is True
+    assert "pid" not in migrated.to_dict() and "open" not in migrated.to_dict()
+    assert migrated.to_dict()["session"] == "" and bound.to_dict()["session"] == "ses-1"
 
 
 # ── ② 산출 계약 — `status --json` 에 pid 키가 없다 ───────────────────────────
@@ -165,7 +165,7 @@ def test_the_status_json_rows_have_no_pid_key(wp, tmp_path, monkeypatch):
         "stashes": 0, "submodules": [], "dirty": False,
     }, raising=False)
     monkeypatch.setattr(wp, "slots_for_task", lambda _name: [], raising=False)
-    task = wp.Task(name="proj_1", open=True, started="t")
+    task = wp.Task(name="proj_1", session="s-test", started="t")
 
     slot_rows = pc._status_json_slots(wp, [lease], {"proj_1"})
     task_rows = pc._status_json_tasks(wp, [task])

@@ -299,7 +299,7 @@ class _TaskLedgerStub:
         self.closed_slots: list[str] = []
         self._record = record
 
-    def release_task_pid(self, name: str):
+    def close_task_session(self, name: str):
         self.calls.append(name)
         return self._record
 
@@ -345,7 +345,7 @@ def test_task_handoff_intent_requires_the_pool_write_primitive(handoff, capsys):
     tool = handoff.PmHandoff(worktree_pool=SimpleNamespace())
 
     assert tool._close_session_records("t1", None) is False
-    assert "release_task_pid" in capsys.readouterr().err
+    assert "close_task_session" in capsys.readouterr().err
 
 
 def test_slot_close_requires_the_pool_write_primitive(handoff, capsys):

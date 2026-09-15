@@ -4406,29 +4406,34 @@ class PmBootstrap:
         `worktree_pool.bind_task` 로 신규/resume 을 처리한다 — 열린 기록(종료 기록 없음)은
         `TaskActiveElsewhere` → 여기서 그 기록의 정체와 이전 세션이 하던 것을 찍고 강제 여부를
         **묻는다**(None → caller 가 dump 이전 중단). `force` 면 기록을 먼저 닫고
-        (`release_task_pid` — 기존 프리미티브) 같은 bind 경로를 그대로 탄다: 강제 전용 분기도,
+        (`close_task_session` — 기존 프리미티브) 같은 bind 경로를 그대로 탄다: 강제 전용 분기도,
         자동 승낙 값도 없다. 성공 시 surface 용 dict(name·prefix·action·서술 pm_state 경로/존재)를
         반환한다. task 는 슬롯 축과 직교라 이 바인딩은 `.local/slots/` 를 건드리지 않는다.
         """
         wp = self._resolve_worktree_pool()
-        if force:
-            record = wp.find_task(task)
-            if record is not None and record.open:
-                print(
-                    f"[강제 인계] task {task!r} 의 열린 기록(task 시작: "
-                    f"{getattr(record, 'started', '') or '(미상)'})을 이어받습니다 — "
-                    f"이전 세션이 하던 것:\n"
-                    f"{self._render_handover(session=task, task=task, indent='  ')}",
-                    file=sys.stderr,
-                )
-                wp.release_task_pid(task)   # 종료 기록을 남기고 아래 공통 bind 경로로 재개.
         try:
+            # 이 부트스트랩을 부른 하네스 세션 ID — 가드 훅이 이 호출을 보고 남긴 기록이다.
+            session = wp.take_task_session_claim(task)
+            if force:
+                record = wp.find_task(task)
+                if record is not None and record.open and record.session != session:
+                    print(
+                        f"[강제 인계] task {task!r} 의 열린 기록(task 시작: "
+                        f"{getattr(record, 'started', '') or '(미상)'})을 이어받습니다 — "
+                        f"이전 세션이 하던 것:\n"
+                        f"{self._render_handover(session=task, task=task, indent='  ')}",
+                        file=sys.stderr,
+                    )
+                    wp.close_task_session(task)   # 종료 기록을 남기고 아래 공통 bind 경로로 재개.
             # 등록 repo 집합을 넘겨 예약명(<repo>_<N>)을 엔진 진입점에서도 방어(primitive 자기완결·
             # should-fix) — CLI 의 빠른 거부(main)와 이중화. 명 검증(traversal/절대경로/빈 이름·
             # must-fix)은 registered_repos 무관하게 엔진에서 항상 돈다.
             record, action = wp.bind_task(
-                task, registered_repos=_registered_repos(self._areas_file)
+                task, session=session, registered_repos=_registered_repos(self._areas_file)
             )
+        except wp.NoTaskSessionClaim as exc:
+            print(f"[중단] {exc}", file=sys.stderr)
+            return None
         except getattr(wp, "TaskArchived", ()) as exc:
             archives = ", ".join(path.name for path in exc.archives)
             print(
