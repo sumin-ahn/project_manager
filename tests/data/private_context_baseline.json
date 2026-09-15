@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "count": 453,
+  "count": 451,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -449,16 +449,6 @@
       {
         "kind": "circled_marker",
         "hash": "8117826a8fa55377fa2fb6c477adedcac3c2b5e4f543ff864697bc5eaa6d41b7",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "82b4d19a2a3afc802aaa0dcb8be344d5021d2a458fe3c5c2538303cd9debdbb4",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "9f8100a9b6e9cb3188112c65d578214a12d8f26e2f2f433e7812db6f2e1a60bd",
         "count": 1
       },
       {

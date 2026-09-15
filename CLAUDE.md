@@ -3,7 +3,7 @@
 > 이 repo(①)는 **Claude Project Framework 의 공개 제품** `project_manager` 다 — canonical 엔진
 > (`.project_manager/tools/`) + 방법론(`wiki/pm_role.md`·`pm_playbook.md`·`_template`·`domain/`) +
 > 어댑터(`templates/`) + `tests/`. 도그푸딩 **PM 운영**(board·wiki·ADR·roadmap·dev-state)은 별도 ② repo
-> `project_manager_dev` 가 **adopter#0** 로 수행하며, ② 의 슬롯(`work/project_manager_<N>`)이 이 repo 의
+> `project_manager_dev` 가 **adopter#0** 로 수행하며, PM 홈의 슬롯(`work/project_manager_<N>`)이 이 repo 의
 > working checkout 이다. **엔진은 세션이 잡은 슬롯에서 고치고 `tests/` 로 검증한다**
 > ("고치는 곳 = 테스트하는 곳"). (채택자용 출하 템플릿은 `templates/` 직계 하위의 **모든 타깃** — 현재
 > `templates/claude_code/`·`templates/codex/`·`templates/opencode/` —
@@ -37,7 +37,7 @@ tests/                 # 엔진 단위테스트 (pytest)
 
 ## 핵심 규칙 (반드시)
 
-- **엔진은 이 공개 제품 repo(② 에서 세션이 잡은 슬롯)에서 고친다.** `board.py`·`ticket_finish.py`·
+- **엔진은 이 공개 제품 repo(PM 홈에서 세션이 잡은 슬롯)에서 고친다.** `board.py`·`ticket_finish.py`·
   `pm_*.py`·`additional_reviewer.py` 등 엔진 코드 + `wiki/` 방법론·`_template` 의 **canonical 단일 진실 = 이 repo**.
   "고치는 곳 = 테스트하는 곳" — 여기서 고치고 `tests/` 로 검증한다.
 - **`templates/*/` 의 엔진을 직접 고치지 마라.** 거긴 이 제품 repo(① worktree)에서 동기화된 사본이다 —
