@@ -1663,12 +1663,18 @@ def test_claude_hook_infra_failure_warn_is_never_suppressed(
 def test_claude_settings_and_self_resolving_wrapper_are_wired():
     wrapper = CLAUDE_WRAPPER.read_text(encoding="utf-8")
     assert "--git-anchor-hook" in wrapper and "pm_orch_claude.py" in wrapper
-    for settings in (REPO / ".claude" / "settings.json",
-                     REPO / "templates" / "claude_code" / ".claude" / "settings.json"):
-        data = json.loads(settings.read_text(encoding="utf-8"))
-        hooks = data["hooks"]["PreToolUse"]
-        assert any(row.get("matcher") == "Bash" and "--git-anchor-hook" in json.dumps(row)
-                   for row in hooks)
+    root = json.loads((REPO / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    assert any(row.get("matcher") == "Bash" and "--git-anchor-hook" in json.dumps(row)
+               for row in root["hooks"]["PreToolUse"])
+    # 출하 template 은 파일 쓰기·편집·위임 도구 입력의 허용 위조도 보고, 사용자 프롬프트에서 허용을 기록한다.
+    template = json.loads(
+        (REPO / "templates" / "claude_code" / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    anchor_rows = [row for row in template["hooks"]["PreToolUse"]
+                   if "--git-anchor-hook" in json.dumps(row)]
+    assert [row["matcher"] for row in anchor_rows] == [
+        "Bash|Write|Edit|MultiEdit|NotebookEdit|Agent|Task"]
+    assert any("--git-anchor-hook" in json.dumps(row)
+               for row in template["hooks"]["UserPromptSubmit"])
 
 
 def test_codex_execpolicy_stays_static_while_the_hook_axis_carries_the_dynamic_guard():
@@ -2035,6 +2041,18 @@ def test_claude_and_opencode_prefilter_target_sets_match(monkeypatch, topology):
         ('cd "/tmp/my dir" && ls', True),
         ("cd X; cmd", True),
         ("cmd && cd X", True),
+        # 파일 삭제·이동 명령·삭제 API·허용 표식·허용 기록 폴더(슬롯·공용 저장소 우회와 허용 위조).
+        ("rm -rf work/product_1", True),
+        ("sudo /bin/mv a b", True),
+        ("find . -delete", True),
+        ("rsync -a --delete src/ dst/", True),
+        ("python3 -c \"import shutil; shutil.rmtree('x')\"", True),
+        ("python3 -c \"subprocess.run(['git', 'branch', '-D', 'x'])\"", True),
+        ("node -e \"require('fs').rmSync('x')\"", True),
+        ("echo 'git 허용: git branch -D x'", True),
+        ("cat .project_manager/.local/git-grants/a.json", True),
+        ("echo confirm firmware removed", False),
+        ("npm run format", False),
     ]
     commands = [command for command, _expected in cases]
     expected_matches = [expected for _command, expected in cases]
@@ -2067,7 +2085,26 @@ process.stdout.write(JSON.stringify(commands.map((command) => m.containsGitComma
         capture_output=True, text=True, encoding="utf-8",
     )
     opencode_matches = json.loads(result.stdout)
-    assert claude_matches == opencode_matches == expected_matches
+
+    dispatcher = _load("git_anchor_prefilter_parity_codex", CODEX_DISPATCHER)
+    codex_calls = []
+
+    class CodexFakeBoard:
+        @staticmethod
+        def judge_git_anchor_command(cwd, command):
+            codex_calls.append((cwd, command))
+            return {"verdict": "ok", "cwd_identity": "pm-home", "reason": "fixture"}
+
+    monkeypatch.setattr(dispatcher, "_load_board", lambda _root: CodexFakeBoard)
+    codex_matches = []
+    for command in commands:
+        before = len(codex_calls)
+        payload = _codex_live_bash_event()
+        payload["cwd"] = str(home)
+        payload["tool_input"] = {"command": command}
+        dispatcher.git_anchor_hook_evaluate(payload, home)
+        codex_matches.append(len(codex_calls) == before + 1)
+    assert claude_matches == opencode_matches == codex_matches == expected_matches
 
 
 def test_opencode_thin_plugin_and_core_node_selfcheck():
@@ -2099,13 +2136,13 @@ const fake = (py, argv, opts) => {
   calls += 1;
   return {status:0, stdout:JSON.stringify({verdict:"warn",cwd_identity:"pm-home",reason:"fixture"})+"\n", stderr:""};
 };
-assert.strictEqual(m.judgeCommand("/r", "/r", "python3 build.py", fake).verdict, "ok");
+assert.strictEqual(m.judgeCommand("/r", "/r", "python3 build.py", {spawnSync: fake}).verdict, "ok");
 assert.strictEqual(calls, 0);
-assert.strictEqual(m.judgeCommand("/r", "/r", "git commit -m x", fake).verdict, "warn");
+assert.strictEqual(m.judgeCommand("/r", "/r", "git commit -m x", {spawnSync: fake}).verdict, "warn");
 assert.strictEqual(calls, 1);
-assert.strictEqual(m.judgeCommand("/r", "/r", "python3 .project_manager/tools/board.py list", fake).verdict, "warn");
-assert.strictEqual(m.judgeCommand("/r", "/r", "python3 -m pytest tests/ -q", fake).verdict, "warn");
-assert.strictEqual(m.judgeCommand("/r", "/r", "cd /tmp && python3 build.py", fake).verdict, "warn");
+assert.strictEqual(m.judgeCommand("/r", "/r", "python3 .project_manager/tools/board.py list", {spawnSync: fake}).verdict, "warn");
+assert.strictEqual(m.judgeCommand("/r", "/r", "python3 -m pytest tests/ -q", {spawnSync: fake}).verdict, "warn");
+assert.strictEqual(m.judgeCommand("/r", "/r", "cd /tmp && python3 build.py", {spawnSync: fake}).verdict, "warn");
 assert.strictEqual(calls, 4);
 assert.strictEqual(typeof m.GitAnchorPlugin, "function");
 assert.strictEqual(typeof m.makeGitAnchorPlugin, "function");
@@ -2336,21 +2373,38 @@ def test_slot_read_only_and_existing_branch_forms_are_not_denied(
     assert got["cwd_identity"] == "slot"
 
 
+_STOP_LINE = "다른 명령으로 같은 일을 하지 마라. 여기서 멈추고 사용자에게 물어라."
+_ACTION_BRANCH_CREATE = "브랜치는 `pm-config task branch <명의> <슬롯> <브랜치> --from <부모>` 로 만든다."
+_ACTION_SLOT_REMOVE = (
+    "사용자에게 슬롯 제거 승인을 묻고, 승인하면 `pm-config worktree remove <slot> --user-ack <slot>` 로 지운다."
+)
+_ACTION_ASK_WITHOUT_GRANT = (
+    "사용자에게 이 명령을 실행할지 묻는다. 이 하네스에는 1회 허용 수단이 없으므로, 허용하면 사용자가 "
+    "터미널에서 직접 실행한다."
+)
+_ACTION_ASK_WITH_GRANT = (
+    "사용자에게 이 명령을 실행할지 묻는다. 허용하면 사용자가 `git 허용: <명령 원문>` 한 줄을 보낸 뒤 "
+    "같은 명령을 그대로 한 번 다시 실행한다."
+)
+_ACTION_FOLDER_UNKNOWN = "대상 폴더를 절대경로로 적어 다시 실행한다(git 은 `git -C <절대경로> …`)."
+
+
 def test_destructive_deny_reasons_prescribe_the_engine_route(topology, destructive_board):
+    """거부 문구 = 멈춤 지시 첫 줄 + 경우별 다음 행동 한 줄 + 거부한 호출."""
     _home, slot = topology
     expectations = {
-        ("checkout", "-b", "feature"): "`pm-config task branch <명의> <슬롯> <브랜치> --from <부모>`",
-        ("worktree", "remove", "../product_2"): "`pm-config worktree remove <slot> --user-ack <slot>` 로 지운다",
-        ("branch", "-D", "main"): (
-            "엔진이 슬롯 제거(`pm-config worktree remove <slot> --user-ack <slot>`)·묶음 종결 때 판정"
-        ),
-        ("reset", "--hard"): "사용자가 터미널에서 직접 한다",
-        ("push", "--force"): "사용자가 터미널에서 직접 한다",
+        "git checkout -b feature": _ACTION_BRANCH_CREATE,
+        "git worktree remove ../product_2": _ACTION_SLOT_REMOVE,
+        "git branch -D main": _ACTION_ASK_WITHOUT_GRANT,
+        "git reset --hard": _ACTION_ASK_WITHOUT_GRANT,
+        "git push --force": _ACTION_ASK_WITHOUT_GRANT,
     }
-    for args, remedy in expectations.items():
-        reason = destructive_board.judge_git_anchor(str(slot), ["git", *args])["reason"]
-        assert "브랜치·슬롯은 엔진만 만들고 지운다" in reason
-        assert remedy in reason.split("; 대신 ", 1)[1], reason
+    for command, action in expectations.items():
+        lines = destructive_board.judge_git_anchor_command(str(slot), command)["reason"].splitlines()
+        assert lines[0] == _STOP_LINE
+        assert lines[1] == action, lines
+        assert lines[2].startswith("거부한 호출: 손 git ") and f"`{command}`" in lines[2]
+        assert len(lines) == 3
 
 
 def test_shared_repository_and_unleased_worktree_are_protected_targets(topology):
@@ -2539,7 +2593,11 @@ def test_claude_hook_denies_destructive_slot_git_with_permission_decision(
     assert driver.run_git_anchor_hook(home) == 0
     output = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
     assert output["permissionDecision"] == "deny"
-    assert output["permissionDecisionReason"].startswith("[git-anchor/deny] 손 git 브랜치 지우기 거부")
+    reason_lines = output["permissionDecisionReason"].splitlines()
+    assert reason_lines[0] == f"[git-anchor/deny] {_STOP_LINE}"
+    # claude 는 사용자 1회 허용을 쓰는 하네스다 — 세션이 있으면 허용 입력 형식을 안내한다.
+    assert reason_lines[1] == _ACTION_ASK_WITH_GRANT
+    assert "손 git 브랜치 지우기" in reason_lines[2]
 
     read_only = {**payload, "tool_input": {"command": "git branch --show-current"}}
     monkeypatch.setattr(driver.sys, "stdin", io.StringIO(json.dumps(read_only)))
@@ -2562,7 +2620,9 @@ def test_codex_hook_blocks_destructive_slot_git_with_measured_envelope(monkeypat
     ) == 0
     envelope = json.loads(stdout.getvalue())
     reason = envelope["reason"]
-    assert reason.startswith("[git-anchor/deny] 손 git 변경 버리기 거부")
+    # codex 는 1회 허용 수단이 없다 — 사용자가 터미널에서 직접 실행하도록 안내한다.
+    assert reason.splitlines()[:2] == [f"[git-anchor/deny] {_STOP_LINE}", _ACTION_ASK_WITHOUT_GRANT]
+    assert "손 git 변경 버리기" in reason
     assert envelope == {
         "decision": "block",
         "reason": reason,
@@ -2601,7 +2661,7 @@ const [engineRoot, slot] = process.argv.slice(1);
     hooks["tool.execute.before"](
       {tool:"bash", sessionID:"S"}, {args:{command:"git worktree remove ../product_2", cwd:slot}},
     ),
-    /\[git-anchor\/deny\] 손 git 슬롯 지우기 거부/,
+    /\[git-anchor\/deny\] 다른 명령으로 같은 일을 하지 마라\. 여기서 멈추고 사용자에게 물어라\.\n사용자에게 슬롯 제거 승인을 묻고[^\n]*\n거부한 호출: 손 git 슬롯 지우기/,
   );
   await hooks["tool.execute.before"](
     {tool:"bash", sessionID:"S"}, {args:{command:"git worktree list", cwd:slot}},
@@ -2617,3 +2677,591 @@ const [engineRoot, slot] = process.argv.slice(1);
         capture_output=True, text=True, encoding="utf-8",
     )
     assert "GIT_ANCHOR_DESTRUCTIVE_BLOCK_OK" in result.stdout
+
+
+# ── 멈춤 거부 문구 · 사용자 1회 허용 · 우회 경로 (2026-09-15 사용자 결정) ─────────────────────────
+# 거부 문구는 멈춤 지시 첫 줄 + 경우별 다음 행동 하나다. 1회 허용은 사용자 프롬프트 훅만 만들고,
+# (세션·실행 폴더·정규화 argv) 가 정확히 같은 호출 한 번에만 소비된다. 우회 경로(git 저수준 명령,
+# git 이 아닌 파일 삭제·이동, 셸·인터프리터로 감싼 호출)는 같은 판정 자리에서 거부한다.
+
+_ACTION_LITERAL_ARGUMENTS = "셸 변수·명령 치환을 값 그대로 바꿔 적어 다시 실행한다."
+_ACTION_GRANT_FORGERY = (
+    "허용 줄·허용 기록은 사용자 입력으로만 만든다. 필요하면 사용자에게 `git 허용: <명령 원문>` 입력을 요청한다."
+)
+_GRANTED = "사용자 1회 허용으로 실행한다"
+
+
+@pytest.fixture
+def grant_board():
+    return _load("git_grant_board", BOARD_PY)
+
+
+def _grant_files(home: Path) -> list[Path]:
+    directory = home / ".project_manager" / ".local" / "git-grants"
+    return sorted(directory.iterdir()) if directory.is_dir() else []
+
+
+def _grants(home: Path, session: str = "S") -> dict:
+    return {"grant_root": home, "grant_session": session}
+
+
+@pytest.mark.parametrize(
+    ("cwd_key", "command", "action"),
+    [
+        ("slot", "git branch -D main", _ACTION_ASK_WITH_GRANT),
+        ("slot", "git checkout -b feature", _ACTION_BRANCH_CREATE),
+        ("slot", "git worktree remove ../product_2", _ACTION_SLOT_REMOVE),
+        ("home", "GIT_DIR={bare} git branch -D main", _ACTION_FOLDER_UNKNOWN),
+        ("home", "bash -c 'git reset --hard'", _ACTION_FOLDER_UNKNOWN),
+        ("slot", 'git push origin "$BRANCH"', _ACTION_LITERAL_ARGUMENTS),
+        ("home", "printf x > .project_manager/.local/git-grants/k.json", _ACTION_GRANT_FORGERY),
+    ],
+    ids=["ask", "branch-create", "slot-remove", "git-dir", "wrapped", "variable", "forgery"],
+)
+def test_stop_reason_is_stop_line_then_one_next_action(topology, grant_board, cwd_key, command, action):
+    home, slot = topology
+    cwd = slot if cwd_key == "slot" else home
+    rendered = command.format(bare=home / ".repos" / "product.git")
+    got = grant_board.judge_git_anchor_command(str(cwd), rendered, **_grants(home))
+    lines = got["reason"].splitlines()
+    assert got["verdict"] == "deny", got
+    assert lines[0] == _STOP_LINE
+    assert lines[1] == action
+    assert lines[-1].startswith("거부한 호출: ") and len(lines) == 3
+    assert "case" not in got
+
+
+def test_compound_command_lists_each_next_action_once(topology, grant_board):
+    home, slot = topology
+    got = grant_board.judge_git_anchor_command(
+        str(slot), "git checkout -b feature; git branch -D main; git branch -D other", **_grants(home),
+    )
+    lines = got["reason"].splitlines()
+    assert lines[:3] == [_STOP_LINE, _ACTION_BRANCH_CREATE, _ACTION_ASK_WITH_GRANT]
+    assert lines[3].startswith("거부한 호출: 호출 1 [slot/deny]")
+    assert "code" not in got and "case" not in got
+
+
+def test_user_grant_passes_the_exact_command_once(topology, grant_board):
+    home, slot = topology
+    judge = grant_board.judge_git_anchor_command
+    assert judge(str(slot), "git branch -D main", **_grants(home))["verdict"] == "deny"
+    granted = grant_board.record_git_grants(
+        home, "S", str(slot), "지워도 됩니다.\ngit 허용: git branch -D 'main'\n",
+    )
+    assert granted == ["git branch -D main"]
+    assert len(_grant_files(home)) == 1
+
+    first = judge(str(slot), "git branch -D main", **_grants(home))
+    assert first["verdict"] == "warn" and first["reason"].startswith(_GRANTED)
+    assert _grant_files(home) == []
+    second = judge(str(slot), "git branch -D main", **_grants(home))
+    assert second["verdict"] == "deny" and second["reason"].splitlines()[0] == _STOP_LINE
+
+
+def test_user_grant_is_bound_to_argv_folder_and_session(topology, grant_board):
+    home, slot = topology
+    judge = grant_board.judge_git_anchor_command
+    grant_board.record_git_grants(home, "S", str(slot), "git 허용: git branch -D main")
+    bare = home / ".repos" / "product.git"
+    assert judge(str(slot), "git branch -d main", **_grants(home))["verdict"] == "deny"
+    assert judge(str(bare), "git branch -D main", **_grants(home))["verdict"] == "deny"
+    assert judge(str(slot), "git branch -D main", **_grants(home, "S2"))["verdict"] == "deny"
+    # 허용 수단이 없는 하네스(세션 미전달)는 기록을 소비하지 않는다.
+    no_grant = judge(str(slot), "git branch -D main")
+    assert no_grant["verdict"] == "deny" and _ACTION_ASK_WITHOUT_GRANT in no_grant["reason"]
+    assert len(_grant_files(home)) == 1
+    assert judge(str(slot), "git branch -D main", **_grants(home))["verdict"] == "warn"
+
+
+def test_user_grant_does_not_open_engine_routes_or_compound_commands(topology, grant_board):
+    home, slot = topology
+    judge = grant_board.judge_git_anchor_command
+    grant_board.record_git_grants(
+        home, "S", str(slot),
+        "git 허용: git checkout -b feature\ngit 허용: git worktree remove ../product_2\n"
+        "git 허용: git branch -D main",
+    )
+    assert judge(str(slot), "git checkout -b feature", **_grants(home))["verdict"] == "deny"
+    assert judge(str(slot), "git worktree remove ../product_2", **_grants(home))["verdict"] == "deny"
+    compound = judge(str(slot), "git branch -D main && git reset --hard", **_grants(home))
+    assert compound["verdict"] == "deny"
+    assert len(_grant_files(home)) == 3
+
+
+def test_user_grant_covers_protected_file_removal_too(topology, grant_board):
+    home, _slot = topology
+    judge = grant_board.judge_git_anchor_command
+    command = "rm -rf .repos/product.git"
+    assert _ACTION_ASK_WITH_GRANT in judge(str(home), command, **_grants(home))["reason"]
+    grant_board.record_git_grants(home, "S", str(home), f"git 허용: {command}")
+    assert judge(str(home), command, **_grants(home))["verdict"] == "warn"
+    assert judge(str(home), command, **_grants(home))["verdict"] == "deny"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "git 허용: ",
+        "git 허용: git branch -D a && git branch -D b",
+        "git 허용: git branch -D $BRANCH",
+        "git 허용: git branch -D 'feat*'",
+        "git 허용: git branch -D 'unterminated",
+        "git 허용: rm -rf ~/work",
+        "git 허용: git branch -D x > out.txt",
+        "git 허용: git branch -D x # 주석",
+    ],
+)
+def test_malformed_grant_line_records_nothing(topology, grant_board, line):
+    home, slot = topology
+    with pytest.raises(grant_board.GitGrantShapeError):
+        grant_board.record_git_grants(home, "S", str(slot), f"git 허용: git branch -D ok\n{line}")
+    assert _grant_files(home) == []
+
+
+def test_grant_line_accepts_git_revision_notation(topology, grant_board):
+    home, slot = topology
+    granted = grant_board.record_git_grants(
+        home, "S", str(slot), "git 허용: git reset --hard HEAD~1\n  git 허용 : git stash drop stash@{0}",
+    )
+    # 반환은 정규화 argv 의 셸 인용 표기(shlex.join)다.
+    assert granted == ["git reset --hard 'HEAD~1'", "git stash drop 'stash@{0}'"]
+    with pytest.raises(ValueError):
+        grant_board.record_git_grants(home, "", str(slot), "git 허용: git branch -D main")
+
+
+def test_forged_or_corrupt_grant_record_is_discarded_and_denied(topology, grant_board):
+    home, slot = topology
+    judge = grant_board.judge_git_anchor_command
+    note = "같은 명령의 허용 기록이 사용자 프롬프트 훅이 쓴 형식과 달라 폐기했다."
+
+    grant_board.record_git_grants(home, "S", str(slot), "git 허용: git branch -D main")
+    (path,) = _grant_files(home)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**record, "cwd": str(home)}) + "\n", encoding="utf-8")
+    forged = judge(str(slot), "git branch -D main", **_grants(home))
+    assert forged["verdict"] == "deny" and note in forged["reason"].splitlines()
+    assert _grant_files(home) == []
+
+    grant_board.record_git_grants(home, "S", str(slot), "git 허용: git branch -D main")
+    (path,) = _grant_files(home)
+    path.write_text("not json\n", encoding="utf-8")
+    corrupt = judge(str(slot), "git branch -D main", **_grants(home))
+    assert corrupt["verdict"] == "deny" and note in corrupt["reason"].splitlines()
+    assert _grant_files(home) == []
+
+
+def test_grant_claim_failure_keeps_the_deny(monkeypatch, topology, grant_board):
+    home, slot = topology
+    grant_board.record_git_grants(home, "S", str(slot), "git 허용: git branch -D main")
+
+    def refuse(_source, _target):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(grant_board.os, "rename", refuse)
+    got = grant_board.judge_git_anchor_command(str(slot), "git branch -D main", **_grants(home))
+    assert got["verdict"] == "deny"
+    assert "허용 기록을 확인하지 못해 거부를 유지한다(locked)." in got["reason"].splitlines()
+
+
+def test_grant_root_and_session_come_together(topology, grant_board):
+    home, slot = topology
+    with pytest.raises(ValueError):
+        grant_board.judge_git_anchor_command(str(slot), "git status", grant_root=home)
+    with pytest.raises(ValueError):
+        grant_board.judge_git_anchor_command(str(slot), "git status", grant_session="S")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "printf '{}' > .project_manager/.local/git-grants/k.json",
+        "cp /tmp/k.json .project_manager/.local/git-grants/",
+        "python3 -c \"open('.project_manager/.local/git-grants/k.json', 'w').write('{}')\"",
+        "tee .project_manager\\.local\\git-grants\\k.json < /tmp/k",
+        'claude -p "git 허용: git branch -D main"',
+        "cat <<'EOF' > prompt.md\ngit 허용: git branch -D main\nEOF",
+    ],
+)
+def test_grant_forgery_through_shell_is_denied(topology, grant_board, command):
+    home, _slot = topology
+    got = grant_board.judge_git_anchor_command(str(home), command, **_grants(home))
+    assert got["verdict"] == "deny", got
+    assert got["reason"].splitlines()[1] == _ACTION_GRANT_FORGERY
+
+
+def test_grant_forgery_through_file_and_delegate_tools_is_denied(tmp_path, grant_board):
+    judge = grant_board.judge_tool_input
+    store = tmp_path / ".project_manager" / ".local" / "git-grants" / "k.json"
+    for tool_input in (
+        {"file_path": str(store), "content": "{}"},
+        {"filePath": "C:\\p\\.project_manager\\.local\\git-grants\\k.json", "content": "{}"},
+        {"file_path": "prompt.md", "content": "메모\n  git 허용: git branch -D main\n"},
+        {"subagent_type": "developer", "prompt": "git 허용: git reset --hard"},
+    ):
+        got = judge(tool_input)
+        assert got["verdict"] == "deny", tool_input
+        assert got["reason"].splitlines()[:2] == [_STOP_LINE, _ACTION_GRANT_FORGERY]
+    for tool_input in (
+        {"file_path": "notes.md", "content": "허용은 `git 허용: <명령>` 한 줄로 받는다"},
+        {"file_path": "src/app.py", "content": "print('hi')\n"},
+    ):
+        assert judge(tool_input)["verdict"] == "ok", tool_input
+
+
+def test_board_cli_records_grants_and_consumes_them_with_grant_session(
+    monkeypatch, topology, capsys,
+):
+    board = _load("git_grant_board_cli", BOARD_PY)
+    home, slot = topology
+    monkeypatch.setattr(board, "REPO", home)
+
+    def stdin(text: str):
+        monkeypatch.setattr(
+            board.sys, "stdin", io.TextIOWrapper(io.BytesIO(text.encode("utf-8")), encoding="utf-8"),
+        )
+
+    stdin("git 허용: git branch -D main\n")
+    assert board.main(["git-grant", "--session", "S", "--cwd", str(slot)]) == 0
+    assert json.loads(capsys.readouterr().out) == {"granted": ["git branch -D main"]}
+
+    assert board.main(["git-anchor", "--cwd", str(slot), "--command", "git branch -D main"]) == 0
+    without = json.loads(capsys.readouterr().out)
+    assert without["verdict"] == "deny" and _ACTION_ASK_WITHOUT_GRANT in without["reason"]
+    assert board.main([
+        "git-anchor", "--cwd", str(slot), "--command", "git branch -D main", "--grant-session", "S",
+    ]) == 0
+    assert json.loads(capsys.readouterr().out)["verdict"] == "warn"
+
+    stdin("git 허용: git branch -D a; rm -rf b\n")
+    with pytest.raises(SystemExit) as stopped:
+        board.main(["git-grant", "--session", "S", "--cwd", str(slot)])
+    assert str(stopped.value.code).startswith("[중단] ")
+
+    stdin(json.dumps({"filePath": str(home / ".project_manager/.local/git-grants/x.json")}))
+    assert board.main(["git-tool-input"]) == 0
+    assert json.loads(capsys.readouterr().out)["verdict"] == "deny"
+
+
+_LOW_LEVEL_DESTRUCTIVE = [
+    ("git update-ref -d refs/heads/main", "브랜치 ref 직접 지우기·옮기기"),
+    ("git update-ref refs/heads/main HEAD~1", "브랜치 ref 직접 지우기·옮기기"),
+    ("git update-ref HEAD HEAD~1", "브랜치 ref 직접 지우기·옮기기"),
+    ("git update-ref --stdin", "브랜치 ref 직접 지우기·옮기기"),
+    ("git symbolic-ref HEAD refs/heads/other", "브랜치 ref 직접 지우기·옮기기"),
+    ("git symbolic-ref -d HEAD", "브랜치 ref 직접 지우기·옮기기"),
+    ("git checkout-index -f -a", "변경 버리기"),
+    ("git checkout-index --force --all", "변경 버리기"),
+    ("git read-tree --reset -u HEAD", "변경 버리기"),
+    ("git read-tree --reset HEAD", "변경 버리기"),
+    ("git worktree move . ../elsewhere", "슬롯 옮기기"),
+    ("git for-each-ref --format='delete %(refname)' refs/heads | git update-ref --stdin",
+     "브랜치 ref 직접 지우기·옮기기"),
+]
+
+
+@pytest.mark.parametrize(
+    ("command", "label"), _LOW_LEVEL_DESTRUCTIVE, ids=[c for c, _l in _LOW_LEVEL_DESTRUCTIVE],
+)
+def test_low_level_git_forms_with_the_same_effect_are_denied(topology, grant_board, command, label):
+    home, slot = topology
+    got = grant_board.judge_git_anchor_command(str(slot), command, **_grants(home))
+    assert got["verdict"] == "deny", got
+    assert label in got["reason"]
+    assert got["reason"].splitlines()[1] == _ACTION_ASK_WITH_GRANT
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git update-ref refs/tags/v1 HEAD", "git symbolic-ref HEAD", "git symbolic-ref --short HEAD",
+        "git checkout-index -a", "git read-tree HEAD", "git for-each-ref refs/heads",
+    ],
+)
+def test_low_level_git_reads_are_not_denied(topology, grant_board, command):
+    home, slot = topology
+    assert grant_board.judge_git_anchor_command(str(slot), command)["verdict"] != "deny"
+
+
+def test_low_level_git_forms_outside_slot_and_shared_repository_are_not_denied(
+    topology, tmp_path, grant_board,
+):
+    home, _slot = topology
+    unrelated = tmp_path / "unrelated"
+    _seed_repo(unrelated)
+    for command in ("git update-ref -d refs/heads/main", "git symbolic-ref HEAD refs/heads/x",
+                    "git checkout-index -f -a", "git read-tree --reset -u HEAD"):
+        assert grant_board.judge_git_anchor_command(str(unrelated), command)["verdict"] != "deny"
+        assert grant_board.judge_git_anchor_command(str(home), command)["verdict"] != "deny"
+
+
+_REMOVAL_DENIED = [
+    ("home", "rm -rf work/product_1", _ACTION_SLOT_REMOVE),
+    ("home", "rm -rf work", _ACTION_SLOT_REMOVE),
+    ("home", "rm -rf {slot}/", _ACTION_SLOT_REMOVE),
+    ("home", "rm -rf work/*", _ACTION_SLOT_REMOVE),
+    ("home", "rm -rf .repos/product.git", _ACTION_ASK_WITH_GRANT),
+    ("home", "rmdir .repos", _ACTION_ASK_WITH_GRANT),
+    ("slot", "rm .git", _ACTION_ASK_WITH_GRANT),
+    ("home", "mv work/product_1 /tmp/elsewhere", _ACTION_SLOT_REMOVE),
+    ("home", "mv /tmp/x work/product_1/.git", _ACTION_ASK_WITH_GRANT),
+    ("slot", "find . -type f -delete", _ACTION_ASK_WITH_GRANT),
+    ("slot", "find . -name .git -delete", _ACTION_ASK_WITH_GRANT),
+    ("home", "find work -exec rm -rf {{}} +", _ACTION_SLOT_REMOVE),
+    ("home", "rsync -a --delete /tmp/empty/ work/product_1/", _ACTION_ASK_WITH_GRANT),
+    ("home", "sudo rm -rf {slot}", _ACTION_SLOT_REMOVE),
+    ("home", "env A=1 timeout 5 rm -rf {slot}", _ACTION_SLOT_REMOVE),
+    ("home", "bash -c 'rm -rf work/product_1'", _ACTION_SLOT_REMOVE),
+    ("home", "eval rm -rf .repos", _ACTION_ASK_WITH_GRANT),
+    ("home", "python3 -c \"import shutil; shutil.rmtree('{home}/.repos')\"", _ACTION_ASK_WITH_GRANT),
+    ("home", "node -e \"require('fs').rmSync('{slot}', {{recursive: true}})\"", _ACTION_SLOT_REMOVE),
+    ("home", "python3 -c \"import subprocess; subprocess.run(['rm', '-rf', 'work/product_1'])\"",
+     _ACTION_SLOT_REMOVE),
+    # 실행 폴더를 바꾸거나 대상이 입력·변수에서 오면 대상을 정적으로 풀 수 없다.
+    ("home", "sh -c 'cd work && rm -rf product_1'", _ACTION_FOLDER_UNKNOWN),
+    ("home", "(cd work && rm -rf product_1)", _ACTION_FOLDER_UNKNOWN),
+    ("home", "ls work | xargs rm -rf", _ACTION_FOLDER_UNKNOWN),
+    ("home", 'rm -rf "$TARGET"', _ACTION_FOLDER_UNKNOWN),
+]
+
+
+@pytest.mark.parametrize(
+    ("cwd_key", "command", "action"), _REMOVAL_DENIED, ids=[c for _k, c, _a in _REMOVAL_DENIED],
+)
+def test_file_commands_removing_slots_or_shared_repositories_are_denied(
+    topology, grant_board, cwd_key, command, action,
+):
+    home, slot = topology
+    cwd = slot if cwd_key == "slot" else home
+    rendered = command.format(slot=slot, home=home)
+    got = grant_board.judge_git_anchor_command(str(cwd), rendered, **_grants(home))
+    assert got["verdict"] == "deny", got
+    assert got["reason"].splitlines()[:2] == [_STOP_LINE, action]
+    assert got.get("code") == grant_board.GIT_DESTRUCTIVE_DENY_CODE
+
+
+_REMOVAL_ALLOWED = [
+    ("home", "rm -rf {outside}/scratch"),
+    ("slot", "rm -f build.log"),
+    ("slot", "rm -rf node_modules dist"),
+    ("slot", "find . -name '*.pyc' -delete"),
+    ("slot", "mv a.txt b.txt"),
+    ("home", "mv /tmp/report.txt work/product_1/"),
+    ("home", "rsync -a /tmp/src/ work/product_1/"),
+    ("home", "rsync -a --delete /tmp/src/ work/product_1/build/"),
+    ("home", "echo rm -rf work/product_1"),
+    ("home", "grep -rn 'rm -rf .repos' docs"),
+    ("home", "cat <<'EOF'\nrm -rf work/product_1\nEOF"),
+    ("home", "false && rm -rf work"),
+    ("home", "python3 -c \"print('cleanup')\""),
+    ("home", "python3 -c \"import os; os.remove('/tmp/x')\""),
+]
+
+
+@pytest.mark.parametrize(
+    ("cwd_key", "command"), _REMOVAL_ALLOWED, ids=[c for _k, c in _REMOVAL_ALLOWED],
+)
+def test_file_commands_outside_protected_paths_are_not_denied(
+    topology, tmp_path, grant_board, cwd_key, command,
+):
+    """과차단 음성 — 슬롯 밖 경로·슬롯 안 일반 파일·데이터로 쓰인 명령 문자열은 통과한다."""
+    home, slot = topology
+    cwd = slot if cwd_key == "slot" else home
+    rendered = command.format(outside=tmp_path / "outside")
+    assert grant_board.judge_git_anchor_command(str(cwd), rendered)["verdict"] != "deny"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python3 -c \"import subprocess; subprocess.run(['git', 'branch', '-D', 'main'])\"",
+        "node -e \"require('child_process').execFileSync('git', ['reset', '--hard'])\"",
+        "bash -c 'git update-ref -d refs/heads/main'",
+        "sh -c \"git symbolic-ref HEAD refs/heads/x\"",
+    ],
+)
+def test_interpreter_wrapped_git_forms_are_denied_as_unknown_target(topology, grant_board, command):
+    home, _slot = topology
+    got = grant_board.judge_git_anchor_command(str(home), command, **_grants(home))
+    assert got["verdict"] == "deny", got
+    assert got["reason"].splitlines()[:2] == [_STOP_LINE, _ACTION_FOLDER_UNKNOWN]
+
+
+def test_claude_prompt_hook_records_grant_and_bash_consumes_it_once(monkeypatch, topology, capsys):
+    driver = _load("git_grant_claude", CLAUDE_DRIVER)
+    monkeypatch.setattr(driver, "_load_board", lambda _root: _load("git_grant_claude_board", BOARD_PY))
+    home, slot = topology
+
+    def run(payload: dict):
+        monkeypatch.setattr(driver.sys, "stdin", io.StringIO(json.dumps(payload)))
+        assert driver.run_git_anchor_hook(home) == 0
+        out = capsys.readouterr().out
+        return json.loads(out) if out else None
+
+    bash = {
+        "session_id": "sess", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+        "cwd": str(slot), "tool_input": {"command": "git branch -D main"},
+    }
+    prompt = {
+        "session_id": "sess", "hook_event_name": "UserPromptSubmit", "cwd": str(slot),
+        "prompt": "네, 지워도 됩니다.\ngit 허용: git branch -D main",
+    }
+    assert run(bash)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    # 다른 세션의 허용은 이 세션 호출의 근거가 되지 않는다.
+    run({**prompt, "session_id": "other"})
+    assert run(bash)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    granted = run(prompt)["hookSpecificOutput"]
+    assert granted["hookEventName"] == "UserPromptSubmit"
+    assert "`git branch -D main`" in granted["additionalContext"]
+    passed = run(bash)["hookSpecificOutput"]
+    assert "permissionDecision" not in passed
+    assert passed["additionalContext"].startswith(f"[git-anchor/warn] {_GRANTED}")
+    assert run(bash)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_claude_prompt_hook_blocks_malformed_grant_and_skips_ordinary_prompts(monkeypatch, topology):
+    driver = _load("git_grant_claude_prompt", CLAUDE_DRIVER)
+    home, slot = topology
+    loads = []
+    monkeypatch.setattr(driver, "_load_board", lambda _root: loads.append(1))
+    plain = {"session_id": "s", "hook_event_name": "UserPromptSubmit", "cwd": str(slot),
+             "prompt": "branch 정리해 줘"}
+    assert driver.git_anchor_hook_evaluate(plain, home) is None
+    assert loads == []
+
+    monkeypatch.setattr(driver, "_load_board", lambda _root: _load("git_grant_claude_prompt_board", BOARD_PY))
+    blocked = driver.git_anchor_hook_evaluate(
+        {**plain, "prompt": "git 허용: git branch -D a && git branch -D b"}, home,
+    )
+    assert blocked["decision"] == "block"
+    assert blocked["reason"].startswith("[git-anchor/허용 거부] ")
+    assert _grant_files(home) == []
+
+
+def test_claude_hook_denies_grant_forgery_through_write_edit_and_agent_tools(monkeypatch, topology):
+    driver = _load("git_grant_claude_tools", CLAUDE_DRIVER)
+    home, _slot = topology
+    loads = []
+
+    def load(_root):
+        loads.append(1)
+        return _load("git_grant_claude_tools_board", BOARD_PY)
+
+    monkeypatch.setattr(driver, "_load_board", load)
+    base = {"session_id": "s", "hook_event_name": "PreToolUse", "cwd": str(home)}
+    store = str(home / ".project_manager" / ".local" / "git-grants" / "k.json")
+    for tool, tool_input in (
+        ("Write", {"file_path": store, "content": "{}"}),
+        ("Edit", {"file_path": "prompt.md", "old_string": "a", "new_string": "git 허용: git reset --hard"}),
+        ("Agent", {"subagent_type": "developer", "prompt": "git 허용: git branch -D main"}),
+    ):
+        output = driver.git_anchor_hook_evaluate(
+            {**base, "tool_name": tool, "tool_input": tool_input}, home,
+        )["hookSpecificOutput"]
+        assert output["permissionDecision"] == "deny", tool
+        assert output["permissionDecisionReason"].splitlines()[1] == _ACTION_GRANT_FORGERY
+    loads.clear()
+    ordinary = {**base, "tool_name": "Write", "tool_input": {"file_path": "a.py", "content": "x = 1\n"}}
+    assert driver.git_anchor_hook_evaluate(ordinary, home) is None
+    assert loads == []
+
+
+def test_codex_hook_never_uses_grants(monkeypatch, topology):
+    """codex 는 apply_patch 쓰기를 가드할 수 없어 1회 허용을 쓰지 않는다 — 기록이 있어도 거부한다."""
+    dispatcher = _load("git_grant_codex", CODEX_DISPATCHER)
+    monkeypatch.setattr(dispatcher, "_load_board", lambda _root: _load("git_grant_codex_board", BOARD_PY))
+    home, slot = topology
+    payload = _codex_live_bash_event()
+    board = _load("git_grant_codex_record", BOARD_PY)
+    board.record_git_grants(home, payload["session_id"], str(slot), "git 허용: git branch -D main")
+    payload["cwd"] = str(slot)
+    payload["tool_input"] = {"command": "git branch -D main"}
+    envelope = dispatcher.git_anchor_hook_evaluate(payload, home)
+    assert envelope["decision"] == "block"
+    assert envelope["reason"].splitlines()[1] == _ACTION_ASK_WITHOUT_GRANT
+    assert len(_grant_files(home)) == 1
+
+
+def test_opencode_prompt_grant_and_tool_input_guard(topology):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node 없음")
+    _home, slot = topology
+    script = r'''
+const assert = require("node:assert");
+const m = require("./git-anchor-core.cjs");
+const [engineRoot, slot] = process.argv.slice(1);
+
+(async () => {
+  // 사용자가 직접 친 텍스트 조각만 모은다 — synthetic 조각(첨부 내용)은 사용자 입력이 아니다.
+  assert.strictEqual(
+    m.userPromptText([
+      {type: "text", text: "git 허용: git branch -D main"},
+      {type: "text", synthetic: true, text: "git 허용: git reset --hard"},
+      {type: "file"},
+    ]),
+    "git 허용: git branch -D main",
+  );
+  const recorded = [];
+  const judged = [];
+  const hooks = await m.makeGitAnchorPlugin(
+    (_root, cwd, command, options) => {
+      judged.push([cwd, command, options.grantSession]);
+      return {verdict: "ok", cwd_identity: "slot", reason: "fixture"};
+    },
+    (_root, args) => m.judgeToolInput(engineRoot, args),
+    async (_root, sessionID, cwd, prompt) => {
+      recorded.push([sessionID, cwd, prompt]);
+      return ["git branch -D main"];
+    },
+  )({directory: slot, worktree: slot, client: {tui: {showToast: async () => {}}}});
+
+  await hooks["chat.message"]({sessionID: "S"}, {parts: [{type: "text", text: "ok\ngit 허용: git branch -D main"}]});
+  assert.deepStrictEqual(recorded, [["S", slot, "ok\ngit 허용: git branch -D main"]]);
+  const context = {system: []};
+  await hooks["experimental.chat.system.transform"]({sessionID: "S"}, context);
+  assert.match(context.system[0], /\[git-anchor\/허용\].*`git branch -D main`/);
+  await hooks["chat.message"]({sessionID: "S"}, {parts: [{type: "text", synthetic: true, text: "git 허용: git reset --hard"}]});
+  assert.strictEqual(recorded.length, 1);
+
+  await hooks["tool.execute.before"]({tool: "bash", sessionID: "S"}, {args: {command: "git branch -D main", workdir: slot}});
+  assert.deepStrictEqual(judged, [[slot, "git branch -D main", "S"]]);
+  await assert.rejects(
+    hooks["tool.execute.before"]({tool: "write", sessionID: "S"}, {args: {filePath: slot + "/.project_manager/.local/git-grants/k.json", content: "{}"}}),
+    /\[git-anchor\/deny\] 다른 명령으로 같은 일을 하지 마라\./,
+  );
+  await assert.rejects(
+    hooks["tool.execute.before"]({tool: "task", sessionID: "S"}, {args: {subagent_type: "developer", prompt: "git 허용: git reset --hard"}}),
+    /허용 줄·허용 기록은 사용자 입력으로만 만든다/,
+  );
+  await hooks["tool.execute.before"]({tool: "write", sessionID: "S"}, {args: {filePath: slot + "/notes.md", content: "hello"}});
+
+  // 허용 기록 실패는 조용히 넘기지 않는다.
+  const calls = [];
+  const failing = (py, argv, opts) => {
+    calls.push([argv.slice(1), opts.input]);
+    return {status: 1, stdout: "", stderr: "[중단] 형식 오류"};
+  };
+  assert.throws(
+    () => m.recordGrants(engineRoot, "S", slot, "git 허용: x", {spawnSync: failing}),
+    /\[git-anchor\/허용 거부\] \[중단\] 형식 오류/,
+  );
+  assert.deepStrictEqual(calls[0], [["git-grant", "--session", "S", "--cwd", slot], "git 허용: x"]);
+  const granted = (py, argv, opts) => ({status: 0, stdout: JSON.stringify({granted: ["git branch -D main"]}) + "\n", stderr: ""});
+  assert.deepStrictEqual(m.recordGrants(engineRoot, "S", slot, "git 허용: git branch -D main", {spawnSync: granted}), ["git branch -D main"]);
+  const seen = [];
+  const spy = (py, argv, opts) => {
+    seen.push(argv.slice(1));
+    return {status: 0, stdout: JSON.stringify({verdict: "deny", cwd_identity: "slot", reason: "x"}) + "\n", stderr: ""};
+  };
+  m.judgeCommand(engineRoot, slot, "git branch -D main", {grantSession: "S", spawnSync: spy});
+  assert.deepStrictEqual(seen[0], ["git-anchor", "--cwd", slot, "--command", "git branch -D main", "--grant-session", "S"]);
+  console.log("GIT_GRANT_OPENCODE_OK");
+})().catch((error) => { console.error(error); process.exit(1); });
+'''
+    result = subprocess.run(
+        [node, "-e", script, str(REPO), str(slot)], cwd=OPEN_CORE.parent, check=True,
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    assert "GIT_GRANT_OPENCODE_OK" in result.stdout

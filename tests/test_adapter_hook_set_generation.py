@@ -378,7 +378,8 @@ def test_codex_entrypoint_migration_left_claude_wiring_untouched(pm_import):
         (REPO / "templates" / "claude_code" / _SETTINGS_REL).read_text(encoding="utf-8"))
     groups = document["hooks"]["PreToolUse"]
 
-    assert [group["matcher"] for group in groups] == ["*", "Bash", "Agent"]
+    assert [group["matcher"] for group in groups] == [
+        "*", "Bash|Write|Edit|MultiEdit|NotebookEdit|Agent|Task", "Agent"]
     commands = [handler["command"] for group in groups
                 for handler in group["hooks"]]
     assert any(command.endswith(_GIT_ANCHOR_FLAG) for command in commands)
@@ -2493,11 +2494,13 @@ def test_feature_axis_reuses_the_entrypoint_presence_judgment(pm_import):
 # `--git-anchor-hook` 로 부른다)을 통째로 지워도 집합이 안 변해 표가 `same` 으로 접혔다 —
 # 채택자가 git anchor 가드를 잃은 상태가 관리자 화면에서 "차이 없음" 이었다.
 
+_GIT_ANCHOR_MATCHER = "Bash|Write|Edit|MultiEdit|NotebookEdit|Agent|Task"
 _SHIPPED_CLAUDE_UNITS = {
     "PreToolUse": ("*:.claude/ctx_stop_hook.sh",
                    "Agent:.claude/delegate_channel_guard_hook.sh",
-                   "Bash:.claude/ctx_stop_hook.sh --git-anchor-hook"),
-    "UserPromptSubmit": (":.claude/ctx_stop_hook.sh",),
+                   f"{_GIT_ANCHOR_MATCHER}:.claude/ctx_stop_hook.sh --git-anchor-hook"),
+    "UserPromptSubmit": (":.claude/ctx_stop_hook.sh",
+                         ":.claude/ctx_stop_hook.sh --git-anchor-hook"),
 }
 
 
@@ -2525,7 +2528,7 @@ def test_removing_one_matcher_group_is_a_feature_difference(pm_import):
     project = json.loads(json.dumps(latest))
     project["hooks"]["PreToolUse"] = [
         group for group in project["hooks"]["PreToolUse"]
-        if group.get("matcher") != "Bash"
+        if group.get("matcher") != _GIT_ANCHOR_MATCHER
     ]
     assert project != latest, "픽스처가 아무것도 지우지 않았다(공허 가드)"
 
@@ -2533,8 +2536,9 @@ def test_removing_one_matcher_group_is_a_feature_difference(pm_import):
 
     row = next(row for row in rows if row.name == "hooks.PreToolUse")
     assert row.verdict == pm_import.ADAPTER_FEATURE_DIFFERS
-    assert "Bash:.claude/ctx_stop_hook.sh --git-anchor-hook" not in row.project
-    assert "Bash:.claude/ctx_stop_hook.sh --git-anchor-hook" in row.latest
+    unit = f"{_GIT_ANCHOR_MATCHER}:.claude/ctx_stop_hook.sh --git-anchor-hook"
+    assert unit not in row.project
+    assert unit in row.latest
     distance = sum(1 for row in rows
                    if row.verdict != pm_import.ADAPTER_FEATURE_SAME)
     assert distance >= 1

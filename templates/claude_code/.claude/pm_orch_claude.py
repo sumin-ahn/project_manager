@@ -62,28 +62,40 @@ def _load_board(root: Path):
     return module
 
 
-def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
-    """Claude PreToolUse(Bash) 입력을 중앙 ``judge_git_anchor_command`` seam에 배선한다."""
-    event = stdin.get("hook_event_name") or stdin.get("hookEventName")
-    tool = stdin.get("tool_name") or stdin.get("toolName")
-    tool_input = stdin.get("tool_input") or stdin.get("toolInput") or {}
-    command = tool_input.get("command") if isinstance(tool_input, dict) else None
-    # 매 Bash 호출에 훅이 떠도 판정 대상 비포함은 board import조차 하지 않는 선필터(핫패스 비용 0).
-    # 대상은 넷이다 — git 호출(앵커) · 엔진 도구 호출(사본 정체) · pytest(트리 정체) · cd 잔존.
-    if event != "PreToolUse" or tool != "Bash" or not isinstance(command, str):
-        return None
+# Bash 명령 선필터(성능 전용 — 판정은 board 가 한다). 대상은 git 호출(앵커·파괴 형태) · 엔진 도구
+# 호출(사본 정체) · pytest(트리 정체) · cd 잔존 · 파일 삭제·이동 명령과 삭제 API · 허용 표식이다.
+# opencode `git-anchor-core.cjs`·codex `pm_orch_codex.py` 선필터와 같은 집합이다(테스트가 대조).
+GIT_ANCHOR_SHELL_PREFILTERS = (
+    r"(?<![A-Za-z0-9_.-])git(?=\s|$|[<>,])",
+    r"(?<![A-Za-z0-9_.-])pytest(?=\s|$)",
+    r"(?:^|[;&|])\s*cd(?=\s)",
+    r"(?<![A-Za-z0-9_.-])(?:rm|rmdir|unlink|shred|mv|find|rsync)(?=\s|$)",
+    r"(?<![A-Za-z0-9_])(?:rmtree|remove|removedirs|unlink|rmdir|rmSync|rmdirSync|unlinkSync"
+    r"|rm_rf|rm_r|rename|replace|move|renameSync)(?![A-Za-z0-9_])",
+    r"git[ \t]+허용[ \t]*:",
+)
+GIT_GRANT_MARKER = r"git[ \t]+허용[ \t]*:"
+GIT_GRANT_DIR_NAME = "git-grants"
+# git-anchor 훅이 입력을 보는 셸 도구. 그 밖의 도구(파일 쓰기·편집·위임)는 허용 위조만 본다.
+GIT_ANCHOR_SHELL_TOOL = "Bash"
+
+
+def _shell_command_needs_judgment(command: str) -> bool:
     prefilter = command.replace("\\\n", "").replace("'", "").replace('"', "")
     normalized = re.sub(r"/+", "/", prefilter.replace("\\", "/"))
-    if not (
-        re.search(r"(?<![A-Za-z0-9_.-])git(?=\s|$|[<>])", prefilter)
+    return (
+        any(re.search(pattern, prefilter) for pattern in GIT_ANCHOR_SHELL_PREFILTERS)
         or ".project_manager/tools/" in normalized
-        or re.search(r"(?<![A-Za-z0-9_.-])pytest(?=\s|$)", prefilter)
-        or re.search(r"(?:^|[;&|])\s*cd(?=\s)", prefilter)
-    ):
-        return None
-    cwd = stdin.get("cwd")
-    anchor = cwd if isinstance(cwd, str) and cwd else str(root)
-    judgment = _load_board(root).judge_git_anchor_command(anchor, command)
+        or GIT_GRANT_DIR_NAME in normalized
+    )
+
+
+def _hook_session_id(stdin: dict) -> str:
+    session = stdin.get("session_id") or stdin.get("sessionId")
+    return session if isinstance(session, str) else ""
+
+
+def _pre_tool_use_output(judgment: dict) -> dict | None:
     verdict = judgment.get("verdict")
     reason = judgment.get("reason", "git cwd 정체 판정")
     if verdict == "deny":
@@ -102,6 +114,71 @@ def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
             }
         }
     return None
+
+
+def git_grant_prompt_evaluate(stdin: dict, root: Path) -> dict | None:
+    """UserPromptSubmit — 사용자 프롬프트의 `git 허용: <명령 원문>` 줄을 1회 허용 기록으로 남긴다.
+
+    허용 기록은 이 경로(사용자 입력)에서만 만들어진다. 형식이 틀린 줄이 있으면 프롬프트를 막고
+    사유를 사용자에게 보인다 — 허용 없이 대화가 진행돼 거부가 반복되지 않게 한다."""
+    prompt = stdin.get("prompt")
+    if not isinstance(prompt, str) or not re.search(GIT_GRANT_MARKER, prompt):
+        return None
+    cwd = stdin.get("cwd")
+    anchor = cwd if isinstance(cwd, str) and cwd else str(root)
+    board = _load_board(root)
+    try:
+        granted = board.record_git_grants(root, _hook_session_id(stdin), anchor, prompt)
+    except ValueError as exc:
+        return {
+            "decision": "block",
+            "reason": (
+                f"[git-anchor/허용 거부] {exc} — `git 허용: <명령 원문>` 한 줄에 한 명령을 값 그대로 "
+                "적어 다시 보낸다"
+            ),
+        }
+    if not granted:
+        return None
+    listed = ", ".join(f"`{command}`" for command in granted)
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": (
+                f"[git-anchor/허용] 사용자가 폴더 {anchor} 에서 다음 명령의 1회 실행을 허용했다: "
+                f"{listed} — 그 명령을 원문 그대로 한 번만 실행한다"
+            ),
+        }
+    }
+
+
+def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
+    """Claude 훅 입력을 중앙 판정(board)에 배선한다.
+
+    PreToolUse(Bash) 는 ``judge_git_anchor_command`` 로(세션이 있으면 1회 허용 소비 포함), 그 밖의
+    PreToolUse 도구는 ``judge_tool_input`` 으로(허용 위조), UserPromptSubmit 은 허용 기록으로 보낸다."""
+    event = stdin.get("hook_event_name") or stdin.get("hookEventName")
+    if event == "UserPromptSubmit":
+        return git_grant_prompt_evaluate(stdin, root)
+    tool = stdin.get("tool_name") or stdin.get("toolName")
+    tool_input = stdin.get("tool_input") or stdin.get("toolInput") or {}
+    if event != "PreToolUse" or not isinstance(tool_input, dict):
+        return None
+    # 매 도구 호출에 훅이 떠도 판정 대상 비포함은 board import조차 하지 않는 선필터(핫패스 비용 0).
+    if tool != GIT_ANCHOR_SHELL_TOOL:
+        serialized = json.dumps(tool_input, ensure_ascii=False)
+        if GIT_GRANT_DIR_NAME not in serialized and not re.search(GIT_GRANT_MARKER, serialized):
+            return None
+        return _pre_tool_use_output(_load_board(root).judge_tool_input(tool_input))
+    command = tool_input.get("command")
+    if not isinstance(command, str) or not _shell_command_needs_judgment(command):
+        return None
+    cwd = stdin.get("cwd")
+    anchor = cwd if isinstance(cwd, str) and cwd else str(root)
+    session = _hook_session_id(stdin)
+    grants = {"grant_root": root, "grant_session": session} if session else {}
+    return _pre_tool_use_output(
+        _load_board(root).judge_git_anchor_command(anchor, command, **grants)
+    )
 
 
 def _write_hook_json(output: dict) -> None:
@@ -138,10 +215,14 @@ def _git_anchor_advisory_text(output: dict) -> str | None:
     """중복 억제 대상인 **비차단** advisory 본문 (아니면 None).
 
     deny 는 `permissionDecision` 으로 도구 실행을 실제로 막는다 — 같은 문구가 반복돼도
-    억제하면 두 번째 위험 명령이 그냥 통과한다(가드 약화). 억제 대상은 `additionalContext` 뿐이다.
+    억제하면 두 번째 위험 명령이 그냥 통과한다(가드 약화). 억제 대상은 PreToolUse 의
+    `additionalContext` 뿐이다(UserPromptSubmit 허용 기록 안내는 매번 알린다).
     """
     hook_output = output.get("hookSpecificOutput") if isinstance(output, dict) else None
-    if not isinstance(hook_output, dict) or hook_output.get("permissionDecision"):
+    if (
+        not isinstance(hook_output, dict) or hook_output.get("permissionDecision")
+        or hook_output.get("hookEventName") != "PreToolUse"
+    ):
         return None
     text = hook_output.get("additionalContext")
     return text if isinstance(text, str) and text else None
@@ -186,9 +267,11 @@ def run_git_anchor_hook(root: Path) -> int:
     try:
         output = git_anchor_hook_evaluate(payload, root)
     except BaseException as exc:  # SystemExit 포함 판정 인프라 손상은 정상 Bash를 막지 않는다.
+        event = payload.get("hook_event_name") or payload.get("hookEventName")
         output = {
             "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
+                # 훅 출력의 이벤트 이름은 발화 이벤트와 같아야 한다(허용 기록 실패도 같은 경고 형태).
+                "hookEventName": "UserPromptSubmit" if event == "UserPromptSubmit" else "PreToolUse",
                 "additionalContext": f"[git-anchor/warn] 판정 불가({exc}) — cwd를 직접 확인",
             }
         }

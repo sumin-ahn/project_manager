@@ -80,6 +80,8 @@ HEAD(released base), role=readonly, session/pid·배타 대여가 없다. 무소
   풀**은 슬롯별 state·보유 task·role(work/readonly)와 `<branch>@<head> (부모: <이름>@<sha> · 앞 N · 뒤 M)`
   요약이다. 부모 기록이 없으면 `(부모 기록 없음)`을 표시하고 추론하지 않는다. readonly는 branch
   `(detached)`와 따라갈 브랜치만 의미한다.
+- status의 **슬롯 없는 보존 브랜치** 절(있을 때만 · `status --json`은 `preserved_branches`)은 슬롯 제거가 보존한
+  브랜치(보호·기본 브랜치 제외)의 쓰던 슬롯·보존 시각·사유·부모·합쳐지지 않은 커밋 수다. 그 브랜치를 슬롯에 다시 체크아웃하면 빠진다.
 - `release`는 폴더를 유지해 idle로 재사용한다. 커밋 안 한 변경이 있으면 `release`·`release --force` 모두
   거부한다. 엔진은 stash 하지 않는다 — 사용자에게 물어 커밋하거나, 사용자가 요청할 때만 stash 한다.
   `--force`는 점유·소유검사만 넘는다.

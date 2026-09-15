@@ -144,6 +144,11 @@ class FakeWorktreePool:
         return {"slot": slot, "branch": None, "head": None, "parent": None, "children": [],
                 "stashes": 0, "submodules": [], "dirty": False}
 
+    def preserved_branches(self, *, git_runner=None):
+        # 슬롯 없는 보존 브랜치 대역 — 콘솔 테스트는 보존 브랜치가 없는 홈이다.
+        self.calls.append(("preserved_branches",))
+        return []
+
     def create_slot(self, repo, *, base, test_cmd=None, readonly=False, owner_task=None):
         # base(필수·T-0075)·owner_task (ⓓB·ADR-0068) — cmd_worktree_add 가 전달한다. 이 콘솔
         # 테스트는 빌드명령 경로만 검증하므로 base/readonly/owner_task 는 받기만 하고 기록 튜플엔 안 넣는다.

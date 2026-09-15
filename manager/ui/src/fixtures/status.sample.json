@@ -101,6 +101,26 @@
       "remote": null
     }
   ],
+  "preserved_branches": [
+    {
+      "repo": "app",
+      "name": "app_6",
+      "slot": "work/app_6",
+      "preserved_at": "2026-09-15T01:02:03+00:00",
+      "reason": "unmerged",
+      "parent": "master",
+      "unmerged": 2
+    },
+    {
+      "repo": "app",
+      "name": "task/old",
+      "slot": "work/app_7",
+      "preserved_at": "2026-09-14T22:10:00+00:00",
+      "reason": "no-parent",
+      "parent": null,
+      "unmerged": null
+    }
+  ],
   "tasks": [
     {
       "name": "demo",

@@ -24,6 +24,7 @@
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import importlib.util
 import json
@@ -150,8 +151,8 @@ def _status_json(home: Path, *argv: str) -> dict:
     return json.loads(lines[0])
 
 
-def _make_slot(home: Path, repo: str, number: int, branch: str) -> str:
-    """실 bare + 실 `git worktree add` 로 만든 슬롯 — 슬롯 git 요약이 실물에서 나온다."""
+def _origin_bare(home: Path, repo: str) -> Path:
+    """홈 안 로컬 origin(기본 브랜치 trunk)과 그 bare 사본 `.repos/<repo>.git` — 이미 있으면 그대로 쓴다."""
     origin = home / ".origin"
     if not origin.exists():
         origin.mkdir(parents=True)
@@ -163,6 +164,12 @@ def _make_slot(home: Path, repo: str, number: int, branch: str) -> str:
     if not bare.exists():
         bare.parent.mkdir(parents=True, exist_ok=True)
         _git(home, "clone", "--bare", "-q", str(origin), str(bare))
+    return bare
+
+
+def _make_slot(home: Path, repo: str, number: int, branch: str) -> str:
+    """실 bare + 실 `git worktree add` 로 만든 슬롯 — 슬롯 git 요약이 실물에서 나온다."""
+    bare = _origin_bare(home, repo)
     slot = f"work/{repo}_{number}"
     _git(bare, "worktree", "add", "-q", "-b", branch, str(home / slot))
     return slot
@@ -595,6 +602,9 @@ def test_default_call_does_not_load_board_engine(pc, monkeypatch, tmp_path, caps
         def list_tasks(self):
             return []
 
+        def preserved_branches(self):
+            return []
+
         def _pid_alive(self, pid):
             return False
 
@@ -965,3 +975,86 @@ def test_whoami_has_no_json_flag(pc):
 def test_status_json_schema_constant_is_single_source(pc):
     """스키마 번호는 상수 하나다 — 문서의 값이 그 상수와 같아야 한다."""
     assert pc.STATUS_JSON_SCHEMA == 1
+
+
+# ── 슬롯 없는 보존 브랜치 — 홈 엔진이 슬롯을 만들고 지워 남긴 기록 ─────────────────
+
+
+# 홈 사본 엔진으로 슬롯을 만들고 지운다 — 보존 기록을 테스트가 조립하지 않고 슬롯 제거가 남긴다.
+_SLOT_LIFECYCLE_SOURCE = '''\
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("worktree_pool_preserved", sys.argv[1])
+worktree_pool = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(worktree_pool)
+if sys.argv[2] == "create":
+    print(worktree_pool.create_slot("app", base="trunk", init_submodules=False).slot)
+else:
+    print(worktree_pool.remove_slot(sys.argv[3]).branch_deletion.reason)
+'''
+
+
+def _slot_lifecycle(home: Path, script: Path, *argv: str) -> str:
+    """`_SLOT_LIFECYCLE_SOURCE` 를 홈에서 돌리고 stdout 마지막 줄(슬롯 또는 판정 사유)을 돌려준다."""
+    done = subprocess.run(
+        [sys.executable, str(script), str(home / ".project_manager" / "tools" / "worktree_pool.py"),
+         *argv],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(home), timeout=300)
+    assert done.returncode == 0, done.stderr
+    return done.stdout.strip().splitlines()[-1]
+
+
+@pytest.fixture
+def preserved_home(home, tmp_path):
+    """홈 엔진으로 슬롯 둘을 만들고 지운 홈 — app_1 은 커밋 2개(합쳐지지 않음)·app_2 는 부모 기록 없음."""
+    bare = _origin_bare(home, "app")
+    _ledger(home, [])
+    script = tmp_path / "slot_lifecycle.py"
+    script.write_text(_SLOT_LIFECYCLE_SOURCE, encoding="utf-8")
+    kept = _slot_lifecycle(home, script, "create")
+    loose = _slot_lifecycle(home, script, "create")
+    for name in ("one.txt", "two.txt"):
+        _write(home / kept / name, f"{name}\n")
+        _git(home / kept, "add", name)
+        _git(home / kept, "commit", "-q", "-m", name)
+    for key in ("pm-parent", "pm-fork"):
+        _git(bare, "config", "--unset", f"branch.app_2.{key}")
+    assert _slot_lifecycle(home, script, "remove", kept) == "unmerged"
+    assert _slot_lifecycle(home, script, "remove", loose) == "no-parent"
+    return home
+
+
+@_git_required
+def test_status_json_preserved_branches_from_engine_slot_removal(preserved_home):
+    """`preserved_branches` — 슬롯 제거가 남긴 기록 그대로 · 합쳐지지 않은 커밋 수 · 부모 기록 없음은 null."""
+    document = _status_json(preserved_home)
+
+    assert document["slots"] == []
+    rows = document["preserved_branches"]
+    for row in rows:
+        assert datetime.datetime.fromisoformat(row.pop("preserved_at")).utcoffset() == datetime.timedelta(0)
+    assert rows == [
+        {"repo": "app", "name": "app_1", "slot": "work/app_1", "reason": "unmerged",
+         "parent": "trunk", "unmerged": 2},
+        {"repo": "app", "name": "app_2", "slot": "work/app_2", "reason": "no-parent",
+         "parent": None, "unmerged": None},
+    ]
+
+
+@_git_required
+def test_status_text_lists_preserved_branches_section(preserved_home):
+    """사람용 `status` — 보존 브랜치 절에 행마다 repo·이름·쓰던 슬롯·보존 시각·사유·부모·커밋 수."""
+    stamps = {row["name"]: row["preserved_at"]
+              for row in _status_json(preserved_home)["preserved_branches"]}
+
+    done = _run_cli(preserved_home, "status")
+
+    assert done.returncode == 0, done.stderr
+    header = "## 슬롯 없는 보존 브랜치 (슬롯 제거 때 삭제 판정이 남긴 브랜치 · 정리는 사용자):\n"
+    assert header in done.stdout
+    assert done.stdout.split(header)[1].splitlines()[:2] == [
+        f"  - app · app_1 · 쓰던 슬롯 work/app_1 · 보존 {stamps['app_1']} · 사유 unmerged · "
+        "부모 trunk · 합쳐지지 않은 커밋 2개",
+        f"  - app · app_2 · 쓰던 슬롯 work/app_2 · 보존 {stamps['app_2']} · 사유 no-parent · "
+        "부모 기록 없음 · 합쳐짐 판정 불가",
+    ]

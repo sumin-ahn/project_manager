@@ -73,6 +73,22 @@ export type SlotUpstream = {
   behind: number | null;
 };
 
+/** 슬롯 없는 보존 브랜치 — 슬롯 제거 때 삭제 판정이 남긴 브랜치(쓰던 슬롯은 이미 없다). */
+export type PreservedBranchRow = {
+  repo: string;
+  name: string;
+  /** 보존 직전 이 브랜치를 쓰던 슬롯. */
+  slot: string;
+  /** 보존 시각 (UTC ISO). */
+  preserved_at: string;
+  /** 삭제 판정 사유 코드 (엔진 `BRANCH_REASON_*` 값 그대로). */
+  reason: string;
+  /** 부모 브랜치 이름 — 부모 기록이 없으면 null. */
+  parent: string | null;
+  /** 부모에 합쳐지지 않은 커밋 수 — 부모 기록이 없거나 부모 브랜치가 지워졌으면 null. */
+  unmerged: number | null;
+};
+
 export type TaskRow = {
   name: string;
   prefix: string | null;
@@ -96,6 +112,7 @@ export type StatusDocument = {
   pm_home: string;
   generated_at: string;
   slots: SlotRow[];
+  preserved_branches: PreservedBranchRow[];
   tasks: TaskRow[];
   git: { branch: string | null; head: string | null; dirty: boolean | null };
   repos: RepoRow[];

@@ -828,6 +828,235 @@ def test_real_git_branch_exists_detection_color_safe(proj, tmp_path):
 
 
 # ════════════════════════════════════════════════════════════════════════
+# 슬롯 없는 보존 브랜치 기록 — 슬롯 제거가 쓰고 · 슬롯 체크아웃이 지우고 · 조회가 읽는다
+# ════════════════════════════════════════════════════════════════════════
+
+_PRESERVED_KEYS = ("pm-slot", "pm-preserved-at", "pm-preserved-reason")
+# 보존 판정 8개 = 기록하는 6개 + 슬롯 수명과 무관해 기록하지 않는 2개(보호·기본 브랜치).
+_RECORDED_REASONS = ("children", "no-parent", "parent-gone", "unmerged", "tip-moved", "delete-refused")
+_UNRECORDED_REASONS = ("protected", "default-branch")
+_NO_PRESERVED_RECORD = dict.fromkeys(_PRESERVED_KEYS)
+
+
+def _preserved_record(bare, branch):
+    """bare 공용 설정의 보존 기록 세 키 — 없는 키는 None."""
+    record = {}
+    for key in _PRESERVED_KEYS:
+        done = _git(bare, "config", "--get", f"branch.{branch}.{key}", check=False)
+        record[key] = done.stdout.strip() if done.returncode == 0 else None
+    return record
+
+
+def _assert_recent_utc(stamp, before):
+    """보존 시각은 UTC ISO 이고 기록 직전 시각과 지금 사이다."""
+    from datetime import datetime, timezone
+    at = datetime.fromisoformat(stamp)
+    assert at.utcoffset() is not None and at.utcoffset().total_seconds() == 0, stamp
+    assert before <= at <= datetime.now(timezone.utc), stamp
+
+
+def _commit_in(slot_dir, name):
+    (slot_dir / name).write_text(f"{name}\n", encoding="utf-8")
+    _git(slot_dir, "add", name)
+    _git(slot_dir, "commit", "-q", "-m", name)
+
+
+@pytest.fixture
+def pool(proj, tmp_path, monkeypatch):
+    """실 bare + 슬롯 A_1·A_2(base main) — A_1 에 합쳐지지 않은 커밋 1개. (wp, bare)."""
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    monkeypatch.setattr(wp, "_resolve_protected", lambda repo: ["main"])
+    bare = _mk_real_bare(wp, "A", tmp_path)
+    wp.create_slot("A", base="main", session="me", init_submodules=False)   # A_1
+    wp.create_slot("A", base="main", session="me", init_submodules=False)   # A_2
+    _commit_in(wp.slot_path("work/A_1"), "wip.txt")
+    return wp, bare
+
+
+def test_preserved_reason_list_covers_every_non_delete_judgement(proj):
+    """사유 표 둘의 합 = 판정 사유 전부에서 삭제 근거(merged·acked)를 뺀 것 — 보존 사유가 늘면 이 표부터 red."""
+    wp = _load_wp_bound(proj)
+    reasons = {value for name, value in vars(wp).items() if name.startswith("BRANCH_REASON_")}
+    assert set(_RECORDED_REASONS) | set(_UNRECORDED_REASONS) == (
+        reasons - {wp.BRANCH_REASON_MERGED, wp.BRANCH_REASON_ACKED})
+    assert set(_UNRECORDED_REASONS) == wp._UNRECORDED_PRESERVED_REASONS
+
+
+@_git_required
+def test_real_git_remove_slot_records_slot_time_and_reason_of_preserved_branches(pool):
+    """실 판정 둘(합쳐지지 않음·부모 기록 없음) — 보존된 브랜치에 쓰던 슬롯·UTC 보존 시각·사유가 남는다."""
+    from datetime import datetime, timezone
+    wp, bare = pool
+    for key in ("pm-parent", "pm-fork"):
+        _git(bare, "config", "--unset", f"branch.A_2.{key}")
+    before = datetime.now(timezone.utc).replace(microsecond=0)
+
+    kept = wp.remove_slot("work/A_1")
+    loose = wp.remove_slot("work/A_2")
+
+    for result, slot_name, reason in ((kept, "work/A_1", wp.BRANCH_REASON_UNMERGED),
+                                      (loose, "work/A_2", wp.BRANCH_REASON_NO_PARENT)):
+        assert result.branch_deletion.reason == reason
+        record = _preserved_record(bare, result.branch)
+        assert (record["pm-slot"], record["pm-preserved-reason"]) == (slot_name, reason)
+        _assert_recent_utc(record["pm-preserved-at"], before)
+
+
+@_git_required
+@pytest.mark.parametrize("reason", _RECORDED_REASONS)
+def test_real_git_remove_slot_records_every_preserved_reason(pool, monkeypatch, reason):
+    """기록하는 보존 사유마다 세 키가 남는다 — 판정 결과를 사유별로 고정하고 기록은 실 git 설정에 쓴다."""
+    wp, bare = pool
+    monkeypatch.setattr(wp, "delete_branch_by_rule", lambda branch, **_kwargs: wp.BranchDeletion(
+        branch, action=wp.BRANCH_PRESERVED, reason=reason))
+
+    result = wp.remove_slot("work/A_2")
+
+    record = _preserved_record(bare, "A_2")
+    assert result.branch_deletion.reason == reason
+    assert (record["pm-slot"], record["pm-preserved-reason"]) == ("work/A_2", reason)
+    assert record["pm-preserved-at"] is not None
+    assert _branch_exists(bare, "A_2")
+
+
+@_git_required
+@pytest.mark.parametrize("reason", _UNRECORDED_REASONS)
+def test_real_git_remove_slot_does_not_record_protected_or_default_branch(pool, monkeypatch, reason):
+    """보호·기본 브랜치 보존은 기록하지 않는다 — 슬롯 수명과 무관한 브랜치라 조회 목록에도 오르지 않는다."""
+    wp, bare = pool
+    monkeypatch.setattr(wp, "delete_branch_by_rule", lambda branch, **_kwargs: wp.BranchDeletion(
+        branch, action=wp.BRANCH_PRESERVED, reason=reason))
+
+    result = wp.remove_slot("work/A_2")
+
+    assert (result.branch_deletion.action, result.branch_deletion.reason) == (wp.BRANCH_PRESERVED, reason)
+    assert _preserved_record(bare, "A_2") == _NO_PRESERVED_RECORD
+    assert _branch_exists(bare, "A_2")
+    assert wp.preserved_branches() == []
+
+
+@_git_required
+def test_real_git_deleted_branch_has_no_preserved_record(pool):
+    """삭제 판정이면 기록을 쓰지 않고, 보존됐던 브랜치를 나중에 지우면 git 이 기록도 함께 지운다."""
+    wp, bare = pool
+    assert wp.remove_slot("work/A_2").branch_deletion.action == wp.BRANCH_DELETED
+    assert _preserved_record(bare, "A_2") == _NO_PRESERVED_RECORD
+
+    assert wp.remove_slot("work/A_1").branch_deletion.action == wp.BRANCH_PRESERVED
+    assert _preserved_record(bare, "A_1")["pm-slot"] == "work/A_1"
+    later = wp.delete_branch_by_rule("A_1", repo="A", acked_branches=frozenset({"A_1"}),
+                                     git_runner=wp._real_git_runner(bare))
+    assert later.action == wp.BRANCH_DELETED
+    assert _preserved_record(bare, "A_1") == _NO_PRESERVED_RECORD
+    assert wp.preserved_branches() == []
+
+
+@_git_required
+def test_real_git_switch_back_into_a_slot_clears_the_preserved_record(pool):
+    """보존 브랜치를 다른 슬롯에서 `switch` 로 다시 쓰면 보존 기록 세 키가 지워지고 부모 기록은 남는다."""
+    wp, bare = pool
+    wp.remove_slot("work/A_1")
+    assert [row["name"] for row in wp.preserved_branches()] == ["A_1"]
+
+    wp.switch("work/A_2", "A_1", protected=["main"])
+
+    assert _preserved_record(bare, "A_1") == _NO_PRESERVED_RECORD
+    assert wp.read_branch_parent("A_1", git_runner=wp._real_git_runner(bare))["name"] == "main"
+    assert wp.preserved_branches() == []
+
+
+@_git_required
+def test_real_git_alloc_checkout_of_a_preserved_branch_clears_the_record(pool):
+    """`alloc(branch=)` 가 보존 브랜치를 idle 슬롯에 체크아웃해도 같은 체크아웃 프리미티브라 기록이 지워진다."""
+    wp, bare = pool
+    wp.remove_slot("work/A_1")
+
+    lease = wp.alloc("A", branch="A_1", owner_task="job")
+
+    assert lease.slot == "work/A_2" and wp.current_branch("work/A_2") == "A_1"
+    assert _preserved_record(bare, "A_1") == _NO_PRESERVED_RECORD
+
+
+def test_remove_slot_preserved_record_write_failure_raises_and_keeps_ledger_row(wp):
+    """보존 기록 쓰기 rc≠0 → BranchParentError(기록 없이 넘어가지 않는다) · 장부 행은 정지 지점에 남는다."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
+    git = RemoveFakeGit(wp, head="A_1", parents={"A_1": "develop"}, merged=False)
+
+    def runner(argv):
+        if argv[:2] == ["config", "branch.A_1.pm-slot"]:
+            return (255, "error: could not lock config file\n")
+        return git(argv)
+
+    with pytest.raises(wp.BranchParentError, match="보존 기록 쓰기 실패"):
+        wp.remove_slot("work/A_1", git_runner=runner)
+    assert wp.list_leases()[0].slot == "work/A_1"
+
+
+def test_checkout_clears_preserved_keys_and_raises_on_other_failures(wp):
+    """체크아웃 뒤 도착 브랜치의 세 키를 지운다 — 없는 키(rc 5)는 통과, 그 밖의 rc≠0 은 BranchParentError."""
+    git = RemoveFakeGit(wp, head="A_1")
+    unset: list[str] = []
+
+    def missing_keys(argv):
+        if argv[:2] == ["config", "--unset"]:
+            unset.append(argv[2])
+            return (5, "")
+        return git(argv)
+
+    wp._checkout_required("work/A_1", "A_1", git_runner=missing_keys)
+    assert unset == ["branch.A_1.pm-slot", "branch.A_1.pm-preserved-at", "branch.A_1.pm-preserved-reason"]
+
+    def locked(argv):
+        if argv[:2] == ["config", "--unset"]:
+            return (255, "error: could not lock config file\n")
+        return git(argv)
+
+    with pytest.raises(wp.BranchParentError, match="보존 기록 지우기 실패"):
+        wp._checkout_required("work/A_1", "A_1", git_runner=locked)
+
+
+@_git_required
+def test_real_git_preserved_branches_rows_parent_and_unmerged_count(family):
+    """조회 행 — 부모에 합쳐지지 않은 커밋 수 · 부모 기록 없음·부모 브랜치 없음은 null · 이름 순."""
+    wp, bare, _slot_dir, runner = family
+    tip = _side_branch(wp, bare, runner, "feat", commit_message="one")
+    _git(bare, "update-ref", "refs/heads/feat", _new_commit(bare, tip, "two"))
+    _git(bare, "branch", "loose", "main")
+    _git(bare, "branch", "orphaned", "main")
+    wp.record_branch_parent("orphaned", "gone-parent", _sha(bare, "main"), git_runner=runner)
+    for name, slot_name, reason in (("orphaned", "work/A_9", "parent-gone"),
+                                    ("feat", "work/A_7", "unmerged"),
+                                    ("loose", "work/A_8", "no-parent")):
+        wp.record_preserved_branch(name, slot=slot_name, reason=reason, git_runner=runner)
+
+    rows = wp.preserved_branches()
+
+    assert [(row["name"], row["slot"], row["reason"], row["parent"], row["unmerged"]) for row in rows] == [
+        ("feat", "work/A_7", "unmerged", "main", 2),
+        ("loose", "work/A_8", "no-parent", None, None),
+        ("orphaned", "work/A_9", "parent-gone", "gone-parent", None),
+    ]
+    assert all(set(row) == {"repo", "name", "slot", "preserved_at", "reason", "parent", "unmerged"}
+               and row["repo"] == "A" for row in rows)
+
+
+@_git_required
+def test_real_git_preserved_branches_damaged_record_raises(family):
+    """세 키 중 일부만 있거나 기록된 브랜치가 없으면 기록 손상으로 raise — 빈 행으로 접지 않는다."""
+    wp, bare, _slot_dir, runner = family
+    _git(bare, "branch", "half", "main")
+    _git(bare, "config", "branch.half.pm-slot", "work/A_3")
+    with pytest.raises(wp.BranchParentError, match="보존 기록 손상"):
+        wp.preserved_branches()
+
+    _git(bare, "config", "--unset", "branch.half.pm-slot")
+    wp.record_preserved_branch("ghost", slot="work/A_4", reason="unmerged", git_runner=runner)
+    with pytest.raises(wp.BranchParentError, match="'ghost' 가 없다"):
+        wp.preserved_branches()
+
+
+# ════════════════════════════════════════════════════════════════════════
 # create_slot 보존 브랜치 충돌 — 선-검출 fail-loud (T-0335·DI seam·hermetic)
 # ════════════════════════════════════════════════════════════════════════
 

@@ -1416,6 +1416,22 @@ def run_hook_dispatch(event: str, root: Path, *, stdin=None, stdout=None) -> int
 #   등록된다.
 GIT_ANCHOR_ONCE_NAMESPACE = "git-anchor"  # 세션 1회 발화 멤버십 namespace(엔진 claim_session_once).
 GIT_ANCHOR_ONCE_KEY_CHARS = 16  # 멤버십 키 = 발화 문구 sha256 앞 16자(문구 전문을 파일에 남기지 않는다).
+# Bash 명령 선필터(성능 전용 — 판정은 board 가 한다). claude `pm_orch_claude.py`·opencode
+#   `git-anchor-core.cjs` 선필터와 같은 집합이다(테스트가 대조). 대상은 git 호출 · pytest · cd 잔존 ·
+#   파일 삭제·이동 명령과 삭제 API · 허용 표식 · 엔진 도구 경로 · 허용 기록 폴더다.
+GIT_ANCHOR_SHELL_PREFILTERS = (
+    r"(?<![A-Za-z0-9_.-])git(?=\s|$|[<>,])",
+    r"(?<![A-Za-z0-9_.-])pytest(?=\s|$)",
+    r"(?:^|[;&|])\s*cd(?=\s)",
+    r"(?<![A-Za-z0-9_.-])(?:rm|rmdir|unlink|shred|mv|find|rsync)(?=\s|$)",
+    r"(?<![A-Za-z0-9_])(?:rmtree|remove|removedirs|unlink|rmdir|rmSync|rmdirSync|unlinkSync"
+    r"|rm_rf|rm_r|rename|replace|move|renameSync)(?![A-Za-z0-9_])",
+    r"git[ \t]+허용[ \t]*:",
+)
+GIT_GRANT_DIR_NAME = "git-grants"
+# codex 는 사용자 1회 허용을 쓰지 않는다 — UserPromptSubmit 훅은 있지만 파일 쓰기 도구(apply_patch)
+#   가 출하 PreToolUse matcher(`^(Bash|collaborationspawn_agent)$`) 밖이라 허용 기록 위조를 막을 수
+#   없다. 그래서 판정에 허용 세션을 넘기지 않고, 거부 문구는 "사용자가 터미널에서 직접 실행" 이다.
 
 
 def _load_board(root: Path):
@@ -1449,10 +1465,9 @@ def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
     prefilter = command.replace("\\\n", "").replace("'", "").replace('"', "")
     normalized = re.sub(r"/+", "/", prefilter.replace("\\", "/"))
     if not (
-        re.search(r"(?<![A-Za-z0-9_.-])git(?=\s|$|[<>])", prefilter)
+        any(re.search(pattern, prefilter) for pattern in GIT_ANCHOR_SHELL_PREFILTERS)
         or ".project_manager/tools/" in normalized
-        or re.search(r"(?<![A-Za-z0-9_.-])pytest(?=\s|$)", prefilter)
-        or re.search(r"(?:^|[;&|])\s*cd(?=\s)", prefilter)
+        or GIT_GRANT_DIR_NAME in normalized
     ):
         return {}
     session_cwd = payload.get("cwd")

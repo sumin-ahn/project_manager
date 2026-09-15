@@ -1,7 +1,7 @@
 import { useContext, useState } from "react";
 import type { ReactNode } from "react";
 import type { Entry } from "../App";
-import type { RepoRow } from "../api";
+import type { PreservedBranchRow, RepoRow } from "../api";
 import { rowDot } from "../lib/status";
 import SlotRemote from "../components/SlotRemote";
 import { ProjectRunContext, useCommand, useProjectRun } from "../lib/run";
@@ -18,6 +18,8 @@ import ConfirmDialog from "../components/ConfirmDialog";
  * 표는 가벼운 절(`status --json`)의 값이고, 동작 뒤에는 그 프로젝트를 다시 읽는다.
  * 이름만 있는 task 동작(`task new`·`task reopen`)이 여기 있는 이유: 종료한 task 는 JSON 의
  * `tasks` 에서 빠져(실측) 현황 탭에 행이 없다.
+ *
+ * 슬롯 없는 보존 브랜치는 보기만 한다 — 화면은 브랜치를 바꾸는 명령을 새로 갖지 않는다.
  */
 
 const BUTTON = "rounded border border-slate-200 px-2 py-0.5 disabled:opacity-40";
@@ -31,6 +33,24 @@ const REPO_ADD_FLAGS = [
 ] as const;
 
 type SlotDraft = { repo: string; readonly: boolean };
+
+/** 삭제 판정 사유 코드(엔진 `BRANCH_REASON_*`)의 사람 말 — 목록에 없는 코드는 코드 그대로 보인다. */
+const PRESERVED_REASON_LABELS: Record<string, string> = {
+  "protected": "보호 브랜치",
+  "default-branch": "공용 저장소 기본 브랜치",
+  "children": "자식 브랜치 있음",
+  "no-parent": "부모 기록 없음",
+  "parent-gone": "부모 브랜치 없음",
+  "unmerged": "합쳐지지 않은 커밋 있음",
+  "tip-moved": "판정 뒤 끝 커밋이 바뀜",
+  "delete-refused": "git 이 삭제를 거부함",
+};
+
+/** 합쳐지지 않은 커밋 수 — 엔진이 셀 수 없었으면(부모 기록 없음·부모 브랜치 없음) 그 까닭이다. */
+function unmergedText(row: PreservedBranchRow): string {
+  if (row.unmerged !== null) return `합쳐지지 않은 커밋 ${row.unmerged}개`;
+  return row.parent === null ? "부모 기록 없음 · 판정 불가" : `부모 ${row.parent} 없음 · 판정 불가`;
+}
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -55,6 +75,7 @@ function ConfigTabBody({ remote }: { remote: Entry | undefined }) {
 
   const repos = status?.repos ?? [];
   const slots = status?.slots ?? [];
+  const preserved = status?.preserved_branches ?? [];
   const harnesses = status?.harnesses ?? [];
 
   // 보호목록 칸의 현재 값 — 사람이 고치기 전에는 장부 값이고, 빈 값은 [설정] 을 열지 않는다
@@ -194,6 +215,29 @@ function ConfigTabBody({ remote }: { remote: Entry | undefined }) {
             }}
             onCancel={() => setRemoveTarget(null)}
           />
+        )}
+      </Section>
+
+      <Section title="슬롯 없는 보존 브랜치">
+        {preserved.length === 0 ? (
+          <p data-testid="preserved-empty" className="text-slate-500">(없음)</p>
+        ) : (
+          <table className="w-full">
+            <tbody>
+              {preserved.map((row) => (
+                <tr key={`${row.repo}:${row.name}`} data-testid={`preserved-${row.repo}:${row.name}`}
+                    className="align-top">
+                  <td className="py-0.5 font-mono">{row.name}</td>
+                  <td className="py-0.5 font-mono text-[11px] text-slate-500">{row.slot}</td>
+                  <td className="py-0.5 font-mono text-[11px] text-slate-500">{row.preserved_at}</td>
+                  <td className="py-0.5 text-slate-500">
+                    {PRESERVED_REASON_LABELS[row.reason] ?? row.reason}
+                  </td>
+                  <td className="py-0.5 text-slate-500">{unmergedText(row)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </Section>
 

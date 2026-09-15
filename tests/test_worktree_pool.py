@@ -152,7 +152,10 @@ _DEFAULT_HEAD_SHA = "a1b2c3d4" * 5
 
 
 def _answer_config(config: dict, args: list) -> tuple[int, str]:
-    """git config 저장소 흉내 — `--get` 없으면 rc1·`--get-regexp` 는 부모 기록 키·없으면 rc1·`<k> <v>` 는 저장."""
+    """git config 저장소 흉내 — `--get` 없으면 rc1·`--get-regexp` 는 부모 기록 키·없으면 rc1·
+    `--unset` 은 지우고 없으면 rc5·`<k> <v>` 는 저장."""
+    if args[:1] == ["--unset"]:
+        return (0, "") if config.pop(args[1], None) is not None else (5, "")
     if args[:1] == ["--get"]:
         value = config.get(args[1])
         return (1, "") if value is None else (0, value + "\n")
@@ -7219,6 +7222,35 @@ def test_cmd_switch_refusal_is_rc1_loud(wp, monkeypatch, capsys):
     rc = wp.main(["switch", "A_1", "main"])
     assert rc == 1
     assert "보호 브랜치로 전환" in capsys.readouterr().err
+
+
+def test_switch_preserved_record_clear_failure_is_record_failed(wp, monkeypatch, capsys):
+    """전환 뒤 보존 기록 지우기(`config --unset`) 실패 → traceback 이 아니라 `SwitchRefused("record-failed")`
+    (전환은 이미 일어났다) · CLI 는 rc 1 + 사유."""
+    def locked(git):
+        def runner(argv):
+            if argv[:2] == ["config", "--unset"]:
+                return (255, "error: could not lock config file\n")
+            return git(argv)
+        return runner
+
+    _switch_lease(wp)
+    git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["task/main"])
+    with pytest.raises(wp.SwitchRefused) as ei:
+        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=locked(git))
+    assert ei.value.reason == "record-failed"
+    assert "보존 기록 지우기 실패" in str(ei.value)
+    assert wp.current_branch("work/A_1", git_runner=git) == "task/main"   # 전환은 일어났다
+
+    _switch_lease(wp)
+    cli_git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["task/main"])
+    monkeypatch.setattr(wp, "_resolve_protected", lambda repo, **kw: ["main"])
+    monkeypatch.setattr(wp, "_real_git_runner", lambda path: locked(cli_git))
+    (wp.REPO / "work" / "A_1").mkdir(parents=True, exist_ok=True)
+    rc = wp.main(["switch", "A_1", "task/main"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "보존 기록 지우기 실패" in err and "Traceback" not in err
 
 
 def test_cmd_switch_bad_slot_rejected(wp, capsys):

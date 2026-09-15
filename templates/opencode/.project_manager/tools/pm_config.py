@@ -2368,7 +2368,7 @@ def _slot_git_summary(status: dict, *, readonly: bool = False) -> str:
 # 관리자(설치본)가 프로젝트 사본에서 현황을 읽는 **유일한 계약**이다. 새 명령을 만들지 않고
 # 이미 읽기 전용인 `status` 에 기계 출력을 붙였다 — 사람 출력(텍스트)은 바이트 그대로다.
 #
-# 절은 비용으로 갈린다: 기본은 가벼운 절(슬롯·task·git·repo·하네스·설정)이고,
+# 절은 비용으로 갈린다: 기본은 가벼운 절(슬롯·슬롯 없는 보존 브랜치·task·git·repo·하네스·설정)이고,
 # `--with-board`(티켓·lint·게이트 기록)와 `--with-adapters`(어댑터 판정·diff·기능 표)가 무거운
 # 절을 붙인다. 기본 호출은 board 를 로드하지 않는다(티켓 파일을 읽지 않는다).
 STATUS_JSON_SCHEMA = 1
@@ -2641,6 +2641,7 @@ def _status_json_document(args, wp, *, board_mod, pm_import_mod,
         "pm_home": str(REPO.resolve()),
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "slots": _status_json_slots(wp, leases, task_names, remote),
+        "preserved_branches": wp.preserved_branches(),
         "tasks": _status_json_tasks(wp, tasks),
         "git": _status_json_git(git_runner),
         "repos": _status_json_repos(),
@@ -2880,6 +2881,17 @@ def cmd_status(
         git_line = _slot_git_line(l.slot, readonly=role == "readonly")
         git_part = git_line if git_line is not None else "(조회 불가)"
         print(f"      ↳ 보유 task={task_disp} · git: {git_part}")
+
+    # 슬롯 없는 보존 브랜치 — 슬롯 제거의 삭제 판정이 남긴 브랜치(공용 git 설정 기록). 있을 때만 절을 낸다.
+    preserved = wp.preserved_branches()
+    if preserved:
+        print("## 슬롯 없는 보존 브랜치 (슬롯 제거 때 삭제 판정이 남긴 브랜치 · 정리는 사용자):")
+    for row in preserved:
+        parent_part = f"부모 {row['parent']}" if row["parent"] is not None else "부모 기록 없음"
+        unmerged_part = ("합쳐짐 판정 불가" if row["unmerged"] is None
+                         else f"합쳐지지 않은 커밋 {row['unmerged']}개")
+        print(f"  - {row['repo']} · {row['name']} · 쓰던 슬롯 {row['slot']} · "
+              f"보존 {row['preserved_at']} · 사유 {row['reason']} · {parent_part} · {unmerged_part}")
 
     # git worktree × 장부 정합(reconcile) — 실 git worktree 와 장부를 대조해 drift 를
     # surface 한다. **조회 전용·부작용 0**: 삭제/prune/이동 안 함 — 판정·복구 안내만(자동삭제는

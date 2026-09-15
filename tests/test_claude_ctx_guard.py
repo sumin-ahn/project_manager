@@ -629,7 +629,10 @@ def test_settings_wires_precompact_pretool_userprompt_and_postcompact():
         assert isinstance(registrations, list) and registrations
         cmds = [h.get("command", "") for m in registrations for h in m.get("hooks", [])]
         assert any("ctx_stop_hook.sh" in c for c in cmds), f"{event} 에 ctx_stop_hook 래퍼 누락"
-    assert data["hooks"]["PostCompact"] == data["hooks"]["UserPromptSubmit"], (
+    # UserPromptSubmit 에는 git-anchor 허용 기록 훅(`--git-anchor-hook`)이 함께 있다 — ctx 훅 그룹만 대조한다.
+    ctx_userprompt = [group for group in data["hooks"]["UserPromptSubmit"]
+                      if "--git-anchor-hook" not in json.dumps(group)]
+    assert data["hooks"]["PostCompact"] == ctx_userprompt, (
         "PostCompact 등록이 UserPromptSubmit ctx 훅과 동형이 아님")
     assert data["hooks"]["PreToolUse"][0].get("matcher") == "*"
     precompact = json.dumps(data["hooks"]["PreCompact"])

@@ -148,6 +148,37 @@ describe("슬롯 절", () => {
   });
 });
 
+describe("슬롯 없는 보존 브랜치 절", () => {
+  it("이름·쓰던 슬롯·보존 시각·사유·합쳐지지 않은 커밋 수를 보이고 버튼은 없다", () => {
+    renderTab();
+
+    const kept = screen.getByTestId("preserved-app:app_6");
+    expect(kept).toHaveTextContent("app_6");
+    expect(kept).toHaveTextContent("work/app_6");
+    expect(kept).toHaveTextContent("2026-09-15T01:02:03+00:00");
+    expect(kept).toHaveTextContent("합쳐지지 않은 커밋 있음");
+    expect(kept).toHaveTextContent("합쳐지지 않은 커밋 2개");
+    expect(kept.querySelector("button")).toBeNull();
+
+    const loose = screen.getByTestId("preserved-app:task/old");
+    expect(loose).toHaveTextContent("work/app_7");
+    expect(loose).toHaveTextContent("부모 기록 없음 · 판정 불가");
+    expect(loose.querySelector("button")).toBeNull();
+  });
+
+  it("보존 브랜치가 없으면 (없음) 한 줄이다", () => {
+    render(
+      <ProjectRunContext.Provider value={{
+        bridge: {} as Bridge, path: DEMO, status: { ...document_, preserved_branches: [] },
+        onChanged: vi.fn(),
+      }}>
+        <ConfigTab />
+      </ProjectRunContext.Provider>);
+
+    expect(screen.getByTestId("preserved-empty")).toHaveTextContent("(없음)");
+  });
+});
+
 describe("하네스·task 절", () => {
   it("설치된 하네스를 보이고 추가는 이름 하나다", async () => {
     const { run } = renderTab();

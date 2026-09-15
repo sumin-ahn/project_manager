@@ -26,6 +26,9 @@ repo별 git worktree 풀로 *코드*를 격리한다(병렬 브랜치·나중 gi
 브랜치 부모 = 공용 git 저장소 설정 `branch.<브랜치>.pm-parent`(부모 이름)·`pm-fork`(갈라진 커밋).
 브랜치를 만드는 엔진 명령(`create_slot`·`create_task_branch`)이 기록하고 rebase 만 바꾼다.
 git 이 브랜치 이름 변경·삭제 때 설정을 함께 옮기고 지운다.
+슬롯 없는 보존 브랜치 = 같은 자리의 `pm-slot`(쓰던 슬롯)·`pm-preserved-at`(보존 시각)·
+`pm-preserved-reason`(삭제 판정 사유). 슬롯 제거가 브랜치를 보존할 때 쓰고(보호·기본 브랜치
+제외), 그 브랜치가 다시 슬롯에 체크아웃되면 지운다.
 (예외 — 보호목록 조회만 board 를 **동적 sibling 로드**한다: `_load_board`·
 `_resolve_protected`. `identity_args`와 동형의 단방향 로더로 top-level import
 는 여전히 없고, 로드 실패는 default 보호목록 폴백이다.)
@@ -3118,6 +3121,9 @@ def remove_slot(
          트리만 못 지운 것이라 `force_rmtree` 로 마저 지우고 계속한다(읽기 전용 잔재 실측 형상).
       브랜치 — `delete_branch_by_rule`(보호·기본 브랜치·자식·부모 기록·합쳐짐·승인값·끝 커밋
          재확인)의 결과를 `RemoveResult.branch_deletion` 에 싣는다. detached 면 판별 불가(None).
+         보존이면 `record_preserved_branch` 로 쓰던 슬롯·보존 시각·사유를 공용 git 설정에 기록한다
+         (쓰기 실패는 `BranchParentError`·장부 행은 남는다). 보호·기본 브랜치 보존은 기록하지 않는다 —
+         슬롯 수명과 무관한 브랜치다(`_UNRECORDED_PRESERVED_REASONS`).
       장부 엔트리 제거 — `add` 가 빈 번호를 **재사용**(번호 skip footgun 종결·이 티켓 핵심).
 
     ⚠️ **보존 브랜치 상호작용**: 합쳐지지 않았거나 판정할 수 없어 전용
@@ -3198,10 +3204,15 @@ def remove_slot(
         bare_runner(["worktree", "prune"])  # best-effort 등록 정리(remove 후 dangling admin).
 
         # 브랜치 — 브랜치 수명은 슬롯 수명이다. 삭제 여부는 공용 판정 규칙이 정한다.
+        # 보존하면 슬롯이 사라진 뒤에도 어느 슬롯에서 왜 남았는지 알 수 있게 기록을 남긴다.
         branch_deletion = None
         if branch is not None:
             branch_deletion = delete_branch_by_rule(
                 branch, repo=target.repo, acked_branches=acked_branches, git_runner=bare_runner)
+            if (branch_deletion.action == BRANCH_PRESERVED
+                    and branch_deletion.reason not in _UNRECORDED_PRESERVED_REASONS):
+                record_preserved_branch(branch, slot=slot, reason=branch_deletion.reason,
+                                        git_runner=bare_runner)
 
         _drop_ledger_row()
         return RemoveResult(slot=slot, branch=branch, branch_deletion=branch_deletion,
@@ -4250,16 +4261,23 @@ def _branch_config_key(branch: str, key: str) -> str:
     return f"{_BRANCH_CONFIG_PREFIX}{branch}.{key}"
 
 
-def record_branch_parent(branch: str, parent: str, fork: str, *, git_runner: GitRunner) -> None:
-    """`branch` 의 부모 이름과 갈라진 커밋을 git 설정에 쓴다. rc≠0 → `BranchParentError`."""
-    for key, value in ((BRANCH_PARENT_KEY, parent), (BRANCH_FORK_KEY, fork)):
+def _write_branch_config(branch: str, values: "tuple[tuple[str, str], ...]", *, what: str,
+                         git_runner: GitRunner) -> None:
+    """`branch.<branch>.<키>=<값>` 들을 git 설정에 쓴다. rc≠0 → `BranchParentError`(`what` 기록 쓰기 실패)."""
+    for key, value in values:
         config_key = _branch_config_key(branch, key)
         rc, out = git_runner(["config", config_key, value])
         if rc != 0:
             raise BranchParentError(
-                f"브랜치 {branch!r} 부모 기록 쓰기 실패 — `git config {config_key} {value}` "
+                f"브랜치 {branch!r} {what} 쓰기 실패 — `git config {config_key} {value}` "
                 f"(rc={rc}): {str(out).strip()[:200]}"
             )
+
+
+def record_branch_parent(branch: str, parent: str, fork: str, *, git_runner: GitRunner) -> None:
+    """`branch` 의 부모 이름과 갈라진 커밋을 git 설정에 쓴다. rc≠0 → `BranchParentError`."""
+    _write_branch_config(branch, ((BRANCH_PARENT_KEY, parent), (BRANCH_FORK_KEY, fork)),
+                         what="부모 기록", git_runner=git_runner)
 
 
 def _read_branch_config(branch: str, key: str, *, git_runner: GitRunner) -> "str | None":
@@ -4576,6 +4594,107 @@ def delete_branch_by_rule(
     return BranchDeletion(branch, action=BRANCH_DELETED,
                           reason=BRANCH_REASON_ACKED if unmerged else BRANCH_REASON_MERGED,
                           unmerged_commits=unmerged, **judged)
+
+
+# ── 슬롯 없는 보존 브랜치 기록 (공용 git 저장소 설정 `branch.<브랜치>.pm-slot` 등) ──
+# 슬롯 제거가 브랜치를 보존하면 어느 슬롯에서 쓰던 브랜치인지·언제·왜 남았는지를 부모 기록과 같은
+# 자리에 쓴다. 보호·기본 브랜치 보존은 쓰지 않는다 — 슬롯 수명과 무관한 브랜치라 "슬롯 없는 보존
+# 브랜치" 가 아니다. 브랜치가 지워지면 git 이 설정도 함께 지우고, 그 브랜치가 다시 슬롯에
+# 체크아웃되면(`_checkout_required`) 엔진이 지운다. 조회는 `preserved_branches` 한 곳이다.
+
+BRANCH_SLOT_KEY = "pm-slot"                          # branch.<브랜치>.pm-slot = 보존 직전 쓰던 슬롯.
+BRANCH_PRESERVED_AT_KEY = "pm-preserved-at"          # branch.<브랜치>.pm-preserved-at = 보존 시각(UTC ISO).
+BRANCH_PRESERVED_REASON_KEY = "pm-preserved-reason"  # branch.<브랜치>.pm-preserved-reason = BRANCH_REASON_*.
+_PRESERVED_RECORD_KEYS = (BRANCH_SLOT_KEY, BRANCH_PRESERVED_AT_KEY, BRANCH_PRESERVED_REASON_KEY)
+_PRESERVED_RECORD_PATTERN = r"^branch\..*\.pm-(slot|preserved-at|preserved-reason)$"
+_GIT_CONFIG_UNSET_MISSING_RC = 5   # `git config --unset` 의 "그런 키 없음" rc(git 2.43 실측).
+# 보존이어도 기록하지 않는 판정 사유 — 슬롯 수명과 무관한 보호 브랜치·공용 저장소 기본 브랜치.
+_UNRECORDED_PRESERVED_REASONS = frozenset({BRANCH_REASON_PROTECTED, BRANCH_REASON_DEFAULT})
+
+
+def record_preserved_branch(branch: str, *, slot: str, reason: str, git_runner: GitRunner) -> None:
+    """슬롯 제거가 보존한 `branch` 에 쓰던 슬롯·보존 시각·사유를 기록한다. rc≠0 → `BranchParentError`."""
+    _write_branch_config(
+        branch,
+        ((BRANCH_SLOT_KEY, slot), (BRANCH_PRESERVED_AT_KEY, _now_utc()),
+         (BRANCH_PRESERVED_REASON_KEY, reason)),
+        what="보존 기록", git_runner=git_runner)
+
+
+def clear_preserved_branch(branch: str, *, git_runner: GitRunner) -> None:
+    """`branch` 의 보존 기록 세 키를 지운다 — 없는 키는 그대로 두고, 그 밖의 rc≠0 은 `BranchParentError`."""
+    for key in _PRESERVED_RECORD_KEYS:
+        config_key = _branch_config_key(branch, key)
+        rc, out = git_runner(["config", "--unset", config_key])
+        if rc not in (0, _GIT_CONFIG_UNSET_MISSING_RC):
+            raise BranchParentError(
+                f"브랜치 {branch!r} 보존 기록 지우기 실패 — `git config --unset {config_key}` "
+                f"(rc={rc}): {str(out).strip()[:200]}"
+            )
+
+
+def _read_preserved_records(repo: str, *, git_runner: GitRunner) -> "dict[str, dict[str, str]]":
+    """공용 git 설정 조회 1회로 `{브랜치: {키: 값}}` — 기록이 하나도 없으면 {}."""
+    rc, out = git_runner(["config", "--get-regexp", _PRESERVED_RECORD_PATTERN])
+    if rc == _GIT_CONFIG_MISSING_RC:
+        return {}
+    if rc != 0:
+        raise BranchParentError(
+            f"repo {repo!r} 보존 브랜치 조회 실패 — `git config --get-regexp` (rc={rc}): "
+            f"{str(out).strip()[:200]}"
+        )
+    records: dict[str, dict[str, str]] = {}
+    for line in str(out).splitlines():
+        key, _sep, value = line.partition(" ")
+        # 키 = `branch.<브랜치>.<변수>` — 변수 이름에는 `.` 이 없어 마지막 `.` 에서 자른다.
+        section, _dot, variable = key.rpartition(".")
+        records.setdefault(section[len(_BRANCH_CONFIG_PREFIX):], {})[variable] = value
+    return records
+
+
+def _unmerged_count(branch: str, parent: "str | None", *, git_runner: GitRunner) -> "int | None":
+    """부모에 합쳐지지 않은 커밋 수 — 부모 기록이 없거나 부모 브랜치가 지워졌으면 None."""
+    if parent is None:
+        return None
+    compare_ref = parent_ref(parent, git_runner=git_runner)
+    if compare_ref is None:
+        return None
+    return _left_right_counts(compare_ref, f"{_SYMREF_BRANCH_PREFIX}{branch}", git_runner=git_runner)[1]
+
+
+def preserved_branches(*, git_runner: GitRunner | None = None) -> "list[dict]":
+    """슬롯 없는 보존 브랜치 목록 — `.repos/*.git` 마다 보존 기록을 읽어 repo·이름 순으로 싣는다.
+
+    행 = `{repo, name, slot, preserved_at, reason, parent, unmerged}`. `parent` 는 부모 기록의 부모
+    이름(없으면 None), `unmerged` 는 부모에 합쳐지지 않은 커밋 수(`_unmerged_count`).
+    세 키 중 일부만 있거나 기록된 브랜치가 없으면 기록 손상이라 `BranchParentError` 다(빈 행으로
+    접지 않는다). `git_runner` 주입 시 모든 repo 에 그 runner, 아니면 repo 마다 bare 에 묶인 실 runner."""
+    rows: list[dict] = []
+    for repo, bare in _discover_bares():
+        runner = git_runner or _real_git_runner(bare)
+        for branch, values in sorted(_read_preserved_records(repo, git_runner=runner).items()):
+            missing = [key for key in _PRESERVED_RECORD_KEYS if key not in values]
+            if missing:
+                raise BranchParentError(
+                    f"repo {repo!r} 브랜치 {branch!r} 보존 기록 손상 — {', '.join(missing)} 가 없다"
+                )
+            if _branch_tip(branch, git_runner=runner) is None:
+                raise BranchParentError(
+                    f"repo {repo!r} 보존 기록 손상 — 기록된 브랜치 {branch!r} 가 없다"
+                    f"(`refs/heads/{branch}`)"
+                )
+            record = read_branch_parent(branch, git_runner=runner)
+            parent = record["name"] if record is not None else None
+            rows.append({
+                "repo": repo,
+                "name": branch,
+                "slot": values[BRANCH_SLOT_KEY],
+                "preserved_at": values[BRANCH_PRESERVED_AT_KEY],
+                "reason": values[BRANCH_PRESERVED_REASON_KEY],
+                "parent": parent,
+                "unmerged": _unmerged_count(branch, parent, git_runner=runner),
+            })
+    return rows
 
 
 # ── readonly 공유 슬롯 — role 조회 / mutation 거부 / refresh ──
@@ -5347,7 +5466,8 @@ class SwitchRefused(RuntimeError):
         (부작용 0).
       - **git-error** — `_checkout_required`(checkout+resync)를 *시도한 뒤* 실패(트리 상태는 git 이
         남긴 그대로·장부 불변·`CheckoutFailed` 를 이 사유로 감싼다).
-      - **record-failed** — 전환은 **성공**했고 장부 스냅 재기록만 실패(원자성 파손 → 아래 안내).
+      - **record-failed** — 전환은 **성공**했고 그 뒤 기록(보존 기록 지우기 또는 장부 스냅 재기록)만
+        실패(원자성 파손 → 아래 안내).
 
     `reason` ∈ {"unregistered", "protected", "protected-upstream", "checked-out-elsewhere",
     "no-worktree", "dirty", "rebase-in-progress", "invalid-ref", "not-found", "git-error",
@@ -5373,8 +5493,9 @@ class SwitchRefused(RuntimeError):
       - **not-found** — 로컬 브랜치가 없다. switch 는 브랜치를 만들지 않는다 — 새 브랜치는 생성
         시점에 부모를 기록하는 task branch 명령으로 만든다.
       - **git-error** — 브랜치 전환(`_checkout_required`) 자체가 실패.
-      - **record-failed** — 전환은 됐으나 장부 스냅 재기록이 실패했다(원자성 깨짐 → **loud**:
-        조용히 성공 보고하면 다음 0단계가 diverged 로 막힌다 → `record` 안내).
+      - **record-failed** — 전환은 됐으나 보존 기록 지우기(`clear_preserved_branch`) 또는 장부 스냅
+        재기록이 실패했다(원자성 깨짐 → **loud**: 조용히 성공 보고하면 다음 0단계가 diverged 로
+        막힌다 → `record` 안내·보존 기록 실패는 원인 해소 뒤 같은 switch 재실행).
     (`RuntimeError` — `RefreshRefused` 동형·CLI 파사드가 rc 1 로 surface.)"""
 
     def __init__(self, slot: str, reason: str, *, detail: str = ""):
@@ -5404,9 +5525,10 @@ class SwitchRefused(RuntimeError):
             "not-found": (f"슬롯 {slot!r} 에 지정한 브랜치가 없다 — switch 는 기존 브랜치 전환만 한다. "
                           f"새 브랜치는 {_TASK_BRANCH_REMEDY} 로 만든다"),
             "git-error": f"슬롯 {slot!r} 브랜치 전환 중 git 오류",
-            "record-failed": (f"슬롯 {slot!r} 브랜치 전환은 됐으나 장부 스냅 재기록에 실패했다 — 이대로면 "
-                              f"다음 0단계가 '기록↔live diverged' 로 막는다. "
-                              f"`worktree_pool.py record {slot}` 로 스냅을 재기록하라"),
+            "record-failed": (f"슬롯 {slot!r} 브랜치 전환은 됐으나 기록(보존 기록 지우기 또는 장부 스냅 "
+                              f"재기록)에 실패했다 — 이대로면 다음 0단계가 '기록↔live diverged' 로 막는다. "
+                              f"`worktree_pool.py record {slot}` 로 스냅을 재기록하라(보존 기록 지우기 "
+                              f"실패였다면 원인을 해소한 뒤 같은 switch 를 다시 실행한다)"),
         }.get(reason, f"슬롯 {slot!r} switch 거부({reason})")
         super().__init__(msg + tail + "")
 
@@ -5493,7 +5615,9 @@ def switch(slot: str, branch: str, *, protected: "list[str] | None" = None,
          `submodule.recurse=true` override) + 성공 직후 `_resync_submodules_selective`
          (detached=pin 재동기·**on-branch(dev)=skip**·dirty=skip+경고·fail-soft). alloc 의 브랜치
          전환 3분기가 쓰는 그 경로다 — 새 프리미티브를 쓰면 이 submodule 보호가 통째로 빠진다
-         (codex 게이트 must-fix). 실패는 `CheckoutFailed` → `git-error`.
+         (codex 게이트 must-fix). 실패는 `CheckoutFailed` → `git-error`. 성공하면 그 브랜치의
+         보존 기록(슬롯 제거가 남긴 `pm-slot` 등)을 지운다 — 다시 슬롯에 들어온 브랜치다. 그 지우기
+         실패(`BranchParentError`)는 전환이 이미 일어난 뒤라 `record-failed` 로 거부한다.
       9. **스냅 재기록** — 전환·resync **후에** `_rerecord_branch_snapshot`(`record` 서브커맨드와
          동형 판정·실패는 전부 `record-failed`).
     반환 = `SwitchResult`(branch=**정규화 이름**·requested=원문·head). **diverged 검사는
@@ -5560,6 +5684,9 @@ def switch(slot: str, branch: str, *, protected: "list[str] | None" = None,
     except CheckoutFailed as exc:
         raise SwitchRefused(slot, "git-error",
                             detail=f"브랜치 전환 실패: {str(exc.output).strip()[:200]}") from exc
+    except BranchParentError as exc:
+        # 보존 기록 지우기 실패 — 전환은 이미 일어났으므로 스냅 재기록 실패와 같은 채널로 거부한다.
+        raise SwitchRefused(slot, "record-failed", detail=str(exc)) from exc
 
     recorded = _rerecord_branch_snapshot(
         slot, target, lease, git_runner=git_runner,
@@ -5912,10 +6039,17 @@ def _checkout_required(slot: str, branch: str, *,
 
     없는 브랜치·타 worktree 점유 브랜치는 `CheckoutFailed` 로 loud 실패한다(브랜치를 만들거나 리셋하지
     않는다 — alloc `--branch` 에 없는 이름을 줘도 만들지 않는다).
+
+    체크아웃 성공 뒤 도착한 브랜치의 보존 기록(`clear_preserved_branch`)을 지운다 — 기존 브랜치가
+    슬롯에 들어오는 엔진 경로(switch·alloc)가 모두 이 함수를 지나므로, 다시 쓰이는 브랜치는 "슬롯 없는
+    보존 브랜치" 목록에서 빠진다. 지우기 실패는 `BranchParentError` 로 올린다.
     """
     rc, out = _checkout(slot_path(slot), branch, git_runner=git_runner)
     if rc != 0:
         raise CheckoutFailed(slot, branch, out)
+    arrived = current_branch(slot, git_runner=git_runner)
+    if arrived is not None:
+        clear_preserved_branch(arrived, git_runner=git_runner or _real_git_runner(slot_path(slot)))
     _resync_submodules_selective(slot_path(slot), git_runner=git_runner)
 
 

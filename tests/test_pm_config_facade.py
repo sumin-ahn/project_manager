@@ -318,6 +318,11 @@ class FakeWorktreePool:
         orphans, stale, incomplete = self._reconcile or ([], [], [])
         return SimpleNamespace(orphans=orphans, stale=stale, incomplete=incomplete)
 
+    def preserved_branches(self, *, git_runner=None):
+        # 슬롯 없는 보존 브랜치 대역 — 보존 기록이 없는 공용 저장소(빈 목록·cmd_status 절 미출력).
+        self.calls.append(("preserved_branches",))
+        return []
+
     def release(self, slot, *, owner_task=None, git_runner=None):
         self.calls.append(("release", slot, owner_task))
         if self._release_raises is not None:

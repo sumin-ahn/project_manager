@@ -88,11 +88,15 @@ def test_hook_registration_sets_asymmetric_both_autocompact_on():
         f"root PreCompact 가 precompact 훅을 안 가리킴: {root_block}"
     )
     assert root.get("autoCompactEnabled") is not False, "root 는 auto-compact 유지여야 함"
-    for config, label in ((root, "root"), (tmpl, "template")):
+    # root 는 Bash 만, template 은 파일 쓰기·편집·위임 도구 입력(허용 위조)까지 git-anchor 훅에 건다.
+    for config, label, matcher in (
+        (root, "root", "Bash"),
+        (tmpl, "template", "Bash|Write|Edit|MultiEdit|NotebookEdit|Agent|Task"),
+    ):
         git_hooks = [entry for entry in config["hooks"]["PreToolUse"]
-                     if entry.get("matcher") == "Bash"
+                     if entry.get("matcher") == matcher
                      and "--git-anchor-hook" in json.dumps(entry)]
-        assert git_hooks, f"{label} PreToolUse(Bash) git-anchor 훅 누락"
+        assert git_hooks, f"{label} PreToolUse({matcher}) git-anchor 훅 누락"
     # template: PostCompact 완료 후 재무장 + auto-compact 정본 단일 토글 ON(T-0458).
     postcompact = tmpl["hooks"]["PostCompact"]
     assert "ctx_stop_hook.sh" in json.dumps(postcompact), (

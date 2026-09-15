@@ -19,6 +19,7 @@ import argparse
 import ast
 import contextlib
 import datetime
+import fnmatch
 import functools
 import hashlib
 import importlib.util
@@ -383,7 +384,7 @@ _READ_PM_INPUTS_BY_SUBCOMMAND: dict[str, str] = {
 # 공유 engine-root `livegate.json`(둘 다 anchor HEAD 로 키·**worktree cwd 실행이 설계 의도**).
 # 게이트하면 릴리즈/회귀 흐름이 깨진다— 비게이트.
 _SIDECAR_SUBCOMMANDS: frozenset[str] = frozenset({
-    "regression", "livegate", "git-anchor",
+    "regression", "livegate", "git-anchor", "git-grant", "git-tool-input",
 })
 # 서브그룹 이름 → 그 그룹 leaf 를 담은 argparse dest. 분류 키(`<group> <leaf>` 점표기)를 만드는
 # `_resolved_subcommand` 의 단일 표다 — 파서에 그룹을 더하면 여기에도 등재한다.
@@ -400,16 +401,39 @@ _GIT_MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
 })
 # 브랜치·작업 변경·슬롯·원격을 되돌리기 어렵게 바꿀 수 있는 서브커맨드. 브랜치와 슬롯은 엔진만
 # 만들고 지우므로, 이 안의 파괴 형태(`_git_destructive_form`)는 슬롯·공용 저장소 대상에서 거부한다.
+# 저수준 명령(update-ref·symbolic-ref·checkout-index·read-tree)도 같은 결과를 내므로 함께 본다.
 _GIT_DESTRUCTIVE_SUBCOMMANDS: frozenset[str] = frozenset({
     "branch", "worktree", "reset", "checkout", "switch", "restore", "clean", "stash", "push",
+    "update-ref", "symbolic-ref", "checkout-index", "read-tree",
 })
 # 파괴 형태를 거부하는 대상 정체 — 등록 슬롯 · 그 밖의 PM 홈 소유 linked worktree · 공용 저장소(bare).
 _GIT_PROTECTED_IDENTITIES: frozenset[str] = frozenset({"slot", "worktree", "shared-repo"})
-# 파괴 형태 deny 표식. 셸 파서의 조건/cwd 불확실 강등(deny→warn)은 이 표식이 붙은 판정을 낮추지
-# 않는다 — 대상을 못 정한 호출은 이미 슬롯·공용 저장소일 수 있다고 보고 거부한 결과다.
+# 멈춤 거부 deny 표식 — 손 git 파괴 형태·슬롯/공용 저장소 파일 삭제·허용 위조. 셸 파서의 조건/cwd
+# 불확실 강등(deny→warn)은 이 표식이 붙은 판정을 낮추지 않는다 — 대상을 못 정한 호출은 이미
+# 슬롯·공용 저장소일 수 있다고 보고 거부한 결과다.
 GIT_DESTRUCTIVE_DENY_CODE = "git-destructive-form"
+# 멈춤 거부 문구의 첫 줄. 다음 줄은 경우(`_GIT_GUARD_CASE_*`)마다 행동 하나다.
+GIT_GUARD_STOP_LINE = "다른 명령으로 같은 일을 하지 마라. 여기서 멈추고 사용자에게 물어라."
+# 거부 경우 — 다음 행동을 고르는 키. 사용자 1회 허용으로 풀 수 있는 경우는 ASK_USER 하나다.
+_GIT_GUARD_CASE_FOLDER_UNKNOWN = "folder-unknown"
+_GIT_GUARD_CASE_LITERAL_ARGUMENTS = "literal-arguments"
+_GIT_GUARD_CASE_BRANCH_CREATE = "branch-create"
+_GIT_GUARD_CASE_SLOT_REMOVE = "slot-remove"
+_GIT_GUARD_CASE_ASK_USER = "ask-user"
+_GIT_GUARD_CASE_GRANT_FORGERY = "grant-forgery"
+# 사용자 1회 허용 입력 한 줄 — `git 허용: <명령 원문>`. 사용자 프롬프트 훅만 이 줄로 허용 기록을
+# 만든다. 도구 호출 입력에 이 표식이나 허용 기록 폴더 이름이 있으면 위조 시도로 거부한다.
+GIT_GRANT_LINE = re.compile(r"^[ \t]*git[ \t]+허용[ \t]*:[ \t]*(.*?)[ \t]*$", re.MULTILINE)
+_GIT_GRANT_MARKER = re.compile(r"git[ \t]+허용[ \t]*:")
+GIT_GRANT_DIR_NAME = "git-grants"
+# 허용 명령 원문에 둘 수 없는 문자 — 셸 연산자·리다이렉션·확장(변수·명령 치환·glob·틸드·중괄호
+# 전개)·주석. 이런 글자가 없어야 argv 정규화(shlex)와 실제 셸 실행의 의미가 같다.
+_GIT_GRANT_UNSAFE_TEXT = re.compile(
+    r"[;&|<>()$`*?\[\r\n]|(?:^|[\s=:])~|\{[^}]*(?:,|\.\.)[^}]*\}|(?:^|\s)#"
+)
 _GIT_ANCHOR_DENY_ROOTS: frozenset[str] = frozenset({"tests", "templates"})
-_GIT_COMMAND_PREFILTER = re.compile(r"(?<![A-Za-z0-9_.-])['\"]?git['\"]?(?=\s|$|[<>])")
+# `,` 뒤따름은 인터프리터 코드의 argv 목록(``['git', 'branch', …]``)에서 따옴표를 걷은 형태다.
+_GIT_COMMAND_PREFILTER = re.compile(r"(?<![A-Za-z0-9_.-])['\"]?git['\"]?(?=\s|$|[<>,])")
 
 
 class _GitInvocation(NamedTuple):
@@ -783,38 +807,33 @@ def _git_option_given(arguments: _GitArguments, *names: str) -> bool:
 
 class _GitDestructiveForm(NamedTuple):
     label: str
-    remedy: str
+    # 거부 경우(`_GIT_GUARD_CASE_*`) — 거부 문구의 다음 행동과 1회 허용 가능 여부를 정한다.
+    case: str
 
 
-_GIT_BRANCH_CREATE = _GitDestructiveForm(
-    "브랜치 만들기", "`pm-config task branch <명의> <슬롯> <브랜치> --from <부모>` 로 만든다",
+_GIT_BRANCH_CREATE = _GitDestructiveForm("브랜치 만들기", _GIT_GUARD_CASE_BRANCH_CREATE)
+_GIT_BRANCH_DELETE = _GitDestructiveForm("브랜치 지우기", _GIT_GUARD_CASE_ASK_USER)
+_GIT_BRANCH_RENAME = _GitDestructiveForm("브랜치 이름 바꾸기", _GIT_GUARD_CASE_ASK_USER)
+_GIT_DISCARD_CHANGES = _GitDestructiveForm("변경 버리기", _GIT_GUARD_CASE_ASK_USER)
+_GIT_SLOT_REMOVE = _GitDestructiveForm("슬롯 지우기", _GIT_GUARD_CASE_SLOT_REMOVE)
+_GIT_SLOT_MOVE = _GitDestructiveForm("슬롯 옮기기", _GIT_GUARD_CASE_ASK_USER)
+_GIT_REMOTE_OVERWRITE = _GitDestructiveForm("원격 덮어쓰기", _GIT_GUARD_CASE_ASK_USER)
+_GIT_REF_REWRITE = _GitDestructiveForm(
+    "브랜치 ref 직접 지우기·옮기기(저수준 명령)", _GIT_GUARD_CASE_ASK_USER,
 )
-_GIT_BRANCH_DELETE = _GitDestructiveForm(
-    "브랜치 지우기",
-    "브랜치 삭제는 엔진이 슬롯 제거(`pm-config worktree remove <slot> --user-ack <slot>`)·"
-    "묶음 종결 때 판정한다",
-)
-_GIT_BRANCH_RENAME = _GitDestructiveForm("브랜치 이름 바꾸기", "사용자가 터미널에서 직접 한다")
-_GIT_DISCARD_CHANGES = _GitDestructiveForm("변경 버리기", "사용자가 터미널에서 직접 한다")
-_GIT_SLOT_REMOVE = _GitDestructiveForm(
-    "슬롯 지우기", "`pm-config worktree remove <slot> --user-ack <slot>` 로 지운다",
-)
-_GIT_REMOTE_OVERWRITE = _GitDestructiveForm("원격 덮어쓰기", "사용자가 터미널에서 직접 한다")
 _GIT_UNRESOLVED_ARGUMENTS = _GitDestructiveForm(
-    "셸 변수·명령 치환이 든 인자(형태를 정적으로 풀 수 없음)",
-    "인자를 값 그대로 적어 다시 실행한다",
+    "셸 변수·명령 치환이 든 인자(형태를 정적으로 풀 수 없음)", _GIT_GUARD_CASE_LITERAL_ARGUMENTS,
 )
 _GIT_UNRESOLVED_REF = _GitDestructiveForm(
     "대상 저장소를 정할 수 없어 기존 브랜치·커밋 전환인지 확인할 수 없음",
-    "대상을 `git -C <절대경로>` 로 적어 다시 실행한다",
+    _GIT_GUARD_CASE_FOLDER_UNKNOWN,
 )
 _GIT_UNKNOWN_CHECKOUT_NAME = _GitDestructiveForm(
     "기존 커밋이 아닌 이름 — 경로 복원(변경 버리기) 또는 원격 추적 브랜치로 브랜치 만들기",
-    "변경 버리기는 사용자가 터미널에서 직접 하고, 브랜치는 "
-    "`pm-config task branch <명의> <슬롯> <브랜치> --from <부모>` 로 만든다",
+    _GIT_GUARD_CASE_ASK_USER,
 )
 _GIT_UNKNOWN_LOCAL_BRANCH = _GitDestructiveForm(
-    "로컬 브랜치가 아닌 이름 — 원격 추적 브랜치로 브랜치 만들기", _GIT_BRANCH_CREATE.remedy,
+    "로컬 브랜치가 아닌 이름 — 원격 추적 브랜치로 브랜치 만들기", _GIT_GUARD_CASE_BRANCH_CREATE,
 )
 
 
@@ -948,6 +967,8 @@ def _git_worktree_form(
     action = parsed.operands[0] if parsed.operands else ""
     if action == "remove":
         return _GIT_SLOT_REMOVE
+    if action == "move":
+        return _GIT_SLOT_MOVE
     if action != "add":
         return None
     if _git_option_given(parsed, "-b", "-B", "--orphan"):
@@ -982,10 +1003,50 @@ def _git_push_form(
     return None
 
 
+def _git_update_ref_form(
+    args: Sequence[str], ref_anchor: Path | None, runner: Any,
+) -> _GitDestructiveForm | None:
+    # ``update-ref [-d] <ref> …`` 이 로컬 브랜치(refs/heads/·HEAD)를 지우거나 옮기면 `branch -D`·
+    # `reset` 과 같은 결과다. ``--stdin`` 은 명령 목록을 입력으로 받아 대상을 정적으로 볼 수 없다.
+    parsed = _git_arguments(args, short_values="m", long_values=frozenset({"--message"}))
+    if _git_option_given(parsed, "--stdin"):
+        return _GIT_REF_REWRITE
+    ref = parsed.operands[0] if parsed.operands else ""
+    return _GIT_REF_REWRITE if ref == "HEAD" or ref.startswith("refs/heads/") else None
+
+
+def _git_symbolic_ref_form(
+    args: Sequence[str], ref_anchor: Path | None, runner: Any,
+) -> _GitDestructiveForm | None:
+    # 이름 하나만 주면 읽기다. 대상까지 주거나 ``-d`` 면 HEAD 가 가리키는 브랜치를 바꾸거나 지운다.
+    parsed = _git_arguments(args, short_values="m", long_values=frozenset({"--message"}))
+    if _git_option_given(parsed, "-d", "--delete") or len(parsed.operands) > 1:
+        return _GIT_REF_REWRITE
+    return None
+
+
+def _git_checkout_index_form(
+    args: Sequence[str], ref_anchor: Path | None, runner: Any,
+) -> _GitDestructiveForm | None:
+    parsed = _git_arguments(args, long_values=frozenset({"--prefix", "--stage"}))
+    return _GIT_DISCARD_CHANGES if _git_option_given(parsed, "-f", "--force") else None
+
+
+def _git_read_tree_form(
+    args: Sequence[str], ref_anchor: Path | None, runner: Any,
+) -> _GitDestructiveForm | None:
+    parsed = _git_arguments(
+        args, long_values=frozenset({"--prefix", "--index-output", "--exclude-per-directory"}),
+    )
+    return _GIT_DISCARD_CHANGES if _git_option_given(parsed, "--reset") else None
+
+
 _GIT_DESTRUCTIVE_FORM_JUDGES = {
     "branch": _git_branch_form, "checkout": _git_checkout_form, "switch": _git_switch_form,
     "reset": _git_reset_form, "restore": _git_restore_form, "clean": _git_clean_form,
     "stash": _git_stash_form, "worktree": _git_worktree_form, "push": _git_push_form,
+    "update-ref": _git_update_ref_form, "symbolic-ref": _git_symbolic_ref_form,
+    "checkout-index": _git_checkout_index_form, "read-tree": _git_read_tree_form,
 }
 
 
@@ -1080,13 +1141,21 @@ _SHELL_COMMAND_WRAPPERS: frozenset[str] = frozenset({
     "env", "command", "exec", "nohup", "nice", "timeout", "sudo",
 })
 _INDIRECT_GIT_CALL = re.compile(r"(?<![A-Za-z0-9_.-])git((?:[ \t]+[^\s;&|()<>'\",\[\]]+)*)")
+# 인터프리터 코드의 argv 목록 형태(``['git', 'branch', '-D', 'x']``·``('git', ['reset', '--hard'])``)
+# — 따옴표 문자열이 쉼표(뒤따르는 여는 대괄호 허용)로 이어진다.
+_INDIRECT_GIT_LIST_CALL = re.compile(r"""(['"])git\1((?:\s*,\s*\[?\s*(['"])[^'"]*\3)*)""")
+_QUOTED_LITERAL = re.compile(r"""(['"])([^'"]*)\1""")
 
 
 def _indirect_git_destructive_argvs(text: str) -> list[tuple[str, ...]]:
     """셸·코드 문자열 속 git 호출 중 대상 미확정으로 읽어 파괴 형태인 것의 argv 목록."""
+    candidates = [("git", *match.group(1).split()) for match in _INDIRECT_GIT_CALL.finditer(text)]
+    candidates.extend(
+        ("git", *(literal for _quote, literal in _QUOTED_LITERAL.findall(match.group(2))))
+        for match in _INDIRECT_GIT_LIST_CALL.finditer(text)
+    )
     argvs: list[tuple[str, ...]] = []
-    for match in _INDIRECT_GIT_CALL.finditer(text):
-        argv = ("git", *match.group(1).split())
+    for argv in candidates:
         invocation = _git_invocation(".", argv)
         if invocation is not None and _git_destructive_form(
             invocation.subcommand, invocation.args, ref_anchor=None, runner=None,
@@ -1095,30 +1164,582 @@ def _indirect_git_destructive_argvs(text: str) -> list[tuple[str, ...]]:
     return argvs
 
 
-def _shell_indirect_git_argvs(command: Sequence[str]) -> list[tuple[str, ...]]:
-    """간접 실행 명령(``bash -c``·``eval``·``xargs``·``alias`` 등)의 인자 속 git 파괴 호출 argv."""
-    values = list(command)
+_SHELL_ASSIGNMENT_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
+
+
+def _shell_command_word_index(values: Sequence[str]) -> int:
+    """앞 할당·실행 wrapper·그 옵션을 걷어 command word 위치를 찾는다(값 소비 옵션 뒤 값은 거기서 멈춘다)."""
     index = 0
-    # 앞 할당·실행 wrapper·그 옵션을 걷어 command word 를 찾는다(값 소비 옵션 뒤 값은 거기서 멈춘다).
     while index < len(values) and (
-        re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", values[index], flags=re.DOTALL)
+        _SHELL_ASSIGNMENT_WORD.fullmatch(values[index])
         or Path(values[index]).name in _SHELL_COMMAND_WRAPPERS
         or values[index].startswith("-") or values[index].isdigit()
     ):
         index += 1
+    return index
+
+
+def _shell_indirect_executor(values: Sequence[str], index: int) -> tuple[str, list[str]] | None:
+    """command word 가 인자를 셸·코드로 다시 실행하는 명령이면 (이름, 인자), 아니면 None."""
+    name = Path(values[index]).name
+    arguments = list(values[index + 1:])
+    inline_code = bool(_SHELL_INLINE_CODE_INTERPRETERS.fullmatch(name)) and any(
+        _SHELL_INLINE_CODE_OPTION.fullmatch(value) for value in arguments
+    )
+    if name not in _SHELL_INDIRECT_EXECUTORS and not inline_code:
+        return None
+    return name, arguments
+
+
+def _shell_indirect_git_argvs(command: Sequence[str]) -> list[tuple[str, ...]]:
+    """간접 실행 명령(``bash -c``·``eval``·``xargs``·``alias`` 등)의 인자 속 git 파괴 호출 argv."""
+    values = list(command)
+    index = _shell_command_word_index(values)
     if index >= len(values):
         return []
     # 괄호 subshell·명령 치환이 command word 에 붙은 git(``(git …)``·``$(git …``)은 파서가 git 으로 읽지 못한다.
     if values[index].startswith(("$", "(", "`")) and Path(values[index].lstrip("$(`")).name == "git":
         return _indirect_git_destructive_argvs(" ".join(values[index:]))
-    name = Path(values[index]).name
-    arguments = values[index + 1:]
-    inline_code = bool(_SHELL_INLINE_CODE_INTERPRETERS.fullmatch(name)) and any(
-        _SHELL_INLINE_CODE_OPTION.fullmatch(value) for value in arguments
-    )
-    if name not in _SHELL_INDIRECT_EXECUTORS and not inline_code:
+    executor = _shell_indirect_executor(values, index)
+    if executor is None:
         return []
-    return _indirect_git_destructive_argvs(" ".join(arguments))
+    return _indirect_git_destructive_argvs(" ".join(executor[1]))
+
+
+# ── git 이 아닌 파일 명령의 슬롯·공용 저장소 삭제·이동 ─────────────────────────────────────
+# 손 git 거부를 파일 명령(rm·mv·find -delete·rsync --delete)이나 인터프리터 코드의 삭제 API 로
+# 돌아가지 못하게 같은 판정 자리에서 본다. 보호 대상은 PM 홈의 슬롯 폴더(`work/<slot>`)·그 git
+# 연결(`<slot>/.git`)·공용 저장소(`.repos/`)다. 슬롯 안의 일반 파일은 보호 대상이 아니다.
+# 경로 자체를 지우는 명령 — 대상 경로를 정적으로 못 풀면 파괴 형태로 보고 거부한다.
+_PATH_REMOVAL_COMMANDS: frozenset[str] = frozenset({"rm", "rmdir", "unlink", "shred"})
+_FILE_REMOVAL_COMMANDS: frozenset[str] = _PATH_REMOVAL_COMMANDS | {"mv", "find", "rsync"}
+# 인터프리터 코드 속 파일 삭제·이동 API(마지막 점 뒤 이름).
+_FILE_REMOVAL_API = re.compile(
+    r"(?:^|\.)(rmtree|remove|removedirs|unlink|rmdir|rmSync|rmdirSync|unlinkSync|rm_rf|rm_r"
+    r"|rename|replace|move|renameSync)$"
+)
+_FILE_MOVE_API_NAMES: frozenset[str] = frozenset({"rename", "replace", "move", "renameSync"})
+# 간접 실행 문자열의 낱말 — 따옴표·여는 괄호·쉼표는 구분자이고, 명령 경계 문자는 따로 낸다.
+_INDIRECT_WORD = re.compile(r"[;&|)\]}\n]|[^\s;&|()\[\]{},'\"`]+")
+_INDIRECT_BOUNDARY: frozenset[str] = frozenset({";", "&", "|", ")", "]", "}", "\n"})
+_INDIRECT_CWD_CHANGE = re.compile(r"(?<![A-Za-z0-9_])(?:cd|pushd|popd|chdir)(?![A-Za-z0-9_])")
+# xargs 가 입력으로 붙이는 대상 자리표시 — `$` 가 들어 있어 정적으로 풀 수 없는 경로가 된다.
+_XARGS_OPERAND_PLACEHOLDER = "$XARGS"
+_MV_VALUE_OPTIONS: frozenset[str] = frozenset({"-t", "--target-directory", "-S", "--suffix"})
+_FIND_EXEC_ACTIONS: frozenset[str] = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+_FIND_VALUE_OPTIONS: frozenset[str] = frozenset({"-maxdepth", "-mindepth", "-newer", "-type",
+                                                 "-mtime", "-mmin", "-size", "-user", "-group",
+                                                 "-perm"})
+# 이름·경로로 대상을 좁히는 find 식. 이 식이 있으면 그 패턴이 .git·.repos 에 걸릴 때만 본다.
+_FIND_NAME_PREDICATES: frozenset[str] = frozenset({
+    "-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex",
+})
+_RSYNC_VALUE_OPTIONS: frozenset[str] = frozenset({
+    "-e", "--rsh", "--exclude", "--include", "--filter", "-f", "--exclude-from",
+    "--include-from", "--files-from", "--backup-dir", "--suffix", "--chmod", "--rsync-path",
+    "--log-file", "--partial-dir", "--temp-dir", "-T", "--compare-dest", "--copy-dest",
+    "--link-dest", "--password-file", "--port", "--timeout", "--bwlimit", "--max-size",
+    "--min-size", "--out-format", "--info", "--debug", "-M", "--remote-option",
+})
+_RSYNC_REMOTE_PATH = re.compile(r"^(?:rsync://|[^/]+:)")
+# 보호 대상 종류와 그 거부 문구·경우.
+_PROTECTED_SLOT = "slot"
+_PROTECTED_SLOT_GIT = "slot-git"
+_PROTECTED_SHARED = "shared"
+# 그 안의 항목을 건드려도 보호 대상이 망가지는 종류(슬롯 폴더 안 일반 파일은 정상 작업이다).
+_PROTECTED_INTERNAL_KINDS: frozenset[str] = frozenset({_PROTECTED_SLOT_GIT, _PROTECTED_SHARED})
+_PROTECTED_KIND_ORDER: tuple[str, ...] = (_PROTECTED_SLOT, _PROTECTED_SLOT_GIT, _PROTECTED_SHARED)
+_PROTECTED_KIND_FORMS: dict[str, tuple[str, str]] = {
+    _PROTECTED_SLOT: ("슬롯 폴더", _GIT_GUARD_CASE_SLOT_REMOVE),
+    _PROTECTED_SLOT_GIT: ("슬롯의 git 연결(.git)", _GIT_GUARD_CASE_ASK_USER),
+    _PROTECTED_SHARED: ("공용 저장소(.repos)", _GIT_GUARD_CASE_ASK_USER),
+}
+
+
+class _RemovalTarget(NamedTuple):
+    token: str
+    # self=경로 자체를 지우거나 옮김 · contents=그 아래 항목을 지움 · into=그 안에 써 넣음(mv 목적지)
+    scope: str
+
+
+class _RemovalShape(NamedTuple):
+    verb: str
+    targets: tuple[_RemovalTarget, ...]
+    # 대상 경로를 정적으로 못 풀 때 파괴 형태로 거부할지(삭제) · 판정하지 않을지(mv).
+    unresolved_is_destructive: bool
+
+
+def _removal_arguments(
+    args: Sequence[str], value_options: frozenset[str],
+) -> tuple[list[str], dict[str, str | None]]:
+    """(operand 목록, {옵션 이름: 값}) — ``--`` 뒤는 전부 operand 다."""
+    operands: list[str] = []
+    options: dict[str, str | None] = {}
+    options_open = True
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if options_open and token == "--":
+            options_open = False
+        elif options_open and token.startswith("-") and token != "-":
+            name, separator, value = token.partition("=")
+            if not separator and name in value_options and index + 1 < len(args):
+                index += 1
+                options[name] = args[index]
+            else:
+                options[name] = value if separator else None
+        else:
+            operands.append(token)
+        index += 1
+    return operands, options
+
+
+def _find_pattern_may_select_protected(pattern: str) -> bool:
+    return any(
+        name in pattern or fnmatch.fnmatchcase(name, pattern)
+        or fnmatch.fnmatchcase(f"x/{name}", pattern)
+        for name in (".git", ".repos")
+    )
+
+
+def _find_removal_shape(args: Sequence[str]) -> _RemovalShape | None:
+    index = 0
+    while index < len(args) and (args[index] in {"-H", "-L", "-P"} or args[index].startswith("-O")):
+        index += 1
+    if index < len(args) and args[index] == "-D":
+        index += 2
+    starts: list[str] = []
+    while index < len(args) and not args[index].startswith("-") and args[index] not in {
+        "(", "!", ")", ",",
+    }:
+        starts.append(args[index])
+        index += 1
+    expression = list(args[index:])
+    destructive = False
+    patterns: list[str] = []
+    position = 0
+    while position < len(expression):
+        token = expression[position]
+        if token in _FIND_EXEC_ACTIONS:
+            command = expression[position + 1] if position + 1 < len(expression) else ""
+            destructive = destructive or Path(command).name in _PATH_REMOVAL_COMMANDS | {"mv"}
+            while position < len(expression) and expression[position] not in {";", "+"}:
+                position += 1
+        elif token == "-delete":
+            destructive = True
+        elif token in _FIND_NAME_PREDICATES and position + 1 < len(expression):
+            position += 1
+            patterns.append(expression[position])
+        elif token in _FIND_VALUE_OPTIONS:
+            position += 1
+        position += 1
+    if not destructive:
+        return None
+    # 이름·경로로 좁힌 삭제는 그 패턴이 .git·.repos 를 고를 수 있을 때만 보호 대상을 건드린다.
+    if patterns and not any(_find_pattern_may_select_protected(value) for value in patterns):
+        return None
+    return _RemovalShape(
+        "일괄 삭제", tuple(_RemovalTarget(token, "contents") for token in (starts or ["."])), True,
+    )
+
+
+def _rsync_removal_shape(args: Sequence[str]) -> _RemovalShape | None:
+    operands, options = _removal_arguments(args, _RSYNC_VALUE_OPTIONS)
+    delete = any(name.startswith("--delete") or name == "--del" for name in options)
+    remove_sources = "--remove-source-files" in options
+    if len(operands) < 2 or not (delete or remove_sources):
+        return None
+    local = [not _RSYNC_REMOTE_PATH.match(token) for token in operands]
+    targets: list[_RemovalTarget] = []
+    if delete and local[-1]:
+        targets.append(_RemovalTarget(operands[-1], "contents"))
+    if remove_sources:
+        targets.extend(
+            _RemovalTarget(token, "contents")
+            for token, is_local in zip(operands[:-1], local[:-1]) if is_local
+        )
+    return _RemovalShape("동기화 삭제", tuple(targets), True) if targets else None
+
+
+def _file_removal_shape(argv: Sequence[str]) -> _RemovalShape | None:
+    """파일 명령 argv 가 경로를 지우거나 옮기는 형태면 그 대상, 아니면 None."""
+    if not argv:
+        return None
+    name = Path(argv[0]).name
+    args = list(argv[1:])
+    if name in _PATH_REMOVAL_COMMANDS:
+        operands, _options = _removal_arguments(args, frozenset())
+        if not operands:
+            return None
+        return _RemovalShape("지우기", tuple(_RemovalTarget(token, "self") for token in operands), True)
+    if name == "mv":
+        operands, options = _removal_arguments(args, _MV_VALUE_OPTIONS)
+        destination = options.get("-t") or options.get("--target-directory")
+        if destination is None and len(operands) > 1:
+            destination = operands.pop()
+        targets = [_RemovalTarget(token, "self") for token in operands]
+        if destination is not None:
+            targets.append(_RemovalTarget(destination, "into"))
+        return _RemovalShape("옮기기", tuple(targets), False) if targets else None
+    if name == "find":
+        return _find_removal_shape(args)
+    if name == "rsync":
+        return _rsync_removal_shape(args)
+    return None
+
+
+def _removal_path(anchor: Path, token: str, *, cwd_certain: bool) -> tuple[Path | None, bool]:
+    """(대상 경로, 그 아래 항목만 지우는지). 정적으로 못 풀면 (None, False).
+
+    glob 은 앞의 고정 폴더 아래 항목으로, 셸 변수·명령 치환은 그 앞에 ``/`` 로 끝난 고정 폴더가
+    있을 때만 그 폴더 아래 항목으로 본다. 마지막 이름은 링크를 따라가지 않는다(링크 삭제는 대상을
+    지우지 않는다).
+    """
+    value = os.path.expanduser(token) if token.startswith("~") else token
+    contents = False
+    special = re.search(r"[$`*?\[]", value)
+    if special is not None:
+        prefix = value[:special.start()]
+        if special.group(0) in "$`" and "/" not in prefix:
+            return None, False
+        head = prefix.rpartition("/")[0] if "/" in prefix else ""
+        value = head or ("/" if prefix.startswith("/") else ".")
+        contents = True
+    path = Path(value)
+    if not path.is_absolute():
+        if not cwd_certain:
+            return None, False
+        path = anchor / path
+    normalized = Path(os.path.normpath(path))
+    if not normalized.name:
+        return normalized, contents
+    return normalized.parent.resolve() / normalized.name, contents
+
+
+def _protected_removal_entries(pm_home: Path) -> tuple[tuple[Path, str], ...]:
+    """PM 홈의 보호 경로 — `work/` 아래 linked worktree(슬롯)와 그 `.git`, 그리고 `.repos/`."""
+    entries: list[tuple[Path, str]] = []
+    work = pm_home / "work"
+    if work.is_dir():
+        for child in sorted(work.iterdir()):
+            if (child / ".git").is_file():
+                root = child.resolve()
+                entries.extend(((root, _PROTECTED_SLOT), (root / ".git", _PROTECTED_SLOT_GIT)))
+    repos = pm_home / ".repos"
+    if repos.is_dir():
+        entries.append((repos.resolve(), _PROTECTED_SHARED))
+    return tuple(entries)
+
+
+def _protected_removal_kind(
+    target: Path, scope: str, entries: Sequence[tuple[Path, str]],
+) -> str | None:
+    kinds: set[str] = set()
+    for path, kind in entries:
+        inside_internal = kind in _PROTECTED_INTERNAL_KINDS and target.is_relative_to(path)
+        if scope == "self":
+            hit = target == path or path.is_relative_to(target) or inside_internal
+        elif scope == "contents":
+            hit = (path != target and path.is_relative_to(target)) or inside_internal
+        else:
+            hit = inside_internal
+        if hit:
+            kinds.add(kind)
+    return next((kind for kind in _PROTECTED_KIND_ORDER if kind in kinds), None)
+
+
+def _nearest_existing_directory(path: Path) -> Path:
+    probe = path
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    return probe if probe.is_dir() else probe.parent
+
+
+def judge_file_removal(
+    cwd: str, argv: Sequence[str], *, cwd_certain: bool = True, runner: Any = subprocess.run,
+) -> dict[str, str] | None:
+    """파일 명령이 슬롯·공용 저장소를 지우거나 옮기면 멈춤 거부 판정, 아니면 None.
+
+    보호 경로는 호출 폴더와 대상 경로 각각의 소유 PM 홈에서 모은다(대상이 PM 홈 조상이면 호출
+    폴더 쪽 PM 홈이 잡는다). ``cwd_certain=False`` 는 셸 파서가 실행 위치를 증명 못 한 호출이다.
+    """
+    shape = _file_removal_shape(argv)
+    if shape is None:
+        return None
+    anchor = Path(cwd).expanduser().resolve()
+    shown = " ".join(argv)
+    identity, _root, cwd_home = _git_anchor_identity(anchor, runner=runner)
+    homes: set[Path] = {cwd_home} if cwd_home is not None else set()
+    resolved: list[tuple[Path, str]] = []
+    for target in shape.targets:
+        path, contents = _removal_path(anchor, target.token, cwd_certain=cwd_certain)
+        if path is None:
+            if not shape.unresolved_is_destructive:
+                continue
+            return {
+                "verdict": "deny", "cwd_identity": identity, "code": GIT_DESTRUCTIVE_DENY_CODE,
+                "case": _GIT_GUARD_CASE_FOLDER_UNKNOWN,
+                "reason": (
+                    f"대상 경로를 정적으로 풀 수 없는 파일 {shape.verb} — `{shown}` "
+                    f"(대상 `{target.token}` 이 슬롯·공용 저장소일 수 있음)"
+                ),
+            }
+        scope = "contents" if contents and target.scope == "self" else target.scope
+        resolved.append((path, scope))
+        _identity, _target_root, target_home = _git_anchor_identity(
+            _nearest_existing_directory(path), runner=runner,
+        )
+        if target_home is not None:
+            homes.add(target_home)
+    entries = [entry for home in sorted(homes) for entry in _protected_removal_entries(home)]
+    for path, scope in resolved:
+        kind = _protected_removal_kind(path, scope, entries)
+        if kind is None:
+            continue
+        label, case = _PROTECTED_KIND_FORMS[kind]
+        return {
+            "verdict": "deny", "cwd_identity": identity, "code": GIT_DESTRUCTIVE_DENY_CODE,
+            "case": case, "reason": f"{label} {shape.verb} — `{shown}` 대상={path}",
+        }
+    return None
+
+
+def _shell_file_removal_argv(command: Sequence[str]) -> tuple[str, ...] | None:
+    """simple command 가 (실행 wrapper 뒤의) 파일 삭제·이동 명령이면 그 argv."""
+    values = list(command)
+    start = 0
+    while start < len(values) and _SHELL_ASSIGNMENT_WORD.fullmatch(values[start]):
+        start += 1
+    if start >= len(values):
+        return None
+    if Path(values[start]).name in _SHELL_COMMAND_WRAPPERS:
+        # wrapper 옵션 문법은 넓다 — 뒤에서 처음 나오는 파일 명령을 실행 대상으로 본다.
+        for candidate in range(start + 1, len(values)):
+            if Path(values[candidate]).name in _FILE_REMOVAL_COMMANDS:
+                return tuple(values[candidate:])
+        return None
+    return tuple(values[start:]) if Path(values[start]).name in _FILE_REMOVAL_COMMANDS else None
+
+
+def _indirect_file_removal_argvs(text: str, *, stdin_operands: bool) -> list[tuple[str, ...]]:
+    """셸·인터프리터 코드 문자열 속 파일 삭제·이동 호출 argv(삭제 API 는 rm/mv 형태로 옮긴다)."""
+    words = [_normalize_shell_path_notation(word) for word in _INDIRECT_WORD.findall(text)]
+    argvs: list[tuple[str, ...]] = []
+    for index, word in enumerate(words):
+        if word in _INDIRECT_BOUNDARY:
+            continue
+        end = index + 1
+        while end < len(words) and words[end] not in _INDIRECT_BOUNDARY:
+            end += 1
+        rest = tuple(words[index + 1:end])
+        name = Path(word).name
+        if name in _FILE_REMOVAL_COMMANDS:
+            extra = (_XARGS_OPERAND_PLACEHOLDER,) if (
+                stdin_operands and name in _PATH_REMOVAL_COMMANDS
+            ) else ()
+            argvs.append((word, *rest, *extra))
+            continue
+        api = _FILE_REMOVAL_API.search(word)
+        if api is not None:
+            argvs.append(("mv" if api.group(1) in _FILE_MOVE_API_NAMES else "rm", "--", *rest))
+    return argvs
+
+
+def _shell_indirect_file_removal_argvs(command: Sequence[str]) -> tuple[list[tuple[str, ...]], bool]:
+    """간접 실행 명령 인자 속 파일 삭제·이동 argv 와, 그 코드가 실행 폴더를 바꾸는지."""
+    values = list(command)
+    index = _shell_command_word_index(values)
+    if index >= len(values):
+        return [], False
+    executor = _shell_indirect_executor(values, index)
+    if executor is None:
+        return [], False
+    name, arguments = executor
+    text = " ".join(arguments)
+    return (
+        _indirect_file_removal_argvs(text, stdin_operands=name == "xargs"),
+        _INDIRECT_CWD_CHANGE.search(text) is not None,
+    )
+
+
+# ── 사용자 1회 허용 ────────────────────────────────────────────────────────────────────
+# 멈춤 거부 중 사용자에게 물어 실행할 수 있는 경우(ASK_USER)는 사용자가 `git 허용: <명령 원문>`
+# 한 줄을 보내면 그 명령 한 번만 통과한다. 허용 기록은 사용자 프롬프트 훅만 만든다
+# (`record_git_grants`). 기록은 (세션·실행 폴더·정규화 argv) 에 묶이고, 가드가 정확히 같은 호출을
+# 만나면 파일을 이름 바꾸기로 선점해 지운 뒤 통과시킨다 — 두 번째 호출은 기록이 없어 거부된다.
+_GIT_GUARD_ACTION_LINES: dict[str, str] = {
+    _GIT_GUARD_CASE_FOLDER_UNKNOWN: (
+        "대상 폴더를 절대경로로 적어 다시 실행한다(git 은 `git -C <절대경로> …`)."
+    ),
+    _GIT_GUARD_CASE_LITERAL_ARGUMENTS: "셸 변수·명령 치환을 값 그대로 바꿔 적어 다시 실행한다.",
+    _GIT_GUARD_CASE_BRANCH_CREATE: (
+        "브랜치는 `pm-config task branch <명의> <슬롯> <브랜치> --from <부모>` 로 만든다."
+    ),
+    _GIT_GUARD_CASE_SLOT_REMOVE: (
+        "사용자에게 슬롯 제거 승인을 묻고, 승인하면 "
+        "`pm-config worktree remove <slot> --user-ack <slot>` 로 지운다."
+    ),
+    _GIT_GUARD_CASE_GRANT_FORGERY: (
+        "허용 줄·허용 기록은 사용자 입력으로만 만든다. 필요하면 사용자에게 "
+        "`git 허용: <명령 원문>` 입력을 요청한다."
+    ),
+}
+_GIT_GUARD_ASK_WITH_GRANT = (
+    "사용자에게 이 명령을 실행할지 묻는다. 허용하면 사용자가 `git 허용: <명령 원문>` 한 줄을 "
+    "보낸 뒤 같은 명령을 그대로 한 번 다시 실행한다."
+)
+_GIT_GUARD_ASK_WITHOUT_GRANT = (
+    "사용자에게 이 명령을 실행할지 묻는다. 이 하네스에는 1회 허용 수단이 없으므로, 허용하면 "
+    "사용자가 터미널에서 직접 실행한다."
+)
+_GIT_GRANT_USED = "used"
+_GIT_GRANT_ABSENT = "absent"
+_GIT_GRANT_FORGED = "forged"
+
+
+class GitGrantShapeError(ValueError):
+    """허용 명령 원문이 셸 확장 없는 한 명령 단독 호출이 아니다."""
+
+
+def _git_guard_stop_reason(
+    cases: Sequence[str], detail: str, *, grants_available: bool, notes: Sequence[str] = (),
+) -> str:
+    """멈춤 지시 첫 줄 + 경우별 다음 행동 한 줄씩 + 추가 사유 + 거부한 호출."""
+    lines = [GIT_GUARD_STOP_LINE]
+    for case in dict.fromkeys(cases):
+        if case == _GIT_GUARD_CASE_ASK_USER:
+            lines.append(
+                _GIT_GUARD_ASK_WITH_GRANT if grants_available else _GIT_GUARD_ASK_WITHOUT_GRANT
+            )
+        else:
+            lines.append(_GIT_GUARD_ACTION_LINES[case])
+    lines.extend(notes)
+    lines.append(f"거부한 호출: {detail}")
+    return "\n".join(lines)
+
+
+def _git_grant_forgery_judgment(detail: str) -> dict[str, str]:
+    return {
+        "verdict": "deny", "cwd_identity": "non-repo", "code": GIT_DESTRUCTIVE_DENY_CODE,
+        "case": _GIT_GUARD_CASE_GRANT_FORGERY, "reason": detail,
+    }
+
+
+def _git_grant_forgery_in_command(command: str) -> dict[str, str] | None:
+    """셸 명령에 허용 표식·허용 기록 폴더가 있으면 위조 시도 판정(파일 쓰기·중첩 하네스 프롬프트)."""
+    text = command.replace("\\", "/").replace("'", "").replace('"', "")
+    if GIT_GRANT_DIR_NAME in text or _GIT_GRANT_MARKER.search(text):
+        return _git_grant_forgery_judgment(
+            f"셸 명령에 허용 표식(`git 허용:`) 또는 허용 기록 폴더(`{GIT_GRANT_DIR_NAME}`)가 있음"
+        )
+    return None
+
+
+def _tool_input_strings(value: object) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield str(key)
+            yield from _tool_input_strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _tool_input_strings(item)
+
+
+def judge_tool_input(tool_input: object) -> dict[str, str]:
+    """셸이 아닌 도구(파일 쓰기·편집·위임 등) 입력의 허용 위조 판정.
+
+    허용 기록 폴더 이름이 어느 값에든 있으면(파일 경로·patch 본문) 기록 파일 쓰기로, 줄 머리에
+    허용 표식이 있으면(파일 내용·위임 프롬프트) 중첩 세션 프롬프트로 허용을 만들려는 시도로 본다.
+    """
+    for text in _tool_input_strings(tool_input):
+        if GIT_GRANT_DIR_NAME in text.replace("\\", "/") or GIT_GRANT_LINE.search(text):
+            judgment = _git_grant_forgery_judgment(
+                f"도구 입력에 허용 기록 폴더(`{GIT_GRANT_DIR_NAME}`) 또는 줄 머리 허용 표식"
+                "(`git 허용:`)이 있음"
+            )
+            judgment["reason"] = _git_guard_stop_reason(
+                [judgment.pop("case")], judgment["reason"], grants_available=False,
+            )
+            return judgment
+    return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "허용 위조 표식 없음"}
+
+
+def _git_grant_argv(text: str) -> tuple[str, ...]:
+    command = text.strip()
+    if not command:
+        raise GitGrantShapeError("허용할 명령 원문이 비어 있다")
+    unsafe = _GIT_GRANT_UNSAFE_TEXT.search(command)
+    if unsafe is not None:
+        raise GitGrantShapeError(
+            f"`{command}`: 셸 연산자·확장 문자(`{unsafe.group(0).strip()}`)가 든 명령은 허용할 수 "
+            "없다 — 한 명령을 값 그대로 적는다"
+        )
+    try:
+        return tuple(split_command_argv(command))
+    except ValueError as exc:
+        raise GitGrantShapeError(f"`{command}`: 명령을 argv 로 나눌 수 없다({exc})") from exc
+
+
+def _git_grant_record(session: str, cwd: str, argv: Sequence[str]) -> dict[str, object]:
+    return {"session": session, "cwd": str(Path(cwd).expanduser().resolve()), "argv": list(argv)}
+
+
+def _git_grant_path(root: str | os.PathLike[str], record: dict[str, object]) -> Path:
+    key = hashlib.sha256(
+        json.dumps([record["session"], record["cwd"], record["argv"]], ensure_ascii=False)
+        .encode("utf-8")
+    ).hexdigest()
+    return Path(root) / ".project_manager" / ".local" / GIT_GRANT_DIR_NAME / f"{key}.json"
+
+
+def record_git_grants(
+    root: str | os.PathLike[str], session: str, cwd: str, prompt: str,
+) -> list[str]:
+    """사용자 프롬프트의 `git 허용: <명령 원문>` 줄마다 허용 기록 1건을 남긴다.
+
+    사용자 프롬프트 훅 전용이다 — 도구 호출 경로에서 부르지 않는다. 한 줄이라도 형식이 틀리면
+    아무것도 기록하지 않고 `GitGrantShapeError` 를 올린다. 반환은 기록한 명령(정규화 표기)이다.
+    """
+    if not session:
+        raise ValueError("세션 id 가 없어 허용을 세션에 묶을 수 없다")
+    records = [
+        _git_grant_record(session, cwd, _git_grant_argv(match.group(1)))
+        for match in GIT_GRANT_LINE.finditer(prompt)
+    ]
+    for record in records:
+        path = _git_grant_path(root, record)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f"{path.name}.tmp-{os.getpid()}-{time.monotonic_ns()}")
+        temporary.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
+        file_lock.atomic_replace(temporary, path)
+    return [shlex.join(record["argv"]) for record in records]
+
+
+def _use_git_grant(root: str | os.PathLike[str], session: str, cwd: str, command: str) -> str:
+    """정확히 같은 (세션·폴더·argv) 허용 기록을 이름 바꾸기로 선점해 지운다 — used/absent/forged.
+
+    선점(rename)은 원자적이라 같은 기록을 두 호출이 함께 쓰지 못한다. 선점한 내용이 키와 다르면
+    (위조·손상) 지우고 forged 를 돌려준다. 선점 밖의 파일 시스템 실패는 올린다.
+    """
+    try:
+        argv = _git_grant_argv(command)
+    except GitGrantShapeError:
+        return _GIT_GRANT_ABSENT  # 한 명령 단독 형태가 아닌 호출에는 허용 기록이 있을 수 없다.
+    record = _git_grant_record(session, cwd, argv)
+    path = _git_grant_path(root, record)
+    claimed = path.with_name(f"{path.name}.claimed-{os.getpid()}-{time.monotonic_ns()}")
+    try:
+        os.rename(path, claimed)
+    except FileNotFoundError:
+        return _GIT_GRANT_ABSENT
+    try:
+        stored = json.loads(file_lock.read_text_shared(claimed, encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        stored = None  # 형식이 깨진 기록은 사용자 프롬프트 훅이 쓴 것이 아니다.
+    claimed.unlink()
+    return _GIT_GRANT_USED if stored == record else _GIT_GRANT_FORGED
 
 
 def judge_git_anchor(
@@ -1127,9 +1748,11 @@ def judge_git_anchor(
     """raw git 호출의 cwd 안전성을 판정하는 엔진·하네스 중립 seam.
 
     deny 는 둘이다. (1) 슬롯·공용 저장소 대상의 손 git 파괴 형태(브랜치 만들기·지우기·이름 바꾸기,
-    변경 버리기, 슬롯 지우기, 원격 덮어쓰기) — 브랜치와 슬롯은 엔진만 만들고 지운다. 대상을 정적으로
-    못 정한 호출(``GIT_DIR``·변수 ``-C``·셸 파서가 cwd 를 증명 못 함 = ``cwd_certain=False``)은
-    슬롯·공용 저장소일 수 있으므로 형태만으로 거부한다. (2) PM 홈에서 등록 slot과 교차 실재하는
+    변경 버리기, 슬롯 지우기·옮기기, 원격 덮어쓰기, 저수준 ref 조작) — 브랜치와 슬롯은 엔진만 만들고
+    지운다. 대상을 정적으로 못 정한 호출(``GIT_DIR``·변수 ``-C``·셸 파서가 cwd 를 증명 못 함 =
+    ``cwd_certain=False``)은 슬롯·공용 저장소일 수 있으므로 형태만으로 거부한다. 이 deny 는 거부
+    경우(``case``)와 거부한 호출만 싣고, 멈춤 지시·다음 행동 문구는 `judge_git_anchor_command` 가
+    붙인다. (2) PM 홈에서 등록 slot과 교차 실재하는
     코드-root pathspec을 mutation으로 건드리는 실사고 패턴. 그 밖은 warn(정체 주입)이며 비-repo/
     foreign 대상과 판정불가 비파괴 호출은 정상 작업을 막지 않는다. ``cwd_certain`` 은 argv 호출자가
     ``cwd`` 를 실제 실행 위치로 아는 기본 형태이고, 셸 파서만 증명 못 한 호출에 False 를 넘긴다.
@@ -1155,10 +1778,9 @@ def judge_git_anchor(
             shown = " ".join(("git", resolved.subcommand, *resolved.args))
             return {
                 "verdict": "deny", "cwd_identity": identity, "code": GIT_DESTRUCTIVE_DENY_CODE,
-                "reason": (
-                    f"손 git {form.label} 거부 — `{shown}` {where}; 브랜치·슬롯은 엔진만 "
-                    f"만들고 지운다; 대신 {form.remedy}"
-                ),
+                # 대상을 못 정한 호출은 형태와 무관하게 대상부터 적어 다시 실행하게 한다.
+                "case": form.case if target_certain else _GIT_GUARD_CASE_FOLDER_UNKNOWN,
+                "reason": f"손 git {form.label} — `{shown}` {where}",
             }
     subcommand = invocation.subcommand
     if subcommand not in _GIT_MUTATION_SUBCOMMANDS:
@@ -1530,6 +2152,8 @@ class _ShellGitInvocation(NamedTuple):
 class _ShellParseResult(NamedTuple):
     invocations: tuple[_ShellGitInvocation, ...]
     engine_invocations: tuple[_ShellGitInvocation, ...]
+    # 파일 삭제·이동 명령(직접·간접 실행) 호출. ``anchor_certain`` 은 상대 경로를 풀 실행 위치의 확실성이다.
+    removal_invocations: tuple[_ShellGitInvocation, ...]
     persistent_cd: bool
     uncertain: bool
     reason: str
@@ -2250,7 +2874,7 @@ def _git_invocations_from_shell(
     ``if …; then …; fi``의 단순형은 condition cwd를 body로 전달한다.
     """
     if not isinstance(command, str):
-        return _ShellParseResult((), (), False, False, "")
+        return _ShellParseResult((), (), (), False, False, "")
     executable, heredoc_uncertain = _strip_shell_heredoc_bodies(command)
     command = _normalize_shell_line_continuations(executable)
     prefilter = _git_prefilter_text(command)
@@ -2259,27 +2883,42 @@ def _git_invocations_from_shell(
         or re.search(r"(?<![A-Za-z0-9_.-])pytest(?=\s|$)", prefilter) is not None
         or _persistent_cd_prefilter(prefilter)
     )
-    if not _GIT_COMMAND_PREFILTER.search(prefilter) and not engine_candidate:
+    removal_candidate = any(
+        Path(word).name in _FILE_REMOVAL_COMMANDS or _FILE_REMOVAL_API.search(word)
+        for word in _INDIRECT_WORD.findall(prefilter)
+    )
+    # 구문 불확실 경고는 git·엔진 호출 후보가 있을 때만 의미가 있다(파일 명령은 거부 판정이 따로 본다).
+    git_or_engine_candidate = bool(_GIT_COMMAND_PREFILTER.search(prefilter)) or engine_candidate
+    if not git_or_engine_candidate and not removal_candidate:
         reason = (
             "shell heredoc을 정적으로 완전히 소비할 수 없음"
             if heredoc_uncertain else ""
         )
-        return _ShellParseResult((), (), False, heredoc_uncertain, reason)
+        return _ShellParseResult((), (), (), False, heredoc_uncertain, reason)
     parsed = _shell_segments(command)
     if parsed is None:
-        # 구문을 못 푼 명령 속 git 파괴 호출도 대상 미확정 호출로 올린다(판정불가를 통과로 두지 않는다).
+        # 구문을 못 푼 명령 속 git 파괴 호출·파일 삭제도 대상 미확정 호출로 올린다(판정불가를 통과로
+        # 두지 않는다).
         anchor = str(Path(cwd).expanduser().resolve())
         hidden = tuple(
             _ShellGitInvocation(anchor, argv, False, False)
             for argv in _indirect_git_destructive_argvs(command)
         )
-        return _ShellParseResult(hidden, (), False, True, "shell 구문을 정적으로 해석할 수 없음")
+        hidden_removals = tuple(
+            _ShellGitInvocation(anchor, argv, False, False)
+            for argv in _indirect_file_removal_argvs(command, stdin_operands=False)
+        )
+        return _ShellParseResult(
+            hidden, (), hidden_removals, False, git_or_engine_candidate,
+            "shell 구문을 정적으로 해석할 수 없음" if git_or_engine_candidate else "",
+        )
     segments, operators = parsed
     persistent_cd = False
     anchors = {Path(cwd).expanduser().resolve()}
     cwd_certain = True
     found: list[_ShellGitInvocation] = []
     engine_found: list[_ShellGitInvocation] = []
+    removal_found: list[_ShellGitInvocation] = []
     last_status: bool | None = None
     in_if_condition = False
     if_status: bool | None = None
@@ -2362,6 +3001,12 @@ def _git_invocations_from_shell(
                     for argv in _shell_indirect_git_argvs(command_without_redirections)
                     for anchor in sorted(command_anchors, key=str)
                 ]
+            if gate is not False:
+                removal_found.extend(_shell_removal_calls(
+                    command_anchors,
+                    structure_certain and command_cwd_certain and len(command_anchors) == 1,
+                    command_without_redirections,
+                ))
             if (
                 not pipeline and not starts_if
                 and gate is not False and status is not False
@@ -2384,17 +3029,44 @@ def _git_invocations_from_shell(
         if gate is not False:
             last_status = group_status
         i = end + 1
-    uncertain = heredoc_uncertain or unsupported_control
+    uncertain = heredoc_uncertain or (unsupported_control and git_or_engine_candidate)
     reason = "shell 구문/cwd를 정적으로 단일 증명할 수 없음" if uncertain else ""
     return _ShellParseResult(
-        tuple(found), tuple(engine_found), persistent_cd, uncertain, reason,
+        tuple(found), tuple(engine_found), tuple(removal_found), persistent_cd, uncertain, reason,
     )
 
 
+def _shell_removal_calls(
+    anchors: set[Path], cwd_certain: bool, command: Sequence[str],
+) -> list[_ShellGitInvocation]:
+    """simple command 하나의 파일 삭제·이동 호출(직접 명령 + 간접 실행 인자 속 호출)."""
+    values = [_normalize_shell_path_notation(value) for value in command]
+    argvs: list[tuple[tuple[str, ...], bool]] = []
+    direct = _shell_file_removal_argv(values)
+    if direct is not None:
+        argvs.append((direct, cwd_certain))
+    indirect, changes_cwd = _shell_indirect_file_removal_argvs(values)
+    argvs.extend((argv, cwd_certain and not changes_cwd) for argv in indirect)
+    return [
+        _ShellGitInvocation(str(anchor), argv, certain, certain)
+        for argv, certain in argvs
+        for anchor in sorted(anchors, key=str)
+    ]
+
+
 def judge_git_anchor_command(
-    cwd: str, command: str, *, runner: Any = subprocess.run
+    cwd: str, command: str, *, grant_root: str | os.PathLike[str] | None = None,
+    grant_session: str | None = None, runner: Any = subprocess.run,
 ) -> dict[str, str]:
-    """셸 command의 모든 git/엔진 호출을 중앙 파싱하고 가장 강한 판정을 반환한다."""
+    """셸 command의 모든 git/엔진/파일 삭제 호출을 중앙 파싱하고 가장 강한 판정을 반환한다.
+
+    멈춤 거부(손 git 파괴 형태·슬롯/공용 저장소 파일 삭제·허용 위조)는 첫 줄 멈춤 지시와 경우별
+    다음 행동을 붙인다. ``grant_root``·``grant_session`` 은 이 하네스가 사용자 1회 허용을 쓸 수
+    있을 때 함께 준다 — 그러면 1회 허용으로 풀 수 있는 거부에서 정확히 같은 명령의 허용 기록을
+    소비하고 통과시킨다. 둘 다 없으면 그 거부는 사용자가 터미널에서 직접 실행하도록 안내한다.
+    """
+    if (grant_root is None) != (grant_session is None):
+        raise ValueError("grant_root 와 grant_session 은 함께 주거나 함께 뺀다")
     parsed = _git_invocations_from_shell(cwd, command)
     invocations = parsed.invocations
     judgments: list[dict[str, str]] = []
@@ -2421,6 +3093,15 @@ def judge_git_anchor_command(
                 "reason": f"조건/cwd를 정적으로 단일 증명할 수 없음 — 차단하지 않음; {judgment['reason']}",
             }
         judgments.append(judgment)
+    for call in parsed.removal_invocations:
+        removal = judge_file_removal(
+            call.cwd, call.argv, cwd_certain=call.anchor_certain, runner=runner,
+        )
+        if removal is not None:
+            judgments.append(removal)
+    forgery = _git_grant_forgery_in_command(command) if isinstance(command, str) else None
+    if forgery is not None:
+        judgments.append(forgery)
     if parsed.persistent_cd:
         judgments.append({
             "verdict": "warn", "cwd_identity": "non-repo",
@@ -2439,6 +3120,52 @@ def judge_git_anchor_command(
             "verdict": "ok", "cwd_identity": "non-repo",
             "reason": "git mutation/엔진 호출 없음",
         }
+    return _finish_git_guard_judgment(
+        _strongest_git_guard_judgment(judgments), judgments, cwd=cwd, command=command,
+        grant_root=grant_root, grant_session=grant_session,
+    )
+
+
+def _finish_git_guard_judgment(
+    result: dict[str, str], judgments: Sequence[dict[str, str]], *, cwd: str, command: str,
+    grant_root: str | os.PathLike[str] | None, grant_session: str | None,
+) -> dict[str, str]:
+    """멈춤 거부면 1회 허용을 소비하거나 멈춤 지시·다음 행동을 붙인다. 내부 표식(case)은 뺀다."""
+    final = {key: value for key, value in result.items() if key != "case"}
+    denies = [item for item in judgments if item["verdict"] == "deny"]
+    cases = [item["case"] for item in denies if "case" in item]
+    if final["verdict"] != "deny" or not cases:
+        return final
+    grants_available = grant_session is not None
+    notes: list[str] = []
+    grantable = len(cases) == len(denies) and all(
+        case == _GIT_GUARD_CASE_ASK_USER for case in cases
+    )
+    if grants_available and grantable:
+        try:
+            use = _use_git_grant(grant_root, grant_session, cwd, command)
+        except OSError as exc:
+            # 허용을 확인하지 못했으면 거부를 유지한다(통과로 흘리지 않는다).
+            use = None
+            notes.append(f"허용 기록을 확인하지 못해 거부를 유지한다({exc}).")
+        if use == _GIT_GRANT_USED:
+            return {
+                "verdict": "warn", "cwd_identity": final["cwd_identity"],
+                "reason": (
+                    f"사용자 1회 허용으로 실행한다 — 허용 기록을 썼으므로 이 명령을 다시 실행하려면 "
+                    f"새 허용이 필요하다: `{command.strip()}`"
+                ),
+            }
+        if use == _GIT_GRANT_FORGED:
+            notes.append("같은 명령의 허용 기록이 사용자 프롬프트 훅이 쓴 형식과 달라 폐기했다.")
+    final["reason"] = _git_guard_stop_reason(
+        cases, final["reason"], grants_available=grants_available, notes=notes,
+    )
+    return final
+
+
+def _strongest_git_guard_judgment(judgments: Sequence[dict[str, str]]) -> dict[str, str]:
+    """가장 강한 판정 하나로 접는다 — 여럿이면 같은 판정 호출들의 사유를 번호와 함께 잇는다."""
     rank = {"ok": 0, "warn": 1, "deny": 2}
     strongest = max(judgments, key=lambda item: rank[item["verdict"]])
     if len(judgments) == 1:
@@ -15710,10 +16437,34 @@ def cmd_refresh(_args: argparse.Namespace) -> int:
 
 
 def cmd_git_anchor(args: argparse.Namespace) -> int:
-    """하네스 훅용 JSON 판정 표면. 외부 상태 mutation 없이 한 줄 JSON만 출력한다."""
-    _write_machine_line(
-        json.dumps(judge_git_anchor_command(args.cwd, args.command), ensure_ascii=False)
+    """하네스 훅용 JSON 판정 표면. 한 줄 JSON만 출력한다.
+
+    ``--grant-session`` 을 주면 이 엔진 루트의 사용자 1회 허용을 쓸 수 있는 하네스로 판정한다
+    (정확히 같은 명령의 허용 기록이 있으면 소비한다).
+    """
+    session = args.grant_session or None
+    judgment = judge_git_anchor_command(
+        args.cwd, args.command, grant_root=REPO if session else None, grant_session=session,
     )
+    _write_machine_line(json.dumps(judgment, ensure_ascii=False))
+    return 0
+
+
+def cmd_git_grant(args: argparse.Namespace) -> int:
+    """사용자 프롬프트 훅 전용 — stdin 프롬프트의 `git 허용:` 줄을 이 엔진 루트의 허용 기록으로 남긴다."""
+    prompt = sys.stdin.buffer.read().decode("utf-8")
+    try:
+        granted = record_git_grants(REPO, args.session, args.cwd, prompt)
+    except ValueError as exc:
+        sys.exit(f"[중단] {exc}")
+    _write_machine_line(json.dumps({"granted": granted}, ensure_ascii=False))
+    return 0
+
+
+def cmd_git_tool_input(args: argparse.Namespace) -> int:
+    """하네스 훅용 — stdin JSON 도구 입력의 허용 위조 판정을 한 줄 JSON 으로 출력한다."""
+    tool_input = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+    _write_machine_line(json.dumps(judge_tool_input(tool_input), ensure_ascii=False))
     return 0
 
 
@@ -20089,7 +20840,16 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("git-anchor", help=argparse.SUPPRESS)
     p.add_argument("--cwd", required=True, help=argparse.SUPPRESS)
     p.add_argument("--command", required=True, help=argparse.SUPPRESS)
+    p.add_argument("--grant-session", default=None, help=argparse.SUPPRESS)
     p.set_defaults(fn=cmd_git_anchor)
+
+    p = sub.add_parser("git-grant", help=argparse.SUPPRESS)
+    p.add_argument("--session", required=True, help=argparse.SUPPRESS)
+    p.add_argument("--cwd", required=True, help=argparse.SUPPRESS)
+    p.set_defaults(fn=cmd_git_grant)
+
+    p = sub.add_parser("git-tool-input", help=argparse.SUPPRESS)
+    p.set_defaults(fn=cmd_git_tool_input)
 
     p = sub.add_parser("refresh", help="regenerate board.md")
     p.set_defaults(fn=cmd_refresh)
