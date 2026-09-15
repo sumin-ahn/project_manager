@@ -656,7 +656,7 @@ def test_codex_pretooluse_and_subagentstart_wiring_uses_live_payload_fixture(
     # T-0872 — PreToolUse native 진입점은 실제 안전 판정 대상 둘만 연다.
     groups = events["PreToolUse"]
     assert len(groups) == 1
-    assert groups[0]["matcher"] == "^(Bash|collaborationspawn_agent)$"
+    assert groups[0]["matcher"] == "^(Bash|apply_patch|collaborationspawn_agent)$"
     assert re.fullmatch(groups[0]["matcher"], spawn["tool_name"])
     assert re.fullmatch(groups[0]["matcher"], subagent_call["tool_name"])
     assert not re.fullmatch(groups[0]["matcher"], _live_wait_payload()["tool_name"])
@@ -698,7 +698,7 @@ def test_codex_pretooluse_and_subagentstart_wiring_uses_live_payload_fixture(
     assert set(events) == set(dispatcher.CODEX_HOOK_ENTRYPOINT_EVENTS)
     for event in dispatcher.CODEX_HOOK_ENTRYPOINT_EVENTS:
         entry_groups = events[event]
-        expected = "^(Bash|collaborationspawn_agent)$" if event == "PreToolUse" else ".*"
+        expected = "^(Bash|apply_patch|collaborationspawn_agent)$" if event == "PreToolUse" else ".*"
         assert len(entry_groups) == 1 and entry_groups[0]["matcher"] == expected, event
         entry = entry_groups[0]["hooks"][0]
         for command_key in ("command", "commandWindows"):

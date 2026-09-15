@@ -6,7 +6,8 @@
 // 사용자 1회 허용: `chat.message`(사용자 메시지 생성 시점 훅·opencode 1.18.30 바이너리의
 // SessionPrompt.createUserMessage 에서 실측)가 사용자가 직접 친 텍스트 조각(synthetic 아님)의
 // `git 허용: <명령 원문>` 줄을 허용 기록으로 남긴다. 도구 호출은 모든 도구가 `tool.execute.before`
-// 를 지나므로, bash 는 명령 판정(1회 허용 소비 포함), 그 밖의 도구는 입력의 허용 위조를 본다.
+// 를 지나므로, bash 는 명령 판정(1회 허용 소비 포함), 파일 쓰기 도구는 슬롯 쓰기 주인, 그 밖의 도구는
+// 입력의 허용 위조를 본다. 세션 ID 는 훅 입력의 `sessionID` 다.
 const path = require("node:path");
 const fs = require("node:fs");
 const childProcess = require("node:child_process");
@@ -21,6 +22,10 @@ const BOARD_PY = path.join(ENGINE_ROOT, ".project_manager", "tools", "board.py")
 // 허용 표식과 허용 기록 폴더 이름 — board.py `GIT_GRANT_LINE`·`GIT_GRANT_DIR_NAME` 과 같은 값.
 const GRANT_MARKER = /git[ \t]+허용[ \t]*:/;
 const GRANT_DIR_NAME = "git-grants";
+// 슬롯 경로 표식 — 셸 명령이 슬롯(`<PM 홈>/work/<repo>_<N>`) 경로를 담으면 판정한다.
+const SLOT_PATH_MARK = "/work/";
+// 파일 쓰기 도구(실측 opencode 1.18.31: write·edit 은 filePath, apply_patch 는 patchText) — 대상은 board 가 푼다.
+const WRITE_TOOLS = new Set(["write", "edit", "apply_patch"]);
 
 // bash 명령 선필터(성능 전용 — 판정은 board 가 한다). claude `pm_orch_claude.py`·codex
 // `pm_orch_codex.py` 의 GIT_ANCHOR_SHELL_PREFILTERS 와 같은 집합이다(테스트가 대조).
@@ -33,6 +38,8 @@ const GIT_PREFILTER = [
   GRANT_MARKER,
 ];
 const BOARD_TIMEOUT_MS = 10000;
+// 세션 부모 조회 제한 — ctx-guard-core 의 SESSION_LOOKUP_TIMEOUT_MS 와 같은 값.
+const SESSION_LOOKUP_TIMEOUT_MS = 1000;
 
 function containsGitCommand(command) {
   if (typeof command !== "string") return false;
@@ -42,11 +49,13 @@ function containsGitCommand(command) {
     GIT_PREFILTER.some((pattern) => pattern.test(prefilter))
     || normalized.includes(".project_manager/tools/")
     || normalized.includes(GRANT_DIR_NAME)
+    || normalized.includes(SLOT_PATH_MARK)
   );
 }
 
-// 셸이 아닌 도구 입력 선필터 — 허용 기록 폴더 이름이나 허용 표식이 어느 값에든 있을 때만 판정한다.
-function toolInputNeedsJudgment(args) {
+// 셸이 아닌 도구 입력 선필터 — 파일 쓰기 도구이거나, 허용 기록 폴더 이름·허용 표식이 어느 값에든 있을 때만 판정한다.
+function toolInputNeedsJudgment(tool, args) {
+  if (WRITE_TOOLS.has(tool)) return true;
   const text = JSON.stringify(args === undefined ? {} : args);
   return typeof text === "string" && (text.includes(GRANT_DIR_NAME) || GRANT_MARKER.test(text));
 }
@@ -93,23 +102,22 @@ function judgmentFromBoard(run) {
   return { verdict: "warn", cwd_identity: "non-repo", reason: `${lastError} — cwd를 직접 확인` };
 }
 
-// grantSession 을 주면 board 가 이 엔진 루트의 1회 허용을 쓸 수 있는 하네스로 판정한다.
-function judgeCommand(root, cwd, command, { grantSession, spawnSync = childProcess.spawnSync } = {}) {
+// grants 를 주면 board 가 이 엔진 루트의 1회 허용(이 세션의 것)을 쓸 수 있는 하네스로 판정한다.
+function judgeCommand(root, cwd, command, { session, grants = false, spawnSync = childProcess.spawnSync } = {}) {
   if (!containsGitCommand(command)) {
     return { verdict: "ok", cwd_identity: "non-repo", reason: "git mutation 없음" };
   }
-  const argv = ["git-anchor", "--cwd", String(cwd || root), "--command", command];
-  if (grantSession) argv.push("--grant-session", String(grantSession));
+  const argv = ["git-anchor", "--session", String(session || ""), "--cwd", String(cwd || root), "--command", command];
+  if (grants) argv.push("--grants");
   return judgmentFromBoard(runBoard(root, argv, undefined, spawnSync));
 }
 
-function judgeToolInput(root, args, { spawnSync = childProcess.spawnSync } = {}) {
-  if (!toolInputNeedsJudgment(args)) {
+function judgeToolInput(root, tool, args, { session, cwd, spawnSync = childProcess.spawnSync } = {}) {
+  if (!toolInputNeedsJudgment(tool, args)) {
     return { verdict: "ok", cwd_identity: "non-repo", reason: "허용 위조 표식 없음" };
   }
-  return judgmentFromBoard(
-    runBoard(root, ["git-tool-input"], JSON.stringify(args === undefined ? {} : args), spawnSync)
-  );
+  const argv = ["git-tool-input", "--session", String(session || ""), "--cwd", String(cwd || root), "--tool", String(tool)];
+  return judgmentFromBoard(runBoard(root, argv, JSON.stringify(args === undefined ? {} : args), spawnSync));
 }
 
 // 사용자 메시지의 허용 줄을 기록한다. 기록 실패(형식 오류·인프라)는 조용히 넘기지 않고 올린다 —
@@ -141,6 +149,44 @@ function makeGitAnchorPlugin(judge = judgeCommand, judgeInput = judgeToolInput, 
   const root = ENGINE_ROOT;
   const warnings = createWarningChannel(client);
 
+  // native task 는 자식 세션을 새 ID 로 만든다(실측 opencode 1.18.31 `session.create({parentID})`). task 기록의
+  // 세션 ID 는 부트스트랩한 최상위 세션이므로 자식 세션은 parentID 를 따라 올라간 ID 로 판정받는다.
+  // SDK 표면은 ctx-guard-core 와 같다: client.session.get({ path: { id } }) -> { data: Session }.
+  // 조회 실패는 삼키지 않고 올린다 — guardedJudgment 가 판정 인프라 실패로 다룬다.
+  const rootSessions = new Map();
+
+  async function sessionRecord(id) {
+    let timeoutID;
+    const timeout = new Promise((_resolve, reject) => {
+      timeoutID = setTimeout(() => reject(new Error(`세션 ${id} 조회 시간 초과`)), SESSION_LOOKUP_TIMEOUT_MS);
+    });
+    try {
+      const result = await Promise.race([client.session.get({ path: { id } }), timeout]);
+      if (!result || !result.data) throw new Error(`세션 ${id} 조회 결과 없음`);
+      return result.data;
+    } finally {
+      clearTimeout(timeoutID);
+    }
+  }
+
+  function rootSessionID(sessionID) {
+    if (!sessionID) return Promise.resolve("");
+    if (!rootSessions.has(sessionID)) {
+      const lookup = (async () => {
+        let current = sessionID;
+        for (;;) {
+          const record = await sessionRecord(current);
+          const parent = typeof record.parentID === "string" ? record.parentID.trim() : "";
+          if (!parent) return current;
+          current = parent;
+        }
+      })();
+      lookup.catch(() => rootSessions.delete(sessionID));
+      rootSessions.set(sessionID, lookup);
+    }
+    return rootSessions.get(sessionID);
+  }
+
   async function guardedJudgment(run, cwd) {
     try {
       const judgment = await run();
@@ -165,14 +211,17 @@ function makeGitAnchorPlugin(judge = judgeCommand, judgeInput = judgeToolInput, 
       const args = (output && output.args) || {};
       const sessionID = input && input.sessionID;
       const shell = tool === "bash";
-      if (shell ? !containsGitCommand(args.command) : !toolInputNeedsJudgment(args)) return;
+      const cwd = args.workdir || args.cwd || directory || worktree || process.cwd();
+      if (shell ? !containsGitCommand(args.command) : !toolInputNeedsJudgment(tool, args)) return;
       // 설치 깨짐은 일시 실패가 아니다 — 판정 엔진이 자기 위치 아래 없으면 경고로 낮추지 않고 막는다.
       if (!fs.existsSync(BOARD_PY)) throw new Error(`[git-anchor/설치] 판정 엔진 부재: ${BOARD_PY}`);
-      const cwd = args.workdir || args.cwd || directory || worktree || process.cwd();
       const judgment = await guardedJudgment(
-        () => (shell
-          ? judge(root, cwd, args.command, { grantSession: sessionID })
-          : judgeInput(root, args)),
+        async () => {
+          const session = await rootSessionID(sessionID);
+          return shell
+            ? judge(root, cwd, args.command, { session, grants: true })
+            : judgeInput(root, tool, args, { session, cwd });
+        },
         cwd,
       );
       const text = `[git-anchor/${judgment.verdict}] ${judgment.reason}`;

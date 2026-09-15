@@ -91,7 +91,7 @@ false-green이었다. direct TUI rollout의 token_count는 관측되지만 stabl
 `hooks.json`이 선언하는 이벤트(`PreToolUse`·`UserPromptSubmit`·`PostToolUse`·`SubagentStart`·
 `PreCompact`·`PostCompact`)는 이벤트당 진입점을 **하나씩만** 연다. 실행 대상은 manifest 등재
 디스패처 `.codex/pm_orch_codex.py --hook-dispatch <이벤트>`다. `PreToolUse`의 native matcher는
-exact `^(Bash|collaborationspawn_agent)$`이고, 나머지 다섯 이벤트만 `.*`다. 따라서 대기·일반 도구는
+exact `^(Bash|apply_patch|collaborationspawn_agent)$`이고, 나머지 다섯 이벤트만 `.*`다. 따라서 대기·일반 도구는
 PreToolUse 디스패처 프로세스를 시작하지 않는다.
 "이 payload에 어떤 가드를 돌릴지"의 판단은 그 코드 안의 registry가 쥔다. native spawn 위임 채널,
 SubagentStart 관측, 압축 checkpoint·안내·snapshot이 전부 그 registry의 항목이고, 옛

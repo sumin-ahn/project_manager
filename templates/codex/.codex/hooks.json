@@ -1,9 +1,9 @@
 {
-  "description": "PreToolUse opens the dispatcher only for Bash and collaborationspawn_agent; every other hook event keeps one universal matcher into the manifest-shipped dispatcher .codex/pm_orch_codex.py --hook-dispatch, which decides in process which registered guards run for the payload. SubagentStart records matcher drift but never denies. Compaction hooks create a deduplicated checkpoint skeleton and re-inject the engine-owned PM snapshot without blocking compaction. Execpolicy remains argv-only and cannot enforce spawn metadata.",
+  "description": "PreToolUse opens the dispatcher only for Bash, apply_patch and collaborationspawn_agent; every other hook event keeps one universal matcher into the manifest-shipped dispatcher .codex/pm_orch_codex.py --hook-dispatch, which decides in process which registered guards run for the payload. SubagentStart records matcher drift but never denies. Compaction hooks create a deduplicated checkpoint skeleton and re-inject the engine-owned PM snapshot without blocking compaction. Execpolicy remains argv-only and cannot enforce spawn metadata.",
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "^(Bash|collaborationspawn_agent)$",
+        "matcher": "^(Bash|apply_patch|collaborationspawn_agent)$",
         "hooks": [
           {
             "type": "command",

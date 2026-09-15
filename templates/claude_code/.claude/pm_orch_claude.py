@@ -76,7 +76,9 @@ GIT_ANCHOR_SHELL_PREFILTERS = (
 )
 GIT_GRANT_MARKER = r"git[ \t]+허용[ \t]*:"
 GIT_GRANT_DIR_NAME = "git-grants"
-# git-anchor 훅이 입력을 보는 셸 도구. 그 밖의 도구(파일 쓰기·편집·위임)는 허용 위조만 본다.
+# 슬롯 경로 표식 — 셸 명령이 슬롯(`<PM 홈>/work/<repo>_<N>`) 경로를 담으면 판정한다.
+GIT_ANCHOR_SLOT_PATH_MARK = "/work/"
+# git-anchor 훅이 명령을 보는 셸 도구. 그 밖의 도구(파일 쓰기·편집·위임)는 board 가 입력을 본다.
 GIT_ANCHOR_SHELL_TOOL = "Bash"
 
 
@@ -87,6 +89,7 @@ def _shell_command_needs_judgment(command: str) -> bool:
         any(re.search(pattern, prefilter) for pattern in GIT_ANCHOR_SHELL_PREFILTERS)
         or ".project_manager/tools/" in normalized
         or GIT_GRANT_DIR_NAME in normalized
+        or GIT_ANCHOR_SLOT_PATH_MARK in normalized
     )
 
 
@@ -155,7 +158,8 @@ def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
     """Claude 훅 입력을 중앙 판정(board)에 배선한다.
 
     PreToolUse(Bash) 는 ``judge_git_anchor_command`` 로(세션이 있으면 1회 허용 소비 포함), 그 밖의
-    PreToolUse 도구는 ``judge_tool_input`` 으로(허용 위조), UserPromptSubmit 은 허용 기록으로 보낸다."""
+    PreToolUse 도구(settings matcher 가 연 쓰기·편집·위임 도구)는 ``judge_tool_input`` 으로(허용 위조·
+    슬롯 쓰기 주인), UserPromptSubmit 은 허용 기록으로 보낸다. 세션 ID 는 훅 입력의 ``session_id`` 다."""
     event = stdin.get("hook_event_name") or stdin.get("hookEventName")
     if event == "UserPromptSubmit":
         return git_grant_prompt_evaluate(stdin, root)
@@ -163,21 +167,21 @@ def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
     tool_input = stdin.get("tool_input") or stdin.get("toolInput") or {}
     if event != "PreToolUse" or not isinstance(tool_input, dict):
         return None
-    # 매 도구 호출에 훅이 떠도 판정 대상 비포함은 board import조차 하지 않는 선필터(핫패스 비용 0).
-    if tool != GIT_ANCHOR_SHELL_TOOL:
-        serialized = json.dumps(tool_input, ensure_ascii=False)
-        if GIT_GRANT_DIR_NAME not in serialized and not re.search(GIT_GRANT_MARKER, serialized):
-            return None
-        return _pre_tool_use_output(_load_board(root).judge_tool_input(tool_input))
-    command = tool_input.get("command")
-    if not isinstance(command, str) or not _shell_command_needs_judgment(command):
-        return None
     cwd = stdin.get("cwd")
     anchor = cwd if isinstance(cwd, str) and cwd else str(root)
     session = _hook_session_id(stdin)
-    grants = {"grant_root": root, "grant_session": session} if session else {}
+    if tool != GIT_ANCHOR_SHELL_TOOL:
+        return _pre_tool_use_output(
+            _load_board(root).judge_tool_input(root, session, anchor, tool, tool_input)
+        )
+    command = tool_input.get("command")
+    # Bash 는 매 호출 훅이 뜬다 — 판정 대상 비포함은 board import조차 하지 않는 선필터(핫패스 비용 0).
+    if not isinstance(command, str) or not _shell_command_needs_judgment(command):
+        return None
     return _pre_tool_use_output(
-        _load_board(root).judge_git_anchor_command(anchor, command, **grants)
+        _load_board(root).judge_git_anchor_command(
+            root, session, anchor, command, grants=bool(session),
+        )
     )
 
 

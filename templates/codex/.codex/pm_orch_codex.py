@@ -1025,9 +1025,10 @@ CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
         #   `board.judge_git_anchor_command` 를 그대로 부른다(claude `pm_orch_claude.py
         #   git_anchor_hook_evaluate` 와 동형). git-anchor 엔 delegate-channel 처럼 부를 별도
         #   엔진 파일이 없어 `{self}` 로 이 디스패처가 자기 자신을 다시 부른다.
+        #   파일 쓰기 도구 apply_patch 도 같은 판정(슬롯 쓰기 주인)을 받는다.
         feature_id="git-anchor",
         event="PreToolUse",
-        tool_pattern="^Bash$",
+        tool_pattern="^(Bash|apply_patch)$",
         argv=("{py}", "{self}", GIT_ANCHOR_HOOK_FLAG),
     ),
 )
@@ -1429,9 +1430,12 @@ GIT_ANCHOR_SHELL_PREFILTERS = (
     r"git[ \t]+허용[ \t]*:",
 )
 GIT_GRANT_DIR_NAME = "git-grants"
-# codex 는 사용자 1회 허용을 쓰지 않는다 — UserPromptSubmit 훅은 있지만 파일 쓰기 도구(apply_patch)
-#   가 출하 PreToolUse matcher(`^(Bash|collaborationspawn_agent)$`) 밖이라 허용 기록 위조를 막을 수
-#   없다. 그래서 판정에 허용 세션을 넘기지 않고, 거부 문구는 "사용자가 터미널에서 직접 실행" 이다.
+# 슬롯 경로 표식 — 셸 명령이 슬롯(`<PM 홈>/work/<repo>_<N>`) 경로를 담으면 판정한다.
+GIT_ANCHOR_SLOT_PATH_MARK = "/work/"
+# 파일 쓰기 도구 — 대상 경로는 패치 본문에 있고 board 가 푼다(`judge_tool_input`).
+GIT_ANCHOR_PATCH_TOOL = "apply_patch"
+# codex 는 사용자 1회 허용을 쓰지 않는다 — 사용자 프롬프트를 허용 기록으로 남기는 배선이 없다. 그래서
+#   판정에 허용 세션을 넘기지 않고, 거부 문구는 "사용자가 터미널에서 직접 실행" 이다.
 
 
 def _load_board(root: Path):
@@ -1444,7 +1448,8 @@ def _load_board(root: Path):
 
 
 def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
-    """codex PreToolUse(Bash) payload 를 중앙 `judge_git_anchor_command` seam 에 배선한다.
+    """codex PreToolUse payload 를 중앙 판정 seam 에 배선한다 — Bash 는 `judge_git_anchor_command`,
+    apply_patch 는 `judge_tool_input`(슬롯 쓰기 주인·허용 위조). 세션 ID 는 payload `session_id` 다.
 
     반환은 **항상 유효한 dict** 다 — 이 기능은 자식 프로세스로 돌고, 디스패처
     `_run_hook_feature` 는 빈 stdout 을 실패로 읽어 adapter-fallback 경고로 강등한다. 그래서
@@ -1455,21 +1460,13 @@ def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
     event = payload.get("hook_event_name") or payload.get("hookEventName")
     tool = payload.get("tool_name") or payload.get("toolName")
     tool_input = payload.get("tool_input") or payload.get("toolInput") or {}
-    command = tool_input.get("command") if isinstance(tool_input, dict) else None
-    if event not in (None, "PreToolUse") or tool != "Bash" or not isinstance(command, str):
-        return {}
-    # claude `pm_orch_claude.git_anchor_hook_evaluate` 와 같은 선필터 — 대상은 넷(git 호출·엔진
-    #   도구 호출·pytest·cd 잔존). 판정 대상 비포함은 board import 조차 하지 않는다(핫패스
-    #   비용 0 — 이 함수 자체는 이미 자식 프로세스라 프로세스 spawn 비용은 등록 축(tool_pattern
-    #   ^Bash$)이 진다).
-    prefilter = command.replace("\\\n", "").replace("'", "").replace('"', "")
-    normalized = re.sub(r"/+", "/", prefilter.replace("\\", "/"))
-    if not (
-        any(re.search(pattern, prefilter) for pattern in GIT_ANCHOR_SHELL_PREFILTERS)
-        or ".project_manager/tools/" in normalized
-        or GIT_GRANT_DIR_NAME in normalized
+    if (
+        event not in (None, "PreToolUse") or tool not in ("Bash", GIT_ANCHOR_PATCH_TOOL)
+        or not isinstance(tool_input, dict)
     ):
         return {}
+    session = payload.get("session_id") or payload.get("sessionId")
+    session = session if isinstance(session, str) else ""
     session_cwd = payload.get("cwd")
     session_anchor = (
         os.path.expanduser(session_cwd)
@@ -1489,7 +1486,25 @@ def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
         anchor = value if os.path.isabs(value) else os.path.join(session_anchor, value)
         anchor = os.path.abspath(anchor)
         break
-    judgment = _load_board(root).judge_git_anchor_command(anchor, command)
+    if tool == GIT_ANCHOR_PATCH_TOOL:
+        judgment = _load_board(root).judge_tool_input(root, session, anchor, tool, tool_input)
+    else:
+        command = tool_input.get("command")
+        if not isinstance(command, str):
+            return {}
+        # claude `pm_orch_claude.git_anchor_hook_evaluate` 와 같은 선필터 — 판정 대상 비포함은 board
+        #   import 조차 하지 않는다(핫패스 비용 0 — 이 함수 자체는 이미 자식 프로세스라 프로세스 spawn
+        #   비용은 등록 축(tool_pattern)이 진다).
+        prefilter = command.replace("\\\n", "").replace("'", "").replace('"', "")
+        normalized = re.sub(r"/+", "/", prefilter.replace("\\", "/"))
+        if not (
+            any(re.search(pattern, prefilter) for pattern in GIT_ANCHOR_SHELL_PREFILTERS)
+            or ".project_manager/tools/" in normalized
+            or GIT_GRANT_DIR_NAME in normalized
+            or GIT_ANCHOR_SLOT_PATH_MARK in normalized
+        ):
+            return {}
+        judgment = _load_board(root).judge_git_anchor_command(root, session, anchor, command)
     verdict = judgment.get("verdict")
     reason = judgment.get("reason", "git cwd 정체 판정")
     if (

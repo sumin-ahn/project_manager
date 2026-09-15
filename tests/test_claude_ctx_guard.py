@@ -71,7 +71,7 @@ def test_git_anchor_prefilter_routes_new_command_classes_to_board(
 
     class FakeBoard:
         @staticmethod
-        def judge_git_anchor_command(cwd, shell_command):
+        def judge_git_anchor_command(_root, _session, cwd, shell_command, grants=False):
             calls.append((cwd, shell_command))
             return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "fixture"}
 

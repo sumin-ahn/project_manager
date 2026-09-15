@@ -85,7 +85,7 @@ def test_shipped_hooks_json_opens_one_entrypoint_per_declared_event(
     """선언된 이벤트마다 진입점이 하나이고 PreToolUse만 안전 도구로 좁다."""
     events = _hooks()
     for event in dispatcher.CODEX_HOOK_ENTRYPOINT_EVENTS:
-        expected = "^(Bash|collaborationspawn_agent)$" if event == "PreToolUse" else ".*"
+        expected = "^(Bash|apply_patch|collaborationspawn_agent)$" if event == "PreToolUse" else ".*"
         assert events[event][0]["matcher"] == expected, event
         handler = _entry_handler(event)
         assert handler["type"] == "command"
@@ -103,22 +103,22 @@ def test_engine_reverse_declaration_names_the_same_entrypoints(dispatcher, pm_im
     assert tuple(item.event for item in declared) == tuple(
         dispatcher.CODEX_HOOK_ENTRYPOINT_EVENTS)
     for item in declared:
-        expected = "^(Bash|collaborationspawn_agent)$" if item.event == "PreToolUse" else ".*"
+        expected = "^(Bash|apply_patch|collaborationspawn_agent)$" if item.event == "PreToolUse" else ".*"
         assert item.matcher == expected
         assert item.dispatcher == DISPATCHER_REL
         assert item.flag == dispatcher.CODEX_HOOK_DISPATCH_FLAG
 
 
-def test_pretooluse_native_matcher_is_exact_bash_and_live_spawn_only():
+def test_pretooluse_native_matcher_is_exact_bash_patch_and_live_spawn_only():
     pattern = _hooks()["PreToolUse"][0]["matcher"]
     live = json.loads((REPO / "tests" / "fixtures" /
                        "codex_0_147_0_live_hook_payloads.json").read_text(encoding="utf-8"))
     live_tools = [event["tool_name"] for event in live["events"]
                   if event.get("hook_event_name") == "PreToolUse"]
     assert "Bash" in live_tools and "collaborationspawn_agent" in live_tools
-    for tool in ("Bash", "collaborationspawn_agent"):
+    for tool in ("Bash", "apply_patch", "collaborationspawn_agent"):
         assert re.fullmatch(pattern, tool), tool
-    for tool in ("Agent", "spawn_agent", "collaborationwait_agent", "apply_patch",
+    for tool in ("Agent", "spawn_agent", "collaborationwait_agent", "apply_patch_extra",
                  "update_plan", "BashExtra", "xBash", "collaborationspawn_agent_extra"):
         assert re.fullmatch(pattern, tool) is None, tool
 
@@ -157,7 +157,7 @@ def test_no_hook_event_is_left_outside_the_entrypoint_set():
     assert set(events) == set(_load("pm_orch_codex", DISPATCHER_PY)
                               .CODEX_HOOK_ENTRYPOINT_EVENTS)
     for event in events:
-        expected = "^(Bash|collaborationspawn_agent)$" if event == "PreToolUse" else ".*"
+        expected = "^(Bash|apply_patch|collaborationspawn_agent)$" if event == "PreToolUse" else ".*"
         assert [group["matcher"] for group in events[event]] == [expected], event
         handler = _entry_handler(event)
         for key in ("command", "commandWindows"):
@@ -226,7 +226,7 @@ def test_readme_documents_the_universal_entrypoint_and_feature_registry(dispatch
     readme = " ".join(README.read_text(encoding="utf-8").split())
 
     for anchor in (
-        "`PreToolUse`의 native matcher는 exact `^(Bash|collaborationspawn_agent)$`",
+        "`PreToolUse`의 native matcher는 exact `^(Bash|apply_patch|collaborationspawn_agent)$`",
         "나머지 다섯 이벤트만 `.*`",
         "대기·일반 도구는 PreToolUse 디스패처 프로세스를 시작하지 않는다",
         "진입점 밖에 남은 이벤트는 없다",

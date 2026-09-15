@@ -408,7 +408,12 @@ _GIT_DESTRUCTIVE_SUBCOMMANDS: frozenset[str] = frozenset({
 })
 # 파괴 형태를 거부하는 대상 정체 — 등록 슬롯 · 그 밖의 PM 홈 소유 linked worktree · 공용 저장소(bare).
 _GIT_PROTECTED_IDENTITIES: frozenset[str] = frozenset({"slot", "worktree", "shared-repo"})
-# 멈춤 거부 deny 표식 — 손 git 파괴 형태·슬롯/공용 저장소 파일 삭제·허용 위조. 셸 파서의 조건/cwd
+# 슬롯 작업 트리·인덱스·HEAD 를 바꾸는 git 쓰기 — 슬롯 주인 판정 대상(`_git_writes_slot`).
+_GIT_SLOT_WRITE_SUBCOMMANDS: frozenset[str] = frozenset({
+    "add", "stage", "commit", "checkout", "switch", "restore", "reset", "rm", "mv", "merge",
+    "rebase", "cherry-pick", "revert", "stash", "pull", "am", "apply", "clean",
+})
+# 멈춤 거부 deny 표식 — 손 git 파괴 형태·슬롯/공용 저장소 파일 삭제·허용 위조·남의 슬롯 쓰기. 셸 파서의 조건/cwd
 # 불확실 강등(deny→warn)은 이 표식이 붙은 판정을 낮추지 않는다 — 대상을 못 정한 호출은 이미
 # 슬롯·공용 저장소일 수 있다고 보고 거부한 결과다.
 GIT_DESTRUCTIVE_DENY_CODE = "git-destructive-form"
@@ -421,6 +426,8 @@ _GIT_GUARD_CASE_BRANCH_CREATE = "branch-create"
 _GIT_GUARD_CASE_SLOT_REMOVE = "slot-remove"
 _GIT_GUARD_CASE_ASK_USER = "ask-user"
 _GIT_GUARD_CASE_GRANT_FORGERY = "grant-forgery"
+_GIT_GUARD_CASE_SLOT_NO_TASK = "slot-no-task"
+_GIT_GUARD_CASE_SLOT_NOT_OWNED = "slot-not-owned"
 # 사용자 1회 허용 입력 한 줄 — `git 허용: <명령 원문>`. 사용자 프롬프트 훅만 이 줄로 허용 기록을
 # 만든다. 도구 호출 입력에 이 표식이나 허용 기록 폴더 이름이 있으면 위조 시도로 거부한다.
 GIT_GRANT_LINE = re.compile(r"^[ \t]*git[ \t]+허용[ \t]*:[ \t]*(.*?)[ \t]*$", re.MULTILINE)
@@ -1583,6 +1590,14 @@ _GIT_GUARD_ACTION_LINES: dict[str, str] = {
         "허용 줄·허용 기록은 사용자 입력으로만 만든다. 필요하면 사용자에게 "
         "`git 허용: <명령 원문>` 입력을 요청한다."
     ),
+    _GIT_GUARD_CASE_SLOT_NO_TASK: (
+        "이 세션에 열린 task 가 없다. `pm_bootstrap.py --task <이름>` 으로 task 를 연 뒤 그 task 가 잡은 "
+        "슬롯에서 한다."
+    ),
+    _GIT_GUARD_CASE_SLOT_NOT_OWNED: (
+        "이 세션 task 가 잡은 슬롯에서만 쓴다. 잡은 슬롯이 없으면 `pm-config alloc <repo> --task <이름>` "
+        "으로 잡는다."
+    ),
 }
 _GIT_GUARD_ASK_WITH_GRANT = (
     "사용자에게 이 명령을 실행할지 묻는다. 허용하면 사용자가 `git 허용: <명령 원문>` 한 줄을 "
@@ -1647,11 +1662,159 @@ def _tool_input_strings(value: object) -> Iterator[str]:
             yield from _tool_input_strings(item)
 
 
-def judge_tool_input(tool_input: object) -> dict[str, str]:
-    """셸이 아닌 도구(파일 쓰기·편집·위임 등) 입력의 허용 위조 판정.
+# 슬롯 쓰기 주인 판정 — 슬롯(`work/<repo>_<N>`) 안에는 그 슬롯을 잡은 task 의 세션만 쓴다. 이 세션의
+# task = task 기록 중 `session` 이 훅 세션 ID 와 같은 것. 위임 하네스(pm_delegate 가 띄움)는 세션 ID 가
+# 따로라 이 환경변수로 받은 task 로 판정한다(그 task 가 열려 있을 때만). 슬롯 밖은 판정하지 않는다.
+SLOT_WRITE_DELEGATE_TASK_ENV = "PM_DELEGATE_TASK"
+# 파일 쓰기·편집 도구의 대상 경로 입력 키(실측 claude 2.1.272 · opencode 1.18.31).
+_WRITE_TOOL_PATH_KEYS: dict[str, str] = {
+    "Write": "file_path", "Edit": "file_path", "NotebookEdit": "notebook_path",
+    "write": "filePath", "edit": "filePath",
+}
+# 패치 본문 도구 — 이름은 codex·opencode 공통, 본문 키는 codex `command` · opencode `patchText`(실측
+# codex 0.154.0 · opencode 1.18.31). 대상 경로는 본문의 파일 머리 줄에 있다.
+_PATCH_TOOL_NAME = "apply_patch"
+_PATCH_TOOL_TEXT_KEYS: tuple[str, ...] = ("command", "patchText")
+_PATCH_TARGET_LINE = re.compile(
+    r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+?)[ \t]*$", re.MULTILINE
+)
+# 셸 명령 속 절대경로 — 셸 쓰기 대상은 정적으로 못 정하므로 슬롯을 가리키는지만 본다(경고).
+_SHELL_ABSOLUTE_PATH = re.compile(
+    "(?<![\\w.~-])(/[^\\s'\"`;&|<>()]+|[A-Za-z]:[\\\\/][^\\s'\"`;&|<>()]+)"
+)
+
+
+def _slot_ledger_rows(pm_home: Path) -> tuple[list[dict], list[dict]]:
+    """PM 홈 장부의 (leases, tasks) — 형식이 틀리면 올린다(빈 장부로 흘려 쓰기를 통과시키지 않는다)."""
+    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    data = json.loads(file_lock.read_text_shared(ledger, encoding="utf-8"))
+    leases = data.get("leases") if isinstance(data, dict) else None
+    tasks = data.get("tasks", []) if isinstance(data, dict) else None
+    if not isinstance(leases, list) or not isinstance(tasks, list):
+        raise ValueError(f"{ledger}: leases·tasks 가 list 가 아니다")
+    return (
+        [row for row in leases if isinstance(row, dict)],
+        [row for row in tasks if isinstance(row, dict)],
+    )
+
+
+def slot_containing(
+    pm_home: str | os.PathLike[str], path: str | os.PathLike[str],
+) -> tuple[dict, list[dict]] | None:
+    """`pm_home` 슬롯 중 `path` 를 담은 것 — (그 슬롯 장부 행, task 행들). 슬롯 밖이면 None.
+
+    슬롯은 PM 홈 장부에 등록된 `work/<이름>` 폴더다. 판정 범위는 이 PM 홈(훅이 설치된 홈)의 슬롯이다.
+    장부가 없는 홈에는 슬롯이 없다."""
+    home = Path(pm_home)
+    try:
+        relative = Path(path).expanduser().resolve().relative_to((home / "work").resolve())
+    except ValueError:
+        return None
+    if not relative.parts or not (home / ".project_manager" / ".local" / "worktree-leases.json").is_file():
+        return None
+    leases, tasks = _slot_ledger_rows(home)
+    key = f"work/{relative.parts[0]}"
+    row = next((item for item in leases if item.get("slot") == key), None)
+    return None if row is None else (row, tasks)
+
+
+def _session_task(session: str, tasks: Sequence[dict]) -> str | None:
+    """이 세션이 연 task 이름 — 세션 ID 로 찾고, 없으면 위임 환경변수의 열린 task."""
+    if session:
+        for row in tasks:
+            if row.get("session") == session and isinstance(row.get("name"), str):
+                return row["name"]
+    delegated = os.environ.get(SLOT_WRITE_DELEGATE_TASK_ENV, "")
+    if delegated and any(row.get("name") == delegated and row.get("session") for row in tasks):
+        return delegated
+    return None
+
+
+def _slot_write_judgment(
+    root: str | os.PathLike[str], session: str, target: str | os.PathLike[str],
+) -> dict[str, str] | None:
+    """`target` 쓰기의 슬롯 주인 판정 — `root` 슬롯 밖이면 None, 이 세션 task 가 잡은 슬롯이면 ok, 아니면 deny."""
+    found = slot_containing(root, target)
+    return None if found is None else _slot_owner_judgment(session, found, target)
+
+
+def _slot_owner_judgment(
+    session: str, found: tuple[dict, list[dict]], target: str | os.PathLike[str],
+) -> dict[str, str]:
+    row, tasks = found
+    slot = row["slot"]
+    task = _session_task(session, tasks)
+    if task is None:
+        return {
+            "verdict": "deny", "cwd_identity": "slot", "code": GIT_DESTRUCTIVE_DENY_CODE,
+            "case": _GIT_GUARD_CASE_SLOT_NO_TASK,
+            "reason": f"슬롯 {slot} 쓰기 — 이 세션({session or '세션 ID 없음'})이 연 task 없음 · 대상 {target}",
+        }
+    role = row.get("role", "work")
+    if row.get("state") == "leased" and role == "work" and row.get("session") == task:
+        return {"verdict": "ok", "cwd_identity": "slot", "reason": f"task {task} 가 잡은 슬롯 {slot}"}
+    return {
+        "verdict": "deny", "cwd_identity": "slot", "code": GIT_DESTRUCTIVE_DENY_CODE,
+        "case": _GIT_GUARD_CASE_SLOT_NOT_OWNED,
+        "reason": (
+            f"슬롯 {slot} 쓰기 — 이 세션 task={task} · 슬롯 주인={row.get('session') or '없음'} · "
+            f"상태={row.get('state')} · 역할={role} · 대상 {target}"
+        ),
+    }
+
+
+def _write_tool_targets(cwd: str, tool_name: str, tool_input: dict) -> list[Path]:
+    """파일 쓰기·편집 도구 입력의 대상 경로(상대 경로는 `cwd` 기준)."""
+    raw: list[str] = []
+    key = _WRITE_TOOL_PATH_KEYS.get(tool_name)
+    if key is not None and isinstance(tool_input.get(key), str):
+        raw.append(tool_input[key])
+    if tool_name == _PATCH_TOOL_NAME:
+        for text_key in _PATCH_TOOL_TEXT_KEYS:
+            text = tool_input.get(text_key)
+            if isinstance(text, str):
+                raw.extend(match.group(1) for match in _PATCH_TARGET_LINE.finditer(text))
+    base = Path(cwd).expanduser()
+    return [base / Path(value).expanduser() for value in raw]
+
+
+def _shell_slot_warnings(
+    root: str | os.PathLike[str], session: str, cwd: str, command: str,
+) -> list[dict[str, str]]:
+    """셸 명령이 이 세션 task 의 것이 아닌 슬롯을 실행 위치나 절대경로로 가리키면 경고한다.
+
+    셸 쓰기(리다이렉트·`sed -i`·스크립트)는 대상을 정적으로 못 정하므로 막지 않는다 — 슬롯 하나당
+    경고 한 줄로 알린다."""
+    warnings: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw in (cwd, *_SHELL_ABSOLUTE_PATH.findall(command)):
+        found = slot_containing(root, raw)
+        if found is None or found[0]["slot"] in seen:
+            continue
+        slot = found[0]["slot"]
+        seen.add(slot)
+        judgment = _slot_owner_judgment(session, found, raw)
+        if judgment["verdict"] == "ok":
+            continue
+        warnings.append({
+            "verdict": "warn", "cwd_identity": "slot",
+            "reason": (
+                f"이 세션 task 가 잡지 않은 슬롯 {slot} 을 가리키는 셸 명령 — 셸 쓰기 대상은 판정하지 "
+                f"않는다. 쓰기라면 멈춘다: {_GIT_GUARD_ACTION_LINES[judgment['case']]}"
+            ),
+        })
+    return warnings
+
+
+def judge_tool_input(
+    root: str | os.PathLike[str], session: str, cwd: str, tool_name: str, tool_input: object,
+) -> dict[str, str]:
+    """셸이 아닌 도구(파일 쓰기·편집·위임 등) 입력 판정 — 허용 위조, 그리고 슬롯 쓰기 주인.
 
     허용 기록 폴더 이름이 어느 값에든 있으면(파일 경로·patch 본문) 기록 파일 쓰기로, 줄 머리에
     허용 표식이 있으면(파일 내용·위임 프롬프트) 중첩 세션 프롬프트로 허용을 만들려는 시도로 본다.
+    파일 쓰기·편집 도구의 대상이 `root`(훅이 설치된 PM 홈) 슬롯 안이면 이 세션 task 가 잡은 슬롯일
+    때만 통과한다.
     """
     for text in _tool_input_strings(tool_input):
         if GIT_GRANT_DIR_NAME in text.replace("\\", "/") or GIT_GRANT_LINE.search(text):
@@ -1663,7 +1826,20 @@ def judge_tool_input(tool_input: object) -> dict[str, str]:
                 [judgment.pop("case")], judgment["reason"], grants_available=False,
             )
             return judgment
-    return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "허용 위조 표식 없음"}
+    targets = _write_tool_targets(cwd, tool_name, tool_input) if isinstance(tool_input, dict) else []
+    denies = [
+        judgment for judgment in (_slot_write_judgment(root, session, target) for target in targets)
+        if judgment is not None and judgment["verdict"] == "deny"
+    ]
+    if denies:
+        return {
+            "verdict": "deny", "cwd_identity": "slot", "code": GIT_DESTRUCTIVE_DENY_CODE,
+            "reason": _git_guard_stop_reason(
+                [item["case"] for item in denies], " | ".join(item["reason"] for item in denies),
+                grants_available=False,
+            ),
+        }
+    return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "허용 위조 표식·남의 슬롯 쓰기 없음"}
 
 
 def _git_grant_argv(text: str) -> tuple[str, ...]:
@@ -1742,10 +1918,31 @@ def _use_git_grant(root: str | os.PathLike[str], session: str, cwd: str, command
     return _GIT_GRANT_USED if stored == record else _GIT_GRANT_FORGED
 
 
+def _git_writes_slot(subcommand: str, args: Sequence[str]) -> bool:
+    """git 호출이 작업 트리·인덱스·HEAD 를 바꾸는지 — 보기만 하는 형태(stash list·show · clean -n ·
+    apply --check·--stat)는 쓰기가 아니다."""
+    if subcommand not in _GIT_SLOT_WRITE_SUBCOMMANDS:
+        return False
+    if subcommand == "stash":
+        return not args or args[0] not in {"list", "show"}
+    arguments = _git_arguments(args)
+    if subcommand == "clean":
+        return not _git_option_given(arguments, "-n", "--dry-run")
+    if subcommand == "apply":
+        return _git_option_given(arguments, "--apply") or not _git_option_given(
+            arguments, "--check", "--stat", "--numstat", "--summary",
+        )
+    return True
+
+
 def judge_git_anchor(
-    cwd: str, argv: list[str], *, runner: Any = subprocess.run, cwd_certain: bool = True,
+    root: str | os.PathLike[str], session: str, cwd: str, argv: list[str], *,
+    runner: Any = subprocess.run, cwd_certain: bool = True,
 ) -> dict[str, str]:
     """raw git 호출의 cwd 안전성을 판정하는 엔진·하네스 중립 seam.
+
+    ``root`` 는 훅이 설치된 PM 홈, ``session`` 은 호출한 하네스 세션 ID 다 — ``root`` 슬롯의 git 쓰기는
+    그 세션 task 가 잡은 슬롯일 때만 통과한다(`_slot_write_judgment`).
 
     deny 는 둘이다. (1) 슬롯·공용 저장소 대상의 손 git 파괴 형태(브랜치 만들기·지우기·이름 바꾸기,
     변경 버리기, 슬롯 지우기·옮기기, 원격 덮어쓰기, 저수준 ref 조작) — 브랜치와 슬롯은 엔진만 만들고
@@ -1782,6 +1979,10 @@ def judge_git_anchor(
                 "case": form.case if target_certain else _GIT_GUARD_CASE_FOLDER_UNKNOWN,
                 "reason": f"손 git {form.label} — `{shown}` {where}",
             }
+        if identity == "slot" and target_certain and _git_writes_slot(resolved.subcommand, resolved.args):
+            owner = _slot_write_judgment(root, session, repo_root)
+            if owner is not None and owner["verdict"] == "deny":
+                return {**owner, "reason": f"git {resolved.subcommand} — {owner['reason']}"}
     subcommand = invocation.subcommand
     if subcommand not in _GIT_MUTATION_SUBCOMMANDS:
         return {
@@ -3055,24 +3256,24 @@ def _shell_removal_calls(
 
 
 def judge_git_anchor_command(
-    cwd: str, command: str, *, grant_root: str | os.PathLike[str] | None = None,
-    grant_session: str | None = None, runner: Any = subprocess.run,
+    root: str | os.PathLike[str], session: str, cwd: str, command: str, *, grants: bool = False,
+    runner: Any = subprocess.run,
 ) -> dict[str, str]:
     """셸 command의 모든 git/엔진/파일 삭제 호출을 중앙 파싱하고 가장 강한 판정을 반환한다.
 
-    멈춤 거부(손 git 파괴 형태·슬롯/공용 저장소 파일 삭제·허용 위조)는 첫 줄 멈춤 지시와 경우별
-    다음 행동을 붙인다. ``grant_root``·``grant_session`` 은 이 하네스가 사용자 1회 허용을 쓸 수
-    있을 때 함께 준다 — 그러면 1회 허용으로 풀 수 있는 거부에서 정확히 같은 명령의 허용 기록을
-    소비하고 통과시킨다. 둘 다 없으면 그 거부는 사용자가 터미널에서 직접 실행하도록 안내한다.
+    멈춤 거부(손 git 파괴 형태·슬롯/공용 저장소 파일 삭제·허용 위조·남의 슬롯 git 쓰기)는 첫 줄 멈춤
+    지시와 경우별 다음 행동을 붙인다. ``root`` 는 훅이 설치된 PM 홈, ``session`` 은 호출한 하네스 세션
+    ID 다 — ``root`` 슬롯 쓰기 주인 판정에 쓰고, 거부가 아니면 `pm_bootstrap.py --task <이름>` 호출의
+    세션 기록을 남긴다(`_record_bootstrap_session_claims`). ``grants`` 는 이 하네스가 사용자 1회 허용을
+    쓸 수 있을 때 준다 — 그러면 1회 허용으로 풀 수 있는 거부에서 ``root`` 에 남은 이 세션·정확히 같은
+    명령의 허용 기록을 소비하고 통과시킨다. 없으면 그 거부는 사용자가 터미널에서 직접 실행하도록 안내한다.
     """
-    if (grant_root is None) != (grant_session is None):
-        raise ValueError("grant_root 와 grant_session 은 함께 주거나 함께 뺀다")
     parsed = _git_invocations_from_shell(cwd, command)
     invocations = parsed.invocations
     judgments: list[dict[str, str]] = []
     for call in invocations:
         judgment = judge_git_anchor(
-            call.cwd, list(call.argv), runner=runner, cwd_certain=call.anchor_certain,
+            root, session, call.cwd, list(call.argv), runner=runner, cwd_certain=call.anchor_certain,
         )
         if (
             not call.certain and judgment["verdict"] != "warn"
@@ -3115,15 +3316,55 @@ def judge_git_anchor_command(
             "verdict": "warn", "cwd_identity": "non-repo",
             "reason": f"{parsed.reason} — 차단하지 않음; cwd를 직접 확인",
         })
+    if isinstance(command, str):
+        judgments.extend(_shell_slot_warnings(root, session, cwd, command))
     if not judgments:
         return {
             "verdict": "ok", "cwd_identity": "non-repo",
             "reason": "git mutation/엔진 호출 없음",
         }
-    return _finish_git_guard_judgment(
+    result = _finish_git_guard_judgment(
         _strongest_git_guard_judgment(judgments), judgments, cwd=cwd, command=command,
-        grant_root=grant_root, grant_session=grant_session,
+        grant_root=root if grants else None, grant_session=session if grants else None,
     )
+    if result["verdict"] != "deny":
+        _record_bootstrap_session_claims(session, parsed)
+    return result
+
+
+def _bootstrap_task_argument(args: Sequence[str]) -> str | None:
+    for index, token in enumerate(args):
+        if token == "--task" and index + 1 < len(args):
+            return args[index + 1]
+        if token.startswith("--task="):
+            return token.split("=", 1)[1]
+    return None
+
+
+def _record_bootstrap_session_claims(session: str, parsed: _ShellParseResult) -> None:
+    """`pm_bootstrap.py --task <이름>` 호출마다 이 세션 ID 기록을 그 부트스트랩 사본의 홈에 남긴다.
+
+    부트스트랩 프로세스는 자기 하네스 세션 ID 를 알 수 없어(codex·opencode 는 도구 프로세스 환경에
+    없다) 이 기록을 가져가 task 에 쓴다(`worktree_pool.take_task_session_claim`). 실행 위치·인자를
+    정적으로 못 정한 호출과 세션 ID 없는 훅은 남기지 않는다 — 그러면 부트스트랩이 기록 없음으로 멈춘다.
+    """
+    if not session:
+        return
+    for call in parsed.engine_invocations:
+        details = _engine_invocation_details(call.cwd, call.argv)
+        if (
+            not call.certain or details is None or details.kind != "engine"
+            or Path(details.script).name != "pm_bootstrap.py"
+        ):
+            continue
+        task = _bootstrap_task_argument(details.args)
+        if task is None:
+            continue
+        script = (Path(call.cwd).expanduser() / details.script).resolve()
+        pool = _load_module_from_path(
+            script.with_name("worktree_pool.py"), "worktree_pool.py", verifier=_verify_engine_rev,
+        )
+        pool.record_task_session_claim(task, session)
 
 
 def _finish_git_guard_judgment(
@@ -16439,12 +16680,11 @@ def cmd_refresh(_args: argparse.Namespace) -> int:
 def cmd_git_anchor(args: argparse.Namespace) -> int:
     """하네스 훅용 JSON 판정 표면. 한 줄 JSON만 출력한다.
 
-    ``--grant-session`` 을 주면 이 엔진 루트의 사용자 1회 허용을 쓸 수 있는 하네스로 판정한다
-    (정확히 같은 명령의 허용 기록이 있으면 소비한다).
+    ``--grants`` 를 주면 이 엔진 루트의 사용자 1회 허용을 쓸 수 있는 하네스로 판정한다
+    (정확히 같은 명령·같은 세션의 허용 기록이 있으면 소비한다).
     """
-    session = args.grant_session or None
     judgment = judge_git_anchor_command(
-        args.cwd, args.command, grant_root=REPO if session else None, grant_session=session,
+        REPO, args.session, args.cwd, args.command, grants=args.grants,
     )
     _write_machine_line(json.dumps(judgment, ensure_ascii=False))
     return 0
@@ -16462,9 +16702,10 @@ def cmd_git_grant(args: argparse.Namespace) -> int:
 
 
 def cmd_git_tool_input(args: argparse.Namespace) -> int:
-    """하네스 훅용 — stdin JSON 도구 입력의 허용 위조 판정을 한 줄 JSON 으로 출력한다."""
+    """하네스 훅용 — stdin JSON 도구 입력의 판정(허용 위조·슬롯 쓰기 주인)을 한 줄 JSON 으로 출력한다."""
     tool_input = json.loads(sys.stdin.buffer.read().decode("utf-8"))
-    _write_machine_line(json.dumps(judge_tool_input(tool_input), ensure_ascii=False))
+    judgment = judge_tool_input(REPO, args.session, args.cwd, args.tool, tool_input)
+    _write_machine_line(json.dumps(judgment, ensure_ascii=False))
     return 0
 
 
@@ -20838,9 +21079,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_livegate)
 
     p = sub.add_parser("git-anchor", help=argparse.SUPPRESS)
+    p.add_argument("--session", required=True, help=argparse.SUPPRESS)
     p.add_argument("--cwd", required=True, help=argparse.SUPPRESS)
     p.add_argument("--command", required=True, help=argparse.SUPPRESS)
-    p.add_argument("--grant-session", default=None, help=argparse.SUPPRESS)
+    p.add_argument("--grants", action="store_true", help=argparse.SUPPRESS)
     p.set_defaults(fn=cmd_git_anchor)
 
     p = sub.add_parser("git-grant", help=argparse.SUPPRESS)
@@ -20849,6 +21091,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_git_grant)
 
     p = sub.add_parser("git-tool-input", help=argparse.SUPPRESS)
+    p.add_argument("--session", required=True, help=argparse.SUPPRESS)
+    p.add_argument("--cwd", required=True, help=argparse.SUPPRESS)
+    p.add_argument("--tool", required=True, help=argparse.SUPPRESS)
     p.set_defaults(fn=cmd_git_tool_input)
 
     p = sub.add_parser("refresh", help="regenerate board.md")

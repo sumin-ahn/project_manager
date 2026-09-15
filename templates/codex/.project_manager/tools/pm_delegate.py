@@ -8904,6 +8904,22 @@ def build_env(
     )
 
 
+def _delegate_task_env(cwd: Path) -> dict[str, str]:
+    """위임 하네스에 실을 슬롯 주인 task — 위임 세션은 세션 ID 가 따로라 슬롯 쓰기 가드가 이 값으로 판정한다.
+
+    `cwd` 가 task 가 잡은 슬롯이면 `{PM_DELEGATE_TASK: <task>}` 다. 슬롯 밖이거나 task 가 잡지 않은
+    슬롯이면 빈 dict 다 — 그 위임의 슬롯 쓰기는 가드가 거부한다(`board.judge_tool_input`)."""
+    board = _load_board()
+    found = board.slot_containing(board.REPO, cwd)
+    if found is None:
+        return {}
+    row, tasks = found
+    owner = row.get("session")
+    if row.get("state") != "leased" or not any(task.get("name") == owner for task in tasks):
+        return {}
+    return {board.SLOT_WRITE_DELEGATE_TASK_ENV: owner}
+
+
 def _is_relative_to(path: Path, base: Path) -> bool:
     """Path.is_relative_to (3.9 호환 래퍼)."""
     try:
@@ -11883,6 +11899,8 @@ def _execute_attempt(
             f"{harness} 하네스는 세션 재사용 미지원인데 재개 id 가 전달됐다 — "
             "미검증 argv 를 만들지 않는다."
         )
+    # 슬롯 주인 task 는 준비 산출물을 만들기 전에 해소한다 — 장부 판독 실패가 되감을 산출물을 남기지 않는다.
+    delegate_task_env = _delegate_task_env(cwd)
     argv, stdin_text, prompt_path, read_tmp = _prepare_attempt_transport(
         harness, model, reasoning, role, cwd, prompt, resume_session_id,
         cluster_run_dir,
@@ -11893,6 +11911,7 @@ def _execute_attempt(
         env = relay.with_harness_runtime_role(
             _apply_read_tmp_env(build_env(harness), harness, read_tmp), harness, role,
         )
+        env.update(delegate_task_env)
     except BaseException:
         _cleanup_attempt_transport(prompt_path, read_tmp)
         raise

@@ -228,11 +228,11 @@ def test_board_git_anchor_hook_json_is_utf8(capture_console, monkeypatch):
     board = _load("board")
     verdict = {"verdict": "deny", "reason": LOSSY_SAMPLE}
     monkeypatch.setattr(
-        board, "judge_git_anchor_command", lambda cwd, command, **_grants: verdict
+        board, "judge_git_anchor_command", lambda root, session, cwd, command, **_grants: verdict
     )
     stream = capture_console()
 
-    args = SimpleNamespace(cwd="/repo", command="git commit", grant_session=None)
+    args = SimpleNamespace(session="S", cwd="/repo", command="git commit", grants=False)
     assert board.cmd_git_anchor(args) == 0
 
     assert _machine_payload(stream) == verdict
