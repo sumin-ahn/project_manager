@@ -221,7 +221,7 @@ def test_task_new_identity_then_bootstrap_resumes(tmp_path, capsys):
     )
     assert "상태=신규 task" not in out, "이미 만든 정체성인데 신규 생성으로 분류됐다"
     assert "회수 진입" not in out, "닫힌 기록 재개인데 회수 경고 오탐"
-    assert "작업공간: (없음)" in out, "슬롯 0 진입 열거가 사라졌다"
+    assert "작업 슬롯: (없음)" in out, "슬롯 0 진입 열거가 사라졌다"
 
     # ③ 장부는 행 하나(중복 생성 없음)이고 열림 표시만 바뀐다. pm_state 는 재개가 덮지 않는다.
     rows = json.loads(
@@ -260,7 +260,7 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, capsys):
     rc = _make_bootstrap(bootstrap_mod, wp, tmp_path).run(task=task)
     assert rc == 0
     out1 = capsys.readouterr().out
-    assert "작업공간: (없음)" in out1, "0슬롯 진입인데 '(없음)' 열거 없음(I2)"
+    assert "작업 슬롯: (없음)" in out1, "0슬롯 진입인데 '(없음)' 열거 없음(I2)"
     assert "신규 task" in out1, "신규 task 정체성 surface 없음(F1)"
     # 부트스트랩이 task 정체성과 state를 함께 생성했다(tasks 장부·created·slot 0개와 무관).
     assert any(t.name == task for t in wp.list_tasks()), "① 부트스트랩이 task 를 생성하지 않았다"

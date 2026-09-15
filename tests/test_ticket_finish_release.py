@@ -103,3 +103,48 @@ def test_unresolved_and_unknown_and_already_released_stay_no_target(home, monkey
     assert "슬롯 미해소 — 무대상" in out
     assert f"슬롯 {SLOT} 리스 없음 — 무대상" in out
     assert "이미 반납됨(idle)" in out
+
+
+class _Released:
+    def __init__(self, repo: str):
+        self.repo = repo
+
+
+class _Held:
+    def __init__(self, slot: str):
+        self.slot = slot
+
+
+@pytest.mark.parametrize("held, expected", [
+    ([], "가진 슬롯: 없음. 이 task 로 코드 작업을 이어가려면 `pm-config alloc A --task main` 로 다시 잡는다"),
+    (["work/A_2"], "가진 슬롯: work/A_2"),
+])
+def test_task_close_release_says_which_slots_the_task_still_holds(home, monkeypatch, held, expected):
+    """종결이 슬롯을 반납하면 그 task 가 아직 가진 슬롯을 말한다 — 0개면 다시 잡는 명령까지."""
+    module = _load_ticket_finish(home, monkeypatch)
+    calls = []
+
+    class _Pool:
+        def release(self, slot, *, owner_task):
+            calls.append((slot, owner_task))
+            return _Released("A")
+
+        def slots_for_task(self, name):
+            return [_Held(value) for value in held]
+
+    monkeypatch.setattr(module, "_load_tool_module", lambda path: _Pool())
+    finisher = module.TicketFinisher(
+        board_py=home / ".project_manager" / "tools" / "board.py",
+        log_file=home / ".project_manager" / "wiki" / "log" / "current.md",
+        run_pytest_fn=lambda: (0, "1 passed in 0.01s"),
+    )
+    closer = module.ClusterCloser(
+        _CLUSTER, finisher=finisher, board_py=home / ".project_manager" / "tools" / "board.py",
+        slot=SLOT, task="main",
+    )
+
+    ok, message = closer._default_release(SLOT)
+
+    assert ok and calls == [(SLOT, "main")]
+    assert message.startswith(f"슬롯 {SLOT} 반납됨 — task main ")
+    assert expected in message

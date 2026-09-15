@@ -4524,10 +4524,11 @@ class PmBootstrap:
         if slot_set:
             self._append_task_slot_matrix(lines, name, slot_set)
         else:
-            # 0개 보유 — 진입(검증 no-op) + generic 안내는 여기서만.
-            lines.append("- 작업공간: (없음)")
+            # 0개 보유 — 이 task 가 쓸 슬롯이 없다는 사실과 잡는 명령을 여기서 말한다.
             lines.append(
-                "  작업공간(슬롯): alloc에서 연결 — 신규 task 는 슬롯 0개로 시작 가능."
+                f"- 작업 슬롯: (없음) — 코드 작업(repo 파일 수정·커밋) 전에 "
+                f"`{_CARD_TOOL_INVOKE}/pm_config.py alloc <repo> --task {name}` 으로 잡는다. "
+                "잡지 않은 슬롯에는 쓰지 않는다."
             )
         if pm_state_path:
             lines.append(_render_task_pm_state_pointer(pm_state_path))

@@ -4076,12 +4076,21 @@ class ClusterCloser:
         if release is None:
             return False, "worktree_pool 반납 seam 을 로드하지 못했다"
         try:
-            release(slot, owner_task=self._task)
+            released = release(slot, owner_task=self._task)
         except Exception as exc:  # noqa: BLE001 — 반납 거부는 사유를 그대로 올린다.
             if _is_engine_rev_skew(exc):
                 raise
             return False, f"{type(exc).__name__}: {exc}"
-        return True, f"슬롯 {slot} 반납됨"
+        if self._task is None:
+            return True, f"슬롯 {slot} 반납됨"
+        # 반납 뒤 이 task 가 가진 슬롯을 말한다 — 종결 뒤에도 같은 세션이 반납된 슬롯에서 계속
+        # 작업하던 것을 막는 자리다(아무것도 안 알리면 세션은 슬롯을 잃은 줄 모른다).
+        held = [lease.slot for lease in pool.slots_for_task(self._task)]
+        if held:
+            return True, f"슬롯 {slot} 반납됨 — task {self._task} 가 가진 슬롯: {', '.join(held)}"
+        return True, (
+            f"슬롯 {slot} 반납됨 — task {self._task} 가 가진 슬롯: 없음. 이 task 로 코드 작업을 "
+            f"이어가려면 `pm-config alloc {released.repo} --task {self._task}` 로 다시 잡는다")
 
     def _slot_state(self, slot: str) -> str | None:
         """슬롯의 현재 상태 — 리스 장부에 그 슬롯이 없으면 None(관측 성공·대여 아님).
