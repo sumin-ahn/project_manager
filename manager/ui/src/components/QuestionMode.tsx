@@ -60,7 +60,7 @@ export default function QuestionMode({ rows, values, onFinish }: {
     if (row) setDraft(prefill(row, values));
   }, [row, values]);
 
-  if (!row) return <p className="text-slate-500">물어볼 항목이 없다</p>;
+  if (!row) return <p className="text-slate-500">물어볼 항목이 없습니다.</p>;
 
   const advance = () => {
     const before = values[row.key] ?? "";

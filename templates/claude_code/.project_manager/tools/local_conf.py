@@ -398,11 +398,12 @@ class KeySpec:
                  unset: str | None = None, governed_by: str | None = None,
                  readonly: bool = False) -> None:
         # `label` = 사람이 읽는 이름(명사구·키 문자열을 옮겨 적지 않는다), `description` = 그 값이
-        # 무엇을 바꾸는지 한 줄. 둘 다 종결형 어미를 쓰지 않는다 — 설정 화면 문구의 단일 소유가
-        # 여기이고, 화면은 받아 그리기만 한다.
-        # `unset` = 이 키를 **안 채웠을 때 실제로 일어나는 일** 한 문장이다. 셋 중 하나로 쓴다:
-        # 다른 값을 씀(`운영체제 기본 파이썬을 씀`) · 그 기능이 돌지 않음(`교차 검토를 하지 않음`) ·
-        # 그 명령이 멈춤(`이 역할로 위임하면 설정이 없다며 멈춤`). 기본값이 있으면 그 값이 곧 답이라
+        # 무엇을 바꾸는지. 설명·`unset`·스위치 사유(`_MASTER_SWITCHES`)는 합니다체 문장으로 쓰고
+        # 마침표로 끝낸다(사용자 결정 2026-09-15). 이름은 명사구 그대로다 — 설정 화면 문구의 단일
+        # 소유가 여기이고, 화면은 받아 그리기만 한다.
+        # `unset` = 이 키를 **안 채웠을 때 실제로 일어나는 일**이다. 셋 중 하나로 쓴다:
+        # 다른 값을 씀(`운영체제 기본 파이썬을 씁니다.`) · 그 기능이 돌지 않음(`교차 검토를 하지
+        # 않습니다.`) · 그 명령이 멈춤(`이 역할로 위임하면 설정이 없다며 멈춥니다.`). 기본값이 있으면 그 값이 곧 답이라
         # None 이고, 없으면 반드시 채운다 — 아래 불변식이 강제한다(설정 화면에 빈 칸이 없다).
         # `governed_by` = 이 키를 쓰게 만드는 스위치 키(`_MASTER_SWITCHES`). 그 스위치가 꺼져
         # 있으면 이 키는 아무 효과가 없고 화면은 칸을 잠근다.
@@ -485,181 +486,178 @@ GROUP_LABELS: dict[str, str] = {
     "additional_reviewer": "교차 검토",
 }
 
-# 시간 예산 키의 기본은 **하네스별 표**라 한 칸에 담기지 않는다 — 설명이 정본의 자리를 말한다.
-_HARNESS_PROFILE_NOTE = "미설정이면 하네스 프로필(`pm_relay.HARNESS_PROFILES`)이 정본이다"
-
 # 절을 켜는 키 → 꺼져 있을 때 그 절의 나머지 칸에 붙는 한 줄. 켜짐 판정은 소비자 것이다:
 # 교차 검토 도구는 값이 있으면 켜짐(`additional_reviewer.resolve_reviewer_target`), 위임 사용은
 # 빈 값이면 기본 ON 이고 그 밖에는 `pm_delegate.DELEGATE_ENABLED_VALUES` 안이어야 켜짐이다.
 _MASTER_SWITCHES: dict[str, str] = {
-    "additional_reviewer.harness": "교차 검토 도구를 정해야 쓰임",
-    "delegate.enabled": "위임 사용이 켜져 있어야 쓰임",
+    "additional_reviewer.harness": "교차 검토 도구를 정해야 쓰입니다.",
+    "delegate.enabled": "위임 사용이 켜져 있어야 쓰입니다.",
 }
 
 # 도구·모델·생각 깊이를 한 세트로 읽는 교차 검토 묶음의 이름(`ADDITIONAL_REVIEWER_KEYS` 의 접두).
 _REVIEWER_UNIT = "additional_reviewer"
 
 # 기본 시간을 도구마다 따로 가진 키가 안 채워졌을 때.
-_TOOL_DEFAULT_TIME = "도구마다 정해진 기본 시간을 씀"
+_TOOL_DEFAULT_TIME = "도구마다 정해진 기본 시간을 씁니다."
 # 안내 문서에 박히는 키가 안 채워졌을 때 — 출하 안내 문서는 설치 때 이미 값이 박혀 평소엔
 # 이 키를 다시 읽지 않는다. 그 자리가 남은 원본을 다시 그릴 때만 채우라며 멈춘다
 # (`pm_render._assert_no_leak`).
-_RENDER_ONLY_UNSET = "평소엔 영향 없음, 안내 문서를 다시 그릴 때 이 자리가 남아 있으면 채우라며 멈춤"
+_RENDER_ONLY_UNSET = "평소에는 영향이 없습니다. 안내 문서를 다시 그릴 때 이 자리가 남아 있으면 채우라며 멈춥니다."
 
 KEY_REGISTRY: dict[str, KeySpec] = {
     "project.name": KeySpec(
         "프로젝트 이름",
-        "안내 문서(CLAUDE.md 등)에 들어갈 이름",
+        "안내 문서(CLAUDE.md 등)에 들어갈 이름입니다.",
         default=None, unset=_RENDER_ONLY_UNSET, required=False, group="project"),
     "project.tagline": KeySpec(
         "한 줄 소개",
-        "안내 문서 첫머리에 들어갈 소개",
+        "안내 문서 첫머리에 들어갈 소개입니다.",
         default=None, unset=_RENDER_ONLY_UNSET, required=False, group="project"),
     "project.root": KeySpec(
         "기준 경로",
-        "안내 문서에 적을 경로의 기준",
+        "안내 문서에 적을 경로의 기준입니다.",
         default=None, unset=_RENDER_ONLY_UNSET, required=False, group="project"),
     "project.date": KeySpec(
         "기준 날짜",
-        "안내 문서에 적을 날짜",
+        "안내 문서에 적을 날짜입니다.",
         default=None, unset=_RENDER_ONLY_UNSET, required=False, group="project"),
     "runtime.py": KeySpec(
         "파이썬 실행 파일",
-        "엔진을 실행할 파이썬 (예: python3, Windows 는 py -3.12), 첫 설치 때 실행해 보고 채움",
-        default=None, unset="운영체제 기본 파이썬(python3, Windows 는 py -3)을 씀",
+        "엔진을 실행할 파이썬입니다(예: python3, Windows 는 py -3.12). 첫 설치 때 실행해 보고 채웁니다.",
+        default=None, unset="운영체제 기본 파이썬(python3, Windows 는 py -3)을 씁니다.",
         required=True, group="runtime"),
     "test.cmd": KeySpec(
         "테스트 명령",
-        "테스트를 돌릴 때 그대로 실행할 명령",
-        default=None, unset="파이썬 기본 테스트 명령(python -m pytest tests/ -q)을 씀",
+        "테스트를 돌릴 때 그대로 실행할 명령입니다.",
+        default=None, unset="파이썬 기본 테스트 명령(python -m pytest tests/ -q)을 씁니다.",
         required=True, group="runtime"),
     "qa.platforms": KeySpec(
         "테스트할 운영체제 목록",
-        "쉼표로 구분 (예: linux, windows), 적으면 운영체제마다 테스트 명령을 따로 정해야 하고 적은 순서대로 실행",
-        default=None, unset="운영체제 구분 없이 테스트 명령 하나만 돎", required=False, group="runtime"),
+        "쉼표로 구분합니다(예: linux, windows). 적으면 운영체제마다 테스트 명령을 따로 정해야 하고, 적은 순서대로 실행합니다.",
+        default=None, unset="운영체제 구분 없이 테스트 명령 하나만 실행합니다.", required=False, group="runtime"),
     "identity.user": KeySpec(
         "내 계정",
-        "작업 기록에 남길 이름",
-        default=None, unset="git 설정의 이메일을 씀, 그것도 없으면 이름 없이 기록",
+        "작업 기록에 남길 이름입니다.",
+        default=None, unset="git 설정의 이메일을 씁니다. 그것도 없으면 이름 없이 기록합니다.",
         required=False, group="identity"),
     "upstream.path": KeySpec(
         "원본 위치",
-        "업데이트를 받아올 폴더 경로나 주소",
-        default=None, unset="받아올 곳이 없어 업데이트가 멈춤", required=False, group="upstream"),
+        "업데이트를 받아올 폴더 경로나 주소입니다.",
+        default=None, unset="받아올 곳이 없어 업데이트가 멈춥니다.", required=False, group="upstream"),
     "upstream.rev": KeySpec(
         "마지막으로 받은 커밋",
-        "업데이트 차이를 재는 기준, 업데이트가 적음",
-        default=None, unset="아직 업데이트를 받은 적 없음", required=False, group="upstream",
+        "업데이트 차이를 재는 기준입니다. 업데이트가 적습니다.",
+        default=None, unset="아직 업데이트를 받은 적이 없습니다.", required=False, group="upstream",
         readonly=True),
     "upstream.seen_rev": KeySpec(
         "마지막으로 확인한 커밋",
-        "원본에서 마지막으로 본 커밋, 업데이트가 적음",
-        default=None, unset="아직 원본을 확인한 적 없음", required=False, group="upstream",
+        "원본에서 마지막으로 본 커밋입니다. 업데이트가 적습니다.",
+        default=None, unset="아직 원본을 확인한 적이 없습니다.", required=False, group="upstream",
         readonly=True),
     "ctx.checkpoint_pct": KeySpec(
         "중간 기록 권고 (%)",
-        "남은 컨텍스트가 이 비율 이하가 되면 중간 기록을 권함, 작업은 계속",
+        "남은 컨텍스트가 이 비율 이하가 되면 중간 기록을 권합니다. 작업은 계속합니다.",
         default="30", required=False, group="ctx"),
     "ctx.precompact_pct": KeySpec(
         "압축 임박 경고 (%)",
-        "남은 컨텍스트가 이 비율 이하가 되면 자동 압축이 곧 일어난다고 보고 마지막으로 중간 기록을 권함, 작업을 멈추거나 세션을 바꾸지는 않음",
+        "남은 컨텍스트가 이 비율 이하가 되면 자동 압축이 곧 일어난다고 보고 마지막으로 중간 기록을 권합니다. 작업을 멈추거나 세션을 바꾸지는 않습니다.",
         default="20", required=False, group="ctx"),
     "ctx.window_tokens": KeySpec(
         "컨텍스트 크기 (토큰)",
-        "위 두 비율의 분모, 도구별 값이 없을 때 쓰는 기준, 실제보다 작게 두면 더 일찍 넘김",
+        "위 두 비율의 분모이며, 도구별 값이 없을 때 쓰는 기준입니다. 실제보다 작게 두면 더 일찍 넘깁니다.",
         default="200000", required=False, group="ctx"),
     "delegate.enabled": KeySpec(
         "위임 사용",
-        "끄면 다른 도구에 작업을 맡기지 않음",
+        "끄면 다른 도구에 작업을 맡기지 않습니다.",
         default="true", required=False, group="delegate"),
     "delegate.timeout": KeySpec(
         "위임 최대 실행 시간 (초)",
-        "이 시간을 넘으면 중단",
+        "이 시간을 넘으면 중단합니다.",
         default=None, unset=_TOOL_DEFAULT_TIME, required=False, group="delegate",
         governed_by="delegate.enabled"),
     "delegate.idle_timeout": KeySpec(
         "위임 응답 없을 때 대기 (초)",
-        "이만큼 출력이 없으면 멈춘 것으로 봄",
+        "이만큼 출력이 없으면 멈춘 것으로 봅니다.",
         default=None, unset=_TOOL_DEFAULT_TIME, required=False, group="delegate",
         governed_by="delegate.enabled"),
     "delegate.code-reviewer.rounds_max": KeySpec(
         "검토 최대 횟수",
-        "같은 작업을 다시 검토할 최대 횟수",
+        "같은 작업을 다시 검토할 최대 횟수입니다.",
         default="3", required=False, group="delegate", governed_by="delegate.enabled"),
     "additional_reviewer.harness": KeySpec(
         "교차 검토 도구",
-        "다른 모델로 한 번 더 검토할 때 쓸 도구, 모델과 함께 채움",
-        default=None, unset="교차 검토를 하지 않음", required=False, group="additional_reviewer",
+        "다른 모델로 한 번 더 검토할 때 쓸 도구입니다. 모델과 함께 채웁니다.",
+        default=None, unset="교차 검토를 하지 않습니다.", required=False, group="additional_reviewer",
         choices="harness"),
     "additional_reviewer.model": KeySpec(
         "교차 검토 모델",
-        "그 도구가 받는 표기 그대로",
-        default=None, unset="교차 검토를 하지 않음", required=False, group="additional_reviewer",
+        "그 도구가 받는 표기 그대로 적습니다.",
+        default=None, unset="교차 검토를 하지 않습니다.", required=False, group="additional_reviewer",
         choices="model"),
     "additional_reviewer.reasoning": KeySpec(
         "교차 검토 생각 깊이",
-        "고를 수 있는 값은 도구마다 다름",
-        default=None, unset="교차 검토를 하지 않음", required=False, group="additional_reviewer",
+        "고를 수 있는 값은 도구마다 다릅니다.",
+        default=None, unset="교차 검토를 하지 않습니다.", required=False, group="additional_reviewer",
         choices="reasoning"),
     "additional_reviewer.rounds_max": KeySpec(
         "교차 검토 최대 횟수",
-        "한 건을 다시 볼 최대 횟수",
+        "한 건을 다시 볼 최대 횟수입니다.",
         default="2", required=False, group="additional_reviewer",
         governed_by="additional_reviewer.harness"),
     "additional_reviewer.incomplete_rounds_max": KeySpec(
         "교차 검토 재시도 횟수",
-        "결과 없이 끝난 호출을 다시 부를 최대 횟수",
+        "결과 없이 끝난 호출을 다시 부를 최대 횟수입니다.",
         default="2", required=False, group="additional_reviewer",
         governed_by="additional_reviewer.harness"),
     "additional_reviewer.wave_budget": KeySpec(
         "교차 검토 세션당 총 횟수",
-        "한 세션에서 쓸 수 있는 전체 호출 수",
+        "한 세션에서 쓸 수 있는 전체 호출 수입니다.",
         default="24", required=False, group="additional_reviewer",
         governed_by="additional_reviewer.harness"),
     "additional_reviewer.paths": KeySpec(
         "교차 검토할 폴더",
-        "쉼표나 공백으로 구분한 경로 목록",
+        "쉼표나 공백으로 구분한 경로 목록입니다.",
         default="src/,tests/,scripts/,.project_manager/tools/",
         required=False, group="additional_reviewer", governed_by="additional_reviewer.harness"),
     "additional_reviewer.timeout": KeySpec(
         "교차 검토 최대 실행 시간 (초)",
-        "이 시간을 넘으면 중단",
+        "이 시간을 넘으면 중단합니다.",
         default=None, unset=_TOOL_DEFAULT_TIME, required=False, group="additional_reviewer",
         governed_by="additional_reviewer.harness"),
     "additional_reviewer.idle_timeout": KeySpec(
         "교차 검토 응답 없을 때 대기 (초)",
-        "이만큼 출력이 없으면 멈춘 것으로 봄",
+        "이만큼 출력이 없으면 멈춘 것으로 봅니다.",
         default=None, unset=_TOOL_DEFAULT_TIME, required=False, group="additional_reviewer",
         governed_by="additional_reviewer.harness"),
     "additional_reviewer.progress_signal": KeySpec(
         "교차 검토 진행 출력 형식",
-        "그 도구가 진행 상황을 어떤 모양으로 내는지",
-        default=None, unset="도구에 맞춰 자동으로 고름", required=False, group="additional_reviewer",
+        "그 도구가 진행 상황을 어떤 모양으로 내는지 정합니다.",
+        default=None, unset="도구에 맞춰 자동으로 고릅니다.", required=False, group="additional_reviewer",
         choices="progress_signal", governed_by="additional_reviewer.harness"),
 }
 
 PATTERN_REGISTRY: dict[str, KeySpec] = {
     HARNESS_PATTERN: KeySpec(
         "도구마다 따로 정하는 값",
-        "실행 시간·대기 시간·컨텍스트 크기와 안내 문서에 적을 모델 이름",
+        "실행 시간·대기 시간·컨텍스트 크기와 안내 문서에 적을 모델 이름입니다.",
         default=None, unset=_TOOL_DEFAULT_TIME, required=False, group="harness"),
     DELEGATE_ROLE_PATTERN: KeySpec(
         "역할별 담당 도구",
-        "역할마다 도구·모델·생각 깊이를 한 묶음으로 정함, 실패 시 대신 쓸 묶음을 따로 둘 수 있음 (어려운 작업용 묶음은 구현만)",
-        default=None, unset="이 역할로 위임하면 설정이 없다며 멈춤", required=False,
+        "역할마다 도구·모델·생각 깊이를 한 묶음으로 정합니다. 실패 시 대신 쓸 묶음을 따로 둘 수 있습니다(어려운 작업용 묶음은 구현만).",
+        default=None, unset="이 역할로 위임하면 설정이 없다며 멈춥니다.", required=False,
         group="delegate", governed_by="delegate.enabled"),
     DELEGATE_ALIAS_PATTERN: KeySpec(
         "모델 별칭",
-        "같은 모델의 다른 표기를 한 이름으로 묶음, 구현과 검토가 같은 모델인지 볼 때만 씀",
-        default=None, unset="표기가 다르면 다른 모델로 봄", required=False, group="delegate"),
+        "같은 모델의 다른 표기를 한 이름으로 묶습니다. 구현과 검토가 같은 모델인지 볼 때만 씁니다.",
+        default=None, unset="표기가 다르면 다른 모델로 봅니다.", required=False, group="delegate"),
     DIFF_CAP_PATTERN: KeySpec(
         "작업 크기별 변경 줄 수 상한",
-        "작업을 마칠 때와 교차 검토 전에 확인, 추가·삭제 줄 수 합계가 넘으면 멈춤, 모르는 크기에는 제한을 두지 않음",
-        default=None, unset="제한을 두지 않음", required=False, group="additional_reviewer"),
+        "작업을 마칠 때와 교차 검토 전에 확인합니다. 추가·삭제 줄 수 합계가 넘으면 멈추고, 모르는 크기에는 제한을 두지 않습니다.",
+        default=None, unset="제한을 두지 않습니다.", required=False, group="additional_reviewer"),
     PLATFORM_TEST_PATTERN: KeySpec(
         "운영체제별 테스트 명령",
-        "위 '테스트할 운영체제 목록' 에 적은 이름마다 하나씩, 목록에 없는 이름은 모르는 항목으로 표시",
-        default=None, unset="목록에 적은 운영체제면 테스트가 멈춤", required=False, group="runtime"),
+        "위 '테스트할 운영체제 목록'에 적은 이름마다 하나씩 정합니다. 목록에 없는 이름은 모르는 항목으로 표시합니다.",
+        default=None, unset="목록에 적은 운영체제면 테스트가 멈춥니다.", required=False, group="runtime"),
 }
 
 # 기존 호출부(`unknown_keys`·`_matches_pattern`)가 그대로 도는 파생 튜플 — 레지스트리가 정본이다.
@@ -672,16 +670,16 @@ KNOWN_KEYS: tuple[str, ...] = tuple(KEY_REGISTRY)
 _HARNESS_MEMBER_UNSET: dict[str, str] = {
     "idle_timeout": _TOOL_DEFAULT_TIME,
     "wall_timeout": _TOOL_DEFAULT_TIME,
-    "ctx_window_tokens": "위 공통 컨텍스트 크기를 씀",
-    "pro_model": "안내 문서의 모델 자리를 TODO 로 남김",
+    "ctx_window_tokens": "위 공통 컨텍스트 크기를 씁니다.",
+    "pro_model": "안내 문서의 모델 자리를 TODO 로 남깁니다.",
 }
 
 # 역할 묶음이 안 채워졌을 때 — 티어마다 다르다(`pm_delegate.resolve_delegate`·`resolve_fallback`).
 _DELEGATE_TIER_UNSET: dict[str, str] = {
-    "": "이 역할로 위임하면 설정이 없다며 멈춤",
-    ".hard": "어려운 작업 위임이 멈춤, 보통 묶음으로 대신하지 않음",
-    ".fallback": "실패하면 대신 쓰지 않고 실패로 끝남",
-    ".hard.fallback": "실패하면 대신 쓰지 않고 실패로 끝남",
+    "": "이 역할로 위임하면 설정이 없다며 멈춥니다.",
+    ".hard": "어려운 작업 위임이 멈춥니다. 보통 묶음으로 대신하지 않습니다.",
+    ".fallback": "실패하면 대신 쓰지 않고 실패로 끝납니다.",
+    ".hard.fallback": "실패하면 대신 쓰지 않고 실패로 끝납니다.",
 }
 
 

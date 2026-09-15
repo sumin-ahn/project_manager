@@ -45,7 +45,7 @@ export const UPSTREAM_PATH_KEY = "upstream.path";
 /** 안내 문서 렌더에 박히는 키 — 저장해도 문서는 갱신 탭 [적용] 이 다시 그린다. */
 const ADAPTER_CARD_KEY = /^(project\.|runtime\.py$|test\.cmd$|delegate\..+\.model$|harness\..+\.pro_model$)/;
 
-const ADAPTER_CARD_NOTE = "안내 문서는 이 저장으로 다시 그려지지 않는다 — 갱신 탭의 [적용] 이 다시 그린다.";
+const ADAPTER_CARD_NOTE = "안내 문서는 이 저장으로 다시 그려지지 않습니다. 갱신 탭의 [적용]이 다시 그립니다.";
 
 /** 왼쪽 목록의 마지막 항목 — 레지스트리 그룹이 아니라 버튼으로만 도는 어댑터 파일 절이다. */
 export const ADAPTER_NAV = "어댑터 파일";
@@ -357,7 +357,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     setBusy(false);
   }, [bridge, path]);
 
-  if (path === null) return <p className="px-4 py-3 text-slate-500">프로젝트를 고르면 설정이 온다</p>;
+  if (path === null) return <p className="px-4 py-3 text-slate-500">프로젝트를 고르면 설정이 나타납니다.</p>;
   // 다섯 번째 목록(`missing_for_latest`)만 어댑터 절이 받아 온 값으로 채운다 — 나머지 넷은
   // 가벼운 현황 조회의 판정이 더 새 것이고, 그 조회는 소스를 해소하지 않아 이 목록이 늘
   // null(모름)이다. 어댑터 절을 불러오기 전에는 그 null 이 그대로 화면에 남는다.
@@ -366,7 +366,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     const failed = settings?.error?.message ?? light?.error?.message ?? null;
     return (
       <p className="px-4 py-3 text-slate-500">
-        {failed ? `설정을 읽지 못했다 — ${failed}` : "설정 조회 중"}
+        {failed ? `설정을 읽지 못했습니다. ${failed}` : "설정을 불러오는 중입니다."}
       </p>
     );
   }
@@ -576,7 +576,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
         )}
       </div>
       {error && (
-        <p role="alert" className="px-4 py-1 text-red-600">설정 호출이 실패했다 — {error.message}</p>
+        <p role="alert" className="px-4 py-1 text-red-600">설정 호출이 실패했습니다. {error.message}</p>
       )}
       {note && <p data-testid="settings-note" className="px-4 py-1 text-amber-700">{note}</p>}
       {command && (
@@ -618,7 +618,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
                 {offReasons.map((reason) => (
                   <p key={reason} data-testid={`switched-off-${section.group}`}
                      className="mb-1 text-[11px] text-slate-500">
-                    회색 칸은 지금 쓰이지 않는다 — {reason}
+                    회색 칸은 지금 쓰이지 않습니다. {reason}
                   </p>
                 ))}
                 {runs.map((run) => (run[0].kind === "key" ? (
@@ -686,7 +686,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
                 {section.group === upstreamGroup && (
                   <div className="mt-3 border-t border-slate-200 pt-2">
                     <p className="text-[11px] text-slate-500">
-                      {labelOfKey(UPSTREAM_PATH_KEY)}: 실제로 받아올 수 있는지 확인한 뒤에 적는다.
+                      {labelOfKey(UPSTREAM_PATH_KEY)}: 실제로 받아올 수 있는지 확인한 뒤에 저장합니다.
                     </p>
                     <div className="flex items-center gap-1">
                       <input aria-label={labelOfKey(UPSTREAM_PATH_KEY)}

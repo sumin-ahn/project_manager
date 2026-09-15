@@ -111,7 +111,7 @@ export default function AdapterSection({ bridge, path, onConfLoaded }:
       </div>
       {error && (
         <p role="alert" className="text-red-600">
-          어댑터 판정을 읽지 못했다 — {error.message}
+          어댑터 판정을 읽지 못했습니다. {error.message}
           {error.stderr && <span className="ml-1 font-mono text-[11px]">{error.stderr}</span>}
         </p>
       )}
@@ -120,7 +120,7 @@ export default function AdapterSection({ bridge, path, onConfLoaded }:
              className="whitespace-pre-wrap bg-slate-50 p-2 font-mono text-[11px]">{outcome}</pre>
       )}
       {!section && !error && (
-        <p className="text-slate-500">[불러오기] 를 눌러야 판정이 온다 (소스 해소가 무겁다)</p>
+        <p className="text-slate-500">[불러오기]를 누르면 판정을 가져옵니다. 원본을 찾는 데 시간이 걸립니다.</p>
       )}
       {section && (
         <table className="w-full">

@@ -2024,7 +2024,7 @@ def test_harness_budget_keys_are_documented_in_the_registry(board, relay):
             spec = conf_module.key_spec(f"harness.{harness}.{suffix}")
             assert spec is not None and spec.description, (harness, suffix)
             # 안 채워도 되는 값임은 안 채웠을 때 일어나는 일(`unset`)이 알린다.
-            assert "도구마다 정해진 기본 시간을 씀" in spec.unset
+            assert "도구마다 정해진 기본 시간을 씁니다." in spec.unset
     table = conf_module.render_key_table()
     assert "idle_timeout,wall_timeout" in table
 

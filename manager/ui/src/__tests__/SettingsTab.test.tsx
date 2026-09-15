@@ -662,13 +662,13 @@ describe("실패", () => {
       error: { kind: "old-generation", message: "먼저 갱신하라.", stderr: "", rc: 2 },
     });
 
-    expect(screen.getByText("설정을 읽지 못했다 — 먼저 갱신하라.")).toBeInTheDocument();
+    expect(screen.getByText("설정을 읽지 못했습니다. 먼저 갱신하라.")).toBeInTheDocument();
   });
 
   it("판정을 나르는 가벼운 절이 없으면 배지를 지어내지 않는다", () => {
     mounted(makeBridge(), false, null, settingsEntry(),
             { error: { kind: "timeout", message: "10초 안에 응답이 없다", stderr: "", rc: null } });
 
-    expect(screen.getByText("설정을 읽지 못했다 — 10초 안에 응답이 없다")).toBeInTheDocument();
+    expect(screen.getByText("설정을 읽지 못했습니다. 10초 안에 응답이 없다")).toBeInTheDocument();
   });
 });

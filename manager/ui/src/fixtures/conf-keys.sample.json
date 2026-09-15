@@ -43,9 +43,9 @@
       "key": "project.name",
       "group": "project",
       "label": "프로젝트 이름",
-      "description": "안내 문서(CLAUDE.md 등)에 들어갈 이름",
+      "description": "안내 문서(CLAUDE.md 등)에 들어갈 이름입니다.",
       "default": null,
-      "unset": "평소엔 영향 없음, 안내 문서를 다시 그릴 때 이 자리가 남아 있으면 채우라며 멈춤",
+      "unset": "평소에는 영향이 없습니다. 안내 문서를 다시 그릴 때 이 자리가 남아 있으면 채우라며 멈춥니다.",
       "required": false,
       "kind": "key",
       "members": null,
@@ -60,9 +60,9 @@
       "key": "project.tagline",
       "group": "project",
       "label": "한 줄 소개",
-      "description": "안내 문서 첫머리에 들어갈 소개",
+      "description": "안내 문서 첫머리에 들어갈 소개입니다.",
       "default": null,
-      "unset": "평소엔 영향 없음, 안내 문서를 다시 그릴 때 이 자리가 남아 있으면 채우라며 멈춤",
+      "unset": "평소에는 영향이 없습니다. 안내 문서를 다시 그릴 때 이 자리가 남아 있으면 채우라며 멈춥니다.",
       "required": false,
       "kind": "key",
       "members": null,
@@ -77,9 +77,9 @@
       "key": "project.root",
       "group": "project",
       "label": "기준 경로",
-      "description": "안내 문서에 적을 경로의 기준",
+      "description": "안내 문서에 적을 경로의 기준입니다.",
       "default": null,
-      "unset": "평소엔 영향 없음, 안내 문서를 다시 그릴 때 이 자리가 남아 있으면 채우라며 멈춤",
+      "unset": "평소에는 영향이 없습니다. 안내 문서를 다시 그릴 때 이 자리가 남아 있으면 채우라며 멈춥니다.",
       "required": false,
       "kind": "key",
       "members": null,
@@ -94,9 +94,9 @@
       "key": "project.date",
       "group": "project",
       "label": "기준 날짜",
-      "description": "안내 문서에 적을 날짜",
+      "description": "안내 문서에 적을 날짜입니다.",
       "default": null,
-      "unset": "평소엔 영향 없음, 안내 문서를 다시 그릴 때 이 자리가 남아 있으면 채우라며 멈춤",
+      "unset": "평소에는 영향이 없습니다. 안내 문서를 다시 그릴 때 이 자리가 남아 있으면 채우라며 멈춥니다.",
       "required": false,
       "kind": "key",
       "members": null,
@@ -111,9 +111,9 @@
       "key": "runtime.py",
       "group": "runtime",
       "label": "파이썬 실행 파일",
-      "description": "엔진을 실행할 파이썬 (예: python3, Windows 는 py -3.12), 첫 설치 때 실행해 보고 채움",
+      "description": "엔진을 실행할 파이썬입니다(예: python3, Windows 는 py -3.12). 첫 설치 때 실행해 보고 채웁니다.",
       "default": null,
-      "unset": "운영체제 기본 파이썬(python3, Windows 는 py -3)을 씀",
+      "unset": "운영체제 기본 파이썬(python3, Windows 는 py -3)을 씁니다.",
       "required": true,
       "kind": "key",
       "members": null,
@@ -128,9 +128,9 @@
       "key": "test.cmd",
       "group": "runtime",
       "label": "테스트 명령",
-      "description": "테스트를 돌릴 때 그대로 실행할 명령",
+      "description": "테스트를 돌릴 때 그대로 실행할 명령입니다.",
       "default": null,
-      "unset": "파이썬 기본 테스트 명령(python -m pytest tests/ -q)을 씀",
+      "unset": "파이썬 기본 테스트 명령(python -m pytest tests/ -q)을 씁니다.",
       "required": true,
       "kind": "key",
       "members": null,
@@ -145,9 +145,9 @@
       "key": "qa.platforms",
       "group": "runtime",
       "label": "테스트할 운영체제 목록",
-      "description": "쉼표로 구분 (예: linux, windows), 적으면 운영체제마다 테스트 명령을 따로 정해야 하고 적은 순서대로 실행",
+      "description": "쉼표로 구분합니다(예: linux, windows). 적으면 운영체제마다 테스트 명령을 따로 정해야 하고, 적은 순서대로 실행합니다.",
       "default": null,
-      "unset": "운영체제 구분 없이 테스트 명령 하나만 돎",
+      "unset": "운영체제 구분 없이 테스트 명령 하나만 실행합니다.",
       "required": false,
       "kind": "key",
       "members": null,
@@ -162,9 +162,9 @@
       "key": "identity.user",
       "group": "identity",
       "label": "내 계정",
-      "description": "작업 기록에 남길 이름",
+      "description": "작업 기록에 남길 이름입니다.",
       "default": null,
-      "unset": "git 설정의 이메일을 씀, 그것도 없으면 이름 없이 기록",
+      "unset": "git 설정의 이메일을 씁니다. 그것도 없으면 이름 없이 기록합니다.",
       "required": false,
       "kind": "key",
       "members": null,
@@ -179,9 +179,9 @@
       "key": "upstream.path",
       "group": "upstream",
       "label": "원본 위치",
-      "description": "업데이트를 받아올 폴더 경로나 주소",
+      "description": "업데이트를 받아올 폴더 경로나 주소입니다.",
       "default": null,
-      "unset": "받아올 곳이 없어 업데이트가 멈춤",
+      "unset": "받아올 곳이 없어 업데이트가 멈춥니다.",
       "required": false,
       "kind": "key",
       "members": null,
@@ -196,9 +196,9 @@
       "key": "upstream.rev",
       "group": "upstream",
       "label": "마지막으로 받은 커밋",
-      "description": "업데이트 차이를 재는 기준, 업데이트가 적음",
+      "description": "업데이트 차이를 재는 기준입니다. 업데이트가 적습니다.",
       "default": null,
-      "unset": "아직 업데이트를 받은 적 없음",
+      "unset": "아직 업데이트를 받은 적이 없습니다.",
       "required": false,
       "kind": "key",
       "members": null,
@@ -213,9 +213,9 @@
       "key": "upstream.seen_rev",
       "group": "upstream",
       "label": "마지막으로 확인한 커밋",
-      "description": "원본에서 마지막으로 본 커밋, 업데이트가 적음",
+      "description": "원본에서 마지막으로 본 커밋입니다. 업데이트가 적습니다.",
       "default": null,
-      "unset": "아직 원본을 확인한 적 없음",
+      "unset": "아직 원본을 확인한 적이 없습니다.",
       "required": false,
       "kind": "key",
       "members": null,
@@ -230,7 +230,7 @@
       "key": "ctx.checkpoint_pct",
       "group": "ctx",
       "label": "중간 기록 권고 (%)",
-      "description": "남은 컨텍스트가 이 비율 이하가 되면 중간 기록을 권함, 작업은 계속",
+      "description": "남은 컨텍스트가 이 비율 이하가 되면 중간 기록을 권합니다. 작업은 계속합니다.",
       "default": "30",
       "unset": null,
       "required": false,
@@ -247,7 +247,7 @@
       "key": "ctx.precompact_pct",
       "group": "ctx",
       "label": "압축 임박 경고 (%)",
-      "description": "남은 컨텍스트가 이 비율 이하가 되면 자동 압축이 곧 일어난다고 보고 마지막으로 중간 기록을 권함, 작업을 멈추거나 세션을 바꾸지는 않음",
+      "description": "남은 컨텍스트가 이 비율 이하가 되면 자동 압축이 곧 일어난다고 보고 마지막으로 중간 기록을 권합니다. 작업을 멈추거나 세션을 바꾸지는 않습니다.",
       "default": "20",
       "unset": null,
       "required": false,
@@ -264,7 +264,7 @@
       "key": "ctx.window_tokens",
       "group": "ctx",
       "label": "컨텍스트 크기 (토큰)",
-      "description": "위 두 비율의 분모, 도구별 값이 없을 때 쓰는 기준, 실제보다 작게 두면 더 일찍 넘김",
+      "description": "위 두 비율의 분모이며, 도구별 값이 없을 때 쓰는 기준입니다. 실제보다 작게 두면 더 일찍 넘깁니다.",
       "default": "200000",
       "unset": null,
       "required": false,
@@ -281,7 +281,7 @@
       "key": "delegate.enabled",
       "group": "delegate",
       "label": "위임 사용",
-      "description": "끄면 다른 도구에 작업을 맡기지 않음",
+      "description": "끄면 다른 도구에 작업을 맡기지 않습니다.",
       "default": "true",
       "unset": null,
       "required": false,
@@ -298,9 +298,9 @@
       "key": "delegate.timeout",
       "group": "delegate",
       "label": "위임 최대 실행 시간 (초)",
-      "description": "이 시간을 넘으면 중단",
+      "description": "이 시간을 넘으면 중단합니다.",
       "default": null,
-      "unset": "도구마다 정해진 기본 시간을 씀",
+      "unset": "도구마다 정해진 기본 시간을 씁니다.",
       "required": false,
       "kind": "key",
       "members": null,
@@ -316,7 +316,7 @@
           "yes",
           "on"
         ],
-        "reason": "위임 사용이 켜져 있어야 쓰임"
+        "reason": "위임 사용이 켜져 있어야 쓰입니다."
       },
       "readonly": false
     },
@@ -324,9 +324,9 @@
       "key": "delegate.idle_timeout",
       "group": "delegate",
       "label": "위임 응답 없을 때 대기 (초)",
-      "description": "이만큼 출력이 없으면 멈춘 것으로 봄",
+      "description": "이만큼 출력이 없으면 멈춘 것으로 봅니다.",
       "default": null,
-      "unset": "도구마다 정해진 기본 시간을 씀",
+      "unset": "도구마다 정해진 기본 시간을 씁니다.",
       "required": false,
       "kind": "key",
       "members": null,
@@ -342,7 +342,7 @@
           "yes",
           "on"
         ],
-        "reason": "위임 사용이 켜져 있어야 쓰임"
+        "reason": "위임 사용이 켜져 있어야 쓰입니다."
       },
       "readonly": false
     },
@@ -350,7 +350,7 @@
       "key": "delegate.code-reviewer.rounds_max",
       "group": "delegate",
       "label": "검토 최대 횟수",
-      "description": "같은 작업을 다시 검토할 최대 횟수",
+      "description": "같은 작업을 다시 검토할 최대 횟수입니다.",
       "default": "3",
       "unset": null,
       "required": false,
@@ -368,7 +368,7 @@
           "yes",
           "on"
         ],
-        "reason": "위임 사용이 켜져 있어야 쓰임"
+        "reason": "위임 사용이 켜져 있어야 쓰입니다."
       },
       "readonly": false
     },
@@ -376,9 +376,9 @@
       "key": "additional_reviewer.harness",
       "group": "additional_reviewer",
       "label": "교차 검토 도구",
-      "description": "다른 모델로 한 번 더 검토할 때 쓸 도구, 모델과 함께 채움",
+      "description": "다른 모델로 한 번 더 검토할 때 쓸 도구입니다. 모델과 함께 채웁니다.",
       "default": null,
-      "unset": "교차 검토를 하지 않음",
+      "unset": "교차 검토를 하지 않습니다.",
       "required": false,
       "kind": "key",
       "members": null,
@@ -404,9 +404,9 @@
       "key": "additional_reviewer.model",
       "group": "additional_reviewer",
       "label": "교차 검토 모델",
-      "description": "그 도구가 받는 표기 그대로",
+      "description": "그 도구가 받는 표기 그대로 적습니다.",
       "default": null,
-      "unset": "교차 검토를 하지 않음",
+      "unset": "교차 검토를 하지 않습니다.",
       "required": false,
       "kind": "key",
       "members": null,
@@ -429,9 +429,9 @@
       "key": "additional_reviewer.reasoning",
       "group": "additional_reviewer",
       "label": "교차 검토 생각 깊이",
-      "description": "고를 수 있는 값은 도구마다 다름",
+      "description": "고를 수 있는 값은 도구마다 다릅니다.",
       "default": null,
-      "unset": "교차 검토를 하지 않음",
+      "unset": "교차 검토를 하지 않습니다.",
       "required": false,
       "kind": "key",
       "members": null,
@@ -473,7 +473,7 @@
       "key": "additional_reviewer.rounds_max",
       "group": "additional_reviewer",
       "label": "교차 검토 최대 횟수",
-      "description": "한 건을 다시 볼 최대 횟수",
+      "description": "한 건을 다시 볼 최대 횟수입니다.",
       "default": "2",
       "unset": null,
       "required": false,
@@ -486,7 +486,7 @@
       "governed_by": {
         "key": "additional_reviewer.harness",
         "on": null,
-        "reason": "교차 검토 도구를 정해야 쓰임"
+        "reason": "교차 검토 도구를 정해야 쓰입니다."
       },
       "readonly": false
     },
@@ -494,7 +494,7 @@
       "key": "additional_reviewer.incomplete_rounds_max",
       "group": "additional_reviewer",
       "label": "교차 검토 재시도 횟수",
-      "description": "결과 없이 끝난 호출을 다시 부를 최대 횟수",
+      "description": "결과 없이 끝난 호출을 다시 부를 최대 횟수입니다.",
       "default": "2",
       "unset": null,
       "required": false,
@@ -507,7 +507,7 @@
       "governed_by": {
         "key": "additional_reviewer.harness",
         "on": null,
-        "reason": "교차 검토 도구를 정해야 쓰임"
+        "reason": "교차 검토 도구를 정해야 쓰입니다."
       },
       "readonly": false
     },
@@ -515,7 +515,7 @@
       "key": "additional_reviewer.wave_budget",
       "group": "additional_reviewer",
       "label": "교차 검토 세션당 총 횟수",
-      "description": "한 세션에서 쓸 수 있는 전체 호출 수",
+      "description": "한 세션에서 쓸 수 있는 전체 호출 수입니다.",
       "default": "24",
       "unset": null,
       "required": false,
@@ -528,7 +528,7 @@
       "governed_by": {
         "key": "additional_reviewer.harness",
         "on": null,
-        "reason": "교차 검토 도구를 정해야 쓰임"
+        "reason": "교차 검토 도구를 정해야 쓰입니다."
       },
       "readonly": false
     },
@@ -536,7 +536,7 @@
       "key": "additional_reviewer.paths",
       "group": "additional_reviewer",
       "label": "교차 검토할 폴더",
-      "description": "쉼표나 공백으로 구분한 경로 목록",
+      "description": "쉼표나 공백으로 구분한 경로 목록입니다.",
       "default": "src/,tests/,scripts/,.project_manager/tools/",
       "unset": null,
       "required": false,
@@ -549,7 +549,7 @@
       "governed_by": {
         "key": "additional_reviewer.harness",
         "on": null,
-        "reason": "교차 검토 도구를 정해야 쓰임"
+        "reason": "교차 검토 도구를 정해야 쓰입니다."
       },
       "readonly": false
     },
@@ -557,9 +557,9 @@
       "key": "additional_reviewer.timeout",
       "group": "additional_reviewer",
       "label": "교차 검토 최대 실행 시간 (초)",
-      "description": "이 시간을 넘으면 중단",
+      "description": "이 시간을 넘으면 중단합니다.",
       "default": null,
-      "unset": "도구마다 정해진 기본 시간을 씀",
+      "unset": "도구마다 정해진 기본 시간을 씁니다.",
       "required": false,
       "kind": "key",
       "members": null,
@@ -570,7 +570,7 @@
       "governed_by": {
         "key": "additional_reviewer.harness",
         "on": null,
-        "reason": "교차 검토 도구를 정해야 쓰임"
+        "reason": "교차 검토 도구를 정해야 쓰입니다."
       },
       "readonly": false
     },
@@ -578,9 +578,9 @@
       "key": "additional_reviewer.idle_timeout",
       "group": "additional_reviewer",
       "label": "교차 검토 응답 없을 때 대기 (초)",
-      "description": "이만큼 출력이 없으면 멈춘 것으로 봄",
+      "description": "이만큼 출력이 없으면 멈춘 것으로 봅니다.",
       "default": null,
-      "unset": "도구마다 정해진 기본 시간을 씀",
+      "unset": "도구마다 정해진 기본 시간을 씁니다.",
       "required": false,
       "kind": "key",
       "members": null,
@@ -591,7 +591,7 @@
       "governed_by": {
         "key": "additional_reviewer.harness",
         "on": null,
-        "reason": "교차 검토 도구를 정해야 쓰임"
+        "reason": "교차 검토 도구를 정해야 쓰입니다."
       },
       "readonly": false
     },
@@ -599,9 +599,9 @@
       "key": "additional_reviewer.progress_signal",
       "group": "additional_reviewer",
       "label": "교차 검토 진행 출력 형식",
-      "description": "그 도구가 진행 상황을 어떤 모양으로 내는지",
+      "description": "그 도구가 진행 상황을 어떤 모양으로 내는지 정합니다.",
       "default": null,
-      "unset": "도구에 맞춰 자동으로 고름",
+      "unset": "도구에 맞춰 자동으로 고릅니다.",
       "required": false,
       "kind": "key",
       "members": null,
@@ -623,7 +623,7 @@
       "governed_by": {
         "key": "additional_reviewer.harness",
         "on": null,
-        "reason": "교차 검토 도구를 정해야 쓰임"
+        "reason": "교차 검토 도구를 정해야 쓰입니다."
       },
       "readonly": false
     },
@@ -631,16 +631,16 @@
       "key": "harness.<name>.{idle_timeout,wall_timeout,ctx_window_tokens,pro_model}",
       "group": "harness",
       "label": "도구마다 따로 정하는 값",
-      "description": "실행 시간·대기 시간·컨텍스트 크기와 안내 문서에 적을 모델 이름",
+      "description": "실행 시간·대기 시간·컨텍스트 크기와 안내 문서에 적을 모델 이름입니다.",
       "default": null,
-      "unset": "도구마다 정해진 기본 시간을 씀",
+      "unset": "도구마다 정해진 기본 시간을 씁니다.",
       "required": false,
       "kind": "pattern",
       "members": [
         {
           "key": "harness.claude.idle_timeout",
           "default": null,
-          "unset": "도구마다 정해진 기본 시간을 씀",
+          "unset": "도구마다 정해진 기본 시간을 씁니다.",
           "choices": null,
           "recommended": null,
           "unit": null,
@@ -650,7 +650,7 @@
         {
           "key": "harness.claude.wall_timeout",
           "default": null,
-          "unset": "도구마다 정해진 기본 시간을 씀",
+          "unset": "도구마다 정해진 기본 시간을 씁니다.",
           "choices": null,
           "recommended": null,
           "unit": null,
@@ -660,7 +660,7 @@
         {
           "key": "harness.claude.ctx_window_tokens",
           "default": null,
-          "unset": "위 공통 컨텍스트 크기를 씀",
+          "unset": "위 공통 컨텍스트 크기를 씁니다.",
           "choices": null,
           "recommended": null,
           "unit": null,
@@ -670,7 +670,7 @@
         {
           "key": "harness.codex.idle_timeout",
           "default": null,
-          "unset": "도구마다 정해진 기본 시간을 씀",
+          "unset": "도구마다 정해진 기본 시간을 씁니다.",
           "choices": null,
           "recommended": null,
           "unit": null,
@@ -680,7 +680,7 @@
         {
           "key": "harness.codex.wall_timeout",
           "default": null,
-          "unset": "도구마다 정해진 기본 시간을 씀",
+          "unset": "도구마다 정해진 기본 시간을 씁니다.",
           "choices": null,
           "recommended": null,
           "unit": null,
@@ -690,7 +690,7 @@
         {
           "key": "harness.codex.ctx_window_tokens",
           "default": null,
-          "unset": "위 공통 컨텍스트 크기를 씀",
+          "unset": "위 공통 컨텍스트 크기를 씁니다.",
           "choices": null,
           "recommended": null,
           "unit": null,
@@ -700,7 +700,7 @@
         {
           "key": "harness.opencode.idle_timeout",
           "default": null,
-          "unset": "도구마다 정해진 기본 시간을 씀",
+          "unset": "도구마다 정해진 기본 시간을 씁니다.",
           "choices": null,
           "recommended": null,
           "unit": null,
@@ -710,7 +710,7 @@
         {
           "key": "harness.opencode.wall_timeout",
           "default": null,
-          "unset": "도구마다 정해진 기본 시간을 씀",
+          "unset": "도구마다 정해진 기본 시간을 씁니다.",
           "choices": null,
           "recommended": null,
           "unit": null,
@@ -720,7 +720,7 @@
         {
           "key": "harness.opencode.ctx_window_tokens",
           "default": null,
-          "unset": "위 공통 컨텍스트 크기를 씀",
+          "unset": "위 공통 컨텍스트 크기를 씁니다.",
           "choices": null,
           "recommended": null,
           "unit": null,
@@ -730,7 +730,7 @@
         {
           "key": "harness.opencode.pro_model",
           "default": null,
-          "unset": "안내 문서의 모델 자리를 TODO 로 남김",
+          "unset": "안내 문서의 모델 자리를 TODO 로 남깁니다.",
           "choices": {
             "depends_on": null,
             "values": {},
@@ -769,16 +769,16 @@
       "key": "delegate.<role>[.hard][.fallback].{harness,model,reasoning}",
       "group": "delegate",
       "label": "역할별 담당 도구",
-      "description": "역할마다 도구·모델·생각 깊이를 한 묶음으로 정함, 실패 시 대신 쓸 묶음을 따로 둘 수 있음 (어려운 작업용 묶음은 구현만)",
+      "description": "역할마다 도구·모델·생각 깊이를 한 묶음으로 정합니다. 실패 시 대신 쓸 묶음을 따로 둘 수 있습니다(어려운 작업용 묶음은 구현만).",
       "default": null,
-      "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
+      "unset": "이 역할로 위임하면 설정이 없다며 멈춥니다.",
       "required": false,
       "kind": "pattern",
       "members": [
         {
           "key": "delegate.developer.harness",
           "default": null,
-          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춥니다.",
           "choices": {
             "depends_on": null,
             "values": {
@@ -801,14 +801,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.developer.model",
           "default": null,
-          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춥니다.",
           "choices": {
             "depends_on": "delegate.developer.harness",
             "values": {},
@@ -828,14 +828,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.developer.reasoning",
           "default": null,
-          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춥니다.",
           "choices": {
             "depends_on": "delegate.developer.harness",
             "values": {
@@ -874,14 +874,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.developer.hard.harness",
           "default": null,
-          "unset": "어려운 작업 위임이 멈춤, 보통 묶음으로 대신하지 않음",
+          "unset": "어려운 작업 위임이 멈춥니다. 보통 묶음으로 대신하지 않습니다.",
           "choices": {
             "depends_on": null,
             "values": {
@@ -904,14 +904,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.developer.hard.model",
           "default": null,
-          "unset": "어려운 작업 위임이 멈춤, 보통 묶음으로 대신하지 않음",
+          "unset": "어려운 작업 위임이 멈춥니다. 보통 묶음으로 대신하지 않습니다.",
           "choices": {
             "depends_on": "delegate.developer.hard.harness",
             "values": {},
@@ -931,14 +931,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.developer.hard.reasoning",
           "default": null,
-          "unset": "어려운 작업 위임이 멈춤, 보통 묶음으로 대신하지 않음",
+          "unset": "어려운 작업 위임이 멈춥니다. 보통 묶음으로 대신하지 않습니다.",
           "choices": {
             "depends_on": "delegate.developer.hard.harness",
             "values": {
@@ -977,14 +977,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.developer.fallback.harness",
           "default": null,
-          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝납니다.",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1007,14 +1007,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.developer.fallback.model",
           "default": null,
-          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝납니다.",
           "choices": {
             "depends_on": "delegate.developer.fallback.harness",
             "values": {},
@@ -1034,14 +1034,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.developer.fallback.reasoning",
           "default": null,
-          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝납니다.",
           "choices": {
             "depends_on": "delegate.developer.fallback.harness",
             "values": {
@@ -1080,14 +1080,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.developer.hard.fallback.harness",
           "default": null,
-          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝납니다.",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1110,14 +1110,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.developer.hard.fallback.model",
           "default": null,
-          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝납니다.",
           "choices": {
             "depends_on": "delegate.developer.hard.fallback.harness",
             "values": {},
@@ -1137,14 +1137,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.developer.hard.fallback.reasoning",
           "default": null,
-          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝납니다.",
           "choices": {
             "depends_on": "delegate.developer.hard.fallback.harness",
             "values": {
@@ -1183,14 +1183,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.researcher.harness",
           "default": null,
-          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춥니다.",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1213,14 +1213,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.researcher.model",
           "default": null,
-          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춥니다.",
           "choices": {
             "depends_on": "delegate.researcher.harness",
             "values": {},
@@ -1240,14 +1240,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.researcher.reasoning",
           "default": null,
-          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춥니다.",
           "choices": {
             "depends_on": "delegate.researcher.harness",
             "values": {
@@ -1286,14 +1286,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.researcher.fallback.harness",
           "default": null,
-          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝납니다.",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1316,14 +1316,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.researcher.fallback.model",
           "default": null,
-          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝납니다.",
           "choices": {
             "depends_on": "delegate.researcher.fallback.harness",
             "values": {},
@@ -1343,14 +1343,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.researcher.fallback.reasoning",
           "default": null,
-          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝납니다.",
           "choices": {
             "depends_on": "delegate.researcher.fallback.harness",
             "values": {
@@ -1389,14 +1389,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.architect.harness",
           "default": null,
-          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춥니다.",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1419,14 +1419,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.architect.model",
           "default": null,
-          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춥니다.",
           "choices": {
             "depends_on": "delegate.architect.harness",
             "values": {},
@@ -1446,14 +1446,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.architect.reasoning",
           "default": null,
-          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춥니다.",
           "choices": {
             "depends_on": "delegate.architect.harness",
             "values": {
@@ -1492,14 +1492,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.architect.fallback.harness",
           "default": null,
-          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝납니다.",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1522,14 +1522,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.architect.fallback.model",
           "default": null,
-          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝납니다.",
           "choices": {
             "depends_on": "delegate.architect.fallback.harness",
             "values": {},
@@ -1549,14 +1549,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.architect.fallback.reasoning",
           "default": null,
-          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝납니다.",
           "choices": {
             "depends_on": "delegate.architect.fallback.harness",
             "values": {
@@ -1595,14 +1595,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.code-reviewer.harness",
           "default": null,
-          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춥니다.",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1625,14 +1625,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.code-reviewer.model",
           "default": null,
-          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춥니다.",
           "choices": {
             "depends_on": "delegate.code-reviewer.harness",
             "values": {},
@@ -1652,14 +1652,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.code-reviewer.reasoning",
           "default": null,
-          "unset": "이 역할로 위임하면 설정이 없다며 멈춤",
+          "unset": "이 역할로 위임하면 설정이 없다며 멈춥니다.",
           "choices": {
             "depends_on": "delegate.code-reviewer.harness",
             "values": {
@@ -1698,14 +1698,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.code-reviewer.fallback.harness",
           "default": null,
-          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝납니다.",
           "choices": {
             "depends_on": null,
             "values": {
@@ -1728,14 +1728,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.code-reviewer.fallback.model",
           "default": null,
-          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝납니다.",
           "choices": {
             "depends_on": "delegate.code-reviewer.fallback.harness",
             "values": {},
@@ -1755,14 +1755,14 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         },
         {
           "key": "delegate.code-reviewer.fallback.reasoning",
           "default": null,
-          "unset": "실패하면 대신 쓰지 않고 실패로 끝남",
+          "unset": "실패하면 대신 쓰지 않고 실패로 끝납니다.",
           "choices": {
             "depends_on": "delegate.code-reviewer.fallback.harness",
             "values": {
@@ -1801,7 +1801,7 @@
               "yes",
               "on"
             ],
-            "reason": "위임 사용이 켜져 있어야 쓰임"
+            "reason": "위임 사용이 켜져 있어야 쓰입니다."
           },
           "readonly": false
         }
@@ -1818,7 +1818,7 @@
           "yes",
           "on"
         ],
-        "reason": "위임 사용이 켜져 있어야 쓰임"
+        "reason": "위임 사용이 켜져 있어야 쓰입니다."
       },
       "readonly": false
     },
@@ -1826,9 +1826,9 @@
       "key": "delegate.model_alias.<name>",
       "group": "delegate",
       "label": "모델 별칭",
-      "description": "같은 모델의 다른 표기를 한 이름으로 묶음, 구현과 검토가 같은 모델인지 볼 때만 씀",
+      "description": "같은 모델의 다른 표기를 한 이름으로 묶습니다. 구현과 검토가 같은 모델인지 볼 때만 씁니다.",
       "default": null,
-      "unset": "표기가 다르면 다른 모델로 봄",
+      "unset": "표기가 다르면 다른 모델로 봅니다.",
       "required": false,
       "kind": "pattern",
       "members": [],
@@ -1843,9 +1843,9 @@
       "key": "diff_cap.<estimate>",
       "group": "additional_reviewer",
       "label": "작업 크기별 변경 줄 수 상한",
-      "description": "작업을 마칠 때와 교차 검토 전에 확인, 추가·삭제 줄 수 합계가 넘으면 멈춤, 모르는 크기에는 제한을 두지 않음",
+      "description": "작업을 마칠 때와 교차 검토 전에 확인합니다. 추가·삭제 줄 수 합계가 넘으면 멈추고, 모르는 크기에는 제한을 두지 않습니다.",
       "default": null,
-      "unset": "제한을 두지 않음",
+      "unset": "제한을 두지 않습니다.",
       "required": false,
       "kind": "pattern",
       "members": [
@@ -1895,9 +1895,9 @@
       "key": "test.<platform>.cmd",
       "group": "runtime",
       "label": "운영체제별 테스트 명령",
-      "description": "위 '테스트할 운영체제 목록' 에 적은 이름마다 하나씩, 목록에 없는 이름은 모르는 항목으로 표시",
+      "description": "위 '테스트할 운영체제 목록'에 적은 이름마다 하나씩 정합니다. 목록에 없는 이름은 모르는 항목으로 표시합니다.",
       "default": null,
-      "unset": "목록에 적은 운영체제면 테스트가 멈춤",
+      "unset": "목록에 적은 운영체제면 테스트가 멈춥니다.",
       "required": false,
       "kind": "pattern",
       "members": [],

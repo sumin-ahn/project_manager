@@ -71,7 +71,7 @@ describe("어댑터 절", () => {
     render(<AdapterSection bridge={bridge} path={DEMO} onConfLoaded={vi.fn()} />);
 
     expect(bridge.adapters).not.toHaveBeenCalled();
-    expect(screen.getByText("[불러오기] 를 눌러야 판정이 온다 (소스 해소가 무겁다)"))
+    expect(screen.getByText("[불러오기]를 누르면 판정을 가져옵니다. 원본을 찾는 데 시간이 걸립니다."))
       .toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("adapter-load"));
