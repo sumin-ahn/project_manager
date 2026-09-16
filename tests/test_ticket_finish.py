@@ -1139,8 +1139,7 @@ def test_default_python_venv_absent_falls_back_to_sys_executable(tf, tmp_path, m
 # (라이브 발견·PM 59차). `--repo`/`--slot`(ADR-0057 decomposed) 은 그 슬롯을 disambiguate 하고,
 # `--no-pytest` 는 **회귀 실행만** skip 한다(코드 트리 해소는 그대로 — diff 서킷브레이커·stage 가
 # 같은 트리를 쓴다). 다중슬롯인데 미지정+진짜 모호면 조용한 false-red 대신 fail-loud 로 중단한다.
-# pm_handoff `_resolve_explicit_identity_slot`(M3 조인검증)·
-# `_resolve_session_worktree_slot` 재사용(DRY).
+# pm_handoff `_resolve_explicit_identity_slot`(M3 조인검증) 재사용(DRY).
 
 
 def _bind_pm_handoff_repo(tf, monkeypatch, repo_root: Path):
@@ -1157,18 +1156,26 @@ def _bind_pm_handoff_repo(tf, monkeypatch, repo_root: Path):
     return hp
 
 
+class _FakeIdentityChain:
+    """pm_log 대역 — 무인자 진입의 정체성 해소 체인만 흉내낸다(`(task, 출처)`)."""
+
+    def __init__(self, result):
+        self._result = result
+
+    def resolve_snapshot_identity(self, repo_root, cwd):
+        return self._result
+
+
 class _FakeHandoff:
     """pm_handoff 대역 — ticket_finish glue(_resolve_finish_slot·main forward)를 hermetic 격리.
 
-    `_resolve_explicit_identity_slot`/`_resolve_session_worktree_slot`/`_regression_cwd` 만
-    흉내낸다(실 pm_bootstrap·areas/leases 장부 미접촉). `resolve_result` = **--repo/--slot 부재**
-    시 `_resolve_session_worktree_slot(None)` 반환((slot,None)|(None,None)|(None,모호메시지)).
-    `explicit_result` 미지정이면 `_resolve_explicit_identity_slot`(repo,slot)이 리스 검증 없이
-    단순 조립(`work/<repo>_<slot 또는 1>`)한다 — explicit 은 모호 게이트를 우회한다는 성질만 흉내.
+    `_resolve_explicit_identity_slot`/`_regression_cwd` 만 흉내낸다(실 pm_bootstrap·areas/leases
+    장부 미접촉). `explicit_result` 미지정이면 `_resolve_explicit_identity_slot`(repo,slot)이 리스
+    검증 없이 단순 조립(`work/<repo>_<slot 또는 1>`)한다. 무인자 진입은 이 대역을 타지 않는다 —
+    정체성은 pm_log 체인이 task 로 해소한다.
     """
 
-    def __init__(self, resolve_result, explicit_result=None):
-        self._resolve_result = resolve_result
+    def __init__(self, explicit_result=None):
         self._explicit_result = explicit_result
 
     def _resolve_explicit_identity_slot(self, repo, slot):
@@ -1177,11 +1184,6 @@ class _FakeHandoff:
         if repo is None:
             return None, None
         return f"work/{repo}_{slot if slot is not None else 1}", None
-
-    def _resolve_session_worktree_slot(self, worktree_slot=None):
-        if worktree_slot:
-            return worktree_slot, None  # explicit 우선(모호 게이트 우회).
-        return self._resolve_result
 
     @staticmethod
     def _regression_cwd(worktree_slot=None, *, repo_root=None):
@@ -1212,9 +1214,9 @@ def test_repo_alone_bypasses_ambiguity(tf, monkeypatch):
     """--repo(+--slot) 명시는 자동해소 모호 여부와 무관하게 그 슬롯 사용(explicit 우선·모호 게이트 우회).
 
     이게 분해형 `--repo`/`--slot` 의 존재 이유 — 다중슬롯 모호를 사용자가 직접 disambiguate 한다.
-    `resolve_result`(--repo/--slot 부재 경로용)가 모호를 반환해도 explicit 경로는 그와 무관하다.
+    무인자 경로의 해소 결과와 무관하게 explicit 경로가 short-circuit 한다.
     """
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, "모호!")))
+    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff())
     slot, err = tf._resolve_finish_slot("project_manager", 2)
     assert err is None            # 명시했으므로 모호 아님(short-circuit)
     assert slot == "work/project_manager_2"
@@ -1283,23 +1285,24 @@ def test_run_skip_pytest_bypasses_regression_keeps_tests_pass(tf, tmp_path, caps
     assert "회귀 ? / ?" in (tmp_path / "log.md").read_text(encoding="utf-8")  # 측정 total 없이 "?"
 
 
-def test_main_multislot_ambiguous_fails_loud_before_regression(tf, monkeypatch, capsys):
-    """(c) 다중슬롯 모호 + --repo/--slot 부재 → 친화 에러·rc 1·회귀 미시작(조용한 ② false-red 제거).
+def test_main_unresolved_identity_fails_loud_before_regression(tf, monkeypatch, capsys):
+    """(c) 무인자 진입에서 정체성 미해소 → 친화 에러·rc 1·회귀 미시작(조용한 ② false-red 제거).
 
     fail-loud 는 run() 진입 *전*이라 회귀가 시작조차 안 된다([1/5] 미출력). 처방은 `--repo
     <name> [--slot <N>]` 또는 `--task <이름>` 이다 — 회귀 skip 은 처방이 아니다(같은 코드 트리를
     diff 서킷브레이커·stage 가 함께 쓴다).
     """
     monkeypatch.setattr(
-        tf, "_load_pm_handoff",
-        lambda: _FakeHandoff((None, "등록 repo 2개(A, B) — 어느 repo 인지 모호하다.")),
+        tf, "_load_pm_log",
+        lambda: _FakeIdentityChain((None, "단일 활성 task")),
     )
     rc = tf.main(["T-1234"])
     captured = capsys.readouterr()
     assert rc == 1
-    assert "모호" in captured.err
-    assert "--repo" in captured.err and "--task" in captured.err
-    assert "--no-pytest" not in captured.err   # 회귀 skip 은 트리 해소 우회 수단이 아니다
+    assert "정체성 미해소" in captured.err
+    assert "--task" in captured.err
+    # 회귀 skip 은 우회 수단이 아니다 — 메시지가 그 점을 명시적으로 부정한다.
+    assert "--no-pytest 로는 풀리지 않는다" in captured.err
     assert "[1/5]" not in captured.out  # run()/회귀 진입 전 중단
 
 
@@ -1333,7 +1336,7 @@ def _capture_main_forward(tf, monkeypatch) -> dict:
 
 def test_main_repo_slot_forwards_resolved_regression_cwd(tf, monkeypatch):
     """--repo/--slot (회귀 실행 경로) → main 이 해소된 worktree 를 regression_cwd forward."""
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
+    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff())
     captured = _capture_main_forward(tf, monkeypatch)
 
     rc = tf.main(["T-1234", "--repo", "project_manager", "--slot", "1"])
@@ -1375,7 +1378,7 @@ def test_run_forwards_board_identity_args_to_complete(tf, tmp_path):
 
 def test_main_repo_slot_forwards_identity_to_board_complete(tf, monkeypatch):
     """`--repo/--slot` 으로 부른 ticket_finish 는 그 좌표를 board complete 로 forward 한다."""
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
+    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff())
     captured = _capture_main_forward(tf, monkeypatch)
 
     assert tf.main(["T-1234", "--repo", "project_manager", "--slot", "1"]) == 0
@@ -1383,13 +1386,6 @@ def test_main_repo_slot_forwards_identity_to_board_complete(tf, monkeypatch):
         "--repo", "project_manager", "--slot", "1"]
 
 
-def test_main_without_identity_keeps_the_bare_complete_argv(tf, monkeypatch):
-    """정체성 인자가 없으면 forward 도 없다 — board 의 기존 해소 체인(env·단일 lease)이 돈다."""
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
-    captured = _capture_main_forward(tf, monkeypatch)
-
-    assert tf.main(["T-1234"]) == 0
-    assert captured["board_identity_args"] == []
 
 
 @pytest.mark.parametrize("identity, slot_identity, expected", [
@@ -1406,8 +1402,8 @@ def test_board_identity_argv_prefers_explicit_then_ledger_coordinates(
     assert tf._board_identity_argv(identity, slot_identity) == expected
 
 
-def test_main_no_pytest_still_gates_ambiguity(tf, monkeypatch, capsys):
-    """--no-pytest + 진짜 모호 → 슬롯 해소는 수행하고 rc 1 + --repo/--slot·--task 처방.
+def test_main_no_pytest_still_gates_unresolved_identity(tf, monkeypatch, capsys):
+    """--no-pytest + 정체성 미해소 → rc 1 + `--task` 처방(회귀 skip 으로 풀리지 않는다).
 
     옛 규칙은 `--no-pytest` 면 슬롯 해소 자체를 건너뛰었다 — 회귀 cwd 가 pytest 전용 값이던
     시점의 결정이다. 그 뒤 같은 해소 결과(코드 트리)를 diff 서킷브레이커·[4/5] stage·PM-direct
@@ -1417,11 +1413,14 @@ def test_main_no_pytest_still_gates_ambiguity(tf, monkeypatch, capsys):
     """
     resolve_calls: list = []
 
-    def _spy_resolve(repo, slot):  # --no-pytest 여도 반드시 호출돼야 한다.
+    def _spy_resolve(repo, slot):  # 무인자 진입은 이 갈래로 오지 않는다(정체성=task).
         resolve_calls.append((repo, slot))
-        return None, "등록 repo 2개(A, B) — 어느 repo 인지 모호하다."
+        return None, None
 
     monkeypatch.setattr(tf, "_resolve_finish_slot", _spy_resolve)
+    monkeypatch.setattr(
+        tf, "_load_pm_log", lambda: _FakeIdentityChain((None, "단일 활성 task")),
+    )
     captured: dict = {}
 
     class _SpyFinisher(tf.TicketFinisher):
@@ -1436,11 +1435,11 @@ def test_main_no_pytest_still_gates_ambiguity(tf, monkeypatch, capsys):
     monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
     rc = tf.main(["T-1234", "--no-pytest"])
     err = capsys.readouterr().err
-    assert rc == 1                          # 모호는 회귀 skip 으로 풀리지 않는다
-    assert resolve_calls == [(None, None)]  # 회귀 skip 여부와 무관하게 해소 수행
+    assert rc == 1                          # 미해소는 회귀 skip 으로 풀리지 않는다
+    assert resolve_calls == []              # 슬롯 자동해소 갈래 자체가 없다
     assert captured == {}                   # TicketFinisher 생성 전에 중단(부작용 0)
-    assert "--repo" in err and "--task" in err
-    assert "--no-pytest" not in err         # 우회 처방 문구 없음
+    assert "--task" in err
+    assert "--no-pytest 로는 풀리지 않는다" in err   # 우회 처방이 아니라 부정
 
 
 def test_main_no_pytest_forwards_resolved_code_tree(tf, monkeypatch):
@@ -1448,28 +1447,16 @@ def test_main_no_pytest_forwards_resolved_code_tree(tf, monkeypatch):
 
     diff 서킷브레이커·stage 가 이 값을 쓰므로 회귀를 안 돌려도 주입돼야 한다.
     """
-    monkeypatch.setattr(
-        tf, "_load_pm_handoff",
-        lambda: _FakeHandoff(("work/project_manager_1", None)),
-    )
+    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff())
     captured = _capture_main_forward(tf, monkeypatch)
 
-    rc = tf.main(["T-1234", "--no-pytest"])
+    rc = tf.main(["T-1234", "--no-pytest", "--repo", "project_manager", "--slot", "1"])
     assert rc == 0
     assert captured["regression_cwd"].replace(os.sep, "/").endswith("work/project_manager_1")
     assert captured["skip_pytest"] is True   # [1/5] 회귀만 skip
     assert captured["session"] == "project_manager_1"
 
 
-def test_main_no_pytest_solo_keeps_repo_fallback(tf, monkeypatch):
-    """--no-pytest + 솔로/미해소 → 모호 아님·regression_cwd 미주입(현행 REPO 런타임 폴백 보존)."""
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
-    captured = _capture_main_forward(tf, monkeypatch)
-
-    rc = tf.main(["T-1234", "--no-pytest"])
-    assert rc == 0
-    assert captured["regression_cwd"] is None
-    assert captured["skip_pytest"] is True
 
 
 def test_main_slot_without_repo_rejected(tf, capsys):
@@ -1482,20 +1469,11 @@ def test_main_slot_without_repo_rejected(tf, capsys):
     assert "--repo" in capsys.readouterr().err
 
 
-def test_main_solo_forwards_no_regression_cwd(tf, monkeypatch):
-    """(d) 솔로/미해소 → main 이 regression_cwd=None 으로 TicketFinisher 생성(런타임 _regression_cwd 폴백 보존)."""
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
-    captured = _capture_main_forward(tf, monkeypatch)
-
-    rc = tf.main(["T-1234"])
-    assert rc == 0
-    assert captured["regression_cwd"] is None   # 솔로 미주입 → 런타임 폴백(현행 100% 보존)
-    assert captured["skip_pytest"] is False
 
 
 def test_resolve_finish_slot_solo_returns_none(tf, monkeypatch):
     """(d) 솔로(pm_handoff 자동해소 None) → (None, None)·모호 아님(fail-loud 미발동)."""
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
+    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff())
     assert tf._resolve_finish_slot(None, None) == (None, None)
 
 

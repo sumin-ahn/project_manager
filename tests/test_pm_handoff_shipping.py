@@ -29,7 +29,47 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from _slot_seed import SESSION, SLOT, seed_areas, seed_slot
+from _slot_seed import SLOT, seed_areas, seed_slot
+
+TASK = "alpha"
+
+_TASK_PM_STATE = """# task state
+
+## 세션 식별 (현재까지 사용된 이름)
+
+최근 N 차 (sliding window, 기본 3 차):
+  - **1차** (2026-08-09 · 첫 세션): 첫 세션.
+
+## 진행 중인 의사결정
+
+표 내용.
+"""
+
+
+class _TaskPool:
+    """task 가 슬롯 하나를 쥔 형상 — 회귀 cwd 와 출하 surface 대상이 이 슬롯이다.
+
+    슬롯은 `seed_slot` 이 실제로 깐 장부 행(`SLOT`·session=TASK)과 같은 값이라, 재스냅 단계의
+    소유권 재검증이 실 장부에서 그대로 통과한다.
+    """
+
+    def find_task(self, name):
+        return type("_T", (), {"name": name, "open": False})()
+
+    def slots_for_task(self, name):
+        return [type("_L", (), {"slot": SLOT})()]
+
+    def close_task_session(self, name):
+        return type("_T", (), {"name": name, "open": False})()
+
+    def lease_owned_by_task_strict(self, slot, task):
+        return slot == SLOT
+
+    def read_lease(self, slot):
+        return type("_L", (), {"git": None})()
+
+    def record_git_snapshot(self, slot, **_kwargs):
+        return type("_L", (), {"git": {"branch": "main", "head": "abc123"}})()
 
 from _repo_owned_inventory import TRACKED_ONLY, repo_owned_paths
 
@@ -48,18 +88,11 @@ def _run_handoff(inst, **kw):
     """핸드오프 실행 — 승인 게이트에 정식 승인값을 실어 통과시킨다.
 
     이 모듈의 축은 승인 게이트가 아니다(그 축은 ``tests/test_pm_handoff_user_ack.py``가
-    소유한다). 승인 대상값은 task > 그 슬롯의 장부 정체성이다 — pm_state 명시 주입 인스턴스는
-    run() 이 슬롯 자동해소를 건너뛰므로 등록된 슬롯 행을 실어 준다.
+    소유한다). 승인 대상값은 정체성 그 자체, 곧 task 이름이다.
     """
-    if (kw.get("task") is None and "worktree_slot" not in kw
-            and getattr(inst, "_pm_state_file_explicit", False)):
-        kw["worktree_slot"] = SLOT
-    if "user_ack" not in kw:
-        slot = kw.get("worktree_slot")
-        kw["user_ack"] = kw.get("task") or (
-            slot.rsplit("/", 1)[-1] if slot else SESSION
-        )
-    return inst.run(**kw)
+    task = kw.pop("task", TASK)
+    kw.setdefault("user_ack", task)
+    return inst.run(task, **kw)
 
 def _load_module(name: str = "pm_handoff"):
     spec = importlib.util.spec_from_file_location(name, PM_HANDOFF_PY)
@@ -78,7 +111,8 @@ def _registered_home(hf, tmp_path, monkeypatch):
     """기본 형상 = 등록된 홈(N=1 슬롯 행) — 정체성·회귀 cwd 가 이 장부 행에서 온다."""
     monkeypatch.setattr(hf, "REPO", tmp_path)
     seed_areas(tmp_path)
-    seed_slot(tmp_path)
+    seed_slot(tmp_path, session=TASK, tasks=[{"name": TASK, "prefix": None}])
+    (tmp_path / SLOT).mkdir(parents=True, exist_ok=True)   # 회귀 cwd 가 실재 트리로 해소된다.
 
 
 # ── git_runner stub 빌더 ──────────────────────────────────────────────────────
@@ -353,15 +387,18 @@ def _make_handoff(hf, tmp_path: Path, *, git_runner):
     """
     log_file = tmp_path / "current.md"
     playbook_file = tmp_path / "pm_playbook.md"
-    missing_state = tmp_path / "nope" / "pm_state.md"
+    # 차수는 pm_state 에서만 추론하므로 파일이 **실재**해야 한다(부재는 중단이다).
+    pm_state = tmp_path / "explicit_pm_state.md"
     log_file.write_text("# log\n", encoding="utf-8")
     playbook_file.write_text("# pm_playbook (no anchor)\n", encoding="utf-8")
+    pm_state.write_text(_TASK_PM_STATE, encoding="utf-8")
     inst = hf.PmHandoff(
         run_pytest_fn=lambda: (0, "120 passed in 1.0s\n"),
         run_git_fn=git_runner,
         log_file=log_file,
         pm_playbook_file=playbook_file,
-        pm_state_file=missing_state,
+        pm_state_file=pm_state,
+        worktree_pool=_TaskPool(),
     )
     return inst
 
@@ -381,7 +418,7 @@ def test_run_surfaces_shipping_change_nonblocking(hf, tmp_path, capsys):
             ".project_manager/tools/pm_handoff.py", "tests/test_x.py",
         ]),
     )
-    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
+    rc = _run_handoff(inst, dry_run=False, skip_pytest=False)
     assert rc == 0  # 비차단 — 출하 변경이 있어도 핸드오프 진행.
     out = capsys.readouterr().out
     assert "미검증 출하 변경" in out
@@ -392,7 +429,7 @@ def test_run_surfaces_shipping_change_nonblocking(hf, tmp_path, capsys):
 def test_run_surfaces_ambiguous_nonblocking(hf, tmp_path, capsys):
     """baseline 해소불가(분류불명) → "가능성 … 분류 불명 … release wave" surface·rc 0."""
     inst = _make_handoff(hf, tmp_path, git_runner=_git_stub(baseline_ok=False))
-    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
+    rc = _run_handoff(inst, dry_run=False, skip_pytest=False)
     assert rc == 0
     out = capsys.readouterr().out
     assert "분류 불명" in out
@@ -407,7 +444,7 @@ def test_run_reports_no_shipping_change(hf, tmp_path, capsys):
             ".project_manager/wiki/raw/spikes/s.md", "tests/test_x.py",
         ]),
     )
-    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
+    rc = _run_handoff(inst, dry_run=False, skip_pytest=False)
     assert rc == 0
     out = capsys.readouterr().out
     assert "출하 변경 없음" in out
@@ -424,9 +461,9 @@ def test_run_shipping_surface_never_blocks_handoff(hf, tmp_path):
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=["templates/opencode/AGENTS.md"]),
     )
-    rc = _run_handoff(inst, session_num=7, wave_summary="x", dry_run=False, skip_pytest=False)
+    rc = _run_handoff(inst, dry_run=False, skip_pytest=False)
     assert rc == 0
-    assert "PM 7차" in (tmp_path / "current.md").read_text(encoding="utf-8")
+    assert "PM 2차" in (tmp_path / "current.md").read_text(encoding="utf-8")
 
 
 def test_run_dry_run_skips_shipping_surface(hf, tmp_path, capsys):
@@ -435,7 +472,7 @@ def test_run_dry_run_skips_shipping_surface(hf, tmp_path, capsys):
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
     )
-    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=True, skip_pytest=False)
+    rc = _run_handoff(inst, dry_run=True, skip_pytest=False)
     assert rc == 0
     out = capsys.readouterr().out
     assert "[dry-run] 출하 변경 surface skip" in out
@@ -449,7 +486,7 @@ def test_run_skips_shipping_surface_when_machine_regression_red(hf, tmp_path, ca
         git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
     )
     inst._run_pytest_fn = lambda: (1, "1 failed in 1.0s\n")  # 기계회귀 red.
-    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
+    rc = _run_handoff(inst, dry_run=False, skip_pytest=False)
     assert rc == 1
     out = capsys.readouterr().out
     assert "미검증 출하 변경" not in out  # 회귀에서 먼저 중단 → surface 미도달.

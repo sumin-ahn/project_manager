@@ -1182,7 +1182,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   board 판독 실패를 None("base 없음")으로 접으면 실제 원인이 가려지므로 예외를 그대로 올린다.
     # 263 = 270 − 부트스트랩 슬롯 모드 삭제가 지운 일곱 경계(슬롯 자동해소·슬롯 정체성 렌더·
     #   0단계 슬롯 판정·시대차 계산 계열). 같은 판정은 task 보유 슬롯 전수 검증이 한다.
-    assert len(report.boundaries) == 263, "propagation sweep boundary ratchet changed"
+    assert len(report.boundaries) == 259, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1640,7 +1640,6 @@ def _raiser(exc):
     "case",
     [
         "handoff_auto_slot",
-        "handoff_session_slot",
         "finish_regression_cwd",
         "board_domain_pages",
         "board_domain_lint",
@@ -1657,19 +1656,6 @@ def test_runtime_loaded_sibling_and_same_method_boundaries_rethrow_marked_skew(
             lambda: SimpleNamespace(_auto_slot=_raiser(skew)),
         )
         invoke = lambda: module._regression_cwd()
-    elif case == "handoff_session_slot":
-        module = _runtime_tool("pm_handoff.py")
-        monkeypatch.setattr(
-            module, "_load_pm_bootstrap",
-            lambda: SimpleNamespace(
-                SlotResolutionError=type("SlotResolutionError", (RuntimeError,), {}),
-                # 세션-entry 실행 슬롯 해소가 부르는 형제 경계 — 좌표만 내던
-                # `_resolve_session_slot` 에서 좌표→행 경로·정체성까지 해소하는
-                # `_session_slot_identity` 로 옮겼다(경계 자체는 같은 자리).
-                _session_slot_identity=_raiser(skew),
-            ),
-        )
-        invoke = lambda: module._resolve_session_worktree_slot()
     elif case == "finish_regression_cwd":
         module = _runtime_tool("ticket_finish.py")
         monkeypatch.setattr(

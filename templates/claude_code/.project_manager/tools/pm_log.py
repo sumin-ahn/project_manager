@@ -693,21 +693,16 @@ def build_checkpoint_entry(
     trigger: str = "manual",
     date: str | None = None,
     *,
-    session: str | None = None,
     ctx_band_checked: bool = False,
     ctx_band_missed: bool = False,
     ctx_window_tokens: int | None = None,
     ctx_observed_tokens: int | None = None,
     harness: str | None = None,
 ) -> str:
-    """task/slot 축의 compaction/manual 경계 보충 박제 골격을 만든다."""
+    """task 축의 compaction/manual 경계 보충 박제 골격을 만든다."""
     if date is None:
         date = datetime.date.today().isoformat()
-    identity_tag = (
-        f" | ({_TASK_TAG_PREFIX}{task})" if task
-        else f" | ({session})" if session
-        else ""
-    )
+    identity_tag = f" | ({_TASK_TAG_PREFIX}{task})" if task else ""
     ctx_advisory = (
         build_ctx_window_mismatch_advisory(
             ctx_window_tokens=ctx_window_tokens,
@@ -721,8 +716,8 @@ def build_checkpoint_entry(
         if ctx_band_checked else ""
     )
     return (
-        # Consumer grammar: pm_handoff.collect_session_entries()의 task/slot
-        # 분기와 동기화한다.
+        # Consumer grammar: pm_handoff._collect_session_entries() 의 task 태그 판별과
+        # 동기화한다.
         f"## [{date}] checkpoint{identity_tag} — {trigger}\n\n"
         f"{ctx_check}"
         f"{ctx_advisory}"
@@ -911,21 +906,6 @@ def _lease_rows(pm_home: Path) -> list[dict]:
     return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
-def _ledger_task_names(pm_home: Path) -> set[str]:
-    """장부 top-level ``tasks`` 컬렉션의 이름 집합 — **task 축의 단일 진실**(등록 membership).
-
-    "이 정체성이 task 인가"를 이름 모양(``foo_1`` 형상 추측)이나 slot 경로 대조가 아니라 등록
-    여부로 묻는다(``worktree_pool.reclaim_stale``·``_ensure_slot_pm_state_locked`` 가 이미 쓰는
-    근거와 같은 축). 부재/손상 → 빈 집합(fail-soft).
-    """
-    data = _read_json_object(
-        Path(pm_home) / ".project_manager" / ".local" / "worktree-leases.json"
-    )
-    rows = data.get("tasks") if data else None
-    if not isinstance(rows, list):
-        return set()
-    return {row["name"] for row in rows
-            if isinstance(row, dict) and isinstance(row.get("name"), str) and row.get("name")}
 
 
 def _active_tasks(pm_home: Path) -> list[str]:
@@ -940,12 +920,8 @@ def _active_tasks(pm_home: Path) -> list[str]:
         return []
 
 
-# 정체성 해소 층은 사람이 읽는 진단 문구이면서 pm_handoff의 실행/수집 축 분류 계약이다.
+# 정체성 해소 층은 사람이 읽는 진단 문구이면서 pm_handoff 의 실행/미해소 분류 계약이다.
 # 소비자가 문자열 리터럴을 복제하지 않도록 생산자가 집합까지 함께 노출한다.
-# 슬롯 정체성 키 형식(`<repo>_<N>`) — `identity_args._SLOT_KEY_RE` 와 같은 값 술어다(이 모듈은
-# leaf point-reader 라 형제를 로드하지 않으므로 패턴만 동형 보유·경로 형태 강제 아님).
-_SLOT_KEY_PATTERN = r"[^()\s/\\]+_[1-9]\d*"
-
 IDENTITY_SOURCE_CWD_LEASE = "cwd→lease"
 IDENTITY_SOURCE_SINGLE_ACTIVE_TASK = "단일 활성 task"
 IDENTITY_SOURCE_UNRESOLVED = "정체성 미해소"
@@ -991,63 +967,6 @@ def resolve_snapshot_identity(pm_home: Path, cwd: Path) -> tuple[str | None, str
     if len(active) == 1:
         return active[0], IDENTITY_SOURCE_SINGLE_ACTIVE_TASK
     return None, IDENTITY_SOURCE_UNRESOLVED
-
-
-def _checkpoint_identity_axes(
-    pm_home: Path,
-    cwd: Path,
-    identity: str,
-    source: str,
-) -> tuple[str | None, str | None]:
-    """snapshot 해소값을 checkpoint의 task/session 2축으로 분리한다.
-
-    축 판정의 단일 진실은 **장부**다: cwd 를 소유한 lease 행의 정체성이 (1) 등록 task 이름이
-    아니고 (2) 슬롯 키 형식(``<repo>_<N>``)이면 slot 축이다. 예전 규칙(``slot.name == identity``)
-    은 정체성을 **슬롯 경로 이름**과 대조해, 경로에 이름이 없는 슬롯(PM 홈 자신을 가리키는 행)과
-    경로·session 이 어긋난 행을 전부 task 축으로 오분류했다(task 이름 검증까지 흘러가 bare
-    handoff 가 argparse 에러로 죽었다). task 오분류 방지는 경로 대조가 아니라 **등록 membership**
-    (``_ledger_task_names``)이 맡는다 — ``foo_1`` 형상 task 는 슬롯 예약 패턴이라 애초에 등록될
-    수 없고, 등록됐다면 그 값이 진실이다.
-    """
-    if source != IDENTITY_SOURCE_CWD_LEASE:
-        return identity, None
-
-    task_names = _ledger_task_names(pm_home)
-    matches: list[tuple[int, bool]] = []
-    for row in _lease_rows(pm_home):
-        if row.get("state") != "leased" or row.get("session") != identity:
-            continue
-        slot = _lease_slot_path(pm_home, row)
-        if slot is None or not _is_within(cwd, slot):
-            continue
-        is_slot_axis = (
-            identity not in task_names
-            and re.fullmatch(_SLOT_KEY_PATTERN, identity) is not None
-        )
-        matches.append((len(slot.resolve(strict=False).parts), is_slot_axis))
-    if matches:
-        deepest = max(depth for depth, _is_slot in matches)
-        kinds = {is_slot for depth, is_slot in matches if depth == deepest}
-        if kinds == {True}:
-            return None, identity
-    return identity, None
-
-
-def resolved_lease_slot_path(pm_home: Path, session: str) -> Path | None:
-    """활성 lease의 ``session``이 가리키는 실제 slot 경로를 반환한다.
-
-    상대 경로는 ``pm_home`` 기준으로 해소하고 absolute slot은 그대로 보존한다. 같은 session의
-    활성 행이 정확히 하나일 때만 권위값을 내어 중복 장부를 임의 선택하지 않는다.
-    """
-    matches = [
-        slot
-        for row in _lease_rows(pm_home)
-        if row.get("state") == "leased" and row.get("session") == session
-        for slot in [_lease_slot_path(pm_home, row)]
-        if slot is not None
-    ]
-    unique = {str(slot.resolve(strict=False)): slot for slot in matches}
-    return next(iter(unique.values())) if len(unique) == 1 else None
 
 
 def _pm_state_path(pm_home: Path, task: str, source: str) -> Path:
@@ -1574,7 +1493,6 @@ def cap_snapshot_sections(
 def _latest_ctx_window_mismatch_section(
     pm_home: Path,
     task: str | None,
-    session: str | None = None,
 ) -> str | None | object:
     """append-only log의 최신 PreCompact 밴드 평가에서 복구용 진단을 읽는다.
 
@@ -1597,10 +1515,6 @@ def _latest_ctx_window_mismatch_section(
             owns_entry = (
                 f"({_TASK_TAG_PREFIX}{task})" in first_line
                 and " checkpoint | " in first_line
-            )
-        elif session is not None:
-            owns_entry = (
-                f"({session})" in first_line and " checkpoint | " in first_line
             )
         else:
             owns_entry = " checkpoint — " in first_line
@@ -1645,7 +1559,7 @@ def build_snapshot(
             "[pm-snapshot] 정체성 미해소 — cwd lease 불일치·활성 task 비단일; 재주입 생략. "
             + _load_identity_args().NO_WORK_FOLDER_REMEDY
         )
-    task, session = _checkpoint_identity_axes(pm_home, cwd, identity_name, source)
+    task = identity_name
     identity = _identity_section(pm_home, cwd, identity_name, source)
     sections: list[str] = []
     mismatch = (
@@ -1656,7 +1570,7 @@ def build_snapshot(
             harness=harness,
         ).rstrip()
         + "\n"
-        if ctx_band_missed else _latest_ctx_window_mismatch_section(pm_home, task, session)
+        if ctx_band_missed else _latest_ctx_window_mismatch_section(pm_home, task)
     )
     if mismatch is _CTX_WINDOW_MISMATCH_READ_FAILED:
         # 무진단 snapshot을 만들지 않아 hook의 기존 armed payload가 그대로 남게 한다.
@@ -1906,7 +1820,6 @@ def _resolve_compaction_boundary(
 def cmd_checkpoint(args: argparse.Namespace) -> int:
     """checkpoint 골격 append. compaction은 boundary/phase marker로 경계당 1건만 허용한다."""
     task = getattr(args, "task", None)
-    session = None
     identity_name = task
     if not task:
         cwd = Path(getattr(args, "cwd", None) or Path.cwd()).resolve(strict=False)
@@ -1920,7 +1833,7 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        task, session = _checkpoint_identity_axes(REPO, cwd, identity_name, source)
+        task = identity_name
     if task is not None:
         identity_args = _load_identity_args()
         try:
@@ -1949,7 +1862,6 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
     entry = build_checkpoint_entry(
         task,
         args.trigger,
-        session=session,
         ctx_band_checked=ctx_band_checked,
         ctx_band_missed=ctx_band_missed,
         ctx_window_tokens=getattr(args, "ctx_window_tokens", None),

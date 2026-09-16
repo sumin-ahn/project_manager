@@ -1267,46 +1267,13 @@ def test_format_freshness_detached():
     assert mod._format_freshness(scope) == "detached HEAD"
 
 
-# ── parse_handoff_worktree_branch / reattach_warning ─────────────────────────
-
-def test_parse_handoff_worktree_branch_happy():
-    """handoff entry 본문의 worktree 줄에서 branch 추출 (부가 주석이 붙어도)."""
-    mod = _load_module()
-    body = (
-        "## [2026-07-02] handoff | PM 48차 인계\n"
-        "- worktree: slot=`work/project_manager_1` · branch=`main` "
-        "(릴리즈 ff 후 상태 · 회전 재부착 단서·ADR-0013)\n"
-    )
-    assert mod.parse_handoff_worktree_branch(body) == "main"
 
 
-def test_parse_handoff_worktree_branch_unset_is_none():
-    """`(미지정)` placeholder 또는 줄 부재 → None (비교 생략)."""
-    mod = _load_module()
-    body = "- worktree: slot=`work/A_1` · branch=`(미지정)` (회전 재부착 단서·ADR-0013)\n"
-    assert mod.parse_handoff_worktree_branch(body) is None
-    assert mod.parse_handoff_worktree_branch("본문에 worktree 줄 없음\n") is None
-    assert mod.parse_handoff_worktree_branch(None) is None
 
 
-def test_reattach_warning_mismatch_warns():
-    """현 브랜치 ≠ 직전 handoff worktree 브랜치 → 경고 문자열 (자동 checkout 안 함)."""
-    mod = _load_module()
-    body = "- worktree: slot=`work/pm_1` · branch=`release/v1.0.2` (회전 재부착 단서·ADR-0013)\n"
-    warn = mod.reattach_warning("main", body)
-    assert warn is not None
-    assert "release/v1.0.2" in warn and "main" in warn
-    # 자동 checkout 은 하지 않는다는 안내를 담는다(재부착은 PM 판단).
-    assert "자동 checkout" in warn
 
 
-def test_reattach_warning_match_or_missing_is_none():
-    """브랜치 일치·직전 브랜치 미상·현 브랜치 미상 → None (경고 생략)."""
-    mod = _load_module()
-    body = "- worktree: slot=`work/pm_1` · branch=`main` (회전 재부착 단서·ADR-0013)\n"
-    assert mod.reattach_warning("main", body) is None            # 일치
-    assert mod.reattach_warning("main", "worktree 줄 없음") is None  # 직전 미상
-    assert mod.reattach_warning(None, body) is None              # 현 미상
+
 
 
 # ── _sync_scope (fetch + 판정 + clean·ff pull) ───────────────────────────────

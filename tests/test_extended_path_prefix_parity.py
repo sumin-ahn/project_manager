@@ -106,7 +106,6 @@ def test_the_three_serializers_agree_on_the_same_slot_path(modules, tmp_path):
     relative = Path("work/proj_1")
 
     texts = {
-        "pm_handoff": handoff._lease_slot_path_text(slot, repo),
         "pm_bootstrap": bootstrap._display_path_text(relative),
         "pm_import": Path(pm_import._path_notation_text(relative)).as_posix(),
     }

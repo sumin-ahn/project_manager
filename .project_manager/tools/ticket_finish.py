@@ -422,14 +422,11 @@ def _regression_cwd(worktree_slot: str | None = None) -> str:
 
 
 # ── --repo/--slot 슬롯 disambiguation (다중슬롯 finish·pm_handoff 미러) ──
-# 다중슬롯 형상에선 `_regression_cwd(None)` 의
-# `_auto_slot` 자동해소가 모호(슬롯 2+)해져 홈으로 폴백하고, `tests/` 가 없어 회귀가
-# red("no tests ran")→finish 가 *조용히* 차단된다. pm_handoff 는 이미
-# `--repo`/`--slot`로 슬롯을 disambiguate 하는데 ticket_finish 엔 그 수단이 없던 게
-# 근본이다. pm_handoff `_resolve_explicit_identity_slot`(명시 identity → 조인검증 해소)·
-# `_resolve_session_worktree_slot`(session-entry 슬롯 해소·default-1/단독/idle-필터·진짜 모호면
-# fail-loud)을 동적 로드해 재사용한다(DRY·해소 로직 복제 0). ticket_finish 는 이미
-# pm_handoff 동적 로드 seam 보유.
+# 다중슬롯 형상에선 `_regression_cwd(None)` 자동해소가 모호해져 홈으로 폴백하고, `tests/` 가
+# 없어 회귀가 red("no tests ran")→finish 가 *조용히* 차단된다. 그래서 무인자 진입은 정체성을
+# task 로 해소해(`pm_log.resolve_snapshot_identity`) 그 task 의 작업 폴더를 쓰고, 미해소면
+# 멈춘다. 명시 `--repo`/`--slot` 만 이 함수를 타며 판정은 pm_handoff
+# `_resolve_explicit_identity_slot`(조인 검증)을 동적 로드해 재사용한다(복제 0).
 
 def _resolve_finish_slot(repo: str | None, slot: int | None) -> tuple[str | None, str | None]:
     """`--repo`/`--slot`(또는 둘 다 부재)에서 회귀 worktree 슬롯을 해소한다 — `(worktree_slot, error_msg)`.
@@ -437,26 +434,14 @@ def _resolve_finish_slot(repo: str | None, slot: int | None) -> tuple[str | None
     pm_handoff 를 동적 로드해 재사용한다(DRY). 반환:
       - `(work/<repo>_<N>, None)` — `--repo`(+`--slot`) 명시 → pm_handoff
         `_resolve_explicit_identity_slot` 로 (세션↔repo 조인 검증) 통과 후 결정론적 해소.
-      - `(work/<repo>_<N>, None)` — `--repo`/`--slot` 둘 다 부재인데 default-1/단독/idle-필터로
-        자동해소됨(no-flag 기본 불변).
       - `(None, None)` — 판정 불능(pm_handoff 사본 부재) → 호출부 REPO 런타임 폴백.
-      - `(None, error_msg)` — **진짜 모호**(멀티-PM under-specified·repo≥2·slot1 부재 비단독) 또는
-        (명시 repo/slot 이 리스 장부와 조인 불일치) → 호출부 fail-loud.
+      - `(None, error_msg)` — 명시 repo/slot 이 리스 장부와 조인 불일치 → 호출부 fail-loud.
 
-    `repo`/`slot` 둘 다 `None`(kind='none')이면 기존 no-flag 자동해소로 위임 — pm_handoff
-    부재/로드 실패는 fail-soft `(None, None)`(현행 REPO 폴백). `repo`/`slot` 명시인데
-    pm_handoff 부재면 검증(리스 조인)을 할 수 없으므로 단순 조립만 해 신뢰한다(현행 폴백 패턴).
+    무인자 진입은 여기 오지 않는다 — 호출부가 정체성을 task 로 먼저 해소해 task 갈래로
+    합류시킨다(슬롯 자동해소 갈래 없음). `repo`/`slot` 명시인데 pm_handoff 부재면 검증(리스
+    조인)을 할 수 없으므로 단순 조립만 해 신뢰한다(현행 폴백 패턴).
     """
     hp = _load_pm_handoff()
-    if repo is None and slot is None:
-        if hp is None:
-            return None, None
-        try:
-            return hp._resolve_session_worktree_slot(None)
-        except Exception as exc:  # noqa: BLE001 — fail-soft: 해소 실패는 현행 폴백(모호 아님).
-            if _is_engine_rev_skew(exc):
-                raise
-            return None, None
     if hp is None:
         # pm_handoff 부재 — (리스 조인) 검증 불가하니 단순 조립만.
         if slot is not None:
@@ -5565,6 +5550,24 @@ def _main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
+
+    # 무인자 진입(`--task`·`--repo/--slot` 전무)도 정체성 축은 task 하나다 — 생산자와 같은
+    # 체인(`cwd 작업 폴더 → 단일 활성 task`)으로 해소해 아래 task 갈래로 합류시킨다. 해소되면
+    # 슬롯 자동해소 갈래가 필요 없고, 안 되면 실행 위치를 지어내지 않고 멈춘다.
+    if identity.task is None and identity.kind == "none":
+        pm_log = _load_pm_log()
+        resolved_task, identity_source = pm_log.resolve_snapshot_identity(REPO, Path.cwd())
+        if resolved_task is None:
+            print(
+                f"\n[중단] 정체성 미해소 ({identity_source}) — 이 cwd 를 가진 작업 폴더가 없고 "
+                "활성 task 도 하나가 아니다. `--task <이름>` 으로 명시하라 "
+                "(코드 트리는 회귀뿐 아니라 diff 측정·stage 가 함께 쓰므로 --no-pytest 로는 "
+                "풀리지 않는다).",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"정체성 자동 해소: task={resolved_task} ({identity_source}; pm_log 공유 체인)")
+        identity.task = resolved_task
 
     regression_cwd: str | None = None
     session: str | None = identity.session

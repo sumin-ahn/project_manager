@@ -339,12 +339,11 @@ slot 을 새로 만드는 것은 코드 checkout 을 추가하는 물리 작업�
 작업 끝났으면 doc task slot 반납까지 정리해줘.
 ```
 
-slot 에 직접 바인딩해 일하는 방식도 있다. 세션이 부트스트랩할 때 repo 와 슬롯을 지정해
-"나는 이 repo 의 N 번 PM" 이라고 선언한다. 이후 그 세션의 작업 위치와 보드 조작 귀속이 그
-슬롯으로 잡힌다:
+세션은 부트스트랩할 때 task 이름을 준다. "나는 이 작업 흐름의 PM" 이라고 선언하는 것이고,
+이후 그 세션의 작업 위치와 보드 조작 귀속은 그 task 가 빌린 slot 으로 잡힌다:
 
 ```text
-/pm-bootstrap repo-a --slot 2
+/pm-bootstrap --task doc
 ```
 
 코드를 읽기만 할 기준면이 필요하면 readonly slot 을 만든다. readonly slot 은 detached HEAD 이고,
@@ -403,7 +402,7 @@ flowchart TB
 - **공유하는 것**: board 의 ticket 상태와 wiki 의 domain·ADR·log. 코드는 배타 work slot 에서
   수정하고, 여러 세션이 함께 읽을 기준면에는 readonly slot 을 쓴다.
 - **범위를 넓힐 때**: "내 것 전체를 보여줘", "doc task 만 보여줘", "다른 사용자까지 보여줘"라고
-  PM 에게 요청한다. slot 정체성이 필요하면 `/pm-bootstrap repo-a --slot 2`처럼 시작한다.
+  PM 에게 요청한다. 세션 정체성이 필요하면 `/pm-bootstrap --task doc` 처럼 시작한다.
 - **신뢰할 수 있는 시점**: 부트스트랩이 offline freshness 경고를 내면 보드 숫자를 최신 원격
   상태로 단정하지 않는다.
 

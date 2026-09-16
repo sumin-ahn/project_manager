@@ -1,5 +1,5 @@
 {
-  "count": 423,
+  "count": 396,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -12,18 +12,6 @@
       {
         "count": 1,
         "hash": "7480ac4f2b224593a64a50b322b0fcb01ba18b12dff4e1408149d236f38fdecb",
-        "kind": "session_stamp"
-      }
-    ],
-    ".claude/skills/pm-handoff/SKILL.md": [
-      {
-        "count": 1,
-        "hash": "024e86f17246d31adf8706691920c6cc55b06669cfd6cd5d062e20285cf95cb3",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 2,
-        "hash": "f16dbbd40bac1a0ebd4ed37d28da4775427cd2a13341a3d738dd1aeb7bb0dc6d",
         "kind": "session_stamp"
       }
     ],
@@ -217,11 +205,6 @@
       {
         "count": 2,
         "hash": "061a27da25a4edeabf61d8ecb859d1aafe4c1407a75708468781959866055368",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 3,
-        "hash": "0dac62604b3f8dc68b916b0f3a23e30328642b64d5b6565319f52144de9e6e2e",
         "kind": "session_stamp"
       },
       {
@@ -440,18 +423,6 @@
         "kind": "session_stamp"
       }
     ],
-    "templates/claude_code/.claude/skills/pm-handoff/SKILL.md": [
-      {
-        "count": 1,
-        "hash": "024e86f17246d31adf8706691920c6cc55b06669cfd6cd5d062e20285cf95cb3",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 2,
-        "hash": "f16dbbd40bac1a0ebd4ed37d28da4775427cd2a13341a3d738dd1aeb7bb0dc6d",
-        "kind": "session_stamp"
-      }
-    ],
     "templates/claude_code/.project_manager/tools/additional_reviewer.py": [
       {
         "count": 1,
@@ -642,11 +613,6 @@
       {
         "count": 2,
         "hash": "061a27da25a4edeabf61d8ecb859d1aafe4c1407a75708468781959866055368",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 3,
-        "hash": "0dac62604b3f8dc68b916b0f3a23e30328642b64d5b6565319f52144de9e6e2e",
         "kind": "session_stamp"
       },
       {
@@ -878,18 +844,6 @@
         "kind": "session_stamp"
       }
     ],
-    "templates/codex/.agents/skills/pm-handoff/SKILL.md": [
-      {
-        "count": 1,
-        "hash": "024e86f17246d31adf8706691920c6cc55b06669cfd6cd5d062e20285cf95cb3",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 2,
-        "hash": "f16dbbd40bac1a0ebd4ed37d28da4775427cd2a13341a3d738dd1aeb7bb0dc6d",
-        "kind": "session_stamp"
-      }
-    ],
     "templates/codex/.project_manager/tools/additional_reviewer.py": [
       {
         "count": 1,
@@ -1080,11 +1034,6 @@
       {
         "count": 2,
         "hash": "061a27da25a4edeabf61d8ecb859d1aafe4c1407a75708468781959866055368",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 3,
-        "hash": "0dac62604b3f8dc68b916b0f3a23e30328642b64d5b6565319f52144de9e6e2e",
         "kind": "session_stamp"
       },
       {
@@ -1323,18 +1272,6 @@
         "kind": "session_stamp"
       }
     ],
-    "templates/opencode/.claude/skills/pm-handoff/SKILL.md": [
-      {
-        "count": 1,
-        "hash": "024e86f17246d31adf8706691920c6cc55b06669cfd6cd5d062e20285cf95cb3",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 2,
-        "hash": "f16dbbd40bac1a0ebd4ed37d28da4775427cd2a13341a3d738dd1aeb7bb0dc6d",
-        "kind": "session_stamp"
-      }
-    ],
     "templates/opencode/.opencode/agents/architect.md": [
       {
         "count": 2,
@@ -1497,18 +1434,6 @@
       {
         "count": 1,
         "hash": "7480ac4f2b224593a64a50b322b0fcb01ba18b12dff4e1408149d236f38fdecb",
-        "kind": "session_stamp"
-      }
-    ],
-    "templates/opencode/.opencode/command/pm-handoff.md": [
-      {
-        "count": 1,
-        "hash": "024e86f17246d31adf8706691920c6cc55b06669cfd6cd5d062e20285cf95cb3",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 2,
-        "hash": "f16dbbd40bac1a0ebd4ed37d28da4775427cd2a13341a3d738dd1aeb7bb0dc6d",
         "kind": "session_stamp"
       }
     ],
@@ -1736,11 +1661,6 @@
       {
         "count": 2,
         "hash": "061a27da25a4edeabf61d8ecb859d1aafe4c1407a75708468781959866055368",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 3,
-        "hash": "0dac62604b3f8dc68b916b0f3a23e30328642b64d5b6565319f52144de9e6e2e",
         "kind": "session_stamp"
       },
       {

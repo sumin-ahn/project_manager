@@ -706,44 +706,8 @@ def _repo_slot_numbers(repo: str, leases_file: Path) -> list[int] | None:
     return ia.repo_slot_numbers(repo, leases_file)
 
 
-def _slot_identity(slot: str | None, leases_file: Path | None = None):
-    """슬롯 경로 값 → 슬롯 정체성(`identity_args.resolve_slot_identity` 위임·단일 진실).
-
-    이 모듈이 `work/<repo>_<N>` basename 을 직접 파싱하지 않기 위한 얇은 위임이다 — 정체성은
-    장부 행의 session 값이 1순위고, 장부가 그 슬롯에 슬롯 축 정체성을 주지 않을 때만 pool 명명
-    규약(경로 마디)으로 내려간다. `identity_args` 부재/로드 실패는 None(fail-soft·현행 폴백).
-    `leases_file` 미지정이면 *호출 시점* REPO 기준 재구성(monkeypatch 추종·hermetic).
-    """
-    ia = _load_identity_args()
-    if ia is None:
-        return None
-    if leases_file is None:
-        leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
-    return ia.resolve_slot_identity(slot, leases_file)
 
 
-def _explicit_slot_path(repo: str, slot: int, leases_file: Path | None = None) -> str:
-    """명시 `--repo X --slot N` → **장부 행의 slot 경로 값**(부재/손상은 canonical 폴백).
-
-    슬롯 경로를 `work/<repo>_<N>` 로 재조립하면 장부가 그 번호를 다른 경로로 들고 있는 슬롯
-    (PM 홈 자신을 가리키는 행 `slot="."`·`nested/X_1`)에서 **존재하지 않는 경로**가 나온다 —
-    0단계 실재 검사·바인딩·cwd 가 전부 그 없는 자리를 본다(리뷰 F-001). 장부가 답을 주지 못하면
-    (부재/손상/그 번호 행 없음) 종전 canonical 관례로 폴백하고, 장부 **모순**(같은 번호를 서로
-    다른 경로가 주장)은 폴백 대상이 아니라 `SlotResolutionError`(fail-loud·리뷰 F-004)다.
-
-    `identity_args` 부재/로드 실패도 canonical 폴백(fail-soft·현행 무변경).
-    """
-    ia = _load_identity_args()
-    if ia is None:
-        return f"work/{repo}_{slot}"
-    if leases_file is None:
-        leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
-    resolution = ia.slot_path_resolution(repo, slot, leases_file)
-    if resolution.status == ia.SLOT_PATH_CONFLICT:
-        raise SlotResolutionError(
-            f"슬롯 경로를 특정할 수 없다 — {resolution.detail}. 장부를 정리한 뒤 다시 실행하라."
-        )
-    return resolution.path or f"work/{repo}_{slot}"
 
 
 def _auto_slot(
@@ -804,13 +768,6 @@ def _auto_slot(
 # 이어야 하는지 명확해야 한다. 슬롯을 하나만 쓰는 홈도 그 홈 자신이 등록된 슬롯 행이므로,
 # 해소 실패는 "등록 안 된 홈" 아니면 "under-specified" 둘 중 하나다 — 둘 다 명시 에러다.
 # 조용한 폴백은 1→2 슬롯 경계에서 침묵 동작변경(없는 legacy 경로·연속성 단절)을 만들었다.
-class SlotResolutionError(Exception):
-    """슬롯을 자동해소할 수 없을 때 — session-entry fail-loud.
-
-    사유는 둘이다: 등록 repo/슬롯이 없어 **아직 등록되지 않은 홈**이거나, 여럿이라
-    under-specified 이거나. 메시지는 그 사유 + `--repo`/`--slot` 안내를 담는다(호출부가
-    그대로 사용자에게 surface).
-    """
 
 
 def _no_work_folder_remedy(repo: str) -> str:
@@ -827,85 +784,8 @@ def _no_work_folder_remedy(repo: str) -> str:
     return ia.no_work_folder_remedy(repo)
 
 
-def _resolve_session_slot(
-    areas_file: Path | None = None,
-    leases_file: Path = LEASES_FILE,
-) -> tuple[str, int] | None:
-    """session-entry 용 guarded 슬롯해소 — repo-안 default-1 + `slot1>단독>fail-loud`.
-
-    해소 규칙(repo 해소 후 repo 안에서):
-      ```
-      repo:  등록 repo 정확히 1개 > (≥2) → FAIL-LOUD
-      slot:  slot 1 존재하면 1 > 슬롯 정확히 1개면 그것 > (모호/부재) → FAIL-LOUD
-      ```
-    `slot 1 존재 > 단독 슬롯` 순서 = 현행 단일슬롯 보존(회귀 0): `_1`-only→1, `_3`-only(단일·1
-    아님)→그것(단독 규칙), `{1,2}`→1(slot1 default), `{2,3}`(1 부재·비단독)→FAIL-LOUD.
-
-    반환:
-      - `(repo, N)` — 해소됨(default-1·단독·단일 self-host).
-      - **raise `SlotResolutionError`** — 미등록(등록 repo 0개, 또는 등록 repo 1개인데 장부를
-        읽을 수 없거나 그 repo 슬롯이 0개) 또는 under-specified(등록 repo ≥2, 또는 repo 1개인데
-        슬롯 ≥2 이고 slot 1 부재한 비단독). 둘 다 조용한 폴백 대상이 아니다.
-
-    `_auto_slot`(순수 resolver) 와 같은 stdlib json 파싱(`_repo_slot_numbers`)을 공유하되,
-    "정확히 1개"가 아니라 슬롯 *집합*을 보고 default-1/단독/fail-loud 를 가른다. worktree_pool
-    미import(touches 격리) 유지. `areas_file` 미지정이면 `_registered_repos` 가
-    `_areas_file()`(board_root 추종)로 해소.
-    """
-    repos = _registered_repos(areas_file)
-    if len(repos) == 0:
-        raise SlotResolutionError(
-            "등록 repo 0개 — 이 홈은 아직 셋업 전이다. `pm-config init` 으로 셋업하거나 "
-            "`--repo <name> --slot <N>` 으로 명시하라."
-        )
-    if len(repos) > 1:
-        raise SlotResolutionError(
-            f"등록 repo {len(repos)}개({', '.join(repos)}) — 어느 repo 인지 모호하다. "
-            f"`--repo <name> --slot <N>` 으로 명시하라."
-        )
-    repo = repos[0]
-    slot_nums = _repo_slot_numbers(repo, leases_file)
-    if not slot_nums:
-        # 장부 부재/깨짐(None) 또는 그 repo 슬롯 0개([]) — 이 홈엔 아직 작업 폴더가 없다.
-        # 조용히 폴백하면 어느 슬롯의 연속성인지 모른 채 로그·pm_state 를 쓰게 된다.
-        raise SlotResolutionError(
-            f"[중단] repo '{repo}' 의 활성 슬롯 0개 — " + _no_work_folder_remedy(repo)
-        )
-    if 1 in slot_nums:
-        return repo, 1  # slot 1 존재 → default-1(`{1}`·`{1,2}` 등).
-    if len(slot_nums) == 1:
-        return repo, slot_nums[0]  # 단독 슬롯(`_3`-only) → 그것(현행 단일슬롯 보존).
-    raise SlotResolutionError(
-        f"repo '{repo}' 슬롯 {len(slot_nums)}개"
-        f"({', '.join(f'work/{repo}_{n}' for n in sorted(slot_nums))}) 중 slot 1 부재 — "
-        f"어느 슬롯인지 모호하다. `--slot <N>` 으로 명시하라."
-    )
 
 
-def _session_slot_identity(
-    areas_file: Path | None = None,
-    leases_file: Path = LEASES_FILE,
-):
-    """session-entry 자동해소 결과의 **슬롯 정체성** — `_resolve_session_slot` 좌표의 값 해소.
-
-    `_resolve_session_slot` 은 *좌표*(어느 repo 의 몇 번 슬롯인가)를 낸다. 그 좌표를 세션 키로
-    쓰려면 `f"{repo}_{n}"` 을 **지어내는** 대신 장부가 그 번호에 대해 들고 있는 경로와 정체성을
-    읽어야 한다(리뷰 F-001·F-002) — 그래야 bare 진입(handoff 태그·연속성)과 명시 진입
-    (`--repo/--slot`)이 같은 슬롯에서 같은 키를 낸다.
-
-    반환은 `identity_args.SlotIdentity`(키 + 장부 경로 값) 또는 None(미해소).
-    모호(`SlotResolutionError`)는 그대로 전파한다 — 호출부가 자기 관례(fail-loud/fail-soft)로
-    받는다.
-    """
-    auto = _resolve_session_slot(areas_file, leases_file)
-    if not auto:
-        return None
-    repo, number = auto
-    ia = _load_identity_args()
-    if ia is None:
-        return None
-    slot = _explicit_slot_path(repo, number, leases_file)
-    return ia.resolve_slot_identity(slot, leases_file)
 
 
 # ── 경로 표기 직렬화 (POSIX 단일) ─────────
@@ -1439,44 +1319,8 @@ def _format_freshness(scope: dict) -> str:
     return " · ".join(parts)
 
 
-# 직전 handoff entry 의 worktree 줄 grammar — pm_handoff `_worktree_line` 과 정합
-# (`- worktree: slot=`...` · branch=`<branch>` (…)`). 재부착 단서비교의 단일 소스.
-_HANDOFF_WORKTREE_RE = re.compile(r"- worktree: slot=`[^`]*` · branch=`([^`]*)`")
 
 
-def parse_handoff_worktree_branch(log_body: str | None) -> str | None:
-    r"""직전 handoff entry 본문에서 worktree branch 를 추출한다 (재부착 단서).
-
-    pm_handoff `_worktree_line` 형식(`- worktree: slot=... · branch=`<branch>` (…)`)을
-    파싱한다. body 부재·줄 부재·`(미지정)` placeholder 는 None(비교 생략). 줄 뒤에
-    부가 주석(예: `(릴리즈 ff 후 상태 · …)`)이 붙어도 branch 백틱 구간만 잡는다.
-    """
-    if not log_body:
-        return None
-    m = _HANDOFF_WORKTREE_RE.search(log_body)
-    if m is None:
-        return None
-    branch = m.group(1).strip()
-    if not branch or branch == "(미지정)":
-        return None
-    return branch
-
-
-def reattach_warning(current_branch: str | None, log_body: str | None) -> str | None:
-    """현 worktree 브랜치가 직전 handoff 의 worktree 브랜치와 다르면 경고 문자열.
-
-    같거나·둘 중 하나라도 미상이면 None(경고 생략). 자동 checkout 은 하지 않는다 —
-    회전 재부착은 PM 판단.
-    """
-    expected = parse_handoff_worktree_branch(log_body)
-    if not expected or not current_branch:
-        return None
-    if current_branch == expected:
-        return None
-    return (
-        f"⚠ worktree 브랜치 불일치 — 현재 `{current_branch}` · "
-        f"직전 handoff `{expected}` (재부착은 PM 판단·자동 checkout 안 함)"
-    )
 
 
 # ── log/current.md 파서 ──────────────────────────────────────────────────────────
@@ -2476,7 +2320,7 @@ class PmBootstrap:
         슬롯의 마지막 handoff*(태그 필터·무태그 폴백=slot-1)로 좁혀 자기 컨텍스트를 복원한다
         (타 슬롯 entry 본문 유입 차단). **MF-2**: bound 세션이 해소됐는데 자기 handoff 가 0개
         (fresh 슬롯)면 **전역 마지막으로 폴백하지 않는다** — 그러면 타 슬롯 handoff 본문·branch 가
-        유입되고 `reattach_warning` 이 타 슬롯로 오경고한다("타 슬롯 최소 유입" 정면 위반). fresh
+        유입된다("타 슬롯 최소 유입" 정면 위반). fresh
         슬롯은 이 슬롯의 첫 세션이라 인계 dump 없음(None). 전역 폴백은 bound 가 **진짜 미해소**
         (식별 자체 없음)일 때만 — 그땐 현행 표시(전역 마지막 제목+본문)를 잃지 않는다.
         """
@@ -2500,7 +2344,6 @@ class PmBootstrap:
         if slot_entry is not None:
             return slot_entry
         # 자기 handoff 0개(task 첫 세션) → 전역 폴백 금지(타 task 유입 차단). 인계 dump 없음 —
-        # reattach 도 None(타 task branch 오경고 차단).
         return None
 
     def _resolve_pm_state_file(self) -> Path | None:
@@ -2845,9 +2688,6 @@ class PmBootstrap:
             if board_sync is not None:
                 lines.append(f"  - {board_sync['label']}: {_format_freshness(board_sync)}")
         # 재부착 단서 — 현 브랜치가 직전 handoff worktree 브랜치와 다르면.
-        reattach = git.get("reattach")
-        if reattach:
-            lines.append(f"- {reattach}")
         # board submodule freshness — `ignore=all` 이 부모 `git status` 에서 board
         # git 상태를 숨기므로 별도 1줄로 surface. board 미분리면 생략(graceful skip).
         board_git = git.get("board_git")
@@ -3036,7 +2876,6 @@ class PmBootstrap:
                 # (`board_sync` 하위 포함). None/[] 면 freshness 미수집(빌더 직접 호출 등).
                 "freshness": git.get("freshness"),
                 # 재부착 단서— 브랜치 불일치 경고 문자열 또는 None.
-                "reattach": git.get("reattach"),
                 # user 연속성 — 직전 handoff 작성자 vs 현재 user 1줄 또는 None.
                 "user_continuity": git.get("user_continuity"),
             },
@@ -3132,12 +2971,6 @@ class PmBootstrap:
         git["freshness"] = freshness
         log_text = self._read_log_text()
         log_entry = self._collect_log_entry()
-        # 재부착 단서 — 현 worktree 브랜치가 직전 handoff 의 worktree
-        # 브랜치와 다르면 경고(자동 checkout 안 함·재부착은 PM 판단). log 마지막 entry 본문의
-        # worktree 줄(`- worktree: slot=… · branch=…`)에서 직전 브랜치를 읽는다.
-        git["reattach"] = reattach_warning(
-            git.get("branch"), log_entry.get("body") if log_entry else None
-        )
         # user 연속성 — 직전 handoff 작성자(commit author) vs 현재 user.
         # 일치=연속·불일치=다른 사용자 경고·미해소=줄 생략(fail-soft). git dict 에 실어 빌더 전달.
         git["user_continuity"] = self._collect_user_continuity(log_text)
@@ -3258,7 +3091,7 @@ class PmBootstrap:
         덮고(in-flight/중단 create 훼손)·alloc 은 creating
         재부착 제외. 그래서 **세션 동일 여부·readonly 무관** 차단한다(내 중단 흔적이든 타 세션 in-flight
         든 슬롯이 불완전한 건 동일). lease None/미상 state 는 False(fail-soft·열림 기록 검사
-        (`_phase0_open_record`)와 분리 — 그쪽은 '지금 열린 기록이 있나'만 본다)."""
+        와 분리 — 열린 기록 판정은 task 장부 축이 따로 본다)."""
         if lease is None:
             return False
         return getattr(lease, "state", None) == "creating"

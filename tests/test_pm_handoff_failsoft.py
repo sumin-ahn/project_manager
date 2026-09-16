@@ -14,7 +14,20 @@ import importlib.util
 from pathlib import Path
 
 import pytest
-from _slot_seed import SESSION, SLOT, seed_areas, seed_slot
+from _slot_seed import SLOT, seed_areas, seed_slot
+
+TASK = "alpha"
+
+
+class _TaskPool:
+    """task membership·보유 슬롯만 답하는 최소 seam — 장부 조회를 통과시킨다."""
+
+    def find_task(self, name):
+        # 기록이 열려 있다 = bootstrap 을 거친 새 세션 — 차수는 직전 log 차수 다음이다.
+        return type("_T", (), {"name": name, "open": True})()
+
+    def slots_for_task(self, name):
+        return []
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -25,20 +38,11 @@ def _run_handoff(inst, **kw):
     """핸드오프 실행 — 승인 게이트에 정식 승인값을 실어 통과시킨다.
 
     이 모듈의 축은 승인 게이트가 아니다(그 축은 ``tests/test_pm_handoff_user_ack.py``가
-    소유한다). 승인 대상값은 task > 그 슬롯의 장부 정체성이다.
-
-    pm_state 를 명시 주입한 hermetic 인스턴스는 run() 이 슬롯 자동해소를 건너뛰므로, 그 경우에만
-    등록된 슬롯 행을 실어 준다 — bare 진입(자동해소 경로)을 검증하는 테스트는 그대로 둔다.
+    소유한다). 승인 대상값은 정체성 그 자체, 곧 task 이름이다.
     """
-    if (kw.get("task") is None and "worktree_slot" not in kw
-            and getattr(inst, "_pm_state_file_explicit", False)):
-        kw["worktree_slot"] = SLOT
-    if "user_ack" not in kw:
-        slot = kw.get("worktree_slot")
-        kw["user_ack"] = kw.get("task") or (
-            slot.rsplit("/", 1)[-1] if slot else SESSION
-        )
-    return inst.run(**kw)
+    task = kw.pop("task", TASK)
+    kw.setdefault("user_ack", task)
+    return inst.run(task, **kw)
 
 def _load(name: str):
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
@@ -60,7 +64,7 @@ def _registered_home(handoff, tmp_path, monkeypatch):
     """
     monkeypatch.setattr(handoff, "REPO", tmp_path)
     seed_areas(tmp_path)
-    seed_slot(tmp_path)
+    seed_slot(tmp_path, session=TASK, tasks=[{"name": TASK, "prefix": None}])
 
 
 def _make_handoff_missing_state(handoff, tmp_path: Path):
@@ -90,61 +94,12 @@ def _make_handoff_missing_state(handoff, tmp_path: Path):
 
 # ── pm_state.md 부재: 3·4단계 skip, 나머지 진행, rc 0 ─────────────────────────
 
-def test_handoff_skips_when_pm_state_absent(handoff, tmp_path):
-    """pm_state.md 부재 → 핸드오프가 크래시 없이 rc 0 으로 끝난다 (3·4단계 skip)."""
-    inst, _, missing_state = _make_handoff_missing_state(handoff, tmp_path)
-    assert not missing_state.exists()  # 전제: pm_state 부재.
-
-    rc = _run_handoff(inst,
-        session_num=5,
-        wave_summary="x",
-        dry_run=False,
-        skip_pytest=True,
-    )
-
-    assert rc == 0
-    # fail-soft 라 pm_state 파일을 새로 만들지 않는다.
-    assert not missing_state.exists()
 
 
-def test_handoff_warns_on_stderr_when_pm_state_absent(handoff, tmp_path, capsys):
-    """부재 시 명확한 경고를 stderr 로 낸다 (board.py init 미실행 clone 안내)."""
-    inst, _, _ = _make_handoff_missing_state(handoff, tmp_path)
-
-    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
-
-    assert rc == 0
-    captured = capsys.readouterr()
-    assert "pm_state.md 없음" in captured.err
-    assert "board.py init" in captured.err
-    assert "skip" in captured.err
 
 
-def test_handoff_continues_remaining_steps_when_pm_state_absent(handoff, tmp_path, capsys):
-    """3·4단계 skip 이후에도 후속 단계(log entry append·잔여 작업)는 진행한다."""
-    inst, log_file, _ = _make_handoff_missing_state(handoff, tmp_path)
-
-    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
-
-    assert rc == 0
-    # step 2: log/current.md 에 handoff entry skeleton 이 실제 append 됐다.
-    log_text = log_file.read_text(encoding="utf-8")
-    assert "handoff" in log_text and "PM 5차" in log_text
-    # step 7: 완료 메시지까지 도달했다 (3·4 skip 이 흐름을 끊지 않음).
-    out = capsys.readouterr().out
-    assert "PM 5차 핸드오프 자동화 완료" in out
 
 
-def test_handoff_dry_run_skips_when_pm_state_absent(handoff, tmp_path):
-    """dry-run 경로에서도 pm_state 부재가 크래시 없이 skip 되고 rc 0."""
-    inst, log_file, _ = _make_handoff_missing_state(handoff, tmp_path)
-    before_log = log_file.read_text(encoding="utf-8")
-
-    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=True, skip_pytest=True)
-
-    assert rc == 0
-    # dry-run 은 log 도 건드리지 않는다.
-    assert log_file.read_text(encoding="utf-8") == before_log
 
 
 # ── guarded 슬롯해소 — bare handoff 멀티-PM 모호 → fail-loud (T-0178·ADR-0035) ──────
@@ -167,65 +122,20 @@ def _write_leases(path: Path, entries: list[tuple[str, int]]) -> None:
     path.write_text(json.dumps({"leases": leases}), encoding="utf-8")
 
 
-# ── _resolve_session_worktree_slot 단위 — (resolved_slot, error_msg) (hermetic seam) ──
 # 가드 단계서 실행 슬롯을 *한 번* 해소해 thread 한다(codex round2 must-fix). 반환 tuple:
 # (worktree_slot|None, error_msg|None). 명시 슬롯→그대로 · solo/미해소→(None,None) ·
 # default-1/단독/idle→(work/<repo>_<N>, None) · 진짜 모호→(None, msg).
 
-def test_resolve_session_wt_slot_explicit_passthrough(handoff, tmp_path):
-    """worktree_slot 명시 → 그대로 반환(downstream explicit 우선)·에러 없음."""
-    assert handoff._resolve_session_worktree_slot("work/project_manager_2") == ("work/project_manager_2", None)
 
 
-def test_resolve_session_wt_slot_unregistered_fails_loud(handoff, tmp_path):
-    """등록 repo 0개(셋업 전) → (None, 사유) — 조용한 폴백 없이 명시를 요구한다."""
-    areas = tmp_path / "areas.md"
-    leases = tmp_path / "worktree-leases.json"
-    _write_areas(areas, [])
-    _write_leases(leases, [("project_manager", 1)])
-    slot, msg = handoff._resolve_session_worktree_slot(None, areas, leases)
-    assert slot is None
-    assert msg is not None and "등록 repo 0개" in msg
 
 
-def test_resolve_session_wt_slot_single_self_host_resolves(handoff, tmp_path):
-    """repo 1개 + 슬롯 1개(단일 self-host) → (work/<repo>_1, None) (실행 슬롯 해소)."""
-    areas = tmp_path / "areas.md"
-    leases = tmp_path / "worktree-leases.json"
-    _write_areas(areas, ["project_manager"])
-    _write_leases(leases, [("project_manager", 1)])
-    assert handoff._resolve_session_worktree_slot(None, areas, leases) == ("work/project_manager_1", None)
 
 
-def test_resolve_session_wt_slot_default_1_resolves_slot1(handoff, tmp_path):
-    """repo 1개 + `{1,2}` → (work/<repo>_1, None) (default-1·실행 슬롯 thread)."""
-    areas = tmp_path / "areas.md"
-    leases = tmp_path / "worktree-leases.json"
-    _write_areas(areas, ["project_manager"])
-    _write_leases(leases, [("project_manager", 1), ("project_manager", 2)])
-    assert handoff._resolve_session_worktree_slot(None, areas, leases) == ("work/project_manager_1", None)
 
 
-def test_resolve_session_wt_slot_two_repos_returns_message(handoff, tmp_path):
-    """등록 repo ≥2 → (None, 모호 메시지) — fail-loud 트리거(--repo 안내)."""
-    areas = tmp_path / "areas.md"
-    leases = tmp_path / "worktree-leases.json"
-    _write_areas(areas, ["A", "B"])
-    _write_leases(leases, [("A", 1)])
-    slot, msg = handoff._resolve_session_worktree_slot(None, areas, leases)
-    assert slot is None
-    assert msg is not None and "repo 2개" in msg and "--repo" in msg
 
 
-def test_resolve_session_wt_slot_slot1_absent_returns_message(handoff, tmp_path):
-    """repo 1개 + `{2,3}`(1 부재·비단독) → (None, 모호 메시지·--slot 안내)."""
-    areas = tmp_path / "areas.md"
-    leases = tmp_path / "worktree-leases.json"
-    _write_areas(areas, ["project_manager"])
-    _write_leases(leases, [("project_manager", 2), ("project_manager", 3)])
-    slot, msg = handoff._resolve_session_worktree_slot(None, areas, leases)
-    assert slot is None
-    assert msg is not None and "슬롯 2개" in msg and "--slot" in msg
 
 
 # ── run() e2e guard — REPO monkeypatch 로 모호 형상 ──────────────
@@ -254,35 +164,8 @@ def _bare_handoff(handoff, tmp_path: Path):
     ), log_file
 
 
-def test_run_aborts_loud_on_ambiguous_multipm(handoff, tmp_path, monkeypatch, capsys):
-    """bare run() + 멀티-PM 모호(repo 2개) → rc 1·명시 에러·log 무접촉 (침묵 폴백 부재)."""
-    monkeypatch.setattr(handoff, "REPO", tmp_path)
-    _make_multipm_ambiguous_repo(tmp_path)
-    inst, log_file = _bare_handoff(handoff, tmp_path)
-    before_log = log_file.read_text(encoding="utf-8")
-
-    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
-
-    assert rc == 1  # fail-loud 중단.
-    err = capsys.readouterr().err
-    assert "슬롯 해소 모호" in err and "repo 2개" in err
-    # log/current.md 무접촉(skeleton append 전에 중단).
-    assert log_file.read_text(encoding="utf-8") == before_log
 
 
-def test_run_registered_home_not_aborted(handoff, tmp_path, capsys):
-    """bare run() + 등록된 홈(N=1 행) → guard 통과·rc 0.
-
-    슬롯이 1개인 홈도 자기 행으로 해소되므로 중단 사유가 없다. pm_state legacy 부재라 3·4 는
-    skip 되고 log skeleton 은 정상 append 된다."""
-    inst, log_file = _bare_handoff(handoff, tmp_path)
-
-    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
-
-    assert rc == 0
-    err = capsys.readouterr().err
-    assert "슬롯 해소 모호" not in err  # 모호 에러 안 남.
-    assert "PM 5차" in log_file.read_text(encoding="utf-8")
 
 
 # ── 해소 슬롯 threading 일관성 — pm_state·회귀cwd·handoff entry 한 슬롯 (codex round2) ──
@@ -313,72 +196,10 @@ def _bare_handoff_capturing_cwd(handoff, tmp_path: Path):
     return inst, log_file, captured
 
 
-def test_run_default_1_threads_slot_to_pm_state_cwd_and_entry(handoff, tmp_path, monkeypatch):
-    """`{1,2}` bare run(): pm_state·회귀cwd·handoff entry 가 *모두* work/<repo>_1 로 일관."""
-    monkeypatch.setattr(handoff, "REPO", tmp_path)
-    _write_areas(tmp_path / ".project_manager" / "areas.md", ["project_manager"])
-    _write_leases(
-        tmp_path / ".project_manager" / ".local" / "worktree-leases.json",
-        [("project_manager", 1), ("project_manager", 2)])
-    # L1(ADR-0057 라이더·T-0316): 명시/해소 슬롯이 리스엔 있어도 worktree 디렉토리가 물리적으로
-    # 없으면 `_regression_cwd` 가 REPO 로 fail-soft 폴백한다 — 이 테스트는 slot1 cwd 로의
-    # threading 자체를 검증하므로 그 디렉토리를 실제로 만들어 L1 폴백을 피한다.
-    (tmp_path / "work" / "project_manager_1").mkdir(parents=True, exist_ok=True)
-    inst, log_file, captured = _bare_handoff_capturing_cwd(handoff, tmp_path)
-
-    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=False,
-                        user_ack="project_manager_1")
-
-    assert rc == 0
-    # (1) 실행 슬롯이 work/project_manager_1 로 thread 됐다.
-    assert inst._worktree_slot == "work/project_manager_1"
-    # (2) 회귀 cwd 가 slot1 worktree(tests/ 있는 곳)로 — REPO 폴백 아님(self-split 핵심).
-    assert captured["cwd"] == str(tmp_path / "work/project_manager_1")
-    assert captured["cwd"] != str(tmp_path)
-    # (3) pm_state read 위치가 slot1 per-slot 경로.
-    assert inst._pm_state_file == (
-        tmp_path / ".project_manager" / ".local" / "slots" / "project_manager_1" / "pm_state.md")
-    # (4) handoff entry 의 worktree 줄에 같은 슬롯 기록.
-    assert "slot=`work/project_manager_1`" in log_file.read_text(encoding="utf-8")
 
 
-def test_run_idle_slot1_threads_to_leased_slot2(handoff, tmp_path, monkeypatch):
-    """`{1:idle, 2:leased}` bare run(): 실행 슬롯·회귀cwd 가 활성 slot2 (idle 1 아님)."""
-    monkeypatch.setattr(handoff, "REPO", tmp_path)
-    _write_areas(tmp_path / ".project_manager" / "areas.md", ["project_manager"])
-    import json
-    (tmp_path / ".project_manager" / ".local").mkdir(parents=True, exist_ok=True)
-    (tmp_path / ".project_manager" / ".local" / "worktree-leases.json").write_text(
-        json.dumps({"leases": [
-            {"repo": "project_manager", "slot": "work/project_manager_1", "state": "idle"},
-            {"repo": "project_manager", "slot": "work/project_manager_2", "state": "leased"},
-        ]}), encoding="utf-8")
-    # L1(ADR-0057 라이더·T-0316) — 실 worktree 디렉토리 부재 시 REPO 폴백을 피하려고 실제로 만든다.
-    (tmp_path / "work" / "project_manager_2").mkdir(parents=True, exist_ok=True)
-    inst, log_file, captured = _bare_handoff_capturing_cwd(handoff, tmp_path)
-
-    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=False,
-                        user_ack="project_manager_2")
-
-    assert rc == 0
-    assert inst._worktree_slot == "work/project_manager_2"
-    assert captured["cwd"] == str(tmp_path / "work/project_manager_2")
-    assert "slot=`work/project_manager_2`" in log_file.read_text(encoding="utf-8")
 
 
-def test_run_single_slot_row_threads_that_slot_and_its_cwd(handoff, tmp_path):
-    """슬롯 행 1개인 홈 → 실행 슬롯 = 그 행의 `slot` · 회귀cwd = 그 작업 폴더.
-
-    "행이 없으니 이 트리겠지" 폴백이 아니라 **행이 그 폴더를 가리켜서** 값이 나온다."""
-    # L1(ADR-0057 라이더) — worktree 디렉토리 부재 시 REPO 폴백을 피하려고 실제로 만든다.
-    (tmp_path / SLOT).mkdir(parents=True, exist_ok=True)
-    inst, log_file, captured = _bare_handoff_capturing_cwd(handoff, tmp_path)
-
-    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
-
-    assert rc == 0
-    assert inst._worktree_slot == SLOT
-    assert captured["cwd"] == str(tmp_path / SLOT)
 
 
 # ── 앵커 부재 fail-soft — step3 만 스킵, 핸드오프 완주 (T-0243·finance_dev D3) ──────
@@ -397,11 +218,20 @@ _PM_STATE_NO_ANCHOR = (
 
 
 def _make_handoff_with_state(handoff, tmp_path: Path, state_text: str):
-    """세션 식별 앵커가 없는 pm_state.md 를 *실재*하게 주입한 PmHandoff 인스턴스."""
+    """세션 식별 앵커가 없는 pm_state.md 를 *실재*하게 주입한 PmHandoff 인스턴스.
+
+    log 에는 이 task 의 직전 handoff entry 를 깔아 둔다 — 차수는 state 와 log 에서 함께
+    복구되므로, state 가 깨진 채택자도 log 가 있으면 차수(4차→5차)가 나오고 그제야 step3
+    앵커 부재가 드러난다(둘 다 없으면 차수 미해소로 그 앞에서 중단이다).
+    """
     log_file = tmp_path / "current.md"
     playbook_file = tmp_path / "pm_playbook.md"
     pm_state = tmp_path / "pm_state.md"
-    log_file.write_text("# log\n", encoding="utf-8")
+    log_file.write_text(
+        "# log\n\n## [2026-07-05] handoff | PM 4차 (task:alpha) → 다음 PM 세션\n\n"
+        "- 이 세션 박제 entries: (이 세션 박제 entry 없음)\n",
+        encoding="utf-8",
+    )
     playbook_file.write_text("# pm_playbook (no anchor)\n", encoding="utf-8")
     pm_state.write_text(state_text, encoding="utf-8")
     inst = handoff.PmHandoff(
@@ -410,6 +240,7 @@ def _make_handoff_with_state(handoff, tmp_path: Path, state_text: str):
         log_file=log_file,
         pm_playbook_file=playbook_file,
         pm_state_file=pm_state,
+        worktree_pool=_TaskPool(),
     )
     return inst, log_file, pm_state
 
@@ -423,7 +254,7 @@ def test_update_session_window_raises_when_anchor_absent(handoff):
     """부재 시 update_session_window 는 종전대로 ValueError (앵커 못 찾으면 지어내지 않음)."""
     with pytest.raises(ValueError):
         handoff.update_session_window(
-            _PM_STATE_NO_ANCHOR, session_num=5, date_str="2026-07-06", wave_summary="x"
+            _PM_STATE_NO_ANCHOR, 5, "2026-07-06", "요약"
         )
 
 
@@ -432,7 +263,7 @@ def test_run_failsoft_skips_step3_when_anchor_absent(handoff, tmp_path, capsys):
     inst, _, pm_state = _make_handoff_with_state(handoff, tmp_path, _PM_STATE_NO_ANCHOR)
     before = pm_state.read_text(encoding="utf-8")
 
-    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, dry_run=False, skip_pytest=True)
 
     assert rc == 0  # fail-soft — 전체 핸드오프가 죽지 않는다.
     err = capsys.readouterr().err
@@ -446,7 +277,7 @@ def test_run_failsoft_continues_remaining_steps_when_anchor_absent(handoff, tmp_
     """step3 스킵 이후에도 나머지 단계(log entry append·완료 메시지)는 진행한다."""
     inst, log_file, _ = _make_handoff_with_state(handoff, tmp_path, _PM_STATE_NO_ANCHOR)
 
-    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, dry_run=False, skip_pytest=True)
 
     assert rc == 0
     # step 2: log/current.md handoff entry skeleton 이 실제 append 됐다.

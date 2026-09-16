@@ -247,60 +247,8 @@ def _slot_checkpoint_fixture(mod, monkeypatch, tmp_path):
     return cwd
 
 
-def test_checkpoint_slot_identity_appends_canonical_header(tmp_path, monkeypatch):
-    """T-0686: cwd lease의 canonical slot은 task validator에 거부되지 않고 append된다."""
-    mod = _load_module("pm_log_t0686_slot_append")
-    cwd = _slot_checkpoint_fixture(mod, monkeypatch, tmp_path)
-
-    rc = mod.cmd_checkpoint(SimpleNamespace(
-        task=None, trigger="manual", cwd=str(cwd), breadcrumb=False,
-    ))
-
-    entries = mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]
-    assert rc == 0 and len(entries) == 1
-    assert entries[0][1].splitlines()[0] == (
-        f"## [{mod.datetime.date.today().isoformat()}] checkpoint | "
-        "(project_manager_1) — manual"
-    )
 
 
-def test_checkpoint_slot_header_round_trips_through_handoff_collector(
-    tmp_path, monkeypatch,
-):
-    """T-0686: pm_log 생산 slot entry를 pm_handoff가 같은 세션 기록으로 수집한다."""
-    mod = _load_module("pm_log_t0686_handoff_producer")
-    cwd = _slot_checkpoint_fixture(mod, monkeypatch, tmp_path)
-    args = SimpleNamespace(
-        task=None, trigger="manual", cwd=str(cwd), breadcrumb=False,
-    )
-    assert mod.cmd_checkpoint(args) == 0
-    log_text = mod.CURRENT_FILE.read_text(encoding="utf-8")
-
-    spec = importlib.util.spec_from_file_location(
-        "pm_handoff_t0686_consumer", PM_HANDOFF_PY,
-    )
-    handoff = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(handoff)
-
-    produced_header = mod.split_entries(log_text)[1][0][1].splitlines()[0]
-    assert handoff.collect_session_entries(log_text, None, "project_manager_1") == [
-        produced_header
-    ]
-
-    diagnostic = mod.build_checkpoint_entry(
-        None, "compaction", date="2026-08-15", session="project_manager_1",
-        ctx_band_checked=True, ctx_band_missed=True,
-        ctx_window_tokens=600_000, ctx_observed_tokens=30_000, harness="claude",
-    )
-    diagnostic_log = (
-        tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
-    )
-    diagnostic_log.parent.mkdir(parents=True)
-    diagnostic_log.write_text(_HEADER + diagnostic, encoding="utf-8")
-    mismatch = mod._latest_ctx_window_mismatch_section(
-        tmp_path, None, "project_manager_1",
-    )
-    assert mismatch is not None and "[ctx-window-mismatch]" in mismatch
 
 
 def test_cmd_checkpoint_unresolved_identity_fails_on_every_trigger(
@@ -335,22 +283,6 @@ def test_cmd_checkpoint_unresolved_identity_fails_on_every_trigger(
         assert mod.CURRENT_FILE.read_text(encoding="utf-8") == original
 
 
-def test_checkpoint_slot_compaction_dedups_same_boundary(tmp_path, monkeypatch):
-    """T-0686: slot 형상도 같은 compaction boundary를 중복 append하지 않는다."""
-    mod = _load_module("pm_log_t0686_slot_dedup")
-    cwd = _slot_checkpoint_fixture(mod, monkeypatch, tmp_path)
-    args = SimpleNamespace(
-        task=None, trigger="compaction", cwd=str(cwd),
-        session_id="harness-session", boundary_id="boundary-1", phase="pre",
-        breadcrumb=False,
-    )
-
-    assert mod.cmd_checkpoint(args) == 0
-    assert mod.cmd_checkpoint(args) == 0
-
-    entries = mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]
-    assert len(entries) == 1
-    assert "checkpoint | (project_manager_1) — compaction" in entries[0][1]
 
 
 def _freeform_task_checkpoint(mod, monkeypatch, tmp_path, *, register_task: bool):
@@ -398,17 +330,6 @@ def test_checkpoint_registered_freeform_task_name_is_not_misclassified_as_slot(
     assert "checkpoint | (task:foo_1) — manual" in entry
 
 
-def test_checkpoint_unregistered_slot_key_session_is_slot_axis(tmp_path, monkeypatch):
-    """등록 task 가 아닌 슬롯 키 session 은 slot 축이다 — slot 경로 이름과 어긋나도 그렇다.
-
-    옛 규칙은 정체성을 slot 경로 basename 과 대조해(`slot.name == identity`) 이 형상을 task 로
-    오분류했고, 그래서 경로에 이름이 없는 슬롯(PM 홈 자신을 가리키는 행)은 slot 축이 될 방법이
-    아예 없었다. 위 등록 케이스와 **장부 tasks 등록 여부만** 다르다(대조군).
-    """
-    mod = _load_module("pm_log_t0686_slotkey_session")
-    entry = _freeform_task_checkpoint(mod, monkeypatch, tmp_path, register_task=False)
-    assert "checkpoint | (foo_1) — manual" in entry
-    assert "task:foo_1" not in entry
 
 
 def test_build_checkpoint_entry_renders_ctx_window_mismatch_with_observation():

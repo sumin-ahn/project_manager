@@ -523,7 +523,7 @@ def test_role_rename_keeps_transport_identifiers_and_history():
 
     # 과거 codex 게이트가 낸 지적 인용은 엔진 주석의 히스토리다 — 인벤토리 대상이 아니다.
     history = TOOLS / "pm_handoff.py"
-    assert "codex 교차검증 must-fix" in history.read_text(encoding="utf-8")
+    assert "codex must-fix" in history.read_text(encoding="utf-8")
     assert history not in set(_active_pm_surfaces())
 
 

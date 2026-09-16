@@ -1933,7 +1933,9 @@ def _close_through_main(tf, base: Path, monkeypatch, argv: list[str],
     monkeypatch.setattr(tf, "TicketFinisher", lambda **kwargs: finisher)
     monkeypatch.setattr(tf, "_resolve_finish_slot", lambda repo, slot: (None, None))
 
-    rc = tf._main(argv)
+    # 이 대조의 축은 티켓형↔묶음형 동형이지 정체성 해소가 아니다 — 양쪽에 같은 좌표를 실어
+    # 무인자 해소(정체성 미해소 중단)를 축 밖으로 뺀다.
+    rc = tf._main([*argv, "--repo", "code", "--slot", "1"])
 
     return (rc, tuple(tuple(args) for args in env.board_calls),
             env.rounds_entries(), tuple(sorted(env.ledger().items())))

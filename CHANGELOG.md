@@ -50,6 +50,7 @@
 
 ### Removed
 
+- **핸드오프 슬롯 모드** — `pm-handoff --repo <repo> --slot <N>`·`--branch`·`--done`·`--session-seq`·`--wave-summary`·`--normalize-session-anchors` 를 지웠다. 세션 정체성이 task 하나이므로 종료 기록도 task 행 하나를 닫고, 작업 폴더 반납은 `pm-config release` 가 한다(세션 종료 ≠ 반납이라 핸드오프가 겸하던 자리다). 차수와 wave 요약은 사람이 대는 값이 아니라 회귀 게이트를 통과한 뒤 task pm_state 에서만 추론한다 — 예전에는 슬롯 경로에서 두 값을 필수로 받아 기록과 장부가 갈릴 수 있었다. `--task` 를 생략하면 현재 폴더의 대여 행 → 단일 활성 task 순으로 스스로 해소하고, 그래도 정할 수 없으면 쓸 자리를 지어내지 않고 멈춘다. 함께 사라진 것은 슬롯별 `pm_state`(`.local/slots/<slot>/pm_state.md`)와 그 legacy 이동, handoff entry 의 `worktree:` 줄과 그 줄을 읽던 부트스트랩의 재부착 경고, checkpoint 기록의 슬롯 정체성 태그, 그리고 슬롯의 세션 열림 표시를 내리던 프리미티브(`worktree_pool.close_slot_session`)다 — 세션 종료는 task 행 하나를 닫고, 슬롯의 열림 표시는 반납(`release`)이 내린다.
 - **부트스트랩 슬롯 모드** — `pm-bootstrap --repo <repo> --slot <N>` 진입과 인자 없는 슬롯 자동 선택을 지웠다. 세션 정체성은 task 하나라 진입은 `--task <이름>` 뿐이고 인자 없이 부르면 멈춘다. 자동 선택은 여러 task 가 각각 슬롯을 가진 홈에서 남의 슬롯을 골라 그 task 의 일을 이어받겠냐고 묻곤 했다. 함께 사라진 것은 multi-PM 정체성 표시(세션 `<repo>_<N>`·슬롯 카드·readonly 슬롯 카드), 첫 슬롯 배너, 슬롯 시대차 경고, 0단계의 슬롯 보호브랜치·기록↔live 판정(같은 판정을 task 보유 슬롯 전수 검증이 한다), 슬롯 pm_state 경로 안내다. 출하 스킬 카드도 `--task` 하나만 안내하고, opencode 커맨드 카드는 사용자가 준 인자를 실제로 넘긴다(`$ARGUMENTS`) — 예전에는 인자가 카드에 닿지 않아 `/pm-bootstrap --task <이름>` 이 인자 없는 호출로 떨어졌다.
 - **자동 stash** — 반납·강제 반납·강제 제거가 커밋 안 한 변경을 알리지 않고 stash 하던 동작이다. 공유 stash 목록에 조용히 쌓였다. 이제 모두 멈추고 stash 는 사용자가 직접 한다. git 등록 없이 남은 슬롯 폴더를 `--force` 로 지우던 경로도 없앴다(폴더는 사용자가 확인하고 지운다).
 - **슬롯 단위 기준점 `set-base` 와 그 기록** — 기준점을 슬롯 장부(`lease.git.base`)에 두던 방식이다. 슬롯을 반납할 때 장부의 git 기록이 통째로 지워져 기준점도 함께 사라졌고(반납 뒤 다시 빌린 슬롯은 기준점이 비었다), 슬롯 안에서 브랜치를 바꾸면 틀린 값이 남았다. 브랜치 단위 부모 기록으로 대체했다. `worktree_pool.py set-base`·`resolve_rebase_base` 가 사라졌고, 부트스트랩 0단계의 기준점 후보 제시도 없어졌다(도착 기록이 없으면 `record` 를 안내한다). 시대차 경고는 부모 브랜치 기준이고 repo 기본값으로 대신 비교하지 않는다.
@@ -66,6 +67,7 @@
 - 이 버전 전에 만든 브랜치에는 부모 기록이 없다. 현황에 `부모 기록 없음` 으로 보이고, 그 브랜치의 rebase 는 `--onto <부모>` 를 줘야 한다(성공하면 부모가 기록된다). 작업 슬롯 장부에 남은 옛 `git.base` 는 다음 도착 기록 때 빠진다.
 - `regression.min_collected` 가 남아 있는 `local.conf` 는 그대로 둬도 회귀가 막히지 않는다(그 키는 이제 읽히지 않는다). 갱신이 그 줄을 지운다.
 - 슬롯 쓰기 판정은 task 기록의 세션 ID 로 한다. 업그레이드 전에 열린 task 는 세션 ID 가 없어 그 세션의 슬롯 쓰기가 거부된다 — 세션마다 `pm_bootstrap.py --task <이름>` 을 다시 실행한다. codex 는 `.codex/hooks.json` 의 PreToolUse matcher 가 `^(Bash|apply_patch|collaborationspawn_agent)$` 여야 파일 쓰기 도구가 판정된다. 갱신이 이 파일을 바꾸지 않으므로 `pm-config sync-adapter-config --accept .codex/hooks.json` 으로 받는다.
+- 작업 폴더 장부에 `session` 이 옛 슬롯 표기(`<repo>_<N>`)로 남은 대여 행은 갱신(`pm-config update`)이 반납 상태로 옮긴다. 폴더와 그 안의 작업은 그대로이고 다음 `alloc` 이 같은 폴더를 다시 빌려준다 — 그 표기는 task 이름이 될 수 없어 남겨 두면 그 폴더에서 부트스트랩·핸드오프가 정체성을 해소하지 못한다.
 - 세션 살아있음 판정이 바뀌어 옛 세대가 남긴 열린 기록은 자동으로 회수되지 않는다. 관리자 화면의 [강제 닫기] 또는 `pm-config release <슬롯> --force` 로 사용자가 닫는다. 그 슬롯에 커밋하지 않은 변경이 있으면 강제 닫기도 멈추므로 먼저 커밋하거나 직접 stash 한다.
 
 ## [1.7.13] - 2026-09-04

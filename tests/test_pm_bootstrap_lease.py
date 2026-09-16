@@ -203,7 +203,6 @@ class FakeWorktreePool:
         self.alloc_calls: list[dict] = []
         self.bind_calls: list[dict] = []
         self.release_calls: list[dict] = []
-        self.closed_slots: list[str] = []
         self.current_branch_calls: list[str] = []
         self.release_raises_keyerror = False
         # 0단계(T-0351) 실재 검사가 통과하도록 사전 시드하는 **idle** 슬롯 — lean 테스트는 실재하는
@@ -335,11 +334,6 @@ class FakeWorktreePool:
             )
         return (_FakeTaskRecord(name, self._task_prefix), self._task_action)
 
-    def close_slot_session(self, slot):
-        """세션 열림 표시만 내리는 엔진 프리미티브 대역 — 대여는 그대로."""
-        self.closed_slots.append(slot)
-        return _FakeLease(slot, "A", "a5")
-
     def release(self, slot):
         # 엔진 시그니처 그대로 — 자동경로 인자(옛 require_clean)를 넘기면 TypeError 로 드러난다.
         self.release_calls.append({"slot": slot})
@@ -440,13 +434,6 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None, areas_text: str 
 # ── 5. handoff payload slot/branch 기록 ───────────────────────────────────────
 
 
-def test_handoff_skeleton_records_slot_branch(handoff):
-    """multi-PM 모드 — handoff entry skeleton 에 slot/branch 기록 줄이 들어간다."""
-    sk = handoff.build_handoff_log_skeleton(
-        session_num=9, date="2026-06-16", worktree_slot="work/A_2", branch="a5",
-    )
-    assert "- worktree: slot=`work/A_2`" in sk
-    assert "branch=`a5`" in sk
 
 
 def test_handoff_skeleton_solo_omits_slot_line(handoff):
@@ -500,70 +487,16 @@ def _make_handoff(handoff, tmp_path, *, worktree_pool=None, green_pytest=True):
     return inst, log_file, state_file
 
 
-# ── 6. handoff run --done → release ───────────────────────────────────────────
 
 
-def test_handoff_done_releases_slot(handoff, tmp_path, capsys):
-    """--done(작업완료) → worktree_pool.release 호출 (idle 반납·ADR-0013)."""
-    wp = FakeWorktreePool()
-    inst, _, _ = _make_handoff(handoff, tmp_path, worktree_pool=wp)
-    rc = inst.run(
-        session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
-        worktree_slot="work/A_2", user_ack="A_2", branch="a5", done=True,
-    )
-    assert rc == 0
-    # release 가 정확히 슬롯 하나로 호출됐다 (stash 자동경로 인자 없음).
-    assert wp.release_calls == [{"slot": "work/A_2"}]
 
 
-def test_handoff_done_requires_slot(handoff, tmp_path, capsys):
-    """--done 인데 슬롯 미지정 → 명시 에러(rc 1·release 안 함)."""
-    wp = FakeWorktreePool()
-    inst, _, _ = _make_handoff(handoff, tmp_path, worktree_pool=wp)
-    rc = inst.run(
-        session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
-        worktree_slot=None, branch=None, done=True,
-    )
-    assert rc == 1
-    assert wp.release_calls == []
 
 
-def test_handoff_no_done_does_not_release(handoff, tmp_path, capsys):
-    """--done 없이(세션종료/회전) handoff → release 안 함 (리스 유지·ADR-0013)."""
-    wp = FakeWorktreePool()
-    inst, log_file, _ = _make_handoff(handoff, tmp_path, worktree_pool=wp)
-    rc = inst.run(
-        session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
-        worktree_slot="work/A_2", user_ack="A_2", branch="a5", done=False,
-    )
-    assert rc == 0
-    # release 미호출 — 슬롯/브랜치는 handoff entry 에 기록만.
-    assert wp.release_calls == []
-    log_text = log_file.read_text(encoding="utf-8")
-    assert "- worktree: slot=`work/A_2`" in log_text
 
 
-def test_handoff_done_dry_run_does_not_release(handoff, tmp_path, capsys):
-    """--done --dry-run → release 실행 안 함 (예고만)."""
-    wp = FakeWorktreePool()
-    inst, _, _ = _make_handoff(handoff, tmp_path, worktree_pool=wp)
-    inst.run(
-        session_num=5, wave_summary="x", dry_run=True, skip_pytest=True,
-        worktree_slot="work/A_2", user_ack="A_2", branch="a5", done=True,
-    )
-    assert wp.release_calls == []
 
 
-def test_handoff_done_release_keyerror_soft(handoff, tmp_path, capsys):
-    """이미 release 된 슬롯(KeyError)은 무해하게 스킵(rc 0)."""
-    wp = FakeWorktreePool()
-    wp.release_raises_keyerror = True
-    inst, _, _ = _make_handoff(handoff, tmp_path, worktree_pool=wp)
-    rc = inst.run(
-        session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
-        worktree_slot="work/A_2", user_ack="A_2", branch="a5", done=True,
-    )
-    assert rc == 0
 
 
 # ── 8. 회전 재부착(resume) 연속성 ─────────────────────────────────────────────
@@ -604,71 +537,17 @@ def test_bootstrap_slot_below_one_rejected(bootstrap):
         bootstrap.main(["--repo", "X", "--slot", "-1"])
 
 
-def test_handoff_parser_worktree_flags(handoff):
-    """파서가 분해형 `--repo`/`--slot`(ADR-0057) + `--branch`/`--done` 조합을 받아들인다.
-
-    `worktree_slot`(=`work/<repo>_<N>`)은 이제 parser.parse_args() 직후가 아니라 `main()`
-    ingress 가 `_resolve_explicit_identity_slot` 로 파생하므로(T-0316), 이 parser-레벨 테스트는
-    분해 필드(`repo`/`slot`)까지만 검증한다."""
-    parser = handoff.build_parser()
-    ns = parser.parse_args(
-        ["--session-seq", "5", "--wave-summary", "x",
-         "--repo", "A", "--slot", "2", "--branch", "a5", "--done"]
-    )
-    assert ns.repo == "A" and ns.slot == 2 and ns.branch == "a5" and ns.done is True
 
 
-def test_handoff_branch_without_slot_rejected(handoff):
-    """--branch 만(--repo/--slot 없이) → parser.error 거부 (조용히 무시 X·오용 축소).
-
-    슬롯 없는 브랜치는 회전 재부착 단서로 불완전 — 어느 슬롯에 재부착할지 모른다.
-    `--no-pytest`·`--dry-run` 을 함께 줘 가드가 없을 때(sensitivity)도 실 회귀·파일편집
-    없이 정상 종료하게 한다 — 그러면 parser.error 미발생이 단언 실패로 즉시 드러난다.
-    """
-    with pytest.raises(SystemExit):
-        handoff.main(
-            ["--session-seq", "5", "--wave-summary", "x",
-             "--branch", "a5", "--no-pytest", "--dry-run"],
-            identity_resolver=lambda: (_ for _ in ()).throw(
-                AssertionError("--branch 오류보다 identity 해소가 먼저 실행됨")
-            ),
-        )
 
 
-def test_handoff_branch_with_slot_accepted_by_parser(handoff):
-    """--branch + --repo/--slot(ADR-0057) 동반은 파서 통과 (main() 의 가드는 슬롯 없는 경우만 거부)."""
-    parser = handoff.build_parser()
-    ns = parser.parse_args(
-        ["--session-seq", "5", "--wave-summary", "x",
-         "--repo", "A", "--slot", "2", "--branch", "a5"]
-    )
-    assert ns.branch == "a5" and ns.repo == "A" and ns.slot == 2
 
 
 # ── 10. sensitivity — 배선 무력화 시 fail 재현 ─────────────────────────────────
 
 
-def test_sensitivity_done_must_release(handoff, tmp_path, capsys):
-    """sensitivity: --done 이 release 를 호출하지 않으면(배선 무력화) 이 단언이 깨진다."""
-    wp = FakeWorktreePool()
-    inst, _, _ = _make_handoff(handoff, tmp_path, worktree_pool=wp)
-    inst.run(
-        session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
-        worktree_slot="work/A_2", user_ack="A_2", branch="a5", done=True,
-    )
-    # 배선이 살아있으면 release 가 정확히 1회. (무력화 시 0회 → fail.)
-    assert len(wp.release_calls) == 1
 
 
-def test_sensitivity_no_done_must_not_release(handoff, tmp_path, capsys):
-    """sensitivity: --done 없는 handoff 가 실수로 release 를 호출하면(리스 파괴) 이 단언이 깨진다."""
-    wp = FakeWorktreePool()
-    inst, _, _ = _make_handoff(handoff, tmp_path, worktree_pool=wp)
-    inst.run(
-        session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
-        worktree_slot="work/A_2", branch="a5", done=False,
-    )
-    assert len(wp.release_calls) == 0
 
 
 # ── 11. _auto_slot — 단일 self-host 자동바인딩 판정 (Part B) ──────────────────
@@ -830,89 +709,24 @@ def _resolve(bootstrap, tmp_path, repos: list[str], lease_entries: list[dict] | 
     return bootstrap._resolve_session_slot(areas_file=areas, leases_file=leases)
 
 
-def test_resolve_session_slot_single_self_host(bootstrap, tmp_path):
-    """repo 1개 + 슬롯 `{1}` → (repo, 1) (현행 단일 self-host 보존)."""
-    got = _resolve(bootstrap, tmp_path, ["project_manager"],
-                   [_lease("project_manager", 1)])
-    assert got == ("project_manager", 1)
 
 
-def test_resolve_session_slot_default_1_when_slot1_present(bootstrap, tmp_path):
-    """repo 1개 + 슬롯 `{1,2}` → (repo, 1) (slot1 존재 → default-1·모호 아님)."""
-    got = _resolve(bootstrap, tmp_path, ["project_manager"],
-                   [_lease("project_manager", 1), _lease("project_manager", 2)])
-    assert got == ("project_manager", 1)
 
 
-def test_resolve_session_slot_sole_non1_slot(bootstrap, tmp_path):
-    """repo 1개 + 슬롯 `{3}`(단독·1 아님) → (repo, 3) (단독 규칙·현행 `_3`-only 보존)."""
-    got = _resolve(bootstrap, tmp_path, ["project_manager"],
-                   [_lease("project_manager", 3)])
-    assert got == ("project_manager", 3)
 
 
-def test_resolve_session_slot_zero_repos_fails_loud(bootstrap, tmp_path):
-    """등록 repo 0개(셋업 전) → SlotResolutionError — 조용한 폴백 없이 셋업/명시를 요구한다."""
-    with pytest.raises(bootstrap.SlotResolutionError) as exc:
-        _resolve(bootstrap, tmp_path, [], [_lease("project_manager", 1)])
-    assert "등록 repo 0개" in str(exc.value)
 
 
-def test_resolve_session_slot_repo1_no_slots_fails_loud(bootstrap, tmp_path):
-    """repo 1개지만 그 repo 슬롯 0개 → SlotResolutionError(작업 폴더 생성 안내)."""
-    with pytest.raises(bootstrap.SlotResolutionError) as exc:
-        _resolve(bootstrap, tmp_path, ["project_manager"], [])
-    assert "작업 폴더가 없다" in str(exc.value)
-    assert "pm-config worktree add project_manager --user-ack project_manager" in str(exc.value)
 
 
-def test_resolve_session_slot_missing_leases_fails_loud(bootstrap, tmp_path):
-    """repo 1개 + 장부 부재 → SlotResolutionError(등록 전 홈은 조용히 넘어가지 않는다)."""
-    with pytest.raises(bootstrap.SlotResolutionError):
-        _resolve(bootstrap, tmp_path, ["project_manager"], None)
 
 
-def test_resolve_session_slot_corrupt_leases_fails_loud(bootstrap, tmp_path):
-    """repo 1개 + 깨진 JSON 장부 → SlotResolutionError(행 수를 모르면 지어내지 않는다)."""
-    areas = tmp_path / "areas.md"
-    leases = tmp_path / "worktree-leases.json"
-    _write_areas(areas, ["project_manager"])
-    leases.write_text("{not valid json", encoding="utf-8")
-    with pytest.raises(bootstrap.SlotResolutionError):
-        bootstrap._resolve_session_slot(areas_file=areas, leases_file=leases)
 
 
-def test_resolve_session_slot_two_repos_fails_loud(bootstrap, tmp_path):
-    """등록 repo ≥2 (no --repo) → SlotResolutionError (fail-loud·--repo 안내)."""
-    with pytest.raises(bootstrap.SlotResolutionError) as exc:
-        _resolve(bootstrap, tmp_path, ["A", "B"], [_lease("A", 1)])
-    msg = str(exc.value)
-    assert "repo 2개" in msg
-    assert "--repo" in msg
 
 
-def test_resolve_session_slot_slot1_absent_nonsole_fails_loud(bootstrap, tmp_path):
-    """repo 1개 + 슬롯 `{2,3}`(1 부재·비단독) → SlotResolutionError (fail-loud·--slot 안내)."""
-    with pytest.raises(bootstrap.SlotResolutionError) as exc:
-        _resolve(bootstrap, tmp_path, ["project_manager"],
-                 [_lease("project_manager", 2), _lease("project_manager", 3)])
-    msg = str(exc.value)
-    assert "슬롯 2개" in msg
-    assert "--slot" in msg
 
 
-def test_resolve_session_slot_no_silent_fallback_sensitivity(bootstrap, tmp_path):
-    """sensitivity — 모호 케이스가 *조용히* (repo,N)/None 으로 폴백하면 fail.
-
-    `{2,3}`(1 부재·비단독)은 명시 에러여야 한다. 침묵 폴백(returns 대신)이면 이 테스트가
-    잡는다 — fail-loud 가 실제로 발화함을 입증(에러 안 나면 실패)."""
-    raised = False
-    try:
-        _resolve(bootstrap, tmp_path, ["project_manager"],
-                 [_lease("project_manager", 2), _lease("project_manager", 3)])
-    except bootstrap.SlotResolutionError:
-        raised = True
-    assert raised, "모호 케이스가 명시 에러 없이 조용히 폴백했다 (침묵 무력화 회귀)"
 
 
 # ── 11c. idle(반납) 슬롯 필터 — leased 만 라우팅 (codex must-fix·ADR-0035 활성 연속성) ──
@@ -920,59 +734,18 @@ def test_resolve_session_slot_no_silent_fallback_sensitivity(bootstrap, tmp_path
 # 가 state=="leased" 만 센다. idle 은 죽은 세션이라 자동바인딩/연속성 대상이 아니다.
 
 
-def test_resolve_session_slot_idle_slot1_routes_to_leased_slot2(bootstrap, tmp_path):
-    """`{1:idle, 2:leased}` → (repo, 2) — idle 슬롯1 아니라 *활성* 슬롯2 (핵심 must-fix)."""
-    got = _resolve(bootstrap, tmp_path, ["project_manager"],
-                   [_lease("project_manager", 1, "idle"),
-                    _lease("project_manager", 2, "leased")])
-    assert got == ("project_manager", 2)
 
 
-def test_resolve_session_slot_idle_slot2_keeps_leased_slot1(bootstrap, tmp_path):
-    """`{1:leased, 2:idle}` → (repo, 1) — 활성 슬롯1 (idle 2 제외·default-1)."""
-    got = _resolve(bootstrap, tmp_path, ["project_manager"],
-                   [_lease("project_manager", 1, "leased"),
-                    _lease("project_manager", 2, "idle")])
-    assert got == ("project_manager", 1)
 
 
-def test_resolve_session_slot_both_leased_default_1(bootstrap, tmp_path):
-    """`{1:leased, 2:leased}`(둘 다 활성) → (repo, 1) — default-1 의도 유지."""
-    got = _resolve(bootstrap, tmp_path, ["project_manager"],
-                   [_lease("project_manager", 1, "leased"),
-                    _lease("project_manager", 2, "leased")])
-    assert got == ("project_manager", 1)
 
 
-def test_resolve_session_slot_all_idle_fails_loud(bootstrap, tmp_path):
-    """`{1:idle, 2:idle}`(활성 없음) → SlotResolutionError(활성 슬롯 0개와 같은 판정)."""
-    with pytest.raises(bootstrap.SlotResolutionError):
-        _resolve(bootstrap, tmp_path, ["project_manager"],
-                 [_lease("project_manager", 1, "idle"),
-                  _lease("project_manager", 2, "idle")])
 
 
-def test_resolve_session_slot_single_leased_unchanged(bootstrap, tmp_path):
-    """`{1:leased}` → (repo, 1) — 단일 활성 슬롯 불변(idle 필터가 이 형상을 안 깸·재확인)."""
-    got = _resolve(bootstrap, tmp_path, ["project_manager"],
-                   [_lease("project_manager", 1, "leased")])
-    assert got == ("project_manager", 1)
 
 
-def test_resolve_session_slot_duplicate_entries_dedup(bootstrap, tmp_path):
-    """같은 슬롯 N 중복 장부 엔트리(2행) → "1 슬롯" 으로 정상 (dedup·codex suggestion)."""
-    got = _resolve(bootstrap, tmp_path, ["project_manager"],
-                   [_lease("project_manager", 3, "leased"),
-                    _lease("project_manager", 3, "leased")])
-    assert got == ("project_manager", 3)  # dedup 없으면 "슬롯 2개"→fail-loud 오진.
 
 
-def test_resolve_session_slot_state_absent_treated_leased(bootstrap, tmp_path):
-    """state 키 부재 엔트리 → leased 로 취급 (back-compat·worktree_pool from_dict default)."""
-    got = _resolve(bootstrap, tmp_path, ["project_manager"],
-                   [{"slot": "work/project_manager_1", "repo": "project_manager",
-                     "session": "project_manager_1"}])  # state 키 없음.
-    assert got == ("project_manager", 1)
 
 
 # ── _auto_slot idle 필터 영향 (공유 헬퍼·의도된 변화·codex 영향 분석) ──────────
@@ -1452,7 +1225,6 @@ def _handover_home(bootstrap, tmp_path, monkeypatch):
 
     wp.live_branch_override["work/X_7"] = "task/x-7"
     wp.task_pm_state_file = lambda name: tmp_path / "tasks" / name / "pm_state.md"
-    wp.slot_pm_state_file = lambda slot: tmp_path / "slots" / slot / "pm_state.md"
 
     inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
     inst._log_file.write_text(

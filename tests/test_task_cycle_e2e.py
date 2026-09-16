@@ -315,9 +315,9 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, capsys):
     regressed_slots: list[str] = []
 
     def _fake_pytest():
-        # `_run_regression_for_slot` 이 self._worktree_slot 을 그 슬롯으로 세팅 후 호출 —
+        # `_run_regression_for_slot` 이 self._regression_slot 을 그 슬롯으로 세팅 후 호출 —
         # 어느 슬롯이 회귀 대상인지 관찰(변경 슬롯만 회귀 검증).
-        regressed_slots.append(handoff._worktree_slot)
+        regressed_slots.append(handoff._regression_slot)
         return 0, "1 passed in 0.01s\n"
 
     handoff = handoff_mod.PmHandoff(
@@ -329,8 +329,7 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, capsys):
         worktree_pool=wp,
         # pm_state_file 미주입 — task 모드(task_mode=True)가 per-task pm_state 를 자체 해소.
     )
-    rc = handoff.run(session_num=1, wave_summary="사이클 e2e", dry_run=False, user_ack="cyc",
-                     skip_pytest=False, task=task)
+    rc = handoff.run(task, dry_run=False, user_ack="cyc", skip_pytest=False)
     assert rc == 0, "핸드오프 실패"
     out3 = capsys.readouterr().out
 

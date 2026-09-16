@@ -2,15 +2,11 @@
 """PM 핸드오프 7단계 자동화 헬퍼 — PM 세션 종료 시 기계 측정·편집 부분을 한 명령으로 묶는다.
 
 사용:
-    venv/bin/python .project_manager/tools/pm_handoff.py --task <이름> --user-ack <이름>
-
-slot 경로:
-    venv/bin/python .project_manager/tools/pm_handoff.py \\
-      --session-seq <N차> \\
-      [--repo <name> [--slot <N>]] \\
-      --wave-summary "<wave 1~3 한 줄 요약>" \\
-      --user-ack <repo_N> \\
+    venv/bin/python .project_manager/tools/pm_handoff.py --task <이름> --user-ack <이름> \\
       [--dry-run] [--no-pytest] [--ack-dirty "<사유>"] [--force-handoff]
+
+    `--task` 를 생략하면 cwd 작업 폴더 → 단일 활성 task 순으로 스스로 해소하고, 그래도 정할
+    수 없으면 중단한다. 차수와 wave 요약은 인자가 아니다 — task pm_state 에서만 추론한다.
 
     --dry-run 미리보기는 쓰기 0이라 --user-ack 없이 허용한다. 실제 핸드오프는 대상값에
     결속된 사용자 명시 승인 토큰이 필요하다.
@@ -20,9 +16,8 @@ slot 경로:
      **어떤 mutation 보다 먼저·회귀보다도 먼저** 중단(판정은 git 조회 몇 번). override =
      `--ack-dirty "<사유>"`(사유는 entry 에 박제). `--auto-trigger`는 사용자 명시 핸드오프
      호출부의 호환 신호일 뿐 독자 실행 권한이 아니며, ack 계약을 우회하지 않는다.
-     핸드오프가 다룰 슬롯(`--done` 반납 대상·task 보유 슬롯)의 커밋 안 한 변경은 사용자에게
-     "커밋할까요? 강제 핸드오프할까요?" 를 묻고 멈춘다 — 넘는 수단은 `--force-handoff`(기록만·
-     그 슬롯 반납 안 함·entry 에 슬롯 유지 기록) 하나다.
+     task 가 보유한 작업 폴더의 커밋 안 한 변경은 사용자에게 "커밋할까요? 강제 핸드오프할까요?"
+     를 묻고 멈춘다 — 넘는 수단은 `--force-handoff`(기록만·변경은 제자리·entry 에 기록) 하나다.
   1. 회귀 측정 — 게이트는 areas.md(prefix 행 > repo 행) > local.conf test.cmd 로 해소하고,
      해소 실패면 pytest tests/ -q. red 면 즉시 중단·핸드오프 불가(비-pytest 게이트는 exit
      code 로 판정 — §회귀 게이트 해소).
@@ -194,7 +189,6 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 REPO = Path(__file__).resolve().parents[2]
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 PM_PLAYBOOK_FILE = REPO / ".project_manager" / "wiki" / "pm_playbook.md"  # 정적 — 인계 프롬프트 템플릿 추출용
-PM_STATE_FILE = REPO / ".project_manager" / "wiki" / "pm_state.md"       # legacy 단일 경로 (별칭·아래 _legacy_pm_state_file 가 호출시점 REPO 추종·마이그레이션 원천)
 TICKETS_DIR = REPO / ".project_manager" / "wiki" / "tickets"             # board 현황 카운트 legacy 별칭 (아래 _tickets_dir 가 추종)
 TOOLS_DIR = REPO / ".project_manager" / "tools"                          # worktree_pool 동적 로드 앵커 (multi-PM 모드)
 # 회귀 cwd 자동해소— board.py·pm_bootstrap.py 와 *같은 위치*. _regression_cwd 가
@@ -353,15 +347,13 @@ def _areas_file() -> Path:
     return REPO / ".project_manager" / "areas.md"
 
 
-# ── worktree_pool import seam (multi-PM 모드) ───────────────────────────
-# multi-PM 인자(--slot)를 받았을 때만 lease 라이프사이클(release)에 진입한다. 슬롯 미지정
-# 무인자 경로는 이 모듈을 전혀 쓰지 않으므로 import 실패가 무해(fail-soft) — 단
-# --done --slot 을 줬는데 worktree_pool 이 없으면 **명시 에러**(침묵 무력화 금지).
+# ── worktree_pool import seam ───────────────────────────
+# task 장부·슬롯 git 재스냅·세션 종료 기록이 이 모듈을 쓴다. 부재는 각 소비 지점이 자기
+# 관례(fail-soft skip / fail-loud 중단)로 판정한다.
 def _load_worktree_pool():
     """worktree_pool 모듈을 동적 로드한다. 부재/로드 실패 시 None (fail-soft).
 
     pm_bootstrap._load_worktree_pool 과 동형 — REPO/tools 스크립트-위치 앵커.
-    slot 미지정에선 호출 안 되거나 None 이어도 무해.
     """
     wp_path = TOOLS_DIR / "worktree_pool.py"
     if not wp_path.exists():
@@ -607,246 +599,26 @@ def _regression_cwd(
     return str(repo_root)
 
 
-# ── per-slot pm_state 경로 해소 (multi-PM 연속성) ─────────
-# pm_state 는 *슬롯별*이다 — 여러 PM 슬롯이 한 clone 의 공유 보드 위에서 각자 핸드오프
-# 연속성(세션 식별 sliding window·진행 중 결정)을 유지해야 하므로, 슬롯마다 별도
-# pm_state 를 둔다. 경로 = `.project_manager/.local/slots/<slot>/pm_state.md`
-# (gitignored·per-slot). slot 키 = lease 장부 슬롯과 동형(`<repo>_<N>`) — `_regression_cwd`·
-# `_auto_slot`의 단일 self-host 바인딩과 같은 식별자를 재사용한다.
-#
-# graceful 마이그레이션:
-#   - 슬롯이 해소되고(`<repo>_<N>`) slot 경로가 아직 없는데 legacy `wiki/pm_state.md` 가
-#     있으면, 첫 접근 시 slot 경로로 **이동**(per-slot 화 일회성 마이그레이션).
-#   - 슬롯 해소돼도 slot 경로 부재 + legacy 부재면(드문 엣지) slot 경로가 정식 위치다.
-#   - 슬롯 미해소면 쓸 자리를 모른다 — 지어내지 않고 fail-loud 한다(legacy 목적지 없음).
-
-# 동적 별칭(_legacy_pm_state_file)으로 PM_STATE_FILE 을 추종 — 테스트가 monkeypatch 로
-# REPO 를 바꿔도 import 시점에 굳은 PM_STATE_FILE 대신 *호출 시점* legacy 경로를 본다.
-def _legacy_pm_state_file() -> Path:
-    """legacy 단일 pm_state 경로 (`wiki/pm_state.md`·clone당 1개·**마이그레이션 원천**).
-
-    per-slot 경로가 정식 위치이고 이 경로는 그리로 옮겨 갈 원본일 뿐이다 — 해소 결과가
-    아니다(미해소의 목적지로 쓰지 않는다).
-    """
-    return REPO / ".project_manager" / "wiki" / "pm_state.md"
-
-
-def _slots_root() -> Path:
-    """per-slot 상태 디렉토리 루트 (`.project_manager/.local/slots/`·gitignored)."""
-    return REPO / ".project_manager" / ".local" / "slots"
-
-
+# ── task pm_state 경로 (세션 연속성 앵커) ─────────
 def _task_pm_state_file(task: str) -> Path:
     """task 서술 공간 pm_state 경로 (`.local/tasks/<task>/pm_state.md`).
 
     세션 종료(핸드오프)의 연속성 앵커가 slot→task 로 이동한 task 모드에서 pm_state 를 여기
     기록한다. worktree_pool.task_dir(name)/pm_state.md 의 미러 — 모듈 격리라 cross-import
-    대신 REPO 파생으로 동형화한다(`_slots_root` 와 같은 관례·monkeypatch(REPO) 추종·hermetic)."""
+    대신 REPO 파생으로 동형화한다(monkeypatch(REPO) 추종·hermetic)."""
     return REPO / ".project_manager" / ".local" / "tasks" / task / "pm_state.md"
 
 
-# canonical 슬롯 키(`<repo>_<N>`)에서 trailing 숫자(`<N>`)를 뽑는다 — divergent bare dir
-# (`slots/<N>`) 존재 여부를 판단하는 backfill 마이그레이션에서 재사용.
-_SLOT_TRAILING_NUM_RE = re.compile(r"^.+_(\d+)$")
 
 
-def _backfill_divergent_slot_dir(slot: str) -> None:
-    """divergent bare 슬롯 dir(`slots/<N>`)을 canonical `slots/<repo>_<N>` 로 1회 이동한다.
-
-    write-side 가 과거 bare 토큰(`--slot 4`)을 verbatim 슬롯 키로 써 `slots/<N>` 을 만든
-    잔재가 있으면, 이번 진입에서 canonical `slots/<repo>_<N>`(`slot`)으로 **backfill**
-    한다(prefer-data-migration-over-fallback — 런타임 폴백 누적 대신 원천 정합). guarded:
-
-      - `slot` 이 `<repo>_<N>` 형식이 아니면(trailing 숫자 없음) no-op.
-      - bare dir(`slots/<N>`)이 없으면 no-op(정상 케이스·이미 정합).
-      - canonical dir(`slots/<repo>_<N>`)이 **이미 있으면** 안전하게 스킵(덮어쓰지 않음 — 두
-        dir 이 동시에 있는 드문 엣지는 canonical 이 우선·bare 는 그대로 둬 데이터 유실 방지).
-      - bare dir 안에 `pm_state.md` 가 있으면 canonical dir 로 이동(부모 생성)하고, bare dir 이
-        비면 정리한다(빈 dir 이 아니면 남겨둔다 — 예상 밖 파일 보존).
-
-    예외/실패는 전부 fail-soft(무해) — 마이그레이션은 편의 backfill 이지 강제 아니다.
-    """
-    m = _SLOT_TRAILING_NUM_RE.match(slot)
-    if not m:
-        return
-    bare = m.group(1)
-    if bare == slot:
-        return  # slot 이 그 자체로 bare 숫자(레포 접두어 없음) — 대상 아님.
-    slots_root = _slots_root()
-    bare_dir = slots_root / bare
-    canonical_dir = slots_root / slot
-    try:
-        if not bare_dir.is_dir() or canonical_dir.exists():
-            return
-        bare_state = bare_dir / "pm_state.md"
-        if not bare_state.exists():
-            return
-        canonical_dir.mkdir(parents=True, exist_ok=True)
-        bare_state.replace(canonical_dir / "pm_state.md")
-        try:
-            next(bare_dir.iterdir())
-        except StopIteration:
-            bare_dir.rmdir()  # 비었으면 정리(예상 밖 잔여 파일이 있으면 남겨둠).
-    except OSError:  # noqa: BLE001 — fail-soft: 마이그레이션 실패는 무해(다음 접근 시 재시도).
-        return
 
 
-def _resolve_state_slot(
-    worktree_slot: str | None = None,
-    areas_file: Path | None = None,
-    leases_file: Path | None = None,
-) -> str | None:
-    """pm_state slot 키(`<repo>_<N>`)를 해소한다 — 명시 슬롯 우선·없으면 guarded default-1 자동.
-
-    해소 순서:
-      - `worktree_slot`이 있으면 relative/absolute 경로의 basename을 canonical
-        `<repo>_<N>` 으로 파싱해 슬롯 키로 쓰고, 비정형 basename이면 **None**.
-      - 없으면 bootstrap `_resolve_session_slot`(guarded default-1) 으로 자동해소 →
-        `<repo>_<N>`. `{1,2}`→slot 1·`{3}`-sole→slot 3·단일 self-host→그것.
-      - 그것도 없으면(판정 불능) **None** — 호출부가 미해소로 다룬다(경로를 지어내지 않는다).
-
-    `--repo`/`--slot` 명시 입력은 `main()` ingress(`_resolve_explicit_identity_slot`)가
-    repo-qualified 경로로 조립한다. 암묵 lease 입력은 실제 상대/absolute 경로일 수 있으므로,
-    이 함수가 두 입력 모두의 basename을 canonical 슬롯 키로 정규화한다.
-
-    **continuity(세션-window read/write) 정합**: `_auto_slot`
-    (exactly-1)은 `{1,2}` 를 None 으로 떨궈 *없는 legacy* 로 새서 slot 1 연속성을 끊었다 —
-    run() 가드는 `_resolve_session_slot`(default-1)로 "slot 1" 통과시키는데 write 는 legacy 로
-    가는 split. continuity 해소도 같은 `_resolve_session_slot`(default-1)을 경유해 정합시킨다.
-    `SlotResolutionError`(진짜 모호·`{2,3}`·repo≥2)는 **catch → None**(display/preview fail-soft
-    보존) — write 경로는 run() 가드가 이미 fail-loud 로 막아 도달 안 한다(방어적).
-
-    `_resolve_session_slot` 은 동적 로드해 재사용(DRY·복붙 금지). `areas_file`/`leases_file`
-    미지정이면 *호출 시점* `_areas_file()`(board_root 추종)·REPO 기준으로 해소한다 — 모듈 default
-    상수가 import 시점에 굳지 않게 None 으로 받아 monkeypatch 된 REPO 를 추종(hermetic).
-    """
-    if worktree_slot:
-        # 실제 lease 경로(상대/absolute)여도 **장부 행이 그 슬롯에 준 정체성**을 상태 키로 쓴다
-        # (장부 미등록이면 pool 명명 규약의 경로 마디 — `_slot_identity`).
-        identity = _slot_identity(worktree_slot, leases_file)
-        return identity.key if identity is not None else None
-    if areas_file is None:
-        areas_file = _areas_file()
-    if leases_file is None:
-        # *호출 시점* REPO 기준 — 모듈 상수 LEASES_FILE 은 import 시점에 굳어 monkeypatch
-        # 된 REPO 를 안 추종(hermetic 테스트 갭). REPO 에서 재구성해 추종한다(_areas_file 동형).
-        leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
-    bp = _load_pm_bootstrap()
-    if bp is None:
-        return None
-    try:
-        # 좌표(`(repo, N)`)를 `f"{repo}_{N}"` 로 재조립하지 않는다 — 그 슬롯의 정체성은 장부가
-        # 준다(`_session_slot_identity`). 재조립은 장부가 다른 session 을 들고 있는 슬롯에서
-        # 명시 진입(`work/<...>` → 행 session)과 갈린 키를 내 상태/태그가 두 갈래로 갈렸다.
-        auto = bp._session_slot_identity(areas_file, leases_file)
-    except bp.SlotResolutionError:
-        # 진짜 모호(`{2,3}`·repo≥2) — display/preview 는 fail-soft(None→legacy 표기). 실제
-        # write 경로는 run() 가드가 이미 fail-loud 로 막았다(여기 도달=방어적).
-        return None
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 판정 실패는 None(legacy 폴백).
-        if _is_engine_rev_skew(exc):
-            raise
-        return None
-    return auto.key if auto is not None else None
 
 
-def _lease_slot_path_text(actual, repo: Path) -> str:
-    """lease 실제 슬롯 경로를 downstream/장부 표기(**POSIX 단일**)로 직렬화한다.
-
-    `repo` 안이면 그 상대 경로를, 밖이면 주어진 경로 자체를 쓴다(기존 우선순위 유지). 표기만
-    `str(path)` 가 아니라 `path.as_posix()` 다 — Windows 의 `str(WindowsPath("nested/A_1"))` 은
-    `nested\\A_1` 을 만들고, 그 값이 pm_state·handoff entry·다음 세션 인자로 흘러 같은 슬롯이
-    OS 를 건너 다른 문자열로 읽힌다(implicit identity 해소가 이 값을 문자열 비교한다). 경로를
-    파일시스템 호출에 넘기는 자리는 `Path` 그대로 두고 문자열화 지점만 POSIX 로 고정한다.
-
-    해소 실패(`resolve`/`relative_to` 오류)는 종전처럼 원본 경로 표기로 폴백한다(fail-soft).
-    """
-    try:
-        relative = actual.resolve(strict=False).relative_to(repo.resolve(strict=False))
-    except (OSError, ValueError):
-        return actual.as_posix()
-    return relative.as_posix()
-
-
-# ── session-entry guarded 슬롯해소 (멀티-PM 모호 → fail-loud + 실행 슬롯 threading) ──
-# bare handoff(`--repo`/`--slot` 미지정)는 *어느 슬롯의* 연속성을 이어야 하는지 명확해야 한다.
-# 멀티-PM 셋업이 모호(등록 repo ≥2·한 repo 슬롯 ≥2 중 slot1 부재)하면, 없는 legacy `wiki/pm_state.md`
-# 명시 에러로 중단한다.
-#
-# **단일 해소로 통일(codex round2 must-fix)**: 이 함수가 가드 단계서 슬롯을 *한 번* 해소해 실행
-# 슬롯(`worktree_slot`)으로 thread 한다 — run() 이 결과를 `self._worktree_slot` 에 박으면
-# downstream 전부(pm_state `_pm_state_path`·회귀/출하 cwd `_regression_cwd`·handoff entry `worktree_slot`
-# 필드)가 *명시 슬롯 우선* 경로로 **같은** 슬롯을 일관되게 쓴다(이미 다들 explicit slot 우선). 이전의
-# "continuity=default-1 / 회귀cwd=REPO 폴백" 비대칭은 self-split(홈엔 tests/ 없음)에서 회귀를 엉뚱한
-# REPO 에서 돌려 깨졌다 — 회귀를 *활성 worktree* 서 돌리려던 목적과 정합시킨다.
-# 판정은 bootstrap `_resolve_session_slot`(idle 필터·default-1) 재사용(DRY·동적 로드).
-def _resolve_session_worktree_slot(
-    worktree_slot: str | None = None,
-    areas_file: Path | None = None,
-    leases_file: Path | None = None,
-) -> tuple[str | None, str | None]:
-    """bare handoff 의 실행 슬롯을 해소한다 — `(resolved_slot, error_msg)`.
-
-    반환:
-      - `(worktree_slot, None)` — `worktree_slot` 인자가 이미 주어져 있으면 그대로(downstream
-        explicit 우선). 이 함수엔 `main()` ingress 가 `--repo`/`--slot`을
-        `_resolve_explicit_identity_slot` 으로 이미 `work/<repo>_<N>` canonical 화한 값만
-        도달한다는 전제 — 여기서 재정규화하지 않는다(정규화를 소비자마다 스레딩하면 새 소비자가
-        생길 때마다 재발하는 두더지잡기 — 입구 단일화가 근본).
-      - `(None, None)` — 판정 불능(bootstrap 사본 부재·판정 실패). 호출부 폴백 유지.
-      - `(resolved_lease_path, None)` — default-1/단독/idle-필터 후 활성 슬롯으로 해소.
-        장부의 실제 상대 경로(`nested/A_1` 포함) 또는 absolute 경로를 우선하고, 경로 보강에
-        실패하면 canonical `work/<repo>_<N>` 으로 폴백한다. run() 이 이 값을
-        `self._worktree_slot` 에 박아 pm_state·회귀cwd·entry 가 같은 슬롯을 쓴다.
-      - `(None, error_msg)` — 진짜 모호(`{2,3}`·repo≥2). run() 이 surface 하고 중단(fail-loud).
-
-    `_resolve_state_slot`(incidental·display/preview 에서도 쓰임)은 동작 유지(None·fail-soft)하고,
-    *오직 session-entry* 인 이 함수만 모호를 loud 로 만들고 실행 슬롯을 thread 한다 — bootstrap 을
-    모호함으로 crash 시키지 않는다. `areas_file`/`leases_file` 미지정이면 *호출 시점* REPO 기준
-    해소(monkeypatch 추종·hermetic).
-    """
-    if worktree_slot:
-        return worktree_slot, None
-    if areas_file is None:
-        areas_file = _areas_file()
-    if leases_file is None:
-        leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
-    bp = _load_pm_bootstrap()
-    if bp is None:
-        return None, None  # bootstrap 부재 → 판정 불가·현행 폴백(fail-soft).
-    try:
-        auto = bp._session_slot_identity(areas_file, leases_file)
-    except bp.SlotResolutionError as exc:
-        return None, str(exc)  # 진짜 모호 → fail-loud.
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 판정 실패는 현행 폴백(모호 아님).
-        if _is_engine_rev_skew(exc):
-            raise
-        return None, None
-    if auto is None:
-        return None, None  # 판정 불능 → 현행 폴백.
-    # 실행 슬롯 경로는 **장부 행의 slot 값**이다(`_session_slot_identity` 가 좌표→행 경로까지
-    # 해소한다) — 번호로 `work/<repo>_<N>` 을 재조립하면 장부가 다른 경로로 들고 있는 슬롯에서
-    # 없는 cwd 가 나온다. 외부 absolute slot 은 absolute 그대로 downstream 에 thread 하되 PM 홈
-    # 안이면 상대 표기를 보존한다(생산자 pm_log._lease_slot_path 와 같은 표기 규칙).
-    slot = auto.slot
-    if not slot:
-        return None, None
-    try:
-        actual = Path(slot)
-        if actual.is_absolute():
-            return _lease_slot_path_text(actual, REPO), None
-    except (OSError, ValueError):  # 표기 이상은 값 그대로 thread(fail-soft·현행 폴백 동형).
-        return slot, None
-    # PM 홈 상대 표기는 **POSIX 단일**로 정규화해 downstream 에 thread 한다 — 같은 슬롯이 OS 를
-    # 건너 다른 문자열로 읽히면 암묵 정체성 해소가 문자열 대조에서 갈린다(`_lease_slot_path_text`
-    # 와 같은 표기 규칙).
-    return identity_args.normalize_slot_value(slot), None
-
-
-# ── 명시 `--repo`/`--slot` → 실행 슬롯 (라이더) ──────────
-# `main()` ingress 가 `identity_args.parse_identity(args)` 로 얻은 discriminated 결과에서
-# repo/slot 두 필드만 뽑아 이 함수에 넘긴다 — CLI 파싱과 리스-조인 검증을 분리해 ticket_finish
-# 도 (자기 `--repo`/`--slot` 파싱 후) 동일 함수를 재사용할 수 있게 한다(동적 로드·DRY).
+# ── 명시 `--repo`/`--slot` → actor 실행 슬롯 (board·ticket_finish 공용 seam) ──────────
+# 이 도구 자신은 쓰지 않는다 — 핸드오프 정체성은 task 하나다. board.py `regression`·
+# ticket_finish `_resolve_finish_slot` 이 자기 `--repo`/`--slot` 을 파싱한 뒤 리스-조인 검증을
+# 위해 동적 로드해 부른다(판정 복붙 0).
 def _resolve_explicit_identity_slot(
     repo: str | None,
     slot: int | None,
@@ -864,8 +636,7 @@ def _resolve_explicit_identity_slot(
         활성 슬롯 ≥2(`SlotResolutionError`)나 0개(미해소)는 모두 *명시 요청이 조인 안 된 것*이라
         와 같은 결로 `(None, error_msg)` (fail-loud) — repo 만 명시했는데 조용히 무관한
         auto-resolve 경로로 새는 것을 막는다.
-      - 둘 다 없음(`repo is None`) → `(None, None)` — 호출부가 기존 no-flag 자동해소
-        (`_resolve_session_worktree_slot(None, ...)`)로 이어간다(이 함수 관여 밖).
+      - 둘 다 없음(`repo is None`) → `(None, None)` — 호출부 관여 밖이다.
 
     `leases_file` 미지정이면 *호출 시점* REPO 기준으로 재구성한다(monkeypatch 추종·hermetic —
     다른 리스 해소 함수들과 동형).
@@ -908,69 +679,8 @@ def _resolve_explicit_identity_slot(
     return workspace.slot, None
 
 
-def _pm_state_path(
-    worktree_slot: str | None = None,
-    areas_file: Path | None = None,
-    leases_file: Path | None = None,
-    *,
-    migrate: bool = True,
-) -> Path:
-    """활성 슬롯의 pm_state 경로를 해소한다 (+graceful 마이그레이션).
-
-    경로 우선순위:
-      - 슬롯 미해소 → `identity_args.SlotResolutionError`(fail-loud — 쓸 자리를 지어내지 않는다).
-      - slot 경로(`.local/slots/<slot>/pm_state.md`) 이미 존재 → 그대로(이미 per-slot).
-      - slot 부재 + legacy 존재 → `migrate=True` 면 legacy → slot 으로 *이동* 후 slot 반환,
-        `migrate=False` 면 이동 없이 **legacy** 반환(현 읽기 위치·미리보기·부작용 0).
-      - slot·legacy 둘 다 부재(드문 엣지·fresh) → **slot 경로** 반환(정식 위치·쓰기 시 생성).
-
-    `migrate` 는 *파일 이동* 만 가른다(경로 우선순위는 동일). run() 은 진입부에서
-    `migrate=False`(읽기 위치만)로 호출하고, 모든 중단 게이트 통과 후 pm_state 첫 접촉 직전에만
-    `_migrate_legacy_pm_state` 로 실제 이동을 수행한다 — "중단 시 pm_state 무접촉" 보장 보존
-    (codex 교차검증 must-fix). dry-run 은 이동을 절대 하지 않는다(미리보기).
-
-    `migrate=True` 일 때만 divergent bare 슬롯 dir(`slots/<N>`) 도 canonical
-    `slots/<repo>_<N>` 로 backfill 한다— legacy 마이그레이션과 같은 타이밍(게이트
-    통과 후·첫 접촉 직전)이라 "중단 시 pm_state 무접촉" 보장을 그대로 지킨다.
-    """
-    slot = _resolve_state_slot(worktree_slot, areas_file, leases_file)
-    legacy = _legacy_pm_state_file()
-    if slot is None:
-        raise identity_args.SlotResolutionError(
-            "슬롯 정체성 미해소 — pm_state 를 어디에 읽고 쓸지 결정할 수 없다. "
-            f"`--repo <repo> --slot <N>` 으로 명시하라. {identity_args.NO_WORK_FOLDER_REMEDY}"
-        )
-    if migrate:
-        _backfill_divergent_slot_dir(slot)
-    slot_path = _slots_root() / slot / "pm_state.md"
-    if slot_path.exists():
-        return slot_path
-    if legacy.exists():
-        if not migrate:
-            # 이동 없이 현 읽기 위치(legacy)를 반환(진입부 target·미리보기·부작용 0).
-            return legacy
-        # graceful 마이그레이션 — legacy → slot 경로 이동(일회성·per-slot 화·atomic·동일 FS).
-        slot_path.parent.mkdir(parents=True, exist_ok=True)
-        legacy.replace(slot_path)
-        return slot_path
-    # slot 경로·legacy 둘 다 부재 — slot 경로를 정식 위치로 반환(쓰기 시 생성).
-    return slot_path
 
 
-def _migrate_legacy_pm_state(
-    worktree_slot: str | None = None,
-    areas_file: Path | None = None,
-    leases_file: Path | None = None,
-) -> Path:
-    """legacy `wiki/pm_state.md` 를 활성 슬롯 경로로 이동하고 최종 pm_state 경로를 반환한다.
-
-    `_pm_state_path(..., migrate=True)` 의 명시 별칭 — run() 이 **모든 중단
-    게이트(회귀·출하) 통과 후·pm_state 첫 접촉 직전**에 단 한 번 호출한다(트랜잭션 보장:
-    중단 시 pm_state 무접촉·codex must-fix). 멱등·비파괴(slot 이미 존재면 이동 안 함)·
-    legacy 부재면 이동 없이 slot 경로 반환(쓰기 시 생성). dry-run 경로는 이 함수를 호출하지
-    않는다(진입부 migrate=False target 을 그대로 읽음·미리보기·부작용 0).
-    """
-    return _pm_state_path(worktree_slot, areas_file, leases_file, migrate=True)
 
 
 def _probe_os_name() -> str:
@@ -1067,17 +777,6 @@ PENDING_INTENT_PLACEHOLDER = (
 )
 
 
-def _worktree_line(worktree_slot: str | None, branch: str | None) -> str:
-    """handoff entry 의 worktree slot/branch 기록 줄을 빌드한다 (회전 연속성).
-
-    multi-PM 모드에서 worktree_slot 이 주어지면 슬롯/브랜치를 한 줄로 기록한다 — 다음
-    bootstrap 이 회전 재부착(같은 슬롯 resume)할 때 연속성 단서가 된다. 미지정이면
-    빈 문자열을 반환해 줄 자체를 생략한다(현행 lean 스키마 100% 보존·하위호환).
-    """
-    if not worktree_slot:
-        return ""
-    branch_part = branch if branch else "(미지정)"
-    return f"- worktree: slot=`{worktree_slot}` · branch=`{branch_part}` (회전 재부착 단서)\n"
 
 
 # task 세션 정체성의 log 헤더 태그 sentinel — task 모드는 헤더 태그를 `(task:<name>)` 로
@@ -1299,7 +998,7 @@ HANDOFF_LOG_SKELETON_TEMPLATE = """\
 - 이 세션 박제 entries:{entries}
 - 메타 학습: <PM 손 — ticket 상태에서 도출 불가한 교훈만. 없으면 "없음".>
 - pending user intent: {pending_intent}
-{worktree_line}{dirty_ack_line}- 회귀/incident: <PM 손 — 회귀 "N passed / 상태" 1줄(green 도 — baseline) + 비-자명 incident. (회귀는 1줄 load-bearing 이라 항상 적음 — board/git/log 대량 재열거만 금지.)>
+{dirty_ack_line}- 회귀/incident: <PM 손 — 회귀 "N passed / 상태" 1줄(green 도 — baseline) + 비-자명 incident. (회귀는 1줄 load-bearing 이라 항상 적음 — board/git/log 대량 재열거만 금지.)>
 """
 
 # dirty-tree ack 박제 줄의 라벨 — `incident` 줄 관례를 따르되 기계-소유임을 라벨로 구분한다
@@ -1369,31 +1068,23 @@ def upsert_dirty_ack_line(entry_text: str, note: str, newline: str = "\n") -> st
 def build_handoff_log_skeleton(
     session_num: int | str,
     date: str | None = None,
-    worktree_slot: str | None = None,
-    branch: str | None = None,
     session: str | None = None,
     log_text: str = "",
     task: str | None = None,
-    collection_task: str | None = None,
     dirty_ack_note: str | None = None,
 ) -> str:
     """log/current.md 에 append 할 handoff entry skeleton 을 반환한다.
 
-    log_text와 collection_task(미지정 시 task)로 직전 자기 handoff 이후
-    complete/checkpoint 헤더를 자동 채운다.
-    worktree_slot 주입 시(multi-PM 모드) slot/branch 기록 줄을 추가한다 — 회전 재부착
-    연속성 단서. 미지정이면 줄 생략(현행 스키마 보존).
-    session 주입 시(multi-PM 정체성 해소·canonical `<repo>_<N>`) 헤더 차수 뒤에 `({session})`
-    정체성 태그를 박는다 — per-slot 시퀀스의 감사 단서(이벤트 메타·상태 저장 아님).
-    미지정이면 태그를 생략해 현행 헤더와 byte-호환이다.
+    log_text 와 task 로 직전 자기 handoff 이후 complete/checkpoint 헤더를 자동 채운다.
+    session 주입 시(정체성 태그 `task:<이름>`) 헤더 차수 뒤에 `({session})` 태그를 박는다 —
+    task 시퀀스의 감사 단서(이벤트 메타·상태 저장 아님). 미지정이면 태그를 생략한다.
     dirty_ack_note 주입 시(dirty-tree 게이트 override) ack 사유 줄을 추가한다 — 미지정이면
     줄 생략(clean 핸드오프는 현행 스키마 byte-호환).
     """
     if date is None:
         date = datetime.date.today().isoformat()
-    entry_task = task if collection_task is None else collection_task
     entries, boundary_unresolved = _collect_session_entries(
-        log_text, entry_task, session, boundary_task=task,
+        log_text, task, session, boundary_task=task,
     )
     return HANDOFF_LOG_SKELETON_TEMPLATE.format(
         date=date,
@@ -1401,7 +1092,6 @@ def build_handoff_log_skeleton(
         session_tag=_session_tag(session),
         entries=_session_entries_text(entries, boundary_unresolved),
         pending_intent=PENDING_INTENT_PLACEHOLDER,
-        worktree_line=_worktree_line(worktree_slot, branch),
         dirty_ack_line=_dirty_ack_line(dirty_ack_note),
     )
 
@@ -1446,12 +1136,9 @@ def _prepare_handoff_log_change(
     *,
     session_num: int | str,
     date: str,
-    worktree_slot: str | None,
-    branch: str | None,
     session: str | None,
     task: str | None,
     dirty_ack_note: str | None = None,
-    collection_task: str | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """handoff log 변경 계획을 만든다.
 
@@ -1464,7 +1151,6 @@ def _prepare_handoff_log_change(
     소유 구획('이 세션 박제 entries')만 건드리는 byte-멱등 경로라 본문 줄을 새로 끼우지 않는다.
     """
     normalized_num = _normalize_session_num(session_num)
-    entry_task = task if collection_task is None else collection_task
     candidates = [
         match
         for match in _HANDOFF_HEADER_CANDIDATE_RE.finditer(log_text)
@@ -1508,7 +1194,7 @@ def _prepare_handoff_log_change(
                 for header in _NESTED_SESSION_ENTRY_RE.findall(original_block)
             ]
             fresh_entries, _boundary_unresolved = _collect_session_entries(
-                log_text, entry_task, session, boundary_task=task,
+                log_text, task, session, boundary_task=task,
             )
             # 기존 기계 목록 + 조기 handoff 뒤 새 complete/checkpoint를 원문 순서로 합친다.
             # dict는 insertion order를 보존해 재실행도 byte-멱등이다.
@@ -1547,12 +1233,9 @@ def _prepare_handoff_log_change(
     skeleton = build_handoff_log_skeleton(
         session_num=normalized_num,
         date=date,
-        worktree_slot=worktree_slot,
-        branch=branch,
         session=session,
         log_text=log_text,
         task=task,
-        collection_task=entry_task,
         dirty_ack_note=dirty_ack_note,
     )
     return False, "\n" + skeleton, skeleton, warning
@@ -1563,13 +1246,10 @@ def _commit_handoff_log_change(
     *,
     session_num: int | str,
     date: str,
-    worktree_slot: str | None,
-    branch: str | None,
     session: str | None,
     task: str | None,
     pm_log_module=None,
     dirty_ack_note: str | None = None,
-    collection_task: str | None = None,
 ) -> tuple[bool, str, str | None]:
     """handoff log 판정과 append/replace를 공유 lock 한 구간에서 원자화한다.
 
@@ -1585,12 +1265,9 @@ def _commit_handoff_log_change(
             log_text,
             session_num=session_num,
             date=date,
-            worktree_slot=worktree_slot,
-            branch=branch,
             session=session,
             task=task,
             dirty_ack_note=dirty_ack_note,
-            collection_task=collection_task,
         )
         if same_session_rerun:
             pm_log._replace_atomic(log_file, payload)
@@ -1626,25 +1303,6 @@ _PM_SESSION_ANCHOR_RE = re.compile(
 # "이전 차" 포인터 줄
 _PREV_SESSIONS_POINTER = "  - 이전 차"
 
-# 오형식 `**N차차+**` → `**N차**` 정규화 대상.
-# 세션 entry bold 토큰에서 '차' 가 2회 이상 연속 반복된 것만 잡는다 — 단일 '차'=정상이라
-# 미매치(멱등: 재실행 무변화). skill 문서가 `--session-num <N차>` 로 안내한 탓에 '차' 가 이미
-# 붙은 입력에 handoff 가 다시 '차' 를 부착해 `**N차차**` 가 만들어졌고, 그러면
-# `_PM_SESSION_ANCHOR_RE`(`\d+차` 1회)가 미매치해 pm_state derive 실패→log 폴백 은닉 의존.
-# 파서 관대화(fallback 누적)가 아니라 원천 데이터 정규화로 해소한다(
-# prefer-data-migration-over-fallback).
-_MALFORMED_SESSION_ANCHOR_RE = re.compile(r"\*\*(\d+)차{2,}\*\*")
-
-# 정상(`**N차**`) + 오형식(`**N차차+**`) anchor 를 모두 매치하는 entry 판정 정규식 — 세션 식별
-# *절 선택* 전용(normalize_session_anchors). 절 선택에 `_PM_SESSION_ANCHOR_RE`(정상만)를 쓰면
-# entry 가 전부 오형식인 실 타깃(finance: `88차차/87차차/89차차`·well-formed 0)에서 window 절이
-# "entry 없음"으로 판정→앞선 설명 절(`## 세션 식별 규칙`)로 폴백→**silent no-op**(마이그레이션
-# 도구가 정작 필요한 상황에서 조용히 실패·최악)이 된다. `차+`(1회 이상)로 오형식 절도
-# entry-bearing 으로 인정해 그 함정을 막는다(codex must-fix). handoff write 경로는 이 정규식을
-# 쓰지 않으므로(default=_PM_SESSION_ANCHOR_RE) 무영향.
-_ANY_SESSION_ANCHOR_RE = re.compile(r"^  - \*\*\d+차+\*\*[^\n]*$", re.MULTILINE)
-
-
 def _normalize_h2_header(line: str) -> str:
     """h2 헤더 줄에서 '#'·공백(전각/반각/탭/CR)·괄호(전각/반각)를 제거한 정규화 문자열."""
     return "".join(
@@ -1653,10 +1311,7 @@ def _normalize_h2_header(line: str) -> str:
     )
 
 
-def _extract_session_section(
-    pm_state_text: str,
-    entry_re: re.Pattern[str] = _PM_SESSION_ANCHOR_RE,
-) -> tuple[str, int, int] | None:
+def _extract_session_section(pm_state_text: str) -> tuple[str, int, int] | None:
     """pm_state.md 에서 세션 식별 절 텍스트와 그 시작·끝 위치를 반환한다.
 
     앵커 탐색은 정확 str.find 이 아니라 정규화 부분일치다 — '##' 로 시작하는 h2 헤더 줄
@@ -1667,12 +1322,6 @@ def _extract_session_section(
     첫 후보로 폴백한다 — '## 세션 식별 규칙' 같은 설명-절이 실제 window 절보다 앞에 있을
     때 빈 절을 오선택해 window 미갱신(fail-soft 스킵)·오염되는 것을 막는다
     reviewer should-fix).
-
-    `entry_re` = "entry 보유 절" 판정에 쓰는 정규식(기본 `_PM_SESSION_ANCHOR_RE`·정상 anchor
-    만). handoff write 경로는 기본값을 그대로 써 무변경이다. **정규화 도구**(normalize_session_
-    anchors)만 `_ANY_SESSION_ANCHOR_RE`(정상+오형식)를 넘겨, entry 가 전부 오형식(`**N차차**`)인
-    실 타깃 window 절도 entry-bearing 으로 인식하게 한다 — 그러지 않으면 설명-절로 폴백해
-    정규화가 silent no-op 이 된다(codex must-fix).
 
     반환: (section_text, start_offset, end_offset) 또는 None (앵커 불일치).
     end_offset 는 다음 ## 또는 ### 헤더 직전 위치 (혹은 파일 끝).
@@ -1692,7 +1341,7 @@ def _extract_session_section(
         return None
     for m in candidates:  # entry 보유 절 우선 — 빈 설명-절 오선택 방지.
         section = _section_bounds(m)
-        if entry_re.search(section[0]):
+        if _PM_SESSION_ANCHOR_RE.search(section[0]):
             return section
     return _section_bounds(candidates[0])  # 전부 entry 없음 → 첫 후보(종전 동작 보존).
 
@@ -1989,30 +1638,6 @@ def infer_next_task_session_num(
 
 # ── 오형식 차수 정규화 (`**N차차+**` → `**N차**`·멱등·비파괴) ─────────
 
-def normalize_session_anchors(pm_state_text: str) -> str:
-    """세션 식별 절의 오형식 `**N차차+**`(2회 이상 반복 차) 를 `**N차**` 로
-    멱등·비파괴 정규화한 새 텍스트를 반환한다.
-
-    - 세션 식별 절만 손댄다 — 절 밖·정상 단일 '차' 토큰은 무변경. 절 부재면 원문 그대로.
-    - 멱등: 정규화 후 토큰은 `**N차**` 라 재실행해도 `차{2,}` 미매치 → 결과 동일.
-    - 비파괴: 오형식 bold 토큰의 잉여 '차' 만 제거하고 그 밖의 문자(날짜·요약·포인터 줄)는
-      한 글자도 건드리지 않는다.
-
-    절 선택은 `_ANY_SESSION_ANCHOR_RE`(정상+오형식)로 한다 — window 절의 entry 가 전부
-    오형식(`**N차차**`·well-formed 0)인 실 타깃(finance)에서도 그 절을 entry-bearing 으로
-    인식하게 해, 앞선 설명 절(`## 세션 식별 규칙`)로 폴백해 조용히 no-op 되는 함정을 막는다
-    (codex must-fix). 정상 anchor 만 보는 handoff write 경로는 무영향.
-
-    변경이 없으면 입력 텍스트를 그대로(동일 객체) 반환한다 — 호출부가 no-op 을 값 비교로 감지.
-    """
-    result = _extract_session_section(pm_state_text, entry_re=_ANY_SESSION_ANCHOR_RE)
-    if result is None:
-        return pm_state_text
-    section_text, start_offset, end_offset = result
-    fixed_section = _MALFORMED_SESSION_ANCHOR_RE.sub(r"**\1차**", section_text)
-    if fixed_section == section_text:
-        return pm_state_text
-    return pm_state_text[:start_offset] + fixed_section + pm_state_text[end_offset:]
 
 
 # ── pm_playbook.md 인계 프롬프트 추출 ────────────────────────────────────────
@@ -2082,86 +1707,12 @@ def _select_runtime_bootstrap_notation(template: str) -> str:
     )
 
 
-def _slot_identity(
-    worktree_slot: str | None,
-    leases_file: Path | None = None,
-) -> "object | None":
-    """실행 슬롯 값 → 슬롯 정체성(`identity_args.resolve_slot_identity` 위임·단일 진실).
-
-    정체성의 원천은 **장부 행의 session** 이고, 장부가 그 슬롯에 슬롯 축 정체성을 주지 않을
-    때만 pool 명명 규약(경로 마지막 마디)으로 내려간다. 이 모듈이 basename 을 직접 파싱하지
-    않는 이유: 경로에 이름이 없는 슬롯(PM 홈 자신을 가리키는 행 `slot="."`)을 파싱 규칙으로는
-    영원히 해소할 수 없고, 소비 지점마다 파싱을 복제하면 규칙이 갈린다.
-
-    `leases_file` 미지정이면 *호출 시점* REPO 기준으로 재구성한다(monkeypatch 추종·hermetic —
-    다른 리스 해소 함수들과 동형).
-    """
-    if leases_file is None:
-        leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
-    return identity_args.resolve_slot_identity(worktree_slot, leases_file)
 
 
-def _slot_identity_admission(worktree_slot: str, label: str) -> str | None:
-    """**쓰기 진입** 슬롯 정체성 검문 — 통과면 None, 아니면 중단 사유 문자열.
-
-    handoff 는 log/current.md·pm_state.md 를 쓰므로 정체성이 확정돼야 진입한다. 관용 wrapper
-    (`_slot_identity`)는 장부 모순에서도 경로 마디 폴백을 내는데, 그 값으로 write 를 통과시키면
-    **판정 불능이 판정으로 위장**된다(리뷰 F-004 — 같은 슬롯을 `A_1`/`B_2` 가 주장하는 장부에서
-    ack 가 `A_1` 로 통과했다). 그래서 판정형(`slot_identity_resolution`)을 직접 소비해 모순과
-    미해소를 각각 명시 사유로 돌려준다(읽기 표시는 종전대로 관용 — 이 함수는 write 전용).
-    """
-    leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
-    resolution = identity_args.slot_identity_resolution(worktree_slot, leases_file)
-    if resolution.status in identity_args.SLOT_IDENTITY_FAIL_LOUD_STATUSES:
-        return (
-            f"{label} {worktree_slot!r} 의 슬롯 정체성이 장부 모순이다 — {resolution.detail}. "
-            "장부를 정리한 뒤 다시 실행하라 "
-            "(log/current.md·pm_state.md 어떤 것도 건드리지 않는다)."
-        )
-    if resolution.identity is None:
-        return (
-            f"{label} {worktree_slot!r} 의 슬롯 정체성을 해소할 수 없다 — 장부 행이 그 슬롯에 준 "
-            "session 도, 경로의 canonical `<repo>_<N>` 마디도 없다 "
-            "(log/current.md·pm_state.md 어떤 것도 건드리지 않는다)."
-        )
-    return None
 
 
-def _parse_worktree_slot(worktree_slot: str | None) -> tuple[str, int] | None:
-    """실행 슬롯 값 → **재접속 좌표** `(repo, N)` (트리거 `--repo/--slot` 렌더용).
-
-    좌표는 `_slot_identity`(장부 값 1순위)가 해소한 **장부 행의 repo·번호**다 — 정체성 키를
-    다시 분해하지도, 경로 basename 을 파싱하지도 않는다. 렌더한 트리거는 *다음 세션이 이 슬롯으로
-    재접속하는 지시*라 장부에 조인돼야 한다: 행 repo 와 어긋난 session(`repo=A · slot=work/A_1 ·
-    session=B_7`)에서 키를 분해하면 `--repo B --slot 7` 이 나오고 즉시 세션↔repo 조인 불일치로
-    거부된다(리뷰 F-002).
-
-    정체성 미해소(장부에도 없고 경로도 슬롯 키가 아님)거나 **장부가 좌표를 주지 못하면** None —
-    호출부가 bare 폴백·하드 거부·fail-soft 등 기존 관례를 적용한다. 재접속 불가능한 명시 트리거를
-    만드느니 만들지 않는다.
-    """
-    identity = _slot_identity(worktree_slot)
-    if identity is None or identity.repo is None or identity.number is None:
-        return None
-    return identity.repo, identity.number
 
 
-def _inject_slot_into_template(template: str, worktree_slot: str | None) -> str:
-    """복사 블록 템플릿의 bare ``pm-bootstrap`` 호출을 slot-qualified 로 치환한다.
-
-    `worktree_slot` 이 `work/<repo>_<N>` 형식이면 템플릿 내 모든 `/pm-bootstrap` 을
-    `/pm-bootstrap <repo> --slot <N>` 로 치환한다 — 멀티-PM 다음 세션이 슬롯 disambiguator
-    없이 fail-loud 하는 갭 보완. 여러 등장 전부 같은 커맨드라 모두 치환 OK.
-    None·비정형(파싱 실패)이면 bare 유지(fail-soft·현행).
-    """
-    parsed = _parse_worktree_slot(worktree_slot)
-    if parsed is None:
-        return template
-    repo, n = parsed
-    return _BARE_BOOTSTRAP_TRIGGER_RE.sub(
-        lambda match: f"{match.group('trigger')} {repo} --slot {n}",
-        template,
-    )
 
 
 def _inject_task_into_template(template: str, task: str) -> str:
@@ -2187,8 +1738,7 @@ def build_handoff_prompt_output(
     session_num: int | str,
     wave_summary: str,
     date_str: str,
-    worktree_slot: str | None = None,
-    task: str | None = None,
+    task: str,
 ) -> str:
     """인계 프롬프트 stdout 출력 문자열을 빌드한다.
 
@@ -2197,13 +1747,10 @@ def build_handoff_prompt_output(
     log handoff entry 에서 자동 dump 하므로, 프롬프트는 더 이상 `<핵심 인계 사항>` 손-채움을
     싣지 않는다
 
-    `task`(기본 None)가 set 이면 task 모드 핸드오프 — 트리거를 `/pm-bootstrap --task <task>` 로
-    주입한다. task 는 slot 보다 우선(직교 앵커)이라 슬롯 열거 없이 task-only 로
-    출력하고, 다음 세션은 진입 시 보유 슬롯 집합을 자동 수령한다. task None 일
-    때만 `worktree_slot`(`work/<repo>_<N>`·기본 None)이 set 이면 복사 블록의 bare `/pm-bootstrap` 을
-    `/pm-bootstrap <repo> --slot <N>` 로 주입해, 멀티-PM 다음 세션이 슬롯을 정확히 바인딩하게
-    한다. 둘 다 None·비정형이면 bare 유지(하위호환·fail-soft). pm_playbook.md 템플릿 파일은
-    건드리지 않는다 — 치환은 추출된 텍스트 안에서만 contained.
+    트리거는 `/pm-bootstrap --task <task>` 로 주입한다 — 세션 정체성이 task 하나이고, 다음
+    세션은 진입 시 보유 작업 폴더 집합을 장부에서 자동 수령하므로 트리거에 슬롯을 열거하지
+    않는다. pm_playbook.md 템플릿 파일은 건드리지 않는다 — 치환은 추출된 텍스트 안에서만
+    contained.
     """
     template = extract_handoff_prompt_template(pm_playbook_text)
     if template is None:
@@ -2213,13 +1760,10 @@ def build_handoff_prompt_output(
             "pm_playbook.md §'다음 PM 세션 부트스트랩 프롬프트 (템플릿)' 을 직접 복사하라."
         )
     template = _select_runtime_bootstrap_notation(template)
-    if task is not None:
-        # 삽입 전 공유 validator 로 fail-loud — build_handoff_prompt_output() 직접 호출도 우회 못 하게
-        # 트리거 경계에서 닫는다. run() 은 진입에서 이미 검증하므로 멱등 재검증.
-        validate_task_name_engine(task)
-        template = _inject_task_into_template(template, task)
-    else:
-        template = _inject_slot_into_template(template, worktree_slot)
+    # 삽입 전 공유 validator 로 fail-loud — build_handoff_prompt_output() 직접 호출도 우회 못 하게
+    # 트리거 경계에서 닫는다. run() 은 진입에서 이미 검증하므로 멱등 재검증.
+    validate_task_name_engine(task)
+    template = _inject_task_into_template(template, task)
 
     header = (
         f"=== 인계 프롬프트 (PM {session_num}차 → 다음 PM 세션) ===\n"
@@ -3019,18 +2563,17 @@ class PmHandoff:
         # 해소해 `_pm_state_path` 로 per-slot 경로를 세팅한다(초기값은 마이그레이션 원본 경로일
         # 뿐 해소 결과가 아니다). 명시 주입 여부를 기억해 per-slot 재해소가 hermetic 테스트의
         # 명시 경로를 덮지 않게 한다.
+        # 명시 주입 여부를 기억해 run() 의 task pm_state 해소가 hermetic 테스트의 명시 경로를
+        # 덮지 않게 한다.
         self._pm_state_file_explicit = pm_state_file is not None
-        self._pm_state_file = pm_state_file if pm_state_file is not None else _legacy_pm_state_file()
+        self._pm_state_file = pm_state_file
         self._venv_python = venv_python
-        # worktree_pool seam — 테스트는 mock 모듈을 주입(hermetic). None 이면 --done
-        # --slot 경로 진입 시에만 동적 로드(multi-PM 모드)·무인자 경로는 안 건드린다.
+        # worktree_pool seam — 테스트는 mock 모듈을 주입(hermetic). None 이면 소비 지점에서
+        # 동적 로드한다.
         self._worktree_pool = worktree_pool
-        # 회귀 cwd 해소용 worktree 슬롯— run() 진입부에서 worktree_slot 인자로 세팅.
-        # _default_run_pytest 가 _regression_cwd 에 넘긴다. 미세팅이면 None → REPO 폴백.
-        self._worktree_slot: str | None = None
-        # run() 경계에서 슬롯 해소가 끝났는지(해소 결과 None도 값이다). True 뒤에는 downstream이
-        # None을 "미해소"로 오인해 lease를 재조회하지 않고 같은 스냅샷을 그대로 유지한다.
-        self._worktree_slot_resolution_frozen = False
+        # 슬롯별 회귀가 도는 동안의 cwd 앵커 — `_run_regression_for_slot` 만 세팅하고 즉시
+        # 원복한다. 세션 정체성이 아니다(정체성은 task 하나다).
+        self._regression_slot: str | None = None
         # task handoff 시작 시 영속 변경 전에 한 번 해소한 보유 슬롯 스냅샷. 회귀/출하/재스냅이
         # 같은 집합을 재사용해 후반 재조회 실패가 이미 기록된 handoff를 false-green으로 끝내지 않게 한다.
         self._task_slots_snapshot: tuple[str, tuple[str, ...]] | None = None
@@ -3041,51 +2584,7 @@ class PmHandoff:
         self._run_pytest_fn = run_pytest_fn or self._default_run_pytest
         self._run_git_fn = run_git_fn or self._default_run_git
 
-    # ── multi-PM 모드: 작업완료 release ────────────────────────────────
-
-    def _resolve_worktree_pool(self):
-        """worktree_pool 모듈을 해소한다 — 주입분 우선·없으면 동적 로드 (multi-PM 모드 전용).
-
-        --done --slot 경로에서만 호출된다. 둘 다 None 이면 **명시 에러**(SystemExit) —
-        multi-PM 인자를 줬는데 worktree_pool 이 없으면 침묵 무력화 금지.
-        """
-        wp = self._worktree_pool or _load_worktree_pool()
-        if wp is None:
-            print(
-                "[중단] --done --slot multi-PM 모드인데 worktree_pool 엔진을 찾을 수 없다 "
-                f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패). "
-                "multi-PM 셋업(pm-config) 또는 엔진 전파를 확인하라.",
-                file=sys.stderr,
-            )
-            return None
-        return wp
-
-    def _release_slot(self, slot: str) -> int:
-        """작업완료 시 worktree 슬롯을 release 한다 (--done).
-
-        커밋 안 한 변경이 있는 슬롯은 [0/7] 게이트가 기록 전에 멈추거나(`--force-handoff` 면 반납
-        대상에서 뺀다) 여기 오지 않는다 — 엔진은 stash 하지 않는다. worktree_pool 부재(multi-PM
-        미배선)면 명시 에러로 중단(rc 1). 반환: 0=성공.
-        """
-        wp = self._resolve_worktree_pool()
-        if wp is None:
-            return 1
-        try:
-            lease = wp.release(slot)
-        except KeyError:
-            print(
-                f"  ⚠ slot {slot!r} 리스 장부에 없음 — 이미 release 됐거나 미등록 슬롯. "
-                "release 스킵(무해).",
-                file=sys.stderr,
-            )
-            return 0
-        # 브랜치는 슬롯 worktree 의 git HEAD 에서 live 조회
-        # Lease.branch 권위 제거·git=진실). detached/조회불가는 "(detached/조회불가)".
-        live_branch = wp.current_branch(slot) or "(detached/조회불가)"
-        print(f"  ✓ worktree 슬롯 release: {slot} → idle (작업완료 반납·branch={live_branch})")
-        return 0
-
-    # ── 핸드오프 완료: bound 슬롯 git 재스냅 ("여기 두고 간다") ───────────────
+    # ── 핸드오프 완료: 보유 슬롯 git 재스냅 ("여기 두고 간다") ───────────────
 
     def _record_slot_snapshot(self, slot: str, *, task: str | None = None) -> bool:
         """bound 슬롯의 live git 을 `lease.git` 에 재기록한다 — "여기 두고 간다".
@@ -3099,7 +2598,7 @@ class PmHandoff:
         write 프리미티브 `worktree_pool.record_git_snapshot(slot)` 만 호출한다 — 브랜치 부모
         기록은 git 설정에 있어 건드리지 않는다·판정 로직 재구현 없음. fail-soft: worktree_pool 부재
         (미셋업)·슬롯 미바인딩/장부 부재(record None)·스냅 예외는 무해 skip(핸드오프
-        차단 안 함). release(--done·git 정리) 경로는 호출부에서 제외한다.
+        차단 안 함).
 
         **실갱신 vs 무변경 구분 출력(dual-gate suggestion)**: `record_git_snapshot` 은 슬롯
         live 스냅이 불가하면(worktree 경로 부재 등) 기존 `lease.git` 을 clobber 하지 않고 그대로
@@ -3270,67 +2769,48 @@ class PmHandoff:
                     return False
         return True
 
-    def _close_session_records(self, task: "str | None", slot: "str | None") -> bool:
+    def _close_session_records(self, task: str) -> bool:
         """이 세션이 연 기록을 **한 자리에서** 전부 닫는다 — 성공 여부 반환.
 
         핸드오프 기록(log·pm_state) 전에 호출한다. 세션이 끝나는 자리에서 그 세션이 연 기록을
         닫지 않으면 같은 사실이 두 곳에서 다르게 읽힌다 — 다음 진입이 그 자리를 "열려 있음"으로
-        보고 매번 강제 확인을 요구한다. 닫는 축은 둘이고 기존 write 프리미티브만 부른다:
-          - task 모드: `worktree_pool.close_task_session(task)` → 장부 task 행 `session` 비움.
-          - 슬롯 모드: `worktree_pool.close_slot_session(slot)` → 그 슬롯 행의 `session` 비움.
-        **대여는 그대로 둔다** — 슬롯 반납(`--done` 의 `release`)과는 다른 축이다. 닫히는 것은
-        "지금 세션이 열려 있다"는 표시뿐이고 슬롯은 두고 간다.
+        보고 매번 강제 확인을 요구한다. 기존 write 프리미티브 하나만 부른다 —
+        `worktree_pool.close_task_session(task)` → 장부 task 행 `session` 비움.
+        **대여는 그대로 둔다** — 슬롯 반납(`pm-config release`)과는 다른 축이다. 닫히는 것은
+        "지금 세션이 열려 있다"는 표시뿐이고 작업 폴더는 두고 간다.
 
-        task 모드에서 그 task 가 보유한 슬롯의 session 은 **task 이름**(소유 축)이라 건드리지
-        않는다 — 그 세션의 열림/닫힘은 task 행 하나가 말한다.
+        그 task 가 보유한 슬롯 행의 session 은 **task 이름**(소유 축)이라 건드리지 않는다 —
+        그 세션의 열림/닫힘은 task 행 하나가 말한다.
 
         같은-session 재실행 판정이 이 durable 신호에 의존하므로 더는 보조 fail-soft 기록이 아니다.
         step2 log write **전**에 성공해야 하며, 엔진/primitive/record 부재·예외는 fail-loud(False)다.
         성공 뒤 후속 단계가 중단돼도 종료 기록이 남아 재실행이 같은 차수로 복구된다."""
-        if task is None and slot is None:
-            return True                # 닫을 기록이 없다(슬롯 미해소 세션).
         wp = self._worktree_pool or _load_worktree_pool()
         if wp is None:
             print("  [중단] worktree_pool 미배선 — 세션 종료 기록을 남길 수 없다.",
                   file=sys.stderr)
             return False
-        if task is not None:
-            primitive = getattr(wp, "close_task_session", None)
-            if primitive is None:
-                print("  [중단] worktree_pool 구버전(close_task_session 부재) — "
-                      "멱등성 신호를 기록할 수 없다.",
-                      file=sys.stderr)
-                return False
-            try:
-                task_rec = primitive(task)
-            except Exception as exc:  # noqa: BLE001 — load-bearing intent 기록 실패는 차단.
-                if _is_engine_rev_skew(exc):
-                    raise
-                print(f"  [중단] task 종료 기록 실패 — {exc}.", file=sys.stderr)
-                return False
-            if task_rec is None:
-                print(f"  [중단] task {task!r} 장부에 없음 — 멱등성 신호를 기록하지 못했다.",
-                      file=sys.stderr)
-                return False
-            print(
-                f"  ✓ task 종료 기록: {task} → 닫힘 "
-                "(재실행=같은 차수·다음 bootstrap=재개/N+1)"
-            )
-        if slot is not None:
-            closer = getattr(wp, "close_slot_session", None)
-            if closer is None:
-                print("  [중단] worktree_pool 구버전(close_slot_session 부재) — "
-                      "슬롯 종료 기록을 남길 수 없다.",
-                      file=sys.stderr)
-                return False
-            try:
-                closer(slot)
-            except Exception as exc:  # noqa: BLE001 — load-bearing 종료 기록 실패는 차단.
-                if _is_engine_rev_skew(exc):
-                    raise
-                print(f"  [중단] 슬롯 종료 기록 실패 — {exc}.", file=sys.stderr)
-                return False
-            print(f"  ✓ 슬롯 종료 기록: {slot} → 닫힘 (대여는 그대로·다음 진입=확인 없이 재개)")
+        primitive = getattr(wp, "close_task_session", None)
+        if primitive is None:
+            print("  [중단] worktree_pool 구버전(close_task_session 부재) — "
+                  "멱등성 신호를 기록할 수 없다.",
+                  file=sys.stderr)
+            return False
+        try:
+            task_rec = primitive(task)
+        except Exception as exc:  # noqa: BLE001 — load-bearing intent 기록 실패는 차단.
+            if _is_engine_rev_skew(exc):
+                raise
+            print(f"  [중단] task 종료 기록 실패 — {exc}.", file=sys.stderr)
+            return False
+        if task_rec is None:
+            print(f"  [중단] task {task!r} 장부에 없음 — 멱등성 신호를 기록하지 못했다.",
+                  file=sys.stderr)
+            return False
+        print(
+            f"  ✓ task 종료 기록: {task} → 닫힘 "
+            "(재실행=같은 차수·다음 bootstrap=재개/N+1)"
+        )
         return True
 
     # ── 기본 subprocess 구현 (실제 실행) ──────────────────────────────────────
@@ -3346,7 +2826,7 @@ class PmHandoff:
         cwd 는 _regression_cwd 가 해소한다— 분리된 PM 홈엔 tests/ 가 없으므로
         활성 worktree 슬롯에서 돌린다. 미해소면 REPO 폴백(현행 보존).
         """
-        cwd = self._run_regression_cwd(self._worktree_slot)
+        cwd = _regression_cwd(self._regression_slot)
         gate_cmd = _resolve_per_repo_test_cmd()
         if gate_cmd:
             # 해소된 게이트 — test_cmd 문자열을 shell 로(board.py regression run 과 동형).
@@ -3372,32 +2852,22 @@ class PmHandoff:
         output = result.stdout + result.stderr
         return result.returncode, output
 
-    def _run_regression_cwd(self, worktree_slot: str | None) -> str:
-        """run()의 단일 슬롯 스냅샷에 결속된 cwd를 반환한다.
-
-        run() 경계에서 해소된 None은 판정 불능이라는 확정값이다. 그 뒤 `_regression_cwd(None)`을
-        호출하면 lease를 다시 읽어 새 슬롯으로 바뀔 수 있으므로 REPO를 바로 반환한다. run() 밖
-        단위 seam은 기존 자동해소 동작을 보존한다.
-        """
-        if self._worktree_slot_resolution_frozen and worktree_slot is None:
-            return str(REPO)
-        return _regression_cwd(worktree_slot)
 
     # ── task 퇴장: 변경 흔적 있는 보유 슬롯 각각에서 회귀 ──────
 
     def _run_regression_for_slot(self, slot: str) -> tuple[int, str]:
         """지정 슬롯 worktree 에서 회귀를 1회 돌린다 — task 다중슬롯 회귀.
 
-        `self._worktree_slot` 을 그 슬롯으로 잠시 세팅해 `_default_run_pytest` 의 `_regression_cwd`
-        해소가 해당 worktree 를 cwd 로 보게 하고 원복한다(다른 downstream 이 `self._worktree_slot` 을
-        재사용하므로 scope 밖 오염 방지). 주입 seam(`run_pytest_fn`)도 그대로 소비해 hermetic
-        테스트와 정합(injected runner 는 세팅된 슬롯을 관찰 가능)."""
-        prev = self._worktree_slot
-        self._worktree_slot = slot
+        `self._regression_slot` 을 그 슬롯으로 잠시 세팅해 `_default_run_pytest` 의 `_regression_cwd`
+        해소가 해당 worktree 를 cwd 로 보게 하고 원복한다(scope 밖 오염 방지). 주입 seam
+        (`run_pytest_fn`)도 그대로 소비해 hermetic 테스트와 정합(injected runner 는 세팅된 슬롯을
+        관찰 가능)."""
+        prev = self._regression_slot
+        self._regression_slot = slot
         try:
             return self._run_pytest_fn()
         finally:
-            self._worktree_slot = prev
+            self._regression_slot = prev
 
     def _slot_worktree_missing(self, slot: str) -> bool:
         """슬롯 worktree 디렉터리가 stale(장부엔 있으나 dir 부재)인지 — task 슬롯별 회귀 vacuous-pass 가드.
@@ -3570,15 +3040,12 @@ class PmHandoff:
 
     # ── dirty-tree 게이트 step ([0/7]·조기 중단) ────────────────
 
-    def _dirty_gate_trees(self, task: str | None) -> list[str]:
+    def _dirty_gate_trees(self, task: str) -> list[str]:
         """게이트가 판정할 실행 앵커 트리 목록 — PM 홈 + **활성 worktree 전수**.
 
-        모드별 특례를 두지 않는다(슬롯 1개 = multi-PM 의 N=1 부분집합):
-          - task 모드: 보유 슬롯 전수. run() 진입부가 영속 변경 전에 한 번 해소해 둔 스냅샷
-            (`_task_slots_snapshot`)을 그대로 쓴다 — 게이트가 장부를 다시 조회해 다른 집합을
-            보는 비대칭을 만들지 않는다.
-          - slot 모드: 활성 worktree 1개 — [1b] 출하 surface 가 쓰는 것과 **같은 해소**
-            (`_regression_cwd(self._worktree_slot)`·무인자는 단일 self-host 자동해소).
+        판정 대상 = PM 홈 + 이 task 가 보유한 슬롯 전수. run() 진입부가 영속 변경 전에 한 번
+        해소해 둔 스냅샷(`_task_slots_snapshot`)을 그대로 쓴다 — 게이트가 장부를 다시 조회해
+        다른 집합을 보는 비대칭을 만들지 않는다.
         PM 홈 `.gitignore` 는 보통 `work/` 를 ignore 하므로 슬롯 트리는 PM 홈 판정에 **절대**
         안 잡힌다 — 슬롯을 따로 넣지 않으면 그 트리의 미커밋 산출은 게이트를 통과한다.
         슬롯 → 트리 변환은 회귀/출하와 같은 `_regression_cwd`(stale 슬롯은 REPO 폴백)라 중복이
@@ -3590,29 +3057,23 @@ class PmHandoff:
         """
         trees = [str(REPO)]
         snapshot = self._task_slots_snapshot
-        if task is not None:
-            if snapshot is not None and snapshot[0] == task:
-                trees.extend(_regression_cwd(slot) for slot in snapshot[1])
-        else:
-            trees.append(self._run_regression_cwd(self._worktree_slot))
+        if snapshot is not None and snapshot[0] == task:
+            trees.extend(_regression_cwd(slot) for slot in snapshot[1])
         ordered: list[str] = []
         for tree in trees:
             if tree not in ordered:
                 ordered.append(tree)
         return ordered
 
-    def _handoff_slot_trees(self, task: str | None) -> dict[str, str]:
+    def _handoff_slot_trees(self, task: str) -> dict[str, str]:
         """핸드오프가 다룰 슬롯의 트리 → 슬롯 — 커밋 안 한 변경이면 기록 전에 사용자에게 묻는 대상.
 
-        task 모드는 보유 슬롯 전수(`_task_slots_snapshot`), slot 모드는 실행 슬롯(`self._worktree_slot`
-        — `--done` 이 반납하는 명시 슬롯과 같은 값). 트리 해소는 `_dirty_gate_trees` 와 같은
-        `_regression_cwd` 이고, 디렉터리가 없어 PM 홈으로 폴백한 슬롯은 슬롯 트리가 아니므로 뺀다.
+        대상은 이 task 가 보유한 슬롯 전수(`_task_slots_snapshot`)다. 트리 해소는
+        `_dirty_gate_trees` 와 같은 `_regression_cwd` 이고, 디렉터리가 없어 PM 홈으로 폴백한
+        슬롯은 슬롯 트리가 아니므로 뺀다.
         """
-        if task is not None:
-            snapshot = self._task_slots_snapshot
-            slots = snapshot[1] if snapshot is not None and snapshot[0] == task else ()
-        else:
-            slots = (self._worktree_slot,) if self._worktree_slot is not None else ()
+        snapshot = self._task_slots_snapshot
+        slots = snapshot[1] if snapshot is not None and snapshot[0] == task else ()
         slot_trees: dict[str, str] = {}
         for slot in slots:
             tree = _regression_cwd(slot)
@@ -3628,14 +3089,13 @@ class PmHandoff:
         auto_trigger: bool,
         force_handoff: bool,
         dry_run: bool,
-    ) -> tuple[int, str | None, tuple[str, ...]]:
-        """[0/7] 미커밋 잔여를 **첫 mutation 전에** 판정한다. 반환: (rc, entry 박제 사유, 유지할 슬롯).
+    ) -> tuple[int, str | None]:
+        """[0/7] 미커밋 잔여를 **첫 mutation 전에** 판정한다. 반환: (rc, entry 박제 사유).
 
         rc 1 = 차단(어떤 파일도 건드리지 않은 상태). 잔여는 자리에 따라 둘로 갈린다:
           - **핸드오프가 다룰 슬롯**(`_handoff_slot_trees`)의 커밋 안 한 변경 → 사용자에게 "커밋할까요?
             강제 핸드오프할까요?" 를 묻게 하고 멈춘다. 넘는 수단은 `--force-handoff` 하나다 — 통과 +
-            그 슬롯을 "유지할 슬롯" 으로 돌려준다(`--done` 이어도 반납하지 않는다) + entry 에
-            `커밋 안 한 변경 있음, 슬롯 유지: <slot>` 을 적는다. `--ack-dirty`·`--auto-trigger` 는
+            entry 에 `커밋 안 한 변경 있음, 슬롯 유지: <slot>` 을 적는다. `--ack-dirty`·`--auto-trigger` 는
             슬롯 쪽 변경을 넘지 않는다.
           - **그 밖**(PM 홈 등) — `--ack-dirty "<사유>"` → 통과 + 사유를 handoff entry 에 박제.
             `--auto-trigger`(사용자 명시 핸드오프 호출부 호환 신호) → 차단 대신 loud 경고 +
@@ -3701,7 +3161,7 @@ class PmHandoff:
             if force_handoff:
                 print("  --force-handoff 무시 — 판정 결과 clean(유지할 슬롯 없음).")
             print(f"  ✓ clean — 미커밋/untracked 없음 (판정 트리 {judged_tree_count}개).")
-            return 0, None, ()
+            return 0, None
 
         print(f"  미커밋 잔여 {dirty_count}건 (판정 트리 {judged_tree_count}개):")
         for tree, paths in dirty:
@@ -3727,22 +3187,22 @@ class PmHandoff:
         if dry_run:
             # 미리보기 — dry-run 은 아무것도 쓰지 않으므로 차단할 이유가 없다(기존 의미 유지).
             print("  [dry-run] 판정 결과 미리보기 — 차단하지 않는다.")
-            return 0, note, kept_slots
+            return 0, note
 
         if dirty_slots and not force_handoff:
             print(
                 f"\n[중단] 슬롯 {', '.join(dirty_slots)} 에 커밋 안 한 변경이 있다 — 사용자에게 물어라: "
                 "커밋할까요? 강제 핸드오프할까요?\n"
-                "  커밋: 그 슬롯에서 커밋한 뒤 핸드오프를 다시 실행한다(`--done` 이면 반납까지 한다).\n"
+                "  커밋: 그 슬롯에서 커밋한 뒤 핸드오프를 다시 실행한다.\n"
                 "  강제 핸드오프: `--force-handoff` 를 붙여 다시 실행한다 — 커밋 없이 핸드오프 기록만 "
-                "하고 그 슬롯은 반납하지 않는다(대여·변경 제자리 유지·entry 에 적는다).\n"
+                "하고 변경은 제자리에 둔다(entry 에 적는다).\n"
                 "  log/current.md·pm_state.md 어떤 것도 건드리지 않는다.",
                 file=sys.stderr,
             )
-            return 1, None, ()
+            return 1, None
 
         if kept_slots:
-            print(f"  ⚠ --force-handoff — 커밋 안 한 변경을 두고 슬롯을 유지한다(반납 안 함): "
+            print("  ⚠ --force-handoff — 커밋 안 한 변경을 두고 나간다: "
                   f"{', '.join(kept_slots)}")
 
         if other_count and ack_dirty:
@@ -3762,10 +3222,10 @@ class PmHandoff:
                 "log/current.md·pm_state.md 어떤 것도 건드리지 않는다.",
                 file=sys.stderr,
             )
-            return 1, None, ()
+            return 1, None
         elif ack_dirty:
             print("  --ack-dirty 무시 — 슬롯 밖 미커밋 잔여 없음(슬롯 쪽은 --force-handoff 몫).")
-        return 0, note, kept_slots
+        return 0, note
 
     # ── 미마감 raw sweep step ────────────────
 
@@ -4025,16 +3485,10 @@ class PmHandoff:
 
     def run(
         self,
-        session_num: int | str | None,
-        wave_summary: str,
-        dry_run: bool,
-        skip_pytest: bool,
-        worktree_slot: str | None = None,
-        branch: str | None = None,
-        done: bool = False,
-        task: str | None = None,
-        collection_task: str | None = None,
-        implicit_worktree_slot: str | None = None,
+        task: str,
+        *,
+        dry_run: bool = False,
+        skip_pytest: bool = False,
         ack_dirty: str | None = None,
         auto_trigger: bool = False,
         user_ack: str | None = None,
@@ -4042,28 +3496,22 @@ class PmHandoff:
     ) -> int:
         """PM 핸드오프 7단계 자동화 전체 흐름을 실행한다.
 
-        worktree_slot/branch: multi-PM 모드— handoff entry 에 slot/branch 를
-            기록해 회전 재부착 연속성 단서를 남긴다. 미지정이면 현행 lean 스키마 보존.
-        done: 작업완료(--done) — worktree 슬롯을 release(idle 반납). worktree_slot
-            필요. 미지정이면 release 안 함(세션종료/회전 ≠ release).
-        task: task 모드 — 세션 종료의 연속성 앵커를 slot→task 로 이동한다. pm_state 를
-            `.local/tasks/<task>/` 에 기록(task 생성 시 이미 존재)·dashboard 자기 섹션은
-            `## <task>`·log 헤더 태그는 `(task:<task>)`. lease 는 유지한다(세션 종료 ≠ task 종료).
-            repo/slot 입력 없이 보유 작업공간 집합을 자동 수령한다. task-only(슬롯 0개)도 정상이다.
-        collection_task: entry 수집 전용 task 태그. legacy 무태그 축이 task 모드로
-            승격되지 않고 기존 pm_state 연속성을 유지하면서 생산자 태그를 소비하는 축이다.
-        implicit_worktree_slot: pm_log cwd-lease가 해소한 실제 slot 경로. 명시 입력이 아니며,
-            run()의 guarded slot 모호성 판정을 통과한 뒤에만 실행 슬롯으로 채택한다.
+        task: 핸드오프 대상 task 이름 — 세션 정체성의 단일 축이다. pm_state 는
+            `.local/tasks/<task>/pm_state.md`·dashboard 자기 섹션은 `## <task>`·log 헤더 태그는
+            `(task:<task>)`. 보유 작업 폴더 집합은 장부에서 자동 수령하며 대여는 유지한다
+            (세션 종료 ≠ task 종료). 보유 0개도 정상이다.
         ack_dirty: dirty-tree 게이트([0/7]) override 사유. 비어있지 않은 문자열이어야 하며
             (빈 사유는 부작용 0 로 중단) 사유는 단일행으로 평탄화돼 handoff entry 에 박제된다.
         auto_trigger: 사용자 명시 핸드오프 호출부의 호환 신호. dirty-tree 게이트를 차단 대신
             loud 경고 + 사유 자동 박제로 강등하지만, 독자 트리거나 승인으로 취급하지 않으며
             ``user_ack`` 값-결속 계약을 그대로 적용한다.
         user_ack: 사용자 발화에서 받은 핸드오프 대상 승인값. 세션이 만들거나 자동 부착하면
-            안 되며, 실제 실행은 해소된 task/slot 대상값과 정확히 일치해야 한다.
-        force_handoff: 사용자가 "강제 핸드오프" 를 고른 경우. 핸드오프가 다룰 슬롯의 커밋 안 한
-            변경을 두고 기록만 하며, 그 슬롯은 반납하지 않고(`--done` 이어도) entry 에
-            `커밋 안 한 변경 있음, 슬롯 유지: <slot>` 을 적는다.
+            안 되며, 실제 실행은 해소된 task 이름과 정확히 일치해야 한다.
+        force_handoff: 사용자가 "강제 핸드오프" 를 고른 경우 — 보유 슬롯의 커밋 안 한 변경을
+            두고 기록만 하며 entry 에 `커밋 안 한 변경 있음, 슬롯 유지: <slot>` 을 적는다.
+
+        차수와 wave 요약은 인자가 아니다 — 회귀 게이트를 통과한 뒤 task pm_state 에서만
+        추론한다. 따라서 어떤 호출 경로도 임의 차수를 log/state/dashboard 에 영속할 수 없다.
 
         반환: 0=성공, 1=실패 (중단).
         """
@@ -4076,155 +3524,64 @@ class PmHandoff:
                 file=sys.stderr,
             )
             return 1
-        # task 차수는 caller 입력을 신뢰하지 않는다. CLI는 명시 `--session-seq`를 usage error로
-        # 거부하고, 엔진 직접 호출은 전달값을 폐기한 뒤 회귀 게이트 통과 후 task pm_state에서만
-        # 추론한다. 따라서 어떤 호출 경로도 임의 차수를 log/state/dashboard에 영속할 수 없다.
-        if task is not None:
-            session_num = None
-        entry_collection_task = task if collection_task is None else collection_task
-
-        # task는 독립 정체성이다. 보유 작업공간 집합은 slots_for_task(task)로 자동 수령하며,
-        # repo/slot/branch/done 혼합 경로는 허용하지 않는다. Python CLI와 run() 직접 호출 모두
-        # 같은 경계를 적용한다.
-        if task is not None and (
-            worktree_slot is not None or branch is not None or done
-        ):
-            print(
-                "\n[중단] task handoff는 `--task <이름>` 정체성만 받는다 — "
-                "`--repo/--slot/--branch/--done`과 함께 쓸 수 없다.",
-                file=sys.stderr,
-            )
-            return 1
-
-        # run() 직접 호출도 CLI ingress와 같은 canonical slot 도메인을 강제한다. 파싱 실패를
-        # 임의 sentinel로 강등하면 malformed 경로에 ack가 결속되므로, ack 판정과 모든 pipeline
-        # 진입보다 앞에서 부작용 0으로 거부한다.
-        if worktree_slot is not None:
-            refusal = _slot_identity_admission(worktree_slot, "worktree_slot")
-            if refusal is not None:
-                print(f"\n[중단] {refusal}", file=sys.stderr)
-                return 1
-        if implicit_worktree_slot is not None:
-            refusal = _slot_identity_admission(implicit_worktree_slot, "해소된 lease slot")
-            if refusal is not None:
-                print(f"\n[중단] {refusal}", file=sys.stderr)
-                return 1
 
         # task 이름 검증 — main() CLI 뿐 아니라 run() 직접 호출도 우회 못 하게 엔진층 단일 choke
         # (validate_task_name_engine)를 *어떤 task 소비(pm_state 경로·log 태그·dashboard·트리거)
-        # 이전에* 통과시킨다. traversal(`../evil`)·whitespace(`my task`)·슬롯 예약패턴이 pm_state 디렉토리
-        # 부적합/엔진부재는 부작용 0 로 중단(1).
-        if task is not None:
-            try:
-                validate_task_name_engine(task)
-            except Exception as exc:  # noqa: BLE001 — InvalidTaskName(.reason)·RuntimeError(엔진 부재)
-                if _is_engine_rev_skew(exc):
-                    raise
-                print(
-                    f"\n[중단] --task 이름 {task!r} 이(가) 부적합 — {getattr(exc, 'reason', exc)} "
-                    "(log/current.md·pm_state 어떤 것도 건드리지 않는다.)",
-                    file=sys.stderr,
-                )
-                return 1
-            # 이름이 유효해도 장부에 없는 task는 handoff가 만들 수 없다. 생성 권한은 bootstrap
-            # (`bind_task`) 전용이며, 이 read-only membership gate는 회귀·state backfill 및 모든
-            # 영속 write보다 앞선다(오타로 인한 고아 state/log/dashboard 부작용 0).
-            if not self._task_is_registered(task):
-                return 1
-            # task 보유 슬롯은 log/pm_state/dashboard 및 재스냅 어떤 영속 변경보다 먼저 한 번
-            # 해소한다. 실패를 실제 0슬롯으로 바꾸면 회귀·출하 검사를 전부 skip한 뒤 기록까지
-            # 완료하는 false-green이 되므로 fail-loud. 성공 스냅샷(빈 tuple 포함)은 전 단계가 재사용한다.
-            self._task_slots_snapshot = None
-            try:
-                held_slots = self._task_held_slots(task)
-            except Exception as exc:  # noqa: BLE001 — 해소 실패 ≠ 실제 빈 집합.
-                if _is_engine_rev_skew(exc):
-                    raise
-                print(
-                    f"\n[중단] task {task!r} 보유 슬롯 장부 해소 실패 — {exc}. "
-                    "실제 0슬롯으로 간주하지 않습니다. "
-                    "log/current.md·pm_state·dashboard·git 재스냅 어떤 것도 기록하지 않습니다.",
-                    file=sys.stderr,
-                )
-                return 1
-            self._task_slots_snapshot = (task, tuple(held_slots))
-        date_str = datetime.date.today().isoformat()
-        # task 모드 — 명시 pm_state 주입(hermetic 테스트) 없이 `--task` 가 오면 연속성 앵커를
-        # task 로 잡는다. 명시 주입은 hermetic 경로 보존(주입 pm_state 를 그대로 씀).
-        task_mode = task is not None and not self._pm_state_file_explicit
-        # release(--done)는 *명시* 슬롯만 반납한다(비가역) — 자동해소 슬롯을 release 하지 않게
-        # 원래 명시 인자를 별도 보존. 슬롯 자동해소(아래)는 read/write 연속성 경로에만 적용.
-        explicit_worktree_slot = worktree_slot
-        # session-entry 슬롯 해소 + 실행 슬롯 threading (codex round2 must-fix) — bare
-        # handoff(`--repo`/`--slot` 미지정)에서 default-1/단독/idle-필터 슬롯을 *한 번* 해소해
-        # 실행 슬롯에 박는다. 그러면 downstream 전부(pm_state·회귀cwd·handoff entry)가 *명시
-        # 슬롯 우선* 경로로 같은 슬롯을 일관되게 쓴다(self-split 에서 회귀를 활성 worktree 서
-        # 돌림·continuity/회귀cwd 비대칭 제거). 멀티-PM 모호면 fail-loud(slot 안 박고 중단).
-        # 명시 주입(테스트·_pm_state_file_explicit)은 슬롯 해소를 건너뛴다(hermetic 경로 보존).
-        # task-only면 슬롯 자동해소를 우회한다 — task는 슬롯 0개로도 동작하고, 보유 집합은
-        # slots_for_task(task)가 별도로 해소한다.
-        if not self._pm_state_file_explicit and not task_mode:
-            resolved_slot, ambiguity = _resolve_session_worktree_slot(worktree_slot)
-            if ambiguity is not None:
-                print(
-                    f"\n[중단] 슬롯 해소 모호 — {ambiguity} "
-                    "(log/current.md·pm_state.md 어떤 것도 건드리지 않는다.)",
-                    file=sys.stderr,
-                )
-                return 1
-            if resolved_slot is not None:
-                refusal = _slot_identity_admission(resolved_slot, "해소된 worktree_slot")
-                if refusal is not None:
-                    print(f"\n[중단] {refusal}", file=sys.stderr)
-                    return 1
-            if worktree_slot is None and implicit_worktree_slot is not None:
-                # CLI 선-해소는 위 ambiguity gate를 우회하지 않는다. 가드가 통과한 뒤에만
-                # pm_log가 lease 행에서 준 실제 relative/absolute 경로를 실행 축으로 채택한다.
-                resolved_slot = implicit_worktree_slot
-            # 해소 결과를 실행 슬롯으로 thread한다. None도 **확정 스냅샷**(판정 불능)이므로
-            # 그대로 결속하고 downstream이 lease를 다시 조회하지 못하게 한다.
-            worktree_slot = resolved_slot
-
-        # 사용자 ack는 CLI가 아니라 핵심 엔진 경계에서 검증한다. bare slot은 바로 위에서 딱 한 번
-        # 해소한 값을 실제 실행 전체에 thread하고, **그 동일 값**에 ack를 결속한다. 여기서 재조회하면
-        # 두 조회 사이 lease 변화로 승인 대상과 실행 대상이 갈리는 TOCTOU가 되므로 금지한다.
-        if not require_handoff_user_ack(
-            user_ack,
-            task=task,
-            worktree_slot=worktree_slot,
-            dry_run=dry_run,
-        ):
+        # 이전에* 통과시킨다. traversal(`../evil`)·whitespace(`my task`)·슬롯 예약패턴·엔진부재는
+        # 부작용 0 로 중단(1).
+        try:
+            validate_task_name_engine(task)
+        except Exception as exc:  # noqa: BLE001 — InvalidTaskName(.reason)·RuntimeError(엔진 부재)
+            if _is_engine_rev_skew(exc):
+                raise
+            print(
+                f"\n[중단] task 이름 {task!r} 이(가) 부적합 — {getattr(exc, 'reason', exc)} "
+                "(log/current.md·pm_state 어떤 것도 건드리지 않는다.)",
+                file=sys.stderr,
+            )
             return 1
-        # 회귀 cwd 해소용 — _default_run_pytest 가 _regression_cwd 에 넘긴다.
-        # 명시/해소 슬롯이 있으면 그 worktree, 해소값 None이면 이 실행 내내 REPO로 고정.
-        self._worktree_slot = worktree_slot
-        self._worktree_slot_resolution_frozen = True
-        # per-slot pm_state 경로 해소— 명시 주입(테스트)이 없을 때만. 진입부에선
-        # **읽기 위치(target 경로)만 정하고 파일은 옮기지 않는다**(migrate=False) — 회귀/출하
-        # 게이트(아래)가 red 면 "중단 시 pm_state 무접촉" 보장을 지켜야 하므로, legacy→slot
-        # 이동은 *모든 중단 게이트 통과 후·pm_state 첫 접촉 직전*([3/7] 앞)에 1회 수행한다.
-        # task 모드면 슬롯 대신 task 서술 공간(`.local/tasks/<task>/pm_state.md`)을 앵커로 쓴다.
-        if not self._pm_state_file_explicit:
-            if task_mode:
-                self._pm_state_file = _task_pm_state_file(task)
-            elif worktree_slot is None:
-                # run()의 1회 해소 결과가 None이면 쓸 자리를 모른다 — 여기서 lease를 재조회하지
-                # 않고(MF-2/NEW-1의 TOCTOU 공통 뿌리) 그대로 중단한다.
-                print(
-                    "\n[중단] 실행 슬롯 미해소 — pm_state 를 어디에 쓸지 결정할 수 없다. "
-                    "`--repo <repo> --slot <N>` 으로 명시하라 "
-                    "(log/current.md·pm_state.md 어떤 것도 건드리지 않는다). "
-                    f"{identity_args.NO_WORK_FOLDER_REMEDY}",
-                    file=sys.stderr,
-                )
-                return 1
-            else:
-                self._pm_state_file = _pm_state_path(worktree_slot, migrate=False)
+        # 이름이 유효해도 장부에 없는 task는 handoff가 만들 수 없다. 생성 권한은 bootstrap
+        # (`bind_task`) 전용이며, 이 read-only membership gate는 회귀·state backfill 및 모든
+        # 영속 write보다 앞선다(오타로 인한 고아 state/log/dashboard 부작용 0).
+        if not self._task_is_registered(task):
+            return 1
+        # task 보유 슬롯은 log/pm_state/dashboard 및 재스냅 어떤 영속 변경보다 먼저 한 번
+        # 해소한다. 실패를 실제 0슬롯으로 바꾸면 회귀·출하 검사를 전부 skip한 뒤 기록까지
+        # 완료하는 false-green이 되므로 fail-loud. 성공 스냅샷(빈 tuple 포함)은 전 단계가 재사용한다.
+        self._task_slots_snapshot = None
+        try:
+            held_slots = self._task_held_slots(task)
+        except Exception as exc:  # noqa: BLE001 — 해소 실패 ≠ 실제 빈 집합.
+            if _is_engine_rev_skew(exc):
+                raise
+            print(
+                f"\n[중단] task {task!r} 보유 슬롯 장부 해소 실패 — {exc}. "
+                "실제 0슬롯으로 간주하지 않습니다. "
+                "log/current.md·pm_state·dashboard·git 재스냅 어떤 것도 기록하지 않습니다.",
+                file=sys.stderr,
+            )
+            return 1
+        self._task_slots_snapshot = (task, tuple(held_slots))
+        date_str = datetime.date.today().isoformat()
+        # 차수는 회귀 게이트 통과 뒤 task pm_state 에서 추론한다(아래). wave 요약도 인자가 아니라
+        # 여기서 만든다 — 사람이 숫자·문구를 대면 기록과 장부가 갈린다.
+        session_num: int | None = None
+        wave_summary = f"task {task} 세션 핸드오프"
+        # 명시 pm_state 주입(hermetic 테스트)이 아니면 이 실행이 task 의 영속 기록(pm_state·장부
+        # 종료 기록)을 소유한다. 주입 경로는 주입된 파일만 쓰고 장부는 건드리지 않는다.
+        owns_task_state = not self._pm_state_file_explicit
+
+        # 사용자 ack 는 CLI 가 아니라 핵심 엔진 경계에서 검증한다 — 실행 대상값(task)과 승인값을
+        # 같은 자리에서 결속해 두 조회 사이에 대상이 갈리는 TOCTOU 를 만들지 않는다.
+        if not require_handoff_user_ack(user_ack, task=task, dry_run=dry_run):
+            return 1
+        # 연속성 앵커 = task 서술 공간(`.local/tasks/<task>/pm_state.md`).
+        if owns_task_state:
+            self._pm_state_file = _task_pm_state_file(task)
         print(
-            f"[pm_handoff] PM {'task-state 자동 추론' if task is not None else str(session_num) + '차'} "
-            "핸드오프 시작 "
+            f"[pm_handoff] task {task} 핸드오프 시작 "
             f"(dry_run={dry_run}, skip_pytest={skip_pytest}, "
-            f"worktree_slot={worktree_slot}, done={done})"
+            f"보유 작업 폴더 {len(held_slots)}개)"
         )
 
         # ── 0. dirty-tree 게이트 (조기 중단) ──────────────────────────────────
@@ -4234,7 +3591,7 @@ class PmHandoff:
         # 판정은 git 조회 몇 번(초 단위)인데 회귀는 수 분이라, 뒤에 두면 커밋만 하면 될 PM 이
         # 회귀 한 판을 통째로 기다린 뒤에야 차단 사유를 본다.
         print("\n[0/7] dirty-tree 게이트 (미커밋 잔여 — 첫 mutation 전 판정)...")
-        dirty_rc, dirty_ack_note, kept_slots = self._dirty_tree_gate(
+        dirty_rc, dirty_ack_note = self._dirty_tree_gate(
             task, ack_dirty=ack_dirty, auto_trigger=auto_trigger,
             force_handoff=force_handoff, dry_run=dry_run,
         )
@@ -4242,138 +3599,97 @@ class PmHandoff:
             return dirty_rc
 
         # ── 1. 회귀 측정 ───────────────────────────────────────────────────────
-        # task 회귀 모드: task-only 정체성으로 변경 흔적(lease 스냅 대비
-        # head 전진/dirty) 있는 **보유 슬롯 각각**에서 회귀한다(0개면 명시 skip).
-        # slot 모드(task None)는 기존 단일 cwd 경로다.
-        task_regression = task is not None
-        # task 변경-슬롯 집합 — [1b] 출하 변경 surface 가 같은 집합을 공유한다(codex must-fix). None =
-        # task 모드 미진입(slot → 아래 단일 cwd surface). task 모드면 **회귀 skip(--no-pytest)
-        # 여도** 변경 슬롯을 열거해 [1b] 에 전달한다(열거는 비용 미미한 git 조회뿐이라
-        # skip_pytest 여도 수행·[1b] REPO 폴백 단일 검사로의 후퇴 방지).
-        task_shipping_slots: list[str] | None = None
+        # 변경 흔적(lease 스냅 대비 head 전진/dirty) 있는 **보유 슬롯 각각**에서 회귀한다
+        # (보유 0개·변경 0개면 명시 skip).
+        # 변경-슬롯 집합은 [1b] 출하 변경 surface 가 공유한다(codex must-fix) — **회귀
+        # skip(--no-pytest) 여도** 열거는 수행한다(비용은 슬롯당 git 조회 몇 회뿐이고, [1b] 가
+        # REPO 폴백 단일 검사로 후퇴하지 않게 집합을 확보해야 한다).
+        task_shipping_slots: list[str] = []
         print("\n[1/7] 회귀 측정...")
         if dry_run:
             # ack 면제의 전제는 쓰기 0이다. pytest는 프로젝트 코드가 아니어도 cacheprovider 등
             # 플러그인이 파일을 만들 수 있으므로 dry-run에서는 runner 자체를 호출하지 않는다.
             print("  [dry-run] 순수 미리보기 — pytest 실행 생략(캐시 생성 없음).")
             pytest_summary = "(dry-run 미실행)"
-            if task_regression:
-                changed = self._classify_task_changed_slots(task)
-                task_shipping_slots = [slot for slot, _reason in changed]
+            changed = self._classify_task_changed_slots(task)
+            task_shipping_slots = [slot for slot, _reason in changed]
         elif skip_pytest:
             print("  [--no-pytest] 회귀 측정 skip.")
             pytest_summary = "(skip)"
-            if task_regression:
-                # 회귀는 skip 하되 변경-슬롯 열거는 수행([1b] 출하 surface 가 같은 집합을 공유).
-                changed = self._classify_task_changed_slots(task)
-                task_shipping_slots = [slot for slot, _reason in changed]
-        elif task_regression:
+            changed = self._classify_task_changed_slots(task)
+            task_shipping_slots = [slot for slot, _reason in changed]
+        else:
             changed = self._classify_task_changed_slots(task)
             ran_slots = self._run_task_regressions(changed, dry_run)
             if ran_slots is None:   # 변경 슬롯 중 하나라도 red — 핸드오프 차단.
                 return 1
             task_shipping_slots = ran_slots
             pytest_summary = "(task 슬롯별 회귀·위 참조)"
-        else:
-            # 게이트 종류(pytest 스위트 / 해소된 임의 명령)를 먼저 해소한다 — green 판정
-            # 기준이 여기서 갈린다(`_gate_is_pytest`).
-            gate_cmd = _resolve_per_repo_test_cmd()
-            returncode, output = self._run_pytest_fn()
-            print(output.rstrip())
-            if not _regression_is_green(output, returncode, gate_cmd):
-                print(
-                    "\n[중단] 회귀 red — 핸드오프 불가. log/current.md·pm_state.md 어떤 것도 건드리지 않는다.",
-                    file=sys.stderr,
-                )
-                if not _gate_is_pytest(gate_cmd):
-                    print(
-                        f"원인: 회귀 명령이 실패했다 — `{gate_cmd}` (exit {returncode}).",
-                        file=sys.stderr,
-                    )
-                return 1
-            pytest_summary = parse_pytest_summary(output)
-            print(f"  ✓ green: {pytest_summary}")
 
         # ── 1b. 출하 변경 surface ───────────────
         # 기계회귀 green 직후 미push diff ∩ SHIPPING_GLOBS 를 분류해 미검증 출하 변경이
         # 있으면 "릴리즈 전 라이브 필요" 1줄을 surface 한다 — **비차단**(rc 무영향·핸드오프
         # 지연 0). 라이브 LLM 검증은 릴리즈 단일 지점(release wave)으로 모았다
-        # dry_run 은 git 분류도 건너뛴다(미리보기). worktree 는 회귀와 같은 cwd.
-        # task 회귀 모드(task_shipping_slots 비-None): 회귀가 돈 **변경-슬롯 각각**에서 surface —
-        # 단일 _regression_cwd(None) 자동해소가 엉뚱한 트리를 보거나 일부 슬롯의 출하 변경을 놓치는
-        # 것을 막는다(집합 1급화 일관·codex must-fix). slot/skip_pytest 는 기존 단일 cwd.
+        # dry_run 은 git 분류도 건너뛴다(미리보기). 회귀가 돈 **변경-슬롯 각각**에서 surface 한다 —
+        # 단일 자동해소가 엉뚱한 트리를 보거나 일부 슬롯의 출하 변경을 놓치는 것을 막는다
+        # (집합 1급화 일관·codex must-fix).
         print("\n[1b/7] 출하 변경 surface (비차단·릴리즈 라이브는 release wave)...")
         if dry_run:
             print("  [dry-run] 출하 변경 surface skip (미리보기).")
-        elif task_shipping_slots is not None:
-            self._shipping_surface_for_slots(task_shipping_slots)
         else:
-            worktree = self._run_regression_cwd(self._worktree_slot)
-            self._shipping_surface_step(worktree)
+            self._shipping_surface_for_slots(task_shipping_slots)
 
         # task state 보장/차수 추론은 회귀·출하 게이트를 통과한 뒤, log/dashboard 등 첫 영속 변경
         # **전**에 끝낸다(MF-b). 구 task backfill 실패 시 외부 상태는 아직 무접촉이라 재시도해도
         # log 중복이 생기지 않는다. dry-run은 state를 만들지 않되 기존 state에서 같은 추론을 한다.
-        if task is not None:
-            if not dry_run and task_mode and not self._ensure_task_pm_state(task):
-                return 1
-            if not self._pm_state_file.exists():
-                print(
-                    f"\n[중단] task pm_state가 없다: {self._pm_state_file} — "
-                    "차수를 임의 지정하지 않고 task state를 먼저 복구하라.",
-                    file=sys.stderr,
-                )
-                return 1
-            inferred = infer_next_task_session_num(
-                file_lock.read_text_shared(self._pm_state_file, encoding="utf-8"),
-                _read_log_text_exact(self._log_file) if self._log_file.exists() else "",
-                task,
-                task_released=(
-                    self._task_record_snapshot is not None
-                    and self._task_record_snapshot[0] == task
-                    and getattr(self._task_record_snapshot[1], "open", None) is False
-                ),
+        if not dry_run and owns_task_state and not self._ensure_task_pm_state(task):
+            return 1
+        if not self._pm_state_file.exists():
+            print(
+                f"\n[중단] task pm_state가 없다: {self._pm_state_file} — "
+                "차수를 임의 지정하지 않고 task state를 먼저 복구하라.",
+                file=sys.stderr,
             )
-            if not isinstance(inferred, int):
-                print(
-                    f"\n[중단] task {task!r} pm_state에서 현재 차수를 추론할 수 없다 — "
-                    "task state를 복구하라.",
-                    file=sys.stderr,
-                )
-                return 1
-            session_num = inferred
-            print(f"  ✓ task state+log 차수 자동 복구: {session_num}차")
+            return 1
+        inferred = infer_next_task_session_num(
+            file_lock.read_text_shared(self._pm_state_file, encoding="utf-8"),
+            _read_log_text_exact(self._log_file) if self._log_file.exists() else "",
+            task,
+            task_released=(
+                self._task_record_snapshot is not None
+                and self._task_record_snapshot[0] == task
+                and getattr(self._task_record_snapshot[1], "open", None) is False
+            ),
+        )
+        if not isinstance(inferred, int):
+            print(
+                f"\n[중단] task {task!r} pm_state에서 현재 차수를 추론할 수 없다 — "
+                "task state를 복구하라.",
+                file=sys.stderr,
+            )
+            return 1
+        session_num = inferred
+        print(f"  ✓ task state+log 차수 자동 복구: {session_num}차")
 
         # 세션 종료 기록(닫힘)은 같은-session 재실행을 판별하는 load-bearing 신호이자, 다음
         # 진입이 이 자리를 "열려 있음"으로 오독하지 않게 하는 값이다. log/state/dashboard 어떤
         # handoff write보다 먼저 기록해, 이후 단계가 중단돼도 재실행이 같은 차수로 복구되게 한다.
-        # 닫는 축은 모드가 가른다: task 모드는 task 행, 슬롯 모드는 그 슬롯 행(대여는 유지).
-        # dry-run은 예고만 하고 장부를 쓰지 않는다.
-        closing_task = task if task_mode else None
-        closing_slot = None if task_mode else worktree_slot
-        if closing_task is not None or closing_slot is not None:
+        # 닫는 것은 task 행 하나다(대여는 유지). dry-run 은 예고만 하고 장부를 쓰지 않는다.
+        # 명시 pm_state 주입(hermetic)은 장부를 소유하지 않으므로 기록하지 않는다.
+        if owns_task_state:
             print("\n[세션] 종료 기록(닫힘) (log write 전)...")
             if dry_run:
-                print(f"  [dry-run] 종료 기록 예고: "
-                      f"{closing_task or closing_slot} (실행 생략).")
-            elif not self._close_session_records(closing_task, closing_slot):
+                print(f"  [dry-run] 종료 기록 예고: {task} (실행 생략).")
+            elif not self._close_session_records(task):
                 return 1
 
         # ── 2. log/current.md handoff entry append / 같은-세션 갱신 ────────────────────
         print("\n[2/7] log/current.md handoff entry append/갱신...")
-        # 세션 정체성 태그— 해소된 슬롯(`work/<repo>_<N>`)에서 canonical `<repo>_<N>`
-        # 를 유도해 헤더에 박는다(감사 메타·상태 저장 아님·무충돌·태그 값에 `work/`
-        # 프리픽스 없음). 미해소면 None → 태그 생략·현행 헤더 byte-호환.
-        # task 모드: 연속성 앵커 = task. dashboard 자기 섹션 = `## <task>`(verbatim·interface 2),
-        # log 헤더 태그 = `(task:<name>)`(sentinel·서술괄호/슬롯태그와 기계 구분·interface 3). 두 표면의
-        # 요구가 달라(사람 가독 vs 기계 파싱) 값을 분리한다. slot 모드는 둘 다 canonical `<repo>_<N>`.
-        if task is not None:
-            session_identity = task
-            log_session_tag = f"{_TASK_TAG_PREFIX}{task}"
-        else:
-            _slot_id = _slot_identity(worktree_slot)
-            session_identity = _slot_id.key if _slot_id is not None else None
-            log_session_tag = session_identity
+        # 연속성 앵커 = task. dashboard 자기 섹션 = `## <task>`(verbatim·interface 2),
+        # log 헤더 태그 = `(task:<name>)`(sentinel·서술괄호와 기계 구분·interface 3). 두 표면의
+        # 요구가 달라(사람 가독 vs 기계 파싱) 값을 분리한다.
+        session_identity = task
+        log_session_tag = f"{_TASK_TAG_PREFIX}{task}"
         normalized_session_num = _normalize_session_num(session_num)
         # ack 박제 자리를 못 찾으면(`DirtyAckStampError`) 통과시키지 않는다 — 사유를 잃은 채
         # 미커밋 세션이 넘어가는 것이 게이트가 막으려는 바로 그 상태다. 예외는 계획 단계에서
@@ -4389,11 +3705,8 @@ class PmHandoff:
                         log_text,
                         session_num=normalized_session_num,
                         date=date_str,
-                        worktree_slot=worktree_slot,
-                        branch=branch,
                         session=log_session_tag,
                         task=task,
-                        collection_task=entry_collection_task,
                         dirty_ack_note=dirty_ack_note,
                     )
                 )
@@ -4403,11 +3716,8 @@ class PmHandoff:
                     self._log_file,
                     session_num=normalized_session_num,
                     date=date_str,
-                    worktree_slot=worktree_slot,
-                    branch=branch,
                     session=log_session_tag,
                     task=task,
-                    collection_task=entry_collection_task,
                     dirty_ack_note=dirty_ack_note,
                 )
         except DirtyAckStampError as exc:
@@ -4457,15 +3767,11 @@ class PmHandoff:
             )
 
         # ── 2b. slot 대시보드 자기 섹션 overwrite ──────────
-        # 세션 정체성 해소 시(멀티-PM 슬롯·`session_identity`)만 자기 섹션을 overwrite 한다 —
-        # log entry append 와 같은 write 패스(타 슬롯 byte 불변·append 아님). 정체성 미해소
-        # ·session_identity None)는 skip(무회귀·섹션 1개뿐이라 무의미). dry_run 은 write
-        # 안 함(미리보기). 명시 pm_state 주입(hermetic 테스트)이어도 session_identity 가 있으면 쓴다
-        # (대시보드 파일은 별도 seam `self._dashboard_file` 로 격리).
-        print("\n[2b/7] slot 대시보드 자기 섹션 overwrite (수정형)...")
-        if session_identity is None:
-            print("  세션 정체성 미해소 — 대시보드 skip(무회귀).")
-        elif dry_run:
+        # log entry append 와 같은 write 패스로 자기 섹션만 overwrite 한다(타 섹션 byte 불변·
+        # append 아님). dry_run 은 write 안 함(미리보기). 명시 pm_state 주입(hermetic 테스트)도
+        # 대시보드는 쓴다 — 파일이 별도 seam(`self._dashboard_file`)으로 격리돼 있다.
+        print("\n[2b/7] 대시보드 자기 섹션 overwrite (수정형)...")
+        if dry_run:
             print(f"  [dry-run] 대시보드 자기 섹션 overwrite 예고: ## {session_identity}")
         else:
             dash_file = self._write_dashboard_section(
@@ -4475,18 +3781,6 @@ class PmHandoff:
                 date_str,
             )
             print(f"  ✓ 대시보드 자기 섹션 overwrite: {dash_file} (## {session_identity})")
-
-        # ── per-slot 마이그레이션 (트랜잭션 보장) ─────────────────────────
-        # 모든 중단 게이트(회귀 [1/7]·출하 [1b/7])를 통과한 *뒤*·pm_state 첫 접촉([3/7])
-        # 직전에 legacy → slot 이동을 1회 수행한다. 게이트 red 면 여기 못 와 legacy 무접촉
-        # (codex must-fix — "중단 시 pm_state 무접촉" 보존). dry_run 은 이동 안 함(미리보기 —
-        # 진입부 migrate=False target 을 그대로 읽음). 명시 주입(테스트)은 재해소 안 함.
-        # task 모드는 slot legacy 마이그레이션 대상이 아니다. task state 보장/차수 추론은
-        # 첫 영속 변경 전 위에서 이미 끝냈다.
-        if not dry_run and not self._pm_state_file_explicit:
-            if not task_mode:
-                # 슬롯 미해소는 위 진입부에서 이미 중단했다 — 여기 오는 값은 해소된 슬롯이다.
-                self._pm_state_file = _migrate_legacy_pm_state(worktree_slot)
 
         # ── 3·4. pm_state.md sliding window 정리 + 길이 검증 ───────────────────
         # pm_state.md 부재(board.py init 미실행 clone)는 치명 아님 — fail-soft.
@@ -4586,12 +3880,7 @@ class PmHandoff:
             session_num=_normalize_session_num(session_num),
             wave_summary=wave_summary,
             date_str=date_str,
-            worktree_slot=self._worktree_slot,
-            # task 모드면 트리거를 task-only(`--task <task>`)로
-            # 갭 보완(트리거=재개 명령 1:1). 정체성 판정 축은 이 run() 전체에서
-            # `task is not None` 로 단일화한다(log 헤더 태그·dashboard 섹션·:2295 와 동축) — 명시
-            # pm_state 주입(hermetic·_pm_state_file_explicit) 경로도 로그/대시보드가 task 로 처리하는
-            # 한 트리거도 task 여야 일관(codex must-fix). slot(task None)는 100% 불변.
+            # 트리거는 `--task <task>` 한 줄이다(트리거=재개 명령 1:1).
             task=task,
         )
         print(prompt_output)
@@ -4652,51 +3941,14 @@ class PmHandoff:
               "보호 브랜치(공개 제품 repo)는 사용자 승인 게이트라 여기서 밀지 마라.")
 
         # ── 핸드오프 완료: 보유 슬롯 git 재스냅 ────
-        # 기록(log·pm_state) 완료 후 슬롯의 live git 을 lease.git 에 재기록한다 — 세션 중 브랜치/HEAD
-        # 변경(예: 릴리즈 v1.3.2→v1.3.3)이 차기 부트스트랩 0단계 record-vs-live 정합(compare_slot_git)을
-        # `diverged` FAIL-LOUD 로 오탐시켜 정당한 자기 진행을 외부-개입 오경보로 차단하는 것을
-        # 막는다. base 미전달=기존 보존(arrival 동형)·판정 재구현 없이 write
-        # 프리미티브만 호출. --done(release→idle·git 정리)은 대상 아님 — idle 슬롯은 활성 git 기대가
-        # 없다(다음 alloc 이 arrival 재스냅). dry_run 은 예고만. worktree_pool 부재·장부 부재는
-        # _record_slot_snapshot 내부에서 fail-soft(무해 skip).
-        #
-        # task 모드: 세션은 보유 슬롯 **집합**을 두고 나가므로 재스냅은 **보유 전
-        # 슬롯**(현행 1슬롯 한정 폐지·_record_task_slot_snapshots→slots_for_task 루프). slot 모드
-        # (task None)는 단일 bound 슬롯 재스냅으로 100% 불변. `--force-handoff` 로 반납하지 않고
-        # 두고 가는 `--done` 슬롯도 대여가 이어지므로 재스냅 대상이다.
-        keeps_done_slot = done and explicit_worktree_slot in kept_slots
-        if not done or keeps_done_slot:
-            if task is not None:
-                if not self._record_task_slot_snapshots(task, dry_run):
-                    return 1
-            elif self._worktree_slot is not None:
-                print("\n[재스냅] bound 슬롯 git 재스냅 (여기 두고 간다)...")
-                if dry_run:
-                    print(f"  [dry-run] git 재스냅 예고: {self._worktree_slot} (실행 생략).")
-                else:
-                    self._record_slot_snapshot(self._worktree_slot)
-
-        # ── multi-PM 모드: --done 작업완료 슬롯 release ─────────────────
-        # 세션종료/회전 ≠ release — --done 명시 시에만 슬롯을 idle 반납한다. release 는 비가역
-        # 이라 *명시* `--repo`/`--slot`(explicit_worktree_slot)만 반납한다 — 자동해소(default-1)
-        # 슬롯은 read/write 연속성에만 쓰고 release 하지 않는다(의도치 않은 반납 차단).
-        if done:
-            if not explicit_worktree_slot:
-                print(
-                    "\n[중단] --done 은 --repo <name> [--slot <N>] 이 필요하다 (어느 슬롯을 반납할지).",
-                    file=sys.stderr,
-                )
-                return 1
-            print("\n[multi-PM] --done 작업완료 — worktree 슬롯 release...")
-            if keeps_done_slot:
-                print(f"  슬롯 {explicit_worktree_slot} 반납 안 함 — 커밋 안 한 변경 있음"
-                      "(--force-handoff·대여 유지).")
-            elif dry_run:
-                print(f"  [dry-run] worktree 슬롯 release 예고: {explicit_worktree_slot} (실행 생략).")
-            else:
-                rc = self._release_slot(explicit_worktree_slot)
-                if rc != 0:
-                    return rc
+        # 기록(log·pm_state) 완료 후 보유 슬롯 **전체**의 live git 을 lease.git 에 재기록한다 —
+        # 세션 중 브랜치/HEAD 변경(예: 릴리즈 v1.3.2→v1.3.3)이 차기 부트스트랩 0단계
+        # record-vs-live 정합(compare_slot_git)을 `diverged` FAIL-LOUD 로 오탐시켜 정당한 자기
+        # 진행을 외부-개입 오경보로 차단하는 것을 막는다. base 미전달=기존 보존(arrival 동형)·
+        # 판정 재구현 없이 write 프리미티브만 호출. dry_run 은 예고만. worktree_pool 부재·장부
+        # 부재는 _record_slot_snapshot 내부에서 fail-soft(무해 skip).
+        if not self._record_task_slot_snapshots(task, dry_run):
+            return 1
 
         if dry_run:
             print("\n[dry-run] 완료 — 실제 파일 편집은 실행하지 않았다.")
@@ -4706,107 +3958,25 @@ class PmHandoff:
         return 0
 
 
-# ── 오형식 차수 정규화 CLI 진입 (--normalize-session-anchors) ────────────
-
-def _run_normalize_session_anchors(worktree_slot: str | None, dry_run: bool) -> int:
-    """`--normalize-session-anchors` 진입 — 활성 슬롯 pm_state.md 의 오형식 `**N차차+**` 를
-    `**N차**` 로 멱등·비파괴 정규화한다.
-
-    - 대상 = `_pm_state_path(..., migrate=False)` (읽기 위치·마이그레이션 안 함·부작용 0).
-      슬롯 미해소면 대상이 없으므로 중단한다(rc1).
-    - 변경 preview(unified diff)를 항상 출력한다(비파괴 선검토).
-    - `--dry-run` 이면 파일을 교체하지 않는다(선검토). 없으면 diff 출력 후 교체 write.
-    - 파일 부재·변경 없음(이미 정합·멱등)은 rc0 no-op.
-
-    반환: 0 (정규화 적용/미리보기/no-op 전부 성공).
-    """
-    try:
-        target = _pm_state_path(worktree_slot, migrate=False)
-    except identity_args.SlotResolutionError as exc:
-        print(f"[중단] {exc}", file=sys.stderr)
-        return 1
-    print(f"[normalize-session-anchors] 대상 pm_state: {target}")
-    if not target.exists():
-        print("  대상 파일이 없다 — 정규화할 것이 없다(no-op).")
-        return 0
-
-    original = file_lock.read_text_shared(target, encoding="utf-8")
-    normalized = normalize_session_anchors(original)
-    if normalized == original:
-        print("  오형식 `**N차차+**` 없음 — 이미 정합(변경 없음·멱등 no-op).")
-        return 0
-
-    print("  변경 preview (오형식 `**N차차+**` → `**N차**`·세션 식별 절만):")
-    diff = difflib.unified_diff(
-        original.splitlines(keepends=True),
-        normalized.splitlines(keepends=True),
-        fromfile="pm_state.md (before)",
-        tofile="pm_state.md (after)",
-    )
-    for line in diff:
-        # unified_diff 는 컨텍스트 줄에 keepends 로 개행을 보존하지만 헤더/eof-no-newline
-        # 줄엔 개행이 없을 수 있어 end 를 조건부로 붙인다.
-        print(line, end="" if line.endswith("\n") else "\n")
-
-    if dry_run:
-        print(
-            "  [dry-run] 파일 미변경 — 위 diff 를 검토한 뒤 --dry-run 없이 재실행해 적용하라 "
-            "(비파괴·멱등)."
-        )
-        return 0
-
-    target.write_text(normalized, encoding="utf-8", newline="\n")
-    print(f"  ✓ 정규화 적용 완료 — {target} 교체 (멱등: 재실행 시 무변화).")
-    return 0
-
-
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
-def _handoff_user_ack_target(
-    task: str | None,
-    worktree_slot: str | None,
-) -> tuple[str | None, str]:
+def _handoff_user_ack_target(task: str) -> tuple[str, str]:
     """핸드오프 승인 토큰의 canonical 대상값과 사람이 읽는 대상 설명을 반환한다.
 
-    대상은 **장부가 준 정체성**이다 — task 이름 또는 슬롯 키. 슬롯을 하나만 쓰는 홈도 그 홈
-    자신이 슬롯 행이라 키가 나온다. 정체성이 없으면 승인할 대상도 없으므로 sentinel 을
-    지어내지 않고 미해소로 돌려준다(호출부가 명시를 요구한다).
+    대상은 **장부가 준 정체성**, 곧 task 이름 하나다. 해소는 run() 진입 전에 이미 끝나 있으므로
+    여기서 미해소를 다시 다루지 않는다.
     """
-    if task is not None:
-        return task, f"task {task!r}"
-    identity = _slot_identity(worktree_slot)
-    if identity is not None:
-        target = identity.key
-        return target, f"slot {target!r}"
-    return None, "정체성 미해소 슬롯"
+    return task, f"task {task!r}"
 
 
 def require_handoff_user_ack(
     user_ack: str | None,
     *,
-    task: str | None,
-    worktree_slot: str | None,
+    task: str,
     dry_run: bool,
 ) -> bool:
     """기존 값-결속 ack 관용구로 실제 핸드오프만 사용자 승인 게이트한다."""
-    target, description = _handoff_user_ack_target(task, worktree_slot)
-    if dry_run and target is None:
-        # 미리보기는 쓰기 0 이라 대상값 없이도 진행한다 — 실제 실행이 무엇을 요구하는지 알린다.
-        print(
-            f"[dry-run] 쓰기 0 미리보기는 사용자 ack 없이 허용한다. 실제 {description} "
-            "핸드오프에는 승인 대상값이 필요하니 `--repo <repo> --slot <N>` 또는 "
-            f"`--task <이름>` 으로 대상을 명시하라. {identity_args.NO_WORK_FOLDER_REMEDY}"
-        )
-        return True
-    if target is None:
-        # 승인 대상값이 없으면 결속할 것이 없다 — 통과시키면 값-결속 게이트가 무력화된다.
-        print(
-            f"[중단] pm_handoff {description}: 승인 대상값을 해소할 수 없다. "
-            "`--repo <repo> --slot <N>` 또는 `--task <이름>` 으로 대상을 명시하라. "
-            f"{identity_args.NO_WORK_FOLDER_REMEDY}",
-            file=sys.stderr,
-        )
-        return False
+    target, description = _handoff_user_ack_target(task)
     if dry_run:
         print(
             f"[dry-run] 쓰기 0 미리보기는 사용자 ack 없이 허용한다. 실제 {description} "
@@ -4841,38 +4011,15 @@ def build_parser() -> argparse.ArgumentParser:
         prog="pm_handoff.py",
         description="PM 핸드오프 7단계 자동화 헬퍼.",
     )
-    # slot 경로에서는 session-seq·wave-summary 필수. task 경로는 task pm_state에서 차수를
-    # 추론하고 기본 요약을 생성하므로 `--task <이름>` 하나로 실행 가능하다.
-    # 차수는 "세션 정체성"이 아니라 "슬롯 시퀀스" — 정체성(--repo/--slot)과는 별개
-    # — actor `--session` 삭제로 이름충돌 없이 `--session-seq` 유지).
+    # 세션 정체성은 task 하나다. 차수와 wave 요약은 인자가 아니라 task pm_state 에서 엔진이
+    # 추론한다 — 사람이 숫자를 대면 기록과 장부가 갈린다.
     parser.add_argument(
-        "--session-seq",
-        metavar="N",
+        "--task",
+        metavar="이름",
         default=None,
-        help="떠나는 PM 세션 차수 (예: 28). slot 경로 필수, task 경로에서는 지정 금지·state 자동 추론.",
-    )
-    parser.add_argument(
-        "--wave-summary",
-        metavar="요약",
-        help="떠나는 PM 세션의 wave 종합 1~2 줄 요약. slot 경로 필수, task 경로 기본값 자동.",
-    )
-    # ── multi-PM 모드 정체성 — 미지정이면 자동해소·현행 보존 ──
-    # canonical = 분해형 `--repo <name> [--slot <N>]`(전 CLI 통일·구 alias --session/
-    # --worktree-slot/--session-num 은 즉시 삭제). --repo 단독은 활성(leased) 슬롯 1개면
-    # 자동해소, 0개/≥2개는 fail-loud(`_resolve_explicit_identity_slot`).
-    identity_args.add_identity_args(parser)
-    parser.add_argument(
-        "--branch",
-        metavar="브랜치",
-        default=None,
-        help="multi-PM 모드 — 이 세션의 작업스트림 브랜치 (--repo/--slot 과 함께·handoff entry 기록).",
-    )
-    parser.add_argument(
-        "--done",
-        action="store_true",
         help=(
-            "multi-PM 모드 — 작업완료 시 worktree 슬롯을 release(idle 반납). "
-            "--repo <name> [--slot <N>] 필요. 미지정이면 세션종료/회전 ≠ release(리스 유지)."
+            "핸드오프 대상 task 이름. 생략하면 cwd 작업 폴더 → 단일 활성 task 순으로 스스로 "
+            "해소하고, 그래도 정할 수 없으면 중단한다(`<등록 repo>_<N>` 예약 패턴은 거부)."
         ),
     )
     parser.add_argument(
@@ -4882,11 +4029,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--user-ack",
-        metavar="<task 또는 slot>",
+        metavar="<task 이름>",
         default=None,
         help=(
-            "사용자가 명시 승인한 핸드오프 대상값과 정확히 결속하는 토큰"
-            "(task 이름 또는 canonical <repo>_<N>). "
+            "사용자가 명시 승인한 핸드오프 대상값(task 이름)과 정확히 결속하는 토큰. "
             "--dry-run 미리보기는 생략 가능."
         ),
     )
@@ -4908,8 +4054,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--force-handoff",
         action="store_true",
         help=(
-            "핸드오프가 다룰 슬롯에 커밋 안 한 변경이 있을 때 사용자가 강제 핸드오프를 고른 경우 — "
-            "커밋 없이 핸드오프 기록만 하고 그 슬롯은 반납하지 않는다(--done 이어도·대여 유지). "
+            "보유 작업 폴더에 커밋 안 한 변경이 있을 때 사용자가 강제 핸드오프를 고른 경우 — "
+            "커밋 없이 핸드오프 기록만 하고 변경은 제자리에 둔다. "
             "entry 에 '커밋 안 한 변경 있음, 슬롯 유지: <slot>' 을 적는다."
         ),
     )
@@ -4920,17 +4066,6 @@ def build_parser() -> argparse.ArgumentParser:
             "사용자가 핸드오프를 명시 지시한 호출부를 위한 호환 신호. dirty-tree 게이트를 "
             "차단 대신 loud 경고 + 사유 자동 박제로 강등한다. 독자 트리거·승인이 아니며 "
             "--user-ack 값-결속 계약을 우회하지 않는다."
-        ),
-    )
-    # ── 유지보수 모드 (핸드오프 7단계와 독립) ──────────────────────────
-    parser.add_argument(
-        "--normalize-session-anchors",
-        action="store_true",
-        help=(
-            "유지보수 모드 — pm_state.md 세션 식별 절의 오형식 `**N차차+**`(잔재) 를 "
-            "`**N차**` 로 멱등·비파괴 정규화한다. session-seq/wave-summary 불요. "
-            "먼저 `--dry-run` 으로 diff 를 선검토한 뒤 재실행해 적용하길 권장. --repo/--slot "
-            "로 슬롯별 pm_state 지정 가능(미지정이면 활성 슬롯 자동해소)."
         ),
     )
     return parser
@@ -4945,46 +4080,6 @@ def _main(
     args = parser.parse_args(argv)
     handoff = PmHandoff()
 
-    # task 혼합 계약을 공용 parse_identity의 `--slot은 --repo 필수`보다 먼저 판정한다(SF).
-    # 그래야 `--task X --slot 1`이 slot-mode 해결책(`--repo` 추가)을 잘못 안내하지 않는다.
-    if args.task is not None and (
-        args.repo is not None
-        or args.slot is not None
-        or args.branch
-        or args.done
-        or args.normalize_session_anchors
-    ):
-        parser.error(
-            "--task 는 단독 정체성이다 — --repo/--slot/--branch/--done/"
-            "--normalize-session-anchors 와 함께 쓸 수 없다."
-        )
-    if args.task is not None and args.session_seq is not None:
-        parser.error(
-            "task 모드에서는 --session-seq를 지정할 수 없다 — "
-            "차수는 task pm_state에서만 자동 추론한다."
-        )
-
-    # 세션 정체성 해소 (identity_args) — 분해형 `--repo/--slot` canonical.
-    # `--slot` 단독(--repo 없음)·slot<1 은 parse_identity 가 ValueError 로 판정(fail-loud).
-    try:
-        identity = identity_args.parse_identity(args)
-    except ValueError as exc:
-        parser.error(str(exc))
-
-    # 명시 --repo(+--slot) → 실행 슬롯(`work/<repo>_<N>`) 해소(세션↔repo 조인 검증·
-    # fail-loud). 정체성 인자 전무(kind='none')면 아래 pm_log 공유 identity 체인으로 이어간다.
-    args.worktree_slot, identity_err = _resolve_explicit_identity_slot(identity.repo, identity.slot)
-    if identity_err is not None:
-        parser.error(identity_err)
-
-    # --branch 는 슬롯 정체성 동반 필요 — 슬롯 없는 브랜치는 회전 재부착 단서로 불완전
-    # (어느 슬롯에 재부착할지 모름)하므로 조용히 무시하지 않고 거부한다(오용 축소).
-    if args.branch and not args.worktree_slot:
-        parser.error(
-            "--branch 는 --repo <name> [--slot <N>] 과 함께 써야 한다 "
-            "(multi-PM 모드 회전 재부착 단서)."
-        )
-
     # --ack-dirty 는 **사유 박제**가 목적이라 빈/공백 사유를 받지 않는다 (사유 없는 bare 플래그는
     # argparse 가 "expected one argument" 로 이미 usage error). 엔진 run() 도 같은 경계를 갖는다.
     # 개행이 살아 있으면 사유 하나로 가짜 entry 줄을 위조할 수 있어 여기서 단일행으로 평탄화한다
@@ -4996,127 +4091,47 @@ def _main(
             )
         args.ack_dirty = flatten_ack_reason(args.ack_dirty)
 
-    # ── 오형식 차수 정규화 모드 (--normalize-session-anchors) ──────
-    # 세션 식별 절의 `**N차차+**` → `**N차**` 멱등·비파괴 정규화. 핸드오프
-    # 7단계와 독립된 유지보수 모드라 session-seq/wave-summary required 체크 *앞에서* 분기해
-    # 조기 반환한다(위 ingress 파이프라인으로 해소된 슬롯을 per-slot 대상 해소에 재사용).
-    if args.normalize_session_anchors:
-        return _run_normalize_session_anchors(args.worktree_slot, args.dry_run)
-
-    task = identity.task
-    collection_task = task
-    implicit_worktree_slot = None
-    if identity.kind == "none" and task is None:
-        # 인자 검증·독립 유지보수 모드 뒤, 실제 handoff 직전에만 생산자 identity를 해소한다.
-        # seam 주입은 CLI 회귀가 실행 머신의 REPO/cwd 장부를 읽지 않게 한다.
+    task = args.task
+    if task is None:
+        # 인자 검증 뒤, 실제 handoff 직전에만 생산자 identity 를 해소한다. seam 주입은 CLI 회귀가
+        # 실행 머신의 REPO/cwd 장부를 읽지 않게 한다.
         resolver = identity_resolver or _resolve_implicit_handoff_identity
-        resolved_identity = resolver()
-        resolved_task, implicit_session, identity_source = resolved_identity[:3]
-        if len(resolved_identity) > 3:
-            implicit_worktree_slot = resolved_identity[3]
-        collection_task = resolved_task
+        task, identity_source = resolver()
         # 생산자 층이 하나라도 미분류로 늘어나면 여기서 즉시 중단한다(계약 검문).
         _handoff_identity_source_contract()
-        if resolved_task is None and implicit_session is None:
+        if task is None:
+            # 쓸 자리를 지어내지 않는다 — 어느 task 의 연속성을 이어야 하는지 모르면 중단이 답이다.
             print(
-                f"[pm_handoff] 수집 정체성 미해소 ({identity_source}) — 실행 슬롯은 run() 이 "
-                "다시 해소하고, 그마저 안 되면 중단한다."
+                f"[중단] 핸드오프 대상 task 미해소 ({identity_source}) — 이 cwd 를 가진 작업 폴더가 "
+                "없고 활성 task 도 하나가 아니다. `--task <이름>` 으로 명시하라. "
+                f"{identity_args.NO_WORK_FOLDER_REMEDY}",
+                file=sys.stderr,
             )
-        elif implicit_session is not None:
-            # CLI 선-결속은 run()의 guarded slot 해소(모호 시 fail-loud)를 우회한다. 여기서는
-            # identity만 표시하고 실제 경로는 run()이 lease 장부의 실제 slot로 한 번 해소한다.
-            print(
-                f"[pm_handoff] 정체성 자동 해소: slot={implicit_session} "
-                f"({identity_source}; pm_log 공유 체인)"
-            )
-        else:
-            # 남은 층은 task 장부에 등록된 identity를 내놓는 실행 층뿐이다(계약이 완전 분할을
-            # 강제하므로 미해소는 위 분기에서 이미 걸렀다).
-            registration_status, registration_detail = handoff._task_registration_status(
-                resolved_task
-            )
-            if registration_status != "registered":
-                if registration_status == "archived":
-                    print(
-                        f"[중단] 자동 해소 task {resolved_task!r} 은(는) 종료 archive로 보관됨 "
-                        f"({registration_detail}). `pm-config.py task reopen {resolved_task}`"
-                        " (복수 후보면 `--archive <basename>` 추가) 후 bootstrap으로 재진입하라. "
-                        "legacy 쓰기 경로로 강등하지 않는다.",
-                        file=sys.stderr,
-                    )
-                    return 1
-                if registration_status == "unregistered":
-                    demotion_reason = "task 장부 미등록"
-                elif registration_status == "lookup-failed":
-                    demotion_reason = f"task 장부 조회 실패 — {registration_detail}"
-                else:
-                    demotion_reason = f"task 장부 엔진 부재 — {registration_detail}"
-                print(
-                    f"[pm_handoff] 수집 정체성 자동 해소: task={collection_task} "
-                    f"({identity_source}; {demotion_reason} — legacy 연속성 유지)"
-                )
-            else:
-                if args.session_seq is not None:
-                    parser.error(
-                        "암묵 task 모드에서도 --session-seq를 지정할 수 없다 — "
-                        "차수는 task pm_state에서만 자동 추론한다."
-                    )
-                task = resolved_task
-                print(
-                    f"[pm_handoff] 정체성 자동 해소: task={task} "
-                    f"({identity_source}; pm_log 공유 체인)"
-                )
+            return 1
+        print(
+            f"[pm_handoff] 정체성 자동 해소: task={task} "
+            f"({identity_source}; pm_log 공유 체인)"
+        )
 
-    # explicit/자동 task 이름 모두 생산자와 같은 task 이름 validator를 통과한다.
-    # task 장부 membership은 실제 task 모드에서만 run()이 검사한다.
-    validated_task = task if task is not None else collection_task
-    if validated_task is not None:
-        try:
-            validate_task_name_engine(validated_task)
-        except RuntimeError as exc:
-            if _is_engine_rev_skew(exc):
-                raise
-            parser.error(str(exc))
-        except Exception as exc:  # noqa: BLE001 — worktree_pool.InvalidTaskName(.reason 진단)
-            parser.error(
-                f"--task 이름 {validated_task!r} 이(가) 부적합 — "
-                f"{getattr(exc, 'reason', exc)}. 안전한 단일 이름(공백·괄호·path 문자·"
-                "슬롯 예약패턴 `<repo>_<N>` 불가)이어야 한다."
-            )
+    # 명시·자동 해소 양쪽 모두 생산자와 같은 task 이름 validator 를 통과한다. 장부 membership
+    # 검사는 run() 이 영속 변경 전에 한 번만 한다(중복 판정 금지).
+    try:
+        validate_task_name_engine(task)
+    except RuntimeError as exc:
+        if _is_engine_rev_skew(exc):
+            raise
+        parser.error(str(exc))
+    except Exception as exc:  # noqa: BLE001 — worktree_pool.InvalidTaskName(.reason 진단)
+        parser.error(
+            f"--task 이름 {task!r} 이(가) 부적합 — "
+            f"{getattr(exc, 'reason', exc)}. 안전한 단일 이름(공백·괄호·path 문자·"
+            "슬롯 예약패턴 `<repo>_<N>` 불가)이어야 한다."
+        )
 
-    if task is not None:
-        # 엔진 run()이 회귀 게이트 뒤 task state를 보장한 다음 차수를 직접 추론한다. CLI가 미리
-        # 읽어 숫자를 전달하지 않아 직접 호출과 같은 단일 봉인을 탄다. 암묵 승격의 명시
-        # --session-seq는 위에서 fail-loud 했으므로 사용자 입력을 여기서 조용히 버리지 않는다.
-        args.session_seq = None
-        if not args.wave_summary:
-            args.wave_summary = f"task {task} 세션 핸드오프"
-    else:
-        # slot 경로 — 기존처럼 사람이 차수와 wave summary를 명시한다.
-        missing = [
-            flag
-            for flag, val in (
-                ("--session-seq", args.session_seq),
-                ("--wave-summary", args.wave_summary),
-            )
-            if not val
-        ]
-        if missing:
-            parser.error(f"{', '.join(missing)} 가 필수다.")
-
-    # CLI는 승인값과 아직 미해소일 수 있는 정체성을 엔진에 그대로 전달한다. 실제 slot 해소와
-    # 값-결속 ack 검증은 PmHandoff.run()의 단일 경계가 한 번만 수행한다(TOCTOU 방지).
     return handoff.run(
-        session_num=args.session_seq,
-        wave_summary=args.wave_summary,
+        task,
         dry_run=args.dry_run,
         skip_pytest=args.no_pytest,
-        worktree_slot=args.worktree_slot,
-        branch=args.branch,
-        done=args.done,
-        task=task,
-        collection_task=collection_task,
-        implicit_worktree_slot=implicit_worktree_slot,
         ack_dirty=args.ack_dirty,
         auto_trigger=args.auto_trigger,
         user_ack=args.user_ack,
@@ -5154,22 +4169,16 @@ def _resolve_implicit_handoff_identity(
     *,
     cwd: Path | None = None,
     pm_log_module=None,
-) -> tuple[str | None, str | None, str, str | None]:
-    """pm_log 생산자와 같은 체인으로 무명시 handoff의 task/session 축을 해소한다."""
+) -> tuple[str | None, str]:
+    """pm_log 생산자와 같은 체인으로 무인자 handoff 의 task 를 해소한다.
+
+    체인은 생산자가 소유한다 — `cwd→lease 행` → `단일 활성 task` → 미해소. 이 함수는 그 결과를
+    그대로 돌려줄 뿐 자기 층을 더하지 않는다(층이 갈리면 checkpoint 와 handoff 가 서로 다른
+    정체성을 쓴다).
+    """
     pm_log = pm_log_module or _load_pm_log()
     resolved_cwd = Path(cwd or Path.cwd()).resolve(strict=False)
-    identity, source = pm_log.resolve_snapshot_identity(REPO, resolved_cwd)
-    if identity is None:
-        return None, None, source, None
-    task, session = pm_log._checkpoint_identity_axes(
-        REPO, resolved_cwd, identity, source,
-    )
-    slot_arg = None
-    if session is not None:
-        actual = pm_log.resolved_lease_slot_path(REPO, session)
-        if actual is not None:
-            slot_arg = _lease_slot_path_text(actual, REPO)
-    return task, session, source, slot_arg
+    return pm_log.resolve_snapshot_identity(REPO, resolved_cwd)
 
 
 def main(

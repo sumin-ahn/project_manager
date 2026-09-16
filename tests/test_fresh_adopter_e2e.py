@@ -458,6 +458,21 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
                           encoding="utf-8", errors="replace", check=False)
 
 
+_FOUR_STEP_TASK = "fourstep"
+
+
+def _seed_task_dir(dest: Path, name: str) -> Path:
+    """task 서술 폴더 — 정체성 해소의 `단일 활성 task` 층이 이 폴더를 센다."""
+    task_dir = dest / ".project_manager" / ".local" / "tasks" / name
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "pm_state.md").write_text(
+        f"# PM State — task {name}\n\n## 세션 식별 (현재까지 사용된 이름)\n\n"
+        "- 차수 기록 (최근 3차):\n",
+        encoding="utf-8",
+    )
+    return task_dir
+
+
 # 5절 전부 채운(placeholder 0) 대체 본문 — draft 를 promote 게이트에 태우기 위한 재작성.
 _FOUR_STEP_FILLED_BODY = (
     "## 목표\n실제 목표 문장이다.\n\n"
@@ -490,8 +505,10 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
     # commit 으로 해소되지 않는다. 채택자의 실제 형상(커밋 있는 홈)을 만들어 준다.
     _git(["-c", "advice.addEmbeddedRepo=false", "add", "-A"], dest)
     assert _git(["commit", "-qm", "adopter home seed"], dest).returncode == 0
-    # 작업 폴더 행 1개 — 귀속 조작(claim·묶음 종결)의 정체성은 그 행에서 온다.
-    _seed_work_slot(dest, tree="worktree")
+    # 작업 폴더 행 1개 + 그 폴더를 잡은 task — 귀속 조작(claim·묶음 종결)의 정체성은 task 다.
+    # `alloc <repo> --task <이름>` 이 남기는 형상(행의 session=task 이름 + task 서술 폴더)이다.
+    _seed_work_slot(dest, tree="worktree", session=_FOUR_STEP_TASK)
+    _seed_task_dir(dest, _FOUR_STEP_TASK)
     board_tickets = dest / ".project_manager" / "board" / "tickets"
 
     # 1단계 — new: 제목만 있는 미충전 본문은 board-git 활성 하에서 draft 로 격리된다(open/ 창 0).

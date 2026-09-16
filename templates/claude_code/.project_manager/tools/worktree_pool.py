@@ -622,7 +622,7 @@ class Lease:
         self.git = git            # 슬롯 git 스냅 dict(base/branch/head/submodules/recorded_at)·None=미기록
         # 슬롯 role (additive): "work"(기본·배타 대여 작업 슬롯) | "readonly"
         # (research 전용 공유 슬롯·detached·session 없음·alloc/release 대상 제외). role 이
-        # 0단계 carve-out(pm_bootstrap `_phase0_is_readonly`) 소유검사 예외(identity_args)·엔진
+        # 0단계 carve-out(readonly 공유 슬롯) 소유검사 예외(identity_args)·엔진
         # mutation 거부(rebase/switch/dev/sync)의 canonical 판별 축이다.
         self.role = role
         # bind-origin 마커 (additive 동형 조건방출): True = 사람 발의 `bind_slot`(직접 슬롯
@@ -1758,7 +1758,7 @@ exit 0
 #
 # 로직: sidecar 보호목록에 `git symbolic-ref --short HEAD`(= 현재 브랜치)가 있으면
 # `PM_ALLOW_PROTECTED_COMMIT=1` 이 아닌 한 거부(exit 1). **detached HEAD 는 통과** —
-# symbolic-ref 가 rc≠0 이라 브랜치가 없다(readonly 공유 슬롯 시맨틱·`_phase0_protected_reject`
+# symbolic-ref 가 rc≠0 이라 브랜치가 없다(readonly 공유 슬롯 시맨틱·0단계 main-참조 판정
 # 의 readonly carve-out 과 일치). 비보호 브랜치·sidecar 부재도 통과.
 #
 # **비커버(정직한 한계)**: `git commit --no-verify`(실측 통과)·merge 커밋
@@ -2183,124 +2183,12 @@ def ensure_task_pm_state(name: str) -> Path:
     return target
 
 
-def slot_pm_state_file(slot: str) -> Path:
-    """slot 연속성 앵커 `.local/slots/<정체성 키>/pm_state.md` 경로.
-
-    키는 **장부 행이 그 슬롯에 준 정체성**(session)이 1순위고, 장부가 슬롯 축 정체성을 주지
-    않으면(미등록·task 소유·무소유) pool 명명 규약의 경로 마디다 —
-    `identity_args.resolve_slot_identity` 단일 해소라 `pm_handoff._resolve_state_slot` 과 같은
-    값을 낸다(두 모듈이 같은 파일을 가리키는 근거·`_ensure_slot_pm_state_locked` 의 drift 대조가
-    그걸 기계 확인한다). 경로 basename 을 직접 파싱하지 않으므로 경로에 이름이 없는 슬롯도
-    해소된다.
-
-    정체성 미해소면 `SlotResolutionError`(fail-loud) — 상태 파일 위치를 지어내지 않는다. 장부
-    **모순**(같은 슬롯을 서로 다른 session 이 주장)도 마찬가지다: 이 경로는 pm_state 를 **쓰는**
-    앵커라 관용 폴백(경로 마디 추측)으로 통과시키면 판정 불능이 판정으로 위장된다(리뷰 F-004).
-    그래서 관용 wrapper 가 아니라 판정형(`slot_identity_resolution`)을 직접 소비한다.
-    """
-    normalized = _normalize_slot(slot)
-    resolution = _identity_args.slot_identity_resolution(normalized, LEASES_FILE)
-    if resolution.status in _identity_args.SLOT_IDENTITY_FAIL_LOUD_STATUSES:
-        raise SlotResolutionError(
-            f"슬롯 {slot!r} 의 정체성이 장부 모순이다 — {resolution.detail}. "
-            "pm_state 위치를 추측하지 않는다(장부를 정리한 뒤 다시 실행하라)."
-        )
-    if resolution.identity is None:
-        raise SlotResolutionError(
-            f"슬롯 {slot!r} 의 정체성을 해소할 수 없다 — 장부 행이 준 session 도, 경로의 "
-            "canonical `<repo>_<N>` 마디도 없다. pm_state 위치를 지어내지 않는다."
-        )
-    return LOCAL_DIR / "slots" / resolution.identity.key / "pm_state.md"
 
 
-def _load_pm_handoff_for_slot_state():
-    """slot state 경로·마이그레이션의 단일 진실인 ``pm_handoff``를 fail-loud 로 로드한다."""
-    path = Path(__file__).resolve().with_name("pm_handoff.py")
-    if not path.exists():
-        raise RuntimeError(
-            "pm_handoff.py 부재 — slot pm_state 마이그레이션 계약을 해소할 수 없다"
-        )
-    # 로드/검증 실패는 그대로 fail-loud. 복구 경계가 아니므로 broad catch로 감싸 엔진
-    # fail-soft 경계를 늘리지 않는다.
-    module = _load_module_from_path(
-        path,
-        "pm_handoff.py",
-        verifier=_verify_engine_rev,
-    )
-    # hermetic 호출부가 worktree_pool.REPO를 재배선해도 handoff의 호출시점 경로 함수들이
-    # 같은 프로젝트를 보게 한다. explicit slot을 넘기므로 lease/areas 자동해소는 타지 않는다.
-    module.REPO = REPO
-    return module
 
 
-def _ensure_slot_pm_state_locked(
-    slot: str,
-    lease: "Lease | None",
-    task_names: set[str],
-) -> Path:
-    """락 안의 lease 스냅샷으로 slot-mode pm_state를 보장한다."""
-    normalized = _normalize_slot(slot)
-    target = slot_pm_state_file(normalized)
-    if target.exists():
-        return target
-
-    if (
-        lease is None
-        or lease.slot != normalized
-        or lease.state != "leased"
-        or lease.role != "work"
-        or not lease.session
-        or lease.session in task_names
-    ):
-        return target
-
-    handoff = _load_pm_handoff_for_slot_state()
-    migrated = Path(handoff._migrate_legacy_pm_state(normalized))
-    if migrated != target:
-        raise RuntimeError(
-            "slot pm_state 경로 drift — "
-            f"worktree_pool={target}, pm_handoff={migrated}"
-        )
-    if target.exists():
-        return target
-
-    template = _task_pm_state_template_file()
-    if not template.exists():
-        raise FileNotFoundError(
-            f"slot pm_state template 부재: {template} — slot state를 만들 수 없다"
-        )
-    rendered = _render_initial_task_pm_state(
-        file_lock.read_text_shared(template, encoding="utf-8"),
-        datetime.date.today().isoformat(),
-    )
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(target.suffix + ".tmp")
-    tmp.write_text(rendered, encoding="utf-8", newline="\n")
-    file_lock.atomic_replace(tmp, target)
-    return target
 
 
-def ensure_slot_pm_state(slot: str) -> Path:
-    """slot-mode lease의 pm_state를 즉시 보장한다.
-
-    발동 술어는 session 문자열의 모양이 아니라 장부 정체성이다. ``leased`` 상태의 일반 작업
-    슬롯 중 session이 있고, 그 session이 task 장부 이름이 아닌 lease만 slot-mode다. 따라서
-    ``_default_session()``이 env/기존 lease/host-pid 중 무엇을 내도 slot state를 만들고,
-    task 소유·readonly(무소유) 슬롯은 거짓 앵커를 만들지 않는다.
-
-    canonical 파일이 없으면 템플릿보다 먼저 ``pm_handoff._migrate_legacy_pm_state``를 호출해
-    handoff와 똑같은 bare 슬롯 dir backfill → legacy 이동 체인을 탄다. 그래도 없을 때만 tracked
-    template을 첫 세션 형태로 렌더해 원자 교체한다. 이미 있으면 byte 불변 no-op이고 template
-    부재/손상은 fail-loud 한다.
-    """
-    normalized = _normalize_slot(slot)
-    with _lease_lock():
-        lease = next(
-            (item for item in _read_ledger_strict() if item.slot == normalized),
-            None,
-        )
-        task_names = {task.name for task in _read_tasks_strict()}
-        return _ensure_slot_pm_state_locked(normalized, lease, task_names)
 
 
 def _read_tasks() -> list[Task]:
@@ -2541,31 +2429,6 @@ def set_task_prefix(name: str, prefix: "str | None") -> "Task | None":
             return None
         target.prefix = prefix
         _write_tasks(tasks)
-        return target
-
-
-def close_slot_session(slot: str) -> "Lease | None":
-    """슬롯의 **세션 열림 표시만** 내린다 — `session=""`(종료 기록). 대여는 그대로 둔다.
-
-    핸드오프가 서사를 쓰기 전에 부르는 종료 기록의 슬롯 축이다(task 축 짝 = `close_task_session`).
-    세션이 끝나는 자리에서 그 세션이 연 기록을 닫지 않으면, 다음 진입이 같은 자리를 "열려 있음"
-    으로 읽어 매번 강제 확인을 요구한다.
-
-    **반납(`release`)과 다르다** — 여기서는 `state`(leased)·git 스냅·`test_cmd`·`bound` 를 건드리지
-    않는다. 슬롯은 그대로 두고 가고(연속성), 닫히는 것은 "지금 세션이 열려 있다"는 표시뿐이다.
-    이미 닫혀 있거나(session 빈 문자열·readonly) 장부에 없는 슬롯은 바꿀 것이 없어 그대로 둔다
-    (반환은 그 lease 또는 `None`·부작용 0).
-
-    **장부 IO 는 이 모듈이 단일 소유**(직접 JSON 금지·flock/스키마) — `_lease_lock` 아래
-    `_read_ledger`/`_write_ledger` 로 atomic 갱신한다.
-    """
-    with _lease_lock():
-        leases = _read_ledger_strict()
-        target = next((lease for lease in leases if lease.slot == slot), None)
-        if target is None or not lease_is_open(target):
-            return target
-        target.session = ""        # 종료 기록 — 대여(state/git/test_cmd/bound)는 불변.
-        _write_ledger(leases)
         return target
 
 
@@ -2937,9 +2800,6 @@ def alloc(
         task_names = {t.name for t in _read_tasks_strict()}
 
         def _finalize(lease: Lease, *, write_ledger: bool) -> Lease:
-            if not task_alloc:
-                # (a) pm_state를 lease 장부 최종 확정 전에 만들어 template 실패 시 장부를 호출 전 상태로 둔다.
-                _ensure_slot_pm_state_locked(lease.slot, lease, task_names)
             if write_ledger:
                 _write_ledger(leases)
             return lease
@@ -3695,8 +3555,6 @@ def bind_slot(slot: str, repo: str, session: str, *, git_runner: GitRunner | Non
             target.bound = True
         # arrival git 스냅(기대 baseline·기존 base 보존·fail-soft — 슬롯 부재면 no-op).
         _apply_git_snapshot(target, git_runner=git_runner)
-        # (a) pm_state를 lease 장부 최종 확정 전에 만들어 template 실패 시 bound/session까지 미변경으로 둔다.
-        _ensure_slot_pm_state_locked(target.slot, target, task_names)
         _write_ledger(leases)
         return target
 

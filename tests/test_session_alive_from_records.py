@@ -100,7 +100,6 @@ def test_the_round_trip_of_a_real_release_flips_the_record(wp, tmp_path, monkeyp
         "state": "idle", "test_cmd": None,
     }], "tasks": []}), encoding="utf-8")
 
-    monkeypatch.setattr(wp, "_ensure_slot_pm_state_locked", lambda *a, **k: None)
     leased = wp.alloc("proj", session="proj_1", git_runner=lambda _argv: (0, ""))
     assert wp.lease_is_open(leased) is True
 
@@ -108,32 +107,6 @@ def test_the_round_trip_of_a_real_release_flips_the_record(wp, tmp_path, monkeyp
     assert wp.lease_is_open(released) is False
 
 
-def test_the_handoff_close_keeps_the_lease_and_flips_the_record(wp, tmp_path, monkeypatch):
-    """핸드오프가 닫는 것은 세션 표시뿐이다 — 대여(state·git·test_cmd·bound)는 그대로 둔다.
-
-    세션이 끝나는 자리에서 이 기록을 닫아야 다음 진입이 같은 자리를 "열려 있음"으로 오독하지
-    않는다. 반납(`release`)과 다른 축이라 슬롯은 두고 간다.
-    """
-    monkeypatch.setattr(wp, "LEASES_FILE",
-                        tmp_path / ".project_manager" / ".local" / "worktree-leases.json")
-    wp.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    wp.LEASES_FILE.write_text(json.dumps({"leases": [{
-        "slot": "work/proj_1", "repo": "proj", "session": "proj_1", "started": "t",
-        "state": "leased", "test_cmd": "pytest -q", "bound": True,
-        "git": {"branch": "task/x", "head": "abc", "submodules": [], "recorded_at": "t"},
-    }], "tasks": []}), encoding="utf-8")
-
-    closed = wp.close_slot_session("work/proj_1")
-
-    assert wp.lease_is_open(closed) is False        # 종료 기록
-    assert closed.state == "leased"                 # 대여는 그대로 — 두고 간다
-    assert closed.test_cmd == "pytest -q" and closed.bound is True
-    assert closed.git["branch"] == "task/x"         # git 스냅 무접촉(연속성)
-    assert wp.list_leases()[0].session == ""        # 영속(장부 write)
-    # 이미 닫힌 자리를 다시 닫아도 바꿀 것이 없다(부작용 0).
-    before = wp.LEASES_FILE.read_bytes()
-    assert wp.close_slot_session("work/proj_1") is not None
-    assert wp.LEASES_FILE.read_bytes() == before
 
 
 def test_the_task_record_has_only_two_values(wp):

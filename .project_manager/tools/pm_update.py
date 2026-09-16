@@ -5510,6 +5510,75 @@ def drop_self_lease_rows(effective_dest: Path, *, write: bool) -> int:
     return dropped
 
 
+# 옛 슬롯 모드가 리스 행 `session` 에 적던 표기(`<repo>_<N>`). 값 술어의 주인은
+# `identity_args._SLOT_KEY_RE` 이고, 이 갱신기는 dest 형제 사본을 로드하지 않는 self-contained
+# 장부 수술이라(`drop_self_lease_rows` 와 같은 관례) 패턴만 동형으로 들고 있다. task 이름은 이
+# 패턴을 예약어로 거부당하므로(`identity_args.validate_task_name`) 두 집합은 겹치지 않는다.
+_LEGACY_SLOT_SESSION_RE = re.compile(r"^[A-Za-z0-9][^\s()/\\]*_[1-9]\d*$")
+
+
+def idle_legacy_slot_session_rows(effective_dest: Path, *, write: bool) -> int:
+    """흡수 말미 1회 — `session` 이 옛 슬롯 표기(`<repo>_<N>`)인 대여 행을 idle 로 옮긴다.
+
+    세션 정체성이 task 하나로 좁혀지면서 슬롯을 점유 주체로 적던 경로가 사라졌다. 그 표기로
+    남은 대여 행은 어느 task 의 것도 아닌데, 부트스트랩·핸드오프의 정체성 해소(cwd→lease 행)가
+    그 행을 집으면 예약 패턴이라 task 이름 검증에서 거부당해 세션이 그 폴더에서 진입하지
+    못한다. 표기를 바꾼 것은 갱신이지 채택자가 아니므로 **바꾼 쪽이 옮긴다**.
+
+    옮기는 것은 점유 표시뿐이다 — 작업 폴더도 그 안의 작업도 건드리지 않는다. `state="idle"`
+    + `session=""` 는 엔진 반납 기록(`release`)과 같은 값이라, 다음 `alloc` 이 그 폴더를 그대로
+    다시 빌려준다.
+
+    옮길 행이 없으면 장부를 **읽기만** 한다(멱등 — 재실행이 byte 를 바꾸지 않는다).
+    `write=False`(dry-run)면 판정만 한다. 반환값은 옮긴(옮길) 행 수다. 락·원자 교체 계약은
+    `drop_self_lease_rows` 와 같다.
+    """
+    ledger = (Path(effective_dest) / ".project_manager" / ".local"
+              / "worktree-leases.json")
+    if not ledger.is_file():
+        return 0
+    seam = _load_file_lock()
+    section = getattr(seam, "exclusive_file_lock", None)
+    replace = getattr(seam, "atomic_replace", None)
+    if not callable(section) or not callable(replace):
+        raise RuntimeError(
+            "리스 장부 마이그레이션에 필요한 file_lock seam"
+            "(exclusive_file_lock·atomic_replace)을 쓸 수 없음"
+        )
+    with section(ledger.parent / "worktree-leases.lock"):
+        data = json.loads(_read_text_shared(ledger, encoding="utf-8"))
+        leases = data.get("leases") or []
+        moved: list[str] = []
+        for row in leases:
+            if not isinstance(row, dict) or row.get("state") != "leased":
+                continue
+            session = row.get("session")
+            if not isinstance(session, str):
+                continue
+            if _LEGACY_SLOT_SESSION_RE.fullmatch(session) is None:
+                continue
+            moved.append(str(row.get("slot") or session))
+            if write:
+                row["state"] = "idle"
+                row["session"] = ""
+        if not moved:
+            return 0
+        prefix = "[dry-run] " if not write else "  ✓ "
+        print(f"{prefix}옛 슬롯 표기로 잡혀 있던 작업 폴더 {len(moved)}개를 반납 상태로 이동"
+              f"{' 예정' if not write else ''} — 세션 정체성은 이제 task 하나다"
+              "(폴더와 그 안의 작업은 그대로).")
+        for slot in moved:
+            print(f"  {slot}")
+        if write:
+            tmp = ledger.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8", newline="\n",
+            )
+            replace(tmp, ledger)
+    return len(moved)
+
+
 def migrate_renamed_conf_keys(effective_dest: Path, *, write: bool) -> dict[str, str]:
     """흡수 말미 1회 — 이름이 바뀐 local.conf 키를 신표기로 옮긴다(값은 그대로).
 
@@ -7004,6 +7073,7 @@ def _main(argv: list[str] | None = None) -> int:
                 effective_dest, source_root, write=not args.dry_run)
             _print_entry_doc_migration_finding(result, dry_run=args.dry_run)
             drop_self_lease_rows(effective_dest, write=not args.dry_run)
+            idle_legacy_slot_session_rows(effective_dest, write=not args.dry_run)
             migrate_renamed_conf_keys(effective_dest, write=not args.dry_run)
         if do_reinstall:
             # **업그레이드 배달 다음 실행이 여기로 온다**(dest 는 신 엔진·changes 0) — 훅이
@@ -7069,6 +7139,7 @@ def _main(argv: list[str] | None = None) -> int:
             result = migrate_entry_doc(effective_dest, source_root, write=False)
             _print_entry_doc_migration_finding(result, dry_run=True)
             drop_self_lease_rows(effective_dest, write=False)
+            idle_legacy_slot_session_rows(effective_dest, write=False)
             migrate_renamed_conf_keys(effective_dest, write=False)
         if do_reinstall:  # 대상 해소만(write=False·무부작용).
             hooks = reinstall_protected_hooks(effective_dest, write=False)
@@ -7104,6 +7175,7 @@ def _main(argv: list[str] | None = None) -> int:
         result = migrate_entry_doc(effective_dest, source_root, write=True)
         _print_entry_doc_migration_finding(result, dry_run=False)
         drop_self_lease_rows(effective_dest, write=True)
+        idle_legacy_slot_session_rows(effective_dest, write=True)
         migrate_renamed_conf_keys(effective_dest, write=True)
 
     if do_reinstall:

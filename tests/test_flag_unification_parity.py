@@ -87,7 +87,7 @@ def tool_parsers():
     }
 
 
-_FLAG_PARSER_TOOLS = ("board.py", "pm_handoff.py", "ticket_finish.py")
+_FLAG_PARSER_TOOLS = ("board.py", "ticket_finish.py")
 
 
 @pytest.mark.parametrize("tool_key", _FLAG_PARSER_TOOLS)
@@ -202,7 +202,7 @@ def test_pm_relay_engine_core_exposes_no_identity_cli_surface():
 
 
 _ADOPTING_TOOL_FILES = (
-    "board.py", "pm_handoff.py", "ticket_finish.py", "worktree_pool.py",
+    "board.py", "ticket_finish.py", "worktree_pool.py",
 )
 
 

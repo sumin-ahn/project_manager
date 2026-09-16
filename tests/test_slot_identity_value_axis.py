@@ -156,70 +156,10 @@ def _adopter0_shape(home: Home) -> None:
 # ════════════════════════════════════════════════════════════════════════
 
 
-def test_adopter0_shape_consumer_values_are_unchanged(home):
-    """행 7 형상에서 슬롯 정체성 소비자 전원이 종전과 같은 값을 낸다(동작 무변경).
-
-    이 형상의 행 session 은 **task 이름**(`main`)이거나 비어 있다 — 슬롯 축 정체성이 아니므로
-    pool 명명 규약(경로 마디)이 키를 준다. 즉 값-경계 교체 뒤에도 슬롯 키는 종전 그대로다.
-    """
-    _adopter0_shape(home)
-    ia, hf, wp = home.ia, home.hf, home.wp
-
-    # 번호 축 — 조회(leased 만·idle 7 제외)와 이름 점유(상태 무관·idle 포함)가 각자 종전 동형.
-    assert ia.repo_slot_numbers(_ADOPTER_REPO, home.ledger) == [1, 2, 3, 4, 5, 6]
-    assert sorted(wp._existing_slot_numbers(_ADOPTER_REPO, wp.list_leases())) == \
-        [1, 2, 3, 4, 5, 6, 7]
-
-    # actor 축 — 활성 슬롯 ≥2 는 여전히 모호(fail-loud).
-    with pytest.raises(ia.SlotResolutionError):
-        ia.resolve_actor_slot(_ADOPTER_REPO, home.ledger)
-
-    # 슬롯 키 축 — task 명 session 은 슬롯 정체성이 아니라 경로 규약이 키를 준다.
-    for number in (1, 3, 7):
-        slot = f"work/{_ADOPTER_REPO}_{number}"
-        key = f"{_ADOPTER_REPO}_{number}"
-        assert hf._parse_worktree_slot(slot) == (_ADOPTER_REPO, number)
-        assert hf._resolve_state_slot(slot, home.areas, home.ledger) == key
-        assert hf._handoff_user_ack_target(None, slot) == (key, f"slot {key!r}")
-        assert wp._normalize_slot(slot) == slot
-        assert wp.slot_pm_state_file(slot) == (
-            home.root / ".project_manager" / ".local" / "slots" / key / "pm_state.md")
-
-    # 자동해소 축 — 슬롯 ≥2 라 미해소(종전 동형)이고 cwd 는 PM 홈.
-    assert home.bp._auto_slot(home.areas, home.ledger) is None
-    assert hf._regression_cwd(None, home.areas, home.ledger) == str(home.root)
 
 
-def test_adopter0_shape_task_session_row_stays_task_axis(home):
-    """task 명으로 대여된 행은 slot 축으로 승격되지 않는다 — 축 판정은 장부 tasks 등록이다."""
-    _adopter0_shape(home)
-    cwd = home.root / f"work/{_ADOPTER_REPO}_2"
-    identity, source = home.lg.resolve_snapshot_identity(home.root, cwd)
-    assert (identity, source) == (_TASK_SESSION, home.lg.IDENTITY_SOURCE_CWD_LEASE)
-    assert home.lg._checkpoint_identity_axes(home.root, cwd, identity, source) == \
-        (_TASK_SESSION, None)
 
 
-def test_multipm_two_slot_shape_consumer_values_are_unchanged(home):
-    """multi-PM N=2(슬롯 세션 canonical) — 소비자 값이 종전과 같다."""
-    home.write_ledger([_pool_row("A", 1, "A_1", test_cmd="pytest -q"),
-                       _pool_row("A", 2, "A_2")])
-    home.write_areas(["A"])
-    home.mkslot("work/A_1", "work/A_2")
-    ia, hf, wp = home.ia, home.hf, home.wp
-
-    assert ia.repo_slot_numbers("A", home.ledger) == [1, 2]
-    with pytest.raises(ia.SlotResolutionError):
-        ia.resolve_actor_slot("A", home.ledger)
-    assert hf._resolve_explicit_identity_slot("A", 2, home.ledger) == ("work/A_2", None)
-    assert hf._resolve_state_slot("work/A_2", home.areas, home.ledger) == "A_2"
-    assert wp.slot_pm_state_file("A_2") == (
-        home.root / ".project_manager" / ".local" / "slots" / "A_2" / "pm_state.md")
-    # slot 축 — 등록 task 가 아니고 슬롯 키 형식이라 slot 축(종전 동형).
-    cwd = home.root / "work/A_1"
-    identity, source = home.lg.resolve_snapshot_identity(home.root, cwd)
-    assert (identity, source) == ("A_1", home.lg.IDENTITY_SOURCE_CWD_LEASE)
-    assert home.lg._checkpoint_identity_axes(home.root, cwd, identity, source) == (None, "A_1")
 
 
 def test_single_slot_shape_resolves_to_ledger_row(home):
@@ -246,25 +186,6 @@ def _mismatch_shape(home: Home) -> None:
     home.mkslot("work/A_1")
 
 
-def test_identity_comes_from_ledger_not_directory_name(home):
-    """정체성은 장부 행의 session 이다 — 디렉토리 basename(`A_1`)이 아니다.
-
-    경로 파싱이 남아 있으면 이 단언들이 전부 `A_1` 로 red 가 난다(파싱과 장부가 우연히 같은
-    픽스처로는 이 회귀를 못 잡는다).
-    """
-    _mismatch_shape(home)
-    ia, hf, wp = home.ia, home.hf, home.wp
-
-    identity = ia.resolve_slot_identity("work/A_1", home.ledger)
-    assert (identity.key, identity.slot) == ("B_7", "work/A_1")
-    assert identity.source == ia.IDENTITY_FROM_LEDGER_SESSION
-    assert hf._resolve_state_slot("work/A_1", home.areas, home.ledger) == "B_7"
-    assert hf._handoff_user_ack_target(None, "work/A_1") == ("B_7", "slot 'B_7'")
-    # 재접속 **좌표**는 키 분해가 아니라 행 값이다 — 행 repo `A` 의 1번 슬롯(§6 왕복 참조).
-    assert hf._parse_worktree_slot("work/A_1") == ("A", 1)
-    assert (identity.repo, identity.number) == ("A", 1)
-    assert wp.slot_pm_state_file("work/A_1") == (
-        home.root / ".project_manager" / ".local" / "slots" / "B_7" / "pm_state.md")
 
 
 def test_actor_resolution_returns_ledger_session_verbatim(home):
@@ -303,19 +224,6 @@ def _home_row_shape(home: Home, repo: str = "adopter") -> str:
     return f"{repo}_1"
 
 
-def test_home_row_slot_resolves_identity_from_ledger(home):
-    """경로에 이름이 없는 슬롯(`.`)도 장부 session 으로 정체성이 해소된다."""
-    key = _home_row_shape(home)
-    ia, hf, wp = home.ia, home.hf, home.wp
-
-    identity = ia.resolve_slot_identity(".", home.ledger)
-    assert (identity.key, identity.slot, identity.source) == (
-        key, ".", ia.IDENTITY_FROM_LEDGER_SESSION)
-    assert hf._resolve_state_slot(".", home.areas, home.ledger) == key
-    assert hf._handoff_user_ack_target(None, ".") == (key, f"slot {key!r}")
-    assert wp._normalize_slot(".") == "."
-    assert wp.slot_pm_state_file(".") == (
-        home.root / ".project_manager" / ".local" / "slots" / key / "pm_state.md")
 
 
 def test_home_row_number_axis_and_paths_are_ledger_derived(home):
@@ -334,16 +242,6 @@ def test_home_row_number_axis_and_paths_are_ledger_derived(home):
     assert hf._regression_cwd(None, home.areas, home.ledger) == str(home.root)
 
 
-def test_home_row_is_not_reported_stale_and_is_slot_axis(home):
-    """홈 행은 git worktree 목록의 값 域 밖이라 stale 판정 대상이 아니고, 축은 slot 이다."""
-    key = _home_row_shape(home)
-    result = home.wp.reconcile_worktrees(git_runner=lambda argv: (0, ""))
-    assert [l.slot for l in result.stale] == []
-
-    identity, source = home.lg.resolve_snapshot_identity(home.root, home.root)
-    assert (identity, source) == (key, home.lg.IDENTITY_SOURCE_CWD_LEASE)
-    assert home.lg._checkpoint_identity_axes(home.root, home.root, identity, source) == \
-        (None, key)
 
 
 def test_pool_slot_without_worktree_is_still_stale(home):
@@ -360,20 +258,6 @@ def test_pool_slot_without_worktree_is_still_stale(home):
 # ════════════════════════════════════════════════════════════════════════
 
 
-@pytest.mark.parametrize("ledger_text", [None, "{not valid json", '{"leases": "nope"}'])
-def test_unresolvable_identity_never_invents_a_key(home, ledger_text):
-    """장부 부재/손상 + 경로도 슬롯 키가 아님 → 정체성 미해소(None) · 대체값 0."""
-    if ledger_text is not None:
-        home.ledger.write_text(ledger_text, encoding="utf-8")
-    ia, hf, wp = home.ia, home.hf, home.wp
-
-    assert ia.resolve_slot_identity(".", home.ledger) is None
-    assert hf._resolve_state_slot(".", home.areas, home.ledger) is None
-    assert hf._parse_worktree_slot(".") is None
-    with pytest.raises(wp.SlotResolutionError):
-        wp.slot_pm_state_file(".")
-    # 대조군 — 같은 장부 상태라도 경로가 슬롯 키를 지니면 pool 명명 규약으로 해소된다.
-    assert hf._resolve_state_slot("work/A_1", home.areas, home.ledger) == "A_1"
 
 
 def test_corrupt_ledger_does_not_downgrade_actor_resolution_to_a_guess(home):
@@ -593,55 +477,12 @@ def test_entry_finish_attributes_the_ledger_identity(home, monkeypatch):
     assert captured["regression_cwd"] == str(home.root)
 
 
-# ════════════════════════════════════════════════════════════════════════
-# 7. 렌더→재해소 왕복 — 엔진이 낸 지시가 다시 해소되는가 (리뷰 F-002)
-# ════════════════════════════════════════════════════════════════════════
-
-_BOOTSTRAP_TRIGGER_RE = re.compile(r"pm-bootstrap (?P<repo>\S+) --slot (?P<slot>\d+)")
 
 
-def _rendered_trigger(home: Home, slot_value: str) -> "tuple[str, int] | None":
-    """handoff 가 복사 블록에 렌더한 명시 트리거를 파싱해 `(repo, N)` 으로 돌려준다."""
-    rendered = home.hf._inject_slot_into_template("/pm-bootstrap\n", slot_value)
-    match = _BOOTSTRAP_TRIGGER_RE.search(rendered)
-    if match is None:
-        return None
-    return match.group("repo"), int(match.group("slot"))
 
 
-def test_rendered_trigger_round_trips_on_divergent_session_row(home):
-    """`repo=A · slot=work/A_1 · session=B_7` — 렌더한 트리거가 **같은 슬롯으로 재해소**된다.
-
-    session 을 분해해 `--repo B --slot 7` 을 렌더하면 즉시 재해소가 M3(repo B 활성 행 부재)로
-    거부된다 — 엔진이 스스로 낸 지시가 작동하지 않는 상태였다(리뷰 F-002 실측).
-    """
-    _mismatch_shape(home)
-    trigger = _rendered_trigger(home, "work/A_1")
-    assert trigger == ("A", 1)
-
-    repo, number = trigger
-    slot, error = home.hf._resolve_explicit_identity_slot(repo, number, home.ledger)
-    assert (slot, error) == ("work/A_1", None)          # 같은 슬롯으로 되돌아온다
-    assert home.ia.resolve_slot_identity(slot, home.ledger).key == "B_7"
 
 
-def test_rendered_trigger_round_trips_on_home_row(home):
-    """경로에 이름이 없는 홈 행도 트리거→재해소가 같은 슬롯으로 닫힌다."""
-    _home_row_A(home)
-    trigger = _rendered_trigger(home, ".")
-    assert trigger == ("A", 1)
-    assert home.hf._resolve_explicit_identity_slot(*trigger, home.ledger) == (".", None)
-
-
-def test_unresolvable_coordinates_render_no_explicit_trigger(home):
-    """장부가 좌표를 주지 못하면 명시 트리거를 **만들지 않는다**(틀린 지시를 내느니 bare 유지)."""
-    # 홈 행을 task 명의로 대여 — 경로에도 session 에도 repo 기준 번호가 없다.
-    home.write_ledger([{"slot": ".", "repo": "A", "session": "job1", "state": "leased"}],
-                      tasks=[{"name": "job1", "prefix": None, "started": "t"}])
-    home.write_areas(["A"])
-    assert home.hf._parse_worktree_slot(".") is None
-    assert _rendered_trigger(home, ".") is None
-    assert home.hf._inject_slot_into_template("/pm-bootstrap\n", ".") == "/pm-bootstrap\n"
 
 
 def test_session_axis_helpers_read_coordinates_from_the_ledger(home, monkeypatch):
@@ -715,10 +556,6 @@ def test_drive_marker_session_key_cannot_escape_the_state_root(home):
     identity = home.ia.resolve_slot_identity("work/A_1", home.ledger)
     # 장부 층이 그 값을 정체성으로 채택하지 않으므로 pool 명명 규약(경로 마디)이 키다.
     assert (identity.key, identity.source) == ("A_1", home.ia.IDENTITY_FROM_SLOT_PATH)
-    state = home.wp.slot_pm_state_file("work/A_1")
-    slots_root = home.root / ".project_manager" / ".local" / "slots"
-    assert state == slots_root / "A_1" / "pm_state.md"
-    assert slots_root in state.parents
 
 
 def test_real_session_key_shapes_stay_allowed(home):
@@ -787,44 +624,10 @@ def test_slot_path_resolution_distinguishes_four_judgments(home):
     assert ambiguous.status == ia.SLOT_PATH_CONFLICT and ambiguous.path is None
 
 
-def test_conflict_fails_loud_at_write_entries(home):
-    """모순은 **쓰기 진입 전부**에서 fail-loud — 경로 추측으로 통과시키지 않는다."""
-    _divergent_shape(home)
-    # pm_state 앵커(쓰기 위치).
-    with pytest.raises(home.wp.SlotResolutionError):
-        home.wp.slot_pm_state_file("work/A_1")
-    # handoff 진입 검문(log/current.md·pm_state.md 쓰기).
-    refusal = home.hf._slot_identity_admission("work/A_1", "worktree_slot")
-    assert refusal is not None and "모순" in refusal
-    # actor 해소(귀속 쓰기).
-    with pytest.raises(home.ia.SlotResolutionError):
-        home.ia.resolve_actor_slot("A", home.ledger)
 
 
-def test_conflict_is_tolerated_on_read_display(home):
-    """읽기 표시는 종전대로 관용 — 모순에서도 표시 연속성은 pool 규약 폴백으로 유지된다."""
-    _divergent_shape(home)
-    resolution = home.ia.slot_identity_resolution("work/A_1", home.ledger)
-    assert resolution.fallback.key == "A_1"
-    assert home.ia.resolve_slot_identity("work/A_1", home.ledger).key == "A_1"
-    assert home.hf._resolve_state_slot("work/A_1", home.areas, home.ledger) == "A_1"
 
 
-def test_number_ambiguity_is_not_downgraded_to_canonical_guess(home):
-    """번호 모호는 canonical 조립으로 폴백되지 않는다 — 명시 진입이 fail-loud 한다."""
-    home.write_ledger([{"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},
-                       {"slot": "nested/A_1", "repo": "A", "session": "A_1", "state": "leased"}])
-    home.write_areas(["A"])
-    slot, error = home.hf._resolve_explicit_identity_slot("A", 1, home.ledger)
-    assert slot is None and "모순" in error
-    with pytest.raises(home.wp.SlotResolutionError):
-        home.wp._explicit_slot_path("A", 1)
-    with pytest.raises(home.bp.SlotResolutionError):
-        home.bp._explicit_slot_path("A", 1, home.ledger)
-    with pytest.raises(home.ia.WorkspaceResolutionError):
-        home.ia.resolve_task_workspace(
-            home.ia.Identity(kind="slot", repo="A", slot=1, session="A_1", task="A_1"),
-            home.ledger)
 
 
 def test_normal_shapes_are_not_judged_conflicting(home):
@@ -842,7 +645,6 @@ def test_normal_shapes_are_not_judged_conflicting(home):
     for slot, key in (("work/A_1", "A_1"), ("work/A_2", "A_2"), ("work/B_1", "B_1")):
         resolution = home.ia.slot_identity_resolution(slot, home.ledger)
         assert (resolution.status, resolution.identity.key) == (home.ia.SLOT_IDENTITY_OK, key)
-        assert home.wp.slot_pm_state_file(slot).parent.name == key
     # idle 로 반납된 옛 행 + 새 leased 행이 같은 슬롯에 있어도 모순이 아니다(session 은 하나).
     home.write_ledger([{"slot": "work/A_1", "repo": "A", "session": "", "state": "idle"},
                        {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"}])

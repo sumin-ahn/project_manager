@@ -219,13 +219,12 @@ def test_interactive_skeleton_lean_schema(handoff):
     assert "reason=" not in sk
 
 
-def test_interactive_main_requires_session_num(handoff):
-    """slot/호환 대화형 경로는 --session-seq 누락을 parser.error로 종료한다."""
-    with pytest.raises(SystemExit):
-        handoff.main(
-            ["--no-pytest"],
-            identity_resolver=lambda: (None, "project_manager_1", "cwd→lease"),
-        )  # 둘 다 누락 → 종료.
+def test_interactive_main_unresolved_identity_is_rc1(handoff):
+    """무인자 진입에서 task 가 해소되지 않으면 쓸 자리를 지어내지 않고 rc 1 로 멈춘다."""
+    assert handoff.main(
+        ["--no-pytest"],
+        identity_resolver=lambda: (None, "정체성 미해소"),
+    ) == 1
 
 
 def test_interactive_run_prompt_goes_to_stdout_not_log(handoff, tmp_path, capsys):
@@ -247,13 +246,13 @@ def test_interactive_run_prompt_goes_to_stdout_not_log(handoff, tmp_path, capsys
         pm_state_file=state_file,
         pm_playbook_file=playbook_file,
         dashboard_file=tmp_path / "dashboard.md",
+        worktree_pool=_TaskLedgerStub(SimpleNamespace(name="alpha", open=False)),
     )
-    rc = inst.run(session_num=5, wave_summary="ws", dry_run=False, skip_pytest=True,
-                  worktree_slot="work/proj_1", user_ack="proj_1")
+    rc = inst.run("alpha", dry_run=False, skip_pytest=True, user_ack="alpha")
     assert rc == 0
     out = capsys.readouterr().out
     # 인계 프롬프트는 stdout 으로 나간다 ([5/7]).
-    assert "=== 인계 프롬프트 (PM 5차 → 다음 PM 세션) ===" in out
+    assert "=== 인계 프롬프트 (PM " in out
     # 그러나 run() 은 log 파일을 인계 프롬프트로 오염시키지 않는다 (경로 분리·불변).
     assert "=== 인계 프롬프트" not in log_file.read_text(encoding="utf-8")
 
@@ -296,16 +295,17 @@ class _TaskLedgerStub:
 
     def __init__(self, record) -> None:
         self.calls: list[str] = []
-        self.closed_slots: list[str] = []
         self._record = record
+
+    def find_task(self, name: str):
+        return SimpleNamespace(name=name)
+
+    def slots_for_task(self, name: str):
+        return []
 
     def close_task_session(self, name: str):
         self.calls.append(name)
         return self._record
-
-    def close_slot_session(self, slot: str):
-        self.closed_slots.append(slot)
-        return SimpleNamespace(slot=slot, state="leased", session="")
 
 
 def test_task_handoff_closes_the_record_through_the_pool_primitive(handoff, capsys):
@@ -313,21 +313,9 @@ def test_task_handoff_closes_the_record_through_the_pool_primitive(handoff, caps
     pool = _TaskLedgerStub(SimpleNamespace(name="t1", open=False))
     tool = handoff.PmHandoff(worktree_pool=pool)
 
-    assert tool._close_session_records("t1", None) is True
+    assert tool._close_session_records("t1") is True
     assert pool.calls == ["t1"], "장부 write 는 그 프리미티브 한 번뿐이다"
-    assert pool.closed_slots == [], "task 보유 슬롯의 소유(session)는 건드리지 않는다"
     assert "닫힘" in capsys.readouterr().out
-
-
-def test_slot_handoff_closes_the_slot_record_and_keeps_the_lease(handoff, capsys):
-    """슬롯 모드는 그 슬롯의 세션 표시만 닫는다 — 반납(release)은 부르지 않는다."""
-    pool = _TaskLedgerStub(SimpleNamespace(name="t1", open=False))
-    tool = handoff.PmHandoff(worktree_pool=pool)
-
-    assert tool._close_session_records(None, "work/app_1") is True
-    assert pool.closed_slots == ["work/app_1"]
-    assert pool.calls == [], "슬롯 모드에서 task 프리미티브를 부르지 않는다"
-    assert "대여는 그대로" in capsys.readouterr().out
 
 
 def test_task_handoff_intent_without_a_task_record_is_fail_loud(handoff, capsys):
@@ -335,7 +323,7 @@ def test_task_handoff_intent_without_a_task_record_is_fail_loud(handoff, capsys)
     pool = _TaskLedgerStub(None)
     tool = handoff.PmHandoff(worktree_pool=pool)
 
-    assert tool._close_session_records("t1", None) is False
+    assert tool._close_session_records("t1") is False
     assert pool.calls == ["t1"]
     assert "장부에 없음" in capsys.readouterr().err
 
@@ -344,16 +332,8 @@ def test_task_handoff_intent_requires_the_pool_write_primitive(handoff, capsys):
     """프리미티브가 없는 구버전 사본에서도 조용히 넘어가지 않는다(멱등성 신호 상실 = 중단)."""
     tool = handoff.PmHandoff(worktree_pool=SimpleNamespace())
 
-    assert tool._close_session_records("t1", None) is False
+    assert tool._close_session_records("t1") is False
     assert "close_task_session" in capsys.readouterr().err
-
-
-def test_slot_close_requires_the_pool_write_primitive(handoff, capsys):
-    """슬롯 축도 같다 — 프리미티브가 없으면 서사를 쓰기 전에 터진다(실패는 실패)."""
-    tool = handoff.PmHandoff(worktree_pool=SimpleNamespace())
-
-    assert tool._close_session_records(None, "work/app_1") is False
-    assert "close_slot_session" in capsys.readouterr().err
 
 
 def test_no_stale_handoff_guidance_across_tree():

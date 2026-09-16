@@ -427,7 +427,7 @@ def test_existence_classifier_catches_drift():
     assert check_command(board, _tokenize("claim T-NNNN --repo <repo> --slot <N>")) == []
     assert check_command(board, _tokenize("regression run --ticket T-pay-001")) == []
     assert check_command(board, _tokenize("show T-NNNN")) == []
-    assert check_command(handoff, _tokenize("--session-seq <N> --wave-summary x")) == []
+    assert check_command(handoff, _tokenize("--task <이름> --user-ack <이름>")) == []
     assert check_command(worktree, _tokenize("sync --slot work/<repo>_<N>")) == []
     assert check_command(config, _tokenize("repo add <name> --git <url> --test x")) == []
     assert check_command(config, _tokenize("worktree remove <slot> [--force]")) == []

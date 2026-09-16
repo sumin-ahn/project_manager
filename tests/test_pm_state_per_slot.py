@@ -78,39 +78,14 @@ def _slot_path(hf, slot: str = "project_manager_1") -> Path:
 
 # ── _resolve_state_slot: 명시 슬롯·자동해소·솔로 None ─────────────────────────
 
-def test_resolve_state_slot_explicit_strips_work_prefix(hf):
-    """명시 worktree_slot(`work/<repo>_<N>`) → 슬롯 키(`<repo>_<N>`·leading work/ 제거)."""
-    assert hf._resolve_state_slot("work/project_manager_1") == "project_manager_1"
 
 
-def test_resolve_state_slot_explicit_bare_key_unchanged(hf):
-    """명시 슬롯이 이미 `<repo>_<N>`(work/ 없음) 면 그대로."""
-    assert hf._resolve_state_slot("project_manager_2") == "project_manager_2"
 
 
-def test_resolve_state_slot_auto_single_self_host(hf):
-    """worktree_slot 미지정 + 단일 self-host → _auto_slot 으로 `<repo>_<N>` 자동해소."""
-    _make_single_self_host(hf._tmp)
-    assert hf._resolve_state_slot() == "project_manager_1"
 
 
-def test_resolve_state_slot_unregistered_returns_none(hf):
-    """등록 repo 0개(미분리·areas 부재) → None (미해소 신호)."""
-    assert hf._resolve_state_slot() is None
 
 
-def test_resolve_state_slot_ambiguous_multi_returns_none(hf):
-    """등록 repo ≥2 (진짜 모호) → None — `_resolve_session_slot` 의 SlotResolutionError 를
-    display/preview fail-soft 로 catch (T-0178). 실제 write 는 run() 가드가 fail-loud 로 막음."""
-    areas = hf._tmp / ".project_manager" / "areas.md"
-    areas.parent.mkdir(parents=True, exist_ok=True)
-    areas.write_text(
-        "| repo | prefix | git | test_cmd | owner |\n"
-        "|---|---|---|---|---|\n"
-        "| repo_a | A | g | pytest | me |\n"
-        "| repo_b | B | g | pytest | me |\n",
-        encoding="utf-8")
-    assert hf._resolve_state_slot() is None
 
 
 def _write_leases_multi(path, repo: str, ns: list[int]) -> None:
@@ -121,35 +96,10 @@ def _write_leases_multi(path, repo: str, ns: list[int]) -> None:
     path.write_text(json.dumps({"leases": leases}), encoding="utf-8")
 
 
-def test_resolve_state_slot_default_1_when_slot1_present(hf):
-    """repo 1개 + 슬롯 `{1,2}` → `<repo>_1`(default-1·T-0178 should-fix).
-
-    이 갭의 핵심: 이전 `_auto_slot`(exactly-1)은 `{1,2}`→None→없는 legacy 로 새서 slot1
-    continuity 를 끊었다. `_resolve_session_slot`(default-1) 경유로 slot1 로 라우팅된다."""
-    _write_areas(hf._tmp / ".project_manager" / "areas.md")
-    _write_leases_multi(
-        hf._tmp / ".project_manager" / ".local" / "worktree-leases.json",
-        "project_manager", [1, 2])
-    assert hf._resolve_state_slot() == "project_manager_1"
 
 
-def test_resolve_state_slot_sole_non1_slot(hf):
-    """repo 1개 + 슬롯 `{3}`(단독·1 아님) → `<repo>_3` (단독 규칙·현행 `_3`-only 보존)."""
-    _write_areas(hf._tmp / ".project_manager" / "areas.md")
-    _write_leases_multi(
-        hf._tmp / ".project_manager" / ".local" / "worktree-leases.json",
-        "project_manager", [3])
-    assert hf._resolve_state_slot() == "project_manager_3"
 
 
-def test_resolve_state_slot_truly_ambiguous_slot1_absent_returns_none(hf):
-    """repo 1개 + 슬롯 `{2,3}`(1 부재·비단독·진짜 모호) → None (SlotResolutionError catch·
-    display fail-soft). 실제 write 는 run() 가드가 fail-loud 로 막음."""
-    _write_areas(hf._tmp / ".project_manager" / "areas.md")
-    _write_leases_multi(
-        hf._tmp / ".project_manager" / ".local" / "worktree-leases.json",
-        "project_manager", [2, 3])
-    assert hf._resolve_state_slot() is None
 
 
 def _write_leases_states(path, repo: str, slots: list[tuple[int, str]]) -> None:
@@ -160,68 +110,20 @@ def _write_leases_states(path, repo: str, slots: list[tuple[int, str]]) -> None:
     path.write_text(json.dumps({"leases": leases}), encoding="utf-8")
 
 
-def test_resolve_state_slot_idle_slot1_routes_continuity_to_leased_slot2(hf):
-    """`{1:idle, 2:leased}` continuity → `project_manager_2` (idle 슬롯1 아님·codex must-fix).
-
-    continuity 도 idle 필터된 활성 슬롯으로 라우팅 — 죽은 슬롯1 의 per-slot 으로 새지 않는다."""
-    _write_areas(hf._tmp / ".project_manager" / "areas.md")
-    _write_leases_states(
-        hf._tmp / ".project_manager" / ".local" / "worktree-leases.json",
-        "project_manager", [(1, "idle"), (2, "leased")])
-    assert hf._resolve_state_slot() == "project_manager_2"
 
 
-def test_pm_state_path_idle_slot1_routes_to_slot2_per_slot(hf):
-    """`{1:idle, 2:leased}` pm_state → `slots/project_manager_2/pm_state.md` (활성 슬롯2 per-slot)."""
-    _write_areas(hf._tmp / ".project_manager" / "areas.md")
-    _write_leases_states(
-        hf._tmp / ".project_manager" / ".local" / "worktree-leases.json",
-        "project_manager", [(1, "idle"), (2, "leased")])
-    assert hf._pm_state_path() == _slot_path(hf, "project_manager_2")
 
 
 # ── _pm_state_path: per-slot / 솔로 폴백 / graceful 마이그레이션 ──────────────
 
-def test_pm_state_path_unresolved_fails_loud(hf):
-    """슬롯 미해소 → 경로를 지어내지 않고 fail-loud(legacy 목적지 없음)."""
-    with pytest.raises(hf.identity_args.SlotResolutionError):
-        hf._pm_state_path()
 
 
-def test_pm_state_path_slot_resolves_to_local_slots(hf):
-    """단일 self-host → `.local/slots/<slot>/pm_state.md` (per-slot·legacy 부재)."""
-    _make_single_self_host(hf._tmp)
-    assert hf._pm_state_path() == _slot_path(hf)
 
 
-def test_pm_state_path_explicit_slot_to_local_slots(hf):
-    """명시 worktree_slot → 그 슬롯의 per-slot 경로 (auto 판정 불요)."""
-    assert hf._pm_state_path("work/project_manager_3") == _slot_path(hf, "project_manager_3")
 
 
-def test_pm_state_path_existing_slot_path_used_as_is(hf):
-    """slot 경로가 이미 있으면 그대로 반환 (마이그레이션 없음·이미 per-slot)."""
-    _make_single_self_host(hf._tmp)
-    sp = _slot_path(hf)
-    sp.parent.mkdir(parents=True, exist_ok=True)
-    sp.write_text("기존 슬롯 상태", encoding="utf-8")
-    assert hf._pm_state_path() == sp
-    assert sp.read_text(encoding="utf-8") == "기존 슬롯 상태"  # 불변.
 
 
-def test_pm_state_path_graceful_migration_moves_legacy(hf):
-    """legacy 존재 + slot 경로 부재 → 첫 접근 시 legacy → slot 경로로 *이동*(graceful)."""
-    _make_single_self_host(hf._tmp)
-    legacy = _legacy(hf)
-    legacy.parent.mkdir(parents=True, exist_ok=True)
-    legacy.write_text("이전 단일 pm_state 내용", encoding="utf-8")
-
-    resolved = hf._pm_state_path()
-
-    sp = _slot_path(hf)
-    assert resolved == sp
-    assert sp.exists() and sp.read_text(encoding="utf-8") == "이전 단일 pm_state 내용"
-    assert not legacy.exists(), "graceful 마이그레이션은 legacy 를 *이동*(복사 아님) — 원본 제거."
 
 
 # ── divergent bare 슬롯 dir backfill 마이그레이션 (T-0201) ────────────────────
@@ -230,110 +132,22 @@ def _bare_slot_dir(hf, n: int = 1) -> Path:
     return hf._tmp / ".project_manager" / ".local" / "slots" / str(n)
 
 
-def test_pm_state_path_backfills_divergent_bare_slot_dir(hf):
-    """`slots/<N>`(divergent bare dir) 존재 + canonical 부재 → canonical 로 이동(backfill)."""
-    _make_single_self_host(hf._tmp)  # _auto_slot → ("project_manager", 1).
-    bare_dir = _bare_slot_dir(hf, 1)
-    bare_dir.mkdir(parents=True)
-    (bare_dir / "pm_state.md").write_text("divergent bare 슬롯 내용", encoding="utf-8")
-
-    resolved = hf._pm_state_path()
-
-    sp = _slot_path(hf, "project_manager_1")
-    assert resolved == sp
-    assert sp.exists() and sp.read_text(encoding="utf-8") == "divergent bare 슬롯 내용"
-    assert not bare_dir.exists(), "backfill 은 bare dir 을 이동(정리) — 원본 잔재 없어야 함."
 
 
-def test_pm_state_path_backfill_skips_when_canonical_already_exists(hf):
-    """canonical dir 이 이미 있으면 bare dir 은 건드리지 않는다(안전 — 유실 방지)."""
-    _make_single_self_host(hf._tmp)
-    sp = _slot_path(hf, "project_manager_1")
-    sp.parent.mkdir(parents=True, exist_ok=True)
-    sp.write_text("canonical 기존 내용", encoding="utf-8")
-
-    bare_dir = _bare_slot_dir(hf, 1)
-    bare_dir.mkdir(parents=True)
-    (bare_dir / "pm_state.md").write_text("bare 잔재 내용", encoding="utf-8")
-
-    resolved = hf._pm_state_path()
-
-    assert resolved == sp
-    assert sp.read_text(encoding="utf-8") == "canonical 기존 내용", "canonical 을 덮어쓰지 않는다."
-    assert bare_dir.exists(), "canonical 이 이미 있으면 bare dir 은 그대로 둔다(유실 방지)."
 
 
-def test_pm_state_path_backfill_noop_when_no_divergent_dir(hf):
-    """divergent bare dir 이 없으면 backfill 은 no-op(정상 케이스·회귀 없음)."""
-    _make_single_self_host(hf._tmp)
-    resolved = hf._pm_state_path()
-    sp = _slot_path(hf, "project_manager_1")
-    assert resolved == sp
-    assert not sp.exists()
 
 
-def test_pm_state_path_dry_run_does_not_backfill(hf):
-    """migrate=False(dry-run/진입부 읽기) → backfill 안 함(부작용 0 계약 보존)."""
-    _make_single_self_host(hf._tmp)
-    bare_dir = _bare_slot_dir(hf, 1)
-    bare_dir.mkdir(parents=True)
-    (bare_dir / "pm_state.md").write_text("divergent bare 슬롯 내용", encoding="utf-8")
-
-    resolved = hf._pm_state_path(migrate=False)
-
-    sp = _slot_path(hf, "project_manager_1")
-    assert not sp.exists(), "dry-run 은 backfill 이동을 하지 않는다."
-    assert bare_dir.exists() and (bare_dir / "pm_state.md").exists(), "bare dir 그대로 보존."
-    # legacy·slot 둘 다 부재인 상태의 migrate=False 반환값은 slot_path(정식 위치) — 이동 안 함.
-    assert resolved == sp
 
 
-def test_backfill_divergent_slot_dir_noop_for_bare_slot_key(hf):
-    """slot 키 자체가 bare 숫자(트레일링 `_N` 없음)면 대상 아님 — no-op(방어적)."""
-    hf._backfill_divergent_slot_dir("4")  # 예외 없이 조용히 통과.
-    assert not (hf._tmp / ".project_manager" / ".local" / "slots").exists()
 
 
-def test_pm_state_path_slot_resolved_but_both_absent_returns_slot_path(hf):
-    """슬롯 해소 + slot 경로·legacy 둘 다 부재 → slot 경로 반환(쓰기 시 생성·생성 안 함)."""
-    _make_single_self_host(hf._tmp)
-    sp = _slot_path(hf)
-    assert hf._pm_state_path() == sp
-    assert not sp.exists(), "반환만 — 파일을 새로 만들지 않는다(fail-soft)."
 
 
-def test_pm_state_path_default_1_routes_to_slot1_not_legacy(hf):
-    """`{1,2}` continuity → `slots/<repo>_1/pm_state.md` (legacy 아님·T-0178 should-fix 핵심).
-
-    이 갭의 단언: default-1 셋업(`{1,2}`)에서 pm_state 가 *없는* legacy `wiki/pm_state.md`
-    로 새지 않고 slot1 per-slot 경로로 해소됨을 박제 — run() 가드의 "slot 1" 판정과 정합."""
-    _write_areas(hf._tmp / ".project_manager" / "areas.md")
-    _write_leases_multi(
-        hf._tmp / ".project_manager" / ".local" / "worktree-leases.json",
-        "project_manager", [1, 2])
-    resolved = hf._pm_state_path()
-    assert resolved == _slot_path(hf, "project_manager_1")
-    assert resolved != _legacy(hf), "continuity 가 없는 legacy 로 새면 안 됨(이 갭의 회귀)."
 
 
-def test_pm_state_path_truly_ambiguous_fails_loud(hf):
-    """`{2,3}`(진짜 모호) → 미해소와 같은 중단 (어느 슬롯 상태인지 지어내지 않는다)."""
-    _write_areas(hf._tmp / ".project_manager" / "areas.md")
-    _write_leases_multi(
-        hf._tmp / ".project_manager" / ".local" / "worktree-leases.json",
-        "project_manager", [2, 3])
-    with pytest.raises(hf.identity_args.SlotResolutionError):
-        hf._pm_state_path()
 
 
-def test_pm_state_path_unresolved_does_not_touch_legacy(hf):
-    """슬롯 미해소 + legacy 존재 → 중단하고 legacy 는 손대지 않는다(부작용 0)."""
-    legacy = _legacy(hf)
-    legacy.parent.mkdir(parents=True, exist_ok=True)
-    legacy.write_text("이전 상태", encoding="utf-8")
-    with pytest.raises(hf.identity_args.SlotResolutionError):
-        hf._pm_state_path()
-    assert legacy.exists() and legacy.read_text(encoding="utf-8") == "이전 상태"
 
 
 # ── incidental(회귀 cwd) fail-soft 무변경 재확인 (T-0178 should-fix·continuity 와 비대칭) ──
@@ -369,11 +183,6 @@ def test_handoff_init_explicit_pm_state_honored(hf, tmp_path):
     assert inst._pm_state_file_explicit is True
 
 
-def test_handoff_init_default_is_legacy_until_run(hf):
-    """미지정(프로덕션·None) → explicit 플래그 False·default 는 legacy(run 진입부서 재해소)."""
-    inst = hf.PmHandoff()
-    assert inst._pm_state_file_explicit is False
-    assert inst._pm_state_file == hf._legacy_pm_state_file()
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -469,132 +278,18 @@ def _make_handoff_production(
     return inst
 
 
-def test_run_writes_to_per_slot_path_when_slot_resolved(hf):
-    """run() 프로덕션 경로 — 단일 self-host + slot seeded → per-slot 경로에 sliding window write."""
-    inst = _make_handoff_production(hf, slot_seeded=True)
-    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=True, user_ack="project_manager_1")
-    assert rc == 0
-    sp = _slot_path(hf)
-    assert sp.exists()
-    assert "**4차**" in sp.read_text(encoding="utf-8"), "신규 세션 entry 가 per-slot pm_state 에 써짐."
-    # legacy 는 건드리지 않음(slot 경로가 권위).
-    assert not _legacy(hf).exists()
 
 
-def test_run_migrates_legacy_then_writes_per_slot(hf):
-    """run() 프로덕션 경로 — legacy 존재 + slot 부재 → 마이그레이션 후 per-slot 에 write."""
-    inst = _make_handoff_production(hf, with_legacy=True)
-    legacy = _legacy(hf)
-    assert legacy.exists()  # 전제: legacy 존재.
-
-    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=True, user_ack="project_manager_1")
-    assert rc == 0
-
-    sp = _slot_path(hf)
-    assert sp.exists() and "**4차**" in sp.read_text(encoding="utf-8")
-    assert not legacy.exists(), "legacy → slot 경로로 *이동*(마이그레이션) 후 원본 제거."
 
 
-def test_run_unregistered_home_aborts_without_touching_legacy(hf):
-    """run() 미등록 홈(장부 행 0) → 중단(rc1) · legacy pm_state 무접촉.
-
-    슬롯 행이 없으면 어느 슬롯의 연속성인지 모른다 — 조용히 legacy 에 쓰던 자리를 fail-loud 로
-    바꾼 BREAKING 지점이다(마이그레이션 안내가 메시지에 있다).
-    """
-    tmp = hf._tmp
-    log_file = tmp / "log.md"; log_file.write_text("# log\n", encoding="utf-8")
-    playbook_file = tmp / "playbook.md"; playbook_file.write_text("# pb\n", encoding="utf-8")
-    legacy = _legacy(hf)
-    legacy.parent.mkdir(parents=True, exist_ok=True)
-    legacy.write_text(_SESSION_SECTION, encoding="utf-8")
-
-    inst = hf.PmHandoff(
-        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("skip")),
-        run_git_fn=lambda args: (0, ""),
-        log_file=log_file, pm_playbook_file=playbook_file,
-    )
-    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=True,
-                  user_ack="proj_1")
-    assert rc == 1
-    assert legacy.read_text(encoding="utf-8") == _SESSION_SECTION
-    assert not _slot_path(hf).exists()
 
 
-def test_run_home_row_migrates_legacy_to_per_slot(hf):
-    """run() 등록된 홈(N=1 행) → legacy `wiki/pm_state.md` 가 per-slot 경로로 **이동**한다.
-
-    사용자 가시 이행 ① — git-tracked legacy 파일이 사라지고 gitignored per-slot 경로가 생긴다.
-    """
-    tmp = hf._tmp
-    _make_single_self_host(tmp)
-    log_file = tmp / "log.md"; log_file.write_text("# log\n", encoding="utf-8")
-    playbook_file = tmp / "playbook.md"; playbook_file.write_text("# pb\n", encoding="utf-8")
-    legacy = _legacy(hf)
-    legacy.parent.mkdir(parents=True, exist_ok=True)
-    legacy.write_text(_SESSION_SECTION, encoding="utf-8")
-
-    inst = hf.PmHandoff(
-        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("skip")),
-        run_git_fn=lambda args: (0, ""),
-        log_file=log_file, pm_playbook_file=playbook_file,
-    )
-    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=True,
-                  user_ack="project_manager_1")
-    assert rc == 0
-    slot_state = _slot_path(hf)
-    assert slot_state.exists() and "**4차**" in slot_state.read_text(encoding="utf-8")
-    assert not legacy.exists()
-    # 사용자 가시 이행 ② — 헤더가 무태그가 아니라 슬롯 태그를 단다.
-    assert "(project_manager_1) → 다음 PM 세션" in log_file.read_text(encoding="utf-8")
 
 
-def test_run_explicit_pm_state_not_redirected_to_slot(hf, tmp_path):
-    """명시 pm_state_file 주입(테스트) → per-slot 재해소 안 함(명시 경로 고정·hermetic 보존)."""
-    _make_single_self_host(hf._tmp)  # 슬롯 해소 가능한 형상이어도
-    explicit = tmp_path / "explicit_state.md"
-    explicit.write_text(_SESSION_SECTION, encoding="utf-8")
-    log_file = tmp_path / "log.md"; log_file.write_text("# log\n", encoding="utf-8")
-    playbook_file = tmp_path / "pb.md"; playbook_file.write_text("# pb\n", encoding="utf-8")
-
-    inst = hf.PmHandoff(
-        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("skip")),
-        run_git_fn=lambda args: (0, ""),
-        log_file=log_file, pm_playbook_file=playbook_file,
-        pm_state_file=explicit,  # 명시 주입.
-    )
-    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=True,
-                  worktree_slot="work/project_manager_1", user_ack="project_manager_1")
-    assert rc == 0
-    # 명시 경로에 써지고 slot 경로로 redirect 안 됨.
-    assert "**4차**" in explicit.read_text(encoding="utf-8")
-    assert not _slot_path(hf).exists()
 
 
-def test_pm_state_path_dry_run_no_migration(hf):
-    """migrate=False(dry-run) → legacy 존재 + slot 부재면 이동 없이 legacy 반환(부작용 0)."""
-    _make_single_self_host(hf._tmp)
-    legacy = _legacy(hf)
-    legacy.parent.mkdir(parents=True, exist_ok=True)
-    legacy.write_text("미리보기 내용", encoding="utf-8")
-
-    resolved = hf._pm_state_path(migrate=False)
-
-    assert resolved == legacy, "dry-run 은 현 읽기 위치(legacy)를 반환."
-    assert legacy.exists(), "dry-run 은 파일 이동 안 함 — legacy 보존."
-    assert not _slot_path(hf).exists(), "dry-run 은 slot 경로를 만들지 않음."
 
 
-def test_run_dry_run_does_not_migrate_legacy(hf):
-    """run(dry_run=True) 프로덕션 경로 — legacy 존재 시 마이그레이션(파일 이동) 안 함."""
-    inst = _make_handoff_production(hf, with_legacy=True)
-    legacy = _legacy(hf)
-    assert legacy.exists()
-
-    rc = inst.run(session_num=4, wave_summary="신규", dry_run=True, skip_pytest=True)
-    assert rc == 0
-    # dry-run — legacy 그대로, slot 경로 미생성.
-    assert legacy.exists(), "dry-run 은 legacy 를 옮기지 않는다."
-    assert not _slot_path(hf).exists()
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -609,43 +304,8 @@ _PYTEST_RED = "1 passed, 1 failed in 0.1s"  # is_pytest_green → False(중단).
 _PYTEST_GREEN = "2 passed in 0.1s"          # is_pytest_green → True(통과).
 
 
-def test_run_pytest_red_does_not_migrate_legacy(hf):
-    """회귀 red 로 run() 중단(return 1) → legacy 미이동·slot 경로 미생성(무접촉 계약)."""
-    inst = _make_handoff_production(
-        hf, with_legacy=True,
-        run_pytest_fn=lambda: (1, _PYTEST_RED),  # red → [1/7] 에서 중단.
-    )
-    legacy = _legacy(hf)
-    assert legacy.exists()
-
-    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=False, user_ack="project_manager_1")
-    assert rc == 1, "회귀 red → 핸드오프 중단."
-    # 중단 시 pm_state 무접촉 — legacy 그대로, slot 경로 미생성.
-    assert legacy.exists(), "회귀 red 중단인데 legacy 가 이동됐다(트랜잭션 계약 위반)."
-    assert legacy.read_text(encoding="utf-8") == _SESSION_SECTION, "legacy 내용 불변."
-    assert not _slot_path(hf).exists(), "회귀 red 중단인데 slot 경로가 생성됐다."
 
 
-def test_run_gates_green_migrates_then_writes_per_slot(hf):
-    """기계회귀 green + 출하 surface 무변경 → 통과 후 legacy→slot 이동 + slot 에 기록.
-
-    test_run_migrates_legacy_then_writes_per_slot 의 *회귀 실행* 변형 — skip_pytest=False·
-    회귀 green·출하 surface 무변경(git stub (0,"") → 출하 변경 없음·비차단)로 통과시킨다.
-    """
-    inst = _make_handoff_production(
-        hf, with_legacy=True,
-        run_pytest_fn=lambda: (0, _PYTEST_GREEN),  # 회귀 green.
-        # git stub 이 (0,"") 라 미push diff 출하 변경 없음 → surface "출하 변경 없음"(비차단).
-    )
-    legacy = _legacy(hf)
-    assert legacy.exists()
-
-    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=False, user_ack="project_manager_1")
-    assert rc == 0
-    sp = _slot_path(hf)
-    assert sp.exists() and "**4차**" in sp.read_text(encoding="utf-8"), \
-        "게이트 통과 후 legacy→slot 이동 + slot 에 기록."
-    assert not legacy.exists(), "게이트 green → legacy 는 slot 으로 이동(제거)."
 
 
 # NB(ADR-0057·T-0323): 이 절이 통째로 검증하던 `--worktree-slot`(raw 문자열) CLI ingress +
@@ -930,20 +590,6 @@ def test_collect_log_entry_solo_note_after_handoff_returns_note(bs, tmp_path):
     assert "과거 handoff 본문" not in entry["body"]
 
 
-def test_collect_log_entry_fresh_slot_no_reattach_leak(bs, tmp_path):
-    """MF-2 파급: fresh slot-2 는 log_entry=None → reattach 가 타 슬롯 branch 로 오경고 안 함."""
-    log = (
-        "## [2026-07-10] handoff | PM 3차 (project_manager_1) → 다음 PM 세션\n"
-        "- worktree: slot=work/project_manager_1 · branch=other-slot-branch\n"
-    )
-    log_file = tmp_path / "current.md"
-    log_file.write_text(log, encoding="utf-8")
-    inst = bs.PmBootstrap(log_file=log_file)
-    inst._bound_slot = "work/project_manager_2"
-    entry = inst._collect_log_entry()
-    # log_entry 없음 → reattach body=None → 타 슬롯 branch 로 오경고 없음.
-    body = entry.get("body") if entry else None
-    assert bs.reattach_warning("my-branch", body) is None, "fresh slot 은 타 슬롯 reattach 오경고 0."
 
 
 # ── should-fix: 정규식 태그 캡처를 canonical `<repo>_<N>` 로 제약 (서술형 괄호 오캡처 방지) ──
@@ -1091,73 +737,21 @@ def _write_legacy_state(hf, text: str) -> Path:
     return p
 
 
-# ── 순수 함수 normalize_session_anchors ──────────────────────────────────────
-
-def test_normalize_fixes_double_cha_tokens(hf):
-    """오형식 `**N차차**` 셋을 전부 `**N차**` 로 정규화·이중-차 잔존 0."""
-    fixed = hf.normalize_session_anchors(_MALFORMED_SESSION_SECTION)
-    assert "**50차**" in fixed and "**51차**" in fixed and "**52차**" in fixed
-    assert "차차" not in fixed
 
 
-def test_normalize_derive_succeeds_after_fix(hf):
-    """DoD: 오형식은 앵커 미매치라 유도 실패(placeholder)·정규화 후 infer 성공(max+1)."""
-    # 오형식 상태 — `_PM_SESSION_ANCHOR_RE`(`\d+차` 1회) 미매치 → placeholder.
-    assert hf.infer_next_session_num(_MALFORMED_SESSION_SECTION) == hf.TRIGGER_SESSION_PLACEHOLDER
-    fixed = hf.normalize_session_anchors(_MALFORMED_SESSION_SECTION)
-    # 정규화 후 max(50,51,52)+1 = 53 유도 성공(log 폴백 은닉 의존 해소).
-    assert hf.infer_next_session_num(fixed) == 53
 
 
-def test_normalize_idempotent(hf):
-    """멱등: 한 번 정규화한 텍스트를 다시 정규화해도 결과가 동일하다."""
-    once = hf.normalize_session_anchors(_MALFORMED_SESSION_SECTION)
-    twice = hf.normalize_session_anchors(once)
-    assert twice == once
 
 
-def test_normalize_noop_on_clean_returns_same_object(hf):
-    """오형식 없는 정상 절 — 무변경 시 입력을 그대로(동일 객체) 반환(값 비교 no-op 감지)."""
-    out = hf.normalize_session_anchors(_SESSION_SECTION)
-    assert out == _SESSION_SECTION
-    assert out is _SESSION_SECTION
 
 
-def test_normalize_handles_triple_or_more_cha(hf):
-    """`차차차`(3회 이상)도 단일 `차` 로 접는다(2회+ 반복 전부 대상)."""
-    text = _MALFORMED_SESSION_SECTION.replace("**50차차**", "**50차차차**")
-    fixed = hf.normalize_session_anchors(text)
-    assert "**50차**" in fixed and "차차" not in fixed
 
 
-def test_normalize_non_destructive_preserves_dates_and_pointer(hf):
-    """비파괴: 오형식 잉여 '차' 만 제거·날짜/요약/포인터 줄은 한 글자도 안 바뀐다."""
-    fixed = hf.normalize_session_anchors(_MALFORMED_SESSION_SECTION)
-    assert "(2026-06-11 · w): w." in fixed
-    assert "이전 차 (PM 1차~1차) = `log/current.md` handoff entry 단일 진실." in fixed
-    assert "## 진행 중인 의사결정" in fixed
 
 
-def test_normalize_no_session_section_unchanged(hf):
-    """세션 식별 절이 없으면 원문을 그대로(동일 객체) 반환 — 절 밖은 손대지 않는다."""
-    text = "# PM State\n\n## 딴 절\n\n**50차차** 본문.\n"
-    out = hf.normalize_session_anchors(text)
-    assert out == text
-    assert out is text
 
 
-def test_normalize_scoped_to_session_section_only(hf):
-    """비파괴 스코프: 세션 식별 절 *밖*의 `**N차차**` 는 정규화 대상이 아니다(절 경계 존중)."""
-    text = (
-        "# PM State\n\n"
-        "## 세션 식별 (현재까지 사용된 이름)\n\n"
-        "  - **50차차** (2026-06-11 · w): w.\n"
-        "\n## 다른 절\n\n"
-        "여기 **99차차** 는 세션 식별 절 밖이라 정규화 대상 아님.\n"
-    )
-    fixed = hf.normalize_session_anchors(text)
-    assert "**50차**" in fixed, "절 안 오형식은 정규화."
-    assert "**99차차**" in fixed, "절 밖 오형식은 보존(비파괴 스코프)."
+
 
 
 # finance 실 타깃 형상 — 설명 절(`## 세션 식별 규칙`·anchor 매치하나 entry 0)이 **먼저** 오고,
@@ -1177,108 +771,23 @@ _FINANCE_MALFORMED_ONLY_STATE = (
 )
 
 
-def test_normalize_all_malformed_window_after_rules_section(hf):
-    """codex must-fix 재현 — 설명 절이 먼저 오고 window entry 가 전부 오형식이어도 window 절을
-    정확히 골라 정규화한다(silent no-op 아님·수정 전엔 이 assert 가 no-op 로 실패).
-    """
-    fixed = hf.normalize_session_anchors(_FINANCE_MALFORMED_ONLY_STATE)
-    assert fixed != _FINANCE_MALFORMED_ONLY_STATE, "window 절을 골라 실제로 정규화(no-op 아님)."
-    assert "**87차**" in fixed and "**88차**" in fixed and "**89차**" in fixed
-    assert "차차" not in fixed, "이중-차 잔존 0."
-    assert "이름은 <repo>_<N> 로 짓는다" in fixed, "설명 절은 무접촉(비파괴)."
 
 
-def test_normalize_all_malformed_window_enables_derive(hf):
-    """DoD — 전부 오형식 window 도 정규화 후 infer 성공(max(87,88,89)+1=90)."""
-    assert hf.infer_next_session_num(_FINANCE_MALFORMED_ONLY_STATE) == hf.TRIGGER_SESSION_PLACEHOLDER
-    fixed = hf.normalize_session_anchors(_FINANCE_MALFORMED_ONLY_STATE)
-    assert hf.infer_next_session_num(fixed) == 90
 
 
-# ── CLI main(--normalize-session-anchors) ────────────────────────────────────
-
-def test_main_normalize_apply_fixes_legacy(hf, capsys):
-    """솔로 apply — legacy pm_state 오형식 교체·rc0·diff 출력·이중-차 잔존 0."""
-    p = _write_legacy_state(hf, _MALFORMED_SESSION_SECTION)
-    rc = hf.main(["--normalize-session-anchors"])
-    assert rc == 0
-    content = p.read_text(encoding="utf-8")
-    assert "**52차**" in content and "차차" not in content
-    out = capsys.readouterr().out
-    assert "정규화 적용 완료" in out
-    assert "차차" in out, "diff preview 에 제거되는 오형식 토큰 노출."
 
 
-def test_main_normalize_needs_no_session_seq_or_wave(hf):
-    """유지보수 모드는 session-seq/wave-summary 없이 동작(required 체크 우회·SystemExit 0)."""
-    _write_legacy_state(hf, _MALFORMED_SESSION_SECTION)
-    assert hf.main(["--normalize-session-anchors"]) == 0
 
 
-def test_main_normalize_dry_run_leaves_file_unchanged(hf, capsys):
-    """비파괴 dry-run — 원문 보존(파일 미변경)·diff preview·미적용 안내."""
-    p = _write_legacy_state(hf, _MALFORMED_SESSION_SECTION)
-    rc = hf.main(["--normalize-session-anchors", "--dry-run"])
-    assert rc == 0
-    assert p.read_text(encoding="utf-8") == _MALFORMED_SESSION_SECTION
-    out = capsys.readouterr().out
-    assert "[dry-run]" in out
-    assert "차차" in out, "dry-run diff 에 오형식 노출."
 
 
-def test_main_normalize_idempotent_second_run_noop(hf, capsys):
-    """멱등 재현 — apply 후 재실행이 파일을 다시 안 바꾸고 no-op 안내(rc0)."""
-    p = _write_legacy_state(hf, _MALFORMED_SESSION_SECTION)
-    assert hf.main(["--normalize-session-anchors"]) == 0
-    after_first = p.read_text(encoding="utf-8")
-    capsys.readouterr()  # 첫 실행 출력 소거.
-    assert hf.main(["--normalize-session-anchors"]) == 0
-    assert p.read_text(encoding="utf-8") == after_first, "재실행 무변화(멱등)."
-    assert "이미 정합" in capsys.readouterr().out
 
 
-def test_main_normalize_noop_on_clean_file(hf, capsys):
-    """이미 정합한 파일 — 변경 없음 no-op(rc0)."""
-    _write_legacy_state(hf, _SESSION_SECTION)
-    assert hf.main(["--normalize-session-anchors"]) == 0
-    assert "변경 없음" in capsys.readouterr().out
 
 
-def test_main_normalize_missing_file_is_noop(hf, capsys):
-    """대상 pm_state 부재(미생성) — 명시 안내 후 no-op(rc0·크래시 0)."""
-    _make_single_self_host(hf._tmp)
-    assert hf.main(
-        ["--normalize-session-anchors"],
-        identity_resolver=lambda: (_ for _ in ()).throw(
-            AssertionError("normalize early-return보다 identity 해소가 먼저 실행됨")
-        ),
-    ) == 0
-    assert "대상 파일이 없다" in capsys.readouterr().out
 
 
-def test_main_normalize_targets_per_slot_pm_state(hf):
-    """--session <repo>_<N> → 해당 슬롯 pm_state 를 정규화(legacy 아님·per-slot 대상)."""
-    _make_single_self_host(hf._tmp)
-    sp = _slot_path(hf, "project_manager_1")
-    sp.parent.mkdir(parents=True, exist_ok=True)
-    sp.write_text(_MALFORMED_SESSION_SECTION, encoding="utf-8")
-    # legacy 는 손대면 안 됨(슬롯 대상 격리 대조).
-    legacy = _write_legacy_state(hf, _MALFORMED_SESSION_SECTION)
-
-    rc = hf.main(["--normalize-session-anchors", "--session", "project_manager_1"])
-    assert rc == 0
-    slot_content = sp.read_text(encoding="utf-8")
-    assert "**52차**" in slot_content and "차차" not in slot_content, "슬롯 pm_state 정규화."
-    assert legacy.read_text(encoding="utf-8") == _MALFORMED_SESSION_SECTION, "legacy 는 무접촉."
 
 
-def test_main_normalize_finance_all_malformed_not_silent_noop(hf, capsys):
-    """CLI end-to-end — finance 실 형상(설명 절 먼저·window 전부 오형식)에서 apply 가 window
-    를 정규화하고 파일을 교체한다(silent no-op 아님·codex must-fix 회귀 가드)."""
-    p = _write_legacy_state(hf, _FINANCE_MALFORMED_ONLY_STATE)
-    rc = hf.main(["--normalize-session-anchors"])
-    assert rc == 0
-    content = p.read_text(encoding="utf-8")
-    assert "**89차**" in content and "차차" not in content, "window 절 실제 교체."
-    assert "정규화 적용 완료" in capsys.readouterr().out
+
 

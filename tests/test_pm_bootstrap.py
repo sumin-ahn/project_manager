@@ -485,32 +485,8 @@ def _spy_never_called(msg: str):
     return _spy, flag
 
 
-def test_branch_without_repo_errors_before_auto_resolve(bootstrap, monkeypatch):
-    """`--branch`(무 `--repo`) 는 auto-resolve 가 args.repo 를 채우기 **전에** 즉시 거부된다.
-
-    회귀 표적(T-0327): 가드가 auto-resolve 뒤에 있으면 auto-resolve 가 자동바인딩으로 args.repo 를
-    채운 뒤 가드를 통과 → branch 가 그 슬롯에 silent 부착됐다. 가드를 앞으로 옮겨
-    `_resolve_session_slot` 이 호출되기도 전에 error(rc 2)로 끝나는지 확인한다.
-
-    비공허: spy 로 auto-resolve **미호출**을 단언한다 — 가드가 정말 auto-resolve 앞이라는 증거.
-    가드를 다시 뒤로 옮기면 spy 가 호출돼 AssertionError 로 red.
-    """
-    spy, flag = _spy_never_called("auto-resolve 는 branch 가드 뒤라 호출되면 안 된다")
-    monkeypatch.setattr(bootstrap, "_resolve_session_slot", spy)
-    with pytest.raises(SystemExit) as exc:
-        bootstrap.main(["--branch", "wip-x"])
-    assert exc.value.code == 2
-    assert flag["called"] is False
 
 
-def test_resume_without_repo_errors_before_auto_resolve(bootstrap, monkeypatch):
-    """`--resume`(무 `--repo`)도 branch 와 동형 — auto-resolve 앞 가드에서 rc 2·auto-resolve 미호출 (T-0327)."""
-    spy, flag = _spy_never_called("auto-resolve 는 resume 가드 뒤라 호출되면 안 된다")
-    monkeypatch.setattr(bootstrap, "_resolve_session_slot", spy)
-    with pytest.raises(SystemExit) as exc:
-        bootstrap.main(["--resume", "prev-wip"])
-    assert exc.value.code == 2
-    assert flag["called"] is False
 
 
 # ── F1 --task 배선 (main·⑥ 예약 거부·auto-slot 제외·T-0353) ─────────────────
@@ -562,18 +538,6 @@ def test_task_cli_rejects_slot_identity_mixing_before_run(bootstrap, monkeypatch
     assert exc.value.code == 2
 
 
-def test_task_alone_does_not_trigger_slot_auto_resolve(bootstrap, monkeypatch):
-    """`--task` 단독은 슬롯 자동해소를 태우지 않는다(⑥·task=슬롯 0개 시작 가능·T-0353)."""
-    monkeypatch.setattr(bootstrap, "_registered_repos", lambda *a, **k: [])
-    spy, flag = _spy_never_called("--task 단독은 auto-slot 해소를 호출하면 안 된다(⑥)")
-    monkeypatch.setattr(bootstrap, "_resolve_session_slot", spy)
-    captured = {}
-    monkeypatch.setattr(bootstrap.PmBootstrap, "run",
-                        lambda self, **kw: captured.update(kw) or 0)
-    rc = bootstrap.main(["--task", "job1"])
-    assert rc == 0
-    assert flag["called"] is False
-    assert captured.get("task") == "job1" and captured.get("repo") is None
 
 
 # ── task 신규 state의 완료 세션 0개 marker surface ───────────────────────────

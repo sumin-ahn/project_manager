@@ -17,11 +17,21 @@ def _load_handoff():
     return module
 
 
+class _TaskPool:
+    """task membership·보유 슬롯만 답하는 최소 seam — 승인 게이트 앞의 장부 조회를 통과시킨다."""
+
+    def find_task(self, name):
+        return type("_T", (), {"name": name})()
+
+    def slots_for_task(self, name):
+        return []
+
+
 def _capture_run(monkeypatch, module):
     calls = []
 
-    def fake_run(self, **kwargs):
-        calls.append(kwargs)
+    def fake_run(self, task, **kwargs):
+        calls.append({"task": task, **kwargs})
         return 0
 
     monkeypatch.setattr(module.PmHandoff, "run", fake_run)
@@ -62,20 +72,6 @@ def test_matching_task_ack_reaches_existing_handoff_pipeline(monkeypatch, capsys
     assert "[승인 감사]" not in capsys.readouterr().out
 
 
-def test_slot_ack_binds_to_canonical_repo_slot(monkeypatch, capsys, tmp_path):
-    handoff = _load_handoff()
-    calls = _capture_run(monkeypatch, handoff)
-    monkeypatch.setattr(handoff, "REPO", tmp_path)
-    argv = [
-        "--repo", "alpha", "--slot", "2", "--session-seq", "7",
-        "--wave-summary", "x", "--no-pytest",
-    ]
-
-    assert handoff.main([*argv, "--user-ack", "alpha_1"]) == 0
-    assert handoff.main([*argv, "--user-ack", "alpha_2"]) == 0
-    assert [call["worktree_slot"] for call in calls] == ["work/alpha_2", "work/alpha_2"]
-    assert [call["user_ack"] for call in calls] == ["alpha_1", "alpha_2"]
-    assert "대상값 'alpha_2'" not in capsys.readouterr().out
 
 
 def test_dry_run_without_ack_is_allowed_but_prints_execution_approval_notice(
@@ -92,177 +88,49 @@ def test_dry_run_without_ack_is_allowed_but_prints_execution_approval_notice(
     assert "쓰기 0 미리보기는 사용자 ack 없이 허용" not in capsys.readouterr().out
 
 
-def test_legacy_solo_cli_only_passes_ack_surface(monkeypatch):
-    handoff = _load_handoff()
-    calls = _capture_run(monkeypatch, handoff)
-    argv = ["--session-seq", "3", "--wave-summary", "x", "--no-pytest"]
-
-    resolver = lambda: ("solo", None, "legacy pm_state")
-    assert handoff.main(argv, identity_resolver=resolver) == 0
-    assert handoff.main(
-        [*argv, "--user-ack", "solo"], identity_resolver=resolver,
-    ) == 0
-    assert [call["worktree_slot"] for call in calls] == [None, None]
-    assert [call["task"] for call in calls] == [None, None]
-    assert [call["collection_task"] for call in calls] == ["solo", "solo"]
-    assert [call["user_ack"] for call in calls] == [None, "solo"]
 
 
 def test_direct_run_missing_ack_is_rejected_before_pipeline(monkeypatch, tmp_path, capsys):
     handoff = _load_handoff()
-    runner = handoff.PmHandoff(pm_state_file=tmp_path / "pm_state.md")
+    runner = handoff.PmHandoff(
+        pm_state_file=tmp_path / "pm_state.md", worktree_pool=_TaskPool(),
+    )
     monkeypatch.setattr(
         runner,
         "_dirty_tree_gate",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("ack 뒤 pipeline 진입 금지")),
     )
 
-    rc = runner.run(
-        session_num=3,
-        wave_summary="x",
-        dry_run=False,
-        skip_pytest=True,
-        worktree_slot="work/alpha_2",
-    )
+    rc = runner.run("alpha", dry_run=False, skip_pytest=True)
 
     assert rc == 1
     err = capsys.readouterr().err
     assert "1순위: 사용자에게 핸드오프 여부를 확인하라" in err
-    assert "부차 수단: 승인한 사용자만 `--user-ack alpha_2`" in err
+    assert "부차 수단: 승인한 사용자만 `--user-ack alpha`" in err
     assert "세션 자동 부착 금지" in err
 
 
 def test_direct_run_mismatched_ack_is_value_bound(monkeypatch, tmp_path, capsys):
     handoff = _load_handoff()
-    runner = handoff.PmHandoff(pm_state_file=tmp_path / "pm_state.md")
+    runner = handoff.PmHandoff(
+        pm_state_file=tmp_path / "pm_state.md", worktree_pool=_TaskPool(),
+    )
     monkeypatch.setattr(
         runner,
         "_dirty_tree_gate",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("mismatch 뒤 pipeline 진입 금지")),
     )
 
-    rc = runner.run(
-        session_num=3,
-        wave_summary="x",
-        dry_run=False,
-        skip_pytest=True,
-        worktree_slot="work/alpha_2",
-        user_ack="alpha_1",
-    )
+    rc = runner.run("alpha", dry_run=False, skip_pytest=True, user_ack="other")
 
     assert rc == 1
-    assert "제공된 값 'alpha_1'은 대상값 'alpha_2'에 결속되지 않았다" in capsys.readouterr().err
+    assert "제공된 값 'other'은 대상값 'alpha'에 결속되지 않았다" in capsys.readouterr().err
 
 
-def test_bare_slot_is_resolved_once_and_same_value_binds_ack(
-    monkeypatch, tmp_path, capsys,
-):
-    handoff = _load_handoff()
-    resolutions = []
-
-    def resolve_once(worktree_slot):
-        resolutions.append(worktree_slot)
-        return ("work/alpha_1", None) if len(resolutions) == 1 else ("work/alpha_2", None)
-
-    monkeypatch.setattr(handoff, "_resolve_session_worktree_slot", resolve_once)
-    runner = handoff.PmHandoff()
-    monkeypatch.setattr(runner, "_dirty_tree_gate", lambda *a, **k: (1, None, ()))
-
-    rc = runner.run(
-        session_num=3,
-        wave_summary="x",
-        dry_run=False,
-        skip_pytest=True,
-        user_ack="alpha_1",
-    )
-
-    assert rc == 1
-    assert resolutions == [None]
-    assert runner._worktree_slot == "work/alpha_1"
-    assert "대상값 'alpha_1'" in capsys.readouterr().out
 
 
-def test_bare_none_resolution_is_frozen_for_ack_and_downstream(
-    monkeypatch, tmp_path, capsys,
-):
-    """첫 해소 None도 실행 스냅샷이다 — 뒤 lease 변화로 slot을 재해소하지 않는다.
-
-    해소가 None 이면 승인 대상값도 없으므로 dirty 게이트(첫 판정)에도 도달하지 않고 멈춘다 —
-    재해소가 0회임을 `resolutions` 로 못박는다."""
-    handoff = _load_handoff()
-    resolutions = []
-
-    def resolve_entry_once(worktree_slot):
-        resolutions.append(("entry", worktree_slot))
-        return None, None
-
-    def resolve_state_after_lease_change(*args, **kwargs):
-        resolutions.append(("state", args[0] if args else None))
-        return "alpha_2"
-
-    def resolve_cwd_after_lease_change(worktree_slot, *args, **kwargs):
-        resolutions.append(("cwd", worktree_slot))
-        return str(tmp_path / "work" / "alpha_2")
-
-    monkeypatch.setattr(handoff, "REPO", tmp_path)
-    monkeypatch.setattr(handoff, "_resolve_session_worktree_slot", resolve_entry_once)
-    monkeypatch.setattr(handoff, "_resolve_state_slot", resolve_state_after_lease_change)
-    monkeypatch.setattr(handoff, "_regression_cwd", resolve_cwd_after_lease_change)
-    runner = handoff.PmHandoff()
-    dirty_trees = []
-
-    def stop_after_observing_dirty_trees(*args, **kwargs):
-        dirty_trees.extend(runner._dirty_gate_trees(None))
-        return 1, None, ()
-
-    monkeypatch.setattr(runner, "_dirty_tree_gate", stop_after_observing_dirty_trees)
-
-    rc = runner.run(
-        session_num=3,
-        wave_summary="x",
-        dry_run=False,
-        skip_pytest=True,
-        user_ack="proj_1",
-    )
-
-    assert rc == 1
-    assert resolutions == [("entry", None)]   # 재해소 0회(state/cwd 미호출).
-    assert dirty_trees == []                  # 어떤 판정/write 보다 앞에서 멈춘다.
-    assert runner._worktree_slot is None
-    # 해소 스냅샷이 None 이면 승인 대상값도 없다 — sentinel 을 지어내지 않고 그 자리에서 멈춘다.
-    assert "승인 대상값을 해소할 수 없다" in capsys.readouterr().err
 
 
-def test_direct_run_rejects_malformed_worktree_slot_before_ack_or_pipeline(
-    monkeypatch, tmp_path, capsys,
-):
-    handoff = _load_handoff()
-    runner = handoff.PmHandoff(pm_state_file=tmp_path / "pm_state.md")
-    pipeline_calls = []
-
-    def dirty_gate(*args, **kwargs):
-        pipeline_calls.append((args, kwargs))
-        return 1, None, ()
-
-    monkeypatch.setattr(runner, "_dirty_tree_gate", dirty_gate)
-
-    rc = runner.run(
-        session_num=3,
-        wave_summary="x",
-        dry_run=False,
-        skip_pytest=True,
-        worktree_slot="work/not-a-canonical-slot",
-        user_ack="solo",
-    )
-
-    assert rc == 1
-    assert pipeline_calls == []
-    captured = capsys.readouterr()
-    assert "[승인 감사]" not in captured.out
-    err = captured.err
-    assert "worktree_slot" in err
-    assert "슬롯 정체성을 해소할 수 없다" in err
-    assert "canonical `<repo>_<N>`" in err
 
 
 def test_compaction_checkpoint_parser_has_no_handoff_ack_gate():
