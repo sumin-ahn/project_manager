@@ -7742,9 +7742,11 @@ def test_flat_opencode_command_rewrites_only_operational_detail_target(pm_update
     assert pm_update._flat_command_skill_name(
         ".claude/skills/pm-review/SKILL.md"
     ) is None
+    # 링크 rewrite + command 전용 인자 전달 절이 이 렌더의 전부다.
     assert pm_update._render_flat_command_reference(source, "pm-review") == (
         "before [references/operational-details.md]"
         "(../../.claude/skills/pm-review/references/operational-details.md) after\n"
+        + pm_update._FLAT_COMMAND_ARGUMENTS_SECTION
     )
 
 

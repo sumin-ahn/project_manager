@@ -232,8 +232,6 @@ def test_single_slot_shape_resolves_to_ledger_row(home):
     assert (resolved.key, resolved.slot) == ("A_1", "work/A_1")
     assert home.hf._regression_cwd(None, home.areas, home.ledger) == \
         str(home.root / "work/A_1")
-    assert home.bp._pm_state_display_path(None, home.areas, home.ledger) == \
-        ".project_manager/.local/slots/A_1/pm_state.md"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -537,43 +535,6 @@ def _home_row_A(home: Home) -> None:
     home.write_ledger([{"slot": ".", "repo": "A", "session": "A_1", "started": "t", "state": "leased", "test_cmd": None,
                         "bound": True}])
     home.write_areas(["A"])
-
-
-def test_entry_bootstrap_bind_reaches_the_ledger_row(home, monkeypatch):
-    """`/pm-bootstrap A --slot 1` 의 bind 진입이 **그 행**에 도달한다(새 행을 파지 않는다).
-
-    경로를 `work/A_1` 로 재조립하면 bind 는 장부에 없는 슬롯을 새로 만들고(행 2개) 세션이
-    phantom 작업공간을 기준으로 굴러간다.
-    """
-    _home_row_A(home)
-    # slot pm_state 생성 경로(bind → ensure)가 실제로 돌도록 tracked template 을 홈에 깐다.
-    template = REPO / ".project_manager" / "wiki" / "pm_state.template.md"
-    (home.root / ".project_manager" / "wiki" / "pm_state.template.md").write_text(
-        template.read_text(encoding="utf-8"), encoding="utf-8")
-
-    bootstrap = home.bp.PmBootstrap(worktree_pool=home.wp, areas_file=home.areas)
-    identity = bootstrap._bind_and_identity("A", 1)
-
-    assert identity["slot"] == "."                      # 행의 경로 값(재조립 아님)
-    assert identity["slot_path"] == str(home.root)      # cwd = PM 홈 자신
-    assert identity["slot_number"] == 1                 # 카드 재접속 좌표
-    rows = json.loads(home.ledger.read_text(encoding="utf-8"))["leases"]
-    assert [r["slot"] for r in rows] == ["."]           # 새 행을 파지 않았다
-    assert rows[0]["session"] == "A_1"
-
-
-def test_entry_bootstrap_phase0_admits_the_ledger_row(home, capsys):
-    """0단계 진입 검사(`/pm-bootstrap A --slot 1`)가 그 행을 실재로 인정한다.
-
-    경로를 재조립하면 홈 행이 "장부·폴더 어디에도 없습니다"로 rc 1 차단된다 — 세션이 아예
-    시작되지 못한다.
-    """
-    _home_row_A(home)
-    bootstrap = home.bp.PmBootstrap(worktree_pool=home.wp, areas_file=home.areas)
-    # 그 행은 열린 기록이라 이어받기(사용자 응답 `--force`)로 진입한다 — 여기서 재는 것은
-    # 그 행의 **경로 인정**이다(재조립하면 "어디에도 없습니다"로 막힌다).
-    assert bootstrap._phase0_preflight("A", 1, True) == 0
-    assert "장부·폴더 어디에도 없습니다" not in capsys.readouterr().out
 
 
 def test_entry_task_workspace_resolves_the_ledger_row(home):

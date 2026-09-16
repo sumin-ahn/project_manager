@@ -76,3 +76,7 @@ python3 .project_manager/tools/additional_reviewer.py --base main --paths src/ t
 - `--no-gate`: 게이트 회계 opt-out(장부 미기록·예산 미소모·loud 표기). `--gate` 와 함께 쓰지 못한다.
 - `--adr ADR-NNNN …`: 관련 ADR을 프롬프트에 포함.
 - 호출 없는 미리보기: `--dry-run`.
+
+## 이번 호출 인자
+
+`$ARGUMENTS` — 사용자가 슬래시 명령 뒤에 준 값이다(하네스가 치환한다). 비어 있으면 인자 없이 부른 것이다. 이 카드가 인자를 받는 진입이면 그 값을 그대로 backbone 에 넘기고, 인자를 받지 않는 진입이면 값이 붙어 온 것을 사용자에게 알리고 인자 없이 다시 부르게 안내한다.

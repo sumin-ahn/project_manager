@@ -87,7 +87,7 @@ def tool_parsers():
     }
 
 
-_FLAG_PARSER_TOOLS = ("board.py", "pm_bootstrap.py", "pm_handoff.py", "ticket_finish.py")
+_FLAG_PARSER_TOOLS = ("board.py", "pm_handoff.py", "ticket_finish.py")
 
 
 @pytest.mark.parametrize("tool_key", _FLAG_PARSER_TOOLS)
@@ -202,13 +202,13 @@ def test_pm_relay_engine_core_exposes_no_identity_cli_surface():
 
 
 _ADOPTING_TOOL_FILES = (
-    "board.py", "pm_bootstrap.py", "pm_handoff.py", "ticket_finish.py", "worktree_pool.py",
+    "board.py", "pm_handoff.py", "ticket_finish.py", "worktree_pool.py",
 )
 
 
 @pytest.mark.parametrize("filename", _ADOPTING_TOOL_FILES)
 def test_flag_bearing_tool_source_adopts_shared_identity_args_module(filename):
-    """공용 헬퍼 채택 정합(T-0322) 잠금 — 5 개 CLI-플래그 도구가 각자 로컬로 `--repo`/`--slot`
+    """공용 헬퍼 채택 정합(T-0322) 잠금 — CLI-플래그 도구가 각자 로컬로 `--repo`/`--slot`
     파서를 재구현하지 않고 canonical `identity_args.add_identity_args(...)` 를 호출한다는 사실을
     소스 텍스트로 못박는다. 어느 도구가 향후 로컬 재구현으로 drift 하면(공용 모듈 미채택) 여기서
     red — semantics parity(위 두 그룹)가 "우연히" 같은 결과를 내더라도, 그 근거가 공용 모듈

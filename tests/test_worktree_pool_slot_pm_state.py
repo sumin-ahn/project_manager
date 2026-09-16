@@ -5,6 +5,7 @@ import ast
 import importlib.util
 import inspect
 import os
+import json
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -405,21 +406,25 @@ def test_locked_ensure_call_sites_are_public_ensure_bind_and_alloc_only():
 def test_first_bootstrap_run_binds_before_context_and_renders_seeded_state(
     wp, project, capsys
 ):
+    """run() 이 인계 컨텍스트 수집 **전에** task 서술 상태를 만들고 그 내용을 dump 한다."""
     bootstrap = _load("pm_bootstrap")
     bootstrap.REPO = project
-    wp.current_branch = lambda _slot, git_runner=None: None
-    wp.slot_status = lambda _slot, git_runner=None: None
-    state = wp.slot_pm_state_file("work/A_1")
+    # 가드 훅이 남기는 세션 기록 — 부트스트랩은 이 기록으로만 자기 세션 ID 를 안다.
+    claims = project / ".project_manager" / ".local" / "task-session-claims"
+    claims.mkdir(parents=True, exist_ok=True)
+    (claims / "mytask.json").write_text(
+        json.dumps({"task": "mytask", "session": "S-1"}), encoding="utf-8"
+    )
+    state = wp.task_pm_state_file("mytask")
     instance = bootstrap.PmBootstrap(
         worktree_pool=wp,
         board=SimpleNamespace(_repo_protected=lambda _repo: []),
-        pm_state_file=state,
     )
-    instance._phase0_preflight = lambda _repo, _slot, _force=False: 0
+    instance._phase0_preflight = lambda: 0
     instance._collect_freshness = lambda: []
     instance._collect_board = lambda: {
         "counts": {"done": 0, "open": 0, "claimed": 0, "blocked": 0},
-        "counts_scope": "slot 1",
+        "counts_scope": "task mytask",
         "open_tickets": [],
         "lint": "clean",
     }
@@ -433,21 +438,20 @@ def test_first_bootstrap_run_binds_before_context_and_renders_seeded_state(
     instance._collect_log_entry = lambda: None
     instance._collect_user_continuity = lambda _log_text: None
     instance._collect_dashboard_others = lambda: None
-    instance._slot_era_info = lambda _freshness: None
-    instance._safe_command_card = lambda _identity: None
+    instance._safe_command_card = lambda: None
 
     observed: list[dict] = []
     collect_handoff_context = instance._collect_handoff_context
 
     def collect_after_bind(log_text=None):
-        assert state.exists(), "run()이 handoff context보다 먼저 slot state를 만들지 않았다"
+        assert state.exists(), "run()이 handoff context보다 먼저 task state를 만들지 않았다"
         context = collect_handoff_context(log_text)
         observed.append(context)
         return context
 
     instance._collect_handoff_context = collect_after_bind
 
-    assert instance.run(repo="A", slot=1) == 0
+    assert instance.run(task="mytask") == 0
 
     assert len(observed) == 1
     context = observed[0]
@@ -455,7 +459,6 @@ def test_first_bootstrap_run_binds_before_context_and_renders_seeded_state(
     assert context["session_num"] == 1
     assert context["state_session_num"] == 1
     assert context["session_stale"] is False
-    assert context["fresh_slot"] is False
     assert context["remaining_work"].startswith("## 남은 작업 전체 그림")
     markdown = capsys.readouterr().out
     assert "## PM 1차 부트스트랩" in markdown

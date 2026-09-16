@@ -740,7 +740,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   줄어든 것은 그 실행이 부르지 않던 코드뿐이다. 현재화한 것은 기대 SHA 하나뿐이다.
 #   같은 티켓의 수정 라운드에서 한 번 더 이동했다 — `plan()` docstring 의 낱말 하나("모듈 밖
 #   호출부")뿐이고 실행 코드·배달 경계는 무편집이다.
-_T0585_PM_UPDATE_SHA256 = "c6fdc67ace1d30fc0ec011beffbfc299c7e14beaa5f289ba0c9449be11253bee"
+_T0585_PM_UPDATE_SHA256 = "9530a7bf66e1ee52626fd91b0e74dfba952f62f8fed1143c9e5fea3ba160594d"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -1073,7 +1073,7 @@ def _install_t0585_updater(dest: Path) -> None:
 # T-0887: 온보딩 opt-in 일습 삭제로 역적용 delta 의 exact-marker 목록이 두 항목으로 줄고
 # (되돌릴 원문이 사라졌다) 그만큼 historical 전문 SHA 도 이동했다. 퇴역 경로 delta 의 marker 는
 # 전부 그 절 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "14c5a6003be86ec2e44ef9257f1debb0cff23e5108365ed700dd6973f7d75f1b"
+_PRE_T0876_PM_UPDATE_SHA256 = "56ead2f1b8bd1c31fddb3a6c32bf364be9a8278f7a895b37edd86dd23ebf2c10"
 
 
 def _pre_t0876_pm_update_source() -> str:

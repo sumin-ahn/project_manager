@@ -138,11 +138,10 @@ def parse_identity(args: argparse.Namespace) -> Identity:
     """parsed args(`.repo`·`.slot`)에서 discriminated `Identity` 로 해소한다.
 
     fail-loud(`ValueError`) 두 경우 — (1) `--slot` 있는데 `--repo` 없음, (2) `--slot < 1`(슬롯
-    번호는 1부터·`work/<repo>_<N>` 정합). caller 가 `parser.error(str(exc))` 로 그대로 보인다
-    (`pm_bootstrap.resolve_repo_arg` 동형). 그 외 세 경우(slot/repo/none)는 성공한다.
+    번호는 1부터·`work/<repo>_<N>` 정합). caller 가 `parser.error(str(exc))` 로 그대로 보인다.
+    그 외 세 경우(slot/repo/none)는 성공한다.
 
-    slot≥1 검증은 `pm_bootstrap` 원 계약(pm_bootstrap.py:2935·`test_bootstrap_slot_below_one_rejected`
-    게이트) 보존 — canonical 모듈이 여기서 빠뜨리면 채택시 회귀.
+    slot≥1 검증은 이 모듈이 단일 진실이다 — 여기서 빠뜨리면 채택시 회귀.
     """
     repo = getattr(args, "repo", None)
     slot = getattr(args, "slot", None)

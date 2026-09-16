@@ -3759,12 +3759,24 @@ def _flat_command_skill_name(relpath: str) -> str | None:
     return path.stem
 
 
+_FLAT_COMMAND_ARGUMENTS_SECTION = (
+    "\n## 이번 호출 인자\n\n"
+    "`$ARGUMENTS` — 사용자가 슬래시 명령 뒤에 준 값이다(하네스가 치환한다). 비어 있으면 인자 없이"
+    " 부른 것이다. 이 카드가 인자를 받는 진입이면 그 값을 그대로 backbone 에 넘기고, 인자를 받지"
+    " 않는 진입이면 값이 붙어 온 것을 사용자에게 알리고 인자 없이 다시 부르게 안내한다.\n"
+)
+
+
 def _render_flat_command_reference(text: str, skill_name: str) -> str:
-    """평탄 command의 canonical detail 링크를 skill별 생성 경로로 rewrite한다.
+    """평탄 command의 canonical detail 링크를 skill별 생성 경로로 rewrite하고 인자 절을 붙인다.
 
     모델 skill은 ``<skill>/SKILL.md`` 옆 ``references/``를 쓰지만 사람 command는
     ``command/<skill>.md``라 같은 상대 링크가 한 공용 파일로 충돌한다. command 산출에만
     skill 이름을 끼워 넣고 원본 카드와 모델 표면은 그대로 둔다.
+
+    **인자 전달**: opencode 커맨드 파일은 본문이 곧 프롬프트라 `$ARGUMENTS` 를 적지 않으면
+    사용자가 `/pm-bootstrap --task X` 로 준 인자가 카드에 닿지 않는다(실측). 모델 skill 표면은
+    하네스가 호출문을 그대로 보여주므로 이 절은 command 사본에만 붙인다.
     """
     count = text.count(_FLAT_COMMAND_DETAIL_LINK)
     if count != 1:
@@ -3776,7 +3788,7 @@ def _render_flat_command_reference(text: str, skill_name: str) -> str:
         "[references/operational-details.md]"
         f"(../../.claude/skills/{skill_name}/references/operational-details.md)"
     )
-    return text.replace(_FLAT_COMMAND_DETAIL_LINK, target)
+    return text.replace(_FLAT_COMMAND_DETAIL_LINK, target) + _FLAT_COMMAND_ARGUMENTS_SECTION
 
 
 _CODEX_OPERATIONAL_PATHS = {

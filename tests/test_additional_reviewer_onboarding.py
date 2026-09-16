@@ -335,17 +335,6 @@ BOOTSTRAP_SOURCES = (
     ),
 )
 
-CARD_IDENTITY = {
-    "repo": "project_manager",
-    "session": "project_manager_1",
-    "slot": "work/project_manager_1",
-    "slot_path": "/home/x/work/project_manager_1",
-    "branch": "release/v1.0.6",
-    "others": [],
-    "protected_branch": None,
-}
-
-
 @pytest.fixture(scope="module")
 def pm_bootstrap():
     return _load("pm_bootstrap")
@@ -507,7 +496,8 @@ def test_bootstrap_first_turn_card_names_the_additional_reviewer(
     for marker in ("CODEX_THREAD_ID", "CODEX_CI"):
         monkeypatch.delenv(marker, raising=False)  # 하네스 감지 절 append 제거(결정론)
     inst = pm_bootstrap.PmBootstrap.__new__(pm_bootstrap.PmBootstrap)
-    card = inst._build_command_card_markdown(CARD_IDENTITY)
+    inst._task_name = "demo-task"
+    card = inst._build_command_card_markdown()
 
     review_lines = [ln for ln in card.splitlines() if "additional_reviewer.py" in ln]
     assert len(review_lines) == 1, f"additional_reviewer 줄이 1개가 아님: {review_lines}"

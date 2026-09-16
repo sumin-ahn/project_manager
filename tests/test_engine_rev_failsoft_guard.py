@@ -1180,7 +1180,9 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   의 엔진 거부 번역이다(둘 다 marked skew 는 그대로 올린다).
     # 270 = 271 − `pm_config._resolve_repo_base` 의 흡수 경계. base 가 슬롯 브랜치의 부모가 되면서
     #   board 판독 실패를 None("base 없음")으로 접으면 실제 원인이 가려지므로 예외를 그대로 올린다.
-    assert len(report.boundaries) == 270, "propagation sweep boundary ratchet changed"
+    # 263 = 270 − 부트스트랩 슬롯 모드 삭제가 지운 일곱 경계(슬롯 자동해소·슬롯 정체성 렌더·
+    #   0단계 슬롯 판정·시대차 계산 계열). 같은 판정은 task 보유 슬롯 전수 검증이 한다.
+    assert len(report.boundaries) == 263, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1280,7 +1282,6 @@ def _blank_recovery_reason(source: str) -> str:
     ("label", "source_name", "function", "occurrence"),
     [
         ("S1", "pm_import.py", "_load_repo_owned_files", 0),
-        ("S2", "pm_bootstrap.py", "PmBootstrap._slot_scope_fetched", 0),
         ("S3", "pm_handoff.py", "_regression_cwd", 0),
         ("S4", "pm_config.py", "cmd_repo_protected", 0),
         ("S5", "pm_bootstrap.py", "main", 0),
@@ -1597,7 +1598,8 @@ def _remove_marker_statement(source: str, function: str, occurrence: int = 0) ->
     [
         ("ticket_finish.py", "TicketFinisher._notify_affected_domain"),
         ("ticket_finish.py", "TicketFinisher._dirty_split"),
-        ("pm_bootstrap.py", "PmBootstrap._slot_branch_exists"),
+        # pm_bootstrap 행은 뺐다 — 슬롯 모드 삭제로 러너 cwd 해소가 형제 모듈을 읽지 않게
+        # 되면서 이 경계까지 스큐가 도달하지 않는다(마커 분기는 방어로 남는다).
     ],
 )
 def test_guard_sensitivity_instance_callable_attribute_plain_absorb_turns_red(
@@ -1637,7 +1639,6 @@ def _raiser(exc):
 @pytest.mark.parametrize(
     "case",
     [
-        "bootstrap_same_method",
         "handoff_auto_slot",
         "handoff_session_slot",
         "finish_regression_cwd",
@@ -1649,13 +1650,7 @@ def test_runtime_loaded_sibling_and_same_method_boundaries_rethrow_marked_skew(
     case, monkeypatch,
 ):
     skew = _marked_skew()
-    if case == "bootstrap_same_method":
-        module = _runtime_tool("pm_bootstrap.py")
-        instance = object.__new__(module.PmBootstrap)
-        instance._bound_slot = None
-        instance._worktree_cwd = _raiser(skew)
-        invoke = lambda: instance._slot_scope_fetched([])
-    elif case == "handoff_auto_slot":
+    if case == "handoff_auto_slot":
         module = _runtime_tool("pm_handoff.py")
         monkeypatch.setattr(
             module, "_load_pm_bootstrap",
@@ -1837,7 +1832,8 @@ def test_runtime_repository_exception_catch_rethrows_marked_skew(monkeypatch):
     [
         ("board.py", ["list"]),
         ("pm_adr.py", ["new", "--title", "title", "--slug", "slug", "--dry-run"]),
-        ("pm_bootstrap.py", ["--help"]),
+        # `--help` 는 파서에서 끝나 형제 사본을 안 읽는다 — 실 진입(`--task`)으로 잰다.
+        ("pm_bootstrap.py", ["--task", "probe"]),
         ("pm_handoff.py", []),
         ("ticket_finish.py", []),
         ("pm_config.py", ["status"]),

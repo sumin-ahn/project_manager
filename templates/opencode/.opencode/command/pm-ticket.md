@@ -93,3 +93,7 @@ python3 .project_manager/tools/board.py promote <T-NNNN>
 - 통과하면 draft → `open/` 이동 + board-git 커밋(공유 board에 등장) 후 claim 가능해진다.
 - legacy(board 비-git)에서는 `promote`가 사실상 no-op(이미 open)이지만 검증은 `lint`로 실행한다.
 - 성공 시(승격 완료·board-git 기록 보류 두 경로 공통) `--touches` 겹침 재료가 §1과 같은 형식으로 stderr에 다시 나온다 — 발행 시점 이후 board가 바뀌었을 수 있어 승격 직전에 한 번 더 확인하는 자리다. 이 축도 **차단하지 않는다**.
+
+## 이번 호출 인자
+
+`$ARGUMENTS` — 사용자가 슬래시 명령 뒤에 준 값이다(하네스가 치환한다). 비어 있으면 인자 없이 부른 것이다. 이 카드가 인자를 받는 진입이면 그 값을 그대로 backbone 에 넘기고, 인자를 받지 않는 진입이면 값이 붙어 온 것을 사용자에게 알리고 인자 없이 다시 부르게 안내한다.

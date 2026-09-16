@@ -47,3 +47,7 @@ mkdir -p "$(dirname "$F")"
 cp .project_manager/wiki/raw/spikes/_template.md "$F" && echo "생성: $F"
 ```
 생성 후 파일 Read → frontmatter(`title`·`created`·`session`·`related`) 채우기 → 상단 사용법 주석 블록 삭제. **`status:` 는 `draft` 로 생성**하고 합의+사용자 사인오프 시 마무리에서 `sealed (<date>)` 로 전환한다.
+
+## 이번 호출 인자
+
+`$ARGUMENTS` — 사용자가 슬래시 명령 뒤에 준 값이다(하네스가 치환한다). 비어 있으면 인자 없이 부른 것이다. 이 카드가 인자를 받는 진입이면 그 값을 그대로 backbone 에 넘기고, 인자를 받지 않는 진입이면 값이 붙어 온 것을 사용자에게 알리고 인자 없이 다시 부르게 안내한다.

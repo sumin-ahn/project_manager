@@ -593,7 +593,8 @@ def test_fresh_codex_adopter_scaffold_lints_clean_and_bootstrap_card(tmp_path, m
     bootstrap = _load_adopter_tool(dest, "pm_bootstrap")
     monkeypatch.setenv("CODEX_THREAD_ID", "019f8003-d535-7a10-adopter")
     inst = bootstrap.PmBootstrap.__new__(bootstrap.PmBootstrap)
-    card = inst._build_command_card_markdown(_CODEX_CARD_IDENTITY)
+    inst._task_name = "probe"
+    card = inst._build_command_card_markdown()
     assert "# codex 하네스" in card, \
         "import 된 pm_bootstrap 카드에 codex 절 미출현 (env 감지/append 실패·전파 손상?)"
     assert ".codex/agents/{architect,developer,code-reviewer,researcher}" in card, \

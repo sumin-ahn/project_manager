@@ -439,7 +439,7 @@ def test_task_single_slot_becomes_git_cwd_before_collection(
 
     def capture_git(args):
         if args[:2] == ["rev-parse", "--abbrev-ref"]:
-            git_cwds.append(inst._worktree_cwd(inst._bound_slot))
+            git_cwds.append(inst._worktree_cwd())
             return 0, "a5\n"
         if args[:2] == ["log", "--oneline"]:
             return 0, "abc123 subj\n"
@@ -470,7 +470,7 @@ def test_task_multiple_slots_use_deterministic_git_and_all_freshness(
             fetched_dirs.append(args[1])
             return 0, ""
         if args[:2] == ["rev-parse", "--abbrev-ref"]:
-            git_cwds.append(inst._worktree_cwd(inst._bound_slot))
+            git_cwds.append(inst._worktree_cwd())
             return 0, "a5\n"
         if args[:2] == ["log", "--oneline"]:
             return 0, "abc123 subj\n"
@@ -500,7 +500,7 @@ def test_task_multiple_slots_with_pytest_runs_all_owned_workspaces(
     pytest_cwds = []
 
     def capture_pytest():
-        pytest_cwds.append(inst._worktree_cwd(inst._bound_slot))
+        pytest_cwds.append(inst._worktree_cwd())
         return 0, "1 passed in 0.01s\n"
 
     inst._run_pytest_fn = capture_pytest
@@ -535,7 +535,7 @@ def test_task_pytest_failure_in_any_slot_blocks_immediately(
     outcomes = iter([(0, "5 passed in 0.01s\n"), failed_result])
 
     def capture_pytest():
-        pytest_cwds.append(inst._worktree_cwd(inst._bound_slot))
+        pytest_cwds.append(inst._worktree_cwd())
         return next(outcomes)
 
     inst._run_pytest_fn = capture_pytest
@@ -823,28 +823,6 @@ def test_unrecorded_slot_passes_and_marks(bootstrap, tmp_path, capsys):
 
 
 # ── 4. slot-모드 / 솔로 불변 (gate 미진입) ───────────────────────────────────
-
-
-def test_slot_mode_does_not_run_task_gate(bootstrap, tmp_path, capsys):
-    """`--slot`(task 없음) = slot-모드 — task gate 미진입(slots_for_task 안 불림·100% 불변)."""
-    pool = _TaskPool(slot_root=tmp_path / "wt", task_slots=("work/A_1",),
-                     missing_dirs=("work/A_1",), present_slots=("work/X_2",),
-                     branches={"work/X_2": "x1"})
-    inst = _make(bootstrap, tmp_path, pool, board=_FakeBoard(protected=[]))
-    # stale task 슬롯이 있어도 slot-모드는 task 검증을 돌지 않는다(진입 성공).
-    rc = inst.run(repo="X", slot=2)
-    assert rc == 0
-    assert pool.slots_for_task_calls == [], "slot-모드인데 task gate(slots_for_task)가 돌았다"
-
-
-def test_solo_does_not_run_task_gate(bootstrap, tmp_path, capsys):
-    """솔로(무인자) = task gate 미진입(slots_for_task 안 불림·100% 불변)."""
-    pool = _TaskPool(slot_root=tmp_path / "wt", task_slots=("work/A_1",),
-                     missing_dirs=("work/A_1",))
-    inst = _make(bootstrap, tmp_path, pool)
-    rc = inst.run()  # 솔로
-    assert rc == 0
-    assert pool.slots_for_task_calls == []
 
 
 # ── 6. sensitivity — stale 판정 배선 무력화 시 차단이 통과로 뒤집힌다 ─────────

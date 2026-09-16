@@ -6,7 +6,7 @@ dangling·**카드↔pm_role 카탈로그 drift** 로부터 지키는 결정론�
 우회·sub-op 누락 등)를 LLM whack-a-mole 대신 상시 회귀로 닫는 **class-closer** 다.
 
 검사 소스 두 개 — 둘 다 살아있어 어느 쪽이 drift 해도 fail 한다:
-  - **카드**(코드 생성): `pm_bootstrap._build_command_card_markdown(identity)` 렌더.
+  - **카드**(코드 생성): `pm_bootstrap._build_command_card_markdown()` 렌더.
   - **pm_role 카탈로그**(문서): `wiki/pm_role.md` 의 skill 카탈로그 표(2개·같은 헤더).
 
 엔진 canonical(① worktree `.project_manager/tools/*.py`)을 importlib 로 로드해 카드를 순수 함수로
@@ -67,22 +67,15 @@ def bootstrap():
     return _load("pm_bootstrap")
 
 
-# lean(멀티-PM) identity — 카드에 정체성 실값을 채우는 형태(test_pm_bootstrap_card 와 동형).
-LEAN_IDENTITY = {
-    "repo": "project_manager",
-    "session": "project_manager_1",
-    "slot": "work/project_manager_1",
-    "slot_path": "/home/x/work/project_manager_1",
-    "branch": "release/v1.1.0",
-    "others": [],
-    "protected_branch": None,
-}
+# 카드 정체성은 task 이름 하나다(슬롯은 정체성이 아니라 빌린 작업 폴더).
+CARD_TASK = "demo-task"
 
 
-def _render_card(bootstrap, identity) -> str:
+def _render_card(bootstrap, task: str = CARD_TASK) -> str:
     """PmBootstrap 인스턴스 없이 카드 헬퍼만 호출한다(순수 함수·I/O 0)."""
     inst = bootstrap.PmBootstrap.__new__(bootstrap.PmBootstrap)
-    return inst._build_command_card_markdown(identity)
+    inst._task_name = task
+    return inst._build_command_card_markdown()
 
 
 def _pm_role_text() -> str:
@@ -275,7 +268,7 @@ def test_review_operation_docs_keep_current_and_legacy_names_in_the_right_direct
 
 def test_card_pointer_targets_live_pm_role_section(bootstrap):
     """카드의 `pm_role §스킬 우선 운영 규율` pointer 가 실제 pm_role 헤더로 non-dangling."""
-    card = _render_card(bootstrap, LEAN_IDENTITY)
+    card = _render_card(bootstrap)
     assert _POINTER_ANCHOR in card, f"카드에 규율 pointer {_POINTER_ANCHOR!r} 부재"
     text = _pm_role_text()
     # pointer 가 가리키는 섹션명이 실제 `## ` 헤더로 존재한다(앵커 살아있음).
@@ -310,11 +303,12 @@ def test_card_demotion_matches_pm_role_catalog(bootstrap):
     강등 backbone 토큰. 비-CLI(Agent/facade) 셀은 카드 block 에 강등 python3 줄이 없어야(빈 집합).
     카드가 엔진을 빠뜨리거나(강등 줄 삭제)·지어내거나(오귀속) 카탈로그 열이 편집되면 red.
     """
-    card = _render_card(bootstrap, LEAN_IDENTITY)
+    card = _render_card(bootstrap)
     catalog = _parse_catalog(_pm_role_text())
     checked, mismatches = _crosscheck(card, catalog)
-    # non-vacuous: 카드-렌더 skill 을 실제로 ≥5 검사했다(파싱 0건이면 가드 무의미).
-    assert len(checked) >= 5, f"카드↔카탈로그 실검사 skill 이 너무 적음({len(checked)}): {checked}"
+    # non-vacuous: 카드-렌더 skill 을 실제로 ≥4 검사했다(파싱 0건이면 가드 무의미).
+    # task 카드가 강등 backbone 을 싣는 skill 은 wave-claim·regression·wave-finish·handoff 넷이다.
+    assert len(checked) >= 4, f"카드↔카탈로그 실검사 skill 이 너무 적음({len(checked)}): {checked}"
     assert not mismatches, (
         "카드↔pm_role 카탈로그 엔진 불일치:\n"
         + "\n".join(
@@ -330,19 +324,19 @@ def test_card_demotion_guard_is_sensitive_to_drift(bootstrap):
     (a) 카드 강등 엔진 줄을 지우면 forward 방향으로, (b) 카탈로그 엔진 열을 바꾸면 backward
     방향으로 mismatch 가 뜬다 — 원본 소스는 건드리지 않고 파싱 산출물만 변조해 실증한다.
     """
-    card = _render_card(bootstrap, LEAN_IDENTITY)
+    card = _render_card(bootstrap)
     catalog = _parse_catalog(_pm_role_text())
     # baseline 은 정합(green).
     _, base_mismatch = _crosscheck(card, catalog)
     assert not base_mismatch
 
-    # (a) 카드에서 /pm-qa 의 `board.py lint` 강등 줄을 지운다 → /pm-qa forward 불일치.
-    qa_block = _card_skill_block(card.splitlines(), "/pm-qa")
-    assert qa_block is not None
-    drop = next(ln for ln in qa_block if ln.startswith(" ") and "board.py lint" in ln)
+    # (a) 카드에서 /pm-wave-claim 의 `board.py lint` 강등 줄을 지운다 → forward 불일치.
+    claim_block = _card_skill_block(card.splitlines(), "/pm-wave-claim")
+    assert claim_block is not None
+    drop = next(ln for ln in claim_block if ln.startswith(" ") and "board.py lint" in ln)
     broken_card = "\n".join(ln for ln in card.splitlines() if ln != drop)
     _, mm_card = _crosscheck(broken_card, catalog)
-    assert any(skill == "/pm-qa" for skill, *_ in mm_card), \
+    assert any(skill == "/pm-wave-claim" for skill, *_ in mm_card), \
         "카드 강등 줄 삭제를 #3 이 잡지 못함(forward 가드 공허)"
 
     # (b) 카탈로그 /pm-handoff 엔진 열을 다른 엔진으로 바꾼다 → /pm-handoff backward 불일치.
@@ -363,10 +357,9 @@ def _line_index(card: str, needle: str) -> int:
     raise AssertionError(f"카드에 {needle!r} 줄이 없음")
 
 
-@pytest.mark.parametrize("identity", [LEAN_IDENTITY, None])
-def test_card_skill_precedes_backbone_representative(bootstrap, identity):
+def test_card_skill_precedes_backbone_representative(bootstrap):
     """대표 op(claim·handoff)에서 `/pm-…` 스킬 진입이 강등 backbone 줄보다 먼저(primary)."""
-    card = _render_card(bootstrap, identity)
+    card = _render_card(bootstrap)
     for skill_needle, backbone_needle in (
         ("/pm-wave-claim", "board.py claim T-NNNN"),
         ("/pm-handoff", "pm_handoff.py"),

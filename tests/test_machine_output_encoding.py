@@ -138,6 +138,21 @@ def _neutralize_engine_anchor_guard(bootstrap, monkeypatch):
     monkeypatch.setattr(bootstrap, "_load_board", lambda: real_board)
 
 
+def _bind_task_stub(inst, monkeypatch, tmp_path):
+    """task 바인딩만 대역으로 — 수집(로그·보드·git)은 실물 경로를 그대로 지난다."""
+    state = tmp_path / "task_pm_state.md"
+    state.write_text("# state\n", encoding="utf-8")
+    monkeypatch.setattr(inst, "_phase0_preflight", lambda: 0)
+    monkeypatch.setattr(inst, "_resolve_task_slot_leases", lambda _task: [])
+    monkeypatch.setattr(
+        inst, "_bind_task_or_reject",
+        lambda task, force=False: {"name": task, "pm_state_path": str(state)},
+    )
+    monkeypatch.setattr(inst, "_validate_task_slot_set", lambda _name, leases=None: 0)
+    monkeypatch.setattr(inst, "_task_slot_set_rows", lambda _name, leases=None: [])
+    monkeypatch.setattr(inst, "_build_task_identity_markdown", lambda _info: "")
+
+
 def _hermetic_bootstrap(bootstrap, tmp_path, log_text: str):
     """board/git/pytest 는 stub, log/pm_state 는 tmp 파일인 PmBootstrap (실 자산 미접촉)."""
     log_file = tmp_path / "current.md"
@@ -166,9 +181,10 @@ def _hermetic_bootstrap(bootstrap, tmp_path, log_text: str):
     )
 
 
+# 헤더의 `(task:probe)` 태그 — 세션은 자기 task 태그 entry 만 자기 것으로 읽는다.
 _LOG_TEXT = (
     "# Project Log\n\n"
-    "## [2026-08-17] handoff | PM 인계 — 다음 우선순위\n"
+    "## [2026-08-17] handoff | PM 3차 (task:probe) — 다음 우선순위\n"
     f"- {LOSSY_SAMPLE}\n"
 )
 
@@ -178,9 +194,10 @@ def test_pm_bootstrap_json_payload_is_utf8(capture_console, tmp_path, monkeypatc
     bootstrap = _load("pm_bootstrap")
     _neutralize_engine_anchor_guard(bootstrap, monkeypatch)
     inst = _hermetic_bootstrap(bootstrap, tmp_path, _LOG_TEXT)
+    _bind_task_stub(inst, monkeypatch, tmp_path)
     stream = capture_console()
 
-    assert inst.run(output_json=True) == 0
+    assert inst.run(task="probe", output_json=True) == 0
 
     data = _machine_payload(stream)
     assert LOSSY_SAMPLE in data["log_last_entry"]["body"]
@@ -408,9 +425,10 @@ def test_human_markdown_path_still_goes_through_the_console_codec(
     bootstrap = _load("pm_bootstrap")
     _neutralize_engine_anchor_guard(bootstrap, monkeypatch)
     inst = _hermetic_bootstrap(bootstrap, tmp_path, _LOG_TEXT)
+    _bind_task_stub(inst, monkeypatch, tmp_path)
     stream = capture_console()
 
-    assert inst.run() == 0
+    assert inst.run(task="probe") == 0
 
     raw = _written_bytes(stream)
     with pytest.raises(UnicodeDecodeError):

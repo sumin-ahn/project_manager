@@ -1137,32 +1137,68 @@ def test_bootstrap_reconcile_install_rethrows_marked_engine_rev_skew(
         inst._reconcile_protected_sidecar("svc")
 
 
-def test_phase0_invokes_sidecar_reconcile(bootstrap, tmp_path, monkeypatch):
-    """0단계가 (슬롯 검사 전에) reconcile 을 부른다 — 그 세션의 첫 커밋보다 앞."""
+def _stub_task_run(inst, monkeypatch, tmp_path, leases):
+    """task 진입 run() 을 수집 없이 굴리기 위한 최소 대역 — 판정 대상은 reconcile 배선 하나."""
+    state = tmp_path / "task_pm_state.md"
+    state.write_text("# state\n", encoding="utf-8")
+    monkeypatch.setattr(inst, "_phase0_preflight", lambda: 0)
+    monkeypatch.setattr(inst, "_resolve_task_slot_leases", lambda _task: leases)
+    monkeypatch.setattr(
+        inst, "_bind_task_or_reject",
+        lambda task, force=False: {"name": task, "pm_state_path": str(state)},
+    )
+    monkeypatch.setattr(inst, "_validate_task_slot_set", lambda _name, leases=None: 0)
+    monkeypatch.setattr(inst, "_task_slot_set_rows", lambda _name, leases=None: [])
+    monkeypatch.setattr(inst, "_build_task_identity_markdown", lambda _info: "")
+    monkeypatch.setattr(inst, "_collect_freshness", lambda: [])
+    monkeypatch.setattr(inst, "_collect_board", lambda: {
+        "counts": {"done": 0, "open": 0, "claimed": 0, "blocked": 0},
+        "open_tickets": [], "lint": "clean",
+    })
+    monkeypatch.setattr(inst, "_collect_git", lambda: {
+        "branch": "main", "commits": [], "working_tree": "clean",
+    })
+    monkeypatch.setattr(inst, "_collect_board_git", lambda: None)
+    monkeypatch.setattr(inst, "_read_log_text", lambda: None)
+    monkeypatch.setattr(inst, "_collect_log_entry", lambda: None)
+    monkeypatch.setattr(inst, "_collect_user_continuity", lambda _log: None)
+    monkeypatch.setattr(inst, "_collect_handoff_context", lambda _log=None: None)
+    monkeypatch.setattr(inst, "_collect_dashboard_others", lambda: None)
+    monkeypatch.setattr(inst, "_safe_command_card", lambda: None)
+
+
+class _Lease:
+    def __init__(self, repo, slot):
+        self.repo = repo
+        self.slot = slot
+
+
+def test_task_entry_invokes_sidecar_reconcile(bootstrap, tmp_path, monkeypatch, capsys):
+    """task 진입이 보유 슬롯의 repo 마다 reconcile 을 부른다 — 그 세션의 첫 커밋보다 앞."""
     inst = _reconciler(bootstrap, tmp_path, board=_ReconcileBoard(["main"]),
                        pool=FakePool(tmp_path / "hooks"))
     seen: list[str] = []
     monkeypatch.setattr(inst, "_reconcile_protected_sidecar",
                         lambda repo: seen.append(repo) or False)
-    # slot=None(alloc 경로) — 슬롯 검사는 자연 no-op 이라 reconcile 배선만 남는다.
-    assert inst._phase0_preflight("svc", None) == 0
-    assert seen == ["svc"]
+    _stub_task_run(inst, monkeypatch, tmp_path,
+                   [_Lease("svc", "work/svc_1"), _Lease("svc", "work/svc_2")])
+    assert inst.run(task="mytask") == 0
+    capsys.readouterr()
+    assert seen == ["svc"], "같은 repo 는 한 번만 — 슬롯 수만큼 반복하지 않는다"
 
 
-def test_phase0_solo_does_not_reconcile(bootstrap, tmp_path, monkeypatch):
-    """solo(repo 없음)는 대상 repo 가 없어 reconcile 도 자연 no-op."""
+def test_task_without_slots_does_not_reconcile(bootstrap, tmp_path, monkeypatch, capsys):
+    """보유 슬롯 0개면 대상 repo 가 없어 reconcile 도 자연 no-op."""
     inst = _reconciler(bootstrap, tmp_path, board=_ReconcileBoard(["main"]),
                        pool=FakePool(tmp_path / "hooks"))
     seen: list[str] = []
     monkeypatch.setattr(inst, "_reconcile_protected_sidecar",
                         lambda repo: seen.append(repo) or False)
-    assert inst._phase0_preflight(None, None) == 0
+    _stub_task_run(inst, monkeypatch, tmp_path, [])
+    assert inst.run(task="mytask") == 0
+    capsys.readouterr()
     assert seen == []
 
-
-# ════════════════════════════════════════════════════════════════════════
-# 7. 재실행 안내가 현재 상태를 반영한다 (명시 / 기본값 폴백 / 미등록 · 단일 분기)
-# ════════════════════════════════════════════════════════════════════════
 
 def test_retry_command_uses_default_literal_when_falling_back(pc, board):
     """폴백 상태(빈 칼럼)의 안내는 `default` — 명시 커맨드를 안내하면 출처가 조용히 바뀐다."""

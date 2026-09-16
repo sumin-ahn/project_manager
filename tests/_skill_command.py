@@ -27,11 +27,21 @@ def normalized_bytes(path: Path) -> bytes:
     return normalize_newline_bytes(path.read_bytes())
 
 
+# command 사본에만 붙는 인자 전달 절 — 엔진 `pm_update._FLAT_COMMAND_ARGUMENTS_SECTION` 미러.
+ARGUMENTS_SECTION = (
+    "\n## 이번 호출 인자\n\n"
+    "`$ARGUMENTS` — 사용자가 슬래시 명령 뒤에 준 값이다(하네스가 치환한다). 비어 있으면 인자 없이"
+    " 부른 것이다. 이 카드가 인자를 받는 진입이면 그 값을 그대로 backbone 에 넘기고, 인자를 받지"
+    " 않는 진입이면 값이 붙어 온 것을 사용자에게 알리고 인자 없이 다시 부르게 안내한다.\n"
+)
+
+
 def expected_command_bytes(skill: Path, name: str) -> bytes:
     """스킬 원문을 command 사본의 기대 내용으로 렌더한다 (LF 정규화 bytes)."""
-    return normalized_bytes(skill).replace(
+    rendered = normalized_bytes(skill).replace(
         DETAIL_LINK.encode("utf-8"), flat_command_link(name).encode("utf-8")
     )
+    return rendered + ARGUMENTS_SECTION.encode("utf-8")
 
 
 def command_matches_skill(skill: Path, name: str, command: Path) -> bool:

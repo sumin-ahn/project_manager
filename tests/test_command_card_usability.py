@@ -103,44 +103,25 @@ _HELP_FLAG_RE = re.compile(r"(?<![\w-])(?:--help|-h)(?![\w-])")
 
 
 # ── 부트스트랩 카드 렌더 (LLM 아님·순수 엔진 재현) ──────────────────────────────
-def _slot_identity(home: Path) -> dict | None:
-    """home 의 lease 장부 행 → 카드 정체성 dict (행이 없으면 None).
-
-    라이브 프롬프트가 받는 카드도 장부 **행의 실값**으로 렌더돼야 실제 채택자가 보는 카드와
-    같다(정체성을 지어내지 않는다). 행이 없으면 미해소 형태 그대로 렌더한다.
-    """
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    if not ledger.is_file():
-        return None
-    rows = json.loads(ledger.read_text(encoding="utf-8")).get("leases") or []
-    leased = [row for row in rows if row.get("state") == "leased" and row.get("session")]
-    if len(leased) != 1:
-        return None
-    row = leased[0]
-    session = row["session"]
-    return {
-        "session": session,
-        "repo": row.get("repo"),
-        "slot": row.get("slot"),
-        "slot_number": session.rsplit("_", 1)[-1],
-        "slot_path": str(home),
-    }
+# 카드 정체성은 task 이름 하나다 — 슬롯은 정체성이 아니라 그 task 가 빌린 작업 폴더다.
+CARD_TASK = "demo-task"
 
 
 def _render_command_card(home: Path) -> str:
     """home 의 pm_bootstrap 엔진으로 이 홈의 커맨드 카드를 렌더한다 (LLM 아님·순수 엔진).
 
     부트스트랩이 정체성 채워 dump 하는 커맨드 카드(ADR-0045)를 라이브 LLM 에 *유일한 컨텍스트*로
-    주기 위해 코드로 재현한다. 정체성은 장부 행에서 오고(행이 없으면 미해소 형태로 분기)
-    `_build_command_card_markdown` 은 순수 함수(identity·모듈 상수 `_CARD_TOOL_INVOKE` 만 사용·
-    인스턴스 상태 무의존)라 부작용 0 — 그래서 기본 생성자로 인스턴스화해 호출한다.
+    주기 위해 코드로 재현한다. 렌더는 task 이름과 모듈 상수(`_CARD_TOOL_INVOKE`)만 읽는
+    순수 함수라 부작용 0 — 그래서 기본 생성자로 인스턴스화해 호출한다.
     """
     path = home / ".project_manager" / "tools" / "pm_bootstrap.py"
     # 유니크 모듈명 — 워크트리 자신의 pm_bootstrap 과 sys.modules 충돌 방지(경로별 격리).
     spec = importlib.util.spec_from_file_location(f"_card_bootstrap_{abs(hash(str(path)))}", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.PmBootstrap()._build_command_card_markdown(_slot_identity(home))
+    inst = mod.PmBootstrap()
+    inst._task_name = CARD_TASK
+    return inst._build_command_card_markdown()
 
 
 def _usability_prompt(card: str) -> str:

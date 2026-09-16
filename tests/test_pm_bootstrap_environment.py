@@ -1,4 +1,4 @@
-"""T-0679 finite OS/config/card-mode environment matrix."""
+"""T-0679 finite OS/config environment matrix."""
 
 from __future__ import annotations
 
@@ -27,7 +27,6 @@ OS_CASES = {
     "unknown": ("FreeBSD", "posix", "other", ("python3",), "separate-lines"),
 }
 CONFIG_CASES = ("valid", "absent", "empty", "read-error")
-MODES = ("slot", "solo", "task", "readonly")
 
 
 def _configure(tmp_path: Path, monkeypatch, state: str, mod=None) -> None:
@@ -57,22 +56,11 @@ def _configure(tmp_path: Path, monkeypatch, state: str, mod=None) -> None:
         raise AssertionError(state)
 
 
-def _card(mod, environment, mode: str) -> str:
+def _card(mod, environment) -> str:
     inst = mod.PmBootstrap.__new__(mod.PmBootstrap)
     inst._command_environment = environment
-    identity = None
-    if mode == "slot":
-        identity = {
-            "repo": "project_manager", "session": "project_manager_1",
-            "slot": "work/project_manager_1",
-        }
-    elif mode == "task":
-        inst._task_name = "env-task"
-    elif mode == "readonly":
-        identity = {"role": "readonly", "slot": "work/project_manager_2"}
-    elif mode != "solo":  # pragma: no cover - parametrization is closed above.
-        raise AssertionError(mode)
-    return inst._build_command_card_markdown(identity)
+    inst._task_name = "env-task"
+    return inst._build_command_card_markdown()
 
 
 def _command_suffixes(card: str) -> list[str]:
@@ -82,11 +70,10 @@ def _command_suffixes(card: str) -> list[str]:
 
 @pytest.mark.parametrize("os_case", OS_CASES, ids=OS_CASES)
 @pytest.mark.parametrize("config_state", CONFIG_CASES)
-@pytest.mark.parametrize("mode", MODES)
-def test_environment_matrix_64(
-    tmp_path, monkeypatch, os_case: str, config_state: str, mode: str
+def test_environment_matrix_16(
+    tmp_path, monkeypatch, os_case: str, config_state: str
 ):
-    """4 OS × 4 config states × 4 card modes = the complete finite surface."""
+    """4 OS × 4 config states = the complete finite surface (card mode axis is gone)."""
     mod = _load()
     _configure(tmp_path, monkeypatch, config_state, mod)
     system, os_name, label, default_argv, policy = OS_CASES[os_case]
@@ -103,7 +90,7 @@ def test_environment_matrix_64(
     )
     assert environment.chain_policy == policy
 
-    card = _card(mod, environment, mode)
+    card = _card(mod, environment)
     prefix = f"{' '.join(expected_argv)} .project_manager/tools/"
     # Execution rows begin with the resolved launcher after Markdown indentation
     # is stripped.  Prose pointers may mention the same path mid-line and are not
@@ -116,7 +103,7 @@ def test_environment_matrix_64(
         assert all("&&" not in line for line in command_lines)
 
     baseline = mod._CommandEnvironment(label, ("baseline-python",), "local-conf", policy)
-    assert _command_suffixes(card) == _command_suffixes(_card(mod, baseline, mode))
+    assert _command_suffixes(card) == _command_suffixes(_card(mod, baseline))
 
     inst = mod.PmBootstrap(run_git_fn=lambda _args: (0, ""))
     inst._command_environment = environment

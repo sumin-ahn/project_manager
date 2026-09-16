@@ -2574,7 +2574,6 @@ def _handler_reraises_marked_skew(handler: ast.ExceptHandler) -> bool:
 @pytest.mark.parametrize(
     ("function_name", "loader_name"),
     (
-        ("_release_alloc_lease_failsoft", "_load_worktree_pool"),
         ("_protected_retry_command", "_load_board"),
         ("_protected_hook_wired", "_load_worktree_pool"),
     ),

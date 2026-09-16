@@ -52,12 +52,12 @@ def _make_board_fn(list_resp: tuple[int, str], lint_resp: tuple[int, str],
     """board argv 의 첫 토큰(list/lint)으로 (rc, out) 을 반환하는 fake run_board_fn.
 
     `_collect_board` 가 lint 를 게이트(`["lint", "--gate"]`)로 부르는지도 함께 검증한다.
-    `done_resp`(T-0198) 로 done 전용 재조회(`["list", "--status", "done", "--mine"]`)에
+    `done_resp`(T-0198) 로 done 전용 재조회(`["list", "--status", "done", "--task", "t"]`)에
     별도 응답을 줄 수 있다 — 생략하면 `list_resp` 를 재사용(기존 테스트 호환·done count
     무관 케이스).
     """
     def _fn(args: list[str]) -> tuple[int, str]:
-        if args == ["list", "--status", "done", "--mine"]:
+        if args[:3] == ["list", "--status", "done"]:
             return done_resp if done_resp is not None else list_resp
         if args[0] == "list":
             return list_resp
@@ -144,6 +144,7 @@ def test_collect_board_done_count_positive_via_separate_query():
         (0, _BOARD_LIST_OUTPUT), (0, "✓ no lint issues\n"),
         done_resp=(0, _BOARD_DONE_OUTPUT))
     bootstrap = mod.PmBootstrap(run_board_fn=board_fn)
+    bootstrap._task_name = "t"
 
     board = bootstrap._collect_board()
     assert board["counts"]["done"] == 2, (
@@ -158,7 +159,7 @@ def test_collect_board_done_query_failure_degrades_to_zero():
     mod = _load_module()
 
     def _fn(args: list[str]) -> tuple[int, str]:
-        if args == ["list", "--status", "done", "--mine"]:
+        if args[:3] == ["list", "--status", "done"]:
             return (1, "unknown flag")
         if args[0] == "list":
             return (0, _BOARD_LIST_OUTPUT)
@@ -172,16 +173,15 @@ def test_collect_board_done_query_failure_degrades_to_zero():
 
 # ── 기본 보드 뷰 = --mine (T-0164·ADR-0033 ④) ────────────────────────────────
 
-def test_collect_board_default_view_is_mine():
-    """_collect_board 가 list 를 `--mine` 렌즈(세션 스트림 + done 전용)로만 부른다 (T-0164·T-0198·ADR-0067).
+def test_collect_board_default_view_is_this_task():
+    """_collect_board 가 list 를 `--task` 렌즈(이 task 스트림 + done 전용)로만 부른다 (T-0164·T-0198·ADR-0067).
 
-    부트스트랩이 전체 contention 을 떠안지 않고 *내 세션 스트림*만 surface 한다 — 솔로(user 미상)는
-    board 의 graceful 폴백으로 현행과 사실상 동등(`--mine` 솔로 폴백·spike §2.D).
+    부트스트랩이 전체 contention 을 떠안지 않고 *이 task 스트림*만 surface 한다.
 
     `list` 호출은 **2 회**다(ADR-0067 — 옛 `["list", "--all"]` 접힘 모수·타 세션 claim 재조회 폐기):
-    (1) 세션 뷰(`["list", "--mine"]` — open/claimed/blocked, T-0197 이 done 을 접음·이 렌즈가 곧 내
-    세션 스트림) (2) done 전용(`["list", "--status", "done", "--mine"]` — default 뷰가 done 을 안
-    보여줘서 생긴 done(mine) 항상 0 회귀[T-0198] 를 메꿈)."""
+    (1) 세션 뷰(`["list", "--task", <이름>]` — open/claimed/blocked, T-0197 이 done 을 접음)
+    (2) done 전용(`["list", "--status", "done", "--task", <이름>]` — default 뷰가 done 을 안
+    보여줘서 생긴 done 항상 0 회귀[T-0198] 를 메꿈)."""
     mod = _load_module()
     captured: list[list[str]] = []
 
@@ -192,12 +192,13 @@ def test_collect_board_default_view_is_mine():
         return (0, "✓ no lint issues\n")
 
     bootstrap = mod.PmBootstrap(run_board_fn=_fn)
+    bootstrap._task_name = "t"
     bootstrap._collect_board()
 
     list_calls = [a for a in captured if a[0] == "list"]
     assert list_calls == [
-        ["list", "--mine"],
-        ["list", "--status", "done", "--mine"],
+        ["list", "--task", "t"],
+        ["list", "--status", "done", "--task", "t"],
     ]
     assert not any("--all" in a for a in list_calls), "폐기된 --all 재조회(ADR-0067)"
 

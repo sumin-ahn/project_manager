@@ -382,138 +382,7 @@ def test_bind_task_rejects_archived_name_with_reopen_prescription(
     assert f"{bootstrap._runtime_skill_entry('pm-bootstrap')} --task job" in err
 
 
-def test_bootstrap_lean_surfaces_dev_ahead_vs_drift(bootstrap, wp, tmp_path, capsys):
-    """lean bind 경로 부트스트랩이 `### 슬롯 상태` 절에서 dev-ahead(정보) vs drift(경고 ⚠) 를 구별 표시한다.
-
-    비공허: drift 토큰엔 ⚠ 가 붙고 dev-ahead 토큰엔 안 붙는다 — 구별을 없애면(둘 다 경고/둘 다
-    정보) 이 단언이 red(ADR-0051 §Decision 4 의 핵심 — dev 작업을 문제로 오표시 금지).
-    """
-    ret = _slot_status_obj(wp, submodules=[
-        ("libs/dev", "dev-ahead", False, False),
-        ("libs/drift", "drift", True, False),
-    ])
-    pool = FakePool(slot_status_ret=ret)
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=pool)
-    rc = inst.run(repo="A", slot=1)
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "### 슬롯 상태" in out
-    assert "dev-ahead(정보)" in out
-    assert "⚠ drift(pin≠working)" in out
-    # dev-ahead 는 경고가 아니다 — ⚠ 가 dev 토큰 앞에 붙지 않는다(구별 확증).
-    assert "⚠ dev-ahead" not in out
-    # slot_status 는 이 슬롯에 대해 소비된다 — 0단계 main-참조 게이트(origin/main upstream 판정·T-0360)
-    # 와 표시 surface 가 각각 1회씩 호출하므로 2회(둘 다 work/A_1·비공허: 표시가 slot_status 로 구동).
-    assert pool.slot_status_calls == ["work/A_1", "work/A_1"]
-
-
-def test_bootstrap_omits_submodule_line_when_none(bootstrap, wp, tmp_path, capsys):
-    """submodule 없는 슬롯 = submodule 줄 생략(upstream 줄은 유지) — 비공허 omission."""
-    ret = _slot_status_obj(wp, submodules=[])
-    pool = FakePool(slot_status_ret=ret)
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=pool)
-    inst.run(repo="A", slot=1)
-    out = capsys.readouterr().out
-    # 슬롯 상태 절과 upstream 줄은 있으나 submodule 줄은 없다.
-    assert "### 슬롯 상태" in out
-    assert "upstream: `origin/a5`" in out
-    assert "- submodule:" not in out
-
-
-def test_bootstrap_warns_upstream_unresolved(bootstrap, wp, tmp_path, capsys):
-    """upstream 미해소 슬롯 = 경고 표시(T-0273/0274 확인 안내) — 비공허 경고."""
-    ret = _slot_status_obj(wp, upstream=None, upstream_ok=False, submodules=[])
-    pool = FakePool(slot_status_ret=ret)
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=pool)
-    inst.run(repo="A", slot=1)
-    out = capsys.readouterr().out
-    assert "upstream: ⚠ 미해소" in out
-
-
-def test_bootstrap_alloc_path_surfaces_slot_status(bootstrap, wp, tmp_path, capsys):
-    """alloc 경로(--repo without --slot)도 슬롯 상태 서브섹션을 surface 한다(양 identity 경로 배선)."""
-    ret = _slot_status_obj(wp, submodules=[("libs/drift", "drift", True, True)])
-    pool = FakePool(slot_status_ret=ret)
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=pool)
-    inst.run(repo="A", branch="a5")
-    out = capsys.readouterr().out
-    assert "### 슬롯 상태" in out
-    # dirty detached drift 는 ⚠ drift + ·dirty 로 *왜* 안 풀렸는지 함께 surface.
-    assert "⚠ drift(pin≠working) ·dirty" in out
-
-
-def test_bootstrap_slot_status_absent_pool_graceful(bootstrap, tmp_path, capsys):
-    """slot_status 미구현 풀(구버전) = graceful — 절 생략·crash 0(fail-soft·기존 dump 무변경).
-
-    비공허: `_safe_slot_status` 가 getattr None 폴백을 안 하면 AttributeError 로 run 이 깨진다.
-    """
-    pool = FakePoolNoStatus()
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=pool)
-    rc = inst.run(repo="A", slot=1)
-    assert rc == 0
-    out = capsys.readouterr().out
-    # identity 는 나오되 슬롯 상태 절은 없다(백본 부재 fail-soft).
-    assert "당신은 **A PM**" in out
-    assert "### 슬롯 상태" not in out
-
-
 # ── S1 (ADR-0056·T-0312): 슬롯 정체성 부트스트랩 = 슬롯-스코프 카운트 ─────────────
-
-
-def test_bootstrap_slot_identity_counts_are_slot_scoped(bootstrap, wp, tmp_path, capsys):
-    """**S1**: 슬롯 정체성(--repo/--slot) 부트스트랩은 카운트를 `list --repo <repo> --slot <N>`
-    (ADR-0057·내 것 ∩ 그 슬롯)로 뽑고 라벨 "(slot N)" 로 announce 한다 — user-wide `list --mine`
-    (전 슬롯) mislabel 근절.
-
-    비공허: board list 호출 argv 가 `--repo A --slot 1`(≠`--mine`)이고, 렌더 카운트 라벨이
-    "(slot 1)"(≠"(mine)")임을 확증한다 — S1 증상("claimed 4 (mine)" 인데 `list --repo/--slot` 은
-    0)의 근본.
-    """
-    calls: list[list[str]] = []
-    # slot 뷰(내 세션 스트림·ADR-0067) = 내 세션 생성 open 1 + 내 세션 claim 2. board.py 층이 타
-    # 세션분을 완전 비노출하므로 이 렌즈 출력이 곧 스트림이고, `--all` 재조회(옛 접힘 모수·타 세션
-    # claim)는 폐기됐다.
-    slot_list_out = (
-        "  [open   ] T-A-001  backlog     -           -\n"
-        "  [claimed] T-A-010  wip a       alice/A_1   -\n"
-        "  [claimed] T-A-011  wip b       alice/A_1   -\n"
-    )
-    slot_done_out = "  [done   ] T-A-009  done a       alice/A_1   -\n"
-
-    def fake_board(args):
-        calls.append(args)
-        if args[:1] == ["lint"]:
-            return 0, "✓ no lint issues\n"
-        if args == ["list", "--status", "done", "--repo", "A", "--slot", "1"]:
-            return 0, slot_done_out
-        if args == ["list", "--repo", "A", "--slot", "1"]:
-            return 0, slot_list_out
-        raise AssertionError(f"슬롯 정체성인데 슬롯-스코프 아님(또는 폐기된 --all): {args}")
-
-    pool = FakePool(slot_status_ret=_slot_status_obj(wp, submodules=[]))
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=pool, board_fn=fake_board)
-    rc = inst.run(repo="A", slot=1)
-    assert rc == 0
-    out = capsys.readouterr().out
-
-    # 1) 카운트는 슬롯 정체성(--repo A --slot 1)으로만 조회(default + done) — `--all` 재조회 폐기(ADR-0067).
-    list_calls = [c for c in calls if c[:1] == ["list"]]
-    assert list_calls == [
-        ["list", "--repo", "A", "--slot", "1"],
-        ["list", "--status", "done", "--repo", "A", "--slot", "1"],
-    ]
-    assert not any("--mine" in c for c in calls), "슬롯 정체성인데 --mine 로 조회(S1 mislabel 재현)"
-    assert not any("--all" in c for c in calls), "폐기된 --all 재조회(ADR-0067·타 세션 정보 노출)"
-    # 2) 카운트 라벨 = "(slot 1)" — open 도 세션 스코프(ADR-0067·옛 open 전용 backlog 라벨 폐기).
-    assert "claimed: 2 (slot 1)" in out
-    assert "open: 1 (slot 1)" in out
-    assert "done: 1 (slot 1)" in out
-    assert "(mine)" not in out
-    assert "backlog·기본 접힘" not in out
-    # 3) open 상세 = 내 세션 스트림(생성 open) — 접힘 카운트/타 세션 줄 없이 그대로 나열(ADR-0067).
-    assert "- open ticket (claim 가능): T-A-001" in out
-    assert "그 외 open" not in out
-    assert "타 세션 진행" not in out
 
 
 # ── T-0284: fresh 슬롯 self-sufficiency (스크램블 낭비 제거) ──────────────────
@@ -566,29 +435,6 @@ def _make_fresh_bootstrap(bootstrap, wp, tmp_path):
         board=_FakeBoard(),
         pm_state_file=pm_state_file,
     )
-
-
-def test_fresh_slot_dumps_explicit_surface_not_placeholder(bootstrap, wp, tmp_path, capsys):
-    """fresh 슬롯(pm_state 부재·자기 handoff 없음) → 명시 "fresh" surface · "미해소" placeholder 부재.
-
-    비공허(DoD): (a) `🆕 첫 바인딩 슬롯`+`차수=1(fresh)`+`폴백 스캔 불요` 명시 배너 존재 (b) "미해소"
-    스크램블 placeholder 부재. 또한 무태그 전역 handoff(`PM 5차`·본문 표식)를 자기 것으로 오인하지
-    않아야 한다(MF-2) — 차수는 1차·본문 유입 0. fresh 분기를 없애면(placeholder 로 되돌리면) red.
-    """
-    inst = _make_fresh_bootstrap(bootstrap, wp, tmp_path)
-    rc = inst.run(repo="A", slot=2)
-    assert rc == 0
-    out = capsys.readouterr().out
-    # (a) 명시 fresh surface 존재.
-    assert "🆕 첫 바인딩 슬롯" in out
-    assert "차수=1(fresh)" in out
-    assert "폴백 스캔 불요" in out
-    # (b) "미해소" placeholder 부재 — fresh 는 복구할 게 없으니 스크램블 유발 표현 금지.
-    assert "미해소" not in out
-    # 차수는 1차(fresh 규칙) — 무태그 전역 "PM 5차" 를 자기 것으로 오인하지 않는다.
-    assert "## PM 1차 부트스트랩" in out
-    # 타 슬롯(무태그) handoff 본문이 유입되지 않는다(MF-2).
-    assert "타-슬롯-산출-표식" not in out
 
 
 def test_resolve_log_file_slot_cwd_finds_shared_home(bootstrap, tmp_path):
@@ -667,27 +513,6 @@ def test_resume_without_repo_errors_before_auto_resolve(bootstrap, monkeypatch):
     assert flag["called"] is False
 
 
-def test_repo_with_branch_unchanged_reaches_run(bootstrap, monkeypatch):
-    """`--repo R --branch X` 는 가드 이동에 불변 — 통과해 `PmBootstrap.run` 에 그대로 전달된다.
-
-    repo 명시라 auto-resolve 는 원래 skip 이고, repo 가 있으니 branch 가드도 통과해야 한다. 가드
-    이동이 이 정상 경로를 오탐 거부하지 않음을 확인한다.
-
-    비공허: run 이 repo="A"·branch="wip-x" 로 정확히 전달됨을 단언 — 가드가 오탐 거부하면 SystemExit 로 red.
-    """
-    captured = {}
-
-    def _fake_run(self, **kwargs):
-        captured.update(kwargs)
-        return 0
-
-    monkeypatch.setattr(bootstrap.PmBootstrap, "run", _fake_run)
-    rc = bootstrap.main(["--repo", "A", "--branch", "wip-x"])
-    assert rc == 0
-    assert captured.get("repo") == "A"
-    assert captured.get("branch") == "wip-x"
-
-
 # ── F1 --task 배선 (main·⑥ 예약 거부·auto-slot 제외·T-0353) ─────────────────
 
 
@@ -735,23 +560,6 @@ def test_task_cli_rejects_slot_identity_mixing_before_run(bootstrap, monkeypatch
     with pytest.raises(SystemExit) as exc:
         bootstrap.main(argv)
     assert exc.value.code == 2
-
-
-def test_task_slot_only_surfaces_task_contract_before_repo_hint(
-    bootstrap, monkeypatch, capsys
-):
-    """task+bare slot은 slot-mode `--repo` 처방보다 task 독립 정체성 계약을 먼저 표면화한다(SF)."""
-    monkeypatch.setattr(
-        bootstrap.PmBootstrap,
-        "run",
-        lambda self, **kw: (_ for _ in ()).throw(AssertionError("run 도달 금지")),
-    )
-    with pytest.raises(SystemExit) as exc:
-        bootstrap.main(["--task", "job1", "--slot", "2"])
-    assert exc.value.code == 2
-    err = capsys.readouterr().err
-    assert "--task 는 단독 정체성" in err
-    assert "--slot 은 --repo 필수" not in err
 
 
 def test_task_alone_does_not_trigger_slot_auto_resolve(bootstrap, monkeypatch):
@@ -976,19 +784,6 @@ def test_remedy_branch_task_fault_consumes_helper(bootstrap, tmp_path):
     # 엔진 단일 커맨드(생성+부모 기록+장부 스냅 재기록). 브랜치명은 T-0412 헬퍼 산출.
     assert resolve == ("python3 .project_manager/tools/pm_config.py task branch main work/X_1 task/main "
                        "--from main")
-
-
-def test_remedy_branch_slot_mode_consumes_helper(bootstrap, tmp_path, capsys):
-    """(d) 슬롯 모드 `<repo>_<N>` 안내도 같은 헬퍼를 탄다 — 세션명 브랜치가 이미 있으면 접두형."""
-    git_fn, _calls = _remedy_git("X_2")     # 슬롯 세션명과 같은 브랜치가 이미 존재.
-    inst = _remedy_inst(bootstrap, git_fn=git_fn)
-    pool = _RemedyPool(tmp_path, branch="main")
-    lease = SimpleNamespace(slot="work/X_2", repo="X", session="", state="idle", role="work")
-    rc = inst._phase0_protected_reject(pool, "X", "work/X_2", "X_2", lease)
-    assert rc == 1
-    err = capsys.readouterr().err
-    assert "pm_config.py task branch X_2 work/X_2 task/X_2 --from main" in err
-    assert "work/X_2 X_2 --from" not in err  # 이미 있는 이름을 안내하지 않는다.
 
 
 # ── remedy 를 엔진 단일 커맨드로 + 후보 상한 안내 (`_remedy_branch_command`) ──

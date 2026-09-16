@@ -27,31 +27,10 @@ skill은 기계 측정만 자동화하며 컨텍스트 인지·결정은 PM이 �
 사용자 진입:
 
 ```text
-/pm-bootstrap
-```
-
-backbone `.project_manager/tools/pm_bootstrap.py` 호출은 skill 내부에서 수행한다.
-
-### multi-PM 모드 (멀티-PM·lean)
-
-`/pm-bootstrap <repo> --slot <N>`의 repo·슬롯을 그대로 forward한다.
-
-```bash
-python3 .project_manager/tools/pm_bootstrap.py --repo <repo> --slot <N>
-```
-
-이는 `<repo>_<N>` PM 정체성 선언 + 상태점검이다. 출력의 identity surface(세션=`<repo>_<N>`·슬롯·라이브 브랜치·보드 공유)와 다른 활성 PM 현황을 확인한다. 이후 보드/리스 조작에 `--repo <repo> --slot <N>`을 명시한다. 슬롯은 먼저 `pm-config worktree add <repo> --user-ack <repo>`로 만든다(물리 슬롯 생성은 사용자 승인
-행위 — 세션이 `--user-ack`을 스스로 붙이지 않는다). 정체성이 장부에서 자동 해소되면 무인자 dump를 쓴다.
-
-### task 모드 (일반 사용자 경로·작업 단위 정체성)
-
-auto-task 없이 신규 task를 시작하거나 기존 task를 재개한다.
-
-```text
 /pm-bootstrap --task <이름>
 ```
 
-backbone도 task-only 계약이다:
+`--task <이름>`은 **필수**다 — 세션 정체성이 task 하나다. 슬롯은 정체성이 아니라 그 task가 빌린 작업 폴더이고, 인자 없이 부르면 엔진이 거부한다. skill은 받은 인자를 그대로 backbone에 넘긴다:
 
 ```bash
 python3 .project_manager/tools/pm_bootstrap.py --task <이름>
@@ -59,8 +38,8 @@ python3 .project_manager/tools/pm_bootstrap.py --task <이름>
 
 - 미등록 이름은 신규 task와 `.project_manager/.local/tasks/<이름>/pm_state.md`를 즉시 만든다(작업공간 0개 가능).
 - 기존 이름은 resume하여 보유 슬롯 집합·prefix 상태·task pm_state를 복원한다. 구 엔진의 state 없는 task도 즉시 backfill한다.
-- task 진입은 항상 `--task` 단독이다. 사용자/skill은 repo/slot을 지정하지 않고 엔진은 `--task + --repo/--slot/--branch/--resume` 혼합을 거부한다. 작업공간은 `/pm-env alloc <repo> --task <이름>` 또는 task-aware worktree add로 대여·편입한다.
-- task-only 수집은 전역 auto-slot을 쓰지 않는다. 보유 0개면 PM 홈, 1개면 그 작업공간, 다중이면 모두를 freshness/opt-in 회귀 범위로 삼고 Git 대표 cwd는 정렬 첫 슬롯으로 surface한다.
+- 부트스트랩 인자는 `--task <이름>`뿐이다. 작업공간은 `/pm-env alloc <repo> --task <이름>` 또는 task-aware worktree add로 대여·편입한다.
+- 수집 범위는 이 task가 보유한 작업공간뿐이다(다른 task 슬롯을 고르지 않는다). 보유 0개면 PM 홈, 1개면 그 작업공간, 다중이면 모두를 freshness/opt-in 회귀 범위로 삼고 Git 대표 cwd는 정렬 첫 슬롯으로 surface한다.
 - task identity surface의 정체성 + **prefix 상태(기본=없음)**를 사용자와 확인한다. 변경은 후속 `task prefix` 명령이다.
 - 같은 task가 살아있는 다른 창에서 열려 있으면 `"다른 창에서 열려 있음"`으로 거부한다. 비정상 종료면 자동 회수 후 재개할 수 있고 회수 진입 시 `"다른 창 작업중일 수 있음"` 경고를 surface한다.
 - task명은 경로 문자(`/`·`\`·`..`·선행 `.`) 없는 단일 자유 형식이어야 한다. `<등록 repo>_<N>` 슬롯 세션 예약 패턴은 거부한다.

@@ -38,6 +38,7 @@ from _harness_matrix import (
     entry_docs as _entry_docs,
 )
 from _repo_owned_inventory import OWNED, repo_owned_paths
+from _skill_command import ARGUMENTS_SECTION
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -67,12 +68,13 @@ _RETIRED_REVIEWER_CLI = (
 
 
 def _expected_opencode_command(skill_text: str, skill_name: str) -> str:
+    """canonical 스킬 → opencode command 사본의 기대 내용 (링크 rewrite + 인자 전달 절)."""
     canonical = "(references/operational-details.md)"
     assert skill_text.count(canonical) == 1
     return skill_text.replace(
         canonical,
         f"(../../.claude/skills/{skill_name}/references/operational-details.md)"
-    )
+    ) + ARGUMENTS_SECTION
 
 
 def _codex_readable_text_paths(dest: Path) -> list[Path]:
@@ -567,7 +569,17 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
 # 행이 하나 생기면 카드가 지시하는 bare 형태(`board.py claim T-NNNN`)가 그 행으로 해소된다.
 
 
-def _seed_work_slot(dest: Path, *, number: int = 1, tree: str | None = None) -> str:
+def _seed_task_session_claim(dest: Path, task: str, session: str = "S-1") -> None:
+    """가드 훅이 남기는 세션 기록 — 하네스 밖 subprocess 는 이게 없으면 부트스트랩이 멈춘다."""
+    claims = dest / ".project_manager" / ".local" / "task-session-claims"
+    claims.mkdir(parents=True, exist_ok=True)
+    (claims / f"{task}.json").write_text(
+        json.dumps({"task": task, "session": session}), encoding="utf-8"
+    )
+
+
+def _seed_work_slot(dest: Path, *, number: int = 1, tree: str | None = None,
+                    session: str | None = None) -> str:
     """`pm-config worktree add` 가 남기는 형상의 최소 재현 — 슬롯 행 + (선택)작업 폴더.
 
     `tree="standalone"` 은 독립 git 트리(커밋 있는 홈이 필요 없는 경우), `tree="worktree"` 는
@@ -580,7 +592,7 @@ def _seed_work_slot(dest: Path, *, number: int = 1, tree: str | None = None) -> 
     if leases_file.is_file():
         rows = json.loads(leases_file.read_text(encoding="utf-8")).get("leases") or []
     rows.append({"slot": slot, "repo": dest.name,
-                 "session": f"{dest.name}_{number}", "state": "leased"})
+                 "session": session or f"{dest.name}_{number}", "state": "leased"})
     leases_file.write_text(json.dumps({"leases": rows, "tasks": []}), encoding="utf-8")
     if tree == "standalone":
         init_git_repo(dest / slot, commit="probe")
@@ -591,9 +603,9 @@ def _seed_work_slot(dest: Path, *, number: int = 1, tree: str | None = None) -> 
     return slot
 
 
-def test_fresh_adopter_without_a_work_folder_stops_with_the_create_command(
+def test_fresh_adopter_task_without_a_work_folder_says_how_to_get_one(
         pm_import, tmp_path, monkeypatch):
-    """작업 폴더 0개 홈의 무인자 부트스트랩 — rc≠0 · 부분 dump 0 · 만드는 명령을 실값으로 안내."""
+    """작업 폴더 0개 홈의 task 진입 — 진입은 되고, 슬롯이 없다는 사실과 잡는 명령을 실값으로 낸다."""
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     dest = tmp_path / "adopter-no-work-folder"
@@ -604,42 +616,37 @@ def test_fresh_adopter_without_a_work_folder_stops_with_the_create_command(
     rows = (json.loads(leases_file.read_text(encoding="utf-8")).get("leases") or []
             if leases_file.is_file() else [])
     assert rows == [], f"import 가 슬롯 행을 만들었다: {rows}"
+    _seed_task_session_claim(dest, "probe")
 
-    got = _tool(dest, "pm_bootstrap.py")
+    got = _tool(dest, "pm_bootstrap.py", "--task", "probe")
 
-    assert got.returncode != 0, f"작업 폴더 0개인데 부트스트랩이 통과했다:\n{got.stdout}"
-    assert got.stdout == "", f"실패인데 부분 dump 가 났다:\n{got.stdout}"
-    assert "작업 폴더가 없다" in got.stderr, got.stderr
-    assert f"pm-config worktree add {dest.name} --user-ack {dest.name}" in got.stderr, got.stderr
-    assert "pm-update" not in got.stderr, (
-        f"엉뚱한 명령(pm-update)을 여전히 안내한다:\n{got.stderr}")
+    assert got.returncode == 0, f"작업 폴더 0개인데 진입이 막혔다:\n{got.stderr}"
+    assert "작업 슬롯: (없음)" in got.stdout, got.stdout
+    assert "alloc <repo> --task probe" in got.stdout, got.stdout
+    rows = (json.loads(leases_file.read_text(encoding="utf-8")).get("leases") or []
+            if leases_file.is_file() else [])
     assert rows == [], "안내만 해야 하는 자리에서 부트스트랩이 행을 만들었다"
 
 
-def test_fresh_adopter_bootstrap_passes_once_a_work_folder_exists(
+def test_fresh_adopter_task_entry_dumps_its_work_folder(
         pm_import, tmp_path, monkeypatch):
-    """작업 폴더를 하나 만든 뒤 같은 명령은 rc 0 + 정상 dump — 과차단 0."""
+    """그 task 명의 작업 폴더가 있으면 rc 0 + 정상 dump — 그 폴더가 dump 에 나온다."""
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     dest = tmp_path / "adopter-one-work-folder"
     assert pm_import.main(
         ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"]
     ) == 0
-    slot = _seed_work_slot(dest, tree="standalone")
+    # 슬롯 행의 session = task 이름 — 이 연결이 task 가 그 폴더를 가졌다는 기록이다.
+    slot = _seed_work_slot(dest, tree="standalone", session="probe")
+    _seed_task_session_claim(dest, "probe")
 
-    # 심은 행은 **열린 기록**(leased + session)이다 — 그 자리의 부트스트랩은 먼저 묻는다.
-    asked = _tool(dest, "pm_bootstrap.py")
-    assert asked.returncode != 0, f"열린 기록인데 그냥 진행했다:\n{asked.stdout}"
-    assert asked.stdout == "", f"거부인데 부분 dump 가 났다:\n{asked.stdout}"
-    assert "열린 세션 기록" in asked.stderr and "--force" in asked.stderr, asked.stderr
-
-    got = _tool(dest, "pm_bootstrap.py", "--force")
+    got = _tool(dest, "pm_bootstrap.py", "--task", "probe")
 
     assert got.returncode == 0, f"작업 폴더가 있는데 막혔다:\n{got.stderr}"
-    assert "이전 세션이 하던 것" in got.stderr, f"강제 인계인데 복원 표시가 없다:\n{got.stderr}"
-    assert len(got.stdout.splitlines()) >= 100, (
+    assert len(got.stdout.splitlines()) >= 60, (
         f"rc 0 인데 dump 가 비었다({len(got.stdout.splitlines())}행):\n{got.stdout}")
-    assert f"slot={slot}" in got.stdout or slot in got.stdout, got.stdout
+    assert slot in got.stdout, got.stdout
 
 
 def test_fresh_adopter_bare_claim_resolves_via_the_work_slot_row(pm_import, tmp_path, monkeypatch):

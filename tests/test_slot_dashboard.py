@@ -356,32 +356,6 @@ def _write_dashboard(tmp_path, hf, *sections: tuple[str, int, str]) -> Path:
     return path
 
 
-def test_collect_dashboard_others_excludes_own(tmp_path, monkeypatch):
-    """대시보드 존재 → 자기 세션 제외 타 슬롯만 dump(자기 섹션 미표시·ADR-0047)."""
-    hf = _load("pm_handoff")
-    bs = _make_bs(tmp_path, monkeypatch, load_tool_hf=hf)
-    _write_dashboard(tmp_path, hf, ("project_manager_1", 52, "mineWave"), ("finance_2", 7, "finWave"))
-    inst = bs.PmBootstrap()
-    inst._bound_slot = "work/project_manager_1"
-    result = inst._collect_dashboard_others()
-    assert result is not None and result["mode"] == "dashboard"
-    sessions = [o["session"] for o in result["others"]]
-    assert "finance_2" in sessions
-    assert "project_manager_1" not in sessions  # 자기 섹션 제외
-    fin = next(o for o in result["others"] if o["session"] == "finance_2")
-    assert "finWave" in fin["body"] and "mineWave" not in fin["body"]
-
-
-def test_collect_dashboard_others_only_own_returns_none(tmp_path, monkeypatch):
-    """대시보드에 자기 섹션뿐 → None(타 PM 없음·절 생략)."""
-    hf = _load("pm_handoff")
-    bs = _make_bs(tmp_path, monkeypatch, load_tool_hf=hf)
-    _write_dashboard(tmp_path, hf, ("project_manager_1", 52, "mineWave"))
-    inst = bs.PmBootstrap()
-    inst._bound_slot = "work/project_manager_1"
-    assert inst._collect_dashboard_others() is None
-
-
 def test_collect_dashboard_others_task_mode_excludes_own_task(tmp_path, monkeypatch):
     """task dashboard 키는 task 이름이므로 자기 task를 '다른 활성 PM'으로 다시 표시하지 않는다."""
     hf = _load("pm_handoff")
@@ -397,24 +371,6 @@ def test_collect_dashboard_others_task_mode_excludes_own_task(tmp_path, monkeypa
     assert result is not None and result["mode"] == "dashboard"
     assert [o["session"] for o in result["others"]] == ["other-task"]
     assert "mineTaskWave" not in result["others"][0]["body"]
-
-
-def test_collect_dashboard_others_lease_fallback(tmp_path, monkeypatch):
-    """대시보드 부재 → lease 장부 폴백(자기 제외 leased 슬롯)."""
-    bs = _make_bs(tmp_path, monkeypatch)
-    leases = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    leases.parent.mkdir(parents=True, exist_ok=True)
-    leases.write_text(
-        '{"leases":['
-        '{"slot":"work/project_manager_1","repo":"project_manager","session":"project_manager_1","state":"leased"},'
-        '{"slot":"work/finance_2","repo":"finance","session":"finance_2","state":"leased"}]}',
-        encoding="utf-8",
-    )
-    inst = bs.PmBootstrap()
-    inst._bound_slot = "work/project_manager_1"
-    result = inst._collect_dashboard_others()
-    assert result["mode"] == "lease"
-    assert [o["session"] for o in result["others"]] == ["finance_2"]
 
 
 def test_collect_dashboard_others_task_lease_fallback_excludes_own_task(tmp_path, monkeypatch):
@@ -433,37 +389,6 @@ def test_collect_dashboard_others_task_lease_fallback_excludes_own_task(tmp_path
     result = inst._collect_dashboard_others()
     assert result["mode"] == "lease"
     assert [o["session"] for o in result["others"]] == ["other-task"]
-
-
-def test_collect_dashboard_others_solo_none(tmp_path, monkeypatch):
-    """대시보드 부재 + 자기 슬롯만 leased → None(솔로·절 생략)."""
-    bs = _make_bs(tmp_path, monkeypatch)
-    leases = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    leases.parent.mkdir(parents=True, exist_ok=True)
-    leases.write_text(
-        '{"leases":[{"slot":"work/project_manager_1","repo":"project_manager",'
-        '"session":"project_manager_1","state":"leased"}]}',
-        encoding="utf-8",
-    )
-    inst = bs.PmBootstrap()
-    inst._bound_slot = "work/project_manager_1"
-    assert inst._collect_dashboard_others() is None
-
-
-def test_lease_fallback_skips_idle(tmp_path, monkeypatch):
-    """lease 폴백은 idle(반납) 슬롯 제외 — 활성(leased)만."""
-    bs = _make_bs(tmp_path, monkeypatch)
-    leases = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    leases.parent.mkdir(parents=True, exist_ok=True)
-    leases.write_text(
-        '{"leases":['
-        '{"slot":"work/project_manager_1","repo":"project_manager","session":"project_manager_1","state":"leased"},'
-        '{"slot":"work/finance_2","repo":"finance","session":"finance_2","state":"idle"}]}',
-        encoding="utf-8",
-    )
-    inst = bs.PmBootstrap()
-    inst._bound_slot = "work/project_manager_1"
-    assert inst._collect_dashboard_others() is None  # finance_2 는 idle → 제외 → 솔로
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -517,24 +442,6 @@ def test_build_json_carries_dashboard_others(hf):
 # 라운드트립 — handoff write → bootstrap read (실 DRY parse·자기 제외)
 # ══════════════════════════════════════════════════════════════════════════
 
-def test_roundtrip_handoff_write_bootstrap_read(tmp_path, monkeypatch):
-    """handoff 가 두 슬롯 섹션을 write → bootstrap(슬롯A bound)이 A 제외·B dump(실 parse 재사용)."""
-    hf = _load("pm_handoff")
-    monkeypatch.setattr(hf, "REPO", tmp_path)
-    inst_hf = hf.PmHandoff()
-    inst_hf._write_dashboard_section("project_manager_1", 52, "mineWave", _DATE)
-    inst_hf._write_dashboard_section("finance_2", 7, "finWave", _DATE)
-
-    bs = _make_bs(tmp_path, monkeypatch, load_tool_hf=hf)
-    inst_bs = bs.PmBootstrap()
-    inst_bs._bound_slot = "work/project_manager_1"
-    result = inst_bs._collect_dashboard_others()
-    assert result["mode"] == "dashboard"
-    sessions = [o["session"] for o in result["others"]]
-    assert sessions == ["finance_2"]  # 자기(project_manager_1) 제외·B 만
-    assert "finWave" in result["others"][0]["body"]
-
-
 # ══════════════════════════════════════════════════════════════════════════
 # MF-1 (codex) — 대시보드 dump 는 활성(leased) 슬롯과 교집합(idle/released 배제)
 # ══════════════════════════════════════════════════════════════════════════
@@ -550,56 +457,6 @@ def _write_leases(tmp_path, *entries: tuple[str, str]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('{"leases":[%s]}' % rows, encoding="utf-8")
     return path
-
-
-def test_dashboard_dump_excludes_released_idle_slot(tmp_path, monkeypatch):
-    """MF-1: 대시보드에 stale 섹션이 남아도, idle(released) 슬롯은 활성 교집합에서 배제된다.
-
-    재현: finance_2 가 --done 으로 release 돼 idle 인데 대시보드 섹션은 그대로 남음. leased 인
-    finance_3 만 dump 에 노출되어야 한다(release 누락/크래시에도 idle 노출 0)."""
-    hf = _load("pm_handoff")
-    bs = _make_bs(tmp_path, monkeypatch, load_tool_hf=hf)
-    _write_dashboard(
-        tmp_path, hf,
-        ("project_manager_1", 52, "mineWave"),  # 자기(bound)
-        ("finance_2", 7, "idleWave"),           # release 됨 → idle (stale 섹션)
-        ("finance_3", 4, "activeWave"),         # 여전히 leased
-    )
-    _write_leases(
-        tmp_path,
-        ("project_manager_1", "leased"),
-        ("finance_2", "idle"),      # released → idle
-        ("finance_3", "leased"),
-    )
-    inst = bs.PmBootstrap()
-    inst._bound_slot = "work/project_manager_1"
-    result = inst._collect_dashboard_others()
-    sessions = [o["session"] for o in result["others"]]
-    assert sessions == ["finance_3"]  # idle finance_2 배제·leased finance_3 만
-    assert "finance_2" not in sessions
-
-
-def test_dashboard_dump_all_idle_returns_none(tmp_path, monkeypatch):
-    """MF-1: 타 슬롯이 전부 idle 이면(활성 교집합 공집합) 절 생략(None)."""
-    hf = _load("pm_handoff")
-    bs = _make_bs(tmp_path, monkeypatch, load_tool_hf=hf)
-    _write_dashboard(tmp_path, hf, ("project_manager_1", 52, "mine"), ("finance_2", 7, "idle"))
-    _write_leases(tmp_path, ("project_manager_1", "leased"), ("finance_2", "idle"))
-    inst = bs.PmBootstrap()
-    inst._bound_slot = "work/project_manager_1"
-    assert inst._collect_dashboard_others() is None
-
-
-def test_dashboard_dump_no_leases_filter_noop(tmp_path, monkeypatch):
-    """MF-1: 장부 판정불가(부재)면 활성 필터 no-op(현행 표시 보존 — 활성여부 알 수 없어 배제 안 함)."""
-    hf = _load("pm_handoff")
-    bs = _make_bs(tmp_path, monkeypatch, load_tool_hf=hf)
-    _write_dashboard(tmp_path, hf, ("project_manager_1", 52, "mine"), ("finance_2", 7, "fin"))
-    # leases 파일 미생성 → _active_leased_sessions None → 필터 no-op.
-    inst = bs.PmBootstrap()
-    inst._bound_slot = "work/project_manager_1"
-    result = inst._collect_dashboard_others()
-    assert [o["session"] for o in result["others"]] == ["finance_2"]
 
 
 def test_active_leased_sessions_none_when_ledger_absent(tmp_path, monkeypatch):
@@ -760,64 +617,6 @@ def _stub_bootstrap(bs, tmp_path, pool, *, log_text: str = "# log\n"):
     )
 
 
-def test_alloc_mode_dashboard_collected_after_identity(tmp_path, monkeypatch, capsys):
-    """MF-1: --repo alloc 모드에서 기존 활성 PM 섹션이 누락 0 으로 dump·방금 alloc 한 자기 슬롯 제외.
-
-    재현: 기존 leased 슬롯 project_manager_1(PM A)이 유일 leased. 새 PM 이 --repo project_manager
-    로 alloc → project_manager_2 획득. 수정 전엔 `_bound_slot` 미설정 상태로 대시보드를 수집해
-    `_bound_session_name` 이 project_manager_1 을 자기로 오인 → PM A 섹션 누락(dump 에서 사라짐).
-    수정 후엔 alloc 이 대시보드 수집 전에 정체성(project_manager_2)을 확정 → PM A 정상 dump."""
-    hf = _load("pm_handoff")
-    bs = _make_bs(tmp_path, monkeypatch, load_tool_hf=hf)
-    _write_dashboard(tmp_path, hf, ("project_manager_1", 40, "PM A wave"))
-    _write_leases(tmp_path, ("project_manager_1", "leased"))
-    pool = _AllocPool("work/project_manager_2")
-    inst = _stub_bootstrap(bs, tmp_path, pool)
-    rc = inst.run(repo="project_manager")
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert pool.alloc_calls == 1  # alloc 정확히 1회(선-alloc·재-alloc 없음)
-    assert "### 다른 활성 PM" in out
-    dash_block = out.split("### 다른 활성 PM", 1)[1].split("\n###", 1)[0]
-    assert "project_manager_1" in dash_block  # 기존 활성 PM A 누락 0
-    assert "PM A wave" in dash_block
-    # 방금 alloc 한 자기 슬롯(project_manager_2)은 대시보드에 없어 이 절에 안 나온다(자기 제외).
-    assert "project_manager_2" not in dash_block
-
-
-def test_alloc_mode_all_bound_collections_use_new_slot(tmp_path, monkeypatch, capsys):
-    """MF R3(포괄): alloc 모드에서 log_entry·차수·대시보드 3개 전부가 새-슬롯 정체성을 본다(유입 0).
-
-    기존 활성 PM A(project_manager_1)가 유일 leased·log 에 40차 handoff(본문 SENTINEL)·대시보드
-    섹션. 새 PM 이 --repo project_manager alloc → project_manager_2. 수정 전엔 log_entry/handoff_
-    context 가 alloc 전에 돌아 project_manager_1 을 자기로 오인 → PM A 의 log 본문·차수(41)를 자기
-    컨텍스트로 표시(cross-slot 유입). 수정 후엔 셋 다 새 슬롯(project_manager_2·fresh) 기준."""
-    hf = _load("pm_handoff")
-    bs = _make_bs(tmp_path, monkeypatch, load_tool_hf=hf)
-    _write_dashboard(tmp_path, hf, ("project_manager_1", 40, "PM A wave"))
-    _write_leases(tmp_path, ("project_manager_1", "leased"))
-    log_text = (
-        "# log\n\n"
-        "## [2026-07-01] handoff | PM 40차 (project_manager_1) → 다음 PM 세션\n\n"
-        "- 읽기 범위: SENTINEL_PM_A_BODY 전용 인계\n"
-        "- 메타 학습: 없음\n"
-    )
-    pool = _AllocPool("work/project_manager_2")
-    inst = _stub_bootstrap(bs, tmp_path, pool, log_text=log_text)
-    rc = inst.run(repo="project_manager")
-    out = capsys.readouterr().out
-    assert rc == 0 and pool.alloc_calls == 1
-    # (a) log_entry: 기존 슬롯 handoff 본문 미표시(새 슬롯 fresh→None·cross-slot 유입 0).
-    assert "SENTINEL_PM_A_BODY" not in out
-    # (b) 차수: 기존 슬롯 40차 미상속 — 새 슬롯 fresh(1차).
-    assert "PM 1차 부트스트랩" in out
-    assert "41차" not in out
-    # (c) 대시보드: 기존 슬롯을 '다른 활성 PM'으로·자기 새 슬롯 제외.
-    dash_block = out.split("### 다른 활성 PM", 1)[1].split("\n###", 1)[0]
-    assert "project_manager_1" in dash_block
-    assert "project_manager_2" not in dash_block
-
-
 def test_write_dashboard_section_atomic_no_tmp_left(hf_repo):
     """suggestion: 대시보드 write 는 tmp→os.replace 원자 교체 — tmp 잔여 없음·내용 온전."""
     inst = hf_repo.PmHandoff()
@@ -832,90 +631,9 @@ def test_write_dashboard_section_atomic_no_tmp_left(hf_repo):
 # MF R4 — alloc 모드: cwd-의존 수집(freshness/git/pytest)도 새 슬롯 cwd 를 본다
 # ══════════════════════════════════════════════════════════════════════════
 
-def test_alloc_mode_cwd_uses_new_slot_not_existing(tmp_path, monkeypatch):
-    """MF R4: alloc 모드에서 freshness/git/pytest 의 cwd(정체성)가 **새 슬롯**·기존 슬롯 아님.
-
-    `_worktree_cwd(_bound_slot)` 로 cwd 를 잡는데, 정체성을 모든 수집보다 먼저 확정 안 하면
-    `_worktree_cwd(None)` 자동해소로 기존 단일 leased 슬롯 cwd 에서 fetch/pull·pytest·branch/
-    status 를 보고한다(cwd 유입). alloc 을 run() 맨 앞으로 올려 모든 cwd-의존 수집이 새 슬롯을
-    본다. codex R5 방지 — 러너가 실제로 본 `-C` 경로 + 수집 시점 정체성을 단언한다."""
-    hf = _load("pm_handoff")
-    bs = _make_bs(tmp_path, monkeypatch, load_tool_hf=hf)
-    _write_leases(tmp_path, ("project_manager_1", "leased"))  # 기존 활성 슬롯
-    pool = _AllocPool("work/project_manager_2")
-    inst = _stub_bootstrap(bs, tmp_path, pool)
-
-    git_c_dirs: list[str] = []
-    bound_at_git: list = []
-
-    def rec_git(args):
-        bound_at_git.append(inst._bound_slot)  # git 수집 시점 정체성.
-        if "-C" in args:
-            git_c_dirs.append(args[args.index("-C") + 1])
-        if args[:2] == ["rev-parse", "--abbrev-ref"]:
-            return 0, "main\n"
-        if args[:2] == ["log", "--oneline"]:
-            return 0, "abc commit\n"
-        return 0, ""
-
-    bound_at_pytest: list = []
-
-    def rec_pytest():
-        bound_at_pytest.append(inst._bound_slot)  # pytest 수집 시점 정체성.
-        # 실 pytest 요약행 형태(`in <초>s` 종결)를 그대로 — 파서는 요약행 문법 완전 일치를
-        # 요구한다(요약 뒤에 붙는 자식 하네스 로그를 요약으로 오인하지 않기 위한 앵커).
-        return 0, pytest_summary()
-
-    inst._run_git_fn = rec_git
-    inst._run_pytest_fn = rec_pytest
-    rc = inst.run(repo="project_manager", with_pytest=True)
-    assert rc == 0 and pool.alloc_calls == 1
-
-    new_slot_cwd = str(tmp_path / "work" / "project_manager_2")
-    existing_slot_cwd = str(tmp_path / "work" / "project_manager_1")
-    # (a) freshness worktree scope 의 `-C` cwd = 새 슬롯·기존 슬롯 아님(observable·codex 지시).
-    assert new_slot_cwd in git_c_dirs
-    assert existing_slot_cwd not in git_c_dirs
-    # (b) 모든 git/pytest 수집 시점의 정체성이 새 슬롯(None 자동해소 아님) — 순서 회귀 가드(non-vacuous).
-    assert bound_at_git and set(bound_at_git) == {"work/project_manager_2"}
-    assert bound_at_pytest == ["work/project_manager_2"]
-
-
 # ══════════════════════════════════════════════════════════════════════════
 # MF R5 — alloc 앞단 이동이 낳은 lease 누수: fail-fast 수집 실패 시 신규 lease release
 # ══════════════════════════════════════════════════════════════════════════
-
-def test_alloc_mode_lease_released_on_collection_failure(tmp_path, monkeypatch):
-    """MF R5: alloc 후 fail-fast 수집(pytest 파싱 실패→SystemExit)이면 신규 lease 를 release.
-
-    alloc 을 앞단에 두면(R4) lease 를 먼저 잡는데, 이후 board/pytest/git 파싱 실패로 abort 하면
-    그 신규 lease 가 stale leased 로 남아 풀 고갈·'다른 활성 PM' 오표시를 낳는다. 예외/SystemExit
-    시 그 lease 를 release 후 re-raise 해야 한다."""
-    hf = _load("pm_handoff")
-    bs = _make_bs(tmp_path, monkeypatch, load_tool_hf=hf)
-    pool = _AllocPool("work/project_manager_2")
-    inst = _stub_bootstrap(bs, tmp_path, pool)
-    inst._run_pytest_fn = lambda: (1, "boom unparseable")  # _collect_pytest → sys.exit(1)
-    with pytest.raises(SystemExit):
-        inst.run(repo="project_manager", with_pytest=True)
-    assert pool.alloc_calls == 1
-    assert "work/project_manager_2" in pool.release_calls  # 신규 lease release
-    assert "work/project_manager_2" not in pool.leased      # 장부에서 leased 아님(누수 0)
-
-
-def test_alloc_mode_lease_kept_on_success(tmp_path, monkeypatch, capsys):
-    """MF R5: 정상 완료면 alloc 한 lease 유지(release 안 함 — 세션이 그 슬롯을 쓴다)."""
-    hf = _load("pm_handoff")
-    bs = _make_bs(tmp_path, monkeypatch, load_tool_hf=hf)
-    pool = _AllocPool("work/project_manager_2")
-    inst = _stub_bootstrap(bs, tmp_path, pool)
-    rc = inst.run(repo="project_manager")
-    capsys.readouterr()
-    assert rc == 0
-    assert pool.alloc_calls == 1
-    assert pool.release_calls == []                     # release 안 함
-    assert "work/project_manager_2" in pool.leased      # leased 유지
-
 
 # ══════════════════════════════════════════════════════════════════════════
 # codex suggestions — 헤딩 키 안전화 + status 따옴표 인식

@@ -108,3 +108,7 @@ record는 라이브 wave 전에 추가 리뷰 라운드 장부의 미해소 must
 ### 5. audience 라벨
 
 신설/변경한 스킬·커맨드 frontmatter의 `audience: user-entrypoint | pm-internal`를 확정한다(청중=binary, 명령어化로 늘어나는 것은 대개 `pm-internal`).
+
+## 이번 호출 인자
+
+`$ARGUMENTS` — 사용자가 슬래시 명령 뒤에 준 값이다(하네스가 치환한다). 비어 있으면 인자 없이 부른 것이다. 이 카드가 인자를 받는 진입이면 그 값을 그대로 backbone 에 넘기고, 인자를 받지 않는 진입이면 값이 붙어 온 것을 사용자에게 알리고 인자 없이 다시 부르게 안내한다.

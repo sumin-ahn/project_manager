@@ -12,7 +12,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from _skill_command import DETAIL_LINK, expected_command_bytes, normalized_bytes
+from _skill_command import (
+    ARGUMENTS_SECTION,
+    DETAIL_LINK,
+    expected_command_bytes,
+    normalized_bytes,
+)
 from _textio import write_crlf, write_lf
 
 REPO = Path(__file__).resolve().parents[1]
@@ -109,9 +114,10 @@ def test_parity_guard_accepts_exact_generated_copy(tmp_path):
 # 환경에서도 재현해, 기대값만 텍스트-읽기로 만드는 층 혼합이 되살아나면 여기서 red가 된다.
 
 _SKILL_BODY = f"---\nname: pm-x\n---\n본문 한 줄 {_DETAIL_LINK}\n"
+# command 사본은 링크 rewrite + 인자 전달 절까지가 기계 렌더 산출이다.
 _COMMAND_BODY = _SKILL_BODY.replace(
     _DETAIL_LINK, "(../../.claude/skills/pm-x/references/operational-details.md)"
-)
+) + ARGUMENTS_SECTION
 
 
 def _skill_and_command_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:

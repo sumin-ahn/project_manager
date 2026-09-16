@@ -148,36 +148,6 @@ def test_bootstrap_is_in_mechanically_derived_runtime_modules():
     assert "pm_bootstrap" in RUNTIME_MODULES
 
 
-def test_bootstrap_fresh_surfaces_use_codex_notation(monkeypatch):
-    monkeypatch.setenv("CODEX_CI", "1")
-    bootstrap = _load("pm_bootstrap")
-    inst = bootstrap.PmBootstrap(run_git_fn=lambda _args: (0, ""))
-    context = {
-        "session_num": 1,
-        "session_stale": False,
-        "state_session_num": 1,
-        "remaining_work": None,
-        "state_path": "pm_state.md",
-        "fresh_slot": True,
-    }
-    markdown = inst._build_markdown(
-        {
-            "counts": {"done": 0, "open": 0, "claimed": 0, "blocked": 0},
-            "open_tickets": [],
-            "lint": "clean",
-        },
-        None,
-        {"branch": "main", "commits": [], "working_tree": "clean"},
-        None,
-        "ts",
-        context,
-        None,
-    )
-    assert "첫 $pm-handoff 가 pm_state 를 생성" in markdown
-    assert "pm_state 없음 · 첫 $pm-handoff 가 생성" in markdown
-    assert "첫 /pm-handoff" not in markdown
-
-
 def test_bootstrap_task_pytest_stop_uses_codex_notation(monkeypatch, capsys):
     monkeypatch.setenv("CODEX_CI", "1")
     bootstrap = _load("pm_bootstrap")
@@ -189,24 +159,6 @@ def test_bootstrap_task_pytest_stop_uses_codex_notation(monkeypatch, capsys):
     error = capsys.readouterr().err
     assert "`$pm-env alloc <repo> --task <이름>`" in error
     assert "`/pm-env" not in error
-
-
-def test_bootstrap_readonly_stop_uses_codex_notation(monkeypatch, capsys):
-    monkeypatch.setenv("CODEX_CI", "1")
-    bootstrap = _load("pm_bootstrap")
-    inst = bootstrap.PmBootstrap(run_git_fn=lambda _args: (0, ""))
-    lease = object()
-    monkeypatch.setattr(inst, "_reject_worktree_copy_anchor", lambda: False)
-    monkeypatch.setattr(inst, "_reconcile_protected_sidecar", lambda _repo: None)
-    monkeypatch.setattr(inst, "_resolve_worktree_pool", lambda: object())
-    monkeypatch.setattr(inst, "_phase0_slot_folder_exists", lambda _wp, _slot: True)
-    monkeypatch.setattr(inst, "_phase0_find_lease", lambda _wp, _slot: lease)
-    monkeypatch.setattr(inst, "_phase0_incomplete_create", lambda _lease: False)
-    monkeypatch.setattr(inst, "_phase0_is_readonly", lambda _lease: True)
-    assert inst._phase0_preflight("repo", 2) == 1
-    error = capsys.readouterr().err
-    assert "`$pm-worktree refresh repo_2`" in error
-    assert "`/pm-worktree" not in error
 
 
 def test_relay_child_bootstrap_prompt_uses_runtime_notation(monkeypatch):

@@ -113,3 +113,7 @@ HEAD(released base), role=readonly, session/pid·배타 대여가 없다. 무소
 판별한다. URL이면 엔진([[pm-update]])이 `<PM 홈>/.project_manager/.local/upstream-cache/<URL 해시>/`에
 clone/fetch해 그 캐시를 소스로 쓰고, 경로면 그 checkout을 그대로 소스로 쓴다. 스킬이 판단하는 것은
 로컬 경로 upstream의 pull 여부뿐이다.
+
+## 이번 호출 인자
+
+`$ARGUMENTS` — 사용자가 슬래시 명령 뒤에 준 값이다(하네스가 치환한다). 비어 있으면 인자 없이 부른 것이다. 이 카드가 인자를 받는 진입이면 그 값을 그대로 backbone 에 넘기고, 인자를 받지 않는 진입이면 값이 붙어 온 것을 사용자에게 알리고 인자 없이 다시 부르게 안내한다.

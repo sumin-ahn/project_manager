@@ -1623,11 +1623,11 @@ def test_marker_label_axis_sensitivity_reverting_one_marker_trips_and_clears():
     ``f"공개 제품 worktree (...)"`` ← 원문 ``f"① task worktree (...)"``)."""
     path = _MARKER_LABEL_TOOLS_DIR / "pm_bootstrap.py"
     current = path.read_text(encoding="utf-8")
-    fixed_snippet = 'scopes.append((f"공개 제품 worktree ({task_slot})", wt_dir, False))'
+    fixed_snippet = 'f"공개 제품 worktree ({task_slot})"'
     assert fixed_snippet in current, "고정 스니펫이 소스에 없다 — 라인이 바뀌면 갱신하라"
     reverted = current.replace(
         fixed_snippet,
-        'scopes.append((f"① task worktree ({task_slot})", wt_dir, False))',
+        'f"① task worktree ({task_slot})"',
     )
     assert reverted != current
 

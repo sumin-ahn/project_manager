@@ -46,3 +46,7 @@ python3 .project_manager/tools/pm_adr.py new \
   대상 불변이며 related 링크만 만든다. 모든 개정 대상은 신규 ADR의 `related`에도 dedup 편입된다.
 - `--dry-run`: 쓰기 없이 예정 번호·신규 파일 미리보기·back-ref 대상·log entry를 stdout에 출력한다.
 - 채번은 단일 PM이 순차 실행하는 전제이며 lock 없이 `decisions/`의 max+1을 쓴다.
+
+## 이번 호출 인자
+
+`$ARGUMENTS` — 사용자가 슬래시 명령 뒤에 준 값이다(하네스가 치환한다). 비어 있으면 인자 없이 부른 것이다. 이 카드가 인자를 받는 진입이면 그 값을 그대로 backbone 에 넘기고, 인자를 받지 않는 진입이면 값이 붙어 온 것을 사용자에게 알리고 인자 없이 다시 부르게 안내한다.

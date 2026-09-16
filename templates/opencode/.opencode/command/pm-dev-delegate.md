@@ -372,3 +372,7 @@ touches 경로의 실재(소유 repo 좌표 기준) · 묶음 안팎 다른 열�
 대상 튜플(`additional_reviewer.harness`/`.model`/`.reasoning`)을 선언한 채택자는 reviewer 라운드와 같은 시점에 추가 리뷰어(additional reviewer) 교차검증을 돌린다. 선언이 없는 채택자에게 이 단계는 없다:
 `python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --adr ADR-NNNN`
 ADR 본문 정합 필요 시 `--paths`에 **코드 경로+ADR을 함께 나열**한다. `--paths`는 `--ticket` touches를 대체한다. 상세: `pm_playbook.md` §"추가 리뷰어 교차검증".
+
+## 이번 호출 인자
+
+`$ARGUMENTS` — 사용자가 슬래시 명령 뒤에 준 값이다(하네스가 치환한다). 비어 있으면 인자 없이 부른 것이다. 이 카드가 인자를 받는 진입이면 그 값을 그대로 backbone 에 넘기고, 인자를 받지 않는 진입이면 값이 붙어 온 것을 사용자에게 알리고 인자 없이 다시 부르게 안내한다.

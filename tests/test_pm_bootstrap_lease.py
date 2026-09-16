@@ -416,193 +416,10 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None, areas_text: str 
 # ── 1. bootstrap --repo --branch → alloc + identity surface + cwd ─────────────
 
 
-def test_bootstrap_repo_calls_alloc(bootstrap, tmp_path, capsys):
-    wp = FakeWorktreePool(alloc_slot="work/A_2", alloc_branch="a5")
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    rc = inst.run(repo="A", branch="a5")
-    assert rc == 0
-    # alloc 이 정확히 한 번·repo/branch 와 함께 호출됐다.
-    assert wp.alloc_calls == [{"repo": "A", "branch": "a5", "resume": None}]
-
-
-def test_bootstrap_repo_emits_identity_surface(bootstrap, tmp_path, capsys):
-    wp = FakeWorktreePool(alloc_slot="work/A_2", alloc_branch="a5")
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    inst.run(repo="A", branch="a5")
-    out = capsys.readouterr().out
-    # identity surface: "당신은 A PM" + worktree 슬롯 + branch + multi-PM 공유 보드.
-    assert "당신은 **A PM**" in out
-    assert "work/A_2" in out
-    assert "a5" in out
-    assert "보드=multi-PM 공유" in out
-
-
-def test_bootstrap_identity_branch_from_live_current_branch(bootstrap, tmp_path, capsys):
-    """identity 의 branch 가 `current_branch(slot)` live 조회에서 온다(ADR-0013 amend T-0072).
-
-    alloc 후 슬롯의 live HEAD 를 다른 값으로 바꾼다(사용자가 슬롯서 직접 checkout 한 상황) —
-    identity surface 가 저장 복사본이 아니라 *바뀐 live 값*을 표시하면 live 조회임이 입증된다.
-    """
-    wp = FakeWorktreePool(alloc_slot="work/A_2", alloc_branch="a5")
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    # 사용자가 슬롯서 git checkout 한 상황 모델링 — alloc 이 심을 a5 를 a9-live 로 override.
-    wp.live_branch_override["work/A_2"] = "a9-live"
-    inst.run(repo="A", branch="a5")
-    out = capsys.readouterr().out
-    # identity 의 branch= 가 live 값(a9-live)이다 — 요청 branch(a5) 가 아니라 슬롯 HEAD live.
-    assert "branch=`a9-live`" in out, "identity branch 가 live current_branch 가 아님(저장 복사본 사용)"
-    # current_branch 가 슬롯에 대해 호출됐다(live 조회 경로).
-    assert "work/A_2" in wp.current_branch_calls
-
-
-def test_bootstrap_identity_detached_branch_shows_placeholder(bootstrap, tmp_path, capsys):
-    """current_branch 가 None(detached/조회불가)이면 identity branch 가 "(미지정)"(fail-soft 유지)."""
-    wp = FakeWorktreePool(alloc_slot="work/A_2", alloc_branch="a5", force_detached=True)
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    inst.run(repo="A", branch="a5")
-    out = capsys.readouterr().out
-    assert "branch=`(미지정)`" in out, "detached current_branch 가 '(미지정)' 로 surface 안 됨"
-
-
-def test_bootstrap_repo_reports_slot_cwd(bootstrap, tmp_path, capsys):
-    wp = FakeWorktreePool(alloc_slot="work/A_2")
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    inst.run(repo="A", branch="a5")
-    out = capsys.readouterr().out
-    # cwd(작업 슬롯) 경로가 보고된다 (slot_path 산출). 엔진 표시는 OS-네이티브라
-    # Windows 에선 역슬래시 — 경로 구분자만 정규화해 비교(POSIX 무변경·os.sep="/").
-    expected = str(fake_slot_path("work/A_2")).replace(os.sep, "/")
-    assert expected in out.replace(os.sep, "/")
-
-
-def test_bootstrap_repo_identity_lists_registered_areas(bootstrap, tmp_path, capsys):
-    """areas.md 가 있으면 identity surface '등록영역' 에 repo 목록을 표면한다."""
-    areas = (
-        "| repo | prefix | git | test_cmd | owner |\n"
-        "|------|--------|-----|----------|-------|\n"
-        "| A | A | g | pytest | me |\n"
-        "| B | B | g | go test | me |\n"
-    )
-    wp = FakeWorktreePool()
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp, areas_text=areas)
-    inst.run(repo="A", branch="a5")
-    out = capsys.readouterr().out
-    assert "등록영역: A, B" in out
-
-
-def test_bootstrap_repo_json_includes_worktree(bootstrap, tmp_path, capsys):
-    """--json 출력에도 worktree identity 가 surface 된다."""
-    import json as _json
-    wp = FakeWorktreePool(alloc_slot="work/A_3", alloc_branch="a7")
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    inst.run(repo="A", branch="a7", output_json=True)
-    data = _json.loads(capsys.readouterr().out)
-    assert data["worktree"]["repo"] == "A"
-    assert data["worktree"]["slot"] == "work/A_3"
-    assert data["worktree"]["branch"] == "a7"
-
-
 # ── 2. 솔로 무인자 — 현행 동작 보존 (alloc 경로 미진입) ───────────────────────
 
 
-def test_bootstrap_solo_does_not_touch_worktree_pool(bootstrap, tmp_path, capsys):
-    """무인자(솔로)면 worktree_pool 을 절대 건드리지 않는다 (alloc 0회·현행 출력)."""
-    wp = FakeWorktreePool()
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    rc = inst.run()  # repo 미지정 — 솔로.
-    assert rc == 0
-    assert wp.alloc_calls == []  # alloc 경로 미진입.
-    out = capsys.readouterr().out
-    # 현행 부트스트랩 출력은 유지되고, identity surface 는 없다 (헤더=차수 announce·T-0179).
-    assert "부트스트랩" in out
-    assert "당신은" not in out
-
-
-def test_bootstrap_solo_no_worktree_pool_needed(bootstrap, tmp_path, capsys):
-    """솔로 경로는 worktree_pool 미주입(None)이어도 동작한다 (fail-soft·import 불요)."""
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=None)
-    assert inst.run() == 0
-
-
 # ── 2b. lean 정체성 선언 — --repo --slot → bind_slot + identity + 상태점검 (T-0074) ──
-
-
-def test_bootstrap_slot_calls_bind_not_alloc(bootstrap, tmp_path, capsys):
-    """--slot lean 모드는 bind_slot 을 호출하고 alloc 은 절대 안 부른다(직접 바인딩·pool 우회)."""
-    wp = FakeWorktreePool()
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    rc = inst.run(repo="X", slot=2)
-    assert rc == 0
-    # bind_slot 이 정확히 한 번·세션명/슬롯과 함께 호출됐다.
-    assert wp.bind_calls == [
-        {"slot": "work/X_2", "repo": "X", "session": "X_2"}
-    ]
-    # alloc 은 절대 안 탄다(bind 경로는 풀 alloc 을 거치지 않음).
-    assert wp.alloc_calls == []
-
-
-def test_bootstrap_slot_emits_lean_identity_surface(bootstrap, tmp_path, capsys):
-    """lean identity surface — 세션명 `X_2`·worktree·라이브 브랜치·`--session X_2` 안내."""
-    wp = FakeWorktreePool(alloc_branch="x-feat")
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    inst.run(repo="X", slot=2)
-    out = capsys.readouterr().out
-    assert "당신은 **X PM**" in out
-    assert "세션=`X_2`" in out
-    assert "worktree=`work/X_2`" in out
-    assert "브랜치=`x-feat`" in out          # 라이브 브랜치(current_branch)
-    assert "--repo X --slot 2" in out        # 보드 조작 명시 안내 (ADR-0057·decomposed)
-    assert "--session X_2" not in out        # 옛 actor 플래그 잔존 금지 (BREAKING·--session-seq 차수는 무관)
-    assert "보드=multi-PM 공유" in out
-
-
-def test_bootstrap_slot_identity_label_unified_worktree(bootstrap, tmp_path, capsys):
-    """lean variant 라벨이 공개-제품 variant 와 통일(`worktree=`)·옛 `슬롯=` 제거 (T-0298).
-
-    같은 슬롯 정체성을 두 표기(`슬롯=`/`worktree=`)로 부르던 혼선을 닫는다 — worktree 경로임을
-    명시하는 단일 용어로 통일.
-    """
-    wp = FakeWorktreePool()
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    inst.run(repo="X", slot=2)
-    out = capsys.readouterr().out
-    assert "worktree=`work/X_2`" in out
-    assert "슬롯=`work/X_2`" not in out       # 옛 라벨 제거(용어 통일)
-
-
-def test_bootstrap_slot_identity_appends_pm_state_path(bootstrap, tmp_path, capsys):
-    """lean identity surface 가 이 슬롯의 per-slot pm_state 경로를 병기한다 (T-0298).
-
-    독자가 pm_state 위치를 못 잡던 표기 혼선(identity=`work/<repo>_<N>` vs 실경로=`.local/slots/
-    <repo>_<N>/`)을 닫는다 — `_pm_state_display_path` 재사용 산출을 identity 뒤에 한 줄.
-    """
-    wp = FakeWorktreePool()
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    inst.run(repo="X", slot=2)
-    out = capsys.readouterr().out
-    assert "pm_state (이 슬롯):" in out
-    assert ".project_manager/.local/slots/X_2/pm_state.md" in out
-
-
-def test_bootstrap_slot_identity_branch_is_live(bootstrap, tmp_path, capsys):
-    """identity 의 브랜치가 `current_branch(slot)` live 조회에서 온다(저장 복사본 아님)."""
-    wp = FakeWorktreePool()
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    # 슬롯 live HEAD 를 명시 override — bind 가 심을 기본값 대신 이 값이 표시되면 live 조회 입증.
-    wp.live_branch_override["work/X_2"] = "x-live"
-    inst.run(repo="X", slot=2)
-    out = capsys.readouterr().out
-    assert "브랜치=`x-live`" in out
-    assert "work/X_2" in wp.current_branch_calls
-
-
-def test_bootstrap_slot_identity_detached_shows_placeholder(bootstrap, tmp_path, capsys):
-    """current_branch None(detached/조회불가) → 브랜치 surface 가 "(미지정)"(fail-soft)."""
-    wp = FakeWorktreePool(force_detached=True)
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    inst.run(repo="X", slot=2)
-    out = capsys.readouterr().out
-    assert "브랜치=`(미지정)`" in out
 
 
 # ── readonly 공유 슬롯 0단계 carve-out (⑬·T-0358·seam #1 파급) ─────────────────
@@ -611,225 +428,13 @@ def test_bootstrap_slot_identity_detached_shows_placeholder(bootstrap, tmp_path,
 # 아래가 그 파급(readonly lease → 0단계 carve-out 실동작)을 못박는다.
 
 
-def test_phase0_is_readonly_reads_canonical_role_not_extra(bootstrap, tmp_path):
-    """seam #1 — `_phase0_is_readonly` 는 canonical `lease.role` 을 읽는다(extra 아님·T-0358).
-
-    role 이 `_LEASE_CANONICAL_KEYS` 로 승격되며 extra 에서 빠졌으므로 옛 extra["role"] 훅은
-    무력화된다. sensitivity: role="work"이되 extra={"role":"readonly"}(stale 스키마)는 **False** —
-    canonical role 만 신뢰하고 extra 경유는 무시해야 훅 무력화 회귀가 없다."""
-    inst = _make_bootstrap(bootstrap, tmp_path)
-    ro = _FakeLeaseEntry("work/A_1", "A", "", state="leased", role="readonly")
-    work = _FakeLeaseEntry("work/A_1", "A", "s", state="leased", role="work")
-    stale_extra = _FakeLeaseEntry("work/A_1", "A", "s", state="leased", role="work",
-                                  extra={"role": "readonly"})
-    assert inst._phase0_is_readonly(ro) is True
-    assert inst._phase0_is_readonly(work) is False
-    assert inst._phase0_is_readonly(stale_extra) is False   # extra 경유 무시(canonical role 만)
-    assert inst._phase0_is_readonly(None) is False
-
-
-def test_bootstrap_readonly_slot_bind_refused(bootstrap, tmp_path, capsys):
-    """⑬ should-fix — readonly 공유 슬롯 바인딩은 0단계에서 거부(rc1·무소유 공유 자산·T-0358).
-
-    0단계 carve-out(F6)은 *조회 지칭*만 허용하고 bind 는 *점유*라 의미가 다르다 — `/pm-bootstrap
-    --slot N` 오지정을 fail-loud 로 막는다(bind_slot 엔진 `ReadonlySlotNotLeasable` 의 user-facing 짝)."""
-    wp = FakeWorktreePool(present_slots=())
-    wp._extra_leases = [_FakeLeaseEntry("work/X_2", "X", "",
-                                        state="leased", role="readonly")]
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    rc = inst.run(repo="X", slot=2)
-    assert rc == 1
-    err = capsys.readouterr().err
-    assert "readonly" in err
-    # T-0818 값 단언 — circled 결정 마커(⑬)가 실 CLI stderr 에 없다(채택자에게 뜻이 서지 않는
-    # 사설 표식 재유입 방지).
-    assert "⑬" not in err
-    assert wp.bind_calls == [], "readonly bind 거부인데 bind_slot 이 불렸다"
-
-
-def test_bootstrap_work_slot_open_record_rejected_sensitivity(bootstrap, tmp_path, capsys):
-    """sensitivity 대조 — 같은 슬롯이 role="work" 면 열린 기록 사유로 0단계 rc1 거부(다른 사유).
-
-    readonly 는 bind 거부(readonly 사유)·work 는 열린 기록 거부 — 둘의 사유가 갈려야 role 판별이
-    실제로 작동함을 입증(양쪽 rc1 이되 메시지 다름)."""
-    wp = FakeWorktreePool(present_slots=())
-    wp._extra_leases = [_FakeLeaseEntry("work/X_2", "X", "other_sess",
-                                        state="leased", role="work")]
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    rc = inst.run(repo="X", slot=2)
-    assert rc == 1
-    err = capsys.readouterr().err
-    assert "열린 세션 기록" in err and "other_sess" in err
-    assert "readonly" not in err
-
-
-def test_bootstrap_slot_surfaces_other_active_pms(bootstrap, tmp_path, capsys):
-    """상태점검 — 다른 활성 리스가 있으면 그 현황(세션·슬롯·라이브 브랜치)을 surface."""
-    wp = FakeWorktreePool()
-    # 다른 활성 PM 을 장부에 심는다(이 세션 X_2 와 별개).
-    wp._extra_leases = [_FakeLeaseEntry("work/billing_3", "billing", "billing_3")]
-    wp.live_branch_override["work/billing_3"] = "bill-b"
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    inst.run(repo="X", slot=2)
-    out = capsys.readouterr().out
-    assert "다른 활성 PM" in out
-    assert "`billing_3`" in out
-    assert "`work/billing_3`" in out
-    assert "bill-b" in out
-
-
-def test_bootstrap_slot_no_other_pms_shows_placeholder(bootstrap, tmp_path, capsys):
-    """다른 활성 리스가 없으면 "(다른 활성 PM 없음)" 을 surface(이 세션은 제외)."""
-    wp = FakeWorktreePool()
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    inst.run(repo="X", slot=2)
-    out = capsys.readouterr().out
-    assert "(다른 활성 PM 없음)" in out
-
-
-def test_bootstrap_slot_excludes_own_session_from_status(bootstrap, tmp_path, capsys):
-    """상태점검은 *이 세션 제외* — 자기 자신은 '다른 활성 PM' 에 안 나온다."""
-    wp = FakeWorktreePool()
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    inst.run(repo="X", slot=2)
-    out = capsys.readouterr().out
-    # 이 세션(X_2)만 leased 면 '다른 활성 PM 없음' — 자기 세션을 타자로 surface 하지 않음.
-    assert "(다른 활성 PM 없음)" in out
-
-
-def test_bootstrap_slot_json_includes_worktree(bootstrap, tmp_path, capsys):
-    """slot JSON은 identity를 내고 task-only 키/null을 섞지 않는다."""
-    import json as _json
-    wp = FakeWorktreePool(alloc_branch="x-feat")
-    wp._extra_leases = [_FakeLeaseEntry("work/billing_3", "billing", "billing_3")]
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    inst._run_pytest_fn = lambda: (0, "1 passed in 0.01s\n")
-    inst.run(repo="X", slot=2, output_json=True, with_pytest=True)
-    data = _json.loads(capsys.readouterr().out)
-    wt = data["worktree"]
-    assert wt["repo"] == "X"
-    assert wt["session"] == "X_2"
-    assert wt["slot"] == "work/X_2"
-    assert wt["branch"] == "x-feat"
-    assert [o["session"] for o in wt["others"]] == ["billing_3"]
-    assert data["board"]["counts_scope"] == "slot 2"
-    assert "counts_mine" not in data["board"]
-    assert "counts_task" not in data["board"]
-    assert data["pytest"] == {"passed": 1, "total": 1}
-    assert "scopes" not in data["pytest"]
-    assert "task_cwd_slot" not in data["git"]
-    assert "task_workspace_count" not in data["git"]
-
-
-def test_bootstrap_slot_does_not_alloc_or_release(bootstrap, tmp_path, capsys):
-    """lean bind 경로는 alloc/release 를 절대 부르지 않는다(직접 바인딩·명시 release 만)."""
-    wp = FakeWorktreePool()
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    inst.run(repo="X", slot=2)
-    assert wp.alloc_calls == []
-    assert wp.release_calls == []
-
-
 # ── 2c. 보호 브랜치 경고 (소프트·T-0076) — 라이브 브랜치가 보호목록이면 🚫 surface ──
-
-
-def test_bootstrap_slot_warns_when_live_branch_protected(bootstrap, tmp_path, capsys):
-    """라이브 브랜치가 보호목록(main)이면 identity surface 에 🚫 보호 경고 (T-0076·소프트)."""
-    wp = FakeWorktreePool(alloc_branch="main")   # 슬롯 live HEAD = main(보호)
-    board = _FakeBoard(protected={"X": ["main", "develop"]})
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp, board=board)
-    inst.run(repo="X", slot=2)
-    out = capsys.readouterr().out
-    assert "🚫" in out
-    assert "보호 브랜치 `main`" in out
-    assert "커밋/푸시 금지" in out
-
-
-def test_bootstrap_slot_no_warning_when_feature_branch(bootstrap, tmp_path, capsys):
-    """라이브 브랜치가 feature(보호목록 아님)면 보호 경고 없음 (T-0076·sensitivity 대조)."""
-    wp = FakeWorktreePool(alloc_branch="x-feat")   # 보호목록 아님
-    board = _FakeBoard(protected={"X": ["main", "develop"]})
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp, board=board)
-    inst.run(repo="X", slot=2)
-    out = capsys.readouterr().out
-    assert "🚫" not in out
-    assert "보호 브랜치" not in out
-
-
-def test_bootstrap_slot_warning_uses_repo_protected_override(bootstrap, tmp_path, capsys):
-    """보호 판정은 board._repo_protected(per-repo override) — release 가 보호목록이면 경고 (T-0076)."""
-    wp = FakeWorktreePool(alloc_branch="release")
-    board = _FakeBoard(protected={"X": ["release"]})   # per-repo override(default 아님)
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp, board=board)
-    inst.run(repo="X", slot=2)
-    out = capsys.readouterr().out
-    assert "보호 브랜치 `release`" in out
-
-
-def test_bootstrap_slot_detached_branch_no_protected_warning(bootstrap, tmp_path, capsys):
-    """detached/조회불가(current_branch None)면 보호 경고 없음 (fail-soft·T-0076)."""
-    wp = FakeWorktreePool(force_detached=True)
-    board = _FakeBoard(protected={"X": ["main"]})
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp, board=board)
-    inst.run(repo="X", slot=2)
-    out = capsys.readouterr().out
-    assert "🚫" not in out
-
-
-def test_bootstrap_slot_protected_warning_in_json(bootstrap, tmp_path, capsys):
-    """--json 출력에도 보호 브랜치(protected_branch) 필드가 surface 된다 (T-0076)."""
-    import json as _json
-    wp = FakeWorktreePool(alloc_branch="main")
-    board = _FakeBoard(protected={"X": ["main"]})
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp, board=board)
-    inst.run(repo="X", slot=2, output_json=True)
-    data = _json.loads(capsys.readouterr().out)
-    assert data["worktree"]["protected_branch"] == "main"
-
-
-def test_bootstrap_slot_board_absent_no_protected_warning(bootstrap, tmp_path, capsys):
-    """board 부재(헬퍼 없음)면 보호 경고 생략 — 소프트(정체성 선언은 안 깨짐·T-0076)."""
-    wp = FakeWorktreePool(alloc_branch="main")
-    board = object()   # _repo_protected 없는 board 대역 → getattr None → 경고 생략
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp, board=board)
-    rc = inst.run(repo="X", slot=2)
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "🚫" not in out
-    assert "당신은 **X PM**" in out   # 정체성 선언 자체는 정상 surface
 
 
 # ── 3. NeedsCreate (풀 소진) → 사용자 게이트·자동 생성 안 함 ───────────────────
 
 
-def test_bootstrap_repo_needs_create_user_gate(bootstrap, tmp_path, capsys):
-    wp = FakeWorktreePool(alloc_raises_needs_create=True)
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    with pytest.raises(SystemExit) as exc:
-        inst.run(repo="A", branch="a5")
-    assert exc.value.code == 1
-    err = capsys.readouterr().err
-    # 사용자 게이트 안내 — 풀 소진·수동 추가 안내·자동 안 함을 표면.
-    assert "사용자 게이트" in err
-    assert "풀 소진" in err
-    assert "git worktree add" in err  # 안내 문구(자동 실행 아님).
-    # release/추가 alloc 등 부작용 없음.
-    assert wp.release_calls == []
-
-
 # ── 4. worktree_pool 부재 시 명시 에러 (침묵 무력화 금지) ─────────────────────
-
-
-def test_bootstrap_repo_without_pool_errors(bootstrap, tmp_path, capsys, monkeypatch):
-    """--repo 줬는데 worktree_pool 이 없으면 명시 에러 (침묵 무력화 금지·ADR-0013)."""
-    # 주입 None + 동적 로드도 None 으로 막는다.
-    monkeypatch.setattr(bootstrap, "_load_worktree_pool", lambda: None)
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=None)
-    with pytest.raises(SystemExit) as exc:
-        inst.run(repo="A", branch="a5")
-    assert exc.value.code == 1
-    err = capsys.readouterr().err
-    assert "worktree_pool" in err
 
 
 # ── 5. handoff payload slot/branch 기록 ───────────────────────────────────────
@@ -964,36 +569,7 @@ def test_handoff_done_release_keyerror_soft(handoff, tmp_path, capsys):
 # ── 8. 회전 재부착(resume) 연속성 ─────────────────────────────────────────────
 
 
-def test_bootstrap_resume_reattaches_same_stream(bootstrap, tmp_path, capsys):
-    """--resume 으로 회전 재부착 — alloc 에 resume 이 전달돼 같은 작업스트림 복원."""
-    wp = FakeWorktreePool(alloc_slot="work/A_2")
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    inst.run(repo="A", resume="a5")
-    assert wp.alloc_calls == [{"repo": "A", "branch": None, "resume": "a5"}]
-    out = capsys.readouterr().out
-    # 재부착된 브랜치(a5)가 identity surface 에 복원돼 표면된다.
-    assert "a5" in out
-
-
 # ── 9. CLI parser 배선 ────────────────────────────────────────────────────────
-
-
-def test_bootstrap_parser_repo_flags(bootstrap):
-    parser = bootstrap.build_parser()
-    ns = parser.parse_args(["--repo", "A", "--branch", "a5"])
-    assert ns.repo == "A" and ns.branch == "a5"
-    ns2 = parser.parse_args(["--repo", "A", "--resume", "a5"])
-    assert ns2.resume == "a5"
-    # 솔로 무인자 — repo None·slot None.
-    ns3 = parser.parse_args([])
-    assert ns3.repo is None and ns3.slot is None
-
-
-def test_bootstrap_parser_slot_flag(bootstrap):
-    """--slot 은 정수 파싱(lean multi-PM 모드·T-0074)."""
-    parser = bootstrap.build_parser()
-    ns = parser.parse_args(["--repo", "X", "--slot", "2"])
-    assert ns.repo == "X" and ns.slot == 2
 
 
 def test_bootstrap_branch_without_repo_errors(bootstrap):
@@ -1454,55 +1030,6 @@ def _patch_main_stub(bootstrap, monkeypatch, auto_result):
     monkeypatch.setattr(bootstrap, "PmBootstrap", _CaptureBootstrap)
 
 
-def test_main_auto_binds_when_both_none(bootstrap, monkeypatch, capsys):
-    """무인자(repo/slot 둘 다 None) + 해소가 (repo,N) → run 에 그 값이 전달."""
-    _patch_main_stub(bootstrap, monkeypatch, ("project_manager", 2))
-    rc = bootstrap.main([])
-    assert rc == 0
-    assert _CaptureBootstrap.last["repo"] == "project_manager"
-    assert _CaptureBootstrap.last["slot"] == 2
-    assert "슬롯 자동 해소" in capsys.readouterr().err
-
-
-def test_main_no_auto_when_resolve_none(bootstrap, monkeypatch, capsys):
-    """무인자 + 해소가 None(solo) → 현행 솔로 (repo/slot 둘 다 None 유지·안내 없음)."""
-    _patch_main_stub(bootstrap, monkeypatch, None)
-    rc = bootstrap.main([])
-    assert rc == 0
-    assert _CaptureBootstrap.last["repo"] is None
-    assert _CaptureBootstrap.last["slot"] is None
-    assert "슬롯 자동 해소" not in capsys.readouterr().err
-
-
-def test_main_ambiguous_fails_loud(bootstrap, monkeypatch, capsys):
-    """무인자 + 해소가 SlotResolutionError(멀티-PM 모호) → 명시 에러로 exit (침묵 폴백 부재)."""
-    _CaptureBootstrap.last = None
-    monkeypatch.setattr(bootstrap, "PmBootstrap", _CaptureBootstrap)
-
-    def _raise():
-        raise bootstrap.SlotResolutionError("등록 repo 2개(A, B) — --repo <name> --slot <N> 으로 명시하라.")
-
-    monkeypatch.setattr(bootstrap, "_resolve_session_slot", _raise)
-    with pytest.raises(SystemExit):
-        bootstrap.main([])
-    # argparse error 는 SystemExit(2)·stderr 로 안내. run() 은 호출되지 않는다(침묵 폴백 부재).
-    assert _CaptureBootstrap.last is None
-    assert "등록 repo 2개" in capsys.readouterr().err
-
-
-def test_main_explicit_slot_skips_auto(bootstrap, monkeypatch, capsys):
-    """명시 --repo --slot 경로는 해소 분기를 타지 않는다 (해소가 던져도 무시)."""
-    # _resolve_session_slot 이 호출되면 예외로 오염시켜, 호출 안 됨을 확인.
-    monkeypatch.setattr(bootstrap, "_resolve_session_slot",
-                        lambda: (_ for _ in ()).throw(AssertionError("해소 호출되면 안 됨")))
-    monkeypatch.setattr(bootstrap, "PmBootstrap", _CaptureBootstrap)
-    _CaptureBootstrap.last = None
-    rc = bootstrap.main(["--repo", "A", "--slot", "1"])
-    assert rc == 0
-    assert _CaptureBootstrap.last["repo"] == "A"
-    assert _CaptureBootstrap.last["slot"] == 1
-
-
 # ── 13. _worktree_cwd — git/pytest 러너 worktree cwd 자동해소 (T-0125·T-0124 동형) ─
 # `_worktree_cwd(slot=)` 는 명시 slot > `_auto_slot()` > REPO 순으로 해소한다. _auto_slot
 # 은 areas/leases 파일 seam 으로 hermetic(위 Part B 헬퍼 _write_areas/_write_leases 재사용).
@@ -1517,155 +1044,10 @@ def test_worktree_cwd_explicit_slot_wins(bootstrap):
     assert cwd.replace(os.sep, "/").endswith("work/foo_2")
 
 
-def test_worktree_cwd_single_selfhost_resolves_slot(bootstrap, tmp_path, monkeypatch):
-    """단일 self-host (1 repo + 1 슬롯) → _auto_slot 해소 → REPO/work/<repo>_<N> 로 끝난다."""
-    areas = tmp_path / "areas.md"
-    leases = tmp_path / "worktree-leases.json"
-    _write_areas(areas, ["project_manager"])
-    _write_leases(leases, [
-        {"slot": "work/project_manager_1", "repo": "project_manager",
-         "session": "project_manager_1", "state": "leased"},
-    ])
-    # _auto_slot 을 이 hermetic 파일 seam 으로 해소하도록 고정 (실 장부 미접촉).
-    real_auto = bootstrap._auto_slot
-    monkeypatch.setattr(bootstrap, "_auto_slot",
-                        lambda: real_auto(areas_file=areas, leases_file=leases))
-    inst = bootstrap.PmBootstrap()
-    cwd = inst._worktree_cwd()
-    assert cwd == str(bootstrap.REPO / "work/project_manager_1")
-    assert cwd.replace(os.sep, "/").endswith("work/project_manager_1")
-
-
-def test_worktree_cwd_no_slot_falls_back_to_repo(bootstrap, monkeypatch):
-    """_auto_slot 이 None(0/2 repo·2 슬롯·부재·모호)면 REPO 폴백 (솔로 무변경)."""
-    monkeypatch.setattr(bootstrap, "_auto_slot", lambda: None)
-    inst = bootstrap.PmBootstrap()
-    assert inst._worktree_cwd() == str(bootstrap.REPO)
-    assert inst._worktree_cwd(None) == str(bootstrap.REPO)
-
-
-def test_worktree_cwd_auto_slot_exception_falls_back_to_repo(bootstrap, monkeypatch):
-    """_auto_slot 이 예외를 던져도 흡수해 REPO 폴백 (fail-soft — 자동해소는 추가 편의)."""
-    monkeypatch.setattr(bootstrap, "_auto_slot",
-                        lambda: (_ for _ in ()).throw(RuntimeError("boom")))
-    inst = bootstrap.PmBootstrap()
-    assert inst._worktree_cwd() == str(bootstrap.REPO)
-
-
-def test_default_git_pytest_cwd_is_worktree_but_board_is_repo(bootstrap, monkeypatch):
-    """분리 회귀 가드 — git/pytest 기본 러너 cwd=worktree, board 기본 러너 cwd=REPO.
-
-    자기분리(ADR-0027): 코드/tests=① worktree·board/wiki=② 홈. 세 기본 러너의 subprocess
-    cwd 를 캡처해 git·pytest 는 worktree 슬롯, board 는 REPO 임을 단언한다(러너별 cwd 분리).
-    subprocess.run 을 fake 로 갈아 실 git/pytest/board 를 절대 부르지 않는다(hermetic).
-    """
-    captured: dict[str, list[str]] = {"git": [], "pytest": [], "board": []}
-
-    class _FakeCompleted:
-        returncode = 0
-        stdout = ""
-        stderr = ""
-
-    def fake_run(argv, **kwargs):
-        cwd = kwargs.get("cwd")
-        if argv[0] == "git":
-            captured["git"].append(cwd)
-        elif "pytest" in argv:
-            captured["pytest"].append(cwd)
-        else:
-            captured["board"].append(cwd)
-        return _FakeCompleted()
-
-    monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
-    # _auto_slot 을 단일 self-host 로 고정 → worktree cwd 가 결정된다.
-    monkeypatch.setattr(
-        bootstrap, "_auto_slot",
-        lambda: _identity("project_manager_1", "work/project_manager_1"))
-    inst = bootstrap.PmBootstrap()
-
-    inst._default_run_git(["status"])
-    inst._default_run_pytest()
-    inst._default_run_board(["list"])
-
-    worktree = str(bootstrap.REPO / "work/project_manager_1")
-    assert captured["git"] == [worktree], "git 러너 cwd 가 worktree 가 아님"
-    assert captured["pytest"] == [worktree], "pytest 러너 cwd 가 worktree 가 아님"
-    # board 는 ②(PM 홈) 소유라 REPO 고정 — worktree 가 아님(분리 가드).
-    assert captured["board"] == [str(bootstrap.REPO)], "board 러너 cwd 가 REPO 가 아님"
-    assert captured["board"][0] != worktree
-
-
-def test_default_git_uses_bound_slot_when_set(bootstrap, monkeypatch):
-    """명시 multi-PM 바인딩(self._bound_slot) → git 기본 러너가 그 슬롯 worktree cwd 를 쓴다."""
-    captured: list[str] = []
-
-    class _FakeCompleted:
-        returncode = 0
-        stdout = ""
-        stderr = ""
-
-    def fake_run(argv, **kwargs):
-        if argv[0] == "git":
-            captured.append(kwargs.get("cwd"))
-        return _FakeCompleted()
-
-    monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
-    # _auto_slot 이 호출되면 안 된다 — 명시 _bound_slot 이 우선.
-    monkeypatch.setattr(bootstrap, "_auto_slot",
-                        lambda: (_ for _ in ()).throw(AssertionError("명시 slot 인데 auto 호출됨")))
-    inst = bootstrap.PmBootstrap()
-    inst._bound_slot = "work/billing_3"
-    inst._default_run_git(["status"])
-    assert captured == [str(bootstrap.REPO / "work/billing_3")]
-
-
 # ── 14. run() 진입부 _bound_slot 스레딩 (순서 함정 — 수집 전 세팅) ─────────────
 # 명시 --repo --slot multi-PM 경로에서 run() 이 _collect_git/_collect_pytest *전*에
 # self._bound_slot 을 세팅하는지 검증한다. 주입 git_fn 으로 호출 시점의 _bound_slot 을
 # 캡처해, git 수집이 worktree cwd 를 쓸 수 있는 상태였는지 확인한다.
-
-
-def test_run_sets_bound_slot_before_git_collection(bootstrap, tmp_path, capsys):
-    """명시 --repo --slot 시 _collect_git 호출 시점에 _bound_slot 이 이미 세팅돼 있다(순서 함정 해소)."""
-    seen: dict[str, str | None] = {}
-
-    def capturing_git(args):
-        # git 수집 시점의 _bound_slot 을 캡처 — 바인딩이 수집보다 먼저면 값이 잡힌다.
-        seen["bound_slot"] = inst._bound_slot
-        if args[:2] == ["rev-parse", "--abbrev-ref"]:
-            return 0, "main\n"
-        if args[:2] == ["log", "--oneline"]:
-            return 0, "abc123 commit subject\n"
-        return 0, ""
-
-    wp = FakeWorktreePool()
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    # 기본 git stub 대신 캡처 git_fn 으로 교체.
-    inst._run_git_fn = capturing_git
-    rc = inst.run(repo="X", slot=2)
-    assert rc == 0
-    # git 수집 시점에 _bound_slot = work/X_2 (명시 multi-PM 슬롯 식별자).
-    assert seen["bound_slot"] == "work/X_2"
-
-
-def test_run_solo_leaves_bound_slot_none(bootstrap, tmp_path, capsys):
-    """솔로(무인자) run 은 _bound_slot 을 None 으로 유지(→ _worktree_cwd 가 _auto_slot 해소)."""
-    seen: dict[str, str | None] = {}
-
-    def capturing_git(args):
-        seen["bound_slot"] = inst._bound_slot
-        if args[:2] == ["rev-parse", "--abbrev-ref"]:
-            return 0, "main\n"
-        if args[:2] == ["log", "--oneline"]:
-            return 0, "abc123 commit subject\n"
-        return 0, ""
-
-    wp = FakeWorktreePool()
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    inst._run_git_fn = capturing_git
-    rc = inst.run()  # 솔로
-    assert rc == 0
-    assert seen["bound_slot"] is None
 
 
 # ── F1 --task 부트스트랩 (신규/resume·prefix surface·㉑ 동시세션 거부·T-0353) ──
@@ -1751,31 +1133,6 @@ def test_bootstrap_task_force_closes_the_record_and_hands_over(bootstrap, tmp_pa
     assert "task identity surface" in captured.out
 
 
-@pytest.mark.parametrize(
-    "identity",
-    [
-        {"repo": "A"},
-        {"repo": "A", "slot": 2},
-        {"branch": "feature"},
-        {"resume": "feature"},
-    ],
-)
-def test_bootstrap_task_rejects_slot_identity_mixing(
-    bootstrap, tmp_path, capsys, identity
-):
-    """task Python 진입은 `--task`만 허용하고 repo/slot/branch/resume 혼합을 부작용 전에 막는다."""
-    wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks")
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-
-    rc = inst.run(task="job1", **identity)
-
-    assert rc == 1
-    captured = capsys.readouterr()
-    assert "`--task <이름>`만 받는다" in captured.err
-    assert wp.bind_task_calls == []
-    assert wp.bind_calls == []
-
-
 def test_bootstrap_task_json_includes_task(bootstrap, tmp_path, capsys):
     """--json 출력에 task 키(name·prefix·action) 포함."""
     import json as _json
@@ -1787,16 +1144,6 @@ def test_bootstrap_task_json_includes_task(bootstrap, tmp_path, capsys):
     assert data["task"]["name"] == "job1"
     assert data["task"]["prefix"] == "PAY"
     assert data["task"]["action"] == "resumed"
-
-
-def test_bootstrap_no_task_omits_task_surface(bootstrap, tmp_path, capsys):
-    """`--task` 미지정(기존 --repo alloc)엔 task surface 가 안 뜬다(100% 불변·⑥)."""
-    wp = FakeWorktreePool(alloc_slot="work/A_2", alloc_branch="a5")
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
-    inst.run(repo="A", branch="a5")
-    out = capsys.readouterr().out
-    assert "task identity surface" not in out
-    assert wp.bind_task_calls == []
 
 
 def test_bootstrap_task_entry_has_no_reclaim_notice(bootstrap, tmp_path, capsys):
@@ -1901,13 +1248,11 @@ def _write_task_pm_state(tmp_path, name, text):
 
 
 def test_bound_session_name_task_returns_tag(bootstrap, tmp_path):
-    """`_bound_session_name` = `task:<이름>` (log/pm_state 귀속)·`_slot_session_name` 은 task-무관."""
+    """`_bound_session_name` = `task:<이름>` — log/pm_state 귀속 태그."""
     inst = _make_bootstrap(bootstrap, tmp_path,
                            worktree_pool=FakeWorktreePool(task_dir_root=tmp_path / "tasks"))
     inst._task_name = "payments-refactor"
     assert inst._bound_session_name() == "task:payments-refactor"
-    # 슬롯 스코프(board/lease/대시보드)는 task 태그를 안 본다 — task-무관 슬롯 정체성.
-    assert not (inst._slot_session_name() or "").startswith("task:")
 
 
 def test_task_resume_dumps_pm_state_body(bootstrap, tmp_path, capsys):
@@ -2125,7 +1470,7 @@ def test_handover_shows_the_six_materials_with_real_values(bootstrap, tmp_path, 
     """강제 인계 표시 여섯 항목이 실값으로 나온다 — 지어낸 값이 아니라 조회 결과다."""
     inst, run_dir = _handover_home(bootstrap, tmp_path, monkeypatch)
 
-    text = inst._render_handover(session="job1", task="job1")
+    text = inst._render_handover(task="job1")
 
     assert "T-0777" in text                                   # claim 중인 티켓
     assert str(run_dir) in text or run_dir.name in text        # 미회수 위임 준비(run-dir)
@@ -2145,7 +1490,7 @@ def test_handover_delegate_runs_read_the_held_slot_not_the_pm_home(
     decoy.mkdir(parents=True)
     (decoy / "01-architect.md").write_text("남의 것\n", encoding="utf-8")
 
-    text = inst._render_handover(session="job1", task="job1")
+    text = inst._render_handover(task="job1")
 
     assert "T-0777" in text and "02-developer.md" in text
     assert str(run_dir.parent.parent) in text or "abc123" in text
@@ -2155,13 +1500,8 @@ def test_handover_delegate_runs_read_the_held_slot_not_the_pm_home(
 def test_handover_claimed_lens_is_the_session_that_held_the_place(
     bootstrap, tmp_path, monkeypatch,
 ):
-    """claim 조회 렌즈 — 슬롯 진입은 그 슬롯 정체성, task 진입은 task. 전역 `--mine` 아님."""
+    """claim 조회 렌즈는 그 자리를 잡고 있던 task 다 — 전역 `--mine` 이 아니다."""
     inst, _run_dir = _handover_home(bootstrap, tmp_path, monkeypatch)
-    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    ledger.write_text(json.dumps({"leases": [
-        {"slot": "work/X_7", "repo": "X", "session": "X_7", "state": "leased"},
-    ]}, ensure_ascii=False), encoding="utf-8")
     seen: list[list[str]] = []
 
     def record_board(argv):
@@ -2170,12 +1510,8 @@ def test_handover_claimed_lens_is_the_session_that_held_the_place(
 
     inst._run_board_fn = record_board
 
-    assert inst._handover_claimed_tickets(None, "X_7") == ["T-0777"]
-    assert seen[-1] == ["list", "--status", "claimed", "--repo", "X", "--slot", "7"]
-    inst._handover_claimed_tickets("job1", "job1")
+    assert inst._handover_claimed_tickets("job1") == ["T-0777"]
     assert seen[-1] == ["list", "--status", "claimed", "--task", "job1"]
-    inst._handover_claimed_tickets(None, None)
-    assert seen[-1] == ["list", "--status", "claimed", "--mine"]
 
 
 def test_handover_only_reads(bootstrap, tmp_path, monkeypatch):
@@ -2185,7 +1521,7 @@ def test_handover_only_reads(bootstrap, tmp_path, monkeypatch):
     before = {path: path.read_bytes() for path in watched}
     rounds_before = sorted(path.name for path in (run_dir / "rounds").iterdir())
 
-    inst._render_handover(session="job1", task="job1")
+    inst._render_handover(task="job1")
 
     for path, blob in before.items():
         assert path.read_bytes() == blob, f"복원이 {path.name} 을 썼다"

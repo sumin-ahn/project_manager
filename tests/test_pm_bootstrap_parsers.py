@@ -849,68 +849,6 @@ def test_collect_board_git_head_failure_is_none(tmp_path):
 # ── run() 통합: 차수 announce + log 본문 dump + 남은작업 surface + 미해소 graceful ──
 
 
-def test_run_announces_session_num_in_header(tmp_path, capsys):
-    """bound slot pm_state 차수로 헤더에 `PM <N>차` announce."""
-    mod = _load_module()
-    inst = _make_hermetic_bootstrap(mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT)
-    assert inst.run() == 0
-    out = capsys.readouterr().out
-    assert "## PM 42차 부트스트랩" in out
-
-
-def test_run_dumps_log_entry_body(tmp_path, capsys):
-    """log 마지막 entry 의 제목 + **본문 전체**를 dump (제목만 아님·인계 컨텍스트)."""
-    mod = _load_module()
-    inst = _make_hermetic_bootstrap(mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT)
-    assert inst.run() == 0
-    out = capsys.readouterr().out
-    assert "title: PM 7차 인계 — 다음 우선순위" in out
-    # 본문 라인이 표면화된다(그간 제목만 표시).
-    assert "- 인계 사항 A" in out
-    assert "- 인계 사항 B" in out
-
-
-def test_run_surfaces_remaining_work_section(tmp_path, capsys):
-    """pm_state '남은 작업/사용자발의' 절을 surface."""
-    mod = _load_module()
-    inst = _make_hermetic_bootstrap(mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT)
-    assert inst.run() == 0
-    out = capsys.readouterr().out
-    assert "### pm_state — 남은 작업 / 사용자 발의" in out
-    assert "🔴 다음 세션 — 사용자 발의" in out
-    assert "sikdan pm 업데이트" in out
-
-
-def test_run_graceful_when_pm_state_unresolved(tmp_path, capsys):
-    """pm_state 미해소 + log handoff 부재면 차수 placeholder + 명시 포인터 — crash 없이 진행.
-
-    (log 에 handoff entry 가 있으면 차수 log-폴백[T-0208]이 placeholder 를 대체하므로, 진짜
-    placeholder 경로를 고정하려면 log 도 handoff-없음이어야 한다 — 별 fixture `_LOG_TEXT_NO_HANDOFF`.)
-    """
-    mod = _load_module()
-    inst = _make_hermetic_bootstrap(mod, tmp_path, log_text=_LOG_TEXT_NO_HANDOFF, pm_state_text=None)
-    assert inst.run() == 0
-    out = capsys.readouterr().out
-    # 차수 placeholder(crash 금지) + 남은작업 명시 포인터 폴백.
-    assert "## PM <?>차 부트스트랩" in out
-    assert "남은 작업 전체 그림" in out  # 포인터 안내 문구.
-    # 본문 dump 는 log 가 있으니 여전히 나온다(차수 미해소와 독립).
-    assert "- 인계 사항 A" in out
-
-
-def test_run_json_includes_session_num_and_handoff_context(tmp_path, capsys):
-    """--json 출력에 session_num + handoff_context(remaining_work·log body) 포함."""
-    import json as _json
-    mod = _load_module()
-    inst = _make_hermetic_bootstrap(mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT)
-    assert inst.run(output_json=True) == 0
-    data = _json.loads(capsys.readouterr().out)
-    assert data["session_num"] == 42
-    assert data["handoff_context"]["session_num"] == 42
-    assert "sikdan pm 업데이트" in data["handoff_context"]["remaining_work"]
-    assert "- 인계 사항 A" in data["log_last_entry"]["body"]
-
-
 # ── 차수 log-폴백 + stale 교차검증 run() 통합 (T-0208) ─────────────────────────
 
 # pm_state 세션 식별 절은 있으나 entry 가 없는 template → infer_session_num == "?"(미해소).
@@ -940,42 +878,6 @@ _LOG_TEXT_48_HANDOFF = (
     "## [2026-07-02] handoff | PM 48차 → 다음 PM 세션\n"
     "- 인계.\n"
 )
-
-
-def test_run_falls_back_to_log_session_num_when_pm_state_template(tmp_path, capsys):
-    """DoD ①: fresh pm_state(template·`?`) + log handoff(`PM 47차`) → 헤더 `PM 48차`(N+1 폴백)."""
-    mod = _load_module()
-    inst = _make_hermetic_bootstrap(
-        mod, tmp_path, log_text=_LOG_TEXT_47_HANDOFF, pm_state_text=_PM_STATE_TEMPLATE,
-    )
-    assert inst.run() == 0
-    out = capsys.readouterr().out
-    assert "## PM 48차 부트스트랩" in out
-    # 폴백(미해소→log)은 stale 경고 아님(pm_state 가 뒤처진 게 아니라 아예 미해소).
-    assert "pm_state stale" not in out
-
-
-def test_run_session_num_stale_cross_check_prefers_log(tmp_path, capsys):
-    """DoD 인터페이스: pm_state 해소(48) < log-derived(49) → log 우선(max) + stale 경고 1줄."""
-    mod = _load_module()
-    inst = _make_hermetic_bootstrap(
-        mod, tmp_path, log_text=_LOG_TEXT_48_HANDOFF, pm_state_text=_PM_STATE_48,
-    )
-    assert inst.run() == 0
-    out = capsys.readouterr().out
-    assert "## PM 49차 부트스트랩" in out
-    assert "⚠ pm_state stale (머신 간 미동기)" in out
-    assert "PM 48차" in out  # 뒤처진 pm_state 값 진단.
-
-
-def test_run_session_num_state_wins_no_stale_warning(tmp_path, capsys):
-    """DoD ③: pm_state 해소(42) > log-derived(8) → pm_state 우선·stale 경고 없음(회귀 무변경)."""
-    mod = _load_module()
-    inst = _make_hermetic_bootstrap(mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT)
-    assert inst.run() == 0
-    out = capsys.readouterr().out
-    assert "## PM 42차 부트스트랩" in out
-    assert "pm_state stale" not in out
 
 
 # ── user 연속성 1줄 (T-0208·ADR-0033 ③·author 일치/불일치/미해소 3분기) ─────────
@@ -1032,116 +934,9 @@ def test_collect_user_continuity_unresolved_is_none():
     assert inst_ok._collect_user_continuity(_LOG_TEXT_NO_HANDOFF) is None
 
 
-def test_run_surfaces_user_continuity_line(tmp_path, capsys):
-    """run() markdown 헤더 직후 user 연속성 1줄이 표면화된다(일치 케이스)."""
-    mod = _load_module()
-    inst = _make_hermetic_bootstrap(
-        mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT,
-    )
-    # 기본 fixture 는 pickaxe 를 (0,"") 로 흘려 author 미해소 → 줄 생략. author/user 를 주입해
-    # 일치 케이스를 만든다(board mock + pickaxe author 반환).
-    inst._board = SimpleNamespace(user_name=lambda: "alice@x.com")
-    _orig_git = inst._run_git_fn
-
-    def _git_fn(args):
-        if args[2:5] == ["log", "-1", "--format=%ae"]:
-            return (0, "alice@x.com\n")
-        return _orig_git(args)
-
-    inst._run_git_fn = _git_fn
-    assert inst.run() == 0
-    out = capsys.readouterr().out
-    assert "사용자: alice@x.com (직전 handoff 작성자와 동일 — 연속)" in out
-
-
 # ── run() 통합: board 카운트 `--mine` 라벨 명확화 (T-0194) ─────────────────────
 
-def test_run_markdown_board_counts_labeled_mine(tmp_path, capsys):
-    """markdown Board 섹션 + 권장 첫 turn 요약 둘 다 네 status 모두 `(mine)` 스코프 라벨(ADR-0067):
-    open 도 세션 스코프(내 세션 생성분)라 옛 open 전용 backlog 라벨(T-0331·ADR-0066)은 폐기됐다."""
-    mod = _load_module()
-    inst = _make_hermetic_bootstrap(mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT)
-    assert inst.run() == 0
-    out = capsys.readouterr().out
-    # 네 status 모두 mine 스코프 — Board 섹션(`open: N`)·요약(`open N`) 양쪽.
-    assert "done: 0 (mine)" in out
-    assert "done 0 (mine)" in out
-    assert "open: 1 (mine)" in out
-    assert "open 1 (mine)" in out
-    assert "backlog·기본 접힘" not in out   # 옛 open 전용 라벨 폐기(ADR-0067)
-
-
-def test_run_json_board_counts_include_mine_alias(tmp_path, capsys):
-    """solo JSON은 기존 mine 별칭을 보존하고 task-only 키를 방출하지 않는다."""
-    import json as _json
-    mod = _load_module()
-    inst = _make_hermetic_bootstrap(mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT)
-    inst._run_pytest_fn = lambda: (0, "1 passed in 0.01s\n")
-    assert inst.run(output_json=True, with_pytest=True) == 0
-    data = _json.loads(capsys.readouterr().out)
-    board = data["board"]
-    assert board["counts_scope"] == "mine"
-    # 하위호환 top-level 네 키는 고정 스키마고, 전량 dict(`counts_mine`)는 board `STATUS_DIRS`
-    # 파생이다(T-0839) — 별칭은 그 네 키 값을 그대로 보존하고 새 상태를 더 싣는다.
-    assert set(board["counts_mine"]) == set(_load_board().STATUS_DIRS)
-    for key in ("done", "open", "claimed", "blocked"):
-        assert board["counts_mine"][key] == board[key]
-    assert "counts_task" not in board
-    assert data["pytest"] == {"passed": 1, "total": 1}
-    assert "scopes" not in data["pytest"]
-    assert "task_cwd_slot" not in data["git"]
-    assert "task_workspace_count" not in data["git"]
-
-
 # ── run() 통합: board submodule freshness surface (T-0195) ───────────────────
-
-def test_run_markdown_board_git_absent_is_skipped(tmp_path, capsys):
-    """board 미분리(솔로) → Git 섹션에 board freshness 줄 자체가 생략된다(graceful skip)."""
-    mod = _load_module()
-    inst = _make_hermetic_bootstrap(
-        mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT, board_git_present=False,
-    )
-    assert inst.run() == 0
-    out = capsys.readouterr().out
-    assert "- board: HEAD" not in out
-
-
-def test_run_markdown_board_git_present_surfaces_freshness(tmp_path, capsys):
-    """board 분리(submodule) → Git 섹션에 HEAD·dirty·ahead/behind 1줄이 추가된다."""
-    mod = _load_module()
-    inst = _make_hermetic_bootstrap(
-        mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT, board_git_present=True,
-    )
-    assert inst.run() == 0
-    out = capsys.readouterr().out
-    assert "- board: HEAD abc1234 · dirty · 1 ahead / 0 behind" in out
-
-
-def test_run_json_board_git_present_in_git_section(tmp_path, capsys):
-    """--json `git.board_git` 에 HEAD/dirty/ahead/behind 가 실린다(분리 시)."""
-    import json as _json
-    mod = _load_module()
-    inst = _make_hermetic_bootstrap(
-        mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT, board_git_present=True,
-    )
-    assert inst.run(output_json=True) == 0
-    data = _json.loads(capsys.readouterr().out)
-    assert data["git"]["board_git"] == {
-        "head": "abc1234", "dirty": True, "ahead": 1, "behind": 0,
-    }
-
-
-def test_run_json_board_git_absent_is_none(tmp_path, capsys):
-    """--json `git.board_git` 이 솔로(미분리)면 None(graceful skip)."""
-    import json as _json
-    mod = _load_module()
-    inst = _make_hermetic_bootstrap(
-        mod, tmp_path, log_text=_LOG_TEXT, pm_state_text=_PM_STATE_TEXT, board_git_present=False,
-    )
-    assert inst.run(output_json=True) == 0
-    data = _json.loads(capsys.readouterr().out)
-    assert data["git"]["board_git"] is None
-
 
 # ── _collect_board dump-then-warn (T-0195·abort-before-dump 제거) ────────────
 
@@ -1192,44 +987,6 @@ def test_collect_board_advisory_only_lint_blocking_false():
     bootstrap = mod.PmBootstrap(run_board_fn=_fn)
     board = bootstrap._collect_board()
     assert board["lint_blocking"] is False
-
-
-def test_run_dump_then_warn_prints_dump_before_warning_and_exits_nonzero(tmp_path, capsys):
-    """run() — blocking lint 여도 markdown dump(board/git/log) 가 먼저 출력되고, 이후
-    경고 + 비-0 반환(T-0195 — abort-before-dump 제거·mid-wave 세션 진입 매끄럽게).
-    """
-    mod = _load_module()
-    log_file = tmp_path / "current.md"
-    log_file.write_text(_LOG_TEXT, encoding="utf-8")
-    pm_state_file = tmp_path / "pm_state.md"
-    pm_state_file.write_text(_PM_STATE_TEXT, encoding="utf-8")
-    areas_file = tmp_path / "areas.md"
-
-    inst = mod.PmBootstrap(
-        run_board_fn=_make_blocking_lint_board_fn(),
-        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("pytest 미호출")),
-        run_git_fn=lambda args: (0, "main\n") if args[:2] == ["rev-parse", "--abbrev-ref"]
-        else ((0, "abc123 subj\n") if args[:2] == ["log", "--oneline"] else (0, "")),
-        log_file=log_file,
-        areas_file=areas_file,
-        pm_state_file=pm_state_file,
-        board_dir=tmp_path / "board",  # 미생성 → board freshness graceful skip
-    )
-
-    rc = inst.run()
-    out = capsys.readouterr()
-
-    assert rc == 1  # 비-0 종료(경고).
-    # 기계 dump(board/git/log/pm_state)가 stdout 에 정상 출력됨 — dump 0 아님.
-    assert "## PM 42차 부트스트랩" in out.out
-    assert "### Git" in out.out
-    assert "- 인계 사항 A" in out.out
-    # 경고는 stderr 로.
-    assert "차단(blocking)" in out.err
-    assert "총계 1건 · blocking 1건" in out.err
-    assert "대표 항목 1건" in out.err
-    assert "전체 진단(opt-in)" in out.err
-    assert out.err.count("[dangling-wikilink]") == 1
 
 
 def _lint_gate_output(*, total: int, blocking: int) -> str:
@@ -1354,32 +1111,6 @@ def test_collect_board_keeps_explicit_clean_nonblocking():
     assert board["lint_parse_failed"] is False
     assert board["lint_blocking"] is False
     assert board["lint"] == "clean"
-
-
-def test_run_noncanonical_lint_failure_keeps_rc_nonzero(tmp_path, capsys):
-    """비정형 lint 실패도 dump 뒤 bounded 진단을 내고 bootstrap rc=1 신호를 유지한다."""
-    mod = _load_module()
-    inst = _make_hermetic_bootstrap(
-        mod,
-        tmp_path,
-        log_text=_LOG_TEXT,
-        pm_state_text=_PM_STATE_TEXT,
-    )
-    lint_error = "Traceback (most recent call last):\nRuntimeError: hook boom\n"
-
-    def board_fn(args: list[str]) -> tuple[int, str]:
-        if args[0] == "list":
-            return (0, "  [open   ] T-0010  x  -  adapter\n")
-        if args == ["lint", "--gate"]:
-            return (2, lint_error)
-        raise AssertionError(f"예상치 못한 board 호출: {args}")
-
-    inst._run_board_fn = board_fn
-    assert inst.run() == 1
-    captured = capsys.readouterr()
-    assert "## PM 42차 부트스트랩" in captured.out
-    assert "실행/출력 파싱 실패 (rc=2)" in captured.err
-    assert len(captured.err.encode("utf-8")) <= mod._LINT_WARNING_BYTE_LIMIT + 1
 
 
 def test_blocking_lint_warning_clips_single_extreme_hook_detail():
@@ -1875,193 +1606,13 @@ def _repo_scope_git_fn(repo_dir, *, behind, ahead=0, dirty=False, pull_rc=0):
     return _fn
 
 
-def test_run_surfaces_freshness_and_ff_pull(tmp_path, capsys):
-    """run() Git 절에 freshness 줄 + clean·ff 자동 ff-pull 결과가 표면화된다 (DoD ①·②)."""
-    mod = _load_module()
-    git_fn = _repo_scope_git_fn(str(mod.REPO), behind=3, ahead=0, dirty=False)
-    inst = _make_freshness_bootstrap(mod, tmp_path, git_fn=git_fn)
-    assert inst.run() == 0
-    out = capsys.readouterr().out
-    assert "freshness (PM 홈)" in out
-    assert "ff-pull 동기 완료" in out
-
-
-def test_run_freshness_json_field(tmp_path, capsys):
-    """--json 출력의 git.freshness 에 scope 목록(pulled·label)이 실린다 (DoD --json 필드)."""
-    import json as _json
-    mod = _load_module()
-    git_fn = _repo_scope_git_fn(str(mod.REPO), behind=2, ahead=0, dirty=False)
-    inst = _make_freshness_bootstrap(mod, tmp_path, git_fn=git_fn)
-    assert inst.run(output_json=True) == 0
-    data = _json.loads(capsys.readouterr().out)
-    freshness = data["git"]["freshness"]
-    assert isinstance(freshness, list) and len(freshness) == 1  # 솔로(②=①) → 1 scope
-    assert freshness[0]["label"] == "PM 홈"
-    assert freshness[0]["pulled"] is True
-    assert freshness[0]["behind"] == 0
-
-
-def test_run_freshness_fetch_failure_failsoft_continues(tmp_path, capsys):
-    """④ fetch 실패여도 부트스트랩은 현행 dump 를 정상 출력하고 rc 0 (fail-soft)."""
-    mod = _load_module()
-    repo_dir = str(mod.REPO)
-
-    def _fn(args: list[str]) -> tuple[int, str]:
-        if args[:2] == ["-C", repo_dir]:
-            sub = args[2:]
-            if sub == ["fetch", "origin"]:
-                return (1, "fatal: could not read from remote repository\n")
-            if sub == ["symbolic-ref", "HEAD"]:  # full ref (T-0377).
-                return (0, "refs/heads/main\n")
-            if sub == ["status", "-s"]:
-                return (0, "")
-            if sub == ["rev-list", "--left-right", "--count", "HEAD...@{u}"]:
-                return (0, "0\t0\n")
-            return (0, "")
-        if args[:2] == ["rev-parse", "--abbrev-ref"]:
-            return (0, "main\n")
-        if args[:2] == ["log", "--oneline"]:
-            return (0, "abc123 subj\n")
-        return (0, "")
-
-    inst = _make_freshness_bootstrap(mod, tmp_path, git_fn=_fn)
-    assert inst.run() == 0  # abort 안 함.
-    out = capsys.readouterr().out
-    assert "### Git" in out
-    assert "⚠ fetch 실패" in out  # 경고 줄은 표면화되되 현행 출력 계속.
-
-
-def test_run_reattach_warning_on_branch_mismatch(tmp_path, capsys):
-    """현 브랜치(main) ≠ 직전 handoff worktree 브랜치(feature-x) → 재부착 경고 줄 (DoD 재부착)."""
-    mod = _load_module()
-    log_text = (
-        "# Project Log\n\n"
-        "## [2026-07-02] handoff | PM 48차 인계\n"
-        "- worktree: slot=`work/project_manager_1` · branch=`feature-x` "
-        "(회전 재부착 단서·ADR-0013)\n"
-    )
-    git_fn = _repo_scope_git_fn(str(mod.REPO), behind=0, ahead=0, dirty=False)
-    inst = _make_freshness_bootstrap(mod, tmp_path, git_fn=git_fn, log_text=log_text)
-    assert inst.run() == 0
-    out = capsys.readouterr().out
-    assert "worktree 브랜치 불일치" in out
-    assert "feature-x" in out
-
-
 # ── positional repo 흡수 — rewriter↔CLI 정합 (T-0247·ADR-0043) ────────────────
 
 # ── resolve_repo_arg (순수 정합 함수) ────────────────────────────────────────
 
-def test_resolve_repo_arg_both_none_is_none():
-    """positional·--repo 둘 다 미지정 → None (무인자 자동바인딩 경로 보존·회귀 0)."""
-    mod = _load_module()
-    assert mod.resolve_repo_arg(None, None) is None
-
-
-def test_resolve_repo_arg_positional_only():
-    """positional 만 주면 그 값 (rewriter 산출 `/pm-bootstrap <repo> --slot N` 경로)."""
-    mod = _load_module()
-    assert mod.resolve_repo_arg("myrepo", None) == "myrepo"
-
-
-def test_resolve_repo_arg_flag_only():
-    """`--repo` 만 주면 그 값 (기존 옵션 경로 무변경)."""
-    mod = _load_module()
-    assert mod.resolve_repo_arg(None, "myrepo") == "myrepo"
-
-
-def test_resolve_repo_arg_both_equal():
-    """positional == --repo → 그 값 (일치는 허용·alias 관계)."""
-    mod = _load_module()
-    assert mod.resolve_repo_arg("myrepo", "myrepo") == "myrepo"
-
-
-def test_resolve_repo_arg_mismatch_raises():
-    """positional != --repo → ValueError(fail-loud·추측 금지). 두 값이 메시지에 드러난다."""
-    mod = _load_module()
-    with pytest.raises(ValueError) as excinfo:
-        mod.resolve_repo_arg("alpha", "beta")
-    msg = str(excinfo.value)
-    assert "alpha" in msg and "beta" in msg
-
-
 # ── build_parser positional 흡수 (rewriter 산출 parse_args 수용) ──────────────
 
-def test_parse_args_accepts_positional_repo_with_slot():
-    """DoD ①: rewriter 형태 `<repo> --slot N` 이 raw CLI parse_args 를 통과한다."""
-    mod = _load_module()
-    args = mod.build_parser().parse_args(["myrepo", "--slot", "2"])
-    assert args.repo_positional == "myrepo"
-    assert args.repo is None  # --repo 미지정 — 정합은 resolve_repo_arg 가 접는다.
-    assert args.slot == 2
-    # main() 이 부르는 정합 헬퍼로 접으면 단일 repo 값이 된다.
-    assert mod.resolve_repo_arg(args.repo_positional, args.repo) == "myrepo"
-
-
-def test_parse_args_rewriter_output_roundtrips():
-    """DoD ①(정합 단언): handoff rewriter 실산출을 그대로 raw CLI 가 파싱한다.
-
-    pm_handoff `_inject_slot_into_template` 가 bare `/pm-bootstrap` 을
-    `/pm-bootstrap <repo> --slot N` 로 치환한 산출(pm_handoff.py:912 경로)을 재사용해,
-    트리거 토큰을 벗긴 나머지를 pm_bootstrap `build_parser` 가 수용하는지 못박는다
-    (rewriter↔CLI drift 가드).
-    """
-    mod = _load_module()
-    handoff = _load_pm_handoff()
-    injected = handoff._inject_slot_into_template(
-        handoff._BARE_BOOTSTRAP_TRIGGER, "work/myrepo_3"
-    )
-    # 산출: `/pm-bootstrap myrepo --slot 3` — 트리거 토큰(첫 토큰)을 벗긴 나머지가 raw CLI argv.
-    tokens = injected.split()
-    assert tokens[0] == handoff._BARE_BOOTSTRAP_TRIGGER
-    cli_args = tokens[1:]
-    args = mod.build_parser().parse_args(cli_args)
-    assert mod.resolve_repo_arg(args.repo_positional, args.repo) == "myrepo"
-    assert args.slot == 3
-
-
-def test_parse_args_flag_repo_path_unchanged():
-    """무회귀: 기존 `--repo <repo> --slot N` 경로는 그대로 동작(positional 미지정)."""
-    mod = _load_module()
-    args = mod.build_parser().parse_args(["--repo", "myrepo", "--slot", "2"])
-    assert args.repo_positional is None
-    assert args.repo == "myrepo"
-    assert args.slot == 2
-    assert mod.resolve_repo_arg(args.repo_positional, args.repo) == "myrepo"
-
-
-def test_parse_args_bare_no_arg_path_unchanged():
-    """무회귀: 무인자(솔로) 호출은 positional·--repo·--slot 전부 None."""
-    mod = _load_module()
-    args = mod.build_parser().parse_args([])
-    assert args.repo_positional is None
-    assert args.repo is None
-    assert args.slot is None
-    assert mod.resolve_repo_arg(args.repo_positional, args.repo) is None
-
-
-def test_parse_args_positional_matches_flag_ok():
-    """positional == --repo(같은 값)면 parse 통과·정합도 그 값 (alias 일치 허용)."""
-    mod = _load_module()
-    args = mod.build_parser().parse_args(["myrepo", "--repo", "myrepo"])
-    assert mod.resolve_repo_arg(args.repo_positional, args.repo) == "myrepo"
-
-
 # ── main() CLI 레벨 fail-loud (positional↔--repo 불일치) ──────────────────────
-
-def test_main_positional_repo_flag_mismatch_fails_loud(capsys):
-    """DoD: positional 과 --repo 를 다른 값으로 주면 main() 이 fail-loud(SystemExit·비-0).
-
-    argparse `error()` 는 SystemExit(2) 를 던지고 usage/메시지를 stderr 로 낸다. 정합 실패가
-    자동바인딩 fs 접근(_resolve_session_slot) 전에 걸리므로 hermetic 하다(실 fs 미접촉).
-    """
-    mod = _load_module()
-    with pytest.raises(SystemExit) as excinfo:
-        mod.main(["alpha", "--repo", "beta"])
-    assert excinfo.value.code != 0
-    err = capsys.readouterr().err
-    assert "alpha" in err and "beta" in err
-
 
 def test_collect_board_names_the_hook_generation_block_instead_of_unparsed():
     """`lint --gate` 가 훅 세대 차단으로 끝난 출력은 '파싱 실패'가 아니라 그 사실로 surface 된다.

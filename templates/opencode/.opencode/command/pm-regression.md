@@ -25,3 +25,7 @@ python3 .project_manager/tools/board.py regression run
 - green → 다음 push 즉시 통과.
 - red → `regression check` 가 push 차단 → 원인을 고친다(코드 repo 한정 · PM 홈 push 는 회귀 비대상).
 - 결과는 per-clone `.project_manager/.local/regression.json`에 HEAD 키로 기록된다.
+
+## 이번 호출 인자
+
+`$ARGUMENTS` — 사용자가 슬래시 명령 뒤에 준 값이다(하네스가 치환한다). 비어 있으면 인자 없이 부른 것이다. 이 카드가 인자를 받는 진입이면 그 값을 그대로 backbone 에 넘기고, 인자를 받지 않는 진입이면 값이 붙어 온 것을 사용자에게 알리고 인자 없이 다시 부르게 안내한다.

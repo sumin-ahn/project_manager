@@ -46,3 +46,7 @@ python3 .project_manager/tools/ticket_finish.py T-NNNN
 않는다. `references/operational-details.md`의 **all-done recovery** 절에 따라 제품 slot·멤버별
 commit·legacy anchor·사용자 승인값을 모두 명시해 reconcile한다. recovery는 merge/rebase/commit/
 review resolve/slot release를 실행하지 않으며, dirty slot을 reset·stash·release하지 않는다.
+
+## 이번 호출 인자
+
+`$ARGUMENTS` — 사용자가 슬래시 명령 뒤에 준 값이다(하네스가 치환한다). 비어 있으면 인자 없이 부른 것이다. 이 카드가 인자를 받는 진입이면 그 값을 그대로 backbone 에 넘기고, 인자를 받지 않는 진입이면 값이 붙어 온 것을 사용자에게 알리고 인자 없이 다시 부르게 안내한다.
