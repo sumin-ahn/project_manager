@@ -598,19 +598,6 @@ def convergence_refusal(
     return None
 
 
-def latest_round_outcome(
-    entry: dict,
-    *,
-    order_key: Callable[[dict], object] | None = None,
-) -> dict | None:
-    """예약 순서상 최신 완료 산출."""
-    rounds = [
-        row for row in (entry.get("rounds") or []) if isinstance(row, dict)
-    ]
-    ordered = ordered_round_outcomes(rounds, order_key=order_key)
-    return ordered[-1] if ordered else None
-
-
 def describe_pm_verified_resolution(declared: dict) -> str:
     """보고/완료 출력용 표기 — 기계 확인 해소임을 명시(리뷰 재투입 없음).
 

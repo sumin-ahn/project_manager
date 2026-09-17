@@ -1691,7 +1691,7 @@ def _write_machine_line(text: str, stream: TextIO, seam) -> None:
     try:
         # 텍스트 레이어에 남은 출력이 bytes 뒤로 밀리지 않게 먼저 비운다(seam 과 같은 규율).
         stream.flush()
-    except Exception:
+    except (OSError, ValueError):
         pass
     buffer.write(line.encode("utf-8"))
     buffer.flush()

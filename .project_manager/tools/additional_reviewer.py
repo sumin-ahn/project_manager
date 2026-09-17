@@ -2256,11 +2256,6 @@ def _reserve_round(
     )
 
 
-def _reservation_deadline(wall_timeout_sec: int | None) -> str | None:
-    """예약이 살아 있을 수 있는 마지막 시각 (백스톱 없으면 None) — 기록·판정 공용 산식."""
-    return _load_review_rounds().reservation_deadline(wall_timeout_sec)
-
-
 def _refund_round(entry: dict, record_id: str) -> bool:
     """스폰 전 실패 예약만 제거한다; sequence는 재사용하지 않는다.
 
@@ -5580,24 +5575,6 @@ def repo_root_from_cwd(cwd: Path | None) -> Path | None:
     if cwd is None:
         return None
     return _path_repo_root(cwd.resolve())
-
-
-def delegate_profile_config(
-    conf: dict[str, str], role: str, tier: str,
-) -> dict[str, str]:
-    """이번 pm_delegate 실행이 해소하는 role/tier의 명시 프로필 키만 반환한다.
-
-    다른 역할 mapping과 fallback/model_alias 등은 이번 primary tuple의 해소 입력이 아니다. 대상
-    per-clone conf에 같은 키가 없다는 사실도 값 충돌이 아니므로, 존재하는 키만 반환해 공용 비교기가
-    양쪽 공통 키의 실제 값 차이만 판정하게 한다.
-    """
-    prefix = f"delegate.{role}" + (".hard" if tier == "hard" else "")
-    keys = tuple(f"{prefix}.{field}" for field in ("harness", "model", "reasoning"))
-    return {
-        key: conf[key].strip()
-        for key in keys
-        if key in conf
-    }
 
 
 def reviewer_profile_config(conf: dict[str, str]) -> dict[str, str]:

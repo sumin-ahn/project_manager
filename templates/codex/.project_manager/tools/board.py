@@ -8469,7 +8469,7 @@ def _interp_runs(cmd: str) -> bool:
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
         )
         return r.returncode == 0
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return False
 
 
@@ -8487,7 +8487,7 @@ def _interp_version_label(cmd: str) -> str | None:
         match = re.search(r"\bPython\s+(\d+)\.(\d+)", output)
         if match:
             return f"{cmd}={match.group(1)}.{match.group(2)}"
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         pass
     return None
 

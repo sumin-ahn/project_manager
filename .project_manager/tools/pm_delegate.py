@@ -8619,10 +8619,6 @@ def _perm_axis(role: str) -> str:
     return "write" if role in WRITE_ROLES else "read"
 
 
-def _claude_tools(role: str) -> str:
-    return _load_relay().claude_tools(role)
-
-
 def build_codex_argv(
     model: str,
     reasoning: str | None,
@@ -14392,14 +14388,6 @@ def _cluster_review_focus(path: Path, *, cwd: Path, pm_home: Path) -> str:
         )
     except (OSError, UnicodeError) as exc:
         raise DelegateError(f"--focus 파일 읽기 실패: {focus_path}: {exc}") from exc
-
-
-def _cluster_next_finding_id_label(specs: Mapping[str, str], rounds_by_ticket) -> str:
-    """티켓마다 다른 다음 finding ID 를 한 줄 표기로 편다(실값 · 재타이핑 0)."""
-    return " · ".join(
-        f"{ticket}: `{next_review_finding_id(text, INTERNAL_REVIEW_ROLE, rounds_by_ticket.get(ticket, ()))}`"
-        for ticket, text in specs.items()
-    )
 
 
 def build_cluster_review_prompt(

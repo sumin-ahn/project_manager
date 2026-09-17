@@ -87,11 +87,6 @@ def canonicalize_path_notation(path: str) -> str:
     return norm
 
 
-def has_worktree_prefix(path: str) -> bool:
-    """표기 정규화 뒤 ``work/<repo>_<N>`` slot 접두가 있는지 판정한다."""
-    return _WORKTREE_PREFIX.match(canonicalize_path_notation(path)) is not None
-
-
 _WINDOWS_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
 
 

@@ -1917,11 +1917,6 @@ def resolve_harness_profile(harness: str, conf: dict | None = None, *,
     return profile._replace(idle_timeout=idle, wall_timeout=wall)
 
 
-def max_declared_wall_timeout() -> float:
-    """선언된 하네스 wall 백스톱 중 최댓값 — 하네스 Bash 상한 부등식의 좌변(단일 출처)."""
-    return max(profile.wall_timeout for profile in HARNESS_PROFILES.values())
-
-
 def idle_timeout_for_signal(progress_signal: str,
                             configured: float | None = None) -> float | None:
     """진행-신호 선언 → 적용할 무진행 상한(초). 신호 없는 축은 None(=벽시계 유지).

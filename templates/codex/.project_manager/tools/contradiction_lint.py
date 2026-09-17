@@ -316,7 +316,7 @@ def _default_scope_files() -> list[Path]:
         return []
     try:
         return list(board._collect_wikilink_files())
-    except Exception:
+    except (OSError, UnicodeError):
         return []
 
 

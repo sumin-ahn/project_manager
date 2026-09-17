@@ -2379,14 +2379,6 @@ def take_task_session_claim(name: str) -> str:
     return session
 
 
-def task_for_session(session: str) -> "Task | None":
-    """이 하네스 세션 ID 로 열린 task — 없으면 None (가드의 "이 세션의 task")."""
-    if not session:
-        return None
-    with _lease_lock():
-        return next((t for t in _read_tasks_strict() if t.session == session), None)
-
-
 def find_task(name: str) -> "Task | None":
     """이름으로 task 레코드를 찾는다 — 없으면 None."""
     with _lease_lock():

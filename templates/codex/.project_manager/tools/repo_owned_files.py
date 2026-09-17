@@ -252,7 +252,7 @@ def _probe_no_repository(runner: GitRunner) -> bool:
     """git 진단 문구가 아니라 저장소 구조 프로브 rc로 비-repo를 판정한다."""
     try:
         rc, _git_dir = runner(["rev-parse", "--git-dir"])
-    except Exception:
+    except OSError:
         return False
     return rc == 128
 

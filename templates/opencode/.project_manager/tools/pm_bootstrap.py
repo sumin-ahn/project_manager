@@ -770,24 +770,6 @@ def _auto_slot(
 # 조용한 폴백은 1→2 슬롯 경계에서 침묵 동작변경(없는 legacy 경로·연속성 단절)을 만들었다.
 
 
-def _no_work_folder_remedy(repo: str) -> str:
-    """작업 폴더 부재 처방 한 줄 — 문구 단일 진실(`identity_args`)에서 가져온다.
-
-    형제 사본을 못 읽으면 문구를 지어내지 않는다(사본 0) — 판독 실패는 그대로 올린다.
-    """
-    ia = _load_identity_args()
-    if ia is None:
-        raise SlotResolutionError(
-            f"identity_args 사본을 로드할 수 없어 안내 문구를 해소하지 못했다 "
-            f"({TOOLS_DIR / 'identity_args.py'}) — `pm-update` 로 엔진 사본을 재동기하라."
-        )
-    return ia.no_work_folder_remedy(repo)
-
-
-
-
-
-
 # ── 경로 표기 직렬화 (POSIX 단일) ─────────
 def _display_path_text(path) -> str:
     """경로를 사람/비교용 표기(**POSIX 단일**)로 직렬화한다 — 문자열화 지점만 고정한다.
