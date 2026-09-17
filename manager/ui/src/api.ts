@@ -91,6 +91,8 @@ export type PreservedBranchRow = {
 
 /** 열린 todo 한 건. 상태 필드가 없다 — 존재 = 열림, 완료 = 목록에서 제거. */
 export type TaskTodo = {
+  /** task 안에서 유일한 번호. 지워도 재사용되지 않으므로 남은 줄의 번호가 밀리지 않는다. */
+  id: number;
   text: string;
   /** 등록 시각(UTC ISO). 비어 있으면 얼마나 묵었는지 알 수 없다. */
   created: string;
@@ -103,7 +105,7 @@ export type TaskRow = {
   alive: boolean;
   started: string | null;
   slots: string[];
-  /** 이 task 가 지금 무엇을 하는 중인지. 비어 있으면 엔진이 파일 쓰기를 거부한다. */
+  /** 이 task 가 지금 무엇을 하는 중인지. 비어 있으면 파일을 고칠 때 경고가 붙는다. */
   todos: TaskTodo[];
 };
 

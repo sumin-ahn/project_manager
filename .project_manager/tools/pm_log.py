@@ -1068,32 +1068,36 @@ def _ledger_section(pm_home: Path, task: str) -> str:
 def _todo_section(pm_home: Path, task: str) -> str:
     """이 task 의 열린 todo — 매 턴 주입되는 "지금 무엇을 하는 중인가" 의 단일 진실.
 
-    장부(`worktree-leases.json`)의 그 task 행 `todos` 를 읽어 `worktree_pool.format_todo_line`
-    으로 렌더한다(표시 문구 사본 0 — CLI `task todo list`·부트스트랩 dump 와 같은 함수). 열린
-    todo 가 없으면 그 사실과 등록 경로를 적는다: 그 상태에서는 파일을 고칠 때마다 쓰기 판정이
-    경고를 붙인다(막지는 않는다).
+    task 별 파일(`.local/tasks/<task>/todo.json`)을 `worktree_pool.read_task_todos` 로 읽고
+    `format_todo_line` 으로 렌더한다(표시 문구 사본 0 — CLI `task todo list`·부트스트랩 dump 와
+    같은 함수). 열린 todo 가 없으면 그 사실과 등록 경로를 적는다: 그 상태에서는 파일을 고칠
+    때마다 쓰기 판정이 경고를 붙인다(막지는 않는다).
 
     옛 `pm_state 머리` 절을 대체한다 — 그 절은 손으로 쓰는 서술이라 갱신이 밀리면 재주입이
-    조용히 낡은 사실을 실어 날랐다. 이 절의 내용은 기계가 쓰는 장부 하나에서만 온다.
+    조용히 낡은 사실을 실어 날랐다. 이 절의 내용은 기계가 쓰는 자리 하나에서만 온다.
+
+    엔진 사본이 없는 홈에서는 이 절만 1줄로 접는다(진행 중 작업 절과 같은 접기 함수) — 이
+    재주입은 매 압축마다 도는 자리라 절 하나 때문에 payload 전체가 죽으면 안 된다. 없는 파일은
+    예외로 받을 일이 아니라 먼저 보면 되는 조건이다. 사본이 **있는데 낡은** 형상은 그대로
+    올린다 — 같은 `pm-update` 가 함께 깔아 놓는 두 파일이라 시대차는 접어 둘 상태가 아니다.
     """
-    ledger = Path(pm_home) / ".project_manager" / ".local" / "worktree-leases.json"
-    data = _read_json_object(ledger)
-    rows = data.get("tasks") if data else None
-    row = next(
-        (item for item in rows if isinstance(item, dict) and item.get("name") == task),
-        None,
-    ) if isinstance(rows, list) else None
-    todos = row.get("todos") if isinstance(row, dict) else None
-    if not isinstance(todos, list) or not todos:
+    pool_path = Path(pm_home) / ".project_manager" / "tools" / "worktree_pool.py"
+    if not pool_path.is_file():
+        return _section_query_failure_line(
+            f"엔진 사본 없음 — {pool_path}",
+            heading="## 열린 todo (장부 실측)", label="열린 todo 절",
+        )
+    wp = _load_worktree_pool(pm_home)
+    todos = wp.read_task_todos(task)
+    if not todos:
         return (
             "## 열린 todo (장부 실측)\n"
             f"- 없음 — 파일 수정 전에 `pm-config task todo add {task} <할 일 한 줄>` 로 등록한다"
             " (등록 전에 파일을 고치면 쓰기 판정이 경고를 붙인다).\n"
         )
-    wp = _load_worktree_pool()
     lines = [
-        f"- {wp.format_todo_line(number, todo)}"
-        for number, todo in enumerate(todos[:_TODO_MAX_SHOWN], start=1)
+        f"- {wp.format_todo_line(todo)}"
+        for todo in todos[:_TODO_MAX_SHOWN]
     ]
     hidden = len(todos) - len(lines)
     if hidden > 0:
@@ -1133,13 +1137,16 @@ def _load_pm_relay():
     return _load_module_from_path(path, "pm_relay.py", verifier=_verify_engine_rev)
 
 
-def _load_worktree_pool():
-    """worktree_pool 모듈을 in-process 로드 — 열린 todo 표시(``format_todo_line``) 전용.
+def _load_worktree_pool(pm_home: Path):
+    """그 PM 홈의 worktree_pool 을 in-process 로드 — 열린 todo 조회·표시 전용.
 
-    todo 한 줄의 생김새는 저장소 주인 모듈이 소유한다 — CLI(`task todo list`)·부트스트랩 dump·
+    **그 홈의 사본**을 부른다(형제 사본이 아니라). 할 일 파일 위치는 모듈이 자기 파일 위치에서
+    푸는 값이라, 이 파일 옆의 사본을 쓰면 다른 홈의 할 일을 읽는다.
+
+    todo 한 줄의 생김새도 저장소 주인 모듈이 소유한다 — CLI(`task todo list`)·부트스트랩 dump·
     이 재주입이 같은 함수를 부르므로 문구 사본이 없다(``_load_pm_relay`` 동형 seam).
     """
-    path = Path(__file__).resolve().parent / "worktree_pool.py"
+    path = Path(pm_home) / ".project_manager" / "tools" / "worktree_pool.py"
     return _load_module_from_path(path, "worktree_pool.py", verifier=_verify_engine_rev)
 
 
@@ -1307,8 +1314,11 @@ def _wip_slot_line(
     return _inflight_capped_line(prefix="- 슬롯 WIP: ", content=content, suffix="")
 
 
-def _inflight_query_failure_line(exc: Exception, *, skew: bool) -> str:
-    """진행 중 작업 절의 skew 흡수 경계 표출 — 흡수해도 stderr 1줄 + payload 1줄로 표출한다.
+def _section_query_failure_line(cause: str, *, heading: str, label: str) -> str:
+    """장부 조회 절의 skew 흡수 경계 표출 — 흡수해도 stderr 1줄 + payload 1줄로 표출한다.
+
+    장부·엔진 사본을 읽는 절(진행 중 작업·열린 todo)이 이 한 함수를 쓴다 — 접는 모양이 절마다
+    갈리면 압축 재주입의 줄 상한·heading 주입 방어가 절마다 따로 틀어진다.
 
     복구 마커 호출(사유 등록 검증)은 흡수 지점인 호출부 except 핸들러가 직접 수행하고
     (`skew` 로 그 판정을 받는다 — 정적 가드의 시야가 핸들러 본문이다), 여기서는 표출만 한다.
@@ -1316,14 +1326,13 @@ def _inflight_query_failure_line(exc: Exception, *, skew: bool) -> str:
     ``_inflight_safe_text``로 정규화하고 ``_inflight_capped_line``으로 줄 상한을 지킨다
     (예외 메시지에 개행이 섞이면 가짜 heading 을 주입할 수 있다).
     """
-    cause = f"엔진 사본 불일치 — {exc}" if skew else f"{type(exc).__name__}: {exc}"
-    print(f"경고: 진행 중 작업 절 조회 실패 ({cause}) — 절을 1줄로 접음", file=sys.stderr)
+    print(f"경고: {label} 조회 실패 ({cause}) — 절을 1줄로 접음", file=sys.stderr)
     line = _inflight_capped_line(
         prefix="- 조회 실패: ",
         content=_inflight_safe_text(cause),
         suffix=" → `python3 .project_manager/tools/pm_bootstrap.py`로 직접 확인",
     )
-    return "## 진행 중 작업 (장부 실측)\n" + line + "\n"
+    return heading + "\n" + line + "\n"
 
 
 def _inflight_section(
@@ -1351,7 +1360,10 @@ def _inflight_section(
         ]
     except Exception as exc:  # noqa: BLE001 — 절 단위 fail-soft(등록 경계에서만 skew 흡수).
         skew = _absorb_engine_rev_skew_for_recovery(exc, "inflight_ledger_query")
-        return _inflight_query_failure_line(exc, skew=skew)
+        cause = f"엔진 사본 불일치 — {exc}" if skew else f"{type(exc).__name__}: {exc}"
+        return _section_query_failure_line(
+            cause, heading="## 진행 중 작업 (장부 실측)", label="진행 중 작업 절",
+        )
 
     lines = [
         _unharvested_copies_line(unharvested_rows),

@@ -7760,75 +7760,90 @@ def test_list_tasks_and_find_task(wp):
 import datetime as _dt_task   # todo 표시(등록일·묵은 일수) 단언 전용 (`_pytest_task` 동형)
 
 
-def test_add_task_todo_appends_with_created_stamp(wp):
-    """`add_task_todo` 가 열린 todo 를 쌓고 등록 시각을 엔진이 박는다(사용자 입력 아님)."""
+def test_add_task_todo_appends_with_created_stamp_and_id(wp):
+    """`add_task_todo` 가 열린 할 일을 쌓고 등록 시각·ID 를 엔진이 박는다(사용자 입력 아님)."""
     wp.bind_task("job1", session="s-test")
     updated = wp.add_task_todo("job1", "  주입 교체  ", now=lambda: "2026-09-10T03:00:00+00:00")
-    assert [t["text"] for t in updated.todos] == ["주입 교체"], "앞뒤 공백이 그대로 저장됐다"
-    assert updated.todos[0]["created"] == "2026-09-10T03:00:00+00:00"
-    assert wp.find_task("job1").todos == updated.todos      # 영속(장부 write)
+    assert updated == [
+        {"id": 1, "text": "주입 교체", "created": "2026-09-10T03:00:00+00:00"}], \
+        "앞뒤 공백이 그대로 저장됐거나 ID·등록 시각이 빠졌다"
+    assert wp.read_task_todos("job1") == updated      # 영속(파일 write)
 
 
-def test_task_todos_survive_session_close(wp):
-    """세션 종료는 `session` 만 비운다 — 열린 todo 는 다음 세션이 그대로 승계한다."""
+def test_task_todo_ids_are_never_reused(wp):
+    """지운 ID 는 다시 쓰지 않는다 — 사람이 화면에서 읽은 번호가 다른 일을 가리키면 안 된다."""
+    wp.bind_task("job1", session="s-test")
+    for text in ("첫째", "둘째", "셋째"):
+        wp.add_task_todo("job1", text)
+    wp.close_task_todo("job1", 2)
+    assert [t["id"] for t in wp.read_task_todos("job1")] == [1, 3]
+    assert [t["id"] for t in wp.add_task_todo("job1", "넷째")] == [1, 3, 4]
+
+
+def test_task_todos_live_in_the_task_file_and_survive_session_close(wp):
+    """할 일은 장부가 아니라 task 폴더에 산다 — 세션 종료·재개가 그대로 승계한다."""
     wp.bind_task("job1", session="s-test")
     wp.add_task_todo("job1", "남은 일")
-    assert wp.close_task_session("job1").todos == [
-        t for t in wp.find_task("job1").todos]
-    resumed, action = wp.bind_task("job1", session="s-next")
+    assert wp.task_todo_file("job1").is_file()
+    row = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))["tasks"][0]
+    assert "todos" not in row, "장부에 할 일이 남았다 — 자리가 둘로 갈린다"
+    wp.close_task_session("job1")
+    _resumed, action = wp.bind_task("job1", session="s-next")
     assert action == "resumed"
-    assert [t["text"] for t in resumed.todos] == ["남은 일"], "세션이 바뀌며 todo 가 사라졌다"
+    assert [t["text"] for t in wp.read_task_todos("job1")] == ["남은 일"], \
+        "세션이 바뀌며 할 일이 사라졌다"
 
 
-def test_close_task_todo_removes_by_one_based_number(wp):
-    """완료 = 목록에서 제거. 번호는 `task todo list` 가 보여준 1부터 세는 번호다."""
+def test_close_task_todo_removes_by_id(wp):
+    """완료 = 목록에서 제거. 지목은 `task todo list` 가 보여준 ID 다."""
     wp.bind_task("job1", session="s-test")
     wp.add_task_todo("job1", "첫째")
     wp.add_task_todo("job1", "둘째")
     updated, removed = wp.close_task_todo("job1", 1)
     assert removed["text"] == "첫째"
-    assert [t["text"] for t in updated.todos] == ["둘째"]
-    assert [t["text"] for t in wp.find_task("job1").todos] == ["둘째"]
+    assert [t["text"] for t in updated] == ["둘째"]
+    assert [t["text"] for t in wp.read_task_todos("job1")] == ["둘째"]
 
 
-def test_close_task_todo_out_of_range_raises_without_write(wp):
-    """범위 밖 번호는 IndexError — 조용히 무시하면 지운 줄 알고 넘어간다(장부 불변)."""
+def test_close_task_todo_unknown_id_raises_without_write(wp):
+    """없는 ID 는 LookupError — 조용히 무시하면 지운 줄 알고 넘어간다(파일 불변)."""
     wp.bind_task("job1", session="s-test")
     wp.add_task_todo("job1", "하나")
-    before = wp.LEASES_FILE.read_bytes()
+    before = wp.task_todo_file("job1").read_bytes()
     for bad in (0, 2, -1):
-        with _pytest_task.raises(IndexError):
+        with _pytest_task.raises(LookupError):
             wp.close_task_todo("job1", bad)
-    assert wp.LEASES_FILE.read_bytes() == before
+    assert wp.task_todo_file("job1").read_bytes() == before
 
 
 def test_add_task_todo_empty_text_raises_without_write(wp):
-    """빈 내용은 ValueError — 가리키는 일이 없는 todo 하나로 쓰기 가드가 열린다(장부 불변)."""
+    """빈 내용은 ValueError — 가리키는 일이 없는 할 일 하나로 쓰기 경고가 꺼진다(파일 불변)."""
     wp.bind_task("job1", session="s-test")
-    before = wp.LEASES_FILE.read_bytes()
     with _pytest_task.raises(ValueError):
         wp.add_task_todo("job1", "   ")
-    assert wp.LEASES_FILE.read_bytes() == before
+    assert not wp.task_todo_file("job1").exists()
 
 
-def test_task_todo_write_entries_validate_name_before_write(wp):
-    """write-capable 진입점 — 불법 task 명은 장부 write 이전 InvalidTaskName(형제 동형·부작용 0)."""
+def test_task_todo_entries_validate_name_before_touching_disk(wp):
+    """이름을 받는 세 진입점 — 불법 task 명은 디스크 접근 이전 InvalidTaskName(부작용 0)."""
     with _pytest_task.raises(wp.InvalidTaskName):
         wp.add_task_todo("../evil", "x")
     with _pytest_task.raises(wp.InvalidTaskName):
         wp.close_task_todo("../evil", 1)
+    with _pytest_task.raises(wp.InvalidTaskName):
+        wp.read_task_todos("../evil")
     assert wp.list_tasks() == []
 
 
 def test_task_todo_missing_task_returns_none(wp):
-    """부재 task → None(호출부가 rc1 안내) — todo 가 task 를 만들지 않는다."""
+    """부재 task → None(호출부가 rc1 안내) — 할 일이 task 를 만들지 않는다."""
     assert wp.add_task_todo("absent", "x") is None
     assert wp.close_task_todo("absent", 1) is None
     assert wp.list_tasks() == []
 
 
-def test_task_todo_preserves_sibling_leases_and_unknown_keys(wp):
-    """todo 쓰기가 형제 `leases`·다른 task·미지 최상위 키를 보존(top-level round-trip)."""
+def test_task_todo_write_leaves_the_lease_ledger_untouched(wp):
+    """할 일 쓰기는 장부를 건드리지 않는다 — 잦은 쓰기가 대여 장부 락을 잡지 않는다."""
     ledger = {
         "leases": [{"slot": "work/A_1", "repo": "A", "session": "me", "started": "t",
                     "state": "leased", "test_cmd": None}],
@@ -7838,31 +7853,34 @@ def test_task_todo_preserves_sibling_leases_and_unknown_keys(wp):
     }
     wp.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     wp.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
+    before = wp.LEASES_FILE.read_bytes()
     wp.add_task_todo("job1", "일")
-    data = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
-    assert data["leases"] == ledger["leases"]
-    assert data["future_top_level"] == {"x": 1}
-    assert [row["name"] for row in data["tasks"]] == ["job1", "job2"]
-    assert data["tasks"][1].get("todos") == [], "손대지 않은 task 의 todo 가 바뀌었다"
+    assert wp.LEASES_FILE.read_bytes() == before
+    assert wp.read_task_todos("job2") == [], "다른 task 의 할 일이 섞였다"
 
 
-def test_task_todo_legacy_row_without_todos_reads_empty(wp):
-    """todo 키가 없던 옛 장부 행은 빈 목록으로 읽힌다(마이그레이션 없이 그대로 진입)."""
+def test_legacy_ledger_todos_migrate_into_the_task_file(wp):
+    """옛 장부 행 `todos` 는 첫 조회 때 파일로 옮겨지고 장부에서 지워진다(옛 자리를 안 읽는다)."""
     wp.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    wp.LEASES_FILE.write_text(
-        json.dumps({"leases": [], "tasks": [{"name": "old", "prefix": None, "started": "t"}]}),
-        encoding="utf-8")
-    assert wp.find_task("old").todos == []
-    assert [t["text"] for t in wp.add_task_todo("old", "새 일").todos] == ["새 일"]
+    wp.LEASES_FILE.write_text(json.dumps({"leases": [], "tasks": [{
+        "name": "old", "prefix": None, "started": "t",
+        "todos": [{"text": "옛 일", "created": "2026-09-10T00:00:00+00:00"},
+                  {"text": "  ", "created": ""}],
+    }]}), encoding="utf-8")
+    assert wp.read_task_todos("old") == [
+        {"id": 1, "text": "옛 일", "created": "2026-09-10T00:00:00+00:00"}]
+    row = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))["tasks"][0]
+    assert "todos" not in row, "옛 자리가 남았다 — 두 자리가 갈린다"
+    assert [t["id"] for t in wp.add_task_todo("old", "새 일")] == [1, 2]
 
 
-def test_format_todo_line_shows_number_date_and_age(wp):
-    """표시 단일 진실 — 번호·내용·등록일·묵은 일수. 등록일이 없으면 나이를 지어내지 않는다."""
+def test_format_todo_line_shows_id_date_and_age(wp):
+    """표시 단일 진실 — ID·내용·등록일·묵은 일수. 등록일이 없으면 나이를 지어내지 않는다."""
     now = _dt_task.datetime(2026, 9, 17, tzinfo=_dt_task.timezone.utc)
     line = wp.format_todo_line(
-        3, {"text": "일", "created": "2026-09-10T03:00:00+00:00"}, now=now)
-    assert line == "3. 일 (등록 2026-09-10 · 6일째)"
-    assert wp.format_todo_line(1, {"text": "일", "created": ""}) == "1. 일 (등록일 없음)"
+        {"id": 3, "text": "일", "created": "2026-09-10T03:00:00+00:00"}, now=now)
+    assert line == "#3 일 (등록 2026-09-10 · 6일째)"
+    assert wp.format_todo_line({"id": 1, "text": "일", "created": ""}) == "#1 일 (등록일 없음)"
     assert wp.todo_age_days("") is None and wp.todo_age_days("not-a-date") is None
 
 

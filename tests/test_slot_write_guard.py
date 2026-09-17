@@ -41,8 +41,11 @@ def home(tmp_path, monkeypatch):
     root = tmp_path / "pm-home"
     for number in (1, 2, 3, 4):
         (root / "work" / f"app_{number}").mkdir(parents=True)
+    # 열린 할 일은 **그 홈의 엔진 사본**이 읽는다 — 사본이 없는 홈은 판정 자체를 하지 않으므로
+    # 이 픽스처는 실 엔진을 그대로 깐다(할 일 파일 형식을 흉내 내는 대역 금지).
+    shutil.copytree(TOOLS, root / ".project_manager" / "tools")
     ledger = root / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
+    ledger.parent.mkdir(parents=True, exist_ok=True)
     ledger.write_text(json.dumps({
         "leases": [
             {"slot": "work/app_1", "repo": "app", "session": "alpha", "state": "leased"},
@@ -50,12 +53,13 @@ def home(tmp_path, monkeypatch):
             {"slot": "work/app_3", "repo": "app", "session": "", "state": "leased", "role": "readonly"},
             {"slot": "work/app_4", "repo": "app", "session": "beta", "state": "leased"},
         ],
-        # alpha 는 열린 todo 를 하나 갖는다 — 쓰기 가드가 "열린 todo 없으면 거부" 를 함께 보므로
-        # 슬롯 주인 판정만 보려는 이 파일의 기존 단언은 todo 가 있는 상태를 전제로 한다.
-        "tasks": [{"name": "alpha", "session": "S-alpha",
-                   "todos": [{"text": "슬롯 쓰기 가드 점검", "created": "2026-09-16T00:00:00+00:00"}]},
-                  {"name": "beta", "session": "", "todos": []}],
+        "tasks": [{"name": "alpha", "session": "S-alpha"},
+                  {"name": "beta", "session": ""}],
     }) + "\n", encoding="utf-8")
+    # alpha 는 열린 할 일을 하나 갖는다 — 쓰기 판정이 "열린 할 일 없으면 경고" 를 함께 보므로
+    # 슬롯 주인 판정만 보려는 이 파일의 기존 단언은 할 일이 있는 상태를 전제로 한다.
+    _set_todos(root, "alpha",
+               [{"text": "슬롯 쓰기 가드 점검", "created": "2026-09-16T00:00:00+00:00"}])
     return root
 
 
@@ -64,13 +68,15 @@ def _action(board, case: str) -> str:
 
 
 def _set_todos(home: Path, task: str, todos: list[dict]) -> None:
-    """장부의 그 task 행 `todos` 를 갈아끼운다(열린 todo 유무로 쓰기 판정이 갈린다)."""
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    data = json.loads(ledger.read_text(encoding="utf-8"))
-    for row in data["tasks"]:
-        if row["name"] == task:
-            row["todos"] = todos
-    ledger.write_text(json.dumps(data) + "\n", encoding="utf-8")
+    """그 task 의 할 일 파일을 갈아끼운다(열린 할 일 유무로 쓰기 판정이 갈린다).
+
+    ID 는 넣은 순서대로 1부터 붙인다 — 이 파일의 단언은 개수만 본다.
+    """
+    path = home / ".project_manager" / ".local" / "tasks" / task / "todo.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [{"id": index, **todo} for index, todo in enumerate(todos, start=1)]
+    path.write_text(
+        json.dumps({"next_id": len(rows) + 1, "todos": rows}) + "\n", encoding="utf-8")
 
 
 # ── 열린 todo 없으면 파일 쓰기 때 경고 ──────────────────────────────────────
@@ -140,22 +146,20 @@ def test_todo_rule_only_applies_to_write_tools(board, home, tmp_path):
     assert judgment["verdict"] == "ok"
 
 
-def test_task_row_without_the_todos_key_is_raised_not_read_as_empty(board, home, tmp_path):
-    """`todos` 키가 없는 행은 0건으로 흘리지 않고 올린다 — 옛 형식을 관용하지 않는다.
-
-    `Task.to_dict` 가 이 키를 항상 내보내고 `bind_task` 가 세션마다 장부를 다시 쓰므로, 살아 있는
-    행에 키가 없을 수 없다. 없으면 이 엔진이 쓴 장부가 아니다(손상 장부를 올리는 규율과 같다).
-    """
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    data = json.loads(ledger.read_text(encoding="utf-8"))
-    for row in data["tasks"]:
-        row.pop("todos", None)
-    ledger.write_text(json.dumps(data) + "\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="todos 목록이 없다"):
-        board.judge_tool_input(
-            home, "S-alpha", str(tmp_path), "Write",
-            {"file_path": str(tmp_path / "note.md"), "content": "x"},
-        )
+def test_write_without_an_engine_copy_makes_no_todo_judgment(board, tmp_path):
+    """엔진 사본이 없는 홈은 열린 할 일을 셀 근거가 없다 — 0건으로 몰아 경고하지 않는다."""
+    root = tmp_path / "no-engine"
+    ledger = root / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(json.dumps({
+        "leases": [],
+        "tasks": [{"name": "alpha", "session": "S-alpha"}],
+    }) + "\n", encoding="utf-8")
+    judgment = board.judge_tool_input(
+        root, "S-alpha", str(tmp_path), "Write",
+        {"file_path": str(tmp_path / "note.md"), "content": "x"},
+    )
+    assert judgment["verdict"] == "ok"
 
 
 def test_delegated_session_inherits_the_owner_task_todos(board, home, tmp_path, monkeypatch):
@@ -257,41 +261,35 @@ def test_corrupt_ledger_is_raised_not_read_as_empty(board, home):
         board.judge_tool_input(home, "S-alpha", str(home), "Write", {"file_path": str(home / "work" / "app_1" / "a.py")})
 
 
-@pytest.fixture
-def engine_home(home):
-    shutil.copytree(TOOLS, home / ".project_manager" / "tools")
-    return home
-
-
-def test_bootstrap_shell_call_records_the_session_for_its_engine_copy(board, engine_home):
-    claims = engine_home / ".project_manager" / ".local" / "task-session-claims"
+def test_bootstrap_shell_call_records_the_session_for_its_engine_copy(board, home):
+    claims = home / ".project_manager" / ".local" / "task-session-claims"
     got = board.judge_git_anchor_command(
-        engine_home, "S-new", str(engine_home), "python3 .project_manager/tools/pm_bootstrap.py --task gamma",
+        home, "S-new", str(home), "python3 .project_manager/tools/pm_bootstrap.py --task gamma",
     )
     assert got["verdict"] != "deny"
     assert json.loads((claims / "gamma.json").read_text(encoding="utf-8")) == {"task": "gamma", "session": "S-new"}
     board.judge_git_anchor_command(
-        engine_home, "S-new", str(engine_home), f"python3 {engine_home}/.project_manager/tools/pm_bootstrap.py --task=delta",
+        home, "S-new", str(home), f"python3 {home}/.project_manager/tools/pm_bootstrap.py --task=delta",
     )
     assert (claims / "delta.json").is_file()
     # 인자를 정적으로 못 정하거나 세션 ID 가 없으면 남기지 않는다 — 부트스트랩이 기록 없음으로 멈춘다.
     board.judge_git_anchor_command(
-        engine_home, "S-new", str(engine_home), 'python3 .project_manager/tools/pm_bootstrap.py --task "$NAME"',
+        home, "S-new", str(home), 'python3 .project_manager/tools/pm_bootstrap.py --task "$NAME"',
     )
     board.judge_git_anchor_command(
-        engine_home, "", str(engine_home), "python3 .project_manager/tools/pm_bootstrap.py --task epsilon",
+        home, "", str(home), "python3 .project_manager/tools/pm_bootstrap.py --task epsilon",
     )
     assert sorted(path.name for path in claims.iterdir()) == ["delta.json", "gamma.json"]
 
 
-def test_denied_bootstrap_command_records_nothing(board, engine_home):
+def test_denied_bootstrap_command_records_nothing(board, home):
     marker = "git " + "허용" + ":"
     got = board.judge_git_anchor_command(
-        engine_home, "S-new", str(engine_home),
+        home, "S-new", str(home),
         f"python3 .project_manager/tools/pm_bootstrap.py --task gamma; echo '{marker} x'",
     )
     assert got["verdict"] == "deny"
-    assert not (engine_home / ".project_manager" / ".local" / "task-session-claims").exists()
+    assert not (home / ".project_manager" / ".local" / "task-session-claims").exists()
 
 
 def test_delegate_env_names_the_task_that_holds_the_slot(board, home, monkeypatch):

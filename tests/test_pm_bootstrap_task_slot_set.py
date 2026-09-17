@@ -54,11 +54,10 @@ class _FakeBoard:
 
 
 class _TaskRecord:
-    def __init__(self, name, prefix=None, started="2026-07-20T00:00:00+00:00", todos=()):
+    def __init__(self, name, prefix=None, started="2026-07-20T00:00:00+00:00"):
         self.name = name
         self.prefix = prefix
         self.started = started
-        self.todos = list(todos)   # 열린 todo — 부트스트랩 dump 가 장부에서 읽는 값
 
 
 class _Lease:
@@ -157,8 +156,11 @@ class _TaskPool:
         return (_TaskRecord(name), "created")
 
     def find_task(self, name):
-        """장부 task 조회 — 부트스트랩이 열린 todo 를 읽는 자리(이 대역은 항상 0건)."""
         return _TaskRecord(name)
+
+    def read_task_todos(self, name):
+        """열린 할 일 조회 — 부트스트랩 dump 가 읽는 자리(이 대역은 항상 0건)."""
+        return []
 
     def task_dir(self, name):
         return self._task_dir_root / name

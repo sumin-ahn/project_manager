@@ -89,11 +89,11 @@ describe("현황 탭 읽기 부분", () => {
     expect(screen.getByTestId("task-live")).toHaveTextContent("작업 중");
   });
 
-  it("열린 todo 를 번호·등록일과 함께 펼치고 줄마다 [완료]를 붙인다", () => {
+  it("열린 todo 를 ID·등록일과 함께 펼치고 줄마다 [완료]를 붙인다", () => {
     renderTab({ light: { status: document_ }, heavy: { status: document_ } });
 
     expect(screen.getByTestId("todos-live"))
-      .toHaveTextContent("1. 슬롯 쓰기 가드 실측 (등록 2026-09-16");
+      .toHaveTextContent("#1 슬롯 쓰기 가드 실측 (등록 2026-09-16");
     expect(screen.getByTestId("todo-done-live-1")).toBeEnabled();
     // 열린 todo 가 0건이면 자리 자체가 없다(빈 목록을 위한 빈 칸을 만들지 않는다).
     expect(screen.queryByTestId("todos-demo")).toBeNull();

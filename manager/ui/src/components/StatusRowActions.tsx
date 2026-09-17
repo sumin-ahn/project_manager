@@ -210,36 +210,36 @@ function TaskActions({ row }: { row: TaskRow }) {
 }
 
 /**
- * 열린 todo 한 줄 — 번호·내용·등록일·묵은 일수. 엔진 `worktree_pool.format_todo_line` 과 같은
+ * 열린 todo 한 줄 — ID·내용·등록일·묵은 일수. 엔진 `worktree_pool.format_todo_line` 과 같은
  * 형식이다(표시 규칙은 두 언어에 각각 있고, 값은 엔진 JSON 그대로다). 등록일이 없으면 나이를
  * 지어내지 않는다.
  */
-export function todoLine(index: number, todo: TaskTodo): string {
-  if (!todo.created) return `${index}. ${todo.text} (등록일 없음)`;
+export function todoLine(todo: TaskTodo): string {
+  if (!todo.created) return `#${todo.id} ${todo.text} (등록일 없음)`;
   const date = todo.created.slice(0, 10);
   const days = Math.floor((Date.now() - Date.parse(todo.created)) / 86_400_000);
-  if (Number.isNaN(days)) return `${index}. ${todo.text} (등록 ${date})`;
-  return `${index}. ${todo.text} (등록 ${date} · ${Math.max(days, 0)}일째)`;
+  if (Number.isNaN(days)) return `#${todo.id} ${todo.text} (등록 ${date})`;
+  return `#${todo.id} ${todo.text} (등록 ${date} · ${Math.max(days, 0)}일째)`;
 }
 
 /**
  * task 가 지금 무엇을 하는 중인지 — 열린 todo 목록과 줄마다 [완료].
  *
- * 완료는 목록에서 지우는 것이다(엔진에 완료 상태가 없다). 번호는 엔진이 받는 번호와 같은
- * 1부터이고, 지운 직후 목록을 다시 읽으므로 번호가 밀려도 화면이 먼저 갱신된다.
+ * 완료는 목록에서 지우는 것이다(엔진에 완료 상태가 없다). 엔진이 받는 값은 화면에 보이는 ID
+ * 그대로이고, ID 는 재사용되지 않으므로 지운 뒤 다시 읽어도 남은 줄의 번호가 바뀌지 않는다.
  */
 export function TaskTodoList({ row }: { row: TaskRow }) {
   const { outcome, busy, call } = useCommand();
   if (row.todos.length === 0) return null;
   return (
     <span data-testid={`todos-${row.name}`} className="mt-0.5 flex flex-col items-start gap-0.5">
-      {row.todos.map((todo, index) => (
-        <span key={`${todo.created}-${index}`} className="flex items-center gap-1">
-          <span>{todoLine(index + 1, todo)}</span>
-          <button type="button" data-testid={`todo-done-${row.name}-${index + 1}`}
+      {row.todos.map((todo) => (
+        <span key={todo.id} className="flex items-center gap-1">
+          <span>{todoLine(todo)}</span>
+          <button type="button" data-testid={`todo-done-${row.name}-${todo.id}`}
                   disabled={busy}
                   onClick={() => void call(
-                    ["task", "todo", "done", row.name, String(index + 1)])}
+                    ["task", "todo", "done", row.name, String(todo.id)])}
                   className={BUTTON}>완료</button>
         </span>
       ))}

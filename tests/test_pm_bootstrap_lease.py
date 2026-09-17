@@ -158,13 +158,12 @@ class _FakeTaskRecord:
     """bind_task 반환 Task 대역 — surface 가 읽는 name·prefix·open·started."""
 
     def __init__(self, name: str, prefix: "str | None", open: bool = True,
-                 started: str = "2026-07-18T00:00:00+00:00", todos=()):
+                 started: str = "2026-07-18T00:00:00+00:00"):
         self.name = name
         self.prefix = prefix
         self.open = open
         self.session = "s-other" if open else ""
         self.started = started
-        self.todos = list(todos)   # 열린 todo — 부트스트랩 dump 가 장부에서 읽는 값
 
 
 class FakeWorktreePool:
@@ -308,6 +307,10 @@ class FakeWorktreePool:
             return None
         return _FakeTaskRecord(name, self._task_prefix, open=True,
                                started=self._task_open_started)
+
+    def read_task_todos(self, name):
+        """열린 할 일 조회 — 부트스트랩 dump 가 읽는 자리(이 대역은 항상 0건)."""
+        return []
 
     def close_task_session(self, name):
         """종료 기록 프리미티브 대역 — 닫은 뒤에는 열림 기록이 없다."""

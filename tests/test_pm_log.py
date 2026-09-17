@@ -16,6 +16,7 @@ import contextlib
 import importlib.util
 import json
 import re
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -904,6 +905,8 @@ def test_main_tail_remains_ungated(tmp_path, monkeypatch, capsys):
 def _snapshot_home(tmp_path: Path, *, tasks=("main",), lease_session="main"):
     pm_home = tmp_path / "pm-home"
     local = pm_home / ".project_manager" / ".local"
+    # 열린 할 일은 **그 홈의 엔진 사본**이 읽는다 — 사본 없는 홈은 조회가 성립하지 않는다.
+    shutil.copytree(TOOLS, pm_home / ".project_manager" / "tools")
     for task in tasks:
         state = local / "tasks" / task / "pm_state.md"
         state.parent.mkdir(parents=True)
@@ -1206,15 +1209,19 @@ def test_inflight_raw_field_newlines_do_not_forge_headings_or_exceed_line_cap(tm
 
 
 def _seed_task_todos(pm_home: Path, task: str, todos: list[dict]) -> None:
-    """`_snapshot_home` 픽스처 장부에 그 task 행과 열린 todo 를 얹는다."""
+    """`_snapshot_home` 픽스처에 그 task 행과 할 일 파일을 얹는다(ID 는 1부터 순서대로)."""
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     data = json.loads(ledger.read_text(encoding="utf-8"))
-    data["tasks"] = [{"name": task, "session": "S-1", "todos": todos}]
+    data["tasks"] = [{"name": task, "session": "S-1"}]
     ledger.write_text(json.dumps(data), encoding="utf-8")
+    path = pm_home / ".project_manager" / ".local" / "tasks" / task / "todo.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [{"id": index, **todo} for index, todo in enumerate(todos, start=1)]
+    path.write_text(json.dumps({"next_id": len(rows) + 1, "todos": rows}), encoding="utf-8")
 
 
 def test_todo_section_lists_open_todos_with_date_and_age(tmp_path):
-    """열린 todo 가 번호·등록일·묵은 일수와 함께 주입된다(표시는 저장소 모듈 단일 함수)."""
+    """열린 todo 가 ID·등록일·묵은 일수와 함께 주입된다(표시는 저장소 모듈 단일 함수)."""
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
     _seed_task_todos(pm_home, "main", [
@@ -1226,8 +1233,8 @@ def test_todo_section_lists_open_todos_with_date_and_age(tmp_path):
 
     assert warning is None
     section = text.split("## 열린 todo (장부 실측)\n", 1)[1].split("\n## ", 1)[0]
-    assert "1. 주입 교체 (등록 2026-09-10 · " in section
-    assert "2. 가드 배선 (등록 2026-09-16 · " in section
+    assert "#1 주입 교체 (등록 2026-09-10 · " in section
+    assert "#2 가드 배선 (등록 2026-09-16 · " in section
     assert "없음" not in section
 
 
@@ -1397,6 +1404,8 @@ def test_single_active_task_identity_emits_snapshot_and_records_compaction_check
     wiki = manager / "wiki"
     log_dir = wiki / "log"
     log_dir.mkdir(parents=True)
+    # 열린 할 일은 그 홈의 엔진 사본이 읽는다 — 손으로 짓는 홈도 사본을 갖춰야 조회가 선다.
+    shutil.copytree(TOOLS, manager / "tools")
     (manager / "local.conf").write_text(
         "# fresh solo adopter\nsession=pm\n", encoding="utf-8",
     )

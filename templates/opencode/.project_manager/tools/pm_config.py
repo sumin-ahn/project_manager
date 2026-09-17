@@ -27,8 +27,8 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config task end <이름>                               # task 종료 — claimed 소진 게이트·dirty 게이트·일괄 반납 + _ended 아카이브
     pm-config task reopen <이름> [--archive <basename>]     # 종료 archive를 동일 task 정체성으로 복원
     pm-config task todo add <이름> <할 일 한 줄>            # 열린 todo 등록 — 파일 수정 전에 지금 하는 일을 적는다(없으면 쓰기 판정이 경고)
-    pm-config task todo list <이름>                         # 열린 todo — 번호·등록일·묵은 일수
-    pm-config task todo done <이름> <번호>                  # 완료 = 목록에서 제거 (완료 표시를 남기지 않는다·기록은 log)
+    pm-config task todo list <이름>                         # 열린 todo — ID·등록일·묵은 일수
+    pm-config task todo done <이름> <ID>                    # 완료 = 목록에서 제거 (완료 표시를 남기지 않는다·기록은 log)
     pm-config update [--from <upstream>]                   # 엔진 갱신 (pm-update 흡수)
     pm-config upstream show | set <url|path>               # upstream 조회/전환 (검증·fail-closed)
     pm-config add-harness <harness> [--from <src>] [--dry-run]  # 라이브 인스턴스에 두 번째 harness 어댑터 추가
@@ -2520,7 +2520,8 @@ def _status_json_tasks(wp, tasks) -> list[dict]:
         "started": getattr(task, "started", "") or None,
         "slots": [lease.slot for lease in (wp.slots_for_task(task.name) or [])],
         # 열린 todo — 관리자 화면이 task 줄에 그대로 그린다(가벼운 절이라 5초 주기로 갱신된다).
-        "todos": [dict(todo) for todo in getattr(task, "todos", [])],
+        # task 별 파일(`.local/tasks/<이름>/todo.json`)이 출처다.
+        "todos": [dict(todo) for todo in wp.read_task_todos(task.name)],
     } for task in tasks]
 
 
@@ -3762,6 +3763,13 @@ def _todo_missing_task(name: str) -> int:
     return 1
 
 
+def _print_open_todos(wp, name: str, todos) -> None:
+    """열린 todo 목록 출력 — 세 명령 공용(문구·형식 사본 0)."""
+    print(f"task {name} 열린 todo {len(todos)}건:")
+    for todo in todos:
+        print(f"  {wp.format_todo_line(todo)}")
+
+
 def cmd_task_todo_add(
     args: argparse.Namespace,
     *,
@@ -3770,8 +3778,8 @@ def cmd_task_todo_add(
     """`task todo add <이름> <내용>` — 열린 todo 를 하나 더한다.
 
     쓰기 판정이 "열린 todo 가 없으면 경고" 를 이 목록으로 내므로, 이 명령이 작업을 시작하는
-    진입이다. 등록 시각(UTC ISO)은 엔진이 박고 사용자가 주지 않는다 — 묵은
-    정도의 근거를 손으로 적게 하면 그 값이 곧 틀린다.
+    진입이다. 등록 시각(UTC ISO)과 ID 는 엔진이 박고 사용자가 주지 않는다 — 묵은 정도의 근거를
+    손으로 적게 하면 그 값이 곧 틀린다.
     """
     wp = _todo_worktree_pool(worktree_pool, "등록")
     if wp is None:
@@ -3786,9 +3794,7 @@ def cmd_task_todo_add(
         return 1
     if updated is None:
         return _todo_missing_task(args.name)
-    print(f"task {updated.name} 열린 todo {len(updated.todos)}건:")
-    for number, todo in enumerate(updated.todos, start=1):
-        print(f"  {wp.format_todo_line(number, todo)}")
+    _print_open_todos(wp, args.name, updated)
     return 0
 
 
@@ -3797,7 +3803,7 @@ def cmd_task_todo_list(
     *,
     worktree_pool=None,
 ) -> int:
-    """`task todo list <이름>` — 열린 todo 를 번호·등록일·묵은 일수와 함께 본다."""
+    """`task todo list <이름>` — 열린 todo 를 ID·등록일·묵은 일수와 함께 본다."""
     wp = _todo_worktree_pool(worktree_pool, "조회")
     if wp is None:
         return 1
@@ -3808,12 +3814,11 @@ def cmd_task_todo_list(
         return 1
     if task is None:
         return _todo_missing_task(args.name)
-    if not task.todos:
+    todos = wp.read_task_todos(task.name)
+    if not todos:
         print(f"task {task.name} 열린 todo 없음 — `pm-config task todo add {task.name} <내용>`")
         return 0
-    print(f"task {task.name} 열린 todo {len(task.todos)}건:")
-    for number, todo in enumerate(task.todos, start=1):
-        print(f"  {wp.format_todo_line(number, todo)}")
+    _print_open_todos(wp, task.name, todos)
     return 0
 
 
@@ -3822,32 +3827,31 @@ def cmd_task_todo_done(
     *,
     worktree_pool=None,
 ) -> int:
-    """`task todo done <이름> <번호>` — 열린 todo 하나를 완료 처리한다(목록에서 제거).
+    """`task todo done <이름> <ID>` — 열린 todo 하나를 완료 처리한다(목록에서 제거).
 
-    완료 표시를 남기지 않는다 — 무엇을 했는지의 단일 진실은 log handoff entry 다. 번호가 범위
-    밖이면 rc1 로 멈춘다(무시하면 지운 줄 알고 넘어간다).
+    완료 표시를 남기지 않는다 — 무엇을 했는지의 단일 진실은 log handoff entry 다. ID 는 재사용
+    하지 않으므로 목록이 줄어도 남은 줄의 번호가 밀리지 않는다. 없는 ID 면 rc1 로 멈춘다
+    (무시하면 지운 줄 알고 넘어간다).
     """
     wp = _todo_worktree_pool(worktree_pool, "완료")
     if wp is None:
         return 1
     try:
-        result = wp.close_task_todo(args.name, args.index)
+        result = wp.close_task_todo(args.name, args.todo_id)
     except wp.InvalidTaskName as exc:
         print(f"[중단] 부적합 task 명 {args.name!r} — {exc.reason}.", file=sys.stderr)
         return 1
-    except IndexError as exc:
+    except LookupError as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return 1
     if result is None:
         return _todo_missing_task(args.name)
     updated, removed = result
     print(f"완료: {str(removed.get('text', '')).strip()}")
-    if not updated.todos:
-        print(f"task {updated.name} 열린 todo 없음 — 이 상태에서는 파일 수정이 거부된다.")
+    if not updated:
+        print(f"task {args.name} 열린 todo 없음 — 이 상태에서는 파일 수정에 경고가 붙는다.")
         return 0
-    print(f"task {updated.name} 열린 todo {len(updated.todos)}건:")
-    for number, todo in enumerate(updated.todos, start=1):
-        print(f"  {wp.format_todo_line(number, todo)}")
+    _print_open_todos(wp, args.name, updated)
     return 0
 
 
@@ -5370,14 +5374,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_todo_add.add_argument("text", help="할 일 한 줄")
     p_todo_add.set_defaults(func=cmd_task_todo_add)
 
-    p_todo_list = todo_sub.add_parser("list", help="열린 todo 를 번호·등록일·묵은 일수와 함께 본다")
+    p_todo_list = todo_sub.add_parser("list", help="열린 todo 를 ID·등록일·묵은 일수와 함께 본다")
     p_todo_list.add_argument("name", help="대상 task 이름")
     p_todo_list.set_defaults(func=cmd_task_todo_list)
 
     p_todo_done = todo_sub.add_parser(
         "done", help="열린 todo 하나를 완료 처리한다 (목록에서 제거·완료 표시를 남기지 않는다)")
     p_todo_done.add_argument("name", help="대상 task 이름")
-    p_todo_done.add_argument("index", type=int, help="`task todo list` 가 보여준 번호(1부터)")
+    p_todo_done.add_argument(
+        "todo_id", type=int, help="`task todo list` 가 보여준 ID(`#3` 이면 3·재사용되지 않는다)")
     p_todo_done.set_defaults(func=cmd_task_todo_done)
 
     # task branch <이름> <슬롯> <브랜치> --from <부모> — 슬롯 안 새 브랜치의 유일한 생성 경로(부모 기록 동반).

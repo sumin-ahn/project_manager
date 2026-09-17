@@ -2329,17 +2329,16 @@ class PmBootstrap:
         return self._task_pm_state_file
 
     def _open_todos(self) -> list[dict]:
-        """이 task 의 열린 todo — 장부(`tasks[].todos`) 단일 출처.
+        """이 task 의 열린 todo — task 별 파일(`.local/tasks/<task>/todo.json`) 단일 출처.
 
         옛 "남은 작업 전체 그림" 절을 대체한다. 그 절은 손으로 쓰는 서술이라 갱신이 밀리면
         부트스트랩이 조용히 낡은 사실을 dump 했다 — 이 목록은 기계가 쓰는 자리에서만 온다.
-        장부 판독 실패는 여기서 접지 않는다(같은 장부를 읽는 슬롯 검증과 같은 규율).
+        판독 실패는 여기서 접지 않는다(같은 자리를 읽는 슬롯 검증과 같은 규율).
         """
         if not self._task_name:
             return []
         wp = self._worktree_pool or _load_worktree_pool()
-        task = wp.find_task(self._task_name)
-        return list(task.todos) if task is not None else []
+        return list(wp.read_task_todos(self._task_name))
 
     def _collect_handoff_context(self, log_text: str | None = None) -> dict | None:
         """bound slot pm_state 차수(+ log 교차검증) + 이 task 의 열린 todo 를 수집한다.
@@ -2706,8 +2705,8 @@ class PmBootstrap:
         if todos:
             wp = self._worktree_pool or _load_worktree_pool()
             lines.append("")
-            for number, todo in enumerate(todos, start=1):
-                lines.append(f"- {wp.format_todo_line(number, todo)}")
+            for todo in todos:
+                lines.append(f"- {wp.format_todo_line(todo)}")
         else:
             lines.append(
                 f"- 없음 — `pm-config task todo add {self._task_name} <할 일 한 줄>` 로 "

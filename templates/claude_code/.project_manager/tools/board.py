@@ -1813,23 +1813,22 @@ def _shell_slot_warnings(
     return warnings
 
 
-def _open_todo_count(tasks: Sequence[dict], task: str) -> int:
-    """그 task 의 열린 todo 수 — 장부 행 `todos` 의 길이.
+def _open_todo_count(root: str | os.PathLike[str], task: str) -> "int | None":
+    """그 task 의 열린 할 일 수 — 판정 대상 PM 홈의 엔진으로 `todo.json` 을 읽는다.
 
-    `Task.to_dict` 가 이 키를 항상 내보내고 `bind_task` 가 세션마다 장부를 다시 쓰므로, 살아 있는
-    task 행에 이 키가 없을 수 없다. 없으면 이 엔진이 쓴 장부가 아니다 — 0 으로 흘려 보내지 않고
-    올린다(형식이 틀린 장부를 통과시키지 않는 `_slot_ledger_rows` 와 같은 규율).
+    형식을 아는 코드는 `worktree_pool` 한 벌로 둔다 — 여기서 JSON 을 직접 파싱하면 파서가 두 벌이
+    되어 갈린다. 사본은 **판정 대상 홈(`root`)의 것**이다: 이 판정을 부르는 훅이 그 홈에 설치돼
+    있고, 할 일 파일도 그 홈 안에 있다.
+
+    엔진 사본이 없으면 `None` — 셀 근거가 없는 것과 0건은 다르다(호출부가 침묵한다).
     """
-    row = next((item for item in tasks if item.get("name") == task), None)
-    if row is None:
-        return 0
-    todos = row.get("todos")
-    if not isinstance(todos, list):
-        raise ValueError(
-            f"worktree lease 장부의 task {task!r} 행에 todos 목록이 없다 — "
-            "`pm_bootstrap.py --task <이름>` 을 한 번 돌려 장부를 현행 형식으로 다시 쓴다"
-        )
-    return len(todos)
+    pool_path = Path(root) / ".project_manager" / "tools" / "worktree_pool.py"
+    if not pool_path.is_file():
+        return None
+    pool = _load_module_from_path(
+        pool_path, "worktree_pool.py", verifier=_verify_engine_rev, cache=True,
+    )
+    return len(pool.read_task_todos(task))
 
 
 def _no_open_todo_judgment(
@@ -1852,7 +1851,10 @@ def _no_open_todo_judgment(
         return None
     _leases, tasks = _slot_ledger_rows(home)
     task = _session_task(session, tasks)
-    if task is None or _open_todo_count(tasks, task) > 0:
+    if task is None:
+        return None
+    open_todos = _open_todo_count(home, task)
+    if open_todos is None or open_todos > 0:
         return None
     return {
         "verdict": "warn", "cwd_identity": "non-repo",

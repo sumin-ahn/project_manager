@@ -602,6 +602,9 @@ def test_default_call_does_not_load_board_engine(pc, monkeypatch, tmp_path, caps
         def list_tasks(self):
             return []
 
+        def read_task_todos(self, name):
+            return []
+
         def preserved_branches(self):
             return []
 
