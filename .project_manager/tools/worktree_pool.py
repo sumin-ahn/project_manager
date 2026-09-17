@@ -707,7 +707,32 @@ class Lease:
 # `open`·`pid` 는 옛 이름으로 남겨 둔다 — canonical 에 있어야 `from_dict` 가 그것을 `extra` 로
 # 보존하지 않고 버린다(다시 쓸 때 옛 필드가 되살아나지 않는다·읽기 1회 이주). 옛 열림 기록은
 # 어느 세션이 열었는지 모르므로 닫힘으로 읽는다 — 열린 세션은 부트스트랩을 다시 한다.
-_TASK_CANONICAL_KEYS = frozenset({"name", "prefix", "session", "open", "pid", "started"})
+_TASK_CANONICAL_KEYS = frozenset(
+    {"name", "prefix", "session", "open", "pid", "started", "todos"})
+
+
+def _sanitize_todos(raw: object) -> list[dict]:
+    """장부에서 읽은 todo 목록을 정규화한다 — 두 키(`text`·`created`)만 남긴다.
+
+    `from_dict` 의 `session` 강제(문자열이 아니면 빈 값)와 같은 자리의 같은 규율이다. 장부가
+    구 엔진·손편집으로 다른 모양을 담고 있어도 정체성 조회를 깨뜨리지 않는다. 내용이 빈 행은
+    가리키는 일이 없으므로 버린다.
+    """
+    if not isinstance(raw, list):
+        return []
+    todos: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        created = item.get("created")
+        todos.append({
+            "text": text.strip(),
+            "created": created if isinstance(created, str) else "",
+        })
+    return todos
 
 
 class Task:
@@ -722,6 +747,11 @@ class Task:
         `close_task_session`(핸드오프·`task close`)·`end_task`. 슬롯 쓰기 가드가 "이 세션의
         task" 를 이 값으로 찾는다. `open` 은 이 값에서 파생한 읽기 전용 값이다.
       - `started`— task 레코드 생성 시각(UTC ISO).
+      - `todos`  — 이 task 의 **열린** 할 일 목록(`[{"text", "created"}]`·기본 빈 리스트).
+        상태 필드를 두지 않는다 — **존재 = 열림, 완료 = 제거**(`close_task_session` 과 같은
+        규율로 세 번째 상태값을 만들지 않는다). 세션 종료는 `session` 만 비우므로 todo 는 다음
+        세션이 그대로 승계한다. `created`(UTC ISO)가 얼마나 묵었는지의 유일한 근거다. 여는
+        자리 = `add_task_todo`, 닫는 자리 = `close_task_todo`.
 
     저장 위치 = 리스 장부 파일 top-level `tasks`(출처 1개·저장소
     신설 불요·단일 파일 스캔). `.local/tasks/<name>/` 는 **서술
@@ -730,11 +760,13 @@ class Task:
     """
 
     def __init__(self, name: str, prefix: "str | None" = None,
-                 session: str = "", started: str = "", extra: "dict | None" = None):
+                 session: str = "", started: str = "", extra: "dict | None" = None,
+                 todos: "list[dict] | None" = None):
         self.name = name
         self.prefix = prefix      # board prefix (None=없음)
         self.session = session    # 연 하네스 세션 ID (빈 값 = 닫힘)
         self.started = started    # 레코드 생성 시각 (UTC ISO)
+        self.todos = _sanitize_todos(todos)   # 열린 할 일 (존재=열림·완료=제거)
         self.extra = dict(extra) if extra else {}
 
     @property
@@ -757,6 +789,7 @@ class Task:
             "prefix": self.prefix,
             "session": self.session,
             "started": self.started,
+            "todos": [dict(todo) for todo in self.todos],
         }
         d.update(self.extra)      # 미지 키 재방출(왕복 무손실·canonical 을 덮을 위험 없음)
         return d
@@ -772,6 +805,7 @@ class Task:
             session=session if isinstance(session, str) else "",
             started=d.get("started", ""),
             extra=extra,
+            todos=d.get("todos"),
         )
 
 
@@ -2430,6 +2464,93 @@ def set_task_prefix(name: str, prefix: "str | None") -> "Task | None":
         target.prefix = prefix
         _write_tasks(tasks)
         return target
+
+
+def add_task_todo(name: str, text: str, *, now=_now_utc) -> "Task | None":
+    """task 에 열린 todo 를 하나 더한다 — 갱신된 `Task`·task 부재 시 `None`.
+
+    `pm-config task todo add <이름> <내용>` 의 write 백엔드다. 같은 내용을 두 번 넣는 것은 막지
+    않는다 — 같은 문장이 서로 다른 일을 가리킬 수 있고, 중복 여부는 기계가 판정할 수 없다.
+
+    **장부 IO 는 이 모듈이 단일 소유**(직접 JSON write 금지) — `set_task_prefix` 와 같은 락
+    (`_lease_lock` 아래 `_read_tasks_strict`/`_write_tasks`)으로 atomic 갱신한다. 형제 `leases`·
+    미지 top-level 키는 무손실 round-trip.
+
+    **명 검증(must-fix)**: `_validate_task_name` 을 장부 write **이전**에 돌린다(형제 write
+    진입점 `set_task_prefix`·`close_task_session` 동형). 빈 내용은 `ValueError` — 가리키는 일이
+    없는 todo 를 만들면 쓰기 가드가 그 빈 줄 하나로 열려 버린다.
+    """
+    _validate_task_name(name)   # 장부 write 이전 fail-loud(부작용 0·must-fix).
+    body = text.strip()
+    if not body:
+        raise ValueError(f"task {name!r} 에 넣을 todo 내용이 비어 있다")
+    with _lease_lock():
+        tasks = _read_tasks_strict()
+        target = next((t for t in tasks if t.name == name), None)
+        if target is None:
+            return None
+        target.todos.append({"text": body, "created": now()})
+        _write_tasks(tasks)
+        return target
+
+
+def close_task_todo(name: str, index: int) -> "tuple[Task, dict] | None":
+    """열린 todo 하나를 완료 처리한다(목록에서 제거) — `(갱신된 Task, 지운 todo)`·부재 시 `None`.
+
+    `pm-config task todo done <이름> <번호>` 의 write 백엔드다. `index` 는 `task todo list` 가
+    보여주는 **1부터 세는 번호**다 — 사람이 화면에서 읽은 번호를 그대로 쓴다. 범위 밖이면
+    `IndexError` 로 멈춘다(호출부가 rc1 안내): 조용히 무시하면 지운 줄 알고 넘어간다.
+
+    완료 표시를 남기지 않는다 — 무엇을 했는지의 단일 진실은 log handoff entry 이고, 여기에
+    완료 목록을 쌓으면 같은 사실이 두 곳에 산다.
+    """
+    _validate_task_name(name)   # 장부 write 이전 fail-loud(부작용 0·must-fix).
+    with _lease_lock():
+        tasks = _read_tasks_strict()
+        target = next((t for t in tasks if t.name == name), None)
+        if target is None:
+            return None
+        if not 1 <= index <= len(target.todos):
+            raise IndexError(
+                f"todo 번호 {index} 는 task {name!r} 의 범위 밖이다 "
+                f"(열린 todo {len(target.todos)}건)")
+        removed = target.todos.pop(index - 1)
+        _write_tasks(tasks)
+        return target, removed
+
+
+def todo_age_days(created: str, *, now=None) -> "int | None":
+    """등록일(UTC ISO)에서 며칠 묵었는지 — 값이 없거나 ISO 가 아니면 `None`.
+
+    나이는 사람이 보는 표시값이라 못 읽는 시각 하나가 목록 전체를 막지 않는다 — 그 줄의 나이만
+    비운다. 저장측(`_sanitize_todos`)이 문자열만 통과시키므로 여기 오는 값은 문자열이거나 빈 값이다.
+    """
+    if not created:
+        return None
+    try:
+        stamp = datetime.datetime.fromisoformat(created)
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=datetime.timezone.utc)
+    current = now or datetime.datetime.now(datetime.timezone.utc)
+    return max((current - stamp).days, 0)
+
+
+def format_todo_line(index: int, todo: dict, *, now=None) -> str:
+    """열린 todo 한 줄 — `<번호>. <내용> (등록 <날짜> · N일째)`.
+
+    표시 형식의 단일 진실이다 — CLI(`task todo list`)·부트스트랩 dump·압축 재주입이 같은 함수를
+    부른다(문구 사본 0). 나이를 못 구하면 등록일만 적는다. 번호는 `close_task_todo` 가 받는 것과
+    같은 1부터 세는 번호다.
+    """
+    text = str(todo.get("text", "")).strip()
+    created = str(todo.get("created", ""))
+    if not created:
+        return f"{index}. {text} (등록일 없음)"
+    age = todo_age_days(created, now=now)
+    tail = f"{created[:10]} · {age}일째" if age is not None else created[:10]
+    return f"{index}. {text} (등록 {tail})"
 
 
 def close_task_session(name: str) -> "Task | None":

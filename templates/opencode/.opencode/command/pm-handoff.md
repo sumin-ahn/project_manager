@@ -6,7 +6,7 @@ audience: user-entrypoint
 
 # /pm-handoff — PM 세션 종료 핸드오프 자동화
 
-{{PROJECT_NAME}} PM 세션의 핸드오프 7단계를 한 trigger 로 처리한다. PM 손작업은 *log/current.md handoff entry 본문 서술 + 이번 세션 산출 경로를 pathspec 으로 명시한 git commit*이다. 인계 본문은 다음 세션 부트스트랩이 log entry 에서 dump한다. backbone = `.project_manager/tools/pm_handoff.py`.
+{{PROJECT_NAME}} PM 세션의 핸드오프 7단계를 한 trigger 로 처리한다. PM 손작업은 *log/current.md handoff entry 본문 서술 + 끝낸 todo 닫기(`pm-config task todo done <task> <번호>` · 남은 것은 그대로 다음 세션이 승계) + 이번 세션 산출 경로를 pathspec 으로 명시한 git commit*이다. 인계 본문은 다음 세션 부트스트랩이 log entry 에서 dump한다. backbone = `.project_manager/tools/pm_handoff.py`.
 
 환경별 명령 문법은 부트스트랩의 "현재 환경" 표시에 맞춰 [Windows 안내](../references/environment-windows.md) 또는 [Linux/macOS 안내](../references/environment-posix.md)를 참조한다.
 

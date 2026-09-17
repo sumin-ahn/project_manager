@@ -428,6 +428,9 @@ _GIT_GUARD_CASE_ASK_USER = "ask-user"
 _GIT_GUARD_CASE_GRANT_FORGERY = "grant-forgery"
 _GIT_GUARD_CASE_SLOT_NO_TASK = "slot-no-task"
 _GIT_GUARD_CASE_SLOT_NOT_OWNED = "slot-not-owned"
+# 열린 todo 없이 파일을 고치려는 경우 — 무엇을 하는 중인지 장부에 없으면 다음 세션도 사용자도
+# 그 일을 못 본다. 등록 경로(`pm-config task todo add`)는 셸 명령이라 이 판정을 타지 않는다.
+_GIT_GUARD_CASE_NO_OPEN_TODO = "no-open-todo"
 # 사용자 1회 허용 입력 한 줄 — `git 허용: <명령 원문>`. 사용자 프롬프트 훅만 이 줄로 허용 기록을
 # 만든다. 도구 호출 입력에 이 표식이나 허용 기록 폴더 이름이 있으면 위조 시도로 거부한다.
 GIT_GRANT_LINE = re.compile(r"^[ \t]*git[ \t]+허용[ \t]*:[ \t]*(.*?)[ \t]*$", re.MULTILINE)
@@ -1598,6 +1601,10 @@ _GIT_GUARD_ACTION_LINES: dict[str, str] = {
         "이 세션 task 가 잡은 슬롯에서만 쓴다. 잡은 슬롯이 없으면 `pm-config alloc <repo> --task <이름>` "
         "으로 잡는다."
     ),
+    _GIT_GUARD_CASE_NO_OPEN_TODO: (
+        "지금 하는 일을 먼저 등록한다 — `pm-config task todo add <task> <할 일 한 줄>`. 목록은 "
+        "`pm-config task todo list <task>`, 끝낸 것은 `pm-config task todo done <task> <번호>`."
+    ),
 }
 _GIT_GUARD_ASK_WITH_GRANT = (
     "사용자에게 이 명령을 실행할지 묻는다. 허용하면 사용자가 `git 허용: <명령 원문>` 한 줄을 "
@@ -1806,6 +1813,46 @@ def _shell_slot_warnings(
     return warnings
 
 
+def _open_todo_count(tasks: Sequence[dict], task: str) -> int:
+    """그 task 의 열린 todo 수 — 장부 행 `todos` 의 길이. 키가 없던 옛 행은 0 이다."""
+    row = next((item for item in tasks if item.get("name") == task), None)
+    todos = row.get("todos") if isinstance(row, dict) else None
+    return len(todos) if isinstance(todos, list) else 0
+
+
+def _no_open_todo_judgment(
+    root: str | os.PathLike[str], session: str,
+) -> dict[str, str] | None:
+    """열린 todo 가 없는 세션의 파일 쓰기 거부 — 막을 근거가 없으면 `None`(기존 판정 그대로).
+
+    "무엇을 하는 중인지" 가 장부에 없으면 다음 세션도 사용자도 그 일을 못 본다. 그래서 파일을
+    고치기 **전에** todo 를 등록하게 한다. 거부 대상은 파일 쓰기·편집 도구뿐이고, todo 를 만드는
+    `pm-config task todo add` 는 셸 명령이라 이 판정을 타지 않는다 — 첫 todo 를 못 만들어 잠기는
+    경우가 없다.
+
+    task 를 해소할 수 없으면(부트스트랩 전·하네스 밖·PM 홈 아님) 여기서 막지 않는다. 그 경우의
+    거부는 슬롯 주인 판정(`_slot_write_judgment`)이 이미 한다 — 같은 사실로 두 번 거부하지 않는다.
+    장부가 **있는데** 형식이 틀리면 `_slot_ledger_rows` 가 올린다(빈 장부로 흘려 통과시키지 않는
+    슬롯 판정과 같은 규율).
+    """
+    home = Path(root)
+    if not (home / ".project_manager" / ".local" / "worktree-leases.json").is_file():
+        return None
+    _leases, tasks = _slot_ledger_rows(home)
+    task = _session_task(session, tasks)
+    if task is None or _open_todo_count(tasks, task) > 0:
+        return None
+    return {
+        "verdict": "deny", "cwd_identity": "non-repo", "code": GIT_DESTRUCTIVE_DENY_CODE,
+        "case": _GIT_GUARD_CASE_NO_OPEN_TODO,
+        "reason": _git_guard_stop_reason(
+            [_GIT_GUARD_CASE_NO_OPEN_TODO],
+            f"task {task} 에 열린 todo 가 없음 — 파일을 고치기 전에 지금 하는 일을 등록한다",
+            grants_available=False,
+        ),
+    }
+
+
 def judge_tool_input(
     root: str | os.PathLike[str], session: str, cwd: str, tool_name: str, tool_input: object,
 ) -> dict[str, str]:
@@ -1814,7 +1861,8 @@ def judge_tool_input(
     허용 기록 폴더 이름이 어느 값에든 있으면(파일 경로·patch 본문) 기록 파일 쓰기로, 줄 머리에
     허용 표식이 있으면(파일 내용·위임 프롬프트) 중첩 세션 프롬프트로 허용을 만들려는 시도로 본다.
     파일 쓰기·편집 도구의 대상이 `root`(훅이 설치된 PM 홈) 슬롯 안이면 이 세션 task 가 잡은 슬롯일
-    때만 통과한다.
+    때만 통과한다. 그리고 대상이 어디든, 이 세션 task 에 **열린 todo 가 없으면** 파일 쓰기를
+    거부한다(`_no_open_todo_judgment`) — 무엇을 하는 중인지 장부에 없는 채로 파일이 바뀌지 않게 한다.
     """
     for text in _tool_input_strings(tool_input):
         if GIT_GRANT_DIR_NAME in text.replace("\\", "/") or GIT_GRANT_LINE.search(text):
@@ -1827,6 +1875,11 @@ def judge_tool_input(
             )
             return judgment
     targets = _write_tool_targets(cwd, tool_name, tool_input) if isinstance(tool_input, dict) else []
+    # 파일을 바꾸는 호출에만 건다 — 읽기 도구는 대상이 없어 여기 들어오지 않는다.
+    if targets:
+        no_open_todo = _no_open_todo_judgment(root, session)
+        if no_open_todo is not None:
+            return no_open_todo
     denies = [
         judgment for judgment in (_slot_write_judgment(root, session, target) for target in targets)
         if judgment is not None and judgment["verdict"] == "deny"

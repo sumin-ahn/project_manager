@@ -35,12 +35,6 @@ type: handoff-state
 |---|---|
 | (예시) board | done 0 / open 0 / claimed 0 / blocked 0 |
 
-## 남은 작업 전체 그림
-
-<!-- TODO: 게이트별·phase별 우선순위와 외부 대기 항목을 정리. 핸드오프마다 갱신.
-예시 구조:
-### 🟢 board open N — 즉시 진행 가능
-### 🔵 외부 대기 (키 발급·배포 등)
-### 🟡 pre-ADR (ideas/)
-### 🔒 사용자 게이트 대기
--->
+<!-- 남은 작업은 여기 적지 않는다 — 장부의 열린 todo 가 단일 진실이다.
+     `pm-config task todo add <task> <할 일 한 줄>` / `list` / `done <번호>`.
+     부트스트랩 dump 와 압축 재주입이 그 목록을 같은 형식으로 보여준다. -->

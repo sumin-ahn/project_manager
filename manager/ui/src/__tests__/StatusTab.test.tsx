@@ -89,6 +89,18 @@ describe("현황 탭 읽기 부분", () => {
     expect(screen.getByTestId("task-live")).toHaveTextContent("작업 중");
   });
 
+  it("열린 todo 를 번호·등록일과 함께 펼치고 줄마다 [완료]를 붙인다", () => {
+    renderTab({ light: { status: document_ }, heavy: { status: document_ } });
+
+    expect(screen.getByTestId("todos-live"))
+      .toHaveTextContent("1. 슬롯 쓰기 가드 실측 (등록 2026-09-16");
+    expect(screen.getByTestId("todo-done-live-1")).toBeEnabled();
+    // 열린 todo 가 0건이면 자리 자체가 없다(빈 목록을 위한 빈 칸을 만들지 않는다).
+    expect(screen.queryByTestId("todos-demo")).toBeNull();
+    // 등록 버튼은 입력 전엔 비활성이고, 작업 중 task 라고 막지 않는다.
+    expect(screen.getByTestId("todo-add-live")).toBeDisabled();
+  });
+
   it("행마다 동작 자리가 하나씩 붙고 대여는 표 머리 하나다", () => {
     renderTab({ light: { status: document_ }, heavy: { status: document_ } });
     expect(screen.getAllByTestId("row-actions").length)

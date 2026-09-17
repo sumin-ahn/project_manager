@@ -224,7 +224,7 @@ def test_status_json_light_sections_from_real_ledger(home, pc, wp):
 
     assert document["tasks"] == [{
         "name": "main", "prefix": "app", "alive": True,
-        "started": "2026-09-07T00:00:00+00:00", "slots": [slot],
+        "started": "2026-09-07T00:00:00+00:00", "slots": [slot], "todos": [],
     }]
     assert document["harnesses"] == ["claude"]
     assert document["repos"] == [{

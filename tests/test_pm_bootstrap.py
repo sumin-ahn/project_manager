@@ -558,7 +558,7 @@ def test_task_empty_session_marker_labels_pm_1cha_not_placeholder(bootstrap):
         "session_num": 1,
         "session_stale": False,
         "state_session_num": 1,
-        "remaining_work": "## 남은 작업 / 사용자 발의\n\n- 아직 없음",
+        "todos": [],
         "state_path": str(inst._pm_state_file),
         "fresh_slot": False,
     }
@@ -584,7 +584,7 @@ def test_task_resume_not_forced_to_task_first_branch(bootstrap):
     inst = bootstrap.PmBootstrap(run_git_fn=lambda a: (0, ""))
     inst._task_name = "payments-refactor"
     ctx = {"session_num": 3, "session_stale": False, "state_session_num": 2,
-           "remaining_work": None, "state_path": "pm_state.md", "fresh_slot": False}
+           "todos": [], "state_path": "pm_state.md", "fresh_slot": False}
     md = inst._build_markdown(_T0391_BOARD, None, _T0391_GIT, None, "ts", ctx, None)
     assert "## PM 3차 부트스트랩" in md
     assert "task 1차" not in md

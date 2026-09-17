@@ -9,7 +9,7 @@
 - **git**: 브랜치, 최근 5 commit, working tree clean 여부. task-only는 task 소유 작업공간만 수집하고 다중 슬롯 대표 cwd·전수 freshness 범위를 표시한다.
 - **차수**: `## PM N차 부트스트랩`. task pm_state 또는 bound slot pm_state의 세션식별 절에서 추론하며 미해소면 placeholder다.
 - **마지막 entry**: `log/current.md` 제목(date·type·title) + 본문 전체를 `<details>`로 dump한다. `handoff`면 직전 PM 종료 정합, `complete`면 wave 진행 중일 수 있다.
-- **pm_state**: 남은 작업/사용자발의 절을 surface한다.
+- **열린 todo**: 장부의 열린 todo 를 번호·등록일과 함께 surface한다(등록·완료는 `pm-config task todo add|list|done`).
 
 ## PM 보고
 
@@ -17,7 +17,7 @@ pm_role.md §인계 후 첫 turn template에 따라 CLI 출력 뒤 다음만 요
 
 1. board 1줄: `done / open / claimed / blocked` + 회귀·lint·git.
 2. 직전 세션 3~5줄: dump된 handoff의 핵심 산출물·메타 학습.
-3. 다음 옵션 N개: surface된 pm_state 남은 작업 전체 그림의 우선순위.
+3. 다음 옵션 N개: surface된 열린 todo + open ticket 우선순위.
 4. 결정 요청: *무엇부터 갈까요?* + 권장 시퀀스 1줄.
 
 CLI subprocess 실패는 fail-soft가 아니므로 즉시 중단·보고한다. 이 skill은 비즈니스 로직 없는 thin wrapper이며 자동 trigger는 frontmatter description의 한국어 명령(예: `"부트스트랩"`)으로 매칭한다.

@@ -158,12 +158,13 @@ class _FakeTaskRecord:
     """bind_task 반환 Task 대역 — surface 가 읽는 name·prefix·open·started."""
 
     def __init__(self, name: str, prefix: "str | None", open: bool = True,
-                 started: str = "2026-07-18T00:00:00+00:00"):
+                 started: str = "2026-07-18T00:00:00+00:00", todos=()):
         self.name = name
         self.prefix = prefix
         self.open = open
         self.session = "s-other" if open else ""
         self.started = started
+        self.todos = list(todos)   # 열린 todo — 부트스트랩 dump 가 장부에서 읽는 값
 
 
 class FakeWorktreePool:
@@ -1029,23 +1030,21 @@ def test_bound_session_name_task_returns_tag(bootstrap, tmp_path):
 
 
 def test_task_resume_dumps_pm_state_body(bootstrap, tmp_path, capsys):
-    """resume — task 서술 pm_state 본문(차수 추론 + '남은 작업' 절)을 dump(포인터가 아닌 소비)."""
+    """resume — pm_state 에서 차수를 추론하고 열린 todo 를 dump(포인터가 아닌 소비)."""
     _write_task_pm_state(
         tmp_path, "job1",
         "# pm_state\n\n"
         "## 세션 식별 (현재까지 사용된 이름)\n"
         "  - **3차** job1 세션\n"
-        "  - **2차** job1 세션\n\n"
-        "## 남은 작업 전체 그림\n"
-        "- [ ] TASK-남은작업-표식-A\n",
+        "  - **2차** job1 세션\n",
     )
     inst, _ = _task_read_bootstrap(bootstrap, tmp_path, action="resumed")
     rc = inst.run(task="job1")
     assert rc == 0
     out = capsys.readouterr().out
-    # 차수 추론(3차 → 4차)·남은작업 절 본문이 실제로 dump(포인터만이 아니라 소비).
+    # 차수 추론(3차 → 4차)·열린 todo 절이 실제로 dump(포인터만이 아니라 소비).
     assert "## PM 4차 부트스트랩" in out
-    assert "TASK-남은작업-표식-A" in out
+    assert "### 열린 todo" in out
 
 
 def test_task_first_session_has_state_and_announces_session_one(bootstrap, tmp_path, capsys):

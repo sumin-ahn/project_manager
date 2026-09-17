@@ -26,6 +26,9 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config task prefix <이름> <p|none> [--user-ack <p>] # 신규 prefix 사용자 승인값 결속·변경/해제 (`none`=해제)
     pm-config task end <이름>                               # task 종료 — claimed 소진 게이트·dirty 게이트·일괄 반납 + _ended 아카이브
     pm-config task reopen <이름> [--archive <basename>]     # 종료 archive를 동일 task 정체성으로 복원
+    pm-config task todo add <이름> <할 일 한 줄>            # 열린 todo 등록 — 파일 수정 전에 지금 하는 일을 적는다(등록 전 쓰기는 가드가 거부)
+    pm-config task todo list <이름>                         # 열린 todo — 번호·등록일·묵은 일수
+    pm-config task todo done <이름> <번호>                  # 완료 = 목록에서 제거 (완료 표시를 남기지 않는다·기록은 log)
     pm-config update [--from <upstream>]                   # 엔진 갱신 (pm-update 흡수)
     pm-config upstream show | set <url|path>               # upstream 조회/전환 (검증·fail-closed)
     pm-config add-harness <harness> [--from <src>] [--dry-run]  # 라이브 인스턴스에 두 번째 harness 어댑터 추가
@@ -2516,6 +2519,8 @@ def _status_json_tasks(wp, tasks) -> list[dict]:
         "alive": bool(task.open),
         "started": getattr(task, "started", "") or None,
         "slots": [lease.slot for lease in (wp.slots_for_task(task.name) or [])],
+        # 열린 todo — 관리자 화면이 task 줄에 그대로 그린다(가벼운 절이라 5초 주기로 갱신된다).
+        "todos": [dict(todo) for todo in getattr(task, "todos", [])],
     } for task in tasks]
 
 
@@ -3731,6 +3736,118 @@ def cmd_task_reopen(
 # `none` = prefix 해제 리터럴(무prefix·T-NNNN 발행) — board `_PREFIX_RESERVED` 와 동형(case-insensitive
 # fold). setter 는 이 리터럴을 board `_validate_prefix`(예약어 거부) 이전에 가로채 해제로 번역한다.
 _TASK_PREFIX_NONE_LITERAL = "none"
+
+
+def _todo_worktree_pool(worktree_pool, action: str):
+    """todo 명령 셋이 공유하는 엔진 해소 — 부재면 `None`(호출부가 rc1 안내)."""
+    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
+    if wp is None:
+        print(
+            f"[중단] worktree_pool.py 엔진을 찾을 수 없다 — todo {action} 불가 "
+            f"({TOOLS_DIR / 'worktree_pool.py'} 부재 또는 로드 실패).",
+            file=sys.stderr,
+        )
+    return wp
+
+
+def _todo_missing_task(name: str) -> int:
+    """todo 대상 task 가 장부에 없을 때의 단일 안내(세 명령 공용·문구 사본 0)."""
+    print(
+        f"[중단] task {name!r} 이(가) 장부에 없다 — todo 는 기존 task 레코드에 달린다. "
+        f"먼저 `pm-config task new {name}`(정체성만) 또는 "
+        f"`{_runtime_skill_entry('pm-bootstrap')} --task {name}`(생성+진입) 로 task 를 만들어라.",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def cmd_task_todo_add(
+    args: argparse.Namespace,
+    *,
+    worktree_pool=None,
+) -> int:
+    """`task todo add <이름> <내용>` — 열린 todo 를 하나 더한다.
+
+    쓰기 가드가 "열린 todo 가 없으면 파일 수정 거부" 를 이 목록으로 판정하므로, 이 명령이
+    작업을 시작하는 진입이다. 등록 시각(UTC ISO)은 엔진이 박고 사용자가 주지 않는다 — 묵은
+    정도의 근거를 손으로 적게 하면 그 값이 곧 틀린다.
+    """
+    wp = _todo_worktree_pool(worktree_pool, "등록")
+    if wp is None:
+        return 1
+    try:
+        updated = wp.add_task_todo(args.name, args.text)
+    except wp.InvalidTaskName as exc:
+        print(f"[중단] 부적합 task 명 {args.name!r} — {exc.reason}.", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
+    if updated is None:
+        return _todo_missing_task(args.name)
+    print(f"task {updated.name} 열린 todo {len(updated.todos)}건:")
+    for number, todo in enumerate(updated.todos, start=1):
+        print(f"  {wp.format_todo_line(number, todo)}")
+    return 0
+
+
+def cmd_task_todo_list(
+    args: argparse.Namespace,
+    *,
+    worktree_pool=None,
+) -> int:
+    """`task todo list <이름>` — 열린 todo 를 번호·등록일·묵은 일수와 함께 본다."""
+    wp = _todo_worktree_pool(worktree_pool, "조회")
+    if wp is None:
+        return 1
+    try:
+        task = wp.find_task(args.name)
+    except wp.InvalidTaskName as exc:
+        print(f"[중단] 부적합 task 명 {args.name!r} — {exc.reason}.", file=sys.stderr)
+        return 1
+    if task is None:
+        return _todo_missing_task(args.name)
+    if not task.todos:
+        print(f"task {task.name} 열린 todo 없음 — `pm-config task todo add {task.name} <내용>`")
+        return 0
+    print(f"task {task.name} 열린 todo {len(task.todos)}건:")
+    for number, todo in enumerate(task.todos, start=1):
+        print(f"  {wp.format_todo_line(number, todo)}")
+    return 0
+
+
+def cmd_task_todo_done(
+    args: argparse.Namespace,
+    *,
+    worktree_pool=None,
+) -> int:
+    """`task todo done <이름> <번호>` — 열린 todo 하나를 완료 처리한다(목록에서 제거).
+
+    완료 표시를 남기지 않는다 — 무엇을 했는지의 단일 진실은 log handoff entry 다. 번호가 범위
+    밖이면 rc1 로 멈춘다(무시하면 지운 줄 알고 넘어간다).
+    """
+    wp = _todo_worktree_pool(worktree_pool, "완료")
+    if wp is None:
+        return 1
+    try:
+        result = wp.close_task_todo(args.name, args.index)
+    except wp.InvalidTaskName as exc:
+        print(f"[중단] 부적합 task 명 {args.name!r} — {exc.reason}.", file=sys.stderr)
+        return 1
+    except IndexError as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
+    if result is None:
+        return _todo_missing_task(args.name)
+    updated, removed = result
+    print(f"완료: {str(removed.get('text', '')).strip()}")
+    if not updated.todos:
+        print(f"task {updated.name} 열린 todo 없음 — 이 상태에서는 파일 수정이 거부된다.")
+        return 0
+    print(f"task {updated.name} 열린 todo {len(updated.todos)}건:")
+    for number, todo in enumerate(updated.todos, start=1):
+        print(f"  {wp.format_todo_line(number, todo)}")
+    return 0
 
 
 def cmd_task_prefix(
@@ -5239,6 +5356,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_task_prefix.set_defaults(func=cmd_task_prefix)
 
+    # task todo <add|list|done> <이름> — 이 task 의 **열린** 할 일. 상태 필드가 없다(존재=열림·
+    # 완료=제거). 쓰기 가드가 "열린 todo 없으면 파일 수정 거부" 를 이 목록으로 판정한다.
+    p_task_todo = task_sub.add_parser(
+        "todo",
+        help="task 의 열린 할 일 등록/조회/완료 (완료 = 목록에서 제거·상태 필드 없음)",
+    )
+    todo_sub = p_task_todo.add_subparsers(dest="todo_command", metavar="<todo-command>")
+
+    p_todo_add = todo_sub.add_parser("add", help="열린 todo 를 하나 더한다")
+    p_todo_add.add_argument("name", help="대상 task 이름")
+    p_todo_add.add_argument("text", help="할 일 한 줄")
+    p_todo_add.set_defaults(func=cmd_task_todo_add)
+
+    p_todo_list = todo_sub.add_parser("list", help="열린 todo 를 번호·등록일·묵은 일수와 함께 본다")
+    p_todo_list.add_argument("name", help="대상 task 이름")
+    p_todo_list.set_defaults(func=cmd_task_todo_list)
+
+    p_todo_done = todo_sub.add_parser(
+        "done", help="열린 todo 하나를 완료 처리한다 (목록에서 제거·완료 표시를 남기지 않는다)")
+    p_todo_done.add_argument("name", help="대상 task 이름")
+    p_todo_done.add_argument("index", type=int, help="`task todo list` 가 보여준 번호(1부터)")
+    p_todo_done.set_defaults(func=cmd_task_todo_done)
+
     # task branch <이름> <슬롯> <브랜치> --from <부모> — 슬롯 안 새 브랜치의 유일한 생성 경로(부모 기록 동반).
     p_task_branch = task_sub.add_parser(
         "branch",
@@ -5408,6 +5548,11 @@ def _main(argv: list[str] | None = None) -> int:
     # `task` 만 주고 하위 동작(end)을 안 줬으면 그 그룹 도움말 surface(repo/worktree/upstream 동형).
     if args.command == "task" and getattr(args, "task_command", None) is None:
         parser.parse_args(["task", "--help"])
+        return 1
+    # `task todo` 만 주고 하위 동작(add/list/done)을 안 줬으면 그 그룹 도움말 surface(위와 동형).
+    if (args.command == "task" and getattr(args, "task_command", None) == "todo"
+            and getattr(args, "todo_command", None) is None):
+        parser.parse_args(["task", "todo", "--help"])
         return 1
     # `delegate` 만 주고 하위 동작(models)을 안 줬으면 그 그룹 도움말 surface(위 넷과 동형).
     if args.command == "delegate" and getattr(args, "delegate_command", None) is None:

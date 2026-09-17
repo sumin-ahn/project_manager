@@ -3928,7 +3928,8 @@ class PmHandoff:
         print("        갱신 = 현재-진실 *교체* — 세션별 delta 를 페이지에 덧붙이지 마라"
               "('언제 왜 바뀌었나'는 log/ADR 몫·domain lint `history` 축).")
         print("  [ ] pm_state.md '진행 중인 의사결정' 표 갱신")
-        print("  [ ] pm_state.md '남은 작업 전체 그림' 갱신")
+        print("  [ ] 열린 todo 정리 — 끝낸 것은 `pm-config task todo done <task> <번호>`. "
+              "남은 것은 그대로 다음 세션이 승계한다(등록일이 묵은 정도를 보인다).")
         # 커밋 지시는 **경로 명시형** 이다 (공유 워킹트리 mutation 은 선언된 경로만).
         # bare `git commit` 은 다른 슬롯이 index 에 올려둔 남의 변경까지 함께 싣는다. 이 도구가
         # 실제로 쓰는 산출물은 `log/current.md` 하나다(pm_state 는 gitignored 라 대상 밖) —

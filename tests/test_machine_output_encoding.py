@@ -230,7 +230,7 @@ def test_pm_log_snapshot_json_payload_is_utf8(capture_console, monkeypatch, tmp_
     )
     stream = capture_console()
 
-    args = SimpleNamespace(cwd=str(tmp_path), state_lines=40, json=True)
+    args = SimpleNamespace(cwd=str(tmp_path), json=True)
     assert pm_log.cmd_snapshot(args) == 0
 
     raw = _written_bytes(stream)

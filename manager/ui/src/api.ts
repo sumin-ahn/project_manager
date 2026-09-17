@@ -89,6 +89,13 @@ export type PreservedBranchRow = {
   unmerged: number | null;
 };
 
+/** 열린 todo 한 건. 상태 필드가 없다 — 존재 = 열림, 완료 = 목록에서 제거. */
+export type TaskTodo = {
+  text: string;
+  /** 등록 시각(UTC ISO). 비어 있으면 얼마나 묵었는지 알 수 없다. */
+  created: string;
+};
+
 export type TaskRow = {
   name: string;
   prefix: string | null;
@@ -96,6 +103,8 @@ export type TaskRow = {
   alive: boolean;
   started: string | null;
   slots: string[];
+  /** 이 task 가 지금 무엇을 하는 중인지. 비어 있으면 엔진이 파일 쓰기를 거부한다. */
+  todos: TaskTodo[];
 };
 
 export type BoardSection = {

@@ -2,7 +2,7 @@ import type { Entry } from "../App";
 import { rowDot } from "../lib/status";
 import SlotRemote from "../components/SlotRemote";
 import StatusDot from "../components/StatusDot";
-import StatusRowActions, { holderLabel, SlotTableAllocate } from "../components/StatusRowActions";
+import StatusRowActions, { holderLabel, SlotTableAllocate, TaskTodoList } from "../components/StatusRowActions";
 
 /**
  * 기계 기록 한 줄 — 판정(`status`) · 수집 수 · 시각. 값은 엔진 sidecar 그대로 고르고 여기서
@@ -80,8 +80,14 @@ export default function StatusTab({ light, heavy, remote }:
                   <td className="py-0.5">{task.name}</td>
                   <td className="py-0.5 text-slate-500">{verdict.label}</td>
                   <td className="py-0.5 font-mono text-[11px] text-slate-500">
-                    {task.alive ? "열림" : "닫힘"}
-                    {task.prefix ? ` · prefix ${task.prefix}` : " · prefix 없음"}
+                    <span className="flex flex-col items-start">
+                      <span>
+                        {task.alive ? "열림" : "닫힘"}
+                        {task.prefix ? ` · prefix ${task.prefix}` : " · prefix 없음"}
+                      </span>
+                      {/* 지금 무엇을 하는 중인지 — 장부의 열린 todo 를 그대로 펼친다. */}
+                      <TaskTodoList row={task} />
+                    </span>
                   </td>
                   <td className="py-0.5 text-right"><StatusRowActions row={task} /></td>
                 </tr>

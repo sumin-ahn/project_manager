@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { SlotRow, TaskRow } from "../api";
+import type { SlotRow, TaskRow, TaskTodo } from "../api";
 import { rowDot } from "../lib/status";
 import type { DotVerdict } from "../lib/status";
 import { useCommand, useProjectRun } from "../lib/run";
@@ -8,7 +8,7 @@ import ConfirmDialog from "./ConfirmDialog";
 
 /**
  * 현황 탭의 동작 — 슬롯 표 머리의 [대여](repo 단위) · 슬롯 행의 [반납]·[새로고침] ·
- * task 행의 [prefix]·[종료].
+ * task 행의 [prefix]·[종료]·[todo] 와 열린 todo 줄마다 [완료].
  *
  * 아이들 규칙(§4.5): 그 행을 잡은 살아 있는 세션이 있으면 변경 동작이 비활성이고 사유가 붙는다.
  * 가부는 상태 판정표(`status-dots.json`)의 첫 일치가 그대로 낸다 — 관리자 쪽 생존 조회 코드는
@@ -160,10 +160,14 @@ function TaskActions({ row }: { row: TaskRow }) {
   const verdict = rowDot(row);
   const { outcome, busy, call } = useCommand();
   const [prefix, setPrefix] = useState("");
+  const [todo, setTodo] = useState("");
   const [asking, setAsking] = useState(false);
   const reason = disabledReason(row, verdict);
   const frozen = verdict.actions !== "change";
   const value = prefix.trim();
+  // todo 등록은 아이들 규칙에서 뺀다 — prefix·종료는 정체성을 바꾸지만 todo 는 사용자가 진행
+  // 중인 task 에 얹는 작업 항목이고, 그걸 막으면 작업 중에는 할 일을 적을 수 없다.
+  const todoValue = todo.trim();
 
   return (
     <span className="inline-flex flex-col items-end gap-1">
@@ -177,6 +181,15 @@ function TaskActions({ row }: { row: TaskRow }) {
         <button type="button" data-testid={`end-${row.name}`} title={reason ?? ""}
                 disabled={frozen || busy} onClick={() => void call(["task", "end", row.name])}
                 className={BUTTON}>종료</button>
+        <input aria-label={`${row.name} todo`} value={todo}
+               onChange={(event) => setTodo(event.target.value)} className={FIELD} />
+        <button type="button" data-testid={`todo-add-${row.name}`}
+                disabled={busy || todoValue === ""}
+                onClick={() => {
+                  void call(["task", "todo", "add", row.name, todoValue]);
+                  setTodo("");
+                }}
+                className={BUTTON}>todo</button>
       </span>
       {asking && (
         <ConfirmDialog
@@ -191,6 +204,45 @@ function TaskActions({ row }: { row: TaskRow }) {
           onCancel={() => setAsking(false)}
         />
       )}
+      <CommandOutput outcome={outcome} />
+    </span>
+  );
+}
+
+/**
+ * 열린 todo 한 줄 — 번호·내용·등록일·묵은 일수. 엔진 `worktree_pool.format_todo_line` 과 같은
+ * 형식이다(표시 규칙은 두 언어에 각각 있고, 값은 엔진 JSON 그대로다). 등록일이 없으면 나이를
+ * 지어내지 않는다.
+ */
+export function todoLine(index: number, todo: TaskTodo): string {
+  if (!todo.created) return `${index}. ${todo.text} (등록일 없음)`;
+  const date = todo.created.slice(0, 10);
+  const days = Math.floor((Date.now() - Date.parse(todo.created)) / 86_400_000);
+  if (Number.isNaN(days)) return `${index}. ${todo.text} (등록 ${date})`;
+  return `${index}. ${todo.text} (등록 ${date} · ${Math.max(days, 0)}일째)`;
+}
+
+/**
+ * task 가 지금 무엇을 하는 중인지 — 열린 todo 목록과 줄마다 [완료].
+ *
+ * 완료는 목록에서 지우는 것이다(엔진에 완료 상태가 없다). 번호는 엔진이 받는 번호와 같은
+ * 1부터이고, 지운 직후 목록을 다시 읽으므로 번호가 밀려도 화면이 먼저 갱신된다.
+ */
+export function TaskTodoList({ row }: { row: TaskRow }) {
+  const { outcome, busy, call } = useCommand();
+  if (row.todos.length === 0) return null;
+  return (
+    <span data-testid={`todos-${row.name}`} className="mt-0.5 flex flex-col items-start gap-0.5">
+      {row.todos.map((todo, index) => (
+        <span key={`${todo.created}-${index}`} className="flex items-center gap-1">
+          <span>{todoLine(index + 1, todo)}</span>
+          <button type="button" data-testid={`todo-done-${row.name}-${index + 1}`}
+                  disabled={busy}
+                  onClick={() => void call(
+                    ["task", "todo", "done", row.name, String(index + 1)])}
+                  className={BUTTON}>완료</button>
+        </span>
+      ))}
       <CommandOutput outcome={outcome} />
     </span>
   );

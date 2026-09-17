@@ -1,7 +1,7 @@
 """구성 탭·현황 탭 행 동작의 브리지 메서드 — 사본의 `pm-config` 를 부르는 자리 하나.
 
 경계 네 줄:
-  - 화면이 부를 수 있는 명령은 **선행 토큰 튜플 15개**(`ALLOWED_COMMANDS`)뿐이고, `run` 은 argv
+  - 화면이 부를 수 있는 명령은 **선행 토큰 튜플 16개**(`ALLOWED_COMMANDS`)뿐이고, `run` 은 argv
     앞머리를 이 집합과 정확히 맞춘 뒤에만 서브프로세스를 띄운다. `argv[0]` 만 보면 `repo`·`task`
     가 통째로 열려 `repo remove` 같은 형제와 미래 확장이 자동으로 들어온다.
   - `--force` 는 **파괴적 제거**(`worktree remove`)에서만 거부한다(값 형태 `--force=…` 포함) —
@@ -41,6 +41,8 @@ ALLOWED_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("task", "prefix"),
     ("task", "end"),
     ("task", "reopen"),
+    # 열린 todo 등록·완료 — 화면에서 직접 다루는 목록이라 읽기(status)만으로는 부족하다.
+    ("task", "todo"),
 )
 
 # 화면에 없는 플래그 — 값 형태(`--force=1`)도 같이 막는다.

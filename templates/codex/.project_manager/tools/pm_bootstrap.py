@@ -1588,35 +1588,6 @@ def reconcile_session_num(
     return state_num, False
 
 
-# pm_state "남은 작업 전체 그림" 절 앵커 — 부트스트랩 인계 surface 의 단일 진실(`## ` 헤더).
-# pm_handoff 의 세션-window 앵커(`## 세션 식별 …`)와 같은 `## ` 레벨이라, 다음 `## ` 헤더
-# 직전(또는 파일 끝)까지가 절 범위다. 형식이 바뀌면 이 상수만 교체.
-_REMAINING_WORK_ANCHOR = "## 남은 작업 전체 그림"
-
-
-def extract_remaining_work_section(pm_state_text: str) -> str | None:
-    """pm_state 의 "남은 작업 전체 그림" 절(`### 🔴 다음 세션 — 사용자 발의` 포함) 텍스트를 반환한다.
-
-    인계 컨텍스트 dump 의 일부. 앵커(`## 남은 작업 전체 그림`)부터 다음 `## ` 헤더
-    직전(또는 파일 끝)까지를 한 절로 surface 한다 — 그 안의 `### 🔴 다음 세션 — 사용자 발의`·
-    `### 🟡 DEFER`·`### 🔵 장기 이월` 하위 절을 통째로 담는다(다음 세션이 "무엇부터" 를
-    바로 보게). pm_handoff `_extract_session_section` 과 동형(앵커 → 다음 동급 헤더)이되
-    *읽기 전용 surface* 라 위치 offset 은 불필요해 텍스트만 반환한다.
-
-    앵커 불일치(형식 변경·절 부재) → None — 호출부가 명시 포인터로 graceful 폴백한다.
-    """
-    anchor_idx = pm_state_text.find(_REMAINING_WORK_ANCHOR)
-    if anchor_idx == -1:
-        return None
-    after_anchor = pm_state_text[anchor_idx + len(_REMAINING_WORK_ANCHOR):]
-    next_header = re.search(r"^## ", after_anchor, re.MULTILINE)
-    if next_header is None:
-        end_offset = len(pm_state_text)
-    else:
-        end_offset = anchor_idx + len(_REMAINING_WORK_ANCHOR) + next_header.start()
-    return pm_state_text[anchor_idx:end_offset].rstrip()
-
-
 # 차수 announce 머리표 placeholder — pm_state 미해소/추론불가 시 `PM <?>차` (crash 금지).
 _SESSION_LABEL_PLACEHOLDER = "PM <?>차"
 
@@ -2357,20 +2328,33 @@ class PmBootstrap:
             return self._pm_state_file
         return self._task_pm_state_file
 
+    def _open_todos(self) -> list[dict]:
+        """이 task 의 열린 todo — 장부(`tasks[].todos`) 단일 출처.
+
+        옛 "남은 작업 전체 그림" 절을 대체한다. 그 절은 손으로 쓰는 서술이라 갱신이 밀리면
+        부트스트랩이 조용히 낡은 사실을 dump 했다 — 이 목록은 기계가 쓰는 자리에서만 온다.
+        장부 판독 실패는 여기서 접지 않는다(같은 장부를 읽는 슬롯 검증과 같은 규율).
+        """
+        if not self._task_name:
+            return []
+        wp = self._worktree_pool or _load_worktree_pool()
+        task = wp.find_task(self._task_name)
+        return list(task.todos) if task is not None else []
+
     def _collect_handoff_context(self, log_text: str | None = None) -> dict | None:
-        """bound slot pm_state 차수(+ log 교차검증) + "남은 작업/사용자발의" 절을 수집한다.
+        """bound slot pm_state 차수(+ log 교차검증) + 이 task 의 열린 todo 를 수집한다.
 
         반환: {"session_num": int|str|None, "session_stale": bool,
-               "state_session_num": int|str|None, "remaining_work": str|None,
-               "state_path": str} 또는 None(pm_state·log 둘 다 미해소 — surface 생략·graceful).
+               "state_session_num": int|str|None, "todos": list[dict],
+               "state_path": str} 또는 None(pm_state·log·todo 전부 미해소 — surface 생략·graceful).
         - `session_num`: pm_state(`infer_session_num`) 와 log(`parse_last_handoff_session_num`+1)
           을 `reconcile_session_num` 으로 교차검증한 *최종* 차수. pm_state 해소 경로가 우선이되
           (현행 무변경), pm_state 미해소(template/부재)면 log-derived N+1 로 **폴백**하고, pm_state
           가 해소돼도 log-derived 가 더 크면 **log 우선(max)** + stale 표시(머신 간 미동기).
         - `session_stale`: pm_state 가 log 보다 뒤처져 log 를 택했으면 True(경고 1줄).
         - `state_session_num`: pm_state-derived 원값(stale 경고 메시지의 진단용).
-        - `remaining_work`: `extract_remaining_work_section`(절 통째) 또는 None(명시 포인터 폴백).
-        pm_state·log 둘 다 미해소면 None — 호출부가 현행(placeholder/명시 포인터)로 폴백한다.
+        - `todos`: 장부의 열린 todo 목록(없으면 빈 리스트 — 호출부가 등록 경로를 안내).
+        pm_state·log·todo 전부 미해소면 None — 호출부가 현행(placeholder)로 폴백한다.
         """
         state_path = self._resolve_pm_state_file()
         state_text: str | None = None
@@ -2407,19 +2391,17 @@ class PmBootstrap:
             # 형제 도구 부재/구버전은 기존 교차검증으로 graceful 폴백.
             session_num, session_stale = reconcile_session_num(state_num, log_next)
 
-        remaining_work = (
-            extract_remaining_work_section(state_text) if state_text is not None else None
-        )
+        todos = self._open_todos()
 
-        # pm_state·log 둘 다 아무 신호도 없으면(차수 미해소 + 남은작업 부재 + pm_state 부재) None
-        # — 현행 graceful(surface 생략)과 동형. log-derived 만 있어도 dict 를 내 폴백을 살린다.
-        if session_num is None and remaining_work is None and state_text is None:
+        # 아무 신호도 없으면(차수 미해소 + 열린 todo 0 + pm_state 부재) None — 현행
+        # graceful(surface 생략)과 동형. log-derived 만 있어도 dict 를 내 폴백을 살린다.
+        if session_num is None and not todos and state_text is None:
             return None
         return {
             "session_num": session_num,
             "session_stale": session_stale,
             "state_session_num": state_num,
-            "remaining_work": remaining_work,
+            "todos": todos,
             # 표기는 POSIX 단일 — 이 값은 dump/`--json` 을 읽는 쪽이 문자열로 대조한다.
             "state_path": (
                 _display_path_text(state_path) if state_path is not None else "pm_state.md"
@@ -2717,17 +2699,19 @@ class PmBootstrap:
             lines.append("- (log/current.md 없음 또는 entry 파싱 실패)")
         lines.append("")
 
-        # pm_state 인계 surface — bound slot 의 "남은 작업/사용자발의" 절. 부트스트랩만으로
-        # 다음 세션이 "무엇부터" 를 바로 보도록 절을 통째로 dump. 미해소/절 부재면 명시 포인터 폴백.
-        lines.append("### pm_state — 남은 작업 / 사용자 발의")
-        remaining_work = handoff_ctx.get("remaining_work") if handoff_ctx else None
-        if remaining_work:
+        # 열린 todo — 이 task 가 지금 무엇을 하는 중인지. 장부 단일 출처라 손 갱신이 없고,
+        # 압축 재주입(`pm_log` 열린 todo 절)이 같은 목록을 같은 형식으로 다시 보여준다.
+        lines.append("### 열린 todo")
+        todos = handoff_ctx.get("todos") if handoff_ctx else None
+        if todos:
+            wp = self._worktree_pool or _load_worktree_pool()
             lines.append("")
-            lines.append(remaining_work)
+            for number, todo in enumerate(todos, start=1):
+                lines.append(f"- {wp.format_todo_line(number, todo)}")
         else:
-            ptr_path = handoff_ctx.get("state_path") if handoff_ctx else self._pm_state_display_path()
             lines.append(
-                f"- (pm_state \"남은 작업 전체 그림\" 절 미해소 — {ptr_path} 직접 확인)"
+                f"- 없음 — `pm-config task todo add {self._task_name} <할 일 한 줄>` 로 "
+                "등록한다 (등록 전 파일 수정은 가드가 거부한다)."
             )
         lines.append("")
 
@@ -2778,10 +2762,7 @@ class PmBootstrap:
         lines.append(
             f"- (직전 세션 요약은 PM 손 — {state_path} \"세션 식별\" 절 + log/current.md 마지막 handoff entry 참조)"
         )
-        lines.append(
-            f"- 무엇부터 갈까요? (PM 손 — {state_path} \"남은 작업 전체 그림\" 절 + open ticket"
-        )
-        lines.append("  목록 보고 옵션 제시)")
+        lines.append("- 무엇부터 갈까요? (위 열린 todo + open ticket 목록 보고 옵션 제시)")
 
         return "\n".join(lines)
 
@@ -2810,8 +2791,8 @@ class PmBootstrap:
                 "chain_policy": environment.chain_policy,
                 "policy_basis": "os-safe-rendering-not-shell-detection",
             },
-            # 차수 + 인계 컨텍스트 — session_num(정수/`?`/None)·remaining_work(절 텍스트/
-            # None)·state_path. log_last_entry 는 body(본문 전체) 포함. 미해소면 None.
+            # 차수 + 인계 컨텍스트 — session_num(정수/`?`/None)·todos(열린 todo 목록)·
+            # state_path. log_last_entry 는 body(본문 전체) 포함. 미해소면 None.
             "session_num": handoff_ctx.get("session_num") if handoff_ctx else None,
             "handoff_context": handoff_ctx,
             "board": {

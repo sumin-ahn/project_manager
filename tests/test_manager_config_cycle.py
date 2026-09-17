@@ -93,6 +93,8 @@ def cycle(tmp_path_factory) -> Cycle:
     run.run("alloc", ["alloc", REPO_NAME, "--task", TASK])
     run.run("task prefix without ack", ["task", "prefix", TASK, PREFIX])
     run.run("task prefix", ["task", "prefix", TASK, PREFIX, "--user-ack", PREFIX])
+    # 열린 todo — 화면에서 등록하고 화면에서 닫는다(등록 전에는 엔진이 파일 쓰기를 거부한다).
+    run.run("task todo", ["task", "todo", "add", TASK, "화면에서 등록한 할 일"])
     slot = _work_slot(run.steps["alloc"]["status"])
     run.run("release other task", ["release", slot, "--task", OTHER_TASK])
     run.run("release", ["release", slot, "--task", TASK])

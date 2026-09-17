@@ -496,14 +496,8 @@ _PM_STATE_TEXT = (
     "  - 이전 차 (PM 1차~39차) = log.\n\n"
     "## 진행 중인 의사결정\n\n"
     "| 항목 | 상태 |\n|---|---|\n| x | y |\n\n"
-    "## 남은 작업 전체 그림\n\n"
-    "> PM 41 종결 — actionable = 0.\n\n"
-    "### 🔴 다음 세션 — 사용자 발의\n"
-    "- sikdan pm 업데이트.\n\n"
-    "### 🟡 DEFER (명시 트리거 전엔 안 함)\n"
-    "- log archive.\n\n"
     "## 다른 절\n"
-    "- 이건 안 들어가야 한다.\n"
+    "- 내용.\n"
 )
 
 
@@ -517,36 +511,6 @@ def test_infer_session_num_no_section_returns_placeholder():
     """세션 식별 절/entry 가 없으면 `?` placeholder (pm_handoff 계약 전달)."""
     mod = _load_module()
     assert mod.infer_session_num("## 다른 절\n- 내용\n") == "?"
-
-
-# ── extract_remaining_work_section (T-0179·남은 작업/사용자발의 절 surface) ────
-
-def test_extract_remaining_work_section_includes_subsections():
-    """`## 남은 작업 전체 그림` 절을 다음 `## ` 직전까지 통째로(🔴/🟡 하위절 포함) 반환한다."""
-    mod = _load_module()
-    section = mod.extract_remaining_work_section(_PM_STATE_TEXT)
-    assert section is not None
-    assert section.startswith("## 남은 작업 전체 그림")
-    assert "🔴 다음 세션 — 사용자 발의" in section
-    assert "sikdan pm 업데이트" in section
-    assert "🟡 DEFER" in section
-    # 다음 `## ` 절은 범위 밖.
-    assert "이건 안 들어가야 한다" not in section
-
-
-def test_extract_remaining_work_section_to_eof():
-    """다음 `## ` 헤더가 없으면 파일 끝까지가 절 범위다."""
-    mod = _load_module()
-    text = "## 남은 작업 전체 그림\n\n### 🔴 다음 세션 — 사용자 발의\n- 끝까지\n"
-    section = mod.extract_remaining_work_section(text)
-    assert section is not None
-    assert "끝까지" in section
-
-
-def test_extract_remaining_work_section_anchor_absent_is_none():
-    """앵커(`## 남은 작업 전체 그림`)가 없으면 None (명시 포인터 폴백 신호)."""
-    mod = _load_module()
-    assert mod.extract_remaining_work_section("## 다른 절\n- 내용\n") is None
 
 
 # ── _format_session_label (T-0179·차수 announce 머리표·crash 금지) ─────────────
@@ -856,9 +820,7 @@ _PM_STATE_TEMPLATE = (
     "---\ntitle: PM State\n---\n\n"
     "## 세션 식별 (현재까지 사용된 이름)\n\n"
     "최근 N 차 (sliding window, 기본 3 차):\n"
-    "  - (아직 없음)\n\n"
-    "## 남은 작업 전체 그림\n\n"
-    "> 초기.\n"
+    "  - (아직 없음)\n"
 )
 
 # pm_state 가 48차를 해소하나 log 가 PM 48차 handoff(→ 다음 49) 라 log 가 앞선다(stale).

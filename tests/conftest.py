@@ -81,12 +81,20 @@ _REPO_ROOT_FOR_RAW_GUARD = Path(__file__).resolve().parent.parent
 _REPO_RAW_OUTPUT_DIRS = (
     Path(".project_manager") / ".local" / "delegate",
     Path(".project_manager") / ".local" / "review",
+    # 세션 기록 — 가드 훅이 부트스트랩 호출을 보고 남기는 자리. 테스트가 여기에 쓰면 실 세션의
+    # 정체성 해소가 그 찌꺼기에 걸린다.
+    Path(".project_manager") / ".local" / "task-session-claims",
 )
 _REPO_RAW_OUTPUT_FILES = (
     Path(".project_manager") / ".local" / "raw_outputs.json",
     # 장부 잠금 파일도 세션이 남기면 누출이다 — 정상 종료면 잠금은 해제되지만 파일 자체가
     # 새로 생겼다는 사실이 "이 세션이 기본 경로를 밟았다"는 증거다.
     Path(".project_manager") / ".local" / "raw_outputs.json.lock",
+    # 슬롯 대여·task·열린 todo 장부. 이 루트(=작업 트리)의 사본만 본다 — PM 홈의 실 장부는
+    # 다른 세션이 슬롯을 대여·반납하며 정상적으로 바꾸는 파일이라, 그걸 감시하면 남의 정상
+    # 동작이 이 세션의 실패로 둔갑한다.
+    Path(".project_manager") / ".local" / "worktree-leases.json",
+    Path(".project_manager") / ".local" / "worktree-leases.lock",
 )
 
 _REPO_LIVE_BOARD_OUTPUT_ROOTS = (

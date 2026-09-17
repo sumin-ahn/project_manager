@@ -45,6 +45,7 @@ SCREEN_ARGV: dict[tuple[str, ...], list[str]] = {
     ("task", "prefix"): ["task", "prefix", "t1", "dm", "--user-ack", "dm"],
     ("task", "end"): ["task", "end", "t1"],
     ("task", "reopen"): ["task", "reopen", "t1"],
+    ("task", "todo"): ["task", "todo", "add", "t1", "할 일 한 줄"],
 }
 
 # 화면에 자리가 없는 것들 — 다른 탭이 부르는 명령(`update`·`upstream`·`sync-adapter-config`)과
@@ -105,7 +106,7 @@ def no_spawn(monkeypatch):
 
 
 def test_the_allowlist_is_a_set_of_leading_token_tuples(api):
-    assert len(ALLOWED_COMMANDS) == 15
+    assert len(ALLOWED_COMMANDS) == 16
     assert ("whoami",) not in ALLOWED_COMMANDS      # 부르는 곳 없는 표면을 두지 않는다
     assert all(isinstance(command, tuple) for command in ALLOWED_COMMANDS)
     # 한 축에 두 낱말이 필요한 것과 한 낱말짜리가 같은 집합에 있다.
@@ -114,7 +115,7 @@ def test_the_allowlist_is_a_set_of_leading_token_tuples(api):
 
 
 def test_the_screen_argv_of_all_commands_passes_the_gate():
-    """정상 명령이 막히지 않는다 — 15개 각각의 실제 인자 형식으로 맞춘다."""
+    """정상 명령이 막히지 않는다 — 16개 각각의 실제 인자 형식으로 맞춘다."""
     assert set(SCREEN_ARGV) == set(ALLOWED_COMMANDS)
     for command, argv in SCREEN_ARGV.items():
         assert matched_command(argv) == command, argv

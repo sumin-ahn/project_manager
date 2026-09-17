@@ -381,7 +381,8 @@ _TASK_TAG_PREFIX = "task:"
 SNAPSHOT_TIMEOUT_SECONDS = 3.0
 SNAPSHOT_MAX_CHARS = 8_000
 SNAPSHOT_MAX_BYTES = 24_000
-SNAPSHOT_PM_STATE_LINES = 24
+# 재주입에 펼칠 열린 todo 최대 줄 수 — 그 뒤는 "외 N건" 한 줄로 접고 목록 명령을 가리킨다.
+_TODO_MAX_SHOWN = 8
 _SNAPSHOT_IDENTITY_HEADING = "## PM 정체성 (compaction 복구)"
 _CTX_WINDOW_MISMATCH_READ_FAILED = object()
 _CTX_WINDOW_MISMATCH_READ_WARNING = (
@@ -1064,14 +1065,39 @@ def _ledger_section(pm_home: Path, task: str) -> str:
     )
 
 
-def _pm_state_section(pm_home: Path, task: str, source: str, line_limit: int) -> str:
-    state_path = _pm_state_path(pm_home, task, source)
-    try:
-        lines = _read_text_shared(state_path, encoding="utf-8").splitlines()[:line_limit]
-    except (OSError, UnicodeError):
-        lines = []
-    body = "\n".join(lines).strip() or "(pm_state를 읽을 수 없음)"
-    return f"## pm_state 머리 ({line_limit}줄 상한)\n{body}\n"
+def _todo_section(pm_home: Path, task: str) -> str:
+    """이 task 의 열린 todo — 매 턴 주입되는 "지금 무엇을 하는 중인가" 의 단일 진실.
+
+    장부(`worktree-leases.json`)의 그 task 행 `todos` 를 읽어 `worktree_pool.format_todo_line`
+    으로 렌더한다(표시 문구 사본 0 — CLI `task todo list`·부트스트랩 dump 와 같은 함수). 열린
+    todo 가 없으면 그 사실과 등록 경로를 적는다: 그 상태에서는 쓰기 가드가 파일 수정을 거부한다.
+
+    옛 `pm_state 머리` 절을 대체한다 — 그 절은 손으로 쓰는 서술이라 갱신이 밀리면 재주입이
+    조용히 낡은 사실을 실어 날랐다. 이 절의 내용은 기계가 쓰는 장부 하나에서만 온다.
+    """
+    ledger = Path(pm_home) / ".project_manager" / ".local" / "worktree-leases.json"
+    data = _read_json_object(ledger)
+    rows = data.get("tasks") if data else None
+    row = next(
+        (item for item in rows if isinstance(item, dict) and item.get("name") == task),
+        None,
+    ) if isinstance(rows, list) else None
+    todos = row.get("todos") if isinstance(row, dict) else None
+    if not isinstance(todos, list) or not todos:
+        return (
+            "## 열린 todo (장부 실측)\n"
+            f"- 없음 — 파일 수정 전에 `pm-config task todo add {task} <할 일 한 줄>` 로 등록한다"
+            " (등록 전 쓰기는 가드가 거부한다).\n"
+        )
+    wp = _load_worktree_pool()
+    lines = [
+        f"- {wp.format_todo_line(number, todo)}"
+        for number, todo in enumerate(todos[:_TODO_MAX_SHOWN], start=1)
+    ]
+    hidden = len(todos) - len(lines)
+    if hidden > 0:
+        lines.append(f"- 외 {hidden}건 — `pm-config task todo list {task}`")
+    return "## 열린 todo (장부 실측)\n" + "\n".join(lines) + "\n"
 
 
 def _recovery_section(task: str, source: str) -> str:
@@ -1104,6 +1130,16 @@ def _load_pm_relay():
     """pm_relay 모듈을 in-process 로드 — 미마감 raw 무락 조회(``raw_records(lock=False)``) 전용."""
     path = Path(__file__).resolve().parent / "pm_relay.py"
     return _load_module_from_path(path, "pm_relay.py", verifier=_verify_engine_rev)
+
+
+def _load_worktree_pool():
+    """worktree_pool 모듈을 in-process 로드 — 열린 todo 표시(``format_todo_line``) 전용.
+
+    todo 한 줄의 생김새는 저장소 주인 모듈이 소유한다 — CLI(`task todo list`)·부트스트랩 dump·
+    이 재주입이 같은 함수를 부르므로 문구 사본이 없다(``_load_pm_relay`` 동형 seam).
+    """
+    path = Path(__file__).resolve().parent / "worktree_pool.py"
+    return _load_module_from_path(path, "worktree_pool.py", verifier=_verify_engine_rev)
 
 
 # raw 장부 필드·예외 메시지처럼 신뢰 경계 밖 값이 CR/LF·제어문자를 실어 절의 물리 줄 수
@@ -1538,7 +1574,6 @@ def build_snapshot(
     pm_home: Path,
     cwd: Path,
     *,
-    line_limit: int = SNAPSHOT_PM_STATE_LINES,
     monotonic=time.monotonic,
     ctx_band_missed: bool = False,
     ctx_window_tokens: int | None = None,
@@ -1549,7 +1584,7 @@ def build_snapshot(
 
     장부 조회는 subprocess·lock 0 (진행 중 작업 절의 WIP git 프로브만 상한 3회의 유일한 예외 —
     `_wip_slot_line` 참고). 절 순서: [ctx 진단] → 전언 경고(always-keep) → 장부 포인터 →
-    진행 중 작업 → pm_state → 복구 포인터.
+    진행 중 작업 → 열린 todo → 복구 포인터.
     """
     started = monotonic()
     identity_name, source = resolve_snapshot_identity(pm_home, cwd)
@@ -1601,7 +1636,7 @@ def build_snapshot(
             identity, sections[:always_keep], required=always_keep,
         ), None
 
-    sections.append(_pm_state_section(pm_home, identity_name, source, line_limit))
+    sections.append(_todo_section(pm_home, identity_name))
     if monotonic() - started >= SNAPSHOT_TIMEOUT_SECONDS:
         return cap_snapshot_sections(
             identity, sections[:always_keep], required=always_keep,
@@ -1616,7 +1651,6 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
     text, warning = build_snapshot(
         pm_home,
         cwd,
-        line_limit=args.state_lines,
         ctx_band_missed=bool(getattr(args, "ctx_band_missed", False)),
         ctx_window_tokens=getattr(args, "ctx_window_tokens", None),
         ctx_observed_tokens=getattr(args, "ctx_observed_tokens", None),
@@ -2036,10 +2070,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("snapshot", help="compaction 뒤 재주입할 PM 정체성·장부 포인터 출력")
     p.add_argument("--cwd", metavar="PATH", help="훅이 발화한 cwd (기본: 프로세스 cwd)")
-    p.add_argument(
-        "--state-lines", type=_positive_int, default=SNAPSHOT_PM_STATE_LINES, metavar="N",
-        help=f"pm_state 머리 줄 수 (기본: {SNAPSHOT_PM_STATE_LINES})",
-    )
     p.add_argument(
         "--ctx-band-missed", action="store_true",
         help="checkpoint append 실패 시 진단을 snapshot payload로 직접 보존",

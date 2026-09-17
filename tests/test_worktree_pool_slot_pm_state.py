@@ -131,9 +131,9 @@ def test_first_bootstrap_run_binds_before_context_and_renders_seeded_state(
     assert context["session_num"] == 1
     assert context["state_session_num"] == 1
     assert context["session_stale"] is False
-    assert context["remaining_work"].startswith("## 남은 작업 전체 그림")
+    assert context["todos"] == []   # 새 task — 열린 todo 0건(등록 경로를 안내한다)
     markdown = capsys.readouterr().out
     assert "## PM 1차 부트스트랩" in markdown
-    assert "## 남은 작업 전체 그림" in markdown
+    assert "### 열린 todo" in markdown
     assert "🆕 첫 바인딩 슬롯" not in markdown
     assert "log 기준" not in markdown
