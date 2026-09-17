@@ -1085,13 +1085,13 @@ def _todo_section(pm_home: Path, task: str) -> str:
     if not pool_path.is_file():
         return _section_query_failure_line(
             f"엔진 사본 없음 — {pool_path}",
-            heading="## 열린 todo (장부 실측)", label="열린 todo 절",
+            heading="## 열린 todo (파일 실측)", label="열린 todo 절",
         )
     wp = _load_worktree_pool(pm_home)
     todos = wp.read_task_todos(task)
     if not todos:
         return (
-            "## 열린 todo (장부 실측)\n"
+            "## 열린 todo (파일 실측)\n"
             f"- 없음 — 파일 수정 전에 `pm-config task todo add {task} <할 일 한 줄>` 로 등록한다"
             " (등록 전에 파일을 고치면 쓰기 판정이 경고를 붙인다).\n"
         )
@@ -1102,7 +1102,7 @@ def _todo_section(pm_home: Path, task: str) -> str:
     hidden = len(todos) - len(lines)
     if hidden > 0:
         lines.append(f"- 외 {hidden}건 — `pm-config task todo list {task}`")
-    return "## 열린 todo (장부 실측)\n" + "\n".join(lines) + "\n"
+    return "## 열린 todo (파일 실측)\n" + "\n".join(lines) + "\n"
 
 
 def _recovery_section(task: str, source: str) -> str:

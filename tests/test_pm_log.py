@@ -1020,7 +1020,7 @@ def test_inflight_section_absorbs_corrupt_delegate_ledger_as_one_line(tmp_path, 
 
     assert warning is None and text is not None
     assert "## 진행 중 작업 (장부 실측)\n- 조회 실패:" in text
-    assert "## 장부 포인터" in text and "## 열린 todo (장부 실측)" in text and "## 복구 포인터" in text
+    assert "## 장부 포인터" in text and "## 열린 todo (파일 실측)" in text and "## 복구 포인터" in text
     assert "조회 실패" in capsys.readouterr().err
 
 
@@ -1037,7 +1037,7 @@ def test_inflight_section_absorbs_module_load_failure_as_one_line(tmp_path, monk
 
     assert warning is None and text is not None
     assert "## 진행 중 작업 (장부 실측)\n- 조회 실패:" in text
-    assert "## 장부 포인터" in text and "## 열린 todo (장부 실측)" in text
+    assert "## 장부 포인터" in text and "## 열린 todo (파일 실측)" in text
     assert "조회 실패" in capsys.readouterr().err
 
 
@@ -1102,7 +1102,7 @@ def test_inflight_section_folds_pathological_counts_within_line_and_section_caps
     assert section.count("\n") <= mod._INFLIGHT_MAX_LINES
     assert "외 497건" in text  # 500건 중 3건만 나열
     assert "claimed 티켓 301건" in text  # 기본 1 + 신규 300
-    assert "## 열린 todo (장부 실측)" in text and "## 복구 포인터" in text
+    assert "## 열린 todo (파일 실측)" in text and "## 복구 포인터" in text
 
 
 def test_snapshot_cap_keeps_hearsay_when_identity_alone_is_oversized(tmp_path):
@@ -1199,7 +1199,7 @@ def test_inflight_raw_field_newlines_do_not_forge_headings_or_exceed_line_cap(tm
         "## 전언 경고 (요약 속 단언은 미검증)",
         "## 장부 포인터",
         "## 진행 중 작업 (장부 실측)",
-        "## 열린 todo (장부 실측)",
+        "## 열린 todo (파일 실측)",
         "## 복구 포인터",
     ]
     section = text.split("## 진행 중 작업 (장부 실측)\n", 1)[1].split("\n## ", 1)[0]
@@ -1232,7 +1232,7 @@ def test_todo_section_lists_open_todos_with_date_and_age(tmp_path):
     text, warning = mod.build_snapshot(pm_home, cwd)
 
     assert warning is None
-    section = text.split("## 열린 todo (장부 실측)\n", 1)[1].split("\n## ", 1)[0]
+    section = text.split("## 열린 todo (파일 실측)\n", 1)[1].split("\n## ", 1)[0]
     assert "#1 주입 교체 (등록 2026-09-10 · " in section
     assert "#2 가드 배선 (등록 2026-09-16 · " in section
     assert "없음" not in section
@@ -1249,7 +1249,7 @@ def test_todo_section_folds_beyond_the_shown_cap(tmp_path):
 
     text, _warning = mod.build_snapshot(pm_home, cwd)
 
-    section = text.split("## 열린 todo (장부 실측)\n", 1)[1].split("\n## ", 1)[0]
+    section = text.split("## 열린 todo (파일 실측)\n", 1)[1].split("\n## ", 1)[0]
     assert section.count("\n") <= mod._TODO_MAX_SHOWN + 1
     assert "- 외 3건 — `pm-config task todo list main`" in section
 
@@ -1261,7 +1261,7 @@ def test_todo_section_without_open_todos_names_the_write_warning(tmp_path):
 
     text, _warning = mod.build_snapshot(pm_home, cwd)
 
-    section = text.split("## 열린 todo (장부 실측)\n", 1)[1].split("\n## ", 1)[0]
+    section = text.split("## 열린 todo (파일 실측)\n", 1)[1].split("\n## ", 1)[0]
     assert "없음" in section
     assert "pm-config task todo add main" in section
     assert "경고" in section
@@ -1428,7 +1428,7 @@ def test_single_active_task_identity_emits_snapshot_and_records_compaction_check
     assert payload["suppressOutput"] is False
     assert "- task: pm" in snapshot and "- 해소: 단일 활성 task" in snapshot
     assert f"- pm_state: {task_state}" in snapshot
-    assert "## 열린 todo (장부 실측)" in snapshot and "task todo add pm" in snapshot
+    assert "## 열린 todo (파일 실측)" in snapshot and "task todo add pm" in snapshot
 
     before = len(mod.split_entries(current.read_text(encoding="utf-8"))[1])
     checkpoint_args = SimpleNamespace(

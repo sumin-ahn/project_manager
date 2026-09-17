@@ -6,7 +6,7 @@ audience: user-entrypoint
 
 # /pm-bootstrap — PM 세션 시작 부트스트랩
 
-`.project_manager/tools/pm_bootstrap.py`로 board·git·회귀, 차수(`PM N차`), 마지막 handoff 본문 전체, 이 task 의 열린 todo(번호·등록일·묵은 일수)를 dump한다. PM은 결과를 요약·판단하고 옵션과 결정 요청을 제시한다.
+`.project_manager/tools/pm_bootstrap.py`로 board·git·회귀, 차수(`PM N차`), 마지막 handoff 본문 전체, 이 task 의 열린 todo(ID·등록일·묵은 일수)를 dump한다. PM은 결과를 요약·판단하고 옵션과 결정 요청을 제시한다.
 
 환경별 명령 문법은 부트스트랩의 "현재 환경" 표시에 맞춰 [Windows 안내](../references/environment-windows.md) 또는 [Linux/macOS 안내](../references/environment-posix.md)를 참조한다.
 

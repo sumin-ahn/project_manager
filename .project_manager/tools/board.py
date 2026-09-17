@@ -1603,7 +1603,7 @@ _GIT_GUARD_ACTION_LINES: dict[str, str] = {
     ),
     _GIT_GUARD_CASE_NO_OPEN_TODO: (
         "지금 하는 일을 먼저 등록한다 — `pm-config task todo add <task> <할 일 한 줄>`. 목록은 "
-        "`pm-config task todo list <task>`, 끝낸 것은 `pm-config task todo done <task> <번호>`."
+        "`pm-config task todo list <task>`, 끝낸 것은 `pm-config task todo done <task> <ID>`."
     ),
 }
 _GIT_GUARD_ASK_WITH_GRANT = (

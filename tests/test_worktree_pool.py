@@ -7859,19 +7859,34 @@ def test_task_todo_write_leaves_the_lease_ledger_untouched(wp):
     assert wp.read_task_todos("job2") == [], "다른 task 의 할 일이 섞였다"
 
 
-def test_legacy_ledger_todos_migrate_into_the_task_file(wp):
-    """옛 장부 행 `todos` 는 첫 조회 때 파일로 옮겨지고 장부에서 지워진다(옛 자리를 안 읽는다)."""
-    wp.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    wp.LEASES_FILE.write_text(json.dumps({"leases": [], "tasks": [{
-        "name": "old", "prefix": None, "started": "t",
-        "todos": [{"text": "옛 일", "created": "2026-09-10T00:00:00+00:00"},
-                  {"text": "  ", "created": ""}],
-    }]}), encoding="utf-8")
-    assert wp.read_task_todos("old") == [
-        {"id": 1, "text": "옛 일", "created": "2026-09-10T00:00:00+00:00"}]
-    row = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))["tasks"][0]
-    assert "todos" not in row, "옛 자리가 남았다 — 두 자리가 갈린다"
-    assert [t["id"] for t in wp.add_task_todo("old", "새 일")] == [1, 2]
+def test_read_task_todos_creates_nothing(wp):
+    """조회는 파일도 락도 만들지 않는다 — 쓰기 판정이 파일 수정마다 부르는 자리다."""
+    wp.bind_task("job1", session="s-test")
+    assert wp.read_task_todos("job1") == []
+    assert not wp.task_todo_file("job1").exists()
+    assert not (wp.task_dir("job1") / "todo.lock").exists()
+    # 장부에 없는 이름도 폴더를 만들지 않는다(빈 목록일 뿐이다).
+    assert wp.read_task_todos("absent") == []
+    assert not wp.task_dir("absent").exists()
+
+
+def test_malformed_todo_file_is_raised_not_read_as_empty(wp):
+    """어긋난 행을 조용히 버리지 않는다 — 버리면 열린 일이 사라지고 쓰기 경고가 함께 꺼진다."""
+    wp.bind_task("job1", session="s-test")
+    wp.add_task_todo("job1", "일")
+    path = wp.task_todo_file("job1")
+
+    path.write_text(json.dumps({"next_id": 2, "todos": [{"text": "ID 가 없다"}]}),
+                    encoding="utf-8")
+    with _pytest_task.raises(ValueError, match=r"todos\[0\]"):
+        wp.read_task_todos("job1")
+
+    # 이미 내준 ID 보다 낮은 next_id 도 올린다 — 그대로 두면 같은 번호가 다른 일을 가리킨다.
+    path.write_text(
+        json.dumps({"next_id": 1, "todos": [{"id": 1, "text": "일", "created": ""}]}),
+        encoding="utf-8")
+    with _pytest_task.raises(ValueError, match="next_id"):
+        wp.read_task_todos("job1")
 
 
 def test_format_todo_line_shows_id_date_and_age(wp):

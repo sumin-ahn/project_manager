@@ -2352,7 +2352,8 @@ class PmBootstrap:
           가 해소돼도 log-derived 가 더 크면 **log 우선(max)** + stale 표시(머신 간 미동기).
         - `session_stale`: pm_state 가 log 보다 뒤처져 log 를 택했으면 True(경고 1줄).
         - `state_session_num`: pm_state-derived 원값(stale 경고 메시지의 진단용).
-        - `todos`: 장부의 열린 todo 목록(없으면 빈 리스트 — 호출부가 등록 경로를 안내).
+        - `todos`: 이 task 의 열린 todo 목록(`.local/tasks/<이름>/todo.json` · 없으면 빈
+          리스트 — 호출부가 등록 경로를 안내).
         pm_state·log·todo 전부 미해소면 None — 호출부가 현행(placeholder)로 폴백한다.
         """
         state_path = self._resolve_pm_state_file()

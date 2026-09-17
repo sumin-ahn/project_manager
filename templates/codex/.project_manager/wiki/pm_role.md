@@ -360,14 +360,14 @@ CLI가 차수·인계 본문·남은작업을 이미 dump하므로 손 추출하
 PM 수동 작업:
 - [[pm_playbook]] §handoff 철학의 lean 스키마를 따르고 재열거하지 않으며 source를 가리킨다.
 - `log/current.md` handoff entry의 `<PM 손>`을 채우고 "읽기 범위" 줄 확정.
-- `pm_state.md` "진행 중인 의사결정" 표 갱신. 남은 작업은 손으로 적지 않는다 — 끝낸 todo 를 `pm-config task todo done <task> <번호>` 로 닫고 남은 것은 그대로 승계한다.
+- `pm_state.md` "진행 중인 의사결정" 표 갱신. 남은 작업은 손으로 적지 않는다 — 끝낸 todo 를 `pm-config task todo done <task> <ID>` 로 닫고 남은 것은 그대로 승계한다.
 - lint 경고 시 `status.md` 정비. 안정화된 ✅ 행은 `status_done.md`로 이동. `status.md`는 judgment-only라 테스트 수를 적지 않으며 상태/비고는 architect 유지·PM 점검.
 - **pathspec을 명시해 이번 세션 산출 전부와 그것만 commit.** bare `git commit` 금지. `log/current.md` + 갱신/신설 `wiki/domain/*.md` + 이번에 정비한 `status.md`·`status_done.md`를 [6/7] `git status -s`에서 직접 고른다. CLI가 직접 쓰는 파일은 `log/current.md`뿐이고 나머지는 PM 손 산출이며 핸드오프에는 finish식 스코프 잔여 보고가 없다. 예: `git commit -m "PM 세션(N차) 핸드오프 — …" -- .project_manager/wiki/log/current.md .project_manager/wiki/domain/<페이지>.md .project_manager/wiki/status.md`. 신설 파일은 `git add` 선행 필수이며 아니면 `pathspec … did not match`로 전체 commit이 rc=1 실패한다. `pm_state.md`는 gitignored. `(Co-Authored-By: Claude 트레일러)`.
 - 마지막 응답에 인계 트리거를 코드블록으로 출력한다. 다음 세션은 `/pm-bootstrap` 실행; 인계 본문은 bootstrap이 log entry에서 dump한다.
 
 ## 동적 상태
 
-진행 중인 의사결정은 [`pm_state.md`](pm_state.md)에서 매 핸드오프 갱신한다. 남은 작업은 장부의 열린 todo 가 단일 진실이다 — `pm-config task todo add|list|done`. 파일을 고치기 전에 열린 todo 를 등록한다 — 없는 채로 파일을 고치면 쓰기 판정이 경고를 띄운다(막지는 않는다). pm_role에는 정적 매뉴얼만 둔다.
+진행 중인 의사결정은 [`pm_state.md`](pm_state.md)에서 매 핸드오프 갱신한다. 남은 작업은 이 task 의 열린 todo(`.local/tasks/<이름>/todo.json`)가 단일 진실이다 — `pm-config task todo add|list|done`. 파일을 고치기 전에 열린 todo 를 등록한다 — 없는 채로 파일을 고치면 쓰기 판정이 경고를 띄운다(막지는 않는다). pm_role에는 정적 매뉴얼만 둔다.
 
 ## 다음 PM 세션 부트스트랩 프롬프트
 

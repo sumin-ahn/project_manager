@@ -707,7 +707,6 @@ class Lease:
 # `open`·`pid`·`todos` 는 옛 이름으로 남겨 둔다 — canonical 에 있어야 `from_dict` 가 그것을
 # `extra` 로 보존하지 않고 버린다(다시 쓸 때 옛 필드가 되살아나지 않는다·읽기 1회 이주). 옛 열림
 # 기록은 어느 세션이 열었는지 모르므로 닫힘으로 읽는다 — 열린 세션은 부트스트랩을 다시 한다.
-# 옛 `todos` 는 버리기 전에 task 별 파일로 옮긴다(`_migrate_ledger_todos`).
 _TASK_CANONICAL_KEYS = frozenset(
     {"name", "prefix", "session", "open", "pid", "started", "todos"})
 
@@ -768,7 +767,6 @@ class Task:
     def from_dict(cls, d: dict) -> "Task":
         extra = {k: v for k, v in d.items() if k not in _TASK_CANONICAL_KEYS}
         # 읽기 1회 이주 — 옛 `open`·`pid`·`todos` 는 버린다(`to_dict` 가 다시 내보내지 않는다).
-        # `todos` 의 내용은 버리기 전에 `_migrate_ledger_todos` 가 task 별 파일로 옮긴다.
         session = d.get("session", "")
         return cls(
             name=d["name"],
@@ -2116,9 +2114,8 @@ def _task_todo_lock_file(name: str) -> Path:
 def _task_todo_lock(name: str) -> Iterator[None]:
     """한 task 의 할 일 파일 read-modify-write 를 직렬화한다.
 
-    장부 락(`_lease_lock`)과 **다른 락**이다. 재진입 금지는 장부 락과 같다. 락 순서는 항상
-    todo → 장부 한 방향이다(이 구간 안에서 `_migrate_ledger_todos` 가 장부 락을 잡는다) —
-    반대로 장부 락을 쥔 채 이 락을 잡는 자리를 만들면 교착이 난다.
+    장부 락(`_lease_lock`)과 **다른 락**이다. 재진입 금지는 장부 락과 같다. 이 구간 안에서
+    장부 락을 잡지 않는다 — 두 락을 겹쳐 잡는 자리를 만들면 순서를 지킬 책임이 생긴다.
     """
     path = _task_todo_lock_file(name)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2126,38 +2123,34 @@ def _task_todo_lock(name: str) -> Iterator[None]:
         yield
 
 
-def _sanitize_todo_doc(raw: object) -> dict:
-    """할 일 파일 내용을 정규화한다 — `{"next_id": int, "todos": [{"id","text","created"}]}`.
+def _validate_todo_doc(path: Path, doc: object) -> None:
+    """할 일 파일 스키마 검증 — 어긋나면 어디가 어긋났는지 지목하고 올린다.
 
-    손편집·구 엔진이 다른 모양을 담고 있어도 조회를 깨뜨리지 않는다. ID 가 없거나 내용이 빈
-    항목은 버린다 — 지목할 수 없거나 가리키는 일이 없는 줄이다. `next_id` 는 남은 ID 최댓값보다
-    항상 크게 잡는다: **한 번 쓴 번호를 다시 쓰지 않는다**(지운 뒤 같은 번호가 다른 일을 가리키면
-    사람이 화면에서 읽은 번호와 실제가 어긋난다).
+    이 파일을 쓰는 코드는 `_write_todo_doc` 하나뿐이라, 모양이 어긋났다면 손편집이거나 깨진
+    파일이다. 어긋난 행을 조용히 버리지 않는다 — 버리면 열린 일이 소리 없이 사라지고, 그러면
+    쓰기 판정이 "열린 할 일 없음" 으로 보고 경고를 멈춘다(실패가 눈에 안 보인다).
+    `_read_tasks_strict` 가 장부 행에 하는 것과 같은 규율이다.
     """
-    raw_doc = raw if isinstance(raw, dict) else {}
-    todos: list[dict] = []
-    raw_todos = raw_doc.get("todos")
-    if isinstance(raw_todos, list):
-        for item in raw_todos:
-            if not isinstance(item, dict):
-                continue
-            todo_id = item.get("id")
-            text = item.get("text")
-            if not isinstance(todo_id, int) or isinstance(todo_id, bool) or todo_id < 1:
-                continue
-            if not isinstance(text, str) or not text.strip():
-                continue
-            created = item.get("created")
-            todos.append({
-                "id": todo_id,
-                "text": text.strip(),
-                "created": created if isinstance(created, str) else "",
-            })
-    floor = max((todo["id"] for todo in todos), default=0) + 1
-    next_id = raw_doc.get("next_id")
-    if not isinstance(next_id, int) or isinstance(next_id, bool) or next_id < floor:
-        next_id = floor
-    return {"next_id": next_id, "todos": todos}
+    if not isinstance(doc, dict):
+        raise ValueError(f"할 일 파일이 object 가 아니다: {path}")
+    todos = doc.get("todos")
+    if not isinstance(todos, list):
+        raise ValueError(f"할 일 파일의 'todos' 값이 list 가 아니다: {path}")
+    for index, todo in enumerate(todos):
+        if (not isinstance(todo, dict)
+                or not isinstance(todo.get("id"), int) or isinstance(todo.get("id"), bool)
+                or not isinstance(todo.get("text"), str)
+                or not isinstance(todo.get("created"), str)):
+            raise ValueError(f"할 일 파일의 todos[{index}] 형식이 어긋난다: {path}")
+    next_id = doc.get("next_id")
+    if not isinstance(next_id, int) or isinstance(next_id, bool):
+        raise ValueError(f"할 일 파일의 'next_id' 값이 정수가 아니다: {path}")
+    highest = max((todo["id"] for todo in todos), default=0)
+    if next_id <= highest:
+        raise ValueError(
+            f"할 일 파일의 next_id({next_id})가 이미 쓴 ID({highest}) 이하다 — "
+            f"그대로 두면 한 번 쓴 번호를 다시 내준다: {path}"
+        )
 
 
 def _write_todo_doc(name: str, doc: dict) -> None:
@@ -2170,68 +2163,31 @@ def _write_todo_doc(name: str, doc: dict) -> None:
     file_lock.atomic_replace(tmp, path)
 
 
-def _migrate_ledger_todos(name: str) -> dict:
-    """옛 장부 행 `tasks[].todos` 를 할 일 파일로 한 번 옮기고 장부에서 지운다.
-
-    `from_dict` 가 옛 `open`·`pid` 를 버리는 것과 같은 **읽기 1회 이주**다 — 옛 자리를 계속 읽는
-    분기를 남기지 않고 데이터만 새 자리로 보낸다. 옮길 것이 없으면 빈 문서이고 장부는 건드리지
-    않는다. ID 는 옮기는 순서대로 1부터 붙인다(옛 자리에는 ID 가 없었다).
-    **`_task_todo_lock` 보유 전제** — 이 함수가 장부 락을 잡는다(락 순서 todo → 장부).
-    """
-    with _lease_lock():
-        data = _read_ledger_raw_strict()
-        rows = data.get("tasks")
-        row = next(
-            (item for item in rows
-             if isinstance(item, dict) and item.get("name") == name),
-            None,
-        ) if isinstance(rows, list) else None
-        legacy = row.pop("todos", None) if isinstance(row, dict) else None
-        moved: list[dict] = []
-        if isinstance(legacy, list):
-            for item in legacy:
-                if not isinstance(item, dict):
-                    continue
-                text = item.get("text")
-                if not isinstance(text, str) or not text.strip():
-                    continue
-                created = item.get("created")
-                moved.append({
-                    "id": len(moved) + 1,
-                    "text": text.strip(),
-                    "created": created if isinstance(created, str) else "",
-                })
-        if legacy is not None:
-            _write_ledger_raw(data)
-    doc = {"next_id": len(moved) + 1, "todos": moved}
-    # 옮길 것이 없어도 파일을 만든다 — 안 만들면 할 일 0건인 task 는 조회할 때마다 여기로 와서
-    # 장부 락을 잡는다. 쓰기 판정이 파일 수정마다 부르는 조회라 그 경합이 그대로 비용이 된다.
-    _write_todo_doc(name, doc)
-    return doc
-
-
 def _read_todo_doc(name: str) -> dict:
-    """할 일 파일을 읽어 정규화한다 — 없으면 옛 장부 행에서 한 번 옮겨 온다.
+    """할 일 파일을 읽는다 — 파일이 없으면 빈 문서.
 
-    **`_task_todo_lock` 보유 전제**. 읽기 실패(손상 JSON)는 올린다 — 빈 목록으로 흘리면 열린
-    일이 없는 것처럼 보인다.
+    **고쳐 쓰는 경로는 `_task_todo_lock` 보유 전제**(조회는 락 없이 부른다 — 쓰기가 원자 교체라
+    읽는 쪽이 반쪽 내용을 보지 않는다). 손상 JSON 과 어긋난 스키마는 올린다 — 빈 목록으로
+    흘리면 열린 일이 없는 것처럼 보인다.
     """
     path = task_todo_file(name)
-    if path.is_file():
-        return _sanitize_todo_doc(
-            json.loads(file_lock.read_text_shared(path, encoding="utf-8")))
-    return _migrate_ledger_todos(name)
+    if not path.is_file():
+        return {"next_id": 1, "todos": []}
+    doc = json.loads(file_lock.read_text_shared(path, encoding="utf-8"))
+    _validate_todo_doc(path, doc)
+    return doc
 
 
 def read_task_todos(name: str) -> list[dict]:
     """이 task 의 열린 할 일 — 표시·판정이 쓰는 단일 조회.
 
-    task 레코드 유무는 보지 않는다(조회는 부작용 0이고, 없는 task 는 빈 목록이다). 쓰기 판정·
-    부트스트랩 dump·압축 재주입·관리자 화면이 전부 이 함수 하나를 부른다(형식 사본 0).
+    **조회는 아무것도 만들지 않는다** — 파일이 없으면 빈 목록이고 task 폴더도 락 파일도 만들지
+    않는다. 쓰기 판정이 파일 수정마다 부르는 자리라 조회가 부작용을 남기면 안 된다. task 레코드
+    유무도 보지 않는다(없는 task 는 빈 목록). 쓰기 판정·부트스트랩 dump·압축 재주입·관리자
+    화면이 전부 이 함수 하나를 부른다(형식 사본 0).
     """
     _validate_task_name(name)
-    with _task_todo_lock(name):
-        return list(_read_todo_doc(name)["todos"])
+    return list(_read_todo_doc(name)["todos"])
 
 
 def _task_pm_state_template_file() -> Path:
@@ -2631,7 +2587,7 @@ def todo_age_days(created: str, *, now=None) -> "int | None":
     """등록일(UTC ISO)에서 며칠 묵었는지 — 값이 없거나 ISO 가 아니면 `None`.
 
     나이는 사람이 보는 표시값이라 못 읽는 시각 하나가 목록 전체를 막지 않는다 — 그 줄의 나이만
-    비운다. 저장측(`_sanitize_todo_doc`)이 문자열만 통과시키므로 여기 오는 값은 문자열이거나 빈 값이다.
+    비운다. 판독측(`_validate_todo_doc`)이 문자열만 통과시키므로 여기 오는 값은 문자열이거나 빈 값이다.
     """
     if not created:
         return None
@@ -2651,11 +2607,13 @@ def format_todo_line(todo: dict, *, now=None) -> str:
     표시 형식의 단일 진실이다 — CLI(`task todo list`)·부트스트랩 dump·압축 재주입이 같은 함수를
     부른다(문구 사본 0). 나이를 못 구하면 등록일만 적는다. 앞에 붙는 ID 는 `close_task_todo` 가
     받는 값 그대로다 — 목록이 줄어도 번호가 밀리지 않는다.
+
+    받는 행은 `read_task_todos` 가 낸 것이다(`_validate_todo_doc` 통과) — 세 키의 타입이 이미
+    보장돼 있어 여기서 다시 확인하지 않는다.
     """
-    todo_id = todo.get("id")
-    head = f"#{todo_id}" if isinstance(todo_id, int) and not isinstance(todo_id, bool) else "#?"
-    text = str(todo.get("text", "")).strip()
-    created = str(todo.get("created", ""))
+    head = f"#{todo['id']}"
+    text = todo["text"]
+    created = todo["created"]
     if not created:
         return f"{head} {text} (등록일 없음)"
     age = todo_age_days(created, now=now)
