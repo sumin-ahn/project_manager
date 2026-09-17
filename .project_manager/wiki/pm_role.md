@@ -367,7 +367,7 @@ PM 수동 작업:
 
 ## 동적 상태
 
-진행 중인 의사결정은 [`pm_state.md`](pm_state.md)에서 매 핸드오프 갱신한다. 남은 작업은 장부의 열린 todo 가 단일 진실이다 — `pm-config task todo add|list|done`. 파일을 고치기 전에 열린 todo 가 하나는 있어야 하며, 없으면 쓰기 가드가 거부한다. pm_role에는 정적 매뉴얼만 둔다.
+진행 중인 의사결정은 [`pm_state.md`](pm_state.md)에서 매 핸드오프 갱신한다. 남은 작업은 장부의 열린 todo 가 단일 진실이다 — `pm-config task todo add|list|done`. 파일을 고치기 전에 열린 todo 를 등록한다 — 없는 채로 파일을 고치면 쓰기 판정이 경고를 띄운다(막지는 않는다). pm_role에는 정적 매뉴얼만 둔다.
 
 ## 다음 PM 세션 부트스트랩 프롬프트
 

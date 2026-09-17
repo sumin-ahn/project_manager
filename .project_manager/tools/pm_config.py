@@ -26,7 +26,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config task prefix <이름> <p|none> [--user-ack <p>] # 신규 prefix 사용자 승인값 결속·변경/해제 (`none`=해제)
     pm-config task end <이름>                               # task 종료 — claimed 소진 게이트·dirty 게이트·일괄 반납 + _ended 아카이브
     pm-config task reopen <이름> [--archive <basename>]     # 종료 archive를 동일 task 정체성으로 복원
-    pm-config task todo add <이름> <할 일 한 줄>            # 열린 todo 등록 — 파일 수정 전에 지금 하는 일을 적는다(등록 전 쓰기는 가드가 거부)
+    pm-config task todo add <이름> <할 일 한 줄>            # 열린 todo 등록 — 파일 수정 전에 지금 하는 일을 적는다(없으면 쓰기 판정이 경고)
     pm-config task todo list <이름>                         # 열린 todo — 번호·등록일·묵은 일수
     pm-config task todo done <이름> <번호>                  # 완료 = 목록에서 제거 (완료 표시를 남기지 않는다·기록은 log)
     pm-config update [--from <upstream>]                   # 엔진 갱신 (pm-update 흡수)
@@ -3253,7 +3253,8 @@ def _registered_repos(board_mod) -> "set[str] | None":
         return None
     try:
         return reg_fn()
-    except Exception:  # noqa: BLE001 — areas 파싱 실패는 None(예약패턴 검증만 완화·traversal 유지).
+    except (OSError, UnicodeError):
+        # areas.md 를 못 읽은 경우다 — None(예약패턴 검증만 완화·traversal 검증은 유지).
         return None
 
 
@@ -3768,8 +3769,8 @@ def cmd_task_todo_add(
 ) -> int:
     """`task todo add <이름> <내용>` — 열린 todo 를 하나 더한다.
 
-    쓰기 가드가 "열린 todo 가 없으면 파일 수정 거부" 를 이 목록으로 판정하므로, 이 명령이
-    작업을 시작하는 진입이다. 등록 시각(UTC ISO)은 엔진이 박고 사용자가 주지 않는다 — 묵은
+    쓰기 판정이 "열린 todo 가 없으면 경고" 를 이 목록으로 내므로, 이 명령이 작업을 시작하는
+    진입이다. 등록 시각(UTC ISO)은 엔진이 박고 사용자가 주지 않는다 — 묵은
     정도의 근거를 손으로 적게 하면 그 값이 곧 틀린다.
     """
     wp = _todo_worktree_pool(worktree_pool, "등록")
@@ -5357,7 +5358,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_task_prefix.set_defaults(func=cmd_task_prefix)
 
     # task todo <add|list|done> <이름> — 이 task 의 **열린** 할 일. 상태 필드가 없다(존재=열림·
-    # 완료=제거). 쓰기 가드가 "열린 todo 없으면 파일 수정 거부" 를 이 목록으로 판정한다.
+    # 완료=제거). 쓰기 판정이 "열린 todo 없으면 경고" 를 이 목록으로 낸다.
     p_task_todo = task_sub.add_parser(
         "todo",
         help="task 의 열린 할 일 등록/조회/완료 (완료 = 목록에서 제거·상태 필드 없음)",

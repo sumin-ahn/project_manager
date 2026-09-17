@@ -3915,10 +3915,14 @@ def test_task_prefix_resolves_registered_repos_through_the_shared_helper(pc, mon
 
 
 def test_task_prefix_keeps_going_when_the_registry_lookup_raises(pc):
-    """조회 예외는 `None` 으로 내려가고 저장은 계속된다 — 헬퍼의 fail-soft 규칙 그대로."""
+    """areas.md 읽기 실패는 `None` 으로 내려가고 저장은 계속된다 — 헬퍼의 fail-soft 규칙 그대로.
+
+    `registered_repos` 가 실제로 내는 것은 `_parse_areas` 의 파일 읽기 실패다(`OSError`·
+    `UnicodeError`). 그 밖의 예외는 엔진 결함이므로 헬퍼가 삼키지 않고 올린다.
+    """
     class RaisingBoard(FakeBoard):
         def registered_repos(self):
-            raise RuntimeError("areas broken")
+            raise OSError("areas broken")
 
     wp = FakeWorktreePool()
 

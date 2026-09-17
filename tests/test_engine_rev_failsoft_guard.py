@@ -1182,7 +1182,12 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   board 판독 실패를 None("base 없음")으로 접으면 실제 원인이 가려지므로 예외를 그대로 올린다.
     # 263 = 270 − 부트스트랩 슬롯 모드 삭제가 지운 일곱 경계(슬롯 자동해소·슬롯 정체성 렌더·
     #   0단계 슬롯 판정·시대차 계산 계열). 같은 판정은 task 보유 슬롯 전수 검증이 한다.
-    assert len(report.boundaries) == 259, "propagation sweep boundary ratchet changed"
+    # 252 = 259 − 예외 좁히기가 지운 일곱 경계. `pm_bootstrap` 인계 표시의 여섯(claim 티켓 조회·
+    #   보유 슬롯 조회·갈래 조회·pm_state 경로·마지막 기록 읽기·CLI task 명 검증)과 `board` 의
+    #   local.conf 판독 하나다. 잡을 예외를 실제 나는 종류로 좁히자 그 자리의 `except Exception`
+    #   자체가 사라졌다 — marked skew 를 흘려보낼 수 있던 경계가 없어진 것이라 원장에서 빠진다
+    #   (흡수 규칙이 느슨해진 게 아니다).
+    assert len(report.boundaries) == 252, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

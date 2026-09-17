@@ -268,8 +268,9 @@ def test_registered_repos_resolution_is_shared_by_task_new_and_prebound_validati
         pass
 
     class RaisingBoard:
+        # 실제로 나는 것은 areas.md 읽기 실패다 — 그 밖의 예외는 엔진 결함이라 헬퍼가 올린다.
         def registered_repos(self):
-            raise RuntimeError("areas broken")
+            raise OSError("areas broken")
 
     board = FakeBoard(registered=("app",))
     assert pc._registered_repos(None) is None

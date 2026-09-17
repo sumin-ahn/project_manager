@@ -298,6 +298,10 @@ class FakeWorktreePool:
         root = self._task_dir_root or (Path("/tmp/multipm") / "tasks")
         return root / name
 
+    def task_pm_state_file(self, name):
+        """실 엔진과 같은 조합 — 인계 표시가 이 경로를 그대로 보인다."""
+        return self.task_dir(name) / "pm_state.md"
+
     def find_task(self, name):
         # 강제 인계 경로가 읽는 자리 — 열림 기록이 설정돼 있으면 그 행을 돌려준다.
         if self._task_open_started is None:

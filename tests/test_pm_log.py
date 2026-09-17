@@ -1247,8 +1247,8 @@ def test_todo_section_folds_beyond_the_shown_cap(tmp_path):
     assert "- 외 3건 — `pm-config task todo list main`" in section
 
 
-def test_todo_section_without_open_todos_names_the_write_block(tmp_path):
-    """열린 todo 가 없으면 등록 경로와 함께 그 상태에서 쓰기가 거부됨을 적는다."""
+def test_todo_section_without_open_todos_names_the_write_warning(tmp_path):
+    """열린 todo 가 없으면 등록 경로와 함께 그 상태에서 쓰기 판정이 경고함을 적는다."""
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
 
@@ -1257,7 +1257,7 @@ def test_todo_section_without_open_todos_names_the_write_block(tmp_path):
     section = text.split("## 열린 todo (장부 실측)\n", 1)[1].split("\n## ", 1)[0]
     assert "없음" in section
     assert "pm-config task todo add main" in section
-    assert "거부" in section
+    assert "경고" in section
 
 
 def test_inflight_section_multiline_exception_does_not_forge_headings(tmp_path, monkeypatch):

@@ -54,7 +54,7 @@ def home(tmp_path, monkeypatch):
         # 슬롯 주인 판정만 보려는 이 파일의 기존 단언은 todo 가 있는 상태를 전제로 한다.
         "tasks": [{"name": "alpha", "session": "S-alpha",
                    "todos": [{"text": "슬롯 쓰기 가드 점검", "created": "2026-09-16T00:00:00+00:00"}]},
-                  {"name": "beta", "session": ""}],
+                  {"name": "beta", "session": "", "todos": []}],
     }) + "\n", encoding="utf-8")
     return root
 
@@ -73,30 +73,34 @@ def _set_todos(home: Path, task: str, todos: list[dict]) -> None:
     ledger.write_text(json.dumps(data) + "\n", encoding="utf-8")
 
 
-# ── 열린 todo 없으면 파일 쓰기 거부 ──────────────────────────────────────────
+# ── 열린 todo 없으면 파일 쓰기 때 경고 ──────────────────────────────────────
 
 
-def test_write_is_denied_when_the_session_task_has_no_open_todo(board, home):
-    """열린 todo 가 없으면 자기 슬롯이어도 파일 쓰기가 거부된다 — 등록이 선행이다."""
+def test_write_warns_when_the_session_task_has_no_open_todo(board, home):
+    """열린 todo 가 없으면 자기 슬롯이어도 경고가 붙는다 — 막지는 않는다.
+
+    막지 않는 이유: 셸 쓰기(`sed -i`·리다이렉션)는 이 판정을 타지 않아 막아도 우회로가 남고,
+    이 축은 나머지 여덟 판정과 달리 "명령이 위험한가" 가 아니라 "일을 적었나" 다.
+    """
     _set_todos(home, "alpha", [])
     judgment = board.judge_tool_input(
         home, "S-alpha", str(home / "work" / "app_1"), "Write",
         {"file_path": str(home / "work" / "app_1" / "x.py"), "content": "x"},
     )
-    assert judgment["verdict"] == "deny"
+    assert judgment["verdict"] == "warn"
     assert _action(board, board._GIT_GUARD_CASE_NO_OPEN_TODO) in judgment["reason"]
-    assert "task alpha 에 열린 todo 가 없음" in judgment["reason"]
+    assert "task alpha 에 열린 todo 가 없다" in judgment["reason"]
 
 
-def test_write_outside_any_slot_is_denied_without_an_open_todo(board, home, tmp_path):
-    """슬롯 밖 쓰기도 막는다 — 기록 없이 바뀌는 파일에 슬롯 안팎 구분이 없다."""
+def test_write_outside_any_slot_also_warns_without_an_open_todo(board, home, tmp_path):
+    """슬롯 밖 쓰기도 말한다 — 기록 없이 바뀌는 파일에 슬롯 안팎 구분이 없다."""
     _set_todos(home, "alpha", [])
     judgment = board.judge_tool_input(
         home, "S-alpha", str(tmp_path), "Write",
         {"file_path": str(tmp_path / "note.md"), "content": "x"},
     )
-    assert judgment["verdict"] == "deny"
-    assert judgment["case"] == board._GIT_GUARD_CASE_NO_OPEN_TODO
+    assert judgment["verdict"] == "warn"
+    assert _action(board, board._GIT_GUARD_CASE_NO_OPEN_TODO) in judgment["reason"]
 
 
 def test_write_passes_once_an_open_todo_exists(board, home, tmp_path):
@@ -136,29 +140,34 @@ def test_todo_rule_only_applies_to_write_tools(board, home, tmp_path):
     assert judgment["verdict"] == "ok"
 
 
-def test_todo_rule_counts_legacy_rows_without_the_key_as_empty(board, home, tmp_path):
-    """`todos` 키가 없던 옛 장부 행은 0건으로 읽혀 거부된다(마이그레이션 없이 규칙이 선다)."""
+def test_task_row_without_the_todos_key_is_raised_not_read_as_empty(board, home, tmp_path):
+    """`todos` 키가 없는 행은 0건으로 흘리지 않고 올린다 — 옛 형식을 관용하지 않는다.
+
+    `Task.to_dict` 가 이 키를 항상 내보내고 `bind_task` 가 세션마다 장부를 다시 쓰므로, 살아 있는
+    행에 키가 없을 수 없다. 없으면 이 엔진이 쓴 장부가 아니다(손상 장부를 올리는 규율과 같다).
+    """
     ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
     data = json.loads(ledger.read_text(encoding="utf-8"))
     for row in data["tasks"]:
         row.pop("todos", None)
     ledger.write_text(json.dumps(data) + "\n", encoding="utf-8")
-    judgment = board.judge_tool_input(
-        home, "S-alpha", str(tmp_path), "Write",
-        {"file_path": str(tmp_path / "note.md"), "content": "x"},
-    )
-    assert judgment["case"] == board._GIT_GUARD_CASE_NO_OPEN_TODO
+    with pytest.raises(ValueError, match="todos 목록이 없다"):
+        board.judge_tool_input(
+            home, "S-alpha", str(tmp_path), "Write",
+            {"file_path": str(tmp_path / "note.md"), "content": "x"},
+        )
 
 
 def test_delegated_session_inherits_the_owner_task_todos(board, home, tmp_path, monkeypatch):
     """위임 세션은 자기 세션 ID 가 없다 — 위임 환경변수의 task todo 로 판정한다."""
     monkeypatch.setenv("PM_DELEGATE_TASK", "alpha")
     _set_todos(home, "alpha", [])
-    denied = board.judge_tool_input(
+    warned = board.judge_tool_input(
         home, "", str(tmp_path), "Write",
         {"file_path": str(tmp_path / "note.md"), "content": "x"},
     )
-    assert denied["case"] == board._GIT_GUARD_CASE_NO_OPEN_TODO
+    assert warned["verdict"] == "warn"
+    assert _action(board, board._GIT_GUARD_CASE_NO_OPEN_TODO) in warned["reason"]
     _set_todos(home, "alpha", [{"text": "일", "created": "2026-09-16T00:00:00+00:00"}])
     assert board.judge_tool_input(
         home, "", str(tmp_path), "Write",

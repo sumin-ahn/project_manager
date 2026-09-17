@@ -1814,24 +1814,36 @@ def _shell_slot_warnings(
 
 
 def _open_todo_count(tasks: Sequence[dict], task: str) -> int:
-    """그 task 의 열린 todo 수 — 장부 행 `todos` 의 길이. 키가 없던 옛 행은 0 이다."""
+    """그 task 의 열린 todo 수 — 장부 행 `todos` 의 길이.
+
+    `Task.to_dict` 가 이 키를 항상 내보내고 `bind_task` 가 세션마다 장부를 다시 쓰므로, 살아 있는
+    task 행에 이 키가 없을 수 없다. 없으면 이 엔진이 쓴 장부가 아니다 — 0 으로 흘려 보내지 않고
+    올린다(형식이 틀린 장부를 통과시키지 않는 `_slot_ledger_rows` 와 같은 규율).
+    """
     row = next((item for item in tasks if item.get("name") == task), None)
-    todos = row.get("todos") if isinstance(row, dict) else None
-    return len(todos) if isinstance(todos, list) else 0
+    if row is None:
+        return 0
+    todos = row.get("todos")
+    if not isinstance(todos, list):
+        raise ValueError(
+            f"worktree lease 장부의 task {task!r} 행에 todos 목록이 없다 — "
+            "`pm_bootstrap.py --task <이름>` 을 한 번 돌려 장부를 현행 형식으로 다시 쓴다"
+        )
+    return len(todos)
 
 
 def _no_open_todo_judgment(
     root: str | os.PathLike[str], session: str,
 ) -> dict[str, str] | None:
-    """열린 todo 가 없는 세션의 파일 쓰기 거부 — 막을 근거가 없으면 `None`(기존 판정 그대로).
+    """열린 todo 가 없는 세션의 파일 쓰기 **경고** — 경고할 근거가 없으면 `None`.
 
-    "무엇을 하는 중인지" 가 장부에 없으면 다음 세션도 사용자도 그 일을 못 본다. 그래서 파일을
-    고치기 **전에** todo 를 등록하게 한다. 거부 대상은 파일 쓰기·편집 도구뿐이고, todo 를 만드는
-    `pm-config task todo add` 는 셸 명령이라 이 판정을 타지 않는다 — 첫 todo 를 못 만들어 잠기는
-    경우가 없다.
+    "무엇을 하는 중인지" 가 장부에 없으면 다음 세션도 사용자도 그 일을 못 본다. 그래서 파일 쓰기
+    호출마다 그 사실을 화면에 올린다. **막지는 않는다** — 셸(`sed -i`·리다이렉션)은 이 판정을 타지
+    않아 막아도 우회로가 남고, 나머지 여덟 판정과 달리 이 축은 "명령이 위험한가" 가 아니라 "일을
+    적었나" 라서 1회 허용 기전(명령 argv 에 묶인다)에도 얹히지 않는다.
 
-    task 를 해소할 수 없으면(부트스트랩 전·하네스 밖·PM 홈 아님) 여기서 막지 않는다. 그 경우의
-    거부는 슬롯 주인 판정(`_slot_write_judgment`)이 이미 한다 — 같은 사실로 두 번 거부하지 않는다.
+    task 를 해소할 수 없으면(부트스트랩 전·하네스 밖·PM 홈 아님) 아무 말도 하지 않는다. 그 경우는
+    슬롯 주인 판정(`_slot_write_judgment`)이 이미 거부한다 — 같은 사실을 두 번 말하지 않는다.
     장부가 **있는데** 형식이 틀리면 `_slot_ledger_rows` 가 올린다(빈 장부로 흘려 통과시키지 않는
     슬롯 판정과 같은 규율).
     """
@@ -1843,12 +1855,10 @@ def _no_open_todo_judgment(
     if task is None or _open_todo_count(tasks, task) > 0:
         return None
     return {
-        "verdict": "deny", "cwd_identity": "non-repo", "code": GIT_DESTRUCTIVE_DENY_CODE,
-        "case": _GIT_GUARD_CASE_NO_OPEN_TODO,
-        "reason": _git_guard_stop_reason(
-            [_GIT_GUARD_CASE_NO_OPEN_TODO],
-            f"task {task} 에 열린 todo 가 없음 — 파일을 고치기 전에 지금 하는 일을 등록한다",
-            grants_available=False,
+        "verdict": "warn", "cwd_identity": "non-repo",
+        "reason": (
+            f"task {task} 에 열린 todo 가 없다 — 지금 하는 일이 장부에 없어서 다음 세션도 "
+            f"사용자도 그 일을 못 본다. {_GIT_GUARD_ACTION_LINES[_GIT_GUARD_CASE_NO_OPEN_TODO]}"
         ),
     }
 
@@ -1861,8 +1871,9 @@ def judge_tool_input(
     허용 기록 폴더 이름이 어느 값에든 있으면(파일 경로·patch 본문) 기록 파일 쓰기로, 줄 머리에
     허용 표식이 있으면(파일 내용·위임 프롬프트) 중첩 세션 프롬프트로 허용을 만들려는 시도로 본다.
     파일 쓰기·편집 도구의 대상이 `root`(훅이 설치된 PM 홈) 슬롯 안이면 이 세션 task 가 잡은 슬롯일
-    때만 통과한다. 그리고 대상이 어디든, 이 세션 task 에 **열린 todo 가 없으면** 파일 쓰기를
-    거부한다(`_no_open_todo_judgment`) — 무엇을 하는 중인지 장부에 없는 채로 파일이 바뀌지 않게 한다.
+    때만 통과한다. 그리고 대상이 어디든, 이 세션 task 에 **열린 todo 가 없으면** 경고를 붙인다
+    (`_no_open_todo_judgment`·막지는 않는다) — 무엇을 하는 중인지 장부에 없다는 사실을 화면에 올린다.
+    거부가 이기고 경고는 거부가 없을 때만 나간다(같은 호출에 두 말을 겹치지 않는다).
     """
     for text in _tool_input_strings(tool_input):
         if GIT_GRANT_DIR_NAME in text.replace("\\", "/") or GIT_GRANT_LINE.search(text):
@@ -1875,11 +1886,8 @@ def judge_tool_input(
             )
             return judgment
     targets = _write_tool_targets(cwd, tool_name, tool_input) if isinstance(tool_input, dict) else []
-    # 파일을 바꾸는 호출에만 건다 — 읽기 도구는 대상이 없어 여기 들어오지 않는다.
-    if targets:
-        no_open_todo = _no_open_todo_judgment(root, session)
-        if no_open_todo is not None:
-            return no_open_todo
+    # 파일을 바꾸는 호출에만 본다 — 읽기 도구는 대상이 없어 여기 들어오지 않는다.
+    todo_warning = _no_open_todo_judgment(root, session) if targets else None
     denies = [
         judgment for judgment in (_slot_write_judgment(root, session, target) for target in targets)
         if judgment is not None and judgment["verdict"] == "deny"
@@ -1892,6 +1900,8 @@ def judge_tool_input(
                 grants_available=False,
             ),
         }
+    if todo_warning is not None:
+        return todo_warning
     return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "허용 위조 표식·남의 슬롯 쓰기 없음"}
 
 
@@ -20291,10 +20301,6 @@ def _lint_local_conf_read():
         return module, module.load_strict(LOCAL_CONF)
     except (OSError, UnicodeError) as exc:
         raise LocalConfUnreadable(f"{LOCAL_CONF}: {exc}") from exc
-    except Exception as exc:  # noqa: BLE001 — 조회면은 로더 해소 실패로 멈추지 않는다.
-        if _is_engine_rev_skew(exc):
-            raise
-        return None
 
 
 # 실 local.conf 를 **읽지 못한** 관측 kind — 위 판독 seam 하나가 낸다(값 축과 배타적).

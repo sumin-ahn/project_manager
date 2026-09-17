@@ -359,8 +359,10 @@ def _load_worktree_pool():
     if not wp_path.exists():
         return None
     try:
+        # `cache=True` — 이 모듈의 예외 클래스(`InvalidTaskName`)를 `except` 에 쓰려면 로드마다
+        # 새 객체가 나오면 안 된다(캐시 키는 해소된 경로라 hermetic 테스트의 다른 tools/ 와 안 섞인다).
         mod = _load_module_from_path(
-            wp_path, "worktree_pool.py", verifier=_verify_engine_rev,
+            wp_path, "worktree_pool.py", verifier=_verify_engine_rev, cache=True,
         )
     except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 기본 경로를 깨지 않는다.
         if _is_engine_rev_skew(exc):
@@ -3529,9 +3531,11 @@ class PmHandoff:
         # (validate_task_name_engine)를 *어떤 task 소비(pm_state 경로·log 태그·dashboard·트리거)
         # 이전에* 통과시킨다. traversal(`../evil`)·whitespace(`my task`)·슬롯 예약패턴·엔진부재는
         # 부작용 0 로 중단(1).
+        # 검증기가 내는 것은 둘뿐이다 — 부적합 이름(`InvalidTaskName`·`.reason`)과 엔진 부재(RuntimeError).
+        wp = self._worktree_pool or _load_worktree_pool()
         try:
             validate_task_name_engine(task)
-        except Exception as exc:  # noqa: BLE001 — InvalidTaskName(.reason)·RuntimeError(엔진 부재)
+        except (RuntimeError, getattr(wp, "InvalidTaskName", ())) as exc:
             if _is_engine_rev_skew(exc):
                 raise
             print(
@@ -3551,7 +3555,8 @@ class PmHandoff:
         self._task_slots_snapshot = None
         try:
             held_slots = self._task_held_slots(task)
-        except Exception as exc:  # noqa: BLE001 — 해소 실패 ≠ 실제 빈 집합.
+        except RuntimeError as exc:
+            # `_task_held_slots` 는 모든 해소 실패를 RuntimeError 로 감싼다(해소 실패 ≠ 실제 빈 집합).
             if _is_engine_rev_skew(exc):
                 raise
             print(
@@ -4122,7 +4127,7 @@ def _main(
         if _is_engine_rev_skew(exc):
             raise
         parser.error(str(exc))
-    except Exception as exc:  # noqa: BLE001 — worktree_pool.InvalidTaskName(.reason 진단)
+    except getattr(_load_worktree_pool(), "InvalidTaskName", ()) as exc:
         parser.error(
             f"--task 이름 {task!r} 이(가) 부적합 — "
             f"{getattr(exc, 'reason', exc)}. 안전한 단일 이름(공백·괄호·path 문자·"

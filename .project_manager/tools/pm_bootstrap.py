@@ -2711,7 +2711,7 @@ class PmBootstrap:
         else:
             lines.append(
                 f"- 없음 — `pm-config task todo add {self._task_name} <할 일 한 줄>` 로 "
-                "등록한다 (등록 전 파일 수정은 가드가 거부한다)."
+                "등록한다 (등록 전에 파일을 고치면 쓰기 판정이 경고를 붙인다)."
             )
         lines.append("")
 
@@ -3279,9 +3279,8 @@ class PmBootstrap:
         lens = ["--task", task]
         try:
             rc, output = self._run_board_fn(["list", "--status", "claimed", *lens])
-        except Exception as exc:  # noqa: BLE001 — 인계 표시는 조회 실패로 진입을 막지 않는다.
-            if _is_engine_rev_skew(exc):
-                raise      # 형제 사본 skew 는 표시 생략으로 접지 않는다(fail-loud).
+        except (OSError, subprocess.SubprocessError):
+            # board 를 자식 프로세스로 띄우지 못한 경우다 — 인계 표시만 비우고 진입은 막지 않는다.
             return []
         if rc != 0:
             return []
@@ -3328,18 +3327,13 @@ class PmBootstrap:
         try:
             leases = [l for l in wp.list_leases()
                       if wp.lease_is_open(l) and l.session == task]
-        except Exception as exc:  # noqa: BLE001 — 인계 표시 조회 실패는 진입을 막지 않는다.
-            if _is_engine_rev_skew(exc):
-                raise
+        except (OSError, KeyError, TypeError):
+            # 장부 파일을 못 읽었거나(OSError) 행 모양이 깨졌다(KeyError·TypeError).
             return []
         rows: list[tuple[str, str]] = []
         for lease in leases:
-            try:
-                branch = wp.current_branch(lease.slot)
-            except Exception as exc:  # noqa: BLE001 — 갈래 조회 실패는 표시만 비운다.
-                if _is_engine_rev_skew(exc):
-                    raise
-                branch = None
+            # `current_branch` 는 자기 계약이 "raise 금지" 다 — 조회 실패도 None 으로 돌려준다.
+            branch = wp.current_branch(lease.slot)
             rows.append(
                 (lease.slot, f"{lease.slot} (갈래: {branch or '(미상·detached)'})")
             )
@@ -3352,9 +3346,8 @@ class PmBootstrap:
             return None
         try:
             return _display_path_text(wp.task_pm_state_file(task))
-        except Exception as exc:  # noqa: BLE001 — 경로 해소 실패는 표시만 비운다.
-            if _is_engine_rev_skew(exc):
-                raise
+        except wp.InvalidTaskName:
+            # 이름이 부적합하면 경로 자체가 없다 — 표시만 비운다.
             return None
 
     def _handover_last_log(self) -> str | None:
@@ -3365,9 +3358,8 @@ class PmBootstrap:
             entry = parse_log_last_entry(
                 _load_file_lock().read_text_shared(self._log_file, encoding="utf-8")
             )
-        except Exception as exc:  # noqa: BLE001 — log 읽기 실패는 표시만 비운다.
-            if _is_engine_rev_skew(exc):
-                raise
+        except (OSError, UnicodeDecodeError):
+            # 기록 파일을 못 읽은 경우다 — 표시만 비운다(파싱은 정규식이라 예외를 내지 않는다).
             return None
         if entry is None:
             return None
@@ -4247,9 +4239,7 @@ def _main(argv: list[str] | None = None) -> int:
         )
     try:
         ia.validate_task_name(args.task, _registered_repos())
-    except Exception as exc:  # noqa: BLE001 — InvalidTaskName 등 검증 실패를 CLI 에러로.
-        if _is_engine_rev_skew(exc):
-            raise   # 형제 사본 불일치는 usage 에러로 강등하지 않는다(fail-loud·main 이 번역).
+    except ia.InvalidTaskName as exc:
         build_parser().error(str(exc))
     bootstrap = PmBootstrap()
     return bootstrap.run(

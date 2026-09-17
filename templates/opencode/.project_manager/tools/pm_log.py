@@ -1070,7 +1070,8 @@ def _todo_section(pm_home: Path, task: str) -> str:
 
     장부(`worktree-leases.json`)의 그 task 행 `todos` 를 읽어 `worktree_pool.format_todo_line`
     으로 렌더한다(표시 문구 사본 0 — CLI `task todo list`·부트스트랩 dump 와 같은 함수). 열린
-    todo 가 없으면 그 사실과 등록 경로를 적는다: 그 상태에서는 쓰기 가드가 파일 수정을 거부한다.
+    todo 가 없으면 그 사실과 등록 경로를 적는다: 그 상태에서는 파일을 고칠 때마다 쓰기 판정이
+    경고를 붙인다(막지는 않는다).
 
     옛 `pm_state 머리` 절을 대체한다 — 그 절은 손으로 쓰는 서술이라 갱신이 밀리면 재주입이
     조용히 낡은 사실을 실어 날랐다. 이 절의 내용은 기계가 쓰는 장부 하나에서만 온다.
@@ -1087,7 +1088,7 @@ def _todo_section(pm_home: Path, task: str) -> str:
         return (
             "## 열린 todo (장부 실측)\n"
             f"- 없음 — 파일 수정 전에 `pm-config task todo add {task} <할 일 한 줄>` 로 등록한다"
-            " (등록 전 쓰기는 가드가 거부한다).\n"
+            " (등록 전에 파일을 고치면 쓰기 판정이 경고를 붙인다).\n"
         )
     wp = _load_worktree_pool()
     lines = [

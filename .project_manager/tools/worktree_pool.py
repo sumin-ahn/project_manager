@@ -2478,7 +2478,7 @@ def add_task_todo(name: str, text: str, *, now=_now_utc) -> "Task | None":
 
     **명 검증(must-fix)**: `_validate_task_name` 을 장부 write **이전**에 돌린다(형제 write
     진입점 `set_task_prefix`·`close_task_session` 동형). 빈 내용은 `ValueError` — 가리키는 일이
-    없는 todo 를 만들면 쓰기 가드가 그 빈 줄 하나로 열려 버린다.
+    없는 todo 를 만들면 쓰기 판정의 경고가 그 빈 줄 하나로 꺼져 버린다.
     """
     _validate_task_name(name)   # 장부 write 이전 fail-loud(부작용 0·must-fix).
     body = text.strip()
