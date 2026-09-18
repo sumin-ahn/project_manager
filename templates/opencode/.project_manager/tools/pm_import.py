@@ -4346,7 +4346,7 @@ def _real_harness_runner(
 ) -> tuple[bool, str]:
     """실 하니스 바이너리를 subprocess 로 구동(fail-soft). 반환: (성공 여부, stdout).
 
-    additional_reviewer.run_reviewer 선례 — 예외를 raise 하지 않고 (False, 에러텍스트)로 감싼다.
+    additional_reviewer._run_reviewer_ex 선례 — 예외를 raise 하지 않고 (False, 에러텍스트)로 감싼다.
     프롬프트는 argv 마지막 인자로 전달한다(claude -p "<prompt>" / opencode run "<prompt>" ...).
 
     SF: cwd 가 주어지면 *대상 repo* 에서 구동한다(run_fill 이 dest_root 를 바인딩). 호출자

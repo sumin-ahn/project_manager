@@ -458,13 +458,13 @@ def _load_lease_rows(leases_file: Path) -> list[dict] | None:
 # 처방 한 줄. 미해소를 조용한 폴백으로 덮지 않으므로, 사용자가 무엇을 하면 되는지는 메시지가
 # 말해야 한다. 문구를 재타이핑하지 않도록 이 모듈이 단일 진실로 들고, 정체성을 해소하는
 # 모듈들이 여기서 가져다 쓴다.
-def no_work_folder_remedy(repo: str | None = None) -> str:
+def no_work_folder_remedy() -> str:
     """작업 폴더가 없는 홈에 붙이는 처방 한 줄 — 모든 소비자가 이 한 문장을 쓴다.
 
     repo 를 알면 실 명령으로, 모르면 `<repo>` 자리표시자로 낸다. 부트스트랩·0단계 게이트·
     snapshot 경고·귀속 쓰기 거부가 같은 문장을 낸다(문구 사본 0).
     """
-    name = repo or "<repo>"
+    name = "<repo>"
     return (f"작업 폴더가 없다 — `pm-config worktree add {name} --user-ack {name}` 로 "
             "먼저 만들어라.")
 

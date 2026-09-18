@@ -3650,13 +3650,13 @@ def _dominant_newline(text: str, default: str = _DEFAULT_TEXT_NEWLINE) -> str:
     return "\r\n" if first > 0 and text[first - 1] == "\r" else "\n"
 
 
-def _path_newline(path: Path, default: str = _DEFAULT_TEXT_NEWLINE) -> str:
-    """그 파일의 현재 지배 개행 — 부재·읽기 실패·비-UTF8 은 `default`."""
+def _path_newline(path: Path) -> str:
+    """그 파일의 현재 지배 개행 — 부재·읽기 실패·비-UTF8 은 `_DEFAULT_TEXT_NEWLINE`."""
     try:
         with _open_shared(Path(path), binary=False, encoding="utf-8", newline="") as handle:
-            return _dominant_newline(handle.read(), default)
+            return _dominant_newline(handle.read(), _DEFAULT_TEXT_NEWLINE)
     except (OSError, UnicodeError):
-        return default
+        return _DEFAULT_TEXT_NEWLINE
 
 
 def _write_rendered_text(dst: Path, source, rendered: str) -> None:

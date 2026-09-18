@@ -10588,7 +10588,7 @@ def _default_run_fn(
 
     **launch 오류 정규화**(codex must-fix): 하네스 바이너리 미설치/실행 불가(FileNotFoundError·
     PermissionError 등 **스폰 단계** 오류)는 traceback 으로 전파하지 않고 RunResult(rc≠0·진단 stderr)로
-    감싼다 — 3드라이버 공통(additional_reviewer.run_reviewer 의 FileNotFoundError fail-soft 계약 동형).
+    감싼다 — 3드라이버 공통(additional_reviewer._run_reviewer_ex 의 FileNotFoundError fail-soft 계약 동형).
 
     **스폰 단계 한정**: 프롬프트를 이미 보낸 뒤의 I/O 오류(communicate 중 EPIPE 등)를 launch
     실패로 표시하면 폴백이 발동해 **같은 프롬프트가 중복 호출**된다. 그래서 launch 신호는

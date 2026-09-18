@@ -134,9 +134,10 @@ def test_extract_diff_head_path_passes_utf8(additional_reviewer):
         _assert_utf8(kwargs)
 
 
-def test_run_reviewer_passes_utf8_encoding(additional_reviewer):
+def test_reviewer_run_passes_utf8_encoding(additional_reviewer):
     rec = _Recorder()
-    ok, _ = additional_reviewer.run_reviewer("echo hi", reviewer_cmd="echo hi", run_fn=rec)
+    _ok, _out, _started = additional_reviewer._run_reviewer_ex(
+        "echo hi", "echo hi", None, rec)
     assert rec.calls
     _assert_utf8(rec.calls[0])
 

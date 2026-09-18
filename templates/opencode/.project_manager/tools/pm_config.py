@@ -5016,14 +5016,14 @@ def cmd_delegate_models(args, *, models_runner=None) -> int:
     return 0
 
 
-def _console_update(pm_update=None) -> None:
+def _console_update() -> None:
     """`[u]` — 엔진 갱신을 `cmd_update([])` 로 위임 (= pm_update.main verbatim).
 
     `[r]`/`[w]`/`[b]` 와 동형의 얇은 래퍼 — 입력 프롬프트 없이(인자 없는 갱신) 기존 핸들러로
     위임만 한다(중복 0). 갱신은 repos/slots 장부를 안 바꿔도(엔진 파일 동기화) 호출부가
     상태를 재렌더한다(무해·일관). pm_update 주입으로 hermetic(실 동기화 없이 배선 검증).
     """
-    cmd_update([], pm_update=pm_update)
+    cmd_update([])
     return None
 
 

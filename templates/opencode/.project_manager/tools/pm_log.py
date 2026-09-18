@@ -1756,17 +1756,10 @@ def _compaction_scope_key(task: str, session_id: str | None) -> str:
     return f"task-{_safe_marker_key(task)}"
 
 
-def _implicit_boundary_state_path(
-    task: str,
-    session_id: str | None,
-    boundary_id: str | None = None,
-) -> Path:
+def _implicit_boundary_state_path(task: str, session_id: str | None) -> Path:
     """구 어댑터의 scope prefix 또는 경계별 durable pending 파일 경로."""
     key = _compaction_scope_key(task, session_id)
-    prefix = REPO / ".project_manager" / ".local/ctx-stop" / f"compact-boundary.{key}"
-    if boundary_id is None:
-        return prefix
-    return prefix.with_name(f"{prefix.name}.{_safe_marker_key(boundary_id)}")
+    return REPO / ".project_manager" / ".local/ctx-stop" / f"compact-boundary.{key}"
 
 
 def _new_implicit_boundary_id() -> str:

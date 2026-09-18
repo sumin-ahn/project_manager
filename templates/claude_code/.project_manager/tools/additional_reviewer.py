@@ -4536,7 +4536,7 @@ def _run_reviewer_ex(
     stdin_text: str | None = None,
     on_spawn_attempt: Callable[[], None] | None = None,
 ) -> tuple[bool, ReviewerOutput, bool]:
-    """run_reviewer 본체 + 자식 프로세스 스폰 여부(started) 신호.
+    """리뷰어 실행 본체 + 자식 프로세스 스폰 여부(started) 신호.
 
     반환: (성공 여부, `ReviewerOutput`(회신/로그 **분리 보관**), started). started=False = 자식 프로세스가 *확실히 시작되지
     않음*(호출 0·과금 0) — 빈 reviewer_cmd·seam 계약 오류·**스폰 경계 전의 준비 실패**·확정 기동
@@ -4691,20 +4691,6 @@ def _run_reviewer_ex(
                 _started_after(exc, spawn_reached))
 
 
-def run_reviewer(
-    prompt: str,
-    reviewer_cmd: str,
-    timeout: int | None = None,
-    run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
-    idle_timeout: float | None = None,
-) -> tuple[bool, str]:
-    """reviewer_cmd 를 stdin(=프롬프트)으로 실행한다. 반환: (성공 여부, 출력 텍스트).
-
-    2-튜플 공개 facade — 스폰 여부(started)와 채널 분리가 필요한 내부 호출은 `_run_reviewer_ex` 를
-    쓴다. 이 facade 는 사람이 읽는 표시 문자열(회신+로그)을 돌려준다."""
-    ok, output, _started = _run_reviewer_ex(prompt, reviewer_cmd, timeout, run_fn, idle_timeout)
-    return ok, output.combined
-
 
 def reviewer_name(reviewer_cmd: str) -> str:
     """reviewer_cmd 의 공유 정규화 키(시간 프로필·진행신호·파일명/요약 공통)."""
@@ -4855,13 +4841,13 @@ class OutputContamination(NamedTuple):
         return tuple(markers)
 
 
-def _unique(values: Sequence[str], limit: int = 5) -> tuple[str, ...]:
+def _unique(values: Sequence[str]) -> tuple[str, ...]:
     """등장 순서를 유지한 중복 제거 + 진단 상한."""
     seen: list[str] = []
     for value in values:
         if value not in seen:
             seen.append(value)
-        if len(seen) >= limit:
+        if len(seen) >= 5:      # 표시용 상한(종전 기본값)
             break
     return tuple(seen)
 

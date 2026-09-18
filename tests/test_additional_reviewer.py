@@ -589,12 +589,6 @@ def test_runner_seam_skew_is_loud_and_distinct(external):
     assert "리뷰어 실행 오류" not in out.answer
 
 
-def test_run_reviewer_remains_two_tuple_facade(external):
-    """run_reviewer 공개 API 는 여전히 2-튜플(성공, 출력) — 내부 split 이 계약을 깨지 않는다."""
-    result = external.run_reviewer("p", reviewer_cmd="codex", run_fn=lambda *a, **k: _completed(0))
-    assert isinstance(result, tuple) and len(result) == 2
-    assert result[0] is True
-
 
 def test_run_review_surfaces_started(external, tmp_path):
     """run_review 결과 dict 가 started 를 성공·실패(타임아웃) 양쪽에서 실어 나른다 (환불 판정 입력).

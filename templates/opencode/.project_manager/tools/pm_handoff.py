@@ -2255,15 +2255,12 @@ def flatten_ack_reason(reason: str) -> str:
     return " ".join(reason.split())
 
 
-def _format_dirty_paths(
-    paths: list[str],
-    limit: int = DIRTY_GATE_LIST_LIMIT,
-) -> list[str]:
-    """차단/경고 메시지의 경로 열거 줄 목록 — limit 초과분은 '… 외 N건' 으로 접는다."""
+def _format_dirty_paths(paths: list[str]) -> list[str]:
+    """차단/경고 메시지의 경로 열거 줄 목록 — DIRTY_GATE_LIST_LIMIT 초과분은 '… 외 N건' 으로 접는다."""
     ordered = sorted(paths)
-    lines = [f"    {path}" for path in ordered[:limit]]
-    if len(ordered) > limit:
-        lines.append(f"    … 외 {len(ordered) - limit}건")
+    lines = [f"    {path}" for path in ordered[:DIRTY_GATE_LIST_LIMIT]]
+    if len(ordered) > DIRTY_GATE_LIST_LIMIT:
+        lines.append(f"    … 외 {len(ordered) - DIRTY_GATE_LIST_LIMIT}건")
     return lines
 
 

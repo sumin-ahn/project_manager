@@ -10224,7 +10224,7 @@ def _resolve_livegate_flag(cwd: str) -> tuple[Path, str]:
     return root / ".project_manager" / ".local" / "livegate.json", _LG_ENGINE_ROOT
 
 
-def _resolve_regression_flag(cwd: str, session: str | None = None) -> tuple[Path, str]:
+def _resolve_regression_flag(cwd: str) -> tuple[Path, str]:
     """regression 증거를 livegate와 같은 engine-root `.local` 좌표로 해소한다.
 
     보호훅 two-git 형상에서는 regression과 livegate가 서로 다른 clone-local 파일을 읽으면
@@ -10234,10 +10234,10 @@ def _resolve_regression_flag(cwd: str, session: str | None = None) -> tuple[Path
     # 단위/채택 트리 중 `.git` 자체가 없는 경로는 hooksPath도 가질 수 없다. git subprocess를
     # 불필요하게 늘리지 않고 기존 clone-local 좌표를 그대로 쓴다.
     if not (Path(cwd) / ".git").exists():
-        return _regression_flag_for(session), _LG_NO_HOOK
+        return _regression_flag_for(None), _LG_NO_HOOK
     livegate_flag, mode = _resolve_livegate_flag(cwd)
     local_dir = livegate_flag.parent if mode == _LG_ENGINE_ROOT else LOCAL_DIR
-    return _regression_flag_for(session, local_dir=local_dir), mode
+    return _regression_flag_for(None, local_dir=local_dir), mode
 
 
 # ── 릴리즈 must-fix 잔여 차단 (릴리즈 절차의 첫 기계 관문) ────────────────
@@ -10998,13 +10998,13 @@ def _dominant_newline(text: str, default: str = DEFAULT_TEXT_NEWLINE) -> str:
     return "\r\n" if first > 0 and text[first - 1] == "\r" else "\n"
 
 
-def ticket_newline(path: Path, default: str = DEFAULT_TEXT_NEWLINE) -> str:
-    """그 티켓 파일의 현재 지배 개행 — 부재·읽기 실패·비-UTF8 은 `default`(신규 발행 = LF)."""
+def ticket_newline(path: Path) -> str:
+    """그 티켓 파일의 현재 지배 개행 — 부재·읽기 실패·비-UTF8 은 `DEFAULT_TEXT_NEWLINE`(신규 발행 = LF)."""
     try:
         with file_lock.open_shared(Path(path), binary=False, encoding="utf-8", newline="") as handle:
-            return _dominant_newline(handle.read(), default)
+            return _dominant_newline(handle.read(), DEFAULT_TEXT_NEWLINE)
     except (OSError, UnicodeError):
-        return default
+        return DEFAULT_TEXT_NEWLINE
 
 
 def _with_newline(text: str, newline: str) -> str:
@@ -12339,9 +12339,9 @@ def _next_idea_id() -> str:
     return f"{n:04d}"
 
 
-def _slugify(text: str, max_len: int = 40) -> str:
+def _slugify(text: str) -> str:
     s = re.sub(r"[^a-z0-9가-힣-]+", "-", text.lower()).strip("-")
-    return s[:max_len].rstrip("-") or "ticket"
+    return s[:40].rstrip("-") or "ticket"      # slug 최대 길이(종전 기본값)
 
 
 # ── commands ───────────────────────────────────────────────────────────
@@ -15861,7 +15861,7 @@ def _is_rewritable(path: Path) -> bool:
     return True
 
 
-def _canonical_ticket_id(path: Path, fm: dict[str, Any] | None = None) -> str | None:
+def _canonical_ticket_id(path: Path) -> str | None:
     """티켓의 canonical ID — frontmatter `id:` 1차 진실·파일명 파싱은 폴백 (숫자-slug 모호성 해소).
 
     파일명 파서(`_ticket_id_from_filename`)는 legacy `T-NNNN` + **숫자로 끝나는 slug**
@@ -15871,19 +15871,16 @@ def _canonical_ticket_id(path: Path, fm: dict[str, Any] | None = None) -> str | 
     폴백한다(fail-soft). `_scan_prefix_tickets` 의 `fm.get("id") or …` 와 동형 semantics — 스캔측과
     rename-planning 측이 같은 canonical 해소를 쓰게 해 파일명↔content 불일치를 원천 차단한다.
 
-    `fm` 이 주어지면(호출부가 이미 로드) 재-read 를 피한다. 미지정이면 여기서 fail-soft 로 로드한다.
-
     **frontmatter 가 매핑이 아닌 형상**(스칼라·리스트)도 같은 축으로 접는다(`load_ticket_soft`
     규약 — 손상 = 없는 것으로 보고 파일명 폴백). YAML 이 비어 있지 않은 스칼라면 파싱은 성공하고
     `fm.get` 이 AttributeError 로 터지는데, 이 함수는 정확-일치 조회(`find_ticket_exact`)의
     후보 순회 안에서 불리므로 그 예외가 **활성 리뷰 판정·강등 판정보다 먼저** 실행을 죽인다
     (손상 티켓은 skip 하고 FULL 로 남긴다는 규약이 깨진다).
     """
-    if fm is None:
-        try:
-            fm, _ = load_ticket(path)
-        except _LOAD_TICKET_SOFT_ERRORS:  # 읽기/파싱 실패는 파일명 폴백(fail-soft·비-UTF-8 등).
-            fm = {}
+    try:
+        fm, _ = load_ticket(path)
+    except _LOAD_TICKET_SOFT_ERRORS:  # 읽기/파싱 실패는 파일명 폴백(fail-soft·비-UTF-8 등).
+        fm = {}
     if not isinstance(fm, dict):
         fm = {}
     fid = fm.get("id")

@@ -740,7 +740,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   줄어든 것은 그 실행이 부르지 않던 코드뿐이다. 현재화한 것은 기대 SHA 하나뿐이다.
 #   같은 티켓의 수정 라운드에서 한 번 더 이동했다 — `plan()` docstring 의 낱말 하나("모듈 밖
 #   호출부")뿐이고 실행 코드·배달 경계는 무편집이다.
-_T0585_PM_UPDATE_SHA256 = "c6e43c398249369028340495b78c85391ab852fcf987fab7ec4cda4489be273d"
+_T0585_PM_UPDATE_SHA256 = "cbbd1da24ec3512cc30fc21ec4edae4bad52dbd130132e4c95ef48ade6d004b5"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -958,6 +958,10 @@ def _t0585_pm_update_source() -> str:
     (`_entry_doc_operational_keys`·`_local_conf_operational_map`·`_delegate_harness_from_local_conf`).
     세 소비처 모두 바로 앞줄에서 pm_render 를 무방비로 로드하므로 도달 불가 분기였고, 이 fixture 가
     역적용하는 delta 와도 겹치지 않는다 — 배달 경계와 배달 파일 집합은 무편집이다.
+    재핀(2026-09-18, 2차) — 손잡이 감사로 `_path_newline` 의 `default` 인자를 지우고(어느 호출부도
+    넘긴 적이 없다) 본문·docstring 이 `_DEFAULT_TEXT_NEWLINE` 상수를 직접 가리키게 했다. 이
+    fixture 가 역적용하는 delta 와 겹치지 않고 배달 경계도 무편집이라, 합성본 bytes 차이만 SHA 에
+    반영했다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -1081,7 +1085,7 @@ def _install_t0585_updater(dest: Path) -> None:
 # T-0887: 온보딩 opt-in 일습 삭제로 역적용 delta 의 exact-marker 목록이 두 항목으로 줄고
 # (되돌릴 원문이 사라졌다) 그만큼 historical 전문 SHA 도 이동했다. 퇴역 경로 delta 의 marker 는
 # 전부 그 절 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "afdd36b8503384c0eb3bc9f86e5d12372e683909fef81c0b7973a588f8473499"
+_PRE_T0876_PM_UPDATE_SHA256 = "873a9ace6d133838e357b3a0c87eb8f035296cf6463427875d0aa15343232393"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -1118,6 +1122,10 @@ def _pre_t0876_pm_update_source() -> str:
     (`_entry_doc_operational_keys`·`_local_conf_operational_map`·`_delegate_harness_from_local_conf`).
     세 소비처 모두 바로 앞줄에서 pm_render 를 무방비로 로드하므로 도달 불가 분기였고, 퇴역 경로
     delta 의 marker 도 전부 그 절 밖이라 그대로 유일 해소된다.
+    재핀(2026-09-18, 2차) — 손잡이 감사로 `_path_newline` 의 `default` 인자를 지우고(어느 호출부도
+    넘긴 적이 없다) 본문·docstring 이 `_DEFAULT_TEXT_NEWLINE` 상수를 직접 가리키게 했다. 이
+    fixture 가 역적용하는 delta 와 겹치지 않고 배달 경계도 무편집이라, 합성본 bytes 차이만 SHA 에
+    반영했다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")

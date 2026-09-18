@@ -173,7 +173,7 @@ def _set_console_codepage_utf8() -> None:
         pass
 
 
-def _toolhelp_processes(kernel32: Any | None = None) -> list[tuple[int, int, str]]:
+def _toolhelp_processes() -> list[tuple[int, int, str]]:
     """Toolhelp32 snapshot을 ``(pid, parent_pid, exe)`` 목록으로 바꾼다.
 
     ``kernel32`` 인자는 Windows VM 없이도 동일한 ctypes 포인터 경계를 검증하기 위한
@@ -196,7 +196,7 @@ def _toolhelp_processes(kernel32: Any | None = None) -> list[tuple[int, int, str
                 ("szExeFile", wintypes.WCHAR * 260),
             ]
 
-        api = kernel32 if kernel32 is not None else _get_kernel32()
+        api = _get_kernel32()
         create_snapshot = api.CreateToolhelp32Snapshot
         try:
             create_snapshot.restype = wintypes.HANDLE
