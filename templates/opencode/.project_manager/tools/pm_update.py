@@ -3566,14 +3566,10 @@ def _local_conf_operational_map() -> dict[str, str]:
     두면 새 역할/티어가 한쪽에만 늘어 그 토큰이 조용히 미배선된다(카드가 영영 TODO 로 중화). 표를
     역전해 쓰므로 표가 자라면 배선도 같이 자란다.
 
-    pm_render 로드 실패는 고정 배선만 반환한다 — 렌더 자체가 pm_render 를 요구하므로 그 실행은
-    어차피 렌더에 닿지 못하고, 위임 토큰은 미해소 → intentional-TODO 중화로 흡수된다(값을 지어내지
-    않는다). `_entry_doc_operational_keys` 의 폴백과 같은 경계다.
+    pm_render 로드 실패는 그대로 올린다 — 이 표의 소비자(`_operational_from_local_conf`)는 세 호출처
+    모두 바로 앞줄에서 pm_render 를 무방비로 로드하므로, 여기서 접어도 같은 실패를 한 줄 뒤로 미룰 뿐이다.
     """
-    try:
-        delegate = _load_pm_render().DELEGATE_MODEL_CONF_KEYS
-    except Exception:  # noqa: BLE001 — 로드 실패는 고정 배선만(위임 토큰은 중화로 흡수).
-        return dict(_LOCAL_CONF_TO_OPERATIONAL)
+    delegate = _load_pm_render().DELEGATE_MODEL_CONF_KEYS
     return {
         **_LOCAL_CONF_TO_OPERATIONAL,
         **{conf_key: token_key for token_key, conf_key in delegate.items()},
@@ -3587,10 +3583,7 @@ def _delegate_harness_from_local_conf(dest_root: Path) -> dict[str, str]:
     않는다 — render 가 값 대신 사유를 중화로 남긴다(`pm_render.unused_delegate_profiles`).
     키 부재/빈값은 담지 않는다(판정 불가 = 현행 거동 유지).
     """
-    try:
-        harness_keys = _load_pm_render().DELEGATE_HARNESS_CONF_KEYS
-    except Exception:  # noqa: BLE001 — 로드 실패면 판정 입력 없음(중화 규칙 비발화).
-        return {}
+    harness_keys = _load_pm_render().DELEGATE_HARNESS_CONF_KEYS
     conf = _read_local_conf(dest_root / ".project_manager" / "local.conf")
     return {
         token_key: conf[conf_key]
@@ -5168,14 +5161,11 @@ def _decode_entry_doc_generation(b64: str) -> str:
 
 def _entry_doc_operational_keys() -> frozenset:
     """세대 대조에서 wildcard(=출하 렌더)로 볼 operational 토큰 집합 = pm_render.OPERATIONAL_KEYS.
-    그 밖의 `{{...}}`(free-form·`{{PROJECT_CONSTRAINTS}}`)은 리터럴(pristine 요구). pm_render 로드
-    실패는 보수 폴백(하드코딩 동일 집합·엔진 co-located 라 정상 설치엔 항상 로드)."""
-    try:
-        return frozenset(_load_pm_render().OPERATIONAL_KEYS)
-    except Exception:  # noqa: BLE001 — 로드 실패 폴백(pm_render 와 동일 집합).
-        return frozenset((
-            "PROJECT_NAME", "PROJECT_TAGLINE", "PROJECT_ROOT", "PY", "TEST_CMD", "DATE",
-        ))
+    그 밖의 `{{...}}`(free-form·`{{PROJECT_CONSTRAINTS}}`)은 리터럴(pristine 요구). pm_render 는
+    같은 tools/ 에 동기되는 엔진 파일이라 로드 실패는 설치 파손이고, `_load_pm_render` 의 계약대로
+    그대로 올린다 — 사본을 두면 새 토큰이 한쪽에만 늘어 조용히 빠진다(실제로 갈라져 있었다:
+    폴백에는 OPENCODE_PRO_MODEL 과 위임 모델 토큰이 없었다)."""
+    return frozenset(_load_pm_render().OPERATIONAL_KEYS)
 
 
 def _build_entry_doc_pattern(generation_text: str, operational_keys) -> tuple[str, dict]:

@@ -443,7 +443,7 @@ def _git_config_email() -> str | None:
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=5,
         )
-    except Exception:  # noqa: BLE001 — fail-soft: git 호출 실패는 None(미상)으로 강등.
+    except (OSError, subprocess.SubprocessError):  # git 호출 실패는 None(미상)으로 강등.
         return None
     if r.returncode != 0:
         return None

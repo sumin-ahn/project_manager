@@ -1260,7 +1260,7 @@ def _touch_with_relative_path(touch: str, relative: str) -> str:
             repo=repo,
             workspace=workspace,
         )
-    except Exception:  # noqa: BLE001 — 알 수 없는 str subclass도 좌표를 잃지 않고 fail-soft.
+    except TypeError:  # 좌표 키워드를 안 받는 str subclass — 좌표를 잃지 않고 기본형으로.
         return _CoordinatePath(
             relative,
             owner=owner,
