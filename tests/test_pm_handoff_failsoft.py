@@ -26,8 +26,16 @@ class _TaskPool:
         # 기록이 열려 있다 = bootstrap 을 거친 새 세션 — 차수는 직전 log 차수 다음이다.
         return type("_T", (), {"name": name, "open": True})()
 
+    def find_task_strict(self, name):
+        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        return self.find_task(name)
+
     def slots_for_task(self, name):
         return []
+
+    def slots_for_task_strict(self, name):
+        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        return self.slots_for_task(name)
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"

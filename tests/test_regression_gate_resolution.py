@@ -6,7 +6,7 @@
   1. areas.md 활성 **prefix** 행의 test_cmd   (multi-repo 네임스페이스 형상)
   2. areas.md 활성 **repo** 행의 test_cmd     (prefix 칼럼이 빈 무prefix 형상)
   3. local.conf 의 test_cmd                   (per-clone 명시 설정)
-  4. None → 호출부가 솔로 `pytest tests/ -q` venv argv (도그푸딩 불변)
+  4. board `default_pytest_cmd()`            (앞 세 층이 다 빈 형상의 기본 게이트)
 
 2·3층이 없으면 무prefix 채택자(현행 `pm-config repo add` 의 기본 등록 형상 — prefix 칼럼이
 빈 값)에서 게이트가 항상 하드코딩 pytest 로 폴백해, `tests/` 가 없는 repo 의 회귀가 **항상
@@ -39,6 +39,8 @@ TOOLS = REPO / ".project_manager" / "tools"
 NON_PYTEST_CMD = "env PYTHONPATH=src .venv/bin/python -m viewer bind"
 PREFIX_ROW_CMD = "pytest tests/ -q --prefix-layer"
 LOCAL_CONF_CMD = "go test ./..."
+# 실 board `default_pytest_cmd()` 가 내는 4층 기본값과 같은 모양.
+BOARD_DEFAULT_CMD = "python3 -m pytest tests/ -q -n auto"
 
 
 def _load_tool(name: str):
@@ -118,6 +120,10 @@ class _StubBoard:
 
     def local_config(self):
         return dict(self._conf)
+
+    def default_pytest_cmd(self):
+        """실 board 와 같은 4층 기본값 — 앞 세 층이 다 비면 체인이 이 값을 낸다."""
+        return BOARD_DEFAULT_CMD
 
 
 def _resolve(mod, seam, stub, monkeypatch):
@@ -221,11 +227,15 @@ def test_layer3_local_conf_when_rows_have_no_test_cmd(tool, monkeypatch):
     assert _resolve(mod, seam, stub, monkeypatch) == LOCAL_CONF_CMD
 
 
-def test_layer4_none_when_nothing_configured(tool, monkeypatch):
-    """4층 — 아무것도 없으면 None → 호출부가 솔로 pytest argv(도그푸딩 불변)."""
+def test_layer4_board_default_when_nothing_configured(tool, monkeypatch):
+    """4층 — 앞 세 층이 다 비면 board 기본 pytest 명령이 게이트다.
+
+    None(호출부 솔로 argv)은 이 층이 아니라 board 로드 실패·해소 예외에서만 나온다 —
+    그 두 경로는 바로 아래 두 테스트가 각각 잡는다.
+    """
     mod, seam = tool
     stub = _StubBoard(areas_exists=False, conf={})
-    assert _resolve(mod, seam, stub, monkeypatch) is None
+    assert _resolve(mod, seam, stub, monkeypatch) == BOARD_DEFAULT_CMD
 
 
 def test_board_load_failure_is_solo_fallback(tool, monkeypatch):
@@ -346,7 +356,7 @@ _PARITY_EXPECTED = {
     "repo_row_blank_prefix": NON_PYTEST_CMD,
     "ambiguous_repos": LOCAL_CONF_CMD,
     "areas_absent": LOCAL_CONF_CMD,
-    "nothing": None,
+    "nothing": BOARD_DEFAULT_CMD,
 }
 
 

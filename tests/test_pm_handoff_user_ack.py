@@ -23,8 +23,16 @@ class _TaskPool:
     def find_task(self, name):
         return type("_T", (), {"name": name})()
 
+    def find_task_strict(self, name):
+        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        return self.find_task(name)
+
     def slots_for_task(self, name):
         return []
+
+    def slots_for_task_strict(self, name):
+        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        return self.slots_for_task(name)
 
 
 def _capture_run(monkeypatch, module):

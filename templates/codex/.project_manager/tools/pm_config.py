@@ -762,7 +762,9 @@ def _default_test_cmd() -> str:
     if configured:
         return configured
     board = _load_module("board", "board.py")
-    if board is not None and hasattr(board, "default_pytest_cmd"):
+    if board is not None:
+        # 로드된 board 사본은 rev 대조를 통과한 것이다(`_STAMPED_SIBLINGS`) — 기본값 함수가
+        # 있는지 더듬지 않는다.
         return board.default_pytest_cmd()
     # 부분 설치에서 board 기본 해소가 불가능해도 serial 하드코딩으로 조용히 강등하지 않는다.
     return "python3 -m pytest tests/ -q -n auto"
@@ -2818,47 +2820,40 @@ def cmd_status(
 
     # task 축 — 사람이 명명한 task 별 {보유 작업공간·prefix}. list_tasks
     # + slots_for_task(session==task 명의 leased 슬롯). slot-모드 세션은
-    # 이 축에 안 올라온다(task 없이 slot 풀 축에만). getattr fail-soft — task API 부재(구 엔진)면
-    # 축을 생략(회귀 0). task 명 집합은 slot 풀 축의 "보유 task" 귀속에도 쓴다.
-    list_tasks_fn = getattr(wp, "list_tasks", None)
-    slots_for_task_fn = getattr(wp, "slots_for_task", None)
+    # 이 축에 안 올라온다(task 없이 slot 풀 축에만). task 명 집합은 slot 풀 축의 "보유 task"
+    # 귀속에도 쓴다. 형제 사본은 rev 검증을 통과한 것만 로드되므로(`_load_module`) 이 함수들이
+    # 없는 사본은 여기 오지 못한다 — 있는지 더듬지 않고 그대로 부른다.
     tasks = []
-    if callable(list_tasks_fn):
-        try:
-            tasks = list_tasks_fn() or []
-        except Exception as exc:  # noqa: BLE001 — task 조회 실패가 status 를 막지 않는다(조회 전용·fail-soft).
-            if _is_engine_rev_skew(exc):
-                return _report_engine_rev_skew_at_terminal(exc)
-            tasks = []
+    try:
+        tasks = wp.list_tasks() or []
+    except Exception as exc:  # noqa: BLE001 — task 조회 실패가 status 를 막지 않는다(조회 전용·fail-soft).
+        if _is_engine_rev_skew(exc):
+            return _report_engine_rev_skew_at_terminal(exc)
+        tasks = []
     # truthy name 만 — 레코드가 name 미보유(None/빈값)면 집합에 넣지 않는다(방어). None 이 섞이면
     # idle lease(session=None/"")가 `보유 task=None` 으로 오귀인될 수 있다(reviewer suggestion).
     task_names = {n for n in (getattr(t, "name", None) for t in tasks) if n}
-    if list_tasks_fn is not None:
-        print("## task 상황 (사람이 명명한 작업스트림·slot-모드 세션 제외):")
-        if not tasks:
-            print("  (task 없음 — 명명한 task 미등록·세션은 아래 풀 축에만 나타남)")
-        for t in tasks:
+    print("## task 상황 (사람이 명명한 작업스트림·slot-모드 세션 제외):")
+    if not tasks:
+        print("  (task 없음 — 명명한 task 미등록·세션은 아래 풀 축에만 나타남)")
+    for t in tasks:
+        slots = []
+        try:
+            slots = wp.slots_for_task(t.name) or []
+        except Exception as exc:  # noqa: BLE001 — 슬롯 귀속 실패는 fail-soft(작업공간 미표시).
+            if _is_engine_rev_skew(exc):
+                return _report_engine_rev_skew_at_terminal(exc)
             slots = []
-            if callable(slots_for_task_fn):
-                try:
-                    slots = slots_for_task_fn(t.name) or []
-                except Exception as exc:  # noqa: BLE001 — 슬롯 귀속 실패는 fail-soft(작업공간 미표시).
-                    if _is_engine_rev_skew(exc):
-                        return _report_engine_rev_skew_at_terminal(exc)
-                    slots = []
-            ws = ", ".join(s.slot for s in slots) or "(보유 작업공간 없음)"
-            prefix = getattr(t, "prefix", None) or "없음(기본)"
-            print(f"  - {t.name} · prefix={prefix} · 작업공간: {ws}")
+        ws = ", ".join(s.slot for s in slots) or "(보유 작업공간 없음)"
+        prefix = getattr(t, "prefix", None) or "없음(기본)"
+        print(f"  - {t.name} · prefix={prefix} · 작업공간: {ws}")
 
     # 슬롯 git 요약 헬퍼 — slot_git_status를 한 줄로.
-    # 조회 실패/API 부재는 fail-soft(요약 줄 생략) — 리스 장부 축은 그대로 surface.
-    slot_git_status_fn = getattr(wp, "slot_git_status", None)
+    # 조회 실패는 fail-soft(요약 줄 생략) — 리스 장부 축은 그대로 surface.
 
     def _slot_git_line(slot: str, *, readonly: bool) -> "str | None":
-        if not callable(slot_git_status_fn):
-            return None
         try:
-            status = slot_git_status_fn(slot)
+            status = wp.slot_git_status(slot)
         except Exception as exc:  # noqa: BLE001 — 일반 git 조회 실패만 요약 생략.
             if _is_engine_rev_skew(exc):
                 raise
@@ -3293,14 +3288,11 @@ def _validate_prebound_task(wp, board_mod, task: str) -> int:
 def _slot_live_branch(wp, slot: str) -> str:
     """슬롯 worktree 의 live 브랜치를 fail-soft 조회.
 
-    `current_branch(slot)`(git=진실·장부 저장 폐지)를 부른다 — 미해소/조회불가/엔진 부재는
-    표시 문자열로 흡수(재열거가 침묵/크래시 하지 않게).
+    `current_branch(slot)`(git=진실·장부 저장 폐지)를 부른다 — 미해소/조회불가는 표시 문자열로
+    흡수(재열거가 침묵/크래시 하지 않게).
     """
-    fn = getattr(wp, "current_branch", None)
-    if not callable(fn):
-        return "(조회불가)"
     try:
-        return fn(slot) or "(detached)"
+        return wp.current_branch(slot) or "(detached)"
     except Exception as exc:  # noqa: BLE001 — 일반 조회 실패는 표시 흡수(재열거는 부작용 0).
         if _is_engine_rev_skew(exc):
             raise
@@ -3315,11 +3307,8 @@ def _render_task_slots(wp, task_name: str, *, header: "str | None" = None) -> No
     (묶음 처리 1급화). 부트스트랩 진입 열거와 같은 렌더 문법을 공유하려는 공용 헬퍼다.
     `slots_for_task`(session==task 명의 leased·장부 진실)에서 파생 — 신설 저장소 0·부작용 0.
     """
-    slots_fn = getattr(wp, "slots_for_task", None)
-    if not callable(slots_fn):
-        return
     try:
-        slots = list(slots_fn(task_name) or [])
+        slots = list(wp.slots_for_task(task_name) or [])
     except Exception as exc:  # noqa: BLE001 — 일반 재열거 실패는 흡수(연산 자체는 이미 성공).
         if _is_engine_rev_skew(exc):
             raise

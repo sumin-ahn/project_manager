@@ -1933,8 +1933,9 @@ def _resolve_gate_cmd(board_module) -> str | None:
         if getattr(exc, "_legacy_conf_key", False):
             raise
         return None
-    default_cmd = getattr(board_module, "default_pytest_cmd", None)
-    return default_cmd() if callable(default_cmd) else None
+    # 여기 오는 board 사본은 rev 검증을 통과한 것이다(`None` 은 위 try 의 첫 호출에서 이미
+    # AttributeError 로 걸러져 폴백으로 빠진다) — 함수가 있는지 더듬지 않는다.
+    return board_module.default_pytest_cmd()
 
 
 def _resolve_per_repo_test_cmd() -> str | None:
@@ -2612,9 +2613,8 @@ class PmHandoff:
             print("  worktree_pool 미배선(미셋업) — git 재스냅 skip(무해).")
             return True
         if task is not None:
-            checker = getattr(wp, "lease_owned_by_task_strict", None)
             try:
-                owned = bool(checker(slot, task)) if callable(checker) else False
+                owned = bool(wp.lease_owned_by_task_strict(slot, task))
             except Exception as exc:  # noqa: BLE001
                 if _is_engine_rev_skew(exc):
                     raise
@@ -2688,15 +2688,10 @@ class PmHandoff:
         wp = self._worktree_pool or _load_worktree_pool()
         if wp is None:
             raise RuntimeError("worktree_pool 엔진 부재")
-        # 실 엔진은 strict API를 우선 사용해 손상/읽기 오류를 실제 0슬롯과 구분한다.
-        # DI/구버전 엔진 호환은 기존 API로 유지한다.
-        fn = getattr(wp, "slots_for_task_strict", None)
-        if not callable(fn):
-            fn = getattr(wp, "slots_for_task", None)
-        if not callable(fn):
-            raise RuntimeError("worktree_pool.slots_for_task 부재")
+        # strict API 로 손상·읽기 오류를 실제 0슬롯과 구분한다. 형제 사본은 rev 검증을 통과한
+        # 것만 로드되므로(`_load_worktree_pool`) 이 함수가 없는 사본은 여기 오지 못한다.
         try:
-            resolved = fn(task)
+            resolved = wp.slots_for_task_strict(task)
             if resolved is None:
                 raise RuntimeError("slots_for_task가 None을 반환")
             leases = list(resolved)
@@ -3348,24 +3343,19 @@ class PmHandoff:
         wp = self._worktree_pool or _load_worktree_pool()
         # membership도 같은 strict 장부 파서를 우선 사용한다. 그렇지 않으면 손상 JSON을
         # "미등록 task"로 오인해 held-slot strict gate에 도달하기 전에 원인을 숨긴다.
-        finder = getattr(wp, "find_task_strict", None) if wp is not None else None
-        if not callable(finder):
-            finder = getattr(wp, "find_task", None) if wp is not None else None
-        if not callable(finder):
+        if wp is None:
             return "engine-missing", "worktree_pool.find_task 부재"
         try:
-            registered = finder(task)
+            registered = wp.find_task_strict(task)
         except Exception as exc:  # noqa: BLE001 — 호출부가 strict 중단/관측용 강등을 결정한다.
             return "lookup-failed", str(exc)
         if registered is None:
-            candidates_fn = getattr(wp, "task_archive_candidates", None)
-            if callable(candidates_fn):
-                try:
-                    archives = candidates_fn(task)
-                except Exception as exc:  # noqa: BLE001 — archive lookup도 strict 진단으로 승격.
-                    return "lookup-failed", str(exc)
-                if archives:
-                    return "archived", ", ".join(path.name for path in archives)
+            try:
+                archives = wp.task_archive_candidates(task)
+            except Exception as exc:  # noqa: BLE001 — archive lookup도 strict 진단으로 승격.
+                return "lookup-failed", str(exc)
+            if archives:
+                return "archived", ", ".join(path.name for path in archives)
             return "unregistered", None
         self._task_record_snapshot = (task, registered)
         return "registered", None

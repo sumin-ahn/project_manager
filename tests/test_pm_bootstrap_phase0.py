@@ -202,6 +202,14 @@ class _Pool:
         self.slots_for_task_calls.append(name)
         return [_Lease(slot, self._repo_of(slot), name) for slot in self._task_slots]
 
+    def slots_for_task_strict(self, name):
+        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        return self.slots_for_task(name)
+
+    def _normalize_branch_name(self, branch, *, git_runner):
+        """실 엔진과 같은 계약 — 유효한 이름은 고정점(자기 자신)으로 돌아온다."""
+        return branch
+
     def lease_owned_by_task_strict(self, slot, task):
         return slot in self._task_slots
 

@@ -155,8 +155,16 @@ class _TaskPool:
         # 종료 기록이 닫혀 있다 = bootstrap 없이 같은 세션을 재실행한 상태(차수 유지).
         return type("_T", (), {"name": name, "open": False})()
 
+    def find_task_strict(self, name):
+        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        return self.find_task(name)
+
     def slots_for_task(self, name):
         return [type("_L", (), {"slot": slot})() for slot in self._slots]
+
+    def slots_for_task_strict(self, name):
+        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        return self.slots_for_task(name)
 
     def close_task_session(self, name):
         self.released.append(name)

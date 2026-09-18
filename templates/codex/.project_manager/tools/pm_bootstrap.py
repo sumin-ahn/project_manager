@@ -3156,15 +3156,12 @@ class PmBootstrap:
         통과 조건은 `normalize(cand) == cand` — 정규화 결과가 원문과 다르면(revspec 확장·`@{-1}`)
         제안 이름이 다른 브랜치로 해소되어 안내가 거짓말이 되므로 후보에서 배제한다.
 
-        판정기 부재(구 풀·mock)·경로 해소 실패·**git 호출 자체가 터진 경우**는 True(검사 생략·현행
-        동작 유지·fail-soft) — 후보 판정 실패가 0단계 안내를 막지 않는다(`_slot_branch_exists` 동형
-        규율). `_normalize_branch_name` 은 runner 예외를 자기 안에서 None(=거부)으로 흡수하므로,
+        경로 해소 실패·**git 호출 자체가 터진 경우**는 True(검사 생략·현행 동작 유지·fail-soft) —
+        후보 판정 실패가 0단계 안내를 막지 않는다(`_slot_branch_exists` 동형 규율). `_normalize_branch_name` 은 runner 예외를 자기 안에서 None(=거부)으로 흡수하므로,
         "이름이 무효" 와 "git 이 못 돌았다" 를 가르기 위해 러너가 예외를 표시(`failed`)한다.
         (rc≠0 로 조용히 실패하는 git 은 무효와 구분 불가 — 그 경우 후보가 소진돼 "브랜치명 직접
         지정" 안내로 수렴한다. 여전히 실행 가능한 안내다.)"""
-        normalize = getattr(wp, "_normalize_branch_name", None)
-        if not callable(normalize):
-            return True    # 구 풀 — 검사 비활성(fail-soft·안내는 계속).
+        normalize = wp._normalize_branch_name
         try:
             slot_dir = str(wp.slot_path(slot_id))
         except Exception:  # noqa: BLE001 — fail-soft: 경로 해소 실패는 검사 생략.
@@ -3537,20 +3534,10 @@ class PmBootstrap:
                 file=sys.stderr,
             )
             return None
-        # 실 엔진은 strict API를 우선 사용해 JSON 손상/읽기 오류를 실제 0슬롯과 구분한다.
-        # DI/구버전 엔진은 기존 함수로 호환하되, 일반 fail-soft 소비자는 변경하지 않는다.
-        slots_fn = getattr(wp, "slots_for_task_strict", None)
-        if not callable(slots_fn):
-            slots_fn = getattr(wp, "slots_for_task", None)
-        if not callable(slots_fn):
-            print(
-                f"[중단·진입검증] task {task!r} 보유 슬롯 장부를 해소할 수 없습니다 — "
-                "worktree_pool.slots_for_task 부재. 실제 0슬롯으로 간주하지 않고 중단합니다.",
-                file=sys.stderr,
-            )
-            return None
+        # strict API 로 JSON 손상·읽기 오류를 실제 0슬롯과 구분한다. 형제 사본은 rev 검증을
+        # 통과한 것만 로드되므로(`_load_worktree_pool`) 이 함수가 없는 사본은 여기 오지 못한다.
         try:
-            resolved = slots_fn(task)
+            resolved = wp.slots_for_task_strict(task)
             if resolved is None:
                 raise RuntimeError("slots_for_task가 None을 반환")
             return list(resolved)
@@ -3650,20 +3637,18 @@ class PmBootstrap:
                 self._remedy_branch_command(wp, repo, slot_id, task),
             )
         # 4. 기록↔live diverged.
-        compare = getattr(wp, "compare_slot_git", None)
-        if callable(compare):
-            try:
-                result = compare(slot_id)
-            except Exception as exc:  # noqa: BLE001 — 일반 compare 실패는 fault 아님(통과).
-                if _is_engine_rev_skew(exc):
-                    raise
-                result = None
-            if result is not None and getattr(result, "fail_loud", False):
-                return (
-                    "기록↔live diverged (외부 개입 가능성)",
-                    _phase0_diverge_reason(result),
-                    f"{_CARD_TOOL_INVOKE}/worktree_pool.py record {slot_id}",
-                )
+        try:
+            result = wp.compare_slot_git(slot_id)
+        except Exception as exc:  # noqa: BLE001 — 일반 compare 실패는 fault 아님(통과).
+            if _is_engine_rev_skew(exc):
+                raise
+            result = None
+        if result is not None and getattr(result, "fail_loud", False):
+            return (
+                "기록↔live diverged (외부 개입 가능성)",
+                _phase0_diverge_reason(result),
+                f"{_CARD_TOOL_INVOKE}/worktree_pool.py record {slot_id}",
+            )
         return None
 
     def _task_slot_set_rows(self, task: str, *, leases: list | None = None) -> list[dict]:
@@ -3679,11 +3664,8 @@ class PmBootstrap:
         if wp is None:
             return []
         if leases is None:
-            slots_fn = getattr(wp, "slots_for_task", None)
-            if not callable(slots_fn):
-                return []
             try:
-                leases = list(slots_fn(task) or [])
+                leases = list(wp.slots_for_task(task) or [])
             except Exception as exc:  # noqa: BLE001 — fail-soft: 직접 호출의 surface 조회 실패.
                 if _is_engine_rev_skew(exc):
                     raise
@@ -3714,12 +3696,9 @@ class PmBootstrap:
         }
 
     def _task_slot_git_status(self, wp, slot_id: str) -> dict:
-        """`slot_git_status(slot)`(branch·head·dirty) fail-soft 조회 — 미제공/실패는 {}."""
-        fn = getattr(wp, "slot_git_status", None)
-        if not callable(fn):
-            return {}
+        """`slot_git_status(slot)`(branch·head·dirty) fail-soft 조회 — 조회 실패는 {}."""
         try:
-            return fn(slot_id) or {}
+            return wp.slot_git_status(slot_id) or {}
         except Exception as exc:  # noqa: BLE001 — 일반 상태 조회 실패는 빈 dict(행 표시 흡수).
             if _is_engine_rev_skew(exc):
                 raise
@@ -3727,11 +3706,8 @@ class PmBootstrap:
 
     def _task_slot_record_live(self, wp, slot_id: str) -> str:
         """기록↔live 상태 문자열 — `compare_slot_git` 소비 (ok|unrecorded|diverged|unknown·fail-soft)."""
-        fn = getattr(wp, "compare_slot_git", None)
-        if not callable(fn):
-            return "unknown"
         try:
-            result = fn(slot_id)
+            result = wp.compare_slot_git(slot_id)
         except Exception as exc:  # noqa: BLE001 — 일반 compare 실패는 unknown(표시만).
             if _is_engine_rev_skew(exc):
                 raise

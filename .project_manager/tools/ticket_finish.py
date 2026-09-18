@@ -592,7 +592,7 @@ def _resolve_per_repo_test_cmd() -> str | None:
       1. areas.md 활성 **prefix** 행의 `test_cmd`   (multi-repo 네임스페이스 형상)
       2. areas.md 활성 **repo** 행의 `test_cmd`     (prefix 칼럼이 빈 무prefix 형상)
       3. `local.conf` 의 `test.cmd`                 (per-clone 명시 설정)
-      4. None → 호출부가 병렬 기본 `pytest tests/ -q -n auto` venv argv
+      4. board `default_pytest_cmd()` — xdist 가용 Python이면 `-n auto` 병렬 기본
 
     **체인 자체는 pm_handoff `_resolve_gate_cmd` 가 소유한다** — 사본을 두지 않고 동적 로드해
     위임한다(`_regression_cwd` 위임과 같은 방향·DRY). 해소 함수가 이 도구에만 있고 pm_handoff
@@ -4903,26 +4903,24 @@ class ClusterCloser:
         if self._dry_run:
             return
         board = self._board
-        load = getattr(board, "load_cluster", None) if board else None
-        dump = getattr(board, "dump_cluster", None) if board else None
-        if load is None or dump is None:
+        # 사본 부재(`None`)는 실재하는 상태라 그대로 본다. 사본이 있으면 rev 검증을 통과한
+        # 것이라 아래 이름들이 없을 수 없다 — 있는지 더듬지 않는다.
+        if board is None:
             return
-        lock = getattr(board, "board_lock", None)
         try:
-            with lock() if callable(lock) else contextlib.nullcontext():
-                ledger = load(self._cluster)
+            with board.board_lock():
+                ledger = board.load_cluster(self._cluster)
                 if ledger is None:
                     return
                 if step_key is None:
                     ledger.pop(_CLOSE_STEP_KEY, None)
                 else:
                     ledger[_CLOSE_STEP_KEY] = step_key
-                statuses = getattr(board, "CLUSTER_STATUSES", ())
-                if status is None or status in statuses:
+                if status is None or status in board.CLUSTER_STATUSES:
                     # 열거의 소유자는 board 다 — 그 열거 안에 있을 때만 쓴다. None 은 되돌리기
                     # 전 값이 비어 있던 형상이라 그대로 되돌린다.
                     ledger["status"] = status
-                dump(ledger)
+                board.dump_cluster(ledger)
         except Exception as exc:  # noqa: BLE001 — 기록 실패가 종결을 되돌리지 않는다.
             if _is_engine_rev_skew(exc):
                 raise

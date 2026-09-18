@@ -174,6 +174,14 @@ class _TaskPool:
             out.append(_Lease(s, repo, name, state=self._states.get(s, "leased")))
         return out
 
+    def slots_for_task_strict(self, name):
+        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        return self.slots_for_task(name)
+
+    def _normalize_branch_name(self, branch, *, git_runner):
+        """실 엔진과 같은 계약 — 유효한 이름은 고정점(자기 자신)으로 돌아온다."""
+        return branch
+
     def lease_owned_by_task_strict(self, slot, task):
         return (
             slot in self._task_slots
@@ -312,6 +320,10 @@ def test_task_slot_resolution_exception_blocks_bootstrap_dump(bootstrap, tmp_pat
 
     class BrokenPool(_TaskPool):
         def slots_for_task(self, name):
+            raise OSError("ledger unreadable")
+
+        def slots_for_task_strict(self, name):
+            """장부를 못 읽는 상태는 두 API 모두에서 같다 — 진입이 막히는지를 본다."""
             raise OSError("ledger unreadable")
 
     board_calls: list[list[str]] = []

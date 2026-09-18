@@ -67,12 +67,20 @@ class _RegisteredTaskPool:
     def find_task(self, name):
         return type("_T", (), {"name": name, "open": self._open})()
 
+    def find_task_strict(self, name):
+        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        return self.find_task(name)
+
     @staticmethod
     def _validate_task_name(_name, _registered_repos=None):
         return None
 
     def slots_for_task(self, name):
         return []
+
+    def slots_for_task_strict(self, name):
+        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        return self.slots_for_task(name)
 
 
 # ── pm_state.md 세션 식별 절 fixture (실 형식 — 앵커·entry·포인터 유지) ────────
@@ -1436,6 +1444,11 @@ def test_archived_task_refuses_handoff_before_side_effects(hf, tmp_path, capsys)
             return None
 
         @staticmethod
+        def find_task_strict(name):
+            """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+            return None
+
+        @staticmethod
         def task_archive_candidates(name):
             return (archive,)
 
@@ -1764,6 +1777,16 @@ def test_run_unregistered_task_fails_without_side_effects(
         def find_task(name):
             return None
 
+        @staticmethod
+        def find_task_strict(name):
+            """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+            return None
+
+        @staticmethod
+        def task_archive_candidates(name):
+            """장부에도 보관본에도 없는 형상 — 실 엔진과 달리 빠지지 않고 빈 결과를 낸다."""
+            return ()
+
     handoff = hf.PmHandoff(
         run_pytest_fn=lambda: (pytest_calls.append(True) or (0, pytest_summary())),
         run_git_fn=lambda args: (0, ""),
@@ -1798,6 +1821,11 @@ def test_run_archived_task_fails_with_reopen_before_any_writes(
     class ArchivedPool:
         @staticmethod
         def find_task(name):
+            return None
+
+        @staticmethod
+        def find_task_strict(name):
+            """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
             return None
 
         @staticmethod
@@ -1836,8 +1864,16 @@ def test_run_task_records_precreated_pm_state(hf, tmp_path, capsys, monkeypatch)
         def find_task(self, name):
             return type("_T", (), {"name": name})()
 
+        def find_task_strict(self, name):
+            """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+            return self.find_task(name)
+
         def slots_for_task(self, name):
             return []
+
+        def slots_for_task_strict(self, name):
+            """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+            return self.slots_for_task(name)
 
         def close_task_session(self, name):
             return type("_T", (), {"name": name})()
@@ -1916,6 +1952,10 @@ class _SnapPool:
     def find_task(self, name):
         return type("_T", (), {"name": name, "open": self._task_open})()
 
+    def find_task_strict(self, name):
+        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        return self.find_task(name)
+
     def close_task_session(self, name):
         self._task_open = False
         self.closed_tasks.append(name)
@@ -1924,6 +1964,10 @@ class _SnapPool:
     def slots_for_task(self, name):
         """이 대역은 슬롯 축을 모델하지 않는다 — 보유 0개(재스냅·회귀 대상 없음)."""
         return []
+
+    def slots_for_task_strict(self, name):
+        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        return self.slots_for_task(name)
 
     def record_git_snapshot(self, slot, **kwargs):
         self.snap_calls.append((slot, kwargs))
@@ -2427,6 +2471,10 @@ class _TaskPidPool(_SnapPool):
     def slots_for_task(self, name):
         return []
 
+    def slots_for_task_strict(self, name):
+        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        return self.slots_for_task(name)
+
 
 def _task_mode_handoff(hf, tmp_path, monkeypatch, pool):
     """task_mode(=명시 pm_state 미주입·--task) 진입 hermetic PmHandoff (T-0392).
@@ -2548,6 +2596,10 @@ class _TaskSetPool(_SnapPool):
 
     def slots_for_task(self, name):
         return [type("_L", (), {"slot": s})() for s in self._task_slots]
+
+    def slots_for_task_strict(self, name):
+        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        return self.slots_for_task(name)
 
     def lease_owned_by_task_strict(self, slot, task):
         return slot in self._task_slots and task == "mytask"
@@ -2869,6 +2921,10 @@ def test_task_slots_resolution_exception_fails_before_persistent_records(hf, tmp
     class BrokenTaskSetPool(_TaskSetPool):
         def slots_for_task(self, name):
             raise OSError("ledger unreadable")
+
+        def slots_for_task_strict(self, name):
+            """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+            return self.slots_for_task(name)
 
     pool = BrokenTaskSetPool([])
     handoff = _task_reg_handoff(

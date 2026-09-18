@@ -259,6 +259,10 @@ class FakeWorktreePool:
         """기본 task fixture는 작업공간 0개 — 해소 성공과 엔진 부재를 구분한다."""
         return []
 
+    def slots_for_task_strict(self, name):
+        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        return self.slots_for_task(name)
+
     def compare_slot_git(self, slot, *, git_runner=None):
         # 0단계 record-vs-live(T-0350 compare 프리미티브) 대역 — 설정된 결과(없으면 None=검사 no-op).
         return self._compare_result

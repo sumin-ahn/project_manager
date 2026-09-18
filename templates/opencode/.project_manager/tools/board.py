@@ -16593,11 +16593,11 @@ def cmd_show(args: argparse.Namespace) -> int:
     if rounds:
         print(f"-- 라운드 {len(rounds)}건 --\n")
         print(rounds_module.render_rounds_for_show(rounds))
-        # 엔진 사본이 없거나 구세대면 라운드 본문까지만 낸다(표시면은 조회를 막지 않는다).
+        # 엔진 사본이 없으면 라운드 본문까지만 낸다(표시면은 조회를 막지 않는다). 사본이 있으면
+        # rev 검증을 통과한 것이라 이 함수가 없을 수 없다 — 있는지 더듬지 않는다.
         delegate = _load_pm_delegate_module()
-        render_summary = getattr(delegate, "render_pm_review_summary", None)
-        if callable(render_summary):
-            summary = render_summary(body, rounds)
+        if delegate is not None:
+            summary = delegate.render_pm_review_summary(body, rounds)
             if summary:
                 print(summary)
         pending = [item for item in rounds if item.pending]
