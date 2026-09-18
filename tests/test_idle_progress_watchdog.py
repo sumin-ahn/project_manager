@@ -2247,27 +2247,6 @@ def test_additional_reviewer_cleanup_failure_saves_partial_output(
     assert "cleanup diagnostic" in raw
 
 
-def test_additional_reviewer_idle_resolution_order(external, relay, capsys):
-    """`--idle-timeout` > 하네스 키 > 리뷰 축 키 > 프로필 선언 — 위임 축과 **같은 해소 순서**.
-
-    리뷰어 커맨드는 해소된 대상에서 오므로(기본 커맨드 없음) 이 해소자는 그것을 인자로 받는다."""
-    codex = "codex exec"
-    cli = external.argparse.Namespace(idle_timeout=45.0)
-    assert external._resolve_idle_timeout(
-        cli, {external.ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY: "77"}, codex) == 45.0
-    unset = external.argparse.Namespace(idle_timeout=None)
-    assert external._resolve_idle_timeout(
-        unset, {external.ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY: "77"}, codex) == 77.0
-    assert external._resolve_idle_timeout(
-        unset, {external.ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY: "77",
-                "harness.codex.idle_timeout": "88"}, codex) == 88.0   # 하네스 키가 더 구체적
-    # 미설정이면 리뷰어 커맨드의 하네스 프로필(codex 축) — 별도 상수가 아니다.
-    assert external._resolve_idle_timeout(unset, {}, codex) == relay.CLOUD_IDLE_TIMEOUT_SEC
-    assert external._resolve_idle_timeout(
-        unset, {external.ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY: "x"}, codex) == \
-        relay.CLOUD_IDLE_TIMEOUT_SEC
-    assert external.ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY in capsys.readouterr().err
-
 
 def test_additional_reviewer_follows_reviewer_harness_profile(external, relay):
     """리뷰어 커맨드의 **하네스 프로필**을 따른다 — 별도 타임아웃 상수 0(값 출처 단일)."""

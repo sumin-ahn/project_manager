@@ -1669,6 +1669,23 @@ def test_codex_read_attempt_reanchors_execution_root_env_preamble_and_cleanup(
     assert pd.WRITE_ROLES == frozenset({"developer", "architect"})
 
 
+_CODEX_READ_TMP_PROFILE = "pm_delegate_read_tmp"
+
+
+def _codex_read_tmp_profile_value(read_tmp, ticket_copy_dir=None):
+    """라이브 codex sandbox 호출용 `-c permissions.<name>=<TOML>` 값.
+
+    엔진은 이 argv 를 만들지 않는다(codex-cli 0.147.0 에서 patch 도구가 read-only 로 남아
+    폐기된 접근) — 이 테스트가 sandbox 를 직접 띄울 때만 쓰는 픽스처다.
+    """
+    path_key = _json.dumps(str(read_tmp), ensure_ascii=False)
+    entries = ['":root"="read"', f'{path_key}="write"']
+    if ticket_copy_dir is not None:
+        entries.append(f'{_json.dumps(str(ticket_copy_dir), ensure_ascii=False)}="write"')
+    return ('{description="pm_delegate read role: root read + isolated writes",'
+            f'filesystem={{{",".join(entries)}}}}}')
+
+
 @pytest.mark.integration
 @pytest.mark.skipif(
     os.environ.get("PM_DELEGATE_LIVE_SANDBOX") != "1" or not shutil.which("codex"),
@@ -1714,15 +1731,15 @@ def test_codex_live_sandbox_tmp_write_and_worktree_open_denied(
         "print(json.dumps(results, sort_keys=True))",
     ])
     profile_override = (
-        f"permissions.{pd._CODEX_READ_TMP_PROFILE}="
-        f"{pd._codex_read_tmp_profile_value(read_tmp.path)}"
+        f"permissions.{_CODEX_READ_TMP_PROFILE}="
+        f"{_codex_read_tmp_profile_value(read_tmp.path)}"
     )
     env = pd._apply_read_tmp_env(dict(os.environ), "codex", read_tmp)
     try:
         completed = subprocess.run(
             [
                 "codex", "sandbox", "-c", profile_override,
-                "-P", pd._CODEX_READ_TMP_PROFILE,
+                "-P", _CODEX_READ_TMP_PROFILE,
                 "-C", str(read_tmp.path), "--", sys.executable, "-c", probe_script,
             ],
             cwd=read_tmp.path,
@@ -4718,18 +4735,28 @@ def test_runtime_harness_cap_table_matches_session_markers(pd):
     assert set(relay.HARNESS_CAP_ENV) == set(relay.HARNESS_SESSION_MARKERS)
 
 
+def _harness_cap_pairs(pd, env):
+    """세션 마커로 뽑힌 하네스와 그 Bash 상한 키 — 살아 있는 두 표면의 조합.
+
+    엔진은 이 짝을 따로 만들지 않는다(`harness_cap_advisory` 가 문장으로 직접 낸다) —
+    단언을 값으로 대조하기 위한 테스트 지역 조립이다.
+    """
+    cap_env = pd._load_relay().HARNESS_CAP_ENV
+    return tuple((name, cap_env.get(name)) for name in pd._session_harnesses(env))
+
+
 @pytest.mark.parametrize("key", ("OPENCODE_CONFIG", "CLAUDE_CONFIG_DIR",
                                   "OPENCODE_CONFIG_DIR"))
 def test_runtime_harness_cap_ignores_config_and_unmeasured_keys(pd, key):
     """설정 경로와 세션 근거 없는 키는 PM 하네스 및 상한 선언을 선택하지 않는다."""
-    assert pd._pm_harness_and_cap_env({key: "configured"}) == ()
+    assert _harness_cap_pairs(pd, {key: "configured"}) == ()
 
 
 def test_runtime_harness_cap_warns_for_all_nested_session_axes(pd, monkeypatch):
     """둘 이상의 실측 세션이 겹치면 각 공개 상한을 모두 검사한다."""
     monkeypatch.setattr(pd, "max_declared_execution_path_budget", lambda: 10)
     env = {"OPENCODE": "child", "CLAUDECODE": "parent"}
-    assert pd._pm_harness_and_cap_env(env) == (
+    assert _harness_cap_pairs(pd, env) == (
         ("claude", "BASH_MAX_TIMEOUT_MS"),
         ("opencode", "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
     )
@@ -4742,7 +4769,7 @@ def test_runtime_harness_cap_warns_for_all_nested_session_axes(pd, monkeypatch):
 
 def test_runtime_harness_cap_accepts_secondary_opencode_session_marker(pd):
     """OpenCode가 세션에 주입하는 보조 마커도 공용 표를 통해 상한 선언을 선택한다."""
-    assert pd._pm_harness_and_cap_env({"OPENCODE_PID": "123"}) == (
+    assert _harness_cap_pairs(pd, {"OPENCODE_PID": "123"}) == (
         ("opencode", "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
     )
 
@@ -4756,7 +4783,7 @@ def test_runtime_harness_cap_unknown_marker_is_never_blocking(pd, monkeypatch):
     monkeypatch.setattr(pd, "_load_relay", lambda: relay)
     env = {"GEMINI_SESSION": "session"}
 
-    assert pd._pm_harness_and_cap_env(env) == (("gemini", None),)
+    assert _harness_cap_pairs(pd, env) == (("gemini", None),)
     assert pd.harness_cap_advisory(env) is None
 
 

@@ -582,7 +582,6 @@ RESUME_MUTATING_ROLES: frozenset[str] = WRITE_ROLES | frozenset(
 #     `external_directory /tmp/pm_delegate_probe/opencode/* = allow`, `edit * = deny`가 나왔다.
 #     즉 고정 `/tmp/opencode/*`가 아니라 `${TMPDIR}/opencode/*`이므로 attempt의 그 하위만 안내한다.
 # 버전 문자열을 런타임 추측해 분기하지 않는다. 위 값이 바뀌면 이 선언·회귀를 함께 갱신한다.
-_CODEX_READ_TMP_PROFILE = "pm_delegate_read_tmp"
 _OPENCODE_READ_TMP_PARENT = "opencode"
 _OPENCODE_ALLOWED_TMP_COMPONENT = "opencode"
 _READ_TMP_PREFIX = "pm_delegate_read_"
@@ -11455,23 +11454,6 @@ def _opencode_transport_launch_target(
     return argv, str(transport.sandbox)
 
 
-def _codex_read_tmp_profile_value(
-    read_tmp: Path, ticket_copy_dir: Path | None = None,
-) -> str:
-    """CLI `-c permissions.<name>=<TOML>`의 동적 최소권한 profile 값."""
-    import json
-
-    path_key = json.dumps(str(read_tmp), ensure_ascii=False)
-    entries = [f'":root"="read"', f'{path_key}="write"']
-    if ticket_copy_dir is not None:
-        entries.append(
-            f'{json.dumps(str(ticket_copy_dir), ensure_ascii=False)}="write"'
-        )
-    return (
-        '{description="pm_delegate read role: root read + isolated writes",'
-        f'filesystem={{{",".join(entries)}}}}}'
-    )
-
 
 # 쓰기 대상 실측 프로브. mode 비트는 ACL 플랫폼에서 권한을 말해 주지 않고 `os.access` 도 ACL 을
 # 반영하지 않으므로, 0바이트 파일을 실제로 만들어 본 결과만 근거로 쓴다.
@@ -14871,20 +14853,6 @@ def max_declared_execution_path_budget() -> int:
     ]
     return max(primary + fallback for primary in budgets for fallback in budgets)
 
-
-def _pm_harness_and_cap_env(
-    env: dict[str, str] | None = None,
-) -> tuple[tuple[str, str | None], ...]:
-    """현재 PM 하네스 전축과 각 Bash 상한 env 키를 해소한다."""
-    env = os.environ if env is None else env
-    relay = _load_relay()
-    session_markers = relay.HARNESS_SESSION_MARKERS
-    cap_env = relay.HARNESS_CAP_ENV
-    return tuple(
-        (pm_harness, cap_env.get(pm_harness))
-        for pm_harness, markers in session_markers.items()
-        if any(env.get(marker) for marker in markers)
-    )
 
 
 def harness_cap_advisory(env: dict[str, str] | None = None,

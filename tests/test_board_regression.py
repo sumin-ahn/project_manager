@@ -2254,7 +2254,7 @@ def test_a_global_hooks_path_is_covered_by_the_authoritative_resolution(
     assert board._pure_hooks_dir() == (board.REPO / ".git" / "hooks").resolve()
     assert not (board.REPO / ".git" / "hooks" / "pre-push").exists()
     # 차단 축 — git 권위 해소가 실제 실행되는 훅을 찾아 세대를 판정한다.
-    assert board._authoritative_hooks_dir() == hooks.resolve()
+    assert board._authoritative_hooks_resolution()[0] == hooks.resolve()
     assert "구버전" in (board._stale_pre_push_hook_refusal() or "")
     assert hook.read_text(encoding="utf-8") == _legacy_hook()   # 고치지 않는다
 
@@ -2275,7 +2275,7 @@ def test_a_current_hook_under_a_global_hooks_path_passes(board, monkeypatch, tmp
     hook.write_text(board.pre_push_hook_body("python3"), encoding="utf-8")
 
     # 판정이 돌았음의 근거 — 해소가 실패하면 아래 통과는 아무 것도 뜻하지 않는다.
-    assert board._authoritative_hooks_dir() == hooks.resolve()
+    assert board._authoritative_hooks_resolution()[0] == hooks.resolve()
     assert board._stale_pre_push_hook_refusal() is None
     # 같은 자리의 구세대 본문은 차단된다 — 통과가 '판정 부재'가 아니라 '현행 판정'임을 가른다.
     hook.write_text(_legacy_hook(), encoding="utf-8")
@@ -2299,7 +2299,7 @@ def test_an_unanswerable_git_hooks_query_is_loud_instead_of_silent(
     hooks_dir, reason = board._hooks_dir_resolution()
     assert hooks_dir is None
     assert reason and "rc=" in reason
-    assert board._authoritative_hooks_dir() is None
+    assert board._authoritative_hooks_resolution()[0] is None
 
     # 관측성 축 — 판정 생략이 사유와 함께 stderr 에 남는다(판정 부재를 통과로 읽지 않게).
     assert board._stale_pre_push_hook_refusal() is None
@@ -2319,7 +2319,7 @@ def test_an_uncallable_git_stays_silent_and_keeps_the_pure_verdict(board, monkey
     monkeypatch.setattr(board.subprocess, "run", _no_git)
     assert board._hooks_dir_resolution() == (None, None)
     assert board._hooks_dir() is None
-    assert board._authoritative_hooks_dir() is None
+    assert board._authoritative_hooks_resolution()[0] is None
     assert capsys.readouterr().err == ""
 
 

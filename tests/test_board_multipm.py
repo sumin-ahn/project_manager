@@ -26,6 +26,20 @@ TOOLS = REPO / ".project_manager" / "tools"
 REAL_AREAS = REPO / ".project_manager" / "areas.md"
 
 
+def _area_owner(board, repo):
+    """areas.md 그 repo 행의 `area_owner` — 미등록·빈 값·구 스키마면 None.
+
+    엔진의 repo-키 조회는 prefix 축 후임(`_ticket_area_owner`)으로 대체돼 제품에서 빠졌다.
+    쓰기 결과(cmd_init·areas_append·areas_set_cell)를 값으로 확인하려는 이 파일의 단언을
+    위해 여기서 직접 읽는다.
+    """
+    _header, rows = board._parse_areas()
+    for row in rows:
+        if row.get("repo") == repo:
+            return row.get("area_owner") or None
+    return None
+
+
 def _load_board():
     """board.py 를 (패키지 아님) importlib 로 경로 로드 — test_portability 와 동일."""
     spec = importlib.util.spec_from_file_location("board", TOOLS / "board.py")
@@ -665,8 +679,8 @@ def test_cmd_init_area_owner_from_explicit_user(init_board, monkeypatch):
     rc = init_board.cmd_init(_init_args(
         prefix="pay", area="결제", owner="alice", user="carol", user_ack="pay"))
     assert rc == 0
-    # 신 8칸 스키마 끝 칼럼 area_owner=carol → _repo_area_owner 로 확증(`--mine` 풀 입력).
-    assert init_board._repo_area_owner(init_board.REPO.name) == "carol"
+    # 신 8칸 스키마 끝 칼럼 area_owner=carol → areas 행을 직접 읽어 확증(`--mine` 풀 입력).
+    assert _area_owner(init_board, init_board.REPO.name) == "carol"
 
 
 def test_cmd_init_area_owner_falls_back_to_local_conf(init_board, monkeypatch):
@@ -676,7 +690,7 @@ def test_cmd_init_area_owner_falls_back_to_local_conf(init_board, monkeypatch):
     rc = init_board.cmd_init(_init_args(
         prefix="acc", area="정산", owner="bob", user_ack="acc"))
     assert rc == 0
-    assert init_board._repo_area_owner(init_board.REPO.name) == "conf-user"
+    assert _area_owner(init_board, init_board.REPO.name) == "conf-user"
 
 
 def test_cmd_init_area_owner_falls_back_to_git_email(init_board, monkeypatch):
@@ -688,7 +702,7 @@ def test_cmd_init_area_owner_falls_back_to_git_email(init_board, monkeypatch):
     rc = init_board.cmd_init(_init_args(
         prefix="ord", area="주문", owner="carol", user_ack="ord"))
     assert rc == 0
-    assert init_board._repo_area_owner(init_board.REPO.name) == "dev@example.com"
+    assert _area_owner(init_board, init_board.REPO.name) == "dev@example.com"
 
 
 def test_cmd_init_owner_empty_when_session_unbound(init_board, monkeypatch):
@@ -704,7 +718,7 @@ def test_cmd_init_owner_empty_when_session_unbound(init_board, monkeypatch):
 
 
 def test_cmd_init_area_owner_graceful_when_user_unknown(init_board, monkeypatch):
-    """user 미상(--user·local.conf·git 전부 없음) → area_owner 빈 칼럼·_repo_area_owner None.
+    """user 미상(--user·local.conf·git 전부 없음) → area_owner 빈 칼럼·읽으면 None.
 
     `--mine` 풀에 안 잡히지만 등록 자체는 graceful 진행(기존 슬롯-only 동작 보존).
     """
@@ -713,7 +727,7 @@ def test_cmd_init_area_owner_graceful_when_user_unknown(init_board, monkeypatch)
     rc = init_board.cmd_init(_init_args(
         prefix="inv", area="재고", owner="dave", user_ack="inv"))
     assert rc == 0
-    assert init_board._repo_area_owner("inv") is None
+    assert _area_owner(init_board, "inv") is None
     # owner(registrant)는 정상 기록 — area_owner 만 빈 값(두 칼럼 독립·overload 금지).
     row = init_board._areas_row_for_prefix("inv")
     assert row["owner"] == "dave"

@@ -1626,15 +1626,6 @@ def _resolve_timeout(args: argparse.Namespace, conf: dict[str, str],
     return int(reviewer_profile(reviewer_cmd, conf).wall_timeout)
 
 
-def _resolve_idle_timeout(args: argparse.Namespace, conf: dict[str, str],
-                          reviewer_cmd: str) -> float:
-    """무진행 상한(초)을 `--idle-timeout` > 리뷰어 프로필 순서로 해소한다(벽시계 축과 대칭).
-
-    값의 출처가 하나이므로(프로필 테이블) 리뷰어 축과 위임 축의 규칙이 갈리지 않는다."""
-    if getattr(args, "idle_timeout", None) is not None:
-        return float(args.idle_timeout)  # main() 이 양수 검증(usage error)
-    return float(reviewer_profile(reviewer_cmd, conf).idle_timeout)
-
 
 def _timeout_seconds_arg(raw: str) -> int:
     """CLI timeout 을 pm_relay 의 단일 정규화 경계로 파싱한다."""
@@ -2356,36 +2347,6 @@ def _format_must_fix_series(series: Sequence[int | None]) -> str:
     """must_fix 추이 표기 — 셀 근거가 없던 라운드는 '미상'(0 과 구분)."""
     return " → ".join("미상" if value is None else str(value) for value in series) or "없음"
 
-
-def _inflight_reservations(entry: dict, *, wall_timeout_sec: int | None = None) -> int:
-    """마감 기록(`finished_at`)이 없는 예약 수 — **지금 나가 있을 수 있는** 라운드.
-
-    수렴 상한이 완료 산출만 세면 동시 실행 둘이 같은 잔여 슬롯을 함께 통과한다(예: 상한 3 설정에서
-    2완료 + 2예약 동시 통과 → 4호출). 예약은 장부 임계 구역 안에서만 만들어지므로, 그 구역에서
-    보는 미마감 예약을 상한에 더하면 창이 닫힌다.
-
-    **미완 재시도 상한(`additional_reviewer.incomplete_rounds_max`)과 역할이 다르다.** 그쪽은
-    "판정을 못 낸 호출을 몇 번까지 다시 시도하나"(호출 횟수 축)이고, 이 수는
-    "지금 몇 라운드가 이미 나가 있나"(수렴 축의 동시성)다. 같은 레코드를 보지만 묻는 질문이
-    달라 한쪽이 다른 쪽을 대신하지 못한다 — 미완 상한(기본 2)은 상한 3 설정을 넘기는 4호출 창을
-    막지 못하고, 이 수는 재시도 예산을 세지 않는다.
-
-    호출이 확실히 없던 예약은 환불로 레코드 자체가 사라지므로(`_refund_round`) 여기 남지 않는다.
-    남는 위험은 **회수 경로 없는 잠식**이다 — kill·전원차단으로 마감하지 못한 레코드는 영원히
-    미마감이라, 연장 승인이 폐지된 수렴 축에서 상한을 영구 잠식한다(상한 3 설정에서 중단 2회면
-    라운드가 1회로 줄고 안내는 "3라운드 썼다"고 오도한다). 그래서 만료 시각을 지난 예약은 세지 않는다 —
-    그 시각을 지난 라운드는 하네스가 이미 죽였을 것이라 *실행 중일 수 없다*. 대가는 백스톱 직후의
-    좁은 창(마감 write 직전 구간)뿐이고, 그건 회수 불능 잠식보다 작다(승인 축과 회수 축을 묶지
-    않는다 — `--ack-wave` 는 예산 축이다).
-
-    **만료 기준은 레코드가 소유한다**(`deadline` — 그 예약을 만든 실행의 백스톱). 지금 장부를 읽는
-    호출자의 `wall_timeout_sec` 으로 재면, 짧은 timeout 의 후속 호출이 긴 timeout 으로 *실제 돌고
-    있는* 라운드를 stale 로 접어 수렴 상한을 넘겨 예약한다. `deadline` 이 없는 구레코드만 종전
-    규칙(호출자 백스톱 기준 `started_at` 대조)으로 보수 합산한다 — 시각을 못 읽는 레코드는 계속
-    센다(판정 불능은 세는 쪽으로 틀린다)."""
-    return _load_review_rounds().inflight_reservations(
-        entry, wall_timeout_sec=wall_timeout_sec,
-    )
 
 
 def _convergence_round_usage(
@@ -3923,10 +3884,6 @@ def _load_ticket_text_and_body(path: Path) -> tuple[str, str]:
     return raw, body
 
 
-def _load_ticket_body_from_file(path: Path) -> str:
-    """이미 정확-일치 해소된 ticket 파일의 frontmatter만 벗긴 본문 원문."""
-    return _load_ticket_text_and_body(path)[1]
-
 
 def _load_ticket_rounds_for(
     ticket_id: str, *, pm_home: Path | None, ticket_text: str,
@@ -3946,15 +3903,6 @@ def _load_ticket_rounds_for(
             f"티켓 라운드 사이드카가 손상돼 리뷰 입력을 조립할 수 없습니다: {exc}"
         ) from exc
 
-
-def _load_ticket_body(ticket_id: str, *, pm_home: Path | None = None) -> str:
-    """정확-일치 ticket 파일에서 frontmatter만 벗긴 본문 원문을 반환한다.
-
-    본문은 7절과 PM 판정 블록까지 모두 리뷰 입력이므로 strip/재직렬화하지 않는다.
-    frontmatter opener가 있는데 closer가 없으면 전체 파일을 본문으로 오인해 메타데이터를 외부로
-    보내지 않고 fail-loud 한다.
-    """
-    return _load_ticket_body_from_file(_find_ticket_file(ticket_id, pm_home=pm_home))
 
 
 class TicketBodySelection(NamedTuple):

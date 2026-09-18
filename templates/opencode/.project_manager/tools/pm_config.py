@@ -1703,7 +1703,7 @@ def cmd_repo_add(
         return 1
     # area_owner = 그 area 의 *user* 소유(`--mine` 풀 입력) — registrant
     # `owner`(슬롯/세션)와 별개 칼럼(overload 금지·codex sug). `--user` 명시 > local.conf identity.user=
-    # > git config user.email > None(빈 칼럼·_repo_area_owner None 폴백·현행 동작).
+    # > git config user.email > None(빈 칼럼·소비자가 None 으로 읽음·현행 동작).
     area_owner = getattr(args, "user", None) or _default_user()
     base_arg = getattr(args, "base", None)
     bare_path = repos_dir / f"{name}.git"

@@ -2140,7 +2140,8 @@ def test_render_leak_template_mirror_requires_render_declaration(board, monkeypa
     # 다른 경로만 @render 인 manifest 도 마찬가지(범위 밖).
     manifest = fake_repo / "templates" / "claude_code" / ".project_manager" / "engine.manifest"
     manifest.write_text(".opencode/agents    @render\n", encoding="utf-8")
-    assert not board._is_token_form_template_mirror(adapter, ".claude/agents/architect.md"), (
+    assert not (board._template_mirror_report(adapter, ".claude/agents/architect.md")[0]
+            == board._TEMPLATE_MIRROR_IDENTICAL), (
         "@render 범위 밖 경로인데 면제가 났다."
     )
 
@@ -2205,9 +2206,10 @@ def test_template_mirror_rejects_symlinked_candidate_file(board, monkeypatch, tm
     monkeypatch.setattr(board, "REPO", fake_repo)
 
     assert linked.read_bytes() == adapter.read_bytes(), "전제 확인: 링크가 루트 파일을 가리킨다."
-    assert board._template_mirror_state(adapter, ".claude/agents/architect.md") \
+    assert board._template_mirror_report(adapter, ".claude/agents/architect.md")[0] \
         == board._TEMPLATE_MIRROR_ABSENT, "루트 자기참조 링크는 판정 비참여여야 한다."
-    assert not board._is_token_form_template_mirror(adapter, ".claude/agents/architect.md"), (
+    assert not (board._template_mirror_report(adapter, ".claude/agents/architect.md")[0]
+            == board._TEMPLATE_MIRROR_IDENTICAL), (
         "템플릿 트리를 벗어나는 링크 후보로 면제가 성립했다."
     )
     assert any(name == ".claude/agents/architect.md" and kind == "render-leak"
@@ -2317,7 +2319,7 @@ def test_template_mirror_multi_target_partial_drift_is_not_exempt(board, monkeyp
 
     # 남은 타깃까지 전파 → 전 후보 identical → 면제.
     stale.write_text(skill.read_text(encoding="utf-8"), encoding="utf-8")
-    assert board._template_mirror_state(skill, rel) == board._TEMPLATE_MIRROR_IDENTICAL
+    assert board._template_mirror_report(skill, rel)[0] == board._TEMPLATE_MIRROR_IDENTICAL
     assert board.lint_render_leak() == [], (
         "전 타깃이 byte-identical 인데 면제되지 않았다."
     )
@@ -2362,7 +2364,7 @@ def test_template_mirror_missing_copy_in_scope_is_drift(board, monkeypatch, tmp_
     dest = fake_repo / "templates" / "opencode" / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(body, encoding="utf-8")
-    assert board._template_mirror_state(skill, rel) == board._TEMPLATE_MIRROR_IDENTICAL
+    assert board._template_mirror_report(skill, rel)[0] == board._TEMPLATE_MIRROR_IDENTICAL
     assert board.lint_render_leak() == [], "전 타깃 전파 후에도 면제되지 않았다."
 
 
@@ -2381,13 +2383,15 @@ def test_template_mirror_no_exemption_without_pm_update_seam(board, monkeypatch,
                              adapter.read_text(encoding="utf-8"))
     monkeypatch.setattr(board, "REPO", fake_repo)
 
-    assert board._is_token_form_template_mirror(adapter, ".claude/agents/architect.md"), (
+    assert (board._template_mirror_report(adapter, ".claude/agents/architect.md")[0]
+            == board._TEMPLATE_MIRROR_IDENTICAL), (
         "정상 seam 에서는 byte-identical 출하 원본이 mirror 로 인정돼야 한다(대조군)."
     )
 
     monkeypatch.setattr(board, "_load_pm_update_module", lambda: None)
     assert board._shipping_template_render_scopes() == []
-    assert not board._is_token_form_template_mirror(adapter, ".claude/agents/architect.md"), (
+    assert not (board._template_mirror_report(adapter, ".claude/agents/architect.md")[0]
+            == board._TEMPLATE_MIRROR_IDENTICAL), (
         "pm_update 로드 실패인데 면제가 났다 — 판정원 부재 시엔 면제하지 않아야 한다."
     )
 

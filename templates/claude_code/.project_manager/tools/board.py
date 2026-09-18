@@ -4668,26 +4668,6 @@ def _repo_protected(repo: str) -> list[str]:
     return list(DEFAULT_PROTECTED)
 
 
-def _repo_area_owner(repo: str) -> str | None:
-    """그 repo 의 areas.md `area_owner`(user 소유) — 미지정/미등록/구 스키마 → None.
-
-    `--mine` 기본 풀(내 area 의 open 티켓) 판정의 입력이다.
-    기존 `owner`(per-repo registry registrant)와 의미가 다른 *별도* 칼럼 — overload 금지(codex sug).
-    단일 user 토큰이다(목록/구분자 아님). repo 명은 areas.md `repo` 칼럼과 매칭한다
-    (repo add 가 `repo=name` 으로 등록).
-
-    None 폴백(현행 동작·회귀 0 — `--mine` 풀 판정이 그 area 를 비소유로 처리):
-      - areas.md 부재 — `_parse_areas()` 가 ([],[]).
-      - 그 repo 행이 없음(미등록).
-      - `area_owner` 칼럼 자체가 없는 구 레지스트리(헤더에 area_owner 없음 → 행 dict 에 키 없음).
-      - `area_owner` 칼럼이 빈 값(부분 등록).
-    """
-    _header, rows = _parse_areas()
-    for row in rows:
-        if row.get("repo") == repo:
-            return row.get("area_owner") or None
-    return None
-
 
 # ── `--mine` 뷰 필터 ─────────
 # 단일 공유 보드 위의 *렌즈*(별도 저장 아님). `board list --mine` 은 두 풀의 합집합:
@@ -5441,7 +5421,7 @@ def areas_append(prefix: str, area: str, owner: str,
     `protected`는 PM 이 자율 commit/push 못 하는 보호 브랜치(쉼표분리) — 빈 값/
     누락이면 `_repo_protected` 가 `DEFAULT_PROTECTED`(main/master/develop) 폴백.
     `area_owner`는 그 area 의 *user* 소유(`--mine` 풀 입력) — `owner`
-    (registrant)와 별개 칼럼(overload 금지). 빈 값/누락이면 `_repo_area_owner` None 폴백.
+    (registrant)와 별개 칼럼(overload 금지). 빈 값/누락이면 소비자가 None 으로 읽는다.
     `area`(구 스키마 칼럼)는 신 스키마에 칼럼이 없어 무시한다 — 호출 시그니처는
     하위호환을 위해 유지(기존 `cmd_init`·테스트가 positional 로 area 를 넘김).
 
@@ -5518,7 +5498,7 @@ class AreasRepoNotFound(Exception):
 class AreasDuplicateRepo(Exception):
     """areas.md 에 같은 repo 행이 2개 이상 — 셀 변경 fail-loud (부작용 0).
 
-    first-match 리졸버(`_repo_protected`·`_repo_base`·`_areas_git_url`·`_repo_area_owner`)가
+    first-match 리졸버(`_repo_protected`·`_repo_base`·`_areas_git_url`)가
     첫 행에서 return 하므로 어느 행을 고쳐야 하는지 기계가 정할 수 없다. 추측해서 한쪽만 고치면
     사용자가 바꿨다고 믿는 값과 리졸버가 읽는 값이 갈린다 → **아무것도 쓰지 않고** 수동 정리를
     안내한다(자동 병합 안 함·사람 판정). `count` = 중복 행 수(진단용).
@@ -6067,10 +6047,6 @@ def _authoritative_hooks_resolution() -> tuple[Path | None, str | None]:
     except Exception:  # noqa: BLE001 — 대역 subprocess/스텁 예외는 순수 해소로 폴백.
         return None, None
 
-
-def _authoritative_hooks_dir() -> Path | None:
-    """git 자신이 해소한 훅 디렉토리 (`rev-parse --git-path hooks`) — 확정 못 하면 None."""
-    return _authoritative_hooks_resolution()[0]
 
 
 def _installed_hook_interpreter(body: str) -> str | None:
@@ -18472,18 +18448,6 @@ def _template_mirror_report(path: Path, rel_posix: str,
     return (_TEMPLATE_MIRROR_IDENTICAL if matched else _TEMPLATE_MIRROR_ABSENT), []
 
 
-def _template_mirror_state(path: Path, rel_posix: str,
-                           template_scopes: list[tuple[Path, set[str]]] | None = None) -> str:
-    """`_template_mirror_report` 의 상태만 — 타깃 이름이 필요 없는 호출부/가드 테스트용."""
-    return _template_mirror_report(path, rel_posix, template_scopes)[0]
-
-
-def _is_token_form_template_mirror(path: Path, rel_posix: str) -> bool:
-    """루트 @render 파일이 출하 템플릿의 byte-identical token-form 원본인지(=면제 대상인지).
-
-    `_template_mirror_state` 의 얇은 술어 — 면제 여부만 묻는 호출부/가드 테스트용."""
-    return _template_mirror_state(path, rel_posix) == _TEMPLATE_MIRROR_IDENTICAL
-
 
 def lint_render_leak() -> list[tuple[str, str, str]]:
     """render 산출물에 리터럴 `{{...}}` 누출 차단 (kind=`render-leak`·blocking).
@@ -20641,7 +20605,7 @@ def lint_areas_repo_unregistered() -> list[tuple[str, str, str]]:
 def lint_areas_duplicate_repo() -> list[tuple[str, str, str]]:
     """areas.md 에 같은 repo 행이 2개 이상이면 advisory (never-block).
 
-    first-match 리졸버(`_repo_protected`·`_repo_base`·`_areas_git_url`·`_repo_area_owner`)가
+    first-match 리졸버(`_repo_protected`·`_repo_base`·`_areas_git_url`)가
     전부 첫 매칭 행에서 return 하므로 중복 행은 **조용히 first-match 로 굳는다** — 사용자가
     보는 표와 엔진이 읽는 값이 갈린다. legacy inline 형상(`merge=union` 활성)에서 두 clone 이
     같은 행을 각자 고치면 실제로 생길 수 있다. 자동 병합은 하지 않고(사람 판정) 존재만 보인다.

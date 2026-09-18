@@ -26,6 +26,20 @@ TOOLS = REPO / ".project_manager" / "tools"
 REAL_AREAS = REPO / ".project_manager" / "areas.md"
 
 
+def _area_owner(board, repo):
+    """areas.md 그 repo 행의 `area_owner` — 미등록·빈 값·구 스키마면 None.
+
+    엔진의 repo-키 조회는 prefix 축 후임(`_ticket_area_owner`)으로 대체돼 제품에서 빠졌다.
+    쓰기 결과(cmd_init·areas_append·areas_set_cell)를 값으로 확인하려는 이 파일의 단언을
+    위해 여기서 직접 읽는다.
+    """
+    _header, rows = board._parse_areas()
+    for row in rows:
+        if row.get("repo") == repo:
+            return row.get("area_owner") or None
+    return None
+
+
 def _load_board():
     """board.py 를 (패키지 아님) importlib 로 경로 로드 — test_board_multipm 과 동일."""
     spec = importlib.util.spec_from_file_location("board", TOOLS / "board.py")
@@ -486,7 +500,7 @@ def test_areas_append_protected_to_base_header_preserves_protected(board):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# areas.md area_owner 칼럼 (T-0161·ADR-0033 ③) — 파싱·하위호환·areas_append·_repo_area_owner
+# areas.md area_owner 칼럼 (T-0161·ADR-0033 ③) — 파싱·하위호환·areas_append·읽기
 # ════════════════════════════════════════════════════════════════════════
 
 def test_parse_areas_area_owner_schema_maps_column(board):
@@ -496,7 +510,7 @@ def test_parse_areas_area_owner_schema_maps_column(board):
     assert header == ["repo", "prefix", "git", "test_cmd", "owner", "base",
                       "protected", "area_owner"]
     assert rows[0]["area_owner"] == "alice"   # 명시 area_owner(단일 user 토큰)
-    assert rows[1]["area_owner"] == ""        # 빈 area_owner → _repo_area_owner None 폴백
+    assert rows[1]["area_owner"] == ""        # 빈 area_owner → 읽으면 None
 
 
 def test_areas_columns_canonical_includes_area_owner(board):
@@ -507,15 +521,15 @@ def test_areas_columns_canonical_includes_area_owner(board):
 
 
 def test_repo_area_owner_resolves_from_areas(board):
-    """_repo_area_owner(repo) → areas.md 그 repo 의 area_owner (T-0161)."""
+    """areas.md 그 repo 행의 area_owner 를 읽는다 (T-0161)."""
     board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
-    assert board._repo_area_owner("service-a") == "alice"
+    assert _area_owner(board, "service-a") == "alice"
 
 
 def test_repo_area_owner_empty_column_is_none(board):
     """빈 area_owner 칼럼(부분 등록) → None (`--mine` 풀이 비소유 처리·T-0161)."""
     board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
-    assert board._repo_area_owner("service-b") is None
+    assert _area_owner(board, "service-b") is None
 
 
 def test_repo_area_owner_old_schema_is_none(board):
@@ -525,11 +539,11 @@ def test_repo_area_owner_old_schema_is_none(board):
     구 areas.md(7칸 protected·6칸 base·5칸 per-repo)는 무변경 동작 — area_owner None 폴백.
     """
     board.AREAS_FILE.write_text(_PROTECTED_SCHEMA, encoding="utf-8")  # 7칸·area_owner 없음
-    assert board._repo_area_owner("service-a") is None
+    assert _area_owner(board, "service-a") is None
     board.AREAS_FILE.write_text(_BASE_SCHEMA, encoding="utf-8")       # 6칸·area_owner 없음
-    assert board._repo_area_owner("service-a") is None
+    assert _area_owner(board, "service-a") is None
     board.AREAS_FILE.write_text(_NEW_SCHEMA, encoding="utf-8")        # 5칸·area_owner 없음
-    assert board._repo_area_owner("service-a") is None
+    assert _area_owner(board, "service-a") is None
 
 
 def test_repo_area_owner_does_not_overload_owner(board):
@@ -547,12 +561,12 @@ def test_repo_area_owner_does_not_overload_owner(board):
 def test_repo_area_owner_absent_repo_is_none(board):
     """미등록 repo → None (T-0161)."""
     board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
-    assert board._repo_area_owner("nope") is None
+    assert _area_owner(board, "nope") is None
 
 
 def test_repo_area_owner_no_registry_is_none(board):
     """areas.md 부재(솔로) → None (T-0161)."""
-    assert board._repo_area_owner("service-a") is None
+    assert _area_owner(board, "service-a") is None
 
 
 def test_areas_append_writes_area_owner_column(board):
@@ -565,15 +579,15 @@ def test_areas_append_writes_area_owner_column(board):
             "| area_owner |") in text
     assert ("| service-a | PAY | git@x:a.git | pytest -q | alice | develop "
             "| main | alice |") in text
-    assert board._repo_area_owner("service-a") == "alice"
+    assert _area_owner(board, "service-a") == "alice"
 
 
 def test_areas_append_area_owner_default_empty(board):
-    """areas_append(area_owner 미지정) → 빈 칼럼 + _repo_area_owner None 폴백 (T-0161)."""
+    """areas_append(area_owner 미지정) → 빈 칼럼 + 읽으면 None (T-0161)."""
     board.areas_append("PAY", "", "alice", repo="service-a", test_cmd="pytest -q")
     row = board._areas_row_for_prefix("PAY")
     assert row["area_owner"] == ""                       # 미지정 → 빈 칼럼
-    assert board._repo_area_owner("service-a") is None    # 빈 값 → None 폴백
+    assert _area_owner(board, "service-a") is None    # 빈 값 → None 폴백
 
 
 def test_areas_append_area_owner_to_protected_header_preserves(board):
@@ -588,9 +602,9 @@ def test_areas_append_area_owner_to_protected_header_preserves(board):
                        repo="service-c", git="git@x:c.git", test_cmd="pytest -q",
                        base="develop", protected="main", area_owner="carol")
     # 헤더는 7칸 그대로지만 append 된 8칸 row 의 area_owner 가 canonical 매핑으로 보존된다.
-    assert board._repo_area_owner("service-c") == "carol"
+    assert _area_owner(board, "service-c") == "carol"
     # 기존 구 protected row(area_owner 셀 없음)는 여전히 None 폴백(회귀 0).
-    assert board._repo_area_owner("service-a") is None
+    assert _area_owner(board, "service-a") is None
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1122,7 +1136,7 @@ def test_areas_set_cell_upgrades_7col_header_for_missing_column(board):
     board.AREAS_FILE.write_text(_7COL_HEADER, encoding="utf-8")
     assert board.areas_set_cell("service-a", "area_owner", "alice") == ("", "alice")
     assert board._areas_header_line() in board.AREAS_FILE.read_text(encoding="utf-8")
-    assert board._repo_area_owner("service-a") == "alice"
+    assert _area_owner(board, "service-a") == "alice"
     assert board._repo_protected("service-a") == ["main"]   # 기존 칼럼 불변
 
 

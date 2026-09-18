@@ -280,7 +280,8 @@ def test_ticket_body_real_board_lookup_is_exact_across_status_dirs(
         encoding="utf-8",
     )
 
-    body = external._load_ticket_body("T-9001", pm_home=tmp_path)
+    body = external._load_ticket_text_and_body(
+        external._find_ticket_file("T-9001", pm_home=tmp_path))[1]
     assert "정확 티켓 본문" in body
     assert "충돌 티켓 본문" not in body
 
@@ -331,7 +332,7 @@ def test_unterminated_frontmatter_fails_loud_for_body_and_touches(
     )
 
     with pytest.raises(external.AnchorResolutionError, match="frontmatter가 닫히지"):
-        external._load_ticket_body("T-9001")
+        external._load_ticket_text_and_body(broken)
     with pytest.raises(external.AnchorResolutionError, match="frontmatter가 닫히지"):
         external._parse_touches_from_file(broken)
 
