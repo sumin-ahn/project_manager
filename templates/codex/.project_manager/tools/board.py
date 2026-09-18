@@ -9103,8 +9103,8 @@ def _collected_count(output: str) -> int | None:
     return sum(_pytest_outcome_counts(line))
 
 
-def _pytest_summary_tail(output: str, kind: str = "passed") -> str | None:
-    """요약행의 `N <kind>` 부터 줄 끝까지 (요약행/그 종류가 없으면 None).
+def _pytest_summary_tail(output: str) -> str | None:
+    """요약행의 `N passed` 부터 줄 끝까지 (요약행/그 표기가 없으면 None).
 
     사람이 읽는 회귀 1줄 표기(인계 프롬프트·log entry)가 소비한다 — 줄 전체가 아니라 카운트
     지점부터 잘라 쓰던 표기를 보존하되, 자를 대상 줄은 끝에서-탐색으로 고른다.
@@ -9112,7 +9112,7 @@ def _pytest_summary_tail(output: str, kind: str = "passed") -> str | None:
     line = _pytest_summary_line(output)
     if line is None:
         return None
-    match = _pytest_outcome_match(line, kind)
+    match = _pytest_outcome_match(line, "passed")
     return line[match.start():].strip() if match else None
 
 

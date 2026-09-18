@@ -2363,15 +2363,15 @@ def write_text_keeping_newlines(path: Path, text: str) -> None:
 DEFAULT_TEXT_NEWLINE = "\n"
 
 
-def dominant_newline(text: str, default: str = DEFAULT_TEXT_NEWLINE) -> str:
+def dominant_newline(text: str) -> str:
     """번역 없이 읽은 본문의 지배 개행 (`"\\r\\n"` 또는 `"\\n"`).
 
-    다수결로 정하고 동수면 **첫 등장** 표기를 쓴다. 개행이 하나도 없으면 `default`.
+    다수결로 정하고 동수면 **첫 등장** 표기를 쓴다. 개행이 하나도 없으면 `DEFAULT_TEXT_NEWLINE`.
     """
     crlf = text.count("\r\n")
     lf = text.count("\n") - crlf
     if crlf == 0 and lf == 0:
-        return default
+        return DEFAULT_TEXT_NEWLINE
     if crlf != lf:
         return "\r\n" if crlf > lf else "\n"
     first = text.find("\n")

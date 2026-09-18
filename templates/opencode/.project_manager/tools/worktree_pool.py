@@ -4774,7 +4774,7 @@ def _unmerged_count(branch: str, parent: "str | None", *, git_runner: GitRunner)
     return _left_right_counts(compare_ref, f"{_SYMREF_BRANCH_PREFIX}{branch}", git_runner=git_runner)[1]
 
 
-def preserved_branches(*, git_runner: GitRunner | None = None) -> "list[dict]":
+def preserved_branches() -> "list[dict]":
     """슬롯 없는 보존 브랜치 목록 — `.repos/*.git` 마다 보존 기록을 읽어 repo·이름 순으로 싣는다.
 
     행 = `{repo, name, slot, preserved_at, reason, parent, unmerged}`. `parent` 는 부모 기록의 부모
@@ -4783,7 +4783,7 @@ def preserved_branches(*, git_runner: GitRunner | None = None) -> "list[dict]":
     접지 않는다). `git_runner` 주입 시 모든 repo 에 그 runner, 아니면 repo 마다 bare 에 묶인 실 runner."""
     rows: list[dict] = []
     for repo, bare in _discover_bares():
-        runner = git_runner or _real_git_runner(bare)
+        runner = _real_git_runner(bare)
         for branch, values in sorted(_read_preserved_records(repo, git_runner=runner).items()):
             missing = [key for key in _PRESERVED_RECORD_KEYS if key not in values]
             if missing:

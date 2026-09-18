@@ -3298,7 +3298,7 @@ def _slot_live_branch(wp, slot: str) -> str:
         return "(조회불가)"
 
 
-def _render_task_slots(wp, task_name: str, *, header: "str | None" = None) -> None:
+def _render_task_slots(wp, task_name: str) -> None:
     """task 보유 슬롯 **집합**을 재열거해 surface 한다.
 
     집합을 바꾸는 연산(alloc·release·task end·`worktree add --task`) **직후** 결과 집합(슬롯·
@@ -3312,7 +3312,7 @@ def _render_task_slots(wp, task_name: str, *, header: "str | None" = None) -> No
         if _is_engine_rev_skew(exc):
             raise
         return
-    label = header or f"작업공간 (task {task_name!r} 보유 {len(slots)})"
+    label = f"작업공간 (task {task_name!r} 보유 {len(slots)})"
     if not slots:
         print(f"{label}: (없음)")
         return
@@ -4876,7 +4876,6 @@ def _print_delegate_model_guidance(
     *,
     pm_import=None,
     conf=None,
-    models_runner=None,
 ) -> int:
     """`[m]` — 설치된 하네스별로 `delegate.<role>[.hard].model` 에 넣을 값을 안내한다.
 
@@ -4886,7 +4885,7 @@ def _print_delegate_model_guidance(
 
     조회 실패(바이너리 부재·rc·timeout·파싱 0)는 형식 안내로 **강등**하되 조용하지 않다:
     강등 사실을 그 자리에 적고, 실패 사유 자체는 조회 seam 이 stderr 한 줄로 남긴다.
-    pm_import·conf·models_runner 주입으로 hermetic 테스트(라이브 CLI 미구동).
+    pm_import·conf 주입으로 hermetic 테스트(라이브 CLI 미구동).
     """
     pm_import_mod = pm_import or _load_module("pm_import", "pm_import.py")
     if pm_import_mod is None:
@@ -4910,7 +4909,7 @@ def _print_delegate_model_guidance(
         print(f"  - {harness}: 값 형식 {value_format} · 확인 {how_to_check}")
         if source.kind != "live":
             continue
-        runner = models_runner or pm_import_mod._real_models_runner
+        runner = pm_import_mod._real_models_runner
         ok, models = runner(source)
         if not ok or not models:
             print(

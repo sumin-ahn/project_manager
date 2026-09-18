@@ -1415,7 +1415,7 @@ def _resolve_hook_set_generation_and_sibling(source_root=None, *, required: bool
             pm_import)
 
 
-def resolve_hook_set_generation(source_root=None, *, required: bool = False):
+def resolve_hook_set_generation(source_root=None):
     """훅 세트 세대 선언을 해소한다 — pm_update 안 **모든 소비자의 단일 진입**.
 
     해소 규칙 자체는 pm_import 소유(`hook_set_declarations`)다: 상류 우선, 조회는 로컬 폴백,
@@ -1425,7 +1425,7 @@ def resolve_hook_set_generation(source_root=None, *, required: bool = False):
     반환은 pm_import 의 `HookSetGeneration`(declarations·origin·reasons) 형상이고, declarations 가
     None 이면 판정 근거가 없다는 뜻이다(게이트는 멈추고, 조회는 loud 후 무판정). 형제 모듈까지
     함께 쓰는 소비자는 `_resolve_hook_set_generation_and_sibling` 로 **한 번만** 로드한다."""
-    return _resolve_hook_set_generation_and_sibling(source_root, required=required)[0]
+    return _resolve_hook_set_generation_and_sibling(source_root)[0]
 
 
 def _sibling_accepts_kwarg(func, name: str) -> bool:
