@@ -703,10 +703,18 @@ def test_head_detached_true_when_detached(board, tmp_path):
         "detached HEAD 인데 감지 못 함 — symbolic-ref rc 판정 실패."
 
 
-def test_head_detached_fail_soft_on_exception(board, monkeypatch):
-    """`_board_git_head_detached` — 판정 예외(git 소실·timeout)는 fail-soft False(현행 경로)."""
+@pytest.mark.parametrize("failure", [
+    FileNotFoundError("git"),                          # git 바이너리 소실
+    subprocess.TimeoutExpired(cmd="git", timeout=30),  # 판정 timeout
+])
+def test_head_detached_fail_soft_on_exception(board, monkeypatch, failure):
+    """`_board_git_head_detached` — 판정 예외(git 소실·timeout)는 fail-soft False(현행 경로).
+
+    주입값은 이 docstring 이 이름 붙인 두 실패 그 자체다 — 실제로는 날 수 없는 예외형을
+    넣으면 포획이 무엇을 통과시키는지 못 본다.
+    """
     def _boom(*a, **k):
-        raise RuntimeError("simulated git failure (timeout/소실)")
+        raise failure
 
     monkeypatch.setattr(board, "_board_git", _boom)
     assert board._board_git_head_detached() is False, \

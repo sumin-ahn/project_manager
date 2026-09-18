@@ -4146,7 +4146,7 @@ def _git_config_email() -> str | None:
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=_GIT_USER_TIMEOUT_SECONDS,
         )
-    except Exception:  # noqa: BLE001 — fail-soft: git 호출 실패는 None(미상)으로 강등.
+    except (OSError, subprocess.SubprocessError):  # fail-soft: git 호출 실패는 None(미상)으로 강등.
         return None
     if r.returncode != 0:
         return None
@@ -6989,7 +6989,7 @@ def _board_git_head_detached() -> bool:
     """
     try:
         r = _board_git(["symbolic-ref", "-q", "HEAD"])
-    except Exception:  # noqa: BLE001 — fail-soft: 판정 예외(timeout 등)는 현행 경로(False).
+    except (OSError, subprocess.SubprocessError):  # fail-soft: 판정 예외(timeout 등)는 현행 경로(False).
         return False
     return r.returncode == 1
 
@@ -7010,7 +7010,7 @@ def _board_git_status_porcelain() -> str:
     """
     try:
         r = _board_git(["status", "--porcelain", "--", *_BOARD_GIT_DRAFT_PATHSPEC])
-    except Exception:  # noqa: BLE001 — fail-soft: status 예외(timeout 등)는 clean 취급(보수적).
+    except (OSError, subprocess.SubprocessError):  # fail-soft: status 예외(timeout 등)는 clean 취급(보수적).
         return ""
     return r.stdout if r.returncode == 0 else ""
 
@@ -7065,7 +7065,7 @@ def _board_git_rebase_in_progress() -> bool:
     for name in ("rebase-merge", "rebase-apply"):
         try:
             r = _board_git(["rev-parse", "--git-path", name])
-        except Exception:  # noqa: BLE001 — fail-soft: 판정 예외는 현행 경로(False).
+        except (OSError, subprocess.SubprocessError):  # fail-soft: 판정 예외는 현행 경로(False).
             return False
         if r.returncode != 0:
             continue
@@ -7108,7 +7108,7 @@ def _board_git_upstream() -> _BoardGitUpstream | None:
             return None
         remote = _board_git(["config", "--get", f"branch.{branch}.remote"])
         merge = _board_git(["config", "--get", f"branch.{branch}.merge"])
-    except Exception:  # noqa: BLE001 — fail-soft: 판정 예외는 upstream 미상(None).
+    except (OSError, subprocess.SubprocessError):  # fail-soft: 판정 예외는 upstream 미상(None).
         return None
     if remote.returncode != 0 or merge.returncode != 0:
         return None
@@ -7126,7 +7126,7 @@ def _board_git_fetch(remote: str) -> bool:
     """
     try:
         return _board_git(["fetch", remote]).returncode == 0
-    except Exception:  # noqa: BLE001 — fail-soft: fetch 예외(timeout)는 도달 불가로 본다.
+    except (OSError, subprocess.SubprocessError):  # fail-soft: fetch 예외(timeout)는 도달 불가로 본다.
         return False
 
 
@@ -7147,7 +7147,7 @@ def _board_git_remote_ticket_status(tracking: str, ticket_id: str) -> str | None
     """
     try:
         r = _board_git(["ls-tree", "-r", "-z", "--name-only", tracking, "--", "tickets/"])
-    except Exception:  # noqa: BLE001 — fail-soft: 조회 예외는 판정 불가(None·차단하지 않음).
+    except (OSError, subprocess.SubprocessError):  # fail-soft: 조회 예외는 판정 불가(None·차단하지 않음).
         return None
     if r.returncode != 0:
         return None
@@ -7172,7 +7172,7 @@ def _board_git_behind(tracking: str) -> int | None:
     """
     try:
         r = _board_git(["rev-list", "--count", f"HEAD..{tracking}"])
-    except Exception:  # noqa: BLE001 — fail-soft: 조회 예외는 판정 불가(None).
+    except (OSError, subprocess.SubprocessError):  # fail-soft: 조회 예외는 판정 불가(None).
         return None
     if r.returncode != 0:
         return None
@@ -7190,7 +7190,7 @@ def _board_git_remote_tip(upstream: _BoardGitUpstream) -> str | None:
     """
     try:
         r = _board_git(["ls-remote", upstream.remote, upstream.merge_ref])
-    except Exception:  # noqa: BLE001 — fail-soft: 재확인 실패는 "미확정"(None) 으로 흘린다.
+    except (OSError, subprocess.SubprocessError):  # fail-soft: 재확인 실패는 "미확정"(None) 으로 흘린다.
         return None
     if r.returncode != 0 or not r.stdout.strip():
         return None
@@ -7214,7 +7214,7 @@ def _board_git_remote_has_commit(upstream: _BoardGitUpstream, commit: str) -> bo
             r = _board_git(["merge-base", "--is-ancestor", commit, upstream.tracking])
             return r.returncode == 0
         return _board_git_remote_tip(upstream) == commit
-    except Exception:  # noqa: BLE001 — fail-soft: 재확인 실패는 미확정(False·롤백).
+    except (OSError, subprocess.SubprocessError):  # fail-soft: 재확인 실패는 미확정(False·롤백).
         return False
 
 
@@ -7619,7 +7619,7 @@ def _board_git_uncommitted_scope(
         result = _board_git([
             "status", "--porcelain", "-z", "--untracked-files=all", "--", *pathspec,
         ])
-    except Exception:  # noqa: BLE001 — 진단 실패가 best-effort mutation을 막으면 안 된다.
+    except (OSError, subprocess.SubprocessError):  # 진단 실패가 best-effort mutation을 막으면 안 된다.
         return _BoardGitUncommittedScope()
     if result.returncode != 0:
         return _BoardGitUncommittedScope()
@@ -8014,7 +8014,7 @@ def _board_git_index_snapshot(
         return {}
     try:
         r = _board_git(["ls-files", "--stage", "-z", "--", *pathspec])
-    except Exception:  # noqa: BLE001 — 캡처 실패는 None(보수적 폴백).
+    except (OSError, subprocess.SubprocessError):  # 캡처 실패는 None(보수적 폴백).
         return None
     if r.returncode != 0:
         return None
@@ -14985,7 +14985,7 @@ def _board_fetch_head_fresh(ttl: float) -> bool:
     """
     try:
         r = _board_git(["rev-parse", "--git-path", "FETCH_HEAD"])
-    except Exception:  # noqa: BLE001 — 경로 조회 예외는 stale 취급(fetch 진행).
+    except (OSError, subprocess.SubprocessError):  # 경로 조회 예외는 stale 취급(fetch 진행).
         return False
     if r.returncode != 0 or not r.stdout.strip():
         return False
@@ -15054,7 +15054,7 @@ def _board_git_freshness() -> _BoardFreshness:
             fetched = _board_git(
                 ["fetch", "origin"],
                 timeout=_FRESHNESS_FETCH_TIMEOUT_SECONDS).returncode == 0
-        except Exception:  # noqa: BLE001 — fetch 예외(timeout·offline)는 fail-soft(판정불가).
+        except (OSError, subprocess.SubprocessError):  # fetch 예외(timeout·offline)는 fail-soft(판정불가).
             fetched = False
     detached = _board_git_head_detached()
     ahead = behind = None
@@ -15064,7 +15064,7 @@ def _board_git_freshness() -> _BoardFreshness:
             parsed = pmb.parse_git_ahead_behind(ab.stdout)
             if parsed is not None:
                 ahead, behind = parsed
-    except Exception:  # noqa: BLE001 — rev-list 예외는 upstream 미상(behind None) 취급.
+    except (OSError, subprocess.SubprocessError):  # rev-list 예외는 upstream 미상(behind None) 취급.
         pass
     scope = {"fetched": fetched, "detached": detached, "dirty": None,
              "ahead": ahead, "behind": behind, "note": None}
@@ -16005,7 +16005,7 @@ def _home_git_status_porcelain() -> str | None:
             ["git", "-C", str(REPO), "status", "--porcelain"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=_BOARD_GIT_TIMEOUT_SECONDS, check=False)
-    except Exception:  # noqa: BLE001 — fail-soft: 판정 예외는 가드 skip(None).
+    except (OSError, subprocess.SubprocessError):  # fail-soft: 판정 예외는 가드 skip(None).
         return None
     if r.returncode != 0:
         return None  # not a git repo → 가드 skip
@@ -19149,7 +19149,7 @@ def _git_commits_between(sha: str, pathspecs: list[str], *,
                     capture_output=True, text=True, encoding="utf-8",
                     errors="replace", timeout=_BOARD_GIT_TIMEOUT_SECONDS)
                 return r.returncode, r.stdout or ""
-            except Exception:  # noqa: BLE001 — fail-soft: 타임아웃/예외를 rc≠0 로.
+            except (OSError, subprocess.SubprocessError):  # fail-soft: 타임아웃/예외를 rc≠0 로.
                 return 1, ""
 
     try:
@@ -19201,7 +19201,7 @@ def _git_run(argv: list[str], *, runner=None,
                 ["git", "-C", str(repo), *argv],
                 capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=_BOARD_GIT_TIMEOUT_SECONDS)
-        except Exception:  # noqa: BLE001 — 타임아웃/바이너리 이상은 None(환경적).
+        except (OSError, subprocess.SubprocessError):  # 타임아웃/바이너리 이상은 None(환경적).
             return None
         return r.returncode, r.stdout or ""
     try:
@@ -19237,7 +19237,7 @@ def _rev_parse_ambiguous(sha: str, *, runner=None,
             r = subprocess.run(
                 ["git", "-C", str(repo), *argv], capture_output=True, text=True,
                 encoding="utf-8", errors="replace", timeout=_BOARD_GIT_TIMEOUT_SECONDS)
-        except Exception:  # noqa: BLE001 — 진단 실패는 False(rc 기반 분류 유지).
+        except (OSError, subprocess.SubprocessError):  # 진단 실패는 False(rc 기반 분류 유지).
             return False
         stderr = r.stderr or ""
     else:
@@ -19561,7 +19561,7 @@ def _repo_head_sha(repo: Path | None = None) -> str | None:
             ["git", "-C", str(repo), "rev-parse", "HEAD"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=_BOARD_GIT_TIMEOUT_SECONDS)
-    except Exception:  # noqa: BLE001 — 타임아웃/바이너리 이상은 None(fail-soft).
+    except (OSError, subprocess.SubprocessError):  # 타임아웃/바이너리 이상은 None(fail-soft).
         return None
     if r.returncode != 0:
         return None
