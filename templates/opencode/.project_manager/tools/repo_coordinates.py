@@ -424,15 +424,9 @@ def normalize_repo_paths(
     *,
     pm_root: Path,
     workspace: Path | str | None = None,
-    leases_file: Path | None = None,
 ) -> list[str]:
     """경로 목록에 ``normalize_repo_path``의 단일 불변식을 순서대로 적용한다."""
     return [
-        normalize_repo_path(
-            path,
-            pm_root=pm_root,
-            workspace=workspace,
-            leases_file=leases_file,
-        )
+        normalize_repo_path(path, pm_root=pm_root, workspace=workspace)
         for path in paths
     ]

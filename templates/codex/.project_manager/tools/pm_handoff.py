@@ -949,13 +949,9 @@ def collect_session_entries(
     log_text: str,
     task: str | None,
     session: str | None = None,
-    *,
-    boundary_task: str | None | object = _BOUNDARY_TASK_DEFAULT,
 ) -> list[str]:
     """현재 세션 entry만 반환한다. 경계 미해소 시 최근 10건으로 제한한다."""
-    return _collect_session_entries(
-        log_text, task, session, boundary_task=boundary_task,
-    )[0]
+    return _collect_session_entries(log_text, task, session)[0]
 
 
 def _session_entries_text(entries: list[str], boundary_unresolved: bool = False) -> str:
@@ -3360,7 +3356,7 @@ class PmHandoff:
         self._task_record_snapshot = (task, registered)
         return "registered", None
 
-    def _task_is_registered(self, task: str, *, report_error: bool = True) -> bool:
+    def _task_is_registered(self, task: str) -> bool:
         """task 장부 membership을 조회 전용으로 검증한다.
 
         task 생성 권한은 bootstrap(`bind_task`)에만 있다. handoff는 기존 task의 연속성만
@@ -3370,8 +3366,6 @@ class PmHandoff:
         status, detail = self._task_registration_status(task)
         if status == "registered":
             return True
-        if not report_error:
-            return False
         if status == "engine-missing":
             print(
                 "\n[중단] task 장부 membership을 검증할 수 없다 — "

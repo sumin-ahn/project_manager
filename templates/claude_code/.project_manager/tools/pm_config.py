@@ -2661,8 +2661,7 @@ def _status_json_document(args, wp, *, board_mod, pm_import_mod,
     }
 
 
-def _emit_status_json(args, wp, *, board=None, pm_import=None,
-                      git_runner: GitRunner | None = None) -> int:
+def _emit_status_json(args, wp, *, board=None, pm_import=None) -> int:
     """`status --json` — 문서를 **전부 만든 뒤** 한 번에 낸다(부분 산출 없음).
 
     소스가 필요한 절(`--with-adapters`·`--from`)에서 소스를 못 잡으면 stdout 에 아무것도 쓰지
@@ -2697,7 +2696,7 @@ def _emit_status_json(args, wp, *, board=None, pm_import=None,
         document = _status_json_document(
             args, wp, board_mod=board_mod, pm_import_mod=pm_import_mod,
             source_root=source_root,
-            git_runner=git_runner if git_runner is not None else _real_clone_runner())
+            git_runner=_real_clone_runner())
     except (FileNotFoundError, pm_import_mod.AdapterConfigChannelUnavailable) as exc:
         # 판정 기준이 없는 상태 둘만 rc 로 번역한다 — 소스에 대조할 파일이 없거나(잘못된 `--from`)
         # 어댑터 판정 채널이 unavailable 인 경우. 그 밖의 실패는 삼키지 않는다(정상 산출로 위장 금지).

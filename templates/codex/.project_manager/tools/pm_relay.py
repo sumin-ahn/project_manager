@@ -1857,7 +1857,7 @@ HARNESS_IDLE_TIMEOUT_KEY = "harness.{harness}.idle_timeout"
 HARNESS_WALL_TIMEOUT_KEY = "harness.{harness}.wall_timeout"
 
 
-def normalize_timeout_seconds(raw, *, minimum: int = 1) -> int | None:
+def normalize_timeout_seconds(raw) -> int | None:
     """외부 timeout 입력을 **유한한 정수 초**로 정규화한다.
 
     CLI·local.conf 등 문자열/수치 입력의 단일 경계다. bool·NaN·±inf·분수·최솟값 미만은 None 으로
@@ -1873,7 +1873,7 @@ def normalize_timeout_seconds(raw, *, minimum: int = 1) -> int | None:
     if not math.isfinite(value) or not value.is_integer():
         return None
     integer = int(value)
-    return integer if integer >= minimum else None
+    return integer if integer >= 1 else None
 
 
 def _conf_positive_float(conf: dict, key: str | None) -> float | None:
@@ -2811,8 +2811,7 @@ def cap_hit_char_threshold_default() -> int:
     return _env_positive_int(CAP_HIT_THRESHOLD_ENV, CAP_HIT_CHAR_THRESHOLD)
 
 
-def detect_output_cap_hit(text, *, char_threshold: int | None = None,
-                          cap_tokens: int = CAP_TOKENS) -> tuple[bool, str]:
+def detect_output_cap_hit(text, *, char_threshold: int | None = None) -> tuple[bool, str]:
     """outbound 응답이 opencode 출력 cap(≈32k 토큰) 근방인지 감지 — silent 절단 의심.
 
     반환 (hit, reason). hit=True 면 응답이 cap-hit 임계(char) 이상이라 절단 의심 → 호출부가 loud
@@ -2830,7 +2829,7 @@ def detect_output_cap_hit(text, *, char_threshold: int | None = None,
     approx_tokens = int(length / CAP_HIT_MIN_CHARS_PER_TOKEN)  # 보수적 상한 근사(token).
     reason = (
         f"응답 {length} 자(≈{approx_tokens} tok 보수적 근사) ≥ 임계 {char_threshold} 자 — "
-        f"opencode 출력 cap {cap_tokens} tok 근방"
+        f"opencode 출력 cap {CAP_TOKENS} tok 근방"
     )
     return True, reason
 

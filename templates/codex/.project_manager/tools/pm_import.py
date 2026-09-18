@@ -337,18 +337,14 @@ def _enforce_legacy_harness_alias_deadline(
 _enforce_legacy_harness_alias_deadline()
 
 
-def parse_harness_selection(
-    value: str,
-    *,
-    harness_template_dirs: dict[str, tuple[str, ...]] | None = None,
-) -> tuple[str, ...]:
+def parse_harness_selection(value: str) -> tuple[str, ...]:
     """콤마 선택을 registry 순서의 중복 없는 하네스 튜플로 정규화한다.
 
     입력 순서는 결과/충돌 우선순위에 영향을 주지 않는다. ``all``은 호출 시점 registry의 키
     전체로 확장돼 네 번째 하네스가 추가돼도 자동 편입된다. ``LEGACY_HARNESS_ALIASES`` 에
     등록된 alias 도 집합 원소처럼 확장된다(현재 빈 seam — `both` 는 v1.6.0 에서 제거).
     """
-    registry = HARNESS_TEMPLATE_DIRS if harness_template_dirs is None else harness_template_dirs
+    registry = HARNESS_TEMPLATE_DIRS
     if not isinstance(value, str):
         raise ValueError(f"--harness 값은 문자열이어야 합니다: {value!r}")
     raw_tokens = value.split(",")
@@ -6592,9 +6588,7 @@ def _adapter_feature_rows(relpath: str, project_document: dict,
     return tuple(rows)
 
 
-def adapter_config_reports(dest_root: Path, source_root: Path, *,
-                           git_runner: GitRunner | None = None
-                           ) -> list[AdapterConfigReport]:
+def adapter_config_reports(dest_root: Path, source_root: Path) -> list[AdapterConfigReport]:
     """instance-owned config 전수의 읽기 보고 (부작용 0 · 판정은 `judge_adapter_configs` 그대로).
 
     관리자(`pm-config status --json --with-adapters`)가 파일별 상태·차이·기능 거리를 한 번에 읽는
@@ -6610,7 +6604,7 @@ def adapter_config_reports(dest_root: Path, source_root: Path, *,
                for target in instance_owned_template_targets(dest_root, source_root)}
     recorded = read_adapter_baseline(dest_root).get("files", {})
     fallback_rev = _instance_owned_fallback_rev(dest_root)
-    runner = git_runner if git_runner is not None else _real_upstream_git_runner()
+    runner = _real_upstream_git_runner()
     prefix_status, prefix_path = _source_git_path_prefix(source_root, runner)
     reachability: dict[str, bool] = {}
 

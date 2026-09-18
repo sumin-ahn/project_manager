@@ -1534,7 +1534,6 @@ def supervise_codex_hook(
     child_argv: Sequence[str],
     *,
     payload_bytes: bytes,
-    runner: Callable[..., object] = subprocess.run,
     state_dir: Path | None = None,
 ) -> dict[str, object]:
     """Run the guard as a bounded child and answer with a valid envelope either way.
@@ -1557,7 +1556,7 @@ def supervise_codex_hook(
         _record_supervisor_fallback(event, payload_bytes, detail, state_dir)
         return _codex_supervisor_fallback(event, detail)
     try:
-        completed = runner(
+        completed = subprocess.run(
             argv,
             input=payload_bytes,
             stdout=subprocess.PIPE,

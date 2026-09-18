@@ -6718,7 +6718,6 @@ def run_pm_review_confirmation_command(
 
 def run_pm_review_confirmations(
     template: PMReviewVerifyTemplate, *, cwd: Path,
-    timeout: int = PM_REVIEW_CONFIRMATION_COMMAND_TIMEOUT_SEC,
     run_fn: Callable | None = None,
 ) -> tuple[tuple[int, PMReviewMachineConfirmation], ...]:
     """확인 가능한 행 전부를 실행해 확인 행으로 만든다(source round 오름차순 보존)."""
@@ -6726,7 +6725,7 @@ def run_pm_review_confirmations(
     for source_round, verify_row in template.machine_rows:
         status, observed = run_pm_review_confirmation_command(
             verify_row.command, cwd=cwd, expected=verify_row.expected,
-            timeout=timeout, run_fn=run_fn,
+            timeout=PM_REVIEW_CONFIRMATION_COMMAND_TIMEOUT_SEC, run_fn=run_fn,
         )
         rows.append((source_round, PMReviewMachineConfirmation(
             verify_row.id, status, verify_row.command, observed, source_round,
@@ -8754,17 +8753,14 @@ def render_shell_token(value: str, *, windows: bool | None = None) -> str:
     return _windows_argv_token(text) if windows else shlex.quote(text)
 
 
-def render_shell_command(
-    argv: Sequence[str], *, windows: bool | None = None
-) -> str:
+def render_shell_command(argv: Sequence[str]) -> str:
     """처방 커맨드 한 줄을 실행 셸 규칙으로 렌더한다 (붙여넣으면 그대로 실행돼야 한다).
 
     POSIX는 `shlex.join`, Windows는 `subprocess.list2cmdline` 등가 argv 규칙 + 셸 메타문자
     인용이다. 두 Windows 셸 공통 평문이 불가능한 입력만 EncodedCommand 한 줄로 올린다
     (`_windows_command_is_paste_safe`). 어느 경로도 `&&` 체이닝을 만들지 않는다 —
     PowerShell 5.x가 지원하지 않는다."""
-    if windows is None:
-        windows = _running_on_windows()
+    windows = _running_on_windows()
     tokens = [str(token) for token in argv]
     if not windows:
         return shlex.join(tokens)
@@ -12200,7 +12196,6 @@ def _touch_notation(item: str) -> str | None:
 
 def _folded_touch_pairs(
     items: Sequence[str], *, pm_root: Path | str, workspace: Path | str, coordinates,
-    on_drop: Callable[[str, str], None] | None = None,
 ) -> tuple[tuple[str, str], ...]:
     """touches 를 `(원 선언, 이 workspace 좌표)` 쌍으로 접는다 — **사전·사후 공용 좌표 규칙**.
 
@@ -12217,8 +12212,6 @@ def _folded_touch_pairs(
                 [item], pm_root=Path(pm_root), workspace=Path(workspace),
             )
         except (ValueError, OSError) as exc:   # RepoCoordinateError(ValueError) = 타 슬롯/미실재
-            if on_drop is not None:
-                on_drop(item, str(exc))
             continue
         for path in normalized:
             value = _touch_notation(coordinates.canonicalize_path_notation(str(path)))

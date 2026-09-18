@@ -2156,13 +2156,13 @@ def lint_pages(pages: list[dict], *, git_runner: GitRunner | None = None,
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 
-def _stale_marker(page: dict, *, git_runner: GitRunner | None = None) -> str:
+def _stale_marker(page: dict) -> str:
     """페이지 줄 앞 stale 마커 — stale(True)=`⚠ `·None(unknown)/False=무표시(공백 정렬).
 
     list/affected 가 공유한다(DRY). page_stale==True 만 ⚠ — unknown(git 부재 등)은 조용히
     무표시(노이즈 방지). 마커 폭(2칸)을 비-stale 줄에도 채워 줄을 정렬한다.
     """
-    return "⚠ " if page_stale(page, git_runner=git_runner) is True else "  "
+    return "⚠ " if page_stale(page) is True else "  "
 
 
 def cmd_list(args: argparse.Namespace) -> int:

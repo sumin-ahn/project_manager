@@ -1007,8 +1007,6 @@ _VERSIONED_BLOCK_RULES = """\
 def _versioned_block_requirement(
     next_finding_id: str | None = None,
     confirmation_ids: Sequence[str] | None = None,
-    *,
-    next_id_label: str | None = None,
 ) -> str:
     """추가 리뷰어 채널의 구조화 블록 요구 — 골격·접두·ID 실값을 엔진에서 렌더한다.
 
@@ -1023,7 +1021,7 @@ def _versioned_block_requirement(
         prefix=delegate.PM_REVIEW_FINDING_ID_PREFIXES[role],
             # 표기는 호출부가 정할 수 있다 — 대상이 티켓 하나면 ID 실값 하나이고, 묶음이면
             # 그 값이 티켓마다 다르다(그 실값은 각 라운드 파일 시드가 이미 들고 있다).
-        next_id=next_id_label or f"`{next_id}`",
+        next_id=f"`{next_id}`",
         top_severity=delegate.PM_REVIEW_SEVERITIES[0],
         placeholder_words="·".join(
             delegate.PM_REVIEW_CONTRACT_PLACEHOLDER_WORDS

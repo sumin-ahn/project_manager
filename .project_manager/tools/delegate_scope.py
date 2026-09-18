@@ -399,14 +399,10 @@ def _hash_object(
     return list(zip(batch, lines))
 
 
-def capture_worktree_state(
-    workspace: Path | str,
-    *,
-    run_git: GitRunner | None = None,
-) -> WorktreeState:
+def capture_worktree_state(workspace: Path | str) -> WorktreeState:
     """untracked 파일까지 펼친 worktree 상태 + dirty 경로 내용 해시를 캡처한다."""
     cwd = Path(workspace).resolve()
-    runner = run_git or _default_git_runner
+    runner = _default_git_runner
     try:
         rc, output = runner(
             cwd,
@@ -626,10 +622,8 @@ def out_of_scope_changes(
     role: str,
     pm_root: Path | str,
     workspace: Path | str,
-    coordinates_module=None,
     write_roles: Iterable[str] | None = None,
     on_drop: Callable[[str, str], None] | None = None,
-    run_git: GitRunner | None = None,
 ) -> tuple[str, ...]:
     """위임 중 상태가 바뀐 경로(+커밋된 경로) 중 허용 범위 밖 경로만 반환한다."""
     allowed = allowed_paths(
@@ -637,12 +631,11 @@ def out_of_scope_changes(
         role=role,
         pm_root=pm_root,
         workspace=workspace,
-        coordinates_module=coordinates_module,
         write_roles=write_roles,
         on_drop=on_drop,
     )
     changed = set(changed_status_paths(before, after))
-    changed.update(committed_paths(before, after, workspace=workspace, run_git=run_git))
+    changed.update(committed_paths(before, after, workspace=workspace))
     return tuple(
         path for path in sorted(changed)
         if not _covered(path, allowed)

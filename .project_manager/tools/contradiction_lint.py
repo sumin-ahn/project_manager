@@ -342,8 +342,6 @@ def collect_reference_scope(
     target_ids: Iterable[str],
     files: Iterable[Path],
     *,
-    wikilink_re: re.Pattern[str] | None = None,
-    read: Callable[[Path], str] | None = None,
     repo: Path | None = None,
 ) -> list[ScopeHit]:
     """`target_ids`(개정된 ADR)를 `[[ADR-NNNN]]` 로 참조하는 파일을 스코프로 수집한다(back-ref 범위).
@@ -351,12 +349,14 @@ def collect_reference_scope(
     각 파일에서 wikilink 를 훑어 대상 번호(선행 0 무관)와 매칭되면 그 파일 + 매칭 id + 참조 라인 스니펫을
     담는다. 대상을 안 참조하는 파일은 제외(전-코퍼스 무차별 아님). wikilink 문법은 board 것을 재사용한다.
 
-    files/read/repo 를 주입해 hermetic 테스트(실 wiki 미접촉). 반환은 파일 경로 정렬."""
+    files/repo 를 주입해 hermetic 테스트(실 wiki 미접촉). 반환은 파일 경로 정렬."""
     targets = _target_num_set(target_ids)
     if not targets:
         return []
-    wl_re = wikilink_re or _wikilink_re()
-    _read = read or (lambda p: _load_file_lock().read_text_shared(p, encoding="utf-8"))
+    wl_re = _wikilink_re()
+
+    def _read(p):
+        return _load_file_lock().read_text_shared(p, encoding="utf-8")
     base = repo or REPO
 
     hits: list[ScopeHit] = []

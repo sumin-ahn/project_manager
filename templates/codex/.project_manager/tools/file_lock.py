@@ -907,10 +907,7 @@ def force_rmtree(
     ) from last_error
 
 
-def force_unlink(
-    path: Path | str, *, missing_ok: bool = False,
-    retries: int = FORCE_DELETE_RETRIES,
-) -> None:
+def force_unlink(path: Path | str, *, missing_ok: bool = False) -> None:
     """파일 하나를 **실제로** 지운다 (`force_rmtree` 와 같은 규칙의 파일판).
 
     read-only 속성(대상·부모)을 풀고 재시도하며, 시도를 다 쓰고도 남으면 `OSError` 를 올린다.
@@ -918,7 +915,7 @@ def force_unlink(
     `Path.unlink` 와 같은 False 다 — 없는 파일을 지우려 한 것 자체가 신호일 수 있다).
     """
     target = Path(path)
-    attempts = max(1, retries)
+    attempts = max(1, FORCE_DELETE_RETRIES)
     last_error: OSError | None = None
     for attempt in range(attempts):
         try:
