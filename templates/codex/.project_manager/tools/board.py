@@ -15906,7 +15906,7 @@ def _canonical_ticket_id(path: Path, fm: dict[str, Any] | None = None) -> str | 
     if fm is None:
         try:
             fm, _ = load_ticket(path)
-        except Exception:  # noqa: BLE001 — 읽기/파싱 실패는 파일명 폴백(fail-soft·비-UTF-8 등).
+        except _LOAD_TICKET_SOFT_ERRORS:  # 읽기/파싱 실패는 파일명 폴백(fail-soft·비-UTF-8 등).
             fm = {}
     if not isinstance(fm, dict):
         fm = {}
@@ -19023,7 +19023,7 @@ def lint_adr_lifecycle() -> list[tuple[str, str, str]]:
     for p in sorted(DECISIONS_DIR.glob("[0-9]*.md")):
         try:
             fm, _ = load_ticket(p)
-        except Exception:  # noqa: BLE001 — 깨진/frontmatter 없는 파일은 skip(비차단).
+        except _LOAD_TICKET_SOFT_ERRORS:  # 깨진/frontmatter 없는 파일은 skip(비차단).
             continue
         adrs[_adr_id_from_path(p)] = fm or {}
 
@@ -19094,7 +19094,7 @@ def lint_adr_author() -> list[tuple[str, str, str]]:
     for p in sorted(DECISIONS_DIR.glob("[0-9]*.md")):
         try:
             fm, _ = load_ticket(p)
-        except Exception:  # noqa: BLE001 — 깨진/frontmatter 없는 파일은 skip(비차단).
+        except _LOAD_TICKET_SOFT_ERRORS:  # 깨진/frontmatter 없는 파일은 skip(비차단).
             continue
         fm = fm or {}
         adr_id = _adr_id_from_path(p)
@@ -19400,7 +19400,7 @@ def _verified_at_finding(doc_file: Path, pathspecs, label: str, kind: str, *,
         return []
     try:
         fm, _ = load_ticket(doc_file)
-    except Exception:  # noqa: BLE001 — frontmatter 없음/깨짐은 skip(비차단).
+    except _LOAD_TICKET_SOFT_ERRORS:  # frontmatter 없음/깨짐은 skip(비차단).
         return []
     sha = str((fm or {}).get("verified_at") or "").strip()
     if not sha:

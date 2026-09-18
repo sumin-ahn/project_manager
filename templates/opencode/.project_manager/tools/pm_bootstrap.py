@@ -818,7 +818,7 @@ try:
     from zoneinfo import ZoneInfo
 
     KST = ZoneInfo("Asia/Seoul")
-except Exception:  # ImportError(zoneinfo 부재) + ZoneInfoNotFoundError(tzdata 부재) 모두 포섭
+except (ImportError, KeyError):  # zoneinfo 부재 + tzdata 부재(ZoneInfoNotFoundError=KeyError)
     KST = datetime.timezone(datetime.timedelta(hours=9))
 
 
