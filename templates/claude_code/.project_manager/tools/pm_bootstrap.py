@@ -639,7 +639,7 @@ def _load_identity_args():
     `_load_worktree_pool`/`_load_board`/`_load_tool` 과 동형 — `spec_from_file_location`
     (스크립트-위치 앵커·sys.path 무오염) — 스크립트 직접실행(`__main__`)·테스트
     `spec_from_file_location` 로드 양쪽에서 똑같이 동작한다(sibling import 관성 회피). 부재/
-    로드 실패 시 None(fail-soft) — `_repo_slot_numbers`/`_auto_slot` 는 이를 "장부를 읽을 수
+    로드 실패 시 None(fail-soft) — `_auto_slot` 는 이를 "장부를 읽을 수
     없음"과 동일하게 흡수해 bare-bootstrap 경로를 깨지 않는다(B-1).
     """
     ia_path = TOOLS_DIR / "identity_args.py"
@@ -685,28 +685,6 @@ def _registered_repos(areas_file: Path | None = None) -> list[str]:
         if name:
             rows.append(name)
     return rows
-
-
-def _repo_slot_numbers(repo: str, leases_file: Path) -> list[int] | None:
-    """`leases_file` 장부에서 `repo` 의 **활성(leased)** worktree 슬롯 번호(`work/<repo>_<N>`→N)를 반환한다.
-
-    **공용 `identity_args.repo_slot_numbers` 위임** — 리스
-    읽기 코어(state=leased 필터·state 키 부재 back-compat·dedup·fail-soft None)는 그 모듈이
-    단일 진실로 소유한다(byte-for-byte 동형 보존). 이 로컬 wrapper 는 `_auto_slot`·
-    `_resolve_session_slot` 의 기존 호출 시그니처를 무손실 보존하기 위한 얇은 위임이다(touches
-    격리 관성은 유지 — `_load_identity_args` 의 동적 로드로 sys.path 무오염).
-
-    파일 부재/JSON 깨짐/스키마 불일치·`identity_args` 로드 실패 → **None**(fail-soft·"읽을 수
-    없음" 신호); 정상 read 인데 그 repo 의 leased 슬롯이 0개면 빈 리스트 `[]`("읽었으나 활성
-    슬롯 없음"). 호출부는 두 경우를 구분할 수 있다.
-    """
-    ia = _load_identity_args()
-    if ia is None:
-        return None
-    return ia.repo_slot_numbers(repo, leases_file)
-
-
-
 
 
 
@@ -2470,7 +2448,7 @@ class PmBootstrap:
         """lease 장부에서 leased 엔트리의 `(session, slot)` 목록을 직접 read 한다 (touches 격리).
 
         session 은 엔트리 `session` 또는 슬롯(`work/<repo>_<N>`→`<repo>_<N>`)에서 유도(대시보드
-        키와 동형). worktree_pool 미import(`_repo_slot_numbers` 동형·stdlib json). **장부 부재/
+        키와 동형). worktree_pool 미import(`identity_args.repo_slot_numbers` 동형·stdlib json). **장부 부재/
         깨짐/스키마 불일치 → None**("활성 슬롯을 알 수 없음"·MF-1 필터가 no-op 폴백에 씀); 정상
         read 인데 leased 0개면 `[]`. `_lease_others`(폴백 dump)·`_active_leased_sessions`(교집합
         필터) 가 공유한다.

@@ -2331,39 +2331,6 @@ def _is_render_managed(rel_posix: str, managed: set[str]) -> bool:
     return False
 
 
-def _engine_render_relpaths(root: Path) -> set[str]:
-    """트리의 engine.manifest 에서 add_harness 가 *복사 제외*할 native-@render 엔진 리소스 relpath 집합.
-
-    add_harness 스코프 제외용. `@render` 만 있고 `@target-owned`·
-    `@source` 가 *둘 다 없는* path = 루트 upstream 에 manifest-경로 그대로 실재하는 native 엔진 리소스
-    (예 `.claude/agents`·`.claude/skills`) — pm_update 소관이라 어댑터 추가 시 오적재하면 안 된다.
-    반대로 어댑터-소유/전파 경로는 add_harness 의 *복사 대상*이라 이 집합에서 뺀다:
-      - `@target-owned`(예 진짜 target-owned) — pm_update ManifestEntry.target_owned 판별자.
-      - `@source=<path>`(예 `.opencode/agents`·`.opencode/command` — framework-owned·guest 하네스·
-        canonical 소스가 `templates/opencode/.opencode/*`) — pm_update 는
-        source-remap 으로 전파하나 add_harness 는 이 guest 어댑터 파일을 *레이다운*해야 한다
-        manifest-경로 = 어댑터 네임스페이스라
-        add_harness 소스(templates/opencode)에 실재 → 복사.
-    manifest 부재·로드 실패 → 빈 set(무동작).
-    """
-    pm_update_py = Path(__file__).resolve().parent / "pm_update.py"
-    manifest = root / ".project_manager" / "engine.manifest"
-    if not manifest.is_file():
-        return set()
-    try:
-        mod = _load_module_from_path(
-            pm_update_py, "pm_update.py", allow_unverified=True,
-        )
-        return {
-            str(e).replace("\\", "/")
-            for e in mod.read_manifest(manifest)
-            if getattr(e, "render", False)
-            and not getattr(e, "target_owned", False)
-            and not getattr(e, "source_rel", None)
-        }
-    except Exception:  # noqa: BLE001 — 로드/파싱 실패는 제외집합 0(무동작·전부 복사 대상).
-        return set()
-
 
 # manifest 미소유 출하 텍스트 중 **설치 하네스 전체**가 함께 읽는 표면 = 인스턴스 wiki.
 #   engine.manifest 는 *upstream 이 관리하는* 경로만 담는다 — status·log·architecture·raw/README
@@ -5281,7 +5248,7 @@ def _existing_create_if_absent_relpaths(
 
 def _load_pm_update():
     """pm_update 모듈 지연 로드 (read_manifest + guest 절 마커/헬퍼 재사용·pm_import 은 pm_update 를
-    top-level import 하지 않는다). `_engine_render_relpaths` 등이 쓰는 그 spec 로드 패턴. 실패 시 None."""
+    top-level import 하지 않는다). `read_manifest` 소비자들이 쓰는 그 spec 로드 패턴. 실패 시 None."""
     pm_update_py = Path(__file__).resolve().parent / "pm_update.py"
     try:
         return _load_module_from_path(
