@@ -69,9 +69,9 @@ function TaskSelect({ label, value, onChange }:
  */
 export function forceCloseNote(row: SlotRow): string {
   const stash = row.dirty
-    ? "이 슬롯에는 커밋하지 않은 변경이 있다 — 그 변경은 stash 로 옮겨진다(작업 폴더에는 남지 않는다)."
+    ? "이 슬롯에는 커밋하지 않은 변경이 있다 — 그 변경은 stash 로 옮겨진다(슬롯에는 남지 않는다)."
     : "커밋하지 않은 변경이 생긴 뒤라면 그 변경은 stash 로 옮겨진다.";
-  return `그 세션이 인계를 남기지 못하고 끝났을 때 쓴다. 아직 그 창이 살아 있으면 그 세션의 기록이 사라진다. 작업 폴더 자체는 남는다. ${stash}`;
+  return `그 세션이 인계를 남기지 못하고 끝났을 때 쓴다. 아직 그 창이 살아 있으면 그 세션의 기록이 사라진다. 슬롯 자체는 남는다. ${stash}`;
 }
 
 /** 변경 동작이 없는 행 — 재조회만. 슬롯 내용 갱신(`pm-worktree refresh`)은 스킬이다. */
@@ -103,6 +103,38 @@ export function SlotTableAllocate() {
         </select>
         <TaskSelect label="대여 task" value={task} onChange={setTask} />
         <button type="button" data-testid="alloc" disabled={busy || repo === "" || task === ""}
+                onClick={() => void call(["alloc", repo, "--task", task])}
+                className={BUTTON}>대여</button>
+      </span>
+      <CommandOutput outcome={outcome} />
+    </span>
+  );
+}
+
+/**
+ * 그 task 명의로 슬롯을 하나 더 대여하는 자리 — task 는 슬롯을 여럿 쥘 수 있다.
+ *
+ * 공용 탭의 [대여]와 같은 엔진 명령(`alloc <repo> --task <이름>`)이고, task 축이 이미
+ * 정해져 있어 repo 만 고른다. 어느 유휴 슬롯이 나갈지는 고르지 않는다 — 엔진이 최소 번호로
+ * 정한다. 유휴 슬롯이 없으면 엔진이 거부하며(`NeedsCreate`), 슬롯을 새로 만드는 것은
+ * 구성 탭의 사용자 승인 행위다.
+ */
+export function TaskSlotAllocate({ task }: { task: string }) {
+  const { status } = useProjectRun();
+  const { outcome, busy, call } = useCommand();
+  const [repo, setRepo] = useState("");
+
+  return (
+    <span className="inline-flex flex-col gap-1">
+      <span className="flex items-center gap-1">
+        <select aria-label={`${task} 에 대여할 repo`} value={repo} className={SELECT}
+                onChange={(event) => setRepo(event.target.value)}>
+          <option value="">repo 선택</option>
+          {(status?.repos ?? []).map((row) => (
+            <option key={row.repo} value={row.repo}>{row.repo}</option>
+          ))}
+        </select>
+        <button type="button" data-testid={`task-alloc-${task}`} disabled={busy || repo === ""}
                 onClick={() => void call(["alloc", repo, "--task", task])}
                 className={BUTTON}>대여</button>
       </span>
@@ -160,14 +192,10 @@ function TaskActions({ row }: { row: TaskRow }) {
   const verdict = rowDot(row);
   const { outcome, busy, call } = useCommand();
   const [prefix, setPrefix] = useState("");
-  const [todo, setTodo] = useState("");
   const [asking, setAsking] = useState(false);
   const reason = disabledReason(row, verdict);
   const frozen = verdict.actions !== "change";
   const value = prefix.trim();
-  // todo 등록은 아이들 규칙에서 뺀다 — prefix·종료는 정체성을 바꾸지만 todo 는 사용자가 진행
-  // 중인 task 에 얹는 작업 항목이고, 그걸 막으면 작업 중에는 할 일을 적을 수 없다.
-  const todoValue = todo.trim();
 
   return (
     <span className="inline-flex flex-col items-end gap-1">
@@ -181,15 +209,6 @@ function TaskActions({ row }: { row: TaskRow }) {
         <button type="button" data-testid={`end-${row.name}`} title={reason ?? ""}
                 disabled={frozen || busy} onClick={() => void call(["task", "end", row.name])}
                 className={BUTTON}>종료</button>
-        <input aria-label={`${row.name} todo`} value={todo}
-               onChange={(event) => setTodo(event.target.value)} className={FIELD} />
-        <button type="button" data-testid={`todo-add-${row.name}`}
-                disabled={busy || todoValue === ""}
-                onClick={() => {
-                  void call(["task", "todo", "add", row.name, todoValue]);
-                  setTodo("");
-                }}
-                className={BUTTON}>todo</button>
       </span>
       {asking && (
         <ConfirmDialog
@@ -230,21 +249,51 @@ export function todoLine(todo: TaskTodo): string {
  */
 export function TaskTodoList({ row }: { row: TaskRow }) {
   const { outcome, busy, call } = useCommand();
-  if (row.todos.length === 0) return null;
+  const [draft, setDraft] = useState("");
+  const value = draft.trim();
+  // 등록은 아이들 규칙을 타지 않는다 — prefix·종료는 정체성을 바꾸지만 할 일은 작업 중인
+  // task 에 얹는 항목이고, 그걸 막으면 정작 일하는 동안 적을 수 없다.
   return (
-    <span data-testid={`todos-${row.name}`} className="mt-0.5 flex flex-col items-start gap-0.5">
-      {row.todos.map((todo) => (
-        <span key={todo.id} className="flex items-center gap-1">
-          <span>{todoLine(todo)}</span>
-          <button type="button" data-testid={`todo-done-${row.name}-${todo.id}`}
-                  disabled={busy}
-                  onClick={() => void call(
-                    ["task", "todo", "done", row.name, String(todo.id)])}
-                  className={BUTTON}>완료</button>
-        </span>
-      ))}
+    <section className="space-y-1">
+      <h2 className="font-medium">열린 todo</h2>
+      {row.todos.length === 0 ? (
+        <p className="text-slate-500">
+          적어 둔 할 일이 없습니다 — 이 상태에서 파일을 고치면 쓰기 판정이 경고를 붙입니다.
+        </p>
+      ) : (
+        <ul data-testid={`todos-${row.name}`}
+            className="divide-y divide-slate-100 border-y border-slate-100">
+          {row.todos.map((todo) => (
+            <li key={todo.id} className="flex items-baseline justify-between gap-3 py-1.5">
+              <span>{todoLine(todo)}</span>
+              <button type="button" data-testid={`todo-done-${row.name}-${todo.id}`}
+                      disabled={busy}
+                      onClick={() => void call(
+                        ["task", "todo", "done", row.name, String(todo.id)])}
+                      className={`${BUTTON} shrink-0`}>완료</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="mt-2 flex items-center gap-1">
+        <input aria-label={`${row.name} todo`} value={draft} placeholder="지금 하는 일 한 줄"
+               onChange={(event) => setDraft(event.target.value)}
+               onKeyDown={(event) => {
+                 if (event.key !== "Enter" || value === "") return;
+                 void call(["task", "todo", "add", row.name, value]);
+                 setDraft("");
+               }}
+               className="flex-1 rounded border border-slate-200 px-2 py-0.5" />
+        <button type="button" data-testid={`todo-add-${row.name}`}
+                disabled={busy || value === ""}
+                onClick={() => {
+                  void call(["task", "todo", "add", row.name, value]);
+                  setDraft("");
+                }}
+                className={BUTTON}>등록</button>
+      </div>
       <CommandOutput outcome={outcome} />
-    </span>
+    </section>
   );
 }
 

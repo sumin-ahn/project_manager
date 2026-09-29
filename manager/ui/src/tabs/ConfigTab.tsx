@@ -189,7 +189,7 @@ function ConfigTabBody({ remote }: { remote: Entry | undefined }) {
             title={`repo ${slotDraft.repo} 에 ${slotDraft.readonly ? "readonly " : ""}물리 슬롯을 만든다 — 승인?`}
             note={`work/${slotDraft.repo}_<번호> 를 만든다(번호·브랜치는 엔진이 고른다 · base `
                   + `${repos.find((repo) => repo.repo === slotDraft.repo)?.base ?? "기본 브랜치"}). `
-                  + "물리 슬롯 생성은 사용자 승인 행위다."}
+                  + "물리 슬롯 생성은 사용자 승인 행위입니다."}
             value={slotDraft.repo}
             onConfirm={(ack) => {
               const draft = slotDraft;
@@ -204,8 +204,8 @@ function ConfigTabBody({ remote }: { remote: Entry | undefined }) {
         {removeTarget !== null && (
           <ConfirmDialog
             title={`슬롯 ${removeTarget} 을 제거한다 — 승인?`}
-            note={"worktree 와 장부 행을 지운다. 커밋 안 한 변경이 있거나 사용 중이면 엔진이 거부한다. "
-                  + "합쳐지지 않은 브랜치는 보존된다. 슬롯 제거는 사용자 승인 행위다."}
+            note={"worktree 와 장부 행을 지웁니다. 커밋 안 한 변경이 있거나 사용 중이면 엔진이 거부합니다. "
+                  + "합쳐지지 않은 브랜치는 보존됩니다. 슬롯 제거는 사용자 승인 행위입니다."}
             value={removeTarget}
             onConfirm={(ack) => {
               const target = removeTarget;
