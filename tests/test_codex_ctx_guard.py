@@ -111,11 +111,14 @@ def test_config_exists_and_parses():
 
 
 def test_config_uses_documented_numeric_auto_compact_threshold_not_off_sentinel():
-    """config은 문서화된 숫자 threshold만 쓴다; 미검증 off sentinel을 발명하지 않는다."""
+    """config은 문서화된 숫자 threshold만 쓴다; 미검증 off sentinel을 발명하지 않는다.
+
+    두 값은 반영(`pm_import.apply_harness_ctx`)의 기본값 고정점이다 — 사용 한도 200000 과
+    압축 지점 200000 × 90% (T-0923)."""
     data = _load_config()
-    assert "model_auto_compact_token_limit" in data, "auto-compact 상향 키 없음"
-    assert data["model_auto_compact_token_limit"] == 900000, (
-        f"상향값이 spike §3.6(900000) 아님: {data['model_auto_compact_token_limit']!r}"
+    assert data.get("model_context_window") == 200000, data.get("model_context_window")
+    assert data.get("model_auto_compact_token_limit") == 180000, (
+        f"압축 지점이 기본값(200000 × 90%)이 아님: {data.get('model_auto_compact_token_limit')!r}"
     )
 
 
@@ -147,6 +150,7 @@ def test_config_omits_machine_local_keys():
     )
     # 출하 템플릿은 리뷰된 반입가능 키만 — 화이트리스트(machine-local leak 전수 차단).
     allowed = {
+        "model_context_window",
         "model_auto_compact_token_limit",
         "sandbox_mode",
         "approval_policy",
@@ -582,7 +586,7 @@ def test_board_init_leaves_the_codex_budget_key_to_the_docs(tmp_path, monkeypatc
     assert not [key for key in parsed if key.startswith("harness.")]
     # 설명은 레지스트리가 소유한다 — 키가 사라진 게 아니라 자리를 옮겼다.
     spec = board._load_local_conf().key_spec("harness.codex.ctx_window_tokens")
-    assert spec is not None and "컨텍스트 크기" in spec.description
+    assert spec is not None and "사용 한도" in spec.description
 
 
 # ── 4. 세션 안 ctx 넛지 (T-0770 · claude 미러) ────────────────────────────────
@@ -670,9 +674,9 @@ def _adopter_root(tmp_path: Path, *, conf: str = "", pm_log_body: str | None = N
     return root
 
 
-# 밴드 안에 들어가는 예산 — 라이브 점유 15328 / 20000 = 77% (잔여 23% → nudge2 밴드).
+# 밴드 안에 들어가는 예산 — 라이브 점유 15328 / 20000 = 77% (쓴 % 77 → nudge2 밴드).
 _IN_BAND_BUDGET = "harness.codex.ctx_window_tokens=20000\n"
-# 밴드 밖 예산 — 15328 / 60000 = 26% (잔여 74%).
+# 밴드 밖 예산 — 15328 / 60000 = 26%.
 _OUT_OF_BAND_BUDGET = "harness.codex.ctx_window_tokens=60000\n"
 _STUB_PM_LOG = (
     "import sys\n"
@@ -904,38 +908,38 @@ def test_prose_does_not_claim_first_turn_coverage(codex_ctx):
 
 @pytest.mark.parametrize("conf", (
     {},
-    {"ctx.checkpoint_pct": "40", "ctx.precompact_pct": "25"},
-    {"ctx.checkpoint_pct": "10", "ctx.precompact_pct": "20"},   # 역전 → 둘 다 엔진 기본 폴백.
-    {"ctx.precompact_pct": "0"},                            # 범위 밖 → 폴백.
-    {"ctx.checkpoint_pct": "abc", "ctx.precompact_pct": "  25 "},
+    {"ctx.checkpoint_at_pct": "60", "ctx.precompact_at_pct": "75"},
+    {"ctx.checkpoint_at_pct": "90", "ctx.precompact_at_pct": "80"},   # 역전 → 둘 다 엔진 기본 폴백.
+    {"ctx.precompact_at_pct": "100"},                                 # 범위 밖 → 폴백.
+    {"ctx.checkpoint_at_pct": "abc", "ctx.precompact_at_pct": "  75 "},
 ))
 def test_thresholds_mirror_claude_keys_and_sanity(codex_ctx, claude_ctx, conf):
-    """`ctx_nudge_pct`/`ctx_stop_pct` 해소와 sanity 폴백이 claude 와 값으로 같다."""
+    """`ctx.checkpoint_at_pct`/`ctx.precompact_at_pct` 해소와 sanity 폴백이 claude 와 값으로 같다."""
     assert codex_ctx.ctx_thresholds(conf) == claude_ctx.ctx_thresholds(conf)
 
 
 @pytest.mark.parametrize("conf", (
     {},
     {"ctx.window_tokens": "500000"},
-    {"harness.codex.ctx_window_tokens": "300000", "ctx.window_tokens": "500000"},
-    {"harness.codex.ctx_window_tokens": "0", "ctx.window_tokens": "400000"},
+    {"harness.codex.ctx_window_tokens": "300000"},
+    {"harness.codex.ctx_window_tokens": "0"},
     {"harness.codex.ctx_window_tokens": "nope"},
 ))
 def test_budget_precedence_mirrors_claude_per_harness_keys(codex_ctx, claude_ctx, conf):
-    """예산 우선순위 `harness.codex.ctx_window_tokens` > `ctx.window_tokens` > 200000 (ADR-0041)."""
+    """예산 = `harness.codex.ctx_window_tokens`(사용 한도) > 200000 — claude 와 같은 해소."""
     assert codex_ctx.resolve_ctx_budget(conf) == claude_ctx.resolve_budget(conf, "codex")
 
 
 def test_budget_precedence_values_are_pinned(codex_ctx):
-    """우선순위 3층의 실값 — 미러 대조만으로는 두 사이트가 함께 틀릴 수 있다."""
-    assert codex_ctx.resolve_ctx_budget(
-        {"harness.codex.ctx_window_tokens": "300000", "ctx.window_tokens": "500000"}) == 300000
-    assert codex_ctx.resolve_ctx_budget({"ctx.window_tokens": "500000"}) == 500000
+    """예산의 실값 — 미러 대조만으로는 두 사이트가 함께 틀릴 수 있다. 공통 층은 없다."""
+    assert codex_ctx.resolve_ctx_budget({"harness.codex.ctx_window_tokens": "300000"}) == 300000
+    assert codex_ctx.resolve_ctx_budget({"ctx.window_tokens": "500000"}) == 200_000
     assert codex_ctx.resolve_ctx_budget({}) == codex_ctx.CTX_WINDOW_TOKENS_DEFAULT == 200_000
 
 
 @pytest.mark.parametrize("conf", (
-    {}, {"ctx.checkpoint_pct": "40", "ctx.precompact_pct": "25"}, {"ctx.precompact_pct": "5"},
+    {}, {"ctx.checkpoint_at_pct": "60", "ctx.precompact_at_pct": "75"},
+    {"ctx.precompact_at_pct": "95"},
 ))
 def test_band_classification_mirrors_claude_for_every_used_pct(codex_ctx, claude_ctx, conf):
     """0~100% 전 구간에서 밴드 이름이 claude 와 같다 — codex 전용 경계 신설 0."""
@@ -975,7 +979,7 @@ def test_ctx_wiring_adds_nothing_to_the_adopter_hooks_config():
     """`.codex/hooks.json` 은 이 축의 배선을 담지 않는다 — 채택자 재승인 0 (T-0770 DoD)."""
     rendered = HOOKS_JSON.read_text(encoding="utf-8")
 
-    for token in ("ctx-nudge", "ctx-guidance --band nudge", "ctx_nudge_pct",
+    for token in ("ctx-nudge", "ctx-guidance --band nudge", "ctx.checkpoint_at_pct",
                   "rollout", "transcript_path"):
         assert token not in rendered, token
 
@@ -993,10 +997,10 @@ def test_band_entry_injects_engine_guidance_verbatim(codex_ctx, tmp_path):
     assert hook_output["hookEventName"] == "PreToolUse"
     guidance = hook_output["additionalContext"]
     assert guidance.startswith("ENGINE-GUIDANCE ")
-    # 엔진에 넘긴 밴드·수치가 실측 판정값이다(15328/20000 = 77% → 잔여 23% → nudge2).
+    # 엔진에 넘긴 밴드·수치가 실측 판정값이다(15328/20000 = 77% → nudge2).
     assert "ctx-guidance --band nudge2" in guidance
-    assert "--used-pct 77" in guidance and "--remaining-pct 23" in guidance
-    assert "--stop-pct 20" in guidance
+    assert "--used-pct 77" in guidance and "--precompact-at-pct 80" in guidance
+    assert "--remaining-pct" not in guidance and "--stop-pct" not in guidance
     # 비차단 — 어떤 결정 필드도 내지 않는다(ADR-0081 D1·codex 는 allow/ask 자체를 거부한다).
     assert set(envelope) == {"hookSpecificOutput"}
     assert "permissionDecision" not in hook_output and "decision" not in envelope
@@ -1118,7 +1122,7 @@ def test_guidance_command_shape_is_the_engine_single_source(codex_ctx, tmp_path)
     assert argv[0] == sys.executable
     assert argv[1] == str(root / ".project_manager" / "tools" / "pm_log.py")
     assert argv[2:] == ["ctx-guidance", "--band", "nudge2", "--used-pct", "77",
-                        "--remaining-pct", "23", "--stop-pct", "20"]
+                        "--precompact-at-pct", "80"]
     assert kwargs["cwd"] == str(root)
     assert 0 < kwargs["timeout"] <= codex_ctx.CTX_GUIDANCE_TIMEOUT_SEC
 

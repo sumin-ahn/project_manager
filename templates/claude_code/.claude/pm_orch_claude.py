@@ -309,7 +309,7 @@ class ClaudeCliDriver:
     """
 
     def __init__(self, parse_stream_json, *, ctx_budget: int | None = None,
-                 stop_pct: int | None = None, root: Path | None = None,
+                 precompact_at_pct: int | None = None, root: Path | None = None,
                  mark_stop=None, spawn_result=None, model: str = DEFAULT_MODEL,
                  claude_bin: str = CLAUDE_BIN, timeout: int = TURN_TIMEOUT_SEC,
                  runner=subprocess.run) -> None:
@@ -318,7 +318,7 @@ class ClaudeCliDriver:
         # ctx 회전 판정과 SpawnResult 생성은 엔진 소유 헬퍼/타입 주입(DI). 어느 ctx 신호든
         # 빠지면 가드는 no-op 이라 기존 단위·부트 경로에 영향을 주지 않는다.
         self._ctx_budget = ctx_budget
-        self._stop_pct = stop_pct
+        self._precompact_at_pct = precompact_at_pct
         self._root = Path(root) if root is not None else None
         self._mark_stop = mark_stop
         self._warned_missing_usage = False
@@ -407,7 +407,7 @@ class ClaudeCliDriver:
     def _maybe_mark_ctx(self, session_id: str, used_tokens: int | None) -> None:
         """주입된 usage·예산 신호가 모두 있으면 엔진의 post-turn 회전 헬퍼를 호출한다."""
         ctx_di_complete = all(value is not None for value in (
-            self._ctx_budget, self._stop_pct, self._root, self._mark_stop,
+            self._ctx_budget, self._precompact_at_pct, self._root, self._mark_stop,
         ))
         if used_tokens is None:
             if ctx_di_complete and not self._warned_missing_usage:
@@ -421,7 +421,7 @@ class ClaudeCliDriver:
         # claude usage 는 요청 단위 절대 점유라 codex `_last_total` 누계 차분이 불요하다.
         # 파서와 ctx_guard._usage_input_tokens 모두 입력+캐시 계열을 현재 점유로 정의한다.
         self._mark_stop(
-            self._root, session_id, used_tokens, self._ctx_budget, self._stop_pct,
+            self._root, session_id, used_tokens, self._ctx_budget, self._precompact_at_pct,
         )
 
 
@@ -463,12 +463,12 @@ def main(argv: list[str] | None = None) -> int:
     cwd = args.cwd or os.getcwd()
     conf = ctx_guard.load_local_config(root)
     ctx_budget = ctx_guard.resolve_budget(conf, "claude")
-    stop_pct = ctx_guard.ctx_thresholds(conf)["stop_pct"]
-    engine.validate_relay_budget(ctx_budget, stop_pct)
+    precompact_at_pct = ctx_guard.ctx_thresholds(conf)["precompact_at_pct"]
+    engine.validate_relay_budget(ctx_budget, precompact_at_pct)
     driver = ClaudeCliDriver(
         engine.parse_stream_json,
         ctx_budget=ctx_budget,
-        stop_pct=stop_pct,
+        precompact_at_pct=precompact_at_pct,
         root=root,
         mark_stop=engine.mark_ctx_post_turn_if_over,
         spawn_result=engine.SpawnResult,

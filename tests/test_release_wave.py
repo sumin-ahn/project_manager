@@ -1301,7 +1301,7 @@ def test_release_wave_multiuser_composite_opencode(tmp_path):
 # transcript-slug 탐색·실 transcript 의 100% 판정·래퍼(.sh) exec 발화는 실 하니스 형상에서만
 # 드러나는 갭이다([[verify-real-output-not-just-review]]·설계검증 allow-list 렌즈).
 
-# ctx 예산 극소 설정 — 실 transcript 의 첫 턴이 곧장 stop 밴드(잔여 0)에 들도록. local.conf
+# ctx 예산 극소 설정 — 실 transcript 의 첫 턴이 곧장 stop 밴드(쓴 100%)에 들도록. local.conf
 # 에 이 값을 *append* 해 마지막-줄이 이긴다(last-wins·load_local_config 규칙·PM 47 실측).
 _TINY_CTX_WINDOW = 2000
 # 최종 넛지 훅 stdin 세션 id — marker 파일명(`<sid>.final`)의 단일 진실.
@@ -1309,14 +1309,17 @@ _FINAL_NUDGE_SID = "release-final-nudge-probe"
 
 
 def _append_tiny_ctx_window(dest: Path) -> None:
-    """adopter local.conf 에 극소 ctx_window_tokens 를 append(last-wins) — 즉발 stop 밴드.
+    """adopter local.conf 에 극소 claude 사용 한도를 append(last-wins) — 즉발 stop 밴드.
 
-    import 기본 local.conf 는 이미 ctx_window_tokens=200000 을 담는다 — append 한 극소값이
-    *마지막 줄* 로 이겨(load_local_config 는 KEY 마지막 값 채택) 첫 실 턴이 잔여 0 = stop 밴드.
+    사용 한도는 하네스별 키(`harness.claude.ctx_window_tokens`)다 — 공통 한도 키는 없다(T-0923).
+    append 한 극소값이 *마지막 줄* 로 이겨(load_local_config 는 KEY 마지막 값 채택) 첫 실 턴이
+    쓴 100% = stop 밴드. 이 값은 훅 판정만 옮긴다 — 설정 파일 반영(`pm-config ctx-apply`)은 돌리지
+    않으므로 Claude Code 의 압축 지점은 출하 값 그대로다.
     """
     conf_path = dest / ".project_manager" / "local.conf"
     conf_path.write_text(
-        conf_path.read_text(encoding="utf-8") + f"\nctx.window_tokens={_TINY_CTX_WINDOW}\n",
+        conf_path.read_text(encoding="utf-8")
+        + f"\nharness.claude.ctx_window_tokens={_TINY_CTX_WINDOW}\n",
         encoding="utf-8",
     )
 

@@ -205,17 +205,19 @@ def test_core_documents_append_allowed_decision():
 
 
 def test_config_output_limit_is_per_model_documented():
-    """opencode.jsonc 가 limit 이 *모델별* 설정임을 채택자에게 안내한다 (codex R2 must-fix·PM 부분수용).
+    """opencode.jsonc 가 모델 `limit` 을 누가 쓰는지 채택자에게 안내한다 (T-0923 새 계약).
 
-    임의 모델 자동 limit 주입은 안 하되(모델별 context 실값 불명·과설계), {{OPENCODE_PRO_MODEL}}
-    교체 시 그 모델 엔트리에 limit 을 직접 명시하라는 채택자-facing 안내가 provider 블록 위에 있다.
+    옛 계약(모델을 바꾸면 채택자가 그 엔트리에 limit 을 손으로 적는다)은 사라졌다 — 설정 파일에
+    적힌 모델 전부의 `limit` 을 프레임워크가 local.conf 사용 한도로 쓰고, `output` 은 있으면 두고
+    없으면 32000 을 쓴다. 그 안내가 provider 블록 위에 있다.
     """
     raw = PROJECT_CONFIG.read_text(encoding="utf-8")
     prov_idx = raw.index('"provider"')
     head = raw[:prov_idx]
-    assert "OPENCODE_PRO_MODEL" in head, "채택자 안내가 모델 교체(OPENCODE_PRO_MODEL) 시나리오를 안 짚음"
-    assert "모델별" in head, "limit 이 모델별 설정임을 안내 안 함"
-    assert "32000" in head, "미명시 시 32000 fallback 안내 없음"
+    assert "모델 전부" in head and "local.conf 사용 한도" in head, (
+        "프레임워크가 설정 파일의 모델 전부에 limit 을 쓴다는 안내 없음")
+    assert "32000" in head, "output 부재 시 32000 을 쓴다는 안내 없음"
+    assert "직접 명시하라" not in head, "옛 수기 limit 안내가 남았다"
     # ⚠️ 리터럴 브레이스 토큰 `{{OPENCODE_PRO_MODEL}}` 은 쓰지 않는다 — opencode.jsonc 는 모델 치환
     # 대상이 아니라(agent frontmatter model: 필드만) 잔존 토큰이 pm_import leak 가드를 깨뜨린다.
     assert "{{OPENCODE_PRO_MODEL}}" not in raw, (

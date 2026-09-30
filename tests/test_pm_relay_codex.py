@@ -480,13 +480,13 @@ def test_codex_driver_does_not_spawn_real_subprocess(orch, driver_mod, monkeypat
 # ── ⑥ driver-side ctx 기계 가드 (ADR-0070 D4 ①·usage 예산 초과 → marker 박제) ──
 
 def test_codex_maybe_mark_ctx_writes_marker_over_budget(orch, driver_mod, tmp_path):
-    """실 wire usage 가 예산 정지점(잔여 20%↔사용 80%)에 도달하면 driver 가 post-turn marker 를 박제 →
+    """실 wire usage 가 예산 회전점(쓴 % 80 = 압축 임박 경고 기본값)에 도달하면 driver 가 post-turn marker 를 박제 →
     supervisor 가 stat 가능(엔진 write_post_turn_marker DI). used = input+output."""
     driver = driver_mod.CodexCliDriver(
         orch.parse_codex_json, ctx_budget=1000,
         mark_stop=orch.write_post_turn_marker, root=tmp_path,
     )
-    # used = 720+80 = 800 = 1000*(100-20)/100 → 정지점 도달(경계 포함). cached/reasoning은 가산 안 함.
+    # used = 720+80 = 800 = 1000*80/100 → 회전점 도달(경계 포함). cached/reasoning은 가산 안 함.
     usage = _usage_from_wire(orch, input_tokens=720, cached_input_tokens=600,
                              output_tokens=80, reasoning_output_tokens=20)
     driver._maybe_mark_ctx("tid_over", usage)
@@ -672,13 +672,13 @@ def test_codex_maybe_mark_ctx_excludes_cached_input(orch, driver_mod, tmp_path):
     assert orch.stop_marker_present(tmp_path, "tid_cached") is False
 
 
-def test_codex_maybe_mark_ctx_honors_stop_pct_override(orch, driver_mod, tmp_path):
-    """ctx.precompact_pct override — stop_pct=40 이면 잔여 40%↔사용 60% 에서 정지(기본 20 보다 이르게)."""
+def test_codex_maybe_mark_ctx_honors_precompact_at_override(orch, driver_mod, tmp_path):
+    """ctx.precompact_at_pct override — 60 이면 쓴 60% 에서 회전(기본 80 보다 이르게)."""
     driver = driver_mod.CodexCliDriver(
-        orch.parse_codex_json, ctx_budget=1000, stop_pct=40,
+        orch.parse_codex_json, ctx_budget=1000, precompact_at_pct=60,
         mark_stop=orch.write_post_turn_marker, root=tmp_path,
     )
-    # used = 540+60 = 600 = 1000*(100-40)/100 → 정지(기본 stop_pct=20 이면 800 이라 미달).
+    # used = 540+60 = 600 = 1000*60/100 → 회전(기본 80 이면 800 이라 미달).
     usage = _usage_from_wire(orch, input_tokens=540, output_tokens=60, reasoning_output_tokens=40)
     driver._maybe_mark_ctx("tid_sp", usage)
     assert orch.stop_marker_present(tmp_path, "tid_sp") is True
@@ -704,28 +704,30 @@ def test_codex_maybe_mark_ctx_disabled_without_mark_stop(orch, driver_mod, tmp_p
     assert orch.stop_marker_present(tmp_path, "tid_y") is False
 
 
-def test_codex_resolve_stop_pct(driver_mod):
-    """ctx.precompact_pct 해소 — conf 값 우선·비정상/범위 밖/미설정은 기본 20 (ctx_guard.ctx_thresholds 대칭)."""
-    resolve = driver_mod.resolve_stop_pct
-    assert resolve({"ctx.precompact_pct": "15"}) == 15
-    assert resolve({}) == driver_mod.CTX_STOP_PCT_DEFAULT
-    assert resolve({"ctx.precompact_pct": "abc"}) == driver_mod.CTX_STOP_PCT_DEFAULT
-    assert resolve({"ctx.precompact_pct": "0"}) == driver_mod.CTX_STOP_PCT_DEFAULT     # 범위 밖(≤0) → 기본.
-    assert resolve({"ctx.precompact_pct": "100"}) == driver_mod.CTX_STOP_PCT_DEFAULT   # 범위 밖(≥100) → 기본.
+def test_codex_relay_rotation_threshold_is_the_ctx_thresholds_precompact_at(driver_mod):
+    """회전 임계는 훅 밴드와 같은 해소(`ctx_thresholds`)의 `precompact_at_pct` 다 — 별도 해소 함수 0.
+
+    conf 값 우선·비정상/범위 밖/순서 역전은 두 비율 모두 기본값(70·80)으로 돌아간다."""
+    resolve = lambda conf: driver_mod.ctx_thresholds(conf)["precompact_at_pct"]  # noqa: E731
+    assert resolve({"ctx.precompact_at_pct": "85"}) == 85
+    assert resolve({}) == driver_mod.CTX_PRECOMPACT_AT_PCT_DEFAULT == 80
+    assert resolve({"ctx.precompact_at_pct": "abc"}) == 80
+    assert resolve({"ctx.precompact_at_pct": "0"}) == 80      # 범위 밖(≤0) → 기본.
+    assert resolve({"ctx.precompact_at_pct": "100"}) == 80    # 범위 밖(≥100) → 기본.
+    assert resolve({"ctx.precompact_at_pct": "65"}) == 80     # checkpoint_at(70) 아래 → 역전 → 기본.
+    assert not hasattr(driver_mod, "resolve_stop_pct")
 
 
 def test_codex_resolve_ctx_budget_precedence(driver_mod):
-    """ctx 예산 해소 순서: harness.codex.ctx_window_tokens > ctx_window_tokens > 200000 (ADR-0041)."""
+    """ctx 예산 = harness.codex.ctx_window_tokens(사용 한도) > 200000 — 공통 층은 없다."""
     resolve = driver_mod.resolve_ctx_budget
-    # codex 키가 generic 보다 우선.
-    assert resolve({"harness.codex.ctx_window_tokens": "300000", "ctx.window_tokens": "500000"}) == 300000
     assert resolve({"harness.codex.ctx_window_tokens": "300000"}) == 300000
-    # codex 키 없으면 generic.
-    assert resolve({"ctx.window_tokens": "500000"}) == 500000
-    # 둘 다 없으면 기본.
+    # 옛 공통 키는 예산이 아니다.
+    assert resolve({"ctx.window_tokens": "500000"}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
+    # 없으면 기본.
     assert resolve({}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
-    # 비정수/≤0 은 다음 층 폴백.
-    assert resolve({"harness.codex.ctx_window_tokens": "abc", "ctx.window_tokens": "200000"}) == 200000
+    # 비정수/≤0 은 기본.
+    assert resolve({"harness.codex.ctx_window_tokens": "abc"}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
     assert resolve({"harness.codex.ctx_window_tokens": "0"}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
 
 
@@ -835,8 +837,8 @@ def test_codex_main_forwards_task_budget_and_engine_seams(driver_mod, monkeypatc
         mark_ctx_post_turn_if_over = staticmethod(lambda *args: False)
 
         @staticmethod
-        def validate_relay_budget(budget, stop_pct):
-            captured["validated"] = (budget, stop_pct)
+        def validate_relay_budget(budget, precompact_at_pct):
+            captured["validated"] = (budget, precompact_at_pct)
 
         @staticmethod
         def parse_codex_json(lines):
@@ -845,16 +847,16 @@ def test_codex_main_forwards_task_budget_and_engine_seams(driver_mod, monkeypatc
     # local.conf codex 예산·정지임계 주입 확인(해소 precedence 가 main 배선에 실제로 닿음).
     (tmp_path / ".project_manager").mkdir()
     (tmp_path / ".project_manager" / "local.conf").write_text(
-        "harness.codex.ctx_window_tokens=333000\nctx.precompact_pct=15\n", encoding="utf-8")
+        "harness.codex.ctx_window_tokens=333000\nctx.precompact_at_pct=85\n", encoding="utf-8")
     monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
     rc = driver_mod.main(["--task", "mytask", "--cwd", str(tmp_path)])
     assert rc == 0 and captured["task"] == "mytask"
     assert captured["driver"]._ctx_budget == 333000
-    assert captured["driver"]._stop_pct == 15
+    assert captured["driver"]._precompact_at_pct == 85
     assert captured["driver"]._mark_stop is _fake_write_marker
     assert captured["driver"]._mark_ctx_if_over is _FakeEngine.mark_ctx_post_turn_if_over
     assert captured["driver"]._spawn_result is _FakeEngine.SpawnResult
-    assert captured["validated"] == (333000, 15)
+    assert captured["validated"] == (333000, 85)
 
 
 def test_codex_driver_repo_root_is_the_adapter_parent(driver_mod, tmp_path):

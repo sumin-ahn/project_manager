@@ -99,19 +99,29 @@ def test_adopt_harness_default_matches_pm_import():
 CTX_DOCS = (
     "templates/claude_code/CLAUDE.md",
     "templates/opencode/AGENTS.md",
+    "templates/codex/AGENTS.md",
 )
+# 사용 한도 규칙 문장(T-0923) — 레지스트리 패턴 설명과 같은 문장이다.
+_WINDOW_RULE = "사용 한도는 그 하네스에서 쓰는 모델 중 가장 작은 창 이하로 두십시오."
 
 
 def test_ctx_budget_keys_documented_in_full_entry_docs():
-    """하네스별 ctx 예산 키가 출하 진입문서에 있다 — 표기는 `harness.<name>.<속성>` 하나다."""
+    """하네스별 사용 한도 키와 세 비율이 출하 진입문서에 있다 — 표기는 `harness.<name>.<속성>` 하나다."""
     for rel in CTX_DOCS:
         text = _read(rel)
         assert "harness.<name>.ctx_window_tokens" in text, (
-            f"{rel}: 하네스별 ctx 예산 키(ADR-0041) 문서화 절 누락"
+            f"{rel}: 하네스별 사용 한도 키(ADR-0041) 문서화 절 누락"
         )
         # suffix 표기(`ctx_window_tokens_<harness>`)는 폐지됐다 — 두 문법이 공존하면 채택자가
         # 읽히지 않는 키를 설정하고 조용히 기본값으로 돈다.
         assert "ctx_window_tokens_" not in text, f"{rel}: 폐지된 suffix 표기 잔존"
+        # 공통 한도·남은 % 키는 사라졌다 — 문서가 옛 이름을 가르치면 그 conf 는 소비 지점에서 멈춘다.
+        for retired in ("ctx.window_tokens", "ctx.checkpoint_pct", "ctx.precompact_pct"):
+            assert retired not in text, f"{rel}: 폐지된 키 {retired} 잔존"
+        for key in ("ctx.checkpoint_at_pct", "ctx.precompact_at_pct", "ctx.compact_at_pct"):
+            assert key in text, f"{rel}: 비율 키 {key} 문서화 누락"
+        assert _WINDOW_RULE in text, f"{rel}: 사용 한도 규칙 문장 누락"
+    assert _WINDOW_RULE in _read("README.md"), "README.md: 사용 한도 규칙 문장 누락"
 
 
 # ── ⑤ opencode README --opencode-model 예시 = pm_import canonical(옛 예시 잔존 금지) ──

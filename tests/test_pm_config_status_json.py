@@ -768,7 +768,10 @@ def test_with_adapters_diffs_against_baseline_rev_and_latest(tmp_path):
                                             "recorded_at": "2026-09-07"}},
     })
     settings = home / ".claude/settings.json"
-    _write(settings, settings.read_text(encoding="utf-8").replace(
+    # 설치 기준은 `template_rev`(HEAD) 시점의 template 이다 — 그 blob 을 깐 뒤 한 줄만 고친다.
+    #   작업 트리 template 을 깔면 커밋 전 template 변경까지 편집으로 세어진다.
+    installed = _git(REPO, "show", f"{head}:templates/claude_code/.claude/settings.json").stdout
+    _write(settings, installed.replace(
         '"autoCompactEnabled": true', '"autoCompactEnabled": false'))
 
     row = next(item for item in

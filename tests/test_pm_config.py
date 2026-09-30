@@ -575,3 +575,99 @@ def test_sync_adapter_config_parser_check_is_exclusive(pc):
     with pytest.raises(SystemExit):
         parser.parse_args(
             ["sync-adapter-config", "--check", "--accept", ".codex/hooks.json"])
+
+
+# ── 수용 뒤 사용 한도 재반영 (T-0923 AT-012) ─────────────────────────────────
+
+
+def test_accept_reapplies_harness_ctx(pc, pim, tmp_path, capsys):
+    """`sync-adapter-config --accept .codex/config.toml` 은 템플릿으로 되돌린 뒤 local.conf 의 사용
+    한도를 다시 쓴다 — 템플릿 값(180000)에 멈추면 압축 지점이 conf 와 갈린다."""
+    import tomllib
+
+    dest = tmp_path / "dest"
+    (dest / ".codex").mkdir(parents=True)
+    (dest / ".agents").mkdir()
+    (dest / ".project_manager").mkdir()
+    (dest / "AGENTS.md").write_text("# adopter\n", encoding="utf-8")
+    templates = REPO / "templates" / "codex" / ".codex"
+    (dest / ".codex" / "hooks.json").write_bytes((templates / "hooks.json").read_bytes())
+    # 앞 세대 채택자 파일(한도 키 하나 · 900000) — 수용이 템플릿으로 바꾼다.
+    shipped = (templates / "config.toml").read_text(encoding="utf-8")
+    managed = "model_context_window = 200000\nmodel_auto_compact_token_limit = 180000\n"
+    (dest / ".codex" / "config.toml").write_text(
+        shipped.replace(managed, "model_auto_compact_token_limit = 900000\n"), encoding="utf-8")
+    (dest / ".project_manager" / "install.json").write_text(
+        '{"schema": 1, "harnesses": ["codex"]}\n', encoding="utf-8")
+    (dest / ".project_manager" / "local.conf").write_text(
+        "ctx.compact_at_pct=85\n", encoding="utf-8")
+    args = argparse.Namespace(list=False, check=False, accept=".codex/config.toml",
+                              accept_all=False, source=str(REPO))
+
+    rc = pc.cmd_sync_adapter_config(args, pm_import=pim, dest_root=dest)
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    document = tomllib.loads((dest / ".codex" / "config.toml").read_text(encoding="utf-8"))
+    assert document["model_auto_compact_token_limit"] == 170000, "템플릿 값에 멈췄다"
+    assert document["model_context_window"] == 200000
+    assert ".codex/config.toml model_auto_compact_token_limit 180000 → 170000" in captured.out
+    # 수용이 원장에 남긴 무편집 증언은 반영 뒤에도 유지된다(sha256 만 새 내용).
+    judged = {item.relpath: item.status
+              for item in pim.judge_adapter_configs(dest, REPO, harnesses=["codex"])}
+    assert judged[".codex/config.toml"] == "unedited"
+
+
+def test_ctx_apply_checks_before_writing_and_reports_json(pc, pim, tmp_path, capsys):
+    """`ctx-apply --set` — 거부된 값은 local.conf·설정 파일 어디에도 쓰이지 않는다(rc 1).
+
+    통과하면 conf 에 쓰고 반영한 뒤 JSON 한 줄 `{"changed", "applied"}` 을 낸다. `키=` 는 줄 삭제다."""
+    dest = tmp_path / "dest"
+    (dest / ".claude").mkdir(parents=True)
+    (dest / ".project_manager").mkdir()
+    settings = dest / ".claude" / "settings.json"
+    settings.write_bytes((REPO / "templates" / "claude_code" / ".claude" / "settings.json").read_bytes())
+    conf = dest / ".project_manager" / "local.conf"
+    conf.write_text("ctx.compact_at_pct=85\ntest.cmd=pytest -q\n", encoding="utf-8")
+    parser = pc.build_parser()
+    conf_before, settings_before = conf.read_bytes(), settings.read_bytes()
+
+    refused = pc.cmd_ctx_apply(
+        parser.parse_args(["ctx-apply", "--json", "--set", "ctx.precompact_at_pct=85"]),
+        pm_import=pim, dest_root=dest)
+    captured = capsys.readouterr()
+    assert refused == 1
+    assert "ctx.precompact_at_pct=85" in captured.err and captured.out == ""
+    assert conf.read_bytes() == conf_before and settings.read_bytes() == settings_before
+
+    # `--set` 없이 — 현재 conf(압축 85%)로 검사·반영만 한다(conf 는 바꾸지 않는다).
+    current = pc.cmd_ctx_apply(parser.parse_args(["ctx-apply", "--json"]), pm_import=pim,
+                               dest_root=dest)
+    assert current == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "changed": False,
+        "applied": [".claude/settings.json autoCompactWindow 180000 → 170000"]}
+    assert conf.read_bytes() == conf_before
+
+    applied = pc.cmd_ctx_apply(
+        parser.parse_args(["ctx-apply", "--json", "--set", "ctx.compact_at_pct=",
+                           "--set", "identity.user=me@example.invalid"]),
+        pm_import=pim, dest_root=dest)
+    captured = capsys.readouterr()
+    assert applied == 0, captured.err
+    assert json.loads(captured.out) == {
+        "changed": True,
+        "applied": [".claude/settings.json autoCompactWindow 170000 → 180000"]}
+    text = conf.read_text(encoding="utf-8")
+    assert "ctx.compact_at_pct" not in text and "identity.user=me@example.invalid" in text
+
+    # 바뀐 값이 없으면 changed=false · applied 빈 목록(멱등).
+    again = pc.cmd_ctx_apply(parser.parse_args(["ctx-apply", "--json"]), pm_import=pim,
+                             dest_root=dest)
+    assert again == 0
+    assert json.loads(capsys.readouterr().out) == {"changed": False, "applied": []}
+
+    # `키=값` 꼴이 아니면 인자 오류(rc 2)다.
+    with pytest.raises(SystemExit) as caught:
+        parser.parse_args(["ctx-apply", "--set", "no-equals"])
+    assert caught.value.code == 2

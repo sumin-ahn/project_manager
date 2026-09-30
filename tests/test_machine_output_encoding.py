@@ -212,7 +212,7 @@ def test_pm_log_ctx_guidance_json_payload_is_utf8(capture_console, monkeypatch):
     stream = capture_console()
 
     args = SimpleNamespace(
-        band="warn", used_pct=80.0, remaining_pct=20.0, stop_pct=95.0, json=True
+        band="warn", used_pct=80.0, precompact_at_pct=95.0, json=True
     )
     assert pm_log.cmd_ctx_guidance(args) == 0
 
@@ -451,7 +451,7 @@ def test_human_text_path_of_the_same_command_is_not_utf8(capture_console, monkey
     stream = capture_console()
 
     args = SimpleNamespace(
-        band="warn", used_pct=80.0, remaining_pct=20.0, stop_pct=95.0, json=False
+        band="warn", used_pct=80.0, precompact_at_pct=95.0, json=False
     )
     assert pm_log.cmd_ctx_guidance(args) == 0
 

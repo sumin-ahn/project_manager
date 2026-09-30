@@ -253,6 +253,28 @@ def _forbid_real_tempdir_project_outputs(tmp_path_factory):
     _assert_repo_board_outputs_unchanged(board_before, board_after)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_opencode_global_config(tmp_path_factory):
+    """`XDG_CONFIG_HOME` 을 pytest 임시 루트 아래 빈 폴더로 둔다 — 세션 전체·자식 프로세스 포함.
+
+    하네스 사용 한도 반영(`pm_import.apply_harness_ctx`)은 opencode 전역 설정 디렉터리
+    (`$XDG_CONFIG_HOME/opencode`, 없으면 `~/.config/opencode`)의 모델까지 대상으로 삼는다. 이 격리가
+    없으면 opencode 를 설치하는 테스트가 개발 머신의 전역 모델을 프로젝트 파일에 더해 머신마다
+    결과가 달라진다. 전역 모델이 필요한 테스트는 in-process 면 `opencode_config_dir` 로, 자식
+    프로세스면 자기 env 의 `XDG_CONFIG_HOME` 으로 폴더를 준다(TMPDIR 격리와 같은 방식).
+    """
+    isolated = tmp_path_factory.mktemp("xdg-config-home")
+    previous = os.environ.get("XDG_CONFIG_HOME")
+    os.environ["XDG_CONFIG_HOME"] = str(isolated)
+    try:
+        yield isolated
+    finally:
+        if previous is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = previous
+
+
 _LIVE_RENDER_OUTPUTS = (
     Path(".project_manager/wiki/board.md"),
     Path(".project_manager/wiki/log/dashboard.md"),

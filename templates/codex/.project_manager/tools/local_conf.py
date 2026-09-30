@@ -218,6 +218,13 @@ def _read_text_shared(path: Path, *, encoding: str) -> str:
     return path.read_text(encoding=encoding)
 
 
+# 이름만이 아니라 **값의 뜻**도 바뀐 이동 두 가지 — `rename_updates` 가 이 두 표로 값을 만든다.
+#   · 남은 % → 쓴 % : 대상 새 키에 `100 − 옛 값` 을 쓴다.
+#   · 공통 한도 → 하네스별 사용 한도 : 표시값 대신 등록 하네스마다 `harness.<name>.ctx_window_tokens` 에 쓴다.
+_USED_PCT_FROM_REMAINING = frozenset({"ctx.checkpoint_at_pct", "ctx.precompact_at_pct"})
+_PER_HARNESS_WINDOW_DISPLAY = "harness.<name>.ctx_window_tokens"
+
+
 # ── 전수 매핑표 (구표기 → 신표기) ────────────────────────────────────────
 # **이 표가 이주 안내와 fail-loud 판정의 단일 입력이다.** 값이 `None` 이면 대체 키 없이 제거된
 # 키이고, 그 밖은 "이 키를 저 이름으로 옮겨라" 다. 테스트가 이 표를 양방향으로 소비한다 —
@@ -257,15 +264,17 @@ LEGACY_KEY_MAP: dict[str, str | None] = {
     "reviewer_cmd": None,
     # 하네스 축
     "opencode_pro_model": "harness.opencode.pro_model",
-    # ctx 임계
-    "ctx_nudge_pct": "ctx.checkpoint_pct",
-    "ctx_stop_pct": "ctx.precompact_pct",
-    "ctx_window_tokens": "ctx.window_tokens",
-    # 이름이 하는 일과 갈렸던 두 축(v1.8.0) — `stop` 은 아무것도 멈추지 않았고 `nudge` 는
-    # 무엇을 권하는지 말하지 않았다. 잔여 컨텍스트가 임계 아래일 때 하는 일 그대로 적는다:
-    # 중간 기록 권고 / 자동 압축 임박 최종 안내. 갱신이 옮긴다(`pm_update` 이관 단계).
-    "ctx.nudge_pct": "ctx.checkpoint_pct",
-    "ctx.stop_pct": "ctx.precompact_pct",
+    # ctx 임계 — 옛 비율 여섯은 전부 **남은** % 였고 새 두 키는 사용 한도 대비 **쓴** % 다. 갱신이
+    # 옮길 때 값도 `100 − 옛 값` 으로 바꾼다(`_USED_PCT_FROM_REMAINING` · `rename_updates`).
+    # 옛 공통 한도 둘은 하네스별 사용 한도로 갈라졌다 — 표시값의 `<name>` 자리는 등록 하네스 전부다.
+    "ctx_nudge_pct": "ctx.checkpoint_at_pct",
+    "ctx_stop_pct": "ctx.precompact_at_pct",
+    "ctx_window_tokens": _PER_HARNESS_WINDOW_DISPLAY,
+    "ctx.nudge_pct": "ctx.checkpoint_at_pct",
+    "ctx.stop_pct": "ctx.precompact_at_pct",
+    "ctx.checkpoint_pct": "ctx.checkpoint_at_pct",
+    "ctx.precompact_pct": "ctx.precompact_at_pct",
+    "ctx.window_tokens": _PER_HARNESS_WINDOW_DISPLAY,
     # 제거 — 회귀 수집 하한 폐지(대체 키 없음: 수집수는 직전 기록 대비 증감으로 표시만 한다)
     "regression_min_collected": None,
     # upstream 좌표
@@ -296,6 +305,7 @@ NON_BLOCKING_LEGACY_KEYS: frozenset[str] = frozenset({"session", "prefix"})
 # 하네스명이 f-string 으로 붙는 **열린 집합**이었고, 신표기 `harness.<name>.ctx_window_tokens`
 # 로 옮기면 `harness.<name>.*` 패턴에 흡수돼 닫힌 집합이 된다.
 LEGACY_SUFFIX_PREFIX = "ctx_window_tokens_"
+
 
 
 # ── 어댑터 파서용 데이터 내보내기 (엔진 미import 파서 4개 + 셸 훅) ────────
@@ -554,18 +564,18 @@ KEY_REGISTRY: dict[str, KeySpec] = {
         "원본에서 마지막으로 본 커밋입니다. 업데이트가 적습니다.",
         default=None, unset="아직 원본을 확인한 적이 없습니다.", required=False, group="upstream",
         readonly=True),
-    "ctx.checkpoint_pct": KeySpec(
+    "ctx.checkpoint_at_pct": KeySpec(
         "중간 기록 권고 (%)",
-        "남은 컨텍스트가 이 비율 이하가 되면 중간 기록을 권합니다. 작업은 계속합니다.",
-        default="30", required=False, group="ctx"),
-    "ctx.precompact_pct": KeySpec(
+        "도구별 사용 한도 대비 쓴 컨텍스트가 이 비율 이상이 되면 중간 기록을 권합니다. 작업은 계속합니다.",
+        default="70", required=False, group="ctx"),
+    "ctx.precompact_at_pct": KeySpec(
         "압축 임박 경고 (%)",
-        "남은 컨텍스트가 이 비율 이하가 되면 자동 압축이 곧 일어난다고 보고 마지막으로 중간 기록을 권합니다. 작업을 멈추거나 세션을 바꾸지는 않습니다.",
-        default="20", required=False, group="ctx"),
-    "ctx.window_tokens": KeySpec(
-        "컨텍스트 크기 (토큰)",
-        "위 두 비율의 분모이며, 도구별 값이 없을 때 쓰는 기준입니다. 실제보다 작게 두면 더 일찍 넘깁니다.",
-        default="200000", required=False, group="ctx"),
+        "쓴 컨텍스트가 이 비율 이상이 되면 자동 압축이 곧 일어난다고 보고 마지막으로 중간 기록을 권합니다. 작업을 멈추거나 세션을 바꾸지는 않습니다.",
+        default="80", required=False, group="ctx"),
+    "ctx.compact_at_pct": KeySpec(
+        "압축 (%)",
+        "쓴 컨텍스트가 이 비율에 닿으면 자동 압축하도록 각 도구의 설정 파일에 압축 지점을 씁니다. Codex·opencode 는 그 지점에서, Claude Code 는 그보다 조금 앞에서 압축합니다.",
+        default="90", required=False, group="ctx"),
     "delegate.enabled": KeySpec(
         "위임 사용",
         "끄면 다른 도구에 작업을 맡기지 않습니다.",
@@ -639,7 +649,8 @@ KEY_REGISTRY: dict[str, KeySpec] = {
 PATTERN_REGISTRY: dict[str, KeySpec] = {
     HARNESS_PATTERN: KeySpec(
         "도구마다 따로 정하는 값",
-        "실행 시간·대기 시간·컨텍스트 크기와 안내 문서에 적을 모델 이름입니다.",
+        "실행 시간·대기 시간·사용 한도(압축 지점과 경고의 기준)와 안내 문서에 적을 모델 이름입니다. "
+        "사용 한도는 그 하네스에서 쓰는 모델 중 가장 작은 창 이하로 두십시오.",
         default=None, unset=_TOOL_DEFAULT_TIME, required=False, group="harness"),
     DELEGATE_ROLE_PATTERN: KeySpec(
         "역할별 담당 도구",
@@ -664,13 +675,15 @@ PATTERN_REGISTRY: dict[str, KeySpec] = {
 KNOWN_KEYS: tuple[str, ...] = tuple(KEY_REGISTRY)
 
 
-# `harness.<name>.*` 의 미설정 동작은 접미마다 다르다 — 시간 두 축은 하네스 프로필이 받고,
-# 컨텍스트 크기는 공용 기준값(`ctx.window_tokens`)으로 흘러가며, 모델 이름은 안내 문서 렌더가
-# 자리를 TODO 로 남긴다(`pm_render.neutralize_model_todo`).
+# `harness.<name>.*` 의 기본값은 접미마다 다르다 — 사용 한도만 한 값(모든 하네스 공통 200000)을
+# 갖고, 나머지는 기본값이 없어 안 채웠을 때 일어나는 일을 적는다: 시간 두 축은 하네스 프로필이
+# 받고, 모델 이름은 안내 문서 렌더가 자리를 TODO 로 남긴다(`pm_render.neutralize_model_todo`).
+_HARNESS_MEMBER_DEFAULTS: dict[str, str] = {
+    "ctx_window_tokens": "200000",
+}
 _HARNESS_MEMBER_UNSET: dict[str, str] = {
     "idle_timeout": _TOOL_DEFAULT_TIME,
     "wall_timeout": _TOOL_DEFAULT_TIME,
-    "ctx_window_tokens": "위 공통 컨텍스트 크기를 씁니다.",
     "pro_model": "안내 문서의 모델 자리를 TODO 로 남깁니다.",
 }
 
@@ -709,8 +722,8 @@ def key_spec(key: str) -> KeySpec | None:
     if pattern == HARNESS_PATTERN:
         suffix = key.rsplit(".", 1)[1]
         return KeySpec(spec.label, spec.description,
-                       default=spec.default, required=spec.required, group=spec.group,
-                       unset=_HARNESS_MEMBER_UNSET[suffix],
+                       default=_HARNESS_MEMBER_DEFAULTS.get(suffix), required=spec.required,
+                       group=spec.group, unset=_HARNESS_MEMBER_UNSET.get(suffix),
                        choices="model" if suffix == "pro_model" else None)
     return spec
 
@@ -944,7 +957,7 @@ _TIER_LABELS = {
 _HARNESS_SUFFIX_LABELS = {
     "idle_timeout": "응답 없을 때 대기 (초)",
     "wall_timeout": "최대 실행 시간 (초)",
-    "ctx_window_tokens": "컨텍스트 크기 (토큰)",
+    "ctx_window_tokens": "사용 한도 (토큰)",
     "pro_model": "안내 문서에 적을 모델",
 }
 
@@ -1182,29 +1195,73 @@ def legacy_error_message(legacy: dict[str, str | None], path: Path | None = None
 
 
 def rename_updates(result: ConfResult) -> dict[str, str | None]:
-    """이름만 바뀐 구표기 키를 신표기로 옮기는 **conf writer 입력** (값은 그대로 간다).
+    """이름이 바뀐 구표기 키를 신표기로 옮기는 **conf writer 입력**.
 
     이름을 바꾼 것은 갱신이지 채택자가 아니다 — 바꾼 쪽이 옮긴다. 갱신은 엔진 파일을
     배달하면서 이 계획도 함께 실행하므로(`pm_update` 이관 단계), 채택자가 손으로 두 줄을
     고칠 때까지 그 값을 쓰는 명령이 멈춰 서 있지 않는다.
 
-    담지 **않는** 것 둘:
+    값은 대개 그대로 가고, 뜻이 바뀐 두 이동만 값을 만든다:
+      - 남은 % → 쓴 %(`_USED_PCT_FROM_REMAINING`) — 새 키에 `100 − 옛 값` 을 쓴다. 옛 값이
+        정수가 아니면 그 키 이름을 담은 `ValueError` 로 멈춘다(지어낸 값으로 옮기지 않는다).
+      - 공통 한도 → 하네스별 사용 한도(`_PER_HARNESS_WINDOW_DISPLAY`) — 등록 하네스 전부의
+        `harness.<name>.ctx_window_tokens` 중 값이 없는 키에 같은 값을 쓴다. 같은 계획 안에서는
+        하네스 전용 구키(`ctx_window_tokens_<name>`)가 공통 키를 이긴다. 등록 하네스 목록을
+        못 읽으면 `ValueError` 로 멈춘다(옛 줄만 지우면 값이 사라진다).
+
+    담지 **않는** 것 셋:
       - 대체 키가 없는 폐지 키(`None`) — 값이 갈 자리가 없어 옮기는 것이 곧 버리는 것이다.
         무엇을 버릴지는 사람이 정한다(교체 안내가 계속 지목한다).
       - 신표기에 이미 값이 있는 키 — 사람이 새 이름으로 명시한 값이 이긴다. 그때는 옛 줄만
         지운다(옛 값이 새 값을 덮어쓰지 않게).
+      - 옛 키가 없는 새 키 — 옮길 값이 없으면 새 줄도 만들지 않는다(기본값은 레지스트리가 준다).
+
+    여러 옛 이름이 같은 새 키로 가면 표(`LEGACY_KEY_MAP`)에서 뒤에 선언된 이름(더 최근 이름)이
+    이긴다 — conf 줄 순서에 결과가 달려 있지 않게 한다. 뜻이 바뀐 두 이동에서 옛 값이 비어
+    있으면(설정 해제) 옛 줄만 지운다.
 
     반환은 `{키: 값 또는 None}` 이고 `None` 은 그 줄을 지우라는 뜻이다. 옮길 것이 없으면 빈
     dict — 호출부가 그것을 "무대상" 으로 읽어 파일을 건드리지 않는다(멱등).
     """
+    declared = {key: index for index, key in enumerate(LEGACY_KEY_MAP)}
     updates: dict[str, str | None] = {}
-    for old, new in result.legacy.items():
+    shared_window: str | None = None
+    for old in sorted(result.legacy, key=lambda key: declared.get(key, len(declared))):
+        new = result.legacy[old]
         if new is None:
             continue
         updates[old] = None
+        value = result.values[old]
+        if new == _PER_HARNESS_WINDOW_DISPLAY:
+            shared_window = value.strip() or shared_window
+            continue
+        if new in _USED_PCT_FROM_REMAINING:
+            if not value.strip():
+                continue
+            value = _used_pct_from_remaining(old, value)
         if new not in result.values:
-            updates[new] = result.values[old]
+            updates[new] = value
+    if shared_window is not None:
+        harnesses = _harness_names()
+        if not harnesses:
+            raise ValueError(
+                "공통 사용 한도(`ctx.window_tokens`)를 하네스별 키로 옮길 등록 하네스 목록을 "
+                "읽지 못했습니다 — pm_relay.py 사본을 확인하고 다시 실행하십시오.")
+        for harness in harnesses:
+            key = f"harness.{harness}.ctx_window_tokens"
+            if key not in result.values and key not in updates:
+                updates[key] = shared_window
     return updates
+
+
+def _used_pct_from_remaining(key: str, value: str) -> str:
+    """옛 남은 % 값 → 새 쓴 % 값(`100 − 값`). 정수가 아니면 그 키 이름으로 멈춘다."""
+    text = value.strip()
+    if not re.fullmatch(r"-?[0-9]+", text):
+        raise ValueError(
+            f"local.conf `{key}={value}` 는 정수가 아니라 쓴 % 로 옮길 수 없습니다 — "
+            "값을 정수로 고치거나 줄을 지운 뒤 다시 실행하십시오.")
+    return str(100 - int(text))
 
 
 def migration_lines(legacy: dict[str, str | None]) -> list[str]:
@@ -1257,7 +1314,8 @@ def migration_notice(result: ConfResult) -> list[str]:
     retired = {old: new for old, new in result.legacy.items() if new is None}
     if renamed:
         lines.append(
-            f"local.conf 키 이름이 바뀌었습니다{where} — 갱신이 값을 그대로 옮깁니다.")
+            f"local.conf 키 이름이 바뀌었습니다{where} — 갱신이 새 이름으로 옮깁니다(남은 % 는 "
+            "쓴 % 로, 공통 사용 한도는 하네스마다 같은 값으로).")
         lines.extend(migration_lines(renamed))
     if retired:
         lines.append(

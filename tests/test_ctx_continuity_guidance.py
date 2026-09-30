@@ -56,7 +56,7 @@ def test_policy_constant_states_auto_continuation_and_user_only_handoff(pm_log):
 @pytest.mark.parametrize("band", ("nudge", "nudge2", "final", "precompact"))
 def test_every_ctx_band_includes_shared_policy_and_no_winding_down_phrase(pm_log, band):
     text = pm_log.build_ctx_guard_guidance(
-        band, used_pct=82, remaining_pct=18, stop_pct=20,
+        band, used_pct=82, precompact_at_pct=80,
     )
     assert pm_log.CTX_GUARD_CONTINUITY_GUIDANCE in text
     assert not any(pattern.search(text) for pattern in FORBIDDEN), text
@@ -66,12 +66,12 @@ def test_every_ctx_band_includes_shared_policy_and_no_winding_down_phrase(pm_log
 def test_required_expression_matrix_matches_direct_renderer_and_raw_cli(pm_log, band):
     """4밴드×필수 3종을 직접 렌더와 실제 raw CLI 출력 양쪽에서 고정한다."""
     direct = pm_log.build_ctx_guard_guidance(
-        band, used_pct=82, remaining_pct=18, stop_pct=20,
+        band, used_pct=82, precompact_at_pct=80,
     )
     result = subprocess.run(
         [
             sys.executable, str(PM_LOG), "ctx-guidance", "--band", band,
-            "--used-pct", "82", "--remaining-pct", "18", "--stop-pct", "20",
+            "--used-pct", "82", "--precompact-at-pct", "80",
         ],
         cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
         env=utf8_child_env(), check=True,
@@ -113,7 +113,7 @@ def test_shipping_harnesses_reference_central_command_without_policy_copy(pm_log
 def test_forbidden_winding_down_phrases_are_absent_from_rendered_outputs(pm_log, band):
     """검사 상수 선언을 오탐하지 않고 사용자가 받는 최종 출력만 판정한다."""
     output = pm_log.build_ctx_guard_guidance(
-        band, used_pct=82, remaining_pct=18, stop_pct=20,
+        band, used_pct=82, precompact_at_pct=80,
     )
     assert not any(pattern.search(output) for pattern in FORBIDDEN), output
     assert all(
@@ -167,13 +167,13 @@ def test_forbidden_phrases_absent_from_compaction_snapshot(pm_log, tmp_path):
 def test_claude_hook_consumes_pm_log_guidance_verbatim(pm_log):
     hook = _load(CLAUDE_TEMPLATE, "t0648_ctx_stop_hook")
     expected = pm_log.build_ctx_guard_guidance(
-        "final", used_pct=82, remaining_pct=18, stop_pct=20,
+        "final", used_pct=82, precompact_at_pct=80,
     )
     actual = hook._build_ctx_guidance(
         ROOT,
         band="final",
         used_pct=82,
-        thresholds={"nudge_pct": 30, "stop_pct": 20},
+        thresholds={"checkpoint_at_pct": 70, "precompact_at_pct": 80},
     )
     assert actual == expected
 
@@ -185,15 +185,15 @@ def test_opencode_consumes_pm_log_guidance_verbatim(pm_log):
     script = (
         "const m=require('./ctx-guard-core.cjs');"
         "process.stdout.write(m.buildEngineCtxGuidance("
-        f"{json.dumps(str(ROOT))},'nudge',{{usedPct:82,remainingPct:18}},"
-        "{nudge_pct:30,stop_pct:20}));"
+        f"{json.dumps(str(ROOT))},'nudge',{{usedPct:82}},"
+        "{checkpoint_at_pct:70,precompact_at_pct:80}));"
     )
     result = subprocess.run(
         [node, "-e", script], cwd=OPENCODE.parent,
         capture_output=True, text=True, encoding="utf-8", check=True,
     )
     expected = pm_log.build_ctx_guard_guidance(
-        "nudge", used_pct=82, remaining_pct=18, stop_pct=20,
+        "nudge", used_pct=82, precompact_at_pct=80,
     )
     assert result.stdout == expected
 
@@ -213,3 +213,31 @@ def test_codex_json_payload_is_engine_owned_shared_value(pm_log):
 
 def test_claude_root_and_template_remain_byte_identical():
     assert CLAUDE_ROOT.read_bytes() == CLAUDE_TEMPLATE.read_bytes()
+
+
+def test_ctx_guidance_takes_used_and_precompact_at(pm_log):
+    """T-0923 AT-019 — 안내는 쓴 % 와 압축 임박 경고 비율만 받는다(남은 % 인자·표기 없음)."""
+    result = subprocess.run(
+        [sys.executable, str(PM_LOG), "ctx-guidance", "--band", "final",
+         "--used-pct", "82", "--precompact-at-pct", "80"],
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+        env=utf8_child_env(),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "컨텍스트 사용 82% (압축 임박 경고 80% 이상)" in result.stdout
+    assert "잔여" not in result.stdout
+    assert result.stdout.rstrip("\n") == pm_log.build_ctx_guard_guidance(
+        "final", used_pct=82, precompact_at_pct=80)
+    # nudge 밴드는 비율을 받아도 싣지 않는다(최종 밴드만의 표기).
+    assert "압축 임박 경고" not in pm_log.build_ctx_guard_guidance(
+        "nudge", used_pct=72, precompact_at_pct=80)
+
+    for retired in (["--remaining-pct", "18"], ["--stop-pct", "20"]):
+        refused = subprocess.run(
+            [sys.executable, str(PM_LOG), "ctx-guidance", "--band", "final",
+             "--used-pct", "82", *retired],
+            cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+            env=utf8_child_env(),
+        )
+        assert refused.returncode == 2, (retired, refused.stdout)
+        assert retired[0] in refused.stderr

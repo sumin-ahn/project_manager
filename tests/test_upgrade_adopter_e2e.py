@@ -740,7 +740,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   줄어든 것은 그 실행이 부르지 않던 코드뿐이다. 현재화한 것은 기대 SHA 하나뿐이다.
 #   같은 티켓의 수정 라운드에서 한 번 더 이동했다 — `plan()` docstring 의 낱말 하나("모듈 밖
 #   호출부")뿐이고 실행 코드·배달 경계는 무편집이다.
-_T0585_PM_UPDATE_SHA256 = "94b5e95fda227e9f58ce6075b68e2dcc5e8fbca28c27bcdd13ad8325a4b5ac2e"
+_T0585_PM_UPDATE_SHA256 = "c46c67d23b3a156a0c35d97cb84e858922136c5a1f5e834603ed1289a5592c74"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -818,6 +818,29 @@ _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, sourc
 
 
 '''
+
+
+# T-0923 의 하네스 사용 한도 반영 단계(`apply_harness_ctx_limits`)는 두 동결 세대 updater 에 없던
+# 개념이다 — 세 종료 경로의 호출을 역적용해 합성본이 그 세대의 동작만 갖게 한다(함수 정의는
+# 호출되지 않으므로 남아도 동작 축이 아니다 · 다른 역델타와 같은 규칙).
+_HARNESS_CTX_APPLY_REVERSALS = (
+    ("            # 하네스 사용 한도·압축 비율 반영 — 채널이 템플릿 갱신·원장 기록을 끝낸 파일 위에 쓴다.\n"
+     "            if not apply_harness_ctx_limits(effective_dest, write=not args.dry_run):\n"
+     "                return 1\n", ""),
+    ("            if not apply_harness_ctx_limits(effective_dest, write=False):\n"
+     "                return 1\n", ""),
+    ("        if not apply_harness_ctx_limits(effective_dest, write=True):\n"
+     "            return 1\n", ""),
+)
+
+
+def _reverse_harness_ctx_apply(source: str) -> str:
+    """T-0923 반영 단계 역적용 — marker 는 각각 정확히 한 번 해소돼야 한다."""
+    for current, legacy in _HARNESS_CTX_APPLY_REVERSALS:
+        assert source.count(current) == 1, current
+        source = source.replace(current, legacy, 1)
+    assert "not apply_harness_ctx_limits(" not in source      # 호출 지점 0(정의는 동작 축이 아니다)
+    return source
 
 
 def _slice_replace(source: str, start_marker: str, end_marker: str, replacement: str) -> str:
@@ -965,6 +988,13 @@ def _t0585_pm_update_source() -> str:
     재핀(2026-09-18, 3차) — 같은 감사로 `resolve_hook_set_generation` 의 `required` 인자를 지웠다
     (호출부 1곳이 넘긴 적이 없고, 값을 넘기던 안쪽 `_resolve_hook_set_generation_and_sibling` 의
     기본값이 바깥과 같은 False 라 동작이 보존된다). 역적용 marker·배달 경계 모두 무편집이다.
+    재핀(T-0923) — 하네스 사용 한도 반영 단계가 들어왔다. 새로 들어온 것은 jsonc 경로 편집
+    헬퍼(`_jsonc_set_value` 와 그 부품)·반영 채널(`apply_harness_ctx_limits` 와 그 rev 혼합 흡수 사유
+    등재)·세 종료 경로의 그 호출과
+    `migrate_renamed_conf_keys` 출력 문구다. 반영 호출 세 곳은 T-0585 세대에 없던 개념이라
+    `_reverse_harness_ctx_apply` 로 역적용하고 호출 지점 부재를 anachronism 목록으로 단언한다. 나머지는
+    역델타 anchor 밖이라 그대로 유일 해소되고, 배달 경계와 배달 파일 집합은 불변이다 — 현재화한 것은
+    기대 SHA 하나뿐이다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -1061,11 +1091,13 @@ def _t0585_pm_update_source() -> str:
         "    msg = f\"✓ {len(changes)} 파일 동기화\"",
         "    apply(changes)  # ← 실패 시 예외 전파 → 아래 전환 미도달(채택자 완전한 구형 유지).\n",
     )
+    source = _reverse_harness_ctx_apply(source)
     # 세대 시대착오 부재를 **기계로** 못박는다 — 전제(“codex 판정이 늘 빈 결과”)에 기대지 않는다.
     #   대조 대상은 `_main` 의 **호출 지점**이다(`apply` 시그니처의 기본값 파라미터는 호출하지
     #   않으면 발화하지 않으므로 이 합성본의 동작 축이 아니다).
     for anachronism in ("check_adapter_hook_sets(effective_dest",
-                        "is_hook_set_path=resolve_hook_set_predicate("):
+                        "is_hook_set_path=resolve_hook_set_predicate(",
+                        "not apply_harness_ctx_limits("):
         assert anachronism not in source, (
             f"T-0585 세대 합성본에 훅 세트 게이트가 남았다: {anachronism}")
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
@@ -1088,7 +1120,7 @@ def _install_t0585_updater(dest: Path) -> None:
 # T-0887: 온보딩 opt-in 일습 삭제로 역적용 delta 의 exact-marker 목록이 두 항목으로 줄고
 # (되돌릴 원문이 사라졌다) 그만큼 historical 전문 SHA 도 이동했다. 퇴역 경로 delta 의 marker 는
 # 전부 그 절 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "51ff35808fc662165501007ad540576841f4646d172cd4584b2adf62a7a6e390"
+_PRE_T0876_PM_UPDATE_SHA256 = "17b7264fae627a6df073c6a4da92999c26548cc2035b82bdd6d15914155043f3"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -1132,6 +1164,11 @@ def _pre_t0876_pm_update_source() -> str:
     재핀(2026-09-18, 3차) — 같은 감사로 `resolve_hook_set_generation` 의 `required` 인자를 지웠다
     (호출부 1곳이 넘긴 적이 없고, 값을 넘기던 안쪽 `_resolve_hook_set_generation_and_sibling` 의
     기본값이 바깥과 같은 False 라 동작이 보존된다). 역적용 marker·배달 경계 모두 무편집이다.
+    재핀(T-0923) — 하네스 사용 한도 반영 단계가 들어왔다(jsonc 경로 편집 헬퍼·반영 채널과 그 흡수 사유·세 종료
+    경로의 호출·이동 출력 문구). 반영 호출은 이 세대에 없던 개념이라 `_reverse_harness_ctx_apply` 로
+    역적용한다. 퇴역 경로 delta 의 exact-marker 는 전부 그 절 밖이라 그대로 유일 해소되고, RUN1 이
+    검증하는 배달 경계(신 reviewer 설치 → 두 번째 실행의 구 파일 퇴역)도 무편집이라 합성본 bytes 차이만
+    SHA 에 반영했다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -1299,6 +1336,7 @@ def _pre_t0876_pm_update_source() -> str:
     ):
         assert source.count(block) == 1, block
         source = source.replace(block, "", 1)
+    source = _reverse_harness_ctx_apply(source)
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
     assert digest == _PRE_T0876_PM_UPDATE_SHA256, (
         f"pre-T0876 updater fixture drift: {digest}; retirement delta의 exact-marker와 "
@@ -1843,9 +1881,11 @@ _OPERATIONAL_CONF = (
     "runtime.py=python3\n"
     "test.cmd=python -c \"print('adopter suite')\"\n"
 )
+# 사용 한도 543210 은 Claude Code 압축 지점 범위(100000~1000000) 안이다 — 옮긴 값이 반영 검사를
+#   통과해야 (5) 의 교체 뒤 실행이 설정 파일까지 반영한다(T-0923).
 _LEGACY_AXES_CONF = (
     "delegate_enabled=true\n"
-    "ctx_window_tokens_claude=54321\n"
+    "ctx_window_tokens_claude=543210\n"
     "regression_min_collected=40\n"
 )
 
@@ -1898,7 +1938,7 @@ def test_upgrade_adopter_legacy_conf_is_guided_then_replaced_then_gates_run(tmp_
     assert "`delegate_enabled` → `delegate.enabled`" in unresolved.stdout
     # 이름이 바뀐 키는 갱신이 옮긴다 — 안내는 그 사실을 알리고, 사람에게 남기는 것은
     # 대체가 없어 옮길 자리가 없는 키뿐이다(옛 안내의 "모델 값은…" 변명은 지워졌다).
-    assert "갱신이 값을 그대로 옮깁니다" in unresolved.stdout
+    assert "갱신이 새 이름으로 옮깁니다" in unresolved.stdout
     assert "제거(대체 키 없음)" in unresolved.stdout
     assert "모델 값은 자동으로 옮기지 않습니다" not in unresolved.stdout
     assert ".codex/config.toml" in unresolved.stdout          # 엔진이 못 고치는 파일 지목
@@ -1920,7 +1960,9 @@ def test_upgrade_adopter_legacy_conf_is_guided_then_replaced_then_gates_run(tmp_
     # 이름이 바뀐 키는 이 실행이 **옮긴다** — 지목하고 끝나지 않는다.
     assert "`ctx_window_tokens_claude` → `harness.claude.ctx_window_tokens`" in run1.stdout
     assert "개 이동 — 갱신이 바꾼 이름이라 갱신이 옮긴다" in run1.stdout
-    assert _parse_conf(conf)["harness.claude.ctx_window_tokens"] == "54321"
+    assert _parse_conf(conf)["harness.claude.ctx_window_tokens"] == "543210"
+    # 폐지 키가 남아 있는 동안 반영은 건너뛴다 — 배달은 계속된다(rc 0).
+    assert "하네스 설정 반영을 건너뛴다" in run1.stdout and "regression_min_collected" in run1.stdout
 
     run2 = _raw_pm_update(dest, "--from", str(REPO))
     assert run2.returncode == 0, run2.stderr
@@ -1937,13 +1979,15 @@ def test_upgrade_adopter_legacy_conf_is_guided_then_replaced_then_gates_run(tmp_
 
     # (5) 교체 후 같은 게이트가 돈다.
     conf.write_text(f"upstream.path={REPO}\n" + _OPERATIONAL_CONF
-                    + "delegate.enabled=true\nharness.claude.ctx_window_tokens=54321\n"
+                    + "delegate.enabled=true\nharness.claude.ctx_window_tokens=543210\n"
                       "regression.min_collected=40\n", encoding="utf-8")
     green = _run_adopter_tool(dest, "board.py", "list")
     assert green.returncode == 0, green.stderr
     settled = _raw_pm_update(dest, "--from", str(REPO))
     assert settled.returncode == 0, settled.stderr
     assert "→ `" not in settled.stdout, "교체 뒤에도 키 지목이 남았다"
+    # 옛 키가 사라진 실행은 사용 한도를 설정 파일에 반영한다(543210 × 90% = 488889).
+    assert ".claude/settings.json autoCompactWindow 180000 → 488889" in settled.stdout
 
 
 def test_public_update_procedure_documents_the_mandatory_zero_change_run2():

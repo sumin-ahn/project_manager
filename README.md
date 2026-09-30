@@ -587,12 +587,21 @@ additional_reviewer.reasoning=max
 구조화 키로만 지정하며, 옛 `reviewer_cmd` 통짜 커맨드는 더 이상 읽히지 않는다.
 
 `local.conf` 키 표기는 **dot notation 하나로 통일**돼 있다(`additional_reviewer.harness`·
-`delegate.timeout`·`ctx.window_tokens`·`harness.opencode.pro_model` 형태). 옛 flat 표기
+`delegate.timeout`·`ctx.compact_at_pct`·`harness.opencode.pro_model` 형태). 옛 flat 표기
 (`external_review_enabled`·`additional_reviewer_enabled`·`reviewer_cmd`·`ctx_window_tokens_opencode`
 등)는 **읽히지 않고 조용히 무시되지도 않는다** — 그 conf 를 소비하는 도구가 실행 시점에 멈추고
 구키마다 대응 신키(또는 제거됨)를 한 줄씩 찍는다. 엔진은 인스턴스 소유인 `local.conf` 를 대신
 고쳐 쓰지 않으므로 안내대로 키 이름을 바꿔 주면 된다. `pm-update` 의 파일 반영 자체는 이 검사에
 막히지 않아서, 구키가 남은 상태에서도 엔진 갱신을 받아 안내를 볼 수 있다.
+
+컨텍스트 한도는 하네스마다 **사용 한도**(`harness.<name>.ctx_window_tokens`, 기본 200000) 하나와 모든
+하네스에 공통인 세 비율로 정한다. 세 비율은 사용 한도 대비 쓴 % 다 — `ctx.checkpoint_at_pct`(중간 기록
+권고, 기본 70)·`ctx.precompact_at_pct`(압축 임박 경고, 기본 80)·`ctx.compact_at_pct`(압축, 기본 90).
+사용 한도는 그 하네스에서 쓰는 모델 중 가장 작은 창 이하로 두십시오. 프레임워크가 사용 한도 × 압축 비율을
+각 하네스 설정 파일(Claude Code `autoCompactWindow`·Codex `model_auto_compact_token_limit`·opencode 모델
+`limit` 과 `compaction.reserved`)에 압축 지점으로 써서 경고와 실제 압축이 같은 한도를 기준으로 삼는다.
+`pm-update` 와 `pm-config ctx-apply` 가 쓰므로 그 값은 설정 파일이 아니라 `local.conf` 에서 고친다.
+Codex·opencode 는 그 지점에서, Claude Code 는 그보다 조금 앞에서 압축한다.
 
 레지스트리와 옛 flat 표기 어느 쪽에도 없는 키(오타·폐기 키)는 조용히 무시되지 않는다 —
 `board.py lint`(그리고 `board.py init` 병합 경로)가 `local-conf-unknown-key` advisory 1줄로

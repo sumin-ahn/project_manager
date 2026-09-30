@@ -129,38 +129,42 @@ def _compact_boundary(*, post_tokens=11_387) -> dict:
 # ── 1. 임계 config (local.conf 읽기 + sanity 폴백) ──────────────────────────
 
 def test_thresholds_defaults(guard):
-    assert guard.ctx_thresholds({}) == {"nudge_pct": 30, "stop_pct": 20}
-    assert guard.CTX_NUDGE_PCT_DEFAULT == 30
-    assert guard.CTX_STOP_PCT_DEFAULT == 20
+    assert guard.ctx_thresholds({}) == {"checkpoint_at_pct": 70, "precompact_at_pct": 80}
+    assert guard.CTX_CHECKPOINT_AT_PCT_DEFAULT == 70
+    assert guard.CTX_PRECOMPACT_AT_PCT_DEFAULT == 80
 
 
 def test_thresholds_reads_conf(guard):
-    th = guard.ctx_thresholds({"ctx.checkpoint_pct": "30", "ctx.precompact_pct": "5"})
-    assert th == {"nudge_pct": 30, "stop_pct": 5}
+    th = guard.ctx_thresholds({"ctx.checkpoint_at_pct": "70", "ctx.precompact_at_pct": "95"})
+    assert th == {"checkpoint_at_pct": 70, "precompact_at_pct": 95}
 
 
 def test_thresholds_sanity_fallback(guard):
-    # stop > nudge (역전) → 기본 폴백.
-    assert guard.ctx_thresholds({"ctx.checkpoint_pct": "5", "ctx.precompact_pct": "30"}) == {
-        "nudge_pct": 30, "stop_pct": 20
-    }
+    defaults = {"checkpoint_at_pct": 70, "precompact_at_pct": 80}
+    # 역전(checkpoint_at > precompact_at) → 기본 폴백.
+    assert guard.ctx_thresholds(
+        {"ctx.checkpoint_at_pct": "95", "ctx.precompact_at_pct": "70"}) == defaults
+    # 같음 — 순서는 엄격하다(0 < checkpoint_at < precompact_at < 100).
+    assert guard.ctx_thresholds(
+        {"ctx.checkpoint_at_pct": "80", "ctx.precompact_at_pct": "80"}) == defaults
     # 음수 → 기본 폴백.
-    assert guard.ctx_thresholds({"ctx.precompact_pct": "-3"}) == {"nudge_pct": 30, "stop_pct": 20}
+    assert guard.ctx_thresholds({"ctx.checkpoint_at_pct": "-3"}) == defaults
     # 비정수 → 기본 폴백.
-    assert guard.ctx_thresholds({"ctx.checkpoint_pct": "abc"}) == {"nudge_pct": 30, "stop_pct": 20}
+    assert guard.ctx_thresholds({"ctx.precompact_at_pct": "abc"}) == defaults
     # 100 이상 → 기본 폴백.
-    assert guard.ctx_thresholds({"ctx.checkpoint_pct": "100"}) == {"nudge_pct": 30, "stop_pct": 20}
+    assert guard.ctx_thresholds({"ctx.precompact_at_pct": "100"}) == defaults
 
 
 def test_load_local_config_parses(guard, tmp_path):
     pm = tmp_path / ".project_manager"
     pm.mkdir()
     (pm / "local.conf").write_text(
-        "# comment\nctx.checkpoint_pct=25\n\nctx.precompact_pct = 8\nprefix=PAY\n", encoding="utf-8"
+        "# comment\nctx.checkpoint_at_pct=75\n\nctx.precompact_at_pct = 92\nprefix=PAY\n",
+        encoding="utf-8"
     )
     conf = guard.load_local_config(tmp_path)
-    assert conf["ctx.checkpoint_pct"] == "25"
-    assert conf["ctx.precompact_pct"] == "8"
+    assert conf["ctx.checkpoint_at_pct"] == "75"
+    assert conf["ctx.precompact_at_pct"] == "92"
     assert conf["prefix"] == "PAY"
 
 
@@ -168,8 +172,8 @@ def test_load_local_config_missing(guard, tmp_path):
     assert guard.load_local_config(tmp_path) == {}
 
 
-# ── 1b. resolve_budget: per-harness precedence (ADR-0041 Decision 1) ────────
-# 분모 = ctx_window_tokens_<harness> > generic ctx_window_tokens > 200000 (각 층 >0 sanity).
+# ── 1b. resolve_budget: 하네스별 사용 한도 (T-0923) ────────────────────────
+# 분모 = harness.<harness>.ctx_window_tokens > 200000 (>0 sanity). 공통 층은 없다.
 
 def test_resolve_budget_defaults_to_200k(guard):
     assert guard.resolve_budget({}, "claude") == 200_000
@@ -177,16 +181,14 @@ def test_resolve_budget_defaults_to_200k(guard):
     assert guard.resolve_budget({}) == 200_000  # harness 기본값 = claude.
 
 
-def test_resolve_budget_generic_fallback(guard):
-    # 하네스 오버라이드 없음 → generic ctx_window_tokens (back-compat·② 1M 무변경).
-    assert guard.resolve_budget({"ctx.window_tokens": "1000000"}, "claude") == 1_000_000
-    assert guard.resolve_budget({"ctx.window_tokens": "1000000"}, "opencode") == 1_000_000
+def test_resolve_budget_has_no_common_layer(guard):
+    # 옛 공통 키는 더 이상 분모가 아니다 — 하네스 키가 없으면 기본값이다.
+    assert guard.resolve_budget({"ctx.window_tokens": "1000000"}, "claude") == 200_000
+    assert guard.resolve_budget({"ctx.window_tokens": "1000000"}, "opencode") == 200_000
 
 
-def test_resolve_budget_harness_override_wins(guard):
-    # 하네스 키가 generic 을 이긴다 (precedence 최상층).
+def test_resolve_budget_harness_key_is_the_budget(guard):
     conf = {
-        "ctx.window_tokens": "300000",
         "harness.claude.ctx_window_tokens": "1000000",
         "harness.opencode.ctx_window_tokens": "200000",
     }
@@ -195,21 +197,18 @@ def test_resolve_budget_harness_override_wins(guard):
 
 
 def test_resolve_budget_independent_harnesses(guard):
-    # claude·opencode 오버라이드 키 완전 독립 (동시 운용·generic 없이도 각자 해소).
+    # claude·opencode 사용 한도 키 완전 독립 (동시 운용·각자 해소).
     conf = {"harness.claude.ctx_window_tokens": "500000", "harness.opencode.ctx_window_tokens": "200000"}
     assert guard.resolve_budget(conf, "claude") == 500_000
     assert guard.resolve_budget(conf, "opencode") == 200_000
-    # 다른 하네스 키만 있고 대상 하네스 키 없으면 → generic(없으면 200K).
+    # 다른 하네스 키만 있고 대상 하네스 키 없으면 → 200K.
     assert guard.resolve_budget({"harness.opencode.ctx_window_tokens": "999"}, "claude") == 200_000
 
 
 @pytest.mark.parametrize("bad", ["0", "-5", "abc", "", "  "])
 def test_resolve_budget_sanity_falls_through(guard, bad):
-    # 오버라이드가 ≤0/비정수 → generic 으로, generic 도 비정상이면 200K (각 층 >0 sanity).
-    assert guard.resolve_budget(
-        {"harness.claude.ctx_window_tokens": bad, "ctx.window_tokens": "300000"}, "claude") == 300_000
-    assert guard.resolve_budget(
-        {"harness.claude.ctx_window_tokens": bad, "ctx.window_tokens": bad}, "claude") == 200_000
+    # 사용 한도가 ≤0/비정수 → 200K (>0 sanity).
+    assert guard.resolve_budget({"harness.claude.ctx_window_tokens": bad}, "claude") == 200_000
 
 
 # ── 2. statusLine: context_window → used % (분모=예산·ADR-0041) + 넛지 ────────
@@ -270,19 +269,19 @@ def test_statusline_no_signal_zero(guard):
 
 
 def test_statusline_render_colors(guard, statusline):
-    # conf={} → 예산 200K 기본·기본 임계(30/20·T-0207). current_usage 토큰으로 밴드 구성.
+    # conf={} → 예산 200K 기본·기본 임계(쓴 % 70/80). current_usage 토큰으로 밴드 구성.
     def _sl(tokens):
         return {"context_window": {"current_usage": {"input_tokens": tokens}}}
-    # ok (used 50, 잔여 50 > 30): 회색·checkpoint 문구 없음.
+    # ok (used 50 < 70): 회색·checkpoint 문구 없음.
     ok = statusline.build_statusline(_sl(100_000), {})
     assert "\033[90m" in ok and "ctx 50%" in ok and "checkpoint" not in ok
-    # nudge (used 75, 잔여 25 <= 30·> 20): 노랑·checkpoint 준비.
+    # nudge (70 <= used 75 < 77): 노랑·checkpoint 준비.
     nudge = statusline.build_statusline(_sl(150_000), {})
     assert "\033[33m" in nudge and "checkpoint 준비" in nudge
-    # nudge2 (used 78, 잔여 22 <= 23[=min(20+3,30)]·> 20): 빨강·checkpoint 권고.
+    # nudge2 (77[=max(80-3,70)] <= used 78 < 80): 빨강·checkpoint 권고.
     nudge2 = statusline.build_statusline(_sl(156_000), {})
     assert "\033[31m" in nudge2 and "checkpoint 권고" in nudge2
-    # stop (used 92, 잔여 8 <= 20): 빨강·checkpoint 최종 알림.
+    # stop (used 92 >= 80): 빨강·checkpoint 최종 알림.
     stop = statusline.build_statusline(_sl(184_000), {})
     assert "\033[31m" in stop and "checkpoint 최종 알림" in stop
 
@@ -299,26 +298,26 @@ def test_statusline_render_colors_respects_budget_override(guard, statusline):
 
 
 def test_classify_boundaries(guard):
-    # nudge2_threshold = min(stop_pct + CTX_NUDGE2_MARGIN_PCT, nudge_pct) = min(10+3, 20) = 13.
-    th = {"nudge_pct": 20, "stop_pct": 10}
+    # nudge2_threshold = max(precompact_at − CTX_NUDGE2_MARGIN_PCT, checkpoint_at) = max(87, 80) = 87.
+    th = {"checkpoint_at_pct": 80, "precompact_at_pct": 90}
     assert guard.classify(50, th) == "ok"
-    assert guard.classify(80, th) == "nudge"    # 잔여 20 == nudge_pct → nudge (1단).
-    assert guard.classify(79, th) == "ok"       # 잔여 21 > nudge_pct → ok.
-    assert guard.classify(86, th) == "nudge"    # 잔여 14 (13 < 14 <= 20) → nudge (1단).
-    assert guard.classify(87, th) == "nudge2"   # 잔여 13 == nudge2_threshold → nudge2 (2단).
-    assert guard.classify(89, th) == "nudge2"   # 잔여 11 (10 < 11 <= 13) → nudge2 (2단).
-    assert guard.classify(90, th) == "stop"     # 잔여 10 == stop_pct → stop.
-    assert guard.classify(91, th) == "stop"     # 잔여 9 < stop_pct → stop.
+    assert guard.classify(80, th) == "nudge"    # 쓴 80 == checkpoint_at → nudge (1단).
+    assert guard.classify(79, th) == "ok"       # 쓴 79 < checkpoint_at → ok.
+    assert guard.classify(86, th) == "nudge"    # 80 <= 86 < 87 → nudge (1단).
+    assert guard.classify(87, th) == "nudge2"   # 쓴 87 == nudge2_threshold → nudge2 (2단).
+    assert guard.classify(89, th) == "nudge2"   # 87 <= 89 < 90 → nudge2 (2단).
+    assert guard.classify(90, th) == "stop"     # 쓴 90 == precompact_at → stop.
+    assert guard.classify(91, th) == "stop"     # 쓴 91 > precompact_at → stop.
 
 
 def test_nudge2_threshold_derivation(guard):
-    # 2단 임계 = stop_pct + margin(3), nudge_pct 로 캡 (config 노브 신설 없이 파생).
+    # 2단 임계 = precompact_at − margin(3), checkpoint_at 으로 하한 (config 노브 신설 없이 파생).
     assert guard.CTX_NUDGE2_MARGIN_PCT == 3
-    assert guard.nudge2_threshold({"nudge_pct": 30, "stop_pct": 20}) == 23   # min(23, 30).
-    assert guard.nudge2_threshold({"nudge_pct": 20, "stop_pct": 10}) == 13   # min(13, 20).
-    # nudge 밴드가 좁으면(stop+3 > nudge) nudge_pct 로 캡 — nudge2 가 ok 영역으로 안 샌다.
-    assert guard.nudge2_threshold({"nudge_pct": 21, "stop_pct": 20}) == 21   # min(23, 21).
-    assert guard.nudge2_threshold({"nudge_pct": 22, "stop_pct": 20}) == 22   # min(23, 22).
+    assert guard.nudge2_threshold({"checkpoint_at_pct": 70, "precompact_at_pct": 80}) == 77
+    assert guard.nudge2_threshold({"checkpoint_at_pct": 80, "precompact_at_pct": 90}) == 87
+    # nudge 밴드가 좁으면(precompact_at − 3 < checkpoint_at) checkpoint_at 이 하한 — nudge2 가 ok 영역으로 안 샌다.
+    assert guard.nudge2_threshold({"checkpoint_at_pct": 79, "precompact_at_pct": 80}) == 79
+    assert guard.nudge2_threshold({"checkpoint_at_pct": 78, "precompact_at_pct": 80}) == 78
 
 
 # ── 3. 훅: transcript 토큰합 → used % + deny ───────────────────────────────
@@ -383,7 +382,7 @@ def test_transcript_malformed_lines_skipped(guard, tmp_path):
 
 
 def test_hook_evaluate_ok_passes(guard, stop_hook, tmp_path):
-    # 잔여 넉넉 (used 50) → 출력 없이 통과.
+    # 쓴 % 낮음 (used 50) → 출력 없이 통과.
     path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 100_000})])
     stdin = {"transcript_path": str(path), "session_id": "sess-ok"}
     rc, output = stop_hook.evaluate(stdin, tmp_path, {})
@@ -494,7 +493,7 @@ def test_hook_new_checkpoint_options_retry_old_engine_once(
 
 
 def _stop_transcript(tmp_path: Path) -> Path:
-    # input_tokens 190_000 / window 200_000 = 95% used → 잔여 5 <= stop_pct 20 → stop.
+    # input_tokens 190_000 / window 200_000 = 95% used >= precompact_at 80 → stop.
     return _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
 
 
@@ -706,26 +705,8 @@ def test_settings_preserves_unrelated_pretooluse_hook(name):
 # ── 6. compaction-native 넛지 + 사이클 재무장 (ADR-0081) ──────────────────
 
 
-def test_build_nudge_guidance(guard):
-    # 1단은 미기록 상태를 알리고 ticket 경계의 complete/checkpoint 기록 규약을 권고한다.
-    g = guard.build_nudge_guidance(82, {"nudge_pct": 20, "stop_pct": 10})
-    assert "ctx-nudge" in g
-    assert "잔여 18%" in g          # remaining_pct(82) = 18.
-    assert "ticket 경계" in g
-    assert "complete" in g
-    assert "python3 .project_manager/tools/pm_log.py checkpoint --task <이름>" in g
-    assert "Windows는 `py -3`" in g
-    assert len(g) <= 10_000
-    assert "직전 박제 경계 이후 구간이 미기록 상태" in g
-    assert "다음 단계 경계" in g and "이 프로젝트의 규약" in g
-    assert "<이름>`에는 현재 task 이름" in g
-    assert not any(command in g for command in ("실행하라", "박제하라", "넣어라"))
-    assert "--trigger compaction" not in g
-    assert "/pm-handoff" not in g
-
-
 def test_hook_nudge_userpromptsubmit_injects(guard, stop_hook, tmp_path):
-    # nudge 레벨(used 75·잔여 25 — stop 20 < 25 <= nudge 30) + UserPromptSubmit → additionalContext 비차단 주입.
+    # nudge 레벨(used 75 — checkpoint_at 70 <= 75 < nudge2 77) + UserPromptSubmit → additionalContext 비차단 주입.
     path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
     stdin = {
         "transcript_path": str(path),
@@ -1540,45 +1521,12 @@ def test_hook_precompact_does_not_rearm_before_compaction_completes(stop_hook, t
 
 # ── 7. 강화 넛지 + 최종 넛지 (ADR-0081) ──────────────────────────────────
 # nudge2 는 checkpoint 즉시 실행을 재안내하고, stop 밴드는 auto-compact 임박을 알리는 최종 넛지다.
-# 별도 `.nudge2`/`.final` marker 로 같은 사이클에서 각 1회 발화한다. 밴드(기본 30/20):
-# nudge2_threshold=23 → 잔여 (20,23] 이 nudge2, (23,30] 이 nudge(1단).
+# 별도 `.nudge2`/`.final` marker 로 같은 사이클에서 각 1회 발화한다. 밴드(기본 쓴 % 70/80):
+# nudge2_threshold=77 → 쓴 [77,80) 이 nudge2, [70,77) 이 nudge(1단).
 
 def _nudge2_transcript(tmp_path: Path) -> Path:
-    # 156_000 / 200_000 = 78% used → 잔여 22 (20 < 22 <= 23) → nudge2 밴드.
+    # 156_000 / 200_000 = 78% used (77 <= 78 < 80) → nudge2 밴드.
     return _write_transcript(tmp_path, [("assistant", {"input_tokens": 156_000})])
-
-
-def test_build_nudge2_guidance(guard):
-    # 2단 안내문도 미기록 사실 + 프로젝트 checkpoint 규약의 권고형이다.
-    g = guard.build_nudge2_guidance(82, {"nudge_pct": 20, "stop_pct": 10})
-    assert "ctx-nudge/강화" in g
-    assert "잔여 18%" in g          # remaining_pct(82) = 18.
-    assert "python3 .project_manager/tools/pm_log.py checkpoint --task <이름>" in g
-    assert "Windows는 `py -3`" in g
-    assert len(g) <= 10_000
-    assert "직전 박제 경계 이후 구간이 미기록 상태" in g
-    assert "다음 단계 경계" in g and "이 프로젝트의 규약" in g
-    assert "<이름>`에는 현재 task 이름" in g
-    assert "--trigger compaction" not in g
-    assert not any(command in g for command in ("실행하라", "박제하라", "넣어라"))
-    assert "/pm-handoff" not in g
-    assert g != guard.build_nudge_guidance(82, {"nudge_pct": 20, "stop_pct": 10})
-
-
-def test_build_final_guidance(guard):
-    g = guard.build_final_guidance(92, {"nudge_pct": 30, "stop_pct": 20})
-    assert "ctx-nudge/최종" in g
-    assert "잔여 8% ≤ 20%" in g
-    assert "python3 .project_manager/tools/pm_log.py checkpoint --task <이름> --trigger compaction" in g
-    assert "Windows는 `py -3`" in g
-    assert len(g) <= 10_000
-    assert "직전 박제 경계 이후 구간이 미기록 상태" in g
-    assert "다음 단계 경계" in g and "이 프로젝트의 규약" in g
-    assert "<이름>`에는 현재 task 이름" in g
-    assert "새 큰 작업" not in g
-    assert "auto-compact" in g
-    assert not any(command in g for command in ("실행하라", "박제하라", "넣어라"))
-    assert "차단" not in g and "/pm-handoff" not in g
 
 
 @pytest.mark.parametrize("band", ["nudge", "nudge2", "final"])
@@ -1590,16 +1538,18 @@ def test_engine_failure_fallback_keeps_continuity_policy_in_every_band(
         tmp_path,
         band=band,
         used_pct=92,
-        thresholds={"nudge_pct": 30, "stop_pct": 20},
+        thresholds={"checkpoint_at_pct": 70, "precompact_at_pct": 80},
     )
 
     assert "압축은 자동이고 세션은 그대로 이어진다" in guidance
     assert "핸드오프는 사용자 명시 지시로만 한다" in guidance
     assert "새 큰 작업보다 현재 서사 기록을 우선" not in guidance
+    # 사용률은 쓴 % 하나다 — 남은 % 를 다시 계산해 싣지 않는다.
+    assert "컨텍스트 사용 92%" in guidance and "잔여" not in guidance
 
 
 def test_hook_nudge2_userpromptsubmit_injects(guard, stop_hook, tmp_path):
-    # nudge2 레벨(잔여 22 — stop 20 < 22 <= nudge2_threshold 23) + UserPromptSubmit → strong 주입.
+    # nudge2 레벨(쓴 78 — nudge2_threshold 77 <= 78 < precompact_at 80) + UserPromptSubmit → strong 주입.
     stdin = {
         "transcript_path": str(_nudge2_transcript(tmp_path)),
         "session_id": "sess-nudge2",
@@ -1662,9 +1612,9 @@ def test_hook_nudge2_fires_independent_of_nudge1(stop_hook, tmp_path):
 
 
 def test_hook_nudge1_then_nudge2_both_fire(stop_hook, tmp_path):
-    # 세션이 nudge(1단·잔여 25)를 거쳐 nudge2(2단·잔여 22)로 진행 → 두 marker 다 생성·각 문구 구별.
+    # 세션이 nudge(1단·쓴 75)를 거쳐 nudge2(2단·쓴 78)로 진행 → 두 marker 다 생성·각 문구 구별.
     sid = "sess-both"
-    # 1단: 잔여 25 (nudge_threshold 23 < 25 <= nudge 30).
+    # 1단: 쓴 75 (checkpoint_at 70 <= 75 < nudge2_threshold 77).
     nudge_stdin = {
         "transcript_path": str(_write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])),
         "session_id": sid, "hook_event_name": "UserPromptSubmit",

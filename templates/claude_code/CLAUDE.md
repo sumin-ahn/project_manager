@@ -138,7 +138,7 @@ ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크**만
 {{PY}} .project_manager/tools/domain.py lint                       # freshness — stale 페이지 검사
 ```
 
-> **ctx 예산:** ctx 정지 밴드(현행 의미 = 최종 checkpoint 넛지·키 이름은 호환 유지)/넛지 %의 100% 기준은 `.project_manager/local.conf` 의 `harness.<name>.ctx_window_tokens`(예 `harness.claude.ctx_window_tokens=500000`) > generic `ctx.window_tokens` > 200000 순. 한 repo 를 여러 harness 로 동시 운용하면 각각 설정한다.
+> **ctx 사용 한도:** 하네스마다 `.project_manager/local.conf` 의 `harness.<name>.ctx_window_tokens`(사용 한도·기본 200000·예 `harness.claude.ctx_window_tokens=500000`)를 둔다. 사용 한도는 그 하네스에서 쓰는 모델 중 가장 작은 창 이하로 두십시오. 세 비율은 사용 한도 대비 쓴 % 이고 모든 하네스에 공통이다: `ctx.checkpoint_at_pct`(중간 기록 권고·기본 70)·`ctx.precompact_at_pct`(압축 임박 경고·기본 80)·`ctx.compact_at_pct`(압축·기본 90). 프레임워크가 사용 한도 × 압축 비율을 하네스 설정 파일(`.claude/settings.json` 의 `autoCompactWindow` 등)에 압축 지점으로 쓴다(`/pm-update`·`pm-config ctx-apply`) — 그 값은 설정 파일이 아니라 local.conf 에서 고친다. Claude Code 는 그 지점보다 조금 앞에서 압축한다.
 
 ## 핵심 디렉토리
 

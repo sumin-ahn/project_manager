@@ -5,6 +5,9 @@
   - **쓰는 파일은 `local.conf` 하나**이고, 그 쓰기는 번들 엔진의 `pm_import._write_conf_keys`
     한 함수를 통한다(원자 교체 + 대상 conf 에서 유도한 배타락 + 실효값 검증). 두 번째 conf
     writer 를 만들지 않는다. 어댑터 수용·upstream 전환은 **그 사본의 명령**이 한다.
+    사용 한도·압축 비율 키(`pm_import.is_harness_ctx_input_key`)가 든 저장도 그 사본의 명령
+    (`pm-config ctx-apply --json --set 키=값 …`)이 한다 — 값 검사·local.conf 기록·하네스 설정 파일
+    반영이 한 번에 돌고, 검사를 통과하지 못한 값은 어디에도 쓰이지 않는다.
   - 항목 목록의 정본은 **그 프로젝트 사본의** 키 레지스트리다
     (`<interpreter> <pm_home>/.project_manager/tools/local_conf.py --keys --json`).
     번들 레지스트리로 대신 그리지 않는다 — 세대가 다르면 키 집합이 다르다.
@@ -70,6 +73,39 @@ def _completed(completed: subprocess.CompletedProcess) -> dict:
             "stderr": completed.stderr}
 
 
+# 사본의 `ctx-apply` 검사 거부 rc — 화면 오류 종류 `invalid-value` 로 넘긴다(그 밖의 rc 는 그
+# 명령을 모르는 옛 세대이거나 인자 오류다).
+CTX_APPLY_REJECTED_RC = 1
+
+
+def _ctx_apply(home: Path, updates: dict) -> dict:
+    """사용 한도 키가 든 저장 — 그 사본의 `pm-config ctx-apply --json --set 키=값 …` 한 번.
+
+    값이 None 인 키는 `키=`(줄 삭제)로 보낸다. rc 0 이면 `{changed, conf, applied}`(conf 는 직후
+    재조회), 검사 거부(rc 1)는 오류 종류 `invalid-value` 로 사본의 문구를 그대로 넘긴다. 사본 명령은
+    관리자 프로세스의 env 를 물려받으므로 opencode 전역 설정 위치는 사용자 env 로 해소된다."""
+    argv = [*runner.interpreter(home), _tool(home, "pm_config.py"), "ctx-apply", "--json"]
+    for key, value in updates.items():
+        argv += ["--set", f"{key}={'' if value is None else value}"]
+    completed = _run(home, argv, timeout=runner.HEAVY_TIMEOUT_SECONDS)
+    if completed.returncode == CTX_APPLY_REJECTED_RC:
+        return {"error": {"kind": "invalid-value", "message": completed.stderr.strip(),
+                          "stderr": completed.stderr, "rc": completed.returncode}}
+    if completed.returncode != 0:
+        raise CallError(
+            "old-generation",
+            "이 사본의 엔진은 `pm-config ctx-apply` 를 모른다 — 먼저 갱신하라.",
+            stderr=completed.stderr, rc=completed.returncode)
+    try:
+        document = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise CallError(
+            "not-json", f"사용 한도 반영 출력이 JSON 이 아니다 ({exc})",
+            stderr=completed.stderr or completed.stdout, rc=completed.returncode) from exc
+    return {"changed": bool(document["changed"]), "conf": runner.status(home)["conf"],
+            "applied": list(document["applied"])}
+
+
 class SettingsApi:
     """설정 탭(local.conf 편집·어댑터 절) 동작."""
 
@@ -123,10 +159,13 @@ class SettingsApi:
             return exc.as_error_dict()
 
     def conf_save(self, path: str, updates: dict) -> dict:
-        """바뀐 키만 쓰고 **직후 재조회**한 판정을 돌려준다.
+        """바뀐 키만 쓰고 **직후 재조회**한 판정을 돌려준다 — `{changed, conf, applied}`.
 
-        쓰기는 번들 엔진의 유일한 conf writer 한 함수다. 요청값과 실효값이 다르면 그 엔진이
-        `RuntimeError` 로 멈추고, 여기서 잡지 않는다(성공으로 흡수할 수 없는 실패다).
+        사용 한도·압축 비율 키가 하나라도 들면 저장 전체를 그 사본의 `ctx-apply` 한 번으로 보낸다
+        (`_ctx_apply`) — 검사를 통과해야 쓰고, 통과하면 하네스 설정 파일까지 반영한 줄(`applied`)이
+        온다. 그 밖의 저장은 번들 엔진의 유일한 conf writer 한 함수이고 `applied` 는 빈 목록이다.
+        요청값과 실효값이 다르면 그 엔진이 `RuntimeError` 로 멈추고, 여기서 잡지 않는다(성공으로
+        흡수할 수 없는 실패다).
         """
         if UPSTREAM_PATH_KEY in updates:
             raise ValueError(
@@ -139,11 +178,14 @@ class SettingsApi:
             with ENGINE_LOCK:
                 engine = load_engine_module("pm_import.py")
                 engine._load_file_lock()
+                goes_through_copy = any(engine.is_harness_ctx_input_key(key) for key in updates)
+            if goes_through_copy:
+                return _ctx_apply(home, updates)
             # 쓰기는 잠금 **밖**이다. 이 함수는 대상 conf 에서 유도한 교차 프로세스 배타락을
             # 기다리는데, 그 대기를 ENGINE_LOCK 을 쥔 채 하면 같은 잠금을 쓰는
             # `runner.conf_values`·`interpreter` 가 막혀 등록 프로젝트 전체의 주기 조회가 선다.
             changed = engine._write_conf_keys(_conf_path(home), dict(updates))
-            return {"changed": bool(changed), "conf": runner.status(home)["conf"]}
+            return {"changed": bool(changed), "conf": runner.status(home)["conf"], "applied": []}
         except CallError as exc:
             return exc.as_error_dict()
 

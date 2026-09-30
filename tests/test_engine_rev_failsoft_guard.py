@@ -1187,7 +1187,11 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   local.conf 판독 하나다. 잡을 예외를 실제 나는 종류로 좁히자 그 자리의 `except Exception`
     #   자체가 사라졌다 — marked skew 를 흘려보낼 수 있던 경계가 없어진 것이라 원장에서 빠진다
     #   (흡수 규칙이 느슨해진 게 아니다).
-    assert len(report.boundaries) == 252, "propagation sweep boundary ratchet changed"
+    # 254 = 252 + T-0923 사용 한도 반영의 두 경계. `pm_config` 의 `ctx-apply`(`cmd_ctx_apply`)는
+    #   local.conf 옛 키(`_legacy_conf_key`)만 rc 1 안내로 번역하고 marked skew 는 그대로 올린다.
+    #   `pm_update.apply_harness_ctx_limits` 는 apply 이후 단계라 `migrate_renamed_conf_keys` 와 같은
+    #   규칙으로 등록된 사유가 흡수한다(반영은 멱등).
+    assert len(report.boundaries) == 254, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

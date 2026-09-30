@@ -335,11 +335,11 @@ def test_mark_ctx_post_turn_if_over_boundary_and_under(orch, tmp_path):
         return True
 
     assert orch.mark_ctx_post_turn_if_over(
-        tmp_path, "under", 79_999, 100_000, 20, mark=mark,
+        tmp_path, "under", 79_999, 100_000, 80, mark=mark,
     ) is False
     assert calls == []
     assert orch.mark_ctx_post_turn_if_over(
-        tmp_path, "boundary", 80_000, 100_000, 20, mark=mark,
+        tmp_path, "boundary", 80_000, 100_000, 80, mark=mark,
     ) is True
     assert calls == [(tmp_path, "boundary")]
 
@@ -355,25 +355,44 @@ def test_mark_ctx_post_turn_if_over_noop_without_signal(
         raise AssertionError("no-op 조건에서 marker writer 호출")
 
     assert orch.mark_ctx_post_turn_if_over(
-        tmp_path, "sid", used_tokens, budget, 20, mark=unexpected_mark,
+        tmp_path, "sid", used_tokens, budget, 80, mark=unexpected_mark,
     ) is False
 
 
 def test_mark_ctx_post_turn_if_over_returns_writer_result(orch, tmp_path):
     assert orch.mark_ctx_post_turn_if_over(
-        tmp_path, "sid", 90_000, 100_000, 20, mark=lambda *_: False,
+        tmp_path, "sid", 90_000, 100_000, 80, mark=lambda *_: False,
     ) is False
 
 
 def test_relay_budget_effective_threshold_boundary_and_unset(orch):
     assert orch.RELAY_BOOTSTRAP_COST_TOKENS == 40_400
     with pytest.raises(ValueError, match="40400 tok"):
-        orch.validate_relay_budget(50_500, 20)  # 유효 임계 40,400: 같으면 거부.
-    orch.validate_relay_budget(50_501, 20)      # 유효 임계 40,400.8: 초과면 통과.
+        orch.validate_relay_budget(50_500, 80)  # 유효 임계 40,400: 같으면 거부.
+    orch.validate_relay_budget(50_501, 80)      # 유효 임계 40,400.8: 초과면 통과.
     with pytest.raises(ValueError, match="40400 tok"):
-        orch.validate_relay_budget(44_888, 10)  # stop_pct 변화도 산식에 반영.
-    orch.validate_relay_budget(44_889, 10)
-    orch.validate_relay_budget(None, 20)        # 미주입이면 가드 비활성.
+        orch.validate_relay_budget(44_888, 90)  # precompact_at 변화도 산식에 반영.
+    orch.validate_relay_budget(44_889, 90)
+    orch.validate_relay_budget(None, 80)        # 미주입이면 가드 비활성.
+
+
+def test_relay_rotation_uses_precompact_at(orch, tmp_path):
+    """T-0923 AT-018 — 회전은 `used ≥ budget × precompact_at / 100`(쓴 %)이다.
+
+    옛 식(`budget × (100 − x) / 100`)으로 80 을 넣으면 임계가 20% 로 떨어져 두 경계가 뒤집힌다."""
+    with pytest.raises(ValueError) as caught:
+        orch.validate_relay_budget(50_500, 80)
+    assert "ctx.precompact_at_pct" in str(caught.value)
+    assert "harness.<이름>.ctx_window_tokens" in str(caught.value)
+    orch.validate_relay_budget(50_501, 80)
+
+    marked = []
+    mark = lambda root, sid: marked.append(sid) or True  # noqa: E731
+    assert orch.mark_ctx_post_turn_if_over(
+        tmp_path, "at", 160_000, 200_000, 80, mark=mark) is True
+    assert orch.mark_ctx_post_turn_if_over(
+        tmp_path, "below", 159_999, 200_000, 80, mark=mark) is False
+    assert marked == ["at"]
 
 
 # ── ② respawn 결정 (marker 시 새 session · 없으면 relay 지속 · 호출 카운트) ────
@@ -768,14 +787,14 @@ def test_claude_main_resolves_and_injects_ctx_config(driver_mod, monkeypatch, tm
             captured["marked"] = args
 
         @staticmethod
-        def validate_relay_budget(budget, stop_pct):
-            captured["validated"] = (budget, stop_pct)
+        def validate_relay_budget(budget, precompact_at_pct):
+            captured["validated"] = (budget, precompact_at_pct)
             captured["events"].append("validate")
 
     captured["events"] = []
     monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
     monkeypatch.setattr(driver_mod.ctx_guard, "load_local_config", lambda root: {
-        "harness.claude.ctx_window_tokens": "123456", "ctx.precompact_pct": "17",
+        "harness.claude.ctx_window_tokens": "123456", "ctx.precompact_at_pct": "83",
     })
     monkeypatch.setattr(
         driver_mod.ctx_guard, "resolve_budget",
@@ -783,14 +802,14 @@ def test_claude_main_resolves_and_injects_ctx_config(driver_mod, monkeypatch, tm
     )
     monkeypatch.setattr(
         driver_mod.ctx_guard, "ctx_thresholds",
-        lambda conf: {"nudge_pct": 30, "stop_pct": 17},
+        lambda conf: {"checkpoint_at_pct": 70, "precompact_at_pct": 83},
     )
     rc = driver_mod.main(["--task", "mytask", "--cwd", str(tmp_path)])
     assert rc == 0 and captured["task"] == "mytask"
-    assert captured["validated"] == (123_456, 17)
+    assert captured["validated"] == (123_456, 83)
     assert captured["events"] == ["validate", "supervisor"]
     driver = captured["driver"]
-    assert driver._ctx_budget == 123_456 and driver._stop_pct == 17
+    assert driver._ctx_budget == 123_456 and driver._precompact_at_pct == 83
     assert driver._root == tmp_path
     assert driver._mark_stop is _FakeEngine.mark_ctx_post_turn_if_over
 
@@ -999,8 +1018,8 @@ def test_claude_driver_marks_ctx_after_spawn_and_relay(orch, driver_mod, tmp_pat
     """usage 임계 초과 turn은 spawn/relay 양쪽에서 엔진 회전 헬퍼로 전달된다."""
     calls = []
 
-    def mark_stop(root, sid, used_tokens, budget, stop_pct):
-        calls.append((root, sid, used_tokens, budget, stop_pct))
+    def mark_stop(root, sid, used_tokens, budget, precompact_at_pct):
+        calls.append((root, sid, used_tokens, budget, precompact_at_pct))
         return True
 
     def fake_run(cmd, **kwargs):
@@ -1023,7 +1042,7 @@ def test_claude_driver_marks_ctx_after_spawn_and_relay(orch, driver_mod, tmp_pat
     driver = driver_mod.ClaudeCliDriver(
         orch.parse_stream_json,
         ctx_budget=100_000,
-        stop_pct=20,
+        precompact_at_pct=80,
         root=tmp_path,
         mark_stop=mark_stop,
         spawn_result=orch.SpawnResult,
@@ -1033,8 +1052,8 @@ def test_claude_driver_marks_ctx_after_spawn_and_relay(orch, driver_mod, tmp_pat
     assert spawned == orch.SpawnResult("uuid-high", "ok")
     assert driver.relay_turn("uuid-high", "next") == "ok"
     assert calls == [
-        (tmp_path, "uuid-high", 80_002, 100_000, 20),
-        (tmp_path, "uuid-high", 80_002, 100_000, 20),
+        (tmp_path, "uuid-high", 80_002, 100_000, 80),
+        (tmp_path, "uuid-high", 80_002, 100_000, 80),
     ]
 
 
@@ -1069,7 +1088,7 @@ def test_claude_driver_real_marker_integration_over_threshold(
     driver = driver_mod.ClaudeCliDriver(
         orch.parse_stream_json,
         ctx_budget=10_000,
-        stop_pct=20,
+        precompact_at_pct=80,
         root=tmp_path,
         mark_stop=orch.mark_ctx_post_turn_if_over,
         spawn_result=orch.SpawnResult,
@@ -1103,7 +1122,7 @@ def test_claude_driver_real_marker_integration_old_red_controls(
     driver = driver_mod.ClaudeCliDriver(
         orch.parse_stream_json,
         ctx_budget=10_000,
-        stop_pct=20,
+        precompact_at_pct=80,
         root=tmp_path,
         mark_stop=(None if control == "helper-missing" else orch.mark_ctx_post_turn_if_over),
         runner=runner,
@@ -1119,7 +1138,7 @@ def test_claude_driver_warns_once_when_usage_missing_with_complete_ctx_di(
     driver = driver_mod.ClaudeCliDriver(
         orch.parse_stream_json,
         ctx_budget=100_000,
-        stop_pct=20,
+        precompact_at_pct=80,
         root=tmp_path,
         mark_stop=orch.mark_ctx_post_turn_if_over,
     )
@@ -1139,7 +1158,7 @@ def test_claude_driver_ctx_guard_noop_when_any_signal_missing(
 
     complete = {
         "ctx_budget": 100_000,
-        "stop_pct": 20,
+        "precompact_at_pct": 80,
         "root": tmp_path,
         "mark_stop": unexpected_mark,
     }

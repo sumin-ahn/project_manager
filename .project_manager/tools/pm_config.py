@@ -33,6 +33,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config upstream show | set <url|path>               # upstream 조회/전환 (검증·fail-closed)
     pm-config add-harness <harness> [--from <src>] [--dry-run]  # 라이브 인스턴스에 두 번째 harness 어댑터 추가
     pm-config sync-adapter-config [--list | --check | --accept <경로> | --accept-all] # 어댑터 config 판정 조회 / 수렴 게이트 / 상류 값 수용(단건·세트)
+    pm-config ctx-apply [--json] [--set 키=값 ...]         # 사용 한도·압축 비율 검사 → local.conf 기록 → 하네스 설정 파일 반영
     pm-config delegate models --harness <h> --json         # 그 하네스가 인정하는 모델 목록 조회 (읽기 전용·JSON 한 줄)
 
 서브커맨드별 엔진 배선:
@@ -66,6 +67,9 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
                   후 template 채택 + 원장 기록). manifest 밖 instance-owned config 는 동기가 무편집
                   분만 자동 갱신하고 나머지는 보존+보고하므로, 이 커맨드가 보존분을 채택자가
                   명시적으로 받는 유일한 채널이다(소스 해소는 add-harness 와 같은 규칙).
+                  수용한 파일이 하네스 설정 파일이면 수용 직후 사용 한도를 다시 반영한다.
+  - ctx-apply → pm_import.validate_harness_ctx(검사)·_write_conf_keys(`--set` 기록)·
+                  apply_harness_ctx(반영). 관리자 저장이 ctx 입력 키를 이 명령 한 번으로 보낸다.
 
 
   - thin forwarder(`pm-config.sh/.cmd`)는 로직 0 — 이 디스패처가 엔진 배선의 단일 지점.
@@ -4371,6 +4375,21 @@ def _accept_adapter_config_one(pm_import_mod, dest: Path, source_root: Path,
     note = pm_import_mod.ADAPTER_CONFIG_REAPPROVAL_NOTE.get(relpath)
     if note:
         print(f"  ⚠️ {note}")
+    ctx_files = getattr(pm_import_mod, "HARNESS_CTX_FILES", None)
+    if ctx_files is None:
+        _warn_engine_downgrade(
+            "사용 한도·압축 비율 반영",
+            "하네스 설정 파일이면 관리 키가 local.conf 값이 아니라 템플릿 값으로 남는다")
+        return 0
+    if relpath in ctx_files.values():
+        # 템플릿 값으로 돌아간 관리 키에 local.conf 의 사용 한도를 다시 쓴다(원장이 방금 증언한
+        #   파일이라 반영 뒤에도 무편집 판정이 유지된다). 설치·add-harness 와 같은 한 번이다 —
+        #   옛 키가 남은 conf 면 반영을 건너뛰고 알리며, 검사 거부만 rc 1(설정 파일 무변경)이다.
+        try:
+            pm_import_mod._print_harness_ctx_apply(dest)
+        except pm_import_mod.HarnessCtxError as exc:
+            print(f"[중단] {exc}", file=sys.stderr)
+            return 1
     return 0
 
 
@@ -4988,6 +5007,81 @@ def _delegate_models(source, *, models_runner=None) -> tuple[list[str], str | No
         f"모르는 모델 원천 kind {source.kind!r} — pm_relay.MODEL_SOURCE 선언과 이 판정이 갈렸다.")
 
 
+def _conf_assignment(text: str) -> tuple[str, str]:
+    """`--set 키=값` 한 개 → (키, 값). 빈 값(`키=`)은 그 줄을 지우라는 뜻이다."""
+    key, separator, value = text.partition("=")
+    if not separator or not key.strip():
+        raise argparse.ArgumentTypeError(f"`키=값` 꼴이 아니다: {text!r}")
+    return key.strip(), value.strip()
+
+
+def cmd_ctx_apply(args, *, pm_import=None, dest_root: Path | None = None) -> int:
+    """`ctx-apply [--json] [--set 키=값 ...]` — 사용 한도·압축 비율 검사 → local.conf 기록 → 반영.
+
+    관리자 저장·초기화가 ctx 입력 키(`pm_import.is_harness_ctx_input_key`)가 든 저장을 이 명령 한
+    번으로 보낸다. `--set` 이 없으면 현재 conf 로 검사·반영만 한다. 있으면 conf 에 덮은 값으로
+    검사하고 설정 파일까지 미리 계산해 본 뒤에만 local.conf 에 쓴다(`_write_conf_keys` · 빈 값은 줄
+    삭제) — 거부되면 local.conf·설정 파일 어느 것도 바뀌지 않는다. `--set` 은 ctx 밖 키도 받는다(한
+    저장이 여러 키를 함께 보낸다).
+
+    rc 0 반영(바뀐 줄 0 포함) · 1 검사 거부·반영 실패(사유는 stderr) · 2 인자 오류(argparse).
+    `--json` 은 한 줄 `{"changed": local.conf 가 바뀌었나, "applied": 바뀐 설정 줄}` 이다."""
+    pm_import_mod = pm_import or _load_module("pm_import", "pm_import.py")
+    if pm_import_mod is None:
+        print(
+            "[중단] pm_import.py 엔진을 찾을 수 없다 — 사용 한도 반영 불가 "
+            f"({TOOLS_DIR / 'pm_import.py'} 부재 또는 로드 실패).",
+            file=sys.stderr,
+        )
+        return 1
+    dest = dest_root if dest_root is not None else REPO
+    conf_file = dest / ".project_manager" / "local.conf"
+    updates = dict(getattr(args, "set", None) or ())
+    if updates and not conf_file.is_file():
+        print(f"[중단] local.conf 없음 ({conf_file}) — 먼저 `pm-config init` 으로 셋업하라.",
+              file=sys.stderr)
+        return 1
+    opencode_dir = pm_import_mod.opencode_global_config_dir(os.environ, Path.home())
+    local_conf = _load_local_conf()
+    try:
+        result = local_conf.load(conf_file)
+        local_conf.assert_no_legacy(result)
+        changed = False
+        if updates:
+            values = {key: value for key, value in result.values.items() if key not in updates}
+            values.update({key: value for key, value in updates.items() if value})
+            local_conf.assert_values_no_legacy(values, conf_file)
+            # 쓰기 전에 설정 파일까지 계산해 본다 — 읽기 실패로 반영이 멈출 값을 conf 에 남기지 않는다.
+            pm_import_mod._apply_harness_ctx_values(
+                dest, values, write=False, opencode_config_dir=opencode_dir)
+            changed = pm_import_mod._write_conf_keys(
+                conf_file, {key: value or None for key, value in updates.items()})
+        applied = pm_import_mod.apply_harness_ctx(
+            dest, write=True, opencode_config_dir=opencode_dir)
+    except pm_import_mod.HarnessCtxError as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
+    except RuntimeError as exc:
+        if _is_engine_rev_skew(exc):
+            raise
+        # 옛 키가 남은 conf(또는 `--set` 이 옛 키) — 값을 읽는 지점의 fail-loud 를 rc 1 로 낸다.
+        if not getattr(exc, "_legacy_conf_key", False):
+            raise
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        _write_machine_line(json.dumps(
+            {"changed": bool(changed), "applied": list(applied)}, ensure_ascii=False))
+        return 0
+    if changed:
+        print(f"✓ local.conf 기록: {', '.join(updates)}")
+    for line in applied:
+        print(f"✓ 하네스 설정 반영: {line}")
+    if not applied:
+        print("하네스 설정 파일: 바뀐 줄 없음 (이미 local.conf 값과 같다).")
+    return 0
+
+
 def cmd_delegate_models(args, *, models_runner=None) -> int:
     """`delegate models --harness <h> --json` — 그 하네스가 인정하는 모델 목록(읽기 전용).
 
@@ -5443,6 +5537,21 @@ def build_parser() -> argparse.ArgumentParser:
              "add-harness 와 같은 규칙).",
     )
     p_sync_cfg.set_defaults(func=cmd_sync_adapter_config)
+
+    # ctx-apply [--json] [--set 키=값 ...] — 사용 한도·압축 비율 검사 → conf 기록 → 설정 파일 반영.
+    p_ctx_apply = sub.add_parser(
+        "ctx-apply",
+        help="사용 한도·압축 비율을 검사하고 local.conf 에 기록한 뒤 하네스 설정 파일에 반영",
+    )
+    p_ctx_apply.add_argument(
+        "--set", action="append", type=_conf_assignment, metavar="키=값", default=None,
+        help="local.conf 에 쓸 값(여러 번 가능·`키=` 는 줄 삭제). 검사를 통과해야 쓴다.",
+    )
+    p_ctx_apply.add_argument(
+        "--json", action="store_true",
+        help="기계 판독 한 줄 `{\"changed\", \"applied\"}` 로 낸다.",
+    )
+    p_ctx_apply.set_defaults(func=cmd_ctx_apply)
 
     # delegate models --harness <h> --json — 위임 모델 목록 조회(읽기 전용·장부 변경 0).
     #   `--harness` 값의 닫힌 집합은 `pm_relay.MODEL_SOURCE` 의 키다. 그 표를 파서 조립 시점에

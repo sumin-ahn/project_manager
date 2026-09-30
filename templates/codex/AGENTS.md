@@ -135,7 +135,7 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 
 위임(dev/reviewer/architect/researcher)은 하네스 네이티브 채널로 한다. 도구·프롬프트·role 매핑은 하네스별 운영 지침이 단일 진실이다.
 
-ctx 정지 밴드(현행 의미 = 최종 checkpoint 넛지·키 이름은 호환 유지)/넛지 %의 100% 기준은 `.project_manager/local.conf`의 `harness.<name>.ctx_window_tokens` > generic `ctx.window_tokens` > 200000 순으로 해소한다. 여러 하네스를 함께 쓰면 하네스별 키로 독립 설정하며, 미설정 기본은 200000이다.
+ctx 사용 한도는 하네스마다 `.project_manager/local.conf`의 `harness.<name>.ctx_window_tokens`(기본 200000)로 정한다. 사용 한도는 그 하네스에서 쓰는 모델 중 가장 작은 창 이하로 두십시오. 세 비율은 사용 한도 대비 쓴 %이며 모든 하네스에 공통이다: `ctx.checkpoint_at_pct`(중간 기록 권고·기본 70)·`ctx.precompact_at_pct`(압축 임박 경고·기본 80)·`ctx.compact_at_pct`(압축·기본 90). 프레임워크가 사용 한도 × 압축 비율을 하네스 설정 파일에 압축 지점으로 쓴다(`$pm-update`·`pm-config ctx-apply`) — 그 값은 설정 파일이 아니라 local.conf 에서 고친다.
 
 ## 8. 핵심 디렉토리
 

@@ -47,6 +47,11 @@ const ADAPTER_CARD_KEY = /^(project\.|runtime\.py$|test\.cmd$|delegate\..+\.mode
 
 const ADAPTER_CARD_NOTE = "안내 문서는 이 저장으로 다시 그려지지 않습니다. 갱신 탭의 [적용]이 다시 그립니다.";
 
+/** 사용 한도 저장이 하네스 설정 파일에서 바꾼 줄 — 없으면 결과 칸을 비운다. */
+function appliedText(applied: string[]): string | null {
+  return applied.length > 0 ? `하네스 설정 파일 반영:\n${applied.join("\n")}` : null;
+}
+
 /** 왼쪽 목록의 마지막 항목 — 레지스트리 그룹이 아니라 버튼으로만 도는 어댑터 파일 절이다. */
 export const ADAPTER_NAV = "어댑터 파일";
 
@@ -312,6 +317,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
       setSetKeys({});
       setNote(Object.keys(updates).some((key) => ADAPTER_CARD_KEY.test(key))
         ? ADAPTER_CARD_NOTE : null);
+      setCommand(appliedText(response.applied));
       onReload();                // 화면 값은 저장 직후 **재조회** 결과다
     }
     setBusy(false);
@@ -324,6 +330,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     if (isError(response)) setError(response.error);
     else {
       setError(null);
+      setCommand(appliedText(response.applied));
       onReload();
     }
     setBusy(false);

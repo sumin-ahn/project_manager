@@ -124,6 +124,8 @@ LOCAL_CONF_WRITERS: dict[tuple[str, str], tuple[str, str]] = {
         (DELEGATES, "해소된 opencode 모델 기록"),
     ("pm_config.py", "cmd_upstream"):
         (DELEGATES, "`pm-config upstream set` → pm_import._write_conf_keys"),
+    ("pm_config.py", "cmd_ctx_apply"):
+        (DELEGATES, "`pm-config ctx-apply --set` → pm_import._write_conf_keys(검사 통과 뒤)"),
 }
 
 # conf 좌표로 인정하는 식별자 — 이 이름이 코드(주석·docstring 아님)에 실제로 등장해야 후보다.

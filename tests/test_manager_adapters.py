@@ -4,7 +4,9 @@
 가 내고, 수용은 그 사본의 `sync-adapter-config --accept` 가 한다. 관리자가 파일을 복사하거나
 백업하지 않는다는 사실을 백업·원장 같은 **엔진만 남기는 흔적**으로 잰다.
 
-소스는 경로 upstream(이 repo)으로 해소된다 — 네트워크 0.
+소스는 경로 upstream(이 트리를 커밋 하나로 담은 임시 저장소)으로 해소된다 — 네트워크 0. 이 트리를
+그대로 쓰지 않는 이유: 설치는 작업 트리를 깔고 HEAD 를 설치 기준으로 적으므로, 커밋 전 템플릿
+변경이 있으면 손대지 않은 파일에도 기준 차이가 보인다.
 
 축 넷:
   1. `files[]` 의 모양이 둘이다(채널 있는 파일 10필드 / 인스턴스 소유 3필드·키 부재).
@@ -22,12 +24,12 @@ from pathlib import Path
 import pytest
 
 from _manager_home import (
-    git_required, install_old_generation_engine, make_pm_home, tree_snapshot,
+    git_required, install_old_generation_engine, make_committed_source, make_pm_home,
+    tree_snapshot,
 )
 
 from manager.bridge import Api
 
-REPO = Path(__file__).resolve().parents[1]
 SETTINGS = ".claude/settings.json"
 # 채널 있는 어댑터 config 행이 드는 필드 전부(T-0907 계약) — 화면이 읽는 표면이다.
 CHANNEL_FIELDS = {"path", "harness", "mode", "status", "template_rev", "diff_lines",
@@ -39,8 +41,15 @@ pytestmark = git_required
 
 
 @pytest.fixture(scope="module")
-def base_home(tmp_path_factory) -> Path:
-    return make_pm_home(tmp_path_factory.mktemp("adapters-base") / "demo", upstream=REPO)
+def source(tmp_path_factory) -> Path:
+    """설치 소스이자 경로 upstream — 설치 기준 커밋이 설치한 내용과 같다."""
+    return make_committed_source(tmp_path_factory.mktemp("adapters-source"))
+
+
+@pytest.fixture(scope="module")
+def base_home(tmp_path_factory, source) -> Path:
+    return make_pm_home(tmp_path_factory.mktemp("adapters-base") / "demo", source=source,
+                        upstream=source)
 
 
 @pytest.fixture
@@ -78,10 +87,10 @@ def _shrink_allow_list(pm_home: Path, keep: int = 5) -> None:
 # ── ① 두 모양 ───────────────────────────────────────────────────────────────
 
 
-def test_the_section_carries_the_source_and_both_file_shapes(api, pm_home):
+def test_the_section_carries_the_source_and_both_file_shapes(api, pm_home, source):
     section = api.adapters(str(pm_home))
 
-    assert section["source"] == str(REPO)          # 소스는 절 머리에 있다(파일 안이 아니다)
+    assert section["source"] == str(source)        # 소스는 절 머리에 있다(파일 안이 아니다)
     channel = _row(section, SETTINGS)
     assert set(channel) == CHANNEL_FIELDS
     assert channel["harness"] == "claude"

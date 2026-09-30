@@ -19,7 +19,7 @@ const RECOMMENDED = ROWS.filter((row) => row.recommended !== null);
 
 function makeBridge(): Bridge {
   return {
-    conf_save: vi.fn(async () => ({ changed: true, conf: CONF })),
+    conf_save: vi.fn(async () => ({ changed: true, conf: CONF, applied: [] })),
     conf_keys: vi.fn(async () => KEYS),
     conf_values: vi.fn(async () => ({ values: {} })),
     adapters: vi.fn(async () => ({ source: "", files: [], conf: CONF })),

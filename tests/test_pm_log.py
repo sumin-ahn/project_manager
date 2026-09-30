@@ -60,8 +60,7 @@ def test_ctx_guidance_all_bands_preserve_required_and_forbid_accident_phrase(ban
     guidance = mod.build_ctx_guard_guidance(
         band,
         used_pct=92,
-        remaining_pct=8,
-        stop_pct=20,
+        precompact_at_pct=80,
     )
 
     for required in mod.CTX_GUARD_REQUIRED_EXPRESSIONS:
@@ -365,6 +364,15 @@ def test_ctx_window_mismatch_without_observation_keeps_qualitative_remedy():
     assert "실 auto-compact 지점 이하" in advisory
     assert "`harness.opencode.ctx_window_tokens`" in advisory
     assert "harness.claude.ctx_window_tokens" not in advisory
+
+
+def test_ctx_window_mismatch_without_harness_names_the_per_harness_key_pattern():
+    """하네스를 모르면 사용 한도 키의 패턴을 지목한다 — 공통 한도 키는 없다(T-0923)."""
+    mod = _load_module()
+    advisory = mod.build_ctx_window_mismatch_advisory(
+        ctx_window_tokens=600_000, ctx_observed_tokens=None, harness=None)
+    assert "`harness.<이름>.ctx_window_tokens`" in advisory
+    assert "ctx.window_tokens" not in advisory
 
 
 def test_cmd_checkpoint_appends_explicit_compaction_trigger(tmp_path, monkeypatch):

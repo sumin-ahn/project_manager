@@ -163,7 +163,7 @@ def test_the_five_lists_are_the_copys_verdict_not_a_manager_calculation(api, pm_
     """
     text = conf_path(pm_home).read_text(encoding="utf-8")
     conf_path(pm_home).write_text(
-        text.replace("test.cmd=", "#test.cmd=").replace("ctx.checkpoint_pct=30", "ctx.checkpoint_pct=25")
+        text.replace("test.cmd=", "#test.cmd=").replace("ctx.checkpoint_at_pct=70", "ctx.checkpoint_at_pct=75")
         + "delegate_enabled=true\nnope.nope=1\n", encoding="utf-8")
 
     verdict = api.status(str(pm_home))["conf"]
@@ -175,7 +175,7 @@ def test_the_five_lists_are_the_copys_verdict_not_a_manager_calculation(api, pm_
     assert verdict["missing_required"] == ["test.cmd"]
     assert verdict["legacy"] == [{"key": "delegate_enabled", "replacement": "delegate.enabled"}]
     assert verdict["unknown"] == ["nope.nope"]      # 폐지 키는 미지가 아니라 폐지로 갈린다
-    assert {"key": "ctx.checkpoint_pct", "value": "25", "default": "30"} in verdict["nonstandard"]
+    assert {"key": "ctx.checkpoint_at_pct", "value": "75", "default": "70"} in verdict["nonstandard"]
 
 
 def test_missing_for_latest_is_a_list_once_the_source_is_resolved(api, pm_home):
@@ -194,19 +194,20 @@ def test_conf_save_writes_through_the_engine_writer_and_its_shared_lock(api, pm_
     lock = pm_home / ".project_manager" / ".local" / "local-conf.lock"
     lock.unlink()      # import 가 세워 둔 것을 치우고, 저장이 같은 경로를 다시 여는지 본다
 
-    response = api.conf_save(str(pm_home), {"ctx.checkpoint_pct": "25"})
+    response = api.conf_save(str(pm_home), {"additional_reviewer.rounds_max": "5"})
 
     assert response["changed"] is True
-    assert _values(pm_home)["ctx.checkpoint_pct"] == "25"
+    assert response["applied"] == []                  # 사용 한도 키가 아니면 반영 줄이 없다
+    assert _values(pm_home)["additional_reviewer.rounds_max"] == "5"
     assert lock.is_file(), "공용 락 파일이 없다 — 엔진 writer 를 우회해 직접 썼다"
 
 
 def test_a_save_touches_no_other_file_in_the_project(api, pm_home):
     """관리자가 직접 쓰는 프로젝트 파일은 `local.conf` 하나다(그 밖의 쓰기는 사본 명령)."""
-    api.conf_save(str(pm_home), {"ctx.precompact_pct": "19"})       # 락 파일까지 세운 뒤가 기준선
+    api.conf_save(str(pm_home), {"identity.user": "a@example.invalid"})  # 락 파일까지 세운 뒤가 기준선
     before = tree_snapshot(pm_home)
 
-    api.conf_save(str(pm_home), {"ctx.checkpoint_pct": "25"})
+    api.conf_save(str(pm_home), {"identity.user": "b@example.invalid"})
 
     after = tree_snapshot(pm_home)
     changed = {name for name in set(before) | set(after) if before.get(name) != after.get(name)}
@@ -228,7 +229,7 @@ def test_a_save_keeps_comments_and_keys_it_was_not_asked_to_change(api, pm_home)
     before = conf_path(pm_home).read_text(encoding="utf-8")
     set_conf_key(pm_home, "nope.nope", "1")
 
-    api.conf_save(str(pm_home), {"ctx.checkpoint_pct": "25"})
+    api.conf_save(str(pm_home), {"additional_reviewer.rounds_max": "5"})
 
     after = conf_path(pm_home).read_text(encoding="utf-8")
     assert after.splitlines()[0] == before.splitlines()[0]     # 머리 주석 그대로
@@ -249,7 +250,11 @@ def test_the_screen_value_after_a_save_is_the_requery_not_the_request(api, pm_ho
 
 
 def test_saving_an_unchanged_value_reports_no_change(api, pm_home):
-    assert api.conf_save(str(pm_home), {"ctx.checkpoint_pct": "30"})["changed"] is False
+    current = _values(pm_home)["test.cmd"]
+    assert api.conf_save(str(pm_home), {"test.cmd": current})["changed"] is False
+    # 사용 한도 경로(사본 `ctx-apply`)도 같은 판정을 낸다 — conf 와 설정 파일 둘 다 그대로다.
+    ctx = api.conf_save(str(pm_home), {"ctx.compact_at_pct": _values(pm_home)["ctx.compact_at_pct"]})
+    assert ctx["changed"] is False and ctx["applied"] == []
 
 
 def test_a_concurrent_writer_in_another_process_serializes_on_the_same_lock(api, pm_home,
@@ -279,7 +284,8 @@ def test_a_concurrent_writer_in_another_process_serializes_on_the_same_lock(api,
 
         started = time.monotonic()
         saver = threading.Thread(
-            target=lambda: saved.append(api.conf_save(str(pm_home), {"ctx.checkpoint_pct": "25"})))
+            target=lambda: saved.append(
+                api.conf_save(str(pm_home), {"additional_reviewer.rounds_max": "5"})))
         saver.start()
         time.sleep(SAVE_ENTERS_THE_WAIT_SECONDS)
         assert saver.is_alive(), "저장이 이미 끝났다 — 대기 중을 재지 못했다"
@@ -298,26 +304,71 @@ def test_a_concurrent_writer_in_another_process_serializes_on_the_same_lock(api,
     assert waited >= BLOCKED_FLOOR_SECONDS, f"저장이 남의 락을 기다리지 않았다 ({waited:.2f}초)"
     assert saved[0]["changed"] is True
     values = _values(pm_home)
-    assert values["ctx.checkpoint_pct"] == "25"                     # 이쪽 결정
+    assert values["additional_reviewer.rounds_max"] == "5"         # 이쪽 결정
     assert values["identity.user"] == "holder@example.invalid"  # 저쪽 결정도 살아 있다
 
 
 def test_a_save_that_cannot_reach_the_project_is_an_error_dict(api, tmp_path):
-    response = api.conf_save(str(tmp_path / "nowhere"), {"ctx.checkpoint_pct": "25"})
+    response = api.conf_save(str(tmp_path / "nowhere"), {"identity.user": "a@example.invalid"})
 
     assert response["error"]["kind"] == "invalid-path"
+
+
+def test_ctx_save_is_checked_before_write_and_reports_applied_lines(api, pm_home):
+    """T-0923 AT-020 — 사용 한도·압축 비율 저장은 그 사본의 `ctx-apply` 한 번이다.
+
+    검사를 통과하지 못한 값은 local.conf·설정 파일 어디에도 쓰이지 않고 오류 종류
+    `invalid-value` 로 온다. 통과하면 설정 파일에서 바뀐 줄이 응답의 `applied` 로 온다.
+    """
+    settings = pm_home / ".claude" / "settings.json"
+    conf_before, settings_before = conf_path(pm_home).read_bytes(), settings.read_bytes()
+
+    refused = api.conf_save(str(pm_home), {"ctx.precompact_at_pct": "90"})  # 90 ≮ 압축 90
+
+    assert refused["error"]["kind"] == "invalid-value", refused
+    assert "ctx.precompact_at_pct=90" in refused["error"]["message"]
+    assert refused["error"]["rc"] == 1
+    assert conf_path(pm_home).read_bytes() == conf_before
+    assert settings.read_bytes() == settings_before
+
+    api.status(str(pm_home))              # 재조회가 세우는 런타임 잠금 파일까지 세운 뒤가 기준선
+    before = tree_snapshot(pm_home)
+    saved = api.conf_save(str(pm_home), {"ctx.compact_at_pct": "85"})
+
+    assert saved["changed"] is True
+    assert ".claude/settings.json autoCompactWindow 180000 → 170000" in saved["applied"]
+    assert _values(pm_home)["ctx.compact_at_pct"] == "85"
+    assert '"autoCompactWindow": 170000' in settings.read_text(encoding="utf-8")
+    assert saved["conf"] == api.status(str(pm_home))["conf"]       # 직후 재조회 판정
+    after = tree_snapshot(pm_home)
+    changed = {name for name in set(before) | set(after) if before.get(name) != after.get(name)}
+    assert changed == {".project_manager/local.conf", ".claude/settings.json",
+                       ".project_manager/adapter_baseline.json"}, changed
+
+    # [기본값으로] 도 같은 사본 명령을 지난다.
+    reset = api.conf_reset(str(pm_home), "ctx.compact_at_pct")
+    assert reset["applied"] == [".claude/settings.json autoCompactWindow 170000 → 180000"]
+
+    # 사용 한도 키가 없는 저장은 지금 경로 그대로 — local.conf 밖 파일은 바뀌지 않는다.
+    before = tree_snapshot(pm_home)
+    plain = api.conf_save(str(pm_home), {"identity.user": "me@example.invalid"})
+    assert plain["applied"] == []
+    after = tree_snapshot(pm_home)
+    assert {name for name in set(before) | set(after)
+            if before.get(name) != after.get(name)} == {".project_manager/local.conf"}
 
 
 # ── ④ [기본값으로] ───────────────────────────────────────────────────────────
 
 
 def test_conf_reset_writes_the_registry_default(api, pm_home):
-    api.conf_save(str(pm_home), {"ctx.checkpoint_pct": "25"})
+    api.conf_save(str(pm_home), {"additional_reviewer.rounds_max": "5"})
 
-    response = api.conf_reset(str(pm_home), "ctx.checkpoint_pct")
+    response = api.conf_reset(str(pm_home), "additional_reviewer.rounds_max")
 
-    assert _values(pm_home)["ctx.checkpoint_pct"] == "30"
-    assert all(row["key"] != "ctx.checkpoint_pct" for row in response["conf"]["nonstandard"])
+    assert _values(pm_home)["additional_reviewer.rounds_max"] == "2"
+    assert all(row["key"] != "additional_reviewer.rounds_max"
+               for row in response["conf"]["nonstandard"])
 
 
 def test_a_key_without_a_declared_default_has_nothing_to_reset_to(api, pm_home):
