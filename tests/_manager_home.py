@@ -79,10 +79,16 @@ def _run(argv: list[str], *, cwd: Path | None = None) -> subprocess.CompletedPro
     return completed
 
 
-def make_pm_home(destination: Path, *, upstream: Path | str | None = None) -> Path:
-    """실 엔진으로 PM 홈을 만든다 (`pm_import.py --new` · 실측 1.6초 · 네트워크 0)."""
+def make_pm_home(destination: Path, *, upstream: Path | str | None = None,
+                 source: Path = REPO) -> Path:
+    """실 엔진으로 PM 홈을 만든다 (`pm_import.py --new` · 실측 1.6초 · 네트워크 0).
+
+    `source` 는 설치 소스다. 설치 기준 커밋과 대조하는 조회(어댑터 차이)나 상류 clone 을 쓰는
+    테스트는 `make_committed_source` 가 만든 저장소를 넘긴다 — 이 트리를 그대로 쓰면 커밋 전
+    변경이 있을 때 결과가 이 트리의 커밋 여부에 따라 달라진다.
+    """
     argv = [sys.executable, str(TOOLS / "pm_import.py"), "--new", str(destination),
-            "--harness", "claude", "--from", str(REPO)]
+            "--harness", "claude", "--from", str(source)]
     if upstream is not None:
         argv += ["--upstream", str(upstream)]
     _run(argv, cwd=REPO)
@@ -182,17 +188,47 @@ def make_bare_with_tags(root: Path, tags: tuple[str, ...] = (
     return bare
 
 
-def make_upstream_checkout(root: Path, *, rev: str = "v9.9.9") -> Path:
-    """이 트리의 실 clone 하나 — 엔진 rev 를 `rev` 로 올리고 같은 이름의 태그를 단다.
+def make_committed_source(root: Path) -> Path:
+    """이 트리의 작업 트리를 커밋 하나로 담은 임시 저장소 — 설치 소스·경로 upstream 으로 쓴다.
+
+    설치(`pm_import --new --from <소스>`)는 소스의 **작업 트리** 파일을 깔고 설치 기준으로 소스
+    HEAD 를 적는다(엔진 동작). 이 트리를 그대로 소스로 쓰면 커밋 전 변경이 있을 때 두 값이
+    갈라져, 기준 커밋과 대조하는 조회와 상류 clone 의 내용이 이 트리의 커밋 여부를 따라간다.
+    추적 파일과 무시되지 않은 새 파일(커밋이 담을 집합)을 작업 트리 내용 그대로 복사해 한 커밋으로
+    박으면, 설치가 까는 내용과 설치 기준 커밋이 늘 같다.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    source = root / "source"
+    listed = _git("-C", str(REPO), "ls-files", "-z", "--cached", "--others",
+                  "--exclude-standard").stdout
+    for relpath in listed.split("\0"):
+        origin = REPO / relpath
+        if not relpath or not origin.is_file():
+            continue            # 작업 트리에서 지운 추적 파일은 커밋에도 없다.
+        target = source / relpath
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(origin, target)
+    _git("init", "-q", str(source))
+    # 무시 규칙에 걸려도 추적 중인 파일이 있으면 그대로 담는다 — 커밋은 복사한 집합과 같아야 한다.
+    _git("-C", str(source), "add", "-A", "--force")
+    _git("-C", str(source), "commit", "-qm", "working tree")
+    return source.resolve()
+
+
+def make_upstream_checkout(root: Path, *, source: Path, rev: str = "v9.9.9") -> Path:
+    """설치 소스(`make_committed_source`)의 실 clone 하나 — 엔진 rev 를 `rev` 로 올리고 같은
+    이름의 태그를 단다.
 
     갱신 축의 실물 상류다: `pm-config update` 가 파일을 복사해 갈 작업트리이면서
-    `git ls-remote --tags` 가 최신 태그를 답하는 저장소다(네트워크 0 · 실측 3.5초라 모듈 단위
-    픽스처로 한 번만 만든다). rev 는 엔진 자신의 `engine_rev.py --bump` 로 올린다 — 리터럴을
-    손으로 고치면 stamped 형제 29개가 어긋나 그 사본이 skew 로 죽는다(실측).
+    `git ls-remote --tags` 가 최신 태그를 답하는 저장소다(네트워크 0 · 모듈 단위 픽스처로 한 번만
+    만든다). 홈도 같은 `source` 로 설치한다 — 설치 기준 커밋이 이 clone 의 이력에 있고 상류가 홈보다
+    rev 하나만 앞선다(이 트리를 직접 clone 하면 커밋 전 변경이 빠져 상류 내용이 홈보다 뒤로 간다).
+    rev 는 엔진 자신의 `engine_rev.py --bump` 로 올린다 — 리터럴을 손으로 고치면 stamped 형제
+    29개가 어긋나 그 사본이 skew 로 죽는다(실측).
     """
     root.mkdir(parents=True, exist_ok=True)
     checkout = root / "upstream"
-    _git("clone", "-q", "--no-local", str(REPO), str(checkout))
+    _git("clone", "-q", "--no-local", str(source), str(checkout))
     _run([sys.executable, str(checkout / ".project_manager" / "tools" / "engine_rev.py"),
           "--bump", rev])
     _git("-C", str(checkout), "commit", "-qam", f"engine rev {rev}")

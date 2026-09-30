@@ -2,12 +2,13 @@
 
 export type BridgeError = {
   /**
-   * 앞 다섯은 바깥(사본·git·등록부)을 부르다 실패한 자리이고, 뒤 둘은 부르기를 **거절한**
+   * 앞 다섯은 바깥(사본·git·등록부)을 부르다 실패한 자리이고, 다음 둘은 부르기를 **거절한**
    * 자리다(허용 목록 밖 명령 · `--force` · 저장·적용이 도는 프로젝트의 다른 요청 · 브라우저의
-   * 폴더 고르기). 거절은 서브프로세스 0개라 `stderr` 가 빈 값이다.
+   * 폴더 고르기). 거절은 서브프로세스 0개라 `stderr` 가 빈 값이다. 마지막 `invalid-value` 는
+   * 사본이 저장값을 검사에서 거부한 자리다(사용 한도·압축 비율 · 문구는 사본 원문).
    */
   kind: "old-generation" | "spawn" | "timeout" | "not-json" | "invalid-path"
-      | "not-allowed" | "forbidden-flag";
+      | "not-allowed" | "forbidden-flag" | "invalid-value";
   message: string;
   stderr: string;
   rc: number | null;
@@ -211,7 +212,11 @@ export type ConfKeysDocument = {
 };
 /** 값 파일 그대로 — 판정(다섯 목록)은 가벼운 현황 조회의 `conf` 절이 나른다(조회 1회). */
 export type ConfValuesDocument = { values: Record<string, string> };
-export type ConfSaveResult = { changed: boolean; conf: ConfSection };
+/**
+ * 저장 결과 — `applied` 는 사용 한도·압축 비율 저장이 하네스 설정 파일에서 바꾼 줄이다
+ * (`<파일> <경로> <옛 값> → <새 값>` · 그 밖의 저장은 빈 목록).
+ */
+export type ConfSaveResult = { changed: boolean; conf: ConfSection; applied: string[] };
 /** `delegate models --harness <h> --json` 산출 그대로 — 빈 목록 성공은 없다(0개면 실패다). */
 export type DelegateModelsDocument = { harness: string; kind: string; models: string[] };
 

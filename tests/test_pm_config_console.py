@@ -91,6 +91,11 @@ class FakeBoardAreas:
                 return row.get("base") or None
         return None
 
+    def default_pytest_cmd(self):
+        # board.default_pytest_cmd 대역 — 행과 local.conf 에 test.cmd 가 없을 때의 빌드명령 기본값.
+        #   대역이 없으면 결과가 실행한 작업 폴더의 local.conf(`test.cmd`) 유무에 따라 갈린다.
+        return "python3 -m pytest tests/ -q"
+
 
 # `[w]` 가 create_slot 까지 가려면 repo 등록 base 가 있어야 한다 — svc 를 base=main 으로 등록한 행.
 _SVC_ROWS = [{"repo": "svc", "prefix": "svc", "git": "git@h:me/svc.git", "test_cmd": "",

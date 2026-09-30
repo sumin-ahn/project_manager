@@ -14,13 +14,15 @@
 //
 // 모델: 사전 checkpoint 넛지 → native compaction → 사후 checkpoint 넛지.
 //
-// 임계값(엔진 상향 조정 이력 반영): local.conf `ctx.checkpoint_pct`/`ctx.precompact_pct`(기본 30/20) = "잔여 컨텍스트 %".
-//   잔여% = (1 - used/limit) * 100. computeCtxState 의 stop 반환은 파리티를 위해 유지하고,
+// 임계값: local.conf `ctx.checkpoint_at_pct`/`ctx.precompact_at_pct`(기본 70/80) = 사용 한도 대비 "쓴 %".
+//   쓴% = used/limit * 100. computeCtxState 의 stop 반환은 파리티를 위해 유지하고,
 //   plugin 은 stop 밴드를 최종 checkpoint 안내로만 흡수한다(차단·marker 없음).
 //   plugin 은 local.conf 를 직접 파싱(의존 적음·board.py shell-out 회피).
+//   압축 비율(`ctx.compact_at_pct`)은 여기서 읽지 않는다 — 엔진이 그 값으로 `.opencode/opencode.jsonc`
+//   의 모델 `limit`·`compaction.reserved` 를 쓰고(pm_import.apply_harness_ctx) 압축은 opencode 가 한다.
 //
 // 멱등성: nudge/nudge2 는 compaction 사이클당 각 1회. session.compacted 가 둘을 re-arm 한다.
-// sanity: 읽은 nudge/stop 이 비정상(음수·stop>nudge)이면 엔진 기본(30/20) 폴백.
+// sanity: 읽은 두 비율이 0 < checkpoint_at < precompact_at < 100 이 아니면 엔진 기본(70/80) 폴백.
 //
 // 엔진(pm_handoff/board) 미수정 — shell-out 호출만. 어댑터층(templates/opencode/.opencode/)만.
 //
@@ -32,19 +34,18 @@ const path = require("node:path");
 const childProcess = require("node:child_process");
 const crypto = require("node:crypto");
 
-// ── 엔진 기본값 (board.py CTX_*_PCT_DEFAULT 미러 — 폴백 전용) ──────────────────
-// 상향 조정(20/10→30/20). stop 값은 computeCtxState 파리티와 nudge2 파생에 계속 쓰인다.
-const NUDGE_PCT_DEFAULT = 30; // 잔여 ≤ 이 % → 넛지 (일은 계속).
-const STOP_PCT_DEFAULT = 20; // 구 stop 경계(판정만 유지·차단 소비 없음).
+// ── 엔진 기본값 사본 (local_conf 레지스트리 미러 — 폴백 전용 · 쓴 % 기준) ──────────
+// tests/test_ctx_default_mirror.py 가 레지스트리·네 어댑터 사이트를 대조한다.
+const CHECKPOINT_AT_PCT_DEFAULT = 70; // 사용 ≥ 이 % → 넛지 (일은 계속).
+const PRECOMPACT_AT_PCT_DEFAULT = 80; // 사용 ≥ 이 % → 최종 안내(자동 압축 임박·차단 없음).
 
-// 2단(strong) nudge 임계 마진 (%p·파생값). nudge2 밴드 = stop_pct < 잔여 ≤
-// min(stop_pct + 이 마진, nudge_pct) — compaction 임박 전 강한 유도.
-// config 노브 신설 없이 stop_pct 에서 파생. claude ctx_guard.CTX_NUDGE2_MARGIN_PCT 와 미러.
+// 2단(strong) nudge 임계 마진 (%p·파생값). nudge2 밴드 = max(precompact_at − 이 마진,
+// checkpoint_at) ≤ 사용 < precompact_at — compaction 임박 전 강한 유도.
+// config 노브 신설 없이 precompact_at 에서 파생. claude ctx_guard.CTX_NUDGE2_MARGIN_PCT 와 미러.
 const NUDGE2_MARGIN_PCT = 3;
 
-// ── ctx 예산 기본 (board.py CTX_WINDOW_TOKENS_DEFAULT 미러) ──────────
-// 정지/넛지 분모(100% 기준)의 최종 폴백. 물리 window auto-detect 개념 폐기 —
-// resolveBudget 이 하네스별 오버라이드 > generic > 이 기본 순으로 예산 하나를 해소한다.
+// ── 사용 한도 기본값 (local_conf 레지스트리 미러) ──────────
+// 넛지 분모(100% 기준) = `harness.opencode.ctx_window_tokens`(사용 한도), 없으면 이 값.
 const CTX_WINDOW_TOKENS_DEFAULT = 200000;
 
 // 엔진 루트는 이 파일 자기 위치에서 나온다 — 훅은 언제나 `<root>/.opencode/lib/*.cjs` 에 설치되고
@@ -84,8 +85,11 @@ const LEGACY_CONF_KEYS = [
   "additional_reviewer_incomplete_round_limit",
   "additional_reviewer_round_limit",
   "additional_reviewer_wave_budget",
+  "ctx.checkpoint_pct",
   "ctx.nudge_pct",
+  "ctx.precompact_pct",
   "ctx.stop_pct",
+  "ctx.window_tokens",
   "ctx_nudge_pct",
   "ctx_stop_pct",
   "ctx_window_tokens",
@@ -157,8 +161,8 @@ function loadLocalConf(root) {
 }
 
 // ── 순수 함수: 임계값 해석 + sanity 폴백 ────────────────────────────────────
-// conf(parseLocalConf 결과)에서 nudge/stop 을 정수로 읽고, 비정상이면 엔진 기본 폴백.
-// 비정상 = 비정수 / 음수 / 0이하 / stop > nudge / 100 초과.  하나라도 깨지면 둘 다 기본으로.
+// conf(parseLocalConf 결과)에서 두 쓴 % 를 정수로 읽고, 0 < checkpoint_at < precompact_at < 100 이
+// 아니면(비정수·역전·범위 밖) 둘 다 엔진 기본값이다(claude ctx_guard.ctx_thresholds 동형).
 function resolveThresholds(conf) {
   const readPct = (key, dflt) => {
     const raw = conf ? conf[key] : undefined;
@@ -166,42 +170,32 @@ function resolveThresholds(conf) {
     const n = Number.parseInt(String(raw).trim(), 10);
     return Number.isNaN(n) ? dflt : n;
   };
-  let nudge = readPct("ctx.checkpoint_pct", NUDGE_PCT_DEFAULT);
-  let stop = readPct("ctx.precompact_pct", STOP_PCT_DEFAULT);
-  // sanity: 잔여% 임계는 0 < stop ≤ nudge ≤ 100 이어야 의미 있다.
+  const checkpoint = readPct("ctx.checkpoint_at_pct", CHECKPOINT_AT_PCT_DEFAULT);
+  const precompact = readPct("ctx.precompact_at_pct", PRECOMPACT_AT_PCT_DEFAULT);
   const sane =
-    Number.isInteger(nudge) &&
-    Number.isInteger(stop) &&
-    stop > 0 &&
-    nudge > 0 &&
-    nudge <= 100 &&
-    stop <= 100 &&
-    stop <= nudge;
+    Number.isInteger(checkpoint) &&
+    Number.isInteger(precompact) &&
+    checkpoint > 0 &&
+    checkpoint < precompact &&
+    precompact < 100;
   if (!sane) {
-    return { nudge_pct: NUDGE_PCT_DEFAULT, stop_pct: STOP_PCT_DEFAULT };
+    return {
+      checkpoint_at_pct: CHECKPOINT_AT_PCT_DEFAULT,
+      precompact_at_pct: PRECOMPACT_AT_PCT_DEFAULT,
+    };
   }
-  return { nudge_pct: nudge, stop_pct: stop };
+  return { checkpoint_at_pct: checkpoint, precompact_at_pct: precompact };
 }
 
 // ── 순수 함수: ctx 예산 해소 (하네스별) ────────────────────────────
-// 정지/넛지 분모(100% 기준) = 해소된 예산 하나 (물리한도 개념 폐기). precedence:
-//   harness.<name>.ctx_window_tokens  (하네스별 오버라이드)
-//   > ctx.window_tokens             (generic)
-//   > CTX_WINDOW_TOKENS_DEFAULT  (200000)
-// 각 층 >0 정수 sanity — ≤0·비정수·미설정이면 다음 층으로(0/음수 특수의미 없음).
+// 넛지 분모(100% 기준) = 그 하네스의 사용 한도 `harness.<name>.ctx_window_tokens`, 없거나 >0 정수가
+// 아니면 CTX_WINDOW_TOKENS_DEFAULT(200000). 엔진은 같은 값으로 opencode 의 압축 지점을 쓴다.
 // claude ctx_guard.resolve_budget(conf,"opencode") 동형. conf = parseLocalConf 결과.
 function resolveBudget(conf, harness) {
-  const readBudget = (key) => {
-    const raw = conf ? conf[key] : undefined;
-    if (raw === undefined || raw === null) return null;
-    const n = Number(String(raw).trim());
-    return Number.isInteger(n) && n > 0 ? n : null;
-  };
-  return (
-    readBudget(`harness.${harness}.ctx_window_tokens`) ||
-    readBudget("ctx.window_tokens") ||
-    CTX_WINDOW_TOKENS_DEFAULT
-  );
+  const raw = conf ? conf[`harness.${harness}.ctx_window_tokens`] : undefined;
+  if (raw === undefined || raw === null) return CTX_WINDOW_TOKENS_DEFAULT;
+  const n = Number(String(raw).trim());
+  return Number.isInteger(n) && n > 0 ? n : CTX_WINDOW_TOKENS_DEFAULT;
 }
 
 // ── 순수 함수: AssistantMessage.tokens 누적 = 현재 컨텍스트 점유 토큰 ──────────
@@ -221,33 +215,32 @@ function accumulateTokens(tokens) {
   return input + output + reasoning + cacheRead + cacheWrite;
 }
 
-// ── 순수 함수: 2단(strong) nudge 임계 (stop_pct + margin·nudge_pct 캡) ────────
-// nudge2 밴드 = stop_pct < 잔여 ≤ 이 값. margin(+3)이 nudge 밴드를 넘지 않게 min 으로 캡해
-// nudge2 가 nudge 밴드 밖(ok 영역)으로 새지 않는다. claude ctx_guard.nudge2_threshold 와 동형.
+// ── 순수 함수: 2단(strong) nudge 임계 (precompact_at − margin·checkpoint_at 하한) ────────
+// nudge2 밴드 = 이 값 ≤ 사용 < precompact_at. margin(3)이 nudge 밴드 아래로 새지 않게 max 로
+// 하한을 둔다. claude ctx_guard.nudge2_threshold 와 동형.
 function nudge2Threshold(thresholds) {
-  const stop = thresholds && thresholds.stop_pct != null ? thresholds.stop_pct : STOP_PCT_DEFAULT;
-  const nudge = thresholds && thresholds.nudge_pct != null ? thresholds.nudge_pct : NUDGE_PCT_DEFAULT;
-  return Math.min(stop + NUDGE2_MARGIN_PCT, nudge);
+  return Math.max(
+    thresholds.precompact_at_pct - NUDGE2_MARGIN_PCT,
+    thresholds.checkpoint_at_pct,
+  );
 }
 
 // ── 순수 함수: ctx 상태 판정 (테스트 핵심) ──────────────────────────────────
 // used: accumulateTokens 결과, limit: 해소된 ctx 예산(resolveBudget·구 물리한도 폐기),
-// thresholds: resolveThresholds 결과. 반환: { remainingPct, usedPct, level: "ok"|"nudge"|"nudge2"|"stop" }.
-//   nudge2= 구 stop 경계 직전 강한 유도 밴드. limit 미상이면 level "ok".
+// thresholds: resolveThresholds 결과. 반환: { usedPct, level: "ok"|"nudge"|"nudge2"|"stop" }.
+//   nudge2 = stop 경계 직전 강한 유도 밴드. limit 미상이면 level "ok".
 function computeCtxState(used, limit, thresholds) {
   const u = Number(used) || 0;
   const lim = Number(limit);
-  const { nudge_pct, stop_pct } = thresholds;
   if (!Number.isFinite(lim) || lim <= 0) {
-    return { remainingPct: 100, usedPct: 0, level: "ok" };
+    return { usedPct: 0, level: "ok" };
   }
   const usedPct = (u / lim) * 100;
-  const remainingPct = 100 - usedPct;
   let level = "ok";
-  if (remainingPct <= stop_pct) level = "stop";
-  else if (remainingPct <= nudge2Threshold(thresholds)) level = "nudge2";
-  else if (remainingPct <= nudge_pct) level = "nudge";
-  return { remainingPct, usedPct, level };
+  if (usedPct >= thresholds.precompact_at_pct) level = "stop";
+  else if (usedPct >= nudge2Threshold(thresholds)) level = "nudge2";
+  else if (usedPct >= thresholds.checkpoint_at_pct) level = "nudge";
+  return { usedPct, level };
 }
 
 // ── 순수 함수: 중앙 엔진 부재 시 비종료 fallback 안내 ────────────────────────
@@ -255,11 +248,10 @@ function computeCtxState(used, limit, thresholds) {
 // 경계에서도 정책이 뒤집히지 않도록 필수 두 사실만 최소 복제한다.
 const FALLBACK_CONTINUITY_GUIDANCE =
   "압축은 자동이고 세션은 그대로 이어진다. 핸드오프는 사용자 명시 지시로만 한다.";
-function buildNudgeGuidance(state, thresholds) {
-  const remaining = Math.round((state && state.remainingPct) || 0);
+function buildNudgeGuidance(state) {
   const used = Math.round((state && state.usedPct) || 0);
   return (
-    `[ctx-nudge] 컨텍스트 사용 ${used}% (잔여 ${remaining}%). ` +
+    `[ctx-nudge] 컨텍스트 사용 ${used}%. ` +
     `현재 ticket 경계의 결과와 진행 상태를 complete entry와 ` +
     `\`python3 .project_manager/tools/pm_log.py checkpoint --task <이름>\`으로 기록할 수 있다. ` +
     `${FALLBACK_CONTINUITY_GUIDANCE} ` +
@@ -269,11 +261,9 @@ function buildNudgeGuidance(state, thresholds) {
 
 // ── 순수 함수: 2단(strong) checkpoint 안내문 (compaction 임박) ────────────────
 // 1단을 놓쳤거나 건너뛴 세션에 checkpoint 실행을 즉시 지시한다. 여전히 비차단 안내다.
-function buildNudge2Guidance(state, thresholds) {
-  const remaining = Math.round((state && state.remainingPct) || 0);
+function buildNudge2Guidance(state) {
   return (
-    `[ctx-nudge/강화] 컨텍스트 사용 ${Math.round((state && state.usedPct) || 0)}% ` +
-    `(잔여 ${remaining}%). ` +
+    `[ctx-nudge/강화] 컨텍스트 사용 ${Math.round((state && state.usedPct) || 0)}%. ` +
     `\`python3 .project_manager/tools/pm_log.py checkpoint --task <이름>\`으로 ` +
     `checkpoint entry의 구간·서사를 기록할 수 있다. ` +
     `${FALLBACK_CONTINUITY_GUIDANCE} ` +
@@ -306,11 +296,8 @@ function buildEngineCtxGuidance(
   if (state && Number.isFinite(Number(state.usedPct))) {
     args.push("--used-pct", String(Math.round(Number(state.usedPct))));
   }
-  if (state && Number.isFinite(Number(state.remainingPct))) {
-    args.push("--remaining-pct", String(Math.round(Number(state.remainingPct))));
-  }
-  if (thresholds && Number.isFinite(Number(thresholds.stop_pct))) {
-    args.push("--stop-pct", String(Math.round(Number(thresholds.stop_pct))));
+  if (thresholds && Number.isFinite(Number(thresholds.precompact_at_pct))) {
+    args.push("--precompact-at-pct", String(Math.round(Number(thresholds.precompact_at_pct))));
   }
   const result = runPmLog(
     root, args, { capture: true, timeout: SNAPSHOT_TIMEOUT_MS }, spawnSync,
@@ -318,14 +305,15 @@ function buildEngineCtxGuidance(
   if (result && result.status === 0 && typeof result.stdout === "string" && result.stdout.trim()) {
     return result.stdout.trim();
   }
-  if (band === "nudge") return buildNudgeGuidance(state, thresholds);
-  if (band === "nudge2") return buildNudge2Guidance(state, thresholds);
+  if (band === "nudge") return buildNudgeGuidance(state);
+  if (band === "nudge2") return buildNudge2Guidance(state);
   if (band === "final") {
-    const remaining = Math.round((state && state.remainingPct) || 0);
     const used = Math.round((state && state.usedPct) || 0);
-    const stop = Math.round((thresholds && thresholds.stop_pct) || STOP_PCT_DEFAULT);
+    const precompact = Math.round(
+      (thresholds && thresholds.precompact_at_pct) || PRECOMPACT_AT_PCT_DEFAULT,
+    );
     return (
-      `[ctx-nudge/최종] 컨텍스트 사용 ${used}% (잔여 ${remaining}% ≤ ${stop}%). ` +
+      `[ctx-nudge/최종] 컨텍스트 사용 ${used}% (압축 임박 경고 ${precompact}% 이상). ` +
       `\`python3 .project_manager/tools/pm_log.py checkpoint --task <이름> --trigger compaction\` ` +
       `기록을 사용할 수 있다. ${FALLBACK_CONTINUITY_GUIDANCE} ` +
       `상세 ctx 연속성 정책은 pm_log.py ctx-guidance 엔진에서 복구한다.`
@@ -854,8 +842,8 @@ module.exports = {
   SESSION_LOOKUP_TIMEOUT_MS,
   SNAPSHOT_TIMEOUT_MS,
   CHECKPOINT_TIMEOUT_MS,
-  NUDGE_PCT_DEFAULT,
-  STOP_PCT_DEFAULT,
+  CHECKPOINT_AT_PCT_DEFAULT,
+  PRECOMPACT_AT_PCT_DEFAULT,
   NUDGE2_MARGIN_PCT,
   CTX_WINDOW_TOKENS_DEFAULT,
 };

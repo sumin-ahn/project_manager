@@ -312,7 +312,7 @@ describe("설정 선읽기", () => {
     const bridge = makeBridge({
       conf_save: vi.fn(async (_path: string, updates: Record<string, string>) => {
         stored = { ...stored, ...updates };
-        return { changed: true, conf: document_.conf };
+        return { changed: true, conf: document_.conf, applied: [] };
       }),
       conf_values: vi.fn(async () => ({ values: stored })),
     } as Partial<Bridge>);
@@ -322,16 +322,16 @@ describe("설정 선읽기", () => {
     fireEvent.mouseDown(screen.getByRole("tab", { name: "설정" }));
     fireEvent.click(await screen.findByTestId("nav-ctx"));
     // 값이 없는 사본이라 칸이 닫혀 있다 — 직접 정함을 켜야 입력 칸이 선다.
-    fireEvent.click(screen.getByLabelText("ctx.checkpoint_pct 직접 정함"));
-    fireEvent.change(screen.getByLabelText("ctx.checkpoint_pct"), { target: { value: "26" } });
+    fireEvent.click(screen.getByLabelText("ctx.checkpoint_at_pct 직접 정함"));
+    fireEvent.change(screen.getByLabelText("ctx.checkpoint_at_pct"), { target: { value: "76" } });
     fireEvent.click(screen.getByTestId("save"));
 
     await waitFor(() => expect(bridge.conf_save)
-      .toHaveBeenCalledWith(DEMO, { "ctx.checkpoint_pct": "26" }));
+      .toHaveBeenCalledWith(DEMO, { "ctx.checkpoint_at_pct": "76" }));
     await waitFor(() => expect(settingsCalls(bridge)).toBe(2));
     // 저장 직후 판정도 다시 읽는다(가벼운 절) — 배지는 사본이 낸 것이다.
     expect(lightCalls(bridge)).toBeGreaterThan(1);
-    await waitFor(() => expect(screen.getByLabelText("ctx.checkpoint_pct")).toHaveValue("26"));
+    await waitFor(() => expect(screen.getByLabelText("ctx.checkpoint_at_pct")).toHaveValue("76"));
   });
 });
 

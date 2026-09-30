@@ -760,7 +760,7 @@ def build_ctx_window_mismatch_advisory(
     )
     config_key = (
         f"harness.{normalized_harness}.ctx_window_tokens"
-        if normalized_harness is not None else "ctx.window_tokens"
+        if normalized_harness is not None else "harness.<이름>.ctx_window_tokens"
     )
     return (
         "> ⚠ [ctx-window-mismatch] 설정 창이 실 압축 지점보다 큼 — 이번 압축 사이클에서 "
@@ -1380,14 +1380,14 @@ def build_ctx_guard_guidance(
     band: str,
     *,
     used_pct: int | None = None,
-    remaining_pct: int | None = None,
-    stop_pct: int | None = None,
+    precompact_at_pct: int | None = None,
 ) -> str:
     """세 하네스가 공유하는 ctx nudge/compaction 안내문을 렌더한다.
 
-    동적 사용률은 하네스 관측값을 그대로 표시하되, 세션 연속성 정책은
+    동적 사용률은 하네스 관측값(사용 한도 대비 쓴 %)을 그대로 표시하되, 세션 연속성 정책은
     :data:`CTX_GUARD_CONTINUITY_GUIDANCE` 한 상수에서만 온다. 밴드는 표현 강도만
-    다르고 작업 중단·세션 종료를 유도하지 않는다.
+    다르고 작업 중단·세션 종료를 유도하지 않는다. final 밴드는 압축 임박 경고 비율
+    (`ctx.precompact_at_pct`)을 함께 적는다.
     """
     labels = {
         "nudge": "ctx-nudge",
@@ -1406,20 +1406,12 @@ def build_ctx_guard_guidance(
             "--trigger compaction`(Windows는 `py -3`)으로 기록한다. "
         )
     else:
-        observed: list[str] = []
+        status = ""
         if used_pct is not None:
-            observed.append(f"컨텍스트 사용 {used_pct}%")
-        if remaining_pct is not None:
-            remaining = f"잔여 {remaining_pct}%"
-            if band == "final" and stop_pct is not None:
-                remaining += f" ≤ {stop_pct}%"
-            observed.append(remaining)
-        if len(observed) >= 2:
-            status = f"{observed[0]} ({', '.join(observed[1:])}). "
-        elif observed:
-            status = f"{observed[0]}. "
-        else:
-            status = ""
+            status = f"컨텍스트 사용 {used_pct}%"
+            if band == "final" and precompact_at_pct is not None:
+                status += f" (압축 임박 경고 {precompact_at_pct}% 이상)"
+            status += ". "
         checkpoint = "`python3 .project_manager/tools/pm_log.py checkpoint --task <이름>"
         if band == "final":
             checkpoint += " --trigger compaction"
@@ -1437,8 +1429,7 @@ def cmd_ctx_guidance(args: argparse.Namespace) -> int:
     text = build_ctx_guard_guidance(
         args.band,
         used_pct=args.used_pct,
-        remaining_pct=args.remaining_pct,
-        stop_pct=args.stop_pct,
+        precompact_at_pct=args.precompact_at_pct,
     )
     if args.json:
         _write_machine_line(json.dumps(
@@ -2027,9 +2018,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--band", choices=("nudge", "nudge2", "final", "precompact"), required=True,
         help="안내 강도/경계 종류",
     )
-    p.add_argument("--used-pct", type=int, metavar="N", help="관측 컨텍스트 사용률")
-    p.add_argument("--remaining-pct", type=int, metavar="N", help="관측 잔여 컨텍스트 비율")
-    p.add_argument("--stop-pct", type=int, metavar="N", help="final 밴드 stop 임계")
+    p.add_argument("--used-pct", type=int, metavar="N", help="관측 컨텍스트 사용률(사용 한도 대비 쓴 %%)")
+    p.add_argument("--precompact-at-pct", type=int, metavar="N",
+                   help="final 밴드의 압축 임박 경고 비율(ctx.precompact_at_pct)")
     p.add_argument(
         "--json", action="store_true",
         help="Codex hook envelope(systemMessage/suppressOutput) JSON 하나로 출력",

@@ -234,9 +234,10 @@ def test_known_keys_comments_and_blank_lines_produce_no_finding(board, monkeypat
         "delegate.developer.hard.fallback.model=gpt-x\n"
         "delegate.model_alias.mymodel=gpt-x\n"
         "additional_reviewer.enabled=false\n"
-        "ctx.checkpoint_pct=30\n"
-        "ctx.precompact_pct=20\n"
-        "ctx.window_tokens=200000\n"
+        "ctx.checkpoint_at_pct=70\n"
+        "ctx.precompact_at_pct=80\n"
+        "ctx.compact_at_pct=90\n"
+        "harness.claude.ctx_window_tokens=200000\n"
         "harness.opencode.pro_model=foo\n"
         "harness.codex.idle_timeout=600\n"
         "diff_cap.small=4000\n"
@@ -476,7 +477,7 @@ _KEYS_BEFORE_THE_REGISTRY = frozenset({
     "additional_reviewer.wave_budget", "additional_reviewer.rounds_max",
     "additional_reviewer.paths", "additional_reviewer.timeout",
     "additional_reviewer.idle_timeout", "additional_reviewer.progress_signal",
-    "ctx.checkpoint_pct", "ctx.precompact_pct", "ctx.window_tokens",
+    "ctx.checkpoint_at_pct", "ctx.precompact_at_pct", "ctx.compact_at_pct",
     "qa.platforms",
     "upstream.path", "upstream.rev", "upstream.seen_rev",
     "project.name", "project.tagline", "project.root", "project.date",
@@ -594,15 +595,15 @@ def test_required_is_only_what_the_core_commands_cannot_run_without(conf_module)
 
 
 _MOVED_DEFAULTS = (
-    pytest.param("ctx.checkpoint_pct", "30",
-                 lambda c: c.board.ctx_thresholds()["nudge_pct"], 30,
-                 id="board-ctx-nudge-pct"),
-    pytest.param("ctx.precompact_pct", "20",
-                 lambda c: c.board.ctx_thresholds()["stop_pct"], 20,
-                 id="board-ctx-stop-pct"),
-    pytest.param("ctx.window_tokens", "200000",
-                 lambda c: c.board._conf_default_int("ctx.window_tokens"), 200000,
-                 id="board-ctx-window-tokens"),
+    pytest.param("ctx.checkpoint_at_pct", "70",
+                 lambda c: c.board._conf_default_int("ctx.checkpoint_at_pct"), 70,
+                 id="board-ctx-checkpoint-at-pct"),
+    pytest.param("ctx.precompact_at_pct", "80",
+                 lambda c: c.board._conf_default_int("ctx.precompact_at_pct"), 80,
+                 id="board-ctx-precompact-at-pct"),
+    pytest.param("ctx.compact_at_pct", "90",
+                 lambda c: c.board._conf_default_int("ctx.compact_at_pct"), 90,
+                 id="board-ctx-compact-at-pct"),
     pytest.param("additional_reviewer.paths", "src/,tests/,scripts/,.project_manager/tools/",
                  lambda c: c.reviewer._configured_paths({}),
                  ["src/", "tests/", "scripts/", ".project_manager/tools/"],
@@ -629,7 +630,7 @@ _MOVED_DEFAULTS = (
 @pytest.mark.parametrize("key,declared,probe,expected", _MOVED_DEFAULTS)
 def test_moved_default_is_declared_once_and_read_by_its_consumer(
         conf_module, consumers, monkeypatch, key, declared, probe, expected):
-    """옮겨 온 기본값 9개 — 레지스트리 선언값과 소비자가 읽는 값이 이동 전 리터럴과 같다."""
+    """레지스트리 선언값과 소비자가 읽는 값이 같다 — ctx 비율 셋은 board init 이 conf 에 쓰는 값이다."""
     monkeypatch.setattr(consumers.board, "local_config", lambda *a, **k: {})
     assert conf_module.default_for(key) == declared
     assert probe(consumers) == expected
@@ -672,16 +673,18 @@ def test_missing_required_reports_only_undeclared_keys(conf_module, values, miss
 def test_nonstandard_compares_only_keys_that_declare_a_default(conf_module):
     """편차 판정은 기본값이 선언된 키만 본다 (기준 없는 자리에 기준을 지어내지 않는다)."""
     deviation = conf_module.nonstandard({
-        "ctx.window_tokens": "300000",       # 선언된 기본과 다름 → 편차
+        "ctx.compact_at_pct": "85",          # 선언된 기본과 다름 → 편차
         "diff_cap.large": "20000",           # 패턴 키도 멤버 기본과 비교한다
-        "ctx.precompact_pct": "20",                # 기본과 같음 → 편차 아님
+        "harness.claude.ctx_window_tokens": "1000000",  # 하네스 사용 한도도 멤버 기본(200000)과 비교
+        "ctx.precompact_at_pct": "80",       # 기본과 같음 → 편차 아님
         "runtime.py": "python3",             # 기본 선언 없음 → 비교 대상 아님
         "additional_reviewer.timeout": "900",  # 하네스 표가 정본 → 비교 대상 아님
         "nope.nope": "1",                    # 모르는 키 → 비교 대상 아님
     })
     assert deviation == {
-        "ctx.window_tokens": ("300000", "200000"),
+        "ctx.compact_at_pct": ("85", "90"),
         "diff_cap.large": ("20000", "2500"),
+        "harness.claude.ctx_window_tokens": ("1000000", "200000"),
     }
 
 
@@ -696,7 +699,7 @@ def test_keys_cli_lists_all_keys(conf_module):
         assert key in proc.stdout, key
     for pattern in conf_module.PATTERN_REGISTRY:
         assert pattern in proc.stdout, pattern
-    for value in ("30", "20", "200000", "24", "300", "1000", "2500"):
+    for value in ("70", "80", "90", "24", "300", "1000", "2500"):
         assert value in proc.stdout, value
     assert "필수" in proc.stdout                       # 필수 칸이 표에 있다
 
@@ -1088,3 +1091,28 @@ def test_sibling_mapping_reads_the_declaration_and_degrades_to_an_empty_table(
                        for harness, values in relay_module.REASONING_ALLOWED.items()}
     assert conf_module._sibling_mapping("pm_relay.py", "NO_SUCH_DECLARATION") == {}
     assert conf_module._sibling_mapping("no_such_sibling.py", "REASONING_ALLOWED") == {}
+
+
+# ── 하네스 사용 한도 구성원 (T-0923 AT-024) ──────────────────────────────────
+
+
+def test_harness_window_member_label_default_and_rule(conf_module, keys_document):
+    """`harness.<이름>.ctx_window_tokens` — 기본값 200000·줄 이름 "사용 한도 (토큰)"·규칙 문장.
+
+    규칙 문장은 구성원별 설명 자리가 없어 패턴 설명에 싣는다(화면이 구성원에 패턴 설명을 붙인다).
+    옛 문구("컨텍스트 크기")가 남으면 화면이 공통 분모 시절의 뜻을 가르친다.
+    """
+    rule = "사용 한도는 그 하네스에서 쓰는 모델 중 가장 작은 창 이하로 두십시오."
+    pattern_row = next(row for row in keys_document["keys"]
+                       if row["key"] == conf_module.HARNESS_PATTERN)
+    assert rule in pattern_row["description"]
+    assert "컨텍스트 크기" not in pattern_row["description"]
+    members = {member["key"]: member for member in pattern_row["members"]}
+    for harness in ("claude", "codex", "opencode"):
+        key = f"harness.{harness}.ctx_window_tokens"
+        assert conf_module.default_for(key) == "200000", key
+        assert conf_module.unset_for(key) is None, key
+        assert members[key]["default"] == "200000", key
+        assert pattern_row["unit_labels"][key] == f"{harness} 사용 한도 (토큰)", key
+        spec = conf_module.key_spec(key)
+        assert rule in spec.description and "컨텍스트 크기" not in spec.description, key

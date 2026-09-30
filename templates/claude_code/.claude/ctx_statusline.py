@@ -3,7 +3,8 @@
 
 claude Code 가 statusLine 입력 JSON 을 stdin 으로 준다 (``context_window`` 포함).
 이 스크립트는 컨텍스트 **사용** % 를 산출해 statusline 한 줄을 stdout 에 낸다.
-임계(local.conf ``ctx.checkpoint_pct``/``ctx.precompact_pct``)에 닿으면 색·문구로 checkpoint 시점을 알린다.
+임계(local.conf ``ctx.checkpoint_at_pct``/``ctx.precompact_at_pct`` · 사용 한도 대비 쓴 %)에 닿으면 색·문구로
+checkpoint 시점을 알린다.
 
   - ok    : 회색 ctx N%
   - nudge : 노랑 "ctx N% — checkpoint 준비"

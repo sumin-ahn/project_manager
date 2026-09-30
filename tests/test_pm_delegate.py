@@ -54,6 +54,16 @@ def pd():
     return _load("pm_delegate", TOOLS / "pm_delegate.py")
 
 
+@pytest.fixture(autouse=True)
+def _fresh_config_anchor(pd, monkeypatch):
+    """설정 앵커(`_CONFIG_REPO_OVERRIDE`)를 테스트마다 비운다.
+
+    `main` 은 `--cwd` 로 해소한 소유 PM 홈을 모듈 전역에 남긴다. pytest 임시 폴더가 PM 홈에 등록된
+    작업 폴더 안에 있으면 그 값이 실 PM 홈이 되고, 뒤 테스트의 `local_config()` 가 실 PM 홈
+    local.conf 를 읽는다 — 결과가 개발 환경의 conf 에 따라 갈린다."""
+    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", None)
+
+
 # ── canned 하네스 출력 (파서 재사용 확인·pm_relay 실측 형식) ──────────────────────
 
 def _codex_stdout(reply: str = "DONE") -> str:

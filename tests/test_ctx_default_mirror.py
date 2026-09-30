@@ -1,23 +1,26 @@
-"""ctx 임계 디폴트 미러 정합 가드 (T-0207·T-0550·T-0770·T-0906).
+"""ctx 임계 디폴트 미러 정합 가드 (T-0207·T-0550·T-0770·T-0906·T-0923).
 
-nudge/stop 디폴트는 네 곳에 있다 — 엔진 레지스트리(`local_conf.KEY_REGISTRY` · fresh init 이
-local.conf 에 쓰는 값의 정본) + 세 어댑터 훅(claude ctx_guard.py·opencode ctx-guard-core.cjs·codex
-pm_orch_codex.py). 어댑터는 엔진을 import 하지 않고(touches 격리·의존 최소) 리터럴을
-보유하므로, 한 곳만 바꾸고 미러를 잊으면 엔진이 기록한 값과 훅 판정 임계가 어긋난다.
+쓴 % 임계(중간 기록 권고·압축 임박 경고)와 사용 한도 기본값은 다섯 곳에 있다 — 엔진 레지스트리
+(`local_conf.KEY_REGISTRY` · fresh init 이 local.conf 에 쓰는 값의 정본) + 어댑터 네 파일(claude
+ctx_guard.py·codex pm_orch_codex.py·opencode ctx-guard-core.cjs·opencode pm_orch_opencode.py). 어댑터는
+엔진을 import 하지 않고(의존 최소) 리터럴을 보유하므로, 한 곳만 바꾸고 미러를 잊으면 엔진이 기록한
+값과 훅 판정 임계가 어긋난다.
 
-이 가드는 어댑터 세 파일을 정규식으로 파싱(언어 무관·hermetic·라이브 없음)하고 엔진 사이트는
-레지스트리 조회로 읽어 사이트들의 디폴트가 서로 **일치**함을 강제한다. ``stop`` 이름은 호환성을 위해 유지하며 Claude/codex 훅에서는
-최종 비차단 넛지 밴드, relay 에서는 회전 임계로 소비한다. 구체 값(현재 30/20)은 각 사이트별 단위테스트가 핀
-(test_handoff_trigger·test_claude_ctx_guard·test_opencode_ctx_guard·test_codex_ctx_guard) — 여기서는
-사이트들의 합의만 검사해 값 변경 시 이 가드를 매번 손대지 않아도 되게 한다.
+이 가드는 어댑터 파일을 정규식으로 파싱(언어 무관·hermetic·라이브 없음)하고 엔진 사이트는 레지스트리
+조회로 읽어 사이트들의 디폴트가 서로 **일치**함을 강제한다. opencode relay 드라이버(pm_orch_opencode.py)는
+회전 임계(압축 임박 경고)와 사용 한도만 소비하므로 그 둘만 대조한다. 압축 비율(`ctx.compact_at_pct`)은
+어느 어댑터도 읽지 않는다 — 엔진이 그 값으로 하네스 설정 파일의 압축 지점을 쓴다.
 
-codex 사이트는 T-0770 이 세션 안 넛지를 배선하며 4번째 미러로 들어왔다. 그 전까지 codex 는
-stop/window 만 미러하고 nudge 축이 없어(relay 회전만 판정) 이 가드 밖에 있었다.
+밴드 대조(`test_three_adapters_classify_the_same_band_table`)는 세 어댑터의 판정 함수를 **실제로
+실행**해 같은 입력 표로 비교한다(opencode 는 node 로 core 를 require).
 """
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -28,8 +31,10 @@ CLAUDE_GUARD = REPO / "templates" / "claude_code" / ".claude" / "ctx_guard.py"
 # opencode 로드 규약(export=단일 함수·T-0283)을 위해 팩토리만 export 하는 얇은 shim 이고, 순수 헬퍼·
 # 상수·팩토리 본체는 lib/ctx-guard-core.cjs(opencode 미스캔·node require 대상)로 분리됐다.
 OPENCODE_GUARD = REPO / "templates" / "opencode" / ".opencode" / "lib" / "ctx-guard-core.cjs"
+# opencode relay 드라이버 — 회전 임계·사용 한도의 네 번째 어댑터 사이트(T-0923).
+OPENCODE_DRIVER = REPO / "templates" / "opencode" / ".opencode" / "pm_orch_opencode.py"
 # codex 는 옆에 ctx_guard 모듈이 없어 relay driver 파일이 곧 어댑터 ctx 사이트다 — 같은 파일의
-# 훅 축(ctx_thresholds·classify)이 이 상수들을 소비한다(T-0770).
+# 훅 축(ctx_thresholds·classify)과 relay 회전 축이 이 상수들을 소비한다(T-0770).
 CODEX_GUARD = REPO / "templates" / "codex" / ".codex" / "pm_orch_codex.py"
 
 
@@ -46,49 +51,52 @@ def _engine(key: str) -> int:
     return int(declared)
 
 
-def test_ctx_nudge_default_mirrors_across_all_sites():
-    engine = _engine("ctx.checkpoint_pct")
-    claude = _grab(CLAUDE_GUARD, r"CTX_NUDGE_PCT_DEFAULT\s*=\s*(\d+)")
-    opencode = _grab(OPENCODE_GUARD, r"const\s+NUDGE_PCT_DEFAULT\s*=\s*(\d+)")
-    codex = _grab(CODEX_GUARD, r"CTX_NUDGE_PCT_DEFAULT\s*=\s*(\d+)")
+def test_ctx_checkpoint_at_default_mirrors_across_all_sites():
+    engine = _engine("ctx.checkpoint_at_pct")
+    claude = _grab(CLAUDE_GUARD, r"CTX_CHECKPOINT_AT_PCT_DEFAULT\s*=\s*(\d+)")
+    opencode = _grab(OPENCODE_GUARD, r"const\s+CHECKPOINT_AT_PCT_DEFAULT\s*=\s*(\d+)")
+    codex = _grab(CODEX_GUARD, r"CTX_CHECKPOINT_AT_PCT_DEFAULT\s*=\s*(\d+)")
     assert engine == claude == opencode == codex, (
-        f"nudge 디폴트 미러 불일치: engine={engine} claude={claude} "
+        f"중간 기록 권고 디폴트 미러 불일치: engine={engine} claude={claude} "
         f"opencode={opencode} codex={codex}"
     )
 
 
-def test_ctx_stop_default_mirrors_across_all_sites():
-    engine = _engine("ctx.precompact_pct")
-    claude = _grab(CLAUDE_GUARD, r"CTX_STOP_PCT_DEFAULT\s*=\s*(\d+)")
-    opencode = _grab(OPENCODE_GUARD, r"const\s+STOP_PCT_DEFAULT\s*=\s*(\d+)")
-    codex = _grab(CODEX_GUARD, r"CTX_STOP_PCT_DEFAULT\s*=\s*(\d+)")
-    assert engine == claude == opencode == codex, (
-        f"stop 디폴트 미러 불일치: engine={engine} claude={claude} "
-        f"opencode={opencode} codex={codex}"
+def test_ctx_precompact_at_default_mirrors_across_all_sites():
+    engine = _engine("ctx.precompact_at_pct")
+    claude = _grab(CLAUDE_GUARD, r"CTX_PRECOMPACT_AT_PCT_DEFAULT\s*=\s*(\d+)")
+    opencode = _grab(OPENCODE_GUARD, r"const\s+PRECOMPACT_AT_PCT_DEFAULT\s*=\s*(\d+)")
+    codex = _grab(CODEX_GUARD, r"CTX_PRECOMPACT_AT_PCT_DEFAULT\s*=\s*(\d+)")
+    driver = _grab(OPENCODE_DRIVER, r"CTX_PRECOMPACT_AT_PCT_DEFAULT\s*=\s*(\d+)")
+    assert engine == claude == opencode == codex == driver, (
+        f"압축 임박 경고 디폴트 미러 불일치: engine={engine} claude={claude} "
+        f"opencode={opencode} codex={codex} opencode-driver={driver}"
     )
 
 
 def test_ctx_window_tokens_default_mirrors_across_all_sites():
-    """ctx 예산 디폴트(200000)도 미러 (T-0236·ADR-0041).
+    """사용 한도 디폴트(200000)도 미러 — 엔진 사이트는 하네스 구성원 기본값이다(T-0923).
 
-    ADR-0041 이 분모=예산 통일을 확정하며 opencode(ctx-guard.js)에도
-    CTX_WINDOW_TOKENS_DEFAULT 미러가 생겼다(T-0235) — nudge/stop 과 동형으로 사이트들의
-    합의를 강제한다(한 곳만 바꾸면 하네스별 기본 예산이 어긋남)."""
-    engine = _engine("ctx.window_tokens")
+    공통 분모 키는 사라졌고 사용 한도는 하네스마다 `harness.<name>.ctx_window_tokens` 하나다.
+    세 하네스 구성원의 선언값이 같고, 어댑터 네 사이트가 그 값을 품는다."""
+    engine = {_engine(f"harness.{name}.ctx_window_tokens") for name in ("claude", "codex", "opencode")}
+    assert len(engine) == 1, engine
+    (engine_value,) = engine
     claude = _grab(CLAUDE_GUARD, r"CTX_WINDOW_TOKENS_DEFAULT\s*=\s*([\d_]+)")
     opencode = _grab(OPENCODE_GUARD, r"const\s+CTX_WINDOW_TOKENS_DEFAULT\s*=\s*(\d+)")
     codex = _grab(CODEX_GUARD, r"CTX_WINDOW_TOKENS_DEFAULT\s*=\s*([\d_]+)")
-    assert engine == claude == opencode == codex, (
-        f"window tokens 디폴트 미러 불일치: engine={engine} claude={claude} "
-        f"opencode={opencode} codex={codex}"
+    driver = _grab(OPENCODE_DRIVER, r"CTX_WINDOW_TOKENS_DEFAULT\s*=\s*([\d_]+)")
+    assert engine_value == claude == opencode == codex == driver, (
+        f"사용 한도 디폴트 미러 불일치: engine={engine_value} claude={claude} "
+        f"opencode={opencode} codex={codex} opencode-driver={driver}"
     )
 
 
 def test_ctx_nudge2_margin_mirrors_across_adapter_sites():
     """2단 넛지 마진(%p)도 세 어댑터가 같은 값을 갖는다 (T-0328·T-0770).
 
-    nudge2 밴드 = stop_pct < 잔여 <= min(stop_pct + 마진, nudge_pct) 이라 마진이 어긋나면 세
-    하네스의 밴드 경계가 갈린다. 엔진엔 이 파생 상수가 없어(레지스트리는 nudge/stop 만 선언)
+    nudge2 밴드 = max(precompact_at − 마진, checkpoint_at) <= 사용 < precompact_at 이라 마진이 어긋나면
+    세 하네스의 밴드 경계가 갈린다. 엔진엔 이 파생 상수가 없어(레지스트리는 두 비율만 선언)
     어댑터 3사이트만 대조한다."""
     claude = _grab(CLAUDE_GUARD, r"CTX_NUDGE2_MARGIN_PCT\s*=\s*(\d+)")
     opencode = _grab(OPENCODE_GUARD, r"const\s+NUDGE2_MARGIN_PCT\s*=\s*(\d+)")
@@ -98,12 +106,50 @@ def test_ctx_nudge2_margin_mirrors_across_adapter_sites():
     )
 
 
-def test_ctx_default_sanity_stop_below_nudge():
-    """디폴트 자체가 sanity(0 < stop <= nudge < 100)를 만족 — 어댑터 sanity 폴백이
-    엔진 기본으로 떨어질 때 무한/역전이 없도록."""
-    nudge = _engine("ctx.checkpoint_pct")
-    stop = _engine("ctx.precompact_pct")
-    assert 0 < stop <= nudge < 100, f"디폴트 sanity 위반: nudge={nudge} stop={stop}"
+def test_ctx_default_sanity_checkpoint_below_precompact_below_compact():
+    """디폴트 자체가 sanity(0 < checkpoint_at < precompact_at < compact_at < 100)를 만족 —
+    어댑터 sanity 폴백이 엔진 기본으로 떨어질 때 무한/역전이 없도록."""
+    checkpoint = _engine("ctx.checkpoint_at_pct")
+    precompact = _engine("ctx.precompact_at_pct")
+    compact = _engine("ctx.compact_at_pct")
+    assert 0 < checkpoint < precompact < compact < 100, (checkpoint, precompact, compact)
+
+
+# ── 세 어댑터 밴드 대조 (T-0923 AT-017) ──────────────────────────────────────
+# 정수 사용률 표 × 비율 70·80 → 기대 밴드. 경계(70·77·80)를 양쪽에서 태운다.
+_BAND_TABLE = ((69, "ok"), (70, "nudge"), (76, "nudge"), (77, "nudge2"), (79, "nudge2"),
+               (80, "stop"), (100, "stop"))
+_BAND_CONF = {"ctx.checkpoint_at_pct": "70", "ctx.precompact_at_pct": "80"}
+_BAND_BUDGET = 200000
+
+
+def test_three_adapters_classify_the_same_band_table():
+    """같은 정수 사용률에 claude·codex·opencode 가 같은 밴드를 낸다 — 판정 함수를 실제로 실행한다."""
+    claude = _load_module("claude_ctx_guard_band_table", CLAUDE_GUARD)
+    codex = _load_module("codex_ctx_guard_band_table", CODEX_GUARD)
+    claude_bands = [claude.classify(used, claude.ctx_thresholds(_BAND_CONF))
+                    for used, _band in _BAND_TABLE]
+    codex_bands = [codex.classify(used, codex.ctx_thresholds(_BAND_CONF))
+                   for used, _band in _BAND_TABLE]
+
+    node = shutil.which("node")
+    assert node is not None, "node 가 없으면 opencode 판정을 실행해 대조할 수 없다"
+    script = (
+        f"const m = require({json.dumps(str(OPENCODE_GUARD))});"
+        f"const t = m.resolveThresholds({json.dumps(_BAND_CONF)});"
+        f"const used = {json.dumps([used for used, _band in _BAND_TABLE])};"
+        f"console.log(JSON.stringify(used.map((u) => "
+        f"m.computeCtxState(u * {_BAND_BUDGET} / 100, {_BAND_BUDGET}, t).level)));"
+    )
+    completed = subprocess.run([node, "-e", script], capture_output=True, text=True,
+                               encoding="utf-8", timeout=60)
+    assert completed.returncode == 0, completed.stderr
+    opencode_bands = json.loads(completed.stdout)
+
+    expected = [band for _used, band in _BAND_TABLE]
+    assert claude_bands == codex_bands == opencode_bands == expected, {
+        "claude": claude_bands, "codex": codex_bands, "opencode": opencode_bands,
+        "expected": expected}
 
 
 # ── 첫 모델 응답 전 침묵 (T-0835) ────────────────────────────────────────────

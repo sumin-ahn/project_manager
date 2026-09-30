@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -302,6 +303,54 @@ def test_add_harness_codex_onto_claude_host_lays_down_adapter(pm_import, tmp_pat
     # dry-run = 파일시스템 미변경.
     assert not (dest / ".codex").exists()
     assert not (dest / ".agents").exists()
+
+
+def test_add_harness_applies_ctx_values(pm_import, tmp_path, capsys):
+    """T-0923 AT-015 — 더한 하네스의 설정 파일에도 local.conf 사용 한도가 들어간다(원장 기록 뒤).
+
+    claude 프로젝트에 `ctx.compact_at_pct=85` 를 두고 codex 를 더하면 codex 설정 파일의 압축
+    지점이 170000(200000 × 85%), 창이 200000 이다 — 템플릿 값 180000 에 멈추지 않는다."""
+    import tomllib
+
+    dest = _build_live_instance(pm_import, tmp_path / "ctx_host", "claude")
+    _set_conf_upstream(dest, str(REPO))
+    conf = dest / ".project_manager" / "local.conf"
+    conf.write_text(conf.read_text(encoding="utf-8").replace(
+        "ctx.compact_at_pct=90", "ctx.compact_at_pct=85"), encoding="utf-8")
+    capsys.readouterr()
+
+    pm_import.add_harness(dest, "codex", dry_run=False)
+
+    document = tomllib.loads((dest / ".codex" / "config.toml").read_text(encoding="utf-8"))
+    assert document["model_auto_compact_token_limit"] == 170000
+    assert document["model_context_window"] == 200000
+    out = capsys.readouterr().out
+    assert ".codex/config.toml model_auto_compact_token_limit 180000 → 170000" in out
+    # 이미 있던 claude 설정 파일도 같은 conf 로 맞춰진다(반영은 있는 하네스 전부다).
+    settings = json.loads((dest / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    assert settings["autoCompactWindow"] == 170000
+
+
+def test_add_harness_skips_ctx_apply_while_legacy_keys_remain(pm_import, tmp_path, capsys):
+    """옛 키(`ctx.window_tokens`)가 남은 conf 에서도 add-harness 는 끝까지 간다(rc 0).
+
+    반영만 건너뛰고 그 사실과 옛 키를 한 줄로 알린다 — 이름 이동은 pm-update 가 하고 그 실행이
+    반영한다. 이미 있던 설정 파일은 그대로다(옛 값 300000 으로 추측해 쓰지 않는다)."""
+    dest = _build_live_instance(pm_import, tmp_path / "legacy_host", "claude")
+    _set_conf_upstream(dest, str(REPO))
+    conf = dest / ".project_manager" / "local.conf"
+    conf.write_text(conf.read_text(encoding="utf-8") + "ctx.window_tokens=300000\n",
+                    encoding="utf-8")
+    settings = dest / ".claude" / "settings.json"
+    settings_before = settings.read_bytes()
+    capsys.readouterr()
+
+    assert pm_import.add_harness_cli(dest, "codex", dry_run=False) == 0
+
+    out = capsys.readouterr().out
+    assert "하네스 설정 반영을 건너뜁니다" in out and "ctx.window_tokens" in out
+    assert (dest / ".codex" / "config.toml").is_file()
+    assert settings.read_bytes() == settings_before
 
 
 def test_add_harness_codex_namespace_invariant_zero_outside(pm_import, tmp_path):

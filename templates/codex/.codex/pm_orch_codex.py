@@ -23,7 +23,8 @@ ctx 기계 가드: 세 하네스 모두 driver 가 usage 로 예산 초과를 �
 **post-turn** 회전 marker 를 박제한다(엔진 `write_post_turn_marker` DI·Supervisor 무수정 회전).
 marker 는 turn *실행 후* 박제 단일 의미론 — Supervisor 는 그 입력을 다시 보내지 않고 다음 입력 전
 회전한다(세션 안 가드는 marker 를 만들지 않는다·비차단 안내 전용). 예산 = local.conf
-`harness.codex.ctx_window_tokens` > generic `ctx.window_tokens` > 200000(per-harness precedence).
+`harness.codex.ctx_window_tokens`(codex 사용 한도) > 200000. 같은 한도로 엔진이 `.codex/config.toml`
+의 `model_context_window`·`model_auto_compact_token_limit` 을 쓴다(`pm_import.apply_harness_ctx`).
 
 codex 어댑터는 claude 와 달리 옆에 Python `ctx_guard` 모듈이 없다(claude=`.claude/ctx_guard.py`·
 opencode=JS core) — 그래서 엔진 루트 탐색·local.conf 파싱을 driver 자체에 둔다(opencode driver 동형).
@@ -50,20 +51,17 @@ from typing import NamedTuple
 CODEX_BIN = "codex"
 TURN_TIMEOUT_SEC = 600  # subprocess 당 hard hang 가드(상한 — 한 turn 이 길 수 있음·codex reasoning).
 
-# ── ctx 기계 가드 상수 (엔진 ctx_guard 미러) ──────────
-# 엔진 밴드 "잔여 <= ctx.precompact_pct" 는 세션 안에서 최종 checkpoint 넛지(비차단)로 소비된다 — relay
-# 경로는 그 같은 경계에서 driver 가 usage 로 **회전** 한다(post-turn marker → Supervisor 가 새 세션
-# 으로 교체·실보호는 회전이 한다). 임계는 local.conf `ctx.precompact_pct` override 해소(기본 20·아래
-# resolve_stop_pct·claude ctx_guard.ctx_thresholds 대칭). 잔여 20% 회전 ⟺ 사용률 80%.
-CTX_STOP_PCT_DEFAULT = 20  # 잔여 회전 임계(%) — claude ctx_guard.CTX_STOP_PCT_DEFAULT 미러.
-# 세션 안 1단 넛지 임계(잔여 %) — claude ctx_guard.CTX_NUDGE_PCT_DEFAULT·opencode
-# NUDGE_PCT_DEFAULT 미러(codex 는 네 번째 미러 사이트·tests/test_ctx_default_mirror.py).
-# relay 회전 축은 stop 하나만 쓰고, 이 값은 아래 훅 축(`ctx_thresholds`)이 소비한다.
-CTX_NUDGE_PCT_DEFAULT = 30
+# ── ctx 기계 가드 상수 (엔진 레지스트리 미러 · 쓴 % 기준) ──────────
+# 엔진 밴드 "사용 >= ctx.precompact_at_pct" 는 세션 안에서 최종 checkpoint 넛지(비차단)로 소비된다 —
+# relay 경로는 그 같은 경계에서 driver 가 usage 로 **회전** 한다(post-turn marker → Supervisor 가 새
+# 세션으로 교체·실보호는 회전이 한다). 두 축 모두 아래 `ctx_thresholds` 한 해소를 쓴다(claude
+# ctx_guard.ctx_thresholds 대칭 · tests/test_ctx_default_mirror.py 가 네 어댑터 사이트를 대조).
+CTX_CHECKPOINT_AT_PCT_DEFAULT = 70  # 사용 >= 이 % → 1단 넛지.
+CTX_PRECOMPACT_AT_PCT_DEFAULT = 80  # 사용 >= 이 % → 최종 넛지 · relay 회전.
 # 2단(strong) 넛지 마진(%p·파생값) — claude ctx_guard.CTX_NUDGE2_MARGIN_PCT·opencode
-# NUDGE2_MARGIN_PCT 미러. nudge2 밴드 = stop_pct < 잔여 <= min(stop_pct + 이 마진, nudge_pct).
+# NUDGE2_MARGIN_PCT 미러. nudge2 밴드 = max(precompact_at − 이 마진, checkpoint_at) <= 사용 < precompact_at.
 CTX_NUDGE2_MARGIN_PCT = 3
-# ctx 예산(분모) 최종 폴백 — local.conf harness.codex.ctx_window_tokens/ctx.window_tokens 미설정 시.
+# 사용 한도 기본값(분모) — local.conf harness.codex.ctx_window_tokens 미설정 시.
 CTX_WINDOW_TOKENS_DEFAULT = 200_000
 
 
@@ -101,8 +99,11 @@ LEGACY_CONF_KEYS = (
     "additional_reviewer_incomplete_round_limit",
     "additional_reviewer_round_limit",
     "additional_reviewer_wave_budget",
+    "ctx.checkpoint_pct",
     "ctx.nudge_pct",
+    "ctx.precompact_pct",
     "ctx.stop_pct",
+    "ctx.window_tokens",
     "ctx_nudge_pct",
     "ctx_stop_pct",
     "ctx_window_tokens",
@@ -179,37 +180,17 @@ def load_local_config(root: Path) -> dict[str, str]:
 
 
 def resolve_ctx_budget(conf: dict[str, str]) -> int:
-    """ctx 예산(분모)을 per-harness precedence 로 해소.
+    """ctx 예산(분모) = codex 사용 한도.
 
-    `harness.codex.ctx_window_tokens` > generic `ctx.window_tokens` > CTX_WINDOW_TOKENS_DEFAULT(200000).
-    각 층 >0 정수 sanity — ≤0·비정수·미설정이면 다음 층 폴백(0/음수 특수의미 없음). claude
-    ctx_guard.resolve_budget(conf,"codex")·opencode resolveBudget 동형(하네스별 키 완전 독립)."""
-    for key in ("harness.codex.ctx_window_tokens", "ctx.window_tokens"):
-        raw = conf.get(key)
-        if raw is None:
-            continue
-        try:
-            size = int(str(raw).strip())
-        except (ValueError, AttributeError):
-            continue
-        if size > 0:
-            return size
-    return CTX_WINDOW_TOKENS_DEFAULT
-
-
-def resolve_stop_pct(conf: dict[str, str]) -> int:
-    """회전 임계(잔여 %)를 conf `ctx.precompact_pct` 로 해소 — 없으면/비정상이면 기본 20.
-
-    claude `ctx_guard.ctx_thresholds` 의 stop 축과 대칭(sanity: 0 < stop < 100·위반 시 기본 폴백).
-    relay 기계 가드는 회전 시점만 판정하므로 nudge 축은 불요 — driver 는 이 하나로 회전 경계를 잡는다."""
-    raw = conf.get("ctx.precompact_pct")
-    if raw is None:
-        return CTX_STOP_PCT_DEFAULT
+    `harness.codex.ctx_window_tokens` > CTX_WINDOW_TOKENS_DEFAULT(200000). >0 정수 sanity — ≤0·비정수·
+    미설정이면 기본값(0/음수 특수의미 없음). claude ctx_guard.resolve_budget(conf,"codex")·opencode
+    resolveBudget 동형(하네스별 키 완전 독립)."""
+    raw = conf.get("harness.codex.ctx_window_tokens")
     try:
-        stop = int(str(raw).strip())
+        size = int(str(raw).strip()) if raw is not None else 0
     except (ValueError, AttributeError):
-        return CTX_STOP_PCT_DEFAULT
-    return stop if 0 < stop < 100 else CTX_STOP_PCT_DEFAULT
+        size = 0
+    return size if size > 0 else CTX_WINDOW_TOKENS_DEFAULT
 
 
 def _resolve_rollout_file(session_id: str) -> Path | None:
@@ -303,7 +284,7 @@ class CodexCliDriver:
     """
 
     def __init__(self, parse_codex_json, *, ctx_budget: int | None = None,
-                 stop_pct: int = CTX_STOP_PCT_DEFAULT, mark_stop=None,
+                 precompact_at_pct: int = CTX_PRECOMPACT_AT_PCT_DEFAULT, mark_stop=None,
                  mark_ctx_if_over=None, spawn_result=None,
                  codex_bin: str = CODEX_BIN, timeout: int = TURN_TIMEOUT_SEC,
                  runner=subprocess.run, root: Path | None = None) -> None:
@@ -322,7 +303,8 @@ class CodexCliDriver:
             or (lambda sid, reply: (sid, reply))
         )
         self._ctx_budget = ctx_budget
-        self._stop_pct = stop_pct  # 잔여 정지 임계(%) — main 이 local.conf ctx.precompact_pct 로 해소해 주입.
+        # 회전 임계(쓴 %) — main 이 local.conf ctx.precompact_at_pct 로 해소해 주입.
+        self._precompact_at_pct = precompact_at_pct
         self._root = Path(root) if root is not None else None
         self.codex_bin = codex_bin
         self.timeout = timeout
@@ -416,7 +398,7 @@ class CodexCliDriver:
     # ── driver-side ctx 기계 가드 (relay 경로 전용) ─────────────────
 
     def _maybe_mark_ctx(self, session_id: str, usage) -> None:
-        """turn usage 가 ctx 예산 정지점(잔여 <= stop_pct)에 도달하면 **post-turn** 회전 marker 를 박제한다.
+        """turn usage 가 ctx 예산 회전점(사용 >= precompact_at_pct)에 도달하면 **post-turn** 회전 marker 를 박제한다.
 
         세 하네스 공통으로 driver 가 회전 판정 주체다(세션 안 가드는 비차단 안내
         전용·marker 미생산). codex 는 turn.completed 후 판정한다. turn 이 *이미 실행·응답됐으므로* 엔진
@@ -424,7 +406,7 @@ class CodexCliDriver:
         방지). 예산·usage·root·mark_stop·엔진 판정 헬퍼 중 하나라도 없으면
         no-op(가드 비활성·부트/테스트 경로 무영향 — usage None turn 은 rollout 도 안 읽는다:
         신선도 anchor 가 wire 누계 대조를 요구하므로 검증 불가 rollout 채택은 fail-open 재도입.
-        그 turn 의 소모는 다음 turn 차분이 보수 흡수한다·PM override). 정지점 = 예산 × (100 - stop_pct)/100.
+        그 turn 의 소모는 다음 turn 차분이 보수 흡수한다·PM override). 회전점 = 예산 × precompact_at_pct/100.
 
         사용 토큰 = input + output. **reasoning_output·cached_input 은 가산하지 않는다** — codex
         upstream usage fixture상 output_tokens는 reasoning 포함(100+10(내 reasoning 5)=110)이라
@@ -458,13 +440,13 @@ class CodexCliDriver:
         )
         used = precise if precise is not None else delta
         if not self._mark_ctx_if_over(
-            self._root, session_id, used, self._ctx_budget, self._stop_pct,
+            self._root, session_id, used, self._ctx_budget, self._precompact_at_pct,
             self._mark_stop,
         ):
             # 임계 미달과 writer 실패가 같은 False 계약이지만, 여기까지 온 양수 사용량은
             # helper가 판정한다. 실패도 relay를 막지는 않고 운영 가시성만 복원한다.
-            stop_threshold = self._ctx_budget * (100 - self._stop_pct) / 100
-            if used >= stop_threshold:
+            rotate_threshold = self._ctx_budget * self._precompact_at_pct / 100
+            if used >= rotate_threshold:
                 sys.stderr.write("[pm-orch] codex ctx marker 박제 실패\n")
 
 
@@ -509,25 +491,21 @@ def _int_conf(conf: dict[str, str], key: str, default: int) -> int:
 
 
 def ctx_thresholds(conf: dict[str, str]) -> dict[str, int]:
-    """넛지 밴드 임계(잔여 %) — `ctx.checkpoint_pct`/`ctx.precompact_pct` (claude ctx_thresholds 미러).
+    """밴드 임계(쓴 %) — `ctx.checkpoint_at_pct`/`ctx.precompact_at_pct` (claude ctx_thresholds 미러).
 
-    sanity 0 < stop <= nudge < 100 위반이면 **둘 다** 엔진 기본으로 폴백한다(오타·역전에 robust).
-    relay 회전 축의 `resolve_stop_pct` 와 키는 같고, 이쪽은 nudge 축까지 있어 claude 와 같은
-    교차 sanity 를 쓴다."""
-    nudge = _int_conf(conf, "ctx.checkpoint_pct", CTX_NUDGE_PCT_DEFAULT)
-    stop = _int_conf(conf, "ctx.precompact_pct", CTX_STOP_PCT_DEFAULT)
-    if not (0 < stop <= nudge < 100):
-        nudge, stop = CTX_NUDGE_PCT_DEFAULT, CTX_STOP_PCT_DEFAULT
-    return {"nudge_pct": nudge, "stop_pct": stop}
+    `0 < checkpoint_at < precompact_at < 100` 위반이면 **둘 다** 엔진 기본으로 폴백한다(오타·역전에
+    robust). 세션 안 넛지와 relay 회전(`precompact_at_pct`)이 이 한 해소를 쓴다."""
+    checkpoint = _int_conf(conf, "ctx.checkpoint_at_pct", CTX_CHECKPOINT_AT_PCT_DEFAULT)
+    precompact = _int_conf(conf, "ctx.precompact_at_pct", CTX_PRECOMPACT_AT_PCT_DEFAULT)
+    if not (0 < checkpoint < precompact < 100):
+        checkpoint, precompact = CTX_CHECKPOINT_AT_PCT_DEFAULT, CTX_PRECOMPACT_AT_PCT_DEFAULT
+    return {"checkpoint_at_pct": checkpoint, "precompact_at_pct": precompact}
 
 
 def nudge2_threshold(thresholds: dict[str, int]) -> int:
-    """2단 넛지 임계(잔여 %) — stop_pct + 마진, nudge_pct 로 캡 (claude nudge2_threshold 미러)."""
-    return min(thresholds["stop_pct"] + CTX_NUDGE2_MARGIN_PCT, thresholds["nudge_pct"])
-
-
-def remaining_pct(used_pct: int) -> int:
-    return max(0, 100 - used_pct)
+    """2단 넛지 임계(쓴 %) — precompact_at − 마진, checkpoint_at 으로 하한 (claude nudge2_threshold 미러)."""
+    return max(thresholds["precompact_at_pct"] - CTX_NUDGE2_MARGIN_PCT,
+               thresholds["checkpoint_at_pct"])
 
 
 def context_used_pct_from_tokens(tokens: int, budget: int) -> int:
@@ -543,13 +521,12 @@ def context_used_pct_from_tokens(tokens: int, budget: int) -> int:
 
 
 def classify(used_pct: int, thresholds: dict[str, int]) -> str:
-    """사용 % → 'ok' | 'nudge' | 'nudge2' | 'stop' (잔여 기준·claude classify 미러)."""
-    remaining = remaining_pct(used_pct)
-    if remaining <= thresholds["stop_pct"]:
+    """사용 % → 'ok' | 'nudge' | 'nudge2' | 'stop' (쓴 % 기준·claude classify 미러)."""
+    if used_pct >= thresholds["precompact_at_pct"]:
         return "stop"
-    if remaining <= nudge2_threshold(thresholds):
+    if used_pct >= nudge2_threshold(thresholds):
         return "nudge2"
-    if remaining <= thresholds["nudge_pct"]:
+    if used_pct >= thresholds["checkpoint_at_pct"]:
         return "nudge"
     return "ok"
 
@@ -690,8 +667,7 @@ def _ctx_guidance_text(root: Path, *, band: str, used_pct: int,
         sys.executable, str(engine), "ctx-guidance",
         "--band", CTX_BAND_GUIDANCE_ARG[band],
         "--used-pct", str(used_pct),
-        "--remaining-pct", str(remaining_pct(used_pct)),
-        "--stop-pct", str(thresholds["stop_pct"]),
+        "--precompact-at-pct", str(thresholds["precompact_at_pct"]),
     ]
     try:
         completed = runner(command, cwd=str(root), stdout=subprocess.PIPE,
@@ -1621,13 +1597,13 @@ def main(argv: list[str] | None = None) -> int:
     cwd = args.cwd or os.getcwd()
     conf = load_local_config(root)
     ctx_budget = resolve_ctx_budget(conf)
-    stop_pct = resolve_stop_pct(conf)
-    engine.validate_relay_budget(ctx_budget, stop_pct)
-    # driver-side ctx 가드 원천 — local.conf 예산·정지임계 해소 + 엔진 post-turn marker writer 주입.
+    precompact_at_pct = ctx_thresholds(conf)["precompact_at_pct"]
+    engine.validate_relay_budget(ctx_budget, precompact_at_pct)
+    # driver-side ctx 가드 원천 — local.conf 예산·회전 임계 해소 + 엔진 post-turn marker writer 주입.
     driver = CodexCliDriver(
         engine.parse_codex_json,
         ctx_budget=ctx_budget,
-        stop_pct=stop_pct,
+        precompact_at_pct=precompact_at_pct,
         mark_stop=engine.write_post_turn_marker,
         mark_ctx_if_over=engine.mark_ctx_post_turn_if_over,
         spawn_result=engine.SpawnResult,

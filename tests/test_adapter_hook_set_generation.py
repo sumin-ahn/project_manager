@@ -80,6 +80,14 @@ def pm_config():
     return _load("pm_config", "pm_config.py")
 
 
+# 출하 template 의 압축 지점 관리 키 값 — 수용 뒤 반영(`pm_import.apply_harness_ctx`)은 기본
+#   local.conf 에서 이 값을 그대로 두므로, 합성 settings 도 같은 값을 실어 "수용 결과 == template"
+#   대조가 훅 세트 축만 재게 한다.
+_AUTO_COMPACT_WINDOW = json.loads(
+    (REPO / "templates" / "claude_code" / _SETTINGS_REL).read_text(encoding="utf-8")
+)["autoCompactWindow"]
+
+
 def _settings(*, git_anchor: bool, wrapper_rel: str = _WRAPPER_REL,
               flag: str = _GIT_ANCHOR_FLAG) -> str:
     """claude settings.json — PreToolUse 훅 2건(공통 넛지 + 선택적 git-anchor Bash 매처)."""
@@ -96,7 +104,7 @@ def _settings(*, git_anchor: bool, wrapper_rel: str = _WRAPPER_REL,
                        "command": ("${CLAUDE_PROJECT_DIR}/" + wrapper_rel + f" {flag}"),
                        "timeout": 15}],
         })
-    return json.dumps({"hooks": {"PreToolUse": groups}},
+    return json.dumps({"hooks": {"PreToolUse": groups}, "autoCompactWindow": _AUTO_COMPACT_WINDOW},
                       ensure_ascii=False, indent=2) + "\n"
 
 

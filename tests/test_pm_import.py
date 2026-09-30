@@ -429,8 +429,8 @@ def test_local_conf_preserves_board_init_keys(pm_import, tmp_path):
     local_conf = dest / ".project_manager" / "local.conf"
     conf = _parse_conf(local_conf)
     # board.py init 이 쓰는 ctx 예산 키가 살아있어야 한다(clobber 아님 — 키 단위 갱신).
-    assert conf.get("ctx.checkpoint_pct") == str(board._conf_default_int("ctx.checkpoint_pct")), \
-        f"ctx.checkpoint_pct 키가 동기화로 손실됨: {conf.get('ctx.checkpoint_pct')!r}"
+    assert conf.get("ctx.checkpoint_at_pct") == str(board._conf_default_int("ctx.checkpoint_at_pct")), \
+        f"ctx.checkpoint_at_pct 키가 동기화로 손실됨: {conf.get('ctx.checkpoint_at_pct')!r}"
     # session·prefix 는 폐지 키 — init 이 쓰지 않는다(T-0779).
     assert conf.get("session") is None, f"session 키가 폐지됐는데 존재: {conf.get('session')!r}"
     assert conf.get("prefix") is None, f"prefix 키가 폐지됐는데 존재: {conf.get('prefix')!r}"
@@ -455,6 +455,32 @@ def test_local_conf_sync_idempotent(pm_import, tmp_path):
             if line.strip().split("=", 1)[0].strip() == key and not line.lstrip().startswith("#")
         ]
         assert len(occurrences) == 1, f"{key} 가 {len(occurrences)}회 등장 — 멱등 위반(중복)."
+
+
+def test_into_reimport_applies_ctx_values(pm_import, tmp_path, capsys):
+    """T-0923 AT-014 — 설치 직후 반영은 고정점이고, `--into` 재적용은 보존된 conf 값을 반영한다.
+
+    출하 템플릿은 기본값(사용 한도 200000·압축 90%)의 고정점이라 `--new` 직후 바뀐 줄이 없고,
+    원장에 settings.json 항목이 선다. 같은 프로젝트에 `ctx.compact_at_pct=85` 를 둔 채 재적용하면
+    설정 파일의 압축 지점이 170000 이 된다(원장 기록 뒤 반영 · 보존 conf 재병합 뒤 값)."""
+    dest = tmp_path / "ctxinto"
+    assert pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "Ctx"]) == 0
+    installed = capsys.readouterr().out
+    assert "하네스 설정 반영" not in installed, "고정점인데 설치 직후 반영 줄이 나왔다"
+    ledger = json.loads((dest / ".project_manager" / "adapter_baseline.json").read_text(
+        encoding="utf-8"))
+    assert ".claude/settings.json" in ledger["files"]
+
+    conf = dest / ".project_manager" / "local.conf"
+    conf.write_text(conf.read_text(encoding="utf-8").replace(
+        "ctx.compact_at_pct=90", "ctx.compact_at_pct=85"), encoding="utf-8")
+    assert pm_import.main(["--into", str(dest), "--harness", "claude", "--name", "Ctx"]) == 0
+
+    out = capsys.readouterr().out
+    settings = json.loads((dest / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    assert settings["autoCompactWindow"] == 170000
+    assert ".claude/settings.json autoCompactWindow 180000 → 170000" in out
+    assert "ctx.compact_at_pct=85" in conf.read_text(encoding="utf-8")
 
 
 # ── T-0053: import 가 source(--from)를 local.conf 의 upstream= 으로 기록 ──────
@@ -5543,6 +5569,25 @@ def test_add_harness_codex_refresh_quietly_preserves_identical_instance_config(
     assert "수동 반영" not in capsys.readouterr().out
 
 
+def _assert_adopter_bytes_kept(pm_import, dest: Path, rel: str, local_bytes: bytes) -> None:
+    """채택자 bytes 보존 — 하네스 설정 파일이면 사용 한도 반영이 관리 키 줄만 뒤에 덧붙인다.
+
+    add-harness 는 설치 뒤 local.conf 의 사용 한도를 하네스 설정 파일에 쓴다(`apply_harness_ctx`).
+    쓰는 것은 관리 키뿐이므로, 채택자 bytes 가 그대로 앞에 있고 덧붙은 부분이 관리 키와 그 값만
+    담는지를 본다."""
+    import tomllib
+
+    after = (dest / rel).read_bytes()
+    if rel not in pm_import.HARNESS_CTX_FILES.values():
+        assert after == local_bytes
+        return
+    assert after.startswith(local_bytes), after
+    values = pm_import._load_local_conf().load(dest / ".project_manager" / "local.conf").values
+    targets = pm_import.harness_ctx_targets(values, {})[rel]
+    assert tomllib.loads(after[len(local_bytes):].decode("utf-8")) == {
+        path[0]: value for path, value in targets.items()}
+
+
 @pytest.mark.parametrize("rel", (".codex/config.toml", ".codex/hooks.json"))
 def test_add_harness_codex_refresh_preserves_different_instance_config_loudly(
     pm_import, tmp_path, capsys, rel,
@@ -5563,7 +5608,7 @@ def test_add_harness_codex_refresh_preserves_different_instance_config_loudly(
 
     plan = pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
 
-    assert instance_file.read_bytes() == local_bytes
+    _assert_adopter_bytes_kept(pm_import, dest, rel, local_bytes)
     assert rel not in _plan_relpaths(plan, dest)
     assert "LOCAL AGENT CUSTOMIZATION" not in agent.read_text(encoding="utf-8")
     out = capsys.readouterr().out
@@ -5586,7 +5631,7 @@ def test_add_harness_codex_instance_config_bypasses_broken_backup_root(
 
     plan = pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
 
-    assert protected.read_bytes() == local_bytes
+    _assert_adopter_bytes_kept(pm_import, dest, rel, local_bytes)
     # CopyAction 자체가 0이므로 backup도 0 — backup root가 file이어도 apply가 도달한다.
     protected_actions = [a for a in plan if a.dst == protected]
     assert protected_actions == []

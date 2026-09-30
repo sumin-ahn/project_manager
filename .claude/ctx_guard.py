@@ -4,16 +4,18 @@
 statusLine 과 PreToolUse/UserPromptSubmit 넛지가 **같은 임계 로직**을 공유하게 한 모듈.
 두 진입점(``ctx_statusline.py`` · ``ctx_stop_hook.py``)이 여기 함수를 호출한다.
 
-엔진 계약 (임계 상향):
-  - 임계값 = local.conf ``ctx.checkpoint_pct`` / ``ctx.precompact_pct`` (없으면 엔진 기본 30/20).
-    훅/statusline 은 board.py 를 import 하지 않고 **local.conf 를 직접 파싱**한다
-    (어댑터는 엔진 사본 경로에 묶이지 않게 — ticket §인터페이스 "local.conf 직접 파싱 권장").
+엔진 계약:
+  - 임계값 = local.conf ``ctx.checkpoint_at_pct`` / ``ctx.precompact_at_pct`` — 사용 한도 대비 **쓴**
+    % (없으면 엔진 기본 70/80). 훅/statusline 은 board.py 를 import 하지 않고 **local.conf 를 직접
+    파싱**한다(어댑터는 엔진 사본 경로에 묶이지 않게).
   - ``stop`` 분류는 statusline/relay 소비를 위해 유지하지만 훅에서는 최종 비차단 넛지로 소비한다.
+  - 압축 비율(``ctx.compact_at_pct``)은 여기서 읽지 않는다 — 엔진이 그 값으로 ``settings.json`` 의
+    ``autoCompactWindow`` 를 쓰고(``pm_import.apply_harness_ctx``) 압축은 Claude Code 가 한다.
 
 컨텍스트 % 모델 (분모 = 해소된 예산 하나·물리 window% 폐기):
-  - 분모 예산 = ``resolve_budget(conf, harness)`` = ``harness.<name>.ctx_window_tokens`` >
-    generic ``ctx.window_tokens`` > 200000 (각 층 >0 sanity). statusLine·hook 이 **같은 예산**
-    을 분모로 써 표시와 넛지 밴드 판정을 일치시킨다(claude·opencode 오버라이드 키는 독립).
+  - 분모 예산 = ``resolve_budget(conf, harness)`` = ``harness.<name>.ctx_window_tokens``(사용 한도)
+    > 200000 (>0 sanity). 압축 지점과 같은 한도라 경고와 압축이 같은 기준을 쓴다. statusLine·hook
+    이 **같은 예산** 을 분모로 써 표시와 넛지 밴드 판정을 일치시킨다(하네스별 키는 독립).
   - statusLine stdin 의 ``context_window`` 에서 used_tokens = current_usage(input+cache 합) >
     total_input_tokens. current_usage null/부재(세션초·/compact 직후)면 0% graceful. native
     ``used_percentage``(물리%)는 **안 읽는다**.
@@ -22,8 +24,8 @@ statusLine 과 PreToolUse/UserPromptSubmit 넛지가 **같은 임계 로직**을
     토큰 = 현재 컨텍스트 점유; omc sessionTotalTokens 선례). 단, 마지막 compact 경계
     뒤의 usage 만 현재 사이클 실측으로 인정한다.
 
-여기서 다루는 % 는 모두 **잔여(remaining)** 가 아니라 **사용(used)** 비율이다.
-``stop`` 분류는 "잔여 <= stop_pct" 로 판정하며, 훅은 이 밴드를 최종 비차단 넛지로 소비한다.
+여기서 다루는 % 는 모두 **사용(used)** 비율이다. ``stop`` 분류는 "사용 >= precompact_at_pct" 로
+판정하며, 훅은 이 밴드를 최종 비차단 넛지로 소비한다.
 """
 from __future__ import annotations
 
@@ -31,19 +33,18 @@ import json
 import sys
 from pathlib import Path
 
-# ── 엔진 기본 임계 (board.py CTX_*_PCT_DEFAULT 와 동일 — 어댑터는 import 안 하고 미러) ──
-# 임계 상향(20/10→30/20): auto-compact 전에 checkpoint를 남길 여유를 더 확보한다.
-CTX_NUDGE_PCT_DEFAULT = 30  # 잔여 <= 이 % → ticket/checkpoint 넛지.
-CTX_STOP_PCT_DEFAULT = 20   # 잔여 <= 이 % → 최종 넛지(키 이름은 호환성 때문에 유지).
+# ── 엔진 기본값 사본 (local_conf 레지스트리와 동일 — 어댑터는 import 안 하고 미러) ──
+# 쓴 % 기준(tests/test_ctx_default_mirror.py 가 레지스트리·네 어댑터 사이트를 대조한다).
+CTX_CHECKPOINT_AT_PCT_DEFAULT = 70   # 사용 >= 이 % → ticket/checkpoint 넛지.
+CTX_PRECOMPACT_AT_PCT_DEFAULT = 80   # 사용 >= 이 % → 최종 넛지(자동 압축 임박).
 
-# 2단(strong) nudge 임계 마진 (%p·파생값). nudge2 밴드 = stop_pct < 잔여 <=
-# min(stop_pct + 이 마진, nudge_pct) — 최종 밴드 직전 강화 유도(1단을 모델이 무시해도 재안내).
-# config 노브 신설 없이 stop_pct 에서 파생(config surface 최소). opencode ctx-guard-core.cjs
-# NUDGE2_MARGIN_PCT 와 미러(양 하네스 파리티).
+# 2단(strong) nudge 임계 마진 (%p·파생값). nudge2 밴드 = max(precompact_at − 이 마진,
+# checkpoint_at) <= 사용 < precompact_at — 최종 밴드 직전 강화 유도(1단을 모델이 무시해도 재안내).
+# config 노브 신설 없이 precompact_at 에서 파생(config surface 최소). opencode
+# ctx-guard-core.cjs NUDGE2_MARGIN_PCT 와 미러(양 하네스 파리티).
 CTX_NUDGE2_MARGIN_PCT = 3
 
-# 기본 ctx 예산(분모) — resolve_budget 의 최종 폴백(오버라이드·generic 미설정 시).
-# claude 기본 200k. local.conf ``harness.<name>.ctx_window_tokens``/``ctx.window_tokens`` 로 조정.
+# 사용 한도 기본값(분모) — local.conf ``harness.<name>.ctx_window_tokens`` 가 없을 때.
 CTX_WINDOW_TOKENS_DEFAULT = 200_000
 
 
@@ -58,8 +59,11 @@ LEGACY_CONF_KEYS = (
     "additional_reviewer_incomplete_round_limit",
     "additional_reviewer_round_limit",
     "additional_reviewer_wave_budget",
+    "ctx.checkpoint_pct",
     "ctx.nudge_pct",
+    "ctx.precompact_pct",
     "ctx.stop_pct",
+    "ctx.window_tokens",
     "ctx_nudge_pct",
     "ctx_stop_pct",
     "ctx_window_tokens",
@@ -157,30 +161,27 @@ def _int_conf(conf: dict[str, str], key: str, default: int) -> int:
 
 
 def ctx_thresholds(conf: dict[str, str]) -> dict[str, int]:
-    """nudge_pct / stop_pct 를 conf 에서 읽는다. sanity 검증 포함.
+    """checkpoint_at_pct / precompact_at_pct(쓴 %)를 conf 에서 읽는다. sanity 검증 포함.
 
-    codex 인계: nudge/stop 이 비정상(음수·범위 밖·stop>nudge)이면 엔진 기본 폴백.
+    ``0 < checkpoint_at < precompact_at < 100`` 이 아니면(비정수·역전·범위 밖) 둘 다 엔진 기본값이다.
+    압축 비율을 포함한 전체 순서는 쓰기 경로의 검사(``pm_import.validate_harness_ctx``)가 본다.
     """
-    nudge = _int_conf(conf, "ctx.checkpoint_pct", CTX_NUDGE_PCT_DEFAULT)
-    stop = _int_conf(conf, "ctx.precompact_pct", CTX_STOP_PCT_DEFAULT)
-    # sanity: 0 < stop <= nudge < 100. 위반 시 기본으로 폴백 (오타·역전에 robust).
-    if not (0 < stop <= nudge < 100):
-        nudge, stop = CTX_NUDGE_PCT_DEFAULT, CTX_STOP_PCT_DEFAULT
-    return {"nudge_pct": nudge, "stop_pct": stop}
+    checkpoint = _int_conf(conf, "ctx.checkpoint_at_pct", CTX_CHECKPOINT_AT_PCT_DEFAULT)
+    precompact = _int_conf(conf, "ctx.precompact_at_pct", CTX_PRECOMPACT_AT_PCT_DEFAULT)
+    if not (0 < checkpoint < precompact < 100):
+        checkpoint, precompact = CTX_CHECKPOINT_AT_PCT_DEFAULT, CTX_PRECOMPACT_AT_PCT_DEFAULT
+    return {"checkpoint_at_pct": checkpoint, "precompact_at_pct": precompact}
 
 
 def resolve_budget(conf: dict[str, str], harness: str = "claude") -> int:
-    """ctx 예산(분모)을 per-harness precedence 로 해소.
+    """ctx 예산(분모) = 그 하네스의 사용 한도.
 
-    ``harness.{harness}.ctx_window_tokens`` > generic ``ctx.window_tokens`` > ``CTX_WINDOW_TOKENS_DEFAULT``.
-    각 층 >0 sanity — ≤0·비정수면 다음 층 폴백(물리한도/0-특수의미 없음). claude·opencode
-    오버라이드 키는 완전 독립(동시 운용 시 하네스별 예산). statusLine·hook 이 이 값을 공유 분모로.
+    ``harness.{harness}.ctx_window_tokens`` > ``CTX_WINDOW_TOKENS_DEFAULT``. >0 sanity — ≤0·비정수면
+    기본값. 하네스별 키는 완전 독립(동시 운용 시 하네스별 예산). statusLine·hook 이 이 값을 공유
+    분모로 쓰고, 엔진은 같은 값으로 하네스의 압축 지점을 쓴다.
     """
-    for key in (f"harness.{harness}.ctx_window_tokens", "ctx.window_tokens"):
-        size = _int_conf(conf, key, 0)
-        if size > 0:
-            return size
-    return CTX_WINDOW_TOKENS_DEFAULT
+    size = _int_conf(conf, f"harness.{harness}.ctx_window_tokens", 0)
+    return size if size > 0 else CTX_WINDOW_TOKENS_DEFAULT
 
 
 # ── statusLine: context_window → used % (분모 = 해소된 예산) ──────────
@@ -345,69 +346,26 @@ def transcript_is_sidechain(transcript_path) -> bool:
 
 # ── 임계 판정 (statusLine·훅 공유) ──────────────────────────────────────────
 
-def remaining_pct(used_pct: int) -> int:
-    return max(0, 100 - used_pct)
-
-
 def nudge2_threshold(thresholds: dict[str, int]) -> int:
-    """2단(strong) nudge 임계(%p) — stop_pct + margin 파생, nudge_pct 로 캡.
+    """2단(strong) nudge 임계(쓴 %) — precompact_at − margin 파생, checkpoint_at 으로 하한.
 
-    nudge2 밴드 = stop_pct < 잔여 <= 이 값. margin(+3)이 nudge 밴드를 넘지 않게 min 으로 캡해
-    nudge2 가 nudge 밴드 밖(ok 영역)으로 새지 않는다. opencode nudge2Threshold 와 동형.
+    nudge2 밴드 = 이 값 <= 사용 < precompact_at. margin(3)이 nudge 밴드 아래로 새지 않게 max 로
+    하한을 둔다. opencode nudge2Threshold 와 동형.
     """
-    return min(thresholds["stop_pct"] + CTX_NUDGE2_MARGIN_PCT, thresholds["nudge_pct"])
+    return max(thresholds["precompact_at_pct"] - CTX_NUDGE2_MARGIN_PCT,
+               thresholds["checkpoint_at_pct"])
 
 
 def classify(used_pct: int, thresholds: dict[str, int]) -> str:
-    """used % → 'ok' | 'nudge' | 'nudge2' | 'stop' (잔여 기준·2단 nudge).
+    """used % → 'ok' | 'nudge' | 'nudge2' | 'stop' (쓴 % 기준·2단 nudge).
 
-    잔여 <= stop_pct → 'stop'. stop_pct < 잔여 <= nudge2_threshold → 'nudge2'(strong·최종 밴드 직전).
-    nudge2_threshold < 잔여 <= nudge_pct → 'nudge'(soft·1단). 그 외 'ok'.
+    사용 >= precompact_at → 'stop'. nudge2_threshold <= 사용 → 'nudge2'(strong·최종 밴드 직전).
+    checkpoint_at <= 사용 → 'nudge'(soft·1단). 그 외 'ok'.
     """
-    remaining = remaining_pct(used_pct)
-    if remaining <= thresholds["stop_pct"]:
+    if used_pct >= thresholds["precompact_at_pct"]:
         return "stop"
-    if remaining <= nudge2_threshold(thresholds):
+    if used_pct >= nudge2_threshold(thresholds):
         return "nudge2"
-    if remaining <= thresholds["nudge_pct"]:
+    if used_pct >= thresholds["checkpoint_at_pct"]:
         return "nudge"
     return "ok"
-
-
-# thresholds 는 세 guidance builder의 시그니처 대칭·미러 파리티를 위해 1·2단에서도 유지한다.
-def build_nudge_guidance(used_pct: int, thresholds: dict[str, int]) -> str:
-    """1단 넛지 — ticket 경계의 complete/checkpoint 기록 시점을 안내."""
-    remaining = remaining_pct(used_pct)
-    return (
-        f"[ctx-nudge] 컨텍스트 사용 {used_pct}% (잔여 {remaining}%). checkpoint 준비 구간이며 "
-        "직전 박제 경계 이후 구간이 미기록 상태다. 현재 ticket 경계의 결과는 complete entry 로 "
-        "남기는 것이 권고된다. 다음 단계 경계에서 "
-        "`python3 .project_manager/tools/pm_log.py checkpoint --task <이름>`(Windows는 `py -3`) "
-        "기록이 이 프로젝트의 규약이다. `<이름>`에는 현재 task 이름을 사용한다."
-    )
-
-
-def build_nudge2_guidance(used_pct: int, thresholds: dict[str, int]) -> str:
-    """2단 넛지 — 강화 checkpoint 기록 시점을 안내."""
-    remaining = remaining_pct(used_pct)
-    return (
-        f"[ctx-nudge/강화] 컨텍스트 사용 {used_pct}% (잔여 {remaining}%). 강화 checkpoint 구간이며 "
-        "직전 박제 경계 이후 구간이 미기록 상태다. 다음 단계 경계에서 "
-        "`python3 .project_manager/tools/pm_log.py checkpoint --task <이름>`(Windows는 `py -3`)으로 "
-        "checkpoint entry 의 구간·서사를 기록하는 것이 이 프로젝트의 규약이다. "
-        "`<이름>`에는 현재 task 이름을 사용한다."
-    )
-
-
-def build_final_guidance(used_pct: int, thresholds: dict[str, int]) -> str:
-    """최종 넛지 — 구 stop 밴드에서 checkpoint와 auto-compact 임박을 비차단 안내."""
-    remaining = remaining_pct(used_pct)
-    return (
-        f"[ctx-nudge/최종] 컨텍스트 사용 {used_pct}% (잔여 {remaining}% ≤ "
-        f"{thresholds['stop_pct']}%). 최종 checkpoint 구간이며 직전 박제 경계 이후 구간이 "
-        "미기록 상태다. 다음 단계 경계에서 "
-        "`python3 .project_manager/tools/pm_log.py checkpoint --task <이름> --trigger compaction`"
-        "(Windows는 `py -3`) 기록이 이 프로젝트의 규약이다. "
-        "`<이름>`에는 현재 task 이름을 사용한다. auto-compact 가 임박한 상태이며, "
-        "checkpoint는 압축 후 서사 복구 경계다."
-    )

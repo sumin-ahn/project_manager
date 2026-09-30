@@ -580,6 +580,12 @@ ADAPTER_CONFIG_REAPPROVAL_NOTE = {
 #
 # 훅 배선(`hooks.<이벤트>`)은 여기 없다 — 그 축은 문서의 `hooks` 매핑과
 # `ADAPTER_HOOK_SET[...].entrypoints` 에서 파생한다(선언 중복 0).
+#
+# 하네스 사용 한도 반영(`apply_harness_ctx`)이 쓰는 관리 키는 이 표에 두지 않는다 — 값이 local.conf
+# 에서 오므로 템플릿과의 차이는 채택자 편집이 아니다(claude `autoCompactWindow`·codex
+# `model_context_window`·`model_auto_compact_token_limit`·opencode `compaction`). opencode 는 모델
+# 항목의 `limit` 이 `provider` 안에 있어 행을 지우지 않고 비교 전에 `limit` 만 뺀다
+# (`_provider_without_model_limits`).
 ADAPTER_SETTINGS_KEYS: dict[str, tuple[str, ...]] = {
     ".claude/settings.json": (
         "autoCompactEnabled", "env", "permissions.allow", "permissions.deny", "statusLine",
@@ -590,7 +596,7 @@ ADAPTER_SETTINGS_KEYS: dict[str, tuple[str, ...]] = {
     ),
     ".codex/config.toml": (
         "sandbox_mode", "approval_policy", "approvals_reviewer",
-        "model_auto_compact_token_limit", "features.multi_agent", "features.hooks",
+        "features.multi_agent", "features.hooks",
         "sandbox_workspace_write.network_access",
     ),
 }
@@ -6544,6 +6550,40 @@ def _hook_event_units(document, entrypoints: tuple = ()) -> dict[str, tuple[str,
     return out
 
 
+def _provider_without_model_limits(present: bool, value: object) -> tuple[bool, object]:
+    """opencode `provider` 값에서 반영이 쓰는 모델 `limit` 을 뺀 비교용 사본 — (있음, 값).
+
+    `limit` 을 지운 뒤 빈 객체가 된 모델 항목·`models`·provider 항목을 차례로 지우고, `provider`
+    자체가 비면 없는 것으로 본다. 반영이 전역 설정의 모델로 만든 항목은 `limit` 만 가지므로
+    비교에서 사라진다. 객체가 아닌 자리는 손대지 않는다(그 차이는 그대로 보인다)."""
+    if not present or not isinstance(value, dict):
+        return present, value
+    providers: dict = {}
+    for provider_name, provider in value.items():
+        if isinstance(provider, dict) and isinstance(provider.get("models"), dict):
+            models = {}
+            for model_name, model in provider["models"].items():
+                if isinstance(model, dict):
+                    model = {key: item for key, item in model.items() if key != "limit"}
+                    if not model:
+                        continue
+                models[model_name] = model
+            provider = {key: item for key, item in provider.items() if key != "models"}
+            if models:
+                provider["models"] = models
+            if not provider:
+                continue
+        providers[provider_name] = provider
+    return bool(providers), (providers or None)
+
+
+# 기능 표에서 값을 비교하기 전에 관리 키를 빼는 자리 — (파일, 설정 키) → 변환. 반영이 쓰는 값은
+#   local.conf 에서 오므로 템플릿과의 차이로 보고하지 않는다(`ADAPTER_SETTINGS_KEYS` 주석).
+_ADAPTER_FEATURE_MANAGED_FILTERS = {
+    (".opencode/opencode.jsonc", "provider"): _provider_without_model_limits,
+}
+
+
 def _adapter_feature_rows(relpath: str, project_document: dict,
                           latest_document: dict) -> tuple[AdapterFeature, ...]:
     """한 config 파일의 기능 표 — 선언 설정 키 축 + 훅 이벤트 축."""
@@ -6551,6 +6591,10 @@ def _adapter_feature_rows(relpath: str, project_document: dict,
     for key in ADAPTER_SETTINGS_KEYS.get(relpath, ()):
         project_present, project_value = _document_key_value(project_document, key)
         latest_present, latest_value = _document_key_value(latest_document, key)
+        managed_filter = _ADAPTER_FEATURE_MANAGED_FILTERS.get((relpath, key))
+        if managed_filter is not None:
+            project_present, project_value = managed_filter(project_present, project_value)
+            latest_present, latest_value = managed_filter(latest_present, latest_value)
         verdict = _feature_verdict(project_present, project_value,
                                    latest_present, latest_value)
         if verdict is None:
@@ -7917,6 +7961,537 @@ def adapter_config_drift_summary(judgment: AdapterConfigJudgment,
             f"첫 차이 {first_diff}줄")
 
 
+# ── 하네스 사용 한도·압축 비율 반영 (local.conf → 하네스 설정 파일) ─────────────────
+# local.conf 의 하네스별 사용 한도 W(`harness.<이름>.ctx_window_tokens`)와 압축 비율
+# (`ctx.compact_at_pct`)로 압축 지점 P = floor(W × compact_at / 100) 를 정하고, 하네스 자신의 설정
+# 파일에 그 지점을 쓴다 — 어댑터 경고 밴드와 하네스의 실제 압축이 같은 W 를 기준으로 삼게 한다.
+#   claude   `.claude/settings.json`     autoCompactWindow = P
+#   codex    `.codex/config.toml`        model_context_window = W · model_auto_compact_token_limit = P
+#   opencode `.opencode/opencode.jsonc`  대상 모델마다 limit.context = limit.input = W ·
+#            limit.output(있으면 유지, 없으면 32000) · 최상위 compaction.reserved = W − P
+# 쓰는 바이트는 이 관리 키의 값 자리(없어서 넣는 멤버·구분 쉼표 포함)뿐이다 — 재직렬화하지 않는다.
+# opencode 전역 설정은 읽기만 한다.
+class _HarnessCtxRule(NamedTuple):
+    """설정 파일 하나의 반영 규칙 — 판정 코드는 하나이고 파일마다 다른 것은 이 값들뿐이다.
+
+    `keys` 는 (관리 키 경로, 값 식(사용 한도 W, 압축 지점 P)) 이다. `point_range` 는 그 설정 형식이
+    받는 압축 지점 범위, `compact_below_pct` 는 압축 비율 상한(설정 형식이 창의 일부만 쓰는 경우),
+    `model_limits` 는 설정 파일에 적힌 모델마다 `limit` 을 쓰는 형식인가다."""
+    label: str
+    keys: tuple[tuple[tuple[str, ...], Callable[[int, int], int]], ...]
+    point_range: tuple[int, int] | None
+    compact_below_pct: int | None
+    model_limits: bool
+
+
+# 설정 파일 relpath → 반영 규칙. 어느 하네스가 그 파일을 갖는지는 어댑터 config 채널
+# (`ADAPTER_CONFIG_CHANNEL`)이 정한다 — 하네스 이름 표를 여기 두 번째로 두지 않는다.
+HARNESS_CTX_RULES: dict[str, _HarnessCtxRule] = {
+    # Claude Code 2.1.284: `autoCompactWindow` 는 "100k–1M tokens" 만 받는다(실행 파일 문구).
+    ".claude/settings.json": _HarnessCtxRule(
+        "Claude Code", ((("autoCompactWindow",), lambda window, point: point),),
+        (100_000, 1_000_000), None, False),
+    # Codex 0.158: `model_context_window` 의 95% 를 실제 창으로 쓴다 — 압축 비율이 그 이상이면
+    #   압축 지점이 창 밖이다.
+    ".codex/config.toml": _HarnessCtxRule(
+        "Codex",
+        ((("model_context_window",), lambda window, point: window),
+         (("model_auto_compact_token_limit",), lambda window, point: point)),
+        None, 95, False),
+    # opencode 1.18.33: `limit.input` 이 있으면 `input − compaction.reserved` 에서 압축한다.
+    ".opencode/opencode.jsonc": _HarnessCtxRule(
+        "opencode", ((("compaction", "reserved"), lambda window, point: window - point),),
+        None, None, True),
+}
+# 하네스 이름 → 반영 대상 설정 파일(규칙 표 순서).
+HARNESS_CTX_FILES: dict[str, str] = {
+    harness: relpath
+    for relpath in HARNESS_CTX_RULES
+    for harness, channel in ADAPTER_CONFIG_CHANNEL.items() if relpath in channel}
+# opencode 전역 설정 — `<설정 기준 폴더>/opencode` 아래 세 이름을 이 순서로 읽어 깊은 병합한다
+# (뒤가 이긴다 · opencode 1.18.33 실측).
+OPENCODE_GLOBAL_CONFIG_SUBDIR = "opencode"
+OPENCODE_GLOBAL_CONFIG_NAMES = ("config.json", "opencode.json", "opencode.jsonc")
+# 어느 설정 파일에도 `limit.output` 이 없는 대상 모델에 쓰는 값. opencode 는 출력 상한이 없는
+# 모델에 OUTPUT_TOKEN_MAX(32000)를 쓰므로 동작이 바뀌지 않는다. 설치본 규격이 파일마다 `limit`
+# 안의 context·output 을 함께 요구해 비워 둘 수 없다(어기면 opencode 가 기동하지 못한다).
+OPENCODE_LIMIT_OUTPUT_DEFAULT = 32000
+# 모델마다 쓰는 `limit` 세 키 — context·input 은 사용 한도, output 은 모델별 값이다.
+_MODEL_LIMIT_KEYS = ("context", "input", "output")
+_HARNESS_CTX_RATIO_KEYS = ("ctx.checkpoint_at_pct", "ctx.precompact_at_pct", "ctx.compact_at_pct")
+_HARNESS_CTX_COMPACT_KEY = "ctx.compact_at_pct"
+_HARNESS_CTX_WINDOW_SUFFIX = "ctx_window_tokens"
+# TOML 표 머리 줄(`[표]`·`[[표 배열]]`) — 최상위 키가 들어갈 구간의 끝이다. 괄호 안은 TOML 키
+# 문법(맨 키·큰따옴표 키·작은따옴표 키를 점으로 이은 것)이고, 줄 끝 앞의 CR 은 CRLF 파일의 개행이다.
+# 여러 줄 배열의 원소 줄(`[1, 2],`)은 쉼표 때문에 이 문법에 맞지 않는다.
+_TOML_SIMPLE_KEY = r"""(?:[A-Za-z0-9_-]+|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*')"""
+_TOML_DOTTED_KEY = rf"{_TOML_SIMPLE_KEY}(?:[ \t]*\.[ \t]*{_TOML_SIMPLE_KEY})*"
+_TOML_TABLE_HEADER_RE = re.compile(
+    rf"^[ \t]*(?:\[[ \t]*{_TOML_DOTTED_KEY}[ \t]*\]|\[\[[ \t]*{_TOML_DOTTED_KEY}[ \t]*\]\])"
+    r"[ \t]*(?:#[^\r\n]*)?\r?$", re.MULTILINE)
+
+
+class HarnessCtxError(ValueError):
+    """사용 한도·압축 비율을 하네스 설정 파일에 반영할 수 없다 — 위반 전부를 한국어 줄로 담는다.
+
+    검사·읽기 단계(쓰기 전)에서 난 이 예외는 local.conf·설정 파일·원장 어느 것도 쓰지 않았다는
+    뜻이다(검사·읽기가 쓰기보다 먼저다). 쓰기 단계에서 나면 `written` 에 교체를 마친 설정 파일을
+    넘겨 첫 줄이 그 사실을 말하고, 위반 줄이 쓰지 못한 파일·원장 기록을 확인하지 못한 파일을 적는다."""
+
+    def __init__(self, violations, *, written=()) -> None:
+        self.violations = tuple(violations)
+        lead = (f"사용 한도·압축 비율을 {', '.join(written)} 에 반영한 뒤 멈췄습니다" if written
+                else "사용 한도·압축 비율을 하네스 설정 파일에 반영하지 않았습니다")
+        super().__init__("\n".join((
+            f"{lead} — 아래를 고친 뒤 다시 실행하십시오.",
+            *(f"  - {violation}" for violation in self.violations))))
+
+
+def opencode_global_config_dir(env, home: Path) -> Path:
+    """opencode 전역 설정 디렉터리 — `XDG_CONFIG_HOME` 이 비어 있지 않으면 그 아래, 아니면 `<home>/.config`.
+
+    opencode 1.18.33 설치본의 식(`join(XDG_CONFIG_HOME || join(homedir, ".config"), "opencode")`)과
+    같다 — 빈 문자열은 없는 것과 같다. `OPENCODE_CONFIG_DIR` 은 보지 않는다(opencode 도 전역 파일
+    위치를 그것으로 바꾸지 않는다). 운영 호출자는 `(os.environ, Path.home())` 를 넘긴다."""
+    configured = env.get("XDG_CONFIG_HOME")
+    base = Path(configured) if configured else Path(home) / ".config"
+    return base / OPENCODE_GLOBAL_CONFIG_SUBDIR
+
+
+def is_harness_ctx_input_key(key: str) -> bool:
+    """반영의 입력 키인가 — 비율 3개와 등록 하네스의 사용 한도(`harness.<이름>.ctx_window_tokens`)."""
+    if key in _HARNESS_CTX_RATIO_KEYS:
+        return True
+    parts = key.split(".")
+    return (len(parts) == 3 and parts[0] == "harness" and parts[1] in HARNESS_CTX_FILES
+            and parts[2] == _HARNESS_CTX_WINDOW_SUFFIX)
+
+
+def _harness_ctx_window_key(harness: str) -> str:
+    return f"harness.{harness}.{_HARNESS_CTX_WINDOW_SUFFIX}"
+
+
+def _harness_ctx_value(values, key: str) -> str:
+    """conf 값 — 비었거나 없으면 레지스트리 기본값(conf 표기 그대로)."""
+    raw = values.get(key)
+    if raw is None or not str(raw).strip():
+        return _load_local_conf().default_for(key)
+    return str(raw).strip()
+
+
+def _harness_ctx_integer(text: str) -> int | None:
+    """정수 표기(부호 허용·ASCII 숫자)면 그 값, 아니면 None."""
+    return int(text) if re.fullmatch(r"[+-]?[0-9]+", text) else None
+
+
+def _harness_ctx_point(window: int, compact_at_pct: int) -> int:
+    """압축 지점 P = floor(W × compact_at / 100)."""
+    return window * compact_at_pct // 100
+
+
+def validate_harness_ctx(values, present: frozenset) -> None:
+    """반영 전 검사 — 위반을 모두 모아 `HarnessCtxError` 한 번으로 올린다.
+
+    `present` 는 설정 파일이 있는 하네스 이름 집합이다. 규칙:
+      (1) 비율 3개는 정수이고 `0 < checkpoint_at < precompact_at < compact_at < 100`
+      (2) 있는 하네스의 사용 한도는 양의 정수
+      (3) 있는 하네스의 설정 형식이 압축 지점 범위를 두면(`point_range` · claude 100000~1000000) 그 안
+      (4) 있는 하네스의 설정 형식이 압축 비율 상한을 두면(`compact_below_pct` · codex 95) 그 아래
+    빈 키는 레지스트리 기본값이다. opencode 모델에 관한 규칙은 없다."""
+    violations: list[str] = []
+    ratios: dict[str, int] = {}
+    for key in _HARNESS_CTX_RATIO_KEYS:
+        text = _harness_ctx_value(values, key)
+        number = _harness_ctx_integer(text)
+        if number is None:
+            violations.append(f"`{key}={text}` 는 정수가 아닙니다.")
+            continue
+        ratios[key] = number
+        if not 0 < number < 100:
+            violations.append(f"`{key}={number}` 는 0 보다 크고 100 보다 작아야 합니다.")
+    for low_key, high_key in zip(_HARNESS_CTX_RATIO_KEYS, _HARNESS_CTX_RATIO_KEYS[1:]):
+        low, high = ratios.get(low_key), ratios.get(high_key)
+        if low is not None and high is not None and not low < high:
+            violations.append(
+                f"`{low_key}={low}` 는 `{high_key}={high}` 보다 작아야 합니다"
+                " (중간 기록 권고 < 압축 임박 경고 < 압축).")
+    compact = ratios.get(_HARNESS_CTX_COMPACT_KEY)
+    for harness, relpath in HARNESS_CTX_FILES.items():
+        if harness not in present:
+            continue
+        rule = HARNESS_CTX_RULES[relpath]
+        key = _harness_ctx_window_key(harness)
+        text = _harness_ctx_value(values, key)
+        window = _harness_ctx_integer(text)
+        if window is None or window <= 0:
+            violations.append(f"`{key}={text}` 는 양의 정수여야 합니다.")
+            window = None
+        if rule.point_range is not None and window is not None and compact is not None:
+            point = _harness_ctx_point(window, compact)
+            low, high = rule.point_range
+            if not low <= point <= high:
+                violations.append(
+                    f"{rule.label} 압축 지점 {point}(사용 한도 {window} × {compact}%)은 "
+                    f"{low}~{high} 이어야 합니다 — {rule.label} 가 설정 파일에서 받는 범위입니다.")
+        if (rule.compact_below_pct is not None and compact is not None
+                and not compact < rule.compact_below_pct):
+            violations.append(
+                f"`{_HARNESS_CTX_COMPACT_KEY}={compact}` 는 {rule.label} 설정 파일이 있으면 "
+                f"{rule.compact_below_pct} 보다 작아야 합니다 — {rule.label} 는 창의 "
+                f"{rule.compact_below_pct}% 까지만 씁니다.")
+    if violations:
+        raise HarnessCtxError(violations)
+
+
+def harness_ctx_targets(values, opencode_models) -> dict[str, dict[tuple[str, ...], int]]:
+    """설정 파일 relpath → {관리 키 경로 조각 튜플: 값}. 빈 키는 레지스트리 기본값이다.
+
+    `opencode_models` 는 대상 모델 `(provider, 모델 id) → limit.output` 이다. 모델 id 는 문서 키
+    그대로 쓴다(점·슬래시·콜론에서 가르지 않는다). 값의 검사는 `validate_harness_ctx` 몫이다."""
+    compact = int(_harness_ctx_value(values, _HARNESS_CTX_COMPACT_KEY))
+    targets: dict[str, dict[tuple[str, ...], int]] = {}
+    for harness, relpath in HARNESS_CTX_FILES.items():
+        rule = HARNESS_CTX_RULES[relpath]
+        window = int(_harness_ctx_value(values, _harness_ctx_window_key(harness)))
+        point = _harness_ctx_point(window, compact)
+        entries: dict[tuple[str, ...], int] = {}
+        if rule.model_limits:
+            for (provider, model), output in opencode_models.items():
+                limit_values = {"context": window, "input": window, "output": output}
+                for name in _MODEL_LIMIT_KEYS:
+                    entries[("provider", provider, "models", model, "limit", name)] = \
+                        limit_values[name]
+        for path, formula in rule.keys:
+            entries[path] = formula(window, point)
+        targets[relpath] = entries
+    return targets
+
+
+def apply_harness_ctx(dest_root: Path, *, write: bool, opencode_config_dir: Path) -> tuple[str, ...]:
+    """local.conf 의 사용 한도·압축 비율을 설정 파일이 있는 하네스에 반영한다 — 바뀐 줄 목록.
+
+    conf 는 공용 로더로 읽고 옛 키가 남았으면 멈춘다(`assert_no_legacy`). 순서가 곧 계약이다:
+    검사 → 세 설정 파일과 opencode 전역 설정 읽기 → 새 내용 계산·재판독 확인 → (`write`) 원자 쓰기
+    → 원장. 앞 단계가 실패하면(`HarnessCtxError`) 어떤 파일도 쓰지 않는다. 쓰기 단계에서 멈추면
+    교체를 마친 파일의 원장을 기록한 뒤 교체한 파일과 못 한 파일을 나눠 알린다. `write=False` 는
+    줄만 낸다. 반환 줄은 "<relpath> <경로> <옛 값> → <새 값>" 꼴이고, 없던 키의 옛 값은 `(없음)`,
+    경로는 조각을 점으로 잇되 점이 든 조각을 큰따옴표로 감싼다(`provider.ollama.models."glm-5.2:cloud"…`).
+
+    원장 규칙: 반영 직전 파일을 원장이 증언하면(`_baseline_attests_dest`) 그 항목의 `sha256` 만 새
+    내용 해시로 바꾸고 `recorded_at`·`template_rev` 는 둔다 — 무편집 판정이 반영 뒤에도 유지된다.
+    편집됨·원장 없음은 원장을 건드리지 않는다. 원장이 상위 schema 면 파일을 쓰지 않고 멈춘다.
+    `harness.opencode.pro_model` 은 읽지 않는다 — 대상 모델은 설정 파일에 적힌 모델 전부다."""
+    dest_root = Path(dest_root)
+    module = _load_local_conf()
+    result = module.load(dest_root / ".project_manager" / "local.conf")
+    module.assert_no_legacy(result)
+    return _apply_harness_ctx_values(
+        dest_root, result.values, write=write, opencode_config_dir=opencode_config_dir)
+
+
+def _apply_harness_ctx_values(dest_root: Path, values, *, write: bool,
+                              opencode_config_dir: Path) -> tuple[str, ...]:
+    """`apply_harness_ctx` 본문 — conf 값을 인자로 받는다(`pm_config ctx-apply` 가 쓰기 전 미리 돈다)."""
+    dest_root = Path(dest_root)
+    present = frozenset(harness for harness, relpath in HARNESS_CTX_FILES.items()
+                        if (dest_root / relpath).is_file())
+    validate_harness_ctx(values, present)
+    if not present:
+        return ()
+    jsonc = _harness_ctx_jsonc_seam()
+    relpaths = [relpath for harness, relpath in HARNESS_CTX_FILES.items() if harness in present]
+    texts = {relpath: _harness_ctx_read_text(dest_root / relpath, relpath) for relpath in relpaths}
+    documents = {relpath: _harness_ctx_parse(relpath, text, jsonc)
+                 for relpath, text in texts.items()}
+    models: dict[tuple[str, str], int] = {}
+    for harness, relpath in HARNESS_CTX_FILES.items():
+        if harness in present and HARNESS_CTX_RULES[relpath].model_limits:
+            models = _opencode_target_models(
+                documents[relpath], relpath, opencode_config_dir, jsonc)
+    # 설정 파일이 없는 하네스의 한도는 검사하지 않으니 계산에도 넣지 않는다(쓰지 않을 값이다).
+    unused = {_harness_ctx_window_key(harness) for harness in HARNESS_CTX_FILES
+              if harness not in present}
+    targets = harness_ctx_targets(
+        {key: value for key, value in values.items() if key not in unused}, models)
+    lines: list[str] = []
+    changed: dict[str, tuple[str, str]] = {}
+    for relpath, text in texts.items():
+        new_text, file_lines = _harness_ctx_edit(relpath, text, targets[relpath], jsonc)
+        lines.extend(file_lines)
+        if new_text != text:
+            changed[relpath] = (text, new_text)
+    if write and changed:
+        _harness_ctx_write(dest_root, changed)
+    return tuple(lines)
+
+
+def _harness_ctx_jsonc_seam():
+    """jsonc 문법·경로 편집 seam(pm_update) — 문법 처리 두 벌 금지(`_load_adapter_config_document`)."""
+    pm_update = _load_pm_update()
+    names = ("_mask_jsonc_comments", "_strip_jsonc_trailing_commas", "_jsonc_set_value")
+    missing = [name for name in names if not callable(getattr(pm_update, name, None))]
+    if missing:
+        raise AdapterConfigChannelUnavailable(
+            f"jsonc seam 을 읽을 수 없다 (pm_update.{'·'.join(missing)}) — 하네스 설정 반영 불가. "
+            "pm-update 로 .project_manager/tools 전체를 재동기하라")
+    return pm_update
+
+
+def _harness_ctx_read_text(path: Path, label: str) -> str:
+    """설정 파일 텍스트(개행 표기 보존) — 못 읽으면 `HarnessCtxError`(보고 채널의 빈 문서 관용 없음)."""
+    try:
+        raw = _read_bytes_shared(path)
+    except OSError as exc:
+        raise HarnessCtxError([f"{label} 를 읽지 못했습니다 ({exc})."]) from exc
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HarnessCtxError([f"{label} 가 UTF-8 이 아닙니다 ({exc})."]) from exc
+
+
+def _harness_ctx_parse(label: str, text: str, jsonc) -> dict:
+    """설정 텍스트 → 문서. 형식은 확장자가 정한다 — 풀지 못하거나 최상위가 표/객체가 아니면 멈춘다."""
+    try:
+        if label.endswith(".toml"):
+            document = tomllib.loads(text)
+        else:
+            document = json.loads(
+                jsonc._strip_jsonc_trailing_commas(jsonc._mask_jsonc_comments(text)))
+    except ValueError as exc:
+        raise HarnessCtxError([f"{label} 를 풀지 못했습니다 ({exc})."]) from exc
+    if not isinstance(document, dict):
+        raise HarnessCtxError([f"{label} 의 최상위가 객체가 아닙니다."])
+    return document
+
+
+def _harness_ctx_check_objects(label: str, document: dict) -> None:
+    """opencode 문서에서 반영이 들어가 쓰거나 읽는 객체 자리가 객체인가 — `compaction`·`provider`·
+    provider 항목·`models`·모델 항목·`limit`. 아니면 파일·키 경로를 지목해 멈춘다(그 값을 덮어써서
+    지우지 않는다)."""
+    def need_object(value, path: str) -> None:
+        if not isinstance(value, dict):
+            raise HarnessCtxError([f"{label} 의 `{path}` 가 객체가 아닙니다."])
+
+    if "compaction" in document:
+        need_object(document["compaction"], "compaction")
+    if "provider" not in document:
+        return
+    need_object(document["provider"], "provider")
+    for provider, entry in document["provider"].items():
+        need_object(entry, f"provider.{provider}")
+        if "models" not in entry:
+            continue
+        need_object(entry["models"], f"provider.{provider}.models")
+        for model, model_entry in entry["models"].items():
+            need_object(model_entry, f"provider.{provider}.models.{model}")
+            if "limit" in model_entry:
+                need_object(model_entry["limit"], f"provider.{provider}.models.{model}.limit")
+
+
+def _opencode_global_documents(config_dir: Path, jsonc) -> list[tuple[str, dict]]:
+    """opencode 전역 설정 파일 중 있는 것을 병합 순서대로 — (경로 표기, 문서). 읽기만 한다."""
+    documents: list[tuple[str, dict]] = []
+    for name in OPENCODE_GLOBAL_CONFIG_NAMES:
+        path = Path(config_dir) / name
+        try:
+            raw = _read_bytes_shared(path)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise HarnessCtxError(
+                [f"opencode 전역 설정 {path} 를 읽지 못했습니다 ({exc})."]) from exc
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HarnessCtxError([f"opencode 전역 설정 {path} 가 UTF-8 이 아닙니다 ({exc})."]) from exc
+        documents.append((str(path), _harness_ctx_parse(str(path), text, jsonc)))
+    return documents
+
+
+def _opencode_target_models(project_document: dict, project_label: str, config_dir: Path,
+                            jsonc) -> dict[tuple[str, str], int]:
+    """opencode 대상 모델 `(provider, 모델 id) → limit.output` — 프로젝트 파일과 전역 설정의 합집합.
+
+    순서는 프로젝트 파일 등장 순, 그다음 전역 파일을 병합 순서대로 본 등장 순이다. `limit.output` 은
+    프로젝트 값, 없으면 전역 값(병합 순서상 뒤 파일이 이긴다), 둘 다 없으면 32000 이다. 가져다 쓸
+    값이 정수가 아니면(bool 포함) 그 파일·키 경로를 지목해 멈춘다."""
+    order: list[tuple[str, str]] = []
+    project_outputs: dict[tuple[str, str], tuple[str, object]] = {}
+    global_outputs: dict[tuple[str, str], tuple[str, object]] = {}
+    sources = [(project_label, project_document, project_outputs),
+               *((label, document, global_outputs)
+                 for label, document in _opencode_global_documents(config_dir, jsonc))]
+    for label, document, outputs in sources:
+        _harness_ctx_check_objects(label, document)
+        for provider, entry in (document.get("provider") or {}).items():
+            for model, model_entry in (entry.get("models") or {}).items():
+                if (provider, model) not in order:
+                    order.append((provider, model))
+                limit = model_entry.get("limit") or {}
+                if "output" in limit:
+                    outputs[(provider, model)] = (label, limit["output"])
+    models: dict[tuple[str, str], int] = {}
+    for provider, model in order:
+        found = project_outputs.get((provider, model)) or global_outputs.get((provider, model))
+        if found is None:
+            models[(provider, model)] = OPENCODE_LIMIT_OUTPUT_DEFAULT
+            continue
+        label, value = found
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise HarnessCtxError([
+                f"{label} 의 `provider.{provider}.models.{_harness_ctx_path_segment(model)}"
+                f".limit.output` 값 {value!r} 는 정수가 아닙니다."])
+        models[(provider, model)] = value
+    return models
+
+
+def _harness_ctx_path_segment(segment: str) -> str:
+    """경로 표기 조각 — 점이 든 조각은 큰따옴표로 감싼다(`"glm-5.2:cloud"`)."""
+    return f'"{segment}"' if "." in segment else segment
+
+
+def _harness_ctx_dotted(path: tuple[str, ...]) -> str:
+    return ".".join(_harness_ctx_path_segment(segment) for segment in path)
+
+
+def _harness_ctx_edit(relpath: str, text: str, entries: dict[tuple[str, ...], int],
+                      jsonc) -> tuple[str, list[str]]:
+    """관리 키를 목표값으로 고친 텍스트와 바뀐 줄 — 결과를 다시 읽어 값을 확인한다."""
+    lines: list[str] = []
+    for path, value in entries.items():
+        try:
+            if relpath.endswith(".toml"):
+                text, old = _toml_set_top_level_integer(text, path[0], value)
+            else:
+                text, old = jsonc._jsonc_set_value(text, path, value)
+        except ValueError as exc:
+            raise HarnessCtxError([f"{relpath}: {exc}"]) from exc
+        if old != str(value):
+            lines.append(f"{relpath} {_harness_ctx_dotted(path)} "
+                         f"{'(없음)' if old is None else old} → {value}")
+    document = _harness_ctx_parse(relpath, text, jsonc)
+    for path, value in entries.items():
+        present, actual = _document_key_value_path(document, path)
+        if not present or isinstance(actual, bool) or actual != value:
+            raise HarnessCtxError([
+                f"{relpath}: 반영 결과를 다시 읽었더니 `{_harness_ctx_dotted(path)}` 가 {value} 가 "
+                "아닙니다 — 파일을 쓰지 않았습니다."])
+    return text, lines
+
+
+def _document_key_value_path(document: dict, path: tuple[str, ...]) -> tuple[bool, object]:
+    """조각 튜플 경로로 문서 안쪽 값을 찾는다 — (있음, 값). 조각을 점에서 가르지 않는다."""
+    node: object = document
+    for part in path:
+        if not isinstance(node, dict) or part not in node:
+            return False, None
+        node = node[part]
+    return True, node
+
+
+def _toml_set_top_level_integer(text: str, key: str, value: int) -> tuple[str, str | None]:
+    """TOML 최상위 키 줄의 값 자리만 정수로 바꾼다 — 없으면 첫 `[표]` 머리 줄 앞에 한 줄 넣는다.
+
+    반환 (새 텍스트, 옛 값 리터럴 또는 None). 최상위 구간은 첫 표 머리 줄 전까지다(그 뒤의 같은
+    이름은 표 안 키다). 넣는 줄은 머리 줄 바로 위의 빈 줄들 앞에 둔다. 결과의 정합은 호출부가
+    `tomllib` 로 다시 읽어 확인한다."""
+    header = _TOML_TABLE_HEADER_RE.search(text)
+    region_end = header.start() if header else len(text)
+    key_re = re.compile(
+        rf'^[ \t]*(?:{re.escape(key)}|"{re.escape(key)}")[ \t]*=[ \t]*(?P<value>[^\s#]+)',
+        re.MULTILINE)
+    found = list(key_re.finditer(text, 0, region_end))
+    if found:
+        match = found[-1]
+        start, end = match.span("value")
+        return text[:start] + str(value) + text[end:], match.group("value")
+    newline = "\r\n" if "\r\n" in text else "\n"
+    line = f"{key} = {value}{newline}"
+    if header is None:
+        if text and not text.endswith("\n"):
+            line = newline + line
+        return text + line, None
+    insert_at = header.start()
+    while True:
+        previous_end = insert_at - 1 if insert_at > 0 and text[insert_at - 1] == "\n" else None
+        if previous_end is None:
+            break
+        previous_start = text.rfind("\n", 0, previous_end) + 1
+        if text[previous_start:previous_end].strip():
+            break
+        insert_at = previous_start
+    return text[:insert_at] + line + text[insert_at:], None
+
+
+def _harness_ctx_write(dest_root: Path, changed: dict[str, tuple[str, str]]) -> None:
+    """바뀐 설정 파일을 원자 쓰기하고 원장 규칙을 적용한다(`apply_harness_ctx` docstring).
+
+    파일마다 교체를 시도해 결과를 모은 뒤, 교체에 성공한 원장 증언 파일의 `sha256` 을 먼저 기록하고
+    나서 쓰지 못한 파일이 있으면 멈춘다 — 이미 바뀐 파일이 원장의 옛 해시에 걸려 편집됨으로 판정되지
+    않게 한다(편집됨 판정은 세트 수용에서도 그 파일을 뺀다). 원장이 상위 schema 면 아무것도 쓰기 전에
+    멈춘다."""
+    if _load_adapter_baseline_document(dest_root).status == "newer-schema":
+        raise HarnessCtxError([
+            f"어댑터 config 원장 schema 가 이 엔진(지원 상한 {ADAPTER_BASELINE_SCHEMA})보다 새로워 "
+            "기록할 수 없어 설정 파일을 쓰지 않았습니다 — 엔진을 갱신한 뒤 다시 실행하십시오."])
+    document = read_adapter_baseline(dest_root)
+    files = dict(document.get("files") or {})
+    attested: dict[str, str] = {}
+    for relpath, (old_text, new_text) in changed.items():
+        entry = files.get(relpath)
+        recorded = entry.get("sha256") if isinstance(entry, dict) else None
+        old_bytes = old_text.encode("utf-8")
+        if recorded is not None and _baseline_attests_dest(
+                recorded, dest_root / relpath, content_sha256(old_bytes)):
+            attested[relpath] = content_sha256(new_text.encode("utf-8"))
+    written: list[str] = []
+    failed: list[str] = []
+    for relpath, (_old_text, new_text) in changed.items():
+        if _atomic_write_dest_bytes(dest_root, Path(relpath), new_text.encode("utf-8")):
+            written.append(relpath)
+        else:
+            failed.append(relpath)
+    violations: list[str] = []
+    if failed:
+        violations.append(
+            f"{', '.join(failed)} 를 쓰지 못했습니다 — 그 파일의 기존 내용은 그대로입니다.")
+    recorded = {relpath: attested[relpath] for relpath in written if relpath in attested}
+    if recorded:
+        for relpath, digest in recorded.items():
+            files[relpath] = {**files[relpath], "sha256": digest}
+        _write_adapter_baseline(dest_root, {"schema": ADAPTER_BASELINE_SCHEMA, "files": files})
+        recorded_now = read_adapter_baseline(dest_root).get("files", {})
+        unrecorded = [relpath for relpath, digest in recorded.items()
+                      if not isinstance(recorded_now.get(relpath), dict)
+                      or recorded_now[relpath].get("sha256") != digest]
+        if unrecorded:
+            violations.append(
+                f"{', '.join(unrecorded)} 는 반영했지만 원장 기록을 확인하지 못했습니다 — 원장 경로 "
+                f"({ADAPTER_BASELINE_RELPATH.as_posix()})의 쓰기 권한을 확인한 뒤 다시 실행하십시오.")
+    if violations:
+        raise HarnessCtxError(violations, written=written)
+
+
+def _print_harness_ctx_apply(dest_root: Path) -> None:
+    """설치·add-harness·어댑터 config 수용 뒤의 반영 한 번 — 운영 환경의 opencode 전역 설정
+    디렉터리로 쓰고 줄을 낸다.
+
+    local.conf 에 값 공급을 잃는 옛 키가 남아 있으면 반영하지 않고 한 줄로 알린다 — 이 단계는
+    파일을 다 깐 뒤의 후속이고, 이름 이동은 pm-update(`migrate_renamed_conf_keys`)가 하며 그 실행이
+    이어서 반영한다(pm_update 의 반영 단계와 같은 처분)."""
+    module = _load_local_conf()
+    remaining = module.blocking_legacy(
+        module.load(Path(dest_root) / ".project_manager" / "local.conf").legacy)
+    if remaining:
+        print(f"  ⚠️ 하네스 설정 반영을 건너뜁니다 — local.conf 에 옛 키({', '.join(remaining)})가 "
+              "남아 있습니다. pm-update 가 키 이름을 옮긴 뒤 반영합니다.")
+        return
+    for line in apply_harness_ctx(
+            dest_root, write=True,
+            opencode_config_dir=opencode_global_config_dir(os.environ, Path.home())):
+        print(f"  ✓ 하네스 설정 반영: {line}")
+
+
 def _unowned_shipped_wiki_relpaths(
         source_root: Path, harnesses, notation_contexts: dict) -> list[str]:
     """선택 하네스 template 이 **출하하는** wiki relpath 중 manifest 소유자가 없는 것.
@@ -8851,6 +9426,10 @@ def add_harness(
     if baselined:
         print(f"  ✓ 어댑터 config 원장 기록 ({ADAPTER_BASELINE_RELPATH.as_posix()}): "
               f"{', '.join(baselined)}")
+    # 하네스 사용 한도 반영 — 원장 기록 **뒤**라야 방금 내려놓은 설정 파일이 무편집으로 증언되고
+    #   반영 뒤에도 그 판정이 유지된다(`apply_harness_ctx` 원장 규칙). 검사 거부는 ValueError 라
+    #   `add_harness_cli` 가 rc 1 로 번역한다.
+    _print_harness_ctx_apply(dest_root)
     # 실복사 수를 보고한다(계획 수 아님) — 제외가 있었으면 위 요약이 사유를 이미 말한다.
     print(f"✓ add-harness 완료: {harness} 어댑터 {len(copied_relpaths)} 파일 복사 · "
           f"{n_subst} 파일 토큰 치환 (스코프: {adapter_scope} + {root_doc})")
@@ -9880,6 +10459,13 @@ def main(argv: list[str] | None = None) -> int:
     if baselined:
         print(f"✓ 어댑터 config 원장 기록 ({ADAPTER_BASELINE_RELPATH.as_posix()}): "
               f"{', '.join(baselined)}")
+    # 하네스 사용 한도 반영 — add-harness 와 같은 자리(원장 기록 뒤)·같은 규칙. `--into` 재적용이면
+    #   보존된 conf 값(예 `ctx.compact_at_pct`)이 여기서 설정 파일에 들어간다.
+    try:
+        _print_harness_ctx_apply(dest_root)
+    except HarnessCtxError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
 
     # ── fill 단계: board init·conf sync 직후 hook. 자유서술 placeholder 처리.
     #    auto + opt-in 게이트 통과 → 하니스 구동 *제안*(파일 미변경, 사람 검토 전제).

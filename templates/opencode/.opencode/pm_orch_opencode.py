@@ -31,8 +31,8 @@ from pathlib import Path
 OPENCODE_BIN = "opencode"
 DEFAULT_AGENT = "pm"          # PM primary spawn 타깃. build 폴백(`--agent build`).
 TURN_TIMEOUT_SEC = 600        # subprocess 당 hard hang 가드(상한 — 한 turn 이 길 수 있음).
-CTX_STOP_PCT_DEFAULT = 20     # 잔여 정지 임계(%).
-CTX_WINDOW_TOKENS_DEFAULT = 200_000
+CTX_PRECOMPACT_AT_PCT_DEFAULT = 80  # 회전 임계(사용 한도 대비 쓴 %) — local_conf 레지스트리 미러.
+CTX_WINDOW_TOKENS_DEFAULT = 200_000  # 사용 한도 기본값 — local_conf 레지스트리 미러.
 
 
 def repo_root(start: Path) -> Path:
@@ -68,8 +68,11 @@ LEGACY_CONF_KEYS = (
     "additional_reviewer_incomplete_round_limit",
     "additional_reviewer_round_limit",
     "additional_reviewer_wave_budget",
+    "ctx.checkpoint_pct",
     "ctx.nudge_pct",
+    "ctx.precompact_pct",
     "ctx.stop_pct",
+    "ctx.window_tokens",
     "ctx_nudge_pct",
     "ctx_stop_pct",
     "ctx_window_tokens",
@@ -142,31 +145,27 @@ def load_local_config(root: Path) -> dict[str, str]:
     return conf
 
 
-def resolve_ctx_budget(conf: dict[str, str]) -> int:
-    """`harness.opencode.ctx_window_tokens` > generic > 200000 순으로 예산을 해소한다."""
-    for key in ("harness.opencode.ctx_window_tokens", "ctx.window_tokens"):
-        raw = conf.get(key)
-        if raw is None:
-            continue
-        try:
-            budget = int(str(raw).strip())
-        except (ValueError, AttributeError):
-            continue
-        if budget > 0:
-            return budget
-    return CTX_WINDOW_TOKENS_DEFAULT
-
-
-def resolve_stop_pct(conf: dict[str, str]) -> int:
-    """잔여 ctx 정지 %를 해소한다. 비정상 값은 기본 20으로 폴백한다."""
-    raw = conf.get("ctx.precompact_pct")
-    if raw is None:
-        return CTX_STOP_PCT_DEFAULT
+def _conf_integer(conf: dict[str, str], key: str) -> int | None:
+    """local.conf 정수 값 — 부재·비정수면 None."""
+    raw = conf.get(key)
     try:
-        stop_pct = int(str(raw).strip())
+        return int(str(raw).strip()) if raw is not None else None
     except (ValueError, AttributeError):
-        return CTX_STOP_PCT_DEFAULT
-    return stop_pct if 0 < stop_pct < 100 else CTX_STOP_PCT_DEFAULT
+        return None
+
+
+def resolve_ctx_budget(conf: dict[str, str]) -> int:
+    """예산 = opencode 사용 한도 `harness.opencode.ctx_window_tokens`, 없거나 >0 정수가 아니면 200000."""
+    budget = _conf_integer(conf, "harness.opencode.ctx_window_tokens")
+    return budget if budget is not None and budget > 0 else CTX_WINDOW_TOKENS_DEFAULT
+
+
+def resolve_precompact_at_pct(conf: dict[str, str]) -> int:
+    """회전 임계(쓴 %) `ctx.precompact_at_pct` — 0 < 값 < 100 이 아니면 기본 80."""
+    precompact_at_pct = _conf_integer(conf, "ctx.precompact_at_pct")
+    if precompact_at_pct is None or not 0 < precompact_at_pct < 100:
+        return CTX_PRECOMPACT_AT_PCT_DEFAULT
+    return precompact_at_pct
 
 
 class OpencodeCliDriver:
@@ -177,16 +176,16 @@ class OpencodeCliDriver:
     """
 
     def __init__(self, parse_opencode_json, *, ctx_budget: int | None = None,
-                 stop_pct: int | None = None, root: Path | None = None,
+                 precompact_at_pct: int | None = None, root: Path | None = None,
                  mark_stop=None, spawn_result=None, agent: str = DEFAULT_AGENT,
                  opencode_bin: str = OPENCODE_BIN, timeout: int = TURN_TIMEOUT_SEC,
                  runner=subprocess.run, stall_error=None) -> None:
         # parse_opencode_json 은 엔진 순수 헬퍼 주입(DI) — driver 가 파싱 로직을 중복 보유하지 않음.
         self._parse = parse_opencode_json
         self._ctx_budget = ctx_budget
-        self._stop_pct = stop_pct
+        self._precompact_at_pct = precompact_at_pct
         self._root = Path(root) if root is not None else None
-        # mark_stop = 엔진 mark_ctx_post_turn_if_over(root, sid, used, budget, stop_pct).
+        # mark_stop = 엔진 mark_ctx_post_turn_if_over(root, sid, used, budget, precompact_at_pct).
         self._mark_stop = mark_stop
         # main은 SpawnResult를 명시 주입한다. parser만 주입한 기존/단위 경로도 parser 소유
         # 엔진 타입을 찾아 쓰며, 제3자 parser면 구조 호환 tuple로 폴백한다.
@@ -288,11 +287,11 @@ class OpencodeCliDriver:
     def _maybe_mark_ctx(self, session_id: str, used_tokens: int | None) -> None:
         """usage 신호와 DI가 모두 있으면 엔진 post-turn 예산 판정을 호출한다."""
         if any(value is None for value in (
-            used_tokens, self._ctx_budget, self._stop_pct, self._root, self._mark_stop,
+            used_tokens, self._ctx_budget, self._precompact_at_pct, self._root, self._mark_stop,
         )):
             return
         self._mark_stop(
-            self._root, session_id, used_tokens, self._ctx_budget, self._stop_pct,
+            self._root, session_id, used_tokens, self._ctx_budget, self._precompact_at_pct,
         )
 
 
@@ -341,14 +340,14 @@ def main(argv: list[str] | None = None) -> int:
     cwd = args.cwd or os.getcwd()
     conf = load_local_config(root)
     budget = resolve_ctx_budget(conf)
-    stop_pct = resolve_stop_pct(conf)
-    engine.validate_relay_budget(budget, stop_pct)
+    precompact_at_pct = resolve_precompact_at_pct(conf)
+    engine.validate_relay_budget(budget, precompact_at_pct)
     # 프로덕션 driver 는 첫-이벤트 워치독 runner 로 opencode 를 구동(startup stall→유한 재시도).
     # 소진 시 StallWatchdogError → driver `_turn` 이 loud + fail-soft(stall_error 주입).
     driver = OpencodeCliDriver(
         engine.parse_opencode_json,
         ctx_budget=budget,
-        stop_pct=stop_pct,
+        precompact_at_pct=precompact_at_pct,
         root=root,
         mark_stop=engine.mark_ctx_post_turn_if_over,
         spawn_result=engine.SpawnResult,

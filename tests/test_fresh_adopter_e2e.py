@@ -1737,12 +1737,15 @@ def test_add_harness_guest_engine_files_sync_on_pm_update(
     #   `ADD_HARNESS_CREATE_IF_ABSENT` 만 쓰면 claude/opencode 가 빈 집합이라 instance-owned 축이
     #   codex 2쌍에서만 실효한다 — 어느 manifest 에도 없는 실 설정 파일을 **채택자 로컬 내용으로**
     #   심어 6쌍 전부에서 byte 불변을 단언한다(전파 대상 아님을 못박는 축).
+    #   심는 내용은 설치본 앞에 로컬 표식 주석을 붙인 문서다 — update 가 읽고 관리 키(사용 한도
+    #   반영)만 쓰는 파일이므로 문서로 읽혀야 하고, 설치가 이미 반영한 값이라 그 쓰기도 0 이다.
     local_config_marker = "// LOCAL ADOPTER CONFIG (must not be touched by update)\n"
     planted = []
     for rel in (".claude/settings.json", ".opencode/opencode.jsonc"):
         target = dest / rel
         if target.is_file():
-            target.write_text(local_config_marker, encoding="utf-8", newline="\n")
+            target.write_text(local_config_marker + target.read_text(encoding="utf-8"),
+                              encoding="utf-8", newline="\n")
             planted.append(rel)
     assert planted, f"{base}->{added}: instance-owned 설정 심기 0(공허 축)"
     instance_owned = sorted({*pm_import.ADD_HARNESS_CREATE_IF_ABSENT[added], *planted})

@@ -22,8 +22,8 @@ from pathlib import Path
 import pytest
 
 from _manager_home import (
-    git_required, install_old_generation_engine, make_pm_home, make_upstream_checkout,
-    set_conf_key, tree_snapshot,
+    git_required, install_old_generation_engine, make_committed_source, make_pm_home,
+    make_upstream_checkout, set_conf_key, tree_snapshot,
 )
 
 from manager import engine_rev
@@ -52,15 +52,23 @@ ANNOUNCE_PREFIXES = ("[update] ", "[render] ")
 
 
 @pytest.fixture(scope="module")
-def upstream(tmp_path_factory) -> Path:
-    """엔진 rev 를 올려 둔 실 clone — 갱신할 것이 있는 상류다."""
-    return make_upstream_checkout(tmp_path_factory.mktemp("update-upstream"), rev=UPSTREAM_REV)
+def source(tmp_path_factory) -> Path:
+    """이 트리의 커밋본 — 홈 설치와 상류 clone 이 같은 커밋에서 출발한다."""
+    return make_committed_source(tmp_path_factory.mktemp("update-source"))
 
 
 @pytest.fixture(scope="module")
-def base_home(tmp_path_factory, upstream) -> Path:
+def upstream(tmp_path_factory, source) -> Path:
+    """엔진 rev 를 올려 둔 실 clone — 갱신할 것이 있는 상류다."""
+    return make_upstream_checkout(tmp_path_factory.mktemp("update-upstream"), source=source,
+                                  rev=UPSTREAM_REV)
+
+
+@pytest.fixture(scope="module")
+def base_home(tmp_path_factory, source, upstream) -> Path:
     """실 엔진이 만든 PM 홈 한 벌 — 테스트마다 복사해 쓴다(원본은 읽기만)."""
-    return make_pm_home(tmp_path_factory.mktemp("update-base") / "demo", upstream=upstream)
+    return make_pm_home(tmp_path_factory.mktemp("update-base") / "demo", source=source,
+                        upstream=upstream)
 
 
 @pytest.fixture

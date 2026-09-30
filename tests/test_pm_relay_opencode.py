@@ -428,15 +428,15 @@ def test_opencode_driver_spawn_marks_after_turn_and_returns_spawn_result(
 ):
     calls = []
 
-    def mark_stop(root, sid, used, budget, stop_pct):
-        calls.append((root, sid, used, budget, stop_pct))
+    def mark_stop(root, sid, used, budget, precompact_at_pct):
+        calls.append((root, sid, used, budget, precompact_at_pct))
         return True
 
     tokens = {"input": 8128, "output": 3, "reasoning": 0, "cache": {"read": 0, "write": 0}}
     driver = driver_mod.OpencodeCliDriver(
         orch.parse_opencode_json,
         ctx_budget=10_000,
-        stop_pct=20,
+        precompact_at_pct=80,
         root=tmp_path,
         mark_stop=mark_stop,
         spawn_result=orch.SpawnResult,
@@ -446,7 +446,7 @@ def test_opencode_driver_spawn_marks_after_turn_and_returns_spawn_result(
     )
     result = driver.spawn("/repo", "ignored-uuid", "boot")
     assert result == orch.SpawnResult("ses_spawn_usage", "READY")
-    assert calls == [(tmp_path, "ses_spawn_usage", 8131, 10_000, 20)]
+    assert calls == [(tmp_path, "ses_spawn_usage", 8131, 10_000, 80)]
 
 
 def test_opencode_driver_relay_marks_when_usage_reaches_threshold(
@@ -457,7 +457,7 @@ def test_opencode_driver_relay_marks_when_usage_reaches_threshold(
     driver = driver_mod.OpencodeCliDriver(
         orch.parse_opencode_json,
         ctx_budget=10_000,
-        stop_pct=20,
+        precompact_at_pct=80,
         root=tmp_path,
         mark_stop=orch.mark_ctx_post_turn_if_over,
         runner=lambda *args, **kwargs: _FakeCompleted(
@@ -481,7 +481,7 @@ def test_opencode_driver_relay_under_threshold_does_not_mark(
     driver = driver_mod.OpencodeCliDriver(
         orch.parse_opencode_json,
         ctx_budget=10_000,
-        stop_pct=20,
+        precompact_at_pct=80,
         root=tmp_path,
         mark_stop=orch.mark_ctx_post_turn_if_over,
         runner=lambda *args, **kwargs: _FakeCompleted(
@@ -521,21 +521,24 @@ def test_opencode_driver_parser_accepts_task(driver_mod):
 
 
 def test_opencode_resolve_ctx_budget_precedence(driver_mod):
+    """예산 = harness.opencode.ctx_window_tokens(사용 한도) > 200000 — 공통 층은 없다."""
     resolve = driver_mod.resolve_ctx_budget
-    assert resolve({"harness.opencode.ctx_window_tokens": "300000", "ctx.window_tokens": "500000"}) == 300000
-    assert resolve({"ctx.window_tokens": "500000"}) == 500000
+    assert resolve({"harness.opencode.ctx_window_tokens": "300000"}) == 300000
+    assert resolve({"ctx.window_tokens": "500000"}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
     assert resolve({}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
-    assert resolve({"harness.opencode.ctx_window_tokens": "bad", "ctx.window_tokens": "250000"}) == 250000
+    assert resolve({"harness.opencode.ctx_window_tokens": "bad"}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
     assert resolve({"harness.opencode.ctx_window_tokens": "0"}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
 
 
-def test_opencode_resolve_stop_pct(driver_mod):
-    resolve = driver_mod.resolve_stop_pct
-    assert resolve({"ctx.precompact_pct": "15"}) == 15
-    assert resolve({}) == driver_mod.CTX_STOP_PCT_DEFAULT
-    assert resolve({"ctx.precompact_pct": "bad"}) == driver_mod.CTX_STOP_PCT_DEFAULT
-    assert resolve({"ctx.precompact_pct": "0"}) == driver_mod.CTX_STOP_PCT_DEFAULT
-    assert resolve({"ctx.precompact_pct": "100"}) == driver_mod.CTX_STOP_PCT_DEFAULT
+def test_opencode_resolve_precompact_at_pct(driver_mod):
+    """회전 임계(쓴 %) — 0 < 값 < 100 이 아니면 기본 80."""
+    resolve = driver_mod.resolve_precompact_at_pct
+    assert resolve({"ctx.precompact_at_pct": "85"}) == 85
+    assert resolve({}) == driver_mod.CTX_PRECOMPACT_AT_PCT_DEFAULT == 80
+    assert resolve({"ctx.precompact_at_pct": "bad"}) == 80
+    assert resolve({"ctx.precompact_at_pct": "0"}) == 80
+    assert resolve({"ctx.precompact_at_pct": "100"}) == 80
+    assert not hasattr(driver_mod, "resolve_stop_pct")
 
 
 def test_opencode_main_forwards_task_and_budget(driver_mod, monkeypatch, tmp_path):
@@ -562,8 +565,8 @@ def test_opencode_main_forwards_task_and_budget(driver_mod, monkeypatch, tmp_pat
             return False
 
         @staticmethod
-        def validate_relay_budget(budget, stop_pct):
-            captured["validated"] = (budget, stop_pct)
+        def validate_relay_budget(budget, precompact_at_pct):
+            captured["validated"] = (budget, precompact_at_pct)
 
         SpawnResult = staticmethod(_fake_spawn_result)
 
@@ -573,15 +576,15 @@ def test_opencode_main_forwards_task_and_budget(driver_mod, monkeypatch, tmp_pat
 
     (tmp_path / ".project_manager").mkdir()
     (tmp_path / ".project_manager" / "local.conf").write_text(
-        "harness.opencode.ctx_window_tokens=333000\nctx.window_tokens=444000\nctx.precompact_pct=15\n",
+        "harness.opencode.ctx_window_tokens=333000\nctx.precompact_at_pct=85\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
     rc = driver_mod.main(["--task", "mytask", "--cwd", str(tmp_path)])
     assert rc == 0 and captured["task"] == "mytask"
-    assert captured["validated"] == (333000, 15)
+    assert captured["validated"] == (333000, 85)
     assert captured["driver"]._ctx_budget == 333000
-    assert captured["driver"]._stop_pct == 15
+    assert captured["driver"]._precompact_at_pct == 85
     assert captured["driver"]._mark_stop is _FakeEngine.mark_ctx_post_turn_if_over
     assert captured["driver"]._spawn_result is _FakeEngine.SpawnResult
 
@@ -603,7 +606,7 @@ def test_opencode_main_rejects_unsafe_budget_before_supervisor(
 
     (tmp_path / ".project_manager").mkdir()
     (tmp_path / ".project_manager" / "local.conf").write_text(
-        "harness.opencode.ctx_window_tokens=50500\nctx.precompact_pct=20\n", encoding="utf-8",
+        "harness.opencode.ctx_window_tokens=50500\nctx.precompact_at_pct=80\n", encoding="utf-8",
     )
     monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
     with pytest.raises(ValueError, match="즉시 세션 회전 위험"):
@@ -676,7 +679,7 @@ def test_supervisor_with_opencode_driver_rotation(orch, driver_mod, tmp_path):
     driver = driver_mod.OpencodeCliDriver(
         orch.parse_opencode_json,
         ctx_budget=10_000,
-        stop_pct=20,
+        precompact_at_pct=80,
         root=tmp_path,
         mark_stop=orch.mark_ctx_post_turn_if_over,
         spawn_result=orch.SpawnResult,

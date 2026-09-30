@@ -8539,44 +8539,9 @@ def default_pytest_cmd(py: str | None = None) -> str:
     return f"{runtime} -m pytest tests/ -q{parallel}"
 
 
-# ── ctx 임계 (context 정지-핸드오프) ──────────────────────────────
-# 세 하네스 어댑터 훅(claude·opencode·codex)이 컨텍스트 잔여 비율로 nudge/stop 을 판정할 기본값의
-# 정본은 **레지스트리**다(`local_conf.KEY_REGISTRY` 의 `ctx.checkpoint_pct`·`ctx.precompact_pct`·
-# `ctx.window_tokens`) — board 는 그 값을 읽어 판정하고 init 이 local.conf 에 기록한다.
-# local.conf 로 per-clone 조정 가능. 잔여 10% 정지는 rich 핸드오프 돌릴 컨텍스트가 아슬.
-# 어댑터 사본 3파일(claude `.claude/ctx_guard.py`·opencode `.opencode/lib/ctx-guard-core.cjs`·
-# codex `.codex/pm_orch_codex.py`)은 엔진을 import 하지 않아(touches 격리) 리터럴을 보유하며,
-# 그 3사본과 레지스트리까지 **4사이트**를 `test_ctx_default_mirror` 가드가 대조한다. codex
-# 사이트는 한 파일이 두 소비자를 겸한다(relay 회전 축 `resolve_stop_pct` + 세션 안 훅 넛지 축
-# `ctx_thresholds`·`ctx_nudge_envelope`).
-
-
 # conf 예시 시드는 없다 — 키 목록·설명은 레지스트리 한 곳이 소유한다(`local_conf.py --keys`).
 # 파일이 자기 규칙("여기엔 실값만 둔다")을 스스로 어기지 않게, 엔진은 conf 에 주석 스키마를
 # 배달하지 않는다. 모르는 키는 `board.py lint` advisory 로 드러나므로 배달 경로가 필요 없다.
-
-
-def _ctx_pct(key: str) -> int:
-    """local.conf 의 ctx 임계값을 정수로 읽는다. 없거나 비정수면 레지스트리 기본값."""
-    default = _conf_default_int(key)
-    raw = local_config().get(key)
-    if raw is None:
-        return default
-    try:
-        return int(raw.strip())
-    except (ValueError, AttributeError):
-        return default
-
-
-def ctx_thresholds() -> dict[str, int]:
-    """ctx 정지-핸드오프 임계값을 dict 로 반환 (어댑터 훅이 읽어 판정).
-
-    반환: {"nudge_pct": N, "stop_pct": M}. local.conf 우선·없으면 레지스트리 기본값.
-    """
-    return {
-        "nudge_pct": _ctx_pct("ctx.checkpoint_pct"),
-        "stop_pct": _ctx_pct("ctx.precompact_pct"),
-    }
 
 
 def _normalized_touches(raw: object) -> list[str] | None:
@@ -13211,7 +13176,7 @@ def _write_init_local_conf() -> None:
 
     **세션·prefix 키는 쓰지 않는다.** 둘 다 slot·task 종속 값이라 프로젝트 공용 per-clone
     conf 의 범위가 아니다 — 세션은 lease 장부, prefix 는 areas.md 칼럼이 단일 진실이고 이
-    함수는 `runtime.py`·`test.cmd`·ctx 예산 같은 per-clone operational 키만 심는다.
+    함수는 `runtime.py`·`test.cmd`·ctx 비율 같은 per-clone operational 키만 심는다.
 
     구간을 나누면 두 곳이 새는데 둘 다 남의 결정을 지운다: (a) 존재 판정과 최초 생성 사이에
     다른 writer 가 만든 conf 를 통째 write 로 덮고, (b) 병합 경로가 읽은 뒤 교체하는 사이에 붙은
@@ -13236,9 +13201,9 @@ def _write_init_local_conf() -> None:
                 f"runtime.py={detected_py}\n"
                 f"test.cmd={detected_test_cmd}\n"
                 "project.name=\n"
-                f"ctx.checkpoint_pct={_conf_default_int('ctx.checkpoint_pct')}\n"
-                f"ctx.precompact_pct={_conf_default_int('ctx.precompact_pct')}\n"
-                f"ctx.window_tokens={_conf_default_int('ctx.window_tokens')}\n"
+                f"ctx.checkpoint_at_pct={_conf_default_int('ctx.checkpoint_at_pct')}\n"
+                f"ctx.precompact_at_pct={_conf_default_int('ctx.precompact_at_pct')}\n"
+                f"ctx.compact_at_pct={_conf_default_int('ctx.compact_at_pct')}\n"
             )
             LOCAL_CONF.write_text(conf, encoding="utf-8", newline="\n")
             return
@@ -13248,14 +13213,14 @@ def _write_init_local_conf() -> None:
         text = file_lock.read_text_shared(LOCAL_CONF, encoding="utf-8")
         existing = local_config()
         updates: dict[str, str] = {}
-        # init 기본키는 *없을 때만* 추가 — 기존 값(커스텀 `ctx.window_tokens` 등)은 보존.
+        # init 기본키는 *없을 때만* 추가 — 기존 값(커스텀 `ctx.compact_at_pct` 등)은 보존.
         defaults = {
             "runtime.py": detected_py,
             "test.cmd": detected_test_cmd,
             "project.name": "",
-            "ctx.checkpoint_pct": str(_conf_default_int("ctx.checkpoint_pct")),
-            "ctx.precompact_pct": str(_conf_default_int("ctx.precompact_pct")),
-            "ctx.window_tokens": str(_conf_default_int("ctx.window_tokens")),
+            "ctx.checkpoint_at_pct": str(_conf_default_int("ctx.checkpoint_at_pct")),
+            "ctx.precompact_at_pct": str(_conf_default_int("ctx.precompact_at_pct")),
+            "ctx.compact_at_pct": str(_conf_default_int("ctx.compact_at_pct")),
         }
         for key, value in defaults.items():
             if key not in existing:
@@ -13441,7 +13406,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         # board_lock 밖에서 부른다(락 순서: board_git_lock → board_lock).
         _board_git_sync_best_effort("init areas 등록", (areas_file(),))
     print(area_message)
-    print("✓ local.conf: py·test_cmd·ctx 예산 (세션·prefix 는 conf 키가 아니다 — "
+    print("✓ local.conf: py·test_cmd·ctx 비율 (세션·prefix 는 conf 키가 아니다 — "
           "세션=lease 장부 · prefix=areas.md)")
     # 병합 경로가 손대지 않은 기존 키(오타·폐기)도 같은 목록·같은 함수로 표면화한다 —
     # `board.py lint` 를 따로 실행하지 않아도 온보딩 시점에 1줄로 보이게(사본 없음).

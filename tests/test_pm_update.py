@@ -8127,3 +8127,124 @@ def test_unused_profile_card_is_neutralized_not_filled(pm_update, tmp_path, monk
     assert "claude" in model_line, "중화 사유(conf 의 그 역할 하네스)가 안 실렸다"
     assert "opus" not in toml, "conf 의 claude 용 모델이 codex 카드에 새어 들어갔다"
     assert "{{" not in toml, "중화 산출물에 리터럴 토큰 잔존(자족 위반)"
+
+
+# ── 하네스 사용 한도 반영 (T-0923 AT-013·AT-025) ──────────────────────────────
+# 실 채택자 트리(`pm_import --new`)와 그 트리의 pm_update.py 를 서브프로세스로 돌린다 — 이동 →
+# 검사 → 반영 순서와 dry-run 무변경을 실행 결과로 잰다. 엔진 사본이 canonical 이라 두 실행 모두
+# 변경 없는 경로(`최신 — 변경 없음.`)를 탄다.
+
+
+def _adopter_update(dest: Path, *args: str, env: dict | None = None):
+    return subprocess.run(
+        [sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"),
+         "--from", str(REPO), *args],
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env={**os.environ, "PM_NONINTERACTIVE": "1", **(env or {})}, timeout=300)
+
+
+def _conf_values(dest: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in (dest / ".project_manager" / "local.conf").read_text(
+            encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key, _, value = stripped.partition("=")
+            values[key.strip()] = value.strip()
+    return values
+
+
+def test_update_migrates_ctx_keys_then_applies(pm_update, tmp_path, monkeypatch):
+    """옛 남은 %·공통 한도 conf → 이동(쓴 %·하네스별 한도) → 검사 → 설정 파일 반영.
+
+    dry-run 은 conf·설정 파일을 바꾸지 않는다. 옮긴 값이 검사에 걸리면(codex 파일 + 압축 95%)
+    rc 1 이고 설정 파일은 그대로다."""
+    import tomllib
+
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
+    dest = tmp_path / "adopter"
+    _import_adopter(pm_import, dest, "claude,codex")
+    conf = dest / ".project_manager" / "local.conf"
+    kept = [line for line in conf.read_text(encoding="utf-8").splitlines()
+            if not line.startswith("ctx.")]
+    conf.write_text("\n".join([*kept, "ctx.checkpoint_pct=30", "ctx.precompact_pct=20",
+                               "ctx.window_tokens=300000"]) + "\n", encoding="utf-8")
+    settings = dest / ".claude" / "settings.json"
+    config = dest / ".codex" / "config.toml"
+    watched = (conf, settings, config)
+
+    before = {path: path.read_bytes() for path in watched}
+    planned = _adopter_update(dest, "--dry-run")
+    assert planned.returncode == 0, planned.stdout + planned.stderr
+    assert {path: path.read_bytes() for path in watched} == before, "dry-run 이 파일을 바꿨다"
+    assert "하네스 설정 반영을 건너뛴다" in planned.stdout      # 이동 전 이름은 읽지 않는다
+
+    run = _adopter_update(dest)
+    assert run.returncode == 0, run.stdout + run.stderr
+    values = _conf_values(dest)
+    assert values["ctx.checkpoint_at_pct"] == "70" and values["ctx.precompact_at_pct"] == "80"
+    for harness in ("claude", "codex", "opencode"):
+        assert values[f"harness.{harness}.ctx_window_tokens"] == "300000", harness
+    for retired in ("ctx.checkpoint_pct", "ctx.precompact_pct", "ctx.window_tokens"):
+        assert retired not in values, retired
+    assert json.loads(settings.read_text(encoding="utf-8"))["autoCompactWindow"] == 270000
+    document = tomllib.loads(config.read_text(encoding="utf-8"))
+    assert document["model_context_window"] == 300000
+    assert document["model_auto_compact_token_limit"] == 270000
+    assert ".claude/settings.json autoCompactWindow 180000 → 270000" in run.stdout
+
+    again = _adopter_update(dest)
+    assert again.returncode == 0, again.stderr
+    assert "하네스 설정 반영:" not in again.stdout, "두 번째 실행이 또 바꿨다(멱등 아님)"
+
+    conf.write_text(conf.read_text(encoding="utf-8") + "ctx.compact_at_pct=95\n",
+                    encoding="utf-8")
+    before = {path: path.read_bytes() for path in (settings, config)}
+    refused = _adopter_update(dest)
+    assert refused.returncode == 1, refused.stdout + refused.stderr
+    assert "[중단]" in refused.stderr and "ctx.compact_at_pct=95" in refused.stderr
+    assert {path: path.read_bytes() for path in (settings, config)} == before
+
+
+def test_update_applies_limits_to_global_opencode_models(pm_update, tmp_path, monkeypatch):
+    """opencode 전역 설정(`$XDG_CONFIG_HOME/opencode`)에만 적힌 모델도 프로젝트 파일에 `limit` 이 생긴다.
+
+    HOME 아래 `.config/opencode` 와 `OPENCODE_CONFIG_DIR` 의 설정은 대상이 아니다. 전역 파일은
+    읽기만 하고, dry-run 은 프로젝트 파일을 바꾸지 않는다."""
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
+    dest = tmp_path / "adopter"
+    _import_adopter(pm_import, dest, "opencode")
+    xdg = tmp_path / "xdg"
+    (xdg / "opencode").mkdir(parents=True)
+    global_file = xdg / "opencode" / "opencode.jsonc"
+    global_file.write_text(
+        '{\n  // 전역 로컬 모델\n  "provider": {"ollama": {"models": {"gemma-t": {"name": "g"}}}}\n}\n',
+        encoding="utf-8")
+    home = tmp_path / "home"
+    (home / ".config" / "opencode").mkdir(parents=True)
+    (home / ".config" / "opencode" / "opencode.jsonc").write_text(
+        '{"provider": {"ollama": {"models": {"home-model": {}}}}}', encoding="utf-8")
+    config_dir = tmp_path / "opencode-config-dir"
+    config_dir.mkdir()
+    (config_dir / "opencode.jsonc").write_text(
+        '{"provider": {"ollama": {"models": {"config-dir-model": {}}}}}', encoding="utf-8")
+    env = {"XDG_CONFIG_HOME": str(xdg), "HOME": str(home),
+           "OPENCODE_CONFIG_DIR": str(config_dir)}
+    project = dest / ".opencode" / "opencode.jsonc"
+    global_before = global_file.read_bytes()
+
+    before = project.read_bytes()
+    planned = _adopter_update(dest, "--dry-run", env=env)
+    assert planned.returncode == 0, planned.stdout + planned.stderr
+    assert project.read_bytes() == before, "dry-run 이 프로젝트 파일을 바꿨다"
+    assert "provider.ollama.models.gemma-t.limit.context (없음) → 200000" in planned.stdout
+
+    run = _adopter_update(dest, env=env)
+    assert run.returncode == 0, run.stdout + run.stderr
+    document = pm_import._load_adapter_config_document(project)
+    models = document["provider"]["ollama"]["models"]
+    assert models["gemma-t"]["limit"] == {"context": 200000, "input": 200000, "output": 32000}
+    assert "home-model" not in models and "config-dir-model" not in models
+    assert global_file.read_bytes() == global_before, "opencode 전역 설정을 썼다"

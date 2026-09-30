@@ -173,7 +173,7 @@ def test_hook_write_passes_utf8_encoding(board, monkeypatch, tmp_path):
     assert (hooks / "pre-push").is_file()      # 교체가 실제로 최종 경로에 착지했다
 
 
-# ── C8: cmd_init 가 local.conf 에 ctx_window_tokens 핸드오프 예산 surface (T-0128) ──
+# ── C8: cmd_init 가 local.conf 에 ctx 비율 셋 surface (T-0128 · T-0923) ──
 
 def _init_isolated(board, monkeypatch, tmp_path):
     """cmd_init 을 hermetic 으로: 경로 전역 tmp 재지정 + pm_state·훅 부수효과 차단.
@@ -199,11 +199,11 @@ def _init_isolated(board, monkeypatch, tmp_path):
     return conf_path
 
 
-def test_init_writes_ctx_window_tokens_budget(board, monkeypatch, tmp_path):
-    """init 이 local.conf 에 ctx_window_tokens=<기본> 라인을 nudge/stop pct 옆에 기록한다.
+def test_init_seeds_used_pct_keys(board, monkeypatch, tmp_path):
+    """T-0923 AT-016 — init 이 새 conf 에 쓴 % 비율 셋(70·80·90)만 쓴다.
 
-    회사 실사용 계기(T-0128): 핸드오프 토큰 예산을 사용자가 발견·조정할 수 있게 surface.
-    기본은 어댑터 ctx_guard 와 동기된 200K (정본=레지스트리 · 어댑터는 touches 격리로 리터럴).
+    회사 실사용 계기(T-0128): 임계를 사용자가 발견·조정할 수 있게 surface. 옛 남은 % 두 키와 공통
+    한도 키는 쓰지 않는다 — 사용 한도는 하네스별 키이고 기본값(200000)은 레지스트리가 준다.
     """
     conf_path = _init_isolated(board, monkeypatch, tmp_path)
     args = argparse.Namespace(prefix=None, area=None, owner=None, session="pm")
@@ -211,10 +211,11 @@ def test_init_writes_ctx_window_tokens_budget(board, monkeypatch, tmp_path):
     assert board.cmd_init(args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
-    assert f"ctx.window_tokens={board._conf_default_int('ctx.window_tokens')}" in conf_text
-    assert board._conf_default_int("ctx.window_tokens") == 200000
-    # nudge/stop pct 옆에 배치됐는지 (기존 ctx 임계와 한 블록).
-    assert "ctx.checkpoint_pct=" in conf_text and "ctx.precompact_pct=" in conf_text
+    assert "ctx.checkpoint_at_pct=70\n" in conf_text
+    assert "ctx.precompact_at_pct=80\n" in conf_text
+    assert "ctx.compact_at_pct=90\n" in conf_text
+    for retired in ("ctx.checkpoint_pct", "ctx.precompact_pct", "ctx.window_tokens"):
+        assert retired not in conf_text, retired
 
 
 def test_init_ctx_budget_is_a_value_not_an_explanation(board, monkeypatch, tmp_path):
@@ -229,39 +230,41 @@ def test_init_ctx_budget_is_a_value_not_an_explanation(board, monkeypatch, tmp_p
     assert board.cmd_init(args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
-    assert f"ctx.window_tokens={board._conf_default_int('ctx.window_tokens')}" in conf_text
+    assert f"ctx.compact_at_pct={board._conf_default_int('ctx.compact_at_pct')}" in conf_text
     # 설명 산문·주석 예시가 conf 에 없다.
     for marker in ("핸드오프 토큰 예산", "물리 window 아님",
                    "harness.claude.ctx_window_tokens",
                    "harness.opencode.ctx_window_tokens"):
         assert marker not in conf_text, f"conf 에 설명 블록 잔존: {marker}"
     parsed = board.local_config()  # _init_isolated 가 LOCAL_CONF 를 conf_path 로 patch.
-    assert parsed.get("ctx.window_tokens") == str(
-        board._conf_default_int("ctx.window_tokens"))
+    assert parsed.get("ctx.compact_at_pct") == str(
+        board._conf_default_int("ctx.compact_at_pct"))
     assert not [key for key in parsed if key.startswith("harness.")]
 
 
 def test_harness_ctx_override_is_documented_in_the_registry(board):
-    """하네스별 오버라이드 키의 설명 자리는 레지스트리다 — 키가 사라지지 않았음을 값으로 못박는다."""
+    """하네스별 사용 한도 키의 설명 자리는 레지스트리다 — 키가 사라지지 않았음을 값으로 못박는다."""
     conf_module = board._load_local_conf()
     override = conf_module.key_spec("harness.claude.ctx_window_tokens")
     assert override is not None and override.description
-    assert "컨텍스트 크기" in override.description             # 생략 시 무엇으로 떨어지는지
-    assert conf_module.key_spec("ctx.window_tokens").default == "200000"
+    assert "사용 한도" in override.description
+    assert override.default == "200000"                      # 안 채우면 이 값이다(공통 층 없음)
+    assert conf_module.key_spec("ctx.window_tokens") is None  # 옛 공통 키는 레지스트리 밖
 
 
 # ── C9: cmd_init 재실행 비파괴 병합 — 사용자/operational 키 보존 (T-0184) ──────
 # 🔴 데이터 손실 버그: cmd_init 이 local.conf 를 가드 없이 통째 덮어써 재실행 시 init 이
 # 안 쓰는 사용자 키(additional_reviewer.harness·upstream·upstream_rev·harness.opencode.pro_model 등)가
-# 소멸하고 커스텀 ctx_window_tokens 가 default 로 리셋됐다. 존재 시 병합으로 수정.
+# 소멸하고 커스텀 ctx 값이 default 로 리셋됐다. 존재 시 병합으로 수정.
 
 # init 이 안 쓰는 사용자/operational 키 + 커스텀 init 기본키를 담은 기존 local.conf.
 _CUSTOM_CONF = (
     "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
     "session=my-pm\n"
     "runtime.py=python3\ntest.cmd=pytest -q\nproject.name=myproj\n"
-    "ctx.checkpoint_pct=20\nctx.precompact_pct=10\n"
-    "ctx.window_tokens=5000\n"
+    "ctx.checkpoint_at_pct=80\nctx.precompact_at_pct=90\n"
+    "ctx.compact_at_pct=95\n"
+    "harness.claude.ctx_window_tokens=5000\n"
     "# 추가 리뷰어 코드리뷰 (ADR-0004)\n"
     "additional_reviewer.harness=codex\n"
     "additional_reviewer.model=gpt-5.6-sol\n"
@@ -290,14 +293,14 @@ def test_init_rerun_preserves_custom_operational_keys(board, monkeypatch, tmp_pa
     assert "harness.opencode.pro_model=m" in conf_text
     assert "status_total_style=fraction" in conf_text
     assert "identity.user=me@example.com" in conf_text
-    # T-0207: 기존 클론의 ctx 임계(20/10)는 디폴트 상향(30/20)이 있어도 불변 —
-    # init 은 '없을 때만 추가'라 이미 기록된 값을 덮지 않는다(마이그레이션 영향 0).
-    assert "ctx.checkpoint_pct=20" in conf_text and "ctx.precompact_pct=10" in conf_text
-    assert "ctx.checkpoint_pct=30" not in conf_text and "ctx.precompact_pct=20" not in conf_text
+    # 기존 클론의 ctx 임계(80/90)는 기본값(70/80)과 달라도 불변 —
+    # init 은 '없을 때만 추가'라 이미 기록된 값을 덮지 않는다.
+    assert "ctx.checkpoint_at_pct=80" in conf_text and "ctx.precompact_at_pct=90" in conf_text
+    assert "ctx.checkpoint_at_pct=70" not in conf_text and "ctx.precompact_at_pct=80" not in conf_text
 
 
 def test_init_rerun_preserves_custom_ctx_window_tokens(board, monkeypatch, tmp_path):
-    """(b) 커스텀 ctx_window_tokens=5000 이 default(200000)로 리셋되지 않는다(없을 때만 추가)."""
+    """(b) 커스텀 압축 비율·사용 한도가 기본값으로 리셋되지 않는다(없을 때만 추가)."""
     conf_path = _init_isolated(board, monkeypatch, tmp_path)
     conf_path.write_text(_CUSTOM_CONF, encoding="utf-8")
     args = argparse.Namespace(prefix=None, area=None, owner=None, session=None)
@@ -305,8 +308,9 @@ def test_init_rerun_preserves_custom_ctx_window_tokens(board, monkeypatch, tmp_p
     assert board.cmd_init(args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
-    assert "ctx.window_tokens=5000" in conf_text
-    assert f"ctx.window_tokens={board._conf_default_int('ctx.window_tokens')}" not in conf_text
+    assert "ctx.compact_at_pct=95" in conf_text
+    assert f"ctx.compact_at_pct={board._conf_default_int('ctx.compact_at_pct')}" not in conf_text
+    assert "harness.claude.ctx_window_tokens=5000" in conf_text
     # init 이 안 쓰는 키(구 `session=` 포함)는 비파괴 병합으로 byte 보존된다 — 엔진은 채택자
     # conf 를 대신 고쳐 쓰지 않는다(읽지 않을 뿐·T-0779).
     assert "session=my-pm" in conf_text
@@ -325,8 +329,8 @@ def test_init_absent_writes_full_default(board, monkeypatch, tmp_path):
     assert "session=" not in conf_text and "prefix=" not in conf_text
     assert "runtime.py=" in conf_text
     assert f"test.cmd={board.default_pytest_cmd(board._detect_py())}" in conf_text
-    assert f"ctx.window_tokens={board._conf_default_int('ctx.window_tokens')}" in conf_text
-    assert "ctx.checkpoint_pct=" in conf_text and "ctx.precompact_pct=" in conf_text
+    assert f"ctx.compact_at_pct={board._conf_default_int('ctx.compact_at_pct')}" in conf_text
+    assert "ctx.checkpoint_at_pct=" in conf_text and "ctx.precompact_at_pct=" in conf_text
 
 
 def test_init_rerun_explicit_identity_registers_that_repo_and_preserves_conf(
@@ -349,7 +353,7 @@ def test_init_rerun_explicit_identity_registers_that_repo_and_preserves_conf(
     assert "session=newsess_2" not in conf_text  # 세션을 conf 에 쓰지 않는다
     assert "additional_reviewer.harness=codex" in conf_text
     assert "upstream.path=/x" in conf_text
-    assert "ctx.window_tokens=5000" in conf_text
+    assert "harness.claude.ctx_window_tokens=5000" in conf_text
 
 
 # default 키 전부 존재 + 마지막 줄 개행 없음.
@@ -358,8 +362,8 @@ _NO_TRAILING_NL_CONF = (
     "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
     "session=my-pm\n"
     "runtime.py=python3\ntest.cmd=pytest -q\nproject.name=myproj\n"
-    "ctx.checkpoint_pct=20\nctx.precompact_pct=10\n"
-    "ctx.window_tokens=5000"  # ← 마지막 줄·개행 없음(intentional)
+    "ctx.checkpoint_at_pct=80\nctx.precompact_at_pct=90\n"
+    "ctx.compact_at_pct=95"  # ← 마지막 줄·개행 없음(intentional)
 )
 
 
@@ -377,5 +381,5 @@ def test_init_rerun_guarantees_a_trailing_newline_after_the_last_key(
 
     conf_text = conf_path.read_text(encoding="utf-8")
     assert conf_text.endswith("\n")
-    assert "ctx.window_tokens=5000\n" in conf_text
-    assert board.local_config().get("ctx.window_tokens") == "5000"
+    assert "ctx.compact_at_pct=95\n" in conf_text
+    assert board.local_config().get("ctx.compact_at_pct") == "95"

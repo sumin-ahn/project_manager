@@ -45,7 +45,7 @@ const toggleOf = (flag: string) => screen.getByLabelText(`${flag} ${SET_TOGGLE}`
 const DEMO = "/projects/demo";
 const VALUES: Record<string, string> = {
   "runtime.py": "python3",
-  "ctx.checkpoint_pct": "25",
+  "ctx.checkpoint_at_pct": "75",
   "delegate_enabled": "true",
   "nope.nope": "1",
   "upstream.path": "/projects/framework",
@@ -55,7 +55,7 @@ const CONF: ConfSection = {
   missing_required: ["test.cmd"],
   legacy: [{ key: "delegate_enabled", replacement: "delegate.enabled" }],
   unknown: ["nope.nope"],
-  nonstandard: [{ key: "ctx.checkpoint_pct", value: "25", default: "30" }],
+  nonstandard: [{ key: "ctx.checkpoint_at_pct", value: "75", default: "70" }],
   // 값·판정을 늘 나르는 두 조회(가벼운/무거운 절)는 소스를 해소하지 않아 이 축이 null 이다.
   missing_for_latest: null,
 };
@@ -69,8 +69,8 @@ function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
   return {
     conf_keys: vi.fn(async () => KEYS),
     conf_values: vi.fn(async () => ({ values: VALUES })),
-    conf_save: vi.fn(async () => ({ changed: true, conf: CONF })),
-    conf_reset: vi.fn(async () => ({ changed: true, conf: CONF })),
+    conf_save: vi.fn(async () => ({ changed: true, conf: CONF, applied: [] })),
+    conf_reset: vi.fn(async () => ({ changed: true, conf: CONF, applied: [] })),
     delegate_models: vi.fn(async (_path: string, harness: string) =>
       ({ harness, kind: "alias", models: MODELS })),
     adapters: vi.fn(async () => ({ source: "/projects/framework", files: [], conf: LATEST })),
@@ -182,12 +182,12 @@ describe("왼쪽 목록", () => {
 
     expect(screen.getByTestId("group-runtime")).toBeInTheDocument();
     expect(screen.getByTestId("conf-test.cmd")).toBeInTheDocument();
-    expect(screen.queryByTestId("conf-ctx.checkpoint_pct")).toBeNull();
+    expect(screen.queryByTestId("conf-ctx.checkpoint_at_pct")).toBeNull();
 
     openGroup("ctx");
 
     expect(screen.queryByTestId("group-runtime")).toBeNull();
-    expect(screen.getByTestId("conf-ctx.checkpoint_pct")).toBeInTheDocument();
+    expect(screen.getByTestId("conf-ctx.checkpoint_at_pct")).toBeInTheDocument();
   });
 
   it("설정 탭을 열고 절을 옮겨도 사본을 부르지 않는다 — 두 조회는 미리 받아 온 것이다", () => {
@@ -250,7 +250,7 @@ describe("다섯 목록의 배너와 행 표시", () => {
     openGroup("ctx");
 
     fireEvent.click(screen.getByText("기본값으로"));
-    await waitFor(() => expect(bridge.conf_reset).toHaveBeenCalledWith(DEMO, "ctx.checkpoint_pct"));
+    await waitFor(() => expect(bridge.conf_reset).toHaveBeenCalledWith(DEMO, "ctx.checkpoint_at_pct"));
     await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1));
     // 버튼은 사본이 "표준과 다름" 이라 한 행에만 있다 — 기본값 없는 키도, 판정 밖 키도 없다.
     expect(screen.getAllByText("기본값으로")).toHaveLength(1);
@@ -261,8 +261,8 @@ describe("다섯 목록의 배너와 행 표시", () => {
     openGroup("ctx");
 
     // 기본값이 있는 키 — 그 값이 쓰인다고 말한다.
-    expect(screen.queryByLabelText("ctx.window_tokens")).toBeNull();
-    expect(screen.getByTestId("conf-ctx.window_tokens")).toHaveTextContent("기본값: 200000");
+    expect(screen.queryByLabelText("ctx.compact_at_pct")).toBeNull();
+    expect(screen.getByTestId("conf-ctx.compact_at_pct")).toHaveTextContent("기본값: 90");
     openGroup("project");
     fireEvent.click(screen.getByTestId("show-unset"));           // 접힘은 숨김이 아니다
     // 기본값이 없는 키 — 엔진이 준 문장이 그대로 선다.
@@ -300,22 +300,22 @@ describe("저장", () => {
     openGroup("ctx");
     expect(screen.getByTestId("save")).toBeDisabled();
 
-    fireEvent.change(screen.getByLabelText("ctx.checkpoint_pct"), { target: { value: "26" } });
+    fireEvent.change(screen.getByLabelText("ctx.checkpoint_at_pct"), { target: { value: "76" } });
     expect(screen.getByTestId("save")).toHaveTextContent("저장 (1 변경)");
     fireEvent.click(screen.getByTestId("save"));
 
     await waitFor(() => expect(bridge.conf_save)
-      .toHaveBeenCalledWith(DEMO, { "ctx.checkpoint_pct": "26" }));
+      .toHaveBeenCalledWith(DEMO, { "ctx.checkpoint_at_pct": "76" }));
     await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1));
     expect(bridge.conf_values).not.toHaveBeenCalled();   // 재조회는 이 탭이 부르지 않는다
 
-    // 화면 값은 타이핑한 26 이 아니라 재조회가 준 27 이다(낙관적 갱신 없음).
+    // 화면 값은 타이핑한 76 이 아니라 재조회가 준 77 이다(낙관적 갱신 없음).
     view.rerender(
       <SettingsTab bridge={bridge} path={DEMO} light={lightEntry()}
-                   settings={settingsEntry({ ...VALUES, "ctx.checkpoint_pct": "27" })}
+                   settings={settingsEntry({ ...VALUES, "ctx.checkpoint_at_pct": "77" })}
                    onReload={onReload} startAsking={false}
                    adapterConf={null} onAdapterConf={vi.fn()} />);
-    await waitFor(() => expect(screen.getByLabelText("ctx.checkpoint_pct")).toHaveValue("27"));
+    await waitFor(() => expect(screen.getByLabelText("ctx.checkpoint_at_pct")).toHaveValue("77"));
   });
 
   it("[되돌리기] 는 저장을 부르지 않고 편집을 지운다", () => {
@@ -323,11 +323,46 @@ describe("저장", () => {
     mounted(bridge);
     openGroup("ctx");
 
-    fireEvent.change(screen.getByLabelText("ctx.checkpoint_pct"), { target: { value: "26" } });
+    fireEvent.change(screen.getByLabelText("ctx.checkpoint_at_pct"), { target: { value: "76" } });
     fireEvent.click(screen.getByText("되돌리기"));
 
-    expect(screen.getByLabelText("ctx.checkpoint_pct")).toHaveValue("25");
+    expect(screen.getByLabelText("ctx.checkpoint_at_pct")).toHaveValue("75");
     expect(bridge.conf_save).not.toHaveBeenCalled();
+  });
+
+  it("사용 한도 저장이 하네스 설정 파일에서 바꾼 줄을 결과 칸에 보인다", async () => {
+    const applied = [".claude/settings.json autoCompactWindow 180000 → 170000"];
+    const bridge = makeBridge({
+      conf_save: vi.fn(async () => ({ changed: true, conf: CONF, applied })),
+    } as Partial<Bridge>);
+    mounted(bridge);
+    openGroup("ctx");
+
+    fireEvent.change(screen.getByLabelText("ctx.checkpoint_at_pct"), { target: { value: "76" } });
+    fireEvent.click(screen.getByTestId("save"));
+
+    await waitFor(() => expect(screen.getByTestId("settings-command"))
+      .toHaveTextContent(applied[0]));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("사본이 거부한 값(invalid-value)은 알림에 사본의 문구로 서고 결과 칸은 비어 있다", async () => {
+    const message = "  - `ctx.precompact_at_pct=90` 는 `ctx.compact_at_pct=90` 보다 작아야 합니다";
+    const bridge = makeBridge({
+      conf_save: vi.fn(async () => ({
+        error: { kind: "invalid-value", message, stderr: message, rc: 3 } })),
+    } as Partial<Bridge>);
+    const { onReload } = mounted(bridge);
+    openGroup("ctx");
+
+    fireEvent.change(screen.getByLabelText("ctx.checkpoint_at_pct"), { target: { value: "76" } });
+    fireEvent.click(screen.getByTestId("save"));
+
+    await waitFor(() => expect(screen.getByRole("alert"))
+      .toHaveTextContent("ctx.precompact_at_pct=90"));
+    expect(screen.queryByTestId("settings-command")).toBeNull();
+    expect(onReload).not.toHaveBeenCalled();
+    expect(screen.getByTestId("save")).toHaveTextContent("저장 (1 변경)");   // 편집은 남는다
   });
 
   it("직접 정함을 끄면 저장이 그 줄을 지운다 — 빈 값을 적지 않는다", async () => {
@@ -335,13 +370,13 @@ describe("저장", () => {
     mounted(bridge);
     openGroup("ctx");
 
-    fireEvent.click(toggleOf("ctx.checkpoint_pct"));
-    expect(screen.queryByLabelText("ctx.checkpoint_pct")).toBeNull();
-    expect(screen.getByTestId("conf-ctx.checkpoint_pct")).toHaveTextContent("기본값: ");
+    fireEvent.click(toggleOf("ctx.checkpoint_at_pct"));
+    expect(screen.queryByLabelText("ctx.checkpoint_at_pct")).toBeNull();
+    expect(screen.getByTestId("conf-ctx.checkpoint_at_pct")).toHaveTextContent("기본값: ");
     fireEvent.click(screen.getByTestId("save"));
 
     await waitFor(() => expect(bridge.conf_save)
-      .toHaveBeenCalledWith(DEMO, { "ctx.checkpoint_pct": null }));
+      .toHaveBeenCalledWith(DEMO, { "ctx.checkpoint_at_pct": null }));
   });
 
   it("기본값 없는 키를 켜면 칸만 열리고 아무것도 적지 않는다", () => {

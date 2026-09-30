@@ -374,18 +374,19 @@ def test_live_calls_use_isolated_env(monkeypatch, tmp_path):
 def _force_nudge_band_conf(dest: Path, harness: str) -> None:
     """adopter local.conf 에 nudge 밴드 강제 conf 를 append (격리·per-harness 키·generic 미변경).
 
-    큰 예산(500K) + 넓은 nudge 밴드(nudge 99·stop 1): 실 세션(수천~수만 토큰)이 stop(잔여 ≤1·
-    used ≥99%)은 절대 못 넘고 nudge(잔여 ≤99·>1·used ≥1% = 토큰 ≥5000)엔 안정적으로 진입한다.
-    nudge2(잔여 ≤4)엔 안 닿아 soft(1단) 주입이 발화 — 주입 채널은 2단과 동일(Tier1 커버)이라
+    큰 예산(500K) + 넓은 nudge 밴드(쓴 % checkpoint_at 1·precompact_at 99): 실 세션(수천~수만
+    토큰)이 stop(used ≥99%)은 절대 못 넘고 nudge(used ≥1% = 토큰 ≥5000)엔 안정적으로 진입한다.
+    nudge2(used ≥96%)엔 안 닿아 soft(1단) 주입이 발화 — 주입 채널은 2단과 동일(Tier1 커버)이라
     도달 증거로 충분(공통 `ctx-nudge` 토큰). local.conf 파싱은 last-wins 라 append 값이 우선.
+    이 값은 훅 판정만 옮긴다 — 설정 파일 반영을 돌리지 않으므로 하네스 압축 지점은 출하 값 그대로다.
     """
     conf_path = dest / ".project_manager" / "local.conf"
     conf_path.parent.mkdir(parents=True, exist_ok=True)
     with conf_path.open("a", encoding="utf-8") as fh:
         fh.write(
-            "\n# T-0286 nudge 밴드 강제 (격리·per-harness 키·generic ctx_window_tokens 미변경)\n"
-            "ctx.checkpoint_pct=99\n"
-            "ctx.precompact_pct=1\n"
+            "\n# T-0286 nudge 밴드 강제 (격리·per-harness 키)\n"
+            "ctx.checkpoint_at_pct=1\n"
+            "ctx.precompact_at_pct=99\n"
             f"harness.{harness}.ctx_window_tokens=500000\n"
         )
 

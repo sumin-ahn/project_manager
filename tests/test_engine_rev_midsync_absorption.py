@@ -472,6 +472,36 @@ def test_reinstall_protected_hooks_absorbs_nested_skew_from_in_sync_probe(
     assert "엔진 사본 불일치" in result["reason"]
 
 
+def test_apply_harness_ctx_limits_absorbs_midsync_skew(pm_update, monkeypatch, tmp_path,
+                                                       capsys):
+    """apply 이후의 하네스 설정 반영도 혼합 트리에서 동기를 죽이지 않는다(반영만 생략·loud)."""
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: _SkewingSibling())
+    assert pm_update.apply_harness_ctx_limits(tmp_path, write=True) is True
+    assert pm_update._ABSORBED_ENGINE_REV_SKEW[-1] == "apply_harness_ctx_limits"
+    assert "하네스 설정 반영을 건너뛴다" in capsys.readouterr().err
+
+
+def test_apply_harness_ctx_limits_still_propagates_non_skew_failures(pm_update, monkeypatch,
+                                                                    tmp_path):
+    """흡수는 marked skew 한정 — 반영의 일반 실패는 그대로 올라간다(무차별 삼킴 금지)."""
+    sibling = SimpleNamespace(
+        HarnessCtxError=type("HarnessCtxError", (ValueError,), {}),
+        opencode_global_config_dir=lambda _env, _home: tmp_path,
+        apply_harness_ctx=lambda *_a, **_k: (_ for _ in ()).throw(OSError("disk gone")),
+    )
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: sibling)
+    with pytest.raises(OSError):
+        pm_update.apply_harness_ctx_limits(tmp_path, write=True)
+
+
+def test_apply_harness_ctx_limits_skips_a_sibling_without_the_step(pm_update, monkeypatch,
+                                                                  tmp_path, capsys):
+    """반영을 모르는 세대의 형제 사본(이번 동기가 깐 구세대)이면 반영을 건너뛰고 동기를 계속한다."""
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: SimpleNamespace())
+    assert pm_update.apply_harness_ctx_limits(tmp_path, write=True) is True
+    assert "하네스 설정 반영이 없어 반영을 건너뛴다" in capsys.readouterr().err
+
+
 # ── §3 흡수의 짝 — 종료 시 수렴 검증 ─────────────────────────────────────────
 
 

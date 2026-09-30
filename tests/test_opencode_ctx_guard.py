@@ -317,10 +317,14 @@ def test_plugin_subscribes_compaction_events_with_local_observation_count():
 
 
 def test_plugin_reads_thresholds_from_local_conf():
-    """임계값을 엔진 local.conf 의 ctx_*_pct 에서 읽는다 (T-0013 계약)."""
+    """임계값을 엔진 local.conf 의 쓴 % 두 키에서 읽는다 (T-0013 계약 · T-0923 키 이름).
+
+    판독 자리(`readPct("<키>"`)로 본다 — 차단 구키 생성 블록에도 옛 이름이 있어 문자열 존재만
+    보면 옛 키를 읽어도 green 이 된다."""
     src = _plugin_src()
-    assert "ctx.checkpoint_pct" in src, "ctx.checkpoint_pct 임계 참조 없음"
-    assert "ctx.precompact_pct" in src, "ctx.precompact_pct 임계 참조 없음"
+    assert 'readPct("ctx.checkpoint_at_pct"' in src, "ctx.checkpoint_at_pct 임계 판독 없음"
+    assert 'readPct("ctx.precompact_at_pct"' in src, "ctx.precompact_at_pct 임계 판독 없음"
+    assert 'readPct("ctx.checkpoint_pct"' not in src and 'readPct("ctx.precompact_pct"' not in src
     assert "local.conf" in src, "local.conf 직접 파싱 경로 참조 없음"
 
 
@@ -1910,7 +1914,7 @@ const nudgeEvent = (sessionID) => ({
 
 
 def test_plugin_emits_nudge():
-    """넛지(이른 경고) 경로가 있다 — nudge_pct 초과 시 안내(toast/message)."""
+    """넛지(이른 경고) 경로가 있다 — checkpoint_at_pct 이상이면 안내(toast/message)."""
     src = _plugin_src()
     assert "nudge" in src.lower(), "넛지 로직 없음"
     # toast 경고 경로 (best-effort).
@@ -1945,7 +1949,7 @@ def _run_node_check(
 def test_plugin_pure_logic_node_selfcheck():
     """node 로 plugin 의 순수 결정 로직을 자가검증 (이벤트/opencode 런타임 없이).
 
-    검증: 임계 분기(nudge/stop 경계·잔여%) · sanity 폴백(stop>nudge·음수) ·
+    검증: 임계 분기(nudge/stop 경계·쓴 %) · sanity 폴백(역전·음수) ·
     토큰 누적 · limit 미상 시 정지 보류. node 부재 시 skip (정적 검증으로 게이트).
     """
     if _NODE is None:
@@ -1962,23 +1966,27 @@ for (const fn of ["parseLocalConf","resolveThresholds","accumulateTokens","compu
   assert.strictEqual(typeof m[fn], "function", "missing export: " + fn);
 }
 
-// 임계 해석 + sanity 폴백 (엔진 기본 30/20 · T-0207).
-assert.deepStrictEqual(m.resolveThresholds({}), {nudge_pct:30, stop_pct:20});                       // 미설정→기본
-assert.deepStrictEqual(m.resolveThresholds({"ctx.checkpoint_pct":"25","ctx.precompact_pct":"12"}), {nudge_pct:25, stop_pct:12});
-assert.deepStrictEqual(m.resolveThresholds({"ctx.checkpoint_pct":"5","ctx.precompact_pct":"30"}), {nudge_pct:30, stop_pct:20}); // stop>nudge→폴백
-assert.deepStrictEqual(m.resolveThresholds({"ctx.checkpoint_pct":"-5","ctx.precompact_pct":"3"}), {nudge_pct:30, stop_pct:20}); // 음수→폴백
+// 임계 해석 + sanity 폴백 (엔진 기본 쓴 % 70/80).
+const defaults = {checkpoint_at_pct:70, precompact_at_pct:80};
+assert.deepStrictEqual(m.resolveThresholds({}), defaults);                                           // 미설정→기본
+assert.deepStrictEqual(m.resolveThresholds({"ctx.checkpoint_at_pct":"75","ctx.precompact_at_pct":"88"}), {checkpoint_at_pct:75, precompact_at_pct:88});
+assert.deepStrictEqual(m.resolveThresholds({"ctx.checkpoint_at_pct":"95","ctx.precompact_at_pct":"70"}), defaults); // 역전→폴백
+assert.deepStrictEqual(m.resolveThresholds({"ctx.checkpoint_at_pct":"80","ctx.precompact_at_pct":"80"}), defaults); // 같음→폴백
+assert.deepStrictEqual(m.resolveThresholds({"ctx.checkpoint_at_pct":"-5","ctx.precompact_at_pct":"97"}), defaults); // 음수→폴백
+assert.deepStrictEqual(m.resolveThresholds({"ctx.precompact_at_pct":"100"}), defaults);              // 100→폴백
 
 // 토큰 누적.
 assert.strictEqual(m.accumulateTokens({input:100,output:20,reasoning:5,cache:{read:10,write:3}}), 138);
 assert.strictEqual(m.accumulateTokens(null), 0);
 
-// ctx 상태 판정 (limit 1000, 20/10 명시 임계 = 잔여% 판정·경계 검증용).
-const t = {nudge_pct:20, stop_pct:10};
-assert.strictEqual(m.computeCtxState(500, 1000, t).level, "ok");    // 잔여 50%
-assert.strictEqual(m.computeCtxState(800, 1000, t).level, "nudge"); // 잔여 20% (경계·<=)
-assert.strictEqual(m.computeCtxState(850, 1000, t).level, "nudge"); // 잔여 15%
-assert.strictEqual(m.computeCtxState(900, 1000, t).level, "stop");  // 잔여 10% (경계·<=)
-assert.strictEqual(m.computeCtxState(950, 1000, t).level, "stop");  // 잔여 5%
+// ctx 상태 판정 (limit 1000, 쓴 % 80/90 명시 임계 · nudge2 = max(87, 80) = 87 · 경계 검증용).
+const t = {checkpoint_at_pct:80, precompact_at_pct:90};
+assert.strictEqual(m.computeCtxState(500, 1000, t).level, "ok");    // 쓴 50%
+assert.strictEqual(m.computeCtxState(800, 1000, t).level, "nudge"); // 쓴 80% (경계·>=)
+assert.strictEqual(m.computeCtxState(850, 1000, t).level, "nudge"); // 쓴 85%
+assert.strictEqual(m.computeCtxState(900, 1000, t).level, "stop");  // 쓴 90% (경계·>=)
+assert.strictEqual(m.computeCtxState(950, 1000, t).level, "stop");  // 쓴 95%
+assert.strictEqual("remainingPct" in m.computeCtxState(500, 1000, t), false); // 남은 % 는 없다
 assert.strictEqual(m.computeCtxState(999, 0, t).level, "ok");       // limit 미상→정지 보류(안전)
 
 console.log("NODE_SELFCHECK_OK");
@@ -1990,8 +1998,8 @@ console.log("NODE_SELFCHECK_OK");
 def test_js_resolve_budget_pure_unit():
     """node 로 resolveBudget 순수 함수(ADR-0041 예산 precedence)를 자가검증.
 
-    precedence: harness.<name>.ctx_window_tokens > generic ctx.window_tokens >
-    CTX_WINDOW_TOKENS_DEFAULT(200000). 각 층 >0 정수 sanity(≤0·비정수·미설정 → 다음 층).
+    예산 = harness.<name>.ctx_window_tokens(사용 한도) > CTX_WINDOW_TOKENS_DEFAULT(200000). >0 정수
+    sanity(≤0·비정수·미설정 → 기본값). 공통 층(옛 `ctx.window_tokens`)은 없다.
     분모 통일 확인: resolveBudget 결과를 computeCtxState 가 stop/nudge/ok 로 판정한다.
     node 부재 시 skip (정적 검증 test_plugin_uses_resolve_budget_not_model_limit 로 게이트).
     """
@@ -2006,33 +2014,29 @@ const assert = require("node:assert");
 assert.strictEqual(typeof m.resolveBudget, "function", "missing export: resolveBudget");
 assert.strictEqual(m.CTX_WINDOW_TOKENS_DEFAULT, 200000, "CTX_WINDOW_TOKENS_DEFAULT 미러(200000) 아님");
 
-// (a) 하네스별 오버라이드 키가 generic 보다 우선.
-assert.strictEqual(m.resolveBudget({"harness.opencode.ctx_window_tokens":"500000", "ctx.window_tokens":"1000000"}, "opencode"), 500000);
-// (b) 오버라이드 없으면 generic ctx.window_tokens (② 1M 무변경).
-assert.strictEqual(m.resolveBudget({"ctx.window_tokens":"1000000"}, "opencode"), 1000000);
-// (c) 둘 다 없으면 200000 기본.
+// (a) 하네스 사용 한도가 곧 예산이다.
+assert.strictEqual(m.resolveBudget({"harness.opencode.ctx_window_tokens":"500000"}, "opencode"), 500000);
+// (b) 공통 층은 없다 — 옛 ctx.window_tokens 는 예산이 아니다.
+assert.strictEqual(m.resolveBudget({"ctx.window_tokens":"1000000"}, "opencode"), 200000);
+// (c) 없으면 200000 기본.
 assert.strictEqual(m.resolveBudget({}, "opencode"), 200000);
 assert.strictEqual(m.resolveBudget(null, "opencode"), 200000);
-// (d) ≤0·비정수·공백은 그 층을 건너뛰고 다음 층으로 폴백 (0/음수 특수의미 없음).
-assert.strictEqual(m.resolveBudget({"harness.opencode.ctx_window_tokens":"0",   "ctx.window_tokens":"300000"}, "opencode"), 300000);
-assert.strictEqual(m.resolveBudget({"harness.opencode.ctx_window_tokens":"-5",  "ctx.window_tokens":"300000"}, "opencode"), 300000);
-assert.strictEqual(m.resolveBudget({"harness.opencode.ctx_window_tokens":"abc", "ctx.window_tokens":"300000"}, "opencode"), 300000);
-assert.strictEqual(m.resolveBudget({"harness.opencode.ctx_window_tokens":"1.5", "ctx.window_tokens":"300000"}, "opencode"), 300000);
-assert.strictEqual(m.resolveBudget({"harness.opencode.ctx_window_tokens":"  ",  "ctx.window_tokens":"300000"}, "opencode"), 300000);
-// 모든 층 비정상 → 200000 기본.
-assert.strictEqual(m.resolveBudget({"harness.opencode.ctx_window_tokens":"x", "ctx.window_tokens":"y"}, "opencode"), 200000);
+// (d) ≤0·비정수·공백은 기본값 (0/음수 특수의미 없음).
+for (const bad of ["0", "-5", "abc", "1.5", "  "]) {
+  assert.strictEqual(m.resolveBudget({"harness.opencode.ctx_window_tokens":bad}, "opencode"), 200000, bad);
+}
 // 하네스 독립: opencode 키는 claude 예산에 새지 않는다 (per-harness precedence).
 assert.strictEqual(m.resolveBudget({"harness.opencode.ctx_window_tokens":"500000"}, "claude"), 200000);
 
-// (e) 분모 통일: resolveBudget 예산으로 computeCtxState 가 stop/nudge/ok 판정.
-const t = {nudge_pct:30, stop_pct:20};
+// (e) 분모 통일: resolveBudget 예산으로 computeCtxState 가 stop/nudge/ok 판정(쓴 % 70/80).
+const t = {checkpoint_at_pct:70, precompact_at_pct:80};
 const lim = m.resolveBudget({"harness.opencode.ctx_window_tokens":"1000"}, "opencode");
 assert.strictEqual(lim, 1000);
-assert.strictEqual(m.computeCtxState(500, lim, t).level, "ok");    // 잔여 50%
-assert.strictEqual(m.computeCtxState(700, lim, t).level, "nudge"); // 잔여 30% (넛지 경계·<=)
-assert.strictEqual(m.computeCtxState(750, lim, t).level, "nudge"); // 잔여 25%
-assert.strictEqual(m.computeCtxState(800, lim, t).level, "stop");  // 잔여 20% (정지 경계·<=)
-assert.strictEqual(m.computeCtxState(850, lim, t).level, "stop");  // 잔여 15%
+assert.strictEqual(m.computeCtxState(500, lim, t).level, "ok");    // 쓴 50%
+assert.strictEqual(m.computeCtxState(700, lim, t).level, "nudge"); // 쓴 70% (넛지 경계·>=)
+assert.strictEqual(m.computeCtxState(750, lim, t).level, "nudge"); // 쓴 75%
+assert.strictEqual(m.computeCtxState(800, lim, t).level, "stop");  // 쓴 80% (정지 경계·>=)
+assert.strictEqual(m.computeCtxState(850, lim, t).level, "stop");  // 쓴 85%
 
 console.log("JS_RESOLVE_BUDGET_OK");
 """
@@ -2087,9 +2091,10 @@ def test_js_build_nudge_guidance():
 const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
 assert.strictEqual(typeof m.buildNudgeGuidance, "function", "missing export: buildNudgeGuidance");
-const g = m.buildNudgeGuidance({ remainingPct: 18, usedPct: 82 }, { nudge_pct: 20, stop_pct: 10 });
+const g = m.buildNudgeGuidance({ usedPct: 82 });
 assert.ok(g.includes("ctx-nudge"), "ctx-nudge 누락");
-assert.ok(g.includes("잔여 18%"), "잔여% 누락: " + g);
+assert.ok(g.includes("컨텍스트 사용 82%"), "쓴 % 누락: " + g);
+assert.ok(!g.includes("잔여"), "남은 % 가 남았다: " + g);
 assert.ok(g.includes("ticket 경계"), "ticket 경계 마무리 안내 누락");
 assert.ok(g.includes("complete entry"), "complete 박제 안내 누락");
 assert.ok(g.includes("python3 .project_manager/tools/pm_log.py checkpoint --task <이름>"), "실 checkpoint 명령 누락");
@@ -2115,8 +2120,8 @@ def test_js_engine_failure_fallback_keeps_continuity_policy_in_all_bands(tmp_pat
 const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
 const root = process.argv[1];
-const state = {remainingPct:8, usedPct:92};
-const thresholds = {nudge_pct:30, stop_pct:20};
+const state = {usedPct:92};
+const thresholds = {checkpoint_at_pct:70, precompact_at_pct:80};
 for (const band of ["nudge", "nudge2", "final", "precompact"]) {
   const guidance = m.buildEngineCtxGuidance(root, band, state, thresholds);
   assert.ok(guidance.includes("압축은 자동이고 세션은 그대로 이어진다"), band + ": continuity missing");
@@ -2130,7 +2135,7 @@ console.log("JS_CTX_FALLBACK_POLICY_OK");
 
 
 # ── checkpoint 2단(strong·compaction 임박) — 정적 + node 순수 검증 ────────────
-# 2단 임계는 min(stop_pct+3, nudge_pct) 파생. fired.nudge2 로 사이클당 1회·1단과 독립.
+# 2단 임계는 max(precompact_at − 3, checkpoint_at) 파생. fired.nudge2 로 사이클당 1회·1단과 독립.
 
 
 def test_plugin_injects_nudge2_to_model():
@@ -2172,28 +2177,28 @@ for (const fn of ["nudge2Threshold","buildNudge2Guidance","computeCtxState"]) {
 }
 assert.strictEqual(m.NUDGE2_MARGIN_PCT, 3, "NUDGE2_MARGIN_PCT 미러(3) 아님");
 
-// nudge2Threshold = min(stop_pct + 3, nudge_pct) 파생 (nudge_pct 로 캡).
-assert.strictEqual(m.nudge2Threshold({nudge_pct:30, stop_pct:20}), 23);
-assert.strictEqual(m.nudge2Threshold({nudge_pct:20, stop_pct:10}), 13);
-assert.strictEqual(m.nudge2Threshold({nudge_pct:21, stop_pct:20}), 21); // nudge 밴드 좁으면 캡.
+// nudge2Threshold = max(precompact_at − 3, checkpoint_at) 파생 (checkpoint_at 이 하한).
+assert.strictEqual(m.nudge2Threshold({checkpoint_at_pct:70, precompact_at_pct:80}), 77);
+assert.strictEqual(m.nudge2Threshold({checkpoint_at_pct:80, precompact_at_pct:90}), 87);
+assert.strictEqual(m.nudge2Threshold({checkpoint_at_pct:79, precompact_at_pct:80}), 79); // nudge 밴드 좁으면 하한.
 
-// computeCtxState 4-밴드 (limit 1000, 30/20 → nudge2_threshold 23).
-const t = {nudge_pct:30, stop_pct:20};
-assert.strictEqual(m.computeCtxState(500, 1000, t).level, "ok");     // 잔여 50%
-assert.strictEqual(m.computeCtxState(700, 1000, t).level, "nudge");  // 잔여 30% (nudge 경계·<=)
-assert.strictEqual(m.computeCtxState(760, 1000, t).level, "nudge");  // 잔여 24% (>23)
-assert.strictEqual(m.computeCtxState(770, 1000, t).level, "nudge2"); // 잔여 23% (nudge2 경계·<=)
-assert.strictEqual(m.computeCtxState(790, 1000, t).level, "nudge2"); // 잔여 21%
-assert.strictEqual(m.computeCtxState(800, 1000, t).level, "stop");   // 잔여 20% (stop 경계·<=)
+// computeCtxState 4-밴드 (limit 1000, 70/80 → nudge2_threshold 77).
+const t = {checkpoint_at_pct:70, precompact_at_pct:80};
+assert.strictEqual(m.computeCtxState(500, 1000, t).level, "ok");     // 쓴 50%
+assert.strictEqual(m.computeCtxState(700, 1000, t).level, "nudge");  // 쓴 70% (nudge 경계·>=)
+assert.strictEqual(m.computeCtxState(760, 1000, t).level, "nudge");  // 쓴 76% (<77)
+assert.strictEqual(m.computeCtxState(770, 1000, t).level, "nudge2"); // 쓴 77% (nudge2 경계·>=)
+assert.strictEqual(m.computeCtxState(790, 1000, t).level, "nudge2"); // 쓴 79%
+assert.strictEqual(m.computeCtxState(800, 1000, t).level, "stop");   // 쓴 80% (stop 경계·>=)
 
 // buildNudge2Guidance 문구 (compaction 임박 checkpoint 지시).
-const g = m.buildNudge2Guidance({remainingPct:18, usedPct:82}, {nudge_pct:20, stop_pct:10});
+const g = m.buildNudge2Guidance({usedPct:82});
 assert.ok(g.includes("ctx-nudge/강화"), "ctx-nudge/강화 누락: " + g);
-assert.ok(g.includes("잔여 18%"), "잔여% 누락: " + g);
+assert.ok(g.includes("컨텍스트 사용 82%"), "쓴 % 누락: " + g);
 assert.ok(g.includes("python3 .project_manager/tools/pm_log.py checkpoint --task <이름>"), "실 checkpoint 명령 누락");
 assert.ok(g.includes("구간·서사"), "checkpoint 서사 박제 지시 누락");
 // 1단 문구와 구별된다 (별개 강도 표지).
-const g1 = m.buildNudgeGuidance({remainingPct:18, usedPct:82}, {nudge_pct:20, stop_pct:10});
+const g1 = m.buildNudgeGuidance({usedPct:82});
 assert.ok(g !== g1, "2단 문구가 1단과 동일 — 강도 구별 없음");
 
 console.log("JS_NUDGE2_OK");
@@ -2293,7 +2298,7 @@ def test_live_gate_rejects_broken_object_export(tmp_path):
         "// T-0283 원 버그 재현(대조군) — CJS 객체 export = opencode 가 함수 아니라며 로드 거부.\n"
         'const core = require("../lib/ctx-guard-core.cjs");\n'
         "module.exports = { CtxGuardPlugin: core.CtxGuardPlugin, "
-        "parseLocalConf: core.parseLocalConf, NUDGE_PCT_DEFAULT: core.NUDGE_PCT_DEFAULT };\n"
+        "parseLocalConf: core.parseLocalConf, CHECKPOINT_AT_PCT_DEFAULT: core.CHECKPOINT_AT_PCT_DEFAULT };\n"
     )
     td = tmp_path / "live-broken"
     td.mkdir()

@@ -147,7 +147,7 @@ def test_init_conf_carries_values_only(board):
     parsed = board.local_config()
     assert not [key for key in parsed if key.startswith("delegate.")], parsed
     for key in ("runtime.py", "test.cmd", "project.name",
-                "ctx.checkpoint_pct", "ctx.precompact_pct", "ctx.window_tokens"):
+                "ctx.checkpoint_at_pct", "ctx.precompact_at_pct", "ctx.compact_at_pct"):
         assert key in parsed, f"init 이 실값 키를 안 썼다: {key}"
 
 
@@ -170,7 +170,7 @@ def test_init_merges_without_appending_a_delegate_block(board):
     """기존 conf 로 재실행해도 위임 블록을 덧붙이지 않고 사용자 값을 그대로 둔다(비파괴)."""
     board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
     board.LOCAL_CONF.write_text(
-        "session=pm\nruntime.py=python3\ntest.cmd=pytest -q\nctx.window_tokens=500000\n"
+        "session=pm\nruntime.py=python3\ntest.cmd=pytest -q\nctx.compact_at_pct=85\n"
         "additional_reviewer.harness=codex\n",
         encoding="utf-8")
 
@@ -180,7 +180,7 @@ def test_init_merges_without_appending_a_delegate_block(board):
     for marker in _EXPLANATION_MARKERS:
         assert marker not in text
     parsed = board.local_config()
-    assert parsed["ctx.window_tokens"] == "500000"          # 커스텀 값 보존
+    assert parsed["ctx.compact_at_pct"] == "85"             # 커스텀 값 보존
     assert parsed["additional_reviewer.harness"] == "codex"  # 기존 값 보존
     assert parsed["session"] == "pm"
 

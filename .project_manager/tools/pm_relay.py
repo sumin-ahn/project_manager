@@ -281,22 +281,24 @@ GUARD_TRIPPED_RC = 1
 RELAY_BOOTSTRAP_COST_TOKENS = 40_400
 
 
-def validate_relay_budget(budget: int | None, stop_pct: int) -> None:
+def validate_relay_budget(budget: int | None, precompact_at_pct: int) -> None:
     """주입된 relay ctx 예산의 유효 회전 임계가 bootstrap 상한보다 큰지 검증한다.
 
-    ``None`` 은 예산 가드 미주입이므로 통과한다. 값이 주입됐다면 stop_pct 적용 후
-    회전 임계가 실측 bootstrap 상한을 엄격히 초과해야 한다.
+    ``None`` 은 예산 가드 미주입이므로 통과한다. 값이 주입됐다면 회전 임계
+    ``budget × precompact_at_pct / 100``(압축 임박 경고 = 쓴 %)이 실측 bootstrap 상한을
+    엄격히 초과해야 한다.
     """
     if budget is None:
         return
-    effective_threshold_x100 = budget * (100 - stop_pct)
+    effective_threshold_x100 = budget * precompact_at_pct
     if effective_threshold_x100 <= RELAY_BOOTSTRAP_COST_TOKENS * 100:
         effective_threshold = effective_threshold_x100 / 100
         raise ValueError(
-            f"[relay] ctx 예산 {budget} tok·stop_pct {stop_pct}%의 유효 회전 임계 "
+            f"[relay] ctx 예산 {budget} tok·압축 임박 경고 {precompact_at_pct}%의 유효 회전 임계 "
             f"{effective_threshold:g} tok은 bootstrap 실측 상한 "
             f"{RELAY_BOOTSTRAP_COST_TOKENS} tok 이하여서 즉시 세션 회전 위험. "
-            "ctx_window_tokens를 높이거나 stop_pct를 낮춰라."
+            "하네스 사용 한도(`harness.<이름>.ctx_window_tokens`)를 높이거나 "
+            "`ctx.precompact_at_pct` 를 높여라."
         )
 
 # 위임/추가 리뷰 raw 위치 장부. 두 실행 표면이 같은 파일을 갱신하므로 파일락 아래
@@ -788,19 +790,19 @@ def mark_ctx_post_turn_if_over(
     session_id: str,
     used_tokens: int,
     budget: int,
-    stop_pct: int,
+    precompact_at_pct: int,
     mark=write_post_turn_marker,
 ) -> bool:
     """turn 사용량이 회전 임계에 닿았으면 post-turn marker 를 박제한다.
 
-    임계는 ``budget * (100 - stop_pct) / 100`` 이며 경계값을 포함한다.
+    임계는 ``budget * precompact_at_pct / 100``(압축 임박 경고 = 쓴 %)이며 경계값을 포함한다.
     ``used_tokens <= 0`` 또는 ``budget <= 0`` 은 신호 미주입으로 보아 no-op(False).
-    stop_pct 범위 클램프는 호출부 책임이다.
+    precompact_at_pct 범위 판정은 호출부 책임이다.
     marker writer 가 성공한 경우에만 True 를 반환한다.
     """
     if used_tokens <= 0 or budget <= 0:
         return False
-    if used_tokens * 100 < budget * (100 - stop_pct):
+    if used_tokens * 100 < budget * precompact_at_pct:
         return False
     return bool(mark(root, session_id))
 

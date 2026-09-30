@@ -149,31 +149,21 @@ def test_thread_tail_adapter_interface_is_absent(handoff):
         assert not hasattr(handoff, name)
 
 
-# ── 3. ctx 임계 config (board.py reader + init 기본값) ─────────────────────────
+# ── 3. ctx 임계 config (init 기본값 · board 는 판정하지 않는다) ─────────────────
 
-def test_ctx_threshold_defaults(board, monkeypatch):
-    """local.conf 에 ctx 키가 없으면 레지스트리 기본(30/20 — T-0207 상향)."""
-    monkeypatch.setattr(board, "local_config", lambda: {})
-    th = board.ctx_thresholds()
-    assert th == {"nudge_pct": 30, "stop_pct": 20}
-    assert board._conf_default_int("ctx.checkpoint_pct") == 30
-    assert board._conf_default_int("ctx.precompact_pct") == 20
+def test_board_has_no_ctx_threshold_reader(board):
+    """임계 판정은 어댑터 몫이다 — board 에는 소비자 없는 reader 가 남지 않는다(T-0923).
 
-
-def test_ctx_threshold_reads_local_conf(board, monkeypatch):
-    monkeypatch.setattr(board, "local_config", lambda: {"ctx.checkpoint_pct": "30", "ctx.precompact_pct": "5"})
-    assert board.ctx_thresholds() == {"nudge_pct": 30, "stop_pct": 5}
-
-
-def test_ctx_threshold_invalid_falls_back(board, monkeypatch):
-    """비정수 값은 무시하고 기본으로 fallback (config 오타에 robust)."""
-    monkeypatch.setattr(board, "local_config", lambda: {"ctx.checkpoint_pct": "abc"})
-    th = board.ctx_thresholds()
-    assert th["nudge_pct"] == 30 and th["stop_pct"] == 20
+    board 는 init 이 local.conf 에 쓰는 비율 셋(레지스트리 기본값)만 다룬다."""
+    assert not hasattr(board, "ctx_thresholds")
+    assert not hasattr(board, "_ctx_pct")
+    assert board._conf_default_int("ctx.checkpoint_at_pct") == 70
+    assert board._conf_default_int("ctx.precompact_at_pct") == 80
+    assert board._conf_default_int("ctx.compact_at_pct") == 90
 
 
 def test_board_init_writes_ctx_defaults(board, tmp_path, monkeypatch):
-    """board.py init 가 local.conf 에 ctx.checkpoint_pct=30·ctx.precompact_pct=20 을 기록한다 (T-0207)."""
+    """board.py init 가 local.conf 에 쓴 % 비율 셋(70·80·90)을 기록한다 (T-0207·T-0923)."""
     conf_path = tmp_path / "local.conf"
     state_path = tmp_path / "pm_state.md"
     monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
@@ -197,8 +187,11 @@ def test_board_init_writes_ctx_defaults(board, tmp_path, monkeypatch):
 
     assert rc == 0
     conf_text = conf_path.read_text(encoding="utf-8")
-    assert "ctx.checkpoint_pct=30" in conf_text
-    assert "ctx.precompact_pct=20" in conf_text
+    assert "ctx.checkpoint_at_pct=70" in conf_text
+    assert "ctx.precompact_at_pct=80" in conf_text
+    assert "ctx.compact_at_pct=90" in conf_text
+    for retired in ("ctx.checkpoint_pct", "ctx.precompact_pct", "ctx.window_tokens"):
+        assert retired not in conf_text, retired
 
 
 # ── 4. 대화형 경로 회귀 불변 (기존 동작 보존) ──────────────────────────────────

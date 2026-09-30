@@ -509,7 +509,8 @@ def test_migration_notice_splits_what_update_moves_from_what_you_decide(
                 "regression_min_collected", "ctx_window_tokens_claude"):
         assert f"`{key}`" in text, key
     assert "`reviewer_cmd` → 제거(대체 키 없음)" in text
-    assert "갱신이 값을 그대로 옮깁니다" in text            # 이름이 바뀐 묶음
+    assert "갱신이 새 이름으로 옮깁니다" in text            # 이름이 바뀐 묶음(뜻이 바뀐 값은 변환)
+    assert "그대로 옮깁니다" not in text                     # 남은 % 는 값이 바뀌어 옮겨진다
     assert "지울지는 직접 정하세요" in text                 # 사람이 정할 묶음
     assert "모델 값은 자동으로 옮기지 않습니다" not in text
     assert str(path) in text                                   # 어느 파일인지
@@ -744,7 +745,7 @@ def test_board_lint_is_quiet_on_a_clean_conf(tmp_path, monkeypatch):
 # ── ⑩ 어댑터 파서·셸 훅 (엔진을 import 하지 않는 독립 해소 경로) ───────────
 #
 # 이 넷은 엔진 로더를 쓰지 않는다(어댑터는 엔진 사본 경로에 묶이지 않는다는 계약). 그래서 엔진의
-# fail-loud 가 여기까지 오지 않고, 구표기 conf 를 발견하고도 **조용히 엔진 기본값**(임계 30/20 ·
+# fail-loud 가 여기까지 오지 않고, 구표기 conf 를 발견하고도 **조용히 엔진 기본값**(임계 70/80 ·
 # 예산 200000)으로 강등할 수 있다 — 채택자 관점에서는 conf 를 고쳤는데 아무 일도 안 일어난다.
 # 그래서 각 파서를 **프로세스로 띄우고 실 local.conf 를 넣어** 값으로 단언한다(문자열 존재 검사가
 # 아니다). 차단 키 목록은 각 파서가 손으로 복제하지 않고 엔진 생성 블록을 그대로 품는다.
@@ -754,16 +755,22 @@ _ADAPTER_LEGACY_CONF = (
     "ctx_stop_pct=90\n"
     "ctx_window_tokens=12345\n"
     "ctx_window_tokens_claude=54321\n"
-    "test_cmd=false\n"
-)
-_ADAPTER_NEW_CONF = (
     "ctx.checkpoint_pct=91\n"
     "ctx.precompact_pct=90\n"
     "ctx.window_tokens=12345\n"
+    "test_cmd=false\n"
+)
+# 남은 % 91·90 = 쓴 % 9·10 — 같은 밴드를 새 이름으로 적은 conf.
+_ADAPTER_NEW_CONF = (
+    "ctx.checkpoint_at_pct=9\n"
+    "ctx.precompact_at_pct=10\n"
     "harness.claude.ctx_window_tokens=54321\n"
+    "harness.codex.ctx_window_tokens=12345\n"
+    "harness.opencode.ctx_window_tokens=23456\n"
     "test.cmd=false\n"
 )
-_ADAPTER_LEGACY_KEYS = ("ctx_nudge_pct", "ctx_stop_pct", "ctx_window_tokens",
+_ADAPTER_LEGACY_KEYS = ("ctx.checkpoint_pct", "ctx.precompact_pct", "ctx.window_tokens",
+                        "ctx_nudge_pct", "ctx_stop_pct", "ctx_window_tokens",
                         "ctx_window_tokens_claude", "test_cmd")
 
 _PY_ADAPTER_DRIVER = """
@@ -778,17 +785,20 @@ print(sys.argv[3].join(str(part) for part in eval(sys.argv[4])))
 
 _PY_ADAPTERS = (
     pytest.param(".claude/ctx_guard.py",
-                 '(module.ctx_thresholds(conf)["stop_pct"], module.resolve_budget(conf, "claude"))',
-                 "90 54321", id="claude-canonical"),
+                 '(module.ctx_thresholds(conf)["precompact_at_pct"], '
+                 'module.resolve_budget(conf, "claude"))',
+                 "10 54321", id="claude-canonical"),
     pytest.param("templates/claude_code/.claude/ctx_guard.py",
-                 '(module.ctx_thresholds(conf)["stop_pct"], module.resolve_budget(conf, "claude"))',
-                 "90 54321", id="claude-shipped"),
+                 '(module.ctx_thresholds(conf)["precompact_at_pct"], '
+                 'module.resolve_budget(conf, "claude"))',
+                 "10 54321", id="claude-shipped"),
     pytest.param("templates/codex/.codex/pm_orch_codex.py",
-                 "(module.resolve_stop_pct(conf), module.resolve_ctx_budget(conf))",
-                 "90 12345", id="codex-shipped"),
+                 '(module.ctx_thresholds(conf)["precompact_at_pct"], '
+                 'module.resolve_ctx_budget(conf))',
+                 "10 12345", id="codex-shipped"),
     pytest.param("templates/opencode/.opencode/pm_orch_opencode.py",
-                 "(module.resolve_stop_pct(conf), module.resolve_ctx_budget(conf))",
-                 "90 12345", id="opencode-shipped"),
+                 "(module.resolve_precompact_at_pct(conf), module.resolve_ctx_budget(conf))",
+                 "10 23456", id="opencode-shipped"),
 )
 
 
@@ -830,7 +840,7 @@ def test_opencode_js_core_stops_on_legacy_conf_before_resolving_values(
     script = (
         f'const m = require({str(core)!r});'
         'const c = m.loadLocalConf(process.argv[1]);'
-        'console.log(m.resolveThresholds(c).stop_pct, m.resolveBudget(c, "opencode"));'
+        'console.log(m.resolveThresholds(c).precompact_at_pct, m.resolveBudget(c, "opencode"));'
     )
     _write_conf(tmp_path, _ADAPTER_LEGACY_CONF)
     blocked = subprocess.run([node, "-e", script, str(tmp_path)], capture_output=True,
@@ -846,7 +856,7 @@ def test_opencode_js_core_stops_on_legacy_conf_before_resolving_values(
     resolved = subprocess.run([node, "-e", script, str(tmp_path)], capture_output=True,
                               text=True, encoding="utf-8", errors="replace", timeout=120)
     assert resolved.returncode == 0, resolved.stderr
-    assert resolved.stdout.strip() == "90 12345"
+    assert resolved.stdout.strip() == "10 23456"
 
 
 @pytest.mark.parametrize("relpath", [

@@ -62,7 +62,7 @@ import warnings
 import zlib
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 _TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
 _TOOLS_BOOTSTRAP_FILE = os.path.realpath(
@@ -229,6 +229,12 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
         "이름이 바뀐 conf 키를 옮기는 단계는 apply **이후**에 돈다 — 이미 착지한 엔진 파일 "
         "위에서 형제 사본 rev 혼합으로 죽으면 채택자는 새 엔진을 받은 채 동기가 traceback 으로 "
         "끝난 트리를 갖는다. 이동은 멱등이라 건너뛴 실행의 몫을 다음 pm-update 가 그대로 한다"
+    ),
+    "apply_harness_ctx_limits": (
+        "하네스 설정 반영도 apply **이후**(어댑터 config 채널 뒤)에 돈다 — 형제 pm_import 가 다시 "
+        "형제 local_conf·file_lock 을 verifier 로 로드하므로 혼합 트리에서 올리면 이미 착지한 엔진 "
+        "파일 위에서 동기가 traceback 으로 죽는다. 반영은 멱등이라 건너뛴 몫을 다음 pm-update 가 "
+        "그대로 한다"
     ),
     "reinstall_protected_hooks": (
         "동기화가 끝난 뒤의 훅 재설치가 부분 동기 목적지 엔진 때문에 실패해도 "
@@ -5327,6 +5333,183 @@ def _strip_jsonc_trailing_commas(text: str) -> str:
     return "".join(out)
 
 
+# ── jsonc 키 경로 편집 (하네스 설정 반영 · `pm_import.apply_harness_ctx`) ──────────
+# 위 두 함수와 같은 규칙이다: 위치는 주석을 가린 사본(오프셋 == 원본)에서 찾고 원본의 같은
+# 오프셋을 고친다. 재직렬화하지 않으므로 주석·키 순서·들여쓰기·개행 표기가 그대로 남는다.
+# JSON 은 JSONC 의 부분집합이라 `.claude/settings.json` 도 같은 함수로 고친다.
+_JSONC_WHITESPACE = " \t\r\n"
+_JSONC_INDENT_STEP = "  "
+
+
+class _JsoncMember(NamedTuple):
+    """객체 멤버 하나의 좌표 — 키 따옴표 시작·값 리터럴의 [시작, 끝)."""
+    key: str
+    key_start: int
+    value_start: int
+    value_end: int
+
+
+def _jsonc_skip_whitespace(masked: str, index: int) -> int:
+    while index < len(masked) and masked[index] in _JSONC_WHITESPACE:
+        index += 1
+    return index
+
+
+def _jsonc_value_end(masked: str, start: int) -> int:
+    """값 리터럴 시작 오프셋 → 끝 오프셋(배타) — 문자열·중첩 괄호를 존중한다."""
+    length = len(masked)
+    if start >= length:
+        raise ValueError("jsonc 값 자리가 비어 있다(파일 끝)")
+    first = masked[start]
+    index = start + 1
+    if first == '"':
+        while index < length:
+            if masked[index] == "\\":
+                index += 2
+                continue
+            if masked[index] == '"':
+                return index + 1
+            index += 1
+        raise ValueError(f"jsonc 문자열이 닫히지 않았다 (오프셋 {start})")
+    if first in "{[":
+        depth, in_string = 1, False
+        while index < length:
+            char = masked[index]
+            if in_string:
+                if char == "\\":
+                    index += 2
+                    continue
+                if char == '"':
+                    in_string = False
+            elif char == '"':
+                in_string = True
+            elif char in "{[":
+                depth += 1
+            elif char in "}]":
+                depth -= 1
+                if depth == 0:
+                    return index + 1
+            index += 1
+        raise ValueError(f"jsonc 괄호가 닫히지 않았다 (오프셋 {start})")
+    while index < length and masked[index] not in ",}]" + _JSONC_WHITESPACE:
+        index += 1
+    if first in ",}]" + _JSONC_WHITESPACE:
+        raise ValueError(f"jsonc 값 자리에 값이 없다 (오프셋 {start})")
+    return index
+
+
+def _jsonc_object_members(masked: str, open_index: int) -> tuple[list[_JsoncMember], int]:
+    """`{` 오프셋 → (멤버 목록, 닫는 `}` 오프셋). 후행 쉼표를 허용한다."""
+    members: list[_JsoncMember] = []
+    index = _jsonc_skip_whitespace(masked, open_index + 1)
+    while True:
+        if index >= len(masked):
+            raise ValueError(f"jsonc 객체가 닫히지 않았다 (오프셋 {open_index})")
+        if masked[index] == "}":
+            return members, index
+        if masked[index] != '"':
+            raise ValueError(f"jsonc 객체 키 자리에 문자열이 없다 (오프셋 {index})")
+        key_end = _jsonc_value_end(masked, index)
+        key = json.loads(masked[index:key_end])
+        colon = _jsonc_skip_whitespace(masked, key_end)
+        if colon >= len(masked) or masked[colon] != ":":
+            raise ValueError(f"jsonc 키 {key!r} 뒤에 `:` 가 없다 (오프셋 {colon})")
+        value_start = _jsonc_skip_whitespace(masked, colon + 1)
+        value_end = _jsonc_value_end(masked, value_start)
+        members.append(_JsoncMember(key, index, value_start, value_end))
+        index = _jsonc_skip_whitespace(masked, value_end)
+        if index < len(masked) and masked[index] == ",":
+            index = _jsonc_skip_whitespace(masked, index + 1)
+            continue
+        if index < len(masked) and masked[index] == "}":
+            return members, index
+        raise ValueError(f"jsonc 멤버 {key!r} 뒤에 `,` 나 `}}` 가 없다 (오프셋 {index})")
+
+
+def _jsonc_member_text(path: tuple[str, ...], literal: str, indent: str, newline: str) -> str:
+    """`path[0]` 멤버 하나의 텍스트 — 남은 조각은 한 줄에 멤버 하나인 중첩 객체로 만든다."""
+    key = json.dumps(path[0], ensure_ascii=False)
+    if len(path) == 1:
+        return f"{key}: {literal}"
+    inner = indent + _JSONC_INDENT_STEP
+    return (f"{key}: {{{newline}{inner}"
+            f"{_jsonc_member_text(path[1:], literal, inner, newline)}{newline}{indent}}}")
+
+
+def _jsonc_inline_member_text(path: tuple[str, ...], literal: str) -> str:
+    """한 줄에 멤버를 늘어놓은 객체에 넣는 멤버 — 줄을 새로 만들지 않는다."""
+    key = json.dumps(path[0], ensure_ascii=False)
+    if len(path) == 1:
+        return f"{key}: {literal}"
+    return f"{key}: {{{_jsonc_inline_member_text(path[1:], literal)}}}"
+
+
+def _jsonc_line_indent(text: str, offset: int) -> str:
+    """`offset` 이 든 줄의 앞 공백."""
+    line_start = text.rfind("\n", 0, offset) + 1
+    line = text[line_start:]
+    return line[:len(line) - len(line.lstrip(" \t"))]
+
+
+def _jsonc_set_value(text: str, path: tuple[str, ...], value: int) -> tuple[str, str | None]:
+    """jsonc 텍스트의 키 경로에 정수 값을 쓴다 — (새 텍스트, 옛 값 리터럴 또는 None).
+
+    키가 있으면 값 리터럴 자리만 바꾼다(같은 키가 여럿이면 읽는 쪽이 쓰는 마지막 것). 없으면 그
+    객체의 마지막 멤버 뒤에 쉼표와 함께 넣고, 경로 중간의 없는 객체는 차례로 만든다. 새 멤버의
+    들여쓰기는 형제 멤버를 따르고, 형제가 없으면 여는 괄호 줄 들여쓰기에 2칸을 더한다. 줄바꿈은
+    파일의 개행 표기를 따른다. 경로 조각은 문서 키 그대로다(점·슬래시가 든 모델 id 를 가르지
+    않는다). 경로가 객체가 아닌 값을 지나거나 문법이 깨졌으면 `ValueError` 다 — 채택자 값을
+    덮어써서 지우지 않는다.
+    """
+    if not path:
+        raise ValueError("jsonc 키 경로가 비어 있다")
+    masked = _mask_jsonc_comments(text)
+    newline = "\r\n" if "\r\n" in text else "\n"
+    literal = json.dumps(value)
+    open_index = _jsonc_skip_whitespace(masked, 0)
+    if open_index >= len(masked) or masked[open_index] != "{":
+        raise ValueError("jsonc 최상위가 객체가 아니다")
+    for depth, key in enumerate(path):
+        members, close_index = _jsonc_object_members(masked, open_index)
+        found = [member for member in members if member.key == key]
+        if not found:
+            return _jsonc_insert_member(
+                text, open_index, close_index, members, path[depth:], literal,
+                newline), None
+        member = found[-1]
+        if depth == len(path) - 1:
+            old = text[member.value_start:member.value_end]
+            return text[:member.value_start] + literal + text[member.value_end:], old
+        if masked[member.value_start] != "{":
+            raise ValueError(
+                f"jsonc `{'.'.join(path[:depth + 1])}` 가 객체가 아니다 — 그 아래에 쓸 수 없다")
+        open_index = member.value_start
+    raise AssertionError("unreachable")
+
+
+def _jsonc_insert_member(text: str, open_index: int, close_index: int,
+                         members: list[_JsoncMember], path: tuple[str, ...], literal: str,
+                         newline: str) -> str:
+    """객체(`{`…`}`)에 `path[0]` 멤버를 넣은 텍스트 — 형제가 있으면 마지막 형제 뒤다."""
+    if members:
+        last = members[-1]
+        line_start = text.rfind("\n", 0, last.key_start) + 1
+        sibling_indent = text[line_start:last.key_start]
+        if sibling_indent.strip(" \t"):
+            piece = ", " + _jsonc_inline_member_text(path, literal)
+        else:
+            piece = ("," + newline + sibling_indent
+                     + _jsonc_member_text(path, literal, sibling_indent, newline))
+        return text[:last.value_end] + piece + text[last.value_end:]
+    parent_indent = _jsonc_line_indent(text, open_index)
+    indent = parent_indent + _JSONC_INDENT_STEP
+    member = newline + indent + _jsonc_member_text(path, literal, indent, newline)
+    if text[open_index + 1:close_index].strip(_JSONC_WHITESPACE):
+        # 빈 객체 안에 주석만 있다 — 주석을 지우지 않게 여는 괄호 바로 뒤에 넣는다.
+        return text[:open_index + 1] + member + text[open_index + 1:]
+    return text[:open_index + 1] + member + newline + parent_indent + text[close_index:]
+
+
 def _scan_array_end(masked: str, body_start: int) -> int:
     """배열 `[` 직후 body_start 부터 매칭되는 `]` 위치를 문자열/중첩 존중으로 찾는다(배열 body 끝).
 
@@ -5570,7 +5753,7 @@ def idle_legacy_slot_session_rows(effective_dest: Path, *, write: bool) -> int:
 
 
 def migrate_renamed_conf_keys(effective_dest: Path, *, write: bool) -> dict[str, str]:
-    """흡수 말미 1회 — 이름이 바뀐 local.conf 키를 신표기로 옮긴다(값은 그대로).
+    """흡수 말미 1회 — 이름이 바뀐 local.conf 키를 신표기로 옮긴다(값 변환은 `rename_updates`).
 
     이름을 바꾼 것은 갱신이지 채택자가 아니다 — **바꾼 쪽이 옮긴다**. 옛 이름이 남아 있으면
     값을 소비하는 지점이 fail-loud 로 멈추므로(`local_conf.assert_no_legacy`), 엔진 파일을
@@ -5604,7 +5787,8 @@ def migrate_renamed_conf_keys(effective_dest: Path, *, write: bool) -> dict[str,
                  if new is not None and old in updates}
         prefix = "[dry-run] " if not write else "  ✓ "
         print(f"{prefix}local.conf 키 이름 {len(moved)}개 이동{' 예정' if not write else ''} — "
-              "갱신이 바꾼 이름이라 갱신이 옮긴다(값은 그대로).")
+              "갱신이 바꾼 이름이라 갱신이 옮긴다(남은 % 는 쓴 % 로, 공통 사용 한도는 "
+              "하네스마다 같은 값으로).")
         for line in module.migration_lines(moved):
             print(f"  {line}")
         if not write:
@@ -6013,6 +6197,58 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
         and final_by_rel[relpath].baseline_sha256 == final_by_rel[relpath].dest_sha256
     )
     return result
+
+
+def apply_harness_ctx_limits(effective_dest: Path, *, write: bool) -> bool:
+    """local.conf 의 하네스별 사용 한도·압축 비율을 하네스 설정 파일에 반영한다 — 멈추면 False.
+
+    무엇을 어디에 쓰는지·검사·원장 처리는 pm_import(`apply_harness_ctx`) 한 곳이 정하고 여기서는
+    출력과 멈춤만 맡는다. 어댑터 config 채널(`sync_adapter_configs`) **뒤**에 돈다 — 채널이 템플릿
+    갱신·원장 기록을 끝낸 파일 위에 관리 키를 쓴다. `write=False`(dry-run)는 바뀔 줄만 낸다.
+
+    local.conf 에 값 공급을 잃는 옛 키가 남아 있으면 반영을 계산하지 않고 그 사실을 한 줄로 낸다 —
+    이 채널은 구표기 conf 를 가진 채택자에게도 엔진 파일을 배달해야 하고(`_read_local_conf`),
+    반영은 옛 이름을 읽지 않는다. dry-run 은 이름 이동 전의 conf 를 보므로 이 줄이 나오고, 실제
+    실행은 이동(`migrate_renamed_conf_keys`)을 먼저 끝낸 뒤 반영한다. 검사를 통과하지 못한 값
+    (`HarnessCtxError`)은 설정 파일을 쓰지 않고 멈춘다 — 호출부가 rc 1 로 끝내 upstream.rev 기록에
+    닿지 않는다.
+
+    이 단계도 apply 이후라 형제 사본 rev 혼합은 등록된 경계로 흡수하고, 형제 pm_import 에 반영
+    API 가 없으면(이번 동기가 반영을 모르는 세대를 깐 경우) 반영을 건너뛴다 — 둘 다 loud 이고,
+    반영은 멱등이라 건너뛴 몫을 다음 pm-update 가 그대로 한다."""
+    prefix = "[dry-run] 하네스 설정 반영 예정" if not write else "  ✓ 하네스 설정 반영"
+    pm_import = None
+    try:
+        local_conf = _load_local_conf()
+        remaining = local_conf.blocking_legacy(local_conf.load(
+            Path(effective_dest) / ".project_manager" / "local.conf").legacy)
+        if remaining:
+            print(f"{'[dry-run] ' if not write else ''}하네스 설정 반영을 건너뛴다 — local.conf 에 "
+                  f"옛 키({', '.join(remaining)})가 남아 있다. 이름 이동과 폐지 키 정리가 끝난 뒤의 "
+                  "pm-update 가 반영한다.")
+            return True
+        pm_import = _load_pm_import()
+        apply = getattr(pm_import, "apply_harness_ctx", None)
+        if apply is None:
+            print("경고: 형제 pm_import 사본에 하네스 설정 반영이 없어 반영을 건너뛴다 — 엔진 사본이 "
+                  "반영을 아는 세대로 맞춰진 뒤의 pm-update 가 반영한다(엔진 파일 적용은 유지).",
+                  file=sys.stderr)
+            return True
+        lines = apply(
+            effective_dest, write=write,
+            opencode_config_dir=pm_import.opencode_global_config_dir(os.environ, Path.home()))
+    except Exception as exc:  # noqa: BLE001 — 사본 skew 는 생략, 검사 거부는 멈춤(그 밖은 전파).
+        if _absorb_engine_rev_skew_for_recovery(exc, "apply_harness_ctx_limits"):
+            print(f"경고: 엔진 사본 rev 혼합으로 하네스 설정 반영을 건너뛴다 ({exc}) — "
+                  "다음 pm-update 가 반영한다(엔진 파일 적용은 유지).", file=sys.stderr)
+            return True
+        if pm_import is None or not isinstance(exc, pm_import.HarnessCtxError):
+            raise
+        print(f"[중단] {exc}", file=sys.stderr)
+        return False
+    for line in lines:
+        print(f"{prefix}: {line}")
+    return True
 
 
 def _adapter_config_gate_failed(result: dict) -> bool:
@@ -7077,6 +7313,9 @@ def _main(argv: list[str] | None = None) -> int:
             configs = sync_adapter_configs(
                 effective_dest, source_root, write=not args.dry_run)
             _print_adapter_config_finding(configs, dry_run=args.dry_run)
+            # 하네스 사용 한도·압축 비율 반영 — 채널이 템플릿 갱신·원장 기록을 끝낸 파일 위에 쓴다.
+            if not apply_harness_ctx_limits(effective_dest, write=not args.dry_run):
+                return 1
             # 세대 정합은 config 채널과 **같은 경계·같은 자리**에서 본다(둘 다 manifest 밖
             #   config 를 축으로 하는 판정이라 한쪽만 도는 실행이 있으면 안 된다). 게이트 순서는
             #   심각도순 — 세대 불일치는 하네스가 잠기는 상태고 원장 미수렴은 다음 실행이
@@ -7137,6 +7376,8 @@ def _main(argv: list[str] | None = None) -> int:
         if do_adapter_config:  # 판정만(write=False·파일·원장 미변경).
             configs = sync_adapter_configs(effective_dest, source_root, write=False)
             _print_adapter_config_finding(configs, dry_run=True)
+            if not apply_harness_ctx_limits(effective_dest, write=False):
+                return 1
             _print_adapter_hook_set_finding(
                 check_adapter_hook_sets(effective_dest, source_root), dry_run=True)
         print_instance_owned_delta()
@@ -7179,6 +7420,8 @@ def _main(argv: list[str] | None = None) -> int:
         #   어댑터 config 만 새 세대로 앞서가지 않게·migrate 와 같은 시퀀싱 논거).
         configs = sync_adapter_configs(effective_dest, source_root, write=True)
         _print_adapter_config_finding(configs, dry_run=False)
+        if not apply_harness_ctx_limits(effective_dest, write=True):
+            return 1
         # apply 로 방금 착지한 **새 훅 세트**를 기준으로 판정한다 — 이 순서라야 "엔진 파일이
         #   뒤처져서 난 불일치" 가 이번 실행에서 저절로 해소되고, 그래도 남는 것만 red 다.
         hook_sets = check_adapter_hook_sets(effective_dest, source_root)

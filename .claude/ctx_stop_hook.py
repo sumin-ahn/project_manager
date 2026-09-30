@@ -165,7 +165,6 @@ def _build_ctx_guidance(
 ) -> str:
     """pm_log.py의 단일 ctx 정책 문구를 읽는다. 실패 시 비종료 fallback만 반환한다."""
     engine = _pm_log_path(root)
-    remaining = ctx_guard.remaining_pct(used_pct)
     labels = {
         "nudge": "ctx-nudge",
         "nudge2": "ctx-nudge/강화",
@@ -179,10 +178,8 @@ def _build_ctx_guidance(
         band,
         "--used-pct",
         str(used_pct),
-        "--remaining-pct",
-        str(remaining),
-        "--stop-pct",
-        str(thresholds["stop_pct"]),
+        "--precompact-at-pct",
+        str(thresholds["precompact_at_pct"]),
     ]
     if engine.is_file():
         try:
@@ -207,7 +204,7 @@ def _build_ctx_guidance(
     if band == "final":
         checkpoint += " --trigger compaction"
     return (
-        f"[{labels[band]}] 컨텍스트 사용 {used_pct}% (잔여 {remaining}%). "
+        f"[{labels[band]}] 컨텍스트 사용 {used_pct}%. "
         f"auto-compact 관측 구간이다. `{checkpoint}` 기록을 사용할 수 있다. "
         "`<이름>`에는 현재 task 이름을 사용한다. "
         "압축은 자동이고 세션은 그대로 이어진다. "
