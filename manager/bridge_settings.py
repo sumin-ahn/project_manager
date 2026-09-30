@@ -73,17 +73,19 @@ def _completed(completed: subprocess.CompletedProcess) -> dict:
             "stderr": completed.stderr}
 
 
-# 사본의 `ctx-apply` 검사 거부 rc — 화면 오류 종류 `invalid-value` 로 넘긴다(그 밖의 rc 는 그
-# 명령을 모르는 옛 세대이거나 인자 오류다).
-CTX_APPLY_REJECTED_RC = 1
+# 사본의 `ctx-apply` 검사 거부 rc — 화면 오류 종류 `invalid-value` 로 넘기는 것은 이 값뿐이다.
+# 처리하지 못한 예외로 끝난 파이썬의 1 과 겹치지 않는 전용 값이라, 그 밖의 rc(사본 안의 실패·그
+# 명령을 모르는 옛 세대·인자 오류)는 저장 오류로 넘긴다.
+CTX_APPLY_REJECTED_RC = 3
 
 
 def _ctx_apply(home: Path, updates: dict) -> dict:
     """사용 한도 키가 든 저장 — 그 사본의 `pm-config ctx-apply --json --set 키=값 …` 한 번.
 
     값이 None 인 키는 `키=`(줄 삭제)로 보낸다. rc 0 이면 `{changed, conf, applied}`(conf 는 직후
-    재조회), 검사 거부(rc 1)는 오류 종류 `invalid-value` 로 사본의 문구를 그대로 넘긴다. 사본 명령은
-    관리자 프로세스의 env 를 물려받으므로 opencode 전역 설정 위치는 사용자 env 로 해소된다."""
+    재조회), 검사 거부(rc 3)는 오류 종류 `invalid-value` 로 사본의 문구를 그대로 넘긴다. 그 밖의
+    0 이 아닌 rc 는 `old-generation` 저장 오류이고 사본의 stderr 를 싣는다. 사본 명령은 관리자
+    프로세스의 env 를 물려받으므로 opencode 전역 설정 위치는 사용자 env 로 해소된다."""
     argv = [*runner.interpreter(home), _tool(home, "pm_config.py"), "ctx-apply", "--json"]
     for key, value in updates.items():
         argv += ["--set", f"{key}={'' if value is None else value}"]
@@ -94,7 +96,8 @@ def _ctx_apply(home: Path, updates: dict) -> dict:
     if completed.returncode != 0:
         raise CallError(
             "old-generation",
-            "이 사본의 엔진은 `pm-config ctx-apply` 를 모른다 — 먼저 갱신하라.",
+            "이 사본이 사용 한도·압축 비율 저장을 끝내지 못했다 "
+            "(`pm-config ctx-apply` 를 모르는 세대면 먼저 갱신하라).",
             stderr=completed.stderr, rc=completed.returncode)
     try:
         document = json.loads(completed.stdout)

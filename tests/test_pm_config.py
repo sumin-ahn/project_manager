@@ -619,7 +619,7 @@ def test_accept_reapplies_harness_ctx(pc, pim, tmp_path, capsys):
 
 
 def test_ctx_apply_checks_before_writing_and_reports_json(pc, pim, tmp_path, capsys):
-    """`ctx-apply --set` — 거부된 값은 local.conf·설정 파일 어디에도 쓰이지 않는다(rc 1).
+    """`ctx-apply --set` — 거부된 값은 local.conf·설정 파일 어디에도 쓰이지 않는다(검사 거부 rc 3).
 
     통과하면 conf 에 쓰고 반영한 뒤 JSON 한 줄 `{"changed", "applied"}` 을 낸다. `키=` 는 줄 삭제다."""
     dest = tmp_path / "dest"
@@ -636,7 +636,7 @@ def test_ctx_apply_checks_before_writing_and_reports_json(pc, pim, tmp_path, cap
         parser.parse_args(["ctx-apply", "--json", "--set", "ctx.precompact_at_pct=85"]),
         pm_import=pim, dest_root=dest)
     captured = capsys.readouterr()
-    assert refused == 1
+    assert refused == 3
     assert "ctx.precompact_at_pct=85" in captured.err and captured.out == ""
     assert conf.read_bytes() == conf_before and settings.read_bytes() == settings_before
 

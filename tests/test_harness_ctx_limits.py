@@ -1,4 +1,4 @@
-"""하네스 사용 한도·압축 비율 반영 (T-0923 AT-001~AT-011·AT-023).
+"""하네스 사용 한도·압축 비율 반영 (T-0923 AT-001~AT-011·AT-023 · 리뷰 F-001~F-003).
 
 local.conf 의 하네스별 사용 한도 W(`harness.<이름>.ctx_window_tokens`)와 세 비율(쓴 %)로 하네스 설정
 파일 세 종류에 압축 지점을 쓰는 엔진 함수(`pm_import.apply_harness_ctx` 와 그 부품)를 잰다.
@@ -247,6 +247,57 @@ def test_apply_codex_config_top_level_keys(pm_import, tmp_path):
     assert _apply(pm_import, root, config_dir) == ()
 
 
+def test_apply_codex_config_crlf_and_quoted_table_headers(pm_import, tmp_path):
+    """표 머리 판정은 TOML 키 문법과 CRLF 줄 끝을 따른다 (T-0923 리뷰 F-001).
+
+    CRLF 로 저장한 앞 세대 파일(한도 키 하나 · 900000)에서도 두 키가 최상위에 들어가고, 넣은 줄도
+    CRLF 다. 인용 키에 `/`·`@`·`:`·한글이 든 표 머리는 표의 시작이다 — 그 표 안의 같은 이름 키는
+    관리 키가 아니므로 바뀌지 않는다."""
+    shipped = TEMPLATE_FILES["codex"][0].read_text(encoding="utf-8")
+    managed = "model_context_window = 200000\nmodel_auto_compact_token_limit = 180000\n"
+    previous = shipped.replace(managed, "model_auto_compact_token_limit = 900000\n", 1)
+    config_dir = _global_dir(tmp_path)
+
+    crlf = previous.replace("\n", "\r\n")
+    root = _project(tmp_path / "crlf", harnesses=("codex",), texts={".codex/config.toml": crlf})
+    path = root / ".codex" / "config.toml"
+    assert _apply(pm_import, root, config_dir) == (
+        ".codex/config.toml model_context_window (없음) → 200000",
+        ".codex/config.toml model_auto_compact_token_limit 900000 → 180000")
+    after = path.read_bytes().decode("utf-8")
+    assert after == crlf.replace(
+        "model_auto_compact_token_limit = 900000\r\n",
+        "model_auto_compact_token_limit = 180000\r\nmodel_context_window = 200000\r\n", 1), (
+        "값 자리·넣은 한 줄 밖의 바이트가 바뀌었거나 넣은 줄이 CRLF 가 아니다")
+    document = tomllib.loads(after)
+    assert (document["model_context_window"], document["model_auto_compact_token_limit"]) == (
+        200000, 180000)
+    assert all("model_context_window" not in table
+               for table in document.values() if isinstance(table, dict))
+    assert _apply(pm_import, root, config_dir) == ()
+
+    for index, header in enumerate(('[profiles."team/a"]', "[profiles.'ops@host:1']",
+                                    '[ profiles . "한글 팀" ]')):
+        table = f"{header}\nmodel_context_window = 128000\n\n[features]\n"
+        # 최상위 키가 이미 목표값이면 파일은 그대로다 — 표 안의 128000 을 최상위로 읽지 않는다.
+        current = shipped.replace("[features]\n", table, 1)
+        root = _project(tmp_path / f"quoted-{index}", harnesses=("codex",),
+                        texts={".codex/config.toml": current})
+        assert _apply(pm_import, root, config_dir) == (), header
+        assert (root / ".codex" / "config.toml").read_text(encoding="utf-8") == current, header
+        # 최상위 키가 없으면 그 표 머리 앞에 넣는다.
+        old_generation = previous.replace("[features]\n", table, 1)
+        root = _project(tmp_path / f"quoted-previous-{index}", harnesses=("codex",),
+                        texts={".codex/config.toml": old_generation})
+        _apply(pm_import, root, config_dir)
+        after = (root / ".codex" / "config.toml").read_text(encoding="utf-8")
+        assert after == old_generation.replace(
+            "model_auto_compact_token_limit = 900000\n",
+            "model_auto_compact_token_limit = 180000\nmodel_context_window = 200000\n", 1), header
+        profile = next(iter(tomllib.loads(after)["profiles"].values()))
+        assert profile == {"model_context_window": 128000}, header
+
+
 def test_apply_opencode_writes_limits_for_every_config_model(pm_import, tmp_path):
     """설정 파일에 적힌 모델 전부 — 전역에만 있는 모델도 프로젝트 파일에 `limit` 이 생긴다."""
     config_dir = _global_dir(tmp_path, {
@@ -400,6 +451,17 @@ def test_rename_updates_splits_common_window_per_harness(local_conf, tmp_path):
         _plan(isolated, tmp_path, "ctx.window_tokens=300000\n")
 
 
+def test_rename_updates_keeps_explicit_new_key_over_non_integer_old(local_conf, tmp_path):
+    """새 키에 값이 있으면 옛 줄만 지운다 — 버려질 옛 값은 정수인지 보지 않는다 (T-0923 리뷰 F-003)."""
+    assert _plan(local_conf, tmp_path, "ctx.checkpoint_pct=abc\nctx.checkpoint_at_pct=60\n") == {
+        "ctx.checkpoint_pct": None}
+    assert _plan(local_conf, tmp_path, "ctx_stop_pct=15%\nctx.precompact_at_pct=85\n") == {
+        "ctx_stop_pct": None}
+    # 새 키가 없으면 옮겨야 하는 값이라 여전히 키 이름을 담아 멈춘다(지어낸 값으로 옮기지 않는다).
+    with pytest.raises(ValueError, match="ctx.checkpoint_pct=abc"):
+        _plan(local_conf, tmp_path, "ctx.checkpoint_pct=abc\n")
+
+
 # ── AT-011 보고 채널·원장 ────────────────────────────────────────────────────
 
 
@@ -454,6 +516,51 @@ def test_report_skips_managed_keys_and_ledger_follows_apply(pm_import, tmp_path)
     ledger_before = edited_ledger.read_bytes()
     _apply(pm_import, edited_root, _global_dir(tmp_path))
     assert edited_ledger.read_bytes() == ledger_before
+
+
+def test_partial_write_failure_keeps_ledger_for_written_files(pm_import, tmp_path, monkeypatch):
+    """한 파일을 교체하지 못해도 이미 교체한 파일의 원장은 기록한다 (T-0923 리뷰 F-002).
+
+    원장이 무편집을 증언하던 settings.json 은 교체 뒤에도 무편집으로 판정되고(편집됨이면 세트 수용에서
+    빠진다), 예외 문구는 교체한 파일과 못 한 파일을 나눠 적는다. 못 쓴 config.toml 과 그 원장 항목은
+    그대로이고, 쓰기가 되살아난 다음 반영이 남은 파일만 바꾼다."""
+    root = _project(tmp_path, harnesses=("claude", "codex"), conf="ctx.compact_at_pct=85\n")
+    settings, config = root / ".claude" / "settings.json", root / ".codex" / "config.toml"
+    ledger = root / ".project_manager" / "adapter_baseline.json"
+    recorded = {"recorded_at": "2026-09-01T00:00:00+09:00", "template_rev": "rev-at-install"}
+    ledger.write_text(json.dumps({"schema": 1, "files": {
+        relpath: {"sha256": pm_import.content_sha256(root / relpath), **recorded}
+        for relpath in (".claude/settings.json", ".codex/config.toml")}}), encoding="utf-8")
+    config_before = config.read_bytes()
+    config_entry = json.loads(ledger.read_text(encoding="utf-8"))["files"][".codex/config.toml"]
+    replace = pm_import._atomic_write_dest_bytes
+
+    def codex_folder_is_read_only(dest_root, rel, payload, **kwargs):
+        if Path(rel).as_posix() == ".codex/config.toml":
+            return False                    # 엔진 교체 함수의 실패 답(원본은 손대지 않음)
+        return replace(dest_root, rel, payload, **kwargs)
+
+    monkeypatch.setattr(pm_import, "_atomic_write_dest_bytes", codex_folder_is_read_only)
+    with pytest.raises(pm_import.HarnessCtxError) as caught:
+        _apply(pm_import, root, _global_dir(tmp_path))
+    message = str(caught.value)
+    assert message.startswith("사용 한도·압축 비율을 .claude/settings.json 에 반영한 뒤 멈췄습니다"), message
+    assert ".codex/config.toml 를 쓰지 못했습니다" in message and "반영하지 않았습니다" not in message
+
+    assert json.loads(settings.read_text(encoding="utf-8"))["autoCompactWindow"] == 170000
+    entries = json.loads(ledger.read_text(encoding="utf-8"))["files"]
+    assert entries[".claude/settings.json"] == {"sha256": pm_import.content_sha256(settings), **recorded}
+    assert config.read_bytes() == config_before and entries[".codex/config.toml"] == config_entry
+    judged = {item.relpath: item.status
+              for item in pm_import.judge_adapter_configs(root, REPO, harnesses=["claude", "codex"])}
+    assert judged[".claude/settings.json"] == "unedited", judged
+
+    monkeypatch.setattr(pm_import, "_atomic_write_dest_bytes", replace)
+    assert _apply(pm_import, root, _global_dir(tmp_path)) == (
+        ".codex/config.toml model_auto_compact_token_limit 180000 → 170000",)
+    judged = {item.relpath: item.status
+              for item in pm_import.judge_adapter_configs(root, REPO, harnesses=["claude", "codex"])}
+    assert (judged[".claude/settings.json"], judged[".codex/config.toml"]) == ("unedited", "unedited")
 
 
 # ── AT-023 opencode 출력 상한 우선순위·전역 읽기 실패 ─────────────────────────

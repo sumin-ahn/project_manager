@@ -33,7 +33,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config upstream show | set <url|path>               # upstream 조회/전환 (검증·fail-closed)
     pm-config add-harness <harness> [--from <src>] [--dry-run]  # 라이브 인스턴스에 두 번째 harness 어댑터 추가
     pm-config sync-adapter-config [--list | --check | --accept <경로> | --accept-all] # 어댑터 config 판정 조회 / 수렴 게이트 / 상류 값 수용(단건·세트)
-    pm-config ctx-apply [--json] [--set 키=값 ...]         # 사용 한도·압축 비율 검사 → local.conf 기록 → 하네스 설정 파일 반영
+    pm-config ctx-apply [--json] [--set 키=값 ...]         # 사용 한도·압축 비율 검사 → local.conf 기록 → 하네스 설정 파일 반영 (검사 거부 rc 3)
     pm-config delegate models --harness <h> --json         # 그 하네스가 인정하는 모델 목록 조회 (읽기 전용·JSON 한 줄)
 
 서브커맨드별 엔진 배선:
@@ -70,6 +70,8 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
                   수용한 파일이 하네스 설정 파일이면 수용 직후 사용 한도를 다시 반영한다.
   - ctx-apply → pm_import.validate_harness_ctx(검사)·_write_conf_keys(`--set` 기록)·
                   apply_harness_ctx(반영). 관리자 저장이 ctx 입력 키를 이 명령 한 번으로 보낸다.
+                  검사 거부는 rc 3 이고 local.conf·설정 파일을 바꾸지 않는다 — 처리하지 못한
+                  예외의 rc 1 과 겹치지 않아 관리자 화면은 rc 3 만 잘못된 값으로 보인다.
 
 
   - thin forwarder(`pm-config.sh/.cmd`)는 로직 0 — 이 디스패처가 엔진 배선의 단일 지점.
@@ -5015,17 +5017,25 @@ def _conf_assignment(text: str) -> tuple[str, str]:
     return key.strip(), value.strip()
 
 
+# ctx-apply 검사 거부 — 처리하지 못한 예외로 끝난 파이썬의 1 과 argparse 인자 오류의 2 와 겹치지
+# 않는 전용 값이다. 관리자 저장은 이 값만 "잘못된 값"(`invalid-value`)으로 보인다
+# (`manager/bridge_settings.py` 의 `CTX_APPLY_REJECTED_RC`).
+_CTX_APPLY_REJECTED = 3
+
+
 def cmd_ctx_apply(args, *, pm_import=None, dest_root: Path | None = None) -> int:
     """`ctx-apply [--json] [--set 키=값 ...]` — 사용 한도·압축 비율 검사 → local.conf 기록 → 반영.
 
     관리자 저장·초기화가 ctx 입력 키(`pm_import.is_harness_ctx_input_key`)가 든 저장을 이 명령 한
-    번으로 보낸다. `--set` 이 없으면 현재 conf 로 검사·반영만 한다. 있으면 conf 에 덮은 값으로
-    검사하고 설정 파일까지 미리 계산해 본 뒤에만 local.conf 에 쓴다(`_write_conf_keys` · 빈 값은 줄
-    삭제) — 거부되면 local.conf·설정 파일 어느 것도 바뀌지 않는다. `--set` 은 ctx 밖 키도 받는다(한
-    저장이 여러 키를 함께 보낸다).
+    번으로 보낸다. 검사는 현재 conf(`--set` 이 있으면 그 값을 덮은 conf)로 설정 파일까지 미리 계산해
+    보는 것이고, 통과해야 local.conf 에 쓰고(`_write_conf_keys` · 빈 값은 줄 삭제) 반영한다 — 거부되면
+    local.conf·설정 파일 어느 것도 바뀌지 않는다. `--set` 은 ctx 밖 키도 받는다(한 저장이 여러 키를
+    함께 보낸다).
 
-    rc 0 반영(바뀐 줄 0 포함) · 1 검사 거부·반영 실패(사유는 stderr) · 2 인자 오류(argparse).
-    `--json` 은 한 줄 `{"changed": local.conf 가 바뀌었나, "applied": 바뀐 설정 줄}` 이다."""
+    rc 0 반영(바뀐 줄 0 포함) · 3 검사 거부(local.conf·설정 파일 무변경 · 사유는 stderr) · 1 그 밖의
+    실패(엔진·local.conf 부재, 검사 뒤 쓰기 단계 실패, 처리하지 못한 예외 — 쓰기 단계에서 멈추면
+    local.conf 와 설정 파일 일부가 이미 바뀌었을 수 있고 stderr 가 교체한 파일을 적는다) · 2 인자
+    오류(argparse). `--json` 은 한 줄 `{"changed": local.conf 가 바뀌었나, "applied": 바뀐 설정 줄}` 이다."""
     pm_import_mod = pm_import or _load_module("pm_import", "pm_import.py")
     if pm_import_mod is None:
         print(
@@ -5046,27 +5056,34 @@ def cmd_ctx_apply(args, *, pm_import=None, dest_root: Path | None = None) -> int
     try:
         result = local_conf.load(conf_file)
         local_conf.assert_no_legacy(result)
-        changed = False
+        values = result.values
         if updates:
             values = {key: value for key, value in result.values.items() if key not in updates}
             values.update({key: value for key, value in updates.items() if value})
             local_conf.assert_values_no_legacy(values, conf_file)
-            # 쓰기 전에 설정 파일까지 계산해 본다 — 읽기 실패로 반영이 멈출 값을 conf 에 남기지 않는다.
-            pm_import_mod._apply_harness_ctx_values(
-                dest, values, write=False, opencode_config_dir=opencode_dir)
-            changed = pm_import_mod._write_conf_keys(
-                conf_file, {key: value or None for key, value in updates.items()})
-        applied = pm_import_mod.apply_harness_ctx(
-            dest, write=True, opencode_config_dir=opencode_dir)
+        # 검사 — 쓰기 전에 설정 파일까지 계산해 본다(읽기 실패로 반영이 멈출 값을 conf 에 남기지 않는다).
+        pm_import_mod._apply_harness_ctx_values(
+            dest, values, write=False, opencode_config_dir=opencode_dir)
     except pm_import_mod.HarnessCtxError as exc:
         print(f"[중단] {exc}", file=sys.stderr)
-        return 1
+        return _CTX_APPLY_REJECTED
     except RuntimeError as exc:
         if _is_engine_rev_skew(exc):
             raise
-        # 옛 키가 남은 conf(또는 `--set` 이 옛 키) — 값을 읽는 지점의 fail-loud 를 rc 1 로 낸다.
+        # 옛 키가 남은 conf(또는 `--set` 이 옛 키) — 값을 읽는 지점의 fail-loud 를 검사 거부로 낸다.
         if not getattr(exc, "_legacy_conf_key", False):
             raise
+        print(f"[중단] {exc}", file=sys.stderr)
+        return _CTX_APPLY_REJECTED
+    changed = False
+    if updates:
+        changed = pm_import_mod._write_conf_keys(
+            conf_file, {key: value or None for key, value in updates.items()})
+    try:
+        applied = pm_import_mod.apply_harness_ctx(
+            dest, write=True, opencode_config_dir=opencode_dir)
+    except pm_import_mod.HarnessCtxError as exc:
+        # 검사를 통과한 뒤의 실패(쓰기 단계) — 검사 거부가 아니다. 교체한 파일은 예외 문구가 적는다.
         print(f"[중단] {exc}", file=sys.stderr)
         return 1
     if getattr(args, "json", False):

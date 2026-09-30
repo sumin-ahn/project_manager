@@ -327,7 +327,7 @@ def test_ctx_save_is_checked_before_write_and_reports_applied_lines(api, pm_home
 
     assert refused["error"]["kind"] == "invalid-value", refused
     assert "ctx.precompact_at_pct=90" in refused["error"]["message"]
-    assert refused["error"]["rc"] == 1
+    assert refused["error"]["rc"] == 3
     assert conf_path(pm_home).read_bytes() == conf_before
     assert settings.read_bytes() == settings_before
 
@@ -356,6 +356,30 @@ def test_ctx_save_is_checked_before_write_and_reports_applied_lines(api, pm_home
     after = tree_snapshot(pm_home)
     assert {name for name in set(before) | set(after)
             if before.get(name) != after.get(name)} == {".project_manager/local.conf"}
+
+
+def test_ctx_apply_crash_is_not_reported_as_invalid_value(api, pm_home):
+    """T-0923 F-004 — "잘못된 값"(`invalid-value`)은 사본의 검사 거부 전용 rc 3 뿐이다.
+
+    사본의 `ctx-apply` 가 처리하지 못한 예외로 끝나면 파이썬 종료 코드는 1 이고, 그것은 저장
+    오류(`old-generation`)다 — traceback 이 값 거부 문구처럼 화면 알림에 서면 안 된다. 예외는 실물로
+    낸다: local.conf 가 UTF-8 이 아니면(한글 주석을 ANSI 로 저장한 파일) 사본이 conf 를 쓰는 자리에서
+    멈춘다.
+    """
+    conf = conf_path(pm_home)
+    conf.write_bytes("# 한글 주석\n".encode("cp949") + conf.read_bytes())
+    settings = pm_home / ".claude" / "settings.json"
+    settings_before = settings.read_bytes()
+
+    response = api.conf_save(str(pm_home), {"ctx.compact_at_pct": "85"})
+
+    error = response["error"]
+    assert error["kind"] == "old-generation", error
+    assert error["rc"] == 1
+    assert "Traceback" in error["stderr"] and "UnicodeDecodeError" in error["stderr"], error
+    assert "Traceback" not in error["message"], "화면 알림 문구가 사본의 traceback 이다"
+    assert "저장을 끝내지 못했다" in error["message"]
+    assert settings.read_bytes() == settings_before
 
 
 # ── ④ [기본값으로] ───────────────────────────────────────────────────────────

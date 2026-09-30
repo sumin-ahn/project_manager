@@ -350,7 +350,7 @@ describe("저장", () => {
     const message = "  - `ctx.precompact_at_pct=90` 는 `ctx.compact_at_pct=90` 보다 작아야 합니다";
     const bridge = makeBridge({
       conf_save: vi.fn(async () => ({
-        error: { kind: "invalid-value", message, stderr: message, rc: 1 } })),
+        error: { kind: "invalid-value", message, stderr: message, rc: 3 } })),
     } as Partial<Bridge>);
     const { onReload } = mounted(bridge);
     openGroup("ctx");

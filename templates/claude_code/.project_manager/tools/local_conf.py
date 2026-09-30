@@ -1202,7 +1202,7 @@ def rename_updates(result: ConfResult) -> dict[str, str | None]:
     고칠 때까지 그 값을 쓰는 명령이 멈춰 서 있지 않는다.
 
     값은 대개 그대로 가고, 뜻이 바뀐 두 이동만 값을 만든다:
-      - 남은 % → 쓴 %(`_USED_PCT_FROM_REMAINING`) — 새 키에 `100 − 옛 값` 을 쓴다. 옛 값이
+      - 남은 % → 쓴 %(`_USED_PCT_FROM_REMAINING`) — 새 키에 `100 − 옛 값` 을 쓴다. 옮길 옛 값이
         정수가 아니면 그 키 이름을 담은 `ValueError` 로 멈춘다(지어낸 값으로 옮기지 않는다).
       - 공통 한도 → 하네스별 사용 한도(`_PER_HARNESS_WINDOW_DISPLAY`) — 등록 하네스 전부의
         `harness.<name>.ctx_window_tokens` 중 값이 없는 키에 같은 값을 쓴다. 같은 계획 안에서는
@@ -1213,7 +1213,8 @@ def rename_updates(result: ConfResult) -> dict[str, str | None]:
       - 대체 키가 없는 폐지 키(`None`) — 값이 갈 자리가 없어 옮기는 것이 곧 버리는 것이다.
         무엇을 버릴지는 사람이 정한다(교체 안내가 계속 지목한다).
       - 신표기에 이미 값이 있는 키 — 사람이 새 이름으로 명시한 값이 이긴다. 그때는 옛 줄만
-        지운다(옛 값이 새 값을 덮어쓰지 않게).
+        지운다(옛 값이 새 값을 덮어쓰지 않게). 버려질 옛 값은 변환하지도 검사하지도 않는다 —
+        정수가 아닌 옛 값이 명시된 새 값의 이전을 멈추지 않게.
       - 옛 키가 없는 새 키 — 옮길 값이 없으면 새 줄도 만들지 않는다(기본값은 레지스트리가 준다).
 
     여러 옛 이름이 같은 새 키로 가면 표(`LEGACY_KEY_MAP`)에서 뒤에 선언된 이름(더 최근 이름)이
@@ -1235,12 +1236,13 @@ def rename_updates(result: ConfResult) -> dict[str, str | None]:
         if new == _PER_HARNESS_WINDOW_DISPLAY:
             shared_window = value.strip() or shared_window
             continue
+        if new in result.values:
+            continue
         if new in _USED_PCT_FROM_REMAINING:
             if not value.strip():
                 continue
             value = _used_pct_from_remaining(old, value)
-        if new not in result.values:
-            updates[new] = value
+        updates[new] = value
     if shared_window is not None:
         harnesses = _harness_names()
         if not harnesses:

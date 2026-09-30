@@ -8021,22 +8021,29 @@ _MODEL_LIMIT_KEYS = ("context", "input", "output")
 _HARNESS_CTX_RATIO_KEYS = ("ctx.checkpoint_at_pct", "ctx.precompact_at_pct", "ctx.compact_at_pct")
 _HARNESS_CTX_COMPACT_KEY = "ctx.compact_at_pct"
 _HARNESS_CTX_WINDOW_SUFFIX = "ctx_window_tokens"
-# TOML 표 머리 줄(`[표]`·`[[표 배열]]`) — 최상위 키가 들어갈 구간의 끝이다. 쉼표가 든 줄(여러 줄
-# 배열의 원소)은 머리가 아니다.
+# TOML 표 머리 줄(`[표]`·`[[표 배열]]`) — 최상위 키가 들어갈 구간의 끝이다. 괄호 안은 TOML 키
+# 문법(맨 키·큰따옴표 키·작은따옴표 키를 점으로 이은 것)이고, 줄 끝 앞의 CR 은 CRLF 파일의 개행이다.
+# 여러 줄 배열의 원소 줄(`[1, 2],`)은 쉼표 때문에 이 문법에 맞지 않는다.
+_TOML_SIMPLE_KEY = r"""(?:[A-Za-z0-9_-]+|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*')"""
+_TOML_DOTTED_KEY = rf"{_TOML_SIMPLE_KEY}(?:[ \t]*\.[ \t]*{_TOML_SIMPLE_KEY})*"
 _TOML_TABLE_HEADER_RE = re.compile(
-    r"^[ \t]*\[\[?[ \t]*[A-Za-z0-9_\-\"'. ]+[ \t]*\]\]?[ \t]*(?:#.*)?$", re.MULTILINE)
+    rf"^[ \t]*(?:\[[ \t]*{_TOML_DOTTED_KEY}[ \t]*\]|\[\[[ \t]*{_TOML_DOTTED_KEY}[ \t]*\]\])"
+    r"[ \t]*(?:#[^\r\n]*)?\r?$", re.MULTILINE)
 
 
 class HarnessCtxError(ValueError):
     """사용 한도·압축 비율을 하네스 설정 파일에 반영할 수 없다 — 위반 전부를 한국어 줄로 담는다.
 
-    이 예외가 나면 local.conf·설정 파일·원장 어느 것도 쓰지 않았다(검사·읽기가 쓰기보다 먼저다)."""
+    검사·읽기 단계(쓰기 전)에서 난 이 예외는 local.conf·설정 파일·원장 어느 것도 쓰지 않았다는
+    뜻이다(검사·읽기가 쓰기보다 먼저다). 쓰기 단계에서 나면 `written` 에 교체를 마친 설정 파일을
+    넘겨 첫 줄이 그 사실을 말하고, 위반 줄이 쓰지 못한 파일·원장 기록을 확인하지 못한 파일을 적는다."""
 
-    def __init__(self, violations) -> None:
+    def __init__(self, violations, *, written=()) -> None:
         self.violations = tuple(violations)
+        lead = (f"사용 한도·압축 비율을 {', '.join(written)} 에 반영한 뒤 멈췄습니다" if written
+                else "사용 한도·압축 비율을 하네스 설정 파일에 반영하지 않았습니다")
         super().__init__("\n".join((
-            "사용 한도·압축 비율을 하네스 설정 파일에 반영하지 않았습니다 — 아래를 고친 뒤 다시 "
-            "실행하십시오.",
+            f"{lead} — 아래를 고친 뒤 다시 실행하십시오.",
             *(f"  - {violation}" for violation in self.violations))))
 
 
@@ -8165,9 +8172,10 @@ def apply_harness_ctx(dest_root: Path, *, write: bool, opencode_config_dir: Path
 
     conf 는 공용 로더로 읽고 옛 키가 남았으면 멈춘다(`assert_no_legacy`). 순서가 곧 계약이다:
     검사 → 세 설정 파일과 opencode 전역 설정 읽기 → 새 내용 계산·재판독 확인 → (`write`) 원자 쓰기
-    → 원장. 앞 단계가 실패하면(`HarnessCtxError`) 어떤 파일도 쓰지 않는다. `write=False` 는 줄만
-    낸다. 반환 줄은 "<relpath> <경로> <옛 값> → <새 값>" 꼴이고, 없던 키의 옛 값은 `(없음)`, 경로는
-    조각을 점으로 잇되 점이 든 조각을 큰따옴표로 감싼다(`provider.ollama.models."glm-5.2:cloud"…`).
+    → 원장. 앞 단계가 실패하면(`HarnessCtxError`) 어떤 파일도 쓰지 않는다. 쓰기 단계에서 멈추면
+    교체를 마친 파일의 원장을 기록한 뒤 교체한 파일과 못 한 파일을 나눠 알린다. `write=False` 는
+    줄만 낸다. 반환 줄은 "<relpath> <경로> <옛 값> → <새 값>" 꼴이고, 없던 키의 옛 값은 `(없음)`,
+    경로는 조각을 점으로 잇되 점이 든 조각을 큰따옴표로 감싼다(`provider.ollama.models."glm-5.2:cloud"…`).
 
     원장 규칙: 반영 직전 파일을 원장이 증언하면(`_baseline_attests_dest`) 그 항목의 `sha256` 만 새
     내용 해시로 바꾸고 `recorded_at`·`template_rev` 는 둔다 — 무편집 판정이 반영 뒤에도 유지된다.
@@ -8416,7 +8424,12 @@ def _toml_set_top_level_integer(text: str, key: str, value: int) -> tuple[str, s
 
 
 def _harness_ctx_write(dest_root: Path, changed: dict[str, tuple[str, str]]) -> None:
-    """바뀐 설정 파일을 원자 쓰기하고 원장 규칙을 적용한다(`apply_harness_ctx` docstring)."""
+    """바뀐 설정 파일을 원자 쓰기하고 원장 규칙을 적용한다(`apply_harness_ctx` docstring).
+
+    파일마다 교체를 시도해 결과를 모은 뒤, 교체에 성공한 원장 증언 파일의 `sha256` 을 먼저 기록하고
+    나서 쓰지 못한 파일이 있으면 멈춘다 — 이미 바뀐 파일이 원장의 옛 해시에 걸려 편집됨으로 판정되지
+    않게 한다(편집됨 판정은 세트 수용에서도 그 파일을 뺀다). 원장이 상위 schema 면 아무것도 쓰기 전에
+    멈춘다."""
     if _load_adapter_baseline_document(dest_root).status == "newer-schema":
         raise HarnessCtxError([
             f"어댑터 config 원장 schema 가 이 엔진(지원 상한 {ADAPTER_BASELINE_SCHEMA})보다 새로워 "
@@ -8431,22 +8444,32 @@ def _harness_ctx_write(dest_root: Path, changed: dict[str, tuple[str, str]]) -> 
         if recorded is not None and _baseline_attests_dest(
                 recorded, dest_root / relpath, content_sha256(old_bytes)):
             attested[relpath] = content_sha256(new_text.encode("utf-8"))
+    written: list[str] = []
+    failed: list[str] = []
     for relpath, (_old_text, new_text) in changed.items():
-        if not _atomic_write_dest_bytes(dest_root, Path(relpath), new_text.encode("utf-8")):
-            raise HarnessCtxError([f"{relpath} 를 쓰지 못했습니다 — 기존 내용은 그대로입니다."])
-    if not attested:
-        return
-    for relpath, digest in attested.items():
-        files[relpath] = {**files[relpath], "sha256": digest}
-    _write_adapter_baseline(dest_root, {"schema": ADAPTER_BASELINE_SCHEMA, "files": files})
-    recorded_now = read_adapter_baseline(dest_root).get("files", {})
-    unrecorded = [relpath for relpath, digest in attested.items()
-                  if not isinstance(recorded_now.get(relpath), dict)
-                  or recorded_now[relpath].get("sha256") != digest]
-    if unrecorded:
-        raise HarnessCtxError([
-            f"{', '.join(unrecorded)} 는 반영했지만 원장 기록을 확인하지 못했습니다 — 원장 경로 "
-            f"({ADAPTER_BASELINE_RELPATH.as_posix()})의 쓰기 권한을 확인한 뒤 다시 실행하십시오."])
+        if _atomic_write_dest_bytes(dest_root, Path(relpath), new_text.encode("utf-8")):
+            written.append(relpath)
+        else:
+            failed.append(relpath)
+    violations: list[str] = []
+    if failed:
+        violations.append(
+            f"{', '.join(failed)} 를 쓰지 못했습니다 — 그 파일의 기존 내용은 그대로입니다.")
+    recorded = {relpath: attested[relpath] for relpath in written if relpath in attested}
+    if recorded:
+        for relpath, digest in recorded.items():
+            files[relpath] = {**files[relpath], "sha256": digest}
+        _write_adapter_baseline(dest_root, {"schema": ADAPTER_BASELINE_SCHEMA, "files": files})
+        recorded_now = read_adapter_baseline(dest_root).get("files", {})
+        unrecorded = [relpath for relpath, digest in recorded.items()
+                      if not isinstance(recorded_now.get(relpath), dict)
+                      or recorded_now[relpath].get("sha256") != digest]
+        if unrecorded:
+            violations.append(
+                f"{', '.join(unrecorded)} 는 반영했지만 원장 기록을 확인하지 못했습니다 — 원장 경로 "
+                f"({ADAPTER_BASELINE_RELPATH.as_posix()})의 쓰기 권한을 확인한 뒤 다시 실행하십시오.")
+    if violations:
+        raise HarnessCtxError(violations, written=written)
 
 
 def _print_harness_ctx_apply(dest_root: Path) -> None:
