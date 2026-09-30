@@ -8389,13 +8389,27 @@ def _document_key_value_path(document: dict, path: tuple[str, ...]) -> tuple[boo
     return True, node
 
 
+def _toml_first_table_header(text: str) -> "re.Match[str] | None":
+    """첫 실제 표 머리 줄 — 여러 줄 문자열·배열 안의 `[이름]` 꼴 줄은 건너뛴다.
+
+    머리 꼴 줄 앞까지의 텍스트가 TOML 로 풀리지 않으면 그 줄은 아직 열린 값(여러 줄 문자열·배열)
+    안에 있다. 앞부분이 풀리는 첫 후보가 최상위 구간의 끝이다."""
+    for match in _TOML_TABLE_HEADER_RE.finditer(text):
+        try:
+            tomllib.loads(text[:match.start()])
+        except tomllib.TOMLDecodeError:
+            continue
+        return match
+    return None
+
+
 def _toml_set_top_level_integer(text: str, key: str, value: int) -> tuple[str, str | None]:
     """TOML 최상위 키 줄의 값 자리만 정수로 바꾼다 — 없으면 첫 `[표]` 머리 줄 앞에 한 줄 넣는다.
 
     반환 (새 텍스트, 옛 값 리터럴 또는 None). 최상위 구간은 첫 표 머리 줄 전까지다(그 뒤의 같은
     이름은 표 안 키다). 넣는 줄은 머리 줄 바로 위의 빈 줄들 앞에 둔다. 결과의 정합은 호출부가
     `tomllib` 로 다시 읽어 확인한다."""
-    header = _TOML_TABLE_HEADER_RE.search(text)
+    header = _toml_first_table_header(text)
     region_end = header.start() if header else len(text)
     key_re = re.compile(
         rf'^[ \t]*(?:{re.escape(key)}|"{re.escape(key)}")[ \t]*=[ \t]*(?P<value>[^\s#]+)',

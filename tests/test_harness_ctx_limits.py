@@ -247,6 +247,23 @@ def test_apply_codex_config_top_level_keys(pm_import, tmp_path):
     assert _apply(pm_import, root, config_dir) == ()
 
 
+def test_toml_bracket_lines_inside_multiline_values_are_not_the_first_table(pm_import):
+    """여러 줄 문자열·배열 안의 `[이름]` 꼴 줄은 표 머리가 아니다 — 관리 키를 그 값 안에 넣지 않는다.
+
+    재현(2026-09-30 T-0923 수정 라운드 발견): 최상위 `notes = \"\"\"…\"\"\"` 안에 `[memo]` 줄이 있으면
+    그 줄을 첫 표 머리로 보아 키 줄을 문자열 안에 넣었고, 반영할 때마다 다시 넣었다."""
+    text = 'notes = """\n[memo]\n"""\nids = [\n  [3],\n  [4]\n]\n[features]\nhooks = true\n'
+    new, old = pm_import._toml_set_top_level_integer(text, "model_context_window", 200000)
+    assert old is None
+    doc = tomllib.loads(new)
+    assert doc["notes"] == "[memo]\n"
+    assert doc["ids"] == [[3], [4]]
+    assert doc["model_context_window"] == 200000
+    assert "model_context_window" not in doc["features"]
+    again, again_old = pm_import._toml_set_top_level_integer(new, "model_context_window", 200000)
+    assert (again, again_old) == (new, "200000")
+
+
 def test_apply_codex_config_crlf_and_quoted_table_headers(pm_import, tmp_path):
     """표 머리 판정은 TOML 키 문법과 CRLF 줄 끝을 따른다 (T-0923 리뷰 F-001).
 
