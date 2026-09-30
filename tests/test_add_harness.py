@@ -54,7 +54,7 @@ def _hermetic_opencode_models(pm_import, monkeypatch):
     """T-0033 동형 — apply 경로(resolve_opencode_model)가 라이브 `opencode models` CLI 를 치지
     않도록 (False, []) 고정(미설치 동치). 이 파일의 add_harness 는 전부 dry_run 이라 실제로 도달
     하지 않지만 hermetic 보험."""
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
+    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
 
 
 # ── 헬퍼 ──────────────────────────────────────────────────────────────────────

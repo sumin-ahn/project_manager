@@ -852,7 +852,7 @@ def _import_multipm_home(tmp_path: Path, harness: str,
     (`_import_multiuser_home`·T-0309). 미지정(기본·None)이면 현행 동작(빈 area_owner·단일 user).
     """
     pm_import = _load_pm_import()
-    pm_import._real_models_runner = lambda: (False, [])
+    pm_import._real_models_runner = lambda source: (False, [])
     home = tmp_path / f"mpm-home-{harness}"
     origins = tmp_path / f"origins-{harness}"
     rc = pm_import.main(

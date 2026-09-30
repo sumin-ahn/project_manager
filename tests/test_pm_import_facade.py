@@ -304,7 +304,7 @@ def test_update_facade_deployed_to_adopter_root(harness: str, tmp_path: Path,
     """
     pm_import = _load_pm_import()
     # opencode models CLI 라이브 호출 차단(설치 환경서도 hermetic).
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
+    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
 
     dest = tmp_path / "adopter"
     rc = pm_import.main(["--new", str(dest), "--harness", harness, "--name", "P"])

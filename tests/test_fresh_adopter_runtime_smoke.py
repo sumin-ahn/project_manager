@@ -100,7 +100,7 @@ def _load_pm_import():
 def _import_adopter(tmp_path: Path, harness: str) -> Path:
     """harness adopter 를 tmp 에 import (hermetic·라이브 models 조회 차단)."""
     pm_import = _load_pm_import()
-    pm_import._real_models_runner = lambda: (False, [])
+    pm_import._real_models_runner = lambda source: (False, [])
     dest = tmp_path / f"adopter-{harness}"
     rc = pm_import.main(
         ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]

@@ -748,7 +748,7 @@ def test_import_scaffold_mirrors_board_block(board):
 def test_new_board_submodule_seed_deploys_union(board, tmp_path, monkeypatch):
     """`pm-import --new --board-submodule` seed 된 board 가 곧바로 union 으로 해소된다."""
     pm_import = _load_mod("pm_import")
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
+    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     bare = tmp_path / "board.git"

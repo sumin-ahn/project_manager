@@ -51,7 +51,7 @@ def pm_import():
 @pytest.fixture(autouse=True)
 def _hermetic(pm_import, monkeypatch):
     """opencode `models` 라이브 호출 차단(설치 여부로 분기하지 않게) + 결정적 git identity."""
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
+    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
 

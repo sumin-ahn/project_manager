@@ -52,7 +52,7 @@ def pm_import():
 @pytest.fixture(autouse=True)
 def _hermetic_opencode_models(pm_import, monkeypatch):
     """실 `opencode models` CLI 미호출 고정(미설치 동치·hermetic)."""
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
+    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
 
 
 def _live_instance(pm_import, dest: Path, harness: str = "claude") -> Path:

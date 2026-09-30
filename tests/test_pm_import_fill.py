@@ -47,7 +47,7 @@ def _hermetic_opencode_models(pm_import, monkeypatch):
     `_real_models_runner` 를 (False, []) 로 고정 — opencode 설치 환경서도 fill 테스트가 hermetic
     (미설치 동치 = 모델 토큰 TODO 폴백, fill 단계는 모델 토큰과 무관).
     """
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
+    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
 
 
 # ── stub runner (실 바이너리 미호출 — 토큰 0) ───────────────────────────────
@@ -1099,3 +1099,25 @@ def test_ensure_pm_playbook_local_stub_created_then_preserved(pm_import, tmp_pat
     assert status2 == "preserved"
     assert sentinel in stub.read_text(encoding="utf-8"), \
         "preserved 경로가 기존 .local 내용을 보존하지 않음."
+
+
+def test_resolve_opencode_model_real_runner_gets_the_opencode_source(pm_import, tmp_path, monkeypatch):
+    """조회 함수를 끼우지 않은 실제 경로는 opencode 조회 원천을 넘겨 부른다.
+
+    재현(2026-09-30): 63326333 이 `_real_models_runner(source)` 로 바꾼 뒤에도 호출부가 인자 없이
+    `runner()` 를 불러 `pm-import --new … --harness opencode` 가 TypeError 로 멈췄다. 기존 테스트는
+    조회 함수를 늘 인자 없는 가짜로 끼워 이 경로를 돌지 않았다."""
+    agent = tmp_path / ".opencode" / "agents" / "pm.md"
+    agent.parent.mkdir(parents=True)
+    agent.write_text(f"model: {OPENCODE_MODEL_TOKEN}\n", encoding="utf-8")
+    seen = []
+
+    def real_like(source):
+        seen.append(tuple(source.command))
+        return True, ["ollama/x"]
+
+    monkeypatch.setattr(pm_import, "_real_models_runner", real_like)
+    result = pm_import.resolve_opencode_model(
+        tmp_path, {Path(".opencode/agents/pm.md")}, model_arg="ollama/x")
+    assert result.path == "flag"
+    assert seen == [("opencode", "models")]

@@ -414,6 +414,8 @@ FREE_FORM_TOKENS = (
 # *아니라* `opencode models` 결정적 조회로 해소한다(resolve_opencode_model) — 따라서 fill
 # 후보에서 분리됐다(중복·환각 제거). opencode 트리가 복사됐을 때만 해소 단계를 탄다.
 OPENCODE_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
+# 이 토큰을 해소할 때 가용 모델을 조회하는 원천의 하네스 키(`pm_relay.MODEL_SOURCE`).
+OPENCODE_MODEL_SOURCE_HARNESS = "opencode"
 
 # `opencode models` 조회 명령 — 가용 모델의 단일 진실(LLM 추측 아님). 줄당 `provider/model`.
 # fill 실 하니스 구동 게이트 환경변수(호출 횟수 축 — 무엇을 보여줄지가 아니라 몇 번 부를지다).
@@ -4057,7 +4059,8 @@ def resolve_opencode_model(
         return ModelResolveResult(active=False, path="inactive",
                                   note="opencode 모델 토큰 미잔존 — 해소 단계 비활성(claude-only).")
 
-    runner = models_runner if models_runner is not None else _real_models_runner
+    runner = models_runner if models_runner is not None else (
+        lambda: _real_models_runner(_load_watchdog().MODEL_SOURCE[OPENCODE_MODEL_SOURCE_HARNESS]))
     stream = stdin if stdin is not None else sys.stdin
     is_tty = bool(getattr(stream, "isatty", lambda: False)())
 

@@ -7983,7 +7983,7 @@ def test_fresh_adopter_card_model_follows_delegate_conf_across_updates(
     delegate_channel_guard 경고 0.
     """
     pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
+    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
     dest = tmp_path / "adopter"
     _import_adopter(pm_import, dest, "claude")
     card = dest / ".claude" / "agents" / "developer.md"
@@ -8054,7 +8054,7 @@ def test_guest_agent_card_model_follows_delegate_conf_after_absorb(
     재실행 변경 0(멱등).
     """
     pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
+    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
     monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
     dest = tmp_path / "guest-adopter"
     _import_adopter(pm_import, dest, "codex")
@@ -8100,7 +8100,7 @@ def test_unused_profile_card_is_neutralized_not_filled(pm_update, tmp_path, monk
     이번 형상에서 스폰되지 않으므로 claude 용 모델을 박으면 카드가 conf 와 어긋난 사실을 감춘다.
     렌더는 실패하지 않는다 — 미해소가 update rc 를 바꾸지 않는다."""
     pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
+    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
     monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
     dest = tmp_path / "unused-profile"
     _import_adopter(pm_import, dest, "codex")
@@ -8162,7 +8162,7 @@ def test_update_migrates_ctx_keys_then_applies(pm_update, tmp_path, monkeypatch)
     import tomllib
 
     pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
+    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
     dest = tmp_path / "adopter"
     _import_adopter(pm_import, dest, "claude,codex")
     conf = dest / ".project_manager" / "local.conf"
@@ -8213,7 +8213,7 @@ def test_update_applies_limits_to_global_opencode_models(pm_update, tmp_path, mo
     HOME 아래 `.config/opencode` 와 `OPENCODE_CONFIG_DIR` 의 설정은 대상이 아니다. 전역 파일은
     읽기만 하고, dry-run 은 프로젝트 파일을 바꾸지 않는다."""
     pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
+    monkeypatch.setattr(pm_import, "_real_models_runner", lambda source: (False, []))
     dest = tmp_path / "adopter"
     _import_adopter(pm_import, dest, "opencode")
     xdg = tmp_path / "xdg"
