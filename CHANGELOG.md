@@ -10,6 +10,7 @@
 ### Fixed
 
 - Windows URL upstream 캐시의 긴 경로에서 Git clone이 실패하던 문제를 수정했다. 사용자 Git 설정 격리를 유지하면서 Windows runner에 `core.longpaths=true`를 명시한다.
+- OpenCode가 Windows의 실행 불가한 Python 별칭에서 멈추던 문제를 수정했다. 명시한 실행기 또는 지원되는 후보를 검증해 선택하고, 상태를 쓰는 엔진 명령은 한 번만 실행한다.
 
 ## [1.8.0] - 2026-09-19
 

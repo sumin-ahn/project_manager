@@ -33,6 +33,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const childProcess = require("node:child_process");
 const crypto = require("node:crypto");
+const { parseLocalConf, supportedPythonCandidates } = require("./delegate-channel-core.cjs");
 
 // ── 엔진 기본값 사본 (local_conf 레지스트리 미러 — 폴백 전용 · 쓴 % 기준) ──────────
 // tests/test_ctx_default_mirror.py 가 레지스트리·네 어댑터 사이트를 대조한다.
@@ -60,21 +61,6 @@ const SESSION_LOOKUP_TIMEOUT_MS = 1000;
 const SNAPSHOT_TIMEOUT_MS = 3000;
 const CHECKPOINT_TIMEOUT_MS = 5000;
 const COMPACTION_SNAPSHOT_RECEIPT_RETAIN = 8;
-
-// ── 순수 함수: local.conf 파싱 (board.local_config 미러 — KEY=value·# 주석 무시) ──
-function parseLocalConf(text) {
-  const conf = {};
-  if (typeof text !== "string") return conf;
-  for (let line of text.split("\n")) {
-    line = line.trim();
-    if (!line || line.startsWith("#") || !line.includes("=")) continue;
-    const idx = line.indexOf("=");
-    const key = line.slice(0, idx).trim();
-    const val = line.slice(idx + 1).trim();
-    conf[key] = val;
-  }
-  return conf;
-}
 
 // 차단 구키 목록은 엔진이 **생성**한다(어댑터가 매핑표를 복제하면 표와 파서가 갈린다):
 //   python3 .project_manager/tools/local_conf.py --render-adapter-block js
@@ -271,22 +257,22 @@ function buildNudge2Guidance(state) {
   );
 }
 
-// ── compaction 엔진 호출: git-anchor-core의 spawnSync+python3→python+timeout 패턴 동형 ──
+// ── compaction 엔진 호출: 지원 실행기 해소 이후 실제 엔진 1회 호출 ──
 function runPmLog(root, args, options = {}, spawnSync = childProcess.spawnSync) {
   const engine = path.join(root, ".project_manager", "tools", "pm_log.py");
   const capture = options.capture === true;
-  for (const py of ["python3", "python"]) {
-    const result = spawnSync(py, [engine, ...args], {
-      cwd: root,
-      encoding: "utf8",
-      timeout: options.timeout || SNAPSHOT_TIMEOUT_MS,
-      maxBuffer: 32 * 1024,
-      stdio: capture ? ["ignore", "pipe", "ignore"] : ["ignore", "ignore", "ignore"],
-    });
-    if (result && result.error && result.error.code === "ENOENT") continue;
-    return result || null;
-  }
-  return null;
+  const timeout = options.timeout || SNAPSHOT_TIMEOUT_MS;
+  const candidate = supportedPythonCandidates(root, {
+    spawnSync, platform: options.platform, timeout, attempts: options.attempts,
+  }).next().value;
+  if (!candidate) return null;
+  return spawnSync(candidate.command, [...candidate.prefixArgs, engine, ...args], {
+    cwd: root,
+    encoding: "utf8",
+    timeout,
+    maxBuffer: 32 * 1024,
+    stdio: capture ? ["ignore", "pipe", "ignore"] : ["ignore", "ignore", "ignore"],
+  }) || null;
 }
 
 function buildEngineCtxGuidance(

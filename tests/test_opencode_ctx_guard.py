@@ -26,6 +26,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -79,7 +80,7 @@ def _install_core(root: Path) -> Path:
     """
     lib = root / ".opencode" / "lib"
     lib.mkdir(parents=True, exist_ok=True)
-    for name in ("ctx-guard-core.cjs", "warning-channel-core.cjs"):
+    for name in ("ctx-guard-core.cjs", "delegate-channel-core.cjs", "warning-channel-core.cjs"):
         shutil.copyfile(CORE_DIR / name, lib / name)
     return lib
 
@@ -90,14 +91,145 @@ def _make_ctx_guard_project(tmp_path: Path, *, snapshot: bool = True) -> Path:
     tools = root / ".project_manager" / "tools"
     tools.mkdir(parents=True)
     _install_core(root)
+    shutil.copyfile(REPO / ".project_manager" / "tools" / "python_floor.py", tools / "python_floor.py")
     source = "import sys\n"
     if snapshot:
         source += (
             "if 'snapshot' in sys.argv:\n"
-            "    print('## PM 정체성 (compaction 복구)\\n- task: main')\n"
+            "    sys.stdout.buffer.write('## PM 정체성 (compaction 복구)\\n- task: main\\n'.encode('utf-8'))\n"
         )
-    (tools / "pm_log.py").write_text(source, encoding="utf-8")
+    (tools / "pm_log.py").write_text(source, encoding="utf-8", newline="\n")
     return root
+
+
+def test_t007_fixture_payload_bytes_and_marker_consumption(tmp_path):
+    assert shutil.which("node") is not None, "Node가 있어야 marker 원문을 검증할 수 있다"
+    for label, payload in (("lf", "원문\n둘째\n"), ("crlf", "원문\r\n둘째\r\n")):
+        root = _make_ctx_guard_project(tmp_path / label)
+        producer = subprocess.run(
+            [sys.executable, str(root / ".project_manager" / "tools" / "pm_log.py"), "snapshot"],
+            capture_output=True, check=True,
+        )
+        assert producer.stdout == "## PM 정체성 (compaction 복구)\n- task: main\n".encode("utf-8")
+        assert producer.stderr == b""
+        marker = _snapshot_marker(root, label, "20260811T000000000Z-00000000-0000-4000-8000-000000000099")
+        marker.parent.mkdir(parents=True)
+        if label == "lf":
+            marker.write_text(payload, encoding="utf-8", newline="\n")
+        else:
+            marker.write_bytes(payload.encode("utf-8"))
+        assert marker.read_bytes() == payload.encode("utf-8")
+        script = r'''
+const m = require("./ctx-guard-core.cjs");
+(async () => {
+  const hooks = await m.CtxGuardPlugin({directory:process.argv[1],
+    client:{session:{get:async ({path:{id}}) => ({data:{id}})}}});
+  const output = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID:process.argv[2]}, output);
+  process.stdout.write(JSON.stringify(output.system));
+})().catch((err) => {console.error(err); process.exitCode=1;});
+'''
+        consumed = _run_node_check(script, root, [str(root), label])
+        assert json.loads(consumed) == [payload]
+        assert not marker.exists()
+
+
+def test_t0934_pm_log_spawn_once_options_and_raw_payload(tmp_path):
+    assert shutil.which("node") is not None, "Node가 있어야 pm_log spawn 계약을 검증할 수 있다"
+    root = _make_ctx_guard_project(tmp_path)
+    script = r'''
+const assert = require("node:assert");
+const path = require("node:path");
+const m = require("./ctx-guard-core.cjs");
+const leaf = require("./delegate-channel-core.cjs");
+const fs = require("node:fs");
+const root = process.argv[1];
+const conf = path.join(root, ".project_manager", "local.conf");
+assert.strictEqual(m.parseLocalConf, leaf.parseLocalConf, "parser must be moved and re-exported");
+const floor = path.join(root, ".project_manager", "tools", "python_floor.py");
+const engine = path.join(root, ".project_manager", "tools", "pm_log.py");
+const missing = {status:null, error:{code:"ENOENT", message:"missing"}};
+const raw = "원문\r\n둘째\r\n";
+for (const platform of ["linux", "win32"]) {
+  for (const configured of [false, true]) {
+  const runtime = path.join(root, "Python with space", "python.exe");
+  fs.writeFileSync(conf, "runtime.py=" + (configured ? runtime : "") + "\n");
+  for (const capture of [true, false]) {
+    for (const outcome of ["success", "rc", "missing", "timeout", "null", "throw"]) {
+      const calls = [];
+      const argv = capture ? ["snapshot", "--cwd", "cwd with space"]
+        : ["checkpoint", "--trigger", "compaction", "--phase", "post"];
+      const expected = outcome === "success" ? {status:0, stdout:raw, stderr:""}
+        : outcome === "rc" ? {status:7, stdout:"", stderr:"engine rc"}
+        : outcome === "missing" ? missing
+        : outcome === "timeout" ? {status:null, error:{code:"ETIMEDOUT", message:"timeout"}}
+        : null;
+      const fake = (command, args, options) => {
+        const probe = args[args.length-1] === floor;
+        calls.push({command, args, options, probe});
+        if (probe) {
+          assert.deepStrictEqual(options, {encoding:"utf8", timeout:137, input:""});
+          if (configured) {
+            assert.strictEqual(command, runtime);
+            assert.deepStrictEqual(args, [floor]);
+            return {status:0, stdout:"Python 3.12\n"};
+          }
+          if (command === "py") return missing;
+          if (command === "python3") return {status:9009, error:null, stderr:"Store alias"};
+          return {status:0, stdout:"Python 3.12\n", stderr:""};
+        }
+        assert.strictEqual(command, configured ? runtime : "python");
+        assert.deepStrictEqual(args, [engine, ...argv]);
+        assert.deepStrictEqual(options, {cwd:root, encoding:"utf8", timeout:137,
+          maxBuffer:32768, stdio:capture ? ["ignore","pipe","ignore"] : ["ignore","ignore","ignore"]});
+        if (outcome === "throw") throw new Error("engine throw");
+        return expected;
+      };
+      if (outcome === "throw") assert.throws(() => m.runPmLog(root, argv, {capture,timeout:137,platform}, fake), /engine throw/);
+      else assert.strictEqual(m.runPmLog(root, argv, {capture,timeout:137,platform}, fake), expected);
+      assert.strictEqual(calls.filter((call) => !call.probe).length, 1);
+      assert.strictEqual(calls[calls.length-1].probe, false, "no probe after actual engine failure");
+    }
+  }
+  }
+}
+fs.writeFileSync(conf, "runtime.py=\n");
+let prefixCalls = 0;
+const prefixResult = m.runPmLog(root, ["snapshot"], {capture:true, platform:"win32"}, (command,args) => {
+  prefixCalls += 1;
+  assert.strictEqual(command, "py");
+  if (args[args.length-1] === floor) {
+    assert.deepStrictEqual(args, ["-3", floor]);
+    return {status:0, stdout:"Python 3.12\n"};
+  }
+  assert.deepStrictEqual(args, ["-3", engine, "snapshot"]);
+  return {status:0, stdout:raw};
+});
+assert.strictEqual(prefixResult.stdout, raw);
+assert.strictEqual(prefixCalls, 2);
+const calls = [];
+const selected = leaf.pythonCandidates(process.platform)[0];
+const fake = (command, args, options) => {
+  calls.push({command,args,options});
+  if (args[args.length-1] === floor) return {status:0, stdout:"Python 3.12\n"};
+  assert.deepStrictEqual(args, [...selected.prefixArgs, engine, "checkpoint", "--trigger", "compaction",
+    "--cwd", root, "--phase", "post", "--session-id", "SID", "--boundary-id", "boundary"]);
+  assert.strictEqual(options.timeout, m.CHECKPOINT_TIMEOUT_MS);
+  assert.deepStrictEqual(options.stdio, ["ignore","ignore","ignore"]);
+  return {status:9};
+};
+m.createCompactionCheckpoint(root, root, " SID ", " boundary ", fake);
+assert.strictEqual(calls.length, 2);
+assert.strictEqual(calls[0].command, selected.command);
+assert.deepStrictEqual(calls[0].args, [...selected.prefixArgs, floor]);
+assert.strictEqual(calls[0].options.timeout, m.CHECKPOINT_TIMEOUT_MS);
+const snapshot = m.buildCompactionSnapshot(root, root, (command,args) =>
+  args[args.length-1] === floor ? {status:0, stdout:"Python 3.12\n"} : {status:0, stdout:raw});
+assert.strictEqual(snapshot, raw);
+console.log("T0934_PM_LOG_ONCE_OK");
+'''
+    out = _run_node_check(script, root, [str(root)])
+    assert "T0934_PM_LOG_ONCE_OK" in out, out
 
 
 def _snapshot_marker_dir(root: Path) -> Path:
@@ -598,9 +730,10 @@ def test_engine_root_is_install_tree_not_ancestor_project(tmp_path):
         (tools / "pm_log.py").write_text(
             "import sys\n"
             "if 'snapshot' in sys.argv:\n"
-            f"    print({payload!r})\n",
+            f"    sys.stdout.buffer.write(({payload!r} + '\\n').encode('utf-8'))\n",
             encoding="utf-8",
         )
+        shutil.copyfile(REPO / ".project_manager" / "tools" / "python_floor.py", tools / "python_floor.py")
         return root
 
     outer = _project(tmp_path / "outer", "OUTER-PROJECT-SNAPSHOT")
@@ -710,13 +843,13 @@ const engine = __ENGINE__;
 const sessionID = __SESSION_ID__;
 const markerPaths = () => fs.readdirSync(markerDir)
   .filter((name) => name.startsWith(`compact-snapshot.${sessionID}.`))
-  .map((name) => `${markerDir}/${name}`);
+  .map((name) => path.resolve(markerDir, name));
 const receiptPaths = () => fs.readdirSync(markerDir)
   .filter((name) => name.startsWith(`compact-snapshot-receipt.${sessionID}.`))
   .sort()
-  .map((name) => `${markerDir}/${name}`);
+  .map((name) => path.resolve(markerDir, name));
 const builder = (value) =>
-  `import sys\nif 'snapshot' in sys.argv:\n    print('${value}')\n`;
+  `import sys\nif 'snapshot' in sys.argv:\n    sys.stdout.buffer.write(('${value}\\n').encode('utf-8'))\n`;
 
 (async () => {
   const client = {session:{get: async ({path:{id}}) => ({data:{id}})}};
@@ -745,7 +878,7 @@ const builder = (value) =>
   assert.deepStrictEqual(markerPaths(), [], "consumed and older generations remain");
   assert.deepStrictEqual(
     receiptPaths(),
-    [`${markerDir}/compact-snapshot-receipt.${sessionID}.${secondGeneration}`],
+    [path.resolve(markerDir, `compact-snapshot-receipt.${sessionID}.${secondGeneration}`)],
     "fallback delivery receipt did not bind only the pushed generation",
   );
 
@@ -787,13 +920,13 @@ const engine = __ENGINE__;
 const sessionID = __SESSION_ID__;
 const markerPaths = () => fs.readdirSync(markerDir)
   .filter((name) => name.startsWith(`compact-snapshot.${sessionID}.`))
-  .map((name) => `${markerDir}/${name}`);
+  .map((name) => path.resolve(markerDir, name));
 const receiptPaths = () => fs.readdirSync(markerDir)
   .filter((name) => name.startsWith(`compact-snapshot-receipt.${sessionID}.`))
   .sort()
-  .map((name) => `${markerDir}/${name}`);
+  .map((name) => path.resolve(markerDir, name));
 const builder = (value) =>
-  `import sys\nif 'snapshot' in sys.argv:\n    print('${value}')\n`;
+  `import sys\nif 'snapshot' in sys.argv:\n    sys.stdout.buffer.write(('${value}\\n').encode('utf-8'))\n`;
 
 (async () => {
   const client = {session:{get: async ({path:{id}}) => ({data:{id}})}};
@@ -811,14 +944,34 @@ const builder = (value) =>
   const markerB = staged.find((marker) => marker !== markerA);
 
   const output = {system:[]};
-  await processA["experimental.chat.system.transform"]({sessionID}, output);
+  const receiptA = path.resolve(markerDir, `compact-snapshot-receipt.${sessionID}.${generationA}`);
+  const originalWriteFileSync = fs.writeFileSync;
+  const receiptWrites = [];
+  fs.writeFileSync = (...args) => {
+    if (path.resolve(String(args[0])) === receiptA) {
+      assert.strictEqual(args[1], "", "receipt data must be empty");
+      assert.strictEqual(args[2].mode, 0o600, "receipt requested mode is not 0600");
+      assert.strictEqual(args[2].encoding, "utf8");
+      assert.strictEqual(args[2].flag === undefined ? "w" : args[2].flag, "w");
+      receiptWrites.push(receiptA);
+    }
+    return originalWriteFileSync(...args);
+  };
+  try {
+    await processA["experimental.chat.system.transform"]({sessionID}, output);
+  } finally {
+    fs.writeFileSync = originalWriteFileSync;
+  }
+  assert.deepStrictEqual(receiptWrites, [receiptA], "receipt write options were not observed exactly once");
   assert.strictEqual(output.system.length, 1);
   assert.strictEqual(output.system[0], "process-a\n", "A did not inject its memory payload");
   assert.strictEqual(fs.existsSync(markerA), false, "A left its owned generation");
   assert.strictEqual(fs.readFileSync(markerB, "utf8"), "process-b\n", "A deleted B generation");
-  const receiptA = `${markerDir}/compact-snapshot-receipt.${sessionID}.${generationA}`;
   assert.deepStrictEqual(receiptPaths(), [receiptA], "memory delivery receipt generation mismatch");
-  assert.strictEqual(fs.statSync(receiptA).mode & 0o777, 0o600, "receipt mode is not 0600");
+  assert.strictEqual(fs.statSync(receiptA).isFile(), true, "receipt is not a real file");
+  if (process.platform !== "win32") {
+    assert.strictEqual(fs.statSync(receiptA).mode & 0o777, 0o600, "receipt mode is not 0600");
+  }
   assert.strictEqual(fs.readFileSync(receiptA, "utf8"), "", "receipt must be empty");
   console.log("JS_IN_MEMORY_MARKER_OWNERSHIP_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
@@ -848,14 +1001,15 @@ const fs = require("node:fs");
 const projectRoot = __PROJECT_ROOT__;
 const markerDir = __MARKER_DIR__;
 const sessionID = __SESSION_ID__;
+const path = require("node:path");
 const snapshotPayload = "## PM 정체성 (compaction 복구)\n- task: main\n";
 const markerPaths = () => fs.readdirSync(markerDir)
   .filter((name) => name.startsWith(`compact-snapshot.${sessionID}.`))
-  .map((name) => `${markerDir}/${name}`);
+  .map((name) => path.resolve(markerDir, name));
 const receiptPaths = () => fs.readdirSync(markerDir)
   .filter((name) => name.startsWith(`compact-snapshot-receipt.${sessionID}.`))
   .sort()
-  .map((name) => `${markerDir}/${name}`);
+  .map((name) => path.resolve(markerDir, name));
 
 (async () => {
   const hooks = await m.CtxGuardPlugin({client:{session:{
@@ -928,9 +1082,9 @@ const engine = __ENGINE__;
 const sessionID = __SESSION_ID__;
 const markerPaths = () => fs.readdirSync(markerDir)
   .filter((name) => name.startsWith(`compact-snapshot.${sessionID}.`))
-  .map((name) => `${markerDir}/${name}`);
+  .map((name) => path.resolve(markerDir, name));
 const builder = (value) =>
-  `import sys\nif 'snapshot' in sys.argv:\n    print('${value}')\n`;
+  `import sys\nif 'snapshot' in sys.argv:\n    sys.stdout.buffer.write(('${value}\\n').encode('utf-8'))\n`;
 
 (async () => {
   const hooks = await m.CtxGuardPlugin({client:{session:{
@@ -981,13 +1135,13 @@ const sessionID = __SESSION_ID__;
 const markerPaths = () => fs.readdirSync(markerDir)
   .filter((name) => name.startsWith(`compact-snapshot.${sessionID}.`))
   .sort()
-  .map((name) => `${markerDir}/${name}`);
+  .map((name) => path.resolve(markerDir, name));
 const receiptPaths = () => fs.readdirSync(markerDir)
   .filter((name) => name.startsWith(`compact-snapshot-receipt.${sessionID}.`))
   .sort()
-  .map((name) => `${markerDir}/${name}`);
+  .map((name) => path.resolve(markerDir, name));
 const builder = (value) =>
-  `import sys\nif 'snapshot' in sys.argv:\n    print('${value}')\n`;
+  `import sys\nif 'snapshot' in sys.argv:\n    sys.stdout.buffer.write(('${value}\\n').encode('utf-8'))\n`;
 
 (async () => {
   const hooks = await m.CtxGuardPlugin({client:{session:{
@@ -1006,7 +1160,8 @@ const builder = (value) =>
   fs.renameSync = (source, destination) => {
     if (
       path.basename(String(source)).endsWith(".tmp") &&
-      String(destination).startsWith(`${markerDir}/compact-snapshot.${sessionID}.`)
+      path.dirname(path.resolve(String(destination))) === path.resolve(markerDir) &&
+      path.basename(String(destination)).startsWith(`compact-snapshot.${sessionID}.`)
     ) {
       stagingFailureObserved = true;
       throw new Error("synthetic recompaction staging failure");
@@ -1030,7 +1185,7 @@ const builder = (value) =>
   assert.deepStrictEqual(markerPaths(), [], "owned old marker was not consumed with memory delivery");
   assert.deepStrictEqual(
     receiptPaths(),
-    [`${markerDir}/compact-snapshot-receipt.${sessionID}.${firstGeneration}`],
+    [path.resolve(markerDir, `compact-snapshot-receipt.${sessionID}.${firstGeneration}`)],
     "memory delivery receipt did not retain the owned durable generation",
   );
   console.log("JS_RECOMPACTION_STAGING_FAILURE_OWNERSHIP_OK");
@@ -1067,8 +1222,8 @@ def test_plugin_late_entry_never_observes_old_while_latest_claim_is_pending(tmp_
         project_root, before_session_id, before_latest_generation,
     )
     before_latest_payload = "snapshot-latest-before-claim\n"
-    before_old_marker.write_text("snapshot-old-before-claim\n", encoding="utf-8")
-    before_latest_marker.write_text(before_latest_payload, encoding="utf-8")
+    before_old_marker.write_text("snapshot-old-before-claim\n", encoding="utf-8", newline="\n")
+    before_latest_marker.write_text(before_latest_payload, encoding="utf-8", newline="\n")
     os.utime(before_old_marker, (1, 1))
     os.utime(before_latest_marker, (2, 2))
 
@@ -1081,8 +1236,8 @@ def test_plugin_late_entry_never_observes_old_while_latest_claim_is_pending(tmp_
         "20260811T000000001Z-00000000-0000-4000-8000-000000000014",
     )
     after_latest_payload = "snapshot-latest-after-claim\n"
-    after_old_marker.write_text("snapshot-old-after-claim\n", encoding="utf-8")
-    after_latest_marker.write_text(after_latest_payload, encoding="utf-8")
+    after_old_marker.write_text("snapshot-old-after-claim\n", encoding="utf-8", newline="\n")
+    after_latest_marker.write_text(after_latest_payload, encoding="utf-8", newline="\n")
     os.utime(after_old_marker, (1, 1))
     os.utime(after_latest_marker, (2, 2))
 
@@ -1148,8 +1303,8 @@ def test_plugin_old_gc_failure_skips_latest_claim_until_retry(tmp_path):
     old_marker = _snapshot_marker(project_root, session_id, old_generation)
     latest_marker = _snapshot_marker(project_root, session_id, latest_generation)
     latest_payload = "snapshot-latest-after-old-gc-retry\n"
-    old_marker.write_text("snapshot-old-blocked-by-eperm\n", encoding="utf-8")
-    latest_marker.write_text(latest_payload, encoding="utf-8")
+    old_marker.write_text("snapshot-old-blocked-by-eperm\n", encoding="utf-8", newline="\n")
+    latest_marker.write_text(latest_payload, encoding="utf-8", newline="\n")
     os.utime(old_marker, (1, 1))
     os.utime(latest_marker, (2, 2))
 
@@ -1163,9 +1318,10 @@ const sessionID = __SESSION_ID__;
 const oldMarker = __OLD_MARKER__;
 const latestMarker = __LATEST_MARKER__;
 const latestPayload = __LATEST_PAYLOAD__;
+const path = require("node:path");
 const markerPaths = () => fs.readdirSync(markerDir)
   .filter((name) => name.startsWith(`compact-snapshot.${sessionID}.`))
-  .map((name) => `${markerDir}/${name}`)
+  .map((name) => path.resolve(markerDir, name))
   .sort();
 const receiptPaths = () => fs.readdirSync(markerDir)
   .filter((name) => name.startsWith(`compact-snapshot-receipt.${sessionID}.`));
@@ -1177,7 +1333,7 @@ const receiptPaths = () => fs.readdirSync(markerDir)
   const originalUnlinkSync = fs.unlinkSync;
   let oldGcFailureObserved = false;
   fs.unlinkSync = (target) => {
-    if (String(target) === oldMarker) {
+    if (path.resolve(String(target)) === path.resolve(oldMarker)) {
       oldGcFailureObserved = true;
       const error = new Error("synthetic old snapshot GC failure");
       error.code = "EPERM";
@@ -1245,8 +1401,8 @@ def test_plugin_atomic_rename_race_has_one_winner_and_loser_skips_without_receip
     latest_marker = _snapshot_marker(project_root, session_id, latest_generation)
     old_payload = "snapshot-old\n"
     latest_payload = "snapshot-latest\n"
-    old_marker.write_text(old_payload, encoding="utf-8")
-    latest_marker.write_text(latest_payload, encoding="utf-8")
+    old_marker.write_text(old_payload, encoding="utf-8", newline="\n")
+    latest_marker.write_text(latest_payload, encoding="utf-8", newline="\n")
     os.utime(old_marker, (1, 1))
     os.utime(latest_marker, (2, 2))
     rendezvous_dir = tmp_path / "snapshot-claim-rendezvous"
@@ -1280,10 +1436,16 @@ const waitForSignals = (suffix) => {
     get: async ({path:{id}}) => ({data:{id}}),
   }}, directory:projectRoot});
   const originalRenameSync = fs.renameSync;
+  const originalUnlinkSync = fs.unlinkSync;
+  const renameAttempts = [];
+  const unlinkAttempts = [];
   let wonLatest = false;
   let lostLatest = false;
   fs.renameSync = (source, destination) => {
-    if (String(source) !== latestMarker || !String(destination).endsWith(".claimed")) {
+    const sourceMatches = path.resolve(String(source)) === path.resolve(latestMarker);
+    const claimMatches = path.basename(String(destination)).endsWith(".claimed");
+    renameAttempts.push({source:String(source), destination:String(destination), sourceMatches, claimMatches});
+    if (!sourceMatches || !claimMatches) {
       return originalRenameSync(source, destination);
     }
     fs.writeFileSync(path.join(rendezvousDir, `${consumerID}.ready`), "", "utf8");
@@ -1305,17 +1467,34 @@ const waitForSignals = (suffix) => {
     }
     if (renameError) throw renameError;
   };
+  fs.unlinkSync = (target) => {
+    try {
+      const result = originalUnlinkSync(target);
+      unlinkAttempts.push({target:String(target), ok:true});
+      return result;
+    } catch (error) {
+      unlinkAttempts.push({target:String(target), code:error.code, message:error.message});
+      throw error;
+    }
+  };
 
   const output = {system:[]};
+  const markersBefore = fs.readdirSync(markerDir);
   try {
     await hooks["experimental.chat.system.transform"]({sessionID}, output);
   } finally {
     fs.renameSync = originalRenameSync;
+    fs.unlinkSync = originalUnlinkSync;
   }
   console.log(JSON.stringify({
     consumerID,
     wonLatest,
     lostLatest,
+    renameAttempts,
+    unlinkAttempts,
+    markersBefore,
+    latestMarker,
+    actualRoot:path.resolve(path.dirname(require.resolve("./ctx-guard-core.cjs")),"..",".."),
     output: output.system,
     oldExistsAfterTransform: fs.existsSync(oldMarker),
     receiptsAfterTransform: fs.readdirSync(markerDir)
@@ -1341,7 +1520,6 @@ const waitForSignals = (suffix) => {
             cwd=str(project_root / ".opencode" / "lib"),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
         )
         for consumer_id in ("consumer-a", "consumer-b")
     ]
@@ -1349,8 +1527,10 @@ const waitForSignals = (suffix) => {
     for process in processes:
         stdout, stderr = process.communicate(timeout=15)
         assert process.returncode == 0, f"consumer 실패. stdout={stdout!r} stderr={stderr!r}"
-        results.append(json.loads(stdout.strip().splitlines()[-1]))
+        results.append(json.loads(stdout))
 
+    assert sum(result["wonLatest"] for result in results) == 1, results
+    assert sum(result["lostLatest"] for result in results) == 1, results
     winner = next(result for result in results if result["wonLatest"])
     loser = next(result for result in results if result["lostLatest"])
     assert winner["output"] == [latest_payload]
@@ -1381,8 +1561,8 @@ def test_plugin_consumer_recovers_latest_after_crash_between_old_gc_and_claim(tm
     old_marker = _snapshot_marker(project_root, session_id, old_generation)
     latest_marker = _snapshot_marker(project_root, session_id, latest_generation)
     latest_payload = "snapshot-latest-after-preclaim-crash\n"
-    old_marker.write_text("snapshot-old-before-preclaim-crash\n", encoding="utf-8")
-    latest_marker.write_text(latest_payload, encoding="utf-8")
+    old_marker.write_text("snapshot-old-before-preclaim-crash\n", encoding="utf-8", newline="\n")
+    latest_marker.write_text(latest_payload, encoding="utf-8", newline="\n")
     os.utime(old_marker, (1, 1))
     os.utime(latest_marker, (2, 2))
 
@@ -1632,7 +1812,10 @@ const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
 let seen = null;
 m.createCompactionCheckpoint("/tmp/project", "/tmp/project", "sid-1", "opencode-sid-1-3",
-  (command, args) => { seen = {command, args}; return {status:0, stdout:""}; });
+  (command, args) => {
+    if (args[args.length-1].endsWith("python_floor.py")) return {status:0, stdout:"Python 3.12\n"};
+    seen = {command, args}; return {status:0, stdout:""};
+  });
 assert.ok(seen, "spawn was not called");
 assert.ok(seen.args.includes("--phase") && seen.args.includes("post"));
 assert.ok(seen.args.includes("--boundary-id") && seen.args.includes("opencode-sid-1-3"));
@@ -1938,12 +2121,11 @@ def _run_node_check(
         [_NODE, "-e", script, *(node_args or [])],
         cwd=str(CORE_DIR if project_root is None else project_root / ".opencode" / "lib"),
         capture_output=True,
-        text=True,
         timeout=30,
     )
     if proc.returncode:
-        return (proc.stdout or "") + (proc.stderr or "")
-    return proc.stdout
+        return ((proc.stdout or b"") + (proc.stderr or b"")).decode("utf-8")
+    return proc.stdout.decode("utf-8")
 
 
 def test_plugin_pure_logic_node_selfcheck():
@@ -2256,7 +2438,8 @@ def _stage_opencode_project(root: Path, plugin_body: str | None = None) -> Path:
     oc = root / ".opencode"
     (oc / "plugins").mkdir(parents=True)
     (oc / "lib").mkdir(parents=True)
-    shutil.copy2(CORE_FILE, oc / "lib" / "ctx-guard-core.cjs")
+    for name in ("ctx-guard-core.cjs", "delegate-channel-core.cjs", "warning-channel-core.cjs"):
+        shutil.copy2(CORE_DIR / name, oc / "lib" / name)
     if plugin_body is None:
         shutil.copy2(PLUGIN_FILE, oc / "plugins" / "ctx-guard.js")
     else:
