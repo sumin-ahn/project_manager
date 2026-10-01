@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import importlib.util
 import json
 from pathlib import Path
@@ -91,9 +92,27 @@ def test_a_readonly_row_is_closed_because_it_has_no_session(wp):
 def test_the_round_trip_of_a_real_release_flips_the_record(wp, tmp_path, monkeypatch):
     """실 장부 왕복 — 대여가 열고 반납이 닫는다(값은 두 개뿐)."""
     monkeypatch.setattr(wp, "REPO", tmp_path)
-    monkeypatch.setattr(wp, "LEASES_FILE",
-                        tmp_path / ".project_manager" / ".local" / "worktree-leases.json")
-    monkeypatch.setattr(wp, "TASKS_DIR", tmp_path / ".project_manager" / ".local" / "tasks")
+    local_dir = tmp_path / ".project_manager" / ".local"
+    monkeypatch.setattr(wp, "LOCAL_DIR", local_dir)
+    monkeypatch.setattr(wp, "LEASES_FILE", local_dir / "worktree-leases.json")
+    monkeypatch.setattr(wp, "LEASES_LOCK", local_dir / "worktree-leases.lock")
+    monkeypatch.setattr(wp, "TASKS_DIR", local_dir / "tasks")
+    monkeypatch.setattr(wp, "WORK_DIR", tmp_path / "work")
+    monkeypatch.setattr(wp, "REPOS_DIR", tmp_path / ".repos")
+    monkeypatch.setattr(wp, "REPO_HOOKS_DIR", local_dir / "repo-hooks")
+    assert wp.slot_path("work/proj_1") == tmp_path / "work" / "proj_1"
+    expected_lock = tmp_path / ".project_manager" / ".local" / "worktree-leases.lock"
+    real_lock = wp.file_lock.exclusive_file_lock
+    lock_paths = []
+
+    @contextlib.contextmanager
+    def observed_lock(path, *args, **kwargs):
+        assert path == expected_lock
+        lock_paths.append(path)
+        with real_lock(path, *args, **kwargs):
+            yield
+
+    monkeypatch.setattr(wp.file_lock, "exclusive_file_lock", observed_lock)
     wp.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     wp.LEASES_FILE.write_text(json.dumps({"leases": [{
         "slot": "work/proj_1", "repo": "proj", "session": "", "started": "t",
@@ -105,6 +124,8 @@ def test_the_round_trip_of_a_real_release_flips_the_record(wp, tmp_path, monkeyp
 
     released = wp.release("work/proj_1", git_runner=lambda _argv: (0, ""))
     assert wp.lease_is_open(released) is False
+    assert lock_paths == [expected_lock, expected_lock]
+    assert expected_lock.is_file()
 
 
 

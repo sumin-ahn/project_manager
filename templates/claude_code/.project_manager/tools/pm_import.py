@@ -1246,10 +1246,14 @@ def _real_upstream_git_runner(*, timeout: int = UPSTREAM_GIT_TIMEOUT_SECONDS) ->
         # GIT_CONFIG_COUNT 패턴으로 protocol allowlist·credential.helper=(빈값) 주입(`-c` 동치·
         # worktree_pool 선례). 기존 env 의 GIT_CONFIG_* 잔여는 우리 카운트로 덮어 결정론 보장
         # (env 격리는 sub-process[ssh transport]까지 전파돼 argv `-c` 보다 안전 — env 단일 채널).
-        for idx, (key, val) in enumerate(_UPSTREAM_GIT_CONFIG_KV):
+        config_kv = _UPSTREAM_GIT_CONFIG_KV
+        if os.name == "nt":
+            # Windows Git의 pack 임시 파일도 긴 캐시 경로에서 만들 수 있어야 한다.
+            config_kv += (("core.longpaths", "true"),)
+        for idx, (key, val) in enumerate(config_kv):
             env[f"GIT_CONFIG_KEY_{idx}"] = key
             env[f"GIT_CONFIG_VALUE_{idx}"] = val
-        env["GIT_CONFIG_COUNT"] = str(len(_UPSTREAM_GIT_CONFIG_KV))
+        env["GIT_CONFIG_COUNT"] = str(len(config_kv))
         try:
             result = subprocess.run(
                 [git_binary, *argv],

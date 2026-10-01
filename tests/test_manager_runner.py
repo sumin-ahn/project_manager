@@ -41,9 +41,10 @@ def copied_home(pm_home, tmp_path) -> Path:
 # ── 인터프리터 해소 (엔진 규칙과 같음) ────────────────────────────────────────
 
 
-def test_configured_bare_name_is_one_token(pm_home):
-    assert runner.conf_values(pm_home)["runtime.py"] == "python3"
-    assert runner.interpreter(pm_home) == ("python3",)
+def test_configured_bare_name_is_one_token(copied_home):
+    set_conf_key(copied_home, "runtime.py", "python3")
+    assert runner.conf_values(copied_home)["runtime.py"] == "python3"
+    assert runner.interpreter(copied_home) == ("python3",)
 
 
 def test_configured_absolute_path_is_kept_verbatim(copied_home):
@@ -70,9 +71,12 @@ def test_missing_conf_file_is_the_os_default_not_an_error(copied_home):
 
 def test_a_copy_with_a_retired_key_is_still_callable(copied_home):
     """`load_checked` 였다면 여기서 예외가 난다 — "먼저 갱신" 을 보여 줄 사본을 못 부르게 된다."""
+    before = runner.interpreter(copied_home)
+    runtime = runner.conf_values(copied_home)["runtime.py"]
     set_conf_key(copied_home, "delegate_enabled", "true")
 
-    assert runner.interpreter(copied_home) == ("python3",)
+    assert runner.interpreter(copied_home) == before
+    assert runner.conf_values(copied_home)["runtime.py"] == runtime
     assert runner.conf_values(copied_home)["delegate_enabled"] == "true"
 
 
@@ -215,11 +219,12 @@ import sys, threading
 sys.path.insert(0, sys.argv[1])
 from manager import runner
 home = sys.argv[2]
+expected_runtime = sys.argv[3]
 failures = []
 def resolve():
     try:
-        assert runner.interpreter(home) == ("python3",), "interpreter"
-        assert runner.conf_values(home)["runtime.py"] == "python3", "conf"
+        assert runner.interpreter(home) == (expected_runtime,), "interpreter"
+        assert runner.conf_values(home)["runtime.py"] == expected_runtime, "conf"
     except BaseException as exc:
         failures.append(f"{type(exc).__name__}: {exc}")
 threads = [threading.Thread(target=resolve) for _ in range(8)]
@@ -227,6 +232,7 @@ for thread in threads:
     thread.start()
 for thread in threads:
     thread.join(timeout=30)
+assert all(not thread.is_alive() for thread in threads), "thread timeout"
 print("failures:", failures)
 """
 
@@ -240,9 +246,11 @@ def test_engine_modules_survive_concurrent_first_loads(pm_home, tmp_path):
     """
     probe = tmp_path / "probe.py"
     probe.write_text(CONCURRENT_PROBE, encoding="utf-8")
+    expected_runtime = runner.conf_values(pm_home)["runtime.py"]
 
     completed = subprocess.run(
-        [sys.executable, str(probe), str(REPO), str(pm_home)], capture_output=True, text=True,
+        [sys.executable, str(probe), str(REPO), str(pm_home), expected_runtime],
+        capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=120)
 
     assert completed.returncode == 0, completed.stderr

@@ -25,6 +25,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -65,10 +66,11 @@ def pm_config():
     return _load("pm_config")
 
 
-def _git(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
+def _git(args: list[str], cwd: Path | None = None, *, binary: bool = False) -> subprocess.CompletedProcess:
     result = subprocess.run(
         ["git", *args], cwd=str(cwd) if cwd else None, capture_output=True,
-        text=True, encoding="utf-8", errors="replace",
+        text=not binary, encoding=None if binary else "utf-8",
+        errors=None if binary else "replace",
         env={**os.environ, **_GIT_ENV}, check=False)
     assert result.returncode == 0, f"git {args}: {result.stdout}{result.stderr}"
     return result
@@ -143,6 +145,44 @@ def _snapshot(root: Path) -> dict:
 
 
 _HOOKS = '{"hooks": {"PreCompact": ["new"]}}\n'
+
+
+def test_t0933_long_cache_clone_uses_the_real_runner(pm_import, tmp_path, monkeypatch):
+    """265자 이상 pack keep 경로의 실제 file URL clone과 HEAD를 검증한다."""
+    source = _make_framework_repo(tmp_path / "fw")
+    url = _make_bare(source, tmp_path / "fw.git")
+    # 작업 파일 개행과 커밋 blob 개행을 분리해 Git 산출물 비교를 검증한다.
+    (source / SENTINEL_REL).write_bytes(b"# v1\r\n")
+    parent = tmp_path / "long"
+    while len(str(parent / "cache-new")) < 196:
+        remaining = 196 - len(str(parent / "cache-new"))
+        parent /= "x" * min(50, max(1, remaining - 1))
+    parent.mkdir(parents=True)
+    dest = parent / "cache-new"
+    keep_path = dest / ".git" / "objects" / "pack" / ("pack-" + "0" * 40 + ".keep")
+    assert len(str(keep_path)) >= 265
+
+    if os.name == "nt":
+        old_dest = parent / "cache-old"
+        assert len(str(old_dest)) == len(str(dest))
+        # 모듈 로컬 대역으로 longpaths 추가 전의 설정 6항목만 전달한다.
+        with monkeypatch.context() as before:
+            before.setattr(pm_import, "os", SimpleNamespace(
+                name="posix", environ=os.environ, devnull=os.devnull))
+            old_runner = pm_import._real_upstream_git_runner(
+                timeout=pm_import.UPSTREAM_CLONE_TIMEOUT_SECONDS)
+            old_rc, old_out = old_runner(["clone", "--", url, str(old_dest)])
+        assert old_rc == 128, old_out
+        assert "Filename too long" in old_out, old_out
+
+    runner = pm_import._real_upstream_git_runner(
+        timeout=pm_import.UPSTREAM_CLONE_TIMEOUT_SECONDS)
+    rc, out = runner(["clone", "--", url, str(dest)])
+    assert rc == 0, out
+    committed = _git(["-C", str(source), "show", f"HEAD:{SENTINEL_REL}"], binary=True).stdout
+    assert (dest / SENTINEL_REL).read_bytes() == committed
+    assert _head(dest) == _head(source)
+    assert list((dest / ".git" / "objects" / "pack").glob("*.pack"))
 
 
 # ── URL upstream + --from 생략 (AT-001 본류) ─────────────────────────────────

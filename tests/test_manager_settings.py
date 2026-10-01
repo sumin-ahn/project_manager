@@ -227,6 +227,7 @@ def test_read_only_calls_write_nothing(api, pm_home):
 
 def test_a_save_keeps_comments_and_keys_it_was_not_asked_to_change(api, pm_home):
     before = conf_path(pm_home).read_text(encoding="utf-8")
+    before_test_cmd = _values(pm_home)["test.cmd"]
     set_conf_key(pm_home, "nope.nope", "1")
 
     api.conf_save(str(pm_home), {"additional_reviewer.rounds_max": "5"})
@@ -234,7 +235,7 @@ def test_a_save_keeps_comments_and_keys_it_was_not_asked_to_change(api, pm_home)
     after = conf_path(pm_home).read_text(encoding="utf-8")
     assert after.splitlines()[0] == before.splitlines()[0]     # 머리 주석 그대로
     assert _values(pm_home)["nope.nope"] == "1"                # 모르는 키도 지우지 않는다
-    assert _values(pm_home)["test.cmd"] == "python3 -m pytest tests/ -q -n auto"
+    assert _values(pm_home)["test.cmd"] == before_test_cmd
 
 
 def test_the_screen_value_after_a_save_is_the_requery_not_the_request(api, pm_home):

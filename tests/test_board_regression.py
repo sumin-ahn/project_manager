@@ -2967,14 +2967,16 @@ def test_leftover_floor_declaration_no_longer_blocks_a_real_run(tmp_path):
     """
     from _git import commit_env
     from _manager_home import make_pm_home
+    from manager import runner
 
     home = make_pm_home(tmp_path / "adopter")
+    runtime = runner.conf_values(home)["runtime.py"]
     (home / "tests").mkdir(exist_ok=True)
     conf = home / ".project_manager" / "local.conf"
     conf.write_text(
         conf.read_text(encoding="utf-8")
         + "\nregression.min_collected=7000\n"
-        + "test.cmd=python3 -c \"print('12 passed in 0.30s')\" tests/\n",
+        + f"test.cmd={runtime} -c \"print('12 passed in 0.30s')\" tests/\n",
         encoding="utf-8")
     env = commit_env()
     for argv in (["git", "init", "-q"], ["git", "add", "-A"],

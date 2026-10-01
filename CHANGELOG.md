@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Windows URL upstream 캐시의 긴 경로에서 Git clone이 실패하던 문제를 수정했다. 사용자 Git 설정 격리를 유지하면서 Windows runner에 `core.longpaths=true`를 명시한다.
+
 ## [1.8.0] - 2026-09-19
 
 ### Added

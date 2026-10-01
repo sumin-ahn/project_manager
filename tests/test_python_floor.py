@@ -162,7 +162,7 @@ def test_board_missing_floor_probe_degrades_to_inline_floor_check(
             return Result(returncode=0 if version >= (3, 11) else 1)
         return Result(stdout=f"Python {version[0]}.{version[1]}\n")
 
-    monkeypatch.setattr(board.shutil, "which", lambda cmd: f"/fake/{cmd}")
+    monkeypatch.setattr(board.shutil, "which", lambda cmd: f"/fake/{cmd}" if cmd in versions else None)
     monkeypatch.setattr(board.subprocess, "run", fake_run)
     assert board._detect_py() == "python"
 
