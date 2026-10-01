@@ -472,16 +472,17 @@ flowchart LR
 ./pm-config.sh add-harness codex
 ```
 
-엔진 갱신은 채택자 루트에서 받는다. **마지막 실행은 변경 0(zero-change)이어야 한다** — 첫 실행은
-채택자가 지금 갖고 있는 구세대 updater 가 돌기 때문에, 새 엔진이 추가한 안내(설정 표기 교체·기본값
-변경 통지)와 완료 게이트는 그 실행에서 나오지 않는다. 배달된 새 엔진으로 한 번 더 돌려 "최신 —
-변경 없음" 을 받은 실행이 그 안내를 낸다:
+엔진 갱신은 채택자 루트에서 받는다. 최신 관리자의 갱신 [적용]은 새 Python 프로세스를 두 번 실행한다. 첫 실행(RUN1)은 구 updater로 새 엔진을 배달하고, 두 번째 실행(RUN2)은 새 updater로 설정 키 이동과 완료 게이트를 수행한다. 미리보기는 한 번만 실행하며, 실패 뒤 세 번째 실행을 자동으로 추가하지 않는다.
+
+구 CLI·구 facade·구 관리자에서 직접 시작하는 경로는 자동 연속 실행을 제공하지 않는다. 같은 명령을 두 번 실행해 배달된 새 updater의 키 이동과 완료 게이트를 확인한다.
 
 ```bash
 ./pm-update.sh --dry-run
-./pm-update.sh          # RUN1 — 구 updater 가 새 엔진을 배달한다
-./pm-update.sh          # RUN2 — 새 엔진이 돌며 안내·완료 게이트를 낸다(변경 0)
+./pm-update.sh          # RUN1: 구 updater의 신 엔진 배달
+./pm-update.sh          # RUN2: 새 updater의 키 이동·완료 검사
 ```
+
+RUN1이 upstream.rev를 앞당겨도 전체 갱신 완료의 증거로 해석하지 않는다. RUN2가 실패하면 배달 사실과 실패 단계·잔존 키를 보존해 최종 실패로 보고하며, baseline이 자동으로 되돌아간다고 안내하지 않는다. RUN2는 엔진 파일 변경 0건에서도 설정 키 이동과 완료 검사를 수행한다.
 
 `pm-update` 는 manifest 에 등록된 엔진 파일과 host 하네스 어댑터만 갱신한다. 프로젝트의 board,
 wiki, ticket, log 같은 인스턴스 상태는 덮어쓰지 않는다. 나중에 `add-harness` 로 붙인 guest 하네스

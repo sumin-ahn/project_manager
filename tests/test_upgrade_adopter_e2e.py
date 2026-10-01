@@ -60,6 +60,79 @@ from _win_skip import posix_bash_supported
 
 REPO = Path(__file__).resolve().parents[1]
 
+# v1.7.13의 실제 실행 소스다. 태그 조회나 최신 함수 합성으로 대체하지 않는다.
+T0927_LEGACY_COMMIT = "e4f2436f55d79f70147d19fd65187f88fd3650be"
+T0927_UPDATER_BLOB = "cd05ffc1c3e0217d92daa33cdf04fd7440bd26c9"
+
+
+@pytest.fixture(scope="module")
+def t0927_legacy_source(tmp_path_factory):
+    from _manager_home import _git
+    root = tmp_path_factory.mktemp("t0927-v1713") / "source"
+    _git("clone", "--quiet", "--no-checkout", "--no-hardlinks", str(REPO), str(root))
+    _git("-C", str(root), "checkout", "--quiet", "--detach", T0927_LEGACY_COMMIT)
+    assert _git("-C", str(root), "rev-parse", "HEAD").stdout.strip() == T0927_LEGACY_COMMIT
+    assert _git("-C", str(root), "hash-object", ".project_manager/tools/pm_update.py").stdout.strip() == T0927_UPDATER_BLOB
+    assert "def migrate_renamed_conf_keys" not in (
+        root / ".project_manager/tools/pm_update.py").read_text(encoding="utf-8")
+    return root
+
+
+@pytest.fixture(scope="module")
+def t0927_upstream(tmp_path_factory):
+    from _manager_home import make_committed_source
+    return make_committed_source(tmp_path_factory.mktemp("t0927-current"))
+
+
+@pytest.fixture
+def t0927_installed_adopter(tmp_path, t0927_legacy_source, t0927_upstream):
+    from _manager_home import _run
+    dest = tmp_path / "old-adopter"
+    _run([sys.executable, str(t0927_legacy_source / ".project_manager/tools/pm_import.py"),
+          "--new", str(dest), "--harness", "claude", "--fill", "manual",
+          "--from", str(t0927_legacy_source), "--upstream", str(t0927_upstream)],
+         cwd=t0927_legacy_source)
+    updater = dest / ".project_manager/tools/pm_update.py"
+    assert updater.read_bytes() == (t0927_legacy_source / ".project_manager/tools/pm_update.py").read_bytes()
+    return dest
+
+
+@pytest.fixture
+def t0927_old_adopter(t0927_installed_adopter):
+    dest = t0927_installed_adopter
+    conf = dest / ".project_manager/local.conf"
+    # 새 압축 키가 없는 실제 구 사용자의 설정이다. 다른 설정과 설치 기록은 그대로 둔다.
+    lines = [line for line in conf.read_text(encoding="utf-8").splitlines(keepends=True)
+             if not line.startswith(("ctx.stop_pct=", "ctx.precompact_at_pct="))]
+    # 남은 10%의 이동 결과인 사용 90%보다 큰 유효 압축 지점을 명시한다.
+    conf.write_text("".join(lines) + "\nctx.stop_pct=10\nctx.compact_at_pct=94\n",
+                    encoding="utf-8", newline="\n")
+    return dest
+
+
+def _t0927_direct_update(dest):
+    return subprocess.run(
+        [sys.executable, str(dest / ".project_manager/tools/pm_config.py"), "update"],
+        cwd=dest, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=300, env={**os.environ, "PM_NONINTERACTIVE": "1"})
+
+
+def test_t0927_old_process_boundary_requires_fresh_run2(t0927_old_adopter, t0927_upstream):
+    dest = t0927_old_adopter
+    conf = dest / ".project_manager/local.conf"
+    run1 = _t0927_direct_update(dest)
+    assert run1.returncode == 0, f"{run1.stdout}\n{run1.stderr}"
+    assert "ctx.stop_pct=10" in conf.read_text(encoding="utf-8")
+    assert (dest / ".project_manager/tools/pm_update.py").read_bytes() == (
+        t0927_upstream / ".project_manager/tools/pm_update.py").read_bytes()
+    run2 = _t0927_direct_update(dest)
+    assert run2.returncode == 0, f"{run2.stdout}\n{run2.stderr}"
+    text = conf.read_text(encoding="utf-8")
+    assert "ctx.stop_pct=" not in text
+    assert "ctx.precompact_at_pct=90" in text
+
+
+
 
 def _card_with_operational_details(path: Path) -> str:
     """상시 카드와 T-0678 sibling 상황별 참조를 함께 읽는다."""
@@ -740,7 +813,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   줄어든 것은 그 실행이 부르지 않던 코드뿐이다. 현재화한 것은 기대 SHA 하나뿐이다.
 #   같은 티켓의 수정 라운드에서 한 번 더 이동했다 — `plan()` docstring 의 낱말 하나("모듈 밖
 #   호출부")뿐이고 실행 코드·배달 경계는 무편집이다.
-_T0585_PM_UPDATE_SHA256 = "c46c67d23b3a156a0c35d97cb84e858922136c5a1f5e834603ed1289a5592c74"
+_T0585_PM_UPDATE_SHA256 = "2ebb31f074849cc47b541b788dc4522178cd27aae8115fe5fbfc853401d53129"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -995,6 +1068,11 @@ def _t0585_pm_update_source() -> str:
     `_reverse_harness_ctx_apply` 로 역적용하고 호출 지점 부재를 anachronism 목록으로 단언한다. 나머지는
     역델타 anchor 밖이라 그대로 유일 해소되고, 배달 경계와 배달 파일 집합은 불변이다 — 현재화한 것은
     기대 SHA 하나뿐이다.
+    T-0927의 이관 완료 계약을 반영했다. 이름 이동 helper의 계획을 락 안으로
+    옮기고 잔존 키·형제 skew를 완료 실패로 처리했다. 역델타 marker와 시대착오 부재 단언은
+    선통과했으며 _main·plan·apply·sync_adapter_configs·_adapter_config_gate_failed의 AST는
+    기준 HEAD와 동일하다. 이 합성 시나리오에는 이동할 옛 키가 없어 새 실패 분기가 발화하지
+    않는다. 실제 v1.7.13 프로세스 검증은 별도 고정 커밋과 blob을 사용한다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -1120,7 +1198,7 @@ def _install_t0585_updater(dest: Path) -> None:
 # T-0887: 온보딩 opt-in 일습 삭제로 역적용 delta 의 exact-marker 목록이 두 항목으로 줄고
 # (되돌릴 원문이 사라졌다) 그만큼 historical 전문 SHA 도 이동했다. 퇴역 경로 delta 의 marker 는
 # 전부 그 절 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "17b7264fae627a6df073c6a4da92999c26548cc2035b82bdd6d15914155043f3"
+_PRE_T0876_PM_UPDATE_SHA256 = "247219e9d7ef0f88f0cdb80bd8feaca6e6b386bffe92dc2ba0afa0eacdc7ce4e"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -1169,6 +1247,10 @@ def _pre_t0876_pm_update_source() -> str:
     역적용한다. 퇴역 경로 delta 의 exact-marker 는 전부 그 절 밖이라 그대로 유일 해소되고, RUN1 이
     검증하는 배달 경계(신 reviewer 설치 → 두 번째 실행의 구 파일 퇴역)도 무편집이라 합성본 bytes 차이만
     SHA 에 반영했다.
+    T-0927의 이름 이동 helper와 실패 진단 변경은 퇴역 경로 역델타와 겹치지 않는다.
+    exact-marker가 선통과하고 _main·plan·apply·sync_adapter_configs·
+    _adapter_config_gate_failed의 AST가 기준 HEAD와 동일함을 확인했다. 이 시나리오는 이동할
+    옛 conf 키가 없어 새 실패 분기가 발화하지 않는다. 합성본 지문만 갱신했다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")

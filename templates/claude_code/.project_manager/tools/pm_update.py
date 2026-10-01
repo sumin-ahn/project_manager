@@ -226,9 +226,8 @@ def _is_engine_rev_skew(exc) -> bool:
 _ABSORBED_ENGINE_REV_SKEW: list[str] = []
 _ENGINE_REV_SKEW_RECOVERY_REASONS = {
     "migrate_renamed_conf_keys": (
-        "이름이 바뀐 conf 키를 옮기는 단계는 apply **이후**에 돈다 — 이미 착지한 엔진 파일 "
-        "위에서 형제 사본 rev 혼합으로 죽으면 채택자는 새 엔진을 받은 채 동기가 traceback 으로 "
-        "끝난 트리를 갖는다. 이동은 멱등이라 건너뛴 실행의 몫을 다음 pm-update 가 그대로 한다"
+        "이름 이동은 apply 이후에 돈다. 형제 사본 rev 혼합은 엔진 배달을 원복하지 않고 "
+        "이관 실패 진단으로 변환한다. 완료 baseline 기록은 중단하고 잔존 키를 보존한다"
     ),
     "apply_harness_ctx_limits": (
         "하네스 설정 반영도 apply **이후**(어댑터 config 채널 뒤)에 돈다 — 형제 pm_import 가 다시 "
@@ -5753,60 +5752,56 @@ def idle_legacy_slot_session_rows(effective_dest: Path, *, write: bool) -> int:
 
 
 def migrate_renamed_conf_keys(effective_dest: Path, *, write: bool) -> dict[str, str]:
-    """흡수 말미 1회 — 이름이 바뀐 local.conf 키를 신표기로 옮긴다(값 변환은 `rename_updates`).
+    """local.conf 이름 이동의 읽기·계획·쓰기·후조건을 공용 락 안에서 수행한다.
 
-    이름을 바꾼 것은 갱신이지 채택자가 아니다 — **바꾼 쪽이 옮긴다**. 옛 이름이 남아 있으면
-    값을 소비하는 지점이 fail-loud 로 멈추므로(`local_conf.assert_no_legacy`), 엔진 파일을
-    배달하는 이 실행이 conf 도 같이 옮겨야 채택자가 손으로 고칠 때까지 도구가 서 있지 않는다.
-
-    옮길 계획의 주인은 엔진이다(`local_conf.rename_updates`) — 무엇이 무엇으로 바뀌었는지는
-    `LEGACY_KEY_MAP` 한 표가 알고 여기서는 그 계획을 쓰기만 한다. 대체 키가 없는 폐지 키는
-    계획에 없다(값이 갈 자리가 없어 옮기는 것이 곧 버리는 것이다 · 교체 안내가 계속 지목한다).
-
-    옮길 것이 없으면 파일을 **읽기만** 한다(멱등 — 재실행이 byte 를 바꾸지 않는다).
-    `write=False`(dry-run)면 판정만 한다. 반환은 `{옛 이름: 새 이름}`.
-
-    사본 rev 혼합은 `record_upstream_revs` 와 같이 등록된 경계로 흡수한다 — 이 단계는 apply
-    **이후**라, 여기서 skew 를 올리면 이미 착지한 엔진 파일 위에서 동기가 traceback 으로 죽는다.
-
-    쓰기는 `record_upstream_revs` 와 같은 구간 계약이다 — pm_update 의 conf 락 안에서
-    pm_import 의 임계 구간 본문(`_write_conf_keys_locked`)을 부른다. 그 seam 이 없는 구세대
-    형제 사본에서는 **아무것도 쓰지 않는다**: 그 사본의 writer 는 줄 삭제를 모르므로 새 줄만
-    쓰고 옛 줄을 남겨 반쪽 상태를 만든다(다음 실행이 신 사본으로 옮긴다).
+    새 키의 사용자 값과 대체 없는 폐지 키를 보존한다. dry-run은 읽기만 한다.
+    형제 사본 부재·skew 또는 이동 가능한 옛 키 잔류는 완료 실패다. 이미 배달한
+    엔진 파일은 보존하며 호출부의 완료 baseline 기록에는 도달하지 않는다.
     """
     conf_path = Path(effective_dest) / ".project_manager" / "local.conf"
     if not conf_path.is_file():
         return {}
     try:
         module = _load_local_conf()
-        result = module.load(conf_path)
-        updates = module.rename_updates(result)
-        if not updates:
-            return {}
-        moved = {old: new for old, new in result.legacy.items()
-                 if new is not None and old in updates}
+        if not write:
+            result = module.load(conf_path)
+            updates = module.rename_updates(result)
+            if not updates:
+                return {}
+            moved = {old: new for old, new in result.legacy.items()
+                     if new is not None and old in updates}
+        else:
+            with _local_conf_write_lock(conf_path):
+                result = module.load(conf_path)
+                updates = module.rename_updates(result)
+                if not updates:
+                    return {}
+                moved = {old: new for old, new in result.legacy.items()
+                         if new is not None and old in updates}
+                pm_import = _load_pm_import()
+                if not callable(getattr(pm_import, "_write_conf_keys_locked", None)):
+                    raise RuntimeError(
+                        "local.conf 키 이동 실패: 형제 pm_import에 삭제 writer가 없다; "
+                        f"잔존 키={', '.join(moved)}. 엔진 사본을 재동기한 뒤 다시 실행하라.")
+                pm_import._write_conf_keys_locked(conf_path, updates)
+                remaining = module.rename_updates(module.load(conf_path))
+                if remaining:
+                    raise RuntimeError(
+                        f"local.conf 키 이동 실패: 잔존 키={', '.join(remaining)}; 파일={conf_path}")
         prefix = "[dry-run] " if not write else "  ✓ "
         print(f"{prefix}local.conf 키 이름 {len(moved)}개 이동{' 예정' if not write else ''} — "
               "갱신이 바꾼 이름이라 갱신이 옮긴다(남은 % 는 쓴 % 로, 공통 사용 한도는 "
               "하네스마다 같은 값으로).")
         for line in module.migration_lines(moved):
             print(f"  {line}")
-        if not write:
-            return moved
-        pm_import = _load_pm_import()
-        if not callable(getattr(pm_import, "_write_conf_keys_locked", None)):
-            print("경고: 형제 pm_import 사본이 구세대라 키 이동을 건너뛴다 — "
-                  "다음 pm-update 가 옮긴다.", file=sys.stderr)
-            return {}
-        with _local_conf_write_lock(conf_path):
-            pm_import._write_conf_keys_locked(conf_path, updates)
         return moved
-    except Exception as exc:  # noqa: BLE001 — 사본 skew 만 생략으로 내린다(그 밖은 전파).
+    except Exception as exc:  # noqa: BLE001 — skew 진단을 보존한 완료 실패로 변환한다.
         if not _absorb_engine_rev_skew_for_recovery(exc, "migrate_renamed_conf_keys"):
             raise
-        print(f"경고: 엔진 사본 rev 혼합으로 local.conf 키 이동을 건너뛴다 ({exc}) — "
-              "다음 pm-update 가 옮긴다(엔진 파일 적용은 유지).", file=sys.stderr)
-        return {}
+        raise RuntimeError(
+            f"엔진 사본 rev 혼합으로 local.conf 키 이동 실패 ({exc}); "
+            f"잔존 키는 {conf_path}에 보존됐다. 엔진 사본을 재동기한 뒤 다시 실행하라."
+        ) from exc
 
 
 def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -> dict:

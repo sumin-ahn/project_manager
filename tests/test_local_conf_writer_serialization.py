@@ -40,6 +40,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from test_upgrade_adopter_e2e import (
+    t0927_legacy_source, t0927_upstream, t0927_installed_adopter,
+    t0927_old_adopter, _t0927_direct_update,
+)
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -84,6 +89,26 @@ def _parse_conf(text: str) -> dict[str, str]:
         key, _, value = stripped.partition("=")
         conf[key.strip()] = value.strip()
     return conf
+
+
+def test_t0927_migration_lock_replans_new_user_value(tmp_path, pm_update, pm_import,
+                                                   monkeypatch):
+    conf = tmp_path / ".project_manager" / "local.conf"
+    conf.parent.mkdir()
+    conf.write_text("ctx.stop_pct=10\n", encoding="utf-8")
+
+    @contextmanager
+    def competing_writer(path):
+        # 계획을 읽고 락을 얻는 사이 사용자가 새 키를 저장한 실제 경합 순서다.
+        pm_import._write_conf_keys(path, {"ctx.precompact_at_pct": "87"})
+        with pm_import._local_conf_write_lock(path):
+            yield
+
+    monkeypatch.setattr(pm_update, "_local_conf_write_lock", competing_writer)
+    pm_update.migrate_renamed_conf_keys(tmp_path, write=True)
+    values = _parse_conf(conf.read_text(encoding="utf-8"))
+    assert values["ctx.precompact_at_pct"] == "87"
+    assert "ctx.stop_pct" not in values
 
 
 # ── 축 1: writer inventory ratchet ──────────────────────────────────────────
@@ -986,3 +1011,36 @@ def test_serialized_writers_preserve_comments_unknown_keys_and_newlines(
     else:
         # 개행 없이 끝나던 마지막 키가 이어붙기로 변질되지 않았다.
         assert "abc#" not in text and "abcrev-2" not in text
+
+
+@pytest.mark.parametrize("failure", ["partial", "old-writer", "skew"])
+def test_t0927_migration_lock_failure_precedes_baseline(t0927_old_adopter, t0927_upstream,
+                                                       monkeypatch, failure):
+    dest = t0927_old_adopter
+    run1 = _t0927_direct_update(dest)
+    assert run1.returncode == 0, f"{run1.stdout}\n{run1.stderr}"
+    conf = dest / ".project_manager/local.conf"
+    before = conf.read_bytes()
+    spec = importlib.util.spec_from_file_location("t0927_run2", dest / ".project_manager/tools/pm_update.py")
+    updater = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(updater)
+    writer = updater._load_pm_import()
+    if failure == "partial":
+        monkeypatch.setattr(writer, "_write_conf_keys_locked", lambda *args: False)
+    elif failure == "old-writer":
+        writer = SimpleNamespace()
+
+    def load_writer():
+        if failure == "skew":
+            error = ImportError("고정 skew 진단")
+            error._engine_rev_skew = True
+            raise error
+        return writer
+
+    monkeypatch.setattr(updater, "_load_pm_import", load_writer)
+    baselines = []
+    monkeypatch.setattr(updater, "converge_upstream_revs", lambda *args: baselines.append(args))
+    with pytest.raises(RuntimeError, match="키 이동 실패"):
+        updater.main(["--from", str(t0927_upstream)])
+    assert baselines == []
+    assert conf.read_bytes() == before

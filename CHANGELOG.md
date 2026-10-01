@@ -14,6 +14,7 @@
 ### Fixed
 
 - 빈 submodule 폴더를 상위 슬롯의 dev 저장소로 오판하던 문제를 수정했다. 폴더 밖·미초기화·채워진 경로를 구분하고 inactive·dev·dirty 작업을 보존한다.
+- 최신 관리자의 엔진 갱신 적용이 구 updater의 배달 뒤 새 프로세스로 설정 키 이동·완료 검사를 수행한다. 구 직접 CLI 경로는 기존 두 번 실행 절차를 유지하고, 두 번째 단계의 실패를 최종 실패로 보고한다.
 
 - Windows URL upstream 캐시의 긴 경로에서 Git clone이 실패하던 문제를 수정했다. 사용자 Git 설정 격리를 유지하면서 Windows runner에 `core.longpaths=true`를 명시한다.
 - OpenCode가 Windows의 실행 불가한 Python 별칭에서 멈추던 문제를 수정했다. 명시한 실행기 또는 지원되는 후보를 검증해 선택하고, 상태를 쓰는 엔진 명령은 한 번만 실행한다.

@@ -3217,6 +3217,7 @@ def _set_conf_keys(text: str, updates: dict[str, str | None]) -> str:
     """
     remaining = {key: value for key, value in updates.items() if value is not None}
     lines = text.splitlines(keepends=True)
+    default_newline = "\r\n" if "\r\n" in text else "\n"
     out: list[str] = []
     for line in lines:
         stripped = line.lstrip()
@@ -3224,16 +3225,17 @@ def _set_conf_keys(text: str, updates: dict[str, str | None]) -> str:
             key = stripped.split("=", 1)[0].strip()
             if key in updates:
                 if key in remaining:
-                    newline = "\n" if line.endswith("\n") else ""
+                    newline = ("\r\n" if line.endswith("\r\n") else
+                               "\n" if line.endswith("\n") else "")
                     out.append(f"{key}={remaining.pop(key)}{newline}")
                 continue
         out.append(line)
     if remaining:
         if out and not out[-1].endswith("\n"):
-            out[-1] = out[-1] + "\n"
+            out[-1] = out[-1] + default_newline
         for key, value in updates.items():
             if key in remaining:
-                out.append(f"{key}={value}\n")
+                out.append(f"{key}={value}{default_newline}")
     return "".join(out)
 
 
@@ -3559,12 +3561,12 @@ def _atomic_replace_conf(tmp: Path, path: Path) -> None:
 
 def _write_conf_keys_locked(path: Path, updates: dict[str, str | None]) -> bool:
     """`_write_conf_keys` 의 임계 구간 본문 — 락을 **이미 쥔** 호출부 전용."""
-    text = _read_text_shared(path, encoding="utf-8")
+    text = _read_text_shared(path, encoding="utf-8", newline="")
     new_text = _set_conf_keys(text, updates)
     changed = new_text != text
     if changed:
         tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(new_text, encoding="utf-8", newline="\n")
+        tmp.write_text(new_text, encoding="utf-8", newline="")
         _atomic_replace_conf(tmp, path)
     effective = _parse_conf_keys(_read_text_shared(path, encoding="utf-8"))
 
