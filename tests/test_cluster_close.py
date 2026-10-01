@@ -1159,6 +1159,35 @@ def test_a_live_member_still_requires_the_code_steps(tf, tmp_path, monkeypatch, 
             f"{_CLUSTER}.md").read_bytes() == ledger_before
 
 
+@requires_git
+def test_close_preflight_reports_a_missing_integration_branch_in_the_found_tree(
+    close_env, capsys,
+):
+    """찾은 작업 트리의 저장소에 장부 `base_branch` 가 없으면 선검사가 그 사유로 막는다.
+
+    작업 트리 해소는 묶음 브랜치를 쥔 슬롯으로 통과한다. 통합 브랜치 부재는 첫 부작용 앞
+    선검사(재배치)가 낸다 — 이 판정이 빠지면 완료 기록과 슬롯 커밋을 마친 뒤에야 멈춘다.
+    """
+    env = close_env
+    _write_cluster_ledger(env.board_dir, tickets=(env.ticket,),
+                          base_branch="task/absent-integration")
+    logs_before = (env.slot_log(), env.integration_log(), env.home_log())
+    lease_before = env.lease_bytes()
+
+    rc = env.closer().run()
+
+    captured = capsys.readouterr()
+    assert rc == 1, captured.out + captured.err
+    assert f"작업 트리 → {env.slot} (묶음 기록 branch {_CLUSTER_BRANCH})" in captured.out
+    assert "종결 선검사" in captured.err
+    assert ("통합 브랜치 task/absent-integration 를 이 코드 트리에서 찾지 못했다"
+            in captured.err)
+    assert "[1/6]" not in captured.out          # 첫 부작용 앞에서 막혔다
+    assert env.board_calls == [] and env.delegate_calls == []
+    assert (env.slot_log(), env.integration_log(), env.home_log()) == logs_before
+    assert env.lease_bytes() == lease_before
+
+
 # ── 작업 트리 해소 — 묶음 기록의 브랜치를 쥔 트리 정확히 하나 ─────────────────
 #
 # 작업 트리는 task 가 쥔 슬롯에서 고르지 않는다. 대여 기록의 작업 폴더가 속한 저장소에서 묶음
@@ -1302,6 +1331,71 @@ def test_close_never_picks_the_pm_home_tree(close_env, capsys):
     assert env.board_calls == [] and env.delegate_calls == []
     assert env.home_log() == home_before
     assert env.ledger()["status"] != _CLOSED_STATUS
+    assert env.lease_bytes() == lease_before
+
+
+@requires_git
+def test_close_stops_when_the_ledger_branch_tree_is_gone_from_disk(close_env, capsys):
+    """폴더가 디스크에서 사라지고 git 등록만 남은 자리는 작업 트리가 아니다.
+
+    `git worktree list` 는 지운 슬롯 폴더를 그 브랜치와 함께 계속 낸다(prunable). 같은 저장소의
+    다른 대여 폴더에서 목록을 보아도 그 등록은 후보가 아니다 — 없는 폴더를 작업 트리로 고르면
+    선검사의 git 조회가 traceback 으로 죽는다. 첫 부작용 앞 작업 트리 해소에서 멈춘다.
+    """
+    env = close_env
+    other = _add_code_tree(env, "code_2")
+    lease_path = env.home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease_path.write_text(json.dumps({"leases": [
+        {"slot": _SLOT, "repo": "code", "session": "t", "started": _FIXTURE_STAMP,
+         "state": "leased"},
+        {"slot": "work/code_2", "repo": "code", "session": "t", "started": _FIXTURE_STAMP,
+         "state": "leased"},
+    ]}, ensure_ascii=False), encoding="utf-8")
+    shutil.rmtree(env.slot)
+    # 묶음 브랜치를 쥔 트리는 지운 슬롯 하나뿐이었다 — 목록의 그 줄은 남은 등록에서 온다.
+    listing = _git(other, "worktree", "list", "--porcelain").stdout
+    assert f"branch refs/heads/{_CLUSTER_BRANCH}" in listing
+    integration_before = env.integration_log()
+    lease_before = env.lease_bytes()
+
+    rc = env.closer().run()
+
+    captured = capsys.readouterr()
+    assert rc == 1, captured.out + captured.err
+    assert "[중단] 작업 트리 해소" in captured.err
+    assert (f"묶음 기록 branch {_CLUSTER_BRANCH} 를 체크아웃한 작업 트리가 없다"
+            in captured.err)
+    assert "작업 트리 →" not in captured.out
+    assert "종결 선검사" not in captured.err
+    assert "[1/6]" not in captured.out
+    assert env.board_calls == [] and env.delegate_calls == []
+    assert env.integration_log() == integration_before
+    assert env.lease_bytes() == lease_before
+
+
+@requires_git
+def test_close_stops_when_two_trees_hold_the_integration_branch(close_env, capsys):
+    """통합 브랜치를 두 트리가 함께 쥐면(git 제약의 우회) 머지할 트리를 고르지 않고 멈춘다.
+
+    작업 트리 해소와 같은 규칙·같은 문구다 — 첫 트리를 고르면 머지할 트리가 목록 순서로
+    정해진다. 작업 트리는 묶음 브랜치로 찾고, 멈춤은 첫 부작용 앞 선검사(머지)에서 난다.
+    """
+    env = close_env
+    other = _add_code_tree(env, "code_2")
+    assert _git(other, "checkout", "-q", "--ignore-other-worktrees",
+                _INTEGRATION_BRANCH).returncode == 0
+    integration_before = env.integration_log()
+    lease_before = env.lease_bytes()
+
+    rc = env.closer().run()
+
+    captured = capsys.readouterr()
+    assert rc == 1, captured.out + captured.err
+    assert f"작업 트리 → {env.slot} (묶음 기록 branch {_CLUSTER_BRANCH})" in captured.out
+    assert f"{_INTEGRATION_BRANCH} 를 체크아웃한 작업 트리가 2개다" in captured.err
+    assert "[1/6]" not in captured.out
+    assert env.board_calls == [] and env.delegate_calls == []
+    assert env.integration_log() == integration_before
     assert env.lease_bytes() == lease_before
 
 

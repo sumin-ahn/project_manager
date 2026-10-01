@@ -421,25 +421,28 @@ def _regression_cwd(worktree_slot: str | None = None) -> str:
     return str(REPO)
 
 
-# ── --repo/--slot 슬롯 disambiguation (다중슬롯 finish·pm_handoff 미러) ──
-# 다중슬롯 형상에선 `_regression_cwd(None)` 자동해소가 모호해져 홈으로 폴백하고, `tests/` 가
-# 없어 회귀가 red("no tests ran")→finish 가 *조용히* 차단된다. 그래서 무인자 진입은 정체성을
-# task 로 해소해(`pm_log.resolve_snapshot_identity`) 그 task 의 작업 폴더를 쓰고, 미해소면
-# 멈춘다. 명시 `--repo`/`--slot` 만 이 함수를 타며 판정은 pm_handoff
+# ── --repo/--slot 슬롯 정체성 (pm_handoff 미러) ──
+# 명시 `--repo`/`--slot` 은 실행 정체성이다 — 대여 기록과 조인 확인한 슬롯 키로 세션·board 인자
+# (멤버 `claimed_by` 소유 확인)를 정하고, 복구 문(`--reconcile-integrated`)에서는 그 슬롯이 복구할
+# 제품 트리다. 정상 종결의 작업 트리는 이 값으로 고르지 않는다 — 묶음 기록의 브랜치로 찾는다
+# (`ClusterCloser._resolve_code_tree`). 무인자 진입은 정체성을 task 로 해소해
+# (`pm_log.resolve_snapshot_identity`) task 갈래로 합류하고, 미해소면 멈춘다. 판정은 pm_handoff
 # `_resolve_explicit_identity_slot`(조인 검증)을 동적 로드해 재사용한다(복제 0).
 
 def _resolve_finish_slot(repo: str | None, slot: int | None) -> tuple[str | None, str | None]:
-    """`--repo`/`--slot`(또는 둘 다 부재)에서 회귀 worktree 슬롯을 해소한다 — `(worktree_slot, error_msg)`.
+    """`--repo`/`--slot` 에서 슬롯 키를 해소한다 — `(worktree_slot, error_msg)`.
 
-    pm_handoff 를 동적 로드해 재사용한다(DRY). 반환:
+    해소한 슬롯 키는 소유 확인 정체성(세션·board 인자)과 복구 문의 제품 트리에 쓴다. 작업
+    트리 선택에는 쓰지 않는다. pm_handoff 를 동적 로드해 재사용한다(DRY). 반환:
       - `(work/<repo>_<N>, None)` — `--repo`(+`--slot`) 명시 → pm_handoff
         `_resolve_explicit_identity_slot` 로 (세션↔repo 조인 검증) 통과 후 결정론적 해소.
-      - `(None, None)` — 판정 불능(pm_handoff 사본 부재) → 호출부 REPO 런타임 폴백.
+      - `(None, None)` — 명시 인자 없음, 또는 판정 불능(pm_handoff 사본 부재 + `--slot` 없음)
+        → 호출부는 슬롯 키 없이 진행한다(세션은 명시 인자가 준 값 그대로, board 인자 없음).
       - `(None, error_msg)` — 명시 repo/slot 이 리스 장부와 조인 불일치 → 호출부 fail-loud.
 
     무인자 진입은 여기 오지 않는다 — 호출부가 정체성을 task 로 먼저 해소해 task 갈래로
-    합류시킨다(슬롯 자동해소 갈래 없음). `repo`/`slot` 명시인데 pm_handoff 부재면 검증(리스
-    조인)을 할 수 없으므로 단순 조립만 해 신뢰한다(현행 폴백 패턴).
+    합류시킨다. `repo`/`slot` 명시인데 pm_handoff 부재면 검증(리스 조인)을 할 수 없으므로
+    단순 조립만 해 신뢰한다.
     """
     hp = _load_pm_handoff()
     if hp is None:
@@ -4236,7 +4239,8 @@ class ClusterCloser:
 
         `git worktree list --porcelain` 해석은 이 한 곳이다 — 작업 트리 해소와 통합 트리 해소가
         같은 해석을 쓴다. detached 트리(재배치가 멈춘 트리 포함)는 `branch` 줄이 없어 None 이다.
-        조회 실패는 정지다(미해소 위장 금지).
+        폴더가 디스크에서 사라지고 등록만 남은 항목(prunable)은 작업 트리가 아니라 내지 않는다 —
+        git 은 그 등록을 브랜치와 함께 계속 낸다. 조회 실패는 정지다(미해소 위장 금지).
         """
         try:
             rc, out = self._git_stdout(folder, ["worktree", "list", "--porcelain"])
@@ -4255,7 +4259,7 @@ class ClusterCloser:
                 trees.append((Path(line[len("worktree "):].strip()), None))
             elif line.startswith("branch ") and trees:
                 trees[-1] = (trees[-1][0], line[len("branch "):].strip())
-        return trees
+        return [(tree, ref) for tree, ref in trees if tree.exists()]
 
     def _integration_worktree(self, branch: str) -> Path | None:
         """그 브랜치를 체크아웃한 작업 트리 (없으면 None · 둘 이상이면 정지).

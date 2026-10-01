@@ -1335,7 +1335,7 @@ def _capture_main_forward(tf, monkeypatch) -> dict:
     return captured
 
 
-def test_main_repo_slot_forwards_resolved_regression_cwd(tf, monkeypatch):
+def test_main_repo_slot_forwards_session_and_slot_but_no_code_tree(tf, monkeypatch):
     """--repo/--slot → main 은 트리 인자 없이 해소된 세션·슬롯만 넘긴다(작업 트리는 종결이 찾는다)."""
     monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff())
     captured = _capture_main_forward(tf, monkeypatch)
@@ -1444,7 +1444,7 @@ def test_main_no_pytest_still_gates_unresolved_identity(tf, monkeypatch, capsys)
     assert "--no-pytest 로는 풀리지 않는다" in err   # 우회 처방이 아니라 부정
 
 
-def test_main_no_pytest_forwards_resolved_code_tree(tf, monkeypatch):
+def test_main_no_pytest_forwards_the_skip_but_no_code_tree(tf, monkeypatch):
     """--no-pytest + 슬롯 해소 성공 → 회귀 skip 만 넘기고 트리 인자는 없다(세션·슬롯은 그대로).
 
     코드 트리는 종결이 묶음 기록의 브랜치로 찾아 넘기므로 회귀 skip 여부와 무관하게 같은 트리다.
