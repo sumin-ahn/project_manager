@@ -491,8 +491,8 @@ function takeCompactionSnapshot(root, sessionID) {
   if (!snapshots.length) return null;
   const latest = snapshots[snapshots.length - 1];
   // old를 latest보다 먼저 지워 claim 진행 중 [old]만 관측되는 상태를 만들지 않는다.
-  // old 삭제 뒤 claim 전에 crash해도 latest는 생존하며, atomic rename 승자는 정확히 하나다.
-  // rename 패배자는 구 generation 재탐색/fallback 없이 skip한다.
+  // old 삭제 뒤 claim 전에 crash해도 latest는 생존한다. 고정 generation 이름의 배타 link가 선점이다.
+  // 선점 패배자는 구 generation 재탐색/fallback 없이 skip한다.
   for (const snapshot of snapshots.slice(0, -1)) {
     try {
       fs.unlinkSync(snapshot.marker);
@@ -504,11 +504,17 @@ function takeCompactionSnapshot(root, sessionID) {
   }
   const claimed = path.join(
     path.dirname(latest.marker),
-    `.${path.basename(latest.marker)}.${process.pid}.${crypto.randomUUID()}.claimed`,
+    `.${path.basename(latest.marker)}.claimed`,
   );
   try {
-    fs.renameSync(latest.marker, claimed);
+    fs.linkSync(latest.marker, claimed);
   } catch {
+    return null;
+  }
+  try {
+    fs.unlinkSync(latest.marker);
+  } catch {
+    // ENOENT도 전달하지 않는다. 원본 제거에 실패한 선점 fence는 재진입을 막기 위해 남긴다.
     return null;
   }
   try {
