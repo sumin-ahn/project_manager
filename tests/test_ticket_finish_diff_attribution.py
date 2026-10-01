@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from _slot_seed import seed_slot
 from conftest import current_branch, write_cluster_ledger
 
 
@@ -437,6 +438,11 @@ def _split_home_shape(
     미커밋 줄 수다 — 코드 트리에는 만들지 않는다. `code_files` 는 두 트리에 만들 파일 이름이다 —
     touches 가 `work/<repo>_<N>/` 접두 형식일 때 선언 좌표와 파일 좌표를 따로 준다(미지정이면
     touches 그대로).
+
+    슬롯은 대여 기록 행을 갖는다 — 종결은 그 행의 작업 폴더가 속한 저장소에서 묶음 기록의
+    브랜치를 쥔 트리를 작업 트리로 찾는다. 슬롯 저장소가 그 브랜치를 쥐고(두 저장소 모두 같은
+    기본 브랜치로 시작한다), PM 홈 자신은 찾는 곳이 아니라 같은 이름의 브랜치를 쥐어도 후보가
+    아니다.
     """
     home_only = dict(home_only or {})
     shared = (list(code_files) if code_files is not None
@@ -445,6 +451,8 @@ def _split_home_shape(
     tools = home / ".project_manager" / "tools"
     tools.parent.mkdir(parents=True)
     shutil.copytree(TOOLS, tools)
+    slot_name = slot.rsplit("/", 1)[-1]
+    seed_slot(home, slot=slot, repo=slot_name.rsplit("_", 1)[0], session=slot_name)
     _write_claimed_ticket(home, ticket_id, touches)
     log_dir = home / ".project_manager" / "wiki" / "log"
     log_dir.mkdir(parents=True, exist_ok=True)

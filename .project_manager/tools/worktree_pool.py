@@ -3079,19 +3079,6 @@ def alloc(
         raise NeedsCreate(repo)
 
 
-def slot_state(slot: str) -> "str | None":
-    """슬롯의 현재 상태(`leased`/`idle`) — 장부에 없으면 None (조회 전용·부작용 0).
-
-    반납이 **필요한지** 묻는 자리다. 자동 종결 경로는 자기 부작용이 이미 있는지 관측해서
-    건너뛰므로(재실행이 곧 재개), 이미 idle 인 슬롯에 반납을 다시 걸어 dirty 판정·소유 검사
-    같은 무관한 거부를 만나지 않는다. 장부 read 동안만 짧게 lock 을 잡는다(`_slot_role`
-    동형)."""
-    with _lease_lock():
-        leases = _read_ledger()
-    target = next((lease for lease in leases if lease.slot == slot), None)
-    return target.state if target is not None else None
-
-
 def release(
     slot: str,
     *,
@@ -4478,11 +4465,11 @@ def parent_ref(parent: str, *, git_runner: GitRunner) -> "str | None":
     return _resolve_parent_ref(parent, git_runner=git_runner)[0]
 
 
-# ── 브랜치 삭제 판정 — 슬롯 제거(`remove_slot`)·묶음 종결(`ticket_finish`)이 같은 규칙을 쓴다 ──
+# ── 브랜치 삭제 판정 — 슬롯 제거(`remove_slot`)가 쓰는 규칙 ──
 
 BRANCH_DELETED = "deleted"
 BRANCH_PRESERVED = "preserved"
-# 판정 사유 — 보존 8개 + 삭제 근거 2개. CLI·종결 보고가 이 값으로 문구를 고른다.
+# 판정 사유 — 보존 8개 + 삭제 근거 2개. 슬롯 제거 CLI 가 이 값으로 문구를 고른다.
 BRANCH_REASON_PROTECTED = "protected"            # repo 보호 브랜치
 BRANCH_REASON_DEFAULT = "default-branch"         # 공용 저장소 기본 브랜치
 BRANCH_REASON_CHILDREN = "children"              # 자식 브랜치가 있다
@@ -4532,7 +4519,7 @@ class BranchDeletion:
         self.detail = detail
 
     def summary(self) -> str:
-        """행동·사유 한 줄 — 슬롯 제거 CLI 와 묶음 종결 보고가 같은 문구를 쓴다."""
+        """행동·사유 한 줄 — 슬롯 제거 CLI 가 내는 문구다."""
         head = f"브랜치 {self.branch}"
         count = len(self.unmerged_commits)
         if self.action == BRANCH_DELETED:
@@ -4648,7 +4635,7 @@ def delete_branch_by_rule(
     acked_branches: "frozenset[str]" = frozenset(),
     git_runner: GitRunner,
 ) -> BranchDeletion:
-    """브랜치 삭제 판정과 삭제 — 슬롯 제거·묶음 종결이 함께 쓰는 단일 규칙.
+    """브랜치 삭제 판정과 삭제 — 슬롯 제거가 쓰는 단일 규칙.
 
     차례(앞에서 걸리면 그 자리에서 보존한다):
       1. repo 보호 브랜치(`_resolve_protected`) 또는 공용 저장소 기본 브랜치 → 보존.

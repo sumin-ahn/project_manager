@@ -474,7 +474,10 @@ def test_entry_finish_attributes_the_ledger_identity(home, monkeypatch):
     rc = tf._main(["T-0001", "--no-pytest", "--repo", "A", "--slot", "1"])
     assert rc == 0
     assert captured["session"] == "A_1"
-    assert captured["regression_cwd"] == str(home.root)
+    # 슬롯 좌표는 행의 경로 값 그대로 종결에 간다(복구 문의 제품 트리). 작업 트리는 종결이 묶음
+    # 기록의 브랜치로 찾으므로 `TicketFinisher` 에는 트리 인자가 없다.
+    assert captured["slot"] == "."
+    assert "regression_cwd" not in captured and "task_workspace" not in captured
 
 
 

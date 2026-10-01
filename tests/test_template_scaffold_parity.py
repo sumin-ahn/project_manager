@@ -419,7 +419,7 @@ def test_templates_no_personal_path_leak():
 # 새 타깃이 생겨도 `TEMPLATE_NAMES` 를 통해 자동 편입된다.
 
 _CLUSTER_STAGE_HEADING = "## 클러스터 단계 표"
-_CLOSE_STEP_COUNT_TOKEN = "7단계"
+_CLOSE_STEP_COUNT_TOKEN = "6단계"
 # 카드 본문에 실린 라운드 순번 표기 전수 — 엔진 수열 밖 순번(확인용 라운드 등)이 하나라도 실리면
 # 그 카드가 서술하는 경로가 엔진 예산과 다르다.
 _ROUND_LABEL_RE = re.compile(r"\b(\d{2})-(architect|developer|code-reviewer)\b")
@@ -823,8 +823,39 @@ def test_completion_guidance_uses_cluster_finish_not_direct_complete():
         path.read_text(encoding="utf-8") for path in sorted(set(finish_surfaces))
     )
     for marker in (
-        "ticket done", "cluster closed", "slot released",
+        "ticket done", "cluster closed",
         "--reconcile-integrated", "--integrated-rev", "--legacy-base-rev",
         "--user-ack", "--repo", "--slot", "dirty slot",
     ):
         assert marker in haystack, f"종결/복구 기준 marker 누락: {marker}"
+
+
+# 종결은 슬롯을 반납하지 않는다 — 카드가 그 사실을 말하고, 반납을 종결 단계로 적은 옛 문구는
+# 카드·운영 상세·방법론 문서 어디에도 없다(루트 원본과 출하 사본 전수).
+_CLOSE_KEEPS_SLOTS_SENTENCE = "종결은 슬롯을 반납하지 않는다"
+_CLOSE_RELEASE_PHRASES = (
+    "슬롯 반납 → board", "머지·반납·board", "슬롯 반납·board", "| 슬롯 반납 |", "slot released",
+)
+
+
+def test_finish_surfaces_say_close_keeps_slots():
+    """AT-010: 종결 카드는 슬롯을 반납하지 않는다고 말하고, 반납을 종결 단계로 적은 문구가 없다."""
+    cards = [REPO / ".claude" / "skills" / "pm-wave-finish" / "SKILL.md"]
+    details = [REPO / ".claude" / "skills" / "pm-wave-finish" / "references" /
+               "operational-details.md"]
+    guides = [REPO / ".project_manager" / "wiki" / "pm_role.md",
+              REPO / ".project_manager" / "wiki" / "pm_playbook.md"]
+    for name in TEMPLATE_NAMES:
+        cards.extend(_shipped_cards(name, "pm-wave-finish"))
+        details.extend(sorted((TEMPLATES / name).glob(
+            "*/skills/pm-wave-finish/references/operational-details.md")))
+        guides.extend((_wiki(name) / "pm_role.md", _wiki(name) / "pm_playbook.md"))
+    assert TEMPLATES / "opencode" / ".opencode" / "command" / "pm-wave-finish.md" in cards
+    assert len(details) == 1 + len(TEMPLATE_NAMES), details
+    for card in cards:
+        assert _CLOSE_KEEPS_SLOTS_SENTENCE in card.read_text(encoding="utf-8"), (
+            f"{card.relative_to(REPO)}: 종결이 슬롯을 반납하지 않는다는 문장이 없음")
+    for path in cards + details + guides:
+        text = path.read_text(encoding="utf-8")
+        stale = [phrase for phrase in _CLOSE_RELEASE_PHRASES if phrase in text]
+        assert not stale, f"{path.relative_to(REPO)}: 반납을 종결 단계로 적은 문구 {stale}"

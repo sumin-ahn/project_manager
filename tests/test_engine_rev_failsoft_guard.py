@@ -1191,7 +1191,11 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   local.conf 옛 키(`_legacy_conf_key`)만 검사 거부(rc 3) 안내로 번역하고 marked skew 는 그대로 올린다.
     #   `pm_update.apply_harness_ctx_limits` 는 apply 이후 단계라 `migrate_renamed_conf_keys` 와 같은
     #   규칙으로 등록된 사유가 흡수한다(반영은 멱등).
-    assert len(report.boundaries) == 254, "propagation sweep boundary ratchet changed"
+    # 252 = 254 − T-0925 가 지운 두 경계. 종결의 반납 단계가 사라지며 `ticket_finish.py:
+    #   ClusterCloser` 의 `_default_release`(반납 거부 사유를 값으로)와 `_slot_state`(대여 상태
+    #   관측)가 함께 없어졌다. 작업 트리 해소는 `_integration_worktree` 가 쓰던 목록 조회 자리
+    #   (`_worktree_list`)를 같이 써서 새 경계를 열지 않는다.
+    assert len(report.boundaries) == 252, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
