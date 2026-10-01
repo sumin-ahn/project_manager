@@ -2,7 +2,7 @@
 
 > 아래 절은 상시 카드에서 분리한 원문이다. 해당 상황에서만 읽는다.
 
-## 종결 7단계 (고정 순서 · 관측 기반 멱등)
+## 종결 6단계 (고정 순서 · 관측 기반 멱등)
 
 | # | 단계 | 하는 일 | 건너뛰기 관측 |
 |---|---|---|---|
@@ -11,8 +11,7 @@
 | 3 | 슬롯 커밋 | 티켓마다 그 티켓이 stage 한 경로를 **티켓 제목 문안**으로 커밋 | 커밋할 변경 없음 |
 | 4 | 통합 브랜치로 재배치 | 묶음 브랜치를 통합 브랜치 위로 rebase(충돌은 abort 후 정지) | 이미 통합 브랜치 위 |
 | 5 | 통합 브랜치 머지 | 통합 브랜치에서 묶음 브랜치를 `--no-ff` 로 받음 | 묶음 브랜치 미선언 · 이미 조상 |
-| 6 | 슬롯 반납 | 이 종결이 쓴 슬롯 lease 해제 | 슬롯 미해소 · 리스 없음 |
-| 7 | board·포인터 커밋 | board 커밋 + PM 홈 서브모듈 포인터 커밋 | 포인터 미대상 |
+| 6 | board·포인터 커밋 | board 커밋 + PM 홈 서브모듈 포인터 커밋 | 포인터 미대상 |
 
 - **막는 조건은 첫 부작용 앞에서 한 번에 전부 나온다(선검사).** 1단계를 시작하기 전에 읽기만으로
   판정 가능한 차단 사유를 전건 모아 번호를 붙여 보고하고 rc=1 로 멈춘다 — 그 실행은 board·git·
@@ -22,12 +21,16 @@
   멈추지 않는다. `--dry-run` 에서도 항상 먼저 돈다.
 - 선검사가 보는 것: final-fix 확인 입력의 완전성·실행 가능성 · 완료 기록의 diff 폭/사설 참조/
   완료 조건(DoD)/스코프 밖 잔여 · 티켓이 claimed 인가 · 묶음 결속과 claim 소유 · 라운드 순번 ·
-  `base_branch` 선언과 통합 브랜치 존재 · 이 트리가 묶음 브랜치를 들었는가 · 통합 브랜치를
-  체크아웃한 트리의 존재와 clean 여부 · board 기록 대상 경로 해소.
+  `base_branch` 선언과 통합 브랜치 존재 · 통합 브랜치를 체크아웃한 트리의 존재와 clean 여부 ·
+  board 기록 대상 경로 해소.
+- **작업 트리 해소는 선검사 앞에서 단독으로 멈춘다.** 묶음 브랜치(선언 없으면 합칠 곳 브랜치)를
+  쥔 작업 트리가 없거나 둘 이상이면 선검사를 돌리기 전에 `[중단] 작업 트리 해소` 로 rc=1
+  멈춘다. 트리 없이는 트리를 보는 선검사를 돌릴 수 없으므로 이 사유는 다른 차단 사유와 한 번에
+  나오지 않는다.
 
 - **관측이 기록보다 앞선다.** 장부의 단계 기록은 사람이 읽는 값이고, 건너뛰기 판정은 실제 상태
   관측이다. 기록과 실제가 어긋나면(중단·외부 원복) 기록을 믿는 재개는 없는 커밋 위에서 진행한다.
-- **관측 실패는 정지다.** "관측했는데 대상이 없다"(커밋할 변경 없음·리스 없음)와 "관측 자체가
+- **관측 실패는 정지다.** "관측했는데 대상이 없다"(커밋할 변경 없음)와 "관측 자체가
   실패했다"는 다르다. 뒤쪽을 무대상으로 접으면 근거 없는 종결 기록만 남는다.
 - **`base_branch` 미선언은 건너뛰기가 아니라 정지다.** 4·5단계의 대상이 그 선언이라 값이 없으면
   판정 기준 자체가 없다. 엔진은 그 자리에서 멈추고 `board.py cluster show <이름>` 으로 장부를
@@ -41,8 +44,8 @@
 
 ## all-done recovery (반쪽 종결 전용)
 
-`ticket done`, `cluster closed`, `slot released`는 독립 상태다. 모든 멤버가 이미 done인데 장부만
-open이면 정상 7단계를 다시 돌리거나 `board complete`를 직접 호출하지 않는다. PM이 선택한 clean
+`ticket done`, `cluster closed`는 독립 상태다. 모든 멤버가 이미 done인데 장부만
+open이면 정상 6단계를 다시 돌리거나 `board complete`를 직접 호출하지 않는다. PM이 선택한 clean
 제품 worktree의 exact HEAD와 티켓별 evidence commit을 명시해 다음 제한된 문만 사용한다.
 
 ```bash
@@ -64,7 +67,7 @@ python3 .project_manager/tools/ticket_finish.py --cluster <C-이름> \
 - 선택 slot이 dirty면 첫 write 전에 정지한다. 비선택 dirty slot은 path·branch·dirty를 보고만 하고
   byte 보존한다. reset/stash/release 처분은 별도 사용자 판단이다.
 
-## 3단계(완료 기록)가 티켓마다 하는 일
+## 2단계(완료 기록)가 티켓마다 하는 일
 
 1. **회귀 측정** — red면 즉시 중단하고 dev 재작업. board complete 도 차단한다.
 2. **log/current.md 단일 entry 확보** — `## [YYYY-MM-DD] complete | [[T-NNNN]] — <title>`.
@@ -74,7 +77,7 @@ python3 .project_manager/tools/ticket_finish.py --cluster <C-이름> \
    - `.project_manager/wiki/log/current.md`
    - legacy 형상(board 미분리·**출하 기본**)에서 옮긴 ticket의 옛/새 경로
 
-ADR(`decisions/`)·domain 페이지·`architecture.md`·`status.md`는 다른 실행의 산출물이므로 자동 stage하지 않는다. 이번 작업에서 고쳤다면 아래 PM 손 잔여에서 경로를 직접 `git add` 한다 — 4단계 커밋은 stage 된 선언 경로만 싣는다.
+ADR(`decisions/`)·domain 페이지·`architecture.md`·`status.md`는 다른 실행의 산출물이므로 자동 stage하지 않는다. 이번 작업에서 고쳤다면 아래 PM 손 잔여에서 경로를 직접 `git add` 한다 — 3단계 커밋은 stage 된 선언 경로만 싣는다.
 
 > **DoD는 실행 전에 마감한다.** `board.py complete`는 ticket 본문 `## 완료 조건` 절의 체크박스를 전부 본다 — 통과 형태는 두 가지뿐이다.
 >
@@ -89,8 +92,8 @@ ADR(`decisions/`)·domain 페이지·`architecture.md`·`status.md`는 다른 �
 
 > **stage 잔여 보고는 둘 다 확인한다.**
 >
-> - `⚠ 미스테이지 잔여 N건` = **under-stage**. 내 작업 누락이면 ticket `touches`를 보강해 다시 실행하고, 남의 WIP면 둔다. 선언 밖 경로는 4단계 커밋에도 실리지 않는다.
-> - `⚠ 스코프 밖 staged N건` = 남이 index에 미리 올린 변경. 4단계 커밋은 선언 경로 pathspec 으로만 커밋하므로 실리지 않는다. 빼려면 `git restore --staged <경로>`.
+> - `⚠ 미스테이지 잔여 N건` = **under-stage**. 내 작업 누락이면 ticket `touches`를 보강해 다시 실행하고, 남의 WIP면 둔다. 선언 밖 경로는 3단계 커밋에도 실리지 않는다.
+> - `⚠ 스코프 밖 staged N건` = 남이 index에 미리 올린 변경. 3단계 커밋은 선언 경로 pathspec 으로만 커밋하므로 실리지 않는다. 빼려면 `git restore --staged <경로>`.
 
 `status.md`는 자동으로 건드리지 않는다. 테스트 수는 박제하지 않고 pytest 실측/history는 log에 둔다.
 
@@ -117,7 +120,7 @@ ADR(`decisions/`)·domain 페이지·`architecture.md`·`status.md`는 다른 �
    - 메타 학습(이번 묶음에서 확인한 수렴 신호)
    - spec/ADR 정합 갱신(있으면)
 
-3. **묶음 산출 밖 파일** — ADR·domain 페이지·`status.md`처럼 티켓 `touches` 밖 산출은 4단계 커밋에
+3. **묶음 산출 밖 파일** — ADR·domain 페이지·`status.md`처럼 티켓 `touches` 밖 산출은 3단계 커밋에
    실리지 않는다. 이번에 고쳤으면 그 경로만 따로 `git add` 하고 별도 커밋으로 싣는다. 종결이 만든
    커밋을 손으로 고쳐 끼워 넣지 않는다.
 

@@ -5,7 +5,7 @@
     venv/bin/python .project_manager/tools/ticket_finish.py T-NNNN [--section "<섹션명>"] [--dry-run]
     venv/bin/python .project_manager/tools/ticket_finish.py --cluster C-<이름> [--dry-run]
         묶음 종결(close) — 아래 다섯 단계를 티켓마다 돌리고 그 앞뒤로 기계 확인·게이트 처분·
-        커밋·재배치·머지·슬롯 반납·board 기록까지 고정 순서로 닫는다(재실행은 재개).
+        커밋·재배치·머지·board 기록까지 고정 순서로 닫는다(재실행은 재개). 슬롯은 반납하지 않는다.
 
 동작 순서 (하나라도 실패하면 이후 단계 중단):
   1. 회귀 실행 — 게이트는 areas.md(prefix 행 > repo 행) > local.conf test.cmd 로 해소하고,
@@ -421,25 +421,28 @@ def _regression_cwd(worktree_slot: str | None = None) -> str:
     return str(REPO)
 
 
-# ── --repo/--slot 슬롯 disambiguation (다중슬롯 finish·pm_handoff 미러) ──
-# 다중슬롯 형상에선 `_regression_cwd(None)` 자동해소가 모호해져 홈으로 폴백하고, `tests/` 가
-# 없어 회귀가 red("no tests ran")→finish 가 *조용히* 차단된다. 그래서 무인자 진입은 정체성을
-# task 로 해소해(`pm_log.resolve_snapshot_identity`) 그 task 의 작업 폴더를 쓰고, 미해소면
-# 멈춘다. 명시 `--repo`/`--slot` 만 이 함수를 타며 판정은 pm_handoff
+# ── --repo/--slot 슬롯 정체성 (pm_handoff 미러) ──
+# 명시 `--repo`/`--slot` 은 실행 정체성이다 — 대여 기록과 조인 확인한 슬롯 키로 세션·board 인자
+# (멤버 `claimed_by` 소유 확인)를 정하고, 복구 문(`--reconcile-integrated`)에서는 그 슬롯이 복구할
+# 제품 트리다. 정상 종결의 작업 트리는 이 값으로 고르지 않는다 — 묶음 기록의 브랜치로 찾는다
+# (`ClusterCloser._resolve_code_tree`). 무인자 진입은 정체성을 task 로 해소해
+# (`pm_log.resolve_snapshot_identity`) task 갈래로 합류하고, 미해소면 멈춘다. 판정은 pm_handoff
 # `_resolve_explicit_identity_slot`(조인 검증)을 동적 로드해 재사용한다(복제 0).
 
 def _resolve_finish_slot(repo: str | None, slot: int | None) -> tuple[str | None, str | None]:
-    """`--repo`/`--slot`(또는 둘 다 부재)에서 회귀 worktree 슬롯을 해소한다 — `(worktree_slot, error_msg)`.
+    """`--repo`/`--slot` 에서 슬롯 키를 해소한다 — `(worktree_slot, error_msg)`.
 
-    pm_handoff 를 동적 로드해 재사용한다(DRY). 반환:
+    해소한 슬롯 키는 소유 확인 정체성(세션·board 인자)과 복구 문의 제품 트리에 쓴다. 작업
+    트리 선택에는 쓰지 않는다. pm_handoff 를 동적 로드해 재사용한다(DRY). 반환:
       - `(work/<repo>_<N>, None)` — `--repo`(+`--slot`) 명시 → pm_handoff
         `_resolve_explicit_identity_slot` 로 (세션↔repo 조인 검증) 통과 후 결정론적 해소.
-      - `(None, None)` — 판정 불능(pm_handoff 사본 부재) → 호출부 REPO 런타임 폴백.
+      - `(None, None)` — 명시 인자 없음, 또는 판정 불능(pm_handoff 사본 부재 + `--slot` 없음)
+        → 호출부는 슬롯 키 없이 진행한다(세션은 명시 인자가 준 값 그대로, board 인자 없음).
       - `(None, error_msg)` — 명시 repo/slot 이 리스 장부와 조인 불일치 → 호출부 fail-loud.
 
     무인자 진입은 여기 오지 않는다 — 호출부가 정체성을 task 로 먼저 해소해 task 갈래로
-    합류시킨다(슬롯 자동해소 갈래 없음). `repo`/`slot` 명시인데 pm_handoff 부재면 검증(리스
-    조인)을 할 수 없으므로 단순 조립만 해 신뢰한다(현행 폴백 패턴).
+    합류시킨다. `repo`/`slot` 명시인데 pm_handoff 부재면 검증(리스 조인)을 할 수 없으므로
+    단순 조립만 해 신뢰한다.
     """
     hp = _load_pm_handoff()
     if hp is None:
@@ -1764,7 +1767,7 @@ class StatusObservationError(Exception):
     """워킹트리 상태 **관측 자체가 실패**했다 — `strict` 소비자만 받는다.
 
     비차단 소비자(stage 후 보고)는 종전대로 빈 목록으로 접는다 — 보고 한 줄이 완료를 막지
-    않는다. 그 관측을 **선행 조건**으로 쓰는 소비자(종결의 재배치·머지·반납)는 실패를 clean 과
+    않는다. 그 관측을 **선행 조건**으로 쓰는 소비자(종결의 재배치·머지)는 실패를 clean 과
     구별해야 한다: 빈 목록으로 접으면 dirty 트리가 clean 으로 위장돼 그 위에서 mutation 이 돈다.
     """
 
@@ -2129,6 +2132,15 @@ class TicketFinisher:
         if self._regression_cwd is not None:
             return Path(self._regression_cwd)
         return Path(_regression_cwd())
+
+    def use_code_tree(self, tree: Path) -> None:
+        """이 트리를 코드 트리로 쓴다 — 회귀 cwd 와 `_code_tree()` 가 이 값을 본다.
+
+        종결(`ClusterCloser.run`)이 묶음 기록의 브랜치로 찾은 작업 트리를 넘기는 자리다. task
+        작업공간 값은 지운다 — 코드 트리는 이 트리 하나다.
+        """
+        self._regression_cwd = str(tree)
+        self._task_workspace = None
 
     def _diff_ticket_inputs(self, ticket_id: str, external) -> DiffTicketInputs:
         """현재 티켓 touches/estimate와 board 모듈 실패를 한 번에 해소한다."""
@@ -3560,7 +3572,7 @@ class TicketFinisher:
         stage 는 그대로다(`_code_tree`).
 
         `close` 는 이 실행이 종결 파이프라인 안에 있다는 뜻이다 — [1/5]~[4/5]는 그대로이고
-        [5/5]의 손작업 안내만 바뀐다(커밋·재배치·머지·반납·board 기록을 종결이 실행하므로 그
+        [5/5]의 손작업 안내만 바뀐다(커밋·재배치·머지·board 기록을 종결이 실행하므로 그
         안내가 남으면 이미 기계가 한 일을 사람에게 시킨다). 판정·부작용은 같다.
 
         `cluster_close`는 ``ClusterCloser``가 넘기는 exact ledger path-binding이다. 인증
@@ -3760,7 +3772,7 @@ class TicketFinisher:
         # 단일 repo 출력은 기존 커밋 안내 문구를 byte-compatible하게 보존한다. 두 repo 계획일 때만
         # cwd별 안내로 확장해 PM 홈 성공이 task worktree 누락을 가리지 못하게 한다.
         if close:
-            print("  git commit — 종결 파이프라인이 실행한다(커밋·재배치·머지·슬롯 반납·"
+            print("  git commit — 종결 파이프라인이 실행한다(커밋·재배치·머지·"
                   "board 기록까지 · 손 git 없음)")
         elif not multi_repo:
             print("  git commit — **경로를 명시**하라: "
@@ -3879,11 +3891,17 @@ class TicketFinisher:
 
 # ── close 파이프라인 (묶음 종결) ───────────────────────────────────────────
 #
-# 종결은 순서가 있는 일곱 단계다: 리뷰 게이트 처분(확인 생성) → 티켓별 완료 기록 → 슬롯 커밋 →
-# 통합 브랜치로 재배치 → 머지 → 슬롯 반납 → board·포인터 커밋. 사람이 순서를 규칙으로
+# 종결은 순서가 있는 여섯 단계다: 리뷰 게이트 처분(확인 생성) → 티켓별 완료 기록 → 슬롯 커밋 →
+# 통합 브랜치로 재배치 → 머지 → board·포인터 커밋. 사람이 순서를 규칙으로
 # 지키던 자리를 한 커맨드가 가져간다 — 순서가 판정 결과를 바꾸던 축(사설 참조·측정 폭)은 이미
-# 판정 기준 교체로 닫혔으므로, 남은 것은 "빠뜨리지 않는" 축이다(반납 누락·포인터 커밋 누락이
-# 실측된 잔여다).
+# 판정 기준 교체로 닫혔으므로, 남은 것은 "빠뜨리지 않는" 축이다(포인터 커밋 누락이 실측된
+# 잔여다).
+#
+# **종결은 슬롯을 반납하지 않는다.** 슬롯은 task 가 빌리는 것이라 반납은 task 종료
+# (`pm-config task end`)나 사용자 반납(`pm-config release`) 몫이다. 종결이 도는 작업 트리는
+# 묶음 기록의 `branch`(없으면 `base_branch`)를 체크아웃한 작업 트리 정확히 하나다
+# (`_resolve_code_tree`) — task 가 슬롯을 몇 개 쥐었는지는 보지 않고, 대여 기록은 찾는 곳을
+# 정하는 데만 읽는다.
 #
 # **막을 조건은 첫 부작용 전에 전부 모아 한 번에 낸다**(`preflight`). 각 단계가 자기 차례에
 # 와서야 자기 조건을 보면 한 실행에 차단 사유가 하나씩만 나오고, 첫 완주까지 사람이 같은
@@ -3893,7 +3911,7 @@ class TicketFinisher:
 # 정상 실행이 첫 줄에서 막힌다. 실행해야 아는 것(머지 충돌·회귀 red)은 선언에서 `None` 이다.
 #
 # **재실행이 곧 재개다.** 각 단계는 자기 부작용이 이미 있는지 **관측**해서 건너뛴다(티켓이
-# done 인가 · 커밋할 변경이 남았나 · 통합 브랜치의 조상인가 · 슬롯이 아직 대여 중인가). 장부의
+# done 인가 · 커밋할 변경이 남았나 · 통합 브랜치의 조상인가). 장부의
 # 단계 기록은 그 관측을 대신하지 않는다 — 기록과 실제가 어긋나면(중단·외부 원복) 기록을 믿는
 # 재개는 없는 커밋 위에서 진행한다. 기록은 어디까지 갔는지 사람이 읽는 값이다.
 #
@@ -3938,12 +3956,26 @@ _CLOSE_INTEGRATION_TREE_DIRTY = (
     "{integration} 트리에 남은 변경이 있어 머지하지 않는다 ({count}건 · {tree})."
 )
 
+# 작업 트리 해소의 두 멈춤 — 브랜치를 쥔 트리가 없을 때와 둘 이상일 때다. 모호 문구는 통합
+# 트리 해소(`_integration_worktree`)도 같이 쓴다(한 규칙 한 문구).
+_CLOSE_CODE_TREE_MISSING = (
+    "묶음 기록 {key} {branch} 를 체크아웃한 작업 트리가 없다 — 대여 기록의 작업 폴더 {folders}곳이 "
+    "속한 저장소의 작업 트리를 모두 보았다. 재배치가 충돌로 멈춘 트리는 목록에 브랜치 없이 "
+    "나오므로 그 브랜치를 쥔 것으로 보이지 않는다 — 그 트리의 재배치를 끝내거나 되돌린 뒤 다시 "
+    "실행하라."
+)
+
+_CLOSE_TREE_AMBIGUOUS = (
+    "{branch} 를 체크아웃한 작업 트리가 {count}개다 ({trees}) — 어느 트리에서 돌지 고르지 "
+    "않는다. 한 트리만 그 브랜치를 쥐게 한 뒤 다시 실행하라."
+)
+
 _CLOSE_TICKET_NOT_CLAIMED = (
     "{ticket} 가 claimed 가 아니다({status}) — 완료 기록은 claimed 티켓만 done 으로 옮긴다."
 )
 
 _CLOSE_OPEN_ALL_DONE = (
-    "{cluster} 장부는 open 인데 멤버 {members} 가 이미 전부 done 이다 — 정상 종결 7단계는 이 "
+    "{cluster} 장부는 open 인데 멤버 {members} 가 이미 전부 done 이다 — 정상 종결은 이 "
     "반쪽 상태를 닫지 않는다(그 완료 기록은 이 파이프라인이 만든 것이 아니라 커밋·재배치·머지가 "
     "무엇을 근거로 도는지 알 수 없다). 이미 통합된 commit 을 명시하는 복구 문으로 닫는다:\n"
     "  python3 .project_manager/tools/ticket_finish.py --cluster {cluster} "
@@ -3956,21 +3988,22 @@ _CLOSE_OPEN_ALL_DONE = (
 class _CloseObservationFailure(Exception):
     """close 단계의 **관측 자체가 실패**했다 — 그 단계에서 정지한다.
 
-    "관측했는데 대상이 없다"(커밋할 변경 없음·리스 없음·서브모듈 아님)와 구별한다: 전자는
+    "관측했는데 대상이 없다"(커밋할 변경 없음·서브모듈 아님)와 구별한다: 전자는
     건너뛰기이고 이쪽은 판정 불능이다. 판정 불능을 완료·clean·무대상으로 접으면 그 단계가
     실제로 끝났다는 증거 없이 다음 단계로 넘어가고, 마지막에 남는 것은 근거 없는 종결 기록뿐
     이다. 관측이 신뢰의 뿌리라는 불변식은 이 구분으로만 지켜진다."""
 
 
 class ClusterCloser:
-    """묶음 종결(close) — 고정 일곱 단계·상태 관측 기반 멱등 + 첫 부작용 앞 선검사.
+    """묶음 종결(close) — 고정 여섯 단계·상태 관측 기반 멱등 + 첫 부작용 앞 선검사.
 
     git·board·위임 호출은 전부 `TicketFinisher` 가 이미 들고 있는 seam 을 그대로 쓴다(사본 0).
-    이 클래스가 새로 받는 seam 은 둘뿐이다 — 라운드 처분 CLI 와 슬롯 반납.
+    이 클래스가 새로 받는 seam 은 라운드 처분 CLI 하나뿐이다. 슬롯은 반납하지 않는다 — 대여
+    기록은 작업 트리를 찾을 곳을 정하는 데만 읽는다(`_resolve_code_tree`).
     """
 
     # `(단계 키, 사람이 읽는 이름, 읽기 전용 선검사 메서드 이름 또는 None)`.
-    # 세 번째 값이 **선언**이다 — `None` 은 "실행해야 아는 것"(머지 충돌·커밋 rc·반납 거부).
+    # 세 번째 값이 **선언**이다 — `None` 은 "실행해야 아는 것"(머지 충돌·커밋 rc).
     # `run()`·`preflight()` 가 이 3-튜플을 언팩하므로 선언을 빠뜨린 단계를 추가하면 그 자리에서
     # `ValueError` 다(별도 가드 장치 없음).
     STEPS: tuple[tuple[str, str, str | None], ...] = (
@@ -3979,16 +4012,12 @@ class ClusterCloser:
         ("commit", "슬롯 커밋", None),
         ("rebase", "통합 브랜치로 재배치", "_pre_rebase"),
         ("merge", "통합 브랜치 머지", "_pre_merge"),
-        ("release", "슬롯 반납", None),
         ("board", "board·포인터 커밋", "_pre_board"),
     )
 
     # 멤버의 코드 산출을 전제하는 단계 — 완료 기록할 티켓·커밋할 경로·재배치할 브랜치·머지할
     # 브랜치가 전부 살아 있는 멤버에서 나온다. 멤버가 전부 종결(처분)이면 이 단계들은 대상이
     # 없다(머지할 코드가 없다).
-    # 반납(`release`)은 여기 없다 — 슬롯 리스는 멤버의 코드 산출이 아니라 묶음이 든 자원이라
-    # 멤버를 전부 폐기해도 남아 있을 수 있다. `_step_release` 가 슬롯 미해소·리스 없음·이미
-    # 반납을 스스로 무대상으로 접으므로 목록에 남길 이유가 없고, 빼면 그 리스가 새어 나간다.
     CODE_STEP_KEYS: frozenset[str] = frozenset(
         {"record", "commit", "rebase", "merge"}
     )
@@ -4011,7 +4040,6 @@ class ClusterCloser:
         user_ack: str | None = None,
         explicit_slot: bool = False,
         run_delegate_fn: Callable[[list[str]], tuple[int, str]] | None = None,
-        release_fn: Callable[[str], tuple[bool, str]] | None = None,
     ) -> None:
         self._cluster = cluster
         self._finisher = finisher
@@ -4030,11 +4058,10 @@ class ClusterCloser:
         # 라운드 처분 seam — 묶음 표면이 있으면 한 번, 없으면 티켓별로 반복한다(둘 다 같은
         # 커맨드의 인자 차이라 여기서 고르는 것은 argv 뿐이다).
         self._run_delegate_fn = run_delegate_fn or self._default_run_delegate
-        self._release_fn = release_fn or self._default_release
         self._board = _board_module_at(board_py)
         # 장부가 선언한 멤버 전부와, 그중 코드 단계의 대상이 되는 **살아 있는** 멤버.
         # 기록 축(무엇을 board 에 남기나·커밋 문안의 단위)은 선언을, 실행 축(완료 기록·커밋·
-        # 재배치·머지·반납)은 살아 있는 멤버를 본다.
+        # 재배치·머지)은 살아 있는 멤버를 본다.
         self._declared_tickets: tuple[str, ...] = ()
         self._tickets: tuple[str, ...] = ()
 
@@ -4049,52 +4076,6 @@ class ClusterCloser:
             cwd=str(REPO),
         )
         return result.returncode, result.stdout + result.stderr
-
-    def _default_release(self, slot: str) -> tuple[bool, str]:
-        """슬롯을 반납한다 — `(성공, 사람이 읽는 한 줄)`.
-
-        커밋 안 한 변경이 있는 슬롯은 거부다(`ReleaseRefused`·엔진은 stash 하지 않는다) — 종결이
-        산출물을 조용히 치우지 않는다. 소유 검사(`owner_task`)도 그대로 태운다.
-        """
-        pool = _load_tool_module(TOOLS_DIR / "worktree_pool.py")
-        release = getattr(pool, "release", None) if pool is not None else None
-        if release is None:
-            return False, "worktree_pool 반납 seam 을 로드하지 못했다"
-        try:
-            released = release(slot, owner_task=self._task)
-        except Exception as exc:  # noqa: BLE001 — 반납 거부는 사유를 그대로 올린다.
-            if _is_engine_rev_skew(exc):
-                raise
-            return False, f"{type(exc).__name__}: {exc}"
-        if self._task is None:
-            return True, f"슬롯 {slot} 반납됨"
-        # 반납 뒤 이 task 가 가진 슬롯을 말한다 — 종결 뒤에도 같은 세션이 반납된 슬롯에서 계속
-        # 작업하던 것을 막는 자리다(아무것도 안 알리면 세션은 슬롯을 잃은 줄 모른다).
-        held = [lease.slot for lease in pool.slots_for_task(self._task)]
-        if held:
-            return True, f"슬롯 {slot} 반납됨 — task {self._task} 가 가진 슬롯: {', '.join(held)}"
-        return True, (
-            f"슬롯 {slot} 반납됨 — task {self._task} 가 가진 슬롯: 없음. 이 task 로 코드 작업을 "
-            f"이어가려면 `pm-config alloc {released.repo} --task {self._task}` 로 다시 잡는다")
-
-    def _slot_state(self, slot: str) -> str | None:
-        """슬롯의 현재 상태 — 리스 장부에 그 슬롯이 없으면 None(관측 성공·대여 아님).
-
-        조회 seam 부재·조회 실패는 판정 불능이라 정지다 — 반납 여부를 모른 채 다음으로 넘어가면
-        반납 누락(실측된 잔여)이 그대로 남는다."""
-        pool = _load_tool_module(TOOLS_DIR / "worktree_pool.py")
-        state_fn = getattr(pool, "slot_state", None) if pool is not None else None
-        if state_fn is None:
-            raise _CloseObservationFailure(
-                f"슬롯 상태 조회 seam 을 로드하지 못했다 ({TOOLS_DIR / 'worktree_pool.py'}) — "
-                "반납 여부를 관측할 수 없다. pm-update 로 .project_manager/tools/ 를 재동기하라.")
-        try:
-            return state_fn(slot)
-        except Exception as exc:  # noqa: BLE001 — 조회 실패는 판정 불능(정지).
-            if _is_engine_rev_skew(exc):
-                raise
-            raise _CloseObservationFailure(
-                f"슬롯 {slot} 상태를 관측하지 못했다 — {type(exc).__name__}: {exc}") from exc
 
     # ── 공용 조회 ─────────────────────────────────────────────────────
 
@@ -4240,7 +4221,7 @@ class ClusterCloser:
         return rc == 0
 
     def _dirty_paths(self, cwd: Path) -> tuple[str, ...]:
-        """그 트리에 남은 변경 전체 (재배치·머지·반납의 선행 조건 관측 · 실패는 정지).
+        """그 트리에 남은 변경 전체 (재배치·머지의 선행 조건 관측 · 실패는 정지).
 
         조회 실패를 빈 목록으로 접으면 **clean 으로 위장**돼 dirty 트리에서 재배치·머지가 돈다."""
         try:
@@ -4253,34 +4234,100 @@ class ClusterCloser:
                 f"{type(exc).__name__}: {exc}") from exc
         return tuple(path for _code, path in entries)
 
-    def _integration_worktree(self, branch: str) -> Path | None:
-        """그 브랜치를 체크아웃한 작업 트리 (없으면 None).
+    def _worktree_list(self, folder: Path) -> list[tuple[Path, str | None]]:
+        """`folder` 가 속한 저장소의 작업 트리 전부 — `(경로, 체크아웃한 브랜치 ref 또는 None)`.
 
-        머지는 통합 브랜치를 **가진 트리에서** 해야 한다 — 같은 브랜치를 두 트리가 동시에
-        체크아웃할 수 없으므로(git 제약) 종결 슬롯에서 체크아웃해 오는 길은 없다.
+        `git worktree list --porcelain` 해석은 이 한 곳이다 — 작업 트리 해소와 통합 트리 해소가
+        같은 해석을 쓴다. detached 트리(재배치가 멈춘 트리 포함)는 `branch` 줄이 없어 None 이다.
+        폴더가 디스크에서 사라지고 등록만 남은 항목(prunable)은 작업 트리가 아니라 내지 않는다 —
+        git 은 그 등록을 브랜치와 함께 계속 낸다. 조회 실패는 정지다(미해소 위장 금지).
         """
         try:
-            rc, out = self._git_stdout(
-                self._code_tree(), ["worktree", "list", "--porcelain"])
+            rc, out = self._git_stdout(folder, ["worktree", "list", "--porcelain"])
         except Exception as exc:  # noqa: BLE001 — 조회 실패는 정지(미해소 위장 금지).
             if _is_engine_rev_skew(exc):
                 raise
             raise _CloseObservationFailure(
-                f"작업 트리 목록을 관측하지 못했다 ({self._code_tree()}) — "
+                f"작업 트리 목록을 관측하지 못했다 ({folder}) — "
                 f"{type(exc).__name__}: {exc}") from exc
         if rc != 0:
             raise _CloseObservationFailure(
-                f"작업 트리 목록을 관측하지 못했다 "
-                f"({self._code_tree()} · rc={rc}): {out.rstrip()}")
-        target = f"refs/heads/{branch}"
-        current: str | None = None
+                f"작업 트리 목록을 관측하지 못했다 ({folder} · rc={rc}): {out.rstrip()}")
+        trees: list[tuple[Path, str | None]] = []
         for line in out.splitlines():
             if line.startswith("worktree "):
-                current = line[len("worktree "):].strip()
-            elif line.startswith("branch ") and current:
-                if line[len("branch "):].strip() == target:
-                    return Path(current)
-        return None
+                trees.append((Path(line[len("worktree "):].strip()), None))
+            elif line.startswith("branch ") and trees:
+                trees[-1] = (trees[-1][0], line[len("branch "):].strip())
+        return [(tree, ref) for tree, ref in trees if tree.exists()]
+
+    def _integration_worktree(self, branch: str) -> Path | None:
+        """그 브랜치를 체크아웃한 작업 트리 (없으면 None · 둘 이상이면 정지).
+
+        머지는 통합 브랜치를 **가진 트리에서** 해야 한다 — 같은 브랜치를 두 트리가 동시에
+        체크아웃할 수 없으므로(git 제약) 종결 슬롯에서 체크아웃해 오는 길은 없다. 그 제약은
+        우회(`--ignore-other-worktrees`)가 있어 둘 이상도 관측된다 — 그때는 고르지 않는다.
+        """
+        target = f"refs/heads/{branch}"
+        holders = [tree for tree, ref in self._worktree_list(self._code_tree())
+                   if ref == target]
+        if len(holders) > 1:
+            raise _CloseObservationFailure(_CLOSE_TREE_AMBIGUOUS.format(
+                branch=branch, count=len(holders), trees=", ".join(map(str, holders))))
+        return holders[0] if holders else None
+
+    def _resolve_code_tree(self) -> tuple[Path | None, str | None]:
+        """이번 종결이 도는 작업 트리 — `(트리, None)` 또는 `(None, 멈춤 사유)`.
+
+        묶음 기록의 `branch`(선언이 없으면 `base_branch`)를 체크아웃한 작업 트리가 **정확히
+        하나**일 때만 그 트리다. 찾는 곳은 대여 기록 행의 작업 폴더 가운데 git 작업 트리인 것이
+        속한 저장소의 작업 트리 전부다(이미 목록에 나온 폴더는 다시 묻지 않는다). PM 홈 자신은
+        찾는 곳이 아니다 — 홈이 작업 폴더와 같은 저장소일 때만 그 목록에 들어 후보가 된다.
+        찾은 트리가 작업 폴더면 그 행의 경로(`REPO/<slot>`)로 넘긴다 — git 목록은 실경로를 내므로
+        심링크 슬롯을 실경로로 넘기면 슬롯 좌표(`work/<repo>_<N>/` touches)를 풀 수 없다.
+
+        task·슬롯 정체성은 보지 않는다 — 누가 그 트리를 빌렸는지는 작업 트리 선택의 입력이
+        아니다(소유 확인은 멤버 `claimed_by` 대조가 따로 한다). "한 브랜치는 한 트리" 는 한
+        저장소 안에서만 성립하고 우회도 있으므로 없음·둘 이상은 고르지 않고 멈춘다. 대여 기록
+        판독 불능·목록 조회 실패는 관측 실패(정지)다.
+        """
+        key, branch = "branch", self._declared_branch("branch")
+        if branch is None:
+            key, branch = "base_branch", self._declared_branch("base_branch")
+        if branch is None:
+            return None, _CLOSE_INTEGRATION_UNDECLARED.format(cluster=self._cluster)
+        ledger_status, rows = identity_args._read_lease_rows_status(LEASES_FILE)
+        if ledger_status == identity_args.LEDGER_UNREADABLE:
+            raise _CloseObservationFailure(
+                f"대여 기록을 읽지 못했다 ({LEASES_FILE}) — 작업 트리를 찾을 곳을 정할 수 없다.")
+        # 작업 폴더(실경로 → 대여 행 경로) — git 작업 트리인 것만, 대여 기록 순서대로.
+        folders: dict[Path, Path] = {}
+        for row in rows:
+            slot = str(row.get("slot") or "").strip()
+            folder = REPO / slot
+            if slot and (folder / ".git").exists():
+                folders.setdefault(folder.resolve(), folder)
+        target = f"refs/heads/{branch}"
+        listed: set[Path] = set()
+        holders: list[Path] = []
+        for resolved_folder, folder in folders.items():
+            if resolved_folder in listed:
+                continue
+            for tree, ref in self._worktree_list(folder):
+                resolved = tree.resolve()
+                if resolved in listed:
+                    continue
+                listed.add(resolved)
+                if ref == target:
+                    holders.append(folders.get(resolved, tree))
+        if not holders:
+            return None, _CLOSE_CODE_TREE_MISSING.format(
+                key=key, branch=branch, folders=len(folders))
+        if len(holders) > 1:
+            return None, _CLOSE_TREE_AMBIGUOUS.format(
+                branch=branch, count=len(holders), trees=", ".join(map(str, holders)))
+        print(f"  작업 트리 → {holders[0]} (묶음 기록 {key} {branch})")
+        return holders[0], None
 
     def _code_tree(self) -> Path:
         return self._finisher._code_tree()
@@ -4628,12 +4675,13 @@ class ClusterCloser:
         return reasons
 
     def _step_merge(self) -> str | None:
-        """통합 브랜치 머지 — 통합 브랜치를 가진 트리에서 `--no-ff` 로 받고, 묶음 브랜치를 정리한다.
+        """통합 브랜치 머지 — 통합 브랜치를 가진 트리에서 `--no-ff` 로 받는다.
 
         묶음 브랜치(`branch`)는 사람이 선언한 묶음만 갖는다(크기 1 자동 장부는 없다) — 그
         선언이 없으면 받을 브랜치가 없어 무대상이다. 기준 브랜치 미선언은 그 축이 아니라
-        판정 기준의 부재라 정지다. 머지가 끝난(또는 이미 조상인) 묶음 브랜치는 그 자리에서
-        삭제를 시도한다(`_delete_cluster_branch` — 거부는 사유 1줄이고 종결을 뒤집지 않는다)."""
+        판정 기준의 부재라 정지다. 합쳐진 묶음 브랜치는 지우지 않는다 — 작업 트리가 그 브랜치를
+        쥔 채 여기 닿으므로 삭제는 늘 거부된다. 브랜치 정리는 슬롯 제거
+        (`worktree_pool.remove_slot`) 몫이다."""
         blocks = self._pre_merge()
         if blocks:
             return "\n".join(blocks)
@@ -4643,11 +4691,10 @@ class ClusterCloser:
             print("  묶음 브랜치 미선언 — 무대상")
             return None
         tree = self._code_tree()
-        target_tree = self._integration_worktree(integration)
         if self._is_ancestor(tree, source, integration):
             print(f"  {source} 는 이미 {integration} 에 있다 — 건너뜀")
-            self._delete_cluster_branch(target_tree, source)
             return None
+        target_tree = self._integration_worktree(integration)
         if target_tree is None:
             # 선검사가 같은 관측으로 이미 막았어야 하는 자리 — 그 사이에 트리가 사라졌다.
             return _CLOSE_INTEGRATION_TREE_MISSING.format(integration=integration)
@@ -4655,7 +4702,6 @@ class ClusterCloser:
         message = _CLOSE_MERGE_MESSAGE.format(unit=unit, title=title)
         if self._dry_run:
             print(f"  [dry-run] cwd={target_tree} git merge --no-ff -m \"{message}\" {source}")
-            self._delete_cluster_branch(target_tree, source)
             return None
         rc, out = self._git(target_tree, ["merge", "--no-ff", "-m", message, source])
         if rc != 0:
@@ -4663,66 +4709,6 @@ class ClusterCloser:
             return (f"머지 충돌 — 원상 복구했다(merge --abort). 충돌을 해소한 뒤 다시 "
                     f"실행하라: {out.rstrip()}")
         print(f"  ✓ {source} → {integration} ({message})")
-        self._delete_cluster_branch(target_tree, source)
-        return None
-
-    def _delete_cluster_branch(self, tree: "Path | None", source: str) -> None:
-        """묶음 브랜치 삭제 판정 1회 — 통합 브랜치를 든 트리에서. 결과는 1줄 보고다.
-
-        브랜치 수명은 묶음 수명이다. 통합에 들어간 뒤에도 남는 묶음 브랜치가 잔재의 한 무리라,
-        종결이 그 자리에서 슬롯 제거와 **같은 삭제 규칙**(`worktree_pool.delete_branch_by_rule` —
-        보호·기본 브랜치·자식·부모 기록·합쳐짐·끝 커밋 재확인 뒤 `git branch -D`)을 태운다. 승인값은
-        없다 — 합쳐지지 않은 묶음 브랜치는 보존이다. **보존은 종결을 실패시키지 않는다** — 반납
-        (`release`)은 슬롯의 체크아웃을 바꾸지 않으므로 이 시점에 작업 슬롯이 묶음 브랜치를 아직
-        쥐고 있고, 그때 `git branch -D` 가 거부하는 것이 정상 형상이다(그 자리의 삭제는 슬롯 제거
-        `worktree_pool.remove_slot` 이 맡는다). 보호 목록은 종결 슬롯 리스의 repo 로 읽는다.
-        판정 조회 실패는 관측 실패(정지)다 — 보존으로 접지 않는다.
-        """
-        if tree is None:
-            print(f"  묶음 브랜치 {source} — 통합 트리가 없어 삭제를 시도하지 않는다")
-            return
-        if self._dry_run:
-            print(f"  [dry-run] cwd={tree} 묶음 브랜치 {source} 삭제 판정"
-                  "(부모 기록·합쳐짐·끝 커밋 재확인 뒤 git branch -D)")
-            return
-        pool = _load_tool_module(TOOLS_DIR / "worktree_pool.py")
-        if pool is None:
-            raise _CloseObservationFailure(
-                f"브랜치 삭제 판정 seam 을 로드하지 못했다 ({TOOLS_DIR / 'worktree_pool.py'}) — "
-                "pm-update 로 .project_manager/tools/ 를 재동기하라.")
-        lease = next((row for row in pool.list_leases() if row.slot == self._slot), None)
-        if lease is None:
-            print(f"  묶음 브랜치 {source} — 종결 슬롯 리스가 없어 repo 보호 목록을 알 수 없다 · "
-                  "삭제를 시도하지 않는다")
-            return
-        try:
-            deletion = pool.delete_branch_by_rule(
-                source, repo=lease.repo, git_runner=lambda args: self._git(tree, args))
-        except pool.BranchParentError as exc:
-            raise _CloseObservationFailure(f"묶음 브랜치 {source} 삭제 판정 실패 — {exc}") from exc
-        mark = "✓ " if deletion.action == pool.BRANCH_DELETED else ""
-        print(f"  {mark}묶음 {deletion.summary()}")
-
-    def _step_release(self) -> str | None:
-        """슬롯 반납 — dirty 슬롯은 거부다(자동 경로라고 산출물을 치우지 않는다)."""
-        if not self._slot:
-            print("  슬롯 미해소 — 무대상")
-            return None
-        state = self._slot_state(self._slot)
-        if state is None:
-            # 관측은 됐고 그 슬롯이 장부에 없다 — 대여한 적이 없으니 반납할 것도 없다.
-            print(f"  슬롯 {self._slot} 리스 없음 — 무대상")
-            return None
-        if state != "leased":
-            print(f"  슬롯 {self._slot} 이미 반납됨({state}) — 건너뜀")
-            return None
-        if self._dry_run:
-            print(f"  [dry-run] pm-config release {self._slot}")
-            return None
-        ok, message = self._release_fn(self._slot)
-        if not ok:
-            return f"슬롯 반납 실패 — {message}"
-        print(f"  ✓ {message}")
         return None
 
     def _pre_board(self) -> list[str]:
@@ -4740,7 +4726,7 @@ class ClusterCloser:
         종결 표시(`status=closed`)는 커밋 **대상**이다 — 장부 자신이 board-git 커밋에 실리므로,
         표시를 커밋 뒤에 쓰면 board-git 이 그 값을 영영 못 담고 다음 실행마다 그 한 줄을
         커밋하려 든다(재실행 무부작용이 깨진다). 그래서 순서는 표시 → 두 커밋이고, **어느
-        커밋이든 실패하면 표시를 되돌린다** — 디스크에 남는 `closed` 는 일곱 단계가 전부
+        커밋이든 실패하면 표시를 되돌린다** — 디스크에 남는 `closed` 는 모든 단계가 전부
         관측된 뒤에만 존재한다.
         """
         paths = self._board_git_paths()
@@ -4895,7 +4881,7 @@ class ClusterCloser:
         """마지막 단계가 실패했을 때 진행 기록을 그 실행 **직전 값**으로 되돌린다.
 
         종결 표시는 커밋에 실어야 해서 커밋보다 먼저 쓰지만, 커밋이 실패하면 그 표시는 근거가
-        없다 — 디스크에 남는 `closed` 는 일곱 단계 전부가 관측된 경우로 제한한다."""
+        없다 — 디스크에 남는 `closed` 는 모든 단계가 관측된 경우로 제한한다."""
         self._write_progress(step_key, status)
 
     def _write_progress(self, step_key: str | None, status: str | None) -> None:
@@ -4952,8 +4938,8 @@ class ClusterCloser:
         """정상 종결의 첫 부작용 앞 read-only 상태 게이트 — open + 전원 done 은 복구 전용이다.
 
         `open` 장부의 멤버가 전부 done 이면 그 완료 기록은 이 파이프라인이 남긴 것이 아니다
-        (1단계가 성공하는 순간 장부는 `closing` 이 된다). 그 상태로 7단계를 시작하면 무엇이
-        이미 통합됐는지 모르는 채 커밋·재배치·머지·반납으로 들어간다 — 그래서 여기서 멈추고
+        (1단계가 성공하는 순간 장부는 `closing` 이 된다). 그 상태로 정상 종결을 시작하면 무엇이
+        이미 통합됐는지 모르는 채 커밋·재배치·머지로 들어간다 — 그래서 여기서 멈추고
         증거를 명시하는 복구 문으로 보낸다. `closing` 재개와 `closed` 멱등 관측은 그대로다.
         """
         ledger = self._ledger()
@@ -4989,7 +4975,7 @@ class ClusterCloser:
     def _cluster_id(self, value: str | None) -> str:
         """이름/장부 id 어느 표기든 board 의 장부 id 하나로 정규화한다 (빈 값은 빈 값).
 
-        정상 7단계는 `load_cluster`·`cluster_members` 안에서 이 정규화를 이미 받는다. recovery
+        정상 종결은 `load_cluster`·`cluster_members` 안에서 이 정규화를 이미 받는다. recovery
         만 원시 문자열을 비교하면 같은 표기로 부른 호출이 "장부 id 가 다르다"로 멈춘다.
         """
         text = str(value or "").strip()
@@ -5060,7 +5046,8 @@ class ClusterCloser:
         if self._cluster_id(self._user_ack) != cluster_id:
             return None, None, (f"--user-ack은 대상 cluster와 정확히 같아야 한다: "
                                 f"expected {self._cluster!r}, got {self._user_ack!r}")
-        tree = self._code_tree()
+        # 복구할 제품 트리는 명시한 슬롯이다 — 정상 종결의 작업 트리 해소와 무관하다.
+        tree = REPO / self._slot
         try:
             if tree.resolve() == REPO.resolve():
                 return None, None, f"제품 git이 PM 홈으로 강등됐다: {tree}"
@@ -5330,7 +5317,7 @@ class ClusterCloser:
 
         폐기를 아는 단계를 뒤에 더하는 대신 **무엇을 밟을지**를 앞에서 정한다. 그래야 그
         단계들의 선검사(통합 브랜치 실재·묶음 브랜치 실재·완료 기록 가능)도 함께 무대상이 된다
-        — 머지할 코드도 반납할 슬롯도 없는 묶음에 브랜치를 요구하지 않는다.
+        — 머지할 코드가 없는 묶음에 브랜치를 요구하지 않는다.
         """
         if self._tickets:
             return self.STEPS
@@ -5384,6 +5371,19 @@ class ClusterCloser:
         if discarded:
             print(f"  처분 종결 멤버 {len(discarded)}: {', '.join(discarded)} — 코드 산출이 "
                   f"없어 코드 단계는 대상이 아니다({', '.join(sorted(self.CODE_STEP_KEYS))})")
+        # 작업 트리는 실행마다 git 에서 다시 찾는다(재실행이 곧 재개). 트리 없이는 트리를 보는
+        # 선검사를 돌릴 수 없으므로 해소 실패는 선검사 앞에서 단독으로 멈춘다. 살아 있는 멤버가
+        # 없으면 코드 단계가 없어 찾지 않는다.
+        if self._tickets:
+            try:
+                tree, problem = self._resolve_code_tree()
+            except _CloseObservationFailure as failure:
+                tree, problem = None, f"관측 실패 — {failure}"
+            if problem:
+                print(f"\n[중단] 작업 트리 해소 — {problem}", file=sys.stderr)
+                return 1
+            assert tree is not None
+            self._finisher.use_code_tree(tree)
         try:
             reasons = self.preflight()
         except _CloseObservationFailure as failure:
@@ -5430,7 +5430,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="C-<이름>",
         default=None,
         help="묶음 종결(close) — 기계 확인·게이트 처분·티켓별 완료 기록·커밋·재배치·머지·"
-             "슬롯 반납·board 기록을 고정 순서로 실행한다. 실패 지점에서 멈추고, 다시 "
+             "board 기록을 고정 순서로 실행한다. 실패 지점에서 멈추고, 다시 "
              "실행하면 끝난 단계는 건너뛴다(재실행이 곧 재개).",
     )
     parser.add_argument(
@@ -5463,10 +5463,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--user-ack", default=None, metavar="C-<이름>",
         help="reconcile 대상 cluster ID와 정확히 같은 사용자 승인값.",
     )
-    # ── 두-git 다중슬롯 seam (pm_handoff 미러) ──────────
-    # 분리된 PM 홈 + worktree 슬롯 여럿 형상에서 회귀를 어느 worktree(tests/ 보유)에서
-    # 돌릴지 disambiguate 한다 — pm_handoff `--repo`/`--slot`/`--no-pytest` 와 동형(canonical
-    # 분해형). `--repo` 단독은 활성(leased) 슬롯 1개면 자동해소·0/≥2 는 fail-loud.
+    # ── 실행 정체성 (`--repo`/`--slot`·`--task`) ──────────
+    # 멤버 `claimed_by` 와 대조하는 소유 확인 정체성이다 — 작업 트리는 묶음 기록의 브랜치로
+    # 찾으므로 이 값으로 고르지 않는다. 복구 문에서는 `--repo --slot` 이 복구할 제품 트리다.
+    # `--repo` 단독은 활성(leased) 슬롯 1개면 자동해소·0/≥2 는 fail-loud.
     identity_args.add_identity_args(parser)
     parser.add_argument(
         "--no-pytest",
@@ -5509,18 +5509,17 @@ def _main(argv: list[str] | None = None) -> int:
                 "--reconcile-integrated는 --repo <repo> --slot <N> 둘 다 필수이고 --task를 받지 않는다."
             )
 
-    # task 실행-위치 핀은 독립 축이다. 혼합을 parse_identity의 bare-slot 오류보다
+    # task 정체성은 독립 축이다. 혼합을 parse_identity의 bare-slot 오류보다
     # 먼저 거부해 `--repo`를 추가하라는 잘못된 해결책을 안내하지 않는다.
     if args.task is not None and (args.repo is not None or args.slot is not None):
         parser.error(
             "--task 는 독립 정체성이다 — --repo/--slot 과 함께 쓸 수 없다 "
-            "(task 보유 작업공간은 장부에서 자동 해소)."
+            "(작업 트리는 묶음 기록의 브랜치로 찾는다)."
         )
 
     # 정체성 인자 *검증*(`--slot` 단독·`slot < 1` = uniform fail-loud)은 `--no-pytest` 와
-    # 무관하게 **항상** 수행한다. task도 회귀 전용 값이 아니다: stage/status 계획의 cwd 단일
-    # 진실이므로 --no-pytest 에서도 반드시 해소한다. slot-mode 코드 트리 해소·모호 게이트도
-    # 같다 — 회귀 skip 여부와 독립이다(아래 비-task 경로 주석).
+    # 무관하게 **항상** 수행한다. 정체성은 소유 확인의 입력이라 회귀 skip 으로 건너뛰지 않는다.
+    # slot-mode 모호 게이트도 같다 — 회귀 skip 여부와 독립이다(아래 비-task 경로 주석).
     try:
         identity = identity_args.parse_identity(args)
     except ValueError as exc:
@@ -5551,7 +5550,7 @@ def _main(argv: list[str] | None = None) -> int:
 
     # 무인자 진입(`--task`·`--repo/--slot` 전무)도 정체성 축은 task 하나다 — 생산자와 같은
     # 체인(`cwd 작업 폴더 → 단일 활성 task`)으로 해소해 아래 task 갈래로 합류시킨다. 해소되면
-    # 슬롯 자동해소 갈래가 필요 없고, 안 되면 실행 위치를 지어내지 않고 멈춘다.
+    # 슬롯 자동해소 갈래가 필요 없고, 안 되면 정체성을 지어내지 않고 멈춘다.
     if identity.task is None and identity.kind == "none":
         pm_log = _load_pm_log()
         resolved_task, identity_source = pm_log.resolve_snapshot_identity(REPO, Path.cwd())
@@ -5559,7 +5558,7 @@ def _main(argv: list[str] | None = None) -> int:
             print(
                 f"\n[중단] 정체성 미해소 ({identity_source}) — 이 cwd 를 가진 작업 폴더가 없고 "
                 "활성 task 도 하나가 아니다. `--task <이름>` 으로 명시하라 "
-                "(코드 트리는 회귀뿐 아니라 diff 측정·stage 가 함께 쓰므로 --no-pytest 로는 "
+                "(정체성은 멤버 티켓의 소유 확인에 쓰므로 --no-pytest 로는 "
                 "풀리지 않는다).",
                 file=sys.stderr,
             )
@@ -5567,54 +5566,32 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"정체성 자동 해소: task={resolved_task} ({identity_source}; pm_log 공유 체인)")
         identity.task = resolved_task
 
-    regression_cwd: str | None = None
     session: str | None = identity.session
-    task_workspace: Path | None = None
-    # 이번 실행이 쓰는 슬롯 키(`work/<repo>_<N>`) — 종결의 반납 대상이다. 두 해소 갈래
-    # (task 작업공간 · `--repo`/`--slot`)가 같은 값을 이 변수로 내보낸다.
+    # 이번 실행이 명시한 슬롯 키(`work/<repo>_<N>`) — 복구 문(`--reconcile-integrated`)이 복구할
+    # 제품 트리다. 정상 종결의 작업 트리는 이 값이 아니라 묶음 기록의 브랜치로 찾는다
+    # (`ClusterCloser._resolve_code_tree`).
     close_slot: str | None = None
     # board 하위 호출(complete)에 실을 정체성 인자. 명시 인자가 1순위이고, `--repo` 단독처럼
     # 좌표가 덜 찬 경우에만 장부가 해소한 슬롯 좌표로 채운다(아래 slot 분기).
     board_identity: list[str] = []
     if identity.task:
-        # task-mode 해소는 regression·stage·잔여 보고가 공유한다. --no-pytest 는 측정만
-        # 생략할 뿐, 실제 code touches를 놓치게 해서는 안 된다.
-        try:
-            ws = identity_args.resolve_task_workspace(identity, LEASES_FILE)
-        except identity_args.WorkspaceResolutionError as exc:
-            print(f"\n[중단] 작업공간 해소 — {exc}", file=sys.stderr)
-            return 1
-        print(f"작업공간(task {identity.task}) → {REPO / ws.slot}")
-        task_workspace = REPO / ws.slot
-        # task-mode 귀속은 `<user>/<task>` 다 — board 도 같은 축으로 소유를 대조해야 한다.
+        # task 정체성은 소유 확인(멤버 `claimed_by` 대조)에만 쓴다 — task 가 슬롯을 몇 개
+        # 쥐었는지는 보지 않는다. task-mode 귀속은 `<user>/<task>` 다 — board 도 같은 축으로
+        # 소유를 대조해야 한다.
         board_identity = ["--task", identity.task]
-        # 비-task 경로와 동형으로 `--no-pytest` 와 무관하게 해소한다 — 결과 트리는 같지만
-        # (`_code_tree` 가 task 작업공간을 먼저 본다) 해소가 stale 슬롯(장부에는 있고 디스크에는
-        # 없음) 존재검사를 태워 경고 없이 사라지던 갈래를 없앤다.
-        regression_cwd = _regression_cwd(ws.slot)
-        close_slot = ws.slot
     else:
-        # 코드 트리(=회귀 cwd) 해소는 `--no-pytest` 와 **무관하게** 항상 수행한다. 해소 결과는
-        # 회귀 실행 전용 값이 아니다 — diff 서킷브레이커(`_code_tree()`)·[4/5] stage·PM-direct
-        # 재검이 같은 트리를 소비한다. 회귀 skip 이 해소까지 우회하면 그 소비자들이 PM 홈(분리
-        # 형상에선 엔진 import 사본)을 잰다: 실측에서 dirty 한 PM 홈 import 사본이 small 상한
-        # 300 줄 티켓을 2832 줄로 false-block 했고, 같은 호출이 PM 홈의 import 사본을 stage 했다.
-        # `--no-pytest` 는 [1/5] 회귀 실행만 건너뛸 뿐 트리 해소의 우회 수단이 아니다 — 모호는
-        # `--repo/--slot` 또는 `--task` 명시로만 푼다(기계 판정).
+        # 슬롯 정체성(`--repo`/`--slot`)은 대여 행과 조인 확인한 뒤 세션·board 인자로 쓴다. 작업
+        # 트리 선택에는 쓰지 않는다. 모호는 `--repo/--slot` 또는 `--task` 명시로만 푼다.
         worktree_slot, ambiguity = _resolve_finish_slot(identity.repo, identity.slot)
         if ambiguity is not None:
-            print(f"\n[중단] 코드 트리(회귀 cwd) 해소 모호 — {ambiguity}", file=sys.stderr)
+            print(f"\n[중단] 슬롯 정체성 해소 모호 — {ambiguity}", file=sys.stderr)
             print(
                 "  → `--repo <name> [--slot <N>]`(예: --repo project_manager --slot 1) 으로 슬롯을 "
-                "명시하거나, `--task <이름>` 으로 task 작업공간을 쓰라 — 코드 트리는 회귀뿐 아니라 "
-                "diff 측정·stage 가 함께 쓰므로 회귀 skip 으로는 풀리지 않는다.",
+                "명시하거나 `--task <이름>` 으로 실행하라.",
                 file=sys.stderr,
             )
             return 1
-        # 해소된 슬롯이 있으면 그 worktree 를 코드 트리(회귀 cwd)로 명시 forward(_regression_cwd 위임).
-        # 미해소(None)면 미주입 → 런타임 `_regression_cwd()` 폴백(현행 100% 보존).
         if worktree_slot:
-            regression_cwd = _regression_cwd(worktree_slot)
             close_slot = worktree_slot
             # 귀속 세션은 **장부 행이 그 슬롯에 준 정체성**이다 — 경로 basename 을 정체성으로
             # 읽으면 경로에 이름이 없는 슬롯(PM 홈 자신을 가리키는 행 `slot="."`)은 `.` 로,
@@ -5626,11 +5603,12 @@ def _main(argv: list[str] | None = None) -> int:
                 session = resolved.key
             board_identity = _board_identity_argv(identity, resolved)
 
-    finisher = TicketFinisher(regression_cwd=regression_cwd, task_workspace=task_workspace)
+    # 코드 트리는 여기서 정하지 않는다 — 종결이 묶음 기록의 브랜치로 찾아 넘긴다(`use_code_tree`).
+    finisher = TicketFinisher()
     # 완료 기록 단위는 **묶음 하나**다(특례 없음) — 티켓 하나를 준 호출도 그 티켓의 묶음으로
     # 해소해 같은 파이프라인으로 보낸다. 묶음을 선언하지 않은 티켓은 board 가 크기 1 로 접어
     # 주고(마이그레이션 0), 장부가 통합 브랜치를 선언하지 않았으면 판정 기준이 없어 멈춘다.
-    # 티켓용 별도 코드 경로를 남기면 그 경로에서만 장부 기록·반납·포인터 커밋이 빠진다.
+    # 티켓용 별도 코드 경로를 남기면 그 경로에서만 장부 기록·포인터 커밋이 빠진다.
     cluster = args.cluster
     if cluster is None:
         cluster, _ledger = ticket_cluster_ledger(BOARD_PY, args.ticket_id)

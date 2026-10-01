@@ -1,10 +1,11 @@
 """T-0355 — task-mode 작업공간(F6) 도구 배선 + 해소 절대경로 surface (spike §3b F6·결정 ⑦).
 
 identity_args.resolve_task_workspace 의 단위 검증은 test_identity_args.py 가 담당하고, 여기선
-그 F6 해소가 실행-위치 필요 도구(`board.py regression run`·`livegate record`·`ticket_finish.py`)에
+그 F6 해소가 실행-위치 필요 도구(`board.py regression run`·`livegate record`)에
 **배선**돼 (a) 특정 슬롯 worktree **절대경로**로 cwd 를 고정하고 (b) 그 절대경로를 surface 하며
-(c) cwd 는 해소에 참여하지 않음(T-0345 불변)을 본다. 실 pytest·git 은 절대 기동하지 않는다
-(subprocess.run 대역·전량 mock — 프로덕션 라이브 실행 금지).
+(c) cwd 는 해소에 참여하지 않음(T-0345 불변)을 본다. `ticket_finish.py` 는 F6 대상이 아니다 —
+`--task` 는 소유 확인 정체성으로만 가고 작업 트리는 종결이 묶음 기록의 브랜치로 찾는다.
+실 pytest·git 은 절대 기동하지 않는다(subprocess.run 대역·전량 mock — 프로덕션 라이브 실행 금지).
 
 hermetic — board/ticket_finish 의 경로 전역(`REPO`·`LEASES_FILE` 등)이 import 시점에 실 repo
 절대경로로 굳으므로 tmp 프로젝트로 재지정한다(test_board_livegate hermetic 패턴 동류).
@@ -372,7 +373,7 @@ def test_new_no_prefix_no_task_defaults_none(board, monkeypatch):
     assert seen["override"] is None                  # 무prefix → id_prefix(None) → legacy T-NNNN(tier3)
 
 
-# ── ticket_finish.py — task-mode 회귀 작업공간 F6 배선 ───────────────────────
+# ── ticket_finish.py — `--task` 는 소유 확인 정체성으로만 간다 ───────────────
 
 
 @pytest.fixture
@@ -382,7 +383,6 @@ def tf(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "REPO", proj)
     monkeypatch.setattr(mod, "LEASES_FILE", proj / ".project_manager" / ".local" / "worktree-leases.json")
     monkeypatch.setattr(mod, "_guard_worktree_misanchor", lambda: False)
-    monkeypatch.setattr(mod, "_regression_cwd", lambda slot=None: f"CWD::{slot}")
     mod._proj = proj
     return mod
 
@@ -390,17 +390,16 @@ def tf(tmp_path, monkeypatch):
 def _capture_finish_forward(tf, monkeypatch) -> dict:
     """`main` 이 해소해 넘긴 값을 부작용 없이 캡처한다.
 
-    완료 기록 단위는 묶음 하나다(티켓 하나 = 크기 1) — 코드 트리 좌표는 `TicketFinisher` 생성
-    인자로, 실행 좌표(세션·정체성·회귀 skip)는 종결 파이프라인 생성 인자로 간다. 파이프라인이
-    그 값을 완료 기록 단계로 넘기는 것은 묶음 종결 회귀가 값으로 고정한다 — 여기서는 `main` 의
+    완료 기록 단위는 묶음 하나다(티켓 하나 = 크기 1) — 실행 좌표(세션·정체성·회귀 skip)는 종결
+    파이프라인 생성 인자로 간다. 코드 트리는 `main` 이 정하지 않는다(종결이 묶음 기록의 브랜치로
+    찾는다) — `TicketFinisher` 생성 인자는 그 사실을 보는 관측점이다. 여기서는 `main` 의
     해소·forward 만 본다.
     """
     captured: dict = {}
 
     class _FakeFinisher:
-        def __init__(self, regression_cwd=None, task_workspace=None):
-            captured["regression_cwd"] = regression_cwd
-            captured["task_workspace"] = task_workspace
+        def __init__(self, **kwargs):
+            captured["finisher_kwargs"] = kwargs
 
     class _SpyCloser:
         def __init__(self, cluster, **kwargs):
@@ -415,67 +414,26 @@ def _capture_finish_forward(tf, monkeypatch) -> dict:
     return captured
 
 
-def test_ticket_finish_task_resolves_regression_cwd(tf, monkeypatch, capsys):
-    """ticket_finish --task → F6 로 슬롯 특정 후 그 worktree 를 회귀 cwd 로 forward·절대경로 surface."""
-    _write_leases(tf.LEASES_FILE, [
-        {"slot": "work/A_1", "repo": "A", "session": "job6", "state": "leased"},
-    ])
-    captured = _capture_finish_forward(tf, monkeypatch)
+def test_ticket_finish_task_forwards_identity_only(tf, monkeypatch, capsys):
+    """AT-008: task 가 슬롯을 여럿 쥐어도 `main` 은 멈추지 않고 정체성만 넘긴다.
 
-    rc = tf.main(["T-0001", "--task", "job6"])
-    assert rc == 0
-    assert captured["regression_cwd"] == "CWD::work/A_1"   # F6 슬롯을 회귀 cwd 로 forward
-    assert captured["task_workspace"] == tf.REPO / "work" / "A_1"
-    # task 귀속은 `<user>/<task>` 다 — board complete 소유 대조(T-0781)에 같은 축을 넘긴다.
-    assert captured["board_identity_args"] == ["--task", "job6"]
-    out = capsys.readouterr().out
-    assert str(tf.REPO / "work" / "A_1") in out             # 절대경로 surface
-
-
-def test_ticket_finish_task_ambiguous_fails_loud(tf, monkeypatch, capsys):
-    """--task 가 2개↑ 보유(모호·⑦) → fail-loud rc1 (암묵 선택 안 함)."""
+    옛 경로는 task 보유 슬롯에서 작업공간을 골라 같은 task 대여가 둘이면 "통틀어 모호" 로
+    멈췄다. 작업 트리는 종결이 묶음 기록의 브랜치로 찾으므로 `TicketFinisher` 에 트리 인자가
+    없고, task 는 board complete 소유 대조(T-0781)의 `--task` 축으로만 간다.
+    """
     _write_leases(tf.LEASES_FILE, [
         {"slot": "work/A_1", "repo": "A", "session": "job7", "state": "leased"},
         {"slot": "work/A_2", "repo": "A", "session": "job7", "state": "leased"},
     ])
-    monkeypatch.setattr(tf, "TicketFinisher",
-                        lambda **kw: types.SimpleNamespace(run=lambda **k: 0))
-    rc = tf.main(["T-0001", "--task", "job7"])
-    assert rc == 1
-    err = capsys.readouterr().err
-    assert "작업공간 해소" in err
-
-
-def test_ticket_finish_task_no_pytest_still_resolves_workspace(tf, monkeypatch, capsys):
-    """--no-pytest 는 회귀만 생략: F6 worktree는 stage/status 계획을 위해 그대로 forward한다.
-
-    해소 자체도 회귀 skip 여부와 무관하게 돈다 — 비-task 경로와 동형이고, 해소가 stale 슬롯
-    (장부에는 있고 디스크에는 없음) 존재검사를 태운다. 결과 트리는 양쪽 같다.
-    """
-    _write_leases(tf.LEASES_FILE, [
-        {"slot": "work/A_3", "repo": "A", "session": "job8", "state": "leased"},
-    ])
     captured = _capture_finish_forward(tf, monkeypatch)
 
-    assert tf.main(["T-0001", "--task", "job8", "--no-pytest"]) == 0
-    assert captured["regression_cwd"] == "CWD::work/A_3"   # 회귀 skip 여도 해소는 수행
-    assert captured["task_workspace"] == tf.REPO / "work" / "A_3"
-    assert captured["skip_pytest"] is True
-    assert str(tf.REPO / "work" / "A_3") in capsys.readouterr().out
+    rc = tf.main(["T-0001", "--task", "job7"])
 
-
-def test_ticket_finish_task_no_pytest_ambiguous_fails_before_finisher(tf, monkeypatch, capsys):
-    """task 보유 worktree가 모호하면 --no-pytest라도 stage 전에 fail-loud 한다."""
-    _write_leases(tf.LEASES_FILE, [
-        {"slot": "work/A_1", "repo": "A", "session": "job9", "state": "leased"},
-        {"slot": "work/A_2", "repo": "A", "session": "job9", "state": "leased"},
-    ])
-    called = {"finisher": False}
-    monkeypatch.setattr(tf, "TicketFinisher",
-                        lambda **kw: called.__setitem__("finisher", True))
-    assert tf.main(["T-0001", "--task", "job9", "--no-pytest"]) == 1
-    assert called["finisher"] is False
-    assert "작업공간 해소" in capsys.readouterr().err
+    assert rc == 0
+    assert captured["finisher_kwargs"] == {}
+    assert captured["board_identity_args"] == ["--task", "job7"]
+    assert captured["task"] == "job7" and captured["slot"] is None
+    assert "작업공간 해소" not in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

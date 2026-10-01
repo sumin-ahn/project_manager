@@ -1,6 +1,6 @@
 ---
 name: pm-wave-finish
-description: "묶음 종결(close) — ticket_finish.py 고정 7단계 wrapper: 확인 생성·게이트 처분 → 티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → 슬롯 반납 → board·포인터 커밋. 막는 조건은 첫 부작용 앞 선검사가 전건 보고. 재실행이 곧 재개. 모듈 판정·비고·log/current.md 서술은 PM 손. Triggers: 'T-NNNN 완료', '묶음 종결', 'ticket 정리', 'finish', 'pm-wave-finish'."
+description: "묶음 종결(close) — ticket_finish.py 고정 6단계 wrapper: 확인 생성·게이트 처분 → 티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → board·포인터 커밋. 슬롯은 반납하지 않는다. 막는 조건은 첫 부작용 앞 선검사가 전건 보고. 재실행이 곧 재개. 모듈 판정·비고·log/current.md 서술은 PM 손. Triggers: 'T-NNNN 완료', '묶음 종결', 'ticket 정리', 'finish', 'pm-wave-finish'."
 audience: pm-internal
 ---
 
@@ -17,24 +17,28 @@ audience: pm-internal
 ## 실행
 
 ```bash
-# 묶음 종결 — 고정 7단계
+# 묶음 종결 — 고정 6단계
 python3 .project_manager/tools/ticket_finish.py --cluster <C-이름>
 # 티켓 표기도 같은 경로다 — 그 티켓이 속한 묶음 전체를 종결한다(크기 1이면 티켓 하나)
 python3 .project_manager/tools/ticket_finish.py T-NNNN
 ```
 
 - **`board.py complete`를 직접 실행하지 않는다.** cluster 멤버의 direct complete는 엔진이
-  첫 write 전에 거부한다. `ticket done`·`cluster closed`·`slot released`는 서로 다른 상태이며,
-  정상 7단계가 세 상태를 각각 관측·기록한다.
+  첫 write 전에 거부한다. `ticket done`·`cluster closed`는 서로 다른 상태이며,
+  정상 6단계가 두 상태를 각각 관측·기록한다.
+- **종결은 슬롯을 반납하지 않는다.** 코드 합치기·완료 표시·board 정리만 한다. 슬롯 반납은
+  task 종료(`pm-config task end`)나 사용자 반납(`pm-config release`) 때만 한다.
+- 작업 트리는 묶음 기록의 `branch`(없으면 `base_branch`)를 체크아웃한 작업 트리 하나다.
+  없거나 둘 이상이면 첫 부작용 전에 멈춘다. task 가 슬롯을 몇 개 쥐었는지는 상관없다.
 - **완료 기록 단위는 묶음 하나다.** 티켓 ID 를 준 호출도 그 티켓의 묶음으로 해소해 같은 파이프라인을
   탄다(티켓당 별도 코드 경로 0). 묶음을 선언하지 않은 티켓은 board 가 크기 1로 접어 준다.
   멤버 중 final-fix 확인 입력이나 완료 조건이 덜 채워진 티켓이 있으면 **선검사가 첫 부작용 전에
   전건을 번호와 함께 보고하고 멈춘다** — 그 실행은 board·git·위임 어디에도 손대지 않는다.
 - **재실행이 곧 재개다.** 각 단계는 자기 부작용이 이미 있는지 관측해서 건너뛴다(티켓이 done 인가 ·
-  커밋할 변경이 남았나 · 통합 브랜치의 조상인가 · 슬롯이 아직 대여 중인가). 실패 지점을 고치고 같은
+  커밋할 변경이 남았나 · 통합 브랜치의 조상인가). 실패 지점을 고치고 같은
   커맨드를 다시 부르면 끝난 단계는 반복하지 않는다.
-- `--repo <repo> --slot <N>` (multi-PM): 회귀·측정·stage 를 돌릴 worktree 슬롯. 분리된 PM 홈에는 `tests/`가 없어 활성 worktree 에서 회귀해야 한다. **단일 슬롯·default-1은 생략 가능**(자동해소). 미지정 상태에서 진짜 모호(repo≥2·slot-1 부재)하면 **fail-loud**하며 `--slot`을 요구한다. pm_handoff `--repo/--slot`과 동형.
-- **`--task <이름>`** (task-mode · 일반 사용자 경로): 작업공간을 task 리스에서 해소해 회귀·diff 서킷브레이커 측정·stage 가 **그 worktree** 를 본다. `--repo/--slot` 과 혼합은 거부. task 세션(`/pm-bootstrap --task <이름>`)에서는 **이 형태가 정상 경로**다.
+- `--repo <repo> --slot <N>` (multi-PM): 소유 확인 정체성이다(멤버 `claimed_by` 와 대조). 작업 트리를 고르지 않는다. 복구 문(`--reconcile-integrated`)에서는 복구할 제품 트리다. `--repo` 단독은 활성 슬롯이 1개면 자동해소하고, 모호하면 **fail-loud**하며 `--slot`을 요구한다.
+- **`--task <이름>`** (task-mode · 일반 사용자 경로): 소유 확인 정체성이다(`<user>/<task>` 귀속). 작업 트리는 task 대여에서 고르지 않고 묶음 브랜치로 찾는다. `--repo/--slot` 과 혼합은 거부. task 세션(`/pm-bootstrap --task <이름>`)에서는 **이 형태가 정상 경로**다.
 - **`--no-pytest`**: 회귀를 별도(`/pm-qa` 등)로 이미 측정했을 때 회귀 실행만 skip 한다(board complete는 `--tests-pass` 유지). 코드 트리 해소·diff 서킷브레이커 측정·stage 는 그대로 그 트리에서 한다. **wave 중 종결은 이 형태가 표준**이며 전량 검증은 릴리즈 절차 1회다.
 - **`--dry-run`**: 편집·board·git 없이 어느 단계가 무엇을 할지만 출력한다. 처음 도는 묶음은 이걸 먼저 본다.
 - **log entry는 티켓당 하나다.** 증거가 이미 확정됐으면 `| [[T-NNNN]] —` heading의 실제 entry를
@@ -42,7 +46,7 @@ python3 .project_manager/tools/ticket_finish.py T-NNNN
   실제 내용으로 **교체**하며 별도 entry를 추가하지 않는다. 상세 순서는 operational-details를 따른다.
 - `--section`: **deprecated no-op**(status.md 합계표 제거, 후방호환 수용만).
 
-이미 direct complete로 멤버만 done이고 장부가 open인 과거 반쪽 상태는 정상 7단계를 재실행하지
+이미 direct complete로 멤버만 done이고 장부가 open인 과거 반쪽 상태는 정상 6단계를 재실행하지
 않는다. `references/operational-details.md`의 **all-done recovery** 절에 따라 제품 slot·멤버별
 commit·legacy anchor·사용자 승인값을 모두 명시해 reconcile한다. recovery는 merge/rebase/commit/
-review resolve/slot release를 실행하지 않으며, dirty slot을 reset·stash·release하지 않는다.
+review resolve를 실행하지 않으며, dirty slot을 reset·stash하지 않는다.

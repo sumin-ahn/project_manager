@@ -6,9 +6,10 @@
       값이다. 순서를 규칙으로 지키던 자리를 판정 기준(통합 브랜치 도달 여부)이 대체한다.
   (2) 측정 폭이 통합 브랜치에서 흡수한 분량을 제외하고, 두 형식 소비자(numstat·unified diff)가
       같은 폭을 본다.
-  (3) close 가 첫 부작용 앞에서 막을 조건을 전건 보고하고, 고정 일곱 단계를 순서대로
+  (3) close 가 첫 부작용 앞에서 막을 조건을 전건 보고하고, 고정 여섯 단계를 순서대로
       실행하며, 중간에서 멈춘 뒤 다시 실행하면 이미 끝난
-      단계를 반복하지 않는다(부작용 카운터로 단언).
+      단계를 반복하지 않는다(부작용 카운터로 단언). 작업 트리는 묶음 기록의 브랜치를 쥔
+      트리 하나이고, 종결은 대여 기록을 바꾸지 않는다.
   (4) 크기 1 묶음이 티켓 하나 완료 기록과 같은 결과를 낸다(rc·board 결과·stage 범위).
   (5) 멤버가 전부 처분(discarded)된 묶음은 코드 단계 없이 board 기록만으로 닫힌다.
 
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import datetime
 import importlib.util
+import inspect
 import io
 import contextlib
 import json
@@ -99,7 +101,7 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
 
 
 def _lease_rows(home: Path) -> list[dict]:
-    """리스 장부의 행 전체 — 반납 여부를 상태 하나가 아니라 행 값으로 본다."""
+    """리스 장부의 행 전체 — 대여 상태를 상태 하나가 아니라 행 값으로 본다."""
     path = home / ".project_manager" / ".local" / "worktree-leases.json"
     return json.loads(path.read_text(encoding="utf-8"))["leases"]
 
@@ -444,7 +446,7 @@ def test_both_width_consumers_see_the_same_stage(external, tmp_path):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# close — 첫 부작용 앞 선검사 · 고정 일곱 단계 · 재실행은 재개
+# close — 첫 부작용 앞 선검사 · 고정 여섯 단계 · 재실행은 재개
 # ════════════════════════════════════════════════════════════════════════
 
 class _CloseEnv:
@@ -460,7 +462,6 @@ class _CloseEnv:
         self.ticket = ticket
         self.board_calls: list[list[str]] = []
         self.delegate_calls: list[list[str]] = []
-        self.release_calls: list[str] = []
         # 남은 complete 실패 횟수 — 완료 기록 중간 실패 뒤 재개를 값으로 보는 입력.
         self.complete_failures = 0
 
@@ -549,6 +550,11 @@ class _CloseEnv:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data["leases"][0]["state"]
 
+    def lease_bytes(self) -> bytes:
+        """리스 장부 원본 — 종결은 이 기록을 쓰지 않는다(실행 전후 바이트가 같다)."""
+        return (self.home / ".project_manager" / ".local" /
+                "worktree-leases.json").read_bytes()
+
     def log_text(self) -> str:
         return (self.home / ".project_manager" / "wiki" / "log" / "current.md").read_text(
             encoding="utf-8")
@@ -627,15 +633,16 @@ def _build_close_env(tf, base: Path, monkeypatch) -> _CloseEnv:
     _git(home, "-c", "advice.addEmbeddedRepo=false", "add", "-A")
     _git(home, "commit", "-qm", "home seed")
 
-    # 리스 장부 — 종결이 반납할 슬롯.
+    # 리스 장부 — 종결이 작업 트리를 찾는 곳(행의 작업 폴더가 속한 저장소). 종결은 이 기록을
+    # 읽기만 한다.
     (home / ".project_manager" / ".local" / "worktree-leases.json").write_text(
         json.dumps({"leases": [{
             "slot": _SLOT, "repo": "code", "session": "t", "started": _FIXTURE_STAMP, "state": "leased",
         }]}, ensure_ascii=False), encoding="utf-8")
 
     # 이 픽스처의 실행 세션은 리스 장부·`claimed_by` 와 같은 `t` 다. 선검사가 board 의 소유
-    # 판정을 그대로 부르므로(사본 0), 리스를 비우는 케이스에서도 세션이 해소돼야 그 케이스가
-    # 재려던 축(반납 무대상)만 남는다 — 세션 미해소는 소유 거부라는 다른 축이다.
+    # 판정을 그대로 부르므로(사본 0) 세션이 해소돼야 각 케이스가 재려던 축만 남는다 — 세션
+    # 미해소는 소유 거부라는 다른 축이다.
     monkeypatch.setenv("PM_SESSION_NAME", "t")
     monkeypatch.setattr(tf, "REPO", home)
     monkeypatch.setattr(tf, "TOOLS_DIR", home / ".project_manager" / "tools")
@@ -736,9 +743,33 @@ def test_reconcile_integrated_records_exact_product_head_without_product_or_slot
             env.ticket: {"anchor": anchor, "anchor_source": "claimed_rev"},
         },
     }
-    assert env.board_calls == [] and env.delegate_calls == [] and env.release_calls == []
+    assert env.board_calls == [] and env.delegate_calls == []
     assert env.lease_state() == "leased"
     assert "제품/slot write 0" in captured.out
+
+
+@requires_git
+def test_reconcile_reads_the_explicit_slot_not_the_finisher_tree(close_env, capsys):
+    """AT-007: 복구 문의 제품 트리는 명시한 `--repo --slot` 슬롯이다 — finisher 트리가 아니다.
+
+    정상 종결은 작업 트리를 묶음 기록의 브랜치로 찾아 finisher 에 넘기지만, 복구 문은 그 해소를
+    타지 않는다. finisher 트리를 PM 홈으로 줘도 명시 슬롯(`work/code_1`)을 읽어 닫힌다.
+    """
+    env = close_env
+    evidence, _anchor = _prepare_reconcile(env)
+    closer = _reconcile_closer(
+        env, evidence, finisher=env.finisher(regression_cwd=str(env.home)))
+    assert closer._code_tree() == env.home           # 전제 — finisher 트리는 PM 홈이다
+
+    rc = closer.run()
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured.out + captured.err
+    assert "PM 홈으로 강등됐다" not in captured.err
+    board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
+    ledger = board.load_cluster(_CLUSTER)
+    assert ledger["status"] == _CLOSED_STATUS
+    assert ledger["closure"]["member_revisions"] == {env.ticket: evidence}
 
 
 @requires_git
@@ -854,10 +885,9 @@ def test_reconcile_integrated_fail_closed_matrix(tf, tmp_path, monkeypatch, caps
         return _reconcile_closer(env, evidence)
 
     def pm_home_anchor(env):
+        # 복구할 제품 트리는 명시 슬롯이다 — 그 슬롯 값이 PM 홈 자신을 가리키면 거부다.
         evidence, _anchor = _prepare_reconcile(env)
-        closer = _reconcile_closer(env, evidence)
-        closer._finisher._regression_cwd = str(env.home)
-        return closer
+        return _reconcile_closer(env, evidence, slot=".")
 
     def dirty_selected_slot(env):
         evidence, _anchor = _prepare_reconcile(env)
@@ -865,11 +895,8 @@ def test_reconcile_integrated_fail_closed_matrix(tf, tmp_path, monkeypatch, caps
         return _reconcile_closer(env, evidence)
 
     legacy_env = reject("legacy", legacy_without_base, "--legacy-base-rev가 필수다")
-    reject("pm-home", pm_home_anchor, "PM 홈으로 강등됐다")
-    dirty_env = reject("dirty", dirty_selected_slot, "선택 슬롯이 dirty")
-    assert (dirty_env.slot / "dirty.txt").read_text(encoding="utf-8") == "preserve\n"
-
-    # 같은 legacy 묶음은 명시 anchor 를 공급하면 통과하고 그 출처를 장부에 남긴다.
+    # 같은 legacy 묶음은 명시 anchor 를 공급하면 통과하고 그 출처를 장부에 남긴다. 복구 문은
+    # 명시 슬롯을 모듈 전역 `REPO` 기준으로 읽으므로 다음 케이스가 새 픽스처를 세우기 전에 돈다.
     legacy_evidence = _rev(legacy_env.slot)
     legacy_anchor = _rev(legacy_env.slot, "HEAD~1")
     assert _reconcile_closer(
@@ -881,6 +908,10 @@ def test_reconcile_integrated_fail_closed_matrix(tf, tmp_path, monkeypatch, caps
         "anchor": legacy_anchor, "anchor_source": "operator-supplied",
     }
     capsys.readouterr()
+
+    reject("pm-home", pm_home_anchor, "PM 홈으로 강등됐다")
+    dirty_env = reject("dirty", dirty_selected_slot, "선택 슬롯이 dirty")
+    assert (dirty_env.slot / "dirty.txt").read_text(encoding="utf-8") == "preserve\n"
 
     # ── bookend drift 는 두 번째 snapshot 에서 감지하고 write 하지 않는다 ──
     env = _build_close_env(tf, tmp_path / "head-race", monkeypatch)
@@ -988,10 +1019,10 @@ def test_reconcile_integrated_accepts_the_name_notation_of_the_normal_path(
 def test_normal_close_rejects_open_all_done_cluster_before_side_effects(
     close_env, capsys,
 ):
-    """F-001: open 장부 + 멤버 전원 done 은 정상 7단계가 아니라 복구 전용이다.
+    """F-001: open 장부 + 멤버 전원 done 은 정상 종결이 아니라 복구 전용이다.
 
     그 완료 기록은 이 파이프라인이 남긴 것이 아니다(1단계가 성공하면 장부는 `closing` 이 된다)
-    — 무엇이 이미 통합됐는지 모르는 채 커밋·재배치·머지·반납으로 들어가지 않는다. 게이트는
+    — 무엇이 이미 통합됐는지 모르는 채 커밋·재배치·머지로 들어가지 않는다. 게이트는
     `open` + 전원 done 에만 걸리고 `closing` 재개는 그대로 통과한다.
     """
     env = close_env
@@ -1005,7 +1036,7 @@ def test_normal_close_rejects_open_all_done_cluster_before_side_effects(
     captured = capsys.readouterr()
     assert rc == 1, captured.out + captured.err
     assert "--reconcile-integrated" in captured.err
-    assert "[1/7]" not in captured.out, "첫 단계가 이미 시작됐다(부작용 앞 게이트가 아님)"
+    assert "[1/6]" not in captured.out, "첫 단계가 이미 시작됐다(부작용 앞 게이트가 아님)"
     assert env.board_calls == [] and env.delegate_calls == []
     assert before == (ledger_path.read_bytes(), _rev(env.slot), _rev(env.board_dir),
                       _rev(env.home), env.integration_log(), env.lease_state())
@@ -1022,19 +1053,20 @@ def test_normal_close_rejects_open_all_done_cluster_before_side_effects(
 
 
 @requires_git
-def test_close_runs_the_seven_steps_and_leaves_no_hand_work(close_env, capsys):
-    """성공 경로 — 일곱 단계가 순서대로 돌고 커밋·재배치·머지·반납·기록이 실제로 남는다."""
+def test_close_runs_the_six_steps_and_leaves_no_hand_work(close_env, capsys):
+    """성공 경로 — 여섯 단계가 순서대로 돌고 커밋·재배치·머지·기록이 실제로 남는다(대여는 그대로)."""
     env = close_env
     # 통합 브랜치가 앞서 나가 있다 — 재배치 단계가 무대상이 아니게 한다.
     (env.code / "other.txt").write_text("x\n", encoding="utf-8")
     _commit(env.code, "integration moves on")
+    lease_before = env.lease_bytes()
 
     rc = env.closer().run()
 
     out = capsys.readouterr().out
     assert rc == 0, out
     order = [line.split("] ", 1)[1].removesuffix("...") for line in out.splitlines()
-             if line.startswith("[") and "/7] " in line]
+             if line.startswith("[") and "/6] " in line]
     assert order == [label for _key, label, _pre in env.tf.ClusterCloser.STEPS], order
     # 단계 2 — 완료 기록이 돌았다(board complete 1회).
     assert [args[0] for args in env.board_calls] == ["complete"]
@@ -1045,10 +1077,10 @@ def test_close_runs_the_seven_steps_and_leaves_no_hand_work(close_env, capsys):
     # 단계 5 — `--no-ff` 머지 문안.
     assert env.integration_log()[0] == f"{env.ticket} merge — 종결 픽스처"
     assert _git(env.code, "rev-parse", f"{_INTEGRATION_BRANCH}^2").returncode == 0
-    # 단계 6 — 슬롯 반납.
-    assert env.lease_state() == "idle"
-    # 단계 7 — PM 홈 포인터·산출물 커밋.
+    # 단계 6 — PM 홈 포인터·산출물 커밋.
     assert env.home_log()[0] == f"{env.ticket} board — 종결 픽스처"
+    # 종결은 슬롯을 반납하지 않는다 — 대여 기록은 바이트 그대로다.
+    assert env.lease_bytes() == lease_before
     committed = _git(env.home, "show", "--name-only", "--format=", "HEAD").stdout
     assert ".project_manager/board" in committed
     assert ".project_manager/wiki/log/current.md" in committed
@@ -1059,18 +1091,16 @@ def test_close_runs_the_seven_steps_and_leaves_no_hand_work(close_env, capsys):
 
 @requires_git
 def test_close_of_an_all_discarded_cluster_runs_no_code_step(close_env, capsys):
-    """AT-004: 멤버가 전부 처분된 묶음은 브랜치 요구 없이 닫히고 슬롯 리스는 반납된다.
+    """AT-005: 멤버가 전부 처분된 묶음은 작업 트리를 찾지 않고 두 단계로 닫힌다.
 
     실측 형상(`C-delegate-model-single-truth-v1.7.12`)은 멤버 하나가 폐기됐고 장부가 선언한
     묶음 브랜치·통합 브랜치가 코드 git 에 없다. 머지할 코드가 없으므로 코드 네 단계는 대상이
-    아니고, 제품 git 은 한 번도 바뀌지 않는다. **반납은 그 네 단계에 들지 않는다** — 슬롯
-    리스는 멤버의 코드 산출이 아니라 묶음이 든 자원이라, 건너뛰면 그대로 샌다(실측 형상도
-    슬롯을 대여한 채였다).
+    아니고, 제품 git 은 한 번도 바뀌지 않는다. 트리가 필요한 단계가 없으니 작업 트리 해소도
+    돌지 않는다(장부의 브랜치가 git 에 없어도 멈추지 않는다). 대여 기록은 그대로다.
     """
     env = close_env
     _discard_ticket(env)
-    # 폐기는 그 라운드의 산출을 버린 처분이라 슬롯에 남을 미커밋 편집도 없다. dirty 슬롯의
-    # 반납 거부는 `_step_release` 가 종전대로 소유하는 별 축이다(이 케이스의 관측 대상 아님).
+    # 폐기는 그 라운드의 산출을 버린 처분이라 슬롯에 남을 미커밋 편집도 없다.
     _git(env.slot, "checkout", "--", "src/app.py")
     _write_cluster_ledger(env.board_dir, tickets=(env.ticket,),
                           base_branch="task/absent-integration",
@@ -1078,20 +1108,20 @@ def test_close_of_an_all_discarded_cluster_runs_no_code_step(close_env, capsys):
     before = (_rev(env.code), _rev(env.slot), env.integration_log(), env.slot_log(),
               _git(env.slot, "status", "--porcelain").stdout)
     assert before[-1].strip() == ""
-    assert env.lease_state() == "leased"
+    lease_before = env.lease_bytes()
 
     rc = env.closer().run()
 
     out = capsys.readouterr().out
     assert rc == 0, out
-    # 밟은 단계는 셋 — 코드 네 단계만 목록에서 빠졌다(반납은 남는다).
+    # 밟은 단계는 둘 — 코드 네 단계가 목록에서 빠졌다.
     order = [line.split("] ", 1)[1].removesuffix("...") for line in out.splitlines()
-             if line.startswith("[") and "/3] " in line]
-    assert order == ["기계 확인 생성·리뷰 게이트 처분", "슬롯 반납",
-                     "board·포인터 커밋"], out
+             if line.startswith("[") and "/2] " in line]
+    assert order == ["기계 확인 생성·리뷰 게이트 처분", "board·포인터 커밋"], out
     assert "처분 종결 멤버 1" in out
+    assert "작업 트리 →" not in out
     assert env.board_calls == [] and env.delegate_calls == []
-    assert env.lease_state() == "idle"        # 반납이 돌았다 — 리스가 새지 않는다
+    assert env.lease_bytes() == lease_before  # 대여는 그대로다 — 종결은 반납하지 않는다
     # 제품 git 은 어느 축도 바뀌지 않았다(커밋·재배치·머지 0회).
     assert before == (_rev(env.code), _rev(env.slot), env.integration_log(),
                       env.slot_log(), _git(env.slot, "status", "--porcelain").stdout)
@@ -1106,24 +1136,267 @@ def test_a_live_member_still_requires_the_code_steps(tf, tmp_path, monkeypatch, 
     """민감도 — 살아 있는 멤버가 있으면 같은 장부가 종전대로 브랜치를 요구한다.
 
     폐기 멤버 건너뛰기가 정상 종결의 판정을 느슨하게 만들지 않는다(멤버를 처분하지 않은 것
-    하나만 다르고 장부·트리는 같다).
+    하나만 다르고 장부·트리는 같다). 장부의 묶음 브랜치를 쥔 작업 트리가 없으므로 첫 부작용
+    앞의 작업 트리 해소에서 멈춘다.
     """
     env = _build_close_env(tf, tmp_path / "live-member", monkeypatch)
     _write_cluster_ledger(env.board_dir, tickets=(env.ticket,),
                           base_branch="task/absent-integration",
                           branch="task/absent-cluster")
     ledger_before = (env.board_dir / "tickets" / "clusters" / f"{_CLUSTER}.md").read_bytes()
+    lease_before = env.lease_bytes()
 
     rc = env.closer().run()
 
     captured = capsys.readouterr()
     assert rc == 1
-    assert "task/absent-integration 를 이 코드 트리에서 찾지 못했다" in captured.err
-    assert "묶음 브랜치 task/absent-cluster 를 이 코드 트리에서 찾지 못했다" in captured.err
-    assert "[1/7]" not in captured.out          # 첫 부작용 앞에서 막혔다
-    assert env.board_calls == [] and env.lease_state() == "leased"
+    assert "[중단] 작업 트리 해소" in captured.err
+    assert ("묶음 기록 branch task/absent-cluster 를 체크아웃한 작업 트리가 없다"
+            in captured.err)
+    assert "[1/6]" not in captured.out          # 첫 부작용 앞에서 막혔다
+    assert env.board_calls == [] and env.lease_bytes() == lease_before
     assert (env.board_dir / "tickets" / "clusters" /
             f"{_CLUSTER}.md").read_bytes() == ledger_before
+
+
+@requires_git
+def test_close_preflight_reports_a_missing_integration_branch_in_the_found_tree(
+    close_env, capsys,
+):
+    """찾은 작업 트리의 저장소에 장부 `base_branch` 가 없으면 선검사가 그 사유로 막는다.
+
+    작업 트리 해소는 묶음 브랜치를 쥔 슬롯으로 통과한다. 통합 브랜치 부재는 첫 부작용 앞
+    선검사(재배치)가 낸다 — 이 판정이 빠지면 완료 기록과 슬롯 커밋을 마친 뒤에야 멈춘다.
+    """
+    env = close_env
+    _write_cluster_ledger(env.board_dir, tickets=(env.ticket,),
+                          base_branch="task/absent-integration")
+    logs_before = (env.slot_log(), env.integration_log(), env.home_log())
+    lease_before = env.lease_bytes()
+
+    rc = env.closer().run()
+
+    captured = capsys.readouterr()
+    assert rc == 1, captured.out + captured.err
+    assert f"작업 트리 → {env.slot} (묶음 기록 branch {_CLUSTER_BRANCH})" in captured.out
+    assert "종결 선검사" in captured.err
+    assert ("통합 브랜치 task/absent-integration 를 이 코드 트리에서 찾지 못했다"
+            in captured.err)
+    assert "[1/6]" not in captured.out          # 첫 부작용 앞에서 막혔다
+    assert env.board_calls == [] and env.delegate_calls == []
+    assert (env.slot_log(), env.integration_log(), env.home_log()) == logs_before
+    assert env.lease_bytes() == lease_before
+
+
+# ── 작업 트리 해소 — 묶음 기록의 브랜치를 쥔 트리 정확히 하나 ─────────────────
+#
+# 작업 트리는 task 가 쥔 슬롯에서 고르지 않는다. 대여 기록의 작업 폴더가 속한 저장소에서 묶음
+# 기록의 `branch`(없으면 `base_branch`)를 체크아웃한 작업 트리를 찾고, 정확히 하나일 때만 그
+# 트리에서 돈다. 멈춤은 전부 첫 부작용 앞이다 — board 호출 0 · 통합 브랜치 불변 · 대여 기록 불변.
+
+
+def _add_code_tree(env, name: str) -> Path:
+    """코드 git 에 작업 트리 하나를 detached 로 더한다(브랜치는 케이스가 정한다)."""
+    tree = env.home / "work" / name
+    assert _git(env.code, "worktree", "add", "-q", "--detach", str(tree),
+                _INTEGRATION_BRANCH).returncode == 0
+    return tree
+
+
+@requires_git
+def test_task_holding_two_slots_closes_and_keeps_both_leases(close_env, monkeypatch, capsys):
+    """AT-001: task 가 슬롯 둘(묶음 브랜치·합칠 곳)을 쥔 정상 형상에서 마무리가 끝까지 돈다.
+
+    발단(T-0923 마무리): 옛 엔진은 작업 트리를 task 가 쥔 슬롯 집합에서 골라, 슬롯이 둘이면
+    "통틀어 모호" 로 멈추고 머지를 한 번도 하지 않았다. 작업 트리는 묶음 기록 `branch` 를 쥔
+    트리 하나로 정해지고, 합칠 곳 브랜치는 다른 슬롯이 쥔 채 머지를 받으며, 두 대여가 그대로 남는다.
+    """
+    env = close_env
+    # 합칠 곳 브랜치를 코드 git 원 트리에서 슬롯 2 로 옮긴다 — task t 가 두 슬롯을 쥔 형상.
+    assert _git(env.code, "checkout", "-q", "--detach").returncode == 0
+    integration_slot = _add_code_tree(env, "code_2")
+    assert _git(integration_slot, "checkout", "-q", _INTEGRATION_BRANCH).returncode == 0
+    lease_path = env.home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease_path.write_text(json.dumps({"leases": [
+        {"slot": _SLOT, "repo": "code", "session": "t", "started": _FIXTURE_STAMP,
+         "state": "leased"},
+        {"slot": "work/code_2", "repo": "code", "session": "t", "started": _FIXTURE_STAMP,
+         "state": "leased"},
+    ]}, ensure_ascii=False), encoding="utf-8")
+    lease_before = env.lease_bytes()
+    finisher = env.finisher()
+    monkeypatch.setattr(env.tf, "TicketFinisher", lambda **kwargs: finisher)
+
+    rc = env.tf._main(["--cluster", _CLUSTER, "--task", "t", "--no-pytest"])
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured.out + captured.err
+    order = [line.split("] ", 1)[1].removesuffix("...") for line in captured.out.splitlines()
+             if line.startswith("[") and "/6] " in line]
+    assert order == [label for _key, label, _pre in env.tf.ClusterCloser.STEPS], order
+    assert f"작업 트리 → {env.slot} (묶음 기록 branch {_CLUSTER_BRANCH})" in captured.out
+    assert env.integration_log()[0] == f"{env.ticket} merge — 종결 픽스처"
+    assert _git(integration_slot, "symbolic-ref", "--short", "HEAD").stdout.strip() == \
+        _INTEGRATION_BRANCH
+    assert env.lease_bytes() == lease_before
+
+
+@requires_git
+def test_close_stops_when_no_tree_holds_the_ledger_branch(close_env, capsys):
+    """AT-002: 묶음 브랜치를 쥔 작업 트리가 없으면 첫 부작용 전에 멈춘다(다른 트리를 고르지 않는다)."""
+    env = close_env
+    assert _git(env.slot, "checkout", "-q", "-b", "dev/side").returncode == 0
+    integration_before = env.integration_log()
+    lease_before = env.lease_bytes()
+
+    rc = env.closer().run()
+
+    captured = capsys.readouterr()
+    assert rc == 1, captured.out + captured.err
+    assert "[중단] 작업 트리 해소" in captured.err
+    assert f"{_CLUSTER_BRANCH} 를 체크아웃한 작업 트리가 없다" in captured.err
+    assert "종결 선검사" not in captured.err
+    assert "[1/6]" not in captured.out
+    assert env.board_calls == [] and env.delegate_calls == []
+    assert env.integration_log() == integration_before
+    assert env.lease_bytes() == lease_before
+
+
+@requires_git
+def test_close_stops_when_two_trees_hold_the_ledger_branch(close_env, capsys):
+    """AT-003: 두 트리가 묶음 브랜치를 함께 쥐면(git 제약의 우회) 고르지 않고 멈춘다."""
+    env = close_env
+    other = _add_code_tree(env, "code_2")
+    assert _git(other, "checkout", "-q", "--ignore-other-worktrees",
+                _CLUSTER_BRANCH).returncode == 0
+    integration_before = env.integration_log()
+    lease_before = env.lease_bytes()
+
+    rc = env.closer().run()
+
+    captured = capsys.readouterr()
+    assert rc == 1, captured.out + captured.err
+    assert "[중단] 작업 트리 해소" in captured.err
+    assert f"{_CLUSTER_BRANCH} 를 체크아웃한 작업 트리가 2개다" in captured.err
+    assert "[1/6]" not in captured.out
+    assert env.board_calls == [] and env.delegate_calls == []
+    assert env.integration_log() == integration_before
+    assert env.lease_bytes() == lease_before
+
+
+@requires_git
+def test_size_one_close_runs_in_the_tree_holding_the_base_branch(close_env, capsys):
+    """AT-004: `branch` 가 없는 묶음은 `base_branch` 를 쥔 작업 트리에서 돈다.
+
+    발행이 만드는 크기 1 장부 형상(묶음 브랜치 미선언)이다. 작업은 합칠 곳 브랜치를 쥔 원 트리에
+    있고, 종결은 그 트리에서 커밋한다 — 머지는 무대상이다.
+    """
+    env = close_env
+    _write_cluster_ledger(env.board_dir, tickets=(env.ticket,), branch=None)
+    _git(env.slot, "checkout", "--", "src/app.py")
+    (env.code / "src" / "app.py").write_text("seed = 1\nwork = 2\n", encoding="utf-8")
+    slot_before = env.slot_log()
+    lease_before = env.lease_bytes()
+
+    rc = env.closer().run()
+
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert f"작업 트리 → {env.code} (묶음 기록 base_branch {_INTEGRATION_BRANCH})" in out
+    assert "묶음 브랜치 미선언 — 무대상" in out
+    assert env.integration_log()[0] == "종결 픽스처"
+    assert env.slot_log() == slot_before
+    assert env.lease_bytes() == lease_before
+
+
+@requires_git
+def test_close_never_picks_the_pm_home_tree(close_env, capsys):
+    """AT-012: PM 홈은 찾는 곳이 아니다 — 홈이 `base_branch` 를 쥐어도 작업 트리 후보가 아니다.
+
+    인자 없는 발행이 PM 홈 브랜치를 합칠 곳으로 적은 묶음에서 홈을 작업 트리로 잡으면 코드 없이
+    완료된다. 홈은 대여 기록의 작업 폴더가 속한 저장소일 때만 목록에 든다.
+    """
+    env = close_env
+    assert _git(env.home, "symbolic-ref", "--short", "HEAD").stdout.strip() == "main"
+    _write_cluster_ledger(env.board_dir, tickets=(env.ticket,), base_branch="main", branch=None)
+    home_before = env.home_log()
+    lease_before = env.lease_bytes()
+
+    rc = env.closer().run()
+
+    captured = capsys.readouterr()
+    assert rc == 1, captured.out + captured.err
+    assert "[중단] 작업 트리 해소" in captured.err
+    assert "묶음 기록 base_branch main 를 체크아웃한 작업 트리가 없다" in captured.err
+    assert env.board_calls == [] and env.delegate_calls == []
+    assert env.home_log() == home_before
+    assert env.ledger()["status"] != _CLOSED_STATUS
+    assert env.lease_bytes() == lease_before
+
+
+@requires_git
+def test_close_stops_when_the_ledger_branch_tree_is_gone_from_disk(close_env, capsys):
+    """폴더가 디스크에서 사라지고 git 등록만 남은 자리는 작업 트리가 아니다.
+
+    `git worktree list` 는 지운 슬롯 폴더를 그 브랜치와 함께 계속 낸다(prunable). 같은 저장소의
+    다른 대여 폴더에서 목록을 보아도 그 등록은 후보가 아니다 — 없는 폴더를 작업 트리로 고르면
+    선검사의 git 조회가 traceback 으로 죽는다. 첫 부작용 앞 작업 트리 해소에서 멈춘다.
+    """
+    env = close_env
+    other = _add_code_tree(env, "code_2")
+    lease_path = env.home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease_path.write_text(json.dumps({"leases": [
+        {"slot": _SLOT, "repo": "code", "session": "t", "started": _FIXTURE_STAMP,
+         "state": "leased"},
+        {"slot": "work/code_2", "repo": "code", "session": "t", "started": _FIXTURE_STAMP,
+         "state": "leased"},
+    ]}, ensure_ascii=False), encoding="utf-8")
+    shutil.rmtree(env.slot)
+    # 묶음 브랜치를 쥔 트리는 지운 슬롯 하나뿐이었다 — 목록의 그 줄은 남은 등록에서 온다.
+    listing = _git(other, "worktree", "list", "--porcelain").stdout
+    assert f"branch refs/heads/{_CLUSTER_BRANCH}" in listing
+    integration_before = env.integration_log()
+    lease_before = env.lease_bytes()
+
+    rc = env.closer().run()
+
+    captured = capsys.readouterr()
+    assert rc == 1, captured.out + captured.err
+    assert "[중단] 작업 트리 해소" in captured.err
+    assert (f"묶음 기록 branch {_CLUSTER_BRANCH} 를 체크아웃한 작업 트리가 없다"
+            in captured.err)
+    assert "작업 트리 →" not in captured.out
+    assert "종결 선검사" not in captured.err
+    assert "[1/6]" not in captured.out
+    assert env.board_calls == [] and env.delegate_calls == []
+    assert env.integration_log() == integration_before
+    assert env.lease_bytes() == lease_before
+
+
+@requires_git
+def test_close_stops_when_two_trees_hold_the_integration_branch(close_env, capsys):
+    """통합 브랜치를 두 트리가 함께 쥐면(git 제약의 우회) 머지할 트리를 고르지 않고 멈춘다.
+
+    작업 트리 해소와 같은 규칙·같은 문구다 — 첫 트리를 고르면 머지할 트리가 목록 순서로
+    정해진다. 작업 트리는 묶음 브랜치로 찾고, 멈춤은 첫 부작용 앞 선검사(머지)에서 난다.
+    """
+    env = close_env
+    other = _add_code_tree(env, "code_2")
+    assert _git(other, "checkout", "-q", "--ignore-other-worktrees",
+                _INTEGRATION_BRANCH).returncode == 0
+    integration_before = env.integration_log()
+    lease_before = env.lease_bytes()
+
+    rc = env.closer().run()
+
+    captured = capsys.readouterr()
+    assert rc == 1, captured.out + captured.err
+    assert f"작업 트리 → {env.slot} (묶음 기록 branch {_CLUSTER_BRANCH})" in captured.out
+    assert f"{_INTEGRATION_BRANCH} 를 체크아웃한 작업 트리가 2개다" in captured.err
+    assert "[1/6]" not in captured.out
+    assert env.board_calls == [] and env.delegate_calls == []
+    assert env.integration_log() == integration_before
+    assert env.lease_bytes() == lease_before
 
 
 # ── 첫 부작용 앞 선검사 — 막는 조건을 한 번에 전부 낸다 ────────────────────
@@ -1195,7 +1468,7 @@ def test_close_preflight_reports_every_readonly_block_at_once(close_env, capsys)
     assert "claimed 가 아니다" in joined
     assert "체크아웃한 작업 트리를 찾지 못했다" in joined
     # 첫 부작용이 0 이다 — 단계 표시조차 찍히지 않는다.
-    assert "[1/7]" not in captured.out
+    assert "[1/6]" not in captured.out
     assert env.board_calls == [] and env.delegate_calls == []
     assert before == (env.slot_log(), env.home_log(), env.integration_log(),
                       env.lease_state())
@@ -1274,7 +1547,7 @@ def test_close_preflight_pass_then_pipeline_never_blocks_on_readonly_reason(
     captured = capsys.readouterr()
     assert rc == 0, captured.out + captured.err
     assert "[중단]" not in captured.err
-    assert env.lease_state() == "idle"
+    assert env.lease_state() == "leased"
 
 
 @requires_git
@@ -1303,13 +1576,22 @@ def test_close_preflight_preserves_resume_of_finished_steps(close_env, capsys, t
 
 @requires_git
 def test_close_steps_declare_preflight_membership(close_env):
-    """AT-004: 단계마다 선검사 대상 여부가 선언이고, 선언 없는 단계는 그 자리에서 터진다."""
+    """AT-006: 단계마다 선검사 대상 여부가 선언이고, 선언 없는 단계는 그 자리에서 터진다.
+
+    반납 단계와 그 의존처(반납 seam·대여 상태 조회·묶음 브랜치 삭제 시도)는 표면에 없다 —
+    종결은 슬롯을 건드리지 않는다.
+    """
     env = close_env
     closer_class = env.tf.ClusterCloser
     keys = [key for key, _label, _pre in closer_class.STEPS]
 
-    assert len(closer_class.STEPS) == 7
+    assert keys == ["resolve", "record", "commit", "rebase", "merge", "board"]
     assert "confirm" not in keys
+    for removed in ("_step_release", "_default_release", "_slot_state",
+                    "_delete_cluster_branch"):
+        assert not hasattr(closer_class, removed), removed
+    assert "release_fn" not in inspect.signature(closer_class).parameters
+    assert "반납" not in env.tf.build_parser().format_help()
     for key, _label, precheck in closer_class.STEPS:
         assert callable(getattr(closer_class, f"_step_{key}", None)), key
         assert precheck is None or callable(getattr(closer_class, precheck, None)), key
@@ -1403,7 +1685,7 @@ def test_close_resumes_without_repeating_earlier_steps(close_env, capsys):
     assert env.slot_log().count("종결 픽스처") == 1                 # 커밋 미반복
     assert "이미 done — 완료 기록 건너뜀" in out
     assert "커밋할 변경 없음 — 건너뜀" in out
-    assert env.lease_state() == "idle"
+    assert env.lease_state() == "leased"
 
 
 @requires_git
@@ -1414,7 +1696,7 @@ def test_close_is_a_no_op_when_everything_is_already_done(close_env, capsys):
     capsys.readouterr()
     home_before = env.home_log()
     integration_before = env.integration_log()
-    release_before = env.lease_state()
+    lease_before = env.lease_bytes()
 
     rc = env.closer().run()
     captured = capsys.readouterr()
@@ -1424,8 +1706,7 @@ def test_close_is_a_no_op_when_everything_is_already_done(close_env, capsys):
     assert [args[0] for args in env.board_calls] == ["complete"]
     assert env.home_log() == home_before
     assert env.integration_log() == integration_before
-    assert env.lease_state() == release_before
-    assert "이미 반납됨" in out
+    assert env.lease_bytes() == lease_before
     assert "이미 task/main 에 있다" in out or "이미 task/main 위에 있다" in out
 
 
@@ -1553,62 +1834,6 @@ def test_close_task_identity_is_forwarded_to_resolve_without_ambient_env(
 
 
 @requires_git
-def test_close_merge_step_attempts_cluster_branch_delete(close_env, capsys):
-    """AT-008 — 머지 단계는 슬롯 제거와 같은 삭제 판정을 태우고 결과를 사실대로 보고한다.
-
-    브랜치 수명은 묶음 수명이다. 세 갈래를 한 자리에서 본다.
-      (1) dry-run — 판정 문구만 내고 실제 `branch -D` 는 발행하지 않는다.
-      (2) 머지 성공 — 부모(통합 브랜치)에 합쳐졌으므로 `branch -D` 를 통합 트리에서 발행한다. 반납은
-          슬롯의 체크아웃을 바꾸지 않으므로 이 시점엔 슬롯이 묶음 브랜치를 쥐고 있고 git 이 거부한다
-          (정상 형상) — 그 보존이 종결을 실패로 뒤집지 않는다.
-      (3) 이미 조상 — 그 경로에서도 판정하고, 아무도 쥐지 않으면 실제로 지워진다.
-    """
-    env = close_env
-    _commit(env.slot, "cluster work")          # 묶음 브랜치에 머지할 것이 생긴다
-
-    def _recording(**kwargs):
-        finisher = env.finisher()
-        seen: list[tuple[Path, list[str]]] = []
-        passthrough = finisher._run_git_at_fn
-
-        def _record(cwd, args):
-            seen.append((Path(cwd), list(args)))
-            return passthrough(cwd, args)
-
-        finisher._run_git_at_fn = _record
-        return env.closer(finisher=finisher, **kwargs), seen
-
-    # (1) dry-run — 문구만, 부작용 0.
-    dry_closer, dry_calls = _recording(dry_run=True)
-    assert dry_closer._step_merge() is None
-    dry_out = capsys.readouterr().out
-    assert f"[dry-run] cwd={env.code} 묶음 브랜치 {_CLUSTER_BRANCH} 삭제 판정" in dry_out
-    assert not any(args[:1] == ["branch"] for _cwd, args in dry_calls), \
-        "dry-run 이 실제 브랜치 삭제를 발행했다"
-
-    # (2) 머지 성공 — 통합 트리에서 삭제 시도. 슬롯이 쥐고 있어 git 이 거부하지만 종결은 산다.
-    closer, calls = _recording()
-    assert closer._step_merge() is None, "브랜치 삭제 거부가 종결을 실패로 뒤집었다"
-    out = capsys.readouterr().out
-    assert (env.code, ["branch", "-D", _CLUSTER_BRANCH]) in calls
-    assert f"묶음 브랜치 {_CLUSTER_BRANCH} 보존 (git branch -D 거부" in out
-    assert _CLUSTER_BRANCH in _git(env.code, "branch", "--list", _CLUSTER_BRANCH).stdout
-    # 머지는 실제로 났다 — 거부된 것은 브랜치 삭제뿐이다(통합 브랜치에 2번 부모가 생긴다).
-    assert _git(env.code, "rev-parse", f"{_INTEGRATION_BRANCH}^2").returncode == 0
-
-    # (3) 이미 조상 — 슬롯이 놓아주면 같은 자리에서 실제로 지워진다.
-    _git(env.slot, "checkout", "-q", "--detach")
-    ancestor_closer, ancestor_calls = _recording()
-    assert ancestor_closer._step_merge() is None
-    ancestor_out = capsys.readouterr().out
-    assert "건너뜀" in ancestor_out
-    assert (env.code, ["branch", "-D", _CLUSTER_BRANCH]) in ancestor_calls
-    assert f"✓ 묶음 브랜치 {_CLUSTER_BRANCH} 삭제 (부모 {_INTEGRATION_BRANCH} 에 다 합쳐짐)" in ancestor_out
-    assert _git(env.code, "branch", "--list", _CLUSTER_BRANCH).stdout.strip() == "", \
-        "머지된 묶음 브랜치가 잔재로 남았다"
-
-
-@requires_git
 def test_close_refuses_to_move_a_branch_that_is_not_the_cluster_branch(close_env):
     """슬롯이 묶음 브랜치를 들고 있지 않으면 재배치·머지 앞에서 거부한다."""
     env = close_env
@@ -1622,20 +1847,6 @@ def test_close_refuses_to_move_a_branch_that_is_not_the_cluster_branch(close_env
     for block in (rebase_block, merge_block):
         assert block is not None and "묶음 브랜치" in block and "dev/side" in block
     assert env.integration_log()[0] == "code seed"   # 통합 브랜치는 그대로다
-
-
-@requires_git
-def test_close_refuses_to_release_a_dirty_slot(close_env, capsys):
-    """반납은 dirty 슬롯을 거부한다 — 자동 경로라고 산출물을 조용히 치우지 않는다."""
-    env = close_env
-    closer = env.closer()
-    (env.slot / "stray.txt").write_text("x\n", encoding="utf-8")
-
-    block = closer._step_release()
-
-    assert block is not None and "슬롯 반납 실패" in block
-    assert env.lease_state() == "leased"
-    assert (env.slot / "stray.txt").is_file()
 
 
 @requires_git
@@ -1814,7 +2025,7 @@ def test_close_stops_when_the_board_record_channel_cannot_commit(close_env, caps
 
     assert rc == 1
     assert "board-git 로컬 커밋이 생기지 않았다" in captured.err
-    assert "[7/7]" in captured.err
+    assert "[6/6]" in captured.err
     assert env.ledger()["status"] != _CLOSED_STATUS      # 관측 전 종결 표시 없음
     assert env.home_log()[0] == "home seed"              # 포인터 커밋도 없다
 
@@ -1848,7 +2059,7 @@ def test_close_stops_when_a_working_tree_observation_fails(close_env, capsys, mo
     assert "관측 실패" in captured.err
     assert "작업 트리 상태를 관측하지 못했다" in captured.err
     assert env.integration_log()[0] == "code seed"       # 머지는 돌지 않았다
-    assert env.lease_state() == "leased"                 # 반납도 돌지 않았다
+    assert env.lease_state() == "leased"                 # 대여 기록은 그대로다
 
 
 @requires_git
@@ -1871,20 +2082,6 @@ def test_close_stops_when_the_board_pointer_cannot_be_observed(close_env, capsys
     assert rc == 1
     assert "board 포인터를 관측하지 못했다" in captured.err
     assert env.ledger()["status"] != _CLOSED_STATUS
-
-
-@requires_git
-def test_close_release_step_is_no_target_without_a_lease(close_env, capsys):
-    """리스가 없는 슬롯은 **관측 성공·대상 없음** 이다 — 정지가 아니라 건너뜀이다."""
-    env = close_env
-    (env.home / ".project_manager" / ".local" / "worktree-leases.json").write_text(
-        json.dumps({"leases": []}, ensure_ascii=False), encoding="utf-8")
-
-    rc = env.closer().run()
-    out = capsys.readouterr().out
-
-    assert rc == 0, out
-    assert f"슬롯 {_SLOT} 리스 없음 — 무대상" in out
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -2214,8 +2411,9 @@ def test_fresh_single_clone_home_closes_on_the_first_call(
     """신선 단일 clone 홈(커밋 0)의 첫 티켓이 **첫 호출**에 닫힌다 — rc 0 · done · 첫 커밋.
 
     v1.7.12 후보에서는 통합 브랜치 미해소 → 스코프 밖 잔여 → 슬롯 반납 거부가 차례로 막았다
-    (2026-09-02 라이브 실측). 셋째는 홈 슬롯 반납 무대상([[T-0897]])이 닫으므로 이 케이스는
-    두 티켓이 함께 있어야 green 이다.
+    (2026-09-02 라이브 실측). 셋째는 종결이 슬롯을 반납하지 않게 되며 없어졌다. 이 케이스는 PM
+    홈을 작업 트리로 쓰는 합성 형상이다 — 홈은 작업 트리를 찾는 곳이 아니라(홈은 작업 폴더가
+    아니다) CLI 로는 닿지 않으므로 해소 결과를 이 트리로 준다.
     """
     root = _unborn_repo(tf, tmp_path, monkeypatch)
     board_dir = root / ".project_manager" / "board"
@@ -2248,6 +2446,7 @@ def test_fresh_single_clone_home_closes_on_the_first_call(
         _CLUSTER, finisher=finisher, board_py=board_py,
         run_delegate_fn=lambda args: (0, ""),
     )
+    monkeypatch.setattr(closer, "_resolve_code_tree", lambda: (root, None))
 
     rc = closer.run()
     captured = capsys.readouterr()
@@ -2309,5 +2508,5 @@ def test_close_stops_when_the_status_query_returns_an_error_code(
     assert rc == 1
     assert "작업 트리 상태를 관측하지 못했다" in captured.err
     assert env.integration_log()[0] == "code seed"       # 머지는 돌지 않았다
-    assert env.lease_state() == "leased"                 # 반납도 돌지 않았다
+    assert env.lease_state() == "leased"                 # 대여 기록은 그대로다
 

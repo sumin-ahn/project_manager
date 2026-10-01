@@ -1309,16 +1309,17 @@ def test_main_unresolved_identity_fails_loud_before_regression(tf, monkeypatch, 
 def _capture_main_forward(tf, monkeypatch) -> dict:
     """`main` 이 해소해 넘긴 값을 부작용 없이 캡처한다.
 
-    완료 기록 단위는 묶음 하나다(티켓 하나 = 크기 1) — 그래서 `main` 의 forward 대상은 두
-    곳이다: 코드 트리 좌표는 `TicketFinisher` 생성 인자로, 실행 좌표(세션·정체성·회귀 skip)는
-    종결 파이프라인 생성 인자로 간다. 파이프라인이 그 값을 완료 기록 단계로 그대로 넘기는
-    것은 묶음 종결 회귀가 값으로 고정한다 — 여기서는 `main` 의 해소·forward 만 본다.
+    완료 기록 단위는 묶음 하나다(티켓 하나 = 크기 1) — 실행 좌표(세션·정체성·회귀 skip)는 종결
+    파이프라인 생성 인자로 간다. 코드 트리는 `main` 이 정하지 않는다(종결이 묶음 기록의 브랜치로
+    찾는다) — `TicketFinisher` 생성 인자는 그 사실을 보는 관측점이다. 파이프라인이 그 값을 완료
+    기록 단계로 그대로 넘기는 것은 묶음 종결 회귀가 값으로 고정한다 — 여기서는 `main` 의
+    해소·forward 만 본다.
     """
     captured: dict = {}
 
     class _SpyFinisher(tf.TicketFinisher):
         def __init__(self, **kw):
-            captured["regression_cwd"] = kw.get("regression_cwd")
+            captured["finisher_kwargs"] = dict(kw)
             super().__init__(**kw)
 
     class _SpyCloser:
@@ -1334,16 +1335,17 @@ def _capture_main_forward(tf, monkeypatch) -> dict:
     return captured
 
 
-def test_main_repo_slot_forwards_resolved_regression_cwd(tf, monkeypatch):
-    """--repo/--slot (회귀 실행 경로) → main 이 해소된 worktree 를 regression_cwd forward."""
+def test_main_repo_slot_forwards_session_and_slot_but_no_code_tree(tf, monkeypatch):
+    """--repo/--slot → main 은 트리 인자 없이 해소된 세션·슬롯만 넘긴다(작업 트리는 종결이 찾는다)."""
     monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff())
     captured = _capture_main_forward(tf, monkeypatch)
 
     rc = tf.main(["T-1234", "--repo", "project_manager", "--slot", "1"])
     assert rc == 0
-    assert captured["regression_cwd"].replace(os.sep, "/").endswith("work/project_manager_1")
+    assert captured["finisher_kwargs"] == {}
     assert captured["skip_pytest"] is False
     assert captured["session"] == "project_manager_1"
+    assert captured["slot"] == "work/project_manager_1"
 
 
 # ── board 정체성 forward (T-0781) ───────────────────────────────────────────
@@ -1442,19 +1444,20 @@ def test_main_no_pytest_still_gates_unresolved_identity(tf, monkeypatch, capsys)
     assert "--no-pytest 로는 풀리지 않는다" in err   # 우회 처방이 아니라 부정
 
 
-def test_main_no_pytest_forwards_resolved_code_tree(tf, monkeypatch):
-    """--no-pytest + 슬롯 해소 성공 → 해소된 worktree 를 코드 트리로 forward(회귀만 skip).
+def test_main_no_pytest_forwards_the_skip_but_no_code_tree(tf, monkeypatch):
+    """--no-pytest + 슬롯 해소 성공 → 회귀 skip 만 넘기고 트리 인자는 없다(세션·슬롯은 그대로).
 
-    diff 서킷브레이커·stage 가 이 값을 쓰므로 회귀를 안 돌려도 주입돼야 한다.
+    코드 트리는 종결이 묶음 기록의 브랜치로 찾아 넘기므로 회귀 skip 여부와 무관하게 같은 트리다.
     """
     monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff())
     captured = _capture_main_forward(tf, monkeypatch)
 
     rc = tf.main(["T-1234", "--no-pytest", "--repo", "project_manager", "--slot", "1"])
     assert rc == 0
-    assert captured["regression_cwd"].replace(os.sep, "/").endswith("work/project_manager_1")
+    assert captured["finisher_kwargs"] == {}
     assert captured["skip_pytest"] is True   # [1/5] 회귀만 skip
     assert captured["session"] == "project_manager_1"
+    assert captured["slot"] == "work/project_manager_1"
 
 
 
@@ -1758,11 +1761,12 @@ def test_task_stage_plan_dry_run_matches_actual_repo_pathspec(tf, tmp_path, monk
 
 
 def test_single_ticket_completion_never_deletes_a_branch(tf, tmp_path, monkeypatch, capsys):
-    """티켓 하나의 완료 기록은 브랜치를 지우지 않는다 — 브랜치 정리는 묶음 종결·슬롯 제거의 몫이다.
+    """티켓 하나의 완료 기록은 브랜치를 지우지 않는다 — 브랜치 정리는 슬롯 제거의 몫이다.
 
-    묶음 브랜치 삭제(T-0902)는 `ClusterCloser._step_merge` 에만 있다. 그 시도가 단일 티켓 완료
-    기록 경로로 새면 사람이 아직 쓰고 있는 브랜치를 완료 기록이 지우려 든다. 픽스처 트리는
-    `init_git_repo` 로 자기 저장소를 선언한다(실 저장소 무접촉).
+    종결도 브랜치를 지우지 않는다(작업 트리가 묶음 브랜치를 쥔 채 머지에 닿으므로 삭제는 늘
+    거부됐다 — T-0925 로 그 시도를 지웠다). 완료 기록 경로가 브랜치 삭제를 발행하면 사람이 아직
+    쓰고 있는 브랜치를 지우려 든다. 픽스처 트리는 `init_git_repo` 로 자기 저장소를 선언한다(실
+    저장소 무접촉).
     """
     home = tmp_path / "pm-home"
     worktree = home / "work" / "project_manager_1"
