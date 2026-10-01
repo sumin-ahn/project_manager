@@ -697,3 +697,117 @@ def test_sparse_creation_failure_rolls_back_the_lease_and_worktree(wp, stage):
         wp.create_slot("A", base="main", folders=["a"], git_runner=runner)
     assert wp.list_leases() == []
     assert any(call[:2] == ["worktree", "remove"] for call in git.calls)
+
+
+def test_slot_folders_round_trips_git_quoted_names(wp, tmp_path):
+    import sys
+    # 실제 파일명 제약과 무관하게 모든 플랫폼에서 Git C 인용의 바이트 복원을 확인한다.
+    encoded = ['"a\\\"b"', '"a\\tb"', '"a\\nb"', '"a\\ab\\bb\\fb\\rb\\vb"',
+               '"a\\\\b"', '"\\355\\225\\234\\352\\270\\200"', 'plain', '한글', 'a\u0085b']
+    expected = ['a"b', 'a\tb', 'a\nb', 'a\ab\bb\fb\rb\vb', 'a\\b', '한글', 'plain', '한글', 'a\u0085b']
+    calls = []
+    def runner(argv):
+        calls.append(argv)
+        if argv[:1] == ["config"]:
+            return 0, "true\n"
+        assert argv == ["-c", "core.quotePath=false", "sparse-checkout", "list"]
+        return 0, "\n".join(encoded) + "\n"
+    assert wp.slot_folders("work/A_1", git_runner=runner) == expected
+    assert calls == [["config", "--type=bool", "--get", "core.sparseCheckout"],
+                     ["config", "--type=bool", "--get", "core.sparseCheckoutCone"],
+                     ["-c", "core.quotePath=false", "sparse-checkout", "list"]]
+    # Windows 파일시스템은 큰따옴표 이름을 받지 않는다. Linux에서 실제 생성·대여·현황을 확인한다.
+    if sys.platform == "win32":
+        return
+    from test_pm_config_status_json import _run_cli, _status_json
+    origin = _make_origin(tmp_path)
+    names = ['a"b', '"한글"']
+    for name in names:
+        path = origin / name
+        path.mkdir()
+        (path / "file").write_text("quoted\n", encoding="utf-8")
+    _git(origin, "add", "-A")
+    _git(origin, "commit", "-qm", "quoted folders")
+    _make_bare(wp, origin)
+    shutil.copytree(TOOLS, wp.REPO / ".project_manager/tools",
+                    ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
+    (wp.REPO / ".project_manager/local.conf").write_text(
+        f"project.name=quoted\nruntime.py={sys.executable}\ntest.cmd=pytest -q\n", encoding="utf-8")
+    (wp.REPO / ".project_manager/areas.md").write_text(
+        "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
+        "|---|---|---|---|---|---|---|---|\n"
+        f"| A | A | {origin} | pytest -q | me | main | main | me |\n", encoding="utf-8")
+    created = _run_cli(wp.REPO, "worktree", "add", "A", "--folders", ",".join(names), "--user-ack", "A")
+    assert created.returncode == 0, created.stderr
+    assert 'a"b' in created.stdout
+    lease = wp.list_leases()[0]
+    assert wp.slot_folders(lease.slot) == sorted(names)
+    assert wp.slot_git_status(lease.slot)["folders"] == sorted(names)
+    (wp.REPO / ".project_manager/wiki").mkdir()
+    (wp.REPO / ".project_manager/wiki/pm_state.template.md").write_text(
+        "# 상태\n\n## 세션 식별 (현재까지 사용된 이름)\n최근 N 차 (sliding window, 기본 3 차):\n",
+        encoding="utf-8")
+    assert _run_cli(wp.REPO, "task", "new", "t").returncode == 0
+    allocated = _run_cli(wp.REPO, "alloc", "A", "--task", "t", "--folders", ",".join(names))
+    assert allocated.returncode == 0, allocated.stderr
+    assert 'a"b' in allocated.stdout
+    assert _status_json(wp.REPO)["slots"][0]["folders"] == sorted(names)
+    status = _run_cli(wp.REPO, "status")
+    assert status.returncode == 0 and 'a"b' in status.stdout, status.stderr
+
+
+def test_alloc_folder_validation_precedes_branch_checkout(wp, tmp_path):
+    _make_bare(wp, _make_origin(tmp_path))
+    lease = wp.create_slot("A", base="main", init_submodules=False)
+    path = wp.slot_path(lease.slot)
+    _git(path, "branch", "other")
+    _git(path, "checkout", "other")
+    (path / "only-other").mkdir()
+    (path / "only-other/file").write_text("target\n", encoding="utf-8")
+    _git(path, "add", "only-other")
+    _git(path, "commit", "-qm", "target folders")
+    _git(path, "checkout", "A_1")
+    bare = wp.bare_repo_path("A")
+    def snapshot():
+        configs = {str(p.relative_to(bare)): p.read_bytes()
+                   for p in [bare / "config", *_worktree_config_files(bare)]}
+        names = _git(path, "ls-files", "-z", "--cached", "--others").split("\0")
+        files = {name: (path / name).read_bytes() for name in [".git", *names]
+                 if name and (path / name).is_file()}
+        return (_git(path, "symbolic-ref", "HEAD"), _git(path, "rev-parse", "HEAD"),
+                files, configs, wp.LEASES_FILE.read_bytes())
+    real = wp._real_git_runner(path)
+    for key in ["branch", "resume"]:
+        for failure in ["bad-folder", "dirty", "old-git"]:
+            if failure == "dirty":
+                (path / "b/y").write_text("uncommitted\n", encoding="utf-8")
+            before = snapshot()
+            calls = []
+            def runner(argv):
+                calls.append(argv)
+                if failure == "old-git" and argv == ["version"]:
+                    return 0, "git version 2.35.8\n"
+                return real(argv)
+            folders = ["nope"] if failure == "bad-folder" else ["a"]
+            with pytest.raises(wp.SlotFoldersRefused):
+                wp.alloc("A", owner_task="t", folders=folders, git_runner=runner, **{key: "other"})
+            assert snapshot() == before, (key, failure)
+            assert not any(call[:1] in (["checkout"], ["sparse-checkout"]) for call in calls)
+            if failure == "dirty":
+                (path / "b/y").write_text("y\n", encoding="utf-8")
+        calls = []
+        def recording(argv):
+            calls.append(argv)
+            return real(argv)
+        result = wp.alloc("A", owner_task="t", folders=["only-other"], git_runner=recording, **{key: "other"})
+        assert result.state == "leased" and wp.current_branch(lease.slot) == "other"
+        assert (path / "only-other/file").is_file()
+        checkout = next(i for i, call in enumerate(calls) if call[:1] == ["checkout"])
+        assert calls.index(["version"]) < checkout
+        assert calls.index(["ls-tree", "-z", "other", "--", "only-other"]) < checkout
+        assert next(i for i, call in enumerate(calls) if call[:1] == ["status"]) < checkout
+        assert calls.count(["version"]) == 1
+        assert calls.count(["ls-tree", "-z", "other", "--", "only-other"]) == 1
+        wp.release(lease.slot, owner_task="t")
+        _git(path, "sparse-checkout", "disable")
+        _git(path, "checkout", "A_1")

@@ -3080,6 +3080,12 @@ def alloc(
             # 슬롯은 skip → 다음 후보/NeedsCreate(dangling idle 을 leased 로 승격하지 않음).
             if git_runner is None and not slot_path(lease.slot).exists():
                 continue
+            # 지정 폴더의 검증은 현재 슬롯을 바꾸기 전에 완료한다. 실재는 도착할 ref에서 읽는다.
+            if folders is not None:
+                runner = git_runner or _real_git_runner(slot_path(lease.slot))
+                _require_sparse_git(runner, target=lease.slot)
+                _require_tree_folders(folders, target_branch or "HEAD", runner, target=lease.slot)
+                _require_clean_for_folders(lease.slot, runner)
             # 슬롯이 이미 target_branch 가 아니면 재체크아웃(live HEAD 비교). 없는 브랜치는 만들지
             # 않고 CheckoutFailed — 장부엔 branch 를 쓰지 않는다.
             if (target_branch is not None
@@ -3473,7 +3479,7 @@ def _apply_slot_folders(slot: str, folders: "list[str] | None", *,
 
     폴더 없는 대여는 슬롯이 제한 상태일 때만 푼다(`disable`). 제한이 없던 슬롯에는 제한 여부를
     읽을 뿐 폴더 제한 명령을 부르지 않는다. `disable` 은 제한 없는 슬롯에서도 공용 설정을 바꾼다.
-    폴더 목록은 git 2.36 이상·슬롯 HEAD 트리의 폴더·커밋 안 한 변경 없음을 확인한 뒤 건다."""
+    지정 폴더의 버전·최종 ref 트리·현재 dirty 검증은 alloc의 checkout 이전 단계에서 완료한다."""
     runner = git_runner or _real_git_runner(slot_path(slot))
     if folders is None:
         if not _config_bool(runner, "core.sparseCheckout", target=slot):
@@ -3482,9 +3488,6 @@ def _apply_slot_folders(slot: str, folders: "list[str] | None", *,
         _run_sparse_checkout(runner, ["disable"], target=slot)
         _resync_submodules_selective(slot_path(slot), git_runner=runner)
         return
-    _require_sparse_git(runner, target=slot)
-    _require_tree_folders(folders, "HEAD", runner, target=slot)
-    _require_clean_for_folders(slot, runner)
     _run_sparse_checkout(runner, ["set", "--cone", "--", *folders], target=slot)
     _resync_submodules_selective(slot_path(slot), git_runner=runner)
 
@@ -3509,10 +3512,44 @@ def slot_folders(slot: str, *, git_runner: GitRunner | None = None) -> "list[str
     if rc != 0:
         raise SlotFoldersRefused(
             slot, f"`git sparse-checkout list` 실패 (rc={rc}): {str(out).strip()[:200]}")
-    folders = [line for line in str(out).splitlines() if line]
-    quoted = [line for line in folders if line.startswith('"')]
-    if quoted:
-        raise SlotFoldersRefused(slot, f"git 이 인용해 낸 폴더 이름을 읽지 못했다: {quoted[0]}")
+    # Git C 인용은 바이트 단위 8진 escape를 포함한다. UTF-8 바이트를 복원한 뒤 해석한다.
+    escapes = {'a': 7, 'b': 8, 't': 9, 'n': 10, 'v': 11, 'f': 12, 'r': 13,
+               '"': 34, '\\': 92}
+    folders: list[str] = []
+    for line in str(out).split("\n"):
+        if not line:
+            continue
+        if not line.startswith('"'):
+            folders.append(line)
+            continue
+        try:
+            if len(line) < 2 or not line.endswith('"'):
+                raise ValueError("닫히지 않은 인용")
+            value = line[1:-1]
+            decoded = bytearray()
+            index = 0
+            while index < len(value):
+                char = value[index]
+                if char != "\\":
+                    decoded.extend(char.encode("utf-8"))
+                    index += 1
+                    continue
+                index += 1
+                escaped = value[index]
+                if escaped in escapes:
+                    decoded.append(escapes[escaped])
+                    index += 1
+                elif escaped in "01234567":
+                    octal = value[index:index + 3]
+                    if len(octal) != 3 or any(digit not in "01234567" for digit in octal):
+                        raise ValueError("잘못된 8진 escape")
+                    decoded.append(int(octal, 8))
+                    index += 3
+                else:
+                    raise ValueError("알 수 없는 escape")
+            folders.append(decoded.decode("utf-8"))
+        except (ValueError, IndexError) as exc:
+            raise SlotFoldersRefused(slot, f"Git 폴더 인용 해석 실패: {line!r}") from exc
     return folders
 
 
