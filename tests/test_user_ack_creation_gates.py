@@ -618,6 +618,12 @@ def test_relabel_empty_map_noop_needs_no_ack_or_lock(
 
 
 class _SlotPool:
+    class SlotFoldersRefused(RuntimeError):
+        pass
+
+    def slot_folders(self, slot, **kwargs):
+        return getattr(self, "last_folders", None)
+
     class InvalidTaskName(Exception):
         def __init__(self, name, reason):
             self.name = name
@@ -642,7 +648,7 @@ class _SlotPool:
     def find_task(self, name):
         return SimpleNamespace(name=name, prefix=None)
 
-    def create_slot(self, repo, *, base, test_cmd=None, readonly=False, owner_task=None):
+    def create_slot(self, repo, *, base, test_cmd=None, readonly=False, owner_task=None, folders=None):
         role = "readonly" if readonly else "work"
         # 확정 상태는 엔진과 같은 세 갈래 — task 명의 leased · readonly 무소유 leased · 그 밖 무소유 idle.
         state = "leased" if (readonly or owner_task is not None) else "idle"

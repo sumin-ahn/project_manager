@@ -115,6 +115,12 @@ class FakeLease:
 
 
 class FakeWorktreePool:
+    class SlotFoldersRefused(RuntimeError):
+        pass
+
+    def slot_folders(self, slot, **kwargs):
+        return getattr(self, "last_folders", None)
+
     """worktree_pool 대역 — list_leases(슬롯 surface) + create_slot(빌드명령 경로 검증)."""
 
     # 공유 bare 대역의 루트 — autouse `_fake_bare_root` 가 테스트별 tmp 로 채운다.
@@ -154,7 +160,7 @@ class FakeWorktreePool:
         self.calls.append(("preserved_branches",))
         return []
 
-    def create_slot(self, repo, *, base, test_cmd=None, readonly=False, owner_task=None):
+    def create_slot(self, repo, *, base, test_cmd=None, readonly=False, owner_task=None, folders=None):
         # base(필수·T-0075)·owner_task (ⓓB·ADR-0068) — cmd_worktree_add 가 전달한다. 이 콘솔
         # 테스트는 빌드명령 경로만 검증하므로 base/readonly/owner_task 는 받기만 하고 기록 튜플엔 안 넣는다.
         self.calls.append(("create_slot", repo, test_cmd))

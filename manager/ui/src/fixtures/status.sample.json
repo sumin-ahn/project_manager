@@ -18,7 +18,8 @@
       "children": [],
       "stashes": 0,
       "dirty": true,
-      "remote": null
+      "remote": null,
+      "folders": null
     },
     {
       "slot": "work/app_1",
@@ -34,7 +35,8 @@
       "children": [],
       "stashes": 0,
       "dirty": false,
-      "remote": null
+      "remote": null,
+      "folders": null
     },
     {
       "slot": "work/app_2",
@@ -50,7 +52,8 @@
       "children": [],
       "stashes": 0,
       "dirty": false,
-      "remote": null
+      "remote": null,
+      "folders": null
     },
     {
       "slot": "work/app_3",
@@ -66,7 +69,8 @@
       "children": [],
       "stashes": 0,
       "dirty": false,
-      "remote": null
+      "remote": null,
+      "folders": null
     },
     {
       "slot": "work/app_4",
@@ -82,7 +86,8 @@
       "children": [],
       "stashes": 0,
       "dirty": false,
-      "remote": null
+      "remote": null,
+      "folders": null
     },
     {
       "slot": "work/app_5",
@@ -98,7 +103,8 @@
       "children": [],
       "stashes": 0,
       "dirty": true,
-      "remote": null
+      "remote": null,
+      "folders": null
     }
   ],
   "preserved_branches": [

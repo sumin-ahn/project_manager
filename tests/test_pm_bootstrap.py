@@ -92,6 +92,8 @@ def _make_runner(
         # submodule 목록.
         if argv[:2] == ["submodule", "status"]:
             return 0, submodule_status
+        if argv[:1] == ["ls-files"]:
+            return 0, ""
         # submodule 당 on-branch/detached 판별 (git -C <sub> symbolic-ref -q HEAD).
         if len(argv) >= 4 and argv[0] == "-C" and argv[2] == "symbolic-ref" and argv[3] == "-q":
             sub = argv[1]

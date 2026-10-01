@@ -10455,7 +10455,8 @@ def test_real_git_slot_git_status_parent_children_stashes(proj, tmp_path):
 
     st = wp.slot_git_status(lease.slot)
 
-    assert set(st) == {"slot", "branch", "head", "parent", "children", "stashes", "submodules", "dirty"}
+    assert set(st) == {"slot", "branch", "head", "parent", "children", "stashes", "submodules", "dirty", "folders"}
+    assert st["folders"] is None
     assert st["branch"] == "A_1"
     assert st["parent"] == {"name": "release", "fork": fork, "ref": "origin/release",
                             "ahead": 1, "behind": 0}

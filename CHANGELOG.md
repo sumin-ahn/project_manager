@@ -7,7 +7,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- 작업 슬롯 생성·대여의 --folders로 필요한 폴더만 꺼내 사용할 수 있다. 작업 중 확장은 본인 슬롯의 sparse-checkout add와 기존 sync로 진행하고, status에 폴더 목록을 표시한다.
+
 ### Fixed
+
+- 빈 submodule 폴더를 상위 슬롯의 dev 저장소로 오판하던 문제를 수정했다. 폴더 밖·미초기화·채워진 경로를 구분하고 inactive·dev·dirty 작업을 보존한다.
 
 - Windows URL upstream 캐시의 긴 경로에서 Git clone이 실패하던 문제를 수정했다. 사용자 Git 설정 격리를 유지하면서 Windows runner에 `core.longpaths=true`를 명시한다.
 - OpenCode가 Windows의 실행 불가한 Python 별칭에서 멈추던 문제를 수정했다. 명시한 실행기 또는 지원되는 후보를 검증해 선택하고, 상태를 쓰는 엔진 명령은 한 번만 실행한다.

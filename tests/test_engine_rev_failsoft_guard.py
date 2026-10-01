@@ -1805,6 +1805,7 @@ def test_runtime_status_slot_git_callable_rethrows_marked_skew(monkeypatch):
         list_tasks=lambda: [],
         slots_for_task=lambda _task: [],
         slot_git_status=_raiser(skew),
+        SlotFoldersRefused=_runtime_tool("worktree_pool.py").SlotFoldersRefused,
     )
     monkeypatch.setattr(module, "_default_session", lambda: "session")
     monkeypatch.setattr(module, "_default_user", lambda: "user")
