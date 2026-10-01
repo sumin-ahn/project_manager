@@ -178,6 +178,57 @@ def test_claude_hook_consumes_pm_log_guidance_verbatim(pm_log):
     assert actual == expected
 
 
+def test_t0934_guidance_execution_real_runtime_and_raw_utf8(tmp_path):
+    from _manager_home import make_pm_home, set_conf_key
+    from test_opencode_ctx_guard import _install_core
+
+    node = shutil.which("node")
+    assert node is not None, "Node가 있어야 실제 guidance 소비를 검증할 수 있다"
+    root = make_pm_home(tmp_path / "engine")
+    set_conf_key(root, "runtime.py", sys.executable)
+    lib = _install_core(root)
+    floor = root / ".project_manager" / "tools" / "python_floor.py"
+    assert floor.read_bytes() == PM_LOG.with_name("python_floor.py").read_bytes()
+    command = [sys.executable, str(root / ".project_manager" / "tools" / "pm_log.py"),
+               "ctx-guidance", "--band", "nudge", "--used-pct", "82", "--precompact-at-pct", "80"]
+    producer = subprocess.run(command, cwd=root, capture_output=True, env=utf8_child_env(), check=True)
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+process.stdout.write(m.buildEngineCtxGuidance(process.argv[1], "nudge", {usedPct:82}, {precompact_at_pct:80}));
+'''
+    consumed = subprocess.run([node, "-e", script, str(root)], cwd=lib,
+                              capture_output=True, check=True, timeout=30, env=utf8_child_env())
+    assert consumed.stdout.decode("utf-8") == producer.stdout.decode("utf-8").strip()
+    assert "압축은 자동" in consumed.stdout.decode("utf-8")
+
+    # 기존 fake engine 채널에 의도한 CRLF 원문을 만들고 실제 Python/Node 경로로 소비한다.
+    payload = "원문 안내\r\n둘째 줄\r\n"
+    engine = root / ".project_manager" / "tools" / "pm_log.py"
+    engine.write_text("import sys\nsys.stdout.buffer.write(" + repr(payload.encode("utf-8")) + ")\n",
+                      encoding="utf-8", newline="\n")
+    producer = subprocess.run([sys.executable, str(engine), "snapshot"], cwd=root,
+                              capture_output=True, check=True)
+    assert producer.stdout == payload.encode("utf-8")
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const root = process.argv[1];
+process.stdout.write(JSON.stringify({
+  guidance:m.buildEngineCtxGuidance(root,"nudge",{usedPct:82},{precompact_at_pct:80}),
+  snapshot:m.buildCompactionSnapshot(root,root),
+}));
+'''
+    result = subprocess.run([node, "-e", script, str(root)], cwd=lib,
+                            capture_output=True, check=True, timeout=30)
+    parsed = json.loads(result.stdout)
+    assert parsed == {"guidance": payload.strip(), "snapshot": payload}
+    assert parsed["snapshot"].encode("utf-8") == producer.stdout
+    set_conf_key(root, "runtime.py", str(root / "absent-python"))
+    failed = subprocess.run([node, "-e", script, str(root)], cwd=lib,
+                            capture_output=True, check=True, timeout=30)
+    assert json.loads(failed.stdout)["snapshot"] is None
+    assert json.loads(failed.stdout)["guidance"] != payload.strip()
+
+
 def test_opencode_consumes_pm_log_guidance_verbatim(pm_log):
     node = shutil.which("node")
     if node is None:
@@ -190,12 +241,13 @@ def test_opencode_consumes_pm_log_guidance_verbatim(pm_log):
     )
     result = subprocess.run(
         [node, "-e", script], cwd=OPENCODE.parent,
-        capture_output=True, text=True, encoding="utf-8", check=True,
+        capture_output=True, check=True,
     )
-    expected = pm_log.build_ctx_guard_guidance(
-        "nudge", used_pct=82, precompact_at_pct=80,
+    producer = subprocess.run(
+        [sys.executable, str(PM_LOG), "ctx-guidance", "--band", "nudge", "--used-pct", "82", "--precompact-at-pct", "80"],
+        cwd=ROOT, capture_output=True, env=utf8_child_env(), check=True,
     )
-    assert result.stdout == expected
+    assert result.stdout.decode("utf-8") == producer.stdout.decode("utf-8").strip()
 
 
 def test_codex_json_payload_is_engine_owned_shared_value(pm_log):

@@ -12,6 +12,7 @@ const path = require("node:path");
 const fs = require("node:fs");
 const childProcess = require("node:child_process");
 const { createWarningChannel } = require("./warning-channel-core.cjs");
+const { supportedPythonCandidates } = require("./delegate-channel-core.cjs");
 
 // 엔진 루트는 이 파일 자기 위치에서 나온다 — 훅은 언제나 `<root>/.opencode/lib/*.cjs` 에 설치되고
 // (pm_import 가 그 깊이를 못박는다) 이는 파이썬 도구의 `Path(__file__).resolve().parents[2]` 와 같은
@@ -61,25 +62,23 @@ function toolInputNeedsJudgment(tool, args) {
 }
 
 // board.py 하위 명령 실행 — { ok, stdout } 또는 { ok:false, error }.
-function runBoard(root, argv, input, spawnSync) {
+function runBoard(root, argv, input, spawnSync, platform) {
   const board = path.join(root, ".project_manager", "tools", "board.py");
-  let lastError = "Python interpreter 없음";
-  for (const py of ["python3", "python"]) {
-    const result = spawnSync(py, [board, ...argv], {
-      encoding: "utf8", timeout: BOARD_TIMEOUT_MS, input,
-    });
-    if (result && result.error && result.error.code === "ENOENT") continue;
-    if (!result || result.error) {
-      lastError = result && result.error ? String(result.error.message || result.error) : "판정 subprocess 실패";
-      break;
-    }
-    if (result.status !== 0) {
-      lastError = String(result.stderr || `board.py rc=${result.status}`).trim();
-      break;
-    }
-    return { ok: true, stdout: String(result.stdout || "") };
-  }
-  return { ok: false, error: lastError };
+  const attempts = [];
+  const candidate = supportedPythonCandidates(root, {spawnSync, platform, attempts}).next().value;
+  if (!candidate) return {ok: false, error: attempts.map(
+    ({label, failure}) => `${label}=${failure}`,
+  ).join("; ") || "Python interpreter 없음"};
+  const result = spawnSync(candidate.command, [...candidate.prefixArgs, board, ...argv], {
+    encoding: "utf8", timeout: BOARD_TIMEOUT_MS, input,
+  });
+  if (!result || result.error) return {
+    ok: false, error: result && result.error ? String(result.error.message || result.error) : "판정 subprocess 실패",
+  };
+  if (result.status !== 0) return {
+    ok: false, error: String(result.stderr || `board.py rc=${result.status}`).trim(),
+  };
+  return {ok: true, stdout: String(result.stdout || "")};
 }
 
 function lastJsonLine(stdout) {
@@ -103,29 +102,29 @@ function judgmentFromBoard(run) {
 }
 
 // grants 를 주면 board 가 이 엔진 루트의 1회 허용(이 세션의 것)을 쓸 수 있는 하네스로 판정한다.
-function judgeCommand(root, cwd, command, { session, grants = false, spawnSync = childProcess.spawnSync } = {}) {
+function judgeCommand(root, cwd, command, { session, grants = false, spawnSync = childProcess.spawnSync, platform } = {}) {
   if (!containsGitCommand(command)) {
     return { verdict: "ok", cwd_identity: "non-repo", reason: "git mutation 없음" };
   }
   const argv = ["git-anchor", "--session", String(session || ""), "--cwd", String(cwd || root), "--command", command];
   if (grants) argv.push("--grants");
-  return judgmentFromBoard(runBoard(root, argv, undefined, spawnSync));
+  return judgmentFromBoard(runBoard(root, argv, undefined, spawnSync, platform));
 }
 
-function judgeToolInput(root, tool, args, { session, cwd, spawnSync = childProcess.spawnSync } = {}) {
+function judgeToolInput(root, tool, args, { session, cwd, spawnSync = childProcess.spawnSync, platform } = {}) {
   if (!toolInputNeedsJudgment(tool, args)) {
     return { verdict: "ok", cwd_identity: "non-repo", reason: "허용 위조 표식 없음" };
   }
   const argv = ["git-tool-input", "--session", String(session || ""), "--cwd", String(cwd || root), "--tool", String(tool)];
-  return judgmentFromBoard(runBoard(root, argv, JSON.stringify(args === undefined ? {} : args), spawnSync));
+  return judgmentFromBoard(runBoard(root, argv, JSON.stringify(args === undefined ? {} : args), spawnSync, platform));
 }
 
 // 사용자 메시지의 허용 줄을 기록한다. 기록 실패(형식 오류·인프라)는 조용히 넘기지 않고 올린다 —
 // 허용 없이 대화가 진행되면 같은 거부가 반복될 뿐 사용자는 이유를 모른다.
-function recordGrants(root, sessionID, cwd, prompt, { spawnSync = childProcess.spawnSync } = {}) {
+function recordGrants(root, sessionID, cwd, prompt, { spawnSync = childProcess.spawnSync, platform } = {}) {
   const run = runBoard(
     root, ["git-grant", "--session", String(sessionID || ""), "--cwd", String(cwd || root)],
-    prompt, spawnSync,
+    prompt, spawnSync, platform,
   );
   if (!run.ok) throw new Error(`[git-anchor/허용 거부] ${run.error}`);
   const parsed = lastJsonLine(run.stdout);

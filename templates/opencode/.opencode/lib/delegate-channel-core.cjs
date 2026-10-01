@@ -59,6 +59,21 @@ function pythonCandidates(platform = process.platform) {
     : [python3, python, py];
 }
 
+// local.conf의 기존 KEY=value·주석·last-wins 규약. ctx core도 이 파서를 재수출한다.
+function parseLocalConf(text) {
+  const conf = {};
+  if (typeof text !== "string") return conf;
+  for (let line of text.split("\n")) {
+    line = line.trim();
+    if (!line || line.startsWith("#") || !line.includes("=")) continue;
+    const idx = line.indexOf("=");
+    const key = line.slice(0, idx).trim();
+    const val = line.slice(idx + 1).trim();
+    conf[key] = val;
+  }
+  return conf;
+}
+
 function compactOutput(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
@@ -95,6 +110,56 @@ function validatedVersion(result) {
   return {version};
 }
 
+function* supportedPythonCandidates(root, {
+  spawnSync = childProcess.spawnSync,
+  platform = process.platform,
+  timeout = DECIDE_TIMEOUT_MS,
+  attempts = [],
+} = {}) {
+  let runtime;
+  try {
+    runtime = parseLocalConf(fs.readFileSync(
+      path.join(root, ".project_manager", "local.conf"), "utf8",
+    ))["runtime.py"];
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      attempts.push({label: "local.conf", failure: `local.conf 판독 실패(${error.message})`});
+      return;
+    }
+  }
+  let candidates;
+  if (runtime) {
+    const absolute = path.isAbsolute(runtime)
+      || (platform === "win32" && path.win32.isAbsolute(runtime));
+    const relative = runtime.includes("/") || (platform === "win32" && runtime.includes("\\"));
+    const command = !absolute && relative ? path.resolve(root, runtime) : runtime;
+    // runtime.py는 program 한 토큰이다. launcher 인자로 분할하거나 기본 후보로 강등하지 않는다.
+    candidates = [{command, prefixArgs: [], label: runtime}];
+  } else {
+    candidates = pythonCandidates(platform);
+  }
+  const floorProbe = path.join(root, ".project_manager", "tools", "python_floor.py");
+  const spawnOptions = {
+    encoding: "utf8", timeout: Math.min(timeout || DECIDE_TIMEOUT_MS, DECIDE_TIMEOUT_MS), input: "",
+  };
+  for (const candidate of candidates) {
+    let probeResult;
+    try {
+      probeResult = spawnSync(candidate.command, [...candidate.prefixArgs, floorProbe], spawnOptions);
+    } catch (error) {
+      const detail = error && error.message ? error.message : String(error);
+      attempts.push({label: candidate.label, failure: `버전 검증 예외(${detail})`});
+      continue;
+    }
+    const probe = validatedVersion(probeResult);
+    if (probe.failure) {
+      attempts.push({label: candidate.label, failure: probe.failure});
+      continue;
+    }
+    yield candidate;
+  }
+}
+
 function judgeDelegation(
   root,
   cwd,
@@ -105,9 +170,6 @@ function judgeDelegation(
 ) {
   const guard = path.join(
     root, ".project_manager", "tools", "delegate_channel_guard.py",
-  );
-  const floorProbe = path.join(
-    root, ".project_manager", "tools", "python_floor.py",
   );
   const args = [
     guard, "decide", "--role", String(agentName || ""),
@@ -121,25 +183,7 @@ function judgeDelegation(
     timeout: DECIDE_TIMEOUT_MS,
     input: "",
   };
-  for (const candidate of pythonCandidates(platform)) {
-    let probeResult;
-    try {
-      probeResult = spawnSync(
-        candidate.command,
-        [...candidate.prefixArgs, floorProbe],
-        spawnOptions,
-      );
-    } catch (error) {
-      const detail = error && error.message ? error.message : String(error);
-      attempts.push({label: candidate.label, failure: `버전 검증 예외(${detail})`});
-      continue;
-    }
-    const probe = validatedVersion(probeResult);
-    if (probe.failure) {
-      attempts.push({label: candidate.label, failure: probe.failure});
-      continue;
-    }
-
+  for (const candidate of supportedPythonCandidates(root, {spawnSync, platform, attempts})) {
     let result;
     try {
       result = spawnSync(
@@ -262,7 +306,9 @@ module.exports = {
   agentNameFromArgs,
   judgeDelegation,
   makeDelegateChannelPlugin,
+  parseLocalConf,
   pythonCandidates,
+  supportedPythonCandidates,
   resolveSurface,
   validJudgment,
 };

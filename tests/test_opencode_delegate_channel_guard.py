@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,7 @@ def _install_core(root: Path, *, with_engine: bool) -> Path:
         tools = root / ".project_manager" / "tools"
         tools.mkdir(parents=True)
         (tools / GUARD_PY.name).write_text("", encoding="utf-8")
+        shutil.copyfile(GUARD_PY.with_name("python_floor.py"), tools / "python_floor.py")
     return lib
 
 
@@ -53,6 +55,125 @@ def _load_guard():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_t0934_resolution_candidates_runtime_and_lazy_probe(tmp_path):
+    node = shutil.which("node")
+    assert node is not None, "Node가 있어야 실제 resolver 계약을 검증할 수 있다"
+    root = tmp_path / "engine"
+    _install_core(root, with_engine=True)
+    script = r'''
+const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
+const child = require("node:child_process");
+const m = require("./delegate-channel-core.cjs");
+const root = process.argv[1];
+const conf = path.join(root, ".project_manager", "local.conf");
+const floor = path.join(root, ".project_manager", "tools", "python_floor.py");
+const supported = {status: 0, stdout: "Python 3.12\r\n", stderr: ""};
+const missing = {status: null, error: {code: "ENOENT", message: "missing"}};
+assert.strictEqual(typeof m.supportedPythonCandidates, "function");
+assert.strictEqual(m.parseLocalConf("runtime.py=old\nruntime.py=new\r\n")["runtime.py"], "new");
+for (const platform of ["win32", "linux"]) {
+  const calls = [];
+  const attempts = [];
+  const spawnSync = (command, argv, options) => {
+    calls.push({command, argv, options});
+    assert.deepStrictEqual(options, {encoding: "utf8", timeout: 37, input: ""});
+    if (platform === "win32") {
+      if (command === "py") return missing;
+      if (command === "python3") return {status: 9009, error: null, stderr: "Store alias"};
+    } else {
+      if (command === "python3") return {status: 0, stdout: "Python 3.10\n"};
+      if (command === "python") return {status: 0, stdout: "not a Python version"};
+    }
+    return supported;
+  };
+  const iterator = m.supportedPythonCandidates(root, {platform, spawnSync, timeout: 37, attempts});
+  assert.deepStrictEqual(calls, [], "probe must be lazy");
+  const chosen = iterator.next().value;
+  const expected = platform === "win32"
+    ? {command: "python", prefixArgs: [], label: "python"}
+    : {command: "py", prefixArgs: ["-3"], label: "py -3"};
+  assert.deepStrictEqual(chosen, expected);
+  assert.deepStrictEqual(calls.map((call) => call.command), platform === "win32"
+    ? ["py", "python3", "python"] : ["python3", "python", "py"]);
+  for (const call of calls) assert.deepStrictEqual(call.argv,
+    [...(call.command === "py" ? ["-3"] : []), floor]);
+  assert.strictEqual(attempts.length, 2);
+  assert.match(attempts[1].failure, platform === "win32" ? /rc=9009/ : /출력 불일치/);
+}
+for (const platform of ["win32", "linux"]) {
+  for (const runtime of ["python", path.join(root, "venv with space", "python.exe"),
+                         "venv/python", ...(platform === "win32" ? ["C:\\Python Root\\python.exe"] : [])]) {
+    fs.writeFileSync(conf, "runtime.py=ignored\nruntime.py=" + runtime + "\r\n");
+    const calls = [];
+    const expected = runtime === "venv/python" ? path.resolve(root, runtime) : runtime;
+    const iterator = m.supportedPythonCandidates(root, {platform, timeout: 20000,
+      spawnSync: (command, argv, options) => {
+        calls.push(command);
+        assert.strictEqual(command, expected);
+        assert.deepStrictEqual(argv, [floor]);
+        assert.strictEqual(options.timeout, m.DECIDE_TIMEOUT_MS);
+        return supported;
+      }});
+    assert.deepStrictEqual(iterator.next().value, {command: expected, prefixArgs: [], label: runtime});
+    assert.strictEqual(iterator.next().done, true);
+    assert.deepStrictEqual(calls, [expected]);
+  }
+  fs.writeFileSync(conf, "runtime.py=\n");
+  const calls = [];
+  const iterator = m.supportedPythonCandidates(root, {platform,
+    spawnSync: (command) => { calls.push(command); return supported; }});
+  assert.deepStrictEqual(iterator.next().value, m.pythonCandidates(platform)[0]);
+  assert.strictEqual(calls.length, 1, "first supported candidate must not eagerly probe others");
+}
+fs.writeFileSync(conf, "runtime.py=py -3\n");
+for (const result of [missing, {status: 9009, error: null},
+  {status: 0, stdout: "Python 3.10"}, {status: 0, stdout: "garbage"},
+  {status: null, error: {code: "ETIMEDOUT", message: "timeout"}}, null]) {
+  const attempts = [];
+  let calls = 0;
+  assert.deepStrictEqual([...m.supportedPythonCandidates(root, {platform: "win32", attempts,
+    spawnSync: (command, argv) => {
+      calls += 1;
+      assert.strictEqual(command, "py -3", "configured raw value is one program");
+      assert.deepStrictEqual(argv, [floor]);
+      return result;
+    }})], []);
+  assert.strictEqual(calls, 1, "explicit runtime must never fall back");
+  assert.strictEqual(attempts.length, 1);
+  assert.ok(attempts[0].failure);
+}
+const thrown = [];
+assert.deepStrictEqual([...m.supportedPythonCandidates(root, {attempts: thrown,
+  spawnSync: () => {throw new Error("probe throw");}})], []);
+assert.match(thrown[0].failure, /probe throw/);
+fs.unlinkSync(conf);
+fs.mkdirSync(conf);
+let calls = 0;
+const unreadable = [];
+assert.deepStrictEqual([...m.supportedPythonCandidates(root, {attempts: unreadable,
+  spawnSync: () => {calls += 1; return supported;}})], []);
+assert.strictEqual(calls, 0, "unreadable configuration must not fall back");
+assert.match(unreadable[0].failure, /local.conf/);
+fs.rmdirSync(conf);
+fs.writeFileSync(conf, "runtime.py=" + process.argv[2] + "\n");
+const real = [...m.supportedPythonCandidates(root, {spawnSync: child.spawnSync})];
+assert.strictEqual(real.length, 1, "canonical python_floor must execute");
+fs.unlinkSync(floor);
+const absent = [];
+assert.deepStrictEqual([...m.supportedPythonCandidates(root, {spawnSync: child.spawnSync, attempts: absent})], []);
+assert.match(absent[0].failure, /rc=/);
+console.log("T0934_RESOLUTION_OK");
+'''
+    result = subprocess.run(
+        [node, "-e", script, str(root), sys.executable], cwd=OPEN_LIB,
+        capture_output=True, encoding="utf-8", timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "T0934_RESOLUTION_OK" in result.stdout
 
 
 def test_opencode_plugin_shape_defaults_and_no_javascript_role_truth():
@@ -79,10 +200,13 @@ def test_opencode_core_spawn_contract_deny_and_warn_fail_open():
     script = r'''
 const assert = require("node:assert");
 const m = require("./delegate-channel-core.cjs");
+const path = require("node:path");
 
 let spawned;
+let probed;
 const fakeSpawn = (py, argv, options) => {
   if (argv[argv.length - 1].endsWith("python_floor.py")) {
+    probed = {py, argv, options};
     return {status: 0, stdout: "Python 3.12\n", stderr: ""};
   }
   spawned = {py, argv, options};
@@ -95,14 +219,22 @@ const fakeSpawn = (py, argv, options) => {
     stderr: "",
   };
 };
-const denied = m.judgeDelegation("/repo", "/repo with space", "developer", null, fakeSpawn);
+for (const platform of ["linux", "win32"]) {
+const expected = platform === "win32" ? {command: "py", prefixArgs: ["-3"]} : {command: "python3", prefixArgs: []};
+const denied = m.judgeDelegation("/repo", "/repo with space", "developer", null, fakeSpawn, platform);
 assert.strictEqual(denied.verdict, "deny");
 assert.strictEqual(spawned.options.input, "");
 assert.strictEqual(spawned.options.timeout, m.DECIDE_TIMEOUT_MS);
+assert.strictEqual(spawned.py, expected.command);
+assert.strictEqual(probed.py, expected.command);
+assert.deepStrictEqual(probed.argv, [...expected.prefixArgs, path.join("/repo", ".project_manager", "tools", "python_floor.py")]);
+assert.deepStrictEqual(spawned.argv.slice(0, expected.prefixArgs.length), expected.prefixArgs);
+assert.strictEqual(spawned.argv[expected.prefixArgs.length], path.join("/repo", ".project_manager", "tools", "delegate_channel_guard.py"));
 assert.deepStrictEqual(
-  spawned.argv.slice(1),
+  spawned.argv.slice(expected.prefixArgs.length + 1),
   ["decide", "--role", "developer", "--harness", "opencode", "--cwd", "/repo with space"],
 );
+}
 
 for (const result of [
   {status: 7, stdout: "", stderr: "bad rc"},

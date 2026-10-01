@@ -335,16 +335,34 @@ def test_opencode_write_tools_reach_the_board_with_session_and_cwd():
     script = r'''
 const assert = require("node:assert");
 const m = require("./git-anchor-core.cjs");
+const path = require("node:path");
 for (const tool of ["write", "edit", "apply_patch"]) assert.strictEqual(m.toolInputNeedsJudgment(tool, {}), true);
 assert.strictEqual(m.toolInputNeedsJudgment("read", {filePath: "/x"}), false);
+for (const platform of ["linux", "win32"]) {
+const prefix = platform === "win32" ? ["-3"] : [];
+const program = platform === "win32" ? "py" : "python3";
 const seen = [];
+const probes = [];
 const spy = (py, argv, opts) => {
-  seen.push([argv.slice(1), opts.input]);
+  assert.strictEqual(py, program);
+  if (argv[argv.length-1].endsWith("python_floor.py")) {
+    probes.push(argv);
+    assert.deepStrictEqual(argv, [...prefix, path.join("/engine", ".project_manager", "tools", "python_floor.py")]);
+    assert.deepStrictEqual(opts, {encoding:"utf8", timeout:10000, input:""});
+    return {status:0, stdout:"Python 3.12\n"};
+  }
+  assert.deepStrictEqual(argv.slice(0, prefix.length), prefix);
+  assert.strictEqual(argv[prefix.length], path.join("/engine", ".project_manager", "tools", "board.py"));
+  assert.deepStrictEqual(opts, {encoding:"utf8", timeout:10000, input:JSON.stringify({filePath:"/h/work/app_2/a.py"})});
+  seen.push([argv.slice(prefix.length+1), opts.input]);
   return {status: 0, stdout: JSON.stringify({verdict: "deny", cwd_identity: "slot", reason: "x"}) + "\n", stderr: ""};
 };
-const got = m.judgeToolInput("/engine", "write", {filePath: "/h/work/app_2/a.py"}, {session: "S", cwd: "/h", spawnSync: spy});
+const got = m.judgeToolInput("/engine", "write", {filePath: "/h/work/app_2/a.py"}, {session: "S", cwd: "/h", spawnSync: spy, platform});
 assert.strictEqual(got.verdict, "deny");
+assert.strictEqual(probes.length, 1);
+assert.strictEqual(seen.length, 1);
 assert.deepStrictEqual(seen[0], [["git-tool-input", "--session", "S", "--cwd", "/h", "--tool", "write"], JSON.stringify({filePath: "/h/work/app_2/a.py"})]);
+}
 console.log("OPENCODE_SLOT_WRITE_OK");
 '''
     result = subprocess.run(
