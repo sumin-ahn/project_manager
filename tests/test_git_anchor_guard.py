@@ -2111,6 +2111,93 @@ process.stdout.write(JSON.stringify(commands.map((command) => m.containsGitComma
     assert claude_matches == opencode_matches == codex_matches == expected_matches
 
 
+def test_t0934_board_spawn_once_prefix_input_and_failure(tmp_path):
+    node = shutil.which("node")
+    assert node is not None, "Node가 있어야 board spawn 계약을 검증할 수 있다"
+    root = tmp_path / "engine"
+    tools = root / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    shutil.copyfile(BOARD_PY.with_name("python_floor.py"), tools / "python_floor.py")
+    script = r'''
+const assert = require("node:assert");
+const path = require("node:path");
+const fs = require("node:fs");
+const m = require("./git-anchor-core.cjs");
+const leaf = require("./delegate-channel-core.cjs");
+const root = process.argv[1];
+const conf = path.join(root, ".project_manager", "local.conf");
+const floor = path.join(root, ".project_manager", "tools", "python_floor.py");
+const board = path.join(root, ".project_manager", "tools", "board.py");
+for (const platform of ["linux", "win32"]) {
+  for (const configured of [false, true]) {
+    const runtime = path.join(root, "Python with space", "python.exe");
+    fs.writeFileSync(conf, "runtime.py=" + (configured ? runtime : "") + "\n");
+    const chosen = configured ? {command:runtime, prefixArgs:[]} : leaf.pythonCandidates(platform)[0];
+    for (const operation of ["command", "tool", "grant"]) {
+      for (const outcome of ["success", "rc", "missing", "timeout", "throw", "json", "null"]) {
+        const calls = [];
+        const prompt = "git 허용: git reset --hard\r\n원문";
+        const payload = {filePath: "원문\r\n파일", content:"UTF-8 원문"};
+        const argv = operation === "command"
+          ? ["git-anchor", "--session", "SID", "--cwd", root, "--command", "git reset --hard", "--grants"]
+          : operation === "tool"
+          ? ["git-tool-input", "--session", "SID", "--cwd", root, "--tool", "write"]
+          : ["git-grant", "--session", "SID", "--cwd", root];
+        const input = operation === "command" ? undefined : operation === "tool" ? JSON.stringify(payload) : prompt;
+        const spawnSync = (command, args, options) => {
+          const probe = args[args.length-1] === floor;
+          calls.push({probe,command,args,options});
+          assert.strictEqual(command, chosen.command);
+          if (probe) {
+            assert.deepStrictEqual(args, [...chosen.prefixArgs, floor]);
+            assert.deepStrictEqual(options, {encoding:"utf8", timeout:10000, input:""});
+            return {status:0, stdout:"Python 3.12\n"};
+          }
+          assert.deepStrictEqual(args, [...chosen.prefixArgs, board, ...argv]);
+          assert.deepStrictEqual(options, {encoding:"utf8", timeout:10000, input});
+          if (outcome === "throw") throw new Error("engine throw");
+          if (outcome === "null") return null;
+          if (outcome === "rc") return {status:7, stderr:"engine rc"};
+          if (outcome === "missing") return {status:null, error:{code:"ENOENT", message:"engine missing"}};
+          if (outcome === "timeout") return {status:null, error:{code:"ETIMEDOUT", message:"engine timeout"}};
+          return {status:0, stdout:outcome === "json" ? "bad JSON\r\n" : JSON.stringify(
+            operation === "grant" ? {granted:["git reset --hard"]}
+              : {verdict:"deny", cwd_identity:"slot", reason:"원문\r\n거부"}) + "\r\n"};
+        };
+        const options = {spawnSync, platform, session:"SID", cwd:root, grants:true};
+        const call = () => operation === "command" ? m.judgeCommand(root, root, "git reset --hard", options)
+          : operation === "tool" ? m.judgeToolInput(root, "write", payload, options)
+          : m.recordGrants(root, "SID", root, prompt, options);
+        if (outcome === "throw") assert.throws(call, /engine throw/);
+        else if (operation === "grant" && outcome !== "success") assert.throws(call);
+        else {
+          const got = call();
+          if (operation === "grant") assert.deepStrictEqual(got, ["git reset --hard"]);
+          else if (outcome === "success") assert.deepStrictEqual(got, {
+            verdict:"deny", cwd_identity:"slot", reason:"원문\r\n거부"});
+          else assert.strictEqual(got.verdict, "warn");
+        }
+        assert.strictEqual(calls.length, 2, "one probe, one actual engine, no retry");
+        assert.strictEqual(calls[1].probe, false);
+      }
+    }
+  }
+}
+fs.writeFileSync(conf, "runtime.py=broken-runtime\n");
+let calls = 0;
+const spawnSync = () => {calls += 1; return {status:9009, error:null, stderr:"Store alias"};};
+const warned = m.judgeCommand(root, root, "git reset --hard", {spawnSync,platform:"win32"});
+assert.strictEqual(warned.verdict, "warn");
+assert.match(warned.reason, /broken-runtime.*rc=9009/);
+assert.strictEqual(calls, 1, "failed explicit runtime must not execute board or another program");
+console.log("T0934_BOARD_ONCE_OK");
+'''
+    result = subprocess.run([node, "-e", script, str(root)], cwd=OPEN_CORE.parent,
+                            capture_output=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert "T0934_BOARD_ONCE_OK" in result.stdout
+
+
 def test_opencode_thin_plugin_and_core_node_selfcheck():
     assert OPEN_PLUGIN.is_file() and OPEN_CORE.is_file()
     plugin = OPEN_PLUGIN.read_text(encoding="utf-8")
@@ -2137,6 +2224,7 @@ assert.strictEqual(m.containsGitCommand("cd X; cmd"), true);
 assert.strictEqual(m.containsGitCommand("cmd && cd X"), true);
 let calls = 0;
 const fake = (py, argv, opts) => {
+  if (argv[argv.length-1].endsWith("python_floor.py")) return {status:0, stdout:"Python 3.12\n"};
   calls += 1;
   return {status:0, stdout:JSON.stringify({verdict:"warn",cwd_identity:"pm-home",reason:"fixture"})+"\n", stderr:""};
 };
@@ -2224,7 +2312,7 @@ def test_opencode_git_anchor_blocks_when_engine_absent_at_install_root(tmp_path)
         pytest.skip("node 없음")
     lib = tmp_path / "install" / ".opencode" / "lib"
     lib.mkdir(parents=True)
-    for name in ("git-anchor-core.cjs", "warning-channel-core.cjs"):
+    for name in ("git-anchor-core.cjs", "delegate-channel-core.cjs", "warning-channel-core.cjs"):
         shutil.copyfile(OPEN_CORE.parent / name, lib / name)
     assert not (tmp_path / "install" / ".project_manager").exists()
 
@@ -3233,7 +3321,8 @@ const [engineRoot, slot] = process.argv.slice(1);
   // 허용 기록 실패는 조용히 넘기지 않는다.
   const calls = [];
   const failing = (py, argv, opts) => {
-    calls.push([argv.slice(1), opts.input]);
+    if (argv[argv.length-1].endsWith("python_floor.py")) return {status:0, stdout:"Python 3.12\n"};
+    calls.push([argv.slice((py === "py" ? 1 : 0) + 1), opts.input]);
     return {status: 1, stdout: "", stderr: "[중단] 형식 오류"};
   };
   assert.throws(
@@ -3241,11 +3330,14 @@ const [engineRoot, slot] = process.argv.slice(1);
     /\[git-anchor\/허용 거부\] \[중단\] 형식 오류/,
   );
   assert.deepStrictEqual(calls[0], [["git-grant", "--session", "S", "--cwd", slot], "git 허용: x"]);
-  const granted = (py, argv, opts) => ({status: 0, stdout: JSON.stringify({granted: ["git branch -D main"]}) + "\n", stderr: ""});
+  const granted = (py, argv, opts) => argv[argv.length-1].endsWith("python_floor.py")
+    ? {status:0, stdout:"Python 3.12\n"}
+    : {status: 0, stdout: JSON.stringify({granted: ["git branch -D main"]}) + "\n", stderr: ""};
   assert.deepStrictEqual(m.recordGrants(engineRoot, "S", slot, "git 허용: git branch -D main", {spawnSync: granted}), ["git branch -D main"]);
   const seen = [];
   const spy = (py, argv, opts) => {
-    seen.push(argv.slice(1));
+    if (argv[argv.length-1].endsWith("python_floor.py")) return {status:0, stdout:"Python 3.12\n"};
+    seen.push(argv.slice((py === "py" ? 1 : 0) + 1));
     return {status: 0, stdout: JSON.stringify({verdict: "deny", cwd_identity: "slot", reason: "x"}) + "\n", stderr: ""};
   };
   m.judgeCommand(engineRoot, slot, "git branch -D main", {session: "S", grants: true, spawnSync: spy});

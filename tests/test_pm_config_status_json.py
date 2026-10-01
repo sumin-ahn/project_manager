@@ -303,7 +303,7 @@ def test_status_json_with_remote_reports_the_tracked_remote_branch(home):
 
 
 @_git_required
-def test_status_json_with_remote_stops_without_a_partial_document(home):
+def test_status_json_with_remote_stops_without_a_partial_document(home, wp):
     """원격에 닿지 못하면 빈 값으로 접지 않고 rc 1 · 표준 출력 없음이다."""
     slot = _make_slot(home, "app", 1, "feat/x")
     _ledger(home, [{"slot": slot, "repo": "app", "session": "", "started": "s",
@@ -311,7 +311,7 @@ def test_status_json_with_remote_stops_without_a_partial_document(home):
     _git(home / ".repos" / "app.git", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
     _git(home / slot, "config", "branch.feat/x.remote", "origin")
     _git(home / slot, "config", "branch.feat/x.merge", "refs/heads/feat/x")  # 원격에 물을 대상이 있다
-    shutil.rmtree(home / ".origin")
+    wp.file_lock.force_rmtree(home / ".origin")
 
     done = _run_cli(home, "status", "--json", "--with-remote")
 

@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -846,6 +847,65 @@ def test_upstream_git_runner_isolates_global_config(pm_import, monkeypatch):
     # argv 에 shell 해석 없이 그대로 — no-shell(argv-list) 계약.
     assert captured["argv"][0] == "/usr/bin/git"
     assert "ls-remote" in captured["argv"]
+
+
+@pytest.mark.parametrize("os_name", ["posix", "nt"])
+@pytest.mark.parametrize("argv", [
+    ["clone", "--", "file:///fixture.git", "cache"],
+    ["-C", "cache", "fetch", "origin"],
+    ["ls-remote", "https://example.invalid/fixture.git"],
+])
+def test_t0933_runner_platforms(pm_import, monkeypatch, os_name, argv):
+    """플랫폼별 활성 설정·상속 격리·반환값·예외를 같은 runner에서 확인한다."""
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "12")
+    for index in range(12):
+        monkeypatch.setenv(f"GIT_CONFIG_KEY_{index}", "protocol.ext.allow")
+        monkeypatch.setenv(f"GIT_CONFIG_VALUE_{index}", "always")
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "ext")
+    monkeypatch.setenv("GIT_PROTOCOL_FROM_USER", "1")
+    parent_env = dict(os.environ)
+    monkeypatch.setattr(pm_import, "os", SimpleNamespace(
+        name=os_name, environ=os.environ, devnull=os.devnull))
+    monkeypatch.setattr(pm_import.shutil, "which", lambda _name: "fixture-git")
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=128, stdout="stdout\n", stderr="stderr\n")
+
+    monkeypatch.setattr(pm_import.subprocess, "run", fake_run)
+    runner = pm_import._real_upstream_git_runner(timeout=137)
+    assert runner(argv) == (128, "stdout\nstderr\n")
+    command, kwargs = calls[0]
+    assert command == ["fixture-git", *argv]
+    assert kwargs.keys() == {"capture_output", "text", "encoding", "errors", "timeout", "env"}
+    assert {key: value for key, value in kwargs.items() if key != "env"} == {
+        "capture_output": True, "text": True, "encoding": "utf-8",
+        "errors": "replace", "timeout": 137,
+    }
+    env = kwargs["env"]
+    count = int(env["GIT_CONFIG_COUNT"])
+    active = tuple((env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"])
+                   for i in range(count))
+    security = (
+        ("credential.helper", ""), ("protocol.allow", "never"),
+        ("protocol.https.allow", "always"), ("protocol.ssh.allow", "always"),
+        ("protocol.file.allow", "always"), ("http.followRedirects", "false"),
+    )
+    assert active == security + ((("core.longpaths", "true"),) if os_name == "nt" else ())
+    assert count == (7 if os_name == "nt" else 6)
+    assert env["GIT_CONFIG_GLOBAL"] == env["GIT_CONFIG_SYSTEM"] == os.devnull
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    assert "GIT_ALLOW_PROTOCOL" not in env and "GIT_PROTOCOL_FROM_USER" not in env
+    assert dict(os.environ) == parent_env
+
+    def failed_run(_command, **_kwargs):
+        raise subprocess.TimeoutExpired("fixture-git", 137)
+
+    monkeypatch.setattr(pm_import.subprocess, "run", failed_run)
+    failure = subprocess.TimeoutExpired("fixture-git", 137)
+    assert runner(argv) == (1, str(failure))
+    assert dict(os.environ) == parent_env
 
 
 def test_set_conf_keys_replaces_in_place(pm_import):

@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from manager import BUNDLED_TOOLS, PACKAGE_ROOT, REPO_ROOT, build, load_engine_module
+from manager import BUNDLED_TOOLS, PACKAGE_ROOT, REPO_ROOT, build, load_engine_module, runner
 from manager.bridge_update import BUILD_INFO_MODULE, bundle_root, import_argv
 
 REPO = Path(__file__).resolve().parents[1]
@@ -103,7 +103,10 @@ def test_the_frozen_source_paths_are_the_same_relative_paths(unpacked, tmp_path)
     """frozen 에서도 경로 문자열은 한 벌이다 — 기준만 `_MEIPASS` 로 갈린다."""
     argv = import_argv(tmp_path / "new-project", "claude", "demo",
                        "https://example.invalid/x.git")
-    tool = Path(argv[1])
+    prefix = runner.interpreter(tmp_path / "new-project")
+    assert tuple(argv[:len(prefix)]) == prefix
+    tool = Path(argv[len(prefix)])
+    assert argv[len(prefix) + 1] == "--new"
     source_root = Path(argv[argv.index("--from") + 1])
 
     assert source_root == bundle_root() == unpacked

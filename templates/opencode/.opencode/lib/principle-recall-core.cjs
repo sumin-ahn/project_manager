@@ -16,6 +16,7 @@
 const path = require("node:path");
 const childProcess = require("node:child_process");
 const { createWarningChannel } = require("./warning-channel-core.cjs");
+const { supportedPythonCandidates } = require("./delegate-channel-core.cjs");
 
 // 엔진 루트는 이 파일 자기 위치에서 나온다 — 훅은 언제나 `<root>/.opencode/lib/*.cjs` 에 설치되고
 // (pm_import 가 그 깊이를 못박는다) 이는 파이썬 도구의 `Path(__file__).resolve().parents[2]` 와 같은
@@ -58,40 +59,39 @@ function extractPromptText(info) {
   return "";
 }
 
-function judgeRecall(root, on, text, sessionID, spawnSync = childProcess.spawnSync) {
+function judgeRecall(root, on, text, sessionID, spawnSync = childProcess.spawnSync, platform = process.platform) {
   const engine = path.join(root, ".project_manager", "tools", "pm_principles.py");
-  let lastError = "Python interpreter 없음";
-  for (const py of ["python3", "python"]) {
+  const attempts = [];
+  const candidate = supportedPythonCandidates(root, {spawnSync, platform, attempts}).next().value;
+  let lastError = attempts.map(({label, failure}) => `${label}=${failure}`).join("; ")
+    || "Python interpreter 없음";
+  if (candidate) {
+    lastError = "판정 subprocess 실패";
     let result;
     try {
       result = spawnSync(
-        py,
-        [engine, "judge-recall", "--root", root, "--on", on, "--text", String(text || ""),
+        candidate.command,
+        [...candidate.prefixArgs, engine, "judge-recall", "--root", root, "--on", on, "--text", String(text || ""),
          "--session", String(sessionID || "unknown")],
         { encoding: "utf8", timeout: 10000 },
       );
     } catch (error) {
       lastError = error && error.message ? error.message : String(error);
-      continue;
     }
-    if (result && result.error && result.error.code === "ENOENT") continue;
     if (!result || result.error) {
-      lastError = result && result.error ? String(result.error.message || result.error) : "판정 subprocess 실패";
-      break;
-    }
-    if (result.status !== 0) {
+      if (result && result.error) lastError = String(result.error.message || result.error);
+    } else if (result.status !== 0) {
       lastError = String(result.stderr || `pm_principles.py rc=${result.status}`).trim();
-      break;
+    } else {
+      try {
+        const lines = String(result.stdout || "").trim().split("\n");
+        const parsed = JSON.parse(lines[lines.length - 1]);
+        if (parsed && typeof parsed === "object") return parsed;
+        lastError = "판정 JSON 형태 불명";
+      } catch (error) {
+        lastError = `판정 JSON 파싱 실패(${error.message})`;
+      }
     }
-    try {
-      const lines = String(result.stdout || "").trim().split("\n");
-      const parsed = JSON.parse(lines[lines.length - 1]);
-      if (parsed && typeof parsed === "object") return parsed;
-      lastError = "판정 JSON 형태 불명";
-    } catch (error) {
-      lastError = `판정 JSON 파싱 실패(${error.message})`;
-    }
-    break;
   }
   // 판정 인프라 실패는 비차단 침묵 — recall 은 통과/거부가 없는 편의 채널이라 git-anchor 의
   // warn-on-uncertain 계약을 따르지 않는다. 실패 사유는 진단용으로만 싣는다.
@@ -101,21 +101,16 @@ function judgeRecall(root, on, text, sessionID, spawnSync = childProcess.spawnSy
 // `pm_principles.py rearm` subprocess 호출 — 세션 marker 를 지워 다음 사이클을 재무장한다
 // (부작용만, 반환값 없음). 실패해도 침묵한다 — 최악의 결과는 다음 압축까지 재주입이 늦는
 // 것뿐이라 도구 실행을 막을 이유가 없다.
-function rearmRecall(root, sessionID, spawnSync = childProcess.spawnSync) {
+function rearmRecall(root, sessionID, spawnSync = childProcess.spawnSync, platform = process.platform) {
   const engine = path.join(root, ".project_manager", "tools", "pm_principles.py");
-  for (const py of ["python3", "python"]) {
-    let result;
-    try {
-      result = spawnSync(
-        py,
-        [engine, "rearm", "--root", root, "--session", String(sessionID || "unknown")],
-        { encoding: "utf8", timeout: 10000 },
-      );
-    } catch (error) {
-      continue;
-    }
-    if (result && result.error && result.error.code === "ENOENT") continue;
-    return; // 성공/실패 무관 — 한 인터프리터가 응답했으면 더 시도하지 않는다(비차단).
+  const candidate = supportedPythonCandidates(root, {spawnSync, platform}).next().value;
+  if (!candidate) return;
+  try {
+    spawnSync(candidate.command,
+      [...candidate.prefixArgs, engine, "rearm", "--root", root, "--session", String(sessionID || "unknown")],
+      {encoding: "utf8", timeout: 10000});
+  } catch (error) {
+    // 재무장 인프라 실패는 기존 비차단 침묵을 유지하며 엔진을 재실행하지 않는다.
   }
 }
 

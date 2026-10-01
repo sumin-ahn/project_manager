@@ -133,7 +133,10 @@ def test_three_adapters_classify_the_same_band_table():
                    for used, _band in _BAND_TABLE]
 
     node = shutil.which("node")
-    assert node is not None, "node 가 없으면 opencode 판정을 실행해 대조할 수 없다"
+    assert node is not None, (
+        "Node를 설치하고 pytest 실행 환경의 PATH에 추가해야 합니다. "
+        "세 하네스 밴드 비교에서 OpenCode의 실제 판정을 생략할 수 없습니다."
+    )
     script = (
         f"const m = require({json.dumps(str(OPENCODE_GUARD))});"
         f"const t = m.resolveThresholds({json.dumps(_BAND_CONF)});"

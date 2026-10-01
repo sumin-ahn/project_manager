@@ -69,7 +69,10 @@ def test_the_import_command_points_into_the_bundle_when_frozen(unpacked, tmp_pat
 
     argv = import_argv(dest, "claude", "new-project", "https://example.invalid/x.git")
 
-    assert argv[1] == str(unpacked / ".project_manager" / "tools" / "pm_import.py")
+    prefix = OS_DEFAULT_ARGV[os.name]
+    assert tuple(argv[:len(prefix)]) == prefix
+    assert argv[len(prefix)] == str(unpacked / ".project_manager" / "tools" / "pm_import.py")
+    assert argv[len(prefix) + 1] == "--new"
     assert argv[argv.index("--from") + 1] == str(unpacked)
 
 

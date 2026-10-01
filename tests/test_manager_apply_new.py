@@ -23,7 +23,7 @@ import pytest
 
 from _manager_home import git_required, make_bare_with_tags
 
-from manager import bridge_update, load_engine_module, registry
+from manager import bridge_update, load_engine_module, registry, runner
 from manager.bridge import Api
 from manager.bridge_update import bundle_root, import_argv, init_argv
 
@@ -157,11 +157,14 @@ def test_the_recorded_upstream_is_the_value_we_passed(api, dest, upstream):
 
 def test_the_import_command_always_carries_upstream_and_the_bundle_source(dest, upstream):
     argv = import_argv(dest, "claude", "applied", str(upstream))
+    prefix = runner.interpreter(dest)
 
     assert argv[argv.index("--upstream") + 1] == str(upstream)
     assert argv[argv.index("--from") + 1] == str(bundle_root())
     assert argv[argv.index("--fill") + 1] == "manual"
-    assert argv[1] == str(bundle_root() / ".project_manager" / "tools" / "pm_import.py")
+    assert tuple(argv[:len(prefix)]) == prefix
+    assert argv[len(prefix)] == str(bundle_root() / ".project_manager" / "tools" / "pm_import.py")
+    assert argv[len(prefix) + 1] == "--new"
 
 
 def test_there_is_no_second_place_that_builds_an_import_call():

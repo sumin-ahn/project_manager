@@ -40,6 +40,7 @@ def _write_engine_tools(tools_dir: Path) -> None:
     shutil.copyfile(PM_PRINCIPLES_PY, tools_dir / "pm_principles.py")
     for name in ENGINE_SIBLING_PY:
         shutil.copyfile(TOOLS / name, tools_dir / name)
+    shutil.copyfile(TOOLS / "python_floor.py", tools_dir / "python_floor.py")
 
 
 def _load_module():
@@ -460,9 +461,89 @@ def _install_recall_core(root: Path) -> Path:
     """
     lib = root / ".opencode" / "lib"
     lib.mkdir(parents=True, exist_ok=True)
-    for name in ("principle-recall-core.cjs", "warning-channel-core.cjs"):
+    for name in ("principle-recall-core.cjs", "delegate-channel-core.cjs", "warning-channel-core.cjs"):
         shutil.copyfile(_OPENCODE_LIB / name, lib / name)
     return lib
+
+
+def test_t0934_recall_spawn_once_runtime_and_infra_failure(tmp_path):
+    assert _NODE is not None, "Node가 있어야 recall spawn 계약을 검증할 수 있다"
+    root = tmp_path / "engine"
+    tools = root / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    shutil.copyfile(TOOLS / "python_floor.py", tools / "python_floor.py")
+    script = r'''
+const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
+const m = require("./principle-recall-core.cjs");
+const leaf = require("./delegate-channel-core.cjs");
+const root = process.argv[1];
+const conf = path.join(root, ".project_manager", "local.conf");
+const floor = path.join(root, ".project_manager", "tools", "python_floor.py");
+const engine = path.join(root, ".project_manager", "tools", "pm_principles.py");
+for (const platform of ["win32", "linux"]) {
+  for (const configured of [false, true]) {
+    const runtime = path.join(root, "venv with space", "python.exe");
+    fs.writeFileSync(conf, "runtime.py=" + (configured ? runtime : "") + "\n");
+    const chosen = configured ? {command:runtime, prefixArgs:[]} : leaf.pythonCandidates(platform)[0];
+    for (const operation of ["judge", "rearm"]) {
+      for (const outcome of ["success", "rc", "missing", "timeout", "throw", "null", "json"]) {
+        const calls = [];
+        const expected = {count:1, keys:["K"], text:"원문\r\n회상"};
+        const argv = operation === "judge"
+          ? ["judge-recall", "--root", root, "--on", "edit", "--text", "원문\r\n입력", "--session", "SID"]
+          : ["rearm", "--root", root, "--session", "SID"];
+        const fake = (command, args, options) => {
+          const probe = args[args.length-1] === floor;
+          calls.push({probe,command,args,options});
+          assert.strictEqual(command, chosen.command);
+          if (probe) {
+            assert.deepStrictEqual(args, [...chosen.prefixArgs, floor]);
+            assert.deepStrictEqual(options, {encoding:"utf8", timeout:10000, input:""});
+            return {status:0, stdout:"Python 3.12\n"};
+          }
+          assert.deepStrictEqual(args, [...chosen.prefixArgs, engine, ...argv]);
+          assert.deepStrictEqual(options, {encoding:"utf8", timeout:10000});
+          if (outcome === "throw") throw new Error("engine throw");
+          if (outcome === "rc") return {status:7, stderr:"engine rc"};
+          if (outcome === "missing") return {status:null, error:{code:"ENOENT", message:"engine missing"}};
+          if (outcome === "timeout") return {status:null, error:{code:"ETIMEDOUT", message:"engine timeout"}};
+          if (outcome === "null") return null;
+          return {status:0, stdout:outcome === "json" ? "bad JSON" : JSON.stringify(expected) + "\r\n"};
+        };
+        const got = operation === "judge"
+          ? m.judgeRecall(root, "edit", "원문\r\n입력", "SID", fake, platform)
+          : m.rearmRecall(root, "SID", fake, platform);
+        if (operation === "rearm") assert.strictEqual(got, undefined);
+        else if (outcome === "success") assert.deepStrictEqual(got, expected);
+        else {
+          assert.deepStrictEqual({count:got.count, keys:got.keys, text:got.text}, {count:0, keys:[], text:""});
+          assert.ok(got.infra_error);
+          assert.match(got.infra_error, /engine|subprocess|JSON/);
+        }
+        assert.strictEqual(calls.length, 2, "no engine retry after selection");
+        assert.strictEqual(calls[1].probe, false);
+      }
+    }
+  }
+}
+fs.writeFileSync(conf, "runtime.py=broken-runtime\n");
+for (const operation of ["judge", "rearm"]) {
+  let probes = 0;
+  const fake = () => {probes += 1; return {status:9009,error:null};};
+  const got = operation === "judge" ? m.judgeRecall(root,"edit","text","SID",fake,"win32")
+    : m.rearmRecall(root,"SID",fake,"win32");
+  assert.strictEqual(probes, 1, "no actual engine or fallback for broken configured runtime");
+  if (operation === "judge") assert.match(got.infra_error, /broken-runtime.*9009/);
+  else assert.strictEqual(got, undefined);
+}
+console.log("T0934_RECALL_ONCE_OK");
+'''
+    result = subprocess.run([_NODE, "-e", script, str(root)], cwd=_OPENCODE_LIB,
+                            capture_output=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert "T0934_RECALL_ONCE_OK" in result.stdout
 
 
 def test_opencode_principle_recall_core_requires_cleanly_in_node():
