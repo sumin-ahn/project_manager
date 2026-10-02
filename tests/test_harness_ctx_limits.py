@@ -850,7 +850,7 @@ def _t0932_install_budget_fixture(root,values=None,harness='claude',capacity=200
     module._read_harness_ctx_metadata=reader
     tools=root/'.project_manager/tools'
     tools.mkdir(parents=True,exist_ok=True)
-    for name in ('local_conf.py','repo_owned_files.py','file_lock.py','console_encoding.py','pm_relay.py'):
+    for name in ('local_conf.py','repo_owned_files.py','file_lock.py','console_encoding.py','pm_relay.py','python_floor.py'):
         if not (tools/name).exists():shutil.copyfile(TOOLS/name,tools/name)
     module._apply_harness_ctx_values(root,values,write=True,opencode_config_dir=root/'global')
     return {'model':'fixture-model','provider':'fixture-provider','profile':''} if harness!='opencode' else {'model':'glm-5.2:cloud','provider':'ollama','profile':''}
@@ -928,12 +928,12 @@ def test_t0932_native_constraints_global_selection_is_a_target(pm_import,tmp_pat
     assert (root/'.opencode/opencode.jsonc').read_bytes()==before
 
 
-def _t0932_native_install(tmp_path,monkeypatch,harness):
+def _t0932_native_install(tmp_path,monkeypatch,harness,version="0.159.3"):
     package=tmp_path/(harness+'-installation');binary=package/'bin'/('codex' if harness=='codex' else 'opencode.exe')
     binary.parent.mkdir(parents=True)
     if harness=='codex':
         binary.write_bytes(b'models-cache-v1')
-        (package/'codex-package.json').write_text(json.dumps({'layoutVersion':1,'version':'0.159.3','entrypoint':'bin/codex'}), encoding='utf-8')
+        (package/'codex-package.json').write_text(json.dumps({'layoutVersion':1,'version':version,'entrypoint':'bin/codex'}), encoding='utf-8')
     else:
         # 실제 1.18.34 byte-read의 overflow 및 getter 식, native 실행은 하지 않는다.
         binary.write_bytes(b'S(exports,{maxOutputTokens:()=>yy,OUTPUT_TOKEN_MAX:()=>V7});var V7=32000;function yy($,Z=V7){return Math.min($.limit.output,Z)||Z}function vn(e){let o=e.model.limit.context;let l=e.cfg.compaction?.reserved??Math.min(20000,yy(e.model,e.outputTokenMax));return e.model.limit.input?Math.max(0,e.model.limit.input-l):Math.max(0,o-yy(e.model,e.outputTokenMax))}')
@@ -943,16 +943,16 @@ def _t0932_native_install(tmp_path,monkeypatch,harness):
     return binary
 
 
-def _t0932_codex_native_catalog(tmp_path,monkeypatch):
+def _t0932_codex_native_catalog(tmp_path,monkeypatch,version="0.159.3"):
     from datetime import datetime,timezone
-    _t0932_native_install(tmp_path,monkeypatch,'codex')
+    _t0932_native_install(tmp_path,monkeypatch,'codex',version)
     home=tmp_path/'codex-native-home';home.mkdir();monkeypatch.setenv('CODEX_HOME',str(home))
     provider={'name':'Fixture','base_url':'https://fixture.example/v1','model_catalog_url':'https://fixture.example/models','requires_openai_auth':False}
     # Native Rust identity의 독립 oracle, 제품 identity 함수를 호출하지 않는다.
     fields=[b'models-cache-v1',b'Fixture',b'https://fixture.example/v1',b'model_catalog_url',b'https://fixture.example/models',(0).to_bytes(8,'little'),b'\x00',b'\x00',b'None',(0).to_bytes(8,'little')]
     digest=hashlib.sha256()
     for field in fields:digest.update(len(field).to_bytes(8,'little'));digest.update(field)
-    catalog={'identity':digest.hexdigest(),'client_version':'0.159.3','fetched_at':datetime.now(timezone.utc).isoformat(),'etag':'native-generation',
+    catalog={'identity':digest.hexdigest(),'client_version':version,'fetched_at':datetime.now(timezone.utc).isoformat(),'etag':'native-generation',
         'models':[{'slug':'exact-model','context_window':272000,'effective_context_window_percent':95,'max_context_window':872000,'supports_experimental_context':False}]}
     (home/'config.toml').write_text('model="exact-model"\nprofile="team"\n[profiles.team]\nmodel_provider="fixture"\n[profiles.inactive]\nmodel_context_window=128000\n[model_providers.fixture]\nname="Fixture"\nbase_url="https://fixture.example/v1"\nmodel_catalog_url="https://fixture.example/models"\nrequires_openai_auth=false\n', encoding='utf-8')
     (home/'models_cache.json').write_text(json.dumps(catalog), encoding='utf-8')
@@ -1026,3 +1026,175 @@ def test_t0932_metadata_identity_registry_id_mismatch(pm_import, tmp_path, monke
     with pytest.raises(pm_import.HarnessCtxError, match='정체'):
         _apply(pm_import, root, _global_dir(tmp_path))
     assert _snapshot_fixture_bytes(root) == before
+
+
+@pytest.mark.parametrize('version', ['0.159.3', '0.160.0'])
+def test_t0932_review_codex_project_selection(tmp_path, monkeypatch, version):
+    importer = _load('pm_import')
+    root = _project(tmp_path, harnesses=('codex',),
+        conf='harness.codex.ctx_window_tokens=600000\nctx.checkpoint_at_pct=80\nctx.precompact_at_pct=90\nctx.compact_at_pct=94\n',
+        texts={'.codex/config.toml': 'model="small-model"\n'})
+    home, catalog = _t0932_codex_native_catalog(tmp_path, monkeypatch, version)
+    with (home / 'config.toml').open('a', encoding='utf-8') as stream:
+        stream.write(f'\n[projects.{json.dumps(str(root.resolve()))}]\ntrust_level="trusted"\n')
+    global_before = (home / 'config.toml').read_bytes()
+    catalog['models'].append({'slug': 'small-model', 'context_window': 100000,
+        'effective_context_window_percent': 95})
+    (home / 'models_cache.json').write_text(json.dumps(catalog), encoding='utf-8')
+    importer.apply_harness_ctx(root, write=True, opencode_config_dir=_global_dir(tmp_path))
+    native = tomllib.loads((root / '.codex/config.toml').read_text(encoding='utf-8'))
+    row = json.loads((root / '.project_manager/.local/ctx-budget.json').read_text(encoding='utf-8'))['budgets']['codex']
+    print('선택 모델:', native['model'], '기록 모델:', row['identity']['model'], 'C:', row['C'], '압축:', native['model_auto_compact_token_limit'])
+    assert (home / 'config.toml').read_bytes() == global_before
+    assert row['identity']['model'] == 'small-model'
+    assert row['C'] == 95000
+    assert native['model_auto_compact_token_limit'] == 89300
+
+
+
+def test_t0932_review_plan_target_presence(tmp_path, monkeypatch):
+    importer = _load('pm_import')
+    root = _project(tmp_path, harnesses=('claude',))
+    monkeypatch.setattr(importer, '_read_harness_ctx_metadata', lambda *args: _t0932_reader(importer, *args))
+    plan = importer._prepare_harness_ctx(root, {'ctx.compact_at_pct': '94'},
+        updates={'ctx.compact_at_pct': '94'}, opencode_config_dir=_global_dir(tmp_path))
+    added = root / '.codex/config.toml'
+    added.parent.mkdir()
+    added.write_text('model="unverified-model"\n', encoding='utf-8')
+    conf_before = (root / '.project_manager/local.conf').read_bytes()
+    native_before = (root / '.claude/settings.json').read_bytes()
+    rejected = False
+    try:
+        result = importer._commit_harness_ctx(plan)
+        print('기록 하네스:', sorted(result[2]), 'conf 변경:', result[0])
+    except importer.HarnessCtxError:
+        rejected = True
+    print('거부:', rejected, 'conf 보존:', (root / '.project_manager/local.conf').read_bytes() == conf_before,
+        'native 보존:', (root / '.claude/settings.json').read_bytes() == native_before)
+    assert rejected
+    assert (root / '.project_manager/local.conf').read_bytes() == conf_before
+    assert (root / '.claude/settings.json').read_bytes() == native_before
+
+
+
+def test_t0932_review_native_policy_formula(tmp_path, monkeypatch):
+    importer = _load('pm_import')
+    binary = _t0932_native_install(tmp_path, monkeypatch, 'opencode')
+    original = binary.read_bytes()
+    assert b'e.model.limit.input-l' in original
+    binary.write_bytes(original.replace(b'e.model.limit.input-l', b'e.model.limit.input+l'))
+    cache = tmp_path / 'cache/opencode'
+    cache.mkdir(parents=True)
+    monkeypatch.setenv('XDG_CACHE_HOME', str(cache.parent))
+    (cache / 'models.json').write_text(json.dumps({'p': {'id': 'p', 'api': 'https://fixture.example',
+        'models': {'m': {'id': 'm', 'limit': {'context': 262144, 'output': 128000}}}}}), encoding='utf-8')
+    root = _project(tmp_path, harnesses=('opencode',),
+        conf='harness.opencode.ctx_window_tokens=600000\nctx.checkpoint_at_pct=80\nctx.precompact_at_pct=90\nctx.compact_at_pct=94\n',
+        texts={'.opencode/opencode.jsonc': '{"model":"p/m","provider":{"p":{"models":{"m":{"limit":{"output":32768}}}}}}'})
+    before = (root / '.opencode/opencode.jsonc').read_bytes()
+    rejected = False
+    try:
+        importer.apply_harness_ctx(root, write=True, opencode_config_dir=_global_dir(tmp_path))
+        row = json.loads((root / '.project_manager/.local/ctx-budget.json').read_text(encoding='utf-8'))['budgets']['opencode']
+        native = json.loads((root / '.opencode/opencode.jsonc').read_text(encoding='utf-8'))
+        recorded_point = row['P']
+        actual_formula_point = native['provider']['p']['models']['m']['limit']['input'] + native['compaction']['reserved']
+        print('원천 수식 거부:', rejected, '기록 P:', recorded_point, '변형 native P:', actual_formula_point)
+    except importer.HarnessCtxError:
+        rejected = True
+    assert rejected
+    assert (root / '.opencode/opencode.jsonc').read_bytes() == before
+
+
+@pytest.mark.parametrize('change', ['input-plus', 'context-plus', 'input-operand', 'context-operand', 'getter-output', 'getter-fallback', 'getter-default', 'getter-argument'])
+def test_t0932_review_native_policy_formula_value_flow(tmp_path, monkeypatch, change):
+    importer = _load('pm_import')
+    command = _t0932_native_install(tmp_path, monkeypatch, 'opencode')
+    original = command.read_bytes()
+    substitutions = {
+        'input-plus': (b'e.model.limit.input-l', b'e.model.limit.input+l'),
+        'context-plus': (b'o-yy(e.model,e.outputTokenMax)', b'o+yy(e.model,e.outputTokenMax)'),
+        'input-operand': (b'e.model.limit.input-l', b'e.model.limit.context-l'),
+        'context-operand': (b'o-yy(e.model,e.outputTokenMax)', b'l-yy(e.model,e.outputTokenMax)'),
+        'getter-output': (b'$.limit.output,Z', b'$.limit.input,Z'),
+        'getter-fallback': (b'||Z}', b'||V7}'),
+        'getter-default': (b'Z=V7', b'Z=32000'),
+        'getter-argument': (b'e.model,e.outputTokenMax', b'e.model,e.otherOutput'),
+    }
+    old, new = substitutions[change]
+    assert old in original
+    assert importer._ctx_opencode_policy(original) == 32000
+    with pytest.raises(ValueError):
+        importer._ctx_opencode_policy(original.replace(old, new))
+
+
+@pytest.mark.parametrize('harness', ['claude', 'codex', 'opencode'])
+@pytest.mark.parametrize('shape', ['file', 'directory', 'symlink'])
+def test_t0932_review_plan_target_presence_all_harnesses(tmp_path, monkeypatch, harness, shape):
+    importer = _load('pm_import')
+    kept = 'codex' if harness == 'claude' else 'claude'
+    root = _project(tmp_path, harnesses=(kept,))
+    monkeypatch.setattr(importer, '_read_harness_ctx_metadata', lambda *a: _t0932_reader(importer, *a))
+    with importer._local_conf_write_lock(root / '.project_manager/local.conf'):
+        pass
+    plan = importer._prepare_harness_ctx(root, {'ctx.compact_at_pct': '94'},
+        updates={'ctx.compact_at_pct': '94'}, opencode_config_dir=_global_dir(tmp_path))
+    target = root / TEMPLATE_FILES[harness][1]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if shape == 'file':
+        shutil.copyfile(TEMPLATE_FILES[harness][0], target)
+    elif shape == 'directory':
+        target.mkdir()
+    else:
+        target.symlink_to(TEMPLATE_FILES[harness][0])
+    before = _snapshot_fixture_bytes(root)
+    with pytest.raises(importer.HarnessCtxError):
+        importer._commit_harness_ctx(plan)
+    assert _snapshot_fixture_bytes(root) == before
+
+
+@pytest.mark.parametrize('version', ['0.159.3', '0.160.0', '0.161.0'])
+@pytest.mark.parametrize('trust', [None, 'untrusted', 'trusted'])
+@pytest.mark.parametrize('model', ['small-model', 'missing-model'])
+def test_t0932_review_codex_project_selection_trust_and_exclusions(tmp_path, monkeypatch, trust, model, version):
+    importer = _load('pm_import')
+    root = _project(tmp_path, harnesses=('codex',), conf='harness.codex.ctx_window_tokens=600000\n',
+        texts={'.codex/config.toml': f'model="{model}"\nmodel_provider="excluded-provider"\nprofile="excluded-profile"\n'})
+    home, catalog = _t0932_codex_native_catalog(tmp_path, monkeypatch, version)
+    if trust:
+        with (home / 'config.toml').open('a', encoding='utf-8') as stream:
+            stream.write(f'\n[projects.{json.dumps(str(root.resolve()))}]\ntrust_level="{trust}"\n')
+    catalog['models'].append({'slug': 'small-model', 'context_window': 100000, 'effective_context_window_percent': 95})
+    (home / 'models_cache.json').write_text(json.dumps(catalog), encoding='utf-8')
+    before = _snapshot_fixture_bytes(root)
+    global_before = (home / 'config.toml').read_bytes()
+    if trust == 'trusted' and model == 'small-model' and version != '0.161.0':
+        importer.apply_harness_ctx(root, write=True, opencode_config_dir=_global_dir(tmp_path))
+        row = json.loads((root / '.project_manager/.local/ctx-budget.json').read_text(encoding='utf-8'))['budgets']['codex']
+        assert row['identity'] == {'model': 'small-model', 'provider': 'fixture', 'profile': 'team'}
+        assert (row['C'], row['E'], row['P']) == (95000, 95000, 85500)
+    else:
+        with pytest.raises(importer.HarnessCtxError):
+            importer.apply_harness_ctx(root, write=True, opencode_config_dir=_global_dir(tmp_path))
+        assert _snapshot_fixture_bytes(root) == before
+    assert (home / 'config.toml').read_bytes() == global_before
+
+
+@pytest.mark.parametrize('harness', ['claude', 'codex', 'opencode'])
+@pytest.mark.parametrize('change', ['delete', 'directory'])
+def test_t0932_review_plan_target_presence_existing(tmp_path, monkeypatch, harness, change):
+    importer = _load('pm_import')
+    root = _project(tmp_path, harnesses=(harness,))
+    monkeypatch.setattr(importer, '_read_harness_ctx_metadata', lambda *a: _t0932_reader(importer, *a))
+    with importer._local_conf_write_lock(root / '.project_manager/local.conf'):
+        pass
+    plan = importer._prepare_harness_ctx(root, {'ctx.compact_at_pct': '94'},
+        updates={'ctx.compact_at_pct': '94'}, opencode_config_dir=_global_dir(tmp_path))
+    target = root / TEMPLATE_FILES[harness][1]
+    target.unlink()
+    if change == 'directory':
+        target.mkdir()
+    before = _snapshot_fixture_bytes(root)
+    with pytest.raises(importer.HarnessCtxError):
+        importer._commit_harness_ctx(plan)
+    assert before == _snapshot_fixture_bytes(root)

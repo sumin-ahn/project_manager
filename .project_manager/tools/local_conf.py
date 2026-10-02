@@ -867,6 +867,9 @@ def read_ctx_budget(root, values, harness, identity=None):
     try:
         unknown["W"] = int(unknown["W"])
         record = json.loads(_read_text_shared(Path(root) / CTX_BUDGET_RELPATH, encoding="utf-8"))
+        if not isinstance(record, dict) or any(not isinstance(record.get(k), dict) for k in
+                ("inputs", "environment", "budgets", "fingerprints", "native_files", "native_commands")):
+            raise ValueError("ctx 적용 기록 구조 손상")
         if record.get("projection_sha256") != ctx_record_digest(record):
             raise ValueError("ctx 적용 기록 손상")
         if record.get("environment") != ctx_environment_fingerprints():
@@ -878,16 +881,29 @@ def read_ctx_budget(root, values, harness, identity=None):
         if not _ctx_fingerprints_match(record["fingerprints"]):
             raise ValueError("모델 선택/native/metadata 근거 변경")
         row = record["budgets"][harness]
-        if not identity or any(identity.get(k) != row["identity"].get(k) for k in ("model", "provider", "profile")):
+        if not isinstance(row, dict) or not isinstance(row.get("identity"), dict):
+            raise ValueError("ctx 하네스 기록 구조 손상")
+        models = row.get("models")
+        if not isinstance(models, list) or not models or any(not isinstance(m, dict) or
+                not isinstance(m.get("identity"), dict) or not isinstance(m.get("metadata"), dict) for m in models):
+            raise ValueError("ctx 모델 기록 구조 손상")
+        if not isinstance(identity, dict):
+            raise ValueError("현재 세션 정체성 구조 손상 또는 부재")
+        if any(identity.get(k) != row["identity"].get(k) for k in ("model", "provider", "profile")):
             # OpenCode는 선언된 전체 모델 중 실제 세션 모델을 확인한다.
             if not identity or not any(all(identity.get(k) == m["identity"].get(k) for k in ("model", "provider", "profile")) for m in row.get("models", [])):
                 raise ValueError("현재 세션 모델/provider/profile 확인 불가 또는 불일치")
         ratios = tuple(int(record["inputs"][k]) for k in CTX_INPUT_KEYS[-3:])
-        models = row.get("models") or [row]
         for model in models:
             verified = resolve_ctx_capacity(row["W"], ratios, model["identity"], model["metadata"])
             if verified["status"] != "known" or verified["C"] != model["C"]:
                 raise ValueError(verified["reason"] or "metadata 한도 변경")
+        identities = [tuple(m["identity"].get(k) for k in ("model", "provider", "profile")) for m in models]
+        if len(set(identities)) != len(identities):
+            raise ValueError("ctx 모델 집합 중복")
+        common = min(models, key=lambda m: m["C"])
+        if row["identity"] != common["identity"] or row.get("metadata") != common["metadata"]:
+            raise ValueError("ctx 공통 한도와 선택 metadata 불일치")
         capacity = min(model["C"] for model in models)
         window = int(ctx_input_values(values)[f"harness.{harness}.ctx_window_tokens"])
         effective = min(window, capacity)
@@ -895,6 +911,10 @@ def read_ctx_budget(root, values, harness, identity=None):
                     "precompact": effective*ratios[1]//100, "P": effective*ratios[2]//100}
         if row.get("status") != "known" or any(type(row.get(k)) is not int or row[k] != value for k,value in expected.items()):
             raise ValueError("ctx 적용 기록의 유효 기준/임계 손상")
+        for model in models:
+            if model.get("status") != "known" or any(type(model.get(k)) is not int or model[k] != expected[k]
+                    for k in ("W", "E", "P", "checkpoint", "precompact")):
+                raise ValueError("ctx 모델 기록의 공통 유효 기준/임계 손상")
         return row
     except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
         unknown["reason"] = str(exc)
@@ -907,7 +927,9 @@ def ctx_budget_status(root, values):
         record = json.loads(_read_text_shared(Path(root) / CTX_BUDGET_RELPATH, encoding="utf-8"))
     except (OSError, UnicodeError, ValueError):
         record = {}
-    return {h: read_ctx_budget(root, values, h, record.get("budgets", {}).get(h, {}).get("identity"))
+    budgets = record.get("budgets") if isinstance(record, dict) else None
+    budgets = budgets if isinstance(budgets, dict) else {}
+    return {h: read_ctx_budget(root, values, h, budgets[h].get("identity") if isinstance(budgets.get(h), dict) else None)
             for h in ("claude", "codex", "opencode")}
 
 

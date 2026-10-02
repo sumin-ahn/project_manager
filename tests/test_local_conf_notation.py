@@ -485,7 +485,15 @@ def test_adapter_parsers_read_the_new_per_harness_key(conf_module):
             assert f"ctx_window_tokens_{harness}" not in text, path
         assert conf_module.LEGACY_SUFFIX_PREFIX in text, path      # 차단 접두는 있어야 한다
         assert "ctx_window_tokens" in text, path
-        if 'harness.' not in text:
+        if path.name == 'ctx-guard-core.cjs':
+            # JS는 기존 실행기로 공유 leaf에 입력·정체성을 전달하고 같은 E를 소비한다.
+            validation = text.split('function validatedBudget(', 1)[1].split('function resolveBudget(', 1)[0]
+            assert re.search(r'^row=leaf\.read_ctx_budget\(root,conf,harness,identity\)$', validation, re.MULTILINE), path
+            assert 'conf,harness,identity=json.loads(sys.argv[2])' in validation, path
+            assert 'JSON.stringify([conf, harness, identity])' in validation, path
+            assert '"E":row["E"]' in validation, path
+            assert 'return validatedBudget(conf, harness, root, identity)?.E ?? null' in text, path
+        elif 'harness.' not in text:
             # 얇은 driver는 W를 재해소하지 않고 엔진의 정체 결속 E를 소비한다.
             assert 'engine.resolve_ctx_budget' in text, path
 

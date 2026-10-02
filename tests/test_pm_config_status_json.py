@@ -1105,3 +1105,14 @@ def test_t0932_ctx_budget_readonly_unknown_and_bound(tmp_path,monkeypatch):
     stale=module._status_json_conf(None)['ctx_budget']['claude']
     assert stale['status']=='unknown' and stale['E'] is None
     assert '변경' in stale['reason']
+
+
+@pytest.mark.parametrize('record', [[], None, {'budgets': None}])
+def test_t0932_review_damaged_ctx_record(tmp_path, record):
+    from test_harness_ctx_limits import _load, _t0932_install_budget_fixture
+    leaf = _load('local_conf')
+    target = tmp_path / leaf.CTX_BUDGET_RELPATH
+    target.parent.mkdir(parents=True)
+    target.write_text(json.dumps(record), encoding='utf-8')
+    statuses = leaf.ctx_budget_status(tmp_path, {})
+    assert all(value['status'] == 'unknown' and value['E'] is None for value in statuses.values())

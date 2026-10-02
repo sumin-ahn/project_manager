@@ -176,53 +176,42 @@ function resolveThresholds(conf) {
 // ── 순수 함수: ctx 예산 해소 (하네스별) ────────────────────────────
 // 같은 engine 적용 기록의 E를 읽고 입력·원천·native·실제 모델 결속을 확인한다.
 // 손상·만료·정체 불일치는 null이다. W/default를 실제 가용 한도로 사용하지 않는다.
-function resolveBudget(conf, harness, root, identity) {
+function validatedBudget(conf, harness, root, identity) {
   if (!root || !identity || !identity.model || !identity.provider || typeof identity.profile !== "string") return null;
   try {
-    const record = JSON.parse(fs.readFileSync(path.join(root, ".project_manager/.local/ctx-budget.json"), "utf8"));
-    if (record.schema !== 1 || !record.environment) return null;
-    const stable = value => Array.isArray(value) ? value.map(stable) :
-      value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map(k => [k,stable(value[k])])) : value;
-    const projection = Object.fromEntries(["schema","inputs","environment","budgets","fingerprints","native_files","native_commands"].map(k => [k,record[k]]));
-    if (crypto.createHash("sha256").update(JSON.stringify(stable(projection))).digest("hex") !== record.projection_sha256) return null;
-    for (const [key, digest] of Object.entries(record.environment)) {
-      const actual = Object.prototype.hasOwnProperty.call(process.env,key) ? crypto.createHash("sha256").update(process.env[key]).digest("hex") : null;
-      if (actual !== digest) return null;
-    }
-    const defaults = {"ctx.checkpoint_at_pct":"70", "ctx.precompact_at_pct":"80", "ctx.compact_at_pct":"90"};
-    for (const name of ["claude", "codex", "opencode"]) defaults[`harness.${name}.ctx_window_tokens`] = "200000";
-    for (const [key, fallback] of Object.entries(defaults)) {
-      if (record.inputs[key] !== String(conf[key] || fallback)) return null;
-    }
-    for (const [name, expected] of Object.entries(record.native_files || {})) {
-      const stat=fs.statSync(name,{bigint:true});
-      const actual={st_dev:String(stat.dev),st_ino:String(stat.ino),st_size:String(stat.size),st_mtime_ns:String(stat.mtimeNs)};
-      if (Object.entries(expected).some(([key,value]) => actual[key] !== value)) return null;
-    }
-    for (const [command, expected] of Object.entries(record.native_commands || {})) {
-      const suffixes=process.platform === "win32" ? ["",...(process.env.PATHEXT || ".EXE;.CMD;.BAT").split(";")] : [""];
-      let found=null;
-      for (const directory of (process.env.PATH || "").split(path.delimiter)) {
-        for (const suffix of suffixes) {
-          const candidate=path.join(directory,command+suffix);
-          try {fs.accessSync(candidate,fs.constants.X_OK);found=fs.realpathSync(candidate);break;} catch {}
-        }
-        if (found) break;
-      }
-      if (found !== expected) return null;
-    }
-    for (const [name, digest] of Object.entries(record.fingerprints)) {
-      const actual = fs.existsSync(name) ? crypto.createHash("sha256").update(fs.readFileSync(name)).digest("hex") : null;
-      if (actual !== digest) return null;
-    }
-    const row = record.budgets[harness];
-    const models = row.models || [row];
-    if (!models.some(m => ["model", "provider", "profile"].every(k => m.identity[k] === identity[k]))) return null;
-    const now = Date.now();
-    if (models.some(m => !m.metadata.independent || !m.metadata.generation ||
-      !(Date.parse(m.metadata.observed_at) <= now && (m.metadata.valid_until === null || now < Date.parse(m.metadata.valid_until))))) return null;
-    return row.status === "known" && Number.isSafeInteger(row.E) && row.E > 0 && row.E <= row.C && row.E <= row.W ? row.E : null;
+    const candidate = supportedPythonCandidates(root, { timeout: SNAPSHOT_TIMEOUT_MS }).next().value;
+    if (!candidate) return null;
+    // 기존 순수 leaf를 로컬 실행기로 소비한다. JS에서 C 의미를 재계산하지 않는다.
+    const script = `import sys,json,hashlib
+from pathlib import Path
+root=Path(sys.argv[1]).resolve()
+sys.path.insert(0,str(root/".project_manager/tools"))
+import repo_owned_files
+if Path(repo_owned_files.__file__).resolve()!=root/".project_manager/tools/repo_owned_files.py": raise ImportError("loader path")
+def verify(module,name):
+ if getattr(module,"ENGINE_REV",None)!=repo_owned_files.ENGINE_REV: raise RuntimeError("engine revision skew")
+leaf=repo_owned_files.load_module(root/".project_manager/tools/local_conf.py","local_conf.py",verifier=verify,cache=True)
+conf,harness,identity=json.loads(sys.argv[2])
+p=root/leaf.CTX_BUDGET_RELPATH
+before=p.read_bytes()
+row=leaf.read_ctx_budget(root,conf,harness,identity)
+if row["status"]=="known" and p.read_bytes()==before:
+ print(json.dumps({"E":row["E"],"binding":hashlib.sha256(before).hexdigest()}))
+else: print("null")
+`;
+    const result = childProcess.spawnSync(candidate.command, [...candidate.prefixArgs, "-I", "-B", "-c", script,
+      root, JSON.stringify([conf, harness, identity])], {
+      cwd: root, encoding: "utf8", timeout: SNAPSHOT_TIMEOUT_MS, maxBuffer: 32 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (!result || result.status !== 0) return null;
+    const budget = JSON.parse(result.stdout);
+    return budget && Number.isSafeInteger(budget.E) && budget.E > 0 && typeof budget.binding === "string" ? budget : null;
   } catch { return null; }
+}
+
+function resolveBudget(conf, harness, root, identity) {
+  return validatedBudget(conf, harness, root, identity)?.E ?? null;
 }
 
 // ── 순수 함수: AssistantMessage.tokens 누적 = 현재 컨텍스트 점유 토큰 ──────────
@@ -616,6 +605,8 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
         fired: { nudge: false, nudge2: false },
         pendingNudgeText: null,
         pendingSnapshotMarker: null,
+        pendingBandBinding: null,
+        observedIdentity: null,
         compactionCount: 0,
         cycleEpoch: 0,
         childLookup: null,
@@ -751,6 +742,7 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
         const stagedSnapshot = buildCompactionSnapshot(root, hookCwd);
         const stagedNotice = stagedSnapshot || compactedGuidance;
         session.pendingNudgeText = stagedNotice;
+        session.pendingBandBinding = null;
         // 같은 payload를 프로세스 경계 너머에도 보존한다. 같은 프로세스의
         // 재-compaction은 새 generation stage 성공 후 자기 구 generation만 정리한다.
         const previousMarker = session.pendingSnapshotMarker;
@@ -787,8 +779,16 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
 
       const used = accumulateTokens(info.tokens);
       const identity = {model: info.modelID, provider: info.providerID, profile: info.profile ?? ""}; // OpenCode native profile 부재는 빈 정체성이다.
-      const limit = resolveBudget(loadConf(), "opencode", root, identity);
-      if (limit === null) return;
+      session.observedIdentity = identity;
+      const budget = validatedBudget(loadConf(), "opencode", root, identity);
+      const binding = budget ? JSON.stringify([identity, budget.binding]) : null;
+      if (session.pendingBandBinding && session.pendingBandBinding !== binding) {
+        session.pendingNudgeText = null;
+        session.pendingBandBinding = null;
+        session.fired = {nudge: false, nudge2: false};
+      }
+      if (!budget) return;
+      const limit = budget.E;
       const t = thresholds();
       const state = computeCtxState(used, limit, t);
 
@@ -799,6 +799,7 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
         // 2단 모델-주입 안내 대기 — 1단과 동일 채널(system.transform 1회 소비).
         const guidance = buildEngineCtxGuidance(root, "nudge2", state, t);
         session.pendingNudgeText = guidance;
+        session.pendingBandBinding = binding;
         session.pendingSnapshotMarker = null;
         await notifyNudge2(guidance); // 2단 강한 toast (사람 UI·1회).
       } else if (state.level === "nudge" && !session.fired.nudge) {
@@ -806,6 +807,7 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
         // 다음 모델 호출의 system.transform 이 checkpoint 안내를 소비한다.
         const guidance = buildEngineCtxGuidance(root, "nudge", state, t);
         session.pendingNudgeText = guidance;
+        session.pendingBandBinding = binding;
         session.pendingSnapshotMarker = null;
         await notifyNudge(guidance); // 넛지 toast (사람 UI·1회).
       }
@@ -825,10 +827,22 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
       const sessionID = input && input.sessionID;
       if (await isChildSession(sessionID)) return;
       const session = sessionState(sessionID);
+      if (session && session.pendingBandBinding) {
+        const identity = input && input.model ? {
+          model: input.model.id, provider: input.model.providerID, profile: input.profile ?? "",
+        } : session.observedIdentity;
+        const budget = validatedBudget(loadConf(), "opencode", root, identity);
+        if (!budget || JSON.stringify([identity, budget.binding]) !== session.pendingBandBinding) {
+          session.pendingNudgeText = null;
+          session.pendingBandBinding = null;
+          session.fired = {nudge: false, nudge2: false};
+        }
+      }
       if (session && session.pendingNudgeText && output && Array.isArray(output.system)) {
         output.system.push(session.pendingNudgeText);
         const ownedMarker = session.pendingSnapshotMarker;
         session.pendingNudgeText = null;
+        session.pendingBandBinding = null;
         session.pendingSnapshotMarker = null;
         if (ownedMarker) {
           const generation = compactionSnapshotGenerationFromMarker(root, sessionID, ownedMarker);

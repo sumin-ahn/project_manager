@@ -8190,6 +8190,16 @@ def _ctx_file_digest(path):
     return content_sha256(raw) if raw is not None else None
 
 
+def _ctx_target_shape(path):
+    """부재와 일반 파일·링크·디렉터리를 구분해 계획 대상 형상을 동결한다."""
+    import stat
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    return stat.S_IFMT(info.st_mode)
+
+
 def _ctx_native_stat(path):
     stat = Path(path).stat()
     return {key: str(getattr(stat, key)) for key in ("st_dev", "st_ino", "st_size", "st_mtime_ns")}
@@ -8272,9 +8282,30 @@ def _ctx_opencode_policy(data):
     boundary = data.find(b"\x00", exported.end())
     region = data[max(0, exported.start()-200):boundary if boundary >= 0 else len(data)]
     amount = re.search(rb"(?:var|let|const)\s+"+re.escape(constant)+rb"=([0-9]+)", region)
-    getter = re.search(rb"function\s+"+re.escape(name)+rb"\([^)]*\)\{return Math\.min\([^}]*\.limit\.output,[^}]*\)\|\|", region)
+    symbol = rb"[A-Za-z_$][A-Za-z0-9_$]*"
+    getter = re.search(rb"function\s+"+re.escape(name)+rb"\(("+symbol+rb"),("+symbol+rb")="+re.escape(constant)+rb"\)\{return Math\.min\(\1\.limit\.output,\2\)\|\|\2\}", region)
     if not amount or not getter:
         raise ValueError("OpenCode 실제 출력 식 손상 또는 미지원")
+    # 입력 분기는 예약 margin, context 분기는 실제 출력 getter를 한 번 차감한다.
+    formula = re.compile(rb"function\s+"+symbol+rb"\((?P<arg>"+symbol+rb")\)\{let (?P<context>"+symbol+rb")=(?P=arg)\.model\.limit\.context;"
+        rb"(?:if\((?P=context)===0\)return 0;)?let (?P<reserved>"+symbol+rb")=(?P=arg)\.cfg\.compaction\?\.reserved\?\?Math\.min\((?P<margin>[0-9]+|"+symbol+rb"),"
+        rb"(?P<getter>"+symbol+rb"(?:\.maxOutputTokens)?)\((?P=arg)\.model,(?P=arg)\.outputTokenMax\)\);"
+        rb"return (?P=arg)\.model\.limit\.input\?Math\.max\(0,(?P=arg)\.model\.limit\.input-(?P=reserved)\):"
+        rb"Math\.max\(0,(?P=context)-(?P=getter)\((?P=arg)\.model,(?P=arg)\.outputTokenMax\)\)\}")
+    matches = list(formula.finditer(data))
+    if len(matches) != 1:
+        raise ValueError("OpenCode overflow 두 분기의 예약 값 흐름 미지원")
+    call = matches[0].group("getter")
+    if call != name:
+        namespace = call.removesuffix(b".maxOutputTokens")
+        overflow_region = data[max(0, data.rfind(b"\x00", 0, matches[0].start())):matches[0].start()]
+        imported = re.search(rb"(?:\{|,)("+symbol+rb") as "+re.escape(namespace)+rb"(?:,|\})", overflow_region)
+        exported_namespace = re.search(rb"ProviderTransform:\(\)=>\s*("+symbol+rb")", nearby)
+        if not imported or not exported_namespace or not re.search(re.escape(exported_namespace.group(1))+rb" as "+re.escape(imported.group(1))+rb"(?:,|\})", region):
+            raise ValueError("OpenCode overflow 출력 getter 결속 미지원")
+    margin = matches[0].group("margin")
+    if not margin.isdigit() and not re.search(rb"(?:var|let|const)\s+"+re.escape(margin)+rb"=20000(?:;|,)", data):
+        raise ValueError("OpenCode 기본 예약 margin 결속 미지원")
     output_max = int(amount.group(1))
     configured = os.environ.get("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX")
     if configured:
@@ -8292,10 +8323,20 @@ def _ctx_missing_metadata(*_args):
 def _ctx_catalog_percent_metadata(harness, documents, models, read, row, evidence, native_files, native_commands):
     from datetime import timedelta
     version, native = _ctx_native_install(harness, evidence, native_files, native_commands)
+    if version not in ("0.159.3", "0.160.0"):
+        raise ValueError("Codex 설치 버전의 설정 선택 규칙 미확인")
     home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
     global_conf = read(home / "config.toml", toml=True)
     profile = global_conf.get("profile", "")
     selected = {**global_conf, **global_conf.get("profiles", {}).get(profile, {})}
+    project = documents[HARNESS_CTX_FILES[harness]]
+    if "model" in project:
+        # 프로젝트 provider/profile은 native denylist에 포함된다. 모델만 신뢰된 계층에서 선택한다.
+        project_root = documents["_ctx_root"]
+        trust = global_conf.get("projects", {}).get(project_root, {}).get("trust_level")
+        if trust != "trusted":
+            raise ValueError("Codex 프로젝트 설정의 신뢰/선택 미확정")
+        selected["model"] = project["model"]
     model, provider_id = selected.get("model"), selected.get("model_provider", "openai")
     provider = global_conf.get("model_providers", {}).get(provider_id)
     if not isinstance(provider, dict):
@@ -8388,10 +8429,15 @@ def _prepare_harness_ctx(dest_root, values, *, opencode_config_dir, updates=None
     if module.ctx_input_values(merged_values) != module.ctx_input_values(values):
         raise HarnessCtxError(["ctx 계획 stale: 입력을 읽은 뒤 local.conf가 변경됨"])
     present = frozenset(h for h, rel in HARNESS_CTX_FILES.items() if (dest_root / rel).is_file())
+    shapes = {rel: _ctx_target_shape(dest_root / rel) for rel in HARNESS_CTX_FILES.values()}
+    import stat
+    if any(shape not in (None, stat.S_IFREG) for shape in shapes.values()):
+        raise HarnessCtxError(["ctx 대상 설정의 파일 형상 미지원"])
     validate_harness_ctx(values, present)
     jsonc = _harness_ctx_jsonc_seam()
     texts = {HARNESS_CTX_FILES[h]: _harness_ctx_read_text(dest_root / HARNESS_CTX_FILES[h], HARNESS_CTX_FILES[h]) for h in HARNESS_CTX_FILES if h in present}
     documents = {rel: _harness_ctx_parse(rel, text, jsonc) for rel, text in texts.items()}
+    documents["_ctx_root"] = str(dest_root)
     global_fingerprints, models = {}, {}
     for harness, rel in HARNESS_CTX_FILES.items():
         if harness not in present or not HARNESS_CTX_RULES[rel].model_limits:
@@ -8401,7 +8447,8 @@ def _prepare_harness_ctx(dest_root, values, *, opencode_config_dir, updates=None
         global_documents = _opencode_global_documents(opencode_config_dir, jsonc)
         models = _opencode_target_models(documents[rel], rel, opencode_config_dir, jsonc, global_documents=global_documents)
         documents["_opencode_sources"] = [document for _,document in global_documents] + [documents[rel]]
-    fingerprints = {str((dest_root / rel).resolve()): content_sha256(text.encode("utf-8")) for rel, text in texts.items()}
+    fingerprints = {str(dest_root / rel): content_sha256(texts[rel].encode("utf-8")) if rel in texts else None
+                    for rel in HARNESS_CTX_FILES.values()}
     fingerprints.update(global_fingerprints)
     conf = dest_root / ".project_manager/local.conf"
     before = {str(conf): conf_digest, str(dest_root / ADAPTER_BASELINE_RELPATH): _ctx_file_digest(dest_root / ADAPTER_BASELINE_RELPATH),
@@ -8454,7 +8501,7 @@ def _prepare_harness_ctx(dest_root, values, *, opencode_config_dir, updates=None
             changed[rel] = [text, new_text]
     return json.dumps({"root": str(dest_root), "environment": environment, "inputs": module.ctx_input_values(values), "budgets": budgets,
                        "fingerprints": fingerprints, "native_files": native_files, "native_commands": native_commands, "before": before, "changed": changed, "lines": lines,
-                       "updates": updates or {}}, ensure_ascii=False)
+                       "target_shapes": shapes, "updates": updates or {}}, ensure_ascii=False)
 
 
 def _commit_harness_ctx(plan):
@@ -8463,6 +8510,8 @@ def _commit_harness_ctx(plan):
     root = Path(document["root"])
     module = _load_local_conf()
     with _local_conf_write_lock(root / ".project_manager/local.conf"):
+        if any(_ctx_target_shape(root / rel) != shape for rel, shape in document["target_shapes"].items()):
+            raise HarnessCtxError(["ctx 계획 stale: 대상 설정 존재/형상 변경"])
         if document["environment"] != module.ctx_environment_fingerprints():
             raise HarnessCtxError(["ctx 계획 stale: native 모델/provider 환경 변경"])
         for path, digest in {**document["fingerprints"], **document["before"]}.items():
