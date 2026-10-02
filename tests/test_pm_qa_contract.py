@@ -1,6 +1,10 @@
 """T-0875 pm-qa three-harness surface contract."""
 import shlex
+import json
+import pytest
 from pathlib import Path
+
+from test_board_livegate import t0936_release
 
 from test_board_regression import (
     _marker as regression_marker,
@@ -44,7 +48,7 @@ def test_every_pm_qa_report_contract_has_core_and_declared_platform_rows():
         assert "회귀(core):" in text, path
         assert "platform[<name>]:" in text, path
         assert "어느 행이든 red/미실행" in text, path
-        assert "한 번이 core와 선언 platform 전부를 직렬 실행" in text, path
+        assert "개발 회귀는 core만 실행" in text and "릴리즈 livegate record" in text, path
 
 
 def test_shipped_notation_and_details_document_the_wrapper_protocol():
@@ -69,8 +73,8 @@ def test_shipped_pm_qa_contract_contains_no_machine_specific_vm_or_ssh_details()
         assert not any(value in text for value in forbidden), path
 
 
-def test_full_core_and_platform_same_head_use_project_full_commands_not_a_test_allowlist(
-        regression_board, monkeypatch):
+def test_t0936_project_full_commands_follow_phase_ownership(
+        regression_board, t0936_release, monkeypatch):
     """QA full은 프로젝트 ``test.cmd``와 platform marker 전체를 그대로 실행한다.
 
     특정 AT 파일 목록을 엔진 안에 박으면 그 목록 밖으로 개칭된 reviewer suite가 조용히 빠진다.
@@ -101,8 +105,19 @@ def test_full_core_and_platform_same_head_use_project_full_commands_not_a_test_a
     monkeypatch.setattr(board, "_run_regression_cmd", run)
 
     assert board.cmd_regression(regression_run_args(final=True)) == 0
-    assert [command for command, _cwd, _env in calls] == [full_test_cmd, platform_cmd]
+    assert [command for command, _cwd, _env in calls] == [full_test_cmd]
     assert "PM_QA_PLATFORM" not in calls[0][2]
+    release = t0936_release
+    release.anchor = board.REPO
+    release.head = expected_head
+    release.board.LOCAL_CONF = board.LOCAL_CONF
+    core = json.loads(board.REGRESSION_FLAG.read_text(encoding="utf-8"))
+    release.board.REGRESSION_FLAG.write_text(json.dumps(core), encoding="utf-8")
+    monkeypatch.setattr(release.board, "_git_head_at", lambda cwd: expected_head)
+    monkeypatch.setattr(release.board, "_run_regression_cmd", run)
+    from test_board_livegate import _t0936_record, _t0936_check
+    assert _t0936_record(release) == 0 and _t0936_check(release) == 0
+    assert [command for command, _cwd, _env in calls] == [full_test_cmd, platform_cmd]
     assert calls[1][2]["PM_QA_PLATFORM"] == "windows"
     assert calls[1][2]["PM_QA_EXPECTED_HEAD"] == expected_head
 
@@ -113,3 +128,36 @@ def test_full_core_and_platform_same_head_use_project_full_commands_not_a_test_a
     assert (REPO / "tests/test_additional_reviewer.py").is_file(), (
         "full tests/ 수집에 포함돼야 할 개칭된 reviewer suite가 없다"
     )
+
+
+_RELEASE_SKILLS = tuple(Path(str(path).replace("pm-qa", "pm-release")) for path in SKILLS)
+_REGRESSION_SKILLS = tuple(Path(str(path).replace("pm-qa", "pm-regression")) for path in SKILLS)
+
+
+def test_t0936_shipped_surfaces_share_phase_contract():
+    for path in SKILLS:
+        text = path.read_text(encoding="utf-8")
+        assert "현재 플랫폼" in text and "wrapper를 호출하지 않는다" in text, path
+        assert "릴리즈 검증 예정" in text and "개발 완료 차단 사유가 아니다" in text, path
+        assert "livegate record" in text and "livegate check" in text, path
+        assert "같은 rev" in text and "현재 선언·명령" in text, path
+    for path in _RELEASE_SKILLS:
+        text = path.read_text(encoding="utf-8")
+        assert "선언 순서대로 실제 실행" in text and "이전 green" in text, path
+        assert "PM_ORCH_LIVE_RELEASE=1" in text and "--cwd" in text, path
+        assert "사용자 승인" in text and "pin" in text, path
+    test_shipped_notation_and_details_document_the_wrapper_protocol()
+    test_shipped_pm_qa_contract_contains_no_machine_specific_vm_or_ssh_details()
+
+
+def test_t0936_background_other_tree_and_completion_boundary():
+    for path in (*SKILLS, *_REGRESSION_SKILLS, *_RELEASE_SKILLS):
+        text = path.read_text(encoding="utf-8")
+        assert "백그라운드" in text and "다른 작업 트리" in text, path
+        assert "완료·통합" in text and ("고정" in text or "동결" in text), path
+        assert "릴리즈" in text and "플랫폼" in text, path
+    for path in SKILLS:
+        text = path.read_text(encoding="utf-8")
+        assert "pending" in text and "완료된 전체 core green" in text, path
+        assert "새 플랫폼 선택 옵션이나 별도 작업 큐를 만들지 않는다" in text, path
+        assert "regression run --final" in text and "regression check" in text, path

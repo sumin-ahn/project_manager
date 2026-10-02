@@ -559,6 +559,10 @@ opencode=`provider/model` · codex=사용자 codex config 가 인정하는 문�
 세그먼트 안 철자는 그 식별자의 정본을 따른다(역할은 `code-reviewer`처럼 하이픈, 속성은
 `idle_timeout`처럼 snake_case).
 
+개발 회귀는 선택한 작업공간의 `test.cmd` 전체를 실행한다. 기존 하네스 백그라운드 기능을 사용하며 검증 트리의 코드와 HEAD를 고정한다. 실행 중에는 다른 작업 트리의 독립 개발을 계속하고, 해당 후보의 완료·통합 때 결과를 확인한다. 완료된 같은 HEAD·명령·작업공간의 전체 결과는 재사용한다.
+
+`qa.platforms`와 `test.<platform>.cmd`의 추가 플랫폼 전체 검증은 릴리즈 `livegate record`에서 실행한다. 같은 커밋의 core green을 확인한 뒤 선언 순서대로 검사하며, 플랫폼 실패·미실행·수집 또는 HEAD 불일치는 라이브 테스트 전에 거부한다. `livegate check`는 같은 커밋의 플랫폼 전부와 현재 선언·명령·좌표를 재확인한다. Windows 전체 검증은 모든 구현·통합이 끝난 릴리즈 직전에 실행한다. 개발 회귀에서는 wrapper를 호출하지 않는다.
+
 `test.<name>.cmd` wrapper에는 board가 `PM_QA_PLATFORM=<name>`과
 `PM_QA_EXPECTED_HEAD=<Git OID>`를 전달한다. wrapper는 stdout에 정확히 한 줄의
 `PM_QA_RESULT_V1={"platform":"<name>","head":"<Git OID>","status":"pass","collected":N}`를

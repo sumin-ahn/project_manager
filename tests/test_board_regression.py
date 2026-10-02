@@ -196,7 +196,12 @@ def _write_flag(board, *, status: str, rc, collected=None, previous_collected=No
 
 def _install_run(board, monkeypatch, fake) -> _FakeRun:
     """회귀 러너 seam(`subprocess.Popen` — tee 하며 읽는다)을 대역으로 덮는다."""
-    monkeypatch.setattr(board.subprocess, "Popen", fake)
+    # 이 대역은 pytest 실행만 소유한다. 가짜 .git fixture의 metadata가 상위 repo로 새지 않는다.
+    monkeypatch.setattr(board, "_git_config_get", lambda cwd, key: None)
+    real_popen = board.subprocess.Popen
+    def popen(*args, **kwargs):
+        return fake(*args, **kwargs) if kwargs.get("shell") else real_popen(*args, **kwargs)
+    monkeypatch.setattr(board.subprocess, "Popen", popen)
     return fake
 
 
@@ -237,6 +242,29 @@ def _duplicate_marker(key: str) -> str:
 
 
 # ════════════════════════════════════════════════════════════════════════
+def _measure_declared_platforms(board, *, session=None):
+    """이동한 플랫폼 실행기의 marker/aggregate 원 oracle을 직접 검증한다."""
+    args = _run_args(final=True)
+    if session is None:
+        board.cmd_regression(args)
+        flag = board.REGRESSION_FLAG
+    else:
+        board._regression_run_slot(args, session, str(board.REPO))
+        flag = board._regression_flag_for(session)
+    core = json.loads(flag.read_text(encoding="utf-8"))
+    status, rc, _note = board._require_collected_count(
+        core["rc"], core["status"], core["collected"], require_collected=True)
+    commands = board._platform_test_commands(str(board.REPO))
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    cells, passed, platform_rc = board._run_platform_cells(
+        commands, str(board.REPO), core["head"], env,
+        core_passed=status == "pass", head_after_core=board._git_head_at(str(board.REPO)))
+    aggregate = {key: value for key, value in core.items() if key != "command"}
+    aggregate.update(platforms=cells, status="pass" if passed else "fail", rc=rc or platform_rc)
+    flag.write_text(json.dumps(aggregate), encoding="utf-8")
+    return 0 if passed else 1
+
+
 # T-0875 — declared platform FULL matrix
 # ════════════════════════════════════════════════════════════════════════
 
@@ -251,7 +279,7 @@ def test_no_platform_full_keeps_one_child_and_legacy_flat_record_shape(
     assert len(calls) == 1
     assert set(_flag(board)) == {
         "head", "status", "rc", "scope", "collected", "previous_collected",
-        "conf_anchor", "ts",
+        "conf_anchor", "ts", "command",
     }
 
 
@@ -271,7 +299,7 @@ def test_declared_platforms_run_after_core_in_order_with_exact_env_and_record(
         return 0, "3 passed in 0.01s\n", ""
 
     monkeypatch.setattr(board, "_run_regression_cmd", run)
-    assert board.cmd_regression(_run_args(final=True)) == 0
+    assert _measure_declared_platforms(board) == 0
     assert [call[0] for call in calls] == [board._test_cmd(None), "run-arm", "run-windows"]
     assert "PM_QA_PLATFORM" not in calls[0][1]
     assert [(call[1]["PM_QA_PLATFORM"], call[1]["PM_QA_EXPECTED_HEAD"])
@@ -286,7 +314,8 @@ def test_declared_platforms_run_after_core_in_order_with_exact_env_and_record(
     out = capsys.readouterr().out
     assert "regression platform[linux-arm]: pass · collected 3 · HEAD deadbeef" in out
     assert "regression platform[windows]: pass · collected 3 · HEAD deadbeef" in out
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 0
+    assert board._platform_record_problem(evidence, str(board.REPO), head, board._platform_test_commands(str(board.REPO))) is None
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
 
 
 def test_platform_record_validator_owns_top_level_status_check(board):
@@ -323,7 +352,7 @@ def test_platform_core_without_summary_is_unverified(
         calls.append(cmd) or (0, "wrapper completed without pytest summary\n", "")
     ))
 
-    assert board.cmd_regression(_run_args(final=True)) == 1
+    assert _measure_declared_platforms(board) == 1
     assert calls == [board._test_cmd(None)], "core evidence가 불명확하면 platform을 실행하지 않는다"
     evidence = _flag(board)
     assert evidence["status"] == "fail"
@@ -352,9 +381,7 @@ def test_multi_slot_platform_core_without_summary_uses_the_same_unverified_contr
         calls.append(cmd) or (0, "wrapper completed without pytest summary\n", "")
     ))
 
-    assert board._regression_run_slot(
-        argparse.Namespace(cmd=None), "A_1", str(board.REPO),
-    ) == 1
+    assert _measure_declared_platforms(board, session="A_1") == 1
     assert len(calls) == 1 and calls[0] != "run-windows"
     evidence = json.loads(
         board._regression_flag_for("A_1").read_text(encoding="utf-8")
@@ -408,7 +435,7 @@ def test_any_platform_result_defect_turns_the_aggregate_red(
         return 0, "3 passed in 0.01s\n", ""
 
     monkeypatch.setattr(board, "_run_regression_cmd", run)
-    assert board.cmd_regression(_run_args(final=True)) == 1
+    assert _measure_declared_platforms(board) == 1
     evidence = _flag(board)
     assert evidence["status"] == "fail"
     assert evidence["platforms"][0]["status"] == "fail"
@@ -426,7 +453,7 @@ def test_duplicate_platform_marker_member_is_invalid_for_run_and_check(
         return 0, "3 passed in 0.01s\n", ""
 
     monkeypatch.setattr(board, "_run_regression_cmd", run)
-    assert board.cmd_regression(_run_args(final=True)) == 1
+    assert _measure_declared_platforms(board) == 1
     assert _flag(board)["platforms"][0]["rc"] == "invalid-result"
     assert board.cmd_regression(argparse.Namespace(action="check")) == 1
 
@@ -468,7 +495,7 @@ def test_core_red_skips_every_declared_platform_and_records_not_run(board, monke
     monkeypatch.setattr(board, "_run_regression_cmd", lambda cmd, cwd, env: (
         calls.append(cmd) or (1, "1 failed in 0.01s\n", "")
     ))
-    assert board.cmd_regression(_run_args(final=True)) == 1
+    assert _measure_declared_platforms(board) == 1
     assert len(calls) == 1
     evidence = _flag(board)
     assert [cell["status"] for cell in evidence["platforms"]] == ["not-run", "not-run"]
@@ -486,7 +513,9 @@ def test_host_head_drift_after_core_skips_platform_and_turns_aggregate_red(
     ))
     assert board.cmd_regression(_run_args(final=True)) == 1
     assert len(calls) == 1
-    assert _flag(board)["platforms"][0]["rc"] == "head-drift"
+    assert _flag(board)["head"] == "deadbeef01234567"
+    assert _flag(board)["rc"] == "head-drift"
+    assert "platforms" not in _flag(board)
 
 
 def test_platform_declaration_preflight_is_fail_closed_before_core(board, monkeypatch):
@@ -499,9 +528,10 @@ def test_platform_declaration_preflight_is_fail_closed_before_core(board, monkey
         raise AssertionError("core must not run")
 
     monkeypatch.setattr(board, "_run_regression_cmd", forbidden)
-    assert board.cmd_regression(_run_args(final=True)) == 1
+    with pytest.raises(board.PlatformConfigError):
+        board._platform_test_commands(str(board.REPO))
     assert not called
-    assert _flag(board)["rc"] == "platform-config"
+    assert not board.REGRESSION_FLAG.exists()
 
 
 def test_explicit_scoped_run_never_executes_declared_platform(board, monkeypatch):
@@ -515,7 +545,7 @@ def test_explicit_scoped_run_never_executes_declared_platform(board, monkeypatch
     assert not board.REGRESSION_FLAG.exists()
 
 
-def test_declaration_forces_implicit_full_instead_of_review_cycle_downgrade(
+def test_declaration_preserves_review_cycle_downgrade(
         board, monkeypatch):
     _set_platforms(board, windows="run-windows")
     monkeypatch.setattr(board, "_review_cycle_downgrade", lambda: (["T-1"], ["tests/test_x.py"]))
@@ -528,15 +558,15 @@ def test_declaration_forces_implicit_full_instead_of_review_cycle_downgrade(
 
     monkeypatch.setattr(board, "_run_regression_cmd", run)
     assert board.cmd_regression(_run_args()) == 0
-    assert len(calls) == 2
-    assert board.REGRESSION_FLAG.exists()
+    assert len(calls) == 1 and "test_x" in calls[0]
+    assert not board.REGRESSION_FLAG.exists()
 
 
 def test_check_rejects_legacy_record_and_command_drift_after_declaration(board, monkeypatch):
     _write_flag(board, status="pass", rc=0, collected=3,
                 conf_anchor=str(board.REPO))
     _set_platforms(board, windows="run-windows")
-    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 0
 
     def run(cmd, cwd, env):
         return ((0, _marker("windows", "deadbeef01234567"), "")
@@ -544,7 +574,7 @@ def test_check_rejects_legacy_record_and_command_drift_after_declaration(board, 
 
     monkeypatch.setattr(board, "_run_regression_cmd", run)
     assert board.cmd_regression(_run_args(final=True)) == 0
-    _set_platforms(board, windows="changed-wrapper")
+    board.LOCAL_CONF.write_text("test.cmd=changed-core\nqa.platforms=windows\ntest.windows.cmd=changed-wrapper\n", encoding="utf-8")
     assert board.cmd_regression(argparse.Namespace(action="check")) == 1
 
 
@@ -1097,14 +1127,16 @@ def test_multi_slot_platform_matrix_uses_each_slot_config_and_is_all_or_nothing(
         return 0, "3 passed in 0.01s\n", ""
 
     monkeypatch.setattr(board, "_run_regression_cmd", run)
-    assert board.cmd_regression(_run_args()) == 1
-    assert [cmd for cmd, _cwd, _env in calls if cmd.startswith("run-")] == [
-        "run-A_1", "run-B_1",
-    ]
+    assert board.cmd_regression(_run_args()) == 0
+    assert [cmd for cmd, _cwd, _env in calls if cmd.startswith("run-")] == []
+    assert len(calls) == 2 and {cwd for _cmd, cwd, _env in calls} == {_slot_cwd(board,"A_1"), _slot_cwd(board,"B_1")}
     a_record = json.loads(board._regression_flag_for("A_1").read_text(encoding="utf-8"))
     b_record = json.loads(board._regression_flag_for("B_1").read_text(encoding="utf-8"))
     assert a_record["status"] == "pass"
-    assert b_record["status"] == "fail"
+    assert b_record["status"] == "pass"
+    b_record["status"] = "fail"
+    board._regression_flag_for("B_1").write_text(json.dumps(b_record), encoding="utf-8")
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
 
 
 @pytest.mark.parametrize("damage,expected", (
@@ -2924,8 +2956,9 @@ def test_the_unverified_collection_label_stays_for_the_platform_contract(board, 
     monkeypatch.setattr(board, "_run_regression_cmd",
                         lambda cmd, cwd, env: (0, "[custom runner] ok\n", ""))
 
-    assert board.cmd_regression(_run_args(final=True)) == 1
-    assert _flag(board)["rc"] == board.REGRESSION_RC_UNVERIFIED_COLLECTION
+    assert board._require_collected_count(0, "pass", None, require_collected=True)[:2] == ("fail", board.REGRESSION_RC_UNVERIFIED_COLLECTION)
+    assert board.cmd_regression(_run_args(final=True)) == 0
+    assert _flag(board)["collected"] is None
 
 
 def test_the_regression_record_has_exactly_one_writer():
@@ -2940,18 +2973,18 @@ def test_the_regression_record_has_exactly_one_writer():
     assert "regression_flag.write_text" not in source
     assert "_write_json_atomic(regression_flag" not in source
     assert "_write_json_atomic(_regression_flag_for(" not in source
-    assert source.count("_write_regression_flag(") == 1 + 9   # 정의 1 + 호출 9자리
+    assert source.count("_write_regression_flag(") == 1 + 4   # 정의 1 + 단일/슬롯의 시작 HEAD 실패 및 종료 기록 각 2자리
 
 
 def test_the_delta_is_only_attached_where_the_record_is_read():
-    """증감 문장은 기록을 읽는 다섯 자리(run 4 · check 1)에만 붙는다.
+    """증감 문장은 기록을 읽는 세 자리(run 2 · check 1)에만 붙는다.
 
     부트스트랩·핸드오프는 기록을 읽지도 쓰지도 않고 자기 pytest 출력의 `passed+failed` 를 쓴다 —
     기록의 `collected`(skipped 포함)와 축이 달라 그대로 빼면 가짜 증감이 상시 뜬다.
     """
     source = (TOOLS / "board.py").read_text(encoding="utf-8")
     call_sites = source.count("collection_delta_text(")
-    assert call_sites == 1 + 5, f"증감 표시 자리가 5곳이 아니다(정의 1 + 호출 {call_sites - 1})"
+    assert call_sites == 1 + 3, f"증감 표시 자리가 3곳이 아니다(정의 1 + 호출 {call_sites - 1})"
     for name in ("pm_bootstrap.py", "pm_handoff.py"):
         text = (TOOLS / name).read_text(encoding="utf-8")
         assert "collection_delta_text" not in text, f"{name} 이 다른 축의 숫자로 증감을 냈다"
@@ -3049,3 +3082,169 @@ def test_t0929_selected_workspace_readonly_cwd_reference_preserved(board, monkey
     assert board.cmd_regression(_run_args(repo='A', cwd=selected, cmd='pytest -q')) == 0
     assert fake.calls[0]['kwargs']['cwd'] == selected
     assert _flag(board)['head'] == 'head5'
+
+
+# T-0936 개발 core 증거와 실행 단계
+
+def _t0936_core_setup(board, monkeypatch, declaration='windows'):
+    board.LOCAL_CONF.write_text('test.cmd=core-full\n' + (f'qa.platforms={declaration}\n' if declaration else ''), encoding='utf-8')
+    monkeypatch.setattr(board, '_stale_pre_push_hook_refusal', lambda: None)
+    monkeypatch.setattr(board, '_resolve_regression_flag', lambda cwd: (board.REGRESSION_FLAG, board._LG_NO_HOOK))
+    monkeypatch.setattr(board, '_platform_test_commands', lambda cwd: pytest.fail('개발 단계에서 플랫폼 선언 해소'))
+    monkeypatch.setattr(board, '_run_platform_cells', lambda *a, **k: pytest.fail('개발 단계에서 플랫폼 실행'))
+    calls = []
+    monkeypatch.setattr(board, '_run_regression_cmd', lambda cmd, cwd, env: (calls.append((cmd, cwd, env)) or (0, '3 passed in 0.01s\n', '')))
+    return calls
+
+
+@pytest.mark.parametrize('declaration', ['', 'windows', 'missing-command'])
+def test_t0936_development_core_only(board, monkeypatch, declaration):
+    calls = _t0936_core_setup(board, monkeypatch, declaration)
+    assert board.cmd_regression(_run_args(final=True)) == 0
+    assert [item[0] for item in calls] == ['core-full']
+    assert 'PM_QA_PLATFORM' not in calls[0][2]
+    record = _flag(board)
+    assert record['command'] == 'core-full' and 'platforms' not in record
+    assert record['head'] == 'deadbeef01234567' and record['conf_anchor'] == str(board.REPO)
+    assert board.cmd_regression(argparse.Namespace(action='check')) == 0
+
+
+@pytest.mark.parametrize('defect', [None, 'red', 'stale', 'missing'])
+def test_t0936_multi_slot_core_only(multi_board, monkeypatch, defect):
+    board = multi_board
+    calls = _t0936_core_setup(board, monkeypatch)
+    local = board.LOCAL_DIR / 'engine-root'
+    local.mkdir()
+    monkeypatch.setattr(board, '_resolve_regression_flag', lambda cwd: (local / 'regression.json', board._LG_ENGINE_ROOT))
+    monkeypatch.setattr(board, '_test_cmd', lambda override, session=None: override or f'core-{session}')
+    monkeypatch.setenv('PM_SESSION_NAME', 'A_1')
+    for session in ['A_1', 'B_1']:
+        tree = Path(_slot_cwd(board, session)); tree.mkdir(parents=True)
+    assert board.cmd_regression(_run_args(final=True)) == 0
+    assert [c[0] for c in calls] == ['core-A_1', 'core-B_1']
+    for session in ['A_1', 'B_1']:
+        flag = board._regression_flag_for(session, local_dir=local)
+        data = json.loads(flag.read_text(encoding='utf-8'))
+        assert data['session'] == session and data['conf_anchor'] == _slot_cwd(board, session)
+        assert 'platforms' not in data
+    calls.clear()
+    assert board.cmd_regression(_run_args(final=True)) == 0 and calls == []
+    if defect:
+        flag = board._regression_flag_for('B_1', local_dir=local)
+        data = json.loads(flag.read_text(encoding='utf-8'))
+        if defect == 'missing': flag.unlink()
+        else:
+            data.update({'status': 'fail'} if defect == 'red' else {'head': 'old'})
+            flag.write_text(json.dumps(data), encoding='utf-8')
+        assert board.cmd_regression(argparse.Namespace(action='check')) == 1
+
+
+@pytest.mark.parametrize('slot', [False, True])
+@pytest.mark.parametrize('declaration', ['', 'windows'])
+@pytest.mark.parametrize('drift', ['missing', 'moved'])
+def test_t0936_core_start_head_binding(board, monkeypatch, slot, declaration, drift):
+    calls = _t0936_core_setup(board, monkeypatch, declaration)
+    head = ['' if drift == 'missing' else 'START']
+    monkeypatch.setattr(board, '_git_head_at', lambda cwd: head[0])
+    def run(cmd, cwd, env):
+        calls.append((cmd, cwd, env)); head[0] = 'END'
+        return 0, '3 passed in 0.01s\n', ''
+    monkeypatch.setattr(board, '_run_regression_cmd', run)
+    args = _run_args(final=True, cmd='core-full')
+    assert (board._regression_run_slot(args, 'A_1', str(board.REPO)) if slot else board.cmd_regression(args)) != 0
+    flag = board._regression_flag_for('A_1') if slot else board.REGRESSION_FLAG
+    record = json.loads(flag.read_text(encoding='utf-8'))
+    assert record['head'] == ('' if drift == 'missing' else 'START') and record['status'] == 'fail'
+    assert record['rc'] == 'head-drift'
+    assert len(calls) == (0 if drift == 'missing' else 1)
+
+
+@pytest.mark.parametrize('key,value', [('rc', True), ('rc', 5), ('scope', 'scoped'), ('collected', True), ('collected', '3'), ('collected', -1), ('previous_collected', True), ('ts', ''), ('conf_anchor', 'relative'), ('command', ''), ('extra', 1), ('status', 'fail')])
+def test_t0936_core_record_integrity(board, monkeypatch, key, value):
+    _t0936_core_setup(board, monkeypatch)
+    assert board.cmd_regression(_run_args(final=True)) == 0
+    record = _flag(board); record[key] = value
+    board.REGRESSION_FLAG.write_text(json.dumps(record), encoding='utf-8')
+    assert board.cmd_regression(argparse.Namespace(action='check')) == 1
+
+
+def test_t0936_core_record_integrity_unknown_summary_and_rc5(board, monkeypatch):
+    _t0936_core_setup(board, monkeypatch)
+    monkeypatch.setattr(board, '_run_regression_cmd', lambda *a: (0, 'custom success', ''))
+    assert board.cmd_regression(_run_args(final=True)) == 0 and _flag(board)['collected'] is None
+    assert board.cmd_regression(argparse.Namespace(action='check')) == 0
+    monkeypatch.setattr(board, '_run_regression_cmd', lambda *a: (5, 'no tests ran', ''))
+    assert board.cmd_regression(_run_args(final=True)) == 1 and _flag(board)['rc'] == 5
+
+
+def test_t0936_core_command_and_selected_workspace(board, monkeypatch):
+    _t0936_core_setup(board, monkeypatch)
+    selected = board.REPO / 'work/proj_5'; sibling = board.REPO / 'work/proj_1'
+    selected.mkdir(parents=True); sibling.mkdir(parents=True)
+    board.LEASES_FILE.write_text(json.dumps({'leases': [
+        {'slot':'work/proj_1','repo':'proj','session':'main','state':'leased','test_cmd':'sibling-core'},
+        {'slot':'work/proj_5','repo':'proj','session':'main','state':'leased','test_cmd':'selected-core'}]}), encoding='utf-8')
+    monkeypatch.setattr(board, '_resolve_task_workspace_cwd', lambda args, **kw: (str(selected), 'selected-core'))
+    assert board.cmd_regression(_run_args(task='main', final=True)) == 0
+    assert _flag(board)['command'] == 'selected-core' and _flag(board)['conf_anchor'] == str(selected)
+    assert board.cmd_regression(argparse.Namespace(action='check', repo='proj', slot=5)) == 0
+    data = json.loads(board.LEASES_FILE.read_text(encoding='utf-8')); data['leases'][1]['test_cmd']='changed-core'
+    board.LEASES_FILE.write_text(json.dumps(data), encoding='utf-8')
+    assert board.cmd_regression(argparse.Namespace(action='check', repo='proj', slot=5)) == 1
+
+
+@pytest.mark.parametrize('mode', ['scoped', 'review', 'final'])
+def test_t0936_scoped_and_review_cycle_preserve_full(board, monkeypatch, mode):
+    calls = _t0936_core_setup(board, monkeypatch)
+    board.REGRESSION_FLAG.write_text('previous full bytes', encoding='utf-8')
+    monkeypatch.setattr(board, '_review_cycle_downgrade', lambda: (['T-0936'], ['module.py']))
+    monkeypatch.setattr(board, '_scope_args', lambda touches: 'tests/test_module.py')
+    assert board.cmd_regression(_run_args(touches='module.py' if mode=='scoped' else None, final=mode=='final')) == 0
+    if mode=='final': assert _flag(board)['scope']=='full' and calls[0][0]=='core-full'
+    else:
+        assert board.REGRESSION_FLAG.read_text(encoding='utf-8')=='previous full bytes'
+        assert calls[0][0]=='core-full tests/test_module.py'
+
+
+@pytest.mark.parametrize("contents", ["[]", "{broken"])
+def test_t0936_core_record_integrity_corrupt_file(board, monkeypatch, contents):
+    _t0936_core_setup(board, monkeypatch)
+    board.REGRESSION_FLAG.write_text(contents, encoding="utf-8")
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+
+
+@pytest.mark.parametrize("slot", [False, True])
+def test_t0936_core_record_integrity_cold_flag_coordinates(board, monkeypatch, slot):
+    _t0936_core_setup(board, monkeypatch)
+    local = board.REPO / "cold-engine" / ".project_manager" / ".local"
+    monkeypatch.setattr(board, "_resolve_regression_flag", lambda cwd: (local / "regression.json", board._LG_ENGINE_ROOT))
+    args = _run_args(final=True, cmd="core-full")
+    assert (board._regression_run_slot(args, "A_1", str(board.REPO)) if slot else board.cmd_regression(args)) == 0
+    flag = board._regression_flag_for("A_1", local_dir=local) if slot else local / "regression.json"
+    assert json.loads(flag.read_text(encoding="utf-8"))["status"] == "pass"
+    assert not board.REGRESSION_FLAG.exists()
+
+
+@pytest.mark.parametrize("prefix,expected", [("", "local-core"), ("A", "repo-core")])
+@pytest.mark.parametrize("consumer", ["state", "reuse"])
+def test_t0936_core_command_and_selected_workspace_slot_prefix_priority(
+        board, monkeypatch, prefix, expected, consumer):
+    board.LOCAL_CONF.write_text("test.cmd=local-core\nqa.platforms=windows\n", encoding="utf-8")
+    session = "A_1"
+    target = board.REPO / "work/A_1"
+    target.mkdir(parents=True)
+    board.LEASES_FILE.write_text(json.dumps({"leases":[{
+        "slot":"work/A_1", "repo":"A", "session":session, "state":"leased", "test_cmd":None,
+    }]}), encoding="utf-8")
+    board.AREAS_FILE.write_text("| repo | prefix | test_cmd |\n|---|---|---|\n" + f"| A | {prefix} | repo-core |\n", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(board, "_run_regression_cmd", lambda *a: (calls.append(a) or (0, "3 passed in 0.01s\n", "")))
+    monkeypatch.setattr(board, "_platform_test_commands", lambda *a: pytest.fail("개발 플랫폼 해소"))
+    assert board._regression_run_slot(_run_args(), session, str(target)) == 0
+    flag = board._regression_flag_for(session)
+    assert json.loads(flag.read_text(encoding="utf-8"))["command"] == expected
+    if consumer == "state":
+        assert board._regression_slot_state(session, str(target)).state == "green"
+    else:
+        assert board._regression_multi_run(_run_args(), [session]) == 0
+        assert len(calls) == 1, "같은 HEAD/명령의 green 슬롯은 재실행하지 않는다"

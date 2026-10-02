@@ -127,6 +127,8 @@ def _make_topology(tmp_path, monkeypatch, *, with_hookspath=True,
 
     local = worktree / ".project_manager" / ".local"
     monkeypatch.setattr(mod, "REPO", worktree)
+    monkeypatch.setattr(mod, "LOCAL_CONF", worktree / ".project_manager/local.conf")
+    monkeypatch.setattr(mod, "AREAS_FILE", worktree / ".project_manager/areas.md")
     monkeypatch.setattr(mod, "LOCAL_DIR", local)
     monkeypatch.setattr(mod, "LIVEGATE_FLAG", local / "livegate.json")
     monkeypatch.setattr(mod, "LEASES_FILE", local / "worktree-leases.json")  # 부재
@@ -149,6 +151,7 @@ def _platform_regression_record(anchor: Path) -> dict:
     """platform FULL green 증거 — 선언은 실행 코드 트리(anchor)에 둔다."""
     (anchor / ".project_manager").mkdir(parents=True, exist_ok=True)
     (anchor / ".project_manager" / "local.conf").write_text(
+        "test.cmd=core-full\n"
         "qa.platforms=windows\n"
         "test.windows.cmd=run-windows\n",
         encoding="utf-8",
@@ -158,11 +161,7 @@ def _platform_regression_record(anchor: Path) -> dict:
         "collected": 3, "previous_collected": None,
         "conf_anchor": str(anchor.resolve()),
         "ts": "2026-08-29T00:00:00+00:00",
-        "platforms": [{
-            "name": "windows", "command": "run-windows", "head": _HEAD_SHA,
-            "status": "pass", "rc": 0, "collected": 3,
-            "ts": "2026-08-29T00:00:00+00:00",
-        }],
+        "command": "core-full",
     }
 
 
@@ -228,7 +227,18 @@ def test_platform_record_uses_engine_root_evidence_and_recorded_anchor_with_read
         real_run, 0, f"{mod.LIVEGATE_RELEASE_PIN} passed, 812 deselected in 1.0s")
     monkeypatch.setattr(mod.subprocess, "run", fake)
 
+    platform_calls = []
+    def platform(command, cwd, env):
+        platform_calls.append((command, cwd, dict(env)))
+        return 0, mod.PM_QA_RESULT_PREFIX + json.dumps({
+            "platform": env["PM_QA_PLATFORM"], "head": _HEAD_SHA,
+            "status": "pass", "collected": 3,
+        }) + "\n", ""
+    monkeypatch.setattr(mod, "_run_regression_cmd", platform)
     assert mod.cmd_livegate(_rec_args(cwd=str(readonly))) == 0
+    assert len(platform_calls) == 1
+    assert platform_calls[0][0] == "run-windows" and platform_calls[0][1] == str(readonly)
+    assert platform_calls[0][2]["PM_QA_EXPECTED_HEAD"] == _HEAD_SHA
     data = json.loads(_hook_read_flag(hooks_dir).read_text(encoding="utf-8"))
     assert data["conf_anchor"] == str(worktree.resolve())
     assert data["platforms"][0]["name"] == "windows"
@@ -253,7 +263,9 @@ def test_platform_evidence_in_called_copy_only_blocks_readonly_record(
     assert mod.cmd_livegate(_rec_args(cwd=str(readonly))) == 1
     assert "engine-root 좌표와 불일치" in capsys.readouterr().err
     assert not fake.pytest_ran
-    assert not _hook_read_flag(hooks_dir).exists()
+    denied = json.loads(_hook_read_flag(hooks_dir).read_text(encoding="utf-8"))
+    assert denied["status"] == "fail"
+    assert mod.cmd_livegate(_chk_args(_HEAD_SHA, cwd=str(readonly))) == 1
 
 
 # ── ② 단일-repo/솔로 폴백: 훅 없음 → 현행 REPO/.local (채택자 무변경) ─────────

@@ -26,9 +26,11 @@ livegate record 전에 PM 홈을 worktree canonical에 동기해 stale import �
 두 번째 명령 rc=0이 adopter#0 흡수 완료 조건이다. red면 livegate/main push/tag/GitHub Release로
 진행하지 않고 `--accept` 또는 pm-update 재실행 처방으로 먼저 수렴시킨다.
 
-### 2. livegate record (readonly 슬롯 핀·수집 N 확인)
+### 2. livegate record (플랫폼·라이브 검증)
 
-push 대상 rev의 release live wave를 실측·기록한다. 부트스트랩 0단계가 main 직접 checkout·origin-추적 슬롯 진입을 거부하므로 main 참조 기준면은 readonly 공유 슬롯(detached·origin/main)이다. 이 슬롯은 무리스(unleased)라 `--repo --slot`로 해소되지 않으므로 `--cwd <readonly 슬롯 절대경로>`로 핀한다.
+push 대상 rev의 선언 플랫폼 전체와 release live wave를 실측·기록한다. qa.platforms가 선언됐으면 같은 rev의 core green을 먼저 확인하고 플랫폼을 선언 순서대로 실제 실행한다. 플랫폼 red/미실행·수집·HEAD·명령·좌표 불일치는 라이브 테스트 전에 거부한다. 이전 green을 새 실패가 가리지 않게 무효화하며 livegate check도 현재 선언과 같은 rev의 core·플랫폼 결과를 재검증한다.
+
+Windows 전체 검증은 모든 구현·통합이 끝난 릴리즈 직전에 실행한다. 개발 회귀는 현재 플랫폼의 test_cmd만 백그라운드로 실행하고 다른 작업 트리의 개발을 계속한다. 검증 트리를 동결하고 완료·통합 시 결과를 확인한다. 새 작업 큐나 플랫폼 선택 옵션을 추가하지 않는다. 부트스트랩 0단계가 main 직접 checkout·origin-추적 슬롯 진입을 거부하므로 main 참조 기준면은 readonly 공유 슬롯(detached·origin/main)이다. 이 슬롯은 무리스(unleased)라 `--repo --slot`로 해소되지 않으므로 `--cwd <readonly 슬롯 절대경로>`로 핀한다.
 
 ```bash
 # main-참조 기준면 = readonly 슬롯(detached·origin/main 추적). PM_ORCH_LIVE_RELEASE=1 필수.

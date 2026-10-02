@@ -92,6 +92,8 @@ class _FakeRun:
 
 def _install_fake(board, monkeypatch, fake):
     """회귀(Popen tee)·livegate(run 캡처) 두 seam 을 같은 대역으로 덮는다 (실 자식 0)."""
+    # 실행 child 대역에 metadata 조회가 섞이지 않게 가짜 Git fixture를 격리한다.
+    monkeypatch.setattr(board, "_git_config_get", lambda cwd, key: None)
     monkeypatch.setattr(board.subprocess, "run", fake)
     monkeypatch.setattr(board.subprocess, "Popen", fake)
     return fake
