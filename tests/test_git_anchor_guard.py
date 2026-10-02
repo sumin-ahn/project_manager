@@ -1353,7 +1353,7 @@ def test_only_canonical_active_lease_is_slot_identity(topology, lease):
     ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.write_text(json.dumps({"leases": [lease]}) + "\n", encoding="utf-8")
     got = board.judge_git_anchor(home, "S", str(slot), ["git", "commit", "-m", "normal"])
-    assert got["verdict"] == "warn"
+    assert got["verdict"] == ("deny" if lease["state"] == "idle" else "warn")
     assert got["cwd_identity"] == "worktree"
 
 
@@ -3373,3 +3373,130 @@ def test_slot_git_writes_pass_only_for_the_session_whose_task_holds_the_slot(top
     other = board.judge_git_anchor_command(home, "S2", str(home), f"git -C {slot} commit -m x")
     assert other["verdict"] == "deny"
     assert other["reason"].splitlines()[1] == not_owned
+
+
+def _t0931_guard_owner(home: Path, mode: str):
+    ledger = home / '.project_manager/.local/worktree-leases.json'
+    data = json.loads(ledger.read_text(encoding='utf-8'))
+    row = data['leases'][0]
+    data['tasks'].append({'name': 't2', 'session': 'F'})
+    if mode == 'foreign':
+        row['session'] = 't2'
+    elif mode == 'idle':
+        row.update(state='idle', session='')
+    elif mode == 'readonly':
+        row.update(role='readonly', session='')
+    ledger.write_text(json.dumps(data), encoding='utf-8')
+
+
+@pytest.mark.parametrize('mode', ['own', 'foreign', 'idle', 'readonly', 'no-task'])
+@pytest.mark.parametrize('command', [
+    ['sparse-checkout', 'set', '--', 'status'],
+    ['submodule', '--quiet', '--cached', 'update', '--', 'status'],
+    ['-c', 'alias.inner=submodule --quiet update -- status', '-c', 'alias.outer=inner', 'outer'],
+    ['-c', 'alias.widen=sparse-checkout add src', 'widen'],
+])
+def test_t0931_slot_paths_global_options_alias_and_ownership(topology, mode, command):
+    home, slot = topology
+    _t0931_guard_owner(home, mode)
+    board = _load('t0931_anchor_alias', BOARD_PY)
+    result = board.judge_git_anchor(home, 'missing' if mode == 'no-task' else 'S', str(home), ['git', '-C', str(slot), *command])
+    assert result['verdict'] == ('ok' if mode == 'own' else 'deny'), result
+
+
+@pytest.mark.parametrize('mode', ['own', 'foreign', 'idle', 'readonly', 'no-task'])
+@pytest.mark.parametrize('command', [['sparse-checkout', 'add', 'src'], ['submodule', 'update', '--', 'status']])
+def test_t0931_slot_paths_populated_nested_submodule_joins_parent(topology, tmp_path, mode, command):
+    """중첩 Git root도 실제 소유 슬롯에 조인한다. update/clone/fetch는 실행하지 않는다."""
+    home, slot = topology
+    _t0931_guard_owner(home, mode)
+    # 외부 clone 없이 gitlink/.gitmodules/독립 Git 포인터로 populated submodule을 선언한다.
+    module = slot / 'vendor/status'
+    module.mkdir(parents=True)
+    git_dir = tmp_path / 'module-git-dir'
+    _git(module, 'init', '-q', '--separate-git-dir', str(git_dir), '-b', 'main')
+    _git(module, 'commit', '-qm', 'module seed', '--allow-empty')
+    from _git_fixture import git
+    head = git(module, 'rev-parse', 'HEAD').stdout.strip()
+    (slot / '.gitmodules').write_text('[submodule "vendor/status"]\n\tpath = vendor/status\n\turl = ./local-fixture\n', encoding='utf-8')
+    _git(slot, 'add', '.gitmodules')
+    _git(slot, 'update-index', '--add', '--cacheinfo', f'160000,{head},vendor/status')
+    _git(slot, 'config', 'submodule.vendor/status.url', './local-fixture')
+    status = git(slot, 'submodule', 'status', '--', 'vendor/status').stdout
+    assert head in status and not status.startswith('-')
+    board = _load('t0931_nested_root', BOARD_PY)
+    result = board.judge_git_anchor(home, 'missing' if mode == 'no-task' else 'S', str(slot), ['git', '-C', 'vendor/status', *command])
+    assert result['verdict'] == ('ok' if mode == 'own' else 'deny'), result
+    read = board.judge_git_anchor(home, 'S', str(module), ['git', 'submodule', '--quiet', 'status'])
+    assert read['verdict'] != 'deny'
+
+
+@pytest.mark.parametrize('harness', ['claude', 'codex', 'opencode'])
+def test_t0931_harness_hooks_share_owner_and_query_contract(topology, monkeypatch, capsys, harness):
+    """실제 hook 입력/출력 배선을 사용하며 git 변경 명령 자체는 실행하지 않는다."""
+    home, slot = topology
+    _t0931_guard_owner(home, 'foreign')
+    cases = [('git sparse-checkout set src', True), ('git submodule --quiet update -- status', True), ('git sparse-checkout list', False), ('git submodule', False)]
+    if harness == 'claude':
+        driver = _load('t0931_claude_hook', CLAUDE_DRIVER)
+        monkeypatch.setattr(driver, '_load_board', lambda root: _load('t0931_claude_board', BOARD_PY))
+        for command, denied in cases:
+            payload = {'session_id': 'S', 'hook_event_name': 'PreToolUse', 'tool_name': 'Bash', 'cwd': str(slot), 'tool_input': {'command': command}}
+            monkeypatch.setattr(driver.sys, 'stdin', io.StringIO(json.dumps(payload)))
+            assert driver.run_git_anchor_hook(home) == 0
+            raw = capsys.readouterr().out
+            result = json.loads(raw) if raw else {}
+            assert (result.get('hookSpecificOutput', {}).get('permissionDecision') == 'deny') is denied
+        _t0931_guard_owner(home, 'own')
+        data = json.loads((home / '.project_manager/.local/worktree-leases.json').read_text(encoding='utf-8'))
+        data['leases'][0].update(session='t1', state='leased', role='work')
+        (home / '.project_manager/.local/worktree-leases.json').write_text(json.dumps(data), encoding='utf-8')
+        payload['tool_input'] = {'command': 'git sparse-checkout add src'}
+        monkeypatch.setattr(driver.sys, 'stdin', io.StringIO(json.dumps(payload)))
+        assert driver.run_git_anchor_hook(home) == 0
+        raw = capsys.readouterr().out
+        assert not raw or json.loads(raw).get('hookSpecificOutput', {}).get('permissionDecision') != 'deny'
+    elif harness == 'codex':
+        dispatcher = _load('t0931_codex_hook', CODEX_DISPATCHER)
+        monkeypatch.setattr(dispatcher, '_load_board', lambda root: _load('t0931_codex_board', BOARD_PY))
+        for command, denied in cases:
+            payload = _codex_live_bash_event()
+            payload.update(session_id='S', cwd=str(slot), tool_input={'command': command})
+            out = io.StringIO()
+            assert dispatcher.run_git_anchor_hook(home, stdin=io.StringIO(json.dumps(payload)), stdout=out) == 0
+            assert (json.loads(out.getvalue()).get('decision') == 'block') is denied
+        ledger = home / '.project_manager/.local/worktree-leases.json'
+        data = json.loads(ledger.read_text(encoding='utf-8')); data['leases'][0].update(session='t1', role='work', state='leased')
+        ledger.write_text(json.dumps(data), encoding='utf-8')
+        payload['tool_input'] = {'command': 'git sparse-checkout add src'}
+        assert dispatcher.git_anchor_hook_evaluate(payload, home).get('decision') != 'block'
+    else:
+        node = shutil.which('node')
+        assert node is not None, '실제 OpenCode hook 검증에 node가 필요하다'
+        shutil.copytree(BOARD_PY.parent, home / '.project_manager/tools')
+        script = r'''
+const assert = require('node:assert');
+const core = require('./git-anchor-core.cjs');
+const fs = require('node:fs');
+const path = require('node:path');
+const [home, slot] = process.argv.slice(1);
+(async () => {
+ const judge = (_root, cwd, command, options) => core.judgeCommand(home, cwd, command, options);
+ const hooks = await core.makeGitAnchorPlugin(judge)({directory:slot, worktree:slot, client:{
+  tui:{showToast:async () => {}}, session:{get:async ({path}) => ({data:{id:path.id}})}
+ }});
+ for (const command of ['git sparse-checkout set src', 'git submodule --quiet update -- status'])
+  await assert.rejects(hooks['tool.execute.before']({tool:'bash',sessionID:'S'},{args:{command,cwd:slot}}), /git-anchor\/deny/);
+ for (const command of ['git sparse-checkout list', 'git submodule'])
+  await hooks['tool.execute.before']({tool:'bash',sessionID:'S'},{args:{command,cwd:slot}});
+ const file = path.join(home,'.project_manager','.local','worktree-leases.json');
+ const data = JSON.parse(fs.readFileSync(file,'utf8'));
+ Object.assign(data.leases[0], {session:'t1',role:'work',state:'leased'});
+ fs.writeFileSync(file,JSON.stringify(data));
+ await hooks['tool.execute.before']({tool:'bash',sessionID:'S'},{args:{command:'git sparse-checkout add src',cwd:slot}});
+ console.log('T0931_HOOK_OK');
+})().catch(error => { console.error(error); process.exitCode=1; });
+'''
+        result = subprocess.run([node, '-e', script, str(home), str(slot)], cwd=OPEN_CORE.parent, capture_output=True, text=True, encoding='utf-8')
+        assert result.returncode == 0, result.stderr
+        assert 'T0931_HOOK_OK' in result.stdout

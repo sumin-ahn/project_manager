@@ -412,6 +412,7 @@ _GIT_PROTECTED_IDENTITIES: frozenset[str] = frozenset({"slot", "worktree", "shar
 _GIT_SLOT_WRITE_SUBCOMMANDS: frozenset[str] = frozenset({
     "add", "stage", "commit", "checkout", "switch", "restore", "reset", "rm", "mv", "merge",
     "rebase", "cherry-pick", "revert", "stash", "pull", "am", "apply", "clean",
+    "sparse-checkout", "submodule",
 })
 # 멈춤 거부 deny 표식 — 손 git 파괴 형태·슬롯/공용 저장소 파일 삭제·허용 위조·남의 슬롯 쓰기. 셸 파서의 조건/cwd
 # 불확실 강등(deny→warn)은 이 표식이 붙은 판정을 낮추지 않는다 — 대상을 못 정한 호출은 이미
@@ -684,7 +685,7 @@ def _registered_slot_paths(
 
 
 def _git_anchor_identity(
-    anchor: Path, *, runner: Any = subprocess.run
+    anchor: Path, *, runner: Any = subprocess.run, slot_home: Path | None = None,
 ) -> tuple[str, Path | None, Path | None]:
     """(public identity, git root, owning PM home)를 기존 misanchor seam으로 해소한다."""
     root = _git_repo_root(anchor, runner=runner)
@@ -695,6 +696,15 @@ def _git_anchor_identity(
         return "non-repo", None, None
     if _has_real_board(root / ".project_manager"):
         return "pm-home", root, root
+    if slot_home is not None:
+        containing = slot_containing(slot_home, root)
+        if containing is not None:
+            parent = slot_home / containing[0]["slot"]
+            # 초기화된 submodule의 포인터는 슬롯 root의 PM 홈 선언 형상이 아니다.
+            # 이미 알려진 홈의 슬롯 하위 Git root만 연결하며 일반 root/symlink 분류는 유지한다.
+            if (root != parent.resolve() and not (slot_home / "work").is_symlink()
+                    and not parent.is_symlink()):
+                return "foreign", root, None
     pm_home = _pm_home_worktree_misanchor(root)
     if pm_home is not None:
         registered_slots = _registered_slot_paths(pm_home, runner=runner)
@@ -1988,6 +1998,14 @@ def _git_writes_slot(subcommand: str, args: Sequence[str]) -> bool:
     apply --check·--stat)는 쓰기가 아니다."""
     if subcommand not in _GIT_SLOT_WRITE_SUBCOMMANDS:
         return False
+    if subcommand in {"sparse-checkout", "submodule"}:
+        arguments = _git_arguments(args, long_values=frozenset({"--path"}))
+        if _git_option_given(arguments, "-h", "--help"):
+            return False
+        operation = arguments.operands[0] if arguments.operands else None
+        if subcommand == "sparse-checkout":
+            return operation not in {None, "list", "check-rules", "help"}
+        return operation not in {None, "status", "summary", "help"}
     if subcommand == "stash":
         return not args or args[0] not in {"list", "show"}
     arguments = _git_arguments(args)
@@ -2022,9 +2040,12 @@ def judge_git_anchor(
     invocation = _git_invocation(cwd, argv)
     if invocation is None:
         return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "git 호출이 아님"}
-    identity, repo_root, pm_home = _git_anchor_identity(invocation.cwd, runner=runner)
+    identity, repo_root, pm_home = _git_anchor_identity(
+        invocation.cwd, runner=runner, slot_home=Path(root),
+    )
     target_certain = cwd_certain and invocation.anchor_certain
-    if identity in _GIT_PROTECTED_IDENTITIES or not target_certain:
+    containing = slot_containing(root, repo_root) if repo_root is not None else None
+    if identity in _GIT_PROTECTED_IDENTITIES or containing is not None or not target_certain:
         # alias 는 대상 저장소 설정으로만 풀린다 — 대상을 못 정한 호출은 서브커맨드 이름 그대로 본다.
         resolved = _git_alias_resolved(invocation, runner=runner) if target_certain else invocation
         target_certain = target_certain and resolved.anchor_certain
@@ -2044,10 +2065,11 @@ def judge_git_anchor(
                 "case": form.case if target_certain else _GIT_GUARD_CASE_FOLDER_UNKNOWN,
                 "reason": f"손 git {form.label} — `{shown}` {where}",
             }
-        if identity == "slot" and target_certain and _git_writes_slot(resolved.subcommand, resolved.args):
+        if repo_root is not None and target_certain and _git_writes_slot(resolved.subcommand, resolved.args):
             owner = _slot_write_judgment(root, session, repo_root)
             if owner is not None and owner["verdict"] == "deny":
-                return {**owner, "reason": f"git {resolved.subcommand} — {owner['reason']}"}
+                return {**owner, "cwd_identity": identity,
+                        "reason": f"git {resolved.subcommand} — {owner['reason']}"}
     subcommand = invocation.subcommand
     if subcommand not in _GIT_MUTATION_SUBCOMMANDS:
         return {
