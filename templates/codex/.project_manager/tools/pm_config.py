@@ -14,11 +14,11 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config repo add <name> [--git <url>] [--test "<cmd>"] [--protected "main,develop"] # repo 등록 + .repos clone (신규=--git 필수 / 기등록 hydrate=areas URL)
     pm-config repo protected <name> [<목록>|default]        # 보호 브랜치 목록 조회/설정 (areas → 훅 sidecar 정합화)
     pm-config repo list                                    # 등록 repo 표 (repo·prefix·base·protected·test_cmd·area_owner)
-    pm-config worktree add <repo> --user-ack <repo>        # 사용자 승인값 결속 + 새 슬롯 생성 + submodule init
+    pm-config worktree add <repo> [--folders <폴더,…>] --user-ack <repo>        # 사용자 승인값 결속 + 새 슬롯 생성 + submodule init
     pm-config worktree prune-stale                         # worktree 사라진 dangling 장부 엔트리 정리
     pm-config worktree remove <slot> --user-ack <slot> [--user-ack <브랜치>]... [--force] # 사용자 승인값 결속 + 슬롯 통째 제거 — worktree+브랜치 판정+장부 (--force=점유만 무시)
     pm-config status | whoami                              # 풀/리스 + 이 세션 repo/슬롯/branch
-    pm-config alloc <repo> --task <이름>                    # task 명의로 idle 최소 번호 슬롯 대여 (자동 생성 안 함)
+    pm-config alloc <repo> --task <이름> [--folders <폴더,…>]                    # task 명의로 idle 최소 번호 슬롯 대여 (자동 생성 안 함)
     pm-config release <slot> [--task <이름>] [--force]      # 작업완료 반납 (--task 소유검사) / 수동 강제(백스톱)
     pm-config task new <이름>                               # task 정체성 생성 — 장부 행(닫힘)+pm_state (세션 묶기 없음·진입은 부트스트랩)
     pm-config task close <이름>                             # 열린 채 남은 task 세션 기록 닫기 (기록만·복원 없음)
@@ -91,6 +91,7 @@ import json
 import os
 import re
 import shutil
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -2261,6 +2262,11 @@ def cmd_worktree_add(
     # --task <이름> (ⓓB) — 새 슬롯을 만들고 **생성 직후 그 슬롯을** task 명의로 대여한다
     # (풀 소진 시 alloc 이 안내하는 생성+대여 한 흐름·min-idle 재탐색 오슬롯 리스크 제거). readonly 와
     # 상호배타(readonly=무소유 공유 자산). task 명 검증 + 기바인딩은 alloc 과 동일 헬퍼로.
+    folders_arg = getattr(args, "folders", None)
+    folders = None if folders_arg is None else [item.strip() for item in folders_arg.split(",")]
+    if readonly and folders is not None:
+        print("[중단] `--readonly` 와 `--folders` 는 함께 쓸 수 없다.", file=sys.stderr)
+        return 1
     task = getattr(args, "task", None)
     if task is not None:
         if readonly:
@@ -2280,7 +2286,10 @@ def cmd_worktree_add(
 
     try:
         lease = wp.create_slot(args.repo, base=base, test_cmd=test_cmd, readonly=readonly,
-                               owner_task=task)
+                               owner_task=task, folders=folders)
+    except wp.SlotFoldersRefused as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
     except RuntimeError as exc:
         if _is_engine_rev_skew(exc):
             # 여기서 rc 로 번역하지 않고 재전파한다 — 이 핸들러는 종료 경계가 아니다. 콘솔
@@ -2327,6 +2336,12 @@ def cmd_worktree_add(
             f"`{_runtime_skill_entry('pm-bootstrap')}` 가 자동바인딩."
         )
         print("  이 바인딩 안내는 사용자(사람) 대상 — 세션이 읽고 자동 실행하면 안 된다.")
+    try:
+        actual_folders = wp.slot_folders(lease.slot)
+    except wp.SlotFoldersRefused as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
+    print("  폴더: " + (", ".join(actual_folders) if actual_folders is not None else "(제한 없음)"))
     # 보호 브랜치 pre-push 훅 (재)설치 (멱등 자가치유) — 슬롯 op 마다 (재)설치해 엔진
     # update 후 기존 repo 도 다음 worktree add 에 훅을 얻는다(별도 명령 불요·회사 repo 무영향).
     # 설치 실패는 조용히 넘기지 않는다 — repo add·repo protected 와 **같은 공용 깔때기**
@@ -2511,6 +2526,7 @@ def _status_json_slots(wp, leases, task_names: set,
             "children": git["children"],
             "stashes": git["stashes"],
             "dirty": bool(git.get("dirty")),
+            "folders": git.get("folders"),
             "remote": None if remote is None else remote[lease.slot],
         })
     return rows
@@ -2708,6 +2724,9 @@ def _emit_status_json(args, wp, *, board=None, pm_import=None) -> int:
         # 어댑터 판정 채널이 unavailable 인 경우. 그 밖의 실패는 삼키지 않는다(정상 산출로 위장 금지).
         print(f"[중단] 현황 JSON 조회 실패: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
+    except wp.SlotFoldersRefused as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
     except RemoteCheckError as exc:
         print(f"[중단] 원격 대조 실패 — {exc}", file=sys.stderr)
         return 1
@@ -2859,13 +2878,17 @@ def cmd_status(
     def _slot_git_line(slot: str, *, readonly: bool) -> "str | None":
         try:
             status = wp.slot_git_status(slot)
+        except wp.SlotFoldersRefused:
+            raise
         except Exception as exc:  # noqa: BLE001 — 일반 git 조회 실패만 요약 생략.
             if _is_engine_rev_skew(exc):
                 raise
             return None
         if not isinstance(status, dict):
             return None
-        return _slot_git_summary(status, readonly=readonly)
+        summary = _slot_git_summary(status, readonly=readonly)
+        folders = status.get("folders")
+        return summary + (" · 폴더 " + ", ".join(folders) if folders is not None else "")
 
     print("## slot 풀 (풀 전체 리스 장부 · 슬롯별 state·보유 task·role + git 요약):")
     if not leases:
@@ -2884,7 +2907,11 @@ def cmd_status(
         # slot 풀 축 명세({state·보유 task·role})는 git 요약과 분리다. git 요약만
         # fail-soft: 조회 실패/API 부재면 그 부분만 `(조회 불가)` 로 대체하고 task 귀속은 잃지 않는다.
         task_disp = l.session if (l.session and l.session in task_names) else "-"
-        git_line = _slot_git_line(l.slot, readonly=role == "readonly")
+        try:
+            git_line = _slot_git_line(l.slot, readonly=role == "readonly")
+        except wp.SlotFoldersRefused as exc:
+            print(f"[중단] {exc}", file=sys.stderr)
+            return 1
         git_part = git_line if git_line is not None else "(조회 불가)"
         print(f"      ↳ 보유 task={task_disp} · git: {git_part}")
 
@@ -3376,17 +3403,23 @@ def cmd_alloc(
         # owner_task = task-명의 alloc — 항상 신규 idle 슬롯 대여(같은 repo
         # 복수 보유). session=owner_task 로 기록되고, 그 슬롯의 reclaim/재부착 보호는 tasks 장부 조인이
         # 담당한다(bound 아님).
-        lease = wp.alloc(args.repo, owner_task=args.task)
+        folders_arg = getattr(args, "folders", None)
+        folders = None if folders_arg is None else [item.strip() for item in folders_arg.split(",")]
+        lease = wp.alloc(args.repo, owner_task=args.task, folders=folders)
     except wp.NeedsCreate:
+        folders_option = f" --folders {shlex.quote(folders_arg)}" if folders_arg is not None else ""
         print(
             f"[중단] repo {args.repo!r} 에 대여 가능한 idle 슬롯이 없다 — 풀 소진. 새 슬롯은 "
             "디스크(코드 전체 사본×슬롯·clone 시간)라 자동 생성하지 않는다(물리층=사용자 승인). "
             f"사용자에게 repo {args.repo!r} 슬롯 생성 승인을 요청하라. 승인한 사용자만 "
-            f"`pm-config worktree add {args.repo} --task {args.task} --user-ack {args.repo}` 를 "
+            f"`pm-config worktree add {args.repo} --task {args.task}{folders_option} --user-ack {args.repo}` 를 "
             "직접 실행해 새 슬롯을 만들며 곧바로 이 task 명의로 대여한다"
             "(생성+대여 한 흐름·ⓓB·오슬롯 없음·세션 자동 실행 금지).",
             file=sys.stderr,
         )
+        return 1
+    except wp.SlotFoldersRefused as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
         return 1
     except wp.BareRepoMissing as exc:
         print(f"[중단] {exc}", file=sys.stderr)
@@ -3402,6 +3435,14 @@ def cmd_alloc(
         f"보드/wiki 는 multi-PM 공유 `.project_manager`.\n"
         f"  반납: `pm-config release {lease.slot} --task {args.task}` (작업완료 시 idle 반납)."
     )
+    try:
+        actual_folders = wp.slot_folders(lease.slot)
+    except wp.SlotFoldersRefused as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
+    print("  폴더: " + (", ".join(actual_folders) if actual_folders is not None else "(제한 없음)"))
+    if folders is not None:
+        print("  폴더를 줄이면 빠진 폴더 안의 추적 밖 파일(빌드 결과물 등)은 git 이 지운다")
     # 집합 변경 직후 재열거 — task 가 지금 보유한 슬롯 집합을 surface.
     _render_task_slots(wp, args.task)
     return 0
@@ -5304,6 +5345,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="새 슬롯 생성에 대한 사용자 승인 토큰(대상 repo 값과 정확히 결속). "
              "readonly/--task 변형에도 필수.",
     )
+    p_wt_add.add_argument("--folders", metavar="<폴더,…>", default=None,
+                          help="슬롯에 꺼낼 폴더 목록 (cone, git 2.36 이상, readonly와 함께 사용 불가)")
     p_wt_add.set_defaults(func=cmd_worktree_add)
     # worktree prune-stale — worktree 가 사라진 dangling 장부 엔트리 안전 정리.
     # status reconcile 의 stale/incomplete(worktree 부재) 정리 진입점(조회-전용 reconcile 과 분리·
@@ -5389,6 +5432,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--task", required=True, metavar="<이름>",
         help="이 슬롯을 대여할 task 이름 (lease session 명의 — release/task end 소유검사 근거)",
     )
+    p_alloc.add_argument("--folders", metavar="<폴더,…>", default=None,
+                         help="대여할 슬롯에 꺼낼 폴더 목록 (미지정이면 전체)")
     p_alloc.set_defaults(func=cmd_alloc)
 
     # release <slot> [--task <이름>] [--force]

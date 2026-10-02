@@ -82,6 +82,12 @@ class FakeLease:
 
 
 class FakeWorktreePool:
+    class SlotFoldersRefused(RuntimeError):
+        pass
+
+    def slot_folders(self, slot, **kwargs):
+        return getattr(self, "last_folders", None)
+
     """worktree_pool 모듈 대역 — 호출을 기록하고 미리 정한 결과를 돌려준다.
 
     실 `git worktree add`/리스장부 없이 create_slot/list_leases/release/force_release
@@ -216,11 +222,12 @@ class FakeWorktreePool:
         # 최소 dict(부모 기록 없음)로 합성해 git 요약 배선을 친다.
         self._slot_git = slot_git or {}
 
-    def create_slot(self, repo, *, base, test_cmd=None, readonly=False, owner_task=None):
+    def create_slot(self, repo, *, base, test_cmd=None, readonly=False, owner_task=None, folders=None):
         # base (T-0075) — areas 의 그 repo base 를 cmd_worktree_add 가 전달한다(슬롯 브랜치의
         # 부모). 엔진처럼 필수 키워드다. 호출 인자에 base 를 함께 기록해 배선 검증(4-tuple).
         self.calls.append(("create_slot", repo, test_cmd, base))
         # readonly (⑬·T-0358) — --readonly 플래그 전달 배선을 별도 속성으로 기록(4-tuple 불변).
+        self.last_folders = folders
         self.last_readonly = readonly
         # owner_task (ⓓB·ADR-0068) — --task 명의 생성 직결 배선을 별도 속성으로 기록(tuple 불변).
         self.last_create_owner_task = owner_task
@@ -337,12 +344,13 @@ class FakeWorktreePool:
             return None
         return FakeLease(slot=slot, repo="r", state="idle")
 
-    def alloc(self, repo, *, session=None, owner_task=None, branch=None, resume=None, git_runner=None):
+    def alloc(self, repo, *, session=None, owner_task=None, branch=None, resume=None, git_runner=None, folders=None):
         # task-명의 alloc(ADR-0068 I3)은 owner_task 로 온다 — 유효 세션(lease.session)은 task 이름.
         # 기존 배선 assertion(`("alloc", repo, "job")`)이 유지되게 유효 세션을 기록하고, owner_task
         # 원값은 별도 속성으로 남겨 I3 경로(멱등 폐기·bound)를 검증한다.
         eff_session = owner_task if owner_task is not None else session
         self.calls.append(("alloc", repo, eff_session))
+        self.last_folders = folders
         self.last_alloc_owner_task = owner_task
         if self._alloc_raises is not None:
             raise self._alloc_raises(repo)
@@ -2261,7 +2269,7 @@ def test_worktree_add_create_failure_errors(pc, capsys):
     """create_slot 이 RuntimeError(예: worktree add 실패)면 rc 1 + 명시 에러."""
     wp = FakeWorktreePool()
 
-    def boom(repo, *, base, test_cmd=None, readonly=False, owner_task=None):
+    def boom(repo, *, base, test_cmd=None, readonly=False, owner_task=None, folders=None):
         raise RuntimeError("git worktree add failed")
     wp.create_slot = boom
     rc = pc.cmd_worktree_add(argparse.Namespace(repo="svc", test=None, user_ack="svc"), worktree_pool=wp,
@@ -2284,7 +2292,7 @@ def test_worktree_add_bare_missing_caught_as_runtime_error(pc, capsys):
 
     wp = FakeWorktreePool()
 
-    def bare_missing(repo, *, base, test_cmd=None, readonly=False, owner_task=None):
+    def bare_missing(repo, *, base, test_cmd=None, readonly=False, owner_task=None, folders=None):
         raise wp_mod.BareRepoMissing(repo, TOOLS.parent / ".repos" / f"{repo}.git")
     wp.create_slot = bare_missing
     rc = pc.cmd_worktree_add(argparse.Namespace(repo="svc", test=None, user_ack="svc"), worktree_pool=wp,
@@ -2429,10 +2437,10 @@ def test_status_engine_missing_errors(pc, monkeypatch, capsys):
 # ── status 2축 cockpit — task 상황 + slot 풀·슬롯당 git 요약 (T-0361·§F8·결정 ⑥⑪) ──
 
 
-def _git_status(*, parent=None, branch=None, head=None):
+def _git_status(*, parent=None, branch=None, head=None, folders=None):
     """slot_git_status 반환 shape 대역(T-0361·§F8) — 명시 필드로 조립."""
     return {"slot": "?", "branch": branch, "head": head, "parent": parent, "children": [],
-            "stashes": 0, "submodules": [], "dirty": False}
+            "stashes": 0, "submodules": [], "dirty": False, "folders": folders}
 
 
 def _parent_row(name, fork, *, ref, ahead=None, behind=None):
@@ -4108,3 +4116,39 @@ def test_task_branch_other_engine_errors_propagate(pc):
     wp = FakeWorktreePool(task_branch_raises=OSError("장부 쓰기 실패"))
     with pytest.raises(OSError, match="장부 쓰기 실패"):
         pc.cmd_task_branch(_task_branch_args(), worktree_pool=wp)
+
+
+def test_worktree_add_and_alloc_forward_folders(pc, capsys):
+    board = FakeBoard(repo_bases=_SVC_BASE)
+    for raw, expected in [(" a, b/c ", ["a", "b/c"]), (None, None)]:
+        wp = FakeWorktreePool()
+        args = pc.build_parser().parse_args(["worktree", "add", "svc", "--user-ack", "svc"] +
+                                            ([] if raw is None else ["--folders", raw]))
+        assert pc.cmd_worktree_add(args, worktree_pool=wp, board=board, is_tty=lambda: False) == 0
+        assert wp.last_folders == expected
+        args = pc.build_parser().parse_args(["alloc", "svc", "--task", "job"] +
+                                            ([] if raw is None else ["--folders", raw]))
+        assert pc.cmd_alloc(args, worktree_pool=wp, board=board) == 0
+        assert wp.last_folders == expected
+        output = capsys.readouterr().out
+        assert "폴더:" in output
+        assert ("추적 밖 파일" in output) == (raw is not None)
+    wp = FakeWorktreePool()
+    args = pc.build_parser().parse_args(["worktree", "add", "svc", "--user-ack", "svc",
+                                        "--readonly", "--folders", "a"])
+    assert pc.cmd_worktree_add(args, worktree_pool=wp, board=board, is_tty=lambda: False) == 1
+    assert not wp.did("create_slot")
+    assert "[중단]" in capsys.readouterr().err
+    wp = FakeWorktreePool(alloc_raises=FakeWorktreePool.NeedsCreate)
+    args = pc.build_parser().parse_args(["alloc", "svc", "--task", "job", "--folders", "a, b"])
+    assert pc.cmd_alloc(args, worktree_pool=wp, board=board) == 1
+    assert "--folders 'a, b'" in capsys.readouterr().err
+    wp = FakeWorktreePool(alloc_raises=FakeWorktreePool.SlotFoldersRefused)
+    assert pc.cmd_alloc(args, worktree_pool=wp, board=board) == 1
+    assert "[중단]" in capsys.readouterr().err
+    def refuse(*args, **kwargs):
+        raise wp.SlotFoldersRefused("invalid folders")
+    wp.create_slot = refuse
+    args = pc.build_parser().parse_args(["worktree", "add", "svc", "--user-ack", "svc", "--folders", "nope"])
+    assert pc.cmd_worktree_add(args, worktree_pool=wp, board=board, is_tty=lambda: False) == 1
+    assert "[중단]" in capsys.readouterr().err

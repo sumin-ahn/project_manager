@@ -51,7 +51,7 @@ sidecar는 파생 캐시다.
 ## worktree add
 
 ```bash
-./pm-config.sh worktree add <repo> --user-ack <repo>              # 작업 슬롯(배타 대여·세션 바인딩)
+./pm-config.sh worktree add <repo> --user-ack <repo> [--folders <폴더,…>]  # 작업 슬롯
 ./pm-config.sh worktree add <repo> --readonly --user-ack <repo>   # readonly 공유 슬롯(research 기준면)
 ```
 
@@ -67,6 +67,27 @@ sidecar는 파생 캐시다.
 HEAD(released base), role=readonly, session/pid·배타 대여가 없다. 무소유 공유 자산이므로
 **바인딩(`/pm-bootstrap --slot`)·release를 거부**하고, 갱신은 [[pm-worktree]] `refresh`만 허용한다
 (rebase/dev/sync 거부). 제거는 `worktree remove <slot> --user-ack <slot> --force`.
+
+## 슬롯 폴더 선택
+
+작업 슬롯을 생성하거나 대여할 때 꺼낼 폴더를 정한다.
+
+```bash
+./pm-config.sh alloc <repo> --task <이름> [--folders <폴더,…>]
+```
+
+--folders는 Git cone sparse-checkout의 저장소 상대 폴더 목록이다. 생략하면 전체를 꺼내고, readonly와 함께 지정하면 부작용 전에 거부한다. Git 2.36 이상이 필요하며 잘못된 폴더·커밋 안 한 변경은 거부한다. 슬롯 반납은 폴더 규칙을 바꾸지 않는다. 좁힌 폴더 밖의 추적되지 않은 빌드 산출물은 Git이 지울 수 있으므로 alloc은 삭제 안내를 출력한다.
+
+첫 sparse 적용은 공용 저장소의 extensions.worktreeConfig를 활성화하고 core.bare를 config.worktree로 옮긴다. 꺼낼 폴더 규칙은 해당 worktree의 설정으로 저장한다. status는 슬롯의 폴더 목록을 표시하고 JSON은 folders 목록 또는 null을 낸다. 폴더 제한 때문에 모든 슬롯에 없는 파일을 티켓 승격 인용으로 사용하면 실재 확인이 막힐 수 있다.
+
+작업 중 필요한 폴더를 넓히려면 본인 슬롯에서 다음 두 명령을 순서대로 실행한다. 폴더를 줄이거나 전체로 돌리는 것은 다음 대여에서 정한다.
+
+```bash
+git -C <본인 슬롯 경로> sparse-checkout add <폴더…>
+python3 .project_manager/tools/worktree_pool.py sync --repo <repo> --slot <N>
+```
+
+sync는 폴더 밖의 submodule을 제외하고 꺼냈으나 초기화되지 않은 경로를 받아온다. 이미 채워진 inactive·dev·dirty 작업은 보존한다. 별도 폴더 변경 엔진 명령을 만들지 않는다.
 
 ## slot status / release / remove
 

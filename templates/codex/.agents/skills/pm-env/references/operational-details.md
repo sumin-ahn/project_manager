@@ -7,7 +7,7 @@
 task는 슬롯과 직교하는 작업스트림 정체성이다.
 
 ```bash
-./pm-config.sh alloc <repo> --task <이름>          # idle 최소 번호 슬롯을 task 명의로 대여
+./pm-config.sh alloc <repo> --task <이름> [--folders <폴더,…>]  # idle 슬롯 대여
 ./pm-config.sh release <slot> --task <이름>        # task 소유검사 후 반납(내 task 슬롯만)
 ./pm-config.sh task end <이름>                     # task 종료 — 소진 게이트 + 일괄 반납 + 아카이브
 ```

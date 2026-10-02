@@ -1064,3 +1064,28 @@ def test_status_text_lists_preserved_branches_section(preserved_home):
         f"  - app · app_2 · 쓰던 슬롯 work/app_2 · 보존 {stamps['app_2']} · 사유 no-parent · "
         "부모 기록 없음 · 합쳐짐 판정 불가",
     ]
+
+
+@_git_required
+def test_status_json_slot_rows_include_folders(home):
+    _origin_bare(home, "app")
+    origin = home / ".origin"
+    _write(origin / "docs/guide.md", "guide\n")
+    _write(origin / "src/app.py", "pass\n")
+    _git(origin, "add", "docs", "src")
+    _git(origin, "commit", "-qm", "folders")
+    bare = home / ".repos/app.git"
+    _git(bare, "fetch", "origin", "trunk:trunk")
+    limited = _make_slot(home, "app", 1, "limited")
+    full = _make_slot(home, "app", 2, "full")
+    _git(home / limited, "sparse-checkout", "set", "--cone", "docs")
+    _ledger(home, [{"slot": slot, "repo": "app", "state": "idle", "session": "", "started": "t"}
+                   for slot in [limited, full]])
+    rows = {row["slot"]: row for row in _status_json(home)["slots"]}
+    assert rows[limited]["folders"] == ["docs"]
+    assert rows[full]["folders"] is None
+    _git(home / limited, "sparse-checkout", "set", "--no-cone", "/docs/*")
+    done = _run_cli(home, "status", "--json")
+    assert done.returncode == 1
+    assert done.stdout == ""
+    assert "[중단]" in done.stderr and "cone" in done.stderr

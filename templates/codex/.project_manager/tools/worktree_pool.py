@@ -565,6 +565,21 @@ class SlotBranchExists(RuntimeError):
         )
 
 
+class SlotFoldersRefused(RuntimeError):
+    """슬롯 폴더 제한(`folders`)을 걸거나 읽지 못했다. 한 종류로 낸다.
+
+    사유: 잘못된 폴더(형식·없음·파일·submodule)·커밋 안 한 변경이 있는 슬롯의 폴더 변경·git 2.36
+    미만·cone 이 아닌 제한(패턴 지정)·git 실패. 생성·대여 거부는 부작용 전에 오거나 그 단계의
+    롤백을 탄다(대여는 기록을 쓰기 전이라 슬롯이 idle 그대로다). `target` = 슬롯 또는 repo 표기.
+    (`RuntimeError`. 파사드 `[중단]` rc 1.)
+    """
+
+    def __init__(self, target: str, reason: str):
+        self.target = target
+        self.reason = reason
+        super().__init__(f"{target} 폴더 제한 거부. {reason}")
+
+
 # Lease 직렬화 키 분류 (additive 스키마 클래스 폐쇄). from_dict 는 canonical 을 각
 # 필드로 소비하고, 그 외 미지 키는 `extra` 로 보존해 to_dict 가 재방출한다(구·신 엔진 왕복 무손실).
 #   - CANONICAL = 이 엔진 버전이 아는 1급 필드(각자 self.* 로 소비·extra 아님).
@@ -2946,6 +2961,7 @@ def alloc(
     session: str | None = None,
     owner_task: str | None = None,
     git_runner: GitRunner | None = None,
+    folders: list[str] | None = None,
 ) -> Lease:
     """repo 슬롯을 리스하고 slot-mode 정체성의 pm_state를 보장한다.
 
@@ -2968,6 +2984,10 @@ def alloc(
     자동 회수는 없다 — 종료 기록 없이 남은 슬롯은 사용자가 `release --force` 로 닫는다.
     `branch` 와 `resume` 은 동의어 역할(둘 다 작업스트림 식별) — 명시된 쪽을 쓴다.
     """
+    if folders is not None:
+        if owner_task is None:
+            raise ValueError("alloc: folders 는 task 명의 대여(owner_task)에서만 받는다")
+        folders = _normalize_folders(folders, target=f"repo {repo!r}")
     # task-명의 alloc이면 session 은 task 이름이다(항상 신규 idle 대여).
     task_alloc = owner_task is not None
     sess = owner_task if task_alloc else (session or _default_session())
@@ -3060,12 +3080,19 @@ def alloc(
             # 슬롯은 skip → 다음 후보/NeedsCreate(dangling idle 을 leased 로 승격하지 않음).
             if git_runner is None and not slot_path(lease.slot).exists():
                 continue
+            # 지정 폴더의 검증은 현재 슬롯을 바꾸기 전에 완료한다. 실재는 도착할 ref에서 읽는다.
+            if folders is not None:
+                runner = git_runner or _real_git_runner(slot_path(lease.slot))
+                _require_sparse_git(runner, target=lease.slot)
+                _require_tree_folders(folders, target_branch or "HEAD", runner, target=lease.slot)
+                _require_clean_for_folders(lease.slot, runner)
             # 슬롯이 이미 target_branch 가 아니면 재체크아웃(live HEAD 비교). 없는 브랜치는 만들지
             # 않고 CheckoutFailed — 장부엔 branch 를 쓰지 않는다.
             if (target_branch is not None
                     and current_branch(lease.slot, git_runner=git_runner) != target_branch):
                 # checkout 을 먼저 — 실패하면 raise(idle 슬롯 상태 보존·부분 leased 전이 차단).
                 _checkout_required(lease.slot, target_branch, git_runner=git_runner)
+            _apply_slot_folders(lease.slot, folders, git_runner=git_runner)
             lease.state = "leased"
             lease.session = sess
             lease.started = _now_utc()
@@ -3320,6 +3347,233 @@ def remove_slot(
                             tree_cleaned=tree_cleaned, forced_state=forced_state)
 
 
+SPARSE_CHECKOUT_MIN_GIT = (2, 36)
+_GIT_VERSION_RE = re.compile(r"git version (\d+)\.(\d+)")
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+_TREE_OBJECT_TYPE = "tree"          # `ls-tree` 의 폴더 항목 종류.
+_GITLINK_OBJECT_TYPE = "commit"     # `ls-tree` 의 submodule 항목 종류.
+_GITLINK_MODE = "160000"            # 인덱스의 submodule(gitlink) 항목 모드.
+_SKIP_WORKTREE_TAG = "S"            # `ls-files -t` 태그. 추적하지만 폴더 제한으로 꺼내지 않은 항목.
+
+
+def _normalize_folders(folders: "list[str]", *, target: str) -> "list[str]":
+    """폴더 목록 형식 검사(부작용 전). 끝 `/` 하나를 떼고 나머지는 그대로 git 에 넘긴다.
+
+    저장소 루트 기준 상대 폴더만 받는다. 빈 목록·빈 항목·절대경로(`/` 시작·드라이브 문자)·역슬래시·
+    `.`/`..`/빈 조각은 거부한다. 폴더 실재(파일·submodule 아님)는 기준 커밋 트리로 따로 본다
+    (`_require_tree_folders`). git 은 없는 폴더도 그대로 받는다.
+    """
+    if not folders:
+        raise SlotFoldersRefused(target, "폴더 목록이 비어 있다. 꺼낼 폴더를 하나 이상 준다")
+    normalized: list[str] = []
+    for raw in folders:
+        folder = raw[:-1] if raw.endswith("/") else raw
+        if raw.startswith("/") or _WINDOWS_DRIVE_RE.match(raw):
+            reason = "절대경로다(저장소 루트 기준 상대 경로만 받는다)"
+        elif "\0" in raw:
+            reason = "NUL 문자가 든 경로다"
+        elif "\\" in raw:
+            reason = "역슬래시 구분자다(`/` 만 받는다)"
+        elif not folder:
+            reason = "빈 항목이다"
+        elif any(part in ("", ".", "..") for part in folder.split("/")):
+            reason = "`.`·`..`·빈 조각이 든 경로다"
+        else:
+            normalized.append(folder)
+            continue
+        raise SlotFoldersRefused(target, f"{raw!r}: {reason}")
+    return normalized
+
+
+def _require_sparse_git(runner: GitRunner, *, target: str) -> None:
+    """git 이 2.36 이상인지. 미만이면 bare 공용 저장소의 슬롯에 폴더 제한을 걸지 않는다."""
+    rc, out = runner(["version"])
+    match = _GIT_VERSION_RE.search(str(out)) if rc == 0 else None
+    if match is None:
+        raise SlotFoldersRefused(
+            target, f"git 버전을 읽지 못했다 (rc={rc}): {str(out).strip()[:200]}")
+    found = (int(match.group(1)), int(match.group(2)))
+    if found < SPARSE_CHECKOUT_MIN_GIT:
+        need = ".".join(str(part) for part in SPARSE_CHECKOUT_MIN_GIT)
+        raise SlotFoldersRefused(
+            target,
+            f"git {found[0]}.{found[1]} 은 bare 공용 저장소의 슬롯에 폴더 제한을 바르게 걸지 못한다. "
+            f"git {need} 이상이 필요하다",
+        )
+
+
+def _require_tree_folders(folders: "list[str]", ref: str, runner: GitRunner, *,
+                          target: str) -> None:
+    """폴더마다 커밋 `ref` 트리에 그 경로 그대로의 폴더(tree)가 있는지. 없음·파일·submodule 거부."""
+    for folder in folders:
+        rc, out = runner(["ls-tree", "-z", ref, "--", folder])
+        if rc != 0:
+            raise SlotFoldersRefused(
+                target, f"`git ls-tree {ref} -- {folder}` 실패 (rc={rc}): {str(out).strip()[:200]}")
+        kinds: dict[str, str] = {}
+        for record in str(out).split("\0"):
+            meta, tab, path = record.partition("\t")
+            fields = meta.split()
+            if tab and len(fields) == 3:
+                kinds[path] = fields[1]
+        kind = kinds.get(folder)
+        if kind == _TREE_OBJECT_TYPE:
+            continue
+        if kind is None:
+            reason = f"{ref} 에 없는 폴더다"
+        elif kind == _GITLINK_OBJECT_TYPE:
+            reason = "submodule 경로다(폴더만 받는다)"
+        else:
+            reason = "파일 경로다(폴더만 받는다)"
+        raise SlotFoldersRefused(target, f"{folder!r}: {reason}")
+
+
+def _config_bool(runner: GitRunner, key: str, *, target: str) -> "bool | None":
+    """`git config --type=bool --get <key>`. 값이 없으면 None. 조회 실패는 거부로 올린다."""
+    rc, out = runner(["config", "--type=bool", "--get", key])
+    if rc == _GIT_CONFIG_MISSING_RC:
+        return None
+    if rc != 0:
+        raise SlotFoldersRefused(
+            target, f"`git config --get {key}` 실패 (rc={rc}): {str(out).strip()[:200]}")
+    return str(out).split("\n", 1)[0].strip() == "true"
+
+
+def _run_sparse_checkout(runner: GitRunner, argv: "list[str]", *, target: str) -> None:
+    """`git sparse-checkout <argv>`. rc≠0 이면 거부로 올린다(호출부의 롤백·idle 유지를 탄다)."""
+    rc, out = runner(["sparse-checkout", *argv])
+    if rc != 0:
+        raise SlotFoldersRefused(
+            target,
+            f"`git sparse-checkout {' '.join(argv)}` 실패 (rc={rc}): {str(out).strip()[:200]}",
+        )
+
+
+def _require_clean_for_folders(slot: str, runner: GitRunner) -> None:
+    """폴더 규칙을 바꾸는 대여는 커밋 안 한 변경이 없는 슬롯에서만. git 은 변경이 있어도 rc 0
+    경고만 내고 그 파일만 남기는 반쪽 적용을 한다."""
+    if _is_dirty(slot_path(slot), git_runner=runner):
+        raise SlotFoldersRefused(
+            slot, "커밋 안 한 변경이 있어 꺼낼 폴더를 바꾸지 않는다. 커밋한 뒤 다시 대여한다")
+
+
+def _checkout_folders(slot: str, path: Path, folders: "list[str]", *,
+                      git_runner: GitRunner | None) -> None:
+    """`--no-checkout` 으로 만든 슬롯에 폴더 규칙을 걸고 그 폴더만 꺼낸다. 전체를 디스크에 쓰지 않는다.
+
+    파일을 쓰는 단계(`checkout`)는 worktree add 와 같은 콘솔 표시 러너·`GIT_TIMEOUT_SECONDS` 로 돈다
+    (대형 저장소의 checkout 이 이 단계로 옮겨 왔다). `--no-recurse-submodules` 는 submodule 을
+    건드리지 않는다. 초기화는 뒤의 submodule 단계가 꺼낸 것만 한다."""
+    _run_sparse_checkout(git_runner or _real_git_runner(path),
+                         ["set", "--cone", "--", *folders], target=slot)
+    checkout_runner = git_runner or _real_git_runner_interactive(path, timeout=GIT_TIMEOUT_SECONDS)
+    rc, out = checkout_runner(["checkout", "--no-recurse-submodules"])
+    if rc != 0:
+        raise SlotFoldersRefused(
+            slot, f"`git checkout` 실패 (rc={rc}): {str(out).strip()[:200]}")
+
+
+def _apply_slot_folders(slot: str, folders: "list[str] | None", *,
+                        git_runner: GitRunner | None) -> None:
+    """idle 대여가 슬롯의 폴더 상태를 그 대여가 말한 대로 맞춘다. 목록이면 그 cone, 없으면 전체.
+
+    폴더 없는 대여는 슬롯이 제한 상태일 때만 푼다(`disable`). 제한이 없던 슬롯에는 제한 여부를
+    읽을 뿐 폴더 제한 명령을 부르지 않는다. `disable` 은 제한 없는 슬롯에서도 공용 설정을 바꾼다.
+    지정 폴더의 버전·최종 ref 트리·현재 dirty 검증은 alloc의 checkout 이전 단계에서 완료한다."""
+    runner = git_runner or _real_git_runner(slot_path(slot))
+    if folders is None:
+        if not _config_bool(runner, "core.sparseCheckout", target=slot):
+            return
+        _require_clean_for_folders(slot, runner)
+        _run_sparse_checkout(runner, ["disable"], target=slot)
+        _resync_submodules_selective(slot_path(slot), git_runner=runner)
+        return
+    _run_sparse_checkout(runner, ["set", "--cone", "--", *folders], target=slot)
+    _resync_submodules_selective(slot_path(slot), git_runner=runner)
+
+
+def slot_folders(slot: str, *, git_runner: GitRunner | None = None) -> "list[str] | None":
+    """슬롯에 꺼낸 폴더 목록. git 이 가진 cone 목록 그대로(git 이 정규화한 뒤). 제한이 없으면 None.
+
+    제한 여부·cone 여부는 슬롯 git 설정(`core.sparseCheckout`·`core.sparseCheckoutCone`)으로 읽고,
+    목록은 `-c core.quotePath=false sparse-checkout list` 로 읽는다(한글 이름 원문). git 에러 문구에는
+    기대지 않는다(로케일마다 다르다). cone 이 아닌 제한(패턴 지정)은 폴더로 보고하지 않고 거부한다.
+    빈 목록은 최상위 파일만 꺼낸 상태다."""
+    runner = git_runner or _real_git_runner(slot_path(slot))
+    if not _config_bool(runner, "core.sparseCheckout", target=slot):
+        return None
+    if not _config_bool(runner, "core.sparseCheckoutCone", target=slot):
+        raise SlotFoldersRefused(
+            slot,
+            "cone 이 아닌 폴더 제한(패턴 지정)이라 폴더 목록으로 보고하지 않는다. 슬롯에서 "
+            "`git sparse-checkout set --cone <폴더…>` 로 바꾸거나 `git sparse-checkout disable` 로 푼다",
+        )
+    rc, out = runner(["-c", "core.quotePath=false", "sparse-checkout", "list"])
+    if rc != 0:
+        raise SlotFoldersRefused(
+            slot, f"`git sparse-checkout list` 실패 (rc={rc}): {str(out).strip()[:200]}")
+    # Git C 인용은 바이트 단위 8진 escape를 포함한다. UTF-8 바이트를 복원한 뒤 해석한다.
+    escapes = {'a': 7, 'b': 8, 't': 9, 'n': 10, 'v': 11, 'f': 12, 'r': 13,
+               '"': 34, '\\': 92}
+    folders: list[str] = []
+    for line in str(out).split("\n"):
+        if not line:
+            continue
+        if not line.startswith('"'):
+            folders.append(line)
+            continue
+        try:
+            if len(line) < 2 or not line.endswith('"'):
+                raise ValueError("닫히지 않은 인용")
+            value = line[1:-1]
+            decoded = bytearray()
+            index = 0
+            while index < len(value):
+                char = value[index]
+                if char != "\\":
+                    decoded.extend(char.encode("utf-8"))
+                    index += 1
+                    continue
+                index += 1
+                escaped = value[index]
+                if escaped in escapes:
+                    decoded.append(escapes[escaped])
+                    index += 1
+                elif escaped in "01234567":
+                    octal = value[index:index + 3]
+                    if len(octal) != 3 or any(digit not in "01234567" for digit in octal):
+                        raise ValueError("잘못된 8진 escape")
+                    decoded.append(int(octal, 8))
+                    index += 3
+                else:
+                    raise ValueError("알 수 없는 escape")
+            folders.append(decoded.decode("utf-8"))
+        except (ValueError, IndexError) as exc:
+            raise SlotFoldersRefused(slot, f"Git 폴더 인용 해석 실패: {line!r}") from exc
+    return folders
+
+
+def _index_gitlink_tags(runner: GitRunner, *, target: str,
+                        paths: "list[str] | None" = None) -> "dict[str, str]":
+    """인덱스의 submodule(gitlink) 항목 `{경로: ls-files -t 태그}`. `S` 는 폴더 제한으로 꺼내지 않은 것.
+
+    `paths` 를 주면 그 경로만 literal pathspec 으로 묻는다(빈 목록으로는 부르지 않는다. 호출부 몫)."""
+    argv = ["ls-files", "-t", "-s", "-z"]
+    if paths is not None:
+        argv += ["--", *(f":(literal){path}" for path in paths)]
+    rc, out = runner(argv)
+    if rc != 0:
+        raise SlotFoldersRefused(
+            target, f"`git ls-files -t -s` 실패 (rc={rc}): {str(out).strip()[:200]}")
+    tags: dict[str, str] = {}
+    for record in str(out).split("\0"):
+        meta, tab, path = record.partition("\t")
+        fields = meta.split()
+        if tab and len(fields) == 4 and fields[1] == _GITLINK_MODE:
+            tags[path] = fields[0]
+    return tags
+
+
 def create_slot(
     repo: str,
     *,
@@ -3330,6 +3584,7 @@ def create_slot(
     git_runner: GitRunner | None = None,
     test_cmd: str | None = None,
     readonly: bool = False,
+    folders: list[str] | None = None,
 ) -> Lease:
     """새 슬롯을 *생성*한다 — 풀 확장 (NeedsCreate 게이트 통과 후).
 
@@ -3382,6 +3637,10 @@ def create_slot(
     `.repos/<repo>.git` bare 컨텍스트의 실 git 으로 worktree add 후, 슬롯 경로 컨텍스트로
     submodule init.
     """
+    if folders is not None:
+        if readonly:
+            raise ValueError("create_slot: readonly 와 folders 는 함께 쓸 수 없다")
+        folders = _normalize_folders(folders, target=f"repo {repo!r}")
     # task-명의 생성이면 session=task 이름(재부착 보호는 tasks 장부 조인이 담당·
     # bound 아님). owner_task 미지정이면 이 값은 provisional 마커에만 실리고 확정은 무소유 idle 이다.
     task_created = owner_task is not None
@@ -3438,8 +3697,11 @@ def create_slot(
             slot=slot, repo=repo, session=sess,
             started=_now_utc(), state="creating", test_cmd=test_cmd,
         )
-        leases.append(provisional)
-        _write_ledger(leases)
+        # 폴더 검사는 creating 장부 쓰기보다 먼저 완료한다. 전체 생성의 기존 순서는 유지한다.
+        provisional_recorded = folders is None
+        if provisional_recorded:
+            leases.append(provisional)
+            _write_ledger(leases)
 
         # add 성공(=fs 에 worktree 생성) 여부 — except 청소가 롤백(remove) 대상을 판정한다. add 자체
         # 실패면 지울 worktree 가 없어 remove 를 안 부른다.
@@ -3493,6 +3755,12 @@ def create_slot(
                 )
                 if rc == 0:
                     ref = f"origin/{base}"
+            if folders is not None:
+                _require_sparse_git(prep_runner, target=slot)
+                _require_tree_folders(folders, ref, prep_runner, target=slot)
+                leases.append(provisional)
+                _write_ledger(leases)
+                provisional_recorded = True
             # worktree add 는 `.repos/<repo>.git` bare 컨텍스트에서 — 슬롯이 그 family repo 의
             # worktree 가 되게 한다. bare repo 도 `git -C <bare> worktree add <abs
             # path>` 가 동작한다(슬롯 path 는 절대).
@@ -3511,6 +3779,8 @@ def create_slot(
                 # base 에 묶음). `--no-track` 으로 그 자동설정을 억제한다(로컬 <base> 폴백 경로에서도
                 # 안전 — no-op·codex 게이트 포착 결함).
                 add_argv = ["worktree", "add", "--no-track", "-b", slot_branch, str(path), ref]
+                if folders is not None:
+                    add_argv.insert(2, "--no-checkout")
 
             # worktree add *자체* 는 **console-visible(인터랙티브) 러너**로 실행한다. 대형 repo 의
             # full checkout(로컬 bare→worktree·느린 디스크/VPN/Windows)이 옛 captured 120s 에 false-kill
@@ -3593,6 +3863,9 @@ def create_slot(
                     )
                 record_branch_parent(slot_branch, base, fork, git_runner=prep_runner)
 
+            if folders is not None:
+                _checkout_folders(slot, path, folders, git_runner=git_runner)
+
             # submodule init — worktree add 는 submodule 자동 init 안 함.
             # `--force`: bare 에서 만든 fresh 슬롯의 worktree+submodule edge 에서 plain `--init` 이
             # 체크아웃 못 하는 상태(`git submodule init failed: ''` — 실 Windows multi-PM 파일럿서 빈
@@ -3615,7 +3888,13 @@ def create_slot(
             if init_submodules:
                 sub_runner = git_runner or _real_git_runner_interactive(path)
                 sub_argv = ["submodule", "update", "--init", "--recursive", "--force"]
-                rc, out = sub_runner(sub_argv)
+                if folders is not None:
+                    tags = _index_gitlink_tags(git_runner or _real_git_runner(path), target=slot)
+                    shown = [sub for sub, tag in tags.items() if tag != _SKIP_WORKTREE_TAG]
+                    sub_argv += ["--", *shown]
+                    rc, out = sub_runner(sub_argv) if shown else (0, "")
+                else:
+                    rc, out = sub_runner(sub_argv)
                 if rc != 0:
                     raise RuntimeError(
                         f"git submodule init failed for {slot!r}: "
@@ -3658,8 +3937,9 @@ def create_slot(
             # (SIGKILL 은 여기 못 옴 — provisional 이 disk 에 남아 reconcile 이 incomplete 로 잡는다.)
             if worktree_created:
                 _rollback_worktree(repo, path, git_runner=git_runner)
-            leases[:] = [l for l in leases if l.slot != slot]
-            _write_ledger(leases)
+            if provisional_recorded:
+                leases[:] = [l for l in leases if l.slot != slot]
+                _write_ledger(leases)
             raise
 
 
@@ -4029,7 +4309,7 @@ def slot_status(slot: str, *, git_runner: GitRunner | None = None) -> SlotStatus
     except Exception:  # noqa: BLE001 — fail-soft: runner raise → 미해소로 흡수(경고 surface).
         upstream, upstream_ok = None, False
     try:
-        submodules = _submodule_statuses(runner)
+        submodules = _submodule_statuses(runner, target=slot)
     except Exception:  # noqa: BLE001 — fail-soft: runner raise → 빈목록(부트스트랩 줄 생략).
         submodules = []
     return SlotStatus(
@@ -5091,7 +5371,7 @@ def slot_git_status(slot: str, *, git_runner: GitRunner | None = None) -> dict:
 
     반환 dict 키: `slot`·`branch`·`head`(live)·`parent`(`_slot_parent_status`)·`children`(작업 슬롯
     브랜치의 자식 브랜치 목록)·`stashes`(그 브랜치 이름 stash 수)·`submodules`(list[SubmoduleStatus]·
-    `_submodule_statuses` 재사용)·`dirty`(bool·`_is_dirty`). 슬롯 경로가 없어 runner 를 못 만들면
+    `_submodule_statuses` 재사용)·`dirty`(bool·`_is_dirty`)·`folders`(cone 폴더 목록 또는 None). 슬롯 경로가 없어 runner 를 못 만들면
     branch/head None·parent None·children []·stashes 0·submodules []·dirty False. 부모·자식·stash
     조회의 git 실패는 `BranchParentError` 로 올린다."""
     runner = git_runner
@@ -5099,7 +5379,7 @@ def slot_git_status(slot: str, *, git_runner: GitRunner | None = None) -> dict:
         runner = _real_git_runner(slot_path(slot))
     if runner is None:
         return {"slot": slot, "branch": None, "head": None, "parent": None, "children": [],
-                "stashes": 0, "submodules": [], "dirty": False}
+                "stashes": 0, "submodules": [], "dirty": False, "folders": None}
     lease = read_lease(slot)
     readonly = lease is not None and lease.role == _LEASE_ROLE_READONLY
     branch = current_branch(slot, git_runner=runner)
@@ -5111,7 +5391,8 @@ def slot_git_status(slot: str, *, git_runner: GitRunner | None = None) -> dict:
         "parent": _slot_parent_status(branch, lease, git_runner=runner),
         "children": branch_children(work_branch, git_runner=runner) if work_branch else [],
         "stashes": _branch_stash_count(branch, git_runner=runner) if branch else 0,
-        "submodules": _submodule_statuses(runner),
+        "submodules": _submodule_statuses(runner, target=slot),
+        "folders": slot_folders(slot, git_runner=runner),
         "dirty": _is_dirty(slot_path(slot), git_runner=runner),
     }
 
@@ -6033,7 +6314,28 @@ def _upstream_status(runner: GitRunner) -> tuple[str | None, bool]:
     return name, True
 
 
-def _submodule_statuses(runner: GitRunner) -> list[SubmoduleStatus]:
+def _classify_unset_submodules(runner: GitRunner, entries: list[tuple[str, str]], *,
+                               target: str) -> dict[str, str]:
+    """비활성 항목을 폴더 밖, 채워짐, 초기화 안 됨으로 분류한다.
+
+    빈 폴더에서 git은 상위 저장소를 읽으므로 show-prefix가 빈 출력인 경로만 채워짐으로 본다.
+    정상 활성 항목은 추가 git 호출 없이 기존 판정을 따른다.
+    """
+    unset = [path for flag, path in entries if flag == "-"]
+    if not unset:
+        return {}
+    tags = _index_gitlink_tags(runner, target=target, paths=unset)
+    result: dict[str, str] = {}
+    for sub in unset:
+        if tags.get(sub) == _SKIP_WORKTREE_TAG:
+            result[sub] = "outside"
+            continue
+        rc, out = runner(["-C", sub, "rev-parse", "--show-prefix"])
+        result[sub] = "populated" if rc == 0 and not str(out).strip() else "uninitialized"
+    return result
+
+
+def _submodule_statuses(runner: GitRunner, *, target: str) -> list[SubmoduleStatus]:
     """각 submodule 을 역할별로 판정한 `SubmoduleStatus` 리스트.
 
     `_resync_submodules_selective` 와 *같은* primitive 로 역할을 정한다(중복 판별 구현 금지):
@@ -6053,12 +6355,22 @@ def _submodule_statuses(runner: GitRunner) -> list[SubmoduleStatus]:
     if rc != 0:
         return []  # 조회 불가(대개 submodule 없음/손상) → 빈 목록(부트스트랩 줄 생략).
     statuses: list[SubmoduleStatus] = []
-    for flag, sub in _parse_submodule_entries(out):
+    entries = _parse_submodule_entries(out)
+    classified = _classify_unset_submodules(runner, entries, target=target)
+    for flag, sub in entries:
+        kind = classified.get(sub)
+        if kind == "outside":
+            continue
+        if kind == "uninitialized":
+            statuses.append(SubmoduleStatus(sub, kind, warning=True, dirty=False))
+            continue
         rc_head, _out = runner(["-C", sub, "symbolic-ref", "-q", "HEAD"])
         if rc_head == 0:
             kind = "dev-ahead"       # on-branch = dev 역할(정보·경고 아님).
         elif flag == "-":
-            kind = "uninitialized"   # 미초기화(경고).
+            rc_pin, pin = runner(["rev-parse", f"HEAD:{sub}"])
+            rc_work, work = runner(["-C", sub, "rev-parse", "HEAD"])
+            kind = "pinned" if rc_pin == rc_work == 0 and pin.strip() == work.strip() else "drift"
         elif flag == " ":
             kind = "pinned"          # detached & pin == working(정상).
         else:
@@ -6099,13 +6411,24 @@ def _resync_submodules_selective(slot_path_: Path, *, git_runner: GitRunner | No
     rc, out = runner(["submodule", "status"])
     if rc != 0:
         return  # 조회 불가(대개 submodule 없음/손상) → no-op fail-soft(checkout 은 이미 성공).
-    for sub in _parse_submodule_paths(out):
+    entries = _parse_submodule_entries(out)
+    try:
+        classified = _classify_unset_submodules(runner, entries, target=str(slot_path_))
+    except SlotFoldersRefused as exc:
+        print(f"[경고] submodule 분류 실패: {exc}", file=sys.stderr)
+        return
+    for _flag, sub in entries:
+        kind = classified.get(sub)
+        # 채워진 비활성 submodule은 초기화하지 않는다(공용 active 설정과 작업 보존).
+        if kind in ("outside", "populated"):
+            continue
         # 역할 = live git HEAD(장부 없음). on-branch(dev) → 보호(skip).
-        rc_head, _out = runner(["-C", sub, "symbolic-ref", "-q", "HEAD"])
+        rc_head, _out = ((1, "") if kind == "uninitialized"
+                         else runner(["-C", sub, "symbolic-ref", "-q", "HEAD"]))
         if rc_head == 0:
             continue
         # detached(consume) → pin 재동기. 단 dirty(미커밋)면 작업 유실 방지 위해 skip + 경고.
-        if _submodule_dirty(sub, runner):
+        if kind != "uninitialized" and _submodule_dirty(sub, runner):
             print(
                 f"[경고] submodule {sub!r} 이 detached 이나 미커밋 변경으로 dirty — pin "
                 f"재동기 skip (작업 보호). 정리 후 재-alloc 하면 재동기된다.",
@@ -6255,6 +6578,9 @@ def dev(slot: str, sub: str, branch: str, *, git_runner: GitRunner | None = None
     known = _parse_submodule_paths(out_st) if rc_st == 0 else []
     if sub not in known:
         raise SubmoduleNotInSlot(slot, sub, known)
+    classified = _classify_unset_submodules(runner, _parse_submodule_entries(out_st), target=slot)
+    if classified.get(sub) in ("outside", "uninitialized"):
+        return 1, f"submodule {sub!r} 은 폴더 밖이거나 초기화 안 됨, sync 후 dev를 지정한다"
     rc, out = runner(["-C", sub, "checkout", "-b", branch])
     if rc != 0:
         # `-b` 실패 원인 판별(codex bundle) — 브랜치가 *이미 존재*할 때만 전환 폴백한다. 그 외
@@ -6563,6 +6889,7 @@ def _print_status_row(row: dict) -> None:
     print(f"  parent: {parent_str}")
     print(f"  children: {', '.join(children) if children else '(없음)'}")
     print(f"  stashes: {row.get('stashes', 0)}")
+    print("  folders: " + (", ".join(row["folders"]) if row.get("folders") is not None else "(제한 없음)"))
     print(f"  dirty:  {'예 (미커밋 변경 있음)' if row.get('dirty') else '아니오 (clean)'}")
     for s in (row.get("submodules") or []):
         mark = "⚠" if getattr(s, "warning", False) else "·"
@@ -6589,6 +6916,9 @@ def _cmd_status(args) -> int:
             rows = status(slot=slot_arg)
         else:
             rows = status()   # 무인자 = 내 task 전 슬롯.
+    except SlotFoldersRefused as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
     except SlotResolutionError as exc:
         print(f"[중단] 대상 슬롯 해소 실패 — {exc}", file=sys.stderr)
         return 1

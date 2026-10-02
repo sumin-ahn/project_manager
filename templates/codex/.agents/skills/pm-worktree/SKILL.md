@@ -80,11 +80,13 @@ python3 .project_manager/tools/worktree_pool.py switch <slot> <branch>
 - `<submodule_path>` = 슬롯 worktree 상대 경로(=`git submodule status` 표기, 예 `vendor/sub`).
 - `dev`: submodule을 on-branch(dev 역할)로 만들어 이후 브랜치 전환·부트스트랩 selective resync가
   **skip**하게 한다(detached pin 전환 방지).
-- `sync`: selective 재동기를 수동 실행한다. dev(on-branch)·dirty submodule은 **skip**해 보호하고,
-  detached & clean만 pin으로 재동기한다.
+- `sync`: 폴더 밖(S 표시)의 submodule은 제외하고, 꺼냈으나 초기화되지 않은 경로만 받아온다.
+  채워진 inactive·dev(on-branch)·dirty 작업은 보존하고, 활성 detached·clean만 기존 pin으로 재동기한다.
+  빈 submodule 폴더에서 상위 슬롯 저장소를 발견한 경우는 초기화 안 됨으로 분류하며 dev 전환을 거부한다.
+  이 판정은 폴더 제한이 없는 슬롯에도 적용한다.
 - `status`: `<slot>` 단일, `--task <이름>` 일괄, 둘 다 생략 시 내 task(세션) 전 슬롯. 슬롯별
   role(work/readonly)·branch·head·부모(이름@갈라진 커밋·앞 N·뒤 M)·자식 브랜치·stash 수·submodule
-  pin/drift(⚠=drift/uninitialized)·dirty를 surface한다. 부모 기록은 git 저장소 설정
+  pin/drift(⚠=drift/uninitialized)·dirty와 folders 목록/null을 표시한다. 부모 기록은 git 저장소 설정
   (`branch.<이름>.pm-parent`·`pm-fork`)에 브랜치 단위로 있어 반납해도 지워지지 않는다. readonly 슬롯의
   부모는 장부의 따라갈 브랜치다.
 - `rebase`: `<slot>`(단일), `--task <이름>`(그 task 전 슬롯 일괄), `rebase <slot> --task <이름>`(그 task
