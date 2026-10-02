@@ -2996,3 +2996,56 @@ def test_leftover_floor_declaration_no_longer_blocks_a_real_run(tmp_path):
     assert record["status"] == "pass" and record["collected"] == 12
     assert "floor" not in record and record["previous_collected"] is None
     assert "하한" not in completed.stdout + completed.stderr
+
+
+def test_t0929_selected_workspace_command_cwd_and_head(board, monkeypatch):
+    from test_task_workspace_wiring import _t0929_mock_workspaces
+    _t0929_mock_workspaces(board, monkeypatch)
+    fake = _install_run(board, monkeypatch, _FakeRun(0, pytest_summary(10)))
+    assert board.cmd_regression(_run_args(task='main', repo='A', slot=5)) == 0
+    assert fake.calls[0]['kwargs']['cwd'] == str(board.REPO / 'work/A_5')
+    assert 'slot5' in str(fake.calls[0]['args'])
+    evidence = _flag(board)
+    assert evidence['head'] == 'head5'
+
+
+@pytest.mark.parametrize('failure', ['head', 'branch', 'command'])
+def test_t0929_selected_workspace_preflight_precedes_runner(board, monkeypatch, failure):
+    from test_task_workspace_wiring import _t0929_mock_workspaces
+    rows = _t0929_mock_workspaces(board, monkeypatch)
+    if failure == 'command':
+        rows[-1]['test_cmd'] = None
+        board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
+        monkeypatch.setattr(board, 'default_pytest_cmd', lambda: None)
+    else:
+        monkeypatch.setattr(board, '_git_head_at' if failure == 'head' else '_cluster_current_branch', lambda tree: None)
+    fake = _install_run(board, monkeypatch, _FakeRun(0, pytest_summary(10)))
+    with pytest.raises(SystemExit):
+        board.cmd_regression(_run_args(task='main', repo='A', slot=5))
+    assert fake.calls == []
+    assert not board.REGRESSION_FLAG.exists()
+
+
+def test_t0929_selected_workspace_missing_command_uses_selected_repo(board, monkeypatch):
+    from test_task_workspace_wiring import _t0929_mock_workspaces
+    rows = _t0929_mock_workspaces(board, monkeypatch)
+    rows[-1]['test_cmd'] = None
+    board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
+    monkeypatch.setenv('PM_SESSION_NAME', 'main')
+    monkeypatch.setattr(board, '_parse_areas', lambda: ([], [{'repo': 'A', 'test_cmd': 'pytest -q -k selected_repo'}]))
+    fake = _install_run(board, monkeypatch, _FakeRun(0, pytest_summary(10)))
+    assert board.cmd_regression(_run_args(task='main', repo='A', slot=5)) == 0
+    assert 'selected_repo' in str(fake.calls[0]['args'])
+    assert 'slot1' not in str(fake.calls[0]['args'])
+
+
+def test_t0929_selected_workspace_readonly_cwd_reference_preserved(board, monkeypatch):
+    from test_task_workspace_wiring import _t0929_mock_workspaces
+    rows = _t0929_mock_workspaces(board, monkeypatch)
+    rows[-1].update(role='readonly', session='')
+    board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
+    selected = str(board.REPO / 'work/A_5')
+    fake = _install_run(board, monkeypatch, _FakeRun(0, pytest_summary(10)))
+    assert board.cmd_regression(_run_args(repo='A', cwd=selected, cmd='pytest -q')) == 0
+    assert fake.calls[0]['kwargs']['cwd'] == selected
+    assert _flag(board)['head'] == 'head5'

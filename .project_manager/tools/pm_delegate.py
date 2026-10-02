@@ -13878,20 +13878,45 @@ def _cluster_confirmation_tree(
 ) -> Path:
     """확인 커맨드를 돌릴 트리 1곳 — 묶음 통합 브랜치를 체크아웃한 코드 트리.
 
-    관측값을 만드는 자리라 그 자리가 그 브랜치가 아니면 **거부한다**: 다른 브랜치에서 잰 값을
-    확인으로 적으면 기계 확인이 거짓이 된다. 트리 해소는 board 의 규칙 하나
-    (`_claim_code_tree` — claim·완료 기록과 같은 해소)를 쓴다 — 여기서 해소 규칙을 새로
-    만들지 않는다. 해소 실패(`None`)는 거부다: 트리를 모른 채 잰 값은 확인이 아니다.
+    명시 선택은 board의 task 보유 조인을 사용한다. finish가 넘긴 task 단독 입력은
+    기존 ClusterCloser의 묶음 branch/base_branch 탐색을 재사용한다. 어느 경로든
+    확인 실행 트리가 묶음 브랜치와 다르면 기입 전에 거부한다.
     """
-    # 정체성 미지정은 "인자 전무"(kind="none") 그대로 넘긴다 — board 가 그 갈래를 소유한다.
-    resolved = board._claim_code_tree(
-        identity if identity is not None else argparse.Namespace())
+    selection = identity if identity is not None else argparse.Namespace()
+    # finish는 task 귀속만 전달한다. 실행 위치는 finish의 기존 묶음 브랜치 탐색을 재사용한다.
+    task_only = (getattr(selection, "task", None)
+                 and getattr(selection, "repo", None) is None
+                 and getattr(selection, "slot", None) is None)
+    if task_only:
+        board._validate_actor_task_or_exit(selection.task)
+        finish = _load_module_from_path(
+            Path(__file__).resolve().with_name("ticket_finish.py"), "ticket_finish.py",
+            verifier=_verify_engine_rev,
+        )
+        finish.REPO = board.REPO
+        finish.LEASES_FILE = board.LEASES_FILE
+        finisher = finish.TicketFinisher(board_py=Path(board.__file__))
+        closer = finish.ClusterCloser(cluster, finisher=finisher, board_py=Path(board.__file__))
+        closer._board = board
+        try:
+            resolved, problem = closer._resolve_code_tree()
+        except finish._CloseObservationFailure as exc:
+            raise DelegateError(str(exc)) from exc
+        if problem:
+            raise DelegateError(problem)
+    else:
+        try:
+            resolved = board._claim_code_tree(selection)
+        except SystemExit as exc:
+            raise DelegateError(str(exc)) from exc
     if not resolved:
         raise DelegateError(
             f"확인 커맨드를 돌릴 코드 트리를 해소하지 못했습니다: {cluster} — "
             "`--repo <이름> --slot <N>` 또는 `--task <이름>` 으로 트리를 명시하세요"
         )
     tree = Path(resolved)
+    if not board._git_head_at(str(tree)):
+        raise DelegateError(f"확인 실행 코드 트리의 HEAD를 읽지 못했습니다: {tree}")
     branch = str((board.load_cluster(cluster) or {}).get("branch") or "").strip()
     if branch:
         current = board._cluster_current_branch(str(tree))
@@ -14090,7 +14115,6 @@ def _cmd_rounds(argv: list[str], run_fn: Callable | None = None) -> int:
     identity_module.add_identity_args(resolve)
     args = parser.parse_args(argv)
     if args.rounds_command == "resolve":
-        board._reject_task_slot_identity_mix(args)
         try:
             identity_module.parse_identity(args)
         except ValueError as exc:

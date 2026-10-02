@@ -341,10 +341,29 @@ def _claim_task(board, capsys, tid, *, task, user) -> None:
     `_claim`(slot-mode·`--repo`/`--slot`)의 task 짝 — `--task <이름>` 이 정체성 축이라 claimed_by 의
     slot 토큰 자리에 task 이름이 들어간다(`_actor_session_override` 가 task 를 세션 override 로 반환).
     """
+    import json
+    from _git_fixture import init_git_repo
+
+    # 조회 자료도 실제 claim 선검사를 통과하는 자기 task의 leased work 트리에서 만든다.
+    repo = {"refactor": "alpha", "docs": "beta"}[task]
+    slot = f"work/{repo}_3"
+    tree = init_git_repo(board.REPO / slot, commit=f"task fixture {task}")
+    head = board._git_head_at(str(tree))
+    assert head and board._cluster_current_branch(str(tree)) == "main"
+    leases = (json.loads(board.LEASES_FILE.read_text(encoding="utf-8"))
+              if board.LEASES_FILE.exists() else {"leases": []})
+    leases["leases"].append({
+        "slot": slot, "repo": repo, "session": task, "state": "leased", "role": "work",
+    })
+    board.LEASES_FILE.write_text(json.dumps(leases), encoding="utf-8")
     rc = board.cmd_claim(argparse.Namespace(
         id=tid, repo=None, slot=None, task=task, user=user))
     out = capsys.readouterr().out
     assert rc == 0, f"cmd_claim --task rc={rc}: {out}"
+    status, path = board.find_ticket_exact(tid)
+    fm, _ = board.load_ticket(path)
+    assert status == "claimed"
+    assert (fm["claimed_by"], fm["claimed_rev"]) == (f"{user}/{task}", head)
 
 
 def _seed_task_composite(board, capsys):

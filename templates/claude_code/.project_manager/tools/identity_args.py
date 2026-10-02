@@ -1156,93 +1156,50 @@ def _lease_dict_rows(leases_file: Path) -> list[dict]:
 
 
 def resolve_task_workspace(identity: Identity, leases_file: Path) -> Workspace:
-    """2단 작업공간 해소 — task 가 보유한 슬롯 중 실행 위치를 특정한다.
+    """task 보유 집합과 명시 repo/slot 좌표를 조인한다. readonly 참조는 역할을 보존한다.
 
-    표:
-      - `--repo X --slot N`(kind="slot") → 그 작업공간 — **내 task 보유 아니면 에러**. 단 그 슬롯이
-        role="readonly" 공유 자산이면 소유검사 **비적용**(조회/참조 지칭 허용·무소유가
-        정상).
-      - `--repo X` 만(kind="repo") → 내 task 가 X 에서 보유한 게 유일하면 그것 / 0·≥2 는 **에러**.
-      - 아무것도 없음(kind="none"·task 만) → 내 task 보유가 통틀어 유일하면 그것 / 0·≥2 는 **에러**.
-      - `--slot N` 만 → `parse_identity` 가 이미 `ValueError`(여기 도달 전 — repo 없는 번호는 식별자 아님).
-
-    슬롯↔task 연결 = `lease.session == task 이름`(`worktree_pool.slots_for_task` 정합) — leased
-    (`state` 부재는 leased 로 봄·`worktree_pool.from_dict` default 동형). cwd 는 해소에 **참여하지
-    않는다**. 모호·미보유는 `WorkspaceResolutionError`(fail-loud). `identity.task`
-    가 있어야 한다(1단 귀속·caller 는 task-mode 에서만 호출).
+    실행 소비는 반환값의 readonly를 검사한다. 장부 부재·손상·중복 모순은 경로 추측 없이
+    거부하며, 선택 없는 다중 슬롯은 기존 --repo/--slot 명시를 요구한다.
     """
     task = identity.task
-    rows = _lease_dict_rows(leases_file)
-    # 이 task 가 보유한 leased 슬롯(session==task·state=leased·부재=leased·slots_for_task 정합).
-    held = [r for r in rows
-            if r.get("session") == task and r.get("state", "leased") == "leased"]
-
+    status, rows = _read_lease_rows_status(leases_file)
+    if status != LEDGER_OK:
+        raise WorkspaceResolutionError(f"task {task!r} 작업공간 장부를 읽을 수 없다: {leases_file} ({status})")
+    active = [r for r in rows if r.get("state", "leased") == "leased"]
+    held = [r for r in active if r.get("session") == task]
     if identity.kind == "slot":
-        # 번호→경로는 **장부 행 값**이 권위다 — `work/<repo>_<N>` 재조립은 장부가 그 번호를 다른
-        # 경로로 들고 있는 슬롯(PM 홈 자신을 가리키는 행 `.`·`nested/X_1`)을 영원히 "미보유"로
-        # 오판한다(리뷰 F-001). 부재/손상/행 부재는 종전 canonical 관례로 폴백하되(검증 불가는
-        # 과잉 차단하지 않는다), **모순은 폴백 대상이 아니다** — 실행 위치를 추측하지 않는다.
-        resolution = slot_path_resolution(identity.repo, identity.slot, leases_file)
-        if resolution.status == SLOT_PATH_CONFLICT:
-            raise WorkspaceResolutionError(
-                f"작업공간 해소 불능 — {resolution.detail}. `--slot <N>` 을 정확히 지정하거나 "
-                f"장부를 정리하라(추측하지 않는다)."
-            )
-        target = resolution.path or f"work/{identity.repo}_{identity.slot}"
-        owned = next((r for r in held
-                      if normalize_slot_value(r.get("slot")) == normalize_slot_value(target)),
-                     None)
-        if owned is not None:
-            return Workspace(slot=target, repo=owned.get("repo") or identity.repo,
-                             session=task, test_cmd=owned.get("test_cmd"))
-        # readonly 공유 슬롯 carve-out — role="readonly" 자산은 무소유가 정상이라
-        # 소유검사를 비적용하고 조회/참조 지칭을 허용한다(장부에 그 슬롯이 실재해야). 쓰기 조작
-        # 거부는 readonly 거부 몫 — 여기선 소유검사 예외만 배선한다.
-        ro = next((r for r in rows
-                   if normalize_slot_value(r.get("slot")) == normalize_slot_value(target)
-                   and r.get("role") == _LEASE_ROLE_READONLY), None)
-        if ro is not None:
-            return Workspace(slot=target, repo=ro.get("repo") or identity.repo,
-                             session=ro.get("session") or None,
-                             test_cmd=ro.get("test_cmd"), readonly=True)
+        candidates = [r for r in active if r.get("repo") == identity.repo
+                      and identity.slot in _row_slot_numbers(identity.repo, r.get("slot"), r.get("session"))]
+    elif identity.kind == "repo":
+        candidates = [r for r in held if r.get("repo") == identity.repo]
+    else:
+        candidates = held
+    if not candidates:
         raise WorkspaceResolutionError(
-            f"작업공간 {target} 은 task {task!r} 보유가 아니다 — 소유검사 거부. 내 task 가 "
-            f"보유한 슬롯을 `--repo/--slot` 으로 지칭하거나 `{_runtime_skill_entry('pm-env')} "
-            f"alloc {identity.repo} --task "
-            f"{task}` 로 대여하라 (readonly 공유 슬롯이면 조회 지칭은 허용)."
+            f"선택 작업공간은 task {task!r} 보유가 아니거나 보유 작업공간이 없다. "
+            f"기존 leased 슬롯의 --repo <이름> --slot <N>을 지정하거나 {_runtime_skill_entry('pm-env')} alloc으로 먼저 대여하라."
         )
-
-    if identity.kind == "repo":
-        in_repo = [r for r in held if r.get("repo") == identity.repo]
-        if len(in_repo) == 1:
-            r = in_repo[0]
-            return Workspace(slot=r.get("slot"), repo=identity.repo,
-                             session=task, test_cmd=r.get("test_cmd"))
-        if not in_repo:
-            raise WorkspaceResolutionError(
-                f"task {task!r} 이(가) repo {identity.repo!r} 에서 보유한 작업공간이 없다 — "
-                f"`{_runtime_skill_entry('pm-env')} alloc {identity.repo} --task {task}` 로 먼저 대여하라."
-            )
-        slots = ", ".join(sorted(r.get("slot") or "" for r in in_repo))
+    if len(candidates) != 1:
         raise WorkspaceResolutionError(
-            f"task {task!r} 이(가) repo {identity.repo!r} 에서 {len(in_repo)}개 작업공간({slots})을 "
-            f"보유 — 모호하다(암묵 선택 금지). `--slot <N>` 으로 번호를 명시하라."
+            f"task {task!r} 작업공간 {len(candidates)}개가 해소돼 모호하다. "
+            "암묵 선택 없이 --repo <이름> --slot <N>으로 기존 슬롯을 명시하라."
         )
-
-    # kind == "none" — 위치 인자 없음(task 만). 통틀어 유일해소 / 0·≥2 는 에러.
-    if len(held) == 1:
-        r = held[0]
-        return Workspace(slot=r.get("slot"), repo=r.get("repo"),
-                         session=task, test_cmd=r.get("test_cmd"))
-    if not held:
-        raise WorkspaceResolutionError(
-            f"task {task!r} 이(가) 보유한 작업공간이 없다 — "
-            f"`{_runtime_skill_entry('pm-env')} alloc <repo> --task {task}` "
-            f"로 먼저 대여하라."
-        )
-    slots = ", ".join(sorted(r.get("slot") or "" for r in held))
-    raise WorkspaceResolutionError(
-        f"task {task!r} 이(가) {len(held)}개 작업공간({slots})을 보유 — 통틀어 모호하다. "
-        "암묵 선택하지 않는다. 쓰지 않는 잉여 슬롯을 "
-        f"`pm_config.py release <slot> --task {task}`로 반납한 뒤 다시 실행하라."
-    )
+    row = candidates[0]
+    slot = normalize_slot_value(row.get("slot"))
+    repo = row.get("repo")
+    role = row.get("role", "work")
+    if (not isinstance(row.get("slot"), str) or not slot
+            or not isinstance(repo, str) or not repo
+            or role not in ("work", _LEASE_ROLE_READONLY)):
+        raise WorkspaceResolutionError(f"task {task!r} 작업공간의 경로·repo·role을 해소할 수 없다: {row}")
+    # 같은 경로를 다른 repo/소유/상태로 주장하는 행도 첫 행으로 덮지 않는다.
+    if sum(normalize_slot_value(r.get("slot")) == slot for r in rows) != 1:
+        raise WorkspaceResolutionError(f"작업공간 {slot}의 장부 행이 중복돼 소유·좌표를 확정할 수 없다")
+    numbers = _row_slot_numbers(repo, row.get("slot"), row.get("session"))
+    if identity.kind == "slot" and numbers != {identity.slot}:
+        raise WorkspaceResolutionError(f"작업공간 {slot}의 repo/slot 번호가 서로 일치하지 않는다")
+    readonly = role == _LEASE_ROLE_READONLY
+    if not readonly and row.get("session") != task:
+        raise WorkspaceResolutionError(f"작업공간 {slot}은 task {task!r} 보유가 아니다, 소유검사 거부")
+    return Workspace(slot=slot, repo=repo, session=row.get("session") or None,
+                     test_cmd=row.get("test_cmd"), readonly=readonly)

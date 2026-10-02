@@ -1494,6 +1494,10 @@ def test_resolve_cluster_executes_writes_and_declares_per_ticket(
     """엔진이 확인 커맨드를 실행해 기입하고 그 증거로 처분까지 낸다(티켓마다)."""
     home, tickets = review_env
     board = _fixture_board(pd, home)
+    board.LEASES_FILE = home / ".project_manager/.local/worktree-leases.json"
+    board.LEASES_FILE.write_text(json.dumps({"leases": [{
+        "slot": ".", "repo": "proj", "session": "main", "state": "leased",
+    }]}), encoding="utf-8")
     tree_identities = []
 
     def task_tree(identity=None):
@@ -1528,9 +1532,7 @@ def test_resolve_cluster_executes_writes_and_declares_per_ticket(
     )
 
     assert rc == 0, capsys.readouterr()
-    assert len(tree_identities) == 1
-    assert tree_identities[0].task == "main"
-    assert tree_identities[0].repo is None and tree_identities[0].slot is None
+    assert tree_identities == []  # task 단독은 finish의 묶음 브랜치 탐색을 소비한다.
     out = capsys.readouterr().out
     ledger = json.loads((
         home / ".project_manager" / ".local" / pd.INTERNAL_REVIEW_LEDGER_NAME
@@ -1657,13 +1659,21 @@ def test_resolve_cluster_is_scoped_to_the_machine_evidence_disposition(pd, capsy
     assert "not allowed with argument" in capsys.readouterr().err
 
 
-def test_resolve_identity_rejects_task_and_repo_slot_mix(pd, capsys):
-    with pytest.raises(SystemExit) as exc:
-        pd._cmd_rounds([
-            "resolve", "--cluster", _CLUSTER, "--pm-verified",
-            "--task", "main", "--repo", "project_manager", "--slot", "1",
-        ])
-    assert "--task 는 독립 정체성" in str(exc.value)
+def test_resolve_identity_accepts_task_and_repo_slot_execution(pd, review_env, monkeypatch):
+    home, _ = review_env
+    board = _fixture_board(pd, home)
+    seen = []
+    board._claim_code_tree = lambda identity: seen.append(identity) or str(home)
+    monkeypatch.setattr(pd, "_load_board", lambda: board)
+    monkeypatch.setattr(pd, "_load_board_for_repo", lambda owner: board)
+    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
+    monkeypatch.setattr(pd, "_resolve_ticket_pm_verified", lambda *a, **k: 0)
+    assert pd._cmd_rounds([
+        "resolve", "--cluster", _CLUSTER, "--pm-verified",
+        "--task", "main", "--repo", "proj", "--slot", "5",
+    ]) == 0
+    assert len(seen) == 1
+    assert (seen[0].task, seen[0].repo, seen[0].slot) == ("main", "proj", 5)
 
 
 @requires_git
@@ -1792,3 +1802,79 @@ def test_resolve_cluster_skips_a_member_whose_review_passed_clean(
     assert f"{passed}: 처분할 반려 잔여 없음(must-fix 0건) — 무대상" in out
     assert pd.PM_REVIEW_CONFIRMATION_SECTION not in (
         tickets / f"{passed}-review.md").read_text(encoding="utf-8")
+
+
+@requires_git
+@pytest.mark.parametrize('explicit', [False, True])
+def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, monkeypatch, explicit):
+    import argparse
+    home, tickets = review_env
+    board = _fixture_board(pd, home)
+    board.LEASES_FILE = home / '.project_manager/.local/worktree-leases.json'
+    # 동일 저장소의 두 작업 트리, 묶음 브랜치를 가진 트리는 두 번째 행이다.
+    one, five = home / 'work/proj_1', home / 'work/proj_5'
+    assert _git(home, 'checkout', '-q', _BASE_BRANCH).returncode == 0
+    assert _git(home, 'worktree', 'add', '-q', '-b', 'task/other', str(one)).returncode == 0
+    assert _git(home, 'worktree', 'add', '-q', str(five), _CLUSTER_BRANCH).returncode == 0
+    rows = [{'slot': f'work/proj_{n}', 'repo': 'proj', 'session': 'main', 'state': 'leased', 'role': 'work'} for n in (1, 5)]
+    board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
+    tf = _load_tool('ticket_finish', f'ticket_finish_t0929_{explicit}')
+    monkeypatch.setattr(tf, 'REPO', home)
+    monkeypatch.setattr(tf, 'LEASES_FILE', board.LEASES_FILE)
+    finisher = tf.TicketFinisher(board_py=Path(board.__file__))
+    closer = tf.ClusterCloser(_CLUSTER, finisher=finisher, board_py=Path(board.__file__), task='main', board_identity_args=['--task', 'main'])
+    closer._board = board
+    found, problem = closer._resolve_code_tree()
+    assert problem is None and found == five
+    calls = []
+    closer._run_delegate_fn = lambda argv: (calls.append(argv) or (0, '--cluster'))
+    # finish의 기존 argv 계약은 task 단독이며 슬롯 좌표를 넣지 않는다.
+    forwarded = closer._resolve_argv_sets(_MEMBERS)
+    assert all('--slot' not in argv and '--repo' not in argv for argv in forwarded)
+    identity = argparse.Namespace(task='main', repo='proj' if explicit else None, slot=5 if explicit else None)
+    before = board.LEASES_FILE.read_bytes()
+    assert pd._cluster_confirmation_tree(board, _CLUSTER, identity=identity) == found
+    assert board.LEASES_FILE.read_bytes() == before
+
+    # finish argv에서 실제 내부 확인·기입·처분까지 연결하며 외부 명령만 대역으로 둔다.
+    import contextlib
+    monkeypatch.setattr(pd, '_CONFIG_REPO_OVERRIDE', home)
+    monkeypatch.setattr(pd, '_activate_internal_rounds_cli_owner', lambda: home)
+    monkeypatch.setattr(pd, '_load_board', lambda: board)
+    monkeypatch.setattr(pd, '_load_board_for_repo', lambda owner: board)
+    rounds_module = pd._load_ticket_rounds()
+    for ticket in _MEMBERS:
+        spec, rounds = _accepted_ticket(pd, command='echo hi', expected='hi')
+        path = tickets / f'{ticket}-review.md'
+        path.write_text(path.read_text(encoding='utf-8') + '\n' + spec, encoding='utf-8')
+        for item in rounds:
+            rounds_module.reserve_round(board.tickets_dir(), ticket, item.role,
+                                        content=item.text, lock=contextlib.nullcontext())
+        _record_rejected_round(pd, ticket)
+    command_calls = []
+    runner = _stub_run(0, 'hi\n')
+    def observe(argv, **kwargs):
+        command_calls.append(kwargs)
+        return runner(argv, **kwargs)
+    argv = forwarded[0][1:]
+    if explicit:
+        argv += ['--repo', 'proj', '--slot', '5']
+    assert pd._cmd_rounds(argv, run_fn=observe) == 0
+    assert len(command_calls) == len(_MEMBERS)
+    assert all(Path(call['cwd']) == found for call in command_calls)
+    assert board.LEASES_FILE.read_bytes() == before
+    for ticket in _MEMBERS:
+        assert pd.PM_REVIEW_CONFIRMATION_SECTION in (tickets / f'{ticket}-review.md').read_text(encoding='utf-8')
+
+
+@requires_git
+def test_t0929_finish_confirmation_explicit_wrong_branch_refused(pd, review_env):
+    import argparse
+    home, _ = review_env
+    board = _fixture_board(pd, home)
+    board.LEASES_FILE = home / '.project_manager/.local/worktree-leases.json'
+    slot = home / 'work/proj_1'
+    assert _git(home, 'worktree', 'add', '-q', str(slot), _BASE_BRANCH).returncode == 0
+    board.LEASES_FILE.write_text(json.dumps({'leases': [{'slot': 'work/proj_1', 'repo': 'proj', 'session': 'main'}]}), encoding='utf-8')
+    with pytest.raises(pd.DelegateError, match='브랜치'):
+        pd._cluster_confirmation_tree(board, _CLUSTER, identity=argparse.Namespace(task='main', repo='proj', slot=1))

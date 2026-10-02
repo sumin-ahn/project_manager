@@ -1510,3 +1510,52 @@ def test_reclaim_without_git_pops_a_stale_claimed_rev_from_a_reused_ticket(
 
     fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9017"))
     assert "claimed_rev" not in fm
+
+
+def _t0929_claim_setup(board, root):
+    heads = {n: _init_code_git(root / f'work/proj_{n}', seed_text=f'slot {n}\n') for n in (1, 5)}
+    board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    rows = [{'slot': f'work/proj_{n}', 'repo': 'proj', 'session': 'main',
+             'role': 'work', 'state': 'leased'} for n in (1, 5)]
+    board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
+    return heads, rows
+
+
+@requires_git
+def test_t0929_claim_anchor_selected_head_and_task_actor(board, tmp_path):
+    heads, _ = _t0929_claim_setup(board, tmp_path)
+    _seed_open_ticket(tmp_path, 'T-9029')
+    assert board.cmd_claim(argparse.Namespace(id='T-9029', task='main', repo='proj', slot=5, user='me')) == 0
+    fm, _ = board.load_ticket(_claimed_ticket(tmp_path, 'T-9029'))
+    assert fm['claimed_rev'] == heads[5] != heads[1]
+    assert fm['claimed_by'] == 'me/main'
+
+
+@requires_git
+@pytest.mark.parametrize('failure', ['ambiguous', 'foreign', 'idle', 'readonly', 'missing', 'git', 'head', 'branch'])
+def test_t0929_claim_anchor_failure_before_mutation(board, tmp_path, monkeypatch, failure):
+    _, rows = _t0929_claim_setup(board, tmp_path)
+    args = argparse.Namespace(id='T-9029', task='main', repo='proj', slot=5, user='me')
+    if failure == 'ambiguous':
+        args.repo = args.slot = None
+    elif failure in ('foreign', 'idle', 'readonly'):
+        key, value = {'foreign': ('session', 'other'), 'idle': ('state', 'idle'), 'readonly': ('role', 'readonly')}[failure]
+        rows[-1][key] = value
+        board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
+    elif failure in ('missing', 'git'):
+        import shutil
+        target = tmp_path / 'work/proj_5'
+        shutil.rmtree(target if failure == 'missing' else target / '.git')
+    elif failure == 'head':
+        monkeypatch.setattr(board, '_git_head_at', lambda tree: '')
+    else:
+        monkeypatch.setattr(board, '_cluster_current_branch', lambda tree: None)
+    source = _seed_open_ticket(tmp_path, 'T-9029')
+    before = source.read_bytes()
+    calls = []
+    monkeypatch.setattr(board, '_cmd_claim_locked', lambda *a, **k: calls.append((a, k)))
+    with pytest.raises(SystemExit):
+        board.cmd_claim(args)
+    assert calls == []
+    assert source.read_bytes() == before
+    assert not _claimed_ticket(tmp_path, 'T-9029').exists()

@@ -58,6 +58,7 @@ def board(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "LIVEGATE_FLAG", local / "livegate.json")
     monkeypatch.setattr(mod, "_git_head", lambda: "deadbeefdeadbeef")
     monkeypatch.setattr(mod, "_git_head_at", lambda cwd: "deadbeefdeadbeef")
+    monkeypatch.setattr(mod, "_cluster_current_branch", lambda tree: "task/main")
     mod._proj = proj
     return mod
 
@@ -107,6 +108,8 @@ def test_regression_run_task_threads_absolute_cwd_and_surfaces(board, monkeypatc
         {"slot": "work/A_1", "repo": "A", "session": "job1", "state": "leased",
          "test_cmd": "pytest -q"},
     ])
+    target = board.REPO / "work/A_1"
+    (target / ".git").mkdir(parents=True)
     fake = _FakeRun(0, pytest_summary(10))
     _install_fake(board, monkeypatch, fake)
     rc = board.cmd_regression(_reg_args(task="job1"))
@@ -129,21 +132,17 @@ def test_regression_run_task_ambiguous_holding_fails_loud(board, monkeypatch):
         board.cmd_regression(_reg_args(task="job2"))
 
 
-def test_regression_run_rejects_task_repo_mix_before_subprocess(board, monkeypatch):
-    """regression run은 독립 task 정체성과 repo 실행 위치의 혼합을 fail-loud 거부한다."""
+def test_regression_run_task_repo_selects_unique_owned_workspace(board, monkeypatch):
+    """task가 다른 repo 슬롯을 여럿 보유해도 repo 유일 선택은 허용한다."""
     _write_leases(board.LEASES_FILE, [
-        {"slot": "work/A_1", "repo": "A", "session": "job3", "state": "leased"},
+        {"slot": "work/A_1", "repo": "A", "session": "job3", "state": "leased", "test_cmd": "pytest -q"},
         {"slot": "work/B_1", "repo": "B", "session": "job3", "state": "leased"},
     ])
-    fake = _FakeRun(0, pytest_summary())
-    _install_fake(board, monkeypatch, fake)
-    with pytest.raises(SystemExit) as exc:
-        board.cmd_regression(_reg_args(task="job3", repo="A"))
-    assert (
-        "--repo/--slot 과 함께 쓸 수 없다" in str(exc.value)
-        and "장부에서 자동 해소" in str(exc.value)
-    )
-    assert fake.calls == []
+    (board.REPO / "work/A_1/.git").mkdir(parents=True)
+    (board.REPO / "work/A_1/tests").mkdir()
+    fake = _install_fake(board, monkeypatch, _FakeRun(0, pytest_summary(10)))
+    assert board.cmd_regression(_reg_args(task="job3", repo="A")) == 0
+    assert fake.calls[0]["kwargs"]["cwd"] == str(board.REPO / "work/A_1")
 
 
 def test_regression_run_rejects_task_cwd_before_subprocess(board, monkeypatch, tmp_path):
@@ -180,6 +179,7 @@ def test_livegate_record_task_threads_absolute_cwd(board, monkeypatch, capsys):
     _write_leases(board.LEASES_FILE, [
         {"slot": "work/A_2", "repo": "A", "session": "job4", "state": "leased"},
     ])
+    (board.REPO / "work/A_2/.git").mkdir(parents=True)
     fake = _FakeRun(0, pytest_summary(14, deselected=800))
     _install_fake(board, monkeypatch, fake)
     # engine-root sidecar 해소를 솔로 폴백으로(_resolve_livegate_flag 가 hooksPath 미설정 시 정상).
@@ -192,13 +192,12 @@ def test_livegate_record_task_threads_absolute_cwd(board, monkeypatch, capsys):
 
 
 def test_livegate_record_rejects_task_slot_mix_before_subprocess(board, monkeypatch):
-    """livegate record의 task+slot 혼합은 bare-slot repo 힌트보다 혼합 금지를 먼저 표면화한다."""
+    """task 실행 선택도 bare-slot은 repo 좌표 부재로 거부한다."""
     fake = _FakeRun(0, pytest_summary(14, deselected=800))
     _install_fake(board, monkeypatch, fake)
     with pytest.raises(SystemExit) as exc:
         board.cmd_livegate(_lg_args(task="job4", slot=2))
-    assert "--task 는 독립 정체성" in str(exc.value)
-    assert "--slot 은 --repo 필수" not in str(exc.value)
+    assert "--slot 은 --repo 필수" in str(exc.value)
     assert fake.calls == []
 
 
@@ -247,11 +246,11 @@ def test_actor_session_override_task_mode_returns_task(board):
     assert "--repo/--slot 과 함께 쓸 수 없다" in str(exc.value)
 
 
-@pytest.mark.parametrize("command", ["claim", "new", "init", "migrate-identity", "reid"])
+@pytest.mark.parametrize("command", ["init", "migrate-identity", "reid"])
 def test_board_provenance_commands_reject_task_repo_mix_at_ingress(
     board, monkeypatch, command
 ):
-    """actor provenance 소비 5종이 본체 부작용 전에 동일 혼합 금지 검증을 탄다."""
+    """세션 provenance 소비 3종이 본체 부작용 전에 동일 혼합 금지 검증을 탄다."""
     args = {
         "claim": argparse.Namespace(id="T-0001", repo="A", slot=1, task="job", user=None),
         "new": argparse.Namespace(
@@ -291,6 +290,8 @@ def test_new_task_prefix_and_created_by(board, monkeypatch):
         "leases": [],
         "tasks": [{"name": "job5", "prefix": "PAY"}],
     }), encoding="utf-8")
+    # prefix/귀속만 검증하는 단위 fixture, 실행 트리는 전용 계약 사례에서 검증한다.
+    monkeypatch.setattr(board, "_claim_code_tree", lambda args: str(board.REPO))
     seen = {}
 
     def _fake_id_prefix(override, session=None):
@@ -332,6 +333,8 @@ def _stub_new_env(board, monkeypatch, *, tasks):
     """cmd_new 3단 해소 테스트용 공통 stub — id_prefix override 캡처 + 부작용 격리(F5·T-0357)."""
     board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     board.LEASES_FILE.write_text(json.dumps({"leases": [], "tasks": tasks}), encoding="utf-8")
+    # prefix/귀속만 검증하는 단위 fixture, 실행 트리는 전용 계약 사례에서 검증한다.
+    monkeypatch.setattr(board, "_claim_code_tree", lambda args: str(board.REPO))
     seen = {}
     monkeypatch.setattr(board, "id_prefix",
                         lambda override, session=None: seen.__setitem__("override", override) or override)
@@ -526,3 +529,65 @@ def test_ticket_finish_rejects_unsafe_task(tf, monkeypatch, capsys):
     assert called["finisher"] is False          # finisher 미도달(기록 부작용 0)
     err = capsys.readouterr().err
     assert "부적합 task 명" in err
+
+
+def _t0929_mock_workspaces(board, monkeypatch):
+    rows = []
+    for n in (1, 5):
+        path = board.REPO / f'work/A_{n}'
+        path.mkdir(parents=True, exist_ok=True)
+        (path / '.git').mkdir()
+        (path / 'tests').mkdir()
+        rows.append({'slot': f'work/A_{n}', 'repo': 'A', 'session': 'main',
+                     'role': 'work', 'state': 'leased', 'test_cmd': f'pytest -q -k slot{n}'})
+    _write_leases(board.LEASES_FILE, rows)
+    monkeypatch.setattr(board, '_cluster_current_branch', lambda tree: f'task/slot{Path(tree).name[-1]}')
+    monkeypatch.setattr(board, '_git_head_at', lambda tree: f'head{Path(tree).name[-1]}')
+    return rows
+
+
+@pytest.mark.parametrize('consumer', ['regression', 'livegate'])
+def test_t0929_consumers_selected_workspace(board, monkeypatch, consumer):
+    _t0929_mock_workspaces(board, monkeypatch)
+    fake = _install_fake(board, monkeypatch, _FakeRun(0, pytest_summary(22)))
+    args = (_reg_args(task='main', repo='A', slot=5) if consumer == 'regression'
+            else _lg_args(task='main', repo='A', slot=5))
+    call = board.cmd_regression if consumer == 'regression' else board.cmd_livegate
+    assert call(args) == 0
+    assert next(call for call in fake.calls if call['kwargs'].get('shell'))['kwargs']['cwd'] == str(board.REPO / 'work/A_5')
+    assert board.session_name('main', required=True) == 'main'
+
+
+@pytest.mark.parametrize('consumer', ['regression', 'livegate'])
+def test_t0929_consumers_readonly_write_refused(board, monkeypatch, consumer):
+    rows = _t0929_mock_workspaces(board, monkeypatch)
+    rows[-1]['role'] = 'readonly'
+    _write_leases(board.LEASES_FILE, rows)
+    fake = _install_fake(board, monkeypatch, _FakeRun(0, pytest_summary(22)))
+    args = (_reg_args(task='main', repo='A', slot=5) if consumer == 'regression'
+            else _lg_args(task='main', repo='A', slot=5))
+    with pytest.raises(SystemExit, match='readonly'):
+        (board.cmd_regression if consumer == 'regression' else board.cmd_livegate)(args)
+    assert fake.calls == []
+    assert not board.REGRESSION_FLAG.exists()
+    assert not board.LIVEGATE_FLAG.exists()
+
+
+@pytest.mark.parametrize('command', ['cmd_init', 'cmd_reid', 'cmd_migrate_identity'])
+def test_t0929_consumers_session_commands_keep_mix_refusal(board, monkeypatch, command):
+    _t0929_mock_workspaces(board, monkeypatch)
+    with pytest.raises(SystemExit, match='함께 쓸 수 없다'):
+        getattr(board, command)(argparse.Namespace(task='main', repo='A', slot=5))
+
+
+def test_t0929_consumers_finish_keeps_mix_refusal(tf, monkeypatch):
+    _capture_finish_forward(tf, monkeypatch)
+    with pytest.raises(SystemExit):
+        tf.main(['--cluster', 'C-wave', '--task', 'main', '--repo', 'A', '--slot', '5'])
+
+
+@pytest.mark.parametrize('name', ['pm_bootstrap', 'pm_handoff'])
+def test_t0929_consumers_bootstrap_handoff_keep_mix_refusal(name):
+    module = _load(name)
+    with pytest.raises(SystemExit):
+        module.main(['--task', 'main', '--repo', 'A', '--slot', '5'])
