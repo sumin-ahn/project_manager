@@ -1543,9 +1543,9 @@ def test_t0929_claim_anchor_failure_before_mutation(board, tmp_path, monkeypatch
         rows[-1][key] = value
         board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
     elif failure in ('missing', 'git'):
-        import shutil
+        from _git_fixture import remove_git_tree
         target = tmp_path / 'work/proj_5'
-        shutil.rmtree(target if failure == 'missing' else target / '.git')
+        remove_git_tree(target if failure == 'missing' else target / '.git')
     elif failure == 'head':
         monkeypatch.setattr(board, '_git_head_at', lambda tree: '')
     else:
