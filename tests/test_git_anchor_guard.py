@@ -3500,3 +3500,125 @@ const [home, slot] = process.argv.slice(1);
         result = subprocess.run([node, '-e', script, str(home), str(slot)], cwd=OPEN_CORE.parent, capture_output=True, text=True, encoding='utf-8')
         assert result.returncode == 0, result.stderr
         assert 'T0931_HOOK_OK' in result.stdout
+
+
+@pytest.mark.parametrize('mode', ['own', 'foreign', 'idle', 'readonly', 'no-task'])
+@pytest.mark.parametrize('help_arg', ['-h', '--help'])
+@pytest.mark.parametrize('form', ['direct', 'chdir', 'alias'])
+def test_t0931_foreach_payload_help_ownership(topology, mode, help_arg, form):
+    home, slot = topology
+    _t0931_guard_owner(home, mode)
+    board = _load('t0931_foreach_owner', BOARD_PY)
+    command = ['submodule', '--quiet', 'foreach', '--recursive', 'printf', '%s', help_arg]
+    cwd = slot
+    if form == 'chdir':
+        cwd = home
+        command = ['-C', str(slot), *command]
+    elif form == 'alias':
+        command = ['-c', 'alias.payload=submodule --quiet foreach --recursive printf %s', 'payload', help_arg]
+    result = board.judge_git_anchor(home, 'missing' if mode == 'no-task' else 'S', str(cwd), ['git', *command])
+    assert result['verdict'] == ('ok' if mode == 'own' else 'deny'), result
+
+
+@pytest.mark.parametrize('mode', ['own', 'foreign', 'idle', 'readonly', 'no-task'])
+@pytest.mark.parametrize('help_arg', ['-h', '--help'])
+def test_t0931_foreach_payload_help_populated_nested_root(topology, tmp_path, mode, help_arg):
+    """로컬 populated submodule에서 printf만 실행해 payload 전달과 중첩 소유 판정을 검증한다."""
+    home, slot = topology
+    _t0931_guard_owner(home, mode)
+    module = slot / 'vendor/status'
+    module.mkdir(parents=True)
+    _git(module, 'init', '-q', '--separate-git-dir', str(tmp_path / 'foreach-module-git'), '-b', 'main')
+    _git(module, 'commit', '-qm', 'module seed', '--allow-empty')
+    from _git_fixture import git
+    head = git(module, 'rev-parse', 'HEAD').stdout.strip()
+    (slot / '.gitmodules').write_text('[submodule "vendor/status"]\n\tpath = vendor/status\n\turl = ./local-fixture\n', encoding='utf-8')
+    _git(slot, 'add', '.gitmodules')
+    _git(slot, 'update-index', '--add', '--cacheinfo', f'160000,{head},vendor/status')
+    _git(slot, 'config', 'submodule.vendor/status.url', './local-fixture')
+    actual = git(slot, 'submodule', 'foreach', 'printf', '%s', help_arg)
+    assert actual.returncode == 0 and actual.stdout.endswith(help_arg), actual
+    board = _load('t0931_foreach_nested', BOARD_PY)
+    session = 'missing' if mode == 'no-task' else 'S'
+    for cwd, prefix in [(slot, []), (slot, ['-C', 'vendor/status']), (module, [])]:
+        result = board.judge_git_anchor(home, session, str(cwd), ['git', *prefix, 'submodule', 'foreach', 'printf', '%s', help_arg])
+        assert result['verdict'] == ('ok' if mode == 'own' else 'deny'), result
+
+
+@pytest.mark.parametrize('command', [
+    ['submodule', '-h'], ['submodule', '--help'],
+    ['submodule', '--quiet', 'foreach', '-h'],
+    ['submodule', 'foreach', '--recursive', '--help'],
+    ['submodule', '--help', 'foreach', 'printf', '%s', '--help'],
+    ['submodule', 'status'], ['submodule', 'summary'],
+    ['sparse-checkout', '--help'], ['sparse-checkout', 'list'],
+])
+def test_t0931_foreach_payload_help_git_query(topology, command):
+    home, slot = topology
+    _t0931_guard_owner(home, 'foreign')
+    board = _load('t0931_foreach_query', BOARD_PY)
+    result = board.judge_git_anchor(home, 'S', str(slot), ['git', *command])
+    assert result['verdict'] == 'ok', result
+
+
+@pytest.mark.parametrize('harness', ['claude', 'codex', 'opencode'])
+@pytest.mark.parametrize('help_arg', ['-h', '--help'])
+def test_t0931_foreach_payload_help_harness_hooks(topology, monkeypatch, capsys, harness, help_arg):
+    """각 실제 hook에 소유 행렬과 Git 자체 help를 전달한다. payload는 실행하지 않는다."""
+    home, slot = topology
+    ledger = home / '.project_manager/.local/worktree-leases.json'
+    original = ledger.read_text(encoding='utf-8')
+    command = f'git submodule foreach printf %s {help_arg}'
+    if harness == 'claude':
+        driver = _load('t0931_foreach_claude', CLAUDE_DRIVER)
+        monkeypatch.setattr(driver, '_load_board', lambda root: _load('t0931_foreach_claude_board', BOARD_PY))
+    elif harness == 'codex':
+        driver = _load('t0931_foreach_codex', CODEX_DISPATCHER)
+        monkeypatch.setattr(driver, '_load_board', lambda root: _load('t0931_foreach_codex_board', BOARD_PY))
+    else:
+        node = shutil.which('node')
+        assert node is not None, '실제 OpenCode hook 검증에 node가 필요하다'
+        shutil.copytree(BOARD_PY.parent, home / '.project_manager/tools')
+    for mode in ['own', 'foreign', 'idle', 'readonly', 'no-task']:
+        ledger.write_text(original, encoding='utf-8')
+        _t0931_guard_owner(home, mode)
+        session = 'missing' if mode == 'no-task' else 'S'
+        for text, denied in [(command, mode != 'own'), ('git submodule foreach --help', False)]:
+            if harness == 'claude':
+                payload = {'session_id': session, 'hook_event_name': 'PreToolUse', 'tool_name': 'Bash', 'cwd': str(slot), 'tool_input': {'command': text}}
+                monkeypatch.setattr(driver.sys, 'stdin', io.StringIO(json.dumps(payload)))
+                assert driver.run_git_anchor_hook(home) == 0
+                raw = capsys.readouterr().out
+                result = json.loads(raw) if raw else {}
+                assert (result.get('hookSpecificOutput', {}).get('permissionDecision') == 'deny') is denied, (mode, result)
+            elif harness == 'codex':
+                payload = _codex_live_bash_event()
+                payload.update(session_id=session, cwd=str(slot), tool_input={'command': text})
+                out = io.StringIO()
+                assert driver.run_git_anchor_hook(home, stdin=io.StringIO(json.dumps(payload)), stdout=out) == 0
+                assert (json.loads(out.getvalue()).get('decision') == 'block') is denied, (mode, out.getvalue())
+            else:
+                script = r"""
+const assert = require('node:assert');
+const core = require('./git-anchor-core.cjs');
+const [home, slot, session, command, denied] = process.argv.slice(1);
+(async () => {
+ const judge = (_root, cwd, command, options) => core.judgeCommand(home, cwd, command, options);
+ const hooks = await core.makeGitAnchorPlugin(judge)({directory:slot, worktree:slot, client:{
+  tui:{showToast:async () => {}}, session:{get:async ({path}) => ({data:{id:path.id}})}
+ }});
+ const run = () => hooks['tool.execute.before']({tool:'bash',sessionID:session},{args:{command,cwd:slot}});
+ if (denied === 'true') await assert.rejects(run(), /git-anchor\/deny/);
+ else await run();
+ console.log('T0931_FOREACH_HOOK_OK');
+})().catch(error => { console.error(error); process.exitCode=1; });
+"""
+                result = subprocess.run([node, '-e', script, str(home), str(slot), session, text, str(denied).lower()], cwd=OPEN_CORE.parent, capture_output=True, text=True, encoding='utf-8')
+                assert result.returncode == 0, (mode, result.stderr)
+                assert 'T0931_FOREACH_HOOK_OK' in result.stdout
+
+
+def test_t0931_foreach_payload_help_option_value():
+    """공유 분류기의 옵션 값 소비 계약이다. 이 argv의 실제 Git 유효성을 주장하거나 실행하지 않는다."""
+    board = _load('t0931_foreach_option_value', BOARD_PY)
+    assert board._git_writes_slot('submodule', ['--path', 'vendor/status', 'foreach', 'printf', '%s', '--help'])

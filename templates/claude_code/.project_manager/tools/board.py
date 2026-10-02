@@ -774,6 +774,7 @@ class _GitArguments(NamedTuple):
 def _git_arguments(
     args: Sequence[str], *, short_values: str = "",
     long_values: frozenset[str] = frozenset(),
+    stop_after_operands: int | None = None,
 ) -> _GitArguments:
     options: list[tuple[str, str | None]] = []
     operands: list[str] = []
@@ -807,6 +808,10 @@ def _git_arguments(
                 break
         else:
             operands.append(token)
+            if stop_after_operands is not None and len(operands) == stop_after_operands:
+                # 실행 명령 시작 뒤 인자는 Git 옵션이 아니라 payload다.
+                operands.extend(values[i + 1:])
+                break
         i += 1
     return _GitArguments(tuple(options), tuple(operands), paths)
 
@@ -1999,7 +2004,12 @@ def _git_writes_slot(subcommand: str, args: Sequence[str]) -> bool:
     if subcommand not in _GIT_SLOT_WRITE_SUBCOMMANDS:
         return False
     if subcommand in {"sparse-checkout", "submodule"}:
-        arguments = _git_arguments(args, long_values=frozenset({"--path"}))
+        leading = _git_arguments(args, long_values=frozenset({"--path"}), stop_after_operands=1)
+        foreach = subcommand == "submodule" and leading.operands[:1] == ("foreach",)
+        arguments = _git_arguments(
+            args, long_values=frozenset({"--path"}),
+            stop_after_operands=2 if foreach else None,
+        )
         if _git_option_given(arguments, "-h", "--help"):
             return False
         operation = arguments.operands[0] if arguments.operands else None
