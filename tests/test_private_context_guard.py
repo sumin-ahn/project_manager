@@ -2195,7 +2195,7 @@ def _pref_write_ticket(
     # 엔진이 멈춘다(다른 기준으로 접지 않는다).
     write_cluster_ledger(
         root / ".project_manager" / "board", ticket_id,
-        base_branch=current_branch(root))
+        base_branch=current_branch(root), branch=current_branch(root))
 
 
 def _pref_finisher(tf_module, root: Path):

@@ -37,6 +37,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import bind_product_cluster
+
 from conftest import write_cluster_ledger
 
 REPO = Path(__file__).resolve().parents[1]
@@ -335,6 +337,7 @@ def test_t0928_recorded_seed_draft_harvest_waits_for_promote(pd, env, monkeypatc
         published.append(tuple(paths))
         return True
 
+    bind_product_cluster(board, "T-9202")
     monkeypatch.setattr(board, "_board_git_enabled", lambda: True)
     monkeypatch.setattr(board, "_body_lint_issues", lambda *a, **k: [])
     monkeypatch.setattr(board, "_board_git_sync_best_effort", publish)

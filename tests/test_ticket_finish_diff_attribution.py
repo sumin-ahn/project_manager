@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from _slot_seed import seed_slot
-from conftest import current_branch, write_cluster_ledger
+from conftest import bind_product_cluster, current_branch, write_cluster_ledger
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -70,7 +70,7 @@ def _shape(
     for ticket_id in tickets:
         write_cluster_ledger(
             root / ".project_manager" / "wiki", ticket_id,
-            base_branch=current_branch(root))
+            base_branch=current_branch(root), branch=current_branch(root))
     (root / "seed.txt").write_text("seed\n", encoding="utf-8")
     for relative in files:
         target = root / relative
@@ -410,7 +410,7 @@ def _seed_git_tree(root: Path, files: dict[str, int], *,
     if ledger_ticket is not None:
         write_cluster_ledger(
             root / ".project_manager" / "wiki", ledger_ticket,
-            base_branch=current_branch(root))
+            base_branch=current_branch(root), branch=current_branch(root))
     (root / "seed.txt").write_text("seed\n", encoding="utf-8")
     for relative in files:
         target = root / relative
@@ -477,6 +477,17 @@ def _split_home_shape(
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # 완료 파이프라인은 명시 제품 branch를 요구한다. 기존 명령으로 실제 결속하고,
+    # 제품 통합 브랜치를 가진 별도 worktree를 준비한다 (측정·stage oracle은 그대로).
+    board = module._board_module_at(tools / "board.py")
+    base = current_branch(worktree)
+    cluster = bind_product_cluster(board, ticket_id, repo="myrepo", number=1)
+    branch = board.load_cluster(cluster)["branch"]
+    _git(worktree, "checkout", "-q", branch)
+    _git(worktree, "worktree", "add", "-q", str(tmp_path / "product-integration"), base)
+    # 결속 준비의 명세·장부만 baseline에 넣는다. 홈 코드 사본과 산출물의 dirty는 보존한다.
+    _git(home, "add", "--", ".project_manager/wiki/tickets")
+    _git(home, "commit", "-qm", "product binding fixture", "--", ".project_manager/wiki/tickets")
     return home, worktree, module
 
 

@@ -11,6 +11,10 @@
 
 - 작업 슬롯 생성·대여의 --folders로 필요한 폴더만 꺼내 사용할 수 있다. 작업 중 확장은 본인 슬롯의 sparse-checkout add와 기존 sync로 진행하고, status에 폴더 목록을 표시한다.
 
+### Changed
+
+- 티켓의 공유 승격·실행·종결 전에 실제 제품 branch/base_branch 및 멤버 결속을 확인한다. 코드 트리 없는 draft 작성은 유지하며 승격 전에 기존 cluster new로 결속한다. 옛 branch 없는 크기 1 장부는 명시 재결속이 필요하고 PM 홈과 제품의 동명 main으로 기준을 추측하지 않는다. 최종 제품 기준 판정과 장부 기록은 같은 조회 결과를 사용하며 재읽기 실패는 기록 전에 거부한다.
+
 ### Fixed
 
 - sparse-checkout과 submodule의 변경 명령에 슬롯 소유 검사를 적용한다. 조회와 본인 슬롯 변경은 허용하고 타 task·idle·readonly·세션 부재의 변경은 차단한다. 초기화된 중첩 submodule도 소유 슬롯에 연결하며 세 하네스가 같은 판정을 사용한다. foreach 실행 명령의 -h/--help 인자는 Git 자체 도움말로 오인하지 않으며 쓰기 소유 검사를 유지한다.

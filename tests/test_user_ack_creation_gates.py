@@ -16,6 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from conftest import ensure_product_slot
+
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -323,6 +325,7 @@ def test_cmd_new_derived_prefixes_share_canonical_gate(
         board.areas_append("OTHER", "other", "owner", repo="other")
         repo = "svc"
         slot = 1
+        ensure_product_slot(board, repo=repo, number=slot)
     else:
         assert derived == "single-area"
         board.areas_append("AAA", "area", "owner", repo="svc")

@@ -13915,6 +13915,9 @@ def _cluster_confirmation_tree(
             "`--repo <이름> --slot <N>` 또는 `--task <이름>` 으로 트리를 명시하세요"
         )
     tree = Path(resolved)
+    problem = board.cluster_binding_problem(cluster, tree=str(tree))
+    if problem:
+        raise DelegateError(problem)
     if not board._git_head_at(str(tree)):
         raise DelegateError(f"확인 실행 코드 트리의 HEAD를 읽지 못했습니다: {tree}")
     branch = str((board.load_cluster(cluster) or {}).get("branch") or "").strip()

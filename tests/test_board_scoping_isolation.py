@@ -37,6 +37,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import ensure_product_slot
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 REAL_AREAS = REPO / ".project_manager" / "areas.md"
@@ -148,6 +150,7 @@ def _new(board, capsys, *, prefix, session, user, title) -> str:
     ADR-0067: `cmd_new` 의 `--repo`/`--slot`(decomposed 세션 기록)으로 created_by 에 생성-세션을
     박아야 세션 기본 뷰 스트림 판정(`_created_by_session`)이 그 세션 open 을 잡는다."""
     repo, slot = _split_session(session)
+    ensure_product_slot(board, repo=repo, number=slot)
     rc = board.cmd_new(argparse.Namespace(
         prefix=prefix, repo=repo, slot=slot, task=None, user=user, title=title,
         touches=None, depends=None, tag=None, estimate="small"))
@@ -642,6 +645,7 @@ def test_new_repo_slot_derives_prefix_multi_repo(board, capsys):
     `id_prefix(override, session=task_session)` 로 세션을 안 넘기면 전역 재해소(모호 None)로 유도 실패 →
     "prefix 필요"(등록 repo ≥2 가드)로 거부되던 회귀."""
     board.AREAS_FILE.write_text(_COMPOSITE_AREAS, encoding="utf-8")   # alpha=al · beta=be (2 등록)
+    ensure_product_slot(board, repo="alpha", number=1)
     rc = board.cmd_new(argparse.Namespace(
         prefix=None, repo="alpha", slot=1, task=None, user="alice",
         title="multi repo derive", touches=None, depends=None, tag=None, estimate="small"))

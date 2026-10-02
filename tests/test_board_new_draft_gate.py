@@ -265,7 +265,7 @@ def test_promote_rejects_still_placeholder(board, tmp_path):
 
 
 @requires_git
-def test_promote_commits_when_body_filled(board, tmp_path):
+def test_promote_commits_when_body_filled(board, tmp_path, monkeypatch):
     """본문을 채운 뒤 `promote` 하면 drafts_dir() → open/ 로 이동 + board-git 에 커밋(승격 성공)."""
     bare = tmp_path / "bare3"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
@@ -288,6 +288,7 @@ def test_promote_commits_when_body_filled(board, tmp_path):
     )
     board.dump_ticket(path, fm, filled_body)
 
+    _t0930_bind(board, tmp_path, ticket_id, monkeypatch)
     rc = board.cmd_promote(argparse.Namespace(id=ticket_id))
     assert rc == 0
     assert not list((board_dir / "tickets" / ".drafts").glob("T-*-*.md")), \
@@ -296,8 +297,8 @@ def test_promote_commits_when_body_filled(board, tmp_path):
         "승격된 티켓이 open/ 으로 이동 안 됨."
     log = _git(["log", "--oneline"], board_dir).stdout
     lines = log.strip().splitlines()
-    assert len(lines) == 3, \
-        "board init + 첫 draft 격리 backfill + promote 커밋이 각각 하나여야 한다."
+    assert len(lines) == 4, \
+        "board init + 첫 draft 격리 backfill + cluster new + promote 커밋이 각각 하나여야 한다."
     assert any("promote" in ln for ln in lines)
     # `-z` 로 NUL 구분 raw 경로를 받는다 — 기본 `ls-tree` 는 non-ASCII(한글) 파일명을
     # core.quotepath 8진 이스케이프로 quote 해 문자열 포함 비교가 깨진다.
@@ -323,7 +324,7 @@ def test_promote_nonexistent_ticket_errors(board, tmp_path):
 # ════════════════════════════════════════════════════════════════════════
 
 @requires_git
-def test_draft_not_leaked_by_unrelated_promote(board, tmp_path):
+def test_draft_not_leaked_by_unrelated_promote(board, tmp_path, monkeypatch):
     """draft(T-0001) 생성 후 무관 티켓(T-0002) 을 promote 해도 T-0001 draft 는 board-git 미커밋.
 
     fix 전: draft 가 `tickets/open/T-0001-*.md` 에 있어 T-0002 의 promote 가 부르는
@@ -357,6 +358,7 @@ def test_draft_not_leaked_by_unrelated_promote(board, tmp_path):
             board.dump_ticket(p, fm, filled_body)
     assert filled_id, "두 번째 draft 파일을 못 찾음(테스트 셋업 오류)."
 
+    _t0930_bind(board, tmp_path, filled_id, monkeypatch)
     rc = board.cmd_promote(argparse.Namespace(id=filled_id))
     assert rc == 0, "무관 티켓의 promote 자체가 실패함(테스트 전제 붕괴)."
 
@@ -374,7 +376,7 @@ def test_draft_not_leaked_by_unrelated_promote(board, tmp_path):
 
 
 @requires_git
-def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path):
+def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path, monkeypatch):
     """draft 생성 후 무관 티켓(T-0001, 기존 seed)을 claim+complete 해도 draft 는 board-git 미커밋.
 
     claim(strict)·complete(best-effort) 모두 `_board_git_stage_and_commit` 을 거친다 — 둘 다
@@ -409,6 +411,7 @@ def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path):
                     "## 참고\n- 참고\n\n## 메모\n"
                 )
                 board.dump_ticket(p, fm, filled_body)
+                _t0930_bind(board, tmp_path, seed_id, monkeypatch)
                 assert board.cmd_promote(argparse.Namespace(id=seed_id)) == 0
     else:
         seed_id = "-".join(seed_path[0].stem.split("-")[:2])
@@ -419,7 +422,7 @@ def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path):
     # complete 는 claim 과 같은 정체성으로 부른다 — 소유 대조(T-0781).
     rc = board.cmd_complete(argparse.Namespace(
         id=seed_id, tests_pass=True, allow_missing_log=True, allow_untested=False,
-        repo="me", slot=1, user="me", cluster_close=f"C-{seed_id}"))
+        repo="me", slot=1, user="me", cluster_close="C-declared"))
     assert rc == 0, "seed 티켓 complete 실패(테스트 전제 붕괴)."
 
     # draft 는 여전히 drafts_dir() 에 있고 board-git 에 커밋/push 되지 않아야 한다.
@@ -453,7 +456,8 @@ def test_new_legacy_no_git_gate_no_op(board, tmp_path, monkeypatch):
     assert rc == 0
     assert called["n"] == 0
     assert list((wiki / "tickets" / "open").glob("T-*-*.md")), \
-        "legacy 에서도 파일은 정상 생성돼야 한다."
+        "비공유 legacy 발행의 로컬 open 작성은 유지한다."
+    assert board.all_clusters()[0]["base_branch"] is None
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -631,3 +635,120 @@ def test_reopen_of_a_draft_discard_returns_to_drafts(board, tmp_path):
     assert _commit_file_status(board_dir) == [f"D\ttickets/discarded/{discarded_name}"], \
         "reopen 커밋은 discarded/ 삭제만 담아야 한다(복귀 경로는 ignore 대상)."
     assert _git(["status", "--porcelain"], board_dir).stdout.strip() == ""
+
+
+def _t0930_bind(board, tmp_path, ticket_id, monkeypatch):
+    from _slot_seed import seed_slot, SLOT, SLOT_REPO
+    slot = tmp_path / SLOT
+    slot.mkdir(parents=True, exist_ok=True)
+    _git(["init", "-q", "-b", "main"], slot)
+    _git(["commit", "--allow-empty", "-qm", "product seed"], slot)
+    seed_slot(tmp_path)
+    monkeypatch.setattr(board, "LEASES_FILE", tmp_path / ".project_manager/.local/worktree-leases.json")
+    assert board.cmd_cluster(argparse.Namespace(cluster_cmd="new", name="declared",
+        tickets=ticket_id, spike=None, repo=SLOT_REPO, slot=1, task=None)) == 0
+    return slot
+
+
+@requires_git
+def test_t0930_promote_binding(board, tmp_path, monkeypatch, capsys):
+    bare = tmp_path / "bare-binding"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    _git(["init", "-q", "-b", "main"], tmp_path)
+    _git(["commit", "--allow-empty", "-qm", "home seed"], tmp_path)
+    assert board.cmd_new(_new_args("초안")) == 0
+    path = next(board.drafts_dir().glob("T-*.md"))
+    fm, _ = board.load_ticket(path)
+    tid = fm["id"]
+    from test_board_cluster import _TEMPLATE_TEXT as filled
+    body = filled.split("---", 2)[2].replace("T-NNNN", tid).replace("<제목>", "초안")
+    board.dump_ticket(path, fm, body)
+    original = path.read_bytes()
+    head = _git(["rev-parse", "HEAD"], board_dir).stdout
+    assert board.cmd_promote(argparse.Namespace(id=tid)) == 1
+    assert path.read_bytes() == original
+    assert board.all_clusters() == []
+    assert _git(["rev-parse", "HEAD"], board_dir).stdout == head
+    assert "cluster new" in capsys.readouterr().err
+    slot = _t0930_bind(board, tmp_path, tid, monkeypatch)
+    ledger = board.cluster_ledger_path("declared")
+    recorded = ledger.read_bytes()
+    assert board.cmd_promote(argparse.Namespace(id=tid)) == 0
+    assert ledger.read_bytes() == recorded
+    assert board.find_ticket_exact(tid)[0] == "open"
+    assert _git(["symbolic-ref", "--short", "HEAD"], slot).stdout.strip() == "main"
+
+
+@requires_git
+@pytest.mark.parametrize("damage", ["branch", "base", "missing", "reverse", "duplicate", "absent-base"])
+def test_t0930_promote_binding_corruption(board, tmp_path, monkeypatch, damage):
+    bare = tmp_path / "corrupt-remote"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    assert board.cmd_new(_new_args("검증 초안")) == 0
+    path = next(board.drafts_dir().glob("T-*.md"))
+    fm, _ = board.load_ticket(path)
+    tid = fm["id"]
+    from test_board_cluster import _TEMPLATE_TEXT as filled
+    board.dump_ticket(path, fm, filled.split("---", 2)[2].replace("T-NNNN", tid).replace("<제목>", "검증"))
+    _t0930_bind(board, tmp_path, tid, monkeypatch)
+    ledger = board.load_cluster("declared")
+    if damage in ("branch", "base"):
+        ledger["branch" if damage == "branch" else "base_branch"] = None
+    elif damage == "absent-base":
+        ledger["base_branch"] = "task/absent"
+    elif damage == "missing":
+        ledger["tickets"] = []
+    elif damage == "reverse":
+        fm, body = board.load_ticket(path)
+        fm["cluster"] = "C-other"
+        board.dump_ticket(path, fm, body)
+    else:
+        duplicate = dict(ledger, id="C-duplicate")
+        board.dump_cluster(duplicate)
+    board.dump_cluster(ledger)
+    before = (path.read_bytes(), tuple(p.read_bytes() for p in sorted(board.clusters_dir().glob("C-*.md"))), _git(["rev-parse", "HEAD"], board_dir).stdout)
+    assert board.cmd_promote(argparse.Namespace(id=tid)) == 1
+    assert (path.read_bytes(), tuple(p.read_bytes() for p in sorted(board.clusters_dir().glob("C-*.md"))), _git(["rev-parse", "HEAD"], board_dir).stdout) == before
+
+
+@requires_git
+def test_t0930_promote_binding_task_draft_without_workspace(board, tmp_path, monkeypatch):
+    bare = tmp_path / "task-remote"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    _make_board_git(tmp_path, remote=bare)
+    monkeypatch.setattr(board, "LEASES_FILE", tmp_path / ".project_manager/.local/worktree-leases.json")
+    args = _new_args("코드 없는 task 초안")
+    args.task = "main"
+    assert board.cmd_new(args) == 0
+    path = next(board.drafts_dir().glob("T-*.md"))
+    assert board.load_ticket(path)[0]["created_by"].endswith("/main")
+    before = path.read_bytes()
+    args.repo, args.slot = "missing", 1
+    with pytest.raises(SystemExit):
+        board.cmd_new(args)
+    assert path.read_bytes() == before
+    assert len(list(board.drafts_dir().glob("T-*.md"))) == 1
+
+
+@requires_git
+def test_t0930_promote_binding_legacy_local_operations(board, tmp_path, monkeypatch):
+    wiki = tmp_path / ".project_manager/wiki"
+    for status in ("open", "claimed", "blocked", "done"):
+        (wiki / "tickets" / status).mkdir(parents=True, exist_ok=True)
+    (wiki / "tickets/_template.md").write_text(_TEMPLATE_TEXT, encoding="utf-8")
+    monkeypatch.setattr(board, "LEASES_FILE", tmp_path / ".project_manager/.local/worktree-leases.json")
+    assert board.cmd_new(_new_args("로컬 발행")) == 0
+    path = next((wiki / "tickets/open").glob("T-*.md"))
+    fm, _ = board.load_ticket(path)
+    tid = fm["id"]
+    before = (path.read_bytes(), board.cluster_ledger_path(fm["cluster"]).read_bytes())
+    assert board.cmd_promote(argparse.Namespace(id=tid)) == 0
+    assert (path.read_bytes(), board.cluster_ledger_path(fm["cluster"]).read_bytes()) == before
+    assert board.load_cluster(fm["cluster"])["base_branch"] is None
+    assert "cluster new" in board.cluster_binding_problem(fm["cluster"])
+    args = _new_args("잘못된 선택")
+    args.repo, args.slot = "missing", 1
+    assert board.cmd_new(args) == 1
+    assert len(list((wiki / "tickets/open").glob("T-*.md"))) == 1

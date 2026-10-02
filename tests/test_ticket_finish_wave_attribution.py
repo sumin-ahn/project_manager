@@ -97,7 +97,7 @@ def _wave_shape(tmp_path: Path, tickets: dict[str, dict], files: dict[str, int],
     for ticket_id in tickets:
         write_cluster_ledger(
             root / ".project_manager" / "wiki", ticket_id,
-            base_branch=current_branch(root))
+            base_branch=current_branch(root), branch=current_branch(root))
     (root / "seed.txt").write_text("seed\n", encoding="utf-8")
     for relative in files:
         target = root / relative

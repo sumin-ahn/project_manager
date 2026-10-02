@@ -33,7 +33,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import anchor_board_module
+from conftest import anchor_board_module, bind_product_cluster, ensure_product_slot
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1108,7 +1108,10 @@ def test_new_commits_only_the_created_ticket(board, tmp_path):
     board_dir = _make_board_git(tmp_path, remote=bare)
     dirty = _seed_dirty_three(board_dir)
 
-    assert board.cmd_new(_new_args("새 티켓")) == 0
+    ensure_product_slot(board)
+    args = _new_args("새 티켓")
+    args.repo, args.slot = "binding", 1
+    assert board.cmd_new(args) == 0
 
     created = _head_files(board_dir)
     assert len(created) == 2, f"new 커밋 스코프가 발행 산출을 넘음: {created}"
@@ -1129,13 +1132,16 @@ def test_promote_commits_only_the_promoted_ticket(board, tmp_path):
     draft = drafts / "T-0009-draft.md"
     draft.write_text(_TEMPLATE_TEXT.replace("T-NNNN", "T-0009").replace(
         "status: open", "status: draft"), encoding="utf-8")
+    bind_product_cluster(board, "T-0009")
+    ledger_before = board.cluster_ledger_path("bound-t-0009").read_bytes()
     dirty = _seed_dirty_three(board_dir)
 
     assert board.cmd_promote(argparse.Namespace(id="T-0009")) == 0
 
     assert _head_files(board_dir) == {
-        "tickets/open/T-0009-draft.md", "tickets/clusters/C-T-0009.md",
+        "tickets/open/T-0009-draft.md",
     }, f"promote 커밋 스코프가 승격 산출을 넘음: {_head_files(board_dir)}"
+    assert board.cluster_ledger_path("bound-t-0009").read_bytes() == ledger_before
     after = _porcelain(board_dir)
     for path, code in dirty.items():
         assert after.get(path) == code, f"promote 가 무관 dirty 를 건드림: {path}"

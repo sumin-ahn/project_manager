@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import anchor_board_module
+from conftest import anchor_board_module, bind_product_cluster
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -245,6 +245,7 @@ def test_promote_accepts_self_contained_draft(board_git):
     fm, _ = board_git.load_ticket(draft_path)
     board_git.dump_ticket(draft_path, fm, _FILLED_BODY)
 
+    bind_product_cluster(board_git, tid)
     rc = board_git.cmd_promote(argparse.Namespace(id=tid))
     assert rc == 0, "자족 본문의 draft promote 가 거부됨(오탐)."
     assert not list((board_dir / "tickets" / ".drafts").glob("T-*-*.md")), \
@@ -336,6 +337,7 @@ def test_promote_commits_the_draft_rounds_with_the_spec(board_git):
     tracked_before = _git(["ls-tree", "-r", "--name-only", "HEAD"], board_dir).stdout
     assert round_rel not in tracked_before, "draft 구간에서 이미 커밋됨(promote 소유 위반)"
 
+    bind_product_cluster(board_git, tid)
     assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0
 
     tracked = _git(["ls-tree", "-r", "--name-only", "HEAD"], board_dir).stdout

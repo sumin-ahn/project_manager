@@ -42,11 +42,7 @@ python3 .project_manager/tools/ticket_finish.py --cluster <C-이름>
   §"티켓과 위임"만 소유한다. 이 카드는 위 표의 prepare/harvest 호출 절차만 제공한다.
 - 현재 장부 단계는 `python3 .project_manager/tools/pm_delegate.py cluster show --cluster <C-이름>`으로 확인한다.
 - **게이트 처분은 종결이 실행한다** — 종결 2단계가 `pm_delegate.py rounds resolve --cluster <C-이름> --pm-verified` 를 부르고 확인 커맨드도 엔진이 돌린다. PM 이 따로 부를 일은 처분만 먼저 확인할 때뿐이다.
-- 묶음을 선언하지 않은 티켓은 발행이 만든 크기 1 장부에 귀속된다(stderr 1줄). 그 장부는 발행
-  시점 코드 트리의 브랜치를 `base_branch` 로 싣고 묶음 브랜치(`branch`)만 비우므로, 종결의 머지
-  단계가 `묶음 브랜치 미선언 — 무대상`으로 건너뛴다. `base_branch` 가 비면 재배치·머지는 무대상이
-  아니라 정지다 — 판정 기준이 없기 때문이다. 묶음 브랜치까지 쓰려면 `board.py cluster new` 로
-  선언한다 — 그 장부는 흡수된다.
+- 자동 크기 1 장부를 실행 묶음으로 사용하기 전에 기존 `board.py cluster new`로 실제 제품 트리의 branch/base_branch와 멤버를 명시 결속한다. 미결속인 branch 없는 옛 장부는 기준 브랜치 이름만으로 제품 출처를 입증할 수 없어 실행·종결 전에 거부한다. 동명 main·PM 홈·created_by·현재 cwd·단일 슬롯을 결속 근거로 사용하지 않으며 장부를 자동 덮어쓰지 않는다. 코드 트리 없는 draft 작성은 유지하고 공유 승격 전에 같은 명령으로 결속한다.
 
 ## 사전 조건
 

@@ -115,7 +115,7 @@ def _pm_home(tmp_path: Path, ticket_id: str, frontmatter: str, *,
     if base_branch is not None:
         write_cluster_ledger(
             home / ".project_manager" / "board", ticket_id,
-            base_branch=base_branch)
+            base_branch=base_branch, branch=_DEV_BRANCH)
     (tickets / f"{ticket_id}-wave.md").write_text(
         f"---\nid: {ticket_id}\n{frontmatter}touches:\n- src/\n---\n\n# 본문\n",
         encoding="utf-8")

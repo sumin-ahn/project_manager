@@ -1285,12 +1285,8 @@ def test_close_stops_when_two_trees_hold_the_ledger_branch(close_env, capsys):
 
 
 @requires_git
-def test_size_one_close_runs_in_the_tree_holding_the_base_branch(close_env, capsys):
-    """AT-004: `branch` 가 없는 묶음은 `base_branch` 를 쥔 작업 트리에서 돈다.
-
-    발행이 만드는 크기 1 장부 형상(묶음 브랜치 미선언)이다. 작업은 합칠 곳 브랜치를 쥔 원 트리에
-    있고, 종결은 그 트리에서 커밋한다 — 머지는 무대상이다.
-    """
+def test_size_one_close_requires_explicit_cluster_binding(close_env, capsys):
+    """branch 없는 크기 1 장부는 base 보유 트리가 있어도 첫 부작용 전에 거부한다."""
     env = close_env
     _write_cluster_ledger(env.board_dir, tickets=(env.ticket,), branch=None)
     _git(env.slot, "checkout", "--", "src/app.py")
@@ -1301,10 +1297,9 @@ def test_size_one_close_runs_in_the_tree_holding_the_base_branch(close_env, caps
     rc = env.closer().run()
 
     out = capsys.readouterr().out
-    assert rc == 0, out
-    assert f"작업 트리 → {env.code} (묶음 기록 base_branch {_INTEGRATION_BRANCH})" in out
-    assert "묶음 브랜치 미선언 — 무대상" in out
-    assert env.integration_log()[0] == "종결 픽스처"
+    assert rc == 1, out
+    assert env.board_calls == [] and env.delegate_calls == []
+    assert env.integration_log()[0] == "code seed"
     assert env.slot_log() == slot_before
     assert env.lease_bytes() == lease_before
 
@@ -1327,7 +1322,7 @@ def test_close_never_picks_the_pm_home_tree(close_env, capsys):
     captured = capsys.readouterr()
     assert rc == 1, captured.out + captured.err
     assert "[중단] 작업 트리 해소" in captured.err
-    assert "묶음 기록 base_branch main 를 체크아웃한 작업 트리가 없다" in captured.err
+    assert "제품 브랜치 미결속" in captured.err
     assert env.board_calls == [] and env.delegate_calls == []
     assert env.home_log() == home_before
     assert env.ledger()["status"] != _CLOSED_STATUS
@@ -2352,7 +2347,7 @@ def _unborn_repo(tf, tmp_path: Path, monkeypatch, *,
     seed_slot(root, repo="home", session="t")
     _write_ticket(board_dir, _MEMBER_A, claimed_rev="null", touches=(_TOUCH_A,))
     _write_cluster_ledger(board_dir, tickets=(_MEMBER_A,),
-                          base_branch=_UNBORN_BRANCH, branch=None)
+                          base_branch=_UNBORN_BRANCH, branch=_UNBORN_BRANCH)
     monkeypatch.setenv("PM_SESSION_NAME", "t")
     monkeypatch.setattr(tf, "REPO", root)
     monkeypatch.setattr(tf, "TOOLS_DIR", root / ".project_manager" / "tools")
@@ -2406,15 +2401,9 @@ def test_unborn_baseline_requires_head_on_the_declared_branch(tf, tmp_path, monk
 
 
 @requires_git
-def test_fresh_single_clone_home_closes_on_the_first_call(
+def test_fresh_single_clone_home_requires_explicit_binding(
         tf, tmp_path, monkeypatch, capsys):
-    """신선 단일 clone 홈(커밋 0)의 첫 티켓이 **첫 호출**에 닫힌다 — rc 0 · done · 첫 커밋.
-
-    v1.7.12 후보에서는 통합 브랜치 미해소 → 스코프 밖 잔여 → 슬롯 반납 거부가 차례로 막았다
-    (2026-09-02 라이브 실측). 셋째는 종결이 슬롯을 반납하지 않게 되며 없어졌다. 이 케이스는 PM
-    홈을 작업 트리로 쓰는 합성 형상이다 — 홈은 작업 트리를 찾는 곳이 아니라(홈은 작업 폴더가
-    아니다) CLI 로는 닿지 않으므로 해소 결과를 이 트리로 준다.
-    """
+    """커밋 0의 미결속 장부는 첫 호출에서 부작용 없이 명시 결속을 요구한다."""
     root = _unborn_repo(tf, tmp_path, monkeypatch)
     board_dir = root / ".project_manager" / "board"
     board_py = root / ".project_manager" / "tools" / "board.py"
@@ -2446,17 +2435,20 @@ def test_fresh_single_clone_home_closes_on_the_first_call(
         _CLUSTER, finisher=finisher, board_py=board_py,
         run_delegate_fn=lambda args: (0, ""),
     )
-    monkeypatch.setattr(closer, "_resolve_code_tree", lambda: (root, None))
+    _write_cluster_ledger(board_dir, tickets=(_MEMBER_A,), base_branch=_UNBORN_BRANCH, branch=None)
+    leases = (root / ".project_manager/.local/worktree-leases.json").read_bytes()
 
     rc = closer.run()
     captured = capsys.readouterr()
 
-    assert rc == 0, captured.out + captured.err
-    assert [args[0] for args in board_calls] == ["complete"]
-    assert list((board_dir / "tickets" / "done").glob(f"{_MEMBER_A}*.md"))
-    assert _git(root, "rev-parse", "--verify", "--quiet", "HEAD").returncode == 0
-    assert _git(root, "log", "--format=%s").stdout.splitlines() == ["종결 픽스처"]
-    assert _lease_rows(root)[0]["session"] == "t"      # 슬롯 행이 그대로다
+    assert rc == 1, captured.out + captured.err
+    assert "cluster new" in captured.err
+    assert board_calls == []
+    assert not list((board_dir / "tickets" / "done").glob(f"{_MEMBER_A}*.md"))
+    assert list((board_dir / "tickets" / "claimed").glob(f"{_MEMBER_A}*.md"))
+    assert _git(root, "rev-parse", "--verify", "--quiet", "HEAD").returncode != 0
+    assert (root / ".project_manager/.local/worktree-leases.json").read_bytes() == leases
+    assert _lease_rows(root)[0]["session"] == "t"
 
 
 def test_status_seam_is_strict_and_the_non_blocking_report_absorbs_it(
@@ -2510,3 +2502,18 @@ def test_close_stops_when_the_status_query_returns_an_error_code(
     assert env.integration_log()[0] == "code seed"       # 머지는 돌지 않았다
     assert env.lease_state() == "leased"                 # 대여 기록은 그대로다
 
+
+
+@requires_git
+def test_t0930_unbound_ledger(close_env, capsys):
+    env = close_env
+    assert _git(env.code, "branch", "-m", "main").returncode == 0
+    _write_cluster_ledger(env.board_dir, tickets=(env.ticket,), base_branch="main", branch=None)
+    ledger = env.board_dir / "tickets/clusters" / f"{_CLUSTER}.md"
+    before = (ledger.read_bytes(), env.lease_bytes(), env.home_log(), _rev(env.code), _rev(env.slot))
+    assert env.closer().run() == 1
+    err = capsys.readouterr().err
+    assert "cluster new" in err
+    assert env.board_calls == [] and env.delegate_calls == []
+    assert (ledger.read_bytes(), env.lease_bytes(), env.home_log(), _rev(env.code), _rev(env.slot)) == before
+    assert not list((env.board_dir / "tickets/done").glob("T-*.md"))

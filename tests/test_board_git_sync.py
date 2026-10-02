@@ -30,7 +30,7 @@ from pathlib import Path
 import pytest
 
 from _git_fixture import remove_git_tree
-from conftest import anchor_board_module, write_cluster_ledger
+from conftest import anchor_board_module, bind_product_cluster, write_cluster_ledger
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -724,6 +724,7 @@ def test_promote_reports_board_git_pending_when_local_commit_is_uncommitted(
     draft.parent.mkdir()
     draft.write_text(_TICKET_TEXT.format(tid="T-0002").replace("status: open", "status: draft"),
                      encoding="utf-8")
+    bind_product_cluster(board, "T-0002")
     monkeypatch.setattr(board, "_body_lint_issues", lambda *args, **kwargs: [])
     monkeypatch.setattr(board, "_board_git_sync_best_effort", lambda *args, **kwargs: False)
 

@@ -35,7 +35,7 @@ import pytest
 
 from _git_fixture import init_git_repo
 
-from conftest import anchor_board_module
+from conftest import anchor_board_module, bind_product_cluster
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -509,6 +509,7 @@ def test_promote_warns_but_ships_a_ticket_with_missing_touches(board_git, capsys
     board_dir = board_git._board_dir
     tid = _fill_draft(board_git, board_dir, _body(), touches=["tests/test_new.py"])
 
+    bind_product_cluster(board_git, tid)
     assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0
     err = capsys.readouterr().err
     assert "touches-missing" in err and "tests/test_new.py" in err
@@ -557,6 +558,7 @@ def test_promote_ships_a_subdirectory_citation_that_resolves_uniquely(
     _write(tmp_path, stored, "a\nb\nc\n")
     tid = _fill_draft(board_git, board_dir, _body(f"- 근거 `{cited}:3`\n"))
 
+    bind_product_cluster(board_git, tid)
     assert board_git.main(["promote", tid]) == 0
     assert list((board_dir / "tickets" / "open").glob("T-*-*.md"))
 
@@ -619,6 +621,7 @@ def test_promote_requires_a_harvested_architect_round_then_accepts(board_git, ca
     header = round_path.read_text(encoding="utf-8").splitlines()[0]
     round_path.write_text(f"{header}\n\n인용·touches 를 실측 대조했다.\n", encoding="utf-8")
 
+    bind_product_cluster(board_git, tid)
     assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0
     assert list((board_dir / "tickets" / "open").glob("T-*-*.md"))
 
@@ -637,6 +640,7 @@ def test_promote_succeeds_when_touches_overlap_another_active_ticket(board_git, 
     tid = _fill_draft(board_git, board_dir, _body(),
                       touches=[".project_manager/tools/board.py"])
 
+    bind_product_cluster(board_git, tid)
     assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0, \
         "touches 겹침이 승격을 막았다 — 정당한 병렬 발행이 차단된다."
 
@@ -654,4 +658,5 @@ def test_advisory_classification_is_what_keeps_the_warning_from_blocking(
 
     monkeypatch.setattr(board_git, "_PROMOTE_ADVISORY_KINDS",
                         board_mod._PROMOTE_ADVISORY_KINDS)
+    bind_product_cluster(board_git, tid)
     assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0
