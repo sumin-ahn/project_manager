@@ -13910,14 +13910,16 @@ def cmd_new(args: argparse.Namespace) -> int:
     is_draft = _board_git_enabled() and bool(
         _body_lint_issues(draft_lint_id, draft_body, strict_sections=True, design=design))
     # 코드 없는 task draft는 허용한다. 명시 선택은 draft에서도 검증한다.
-    if ((not is_draft and _board_git_enabled())
-            or getattr(args, "repo", None) or getattr(args, "slot", None)
-            or (getattr(args, "task", None) and not is_draft)):
+    binding_required = ((not is_draft and _board_git_enabled())
+                        or getattr(args, "repo", None) or getattr(args, "slot", None)
+                        or (getattr(args, "task", None) and not is_draft))
+    binding_message = ("[중단] 공유 발행의 코드 트리와 기준 브랜치를 명시하라 "
+                       "(`--repo <이름> --slot <N>` 또는 `--task <이름>`). "
+                       "코드 없는 초안은 draft로 작성한 뒤 기존 cluster new로 결속하라.")
+    if binding_required:
         tree, base = _cluster_publish_base_branch(args)
         if not tree or not base:
-            print("[중단] 공유 발행의 코드 트리와 기준 브랜치를 명시하라 "
-                  "(`--repo <이름> --slot <N>` 또는 `--task <이름>`). "
-                  "코드 없는 초안은 draft로 작성한 뒤 기존 cluster new로 결속하라.", file=sys.stderr)
+            print(binding_message, file=sys.stderr)
             return 1
 
     # 발행 규율 게이트: board-git 이 공유(별도 git·submodule) 상태일 때만
@@ -13989,8 +13991,18 @@ def cmd_new(args: argparse.Namespace) -> int:
         # 지금 멤버로 올리면 다른 클론에는 없는 티켓을 가리키는 장부가 공유된다. 승격
         # 전에 기존 cluster new로 제품 브랜치와 멤버를 명시 결속한다.
         cluster_ledger: Path | None = None
+        # 마지막 제품 판정과 기록에 같은 결과를 사용한다. helper의 재조회로 바꾸지 않는다.
+        final_binding_required = ((not is_draft and _board_git_enabled())
+                                  or getattr(args, "repo", None) or getattr(args, "slot", None)
+                                  or (getattr(args, "task", None) and not is_draft))
+        if not is_draft or final_binding_required:
+            publish_basis = _cluster_publish_base_branch(args)
+            if final_binding_required and (not publish_basis[0] or not publish_basis[1]):
+                print(binding_message, file=sys.stderr)
+                return 1
         if not is_draft:
-            fm["cluster"], cluster_ledger = _cluster_auto_attach(tid, args)
+            fm["cluster"], cluster_ledger = _cluster_auto_attach(
+                tid, args, publish_basis=publish_basis)
 
         if is_draft:
             drafts_dir().mkdir(parents=True, exist_ok=True)
@@ -14653,7 +14665,8 @@ def _new_cluster_fm(
 
 
 def _cluster_auto_attach(
-    tid: str, args: argparse.Namespace,
+    tid: str, args: argparse.Namespace, *,
+    publish_basis: tuple[str | None, str | None] | None = None,
 ) -> tuple[str, Path]:
     """발행 시점 크기 1 장부 생성 — `(클러스터 id, 장부 경로)`.
 
@@ -14666,7 +14679,8 @@ def _cluster_auto_attach(
 
     board_lock 보유 전제다(발행·재개방 임계구역 안에서 부른다).
     """
-    _tree, base_branch = _cluster_publish_base_branch(args)
+    _tree, base_branch = (_cluster_publish_base_branch(args)
+                          if publish_basis is None else publish_basis)
     fm = _new_cluster_fm(
         f"{CLUSTER_ID_PREFIX}{tid}", [tid], base_branch=base_branch)
     return str(fm["id"]), dump_cluster(fm)

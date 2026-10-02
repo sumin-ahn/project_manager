@@ -1000,3 +1000,110 @@ def test_t0930_publish_binding_linked_worktree(split_env, tmp_path):
     assert board.cmd_new(_new_args("linked", repo=SLOT_REPO, slot=3)) == 0
     ledger = board.all_clusters()[0]
     assert ledger["base_branch"] == "task/linked" and ledger["branch"] is None
+
+
+@requires_git
+@pytest.mark.parametrize("damage", ["detached", "marker", "head"])
+@pytest.mark.parametrize("shared", [True, False], ids=["shared", "legacy-explicit"])
+def test_t0930_publish_revalidation_rejects_final_basis_loss(
+        split_env, monkeypatch, damage, shared):
+    board, board_dir, slot = split_env
+    if not shared:
+        monkeypatch.setattr(board, "_board_git_enabled", lambda: False)
+    head = _git(["rev-parse", "HEAD"], board_dir).stdout
+    leases = board.LEASES_FILE.read_bytes()
+    original = board._cluster_publish_base_branch
+    observed = []
+    writes = []
+
+    def track(name, fn):
+        def call(*args, **kwargs):
+            writes.append(name)
+            return fn(*args, **kwargs)
+        return call
+
+    for name in ("dump_cluster", "dump_ticket", "_board_git_sync_best_effort"):
+        monkeypatch.setattr(board, name, track(name, getattr(board, name)))
+
+    def read_basis(args):
+        if observed:
+            assert len(observed) == 1
+            assert writes == []
+            assert _all_ticket_files(board) == [] and board.all_clusters() == []
+            assert _git(["rev-parse", "HEAD"], board_dir).stdout == head
+            assert board.LEASES_FILE.read_bytes() == leases
+            if damage == "detached":
+                assert _git(["checkout", "--detach", "-q"], slot).returncode == 0
+            elif damage == "marker":
+                (slot / ".git").rename(slot / ".git.saved")
+                (slot / ".git").write_text("gitdir: missing-product-git\n", encoding="utf-8")
+            else:
+                (slot / ".git/HEAD").write_text("ref: refs/heads/missing-product-head\n", encoding="utf-8")
+        result = original(args)
+        observed.append(result)
+        return result
+
+    monkeypatch.setattr(board, "_cluster_publish_base_branch", read_basis)
+    assert board.cmd_new(_new_args("최종 제품 기준 거부", repo=SLOT_REPO, slot=1)) == 1
+    assert observed[0] == (str(slot), _BASE_BRANCH)
+    assert len(observed) == 2 and not observed[-1][1]
+    assert writes == []
+    assert _all_ticket_files(board) == [] and board.all_clusters() == []
+    assert _git(["rev-parse", "HEAD"], board_dir).stdout == head
+    assert board.LEASES_FILE.read_bytes() == leases
+
+
+@requires_git
+@pytest.mark.parametrize("change", [False, True], ids=["stable", "changed"])
+def test_t0930_publish_revalidation_records_the_validated_final_basis(
+        split_env, monkeypatch, change):
+    board, board_dir, slot = split_env
+    original = board._cluster_publish_base_branch
+    observed = []
+    leases = board.LEASES_FILE.read_bytes()
+    head = _git(["rev-parse", "HEAD"], board_dir).stdout
+    branches = _git(["for-each-ref", "--format=%(refname)", "refs/heads"], slot).stdout
+
+    def read_basis(args):
+        assert len(observed) < 2, "최종 판정 뒤 기록을 위해 다시 조회하면 안 된다"
+        if observed and change:
+            assert _git(["checkout", "-q", "-b", "task/final-product"], slot).returncode == 0
+        result = original(args)
+        observed.append(result)
+        return result
+
+    monkeypatch.setattr(board, "_cluster_publish_base_branch", read_basis)
+    assert board.cmd_new(_new_args("최종 제품 기준 기록", repo=SLOT_REPO, slot=1)) == 0
+    assert observed[0] == (str(slot), _BASE_BRANCH)
+    assert len(observed) == 2
+    ticket = board.load_ticket(_all_ticket_files(board)[0])[0]
+    ledger = board.load_cluster(ticket["cluster"])
+    assert ledger["base_branch"] == observed[-1][1]
+    assert ledger["base_branch"] == ("task/final-product" if change else _BASE_BRANCH)
+    assert ledger["branch"] is None
+    after_branches = _git(["for-each-ref", "--format=%(refname)", "refs/heads"], slot).stdout
+    assert after_branches == ("refs/heads/task/final-product\n" + branches if change else branches)
+    assert _git(["rev-parse", "HEAD"], board_dir).stdout != head
+    assert board.LEASES_FILE.read_bytes() == leases
+
+
+@requires_git
+def test_t0930_publish_revalidation_preserves_legacy_local_new(board, tmp_path):
+    tickets = tmp_path / ".project_manager/wiki/tickets"
+    for status in ("open", "claimed", "blocked", "done"):
+        (tickets / status).mkdir(parents=True, exist_ok=True)
+    (tickets / "_template.md").write_text(_TEMPLATE_TEXT, encoding="utf-8")
+    _make_code_git(tmp_path)
+    leases = board.LEASES_FILE.read_bytes()
+    head = _git(["rev-parse", "HEAD"], tmp_path).stdout
+    assert not board._board_git_enabled()
+    assert board.cmd_new(_new_args("로컬 무선택 발행")) == 0
+    path = _all_ticket_files(board)[0]
+    fm, _ = board.load_ticket(path)
+    ledger = board.load_cluster(fm["cluster"])
+    before = (path.read_bytes(), board.cluster_ledger_path(fm["cluster"]).read_bytes())
+    assert ledger["base_branch"] is None and ledger["branch"] is None
+    assert board.cmd_promote(argparse.Namespace(id=fm["id"])) == 0
+    assert (path.read_bytes(), board.cluster_ledger_path(fm["cluster"]).read_bytes()) == before
+    assert _git(["rev-parse", "HEAD"], tmp_path).stdout == head
+    assert board.LEASES_FILE.read_bytes() == leases
