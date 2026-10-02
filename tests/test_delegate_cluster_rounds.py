@@ -18,6 +18,7 @@ import importlib.util
 import json
 import shutil
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -231,6 +232,204 @@ def test_cluster_prepare_lays_one_run_dir_with_a_seat_per_ticket(pd, cluster_env
     assert {row["run_id"] for row in rows} == {plan.run_id}
     assert {row["cluster"] for row in rows} == {"C-wave"}
     assert {row["ticket"] for row in rows} == {"T-6001", "T-6002"}
+
+
+def _t0928_prior_roles(pd, pm_home, tickets, members, role):
+    module = pd._load_ticket_rounds()
+    for ticket in members:
+        spec = (tickets / f"{ticket}-cluster.md").read_text(encoding="utf-8")
+        for previous_role in ("architect", "developer")[:
+                (0 if role == "architect" else 1 if role == "developer" else 2)]:
+            previous = module.load_rounds(tickets.parent, ticket, ticket_text=spec)
+            seed = pd._ticket_round_seed(module, previous_role, spec, None,
+                                        today="2026-10-02", rounds=previous)
+            path = module.reserve_round(tickets.parent, ticket, previous_role, content=seed,
+                                        lock=_fixture_board(pd, pm_home).board_lock())
+            _fill(path, "## 실측\n- 이전 단계 완료")
+
+
+def _t0928_set_status(board, ticket, status):
+    old_status, path = board.find_ticket_exact(ticket)
+    target_dir = board.drafts_dir() if status == "draft" else board.tickets_dir() / status
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(path.read_text(encoding="utf-8").replace(
+        f"status: {old_status}", f"status: {status}"), encoding="utf-8")
+    path.rename(target_dir / path.name)
+
+
+@pytest.mark.parametrize("role", ["architect", "developer", "code-reviewer"])
+@pytest.mark.parametrize("size", [1, 2])
+def test_t0928_formal_prepare_records_only_new_seeds_after_all_ledger_rows(
+        pd, cluster_env, monkeypatch, role, size):
+    pm_home, slot, tickets = cluster_env
+    members = ["T-6101", "T-6102"][:size]
+    _seed_cluster(pm_home, tickets, "C-seeds", members)
+    _t0928_prior_roles(pd, pm_home, tickets, members, role)
+    board = _fixture_board(pd, pm_home)
+    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _: board)
+    original_lock = board.board_lock
+    active = []
+    syncs = []
+
+    @contextmanager
+    def lock():
+        with original_lock():
+            active.append(True)
+            try:
+                yield
+            finally:
+                active.pop()
+
+    def sync(message, paths):
+        assert not active
+        rows = _ledger_rows(pm_home)
+        assert {row["ticket"] for row in rows} == set(members)
+        assert all(Path(row["copy"]).is_file() for row in rows)
+        assert all((Path(row["copy"]).parent / "spec.md").is_file() for row in rows)
+        previous_count = {"architect": 0, "developer": 1, "code-reviewer": 2}[role]
+        assert all(len(list((Path(row["copy"]).parent / "rounds").iterdir())) == previous_count
+                   for row in rows)
+        syncs.append((message, tuple(paths)))
+        return True
+
+    monkeypatch.setattr(board, "board_lock", lock)
+    monkeypatch.setattr(board, "_rounds_mutation_sync_paths", sync)
+    if size == 1:
+        plans = (pd.prepare_ticket_copy(ticket=members[0], role=role,
+                                        cwd=slot, pm_home=pm_home),)
+    else:
+        plans = pd.prepare_cluster_copy(cluster="C-seeds", role=role,
+                                         cwd=slot, pm_home=pm_home).rounds
+    assert len(syncs) == 1
+    assert set(syncs[0][1]) == {plan.board_path for plan in plans}
+
+
+def test_t0928_formal_prepare_preserves_single_ticket_machine_stdout(pd, cluster_env,
+                                                                   monkeypatch, capsys):
+    pm_home, slot, tickets = cluster_env
+    _seed_cluster(pm_home, tickets, "C-machine", ["T-6103"])
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _: pm_home)
+    monkeypatch.setattr(pd, "_repo_root_for_cwd", lambda cwd: Path(cwd))
+    monkeypatch.setattr(pd, "local_config", lambda *a, **k: {})
+    monkeypatch.setattr(pd, "_reject_cross_role_prepare", lambda *a, **k: None)
+    assert pd.main(["ticket", "prepare", "--ticket", "T-6103", "--role", "architect",
+                    "--cwd", str(slot)]) == 0
+    captured = capsys.readouterr()
+    row = json.loads(captured.out)
+    assert set(row) == {"copy", "ordinal", "run_dir"}
+    assert Path(row["copy"]).parent.name == "T-6103"
+    assert Path(row["copy"]).is_file()
+    assert "별도 board-git 없음" in captured.err
+
+
+@pytest.mark.parametrize("state", ["draft", "mixed", "final-draft", "final-formal"])
+def test_t0928_prepare_boundaries_use_final_reservation_status(pd, cluster_env,
+                                                              monkeypatch, state):
+    pm_home, slot, tickets = cluster_env
+    _seed_cluster(pm_home, tickets, "C-status", ["T-6111", "T-6112"])
+    board = _fixture_board(pd, pm_home)
+    syncs = []
+    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _: board)
+    monkeypatch.setattr(board, "_rounds_mutation_sync_paths",
+                        lambda message, paths: syncs.append(tuple(paths)) or True)
+    if state in ("draft", "mixed", "final-formal"):
+        _t0928_set_status(board, "T-6112", "draft")
+    if state == "draft":
+        _t0928_set_status(board, "T-6111", "draft")
+    original_seed = pd._ticket_round_seed
+
+    def seed(*args, **kwargs):
+        result = original_seed(*args, **kwargs)
+        if state.startswith("final-"):
+            _t0928_set_status(board, "T-6112", "draft" if state == "final-draft" else "open")
+        return result
+
+    monkeypatch.setattr(pd, "_ticket_round_seed", seed)
+    plan = pd.prepare_cluster_copy(cluster="C-status", role="architect",
+                                   cwd=slot, pm_home=pm_home)
+    expected = {item.board_path for item in plan.rounds
+                if state != "draft" and (item.ticket == "T-6111" or state == "final-formal")}
+    assert syncs == ([tuple(item.board_path for item in plan.rounds
+                            if item.board_path in expected)] if expected else [])
+
+
+def test_t0928_prepare_boundaries_reopen_records_nothing(pd, cluster_env, monkeypatch):
+    pm_home, slot, tickets = cluster_env
+    _seed_cluster(pm_home, tickets, "C-reopen", ["T-6121"])
+    board = _fixture_board(pd, pm_home)
+    syncs = []
+    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _: board)
+    monkeypatch.setattr(board, "_rounds_mutation_sync_paths",
+                        lambda message, paths: syncs.append(tuple(paths)) or True)
+    original = pd.prepare_ticket_copy(ticket="T-6121", role="architect",
+                                      cwd=slot, pm_home=pm_home)
+    _fill(original.board_path, "## 실측\n- 충전된 입력")
+    syncs.clear()
+    reopened = pd.prepare_ticket_copy(ticket="T-6121", role="architect", cwd=slot,
+                                      pm_home=pm_home, reopen_ordinal=original.ordinal)
+    assert reopened.path.read_bytes() == original.board_path.read_bytes()
+    assert syncs == []
+
+
+@pytest.mark.parametrize("failure", ["before-reserve", "after-reserve", "laydown",
+                                     "ledger-first", "ledger-second", "sync"])
+def test_t0928_prepare_boundaries_preserve_failure_evidence(pd, cluster_env, monkeypatch,
+                                                           capsys, failure):
+    pm_home, slot, tickets = cluster_env
+    _seed_cluster(pm_home, tickets, "C-failure", ["T-6131", "T-6132"])
+    board = _fixture_board(pd, pm_home)
+    syncs = []
+    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _: board)
+
+    def sync(message, paths):
+        syncs.append(tuple(paths))
+        if failure == "sync":
+            raise OSError("고정 기록 오류")
+        return True
+
+    monkeypatch.setattr(board, "_rounds_mutation_sync_paths", sync)
+    if failure == "before-reserve":
+        monkeypatch.setattr(pd, "_ticket_round_seed",
+                            lambda *a, **k: (_ for _ in ()).throw(pd.DelegateError("예약 전 오류")))
+    elif failure == "after-reserve":
+        monkeypatch.setattr(pd._load_ticket_rounds(), "parse_round_filename",
+                            lambda *a: (_ for _ in ()).throw(OSError("예약 후 오류")))
+    elif failure == "laydown":
+        original = pd._write_exclusive_file
+
+        def write(path, *args, **kwargs):
+            if Path(path).name == "spec.md":
+                raise OSError("사본 쓰기 오류")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(pd, "_write_exclusive_file", write)
+    elif failure.startswith("ledger-"):
+        original = pd._append_delegate_rounds_ledger
+        count = []
+
+        def append(home, row):
+            count.append(row)
+            if len(count) == (1 if failure == "ledger-first" else 2):
+                raise pd.DelegateError("장부 오류")
+            return original(home, row)
+
+        monkeypatch.setattr(pd, "_append_delegate_rounds_ledger", append)
+    with pytest.raises((pd.DelegateError, OSError)) as caught:
+        pd.prepare_cluster_copy(cluster="C-failure", role="architect",
+                                cwd=slot, pm_home=pm_home)
+    seeds = list((tickets.parent / "rounds").glob("*/*.md"))
+    run_root = slot / pd.TICKET_COPY_REL_ROOT / "C-failure"
+    if failure == "before-reserve":
+        assert seeds == []
+        assert not list(run_root.glob("*"))
+    else:
+        assert seeds and list(run_root.glob("*"))
+        diagnostic = str(caught.value) + capsys.readouterr().err
+        assert "예약한 board 라운드" in diagnostic
+        assert str(run_root) in diagnostic
+    assert len(_ledger_rows(pm_home)) == (
+        2 if failure == "sync" else 1 if failure == "ledger-second" else 0)
+    assert len(syncs) == (1 if failure == "sync" else 0)
 
 
 def test_cluster_prepare_reserves_nothing_when_one_member_fails_the_judgment(

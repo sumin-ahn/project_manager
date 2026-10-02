@@ -278,7 +278,10 @@ def test_review_prepare_over_a_harvested_developer_round_is_silent(pd, rounds_en
 
     review = _prepare(pd, pm_home, slot, "T-7803", "code-reviewer")
 
-    assert capsys.readouterr().err == ""
+    lines = capsys.readouterr().err.splitlines(keepends=True)
+    record_lines = [line for line in lines if line.startswith("ticket prepare: ")]
+    assert len(record_lines) == 1
+    assert "".join(line for line in lines if line not in record_lines) == ""
     assert review.ordinal == 3 and review.path.exists()
 
 

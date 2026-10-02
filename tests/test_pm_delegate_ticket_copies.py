@@ -32,6 +32,7 @@ import inspect
 import json
 import shutil
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -259,6 +260,8 @@ def test_abandon_without_superseded_by_still_refuses_mismatched_output(pd, env):
     _write_round_output(plan.path, _review_body(pd, "code-reviewer", ["F-901"]))
     before = plan.board_path.read_bytes()
 
+    before_sync = list(sync_log)
+
     with pytest.raises(pd.DelegateError, match="산출이 있어 포기할 수 없습니다"):
         pd.abandon_ticket_copy(
             copy_path=plan.path, cwd=slot, pm_home=pm_home, assume_dead=True,
@@ -267,7 +270,79 @@ def test_abandon_without_superseded_by_still_refuses_mismatched_output(pd, env):
     assert plan.board_path.read_bytes() == before
     assert plan.run_dir.exists()
     assert "abandoned_at" not in _ledger_rows(pm_home)[-1]
+    assert sync_log == before_sync
+
+
+def test_t0928_recorded_seed_stays_pending_and_can_be_abandoned(pd, env):
+    pm_home, slot, tickets, sync_log = env
+    _write_spec(tickets, "T-9201", rounds=("architect",))
+    plan = pd.prepare_ticket_copy(ticket="T-9201", role="architect", cwd=slot, pm_home=pm_home)
+    assert len(sync_log) == 1
+    before = plan.board_path.read_bytes()
+    result = pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
+    assert result.changed is False
+    assert plan.board_path.read_bytes() == before
+    assert plan.path.is_file()
+    assert _ledger_rows(pm_home)[-1]["harvested_at"] is None
+    assert len(sync_log) == 1
+    abandoned = pd.abandon_ticket_copy(copy_path=plan.path, cwd=slot,
+                                       pm_home=pm_home, assume_dead=True)
+    assert abandoned.changed
+    assert not plan.board_path.exists() and not plan.run_dir.exists()
+
+
+def test_t0928_recorded_seed_draft_harvest_waits_for_promote(pd, env, monkeypatch):
+    from test_delegate_cluster_rounds import _fill
+    pm_home, slot, tickets, sync_log = env
+    spec = _write_spec(tickets, "T-9202", rounds=("architect",), status="draft")
+    spec.write_text(spec.read_text(encoding="utf-8").replace(
+        "tags: []", "cluster: C-T-9202\ntags: []"), encoding="utf-8")
+    board = _fixture_board(pd, pm_home, sync_log)
+    board.drafts_dir().mkdir(parents=True)
+    spec.rename(board.drafts_dir() / spec.name)
+    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _: board)
+    plan = pd.prepare_ticket_copy(ticket="T-9202", role="architect", cwd=slot, pm_home=pm_home)
+    active = []
+    original_lock = board.board_lock
+    module = pd._load_ticket_rounds()
+    original_replace = module.replace_round
+
+    @contextmanager
+    def lock():
+        with original_lock():
+            active.append(True)
+            try:
+                yield
+            finally:
+                active.pop()
+
+    def replace(*args):
+        assert active
+        return original_replace(*args)
+
+    monkeypatch.setattr(board, "board_lock", lock)
+    monkeypatch.setattr(module, "replace_round", replace)
+    _fill(plan.path, "## 실측\n- 설계 완료")
+    result = pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
+    assert result.changed
     assert sync_log == []
+    assert "설계 완료" in plan.board_path.read_text(encoding="utf-8")
+    assert not plan.run_dir.exists()
+    published = []
+
+    def publish(message, paths):
+        assert not active
+        published.append(tuple(paths))
+        return True
+
+    monkeypatch.setattr(board, "_board_git_enabled", lambda: True)
+    monkeypatch.setattr(board, "_body_lint_issues", lambda *a, **k: [])
+    monkeypatch.setattr(board, "_board_git_sync_best_effort", publish)
+    import argparse
+    assert board.cmd_promote(argparse.Namespace(id="T-9202")) == 0
+    assert len(published) == 1
+    assert plan.board_path.parent in published[0]
+    assert board.find_ticket_exact("T-9202")[0] == "open"
 
 
 # ── R2 자기 참조 거부 ────────────────────────────────────────────────────────
@@ -282,6 +357,8 @@ def test_superseded_by_self_reference_is_rejected(pd, env):
     _write_round_output(plan.path, _review_body(pd, "code-reviewer", ["F-902"]))
     before = plan.board_path.read_bytes()
 
+    before_sync = list(sync_log)
+
     with pytest.raises(pd.DelegateError, match="대체 라운드 ordinal 이 올바르지 않습니다"):
         pd.abandon_ticket_copy(
             copy_path=plan.path, cwd=slot, pm_home=pm_home, assume_dead=True,
@@ -291,7 +368,7 @@ def test_superseded_by_self_reference_is_rejected(pd, env):
     assert plan.board_path.read_bytes() == before
     assert plan.run_dir.exists()
     assert "abandoned_at" not in _ledger_rows(pm_home)[-1]
-    assert sync_log == []
+    assert sync_log == before_sync
 
 
 # ── R3 생존 확인 유지(역방향 확인 — 대체-확인이 liveness gate 를 대신하지 않는다) ─────────
@@ -309,6 +386,8 @@ def test_superseded_by_without_evidence_still_requires_assume_dead(pd, env):
     _write_round_output(dead.path, _review_body(pd, "code-reviewer", ["F-903"]))
     before = dead.board_path.read_bytes()
 
+    before_sync = list(sync_log)
+
     with pytest.raises(pd.DelegateError, match="종료 증거가 없습니다") as caught:
         pd.abandon_ticket_copy(
             copy_path=dead.path, cwd=slot, pm_home=pm_home,
@@ -319,7 +398,7 @@ def test_superseded_by_without_evidence_still_requires_assume_dead(pd, env):
     assert dead.board_path.read_bytes() == before
     assert dead.run_dir.exists()
     assert "abandoned_at" not in _ledger_rows(pm_home)[-1]
-    assert sync_log == []
+    assert sync_log == before_sync
 
 
 def test_superseded_by_does_not_override_a_live_owner_pid(pd, env, monkeypatch):
@@ -336,6 +415,8 @@ def test_superseded_by_does_not_override_a_live_owner_pid(pd, env, monkeypatch):
     before = dead.board_path.read_bytes()
     _use_relay_pid(pd, monkeypatch, alive=True)
 
+    before_sync = list(sync_log)
+
     with pytest.raises(pd.DelegateError, match="실행 중이라 포기하지 않습니다"):
         pd.abandon_ticket_copy(
             copy_path=dead.path, cwd=slot, pm_home=pm_home,
@@ -345,7 +426,7 @@ def test_superseded_by_does_not_override_a_live_owner_pid(pd, env, monkeypatch):
     assert dead.board_path.read_bytes() == before
     assert dead.run_dir.exists()
     assert "abandoned_at" not in _ledger_rows(pm_home)[-1]
-    assert sync_log == []
+    assert sync_log == before_sync
 
     # 죽음이 확인되면(`pid_is_alive`→False) `--assume-dead` 로 그제야 진행된다.
     _use_relay_pid(pd, monkeypatch, alive=False)
@@ -611,6 +692,8 @@ def test_self_reference_is_rejected_even_when_seed_is_intact(pd, env):
     # 산출을 쓰지 않는다 — 슬롯 라운드 파일이 board 시드 그대로다.
     before = round1.board_path.read_bytes()
 
+    before_sync = list(sync_log)
+
     with pytest.raises(pd.DelegateError, match="대체 라운드 ordinal 이 올바르지 않습니다"):
         pd.abandon_ticket_copy(
             copy_path=round1.path, cwd=slot, pm_home=pm_home, assume_dead=True,
@@ -622,7 +705,7 @@ def test_self_reference_is_rejected_even_when_seed_is_intact(pd, env):
     assert "abandoned_at" not in last_row
     assert round1.board_path.read_bytes() == before
     assert round1.run_dir.exists()
-    assert sync_log == []
+    assert sync_log == before_sync
 
 
 def test_a_retry_only_flag_cannot_delete_output_the_closing_call_never_confirmed(

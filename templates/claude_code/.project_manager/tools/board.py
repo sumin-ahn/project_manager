@@ -11416,9 +11416,12 @@ def _active_ticket_path(
 def _rounds_mutation_sync_paths(message: str, paths: Sequence[Path]) -> bool:
     """라운드/티어 mutation이 만진 경로들을 한 스코프 커밋으로 기록한다.
 
-    시그니처는 고정이다 — pm_delegate 회수가 `getattr` 로 이 이름을 찾고 없으면 구-board 이름을
-    거쳐 board-git funnel 로 내려가는 skew 폴백을 탄다. 인자를 늘리면 부분 동기된 PM 홈 사본에서
-    라운드는 반영됐는데 CLI 만 TypeError 로 죽는 부분 성공이 재현된다.
+    호출자는 board_lock 밖에서 공개할 경로만 전달한다. True는 로컬 기록 준비 완료 또는
+    별도 board-git이 없는 no-op이며, 원격 공유 완료를 뜻하지 않는다. 원격 보류는 기존
+    best-effort 출력이 안내하고 draft 라운드의 공개는 promote가 소유한다.
+
+    준비·회수·포기가 직접 호출하는 두 인자 시그니처를 유지한다. 인자를 늘리면 부분 동기된
+    PM 홈 사본에서 라운드를 반영한 뒤 CLI가 TypeError로 실패할 수 있다.
     """
     refresh_board()
     return _board_git_sync_best_effort(message, tuple(paths))
@@ -20767,7 +20770,14 @@ def _refresh_board_locked() -> None:
             lines.append("|---|---|---|---|---|")
             for fm in items:
                 dep = ", ".join(fm.get("depends_on") or []) or "—"
-                tch = ", ".join((fm.get("touches") or [])[:3]) or "—"
+                touches = fm.get("touches")
+                if touches is None:
+                    tch = "—"
+                elif isinstance(touches, list) and all(isinstance(item, str) for item in touches):
+                    tch = ", ".join(touches[:3]) or "—"
+                else:
+                    # 파생 화면만 오류를 표시한다. 명세 원값과 scope 검증 입력은 보존한다.
+                    tch = "touches 형식 오류"
                 tag = ", ".join(_tag_values(fm))
                 lines.append(
                     f"| {fm['id']} | {fm.get('title','')} | {dep} | {tch} | {tag} |"
