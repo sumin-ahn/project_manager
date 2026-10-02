@@ -1089,3 +1089,19 @@ def test_status_json_slot_rows_include_folders(home):
     assert done.returncode == 1
     assert done.stdout == ""
     assert "[중단]" in done.stderr and "cone" in done.stderr
+
+
+def test_t0932_ctx_budget_readonly_unknown_and_bound(tmp_path,monkeypatch):
+    from test_harness_ctx_limits import _t0932_install_budget_fixture,_load as load_engine,_snapshot_fixture_bytes
+    module=load_engine('pm_config');leaf=load_engine('local_conf')
+    conf={'harness.claude.ctx_window_tokens':'600000','ctx.checkpoint_at_pct':'80','ctx.precompact_at_pct':'90','ctx.compact_at_pct':'94'}
+    identity=_t0932_install_budget_fixture(tmp_path,conf,capacity=200000)
+    monkeypatch.setattr(module,'REPO',tmp_path)
+    before=_snapshot_fixture_bytes(tmp_path)
+    row=module._status_json_conf(None)['ctx_budget']['claude']
+    assert (row['W'],row['C'],row['E'],row['P'])==(600000,200000,200000,188000)
+    assert before==_snapshot_fixture_bytes(tmp_path)
+    source=tmp_path/'.project_manager/independent-runtime-fixture.json';source.write_text('changed source generation', encoding='utf-8')
+    stale=module._status_json_conf(None)['ctx_budget']['claude']
+    assert stale['status']=='unknown' and stale['E'] is None
+    assert '변경' in stale['reason']

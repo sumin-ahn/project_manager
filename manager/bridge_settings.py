@@ -105,7 +105,10 @@ def _ctx_apply(home: Path, updates: dict) -> dict:
         raise CallError(
             "not-json", f"사용 한도 반영 출력이 JSON 이 아니다 ({exc})",
             stderr=completed.stderr or completed.stdout, rc=completed.returncode) from exc
-    return {"changed": bool(document["changed"]), "conf": runner.status(home)["conf"],
+    conf = runner.status(home)["conf"]
+    if "ctx_budget" in document:
+        conf.setdefault("ctx_budget", {}).update(document["ctx_budget"])
+    return {"changed": bool(document["changed"]), "conf": conf,
             "applied": list(document["applied"])}
 
 

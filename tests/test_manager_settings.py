@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import shutil
 import subprocess
 import sys
@@ -62,16 +63,52 @@ with pm_import._local_conf_write_lock(conf):
 '''
 
 
+from _manager_home import _KNOWN_CTX_READER_PY
+
+_KNOWN_CTX_CHILD = _KNOWN_CTX_READER_PY + r"""
+import sys,importlib.util
+from pathlib import Path
+path=Path(sys.argv[1])
+spec=importlib.util.spec_from_file_location('ctx_fixture_entry',path)
+entry=importlib.util.module_from_spec(spec);spec.loader.exec_module(entry)
+if path.name=='pm_import.py':
+    entry._read_harness_ctx_metadata=fixture_reader(entry)
+else:
+    original=entry._load_module
+    pmi=original('pm_import','pm_import.py')
+    pmi._read_harness_ctx_metadata=fixture_reader(pmi)
+    entry._load_module=lambda name,filename: pmi if name=='pm_import' else original(name,filename)
+raise SystemExit(entry.main(sys.argv[2:]))
+"""
+
+@pytest.fixture(autouse=True)
+def _known_ctx_child_reader(request,monkeypatch):
+    if 't0932' in request.node.name:return
+    import manager.bridge_settings as bridge
+    original=bridge._run
+    def run(home,argv,**kwargs):
+        if 'ctx-apply' in argv:
+            argv=[argv[0],'-c',_KNOWN_CTX_CHILD,argv[1],*argv[2:]]
+        return original(home,argv,**kwargs)
+    monkeypatch.setattr(bridge,'_run',run)
+
 @pytest.fixture(scope="module")
 def base_home(tmp_path_factory) -> Path:
     """실 엔진이 만든 PM 홈 한 벌 — 테스트마다 복사해 쓴다(원본은 읽기만)."""
-    return make_pm_home(tmp_path_factory.mktemp("settings-base") / "demo", upstream=REPO)
+    return make_pm_home(tmp_path_factory.mktemp("settings-base") / "demo",upstream=REPO)
 
 
 @pytest.fixture
 def pm_home(base_home, tmp_path) -> Path:
     home = tmp_path / "demo"
     shutil.copytree(base_home, home, symlinks=True)
+    record=home/'.project_manager/.local/ctx-budget.json'
+    if record.is_file():
+        document=json.loads(record.read_text(encoding='utf-8'))
+        document['fingerprints']={name.replace(str(base_home),str(home),1):digest for name,digest in document['fingerprints'].items()}
+        from test_harness_ctx_limits import _load
+        document['projection_sha256']=_load('local_conf').ctx_record_digest(document)
+        record.write_text(json.dumps(document),encoding='utf-8')
     return home
 
 
@@ -168,7 +205,7 @@ def test_the_five_lists_are_the_copys_verdict_not_a_manager_calculation(api, pm_
 
     verdict = api.status(str(pm_home))["conf"]
     assert set(verdict) == {
-        "missing_required", "legacy", "unknown", "nonstandard", "missing_for_latest"}
+        "missing_required", "legacy", "unknown", "nonstandard", "missing_for_latest", "ctx_budget"}
     # 가벼운 절은 소스를 해소하지 않는다 — "갱신하면 필요" 는 없음([])이 아니라 모름(null)이다.
     assert verdict["missing_for_latest"] is None
 
@@ -344,7 +381,7 @@ def test_ctx_save_is_checked_before_write_and_reports_applied_lines(api, pm_home
     after = tree_snapshot(pm_home)
     changed = {name for name in set(before) | set(after) if before.get(name) != after.get(name)}
     assert changed == {".project_manager/local.conf", ".claude/settings.json",
-                       ".project_manager/adapter_baseline.json"}, changed
+                       ".project_manager/adapter_baseline.json", ".project_manager/.local/ctx-budget.json"}, changed
 
     # [기본값으로] 도 같은 사본 명령을 지난다.
     reset = api.conf_reset(str(pm_home), "ctx.compact_at_pct")
@@ -554,3 +591,31 @@ def test_the_model_query_waits_on_the_heavy_limit(api, pm_home, monkeypatch):
     response = api.delegate_models(str(pm_home), name)
 
     assert response["error"]["kind"] == "timeout"
+
+
+def test_t0932_budget_display_unknown_mixed_and_unrelated(api,pm_home):
+    record=pm_home/'.project_manager/.local/ctx-budget.json';record.unlink()
+    api.status(str(pm_home))
+    before=tree_snapshot(pm_home)
+    refused=api.conf_save(str(pm_home),{'ctx.compact_at_pct':'94','identity.user':'must-not-save@example.invalid'})
+    assert refused['error']['rc']==3 and 'unknown' in refused['error']['message']
+    assert tree_snapshot(pm_home)==before
+    saved=api.conf_save(str(pm_home),{'identity.user':'allowed@example.invalid'})
+    assert saved['changed'] and _values(pm_home)['identity.user']=='allowed@example.invalid'
+    after=tree_snapshot(pm_home)
+    assert {name for name in set(before)|set(after) if before.get(name)!=after.get(name)}=={'.project_manager/local.conf'}
+    assert saved['conf']['ctx_budget']['claude']['status']=='unknown'
+
+
+def test_t0932_budget_display_same_commit_projection(api,pm_home,monkeypatch):
+    import manager.bridge_settings as bridge
+    original=bridge._run
+    def run(home,argv,**kwargs):
+        if 'ctx-apply' in argv:argv=[argv[0],'-c',_KNOWN_CTX_CHILD,argv[1],*argv[2:]]
+        return original(home,argv,**kwargs)
+    monkeypatch.setattr(bridge,'_run',run)
+    saved=api.conf_save(str(pm_home),{'harness.claude.ctx_window_tokens':'600000','ctx.checkpoint_at_pct':'80','ctx.precompact_at_pct':'90','ctx.compact_at_pct':'94'})
+    row=saved['conf']['ctx_budget']['claude']
+    assert (row['W'],row['C'],row['E'],row['P'])==(600000,200000,200000,188000)
+    assert _values(pm_home)['harness.claude.ctx_window_tokens']=='600000'
+    assert saved['conf']==api.status(str(pm_home))['conf']

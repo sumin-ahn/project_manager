@@ -102,7 +102,7 @@ CTX_DOCS = (
     "templates/codex/AGENTS.md",
 )
 # 사용 한도 규칙 문장(T-0923) — 레지스트리 패턴 설명과 같은 문장이다.
-_WINDOW_RULE = "사용 한도는 그 하네스에서 쓰는 모델 중 가장 작은 창 이하로 두십시오."
+_WINDOW_RULE = "설정한 희망 기준을 보존하며, 실제 적용 기준은 독립 근거로 확인한 모델의 가용 한도 이하로 제한합니다."
 
 
 def test_ctx_budget_keys_documented_in_full_entry_docs():

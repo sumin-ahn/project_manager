@@ -149,8 +149,8 @@ LOCAL_CONF_WRITERS: dict[tuple[str, str], tuple[str, str]] = {
         (DELEGATES, "해소된 opencode 모델 기록"),
     ("pm_config.py", "cmd_upstream"):
         (DELEGATES, "`pm-config upstream set` → pm_import._write_conf_keys"),
-    ("pm_config.py", "cmd_ctx_apply"):
-        (DELEGATES, "`pm-config ctx-apply --set` → pm_import._write_conf_keys(검사 통과 뒤)"),
+    ("pm_import.py", "_commit_harness_ctx"):
+        (HOLDS_LOCK, "동결계획 commit의 공용 락 안에서 _write_conf_keys_locked 호출"),
 }
 
 # conf 좌표로 인정하는 식별자 — 이 이름이 코드(주석·docstring 아님)에 실제로 등장해야 후보다.
@@ -197,7 +197,8 @@ def _measured_conf_writers() -> dict[tuple[str, str], set[str]]:
         for name, node in _function_scopes(tree):
             identifiers = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
             # conf 좌표를 이름으로 쓰거나, 이름 자체가 conf writer 를 표방하는 함수만 후보.
-            if not (identifiers & _CONF_COORDINATES
+            direct_writer = any(isinstance(n, ast.Call) and _called_name(n) in {"_write_conf_keys", "_write_conf_keys_locked", "_append_local_conf_atomic"} for n in ast.walk(node))
+            if not (direct_writer or identifiers & _CONF_COORDINATES
                     or re.search(r"conf_keys|local_conf", name)):
                 continue
             calls = {
@@ -1044,3 +1045,15 @@ def test_t0927_migration_lock_failure_precedes_baseline(t0927_old_adopter, t0927
         updater.main(["--from", str(t0927_upstream)])
     assert baselines == []
     assert conf.read_bytes() == before
+
+
+def test_t0932_commit_writer_lock_sensitivity():
+    source = _source_of('pm_import.py', '_commit_harness_ctx')
+    tree = ast.parse(source)
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and _called_name(n) == '_write_conf_keys_locked']
+    assert calls
+    locks = [n for n in ast.walk(tree) if isinstance(n, ast.With) and any(isinstance(i.context_expr, ast.Call) and _called_name(i.context_expr) == '_local_conf_write_lock' for i in n.items)]
+    assert locks and all(any(call in list(ast.walk(lock)) for lock in locks) for call in calls)
+    broken = source.replace('_local_conf_write_lock(', '_removed_lock(')
+    with pytest.raises(AssertionError):
+        assert LOCK_SEAM_CALL in broken, '동결 commit 락 누락'

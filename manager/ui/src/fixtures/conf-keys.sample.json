@@ -631,7 +631,7 @@
       "key": "harness.<name>.{idle_timeout,wall_timeout,ctx_window_tokens,pro_model}",
       "group": "harness",
       "label": "도구마다 따로 정하는 값",
-      "description": "실행 시간·대기 시간·사용 한도(압축 지점과 경고의 기준)와 안내 문서에 적을 모델 이름입니다. 사용 한도는 그 하네스에서 쓰는 모델 중 가장 작은 창 이하로 두십시오.",
+      "description": "실행 시간·대기 시간·사용 한도(압축 지점과 경고의 기준)와 안내 문서에 적을 모델 이름입니다. 설정한 희망 기준을 보존하며, 실제 적용 기준은 독립 근거로 확인한 모델의 가용 한도 이하로 제한합니다.",
       "default": null,
       "unset": "도구마다 정해진 기본 시간을 씁니다.",
       "required": false,

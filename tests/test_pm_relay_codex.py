@@ -719,16 +719,10 @@ def test_codex_relay_rotation_threshold_is_the_ctx_thresholds_precompact_at(driv
 
 
 def test_codex_resolve_ctx_budget_precedence(driver_mod):
-    """ctx 예산 = harness.codex.ctx_window_tokens(사용 한도) > 200000 — 공통 층은 없다."""
-    resolve = driver_mod.resolve_ctx_budget
-    assert resolve({"harness.codex.ctx_window_tokens": "300000"}) == 300000
-    # 옛 공통 키는 예산이 아니다.
-    assert resolve({"ctx.window_tokens": "500000"}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
-    # 없으면 기본.
-    assert resolve({}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
-    # 비정수/≤0 은 기본.
-    assert resolve({"harness.codex.ctx_window_tokens": "abc"}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
-    assert resolve({"harness.codex.ctx_window_tokens": "0"}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
+    """W/default만으로 실제 E를 만들지 않는다. 독립 적용 기록 없는 요청은 unknown이다."""
+    for conf in ({"harness.codex.ctx_window_tokens": "300000"}, {"ctx.window_tokens": "500000"}, {}, {"harness.codex.ctx_window_tokens": "abc"}, {"harness.codex.ctx_window_tokens": "0"}):
+        assert driver_mod.resolve_ctx_budget(conf) is None
+
 
 
 # ── 엔진 Supervisor + codex driver 결합 (post-turn 회전·재호출 금지·codex R2 핵심 가드) ──
@@ -848,6 +842,10 @@ def test_codex_main_forwards_task_budget_and_engine_seams(driver_mod, monkeypatc
     (tmp_path / ".project_manager").mkdir()
     (tmp_path / ".project_manager" / "local.conf").write_text(
         "harness.codex.ctx_window_tokens=333000\nctx.precompact_at_pct=85\n", encoding="utf-8")
+    from test_harness_ctx_limits import _t0932_install_budget_fixture, _load as load_ctx_engine
+    identity = _t0932_install_budget_fixture(tmp_path, harness='codex', capacity=2000000)
+    engine = load_ctx_engine('pm_relay')
+    _FakeEngine.resolve_ctx_budget = staticmethod(lambda root, conf, harness, _identity=None: engine.resolve_ctx_budget(root, conf, harness, identity))
     monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
     rc = driver_mod.main(["--task", "mytask", "--cwd", str(tmp_path)])
     assert rc == 0 and captured["task"] == "mytask"

@@ -650,7 +650,7 @@ PATTERN_REGISTRY: dict[str, KeySpec] = {
     HARNESS_PATTERN: KeySpec(
         "도구마다 따로 정하는 값",
         "실행 시간·대기 시간·사용 한도(압축 지점과 경고의 기준)와 안내 문서에 적을 모델 이름입니다. "
-        "사용 한도는 그 하네스에서 쓰는 모델 중 가장 작은 창 이하로 두십시오.",
+        "설정한 희망 기준을 보존하며, 실제 적용 기준은 독립 근거로 확인한 모델의 가용 한도 이하로 제한합니다.",
         default=None, unset=_TOOL_DEFAULT_TIME, required=False, group="harness"),
     DELEGATE_ROLE_PATTERN: KeySpec(
         "역할별 담당 도구",
@@ -726,6 +726,189 @@ def key_spec(key: str) -> KeySpec | None:
                        group=spec.group, unset=_HARNESS_MEMBER_UNSET.get(suffix),
                        choices="model" if suffix == "pro_model" else None)
     return spec
+
+
+
+# ctx 입력은 희망값이며 적용 기록은 독립 metadata를 대신하지 않는다.
+CTX_BUDGET_RELPATH = Path(".project_manager/.local/ctx-budget.json")
+CTX_INPUT_KEYS = tuple(f"harness.{name}.ctx_window_tokens" for name in ("claude", "codex", "opencode")) + (
+    "ctx.checkpoint_at_pct", "ctx.precompact_at_pct", "ctx.compact_at_pct")
+
+
+def ctx_input_values(values):
+    return {key: str(values.get(key) or default_for(key)).strip() for key in CTX_INPUT_KEYS}
+
+
+def ctx_environment_fingerprints():
+    """native 모델/provider 선택 환경의 바이트 지문. credential 값은 저장하지 않는다."""
+    import hashlib
+    keys = ("HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "CODEX_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "ANTHROPIC_MODEL", "ANTHROPIC_BASE_URL",
+            "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "AWS_PROFILE",
+            "ANTHROPIC_VERTEX_PROJECT_ID", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT",
+            "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX")
+    return {key: hashlib.sha256(os.environ[key].encode("utf-8")).hexdigest() if key in os.environ else None for key in keys}
+
+
+def _ctx_time(value):
+    from datetime import datetime, timezone
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("metadata 시각에 시간대가 없음")
+    return parsed.astimezone(timezone.utc)
+
+
+def resolve_ctx_capacity(window, ratios, identity, metadata, *, now=None):
+    """독립 원천의 의미를 한 번만 정규화하는 순수 leaf."""
+    from datetime import datetime, timezone
+    result = {"status": "unknown", "reason": "독립 모델 metadata 확인 불가", "W": window,
+              "C": None, "E": None, "P": None, "checkpoint": None, "precompact": None,
+              "identity": dict(identity), "metadata": metadata}
+    def integer(value):
+        if type(value) is not int or value <= 0:
+            raise ValueError("metadata 한도가 양의 정수가 아님")
+        return value
+    try:
+        integer(window)
+        if len(ratios) != 3 or any(type(p) is not int for p in ratios) or not 0 < ratios[0] < ratios[1] < ratios[2] < 100:
+            raise ValueError("ctx 비율 순서 오류")
+        if not isinstance(metadata, dict) or metadata.get("independent") is not True:
+            raise ValueError("독립 metadata 없음, native 적용값은 한도 근거가 아님")
+        for field in ("model", "provider", "profile"):
+            if field not in identity or not isinstance(identity[field], str) or metadata.get(field) != identity[field]:
+                raise ValueError(f"metadata {field} 정체 불일치")
+        if not identity["model"] or not identity["provider"]:
+            raise ValueError("선택 모델/provider 미확정")
+        if not metadata.get("source") or not metadata.get("generation"):
+            raise ValueError("metadata 원천/세대 없음")
+        observed = _ctx_time(metadata["observed_at"])
+        expiry = _ctx_time(metadata["valid_until"]) if metadata.get("valid_until") is not None else None
+        current = now if now is not None else datetime.now(timezone.utc)
+        if observed > current or (expiry is not None and current >= expiry):
+            raise ValueError("metadata 관측 시각/유효성 불일치")
+        semantics = metadata.get("semantics")
+        if semantics == "usable":
+            capacity = integer(metadata.get("usable"))
+        elif semantics == "context-percent":
+            percent = integer(metadata.get("effective_percent"))
+            if percent > 100:
+                raise ValueError("effective percent 범위 오류")
+            capacity = integer(metadata.get("context")) * percent // 100
+        elif semantics == "input-context-output":
+            context = integer(metadata.get("context"))
+            output = integer(metadata.get("effective_output"))
+            available = context - output
+            input_limit = metadata.get("input")
+            if input_limit is not None:
+                available = min(integer(input_limit), available)
+            capacity = available
+        elif semantics in ("input-reserved", "context-output"):
+            reserved = metadata.get("reserved" if semantics == "input-reserved" else "effective_output")
+            if type(reserved) is not int or reserved < 0:
+                raise ValueError("실제 예약 근거 없음")
+            capacity = integer(metadata.get("input" if semantics == "input-reserved" else "context")) - reserved
+        else:
+            raise ValueError("가용 창 의미 미확정 (max/alias/override 사용 불가)")
+        integer(capacity)
+        raw_context = metadata.get("context")
+        if raw_context is not None and (type(raw_context) is not int or capacity > raw_context):
+            raise ValueError("가용 창이 원본 context 한도를 초과함")
+        effective_output = metadata.get("effective_output")
+        if raw_context is not None and effective_output is not None:
+            if type(effective_output) is not int or effective_output < 0 or capacity + effective_output > raw_context:
+                raise ValueError("가용 창/실제 출력 예약이 원본 context 한도를 초과함")
+        effective = min(window, capacity)
+        result.update(status="known", reason=None, C=capacity, E=effective,
+                      checkpoint=effective*ratios[0]//100, precompact=effective*ratios[1]//100,
+                      P=effective*ratios[2]//100)
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        result["reason"] = str(exc)
+    return result
+
+
+def ctx_record_digest(record):
+    """파생 기록의 손상 검출 지문. 독립 metadata catalog로 사용하지 않는다."""
+    import hashlib
+    payload = {key: record[key] for key in ("schema", "inputs", "environment", "budgets", "fingerprints", "native_files", "native_commands")}
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _ctx_native_matches(record):
+    import shutil
+    for command, expected in record.get("native_commands", {}).items():
+        current = shutil.which(command)
+        if not current or str(Path(current).resolve()) != expected:
+            return False
+    for name, expected in record.get("native_files", {}).items():
+        stat = Path(name).stat()
+        actual = {key: str(getattr(stat, key)) for key in ("st_dev", "st_ino", "st_size", "st_mtime_ns")}
+        if actual != expected:
+            return False
+    return True
+
+
+def _ctx_fingerprints_match(fingerprints):
+    import hashlib
+    file_lock = _load_module_from_path(
+        Path(__file__).resolve().with_name("file_lock.py"), "file_lock.py",
+        verifier=_verify_engine_rev, cache=True,
+    )
+    for name, digest in fingerprints.items():
+        path = Path(name)
+        actual = hashlib.sha256(file_lock.read_bytes_shared(path)).hexdigest() if path.is_file() else None
+        if actual != digest:
+            return False
+    return True
+
+
+def read_ctx_budget(root, values, harness, identity=None):
+    """성공 적용 기록의 입력·원천·native 결속 확인. 조회는 쓰지 않는다."""
+    unknown = {"status": "unknown", "reason": "검증된 ctx 적용 기록 없음", "W": ctx_input_values(values)[f"harness.{harness}.ctx_window_tokens"],
+               "C": None, "E": None, "P": None}
+    try:
+        unknown["W"] = int(unknown["W"])
+        record = json.loads(_read_text_shared(Path(root) / CTX_BUDGET_RELPATH, encoding="utf-8"))
+        if record.get("projection_sha256") != ctx_record_digest(record):
+            raise ValueError("ctx 적용 기록 손상")
+        if record.get("environment") != ctx_environment_fingerprints():
+            raise ValueError("native 모델/provider 환경 변경")
+        if record.get("schema") != 1 or record.get("inputs") != ctx_input_values(values):
+            raise ValueError("ctx 입력 변경 또는 적용 기록 형식 불일치")
+        if not _ctx_native_matches(record):
+            raise ValueError("native 설치 정체/세대 변경")
+        if not _ctx_fingerprints_match(record["fingerprints"]):
+            raise ValueError("모델 선택/native/metadata 근거 변경")
+        row = record["budgets"][harness]
+        if not identity or any(identity.get(k) != row["identity"].get(k) for k in ("model", "provider", "profile")):
+            # OpenCode는 선언된 전체 모델 중 실제 세션 모델을 확인한다.
+            if not identity or not any(all(identity.get(k) == m["identity"].get(k) for k in ("model", "provider", "profile")) for m in row.get("models", [])):
+                raise ValueError("현재 세션 모델/provider/profile 확인 불가 또는 불일치")
+        ratios = tuple(int(record["inputs"][k]) for k in CTX_INPUT_KEYS[-3:])
+        models = row.get("models") or [row]
+        for model in models:
+            verified = resolve_ctx_capacity(row["W"], ratios, model["identity"], model["metadata"])
+            if verified["status"] != "known" or verified["C"] != model["C"]:
+                raise ValueError(verified["reason"] or "metadata 한도 변경")
+        capacity = min(model["C"] for model in models)
+        window = int(ctx_input_values(values)[f"harness.{harness}.ctx_window_tokens"])
+        effective = min(window, capacity)
+        expected = {"W": window, "C": capacity, "E": effective, "checkpoint": effective*ratios[0]//100,
+                    "precompact": effective*ratios[1]//100, "P": effective*ratios[2]//100}
+        if row.get("status") != "known" or any(type(row.get(k)) is not int or row[k] != value for k,value in expected.items()):
+            raise ValueError("ctx 적용 기록의 유효 기준/임계 손상")
+        return row
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
+        unknown["reason"] = str(exc)
+        return unknown
+
+
+def ctx_budget_status(root, values):
+    """관리자 읽기 전용 표시. 세션이 없는 조회는 기록의 선택 정체성으로 검사한다."""
+    try:
+        record = json.loads(_read_text_shared(Path(root) / CTX_BUDGET_RELPATH, encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        record = {}
+    return {h: read_ctx_budget(root, values, h, record.get("budgets", {}).get(h, {}).get("identity"))
+            for h in ("claude", "codex", "opencode")}
 
 
 def default_for(key: str) -> str | None:
@@ -1589,9 +1772,8 @@ def _sibling_mapping(filename: str, attribute: str) -> dict[str, tuple[str, ...]
 def _verify_engine_rev(sibling_module, sibling_filename):
     """로드한 형제 모듈의 baked ENGINE_REV 를 이 사본의 것과 대조한다 (fail-loud·skew→명시 에러).
 
-    이 모듈은 conf 판독 leaf 라 **읽기 경로**에는 형제 판정 계층을 두지 않는다(그 지연 로드는
-    코드 소유 면제다). CLI 진입(`main`)은 그 경로가 아니라 도구 실행이므로, CLI 를 가진 형제
-    모듈들과 같은 규칙으로 사본 skew 를 여기서 fail-loud 로 잡는다.
+    일반 conf 판독은 복구를 위한 코드 소유 면제를 유지한다. ctx 적용 기록의 근거 판독과
+    CLI 진입(`main`)은 같은 verifier로 사본 skew를 fail-loud로 검출한다.
     """
     got = getattr(sibling_module, "ENGINE_REV", None)
     if got != ENGINE_REV:

@@ -63,6 +63,7 @@ def _project(tmp_path: Path, *, conf: str = "", harnesses=("claude", "codex", "o
     root = tmp_path / "project"
     (root / ".project_manager").mkdir(parents=True)
     (root / ".project_manager" / "local.conf").write_text(conf, encoding="utf-8")
+    (root / ".project_manager/independent-runtime-fixture.json").write_text('{"generation":"fixture-generation","usable":200000}',encoding="utf-8")
     for harness in harnesses:
         template, relpath = TEMPLATE_FILES[harness]
         destination = root / relpath
@@ -96,6 +97,18 @@ def _only_insertions(old: str, new: str) -> bool:
     """글자 단위로 old → new 가 **넣기만** 했는가(지우거나 바꾼 글자 0)."""
     matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
     return all(tag in ("equal", "insert") for tag, *_ in matcher.get_opcodes())
+
+
+def _snapshot_fixture_bytes(root, *, excluded_names=()):
+    """격리 fixture 바이트를 기존 열거 seam으로 전수 확인한다."""
+    repo_files = _load('repo_owned_files')
+    entries = repo_files.list_repo_owned_entries(
+        root, '.', mode=repo_files.OWNED,
+        git_runner=lambda _args: (127, 'isolated fixture, filesystem oracle'),
+    )
+    return {entry.path.as_posix(): (root / entry.path).read_bytes()
+            for entry in entries if (root / entry.path).is_file()
+            and entry.path.name not in excluded_names}
 
 
 def _sha(path: Path) -> str:
@@ -134,25 +147,10 @@ def test_validate_collects_order_and_range_violations(pm_import):
 
 def test_validate_harness_specific_limits(pm_import):
     """claude 압축 지점 범위·codex 95 규칙은 그 파일이 있을 때만, 한도 검사는 있는 하네스만."""
-    ratios = {"ctx.checkpoint_at_pct": "30", "ctx.precompact_at_pct": "40",
-              "ctx.compact_at_pct": "50"}
-    claude = frozenset({"claude"})
-    for window in ("199998", "2000002"):                  # P 99999 · 1000001
-        with pytest.raises(pm_import.HarnessCtxError) as caught:
-            pm_import.validate_harness_ctx(
-                {**ratios, "harness.claude.ctx_window_tokens": window}, claude)
-        assert any("Claude Code 압축 지점" in line for line in caught.value.violations)
-    for window in ("200000", "2000000"):                  # P 100000 · 1000000 — 경계 포함
-        pm_import.validate_harness_ctx(
-            {**ratios, "harness.claude.ctx_window_tokens": window}, claude)
-
-    codex = frozenset({"codex"})
-    with pytest.raises(pm_import.HarnessCtxError) as caught:
-        pm_import.validate_harness_ctx({"ctx.compact_at_pct": "95"}, codex)
-    assert any("Codex" in line for line in caught.value.violations)
-    pm_import.validate_harness_ctx({"ctx.compact_at_pct": "94"}, codex)
-    # 역방향 — codex 파일이 없으면 95 는 거부 사유가 아니다.
-    pm_import.validate_harness_ctx({"ctx.compact_at_pct": "95"}, frozenset({"claude", "opencode"}))
+    # 입력 검사는 W만 검증한다. native P 범위는 C를 적용한 계획에서 검사한다.
+    for window in ("199998", "2000002", "200000", "2000000"):
+        pm_import.validate_harness_ctx({"harness.claude.ctx_window_tokens": window}, frozenset({"claude"}))
+    pm_import.validate_harness_ctx({"ctx.compact_at_pct": "95"}, frozenset({"codex"}))
 
     for harness in ("claude", "codex", "opencode"):
         key = f"harness.{harness}.ctx_window_tokens"
@@ -161,25 +159,33 @@ def test_validate_harness_specific_limits(pm_import):
                 pm_import.validate_harness_ctx({key: bad}, frozenset({harness}))
             assert any(f"`{key}={bad}`" in line for line in caught.value.violations)
     # 역방향 — 설정 파일이 없는 하네스의 한도는 검사하지 않는다(그 값은 어디에도 쓰이지 않는다).
-    pm_import.validate_harness_ctx({"harness.codex.ctx_window_tokens": "abc"}, claude)
+    pm_import.validate_harness_ctx({"harness.codex.ctx_window_tokens": "abc"}, frozenset({"claude"}))
 
 
 # ── AT-003 목표값 ────────────────────────────────────────────────────────────
 
 
-def test_targets_floor_and_reserved(pm_import):
-    targets = pm_import.harness_ctx_targets({}, {("ollama", "glm-5.2:cloud"): 32768})
+def test_targets_floor_and_reserved(pm_import,local_conf):
+    def budgets(window):
+        rows = {}
+        for h in ('claude','codex','opencode'):
+            identity={'model':'glm-5.2:cloud','provider':'ollama','profile':''}
+            metadata={**_t0932_metadata(identity,400000),'context':1000000,'output':128000,'effective_output':32000,'native_formula':'input-reserved'}
+            row=local_conf.resolve_ctx_capacity(window,(70,80,90),identity,metadata)
+            rows[h]={**row,'models':[row]}
+        return rows
+    targets = pm_import.harness_ctx_targets({}, {("ollama", "glm-5.2:cloud"): 32768}, budgets(200000))
 
     assert targets[".claude/settings.json"] == {("autoCompactWindow",): 180000}
     assert targets[".codex/config.toml"] == {
-        ("model_context_window",): 200000, ("model_auto_compact_token_limit",): 180000}
+        ("model_auto_compact_token_limit",): 180000}
     assert targets[".opencode/opencode.jsonc"] == {
-        (*GLM, "context"): 200000, (*GLM, "input"): 200000, (*GLM, "output"): 32768,
+        (*GLM, "context"): 1000000, (*GLM, "input"): 200000, (*GLM, "output"): 32768,
         ("compaction", "reserved"): 20000}
 
     odd = pm_import.harness_ctx_targets(
         {f"harness.{name}.ctx_window_tokens": "333333" for name in ("claude", "codex", "opencode")},
-        {})
+        {},budgets(333333))
     assert odd[".claude/settings.json"][("autoCompactWindow",)] == 299999      # 내림(반올림 300000 아님)
     assert odd[".codex/config.toml"][("model_auto_compact_token_limit",)] == 299999
     assert odd[".opencode/opencode.jsonc"][("compaction", "reserved")] == 33334
@@ -220,7 +226,7 @@ def test_apply_claude_settings_keeps_other_bytes(pm_import, tmp_path):
 def test_apply_codex_config_top_level_keys(pm_import, tmp_path):
     """두 키는 최상위에 들어간다 — 첫 표 뒤에 넣으면 `[features]` 아래 키가 된다."""
     shipped = TEMPLATE_FILES["codex"][0].read_text(encoding="utf-8")
-    managed = "model_context_window = 200000\nmodel_auto_compact_token_limit = 180000\n"
+    managed = "model_auto_compact_token_limit = 180000\n"
     assert shipped.count(managed) == 1
     # 앞 세대 채택자 파일: 한도 키 하나(900000)만 있고 뒤에 표가 하나 더 있다.
     previous = shipped.replace(managed, "model_auto_compact_token_limit = 900000\n", 1) + (
@@ -230,17 +236,16 @@ def test_apply_codex_config_top_level_keys(pm_import, tmp_path):
     path = root / ".codex" / "config.toml"
 
     lines = _apply(pm_import, root, config_dir)
-    assert lines == (".codex/config.toml model_context_window (없음) → 200000",
-                     ".codex/config.toml model_auto_compact_token_limit 900000 → 180000")
+    assert lines == (".codex/config.toml model_auto_compact_token_limit 900000 → 180000",)
     after = path.read_text(encoding="utf-8")
     document = tomllib.loads(after)
-    assert document["model_context_window"] == 200000
+    assert "model_context_window" not in document
     assert document["model_auto_compact_token_limit"] == 180000
     assert "model_context_window" not in document["features"]
     assert "model_context_window" not in document["tui"]
     assert after == previous.replace(
         "model_auto_compact_token_limit = 900000\n",
-        "model_auto_compact_token_limit = 180000\nmodel_context_window = 200000\n", 1), (
+        "model_auto_compact_token_limit = 180000\n", 1), (
         "값 자리·넣은 한 줄 밖의 바이트(주석 포함)가 바뀌었다")
     comments = [line for line in previous.splitlines() if line.lstrip().startswith("#")]
     assert [line for line in after.splitlines() if line.lstrip().startswith("#")] == comments
@@ -271,7 +276,7 @@ def test_apply_codex_config_crlf_and_quoted_table_headers(pm_import, tmp_path):
     CRLF 다. 인용 키에 `/`·`@`·`:`·한글이 든 표 머리는 표의 시작이다 — 그 표 안의 같은 이름 키는
     관리 키가 아니므로 바뀌지 않는다."""
     shipped = TEMPLATE_FILES["codex"][0].read_text(encoding="utf-8")
-    managed = "model_context_window = 200000\nmodel_auto_compact_token_limit = 180000\n"
+    managed = "model_auto_compact_token_limit = 180000\n"
     previous = shipped.replace(managed, "model_auto_compact_token_limit = 900000\n", 1)
     config_dir = _global_dir(tmp_path)
 
@@ -279,16 +284,15 @@ def test_apply_codex_config_crlf_and_quoted_table_headers(pm_import, tmp_path):
     root = _project(tmp_path / "crlf", harnesses=("codex",), texts={".codex/config.toml": crlf})
     path = root / ".codex" / "config.toml"
     assert _apply(pm_import, root, config_dir) == (
-        ".codex/config.toml model_context_window (없음) → 200000",
-        ".codex/config.toml model_auto_compact_token_limit 900000 → 180000")
+        ".codex/config.toml model_auto_compact_token_limit 900000 → 180000",)
     after = path.read_bytes().decode("utf-8")
     assert after == crlf.replace(
         "model_auto_compact_token_limit = 900000\r\n",
-        "model_auto_compact_token_limit = 180000\r\nmodel_context_window = 200000\r\n", 1), (
+        "model_auto_compact_token_limit = 180000\r\n", 1), (
         "값 자리·넣은 한 줄 밖의 바이트가 바뀌었거나 넣은 줄이 CRLF 가 아니다")
     document = tomllib.loads(after)
-    assert (document["model_context_window"], document["model_auto_compact_token_limit"]) == (
-        200000, 180000)
+    assert "model_context_window" not in document
+    assert document["model_auto_compact_token_limit"] == 180000
     assert all("model_context_window" not in table
                for table in document.values() if isinstance(table, dict))
     assert _apply(pm_import, root, config_dir) == ()
@@ -310,7 +314,7 @@ def test_apply_codex_config_crlf_and_quoted_table_headers(pm_import, tmp_path):
         after = (root / ".codex" / "config.toml").read_text(encoding="utf-8")
         assert after == old_generation.replace(
             "model_auto_compact_token_limit = 900000\n",
-            "model_auto_compact_token_limit = 180000\nmodel_context_window = 200000\n", 1), header
+            "model_auto_compact_token_limit = 180000\n", 1), header
         profile = next(iter(tomllib.loads(after)["profiles"].values()))
         assert profile == {"model_context_window": 128000}, header
 
@@ -333,21 +337,22 @@ def test_apply_opencode_writes_limits_for_every_config_model(pm_import, tmp_path
     lines = _apply(pm_import, root, config_dir)
 
     after = path.read_text(encoding="utf-8")
-    assert _only_insertions(before, after), "주석·다른 멤버 바이트를 지우거나 바꿨다"
+    restored = after.replace('"context": 232000', '"context": 200000', 1)
+    assert _only_insertions(before, restored), "관리 context 외의 주석·다른 멤버 바이트를 지우거나 바꿨다"
     document = _jsonc(pm_import, path)
     ollama = document["provider"]["ollama"]["models"]
-    assert ollama["glm-5.2:cloud"]["limit"] == {"context": 200000, "input": 200000, "output": 32768}
-    assert ollama["qwen3.8:27b-unc"]["limit"] == {"context": 200000, "input": 200000, "output": 32000}
+    assert ollama["glm-5.2:cloud"]["limit"] == {"context": 232000, "input": 200000, "output": 32768}
+    assert ollama["qwen3.8:27b-unc"]["limit"] == {"context": 232000, "input": 200000, "output": 32000}
     openrouter = document["provider"]["openrouter"]["models"]
     assert openrouter["anthropic/claude-x"]["limit"] == {
-        "context": 200000, "input": 200000, "output": 16000}
+        "context": 232000, "input": 200000, "output": 16000}
     assert set(openrouter) == {"anthropic/claude-x"}, "모델 id 를 슬래시에서 갈랐다"
     assert document["compaction"]["reserved"] == 20000
     for provider in document["provider"].values():
         for model in provider["models"].values():
             if "limit" in model:
                 assert {"context", "output"} <= set(model["limit"]), model
-    assert '.opencode/opencode.jsonc provider.ollama.models."qwen3.8:27b-unc".limit.context (없음) → 200000' in lines
+    assert '.opencode/opencode.jsonc provider.ollama.models."qwen3.8:27b-unc".limit.context (없음) → 232000' in lines
     assert ".opencode/opencode.jsonc provider.openrouter.models.anthropic/claude-x.limit.output (없음) → 16000" in lines
     assert {name: _sha(config_dir / name) for name in global_before} == global_before, (
         "opencode 전역 설정을 썼다")
@@ -401,14 +406,16 @@ def test_opencode_global_dir_resolution_and_isolation(pm_import, tmp_path, monke
 # ── AT-008 템플릿 고정점 ─────────────────────────────────────────────────────
 
 
-def test_shipped_templates_are_fixed_points_of_apply(pm_import, tmp_path):
+def test_shipped_defaults_and_resolved_native_fixed_point(pm_import, tmp_path):
     root = _project(tmp_path)
     config_dir = _global_dir(tmp_path)
     before = {relpath: (root / relpath).read_bytes() for _template, relpath in TEMPLATE_FILES.values()}
 
-    assert _apply(pm_import, root, config_dir, write=False) == ()
-    assert _apply(pm_import, root, config_dir) == ()
+    expected=('.opencode/opencode.jsonc provider.ollama.models."glm-5.2:cloud".limit.context 200000 → 232000',)
+    assert _apply(pm_import, root, config_dir, write=False) == expected
     assert {relpath: (root / relpath).read_bytes() for relpath in before} == before
+    assert _apply(pm_import, root, config_dir) == expected
+    assert _apply(pm_import, root, config_dir) == ()
 
     document = _jsonc(pm_import, TEMPLATE_FILES["opencode"][0])
     assert document["provider"]["ollama"]["models"]["glm-5.2:cloud"]["limit"] == {
@@ -652,3 +659,370 @@ def test_object_slots_are_checked_only_in_opencode_documents(pm_import, tmp_path
         _apply(pm_import, root, broken_dir)
     assert f"{broken_dir / 'opencode.json'} 의 `provider` 가 객체가 아닙니다" in str(caught.value)
     assert (root / ".opencode" / "opencode.jsonc").read_bytes() == before
+
+# T-0932 독립 metadata 및 동결 계획 계약
+@pytest.mark.parametrize('window,capacity,effective', [(150000,200000,150000),(200000,200000,200000),(600000,200000,200000),(333333,400000,333333)])
+def test_t0932_effective_budget(local_conf, window, capacity, effective):
+    identity = {'model':'fixture-model','provider':'fixture-provider','profile':''}
+    metadata = _t0932_metadata(identity, capacity)
+    result = local_conf.resolve_ctx_capacity(window, (80,90,94), identity, metadata)
+    assert result['status'] == 'known'
+    assert result['W'] == window and result['C'] == capacity and result['E'] == effective
+    assert (result['checkpoint'],result['precompact'],result['P']) == tuple(effective*p//100 for p in (80,90,94))
+
+
+def _t0932_metadata(identity, capacity=200000):
+    return {**identity, 'source':'independent-runtime','generation':'fixture-generation',
+            'observed_at':'2026-10-02T00:00:00+00:00','valid_until':'2099-01-01T00:00:00+00:00',
+            'independent':True,'semantics':'usable','usable':capacity,'context':1000000,
+            'output':32000,'effective_percent':95}
+
+
+@pytest.mark.parametrize('change', [ {'model':'other'}, {'provider':'other'}, {'profile':'other'},
+    {'independent':False}, {'usable':None}, {'generation':''}, {'valid_until':'2000-01-01T00:00:00+00:00'},
+    {'semantics':'max_context_window'}, {'usable':True} ])
+def test_t0932_metadata_identity(local_conf, change):
+    identity={'model':'fixture-model','provider':'fixture-provider','profile':''}
+    metadata={**_t0932_metadata(identity),**change}
+    result=local_conf.resolve_ctx_capacity(600000,(80,90,94),identity,metadata)
+    assert result['status']=='unknown' and result['E'] is None
+
+
+def test_t0932_metadata_identity_percent_once(local_conf):
+    identity={'model':'fixture-model','provider':'fixture-provider','profile':''}
+    metadata={**_t0932_metadata(identity),'semantics':'context-percent','context':272000,'effective_percent':95}
+    result=local_conf.resolve_ctx_capacity(600000,(80,90,94),identity,metadata)
+    assert result['C']==258400
+    metadata.update(semantics='usable',usable=258400)
+    assert local_conf.resolve_ctx_capacity(600000,(80,90,94),identity,metadata)['C']==258400
+
+
+def test_t0932_plan_no_write_unknown(pm_import,tmp_path,monkeypatch):
+    root=_project(tmp_path)
+    before=_snapshot_fixture_bytes(root)
+    monkeypatch.setattr(pm_import,'_read_harness_ctx_metadata',lambda *a,**kw: {'models':[], 'evidence':{}})
+    with pytest.raises(pm_import.HarnessCtxError,match='unknown'):
+        _apply(pm_import,root,_global_dir(tmp_path))
+    assert before==_snapshot_fixture_bytes(root)
+
+
+def _t0932_reader(pm_import,root,harness,documents,models,capacity=200000):
+    source=root/'.project_manager/independent-runtime-fixture.json'
+    if not source.exists():
+        source.write_text('{"generation":"fixture-generation","usable":200000}',encoding='utf-8')
+    identities=[{'model':model,'provider':provider,'profile':''} for provider,model in models] if harness=='opencode' else [{'model':'fixture-model','provider':'fixture-provider','profile':''}]
+    rows=[]
+    for identity in identities:
+        metadata=_t0932_metadata(identity,capacity)
+        metadata.update(native_formula='input-reserved',output=128000,effective_output=32000)
+        rows.append({'identity':identity,'metadata':metadata})
+    return {'models':rows,'evidence':{str(source.resolve()):_sha(source)}}
+
+
+def test_t0932_native_constraints_clamped_actual_entry(pm_import,tmp_path,monkeypatch):
+    root=_project(tmp_path,conf='harness.claude.ctx_window_tokens=600000\nharness.codex.ctx_window_tokens=600000\nctx.checkpoint_at_pct=80\nctx.precompact_at_pct=90\nctx.compact_at_pct=94\n')
+    monkeypatch.setattr(pm_import,'_read_harness_ctx_metadata',lambda *a:_t0932_reader(pm_import,*a))
+    _apply(pm_import,root,_global_dir(tmp_path))
+    assert json.loads((root/'.claude/settings.json').read_text(encoding='utf-8'))['autoCompactWindow']==188000
+    codex=tomllib.loads((root/'.codex/config.toml').read_text(encoding='utf-8'))
+    assert 'model_context_window' not in codex and codex['model_auto_compact_token_limit']==188000
+    oc=_jsonc(pm_import,root/'.opencode/opencode.jsonc')
+    assert oc['provider']['ollama']['models']['glm-5.2:cloud']['limit']=={'context':1000000,'input':200000,'output':32768}
+    assert oc['compaction']['reserved']==12000
+    assert 200000-oc['compaction']['reserved']==188000
+    assert 'harness.claude.ctx_window_tokens=600000' in (root/'.project_manager/local.conf').read_text(encoding='utf-8')
+
+
+@pytest.mark.parametrize('change',['conf','native','ledger','source','generation','model','provider','profile'])
+def test_t0932_plan_no_write_stale(pm_import,tmp_path,monkeypatch,change):
+    root=_project(tmp_path,harnesses=('claude',))
+    monkeypatch.setattr(pm_import,'_read_harness_ctx_metadata',lambda *a:_t0932_reader(pm_import,*a))
+    with pm_import._local_conf_write_lock(root/'.project_manager/local.conf'):
+        pass
+    plan=pm_import._prepare_harness_ctx(root,{'ctx.compact_at_pct':'94','delegate.enabled':'true'},opencode_config_dir=_global_dir(tmp_path),updates={'ctx.compact_at_pct':'94','delegate.enabled':'true'})
+    paths={'conf':root/'.project_manager/local.conf','native':root/'.claude/settings.json',
+           'ledger':root/pm_import.ADAPTER_BASELINE_RELPATH,'source':root/'.project_manager/independent-runtime-fixture.json'}
+    target=paths.get(change,paths['source'])
+    target.parent.mkdir(parents=True,exist_ok=True)
+    target.write_bytes((target.read_bytes() if target.exists() else b'')+change.encode())
+    before=_snapshot_fixture_bytes(root)
+    with pytest.raises(pm_import.HarnessCtxError,match='stale'):
+        pm_import._commit_harness_ctx(plan)
+    assert before==_snapshot_fixture_bytes(root)
+
+
+def test_t0932_plan_no_write_single_resolution_ctx_apply(pm_import,tmp_path,monkeypatch,capsys):
+    root=_project(tmp_path,conf='harness.claude.ctx_window_tokens=600000\n',harnesses=('claude',))
+    config=_load('pm_config');calls=[]
+    def reader(*a):
+        calls.append(a[1]);return _t0932_reader(pm_import,*a)
+    monkeypatch.setattr(pm_import,'_read_harness_ctx_metadata',reader)
+    from types import SimpleNamespace
+    rc=config.cmd_ctx_apply(SimpleNamespace(set=[('ctx.compact_at_pct','94')],json=True),pm_import=pm_import,dest_root=root)
+    assert rc==0 and calls==['claude']
+    result=json.loads(capsys.readouterr().out)
+    assert result['ctx_budget']['claude']['E']==200000
+    assert json.loads((root/'.claude/settings.json').read_text(encoding='utf-8'))['autoCompactWindow']==188000
+
+
+def test_t0932_native_constraints_opencode_min_and_unknown(pm_import,tmp_path,monkeypatch):
+    root=_project(tmp_path,harnesses=('opencode',),texts={'.opencode/opencode.jsonc':'{"provider":{"p":{"models":{"a":{},"b":{}}}}}'})
+    def reader(*a):
+        result=_t0932_reader(pm_import,*a,capacity=300000)
+        result['models'][1]['metadata']['usable']=150000
+        return result
+    monkeypatch.setattr(pm_import,'_read_harness_ctx_metadata',reader)
+    global_dir=_global_dir(tmp_path)
+    _apply(pm_import,root,global_dir)
+    doc=_jsonc(pm_import,root/'.opencode/opencode.jsonc')
+    assert {m['limit']['input'] for m in doc['provider']['p']['models'].values()}=={150000}
+    assert doc['compaction']['reserved']==15000
+    before=(root/'.opencode/opencode.jsonc').read_bytes()
+    def missing(*a):
+        result=reader(*a);result['models'].pop();return result
+    monkeypatch.setattr(pm_import,'_read_harness_ctx_metadata',missing)
+    with pytest.raises(pm_import.HarnessCtxError,match='집합'):_apply(pm_import,root,global_dir)
+    assert before==(root/'.opencode/opencode.jsonc').read_bytes()
+
+@pytest.fixture(autouse=True)
+def _legacy_independent_metadata(request,pm_import,monkeypatch):
+    if 't0932' in request.node.name:
+        return
+    def reader(*a):
+        result=_t0932_reader(pm_import,*a)
+        for row in result['models']:
+            row['metadata'].update(context=232000,output=128000)
+        return result
+    monkeypatch.setattr(pm_import,'_read_harness_ctx_metadata',reader)
+
+
+def _t0932_known_leaf(tmp_path):
+    """기존 밴드 fixture의 독립 고정 C. 실제 계획/기록 reader를 그대로 통과한다."""
+    from types import SimpleNamespace
+    module=_load('pm_import');leaf=_load('local_conf')
+    identity={'model':'fixture-model','provider':'fixture-provider','profile':''}
+    def read(_root,values,harness,_identity=None):
+        normalized=leaf.ctx_input_values(values)
+        # 입력/default 검사와 known native 적용 검사는 구분한다.
+        try:
+            window=int(normalized[f'harness.{harness}.ctx_window_tokens'])
+            ratios=tuple(int(normalized[k]) for k in leaf.CTX_INPUT_KEYS[-3:])
+        except ValueError:
+            return {'status':'unknown','E':None,'reason':'fixture 입력 오류'}
+        if window<=0:return {'status':'unknown','E':None,'reason':'fixture 입력 오류'}
+        if not 0<ratios[0]<ratios[1]<ratios[2]<100:
+            normalized.update(zip(leaf.CTX_INPUT_KEYS[-3:],('70','80','90')))
+        digest=hashlib.sha256(json.dumps([normalized,harness],sort_keys=True).encode()).hexdigest()[:16]
+        root=tmp_path/digest
+        if not root.exists():
+            root=_project(root,conf=''.join(f'{k}={v}\n' for k,v in normalized.items()),harnesses=(harness,))
+        else:root=root/'project'
+        def reader(*args):
+            snapshot=_t0932_reader(module,*args,capacity=2000000)
+            for row in snapshot['models']:row['metadata'].update(context=3000000)
+            return snapshot
+        module._read_harness_ctx_metadata=reader
+        if not (root/leaf.CTX_BUDGET_RELPATH).exists():
+            module.apply_harness_ctx(root,write=True,opencode_config_dir=root/'global')
+        row=leaf.read_ctx_budget(root,normalized,harness,identity if harness!='opencode' else {'model':'glm-5.2:cloud','provider':'ollama','profile':''})
+        return row
+    return SimpleNamespace(read_ctx_budget=read),identity
+
+
+def _t0932_install_budget_fixture(root,values=None,harness='claude',capacity=2000000):
+    """격리 런타임 fixture에 고정 독립 C를 실제 적용한 기록을 설치한다."""
+    root=Path(root);leaf=_load('local_conf');module=_load('pm_import')
+    values=values if values is not None else leaf.load(root/'.project_manager/local.conf').values
+    conf=root/'.project_manager/local.conf'
+    if not conf.exists():
+        conf.parent.mkdir(parents=True,exist_ok=True)
+        conf.write_text(''.join(f'{k}={v}\n' for k,v in values.items()),encoding='utf-8')
+    native=root/TEMPLATE_FILES[harness][1]
+    if not native.exists():
+        native.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(TEMPLATE_FILES[harness][0],native)
+    source=root/'.project_manager/independent-runtime-fixture.json'
+    source.parent.mkdir(parents=True,exist_ok=True)
+    source.write_text(json.dumps({'generation':'fixture-generation','usable':capacity}),encoding='utf-8')
+    def reader(*a):
+        result=_t0932_reader(module,*a,capacity=capacity)
+        for row in result['models']:row['metadata'].update(context=3000000)
+        return result
+    module._read_harness_ctx_metadata=reader
+    tools=root/'.project_manager/tools'
+    tools.mkdir(parents=True,exist_ok=True)
+    for name in ('local_conf.py','repo_owned_files.py','file_lock.py','console_encoding.py','pm_relay.py'):
+        if not (tools/name).exists():shutil.copyfile(TOOLS/name,tools/name)
+    module._apply_harness_ctx_values(root,values,write=True,opencode_config_dir=root/'global')
+    return {'model':'fixture-model','provider':'fixture-provider','profile':''} if harness!='opencode' else {'model':'glm-5.2:cloud','provider':'ollama','profile':''}
+
+
+@pytest.mark.parametrize('semantics,raw',[
+    ('input-reserved',{'input':232000,'reserved':32000,'context':262144,'output':128000}),
+    ('context-output',{'context':232000,'effective_output':32000,'output':128000}),
+    ('usable',{'usable':200000,'context':262144,'output':128000,'reserved':32000}),
+])
+def test_t0932_metadata_identity_reservation_semantics(local_conf,semantics,raw):
+    identity={'model':'fixture-model','provider':'fixture-provider','profile':''}
+    result=local_conf.resolve_ctx_capacity(600000,(80,90,94),identity,{**_t0932_metadata(identity),**raw,'semantics':semantics})
+    assert (result['C'],result['E'],result['P'])==(200000,200000,188000)
+
+
+def test_t0932_native_constraints_claude_range_after_clamp(pm_import,tmp_path,monkeypatch):
+    root=_project(tmp_path,harnesses=('claude',),conf='harness.claude.ctx_window_tokens=600000\n')
+    monkeypatch.setattr(pm_import,'_read_harness_ctx_metadata',lambda *a:_t0932_reader(pm_import,*a,capacity=100000))
+    before=_snapshot_fixture_bytes(root)
+    with pytest.raises(pm_import.HarnessCtxError,match='100000~1000000'):_apply(pm_import,root,_global_dir(tmp_path))
+    assert before==_snapshot_fixture_bytes(root)
+
+
+def test_t0932_plan_no_write_native_provider_environment(pm_import,tmp_path,monkeypatch):
+    root=_project(tmp_path,harnesses=('claude',))
+    monkeypatch.setattr(pm_import,'_read_harness_ctx_metadata',lambda *a:_t0932_reader(pm_import,*a))
+    plan=pm_import._prepare_harness_ctx(root,{},opencode_config_dir=_global_dir(tmp_path))
+    before=_snapshot_fixture_bytes(root, excluded_names=('local-conf.lock',))
+    monkeypatch.setenv('CLAUDE_CODE_USE_BEDROCK','1')
+    with pytest.raises(pm_import.HarnessCtxError,match='환경 변경'):pm_import._commit_harness_ctx(plan)
+    assert before==_snapshot_fixture_bytes(root, excluded_names=('local-conf.lock',))
+
+
+def test_t0932_native_constraints_output_reservation_insufficient(pm_import,tmp_path,monkeypatch):
+    root=_project(tmp_path,harnesses=('opencode',))
+    def reader(*a):
+        result=_t0932_reader(pm_import,*a)
+        for row in result['models']:row['metadata']['context']=200000
+        return result
+    monkeypatch.setattr(pm_import,'_read_harness_ctx_metadata',reader)
+    before=_snapshot_fixture_bytes(root)
+    with pytest.raises(pm_import.HarnessCtxError,match='native encoding|출력 예약'):_apply(pm_import,root,_global_dir(tmp_path))
+    assert before==_snapshot_fixture_bytes(root)
+
+
+def test_t0932_metadata_identity_damaged_record(pm_import,local_conf,tmp_path,monkeypatch):
+    root=_project(tmp_path,harnesses=('claude',),conf='harness.claude.ctx_window_tokens=600000\n')
+    monkeypatch.setattr(pm_import,'_read_harness_ctx_metadata',lambda *a:_t0932_reader(pm_import,*a))
+    _apply(pm_import,root,_global_dir(tmp_path))
+    path=root/local_conf.CTX_BUDGET_RELPATH
+    record=json.loads(path.read_text(encoding='utf-8'));row=record['budgets']['claude'];identity=row['identity']
+    row['E']=600000
+    path.write_text(json.dumps(record), encoding='utf-8')
+    assert local_conf.read_ctx_budget(root,{'harness.claude.ctx_window_tokens':'600000'},'claude',identity)['status']=='unknown'
+    record['projection_sha256']=local_conf.ctx_record_digest(record)
+    path.write_text(json.dumps(record), encoding='utf-8')
+    assert local_conf.read_ctx_budget(root,{'harness.claude.ctx_window_tokens':'600000'},'claude',identity)['status']=='unknown'
+
+
+def test_t0932_native_constraints_global_selection_is_a_target(pm_import,tmp_path,monkeypatch):
+    root=_project(tmp_path,harnesses=('opencode',))
+    global_dir=_global_dir(tmp_path,{'opencode.json':'{"model":"another/selected"}'})
+    monkeypatch.setattr(pm_import,'_read_harness_ctx_metadata',lambda *a:_t0932_reader(pm_import,*a))
+    _apply(pm_import,root,global_dir)
+    document=_jsonc(pm_import,root/'.opencode/opencode.jsonc')
+    assert document['provider']['another']['models']['selected']['limit']['input']==200000
+    before=(root/'.opencode/opencode.jsonc').read_bytes()
+    def missing(*a):
+        snapshot=_t0932_reader(pm_import,*a)
+        snapshot['models']=[m for m in snapshot['models'] if m['identity']['provider']!='another']
+        return snapshot
+    monkeypatch.setattr(pm_import,'_read_harness_ctx_metadata',missing)
+    with pytest.raises(pm_import.HarnessCtxError,match='집합'):_apply(pm_import,root,global_dir)
+    assert (root/'.opencode/opencode.jsonc').read_bytes()==before
+
+
+def _t0932_native_install(tmp_path,monkeypatch,harness):
+    package=tmp_path/(harness+'-installation');binary=package/'bin'/('codex' if harness=='codex' else 'opencode.exe')
+    binary.parent.mkdir(parents=True)
+    if harness=='codex':
+        binary.write_bytes(b'models-cache-v1')
+        (package/'codex-package.json').write_text(json.dumps({'layoutVersion':1,'version':'0.159.3','entrypoint':'bin/codex'}), encoding='utf-8')
+    else:
+        # 실제 1.18.34 byte-read의 overflow 및 getter 식, native 실행은 하지 않는다.
+        binary.write_bytes(b'S(exports,{maxOutputTokens:()=>yy,OUTPUT_TOKEN_MAX:()=>V7});var V7=32000;function yy($,Z=V7){return Math.min($.limit.output,Z)||Z}function vn(e){let o=e.model.limit.context;let l=e.cfg.compaction?.reserved??Math.min(20000,yy(e.model,e.outputTokenMax));return e.model.limit.input?Math.max(0,e.model.limit.input-l):Math.max(0,o-yy(e.model,e.outputTokenMax))}')
+        (package/'package.json').write_text(json.dumps({'name':'opencode-ai','version':'1.18.34','bin':{'opencode':'bin/opencode.exe'}}), encoding='utf-8')
+    original=shutil.which
+    monkeypatch.setattr(shutil,'which',lambda name,*a,**kw:str(binary) if name==harness else original(name,*a,**kw))
+    return binary
+
+
+def _t0932_codex_native_catalog(tmp_path,monkeypatch):
+    from datetime import datetime,timezone
+    _t0932_native_install(tmp_path,monkeypatch,'codex')
+    home=tmp_path/'codex-native-home';home.mkdir();monkeypatch.setenv('CODEX_HOME',str(home))
+    provider={'name':'Fixture','base_url':'https://fixture.example/v1','model_catalog_url':'https://fixture.example/models','requires_openai_auth':False}
+    # Native Rust identity의 독립 oracle, 제품 identity 함수를 호출하지 않는다.
+    fields=[b'models-cache-v1',b'Fixture',b'https://fixture.example/v1',b'model_catalog_url',b'https://fixture.example/models',(0).to_bytes(8,'little'),b'\x00',b'\x00',b'None',(0).to_bytes(8,'little')]
+    digest=hashlib.sha256()
+    for field in fields:digest.update(len(field).to_bytes(8,'little'));digest.update(field)
+    catalog={'identity':digest.hexdigest(),'client_version':'0.159.3','fetched_at':datetime.now(timezone.utc).isoformat(),'etag':'native-generation',
+        'models':[{'slug':'exact-model','context_window':272000,'effective_context_window_percent':95,'max_context_window':872000,'supports_experimental_context':False}]}
+    (home/'config.toml').write_text('model="exact-model"\nprofile="team"\n[profiles.team]\nmodel_provider="fixture"\n[profiles.inactive]\nmodel_context_window=128000\n[model_providers.fixture]\nname="Fixture"\nbase_url="https://fixture.example/v1"\nmodel_catalog_url="https://fixture.example/models"\nrequires_openai_auth=false\n', encoding='utf-8')
+    (home/'models_cache.json').write_text(json.dumps(catalog), encoding='utf-8')
+    return home,catalog
+
+
+@pytest.mark.parametrize('bad',[None,'identity','version','expired','model','override'])
+def test_t0932_metadata_identity_actual_codex_format(pm_import,tmp_path,monkeypatch,bad):
+    from datetime import datetime,timedelta,timezone
+    root=_project(tmp_path,harnesses=('codex',),conf='harness.codex.ctx_window_tokens=600000\n')
+    home,catalog=_t0932_codex_native_catalog(tmp_path,monkeypatch)
+    global_before=(home/'config.toml').read_bytes()
+    if bad=='identity':catalog['identity']=None
+    if bad=='version':catalog['client_version']='old-version'
+    if bad=='expired':catalog['fetched_at']=(datetime.now(timezone.utc)-timedelta(seconds=301)).isoformat()
+    if bad=='model':catalog['models'][0]['slug']='similar-model'
+    if bad=='override':(home/'config.toml').write_text('model_context_window=600000\n'+(home/'config.toml').read_text(encoding='utf-8'), encoding='utf-8')
+    (home/'models_cache.json').write_text(json.dumps(catalog), encoding='utf-8')
+    before=_snapshot_fixture_bytes(root)
+    if bad:
+        with pytest.raises(pm_import.HarnessCtxError):_apply(pm_import,root,_global_dir(tmp_path))
+        assert before==_snapshot_fixture_bytes(root)
+    else:
+        _apply(pm_import,root,_global_dir(tmp_path))
+        record=json.loads((root/'.project_manager/.local/ctx-budget.json').read_text(encoding='utf-8'))
+        assert record['budgets']['codex']['C']==258400
+        assert (home/'config.toml').read_bytes()==global_before
+
+
+@pytest.mark.parametrize('input_limit,capacity',[(192000,192000),(None,230144)])
+def test_t0932_native_constraints_actual_opencode_format(pm_import,tmp_path,monkeypatch,input_limit,capacity):
+    _t0932_native_install(tmp_path,monkeypatch,'opencode')
+    cache=tmp_path/'cache';(cache/'opencode').mkdir(parents=True);monkeypatch.setenv('XDG_CACHE_HOME',str(cache))
+    limit={'context':262144,'output':128000}
+    if input_limit is not None:limit['input']=input_limit
+    registry={'p':{'id':'p','api':'https://fixture.example','models':{'m':{'id':'m','limit':limit}}}}
+    source=cache/'opencode/models.json';source.write_text(json.dumps(registry), encoding='utf-8');source_before=source.read_bytes()
+    root=_project(tmp_path,harnesses=('opencode',),conf='harness.opencode.ctx_window_tokens=600000\nctx.checkpoint_at_pct=80\nctx.precompact_at_pct=90\nctx.compact_at_pct=94\n',texts={'.opencode/opencode.jsonc':'{"model":"p/m","provider":{"p":{"models":{"m":{"limit":{"output":32768}}}}}}'})
+    _apply(pm_import,root,_global_dir(tmp_path))
+    record=json.loads((root/'.project_manager/.local/ctx-budget.json').read_text(encoding='utf-8'));row=record['budgets']['opencode']
+    assert (row['C'],row['E'],row['P'])==(capacity,capacity,capacity*94//100)
+    document=_jsonc(pm_import,root/'.opencode/opencode.jsonc')
+    encoded=document['provider']['p']['models']['m']['limit']
+    assert encoded['context']==262144 and encoded['input']-document['compaction']['reserved']==row['P']
+    assert encoded['output']==32768 and source.read_bytes()==source_before
+    before=(root/'.opencode/opencode.jsonc').read_bytes();registry['p']['models'].clear();source.write_text(json.dumps(registry), encoding='utf-8')
+    with pytest.raises(pm_import.HarnessCtxError,match='정확 모델 없음'):_apply(pm_import,root,_global_dir(tmp_path/'retry'))
+    assert (root/'.opencode/opencode.jsonc').read_bytes()==before
+
+
+def test_t0932_metadata_identity_actual_claude_missing_producer(pm_import,tmp_path):
+    root=_project(tmp_path,harnesses=('claude',))
+    before=(root/'.claude/settings.json').read_bytes()
+    with pytest.raises(pm_import.HarnessCtxError,match='기존 실행정보'):_apply(pm_import,root,_global_dir(tmp_path))
+    assert (root/'.claude/settings.json').read_bytes()==before
+
+
+@pytest.mark.parametrize('field', ['provider', 'model'])
+def test_t0932_metadata_identity_registry_id_mismatch(pm_import, tmp_path, monkeypatch, field):
+    _t0932_native_install(tmp_path, monkeypatch, 'opencode')
+    cache = tmp_path / 'cache/opencode'
+    cache.mkdir(parents=True)
+    monkeypatch.setenv('XDG_CACHE_HOME', str(cache.parent))
+    provider_id = 'other-provider' if field == 'provider' else 'p'
+    model_id = 'other-model' if field == 'model' else 'm'
+    registry = {'p': {'id': provider_id, 'api': 'https://fixture.example',
+                     'models': {'m': {'id': model_id, 'limit': {'context': 262144, 'output': 128000}}}}}
+    (cache / 'models.json').write_text(json.dumps(registry), encoding='utf-8')
+    root = _project(tmp_path, harnesses=('opencode',), texts={'.opencode/opencode.jsonc': '{"model":"p/m","provider":{"p":{"models":{"m":{}}}}}'})
+    before = _snapshot_fixture_bytes(root)
+    with pytest.raises(pm_import.HarnessCtxError, match='정체'):
+        _apply(pm_import, root, _global_dir(tmp_path))
+    assert _snapshot_fixture_bytes(root) == before

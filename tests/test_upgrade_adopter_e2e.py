@@ -111,8 +111,9 @@ def t0927_old_adopter(t0927_installed_adopter):
 
 
 def _t0927_direct_update(dest):
+    from _manager_home import known_ctx_argv
     return subprocess.run(
-        [sys.executable, str(dest / ".project_manager/tools/pm_config.py"), "update"],
+        known_ctx_argv([sys.executable, str(dest / ".project_manager/tools/pm_config.py"), "update"]),
         cwd=dest, capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=300, env={**os.environ, "PM_NONINTERACTIVE": "1"})
 
@@ -208,9 +209,10 @@ def _run_pm_update(dest: Path, *args: str) -> subprocess.CompletedProcess:
 
     upstream 은 명시 `--from REPO` 다 — fresh 인스턴스의 local.conf `upstream.path=` 은 URL 이라
     엔진이 자동 진행하지 않는다(로컬 checkout 명시가 채택자의 실제 절차)."""
+    from _manager_home import known_ctx_argv
     proc = subprocess.run(
-        [sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"),
-         "--from", str(REPO), *args],
+        known_ctx_argv([sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"),
+         "--from", str(REPO), *args]),
         cwd=str(dest),
         capture_output=True,
         text=True,
@@ -670,8 +672,9 @@ _LEGACY_BLOCKING_HOOKS = '{"hooks": {"PreCompact": [{"command": "legacy-block"}]
 
 def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.CompletedProcess:
     """채택자 사본 CLI를 hermetic subprocess로 실행 — 성공/실패 판정은 호출 테스트가 한다."""
+    from _manager_home import known_ctx_argv
     return subprocess.run(
-        [sys.executable, str(dest / ".project_manager" / "tools" / tool), *args],
+        known_ctx_argv([sys.executable, str(dest / ".project_manager" / "tools" / tool), *args]),
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env={**os.environ, "PM_NONINTERACTIVE": "1"}, timeout=300,
     )
@@ -1458,13 +1461,14 @@ def test_legacy_updater_run1_delivers_new_reviewer_and_run2_retires_old(tmp_path
     """구 full rc2 → updater 단독 self-delivery → 신 full 1회가 rename을 수렴한다."""
     legacy_framework = _make_pre_t0876_codex_framework(tmp_path)
     dest = tmp_path / "legacy-reviewer-adopter"
+    from _manager_home import known_ctx_argv
     installed = subprocess.run(
-        [
+        known_ctx_argv([
             sys.executable,
             str(legacy_framework / ".project_manager" / "tools" / "pm_import.py"),
             "--new", str(dest), "--harness", "codex", "--name", _ADOPTER_NAME,
             "--fill", "manual", "--from", str(legacy_framework),
-        ],
+        ]),
         cwd=str(legacy_framework), capture_output=True, text=True, encoding="utf-8",
         errors="replace", env={**os.environ, "PM_NONINTERACTIVE": "1"}, timeout=300,
     )
@@ -1985,8 +1989,9 @@ def _parse_conf(path: Path) -> dict[str, str]:
 
 def _raw_pm_update(dest: Path, *args: str) -> subprocess.CompletedProcess:
     """rc 를 판정하지 않는 pm_update 실행 — 실패 경로의 출력까지 본다."""
+    from _manager_home import known_ctx_argv
     return subprocess.run(
-        [sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"), *args],
+        known_ctx_argv([sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"), *args]),
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env={**os.environ, "PM_NONINTERACTIVE": "1"}, timeout=300,
     )
@@ -2069,7 +2074,9 @@ def test_upgrade_adopter_legacy_conf_is_guided_then_replaced_then_gates_run(tmp_
     assert settled.returncode == 0, settled.stderr
     assert "→ `" not in settled.stdout, "교체 뒤에도 키 지목이 남았다"
     # 옛 키가 사라진 실행은 사용 한도를 설정 파일에 반영한다(543210 × 90% = 488889).
-    assert ".claude/settings.json autoCompactWindow 180000 → 488889" in settled.stdout
+    ctx = json.loads((dest / '.project_manager/.local/ctx-budget.json').read_text(encoding='utf-8'))['budgets']['claude']
+    assert (ctx['W'], ctx['C'], ctx['E'], ctx['P']) == (543210, 200000, 200000, 180000)
+    assert json.loads((dest / '.claude/settings.json').read_text(encoding='utf-8'))['autoCompactWindow'] == 180000
 
 
 def test_public_update_procedure_documents_the_mandatory_zero_change_run2():

@@ -221,6 +221,33 @@ def _load_file_lock():
     )
 
 
+def _load_ctx_leaf():
+    path = Path(__file__).resolve().with_name("local_conf.py")
+    _require_engine_sibling(path, "local_conf.py")
+    return _load_module_from_path(path, "local_conf.py", verifier=_verify_engine_rev, cache=True)
+
+
+def resolve_ctx_budget(root, conf, harness, identity=None):
+    result = _load_ctx_leaf().read_ctx_budget(root, conf, harness, identity)
+    if result["status"] != "known":
+        return None
+    return result["E"]
+
+
+def bound_ctx_budget(root, harness, identity):
+    leaf = _load_ctx_leaf()
+    values = leaf.load(Path(root) / ".project_manager/local.conf").values
+    budget = resolve_ctx_budget(root, values, harness, identity)
+    try:
+        precompact = int(leaf.ctx_input_values(values)["ctx.precompact_at_pct"])
+    except ValueError:
+        if budget is not None:
+            raise
+        precompact = int(leaf.default_for("ctx.precompact_at_pct"))
+    validate_relay_budget(budget, precompact)
+    return budget, precompact
+
+
 # marker 디렉토리 — ctx_stop_hook.py 의 _MARKER_DIR 와 동일해야 한다(읽기 측·hook 이 쓰는 측).
 MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"
 
@@ -297,8 +324,9 @@ def validate_relay_budget(budget: int | None, precompact_at_pct: int) -> None:
             f"[relay] ctx 예산 {budget} tok·압축 임박 경고 {precompact_at_pct}%의 유효 회전 임계 "
             f"{effective_threshold:g} tok은 bootstrap 실측 상한 "
             f"{RELAY_BOOTSTRAP_COST_TOKENS} tok 이하여서 즉시 세션 회전 위험. "
-            "하네스 사용 한도(`harness.<이름>.ctx_window_tokens`)를 높이거나 "
-            "`ctx.precompact_at_pct` 를 높여라."
+            "희망 기준(`harness.<이름>.ctx_window_tokens`)은 실제 C 이하로 제한됩니다. "
+            "독립 모델의 실제 가용 한도와 적용 기준을 확인하고 "
+            "기존 모델 선택과 `ctx.precompact_at_pct` 설정으로 bootstrap 예산을 확보하십시오."
         )
 
 # 위임/추가 리뷰 raw 위치 장부. 두 실행 표면이 같은 파일을 갱신하므로 파일락 아래

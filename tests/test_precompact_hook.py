@@ -79,6 +79,13 @@ def _declare_slot_git_pointer(pm_home: Path, worktree: Path, repo: str = "produc
     (git_dir / "commondir").write_text("../..\n", encoding="utf-8")
 
 
+def _known_budget_payload(root, payload):
+    """기존 known band 시험의 독립 cap와 실제 적용 기록을 명시 설치한다."""
+    from test_harness_ctx_limits import _t0932_install_budget_fixture
+    identity = _t0932_install_budget_fixture(root, capacity=2000000)
+    return {**payload, 'model': {'id': identity['model']}, 'model_provider': identity['provider'], 'profile': identity['profile']}
+
+
 def _run_hook(hook_path: Path, payload: dict | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [_SH, str(hook_path)], input=json.dumps(payload or {}),
@@ -182,6 +189,7 @@ def test_band_missed_precompact_durably_records_remedy_and_reinjects_after_compa
         "transcript_path": str(transcript),
         "trigger": "auto",
     }
+    payload = _known_budget_payload(tmp_path, payload)
 
     pre = _run_hook(hook, payload)
 
@@ -224,6 +232,7 @@ def test_duplicate_postcompact_preserves_unconsumed_window_mismatch_recovery(tmp
         "transcript_path": str(transcript),
         "trigger": "auto",
     }
+    payload = _known_budget_payload(tmp_path, payload)
 
     assert _run_hook(hook, payload).returncode == 0
     posts = [
@@ -254,6 +263,7 @@ def test_duplicate_postcompact_without_transcript_preserves_unconsumed_mismatch(
         "session_id": "no-transcript-duplicate-post",
         "trigger": "auto",
     }
+    payload = _known_budget_payload(tmp_path, payload)
 
     assert _run_hook(hook, payload).returncode == 0
     posts = [
@@ -299,6 +309,7 @@ def test_precompact_retries_diagnostic_after_prior_process_died_post_claim(tmp_p
         "transcript_path": str(transcript),
         "trigger": "auto",
     }
+    payload = _known_budget_payload(tmp_path, payload)
 
     rerun = _run_hook(hook, payload)
 

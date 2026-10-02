@@ -798,7 +798,7 @@ def test_claude_main_resolves_and_injects_ctx_config(driver_mod, monkeypatch, tm
     })
     monkeypatch.setattr(
         driver_mod.ctx_guard, "resolve_budget",
-        lambda conf, harness: 123_456 if harness == "claude" else 0,
+        lambda conf, harness, **kw: 123_456 if harness == "claude" else 0,
     )
     monkeypatch.setattr(
         driver_mod.ctx_guard, "ctx_thresholds",
@@ -1256,3 +1256,32 @@ def test_live_spawn_relay_swap_smoke(orch, driver_mod, tmp_path):
     assert new_observed == new_sid, "swap 후 새 세션 sid 예측 실패"
     swap_reply = driver.relay_turn(new_observed, "Reply with only the prior code word.")
     assert "MANGO77" in swap_reply.upper(), f"swap 후 relay 실패 — reply={swap_reply!r}"
+
+
+@pytest.mark.parametrize('harness,flavor,klass',[('claude','claude_code','ClaudeCliDriver'),('codex','codex','CodexCliDriver'),('opencode','opencode','OpencodeCliDriver')])
+def test_t0932_effective_budget_driver_binding(orch,tmp_path,harness,flavor,klass):
+    from test_harness_ctx_limits import _t0932_install_budget_fixture
+    root=tmp_path/harness;root.mkdir()
+    conf={f'harness.{harness}.ctx_window_tokens':'600000','ctx.checkpoint_at_pct':'80','ctx.precompact_at_pct':'90','ctx.compact_at_pct':'94'}
+    identity=_t0932_install_budget_fixture(root,conf,harness=harness,capacity=200000)
+    module=_load('t0932_driver_'+harness,REPO/'templates'/flavor/f'.{harness}'/f'pm_orch_{harness}.py')
+    marked=[]
+    def writer(*args):marked.append(args);return True
+    kwargs={'ctx_budget':None,'precompact_at_pct':90,'root':root,'mark_stop':writer,
+            'budget_reader':lambda actual:orch.bound_ctx_budget(root,harness,actual)}
+    if harness=='codex':kwargs['mark_ctx_if_over']=orch.mark_ctx_post_turn_if_over
+    driver=getattr(module,klass)(lambda lines:(None,None,None),**kwargs)
+    driver._budget_identity=identity
+    driver._maybe_mark_ctx('same-session',{'input':180000,'output':0} if harness=='codex' else 180000)
+    assert marked and driver._ctx_budget==200000
+    count=len(marked)
+    driver._budget_identity={**identity,'model':'other'}
+    driver._maybe_mark_ctx('new-session',{'input':180000,'output':0} if harness=='codex' else 180000)
+    assert len(marked)==count and driver._ctx_budget is None
+
+
+def test_t0932_effective_budget_bootstrap_minimum(orch,tmp_path):
+    from test_harness_ctx_limits import _t0932_install_budget_fixture
+    identity=_t0932_install_budget_fixture(tmp_path,{'harness.codex.ctx_window_tokens':'600000'},harness='codex',capacity=30000)
+    with pytest.raises(ValueError,match='40400'):
+        orch.bound_ctx_budget(tmp_path,'codex',identity)

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import inspect
 import os
 import shutil
 import subprocess
@@ -79,6 +80,91 @@ def _run(argv: list[str], *, cwd: Path | None = None) -> subprocess.CompletedPro
     return completed
 
 
+# 자식 fixture는 HOME이 격리돼도 pytest 설치 위치에 의존하지 않는 stdlib mock이다.
+_KNOWN_CTX_READER_PY = "_CTX_FIXTURE_SOURCE_ROOT=" + repr(str(REPO.resolve())) + "\n" + r"""
+from pathlib import Path
+import json
+
+def fixture_reader(module,capacity=200000,context=1000000):
+    def reader(root,harness,documents,models):
+        if Path(root).resolve() == Path(_CTX_FIXTURE_SOURCE_ROOT).resolve():
+            raise ValueError('fixture source root write refused')
+        source=Path(root)/'.project_manager/independent-runtime-fixture.json'
+        source.parent.mkdir(parents=True,exist_ok=True)
+        if not source.exists():
+            source.write_text(json.dumps({'generation':'fixture-generation','usable':capacity,'context':context}),encoding='utf-8')
+        identities=[{'model':m,'provider':p,'profile':''} for p,m in models] if harness=='opencode' else [{'model':'fixture-model','provider':'fixture-provider','profile':''}]
+        rows=[]
+        for identity in identities:
+            metadata={**identity,'source':'independent-runtime-fixture','generation':'fixture-generation',
+                'observed_at':'2026-10-02T00:00:00+00:00','valid_until':'2099-01-01T00:00:00+00:00',
+                'independent':True,'semantics':'usable','usable':capacity,'context':context,'output':128000,
+                'effective_output':32000,'native_formula':'input-reserved'}
+            rows.append({'identity':identity,'metadata':metadata})
+        return {'models':rows,'evidence':{str(source.resolve()):module.content_sha256(source.read_bytes())}}
+    return reader
+"""
+
+def known_ctx_module(module, *, capacity=200000, context=1000000):
+    """정상 unit 설치 factory가 명시 호출하는 독립 mock, verified loader는 먼저 실행한다."""
+    namespace = {}
+    exec(_KNOWN_CTX_READER_PY, namespace)
+    if hasattr(module, '_read_harness_ctx_metadata'):
+        module._read_harness_ctx_metadata = namespace['fixture_reader'](module, capacity, context)
+    if getattr(module, '_t0932_known_ctx_loader', False):
+        return module
+    for name in ('_load_pm_import', '_load_pm_update', '_load_module'):
+        original = getattr(module, name, None)
+        if original is None:
+            continue
+        def verified(*args, _original=original, **kwargs):
+            loaded = _original(*args, **kwargs)
+            if any(hasattr(loaded, key) for key in ('_read_harness_ctx_metadata', '_load_pm_import', '_load_pm_update', '_load_module')):
+                known_ctx_module(loaded, capacity=capacity, context=context)
+            return loaded
+        setattr(module, name, verified)
+    module._t0932_known_ctx_loader = True
+    return module
+
+
+_KNOWN_CTX_ENTRY_CHILD = (
+    "_KNOWN_CTX_READER_PY=" + repr(_KNOWN_CTX_READER_PY) + "\n"
+    + inspect.getsource(known_ctx_module)
+    + r"""
+import sys,importlib.util
+from pathlib import Path
+path=Path(sys.argv[1])
+sys.argv=sys.argv[1:]
+spec=importlib.util.spec_from_file_location('known_ctx_fixture_entry',path)
+entry=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(entry)
+known_ctx_module(entry)
+raise SystemExit(entry.main(sys.argv[1:]))
+"""
+)
+
+
+def known_ctx_argv(argv):
+    """정상 setup/갱신 fixture 자식 하나에만 독립 mock을 전달한다."""
+    for index, part in enumerate(argv):
+        if Path(str(part)).name in ('pm_import.py', 'pm_update.py', 'pm_config.py'):
+            return [*argv[:index], '-c', _KNOWN_CTX_ENTRY_CHILD, *argv[index:]]
+    return argv
+
+
+# 정상 설치 baseline의 독립 C는 제품 source가 아닌 고정 unit metadata다.
+# 주입은 make_pm_home setup 자식 하나에만 적용하며 후속 CLI/실제 환경으로 전파하지 않는다.
+_KNOWN_SETUP_CHILD = _KNOWN_CTX_READER_PY + r"""
+import importlib.util,sys
+from pathlib import Path
+path=Path(sys.argv[1])
+spec=importlib.util.spec_from_file_location('known_setup_importer',path)
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+module._read_harness_ctx_metadata=fixture_reader(module)
+raise SystemExit(module.main(sys.argv[2:]))
+"""
+
+
 def make_pm_home(destination: Path, *, upstream: Path | str | None = None,
                  source: Path = REPO) -> Path:
     """실 엔진으로 PM 홈을 만든다 (`pm_import.py --new` · 실측 1.6초 · 네트워크 0).
@@ -91,7 +177,7 @@ def make_pm_home(destination: Path, *, upstream: Path | str | None = None,
             "--harness", "claude", "--from", str(source)]
     if upstream is not None:
         argv += ["--upstream", str(upstream)]
-    _run(argv, cwd=REPO)
+    _run([argv[0], "-c", _KNOWN_SETUP_CHILD, argv[1], *argv[2:]], cwd=REPO)
     return Path(destination)
 
 

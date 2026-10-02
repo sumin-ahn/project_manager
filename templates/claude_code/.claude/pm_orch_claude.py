@@ -312,12 +312,14 @@ class ClaudeCliDriver:
                  precompact_at_pct: int | None = None, root: Path | None = None,
                  mark_stop=None, spawn_result=None, model: str = DEFAULT_MODEL,
                  claude_bin: str = CLAUDE_BIN, timeout: int = TURN_TIMEOUT_SEC,
-                 runner=subprocess.run) -> None:
+                 runner=subprocess.run, budget_reader=None) -> None:
         # parse_stream_json 은 엔진 순수 헬퍼 주입(DI) — driver 가 파싱 로직을 중복 보유하지 않음.
         self._parse = parse_stream_json
         # ctx 회전 판정과 SpawnResult 생성은 엔진 소유 헬퍼/타입 주입(DI). 어느 ctx 신호든
         # 빠지면 가드는 no-op 이라 기존 단위·부트 경로에 영향을 주지 않는다.
         self._ctx_budget = ctx_budget
+        self._budget_reader = budget_reader
+        self._budget_identity = None
         self._precompact_at_pct = precompact_at_pct
         self._root = Path(root) if root is not None else None
         self._mark_stop = mark_stop
@@ -401,11 +403,30 @@ class ClaudeCliDriver:
         elif not (completed.stdout or ""):
             sys.stderr.write("[pm-orch] claude turn 무출력(rc 0) — stdin/파싱 점검\n")
 
+        self._budget_identity = None
+        for raw in (completed.stdout or "").splitlines():
+            try:
+                event = json.loads(raw)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(event, dict):
+                continue
+            info = event.get("info") or event.get("message") or event
+            if not isinstance(info, dict):
+                continue
+            model = info.get("modelID") or info.get("model")
+            provider = info.get("providerID") or info.get("provider") or info.get("model_provider")
+            profile = info.get("profile")
+            if isinstance(model, str) and isinstance(provider, str) and isinstance(profile, str):
+                self._budget_identity = {"model": model, "provider": provider, "profile": profile}
         lines = (completed.stdout or "").splitlines()
         return self._parse(lines)
 
     def _maybe_mark_ctx(self, session_id: str, used_tokens: int | None) -> None:
         """주입된 usage·예산 신호가 모두 있으면 엔진의 post-turn 회전 헬퍼를 호출한다."""
+        if self._budget_reader is not None:
+            self._ctx_budget, self._precompact_at_pct = self._budget_reader(self._budget_identity)
+
         ctx_di_complete = all(value is not None for value in (
             self._ctx_budget, self._precompact_at_pct, self._root, self._mark_stop,
         ))
@@ -462,12 +483,13 @@ def main(argv: list[str] | None = None) -> int:
 
     cwd = args.cwd or os.getcwd()
     conf = ctx_guard.load_local_config(root)
-    ctx_budget = ctx_guard.resolve_budget(conf, "claude")
+    ctx_budget = ctx_guard.resolve_budget(conf, "claude", root=root)
     precompact_at_pct = ctx_guard.ctx_thresholds(conf)["precompact_at_pct"]
     engine.validate_relay_budget(ctx_budget, precompact_at_pct)
     driver = ClaudeCliDriver(
         engine.parse_stream_json,
         ctx_budget=ctx_budget,
+        budget_reader=lambda identity: engine.bound_ctx_budget(root, "claude", identity),
         precompact_at_pct=precompact_at_pct,
         root=root,
         mark_stop=engine.mark_ctx_post_turn_if_over,

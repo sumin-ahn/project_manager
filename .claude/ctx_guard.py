@@ -13,9 +13,8 @@ statusLine 과 PreToolUse/UserPromptSubmit 넛지가 **같은 임계 로직**을
     ``autoCompactWindow`` 를 쓰고(``pm_import.apply_harness_ctx``) 압축은 Claude Code 가 한다.
 
 컨텍스트 % 모델 (분모 = 해소된 예산 하나·물리 window% 폐기):
-  - 분모 예산 = ``resolve_budget(conf, harness)`` = ``harness.<name>.ctx_window_tokens``(사용 한도)
-    > 200000 (>0 sanity). 압축 지점과 같은 한도라 경고와 압축이 같은 기준을 쓴다. statusLine·hook
-    이 **같은 예산** 을 분모로 써 표시와 넛지 밴드 판정을 일치시킨다(하네스별 키는 독립).
+  - 분모는 engine의 검증된 적용 기록 E다. 입력·원천·native·현재 모델이 일치해야 사용한다.
+    metadata 부재·손상·만료·모델 변경은 None이며 W/default 또는 0%로 대체하지 않는다.
   - statusLine stdin 의 ``context_window`` 에서 used_tokens = current_usage(input+cache 합) >
     total_input_tokens. current_usage null/부재(세션초·/compact 직후)면 0% graceful. native
     ``used_percentage``(물리%)는 **안 읽는다**.
@@ -173,15 +172,41 @@ def ctx_thresholds(conf: dict[str, str]) -> dict[str, int]:
     return {"checkpoint_at_pct": checkpoint, "precompact_at_pct": precompact}
 
 
-def resolve_budget(conf: dict[str, str], harness: str = "claude") -> int:
-    """ctx 예산(분모) = 그 하네스의 사용 한도.
+def _ctx_leaf(root):
+    import importlib.util
+    path = Path(root) / ".project_manager/tools/repo_owned_files.py"
+    spec = importlib.util.spec_from_file_location("ctx_owned_loader", path)
+    loader = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(loader)
+    def verify(module, filename):
+        if getattr(module, "ENGINE_REV", None) != getattr(loader, "ENGINE_REV", None):
+            raise RuntimeError(f"ctx 엔진 사본 불일치: {filename}")
+    return loader.load_module(path.with_name("local_conf.py"), "local_conf.py", verifier=verify, cache=True)
 
-    ``harness.{harness}.ctx_window_tokens`` > ``CTX_WINDOW_TOKENS_DEFAULT``. >0 sanity — ≤0·비정수면
-    기본값. 하네스별 키는 완전 독립(동시 운용 시 하네스별 예산). statusLine·hook 이 이 값을 공유
-    분모로 쓰고, 엔진은 같은 값으로 하네스의 압축 지점을 쓴다.
-    """
-    size = _int_conf(conf, f"harness.{harness}.ctx_window_tokens", 0)
-    return size if size > 0 else CTX_WINDOW_TOKENS_DEFAULT
+
+def session_identity(payload):
+    if not isinstance(payload, dict):
+        return None
+    model = payload.get("model")
+    if isinstance(model, dict):
+        model = model.get("id")
+    provider = payload.get("provider") or payload.get("model_provider")
+    profile = payload.get("profile")
+    if not model or not provider or not isinstance(profile, str):
+        return None
+    return {"model": model, "provider": provider, "profile": profile}
+
+
+def resolve_budget(conf: dict[str, str], harness: str = "claude", *, root=None, identity=None) -> int | None:
+    """같은 engine 적용 기록 E를 소비한다. 미확정은 None이며 W로 대체하지 않는다."""
+    if root is None:
+        return None
+    try:
+        result = _ctx_leaf(root).read_ctx_budget(root, conf, harness, identity)
+        return result["E"] if result["status"] == "known" else None
+    except (OSError, ImportError, AttributeError, ValueError, RuntimeError) as exc:
+        print(f"[ctx-budget-unknown] {exc}", file=sys.stderr)
+        return None
 
 
 # ── statusLine: context_window → used % (분모 = 해소된 예산) ──────────
@@ -223,6 +248,8 @@ def context_used_pct_from_statusline(stdin: dict, budget: int) -> int:
     used_percentage)는 폐기 — hook 과 같은 예산 분모로 표시와 넛지 판정을 일치시킨다. 신호 없으면 0
     (세션초·/compact 직후 graceful). budget<=0(비정상)도 0.
     """
+    if budget is None:
+        return None
     if budget <= 0:
         return 0
     cw = stdin.get("context_window")
@@ -298,6 +325,8 @@ def context_tokens_from_transcript(transcript_path) -> int:
 
 def context_used_pct_from_tokens(tokens: int, window_tokens: int) -> int:
     """raw 점유 토큰 / 윈도 크기 → 사용 % (정수 반올림·0%도 유효 측정일 수 있음)."""
+    if window_tokens is None:
+        return None
     if window_tokens <= 0:
         return 0
     if tokens <= 0:

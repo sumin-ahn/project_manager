@@ -123,6 +123,28 @@ def pm_update():
 
 
 @pytest.fixture(autouse=True)
+def _known_install_capacity_fixture(request,tmp_path,pm_import,pm_update,monkeypatch):
+    """정상 설치/반영 fixture만 같은 독립 reader seam으로 고정한다."""
+    from test_harness_ctx_limits import _t0932_metadata
+    source=tmp_path/'independent-capacity.json'
+    source.write_text('{"generation":"fixture-generation","usable":200000}',encoding='utf-8')
+    def reader(root,harness,documents,models):
+        identities=[{'model':model,'provider':provider,'profile':''} for provider,model in models] if harness=='opencode' else [{'model':'fixture-model','provider':'fixture-provider','profile':''}]
+        rows=[]
+        for identity in identities:
+            metadata={**_t0932_metadata(identity),'context':232000,'output':128000,'effective_output':32000,'native_formula':'input-reserved'}
+            rows.append({'identity':identity,'metadata':metadata})
+        return {'models':rows,'evidence':{str(source.resolve()):pm_import.content_sha256(source.read_bytes())}}
+    monkeypatch.setattr(pm_import,'_read_harness_ctx_metadata',reader)
+    original=pm_update._load_pm_import
+    def load():
+        module=original()
+        module._read_harness_ctx_metadata=reader
+        return module
+    monkeypatch.setattr(pm_update,'_load_pm_import',load)
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_opencode_models(request, pm_import, monkeypatch):
     """T-0033: main() 의 opencode 경로(resolve_opencode_model)가 실제 `opencode models` CLI 를
     호출하지 않도록 `_real_models_runner` 를 (False, []) 로 고정한다.
@@ -5643,7 +5665,8 @@ def _assert_adopter_bytes_kept(pm_import, dest: Path, rel: str, local_bytes: byt
         return
     assert after.startswith(local_bytes), after
     values = pm_import._load_local_conf().load(dest / ".project_manager" / "local.conf").values
-    targets = pm_import.harness_ctx_targets(values, {})[rel]
+    budgets=json.loads((dest / ".project_manager/.local/ctx-budget.json").read_text(encoding="utf-8"))["budgets"]
+    targets = pm_import.harness_ctx_targets(values, {}, budgets)[rel]
     assert tomllib.loads(after[len(local_bytes):].decode("utf-8")) == {
         path[0]: value for path, value in targets.items()}
 

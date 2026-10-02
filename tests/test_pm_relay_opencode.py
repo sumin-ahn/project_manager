@@ -521,13 +521,10 @@ def test_opencode_driver_parser_accepts_task(driver_mod):
 
 
 def test_opencode_resolve_ctx_budget_precedence(driver_mod):
-    """예산 = harness.opencode.ctx_window_tokens(사용 한도) > 200000 — 공통 층은 없다."""
-    resolve = driver_mod.resolve_ctx_budget
-    assert resolve({"harness.opencode.ctx_window_tokens": "300000"}) == 300000
-    assert resolve({"ctx.window_tokens": "500000"}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
-    assert resolve({}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
-    assert resolve({"harness.opencode.ctx_window_tokens": "bad"}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
-    assert resolve({"harness.opencode.ctx_window_tokens": "0"}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
+    """W/default만으로 실제 E를 만들지 않는다. 독립 적용 기록 없는 요청은 unknown이다."""
+    for conf in ({"harness.opencode.ctx_window_tokens": "300000"}, {"ctx.window_tokens": "500000"}, {}, {"harness.opencode.ctx_window_tokens": "abc"}, {"harness.opencode.ctx_window_tokens": "0"}):
+        assert driver_mod.resolve_ctx_budget(conf) is None
+
 
 
 def test_opencode_resolve_precompact_at_pct(driver_mod):
@@ -579,6 +576,10 @@ def test_opencode_main_forwards_task_and_budget(driver_mod, monkeypatch, tmp_pat
         "harness.opencode.ctx_window_tokens=333000\nctx.precompact_at_pct=85\n",
         encoding="utf-8",
     )
+    from test_harness_ctx_limits import _t0932_install_budget_fixture, _load as load_ctx_engine
+    identity = _t0932_install_budget_fixture(tmp_path, harness='opencode', capacity=2000000)
+    engine = load_ctx_engine('pm_relay')
+    _FakeEngine.resolve_ctx_budget = staticmethod(lambda root, conf, harness, _identity=None: engine.resolve_ctx_budget(root, conf, harness, identity))
     monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
     rc = driver_mod.main(["--task", "mytask", "--cwd", str(tmp_path)])
     assert rc == 0 and captured["task"] == "mytask"
@@ -608,6 +609,10 @@ def test_opencode_main_rejects_unsafe_budget_before_supervisor(
     (tmp_path / ".project_manager" / "local.conf").write_text(
         "harness.opencode.ctx_window_tokens=50500\nctx.precompact_at_pct=80\n", encoding="utf-8",
     )
+    from test_harness_ctx_limits import _t0932_install_budget_fixture, _load as load_ctx_engine
+    identity = _t0932_install_budget_fixture(tmp_path, harness='opencode', capacity=2000000)
+    engine = load_ctx_engine('pm_relay')
+    _FakeEngine.resolve_ctx_budget = staticmethod(lambda root, conf, harness, _identity=None: engine.resolve_ctx_budget(root, conf, harness, identity))
     monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
     with pytest.raises(ValueError, match="즉시 세션 회전 위험"):
         driver_mod.main(["--cwd", str(tmp_path)])

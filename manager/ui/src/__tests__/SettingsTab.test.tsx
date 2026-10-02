@@ -707,3 +707,16 @@ describe("실패", () => {
     expect(screen.getByText("설정을 읽지 못했습니다. 10초 안에 응답이 없다")).toBeInTheDocument();
   });
 });
+
+it("T-0932 희망값과 실제 한도·적용 기준의 읽기 전용 표시", () => {
+  const conf: ConfSection = {...CONF, ctx_budget: {
+    claude: {status:"known",reason:null,W:600000,C:200000,E:200000,P:188000},
+    codex: {status:"unknown",reason:"모델 정체 불일치",W:600000,C:null,E:null,P:null},
+  }};
+  mounted(makeBridge(),false,null,settingsEntry({...VALUES,"harness.claude.ctx_window_tokens":"600000"}),lightEntry(conf));
+  openGroup("harness");
+  expect(screen.getByTestId("budget-claude").textContent).toContain("희망 기준 600000 · 실제 가용 한도 200000 · 적용 기준 200000 · 압축 지점 188000 토큰");
+  expect((screen.getByLabelText("harness.claude.ctx_window_tokens") as HTMLInputElement).value).toBe("600000");
+  expect(screen.getByTestId("budget-codex").textContent).toContain("모델 한도 확인 불가 (모델 정체 불일치)");
+  expect(screen.queryByLabelText("actual_capacity")).toBeNull();
+});

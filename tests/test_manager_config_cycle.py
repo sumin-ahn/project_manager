@@ -49,7 +49,17 @@ class Cycle:
         self.steps: dict[str, dict] = {}
 
     def run(self, name: str, argv: list[str]) -> dict:
-        result = self.api.run(str(self.home), argv)
+        if argv and argv[0] == 'add-harness':
+            from unittest.mock import patch
+            import manager.bridge_run as bridge
+            from _manager_home import known_ctx_argv
+            original = bridge._run
+            def run(home, command, **kwargs):
+                return original(home, known_ctx_argv(command), **kwargs)
+            with patch.object(bridge, '_run', run):
+                result = self.api.run(str(self.home), argv)
+        else:
+            result = self.api.run(str(self.home), argv)
         assert "error" not in result, (name, result)
         document = self.api.status(str(self.home))
         assert "error" not in document, (name, document)

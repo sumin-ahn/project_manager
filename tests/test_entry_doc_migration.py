@@ -42,7 +42,8 @@ def _load_pm_update():
     spec = importlib.util.spec_from_file_location("pm_update", TOOLS / "pm_update.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod
+    from _manager_home import known_ctx_module
+    return known_ctx_module(mod)
 
 
 # 임베드 세대 수 + 세대 index → git 출하 blob ref (provenance lock). parametrize collection 시점에
@@ -563,11 +564,21 @@ def test_target_export_does_not_migrate(pm_update, monkeypatch, capsys):
     assert calls == [], "--target 모드에서 migrate_entry_doc 가 호출됐다(비발화 위반)."
 
 
-def test_self_update_invokes_migration(pm_update, monkeypatch):
+def test_self_update_invokes_migration(pm_update, monkeypatch, tmp_path):
     """self-update(--target 없음) 경로는 migrate_entry_doc 를 발화한다(--target 비발화의 대칭 증거).
 
-    REPO 를 source 이자 self-dest 로 한 dry-run — source==dest 라 엔진 변경 0·부작용 0. REPO 루트엔
-    opencode.jsonc 부재라 migrate 는 not_opencode(무해)지만, *호출됐다*는 사실이 wiring 을 입증한다."""
+    tmp 트리를 source와 self-dest로 격리해 엔진 변경과 파일 쓰기 0을 단언한다.
+    opencode.jsonc 부재로 migrate는 not_opencode지만 호출 wiring은 유지한다."""
+    _unused, isolated = _make_selfupdate_pair(tmp_path, "")
+    native = isolated / '.claude/settings.json'
+    native.parent.mkdir()
+    native.write_bytes((REPO / 'templates/claude_code/.claude/settings.json').read_bytes())
+    (isolated / '.project_manager/local.conf').write_text('# baseline\n', encoding='utf-8')
+    source = isolated / '.project_manager/independent-runtime-fixture.json'
+    source.write_text(json.dumps({'generation': 'fixture-generation', 'usable': 200000, 'context': 1000000}), encoding='utf-8')
+    from test_harness_ctx_limits import _snapshot_fixture_bytes
+    before = _snapshot_fixture_bytes(isolated)
+    monkeypatch.setattr(pm_update, 'REPO', isolated)
     calls = []
     orig = pm_update.migrate_entry_doc
 
@@ -576,9 +587,10 @@ def test_self_update_invokes_migration(pm_update, monkeypatch):
         return orig(*a, **k)
 
     monkeypatch.setattr(pm_update, "migrate_entry_doc", _spy)
-    rc = pm_update.main(["--from", str(REPO), "--dry-run"])
+    rc = pm_update.main(["--from", str(isolated), "--dry-run"])
     assert rc == 0
     assert calls == [False], "self-update dry-run 이 migrate_entry_doc(write=False)를 1회 호출해야 한다."
+    assert _snapshot_fixture_bytes(isolated) == before
 
 
 def test_migrate_without_local_conf(pm_update, old_gen_text, tmp_path):
@@ -597,11 +609,14 @@ def test_migrate_without_local_conf(pm_update, old_gen_text, tmp_path):
     assert "UNIQUE_TAGLINE_XYZ_12345" in new  # 포획 tagline 보존
 
 
+
 # ── 시퀀싱 (codex R1·전환 write 는 apply(changes) 성공 이후) ────────────────
 
 def test_sequencing_migration_after_apply_success(pm_update, old_gen_text, tmp_path, monkeypatch):
     """self-update(changes 有) 성공 경로: migrate 전환이 apply(changes) *이후* 발화한다."""
     dest, src = _make_selfupdate_pair(tmp_path, _sim_old_adopter(old_gen_text, _SIM_OP))
+    config = dest / ".opencode/opencode.jsonc"
+    config.write_text(_MINIMAL_OLD_JSONC.replace("{", '{"model":"fixture-provider/fixture-model",', 1), encoding="utf-8")
     order = []
     real_migrate = pm_update.migrate_entry_doc
 
@@ -666,3 +681,19 @@ def test_finding_printer_migrated_backup(pm_update, capsys):
     out = capsys.readouterr().out
     assert "세대 마이그레이션 전환" in out
     assert ".pm_import_backups/2026-07-21" in out
+
+
+def test_t0932_fixture_reader_refuses_actual_source_before_mkdir(monkeypatch):
+    """실제 source에 unit 모델 원천을 만들거나 기존 원천을 소비하지 않는다."""
+    from _manager_home import _KNOWN_CTX_READER_PY
+    namespace = {}
+    exec(_KNOWN_CTX_READER_PY, namespace)
+    reader = namespace['fixture_reader'](object())
+    artifact = REPO / '.project_manager/independent-runtime-fixture.json'
+    before = artifact.read_bytes() if artifact.exists() else None
+    def forbidden_mkdir(*_args, **_kwargs):
+        raise AssertionError('source guard 이전 mkdir')
+    monkeypatch.setattr(Path, 'mkdir', forbidden_mkdir)
+    with pytest.raises(ValueError, match='source root write refused'):
+        reader(REPO, 'claude', {}, {})
+    assert (artifact.read_bytes() if artifact.exists() else None) == before

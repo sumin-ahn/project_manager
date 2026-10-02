@@ -11,6 +11,8 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 CLAUDE = REPO / "templates" / "claude_code" / ".claude"
 TOOLS = REPO / ".project_manager" / "tools"
@@ -183,3 +185,30 @@ def test_cap_merged_context_over_by_one_char_is_summarized_not_truncated():
     assert existing in combined  # ctx 밴드 안내는 그대로 보존된다.
     assert "x" * 50 not in combined  # recall 원문은 절단된 채로 남지 않는다(생략 표시로 대체).
     assert "[principle-recall]" in combined
+
+@pytest.fixture(autouse=True)
+def _known_legacy_ctx_fixture(request,tmp_path,monkeypatch):
+    if 't0932' in request.node.name:return
+    from test_harness_ctx_limits import _t0932_known_leaf
+    leaf,identity=_t0932_known_leaf(tmp_path/'known-capacity')
+    ctx_guard=_load("ctx_stop_hook").ctx_guard
+    monkeypatch.setattr(ctx_guard,'_ctx_leaf',lambda root:leaf)
+    monkeypatch.setattr(ctx_guard,'session_identity',lambda payload:identity)
+
+
+def test_t0932_effective_budget_precompact_unknown_checkpoint(tmp_path,monkeypatch):
+    from test_harness_ctx_limits import _t0932_install_budget_fixture
+    hook=_load('ctx_stop_hook');conf={'harness.claude.ctx_window_tokens':'600000','ctx.checkpoint_at_pct':'80','ctx.precompact_at_pct':'90','ctx.compact_at_pct':'94'}
+    (tmp_path/'.project_manager').mkdir()
+    (tmp_path/'.project_manager/local.conf').write_text(''.join(f'{k}={v}\n' for k,v in conf.items()), encoding='utf-8')
+    identity=_t0932_install_budget_fixture(tmp_path,conf,capacity=200000)
+    transcript=_write_transcript(tmp_path,180000)
+    captured=[]
+    monkeypatch.setattr(hook,'_create_checkpoint',lambda *a,**kw:captured.append(kw) or True)
+    monkeypatch.setattr(hook,'_build_snapshot',lambda *a,**kw:'')
+    payload={**identity,'hook_event_name':'PreCompact','trigger':'auto','session_id':'t0932','transcript_path':str(transcript)}
+    assert hook.capture_precompact(payload,tmp_path)==0
+    assert captured[-1]['ctx_window_tokens']==200000 and captured[-1]['ctx_band_checked'] is True
+    assert hook.capture_precompact({**payload,'model':'other'},tmp_path)==0
+    assert captured[-1]['ctx_band_checked'] is False
+    assert hook.evaluate({**payload,'isSidechain':True},tmp_path,conf)==(0,None)

@@ -46,7 +46,7 @@ const PRECOMPACT_AT_PCT_DEFAULT = 80; // 사용 ≥ 이 % → 최종 안내(자�
 const NUDGE2_MARGIN_PCT = 3;
 
 // ── 사용 한도 기본값 (local_conf 레지스트리 미러) ──────────
-// 넛지 분모(100% 기준) = `harness.opencode.ctx_window_tokens`(사용 한도), 없으면 이 값.
+// 사용자 희망값 W의 출하 기본값이다. 넛지 분모는 engine이 검증한 E이며 unknown을 이 값으로 대체하지 않는다.
 const CTX_WINDOW_TOKENS_DEFAULT = 200000;
 
 // 엔진 루트는 이 파일 자기 위치에서 나온다 — 훅은 언제나 `<root>/.opencode/lib/*.cjs` 에 설치되고
@@ -174,14 +174,55 @@ function resolveThresholds(conf) {
 }
 
 // ── 순수 함수: ctx 예산 해소 (하네스별) ────────────────────────────
-// 넛지 분모(100% 기준) = 그 하네스의 사용 한도 `harness.<name>.ctx_window_tokens`, 없거나 >0 정수가
-// 아니면 CTX_WINDOW_TOKENS_DEFAULT(200000). 엔진은 같은 값으로 opencode 의 압축 지점을 쓴다.
-// claude ctx_guard.resolve_budget(conf,"opencode") 동형. conf = parseLocalConf 결과.
-function resolveBudget(conf, harness) {
-  const raw = conf ? conf[`harness.${harness}.ctx_window_tokens`] : undefined;
-  if (raw === undefined || raw === null) return CTX_WINDOW_TOKENS_DEFAULT;
-  const n = Number(String(raw).trim());
-  return Number.isInteger(n) && n > 0 ? n : CTX_WINDOW_TOKENS_DEFAULT;
+// 같은 engine 적용 기록의 E를 읽고 입력·원천·native·실제 모델 결속을 확인한다.
+// 손상·만료·정체 불일치는 null이다. W/default를 실제 가용 한도로 사용하지 않는다.
+function resolveBudget(conf, harness, root, identity) {
+  if (!root || !identity || !identity.model || !identity.provider || typeof identity.profile !== "string") return null;
+  try {
+    const record = JSON.parse(fs.readFileSync(path.join(root, ".project_manager/.local/ctx-budget.json"), "utf8"));
+    if (record.schema !== 1 || !record.environment) return null;
+    const stable = value => Array.isArray(value) ? value.map(stable) :
+      value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map(k => [k,stable(value[k])])) : value;
+    const projection = Object.fromEntries(["schema","inputs","environment","budgets","fingerprints","native_files","native_commands"].map(k => [k,record[k]]));
+    if (crypto.createHash("sha256").update(JSON.stringify(stable(projection))).digest("hex") !== record.projection_sha256) return null;
+    for (const [key, digest] of Object.entries(record.environment)) {
+      const actual = Object.prototype.hasOwnProperty.call(process.env,key) ? crypto.createHash("sha256").update(process.env[key]).digest("hex") : null;
+      if (actual !== digest) return null;
+    }
+    const defaults = {"ctx.checkpoint_at_pct":"70", "ctx.precompact_at_pct":"80", "ctx.compact_at_pct":"90"};
+    for (const name of ["claude", "codex", "opencode"]) defaults[`harness.${name}.ctx_window_tokens`] = "200000";
+    for (const [key, fallback] of Object.entries(defaults)) {
+      if (record.inputs[key] !== String(conf[key] || fallback)) return null;
+    }
+    for (const [name, expected] of Object.entries(record.native_files || {})) {
+      const stat=fs.statSync(name,{bigint:true});
+      const actual={st_dev:String(stat.dev),st_ino:String(stat.ino),st_size:String(stat.size),st_mtime_ns:String(stat.mtimeNs)};
+      if (Object.entries(expected).some(([key,value]) => actual[key] !== value)) return null;
+    }
+    for (const [command, expected] of Object.entries(record.native_commands || {})) {
+      const suffixes=process.platform === "win32" ? ["",...(process.env.PATHEXT || ".EXE;.CMD;.BAT").split(";")] : [""];
+      let found=null;
+      for (const directory of (process.env.PATH || "").split(path.delimiter)) {
+        for (const suffix of suffixes) {
+          const candidate=path.join(directory,command+suffix);
+          try {fs.accessSync(candidate,fs.constants.X_OK);found=fs.realpathSync(candidate);break;} catch {}
+        }
+        if (found) break;
+      }
+      if (found !== expected) return null;
+    }
+    for (const [name, digest] of Object.entries(record.fingerprints)) {
+      const actual = fs.existsSync(name) ? crypto.createHash("sha256").update(fs.readFileSync(name)).digest("hex") : null;
+      if (actual !== digest) return null;
+    }
+    const row = record.budgets[harness];
+    const models = row.models || [row];
+    if (!models.some(m => ["model", "provider", "profile"].every(k => m.identity[k] === identity[k]))) return null;
+    const now = Date.now();
+    if (models.some(m => !m.metadata.independent || !m.metadata.generation ||
+      !(Date.parse(m.metadata.observed_at) <= now && (m.metadata.valid_until === null || now < Date.parse(m.metadata.valid_until))))) return null;
+    return row.status === "known" && Number.isSafeInteger(row.E) && row.E > 0 && row.E <= row.C && row.E <= row.W ? row.E : null;
+  } catch { return null; }
 }
 
 // ── 순수 함수: AssistantMessage.tokens 누적 = 현재 컨텍스트 점유 토큰 ──────────
@@ -214,12 +255,12 @@ function nudge2Threshold(thresholds) {
 // ── 순수 함수: ctx 상태 판정 (테스트 핵심) ──────────────────────────────────
 // used: accumulateTokens 결과, limit: 해소된 ctx 예산(resolveBudget·구 물리한도 폐기),
 // thresholds: resolveThresholds 결과. 반환: { usedPct, level: "ok"|"nudge"|"nudge2"|"stop" }.
-//   nudge2 = stop 경계 직전 강한 유도 밴드. limit 미상이면 level "ok".
+//   nudge2 = stop 경계 직전 강한 유도 밴드. limit 미상이면 level "unknown".
 function computeCtxState(used, limit, thresholds) {
   const u = Number(used) || 0;
   const lim = Number(limit);
   if (!Number.isFinite(lim) || lim <= 0) {
-    return { usedPct: 0, level: "ok" };
+    return { usedPct: null, level: "unknown" };
   }
   const usedPct = (u / lim) * 100;
   let level = "ok";
@@ -587,18 +628,18 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
   const root = ENGINE_ROOT;
   const hookCwd = directory || worktree || process.cwd();
 
-  // local.conf 직접 파싱 (thresholds·budget 공용·1회 캐시). 판독 실패 시 {}.
+  // 매 이벤트의 현재 local.conf를 같은 적용 기록과 검증한다. 판독 실패 시 {}.
   function loadConf() {
-    if (cachedConf) return cachedConf;
+    // 입력 변경을 매 이벤트에서 확인하고 engine 기록과 같은 세대로 결속한다.
     // 판독 실패는 빈 conf 로 강등하지만(부재가 정상 형상) 구표기 잔존은 그대로 올린다 —
     // 여기서 삼키면 임계·예산이 조용히 기본값이 된다.
     cachedConf = loadLocalConf(root);
     return cachedConf;
   }
 
-  // local.conf → 임계값 (1회 캐시).
+  // 현재 local.conf의 임계값.
   function thresholds() {
-    if (cachedThresholds) return cachedThresholds;
+
     cachedThresholds = resolveThresholds(loadConf());
     return cachedThresholds;
   }
@@ -745,7 +786,9 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
       if (session.cycleEpoch !== cycleEpoch) return;
 
       const used = accumulateTokens(info.tokens);
-      const limit = resolveBudget(loadConf(), "opencode"); // ctx 예산 (물리한도 폐기).
+      const identity = {model: info.modelID, provider: info.providerID, profile: info.profile ?? ""}; // OpenCode native profile 부재는 빈 정체성이다.
+      const limit = resolveBudget(loadConf(), "opencode", root, identity);
+      if (limit === null) return;
       const t = thresholds();
       const state = computeCtxState(used, limit, t);
 

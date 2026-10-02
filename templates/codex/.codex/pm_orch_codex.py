@@ -179,18 +179,14 @@ def load_local_config(root: Path) -> dict[str, str]:
     return conf
 
 
-def resolve_ctx_budget(conf: dict[str, str]) -> int:
-    """ctx 예산(분모) = codex 사용 한도.
-
-    `harness.codex.ctx_window_tokens` > CTX_WINDOW_TOKENS_DEFAULT(200000). >0 정수 sanity — ≤0·비정수·
-    미설정이면 기본값(0/음수 특수의미 없음). claude ctx_guard.resolve_budget(conf,"codex")·opencode
-    resolveBudget 동형(하네스별 키 완전 독립)."""
-    raw = conf.get("harness.codex.ctx_window_tokens")
+def resolve_ctx_budget(conf: dict[str, str], *, root=None, identity=None) -> int | None:
+    if root is None:
+        return None
     try:
-        size = int(str(raw).strip()) if raw is not None else 0
-    except (ValueError, AttributeError):
-        size = 0
-    return size if size > 0 else CTX_WINDOW_TOKENS_DEFAULT
+        engine, _ = _load_engine()
+        return engine.resolve_ctx_budget(root, conf, "codex", identity)
+    except (OSError, ImportError, AttributeError, RuntimeError):
+        return None
 
 
 def _resolve_rollout_file(session_id: str) -> Path | None:
@@ -287,7 +283,7 @@ class CodexCliDriver:
                  precompact_at_pct: int = CTX_PRECOMPACT_AT_PCT_DEFAULT, mark_stop=None,
                  mark_ctx_if_over=None, spawn_result=None,
                  codex_bin: str = CODEX_BIN, timeout: int = TURN_TIMEOUT_SEC,
-                 runner=subprocess.run, root: Path | None = None) -> None:
+                 runner=subprocess.run, root: Path | None = None, budget_reader=None) -> None:
         # parse_codex_json 은 엔진 순수 헬퍼 주입(DI) — driver 가 파싱 로직을 중복 보유하지 않음.
         self._parse = parse_codex_json
         # mark_stop 은 엔진 `write_post_turn_marker`(root, sid)->bool 주입(DI) — marker payload/경로
@@ -303,6 +299,8 @@ class CodexCliDriver:
             or (lambda sid, reply: (sid, reply))
         )
         self._ctx_budget = ctx_budget
+        self._budget_reader = budget_reader
+        self._budget_identity = None
         # 회전 임계(쓴 %) — main 이 local.conf ctx.precompact_at_pct 로 해소해 주입.
         self._precompact_at_pct = precompact_at_pct
         self._root = Path(root) if root is not None else None
@@ -393,6 +391,22 @@ class CodexCliDriver:
         elif not (completed.stdout or ""):
             sys.stderr.write("[pm-orch] codex turn 무출력(rc 0) — stdin/파싱 점검\n")
 
+        self._budget_identity = None
+        for raw in (completed.stdout or "").splitlines():
+            try:
+                event = json.loads(raw)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(event, dict):
+                continue
+            info = event.get("info") or event.get("message") or event
+            if not isinstance(info, dict):
+                continue
+            model = info.get("modelID") or info.get("model")
+            provider = info.get("providerID") or info.get("provider") or info.get("model_provider")
+            profile = info.get("profile")
+            if isinstance(model, str) and isinstance(provider, str) and isinstance(profile, str):
+                self._budget_identity = {"model": model, "provider": provider, "profile": profile}
         return self._parse((completed.stdout or "").splitlines())
 
     # ── driver-side ctx 기계 가드 (relay 경로 전용) ─────────────────
@@ -420,6 +434,9 @@ class CodexCliDriver:
         차분으로 폴백한다. 이 차분은 turn 내 다중 모델 호출 합이라 실제 마지막 요청 점유의 보수적
         상한 근사다.
         marker 박제 실패는 fail-soft."""
+        if self._budget_reader is not None:
+            self._ctx_budget, self._precompact_at_pct = self._budget_reader(self._budget_identity)
+
         if not (self._ctx_budget and usage and self._root and self._mark_stop
                 and self._mark_ctx_if_over):
             return
@@ -707,8 +724,14 @@ def ctx_nudge_envelope(payload: dict, root: Path, *,
     root = Path(root)
     session_id = _hook_session_id(payload)
     tokens = rollout_context_tokens(payload.get("transcript_path"))
+    if tokens <= 0:
+        return {}
     conf = load_local_config(root)
-    used_pct = context_used_pct_from_tokens(tokens, resolve_ctx_budget(conf))
+    identity = {k: payload.get(k) for k in ("model", "provider", "profile")}
+    budget = resolve_ctx_budget(conf, root=root, identity=identity)
+    if budget is None:
+        return {}
+    used_pct = context_used_pct_from_tokens(tokens, budget)
     thresholds = ctx_thresholds(conf)
     band = classify(used_pct, thresholds)
     if band == "ok":
@@ -1596,13 +1619,14 @@ def main(argv: list[str] | None = None) -> int:
 
     cwd = args.cwd or os.getcwd()
     conf = load_local_config(root)
-    ctx_budget = resolve_ctx_budget(conf)
+    ctx_budget = resolve_ctx_budget(conf, root=root)
     precompact_at_pct = ctx_thresholds(conf)["precompact_at_pct"]
     engine.validate_relay_budget(ctx_budget, precompact_at_pct)
     # driver-side ctx 가드 원천 — local.conf 예산·회전 임계 해소 + 엔진 post-turn marker writer 주입.
     driver = CodexCliDriver(
         engine.parse_codex_json,
         ctx_budget=ctx_budget,
+        budget_reader=lambda identity: engine.bound_ctx_budget(root, "codex", identity),
         precompact_at_pct=precompact_at_pct,
         mark_stop=engine.write_post_turn_marker,
         mark_ctx_if_over=engine.mark_ctx_post_turn_if_over,

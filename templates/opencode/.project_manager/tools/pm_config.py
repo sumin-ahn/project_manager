@@ -2616,6 +2616,7 @@ def _status_json_conf(source_root: Path | None) -> dict:
     result = local_conf.load(REPO / ".project_manager" / "local.conf")
     values = result.values
     return {
+        "ctx_budget": local_conf.ctx_budget_status(REPO, values),
         "missing_required": list(local_conf.missing_required(values)),
         "legacy": [{"key": key, "replacement": replacement}
                    for key, replacement in sorted(result.legacy.items())],
@@ -5103,8 +5104,9 @@ def cmd_ctx_apply(args, *, pm_import=None, dest_root: Path | None = None) -> int
             values.update({key: value for key, value in updates.items() if value})
             local_conf.assert_values_no_legacy(values, conf_file)
         # 검사 — 쓰기 전에 설정 파일까지 계산해 본다(읽기 실패로 반영이 멈출 값을 conf 에 남기지 않는다).
-        pm_import_mod._apply_harness_ctx_values(
-            dest, values, write=False, opencode_config_dir=opencode_dir)
+        plan = pm_import_mod._prepare_harness_ctx(
+            dest, values, opencode_config_dir=opencode_dir,
+            updates={key: value or None for key, value in updates.items()})
     except pm_import_mod.HarnessCtxError as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return _CTX_APPLY_REJECTED
@@ -5116,20 +5118,14 @@ def cmd_ctx_apply(args, *, pm_import=None, dest_root: Path | None = None) -> int
             raise
         print(f"[중단] {exc}", file=sys.stderr)
         return _CTX_APPLY_REJECTED
-    changed = False
-    if updates:
-        changed = pm_import_mod._write_conf_keys(
-            conf_file, {key: value or None for key, value in updates.items()})
     try:
-        applied = pm_import_mod.apply_harness_ctx(
-            dest, write=True, opencode_config_dir=opencode_dir)
+        changed, applied, budgets = pm_import_mod._commit_harness_ctx(plan)
     except pm_import_mod.HarnessCtxError as exc:
-        # 검사를 통과한 뒤의 실패(쓰기 단계) — 검사 거부가 아니다. 교체한 파일은 예외 문구가 적는다.
         print(f"[중단] {exc}", file=sys.stderr)
-        return 1
+        return 1 if getattr(exc, "phase", None) == "commit" or getattr(exc, "written", ()) else _CTX_APPLY_REJECTED
     if getattr(args, "json", False):
         _write_machine_line(json.dumps(
-            {"changed": bool(changed), "applied": list(applied)}, ensure_ascii=False))
+            {"changed": bool(changed), "applied": list(applied), "ctx_budget": budgets}, ensure_ascii=False))
         return 0
     if changed:
         print(f"✓ local.conf 기록: {', '.join(updates)}")

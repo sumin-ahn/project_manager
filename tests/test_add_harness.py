@@ -50,6 +50,16 @@ def pm_config():
 
 
 @pytest.fixture(autouse=True)
+def _known_native_capacity(tmp_path,pm_import,monkeypatch):
+    from test_harness_ctx_limits import _t0932_reader
+    def reader(*a):
+        result=_t0932_reader(pm_import,*a)
+        for row in result['models']:row['metadata']['context']=232000
+        return result
+    monkeypatch.setattr(pm_import,'_read_harness_ctx_metadata',reader)
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_opencode_models(pm_import, monkeypatch):
     """T-0033 동형 — apply 경로(resolve_opencode_model)가 라이브 `opencode models` CLI 를 치지
     않도록 (False, []) 고정(미설치 동치). 이 파일의 add_harness 는 전부 dry_run 이라 실제로 도달
@@ -323,7 +333,7 @@ def test_add_harness_applies_ctx_values(pm_import, tmp_path, capsys):
 
     document = tomllib.loads((dest / ".codex" / "config.toml").read_text(encoding="utf-8"))
     assert document["model_auto_compact_token_limit"] == 170000
-    assert document["model_context_window"] == 200000
+    assert "model_context_window" not in document
     out = capsys.readouterr().out
     assert ".codex/config.toml model_auto_compact_token_limit 180000 → 170000" in out
     # 이미 있던 claude 설정 파일도 같은 conf 로 맞춰진다(반영은 있는 하네스 전부다).

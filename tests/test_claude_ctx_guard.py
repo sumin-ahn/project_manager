@@ -176,15 +176,15 @@ def test_load_local_config_missing(guard, tmp_path):
 # 분모 = harness.<harness>.ctx_window_tokens > 200000 (>0 sanity). 공통 층은 없다.
 
 def test_resolve_budget_defaults_to_200k(guard):
-    assert guard.resolve_budget({}, "claude") == 200_000
-    assert guard.resolve_budget({}, "opencode") == 200_000
-    assert guard.resolve_budget({}) == 200_000  # harness 기본값 = claude.
+    assert guard.resolve_budget({}, "claude") is None
+    assert guard.resolve_budget({}, "opencode") is None
+    assert guard.resolve_budget({}) is None
 
 
 def test_resolve_budget_has_no_common_layer(guard):
     # 옛 공통 키는 더 이상 분모가 아니다 — 하네스 키가 없으면 기본값이다.
-    assert guard.resolve_budget({"ctx.window_tokens": "1000000"}, "claude") == 200_000
-    assert guard.resolve_budget({"ctx.window_tokens": "1000000"}, "opencode") == 200_000
+    assert guard.resolve_budget({"ctx.window_tokens": "1000000"}, "claude") is None
+    assert guard.resolve_budget({"ctx.window_tokens": "1000000"}, "opencode") is None
 
 
 def test_resolve_budget_harness_key_is_the_budget(guard):
@@ -192,23 +192,23 @@ def test_resolve_budget_harness_key_is_the_budget(guard):
         "harness.claude.ctx_window_tokens": "1000000",
         "harness.opencode.ctx_window_tokens": "200000",
     }
-    assert guard.resolve_budget(conf, "claude") == 1_000_000
-    assert guard.resolve_budget(conf, "opencode") == 200_000
+    assert guard.resolve_budget(conf, "claude") is None
+    assert guard.resolve_budget(conf, "opencode") is None
 
 
 def test_resolve_budget_independent_harnesses(guard):
     # claude·opencode 사용 한도 키 완전 독립 (동시 운용·각자 해소).
     conf = {"harness.claude.ctx_window_tokens": "500000", "harness.opencode.ctx_window_tokens": "200000"}
-    assert guard.resolve_budget(conf, "claude") == 500_000
-    assert guard.resolve_budget(conf, "opencode") == 200_000
+    assert guard.resolve_budget(conf, "claude") is None
+    assert guard.resolve_budget(conf, "opencode") is None
     # 다른 하네스 키만 있고 대상 하네스 키 없으면 → 200K.
-    assert guard.resolve_budget({"harness.opencode.ctx_window_tokens": "999"}, "claude") == 200_000
+    assert guard.resolve_budget({"harness.opencode.ctx_window_tokens": "999"}, "claude") is None
 
 
 @pytest.mark.parametrize("bad", ["0", "-5", "abc", "", "  "])
 def test_resolve_budget_sanity_falls_through(guard, bad):
     # 사용 한도가 ≤0/비정수 → 200K (>0 sanity).
-    assert guard.resolve_budget({"harness.claude.ctx_window_tokens": bad}, "claude") == 200_000
+    assert guard.resolve_budget({"harness.claude.ctx_window_tokens": bad}, "claude") is None
 
 
 # ── 2. statusLine: context_window → used % (분모=예산·ADR-0041) + 넛지 ────────
@@ -268,32 +268,32 @@ def test_statusline_no_signal_zero(guard):
         {"context_window": {"current_usage": {"input_tokens": 100_000}}}, 0) == 0
 
 
-def test_statusline_render_colors(guard, statusline):
+def test_statusline_render_colors(guard, statusline,tmp_path):
     # conf={} → 예산 200K 기본·기본 임계(쓴 % 70/80). current_usage 토큰으로 밴드 구성.
     def _sl(tokens):
         return {"context_window": {"current_usage": {"input_tokens": tokens}}}
     # ok (used 50 < 70): 회색·checkpoint 문구 없음.
-    ok = statusline.build_statusline(_sl(100_000), {})
+    ok = statusline.build_statusline(_sl(100_000), {},root=tmp_path)
     assert "\033[90m" in ok and "ctx 50%" in ok and "checkpoint" not in ok
     # nudge (70 <= used 75 < 77): 노랑·checkpoint 준비.
-    nudge = statusline.build_statusline(_sl(150_000), {})
+    nudge = statusline.build_statusline(_sl(150_000), {},root=tmp_path)
     assert "\033[33m" in nudge and "checkpoint 준비" in nudge
     # nudge2 (77[=max(80-3,70)] <= used 78 < 80): 빨강·checkpoint 권고.
-    nudge2 = statusline.build_statusline(_sl(156_000), {})
+    nudge2 = statusline.build_statusline(_sl(156_000), {},root=tmp_path)
     assert "\033[31m" in nudge2 and "checkpoint 권고" in nudge2
     # stop (used 92 >= 80): 빨강·checkpoint 최종 알림.
-    stop = statusline.build_statusline(_sl(184_000), {})
+    stop = statusline.build_statusline(_sl(184_000), {},root=tmp_path)
     assert "\033[31m" in stop and "checkpoint 최종 알림" in stop
 
 
-def test_statusline_render_colors_respects_budget_override(guard, statusline):
+def test_statusline_render_colors_respects_budget_override(guard, statusline,tmp_path):
     # 하네스 오버라이드로 예산이 커지면 같은 토큰이 낮은 %로 표시(표시=밴드 일관·per-harness).
     sl = {"context_window": {"current_usage": {"input_tokens": 184_000}}}
     # 기본 200K: 92% used → stop(빨강).
-    stop = statusline.build_statusline(sl, {})
+    stop = statusline.build_statusline(sl, {},root=tmp_path)
     assert "\033[31m" in stop and "checkpoint 최종 알림" in stop
     # claude 오버라이드 1M: 18% used → ok(회색).
-    ok = statusline.build_statusline(sl, {"harness.claude.ctx_window_tokens": "1000000"})
+    ok = statusline.build_statusline(sl, {"harness.claude.ctx_window_tokens": "1000000"},root=tmp_path)
     assert "\033[90m" in ok and "ctx 18%" in ok and "checkpoint" not in ok
 
 
@@ -958,10 +958,10 @@ def _postcompact_durable_mismatch_subprocess_probe(
     if drop_append_fallback:
         hook = claude / "ctx_stop_hook.py"
         text = hook.read_text(encoding="utf-8")
-        fallback = "    if auto_compact and not band_fired and not checkpointed:\n"
+        fallback = "    if auto_compact and window_tokens is not None and not band_fired and not checkpointed:\n"
         assert text.count(fallback) == 1
         hook.write_text(
-            text.replace(fallback, "    if False and auto_compact and not band_fired and not checkpointed:\n"),
+            text.replace(fallback, "    if False and auto_compact and window_tokens is not None and not band_fired and not checkpointed:\n"),
             encoding="utf-8",
         )
 
@@ -984,7 +984,10 @@ def _postcompact_durable_mismatch_subprocess_probe(
         }),
     )
 
+    from test_harness_ctx_limits import _t0932_install_budget_fixture
+    known_identity=_t0932_install_budget_fixture(root,{'harness.claude.ctx_window_tokens':'600000'})
     def run_hook(payload: dict, *args: str) -> dict | None:
+        payload={**known_identity,**payload}
         result = subprocess.run(
             [sys.executable, str(claude / "ctx_stop_hook.py"), *args],
             cwd=root,
@@ -1376,7 +1379,10 @@ elif args and args[0] == "snapshot":
         "isSidechain": False,
     }) + "\n", encoding="utf-8")
 
+    from test_harness_ctx_limits import _t0932_install_budget_fixture
+    known_identity=_t0932_install_budget_fixture(worktree,{'harness.claude.ctx_window_tokens':'600000'})
     def run_hook(payload: dict, *args: str) -> subprocess.CompletedProcess:
+        payload={**known_identity,**payload}
         return subprocess.run(
             [sys.executable, str(claude / "ctx_stop_hook.py"), *args],
             cwd=worktree,
@@ -1791,3 +1797,37 @@ def test_settings_auto_compact_enabled_true():
     assert data.get("autoCompactEnabled") is True, (
         "settings.json autoCompactEnabled 가 true 가 아님 — 서브에이전트 compaction 봉쇄 재발 위험(T-0458)"
     )
+
+@pytest.fixture(autouse=True)
+def _known_legacy_ctx_fixture(request,tmp_path,monkeypatch,guard,statusline,stop_hook):
+    if 't0932' in request.node.name:return
+    from test_harness_ctx_limits import _t0932_known_leaf
+    leaf,identity=_t0932_known_leaf(tmp_path/'known-capacity')
+    # marker 경쟁 대역이 os.open을 변형하기 전에 fixture 예산을 준비한다.
+    leaf.read_ctx_budget(tmp_path,{},'claude',identity)
+    for module in (guard,statusline.ctx_guard,stop_hook.ctx_guard):
+        monkeypatch.setattr(module,'_ctx_leaf',lambda root:leaf)
+        monkeypatch.setattr(module,'session_identity',lambda payload:identity)
+
+
+def test_t0932_budget_binding_statusline_hook_unknown(guard,statusline,stop_hook,tmp_path,monkeypatch):
+    from test_harness_ctx_limits import _t0932_install_budget_fixture
+    conf={'harness.claude.ctx_window_tokens':'600000','ctx.checkpoint_at_pct':'80','ctx.precompact_at_pct':'90','ctx.compact_at_pct':'94'}
+    (tmp_path/'.project_manager').mkdir()
+    (tmp_path/'.project_manager/local.conf').write_text(''.join(f'{k}={v}\n' for k,v in conf.items()), encoding='utf-8')
+    identity=_t0932_install_budget_fixture(tmp_path,conf,capacity=200000)
+    assert guard.resolve_budget(conf,root=tmp_path,identity=identity)==200000
+    payload={**identity,'context_window':{'current_usage':{'input_tokens':180000}}}
+    assert 'ctx 90%' in statusline.build_statusline(payload,conf,root=tmp_path)
+    assert 'unknown' not in statusline.build_statusline({**identity,'context_window':{'current_usage':{'input_tokens':0}}},conf,root=tmp_path)
+    transcript=_write_transcript(tmp_path,[('assistant',{'input_tokens':180000})])
+    stdin={**identity,'hook_event_name':'UserPromptSubmit','session_id':'t0932-known','transcript_path':str(transcript)}
+    monkeypatch.setattr(stop_hook,'_build_ctx_guidance',lambda *a,**kw:f"E=200000 used={kw['used_pct']}%")
+    rc,out=stop_hook.evaluate(stdin,tmp_path,conf)
+    assert rc==0 and 'used=90%' in json.dumps(out)
+    unknown={**identity,'model':'other'}
+    assert guard.resolve_budget(conf,root=tmp_path,identity=unknown) is None
+    assert 'ctx unknown' in statusline.build_statusline({**payload,**unknown},conf,root=tmp_path)
+    marker=stop_hook._final_marker_path(tmp_path,'t0932-known');assert marker.exists()
+    assert stop_hook.evaluate({**stdin,**unknown},tmp_path,conf)==(0,None)
+    assert marker.exists()

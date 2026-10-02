@@ -38,6 +38,22 @@ def _load_pm_update():
     return mod
 
 
+@pytest.fixture(autouse=True)
+def _known_native_capacity(pm_update,monkeypatch):
+    """정상 update baseline의 독립 C=1000000, raw T=2000000 고정 mock."""
+    from test_harness_ctx_limits import _t0932_reader
+    original=pm_update._load_pm_import
+    def load():
+        module=original()
+        def reader(*a):
+            result=_t0932_reader(module,*a,capacity=1000000)
+            for row in result['models']:row['metadata']['context']=2000000
+            return result
+        module._read_harness_ctx_metadata=reader
+        return module
+    monkeypatch.setattr(pm_update,'_load_pm_import',load)
+
+
 @pytest.fixture(scope="module")
 def pm_update():
     return _load_pm_update()
@@ -8135,9 +8151,26 @@ def test_unused_profile_card_is_neutralized_not_filled(pm_update, tmp_path, monk
 # 변경 없는 경로(`최신 — 변경 없음.`)를 탄다.
 
 
+from _manager_home import _KNOWN_CTX_READER_PY
+
+_KNOWN_UPDATE_CHILD = _KNOWN_CTX_READER_PY + r"""
+import importlib.util,sys
+from pathlib import Path
+spec=importlib.util.spec_from_file_location('ctx_known_update',Path(sys.argv[1]))
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+original=module._load_pm_import
+def load():
+    pmi=original()
+    pmi._read_harness_ctx_metadata=fixture_reader(pmi,capacity=1000000,context=2000000)
+    return pmi
+module._load_pm_import=load
+raise SystemExit(module.main(sys.argv[2:]))
+"""
+
+
 def _adopter_update(dest: Path, *args: str, env: dict | None = None):
     return subprocess.run(
-        [sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"),
+        [sys.executable, "-c", _KNOWN_UPDATE_CHILD, str(dest / ".project_manager" / "tools" / "pm_update.py"),
          "--from", str(REPO), *args],
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env={**os.environ, "PM_NONINTERACTIVE": "1", **(env or {})}, timeout=300)
@@ -8190,7 +8223,7 @@ def test_update_migrates_ctx_keys_then_applies(pm_update, tmp_path, monkeypatch)
         assert retired not in values, retired
     assert json.loads(settings.read_text(encoding="utf-8"))["autoCompactWindow"] == 270000
     document = tomllib.loads(config.read_text(encoding="utf-8"))
-    assert document["model_context_window"] == 300000
+    assert "model_context_window" not in document
     assert document["model_auto_compact_token_limit"] == 270000
     assert ".claude/settings.json autoCompactWindow 180000 → 270000" in run.stdout
 
@@ -8198,12 +8231,12 @@ def test_update_migrates_ctx_keys_then_applies(pm_update, tmp_path, monkeypatch)
     assert again.returncode == 0, again.stderr
     assert "하네스 설정 반영:" not in again.stdout, "두 번째 실행이 또 바꿨다(멱등 아님)"
 
-    conf.write_text(conf.read_text(encoding="utf-8") + "ctx.compact_at_pct=95\n",
+    conf.write_text(conf.read_text(encoding="utf-8") + "ctx.compact_at_pct=100\n",
                     encoding="utf-8")
     before = {path: path.read_bytes() for path in (settings, config)}
     refused = _adopter_update(dest)
     assert refused.returncode == 1, refused.stdout + refused.stderr
-    assert "[중단]" in refused.stderr and "ctx.compact_at_pct=95" in refused.stderr
+    assert "[중단]" in refused.stderr and "ctx.compact_at_pct=100" in refused.stderr
     assert {path: path.read_bytes() for path in (settings, config)} == before
 
 
@@ -8245,6 +8278,6 @@ def test_update_applies_limits_to_global_opencode_models(pm_update, tmp_path, mo
     assert run.returncode == 0, run.stdout + run.stderr
     document = pm_import._load_adapter_config_document(project)
     models = document["provider"]["ollama"]["models"]
-    assert models["gemma-t"]["limit"] == {"context": 200000, "input": 200000, "output": 32000}
+    assert models["gemma-t"]["limit"] == {"context": 2000000, "input": 200000, "output": 32000}
     assert "home-model" not in models and "config-dir-model" not in models
     assert global_file.read_bytes() == global_before, "opencode 전역 설정을 썼다"
