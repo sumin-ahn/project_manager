@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import anchor_board_module
+from conftest import anchor_board_module, bind_product_cluster, ensure_product_slot
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -387,6 +387,7 @@ def test_cmd_promote_emits_material_and_never_blocks(board_git, capsys):
     board_git.dump_ticket(draft, fm, _FILLED_BODY.replace("T-NNNN", tid))
     capsys.readouterr()
 
+    bind_product_cluster(board_git, tid)
     rc = board_git.cmd_promote(argparse.Namespace(id=tid))
     assert rc == 0, "touches 겹침이 승격을 막았다 — never-block 계약 위반."
     err = capsys.readouterr().err
@@ -405,6 +406,7 @@ def test_no_overlap_promote_has_no_material_header(board_git, capsys):
     board_git.dump_ticket(draft, fm, _FILLED_BODY.replace("T-NNNN", tid))
     capsys.readouterr()
 
+    bind_product_cluster(board_git, tid)
     rc = board_git.cmd_promote(argparse.Namespace(id=tid))
     assert rc == 0
     err = capsys.readouterr().err
@@ -452,6 +454,7 @@ def test_cmd_new_reports_registered_repo_idle_count_not_physical_folder_name(
         _lease_row(slot="work/canonical_2", repo="canonical", session="canonical_2", state="idle"),
         _lease_row(slot="work/canonical_3", repo="canonical", session="canonical_3", state="idle"))
 
+    ensure_product_slot(board_git, repo="canonical")
     rc = board_git.cmd_new(_new_args(repo="canonical", touches="tools/x.py"))
     assert rc == 0
     err = capsys.readouterr().err
@@ -472,6 +475,7 @@ def test_cmd_promote_reports_registered_repo_idle_count_from_ticket_provenance(
         "depends_on": [], "blocks": [], "tags": [],
     }, _FILLED_BODY.replace("T-NNNN", "T-0002"))
 
+    ensure_product_slot(board_git, repo="canonical")
     assert board_git.cmd_new(_new_args(
         touches="tools/x.py", repo="canonical", slot=1)) == 0
     draft = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
@@ -487,6 +491,7 @@ def test_cmd_promote_reports_registered_repo_idle_count_from_ticket_provenance(
         _lease_row(slot="work/canonical_2", repo="canonical", session="canonical_2", state="idle"),
         _lease_row(slot="work/canonical_3", repo="canonical", session="canonical_3", state="idle"))
 
+    bind_product_cluster(board_git, tid)
     rc = board_git.cmd_promote(argparse.Namespace(id=tid))
     assert rc == 0
     err = capsys.readouterr().err

@@ -1658,6 +1658,9 @@ def _cluster_integration_branch(board_py: Path, ticket_id: str) -> str | None:
     **멈춘다** — 다른 기준으로 접는 갈래가 없다.
     """
     _cluster, ledger = ticket_cluster_ledger(board_py, ticket_id)
+    # 기준 이름만 있는 옛 singleton은 제품 결속의 증거가 아니다.
+    if not str((ledger or {}).get("branch") or "").strip():
+        return None
     declared = (ledger or {}).get("base_branch")
     if not isinstance(declared, str):
         return None
@@ -4279,7 +4282,7 @@ class ClusterCloser:
     def _resolve_code_tree(self) -> tuple[Path | None, str | None]:
         """이번 종결이 도는 작업 트리 — `(트리, None)` 또는 `(None, 멈춤 사유)`.
 
-        묶음 기록의 `branch`(선언이 없으면 `base_branch`)를 체크아웃한 작업 트리가 **정확히
+        명시 묶음 기록의 `branch`를 체크아웃한 작업 트리가 **정확히
         하나**일 때만 그 트리다. 찾는 곳은 대여 기록 행의 작업 폴더 가운데 git 작업 트리인 것이
         속한 저장소의 작업 트리 전부다(이미 목록에 나온 폴더는 다시 묻지 않는다). PM 홈 자신은
         찾는 곳이 아니다 — 홈이 작업 폴더와 같은 저장소일 때만 그 목록에 들어 후보가 된다.
@@ -4293,9 +4296,9 @@ class ClusterCloser:
         """
         key, branch = "branch", self._declared_branch("branch")
         if branch is None:
-            key, branch = "base_branch", self._declared_branch("base_branch")
-        if branch is None:
-            return None, _CLOSE_INTEGRATION_UNDECLARED.format(cluster=self._cluster)
+            return None, (f"{self._cluster}는 제품 브랜치 미결속 장부다. 기존 "
+                          "`board.py cluster new <이름> --tickets <티켓들> --repo <이름> --slot <N>` "
+                          "또는 `--task <이름>`으로 명시 재결속하라")
         ledger_status, rows = identity_args._read_lease_rows_status(LEASES_FILE)
         if ledger_status == identity_args.LEDGER_UNREADABLE:
             raise _CloseObservationFailure(

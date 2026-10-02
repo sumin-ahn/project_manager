@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from _git import commit_env
-from conftest import anchor_board_module
+from conftest import anchor_board_module, bind_product_cluster
 
 REPO = Path(__file__).resolve().parents[1]
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
@@ -1071,6 +1071,7 @@ def test_promote_ships_the_draft_rounds_with_the_spec(board_env):
     round_path.write_text(
         round_path.read_text(encoding="utf-8") + "\n## 경계 실측\n- 실측 대조 근거\n",
         encoding="utf-8", newline="")
+    bind_product_cluster(board, "T-1007")
     assert board.main(["promote", "T-1007"]) == 0
 
     promoted = board_dir / "tickets" / "open" / path.name

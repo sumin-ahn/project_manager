@@ -39,7 +39,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import anchor_board_module
+from conftest import anchor_board_module, bind_product_cluster
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -803,6 +803,7 @@ def test_promote_accepts_filled_design_section_with_done(board_git):
     board_git.dump_ticket(draft, fm, _body())
     _harvest_architect_round(board_git, board_dir, fm["id"])
 
+    bind_product_cluster(board_git, fm["id"])
     assert board_git.cmd_promote(argparse.Namespace(id=fm["id"])) == 0
     assert list((board_dir / "tickets" / "open").glob("T-*-*.md")), \
         "승격된 티켓이 open/ 으로 이동 안 됨."
@@ -818,6 +819,7 @@ def test_promote_unaffected_for_na_ticket_with_skeleton_design(board_git):
     assert fm["design"] == board_git.DESIGN_NA
     board_git.dump_ticket(draft, fm, _body(_DESIGN_SKELETON))
 
+    bind_product_cluster(board_git, fm["id"])
     assert board_git.cmd_promote(argparse.Namespace(id=fm["id"])) == 0
     assert list((board_dir / "tickets" / "open").glob("T-*-*.md"))
 
@@ -925,6 +927,7 @@ def test_design_promotes_a_blocked_draft_so_promote_now_flips_from_reject_to_pas
     # `done` 은 architect 점검 라운드도 함께 요구한다(면제 경로가 없어진 자리) — 실산출 1건.
     _seed_harvested_architect_round(board_git, tid)
 
+    bind_product_cluster(board_git, tid)
     assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0
     assert list((board_dir / "tickets" / "open").glob(f"{tid}-*.md")), \
         "승격 후 promote 가 open/ 으로 이동해야 한다."
@@ -960,6 +963,7 @@ def test_design_open_ticket_transition_syncs_to_board_git(board_git):
     fm["design"] = board_git.DESIGN_DONE
     board_git.dump_ticket(draft, fm, _body())
     _harvest_architect_round(board_git, board_dir, tid)
+    bind_product_cluster(board_git, tid)
     assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0
 
     assert board_git.main(["design", tid, "n/a"]) == 0

@@ -531,6 +531,13 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
         f"---\n{frontmatter}---\n\n# {tid} — 4단계 완주 스모크\n\n{_FOUR_STEP_FILLED_BODY}",
         encoding="utf-8", newline="\n")
 
+    # 공유 승격 전에 기존 명령으로 실제 제품 브랜치와 멤버를 명시 결속한다.
+    declared = _board(dest, "cluster", "new", "four-step", "--tickets", tid,
+                      "--repo", dest.name, "--slot", "1")
+    assert declared.returncode == 0, declared.stderr
+    slot_tree = dest / f"work/{dest.name}_1"
+    assert _git(["checkout", "-q", "task/four-step"], slot_tree).returncode == 0
+
     # 2단계 — promote: draft → open/ 이동 + board-git 커밋.
     promote = _board(dest, "promote", tid)
     assert promote.returncode == 0, f"promote 실패: {promote.stderr}"
@@ -567,7 +574,7 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
     assert list(board_tickets.glob(f"claimed/{tid}-*.md")), (
         "거부됐는데 티켓이 claimed/ 를 떠났다")
 
-    complete = _ticket_finish(dest, "--cluster", f"C-{tid}", "--no-pytest")
+    complete = _ticket_finish(dest, "--cluster", "C-four-step", "--no-pytest")
     assert complete.returncode == 0, (
         f"묶음 종결 실패:\n--- stdout ---\n{complete.stdout}\n--- stderr ---\n{complete.stderr}")
     done_matches = list(board_tickets.glob(f"done/{tid}-*.md"))
@@ -575,7 +582,7 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
         f"종결 성공인데 done/ 에 정확히 1개가 아님: {done_matches}")
     assert not list(board_tickets.glob(f"claimed/{tid}-*.md")), (
         "종결 성공인데 claimed/ 에 원본이 남음 — copy-without-delete 회귀.")
-    ledger = board_tickets / "clusters" / f"C-{tid}.md"
+    ledger = board_tickets / "clusters" / "C-four-step.md"
     assert "status: closed" in ledger.read_text(encoding="utf-8"), (
         f"종결 뒤에도 장부가 닫히지 않았다:\n{ledger.read_text(encoding='utf-8')}")
 

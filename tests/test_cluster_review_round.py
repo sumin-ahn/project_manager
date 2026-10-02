@@ -1878,3 +1878,26 @@ def test_t0929_finish_confirmation_explicit_wrong_branch_refused(pd, review_env)
     board.LEASES_FILE.write_text(json.dumps({'leases': [{'slot': 'work/proj_1', 'repo': 'proj', 'session': 'main'}]}), encoding='utf-8')
     with pytest.raises(pd.DelegateError, match='브랜치'):
         pd._cluster_confirmation_tree(board, _CLUSTER, identity=argparse.Namespace(task='main', repo='proj', slot=1))
+
+
+@requires_git
+@pytest.mark.parametrize("task_only", [False, True])
+def test_t0930_confirmation_unbound(pd, review_env, monkeypatch, task_only):
+    import argparse
+    home, tickets = review_env
+    board = _fixture_board(pd, home)
+    board.LEASES_FILE = home / ".project_manager/.local/worktree-leases.json"
+    slot = home / "work/proj_1"
+    assert _git(home, "worktree", "add", "-q", str(slot), _BASE_BRANCH).returncode == 0
+    board.LEASES_FILE.write_text(json.dumps({"leases": [{"slot": "work/proj_1", "repo": "proj", "session": "main", "state": "leased", "role": "work"}]}), encoding="utf-8")
+    ledger_path = board.cluster_ledger_path(_CLUSTER)
+    ledger = board.load_cluster(_CLUSTER)
+    ledger["branch"] = None
+    board.dump_cluster(ledger)
+    before = (ledger_path.read_bytes(), board.LEASES_FILE.read_bytes(),
+              tuple(path.read_bytes() for path in sorted(tickets.glob("T-*.md"))))
+    identity = argparse.Namespace(task="main", repo=None if task_only else "proj", slot=None if task_only else 1)
+    with pytest.raises(pd.DelegateError, match="cluster new"):
+        pd._cluster_confirmation_tree(board, _CLUSTER, identity=identity)
+    assert (ledger_path.read_bytes(), board.LEASES_FILE.read_bytes(),
+            tuple(path.read_bytes() for path in sorted(tickets.glob("T-*.md")))) == before

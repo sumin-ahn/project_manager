@@ -290,8 +290,10 @@ def test_new_task_prefix_and_created_by(board, monkeypatch):
         "leases": [],
         "tasks": [{"name": "job5", "prefix": "PAY"}],
     }), encoding="utf-8")
-    # prefix/귀속만 검증하는 단위 fixture, 실행 트리는 전용 계약 사례에서 검증한다.
-    monkeypatch.setattr(board, "_claim_code_tree", lambda args: str(board.REPO))
+    # prefix/귀속만 검증한다. 제품 기준 조회는 대역이며 실 Git 결속은 전용 계약 사례가 검증한다.
+    monkeypatch.setattr(board, "_cluster_publish_base_branch",
+                        lambda args: (str(board.REPO / "product"), "task/main")
+                        if getattr(args, "task", None) else (None, None))
     seen = {}
 
     def _fake_id_prefix(override, session=None):
@@ -333,8 +335,10 @@ def _stub_new_env(board, monkeypatch, *, tasks):
     """cmd_new 3단 해소 테스트용 공통 stub — id_prefix override 캡처 + 부작용 격리(F5·T-0357)."""
     board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     board.LEASES_FILE.write_text(json.dumps({"leases": [], "tasks": tasks}), encoding="utf-8")
-    # prefix/귀속만 검증하는 단위 fixture, 실행 트리는 전용 계약 사례에서 검증한다.
-    monkeypatch.setattr(board, "_claim_code_tree", lambda args: str(board.REPO))
+    # prefix/귀속만 검증한다. 제품 기준 조회는 대역이며 실 Git 결속은 전용 계약 사례가 검증한다.
+    monkeypatch.setattr(board, "_cluster_publish_base_branch",
+                        lambda args: (str(board.REPO / "product"), "task/main")
+                        if getattr(args, "task", None) else (None, None))
     seen = {}
     monkeypatch.setattr(board, "id_prefix",
                         lambda override, session=None: seen.__setitem__("override", override) or override)

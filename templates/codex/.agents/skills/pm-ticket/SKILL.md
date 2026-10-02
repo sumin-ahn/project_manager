@@ -29,6 +29,7 @@ python3 .project_manager/tools/board.py new "<한 줄 제목>" \
   [--design required|done|n/a]
 ```
 
+- 코드 트리 없는 draft 작성은 허용한다. 공유 발행의 기준은 기존 task 또는 repo/slot 입력으로 명시한 실제 제품 트리에서 해소한다. PM 홈·현재 cwd·created_by·단일 슬롯을 근거로 제품 브랜치를 추측하지 않는다.
 - board-git 공유 형상: template placeholder가 남은 새 티켓은 자동으로 **draft**(`tickets/.drafts/`, board-git 미커밋)로 격리되어 다른 슬롯의 pull/handoff에 나타나지 않는다. 별도 flag는 없으며(`--draft` 없음) 미충전이면 draft다.
 - §3 본문 점검 라운드는 `pm_delegate.py ticket prepare|harvest --role architect`로 준비·회수한다 —
   **이 위임 경로만 규범이다**(PM이 자기 초안을 점검한 라운드는 독립 점검이 아니다). `board.py
@@ -80,6 +81,8 @@ python3 .project_manager/tools/pm_delegate.py ticket harvest --copy <prepare JSO
 - `design: required|done` 티켓은 이 라운드가 회수·충전되기 전 `promote`가 rc=1로 거부한다. `n/a`는 기계 강제 밖이지만, 다중 티켓을 한 번에 발행할 때와 `estimate: medium` 이상은 규범으로 점검을 받는다.
 
 ## 4. 검증 → 승격
+
+공유 승격 전에 기존 `board.py cluster new`로 실제 제품 트리와 branch/base_branch 및 멤버를 결속한다. task가 작업공간을 여럿 보유하면 기존 `--task <이름> --repo <repo> --slot <N>`을 사용한다. promote는 이 장부를 읽기로 검증하고 보존하며 새 선택 인자를 받지 않는다. 미결속 장부는 공유 전에 거부하고 같은 명시 결속 명령을 안내한다.
 
 ```bash
 python3 .project_manager/tools/board.py lint            # placeholder/thin/design-pending 잔존 확인(선택·조기 피드백)

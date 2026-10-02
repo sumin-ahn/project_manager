@@ -2853,7 +2853,7 @@ def _wave_repo(tmp_path: Path, *, git: bool = True,
         # 판정 기준은 묶음 장부가 소유한다 — 실 board 는 발행이 이 파일을 만든다.
         write_cluster_ledger(
             root / ".project_manager" / "board", _WAVE_TICKET,
-            base_branch=base_branch)
+            base_branch=base_branch, branch=f"dev/{_WAVE_TICKET}")
     _wave_write(root / "src" / "app.py", 5)
     _wave_write(root / "docs" / "notes.md", 3)
     if git:
@@ -3625,3 +3625,53 @@ def test_self_axis_block_fn_defaults_to_the_real_implementation(tf):
     """DI 인자 1개 — 미주입이면 `_default_self_axis_block` 이 기본값이다."""
     finisher = tf.TicketFinisher()
     assert finisher._self_axis_block_fn == finisher._default_self_axis_block
+
+
+def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
+    from test_cluster_close import _build_close_env, _write_cluster_ledger, _CLUSTER, _CLUSTER_BRANCH, _INTEGRATION_BRANCH, _git, _rev
+    env = _build_close_env(_load_module(), tmp_path / "rebound", monkeypatch)
+    closer = env.closer()
+    board = closer._board
+    _write_cluster_ledger(env.board_dir, tickets=(env.ticket,), branch=None)
+    board_py = env.home / ".project_manager/tools/board.py"
+    assert env.tf._cluster_integration_branch(board_py, env.ticket) is None
+    assert closer.run() == 1
+    _git(env.slot, "checkout", "--", "src/app.py")
+    _git(env.slot, "checkout", "--detach")
+    _git(env.code, "checkout", "-b", "user-held")
+    _git(env.slot, "checkout", _INTEGRATION_BRANCH)
+    _git(env.code, "branch", "-D", _CLUSTER_BRANCH)
+    assert board.cmd_cluster(argparse.Namespace(cluster_cmd="new", name="rebound",
+        tickets=env.ticket, spike=None, repo="code", slot=1, task=None)) == 0
+    ledger = board.cluster_ledger_path("rebound")
+    declaration = board.load_cluster("rebound")
+    assert declaration["base_branch"] == _INTEGRATION_BRANCH
+    assert board.cluster_tickets(board.load_cluster(_CLUSTER)) == []
+    # 재결속 장부를 보존하면서 실제 draft 승격과 claim을 이어 실행한다.
+    path = board.find_ticket_exact(env.ticket)[1]
+    fm, _ = board.load_ticket(path)
+    from test_board_cluster import _TEMPLATE_TEXT as filled
+    body = filled.split("---", 2)[2].replace("T-NNNN", env.ticket).replace("<제목>", "종결 픽스처").replace("- [ ]", "- [x]")
+    fm["status"] = "draft"
+    draft = board.move_ticket(path, ".drafts")
+    board.dump_ticket(draft, fm, body)
+    assert board._board_git_sync_best_effort("fixture draft conversion", (path,))
+    before = ledger.read_bytes()
+    assert board.cmd_promote(argparse.Namespace(id=env.ticket)) == 0
+    assert ledger.read_bytes() == before
+    assert board.cmd_claim(argparse.Namespace(id=env.ticket, repo="code", slot=1, task="t")) == 0
+    fork = _git(env.slot, "config", f"branch.{declaration['branch']}.pm-fork").stdout.strip()
+    assert fork == _rev(env.slot)
+    assert _git(env.slot, "config", f"branch.{declaration['branch']}.pm-parent").stdout.strip() == _INTEGRATION_BRANCH
+    _git(env.slot, "checkout", board.cluster_branch_name("rebound"))
+    _git(env.code, "checkout", _INTEGRATION_BRANCH)
+    (env.slot / "src/app.py").write_text("seed = 1\nwork = 2\n", encoding="utf-8")
+    leases, home = env.lease_bytes(), env.home_log()
+    assert env.tf._cluster_integration_branch(board_py, env.ticket) == _INTEGRATION_BRANCH
+    assert env.closer(cluster="rebound").run() == 0
+    after = board.load_cluster("rebound")
+    assert after["branch"] == declaration["branch"] and after["base_branch"] == declaration["base_branch"]
+    assert env.lease_bytes() == leases
+    assert env.home_log()[1:] == home
+    assert list((env.board_dir / "tickets/done").glob("T-*.md"))
+    assert _git(env.code, "merge-base", "--is-ancestor", _rev(env.slot), _INTEGRATION_BRANCH).returncode == 0

@@ -13830,8 +13830,6 @@ def cmd_new(args: argparse.Namespace) -> int:
     # `--task` → task 명(F5b) · `--repo/--slot`→ `<repo>_<N>` 슬롯 세션 · 무명시 → None.
     # 하나의 세션 override 문자열이지만 축이 둘(task vs slot)이라 아래 분기가 축을 명시 구분한다.
     actor_session = _execution_actor_session_override(args)
-    if getattr(args, "task", None):
-        _claim_code_tree(args)
     requested_override = getattr(args, "prefix", None)
     override = requested_override
     if override:
@@ -13906,6 +13904,21 @@ def cmd_new(args: argparse.Namespace) -> int:
         return 1
 
     tmpl_fm, tmpl_body = load_ticket(template_file())
+    # ID 발행 전에는 템플릿의 ID로 본문 경로만 판정한다.
+    draft_lint_id = str(tmpl_fm.get("id") or "")
+    draft_body = tmpl_body.replace("T-NNNN", draft_lint_id).replace("<제목>", args.title)
+    is_draft = _board_git_enabled() and bool(
+        _body_lint_issues(draft_lint_id, draft_body, strict_sections=True, design=design))
+    # 코드 없는 task draft는 허용한다. 명시 선택은 draft에서도 검증한다.
+    if ((not is_draft and _board_git_enabled())
+            or getattr(args, "repo", None) or getattr(args, "slot", None)
+            or (getattr(args, "task", None) and not is_draft)):
+        tree, base = _cluster_publish_base_branch(args)
+        if not tree or not base:
+            print("[중단] 공유 발행의 코드 트리와 기준 브랜치를 명시하라 "
+                  "(`--repo <이름> --slot <N>` 또는 `--task <이름>`). "
+                  "코드 없는 초안은 draft로 작성한 뒤 기존 cluster new로 결속하라.", file=sys.stderr)
+            return 1
 
     # 발행 규율 게이트: board-git 이 공유(별도 git·submodule) 상태일 때만
     # 의미가 있다 — 미충전 stub 이 board-git 에 커밋돼 다른 slot 의 handoff/bootstrap 을
@@ -13974,8 +13987,7 @@ def cmd_new(args: argparse.Namespace) -> int:
         # 운영 단위 — 새 티켓은 자기 크기 1 장부를 갖는다(기준 브랜치·예산은 그 자리에서
         # 박는다). **draft 는 미룬다**: 장부는 board-git 공유인데 draft 명세는 격리(공유 밖)라,
         # 지금 멤버로 올리면 다른 클론에는 없는 티켓을 가리키는 장부가 공유된다. 승격
-        # (`promote`)이 공유 board 로 올리는 그 자리에서 귀속한다(필드 부재 = 크기 1 로 읽히
-        # 므로 그 사이도 판정이 성립한다).
+        # 전에 기존 cluster new로 제품 브랜치와 멤버를 명시 결속한다.
         cluster_ledger: Path | None = None
         if not is_draft:
             fm["cluster"], cluster_ledger = _cluster_auto_attach(tid, args)
@@ -14042,9 +14054,8 @@ def cmd_promote(args: argparse.Namespace) -> int:
     개수는 경고 1줄). 판정 대상은 승격되는 티켓 하나이며 기존 open 티켓을 소급하지 않는다.
     통과해야 `open/` 으로 옮겨져 STATUS_DIRS 스캔 대상이 되고 board-git 에 커밋돼 공유 board
     에 존재하게 된다(생성~claim 사이 handoff 창에 미충전 stub 이 인계되는 실패를 원천 차단).
-    board 가 별도 git 이 아니면(legacy) 게이트 자체가 무의미하므로 항상 통과(sync 는
-    기존처럼 no-op) — 이 경로에선 draft 개념 자체가 없으므로(`cmd_new` 가 legacy 에선 항상
-    `open/` 에 발행) status 는 정상적으로 "open" 이다.
+    legacy board에서는 본문 게이트와 sync가 no-op이다. 제품 branch/base와 멤버 결속은
+    공유 여부와 관계없이 검증한다.
     """
     moved = False
     with board_lock():
@@ -14078,12 +14089,15 @@ def cmd_promote(args: argparse.Namespace) -> int:
         # 이 걸러낸다.
         touched: list[Path] = [path]
         final_path = path
-        # 승격 = 공유 board 진입 지점 — 발행이 draft 때 미룬 클러스터 귀속을 여기서 마친다.
-        # 필드가 이미 있으면(예: `cluster new` 가 draft 를 멤버로 선언) 그대로 둔다.
-        cluster_ledger: Path | None = None
-        if not str(fm.get("cluster") or "").strip():
-            fm["cluster"], cluster_ledger = _cluster_auto_attach(args.id, args)
-            touched.append(cluster_ledger)
+        # 공유 전에 기존 cluster new의 제품·멤버 결속을 읽기로 검증한다.
+        # 선언된 장부와 티켓 cluster 값은 승격이 재작성하지 않는다.
+        if _board_git_enabled():
+            problem = cluster_binding_problem(ticket_cluster(args.id, fm))
+            if problem is None:
+                problem = cluster_complete_binding_problem(args.id, fm, str(fm.get("cluster") or ""))
+            if problem:
+                print(f"[중단] promote 결속 검증: {problem}", file=sys.stderr)
+                return 1
         if status == "draft":
             # drafts_dir() → open/ 이동 — 이제서야 STATUS_DIRS 스캔·board-git 대상이 된다.
             # status dump와 rename도 같은 lock 안이라 claim/tier writer가 중간 형상을 못 본다.
@@ -14093,8 +14107,6 @@ def cmd_promote(args: argparse.Namespace) -> int:
             touched.append(new_path)
             final_path = new_path
             moved = True
-        elif cluster_ledger is not None:
-            dump_ticket(path, fm, body)
         # draft 의 라운드도 promote 가 출하한다 — draft 명세는 board-git ignore 지만
         # `tickets/<라운드 디렉터리>/<티켓>/` 은 ignore 밖이라, 승격 커밋에 함께 싣지 않으면
         # 준비된 라운드가 미커밋으로 눌러앉는다(스코프 전개는 디렉터리를 파일로 펼친다).
@@ -14108,8 +14120,6 @@ def cmd_promote(args: argparse.Namespace) -> int:
         print(f"promoted {args.id} (board-git 승격 완료)")
     else:
         print(f"promoted {args.id} (board-git 기록 보류: local-only/uncommitted)")
-    if cluster_ledger is not None:
-        print(f"  ⓘ 크기 1 묶음 장부 생성: {fm['cluster']}", file=sys.stderr)
     # 발행 시점 판단 재료 — 성공 경로 두 갈래(승격 완료/기록 보류) 공통 뒤,
     # `_board_git_enabled()` 게이트 분기 밖(솔로/legacy 형상에서도 나온다). 겹침 0 이면 침묵.
     # `promote` 는 `--repo`/`--slot` 인자가 없다 — 슬롯 재료의 repo 는 이 티켓의 provenance
@@ -14588,6 +14598,43 @@ def cluster_complete_binding_problem(
     return None
 
 
+def cluster_binding_problem(cluster: str, *, tree: str | None = None) -> str | None:
+    """명시 장부의 제품 branch/base 결속을 읽기로 검증한다 (추정·재작성 없음)."""
+    ledger = load_cluster(cluster)
+    branch = str((ledger or {}).get("branch") or "").strip()
+    base = str((ledger or {}).get("base_branch") or "").strip()
+    if not branch or not base:
+        return (f"{cluster}는 제품 브랜치 미결속 장부다. 기존 "
+                "`board.py cluster new <이름> --tickets <티켓들> --repo <이름> --slot <N>` "
+                "또는 `--task <이름>`으로 명시 재결속하라")
+    if tree is not None:
+        return None if (_cluster_branch_state(tree, branch) is True
+                        and _cluster_branch_state(tree, base) is True) else (
+            f"{cluster}의 branch {branch} 또는 base_branch {base}를 제품 트리 {tree}에서 확인하지 못했다")
+    status, rows = identity_args._read_lease_rows_status(LEASES_FILE)
+    if status == identity_args.LEDGER_UNREADABLE:
+        return f"{cluster} 제품 결속을 검증할 대여 기록을 읽지 못했다"
+    repositories: set[str] = set()
+    for row in rows:
+        slot = str(row.get("slot") or "").strip()
+        folder = REPO / slot
+        if not slot or not (folder / ".git").exists():
+            continue
+        branch_state = _cluster_branch_state(str(folder), branch)
+        base_state = _cluster_branch_state(str(folder), base)
+        if branch_state is None or base_state is None:
+            return f"{cluster}의 제품 브랜치를 관측하지 못했다: {folder}"
+        if branch_state and base_state:
+            common = _git_run(["rev-parse", "--git-common-dir"], repo=folder)
+            if common is None or common[0] != 0:
+                return f"{cluster} 제품 저장소 근거를 읽지 못했다: {folder}"
+            repositories.add(str((folder / common[1].strip()).resolve()))
+    if len(repositories) != 1:
+        return (f"{cluster}의 branch {branch}·base_branch {base}를 가진 제품 저장소가 "
+                f"정확히 하나가 아니다 ({len(repositories)}개). 명시 결속을 확인하라")
+    return None
+
+
 def _new_cluster_fm(
     cluster: str, tickets: Sequence[str], *,
     base_branch: str | None = None, branch: str | None = None,
@@ -14614,11 +14661,10 @@ def _cluster_auto_attach(
     (`cluster new`)이고 엔진은 고르지 않는다 — 활성 묶음에 새 티켓을 자동으로 끼우면 선언한 적
     없는 묶음이 생기고, 그 묶음의 예산·기준 브랜치가 끼워진 티켓의 판정을 대신한다.
 
-    기준 브랜치와 예산(`_new_cluster_fm` 기본값)은 이 자리에서 박는다 — 판정 표면(완료 기록
-    폭·리뷰 폭·라운드 예산)은 **선언된 값만** 읽고 선언이 없으면 거부하므로, 발행이 값을 비워
-    두면 그 티켓은 완료 기록에서 멈춘다.
+    명시 제품 기준 브랜치와 예산을 기록한다. branch 선언은 기존 cluster new의 몫이며,
+    실행·종결은 그 명시 결속 전까지 거부한다. 재개방의 무선택 경로는 기준을 추측하지 않는다.
 
-    board_lock 보유 전제다(발행·승격 임계구역 안에서 부른다).
+    board_lock 보유 전제다(발행·재개방 임계구역 안에서 부른다).
     """
     _tree, base_branch = _cluster_publish_base_branch(args)
     fm = _new_cluster_fm(
@@ -14631,10 +14677,18 @@ def _cluster_publish_base_branch(
 ) -> tuple[str | None, str | None]:
     """장부에 박을 `(코드 트리, 기준 브랜치)` — 트리 미해소·브랜치 없는 트리(detached·비-git)는 None.
 
-    트리 해소는 claim 과 **같은 하나**(`_claim_code_tree`)다 — 이 자리에 별도 규칙은 없다.
-    task 작업공간에서 발행하면 그 세션의 통합 브랜치가 그대로 장부에 실린다.
+    명시 입력만 기존 `_claim_code_tree`로 해소한다. 인자 없는 PM 홈 fallback은
+    제품 결속의 증거가 아니므로 기준 브랜치를 기록하지 않는다.
     """
+    identity = identity_args.parse_identity(args)
+    if identity.kind == "none" and not identity.task:
+        return None, None
     tree = _claim_code_tree(args)
+    if not tree or not (Path(tree) / ".git").exists() or not _git_head_at(tree):
+        return None, None
+    top = _git_run(["rev-parse", "--show-toplevel"], repo=Path(tree))
+    if top is None or top[0] != 0 or Path(top[1].strip()).resolve() != Path(tree).resolve():
+        return None, None
     return tree, (_cluster_current_branch(tree) if tree else None)
 
 

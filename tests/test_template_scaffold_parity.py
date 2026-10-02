@@ -718,15 +718,27 @@ def _close_branch_surfaces() -> list[Path]:
     return sorted(set(paths))
 
 
-def test_completion_guidance_matches_close_branch_contract():
+def test_completion_guidance_matches_close_branch_contract(monkeypatch):
     """F-002: 카드의 5·6단계 안내가 엔진의 차단/건너뛰기 계약과 같은 값을 말한다."""
     finish = _load_engine_module("ticket_finish")
     board = _load_engine_module("board")
     closer = finish.ClusterCloser
 
-    # 엔진 축 — 기준 브랜치 미선언은 두 단계 모두 차단 문구로 정지하고,
-    # 무대상 건너뛰기는 묶음 브랜치(`branch`) 미선언에만 있다. 판정 자리는 그 단계가 선언한
-    # 읽기 전용 선검사이므로 선언에서 파생해 본다(메서드 이름을 여기 손으로 적지 않는다).
+    # 살아 있는 멤버의 미결속은 동명 기준 브랜치로 해소하지 않고 조회 전에 거부한다.
+    probe = object.__new__(closer)
+    probe._cluster = "C-guidance"
+    ledger = {"branch": None, "base_branch": "main"}
+    probe._ledger = lambda: ledger
+    reads = []
+    monkeypatch.setattr(
+        finish.identity_args, "_read_lease_rows_status",
+        lambda path: reads.append(path) or (finish.identity_args.LEDGER_OK, []),
+    )
+    tree, problem = probe._resolve_code_tree()
+    assert tree is None and "미결속" in problem and "cluster new" in problem
+    assert reads == [] and ledger == {"branch": None, "base_branch": "main"}
+
+    # 기준 브랜치 부재의 기존 단계별 차단도 유지한다.
     blocking = finish._CLOSE_INTEGRATION_UNDECLARED
     assert "base_branch" in blocking
     prechecks = {key: precheck for key, _label, precheck in closer.STEPS}
@@ -744,8 +756,7 @@ def test_completion_guidance_matches_close_branch_contract():
         board.cluster_id_for_name("T-9999"), ["T-9999"], base_branch="task/main")
     assert auto["base_branch"] == "task/main" and auto["branch"] is None
 
-    # 카드 축 — 옛 "통합 브랜치 미선언 = 무대상" 안내는 어느 사본에도 없고,
-    # 두 카드 계열이 정지 규칙과 자동 장부의 실제 형상을 싣는다.
+    # 카드 전건이 미결속 거부와 기존 명시 재결속을 안내한다.
     surfaces = _close_branch_surfaces()
     assert len(surfaces) >= 2 * (1 + len(TEMPLATE_NAMES)), (
         f"종결 브랜치 계약 카드 표면이 너무 적다: {[str(p) for p in surfaces]}"
@@ -769,10 +780,10 @@ def test_completion_guidance_matches_close_branch_contract():
         )
     for path in finish_details + delegate_cards:
         text = path.read_text(encoding="utf-8")
-        assert "묶음 브랜치 미선언" in text, (
-            f"{path.relative_to(REPO)}: 실제 무대상 축(묶음 브랜치 미선언) 누락")
-        assert "base_branch" in text and "정지" in text, (
-            f"{path.relative_to(REPO)}: 기준 브랜치 미선언 = 정지 계약 누락")
+        assert "미결속" in text and "cluster new" in text, (
+            f"{path.relative_to(REPO)}: 미결속 거부 또는 기존 재결속 안내 누락")
+        assert "branch" in text and "base_branch" in text, (
+            f"{path.relative_to(REPO)}: 제품 branch/base_branch 결속 안내 누락")
 
 
 def test_completion_guidance_uses_cluster_finish_not_direct_complete():
