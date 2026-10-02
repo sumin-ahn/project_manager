@@ -2002,13 +2002,14 @@ def prepare_cluster_copy(
     (설계 근거 게이트 포함)가 **N 티켓 전부** board 를 건드리기 전에 끝난다.
     뒤에 두면 거부된 준비가 board 에 회수 불가능한 고아 라운드를 남기고 순번을 영구 소모한다.
 
-    순서는 다섯이다 — (1) 역할·멤버 해소·티켓별 상태 판정 (2) ignore 검증과
+    순서는 여섯이다. (1) 역할·멤버 해소·티켓별 상태 판정 (2) ignore 검증과
     run-dir 확보(슬롯 전용 부작용) (3) 티켓별 시드 렌더 (4) **상태 재확인 + 역할 count 재확인 +
     채번 + O_EXCL 예약을 하나의 board_lock 임계구역에서 최신 스냅샷으로 수행** (5) 슬롯 파일
-    laydown + PM 홈 장부 기록(회수의 신뢰 뿌리 · 티켓당 한 행).
+    laydown + PM 홈 장부 기록(회수의 신뢰 뿌리 · 티켓당 한 행) (6) 공개된 신규 시드의
+    경로 한정 보드 기록. (6)은 모든 사본과 장부가 완성된 뒤 수행한다.
 
-    락은 (4) 구간만 잡는다. 재확인·채번·생성이 그 구간 안에서 한 번에 끝나는 게 두 준비가 같은
-    번호를 계산할 수 있는 유일한 창을 닫는 방법이고, 회수·기록 경로에는 락이 없다. 순번은
+    명세 스냅샷(1)과 최종 예약(4)은 board_lock 안에서 처리한다. 재확인·채번·생성이 같은
+    구간에서 끝나므로 두 준비의 동일 순번 예약을 막는다. (6)의 기록 seam은 락 밖에서 부른다. 순번은
     **티켓별**이다 — 묶음 하나의 라운드가 티켓마다 다른 번호를 받을 수 있다.
 
     `owner_pid` 는 **호출자가 이 run 의 소유자일 때만** 준다 — 준비·실행·회수가 한 프로세스의
@@ -2137,6 +2138,7 @@ def prepare_cluster_copy(
     # fallback 값으로 먼저 채우고 더 나은 값으로 교체한다(아래 (4) 주석).
     reserved: list[dict[str, Any]] = []
     plans: list[TicketCopyPlan] = []
+    seed_sync_paths: list[Path] = []
     # 예약(reserve_round) 성공 전에 이 블록을 벗어나면(동시 prepare 경합 패자 포함) 이 run_dir
     # 은 이 호출 하나만의 소유라 안전하게 지운다. 성공 후 실패(장부 append 등)는 board 라운드가
     # 이미 살아 있어 `_reserved_round_residue` 진단으로 수동 복구 좌표를 남긴다(지우지 않는다).
@@ -2197,6 +2199,7 @@ def prepare_cluster_copy(
                 # 재확인은 최신 스냅샷으로 낸다(스냅샷 1회 · 멤버 전부가 같은 장부 판독을 공유한다).
                 # 그사이 장부가 사라졌으면 같은 판독이 그 자리에서 멈춘다(예약 없음).
                 budget_sequence = _budget_inputs()
+                formal_tickets: set[str] = set()
                 for ticket in members:
                     refreshed = board.find_ticket_exact(ticket)
                     if refreshed is None:
@@ -2209,6 +2212,8 @@ def prepare_cluster_copy(
                             "티켓 라운드 준비는 open/claimed 또는 draft×architect만 허용: "
                             f"{ticket} role={role} currently in {fresh_status}/"
                         )
+                    if fresh_status != "draft":
+                        formal_tickets.add(ticket)
                     if reopen_ordinal is not None:
                         # 재개방은 순번을 늘리지 않아 수열이 볼 것이 없다 — 이 티켓의
                         # 재확인은 아래 예약 루프의 `reopen_round` 가 최신 스캔으로 낸다.
@@ -2257,6 +2262,8 @@ def prepare_cluster_copy(
                     if parsed_round is not None:
                         record["ordinal"] = parsed_round[0]
                     record["board_rel"] = _board_relative_path(board_path, pm_home)
+                    if reopen_ordinal is None and ticket in formal_tickets:
+                        seed_sync_paths.append(board_path)
 
             # ── (5) 슬롯 파일 laydown ─────────────────────────────────────
             for record in reserved:
@@ -2344,7 +2351,7 @@ def prepare_cluster_copy(
             )
             print(
                 f"경고: board 라운드 예약 후 준비가 실패했습니다({type(exc).__name__}: {exc})"
-                f" · {residue}",
+                f" · run-dir={run_dir} · {residue}",
                 file=sys.stderr,
             )
         raise
@@ -2370,8 +2377,29 @@ def prepare_cluster_copy(
         except DelegateError as exc:
             # 장부 행이 없으면 이 라운드는 회수 자체가 막힌다 — 남은 좌표를 진단에 싣는다.
             raise DelegateError(
-                f"{exc}{_reserved_round_residue(ledger_row['board_rel'], plan.ordinal)}"
+                f"{exc}; run-dir={run_dir}"
+                f"{_reserved_round_residue(ledger_row['board_rel'], plan.ordinal)}"
             ) from exc
+    # 모든 사본과 장부 행이 완성된 뒤, board_lock 밖에서 이번 공개 시드만 기록한다.
+    # 재개방은 새 시드가 없고 draft는 promote가 공개하므로 이 집합에 들어오지 않는다.
+    if seed_sync_paths:
+        try:
+            ready = board._rounds_mutation_sync_paths(
+                f"ticket-prepare {cluster} {role}", tuple(seed_sync_paths))
+        except OSError as exc:
+            residue = " · ".join(
+                _reserved_round_residue(record["board_rel"], record["ordinal"])
+                for record in reserved)
+            raise DelegateError(
+                f"준비 완료 후 보드 기록 실패: {exc}; run-dir={run_dir}{residue}"
+            ) from exc
+        if not board._board_git_enabled():
+            print("ticket prepare: 별도 board-git 없음 (기존 no-op 기록)", file=sys.stderr)
+        elif ready:
+            print("ticket prepare: 신규 시드 로컬 기록 완료 "
+                  "(원격 동기 보류는 board sync 경고로 안내)", file=sys.stderr)
+        else:
+            print("ticket prepare: 신규 시드 로컬 기록 보류 (local-only/uncommitted)", file=sys.stderr)
     return ClusterCopyPlan(run_dir, cluster, run_id, role, tuple(plans))
 
 
@@ -2565,12 +2593,21 @@ def harvest_ticket_copy(
                 f"그대로 보존했습니다 — 사본을 고쳐 같은 경로로 다시 회수하세요: "
                 f"round={board_path.name} · copy={expected}"
             )
-    rounds_module.replace_round(board_path, text)
+    # promote와 같은 락에서 공개 상태 확인·교체를 마친다. draft 회수는 로컬 산출이며,
+    # promote가 명세와 충전된 라운드를 함께 기록한다.
+    with board.board_lock():
+        found = board.find_ticket_exact(row["ticket"])
+        if found is None:
+            raise DelegateError(f"회수할 티켓 명세가 없습니다: {row['ticket']}")
+        is_draft = found[0] == "draft"
+        rounds_module.replace_round(board_path, text)
     message = f"ticket-harvest {row['ticket']} {row['role']}"
     # board 부분 커밋 seam 은 직접 부른다 — 이름을 더듬어 찾으면 부분 동기된 사본에서 커밋만
     # 조용히 빠진 rc0(라운드는 바뀌었는데 board git 은 그대로)이 된다. 이름이 갈리면
     # AttributeError 로 loud 하게 죽는 편이 그 침묵보다 낫다.
-    sync_ready = bool(board._rounds_mutation_sync_paths(message, (board_path,)))
+    sync_ready = True
+    if not is_draft:
+        sync_ready = bool(board._rounds_mutation_sync_paths(message, (board_path,)))
     harvested = dict(row)
     harvested["harvested_at"] = datetime.datetime.now(
         datetime.timezone.utc
@@ -13841,20 +13878,45 @@ def _cluster_confirmation_tree(
 ) -> Path:
     """확인 커맨드를 돌릴 트리 1곳 — 묶음 통합 브랜치를 체크아웃한 코드 트리.
 
-    관측값을 만드는 자리라 그 자리가 그 브랜치가 아니면 **거부한다**: 다른 브랜치에서 잰 값을
-    확인으로 적으면 기계 확인이 거짓이 된다. 트리 해소는 board 의 규칙 하나
-    (`_claim_code_tree` — claim·완료 기록과 같은 해소)를 쓴다 — 여기서 해소 규칙을 새로
-    만들지 않는다. 해소 실패(`None`)는 거부다: 트리를 모른 채 잰 값은 확인이 아니다.
+    명시 선택은 board의 task 보유 조인을 사용한다. finish가 넘긴 task 단독 입력은
+    기존 ClusterCloser의 묶음 branch/base_branch 탐색을 재사용한다. 어느 경로든
+    확인 실행 트리가 묶음 브랜치와 다르면 기입 전에 거부한다.
     """
-    # 정체성 미지정은 "인자 전무"(kind="none") 그대로 넘긴다 — board 가 그 갈래를 소유한다.
-    resolved = board._claim_code_tree(
-        identity if identity is not None else argparse.Namespace())
+    selection = identity if identity is not None else argparse.Namespace()
+    # finish는 task 귀속만 전달한다. 실행 위치는 finish의 기존 묶음 브랜치 탐색을 재사용한다.
+    task_only = (getattr(selection, "task", None)
+                 and getattr(selection, "repo", None) is None
+                 and getattr(selection, "slot", None) is None)
+    if task_only:
+        board._validate_actor_task_or_exit(selection.task)
+        finish = _load_module_from_path(
+            Path(__file__).resolve().with_name("ticket_finish.py"), "ticket_finish.py",
+            verifier=_verify_engine_rev,
+        )
+        finish.REPO = board.REPO
+        finish.LEASES_FILE = board.LEASES_FILE
+        finisher = finish.TicketFinisher(board_py=Path(board.__file__))
+        closer = finish.ClusterCloser(cluster, finisher=finisher, board_py=Path(board.__file__))
+        closer._board = board
+        try:
+            resolved, problem = closer._resolve_code_tree()
+        except finish._CloseObservationFailure as exc:
+            raise DelegateError(str(exc)) from exc
+        if problem:
+            raise DelegateError(problem)
+    else:
+        try:
+            resolved = board._claim_code_tree(selection)
+        except SystemExit as exc:
+            raise DelegateError(str(exc)) from exc
     if not resolved:
         raise DelegateError(
             f"확인 커맨드를 돌릴 코드 트리를 해소하지 못했습니다: {cluster} — "
             "`--repo <이름> --slot <N>` 또는 `--task <이름>` 으로 트리를 명시하세요"
         )
     tree = Path(resolved)
+    if not board._git_head_at(str(tree)):
+        raise DelegateError(f"확인 실행 코드 트리의 HEAD를 읽지 못했습니다: {tree}")
     branch = str((board.load_cluster(cluster) or {}).get("branch") or "").strip()
     if branch:
         current = board._cluster_current_branch(str(tree))
@@ -14053,7 +14115,6 @@ def _cmd_rounds(argv: list[str], run_fn: Callable | None = None) -> int:
     identity_module.add_identity_args(resolve)
     args = parser.parse_args(argv)
     if args.rounds_command == "resolve":
-        board._reject_task_slot_identity_mix(args)
         try:
             identity_module.parse_identity(args)
         except ValueError as exc:

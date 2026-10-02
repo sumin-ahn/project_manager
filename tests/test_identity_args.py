@@ -368,7 +368,7 @@ def test_f6_none_ambiguous_holding_raises(ia, tmp_path):
     ])
     with pytest.raises(
         ia.WorkspaceResolutionError,
-        match=r"pm_config\.py release <slot> --task job2",
+        match=r"--repo.*--slot",
     ):
         _tw(ia, ["--task", "job2"], leases)
 
@@ -538,3 +538,74 @@ def test_validate_task_name_rejects_reserved_slot_pattern(ia):
         ia.validate_task_name("project_manager_1", ["project_manager"])
     # 미등록 repo 로 시작하는 _N 은 무관(자유 포맷 허용).
     ia.validate_task_name("project_manager_1", ["finance"])
+
+
+@pytest.mark.parametrize('argv, expected', [
+    (['--repo', 'A', '--slot', '5'], 'work/A_5'),
+    (['--repo', 'B'], 'work/B_1'),
+])
+def test_t0929_workspace_selects_owned_coordinate(ia, tmp_path, argv, expected):
+    leases = tmp_path / 'leases.json'
+    _write_leases(leases, [
+        {'slot': 'work/A_1', 'repo': 'A', 'session': 'main'},
+        {'slot': 'work/A_5', 'repo': 'A', 'session': 'main'},
+        {'slot': 'work/B_1', 'repo': 'B', 'session': 'main'},
+    ])
+    ws = ia.resolve_task_workspace(ia.parse_identity(_parse(ia, ['--task', 'main', *argv])), leases)
+    assert (ws.slot, ws.session, ws.readonly) == (expected, 'main', False)
+
+
+@pytest.mark.parametrize('change', [
+    {'session': 'foreign'}, {'state': 'idle'}, {'role': 'creating'},
+    {'repo': 'B'}, {'slot': 'work/A_7'},
+])
+def test_t0929_workspace_rejects_invalid_join(ia, tmp_path, change):
+    leases = tmp_path / 'leases.json'
+    row = {'slot': 'work/A_5', 'repo': 'A', 'session': 'main', 'state': 'leased', 'role': 'work'}
+    row.update(change)
+    _write_leases(leases, [row])
+    ident = ia.parse_identity(_parse(ia, ['--task', 'main', '--repo', 'A', '--slot', '5']))
+    with pytest.raises(ia.WorkspaceResolutionError):
+        ia.resolve_task_workspace(ident, leases)
+
+
+@pytest.mark.parametrize('argv', [[], ['--repo', 'A']])
+def test_t0929_workspace_ambiguity_preserves_leases(ia, tmp_path, argv):
+    leases = tmp_path / 'leases.json'
+    _write_leases(leases, [{'slot': f'work/A_{n}', 'repo': 'A', 'session': 'main'} for n in (1, 5)])
+    before = leases.read_bytes()
+    with pytest.raises(ia.WorkspaceResolutionError) as exc:
+        ia.resolve_task_workspace(ia.parse_identity(_parse(ia, ['--task', 'main', *argv])), leases)
+    assert '--slot' in str(exc.value)
+    assert '반납' not in str(exc.value)
+    assert leases.read_bytes() == before
+
+
+@pytest.mark.parametrize('owner', ['', 'main'])
+def test_t0929_workspace_readonly_reference_retains_role(ia, tmp_path, owner):
+    leases = tmp_path / 'leases.json'
+    _write_leases(leases, [{'slot': 'work/A_5', 'repo': 'A', 'session': owner, 'role': 'readonly'}])
+    ws = ia.resolve_task_workspace(ia.parse_identity(_parse(ia, ['--task', 'main', '--repo', 'A', '--slot', '5'])), leases)
+    assert ws.readonly is True
+
+
+def test_t0929_workspace_conflicting_owners_are_not_first_row(ia, tmp_path):
+    leases = tmp_path / 'leases.json'
+    _write_leases(leases, [{'slot': 'work/A_5', 'repo': 'A', 'session': owner} for owner in ('main', 'other')])
+    with pytest.raises(ia.WorkspaceResolutionError):
+        ia.resolve_task_workspace(ia.parse_identity(_parse(ia, ['--task', 'main', '--repo', 'A', '--slot', '5'])), leases)
+
+
+def test_t0929_workspace_windows_notation_is_same_coordinate(ia, tmp_path):
+    leases = tmp_path / 'leases.json'
+    _write_leases(leases, [{'slot': 'work\\A_5\\', 'repo': 'A', 'session': 'main'}])
+    ws = ia.resolve_task_workspace(ia.parse_identity(_parse(ia, ['--task', 'main', '--repo', 'A', '--slot', '5'])), leases)
+    assert (ws.slot, ws.repo, ws.session) == ('work/A_5', 'A', 'main')
+
+
+@pytest.mark.parametrize('state', ['idle', 'creating'])
+def test_t0929_workspace_inactive_readonly_is_not_a_reference(ia, tmp_path, state):
+    leases = tmp_path / 'leases.json'
+    _write_leases(leases, [{'slot': 'work/A_5', 'repo': 'A', 'session': '', 'role': 'readonly', 'state': state}])
+    with pytest.raises(ia.WorkspaceResolutionError):
+        ia.resolve_task_workspace(ia.parse_identity(_parse(ia, ['--task', 'main', '--repo', 'A', '--slot', '5'])), leases)

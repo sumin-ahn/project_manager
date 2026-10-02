@@ -30,6 +30,8 @@ wave 시작은 **baseline fix → wave 시작** 순서이며 red baseline 위에
 python3 .project_manager/tools/board.py regression run
 ```
 
+task가 작업공간을 여럿 보유하면 이 한 번의 회귀 명령에 `--task <이름> --repo <repo> --slot <N>`을 덧붙여 자기 실행 대상을 지정한다. task 귀속은 유지하며 선택한 작업공간의 HEAD·브랜치·test_cmd와 QA 선언을 실행·기록에 함께 결속한다. 선택 없는 다중 슬롯이나 미소유·idle·쓰기용 readonly 대상은 부작용 전에 거부한다. bootstrap·handoff와 finish는 task 단독 입력을 유지한다.
+
 보고에는 `회귀(core)`와 선언된 `platform[<name>]` 행을 모두 포함한다. core 또는 platform 어느
 한 행이라도 red/미실행이면 즉시 PM에게 보고하고 후속 wave 종료/시작을 중단한다. platform 선택
 flag나 별도 platform 명령을 만들지 않으며, VM/SSH 상세는 adopter-owned wrapper가 소유한다.

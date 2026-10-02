@@ -416,3 +416,54 @@ const m = require("./git-anchor-core.cjs");
         capture_output=True, text=True, encoding="utf-8",
     )
     assert "OPENCODE_ROOT_SESSION_OK" in result.stdout
+
+
+_T0931_GIT_FORMS = [
+    ('sparse-checkout', ['init'], True),
+    ('sparse-checkout', ['set', '--', 'list'], True),
+    ('sparse-checkout', ['add', 'src'], True),
+    ('sparse-checkout', ['reapply'], True),
+    ('sparse-checkout', ['disable'], True),
+    ('sparse-checkout', ['--quiet', 'set', '--', 'status'], True),
+    ('sparse-checkout', ['--path', 'list', 'set'], True),
+    ('sparse-checkout', ['list'], False),
+    ('sparse-checkout', ['check-rules', '--stdin'], False),
+    ('sparse-checkout', ['help'], False),
+    ('sparse-checkout', ['-h'], False),
+    ('sparse-checkout', ['init', '--help'], False),
+    ('submodule', ['update', '--remote', '--no-fetch'], True),
+    ('submodule', ['init'], True),
+    ('submodule', ['deinit', '--', 'status'], True),
+    ('submodule', ['add', 'local-repository', 'module'], True),
+    ('submodule', ['sync', '--recursive'], True),
+    ('submodule', ['set-url', 'module', 'local-repository'], True),
+    ('submodule', ['set-branch', '--branch', 'main', 'module'], True),
+    ('submodule', ['foreach', 'git status'], True),
+    ('submodule', ['absorbgitdirs'], True),
+    ('submodule', ['--quiet', '--cached', 'update', '--', 'status'], True),
+    ('submodule', ['--path', 'status', '-q', 'sync', '--', 'help'], True),
+    ('submodule', [], False),
+    ('submodule', ['--quiet', '--cached'], False),
+    ('submodule', ['status', '--', 'update'], False),
+    ('submodule', ['--quiet', 'status'], False),
+    ('submodule', ['--cached', 'summary'], False),
+    ('submodule', ['--path=update', 'status'], False),
+    ('submodule', ['help'], False),
+    ('submodule', ['-qh'], False),
+    ('submodule', ['update', '--help'], False),
+]
+
+
+@pytest.mark.parametrize('subcommand,args,writes', _T0931_GIT_FORMS)
+def test_t0931_git_forms_read_write_and_owner_matrix(board, home, monkeypatch, subcommand, args, writes):
+    """명령 형태별로 자기·타 task·idle·readonly·세션 부재를 같은 판정자로 확인한다."""
+    monkeypatch.setattr(board, '_git_anchor_identity', lambda anchor, **kw: ('slot', Path(anchor), home))
+    monkeypatch.setattr(board, '_git_alias_resolved', lambda invocation, **kw: invocation)
+    def no_git_mutation(*a, **k):
+        pytest.fail('판정 테스트가 git 변경을 실행했다')
+    for number, session in [(1, 'S-alpha'), (2, 'S-alpha'), (3, 'S-alpha'), (4, 'S-alpha'), (1, 'S-missing')]:
+        target = home / 'work' / f'app_{number}'
+        result = board.judge_git_anchor(home, session, str(target), ['git', subcommand, *args], runner=no_git_mutation)
+        expected = 'deny' if writes and (number != 1 or session != 'S-alpha') else 'ok'
+        assert result['verdict'] == expected, (number, session, result)
+    assert board._git_writes_slot(subcommand, args) is writes

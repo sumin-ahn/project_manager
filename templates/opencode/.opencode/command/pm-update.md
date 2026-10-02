@@ -55,6 +55,8 @@ URL(`https://`·`ssh://`·`file://`) 또는 로컬 경로 모양으로 분기한
 
 manifest 경로만 byte-overwrite하며 `@render` path는 operational 토큰을 재치환한다. pm_update가 sync rev를 `upstream.rev`(baseline)와 `upstream.seen_rev`(관찰값)에 함께 기록하므로 정상 흡수 직후 두 키가 같아져 drift가 clear된다. 다른 checkout에서 받을 때만 `--from <checkout>`을 명시한다.
 
+최신 관리자의 [적용]은 fresh Python 두 프로세스로 RUN1 배달→RUN2 새 updater의 설정 키 이동·완료 검사를 수행한다. 미리보기는 한 번이며 실패 뒤 자동 세 번째 실행은 없다. 구 CLI·구 facade·구 관리자 직접 진입은 같은 명령을 두 번 실행해야 한다. RUN1의 upstream.rev 전진은 배달 관측값이고, 최종 성공은 RUN2 완료 결과로 판단한다. RUN2 실패는 baseline 자동 rollback으로 설명하지 말고 실패 단계·잔존 키를 보고한다. 변경0 RUN2에서도 키 이동을 수행한다.
+
 동기 뒤 managed config 완료 게이트를 확인한다. red면 안내된 `--accept <경로>` 또는 pm-update
 재실행으로 수렴시킨 뒤 다시 검사하며, rc=0 전에는 흡수 완료로 기록하지 않는다.
 

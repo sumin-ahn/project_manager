@@ -412,6 +412,7 @@ _GIT_PROTECTED_IDENTITIES: frozenset[str] = frozenset({"slot", "worktree", "shar
 _GIT_SLOT_WRITE_SUBCOMMANDS: frozenset[str] = frozenset({
     "add", "stage", "commit", "checkout", "switch", "restore", "reset", "rm", "mv", "merge",
     "rebase", "cherry-pick", "revert", "stash", "pull", "am", "apply", "clean",
+    "sparse-checkout", "submodule",
 })
 # 멈춤 거부 deny 표식 — 손 git 파괴 형태·슬롯/공용 저장소 파일 삭제·허용 위조·남의 슬롯 쓰기. 셸 파서의 조건/cwd
 # 불확실 강등(deny→warn)은 이 표식이 붙은 판정을 낮추지 않는다 — 대상을 못 정한 호출은 이미
@@ -684,7 +685,7 @@ def _registered_slot_paths(
 
 
 def _git_anchor_identity(
-    anchor: Path, *, runner: Any = subprocess.run
+    anchor: Path, *, runner: Any = subprocess.run, slot_home: Path | None = None,
 ) -> tuple[str, Path | None, Path | None]:
     """(public identity, git root, owning PM home)를 기존 misanchor seam으로 해소한다."""
     root = _git_repo_root(anchor, runner=runner)
@@ -695,6 +696,15 @@ def _git_anchor_identity(
         return "non-repo", None, None
     if _has_real_board(root / ".project_manager"):
         return "pm-home", root, root
+    if slot_home is not None:
+        containing = slot_containing(slot_home, root)
+        if containing is not None:
+            parent = slot_home / containing[0]["slot"]
+            # 초기화된 submodule의 포인터는 슬롯 root의 PM 홈 선언 형상이 아니다.
+            # 이미 알려진 홈의 슬롯 하위 Git root만 연결하며 일반 root/symlink 분류는 유지한다.
+            if (root != parent.resolve() and not (slot_home / "work").is_symlink()
+                    and not parent.is_symlink()):
+                return "foreign", root, None
     pm_home = _pm_home_worktree_misanchor(root)
     if pm_home is not None:
         registered_slots = _registered_slot_paths(pm_home, runner=runner)
@@ -764,6 +774,7 @@ class _GitArguments(NamedTuple):
 def _git_arguments(
     args: Sequence[str], *, short_values: str = "",
     long_values: frozenset[str] = frozenset(),
+    stop_after_operands: int | None = None,
 ) -> _GitArguments:
     options: list[tuple[str, str | None]] = []
     operands: list[str] = []
@@ -797,6 +808,10 @@ def _git_arguments(
                 break
         else:
             operands.append(token)
+            if stop_after_operands is not None and len(operands) == stop_after_operands:
+                # 실행 명령 시작 뒤 인자는 Git 옵션이 아니라 payload다.
+                operands.extend(values[i + 1:])
+                break
         i += 1
     return _GitArguments(tuple(options), tuple(operands), paths)
 
@@ -1988,6 +2003,19 @@ def _git_writes_slot(subcommand: str, args: Sequence[str]) -> bool:
     apply --check·--stat)는 쓰기가 아니다."""
     if subcommand not in _GIT_SLOT_WRITE_SUBCOMMANDS:
         return False
+    if subcommand in {"sparse-checkout", "submodule"}:
+        leading = _git_arguments(args, long_values=frozenset({"--path"}), stop_after_operands=1)
+        foreach = subcommand == "submodule" and leading.operands[:1] == ("foreach",)
+        arguments = _git_arguments(
+            args, long_values=frozenset({"--path"}),
+            stop_after_operands=2 if foreach else None,
+        )
+        if _git_option_given(arguments, "-h", "--help"):
+            return False
+        operation = arguments.operands[0] if arguments.operands else None
+        if subcommand == "sparse-checkout":
+            return operation not in {None, "list", "check-rules", "help"}
+        return operation not in {None, "status", "summary", "help"}
     if subcommand == "stash":
         return not args or args[0] not in {"list", "show"}
     arguments = _git_arguments(args)
@@ -2022,9 +2050,12 @@ def judge_git_anchor(
     invocation = _git_invocation(cwd, argv)
     if invocation is None:
         return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "git 호출이 아님"}
-    identity, repo_root, pm_home = _git_anchor_identity(invocation.cwd, runner=runner)
+    identity, repo_root, pm_home = _git_anchor_identity(
+        invocation.cwd, runner=runner, slot_home=Path(root),
+    )
     target_certain = cwd_certain and invocation.anchor_certain
-    if identity in _GIT_PROTECTED_IDENTITIES or not target_certain:
+    containing = slot_containing(root, repo_root) if repo_root is not None else None
+    if identity in _GIT_PROTECTED_IDENTITIES or containing is not None or not target_certain:
         # alias 는 대상 저장소 설정으로만 풀린다 — 대상을 못 정한 호출은 서브커맨드 이름 그대로 본다.
         resolved = _git_alias_resolved(invocation, runner=runner) if target_certain else invocation
         target_certain = target_certain and resolved.anchor_certain
@@ -2044,10 +2075,11 @@ def judge_git_anchor(
                 "case": form.case if target_certain else _GIT_GUARD_CASE_FOLDER_UNKNOWN,
                 "reason": f"손 git {form.label} — `{shown}` {where}",
             }
-        if identity == "slot" and target_certain and _git_writes_slot(resolved.subcommand, resolved.args):
+        if repo_root is not None and target_certain and _git_writes_slot(resolved.subcommand, resolved.args):
             owner = _slot_write_judgment(root, session, repo_root)
             if owner is not None and owner["verdict"] == "deny":
-                return {**owner, "reason": f"git {resolved.subcommand} — {owner['reason']}"}
+                return {**owner, "cwd_identity": identity,
+                        "reason": f"git {resolved.subcommand} — {owner['reason']}"}
     subcommand = invocation.subcommand
     if subcommand not in _GIT_MUTATION_SUBCOMMANDS:
         return {
@@ -4193,12 +4225,10 @@ def identity_tag(session_override: str | None = None,
 
 
 def _reject_task_slot_identity_mix(args: argparse.Namespace) -> None:
-    """task 소비 연산에서 `--task`와 `--repo/--slot` 혼합을 부작용 전에 거부한다.
+    """세션 정체성 소비의 task와 repo/slot 혼합을 거부한다.
 
-    task는 귀속/실행 위치 모두 보유 집합을 자동 해소하는 독립 축이다. repo/slot을 함께 받으면
-    task 조용 우선이나 특정 슬롯 선택으로 의미가 갈렸던 과거 경로를 없애고 fail-loud 한다.
-    `--slot` 단독 혼합도 parse_identity의 slot-mode 처방보다 이 계약이 먼저 surface 된다.
-    자원 연산(alloc/release·rebase 소유검사)은 이 깔때기를 소비하지 않아 불변이다.
+    init·reid·migrate-identity 등은 독립 task 축을 유지한다. 허용된 실행 소비는
+    _execution_actor_session_override에서 task 귀속과 실행 좌표를 따로 처리한다.
     """
     if getattr(args, "task", None) is not None and (
         getattr(args, "repo", None) is not None
@@ -4278,6 +4308,18 @@ def _actor_session_override(args: argparse.Namespace, *, soft: bool = False) -> 
     return None
 
 
+def _execution_actor_session_override(args: argparse.Namespace, *, soft: bool = False) -> str | None:
+    """허용된 실행 소비의 actor. 선택 좌표는 task 귀속을 바꾸지 않는다."""
+    if getattr(args, "task", None):
+        try:
+            identity = identity_args.parse_identity(args)
+        except ValueError as exc:
+            sys.exit(f"[중단] {exc}")
+        _validate_actor_task_or_exit(identity.task)
+        return identity.task
+    return _actor_session_override(args, soft=soft)
+
+
 def _validate_actor_task_or_exit(task: str) -> None:
     """task 명 공유 validator 소비 — 불법이면 fail-loud (깔때기 단일 지점).
 
@@ -4300,35 +4342,43 @@ def _validate_actor_task_or_exit(task: str) -> None:
         )
 
 
-def _resolve_task_workspace_cwd(args: argparse.Namespace) -> tuple[str, str | None] | None:
-    """task-mode(`--task`) 실행 위치를 해소해 `(절대경로, 슬롯 test_cmd)` 를 반환한다.
-
-    `--task` 미지정이면 `None`(task 아님·호출부는 기존 slot-mode 경로 유지). task 지정이면
-    `identity_args.resolve_task_workspace`(모호=에러)로 슬롯을 특정하고 그 worktree
-    **절대경로**(`REPO / ws.slot`)를 돌린다 — cwd 는 해소에 참여하지 않고 순전히 장부+
-    명시 인자로만 판정한다. 모호/미보유는 fail-loud(`[중단]` 접두·board 관례). 슬롯 test_cmd 는
-    바인딩된 회귀명령(None=미바인딩·호출부 폴백).
-    """
+def _resolve_task_workspace_cwd(
+    args: argparse.Namespace, *, require_test_cmd: bool = False,
+) -> tuple[str, str | None] | None:
+    """허용된 task 실행 소비의 leased work 트리와 해당 행의 test_cmd를 해소한다."""
     if not getattr(args, "task", None):
         return None
     if getattr(args, "cwd", None) is not None:
-        sys.exit(
-            "[중단] --task 모드에서는 --cwd를 명시할 수 없다 — task 작업공간은 장부에서 "
-            "자동 해소하며 외부 경로 override를 허용하지 않는다."
-        )
-    _reject_task_slot_identity_mix(args)
+        sys.exit("[중단] --task 모드에서는 --cwd를 명시할 수 없다, 외부 경로 override를 허용하지 않는다. 기존 repo/slot 좌표로 선택하라.")
+    _execution_actor_session_override(args)
     try:
-        identity = identity_args.parse_identity(args)
-    except ValueError as e:
-        sys.exit(f"[중단] {e}")
-    # 해소 이전 깔때기 검증(must-fix) — 불법 task 명이 실행-위치로 쓰이기 전 fail-loud(귀속 경로와
-    # 동일 validator·일관 메시지). "보유 작업공간 없음" 보다 앞서 정확한 사유를 준다.
-    _validate_actor_task_or_exit(identity.task)
-    try:
-        ws = identity_args.resolve_task_workspace(identity, LEASES_FILE)
-    except identity_args.WorkspaceResolutionError as e:
-        sys.exit(f"[중단] {e}")
-    return str(REPO / ws.slot), ws.test_cmd
+        ws = identity_args.resolve_task_workspace(identity_args.parse_identity(args), LEASES_FILE)
+    except (ValueError, identity_args.WorkspaceResolutionError) as exc:
+        sys.exit(f"[중단] {exc}")
+    if ws.readonly:
+        sys.exit("[중단] readonly 슬롯은 task 실행 쓰기 대상이 아니다, 참조는 기존 --cwd 핀을 사용하라.")
+    tree = REPO / ws.slot
+    if not tree.is_dir() or not (tree / ".git").exists():
+        sys.exit(f"[중단] task 코드 트리의 경로 또는 git 트리가 없다: {tree}")
+    if not _git_head_at(str(tree)):
+        sys.exit(f"[중단] task 코드 트리의 git HEAD를 읽지 못했다: {tree}")
+    if not _cluster_current_branch(str(tree)):
+        sys.exit(f"[중단] task 코드 트리의 브랜치를 읽지 못했다: {tree}")
+    command = ws.test_cmd
+    if require_test_cmd:
+        command = getattr(args, "cmd", None)
+        if command is None:
+            command = ws.test_cmd
+            if not command:
+                _header, rows = _parse_areas()
+                matching = [row for row in rows if row.get("repo") == ws.repo]
+                if len(matching) > 1:
+                    sys.exit(f"[중단] 선택 repo {ws.repo!r}의 test_cmd 장부가 모호하다")
+                command = (matching[0].get("test_cmd") if matching else None)
+                command = command or local_config().get("test.cmd") or default_pytest_cmd()
+        if not isinstance(command, str) or not command.strip():
+            sys.exit(f"[중단] task 선택 작업공간의 test_cmd를 해소할 수 없다: {tree}")
+    return str(tree), command
 
 
 def _repo_from_session(session: str) -> str | None:
@@ -9827,15 +9877,14 @@ def cmd_regression(args: argparse.Namespace) -> int:
     # 로 고정하고 슬롯 test_cmd 를 실어 잘못된 형제-슬롯 유도를 피한다. 절대경로를
     # surface 해 dev/git 짐작 여지를 없앤다(cwd 비참여). run 만 실행 위치가 필요하다.
     if args.action == "run" and getattr(args, "task", None):
-        task_cwd, task_test_cmd = _resolve_task_workspace_cwd(args)
+        task_cwd, task_test_cmd = _resolve_task_workspace_cwd(args, require_test_cmd=True)
         if getattr(args, "cwd", None) is None:
             args.cwd = task_cwd
         if getattr(args, "cmd", None) is None:
             # 슬롯을 **확정**했으므로 그 슬롯 test_cmd 를 직접 싣는다 — session 유도
             # (`_active_slot_test_cmd(<task>)`)는 같은 task 의 **형제 슬롯 첫-매칭**을 반환해 오매칭
-            # 여지가 있다(reviewer). 미바인딩(None)이면 슬롯 레이어를 건너뛰고 repo/local 폴백
-            # (`session=None`)으로 — 형제 슬롯 test_cmd 를 타지 않는다(결정론).
-            args.cmd = task_test_cmd or _test_cmd(None, session=None)
+            # 여지가 있다. 해소 함수가 해당 행과 선택 repo/local 기본값만 판독한다.
+            args.cmd = task_test_cmd
         print(f"regression: 작업공간(task {args.task}) → {task_cwd}")
     # 디스패치 판정은 CLI --repo/--slot(명시) 만 본다 — env 세션은 M>1 게이트를 조용히 좁히므로
     # 여기선 제외(위 docstring·codex). explicit 없고 leased ≥2 면 env 유무 무관 전-슬롯 순회.
@@ -9850,7 +9899,8 @@ def cmd_regression(args: argparse.Namespace) -> int:
     # 그대로 유지하고(soft 는 kind=slot 을 안 건드림·pickable 할 때만), 모호(→None)면 `--cmd`/repo/
     # local 폴백을 탄다(결정 절 (a)).
     _run_cwd_pinned = args.action == "run" and getattr(args, "cwd", None)
-    explicit_override = _actor_session_override(args, soft=bool(_run_cwd_pinned))
+    explicit_override = (_execution_actor_session_override(args, soft=bool(_run_cwd_pinned))
+                         if args.action == "run" else _actor_session_override(args))
     if not _run_cwd_pinned and explicit_override is None:
         leased = identity_args.leased_sessions(LEASES_FILE)
         if len(leased) >= 2:
@@ -11416,9 +11466,12 @@ def _active_ticket_path(
 def _rounds_mutation_sync_paths(message: str, paths: Sequence[Path]) -> bool:
     """라운드/티어 mutation이 만진 경로들을 한 스코프 커밋으로 기록한다.
 
-    시그니처는 고정이다 — pm_delegate 회수가 `getattr` 로 이 이름을 찾고 없으면 구-board 이름을
-    거쳐 board-git funnel 로 내려가는 skew 폴백을 탄다. 인자를 늘리면 부분 동기된 PM 홈 사본에서
-    라운드는 반영됐는데 CLI 만 TypeError 로 죽는 부분 성공이 재현된다.
+    호출자는 board_lock 밖에서 공개할 경로만 전달한다. True는 로컬 기록 준비 완료 또는
+    별도 board-git이 없는 no-op이며, 원격 공유 완료를 뜻하지 않는다. 원격 보류는 기존
+    best-effort 출력이 안내하고 draft 라운드의 공개는 promote가 소유한다.
+
+    준비·회수·포기가 직접 호출하는 두 인자 시그니처를 유지한다. 인자를 늘리면 부분 동기된
+    PM 홈 사본에서 라운드를 반영한 뒤 CLI가 TypeError로 실패할 수 있다.
     """
     refresh_board()
     return _board_git_sync_best_effort(message, tuple(paths))
@@ -12379,16 +12432,11 @@ def _claim_code_tree(args: argparse.Namespace) -> str | None:
     session 이 `<repo>_<N>` 이 아닌 실측)에서도 finish 와 같은 좌표를 잰다. **인자 전무**
     (kind="none")만 종전 세션/REPO 층을 그대로 쓴다.
 
-    해소 실패는 `None` 이다 — 이 값은 측정 보조일 뿐이라 claim 을 막지 않는다(호출부가 경고
-    1줄). task 작업공간 해소는 실행-위치 도구처럼 `sys.exit` 하지 않고 여기서 사유를 접는다.
+    task 입력은 leased work·경로·HEAD·브랜치를 선검사하고 실패하면 중단한다.
+    비-task의 기존 보조 앵커 경로는 해소 실패를 None으로 반환한다.
     """
     if getattr(args, "task", None):
-        try:
-            identity = identity_args.parse_identity(args)
-            workspace = identity_args.resolve_task_workspace(identity, LEASES_FILE)
-        except (ValueError, identity_args.WorkspaceResolutionError):
-            return None
-        return str(REPO / workspace.slot)
+        return _resolve_task_workspace_cwd(args)[0]
     identity = identity_args.parse_identity(args)
     if identity.kind in ("slot", "repo"):
         hp = _load_pm_handoff()
@@ -12413,13 +12461,15 @@ def _claim_code_tree(args: argparse.Namespace) -> str | None:
 
 
 def _claim_head_rev(args: argparse.Namespace) -> str | None:
-    """claim 시점 코드 트리 HEAD sha (해소 불가·비-git 이면 경고 1줄 + None).
+    """claim 시점 HEAD. task 실행은 미해소를 거부하며 기존 비-task 경고 계약을 유지한다.
 
-    이 값이 티켓 frontmatter `claimed_rev` 로 박제되고, 완료 기록의 **자기 축 회귀** 가 그것을
-    baseline 트리로 되살려 이 작업이 새로 낸 실패만 골라낸다. 박제 실패는 **경고만** 이다 —
-    보조 필드가 소유 확정을 막지 않는다(측정 폭의 기준점은 묶음 장부가 소유한다)."""
+    새 task claim은 실제 선택 트리의 SHA를 claimed_rev에 남긴다. 과거 티켓의
+    claimed_rev·actor는 이 읽기 경로에서 보충하거나 바꾸지 않는다.
+    """
     tree = _claim_code_tree(args)
     rev = _git_head_at(tree) if tree else ""
+    if not rev and getattr(args, "task", None):
+        sys.exit(f"[중단] task claim 앵커 HEAD를 읽지 못했다: {tree}")
     if not rev:
         where = tree or "코드 트리 미해소"
         print(f"주의: claim 시점 rev 박제 skip — {where} 의 git HEAD 를 읽지 못했다"
@@ -12430,10 +12480,9 @@ def _claim_head_rev(args: argparse.Namespace) -> str | None:
 
 
 def cmd_claim(args: argparse.Namespace) -> int:
-    _reject_task_slot_identity_mix(args)
     # claim = 귀속 쓰기 — 세션 미해소면 fail-loud
     # 명시 --repo/--slot > env > 단일-lease 유도 > 미해소(fail-loud).
-    override = _actor_session_override(args)
+    override = _execution_actor_session_override(args)
     sess = session_name(override, required=True)
     # claimed_by 는 `<user>/<slot>` — user 미상이면 슬롯만
     # (graceful·기존 슬롯-only 값과 형태 동일). 진행메시지/board surface 는 슬롯(sess)을 쓴다.
@@ -13771,7 +13820,6 @@ def cmd_migrate_identity(args: argparse.Namespace) -> int:
 
 
 def cmd_new(args: argparse.Namespace) -> int:
-    _reject_task_slot_identity_mix(args)
     # 명시 --prefix sanity (예약어 `none`·형식 [a-z0-9_]+) — 위반이면 ID 스캔·파일
     # 발행 전에 부작용 0 으로 즉시 거부. 유도/count-based 로 해소된 legacy prefix 는 검증하지
     # 않는다(기존 발행분 존중) — 사용자가 *명시*한 override 만 입력측 sanity 대상이다.
@@ -13781,7 +13829,9 @@ def cmd_new(args: argparse.Namespace) -> int:
     # None(기존 created_by 체인 무변경). 부작용(ID 발행·파일 write) 이전이라 불법 task 는 여기서 fail-loud.
     # `--task` → task 명(F5b) · `--repo/--slot`→ `<repo>_<N>` 슬롯 세션 · 무명시 → None.
     # 하나의 세션 override 문자열이지만 축이 둘(task vs slot)이라 아래 분기가 축을 명시 구분한다.
-    actor_session = _actor_session_override(args)
+    actor_session = _execution_actor_session_override(args)
+    if getattr(args, "task", None):
+        _claim_code_tree(args)
     requested_override = getattr(args, "prefix", None)
     override = requested_override
     if override:
@@ -14749,6 +14799,8 @@ def _cmd_cluster_new(args: argparse.Namespace) -> int:
         print("[중단] cluster new 는 통합 브랜치를 만들 코드 트리를 명시로 받는다 — "
               "`--repo <이름> --slot <N>` 또는 `--task <이름>` 을 지정하라.", file=sys.stderr)
         return 1
+    if identity.task:
+        _claim_code_tree(args)
     cluster = cluster_id_for_name(args.name)
     raw = (getattr(args, "tickets", None) or "").strip()
     if not raw:
@@ -20767,7 +20819,14 @@ def _refresh_board_locked() -> None:
             lines.append("|---|---|---|---|---|")
             for fm in items:
                 dep = ", ".join(fm.get("depends_on") or []) or "—"
-                tch = ", ".join((fm.get("touches") or [])[:3]) or "—"
+                touches = fm.get("touches")
+                if touches is None:
+                    tch = "—"
+                elif isinstance(touches, list) and all(isinstance(item, str) for item in touches):
+                    tch = ", ".join(touches[:3]) or "—"
+                else:
+                    # 파생 화면만 오류를 표시한다. 명세 원값과 scope 검증 입력은 보존한다.
+                    tch = "touches 형식 오류"
                 tag = ", ".join(_tag_values(fm))
                 lines.append(
                     f"| {fm['id']} | {fm.get('title','')} | {dep} | {tch} | {tag} |"

@@ -303,10 +303,15 @@ def test_cmd_new_derived_prefixes_share_canonical_gate(
     repo = None
     slot = None
     if derived == "task":
+        from _git_fixture import init_git_repo
+        tree = init_git_repo(board.REPO / "work/svc_1", commit="task prefix fixture")
+        assert board._git_head_at(str(tree))
+        assert board._cluster_current_branch(str(tree)) == "main"
         board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
         board.LEASES_FILE.write_text(
             json.dumps({
-                "leases": [],
+                "leases": [{"slot": "work/svc_1", "repo": "svc", "session": "job",
+                            "state": "leased", "role": "work"}],
                 "tasks": [{"name": "job", "prefix": "AAA"}],
             }),
             encoding="utf-8",
@@ -344,6 +349,9 @@ def test_cmd_new_derived_prefixes_share_canonical_gate(
         assert rc == 0
         assert ids == {"T-AAA-001"}
         assert "case 변형이 2개 이상" not in captured.err
+        if derived == "task":
+            fm, _ = board.load_ticket(board.find_ticket_exact("T-AAA-001")[1])
+            assert fm["created_by"].split("/")[-1] == "job"
 
 
 def test_known_prefixes_ignores_local_conf_prefix_when_area_registered(board):

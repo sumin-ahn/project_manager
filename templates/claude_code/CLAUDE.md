@@ -35,6 +35,8 @@
 미해소 귀속 쓰기는 fail-loud한다. lease 행이 0개인 홈은 아직 작업 폴더가 없는 것이며
 `pm-config worktree add <repo> --user-ack <repo>` 로 먼저 만든다.
 
+task 모드의 귀속은 task 이름 하나다. 다중 작업공간에서는 claim 앵커·regression run·livegate record·new/cluster new 코드 트리·rounds resolve에만 `--task <이름> --repo <repo> --slot <N>`을 함께 준다. 자기 task의 소유 슬롯을 명시하고 HEAD·브랜치·test_cmd를 결속한다. bootstrap·handoff·init·reid·finish는 task 단독 입력이며, finish 내부 확인은 묶음 브랜치로 트리를 찾는다.
+
 외부 의존이 없고 다른 세션이 claim하지 않은 ticket을 고른다:
 
 ```bash

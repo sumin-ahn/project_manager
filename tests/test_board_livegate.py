@@ -1737,3 +1737,30 @@ def test_sensitivity_surface_floor_check_removed_lets_a_short_surface_pass():
         spec, rounds, reviewer_role=_PV_ADDITIONAL_ROLE, surface_floor=0,   # 대조 제거를 흉내
     )
     assert removed is None, "건수 대조가 제거되면 표면 미달이 잘못 통과한다"
+
+
+def test_t0929_selected_workspace_livegate_head_and_cwd(live_board, monkeypatch):
+    from test_task_workspace_wiring import _t0929_mock_workspaces
+    from _pytest_summary import pytest_summary
+    _t0929_mock_workspaces(live_board, monkeypatch)
+    fake = _FakeRun(0, pytest_summary(22))
+    monkeypatch.setattr(live_board.subprocess, 'run', fake)
+    args = _rec_args(repo='A', slot=5)
+    args.task = 'main'
+    assert live_board.cmd_livegate(args) == 0
+    assert next(call for call in fake.calls if call['kwargs'].get('shell'))['kwargs']['cwd'] == str(live_board.REPO / 'work/A_5')
+    assert _read_flag(live_board)['head'] == 'head5'
+
+
+def test_t0929_selected_workspace_readonly_cwd_reference_preserved(live_board, monkeypatch):
+    from test_task_workspace_wiring import _t0929_mock_workspaces
+    from _pytest_summary import pytest_summary
+    rows = _t0929_mock_workspaces(live_board, monkeypatch)
+    rows[-1].update(role='readonly', session='')
+    live_board.LEASES_FILE.write_text(json.dumps({'leases': rows}), encoding='utf-8')
+    fake = _FakeRun(0, pytest_summary(22))
+    monkeypatch.setattr(live_board.subprocess, 'run', fake)
+    selected = live_board.REPO / 'work/A_5'
+    assert live_board.cmd_livegate(_rec_args(repo='A', cwd=str(selected))) == 0
+    assert next(call for call in fake.calls if call['kwargs'].get('shell'))['kwargs']['cwd'] == str(selected)
+    assert _read_flag(live_board)['head'] == 'head5'

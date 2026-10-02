@@ -528,10 +528,19 @@ def test_task_derived_new_rechecks_after_concurrent_area_case_write(
     fresh 재검증을 우회한 sensitivity control은 `T-fresh-001`을 발행해 areas `FRESH`와
     case가 갈린다. production 경계는 두 프로세스가 모두 정상 종료해도 new만 rc1·쓰기 0이어야 한다.
     """
+    import json
+    from _git_fixture import init_git_repo
     board = _load_board_bound(proj)
+    tree = init_git_repo(proj / "work/svc_1", commit="task prefix race fixture")
+    assert board._git_head_at(str(tree))
+    assert board._cluster_current_branch(str(tree)) == "main"
     board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
     board.LEASES_FILE.write_text(
-        '{"leases": [], "tasks": [{"name": "job", "prefix": "fresh"}]}',
+        json.dumps({
+            "leases": [{"slot": "work/svc_1", "repo": "svc", "session": "job",
+                        "state": "leased", "role": "work"}],
+            "tasks": [{"name": "job", "prefix": "fresh"}],
+        }),
         encoding="utf-8",
     )
 
@@ -562,6 +571,9 @@ def test_task_derived_new_rechecks_after_concurrent_area_case_write(
 
     assert (new_proc.exitcode, writer.exitcode) == (0, 0)
     assert result == expected
+    if result[0] == 0:
+        fm, _ = board.load_ticket(board.find_ticket_exact(result[1][0])[1])
+        assert fm["created_by"].split("/")[-1] == "job"
 
 
 def test_unlocked_id_issuance_collides_deterministically(board, monkeypatch):

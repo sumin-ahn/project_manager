@@ -489,12 +489,14 @@ def test_unedited_seed_warns_keeps_run_dir_and_leaves_board_untouched(
     )
     before = plan.board_path.read_bytes()
 
+    before_sync = list(sync_log)
+
     result = pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
 
     assert result.changed is False
     assert plan.board_path.read_bytes() == before
     assert plan.run_dir.exists() and plan.path.exists()
-    assert sync_log == []
+    assert sync_log == before_sync
     assert "산출 없음" in capsys.readouterr().err
     assert _ledger_rows(pm_home)[-1]["harvested_at"] is None
 
@@ -2232,6 +2234,8 @@ def test_parallel_reviewer_rounds_keep_the_untouched_seed_unharvested(
         _reviewer_output(pd, first.path.read_text(encoding="utf-8"), "F-001"),
         encoding="utf-8", newline="",
     )
+    before_sync = list(sync_log)
+
     assert pd.harvest_ticket_copy(
         copy_path=first.path, cwd=slot, pm_home=pm_home,
     ).changed is True
@@ -2245,7 +2249,8 @@ def test_parallel_reviewer_rounds_keep_the_untouched_seed_unharvested(
     assert "산출 없음" in capsys.readouterr().err
     assert second.run_dir.exists()
     assert second.board_path.read_bytes() == untouched
-    assert [paths for _message, paths in sync_log] == [[first.board_path]]
+    assert sync_log[:len(before_sync)] == before_sync
+    assert [paths for _message, paths in sync_log[len(before_sync):]] == [[first.board_path]]
 
 
 def test_slot_write_failure_after_the_reservation_names_the_leftover_round(
@@ -2366,10 +2371,12 @@ def test_harvest_refuses_a_row_whose_binding_does_not_match_the_path(pd, rounds_
     )
     _rewrite_last_row(pm_home, ordinal=2)
 
+    before_sync = list(sync_log)
+
     with pytest.raises(pd.DelegateError, match="장부가 인가한 라운드 경로와 불일치"):
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
     assert plan.run_dir.exists() and plan.path.exists()
-    assert sync_log == []
+    assert sync_log == before_sync
 
 
 def test_harvest_refuses_a_row_pointing_outside_or_above_the_run_dir(pd, rounds_env):
@@ -2387,11 +2394,13 @@ def test_harvest_refuses_a_row_pointing_outside_or_above_the_run_dir(pd, rounds_
                      encoding="utf-8", newline="\n")
     _rewrite_last_row(pm_home, copy=str(above))
 
+    before_sync = list(sync_log)
+
     with pytest.raises(pd.DelegateError, match="장부가 인가한 라운드 경로와 불일치"):
         pd.harvest_ticket_copy(copy_path=above, cwd=slot, pm_home=pm_home)
     # 형제 run 과 상위 디렉터리 어느 쪽도 사라지지 않는다.
     assert sibling.run_dir.exists() and plan.run_dir.exists() and above.exists()
-    assert sync_log == []
+    assert sync_log == before_sync
 
 
 def test_harvest_refuses_when_the_authorising_row_is_value_corrupt(pd, rounds_env):
@@ -2412,10 +2421,12 @@ def test_harvest_refuses_when_the_authorising_row_is_value_corrupt(pd, rounds_en
         encoding="utf-8", newline="",
     )
 
+    before_sync = list(sync_log)
+
     with pytest.raises(pd.DelegateError, match="준비 기록 없음"):
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
     assert plan.run_dir.exists() and plan.board_path.exists()
-    assert sync_log == []
+    assert sync_log == before_sync
 
 
 def test_corrupt_ledger_lines_are_skipped_loudly_without_losing_other_runs(
@@ -2598,6 +2609,8 @@ def test_redeclared_prior_finding_id_is_refused_at_harvest(
     )
     capsys.readouterr()
 
+    before_sync = list(sync_log)
+
     rc = _harvest_rc(pd, monkeypatch, pm_home, slot, second.path)
 
     assert rc == 1
@@ -2606,7 +2619,7 @@ def test_redeclared_prior_finding_id_is_refused_at_harvest(
     assert second.board_path.read_bytes() == reserved
     assert second.run_dir.exists() and second.path.exists()
     assert _ledger_rows(pm_home)[-1]["harvested_at"] is None
-    assert [paths for _message, paths in sync_log] == [[first.board_path]]
+    assert sync_log == before_sync
 
     # `findings` 에만 다시 실은 형상도 같은 회수면에서 거부된다(전역 유일성 축).
     _write_round_output(second.path, _review_body(pd, "code-reviewer", ["F-007"]))
@@ -2639,6 +2652,8 @@ def test_first_review_round_confirming_its_own_finding_is_refused_at_harvest(
     )
     capsys.readouterr()
 
+    before_sync = list(sync_log)
+
     rc = _harvest_rc(pd, monkeypatch, pm_home, slot, plan.path)
 
     assert rc == 1
@@ -2646,7 +2661,7 @@ def test_first_review_round_confirming_its_own_finding_is_refused_at_harvest(
     assert plan.board_path.read_bytes() == reserved
     assert plan.run_dir.exists() and plan.path.exists()
     assert _ledger_rows(pm_home)[-1]["harvested_at"] is None
-    assert sync_log == []
+    assert sync_log == before_sync
 
     # 선행 선언이 공집합이라 **어떤** 기존 ID 참조도 표면에 없다 — 자기-확인이 아닌 확인도 거부다.
     _write_round_output(
@@ -4861,7 +4876,7 @@ def test_reject_cross_role_prepare_does_not_misclassify_a_master_switch_deny_as_
 def test_fail_open_and_single_stderr_line_when_the_guard_module_fails_to_load(
         pd, rounds_env, monkeypatch, capsys):
     """F-004 — 가드 로드 예외(개행 포함)를 직접 주입해도 rc=0·prepare 성공·stderr 침묵 없이
-    정확히 물리 1행으로 접힌다(예외 텍스트의 CR/LF 를 공백으로 정규화)."""
+    가드 경고는 정확히 물리 1행으로 접힌다(예외 텍스트의 CR/LF 를 공백으로 정규화)."""
     pm_home, slot, tickets, _sync = rounds_env
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
     _write_local_conf(pm_home, {
@@ -4882,8 +4897,11 @@ def test_fail_open_and_single_stderr_line_when_the_guard_module_fails_to_load(
 
     captured = capsys.readouterr()
     assert rc == 0
-    assert captured.err.count("\n") == 1
-    assert "가드 로드 실패 2행째" in captured.err
+    warnings = [line for line in captured.err.splitlines(keepends=True)
+                if line.startswith("[pm-delegate/warn] ")]
+    assert len(warnings) == 1
+    assert warnings[0].count("\n") == 1
+    assert "가드 로드 실패 2행째" in warnings[0]
     plan_json = json.loads(captured.out.strip().splitlines()[-1])
     assert Path(plan_json["copy"]).exists()
 
@@ -4891,7 +4909,7 @@ def test_fail_open_and_single_stderr_line_when_the_guard_module_fails_to_load(
 def test_fail_open_and_single_stderr_line_when_decide_raises(
         pd, rounds_env, monkeypatch, capsys):
     """F-004 — decide() 실행 예외(개행 포함)를 직접 주입해도 rc=0·prepare 성공·stderr 침묵 없이
-    정확히 물리 1행으로 접힌다."""
+    가드 경고는 정확히 물리 1행으로 접힌다."""
     pm_home, slot, tickets, _sync = rounds_env
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
     _write_local_conf(pm_home, {
@@ -4914,8 +4932,11 @@ def test_fail_open_and_single_stderr_line_when_decide_raises(
 
     captured = capsys.readouterr()
     assert rc == 0
-    assert captured.err.count("\n") == 1
-    assert "decide 실행 실패 2행째" in captured.err
+    warnings = [line for line in captured.err.splitlines(keepends=True)
+                if line.startswith("[pm-delegate/warn] ")]
+    assert len(warnings) == 1
+    assert warnings[0].count("\n") == 1
+    assert "decide 실행 실패 2행째" in warnings[0]
     plan_json = json.loads(captured.out.strip().splitlines()[-1])
     assert Path(plan_json["copy"]).exists()
 

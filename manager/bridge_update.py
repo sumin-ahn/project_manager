@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -165,16 +166,44 @@ class UpdateApi:
         return self._update(path, dry_run=True)
 
     def update_apply(self, path: str) -> dict:
-        """`pm-config update` — 스킬·명령줄과 같은 코드 한 자리를 부른다."""
+        """`pm-config update`의 RUN1 배달과 RUN2 완료를 새 프로세스로 실행한다."""
         return self._update(path, dry_run=False)
 
     def _update(self, path: str, *, dry_run: bool) -> dict:
+        steps: list[dict] = []
+        stage = "RUN1"
         try:
             home = _pm_home(path)
-            return _completed(_run(home, update_argv(home, dry_run=dry_run),
-                                   timeout=UPDATE_TIMEOUT_SECONDS))
+            if dry_run:
+                return _completed(_run(home, update_argv(home, dry_run=True),
+                                       timeout=UPDATE_TIMEOUT_SECONDS))
+            # RUN1은 구 코드로 배달할 수 있다. RUN2는 교체된 도구와 현재 runtime.py를
+            # 새 프로세스로 읽어 이관과 완료 게이트까지 실행한다. 재시도는 없다.
+            for stage in ("RUN1", "RUN2"):
+                completed = _run(home, update_argv(home, dry_run=False),
+                                 timeout=UPDATE_TIMEOUT_SECONDS)
+                steps.append(_step(stage, completed))
+                if completed.returncode != 0:
+                    break
+            response = {**_completed(completed), "steps": steps,
+                        "stdout": "".join(step["stdout"] for step in steps),
+                        "stderr": "".join(step["stderr"] for step in steps)}
+            if completed.returncode != 0:
+                response["failed_step"] = stage
+            return response
         except CallError as exc:
-            return exc.as_error_dict()
+            if dry_run or (not steps and exc.kind == "invalid-path"):
+                return exc.as_error_dict()
+            # _run의 timeout 원인은 캡처 도중의 bytes를 보유한다. 완료된 RUN1뿐 아니라
+            # 중단된 RUN2 원문도 보존하며, rc가 없는 실행을 성공으로 바꾸지 않는다.
+            if isinstance(exc.__cause__, subprocess.TimeoutExpired):
+                partial = {}
+                for field in ("stdout", "stderr"):
+                    value = getattr(exc.__cause__, field) or ""
+                    partial[field] = (value.decode("utf-8", errors="replace")
+                                      if isinstance(value, bytes) else value)
+                steps.append({"name": stage, "rc": None, **partial})
+            return {**exc.as_error_dict(), "steps": steps, "failed_step": stage}
 
     # ── 새 프로젝트 적용 ──────────────────────────────────────────────────
     def apply_defaults(self) -> dict:

@@ -48,6 +48,8 @@ PM 역할의 정적 운영 매뉴얼이다. PM 역할은 보드 운영·분할·
 
 **세션 정체성:** 세션 정체성은 task 이름 하나다(`/pm-bootstrap --task <이름>`). board 조작에 실리는 정체성도 `--task <이름>`이고, 실값은 부트스트랩 커맨드 카드가 채우므로 외우지 않는다. `--repo/--slot`은 정체성이 아니라 작업 폴더 좌표이며, 그 좌표를 직접 지정할 일이 있는 도구에서만 쓴다.
 
+실행 위치 선택은 regression run·livegate record·claim 앵커·new/cluster new의 코드 트리·rounds resolve에 한정한다. task가 작업공간을 여럿 보유하면 `--task <이름> --repo <repo> --slot <N>`으로 자기 슬롯을 지정한다. 귀속은 task로 남고 선택한 제품 HEAD·브랜치·test_cmd를 실행과 증거에 결속한다. 미소유·타 task·idle·쓰기용 readonly 또는 선택 없는 다중 슬롯은 첫 부작용 전에 거부한다. 세션 진입·퇴장, init·reid 및 finish는 task 단독 입력과 혼합 거부를 유지한다. finish와 내부 확인은 묶음 branch/base_branch로 트리를 찾으며 슬롯을 반납하지 않는다.
+
 ## 찾아가는 법
 
 자기 공간이 1차 운영면이고 공유 자산은 실제 필요할 때만 연다. 부트스트랩 카드의 포인터는 이 표를 가리키며 카드=커맨드 표기, pm_role=정식 규칙이다.
@@ -74,7 +76,7 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 
 ## skill 카탈로그
 
-표준 wave의 실행 절차와 호출 순서는 [`pm_playbook.md`](pm_playbook.md) §"Wave 패턴"을 따른다. 호출줄의 실 인자·`--repo <repo> --slot <N>` 값과 전제 경고는 부트스트랩 카드가 단일 진실이다.
+표준 wave의 실행 절차와 호출 순서는 [`pm_playbook.md`](pm_playbook.md) §"Wave 패턴"을 따른다. 호출줄의 task 귀속·선택 작업공간 좌표와 전제 경고는 부트스트랩 카드가 단일 진실이다.
 
 | skill | 역할 | 감싸는 내부 엔진 (직접호출 금지) |
 |---|---|---|
@@ -258,14 +260,14 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 - 구현 세션은 짧은 식별자를 `$PM_SESSION_NAME=<name>`으로 바인딩한다.
 - orchestrator 서브에이전트 라벨은 `orch-dev-T<NNNN>` / `orch-review-T<NNNN>` 류 free-form이다. board 조작은 PM이 하므로 서브는 claim하지 않는다. board 귀속이 필요하면 `$PM_SESSION_NAME`만 바인딩한다(claim 플래그 없음).
 
-세션명·ticket prefix는 저장하지 않고 다음 순서로 유도한다:
+슬롯 모드의 세션명·ticket prefix는 저장하지 않고 다음 순서로 유도한다:
 `명시(--repo/--slot·--prefix) > $PM_SESSION_NAME(env·CLAUDE_SESSION_NAME alias) > lease 장부에 leased 슬롯이 정확히 1개면 그 세션(count-based 유도)`. prefix 는 세션 repo → areas 레지스트리로 해소한다.
 
 lease 장부에 행이 하나도 없는 홈은 **아직 작업 폴더가 없는 것**이라 귀속 조작이 fail-loud 한다. `pm-config worktree add <repo> --user-ack <repo>` 로 작업 폴더를 먼저 만든다(순서: 작업 폴더 생성 → 부트스트랩).
 
 `local.conf session=`/`prefix=` 폴백은 폐지되었다 — 진실은 lease 장부와 areas 레지스트리다. 기존 채택자는 conf 에서 두 키를 제거하고 `board init` 재실행으로 이 clone 의 repo 행 등록을 갱신한다. 모호(leased ≥2·무명시)한 귀속 조작(claim/complete/unclaim/release/new owner)은 **fail-loud**하며 `--repo <repo> --slot <N>` 명시를 요구한다. 조회 whoami/status는 `(비바인딩)`을 표시한다. 동적 세션 목록은 [`pm_state.md`](pm_state.md) §"세션 식별 (현재까지 사용된 이름)"에 있고 `/pm-handoff`가 갱신한다.
 
-**`list` 스코핑:** `board.py list`의 `--repo`/`--slot`/`--mine`은 **조회 필터**(해당 식별자의 open+claim), `claim`/`complete`/`migrate-identity`의 `--repo`/`--slot`은 **행위자 지정**이다. 미해소 귀속 조작은 fail-loud하고 조회는 `(비바인딩)`으로 계속된다.
+**`list` 스코핑:** `board.py list`의 `--repo`/`--slot`/`--mine`은 조회 필터다. 슬롯 모드의 claim·complete·migrate-identity에서 repo/slot은 기존 행위자 지정이며, task claim의 명시 repo/slot은 제품 앵커의 대상 좌표다. 이때 행위자는 task로 유지한다. 이 허용을 complete·migrate-identity 및 세션 소비의 혼합 허용으로 확대하지 않는다. 미해소 귀속 조작은 fail-loud하고 조회는 `(비바인딩)`으로 계속된다.
 
 areas.md에 repo를 정확히 1개 등록한 홈은 `--prefix` 없이도 그 repo의 `T-<prefix>-NNN`로 새 ticket을 발행한다. 기존 `T-NNNN`과 혼합되어도 disjoint라 충돌하지 않는다. repo ≥2 multi 홈은 슬롯별 prefix를 해소하며 모호하면 `new`가 fail-loud한다.
 

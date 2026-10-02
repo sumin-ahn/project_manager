@@ -370,6 +370,7 @@ def test_engine_sources_are_actually_scanned():
     """스캔 대상이 비면 판정 불능이다 — 초록이 사각의 증거가 되지 않게 먼저 센다."""
     sources = _engine_sources()
     assert len(sources) >= 20, [path.name for path in sources]
+    assert TOOLS / "board.py" in sources, "공유 슬롯 가드 board.py가 스캔 대상에서 누락됐다"
     assert _measured_sites(sources), "측정 자리 0 — 스캐너가 무력화됐다"
 
 

@@ -30,7 +30,7 @@ from pathlib import Path
 import pytest
 
 from _git_fixture import remove_git_tree
-from conftest import anchor_board_module
+from conftest import anchor_board_module, write_cluster_ledger
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -108,6 +108,130 @@ def _make_board_git(root: Path, *, remote: Path, tid: str = "T-0001") -> Path:
     _git(["commit", "-qm", "board init"], board)
     _git(["push", "-q", "-u", "origin", "main"], board)
     return board
+
+
+def _t0928_prepare_fixture(board, tmp_path, monkeypatch, *, legacy=False):
+    from test_delegate_cluster_rounds import _load_pd, _spec_text
+    pd = _load_pd()
+    if legacy:
+        board_dir = board.board_root()
+        (board_dir / "tickets/open").mkdir(parents=True)
+    else:
+        remote = tmp_path / "initial-local-remote.git"
+        assert _git(["init", "--bare", "-q", "-b", "main", str(remote)], tmp_path).returncode == 0
+        board_dir = _make_board_git(tmp_path, remote=remote)
+    spec = board_dir / "tickets/open/T-0001-t.md"
+    spec.write_text(_spec_text("T-0001", status="open"), encoding="utf-8")
+    write_cluster_ledger(board_dir, "T-0001", base_branch="task/main")
+    if not legacy:
+        board._ensure_board_root_files()
+        for name in ("user.staged", "user.unstaged"):
+            (board_dir / name).write_text("원본\n", encoding="utf-8")
+        assert _git(["add", "-A"], board_dir).returncode == 0
+        assert _git(["commit", "-qm", "fixture setup"], board_dir).returncode == 0
+    slot = tmp_path / "slot"
+    slot.mkdir()
+    assert _git(["init", "-q"], slot).returncode == 0
+    ignore = slot / ".project_manager/.gitignore"
+    ignore.parent.mkdir()
+    ignore.write_text(".local/\n", encoding="utf-8")
+    assert _git(["add", ".project_manager/.gitignore"], slot).returncode == 0
+    assert _git(["commit", "-qm", "slot setup"], slot).returncode == 0
+    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _: board)
+    return pd, slot, board_dir
+
+
+@pytest.mark.parametrize("mode", ["success", "commit", "offline", "push"])
+@pytest.mark.parametrize("dirty", [False, True])
+def test_t0928_prepare_sync_preserves_scope_and_reports_local_vs_remote(
+        board, tmp_path, monkeypatch, capsys, mode, dirty):
+    pd, slot, board_dir = _t0928_prepare_fixture(board, tmp_path, monkeypatch)
+    for name in (("user.staged", "user.unstaged", "user.untracked")
+                 if dirty else ("user.untracked",)):
+        (board_dir / name).write_text("사용자 변경\n", encoding="utf-8")
+    if dirty:
+        assert _git(["add", "user.staged"], board_dir).returncode == 0
+    index_before = _git(["show", ":user.staged"], board_dir).stdout
+    head = board._board_git_head()
+    calls = []
+
+    def pull():
+        calls.append("pull")
+        return subprocess.CompletedProcess([], 1 if mode == "offline" else 0, "", "고정 원격 결과")
+
+    def push():
+        calls.append("push")
+        return subprocess.CompletedProcess([], 1 if mode in ("offline", "push") else 0, "", "고정 원격 결과")
+
+    monkeypatch.setattr(board, "_board_git_pull_rebase", pull)
+    monkeypatch.setattr(board, "_board_git_push", push)
+    if mode == "commit":
+        monkeypatch.setattr(board, "git_scope_stage_and_commit", lambda *a, **k: None)
+    plan = pd.prepare_ticket_copy(ticket="T-0001", role="architect", cwd=slot, pm_home=tmp_path)
+    assert plan.path.is_file() and plan.board_path.is_file()
+    assert len(pd.ticket_copy_records(tmp_path, ticket="T-0001", unharvested=True)) == 1
+    out = capsys.readouterr()
+    diagnostic = out.out + out.err
+    if mode == "commit":
+        assert board._board_git_head() == head
+        assert calls == []
+        assert "기록 보류" in diagnostic
+        assert "로컬 기록 완료" not in diagnostic
+    else:
+        assert board._board_git_head() != head
+        committed = _git(["show", "--format=", "--name-only", "HEAD"], board_dir).stdout.splitlines()
+        assert committed == ["tickets/rounds/T-0001/01-architect.md"]
+        assert "로컬 기록 완료" in diagnostic
+        assert "원격 공유 완료" not in diagnostic
+        if mode != "success":
+            assert "sync 보류" in out.err
+        assert calls == (["push"] if dirty else ["pull"] if mode == "offline" else ["pull", "push"])
+    assert _git(["show", ":user.staged"], board_dir).stdout == index_before
+    assert _git(["diff", "--cached", "--name-only"], board_dir).stdout.splitlines() == (
+        ["user.staged"] if dirty else [])
+    assert (board_dir / "user.unstaged").read_text(encoding="utf-8") == (
+        "사용자 변경\n" if dirty else "원본\n")
+    assert _git(["ls-files", "user.untracked"], board_dir).stdout == ""
+
+
+def test_t0928_prepare_sync_legacy_keeps_noop_semantics(board, tmp_path, monkeypatch, capsys):
+    pd, slot, _board_dir = _t0928_prepare_fixture(board, tmp_path, monkeypatch, legacy=True)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("별도 board-git이 없는 경로의 git 호출")
+
+    monkeypatch.setattr(board, "_board_git", forbidden)
+    plan = pd.prepare_ticket_copy(ticket="T-0001", role="architect", cwd=slot, pm_home=tmp_path)
+    assert plan.path.is_file()
+    captured = capsys.readouterr()
+    out = captured.out + captured.err
+    assert "별도 board-git 없음" in out
+    assert "로컬 기록 완료" not in out
+
+
+@pytest.mark.parametrize("malformed", [{"broken": True}, {}, "broken", 0, "", ["ok.py", {}]])
+def test_t0928_prepare_sync_marks_malformed_touches_and_preserves_source(
+        board, tmp_path, monkeypatch, malformed):
+    pd, slot, board_dir = _t0928_prepare_fixture(board, tmp_path, monkeypatch)
+    spec = board.find_ticket_exact("T-0001")[1]
+    fm, body = board.load_ticket(spec)
+    fm["touches"] = malformed
+    board.dump_ticket(spec, fm, body)
+    original = spec.read_bytes()
+    monkeypatch.setattr(board, "_board_git_pull_rebase",
+                        lambda: subprocess.CompletedProcess([], 0, "", ""))
+    monkeypatch.setattr(board, "_board_git_push",
+                        lambda: subprocess.CompletedProcess([], 0, "", ""))
+    head = board._board_git_head()
+    plan = pd.prepare_ticket_copy(ticket="T-0001", role="architect", cwd=slot, pm_home=tmp_path)
+    assert "touches 형식 오류" in board.BOARD_FILE.read_text(encoding="utf-8")
+    assert board.load_ticket(spec)[0]["touches"] == malformed
+    assert spec.read_bytes() == original
+    assert (plan.run_dir / "spec.md").read_bytes() == original
+    assert len(pd.ticket_copy_records(tmp_path, ticket="T-0001", unharvested=True)) == 1
+    assert board._board_git_head() != head
+    assert _git(["show", "--format=", "--name-only", "HEAD"], board_dir).stdout.splitlines() == [
+        "tickets/rounds/T-0001/01-architect.md"]
 
 
 @pytest.fixture

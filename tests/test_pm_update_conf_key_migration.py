@@ -17,6 +17,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -103,3 +105,33 @@ def test_a_tree_without_a_conf_is_not_a_target(tmp_path):
     pm_update = _load("pm_update")
 
     assert pm_update.migrate_renamed_conf_keys(tmp_path / "nope", write=True) == {}
+
+
+@pytest.mark.parametrize("new_value", [None, "88"])
+def test_t0927_conf_contract(tmp_path, new_value):
+    updater = _load("pm_update")
+    path = _conf(tmp_path / "home", "")
+    original = ("# 사용자 주석\r\ncustom.key = 보존\r\nctx.stop_pct=10\r\n"
+                f"{RETIRED}=keep\r\n" +
+                (f"ctx.precompact_at_pct={new_value}\r\n" if new_value else ""))
+    path.write_bytes(original.encode("utf-8"))
+    updater.migrate_renamed_conf_keys(path.parent.parent, write=False)
+    assert path.read_bytes() == original.encode("utf-8")
+    updater.migrate_renamed_conf_keys(path.parent.parent, write=True)
+    after = path.read_bytes()
+    assert b"ctx.stop_pct=" not in after
+    assert f"ctx.precompact_at_pct={new_value or '90'}\r\n".encode() in after
+    assert "# 사용자 주석\r\ncustom.key = 보존\r\n".encode() in after
+    assert f"{RETIRED}=keep\r\n".encode() in after
+    assert updater.migrate_renamed_conf_keys(path.parent.parent, write=True) == {}
+    assert path.read_bytes() == after
+
+
+def test_t0927_conf_contract_partial_writer_is_failure(tmp_path, monkeypatch):
+    updater = _load("pm_update")
+    writer = _load("pm_import")
+    path = _conf(tmp_path / "home", "ctx.stop_pct=10\n")
+    monkeypatch.setattr(updater, "_load_pm_import", lambda: writer)
+    monkeypatch.setattr(writer, "_write_conf_keys_locked", lambda *args: False)
+    with pytest.raises(RuntimeError, match="ctx.stop_pct"):
+        updater.migrate_renamed_conf_keys(path.parent.parent, write=True)

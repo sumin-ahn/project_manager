@@ -899,3 +899,48 @@ def test_cluster_show_without_ledger_is_not_found(env, capsys):
     # 없는 티켓 ID 모양도 같은 답·같은 문구다(새 문구 0).
     assert board.cmd_cluster(_cluster_args("show", "T-9999")) == 2
     assert "cluster not found: C-T-9999" in capsys.readouterr().err
+
+
+@requires_git
+def test_t0929_selected_tree_new_and_cluster_anchor(split_env, tmp_path):
+    board, _, _ = split_env
+    slot = tmp_path / 'work' / f'{SLOT_REPO}_2'
+    branch = 'task/selected'
+    assert _git(['checkout', '-qb', branch], slot).returncode == 0
+    assert board.cmd_new(_new_args('선택 발행', task='main', repo=SLOT_REPO, slot=2)) == 0
+    tid = board.load_ticket(_all_ticket_files(board)[0])[0]['id']
+    fm, _ = board.load_ticket(board.find_ticket_exact(tid)[1])
+    assert fm['created_by'].endswith('/main')
+    assert board.load_cluster(fm['cluster'])['base_branch'] == branch
+    assert board.cmd_cluster(_cluster_args('new', 'selected', tickets=tid, task='main', slot=2)) == 0
+    ledger = board.load_cluster('C-selected')
+    assert ledger['base_branch'] == branch
+    assert _git(['show-ref', '--verify', 'refs/heads/task/selected'], tmp_path / 'work' / f'{SLOT_REPO}_1').returncode != 0
+
+
+@requires_git
+@pytest.mark.parametrize('consumer', ['new', 'cluster'])
+@pytest.mark.parametrize('failure', ['ambiguous', 'head', 'branch', 'readonly'])
+def test_t0929_selected_tree_failure_before_writes(split_env, tmp_path, monkeypatch, consumer, failure):
+    board, _, _ = split_env
+    tid = _issue_ticket(board, '기존 발행')
+    args = (_new_args('거부 발행', task='main', repo=SLOT_REPO, slot=2) if consumer == 'new'
+            else _cluster_args('new', 'refused', tickets=tid, task='main', slot=2))
+    if failure == 'ambiguous':
+        args.repo = args.slot = None
+    elif failure == 'head':
+        monkeypatch.setattr(board, '_git_head_at', lambda tree: '')
+    elif failure == 'branch':
+        monkeypatch.setattr(board, '_cluster_current_branch', lambda tree: None)
+    else:
+        data = json.loads(board.LEASES_FILE.read_text(encoding='utf-8'))
+        data['leases'][-1]['role'] = 'readonly'
+        board.LEASES_FILE.write_text(json.dumps(data), encoding='utf-8')
+    before = {path: path.read_bytes() for path in _all_ticket_files(board)}
+    calls = []
+    monkeypatch.setattr(board, 'dump_cluster', lambda *a, **k: calls.append('ledger'))
+    monkeypatch.setattr(board, '_cluster_ensure_branch', lambda *a: calls.append('branch'))
+    with pytest.raises(SystemExit):
+        (board.cmd_new if consumer == 'new' else board.cmd_cluster)(args)
+    assert calls == []
+    assert {path: path.read_bytes() for path in _all_ticket_files(board)} == before

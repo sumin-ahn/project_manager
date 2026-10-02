@@ -361,13 +361,15 @@ def test_abandon_refuses_a_round_with_real_output(pd, env):
     _write_output(plan.path, "실산출")
     before = plan.board_path.read_bytes()
 
+    before_sync = list(env.sync_calls)
+
     with pytest.raises(pd.DelegateError, match="산출이 있어 포기할 수 없습니다"):
         _abandon(pd, env, plan)
 
     assert plan.board_path.read_bytes() == before
     assert plan.run_dir.exists()
     assert "abandoned_at" not in _ledger_rows(env)[-1]
-    assert env.sync_calls == []
+    assert env.sync_calls == before_sync
 
 
 def test_abandon_refuses_an_unprepared_path(pd, env):
@@ -399,12 +401,14 @@ def test_abandon_without_evidence_is_refused_and_leaves_all_three_assets(pd, env
     plan = _prepare(pd, env, "T-8020")
     before = _assets(plan, env)
 
+    before_sync = list(env.sync_calls)
+
     with pytest.raises(pd.DelegateError, match="종료 증거가 없습니다") as caught:
         _abandon(pd, env, plan, assume_dead=False)
 
     assert pd.ABANDON_ASSUME_DEAD_FLAG in str(caught.value)
     assert _assets(plan, env) == before
-    assert env.sync_calls == []
+    assert env.sync_calls == before_sync
 
 
 def test_evidence_refusal_message_carries_the_reservation_coordinates(pd, env):
@@ -451,12 +455,14 @@ def test_live_owner_pid_refusal_leaves_the_three_assets_unchanged(pd, env, monke
     before = _assets(plan, env)
     _use_relay_pid(pd, monkeypatch, alive=True)
 
+    before_sync = list(env.sync_calls)
+
     with pytest.raises(pd.DelegateError, match="실행 중이라 포기하지 않습니다") as caught:
         _abandon(pd, env, plan, assume_dead=False)
 
     assert "pid=4242" in str(caught.value) and "ps -p 4242" in str(caught.value)
     assert _assets(plan, env) == before
-    assert env.sync_calls == []
+    assert env.sync_calls == before_sync
 
 
 def test_live_owner_pid_is_overridable_only_by_explicit_confirmation(pd, env, monkeypatch):
@@ -772,6 +778,8 @@ def test_discard_converges_when_both_artifacts_are_gone(pd, env):
     assert not plan.path.exists() and not plan.board_path.exists()
 
     # 선언이 없으면 종전대로 거부다 — 자산 부재가 처분의 근거가 되지는 않는다.
+    before_sync = list(env.sync_calls)
+
     with pytest.raises(pd.DelegateError, match="지울 자산이 없습니다"):
         _abandon(pd, env, plan)
     assert "abandoned_at" not in _ledger_rows(env)[-1]
@@ -783,7 +791,7 @@ def test_discard_converges_when_both_artifacts_are_gone(pd, env):
     row = _ledger_rows(env)[-1]
     assert row["abandoned_at"] is not None and row["discard_reason"] == _DISCARD_REASON
     assert pd.ticket_copy_records(env.pm_home, ticket="T-8081", unharvested=True) == []
-    assert env.sync_calls == []              # 지운 자산이 없어 커밋할 board 변경도 없다
+    assert env.sync_calls == before_sync     # 지운 자산이 없어 커밋할 board 변경도 없다
 
     # 멱등 — 남은 정리가 없는 행의 재호출도 rc 0 이다(선언 인자는 다시 주지 않아도 된다).
     again = _abandon(pd, env, plan)
@@ -797,6 +805,8 @@ def test_discard_without_any_declaration_is_still_refused(pd, env):
     _write_output(plan.path)
     before = _assets(plan, env)
 
+    before_sync = list(env.sync_calls)
+
     with pytest.raises(pd.DelegateError, match="산출이 있어 포기할 수 없습니다") as caught:
         _abandon(pd, env, plan)
 
@@ -804,7 +814,7 @@ def test_discard_without_any_declaration_is_still_refused(pd, env):
     assert pd.ABANDON_SUPERSEDED_BY_FLAG in str(caught.value)
     assert pd.ABANDON_DISCARD_REASON_FLAG in str(caught.value)
     assert _assets(plan, env) == before      # 세 자산 전부 불변
-    assert env.sync_calls == []
+    assert env.sync_calls == before_sync
 
 
 def test_the_two_disposal_declarations_are_mutually_exclusive(pd, env):
