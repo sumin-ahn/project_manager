@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from _git_fixture import remove_git_tree
 from _slot_seed import SLOT, SLOT_REPO, lease_row, seed_slot
 from conftest import anchor_board_module
 
@@ -976,7 +977,7 @@ def test_t0930_publish_binding_rejects_parent_git(split_env, tmp_path, marker):
     if marker == "foreign-toplevel":
         assert _git(["config", "core.worktree", str(tmp_path)], slot).returncode == 0
     else:
-        shutil.rmtree(slot / ".git")
+        remove_git_tree(slot / ".git")
     if marker == "broken":
         (slot / ".git").write_text("gitdir: missing-git-dir\n", encoding="utf-8")
     before = (board.LEASES_FILE.read_bytes(), _git(["rev-parse", "HEAD"], board_dir).stdout,
