@@ -164,12 +164,18 @@ def _platform_conf(live_board, command="run-windows") -> None:
     게이트는 platform 증거가 있으면 그 기록의 `conf_anchor`(홈)를, 없으면 실행 cwd(장부 행이
     가리키는 작업 폴더)를 선언 좌표로 읽는다. 두 좌표가 갈리는 것이 슬롯 형상의 평시다.
     """
-    text = ("qa.platforms=windows\n"
+    text = ("test.cmd=core-full\nqa.platforms=windows\n"
             f"test.windows.cmd={command}\n")
     for conf in (live_board.LOCAL_CONF,
                  live_board._proj / SLOT / ".project_manager" / "local.conf"):
         conf.parent.mkdir(parents=True, exist_ok=True)
         conf.write_text(text, encoding="utf-8")
+    live_board._run_regression_cmd = lambda command, cwd, env: (
+        0, live_board.PM_QA_RESULT_PREFIX + json.dumps({
+            "platform": env["PM_QA_PLATFORM"], "head": env["PM_QA_EXPECTED_HEAD"],
+            "status": "pass", "collected": 3,
+        }) + "\n", "",
+    )
 
 
 def _platform_regression_record(live_board, *, status="pass", head=None,
@@ -180,11 +186,7 @@ def _platform_regression_record(live_board, *, status="pass", head=None,
         "collected": 3, "previous_collected": None,
         "conf_anchor": str(live_board._proj.resolve()),
         "ts": "2026-08-28T00:00:00+00:00",
-        "platforms": [{
-            "name": "windows", "command": command, "head": head,
-            "status": status, "rc": 0, "collected": 3,
-            "ts": "2026-08-28T00:00:00+00:00",
-        }],
+        "command": "core-full",
     }
     live_board.REGRESSION_FLAG.write_text(json.dumps(record), encoding="utf-8")
     return record
@@ -521,9 +523,6 @@ def test_declared_platform_unverified_core_blocks_before_release(
     record = _platform_regression_record(live_board, status="fail")
     record["rc"] = live_board.REGRESSION_RC_UNVERIFIED_COLLECTION
     record["collected"] = None
-    record["platforms"][0].update({
-        "status": "not-run", "rc": "core-red", "collected": None,
-    })
     live_board.REGRESSION_FLAG.write_text(json.dumps(record), encoding="utf-8")
     fake = _FakeRun(0, "22 passed in 1.00s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
@@ -532,10 +531,13 @@ def test_declared_platform_unverified_core_blocks_before_release(
     assert not any(call["kwargs"].get("shell") for call in fake.calls)
 
 
-def test_declared_platform_valid_same_head_evidence_is_snapshotted_without_rerun(
+def test_declared_platform_valid_same_head_core_executes_platform_and_snapshots(
         live_board, monkeypatch):
     _platform_conf(live_board)
     regression = _platform_regression_record(live_board)
+    platform_calls = []
+    original = live_board._run_regression_cmd
+    monkeypatch.setattr(live_board, "_run_regression_cmd", lambda *a: (platform_calls.append(a) or original(*a)))
     fake = _FakeRun(0, "22 passed in 1.00s")
     monkeypatch.setattr(live_board.subprocess, "run", fake)
     assert live_board.cmd_livegate(_rec_args()) == 0
@@ -545,9 +547,12 @@ def test_declared_platform_valid_same_head_evidence_is_snapshotted_without_rerun
     data = _read_flag(live_board)
     assert set(data) == {
         "head", "status", "n", "rc", "ts", "scope", "collected",
-        "previous_collected", "conf_anchor", "platforms",
+        "previous_collected", "conf_anchor", "platforms", "command", "cwd",
     }
-    assert data["platforms"] == regression["platforms"]
+    assert "platforms" not in regression
+    assert len(platform_calls) == 1 and platform_calls[0][0] == "run-windows"
+    assert data["platforms"][0]["name"] == "windows" and data["platforms"][0]["status"] == "pass"
+    assert data["command"] == regression["command"]
     assert live_board.cmd_livegate(_chk_args(rev=data["head"])) == 0
 
 
@@ -627,13 +632,15 @@ def test_declared_platform_corrupt_core_evidence_blocks_record_and_check(
 def test_declared_platform_release_head_drift_records_red(live_board, monkeypatch):
     _platform_conf(live_board)
     _platform_regression_record(live_board)
-    heads = iter((
-        "cafef00dcafef00d0011223344556677",
-        "moved-head",
-    ))
-    monkeypatch.setattr(live_board, "_git_head_at", lambda _cwd: next(heads))
+    head = ["cafef00dcafef00d0011223344556677"]
+    monkeypatch.setattr(live_board, "_git_head_at", lambda _cwd: head[0])
     fake = _FakeRun(0, "22 passed in 1.00s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
+    def run(*args, **kwargs):
+        result = fake(*args, **kwargs)
+        if kwargs.get("shell"):
+            head[0] = "moved-head"
+        return result
+    monkeypatch.setattr(live_board.subprocess, "run", run)
     assert live_board.cmd_livegate(_rec_args()) == 1
     data = _read_flag(live_board)
     assert data["status"] == "fail" and data["rc"] == "head-drift"
@@ -1764,3 +1771,284 @@ def test_t0929_selected_workspace_readonly_cwd_reference_preserved(live_board, m
     assert live_board.cmd_livegate(_rec_args(repo='A', cwd=str(selected))) == 0
     assert next(call for call in fake.calls if call['kwargs'].get('shell'))['kwargs']['cwd'] == str(selected)
     assert _read_flag(live_board)['head'] == 'head5'
+
+
+# T-0936 릴리즈 플랫폼 실행과 증거 결속
+@pytest.fixture
+def t0936_release(tmp_path, monkeypatch):
+    board = _load_board()
+    anchor = tmp_path / 'declared'; execution = tmp_path / 'release'; home = tmp_path / 'engine'
+    for tree in [anchor, execution, home]: (tree / '.project_manager/.local').mkdir(parents=True)
+    local = home / '.project_manager/.local'
+    for name, value in {'REPO':home, 'LOCAL_DIR':local, 'LOCAL_CONF':anchor/'.project_manager/local.conf',
+                        'REGRESSION_FLAG':local/'regression.json', 'LIVEGATE_FLAG':local/'livegate.json',
+                        'LEASES_FILE':local/'worktree-leases.json', 'AREAS_FILE':home/'.project_manager/areas.md'}.items():
+        monkeypatch.setattr(board, name, value)
+    head = 'T0936-REV'
+    monkeypatch.setattr(board, '_git_head_at', lambda cwd: head)
+    monkeypatch.setattr(board, '_resolve_livegate_flag', lambda cwd: (board.LIVEGATE_FLAG, board._LG_ENGINE_ROOT))
+    monkeypatch.setattr(board, '_resolve_regression_flag', lambda cwd: (board.REGRESSION_FLAG, board._LG_ENGINE_ROOT))
+    monkeypatch.setattr(board, '_sync_release_must_fix_marker', lambda flag: [])
+    monkeypatch.setattr(board, '_refuse_release_for_engine_drift', lambda flag, cwd: 0)
+    monkeypatch.delenv('PM_SESSION_NAME', raising=False)
+    monkeypatch.delenv('CLAUDE_SESSION_NAME', raising=False)
+    board.LOCAL_CONF.write_text('test.cmd=core-full\nqa.platforms=arm,windows\ntest.arm.cmd=arm-full\ntest.windows.cmd=windows-full\n', encoding='utf-8')
+    (home/'.project_manager/local.conf').write_text(board.LOCAL_CONF.read_text(encoding='utf-8'), encoding='utf-8')
+    core = {'head':head, 'status':'pass', 'rc':0, 'scope':'full', 'collected':3,
+            'previous_collected':2, 'conf_anchor':str(anchor), 'command':'core-full', 'ts':'2026-10-02T00:00:00+00:00'}
+    board.REGRESSION_FLAG.write_text(json.dumps(core), encoding='utf-8')
+    calls = []; live = []
+    def platform(command, cwd, env):
+        calls.append((command,cwd,dict(env)))
+        return 0, board.PM_QA_RESULT_PREFIX+json.dumps({'platform':env['PM_QA_PLATFORM'],'head':head,'status':'pass','collected':3})+'\n', ''
+    monkeypatch.setattr(board, '_run_regression_cmd', platform)
+    def release(*a, **kw):
+        live.append((a,kw)); return types.SimpleNamespace(returncode=0,stdout='22 passed in 0.01s\n',stderr='')
+    monkeypatch.setattr(board.subprocess, 'run', release)
+    return types.SimpleNamespace(board=board, anchor=anchor, cwd=execution, head=head, core=core, calls=calls, live=live, platform=platform, release=release)
+
+
+def _t0936_record(f):
+    return f.board.cmd_livegate(_rec_args(cwd=str(f.cwd)))
+
+
+def _t0936_check(f):
+    args = _chk_args(f.head); args.cwd=str(f.cwd)
+    return f.board.cmd_livegate(args)
+
+
+def test_t0936_record_executes_platforms_before_live(t0936_release):
+    f=t0936_release
+    original=f.board.REGRESSION_FLAG.read_bytes()
+    assert _t0936_record(f)==0
+    assert [c[0] for c in f.calls]==['arm-full','windows-full']
+    assert all(c[1]==str(f.cwd) and c[2]['PM_QA_EXPECTED_HEAD']==f.head for c in f.calls)
+    assert [c[2]['PM_QA_PLATFORM'] for c in f.calls]==['arm','windows']
+    assert len(f.live)==1 and f.live[0][1]['cwd']==str(f.cwd)
+    assert f.live[0][0][0]==f.board.LIVEGATE_TEST_CMD
+    snapshot=_read_flag(f.board)
+    assert snapshot['conf_anchor']==str(f.anchor) and snapshot['cwd']==str(f.cwd)
+    assert snapshot['command']=='core-full' and snapshot['collected']==3 and snapshot['previous_collected']==2
+    assert [cell['name'] for cell in snapshot['platforms']]==['arm','windows']
+    assert _t0936_check(f)==0
+    assert len(f.calls)==2 and len(f.live)==1 and f.board.REGRESSION_FLAG.read_bytes()==original
+
+
+@pytest.mark.parametrize('defect', ['missing','red','stale','unknown','zero','bool','command','anchor','schema','other-F','old-aggregate'])
+def test_t0936_record_rejects_unusable_core_before_children(t0936_release, defect):
+    f=t0936_release; core=dict(f.core)
+    changes={'red':('status','fail'),'stale':('head','old'),'unknown':('collected',None),'zero':('collected',0),'bool':('collected',True),'command':('command','old-core'),'anchor':('conf_anchor','relative'),'schema':('extra',1),'old-aggregate':('platforms',[])}
+    if defect in ['missing','other-F']:
+        if defect=='other-F': (f.anchor/'regression.json').write_text(json.dumps(core),encoding='utf-8')
+        f.board.REGRESSION_FLAG.unlink()
+    else:
+        key,value=changes[defect]; core[key]=value
+        f.board.REGRESSION_FLAG.write_text(json.dumps(core),encoding='utf-8')
+    assert _t0936_record(f)==1
+    assert f.calls==f.live==[] and _t0936_check(f)==1
+
+
+@pytest.mark.parametrize('defect', ['rc','absent','multiple','duplicate','schema','name','head','status','zero','negative','bool','unknown','stderr'])
+def test_t0936_platform_defects_block_live(t0936_release, monkeypatch, defect):
+    f=t0936_release
+    def run(command,cwd,env):
+        f.calls.append((command,cwd,env))
+        payload={'platform':env['PM_QA_PLATFORM'],'head':f.head,'status':'pass','collected':3}
+        if defect in ['schema','name','head','status','zero','negative','bool','unknown']:
+            key,value={'schema':('extra',1),'name':('platform','other'),'head':('head','old'),'status':('status','fail'),'zero':('collected',0),'negative':('collected',-1),'bool':('collected',True),'unknown':('collected',None)}[defect]; payload[key]=value
+        marker=f.board.PM_QA_RESULT_PREFIX+json.dumps(payload)+'\n'
+        if defect=='duplicate': marker=f.board.PM_QA_RESULT_PREFIX+'{"platform":"arm","platform":"arm","head":"'+f.head+'","status":"pass","collected":3}\n'
+        return (1 if defect=='rc' else 0), ('' if defect in ['absent','stderr'] else marker*2 if defect=='multiple' else marker), (marker if defect=='stderr' else '')
+    monkeypatch.setattr(f.board,'_run_regression_cmd',run)
+    assert _t0936_record(f)==1 and len(f.calls)==1 and f.live==[]
+    data=_read_flag(f.board)
+    assert data['status']=='fail' and data['platforms'][0]['status']=='fail'
+    assert data['platforms'][1]['status']=='not-run' and data['platforms'][1]['rc']=='previous-platform-red'
+    assert _t0936_check(f)==1
+
+
+@pytest.mark.parametrize('defect', ['order','add','delete','command','missing-cell','cell-schema','cell-red','cell-not-run','cell-stale','cell-rc-bool','core-scope','core-collected','core-previous','core-command','core-anchor','core-session','current-red','current-stale','current-collected','current-command','current-anchor','rc','pin','rev','command-missing','cwd-relative'])
+def test_t0936_check_revalidates_complete_release_evidence(t0936_release, defect):
+    f=t0936_release; assert _t0936_record(f)==0
+    record=_read_flag(f.board)
+    if defect in ['order','add','delete','command']:
+        text=f.board.LOCAL_CONF.read_text(encoding='utf-8')
+        text=text.replace('arm,windows',{'order':'windows,arm','add':'arm,windows,extra','delete':'','command':'arm,windows'}[defect])
+        if defect=='add': text+='test.extra.cmd=extra-full\n'
+        if defect=='command': text=text.replace('windows-full','changed-full')
+        f.board.LOCAL_CONF.write_text(text,encoding='utf-8')
+    elif defect.startswith('current-'):
+        core=dict(f.core); key=defect[8:]
+        key,value={'red':('status','fail'),'stale':('head','old'),'collected':('collected',9),'command':('command','old'),'anchor':('conf_anchor',str(f.cwd))}[key]
+        core[key]=value; f.board.REGRESSION_FLAG.write_text(json.dumps(core),encoding='utf-8')
+    else:
+        if defect=='missing-cell': record['platforms'].pop()
+        elif defect.startswith('cell-'):
+            key,value={'schema':('extra',1),'red':('status','fail'),'not-run':('status','not-run'),'stale':('head','old'),'rc-bool':('rc',False)}[defect[5:]]; record['platforms'][0][key]=value
+        elif defect=='command-missing': record.pop('command')
+        else:
+            key,value={'core-scope':('scope','scoped'),'core-collected':('collected',9),'core-previous':('previous_collected',True),'core-command':('command','old'),'core-anchor':('conf_anchor',str(f.cwd)),'core-session':('session','wrong'),'rc':('rc',True),'pin':('n',21),'rev':('head','old'),'cwd-relative':('cwd','relative')}[defect]; record[key]=value
+        f.board.LIVEGATE_FLAG.write_text(json.dumps(record),encoding='utf-8')
+    count=(len(f.calls),len(f.live))
+    assert _t0936_check(f)==1 and count==(len(f.calls),len(f.live))
+
+
+@pytest.mark.parametrize('phase', ['platform','before-live','after-live'])
+@pytest.mark.parametrize('drift', ['A-head','L-head','declaration','command'])
+def test_t0936_release_midrun_drift_stays_red(t0936_release, monkeypatch, phase, drift):
+    f=t0936_release; original=f.board.REGRESSION_FLAG.read_bytes(); changed=[False]
+    def mutate():
+        changed[0]=True
+        if drift in ['declaration','command']:
+            text=f.board.LOCAL_CONF.read_text(encoding='utf-8')
+            f.board.LOCAL_CONF.write_text(text.replace('arm,windows','windows,arm') if drift=='declaration' else text.replace('core-full','changed-core'),encoding='utf-8')
+    monkeypatch.setattr(f.board,'_git_head_at',lambda cwd: 'NEW' if changed[0] and str(cwd)==str(f.anchor if drift=='A-head' else f.cwd) and drift.endswith('head') else f.head)
+    def platform(command,cwd,env):
+        result=f.platform(command,cwd,env)
+        if phase=='platform' or (phase=='before-live' and env['PM_QA_PLATFORM']=='windows'): mutate()
+        return result
+    def release(*a,**kw):
+        result=f.release(*a,**kw)
+        if phase=='after-live': mutate()
+        return result
+    monkeypatch.setattr(f.board,'_run_regression_cmd',platform); monkeypatch.setattr(f.board.subprocess,'run',release)
+    assert _t0936_record(f)==1 and _read_flag(f.board)['status']=='fail'
+    assert f.board.REGRESSION_FLAG.read_bytes()==original
+    if phase!='after-live': assert f.live==[]
+
+
+@pytest.mark.parametrize('defect', [None,'A-relative','A-missing','A-head','L-missing','L-head','A-F','L-F','broken','clone-only'])
+def test_t0936_readonly_and_engine_root_coordinates(t0936_release, monkeypatch, defect):
+    f=t0936_release; assert not (f.cwd/'.project_manager/local.conf').exists()
+    monkeypatch.setattr(f.board,'_actor_session_override',lambda *a,**k: pytest.fail('명시 readonly cwd의 actor 해소'))
+    if defect:
+        core=dict(f.core)
+        if defect=='A-relative': core['conf_anchor']='relative'
+        elif defect=='A-missing': core['conf_anchor']=str(f.anchor/'missing')
+        elif defect in ['A-head','L-head']: monkeypatch.setattr(f.board,'_git_head_at',lambda cwd:'old' if str(cwd)==str(f.anchor if defect=='A-head' else f.cwd) else f.head)
+        elif defect=='L-missing': f.cwd=f.cwd/'missing'
+        elif defect=='A-F': monkeypatch.setattr(f.board,'_resolve_regression_flag',lambda cwd:(f.anchor/'regression.json',f.board._LG_ENGINE_ROOT))
+        elif defect=='L-F': monkeypatch.setattr(f.board,'_resolve_livegate_flag',lambda cwd:(f.anchor/'livegate.json',f.board._LG_ENGINE_ROOT))
+        elif defect=='broken': monkeypatch.setattr(f.board,'_resolve_livegate_flag',lambda cwd:(f.board.LIVEGATE_FLAG,f.board._LG_BROKEN))
+        elif defect=='clone-only':
+            f.board.REGRESSION_FLAG.unlink(); monkeypatch.setattr(f.board,'LOCAL_DIR',f.anchor)
+            (f.anchor/'regression.json').write_text(json.dumps(core),encoding='utf-8')
+        if defect!='clone-only': f.board.REGRESSION_FLAG.write_text(json.dumps(core),encoding='utf-8')
+    assert _t0936_record(f)==(0 if defect is None else 1)
+    if defect is not None: assert f.calls==f.live==[]
+
+
+@pytest.mark.parametrize('form', ['aggregate-pass','aggregate-fail','legacy-live-declared','no-platform-legacy','declared-deleted'])
+def test_t0936_legacy_and_old_aggregate_disposition(t0936_release, form):
+    f=t0936_release
+    if form=='no-platform-legacy':
+        (f.board.REPO/'.project_manager/local.conf').write_text('test.cmd=core-full\n',encoding='utf-8')
+        f.board.LOCAL_CONF.write_text('test.cmd=core-full\n',encoding='utf-8')
+        f.board.REGRESSION_FLAG.unlink()
+        assert _t0936_record(f)==0 and f.calls==[] and len(f.live)==1 and _t0936_check(f)==0
+    elif form in ['aggregate-pass','aggregate-fail']:
+        core=dict(f.core); core.pop('command'); core['platforms']=[]
+        if form=='aggregate-fail': core['status']='fail'
+        f.board.REGRESSION_FLAG.write_text(json.dumps(core),encoding='utf-8')
+        assert _t0936_record(f)==1 and f.calls==f.live==[]
+    elif form=='declared-deleted':
+        assert _t0936_record(f)==0
+        f.board.LOCAL_CONF.write_text('test.cmd=core-full\n',encoding='utf-8')
+        assert _t0936_check(f)==1
+    else:
+        f.board.LIVEGATE_FLAG.write_text(json.dumps({'head':f.head,'status':'pass','rc':0,'n':22,'ts':'now'}),encoding='utf-8')
+        assert _t0936_check(f)==1
+
+
+@pytest.mark.parametrize('failure', ['config','core','platform','coordinate','interrupted'])
+def test_t0936_failed_record_invalidates_previous_green(t0936_release, monkeypatch, failure):
+    f=t0936_release
+    f.board.LIVEGATE_FLAG.write_text(json.dumps({'head':f.head,'status':'pass','rc':0,'n':22,'ts':'now'}),encoding='utf-8')
+    if failure=='config': f.board.LOCAL_CONF.write_text('test.cmd=core-full\nqa.platforms=windows\n',encoding='utf-8')
+    elif failure=='core': f.board.REGRESSION_FLAG.unlink()
+    elif failure=='coordinate': f.core['conf_anchor']='relative'; f.board.REGRESSION_FLAG.write_text(json.dumps(f.core),encoding='utf-8')
+    else:
+        def run(*a):
+            assert _read_flag(f.board)['status']=='fail'
+            if failure=='interrupted': raise RuntimeError('중간 중단')
+            return 1,'',''
+        monkeypatch.setattr(f.board,'_run_regression_cmd',run)
+    if failure=='interrupted':
+        with pytest.raises(RuntimeError,match='중간 중단'): _t0936_record(f)
+    else: assert _t0936_record(f)==1
+    assert _read_flag(f.board)['status']=='fail' and _t0936_check(f)==1
+
+
+@pytest.mark.parametrize('guard', ['sidecar','must-fix','drift','opt-in','live-rc','live-pin'])
+def test_t0936_existing_release_guards_precede_platforms(t0936_release, monkeypatch, guard):
+    f=t0936_release
+    assert f.board.LIVEGATE_RELEASE_PIN==22
+    if guard=='sidecar': monkeypatch.setattr(f.board,'_resolve_livegate_flag',lambda cwd:(f.board.LIVEGATE_FLAG,f.board._LG_BROKEN))
+    elif guard=='must-fix': monkeypatch.setattr(f.board,'_sync_release_must_fix_marker',lambda flag:['must-fix'])
+    elif guard=='drift': monkeypatch.setattr(f.board,'_refuse_release_for_engine_drift',lambda flag,cwd:1)
+    else:
+        def release(*a,**kw):
+            f.live.append((a,kw))
+            assert kw['env']['PYTHONUTF8']=='1' and kw['env']['PYTHONIOENCODING']=='utf-8'
+            return types.SimpleNamespace(returncode=1 if guard in ['opt-in','live-rc'] else 0,stdout='21 passed\n' if guard=='live-pin' else '22 passed\n',stderr='')
+        monkeypatch.setattr(f.board.subprocess,'run',release)
+    assert _t0936_record(f)==1
+    if guard in ['sidecar','must-fix','drift']: assert f.calls==f.live==[]
+
+
+def test_t0936_readonly_and_engine_root_coordinates_cold_no_platform(t0936_release, monkeypatch):
+    f = t0936_release
+    f.board.REGRESSION_FLAG.unlink()
+    f.board.LOCAL_CONF.write_text("test.cmd=core-full\n", encoding="utf-8")
+    (f.board.REPO / ".project_manager/local.conf").write_text("test.cmd=core-full\n", encoding="utf-8")
+    flag = f.board.REPO / "cold" / ".project_manager" / ".local/livegate.json"
+    monkeypatch.setattr(f.board, "_resolve_livegate_flag", lambda cwd: (flag, f.board._LG_ENGINE_ROOT))
+    assert _t0936_record(f) == 0
+    assert json.loads(flag.read_text(encoding="utf-8"))["status"] == "pass"
+    assert f.calls == [] and len(f.live) == 1
+
+
+@pytest.mark.parametrize("consumer", ["record", "check"])
+def test_t0936_legacy_and_old_aggregate_disposition_partial_engine_absent_conf(
+        t0936_release, monkeypatch, consumer):
+    f = t0936_release
+    f.board.REGRESSION_FLAG.unlink()
+    f.board.LOCAL_CONF.unlink()
+    (f.board.REPO / ".project_manager/local.conf").unlink()
+    f.board.LIVEGATE_FLAG.write_text(json.dumps({
+        "head":f.head, "status":"pass", "rc":0, "n":22, "ts":"now",
+    }), encoding="utf-8")
+    calls = []
+    def unavailable():
+        calls.append(True)
+        raise FileNotFoundError("partial engine local_conf.py missing")
+    monkeypatch.setattr(f.board, "_load_local_conf", unavailable)
+    assert (_t0936_record(f) if consumer == "record" else _t0936_check(f)) == 0
+    assert calls == [] and f.calls == []
+    assert len(f.live) == (1 if consumer == "record" else 0)
+
+
+@pytest.mark.parametrize("shape", ["declaration", "empty-file", "directory", "stat-denied"])
+def test_t0936_legacy_and_old_aggregate_disposition_partial_engine_present_or_damaged_conf(
+        t0936_release, monkeypatch, shape):
+    f = t0936_release
+    f.board.REGRESSION_FLAG.unlink()
+    f.board.LOCAL_CONF.unlink()
+    (f.board.REPO / ".project_manager/local.conf").unlink()
+    conf = f.cwd / ".project_manager/local.conf"
+    if shape == "directory": conf.mkdir()
+    else: conf.write_text("qa.platforms=windows\n" if shape == "declaration" else "", encoding="utf-8")
+    calls = []
+    def unavailable():
+        calls.append(True)
+        raise FileNotFoundError("partial engine local_conf.py missing")
+    monkeypatch.setattr(f.board, "_load_local_conf", unavailable)
+    if shape == "stat-denied":
+        original = Path.lstat
+        def lstat(path, *args, **kwargs):
+            if path == conf: raise PermissionError("declaration stat denied")
+            return original(path, *args, **kwargs)
+        monkeypatch.setattr(Path, "lstat", lstat)
+    assert _t0936_record(f) == 1 and _t0936_check(f) == 1
+    assert f.calls == f.live == []
+    assert len(calls) == (0 if shape == "stat-denied" else 1)

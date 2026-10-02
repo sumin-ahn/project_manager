@@ -337,6 +337,12 @@ def test_gate_label_shows_solo_argv_for_none(tool):
 # 낸다**는 관계 자체를 직접 못박는다 — 한쪽만 고친 반쪽 수정이 여기서 걸린다.
 
 _PARITY_BOARDS = {
+    "platform_declared_prefix": _StubBoard(
+        rows=[{"repo":"heru", "prefix":"HERU", "test_cmd":PREFIX_ROW_CMD}],
+        prefix="HERU", repos={"heru"},
+        conf={"test.cmd":LOCAL_CONF_CMD, "qa.platforms":"windows", "test.windows.cmd":"windows-full"}),
+    "platform_missing_command_local": _StubBoard(
+        areas_exists=False, conf={"test.cmd":LOCAL_CONF_CMD, "qa.platforms":"windows"}),
     "prefix_row": _StubBoard(
         rows=[{"repo": "heru", "prefix": "HERU", "test_cmd": PREFIX_ROW_CMD}],
         prefix="HERU", repos={"heru"}, conf={"test.cmd": LOCAL_CONF_CMD}),
@@ -352,6 +358,8 @@ _PARITY_BOARDS = {
 }
 
 _PARITY_EXPECTED = {
+    "platform_declared_prefix": PREFIX_ROW_CMD,
+    "platform_missing_command_local": LOCAL_CONF_CMD,
     "prefix_row": PREFIX_ROW_CMD,
     "repo_row_blank_prefix": NON_PYTEST_CMD,
     "ambiguous_repos": LOCAL_CONF_CMD,
@@ -620,3 +628,29 @@ def test_solo_shape_keeps_venv_pytest_argv(hf, monkeypatch):
         "/venv/bin/python", "-m", "pytest", "tests/", "-q", "-n", "auto",
     ]
     assert captured["shell"] is False
+
+
+@pytest.mark.parametrize("gate_cmd,output,rc,expected", [
+    ("pytest tests/ -q", "3 passed in 0.01s", 0, True),
+    ("pytest tests/ -q", "no summary", 0, False),
+    ("pytest tests/ -q", "3 passed in 0.01s", 1, False),
+    (LOCAL_CONF_CMD, "custom success", 0, True),
+    (LOCAL_CONF_CMD, "custom success", 1, False),
+])
+@pytest.mark.parametrize("platform_command", [None, "windows-full"])
+def test_verdict_parity_across_tools_with_declared_platforms(
+        tf, hf, monkeypatch, gate_cmd, output, rc, expected, platform_command):
+    conf = {"test.cmd":gate_cmd, "qa.platforms":"windows"}
+    if platform_command is not None:
+        conf["test.windows.cmd"] = platform_command
+    stub = _StubBoard(areas_exists=False, conf=conf)
+    parser = _load_tool("board")
+    stub._pytest_summary_line = parser._pytest_summary_line
+    stub._pytest_outcome_count = parser._pytest_outcome_count
+    stub._pytest_summary_tail = parser._pytest_summary_tail
+    monkeypatch.setattr(tf, "_load_board_module", lambda: stub)
+    monkeypatch.setattr(hf, "_load_board", lambda: stub)
+    for tool in (tf, hf):
+        command = tool._resolve_per_repo_test_cmd()
+        assert command == gate_cmd
+        assert tool._regression_is_green(output, rc, command) is expected
