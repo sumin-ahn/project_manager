@@ -9580,9 +9580,10 @@ def _core_command_at(anchor: str, session: str | None = None, *,
             matching = [r for r in rows if r.get("repo") == row.get("repo")]
             if len(matching) > 1:
                 return ""
-            # 슬롯 순회는 기존 prefix 층, task 선택 기록은 선택 repo 층을 유지한다.
+            # 실제 task 등록 행만 선택 repo 층을 사용한다. 세션 인자 부재는 task가 아니다.
             command = (matching[0].get("test_cmd") if matching and (
-                session is None or matching[0].get("prefix")) else None)
+                row.get("session") in identity_args.task_names(leases)
+                or matching[0].get("prefix")) else None)
         command = command or local_config(home).get("test.cmd")
         return " ".join(p for p in (command or default_pytest_cmd(),
                                     _quarantine_args()) if p)
@@ -10086,6 +10087,26 @@ def cmd_regression(args: argparse.Namespace) -> int:
         extra = " · 수집 0 — 테스트 루트/cwd 확인" if rc == 5 else ""
         print(f"regression: RED @ {head[:8]} (rc={rc}){extra} — push 차단.", file=sys.stderr)
         return 1
+    # 신규 core 기록은 명시 선택과 같은 작업공간에서 측정돼야 한다.
+    # 인자 없는 훅과 명령 증거가 없던 legacy 기록의 기존 앵커 소비는 유지한다.
+    if "command" in data:
+        selected_cwd = getattr(args, "cwd", None)
+        identity = identity_args.parse_identity(args)
+        selected_slot = None
+        if identity.task:
+            selected_slot, _cmd = _resolve_task_workspace_cwd(args, require_test_cmd=False)
+        elif identity.kind == "slot":
+            selected_slot = identity_args.slot_path_for_number(
+                identity.repo, identity.slot, LEASES_FILE)
+        elif identity.kind == "repo":
+            workspace = identity_args.resolve_actor_workspace(identity.repo, LEASES_FILE)
+            selected_slot = workspace.slot if workspace is not None else None
+        if ((identity.kind != "none" or identity.task) and selected_slot is None
+                or selected_slot is not None and os.path.abspath(REPO / selected_slot) != anchor
+                or selected_cwd is not None and os.path.abspath(selected_cwd) != anchor):
+            print("regression: stale (선택 작업공간과 core 기록 좌표 불일치) "
+                  "— core 재실행 필요.", file=sys.stderr)
+            return 1
     problem = _core_record_problem(data, anchor, head, local_dir=regression_flag.parent)
     if problem is not None:
         print(f"regression: stale ({problem}) — core 재실행 필요.", file=sys.stderr)

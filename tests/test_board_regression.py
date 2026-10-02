@@ -3248,3 +3248,90 @@ def test_t0936_core_command_and_selected_workspace_slot_prefix_priority(
     else:
         assert board._regression_multi_run(_run_args(), [session]) == 0
         assert len(calls) == 1, "같은 HEAD/명령의 green 슬롯은 재실행하지 않는다"
+
+
+# T-0936 정식04 명령 우선순위와 명시 선택 경계
+
+def _t0936_review_command_setup(board, monkeypatch, prefix="", platform=False, task=False):
+    target = board.REPO / "work/A_1"
+    (target / ".git").mkdir(parents=True)
+    (target / "tests").mkdir()
+    board.LOCAL_CONF.write_text("test.cmd=local-core\n" + ("qa.platforms=windows\n" if platform else ""), encoding="utf-8")
+    board.AREAS_FILE.write_text("| repo | prefix | test_cmd |\n|---|---|---|\n" + f"| A | {prefix} | repo-core |\n", encoding="utf-8")
+    row = {"slot":"work/A_1", "repo":"A", "session":"main" if task else "A_1", "state":"leased", "role":"work", "test_cmd":None}
+    ledger = {"leases":[row], "tasks":[{"name":"main", "session":"S"}] if task else []}
+    board.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
+    monkeypatch.setattr(board, "_stale_pre_push_hook_refusal", lambda: None)
+    monkeypatch.setattr(board, "_review_cycle_downgrade", lambda: ([], []))
+    monkeypatch.setattr(board, "_resolve_regression_flag", lambda cwd: (board.REGRESSION_FLAG, board._LG_NO_HOOK))
+    monkeypatch.setattr(board, "_cluster_current_branch", lambda cwd: "task/main")
+    monkeypatch.setattr(board, "_git_config_get", lambda cwd, key: None)
+    monkeypatch.setattr(board, "_platform_test_commands", lambda *a: pytest.fail("개발 플랫폼 해소"))
+    calls = []
+    monkeypatch.setattr(board, "_run_regression_cmd", lambda *a: (calls.append(a) or (0, "3 passed in 0.01s\n", "")))
+    return target, ledger, calls
+
+
+@pytest.mark.parametrize("prefix", ["", "A"])
+@pytest.mark.parametrize("platform", [False, True])
+@pytest.mark.parametrize("task", [False, True])
+def test_t0936_single_slot_core_command_priority(board, monkeypatch, prefix, platform, task):
+    target, ledger, calls = _t0936_review_command_setup(board, monkeypatch, prefix, platform, task)
+    argv = ["regression", "run", "--repo", "A", "--slot", "1", "--final"]
+    argv += ["--task", "main"] if task else ["--cwd", str(target)]
+    assert board.cmd_regression(board.build_parser().parse_args(argv)) == 0
+    assert _flag(board)["command"] == ("repo-core" if task or prefix else "local-core")
+    check = ["regression", "check", "--repo", "A", "--slot", "1", "--cwd", str(target)]
+    assert board.cmd_regression(board.build_parser().parse_args(check)) == 0
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("layer", ["lease", "prefix", "local", "default"])
+def test_t0936_single_slot_core_command_priority_layers_and_quarantine(board, monkeypatch, layer):
+    target, ledger, calls = _t0936_review_command_setup(board, monkeypatch, prefix="A" if layer=="prefix" else "")
+    if layer=="lease":
+        ledger["leases"][0]["test_cmd"]="lease-core"
+        board.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
+    if layer=="default": board.LOCAL_CONF.write_text("", encoding="utf-8")
+    (board.REPO / ".project_manager/quarantine.txt").write_text("tests/test_sample.py::test_bad\n", encoding="utf-8")
+    expected = {"lease":"lease-core", "prefix":"repo-core", "local":"local-core", "default":board.default_pytest_cmd()}[layer]
+    assert board.cmd_regression(board.build_parser().parse_args(["regression","run","--repo","A","--slot","1","--cwd",str(target),"--final"]))==0
+    assert _flag(board)["command"]==expected+" --deselect tests/test_sample.py::test_bad"
+    assert board.cmd_regression(board.build_parser().parse_args(["regression","check","--repo","A","--slot","1","--cwd",str(target)]))==0
+    (board.REPO / ".project_manager/quarantine.txt").write_text("tests/test_sample.py::test_other\n", encoding="utf-8")
+    assert board.cmd_regression(board.build_parser().parse_args(["regression","check","--repo","A","--slot","1","--cwd",str(target)]))==1
+
+
+@pytest.mark.parametrize("explicit_cwd", [False, True])
+@pytest.mark.parametrize("task", [False, True])
+def test_t0936_core_check_rejects_other_selected_slot(board, monkeypatch, explicit_cwd, task):
+    target, ledger, calls = _t0936_review_command_setup(board, monkeypatch, prefix="A", task=task)
+    sibling = board.REPO / "work/A_2"
+    sibling.mkdir(parents=True)
+    ledger["leases"][0]["test_cmd"]="core-A"
+    ledger["leases"].append({"slot":"work/A_2", "repo":"A", "session":"main" if task else "A_2", "state":"leased", "role":"work", "test_cmd":"core-B"})
+    board.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
+    run=["regression","run","--repo","A","--slot","1","--final"]
+    run += ["--task","main"] if task else ["--cwd",str(target)]
+    assert board.cmd_regression(board.build_parser().parse_args(run))==0
+    original=board.REGRESSION_FLAG.read_bytes()
+    same=["regression","check","--repo","A","--slot","1"]
+    if explicit_cwd: same += ["--cwd",str(target)]
+    assert board.cmd_regression(board.build_parser().parse_args(same))==0
+    different=["regression","check","--repo","A","--slot","2"]
+    if explicit_cwd: different += ["--cwd",str(sibling)]
+    assert board.cmd_regression(board.build_parser().parse_args(different))==1
+    # check는 자식을 실행하거나 기록을 바꾸지 않는다.
+    assert len(calls)==1 and board.REGRESSION_FLAG.read_bytes()==original
+
+
+def test_t0936_core_check_rejects_other_selected_slot_cwd_only_and_conflict(board, monkeypatch):
+    target, ledger, calls = _t0936_review_command_setup(board, monkeypatch, prefix="A")
+    ledger["leases"][0]["test_cmd"]="core-A"
+    board.LEASES_FILE.write_text(json.dumps(ledger), encoding="utf-8")
+    other=board.REPO / "other"; other.mkdir()
+    assert board.cmd_regression(board.build_parser().parse_args(["regression","run","--repo","A","--slot","1","--cwd",str(target),"--final"]))==0
+    assert board.cmd_regression(board.build_parser().parse_args(["regression","check","--cwd",str(other)]))==1
+    assert board.cmd_regression(board.build_parser().parse_args(["regression","check","--repo","A","--slot","1","--cwd",str(other)]))==1
+    assert board.cmd_regression(board.build_parser().parse_args(["regression","check"]))==0
+    assert len(calls)==1
