@@ -599,14 +599,37 @@ additional_reviewer.reasoning=max
 고쳐 쓰지 않으므로 안내대로 키 이름을 바꿔 주면 된다. `pm-update` 의 파일 반영 자체는 이 검사에
 막히지 않아서, 구키가 남은 상태에서도 엔진 갱신을 받아 안내를 볼 수 있다.
 
-컨텍스트 한도는 하네스마다 **사용 한도**(`harness.<name>.ctx_window_tokens`, 기본 200000) 하나와 모든
-하네스에 공통인 세 비율로 정한다. 세 비율은 사용 한도 대비 쓴 % 다 — `ctx.checkpoint_at_pct`(중간 기록
-권고, 기본 70)·`ctx.precompact_at_pct`(압축 임박 경고, 기본 80)·`ctx.compact_at_pct`(압축, 기본 90).
-사용 한도는 그 하네스에서 쓰는 모델 중 가장 작은 창 이하로 두십시오. 프레임워크가 사용 한도 × 압축 비율을
-각 하네스 설정 파일(Claude Code `autoCompactWindow`·Codex `model_auto_compact_token_limit`·opencode 모델
-`limit` 과 `compaction.reserved`)에 압축 지점으로 써서 경고와 실제 압축이 같은 한도를 기준으로 삼는다.
-`pm-update` 와 `pm-config ctx-apply` 가 쓰므로 그 값은 설정 파일이 아니라 `local.conf` 에서 고친다.
-Codex·opencode 는 그 지점에서, Claude Code 는 그보다 조금 앞에서 압축한다.
+압축 기준은 하네스별 희망 토큰 수 3개와 공통 비율 3개로 설정한다. 입력은
+`harness.<name>.ctx_window_tokens`와 `ctx.checkpoint_at_pct`, `ctx.precompact_at_pct`,
+`ctx.compact_at_pct`다. 기존 채택자의 기본값은 하네스별 200000토큰과 체크포인트70%·압축 임박
+경고80%·압축90%다.
+
+| 용어 | 의미 |
+|---|---|
+| W | 사용자가 설정한 희망 기준(토큰) |
+| C | 현재 모델·provider·profile 및 독립 근거에 결속한 실제 가용 한도(토큰) |
+| E | 실제 적용 기준 min(W,C). OpenCode는 대상 모델 전체 C의 최솟값 사용 |
+| P | E에 압축 비율을 곱하고 내림한 압축 임계(토큰) |
+
+설정한 희망 기준을 보존하며, 실제 적용 기준은 독립 근거로 확인한 모델의 가용 한도 이하로 제한합니다. 체크포인트·압축 임박 경고·
+압축·relay와 관리자 표시는 같은 적용 결과를 사용한다. 관리자에는 W·C·E와 미확인 사유를
+표시하며 C·E 입력칸은 추가하지 않는다. 검증용 예시에서 W=600000토큰·C=200000토큰·공통 비율
+80/90/94%이면 E=200000토큰, 체크포인트160000토큰·압축 임박 경고180000토큰·압축188000토큰이다.
+실제 모델 한도는 독립 근거로 확인한다.
+
+독립 모델 정보가 없거나 모델·입력·대상 파일의 근거가 바뀌면 적용 전에 거부하고 설정 파일과
+원장을 보존한다. 모델명·별칭·현재 하네스 적용값을 실제 한도로 추측하지 않는다. 컨텍스트 항목을
+포함한 저장 요청은 한도 미확인 때 전체를 거부한다. 다른 설정만 저장하는 요청은 기존 절차를 따른다.
+
+`pm-config ctx-apply`와 갱신·설정 저장은 같은 사전 계획으로 검사·파일 반영·표시를 연결한다.
+Claude Code의 `autoCompactWindow`, Codex의 `model_auto_compact_token_limit`, OpenCode의 모델별
+`limit` 및 `compaction.reserved`에 실제 형식에 맞춰 적용한다. Codex의 프레임워크 W 기반 최상위
+`model_context_window` override는 제거하고 사용자 global/profile은 보존한다. OpenCode 원본 모델
+registry와 전역 파일은 읽기 전용이며 대상 모델 전체가 확인된 공통 E를 사용한다. 예약과 유효 비율은
+가용 기준에서 두 번 차감하지 않는다. Claude Code의 설정창은 실제 압축 임계 P와 다르다.
+확인한 출력 예약과 요약 버퍼를 보상해 같은 P에서 압축되도록 설정창을 계산한다.
+모델 한도 조회는 적용 준비 단계에서 수행하며, 실행 중 경고와 표시는 검증된 적용 기록을 사용한다.
+엔진 갱신에서 완료된 파일 배달과 압축 설정 미적용은 구분해 보고한다.
 
 레지스트리와 옛 flat 표기 어느 쪽에도 없는 키(오타·폐기 키)는 조용히 무시되지 않는다 —
 `board.py lint`(그리고 `board.py init` 병합 경로)가 `local-conf-unknown-key` advisory 1줄로

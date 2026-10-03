@@ -94,7 +94,8 @@ def _load_pm_import():
     spec = importlib.util.spec_from_file_location("pm_import", TOOLS / "pm_import.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod
+    from _manager_home import known_ctx_module
+    return known_ctx_module(mod)
 
 
 def _import_adopter(tmp_path: Path, harness: str) -> Path:
@@ -330,6 +331,12 @@ def test_live_calls_use_isolated_env(monkeypatch, tmp_path):
     import importlib
     mod = importlib.import_module(__name__)
     monkeypatch.setattr(mod, "PM_ORCH_LIVE_RELEASE", True)
+    from _manager_home import known_ctx_argv
+    def fixture_update(dest):
+        return real_run(known_ctx_argv([sys.executable, str(dest / '.project_manager/tools/pm_update.py'), '--from', str(REPO)]),
+                        cwd=str(dest), capture_output=True, text=True, encoding='utf-8', errors='replace',
+                        env={**os.environ, 'PM_NONINTERACTIVE': '1'})
+    monkeypatch.setattr(mod, '_self_update', fixture_update)
 
     # 2개 라이브 테스트 함수를 각자 별도 자리에서 spy 하에 구동한다(둘이 같은 트리를 쓰면
     # 앞 실행의 import 결과가 뒤 실행의 입력이 된다).

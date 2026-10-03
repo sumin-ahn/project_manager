@@ -62,7 +62,8 @@ def _load(name: str, filename: str):
     spec = importlib.util.spec_from_file_location(name, TOOLS / filename)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod
+    from _manager_home import known_ctx_module
+    return known_ctx_module(mod)
 
 
 @pytest.fixture(scope="module")
@@ -2121,7 +2122,8 @@ def _load_pm_import_at(path: Path, name: str):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module
+    from _manager_home import known_ctx_module
+    return known_ctx_module(module)
 
 
 def test_same_path_generation_is_loaded_from_the_hashed_bytes(tmp_path):

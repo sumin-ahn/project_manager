@@ -46,7 +46,7 @@ const PRECOMPACT_AT_PCT_DEFAULT = 80; // 사용 ≥ 이 % → 최종 안내(자�
 const NUDGE2_MARGIN_PCT = 3;
 
 // ── 사용 한도 기본값 (local_conf 레지스트리 미러) ──────────
-// 넛지 분모(100% 기준) = `harness.opencode.ctx_window_tokens`(사용 한도), 없으면 이 값.
+// 사용자 희망값 W의 출하 기본값이다. 넛지 분모는 engine이 검증한 E이며 unknown을 이 값으로 대체하지 않는다.
 const CTX_WINDOW_TOKENS_DEFAULT = 200000;
 
 // 엔진 루트는 이 파일 자기 위치에서 나온다 — 훅은 언제나 `<root>/.opencode/lib/*.cjs` 에 설치되고
@@ -174,14 +174,44 @@ function resolveThresholds(conf) {
 }
 
 // ── 순수 함수: ctx 예산 해소 (하네스별) ────────────────────────────
-// 넛지 분모(100% 기준) = 그 하네스의 사용 한도 `harness.<name>.ctx_window_tokens`, 없거나 >0 정수가
-// 아니면 CTX_WINDOW_TOKENS_DEFAULT(200000). 엔진은 같은 값으로 opencode 의 압축 지점을 쓴다.
-// claude ctx_guard.resolve_budget(conf,"opencode") 동형. conf = parseLocalConf 결과.
-function resolveBudget(conf, harness) {
-  const raw = conf ? conf[`harness.${harness}.ctx_window_tokens`] : undefined;
-  if (raw === undefined || raw === null) return CTX_WINDOW_TOKENS_DEFAULT;
-  const n = Number(String(raw).trim());
-  return Number.isInteger(n) && n > 0 ? n : CTX_WINDOW_TOKENS_DEFAULT;
+// 같은 engine 적용 기록의 E를 읽고 입력·원천·native·실제 모델 결속을 확인한다.
+// 손상·만료·정체 불일치는 null이다. W/default를 실제 가용 한도로 사용하지 않는다.
+function validatedBudget(conf, harness, root, identity) {
+  if (!root || !identity || !identity.model || !identity.provider || typeof identity.profile !== "string") return null;
+  try {
+    const candidate = supportedPythonCandidates(root, { timeout: SNAPSHOT_TIMEOUT_MS }).next().value;
+    if (!candidate) return null;
+    // 기존 순수 leaf를 로컬 실행기로 소비한다. JS에서 C 의미를 재계산하지 않는다.
+    const script = `import sys,json,hashlib
+from pathlib import Path
+root=Path(sys.argv[1]).resolve()
+sys.path.insert(0,str(root/".project_manager/tools"))
+import repo_owned_files
+if Path(repo_owned_files.__file__).resolve()!=root/".project_manager/tools/repo_owned_files.py": raise ImportError("loader path")
+def verify(module,name):
+ if getattr(module,"ENGINE_REV",None)!=repo_owned_files.ENGINE_REV: raise RuntimeError("engine revision skew")
+leaf=repo_owned_files.load_module(root/".project_manager/tools/local_conf.py","local_conf.py",verifier=verify,cache=True)
+conf,harness,identity=json.loads(sys.argv[2])
+p=root/leaf.CTX_BUDGET_RELPATH
+before=p.read_bytes()
+row=leaf.read_ctx_budget(root,conf,harness,identity)
+if row["status"]=="known" and p.read_bytes()==before:
+ print(json.dumps({"E":row["E"],"binding":hashlib.sha256(before).hexdigest()}))
+else: print("null")
+`;
+    const result = childProcess.spawnSync(candidate.command, [...candidate.prefixArgs, "-I", "-B", "-c", script,
+      root, JSON.stringify([conf, harness, identity])], {
+      cwd: root, encoding: "utf8", timeout: SNAPSHOT_TIMEOUT_MS, maxBuffer: 32 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (!result || result.status !== 0) return null;
+    const budget = JSON.parse(result.stdout);
+    return budget && Number.isSafeInteger(budget.E) && budget.E > 0 && typeof budget.binding === "string" ? budget : null;
+  } catch { return null; }
+}
+
+function resolveBudget(conf, harness, root, identity) {
+  return validatedBudget(conf, harness, root, identity)?.E ?? null;
 }
 
 // ── 순수 함수: AssistantMessage.tokens 누적 = 현재 컨텍스트 점유 토큰 ──────────
@@ -214,12 +244,12 @@ function nudge2Threshold(thresholds) {
 // ── 순수 함수: ctx 상태 판정 (테스트 핵심) ──────────────────────────────────
 // used: accumulateTokens 결과, limit: 해소된 ctx 예산(resolveBudget·구 물리한도 폐기),
 // thresholds: resolveThresholds 결과. 반환: { usedPct, level: "ok"|"nudge"|"nudge2"|"stop" }.
-//   nudge2 = stop 경계 직전 강한 유도 밴드. limit 미상이면 level "ok".
+//   nudge2 = stop 경계 직전 강한 유도 밴드. limit 미상이면 level "unknown".
 function computeCtxState(used, limit, thresholds) {
   const u = Number(used) || 0;
   const lim = Number(limit);
   if (!Number.isFinite(lim) || lim <= 0) {
-    return { usedPct: 0, level: "ok" };
+    return { usedPct: null, level: "unknown" };
   }
   const usedPct = (u / lim) * 100;
   let level = "ok";
@@ -575,6 +605,8 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
         fired: { nudge: false, nudge2: false },
         pendingNudgeText: null,
         pendingSnapshotMarker: null,
+        pendingBandBinding: null,
+        observedIdentity: null,
         compactionCount: 0,
         cycleEpoch: 0,
         childLookup: null,
@@ -587,18 +619,18 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
   const root = ENGINE_ROOT;
   const hookCwd = directory || worktree || process.cwd();
 
-  // local.conf 직접 파싱 (thresholds·budget 공용·1회 캐시). 판독 실패 시 {}.
+  // 매 이벤트의 현재 local.conf를 같은 적용 기록과 검증한다. 판독 실패 시 {}.
   function loadConf() {
-    if (cachedConf) return cachedConf;
+    // 입력 변경을 매 이벤트에서 확인하고 engine 기록과 같은 세대로 결속한다.
     // 판독 실패는 빈 conf 로 강등하지만(부재가 정상 형상) 구표기 잔존은 그대로 올린다 —
     // 여기서 삼키면 임계·예산이 조용히 기본값이 된다.
     cachedConf = loadLocalConf(root);
     return cachedConf;
   }
 
-  // local.conf → 임계값 (1회 캐시).
+  // 현재 local.conf의 임계값.
   function thresholds() {
-    if (cachedThresholds) return cachedThresholds;
+
     cachedThresholds = resolveThresholds(loadConf());
     return cachedThresholds;
   }
@@ -710,6 +742,7 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
         const stagedSnapshot = buildCompactionSnapshot(root, hookCwd);
         const stagedNotice = stagedSnapshot || compactedGuidance;
         session.pendingNudgeText = stagedNotice;
+        session.pendingBandBinding = null;
         // 같은 payload를 프로세스 경계 너머에도 보존한다. 같은 프로세스의
         // 재-compaction은 새 generation stage 성공 후 자기 구 generation만 정리한다.
         const previousMarker = session.pendingSnapshotMarker;
@@ -745,7 +778,17 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
       if (session.cycleEpoch !== cycleEpoch) return;
 
       const used = accumulateTokens(info.tokens);
-      const limit = resolveBudget(loadConf(), "opencode"); // ctx 예산 (물리한도 폐기).
+      const identity = {model: info.modelID, provider: info.providerID, profile: info.profile ?? ""}; // OpenCode native profile 부재는 빈 정체성이다.
+      session.observedIdentity = identity;
+      const budget = validatedBudget(loadConf(), "opencode", root, identity);
+      const binding = budget ? JSON.stringify([identity, budget.binding]) : null;
+      if (session.pendingBandBinding && session.pendingBandBinding !== binding) {
+        session.pendingNudgeText = null;
+        session.pendingBandBinding = null;
+        session.fired = {nudge: false, nudge2: false};
+      }
+      if (!budget) return;
+      const limit = budget.E;
       const t = thresholds();
       const state = computeCtxState(used, limit, t);
 
@@ -756,6 +799,7 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
         // 2단 모델-주입 안내 대기 — 1단과 동일 채널(system.transform 1회 소비).
         const guidance = buildEngineCtxGuidance(root, "nudge2", state, t);
         session.pendingNudgeText = guidance;
+        session.pendingBandBinding = binding;
         session.pendingSnapshotMarker = null;
         await notifyNudge2(guidance); // 2단 강한 toast (사람 UI·1회).
       } else if (state.level === "nudge" && !session.fired.nudge) {
@@ -763,6 +807,7 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
         // 다음 모델 호출의 system.transform 이 checkpoint 안내를 소비한다.
         const guidance = buildEngineCtxGuidance(root, "nudge", state, t);
         session.pendingNudgeText = guidance;
+        session.pendingBandBinding = binding;
         session.pendingSnapshotMarker = null;
         await notifyNudge(guidance); // 넛지 toast (사람 UI·1회).
       }
@@ -782,10 +827,22 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
       const sessionID = input && input.sessionID;
       if (await isChildSession(sessionID)) return;
       const session = sessionState(sessionID);
+      if (session && session.pendingBandBinding) {
+        const identity = input && input.model ? {
+          model: input.model.id, provider: input.model.providerID, profile: input.profile ?? "",
+        } : session.observedIdentity;
+        const budget = validatedBudget(loadConf(), "opencode", root, identity);
+        if (!budget || JSON.stringify([identity, budget.binding]) !== session.pendingBandBinding) {
+          session.pendingNudgeText = null;
+          session.pendingBandBinding = null;
+          session.fired = {nudge: false, nudge2: false};
+        }
+      }
       if (session && session.pendingNudgeText && output && Array.isArray(output.system)) {
         output.system.push(session.pendingNudgeText);
         const ownedMarker = session.pendingSnapshotMarker;
         session.pendingNudgeText = null;
+        session.pendingBandBinding = null;
         session.pendingSnapshotMarker = null;
         if (ownedMarker) {
           const generation = compactionSnapshotGenerationFromMarker(root, sessionID, ownedMarker);

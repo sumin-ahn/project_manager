@@ -135,7 +135,12 @@ export type StatusDocument = {
 };
 
 /** 설정 완전성 다섯 목록. `missing_for_latest` 는 소스가 해소된 호출에서만 배열이고 아니면 null(모름). */
+export type CtxBudget = {
+  status: "known" | "unknown"; reason: string | null;
+  W: number; C: number | null; E: number | null; P: number | null;
+};
 export type ConfSection = {
+  ctx_budget?: Record<string, CtxBudget>;
   missing_required: string[];
   legacy: { key: string; replacement: string | null }[];
   unknown: string[];

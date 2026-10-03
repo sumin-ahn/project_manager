@@ -116,7 +116,7 @@ def test_config_uses_documented_numeric_auto_compact_threshold_not_off_sentinel(
     두 값은 반영(`pm_import.apply_harness_ctx`)의 기본값 고정점이다 — 사용 한도 200000 과
     압축 지점 200000 × 90% (T-0923)."""
     data = _load_config()
-    assert data.get("model_context_window") == 200000, data.get("model_context_window")
+    assert "model_context_window" not in data, data.get("model_context_window")
     assert data.get("model_auto_compact_token_limit") == 180000, (
         f"압축 지점이 기본값(200000 × 90%)이 아님: {data.get('model_auto_compact_token_limit')!r}"
     )
@@ -671,6 +671,10 @@ def _adopter_root(tmp_path: Path, *, conf: str = "", pm_log_body: str | None = N
     (root / ".project_manager" / "local.conf").write_text(conf, encoding="utf-8")
     if pm_log_body is not None:
         (tools / "pm_log.py").write_text(pm_log_body, encoding="utf-8")
+    from test_harness_ctx_limits import _t0932_install_budget_fixture
+    _t0932_install_budget_fixture(root,harness='codex')
+    for name in ('pm_relay.py','local_conf.py','repo_owned_files.py','file_lock.py','console_encoding.py'):
+        shutil.copyfile(REPO/'.project_manager/tools'/name,tools/name)
     return root
 
 
@@ -687,6 +691,7 @@ _STUB_PM_LOG = (
 def _payload(rollout: Path, **extra) -> dict:
     payload = {
         "hook_event_name": "PreToolUse",
+        "model":"fixture-model", "provider":"fixture-provider", "profile":"",
         "tool_name": "Bash",
         "tool_input": {"command": "echo hi"},
         "session_id": "01a029b8-dd2b-7cc0-aac8-65158e5d120b",
@@ -932,9 +937,10 @@ def test_budget_precedence_mirrors_claude_per_harness_keys(codex_ctx, claude_ctx
 
 def test_budget_precedence_values_are_pinned(codex_ctx):
     """예산의 실값 — 미러 대조만으로는 두 사이트가 함께 틀릴 수 있다. 공통 층은 없다."""
-    assert codex_ctx.resolve_ctx_budget({"harness.codex.ctx_window_tokens": "300000"}) == 300000
-    assert codex_ctx.resolve_ctx_budget({"ctx.window_tokens": "500000"}) == 200_000
-    assert codex_ctx.resolve_ctx_budget({}) == codex_ctx.CTX_WINDOW_TOKENS_DEFAULT == 200_000
+    assert codex_ctx.resolve_ctx_budget({"harness.codex.ctx_window_tokens": "300000"}) is None
+    assert codex_ctx.resolve_ctx_budget({"ctx.window_tokens": "500000"}) is None
+    assert codex_ctx.resolve_ctx_budget({}) is None
+    assert codex_ctx.CTX_WINDOW_TOKENS_DEFAULT == 200_000
 
 
 @pytest.mark.parametrize("conf", (
@@ -1069,6 +1075,10 @@ def test_measured_ok_rearms_the_cycle_but_unmeasured_ok_does_not(codex_ctx, tmp_
     # 예산이 커져 실측 ok 로 돌아오면(압축 후 형상) 다음 상승 사이클이 열린다.
     (root / ".project_manager" / "local.conf").write_text(_OUT_OF_BAND_BUDGET,
                                                           encoding="utf-8")
+    assert codex_ctx.ctx_nudge_envelope(_payload(rollout), root) == {}
+    assert list(marker_dir.iterdir())  # 입력 변경 후 stale 기록으로 재무장하지 않는다.
+    from test_harness_ctx_limits import _t0932_install_budget_fixture
+    _t0932_install_budget_fixture(root,harness="codex")
     assert codex_ctx.ctx_nudge_envelope(_payload(rollout), root) == {}
     assert not list(marker_dir.iterdir())
 
@@ -1275,3 +1285,23 @@ def test_self_reconstructed_from_root_would_miss_the_flat_layout(tmp_path):
 
     assert Path(fixed_self).exists()
     assert Path(fixed_self) != old_root_derived_self
+
+
+def test_t0932_model_capacity_actual_catalog_native_and_runtime(tmp_path,monkeypatch,codex_ctx):
+    from test_harness_ctx_limits import _load,_project,_global_dir,_sha
+    module=_load('pm_import');leaf=_load('local_conf')
+    root=_project(tmp_path,harnesses=('codex',),conf='harness.codex.ctx_window_tokens=600000\nctx.checkpoint_at_pct=80\nctx.precompact_at_pct=90\nctx.compact_at_pct=94\n',texts={'.codex/config.toml':'model_context_window = 900000\n[profiles.user]\nmodel_context_window = 128000\n'})
+    from test_harness_ctx_limits import _t0932_codex_native_catalog
+    home,data=_t0932_codex_native_catalog(tmp_path,monkeypatch)
+    global_conf=home/'config.toml';catalog=home/'models_cache.json';before=global_conf.read_bytes()
+    module.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
+    native=tomllib.loads((root/'.codex/config.toml').read_text(encoding='utf-8'))
+    assert 'model_context_window' not in native and native['profiles']['user']['model_context_window']==128000
+    assert native['model_auto_compact_token_limit']==258400*94//100
+    assert global_conf.read_bytes()==before
+    identity={'model':'exact-model','provider':'fixture','profile':'team'}
+    conf=leaf.load(root/'.project_manager/local.conf').values
+    assert codex_ctx.resolve_ctx_budget(conf,root=root,identity=identity)==258400
+    assert codex_ctx.resolve_ctx_budget(conf,root=root,identity={**identity,'provider':'other'}) is None
+    catalog.write_text(catalog.read_text(encoding='utf-8').replace('native-generation','native-generation-2'), encoding='utf-8')
+    assert codex_ctx.resolve_ctx_budget(conf,root=root,identity=identity) is None

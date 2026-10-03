@@ -1102,7 +1102,7 @@ def test_harness_window_member_label_default_and_rule(conf_module, keys_document
     규칙 문장은 구성원별 설명 자리가 없어 패턴 설명에 싣는다(화면이 구성원에 패턴 설명을 붙인다).
     옛 문구("컨텍스트 크기")가 남으면 화면이 공통 분모 시절의 뜻을 가르친다.
     """
-    rule = "사용 한도는 그 하네스에서 쓰는 모델 중 가장 작은 창 이하로 두십시오."
+    rule = "설정한 희망 기준을 보존하며, 실제 적용 기준은 독립 근거로 확인한 모델의 가용 한도 이하로 제한합니다."
     pattern_row = next(row for row in keys_document["keys"]
                        if row["key"] == conf_module.HARNESS_PATTERN)
     assert rule in pattern_row["description"]

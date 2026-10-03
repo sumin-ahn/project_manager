@@ -23,6 +23,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 # 엔진 사이트는 리터럴이 아니라 키 레지스트리다(T-0906) — board 의 ctx 상수는 거기로 옮겨졌다.
 LOCAL_CONF_PY = REPO / ".project_manager" / "tools" / "local_conf.py"
@@ -165,6 +167,33 @@ def _load_module(name: str, path: Path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("harness", ("claude", "codex", "opencode"))
+def test_t0932_default_window_is_not_capacity_evidence(tmp_path, harness):
+    """출하 W 기본값은 보존하지만 미적용 환경의 C/E를 생성하지 않는다."""
+    leaf = _load_module("ctx_default_unknown_capacity", LOCAL_CONF_PY)
+    paths = {
+        ".project_manager/local.conf": b"# existing local configuration\n",
+        ".project_manager/adapter_baseline.json": b'{"schema":1}\n',
+        ".claude/settings.json": b"{}\n",
+        ".codex/config.toml": b"# existing profile\n",
+        ".opencode/opencode.jsonc": b"{}\n",
+    }
+    for rel, data in paths.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    record = tmp_path / leaf.CTX_BUDGET_RELPATH
+    assert not record.exists()
+    before = {rel: (tmp_path / rel).read_bytes() for rel in paths}
+    identity = {"model": "fixture-model", "provider": "fixture-provider", "profile": ""}
+    result = leaf.read_ctx_budget(tmp_path, {}, harness, identity)
+    assert leaf.ctx_input_values({})[f"harness.{harness}.ctx_window_tokens"] == "200000"
+    assert result["status"] == "unknown" and result["W"] == 200000
+    assert result["C"] is None and result["E"] is None and result["P"] is None
+    assert {rel: (tmp_path / rel).read_bytes() for rel in paths} == before
+    assert not record.exists()
 
 
 def test_claude_and_codex_return_the_same_unmeasured_sentinel_before_first_response(tmp_path):

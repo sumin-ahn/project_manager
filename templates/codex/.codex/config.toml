@@ -11,13 +11,11 @@ sandbox_mode = "workspace-write"
 approval_policy = "on-request"
 approvals_reviewer = "auto_review"
 
-# 압축 지점(관리 키 두 개): 프레임워크가 local.conf 의 codex 사용 한도
-#   (`harness.codex.ctx_window_tokens`)와 압축 비율(`ctx.compact_at_pct`)로 쓴다 — 값은 local.conf 에서
-#   고친다(pm-update·pm-config ctx-apply 가 다시 쓴다). model_context_window = 사용 한도,
-#   model_auto_compact_token_limit = 사용 한도 × 압축 비율. 숫자 threshold 라 auto-compaction 을 끄지
-#   않는다. threshold 도달 시 hooks.json PreCompact는 compaction을 통과시키고 직전 내구 경계 이후
-#   구간의 checkpoint 기록을 안내한다.
-model_context_window = 200000
+# 압축 지점: 독립 모델 한도 C와 사용자 희망 기준 W에서 해소한 E=min(W,C)를 사용한다.
+#   model_auto_compact_token_limit = floor(E × ctx.compact_at_pct / 100).
+#   엔진 최상위 model_context_window override는 두지 않는다. 사용자 global/profile은 보존한다.
+#   metadata가 unknown이면 ctx-apply가 쓰기를 거부한다. 아래 숫자는 기존 출하 seed이며 actual C의 근거가 아니다.
+#   hooks.json PreCompact는 compaction을 통과시키고 직전 내구 경계 이후의 checkpoint 기록을 안내한다.
 model_auto_compact_token_limit = 180000
 
 [features]

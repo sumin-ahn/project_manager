@@ -34,14 +34,16 @@ def _load_pm_config():
     spec = importlib.util.spec_from_file_location("pm_config", TOOLS / "pm_config.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod
+    from _manager_home import known_ctx_module
+    return known_ctx_module(mod)
 
 
 def _load_pm_import():
     spec = importlib.util.spec_from_file_location("pm_import", TOOLS / "pm_import.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod
+    from _manager_home import known_ctx_module
+    return known_ctx_module(mod)
 
 
 @pytest.fixture(scope="module")
@@ -610,7 +612,7 @@ def test_accept_reapplies_harness_ctx(pc, pim, tmp_path, capsys):
     assert rc == 0, captured.err
     document = tomllib.loads((dest / ".codex" / "config.toml").read_text(encoding="utf-8"))
     assert document["model_auto_compact_token_limit"] == 170000, "템플릿 값에 멈췄다"
-    assert document["model_context_window"] == 200000
+    assert "model_context_window" not in document
     assert ".codex/config.toml model_auto_compact_token_limit 180000 → 170000" in captured.out
     # 수용이 원장에 남긴 무편집 증언은 반영 뒤에도 유지된다(sha256 만 새 내용).
     judged = {item.relpath: item.status
@@ -644,7 +646,9 @@ def test_ctx_apply_checks_before_writing_and_reports_json(pc, pim, tmp_path, cap
     current = pc.cmd_ctx_apply(parser.parse_args(["ctx-apply", "--json"]), pm_import=pim,
                                dest_root=dest)
     assert current == 0
-    assert json.loads(capsys.readouterr().out) == {
+    document = json.loads(capsys.readouterr().out)
+    assert document["ctx_budget"]["claude"]["E"] == 200000
+    assert {key: value for key, value in document.items() if key != "ctx_budget"} == {
         "changed": False,
         "applied": [".claude/settings.json autoCompactWindow 180000 → 170000"]}
     assert conf.read_bytes() == conf_before
@@ -655,7 +659,9 @@ def test_ctx_apply_checks_before_writing_and_reports_json(pc, pim, tmp_path, cap
         pm_import=pim, dest_root=dest)
     captured = capsys.readouterr()
     assert applied == 0, captured.err
-    assert json.loads(captured.out) == {
+    document = json.loads(captured.out)
+    assert document["ctx_budget"]["claude"]["P"] == 180000
+    assert {key: value for key, value in document.items() if key != "ctx_budget"} == {
         "changed": True,
         "applied": [".claude/settings.json autoCompactWindow 170000 → 180000"]}
     text = conf.read_text(encoding="utf-8")
@@ -665,7 +671,9 @@ def test_ctx_apply_checks_before_writing_and_reports_json(pc, pim, tmp_path, cap
     again = pc.cmd_ctx_apply(parser.parse_args(["ctx-apply", "--json"]), pm_import=pim,
                              dest_root=dest)
     assert again == 0
-    assert json.loads(capsys.readouterr().out) == {"changed": False, "applied": []}
+    document = json.loads(capsys.readouterr().out)
+    assert document["ctx_budget"]["claude"]["E"] == 200000
+    assert {key: value for key, value in document.items() if key != "ctx_budget"} == {"changed": False, "applied": []}
 
     # `키=값` 꼴이 아니면 인자 오류(rc 2)다.
     with pytest.raises(SystemExit) as caught:

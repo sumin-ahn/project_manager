@@ -485,7 +485,17 @@ def test_adapter_parsers_read_the_new_per_harness_key(conf_module):
             assert f"ctx_window_tokens_{harness}" not in text, path
         assert conf_module.LEGACY_SUFFIX_PREFIX in text, path      # 차단 접두는 있어야 한다
         assert "ctx_window_tokens" in text, path
-        assert "harness." in text, path
+        if path.name == 'ctx-guard-core.cjs':
+            # JS는 기존 실행기로 공유 leaf에 입력·정체성을 전달하고 같은 E를 소비한다.
+            validation = text.split('function validatedBudget(', 1)[1].split('function resolveBudget(', 1)[0]
+            assert re.search(r'^row=leaf\.read_ctx_budget\(root,conf,harness,identity\)$', validation, re.MULTILINE), path
+            assert 'conf,harness,identity=json.loads(sys.argv[2])' in validation, path
+            assert 'JSON.stringify([conf, harness, identity])' in validation, path
+            assert '"E":row["E"]' in validation, path
+            assert 'return validatedBudget(conf, harness, root, identity)?.E ?? null' in text, path
+        elif 'harness.' not in text:
+            # 얇은 driver는 W를 재해소하지 않고 엔진의 정체 결속 E를 소비한다.
+            assert 'engine.resolve_ctx_budget' in text, path
 
 
 # ── ⑤ 교체 안내 (키 단위 지목 · 자동 이관 없음) ────────────────────────────
@@ -787,18 +797,18 @@ _PY_ADAPTERS = (
     pytest.param(".claude/ctx_guard.py",
                  '(module.ctx_thresholds(conf)["precompact_at_pct"], '
                  'module.resolve_budget(conf, "claude"))',
-                 "10 54321", id="claude-canonical"),
+                 "10 None", id="claude-canonical"),
     pytest.param("templates/claude_code/.claude/ctx_guard.py",
                  '(module.ctx_thresholds(conf)["precompact_at_pct"], '
                  'module.resolve_budget(conf, "claude"))',
-                 "10 54321", id="claude-shipped"),
+                 "10 None", id="claude-shipped"),
     pytest.param("templates/codex/.codex/pm_orch_codex.py",
                  '(module.ctx_thresholds(conf)["precompact_at_pct"], '
                  'module.resolve_ctx_budget(conf))',
-                 "10 12345", id="codex-shipped"),
+                 "10 None", id="codex-shipped"),
     pytest.param("templates/opencode/.opencode/pm_orch_opencode.py",
                  "(module.resolve_precompact_at_pct(conf), module.resolve_ctx_budget(conf))",
-                 "10 23456", id="opencode-shipped"),
+                 "10 None", id="opencode-shipped"),
 )
 
 
@@ -856,7 +866,7 @@ def test_opencode_js_core_stops_on_legacy_conf_before_resolving_values(
     resolved = subprocess.run([node, "-e", script, str(tmp_path)], capture_output=True,
                               text=True, encoding="utf-8", errors="replace", timeout=120)
     assert resolved.returncode == 0, resolved.stderr
-    assert resolved.stdout.strip() == "10 23456"
+    assert resolved.stdout.strip() == "10 null"  # 독립 적용 기록이 없는 E는 unknown이다.
 
 
 @pytest.mark.parametrize("relpath", [

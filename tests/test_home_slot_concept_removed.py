@@ -70,11 +70,12 @@ def test_retired_test_files_are_gone():
 
 def test_a_fresh_home_lists_no_work_folder(tmp_path):
     """갓 만든 홈의 작업 폴더 목록이 비어 있다 — 홈 자신을 행으로 지어내지 않는다(실 서브프로세스)."""
+    from _manager_home import known_ctx_argv
     spec_path = TOOLS / "pm_import.py"
     dest = tmp_path / "fresh"
     imported = subprocess.run(
-        [sys.executable, str(spec_path), "--new", str(dest), "--harness", "claude",
-         "--name", "Adopter", "--fill", "manual", "--from", str(REPO)],
+        known_ctx_argv([sys.executable, str(spec_path), "--new", str(dest), "--harness", "claude",
+         "--name", "Adopter", "--fill", "manual", "--from", str(REPO)]),
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         env={**os.environ, "PM_NONINTERACTIVE": "1"}, timeout=300,
     )
@@ -103,7 +104,8 @@ def _load_engine(name: str):
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module
+    from _manager_home import known_ctx_module
+    return known_ctx_module(module)
 
 
 def _seed_ledger(dest: Path, leases: list[dict]) -> Path:

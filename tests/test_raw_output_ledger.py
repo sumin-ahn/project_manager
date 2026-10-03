@@ -1268,11 +1268,9 @@ def test_completed_retention_raised_and_pm_relay_stays_conf_independent(relay):
     assert relay.RAW_LEDGER_COMPLETED_DAYS > PRE_T0774_COMPLETED_DAYS
     assert relay.RAW_LEDGER_MAX_COMPLETED > PRE_T0774_MAX_COMPLETED
 
-    # "local.conf" 문자열 자체는 사용자 안내 메시지에 이미 등장한다(예: 승인 근거 문구) —
-    # 그건 conf 의존이 아니라 conf 파일명을 사람에게 안내하는 산문이다. 실 코드 의존 신호만 본다.
-    source = Path(relay.__file__).read_text(encoding="utf-8")
-    for needle in ("import pm_config", "pm_config.", "load_conf(", "local_conf"):
-        assert needle not in source, f"pm_relay 가 conf 의존을 들였다: {needle}"
+    from test_additional_reviewer_target import _assert_relay_conf_isolation, _assert_relay_dag
+    _assert_relay_dag()
+    _assert_relay_conf_isolation(Path(relay.__file__).read_text(encoding="utf-8"))
 
 
 def test_completed_retention_pinned_to_measured_capacity_bound(relay):

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -154,10 +155,11 @@ def _conf_integer(conf: dict[str, str], key: str) -> int | None:
         return None
 
 
-def resolve_ctx_budget(conf: dict[str, str]) -> int:
-    """예산 = opencode 사용 한도 `harness.opencode.ctx_window_tokens`, 없거나 >0 정수가 아니면 200000."""
-    budget = _conf_integer(conf, "harness.opencode.ctx_window_tokens")
-    return budget if budget is not None and budget > 0 else CTX_WINDOW_TOKENS_DEFAULT
+def resolve_ctx_budget(conf: dict[str, str], *, root=None, identity=None) -> int | None:
+    if root is None:
+        return None
+    engine, _ = _load_engine()
+    return engine.resolve_ctx_budget(root, conf, "opencode", identity)
 
 
 def resolve_precompact_at_pct(conf: dict[str, str]) -> int:
@@ -179,10 +181,12 @@ class OpencodeCliDriver:
                  precompact_at_pct: int | None = None, root: Path | None = None,
                  mark_stop=None, spawn_result=None, agent: str = DEFAULT_AGENT,
                  opencode_bin: str = OPENCODE_BIN, timeout: int = TURN_TIMEOUT_SEC,
-                 runner=subprocess.run, stall_error=None) -> None:
+                 runner=subprocess.run, stall_error=None, budget_reader=None) -> None:
         # parse_opencode_json 은 엔진 순수 헬퍼 주입(DI) — driver 가 파싱 로직을 중복 보유하지 않음.
         self._parse = parse_opencode_json
         self._ctx_budget = ctx_budget
+        self._budget_reader = budget_reader
+        self._budget_identity = None
         self._precompact_at_pct = precompact_at_pct
         self._root = Path(root) if root is not None else None
         # mark_stop = 엔진 mark_ctx_post_turn_if_over(root, sid, used, budget, precompact_at_pct).
@@ -281,11 +285,30 @@ class OpencodeCliDriver:
         elif not (completed.stdout or ""):
             sys.stderr.write("[pm-orch] opencode turn 무출력(rc 0) — stdin/파싱 점검\n")
 
+        self._budget_identity = None
+        for raw in (completed.stdout or "").splitlines():
+            try:
+                event = json.loads(raw)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(event, dict):
+                continue
+            info = event.get("info") or event.get("message") or event
+            if not isinstance(info, dict):
+                continue
+            model = info.get("modelID") or info.get("model")
+            provider = info.get("providerID") or info.get("provider") or info.get("model_provider")
+            profile = info.get("profile", "")
+            if isinstance(model, str) and isinstance(provider, str) and isinstance(profile, str):
+                self._budget_identity = {"model": model, "provider": provider, "profile": profile}
         lines = (completed.stdout or "").splitlines()
         return self._parse(lines)
 
     def _maybe_mark_ctx(self, session_id: str, used_tokens: int | None) -> None:
         """usage 신호와 DI가 모두 있으면 엔진 post-turn 예산 판정을 호출한다."""
+        if self._budget_reader is not None:
+            self._ctx_budget, self._precompact_at_pct = self._budget_reader(self._budget_identity)
+
         if any(value is None for value in (
             used_tokens, self._ctx_budget, self._precompact_at_pct, self._root, self._mark_stop,
         )):
@@ -339,7 +362,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cwd = args.cwd or os.getcwd()
     conf = load_local_config(root)
-    budget = resolve_ctx_budget(conf)
+    budget = resolve_ctx_budget(conf, root=root)
     precompact_at_pct = resolve_precompact_at_pct(conf)
     engine.validate_relay_budget(budget, precompact_at_pct)
     # 프로덕션 driver 는 첫-이벤트 워치독 runner 로 opencode 를 구동(startup stall→유한 재시도).
@@ -347,6 +370,7 @@ def main(argv: list[str] | None = None) -> int:
     driver = OpencodeCliDriver(
         engine.parse_opencode_json,
         ctx_budget=budget,
+        budget_reader=lambda identity: engine.bound_ctx_budget(root, "opencode", identity),
         precompact_at_pct=precompact_at_pct,
         root=root,
         mark_stop=engine.mark_ctx_post_turn_if_over,

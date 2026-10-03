@@ -497,6 +497,17 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
 
   // 군 이름 하나가 멤버 전부에 붙으면 같은 이름이 여러 줄에 선다 — 갈리는 이름이 있으면 그것을
   // 쓴다. 갈리는지 아닌지의 주인은 엔진 키 목록(`unit_labels`)이고 화면은 있으면 쓸 뿐이다.
+  const budgetHint = (key: string) => {
+    const match = /^harness\.(claude|codex|opencode)\.ctx_window_tokens$/.exec(key);
+    if (!match) return null;
+    const budget = conf.ctx_budget?.[match[1]];
+    return <span className="block text-[11px] text-slate-500" data-testid={`budget-${match[1]}`}>
+      {budget?.status === "known"
+        ? `희망 기준 ${budget.W} · 실제 가용 한도 ${budget.C} · 적용 기준 ${budget.E} · 압축 지점 ${budget.P} 토큰`
+        : `모델 한도 확인 불가 (${budget?.reason ?? "검증된 적용 기록 없음"})`}
+    </span>;
+  };
+
   const keyRow = (row: Row) => {
     const on = setKeys[row.key] ?? present(row.key);
     const off = switchedOff(row) !== null;
@@ -506,6 +517,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
         <td className="w-6 py-0.5">{!row.readonly && checkbox(row.key, [row], on, off)}</td>
         <td className="py-0.5 pr-2">
           {on && !off && !row.readonly ? field(row) : grey(row, on)}
+          {budgetHint(row.key)}
         </td>
         <td className="w-32 py-0.5 pr-2 text-[11px]">
           <span className="flex gap-1 overflow-hidden whitespace-nowrap">

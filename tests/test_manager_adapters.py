@@ -113,7 +113,7 @@ def test_the_section_carries_the_conf_verdict_of_the_same_call(api, pm_home):
 
     conf = section["conf"]
     assert set(conf) == {"missing_required", "legacy", "unknown", "nonstandard",
-                         "missing_for_latest"}
+                         "missing_for_latest", "ctx_budget"}
     assert conf["missing_for_latest"] == []                   # 없음 — 모름(null)과 다른 값이다
     light = api.status(str(pm_home))["conf"]
     assert light["missing_for_latest"] is None                # 같은 사본의 가벼운 절은 모름
@@ -167,7 +167,15 @@ def test_an_untouched_file_is_in_sync_with_no_diff(api, pm_home):
 # ── ③ 수용 = 사본 명령 ──────────────────────────────────────────────────────
 
 
-def test_accept_runs_the_copys_command_and_the_requery_confirms_it(api, pm_home):
+def test_accept_runs_the_copys_command_and_the_requery_confirms_it(api, pm_home, monkeypatch):
+    import manager.bridge_settings as bridge
+    from test_manager_settings import _KNOWN_CTX_CHILD
+    original = bridge._run
+    def run(home, argv, **kwargs):
+        if "--accept" in argv:
+            argv = [argv[0], "-c", _KNOWN_CTX_CHILD, argv[1], *argv[2:]]
+        return original(home, argv, **kwargs)
+    monkeypatch.setattr(bridge, "_run", run)
     _shrink_allow_list(pm_home)
     assert _row(api.adapters(str(pm_home)), SETTINGS)["status"] == "edited"
 

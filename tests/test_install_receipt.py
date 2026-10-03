@@ -40,7 +40,8 @@ def _load(name: str):
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module
+    from _manager_home import known_ctx_module
+    return known_ctx_module(module)
 
 
 @pytest.fixture(scope="module")

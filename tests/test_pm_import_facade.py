@@ -76,7 +76,8 @@ def _load_pm_import():
     spec = importlib.util.spec_from_file_location("pm_import", tools / "pm_import.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod
+    from _manager_home import known_ctx_module
+    return known_ctx_module(mod)
 
 
 # --- POSIX e2e: 임의 cwd 에서 파사드가 pm_import dry-run 에 도달 ---

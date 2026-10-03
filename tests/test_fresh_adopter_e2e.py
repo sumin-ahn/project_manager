@@ -146,7 +146,8 @@ def _load_pm_import():
     spec = importlib.util.spec_from_file_location("pm_import", TOOLS / "pm_import.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod
+    from _manager_home import known_ctx_module
+    return known_ctx_module(mod)
 
 
 @pytest.fixture(scope="module")
@@ -161,7 +162,8 @@ def _load_pm_update():
     spec = importlib.util.spec_from_file_location("pm_update", TOOLS / "pm_update.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod
+    from _manager_home import known_ctx_module
+    return known_ctx_module(mod)
 
 
 @pytest.fixture(scope="module")
@@ -1063,13 +1065,14 @@ def test_fresh_adopter_central_loader_survives_self_update(pm_import, tmp_path, 
     seam = dest / ".project_manager" / "tools" / "repo_owned_files.py"
     assert seam.is_file() and "def load_module(" in seam.read_text(encoding="utf-8")
 
+    from _manager_home import known_ctx_argv
     updated = subprocess.run(
-        [
+        known_ctx_argv([
             sys.executable,
             str(dest / ".project_manager" / "tools" / "pm_update.py"),
             "--from",
             str(REPO),
-        ],
+        ]),
         cwd=dest,
         capture_output=True,
         text=True,
@@ -1558,6 +1561,7 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     _MANIFEST_REL = ".project_manager/engine.manifest"
     _RECEIPT_REL = pm_import.INSTALL_RECEIPT_RELPATH.as_posix()
     _BASELINE_REL = pm_import.ADAPTER_BASELINE_RELPATH.as_posix()
+    _CTX_RECORD_REL = ".project_manager/.local/ctx-budget.json"
     notation_shared = {
         ".project_manager/wiki/README.md",
         ".project_manager/wiki/pm_role.md",
@@ -1577,12 +1581,21 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     changed = sorted(
         r for r in before_rels & after_rels
         if before[r] != after[r]
-        and r not in (_MANIFEST_REL, _RECEIPT_REL, _BASELINE_REL)
+        and r not in (_MANIFEST_REL, _RECEIPT_REL, _BASELINE_REL, _CTX_RECORD_REL)
         and r not in notation_shared
     )
     assert changed == [], (
         f"{base}→{added}: add-harness 가 기존 파일을 변경(engine.manifest·설치 기록·config 원장 "
         f"외·byte diff≠0·clobber 재발): {changed}")
+
+    # 적용 기록은 추가 하네스와 바뀐 지문만 갱신하며 기존 하네스의 budget은 보존한다.
+    from test_harness_ctx_limits import _load as load_ctx_engine
+    old_ctx = json.loads(before[_CTX_RECORD_REL].decode('utf-8'))
+    new_ctx = json.loads(after[_CTX_RECORD_REL].decode('utf-8'))
+    assert new_ctx['budgets'][base] == old_ctx['budgets'][base]
+    assert set(new_ctx['budgets']) == {base, added}
+    assert new_ctx['budgets'][added]['E'] == 200000
+    assert new_ctx['projection_sha256'] == load_ctx_engine('local_conf').ctx_record_digest(new_ctx)
 
     # (3-a) 설치 기록의 변경 내용 — 정확히 base∪added(registry 순서)여야 한다. 표기 독자 집합이
     #   여기서 갈리므로 하나라도 빠지면 이후 공유 문서 재렌더가 그 하네스 표기를 지운다.

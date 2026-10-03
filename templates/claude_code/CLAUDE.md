@@ -140,7 +140,7 @@ ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크**만
 {{PY}} .project_manager/tools/domain.py lint                       # freshness — stale 페이지 검사
 ```
 
-> **ctx 사용 한도:** 하네스마다 `.project_manager/local.conf` 의 `harness.<name>.ctx_window_tokens`(사용 한도·기본 200000·예 `harness.claude.ctx_window_tokens=500000`)를 둔다. 사용 한도는 그 하네스에서 쓰는 모델 중 가장 작은 창 이하로 두십시오. 세 비율은 사용 한도 대비 쓴 % 이고 모든 하네스에 공통이다: `ctx.checkpoint_at_pct`(중간 기록 권고·기본 70)·`ctx.precompact_at_pct`(압축 임박 경고·기본 80)·`ctx.compact_at_pct`(압축·기본 90). 프레임워크가 사용 한도 × 압축 비율을 하네스 설정 파일(`.claude/settings.json` 의 `autoCompactWindow` 등)에 압축 지점으로 쓴다(`/pm-update`·`pm-config ctx-apply`) — 그 값은 설정 파일이 아니라 local.conf 에서 고친다. Claude Code 는 그 지점보다 조금 앞에서 압축한다.
+> **컨텍스트 압축 기준:** 하네스별 희망 기준 `harness.<name>.ctx_window_tokens`(기본 200000토큰)와 공통 비율 3개로 설정한다. 설정한 희망 기준을 보존하며, 실제 적용 기준은 독립 근거로 확인한 모델의 가용 한도 이하로 제한합니다. 실제 적용 기준 E=min(W,C)를 체크포인트·경고·압축·relay가 함께 사용한다. 비율은 E 대비 사용률이며 `ctx.checkpoint_at_pct`(체크포인트·기본70%)·`ctx.precompact_at_pct`(압축 임박 경고·기본80%)·`ctx.compact_at_pct`(압축·기본90%)다. 모델/provider/profile 및 독립 근거가 없거나 바뀌면 적용 전에 거부하고 설정 파일·원장을 보존한다. `/pm-update` 및 `pm-config ctx-apply`가 같은 사전 계획으로 검사·반영하며 입력은 local.conf에서 설정한다. 관리자는 희망값 W·확인된 가용 한도 C·적용값 E와 미확인 사유를 구분해 표시한다. 하네스 설정값은 확인한 예약을 보상해 같은 실제 압축 임계 P를 표현한다. 모델 한도 조회는 적용 준비 단계에서 수행하고 실행 중 경고는 검증된 적용 기록을 사용한다.
 
 ## 핵심 디렉토리
 

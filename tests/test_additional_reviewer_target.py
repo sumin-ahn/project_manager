@@ -1881,18 +1881,101 @@ def _sibling_loads(name: str) -> set[str]:
     return loaded
 
 
-def test_pm_relay_is_cycle_free(relay):
-    """공용 계약 모듈은 다른 엔진 표면을 읽지 않는다 — 양쪽이 안전하게 deep-import 한다."""
-    loads = {name for name in _sibling_loads("pm_relay.py") if (TOOLS / name).is_file()}
-    assert "pm_delegate.py" not in loads
-    assert "additional_reviewer.py" not in loads
-    # 형제는 공용 파일락과 소유 파일 목록 둘뿐이고, 둘 다 아무것도 되로드하지 않는 leaf 다 —
-    # 어느 표면이 relay 를 deep-import 해도 순환이 생기지 않는다. (Windows 프로세스 표를 쓰던
-    # `console_encoding` 로드는 세션 pid 해소와 함께 사라졌다.)
-    assert loads == {"file_lock.py", "repo_owned_files.py"}
-    for leaf in sorted(loads):
-        assert {name for name in _sibling_loads(leaf) if (TOOLS / name).is_file()} == set()
-    assert Path(relay._load_file_lock().__file__).name == "file_lock.py"
+def _assert_relay_dag():
+    """실제 형제 의존 그래프의 순환과 표면 침범을 전수 검사한다."""
+    graph = {}
+    pending = ['pm_relay.py']
+    while pending:
+        name = pending.pop()
+        if name in graph:
+            continue
+        graph[name] = {child for child in _sibling_loads(name) if (TOOLS / child).is_file()}
+        pending.extend(graph[name] - graph.keys())
+    visiting, complete = set(), set()
+    def visit(name):
+        assert name not in visiting, f'엔진 의존 순환: {name}'
+        if name in complete:
+            return
+        visiting.add(name)
+        for child in graph[name]:
+            visit(child)
+        visiting.remove(name)
+        complete.add(name)
+    visit('pm_relay.py')
+    assert graph == {
+        'pm_relay.py': {'file_lock.py', 'repo_owned_files.py', 'local_conf.py'},
+        'local_conf.py': {'file_lock.py', 'repo_owned_files.py', 'console_encoding.py'},
+        'file_lock.py': set(), 'repo_owned_files.py': set(), 'console_encoding.py': set(),
+    }
+
+
+def _assert_relay_conf_isolation(source):
+    """import·Supervisor·RAW ledger의 실제 호출 경로가 conf 소비에 도달하지 않는다."""
+    tree = ast.parse(source)
+    functions = {}
+    def collect(nodes, prefix=''):
+        for node in nodes:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                name = prefix + node.name
+                functions[name] = node
+                collect(node.body, name + '.')
+            elif isinstance(node, ast.ClassDef):
+                collect(node.body, prefix + node.name + '.')
+    collect(tree.body)
+    forbidden = {'_load_ctx_leaf', 'resolve_ctx_budget', 'bound_ctx_budget', 'load_conf', 'read_ctx_budget'}
+    roots = [name for name in functions if name.startswith('Supervisor.') or 'raw' in name.lower()]
+    top = ast.Module(body=[node for node in tree.body if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))], type_ignores=[])
+    functions['<import>'] = top
+    roots.append('<import>')
+    seen = set()
+    def visit(name):
+        if name in seen:
+            return
+        seen.add(name)
+        for node in ast.walk(functions[name]):
+            if not isinstance(node, ast.Call):
+                continue
+            called = getattr(node.func, 'id', None) or getattr(node.func, 'attr', None)
+            assert called not in forbidden, f'conf 소비 도달: {name} -> {called}'
+            target = called
+            if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) and node.func.value.id in ('self', 'cls'):
+                target = name.rsplit('.', 1)[0] + '.' + called
+            if target in functions:
+                visit(target)
+    for root in roots:
+        visit(root)
+
+
+def test_pm_relay_is_cycle_free(relay, monkeypatch):
+    _assert_relay_dag()
+    _assert_relay_conf_isolation((TOOLS / 'pm_relay.py').read_text(encoding='utf-8'))
+    leaf = relay._load_ctx_leaf()
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError('import-time conf 조회')
+    monkeypatch.setattr(leaf, 'load', forbidden)
+    _load('pm_relay')
+    assert Path(relay._load_file_lock().__file__).name == 'file_lock.py'
+
+
+def test_t0932_relay_dag_cycle_sensitivity(monkeypatch):
+    original = _sibling_loads
+    monkeypatch.setitem(globals(), '_sibling_loads', lambda name: original(name) | ({'pm_relay.py'} if name == 'local_conf.py' else set()))
+    with pytest.raises(AssertionError, match='순환'):
+        _assert_relay_dag()
+
+
+@pytest.mark.parametrize('mutation', ['import', 'Supervisor', 'raw'])
+def test_t0932_relay_conf_path_sensitivity(mutation):
+    source = (TOOLS / 'pm_relay.py').read_text(encoding='utf-8')
+    if mutation == 'import':
+        source += '\nbound_ctx_budget(None, None, None)\n'
+    elif mutation == 'Supervisor':
+        source += '\nSupervisor._guard_probe = bound_ctx_budget\n'
+        source = source.replace('def stop_marker_present(self, session_id: str) -> bool:', 'def stop_marker_present(self, session_id: str) -> bool:\n        bound_ctx_budget(None, None, None)')
+    else:
+        source += '\ndef _raw_guard_probe():\n    resolve_ctx_budget(None, {}, "fixture")\n'
+    with pytest.raises(AssertionError, match='conf 소비 도달'):
+        _assert_relay_conf_isolation(source)
 
 
 def test_additional_reviewer_reuses_only_pm_delegate_transport_seam(external):

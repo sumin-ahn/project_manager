@@ -47,9 +47,12 @@ def render_line(used_pct: int, state: str) -> str:
     return f"{color}{body}{_RESET}"
 
 
-def build_statusline(stdin: dict, conf: dict) -> str:
+def build_statusline(stdin: dict, conf: dict, *, root=None) -> str:
     # 분모 = 해소된 claude 예산 — hook 과 같은 예산으로 표시=밴드 일관.
-    budget = ctx_guard.resolve_budget(conf, "claude")
+    identity = ctx_guard._native_session_identity(stdin, root, conf) if hasattr(ctx_guard, "_native_session_identity") else ctx_guard.session_identity(stdin)
+    budget = ctx_guard.resolve_budget(conf, "claude", root=root, identity=identity)
+    if budget is None:
+        return "ctx unknown (모델 한도 확인 불가)"
     used = ctx_guard.context_used_pct_from_statusline(stdin, budget)
     thresholds = ctx_guard.ctx_thresholds(conf)
     state = ctx_guard.classify(used, thresholds)
@@ -66,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         stdin = {}
     root = ctx_guard.repo_root(Path(__file__).resolve().parent)
     conf = ctx_guard.load_local_config(root)
-    sys.stdout.write(build_statusline(stdin, conf))
+    sys.stdout.write(build_statusline(stdin, conf, root=root))
     return 0
 
 
