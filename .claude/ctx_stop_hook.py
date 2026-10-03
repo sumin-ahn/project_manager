@@ -379,7 +379,8 @@ def capture_precompact(stdin: dict, root: Path) -> int:
             ctx_guard.context_tokens_from_transcript(transcript_path)
             if isinstance(transcript_path, str) and transcript_path else 0
         )
-        window_tokens = ctx_guard.resolve_budget(ctx_guard.load_local_config(root), "claude", root=root, identity=ctx_guard.session_identity(stdin))
+        current_conf = ctx_guard.load_local_config(root)
+        window_tokens = ctx_guard.resolve_budget(current_conf, "claude", root=root, identity=ctx_guard._native_session_identity(stdin, root, current_conf) if hasattr(ctx_guard, "_native_session_identity") else ctx_guard.session_identity(stdin))
     checkpointed = _create_checkpoint(
         root,
         stdin,
@@ -625,7 +626,7 @@ def _evaluate_ctx_bands(stdin: dict, root: Path, conf: dict) -> tuple[int, dict 
             return 0, nudge_output(stdin, snapshot)
 
     # 분모 = 해소된 claude 예산(per-harness) — statusLine 과 같은 예산.
-    window = ctx_guard.resolve_budget(conf, "claude", root=root, identity=ctx_guard.session_identity(stdin))
+    window = ctx_guard.resolve_budget(conf, "claude", root=root, identity=ctx_guard._native_session_identity(stdin, root, conf) if hasattr(ctx_guard, "_native_session_identity") else ctx_guard.session_identity(stdin))
     if window is None:
         print("[ctx-budget-unknown] 독립 한도와 현재 모델 결속을 확인할 수 없음", file=sys.stderr)
         return 0, None

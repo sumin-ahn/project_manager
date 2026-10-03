@@ -197,6 +197,30 @@ def session_identity(payload):
     return {"model": model, "provider": provider, "profile": profile}
 
 
+def _native_session_identity(payload, root, conf):
+    identity = session_identity(payload)
+    if identity is not None or not isinstance(payload, dict) or root is None:
+        return identity
+    if payload.get("provider") is not None or payload.get("model_provider") is not None or payload.get("profile") is not None:
+        return None
+    model = payload.get("model")
+    if isinstance(model, dict):
+        model = model.get("id")
+    if not isinstance(model, str) or not model:
+        return None
+    # 표준 statusLine의 현재 모델·버전을 검증된 native receipt와만 결합한다.
+    try:
+        row = _ctx_leaf(root).ctx_budget_status(root, conf)["claude"]
+        metadata, selected = row.get("metadata", {}), row.get("identity", {})
+        if (row.get("status") == "known" and metadata.get("source") == "claude-sdk-neutral"
+                and metadata.get("semantics") == "claude-cutoff" and payload.get("version") == metadata.get("source_version")
+                and selected.get("model") == model):
+            return selected
+    except (OSError, ImportError, AttributeError, ValueError, RuntimeError, KeyError):
+        return None
+    return None
+
+
 def resolve_budget(conf: dict[str, str], harness: str = "claude", *, root=None, identity=None) -> int | None:
     """같은 engine 적용 기록 E를 소비한다. 미확정은 None이며 W로 대체하지 않는다."""
     if root is None:

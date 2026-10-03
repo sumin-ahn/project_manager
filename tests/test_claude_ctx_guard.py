@@ -1831,3 +1831,24 @@ def test_t0932_budget_binding_statusline_hook_unknown(guard,statusline,stop_hook
     marker=stop_hook._final_marker_path(tmp_path,'t0932-known');assert marker.exists()
     assert stop_hook.evaluate({**stdin,**unknown},tmp_path,conf)==(0,None)
     assert marker.exists()
+
+
+@pytest.mark.parametrize('changed',[None,'model','origin','version','partial'])
+def test_t0932_native_standard_statusline_receipt_binding(guard,statusline,tmp_path,monkeypatch,changed):
+    from test_harness_ctx_limits import _load as engine,_project,_global_dir,_t0932_control_claude_fixture,_snapshot_fixture_bytes
+    guard=_load('ctx_guard')
+    importer=engine('pm_import');leaf=engine('local_conf')
+    root=_project(tmp_path,harnesses=('claude',),conf='harness.claude.ctx_window_tokens=600000\n')
+    receipt=_t0932_control_claude_fixture(tmp_path,monkeypatch)
+    monkeypatch.setattr(importer,'_ctx_native_protocol',lambda *a,**kw:receipt)
+    importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
+    monkeypatch.setattr(guard,'_ctx_leaf',lambda root:leaf);monkeypatch.setattr(statusline,'ctx_guard',guard)
+    payload={'version':'2.1.287','model':{'id':'claude-opus-5-5'},'context_window':{'current_usage':{'input_tokens':300000}}}
+    if changed=='model':payload['model']['id']='glm-5.3:cloud'
+    if changed=='origin':monkeypatch.setenv('ANTHROPIC_BASE_URL','http://localhost:11434')
+    if changed=='version':payload['version']='2.1.288'
+    if changed=='partial':payload['provider']='firstParty'
+    before=_snapshot_fixture_bytes(root)
+    rendered=statusline.build_statusline(payload,leaf.load(root/'.project_manager/local.conf').values,root=root)
+    assert ('ctx 50%' in rendered) if changed is None else ('unknown' in rendered)
+    assert _snapshot_fixture_bytes(root)==before

@@ -49,7 +49,8 @@ def render_line(used_pct: int, state: str) -> str:
 
 def build_statusline(stdin: dict, conf: dict, *, root=None) -> str:
     # 분모 = 해소된 claude 예산 — hook 과 같은 예산으로 표시=밴드 일관.
-    budget = ctx_guard.resolve_budget(conf, "claude", root=root, identity=ctx_guard.session_identity(stdin))
+    identity = ctx_guard._native_session_identity(stdin, root, conf) if hasattr(ctx_guard, "_native_session_identity") else ctx_guard.session_identity(stdin)
+    budget = ctx_guard.resolve_budget(conf, "claude", root=root, identity=identity)
     if budget is None:
         return "ctx unknown (모델 한도 확인 불가)"
     used = ctx_guard.context_used_pct_from_statusline(stdin, budget)

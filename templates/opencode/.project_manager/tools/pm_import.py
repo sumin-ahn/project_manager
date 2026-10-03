@@ -7973,14 +7973,14 @@ def adapter_config_drift_summary(judgment: AdapterConfigJudgment,
 # ── 하네스 희망 기준과 실제 모델 한도의 동결 적용 ─────────────────
 # W는 사용자 희망값, C는 독립 metadata의 가용 창, E=min(W,C), P=floor(E×compact/100)다.
 # 준비는 무쓰기이며 입력·정체·원천·native·원장 바이트의 같은 계획을 commit과 표시가 소비한다.
-# Claude는 P, Codex는 P만 적용하고 엔진 최상위 창 override를 제거한다.
+# Claude는 예약을 보상한 창, Codex는 P를 적용하고 엔진 최상위 창 override를 제거한다.
 # OpenCode는 원본 context/output을 보존하며 운용 input=E, reserved=E−P로 native 식을 검증한다.
 # 전역 설정과 registry는 읽기 전용이다.
 class _HarnessCtxRule(NamedTuple):
     """설정 파일 하나의 반영 규칙 — 판정 코드는 하나이고 파일마다 다른 것은 이 값들뿐이다.
 
-    `keys`는 (관리 키 경로, 유효 기준 E와 압축 지점 P의 값 식)이다.
-    `point_range`는 clamp 이후의 압축 지점 범위, `model_limits`는 모델별 native encoding 여부다."""
+    `keys`는 (관리 키 경로, 유효 기준 E와 native 설정값의 값 식)이다.
+    `point_range`는 clamp 이후 native 설정값 범위, `model_limits`는 모델별 native encoding 여부다."""
     label: str
     keys: tuple[tuple[tuple[str, ...], Callable[[int, int], int]], ...]
     point_range: tuple[int, int] | None
@@ -7995,7 +7995,7 @@ HARNESS_CTX_RULES: dict[str, _HarnessCtxRule] = {
     # Claude Code 2.1.284: `autoCompactWindow` 는 "100k–1M tokens" 만 받는다(실행 파일 문구).
     ".claude/settings.json": _HarnessCtxRule(
         "Claude Code", ((("autoCompactWindow",), lambda window, point: point),),
-        (100_000, 1_000_000), False, None, lambda *args: _ctx_missing_metadata(*args)),
+        (100_000, 1_000_000), False, None, lambda *args: _ctx_claude_metadata(*args)),
     # Codex의 effective percent는 독립 C 정규화에서 한 번만 적용한다.
     ".codex/config.toml": _HarnessCtxRule(
         "Codex",
@@ -8154,7 +8154,7 @@ def harness_ctx_targets(values, opencode_models, budgets) -> dict[str, dict[tupl
                     entries[("provider", provider, "models", model, "limit", name)] = \
                         limit_values[name]
         for path, formula in rule.keys:
-            entries[path] = formula(window, point)
+            entries[path] = formula(window, budgets[harness]["native_window"])
         targets[relpath] = entries
     return targets
 
@@ -8239,14 +8239,70 @@ def _ctx_native_install(harness, evidence, native_files, native_commands):
     return version, data
 
 
-def _ctx_codex_cache_identity(provider):
-    """Codex models-cache-v1의 provider/무인증 정체. 미지원 auth는 추정하지 않는다.
+def _ctx_codex_cache_identity(provider, file_auth=None):
+    """Codex models-cache-v1의 무인증 또는 stable-owner 파일 ChatGPT 정체.
 
     원천: openai/codex model-provider/src/models_identity.rs. credential/header는 기록하지 않는다.
     """
     import hashlib
-    if provider.get("requires_openai_auth", False) or any(provider.get(k) for k in ("auth", "gateway_oauth", "aws", "experimental_bearer_token", "env_key")):
+    if any(provider.get(k) for k in ("auth", "gateway_oauth", "aws", "experimental_bearer_token", "env_key")):
         raise ValueError("Codex provider/auth 정체를 독립적으로 확인할 수 없음")
+    authenticated = provider.get("requires_openai_auth", False)
+    claims = None
+    if authenticated:
+        # 실제 토큰 값과 식별 claim은 이 함수의 메모리 밖으로 전달하지 않는다.
+        import base64
+        try:
+            if not isinstance(file_auth, dict): raise ValueError()
+            mode = file_auth.get("auth_mode")
+            if mode is None:
+                if any(file_auth.get(k) is not None for k in ("personal_access_token", "bedrock_api_key", "bedrock_access_keys", "OPENAI_API_KEY")):
+                    raise ValueError()
+                mode = "chatgpt"
+            if mode != "chatgpt": raise ValueError()
+            tokens = file_auth["tokens"]
+            if any(not isinstance(tokens.get(k),str) for k in ("id_token","access_token","refresh_token")): raise ValueError()
+            refreshed = file_auth.get("last_refresh")
+            if refreshed is not None: _load_local_conf()._ctx_time(refreshed)
+            account = tokens.get("account_id")
+            segments = tokens["id_token"].split(".")
+            if len(segments) != 3 or not all(segments) or not re.fullmatch(r"[A-Za-z0-9_-]+", segments[1]): raise ValueError()
+            decoded = json.loads(base64.urlsafe_b64decode(segments[1]+"="*((-len(segments[1]))%4)))
+            if not isinstance(decoded,dict): raise ValueError()
+            auth_claims = decoded.get("https://api.openai.com/auth")
+            profile_claims = decoded.get("https://api.openai.com/profile")
+            auth_claims = {} if auth_claims is None else auth_claims
+            profile_claims = {} if profile_claims is None else profile_claims
+            if not isinstance(auth_claims,dict) or not isinstance(profile_claims,dict): raise ValueError()
+            if any(auth_claims.get(k) is not None and not isinstance(auth_claims[k],str)
+                   for k in ("chatgpt_user_id","user_id","chatgpt_account_id")): raise ValueError()
+            if any(d.get("email") is not None and not isinstance(d["email"],str) for d in (decoded,profile_claims)): raise ValueError()
+            user = auth_claims.get("chatgpt_user_id")
+            if user is None: user = auth_claims.get("user_id")
+            email = decoded.get("email")
+            if email is None: email = profile_claims.get("email")
+            if account is None or (user is None and email is None): raise ValueError()
+            def option(value):
+                if value is None: return "None"
+                # Rust Debug과 JSON의 공통 표현만 지원한다. 임의 유니코드/제어문자는 거부한다.
+                if not isinstance(value,str) or any(ord(c)<32 or ord(c)>126 for c in value): raise ValueError()
+                return "Some("+json.dumps(value,ensure_ascii=False)+")"
+            plan = auth_claims.get("chatgpt_plan_type")
+            if plan is not None and not isinstance(plan,str): raise ValueError()
+            known = {"free":"Free","go":"Go","plus":"Plus","pro":"Pro","prolite":"ProLite","promax":"ProMax",
+                     "team":"Team","business":"Business","ent26":"Ent26","self_serve_business_prolite":"SelfServeBusinessProLite",
+                     "self_serve_business_usage_based":"SelfServeBusinessUsageBased","enterprise_cbp_automation":"EnterpriseCbpAutomation",
+                     "enterprise_cbp_usage_based":"EnterpriseCbpUsageBased","enterprise":"Enterprise","hc":"Enterprise",
+                     "edu":"Edu","education":"Edu","edu_plus":"EduPlus","edu_pro":"EduPro"}
+            typed = known.get(plan,"Unknown")
+            raw = {"hc":"enterprise","education":"edu"}.get(plan,plan) if file_auth.get("last_refresh") is not None else None
+            fedramp = auth_claims.get("chatgpt_account_is_fedramp",False)
+            if type(fedramp) is not bool: raise ValueError()
+            claims = (option(account),option(user),option(email),"Some("+typed+")",option(raw),bytes([fedramp]))
+        except (KeyError, TypeError, ValueError, AttributeError, UnicodeError):
+            raise ValueError("Codex stable-owner 파일 ChatGPT claim 형상 미지원") from None
+    elif file_auth is not None:
+        raise ValueError("Codex 파일 인증과 provider 정체 불일치")
     name, base = provider.get("name"), provider.get("base_url")
     if not isinstance(name, str) or not isinstance(base, str) or not name or not base:
         raise ValueError("Codex provider 경로/정체 확인 불가")
@@ -8262,7 +8318,9 @@ def _ctx_codex_cache_identity(provider):
     query = sorted((provider.get("query_params") or {}).items())
     field(len(query).to_bytes(8, "little"))
     for key,value in query: field(key); field(value)
-    field(b"\x00"); field(b"\x00"); field("None")
+    field(bytes([bool(authenticated)])); field(b"\x00"); field("Some(Chatgpt)" if authenticated else "None")
+    if claims:
+        for value in claims: field(value)
     headers = sorted((provider.get("http_headers") or {}).items())
     field(len(headers).to_bytes(8, "little"))
     for key,value in headers: field(key.lower()); field(value)
@@ -8315,9 +8373,232 @@ def _ctx_opencode_policy(data):
     return output_max
 
 
-def _ctx_missing_metadata(*_args):
-    # 기존 statusLine/contextWindow는 raw T다. 실제 예약/provider 결속을 생산하지 않는다.
-    raise ValueError("Claude 기존 실행정보에 결속된 실제 예약/가용 창 근거 없음")
+def _ctx_native_protocol(command, root, requests):
+    """기존 native metadata protocol만 조회한다. user/turn 요청과 진단 원문은 내보내지 않는다."""
+    import queue
+    import threading
+    import time
+    from datetime import datetime, timezone
+    incoming = queue.Queue()
+    diagnostics = []
+    proc = subprocess.Popen(command, cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1)
+    def receive():
+        for line in proc.stdout:
+            try:
+                incoming.put(json.loads(line))
+            except ValueError:
+                incoming.put(None)
+    def discard_diagnostics():
+        for line in proc.stderr:
+            lowered = line.lower()
+            if "bundled" in lowered or "failed to refresh" in lowered:
+                diagnostics.append("catalog-fallback")
+    workers = [threading.Thread(target=receive, daemon=True),
+               threading.Thread(target=discard_diagnostics, daemon=True)]
+    for worker in workers:
+        worker.start()
+    responses, frames, receipt = {}, [], None
+    deadline = time.monotonic() + 30
+    try:
+        for name, message, notification in requests:
+            proc.stdin.write(json.dumps(message) + "\n"); proc.stdin.flush()
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ValueError("native metadata 응답 시간 초과")
+                try:
+                    frame = incoming.get(timeout=min(remaining, 0.25))
+                except queue.Empty:
+                    if proc.poll() is not None:
+                        raise ValueError("native metadata 응답 전에 종료됨")
+                    continue
+                if not isinstance(frame, dict):
+                    raise ValueError("native metadata protocol 손상")
+                if frame.get("type") in ("user", "assistant", "result"):
+                    raise ValueError("native metadata 조회에서 모델 turn 발생")
+                if frame.get("type") == "autocompact_state":
+                    frames.append({"type":"autocompact_state", "value":frame.get("value")})
+                control = frame.get("response") if frame.get("type") == "control_response" else None
+                identifier = control.get("request_id") if isinstance(control, dict) else frame.get("id")
+                expected = message.get("request_id", message.get("id"))
+                if identifier != expected:
+                    continue
+                if "error" in frame or (control and control.get("subtype") != "success"):
+                    raise ValueError("native metadata 요청 거부")
+                responses[name] = control.get("response") if control else frame.get("result")
+                if not isinstance(responses[name], dict):
+                    raise ValueError("native metadata 응답 구조 손상")
+                break
+            if notification:
+                proc.stdin.write(json.dumps(notification) + "\n"); proc.stdin.flush()
+        receipt = {"responses":responses, "frames":frames, "sent_user_turns":0,
+                   "observed_at":datetime.now(timezone.utc).isoformat()}
+        return receipt
+    finally:
+        proc.stdin.close()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill(); proc.wait()
+        for worker in workers:
+            worker.join(timeout=1)
+        if any(worker.is_alive() for worker in workers):
+            raise ValueError("native metadata 수집 미완료")
+        if receipt is not None:
+            receipt["catalog_fallback"] = bool(diagnostics)
+
+
+def _ctx_claude_policy(data):
+    """확인한 2.1.287의 출력 예약·요약 buffer·비율 branch를 실행 없이 확인한다."""
+    reserve = re.search(rb"function Bq\(e,n\)\{let r=Math\.min\(e\.maxOutputTokens,([A-Za-z_$][A-Za-z0-9_$]*)\),s=Sm\(\)\?n:void 0,\{window:g\}=bv\(e,s\);return g-r\}", data)
+    if (not reserve or not re.search(rb"(?:var|let|const) "+re.escape(reserve.group(1))+rb"=20000(?:;|,)", data)
+            or b"let r=e-13000,s=n.testPctOverride" not in data
+            or b"Math.min(Math.floor(e*(s/100)),r)" not in data):
+        raise ValueError("Claude native 예약/cutoff 식 미지원")
+    return 20000, 13000
+
+
+def _ctx_claude_metadata(harness, documents, models, read, row, evidence, native_files, native_commands):
+    from datetime import datetime, timezone
+    root = Path(documents["_ctx_root"])
+    entry = Path(shutil.which(harness) or "").resolve()
+    if not entry.is_file():
+        raise ValueError("Claude native 설치 원천 없음")
+    before = _ctx_native_stat(entry)
+    native = _ctx_file_bytes(entry)
+    if _ctx_native_stat(entry) != before:
+        raise ValueError("Claude native 설치 판독 경쟁")
+    versions = set(re.findall(rb"// Version: ([0-9]+\.[0-9]+\.[0-9]+)", native))
+    if versions != {b"2.1.287"}:
+        raise ValueError("Claude 설치 정책 버전 미지원")
+    reply_max, buffer = _ctx_claude_policy(native)
+    native_files[str(entry)] = before; native_commands[harness] = str(entry)
+    home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home()/".claude")
+    if Path("/etc/claude-code/managed-settings.d").exists():
+        raise ValueError("Claude managed 설정 묶음의 선택 근거 미지원")
+    settings = [read(home/"settings.json"), documents[HARNESS_CTX_FILES[harness]], read(root/".claude/settings.local.json"),
+                read(Path("/etc/claude-code/managed-settings.json"))]
+    effective = dict(os.environ)
+    for setting in settings:
+        if not isinstance(setting, dict) or not isinstance(setting.get("env", {}), dict):
+            raise ValueError("Claude 설정 구조 손상")
+        effective.update(setting.get("env", {}))
+        if any(setting.get(k) for k in ("profile", "authProfile", "apiKeyHelper")):
+            raise ValueError("Claude ordinary profile 외 선택 근거 미확정")
+    unsupported = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+                   "CLAUDE_CODE_USE_ANTHROPIC_AWS", "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD", "CLAUDE_CODE_USE_MANTLE",
+                   "ANTHROPIC_UNIX_SOCKET", "ANTHROPIC_WIF_PROFILE", "ANTHROPIC_AUTH_TOKEN_FILE_DESCRIPTOR")
+    if any(effective.get(k) for k in unsupported):
+        raise ValueError("Claude provider/profile/transport 결속 미지원")
+    origin = effective.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
+    if origin.rstrip("/") != "https://api.anthropic.com":
+        raise ValueError("Claude custom origin의 독립 provider 창 근거 없음")
+    if effective.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW"):
+        raise ValueError("Claude 환경 압축창이 neutral 원천을 가림")
+    receipt = _ctx_native_protocol([str(entry), "-p", "--verbose", "--input-format", "stream-json",
+        "--output-format", "stream-json", "--no-session-persistence", "--safe-mode", "--setting-sources", "user,project,local",
+        "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--permission-mode", "plan", "--tools", "",
+        "--autocompact", "auto"], root, [
+        ("initialize", {"type":"control_request", "request_id":"ctx-init", "request":{"subtype":"initialize", "hooks":{}, "skills":[]}}, None),
+        ("context", {"type":"control_request", "request_id":"ctx-context", "request":{"subtype":"get_context_usage", "detail":"summary"}}, None)])
+    responses = receipt["responses"]; account = responses["initialize"].get("account", {})
+    context = responses["context"]
+    if (receipt.get("sent_user_turns") != 0 or account.get("apiProvider") != "firstParty"
+            or context.get("apiUsage") is not None or context.get("isAutoCompactEnabled") is not True
+            or context.get("autocompactSource") != "model-default"):
+        raise ValueError("Claude neutral zero-turn 원천/provider 불일치")
+    model = context.get("model")
+    if not isinstance(model, str) or not model or re.search(r"\[1m\]", model, re.I):
+        raise ValueError("Claude model suffix/선택 미확정")
+    window, point = context.get("rawMaxTokens"), context.get("autoCompactThreshold")
+    if type(window) is not int or context.get("maxTokens") != window or type(point) is not int:
+        raise ValueError("Claude 원본 창/cutoff 구조 손상")
+    percent_text = effective.get("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")
+    percent = float(percent_text) if percent_text else None
+    reserved = window-point-buffer
+    if percent is not None:
+        # 비율 branch는 buffer category가 원래의 출력 예약도 증언하지 않는다.
+        raise ValueError("Claude native 비율 override의 독립 예약 미확정")
+    if not 0 <= reserved <= reply_max:
+        raise ValueError("Claude 실제 출력 예약과 설치 policy 불일치")
+    raw = {"context":window, "native_context":window, "native_window_min":100000, "native_window_max":1000000,
+           "reserved":reserved, "summary_buffer":buffer, "native_formula":"claude-cutoff", "native_percent":percent}
+    projection = {"model":model, "provider":"firstParty", "profile":"", "origin":origin,
+                  "context":raw, "native_sha256":content_sha256(native)}
+    generation = content_sha256(json.dumps(projection, sort_keys=True).encode("utf-8"))
+    observed = receipt.get("observed_at") or datetime.now(timezone.utc).isoformat()
+    row({"model":model, "provider":"firstParty", "profile":""}, raw, "claude-sdk-neutral", generation,
+        observed, None, "claude-cutoff", "2.1.287")
+
+
+def _ctx_codex_native_selection(root, entry, read, evidence, native_files):
+    """실제 cwd의 native 선택과 catalog 경로를 결속한다. 반환값에 비밀값을 싣지 않는다."""
+    previous_files = dict(evidence)
+    receipt = _ctx_native_protocol([str(entry), "app-server", "--stdio"], root, [
+        ("initialize", {"id":1,"method":"initialize","params":{"clientInfo":{"name":"pm-ctx","version":"1"},
+            "capabilities":{"experimentalApi":True,"explicitGatewayOauth":True}}}, {"method":"initialized"}),
+        ("config", {"id":2,"method":"config/read","params":{"includeLayers":True,"cwd":str(root)}}, None),
+        ("gateway", {"id":3,"method":"account/gatewayOAuth/read","params":{}}, None),
+        ("models", {"id":4,"method":"model/list","params":{"includeHidden":True,"limit":100}}, None),
+        ("config_after", {"id":5,"method":"config/read","params":{"includeLayers":True,"cwd":str(root)}}, None)])
+    if receipt.get("sent_user_turns") != 0 or receipt.get("catalog_fallback"):
+        raise ValueError("Codex catalog fallback 또는 모델 turn 원천 거부")
+    responses = receipt["responses"]
+    before, after = responses["config"], responses["config_after"]
+    keys = ("model", "model_provider", "profile", "model_context_window", "cli_auth_credentials_store",
+            "model_providers", "forced_login_method", "forced_chatgpt_workspace_id", "chatgpt_base_url", "data_residency")
+    def selection(document):
+        config, layers = document.get("config"), document.get("layers")
+        if not isinstance(config, dict) or not isinstance(layers, list) or not layers:
+            raise ValueError("Codex native 선택 계층 구조 손상")
+        projected = []
+        for layer in layers:
+            if not isinstance(layer, dict) or not isinstance(layer.get("name"), dict) or not layer.get("version"):
+                raise ValueError("Codex native 계층 세대 미확정")
+            projected.append({"name":layer["name"], "version":layer["version"], "disabled":layer.get("disabledReason"),
+                              "config":{k:layer.get("config",{}).get(k) for k in keys if k in layer.get("config",{})}})
+        return {"config":{k:config.get(k) for k in keys}, "layers":projected}
+    selected = selection(before)
+    if selected != selection(after):
+        raise ValueError("Codex native 설정 조회 경쟁")
+    config = selected["config"]
+    provider = config.get("model_provider") or "openai"
+    gateway = responses["gateway"]
+    if gateway.get("providerId") != provider or gateway.get("error") or gateway.get("required") is not False:
+        raise ValueError("Codex native provider/auth 경로 미확정")
+    override = None
+    for layer in selected["layers"]:
+        name = layer["name"]
+        file = name.get("file")
+        if name.get("type") == "project":
+            folder = name.get("dotCodexFolder")
+            if not isinstance(folder, str):
+                raise ValueError("Codex 프로젝트 계층 경로 손상")
+            file = str(Path(folder)/"config.toml")
+        if file:
+            path = Path(file).resolve()
+            digest = _ctx_file_digest(path)
+            if str(path) in previous_files and previous_files[str(path)] != digest:
+                raise ValueError("Codex native 설정 파일 조회 경쟁")
+            evidence[str(path)] = digest
+        if layer["disabled"]:
+            continue
+        # 계층은 native의 우선순위 순서다. 제거할 framework window만 제외한다.
+        owned = name.get("type") == "project" and Path(name["dotCodexFolder"]).resolve() == root/".codex"
+        if not owned and override is None and "model_context_window" in layer["config"]:
+            override = layer["config"]["model_context_window"]
+    model, profile = config.get("model"), config.get("profile") or ""
+    if not isinstance(model, str) or not model or not isinstance(profile, str):
+        raise ValueError("Codex native 모델/profile 선택 미확정")
+    listed = responses["models"].get("data")
+    if not isinstance(listed, list) or not any(m.get("id") == model or m.get("model") == model for m in listed if isinstance(m, dict)):
+        raise ValueError("Codex native 모델 목록과 선택 불일치")
+    return {"model":model,"provider":provider,"profile":profile}, override, selected
 
 
 def _ctx_catalog_percent_metadata(harness, documents, models, read, row, evidence, native_files, native_commands):
@@ -8339,26 +8620,124 @@ def _ctx_catalog_percent_metadata(harness, documents, models, read, row, evidenc
         selected["model"] = project["model"]
     model, provider_id = selected.get("model"), selected.get("model_provider", "openai")
     provider = global_conf.get("model_providers", {}).get(provider_id)
-    if not isinstance(provider, dict):
-        raise ValueError("Codex native provider/auth 정체 확인 불가")
-    # auth를 재해석하거나 keyring/command auth를 실행하지 않는다.
-    auth = read(home / "auth.json")
-    if auth:
-        raise ValueError("Codex auth cache 정체의 native 결속 확인 불가")
-    if selected.get("model_context_window") is not None:
-        raise ValueError("Codex 사용자 global/profile override의 독립 활성 가용 창 근거 없음")
-    expected_identity = _ctx_codex_cache_identity(provider)
+    use_native = not isinstance(provider, dict) or provider.get("requires_openai_auth") or (home/"auth.json").exists()
+    if use_native:
+        if version != "0.160.0":
+            raise ValueError("Codex 인증 catalog protocol 설치 버전 미지원")
+        identity, override, native_selected = _ctx_codex_native_selection(Path(documents["_ctx_root"]), Path(native_commands[harness]),
+                                                                         read, evidence, native_files)
+        model, provider_id, profile = (identity[k] for k in ("model","provider","profile"))
+        config = native_selected["config"]
+        forbidden_env = ("CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "OPENAI_API_KEY", "OPENAI_BASE_URL",
+                         "OPENAI_ORGANIZATION", "OPENAI_PROJECT", "CODEX_AUTH_JSON")
+        if (provider_id != "openai" or profile or any(k in os.environ for k in forbidden_env)
+                or config.get("cli_auth_credentials_store") not in (None,"file")
+                or any(config.get(k) for k in ("forced_login_method","forced_chatgpt_workspace_id","data_residency"))
+                or config.get("chatgpt_base_url") not in (None,"https://chatgpt.com/backend-api/","https://chatgpt.com/backend-api")):
+            raise ValueError("Codex native 승인 catalog 세대의 파일 인증 경로 미지원")
+        if any(layer["config"].get("chatgpt_base_url") for layer in native_selected["layers"] if not layer["disabled"]):
+            raise ValueError("Codex 명시 ChatGPT origin 미지원")
+        # 기본 provider가 RPC에서 확장되지 않으면 검증된 설치 0.160.0의 builtin 형상만 사용한다.
+        # 사용자 provider override가 있으면 builtin으로 조용히 대체하지 않는다.
+        if any(layer["config"].get("model_providers",{}).get("openai") for layer in native_selected["layers"]):
+            raise ValueError("Codex OpenAI provider 사용자 override 미지원")
+        builtin = config.get("model_providers") or {}
+        provider = builtin.get("openai") or {"name":"OpenAI","requires_openai_auth":True,
+            "http_headers":{"version":version}}
+        if (provider.get("name") != "OpenAI" or provider.get("requires_openai_auth") is not True
+                or provider.get("base_url") is not None or provider.get("model_catalog_url") is not None
+                or provider.get("query_params") or any(provider.get(k) for k in ("env_key","auth","experimental_bearer_token","gateway_oauth","aws"))
+                or provider.get("http_headers") != {"version":version}
+                or provider.get("env_http_headers") not in (None,{}, {"OpenAI-Organization":"OPENAI_ORGANIZATION","OpenAI-Project":"OPENAI_PROJECT"})):
+            raise ValueError("Codex builtin provider 원형 불일치")
+        provider = {**provider,"base_url":"https://chatgpt.com/backend-api/codex","env_http_headers":{}}
+        auth_path = home / "auth.json"
+        try:
+            file_auth = read(auth_path)
+            expected_identity = _ctx_codex_cache_identity(provider, file_auth)
+        except (ValueError,UnicodeError,TypeError,KeyError):
+            raise ValueError("Codex 파일 인증 정체 확인 불가") from None
+        if _ctx_file_digest(auth_path) != evidence[str(auth_path.resolve())]:
+            raise ValueError("Codex 파일 인증 판독 경쟁")
+    else:
+        expected_identity = _ctx_codex_cache_identity(provider)
+        override = selected.get("model_context_window")
     path = home / "models_cache.json"; catalog = read(path)
-    if b"models-cache-v1" not in native or catalog.get("identity") != expected_identity or catalog.get("client_version") != version:
+    opaque = catalog.get("identity")
+    # 최적화된 설치 binary에 짧은 hash marker literal이 남는다고 가정하지 않는다.
+    # 검증된 설치 버전의 해시 식과 실제 cache identity 일치가 provider/auth 근거다.
+    if (not isinstance(opaque, str) or not opaque or opaque != expected_identity or catalog.get("client_version") != version):
         raise ValueError("Codex catalog provider/auth/설치 버전 불일치")
     observed = _load_local_conf()._ctx_time(catalog.get("fetched_at"))
     # 실제 native models-manager의 cache TTL (300초). raw cache에 expiry 키를 요구하지 않는다.
     expiry = observed + timedelta(seconds=300)
     found = [m for m in catalog.get("models", []) if m.get("slug") == model]
     if len(found) != 1: raise ValueError("Codex 정확 모델 행 없음 또는 중복")
-    raw = {"context": found[0].get("context_window"), "effective_percent": found[0].get("effective_context_window_percent")}
+    raw = {"context": found[0].get("context_window"), "max_context":found[0].get("max_context_window"),
+           "effective_percent": found[0].get("effective_context_window_percent"), "window_override":override}
+    active = raw["context"]
+    if override is not None:
+        if type(override) is not int or override <= 0 or (raw["max_context"] is None and override > active):
+            raise ValueError("Codex 사용자 override의 독립 max 근거 없음")
+        active = min(override, raw["max_context"]) if raw["max_context"] is not None else override
+    raw["native_compact_max"] = active*9//10
+    if _ctx_file_digest(path) != evidence[str(path.resolve())]:
+        raise ValueError("Codex catalog 판독 경쟁")
     row({"model":model,"provider":provider_id,"profile":profile},raw,path,
         content_sha256(_ctx_file_bytes(path)),observed.isoformat(),expiry.isoformat(),"context-percent",version)
+
+
+def _ctx_ollama_show(origin, model):
+    """정확 authority/tag의 기존 metadata API만 조회한다. generate/chat 요청은 없다."""
+    from urllib import request, error
+    from urllib.parse import urlsplit, urlunsplit
+    from datetime import datetime, timezone
+    address = urlsplit(origin)
+    prefix = address.path.rstrip("/")
+    if (address.scheme not in ("http", "https") or not address.hostname or address.username or address.password
+            or address.query or address.fragment or not prefix.endswith("/v1")):
+        raise ValueError("Ollama metadata origin 형상 미지원")
+    endpoint = urlunsplit((address.scheme,address.netloc,prefix[:-3]+"/api/show","",""))
+    payload = json.dumps({"model":model,"verbose":False}).encode("utf-8")
+    message = request.Request(endpoint, data=payload, headers={"Content-Type":"application/json"}, method="POST")
+    try:
+        with request.urlopen(message, timeout=15) as response:
+            raw = response.read(1024*1024+1)
+            if response.status != 200 or len(raw)>1024*1024:
+                raise ValueError("Ollama metadata 응답 거부/크기 초과")
+    except error.HTTPError as exc:
+        raise ValueError("Ollama 정확 target retired" if exc.code==410 else "Ollama 정확 target metadata 조회 거부") from None
+    except error.URLError:
+        raise ValueError("Ollama metadata 원천 접근 실패") from None
+    return {"model":model,"origin":origin,"body":json.loads(raw.decode("utf-8")),
+            "generation":content_sha256(raw),"observed_at":datetime.now(timezone.utc).isoformat()}
+
+
+def _ctx_ollama_rows(documents, models, output_max, row, version):
+    """사용자 limit와 원본 show를 구분한다. target을 숫자로 추정하거나 제외하지 않는다."""
+    sources = documents["_opencode_sources"]
+    for provider, model in models:
+        origin, npm, api_model = None, None, model
+        for config in sources:
+            configured = config.get("provider",{}).get(provider,{})
+            origin = configured.get("options",{}).get("baseURL",origin)
+            npm = configured.get("npm",npm)
+            api_model = configured.get("models",{}).get(model,{}).get("id",api_model)
+        if npm != "@ai-sdk/openai-compatible" or not isinstance(origin,str) or not isinstance(api_model,str) or not api_model:
+            raise ValueError("OpenCode 독립 registry 정확 모델 없음/custom provider/API 모델 정체 미확정")
+        received = _ctx_ollama_show(origin,api_model)
+        if received.get("model") != api_model or received.get("origin") != origin:
+            raise ValueError("Ollama authority/정확 API tag 불일치")
+        info = received["body"].get("model_info",{})
+        architecture = info.get("general.architecture")
+        context = info.get(f"{architecture}.context_length") if isinstance(architecture,str) and architecture else None
+        if type(context) is not int or context<=0:
+            raise ValueError("Ollama architecture에 결속된 원본 context 없음")
+        output = models[(provider,model)]
+        payload = {"context":context,"output":output,"effective_output":min(output,output_max),
+                   "native_formula":"input-reserved"}
+        row({"model":model,"provider":provider,"profile":""},payload,origin+"/api/show",received["generation"],
+            received["observed_at"],None,"input-context-output",version)
 
 
 def _ctx_registry_output_metadata(harness, documents, models, read, row, evidence, native_files, native_commands):
@@ -8367,7 +8746,7 @@ def _ctx_registry_output_metadata(harness, documents, models, read, row, evidenc
     output_max = _ctx_opencode_policy(native)
     path = Path(os.environ.get("XDG_CACHE_HOME") or Path.home()/".cache")/"opencode/models.json"
     catalog = read(path)
-    observed = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+    observed = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat() if path.is_file() else None
     generation = evidence[str(path.resolve())]
     sources = documents.get("_opencode_sources") or [documents[HARNESS_CTX_FILES[harness]]]
     for provider,model in models:
@@ -8375,7 +8754,9 @@ def _ctx_registry_output_metadata(harness, documents, models, read, row, evidenc
         if provider_row.get("id", provider) != provider:
             raise ValueError("OpenCode registry provider 정체 불일치")
         raw = provider_row.get("models", {}).get(model)
-        if not isinstance(raw, dict): raise ValueError(f"OpenCode 독립 registry 정확 모델 없음: {provider}/{model}")
+        if not isinstance(raw, dict):
+            _ctx_ollama_rows(documents,{(provider,model):models[(provider,model)]},output_max,row,version)
+            continue
         if raw.get("id", model) != model:
             raise ValueError("OpenCode registry 모델 정체 불일치")
         for config in sources:
@@ -8479,15 +8860,17 @@ def _prepare_harness_ctx(dest_root, values, *, opencode_config_dir, updates=None
             raise HarnessCtxError([f"{harness} actual C unknown: 선택 모델 미확정"])
         # 기록은 가용 창 의미·정체·원천 검증에 필요한 metadata만 보존한다.
         metadata_keys = ("model", "provider", "profile", "source", "generation", "observed_at", "valid_until", "independent",
-                         "source_version", "semantics", "usable", "context", "input", "output", "reserved", "effective_output", "effective_percent", "native_formula")
+                         "source_version", "semantics", "usable", "context", "input", "output", "reserved", "effective_output", "effective_percent", "native_formula",
+                         "native_context", "native_window_min", "native_window_max", "summary_buffer", "native_percent", "max_context", "window_override", "native_compact_max")
         for row in results:
             row["metadata"] = {key: row["metadata"][key] for key in metadata_keys if key in row["metadata"]}
         common = min(results, key=lambda row: row["C"])
-        common_models = [{**row, **{key: common[key] for key in ("E", "P", "checkpoint", "precompact")}} for row in results]
+        common_models = [{**row, **{key: common[key] for key in ("E", "P", "checkpoint", "precompact")},
+                          "native_window": module._ctx_native_window(common["P"], row["metadata"])} for row in results]
         budget = {**common, "models": common_models}
         rule = HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]]
-        if rule.point_range is not None and not rule.point_range[0] <= budget["P"] <= rule.point_range[1]:
-            raise HarnessCtxError([f"{harness} 유효 압축 지점 {budget['P']}은 {rule.point_range[0]}~{rule.point_range[1]} 이어야 합니다."])
+        if rule.point_range is not None and not rule.point_range[0] <= budget["native_window"] <= rule.point_range[1]:
+            raise HarnessCtxError([f"{harness} native 설정값 {budget['native_window']}은 {rule.point_range[0]}~{rule.point_range[1]} 이어야 합니다."])
         budgets[harness] = budget
     targets = harness_ctx_targets(values, models, budgets)
     changed, lines = {}, []

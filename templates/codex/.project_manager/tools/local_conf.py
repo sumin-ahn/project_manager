@@ -743,9 +743,15 @@ def ctx_environment_fingerprints():
     """native 모델/provider 선택 환경의 바이트 지문. credential 값은 저장하지 않는다."""
     import hashlib
     keys = ("HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "CODEX_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "ANTHROPIC_MODEL", "ANTHROPIC_BASE_URL",
+            "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "CLAUDE_CODE_DISABLE_1M_CONTEXT",
+            "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT", "DISABLE_COMPACT", "DISABLE_AUTO_COMPACT",
+            "CLAUDE_CODE_USE_ANTHROPIC_AWS", "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD", "CLAUDE_CODE_USE_MANTLE",
+            "ANTHROPIC_UNIX_SOCKET", "ANTHROPIC_WIF_PROFILE", "CLAUDE_CODE_API_BASE_URL",
             "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "AWS_PROFILE",
             "ANTHROPIC_VERTEX_PROJECT_ID", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT",
-            "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX")
+            "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "CODEX_AUTH_JSON",
+            "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORGANIZATION", "OPENAI_PROJECT")
     return {key: hashlib.sha256(os.environ[key].encode("utf-8")).hexdigest() if key in os.environ else None for key in keys}
 
 
@@ -755,6 +761,29 @@ def _ctx_time(value):
     if parsed.tzinfo is None:
         raise ValueError("metadata 시각에 시간대가 없음")
     return parsed.astimezone(timezone.utc)
+
+
+def _ctx_native_window(point, metadata):
+    """같은 P를 실제 native cutoff로 만드는 내부 인코딩. 모델 한도를 만들지 않는다."""
+    import math
+    if metadata.get("native_formula") == "claude-cutoff":
+        reserve, buffer = metadata["reserved"], metadata["summary_buffer"]
+        base = point + buffer
+        percent = metadata.get("native_percent")
+        if percent is not None:
+            base = max(base, math.ceil(point * 100 / percent))
+        window = base + reserve
+        maximum = min(metadata["context"], metadata["native_context"], metadata["native_window_max"])
+        cutoff = base - buffer
+        if percent is not None:
+            cutoff = min(cutoff, math.floor(base * percent / 100))
+        if cutoff != point or not metadata.get("native_window_min", 100000) <= window <= maximum:
+            raise ValueError("Claude native cutoff 인코딩 범위/예약 불일치")
+        return window
+    maximum = metadata.get("native_compact_max")
+    if maximum is not None and (type(maximum) is not int or point > maximum):
+        raise ValueError("native 압축 상한보다 큰 P")
+    return point
 
 
 def resolve_ctx_capacity(window, ratios, identity, metadata, *, now=None):
@@ -786,13 +815,37 @@ def resolve_ctx_capacity(window, ratios, identity, metadata, *, now=None):
         if observed > current or (expiry is not None and current >= expiry):
             raise ValueError("metadata 관측 시각/유효성 불일치")
         semantics = metadata.get("semantics")
+        capacity_context = metadata.get("context")
         if semantics == "usable":
             capacity = integer(metadata.get("usable"))
         elif semantics == "context-percent":
             percent = integer(metadata.get("effective_percent"))
             if percent > 100:
                 raise ValueError("effective percent 범위 오류")
-            capacity = integer(metadata.get("context")) * percent // 100
+            context = integer(metadata.get("context"))
+            override = metadata.get("window_override")
+            if override is not None:
+                override = integer(override)
+                maximum = metadata.get("max_context")
+                if maximum is None and override > context:
+                    raise ValueError("Codex 확대 override의 독립 max 한도 없음")
+                context = min(override, integer(maximum)) if maximum is not None else override
+            capacity_context = context
+            capacity = context * percent // 100
+        elif semantics == "claude-cutoff":
+            import math
+            context = min(integer(metadata.get("context")), integer(metadata.get("native_context")),
+                          integer(metadata.get("native_window_max")))
+            reserve, buffer = metadata.get("reserved"), metadata.get("summary_buffer")
+            if any(type(v) is not int or v < 0 for v in (reserve, buffer)):
+                raise ValueError("Claude 출력 예약/요약 buffer 근거 손상")
+            available = context - reserve
+            capacity = available - buffer
+            percent = metadata.get("native_percent")
+            if percent is not None:
+                if type(percent) not in (int, float) or not math.isfinite(percent) or not 0 < percent <= 100:
+                    raise ValueError("Claude native 비율 override 손상")
+                capacity = min(capacity, math.floor(available * percent / 100))
         elif semantics == "input-context-output":
             context = integer(metadata.get("context"))
             output = integer(metadata.get("effective_output"))
@@ -809,7 +862,7 @@ def resolve_ctx_capacity(window, ratios, identity, metadata, *, now=None):
         else:
             raise ValueError("가용 창 의미 미확정 (max/alias/override 사용 불가)")
         integer(capacity)
-        raw_context = metadata.get("context")
+        raw_context = capacity_context
         if raw_context is not None and (type(raw_context) is not int or capacity > raw_context):
             raise ValueError("가용 창이 원본 context 한도를 초과함")
         effective_output = metadata.get("effective_output")
@@ -817,9 +870,11 @@ def resolve_ctx_capacity(window, ratios, identity, metadata, *, now=None):
             if type(effective_output) is not int or effective_output < 0 or capacity + effective_output > raw_context:
                 raise ValueError("가용 창/실제 출력 예약이 원본 context 한도를 초과함")
         effective = min(window, capacity)
+        point = effective*ratios[2]//100
+        native_window = _ctx_native_window(point, metadata)
         result.update(status="known", reason=None, C=capacity, E=effective,
                       checkpoint=effective*ratios[0]//100, precompact=effective*ratios[1]//100,
-                      P=effective*ratios[2]//100)
+                      P=point, native_window=native_window)
     except (ValueError, TypeError, KeyError, AttributeError) as exc:
         result["reason"] = str(exc)
     return result
@@ -915,6 +970,10 @@ def read_ctx_budget(root, values, harness, identity=None):
             if model.get("status") != "known" or any(type(model.get(k)) is not int or model[k] != expected[k]
                     for k in ("W", "E", "P", "checkpoint", "precompact")):
                 raise ValueError("ctx 모델 기록의 공통 유효 기준/임계 손상")
+            if model.get("native_window") != _ctx_native_window(expected["P"], model["metadata"]):
+                raise ValueError("ctx 모델 native 인코딩 손상")
+        if row.get("native_window") != _ctx_native_window(expected["P"], row["metadata"]):
+            raise ValueError("ctx 공통 native 인코딩 손상")
         return row
     except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
         unknown["reason"] = str(exc)

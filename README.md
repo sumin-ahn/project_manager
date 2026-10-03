@@ -626,7 +626,10 @@ Claude Code의 `autoCompactWindow`, Codex의 `model_auto_compact_token_limit`, O
 `limit` 및 `compaction.reserved`에 실제 형식에 맞춰 적용한다. Codex의 프레임워크 W 기반 최상위
 `model_context_window` override는 제거하고 사용자 global/profile은 보존한다. OpenCode 원본 모델
 registry와 전역 파일은 읽기 전용이며 대상 모델 전체가 확인된 공통 E를 사용한다. 예약과 유효 비율은
-가용 기준에서 두 번 차감하지 않는다. 엔진 갱신에서 완료된 파일 배달과 압축 설정 미적용은 구분해 보고한다.
+가용 기준에서 두 번 차감하지 않는다. Claude Code의 설정창은 실제 압축 임계 P와 다르다.
+확인한 출력 예약과 요약 버퍼를 보상해 같은 P에서 압축되도록 설정창을 계산한다.
+모델 한도 조회는 적용 준비 단계에서 수행하며, 실행 중 경고와 표시는 검증된 적용 기록을 사용한다.
+엔진 갱신에서 완료된 파일 배달과 압축 설정 미적용은 구분해 보고한다.
 
 레지스트리와 옛 flat 표기 어느 쪽에도 없는 키(오타·폐기 키)는 조용히 무시되지 않는다 —
 `board.py lint`(그리고 `board.py init` 병합 경로)가 `local-conf-unknown-key` advisory 1줄로

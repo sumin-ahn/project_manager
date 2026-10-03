@@ -593,7 +593,18 @@ def test_the_model_query_waits_on_the_heavy_limit(api, pm_home, monkeypatch):
     assert response["error"]["kind"] == "timeout"
 
 
-def test_t0932_budget_display_unknown_mixed_and_unrelated(api,pm_home):
+def test_t0932_budget_display_unknown_mixed_and_unrelated(api,pm_home,monkeypatch):
+    import manager.bridge_settings as bridge
+    original=bridge._run
+    child=_KNOWN_CTX_CHILD.replace("entry._read_harness_ctx_metadata=fixture_reader(entry)",
+        "entry._ctx_native_protocol=lambda *a,**kw: (_ for _ in ()).throw(ValueError('fixture native 근거 없음'))")
+    # pm_config의 검증된 importer에도 같은 subprocess 거부를 주입한다.
+    child=child.replace("pmi._read_harness_ctx_metadata=fixture_reader(pmi)",
+        "pmi._ctx_native_protocol=lambda *a,**kw: (_ for _ in ()).throw(ValueError('fixture native 근거 없음'))")
+    def run(home,argv,**kwargs):
+        if 'ctx-apply' in argv:argv=[argv[0],'-c',child,argv[1],*argv[2:]]
+        return original(home,argv,**kwargs)
+    monkeypatch.setattr(bridge,'_run',run)
     record=pm_home/'.project_manager/.local/ctx-budget.json';record.unlink()
     api.status(str(pm_home))
     before=tree_snapshot(pm_home)

@@ -969,7 +969,9 @@ def test_t0932_metadata_identity_actual_codex_format(pm_import,tmp_path,monkeypa
     if bad=='version':catalog['client_version']='old-version'
     if bad=='expired':catalog['fetched_at']=(datetime.now(timezone.utc)-timedelta(seconds=301)).isoformat()
     if bad=='model':catalog['models'][0]['slug']='similar-model'
-    if bad=='override':(home/'config.toml').write_text('model_context_window=600000\n'+(home/'config.toml').read_text(encoding='utf-8'), encoding='utf-8')
+    if bad=='override':
+        catalog['models'][0].pop('max_context_window')
+        (home/'config.toml').write_text('model_context_window=600000\n'+(home/'config.toml').read_text(encoding='utf-8'), encoding='utf-8')
     (home/'models_cache.json').write_text(json.dumps(catalog), encoding='utf-8')
     before=_snapshot_fixture_bytes(root)
     if bad:
@@ -1003,8 +1005,12 @@ def test_t0932_native_constraints_actual_opencode_format(pm_import,tmp_path,monk
     assert (root/'.opencode/opencode.jsonc').read_bytes()==before
 
 
-def test_t0932_metadata_identity_actual_claude_missing_producer(pm_import,tmp_path):
+def test_t0932_metadata_identity_actual_claude_missing_producer(pm_import,tmp_path,monkeypatch):
     root=_project(tmp_path,harnesses=('claude',))
+    _t0932_control_claude_fixture(tmp_path,monkeypatch)
+    def missing(*a,**kw):
+        raise ValueError('기존 실행정보 mock 원천 없음')
+    monkeypatch.setattr(pm_import,'_ctx_native_protocol',missing)
     before=(root/'.claude/settings.json').read_bytes()
     with pytest.raises(pm_import.HarnessCtxError,match='기존 실행정보'):_apply(pm_import,root,_global_dir(tmp_path))
     assert (root/'.claude/settings.json').read_bytes()==before
@@ -1198,3 +1204,326 @@ def test_t0932_review_plan_target_presence_existing(tmp_path, monkeypatch, harne
     with pytest.raises(importer.HarnessCtxError):
         importer._commit_harness_ctx(plan)
     assert before == _snapshot_fixture_bytes(root)
+
+
+def _t0932_control_claude_fixture(tmp_path, monkeypatch, model='claude-opus-5-5', window=1000000):
+    from datetime import datetime, timezone
+    package = tmp_path/'claude-installation'; command = package/'bin/claude'
+    command.parent.mkdir(parents=True)
+    command.write_bytes(b'// Version: 2.1.287\nfunction Bq(e,n){let r=Math.min(e.maxOutputTokens,z_t),s=Sm()?n:void 0,{window:g}=bv(e,s);return g-r}var z_t=20000;function Tq(e,n){let r=e-13000,s=n.testPctOverride;if(s!==void 0&&!isNaN(s)&&s>0&&s<=100)return Math.min(Math.floor(e*(s/100)),r);return r}')
+    (package/'package.json').write_text(json.dumps({'version':'2.1.287'}), encoding='utf-8')
+    home = tmp_path/'claude-home'; home.mkdir(); monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(home))
+    (home/'settings.json').write_text('{}', encoding='utf-8')
+    original = shutil.which
+    monkeypatch.setattr(shutil, 'which', lambda name,*a,**kw: str(command) if name=='claude' else original(name,*a,**kw))
+    return {'responses': {'initialize': {'account': {'apiProvider':'firstParty','subscriptionType':'Claude Max'}},
+        'context': {'model':model,'rawMaxTokens':window,'maxTokens':window,'autoCompactThreshold':window-33000,
+        'autocompactSource':'model-default','isAutoCompactEnabled':True,'apiUsage':None,
+        'categories':[{'kind':'buffer','tokens':33000}]}}, 'frames':[], 'sent_user_turns':0,
+        'observed_at':datetime.now(timezone.utc).isoformat()}
+
+
+@pytest.mark.parametrize('model,window,capacity,encoded',[
+    ('claude-opus-5-5',1000000,967000,597000),
+    ('claude-sonnet-4-6',200000,167000,189980),
+])
+def test_t0932_native_producer_claude_zero_turn_cutoff(tmp_path, monkeypatch, model, window, capacity, encoded):
+    importer = _load('pm_import')
+    root = _project(tmp_path,harnesses=('claude',),conf='harness.claude.ctx_window_tokens=600000\nctx.checkpoint_at_pct=80\nctx.precompact_at_pct=90\nctx.compact_at_pct=94\n')
+    response = _t0932_control_claude_fixture(tmp_path,monkeypatch,model,window)
+    monkeypatch.setattr(importer,'_ctx_native_protocol',lambda *a,**kw:response,raising=False)
+    importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
+    native = json.loads((root/'.claude/settings.json').read_text(encoding='utf-8'))
+    row = json.loads((root/'.project_manager/.local/ctx-budget.json').read_text(encoding='utf-8'))['budgets']['claude']
+    assert row['C']==capacity
+    assert native['autoCompactWindow']==encoded
+    assert native['autoCompactWindow']-33000==row['P']
+    assert row['precompact']<row['P']
+
+
+def test_t0932_native_producer_claude_existing_encoding_red(tmp_path, monkeypatch):
+    importer = _load('pm_import'); root = _project(tmp_path,harnesses=('claude',))
+    monkeypatch.setattr(importer,'_read_harness_ctx_metadata',lambda *a:_t0932_reader(importer,*a,capacity=967000))
+    leaf = _load('local_conf'); values={'harness.claude.ctx_window_tokens':'600000','ctx.checkpoint_at_pct':'80','ctx.precompact_at_pct':'90','ctx.compact_at_pct':'94'}
+    result=leaf.resolve_ctx_capacity(600000,(80,90,94),{'model':'m','provider':'firstParty','profile':''},
+        {**_t0932_metadata({'model':'m','provider':'firstParty','profile':''}), 'semantics':'claude-cutoff',
+         'context':1000000,'native_context':1000000,'reserved':20000,'summary_buffer':13000,'native_formula':'claude-cutoff','native_window_max':1000000})
+    assert result['status']=='known'
+    actual = importer.harness_ctx_targets(values,{}, {'claude':result})['.claude/settings.json'][('autoCompactWindow',)]
+    assert actual-33000==564000
+
+
+@pytest.mark.parametrize('bad',['source-auto','source-settings','suffix','provider','model-turn','clock','origin','output-change','window-change'])
+def test_t0932_native_producer_claude_unknown_no_write(tmp_path,monkeypatch,bad):
+    importer=_load('pm_import');root=_project(tmp_path,harnesses=('claude',))
+    response=_t0932_control_claude_fixture(tmp_path,monkeypatch)
+    context=response['responses']['context']
+    if bad=='source-auto':context['autocompactSource']='auto'
+    if bad=='source-settings':context['autocompactSource']='settings'
+    if bad=='suffix':context['model']='glm-5.3:cloud[1m]'
+    if bad=='provider':response['responses']['initialize']['account']['apiProvider']='bedrock'
+    if bad=='model-turn':response['sent_user_turns']=1
+    if bad=='clock':response['observed_at']='2100-01-01T00:00:00Z'
+    if bad=='origin':monkeypatch.setenv('ANTHROPIC_BASE_URL','http://localhost:11434')
+    def protocol(*a,**kw):
+        if bad in ('output-change','window-change'):
+            monkeypatch.setenv('CLAUDE_CODE_MAX_OUTPUT_TOKENS' if bad=='output-change' else 'CLAUDE_CODE_AUTO_COMPACT_WINDOW','16000')
+        return response
+    monkeypatch.setattr(importer,'_ctx_native_protocol',protocol)
+    with importer._local_conf_write_lock(root/'.project_manager/local.conf'):
+        pass
+    before=_snapshot_fixture_bytes(root)
+    with pytest.raises(importer.HarnessCtxError):importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
+    assert _snapshot_fixture_bytes(root)==before
+
+
+@pytest.mark.parametrize('change',['model','origin','output','percent','disable','window'])
+def test_t0932_native_producer_claude_record_env_binding(tmp_path,monkeypatch,change):
+    importer=_load('pm_import');root=_project(tmp_path,harnesses=('claude',))
+    response=_t0932_control_claude_fixture(tmp_path,monkeypatch)
+    monkeypatch.setattr(importer,'_ctx_native_protocol',lambda *a,**kw:response)
+    importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
+    names={'model':'ANTHROPIC_MODEL','origin':'ANTHROPIC_BASE_URL','output':'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
+           'percent':'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE','disable':'DISABLE_AUTO_COMPACT','window':'CLAUDE_CODE_AUTO_COMPACT_WINDOW'}
+    monkeypatch.setenv(names[change],'changed')
+    leaf=_load('local_conf');before=_snapshot_fixture_bytes(root)
+    assert leaf.read_ctx_budget(root,{},'claude',{'model':'claude-opus-5-5','provider':'firstParty','profile':''})['status']=='unknown'
+    assert before==_snapshot_fixture_bytes(root)
+
+
+def test_t0932_native_producer_protocol_late_fallback(tmp_path,monkeypatch):
+    import io,time
+    importer=_load('pm_import')
+    class Late(io.StringIO):
+        def __iter__(self):
+            time.sleep(.05)
+            return super().__iter__()
+    class Process:
+        stdin=io.StringIO();stdout=io.StringIO('{"id":1,"result":{}}\n')
+        stderr=Late('failed to refresh available models\n')
+        def poll(self):return 0
+        def wait(self,timeout=None):return 0
+    monkeypatch.setattr(importer.subprocess,'Popen',lambda *a,**kw:Process())
+    result=importer._ctx_native_protocol(['mock'],tmp_path,[('init',{'id':1,'method':'initialize','params':{}},None)])
+    assert result['catalog_fallback'] is True
+
+
+@pytest.mark.parametrize('bad',[None,'retired','wrong-tag','wrong-origin','architecture'])
+def test_t0932_native_producer_opencode_exact_show(tmp_path,monkeypatch,bad):
+    importer=_load('pm_import');_t0932_native_install(tmp_path,monkeypatch,'opencode')
+    cache=tmp_path/'cache';(cache/'opencode').mkdir(parents=True);monkeypatch.setenv('XDG_CACHE_HOME',str(cache))
+    config={'provider':{'ollama':{'npm':'@ai-sdk/openai-compatible','options':{'baseURL':'http://localhost:11434/v1'},
+        'models':{'exact:tag':{'limit':{'output':32768}}}}}}
+    root=_project(tmp_path,harnesses=('opencode',),conf='harness.opencode.ctx_window_tokens=600000\n',texts={'.opencode/opencode.jsonc':json.dumps(config)})
+    from datetime import datetime,timezone
+    def show(origin,model):
+        if bad=='retired':raise ValueError('Ollama 정확 target retired')
+        return {'origin':origin if bad!='wrong-origin' else 'http://other:11434/v1',
+            'model':model if bad!='wrong-tag' else 'alias:tag','generation':'show-generation',
+            'observed_at':datetime.now(timezone.utc).isoformat(),
+            'body':{'model_info':{'general.architecture':'a','a.context_length':262144} if bad!='architecture' else {'general.architecture':'b','a.context_length':262144}}}
+    monkeypatch.setattr(importer,'_ctx_ollama_show',show)
+    before=_snapshot_fixture_bytes(root)
+    if bad:
+        with pytest.raises(importer.HarnessCtxError):importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
+        assert before==_snapshot_fixture_bytes(root)
+    else:
+        importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
+        record=json.loads((root/'.project_manager/.local/ctx-budget.json').read_text(encoding='utf-8'))
+        row=record['budgets']['opencode'];assert (row['C'],row['E'],row['P'])==(230144,230144,207129)
+        native=json.loads((root/'.opencode/opencode.jsonc').read_text(encoding='utf-8'))
+        assert native['provider']['ollama']['models']['exact:tag']['limit']['context']==262144
+        assert native['provider']['ollama']['models']['exact:tag']['limit']['input']-native['compaction']['reserved']==row['P']
+
+
+@pytest.mark.parametrize('formula',['codex','claude'])
+def test_t0932_native_producer_encoder_failure_unknown_fields(tmp_path,formula):
+    leaf=_load('local_conf');identity={'model':'m','provider':'p','profile':''}
+    metadata={**_t0932_metadata(identity), 'usable':100000, 'native_compact_max':90000}
+    if formula=='claude':metadata.update(semantics='claude-cutoff',context=100000,native_context=100000,
+        native_window_max=100000,reserved=0,summary_buffer=0,native_formula='claude-cutoff')
+    result=leaf.resolve_ctx_capacity(100000,(80,90,94),identity,metadata)
+    assert result['status']=='unknown'
+    assert result['reason']
+    assert all(result[k] is None for k in ('C','E','P','checkpoint','precompact'))
+
+
+@pytest.mark.parametrize('percent,encoded',[(None,597000),(80,725000),(94,620000),(100,597000)])
+def test_t0932_native_producer_claude_inverse_branches(tmp_path,percent,encoded):
+    leaf=_load('local_conf');identity={'model':'m','provider':'firstParty','profile':''}
+    metadata={**_t0932_metadata(identity), 'semantics':'claude-cutoff','context':1000000,'native_context':1000000,
+        'native_window_max':1000000,'reserved':20000,'summary_buffer':13000,'native_formula':'claude-cutoff','native_percent':percent}
+    result=leaf.resolve_ctx_capacity(600000,(80,90,94),identity,metadata)
+    assert result['status']=='known'
+    assert result['P']==564000
+    assert result['native_window']==encoded
+    base=encoded-20000
+    assert (min(base-13000,int(base*percent/100)) if percent else base-13000)==result['P']
+
+
+@pytest.mark.parametrize('retired',[False,True])
+def test_t0932_native_producer_opencode_mixed_sources(tmp_path,monkeypatch,retired):
+    importer=_load('pm_import');_t0932_native_install(tmp_path,monkeypatch,'opencode')
+    cache=tmp_path/'cache';(cache/'opencode').mkdir(parents=True);monkeypatch.setenv('XDG_CACHE_HOME',str(cache))
+    registry={'p':{'id':'p','models':{'m':{'id':'m','limit':{'context':262144,'output':128000}}}}}
+    (cache/'opencode/models.json').write_text(json.dumps(registry),encoding='utf-8')
+    config={'provider':{'p':{'models':{'m':{}}},'ollama':{'npm':'@ai-sdk/openai-compatible',
+        'options':{'baseURL':'http://localhost:11434/v1'},'models':{'qwen3.5:397b-cloud':{}}}}}
+    root=_project(tmp_path,harnesses=('opencode',),conf='harness.opencode.ctx_window_tokens=600000\n',
+        texts={'.opencode/opencode.jsonc':json.dumps(config)})
+    from datetime import datetime,timezone
+    called=[]
+    def show(origin,model):
+        called.append(model)
+        if retired:raise ValueError('Ollama 정확 target retired')
+        return {'origin':origin,'model':model,'generation':'independent-show', 'observed_at':datetime.now(timezone.utc).isoformat(),
+            'body':{'model_info':{'general.architecture':'glm','glm.context_length':1048576}}}
+    monkeypatch.setattr(importer,'_ctx_ollama_show',show);before=_snapshot_fixture_bytes(root)
+    if retired:
+        with pytest.raises(importer.HarnessCtxError):importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
+        assert before==_snapshot_fixture_bytes(root)
+    else:
+        importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
+        row=json.loads((root/'.project_manager/.local/ctx-budget.json').read_text(encoding='utf-8'))['budgets']['opencode']
+        assert row['C']==230144
+        assert len(row['models'])==2
+        assert {m['E'] for m in row['models']}=={230144}
+    assert called==['qwen3.5:397b-cloud']
+
+
+@pytest.mark.parametrize('bad',[None,'missing-max','native-cap'])
+def test_t0932_native_producer_codex_conditional_override(tmp_path,monkeypatch,bad):
+    importer=_load('pm_import');home,catalog=_t0932_codex_native_catalog(tmp_path,monkeypatch,version='0.160.0')
+    (home/'config.toml').write_text('model_context_window=600000\n'+(home/'config.toml').read_text(encoding='utf-8'),encoding='utf-8')
+    if bad=='missing-max':catalog['models'][0].pop('max_context_window')
+    (home/'models_cache.json').write_text(json.dumps(catalog),encoding='utf-8')
+    compact=99 if bad=='native-cap' else 94
+    root=_project(tmp_path,harnesses=('codex',),conf=f'harness.codex.ctx_window_tokens=600000\nctx.checkpoint_at_pct=80\nctx.precompact_at_pct=90\nctx.compact_at_pct={compact}\n')
+    before=_snapshot_fixture_bytes(root);global_before=(home/'config.toml').read_bytes()
+    if bad:
+        with pytest.raises(importer.HarnessCtxError):importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
+        assert before==_snapshot_fixture_bytes(root)
+    else:
+        importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
+        row=json.loads((root/'.project_manager/.local/ctx-budget.json').read_text(encoding='utf-8'))['budgets']['codex']
+        assert (row['C'],row['E'],row['P'])==(570000,570000,535800)
+        assert row['P']<=540000
+    assert (home/'config.toml').read_bytes()==global_before
+
+
+@pytest.mark.parametrize('opaque',['other-account','other-provider','same-nonempty'])
+def test_t0932_native_producer_codex_unapproved_cache_unknown(tmp_path,monkeypatch,opaque):
+    importer=_load('pm_import');home,catalog=_t0932_codex_native_catalog(tmp_path,monkeypatch,version='0.160.0')
+    (home/'auth.json').write_text('{"fixture":true}',encoding='utf-8')
+    catalog['identity']=opaque;(home/'models_cache.json').write_text(json.dumps(catalog),encoding='utf-8')
+    root=_project(tmp_path,harnesses=('codex',))
+    config={'config':{'model':'exact-model','model_provider':'fixture','profile':'team','model_context_window':600000},
+        'layers':[{'name':{'type':'user','file':str(home/'config.toml'),'profile':'team'},'version':'sha256:fixture','disabledReason':None,
+            'config':{'model':'exact-model','model_context_window':600000}}]}
+    response={'sent_user_turns':0,'catalog_fallback':False,'responses':{'config':config,'config_after':config,
+        'gateway':{'providerId':'fixture','required':False,'error':None},'models':{'data':[{'id':'exact-model','model':'exact-model'}]}}}
+    monkeypatch.setattr(importer,'_ctx_native_protocol',lambda *a,**kw:response)
+    before=_snapshot_fixture_bytes(root)
+    with pytest.raises(importer.HarnessCtxError,match='승인 catalog 세대'):importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
+    assert before==_snapshot_fixture_bytes(root)
+
+
+def _t0932_file_auth(plan='pro', refresh=True):
+    import base64
+    claims={'email':'fixture@example.invalid','https://api.openai.com/auth':{
+        'chatgpt_user_id':'fixture-user','chatgpt_plan_type':plan,'chatgpt_account_is_fedramp':False}}
+    encoded=base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip('=')
+    return {'auth_mode':'chatgpt','tokens':{'account_id':'fixture-account','id_token':'header.'+encoded+'.signature',
+        'access_token':'DO-NOT-OUTPUT-ACCESS','refresh_token':'DO-NOT-OUTPUT-REFRESH'},
+        'last_refresh':'2026-10-03T00:00:00Z' if refresh else None}
+
+
+def _t0932_file_identity_oracle(plan='Pro', raw='pro'):
+    fields=[b'models-cache-v1',b'OpenAI',b'https://chatgpt.com/backend-api/codex',(0).to_bytes(8,'little'),
+        b'\x01',b'\x00',b'Some(Chatgpt)',b'Some("fixture-account")',b'Some("fixture-user")',
+        b'Some("fixture@example.invalid")',f'Some({plan})'.encode(),
+        b'None' if raw is None else f'Some("{raw}")'.encode(),b'\x00',(1).to_bytes(8,'little'),b'version',b'0.160.0']
+    digest=hashlib.sha256()
+    for field in fields:digest.update(len(field).to_bytes(8,'little'));digest.update(field)
+    return digest.hexdigest()
+
+
+@pytest.mark.parametrize('plan,refresh,typed,raw',[('pro',True,'Pro','pro'),('hc',True,'Enterprise','enterprise'),
+    ('education',True,'Edu','edu'),('PRO',True,'Unknown','PRO'),('pro',False,'Pro',None),
+    ('promax',True,'ProMax','promax'),('edu_pro',True,'EduPro','edu_pro')])
+def test_t0932_native_file_auth_identity_golden(plan,refresh,typed,raw):
+    importer=_load('pm_import')
+    provider={'name':'OpenAI','base_url':'https://chatgpt.com/backend-api/codex','requires_openai_auth':True,
+        'http_headers':{'version':'0.160.0'}}
+    assert importer._ctx_codex_cache_identity(provider,_t0932_file_auth(plan,refresh))==_t0932_file_identity_oracle(typed,raw)
+
+
+@pytest.mark.parametrize('bad',[None,'identity','expired','version','fallback','auto','profile','env','provider',
+    'no-owner','malformed','api-mode','implicit-api','auth-race','cache-race','config-race','file-race',
+    'refresh-schema','claim-schema','unicode-owner','keyring','dynamic-header','base-override','base-origin'])
+def test_t0932_native_file_auth_bound_catalog(tmp_path,monkeypatch,capsys,bad):
+    from datetime import datetime,timedelta,timezone
+    importer=_load('pm_import');home,catalog=_t0932_codex_native_catalog(tmp_path,monkeypatch,version='0.160.0')
+    # 실제 최적화 binary처럼 hash marker literal이 없어도 정확 native digest는 검사한다.
+    binary=Path(shutil.which('codex'));binary.write_bytes(b'optimized native fixture without identity marker')
+    (home/'config.toml').write_text('model="exact-model"\nmodel_context_window=600000\n',encoding='utf-8')
+    auth=_t0932_file_auth()
+    if bad=='no-owner':auth['tokens'].pop('account_id')
+    if bad=='malformed':auth['tokens']['id_token']='DO-NOT-OUTPUT-BROKEN'
+    if bad=='api-mode':auth['auth_mode']='api_key'
+    if bad=='implicit-api':auth.pop('auth_mode');auth['OPENAI_API_KEY']='DO-NOT-OUTPUT-API'
+    if bad=='refresh-schema':auth['last_refresh']='invalid'
+    if bad=='claim-schema':auth['tokens']['account_id']=42
+    if bad=='unicode-owner':auth['tokens']['account_id']='소유자'
+    (home/'auth.json').write_text(json.dumps(auth),encoding='utf-8')
+    catalog['identity']=_t0932_file_identity_oracle()
+    if bad=='identity':catalog['identity']='other-account'
+    if bad=='expired':catalog['fetched_at']=(datetime.now(timezone.utc)-timedelta(seconds=301)).isoformat()
+    if bad=='version':catalog['client_version']='0.159.3'
+    (home/'models_cache.json').write_text(json.dumps(catalog),encoding='utf-8')
+    root=_project(tmp_path,harnesses=('codex',),conf='harness.codex.ctx_window_tokens=600000\nctx.checkpoint_at_pct=80\nctx.precompact_at_pct=90\nctx.compact_at_pct=94\n')
+    config={'config':{'model':'exact-model','model_provider':None,'profile':None,'model_context_window':600000,
+        'chatgpt_base_url':'https://chatgpt.com/backend-api/','cli_auth_credentials_store':'file'},
+        'layers':[{'name':{'type':'user','file':str(home/'config.toml')},'version':'sha256:fixture','disabledReason':None,
+            'config':{'model':'exact-model','model_context_window':600000}}]}
+    if bad=='auto':config['config']['cli_auth_credentials_store']='auto'
+    if bad=='keyring':config['config']['cli_auth_credentials_store']='keyring'
+    if bad=='profile':config['config']['profile']='other'
+    if bad=='base-override':config['layers'][0]['config']['chatgpt_base_url']='https://chatgpt.com/backend-api/'
+    if bad=='base-origin':config['config']['chatgpt_base_url']='https://other.example/backend-api/'
+    if bad=='env':monkeypatch.setenv('CODEX_ACCESS_TOKEN','DO-NOT-OUTPUT-ENV')
+    if bad=='provider':config['layers'][0]['config']['model_providers']={'openai':{'name':'Other'}}
+    if bad=='dynamic-header':config['config']['model_providers']={'openai':{'name':'OpenAI','requires_openai_auth':True,
+        'http_headers':{'version':'0.160.0','authorization':'DO-NOT-OUTPUT-HEADER'}}}
+    response={'sent_user_turns':0,'catalog_fallback':bad=='fallback','responses':{'config':config,'config_after':config,
+        'gateway':{'providerId':'openai','required':False,'error':None},'models':{'data':[{'id':'exact-model'}]}}}
+    if bad=='config-race':response['responses']['config_after']=json.loads(json.dumps(config));response['responses']['config_after']['config']['model']='other'
+    def protocol(*a,**kw):
+        if bad=='file-race':(home/'config.toml').write_text('model="other"\n',encoding='utf-8')
+        return response
+    monkeypatch.setattr(importer,'_ctx_native_protocol',protocol)
+    digest=importer._ctx_file_digest
+    def racing(path):
+        if (bad=='auth-race' and Path(path).name=='auth.json') or (bad=='cache-race' and Path(path).name=='models_cache.json'):return 'racing-generation'
+        return digest(path)
+    monkeypatch.setattr(importer,'_ctx_file_digest',racing)
+    before=_snapshot_fixture_bytes(root);user_before={p.name:p.read_bytes() for p in home.iterdir()}
+    if bad:
+        with pytest.raises(importer.HarnessCtxError) as error:
+            importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
+        projection=str(error.value)
+        assert before==_snapshot_fixture_bytes(root)
+    else:
+        importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
+        projection=(root/'.project_manager/.local/ctx-budget.json').read_text(encoding='utf-8')
+        budget=json.loads(projection)['budgets']['codex']
+        assert (budget['C'],budget['E'],budget['P'])==(570000,570000,535800)
+        leaf=importer._load_local_conf();values=leaf.load(root/'.project_manager/local.conf').values
+        assert leaf.read_ctx_budget(root,values,'codex',budget['identity'])['status']=='known'
+        (home/'auth.json').write_text(json.dumps(_t0932_file_auth('plus')),encoding='utf-8')
+        assert leaf.read_ctx_budget(root,values,'codex',budget['identity'])['status']=='unknown'
+        (home/'auth.json').write_bytes(user_before['auth.json'])
+    assert {p.name:p.read_bytes() for p in home.iterdir() if bad!='file-race' or p.name!='config.toml'}=={
+        k:v for k,v in user_before.items() if bad!='file-race' or k!='config.toml'}
+    projection+=str(capsys.readouterr())
+    assert all(value not in projection for value in ('DO-NOT-OUTPUT','fixture@example.invalid','fixture-user','fixture-account','header.'))
