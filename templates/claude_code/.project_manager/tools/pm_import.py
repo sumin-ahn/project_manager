@@ -8929,8 +8929,9 @@ def _commit_harness_ctx(plan):
         if not module._ctx_native_matches(document):
             raise HarnessCtxError(["ctx 계획 stale: native 설치 세대 변경"])
         try:
-            if document["budgets"]:module._ctx_binding_structure(document,root)
+            module._ctx_binding_structure(document,root)
             for harness,budget in document["budgets"].items():
+                module._ctx_role_source_correlation(document["bindings"][harness],budget,root)
                 module._ctx_budget_semantics(budget,document["inputs"],document["inputs"],harness,budget["identity"])
         except (ValueError,TypeError,KeyError,AttributeError) as exc:
             raise HarnessCtxError([f"ctx 계획 stale: {exc}"]) from None

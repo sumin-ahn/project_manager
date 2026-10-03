@@ -742,6 +742,9 @@ def ctx_input_values(values):
 _CTX_INPUT_BINDING_RULES = {
     "harness.claude.ctx_window_tokens": {
         "target":".claude/settings.json", "roles":{"settings":3},
+        "protocol_source":"claude-sdk-neutral",
+        "live_roles":lambda root,registry:{"settings":[str((Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home()/".claude")/"settings.json").resolve()),
+            str(root/".claude/settings.local.json"),"/etc/claude-code/managed-settings.json"]},
         "role_values":{"managed_bundle":"/etc/claude-code/managed-settings.d"}, "registry":False,
         "environment":("ANTHROPIC_MODEL","ANTHROPIC_BASE_URL","CLAUDE_CONFIG_DIR","CLAUDE_CODE_MAX_OUTPUT_TOKENS",
             "CLAUDE_CODE_MAX_CONTEXT_TOKENS","CLAUDE_CODE_AUTO_COMPACT_WINDOW","CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
@@ -752,11 +755,15 @@ _CTX_INPUT_BINDING_RULES = {
             "ANTHROPIC_VERTEX_PROJECT_ID","ANTHROPIC_AUTH_TOKEN_FILE_DESCRIPTOR")},
     "harness.codex.ctx_window_tokens": {
         "target":".codex/config.toml", "roles":{"manifest":1,"selection":1,"auth":1,"catalog":1},
+        "native_manifest":"codex-package.json",
+        "live_roles":lambda root,registry:{role:str((Path(os.environ.get("CODEX_HOME") or Path.home()/".codex")/name).resolve())
+            for role,name in (("selection","config.toml"),("auth","auth.json"),("catalog","models_cache.json"))},
         "role_values":{}, "registry":False,
         "environment":("CODEX_HOME","CODEX_API_KEY","CODEX_ACCESS_TOKEN","CODEX_AUTH_JSON","OPENAI_API_KEY",
             "OPENAI_BASE_URL","OPENAI_ORGANIZATION","OPENAI_PROJECT")},
     "harness.opencode.ctx_window_tokens": {
         "target":".opencode/opencode.jsonc", "roles":{"manifest":1,"global":3},"role_values":{},"registry":True,
+        "live_roles":lambda root,registry:{} if not registry else {"catalog":str((Path(os.environ.get("XDG_CACHE_HOME") or Path.home()/".cache")/"opencode/models.json").resolve())},
         "environment":("XDG_CONFIG_HOME","OPENCODE_CONFIG","OPENCODE_CONFIG_DIR","OPENCODE_CONFIG_CONTENT",
             "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX")},
 }
@@ -950,8 +957,17 @@ def _ctx_record_pairs(pairs):
 
 def _ctx_binding_structure(record, root):
     bindings, budgets = record.get("bindings"), record["budgets"]
-    if not isinstance(bindings,dict) or not bindings or set(bindings) != set(budgets) or not set(bindings) <= {key.split(".")[1] for key in CTX_INPUT_KEYS[:-3]}:
+    if not isinstance(bindings,dict) or set(bindings) != set(budgets) or not set(bindings) <= {key.split(".")[1] for key in CTX_INPUT_KEYS[:-3]}:
         raise ValueError("ctx 하네스 근거 귀속 구조 손상")
+    targets={key.split(".")[1]:str(Path(root)/rule["target"]) for key,rule in _CTX_INPUT_BINDING_RULES.items()}
+    if any(path not in record["fingerprints"] for path in targets.values()) or set(bindings)!=set(record["native_commands"]) or set(bindings)!={h for h,path in targets.items() if record["fingerprints"][path] is not None}:
+        raise ValueError("ctx 등록 하네스와 native/대상 근거 불일치")
+    if "target_shapes" in record:
+        import stat
+        shapes=record["target_shapes"]
+        expected={rule["target"] for rule in _CTX_INPUT_BINDING_RULES.values()}
+        if not isinstance(shapes,dict) or set(shapes)!=expected or set(bindings)!={key.split(".")[1] for key,rule in _CTX_INPUT_BINDING_RULES.items() if shapes[rule["target"]]==stat.S_IFREG}:
+            raise ValueError("ctx 등록 하네스와 준비 대상 집합 불일치")
     for harness,binding in bindings.items():
         if not isinstance(binding,dict) or binding.get("harness") != harness or type(binding.get("registry")) is not bool:
             raise ValueError("ctx 하네스 근거 귀속 형상 손상")
@@ -996,13 +1012,36 @@ def _ctx_binding_structure(record, root):
                 raise ValueError("ctx 모델 근거 구조 손상")
             source=model["metadata"].get("source")
             if not isinstance(source,str) or not source:raise ValueError("ctx 모델 원천 누락")
-            if Path(source).is_absolute() and source not in files:raise ValueError("ctx 모델 source의 파일 귀속 누락")
+            if Path(source).is_absolute() and (source not in files or roles.get("catalog")!=source):
+                raise ValueError("ctx 모델 source와 catalog 역할 귀속 불일치")
         if "managed_bundle" in roles and any(m["metadata"]["source"]=="claude-sdk-neutral" for m in budget["models"]):
             if roles["managed_bundle"] not in files:raise ValueError("Claude managed 원천 부재 근거 누락")
         if rule["registry"] and any(m["metadata"].get("semantics")=="input-context-output" for m in budget["models"]):
             used_registry=any(Path(m["metadata"]["source"]).is_absolute() for m in budget["models"])
             if binding["registry"]!=used_registry:raise ValueError("OpenCode 실사용 registry 귀속 불일치")
     return bindings
+
+
+def _ctx_role_source_correlation(binding, budget, root):
+    """실제 producer의 사용 원천과 현재 선택 경로를 대조한다. 외부 조회는 없다."""
+    rule=_CTX_INPUT_BINDING_RULES[f"harness.{binding['harness']}.ctx_window_tokens"]
+    sources=[model["metadata"]["source"] for model in budget["models"]]
+    # native catalog·protocol receipt의 실제 producer 역할을 확인한다.
+    # 독립 가용 한도 metadata에는 native 선택 경로를 새로 추정하지 않는다.
+    if not any(Path(source).is_absolute() or source==rule.get("protocol_source") or model["metadata"].get("source_version")
+               for source,model in zip(sources,budget["models"])):
+        return
+    expected={role:path for role,path in rule["live_roles"](Path(root),binding["registry"]).items()
+              if role in rule["roles"] or binding["registry"]}
+    if "manifest" in rule["roles"]:
+        entry=Path(binding["native_commands"][binding["harness"]])
+        preferred=rule.get("native_manifest")
+        candidates=([entry.parent.parent/preferred] if preferred else [])+[parent/"package.json" for parent in entry.parents[:3]]
+        manifest=next((path for path in candidates if path.is_file()),None)
+        if manifest is None:raise ValueError("ctx native 설치 manifest 원천 부재")
+        expected["manifest"]=str(manifest)
+    if any(binding["roles"].get(role)!=path for role,path in expected.items()):
+        raise ValueError("ctx producer source와 현재 선택 역할 불일치")
 
 
 def _ctx_budget_semantics(row, inputs, values, harness, identity):
@@ -1063,6 +1102,7 @@ def read_ctx_budget(root, values, harness, identity=None):
         binding = _ctx_binding_structure(record,root)[harness]
         if binding["environment"] != ctx_environment_fingerprints(harness,registry=binding.get("registry",False)):
             raise ValueError("native 모델/provider 환경 변경")
+        _ctx_role_source_correlation(binding,record["budgets"][harness],root)
         scoped_keys = (f"harness.{harness}.ctx_window_tokens",) + CTX_INPUT_KEYS[-3:]
         current_inputs = ctx_input_values(values)
         if any(record["inputs"].get(k) != current_inputs[k] for k in scoped_keys):

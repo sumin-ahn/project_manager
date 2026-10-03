@@ -1760,3 +1760,116 @@ def test_t0937_managed_source_absence_is_bound(tmp_path,monkeypatch):
     before=_snapshot_fixture_bytes(f.root)
     with pytest.raises(f.importer.HarnessCtxError):f.importer._commit_harness_ctx(plan)
     assert before==_snapshot_fixture_bytes(f.root)
+
+
+@pytest.mark.parametrize('harness', ['claude', 'codex'])
+@pytest.mark.parametrize('stage', ['record', 'commit'])
+@pytest.mark.parametrize('replacement', ['target', 'other-source', 'manifest-or-local'])
+def test_t0937_role_source_correlation(tmp_path, monkeypatch, harness, stage, replacement):
+    f=_t0937_actual_fixture(tmp_path,monkeypatch)
+    if stage=='commit':
+        updates={'ctx.compact_at_pct':'93'}
+        document=json.loads(f.importer._prepare_harness_ctx(f.root,{**f.values,**updates},updates=updates,opencode_config_dir=f.global_dir))
+    else:document=f.record
+    binding=document['bindings'][harness]
+    if harness=='claude':
+        index=1 if replacement=='manifest-or-local' else 0
+        original=binding['roles']['settings'][index]
+        binding['roles']['settings'][index]=str(f.root/'.codex/config.toml') if replacement=='other-source' else binding['target']
+        path=binding['roles']['settings'][index]
+        binding['fingerprints'][path]=document['fingerprints'][path]
+        if path not in binding['required_files']:binding['required_files'].append(path)
+        Path(original).write_text(json.dumps({'env':{'ANTHROPIC_MODEL':'changed-own-model'}}),encoding='utf-8')
+    else:
+        role='manifest' if replacement=='manifest-or-local' else 'auth'
+        original=binding['roles'][role]
+        binding['roles'][role]=binding['roles']['catalog'] if replacement=='other-source' else binding['target']
+        Path(original).write_text('{"synthetic":"changed-own-auth"}',encoding='utf-8')
+    binding['fingerprints'].pop(original)
+    binding['required_files'].remove(original)
+    document['fingerprints'].pop(original)
+    calls=list(f.calls)
+    writes=[]
+    for name in ('_write_conf_keys_locked','_harness_ctx_write','_atomic_write_dest_bytes'):
+        original_write=getattr(f.importer,name)
+        def write(*a,_name=name,_original=original_write,**kw):
+            writes.append(_name);return _original(*a,**kw)
+        monkeypatch.setattr(f.importer,name,write)
+    if stage=='record':
+        document['projection_sha256']=f.leaf.ctx_record_digest(document)
+        (f.root/f.leaf.CTX_BUDGET_RELPATH).write_text(json.dumps(document),encoding='utf-8')
+        before=_snapshot_fixture_bytes(f.root)
+        row=f.leaf.read_ctx_budget(f.root,f.values,harness,document['budgets'][harness]['identity'])
+        assert row['status']=='unknown' and all(row[k] is None for k in ('C','E','P')),row
+    else:
+        before=_snapshot_fixture_bytes(f.root)
+        with pytest.raises(f.importer.HarnessCtxError):f.importer._commit_harness_ctx(json.dumps(document))
+    assert before==_snapshot_fixture_bytes(f.root) and not writes and calls==f.calls
+
+
+@pytest.mark.parametrize('stage', ['record', 'commit', 'record-no-command', 'commit-no-command', 'record-empty', 'commit-empty', 'commit-shape', 'claude-only', 'codex-only', 'opencode-only', 'two-tools', 'empty'])
+def test_t0937_registered_owner_completeness(tmp_path, monkeypatch, stage):
+    damaged=stage.startswith(('record','commit'))
+    f=_t0937_actual_fixture(tmp_path,monkeypatch,apply=damaged)
+    identity=f.record['budgets']['claude']['identity'] if damaged else None
+    if stage.startswith('record'):
+        document=f.record
+    else:
+        keep={'claude-only':{'claude'},'codex-only':{'codex'},'opencode-only':{'opencode'},
+              'two-tools':{'claude','opencode'},'empty':set()}.get(stage,{'claude','codex','opencode'})
+        for harness,rel in f.importer.HARNESS_CTX_FILES.items():
+            if harness not in keep:(f.root/rel).unlink()
+        updates={'ctx.compact_at_pct':'93'}
+        document=json.loads(f.importer._prepare_harness_ctx(f.root,{**f.values,**updates},updates=updates,opencode_config_dir=f.global_dir))
+    if stage=='commit-shape':document['target_shapes'].pop('.codex/config.toml')
+    elif damaged:
+        document['bindings'].pop('codex');document['budgets'].pop('codex')
+        if stage.endswith('no-command'):document['native_commands'].pop('codex')
+        elif stage.endswith('empty'):document['bindings'].clear();document['budgets'].clear()
+    calls=list(f.calls)
+    if stage.startswith('record'):
+        document['projection_sha256']=f.leaf.ctx_record_digest(document)
+        (f.root/f.leaf.CTX_BUDGET_RELPATH).write_text(json.dumps(document),encoding='utf-8')
+        before=_snapshot_fixture_bytes(f.root)
+        row=f.leaf.read_ctx_budget(f.root,f.values,'claude',identity)
+        assert row['status']=='unknown' and all(row[k] is None for k in ('C','E','P')),row
+        assert before==_snapshot_fixture_bytes(f.root)
+    elif stage.startswith('commit'):
+        before=_snapshot_fixture_bytes(f.root)
+        writes=[]
+        for name in ('_write_conf_keys_locked','_harness_ctx_write','_atomic_write_dest_bytes'):
+            original=getattr(f.importer,name)
+            def write(*a,_name=name,_original=original,**kw):writes.append(_name);return _original(*a,**kw)
+            monkeypatch.setattr(f.importer,name,write)
+        with pytest.raises(f.importer.HarnessCtxError):f.importer._commit_harness_ctx(json.dumps(document))
+        assert before==_snapshot_fixture_bytes(f.root) and not writes
+    else:
+        result=f.importer._commit_harness_ctx(json.dumps(document));assert set(result[2])==keep
+        values=f.leaf.load(f.root/'.project_manager/local.conf').values
+        for harness,budget in result[2].items():
+            assert f.leaf.read_ctx_budget(f.root,values,harness,budget['identity'])['status']=='known'
+    assert calls==f.calls
+
+
+@pytest.mark.parametrize('harness',['claude','codex'])
+def test_t0937_role_source_shared_paths(tmp_path,monkeypatch,harness):
+    f=_t0937_actual_fixture(tmp_path,monkeypatch,apply=False)
+    if harness=='claude':monkeypatch.setenv('CLAUDE_CONFIG_DIR',str(f.root/'.claude'))
+    else:
+        home=f.root/'.codex'
+        text=(f.codex/'config.toml').read_text(encoding='utf-8').replace('model_context_window=600000\n','')
+        text+='\n[projects.'+json.dumps(str(f.root))+']\ntrust_level="trusted"\n'
+        (home/'config.toml').write_text(text,encoding='utf-8')
+        catalog=json.loads((f.codex/'models_cache.json').read_text(encoding='utf-8'))
+        catalog['models'][0]['context_window']=600000
+        (home/'models_cache.json').write_text(json.dumps(catalog),encoding='utf-8')
+        monkeypatch.setenv('CODEX_HOME',str(home))
+    f.importer.apply_harness_ctx(f.root,write=True,opencode_config_dir=f.global_dir)
+    record=json.loads((f.root/f.leaf.CTX_BUDGET_RELPATH).read_text(encoding='utf-8'))
+    roles=record['bindings'][harness]['roles']
+    assert (roles['settings'][0] if harness=='claude' else roles['selection'])==record['bindings'][harness]['target']
+    calls=list(f.calls);before=_snapshot_fixture_bytes(f.root)
+    values=f.leaf.load(f.root/'.project_manager/local.conf').values
+    for owner,budget in record['budgets'].items():
+        assert f.leaf.read_ctx_budget(f.root,values,owner,budget['identity'])['status']=='known'
+    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
