@@ -23,6 +23,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from _manager_home import _known_ctx_installation
 from _win_skip import posix_mode_supported
 
 REPO = Path(__file__).resolve().parents[1]
@@ -41,15 +42,11 @@ def _load_pm_update():
 @pytest.fixture(autouse=True)
 def _known_native_capacity(pm_update,monkeypatch):
     """정상 update baseline의 독립 C=1000000, raw T=2000000 고정 mock."""
-    from test_harness_ctx_limits import _t0932_reader
+    from _manager_home import known_ctx_reader
     original=pm_update._load_pm_import
     def load():
         module=original()
-        def reader(*a):
-            result=_t0932_reader(module,*a,capacity=1000000)
-            for row in result['models']:row['metadata']['context']=2000000
-            return result
-        module._read_harness_ctx_metadata=reader
+        module._read_harness_ctx_metadata=known_ctx_reader(module,capacity=1000000,context=2000000)
         return module
     monkeypatch.setattr(pm_update,'_load_pm_import',load)
 

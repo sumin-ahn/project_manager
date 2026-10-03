@@ -29,7 +29,7 @@ from pathlib import Path
 import pytest
 
 from _manager_home import (
-    conf_path, git_required, install_old_generation_engine, install_old_generation_key_registry,
+    _known_ctx_installation, conf_path, git_required, install_old_generation_engine, install_old_generation_key_registry,
     install_previous_generation_key_registry, install_slow_engine, make_bare_with_tags,
     make_pm_home, remove_engine_script, set_conf_key, tree_snapshot,
 )

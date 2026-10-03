@@ -720,3 +720,20 @@ it("T-0932 희망값과 실제 한도·적용 기준의 읽기 전용 표시", (
   expect(screen.getByTestId("budget-codex").textContent).toContain("모델 한도 확인 불가 (모델 정체 불일치)");
   expect(screen.queryByLabelText("actual_capacity")).toBeNull();
 });
+
+it("T-0937 다른 도구의 원천 변경에서 확인된 도구별 예산을 유지한다", () => {
+  const bridge=makeBridge();
+  const conf: ConfSection={...CONF,ctx_budget:{
+    claude:{status:"known",reason:null,W:600000,C:967000,E:600000,P:564000},
+    codex:{status:"unknown",reason:"모델 선택/native/metadata 근거 변경",W:600000,C:null,E:null,P:null},
+    opencode:{status:"known",reason:null,W:200000,C:1015808,E:200000,P:188000},
+  }};
+  mounted(bridge,false,null,settingsEntry({...VALUES,"harness.codex.ctx_window_tokens":"600000"}),lightEntry(conf));
+  openGroup("harness");
+  expect(screen.getByTestId("budget-claude")).toHaveTextContent("적용 기준 600000 · 압축 지점 564000 토큰");
+  expect(screen.getByTestId("budget-opencode")).toHaveTextContent("적용 기준 200000 · 압축 지점 188000 토큰");
+  expect(screen.getByTestId("budget-codex")).toHaveTextContent("모델 한도 확인 불가 (모델 선택/native/metadata 근거 변경)");
+  expect(screen.getByTestId("budget-codex")).not.toHaveTextContent("570000");
+  expect((screen.getByLabelText("harness.codex.ctx_window_tokens") as HTMLInputElement).value).toBe("600000");
+  expect(bridge.conf_save).not.toHaveBeenCalled();
+});

@@ -8187,7 +8187,9 @@ def _ctx_file_bytes(path):
 
 def _ctx_file_digest(path):
     raw = _ctx_file_bytes(path)
-    return content_sha256(raw) if raw is not None else None
+    if raw is not None:return content_sha256(raw)
+    shape = _ctx_target_shape(path)
+    return None if shape is None else f"shape:{shape}"
 
 
 def _ctx_target_shape(path):
@@ -8479,6 +8481,9 @@ def _ctx_claude_metadata(harness, documents, models, read, row, evidence, native
     reply_max, buffer = _ctx_claude_policy(native)
     native_files[str(entry)] = before; native_commands[harness] = str(entry)
     home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home()/".claude")
+    documents["_ctx_roles"] = {"settings":[str((home/"settings.json").resolve()),str(root/".claude/settings.local.json"),
+        "/etc/claude-code/managed-settings.json"],"managed_bundle":"/etc/claude-code/managed-settings.d"}
+    evidence[documents["_ctx_roles"]["managed_bundle"]] = _ctx_file_digest(Path(documents["_ctx_roles"]["managed_bundle"]))
     if Path("/etc/claude-code/managed-settings.d").exists():
         raise ValueError("Claude managed 설정 묶음의 선택 근거 미지원")
     settings = [read(home/"settings.json"), documents[HARNESS_CTX_FILES[harness]], read(root/".claude/settings.local.json"),
@@ -8604,9 +8609,12 @@ def _ctx_codex_native_selection(root, entry, read, evidence, native_files):
 def _ctx_catalog_percent_metadata(harness, documents, models, read, row, evidence, native_files, native_commands):
     from datetime import timedelta
     version, native = _ctx_native_install(harness, evidence, native_files, native_commands)
+    documents["_ctx_roles"] = {"manifest":next(iter(evidence))}
     if version not in ("0.159.3", "0.160.0"):
         raise ValueError("Codex 설치 버전의 설정 선택 규칙 미확인")
     home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    documents["_ctx_roles"].update(selection=str((home/"config.toml").resolve()),auth=str((home/"auth.json").resolve()),
+                                  catalog=str((home/"models_cache.json").resolve()))
     global_conf = read(home / "config.toml", toml=True)
     profile = global_conf.get("profile", "")
     selected = {**global_conf, **global_conf.get("profiles", {}).get(profile, {})}
@@ -8621,6 +8629,7 @@ def _ctx_catalog_percent_metadata(harness, documents, models, read, row, evidenc
     model, provider_id = selected.get("model"), selected.get("model_provider", "openai")
     provider = global_conf.get("model_providers", {}).get(provider_id)
     use_native = not isinstance(provider, dict) or provider.get("requires_openai_auth") or (home/"auth.json").exists()
+    evidence[str((home/"auth.json").resolve())] = _ctx_file_digest(home/"auth.json")
     if use_native:
         if version != "0.160.0":
             raise ValueError("Codex 인증 catalog protocol 설치 버전 미지원")
@@ -8743,6 +8752,7 @@ def _ctx_ollama_rows(documents, models, output_max, row, version):
 def _ctx_registry_output_metadata(harness, documents, models, read, row, evidence, native_files, native_commands):
     from datetime import datetime, timezone
     version, native = _ctx_native_install(harness, evidence, native_files, native_commands)
+    documents["_ctx_roles"] = {"manifest":next(iter(evidence))}
     output_max = _ctx_opencode_policy(native)
     path = Path(os.environ.get("XDG_CACHE_HOME") or Path.home()/".cache")/"opencode/models.json"
     catalog = read(path)
@@ -8774,11 +8784,16 @@ def _ctx_registry_output_metadata(harness, documents, models, read, row, evidenc
         # native input은 독립 입력 상한이다. E−P는 압축 margin이며 C에서 다시 빼지 않는다.
         row({"model":model,"provider":provider,"profile":""},payload,path,generation,
             observed,None,"input-context-output",version)
+        documents["_ctx_roles"]["catalog"] = str(path.resolve())
+        documents["_ctx_registry"] = True
+    if not documents.get("_ctx_registry"):
+        documents["_ctx_unused_sources"] = [str(path.resolve())]
 
 
 def _read_harness_ctx_metadata(dest_root, harness, documents, models):
     """실제 native catalog 형식을 읽고 선택·설치 정책과 결속한다. 외부 실행은 없다."""
     evidence, rows, native_files, native_commands = {}, [], {}, {}
+    documents = dict(documents)
     def read(path, toml=False):
         path = Path(path).resolve()
         raw = _ctx_file_bytes(path)
@@ -8793,7 +8808,10 @@ def _read_harness_ctx_metadata(dest_root, harness, documents, models):
     try:
         rule = HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]]
         rule.metadata_reader(harness, documents, models, read, row, evidence, native_files, native_commands)
-        return {"models":rows,"evidence":evidence,"native_files":native_files,"native_commands":native_commands}
+        runtime_evidence = {path:digest for path,digest in evidence.items() if path not in documents.get("_ctx_unused_sources",())}
+        registry = documents.get("_ctx_registry",False)
+        return {"models":rows,"evidence":evidence,"runtime_evidence":runtime_evidence,"registry":registry,
+                "roles":documents.get("_ctx_roles",{}),"native_files":native_files,"native_commands":native_commands}
     except (OSError, UnicodeError, ValueError, TypeError, AttributeError, KeyError) as exc:
         return {"models":[],"evidence":evidence,"reason":str(exc)}
 
@@ -8836,7 +8854,7 @@ def _prepare_harness_ctx(dest_root, values, *, opencode_config_dir, updates=None
               str(dest_root / module.CTX_BUDGET_RELPATH): _ctx_file_digest(dest_root / module.CTX_BUDGET_RELPATH)}
     if _load_adapter_baseline_document(dest_root).status == "newer-schema":
         raise HarnessCtxError(["어댑터 config 원장 schema가 엔진 지원 상한보다 새롭습니다."])
-    budgets, native_files, native_commands = {}, {}, {}
+    budgets, bindings, native_files, native_commands = {}, {}, {}, {}
     ratios = tuple(int(_harness_ctx_value(values, key)) for key in _HARNESS_CTX_RATIO_KEYS)
     for harness in HARNESS_CTX_FILES:
         if harness not in present:
@@ -8848,6 +8866,14 @@ def _prepare_harness_ctx(dest_root, values, *, opencode_config_dir, updates=None
         fingerprints.update(snapshot["evidence"])
         native_files.update(snapshot.get("native_files",{}))
         native_commands.update(snapshot.get("native_commands",{}))
+        own_fingerprints = dict(snapshot.get("runtime_evidence",snapshot["evidence"]))
+        own_fingerprints[str(dest_root/HARNESS_CTX_FILES[harness])] = fingerprints[str(dest_root/HARNESS_CTX_FILES[harness])]
+        if HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]].model_limits:own_fingerprints.update(global_fingerprints)
+        bindings[harness] = {"harness":harness,"fingerprints":own_fingerprints,"registry":snapshot.get("registry",False),
+            "native_files":snapshot.get("native_files",{}),"native_commands":snapshot.get("native_commands",{}),
+            "environment":module.ctx_environment_fingerprints(harness,registry=snapshot.get("registry",False)),
+            "target":str(dest_root/HARNESS_CTX_FILES[harness]),"required_files":sorted(own_fingerprints),"roles":snapshot.get("roles",{})}
+        if HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]].model_limits:bindings[harness]["roles"]["global"] = sorted(global_fingerprints)
         window = int(_harness_ctx_value(values, _harness_ctx_window_key(harness)))
         results = [module.resolve_ctx_capacity(window, ratios, row.get("identity", {}), row.get("metadata")) for row in rows]
         if any(row["status"] != "known" for row in results):
@@ -8884,7 +8910,7 @@ def _prepare_harness_ctx(dest_root, values, *, opencode_config_dir, updates=None
             changed[rel] = [text, new_text]
     return json.dumps({"root": str(dest_root), "environment": environment, "inputs": module.ctx_input_values(values), "budgets": budgets,
                        "fingerprints": fingerprints, "native_files": native_files, "native_commands": native_commands, "before": before, "changed": changed, "lines": lines,
-                       "target_shapes": shapes, "updates": updates or {}}, ensure_ascii=False)
+                       "target_shapes": shapes, "bindings":bindings, "updates": updates or {}}, ensure_ascii=False)
 
 
 def _commit_harness_ctx(plan):
@@ -8902,6 +8928,13 @@ def _commit_harness_ctx(plan):
                 raise HarnessCtxError([f"ctx 계획 stale: {path} 근거 바이트 변경"])
         if not module._ctx_native_matches(document):
             raise HarnessCtxError(["ctx 계획 stale: native 설치 세대 변경"])
+        try:
+            module._ctx_binding_structure(document,root)
+            for harness,budget in document["budgets"].items():
+                module._ctx_role_source_correlation(document["bindings"][harness],budget,root)
+                module._ctx_budget_semantics(budget,document["inputs"],document["inputs"],harness,budget["identity"])
+        except (ValueError,TypeError,KeyError,AttributeError) as exc:
+            raise HarnessCtxError([f"ctx 계획 stale: {exc}"]) from None
         ratios = tuple(int(document["inputs"][k]) for k in _HARNESS_CTX_RATIO_KEYS)
         for budget in document["budgets"].values():
             for row in budget["models"]:
@@ -8923,7 +8956,9 @@ def _commit_harness_ctx(plan):
         fingerprints = dict(document["fingerprints"])
         for rel, (_, after) in document["changed"].items():
             fingerprints[str(root / rel)] = content_sha256(after.encode("utf-8"))
-        record = {"schema": 1, "environment": document["environment"], "inputs": document["inputs"], "budgets": document["budgets"], "fingerprints": fingerprints, "native_files": document["native_files"], "native_commands": document["native_commands"]}
+            for binding in document["bindings"].values():
+                if str(root/rel) in binding["fingerprints"]:binding["fingerprints"][str(root/rel)]=fingerprints[str(root/rel)]
+        record = {"schema": 2, "bindings":document["bindings"], "environment": document["environment"], "inputs": document["inputs"], "budgets": document["budgets"], "fingerprints": fingerprints, "native_files": document["native_files"], "native_commands": document["native_commands"]}
         record["projection_sha256"] = module.ctx_record_digest(record)
         raw = (json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
         if _ctx_file_bytes(root / module.CTX_BUDGET_RELPATH) != raw:

@@ -36,6 +36,8 @@ from pathlib import Path
 
 import pytest
 
+from test_harness_ctx_limits import _legacy_native_fixture
+
 from _git_fixture import remove_git_tree
 # T-0908 의 URL 캐시 픽스처(로컬 bare + `file://` · 네트워크 0)를 그대로 쓴다 — 캐시 자리·
 # 형상 판정을 두 벌로 만들지 않는다.
@@ -1116,3 +1118,28 @@ def test_t0932_review_damaged_ctx_record(tmp_path, record):
     target.write_text(json.dumps(record), encoding='utf-8')
     statuses = leaf.ctx_budget_status(tmp_path, {})
     assert all(value['status'] == 'unknown' and value['E'] is None for value in statuses.values())
+
+
+def test_t0937_status_ctx_budget_scoped_readonly(tmp_path,monkeypatch):
+    from test_harness_ctx_limits import _t0937_actual_fixture,_snapshot_fixture_bytes,_load
+    f=_t0937_actual_fixture(tmp_path,monkeypatch);module=_load('pm_config');monkeypatch.setattr(module,'REPO',f.root)
+    (f.codex/'models_cache.json').write_text('{"client_version":"0.150.0","models":[]}',encoding='utf-8')
+    before=_snapshot_fixture_bytes(f.root);calls=list(f.calls)
+    rows=module._status_json_conf(None)['ctx_budget']
+    assert rows['claude']['status']=='known' and rows['claude']['E']==600000
+    assert rows['opencode']['status']=='known' and rows['opencode']['E']==200000
+    assert rows['codex']['status']=='unknown' and rows['codex']['C'] is None and rows['codex']['E'] is None
+    assert '변경' in rows['codex']['reason']
+    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
+
+
+def test_t0937_gui_projection_preserves_scoped_unknown(tmp_path,monkeypatch):
+    from test_harness_ctx_limits import _t0937_actual_fixture,_snapshot_fixture_bytes,_load
+    f=_t0937_actual_fixture(tmp_path,monkeypatch);module=_load('pm_config');monkeypatch.setattr(module,'REPO',f.root)
+    (f.codex/'models_cache.json').write_text('{}',encoding='utf-8')
+    before=_snapshot_fixture_bytes(f.root);calls=list(f.calls)
+    rows=module._status_json_conf(None)['ctx_budget']
+    assert rows['codex']['W']==600000 and all(rows['codex'][k] is None for k in ('C','E','P'))
+    assert all(rows[h]['status']=='known' for h in ('claude','opencode'))
+    assert all(k not in json.dumps(rows) for k in ('bindings','environment','native_commands','native_files','fingerprints','access_token','refresh_token'))
+    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls

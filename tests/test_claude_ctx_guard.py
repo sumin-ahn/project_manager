@@ -24,6 +24,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from test_harness_ctx_limits import _legacy_native_fixture
+
 from _textio import normalize_newline_bytes, utf8_child_env, write_lf
 from _win_skip import posix_mode_supported
 
@@ -1799,8 +1801,8 @@ def test_settings_auto_compact_enabled_true():
     )
 
 @pytest.fixture(autouse=True)
-def _known_legacy_ctx_fixture(request,tmp_path,monkeypatch,guard,statusline,stop_hook):
-    if 't0932' in request.node.name:return
+def _known_legacy_ctx_fixture(request,tmp_path,monkeypatch,guard,statusline,stop_hook,_legacy_native_fixture):
+    if 't0932' in request.node.name or 't0937' in request.node.name:return
     from test_harness_ctx_limits import _t0932_known_leaf
     leaf,identity=_t0932_known_leaf(tmp_path/'known-capacity')
     # marker 경쟁 대역이 os.open을 변형하기 전에 fixture 예산을 준비한다.
@@ -1852,3 +1854,25 @@ def test_t0932_native_standard_statusline_receipt_binding(guard,statusline,tmp_p
     rendered=statusline.build_statusline(payload,leaf.load(root/'.project_manager/local.conf').values,root=root)
     assert ('ctx 50%' in rendered) if changed is None else ('unknown' in rendered)
     assert _snapshot_fixture_bytes(root)==before
+
+
+def test_t0937_claude_scoped_budget_statusline_hook(guard,statusline,stop_hook,tmp_path,monkeypatch):
+    from test_harness_ctx_limits import _t0937_actual_fixture,_snapshot_fixture_bytes
+    f=_t0937_actual_fixture(tmp_path,monkeypatch);guard=_load('ctx_guard')
+    monkeypatch.setattr(guard,'_ctx_leaf',lambda root:f.leaf);monkeypatch.setattr(statusline,'ctx_guard',guard)
+    monkeypatch.setattr(stop_hook,'ctx_guard',guard)
+    identity=f.record['budgets']['claude']['identity']
+    (f.codex/'models_cache.json').write_text('{}',encoding='utf-8');f.registry.write_text('{}',encoding='utf-8')
+    before=_snapshot_fixture_bytes(f.root);calls=list(f.calls)
+    assert guard.resolve_budget(f.values,root=f.root,identity=identity)==600000
+    payload={**identity,'context_window':{'current_usage':{'input_tokens':540000}}}
+    assert 'ctx 90%' in statusline.build_statusline(payload,f.values,root=f.root)
+    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
+    transcript=_write_transcript(f.root,[('assistant',{'input_tokens':540000})])
+    stdin={**identity,'hook_event_name':'UserPromptSubmit','session_id':'t0937','transcript_path':str(transcript)}
+    monkeypatch.setattr(stop_hook,'_build_ctx_guidance',lambda *a,**kw:f"E600000 used={kw['used_pct']}")
+    rc,out=stop_hook.evaluate(stdin,f.root,f.values);assert rc==0 and 'used=90' in json.dumps(out)
+    Path(f.record['bindings']['claude']['roles']['settings'][0]).write_text('{"env":{"ANTHROPIC_MODEL":"other"}}',encoding='utf-8')
+    assert guard.resolve_budget(f.values,root=f.root,identity=identity) is None
+    assert 'unknown' in statusline.build_statusline(payload,f.values,root=f.root)
+    assert stop_hook.evaluate(stdin,f.root,f.values)==(0,None) and calls==f.calls

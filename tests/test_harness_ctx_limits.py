@@ -716,7 +716,19 @@ def _t0932_reader(pm_import,root,harness,documents,models,capacity=200000):
         metadata=_t0932_metadata(identity,capacity)
         metadata.update(native_formula='input-reserved',output=128000,effective_output=32000)
         rows.append({'identity':identity,'metadata':metadata})
-    return {'models':rows,'evidence':{str(source.resolve()):_sha(source)}}
+    native=Path(shutil.which(harness) or '')
+    native_files={str(native.resolve()):pm_import._ctx_native_stat(native)} if native.is_file() else {}
+    native_commands={harness:str(native.resolve())} if native.is_file() else {}
+    evidence={str(source.resolve()):_sha(source)}
+    if harness=='claude':
+        settings=[str(source.resolve()),str(root/'.claude/settings.local.json'),str(root/'.project_manager/mock-managed.json')]
+        roles={'settings':settings,'managed_bundle':'/etc/claude-code/managed-settings.d'}
+        for path in settings:evidence[path]=pm_import._ctx_file_digest(Path(path))
+    elif harness=='codex':
+        auth=str(root/'.project_manager/mock-auth.json');evidence[auth]=None
+        roles={'manifest':str(source.resolve()),'selection':str(source.resolve()),'catalog':str(source.resolve()),'auth':auth}
+    else:roles={'manifest':str(source.resolve())}
+    return {'models':rows,'evidence':evidence,'native_files':native_files,'native_commands':native_commands,'roles':roles}
 
 
 def test_t0932_native_constraints_clamped_actual_entry(pm_import,tmp_path,monkeypatch):
@@ -785,8 +797,18 @@ def test_t0932_native_constraints_opencode_min_and_unknown(pm_import,tmp_path,mo
     assert before==(root/'.opencode/opencode.jsonc').read_bytes()
 
 @pytest.fixture(autouse=True)
+def _legacy_native_fixture(request,tmp_path,monkeypatch):
+    """기존 독립 metadata fixture의 설치/명령 정체만 격리한다. C는 공급하지 않는다."""
+    if 't0937' in request.node.name:return
+    folder=tmp_path/'legacy-native-bin';folder.mkdir()
+    for harness in ('claude','codex','opencode'):
+        command=folder/harness;command.write_text('#!/bin/sh\nexit 91\n',encoding='utf-8');command.chmod(0o755)
+    monkeypatch.setenv('PATH',str(folder)+os.pathsep+os.environ.get('PATH',''))
+
+
+@pytest.fixture(autouse=True)
 def _legacy_independent_metadata(request,pm_import,monkeypatch):
-    if 't0932' in request.node.name:
+    if 't0932' in request.node.name or 't0937' in request.node.name:
         return
     def reader(*a):
         result=_t0932_reader(pm_import,*a)
@@ -1527,3 +1549,327 @@ def test_t0932_native_file_auth_bound_catalog(tmp_path,monkeypatch,capsys,bad):
         k:v for k,v in user_before.items() if bad!='file-race' or k!='config.toml'}
     projection+=str(capsys.readouterr())
     assert all(value not in projection for value in ('DO-NOT-OUTPUT','fixture@example.invalid','fixture-user','fixture-account','header.'))
+
+
+def _t0937_actual_fixture(tmp_path,monkeypatch,*,mixed=False,apply=True):
+    """제품 producer는 그대로 실행하며 native protocol/show만 격리한다."""
+    from datetime import datetime,timezone
+    from types import SimpleNamespace
+    importer=_load('pm_import');leaf=importer._load_local_conf()
+    isolated=tmp_path/'isolated-home';isolated.mkdir();monkeypatch.setenv('HOME',str(isolated))
+    receipt=_t0932_control_claude_fixture(tmp_path,monkeypatch)
+    codex,catalog=_t0932_codex_native_catalog(tmp_path,monkeypatch,version='0.160.0')
+    path=codex/'config.toml';path.write_text('model_context_window=600000\n'+path.read_text(encoding='utf-8'),encoding='utf-8')
+    op_native=_t0932_native_install(tmp_path,monkeypatch,'opencode','1.18.34')
+    binaries=[Path(shutil.which(h)) for h in ('claude','codex','opencode')]
+    for binary in binaries:binary.chmod(0o755)
+    # 별도 Node/Python 소비도 같은 격리 설치를 선택한다. command는 실행하지 않는다.
+    (op_native.parent/'opencode').symlink_to(op_native.name)
+    monkeypatch.setenv('PATH',os.pathsep.join(str(b.parent) for b in binaries)+os.pathsep+os.environ.get('PATH',''))
+    cache=tmp_path/'cache';(cache/'opencode').mkdir(parents=True);monkeypatch.setenv('XDG_CACHE_HOME',str(cache))
+    registry=cache/'opencode/models.json'
+    registry.write_text(json.dumps({'registry':{'id':'registry','api':'https://registry.invalid/v1','models':{
+        'exact-registry':{'id':'exact-registry','limit':{'context':262144,'input':250000,'output':128000}}}}}),encoding='utf-8')
+    provider={'ollama':{'npm':'@ai-sdk/openai-compatible','options':{'baseURL':'http://fixture.invalid:11434/v1'},
+        'models':{'glm-5.2:cloud':{'limit':{'output':32768}}}}}
+    if mixed:provider['registry']={'models':{'exact-registry':{'limit':{'output':128000}}}}
+    root=_project(tmp_path,conf='harness.claude.ctx_window_tokens=600000\nharness.codex.ctx_window_tokens=600000\nharness.opencode.ctx_window_tokens=200000\nctx.checkpoint_at_pct=80\nctx.precompact_at_pct=90\nctx.compact_at_pct=94\n',
+        texts={'.opencode/opencode.jsonc':json.dumps({'provider':provider})})
+    global_dir=_global_dir(tmp_path);calls=[]
+    def protocol(*a,**kw):calls.append('protocol');return receipt
+    def show(origin,model):
+        calls.append('show')
+        return {'model':model,'origin':origin,'body':{'model_info':{'general.architecture':'glm','glm.context_length':1048576}},
+            'generation':'independent-show-generation','observed_at':datetime.now(timezone.utc).isoformat()}
+    monkeypatch.setattr(importer,'_ctx_native_protocol',protocol)
+    monkeypatch.setattr(importer,'_ctx_ollama_show',show)
+    if apply:importer.apply_harness_ctx(root,write=True,opencode_config_dir=global_dir)
+    values=leaf.load(root/'.project_manager/local.conf').values
+    record=json.loads((root/leaf.CTX_BUDGET_RELPATH).read_text(encoding='utf-8')) if apply else {}
+    return SimpleNamespace(importer=importer,leaf=leaf,root=root,values=values,record=record,codex=codex,
+        registry=registry,global_dir=global_dir,calls=calls,op_native=op_native)
+
+
+@pytest.mark.parametrize('source',['codex-cache','codex-config','opencode-config'])
+def test_t0937_actual_producer_scope_matrix(tmp_path,monkeypatch,source):
+    f=_t0937_actual_fixture(tmp_path,monkeypatch)
+    assert all(f.leaf.read_ctx_budget(f.root,f.values,h,b['identity'])['status']=='known' for h,b in f.record['budgets'].items())
+    assert (f.record['budgets']['claude']['E'],f.record['budgets']['codex']['E'],f.record['budgets']['opencode']['E'])==(600000,570000,200000)
+    if source=='codex-cache':(f.codex/'models_cache.json').write_text('{"client_version":"0.150.0","models":[]}',encoding='utf-8')
+    elif source=='codex-config':(f.codex/'config.toml').write_text('model="other"\n',encoding='utf-8')
+    else:(f.global_dir/'opencode.json').write_text('{}',encoding='utf-8')
+    own='opencode' if source.startswith('opencode') else 'codex';calls=list(f.calls);before=_snapshot_fixture_bytes(f.root)
+    for h,b in f.record['budgets'].items():
+        result=f.leaf.read_ctx_budget(f.root,f.values,h,b['identity'])
+        assert result['status']==('unknown' if h==own else 'known'),(h,result)
+        assert result['E']==(None if h==own else b['E'])
+    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
+
+
+@pytest.mark.parametrize('mixed',[False,True])
+def test_t0937_opencode_used_source_matrix(tmp_path,monkeypatch,mixed):
+    f=_t0937_actual_fixture(tmp_path,monkeypatch,mixed=mixed)
+    f.registry.write_text('{}',encoding='utf-8');calls=list(f.calls);before=_snapshot_fixture_bytes(f.root)
+    row=f.record['budgets']['opencode'];result=f.leaf.read_ctx_budget(f.root,f.values,'opencode',row['identity'])
+    assert result['status']==('unknown' if mixed else 'known')
+    assert result['E']==(None if mixed else 200000)
+    assert f.leaf.read_ctx_budget(f.root,f.values,'claude',f.record['budgets']['claude']['identity'])['status']=='known'
+    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
+
+
+@pytest.mark.parametrize('change',['claude-env','codex-env','opencode-env','unused-cache-env','claude-window','codex-window',
+    'opencode-window','ratio','claude-native','codex-native','opencode-native','ttl-before','ttl-expired'])
+def test_t0937_scoped_native_environment_inputs(tmp_path,monkeypatch,change):
+    from datetime import timedelta
+    f=_t0937_actual_fixture(tmp_path,monkeypatch);affected=set()
+    if change.endswith('-env'):
+        key={'claude-env':'ANTHROPIC_MODEL','codex-env':'CODEX_HOME','opencode-env':'OPENCODE_CONFIG_CONTENT',
+             'unused-cache-env':'XDG_CACHE_HOME'}[change]
+        monkeypatch.setenv(key,'changed scope');affected=set() if change=='unused-cache-env' else {change.split('-')[0]}
+    elif change.endswith('-window'):
+        h=change.split('-')[0];f.values[f'harness.{h}.ctx_window_tokens']='300000';affected={h}
+    elif change=='ratio':f.values['ctx.checkpoint_at_pct']='79';affected=set(f.record['budgets'])
+    elif change.endswith('-native'):
+        h=change.split('-')[0];path=Path(f.record['native_commands'][h]);path.write_bytes(path.read_bytes()+b'changed install');affected={h}
+    else:
+        now=f.leaf._ctx_time(f.record['budgets']['codex']['metadata']['observed_at'])+timedelta(seconds=299 if change=='ttl-before' else 300)
+        original=f.leaf.resolve_ctx_capacity
+        monkeypatch.setattr(f.leaf,'resolve_ctx_capacity',lambda window,ratios,identity,metadata:original(window,ratios,identity,metadata,now=now))
+        affected=set() if change=='ttl-before' else {'codex'}
+    before=_snapshot_fixture_bytes(f.root);calls=list(f.calls)
+    for h,b in f.record['budgets'].items():
+        row=f.leaf.read_ctx_budget(f.root,f.values,h,b['identity'])
+        assert row['status']==('unknown' if h in affected else 'known'),(h,row)
+        assert row['E']==(None if h in affected else b['E'])
+    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
+
+
+@pytest.mark.parametrize('damage',['none','bindings-missing','binding-null','unknown-owner','swapped-owner','native-empty','install-empty',
+    'required-file','settings-role','catalog-file','registry-string','registry-hidden','models-duplicate','capacity','point','native-window','metadata',
+    'json-duplicate'])
+def test_t0937_record_scope_and_semantic_integrity(tmp_path,monkeypatch,damage):
+    f=_t0937_actual_fixture(tmp_path,monkeypatch,mixed=damage=='registry-hidden');r=f.record;b=r['bindings']['claude'];row=r['budgets']['claude']
+    if damage=='bindings-missing':r.pop('bindings')
+    elif damage=='binding-null':r['bindings']['claude']=None
+    elif damage=='unknown-owner':r['bindings']['other']=b
+    elif damage=='swapped-owner':r['bindings']['claude']=r['bindings']['codex']
+    elif damage=='native-empty':b['native_commands']={}
+    elif damage=='install-empty':b['native_files']={}
+    elif damage=='required-file':b['fingerprints'].pop(b['roles']['settings'][0])
+    elif damage=='settings-role':b['roles'].pop('settings')
+    elif damage=='catalog-file':
+        c=r['bindings']['codex'];p=c['roles']['catalog'];c['fingerprints'].pop(p);c['required_files'].remove(p)
+    elif damage=='registry-string':r['bindings']['opencode']['registry']='false'
+    elif damage=='registry-hidden':r['bindings']['opencode']['registry']=False;r['bindings']['opencode']['roles'].pop('catalog')
+    elif damage=='models-duplicate':row['models'].append(row['models'][0])
+    elif damage=='capacity':row['C']+=1
+    elif damage=='point':row['P']+=1
+    elif damage=='native-window':row['native_window']+=1
+    elif damage=='metadata':row['models'][0]['metadata']['reserved']+=1
+    path=f.root/f.leaf.CTX_BUDGET_RELPATH
+    if damage!='bindings-missing':r['projection_sha256']=f.leaf.ctx_record_digest(r)
+    raw=json.dumps(r)
+    if damage=='json-duplicate':raw=raw.replace('"bindings": {','"bindings": {}, "bindings": {',1)
+    path.write_text(raw,encoding='utf-8');before=_snapshot_fixture_bytes(f.root);calls=list(f.calls)
+    result=f.leaf.read_ctx_budget(f.root,f.values,'claude',row['identity'])
+    assert result['status']==('known' if damage=='none' else 'unknown'),(damage,result)
+    if damage!='none':assert all(result[k] is None for k in ('C','E','P'))
+    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
+
+
+@pytest.mark.parametrize('changed',['claude-source','codex-source','opencode-source','unused-registry','conf','baseline','record',
+    'target-add','target-shape','native','environment','ttl','capacity','point','binding'])
+def test_t0937_commit_preflight_all_sources_no_write(tmp_path,monkeypatch,changed):
+    from datetime import datetime,timezone
+    f=_t0937_actual_fixture(tmp_path,monkeypatch);plan=f.importer._prepare_harness_ctx(f.root,f.values,opencode_config_dir=f.global_dir)
+    doc=json.loads(plan)
+    if changed=='claude-source':Path(doc['bindings']['claude']['roles']['settings'][0]).write_text('{}\n',encoding='utf-8')
+    elif changed=='codex-source':(f.codex/'models_cache.json').write_text('{}',encoding='utf-8')
+    elif changed=='opencode-source':(f.global_dir/'config.json').write_text('{}',encoding='utf-8')
+    elif changed=='unused-registry':f.registry.write_text('{}',encoding='utf-8')
+    elif changed in ('conf','baseline','record'):
+        name={'conf':'.project_manager/local.conf','baseline':f.importer.ADAPTER_BASELINE_RELPATH,'record':f.leaf.CTX_BUDGET_RELPATH}[changed]
+        (f.root/name).write_bytes(b'changed bytes')
+    elif changed=='target-add':
+        # 부재 대상의 등장도 검사한다. 새 단일 하네스 fixture에서 다른 설정을 추가한다.
+        path=f.root/'.codex/config.toml';path.unlink();plan=f.importer._prepare_harness_ctx(f.root,f.values,opencode_config_dir=f.global_dir)
+        path.write_text('model="new"',encoding='utf-8')
+    elif changed=='target-shape':path=f.root/'.claude/settings.json';path.unlink();path.mkdir()
+    elif changed=='native':f.op_native.write_bytes(f.op_native.read_bytes()+b'changed')
+    elif changed=='environment':monkeypatch.setenv('CODEX_HOME','changed')
+    elif changed=='ttl':
+        original=f.importer._load_local_conf;leaf=original();resolve=leaf.resolve_ctx_capacity
+        deadline=leaf._ctx_time(doc['budgets']['codex']['metadata']['valid_until'])
+        leaf.resolve_ctx_capacity=lambda w,r,i,m:resolve(w,r,i,m,now=deadline)
+        monkeypatch.setattr(f.importer,'_load_local_conf',lambda:leaf)
+    else:
+        if changed=='capacity':doc['budgets']['claude']['C']+=1
+        elif changed=='point':doc['budgets']['claude']['P']+=1
+        else:doc['bindings']['claude']['native_commands']={}
+        plan=json.dumps(doc)
+    calls=[]
+    for name in ('_write_conf_keys_locked','_harness_ctx_write','_atomic_write_dest_bytes'):
+        original=getattr(f.importer,name)
+        def write(*a,_name=name,_original=original,**kw):calls.append(_name);return _original(*a,**kw)
+        monkeypatch.setattr(f.importer,name,write)
+    before=_snapshot_fixture_bytes(f.root)
+    with pytest.raises(f.importer.HarnessCtxError):f.importer._commit_harness_ctx(plan)
+    assert before==_snapshot_fixture_bytes(f.root) and not calls
+
+
+def test_t0937_legacy_unknown_existing_apply_refresh(tmp_path,monkeypatch):
+    f=_t0937_actual_fixture(tmp_path,monkeypatch);path=f.root/f.leaf.CTX_BUDGET_RELPATH
+    legacy=dict(f.record);legacy['schema']=1;legacy.pop('bindings');legacy['projection_sha256']=f.leaf.ctx_record_digest(legacy)
+    path.write_text(json.dumps(legacy),encoding='utf-8');before=_snapshot_fixture_bytes(f.root);calls=list(f.calls)
+    row=f.leaf.read_ctx_budget(f.root,f.values,'claude',legacy['budgets']['claude']['identity'])
+    assert row['status']=='unknown' and '재검증' in row['reason'] and row['E'] is None
+    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
+    f.importer.apply_harness_ctx(f.root,write=True,opencode_config_dir=f.global_dir)
+    refreshed=json.loads(path.read_text(encoding='utf-8'));assert refreshed['schema']==2
+    assert f.leaf.read_ctx_budget(f.root,f.values,'claude',refreshed['budgets']['claude']['identity'])['status']=='known'
+
+
+def test_t0937_setup_fixture_without_installed_cli(tmp_path,monkeypatch):
+    from _manager_home import _KNOWN_CTX_READER_PY, known_ctx_module
+    monkeypatch.setenv('PATH',str(tmp_path/'empty-path'))
+    monkeypatch.delenv('_KNOWN_CTX_FIXTURE_BIN',raising=False)
+    original=shutil.which
+    assert shutil.which('claude') is None
+    namespace={};exec(_KNOWN_CTX_READER_PY,namespace)
+    with namespace['fixture_native_installation'](tmp_path/'native'):
+        importer=_load('pm_import');known_ctx_module(importer)
+        for index in range(2):
+            root=_project(tmp_path/str(index),harnesses=('claude',))
+            importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path/str(index)))
+            leaf=importer._load_local_conf();record=json.loads((root/leaf.CTX_BUDGET_RELPATH).read_text(encoding='utf-8'))
+            assert leaf.read_ctx_budget(root,leaf.load(root/'.project_manager/local.conf').values,'claude',record['budgets']['claude']['identity'])['status']=='known'
+            assert not (root/'.project_manager/mock-native-bin').exists()
+            assert shutil.which is original
+    assert shutil.which is original and shutil.which('claude') is None
+    assert '_KNOWN_CTX_FIXTURE_BIN' not in os.environ
+
+
+def test_t0937_managed_source_absence_is_bound(tmp_path,monkeypatch):
+    import stat
+    from types import SimpleNamespace
+    f=_t0937_actual_fixture(tmp_path,monkeypatch);plan=f.importer._prepare_harness_ctx(f.root,f.values,opencode_config_dir=f.global_dir)
+    bundle=f.record['bindings']['claude']['roles']['managed_bundle'];original=Path.lstat
+    monkeypatch.setattr(Path,'lstat',lambda path,*a,**kw:SimpleNamespace(st_mode=stat.S_IFDIR) if str(path)==bundle else original(path,*a,**kw))
+    assert f.leaf.read_ctx_budget(f.root,f.values,'claude',f.record['budgets']['claude']['identity'])['status']=='unknown'
+    assert f.leaf.read_ctx_budget(f.root,f.values,'codex',f.record['budgets']['codex']['identity'])['status']=='known'
+    before=_snapshot_fixture_bytes(f.root)
+    with pytest.raises(f.importer.HarnessCtxError):f.importer._commit_harness_ctx(plan)
+    assert before==_snapshot_fixture_bytes(f.root)
+
+
+@pytest.mark.parametrize('harness', ['claude', 'codex'])
+@pytest.mark.parametrize('stage', ['record', 'commit'])
+@pytest.mark.parametrize('replacement', ['target', 'other-source', 'manifest-or-local'])
+def test_t0937_role_source_correlation(tmp_path, monkeypatch, harness, stage, replacement):
+    f=_t0937_actual_fixture(tmp_path,monkeypatch)
+    if stage=='commit':
+        updates={'ctx.compact_at_pct':'93'}
+        document=json.loads(f.importer._prepare_harness_ctx(f.root,{**f.values,**updates},updates=updates,opencode_config_dir=f.global_dir))
+    else:document=f.record
+    binding=document['bindings'][harness]
+    if harness=='claude':
+        index=1 if replacement=='manifest-or-local' else 0
+        original=binding['roles']['settings'][index]
+        binding['roles']['settings'][index]=str(f.root/'.codex/config.toml') if replacement=='other-source' else binding['target']
+        path=binding['roles']['settings'][index]
+        binding['fingerprints'][path]=document['fingerprints'][path]
+        if path not in binding['required_files']:binding['required_files'].append(path)
+        Path(original).write_text(json.dumps({'env':{'ANTHROPIC_MODEL':'changed-own-model'}}),encoding='utf-8')
+    else:
+        role='manifest' if replacement=='manifest-or-local' else 'auth'
+        original=binding['roles'][role]
+        binding['roles'][role]=binding['roles']['catalog'] if replacement=='other-source' else binding['target']
+        Path(original).write_text('{"synthetic":"changed-own-auth"}',encoding='utf-8')
+    binding['fingerprints'].pop(original)
+    binding['required_files'].remove(original)
+    document['fingerprints'].pop(original)
+    calls=list(f.calls)
+    writes=[]
+    for name in ('_write_conf_keys_locked','_harness_ctx_write','_atomic_write_dest_bytes'):
+        original_write=getattr(f.importer,name)
+        def write(*a,_name=name,_original=original_write,**kw):
+            writes.append(_name);return _original(*a,**kw)
+        monkeypatch.setattr(f.importer,name,write)
+    if stage=='record':
+        document['projection_sha256']=f.leaf.ctx_record_digest(document)
+        (f.root/f.leaf.CTX_BUDGET_RELPATH).write_text(json.dumps(document),encoding='utf-8')
+        before=_snapshot_fixture_bytes(f.root)
+        row=f.leaf.read_ctx_budget(f.root,f.values,harness,document['budgets'][harness]['identity'])
+        assert row['status']=='unknown' and all(row[k] is None for k in ('C','E','P')),row
+    else:
+        before=_snapshot_fixture_bytes(f.root)
+        with pytest.raises(f.importer.HarnessCtxError):f.importer._commit_harness_ctx(json.dumps(document))
+    assert before==_snapshot_fixture_bytes(f.root) and not writes and calls==f.calls
+
+
+@pytest.mark.parametrize('stage', ['record', 'commit', 'record-no-command', 'commit-no-command', 'record-empty', 'commit-empty', 'commit-shape', 'claude-only', 'codex-only', 'opencode-only', 'two-tools', 'empty'])
+def test_t0937_registered_owner_completeness(tmp_path, monkeypatch, stage):
+    damaged=stage.startswith(('record','commit'))
+    f=_t0937_actual_fixture(tmp_path,monkeypatch,apply=damaged)
+    identity=f.record['budgets']['claude']['identity'] if damaged else None
+    if stage.startswith('record'):
+        document=f.record
+    else:
+        keep={'claude-only':{'claude'},'codex-only':{'codex'},'opencode-only':{'opencode'},
+              'two-tools':{'claude','opencode'},'empty':set()}.get(stage,{'claude','codex','opencode'})
+        for harness,rel in f.importer.HARNESS_CTX_FILES.items():
+            if harness not in keep:(f.root/rel).unlink()
+        updates={'ctx.compact_at_pct':'93'}
+        document=json.loads(f.importer._prepare_harness_ctx(f.root,{**f.values,**updates},updates=updates,opencode_config_dir=f.global_dir))
+    if stage=='commit-shape':document['target_shapes'].pop('.codex/config.toml')
+    elif damaged:
+        document['bindings'].pop('codex');document['budgets'].pop('codex')
+        if stage.endswith('no-command'):document['native_commands'].pop('codex')
+        elif stage.endswith('empty'):document['bindings'].clear();document['budgets'].clear()
+    calls=list(f.calls)
+    if stage.startswith('record'):
+        document['projection_sha256']=f.leaf.ctx_record_digest(document)
+        (f.root/f.leaf.CTX_BUDGET_RELPATH).write_text(json.dumps(document),encoding='utf-8')
+        before=_snapshot_fixture_bytes(f.root)
+        row=f.leaf.read_ctx_budget(f.root,f.values,'claude',identity)
+        assert row['status']=='unknown' and all(row[k] is None for k in ('C','E','P')),row
+        assert before==_snapshot_fixture_bytes(f.root)
+    elif stage.startswith('commit'):
+        before=_snapshot_fixture_bytes(f.root)
+        writes=[]
+        for name in ('_write_conf_keys_locked','_harness_ctx_write','_atomic_write_dest_bytes'):
+            original=getattr(f.importer,name)
+            def write(*a,_name=name,_original=original,**kw):writes.append(_name);return _original(*a,**kw)
+            monkeypatch.setattr(f.importer,name,write)
+        with pytest.raises(f.importer.HarnessCtxError):f.importer._commit_harness_ctx(json.dumps(document))
+        assert before==_snapshot_fixture_bytes(f.root) and not writes
+    else:
+        result=f.importer._commit_harness_ctx(json.dumps(document));assert set(result[2])==keep
+        values=f.leaf.load(f.root/'.project_manager/local.conf').values
+        for harness,budget in result[2].items():
+            assert f.leaf.read_ctx_budget(f.root,values,harness,budget['identity'])['status']=='known'
+    assert calls==f.calls
+
+
+@pytest.mark.parametrize('harness',['claude','codex'])
+def test_t0937_role_source_shared_paths(tmp_path,monkeypatch,harness):
+    f=_t0937_actual_fixture(tmp_path,monkeypatch,apply=False)
+    if harness=='claude':monkeypatch.setenv('CLAUDE_CONFIG_DIR',str(f.root/'.claude'))
+    else:
+        home=f.root/'.codex'
+        text=(f.codex/'config.toml').read_text(encoding='utf-8').replace('model_context_window=600000\n','')
+        text+='\n[projects.'+json.dumps(str(f.root))+']\ntrust_level="trusted"\n'
+        (home/'config.toml').write_text(text,encoding='utf-8')
+        catalog=json.loads((f.codex/'models_cache.json').read_text(encoding='utf-8'))
+        catalog['models'][0]['context_window']=600000
+        (home/'models_cache.json').write_text(json.dumps(catalog),encoding='utf-8')
+        monkeypatch.setenv('CODEX_HOME',str(home))
+    f.importer.apply_harness_ctx(f.root,write=True,opencode_config_dir=f.global_dir)
+    record=json.loads((f.root/f.leaf.CTX_BUDGET_RELPATH).read_text(encoding='utf-8'))
+    roles=record['bindings'][harness]['roles']
+    assert (roles['settings'][0] if harness=='claude' else roles['selection'])==record['bindings'][harness]['target']
+    calls=list(f.calls);before=_snapshot_fixture_bytes(f.root)
+    values=f.leaf.load(f.root/'.project_manager/local.conf').values
+    for owner,budget in record['budgets'].items():
+        assert f.leaf.read_ctx_budget(f.root,values,owner,budget['identity'])['status']=='known'
+    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls

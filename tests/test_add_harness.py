@@ -28,6 +28,8 @@ from pathlib import Path
 
 import pytest
 
+from _manager_home import _known_ctx_installation
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -51,11 +53,8 @@ def pm_config():
 
 @pytest.fixture(autouse=True)
 def _known_native_capacity(tmp_path,pm_import,monkeypatch):
-    from test_harness_ctx_limits import _t0932_reader
-    def reader(*a):
-        result=_t0932_reader(pm_import,*a)
-        for row in result['models']:row['metadata']['context']=232000
-        return result
+    from _manager_home import known_ctx_reader
+    reader=known_ctx_reader(pm_import,capacity=200000,context=232000)
     monkeypatch.setattr(pm_import,'_read_harness_ctx_metadata',reader)
 
 
