@@ -1873,3 +1873,36 @@ def test_t0937_role_source_shared_paths(tmp_path,monkeypatch,harness):
     for owner,budget in record['budgets'].items():
         assert f.leaf.read_ctx_budget(f.root,values,owner,budget['identity'])['status']=='known'
     assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
+
+
+@pytest.mark.parametrize('version,damage', [('2.1.287',None),('2.1.288',None),('2.1.288','reserve'),('2.1.288','buffer'),('2.1.289',None)])
+def test_t0932_verified_claude_patch_policy_compatibility(tmp_path,monkeypatch,version,damage):
+    importer=_load('pm_import')
+    root=_project(tmp_path,harnesses=('claude',),conf='harness.claude.ctx_window_tokens=600000\nctx.checkpoint_at_pct=80\nctx.precompact_at_pct=90\nctx.compact_at_pct=94\n')
+    receipt=_t0932_control_claude_fixture(tmp_path,monkeypatch)
+    command=Path(shutil.which('claude')).resolve()
+    data=command.read_bytes().replace(b'// Version: 2.1.287',b'// Version: '+version.encode())
+    if version!='2.1.287':
+        data=data.replace(b'function Bq(',b'function TK(').replace(b's=Sm()',b's=Df()').replace(b'=bv(',b'=Dw(')
+    if damage=='reserve':data=data.replace(b'=20000;',b'=19000;')
+    if damage=='buffer':data=data.replace(b'e-13000',b'e-12000')
+    command.write_bytes(data)
+    calls=[]
+    def protocol(*args,**kwargs):
+        calls.append(True)
+        return receipt
+    monkeypatch.setattr(importer,'_ctx_native_protocol',protocol)
+    before=_snapshot_fixture_bytes(root)
+    if damage or version=='2.1.289':
+        with pytest.raises(importer.HarnessCtxError):
+            importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
+        assert _snapshot_fixture_bytes(root)==before
+        assert calls==[]
+    else:
+        importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
+        record=json.loads((root/'.project_manager/.local/ctx-budget.json').read_text(encoding='utf-8'))
+        row=record['budgets']['claude']
+        assert row['metadata']['source_version']==version
+        assert (row['C'],row['E'],row['P'])==(967000,600000,564000)
+        assert json.loads((root/'.claude/settings.json').read_text(encoding='utf-8'))['autoCompactWindow']==597000
+        assert calls==[True]

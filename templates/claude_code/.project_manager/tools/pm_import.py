@@ -8456,8 +8456,8 @@ def _ctx_native_protocol(command, root, requests):
 
 
 def _ctx_claude_policy(data):
-    """확인한 2.1.287의 출력 예약·요약 buffer·비율 branch를 실행 없이 확인한다."""
-    reserve = re.search(rb"function Bq\(e,n\)\{let r=Math\.min\(e\.maxOutputTokens,([A-Za-z_$][A-Za-z0-9_$]*)\),s=Sm\(\)\?n:void 0,\{window:g\}=bv\(e,s\);return g-r\}", data)
+    """확인한 2.1.287·2.1.288의 출력 예약·요약 buffer·비율 branch를 실행 없이 확인한다."""
+    reserve = re.search(rb"function (?:Bq|TK)\(e,n\)\{let r=Math\.min\(e\.maxOutputTokens,([A-Za-z_$][A-Za-z0-9_$]*)\),s=(?:Sm|Df)\(\)\?n:void 0,\{window:g\}=(?:bv|Dw)\(e,s\);return g-r\}", data)
     if (not reserve or not re.search(rb"(?:var|let|const) "+re.escape(reserve.group(1))+rb"=20000(?:;|,)", data)
             or b"let r=e-13000,s=n.testPctOverride" not in data
             or b"Math.min(Math.floor(e*(s/100)),r)" not in data):
@@ -8476,8 +8476,9 @@ def _ctx_claude_metadata(harness, documents, models, read, row, evidence, native
     if _ctx_native_stat(entry) != before:
         raise ValueError("Claude native 설치 판독 경쟁")
     versions = set(re.findall(rb"// Version: ([0-9]+\.[0-9]+\.[0-9]+)", native))
-    if versions != {b"2.1.287"}:
+    if versions not in ({b"2.1.287"}, {b"2.1.288"}):
         raise ValueError("Claude 설치 정책 버전 미지원")
+    version = next(iter(versions)).decode("ascii")
     reply_max, buffer = _ctx_claude_policy(native)
     native_files[str(entry)] = before; native_commands[harness] = str(entry)
     home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home()/".claude")
@@ -8538,7 +8539,7 @@ def _ctx_claude_metadata(harness, documents, models, read, row, evidence, native
     generation = content_sha256(json.dumps(projection, sort_keys=True).encode("utf-8"))
     observed = receipt.get("observed_at") or datetime.now(timezone.utc).isoformat()
     row({"model":model, "provider":"firstParty", "profile":""}, raw, "claude-sdk-neutral", generation,
-        observed, None, "claude-cutoff", "2.1.287")
+        observed, None, "claude-cutoff", version)
 
 
 def _ctx_codex_native_selection(root, entry, read, evidence, native_files):
