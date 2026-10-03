@@ -37,6 +37,8 @@ from pathlib import Path
 
 import pytest
 
+from test_harness_ctx_limits import _legacy_native_fixture
+
 from _textio import utf8_child_env
 from _win_skip import posix_bash_supported
 from _hook_commands import inline_script_payloads, powershell_native_arguments
@@ -1305,3 +1307,17 @@ def test_t0932_model_capacity_actual_catalog_native_and_runtime(tmp_path,monkeyp
     assert codex_ctx.resolve_ctx_budget(conf,root=root,identity={**identity,'provider':'other'}) is None
     catalog.write_text(catalog.read_text(encoding='utf-8').replace('native-generation','native-generation-2'), encoding='utf-8')
     assert codex_ctx.resolve_ctx_budget(conf,root=root,identity=identity) is None
+
+
+def test_t0937_codex_scoped_budget_runtime(tmp_path,monkeypatch,codex_ctx):
+    from test_harness_ctx_limits import _t0937_actual_fixture,_snapshot_fixture_bytes
+    f=_t0937_actual_fixture(tmp_path,monkeypatch)
+    identity=f.record['budgets']['codex']['identity']
+    Path(f.record['bindings']['claude']['roles']['settings'][0]).write_text('{}\n',encoding='utf-8')
+    (f.global_dir/'opencode.json').write_text('{}',encoding='utf-8');f.registry.write_text('{}',encoding='utf-8')
+    calls=list(f.calls)
+    assert codex_ctx.resolve_ctx_budget(f.values,root=f.root,identity=identity)==570000
+    assert codex_ctx.resolve_ctx_budget(f.values,root=f.root,identity={**identity,'profile':'other'}) is None
+    (f.codex/'models_cache.json').write_text('{"client_version":"0.150.0","models":[]}',encoding='utf-8')
+    assert codex_ctx.resolve_ctx_budget(f.values,root=f.root,identity=identity) is None
+    assert f.values['harness.codex.ctx_window_tokens']=='600000' and calls==f.calls

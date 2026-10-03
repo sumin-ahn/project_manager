@@ -84,6 +84,29 @@ def _run(argv: list[str], *, cwd: Path | None = None) -> subprocess.CompletedPro
 _KNOWN_CTX_READER_PY = "_CTX_FIXTURE_SOURCE_ROOT=" + repr(str(REPO.resolve())) + "\n" + r"""
 from pathlib import Path
 import json
+import os
+import shutil
+import tempfile
+from contextlib import contextmanager
+from unittest.mock import patch
+
+@contextmanager
+def fixture_native_installation(folder=None):
+    inherited=os.environ.get('_KNOWN_CTX_FIXTURE_BIN')
+    if inherited and folder is None:
+        yield Path(inherited)
+        return
+    with tempfile.TemporaryDirectory(prefix='known-ctx-native-') as temporary:
+        native=Path(folder or temporary)
+        native.mkdir(parents=True,exist_ok=True)
+        for harness in ('claude','codex','opencode'):
+            command=native/(harness+'.exe' if os.name=='nt' else harness)
+            if not command.exists():
+                command.write_text('#!/bin/sh\nexit 91\n',encoding='utf-8')
+                command.chmod(0o755)
+        with patch.dict(os.environ, {'PATH':str(native)+os.pathsep+os.environ.get('PATH',''),
+                                    '_KNOWN_CTX_FIXTURE_BIN':str(native)}):
+            yield native
 
 def fixture_reader(module,capacity=200000,context=1000000):
     def reader(root,harness,documents,models):
@@ -101,18 +124,69 @@ def fixture_reader(module,capacity=200000,context=1000000):
                 'independent':True,'semantics':'usable','usable':capacity,'context':context,'output':128000,
                 'effective_output':32000,'native_formula':'input-reserved'}
             rows.append({'identity':identity,'metadata':metadata})
-        return {'models':rows,'evidence':{str(source.resolve()):module.content_sha256(source.read_bytes())}}
+        # native 설치는 호출 범위의 PATH로 제공하며 전역 which와 목적지 트리는 수정하지 않는다.
+        native=Path(shutil.which(harness) or '')
+        if not native.is_file():
+            raise ValueError('fixture native installation missing')
+        native=native.resolve()
+        evidence={str(source.resolve()):module.content_sha256(source.read_bytes())}
+        if harness=='claude':
+            settings=[str(source.resolve()),str(Path(root)/'.claude/settings.local.json'),str(Path(root)/'.project_manager/mock-managed.json')]
+            roles={'settings':settings,'managed_bundle':'/etc/claude-code/managed-settings.d'}
+            for path in settings:evidence[path]=module._ctx_file_digest(Path(path))
+        elif harness=='codex':
+            auth=str(Path(root)/'.project_manager/mock-auth.json');evidence[auth]=None
+            roles={'manifest':str(source.resolve()),'selection':str(source.resolve()),'catalog':str(source.resolve()),'auth':auth}
+        else:roles={'manifest':str(source.resolve())}
+        return {'models':rows,'evidence':evidence,'roles':roles,
+                'native_commands':{harness:str(native)},'native_files':{str(native):module._ctx_native_stat(native)}}
     return reader
 """
 
+def known_ctx_reader(module, *, capacity=200000, context=1000000):
+    namespace={}
+    exec(_KNOWN_CTX_READER_PY,namespace)
+    return namespace['fixture_reader'](module,capacity,context)
+
+
+@pytest.fixture(autouse=True)
+def _known_ctx_installation(tmp_path,monkeypatch):
+    namespace={}
+    exec(_KNOWN_CTX_READER_PY,namespace)
+    folder=tmp_path/'known-native-bin'
+    with namespace['fixture_native_installation'](folder):
+        pass
+    monkeypatch.setenv('PATH',str(folder)+os.pathsep+os.environ.get('PATH',''))
+    monkeypatch.setenv('_KNOWN_CTX_FIXTURE_BIN',str(folder))
+    return folder
+
+
 def known_ctx_module(module, *, capacity=200000, context=1000000):
     """정상 unit 설치 factory가 명시 호출하는 독립 mock, verified loader는 먼저 실행한다."""
+    import os
+    import shutil
+    from functools import wraps
+    from unittest.mock import patch
     namespace = {}
     exec(_KNOWN_CTX_READER_PY, namespace)
     if hasattr(module, '_read_harness_ctx_metadata'):
         module._read_harness_ctx_metadata = namespace['fixture_reader'](module, capacity, context)
     if getattr(module, '_t0932_known_ctx_loader', False):
         return module
+    for name in ('main', '_apply_harness_ctx_values'):
+        original=getattr(module,name,None)
+        if original is None:continue
+        @wraps(original)
+        def installed(*args,_original=original,**kwargs):
+            with namespace['fixture_native_installation']() as folder:
+                previous=shutil.which
+                def which(command,*args,**kwargs):
+                    if command in ('claude','codex','opencode'):
+                        return str(folder/(command+'.exe' if os.name=='nt' else command))
+                    return previous(command,*args,**kwargs)
+                with patch.object(shutil,'which',which):
+                    return _original(*args,**kwargs)
+        setattr(module,name,installed)
     for name in ('_load_pm_import', '_load_pm_update', '_load_module'):
         original = getattr(module, name, None)
         if original is None:
@@ -161,7 +235,8 @@ path=Path(sys.argv[1])
 spec=importlib.util.spec_from_file_location('known_setup_importer',path)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 module._read_harness_ctx_metadata=fixture_reader(module)
-raise SystemExit(module.main(sys.argv[2:]))
+with fixture_native_installation():
+    raise SystemExit(module.main(sys.argv[2:]))
 """
 
 

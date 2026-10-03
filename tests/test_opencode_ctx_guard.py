@@ -31,6 +31,8 @@ from pathlib import Path
 
 import pytest
 
+from test_harness_ctx_limits import _legacy_native_fixture
+
 REPO = Path(__file__).resolve().parents[1]
 OPENCODE = REPO / "templates" / "opencode" / ".opencode"
 
@@ -2711,6 +2713,37 @@ assert.strictEqual(m.computeCtxState(0,null,m.resolveThresholds(conf)).level,'un
     assert (root/'.opencode/opencode.jsonc').read_bytes()==before
 
 
+@pytest.mark.parametrize('own',[False,True])
+def test_t0937_opencode_scoped_budget_runtime_pending(tmp_path,monkeypatch,own):
+    from test_harness_ctx_limits import _t0937_actual_fixture
+    f=_t0937_actual_fixture(tmp_path,monkeypatch);root=f.root;_install_core(root)
+    tools=root/'.project_manager/tools';tools.mkdir()
+    for name in ('local_conf.py','repo_owned_files.py','file_lock.py','console_encoding.py','pm_relay.py','python_floor.py'):
+        shutil.copyfile(REPO/'.project_manager/tools'/name,tools/name)
+    (tools/'pm_log.py').write_text('import sys\nprint(" ".join(sys.argv[1:]))\n',encoding='utf-8')
+    script=r'''
+const m=require('./ctx-guard-core.cjs'),fs=require('node:fs'),path=require('node:path'),assert=require('node:assert');
+const [root,catalog,registry,own]=process.argv.slice(1),confPath=path.join(root,'.project_manager/local.conf');
+const conf=()=>m.parseLocalConf(fs.readFileSync(confPath,'utf8'));
+const identity={model:'glm-5.2:cloud',provider:'ollama',profile:''};
+assert.strictEqual(m.resolveBudget(conf(),'opencode',root,identity),200000);
+(async()=>{
+ const hooks=await m.CtxGuardPlugin({directory:root,client:{session:{get:async({path})=>({data:{id:path.id}})}}});
+ await hooks.event({event:{type:'message.updated',properties:{info:{sessionID:'scope',role:'assistant',modelID:identity.model,providerID:identity.provider,profile:'',tokens:{input:180000}}}}});
+ fs.writeFileSync(catalog,'{}');fs.writeFileSync(registry,'{}');
+ const before=fs.readFileSync(confPath,'utf8');
+ fs.writeFileSync(confPath,before.replace(own==='true'?'harness.opencode.ctx_window_tokens=200000':'harness.codex.ctx_window_tokens=600000',
+    own==='true'?'harness.opencode.ctx_window_tokens=210000':'harness.codex.ctx_window_tokens=700000'));
+ const output={system:[]};await hooks['experimental.chat.system.transform']({sessionID:'scope'},output);
+ if(own==='true'){assert.deepStrictEqual(output.system,[]);assert.strictEqual(m.resolveBudget(conf(),'opencode',root,identity),null);}
+ else{assert.strictEqual(output.system.length,1);assert(output.system[0].includes('--used-pct 90'));assert.strictEqual(m.resolveBudget(conf(),'opencode',root,identity),200000);}
+})().catch(e=>{console.error(e);process.exitCode=1});
+'''
+    done=subprocess.run([_NODE,'-e',script,str(root),str(f.codex/'models_cache.json'),str(f.registry),str(own).lower()],
+        cwd=root/'.opencode/lib',capture_output=True,text=True,timeout=30)
+    assert done.returncode==0,done.stderr
+
+
 @pytest.mark.parametrize('damage', ['top', 'model-point', 'model-set', 'metadata'])
 def test_t0932_review_js_record_semantics(tmp_path, damage):
     from test_harness_ctx_limits import _load, _t0932_install_budget_fixture
@@ -2784,7 +2817,7 @@ if(extra) await hooks.event(event(extra));
 const output={system:[]};
 await hooks['experimental.chat.system.transform'](change==='consume-model'?{sessionID:'same',model:{id:'other',providerID:'ollama'}}:{sessionID:'same'},output);
 console.log(JSON.stringify(output));
-if(change==='none'||change==='rearm') {assert.strictEqual(output.system.length,1);assert(output.system[0].includes('--used-pct 90'));}
+if(['none','rearm','other-window','third-window'].includes(change)) {assert.strictEqual(output.system.length,1);assert(output.system[0].includes('--used-pct 90'));}
 else assert.deepStrictEqual(output.system,[]);
 const second={system:[]};await hooks['experimental.chat.system.transform']({sessionID:'same'},second);
 assert.deepStrictEqual(second.system,[]);

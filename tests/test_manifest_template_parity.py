@@ -729,3 +729,23 @@ def test_facade_guard_is_sensitive_to_missing_facade():
     assert missing == expected, (
         f"facade 가드가 누락을 못 잡음(vacuous 위험) — 검출 {missing}, 예상 {expected}"
     )
+
+
+def test_t0937_schema2_scoped_runtime_in_all_flavors(tmp_path,monkeypatch):
+    from test_harness_ctx_limits import _t0937_actual_fixture,_snapshot_fixture_bytes
+    f=_t0937_actual_fixture(tmp_path,monkeypatch)
+    (f.codex/'models_cache.json').write_text('{"client_version":"0.150.0","models":[]}',encoding='utf-8')
+    f.registry.write_text('{}',encoding='utf-8')
+    before=_snapshot_fixture_bytes(f.root);calls=list(f.calls)
+    for flavor in ('claude_code','codex','opencode'):
+        spec=importlib.util.spec_from_file_location('scoped_shipping_'+flavor,REPO/'templates'/flavor/'.project_manager/tools/local_conf.py')
+        leaf=importlib.util.module_from_spec(spec);spec.loader.exec_module(leaf)
+        for harness,budget in f.record['budgets'].items():
+            row=leaf.read_ctx_budget(f.root,f.values,harness,budget['identity'])
+            assert row['status']==('unknown' if harness=='codex' else 'known'),(flavor,harness,row)
+            assert row['E']==(None if harness=='codex' else budget['E'])
+        monkeypatch.setenv('ANTHROPIC_MODEL','changed-own-model')
+        assert leaf.read_ctx_budget(f.root,f.values,'claude',f.record['budgets']['claude']['identity'])['status']=='unknown'
+        assert leaf.read_ctx_budget(f.root,f.values,'opencode',f.record['budgets']['opencode']['identity'])['status']=='known'
+        monkeypatch.delenv('ANTHROPIC_MODEL')
+    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls

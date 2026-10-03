@@ -45,6 +45,7 @@ from pathlib import Path
 
 import pytest
 
+from _manager_home import _known_ctx_installation
 from _git_fixture import init_git_repo
 
 from _harness_matrix import HARNESSES

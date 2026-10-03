@@ -23,6 +23,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from _manager_home import _known_ctx_installation
 from _git_fixture import init_git_repo
 from _win_skip import _can_symlink
 from _harness_matrix import HARNESSES, HARNESS_ADAPTER_DIRS, HARNESS_ROOT_DOC
@@ -125,16 +126,8 @@ def pm_update():
 @pytest.fixture(autouse=True)
 def _known_install_capacity_fixture(request,tmp_path,pm_import,pm_update,monkeypatch):
     """정상 설치/반영 fixture만 같은 독립 reader seam으로 고정한다."""
-    from test_harness_ctx_limits import _t0932_metadata
-    source=tmp_path/'independent-capacity.json'
-    source.write_text('{"generation":"fixture-generation","usable":200000}',encoding='utf-8')
-    def reader(root,harness,documents,models):
-        identities=[{'model':model,'provider':provider,'profile':''} for provider,model in models] if harness=='opencode' else [{'model':'fixture-model','provider':'fixture-provider','profile':''}]
-        rows=[]
-        for identity in identities:
-            metadata={**_t0932_metadata(identity),'context':232000,'output':128000,'effective_output':32000,'native_formula':'input-reserved'}
-            rows.append({'identity':identity,'metadata':metadata})
-        return {'models':rows,'evidence':{str(source.resolve()):pm_import.content_sha256(source.read_bytes())}}
+    from _manager_home import known_ctx_reader
+    reader=known_ctx_reader(pm_import,capacity=200000,context=232000)
     monkeypatch.setattr(pm_import,'_read_harness_ctx_metadata',reader)
     original=pm_update._load_pm_import
     def load():

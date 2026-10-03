@@ -739,20 +739,39 @@ def ctx_input_values(values):
     return {key: str(values.get(key) or default_for(key)).strip() for key in CTX_INPUT_KEYS}
 
 
-def ctx_environment_fingerprints():
-    """native 모델/provider 선택 환경의 바이트 지문. credential 값은 저장하지 않는다."""
+_CTX_INPUT_BINDING_RULES = {
+    "harness.claude.ctx_window_tokens": {
+        "target":".claude/settings.json", "roles":{"settings":3},
+        "role_values":{"managed_bundle":"/etc/claude-code/managed-settings.d"}, "registry":False,
+        "environment":("ANTHROPIC_MODEL","ANTHROPIC_BASE_URL","CLAUDE_CONFIG_DIR","CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS","CLAUDE_CODE_AUTO_COMPACT_WINDOW","CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
+            "CLAUDE_CODE_DISABLE_1M_CONTEXT","CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT","DISABLE_COMPACT",
+            "DISABLE_AUTO_COMPACT","CLAUDE_CODE_USE_ANTHROPIC_AWS","CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+            "CLAUDE_CODE_USE_MANTLE","ANTHROPIC_UNIX_SOCKET","ANTHROPIC_WIF_PROFILE","CLAUDE_CODE_API_BASE_URL",
+            "CLAUDE_CODE_USE_BEDROCK","CLAUDE_CODE_USE_VERTEX","CLAUDE_CODE_USE_FOUNDRY","AWS_PROFILE",
+            "ANTHROPIC_VERTEX_PROJECT_ID","ANTHROPIC_AUTH_TOKEN_FILE_DESCRIPTOR")},
+    "harness.codex.ctx_window_tokens": {
+        "target":".codex/config.toml", "roles":{"manifest":1,"selection":1,"auth":1,"catalog":1},
+        "role_values":{}, "registry":False,
+        "environment":("CODEX_HOME","CODEX_API_KEY","CODEX_ACCESS_TOKEN","CODEX_AUTH_JSON","OPENAI_API_KEY",
+            "OPENAI_BASE_URL","OPENAI_ORGANIZATION","OPENAI_PROJECT")},
+    "harness.opencode.ctx_window_tokens": {
+        "target":".opencode/opencode.jsonc", "roles":{"manifest":1,"global":3},"role_values":{},"registry":True,
+        "environment":("XDG_CONFIG_HOME","OPENCODE_CONFIG","OPENCODE_CONFIG_DIR","OPENCODE_CONFIG_CONTENT",
+            "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX")},
+}
+
+
+def ctx_environment_fingerprints(harness=None, *, registry=True):
+    """native 선택 환경의 지문. 기존 입력의 같은 선언에서 전건/선택 귀속을 해소한다."""
     import hashlib
-    keys = ("HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "CODEX_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "ANTHROPIC_MODEL", "ANTHROPIC_BASE_URL",
-            "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
-            "CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "CLAUDE_CODE_DISABLE_1M_CONTEXT",
-            "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT", "DISABLE_COMPACT", "DISABLE_AUTO_COMPACT",
-            "CLAUDE_CODE_USE_ANTHROPIC_AWS", "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD", "CLAUDE_CODE_USE_MANTLE",
-            "ANTHROPIC_UNIX_SOCKET", "ANTHROPIC_WIF_PROFILE", "CLAUDE_CODE_API_BASE_URL",
-            "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "AWS_PROFILE",
-            "ANTHROPIC_VERTEX_PROJECT_ID", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT",
-            "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "CODEX_AUTH_JSON",
-            "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORGANIZATION", "OPENAI_PROJECT")
-    return {key: hashlib.sha256(os.environ[key].encode("utf-8")).hexdigest() if key in os.environ else None for key in keys}
+    common=("HOME","USERPROFILE","HOMEDRIVE","HOMEPATH","APPDATA","LOCALAPPDATA")
+    if harness is None:
+        keys=common+tuple(key for rule in _CTX_INPUT_BINDING_RULES.values() for key in rule["environment"])+( "XDG_CACHE_HOME",)
+    else:
+        rule=_CTX_INPUT_BINDING_RULES[f"harness.{harness}.ctx_window_tokens"]
+        keys=common+rule["environment"]+(("XDG_CACHE_HOME",) if registry and rule["registry"] else ())
+    return {key:hashlib.sha256(os.environ[key].encode("utf-8")).hexdigest() if key in os.environ else None for key in keys}
 
 
 def _ctx_time(value):
@@ -883,7 +902,9 @@ def resolve_ctx_capacity(window, ratios, identity, metadata, *, now=None):
 def ctx_record_digest(record):
     """파생 기록의 손상 검출 지문. 독립 metadata catalog로 사용하지 않는다."""
     import hashlib
-    payload = {key: record[key] for key in ("schema", "inputs", "environment", "budgets", "fingerprints", "native_files", "native_commands")}
+    keys = ("schema", "inputs", "environment", "budgets", "fingerprints", "native_files", "native_commands")
+    if record.get("schema") == 2: keys += ("bindings",)
+    payload = {key: record[key] for key in keys}
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
@@ -909,10 +930,120 @@ def _ctx_fingerprints_match(fingerprints):
     )
     for name, digest in fingerprints.items():
         path = Path(name)
-        actual = hashlib.sha256(file_lock.read_bytes_shared(path)).hexdigest() if path.is_file() else None
+        if path.is_file():actual = hashlib.sha256(file_lock.read_bytes_shared(path)).hexdigest()
+        else:
+            import stat
+            try:actual = f"shape:{stat.S_IFMT(path.lstat().st_mode)}"
+            except FileNotFoundError:actual = None
         if actual != digest:
             return False
     return True
+
+
+def _ctx_record_pairs(pairs):
+    result = {}
+    for key,value in pairs:
+        if key in result: raise ValueError("ctx 적용 기록의 JSON 귀속 중복")
+        result[key] = value
+    return result
+
+
+def _ctx_binding_structure(record, root):
+    bindings, budgets = record.get("bindings"), record["budgets"]
+    if not isinstance(bindings,dict) or not bindings or set(bindings) != set(budgets) or not set(bindings) <= {key.split(".")[1] for key in CTX_INPUT_KEYS[:-3]}:
+        raise ValueError("ctx 하네스 근거 귀속 구조 손상")
+    for harness,binding in bindings.items():
+        if not isinstance(binding,dict) or binding.get("harness") != harness or type(binding.get("registry")) is not bool:
+            raise ValueError("ctx 하네스 근거 귀속 형상 손상")
+        if any(not isinstance(binding.get(k),dict) for k in ("fingerprints","native_files","native_commands","environment","roles")):
+            raise ValueError("ctx 하네스 근거 항목 손상")
+        files, required = binding["fingerprints"], binding.get("required_files")
+        if not isinstance(required,list) or any(not isinstance(p,str) for p in required) or len(set(required))!=len(required) or set(required)!=set(files):
+            raise ValueError("ctx 필수 원천 누락 또는 중복")
+        rule = _CTX_INPUT_BINDING_RULES[f"harness.{harness}.ctx_window_tokens"]
+        target = str(Path(root)/rule["target"])
+        if binding.get("target") != target or target not in files or set(binding["native_commands"]) != {harness}:
+            raise ValueError("ctx 대상/native 명령 귀속 불일치")
+        command = binding["native_commands"][harness]
+        if not isinstance(command,str) or command not in binding["native_files"] or not binding["native_files"]:
+            raise ValueError("ctx native 설치 근거 누락")
+        if any(not isinstance(stat,dict) or set(stat)!={"st_dev","st_ino","st_size","st_mtime_ns"}
+               or any(not isinstance(value,str) for value in stat.values()) for stat in binding["native_files"].values()):
+            raise ValueError("ctx native 설치 근거 형상 손상")
+        if any(path not in record["fingerprints"] or record["fingerprints"][path]!=digest for path,digest in files.items()):
+            raise ValueError("ctx source 귀속과 사전검사 근거 불일치")
+        if any(path not in record["native_files"] or record["native_files"][path]!=stat for path,stat in binding["native_files"].items()) or record["native_commands"].get(harness)!=command:
+            raise ValueError("ctx native 귀속과 설치 근거 불일치")
+        expected_env = ctx_environment_fingerprints(harness,registry=binding["registry"])
+        if set(binding["environment"])!=set(expected_env) or any(record["environment"].get(k)!=v for k,v in binding["environment"].items()):
+            raise ValueError("ctx 환경 귀속 누락 또는 불일치")
+        budget = budgets[harness]
+        if not isinstance(budget,dict) or not isinstance(budget.get("identity"),dict) or not isinstance(budget.get("models"),list) or not budget["models"]:
+            raise ValueError("ctx 하네스/모델 기록 구조 손상")
+        roles = binding["roles"]
+        for role,count in rule["roles"].items():
+            paths=[roles.get(role)] if count==1 else roles.get(role)
+            if not isinstance(paths,list) or len(paths)!=count or any(not isinstance(path,str) for path in paths) or len(set(paths))!=count or any(path not in files for path in paths):
+                raise ValueError("ctx 필수 선택/source 역할 누락")
+        if any(roles.get(key)!=value for key,value in rule["role_values"].items()):
+            raise ValueError("ctx 필수 가상 원천 역할 불일치")
+        if binding["registry"] and not rule["registry"]:
+            raise ValueError("ctx registry 귀속 불일치")
+        if rule["registry"] and (binding["registry"]!=("catalog" in roles) or (binding["registry"] and roles["catalog"] not in files)):
+            raise ValueError("registry 원천 귀속 불일치")
+        for model in budget["models"]:
+            if not isinstance(model,dict) or not isinstance(model.get("identity"),dict) or not isinstance(model.get("metadata"),dict):
+                raise ValueError("ctx 모델 근거 구조 손상")
+            source=model["metadata"].get("source")
+            if not isinstance(source,str) or not source:raise ValueError("ctx 모델 원천 누락")
+            if Path(source).is_absolute() and source not in files:raise ValueError("ctx 모델 source의 파일 귀속 누락")
+        if "managed_bundle" in roles and any(m["metadata"]["source"]=="claude-sdk-neutral" for m in budget["models"]):
+            if roles["managed_bundle"] not in files:raise ValueError("Claude managed 원천 부재 근거 누락")
+        if rule["registry"] and any(m["metadata"].get("semantics")=="input-context-output" for m in budget["models"]):
+            used_registry=any(Path(m["metadata"]["source"]).is_absolute() for m in budget["models"])
+            if binding["registry"]!=used_registry:raise ValueError("OpenCode 실사용 registry 귀속 불일치")
+    return bindings
+
+
+def _ctx_budget_semantics(row, inputs, values, harness, identity):
+    """같은 입력과 동결 metadata의 C/E/P 및 native 인코딩을 검증한다."""
+    models = row.get("models")
+    if not isinstance(models, list) or not models or any(not isinstance(m, dict) or
+            not isinstance(m.get("identity"), dict) or not isinstance(m.get("metadata"), dict) for m in models):
+        raise ValueError("ctx 모델 기록 구조 손상")
+    if not isinstance(identity, dict):
+        raise ValueError("현재 세션 정체성 구조 손상 또는 부재")
+    if any(identity.get(k) != row["identity"].get(k) for k in ("model", "provider", "profile")):
+        # OpenCode는 선언된 전체 모델 중 실제 세션 모델을 확인한다.
+        if not identity or not any(all(identity.get(k) == m["identity"].get(k) for k in ("model", "provider", "profile")) for m in row.get("models", [])):
+            raise ValueError("현재 세션 모델/provider/profile 확인 불가 또는 불일치")
+    ratios = tuple(int(inputs[k]) for k in CTX_INPUT_KEYS[-3:])
+    for model in models:
+        verified = resolve_ctx_capacity(row["W"], ratios, model["identity"], model["metadata"])
+        if verified["status"] != "known" or verified["C"] != model["C"]:
+            raise ValueError(verified["reason"] or "metadata 한도 변경")
+    identities = [tuple(m["identity"].get(k) for k in ("model", "provider", "profile")) for m in models]
+    if len(set(identities)) != len(identities):
+        raise ValueError("ctx 모델 집합 중복")
+    common = min(models, key=lambda m: m["C"])
+    if row["identity"] != common["identity"] or row.get("metadata") != common["metadata"]:
+        raise ValueError("ctx 공통 한도와 선택 metadata 불일치")
+    capacity = min(model["C"] for model in models)
+    window = int(ctx_input_values(values)[f"harness.{harness}.ctx_window_tokens"])
+    effective = min(window, capacity)
+    expected = {"W": window, "C": capacity, "E": effective, "checkpoint": effective*ratios[0]//100,
+                "precompact": effective*ratios[1]//100, "P": effective*ratios[2]//100}
+    if row.get("status") != "known" or any(type(row.get(k)) is not int or row[k] != value for k,value in expected.items()):
+        raise ValueError("ctx 적용 기록의 유효 기준/임계 손상")
+    for model in models:
+        if model.get("status") != "known" or any(type(model.get(k)) is not int or model[k] != expected[k]
+                for k in ("W", "E", "P", "checkpoint", "precompact")):
+            raise ValueError("ctx 모델 기록의 공통 유효 기준/임계 손상")
+        if model.get("native_window") != _ctx_native_window(expected["P"], model["metadata"]):
+            raise ValueError("ctx 모델 native 인코딩 손상")
+    if row.get("native_window") != _ctx_native_window(expected["P"], row["metadata"]):
+        raise ValueError("ctx 공통 native 인코딩 손상")
+    return row
 
 
 def read_ctx_budget(root, values, harness, identity=None):
@@ -921,61 +1052,30 @@ def read_ctx_budget(root, values, harness, identity=None):
                "C": None, "E": None, "P": None}
     try:
         unknown["W"] = int(unknown["W"])
-        record = json.loads(_read_text_shared(Path(root) / CTX_BUDGET_RELPATH, encoding="utf-8"))
+        record = json.loads(_read_text_shared(Path(root) / CTX_BUDGET_RELPATH, encoding="utf-8"),object_pairs_hook=_ctx_record_pairs)
         if not isinstance(record, dict) or any(not isinstance(record.get(k), dict) for k in
                 ("inputs", "environment", "budgets", "fingerprints", "native_files", "native_commands")):
             raise ValueError("ctx 적용 기록 구조 손상")
         if record.get("projection_sha256") != ctx_record_digest(record):
             raise ValueError("ctx 적용 기록 손상")
-        if record.get("environment") != ctx_environment_fingerprints():
+        if record.get("schema") != 2:
+            raise ValueError("ctx 적용 기록 귀속 형식 미지원, 기존 ctx-apply로 근거 재검증 필요")
+        binding = _ctx_binding_structure(record,root)[harness]
+        if binding["environment"] != ctx_environment_fingerprints(harness,registry=binding.get("registry",False)):
             raise ValueError("native 모델/provider 환경 변경")
-        if record.get("schema") != 1 or record.get("inputs") != ctx_input_values(values):
+        scoped_keys = (f"harness.{harness}.ctx_window_tokens",) + CTX_INPUT_KEYS[-3:]
+        current_inputs = ctx_input_values(values)
+        if any(record["inputs"].get(k) != current_inputs[k] for k in scoped_keys):
             raise ValueError("ctx 입력 변경 또는 적용 기록 형식 불일치")
-        if not _ctx_native_matches(record):
+        if not _ctx_native_matches(binding):
             raise ValueError("native 설치 정체/세대 변경")
-        if not _ctx_fingerprints_match(record["fingerprints"]):
+        if not _ctx_fingerprints_match(binding["fingerprints"]):
             raise ValueError("모델 선택/native/metadata 근거 변경")
         row = record["budgets"][harness]
         if not isinstance(row, dict) or not isinstance(row.get("identity"), dict):
             raise ValueError("ctx 하네스 기록 구조 손상")
-        models = row.get("models")
-        if not isinstance(models, list) or not models or any(not isinstance(m, dict) or
-                not isinstance(m.get("identity"), dict) or not isinstance(m.get("metadata"), dict) for m in models):
-            raise ValueError("ctx 모델 기록 구조 손상")
-        if not isinstance(identity, dict):
-            raise ValueError("현재 세션 정체성 구조 손상 또는 부재")
-        if any(identity.get(k) != row["identity"].get(k) for k in ("model", "provider", "profile")):
-            # OpenCode는 선언된 전체 모델 중 실제 세션 모델을 확인한다.
-            if not identity or not any(all(identity.get(k) == m["identity"].get(k) for k in ("model", "provider", "profile")) for m in row.get("models", [])):
-                raise ValueError("현재 세션 모델/provider/profile 확인 불가 또는 불일치")
-        ratios = tuple(int(record["inputs"][k]) for k in CTX_INPUT_KEYS[-3:])
-        for model in models:
-            verified = resolve_ctx_capacity(row["W"], ratios, model["identity"], model["metadata"])
-            if verified["status"] != "known" or verified["C"] != model["C"]:
-                raise ValueError(verified["reason"] or "metadata 한도 변경")
-        identities = [tuple(m["identity"].get(k) for k in ("model", "provider", "profile")) for m in models]
-        if len(set(identities)) != len(identities):
-            raise ValueError("ctx 모델 집합 중복")
-        common = min(models, key=lambda m: m["C"])
-        if row["identity"] != common["identity"] or row.get("metadata") != common["metadata"]:
-            raise ValueError("ctx 공통 한도와 선택 metadata 불일치")
-        capacity = min(model["C"] for model in models)
-        window = int(ctx_input_values(values)[f"harness.{harness}.ctx_window_tokens"])
-        effective = min(window, capacity)
-        expected = {"W": window, "C": capacity, "E": effective, "checkpoint": effective*ratios[0]//100,
-                    "precompact": effective*ratios[1]//100, "P": effective*ratios[2]//100}
-        if row.get("status") != "known" or any(type(row.get(k)) is not int or row[k] != value for k,value in expected.items()):
-            raise ValueError("ctx 적용 기록의 유효 기준/임계 손상")
-        for model in models:
-            if model.get("status") != "known" or any(type(model.get(k)) is not int or model[k] != expected[k]
-                    for k in ("W", "E", "P", "checkpoint", "precompact")):
-                raise ValueError("ctx 모델 기록의 공통 유효 기준/임계 손상")
-            if model.get("native_window") != _ctx_native_window(expected["P"], model["metadata"]):
-                raise ValueError("ctx 모델 native 인코딩 손상")
-        if row.get("native_window") != _ctx_native_window(expected["P"], row["metadata"]):
-            raise ValueError("ctx 공통 native 인코딩 손상")
-        return row
-    except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
+        return _ctx_budget_semantics(row,record["inputs"],values,harness,identity)
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError, AttributeError) as exc:
         unknown["reason"] = str(exc)
         return unknown
 
