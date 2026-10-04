@@ -143,7 +143,12 @@ export type CtxCapacity = {
   schema: 1; harness: string; status: "known" | "unknown"; reason: string | null;
   C: number | null; observed_at: string | null; valid_until: string | null;
 };
+export type CtxApplied = {
+  status: "known" | "unknown"; reason: string | null; W: number;
+  E: number | null; P: number | null; native_window: number | null; applied_at: string | null;
+};
 export type ConfSection = {
+  ctx_applied?: Record<string, CtxApplied>;
   ctx_budget?: Record<string, CtxBudget>;
   missing_required: string[];
   legacy: { key: string; replacement: string | null }[];

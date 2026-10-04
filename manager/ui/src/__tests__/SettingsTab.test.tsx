@@ -715,9 +715,9 @@ it("T-0932 희망값과 실제 한도·적용 기준의 읽기 전용 표시", (
   }};
   mounted(makeBridge(),false,null,settingsEntry({...VALUES,"harness.claude.ctx_window_tokens":"600000"}),lightEntry(conf));
   openGroup("harness");
-  expect(screen.getByTestId("budget-claude").textContent).toContain("희망 기준 600000 · 적용 가용 한도 200000 · 적용 기준 200000 · 압축 지점 188000 토큰");
+  expect(screen.getByTestId("budget-claude").textContent).toContain("현재 예산 근거 확인 · 기준 200000 · 압축 지점 188000 토큰");
   expect((screen.getByLabelText("harness.claude.ctx_window_tokens") as HTMLInputElement).value).toBe("600000");
-  expect(screen.getByTestId("budget-codex").textContent).toContain("적용 상태 확인 불가 (모델 정체 불일치)");
+  expect(screen.getByTestId("budget-codex").textContent).toContain("현재 예산 근거 재확인 필요 (모델 정체 불일치)");
   expect(screen.queryByLabelText("actual_capacity")).toBeNull();
 });
 
@@ -730,9 +730,9 @@ it("T-0937 다른 도구의 원천 변경에서 확인된 도구별 예산을 �
   }};
   mounted(bridge,false,null,settingsEntry({...VALUES,"harness.codex.ctx_window_tokens":"600000"}),lightEntry(conf));
   openGroup("harness");
-  expect(screen.getByTestId("budget-claude")).toHaveTextContent("적용 기준 600000 · 압축 지점 564000 토큰");
-  expect(screen.getByTestId("budget-opencode")).toHaveTextContent("적용 기준 200000 · 압축 지점 188000 토큰");
-  expect(screen.getByTestId("budget-codex")).toHaveTextContent("적용 상태 확인 불가 (모델 선택/native/metadata 근거 변경)");
+  expect(screen.getByTestId("budget-claude")).toHaveTextContent("현재 예산 근거 확인 · 기준 600000 · 압축 지점 564000 토큰");
+  expect(screen.getByTestId("budget-opencode")).toHaveTextContent("현재 예산 근거 확인 · 기준 200000 · 압축 지점 188000 토큰");
+  expect(screen.getByTestId("budget-codex")).toHaveTextContent("현재 예산 근거 재확인 필요 (모델 선택/native/metadata 근거 변경)");
   expect(screen.getByTestId("budget-codex")).not.toHaveTextContent("570000");
   expect((screen.getByLabelText("harness.codex.ctx_window_tokens") as HTMLInputElement).value).toBe("600000");
   expect(bridge.conf_save).not.toHaveBeenCalled();
@@ -751,8 +751,32 @@ it("T0938_AT4_current_and_applied_separation", () => {
       observed_at: "2026-10-04T00:00:00Z", valid_until: null } }} />);
   openGroup("harness");
   expect(screen.getByTestId("capacity-claude")).toHaveTextContent("현재 가용 한도 967000 토큰");
-  expect(screen.getByTestId("budget-claude")).toHaveTextContent("적용 상태 확인 불가");
+  expect(screen.getByTestId("budget-claude")).toHaveTextContent("설정 반영 확인 불가");
   expect(screen.getByTestId("budget-claude")).not.toHaveTextContent("적용 기준 600000");
   expect((screen.getByLabelText("harness.claude.ctx_window_tokens") as HTMLInputElement).value).toBe("600000");
+  expect(bridge.conf_save).not.toHaveBeenCalled();
+});
+
+it('T-0939 만료된 예산과 마지막 설정 반영의 분리', () => {
+  const conf = {...CONF,ctx_budget:{codex:{status:'unknown',reason:'metadata 만료',W:600000,C:null,E:null,P:null}},
+    ctx_applied:{codex:{status:'known',reason:null,W:600000,E:570000,P:535800,native_window:535800,applied_at:'2026-10-05T00:00:00Z'}}} as ConfSection;
+  mounted(makeBridge(),false,null,settingsEntry(),lightEntry(conf));openGroup('harness');
+  expect(screen.getByTestId('budget-codex')).toHaveTextContent('설정 반영 확인');
+  expect(screen.getByTestId('budget-codex')).toHaveTextContent('마지막 반영 기준 570000');
+  expect(screen.getByTestId('budget-codex')).toHaveTextContent('현재 예산 근거 재확인 필요');
+});
+
+it('T-0939 관리 설정 변경의 반영 확인 거부와 현재 C 유지', () => {
+  const conf: ConfSection={...CONF,ctx_budget:{codex:{status:'unknown',reason:'관리 값 변경',W:600000,C:null,E:null,P:null}},
+    ctx_applied:{codex:{status:'unknown',reason:'관리 설정 변경',W:600000,E:null,P:null,native_window:null,applied_at:null}}};
+  const bridge=makeBridge();
+  render(<SettingsTab bridge={bridge} path={DEMO} light={lightEntry(conf)} settings={settingsEntry({...VALUES,'harness.codex.ctx_window_tokens':'600000'})}
+    onReload={vi.fn()} startAsking={false} adapterConf={null} onAdapterConf={vi.fn()}
+    capacities={{codex:{schema:1,harness:'codex',status:'known',reason:null,C:570000,observed_at:'2026-10-05T00:00:00Z',valid_until:null}}}/>);
+  openGroup('harness');
+  expect(screen.getByTestId('capacity-codex')).toHaveTextContent('현재 가용 한도 570000');
+  expect(screen.getByTestId('budget-codex')).toHaveTextContent('설정 반영 확인 불가 (관리 설정 변경)');
+  expect(screen.getByTestId('budget-codex')).not.toHaveTextContent('마지막 반영 기준');
+  expect((screen.getByLabelText('harness.codex.ctx_window_tokens') as HTMLInputElement).value).toBe('600000');
   expect(bridge.conf_save).not.toHaveBeenCalled();
 });

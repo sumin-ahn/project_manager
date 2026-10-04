@@ -113,7 +113,7 @@ def test_the_section_carries_the_conf_verdict_of_the_same_call(api, pm_home):
 
     conf = section["conf"]
     assert set(conf) == {"missing_required", "legacy", "unknown", "nonstandard",
-                         "missing_for_latest", "ctx_budget"}
+                         "missing_for_latest", "ctx_budget", "ctx_applied"}
     assert conf["missing_for_latest"] == []                   # 없음 — 모름(null)과 다른 값이다
     light = api.status(str(pm_home))["conf"]
     assert light["missing_for_latest"] is None                # 같은 사본의 가벼운 절은 모름

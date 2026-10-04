@@ -799,7 +799,7 @@ def test_t0932_native_constraints_opencode_min_and_unknown(pm_import,tmp_path,mo
 @pytest.fixture(autouse=True)
 def _legacy_native_fixture(request,tmp_path,monkeypatch):
     """기존 독립 metadata fixture의 설치/명령 정체만 격리한다. C는 공급하지 않는다."""
-    if 't0937' in request.node.name or 't0938' in request.node.name:return
+    if 't0937' in request.node.name or 't0938' in request.node.name or 't0939' in request.node.name:return
     folder=tmp_path/'legacy-native-bin';folder.mkdir()
     for harness in ('claude','codex','opencode'):
         command=folder/harness;command.write_text('#!/bin/sh\nexit 91\n',encoding='utf-8');command.chmod(0o755)
@@ -808,7 +808,7 @@ def _legacy_native_fixture(request,tmp_path,monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _legacy_independent_metadata(request,pm_import,monkeypatch):
-    if 't0932' in request.node.name or 't0937' in request.node.name or 't0938' in request.node.name:
+    if 't0932' in request.node.name or 't0937' in request.node.name or 't0938' in request.node.name or 't0939' in request.node.name:
         return
     def reader(*a):
         result=_t0932_reader(pm_import,*a)
@@ -1593,6 +1593,8 @@ def _t0937_actual_fixture(tmp_path,monkeypatch,*,mixed=False,apply=True):
 @pytest.mark.parametrize('source',['codex-cache','codex-config','opencode-config'])
 def test_t0937_actual_producer_scope_matrix(tmp_path,monkeypatch,source):
     f=_t0937_actual_fixture(tmp_path,monkeypatch)
+    legacy=dict(f.record);legacy['schema']=2;legacy.pop('applied');legacy.pop('applied_at');legacy['projection_sha256']=f.leaf.ctx_record_digest(legacy)
+    (f.root/f.leaf.CTX_BUDGET_RELPATH).write_text(json.dumps(legacy),encoding='utf-8')
     assert all(f.leaf.read_ctx_budget(f.root,f.values,h,b['identity'])['status']=='known' for h,b in f.record['budgets'].items())
     assert (f.record['budgets']['claude']['E'],f.record['budgets']['codex']['E'],f.record['budgets']['opencode']['E'])==(600000,570000,200000)
     if source=='codex-cache':(f.codex/'models_cache.json').write_text('{"client_version":"0.150.0","models":[]}',encoding='utf-8')
@@ -1634,7 +1636,7 @@ def test_t0937_scoped_native_environment_inputs(tmp_path,monkeypatch,change):
     else:
         now=f.leaf._ctx_time(f.record['budgets']['codex']['metadata']['observed_at'])+timedelta(seconds=299 if change=='ttl-before' else 300)
         original=f.leaf.resolve_ctx_capacity
-        monkeypatch.setattr(f.leaf,'resolve_ctx_capacity',lambda window,ratios,identity,metadata:original(window,ratios,identity,metadata,now=now))
+        monkeypatch.setattr(f.leaf,'resolve_ctx_capacity',lambda window,ratios,identity,metadata,**kw:original(window,ratios,identity,metadata,now=kw.get('now') or now))
         affected=set() if change=='ttl-before' else {'codex'}
     before=_snapshot_fixture_bytes(f.root);calls=list(f.calls)
     for h,b in f.record['budgets'].items():
@@ -1700,7 +1702,7 @@ def test_t0937_commit_preflight_all_sources_no_write(tmp_path,monkeypatch,change
     elif changed=='ttl':
         original=f.importer._load_local_conf;leaf=original();resolve=leaf.resolve_ctx_capacity
         deadline=leaf._ctx_time(doc['budgets']['codex']['metadata']['valid_until'])
-        leaf.resolve_ctx_capacity=lambda w,r,i,m:resolve(w,r,i,m,now=deadline)
+        monkeypatch.setattr(leaf,'resolve_ctx_capacity',lambda w,r,i,m,**kw:resolve(w,r,i,m,now=deadline))
         monkeypatch.setattr(f.importer,'_load_local_conf',lambda:leaf)
     else:
         if changed=='capacity':doc['budgets']['claude']['C']+=1
@@ -1725,7 +1727,7 @@ def test_t0937_legacy_unknown_existing_apply_refresh(tmp_path,monkeypatch):
     assert row['status']=='unknown' and '재검증' in row['reason'] and row['E'] is None
     assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
     f.importer.apply_harness_ctx(f.root,write=True,opencode_config_dir=f.global_dir)
-    refreshed=json.loads(path.read_text(encoding='utf-8'));assert refreshed['schema']==2
+    refreshed=json.loads(path.read_text(encoding='utf-8'));assert refreshed['schema']==3
     assert f.leaf.read_ctx_budget(f.root,f.values,'claude',refreshed['budgets']['claude']['identity'])['status']=='known'
 
 
@@ -2028,6 +2030,8 @@ def test_t0938_at3_codex_snapshot_lifecycle(tmp_path, monkeypatch, case):
     # Apply uses independent producer and still binds the catalog, including replacement.
     importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
     result=importer.preview_ctx_capacity(root,'codex',now=fetched)
+    path=root/leaf.CTX_BUDGET_RELPATH;legacy=json.loads(path.read_text(encoding='utf-8'));legacy['schema']=2;legacy.pop('applied');legacy.pop('applied_at');legacy['projection_sha256']=leaf.ctx_record_digest(legacy)
+    path.write_text(json.dumps(legacy),encoding='utf-8')
     values=leaf.load(root/'.project_manager/local.conf').values
     identity=models[0]['identity']
     assert leaf.read_ctx_budget(root,values,'codex',identity)['status']=='known'
@@ -2132,3 +2136,263 @@ def test_t0938_review_preview_auth_environment_binding(tmp_path,monkeypatch,key,
     assert trace==['metadata']
     assert 'ENV_AUTH_' not in json.dumps(result)
     assert before==_snapshot_fixture_bytes(tmp_path)
+
+@pytest.mark.parametrize('replacement',['identical','generation','writer','deleted'])
+def test_t0939_at1_cache_lifecycle(tmp_path,monkeypatch,replacement):
+    f=_t0937_actual_fixture(tmp_path,monkeypatch)
+    cache=f.codex/'models_cache.json';before=(f.root/f.leaf.CTX_BUDGET_RELPATH).read_bytes()
+    raw=cache.read_bytes()
+    if replacement=='deleted':cache.unlink()
+    else:
+        doc=json.loads(raw)
+        if replacement=='writer':doc['client_version']='0.159.0'
+        if replacement=='generation':doc['unrelated']='new generation'
+        cache.write_bytes(raw if replacement=='identical' else json.dumps(doc).encode('utf-8'))
+    row=f.leaf.read_ctx_budget(f.root,f.values,'codex',f.record['budgets']['codex']['identity'])
+    assert row['status']=='known'
+    assert (row['C'],row['E'],row['P'])==(570000,570000,535800)
+    applied=f.importer.ctx_applied_status(f.root,f.values)['codex']
+    assert applied['status']=='known' and applied['P']==535800 and 'C' not in applied
+    assert (f.root/f.leaf.CTX_BUDGET_RELPATH).read_bytes()==before
+
+@pytest.mark.parametrize('seconds',[299,300])
+@pytest.mark.parametrize('replacement',[False,True])
+def test_t0939_at1_original_expiry(tmp_path,monkeypatch,seconds,replacement):
+    from datetime import timedelta
+    f=_t0937_actual_fixture(tmp_path,monkeypatch)
+    original=f.leaf.resolve_ctx_capacity
+    now=f.leaf._ctx_time(f.record['budgets']['codex']['metadata']['observed_at'])+timedelta(seconds=seconds)
+    monkeypatch.setattr(f.leaf,'resolve_ctx_capacity',lambda w,r,i,m,**kw:original(w,r,i,m,now=kw.get('now') or now))
+    if replacement:(f.codex/'models_cache.json').unlink()
+    before=(f.root/f.leaf.CTX_BUDGET_RELPATH).read_bytes()
+    row=f.leaf.read_ctx_budget(f.root,f.values,'codex',f.record['budgets']['codex']['identity'])
+    assert row['status']==('known' if seconds==299 else 'unknown')
+    if seconds==300:assert all(row[k] is None for k in ('C','E','P'))
+    applied=f.importer.ctx_applied_status(f.root,f.values)['codex']
+    assert applied['status']=='known' and (applied['E'],applied['P'])==(570000,535800) and 'C' not in applied
+    assert (f.root/f.leaf.CTX_BUDGET_RELPATH).read_bytes()==before
+
+
+def test_t0939_at1_independent_c_and_legacy_control(tmp_path,monkeypatch):
+    f=_t0937_actual_fixture(tmp_path,monkeypatch)
+    f.importer._commit_harness_ctx(f.importer._prepare_harness_ctx(f.root,{**f.values,'harness.codex.ctx_window_tokens':'100000'},
+        updates={'harness.codex.ctx_window_tokens':'100000'},opencode_config_dir=f.global_dir))
+    values=f.leaf.load(f.root/'.project_manager/local.conf').values
+    record=json.loads((f.root/f.leaf.CTX_BUDGET_RELPATH).read_text(encoding='utf-8'))
+    row=f.leaf.read_ctx_budget(f.root,values,'codex',record['budgets']['codex']['identity'])
+    assert (row['C'],row['E'],row['P'])==(570000,100000,94000)
+    record['schema']=2;record.pop('applied');record.pop('applied_at');record['projection_sha256']=f.leaf.ctx_record_digest(record)
+    (f.root/f.leaf.CTX_BUDGET_RELPATH).write_text(json.dumps(record),encoding='utf-8')
+    assert f.leaf.read_ctx_budget(f.root,values,'codex',record['budgets']['codex']['identity'])['status']=='known'
+    (f.codex/'models_cache.json').unlink()
+    assert f.leaf.read_ctx_budget(f.root,values,'codex',record['budgets']['codex']['identity'])['status']=='unknown'
+    assert f.importer.ctx_applied_status(f.root,values)['codex']['status']=='unknown'
+
+@pytest.mark.parametrize('damage',['digest','C','E','P','native','future','before-observed','expired-apply','TTL301','generation','version',
+    'snapshot','source','role-swap','required-missing','required-duplicate','harness','root','models','managed-missing','managed-extra','managed-duplicate','managed-bool','selection'])
+def test_t0939_at2_record_corruption(tmp_path,monkeypatch,damage):
+    from datetime import datetime,timedelta,timezone
+    f=_t0937_actual_fixture(tmp_path,monkeypatch);r=f.record;b=r['budgets']['codex'];binding=r['bindings']['codex'];proof=r['applied']['codex']
+    if damage in ('C','E','P'):b[damage]+=1
+    elif damage=='native':b['native_window']+=1
+    elif damage=='future':r['applied_at']=(datetime.now(timezone.utc)+timedelta(seconds=1)).isoformat()
+    elif damage=='before-observed':r['applied_at']=(f.leaf._ctx_time(b['metadata']['observed_at'])-timedelta(seconds=1)).isoformat()
+    elif damage=='expired-apply':r['applied_at']=b['metadata']['valid_until']
+    elif damage in ('TTL301','generation','version','source'):
+        key={'TTL301':'valid_until','generation':'generation','version':'source_version','source':'source'}[damage]
+        value=(f.leaf._ctx_time(b['metadata']['observed_at'])+timedelta(seconds=301)).isoformat() if damage=='TTL301' else 'wrong'
+        b['metadata'][key]=value;b['models'][0]['metadata'][key]=value
+    elif damage=='snapshot':b['models'][0].pop('metadata')
+    elif damage=='role-swap':binding['roles']['auth'],binding['roles']['catalog']=binding['roles']['catalog'],binding['roles']['auth']
+    elif damage=='required-missing':binding['required_files'].pop()
+    elif damage=='required-duplicate':binding['required_files'].append(binding['required_files'][0])
+    elif damage=='harness':binding['harness']='claude'
+    elif damage=='root':binding['target']=str(f.root.parent/'wrong/config.toml')
+    elif damage=='models':b['models'].append(b['models'][0])
+    elif damage=='managed-missing':proof['managed'].pop()
+    elif damage=='managed-extra':proof['managed'].append({'path':['extra'],'value':1})
+    elif damage=='managed-duplicate':proof['managed'].append(proof['managed'][0])
+    elif damage=='managed-bool':proof['managed'][0]['value']=True
+    elif damage=='selection':proof['selection_sha256']='0'*64
+    r['projection_sha256']='broken' if damage=='digest' else f.leaf.ctx_record_digest(r)
+    (f.root/f.leaf.CTX_BUDGET_RELPATH).write_text(json.dumps(r),encoding='utf-8')
+    assert f.importer.ctx_applied_status(f.root,f.values)['codex']['status']=='unknown'
+
+@pytest.mark.parametrize('change',['managed','window','model','provider','profile','global','auth','install','env','input','theme','other-harness','output-forged','output-excess'])
+def test_t0939_at2_actual_target_binding(tmp_path,monkeypatch,change):
+    f=_t0937_actual_fixture(tmp_path,monkeypatch);h='codex';target=f.root/'.codex/config.toml'
+    if change=='managed':target.write_text('model_auto_compact_token_limit=1\n',encoding='utf-8')
+    elif change in ('window','model','provider','profile','theme'):
+        target.write_text({'window':'\nmodel_context_window=600000\n','model':'\nmodel="other"\n',
+            'provider':'\nmodel_provider="other"\n','profile':'\nprofile="other"\n','theme':'\ntheme="light"\n# comment\n'}[change]+target.read_text(encoding='utf-8'),encoding='utf-8')
+    elif change=='global':(f.codex/'config.toml').write_text('model="other"\n',encoding='utf-8')
+    elif change=='auth':(f.codex/'auth.json').write_text('{"secret":"DO-NOT-OUTPUT"}',encoding='utf-8')
+    elif change=='install':Path(f.record['native_commands']['codex']).write_bytes(b'changed install')
+    elif change=='env':monkeypatch.setenv('CODEX_API_KEY','DO-NOT-OUTPUT')
+    elif change=='input':f.values['harness.codex.ctx_window_tokens']='100000'
+    elif change=='other-harness':(f.global_dir/'config.json').write_text('{}',encoding='utf-8')
+    else:
+        h='opencode';target=f.root/'.opencode/opencode.jsonc';doc=json.loads(target.read_text(encoding='utf-8'))
+        value=32767 if change=='output-forged' else 999999
+        doc['provider']['ollama']['models']['glm-5.2:cloud']['limit']['output']=value
+        target.write_text(json.dumps(doc),encoding='utf-8')
+        for entry in f.record['applied'][h]['managed']:
+            if entry['path'][-1]=='output':entry['value']=value
+        f.record['projection_sha256']=f.leaf.ctx_record_digest(f.record)
+        (f.root/f.leaf.CTX_BUDGET_RELPATH).write_text(json.dumps(f.record),encoding='utf-8')
+    before=_snapshot_fixture_bytes(f.root);calls=list(f.calls)
+    applied=f.importer.ctx_applied_status(f.root,f.values)[h]
+    assert applied['status']==('known' if change in ('theme','other-harness') else 'unknown')
+    assert 'DO-NOT-OUTPUT' not in json.dumps(applied)
+    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
+
+@pytest.mark.parametrize('changed',['codex-source','conf','baseline','record','target-shape','native','environment','ttl','capacity','binding'])
+def test_t0939_at2_prewrite_full_plan_guards(tmp_path,monkeypatch,changed):
+    test_t0937_commit_preflight_all_sources_no_write(tmp_path,monkeypatch,changed)
+
+@pytest.mark.parametrize('failure',['native','baseline','ledger','readback'])
+def test_t0939_at2_failed_writer_no_new_proof(tmp_path,monkeypatch,failure):
+    f=_t0937_actual_fixture(tmp_path,monkeypatch,apply=False)
+    plan=f.importer._prepare_harness_ctx(f.root,f.values,opencode_config_dir=f.global_dir)
+    original=f.importer._atomic_write_dest_bytes
+    baseline=f.root/f.importer.ADAPTER_BASELINE_RELPATH
+    if failure=='baseline':
+        baseline.write_text(json.dumps({'schema':1,'files':{rel:{'sha256':f.importer.content_sha256(f.root/rel),
+            'recorded_at':'2026-10-01T00:00:00Z','template_rev':'fixture'} for rel in f.importer.HARNESS_CTX_FILES.values()}}),encoding='utf-8')
+        plan=f.importer._prepare_harness_ctx(f.root,f.values,opencode_config_dir=f.global_dir)
+        monkeypatch.setattr(f.importer,'_write_adapter_baseline',lambda *a,**kw:False)
+    def write(root,rel,payload,**kw):
+        if Path(rel)==({'native':Path('.codex/config.toml'),'baseline':f.importer.ADAPTER_BASELINE_RELPATH,
+                      'ledger':f.leaf.CTX_BUDGET_RELPATH}.get(failure)):return False
+        return original(root,rel,payload,**kw)
+    monkeypatch.setattr(f.importer,'_atomic_write_dest_bytes',write)
+    if failure=='readback':
+        writer=f.importer._harness_ctx_write
+        def corrupt(*a,**kw):
+            writer(*a,**kw);(f.root/'.codex/config.toml').write_text('model_auto_compact_token_limit=1\n',encoding='utf-8')
+        monkeypatch.setattr(f.importer,'_harness_ctx_write',corrupt)
+    with pytest.raises(f.importer.HarnessCtxError):f.importer._commit_harness_ctx(plan)
+    assert not (f.root/f.leaf.CTX_BUDGET_RELPATH).exists()
+
+@pytest.mark.parametrize('source',['models_cache.json','config.toml','auth.json'])
+def test_t0939_at2_acquisition_race_no_writer(tmp_path,monkeypatch,source):
+    f=_t0937_actual_fixture(tmp_path,monkeypatch,apply=False)
+    original=f.importer._ctx_file_bytes;path=f.codex/source;trigger=[]
+    def racing(candidate):
+        raw=original(candidate)
+        if Path(candidate)==path and not trigger:
+            trigger.append(True);path.write_bytes((raw or b'')+b' ')
+        return raw
+    monkeypatch.setattr(f.importer,'_ctx_file_bytes',racing)
+    for name in ('_harness_ctx_write','_atomic_write_dest_bytes','_write_conf_keys_locked'):
+        monkeypatch.setattr(f.importer,name,lambda *a,**kw:pytest.fail('경쟁 시 writer 호출'))
+    with f.importer._local_conf_write_lock(f.root/'.project_manager/local.conf'):pass
+    before=_snapshot_fixture_bytes(f.root)
+    with pytest.raises(f.importer.HarnessCtxError):f.importer.apply_harness_ctx(f.root,write=True,opencode_config_dir=f.global_dir)
+    assert before==_snapshot_fixture_bytes(f.root) and trigger
+
+
+def test_t0939_at2_identical_success_is_idempotent(tmp_path,monkeypatch):
+    f=_t0937_actual_fixture(tmp_path,monkeypatch)
+    before=(f.root/f.leaf.CTX_BUDGET_RELPATH).read_bytes()
+    f.importer._commit_harness_ctx(f.importer._prepare_harness_ctx(f.root,f.values,opencode_config_dir=f.global_dir))
+    # Claude/show의 새 획득 시각은 새 증언 대상이다. 같은 동결 snapshot 재반영만 비교한다.
+    plan=f.importer._prepare_harness_ctx(f.root,f.values,opencode_config_dir=f.global_dir)
+    f.importer._commit_harness_ctx(plan)
+    before=(f.root/f.leaf.CTX_BUDGET_RELPATH).read_bytes()
+    plan=f.importer._prepare_harness_ctx(f.root,f.values,opencode_config_dir=f.global_dir)
+    document=json.loads(plan);previous=json.loads(before)
+    document['budgets']=previous['budgets']
+    f.importer._commit_harness_ctx(json.dumps(document))
+    assert (f.root/f.leaf.CTX_BUDGET_RELPATH).read_bytes()==before
+
+@pytest.mark.parametrize('mode',['parse','io','managed','selection','policy','partial','success'])
+def test_t0939_r04_postwrite_failure_report(tmp_path,monkeypatch,mode,capsys):
+    from types import SimpleNamespace
+    f=_t0937_actual_fixture(tmp_path,monkeypatch,apply=False)
+    original_writer=f.importer._harness_ctx_write;reader=f.importer._read_bytes_shared;active=[];caught=[]
+    before_conf=(f.root/'.project_manager/local.conf').read_bytes()
+    native_before={rel:(f.root/rel).read_bytes() for rel in f.importer.HARNESS_CTX_FILES.values()}
+    def read(path,*a,**kw):
+        if mode=='io' and active and Path(path)==f.root/'.codex/config.toml':raise OSError('DO-NOT-OUTPUT readback')
+        return reader(path,*a,**kw)
+    def writer(*a,**kw):
+        if mode=='partial':
+            rel='.claude/settings.json';root,changed=a
+            assert f.importer._atomic_write_dest_bytes(root,Path(rel),changed[rel][1].encode('utf-8'))
+            raise f.importer.HarnessCtxError(['부분 쓰기 실패'],written=(rel,))
+        original_writer(*a,**kw);active.append(True);target=f.root/'.codex/config.toml'
+        if mode=='parse':target.write_text('model_auto_compact_token_limit=["DO-NOT-OUTPUT',encoding='utf-8')
+        elif mode=='managed':target.write_text('model_auto_compact_token_limit=1\n',encoding='utf-8')
+        elif mode=='selection':target.write_text('model="changed"\nmodel_auto_compact_token_limit=535800\n',encoding='utf-8')
+        elif mode=='policy':f.op_native.write_bytes(b'DO-NOT-OUTPUT bad policy')
+    monkeypatch.setattr(f.importer,'_harness_ctx_write',writer)
+    monkeypatch.setattr(f.importer,'_read_bytes_shared',read)
+    monkeypatch.setattr(f.importer,'opencode_global_config_dir',lambda *a:f.global_dir)
+    original_commit=f.importer._commit_harness_ctx
+    def commit(plan):
+        try:return original_commit(plan)
+        except (f.importer.HarnessCtxError,ValueError) as exc:caught.append(exc);raise
+    monkeypatch.setattr(f.importer,'_commit_harness_ctx',commit)
+    config=_load('pm_config');args=SimpleNamespace(json=True,set=[('ctx.checkpoint_at_pct','79')],preview=False)
+    rc=config.cmd_ctx_apply(args,pm_import=f.importer,dest_root=f.root)
+    output=capsys.readouterr()
+    assert (f.root/'.project_manager/local.conf').read_bytes()!=before_conf
+    if mode=='success':
+        assert rc==0 and not caught
+        assert json.loads((f.root/f.leaf.CTX_BUDGET_RELPATH).read_text(encoding='utf-8'))['schema']==3
+    else:
+        assert rc==1 and len(caught)==1 and getattr(caught[0],'phase',None)=='commit'
+        changed={rel for rel,raw in native_before.items() if (f.root/rel).read_bytes()!=raw}
+        assert set(caught[0].written)=={'.project_manager/local.conf',*changed}
+        assert not (f.root/f.leaf.CTX_BUDGET_RELPATH).exists()
+        assert '반영한 뒤 멈췄습니다' in output.err and '반영하지 않았습니다' not in output.err
+        assert 'DO-NOT-OUTPUT' not in output.err+output.out
+
+@pytest.mark.parametrize('mode',['parse','io','managed','selection','policy'])
+def test_t0939_r04_prewrite_failure_control(tmp_path,monkeypatch,mode,capsys):
+    from types import SimpleNamespace
+    f=_t0937_actual_fixture(tmp_path,monkeypatch,apply=False);target=f.root/'.codex/config.toml'
+    if mode=='parse':target.write_text('model_auto_compact_token_limit=["',encoding='utf-8')
+    elif mode=='io':
+        original=f.importer._read_bytes_shared
+        def read(path,*a,**kw):
+            if Path(path)==target:raise OSError('mock prewrite read failure')
+            return original(path,*a,**kw)
+        monkeypatch.setattr(f.importer,'_read_bytes_shared',read)
+    elif mode in ('managed','selection'):
+        monkeypatch.setattr(f.importer,'_ctx_managed_proof',lambda *a,**kw:(_ for _ in ()).throw(f.importer.HarnessCtxError(['mock projection rejection'])))
+    else:f.op_native.write_bytes(b'invalid policy before prepare')
+    monkeypatch.setattr(f.importer,'opencode_global_config_dir',lambda *a:f.global_dir)
+    for name in ('_harness_ctx_write','_atomic_write_dest_bytes','_write_conf_keys_locked'):
+        monkeypatch.setattr(f.importer,name,lambda *a,**kw:pytest.fail('prewrite writer 호출'))
+    before=_snapshot_fixture_bytes(f.root)
+    rc=_load('pm_config').cmd_ctx_apply(SimpleNamespace(json=True,set=[('ctx.checkpoint_at_pct','79')],preview=False),pm_import=f.importer,dest_root=f.root)
+    assert rc==3 and before==_snapshot_fixture_bytes(f.root)
+    assert not (f.root/f.leaf.CTX_BUDGET_RELPATH).exists()
+
+@pytest.mark.parametrize('damage',['normal','install',*range(7),'single'])
+def test_t0939_r04_opencode_policy_single_scan(tmp_path,monkeypatch,damage):
+    f=_t0937_actual_fixture(tmp_path,monkeypatch,apply=False);target=f.root/'.opencode/opencode.jsonc'
+    doc=json.loads(target.read_text(encoding='utf-8'));count=1 if damage=='single' else 7
+    doc['provider']['ollama']['models']={f'review-model-{i}:cloud':{'limit':{'output':32768}} for i in range(count)}
+    target.write_text(json.dumps(doc),encoding='utf-8')
+    f.importer.apply_harness_ctx(f.root,write=True,opencode_config_dir=f.global_dir)
+    if type(damage) is int:
+        doc=json.loads(target.read_text(encoding='utf-8'));doc['provider']['ollama']['models'][f'review-model-{damage}:cloud']['limit']['output']=32767
+        target.write_text(json.dumps(doc),encoding='utf-8')
+    elif damage=='install':f.op_native.write_bytes(b'changed install')
+    native=f.op_native.resolve();original_read=f.importer._ctx_file_bytes;original_policy=f.importer._ctx_opencode_policy;reads=[];policies=[]
+    def read(path):
+        raw=original_read(path)
+        if Path(path).resolve()==native:reads.append(True)
+        return raw
+    def policy(raw):policies.append(True);return original_policy(raw)
+    monkeypatch.setattr(f.importer,'_ctx_file_bytes',read);monkeypatch.setattr(f.importer,'_ctx_opencode_policy',policy)
+    status=_load('pm_config');monkeypatch.setattr(status,'REPO',f.root);monkeypatch.setattr(status,'_load_module',lambda *a:f.importer)
+    before=_snapshot_fixture_bytes(f.root);calls=list(f.calls)
+    row=status._status_json_conf(None)['ctx_applied']['opencode']
+    assert row['status']==('known' if damage in ('normal','single') else 'unknown')
+    assert len(reads)==len(policies)<=1
+    if damage in ('normal','single'):assert len(reads)==1
+    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls

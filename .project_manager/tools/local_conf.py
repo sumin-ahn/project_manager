@@ -920,7 +920,8 @@ def ctx_record_digest(record):
     """파생 기록의 손상 검출 지문. 독립 metadata catalog로 사용하지 않는다."""
     import hashlib
     keys = ("schema", "inputs", "environment", "budgets", "fingerprints", "native_files", "native_commands")
-    if record.get("schema") == 2: keys += ("bindings",)
+    if record.get("schema") in (2, 3): keys += ("bindings",)
+    if record.get("schema") == 3: keys += ("applied_at", "applied")
     payload = {key: record[key] for key in keys}
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
@@ -1054,7 +1055,7 @@ def _ctx_role_source_correlation(binding, budget, root):
         raise ValueError("ctx producer source와 현재 선택 역할 불일치")
 
 
-def _ctx_budget_semantics(row, inputs, values, harness, identity):
+def _ctx_budget_semantics(row, inputs, values, harness, identity, *, now=None):
     """같은 입력과 동결 metadata의 C/E/P 및 native 인코딩을 검증한다."""
     models = row.get("models")
     if not isinstance(models, list) or not models or any(not isinstance(m, dict) or
@@ -1068,7 +1069,7 @@ def _ctx_budget_semantics(row, inputs, values, harness, identity):
             raise ValueError("현재 세션 모델/provider/profile 확인 불가 또는 불일치")
     ratios = tuple(int(inputs[k]) for k in CTX_INPUT_KEYS[-3:])
     for model in models:
-        verified = resolve_ctx_capacity(row["W"], ratios, model["identity"], model["metadata"])
+        verified = resolve_ctx_capacity(row["W"], ratios, model["identity"], model["metadata"], now=now)
         if verified["status"] != "known" or verified["C"] != model["C"]:
             raise ValueError(verified["reason"] or "metadata 한도 변경")
     identities = [tuple(m["identity"].get(k) for k in ("model", "provider", "profile")) for m in models]
@@ -1095,36 +1096,92 @@ def _ctx_budget_semantics(row, inputs, values, harness, identity):
     return row
 
 
+def _ctx_schema3_snapshot(record, binding, values, harness):
+    """성공 시각의 산식과 원래 catalog snapshot을 검증한다. TTL을 갱신하지 않는다."""
+    from datetime import datetime, timezone, timedelta
+    applied_at = _ctx_time(record["applied_at"])
+    if applied_at > datetime.now(timezone.utc):
+        raise ValueError("미래 적용 시각")
+    proofs = record["applied"]
+    if not isinstance(proofs, dict) or set(proofs) != set(record["bindings"]):
+        raise ValueError("설정 반영 하네스 집합 손상")
+    proof = proofs[harness]
+    if not isinstance(proof, dict) or set(proof) != {"managed", "selection_sha256"}:
+        raise ValueError("설정 반영 증언 구조 손상")
+    if not isinstance(proof["selection_sha256"], str) or len(proof["selection_sha256"]) != 64:
+        raise ValueError("선택 projection 손상")
+    managed = proof["managed"]
+    if not isinstance(managed, list) or not managed:
+        raise ValueError("관리 projection 없음")
+    paths = []
+    for entry in managed:
+        if not isinstance(entry, dict) or set(entry) != {"path", "value"} or not isinstance(entry["path"], list) or not entry["path"] or any(not isinstance(k,str) or not k for k in entry["path"]):
+            raise ValueError("관리 projection 경로 손상")
+        if type(entry["value"]) is not int and not ("selection" in binding["roles"] and entry["path"] == ["model_context_window"] and entry["value"] is None):
+            raise ValueError("관리 projection 값 손상")
+        paths.append(tuple(entry["path"]))
+    if len(set(paths)) != len(paths): raise ValueError("관리 projection 중복")
+    row = record["budgets"][harness]
+    _ctx_budget_semantics(row, record["inputs"], values, harness, row["identity"], now=applied_at)
+    excluded = set()
+    if "selection" in binding["roles"]:
+        for model in row["models"]:
+            metadata = model["metadata"]
+            if metadata.get("semantics") != "context-percent" and not Path(metadata["source"]).is_absolute():
+                continue
+            if metadata.get("semantics") != "context-percent" or len(row["models"]) != 1:
+                raise ValueError("Codex snapshot 모델/의미 손상")
+            catalog = binding["roles"]["catalog"]
+            manifest = binding["roles"]["manifest"]
+            native = json.loads(_read_text_shared(Path(manifest), encoding="utf-8"))
+            if (metadata["source"] != catalog or metadata["generation"] != binding["fingerprints"][catalog]
+                    or metadata.get("source_version") != native.get("version")
+                    or _ctx_time(metadata["valid_until"]) != _ctx_time(metadata["observed_at"]) + timedelta(seconds=300)):
+                raise ValueError("Codex 원래 snapshot 결속 손상")
+            excluded.add(catalog)
+    return excluded
+
+
+def _read_ctx_record(root, values, harness, *, applied=False):
+    """현재 scoped 근거 검사. 설정 반영과 런타임이 같은 검사를 공유한다."""
+    record = json.loads(_read_text_shared(Path(root) / CTX_BUDGET_RELPATH, encoding="utf-8"),object_pairs_hook=_ctx_record_pairs)
+    if not isinstance(record, dict) or any(not isinstance(record.get(k), dict) for k in
+            ("inputs", "environment", "budgets", "fingerprints", "native_files", "native_commands")):
+        raise ValueError("ctx 적용 기록 구조 손상")
+    if record.get("projection_sha256") != ctx_record_digest(record):
+        raise ValueError("ctx 적용 기록 손상")
+    if record.get("schema") not in (2, 3):
+        raise ValueError("ctx 적용 기록 귀속 형식 미지원, 기존 ctx-apply로 근거 재검증 필요")
+    binding = _ctx_binding_structure(record,root)[harness]
+    if binding["environment"] != ctx_environment_fingerprints(harness,registry=binding.get("registry",False)):
+        raise ValueError("native 모델/provider 환경 변경")
+    _ctx_role_source_correlation(binding,record["budgets"][harness],root)
+    scoped_keys = (f"harness.{harness}.ctx_window_tokens",) + CTX_INPUT_KEYS[-3:]
+    current_inputs = ctx_input_values(values)
+    if any(record["inputs"].get(k) != current_inputs[k] for k in scoped_keys):
+        raise ValueError("ctx 입력 변경 또는 적용 기록 형식 불일치")
+    if not _ctx_native_matches(binding):
+        raise ValueError("native 설치 정체/세대 변경")
+    excluded = _ctx_schema3_snapshot(record, binding, values, harness) if record["schema"] == 3 else set()
+    if applied:
+        if record["schema"] != 3: raise ValueError("설정 반영 증언 없음, ctx-apply 필요")
+        excluded.add(binding["target"])
+    if not _ctx_fingerprints_match({p:d for p,d in binding["fingerprints"].items() if p not in excluded}):
+        raise ValueError("모델 선택/native/metadata 근거 변경")
+    row = record["budgets"][harness]
+    if not isinstance(row, dict) or not isinstance(row.get("identity"), dict):
+        raise ValueError("ctx 하네스 기록 구조 손상")
+    return record, binding, row
+
+
 def read_ctx_budget(root, values, harness, identity=None):
-    """성공 적용 기록의 입력·원천·native 결속 확인. 조회는 쓰지 않는다."""
-    unknown = {"status": "unknown", "reason": "검증된 ctx 적용 기록 없음", "W": ctx_input_values(values)[f"harness.{harness}.ctx_window_tokens"],
-               "C": None, "E": None, "P": None}
+    """현재 모델 예산. 조회는 쓰지 않으며 원래 metadata TTL을 유지한다."""
+    unknown = {"status":"unknown", "reason":"검증된 ctx 적용 기록 없음",
+               "W":ctx_input_values(values)[f"harness.{harness}.ctx_window_tokens"], "C":None, "E":None, "P":None}
     try:
         unknown["W"] = int(unknown["W"])
-        record = json.loads(_read_text_shared(Path(root) / CTX_BUDGET_RELPATH, encoding="utf-8"),object_pairs_hook=_ctx_record_pairs)
-        if not isinstance(record, dict) or any(not isinstance(record.get(k), dict) for k in
-                ("inputs", "environment", "budgets", "fingerprints", "native_files", "native_commands")):
-            raise ValueError("ctx 적용 기록 구조 손상")
-        if record.get("projection_sha256") != ctx_record_digest(record):
-            raise ValueError("ctx 적용 기록 손상")
-        if record.get("schema") != 2:
-            raise ValueError("ctx 적용 기록 귀속 형식 미지원, 기존 ctx-apply로 근거 재검증 필요")
-        binding = _ctx_binding_structure(record,root)[harness]
-        if binding["environment"] != ctx_environment_fingerprints(harness,registry=binding.get("registry",False)):
-            raise ValueError("native 모델/provider 환경 변경")
-        _ctx_role_source_correlation(binding,record["budgets"][harness],root)
-        scoped_keys = (f"harness.{harness}.ctx_window_tokens",) + CTX_INPUT_KEYS[-3:]
-        current_inputs = ctx_input_values(values)
-        if any(record["inputs"].get(k) != current_inputs[k] for k in scoped_keys):
-            raise ValueError("ctx 입력 변경 또는 적용 기록 형식 불일치")
-        if not _ctx_native_matches(binding):
-            raise ValueError("native 설치 정체/세대 변경")
-        if not _ctx_fingerprints_match(binding["fingerprints"]):
-            raise ValueError("모델 선택/native/metadata 근거 변경")
-        row = record["budgets"][harness]
-        if not isinstance(row, dict) or not isinstance(row.get("identity"), dict):
-            raise ValueError("ctx 하네스 기록 구조 손상")
-        return _ctx_budget_semantics(row,record["inputs"],values,harness,identity)
+        record, binding, row = _read_ctx_record(root, values, harness)
+        return _ctx_budget_semantics(row, record["inputs"], values, harness, identity)
     except (OSError, UnicodeError, ValueError, TypeError, KeyError, AttributeError) as exc:
         unknown["reason"] = str(exc)
         return unknown

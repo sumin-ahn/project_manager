@@ -205,7 +205,7 @@ def test_the_five_lists_are_the_copys_verdict_not_a_manager_calculation(api, pm_
 
     verdict = api.status(str(pm_home))["conf"]
     assert set(verdict) == {
-        "missing_required", "legacy", "unknown", "nonstandard", "missing_for_latest", "ctx_budget"}
+        "missing_required", "legacy", "unknown", "nonstandard", "missing_for_latest", "ctx_budget", "ctx_applied"}
     # 가벼운 절은 소스를 해소하지 않는다 — "갱신하면 필요" 는 없음([])이 아니라 모름(null)이다.
     assert verdict["missing_for_latest"] is None
 
