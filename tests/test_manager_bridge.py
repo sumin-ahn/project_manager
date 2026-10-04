@@ -276,3 +276,78 @@ def test_the_server_does_not_add_a_second_lock_around_the_engine_call():
 
     assert "with ENGINE_LOCK" not in source and "import ENGINE_LOCK" not in source
     assert "RLock" not in source
+
+
+@pytest.mark.parametrize('case',['private','missing','singleflight','late-check','query-failure','check-failure','expiry','source-change','isolation'])
+def test_t0938_at2_backend_private_receipt_check(tmp_path, monkeypatch, case):
+    import subprocess
+    from concurrent.futures import ThreadPoolExecutor, Future
+    from datetime import datetime,timedelta,timezone
+    from manager import bridge_settings as module
+    from manager import ENGINE_LOCK
+    home=tmp_path/'capacity';(home/'.project_manager').mkdir(parents=True)
+    api=SettingsApi();calls=[];started=threading.Event();release=threading.Event()
+    monkeypatch.setattr(module.runner,'interpreter',lambda home:['python3'])
+    phase={'C':967000,'fail':False}
+    waiting=threading.Event()
+    class ObservedFuture(Future):
+        def result(self,timeout=None):
+            waiting.set();return super().result(timeout)
+    monkeypatch.setattr(module,'Future',ObservedFuture)
+    def run(home,argv,*,timeout,input=None):
+        request=json.loads(input);calls.append(request)
+        if (case=='singleflight' and 'receipt' not in request) or (case=='late-check' and 'receipt' in request):
+            started.set();assert release.wait(5)
+        if 'receipt' in request:
+            result={'mode':'check','schema':1,'harness':request['harness'],
+                'status':'unknown' if phase['fail'] or case in {'late-check','expiry','source-change'} else 'known','reason':None}
+        else:
+            result={'mode':'query','schema':1,'harness':request['harness'],
+                'status':'unknown' if phase['fail'] else 'known','reason':None,'C':None if phase['fail'] else phase['C'],
+                'observed_at':datetime.now(timezone.utc).isoformat(),
+                'valid_until':(datetime.now(timezone.utc)+timedelta(seconds=300)).isoformat(),
+                'receipt':None if phase['fail'] else {'private':'SECRET_CREDENTIAL_SENTINEL'}}
+        return subprocess.CompletedProcess(argv,0,json.dumps(result),'')
+    monkeypatch.setattr(module,'_run',run)
+    if case=='missing':
+        assert api.ctx_capacity(str(home),'claude',True)['status']=='unknown' and calls==[];return
+    if case=='singleflight':
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first=pool.submit(api.ctx_capacity,str(home),'claude');assert started.wait(5)
+            second=pool.submit(api.ctx_capacity,str(home),'claude');assert waiting.wait(5)
+            # Unrelated engine work can proceed while the native protocol waits.
+            assert ENGINE_LOCK.acquire(blocking=False);ENGINE_LOCK.release()
+            release.set();a,b=first.result(5),second.result(5)
+        assert a==b and a['C']==967000 and len(calls)==1;return
+    result=api.ctx_capacity(str(home),'claude')
+    assert result['C']==967000 and 'receipt' not in result
+    original_times=(result['observed_at'],result['valid_until'])
+    if case=='late-check':
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            old=pool.submit(api.ctx_capacity,str(home),'claude',True);assert started.wait(5)
+            phase['C']=570000
+            assert api.ctx_capacity(str(home),'claude')['C']==570000
+            release.set();assert old.result(5)['status']=='unknown'
+        assert api._capacities[(str(home),'claude')]['C']==570000;return
+    if case in {'query-failure','check-failure'}:phase['fail']=True
+    if case=='isolation':
+        phase['fail']=True;assert api.ctx_capacity(str(home),'codex')['status']=='unknown';phase['fail']=False
+    checked=api.ctx_capacity(str(home),'claude',case!='query-failure')
+    if case in {'query-failure','check-failure','expiry','source-change'}:
+        assert checked['status']=='unknown' and checked['C'] is None
+        count=len(calls);assert api.ctx_capacity(str(home),'claude',True)['status']=='unknown';assert len(calls)==count
+    else:
+        assert checked['C']==967000 and (checked['observed_at'],checked['valid_until'])==original_times
+        assert 'receipt' in calls[-1]
+    assert 'SECRET_CREDENTIAL_SENTINEL' not in json.dumps(checked)
+
+
+def test_t0938_at4_apply_status_wins(tmp_path, monkeypatch):
+    import subprocess
+    from manager import bridge_settings as module
+    monkeypatch.setattr(module.runner,'interpreter',lambda home:['python3'])
+    monkeypatch.setattr(module,'_run',lambda *a,**kw:subprocess.CompletedProcess([],0,json.dumps({'changed':True,'applied':[],
+        'ctx_budget':{'claude':{'status':'known','E':600000}}}),''))
+    monkeypatch.setattr(module.runner,'status',lambda *a:{'conf':{'ctx_budget':{'claude':{'status':'unknown','E':None}}}})
+    result=module._ctx_apply(tmp_path,{})
+    assert result['conf']['ctx_budget']['claude']['status']=='unknown'

@@ -8456,12 +8456,95 @@ def _ctx_native_protocol(command, root, requests):
 
 
 def _ctx_claude_policy(data):
-    """확인한 2.1.287·2.1.288의 출력 예약·요약 buffer·비율 branch를 실행 없이 확인한다."""
-    reserve = re.search(rb"function (?:Bq|TK)\(e,n\)\{let r=Math\.min\(e\.maxOutputTokens,([A-Za-z_$][A-Za-z0-9_$]*)\),s=(?:Sm|Df)\(\)\?n:void 0,\{window:g\}=(?:bv|Dw)\(e,s\);return g-r\}", data)
-    if (not reserve or not re.search(rb"(?:var|let|const) "+re.escape(reserve.group(1))+rb"=20000(?:;|,)", data)
-            or b"let r=e-13000,s=n.testPctOverride" not in data
-            or b"Math.min(Math.floor(e*(s/100)),r)" not in data):
-        raise ValueError("Claude native 예약/cutoff 식 미지원")
+    """좁은 native 식과 합성 caller의 back-reference를 확인한다 (실행 없음)."""
+    # 문자열/주석 속 식은 실행 정책의 증언이 아니다. 식을 숨기는 template도 제외한다.
+    symbol = rb"[A-Za-z_$][A-Za-z0-9_$]*"
+    reserve = re.compile(rb"function (?P<name>"+symbol+rb")\((?P<a>"+symbol+rb"),(?P<b>"+symbol+rb")\)\{let (?P<r>"+symbol+rb")=Math\.min\((?P=a)\.maxOutputTokens,(?P<const>"+symbol+rb")\),(?P<s>"+symbol+rb")=(?P<gate>"+symbol+rb")\(\)\?(?P=b):void 0,\{window:(?P<w>"+symbol+rb")\}=(?P<window>"+symbol+rb")\((?P=a),(?P=s)\);return (?P=w)-(?P=r)\}")
+    cutoff = re.compile(rb"function (?P<name>"+symbol+rb")\((?P<a>"+symbol+rb"),(?P<b>"+symbol+rb")\)\{let (?P<r>"+symbol+rb")=(?P=a)-13000,(?P<s>"+symbol+rb")=(?P=b)\.testPctOverride;if\((?P=s)!==void 0&&!isNaN\((?P=s)\)&&(?P=s)>0&&(?P=s)<=100\)return Math\.min\(Math\.floor\((?P=a)\*\((?P=s)/100\)\),(?P=r)\);return (?P=r)\}")
+    # Literal provenance is established from the original NUL-delimited source
+    # context, before extracting a policy unit. This only skips literals/comments;
+    # it does not parse or evaluate JavaScript statements or lexical scopes.
+    contexts={(data.rfind(b"\0",0,m.start())+1,
+               data.find(b"\0",m.end()) if b"\0" in data[m.end():] else len(data))
+              for m in reserve.finditer(data)}
+    quoted=re.compile(rb"\"(?:\\.|[^\"\\\r\n])*\"|'(?:\\.|[^'\\\r\n])*'",re.S)
+    word=re.compile(rb"[A-Za-z_$][A-Za-z0-9_$]*|[0-9]+(?:\.[0-9]+)?")
+    regexp=re.compile(rb"/(?![/*])(?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\r\n\\])+/[dgimsuvy]*")
+    policies=set()
+    for lower,upper in sorted(contexts):
+        context=data[lower:upper]; masked=bytearray(context)
+        stack=[]; spans=[]; position=0; previous=b""
+        while position<len(context):
+            if stack and stack[-1][0]=="template":
+                if context[position]==92:
+                    position+=2;continue
+                if context[position]==96:
+                    _,opened,_=stack.pop();spans.append((opened,position+1))
+                    position+=1;previous=b"value";continue
+                if context[position:position+2]==b"${":
+                    stack.append(("expression",position,1));position+=2;previous=b"{";continue
+                position+=1;continue
+            char=context[position]
+            if char in (34,39):
+                token=quoted.match(context,position)
+                if token is None:
+                    spans.append((position,len(context)));break
+                spans.append((position,token.end()));position=token.end();previous=b"value";continue
+            if char==96:
+                stack.append(("template",position,0));position+=1;continue
+            pair=context[position:position+2]
+            if pair in (b"//",b"/*"):
+                end=context.find(b"\n" if pair==b"//" else b"*/",position+2)
+                end=len(context) if end<0 else end+(2 if pair==b"/*" else 0)
+                spans.append((position,end));position=end;continue
+            if char==47 and previous in (b"",b"=",b"(",b",",b":",b"!",b"&",b"|",b"?",b";",b"{",b"[",b"=>",
+                                          b"return",b"throw",b"case",b"yield",b"void",b"typeof",b"delete",b"await"):
+                token=regexp.match(context,position)
+                if token is None:
+                    spans.append((position,len(context)));break
+                spans.append((position,token.end()));position=token.end();previous=b"value";continue
+            if stack and stack[-1][0]=="expression" and char in (123,125):
+                kind,opened,depth=stack[-1];depth+=1 if char==123 else -1
+                if depth==0:
+                    stack.pop();position+=1;continue
+                stack[-1]=(kind,opened,depth)
+            token=word.match(context,position)
+            if token is not None:
+                previous=token[0];position=token.end();continue
+            if char not in b" \t\r\n":
+                previous=b"=>" if pair==b"=>" else bytes([char])
+            position+=2 if pair==b"=>" else 1
+        for kind,opened,_ in stack:
+            if kind=="template":spans.append((opened,len(context)))
+        for lower_span,upper_span in spans:
+            masked[lower_span:upper_span]=b" "*(upper_span-lower_span)
+        code=bytes(masked)
+        for res in reserve.finditer(code):
+            amounts=re.findall(rb"(?:var|let|const) "+re.escape(res['const'])+rb"=([0-9]+)(?:;|,)",code)
+            if not amounts or set(amounts)!={b'20000'}:
+                raise ValueError("Claude 출력 예약 상수 결속 미지원")
+            connected=False
+            for cut in cutoff.finditer(code):
+                caller=re.compile(rb"function (?P<name>"+symbol+rb")\((?P<a>"+symbol+rb"),(?P<b>"+symbol+rb")\)\{return "+re.escape(cut['name'])+rb"\("+re.escape(res['name'])+rb"\((?P=a),(?P=b)\),(?P<options>"+symbol+rb")\((?P=a),(?P=b)\)\)\}")
+                for call in caller.finditer(code):
+                    wrapper=re.compile(rb"function (?P<name>"+symbol+rb")\((?P<a>"+symbol+rb"),(?P<b>"+symbol+rb")\)\{return "+re.escape(cut['name'])+rb"\("+re.escape(res['name'])+rb"\((?P=a),(?P=b)\),\{\.\.\."+re.escape(call['options'])+rb"\((?P=a),(?P=b)\),testPctOverride:void 0\}\)\}")
+                    wrappers=list(wrapper.finditer(code))
+                    if not wrappers:
+                        raise ValueError("Claude 기본 caller 결속 미지원")
+                    for wrapped in wrappers:
+                        # Check all four connected names, including conflicting declarations.
+                        for name,pattern in ((res['name'],reserve),(cut['name'],cutoff),
+                                             (call['name'],caller),(wrapped['name'],wrapper)):
+                            declarations=list(re.finditer(rb"function "+re.escape(name)+rb"\(",code))
+                            supported=[m for m in pattern.finditer(code) if m['name']==name]
+                            if len(declarations)!=len(supported):
+                                raise ValueError("Claude 연결 정책의 상이한 선언")
+                        policies.add((res['gate'],res['window'],call['options']))
+                        connected=True
+            if not connected:
+                raise ValueError("Claude 정책의 caller 연결 미지원")
+    if len(policies) != 1:
+        raise ValueError("Claude native 예약/cutoff/caller 식 미지원 또는 모호")
     return 20000, 13000
 
 
@@ -8476,7 +8559,7 @@ def _ctx_claude_metadata(harness, documents, models, read, row, evidence, native
     if _ctx_native_stat(entry) != before:
         raise ValueError("Claude native 설치 판독 경쟁")
     versions = set(re.findall(rb"// Version: ([0-9]+\.[0-9]+\.[0-9]+)", native))
-    if versions not in ({b"2.1.287"}, {b"2.1.288"}):
+    if len(versions) != 1:
         raise ValueError("Claude 설치 정책 버전 미지원")
     version = next(iter(versions)).decode("ascii")
     reply_max, buffer = _ctx_claude_policy(native)
@@ -8512,6 +8595,8 @@ def _ctx_claude_metadata(harness, documents, models, read, row, evidence, native
         "--autocompact", "auto"], root, [
         ("initialize", {"type":"control_request", "request_id":"ctx-init", "request":{"subtype":"initialize", "hooks":{}, "skills":[]}}, None),
         ("context", {"type":"control_request", "request_id":"ctx-context", "request":{"subtype":"get_context_usage", "detail":"summary"}}, None)])
+    if _ctx_native_stat(entry) != before:
+        raise ValueError("Claude protocol 중 설치 변경")
     responses = receipt["responses"]; account = responses["initialize"].get("account", {})
     context = responses["context"]
     if (receipt.get("sent_user_turns") != 0 or account.get("apiProvider") != "firstParty"
@@ -8521,11 +8606,19 @@ def _ctx_claude_metadata(harness, documents, models, read, row, evidence, native
     model = context.get("model")
     if not isinstance(model, str) or not model or re.search(r"\[1m\]", model, re.I):
         raise ValueError("Claude model suffix/선택 미확정")
+    initialized_models=responses["initialize"].get("models")
+    if (not isinstance(initialized_models,list) or not any(isinstance(item,dict)
+            and model in (item.get("resolvedModel"),item.get("value")) for item in initialized_models)):
+        raise ValueError("Claude 초기 모델 목록/실제 선택 불일치")
     window, point = context.get("rawMaxTokens"), context.get("autoCompactThreshold")
-    if type(window) is not int or context.get("maxTokens") != window or type(point) is not int:
+    if type(window) is not int or not 100000 <= window <= 1000000 or context.get("maxTokens") != window or type(point) is not int:
         raise ValueError("Claude 원본 창/cutoff 구조 손상")
     percent_text = effective.get("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")
     percent = float(percent_text) if percent_text else None
+    categories = context.get("categories")
+    buffers = [item.get("tokens") for item in categories if isinstance(item, dict) and item.get("kind") == "buffer"] if isinstance(categories, list) else []
+    if len(buffers) != 1 or type(buffers[0]) is not int or buffers[0] != window-point:
+        raise ValueError("Claude neutral buffer/cutoff 불일치")
     reserved = window-point-buffer
     if percent is not None:
         # 비율 branch는 buffer category가 원래의 출력 예약도 증언하지 않는다.
@@ -8672,7 +8765,13 @@ def _ctx_catalog_percent_metadata(harness, documents, models, read, row, evidenc
     else:
         expected_identity = _ctx_codex_cache_identity(provider)
         override = selected.get("model_context_window")
-    path = home / "models_cache.json"; catalog = read(path)
+    path = home / "models_cache.json"
+    before_catalog = _ctx_native_stat(path)
+    catalog_bytes = _ctx_file_bytes(path)
+    if _ctx_native_stat(path) != before_catalog:
+        raise ValueError("Codex catalog 판독 경쟁")
+    catalog = json.loads(catalog_bytes.decode("utf-8"))
+    evidence[str(path.resolve())] = content_sha256(catalog_bytes)
     opaque = catalog.get("identity")
     # 최적화된 설치 binary에 짧은 hash marker literal이 남는다고 가정하지 않는다.
     # 검증된 설치 버전의 해시 식과 실제 cache identity 일치가 provider/auth 근거다.
@@ -8694,7 +8793,7 @@ def _ctx_catalog_percent_metadata(harness, documents, models, read, row, evidenc
     if _ctx_file_digest(path) != evidence[str(path.resolve())]:
         raise ValueError("Codex catalog 판독 경쟁")
     row({"model":model,"provider":provider_id,"profile":profile},raw,path,
-        content_sha256(_ctx_file_bytes(path)),observed.isoformat(),expiry.isoformat(),"context-percent",version)
+        content_sha256(catalog_bytes),observed.isoformat(),expiry.isoformat(),"context-percent",version)
 
 
 def _ctx_ollama_show(origin, model):
@@ -8815,6 +8914,161 @@ def _read_harness_ctx_metadata(dest_root, harness, documents, models):
                 "roles":documents.get("_ctx_roles",{}),"native_files":native_files,"native_commands":native_commands}
     except (OSError, UnicodeError, ValueError, TypeError, AttributeError, KeyError) as exc:
         return {"models":[],"evidence":evidence,"reason":str(exc)}
+
+
+def preview_ctx_capacity(dest_root, harness, *, receipt=None, check=False, now=None):
+    """현재 C query와 결속 check. 적용 원장·설정 writer를 호출하지 않는다."""
+    root = Path(dest_root).resolve()
+    module = _load_local_conf()
+    if harness not in HARNESS_CTX_FILES:
+        raise ValueError("미지원 harness")
+    mode = "check" if check or receipt is not None else "query"
+    result = {"mode":mode,"schema":1,"harness":harness,"status":"unknown","reason":"현재 모델 metadata 미보유"}
+    if mode == "query":
+        result.update(C=None,observed_at=None,valid_until=None,receipt=None)
+    def digest(document):
+        return content_sha256(json.dumps({k:v for k,v in document.items() if k != "digest"},
+            ensure_ascii=False,sort_keys=True,separators=(",",":")).encode("utf-8"))
+    values = module.load(root/".project_manager/local.conf").values
+    scoped_keys = (f"harness.{harness}.ctx_window_tokens",) + module.CTX_INPUT_KEYS[-3:]
+    inputs = {k:v for k,v in module.ctx_input_values(values).items() if k in scoped_keys}
+    rule = module._CTX_INPUT_BINDING_RULES[f"harness.{harness}.ctx_window_tokens"]
+    target = str(root/HARNESS_CTX_FILES[harness])
+    global_dir = opencode_global_config_dir(os.environ, Path.home())
+    def current_environment(*,registry=True):
+        fingerprints=module.ctx_environment_fingerprints(harness,registry=registry)
+        if "settings" in rule["roles"]:
+            # Preview-only authentication binding; runtime/apply declarations stay intact.
+            fingerprints.update({key:content_sha256(os.environ[key].encode("utf-8")) if key in os.environ else None
+                for key in ("ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","CLAUDE_CODE_OAUTH_TOKEN")})
+        return fingerprints
+    if mode == "check":
+        # Shape/digest/path permissions are checked before any submitted file is read.
+        if not isinstance(receipt,dict) or set(receipt)!={"schema","root","harness","inputs","binding","models","digest"}:
+            raise ValueError("receipt 형식 오류")
+        if not isinstance(receipt["inputs"],dict):
+            raise ValueError("receipt 입력 object 형식 오류")
+        binding, rows = receipt["binding"], receipt["models"]
+        if type(receipt["schema"]) is not int or receipt["schema"]!=1 or receipt["root"]!=str(root) or receipt["harness"]!=harness:
+            raise ValueError("receipt 귀속 오류")
+        fields={"harness","target","fingerprints","required_files","roles","registry","native_files","native_commands","environment"}
+        if not isinstance(binding,dict) or set(binding)!=fields or binding["harness"]!=harness or binding["target"]!=target or type(binding["registry"]) is not bool:
+            raise ValueError("receipt binding 형식 오류")
+        if any(not isinstance(binding[k],dict) for k in ("fingerprints","roles","native_files","native_commands","environment")):
+            raise ValueError("receipt 원천 형식 오류")
+        files = binding["fingerprints"]
+        if not isinstance(binding["required_files"],list) or len(binding["required_files"])!=len(set(binding["required_files"])) or set(binding["required_files"])!=set(files):
+            raise ValueError("receipt 필수 원천 오류")
+        if not isinstance(rows,list) or not rows or any(not isinstance(row,dict) or set(row)!={"identity","metadata"}
+                or not isinstance(row["identity"],dict) or not isinstance(row["metadata"],dict) for row in rows):
+            raise ValueError("receipt 모델 형식 오류")
+        expected_roles = dict(rule["live_roles"](root,binding["registry"]))
+        expected_roles.update(rule["role_values"])
+        command = shutil.which(harness)
+        if not command:
+            result["reason"]="native 설치 부재"; return result
+        entry = Path(command).resolve()
+        allowed_native={str(entry)}
+        if "manifest" in rule["roles"]:
+            preferred=rule.get("native_manifest")
+            candidates=([entry.parent.parent/preferred] if preferred else [])+[parent/"package.json" for parent in entry.parents[:3]]
+            manifest=next((path for path in candidates if path.is_file()),None)
+            if manifest is None:
+                result["reason"]="native manifest 부재"; return result
+            expected_roles["manifest"]=str(manifest)
+            if entry.suffix in (".js",".mjs"):
+                binaries=list(manifest.parent.glob("vendor/*/codex/codex"))+list(manifest.parent.glob("vendor/*/codex/codex.exe"))
+                if len(binaries)!=1:
+                    result["reason"]="native binary 정체 미확정";return result
+                allowed_native.add(str(binaries[0].resolve()))
+            if rule["registry"]:
+                expected_roles["global"]=sorted(str((global_dir/name).resolve()) for name in OPENCODE_GLOBAL_CONFIG_NAMES)
+        if "selection" in rule["roles"] and "layers" in binding["roles"]:
+            layers=binding["roles"]["layers"]
+            allowed_layers={str(parent/".codex/config.toml") for parent in (root,*root.parents)}
+            allowed_layers.update(("/etc/codex/config.toml","/etc/codex/managed_config.toml"))
+            if (not isinstance(layers,list) or not layers or len(layers)!=len(set(layers))
+                    or any(path not in allowed_layers for path in layers)):
+                raise ValueError("receipt native 계층 허용 경로 오류")
+            expected_roles["layers"]=layers
+        if binding["roles"] != expected_roles:
+            raise ValueError("receipt 현재 역할/경로 불일치")
+        allowed={target}
+        for paths in expected_roles.values():
+            allowed.update(paths if isinstance(paths,list) else [paths])
+        if set(files)!=allowed or set(binding["native_files"])!=allowed_native or binding["native_commands"]!={harness:str(entry)}:
+            raise ValueError("receipt 허용 원천 집합 불일치")
+        if any(not Path(path).is_absolute() or (value is not None and (not isinstance(value,str) or not re.fullmatch(r"[0-9a-f]{64}",value))) for path,value in files.items()):
+            raise ValueError("receipt 경로/지문 오류")
+        if any(not isinstance(stat,dict) or set(stat)!={"st_dev","st_ino","st_size","st_mtime_ns"} or any(not isinstance(v,str) for v in stat.values()) for stat in binding["native_files"].values()):
+            raise ValueError("receipt native stat 오류")
+        if receipt["digest"]!=digest(receipt):
+            raise ValueError("receipt digest 오류")
+        try:
+            if receipt["inputs"]!=inputs or binding["environment"]!=current_environment(registry=binding["registry"]):
+                raise ValueError("현재 입력/환경 변경")
+            if not module._ctx_native_matches(binding):
+                raise ValueError("native 설치 변경")
+            # Acquired catalog replacement exception belongs only to this current-C check.
+            checked_files={k:v for k,v in files.items() if "selection" not in rule["roles"] or k!=expected_roles["catalog"]}
+            if not module._ctx_fingerprints_match(checked_files):
+                raise ValueError("현재 선택/인증/원천 변경")
+            for row in rows:
+                metadata=row["metadata"]
+                if "selection" in rule["roles"]:
+                    from datetime import timedelta
+                    if (metadata.get("source")!=expected_roles["catalog"] or metadata.get("generation")!=files[expected_roles["catalog"]]
+                            or module._ctx_time(metadata["valid_until"])!=module._ctx_time(metadata["observed_at"])+timedelta(seconds=300)):
+                        raise ValueError("acquired Codex snapshot 원래 세대/만료 오류")
+                module._normalize_ctx_capacity(row["identity"],metadata,now=now)
+            result.update(status="known",reason=None)
+        except (OSError,ValueError,TypeError,KeyError,AttributeError):
+            result["reason"]="현재 metadata 결속 변경 또는 만료"
+        return result
+    try:
+        jsonc=_harness_ctx_jsonc_seam()
+        text=_harness_ctx_read_text(Path(target),HARNESS_CTX_FILES[harness])
+        documents={HARNESS_CTX_FILES[harness]:_harness_ctx_parse(HARNESS_CTX_FILES[harness],text,jsonc),"_ctx_root":str(root)}
+        models={}; global_files={}
+        if rule["registry"]:
+            global_documents=_opencode_global_documents(global_dir,jsonc)
+            models=_opencode_target_models(documents[HARNESS_CTX_FILES[harness]],HARNESS_CTX_FILES[harness],global_dir,jsonc,global_documents=global_documents)
+            documents["_opencode_sources"]=[d for _,d in global_documents]+[documents[HARNESS_CTX_FILES[harness]]]
+            global_files={str((global_dir/name).resolve()):_ctx_file_digest(global_dir/name) for name in OPENCODE_GLOBAL_CONFIG_NAMES}
+        environment=current_environment()
+        snapshot=_read_harness_ctx_metadata(root,harness,documents,models)
+        rows=snapshot.get("models") or []
+        if not rows:raise ValueError(snapshot.get("reason") or "독립 metadata 없음")
+        capacities=[module._normalize_ctx_capacity(row["identity"],row["metadata"],now=now) for row in rows]
+        if rule["registry"] and (len(rows)!=len(models) or {(r["identity"]["provider"],r["identity"]["model"]) for r in rows}!=set(models)):
+            raise ValueError("등록 모델 집합 불일치")
+        files={**snapshot.get("runtime_evidence",snapshot["evidence"]),**global_files,target:content_sha256(text.encode("utf-8"))}
+        if not module._ctx_fingerprints_match(files) or not module._ctx_native_matches(snapshot):
+            raise ValueError("query 원천 판독 경쟁")
+        if current_environment()!=environment or module.ctx_input_values(module.load(root/".project_manager/local.conf").values)!=module.ctx_input_values(values):
+            raise ValueError("query 입력/환경 경쟁")
+        roles=dict(snapshot.get("roles",{}))
+        if "selection" in rule["roles"]:
+            base_files={target,*roles.values()}
+            layers=sorted(set(files)-base_files)
+            if layers:
+                allowed_layers={str(parent/".codex/config.toml") for parent in (root,*root.parents)}
+                allowed_layers.update(("/etc/codex/config.toml","/etc/codex/managed_config.toml"))
+                if any(path not in allowed_layers for path in layers):
+                    raise ValueError("native metadata 추가 계층 경로 미지원")
+                roles["layers"]=layers
+        if rule["registry"]:roles["global"]=sorted(global_files)
+        binding={"harness":harness,"target":target,"fingerprints":files,"required_files":sorted(files),"roles":roles,
+            "registry":snapshot.get("registry",False),"native_files":snapshot.get("native_files",{}),"native_commands":snapshot.get("native_commands",{}),
+            "environment":current_environment(registry=snapshot.get("registry",False))}
+        minted={"schema":1,"root":str(root),"harness":harness,"inputs":inputs,"binding":binding,"models":rows}
+        minted["digest"]=digest(minted)
+        expiry=[row["metadata"]["valid_until"] for row in rows if row["metadata"].get("valid_until")]
+        result.update(status="known",reason=None,C=min(capacities),observed_at=max(row["metadata"]["observed_at"] for row in rows),
+            valid_until=min(expiry) if expiry else None,receipt=minted)
+    except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError):
+        result["reason"]="독립 모델 metadata 확인 불가 또는 판독 경쟁"
+    return result
 
 
 def _prepare_harness_ctx(dest_root, values, *, opencode_config_dir, updates=None):

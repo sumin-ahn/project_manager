@@ -799,7 +799,7 @@ def test_t0932_native_constraints_opencode_min_and_unknown(pm_import,tmp_path,mo
 @pytest.fixture(autouse=True)
 def _legacy_native_fixture(request,tmp_path,monkeypatch):
     """기존 독립 metadata fixture의 설치/명령 정체만 격리한다. C는 공급하지 않는다."""
-    if 't0937' in request.node.name:return
+    if 't0937' in request.node.name or 't0938' in request.node.name:return
     folder=tmp_path/'legacy-native-bin';folder.mkdir()
     for harness in ('claude','codex','opencode'):
         command=folder/harness;command.write_text('#!/bin/sh\nexit 91\n',encoding='utf-8');command.chmod(0o755)
@@ -808,7 +808,7 @@ def _legacy_native_fixture(request,tmp_path,monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _legacy_independent_metadata(request,pm_import,monkeypatch):
-    if 't0932' in request.node.name or 't0937' in request.node.name:
+    if 't0932' in request.node.name or 't0937' in request.node.name or 't0938' in request.node.name:
         return
     def reader(*a):
         result=_t0932_reader(pm_import,*a)
@@ -1232,13 +1232,13 @@ def _t0932_control_claude_fixture(tmp_path, monkeypatch, model='claude-opus-5-5'
     from datetime import datetime, timezone
     package = tmp_path/'claude-installation'; command = package/'bin/claude'
     command.parent.mkdir(parents=True)
-    command.write_bytes(b'// Version: 2.1.287\nfunction Bq(e,n){let r=Math.min(e.maxOutputTokens,z_t),s=Sm()?n:void 0,{window:g}=bv(e,s);return g-r}var z_t=20000;function Tq(e,n){let r=e-13000,s=n.testPctOverride;if(s!==void 0&&!isNaN(s)&&s>0&&s<=100)return Math.min(Math.floor(e*(s/100)),r);return r}')
+    command.write_bytes(b'// Version: 2.1.287\nfunction Bq(e,n){let r=Math.min(e.maxOutputTokens,z_t),s=Sm()?n:void 0,{window:g}=bv(e,s);return g-r}var z_t=20000;function Tq(e,n){let r=e-13000,s=n.testPctOverride;if(s!==void 0&&!isNaN(s)&&s>0&&s<=100)return Math.min(Math.floor(e*(s/100)),r);return r}' + b'function TCe(e,n){return Tq(Bq(e,n),yne(e,n))}function oTt(e,n){return Tq(Bq(e,n),{...yne(e,n),testPctOverride:void 0})}')
     (package/'package.json').write_text(json.dumps({'version':'2.1.287'}), encoding='utf-8')
     home = tmp_path/'claude-home'; home.mkdir(); monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(home))
     (home/'settings.json').write_text('{}', encoding='utf-8')
     original = shutil.which
     monkeypatch.setattr(shutil, 'which', lambda name,*a,**kw: str(command) if name=='claude' else original(name,*a,**kw))
-    return {'responses': {'initialize': {'account': {'apiProvider':'firstParty','subscriptionType':'Claude Max'}},
+    return {'responses': {'initialize': {'models':[{'value':'default','resolvedModel':model}], 'account': {'apiProvider':'firstParty','subscriptionType':'Claude Max'}},
         'context': {'model':model,'rawMaxTokens':window,'maxTokens':window,'autoCompactThreshold':window-33000,
         'autocompactSource':'model-default','isAutoCompactEnabled':True,'apiUsage':None,
         'categories':[{'kind':'buffer','tokens':33000}]}}, 'frames':[], 'sent_user_turns':0,
@@ -1883,7 +1883,7 @@ def test_t0932_verified_claude_patch_policy_compatibility(tmp_path,monkeypatch,v
     command=Path(shutil.which('claude')).resolve()
     data=command.read_bytes().replace(b'// Version: 2.1.287',b'// Version: '+version.encode())
     if version!='2.1.287':
-        data=data.replace(b'function Bq(',b'function TK(').replace(b's=Sm()',b's=Df()').replace(b'=bv(',b'=Dw(')
+        data=data.replace(b'Bq(',b'TK(').replace(b's=Sm()',b's=Df()').replace(b'=bv(',b'=Dw(')
     if damage=='reserve':data=data.replace(b'=20000;',b'=19000;')
     if damage=='buffer':data=data.replace(b'e-13000',b'e-12000')
     command.write_bytes(data)
@@ -1893,7 +1893,7 @@ def test_t0932_verified_claude_patch_policy_compatibility(tmp_path,monkeypatch,v
         return receipt
     monkeypatch.setattr(importer,'_ctx_native_protocol',protocol)
     before=_snapshot_fixture_bytes(root)
-    if damage or version=='2.1.289':
+    if damage:
         with pytest.raises(importer.HarnessCtxError):
             importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
         assert _snapshot_fixture_bytes(root)==before
@@ -1906,3 +1906,229 @@ def test_t0932_verified_claude_patch_policy_compatibility(tmp_path,monkeypatch,v
         assert (row['C'],row['E'],row['P'])==(967000,600000,564000)
         assert json.loads((root/'.claude/settings.json').read_text(encoding='utf-8'))['autoCompactWindow']==597000
         assert calls==[True]
+
+
+# 정제 2.1.289 설치 fragment: 실제 reserve/cutoff와 두 caller의 결속.
+_T0938_CLAUDE = b"function OK(e,n){let r=Math.min(e.maxOutputTokens,tTt),s=Lf()?n:void 0,{window:g}=Nw(e,s);return g-r}var tTt=20000;function dK(e,n){let r=e-13000,s=n.testPctOverride;if(s!==void 0&&!isNaN(s)&&s>0&&s<=100)return Math.min(Math.floor(e*(s/100)),r);return r}function TCe(e,n){return dK(OK(e,n),yne(e,n))}function oTt(e,n){return dK(OK(e,n),{...yne(e,n),testPctOverride:void 0})}function yne(e,n,r){let s=process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE,g=process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE;return{enabled:Lf(),precomputeBufferFraction:reo(e,n,r),testPctOverride:s?parseFloat(s):void 0,testBlockingOverride:g?Uc(g):void 0}}"
+
+
+@pytest.mark.parametrize('case', ['287','288','289','renamed','duplicate','embedded',
+    'reserve19000','buffer12000','backref','wrapper','different-duplicate','string','comment',
+    'pct-lower','pct-upper','branch','provider','apiUsage','origin','model','selection','buffer','max','source','install-race'])
+def test_t0938_at1_claude_policy_and_neutral_oracle(tmp_path, monkeypatch, case):
+    import copy
+    importer = _load('pm_import')
+    root = _project(tmp_path, harnesses=('claude',), conf='harness.claude.ctx_window_tokens=600000\n')
+    receipt = _t0932_control_claude_fixture(tmp_path, monkeypatch)
+    command = Path(shutil.which('claude')); source = _T0938_CLAUDE
+    good = case in {'287','288','289','renamed','duplicate','embedded'}
+    if case in {'287','288'}:
+        source=source.replace(b'OK(',b'Bq(' if case=='287' else b'TK(').replace(b'Lf()',b'Sm()' if case=='287' else b'Df()').replace(b'Nw(',b'bv(' if case=='287' else b'Dw(')
+    if case=='renamed':
+        import re
+        mapping={b'OK':b'reserve',b'dK':b'cut',b'TCe':b'caller',b'oTt':b'defaultCaller',b'yne':b'options',b'tTt':b'cap',b'e':b'$a',b'n':b'_b',b'r':b'x',b's':b'y',b'g':b'z'}
+        source=re.sub(rb'(?<![A-Za-z0-9_$])[A-Za-z_$][A-Za-z0-9_$]*(?![A-Za-z0-9_$])',lambda m:mapping.get(m[0],m[0]),source)
+    if case=='duplicate':source=source+source
+    if case=='embedded':source=b'function OK(x){return x+1}\0'+source
+    mutations={'reserve19000':(b'=20000;',b'=19000;'),'buffer12000':(b'e-13000',b'e-12000'),
+        'backref':(b'Nw(e,s)',b'Nw(n,s)'),'wrapper':(b'dK(OK(e,n),yne(e,n))',b'dK(OK(n,e),yne(e,n))'),
+        'pct-lower':(b's>0',b's>=0'),'pct-upper':(b's<=100',b's<=101'),
+        'branch':(b'return r}',b'if(n.extra)return 1;return r}')}
+    if case in mutations:source=source.replace(*mutations[case])
+    if case=='different-duplicate':source+=source.replace(b'e-13000',b'e-12000')
+    if case=='string':source=b'var fake="'+source+b'";'
+    if case=='comment':source=b'/*'+source+b'*/'
+    version=case if case in {'287','288'} else '289'
+    command.write_bytes(b'// Version: 2.1.'+version.encode()+b'\n'+source)
+    if case=='provider':receipt['responses']['initialize']['account']['apiProvider']='custom'
+    context=receipt['responses']['context']
+    if case=='apiUsage':context['apiUsage']={'input_tokens':1}
+    if case=='origin':monkeypatch.setenv('ANTHROPIC_BASE_URL','https://else.invalid')
+    if case=='model':context['model']='claude-opus-5-5[1m]'
+    if case=='selection':context['model']='other-model'
+    if case=='buffer':context['categories'][0]['tokens']=32000
+    if case=='max':context['maxTokens']=999999
+    if case=='source':context['autocompactSource']='env'
+    calls=[]
+    def protocol(argv, path, requests):
+        calls.append(requests)
+        assert all(message['type']=='control_request' for _,message,_ in requests)
+        assert [message['request']['subtype'] for _,message,_ in requests]==['initialize','get_context_usage']
+        if case=='install-race':command.write_bytes(command.read_bytes()+b'changed')
+        return copy.deepcopy(receipt)
+    monkeypatch.setattr(importer, '_ctx_native_protocol', protocol)
+    before = _snapshot_fixture_bytes(root)
+    result = importer.preview_ctx_capacity(root, 'claude')
+    assert result['status']==('known' if good else 'unknown')
+    assert result['C']==(1000000-20000-13000 if good else None)
+    assert _snapshot_fixture_bytes(root) == before
+    if good:
+        checked=importer.preview_ctx_capacity(root,'claude',receipt=result['receipt'])
+        assert checked=={'mode':'check','schema':1,'harness':'claude','status':'known','reason':None}
+        assert len(calls)==1
+
+
+@pytest.mark.parametrize('case',['W-only','override','replace','expiry299','expiry300','TTL-extend',
+    'future','missing','duplicate','auth','selection','install','input','race',
+    'file-auth','file-auth-W-only','native-layer','RPC-race','catalog-version','catalog-identity'])
+def test_t0938_at3_codex_snapshot_lifecycle(tmp_path, monkeypatch, case):
+    from datetime import datetime,timedelta,timezone
+    importer = _load('pm_import');leaf=importer._load_local_conf()
+    root = _project(tmp_path, harnesses=('codex',), conf='harness.codex.ctx_window_tokens=600000\n')
+    home, catalog = _t0932_codex_native_catalog(tmp_path, monkeypatch, version='0.160.0')
+    if case in {'file-auth','file-auth-W-only','native-layer','RPC-race','catalog-version','catalog-identity'}:
+        import copy
+        global_override=case!='file-auth-W-only'
+        (home/'config.toml').write_text('model="exact-model"\n'+('model_context_window=600000\n' if global_override else ''), encoding="utf-8")
+        (home/'auth.json').write_text(json.dumps(_t0932_file_auth()), encoding="utf-8")
+        catalog['identity']=_t0932_file_identity_oracle()
+        config={'config':{'model':'exact-model','model_provider':None,'profile':None,'model_context_window':600000,
+            'chatgpt_base_url':'https://chatgpt.com/backend-api/','cli_auth_credentials_store':'file'},
+            'layers':[{'name':{'type':'project','dotCodexFolder':str(root/'.codex')},'version':'sha256:project',
+                'config':{'model_context_window':600000}},
+                {'name':{'type':'user','file':str(home/'config.toml')},'version':'sha256:user',
+                 'config':{'model':'exact-model',**({'model_context_window':600000} if global_override else {})}}]}
+        if case=='native-layer':
+            layer=root.parent/'.codex/config.toml';layer.parent.mkdir();layer.write_text('model="exact-model"', encoding="utf-8")
+            config['layers'].append({'name':{'type':'project','dotCodexFolder':str(layer.parent)},'version':'sha256:parent','config':{'model':'exact-model'}})
+        after=copy.deepcopy(config)
+        if case=='RPC-race':after['config']['model']='other'
+        response={'sent_user_turns':0,'catalog_fallback':False,'responses':{'config':config,'config_after':after,
+            'gateway':{'providerId':'openai','required':False,'error':None},'models':{'data':[{'id':'exact-model'}]}}}
+        def protocol(argv,path,requests):
+            assert [r[1]['method'] for r in requests]==['initialize','config/read','account/gatewayOAuth/read','model/list','config/read']
+            return copy.deepcopy(response)
+        monkeypatch.setattr(importer,'_ctx_native_protocol',protocol)
+    fetched=datetime.now(timezone.utc);catalog['fetched_at']=fetched.isoformat()
+    cache=home/'models_cache.json'
+    if case=='override':(home/'config.toml').write_text('model_context_window=600000\n'+(home/'config.toml').read_text(encoding="utf-8"), encoding="utf-8")
+    if case=='future':catalog['fetched_at']=(fetched+timedelta(seconds=1)).isoformat()
+    if case=='catalog-version':catalog['client_version']='0.150.0'
+    if case=='catalog-identity':catalog['identity']='other'
+    if case=='missing':catalog['models']=[]
+    if case=='duplicate':catalog['models']*=2
+    cache.write_text(json.dumps(catalog), encoding="utf-8")
+    original=importer._ctx_file_bytes
+    def read(path):
+        raw=original(path)
+        if case=='race' and Path(path)==cache:cache.write_text('{}', encoding="utf-8")
+        return raw
+    monkeypatch.setattr(importer,'_ctx_file_bytes',read)
+    before=_snapshot_fixture_bytes(root)
+    result = importer.preview_ctx_capacity(root, 'codex',now=fetched)
+    assert _snapshot_fixture_bytes(root)==before
+    if case in {'future','missing','duplicate','race','RPC-race','catalog-version','catalog-identity'}:
+        assert result['status']=='unknown' and result['C'] is None;return
+    assert result['C'] == (600000 if case in {'override','file-auth','native-layer'} else 272000)*95//100
+    models=result['receipt']['models']
+    assert models[0]['metadata']['generation']==hashlib.sha256(cache.read_bytes()).hexdigest()
+    assert result['valid_until']==(fetched+timedelta(seconds=300)).isoformat()
+    if case.startswith('file-auth') or case=='native-layer':
+        assert 'DO-NOT-OUTPUT' not in json.dumps(result)
+    # Apply uses independent producer and still binds the catalog, including replacement.
+    importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
+    result=importer.preview_ctx_capacity(root,'codex',now=fetched)
+    values=leaf.load(root/'.project_manager/local.conf').values
+    identity=models[0]['identity']
+    assert leaf.read_ctx_budget(root,values,'codex',identity)['status']=='known'
+    check_time=fetched
+    if case in {'replace','expiry299','expiry300'}:
+        cache.write_text('{"client_version":"0.150.0","models":[]}', encoding="utf-8")
+        check_time=fetched+timedelta(seconds=300 if case=='expiry300' else 299)
+        assert leaf.read_ctx_budget(root,values,'codex',identity)['status']=='unknown'
+    if case=='TTL-extend':
+        result['receipt']['models'][0]['metadata']['valid_until']=(fetched+timedelta(seconds=301)).isoformat()
+        r=result['receipt'];r['digest']=hashlib.sha256(json.dumps({k:v for k,v in r.items() if k!='digest'},ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    if case=='auth':(home/'auth.json').write_text('{"sentinel":"secret"}', encoding="utf-8")
+    if case=='selection':(home/'config.toml').write_text('model="other"', encoding="utf-8")
+    if case=='install':Path(shutil.which('codex')).write_bytes(b'changed')
+    if case=='input':(root/'.project_manager/local.conf').write_text('harness.codex.ctx_window_tokens=123000\n', encoding="utf-8")
+    before=_snapshot_fixture_bytes(root)
+    checked=importer.preview_ctx_capacity(root,'codex',receipt=result['receipt'],now=check_time)
+    assert set(checked)=={'mode','schema','harness','status','reason'}
+    assert checked['status']==('unknown' if case in {'expiry300','TTL-extend','auth','selection','install','input'} else 'known')
+    assert _snapshot_fixture_bytes(root)==before
+
+
+@pytest.mark.parametrize('case',['positive','same-copy','renamed','embedded','long-string','long-comment'])
+def test_t0938_review_claude_policy_lexical_context(tmp_path,monkeypatch,case):
+    import copy,re
+    assert hashlib.sha256(_T0938_CLAUDE).hexdigest()=='803006685b877fb3c1f700f7852be0432c3e65820712e004ec8d8371c94d68da'
+    source=_T0938_CLAUDE
+    if case=='same-copy':source+=source
+    if case=='embedded':source=b'function OK(x){return x+1}\0'+source
+    if case=='renamed':
+        names={b'OK':b'reserve',b'dK':b'cutoff',b'TCe':b'caller',b'oTt':b'wrapper',b'yne':b'options'}
+        source=re.sub(rb'[A-Za-z_$][A-Za-z0-9_$]*',lambda m:names.get(m[0],m[0]),source)
+    if case=='long-string':source=b'const fake="'+b'x'*9000+source+b'y'*9000+b'";'
+    if case=='long-comment':source=b'/*'+b'x'*9000+source+b'y'*9000+b'*/'
+    importer=_load('pm_import');root=_project(tmp_path,harnesses=('claude',),conf='harness.claude.ctx_window_tokens=600000\n')
+    native=_t0932_control_claude_fixture(tmp_path,monkeypatch)
+    Path(shutil.which('claude')).write_bytes(b'// Version: 2.1.289\n'+source)
+    trace=[]
+    def protocol(argv,path,requests):
+        trace.append([r[1]['request']['subtype'] for r in requests]);return copy.deepcopy(native)
+    monkeypatch.setattr(importer,'_ctx_native_protocol',protocol)
+    before=_snapshot_fixture_bytes(tmp_path)
+    result=importer.preview_ctx_capacity(root,'claude')
+    good=case in {'positive','same-copy','renamed','embedded'}
+    assert result['status']==('known' if good else 'unknown')
+    assert result['C']==(1000000-20000-13000 if good else None)
+    assert trace==([['initialize','get_context_usage']] if good else [])
+    assert before==_snapshot_fixture_bytes(tmp_path)
+
+
+@pytest.mark.parametrize('case',['positive','same-copy','caller','wrapper','reserve','cutoff'])
+def test_t0938_review_claude_connected_caller_ambiguity(tmp_path,monkeypatch,case):
+    import copy
+    additions={'caller':b'function TCe(e,n){return dK(OK(n,e),yne(e,n))}',
+        'wrapper':b'function oTt(e,n){return dK(OK(n,e),{...yne(e,n),testPctOverride:void 0})}',
+        'reserve':b'function OK(e,n){return 1}', 'cutoff':b'function dK(e,n){return e-12000}'}
+    source=_T0938_CLAUDE+(_T0938_CLAUDE if case=='same-copy' else additions.get(case,b''))
+    importer=_load('pm_import');root=_project(tmp_path,harnesses=('claude',),conf='harness.claude.ctx_window_tokens=600000\n')
+    native=_t0932_control_claude_fixture(tmp_path,monkeypatch)
+    Path(shutil.which('claude')).write_bytes(b'// Version: 2.1.289\n'+source)
+    trace=[]
+    def protocol(*args):trace.append('metadata');return copy.deepcopy(native)
+    monkeypatch.setattr(importer,'_ctx_native_protocol',protocol)
+    before=_snapshot_fixture_bytes(tmp_path)
+    result=importer.preview_ctx_capacity(root,'claude')
+    good=case in {'positive','same-copy'}
+    assert result['status']==('known' if good else 'unknown')
+    assert result['C']==(967000 if good else None)
+    assert trace==(['metadata'] if good else [])
+    assert before==_snapshot_fixture_bytes(tmp_path)
+
+
+@pytest.mark.parametrize('key',['ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','CLAUDE_CODE_OAUTH_TOKEN'])
+@pytest.mark.parametrize('phase',['stable','check-change','query-race'])
+def test_t0938_review_preview_auth_environment_binding(tmp_path,monkeypatch,key,phase):
+    import copy
+    importer=_load('pm_import');leaf=importer._load_local_conf()
+    root=_project(tmp_path,harnesses=('claude',),conf='harness.claude.ctx_window_tokens=600000\n')
+    native=_t0932_control_claude_fixture(tmp_path,monkeypatch)
+    Path(shutil.which('claude')).write_bytes(b'// Version: 2.1.289\n'+_T0938_CLAUDE)
+    monkeypatch.setenv(key,'ENV_AUTH_ONE');trace=[]
+    original=leaf.ctx_environment_fingerprints('claude')
+    others={h:leaf.ctx_environment_fingerprints(h) for h in ('codex','opencode')}
+    def protocol(*args):
+        trace.append('metadata')
+        if phase=='query-race':monkeypatch.setenv(key,'ENV_AUTH_TWO')
+        return copy.deepcopy(native)
+    monkeypatch.setattr(importer,'_ctx_native_protocol',protocol)
+    before=_snapshot_fixture_bytes(tmp_path)
+    result=importer.preview_ctx_capacity(root,'claude')
+    if phase=='query-race':
+        assert result['status']=='unknown' and result['C'] is None
+    else:
+        assert result['C']==967000
+        assert result['receipt']['binding']['environment'][key]==hashlib.sha256(b'ENV_AUTH_ONE').hexdigest()
+        if phase=='check-change':monkeypatch.setenv(key,'ENV_AUTH_TWO')
+        checked=importer.preview_ctx_capacity(root,'claude',receipt=result['receipt'])
+        assert checked['status']==('known' if phase=='stable' else 'unknown')
+        assert 'C' not in checked
+    assert leaf.ctx_environment_fingerprints('claude')==original and key not in original
+    assert others=={h:leaf.ctx_environment_fingerprints(h) for h in others}
+    assert trace==['metadata']
+    assert 'ENV_AUTH_' not in json.dumps(result)
+    assert before==_snapshot_fixture_bytes(tmp_path)

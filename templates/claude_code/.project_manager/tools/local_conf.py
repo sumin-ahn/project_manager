@@ -812,9 +812,87 @@ def _ctx_native_window(point, metadata):
     return point
 
 
+def _normalize_ctx_capacity(identity, metadata, *, now=None):
+    """현재 C의 순수 정규화. 희망 W와 native P 인코딩을 사용하지 않는다."""
+    from datetime import datetime, timezone
+    def integer(value):
+        if type(value) is not int or value <= 0:
+            raise ValueError("metadata 한도가 양의 정수가 아님")
+        return value
+    if not isinstance(metadata, dict) or metadata.get("independent") is not True:
+        raise ValueError("독립 metadata 없음, native 적용값은 한도 근거가 아님")
+    for field in ("model", "provider", "profile"):
+        if field not in identity or not isinstance(identity[field], str) or metadata.get(field) != identity[field]:
+            raise ValueError(f"metadata {field} 정체 불일치")
+    if not identity["model"] or not identity["provider"]:
+        raise ValueError("선택 모델/provider 미확정")
+    if not metadata.get("source") or not metadata.get("generation"):
+        raise ValueError("metadata 원천/세대 없음")
+    observed = _ctx_time(metadata["observed_at"])
+    expiry = _ctx_time(metadata["valid_until"]) if metadata.get("valid_until") is not None else None
+    current = now if now is not None else datetime.now(timezone.utc)
+    if observed > current or (expiry is not None and current >= expiry):
+        raise ValueError("metadata 관측 시각/유효성 불일치")
+    semantics = metadata.get("semantics")
+    capacity_context = metadata.get("context")
+    if semantics == "usable":
+        capacity = integer(metadata.get("usable"))
+    elif semantics == "context-percent":
+        percent = integer(metadata.get("effective_percent"))
+        if percent > 100:
+            raise ValueError("effective percent 범위 오류")
+        context = integer(metadata.get("context"))
+        override = metadata.get("window_override")
+        if override is not None:
+            override = integer(override)
+            maximum = metadata.get("max_context")
+            if maximum is None and override > context:
+                raise ValueError("Codex 확대 override의 독립 max 한도 없음")
+            context = min(override, integer(maximum)) if maximum is not None else override
+        capacity_context = context
+        capacity = context * percent // 100
+    elif semantics == "claude-cutoff":
+        import math
+        context = min(integer(metadata.get("context")), integer(metadata.get("native_context")),
+                      integer(metadata.get("native_window_max")))
+        reserve, buffer = metadata.get("reserved"), metadata.get("summary_buffer")
+        if any(type(v) is not int or v < 0 for v in (reserve, buffer)):
+            raise ValueError("Claude 출력 예약/요약 buffer 근거 손상")
+        available = context - reserve
+        capacity = available - buffer
+        percent = metadata.get("native_percent")
+        if percent is not None:
+            if type(percent) not in (int, float) or not math.isfinite(percent) or not 0 < percent <= 100:
+                raise ValueError("Claude native 비율 override 손상")
+            capacity = min(capacity, math.floor(available * percent / 100))
+    elif semantics == "input-context-output":
+        context = integer(metadata.get("context"))
+        output = integer(metadata.get("effective_output"))
+        available = context - output
+        input_limit = metadata.get("input")
+        if input_limit is not None:
+            available = min(integer(input_limit), available)
+        capacity = available
+    elif semantics in ("input-reserved", "context-output"):
+        reserved = metadata.get("reserved" if semantics == "input-reserved" else "effective_output")
+        if type(reserved) is not int or reserved < 0:
+            raise ValueError("실제 예약 근거 없음")
+        capacity = integer(metadata.get("input" if semantics == "input-reserved" else "context")) - reserved
+    else:
+        raise ValueError("가용 창 의미 미확정 (max/alias/override 사용 불가)")
+    integer(capacity)
+    raw_context = capacity_context
+    if raw_context is not None and (type(raw_context) is not int or capacity > raw_context):
+        raise ValueError("가용 창이 원본 context 한도를 초과함")
+    effective_output = metadata.get("effective_output")
+    if raw_context is not None and effective_output is not None:
+        if type(effective_output) is not int or effective_output < 0 or capacity + effective_output > raw_context:
+            raise ValueError("가용 창/실제 출력 예약이 원본 context 한도를 초과함")
+    return capacity
+
+
 def resolve_ctx_capacity(window, ratios, identity, metadata, *, now=None):
     """독립 원천의 의미를 한 번만 정규화하는 순수 leaf."""
-    from datetime import datetime, timezone
     result = {"status": "unknown", "reason": "독립 모델 metadata 확인 불가", "W": window,
               "C": None, "E": None, "P": None, "checkpoint": None, "precompact": None,
               "identity": dict(identity), "metadata": metadata}
@@ -826,75 +904,7 @@ def resolve_ctx_capacity(window, ratios, identity, metadata, *, now=None):
         integer(window)
         if len(ratios) != 3 or any(type(p) is not int for p in ratios) or not 0 < ratios[0] < ratios[1] < ratios[2] < 100:
             raise ValueError("ctx 비율 순서 오류")
-        if not isinstance(metadata, dict) or metadata.get("independent") is not True:
-            raise ValueError("독립 metadata 없음, native 적용값은 한도 근거가 아님")
-        for field in ("model", "provider", "profile"):
-            if field not in identity or not isinstance(identity[field], str) or metadata.get(field) != identity[field]:
-                raise ValueError(f"metadata {field} 정체 불일치")
-        if not identity["model"] or not identity["provider"]:
-            raise ValueError("선택 모델/provider 미확정")
-        if not metadata.get("source") or not metadata.get("generation"):
-            raise ValueError("metadata 원천/세대 없음")
-        observed = _ctx_time(metadata["observed_at"])
-        expiry = _ctx_time(metadata["valid_until"]) if metadata.get("valid_until") is not None else None
-        current = now if now is not None else datetime.now(timezone.utc)
-        if observed > current or (expiry is not None and current >= expiry):
-            raise ValueError("metadata 관측 시각/유효성 불일치")
-        semantics = metadata.get("semantics")
-        capacity_context = metadata.get("context")
-        if semantics == "usable":
-            capacity = integer(metadata.get("usable"))
-        elif semantics == "context-percent":
-            percent = integer(metadata.get("effective_percent"))
-            if percent > 100:
-                raise ValueError("effective percent 범위 오류")
-            context = integer(metadata.get("context"))
-            override = metadata.get("window_override")
-            if override is not None:
-                override = integer(override)
-                maximum = metadata.get("max_context")
-                if maximum is None and override > context:
-                    raise ValueError("Codex 확대 override의 독립 max 한도 없음")
-                context = min(override, integer(maximum)) if maximum is not None else override
-            capacity_context = context
-            capacity = context * percent // 100
-        elif semantics == "claude-cutoff":
-            import math
-            context = min(integer(metadata.get("context")), integer(metadata.get("native_context")),
-                          integer(metadata.get("native_window_max")))
-            reserve, buffer = metadata.get("reserved"), metadata.get("summary_buffer")
-            if any(type(v) is not int or v < 0 for v in (reserve, buffer)):
-                raise ValueError("Claude 출력 예약/요약 buffer 근거 손상")
-            available = context - reserve
-            capacity = available - buffer
-            percent = metadata.get("native_percent")
-            if percent is not None:
-                if type(percent) not in (int, float) or not math.isfinite(percent) or not 0 < percent <= 100:
-                    raise ValueError("Claude native 비율 override 손상")
-                capacity = min(capacity, math.floor(available * percent / 100))
-        elif semantics == "input-context-output":
-            context = integer(metadata.get("context"))
-            output = integer(metadata.get("effective_output"))
-            available = context - output
-            input_limit = metadata.get("input")
-            if input_limit is not None:
-                available = min(integer(input_limit), available)
-            capacity = available
-        elif semantics in ("input-reserved", "context-output"):
-            reserved = metadata.get("reserved" if semantics == "input-reserved" else "effective_output")
-            if type(reserved) is not int or reserved < 0:
-                raise ValueError("실제 예약 근거 없음")
-            capacity = integer(metadata.get("input" if semantics == "input-reserved" else "context")) - reserved
-        else:
-            raise ValueError("가용 창 의미 미확정 (max/alias/override 사용 불가)")
-        integer(capacity)
-        raw_context = capacity_context
-        if raw_context is not None and (type(raw_context) is not int or capacity > raw_context):
-            raise ValueError("가용 창이 원본 context 한도를 초과함")
-        effective_output = metadata.get("effective_output")
-        if raw_context is not None and effective_output is not None:
-            if type(effective_output) is not int or effective_output < 0 or capacity + effective_output > raw_context:
-                raise ValueError("가용 창/실제 출력 예약이 원본 context 한도를 초과함")
+        capacity = _normalize_ctx_capacity(identity, metadata, now=now)
         effective = min(window, capacity)
         point = effective*ratios[2]//100
         native_window = _ctx_native_window(point, metadata)

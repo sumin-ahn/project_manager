@@ -139,6 +139,10 @@ export type CtxBudget = {
   status: "known" | "unknown"; reason: string | null;
   W: number; C: number | null; E: number | null; P: number | null;
 };
+export type CtxCapacity = {
+  schema: 1; harness: string; status: "known" | "unknown"; reason: string | null;
+  C: number | null; observed_at: string | null; valid_until: string | null;
+};
 export type ConfSection = {
   ctx_budget?: Record<string, CtxBudget>;
   missing_required: string[];
@@ -304,6 +308,8 @@ export type Bridge = {
   pick_folder(): Promise<{ path: string | null } | ErrorResponse>;
   conf_keys(path: string): Promise<ConfKeysDocument | ErrorResponse>;
   conf_values(path: string): Promise<ConfValuesDocument | ErrorResponse>;
+  ctx_capacity(path: string, harness: string, validateOnly?: boolean):
+    Promise<CtxCapacity | ErrorResponse>;
   /** 값 null 은 그 줄을 지운다(엔진 conf writer 의 삭제). */
   conf_save(path: string, updates: Record<string, string | null>):
     Promise<ConfSaveResult | ErrorResponse>;
@@ -368,6 +374,8 @@ export function httpBridge(): Bridge {
     conf_keys: (path) => call("conf_keys", path) as Promise<ConfKeysDocument | ErrorResponse>,
     conf_values: (path) =>
       call("conf_values", path) as Promise<ConfValuesDocument | ErrorResponse>,
+    ctx_capacity: (path, harness, validateOnly = false) =>
+      call("ctx_capacity", path, harness, validateOnly) as Promise<CtxCapacity | ErrorResponse>,
     conf_save: (path, updates) =>
       call("conf_save", path, updates) as Promise<ConfSaveResult | ErrorResponse>,
     conf_reset: (path, key) =>

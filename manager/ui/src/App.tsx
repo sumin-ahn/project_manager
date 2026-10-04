@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
-  Bridge, BridgeError, ConfKeysDocument, DelegateModelsDocument, Project, StatusDocument,
+  Bridge, BridgeError, CtxCapacity, ConfKeysDocument, DelegateModelsDocument, Project, StatusDocument,
   TagsResponse } from "./api";
 import { chooseFolder, isError, subscribeChanges } from "./api";
 import AdapterMatrix from "./components/AdapterMatrix";
@@ -71,6 +71,55 @@ export default function App({ bridge }: { bridge: Bridge }) {
   // 무엇이든 고르면 풀린다 · 같은 프로젝트를 다시 고를 때마다 질문형이 되지 않는다).
   const [appliedPath, setAppliedPath] = useState<string | null>(null);
 
+  const [capacities, setCapacities] = useState<Record<string, Record<string, CtxCapacity>>>({});
+  const capacityGeneration = useRef<Record<string, number>>({});
+  const capacityQuery = useRef(new Set<string>());
+  const lightRef = useRef(light);
+  lightRef.current = light;
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+
+  const refreshCapacity = useCallback(async (path: string, validateOnly = false, harnesses?: string[]) => {
+    if (!bridge.ctx_capacity) return;
+    const wanted = harnesses ?? lightRef.current[path]?.status?.harnesses ?? ["claude", "codex", "opencode"];
+    await Promise.all(wanted.filter((h) => ["claude", "codex", "opencode"].includes(h)).map(async (harness) => {
+      const key = `${path}\0${harness}`;
+      // background checks never supersede an explicit acquisition in flight.
+      if (validateOnly && capacityQuery.current.has(key)) return;
+      const generation = (capacityGeneration.current[key] ?? 0) + 1;
+      capacityGeneration.current[key] = generation;
+      if (!validateOnly) capacityQuery.current.add(key);
+      setCapacities((previous) => ({ ...previous, [path]: { ...previous[path], [harness]: {
+        schema: 1, harness, status: "unknown", reason: "현재 metadata 확인 중", C: null,
+        observed_at: null, valid_until: null,
+      } } }));
+      const response = await bridge.ctx_capacity(path, harness, validateOnly);
+      if (capacityGeneration.current[key] !== generation) return;
+      if (!validateOnly) capacityQuery.current.delete(key);
+      if (selectedRef.current !== path) return;
+      const value: CtxCapacity = isError(response) ? {
+        schema: 1, harness, status: "unknown", reason: response.error.message, C: null,
+        observed_at: null, valid_until: null,
+      } : response;
+      setCapacities((previous) => ({ ...previous, [path]: { ...previous[path], [harness]: value } }));
+    }));
+  }, [bridge]);
+
+  // Expiry only removes a claim. Acquisition belongs to a user action.
+  useEffect(() => {
+    const expiries = Object.values(capacities).flatMap((rows) => Object.values(rows))
+      .filter((row) => row.status === "known" && row.valid_until !== null)
+      .map((row) => Date.parse(row.valid_until!));
+    if (expiries.length === 0) return;
+    const timer = setTimeout(() => setCapacities((previous) => Object.fromEntries(
+      Object.entries(previous).map(([path, rows]) => [path, Object.fromEntries(
+        Object.entries(rows).map(([harness, row]) => [harness,
+          row.status === "known" && row.valid_until && Date.parse(row.valid_until) <= Date.now()
+            ? { ...row, status: "unknown" as const, C: null, reason: "metadata 유효기간 만료" } : row]))]))),
+      Math.max(0, Math.min(...expiries) - Date.now()));
+    return () => clearTimeout(timer);
+  }, [capacities]);
+
   const loadProjects = useCallback(async (): Promise<Project[]> => {
     const response = await bridge.list_projects();
     if (isError(response)) {
@@ -88,6 +137,8 @@ export default function App({ bridge }: { bridge: Bridge }) {
     setBusy((current) => ({ ...current, light: true }));
     const results = await Promise.all(
       paths.map(async (path) => [path, await bridge.status(path, false, false)] as const));
+    if (!explicit) void Promise.all(results.map(([path, response]) =>
+      refreshCapacity(path, true, isError(response) ? [] : response.harnesses)));
     const at = Date.now();
     setLight((previous) => {
       const next = { ...previous };
@@ -97,7 +148,7 @@ export default function App({ bridge }: { bridge: Bridge }) {
       return next;
     });
     setBusy((current) => ({ ...current, light: false }));
-  }, [bridge]);
+  }, [bridge, refreshCapacity]);
 
   const refreshHeavy = useCallback(async (path: string, explicit = true) => {
     setBusy((current) => ({ ...current, heavy: true }));
@@ -275,15 +326,15 @@ export default function App({ bridge }: { bridge: Bridge }) {
 
   const refreshSelected = useCallback(async () => {
     if (selected === null) return;
-    await Promise.all([refreshLight([selected]), refreshHeavy(selected), refreshTags(),
+    await Promise.all([refreshCapacity(selected), refreshLight([selected]), refreshHeavy(selected), refreshTags(),
                        refreshSettings(selected), refreshRemote([selected])]);
-  }, [selected, refreshLight, refreshHeavy, refreshTags, refreshSettings, refreshRemote]);
+  }, [selected, refreshCapacity, refreshLight, refreshHeavy, refreshTags, refreshSettings, refreshRemote]);
 
   // 설정을 저장한 직후 — 값(설정 조회)과 판정(가벼운 절)을 다시 읽는다. 낙관적 갱신은 없다.
   const reloadSettings = useCallback(() => {
     if (selected === null) return;
-    void Promise.all([refreshSettings(selected), refreshLight([selected])]);
-  }, [selected, refreshSettings, refreshLight]);
+    void Promise.all([refreshCapacity(selected, true), refreshSettings(selected), refreshLight([selected])]);
+  }, [selected, refreshCapacity, refreshSettings, refreshLight]);
 
   const selectedLight = selected === null ? undefined : light[selected];
   const selectedHeavy = selected === null ? undefined : heavy[selected];
@@ -315,7 +366,8 @@ export default function App({ bridge }: { bridge: Bridge }) {
           tags={{ at: tagsAt, error: tagsError, busy: busy.tags }}
           onRefresh={refreshSelected}
         />
-        <Tabs bridge={bridge} path={selected} light={selectedLight} heavy={selectedHeavy}
+        <Tabs capacities={selected === null ? undefined : capacities[selected]}
+              onSettingsEntry={refreshCapacity} bridge={bridge} path={selected} light={selectedLight} heavy={selectedHeavy}
               remote={selected === null ? undefined : remote[selected]}
               settings={selected === null ? undefined : settings[selected]}
               latestTag={selected === null ? null : latestTagOf(tags, selected)}

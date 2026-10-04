@@ -255,10 +255,11 @@ function ValueField({ row, value, options, dependsValue, dependsLabel, fetched, 
 }
 
 export default function SettingsTab({ bridge, path, light, settings, onReload, startAsking,
-                                     adapterConf, onAdapterConf }:
+                                     adapterConf, onAdapterConf, capacities }:
   { bridge: Bridge; path: string | null; light: Entry | undefined;
     settings: SettingsEntry | undefined; onReload: () => void; startAsking: boolean;
-    adapterConf: ConfSection | null; onAdapterConf: (conf: ConfSection) => void }) {
+    adapterConf: ConfSection | null; onAdapterConf: (conf: ConfSection) => void;
+    capacities?: Record<string, import("../api").CtxCapacity> }) {
   const [error, setError] = useState<BridgeError | null>(null);
   const [edits, setEdits] = useState<Edits>({});
   const [newKey, setNewKey] = useState("");
@@ -501,10 +502,17 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     const match = /^harness\.(claude|codex|opencode)\.ctx_window_tokens$/.exec(key);
     if (!match) return null;
     const budget = conf.ctx_budget?.[match[1]];
+    const capacity = capacities?.[match[1]];
     return <span className="block text-[11px] text-slate-500" data-testid={`budget-${match[1]}`}>
-      {budget?.status === "known"
-        ? `희망 기준 ${budget.W} · 실제 가용 한도 ${budget.C} · 적용 기준 ${budget.E} · 압축 지점 ${budget.P} 토큰`
-        : `모델 한도 확인 불가 (${budget?.reason ?? "검증된 적용 기록 없음"})`}
+      <span data-testid={`capacity-${match[1]}`}>
+        {capacity?.status === "known" ? `현재 가용 한도 ${capacity.C} 토큰`
+          : `현재 모델 한도 확인 불가 (${capacity?.reason ?? "현재 metadata 미보유"})`}
+      </span>
+      <span className="block">
+        {budget?.status === "known"
+          ? `희망 기준 ${budget.W} · 적용 가용 한도 ${budget.C} · 적용 기준 ${budget.E} · 압축 지점 ${budget.P} 토큰`
+          : `적용 상태 확인 불가 (${budget?.reason ?? "검증된 적용 기록 없음"})`}
+      </span>
     </span>;
   };
 
