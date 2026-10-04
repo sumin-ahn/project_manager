@@ -1199,3 +1199,33 @@ def test_t0938_at2_preview_stdin_and_no_write(tmp_path, monkeypatch, capsys, cas
     # C is independent from W; the original encoding rejection still applies.
     leaf=importer._load_local_conf();metadata=minted['receipt']['models'][0]
     assert leaf.resolve_ctx_capacity(1000,(70,85,94),metadata['identity'],metadata['metadata'])['status']=='unknown'
+
+
+@pytest.mark.parametrize('case',['valid','expired','inputs-array','identity-array','metadata-array'])
+def test_t0938_review_preview_nested_receipt_shape(tmp_path,monkeypatch,capsys,case):
+    import copy,io
+    from types import SimpleNamespace
+    from test_harness_ctx_limits import _load,_project,_t0932_control_claude_fixture,_T0938_CLAUDE,_snapshot_fixture_bytes
+    importer=_load('pm_import');config=_load('pm_config')
+    root=_project(tmp_path,harnesses=('claude',),conf='harness.claude.ctx_window_tokens=600000\n')
+    native=_t0932_control_claude_fixture(tmp_path,monkeypatch)
+    Path(shutil.which('claude')).write_bytes(b'// Version: 2.1.289\n'+_T0938_CLAUDE);trace=[]
+    def protocol(*a):trace.append('metadata');return copy.deepcopy(native)
+    monkeypatch.setattr(importer,'_ctx_native_protocol',protocol)
+    receipt=importer.preview_ctx_capacity(root,'claude')['receipt']
+    if case=='inputs-array':receipt['inputs']=[]
+    if case=='identity-array':receipt['models'][0]['identity']=[]
+    if case=='metadata-array':receipt['models'][0]['metadata']=[]
+    if case=='expired':receipt['models'][0]['metadata']['valid_until']='2020-01-01T00:00:00+00:00'
+    receipt['digest']=hashlib.sha256(json.dumps({k:v for k,v in receipt.items() if k!='digest'},ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    before=_snapshot_fixture_bytes(tmp_path)
+    monkeypatch.setattr(sys,'stdin',io.StringIO(json.dumps({'harness':'claude','receipt':receipt})))
+    rc=config.cmd_ctx_apply(SimpleNamespace(preview=True,json=True,set=None),pm_import=importer,dest_root=root)
+    out=capsys.readouterr()
+    assert rc==(0 if case in {'valid','expired'} else 2)
+    if rc==0:
+        response=json.loads(out.out)
+        assert response['status']==('known' if case=='valid' else 'unknown')
+        assert set(response)=={'mode','schema','harness','status','reason'}
+    assert trace==['metadata']
+    assert before==_snapshot_fixture_bytes(tmp_path)

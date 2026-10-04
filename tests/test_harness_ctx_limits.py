@@ -2048,3 +2048,87 @@ def test_t0938_at3_codex_snapshot_lifecycle(tmp_path, monkeypatch, case):
     assert set(checked)=={'mode','schema','harness','status','reason'}
     assert checked['status']==('unknown' if case in {'expiry300','TTL-extend','auth','selection','install','input'} else 'known')
     assert _snapshot_fixture_bytes(root)==before
+
+
+@pytest.mark.parametrize('case',['positive','same-copy','renamed','embedded','long-string','long-comment'])
+def test_t0938_review_claude_policy_lexical_context(tmp_path,monkeypatch,case):
+    import copy,re
+    assert hashlib.sha256(_T0938_CLAUDE).hexdigest()=='803006685b877fb3c1f700f7852be0432c3e65820712e004ec8d8371c94d68da'
+    source=_T0938_CLAUDE
+    if case=='same-copy':source+=source
+    if case=='embedded':source=b'function OK(x){return x+1}\0'+source
+    if case=='renamed':
+        names={b'OK':b'reserve',b'dK':b'cutoff',b'TCe':b'caller',b'oTt':b'wrapper',b'yne':b'options'}
+        source=re.sub(rb'[A-Za-z_$][A-Za-z0-9_$]*',lambda m:names.get(m[0],m[0]),source)
+    if case=='long-string':source=b'const fake="'+b'x'*9000+source+b'y'*9000+b'";'
+    if case=='long-comment':source=b'/*'+b'x'*9000+source+b'y'*9000+b'*/'
+    importer=_load('pm_import');root=_project(tmp_path,harnesses=('claude',),conf='harness.claude.ctx_window_tokens=600000\n')
+    native=_t0932_control_claude_fixture(tmp_path,monkeypatch)
+    Path(shutil.which('claude')).write_bytes(b'// Version: 2.1.289\n'+source)
+    trace=[]
+    def protocol(argv,path,requests):
+        trace.append([r[1]['request']['subtype'] for r in requests]);return copy.deepcopy(native)
+    monkeypatch.setattr(importer,'_ctx_native_protocol',protocol)
+    before=_snapshot_fixture_bytes(tmp_path)
+    result=importer.preview_ctx_capacity(root,'claude')
+    good=case in {'positive','same-copy','renamed','embedded'}
+    assert result['status']==('known' if good else 'unknown')
+    assert result['C']==(1000000-20000-13000 if good else None)
+    assert trace==([['initialize','get_context_usage']] if good else [])
+    assert before==_snapshot_fixture_bytes(tmp_path)
+
+
+@pytest.mark.parametrize('case',['positive','same-copy','caller','wrapper','reserve','cutoff'])
+def test_t0938_review_claude_connected_caller_ambiguity(tmp_path,monkeypatch,case):
+    import copy
+    additions={'caller':b'function TCe(e,n){return dK(OK(n,e),yne(e,n))}',
+        'wrapper':b'function oTt(e,n){return dK(OK(n,e),{...yne(e,n),testPctOverride:void 0})}',
+        'reserve':b'function OK(e,n){return 1}', 'cutoff':b'function dK(e,n){return e-12000}'}
+    source=_T0938_CLAUDE+(_T0938_CLAUDE if case=='same-copy' else additions.get(case,b''))
+    importer=_load('pm_import');root=_project(tmp_path,harnesses=('claude',),conf='harness.claude.ctx_window_tokens=600000\n')
+    native=_t0932_control_claude_fixture(tmp_path,monkeypatch)
+    Path(shutil.which('claude')).write_bytes(b'// Version: 2.1.289\n'+source)
+    trace=[]
+    def protocol(*args):trace.append('metadata');return copy.deepcopy(native)
+    monkeypatch.setattr(importer,'_ctx_native_protocol',protocol)
+    before=_snapshot_fixture_bytes(tmp_path)
+    result=importer.preview_ctx_capacity(root,'claude')
+    good=case in {'positive','same-copy'}
+    assert result['status']==('known' if good else 'unknown')
+    assert result['C']==(967000 if good else None)
+    assert trace==(['metadata'] if good else [])
+    assert before==_snapshot_fixture_bytes(tmp_path)
+
+
+@pytest.mark.parametrize('key',['ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','CLAUDE_CODE_OAUTH_TOKEN'])
+@pytest.mark.parametrize('phase',['stable','check-change','query-race'])
+def test_t0938_review_preview_auth_environment_binding(tmp_path,monkeypatch,key,phase):
+    import copy
+    importer=_load('pm_import');leaf=importer._load_local_conf()
+    root=_project(tmp_path,harnesses=('claude',),conf='harness.claude.ctx_window_tokens=600000\n')
+    native=_t0932_control_claude_fixture(tmp_path,monkeypatch)
+    Path(shutil.which('claude')).write_bytes(b'// Version: 2.1.289\n'+_T0938_CLAUDE)
+    monkeypatch.setenv(key,'ENV_AUTH_ONE');trace=[]
+    original=leaf.ctx_environment_fingerprints('claude')
+    others={h:leaf.ctx_environment_fingerprints(h) for h in ('codex','opencode')}
+    def protocol(*args):
+        trace.append('metadata')
+        if phase=='query-race':monkeypatch.setenv(key,'ENV_AUTH_TWO')
+        return copy.deepcopy(native)
+    monkeypatch.setattr(importer,'_ctx_native_protocol',protocol)
+    before=_snapshot_fixture_bytes(tmp_path)
+    result=importer.preview_ctx_capacity(root,'claude')
+    if phase=='query-race':
+        assert result['status']=='unknown' and result['C'] is None
+    else:
+        assert result['C']==967000
+        assert result['receipt']['binding']['environment'][key]==hashlib.sha256(b'ENV_AUTH_ONE').hexdigest()
+        if phase=='check-change':monkeypatch.setenv(key,'ENV_AUTH_TWO')
+        checked=importer.preview_ctx_capacity(root,'claude',receipt=result['receipt'])
+        assert checked['status']==('known' if phase=='stable' else 'unknown')
+        assert 'C' not in checked
+    assert leaf.ctx_environment_fingerprints('claude')==original and key not in original
+    assert others=={h:leaf.ctx_environment_fingerprints(h) for h in others}
+    assert trace==['metadata']
+    assert 'ENV_AUTH_' not in json.dumps(result)
+    assert before==_snapshot_fixture_bytes(tmp_path)
