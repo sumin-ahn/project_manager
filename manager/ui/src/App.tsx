@@ -88,11 +88,13 @@ export default function App({ bridge }: { bridge: Bridge }) {
       if (validateOnly && capacityQuery.current.has(key)) return;
       const generation = (capacityGeneration.current[key] ?? 0) + 1;
       capacityGeneration.current[key] = generation;
-      if (!validateOnly) capacityQuery.current.add(key);
-      setCapacities((previous) => ({ ...previous, [path]: { ...previous[path], [harness]: {
-        schema: 1, harness, status: "unknown", reason: "현재 metadata 확인 중", C: null,
-        observed_at: null, valid_until: null,
-      } } }));
+      if (!validateOnly) {
+        capacityQuery.current.add(key);
+        setCapacities((previous) => ({ ...previous, [path]: { ...previous[path], [harness]: {
+          schema: 1, harness, status: "unknown", reason: "현재 metadata 확인 중", C: null,
+          observed_at: null, valid_until: null,
+        } } }));
+      }
       const response = await bridge.ctx_capacity(path, harness, validateOnly);
       if (capacityGeneration.current[key] !== generation) return;
       if (!validateOnly) capacityQuery.current.delete(key);
@@ -101,7 +103,12 @@ export default function App({ bridge }: { bridge: Bridge }) {
         schema: 1, harness, status: "unknown", reason: response.error.message, C: null,
         observed_at: null, valid_until: null,
       } : response;
-      setCapacities((previous) => ({ ...previous, [path]: { ...previous[path], [harness]: value } }));
+      setCapacities((previous) => {
+        const current = previous[path]?.[harness];
+        const fields = ["schema", "harness", "status", "reason", "C", "observed_at", "valid_until"] as const;
+        if (current && fields.every((field) => current[field] === value[field])) return previous;
+        return { ...previous, [path]: { ...previous[path], [harness]: value } };
+      });
     }));
   }, [bridge]);
 

@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App, { LIGHT_INTERVAL_MS } from "../App";
-import type { Bridge, BridgeError, ConfKeysDocument, StatusDocument } from "../api";
+import type { Bridge, BridgeError, ConfKeysDocument, CtxCapacity, StatusDocument } from "../api";
 import confKeys from "../fixtures/conf-keys.sample.json";
 import fixture from "../fixtures/status.sample.json";
 
@@ -408,6 +408,46 @@ it("T0938_AT4_user_actions_and_background", async () => {
   expect(capacity.mock.calls.filter((c) => !c[2])).toHaveLength(initial);
   fireEvent.click(screen.getByLabelText("새로고침"));
   await waitFor(() => expect(capacity.mock.calls.filter((c) => !c[2])).toHaveLength(initial * 2));
+});
+
+it.each(["known", "unknown"] as const)("background_capacity_hint stays visible during validation (%s)", async (status) => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const pending: { harness: string; resolve: (reply: CtxCapacity) => void }[] = [];
+  const known = (harness: string): CtxCapacity => ({
+    schema: 1, harness, status: "known", reason: null, C: 967000,
+    observed_at: "2026-10-04T00:00:00Z", valid_until: null,
+  });
+  const capacity = vi.fn((_path: string, harness: string, validateOnly = false) =>
+    validateOnly ? new Promise<CtxCapacity>((resolve) => pending.push({ harness, resolve }))
+      : Promise.resolve(known(harness)));
+  render(<App bridge={makeBridge({ ctx_capacity: capacity })} />);
+  await waitFor(() => expect(screen.getByRole("tab", { name: "설정" })).toBeInTheDocument());
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "설정" }));
+  fireEvent.click(await screen.findByTestId("nav-harness"));
+  await waitFor(() => expect(screen.getByTestId("capacity-claude")).toHaveTextContent("967000"));
+  const initialQueries = capacity.mock.calls.filter((call) => !call[2]).length;
+  const hint = screen.getByTestId("capacity-claude");
+  const changedText: string[] = [];
+  const observer = new MutationObserver(() => changedText.push(hint.textContent ?? ""));
+  observer.observe(hint, { childList: true, subtree: true, characterData: true });
+  try {
+    await act(async () => { await vi.advanceTimersByTimeAsync(LIGHT_INTERVAL_MS); });
+    expect(pending).toHaveLength(document_.harnesses.length);
+    expect(hint).toHaveTextContent("967000");
+    expect(hint).not.toHaveTextContent("확인 중");
+    expect(changedText).toEqual([]);
+    await act(async () => {
+      for (const check of pending.splice(0)) check.resolve(status === "unknown" && check.harness === "claude"
+        ? { ...known(check.harness), status: "unknown", C: null, reason: "원천 변경" }
+        : known(check.harness));
+    });
+    if (status === "unknown") expect(hint).toHaveTextContent("원천 변경");
+    else {
+      expect(hint).toHaveTextContent("967000");
+      expect(changedText).toEqual([]);
+    }
+    expect(capacity.mock.calls.filter((call) => !call[2])).toHaveLength(initialQueries);
+  } finally { observer.disconnect(); }
 });
 
 it("T0938_AT4_late_response_and_project_switch", async () => {
