@@ -2617,6 +2617,7 @@ def _status_json_conf(source_root: Path | None) -> dict:
     values = result.values
     return {
         "ctx_budget": local_conf.ctx_budget_status(REPO, values),
+        "ctx_applied": _load_module("pm_import", "pm_import.py").ctx_applied_status(REPO, values),
         "missing_required": list(local_conf.missing_required(values)),
         "legacy": [{"key": key, "replacement": replacement}
                    for key, replacement in sorted(result.legacy.items())],

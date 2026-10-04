@@ -1123,6 +1123,8 @@ def test_t0932_review_damaged_ctx_record(tmp_path, record):
 def test_t0937_status_ctx_budget_scoped_readonly(tmp_path,monkeypatch):
     from test_harness_ctx_limits import _t0937_actual_fixture,_snapshot_fixture_bytes,_load
     f=_t0937_actual_fixture(tmp_path,monkeypatch);module=_load('pm_config');monkeypatch.setattr(module,'REPO',f.root)
+    legacy=dict(f.record);legacy['schema']=2;legacy.pop('applied');legacy.pop('applied_at');legacy['projection_sha256']=f.leaf.ctx_record_digest(legacy)
+    (f.root/f.leaf.CTX_BUDGET_RELPATH).write_text(json.dumps(legacy),encoding='utf-8')
     (f.codex/'models_cache.json').write_text('{"client_version":"0.150.0","models":[]}',encoding='utf-8')
     before=_snapshot_fixture_bytes(f.root);calls=list(f.calls)
     rows=module._status_json_conf(None)['ctx_budget']
@@ -1136,6 +1138,8 @@ def test_t0937_status_ctx_budget_scoped_readonly(tmp_path,monkeypatch):
 def test_t0937_gui_projection_preserves_scoped_unknown(tmp_path,monkeypatch):
     from test_harness_ctx_limits import _t0937_actual_fixture,_snapshot_fixture_bytes,_load
     f=_t0937_actual_fixture(tmp_path,monkeypatch);module=_load('pm_config');monkeypatch.setattr(module,'REPO',f.root)
+    legacy=dict(f.record);legacy['schema']=2;legacy.pop('applied');legacy.pop('applied_at');legacy['projection_sha256']=f.leaf.ctx_record_digest(legacy)
+    (f.root/f.leaf.CTX_BUDGET_RELPATH).write_text(json.dumps(legacy),encoding='utf-8')
     (f.codex/'models_cache.json').write_text('{}',encoding='utf-8')
     before=_snapshot_fixture_bytes(f.root);calls=list(f.calls)
     rows=module._status_json_conf(None)['ctx_budget']
@@ -1229,3 +1233,42 @@ def test_t0938_review_preview_nested_receipt_shape(tmp_path,monkeypatch,capsys,c
         assert set(response)=={'mode','schema','harness','status','reason'}
     assert trace==['metadata']
     assert before==_snapshot_fixture_bytes(tmp_path)
+
+@pytest.mark.parametrize('phase',['deleted','expired','managed','auth'])
+def test_t0939_at3_status_two_readonly_projections(tmp_path,monkeypatch,phase):
+    from datetime import timedelta
+    from test_harness_ctx_limits import _t0937_actual_fixture,_snapshot_fixture_bytes,_load
+    f=_t0937_actual_fixture(tmp_path,monkeypatch);module=_load('pm_config');monkeypatch.setattr(module,'REPO',f.root)
+    if phase=='deleted':(f.codex/'models_cache.json').unlink()
+    elif phase=='expired':
+        now=f.leaf._ctx_time(f.record['budgets']['codex']['metadata']['observed_at'])+timedelta(seconds=300)
+        original=f.leaf.resolve_ctx_capacity
+        monkeypatch.setattr(f.leaf,'resolve_ctx_capacity',lambda w,r,i,m,**kw:original(w,r,i,m,now=kw.get('now') or now))
+    elif phase=='managed':(f.root/'.codex/config.toml').write_text('model_auto_compact_token_limit=1\n',encoding='utf-8')
+    else:(f.codex/'auth.json').write_text('{"secret":"DO-NOT-OUTPUT"}',encoding='utf-8')
+    calls=list(f.calls);before=_snapshot_fixture_bytes(f.root)
+    conf=module._status_json_conf(None)
+    applied=conf['ctx_applied']['codex'];budget=conf['ctx_budget']['codex']
+    assert applied['status']==('known' if phase in ('deleted','expired') else 'unknown')
+    assert budget['status']==('known' if phase=='deleted' else 'unknown')
+    if applied['status']=='known':assert (applied['E'],applied['P'])==(570000,535800)
+    assert 'C' not in applied
+    assert all(secret not in json.dumps(conf) for secret in ('DO-NOT-OUTPUT','access_token','refresh_token','bindings','native_files'))
+    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
+
+
+def test_t0939_at3_query_and_check_no_settings_writer(tmp_path,monkeypatch):
+    from test_harness_ctx_limits import _t0937_actual_fixture,_snapshot_fixture_bytes
+    f=_t0937_actual_fixture(tmp_path,monkeypatch)
+    before=_snapshot_fixture_bytes(f.root);count=len(f.calls)
+    for name in ('_harness_ctx_write','_atomic_write_dest_bytes','_write_conf_keys_locked'):
+        monkeypatch.setattr(f.importer,name,lambda *a,**kw:pytest.fail('조회 writer 호출'))
+    queried=f.importer.preview_ctx_capacity(f.root,'codex')
+    assert queried['status']=='known' and queried['C']==570000
+    # Fixture's selected custom provider uses file metadata; no turn/CLI/API occurs.
+    assert len(f.calls)==count
+    (f.codex/'models_cache.json').unlink()
+    checked=f.importer.preview_ctx_capacity(f.root,'codex',receipt=queried['receipt'],check=True)
+    assert checked['status']=='known' and 'C' not in checked
+    assert len(f.calls)==count and before==_snapshot_fixture_bytes(f.root)
+    assert 'DO-NOT-OUTPUT' not in json.dumps(checked)

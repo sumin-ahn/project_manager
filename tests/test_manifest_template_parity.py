@@ -732,8 +732,13 @@ def test_facade_guard_is_sensitive_to_missing_facade():
 
 
 def test_t0937_schema2_scoped_runtime_in_all_flavors(tmp_path,monkeypatch):
+    import json
     from test_harness_ctx_limits import _t0937_actual_fixture,_snapshot_fixture_bytes
     f=_t0937_actual_fixture(tmp_path,monkeypatch)
+    # schema2의 catalog strict 계약 대조군. schema3 snapshot 예외는 AT1에서 검증한다.
+    legacy=dict(f.record);legacy['schema']=2;legacy.pop('applied');legacy.pop('applied_at')
+    legacy['projection_sha256']=f.leaf.ctx_record_digest(legacy)
+    (f.root/f.leaf.CTX_BUDGET_RELPATH).write_text(json.dumps(legacy),encoding='utf-8')
     (f.codex/'models_cache.json').write_text('{"client_version":"0.150.0","models":[]}',encoding='utf-8')
     f.registry.write_text('{}',encoding='utf-8')
     before=_snapshot_fixture_bytes(f.root);calls=list(f.calls)

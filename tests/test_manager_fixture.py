@@ -75,6 +75,8 @@ def test_top_level_keys_match_the_engine(sample, live):
 @pytest.mark.parametrize("section", ["conf", "git", "board", "adapters"])
 def test_section_keys_match_the_engine(sample, live, section):
     assert set(sample[section]) == set(live[section])
+    if section == "conf":
+        assert set(sample[section]["ctx_applied"]) == set(live[section]["ctx_applied"])
 
 
 @pytest.mark.parametrize("section", ["open", "lint"])

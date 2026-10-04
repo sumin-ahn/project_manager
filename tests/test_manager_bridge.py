@@ -351,3 +351,17 @@ def test_t0938_at4_apply_status_wins(tmp_path, monkeypatch):
     monkeypatch.setattr(module.runner,'status',lambda *a:{'conf':{'ctx_budget':{'claude':{'status':'unknown','E':None}}}})
     result=module._ctx_apply(tmp_path,{})
     assert result['conf']['ctx_budget']['claude']['status']=='unknown'
+
+
+def test_t0939_at4_apply_status_proof_and_capacity_separation(tmp_path,monkeypatch):
+    import subprocess
+    from manager import bridge_settings as module
+    applied={'status':'known','reason':None,'W':600000,'E':570000,'P':535800,'native_window':535800,'applied_at':'2026-10-05T00:00:00Z'}
+    conf={'ctx_budget':{'codex':{'status':'unknown','W':600000,'C':None,'E':None,'P':None}},'ctx_applied':{'codex':applied}}
+    monkeypatch.setattr(module.runner,'interpreter',lambda home:['python3'])
+    monkeypatch.setattr(module,'_run',lambda *a,**kw:subprocess.CompletedProcess([],0,json.dumps({'changed':False,'applied':[],
+        'ctx_budget':{'codex':{'status':'known','C':570000,'E':570000}}}),''))
+    monkeypatch.setattr(module.runner,'status',lambda *a:{'conf':conf})
+    result=module._ctx_apply(tmp_path,{})
+    assert result['conf']==conf and result['conf']['ctx_applied']['codex']==applied
+    assert result['conf']['ctx_budget']['codex']['C'] is None and 'C' not in applied

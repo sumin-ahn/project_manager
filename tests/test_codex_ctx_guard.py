@@ -1297,6 +1297,11 @@ def test_t0932_model_capacity_actual_catalog_native_and_runtime(tmp_path,monkeyp
     home,data=_t0932_codex_native_catalog(tmp_path,monkeypatch)
     global_conf=home/'config.toml';catalog=home/'models_cache.json';before=global_conf.read_bytes()
     module.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
+    # schema2의 엄격한 catalog 세대 검사 대조군. schema3 수명주기는 T-0939 AT1에서 검증한다.
+    record_path=root/leaf.CTX_BUDGET_RELPATH
+    legacy=json.loads(record_path.read_text(encoding='utf-8'));legacy['schema']=2
+    legacy.pop('applied');legacy.pop('applied_at');legacy['projection_sha256']=leaf.ctx_record_digest(legacy)
+    record_path.write_text(json.dumps(legacy),encoding='utf-8')
     native=tomllib.loads((root/'.codex/config.toml').read_text(encoding='utf-8'))
     assert 'model_context_window' not in native and native['profiles']['user']['model_context_window']==128000
     assert native['model_auto_compact_token_limit']==258400*94//100
@@ -1312,6 +1317,10 @@ def test_t0932_model_capacity_actual_catalog_native_and_runtime(tmp_path,monkeyp
 def test_t0937_codex_scoped_budget_runtime(tmp_path,monkeypatch,codex_ctx):
     from test_harness_ctx_limits import _t0937_actual_fixture,_snapshot_fixture_bytes
     f=_t0937_actual_fixture(tmp_path,monkeypatch)
+    # schema2의 엄격한 catalog 세대 검사 대조군.
+    legacy=dict(f.record);legacy['schema']=2;legacy.pop('applied');legacy.pop('applied_at')
+    legacy['projection_sha256']=f.leaf.ctx_record_digest(legacy)
+    (f.root/f.leaf.CTX_BUDGET_RELPATH).write_text(json.dumps(legacy),encoding='utf-8')
     identity=f.record['budgets']['codex']['identity']
     Path(f.record['bindings']['claude']['roles']['settings'][0]).write_text('{}\n',encoding='utf-8')
     (f.global_dir/'opencode.json').write_text('{}',encoding='utf-8');f.registry.write_text('{}',encoding='utf-8')

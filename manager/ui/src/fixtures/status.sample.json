@@ -180,6 +180,35 @@
     "claude"
   ],
   "conf": {
+    "ctx_applied": {
+      "claude": {
+        "status": "unknown",
+        "reason": "성공 반영 증언 없음",
+        "W": 200000,
+        "E": null,
+        "P": null,
+        "native_window": null,
+        "applied_at": null
+      },
+      "codex": {
+        "status": "unknown",
+        "reason": "성공 반영 증언 없음",
+        "W": 200000,
+        "E": null,
+        "P": null,
+        "native_window": null,
+        "applied_at": null
+      },
+      "opencode": {
+        "status": "unknown",
+        "reason": "성공 반영 증언 없음",
+        "W": 200000,
+        "E": null,
+        "P": null,
+        "native_window": null,
+        "applied_at": null
+      }
+    },
     "missing_required": [],
     "legacy": [],
     "unknown": [],

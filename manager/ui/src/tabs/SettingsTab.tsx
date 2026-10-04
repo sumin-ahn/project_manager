@@ -503,15 +503,21 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     if (!match) return null;
     const budget = conf.ctx_budget?.[match[1]];
     const capacity = capacities?.[match[1]];
+    const applied = conf.ctx_applied?.[match[1]];
     return <span className="block text-[11px] text-slate-500" data-testid={`budget-${match[1]}`}>
       <span data-testid={`capacity-${match[1]}`}>
         {capacity?.status === "known" ? `현재 가용 한도 ${capacity.C} 토큰`
           : `현재 모델 한도 확인 불가 (${capacity?.reason ?? "현재 metadata 미보유"})`}
       </span>
       <span className="block">
+        {applied?.status === "known"
+          ? `설정 반영 확인 · 마지막 반영 기준 ${applied.E} · 압축 지점 ${applied.P} 토큰`
+          : `설정 반영 확인 불가 (${applied?.reason ?? "성공 반영 증언 없음"})`}
+      </span>
+      <span className="block">
         {budget?.status === "known"
-          ? `희망 기준 ${budget.W} · 적용 가용 한도 ${budget.C} · 적용 기준 ${budget.E} · 압축 지점 ${budget.P} 토큰`
-          : `적용 상태 확인 불가 (${budget?.reason ?? "검증된 적용 기록 없음"})`}
+          ? `현재 예산 근거 확인 · 기준 ${budget.E} · 압축 지점 ${budget.P} 토큰`
+          : `현재 예산 근거 재확인 필요 (${budget?.reason ?? "검증된 예산 기록 없음"})`}
       </span>
     </span>;
   };
