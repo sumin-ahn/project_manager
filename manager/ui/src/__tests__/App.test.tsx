@@ -386,3 +386,78 @@ describe("새 프로젝트 적용", () => {
     expect(bridge.conf_values).toHaveBeenCalledWith(NEW);
   });
 });
+
+
+it("T0938_AT4_user_actions_and_background", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const capacity = vi.fn(async (_path: string, harness: string, _validateOnly: boolean) => ({
+    schema: 1 as const, harness, status: "known" as const, reason: null, C: 967000,
+    observed_at: new Date().toISOString(), valid_until: null,
+  }));
+  const bridge = makeBridge({ ctx_capacity: capacity });
+  render(<App bridge={bridge} />);
+  await waitFor(() => expect(bridge.conf_keys).toHaveBeenCalled());
+  expect(capacity.mock.calls.filter((c) => !c[2])).toHaveLength(0);
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "설정" }));
+  await waitFor(() => expect(capacity.mock.calls.filter((c) => !c[2])).toHaveLength(document_.harnesses.length));
+  const initial = capacity.mock.calls.filter((c) => !c[2]).length;
+  await act(async () => { await vi.advanceTimersByTimeAsync(LIGHT_INTERVAL_MS * 2); });
+  setVisibility("hidden"); setVisibility("visible");
+  act(() => { openedStream().dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ path: DEMO }) })); });
+  await waitFor(() => expect(capacity.mock.calls.some((c) => c[2])).toBe(true));
+  expect(capacity.mock.calls.filter((c) => !c[2])).toHaveLength(initial);
+  fireEvent.click(screen.getByLabelText("새로고침"));
+  await waitFor(() => expect(capacity.mock.calls.filter((c) => !c[2])).toHaveLength(initial * 2));
+});
+
+it("T0938_AT4_late_response_and_project_switch", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const pending: { path: string; harness: string; check: boolean; resolve: (value: any) => void }[] = [];
+  const capacity = vi.fn((path: string, harness: string, check: boolean) =>
+    new Promise<any>((resolve) => pending.push({ path, harness, check, resolve })));
+  const bridge = makeBridge({
+    list_projects: vi.fn(async () => ({ projects: [{ path: DEMO, name: "demo" }, { path: OTHER, name: "other" }] })),
+    ctx_capacity: capacity,
+  });
+  render(<App bridge={bridge} />);
+  await waitFor(() => expect(bridge.conf_keys).toHaveBeenCalled());
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "설정" }));
+  await waitFor(() => expect(pending.length).toBe(document_.harnesses.length));
+  fireEvent.click(screen.getByTestId("nav-harness"));
+  const old = pending.splice(0);
+  fireEvent.click(screen.getByLabelText("새로고침"));
+  await waitFor(() => expect(pending.length).toBe(document_.harnesses.length));
+  const reply = (item: typeof old[number], C: number, valid_until: string | null = null, status = "known") =>
+    item.resolve({ schema: 1, harness: item.harness, status, reason: status === "known" ? null : "원천 변경",
+      C: status === "known" ? C : null, observed_at: new Date().toISOString(), valid_until });
+  await act(async () => { for (const item of pending.splice(0)) reply(item, 570000); });
+  await act(async () => { for (const item of old) reply(item, 967000); });
+  expect(screen.getByTestId("capacity-claude")).toHaveTextContent("570000");
+  expect(screen.getByTestId("capacity-claude")).not.toHaveTextContent("967000");
+  // Old validation cannot discard a newer explicit acquisition.
+  await act(async () => { await vi.advanceTimersByTimeAsync(LIGHT_INTERVAL_MS); });
+  const oldChecks = pending.splice(0);
+  expect(oldChecks.every((item) => item.check)).toBe(true);
+  fireEvent.click(screen.getByLabelText("새로고침"));
+  await waitFor(() => expect(pending.length).toBe(document_.harnesses.length));
+  await act(async () => { for (const item of pending.splice(0)) reply(item, 580000, new Date(Date.now()+1000).toISOString()); });
+  await act(async () => { for (const item of oldChecks) reply(item, 0, null, "unknown"); });
+  expect(screen.getByTestId("capacity-claude")).toHaveTextContent("580000");
+  const queryCount = capacity.mock.calls.filter((call) => !call[2]).length;
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(screen.getByTestId("capacity-claude")).toHaveTextContent("유효기간 만료");
+  expect(capacity.mock.calls.filter((call) => !call[2])).toHaveLength(queryCount);
+  fireEvent.click(screen.getByLabelText("새로고침"));
+  await waitFor(() => expect(pending.length).toBe(document_.harnesses.length));
+  const previousProject = pending.splice(0);
+  fireEvent.click(screen.getByTestId("project-other"));
+  await waitFor(() => expect(pending.length).toBe(document_.harnesses.length));
+  await act(async () => { for (const item of pending.splice(0)) reply(item, 258400); });
+  await act(async () => { for (const item of previousProject) reply(item, 967000); });
+  fireEvent.click(screen.getByTestId("nav-harness"));
+  expect(screen.getByTestId("capacity-claude")).toHaveTextContent("258400");
+  // Related-source invalidation uses check, with no new metadata acquisition.
+  await act(async () => { await vi.advanceTimersByTimeAsync(LIGHT_INTERVAL_MS); });
+  await act(async () => { for (const item of pending.splice(0)) reply(item, 0, null, "unknown"); });
+  expect(screen.getByTestId("capacity-claude")).toHaveTextContent("원천 변경");
+});

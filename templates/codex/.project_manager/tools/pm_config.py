@@ -5078,6 +5078,30 @@ def cmd_ctx_apply(args, *, pm_import=None, dest_root: Path | None = None) -> int
     실패(엔진·local.conf 부재, 검사 뒤 쓰기 단계 실패, 처리하지 못한 예외 — 쓰기 단계에서 멈추면
     local.conf 와 설정 파일 일부가 이미 바뀌었을 수 있고 stderr 가 교체한 파일을 적는다) · 2 인자
     오류(argparse). `--json` 은 한 줄 `{"changed": local.conf 가 바뀌었나, "applied": 바뀐 설정 줄}` 이다."""
+    if getattr(args,"preview",False):
+        if not getattr(args,"json",False) or getattr(args,"set",None):
+            print("preview 인자 조합 오류",file=sys.stderr);return 2
+        module=pm_import or _load_module("pm_import","pm_import.py")
+        try:
+            stream=getattr(sys.stdin,"buffer",sys.stdin)
+            raw=stream.read(262145)
+            if isinstance(raw,str):raw=raw.encode("utf-8")
+            if len(raw)>262144:raise ValueError()
+            def pairs(items):
+                document={}
+                for key,value in items:
+                    if key in document:raise ValueError()
+                    document[key]=value
+                return document
+            request=json.loads(raw.decode("utf-8"),object_pairs_hook=pairs)
+            if not isinstance(request,dict) or set(request) not in ({"harness"},{"harness","receipt"}) or request["harness"] not in module.HARNESS_CTX_FILES:
+                raise ValueError()
+            if "receipt" in request and not isinstance(request["receipt"],dict):raise ValueError()
+            result=module.preview_ctx_capacity(dest_root if dest_root is not None else REPO,request["harness"],
+                check="receipt" in request,receipt=request.get("receipt"))
+        except (ValueError,TypeError,KeyError,UnicodeError):
+            print("preview JSON 또는 receipt 형식 오류",file=sys.stderr);return 2
+        _write_machine_line(json.dumps(result,ensure_ascii=False));return 0
     pm_import_mod = pm_import or _load_module("pm_import", "pm_import.py")
     if pm_import_mod is None:
         print(
@@ -5609,6 +5633,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
         help="기계 판독 한 줄 `{\"changed\", \"applied\"}` 로 낸다.",
     )
+    p_ctx_apply.add_argument("--preview",action="store_true",help="현재 모델 한도 읽기 전용 조회/검증")
     p_ctx_apply.set_defaults(func=cmd_ctx_apply)
 
     # delegate models --harness <h> --json — 위임 모델 목록 조회(읽기 전용·장부 변경 0).

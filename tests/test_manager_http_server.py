@@ -28,6 +28,7 @@ REPO = Path(__file__).resolve().parents[1]
 MANAGER_SOURCES = sorted((REPO / "manager").glob("*.py"))
 # 창이 주입하던 이름 그대로 — 이 목록은 **기대값**이고 구현이 읽는 자리가 아니다.
 EXPECTED_NAMES = {
+    "ctx_capacity",
     "list_projects", "add_project", "remove_project", "status", "latest_tags", "pick_folder",
     "run", "conf_keys", "conf_values", "conf_save", "delegate_models", "conf_reset", "adapters",
     "adapter_accept", "adapter_matrix", "upstream_show", "upstream_set", "update_preview",
@@ -130,7 +131,7 @@ def test_the_http_names_are_the_bridge_methods_measured_in_one_run(api, dist):
     """양쪽을 같은 실행에서 잰다 — 목록을 적어 둔 자리가 없다는 것이 이 단언의 뜻이다."""
     derived = set(manager_server.api_names(api))
     assert derived == EXPECTED_NAMES
-    assert len(derived) == 21
+    assert len(derived) == 22
 
     server = ManagerServer(echo_api(derived), dist=dist)
     server.start()
@@ -150,7 +151,7 @@ def test_a_new_bridge_method_shows_up_without_touching_the_server(dist):
     server = ManagerServer(WithOneMore(), dist=dist)
     server.start()
     try:
-        assert len(manager_server.api_names(server.api)) == 22
+        assert len(manager_server.api_names(server.api)) == 23
         assert post(server, "board_open", "/어디") == {"path": "/어디"}
     finally:
         server.stop()

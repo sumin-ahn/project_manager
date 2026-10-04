@@ -121,3 +121,18 @@ describe("서버 알림", () => {
     await waitFor(() => expect(statusCalls()).toBeGreaterThan(before));
   });
 });
+
+
+it("T0938_AT4_capacity_bridge_arguments", async () => {
+  const result = { schema: 1, harness: "claude", status: "known", C: 967000,
+    observed_at: "2026-10-04T00:00:00Z", valid_until: null, reason: null };
+  globalThis.fetch = jsonOnce(result);
+  const bridge = httpBridge();
+  expect(await bridge.ctx_capacity(DEMO, "claude")).toEqual(result);
+  expect(await bridge.ctx_capacity(DEMO, "claude", true)).toEqual(result);
+  const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
+  expect(calls[0][0]).toBe("/api/ctx_capacity");
+  expect(JSON.parse(calls[0][1].body)).toEqual({ args: [DEMO, "claude", false] });
+  expect(JSON.parse(calls[1][1].body)).toEqual({ args: [DEMO, "claude", true] });
+  expect(calls[0][1].body).not.toContain("receipt");
+});

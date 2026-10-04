@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
+from concurrent.futures import Future
 from pathlib import Path
 
 from . import CallError, ENGINE_LOCK, load_engine_module
@@ -47,7 +49,7 @@ def _pm_home(path: Path | str) -> Path:
     return home
 
 
-def _run(home: Path, argv: list[str], *, timeout: int) -> subprocess.CompletedProcess:
+def _run(home: Path, argv: list[str], *, timeout: int, input: str | None = None) -> subprocess.CompletedProcess:
     """그 사본의 스크립트 하나를 부른다 — rc 는 판정하지 않고 그대로 돌려준다.
 
     rc≠0 이 곧 실패인 자리(`--keys --json`)와 rc 자체가 산출인 자리(수용 거부·upstream 거부)를
@@ -56,7 +58,8 @@ def _run(home: Path, argv: list[str], *, timeout: int) -> subprocess.CompletedPr
     try:
         return subprocess.run(
             argv, cwd=str(home), capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=timeout, creationflags=runner.CREATION_FLAGS)
+            errors="replace", timeout=timeout, creationflags=runner.CREATION_FLAGS,
+            **({"input":input} if input is not None else {}))
     except subprocess.TimeoutExpired as exc:
         raise CallError("timeout", f"{timeout}초 안에 응답이 없다: {' '.join(argv)}") from exc
     except OSError as exc:
@@ -106,14 +109,75 @@ def _ctx_apply(home: Path, updates: dict) -> dict:
             "not-json", f"사용 한도 반영 출력이 JSON 이 아니다 ({exc})",
             stderr=completed.stderr or completed.stdout, rc=completed.returncode) from exc
     conf = runner.status(home)["conf"]
-    if "ctx_budget" in document:
-        conf.setdefault("ctx_budget", {}).update(document["ctx_budget"])
     return {"changed": bool(document["changed"]), "conf": conf,
             "applied": list(document["applied"])}
 
 
 class SettingsApi:
     """설정 탭(local.conf 편집·어댑터 절) 동작."""
+
+    _capacity_lock = threading.Lock()
+
+    def ctx_capacity(self, path: str, harness: str, validate_only: bool = False) -> dict:
+        """fresh query 영수증은 private memory에만 보관하며 check는 그 C만 검증한다."""
+        unknown={"schema":1,"harness":harness,"status":"unknown","reason":"현재 metadata 미보유",
+                 "C":None,"observed_at":None,"valid_until":None}
+        if harness not in ("claude","codex","opencode") or type(validate_only) is not bool:
+            return {**unknown,"reason":"capacity 인자 오류"}
+        try:
+            home=_pm_home(path); key=(str(home),harness)
+            with self._capacity_lock:
+                if not hasattr(self,"_capacities"):
+                    self._capacities={}; self._capacity_queries={}; self._capacity_generations={}
+                stored=self._capacities.get(key)
+                generation=self._capacity_generations.get(key,0)
+                if validate_only:
+                    if stored is None:return unknown
+                    future=None; owner=False
+                else:
+                    future=self._capacity_queries.get(key)
+                    owner=future is None
+                    if owner:
+                        future=Future();self._capacity_queries[key]=future
+                        generation+=1;self._capacity_generations[key]=generation
+                        self._capacities.pop(key,None)
+            if not validate_only and not owner:
+                return future.result()
+            request={"harness":harness}
+            if validate_only:request["receipt"]=stored["receipt"]
+            try:
+                argv=[*runner.interpreter(home),_tool(home,"pm_config.py"),"ctx-apply","--json","--preview"]
+                completed=_run(home,argv,timeout=runner.HEAVY_TIMEOUT_SECONDS,input=json.dumps(request,ensure_ascii=False))
+                if completed.returncode!=0:raise ValueError("capacity child 오류")
+                document=json.loads(completed.stdout)
+                if not isinstance(document,dict) or document.get("schema")!=1 or document.get("harness")!=harness:
+                    raise ValueError("capacity child 응답 오류")
+                if validate_only:
+                    if set(document)!={"mode","schema","harness","status","reason"} or document["mode"]!="check":
+                        raise ValueError("capacity check 응답 오류")
+                    response={k:v for k,v in stored.items() if k not in ("mode","receipt")}
+                    if document["status"]!="known":response={**unknown,"reason":document["reason"]}
+                else:
+                    if set(document)!={"mode","schema","harness","status","reason","C","observed_at","valid_until","receipt"} or document["mode"]!="query":
+                        raise ValueError("capacity query 응답 오류")
+                    if document["status"]=="known" and (type(document["C"]) is not int or document["C"]<=0 or not isinstance(document["receipt"],dict)):
+                        raise ValueError("capacity query 근거 오류")
+                    response={k:v for k,v in document.items() if k not in ("mode","receipt")}
+            except (CallError,ValueError,TypeError,KeyError):
+                document=None;response={**unknown,"reason":"현재 metadata 조회/검증 실패"}
+            with self._capacity_lock:
+                if self._capacity_generations[key]!=generation:
+                    return unknown
+                if validate_only:
+                    if self._capacities.get(key) is not stored:return unknown
+                    if response["status"]!="known":self._capacities.pop(key,None)
+                elif document is not None and response["status"]=="known":
+                    self._capacities[key]=document
+                if not validate_only:
+                    self._capacity_queries.pop(key,None);future.set_result(response)
+            return response
+        except CallError:
+            return {**unknown,"reason":"현재 metadata 프로젝트 확인 실패"}
 
     # ── local.conf ────────────────────────────────────────────────────────
     def conf_keys(self, path: str) -> dict:

@@ -1143,3 +1143,59 @@ def test_t0937_gui_projection_preserves_scoped_unknown(tmp_path,monkeypatch):
     assert all(rows[h]['status']=='known' for h in ('claude','opencode'))
     assert all(k not in json.dumps(rows) for k in ('bindings','environment','native_commands','native_files','fingerprints','access_token','refresh_token'))
     assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
+
+
+@pytest.mark.parametrize('case',['query','check','set','large','duplicate','extra','trailing','harness','null','array',
+    'digest','root','wrong-harness','missing','swap','duplicate-path','extra-path','relative','sentinel','encoding'])
+def test_t0938_at2_preview_stdin_and_no_write(tmp_path, monkeypatch, capsys, case):
+    from types import SimpleNamespace
+    from io import StringIO
+    from test_harness_ctx_limits import _load, _project, _snapshot_fixture_bytes, _t0932_control_claude_fixture, _T0938_CLAUDE
+    importer = _load('pm_import'); config = _load('pm_config')
+    root = _project(tmp_path, harnesses=('claude',), conf='harness.claude.ctx_window_tokens=1000\n')
+    native = _t0932_control_claude_fixture(tmp_path, monkeypatch)
+    Path(shutil.which('claude')).write_bytes(b'// Version: 2.1.289\n'+_T0938_CLAUDE)
+    calls=[]
+    def protocol(*a):calls.append(a);return native
+    monkeypatch.setattr(importer, '_ctx_native_protocol', protocol)
+    minted=importer.preview_ctx_capacity(root,'claude');assert minted['C']==967000
+    calls.clear();request={'harness':'claude'};raw=None
+    if case in {'check','digest','root','wrong-harness','missing','swap','duplicate-path','extra-path','relative'}:
+        request['receipt']=json.loads(json.dumps(minted['receipt']));receipt=request['receipt'];binding=receipt['binding']
+        if case=='digest':receipt['digest']='0'*64
+        if case=='root':receipt['root']=str(tmp_path/'other')
+        if case=='wrong-harness':receipt['harness']='codex'
+        if case=='missing':binding['required_files'].pop()
+        if case=='swap':binding['roles']['settings'][0],binding['roles']['settings'][1]=binding['roles']['settings'][1],binding['roles']['settings'][0]
+        if case=='duplicate-path':binding['required_files'].append(binding['required_files'][0])
+        if case=='extra-path':binding['fingerprints'][str(tmp_path/'credential')]='0'*64;binding['required_files'].append(str(tmp_path/'credential'))
+        if case=='relative':binding['roles']['settings'][0]='relative.json'
+    if case=='large':raw=' '*262145
+    if case=='duplicate':raw='{"harness":"claude","harness":"claude"}'
+    if case=='extra':request['extra']='secret'
+    if case=='trailing':raw='{"harness":"claude"} {}'
+    if case=='harness':request['harness']='other'
+    if case=='null':request['receipt']=None
+    if case=='array':request['receipt']=[]
+    if case=='sentinel':raw='SECRET_CREDENTIAL_SENTINEL'
+    if case=='encoding':raw='{"harness":"claude","receipt":"'+('한'*90000)+'"}'
+    class Unreadable:
+        def read(self,*a):raise AssertionError('preview --set read stdin')
+    monkeypatch.setattr(sys,'stdin',Unreadable() if case=='set' else StringIO(raw if raw is not None else json.dumps(request)))
+    before=_snapshot_fixture_bytes(root)
+    native_before={p:p.read_bytes() for p in (Path(shutil.which('claude')),Path(os.environ['CLAUDE_CONFIG_DIR'])/'settings.json')}
+    rc=config.cmd_ctx_apply(SimpleNamespace(preview=True,json=True,set=[('ctx.compact_at_pct','94')] if case=='set' else None),pm_import=importer,dest_root=root)
+    captured=capsys.readouterr()
+    assert 'SECRET_CREDENTIAL_SENTINEL' not in captured.out+captured.err
+    assert rc==(0 if case in {'query','check'} else 2)
+    if rc==0:
+        result=json.loads(captured.out)
+        assert 'E' not in result and 'P' not in result
+        if case=='query':assert result['mode']=='query' and result['C']==967000 and len(calls)==1
+        else:assert set(result)=={'mode','schema','harness','status','reason'} and result['status']=='known' and calls==[]
+    else:assert calls==[]
+    assert _snapshot_fixture_bytes(root)==before
+    assert all(p.read_bytes()==b for p,b in native_before.items())
+    # C is independent from W; the original encoding rejection still applies.
+    leaf=importer._load_local_conf();metadata=minted['receipt']['models'][0]
+    assert leaf.resolve_ctx_capacity(1000,(70,85,94),metadata['identity'],metadata['metadata'])['status']=='unknown'
