@@ -9108,6 +9108,7 @@ def _ctx_target_selection(harness, document):
 def _ctx_managed_proof(harness, document, values, budgets):
     """기존 targets로 관리 경로와 값을 재구성하고 실제 문서와 비교한다."""
     models = {}
+    maximum = None
     if HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]].model_limits:
         for row in budgets[harness]["models"]:
             identity = row["identity"]
@@ -9116,7 +9117,8 @@ def _ctx_managed_proof(harness, document, values, budgets):
             if not present: raise HarnessCtxError(["관리 output 없음"])
             metadata = row["metadata"]
             if metadata.get("semantics") == "input-context-output":
-                maximum = _ctx_opencode_policy(_ctx_file_bytes(Path(shutil.which(harness)).resolve()))
+                if maximum is None:
+                    maximum = _ctx_opencode_policy(_ctx_file_bytes(Path(shutil.which(harness)).resolve()))
                 if (type(value) is not int or value <= 0 or metadata["effective_output"] != min(value,metadata["output"],maximum)
                         or (metadata["source"].endswith("/api/show") and value != metadata["output"])):
                     raise HarnessCtxError(["실제 output과 독립 출력 예약 불일치"])
@@ -9286,10 +9288,23 @@ def _commit_harness_ctx(plan):
         changed = False
         if document["updates"]:
             changed = _write_conf_keys_locked(root / ".project_manager/local.conf", document["updates"])
+        native_written = None
         try:
             _harness_ctx_write(root, document["changed"])
-        except HarnessCtxError as exc:
-            failure = HarnessCtxError(exc.violations, written=((".project_manager/local.conf",) if changed else ()) + exc.written)
+            native_written = tuple(document["changed"])
+            for harness,proof in document["applied"].items():
+                rel = HARNESS_CTX_FILES[harness]
+                actual = _harness_ctx_parse(rel,_harness_ctx_read_text(root/rel,rel),_harness_ctx_jsonc_seam())
+                if _ctx_managed_proof(harness,actual,document["inputs"],document["budgets"]) != proof:
+                    raise HarnessCtxError(["성공 후 실제 설정 검증 실패"])
+        except (HarnessCtxError,OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError) as exc:
+            if native_written is None:
+                if not isinstance(exc,HarnessCtxError):
+                    raise
+                violations, written = exc.violations, exc.written
+            else:
+                violations, written = ["성공 후 실제 설정 재판독 또는 관리 정책 검증 실패"], native_written
+            failure = HarnessCtxError(violations, written=((".project_manager/local.conf",) if changed else ()) + written)
             failure.phase = "commit"
             raise failure from exc
         if not document["budgets"]:
@@ -9300,11 +9315,6 @@ def _commit_harness_ctx(plan):
             fingerprints[str(root / rel)] = content_sha256(after.encode("utf-8"))
             for binding in document["bindings"].values():
                 if str(root/rel) in binding["fingerprints"]:binding["fingerprints"][str(root/rel)]=fingerprints[str(root/rel)]
-        for harness,proof in document["applied"].items():
-            rel = HARNESS_CTX_FILES[harness]
-            actual = _harness_ctx_parse(rel,_harness_ctx_read_text(root/rel,rel),_harness_ctx_jsonc_seam())
-            if _ctx_managed_proof(harness,actual,document["inputs"],document["budgets"]) != proof:
-                raise HarnessCtxError(["성공 후 실제 설정 검증 실패"], written=tuple(document["changed"]))
         record = {"schema": 3, "applied_at":applied_at.isoformat(), "applied":document["applied"], "bindings":document["bindings"], "environment": document["environment"], "inputs": document["inputs"], "budgets": document["budgets"], "fingerprints": fingerprints, "native_files": document["native_files"], "native_commands": document["native_commands"]}
         # 같은 관리 값과 획득 snapshot은 최초 성공 시각을 유지한다. 재동기 바이트 진동 0.
         try:

@@ -2305,3 +2305,94 @@ def test_t0939_at2_identical_success_is_idempotent(tmp_path,monkeypatch):
     document['budgets']=previous['budgets']
     f.importer._commit_harness_ctx(json.dumps(document))
     assert (f.root/f.leaf.CTX_BUDGET_RELPATH).read_bytes()==before
+
+@pytest.mark.parametrize('mode',['parse','io','managed','selection','policy','partial','success'])
+def test_t0939_r04_postwrite_failure_report(tmp_path,monkeypatch,mode,capsys):
+    from types import SimpleNamespace
+    f=_t0937_actual_fixture(tmp_path,monkeypatch,apply=False)
+    original_writer=f.importer._harness_ctx_write;reader=f.importer._read_bytes_shared;active=[];caught=[]
+    before_conf=(f.root/'.project_manager/local.conf').read_bytes()
+    native_before={rel:(f.root/rel).read_bytes() for rel in f.importer.HARNESS_CTX_FILES.values()}
+    def read(path,*a,**kw):
+        if mode=='io' and active and Path(path)==f.root/'.codex/config.toml':raise OSError('DO-NOT-OUTPUT readback')
+        return reader(path,*a,**kw)
+    def writer(*a,**kw):
+        if mode=='partial':
+            rel='.claude/settings.json';root,changed=a
+            assert f.importer._atomic_write_dest_bytes(root,Path(rel),changed[rel][1].encode('utf-8'))
+            raise f.importer.HarnessCtxError(['부분 쓰기 실패'],written=(rel,))
+        original_writer(*a,**kw);active.append(True);target=f.root/'.codex/config.toml'
+        if mode=='parse':target.write_text('model_auto_compact_token_limit=["DO-NOT-OUTPUT',encoding='utf-8')
+        elif mode=='managed':target.write_text('model_auto_compact_token_limit=1\n',encoding='utf-8')
+        elif mode=='selection':target.write_text('model="changed"\nmodel_auto_compact_token_limit=535800\n',encoding='utf-8')
+        elif mode=='policy':f.op_native.write_bytes(b'DO-NOT-OUTPUT bad policy')
+    monkeypatch.setattr(f.importer,'_harness_ctx_write',writer)
+    monkeypatch.setattr(f.importer,'_read_bytes_shared',read)
+    monkeypatch.setattr(f.importer,'opencode_global_config_dir',lambda *a:f.global_dir)
+    original_commit=f.importer._commit_harness_ctx
+    def commit(plan):
+        try:return original_commit(plan)
+        except (f.importer.HarnessCtxError,ValueError) as exc:caught.append(exc);raise
+    monkeypatch.setattr(f.importer,'_commit_harness_ctx',commit)
+    config=_load('pm_config');args=SimpleNamespace(json=True,set=[('ctx.checkpoint_at_pct','79')],preview=False)
+    rc=config.cmd_ctx_apply(args,pm_import=f.importer,dest_root=f.root)
+    output=capsys.readouterr()
+    assert (f.root/'.project_manager/local.conf').read_bytes()!=before_conf
+    if mode=='success':
+        assert rc==0 and not caught
+        assert json.loads((f.root/f.leaf.CTX_BUDGET_RELPATH).read_text(encoding='utf-8'))['schema']==3
+    else:
+        assert rc==1 and len(caught)==1 and getattr(caught[0],'phase',None)=='commit'
+        changed={rel for rel,raw in native_before.items() if (f.root/rel).read_bytes()!=raw}
+        assert set(caught[0].written)=={'.project_manager/local.conf',*changed}
+        assert not (f.root/f.leaf.CTX_BUDGET_RELPATH).exists()
+        assert '반영한 뒤 멈췄습니다' in output.err and '반영하지 않았습니다' not in output.err
+        assert 'DO-NOT-OUTPUT' not in output.err+output.out
+
+@pytest.mark.parametrize('mode',['parse','io','managed','selection','policy'])
+def test_t0939_r04_prewrite_failure_control(tmp_path,monkeypatch,mode,capsys):
+    from types import SimpleNamespace
+    f=_t0937_actual_fixture(tmp_path,monkeypatch,apply=False);target=f.root/'.codex/config.toml'
+    if mode=='parse':target.write_text('model_auto_compact_token_limit=["',encoding='utf-8')
+    elif mode=='io':
+        original=f.importer._read_bytes_shared
+        def read(path,*a,**kw):
+            if Path(path)==target:raise OSError('mock prewrite read failure')
+            return original(path,*a,**kw)
+        monkeypatch.setattr(f.importer,'_read_bytes_shared',read)
+    elif mode in ('managed','selection'):
+        monkeypatch.setattr(f.importer,'_ctx_managed_proof',lambda *a,**kw:(_ for _ in ()).throw(f.importer.HarnessCtxError(['mock projection rejection'])))
+    else:f.op_native.write_bytes(b'invalid policy before prepare')
+    monkeypatch.setattr(f.importer,'opencode_global_config_dir',lambda *a:f.global_dir)
+    for name in ('_harness_ctx_write','_atomic_write_dest_bytes','_write_conf_keys_locked'):
+        monkeypatch.setattr(f.importer,name,lambda *a,**kw:pytest.fail('prewrite writer 호출'))
+    before=_snapshot_fixture_bytes(f.root)
+    rc=_load('pm_config').cmd_ctx_apply(SimpleNamespace(json=True,set=[('ctx.checkpoint_at_pct','79')],preview=False),pm_import=f.importer,dest_root=f.root)
+    assert rc==3 and before==_snapshot_fixture_bytes(f.root)
+    assert not (f.root/f.leaf.CTX_BUDGET_RELPATH).exists()
+
+@pytest.mark.parametrize('damage',['normal','install',*range(7),'single'])
+def test_t0939_r04_opencode_policy_single_scan(tmp_path,monkeypatch,damage):
+    f=_t0937_actual_fixture(tmp_path,monkeypatch,apply=False);target=f.root/'.opencode/opencode.jsonc'
+    doc=json.loads(target.read_text(encoding='utf-8'));count=1 if damage=='single' else 7
+    doc['provider']['ollama']['models']={f'review-model-{i}:cloud':{'limit':{'output':32768}} for i in range(count)}
+    target.write_text(json.dumps(doc),encoding='utf-8')
+    f.importer.apply_harness_ctx(f.root,write=True,opencode_config_dir=f.global_dir)
+    if type(damage) is int:
+        doc=json.loads(target.read_text(encoding='utf-8'));doc['provider']['ollama']['models'][f'review-model-{damage}:cloud']['limit']['output']=32767
+        target.write_text(json.dumps(doc),encoding='utf-8')
+    elif damage=='install':f.op_native.write_bytes(b'changed install')
+    native=f.op_native.resolve();original_read=f.importer._ctx_file_bytes;original_policy=f.importer._ctx_opencode_policy;reads=[];policies=[]
+    def read(path):
+        raw=original_read(path)
+        if Path(path).resolve()==native:reads.append(True)
+        return raw
+    def policy(raw):policies.append(True);return original_policy(raw)
+    monkeypatch.setattr(f.importer,'_ctx_file_bytes',read);monkeypatch.setattr(f.importer,'_ctx_opencode_policy',policy)
+    status=_load('pm_config');monkeypatch.setattr(status,'REPO',f.root);monkeypatch.setattr(status,'_load_module',lambda *a:f.importer)
+    before=_snapshot_fixture_bytes(f.root);calls=list(f.calls)
+    row=status._status_json_conf(None)['ctx_applied']['opencode']
+    assert row['status']==('known' if damage in ('normal','single') else 'unknown')
+    assert len(reads)==len(policies)<=1
+    if damage in ('normal','single'):assert len(reads)==1
+    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
