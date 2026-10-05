@@ -5658,7 +5658,9 @@ def _assert_adopter_bytes_kept(pm_import, dest: Path, rel: str, local_bytes: byt
         return
     assert after.startswith(local_bytes), after
     values = pm_import._load_local_conf().load(dest / ".project_manager" / "local.conf").values
-    budgets=json.loads((dest / ".project_manager/.local/ctx-budget.json").read_text(encoding="utf-8"))["budgets"]
+    record=json.loads((dest / ".project_manager/.local/ctx-budget.json").read_text(encoding="utf-8"))
+    assert record["schema"]==4
+    budgets={h:entry["verification"]["snapshot"]["budget"] for h,entry in record["harnesses"].items()}
     targets = pm_import.harness_ctx_targets(values, {}, budgets)[rel]
     assert tomllib.loads(after[len(local_bytes):].decode("utf-8")) == {
         path[0]: value for path, value in targets.items()}

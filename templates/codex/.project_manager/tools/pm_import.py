@@ -9077,6 +9077,325 @@ def preview_ctx_capacity(dest_root, harness, *, receipt=None, check=False, now=N
     return result
 
 
+def _ctx_query_revision(record, harness):
+    if record is None:
+        return None
+    value = record.get("harnesses", {}).get(harness) if record.get("schema") == 4 else record
+    return content_sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+
+def _ctx_load_evidence(root, module):
+    raw = _ctx_file_bytes(root/module.CTX_BUDGET_RELPATH)
+    if raw is None:
+        return None
+    record = json.loads(raw.decode("utf-8"), object_pairs_hook=module._ctx_record_pairs)
+    if not isinstance(record, dict) or type(record.get("schema")) is not int:
+        raise ValueError("ctx 원장 구조 손상")
+    if record["schema"] not in (1, 2, 3, 4):
+        raise ValueError("ctx 원장 세대 미지원, 엔진 갱신 필요")
+    if record["schema"] == 4:
+        return module._ctx_schema4_structure(record, root)
+    if (any(not isinstance(record.get(k), dict) for k in
+            ("inputs", "environment", "budgets", "fingerprints", "native_files", "native_commands"))
+            or record.get("projection_sha256") != module.ctx_record_digest(record)):
+        raise ValueError("ctx 이전 원장 구조/digest 손상")
+    if record["schema"] in (2, 3):
+        module._ctx_binding_structure(record, root)
+        if record["schema"] == 3:
+            for h,binding in record["bindings"].items():
+                module._ctx_schema3_snapshot(record, binding, record["inputs"], h,check_manifest=False)
+    return record
+
+
+def _ctx_snapshot(inputs, binding, budget, proof):
+    harness = binding["harness"]
+    module = _load_local_conf()
+    keys = (f"harness.{harness}.ctx_window_tokens",) + module.CTX_INPUT_KEYS[-3:]
+    return {"inputs": {k:inputs[k] for k in keys}, "binding": binding, "budget": budget, "proof": proof}
+
+
+def _ctx_migrate_evidence(root, module, previous, values):
+    if previous is not None and previous["schema"] == 4:
+        return json.loads(json.dumps(previous))
+    record = {"schema": 4, "root": str(root), "harnesses": {}}
+    if previous is not None and previous["schema"] in (2, 3):
+        for harness,binding in previous["bindings"].items():
+            physical = None
+            verification = None
+            if previous["schema"] == 3:
+                snapshot = _ctx_snapshot(previous["inputs"], binding, previous["budgets"][harness], previous["applied"][harness])
+                physical = {"applied_at": previous["applied_at"], "snapshot": snapshot}
+            # Current conversion never inherits the acquired-C catalog exception.
+            try:
+                _,_,budget = module._read_ctx_legacy_record(previous,root,values,harness)
+                if not module._ctx_fingerprints_match(binding["fingerprints"]):
+                    raise ValueError("현재 원천 변경")
+                module._ctx_budget_semantics(budget,previous["inputs"],values,harness,budget["identity"])
+                rel = HARNESS_CTX_FILES[harness]
+                document = _harness_ctx_parse(rel,_harness_ctx_read_text(root/rel,rel),_harness_ctx_jsonc_seam())
+                proof = _ctx_managed_proof(harness,document,values,{harness:budget})
+                snapshot = _ctx_snapshot(previous["inputs"], binding,budget,proof)
+                snapshot = json.loads(json.dumps(snapshot))
+                snapshot["binding"]["environment"] = module.ctx_receipt_environment(harness,registry=binding["registry"])
+                if "selection" in module._CTX_INPUT_BINDING_RULES[f"harness.{harness}.ctx_window_tokens"]["roles"]:
+                    roles = snapshot["binding"]["roles"]
+                    layers = sorted(set(binding["fingerprints"]) - {binding["target"], *(p for value in roles.values() for p in (value if isinstance(value,list) else [value]))})
+                    if layers:roles["layers"] = layers
+                from datetime import datetime,timezone
+                stamp = previous.get("applied_at") or datetime.now(timezone.utc).isoformat()
+                verification = {"verified_at": stamp, "snapshot": snapshot}
+            except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError,HarnessCtxError):
+                pass  # Old current failure does not erase a valid historical physical snapshot.
+            if verification is not None or physical is not None:
+                record["harnesses"][harness] = {"verification": verification, "physical": physical}
+    return record
+
+
+_CTX_METADATA_KEYS = ("model", "provider", "profile", "source", "generation", "observed_at", "valid_until", "independent",
+    "source_version", "semantics", "usable", "context", "input", "output", "reserved", "effective_output", "effective_percent", "native_formula",
+    "native_context", "native_window_min", "native_window_max", "summary_buffer", "native_percent", "max_context", "window_override", "native_compact_max")
+
+
+def _ctx_capacity_budget(module, inputs, harness, models):
+    ratios = tuple(int(inputs[k]) for k in module.CTX_INPUT_KEYS[-3:])
+    window = int(inputs[f"harness.{harness}.ctx_window_tokens"])
+    results = [module.resolve_ctx_capacity(window,ratios,row["identity"],row["metadata"]) for row in models]
+    if not results or any(row["status"] != "known" for row in results):
+        raise ValueError("전체 모델 native 예산 확인 불가")
+    identities = [tuple(row["identity"].get(k) for k in ("model", "provider", "profile")) for row in results]
+    if len(set(identities)) != len(identities) or (not HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]].model_limits and len(results) != 1):
+        raise ValueError("현재 모델 집합 불일치")
+    for row in results:
+        row["metadata"] = {key:row["metadata"][key] for key in _CTX_METADATA_KEYS if key in row["metadata"]}
+    common = min(results,key=lambda row:row["C"])
+    common_models = [{**row, **{key:common[key] for key in ("E", "P", "checkpoint", "precompact")},
+        "native_window":module._ctx_native_window(common["P"],row["metadata"])} for row in results]
+    budget = {**common,"models":common_models}
+    rule = HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]]
+    if rule.point_range is not None and not rule.point_range[0] <= budget["native_window"] <= rule.point_range[1]:
+        raise ValueError("native 설정 인코딩 범위 불일치")
+    return budget
+
+
+def _ctx_public_budget(row):
+    return {k:row.get(k) for k in ("status", "reason", "W", "C", "E", "P")}
+
+
+def _ctx_capacity_candidate(root, module, harness, receipt, values):
+    budget = _ctx_capacity_budget(module,receipt["inputs"],harness,receipt["models"])
+    rel = HARNESS_CTX_FILES[harness]
+    document = _harness_ctx_parse(rel,_harness_ctx_read_text(root/rel,rel),_harness_ctx_jsonc_seam())
+    models = {(m["identity"]["provider"],m["identity"]["model"]):
+        _document_key_value_path(document,("provider",m["identity"]["provider"],"models",m["identity"]["model"],"limit","output"))[1]
+        for m in budget["models"]} if HARNESS_CTX_RULES[rel].model_limits else {}
+    targets = harness_ctx_targets(values,models,{harness:budget})[rel]
+    if rel.endswith(".toml"):
+        targets[("model_context_window",)] = None
+    candidate = {**{k:budget[k] for k in ("W","C","E","P","native_window")},
+        "managed":[{"path":list(path),"value":value} for path,value in targets.items()]}
+    return budget,document,candidate
+
+
+def _ctx_query_witnesses(root, module, harness, previous):
+    """획득 전 allowlisted 현재 source/native/env만 동결한다. 외부 조회는 없다."""
+    rule = module._CTX_INPUT_BINDING_RULES[f"harness.{harness}.ctx_window_tokens"]
+    binding = None
+    if previous is not None:
+        if previous["schema"] == 4:
+            entry = previous["harnesses"].get(harness,{})
+            proof = entry.get("verification") or entry.get("physical")
+            if proof is not None:binding = proof["snapshot"]["binding"]
+        elif previous["schema"] in (2,3):binding = previous["bindings"].get(harness)
+    registry = binding["registry"] if binding is not None else rule["registry"]
+    paths = {str(root/rule["target"])}
+    roles = {**rule["live_roles"](root,registry), **rule["role_values"]}
+    for value in roles.values():paths.update(value if isinstance(value,list) else [value])
+    if rule["registry"]:
+        global_dir = opencode_global_config_dir(os.environ,Path.home())
+        paths.update(str((global_dir/name).resolve()) for name in OPENCODE_GLOBAL_CONFIG_NAMES)
+    if "selection" in rule["roles"]:
+        paths.update(str(parent/".codex/config.toml") for parent in (root,*root.parents))
+        paths.update(("/etc/codex/config.toml","/etc/codex/managed_config.toml"))
+    command = shutil.which(harness)
+    native = {}
+    if command:
+        entry = Path(command).resolve()
+        if entry.is_file():native[str(entry)] = _ctx_native_stat(entry)
+        preferred = rule.get("native_manifest")
+        manifests = ([entry.parent.parent/preferred] if preferred else [])+[parent/"package.json" for parent in entry.parents[:3]]
+        paths.update(str(path) for path in manifests)
+        if entry.suffix in (".js",".mjs") and "manifest" in rule["roles"]:
+            for manifest in manifests:
+                for binary in list(manifest.parent.glob("vendor/*/codex/codex"))+list(manifest.parent.glob("vendor/*/codex/codex.exe")):
+                    native[str(binary.resolve())] = _ctx_native_stat(binary)
+        command = str(entry)
+    return {"environment":module.ctx_receipt_environment(harness,registry=registry),"command":command,
+        "native":native,"source":{path:_ctx_file_digest(Path(path)) for path in sorted(paths)}}
+
+
+def query_ctx_capacity(dest_root, harness, *, receipt=None, check=False):
+    """CLI query의 단일 terminal 근거 교체/철회. check와 reader는 순수 읽기다."""
+    from datetime import datetime,timezone
+    root = Path(dest_root).resolve()
+    module = _load_local_conf()
+    conf = root/".project_manager/local.conf"
+    values = module.load(conf).values
+    result = {"schema":2,"mode":"check" if check else "query","harness":harness,
+        "status":"unknown","reason":"현재 metadata 미보유","C":None,"observed_at":None,"valid_until":None,
+        "verification":{"status":"unknown","reason":"현재 검증 근거 없음","verified_at":None,"revision":None,"evidence_changed":False},
+        "candidate":None,"receipt":None}
+    committed_revision = None
+    def finish():
+        result["budget"] = _ctx_public_budget(module.ctx_budget_status(root,module.load(conf).values)[harness])
+        result["applied"] = ctx_applied_status(root,module.load(conf).values)[harness]
+        if committed_revision is not None:
+            try: current_revision = _ctx_query_revision(_ctx_load_evidence(root,module),harness)
+            except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError):current_revision = None
+            if current_revision != committed_revision:
+                result["verification"].update(status="changed",reason="근거 저장 후 다른 검증의 변경")
+        if result["verification"]["status"] == "verified" and result["budget"]["status"] != "known":
+            result["verification"].update(status="changed",reason="저장 후 현재 근거 변경")
+        return result
+    if check:
+        observed = preview_ctx_capacity(root,harness,receipt=receipt,check=True)
+        result.update({k:observed[k] for k in ("status","reason")})
+        if result["status"] == "known":
+            capacities = [module._normalize_ctx_capacity(m["identity"],m["metadata"]) for m in receipt["models"]]
+            expiries = [m["metadata"]["valid_until"] for m in receipt["models"] if m["metadata"].get("valid_until")]
+            result.update(C=min(capacities),observed_at=max(m["metadata"]["observed_at"] for m in receipt["models"]),
+                valid_until=min(expiries) if expiries else None)
+        finish()
+        entry = None
+        try:
+            saved = _ctx_load_evidence(root,module)
+            entry = saved["harnesses"][harness]["verification"] if saved is not None and saved["schema"] == 4 else None
+            if entry is not None and result["budget"]["status"] == "known" and result["status"] == "known":
+                result["verification"].update(status="verified",reason=None,verified_at=entry["verified_at"],revision=_ctx_query_revision(entry,""))
+            else:result["verification"].update(status="changed",reason="현재 검증 근거 변경 또는 만료")
+        except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError):
+            result["verification"].update(status="changed",reason="현재 검증 근거 변경 또는 만료")
+        if result["status"] == "known":
+            try:
+                budget,document,result["candidate"] = _ctx_capacity_candidate(root,module,harness,receipt,values)
+                proof = _ctx_managed_proof(harness,document,values,{harness:budget})
+                if entry is not None and entry["snapshot"] != _ctx_snapshot(receipt["inputs"],receipt["binding"],budget,proof):
+                    result["verification"].update(status="changed",reason="최신 획득 근거의 저장 미확인")
+            except HarnessCtxError:
+                result["verification"].update(status="apply-required" if result["budget"]["status"]=="unknown" else "changed",
+                    reason="현재 관리 설정과 최신 모델 예산 불일치")
+            except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError):
+                result["verification"].update(status="unknown",reason="현재 native 예산 확인 불가")
+        return result
+    try:
+        previous = _ctx_load_evidence(root,module)
+        revision = _ctx_query_revision(previous,harness)
+        root_stat = root.stat()
+        root_identity = (root_stat.st_dev,root_stat.st_ino)
+        shapes = {rel:_ctx_target_shape(root/rel) for rel in HARNESS_CTX_FILES.values()}
+        before = {str(conf):_ctx_file_digest(conf),str(root/ADAPTER_BASELINE_RELPATH):_ctx_file_digest(root/ADAPTER_BASELINE_RELPATH)}
+        before.update({str(root/".project_manager/tools"/name):_ctx_file_digest(root/".project_manager/tools"/name)
+            for name in ("local_conf.py","pm_import.py","pm_config.py")})
+        witnesses = _ctx_query_witnesses(root,module,harness,previous)
+        if _load_adapter_baseline_document(root).status == "newer-schema":raise ValueError("어댑터 원장 세대 미지원")
+    except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError):
+        result["verification"].update(status="update-required",reason="원장/엔진 근거 확인 불가, 갱신 필요")
+        return finish()
+    observed = preview_ctx_capacity(root,harness)
+    result.update({k:observed[k] for k in ("status","reason","C","observed_at","valid_until","receipt")})
+    snapshot = None
+    validation = None
+    stamp = datetime.now(timezone.utc).isoformat()
+    if observed["status"] == "known":
+        try:
+            receipt = observed["receipt"]
+            if preview_ctx_capacity(root,harness,receipt=receipt,check=True)["status"] != "known":
+                raise ValueError("획득 후 근거 변경")
+        except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError):
+            result["verification"].update(status="changed",reason="획득한 metadata 근거 변경")
+            return finish()
+        try:
+            budget,document,result["candidate"] = _ctx_capacity_candidate(root,module,harness,receipt,values)
+            proof = _ctx_managed_proof(harness,document,values,{harness:budget})
+            snapshot = _ctx_snapshot(receipt["inputs"],receipt["binding"],budget,proof)
+            validation = {"schema":4,"root":str(root),"harnesses":{harness:{"verification":{"verified_at":stamp,"snapshot":snapshot},"physical":None}}}
+            validation["projection_sha256"] = module.ctx_record_digest(validation)
+            module._ctx_schema4_read(validation,root,values,harness)
+            result["verification"].update(status="verified",reason=None)
+        except HarnessCtxError:
+            result["verification"].update(status="apply-required",reason="현재 관리 설정과 최신 모델 예산 불일치")
+        except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError):
+            snapshot = None;validation = None
+            result["verification"].update(status="unknown",reason="전체 모델 native 예산 확인 불가")
+    else:result["verification"].update(status="unknown",reason=observed["reason"])
+    # One mutually exclusive terminal action: a fresh matching proof, nullification, or no-op.
+    latest_cause = result["verification"]["reason"]
+    prior_claim = (previous is not None and ((previous["schema"] == 4 and
+        previous["harnesses"].get(harness,{}).get("verification") is not None) or
+        (previous["schema"] in (2,3) and harness in previous["budgets"])))
+    if snapshot is None and not prior_claim:
+        try:
+            if _ctx_query_revision(_ctx_load_evidence(root,module),harness) != revision:
+                result["verification"].update(status="changed",reason="조회 중 다른 검증의 변경")
+        except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError):
+            result["verification"].update(status="changed",reason="조회 중 원장 근거 변경")
+        return finish()
+    try:
+        lock = _load_file_lock()
+        if _conf_lock_section(lock,conf) is None or not callable(_atomic_write_dest_bytes):raise OSError("실제 conf 락/atomic writer 부재")
+        with _local_conf_write_lock(conf) as held_lock:
+            if held_lock is None:raise OSError("실제 conf 락 부재")
+            current = _ctx_load_evidence(root,module)
+            stat = root.stat()
+            if (root.resolve() != root or (stat.st_dev,stat.st_ino) != root_identity
+                    or any(_ctx_target_shape(root/rel) != shape for rel,shape in shapes.items())
+                    or any(_ctx_file_digest(Path(path)) != digest for path,digest in before.items())
+                    or _ctx_query_revision(current,harness) != revision
+                    or _ctx_query_witnesses(root,module,harness,previous) != witnesses):
+                raise ValueError("획득 전 root/설정/native/원천/엔진/원장 근거 변경")
+            current_values = module.load(conf).values
+            if observed["status"] == "known":
+                if preview_ctx_capacity(root,harness,receipt=receipt,check=True)["status"] != "known" or not module._ctx_fingerprints_match(receipt["binding"]["fingerprints"]):
+                    raise ValueError("첫 쓰기 전 fresh metadata 결속 변경")
+            if snapshot is not None:
+                module._ctx_schema4_read(validation,root,current_values,harness)
+                rel = HARNESS_CTX_FILES[harness]
+                actual = _harness_ctx_parse(rel,_harness_ctx_read_text(root/rel,rel),_harness_ctx_jsonc_seam())
+                if _ctx_managed_proof(harness,actual,current_values,{harness:budget}) != proof:
+                    raise ValueError("첫 쓰기 전 실제 관리/선택 변경")
+            if snapshot is not None and current is not None and current["schema"] == 4:
+                saved = current["harnesses"].get(harness,{}).get("verification")
+                if saved is not None and saved["snapshot"] == snapshot:
+                    committed_revision = _ctx_query_revision(current,harness)
+                    result["verification"].update(verified_at=saved["verified_at"],revision=_ctx_query_revision(saved,""))
+                    return finish()
+            if snapshot is None:
+                had_current = (current is not None and ((current["schema"] == 4 and
+                    current["harnesses"].get(harness,{}).get("verification") is not None) or
+                    (current["schema"] in (2,3) and harness in current["budgets"])))
+                if not had_current:return finish()
+            merged = _ctx_migrate_evidence(root,module,current,current_values)
+            entry = merged["harnesses"].setdefault(harness,{"verification":None,"physical":None})
+            if snapshot is None:
+                entry["verification"] = None
+            elif entry["verification"] is None or entry["verification"]["snapshot"] != snapshot:
+                entry["verification"] = {"verified_at":stamp,"snapshot":snapshot}
+            merged["projection_sha256"] = module.ctx_record_digest(merged)
+            module._ctx_schema4_structure(merged,root)
+            raw = (json.dumps(merged,ensure_ascii=False,sort_keys=True)+"\n").encode("utf-8")
+            changed = _ctx_file_bytes(root/module.CTX_BUDGET_RELPATH) != raw
+            if changed and not _atomic_write_dest_bytes(root,module.CTX_BUDGET_RELPATH,raw):raise OSError("검증 근거 저장 실패")
+            committed_revision = _ctx_query_revision(merged,harness)
+            result["verification"].update(verified_at=entry["verification"]["verified_at"] if entry["verification"] is not None else None,
+                revision=_ctx_query_revision(entry["verification"],"") if snapshot is not None else committed_revision,evidence_changed=changed)
+    except (OSError,UnicodeError):
+        provenance = previous["harnesses"].get(harness,{}).get("verification") if previous is not None and previous["schema"] == 4 else None
+        result["verification"].update(status="write-failed",reason="최신 검증 근거 저장 실패, 이전 저장 근거 유지"+(f" ({latest_cause})" if latest_cause else ""),
+            verified_at=provenance["verified_at"] if provenance is not None else None,revision=_ctx_query_revision(provenance,"") if provenance is not None else None,evidence_changed=False)
+    except (ValueError,TypeError,KeyError,AttributeError,HarnessCtxError):
+        result["verification"].update(status="changed",reason="현재 검증 근거 변경, 저장 계획 거절",evidence_changed=False)
+    return finish()
+
+
 def _ctx_target_selection(harness, document):
     """관리 값을 제외한 collector 선택 projection의 지문. 원문 비밀은 저장하지 않는다."""
     if HARNESS_CTX_FILES[harness].endswith(".toml"):
@@ -9163,6 +9482,7 @@ def _prepare_harness_ctx(dest_root, values, *, opencode_config_dir, updates=None
     environment = module.ctx_environment_fingerprints()
     conf_path = dest_root / ".project_manager/local.conf"
     conf_digest = _ctx_file_digest(conf_path)
+    receipt_environment = {h:module.ctx_receipt_environment(h) for h in HARNESS_CTX_FILES}
     current_values = module.load(conf_path).values
     merged_values = {**current_values, **(updates or {})}
     if module.ctx_input_values(merged_values) != module.ctx_input_values(values):
@@ -9190,8 +9510,10 @@ def _prepare_harness_ctx(dest_root, values, *, opencode_config_dir, updates=None
                     for rel in HARNESS_CTX_FILES.values()}
     fingerprints.update(global_fingerprints)
     conf = dest_root / ".project_manager/local.conf"
-    before = {str(conf): conf_digest, str(dest_root / ADAPTER_BASELINE_RELPATH): _ctx_file_digest(dest_root / ADAPTER_BASELINE_RELPATH),
-              str(dest_root / module.CTX_BUDGET_RELPATH): _ctx_file_digest(dest_root / module.CTX_BUDGET_RELPATH)}
+    before = {str(dest_root/".project_manager/tools"/name): _ctx_file_digest(dest_root/".project_manager/tools"/name)
+              for name in ("local_conf.py", "pm_import.py", "pm_config.py")}
+    before.update({str(conf): conf_digest, str(dest_root / ADAPTER_BASELINE_RELPATH): _ctx_file_digest(dest_root / ADAPTER_BASELINE_RELPATH),
+              str(dest_root / module.CTX_BUDGET_RELPATH): _ctx_file_digest(dest_root / module.CTX_BUDGET_RELPATH)})
     if _load_adapter_baseline_document(dest_root).status == "newer-schema":
         raise HarnessCtxError(["어댑터 config 원장 schema가 엔진 지원 상한보다 새롭습니다."])
     budgets, bindings, native_files, native_commands = {}, {}, {}, {}
@@ -9214,6 +9536,11 @@ def _prepare_harness_ctx(dest_root, values, *, opencode_config_dir, updates=None
             "environment":module.ctx_environment_fingerprints(harness,registry=snapshot.get("registry",False)),
             "target":str(dest_root/HARNESS_CTX_FILES[harness]),"required_files":sorted(own_fingerprints),"roles":snapshot.get("roles",{})}
         if HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]].model_limits:bindings[harness]["roles"]["global"] = sorted(global_fingerprints)
+        if "selection" in module._CTX_INPUT_BINDING_RULES[f"harness.{harness}.ctx_window_tokens"]["roles"]:
+            roles = bindings[harness]["roles"]
+            layers = sorted(set(own_fingerprints) - {str(dest_root/HARNESS_CTX_FILES[harness]), *roles.values()})
+            if layers:
+                roles["layers"] = layers
         window = int(_harness_ctx_value(values, _harness_ctx_window_key(harness)))
         results = [module.resolve_ctx_capacity(window, ratios, row.get("identity", {}), row.get("metadata")) for row in rows]
         if any(row["status"] != "known" for row in results):
@@ -9225,11 +9552,8 @@ def _prepare_harness_ctx(dest_root, values, *, opencode_config_dir, updates=None
         elif len(results) != 1:
             raise HarnessCtxError([f"{harness} actual C unknown: 선택 모델 미확정"])
         # 기록은 가용 창 의미·정체·원천 검증에 필요한 metadata만 보존한다.
-        metadata_keys = ("model", "provider", "profile", "source", "generation", "observed_at", "valid_until", "independent",
-                         "source_version", "semantics", "usable", "context", "input", "output", "reserved", "effective_output", "effective_percent", "native_formula",
-                         "native_context", "native_window_min", "native_window_max", "summary_buffer", "native_percent", "max_context", "window_override", "native_compact_max")
         for row in results:
-            row["metadata"] = {key: row["metadata"][key] for key in metadata_keys if key in row["metadata"]}
+            row["metadata"] = {key: row["metadata"][key] for key in _CTX_METADATA_KEYS if key in row["metadata"]}
         common = min(results, key=lambda row: row["C"])
         common_models = [{**row, **{key: common[key] for key in ("E", "P", "checkpoint", "precompact")},
                           "native_window": module._ctx_native_window(common["P"], row["metadata"])} for row in results]
@@ -9252,7 +9576,7 @@ def _prepare_harness_ctx(dest_root, values, *, opencode_config_dir, updates=None
             changed[rel] = [text, new_text]
     return json.dumps({"root": str(dest_root), "environment": environment, "inputs": module.ctx_input_values(values), "budgets": budgets,
                        "fingerprints": fingerprints, "native_files": native_files, "native_commands": native_commands, "before": before, "changed": changed, "lines": lines,
-                       "target_shapes": shapes, "bindings":bindings, "applied":applied, "updates": updates or {}}, ensure_ascii=False)
+                       "target_shapes": shapes, "receipt_environment": receipt_environment, "bindings":bindings, "applied":applied, "updates": updates or {}}, ensure_ascii=False)
 
 
 def _commit_harness_ctx(plan):
@@ -9263,7 +9587,8 @@ def _commit_harness_ctx(plan):
     with _local_conf_write_lock(root / ".project_manager/local.conf"):
         if any(_ctx_target_shape(root / rel) != shape for rel, shape in document["target_shapes"].items()):
             raise HarnessCtxError(["ctx 계획 stale: 대상 설정 존재/형상 변경"])
-        if document["environment"] != module.ctx_environment_fingerprints():
+        if document["environment"] != module.ctx_environment_fingerprints() or any(
+                document["receipt_environment"][h] != module.ctx_receipt_environment(h) for h in document["budgets"]):
             raise HarnessCtxError(["ctx 계획 stale: native 모델/provider 환경 변경"])
         for path, digest in {**document["fingerprints"], **document["before"]}.items():
             if _ctx_file_digest(Path(path)) != digest:
@@ -9285,6 +9610,11 @@ def _commit_harness_ctx(plan):
                 current = module.resolve_ctx_capacity(row["W"], ratios, row["identity"], row["metadata"], now=applied_at)
                 if current["status"] != "known" or current["C"] != row["C"]:
                     raise HarnessCtxError([f"ctx 계획 stale: metadata {current['reason']}"])
+        try:
+            previous = _ctx_load_evidence(root,module)
+            record = _ctx_migrate_evidence(root,module,previous,document["inputs"])
+        except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError) as exc:
+            raise HarnessCtxError(["ctx 원장 구조/세대 검증 실패"]) from exc
         changed = False
         if document["updates"]:
             changed = _write_conf_keys_locked(root / ".project_manager/local.conf", document["updates"])
@@ -9315,19 +9645,14 @@ def _commit_harness_ctx(plan):
             fingerprints[str(root / rel)] = content_sha256(after.encode("utf-8"))
             for binding in document["bindings"].values():
                 if str(root/rel) in binding["fingerprints"]:binding["fingerprints"][str(root/rel)]=fingerprints[str(root/rel)]
-        record = {"schema": 3, "applied_at":applied_at.isoformat(), "applied":document["applied"], "bindings":document["bindings"], "environment": document["environment"], "inputs": document["inputs"], "budgets": document["budgets"], "fingerprints": fingerprints, "native_files": document["native_files"], "native_commands": document["native_commands"]}
-        # 같은 관리 값과 획득 snapshot은 최초 성공 시각을 유지한다. 재동기 바이트 진동 0.
-        try:
-            previous = json.loads(_ctx_file_bytes(root/module.CTX_BUDGET_RELPATH) or b"null",
-                                  object_pairs_hook=module._ctx_record_pairs)
-            if (isinstance(previous,dict) and previous.get("schema") == 3
-                    and previous.get("projection_sha256") == module.ctx_record_digest(previous)
-                    and all(previous.get(key) == value for key,value in record.items() if key != "applied_at")):
-                for harness,binding in previous["bindings"].items():
-                    module._ctx_schema3_snapshot(previous,binding,document["inputs"],harness)
-                record["applied_at"] = previous["applied_at"]
-        except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError):
-            pass  # 손상·이전 원장은 이번 명시 apply의 검증된 성공 증언으로 교체한다.
+        for harness,budget in document["budgets"].items():
+            binding = document["bindings"][harness]
+            binding["environment"] = module.ctx_receipt_environment(harness,registry=binding["registry"])
+            snapshot = _ctx_snapshot(document["inputs"],binding,budget,document["applied"][harness])
+            entry = record["harnesses"].setdefault(harness,{"verification":None,"physical":None})
+            for kind,time_key in (("verification","verified_at"),("physical","applied_at")):
+                if entry[kind] is None or entry[kind]["snapshot"] != snapshot:
+                    entry[kind] = {time_key:applied_at.isoformat(),"snapshot":snapshot}
         record["projection_sha256"] = module.ctx_record_digest(record)
         raw = (json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
         if _ctx_file_bytes(root / module.CTX_BUDGET_RELPATH) != raw:

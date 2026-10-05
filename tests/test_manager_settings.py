@@ -102,13 +102,8 @@ def base_home(tmp_path_factory) -> Path:
 def pm_home(base_home, tmp_path) -> Path:
     home = tmp_path / "demo"
     shutil.copytree(base_home, home, symlinks=True)
-    record=home/'.project_manager/.local/ctx-budget.json'
-    if record.is_file():
-        document=json.loads(record.read_text(encoding='utf-8'))
-        document['fingerprints']={name.replace(str(base_home),str(home),1):digest for name,digest in document['fingerprints'].items()}
-        from test_harness_ctx_limits import _load
-        document['projection_sha256']=_load('local_conf').ctx_record_digest(document)
-        record.write_text(json.dumps(document),encoding='utf-8')
+    from _manager_home import reanchor_ctx_record
+    reanchor_ctx_record(home,base_home)
     return home
 
 

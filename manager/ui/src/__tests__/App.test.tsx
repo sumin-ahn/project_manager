@@ -425,6 +425,7 @@ it.each(["known", "unknown"] as const)("background_capacity_hint stays visible d
   fireEvent.mouseDown(screen.getByRole("tab", { name: "설정" }));
   fireEvent.click(await screen.findByTestId("nav-harness"));
   await waitFor(() => expect(screen.getByTestId("capacity-claude")).toHaveTextContent("967000"));
+  await act(async () => { for (const item of pending.splice(0)) item.resolve(known(item.harness)); });
   const initialQueries = capacity.mock.calls.filter((call) => !call[2]).length;
   const hint = screen.getByTestId("capacity-claude");
   const changedText: string[] = [];
@@ -441,63 +442,138 @@ it.each(["known", "unknown"] as const)("background_capacity_hint stays visible d
         ? { ...known(check.harness), status: "unknown", C: null, reason: "원천 변경" }
         : known(check.harness));
     });
-    if (status === "unknown") expect(hint).toHaveTextContent("원천 변경");
+    if (status === "unknown") expect(hint).toHaveTextContent("967000");
     else {
       expect(hint).toHaveTextContent("967000");
       expect(changedText).toEqual([]);
     }
-    expect(capacity.mock.calls.filter((call) => !call[2])).toHaveLength(initialQueries);
+    expect(capacity.mock.calls.filter((call) => !call[2])).toHaveLength(initialQueries + (status === "unknown" ? 1 : 0));
   } finally { observer.disconnect(); }
 });
 
-it("T0938_AT4_late_response_and_project_switch", async () => {
+it("T0941_AT3_singleflight_late_check_project_and_expiry", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   const pending: { path: string; harness: string; check: boolean; resolve: (value: any) => void }[] = [];
-  const capacity = vi.fn((path: string, harness: string, check: boolean) =>
-    new Promise<any>((resolve) => pending.push({ path, harness, check, resolve })));
+  const seen = new Set<string>();
+  const capacity = vi.fn((path: string, harness: string, check: boolean) => {
+    if (check && !seen.has(path)) return Promise.resolve({ schema: 2, harness, status: "unknown", C: null,
+      observed_at: null, valid_until: null, reason: "미보유" });
+    return new Promise<any>((resolve) => pending.push({ path, harness, check, resolve }));
+  });
   const bridge = makeBridge({
     list_projects: vi.fn(async () => ({ projects: [{ path: DEMO, name: "demo" }, { path: OTHER, name: "other" }] })),
     ctx_capacity: capacity,
   });
   render(<App bridge={bridge} />);
-  await waitFor(() => expect(bridge.conf_keys).toHaveBeenCalled());
+  await waitFor(() => expect(pending.filter((p) => !p.check)).toHaveLength(1));
   fireEvent.mouseDown(screen.getByRole("tab", { name: "설정" }));
-  await waitFor(() => expect(pending.length).toBe(document_.harnesses.length));
-  fireEvent.click(screen.getByTestId("nav-harness"));
-  const old = pending.splice(0);
+  fireEvent.click(await screen.findByTestId("nav-harness"));
   fireEvent.click(screen.getByLabelText("새로고침"));
-  await waitFor(() => expect(pending.length).toBe(document_.harnesses.length));
-  const reply = (item: typeof old[number], C: number, valid_until: string | null = null, status = "known") =>
-    item.resolve({ schema: 1, harness: item.harness, status, reason: status === "known" ? null : "원천 변경",
-      C: status === "known" ? C : null, observed_at: new Date().toISOString(), valid_until });
-  await act(async () => { for (const item of pending.splice(0)) reply(item, 570000); });
-  await act(async () => { for (const item of old) reply(item, 967000); });
+  expect(pending.filter((p) => !p.check)).toHaveLength(1);
+  const reply = (item: typeof pending[number], C: number, expiry: string | null = null) => {
+    seen.add(item.path);
+    item.resolve({ schema: 2, harness: item.harness, status: "known", reason: null, C,
+      observed_at: new Date().toISOString(), valid_until: expiry,
+      verification: { status: "verified", reason: null, verified_at: new Date().toISOString(), revision: "a".repeat(64), evidence_changed: false },
+      budget: { status: "known", reason: null, W: 600000, C, E: Math.min(600000,C), P: Math.floor(Math.min(600000,C)*.94) } });
+  };
+  await act(async () => { pending.splice(0).forEach((p) => reply(p, 570000)); });
   expect(screen.getByTestId("capacity-claude")).toHaveTextContent("570000");
-  expect(screen.getByTestId("capacity-claude")).not.toHaveTextContent("967000");
-  // Old validation cannot discard a newer explicit acquisition.
   await act(async () => { await vi.advanceTimersByTimeAsync(LIGHT_INTERVAL_MS); });
   const oldChecks = pending.splice(0);
-  expect(oldChecks.every((item) => item.check)).toBe(true);
+  expect(oldChecks.every((p) => p.check)).toBe(true);
   fireEvent.click(screen.getByLabelText("새로고침"));
-  await waitFor(() => expect(pending.length).toBe(document_.harnesses.length));
-  await act(async () => { for (const item of pending.splice(0)) reply(item, 580000, new Date(Date.now()+1000).toISOString()); });
-  await act(async () => { for (const item of oldChecks) reply(item, 0, null, "unknown"); });
+  await waitFor(() => expect(pending.filter((p) => !p.check)).toHaveLength(1));
+  await act(async () => { pending.splice(0).forEach((p) => reply(p, 580000,new Date(Date.now()+1000).toISOString())); });
+  await act(async () => { oldChecks.forEach((p) => reply(p,967000)); });
   expect(screen.getByTestId("capacity-claude")).toHaveTextContent("580000");
-  const queryCount = capacity.mock.calls.filter((call) => !call[2]).length;
   await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
   expect(screen.getByTestId("capacity-claude")).toHaveTextContent("유효기간 만료");
-  expect(capacity.mock.calls.filter((call) => !call[2])).toHaveLength(queryCount);
   fireEvent.click(screen.getByLabelText("새로고침"));
-  await waitFor(() => expect(pending.length).toBe(document_.harnesses.length));
-  const previousProject = pending.splice(0);
+  await waitFor(() => expect(pending.filter((p) => !p.check)).toHaveLength(1));
+  const previous = pending.splice(0);
   fireEvent.click(screen.getByTestId("project-other"));
-  await waitFor(() => expect(pending.length).toBe(document_.harnesses.length));
-  await act(async () => { for (const item of pending.splice(0)) reply(item, 258400); });
-  await act(async () => { for (const item of previousProject) reply(item, 967000); });
+  await waitFor(() => expect(pending.some((p) => p.path===OTHER && !p.check)).toBe(true));
+  await act(async () => { pending.splice(0).forEach((p) => reply(p,258400)); });
+  await act(async () => { previous.forEach((p) => reply(p,967000)); });
   fireEvent.click(screen.getByTestId("nav-harness"));
   expect(screen.getByTestId("capacity-claude")).toHaveTextContent("258400");
-  // Related-source invalidation uses check, with no new metadata acquisition.
-  await act(async () => { await vi.advanceTimersByTimeAsync(LIGHT_INTERVAL_MS); });
-  await act(async () => { for (const item of pending.splice(0)) reply(item, 0, null, "unknown"); });
-  expect(screen.getByTestId("capacity-claude")).toHaveTextContent("원천 변경");
+});
+
+it("T0941_AT3_selected_visible_backoff_manual_and_event", async () => {
+  vi.useFakeTimers({shouldAdvanceTime:true});
+  const started=Date.now();const queries:{path:string;time:number}[]=[];
+  const capacity=vi.fn(async(path:string,harness:string,check=false):Promise<CtxCapacity>=>{
+    if(!check)queries.push({path,time:Date.now()-started});
+    return {schema:2,harness,status:"unknown",reason:"transport unavailable",C:null,observed_at:null,valid_until:null,
+      verification:{status:"unknown",reason:"transport unavailable",verified_at:null,revision:null,evidence_changed:false}};
+  });
+  const bridge=makeBridge({ctx_capacity:capacity,list_projects:vi.fn(async()=>({projects:[{path:DEMO,name:"demo"},{path:OTHER,name:"other"}]}))});
+  render(<App bridge={bridge}/>);
+  await waitFor(()=>expect(queries).toHaveLength(1));
+  await act(async()=>{await vi.advanceTimersByTimeAsync(140000);});
+  const differences=queries.slice(1).map((q,i)=>q.time-queries[i].time);
+  expect(differences.slice(0,5)).toEqual([5000,10000,20000,40000,60000]);
+  expect(queries.every((q)=>q.path===DEMO)).toBe(true);
+  const count=queries.length;
+  setVisibility("hidden");const calls=capacity.mock.calls.length;
+  await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});
+  expect(queries).toHaveLength(count);expect(capacity).toHaveBeenCalledTimes(calls);
+  setVisibility("visible");
+  await waitFor(()=>expect(queries.length).toBeGreaterThan(count));
+  const before=queries.length;
+  act(()=>openedStream().dispatchEvent(new MessageEvent("message",{data:JSON.stringify({name:"ctx_capacity",path:DEMO,harness:"claude",revision:"a".repeat(64)})})));
+  await act(async()=>{await Promise.resolve();});expect(queries).toHaveLength(before);
+  fireEvent.click(screen.getByLabelText("새로고침"));
+  await waitFor(()=>expect(queries).toHaveLength(before+1));
+});
+
+it("T0941_AT5_query_generation_discards_old_status_and_keeps_new_unknown", async () => {
+  vi.useFakeTimers({shouldAdvanceTime:true});
+  let known=false;let hold=false;const old:((value:StatusDocument)=>void)[]=[];
+  const budget=(status:"known"|"unknown")=>({status,reason:status==="known"?null:"원천 변경",W:600000,C:status==="known"?967000:null,E:status==="known"?600000:null,P:status==="known"?564000:null});
+  const statusDoc=(current:boolean):StatusDocument=>({...document_,conf:{...document_.conf,ctx_budget:{claude:budget(current?"known":"unknown")}}});
+  const status=vi.fn(async(_path:string,heavy=false)=>hold&&!heavy?new Promise<StatusDocument>((resolve)=>old.push(resolve)):statusDoc(known));
+  const capacity=vi.fn(async(_path:string,harness:string,check=false):Promise<CtxCapacity>=>{
+    if(!check)known=true;
+    return {schema:2,harness,status:known?"known":"unknown",reason:null,C:known?967000:null,observed_at:null,valid_until:null,
+      verification:{status:known?"verified":"unknown",reason:null,verified_at:null,revision:"a".repeat(64),evidence_changed:false},budget:budget(known?"known":"unknown")};
+  });
+  render(<App bridge={makeBridge({status,ctx_capacity:capacity})}/>);
+  await waitFor(()=>expect(capacity.mock.calls.some(c=>!c[2])).toBe(true));
+  fireEvent.mouseDown(screen.getByRole("tab",{name:"설정"}));fireEvent.click(await screen.findByTestId("nav-harness"));
+  hold=true;await act(async()=>{await vi.advanceTimersByTimeAsync(5000);});
+  expect(old.length).toBeGreaterThan(0);
+  hold=false;fireEvent.click(screen.getByLabelText("새로고침"));
+  await waitFor(()=>expect(screen.getByTestId("budget-claude")).toHaveTextContent("현재 설정 검증 완료 · 기준 600000"));
+  await act(async()=>{old.splice(0).forEach(resolve=>resolve(statusDoc(false)));});
+  expect(screen.getByTestId("budget-claude")).not.toHaveTextContent("재확인 필요");
+  // A subsequent real core unknown response must be displayed and never hidden by the previous query budget.
+  known=false;
+  act(()=>openedStream().dispatchEvent(new MessageEvent("message",{data:JSON.stringify({name:"ctx_capacity",path:DEMO})})));
+  await waitFor(()=>expect(screen.getByTestId("budget-claude")).toHaveTextContent("현재 예산 근거 재확인 필요"));
+});
+
+it("T0941_AT3_apply_required_is_stable_until_source_change", async()=>{
+  vi.useFakeTimers({shouldAdvanceTime:true});let changed=false;
+  const budget={status:"unknown" as const,reason:"현재 검증 없음",W:600000,C:null,E:null,P:null};
+  const reply=(harness:string):CtxCapacity=>({schema:2,harness,status:"known",reason:null,C:567000,observed_at:null,valid_until:null,budget,
+    verification:{status:"apply-required",reason:"불일치",verified_at:null,revision:"a".repeat(64),evidence_changed:false},
+    candidate:{W:600000,C:567000,E:567000,P:532980,native_window:565980,managed:[{path:["autoCompactWindow"],value:565980}]}});
+  let queried=false;
+  const capacity=vi.fn(async(_path:string,harness:string,check=false):Promise<CtxCapacity>=>{
+    if(check&&(!queried||changed))return{...reply(harness),status:"unknown",C:null,verification:{status:"changed",reason:"source changed",verified_at:null,revision:null,evidence_changed:false}};
+    if(!check){queried=true;changed=false;}return reply(harness);
+  });
+  const bridge=makeBridge({ctx_capacity:capacity,status:vi.fn(async()=>({...document_,conf:{...document_.conf,ctx_budget:{claude:budget}}}))});
+  render(<App bridge={bridge}/>);await waitFor(()=>expect(capacity.mock.calls.filter(c=>!c[2])).toHaveLength(1));
+  fireEvent.mouseDown(screen.getByRole("tab",{name:"설정"}));fireEvent.click(await screen.findByTestId("nav-harness"));
+  await act(async()=>{await Promise.resolve();});
+  const count=capacity.mock.calls.filter(c=>!c[2]).length;
+  await act(async()=>{await vi.advanceTimersByTimeAsync(30000);});
+  expect(capacity.mock.calls.filter(c=>!c[2])).toHaveLength(count);expect(screen.getByTestId("budget-claude")).toHaveTextContent("현재 기준 적용");
+  await act(async()=>{await vi.advanceTimersByTimeAsync(30000);});
+  expect(capacity.mock.calls.filter(c=>!c[2])).toHaveLength(count);
+  changed=true;await act(async()=>{await vi.advanceTimersByTimeAsync(5000);});
+  expect(capacity.mock.calls.filter(c=>!c[2])).toHaveLength(count+1);
 });

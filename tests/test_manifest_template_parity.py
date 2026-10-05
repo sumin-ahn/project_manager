@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import pytest
 from pathlib import Path
 
 from _git_fixture import init_git_repo
@@ -754,3 +755,12 @@ def test_t0937_schema2_scoped_runtime_in_all_flavors(tmp_path,monkeypatch):
         assert leaf.read_ctx_budget(f.root,f.values,'opencode',f.record['budgets']['opencode']['identity'])['status']=='known'
         monkeypatch.delenv('ANTHROPIC_MODEL')
     assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
+
+
+@pytest.mark.parametrize('name',['local_conf.py','pm_import.py','pm_config.py'])
+def test_t0941_current_verification_core_shipping(name):
+    source=(TOOLS/name).read_bytes()
+    for flavor in ('claude_code','codex','opencode'):
+        target=REPO/'templates'/flavor/'.project_manager/tools'/name
+        assert target.read_bytes()==source
+        assert '.project_manager/tools/'+name in (REPO/'templates'/flavor/'.project_manager/engine.manifest').read_text(encoding='utf-8')

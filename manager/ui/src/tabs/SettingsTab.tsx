@@ -501,24 +501,36 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
   const budgetHint = (key: string) => {
     const match = /^harness\.(claude|codex|opencode)\.ctx_window_tokens$/.exec(key);
     if (!match) return null;
-    const budget = conf.ctx_budget?.[match[1]];
+    const budget = capacities?.[match[1]]?.budget ?? conf.ctx_budget?.[match[1]];
     const capacity = capacities?.[match[1]];
-    const applied = conf.ctx_applied?.[match[1]];
+    const applied = capacity?.applied ?? conf.ctx_applied?.[match[1]];
+    const verified = capacity?.verification?.status === "verified" && budget?.status === "known";
     return <span className="block text-[11px] text-slate-500" data-testid={`budget-${match[1]}`}>
       <span data-testid={`capacity-${match[1]}`}>
         {capacity?.status === "known" ? `현재 가용 한도 ${capacity.C} 토큰`
           : `현재 모델 한도 확인 불가 (${capacity?.reason ?? "현재 metadata 미보유"})`}
       </span>
       <span className="block">
-        {applied?.status === "known"
+        {verified ? `현재 설정 검증 완료 · 기준 ${budget.E} · 압축 지점 ${budget.P} 토큰`
+          : applied?.status === "known"
           ? `설정 반영 확인 · 마지막 반영 기준 ${applied.E} · 압축 지점 ${applied.P} 토큰`
           : `설정 반영 확인 불가 (${applied?.reason ?? "성공 반영 증언 없음"})`}
       </span>
-      <span className="block">
+      {!verified && <span className="block">
         {budget?.status === "known"
-          ? `현재 예산 근거 확인 · 기준 ${budget.E} · 압축 지점 ${budget.P} 토큰`
+          ? `${capacity?.verification?.status === "write-failed" ? "마지막 검증 예산 유지" : "현재 예산 근거 확인"} · 기준 ${budget.E} · 압축 지점 ${budget.P} 토큰`
           : `현재 예산 근거 재확인 필요 (${budget?.reason ?? "검증된 예산 기록 없음"})`}
-      </span>
+      </span>}
+      {verified && applied?.status === "known" && <span className="block">마지막 반영 시각 {applied.applied_at}</span>}
+      {verified && applied?.status !== "known" && <span className="block">마지막 물리 반영 이력 미확인</span>}
+      {capacity?.verification?.status === "write-failed" && <span className="block">최신 검증 근거 저장 실패 ({capacity.verification.reason})</span>}
+      {capacity?.verification?.status === "update-required" && <span className="block">엔진 갱신 후 현재 설정 검증 필요</span>}
+      {["apply-required","write-failed"].includes(capacity?.verification?.status ?? "") && capacity?.candidate && <span className="block">
+        {capacity.verification?.status === "apply-required" ? "적용 필요" : "최신 후보"} (저장값 기준) · 기준 {capacity.candidate.E} · 압축 지점 {capacity.candidate.P} · native {capacity.candidate.native_window} 토큰
+        <button type="button" disabled={busy || changedCount > 0} onClick={() => void save({ [key]: values[key] ?? null })}
+                className="ml-2 rounded border border-slate-200 px-1">현재 기준 적용</button>
+        {changedCount > 0 && <span className="block">편집 내용을 저장한 후 검증하십시오.</span>}
+      </span>}
     </span>;
   };
 

@@ -1592,9 +1592,10 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     from test_harness_ctx_limits import _load as load_ctx_engine
     old_ctx = json.loads(before[_CTX_RECORD_REL].decode('utf-8'))
     new_ctx = json.loads(after[_CTX_RECORD_REL].decode('utf-8'))
-    assert new_ctx['budgets'][base] == old_ctx['budgets'][base]
-    assert set(new_ctx['budgets']) == {base, added}
-    assert new_ctx['budgets'][added]['E'] == 200000
+    assert new_ctx['schema']==old_ctx['schema']==4
+    assert new_ctx['harnesses'][base]['verification']['snapshot']['budget'] == old_ctx['harnesses'][base]['verification']['snapshot']['budget']
+    assert set(new_ctx['harnesses']) == {base, added}
+    assert new_ctx['harnesses'][added]['verification']['snapshot']['budget']['E'] == 200000
     assert new_ctx['projection_sha256'] == load_ctx_engine('local_conf').ctx_record_digest(new_ctx)
 
     # (3-a) 설치 기록의 변경 내용 — 정확히 base∪added(registry 순서)여야 한다. 표기 독자 집합이

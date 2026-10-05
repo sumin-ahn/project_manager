@@ -743,6 +743,8 @@ _CTX_INPUT_BINDING_RULES = {
     "harness.claude.ctx_window_tokens": {
         "target":".claude/settings.json", "roles":{"settings":3},
         "protocol_source":"claude-sdk-neutral",
+        "receipt_environment":("ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","CLAUDE_CODE_OAUTH_TOKEN"),
+        "managed":{("autoCompactWindow",):lambda budget:budget["native_window"]},
         "live_roles":lambda root,registry:{"settings":[str((Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home()/".claude")/"settings.json").resolve()),
             str(root/".claude/settings.local.json"),"/etc/claude-code/managed-settings.json"]},
         "role_values":{"managed_bundle":"/etc/claude-code/managed-settings.d"}, "registry":False,
@@ -756,13 +758,14 @@ _CTX_INPUT_BINDING_RULES = {
     "harness.codex.ctx_window_tokens": {
         "target":".codex/config.toml", "roles":{"manifest":1,"selection":1,"auth":1,"catalog":1},
         "native_manifest":"codex-package.json",
+        "managed":{("model_auto_compact_token_limit",):lambda budget:budget["native_window"],("model_context_window",):lambda budget:None},
         "live_roles":lambda root,registry:{role:str((Path(os.environ.get("CODEX_HOME") or Path.home()/".codex")/name).resolve())
             for role,name in (("selection","config.toml"),("auth","auth.json"),("catalog","models_cache.json"))},
         "role_values":{}, "registry":False,
         "environment":("CODEX_HOME","CODEX_API_KEY","CODEX_ACCESS_TOKEN","CODEX_AUTH_JSON","OPENAI_API_KEY",
             "OPENAI_BASE_URL","OPENAI_ORGANIZATION","OPENAI_PROJECT")},
     "harness.opencode.ctx_window_tokens": {
-        "target":".opencode/opencode.jsonc", "roles":{"manifest":1,"global":3},"role_values":{},"registry":True,
+        "target":".opencode/opencode.jsonc", "managed":{("compaction","reserved"):lambda budget:budget["E"]-budget["P"]}, "roles":{"manifest":1,"global":3},"role_values":{},"registry":True,
         "live_roles":lambda root,registry:{} if not registry else {"catalog":str((Path(os.environ.get("XDG_CACHE_HOME") or Path.home()/".cache")/"opencode/models.json").resolve())},
         "environment":("XDG_CONFIG_HOME","OPENCODE_CONFIG","OPENCODE_CONFIG_DIR","OPENCODE_CONFIG_CONTENT",
             "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX")},
@@ -919,7 +922,10 @@ def resolve_ctx_capacity(window, ratios, identity, metadata, *, now=None):
 def ctx_record_digest(record):
     """파생 기록의 손상 검출 지문. 독립 metadata catalog로 사용하지 않는다."""
     import hashlib
-    keys = ("schema", "inputs", "environment", "budgets", "fingerprints", "native_files", "native_commands")
+    if record.get("schema") == 4:
+        keys = ("schema", "root", "harnesses")
+    else:
+        keys = ("schema", "inputs", "environment", "budgets", "fingerprints", "native_files", "native_commands")
     if record.get("schema") in (2, 3): keys += ("bindings",)
     if record.get("schema") == 3: keys += ("applied_at", "applied")
     payload = {key: record[key] for key in keys}
@@ -1096,7 +1102,7 @@ def _ctx_budget_semantics(row, inputs, values, harness, identity, *, now=None):
     return row
 
 
-def _ctx_schema3_snapshot(record, binding, values, harness):
+def _ctx_schema3_snapshot(record, binding, values, harness, *, check_manifest=True):
     """성공 시각의 산식과 원래 catalog snapshot을 검증한다. TTL을 갱신하지 않는다."""
     from datetime import datetime, timezone, timedelta
     applied_at = _ctx_time(record["applied_at"])
@@ -1108,7 +1114,7 @@ def _ctx_schema3_snapshot(record, binding, values, harness):
     proof = proofs[harness]
     if not isinstance(proof, dict) or set(proof) != {"managed", "selection_sha256"}:
         raise ValueError("설정 반영 증언 구조 손상")
-    if not isinstance(proof["selection_sha256"], str) or len(proof["selection_sha256"]) != 64:
+    if not isinstance(proof["selection_sha256"], str) or re.fullmatch(r"[0-9a-f]{64}",proof["selection_sha256"]) is None:
         raise ValueError("선택 projection 손상")
     managed = proof["managed"]
     if not isinstance(managed, list) or not managed:
@@ -1133,7 +1139,7 @@ def _ctx_schema3_snapshot(record, binding, values, harness):
                 raise ValueError("Codex snapshot 모델/의미 손상")
             catalog = binding["roles"]["catalog"]
             manifest = binding["roles"]["manifest"]
-            native = json.loads(_read_text_shared(Path(manifest), encoding="utf-8"))
+            native = json.loads(_read_text_shared(Path(manifest), encoding="utf-8")) if check_manifest else {"version":metadata.get("source_version")}
             if (metadata["source"] != catalog or metadata["generation"] != binding["fingerprints"][catalog]
                     or metadata.get("source_version") != native.get("version")
                     or _ctx_time(metadata["valid_until"]) != _ctx_time(metadata["observed_at"]) + timedelta(seconds=300)):
@@ -1142,9 +1148,185 @@ def _ctx_schema3_snapshot(record, binding, values, harness):
     return excluded
 
 
+def ctx_receipt_environment(harness, *, registry=True):
+    """현재 독립 조회의 인증 환경 결속. 원문은 보관하지 않는다."""
+    import hashlib
+    result = ctx_environment_fingerprints(harness, registry=registry)
+    keys = _CTX_INPUT_BINDING_RULES[f"harness.{harness}.ctx_window_tokens"].get("receipt_environment", ())
+    result.update({key:hashlib.sha256(os.environ[key].encode("utf-8")).hexdigest()
+        if key in os.environ else None for key in keys})
+    return result
+
+
+def _ctx_scoped_record(root, harness, snapshot, stamp):
+    """기존 구조·산식 검사에 전달하는 단일 하네스 view. 원장을 쓰지 않는다."""
+    binding = snapshot["binding"]
+    fingerprints = {str(Path(root)/rule["target"]): None for rule in _CTX_INPUT_BINDING_RULES.values()}
+    fingerprints.update(binding["fingerprints"])
+    environment = {k:v for k,v in binding["environment"].items()
+        if k in ctx_environment_fingerprints(harness, registry=binding["registry"])}
+    scoped_binding = {**binding, "environment": environment}
+    return {"schema": 3, "applied_at": stamp, "inputs": snapshot["inputs"],
+        "bindings": {harness: scoped_binding}, "budgets": {harness: snapshot["budget"]},
+        "applied": {harness: snapshot["proof"]}, "fingerprints": fingerprints,
+        "environment": environment, "native_files": binding["native_files"],
+        "native_commands": binding["native_commands"]}
+
+
+def _ctx_binding_paths(root, binding, budget, *, current=False):
+    """읽기 전 source 역할과 native 경로 허용 집합 검사."""
+    harness = binding["harness"]
+    rule = _CTX_INPUT_BINDING_RULES[f"harness.{harness}.ctx_window_tokens"]
+    files, roles = binding["fingerprints"], binding["roles"]
+    if any(not isinstance(path, str) or not Path(path).is_absolute() or
+            (value is not None and (not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None))
+            for path, value in files.items()):
+        raise ValueError("ctx 원천 경로/지문 손상")
+    # 오래된 독립 테스트/원천의 leaf 계약도 유지한다. 실제 producer는 정확 pathset을 검사한다.
+    real = any(Path(m["metadata"]["source"]).is_absolute() or
+        m["metadata"]["source"] == rule.get("protocol_source") or m["metadata"].get("source_version")
+        for m in budget["models"])
+    if not real:
+        return
+    expected = dict(rule["live_roles"](Path(root), binding["registry"]))
+    expected.update(rule["role_values"])
+    entry = Path(binding["native_commands"][harness])
+    if not entry.is_absolute():
+        raise ValueError("ctx native 경로 손상")
+    allowed_native = {str(entry)}
+    if "manifest" in rule["roles"]:
+        preferred = rule.get("native_manifest")
+        candidates = ([entry.parent.parent/preferred] if preferred else []) + [p/"package.json" for p in entry.parents[:3]]
+        manifest = next((path for path in candidates if path.is_file()), None) if current else next((path for path in candidates if str(path) == roles.get("manifest")), None)
+        if manifest is None:
+            raise ValueError("ctx native manifest 부재")
+        expected["manifest"] = str(manifest)
+        if entry.suffix in (".js", ".mjs"):
+            binaries = (list(manifest.parent.glob("vendor/*/codex/codex")) + list(manifest.parent.glob("vendor/*/codex/codex.exe"))) if current else [Path(path) for path in binding["native_files"] if path != str(entry) and
+                Path(path).parent.name == harness and Path(path).parent.parent.parent == manifest.parent/"vendor" and Path(path).name in (harness, harness+".exe")]
+            if len(binaries) != 1:
+                raise ValueError("ctx native binary 정체 미확정")
+            allowed_native.add(str(binaries[0].resolve()))
+        if rule["registry"]:
+            global_dir = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home()/".config")/"opencode"
+            expected["global"] = sorted(str((global_dir/name).resolve()) for name in ("opencode.json", "opencode.jsonc", "config.json"))
+    if "layers" in roles:
+        layers = roles["layers"]
+        allowed = {str(p/".codex/config.toml") for p in (Path(root), *Path(root).parents)} | {"/etc/codex/config.toml", "/etc/codex/managed_config.toml"}
+        if "selection" not in rule["roles"] or not isinstance(layers, list) or not layers or len(set(layers)) != len(layers) or any(p not in allowed for p in layers):
+            raise ValueError("ctx native 계층 허용 경로 오류")
+        expected["layers"] = layers
+    if not current:
+        # 구조 검사는 저장 당시의 외부 위치를 보존한다. live 역할 변경은 해당 h current에서만 판정한다.
+        if set(roles) != set(expected):
+            raise ValueError("ctx producer 역할 집합 손상")
+        expected = roles
+    if roles != expected:
+        raise ValueError("ctx producer 역할/경로 불일치")
+    allowed = {binding["target"]}
+    for paths in expected.values():
+        allowed.update(paths if isinstance(paths, list) else [paths])
+    if not current and "selection" in rule["roles"]:
+        allowed.update(set(files) & ({str(p/".codex/config.toml") for p in (Path(root), *Path(root).parents)} |
+            {"/etc/codex/config.toml", "/etc/codex/managed_config.toml"}))
+    if set(files) != allowed or set(binding["native_files"]) != allowed_native:
+        raise ValueError("ctx 허용 원천 집합 불일치")
+
+
+def _ctx_schema4_structure(record, root):
+    """per-h 원장 구조 검사. 다른 도구의 현재 TTL/source는 여기서 판정하지 않는다."""
+    if (not isinstance(record, dict) or set(record) != {"schema", "root", "harnesses", "projection_sha256"}
+            or type(record["schema"]) is not int or record["schema"] != 4
+            or record["root"] != str(Path(root).resolve()) or not isinstance(record["harnesses"], dict)
+            or not record["harnesses"] or not set(record["harnesses"]) <= {k.split(".")[1] for k in _CTX_INPUT_BINDING_RULES}
+            or record["projection_sha256"] != ctx_record_digest(record)):
+        raise ValueError("ctx 현재 검증 원장 구조/root/digest 손상")
+    for harness, entry in record["harnesses"].items():
+        if not isinstance(entry, dict) or set(entry) != {"verification", "physical"}:
+            raise ValueError("ctx 하네스 검증/반영 귀속 손상")
+        for kind, value in entry.items():
+            if value is None:
+                continue
+            time_key = "verified_at" if kind == "verification" else "applied_at"
+            if not isinstance(value, dict) or set(value) != {time_key, "snapshot"}:
+                raise ValueError("ctx 검증 시각/snapshot 손상")
+            _ctx_time(value[time_key])
+            snapshot = value["snapshot"]
+            keys = (f"harness.{harness}.ctx_window_tokens",) + CTX_INPUT_KEYS[-3:]
+            if (not isinstance(snapshot, dict) or set(snapshot) != {"inputs", "binding", "budget", "proof"}
+                    or not isinstance(snapshot["inputs"], dict) or set(snapshot["inputs"]) != set(keys)):
+                raise ValueError("ctx scoped snapshot 입력 손상")
+            if not isinstance(snapshot["binding"],dict) or set(snapshot["binding"]) != {"harness","target","fingerprints","required_files","roles","registry","native_files","native_commands","environment"}:
+                raise ValueError("ctx snapshot binding 항목 손상")
+            view = _ctx_scoped_record(root, harness, snapshot, value[time_key])
+            _ctx_binding_structure(view, root)
+            _ctx_binding_paths(root, snapshot["binding"], snapshot["budget"])
+            environment_keys = set(ctx_receipt_environment(harness,registry=snapshot["binding"]["registry"]))
+            legacy_keys = set(ctx_environment_fingerprints(harness,registry=snapshot["binding"]["registry"]))
+            if set(snapshot["binding"]["environment"]) not in (environment_keys, legacy_keys):
+                raise ValueError("ctx 환경 귀속 구조 손상")
+            _ctx_schema3_snapshot(view,snapshot["binding"],snapshot["inputs"],harness,check_manifest=False)
+            proof = {tuple(e["path"]):e["value"] for e in snapshot["proof"]["managed"]}
+            budget = snapshot["budget"]
+            rule = _CTX_INPUT_BINDING_RULES[f"harness.{harness}.ctx_window_tokens"]
+            expected = {path:formula(budget) for path,formula in rule["managed"].items()}
+            if rule["registry"]:
+                for model in budget["models"]:
+                    prefix = ("provider",model["identity"]["provider"],"models",model["identity"]["model"],"limit")
+                    output = proof.get(prefix+("output",))
+                    metadata = model["metadata"]
+                    if type(output) is not int or not 0 < output <= metadata["output"] or output >= metadata["context"]:
+                        raise ValueError("ctx 관리 출력 예약 증언 손상")
+                    expected.update({prefix+("context",):metadata["context"],prefix+("input",):budget["E"],prefix+("output",):output})
+            if proof != expected:
+                raise ValueError("ctx 관리 경로/예산 증언 손상")
+    return record
+
+
+def _ctx_schema4_read(record, root, values, harness, *, applied=False):
+    from datetime import datetime, timezone
+    _ctx_schema4_structure(record, root)
+    entry = record["harnesses"][harness]["physical" if applied else "verification"]
+    if entry is None:
+        raise ValueError("현재 검증 근거 없음" if not applied else "설정 반영 증언 없음")
+    stamp = entry["applied_at" if applied else "verified_at"]
+    snapshot = entry["snapshot"]
+    binding, row = snapshot["binding"], snapshot["budget"]
+    view = _ctx_scoped_record(root, harness, snapshot, stamp)
+    # schema3 역사 예외는 physical에만 적용한다. 현재는 catalog까지 정확 비교한다.
+    if not _ctx_native_matches(binding):
+        raise ValueError("native 설치 정체/세대 변경")
+    _ctx_schema3_snapshot(view, binding, snapshot["inputs"], harness)
+    if not applied:
+        _ctx_binding_paths(root, binding, row, current=True)
+        verified_at = _ctx_time(stamp)
+        if verified_at > datetime.now(timezone.utc) or any(verified_at < _ctx_time(m["metadata"]["observed_at"]) for m in row["models"]):
+            raise ValueError("현재 검증 시각 불일치")
+        if snapshot["inputs"] != {k: ctx_input_values(values)[k] for k in snapshot["inputs"]}:
+            raise ValueError("ctx 입력 변경")
+        if binding["environment"] != ctx_receipt_environment(harness, registry=binding["registry"]):
+            raise ValueError("현재 인증/native 환경 변경")
+        if not _ctx_native_matches(binding) or not _ctx_fingerprints_match(binding["fingerprints"]):
+            raise ValueError("현재 선택/native/metadata 근거 변경")
+        _ctx_role_source_correlation(binding, row, root)
+    else:
+        # 기존 물리 판정에 전달하는 역사 view는 기존 환경 키만 사용한다.
+        view["environment"] = {k:v for k,v in binding["environment"].items() if k in ctx_environment_fingerprints(harness, registry=binding["registry"])}
+        view["bindings"] = {harness: {**binding, "environment": view["environment"]}}
+        view["projection_sha256"] = ctx_record_digest(view)
+        return _read_ctx_legacy_record(view, root, values, harness, applied=True)
+    return view, binding, row
+
+
 def _read_ctx_record(root, values, harness, *, applied=False):
     """현재 scoped 근거 검사. 마지막 물리 반영과 현재 예산을 구분한다."""
     record = json.loads(_read_text_shared(Path(root) / CTX_BUDGET_RELPATH, encoding="utf-8"),object_pairs_hook=_ctx_record_pairs)
+    if isinstance(record, dict) and record.get("schema") == 4:
+        return _ctx_schema4_read(record, root, values, harness, applied=applied)
+    return _read_ctx_legacy_record(record, root, values, harness, applied=applied)
+
+
+def _read_ctx_legacy_record(record, root, values, harness, *, applied=False):
     if not isinstance(record, dict) or any(not isinstance(record.get(k), dict) for k in
             ("inputs", "environment", "budgets", "fingerprints", "native_files", "native_commands")):
         raise ValueError("ctx 적용 기록 구조 손상")
@@ -1202,6 +1384,9 @@ def ctx_budget_status(root, values):
     except (OSError, UnicodeError, ValueError):
         record = {}
     budgets = record.get("budgets") if isinstance(record, dict) else None
+    if isinstance(record, dict) and record.get("schema") == 4:
+        budgets = {h: e["verification"]["snapshot"]["budget"] for h,e in record.get("harnesses", {}).items()
+            if isinstance(e, dict) and isinstance(e.get("verification"), dict) and isinstance(e["verification"].get("snapshot"), dict)}
     budgets = budgets if isinstance(budgets, dict) else {}
     return {h: read_ctx_budget(root, values, h, budgets[h].get("identity") if isinstance(budgets.get(h), dict) else None)
             for h in ("claude", "codex", "opencode")}

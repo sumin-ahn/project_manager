@@ -2075,7 +2075,7 @@ def test_upgrade_adopter_legacy_conf_is_guided_then_replaced_then_gates_run(tmp_
     assert settled.returncode == 0, settled.stderr
     assert "→ `" not in settled.stdout, "교체 뒤에도 키 지목이 남았다"
     # 옛 키가 사라진 실행은 사용 한도를 설정 파일에 반영한다(543210 × 90% = 488889).
-    ctx = json.loads((dest / '.project_manager/.local/ctx-budget.json').read_text(encoding='utf-8'))['budgets']['claude']
+    ctx = json.loads((dest / '.project_manager/.local/ctx-budget.json').read_text(encoding='utf-8'))['harnesses']['claude']['verification']['snapshot']['budget']
     assert (ctx['W'], ctx['C'], ctx['E'], ctx['P']) == (543210, 200000, 200000, 180000)
     assert json.loads((dest / '.claude/settings.json').read_text(encoding='utf-8'))['autoCompactWindow'] == 180000
 

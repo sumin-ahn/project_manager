@@ -1290,7 +1290,7 @@ def test_self_reconstructed_from_root_would_miss_the_flat_layout(tmp_path):
 
 
 def test_t0932_model_capacity_actual_catalog_native_and_runtime(tmp_path,monkeypatch,codex_ctx):
-    from test_harness_ctx_limits import _load,_project,_global_dir,_sha
+    from test_harness_ctx_limits import _load,_project,_global_dir,_sha,_legacy_schema3_record
     module=_load('pm_import');leaf=_load('local_conf')
     root=_project(tmp_path,harnesses=('codex',),conf='harness.codex.ctx_window_tokens=600000\nctx.checkpoint_at_pct=80\nctx.precompact_at_pct=90\nctx.compact_at_pct=94\n',texts={'.codex/config.toml':'model_context_window = 900000\n[profiles.user]\nmodel_context_window = 128000\n'})
     from test_harness_ctx_limits import _t0932_codex_native_catalog
@@ -1299,7 +1299,7 @@ def test_t0932_model_capacity_actual_catalog_native_and_runtime(tmp_path,monkeyp
     module.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
     # schema2의 엄격한 catalog 세대 검사 대조군. schema3 수명주기는 T-0939 AT1에서 검증한다.
     record_path=root/leaf.CTX_BUDGET_RELPATH
-    legacy=json.loads(record_path.read_text(encoding='utf-8'));legacy['schema']=2
+    legacy=_legacy_schema3_record(root,leaf);legacy['schema']=2
     legacy.pop('applied');legacy.pop('applied_at');legacy['projection_sha256']=leaf.ctx_record_digest(legacy)
     record_path.write_text(json.dumps(legacy),encoding='utf-8')
     native=tomllib.loads((root/'.codex/config.toml').read_text(encoding='utf-8'))
