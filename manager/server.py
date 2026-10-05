@@ -63,7 +63,7 @@ def project_key(method, args: list) -> str | None:
     parameters = list(inspect.signature(method).parameters)
     if not parameters or parameters[0] not in PROJECT_PARAMETERS or not args:
         return None
-    return str(args[0])
+    return str(Path(args[0]).resolve())
 
 
 def _rejected(message: str) -> dict:
@@ -166,32 +166,58 @@ class ManagerServer:
         key = project_key(method, args)
         if key is None:
             return method(*args)
+        if name == "ctx_capacity" and (len(args) < 3 or args[2] is False):
+            return self._call_capacity(method, args, key)
         if name in WRITE_NAMES:
             return self._call_write(name, method, args, key)
         running = self._running(key)
-        if running is not None:
+        if running is not None and running != "ctx_capacity":
             return _rejected(self._busy_message(key, running))
         return method(*args)
 
+    def _call_capacity(self, method, args: list, key: str) -> dict:
+        with self._writes_lock:
+            entry = self._writes.setdefault(key, [threading.Lock(), "", 0, set()])
+            if entry[1] not in ("", "ctx_capacity"):
+                return _rejected(self._busy_message(key, entry[1]))
+            entry[1] = "ctx_capacity"
+            entry[2] += 1
+        result = None
+        try:
+            result = method(*args)
+            return result
+        finally:
+            events = []
+            with self._writes_lock:
+                verification = result.get("verification", {}) if isinstance(result, dict) else {}
+                if verification.get("evidence_changed") is True:
+                    entry[3].add((result["harness"], verification["revision"]))
+                entry[2] -= 1
+                if entry[2] == 0:
+                    events = sorted(entry[3])
+                    entry[3].clear()
+                    entry[1] = ""
+            for harness,revision in events:
+                self.events.publish({"name":"ctx_capacity", "path":key, "harness":harness, "revision":revision})
+
     def _call_write(self, name: str, method, args: list, key: str) -> dict:
         with self._writes_lock:
-            entry = self._writes.setdefault(key, [threading.Lock(), ""])
-        if not entry[0].acquire(blocking=False):
-            return _rejected(self._busy_message(key, entry[1]))
-        entry[1] = name
+            entry = self._writes.setdefault(key, [threading.Lock(), "", 0, set()])
+            if entry[1] or not entry[0].acquire(blocking=False):
+                return _rejected(self._busy_message(key, entry[1]))
+            entry[1] = name
         try:
             return method(*args)
         finally:
-            entry[1] = ""
-            entry[0].release()
+            with self._writes_lock:
+                entry[1] = ""
+                entry[0].release()
             self.events.publish({"name": name, "path": key})
 
     def _running(self, key: str) -> str | None:
         with self._writes_lock:
             entry = self._writes.get(key)
-        if entry is None or not entry[0].locked():
-            return None
-        return entry[1]
+            return entry[1] or None if entry is not None else None
 
     @staticmethod
     def _busy_message(key: str, running: str) -> str:

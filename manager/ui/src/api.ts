@@ -140,8 +140,16 @@ export type CtxBudget = {
   W: number; C: number | null; E: number | null; P: number | null;
 };
 export type CtxCapacity = {
-  schema: 1; harness: string; status: "known" | "unknown"; reason: string | null;
+  schema: 1 | 2; harness: string; status: "known" | "unknown"; reason: string | null;
   C: number | null; observed_at: string | null; valid_until: string | null;
+  verification?: {
+    status: "verified" | "apply-required" | "unknown" | "changed" | "write-failed" | "update-required";
+    reason: string | null; verified_at: string | null; revision: string | null; evidence_changed: boolean;
+  };
+  budget?: CtxBudget;
+  candidate?: { W: number; C: number; E: number; P: number; native_window: number;
+    managed: { path: string[]; value: number | null }[] } | null;
+  applied?: CtxApplied | null;
 };
 export type CtxApplied = {
   status: "known" | "unknown"; reason: string | null; W: number;

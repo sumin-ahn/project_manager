@@ -136,3 +136,15 @@ it("T0938_AT4_capacity_bridge_arguments", async () => {
   expect(JSON.parse(calls[1][1].body)).toEqual({ args: [DEMO, "claude", true] });
   expect(calls[0][1].body).not.toContain("receipt");
 });
+
+it("T0941 schema2 query/check use the existing HTTP method and preserve public proof", async () => {
+  const response={schema:2,harness:"codex",status:"known",reason:null,C:570000,observed_at:"2026-10-05T00:00:00Z",valid_until:"2026-10-05T00:05:00Z",
+    verification:{status:"verified",reason:null,verified_at:"2026-10-05T00:00:01Z",revision:"a".repeat(64),evidence_changed:true},
+    budget:{status:"known",reason:null,W:600000,C:570000,E:570000,P:535800},candidate:null,applied:null};
+  globalThis.fetch=jsonOnce(response);
+  const bridge=httpBridge();expect(await bridge.ctx_capacity!(DEMO,"codex",false)).toEqual(response);
+  expect(await bridge.ctx_capacity!(DEMO,"codex",true)).toEqual(response);
+  const calls=(globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
+  expect(calls.map(([url])=>url)).toEqual(["/api/ctx_capacity","/api/ctx_capacity"]);
+  expect(calls.map(([,init])=>JSON.parse(init.body))).toEqual([{args:[DEMO,"codex",false]},{args:[DEMO,"codex",true]}]);
+});

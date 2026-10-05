@@ -2753,7 +2753,8 @@ def test_t0932_review_js_record_semantics(tmp_path, damage):
     identity = _t0932_install_budget_fixture(tmp_path, conf, harness='opencode', capacity=200000)
     record_path = tmp_path / leaf.CTX_BUDGET_RELPATH
     record = json.loads(record_path.read_text(encoding='utf-8'))
-    row = record['budgets']['opencode']
+    assert record['schema']==4
+    row = record['harnesses']['opencode']['verification']['snapshot']['budget']
     if damage == 'top':
         row.update(C=600000, E=600000, P=564000, checkpoint=480000, precompact=540000)
     elif damage == 'model-point':

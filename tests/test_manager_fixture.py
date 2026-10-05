@@ -76,7 +76,11 @@ def test_top_level_keys_match_the_engine(sample, live):
 def test_section_keys_match_the_engine(sample, live, section):
     assert set(sample[section]) == set(live[section])
     if section == "conf":
-        assert set(sample[section]["ctx_applied"]) == set(live[section]["ctx_applied"])
+        for projection in ("ctx_budget","ctx_applied"):
+            assert set(sample[section][projection]) == set(live[section][projection])
+            for h in sample[section][projection]:
+                assert set(sample[section][projection][h]) == set(live[section][projection][h])
+                assert not set(sample[section][projection][h]) & {"metadata","identity","models","binding","environment","receipt"}
 
 
 @pytest.mark.parametrize("section", ["open", "lint"])

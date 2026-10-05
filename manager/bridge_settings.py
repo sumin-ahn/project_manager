@@ -120,19 +120,29 @@ class SettingsApi:
 
     def ctx_capacity(self, path: str, harness: str, validate_only: bool = False) -> dict:
         """fresh query 영수증은 private memory에만 보관하며 check는 그 C만 검증한다."""
-        unknown={"schema":1,"harness":harness,"status":"unknown","reason":"현재 metadata 미보유",
-                 "C":None,"observed_at":None,"valid_until":None}
+        unknown={"schema":2,"harness":harness,"status":"unknown","reason":"현재 metadata 미보유",
+                 "C":None,"observed_at":None,"valid_until":None,
+                 "verification":{"status":"unknown","reason":"현재 검증 근거 없음","verified_at":None,"revision":None,"evidence_changed":False},
+                 "budget":{"status":"unknown","reason":"현재 검증 근거 없음","W":None,"C":None,"E":None,"P":None},
+                 "candidate":None,"applied":None}
         if harness not in ("claude","codex","opencode") or type(validate_only) is not bool:
             return {**unknown,"reason":"capacity 인자 오류"}
         try:
             home=_pm_home(path); key=(str(home),harness)
             with self._capacity_lock:
                 if not hasattr(self,"_capacities"):
-                    self._capacities={}; self._capacity_queries={}; self._capacity_generations={}
+                    self._capacities={}; self._capacity_queries={}; self._capacity_generations={}; self._capacity_latest={}
+                keys = set(self._capacity_generations) | set(self._capacities) | set(self._capacity_queries)
+                if key not in keys and len(keys) >= 96:
+                    inactive = next((k for k in self._capacity_generations if k not in self._capacity_queries), None)
+                    if inactive is None:
+                        return {**unknown,"reason":"현재 검증 요청 상한, 잠시 후 재시도"}
+                    self._capacity_generations.pop(inactive,None);self._capacities.pop(inactive,None);self._capacity_latest.pop(inactive,None)
                 stored=self._capacities.get(key)
                 generation=self._capacity_generations.get(key,0)
                 if validate_only:
-                    if stored is None:return unknown
+                    fallback = stored is None or not isinstance(stored.get("receipt"),dict)
+                    latest = self._capacity_latest.get(key,unknown)
                     future=None; owner=False
                 else:
                     future=self._capacity_queries.get(key)
@@ -141,6 +151,19 @@ class SettingsApi:
                         future=Future();self._capacity_queries[key]=future
                         generation+=1;self._capacity_generations[key]=generation
                         self._capacities.pop(key,None)
+            if validate_only and fallback:
+                # A missing receipt withdraws C, not a persisted core proof. Pure status owns that truth.
+                try:
+                    conf=runner.status(home)["conf"]
+                    budget=conf["ctx_budget"][harness];applied=conf["ctx_applied"][harness]
+                    response={**latest,"budget":{k:budget.get(k) for k in ("status","reason","W","C","E","P")},
+                        "applied":{k:applied.get(k) for k in ("status","reason","W","E","P","native_window","applied_at")}}
+                except (CallError,ValueError,TypeError,KeyError):
+                    response={**latest,"budget":{**unknown["budget"],"reason":"저장 근거 판독 실패"},"applied":None}
+                with self._capacity_lock:
+                    if self._capacity_generations.get(key,0)!=generation:
+                        return self._capacity_latest.get(key,response)
+                return response
             if not validate_only and not owner:
                 return future.result()
             request={"harness":harness}
@@ -150,30 +173,63 @@ class SettingsApi:
                 completed=_run(home,argv,timeout=runner.HEAVY_TIMEOUT_SECONDS,input=json.dumps(request,ensure_ascii=False))
                 if completed.returncode!=0:raise ValueError("capacity child 오류")
                 document=json.loads(completed.stdout)
-                if not isinstance(document,dict) or document.get("schema")!=1 or document.get("harness")!=harness:
+                if not isinstance(document,dict) or type(document.get("schema")) is not int or document["schema"] not in (1,2) or document.get("harness")!=harness:
                     raise ValueError("capacity child 응답 오류")
-                if validate_only:
-                    if set(document)!={"mode","schema","harness","status","reason"} or document["mode"]!="check":
-                        raise ValueError("capacity check 응답 오류")
-                    response={k:v for k,v in stored.items() if k not in ("mode","receipt")}
-                    if document["status"]!="known":response={**unknown,"reason":document["reason"]}
+                if document.get("mode") != ("check" if validate_only else "query") or document.get("status") not in ("known","unknown"):
+                    raise ValueError("capacity mode/status 오류")
+                if document["schema"] == 1:
+                    fields = {"mode","schema","harness","status","reason"}
+                    if not validate_only:fields |= {"C","observed_at","valid_until","receipt"}
+                    if set(document) != fields:raise ValueError("capacity 이전 응답 오류")
+                    response = {k:v for k,v in (stored if validate_only else document).items() if k in
+                        ("schema","harness","status","reason","C","observed_at","valid_until")}
+                    if validate_only and document["status"] != "known":response={**unknown,"reason":document["reason"]}
+                    response.update(verification={**unknown["verification"],"status":"update-required","reason":"엔진 갱신 후 현재 설정 검증 필요"},
+                        budget=unknown["budget"],candidate=None,applied=None)
                 else:
-                    if set(document)!={"mode","schema","harness","status","reason","C","observed_at","valid_until","receipt"} or document["mode"]!="query":
-                        raise ValueError("capacity query 응답 오류")
-                    if document["status"]=="known" and (type(document["C"]) is not int or document["C"]<=0 or not isinstance(document["receipt"],dict)):
-                        raise ValueError("capacity query 근거 오류")
-                    response={k:v for k,v in document.items() if k not in ("mode","receipt")}
+                    fields = {"mode","schema","harness","status","reason","C","observed_at","valid_until","verification","budget","candidate","applied","receipt"}
+                    if set(document) != fields:raise ValueError("capacity 현재 응답 오류")
+                    verification=document["verification"]
+                    if not isinstance(verification,dict) or set(verification)!={"status","reason","verified_at","revision","evidence_changed"} or verification["status"] not in (
+                        "verified","apply-required","unknown","changed","write-failed","update-required") or type(verification["evidence_changed"]) is not bool:
+                        raise ValueError("capacity verification 오류")
+                    def projection(row, keys):
+                        if not isinstance(row,dict) or row.get("status") not in ("known","unknown"):
+                            raise ValueError("capacity 공개 budget 오류")
+                        return {k:row.get(k) for k in keys}
+                    response={k:document[k] for k in ("schema","harness","status","reason","C","observed_at","valid_until","verification")}
+                    response["budget"]=projection(document["budget"],("status","reason","W","C","E","P"))
+                    response["applied"]=projection(document["applied"],("status","reason","W","E","P","native_window","applied_at"))
+                    candidate=document["candidate"]
+                    if candidate is not None:
+                        if not isinstance(candidate,dict) or set(candidate)!={"W","C","E","P","native_window","managed"} or not isinstance(candidate["managed"],list):
+                            raise ValueError("capacity 후보 오류")
+                        if any(not isinstance(e,dict) or set(e)!={"path","value"} or not isinstance(e["path"],list) or
+                            not e["path"] or any(not isinstance(p,str) or not p for p in e["path"]) or
+                            (type(e["value"]) is not int and e["value"] is not None) for e in candidate["managed"]):
+                            raise ValueError("capacity 후보 경로 오류")
+                    response["candidate"]=candidate
+                    if verification["status"] == "verified" and response["budget"]["status"] != "known":
+                        raise ValueError("capacity 저장 후 예산 불일치")
+                if response["status"]=="known" and (type(response["C"]) is not int or response["C"]<=0 or
+                    (not validate_only and not isinstance(document.get("receipt"),dict))):
+                    raise ValueError("capacity query 근거 오류")
             except (CallError,ValueError,TypeError,KeyError):
                 document=None;response={**unknown,"reason":"현재 metadata 조회/검증 실패"}
             with self._capacity_lock:
-                if self._capacity_generations[key]!=generation:
+                if self._capacity_generations.get(key)!=generation:
                     return unknown
                 if validate_only:
                     if self._capacities.get(key) is not stored:return unknown
+                    latest=self._capacity_latest.get(key)
+                    if latest is not None and latest.get("verification",{}).get("status")=="write-failed":
+                        response={**response,"verification":latest["verification"]}
                     if response["status"]!="known":self._capacities.pop(key,None)
+                    self._capacity_latest[key]=response
                 elif document is not None and response["status"]=="known":
                     self._capacities[key]=document
                 if not validate_only:
+                    self._capacity_latest[key]=response
                     self._capacity_queries.pop(key,None);future.set_result(response)
             return response
         except CallError:

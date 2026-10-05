@@ -365,3 +365,123 @@ def test_t0939_at4_apply_status_proof_and_capacity_separation(tmp_path,monkeypat
     result=module._ctx_apply(tmp_path,{})
     assert result['conf']==conf and result['conf']['ctx_applied']['codex']==applied
     assert result['conf']['ctx_budget']['codex']['C'] is None and 'C' not in applied
+
+
+@pytest.mark.parametrize('harness',['claude','codex','opencode'])
+def test_t0941_at3_actual_engine_private_check(tmp_path,monkeypatch,harness):
+    import subprocess
+    from manager import bridge_settings as module
+    from test_harness_ctx_limits import _t0941_fixture, _snapshot_fixture_bytes
+    f=_t0941_fixture(tmp_path,monkeypatch)
+    api=SettingsApi();calls=[]
+    monkeypatch.setattr(module.runner,'interpreter',lambda home:['python3'])
+    def run(home,argv,*,timeout,input=None):
+        request=json.loads(input);calls.append(request)
+        response=f.importer.query_ctx_capacity(home,request['harness'],receipt=request.get('receipt'),check='receipt' in request)
+        return subprocess.CompletedProcess(argv,0,json.dumps(response),'')
+    monkeypatch.setattr(module,'_run',run)
+    response=api.ctx_capacity(str(f.root),harness)
+    assert response['schema']==2 and response['verification']['status']=='verified'
+    assert response['budget']['status']=='known'
+    assert response['budget']==f.importer._ctx_public_budget(f.leaf.ctx_budget_status(f.root,f.values)[harness])
+    assert not set(response)&{'receipt','binding','models','environment','fingerprints'}
+    before=_snapshot_fixture_bytes(tmp_path);external=list(f.calls)
+    checked=api.ctx_capacity(str(f.root),harness,True)
+    assert checked['verification']['status']=='verified'
+    assert checked['observed_at']==response['observed_at'] and checked['valid_until']==response['valid_until']
+    assert checked['budget']==response['budget']
+    assert before==_snapshot_fixture_bytes(tmp_path) and external==f.calls
+    assert 'receipt' in calls[-1]
+    assert all(secret not in json.dumps([response,checked]) for secret in ('DO-NOT-OUTPUT','apiKey','access_token','fixture-account','header.'))
+
+
+def test_t0941_at3_actual_singleflight_and_legacy(tmp_path,monkeypatch):
+    import subprocess
+    from concurrent.futures import ThreadPoolExecutor,Future
+    from manager import bridge_settings as module
+    from manager import ENGINE_LOCK
+    from test_harness_ctx_limits import _t0941_fixture
+    f=_t0941_fixture(tmp_path,monkeypatch);api=SettingsApi()
+    started=threading.Event();release=threading.Event();joined=threading.Event();calls=[]
+    class WaitingFuture(Future):
+        def result(self,timeout=None):joined.set();return super().result(timeout)
+    monkeypatch.setattr(module,'Future',WaitingFuture)
+    monkeypatch.setattr(module.runner,'interpreter',lambda home:['python3'])
+    def run(home,argv,*,timeout,input=None):
+        calls.append(json.loads(input));started.set();assert release.wait(5)
+        response=f.importer.query_ctx_capacity(home,'codex')
+        return subprocess.CompletedProcess(argv,0,json.dumps(response),'')
+    monkeypatch.setattr(module,'_run',run)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first=pool.submit(api.ctx_capacity,str(f.root),'codex');assert started.wait(5)
+        second=pool.submit(api.ctx_capacity,str(f.root),'codex');assert joined.wait(5)
+        assert ENGINE_LOCK.acquire(blocking=False);ENGINE_LOCK.release()
+        release.set();a,b=first.result(5),second.result(5)
+    assert a is b and a['verification']['status']=='verified' and len(calls)==1
+    old=f.importer.preview_ctx_capacity(f.root,'codex')
+    monkeypatch.setattr(module,'_run',lambda *a,**kw:subprocess.CompletedProcess([],0,json.dumps(old),''))
+    legacy=api.ctx_capacity(str(f.root),'codex')
+    assert legacy['C']==570000 and legacy['verification']['status']=='update-required'
+    assert legacy['budget']['status']=='unknown' and legacy['budget']['E'] is None
+
+
+def test_t0941_at3_cache_bound(tmp_path,monkeypatch):
+    import subprocess
+    from manager import bridge_settings as module
+    api=SettingsApi();monkeypatch.setattr(module.runner,'interpreter',lambda home:['python3'])
+    # Transport failure creates no proof and must not produce unbounded failed pair state.
+    monkeypatch.setattr(module,'_run',lambda *a,**kw:subprocess.CompletedProcess([],1,'','DO-NOT-OUTPUT'))
+    for i in range(100):
+        home=tmp_path/str(i);(home/'.project_manager').mkdir(parents=True)
+        result=api.ctx_capacity(str(home),'codex')
+        assert result['status']=='unknown' and 'DO-NOT-OUTPUT' not in json.dumps(result)
+    assert len(api._capacity_generations)==96 and not api._capacity_queries and not api._capacities
+
+
+@pytest.mark.parametrize('persist',['success','writer-failed'])
+def test_t0941_at3_missing_receipt_uses_pure_persisted_status(tmp_path,monkeypatch,persist):
+    import subprocess
+    from manager import bridge_settings as module
+    from test_harness_ctx_limits import _t0941_fixture,_snapshot_fixture_bytes
+    f=_t0941_fixture(tmp_path,monkeypatch);api=SettingsApi();calls=[];status_calls=[]
+    monkeypatch.setattr(module.runner,'interpreter',lambda home:['python3'])
+    monkeypatch.setattr(f.importer,'_ctx_native_protocol',lambda *a,**kw:(_ for _ in ()).throw(ValueError('unavailable')))
+    if persist=='writer-failed':monkeypatch.setattr(f.importer,'_atomic_write_dest_bytes',lambda *a,**kw:False)
+    def run(home,argv,*,timeout,input=None):
+        request=json.loads(input);calls.append(request)
+        result=f.importer.query_ctx_capacity(home,request['harness'])
+        return subprocess.CompletedProcess(argv,0,json.dumps(result),'')
+    def status(home):
+        status_calls.append(home)
+        return {'conf':{'ctx_budget':{h:f.importer._ctx_public_budget(row) for h,row in f.leaf.ctx_budget_status(home,f.values).items()},
+            'ctx_applied':f.importer.ctx_applied_status(home,f.values)}}
+    monkeypatch.setattr(module,'_run',run);monkeypatch.setattr(module.runner,'status',status)
+    result=api.ctx_capacity(str(f.root),'claude')
+    expected='known' if persist=='writer-failed' else 'unknown'
+    assert result['budget']['status']==expected and result['status']=='unknown'
+    before=_snapshot_fixture_bytes(tmp_path);external=list(f.calls)
+    checked=api.ctx_capacity(str(f.root),'claude',True)
+    assert checked['budget']==result['budget'] and checked['verification']==result['verification']
+    assert checked['applied']==result['applied'] and len(calls)==1 and len(status_calls)==1
+    assert before==_snapshot_fixture_bytes(tmp_path) and external==f.calls
+    assert 'receipt' not in checked and 'DO-NOT-OUTPUT' not in json.dumps(checked)
+
+
+def test_t0941_at3_check_preserves_latest_failed_matching_write(tmp_path,monkeypatch):
+    import subprocess
+    from manager import bridge_settings as module
+    from test_harness_ctx_limits import _t0941_fixture,_t0941_remote_claude
+    f=_t0941_fixture(tmp_path,monkeypatch);_t0941_remote_claude(f,monkeypatch)
+    monkeypatch.setattr(f.importer,'_atomic_write_dest_bytes',lambda *a,**kw:False)
+    monkeypatch.setattr(module.runner,'interpreter',lambda home:['python3'])
+    def run(home,argv,*,timeout,input=None):
+        request=json.loads(input)
+        result=f.importer.query_ctx_capacity(home,request['harness'],receipt=request.get('receipt'),check='receipt' in request)
+        return subprocess.CompletedProcess(argv,0,json.dumps(result),'')
+    monkeypatch.setattr(module,'_run',run);api=SettingsApi()
+    result=api.ctx_capacity(str(f.root),'claude')
+    assert result['status']=='known' and result['verification']['status']=='write-failed'
+    assert result['budget']['status']=='known'
+    checked=api.ctx_capacity(str(f.root),'claude',True)
+    assert checked['status']=='known' and checked['verification']==result['verification']
+    assert checked['budget']==result['budget']

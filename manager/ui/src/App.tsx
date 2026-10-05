@@ -72,49 +72,129 @@ export default function App({ bridge }: { bridge: Bridge }) {
   const [appliedPath, setAppliedPath] = useState<string | null>(null);
 
   const [capacities, setCapacities] = useState<Record<string, Record<string, CtxCapacity>>>({});
-  const capacityGeneration = useRef<Record<string, number>>({});
-  const capacityQuery = useRef(new Set<string>());
+  const capacityPairs = useRef(new Map<string, {
+    generation: number; future?: Promise<void>; kind?: "query" | "check"; failures: number; nextDue: number; lastQuery: number;
+  }>());
+  const statusGeneration = useRef<Record<string, number>>({});
   const lightRef = useRef(light);
   lightRef.current = light;
   const selectedRef = useRef(selected);
+  const selectionGeneration = useRef(0);
+  if (selectedRef.current !== selected) selectionGeneration.current += 1;
   selectedRef.current = selected;
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
 
-  const refreshCapacity = useCallback(async (path: string, validateOnly = false, harnesses?: string[]) => {
-    if (!bridge.ctx_capacity) return;
-    const wanted = harnesses ?? lightRef.current[path]?.status?.harnesses ?? ["claude", "codex", "opencode"];
-    await Promise.all(wanted.filter((h) => ["claude", "codex", "opencode"].includes(h)).map(async (harness) => {
-      const key = `${path}\0${harness}`;
-      // background checks never supersede an explicit acquisition in flight.
-      if (validateOnly && capacityQuery.current.has(key)) return;
-      const generation = (capacityGeneration.current[key] ?? 0) + 1;
-      capacityGeneration.current[key] = generation;
-      if (!validateOnly) {
-        capacityQuery.current.add(key);
-        setCapacities((previous) => ({ ...previous, [path]: { ...previous[path], [harness]: {
-          schema: 1, harness, status: "unknown", reason: "현재 metadata 확인 중", C: null,
-          observed_at: null, valid_until: null,
-        } } }));
+  const syncCapacityStatus = useCallback((path: string, status: StatusDocument) => {
+    setCapacities((previous) => {
+      const rows = previous[path];
+      if (!rows) return previous;
+      let changed = false;
+      const next = { ...rows };
+      for (const [harness, value] of Object.entries(rows)) {
+        const budget = value.verification?.status === "update-required" ? undefined : status.conf.ctx_budget?.[harness];
+        const applied = status.conf.ctx_applied?.[harness];
+        const updated = { ...value, budget: budget ?? value.budget, applied: applied ?? value.applied,
+          verification: budget?.status === "unknown" && value.verification?.status === "verified"
+            ? { ...value.verification, status: "changed" as const, reason: budget.reason } : value.verification };
+        if (JSON.stringify(updated) !== JSON.stringify(value)) { next[harness] = updated; changed = true; }
       }
-      const response = await bridge.ctx_capacity(path, harness, validateOnly);
-      if (capacityGeneration.current[key] !== generation) return;
-      if (!validateOnly) capacityQuery.current.delete(key);
-      if (selectedRef.current !== path) return;
-      const value: CtxCapacity = isError(response) ? {
-        schema: 1, harness, status: "unknown", reason: response.error.message, C: null,
-        observed_at: null, valid_until: null,
-      } : response;
-      setCapacities((previous) => {
-        const current = previous[path]?.[harness];
-        const fields = ["schema", "harness", "status", "reason", "C", "observed_at", "valid_until"] as const;
-        if (current && fields.every((field) => current[field] === value[field])) return previous;
-        return { ...previous, [path]: { ...previous[path], [harness]: value } };
-      });
-    }));
-  }, [bridge]);
+      return changed ? { ...previous, [path]: next } : previous;
+    });
+  }, []);
 
-  // Expiry only removes a claim. Acquisition belongs to a user action.
+  const refreshCapacity = useCallback(async (path: string, validateOnly = false, harnesses?: string[], automatic = false) => {
+    if (!bridge.ctx_capacity || selectedRef.current !== path || !visibleRef.current) return;
+    const wanted = harnesses ?? lightRef.current[path]?.status?.harnesses ?? [];
+    await Promise.all(wanted.filter((h) => ["claude", "codex", "opencode"].includes(h)).map((harness) => {
+      const key = `${path}\0${harness}`;
+      let pair = capacityPairs.current.get(key);
+      if (pair?.future && (validateOnly || pair.kind === "query")) return pair.future;
+      if (!pair) {
+        if (capacityPairs.current.size >= 96) {
+          const inactive = [...capacityPairs.current].find(([k, value]) => !value.future && !k.startsWith(`${path}\0`));
+          if (!inactive) return;
+          capacityPairs.current.delete(inactive[0]);
+          const [oldPath, oldHarness] = inactive[0].split("\0");
+          setCapacities((previous) => {
+            const rows = { ...previous[oldPath] }; delete rows[oldHarness];
+            const next = { ...previous };
+            if (Object.keys(rows).length > 0) next[oldPath] = rows; else delete next[oldPath];
+            return next;
+          });
+        }
+        pair = { generation: 0, failures: 0, nextDue: 0, lastQuery: -Infinity };
+        capacityPairs.current.set(key, pair);
+      }
+      if (!validateOnly && automatic && Date.now() < pair.nextDue) return;
+      const active = pair;
+      const selectionEpoch = selectionGeneration.current;
+      const generation = ++active.generation;
+      active.kind = validateOnly ? "check" : "query";
+      if (!validateOnly) {
+        active.lastQuery = Date.now();
+        statusGeneration.current[path] = (statusGeneration.current[path] ?? 0) + 1;
+      }
+      const run = async () => {
+        const response = await bridge.ctx_capacity(path, harness, validateOnly);
+        if (active.generation !== generation || selectedRef.current !== path || selectionGeneration.current !== selectionEpoch) return;
+        const value: CtxCapacity = isError(response) ? {
+          schema: 2, harness, status: "unknown", reason: response.error.message, C: null,
+          observed_at: null, valid_until: null,
+          verification: { status: "unknown", reason: response.error.message, verified_at: null, revision: null, evidence_changed: false },
+        } : response;
+        if (!validateOnly) {
+          const success = value.verification?.status === "verified" || value.verification?.status === "apply-required";
+          active.failures = success ? 0 : active.failures + 1;
+          active.nextDue = Date.now() + (success ? 5000 : Math.min(60000, 5000 * 2 ** Math.min(4, active.failures - 1)));
+        }
+        setCapacities((previous) => {
+          const current = previous[path]?.[harness];
+          if (JSON.stringify(current) === JSON.stringify(value)) return previous;
+          return { ...previous, [path]: { ...previous[path], [harness]: value } };
+        });
+        if (value.budget || value.applied) {
+          const install = (previous: Record<string, Entry>) => {
+            const current = previous[path];
+            if (!current?.status) return previous;
+            const conf = current.status.conf;
+            return { ...previous, [path]: { ...current, status: { ...current.status, conf: {
+              ...conf, ctx_budget: value.budget ? { ...conf.ctx_budget, [harness]: value.budget } : conf.ctx_budget,
+              ctx_applied: value.applied ? { ...conf.ctx_applied, [harness]: value.applied } : conf.ctx_applied,
+            } } } };
+          };
+          setLight(install); setHeavy(install);
+        }
+        if (validateOnly && automatic && (value.status === "unknown" ||
+            ["changed", "unknown", "write-failed"].includes(value.verification?.status ?? ""))) {
+          if (Date.now() >= active.nextDue && selectedRef.current === path && visibleRef.current) {
+            active.future = undefined;
+            await refreshCapacity(path, false, [harness], true);
+          }
+        }
+      };
+      const future = run().finally(async () => {
+        if (active.future !== future) return;
+        active.future = undefined;
+        if (!validateOnly) {
+          statusGeneration.current[path] = (statusGeneration.current[path] ?? 0) + 1;
+          if (selectedRef.current !== path || [...capacityPairs.current].some(([k,p]) => k.startsWith(`${path}\0`) && p.future)) return;
+          const epoch = statusGeneration.current[path];
+          const status = await bridge.status(path, false, false);
+          if (statusGeneration.current[path] !== epoch || selectedRef.current !== path || isError(status)) return;
+          syncCapacityStatus(path,status);
+          setLight((previous) => ({ ...previous, [path]: merged(previous[path], status, Date.now(), false) }));
+        }
+      });
+      active.future = future;
+      return future;
+    }));
+  }, [bridge, syncCapacityStatus]);
+
+  // 최초 expiry에서 현재 주장을 철회한다. fresh 획득은 표시 중인 프로젝트의 light tick이 수행한다.
   useEffect(() => {
-    const expiries = Object.values(capacities).flatMap((rows) => Object.values(rows))
+    if (!visible || selected === null) return;
+    const expiries = Object.values(capacities[selected] ?? {})
       .filter((row) => row.status === "known" && row.valid_until !== null)
       .map((row) => Date.parse(row.valid_until!));
     if (expiries.length === 0) return;
@@ -122,10 +202,12 @@ export default function App({ bridge }: { bridge: Bridge }) {
       Object.entries(previous).map(([path, rows]) => [path, Object.fromEntries(
         Object.entries(rows).map(([harness, row]) => [harness,
           row.status === "known" && row.valid_until && Date.parse(row.valid_until) <= Date.now()
-            ? { ...row, status: "unknown" as const, C: null, reason: "metadata 유효기간 만료" } : row]))]))),
+            ? { ...row, status: "unknown" as const, C: null, reason: "metadata 유효기간 만료",
+                verification: row.verification ? { ...row.verification, status: "changed" as const, reason: "metadata 유효기간 만료" } : undefined,
+                budget: row.budget ? { ...row.budget, status: "unknown" as const, C: null, E: null, P: null, reason: "metadata 유효기간 만료" } : undefined } : row]))]))),
       Math.max(0, Math.min(...expiries) - Date.now()));
     return () => clearTimeout(timer);
-  }, [capacities]);
+  }, [capacities, selected, visible]);
 
   const loadProjects = useCallback(async (): Promise<Project[]> => {
     const response = await bridge.list_projects();
@@ -139,27 +221,37 @@ export default function App({ bridge }: { bridge: Bridge }) {
     return response.projects;
   }, [bridge]);
 
-  const refreshLight = useCallback(async (paths: string[], explicit = true) => {
+  const refreshLight = useCallback(async (paths: string[], explicit = true, automaticCapacity = true) => {
     if (paths.length === 0) return;
     setBusy((current) => ({ ...current, light: true }));
+    const epochs = Object.fromEntries(paths.map((path) => [path, statusGeneration.current[path] ?? 0]));
     const results = await Promise.all(
       paths.map(async (path) => [path, await bridge.status(path, false, false)] as const));
+    for (const [path,response] of results) {
+      if (!isError(response) && (statusGeneration.current[path] ?? 0) === epochs[path] &&
+          ![...capacityPairs.current].some(([k,p]) => k.startsWith(`${path}\0`) && p.future)) syncCapacityStatus(path,response);
+    }
     if (!explicit) void Promise.all(results.map(([path, response]) =>
-      refreshCapacity(path, true, isError(response) ? [] : response.harnesses)));
+      refreshCapacity(path, true, isError(response) ? [] : response.harnesses, automaticCapacity)));
     const at = Date.now();
     setLight((previous) => {
       const next = { ...previous };
       for (const [path, response] of results) {
+        if ((statusGeneration.current[path] ?? 0) !== epochs[path] || [...capacityPairs.current].some(([k,p]) => k.startsWith(`${path}\0`) && p.future)) continue;
         next[path] = merged(previous[path], response, at, explicit);
       }
       return next;
     });
     setBusy((current) => ({ ...current, light: false }));
-  }, [bridge, refreshCapacity]);
+  }, [bridge, refreshCapacity, syncCapacityStatus]);
 
   const refreshHeavy = useCallback(async (path: string, explicit = true) => {
     setBusy((current) => ({ ...current, heavy: true }));
+    const epoch = statusGeneration.current[path] ?? 0;
     const response = await bridge.status(path, true, false);
+    if ((statusGeneration.current[path] ?? 0) !== epoch || [...capacityPairs.current].some(([k,p]) => k.startsWith(`${path}\0`) && p.future)) {
+      setBusy((current) => ({ ...current, heavy: false })); return;
+    }
     const at = Date.now();
     setHeavy((previous) => ({ ...previous,
                               [path]: merged(previous[path], response, at, explicit) }));
@@ -271,16 +363,23 @@ export default function App({ bridge }: { bridge: Bridge }) {
     return () => clearInterval(timer);
   }, [visible, projects, refreshLight]);
 
+  const installedHarnesses = selected === null ? "" : (light[selected]?.status?.harnesses ?? []).join("\0");
+
+  useEffect(() => {
+    if (selected !== null && visible && installedHarnesses)
+      void refreshCapacity(selected, true, installedHarnesses.split("\0"), true);
+  }, [selected, visible, installedHarnesses, refreshCapacity]);
+
   // 선택한 프로젝트만 무거운 절 1회 + 설정 두 조회 선읽기(탭을 열기 전에 채워 둔다).
   useEffect(() => {
-    if (selected === null) return;
+    if (selected === null || !visible) return;
     void refreshHeavy(selected);
     void refreshSettings(selected);
-  }, [selected, refreshHeavy, refreshSettings]);
+  }, [selected, visible, refreshCapacity, refreshHeavy, refreshSettings]);
 
   // 다른 손님(창·브라우저)이 저장·적용을 끝내면 서버가 알린다 — 그 신호로 다시 읽는다.
   useEffect(() => subscribeChanges(() => {
-    void refreshLight(projects.map((project) => project.path), false);
+    void refreshLight(projects.map((project) => project.path), false, false);
     if (selected !== null) {
       void refreshHeavy(selected, false);
       void refreshSettings(selected, false);
@@ -340,7 +439,7 @@ export default function App({ bridge }: { bridge: Bridge }) {
   // 설정을 저장한 직후 — 값(설정 조회)과 판정(가벼운 절)을 다시 읽는다. 낙관적 갱신은 없다.
   const reloadSettings = useCallback(() => {
     if (selected === null) return;
-    void Promise.all([refreshCapacity(selected, true), refreshSettings(selected), refreshLight([selected])]);
+    void Promise.all([refreshCapacity(selected), refreshSettings(selected), refreshLight([selected])]);
   }, [selected, refreshCapacity, refreshSettings, refreshLight]);
 
   const selectedLight = selected === null ? undefined : light[selected];

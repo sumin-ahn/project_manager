@@ -2616,7 +2616,8 @@ def _status_json_conf(source_root: Path | None) -> dict:
     result = local_conf.load(REPO / ".project_manager" / "local.conf")
     values = result.values
     return {
-        "ctx_budget": local_conf.ctx_budget_status(REPO, values),
+        "ctx_budget": {h:{k:row.get(k) for k in ("status","reason","W","C","E","P")}
+                       for h,row in local_conf.ctx_budget_status(REPO,values).items()},
         "ctx_applied": _load_module("pm_import", "pm_import.py").ctx_applied_status(REPO, values),
         "missing_required": list(local_conf.missing_required(values)),
         "legacy": [{"key": key, "replacement": replacement}
@@ -5098,7 +5099,7 @@ def cmd_ctx_apply(args, *, pm_import=None, dest_root: Path | None = None) -> int
             if not isinstance(request,dict) or set(request) not in ({"harness"},{"harness","receipt"}) or request["harness"] not in module.HARNESS_CTX_FILES:
                 raise ValueError()
             if "receipt" in request and not isinstance(request["receipt"],dict):raise ValueError()
-            result=module.preview_ctx_capacity(dest_root if dest_root is not None else REPO,request["harness"],
+            result=module.query_ctx_capacity(dest_root if dest_root is not None else REPO,request["harness"],
                 check="receipt" in request,receipt=request.get("receipt"))
         except (ValueError,TypeError,KeyError,UnicodeError):
             print("preview JSON 또는 receipt 형식 오류",file=sys.stderr);return 2

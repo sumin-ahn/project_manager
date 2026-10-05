@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import inspect
+import json
 import os
 import shutil
 import subprocess
@@ -418,3 +419,20 @@ def close_session(pool, session: str) -> None:
     assert held, f"세션 {session!r} 이 잡은 행이 장부에 없다"
     for slot in held:
         pool.force_release(slot)
+
+
+def reanchor_ctx_record(home: Path, previous_home: Path) -> None:
+    """복제한 현재 schema4 fixture의 root와 경로를 실제 사본에 재결속한다."""
+    path=home/'.project_manager/.local/ctx-budget.json'
+    if not path.is_file():return
+    document=json.loads(path.read_text(encoding='utf-8'))
+    before,after=str(previous_home),str(home)
+    def replace(value):
+        if isinstance(value,str):return after+value[len(before):] if value==before or value.startswith(before+os.sep) else value
+        if isinstance(value,list):return [replace(item) for item in value]
+        if isinstance(value,dict):return {replace(key):replace(item) for key,item in value.items()}
+        return value
+    document=replace(document)
+    from test_harness_ctx_limits import _load
+    document['projection_sha256']=_load('local_conf').ctx_record_digest(document)
+    path.write_text(json.dumps(document,ensure_ascii=False,sort_keys=True)+'\n',encoding='utf-8')

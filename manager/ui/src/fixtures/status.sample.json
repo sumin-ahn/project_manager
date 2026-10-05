@@ -216,68 +216,12 @@
     "missing_for_latest": [],
     "ctx_budget": {
       "claude": {
+        "status": "known",
+        "reason": null,
+        "W": 200000,
         "C": 200000,
         "E": 200000,
-        "P": 180000,
-        "W": 200000,
-        "checkpoint": 140000,
-        "identity": {
-          "model": "fixture-model",
-          "profile": "",
-          "provider": "fixture-provider"
-        },
-        "metadata": {
-          "context": 1000000,
-          "effective_output": 32000,
-          "generation": "fixture-generation",
-          "independent": true,
-          "model": "fixture-model",
-          "native_formula": "input-reserved",
-          "observed_at": "2026-10-02T00:00:00+00:00",
-          "output": 128000,
-          "profile": "",
-          "provider": "fixture-provider",
-          "semantics": "usable",
-          "source": "independent-runtime-fixture",
-          "usable": 200000,
-          "valid_until": "2099-01-01T00:00:00+00:00"
-        },
-        "models": [
-          {
-            "C": 200000,
-            "E": 200000,
-            "P": 180000,
-            "W": 200000,
-            "checkpoint": 140000,
-            "identity": {
-              "model": "fixture-model",
-              "profile": "",
-              "provider": "fixture-provider"
-            },
-            "metadata": {
-              "context": 1000000,
-              "effective_output": 32000,
-              "generation": "fixture-generation",
-              "independent": true,
-              "model": "fixture-model",
-              "native_formula": "input-reserved",
-              "observed_at": "2026-10-02T00:00:00+00:00",
-              "output": 128000,
-              "profile": "",
-              "provider": "fixture-provider",
-              "semantics": "usable",
-              "source": "independent-runtime-fixture",
-              "usable": 200000,
-              "valid_until": "2099-01-01T00:00:00+00:00"
-            },
-            "precompact": 160000,
-            "reason": null,
-            "status": "known"
-          }
-        ],
-        "precompact": 160000,
-        "reason": null,
-        "status": "known"
+        "P": 180000
       },
       "codex": {
         "status": "unknown",
