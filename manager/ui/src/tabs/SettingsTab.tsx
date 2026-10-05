@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Entry, SettingsEntry } from "../App";
 import type {
   Bridge, BridgeError, ConfChoices, ConfGovernor, ConfKeysDocument, ConfSection,
-  DelegateModelsDocument,
+  DelegateModelsDocument, CtxCapacityView,
 } from "../api";
-import { isError } from "../api";
+import { isError, isCapacityQueryFailure } from "../api";
 import AdapterSection from "../components/AdapterSection";
 import QuestionMode from "../components/QuestionMode";
 import { foldable, markedKeys, offReason, PICK, SET_TOGGLE, unsetHint } from "../lib/settings-rows";
@@ -259,7 +259,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
   { bridge: Bridge; path: string | null; light: Entry | undefined;
     settings: SettingsEntry | undefined; onReload: () => void; startAsking: boolean;
     adapterConf: ConfSection | null; onAdapterConf: (conf: ConfSection) => void;
-    capacities?: Record<string, import("../api").CtxCapacity> }) {
+    capacities?: Record<string, import("../api").CtxCapacity & Partial<Pick<CtxCapacityView, "activity">>> }) {
   const [error, setError] = useState<BridgeError | null>(null);
   const [edits, setEdits] = useState<Edits>({});
   const [newKey, setNewKey] = useState("");
@@ -503,13 +503,21 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     if (!match) return null;
     const budget = capacities?.[match[1]]?.budget ?? conf.ctx_budget?.[match[1]];
     const capacity = capacities?.[match[1]];
+    const phase = capacity?.activity?.phase ?? "idle";
+    const pending = phase !== "idle";
     const applied = capacity?.applied ?? conf.ctx_applied?.[match[1]];
-    const verified = capacity?.verification?.status === "verified" && budget?.status === "known";
+    const verified = !pending && capacity?.verification?.status === "verified" && budget?.status === "known";
     return <span className="block text-[11px] text-slate-500" data-testid={`budget-${match[1]}`}>
       <span data-testid={`capacity-${match[1]}`}>
-        {capacity?.status === "known" ? `현재 가용 한도 ${capacity.C} 토큰`
+        {capacity?.status === "known" ? `${pending ? "마지막 조회 한도" : "현재 가용 한도"} ${capacity.C} 토큰`
           : `현재 모델 한도 확인 불가 (${capacity?.reason ?? "현재 metadata 미보유"})`}
       </span>
+      {pending && <span className="block">
+        {phase === "querying" ? "자동 재검증 중" : (isCapacityQueryFailure(capacity) || capacity?.verification?.status === "write-failed" || capacity?.activity?.reason?.startsWith("최신 검증 근거 저장 실패")) ? "자동 재시도 대기" : "자동 재검증 대기"}
+        {phase === "waiting" && capacity?.activity?.retry_at ? ` · 다음 시도 ${new Date(capacity.activity.retry_at).toLocaleTimeString()}` : ""}
+        {capacity?.activity?.reason ? ` (${capacity.activity.reason})` : ""}
+      </span>}
+      {phase === "waiting" && isCapacityQueryFailure(capacity) && !capacity?.activity?.reason?.startsWith("최근 조회 실패") && <span className="block">최근 조회 실패 ({capacity?.verification?.reason ?? capacity?.reason})</span>}
       <span className="block">
         {verified ? `현재 설정 검증 완료 · 기준 ${budget.E} · 압축 지점 ${budget.P} 토큰`
           : applied?.status === "known"
@@ -518,14 +526,14 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
       </span>
       {!verified && <span className="block">
         {budget?.status === "known"
-          ? `${capacity?.verification?.status === "write-failed" ? "마지막 검증 예산 유지" : "현재 예산 근거 확인"} · 기준 ${budget.E} · 압축 지점 ${budget.P} 토큰`
-          : `현재 예산 근거 재확인 필요 (${budget?.reason ?? "검증된 예산 기록 없음"})`}
+          ? `${capacity?.verification?.status === "write-failed" ? "마지막 검증 예산 유지" : pending ? "마지막 검증 예산" : "현재 예산 근거 확인"} · 기준 ${budget.E} · 압축 지점 ${budget.P} 토큰`
+          : `현재 예산 확인 불가 (${budget?.reason ?? "검증된 예산 기록 없음"})`}
       </span>}
       {verified && applied?.status === "known" && <span className="block">마지막 반영 시각 {applied.applied_at}</span>}
       {verified && applied?.status !== "known" && <span className="block">마지막 물리 반영 이력 미확인</span>}
       {capacity?.verification?.status === "write-failed" && <span className="block">최신 검증 근거 저장 실패 ({capacity.verification.reason})</span>}
-      {capacity?.verification?.status === "update-required" && <span className="block">엔진 갱신 후 현재 설정 검증 필요</span>}
-      {["apply-required","write-failed"].includes(capacity?.verification?.status ?? "") && capacity?.candidate && <span className="block">
+      {capacity?.verification?.status === "update-required" && <span className="block">엔진 갱신 후 현재 설정 검증 필요 ({capacity.verification.reason})</span>}
+      {phase !== "querying" && ["apply-required","write-failed"].includes(capacity?.verification?.status ?? "") && capacity?.candidate && <span className="block">
         {capacity.verification?.status === "apply-required" ? "적용 필요" : "최신 후보"} (저장값 기준) · 기준 {capacity.candidate.E} · 압축 지점 {capacity.candidate.P} · native {capacity.candidate.native_window} 토큰
         <button type="button" disabled={busy || changedCount > 0} onClick={() => void save({ [key]: values[key] ?? null })}
                 className="ml-2 rounded border border-slate-200 px-1">현재 기준 적용</button>
