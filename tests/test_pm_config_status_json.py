@@ -1249,7 +1249,7 @@ def test_t0939_at3_status_two_readonly_projections(tmp_path,monkeypatch,phase):
     calls=list(f.calls);before=_snapshot_fixture_bytes(f.root)
     conf=module._status_json_conf(None)
     applied=conf['ctx_applied']['codex'];budget=conf['ctx_budget']['codex']
-    assert applied['status']==('known' if phase in ('deleted','expired') else 'unknown')
+    assert applied['status']==('known' if phase in ('deleted','expired','auth') else 'unknown')
     assert budget['status']==('known' if phase=='deleted' else 'unknown')
     if applied['status']=='known':assert (applied['E'],applied['P'])==(570000,535800)
     assert 'C' not in applied
@@ -1272,3 +1272,30 @@ def test_t0939_at3_query_and_check_no_settings_writer(tmp_path,monkeypatch):
     assert checked['status']=='known' and 'C' not in checked
     assert len(f.calls)==count and before==_snapshot_fixture_bytes(f.root)
     assert 'DO-NOT-OUTPUT' not in json.dumps(checked)
+
+
+@pytest.mark.parametrize('source',['baseline','auth-account','auth-delete','global-model','global-endpoint','layer-change','target-managed'])
+def test_t0940_at3_status_projection(tmp_path,monkeypatch,source):
+    from test_harness_ctx_limits import (_t0940_actual_fixture,_t0940_change_external,
+        _t0940_readonly_guards,_snapshot_fixture_bytes,_load)
+    f = _t0940_actual_fixture(tmp_path,monkeypatch)
+    module = _load('pm_config');monkeypatch.setattr(module,'REPO',f.root)
+    preview = f.importer.preview_ctx_capacity(f.root,'codex')
+    assert preview['status']=='known' and preview['C']==570000
+    if source=='target-managed':(f.root/'.codex/config.toml').write_text('model_auto_compact_token_limit=1\n',encoding='utf-8')
+    else:_t0940_change_external(f,source)
+    checked = f.importer.preview_ctx_capacity(f.root,'codex',receipt=preview['receipt'],check=True)
+    assert checked['status']==('known' if source=='baseline' else 'unknown') and 'C' not in checked
+    _t0940_readonly_guards(f,monkeypatch)
+    monkeypatch.setattr(module,'_write_machine_line',lambda *a:pytest.fail('status 조회 출력 writer 호출'))
+    before = _snapshot_fixture_bytes(tmp_path);calls = list(f.calls)
+    conf = module._status_json_conf(None)
+    applied = conf['ctx_applied']['codex'];budget = conf['ctx_budget']['codex']
+    assert applied['status']==('unknown' if source=='target-managed' else 'known')
+    assert budget['status']==('known' if source=='baseline' else 'unknown')
+    if applied['status']=='known':assert (applied['E'],applied['P'])==(570000,535800)
+    assert 'C' not in applied
+    if budget['status']=='unknown':assert all(budget[k] is None for k in ('C','E','P'))
+    assert all(conf['ctx_applied'][h]['status']=='known' for h in ('claude','opencode'))
+    assert all(secret not in json.dumps(conf) for secret in ('DO-NOT-OUTPUT','access_token','refresh_token','fixture-account','header.','bindings','native_files'))
+    assert before==_snapshot_fixture_bytes(tmp_path) and calls==f.calls

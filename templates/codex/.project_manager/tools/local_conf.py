@@ -1143,7 +1143,7 @@ def _ctx_schema3_snapshot(record, binding, values, harness):
 
 
 def _read_ctx_record(root, values, harness, *, applied=False):
-    """현재 scoped 근거 검사. 설정 반영과 런타임이 같은 검사를 공유한다."""
+    """현재 scoped 근거 검사. 마지막 물리 반영과 현재 예산을 구분한다."""
     record = json.loads(_read_text_shared(Path(root) / CTX_BUDGET_RELPATH, encoding="utf-8"),object_pairs_hook=_ctx_record_pairs)
     if not isinstance(record, dict) or any(not isinstance(record.get(k), dict) for k in
             ("inputs", "environment", "budgets", "fingerprints", "native_files", "native_commands")):
@@ -1166,6 +1166,14 @@ def _read_ctx_record(root, values, harness, *, applied=False):
     if applied:
         if record["schema"] != 3: raise ValueError("설정 반영 증언 없음, ctx-apply 필요")
         excluded.add(binding["target"])
+        rule = _CTX_INPUT_BINDING_RULES[f"harness.{harness}.ctx_window_tokens"]
+        if "selection" in rule["roles"]:
+            # 현재 인증·외부 선택은 현재 예산에서 검사한다. 마지막 물리 반영은
+            # 성공 시각 snapshot과 실제 target 관리/선택 projection으로 확인한다.
+            allowed_layers = {str(parent/".codex/config.toml") for parent in (Path(root), *Path(root).parents)}
+            allowed_layers.update(("/etc/codex/config.toml", "/etc/codex/managed_config.toml"))
+            excluded.update({binding["roles"]["auth"], binding["roles"]["selection"]})
+            excluded.update(set(binding["fingerprints"]) & allowed_layers)
     if not _ctx_fingerprints_match({p:d for p,d in binding["fingerprints"].items() if p not in excluded}):
         raise ValueError("모델 선택/native/metadata 근거 변경")
     row = record["budgets"][harness]
