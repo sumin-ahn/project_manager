@@ -151,6 +151,14 @@ export type CtxCapacity = {
     managed: { path: string[]; value: number | null }[] } | null;
   applied?: CtxApplied | null;
 };
+/** 클라이언트 스케줄러 표시 전용. ctx_capacity wire에는 포함하지 않는다. */
+export type CtxCapacityView = CtxCapacity & {
+  activity: { phase: "idle" | "querying" | "waiting"; retry_at: number | null; reason: string | null };
+};
+/** 한도 응답의 실패 상태 이름은 일반 설정 배지 목록과 별도로 관리한다. */
+export function isCapacityQueryFailure(capacity: (CtxCapacity & Partial<Pick<CtxCapacityView, "activity">>) | undefined): boolean {
+  return capacity?.verification?.status === "unknown" || capacity?.activity?.reason?.startsWith("최근 조회 실패") === true;
+}
 export type CtxApplied = {
   status: "known" | "unknown"; reason: string | null; W: number;
   E: number | null; P: number | null; native_window: number | null; applied_at: string | null;

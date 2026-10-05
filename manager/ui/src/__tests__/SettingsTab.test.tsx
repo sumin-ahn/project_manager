@@ -717,7 +717,7 @@ it("T-0932 희망값과 실제 한도·적용 기준의 읽기 전용 표시", (
   openGroup("harness");
   expect(screen.getByTestId("budget-claude").textContent).toContain("현재 예산 근거 확인 · 기준 200000 · 압축 지점 188000 토큰");
   expect((screen.getByLabelText("harness.claude.ctx_window_tokens") as HTMLInputElement).value).toBe("600000");
-  expect(screen.getByTestId("budget-codex").textContent).toContain("현재 예산 근거 재확인 필요 (모델 정체 불일치)");
+  expect(screen.getByTestId("budget-codex").textContent).toContain("현재 예산 확인 불가 (모델 정체 불일치)");
   expect(screen.queryByLabelText("actual_capacity")).toBeNull();
 });
 
@@ -732,7 +732,7 @@ it("T-0937 다른 도구의 원천 변경에서 확인된 도구별 예산을 �
   openGroup("harness");
   expect(screen.getByTestId("budget-claude")).toHaveTextContent("현재 예산 근거 확인 · 기준 600000 · 압축 지점 564000 토큰");
   expect(screen.getByTestId("budget-opencode")).toHaveTextContent("현재 예산 근거 확인 · 기준 200000 · 압축 지점 188000 토큰");
-  expect(screen.getByTestId("budget-codex")).toHaveTextContent("현재 예산 근거 재확인 필요 (모델 선택/native/metadata 근거 변경)");
+  expect(screen.getByTestId("budget-codex")).toHaveTextContent("현재 예산 확인 불가 (모델 선택/native/metadata 근거 변경)");
   expect(screen.getByTestId("budget-codex")).not.toHaveTextContent("570000");
   expect((screen.getByLabelText("harness.codex.ctx_window_tokens") as HTMLInputElement).value).toBe("600000");
   expect(bridge.conf_save).not.toHaveBeenCalled();
@@ -763,7 +763,7 @@ it('T-0939 만료된 예산과 마지막 설정 반영의 분리', () => {
   mounted(makeBridge(),false,null,settingsEntry(),lightEntry(conf));openGroup('harness');
   expect(screen.getByTestId('budget-codex')).toHaveTextContent('설정 반영 확인');
   expect(screen.getByTestId('budget-codex')).toHaveTextContent('마지막 반영 기준 570000');
-  expect(screen.getByTestId('budget-codex')).toHaveTextContent('현재 예산 근거 재확인 필요');
+  expect(screen.getByTestId('budget-codex')).toHaveTextContent('현재 예산 확인 불가');
 });
 
 it('T-0939 관리 설정 변경의 반영 확인 거부와 현재 C 유지', () => {
@@ -842,4 +842,37 @@ it("T0941 failed invalidation keeps the trusted candidate and explicit action", 
   expect(screen.getByTestId("budget-claude")).toHaveTextContent("최신 후보 (저장값 기준) · 기준 567000 · 압축 지점 532980");
   expect(screen.getByText("현재 기준 적용")).toBeEnabled();
   expect(screen.getByTestId("budget-claude")).not.toHaveTextContent("현재 설정 검증 완료");
+});
+
+it.each([
+  ["querying", "changed", false, "자동 재검증 중"],
+  ["waiting", "changed", false, "자동 재검증 대기"],
+  ["waiting", "unknown", false, "자동 재시도 대기"],
+  ["waiting", "write-failed", true, "자동 재시도 대기"],
+  ["idle", "apply-required", false, "적용 필요 (저장값 기준)"],
+  ["idle", "update-required", false, "엔진 갱신 후 현재 설정 검증 필요"],
+  ["idle", "unknown", false, "현재 예산 확인 불가"],
+] as const)("T0942_AT3_activity_matrix_%s_%s", (phase,verification,retained,label)=>{
+  const key="harness.codex.ctx_window_tokens";
+  const budget={status:retained?"known" as const:"unknown" as const,reason:retained?null:"원천 변경",W:600000,C:retained?570000:null,E:retained?570000:null,P:retained?535800:null};
+  const capacity={schema:2 as const,harness:"codex",status:"known" as const,reason:null,C:570000,observed_at:null,valid_until:null,budget,
+    verification:{status:verification,reason:"실제 오류 사유",verified_at:null,revision:null,evidence_changed:false},
+    activity:{phase,retry_at:phase==="waiting"?new Date("2026-10-05T00:00:05Z").getTime():null,reason:phase==="waiting"?"실제 오류 사유":null},
+    candidate:{W:600000,C:570000,E:570000,P:535800,native_window:535800,managed:[]},
+    applied:{status:"known" as const,reason:null,W:600000,E:570000,P:535800,native_window:535800,applied_at:"2026-10-05T00:00:00Z"}};
+  const bridge=makeBridge();const props={bridge,path:DEMO,light:lightEntry(),settings:settingsEntry({...VALUES,[key]:"600000"}),onReload:vi.fn(),startAsking:false,adapterConf:null,onAdapterConf:vi.fn()};
+  const view=render(<SettingsTab {...props} capacities={{codex:capacity}}/>);openGroup("harness");
+  const hint=screen.getByTestId("budget-codex");expect(hint).toHaveTextContent(label);
+  expect(hint).not.toHaveTextContent("재확인 필요");expect(hint).not.toHaveTextContent("현재 설정 검증 완료");
+  expect(hint).toHaveTextContent("마지막 반영 기준 570000");
+  if(phase!=="idle") {expect(hint).not.toHaveTextContent("현재 가용 한도");expect(hint).toHaveTextContent("마지막 조회 한도");}
+  if(phase==="waiting") expect(hint).toHaveTextContent("다음 시도");
+  if(verification==="unknown"&&phase==="waiting") expect(hint).toHaveTextContent("최근 조회 실패 (실제 오류 사유)");
+  if(verification==="write-failed") {expect(hint).toHaveTextContent("마지막 검증 예산 유지");expect(hint).toHaveTextContent("최신 검증 근거 저장 실패 (실제 오류 사유)");}
+  if(phase==="querying") expect(screen.queryByText("현재 기준 적용")).toBeNull();
+  if(verification==="apply-required") expect(screen.getByText("현재 기준 적용")).toBeEnabled();
+  fireEvent.change(screen.getByLabelText(key),{target:{value:"610000"}});const input=screen.getByLabelText(key);
+  view.rerender(<SettingsTab {...props} capacities={{codex:{...capacity,activity:{phase:"querying",retry_at:null,reason:null}}}}/>);
+  expect(screen.getByLabelText(key)).toBe(input);expect(input).toHaveValue("610000");
+  expect(screen.queryByText("현재 기준 적용")).toBeNull();expect(bridge.conf_save).not.toHaveBeenCalled();
 });

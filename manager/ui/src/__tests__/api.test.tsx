@@ -148,3 +148,14 @@ it("T0941 schema2 query/check use the existing HTTP method and preserve public p
   expect(calls.map(([url])=>url)).toEqual(["/api/ctx_capacity","/api/ctx_capacity"]);
   expect(calls.map(([,init])=>JSON.parse(init.body))).toEqual([{args:[DEMO,"codex",false]},{args:[DEMO,"codex",true]}]);
 });
+
+it("T0942_AT4_client_activity_is_not_a_wire_argument_or_required_response", async()=>{
+  const wire={schema:2,harness:"codex",status:"known",reason:null,C:570000,observed_at:null,valid_until:null,
+    verification:{status:"changed",reason:"현재 source 변경",verified_at:null,revision:null,evidence_changed:false},
+    budget:{status:"unknown",reason:"source 변경",W:600000,C:null,E:null,P:null},candidate:null,applied:null};
+  globalThis.fetch=jsonOnce(wire);const bridge=httpBridge();
+  for(const check of [false,true]) {const reply=await bridge.ctx_capacity(DEMO,"codex",check);expect(reply).toEqual(wire);expect(reply).not.toHaveProperty("activity");}
+  const calls=(globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
+  expect(calls).toHaveLength(2);expect(calls.map(([url])=>url)).toEqual(["/api/ctx_capacity","/api/ctx_capacity"]);
+  expect(calls.map(([,init])=>JSON.parse(init.body))).toEqual([{args:[DEMO,"codex",false]},{args:[DEMO,"codex",true]}]);
+});

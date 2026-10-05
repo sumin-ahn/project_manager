@@ -551,7 +551,7 @@ it("T0941_AT5_query_generation_discards_old_status_and_keeps_new_unknown", async
   // A subsequent real core unknown response must be displayed and never hidden by the previous query budget.
   known=false;
   act(()=>openedStream().dispatchEvent(new MessageEvent("message",{data:JSON.stringify({name:"ctx_capacity",path:DEMO})})));
-  await waitFor(()=>expect(screen.getByTestId("budget-claude")).toHaveTextContent("현재 예산 근거 재확인 필요"));
+  await waitFor(()=>expect(screen.getByTestId("budget-claude")).toHaveTextContent("현재 예산 확인 불가"));
 });
 
 it("T0941_AT3_apply_required_is_stable_until_source_change", async()=>{
@@ -576,4 +576,204 @@ it("T0941_AT3_apply_required_is_stable_until_source_change", async()=>{
   expect(capacity.mock.calls.filter(c=>!c[2])).toHaveLength(count);
   changed=true;await act(async()=>{await vi.advanceTimersByTimeAsync(5000);});
   expect(capacity.mock.calls.filter(c=>!c[2])).toHaveLength(count+1);
+});
+
+// Exact public schema2 facts used by the recurrence and ordering contracts.
+function t0942Capacity(harness = "codex", known = true): CtxCapacity {
+  return {schema:2,harness,status:"known",reason:null,C:570000,observed_at:null,valid_until:null,
+    verification:{status:known?"verified":"changed",reason:known?null:"현재 선택/native/metadata 근거 변경",verified_at:null,revision:"a".repeat(64),evidence_changed:false},
+    budget:{status:known?"known":"unknown",reason:known?null:"현재 선택/native/metadata 근거 변경",W:600000,C:known?570000:null,E:known?570000:null,P:known?535800:null},
+    applied:{status:"known",reason:null,W:600000,E:570000,P:535800,native_window:535800,applied_at:"2026-10-05T00:00:00Z"}};
+}
+function t0942Status(known = true): StatusDocument {
+  return {...document_,harnesses:["codex"],conf:{...document_.conf,ctx_budget:{codex:t0942Capacity("codex",known).budget!}}};
+}
+async function t0942Open() {
+  fireEvent.mouseDown(screen.getByRole("tab",{name:"설정"}));
+  fireEvent.click(await screen.findByTestId("nav-harness"));
+}
+it("T0942_AT1_source_changed_pending_query_and_repeat_expiry", async()=>{
+  vi.useFakeTimers({shouldAdvanceTime:true});
+  let changed=false; let pending: ((value:CtxCapacity)=>void)|undefined;
+  const capacity=vi.fn((_path:string,harness:string,check=false):Promise<CtxCapacity>=>
+    !check&&changed ? new Promise(resolve=>{pending=resolve;}) : Promise.resolve(t0942Capacity(harness,!changed)));
+  const values={"harness.codex.ctx_window_tokens":"600000","harness.codex.compaction_pct":"94"};
+  const bridge=makeBridge({ctx_capacity:capacity,status:vi.fn(async()=>t0942Status(!changed)),conf_values:vi.fn(async()=>({values}))});
+  render(<App bridge={bridge}/>); await waitFor(()=>expect(capacity).toHaveBeenCalled());
+  await t0942Open(); await waitFor(()=>expect(screen.getByTestId("budget-codex")).toHaveTextContent("현재 설정 검증 완료"));
+  const input=screen.getByLabelText("harness.codex.ctx_window_tokens");
+  fireEvent.change(input,{target:{value:"610000"}});
+  for(let cycle=0;cycle<2;cycle++) {
+    changed=true; await act(async()=>{await vi.advanceTimersByTimeAsync(10000);});
+    expect(pending).toBeDefined();
+    const hint=screen.getByTestId("budget-codex");
+    expect(hint).toHaveTextContent("자동 재검증 중");
+    expect(hint).not.toHaveTextContent("재확인 필요");
+    expect(hint).not.toHaveTextContent("현재 가용 한도");
+    expect(hint).not.toHaveTextContent("현재 설정 검증 완료");
+    expect(screen.getByLabelText("harness.codex.ctx_window_tokens")).toBe(input);
+    expect(input).toHaveValue("610000");
+    expect(capacity.mock.calls.filter(c=>!c[2])).toHaveLength(cycle+2); // tab query + exactly one automatic query each cycle
+    changed=false;
+    await act(async()=>{pending!(cycle===1?{...t0942Capacity(),valid_until:new Date(Date.now()+1000).toISOString()}:t0942Capacity());});
+    expect(hint).toHaveTextContent("현재 설정 검증 완료");
+  }
+  await act(async()=>{await vi.advanceTimersByTimeAsync(1000);});
+  expect(screen.getByTestId("budget-codex")).toHaveTextContent("자동 재검증 대기");
+  expect(screen.getByTestId("budget-codex")).toHaveTextContent("유효기간 만료");
+  await act(async()=>{await vi.advanceTimersByTimeAsync(4000);});
+  expect(screen.getByTestId("budget-codex")).toHaveTextContent("현재 설정 검증 완료");
+  expect(input).toHaveValue("610000"); expect(bridge.conf_save).toBeUndefined();
+});
+it("T0942_AT2_same_epoch_unknown_S1_cannot_downgrade_S2_and_new_unknown_admitted",async()=>{
+  vi.useFakeTimers({shouldAdvanceTime:true});
+  let hold=false; const pending:((value:StatusDocument)=>void)[]=[];
+  const status=vi.fn((_path:string,_heavy=false,_board=false,remote=false):Promise<StatusDocument>=>
+    hold&&!remote ? new Promise(resolve=>pending.push(resolve)) : Promise.resolve(t0942Status()));
+  const capacity=vi.fn(async(_path:string,harness:string)=>t0942Capacity(harness));
+  render(<App bridge={makeBridge({status,ctx_capacity:capacity})}/>);
+  await waitFor(()=>expect(capacity).toHaveBeenCalled());await t0942Open();
+  await waitFor(()=>expect(screen.getByTestId("budget-codex")).toHaveTextContent("현재 설정 검증 완료"));
+  hold=true;
+  act(()=>openedStream().dispatchEvent(new MessageEvent("message",{data:"{}"})));
+  const s1=pending.splice(0);expect(s1).toHaveLength(2);
+  act(()=>openedStream().dispatchEvent(new MessageEvent("message",{data:"{}"})));
+  const s2=pending.splice(0);expect(s2).toHaveLength(2);
+  setVisibility("hidden");
+  await act(async()=>{s2.forEach(resolve=>resolve(t0942Status()));});
+  await act(async()=>{s1.forEach(resolve=>resolve(t0942Status(false)));});
+  expect(screen.getByTestId("budget-codex")).toHaveTextContent("현재 설정 검증 완료");
+  act(()=>openedStream().dispatchEvent(new MessageEvent("message",{data:"{}"})));
+  await act(async()=>{pending.splice(0).forEach(resolve=>resolve(t0942Status(false)));});
+  expect(screen.getByTestId("budget-codex")).not.toHaveTextContent("현재 설정 검증 완료");
+  expect(screen.getByTestId("budget-codex")).toHaveTextContent("현재 예산 확인 불가");
+});
+
+it("T0942_AT2_first_light_survives_newer_heavy_and_preserves_fallback_budget",async()=>{
+  const pending:{heavy:boolean;resolve:(value:StatusDocument)=>void}[]=[];
+  const status=vi.fn((_path:string,heavy=false,_board=false,remote=false):Promise<StatusDocument>=>remote?Promise.resolve(t0942Status()):new Promise(resolve=>pending.push({heavy,resolve})));
+  const capacity=vi.fn(async(_path:string,harness:string):Promise<CtxCapacity>=>{const value=t0942Capacity(harness);delete value.budget;return value;});
+  render(<App bridge={makeBridge({status,ctx_capacity:capacity})}/>);
+  await waitFor(()=>expect(pending).toHaveLength(2));
+  await act(async()=>{pending.find(p=>p.heavy)!.resolve(t0942Status());});
+  expect(capacity).not.toHaveBeenCalled();
+  act(()=>openedStream().dispatchEvent(new MessageEvent("message",{data:"{}"})));
+  await act(async()=>{pending.filter(p=>p.heavy).at(-1)!.resolve(t0942Status());});
+  await act(async()=>{pending.find(p=>!p.heavy)!.resolve(t0942Status(false));});
+  await waitFor(()=>expect(capacity).toHaveBeenCalledWith(DEMO,"codex",true));
+  await t0942Open(); // existing explicit tab query, whose reply also lacks a budget
+  await waitFor(()=>expect(screen.getByTestId("budget-codex")).toHaveTextContent("현재 설정 검증 완료 · 기준 570000"));
+  expect(screen.getByTestId("capacity-codex")).toHaveTextContent("570000");
+});
+it.each([true,false])("T0942_AT2_newer_check_fences_older_%s_status_and_fallback",async(heavy)=>{
+  vi.useFakeTimers({shouldAdvanceTime:true});let hold=false;
+  const pending:{heavy:boolean;resolve:(value:StatusDocument)=>void}[]=[];
+  const status=vi.fn((_path:string,h=false,_board=false,remote=false):Promise<StatusDocument>=>hold&&!remote?new Promise(resolve=>pending.push({heavy:h,resolve})):Promise.resolve(t0942Status()));
+  const capacity=vi.fn(async(_path:string,harness:string,check=false):Promise<CtxCapacity>=>{const value=t0942Capacity(harness);if(check)delete value.budget;return value;});
+  render(<App bridge={makeBridge({status,ctx_capacity:capacity})}/>);await waitFor(()=>expect(capacity).toHaveBeenCalled());await t0942Open();
+  await waitFor(()=>expect(screen.getByTestId("budget-codex")).toHaveTextContent("현재 설정 검증 완료"));
+  hold=true;act(()=>openedStream().dispatchEvent(new MessageEvent("message",{data:"{}"})));
+  const old=pending.splice(0);
+  // The other channel admits known, then dispatches a newer pure check with no budget field.
+  await act(async()=>{old.find(p=>p.heavy!==heavy)!.resolve(t0942Status());});
+  if(heavy) { // light completion already dispatched the check
+    expect(capacity.mock.calls.at(-1)![2]).toBe(true);
+  } else {
+    // Existing visibility return dispatches a light request and check; no new request source.
+    setVisibility("hidden");setVisibility("visible");
+    await act(async()=>{pending.splice(0).forEach(p=>p.resolve(t0942Status()));});
+  }
+  setVisibility("hidden");
+  await act(async()=>{old.find(p=>p.heavy===heavy)!.resolve(t0942Status(false));});
+  expect(screen.getByTestId("budget-codex")).toHaveTextContent("현재 설정 검증 완료 · 기준 570000");
+  expect(screen.getByTestId("budget-codex")).not.toHaveTextContent("현재 예산 확인 불가");
+});
+it("T0942_AT2_per_harness_watermarks_admit_independent_codex_unknown",async()=>{
+  let hold=false;const pending:((value:StatusDocument)=>void)[]=[];
+  const doc=(codex=true,claude=true):StatusDocument=>({...t0942Status(),harnesses:["claude","codex","opencode"],conf:{...document_.conf,ctx_budget:{claude:t0942Capacity("claude",claude).budget!,codex:t0942Capacity("codex",codex).budget!,opencode:t0942Capacity("opencode").budget!}}});
+  const status=vi.fn((_path:string,_heavy=false,_board=false,remote=false):Promise<StatusDocument>=>hold&&!remote?new Promise(resolve=>pending.push(resolve)):Promise.resolve(doc()));
+  const capacity=vi.fn(async(_path:string,harness:string)=>t0942Capacity(harness));
+  render(<App bridge={makeBridge({status,ctx_capacity:capacity})}/>);await waitFor(()=>expect(capacity).toHaveBeenCalledTimes(3));await t0942Open();
+  await waitFor(()=>expect(screen.getByTestId("budget-codex")).toHaveTextContent("현재 설정 검증 완료"));
+  await act(async()=>{await Promise.resolve();});
+  hold=true;setVisibility("hidden");
+  act(()=>openedStream().dispatchEvent(new MessageEvent("message",{data:"{}"})));const s1=pending.splice(0);
+  act(()=>openedStream().dispatchEvent(new MessageEvent("message",{data:"{}"})));const s2=pending.splice(0);
+  const partial={...doc(),conf:{...document_.conf,ctx_applied:{},ctx_budget:{claude:t0942Capacity("claude").budget!}}};
+  await act(async()=>{s2.forEach(resolve=>resolve(partial));});
+  await act(async()=>{s1.forEach(resolve=>resolve(doc(false,false)));});
+  expect(screen.getByTestId("budget-claude")).toHaveTextContent("현재 설정 검증 완료");
+  expect(screen.getByTestId("budget-opencode")).toHaveTextContent("현재 설정 검증 완료");
+  expect(screen.getByTestId("budget-codex")).toHaveTextContent("현재 예산 확인 불가");
+});
+it("T0942_AT2_older_known_cannot_restore_newer_unknown_or_invent_verified",async()=>{
+  let hold=false;const pending:((value:StatusDocument)=>void)[]=[];
+  const status=vi.fn((_path:string,_heavy=false,_board=false,remote=false):Promise<StatusDocument>=>hold&&!remote?new Promise(resolve=>pending.push(resolve)):Promise.resolve(t0942Status()));
+  render(<App bridge={makeBridge({status,ctx_capacity:vi.fn(async(_path:string,harness:string)=>t0942Capacity(harness))})}/>);
+  await waitFor(()=>expect(screen.getByRole("tab",{name:"설정"})).toBeInTheDocument());await t0942Open();
+  await waitFor(()=>expect(screen.getByTestId("budget-codex")).toHaveTextContent("현재 설정 검증 완료"));
+  await act(async()=>{await Promise.resolve();});
+  hold=true;setVisibility("hidden");
+  act(()=>openedStream().dispatchEvent(new MessageEvent("message",{data:"{}"})));const s1=pending.splice(0);
+  act(()=>openedStream().dispatchEvent(new MessageEvent("message",{data:"{}"})));const s2=pending.splice(0);
+  await act(async()=>{s2.forEach(resolve=>resolve(t0942Status(false)));});
+  await act(async()=>{s1.forEach(resolve=>resolve(t0942Status()));});
+  expect(screen.getByTestId("budget-codex")).toHaveTextContent("현재 예산 확인 불가");
+  act(()=>openedStream().dispatchEvent(new MessageEvent("message",{data:"{}"})));
+  await act(async()=>{pending.splice(0).forEach(resolve=>resolve(t0942Status()));});
+  expect(screen.getByTestId("budget-codex")).not.toHaveTextContent("현재 설정 검증 완료"); // status known cannot verify C
+});
+it("T0942_AT2_query_finally_status_uses_same_admission_as_events",async()=>{
+  let hold=false;let query:((value:CtxCapacity)=>void)|undefined;const pending:((value:StatusDocument)=>void)[]=[];
+  const status=vi.fn((_path:string,_heavy=false,_board=false,remote=false):Promise<StatusDocument>=>hold&&!remote?new Promise(resolve=>pending.push(resolve)):Promise.resolve(t0942Status()));
+  const capacity=vi.fn((_path:string,harness:string,check=false):Promise<CtxCapacity>=>check?Promise.resolve(t0942Capacity(harness)):new Promise(resolve=>{query=resolve;}));
+  render(<App bridge={makeBridge({status,ctx_capacity:capacity})}/>);await waitFor(()=>expect(capacity).toHaveBeenCalled());await t0942Open();await waitFor(()=>expect(query).toBeDefined());
+  hold=true;await act(async()=>{query!(t0942Capacity());});const finallyStatus=pending.splice(0);expect(finallyStatus).toHaveLength(1);
+  setVisibility("hidden");act(()=>openedStream().dispatchEvent(new MessageEvent("message",{data:"{}"})));
+  await act(async()=>{pending.splice(0).forEach(resolve=>resolve(t0942Status()));});
+  await act(async()=>{finallyStatus.forEach(resolve=>resolve(t0942Status(false)));});
+  expect(screen.getByTestId("budget-codex")).toHaveTextContent("현재 설정 검증 완료");
+});
+
+it("T0942_AT2_three_query_replies_survive_other_harness_completion_epochs",async()=>{
+  const pending:{harness:string;resolve:(value:CtxCapacity)=>void}[]=[];
+  const doc={...t0942Status(),harnesses:["claude","codex","opencode"]};
+  const capacity=vi.fn((_path:string,harness:string,check=false):Promise<CtxCapacity>=>check?Promise.resolve(t0942Capacity(harness)):new Promise(resolve=>pending.push({harness,resolve})));
+  render(<App bridge={makeBridge({status:vi.fn(async()=>doc),ctx_capacity:capacity})}/>);await waitFor(()=>expect(capacity).toHaveBeenCalledTimes(3));await t0942Open();
+  await waitFor(()=>expect(pending).toHaveLength(3));
+  for(const harness of ["opencode","codex","claude"]) {
+    const C=harness==="claude"?967000:harness==="codex"?570000:258400;
+    await act(async()=>{pending.find(p=>p.harness===harness)!.resolve({...t0942Capacity(harness),C,budget:{status:"known",reason:null,W:600000,C,E:Math.min(C,600000),P:Math.floor(Math.min(C,600000)*.94)}});});
+    expect(screen.getByTestId(`capacity-${harness}`)).toHaveTextContent(`${C}`);
+  }
+  expect(capacity.mock.calls.filter(c=>!c[2])).toHaveLength(3);
+});
+it("T0942_AT1_old_engine_is_an_idle_action_not_an_automatic_retry_loop",async()=>{
+  vi.useFakeTimers({shouldAdvanceTime:true});
+  const capacity=vi.fn(async(_path:string,_harness:string,_check=false)=>({error:oldGeneration}));
+  render(<App bridge={makeBridge({status:vi.fn(async()=>t0942Status()),ctx_capacity:capacity})}/>);
+  await waitFor(()=>expect(capacity).toHaveBeenCalled());await t0942Open();
+  await waitFor(()=>expect(screen.getByTestId("budget-codex")).toHaveTextContent("엔진 갱신 후 현재 설정 검증 필요"));
+  await act(async()=>{await vi.advanceTimersByTimeAsync(30000);});
+  expect(capacity.mock.calls.filter(c=>!c[2])).toHaveLength(1);
+  expect(screen.getByTestId("budget-codex")).toHaveTextContent(oldGeneration.message);
+  expect(screen.getByTestId("budget-codex")).not.toHaveTextContent("자동 재시도");
+});
+
+it("T0942_AT1_backoff_retains_query_error_after_a_changed_pure_check",async()=>{
+  vi.useFakeTimers({shouldAdvanceTime:true});let failed=false;
+  const capacity=vi.fn(async(_path:string,harness:string,check=false):Promise<CtxCapacity>=>{
+    if(check) return t0942Capacity(harness,!failed);
+    failed=true;
+    return {...t0942Capacity(harness,false),status:"unknown",C:null,reason:"catalog transport failed",verification:{status:"unknown",reason:"catalog transport failed",verified_at:null,revision:null,evidence_changed:false}};
+  });
+  render(<App bridge={makeBridge({status:vi.fn(async()=>t0942Status(!failed)),ctx_capacity:capacity})}/>);
+  await waitFor(()=>expect(capacity).toHaveBeenCalled());await t0942Open();
+  await waitFor(()=>expect(screen.getByTestId("budget-codex")).toHaveTextContent("catalog transport failed"));
+  await act(async()=>{await vi.advanceTimersByTimeAsync(15000);});
+  expect(capacity.mock.calls.filter(c=>!c[2])).toHaveLength(2);
+  expect(screen.getByTestId("budget-codex")).toHaveTextContent("자동 재시도 대기");
+  expect(screen.getByTestId("budget-codex")).toHaveTextContent("최근 조회 실패 (catalog transport failed)");
+  expect(screen.getByTestId("budget-codex")).toHaveTextContent("다음 시도");
+  expect(screen.getByTestId("budget-codex")).not.toHaveTextContent("현재 설정 검증 완료");
 });
