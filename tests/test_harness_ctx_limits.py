@@ -2242,7 +2242,10 @@ def test_t0939_at2_actual_target_binding(tmp_path,monkeypatch,change):
         (f.root/f.leaf.CTX_BUDGET_RELPATH).write_text(json.dumps(f.record),encoding='utf-8')
     before=_snapshot_fixture_bytes(f.root);calls=list(f.calls)
     applied=f.importer.ctx_applied_status(f.root,f.values)[h]
-    assert applied['status']==('known' if change in ('theme','other-harness') else 'unknown')
+    assert applied['status']==('known' if change in ('theme','other-harness','global','auth') else 'unknown')
+    if change in ('global','auth'):
+        budget=f.leaf.read_ctx_budget(f.root,f.values,h,f.record['budgets'][h]['identity'])
+        assert budget['status']=='unknown' and all(budget[k] is None for k in ('C','E','P'))
     assert 'DO-NOT-OUTPUT' not in json.dumps(applied)
     assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
 
@@ -2396,3 +2399,183 @@ def test_t0939_r04_opencode_policy_single_scan(tmp_path,monkeypatch,damage):
     assert len(reads)==len(policies)<=1
     if damage in ('normal','single'):assert len(reads)==1
     assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
+
+
+def _t0940_actual_fixture(tmp_path, monkeypatch):
+    """기존 3하네스 fixture와 file-auth transport로 실제 성공 원장을 만든다."""
+    import copy
+    f = _t0937_actual_fixture(tmp_path, monkeypatch, apply=False)
+    (f.codex/'config.toml').write_text('model="exact-model"\nmodel_context_window=600000\n', encoding='utf-8')
+    (f.codex/'auth.json').write_text(json.dumps(_t0932_file_auth()), encoding='utf-8')
+    cache = f.codex/'models_cache.json'
+    catalog = json.loads(cache.read_text(encoding='utf-8'))
+    catalog['identity'] = _t0932_file_identity_oracle()
+    cache.write_text(json.dumps(catalog), encoding='utf-8')
+    f.layer = f.root.parent/'.codex/config.toml'
+    f.layer.parent.mkdir()
+    f.layer.write_text('model="exact-model"\n', encoding='utf-8')
+    config = {'config':{'model':'exact-model', 'model_context_window':600000,
+        'cli_auth_credentials_store':'file'}, 'layers':[
+        {'name':{'type':'user','file':str(f.codex/'config.toml')}, 'version':'sha256:user',
+         'config':{'model':'exact-model','model_context_window':600000}},
+        {'name':{'type':'project','dotCodexFolder':str(f.layer.parent)}, 'version':'sha256:parent',
+         'config':{'model':'exact-model'}}]}
+    response = {'sent_user_turns':0,'catalog_fallback':False,'responses':{
+        'config':config,'config_after':config,'gateway':{'providerId':'openai','required':False,'error':None},
+        'models':{'data':[{'id':'exact-model'}]}}}
+    claude_protocol = f.importer._ctx_native_protocol
+    def protocol(argv, *args, **kwargs):
+        if Path(argv[0]).name == 'codex':
+            f.calls.append('codex-protocol')
+            return copy.deepcopy(response)
+        return claude_protocol(argv, *args, **kwargs)
+    monkeypatch.setattr(f.importer,'_ctx_native_protocol',protocol)
+    f.importer.apply_harness_ctx(f.root,write=True,opencode_config_dir=f.global_dir)
+    f.record = json.loads((f.root/f.leaf.CTX_BUDGET_RELPATH).read_text(encoding='utf-8'))
+    assert str(f.layer) in f.record['bindings']['codex']['fingerprints']
+    assert 'layers' not in f.record['bindings']['codex']['roles']
+    return f
+
+
+def _t0940_change_external(f, source):
+    auth = f.codex/'auth.json'
+    global_config = f.codex/'config.toml'
+    if source == 'auth-refresh':
+        document = json.loads(auth.read_text(encoding='utf-8'))
+        document['last_refresh'] = '2026-10-04T00:00:00Z'
+        document['tokens']['refresh_token'] = 'DO-NOT-OUTPUT-NEW'
+        auth.write_text(json.dumps(document), encoding='utf-8')
+    elif source == 'auth-account':
+        import base64
+        document = _t0932_file_auth('plus')
+        document['tokens']['account_id'] = 'other-fixture-account'
+        claims = {'email':'other@example.invalid','https://api.openai.com/auth':{
+            'chatgpt_user_id':'other-fixture-user','chatgpt_plan_type':'plus','chatgpt_account_is_fedramp':False}}
+        encoded = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip('=')
+        document['tokens']['id_token'] = 'header.'+encoded+'.signature'
+        auth.write_text(json.dumps(document), encoding='utf-8')
+    elif source == 'auth-delete':auth.unlink()
+    elif source == 'global-delete':global_config.unlink()
+    elif source.startswith('global-'):
+        changes = {'comment':'# refreshed\n', 'theme':'theme="light"\n',
+            'trust':'[projects."fixture"]\ntrust_level="untrusted"\n',
+            'model':'model="other-model"\n', 'provider':'model_provider="other-provider"\n',
+            'profile':'profile="other-profile"\n', 'endpoint':'chatgpt_base_url="https://other.invalid/"\n'}
+        global_config.write_text(changes[source.removeprefix('global-')], encoding='utf-8')
+    elif source == 'layer-change':f.layer.write_text('model="other-model"\n', encoding='utf-8')
+    elif source == 'layer-delete':f.layer.unlink()
+    elif source == 'cache-delete':(f.codex/'models_cache.json').unlink()
+
+
+def _t0940_readonly_guards(f, monkeypatch):
+    for name in ('_harness_ctx_write','_atomic_write_dest_bytes','_write_conf_keys_locked'):
+        monkeypatch.setattr(f.importer,name,lambda *a,**kw:pytest.fail('조회 writer 호출'))
+    monkeypatch.setattr(f.importer,'_ctx_native_protocol',lambda *a,**kw:pytest.fail('조회 native 호출'))
+    monkeypatch.setattr(f.importer,'_ctx_ollama_show',lambda *a,**kw:pytest.fail('조회 API 호출'))
+
+
+@pytest.mark.parametrize('seconds',[299,300])
+@pytest.mark.parametrize('source',['baseline','auth-refresh','auth-account','auth-delete',
+    'global-comment','global-theme','global-trust','global-model','global-provider','global-profile',
+    'global-endpoint','global-delete','layer-change','layer-delete','cache-delete'])
+def test_t0940_at1_external_sources(tmp_path,monkeypatch,source,seconds):
+    from datetime import timedelta
+    f = _t0940_actual_fixture(tmp_path,monkeypatch)
+    immutable = {(f.root/path): (f.root/path).read_bytes() for path in
+        (f.leaf.CTX_BUDGET_RELPATH,Path('.codex/config.toml'),Path('.project_manager/local.conf'))}
+    _t0940_change_external(f,source)
+    original = f.leaf.resolve_ctx_capacity
+    now = f.leaf._ctx_time(f.record['budgets']['codex']['metadata']['observed_at'])+timedelta(seconds=seconds)
+    monkeypatch.setattr(f.leaf,'resolve_ctx_capacity',lambda w,r,i,m,**kw:original(w,r,i,m,now=kw.get('now') or now))
+    _t0940_readonly_guards(f,monkeypatch)
+    before = _snapshot_fixture_bytes(tmp_path);calls = list(f.calls)
+    applied = f.importer.ctx_applied_status(f.root,f.values)['codex']
+    budget = f.leaf.read_ctx_budget(f.root,f.values,'codex',f.record['budgets']['codex']['identity'])
+    assert applied['status'] == 'known'
+    assert (applied['E'],applied['P']) == (570000,535800) and 'C' not in applied
+    assert budget['status'] == ('known' if seconds==299 and source in ('baseline','cache-delete') else 'unknown')
+    if budget['status']=='unknown':assert all(budget[key] is None for key in ('C','E','P'))
+    assert all(path.read_bytes()==raw for path,raw in immutable.items())
+    assert before == _snapshot_fixture_bytes(tmp_path) and calls == f.calls
+    assert all(secret not in json.dumps([applied,budget]) for secret in ('DO-NOT-OUTPUT','access_token','refresh_token','fixture-account','header.'))
+
+
+@pytest.mark.parametrize('case',['target-managed','target-window','target-model','target-provider','target-profile',
+    'input-W','input-ratio','env','native','manifest','digest','role-swap','required-missing',
+    'required-duplicate','source','root','fake-C','future','expired-apply','foreign-extra-source',
+    'schema2-auth','schema2-global','runtime-auth','querycheck-auth','prewrite-auth'])
+def test_t0940_at2_strict_boundaries(tmp_path,monkeypatch,case):
+    from datetime import datetime,timedelta,timezone
+    f = _t0940_actual_fixture(tmp_path,monkeypatch)
+    assert f.importer.ctx_applied_status(f.root,f.values)['codex']['status']=='known'
+    identity = f.record['budgets']['codex']['identity']
+    assert f.leaf.read_ctx_budget(f.root,f.values,'codex',identity)['status']=='known'
+    r = f.record;b = r['budgets']['codex'];binding = r['bindings']['codex']
+    ledger = f.root/f.leaf.CTX_BUDGET_RELPATH
+    target = f.root/'.codex/config.toml'
+    if case=='runtime-auth':
+        spec = importlib.util.spec_from_file_location('t0940_codex_runtime',TEMPLATES/'codex/.codex/pm_orch_codex.py')
+        runtime = importlib.util.module_from_spec(spec);spec.loader.exec_module(runtime)
+        assert runtime.resolve_ctx_budget(f.values,root=f.root,identity=identity)==570000
+    plan = f.importer._prepare_harness_ctx(f.root,f.values,opencode_config_dir=f.global_dir) if case=='prewrite-auth' else None
+    receipt = f.importer.preview_ctx_capacity(f.root,'codex')['receipt'] if case=='querycheck-auth' else None
+    if case.startswith('target-'):
+        text = {'managed':'model_auto_compact_token_limit=1\n','window':'model_context_window=600000\n',
+            'model':'model="other"\n','provider':'model_provider="other"\n','profile':'profile="other"\n'}[case.removeprefix('target-')]
+        target.write_text(text+('' if case=='target-managed' else target.read_text(encoding='utf-8')),encoding='utf-8')
+    elif case=='input-W':f.values['harness.codex.ctx_window_tokens']='100000'
+    elif case=='input-ratio':f.values['ctx.compact_at_pct']='93'
+    elif case=='env':monkeypatch.setenv('CODEX_ACCESS_TOKEN','DO-NOT-OUTPUT-ENV')
+    elif case=='native':Path(r['native_commands']['codex']).write_bytes(b'changed install')
+    elif case=='manifest':Path(binding['roles']['manifest']).write_text('{"version":"other"}',encoding='utf-8')
+    elif case=='digest':r['projection_sha256']='broken'
+    elif case=='role-swap':binding['roles']['auth'],binding['roles']['catalog']=binding['roles']['catalog'],binding['roles']['auth']
+    elif case=='required-missing':binding['required_files'].pop()
+    elif case=='required-duplicate':binding['required_files'].append(binding['required_files'][0])
+    elif case=='source':
+        b['metadata']['source']='wrong';b['models'][0]['metadata']['source']='wrong'
+    elif case=='root':binding['target']=str(f.root.parent/'wrong/config.toml')
+    elif case=='fake-C':b['C']+=1
+    elif case=='future':r['applied_at']=(datetime.now(timezone.utc)+timedelta(seconds=1)).isoformat()
+    elif case=='expired-apply':r['applied_at']=b['metadata']['valid_until']
+    elif case=='foreign-extra-source':
+        extra = f.root.parent/'foreign/config.toml';extra.parent.mkdir();extra.write_text('model="exact-model"\n',encoding='utf-8')
+        digest = hashlib.sha256(extra.read_bytes()).hexdigest()
+        binding['fingerprints'][str(extra)] = digest;r['fingerprints'][str(extra)] = digest
+        binding['required_files'].append(str(extra))
+        # 임의 selection 역할은 다른 하네스에 Codex 예외를 부여하지 않는다.
+        claude = r['bindings']['claude'];selection = str(f.codex/'config.toml')
+        claude['roles']['selection'] = selection
+        claude['fingerprints'][selection] = r['fingerprints'][selection]
+        claude['required_files'].append(selection)
+        r['projection_sha256']=f.leaf.ctx_record_digest(r);ledger.write_text(json.dumps(r),encoding='utf-8')
+        assert f.importer.ctx_applied_status(f.root,f.values)['codex']['status']=='known'
+        assert f.importer.ctx_applied_status(f.root,f.values)['claude']['status']=='known'
+        _t0940_change_external(f,'global-model')
+        assert f.importer.ctx_applied_status(f.root,f.values)['claude']['status']=='unknown'
+        assert f.importer.ctx_applied_status(f.root,f.values)['codex']['status']=='known'
+        extra.write_text('model="other"\n',encoding='utf-8')
+    elif case.startswith('schema2-'):
+        r['schema']=2;r.pop('applied');r.pop('applied_at')
+        r['projection_sha256']=f.leaf.ctx_record_digest(r);ledger.write_text(json.dumps(r),encoding='utf-8')
+        assert f.leaf.read_ctx_budget(f.root,f.values,'codex',identity)['status']=='known'
+        _t0940_change_external(f,'auth-refresh' if case=='schema2-auth' else 'global-model')
+    else:_t0940_change_external(f,'auth-refresh')
+    if case in ('digest','role-swap','required-missing','required-duplicate','source','root','fake-C','future','expired-apply'):
+        if case!='digest':r['projection_sha256']=f.leaf.ctx_record_digest(r)
+        ledger.write_text(json.dumps(r),encoding='utf-8')
+    _t0940_readonly_guards(f,monkeypatch)
+    before = _snapshot_fixture_bytes(tmp_path);calls = list(f.calls)
+    if case=='prewrite-auth':
+        with pytest.raises(f.importer.HarnessCtxError):f.importer._commit_harness_ctx(plan)
+    elif case=='querycheck-auth':
+        checked = f.importer.preview_ctx_capacity(f.root,'codex',receipt=receipt,check=True)
+        assert checked['status']=='unknown' and 'C' not in checked
+    elif case=='runtime-auth':
+        assert runtime.resolve_ctx_budget(f.values,root=f.root,identity=identity) is None
+    else:assert f.importer.ctx_applied_status(f.root,f.values)['codex']['status']=='unknown'
+    if case.startswith('schema2-') or case=='runtime-auth':
+        budget = f.leaf.read_ctx_budget(f.root,f.values,'codex',identity)
+        assert budget['status']=='unknown' and all(budget[k] is None for k in ('C','E','P'))
+    assert before==_snapshot_fixture_bytes(tmp_path) and calls==f.calls
+    assert all(secret not in json.dumps(f.importer.ctx_applied_status(f.root,f.values)) for secret in ('DO-NOT-OUTPUT','access_token','refresh_token','fixture-account','header.'))
