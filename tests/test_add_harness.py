@@ -53,9 +53,9 @@ def pm_config():
 
 @pytest.fixture(autouse=True)
 def _known_native_capacity(tmp_path,pm_import,monkeypatch):
-    from _manager_home import known_ctx_reader
-    reader=known_ctx_reader(pm_import,capacity=200000,context=232000)
-    monkeypatch.setattr(pm_import,'_read_harness_ctx_metadata',reader)
+    from _manager_home import known_ctx_seams
+    for name,seam in known_ctx_seams(capacity=200000,context=232000).items():
+        monkeypatch.setattr(pm_import,name,seam)
 
 
 @pytest.fixture(autouse=True)

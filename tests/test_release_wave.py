@@ -204,10 +204,28 @@ def _claude_recovery_deliveries(transcript: Path) -> int:
     return count
 
 
+def _override_ctx_record(dest: Path, harness: str, window: int) -> None:
+    """설치가 쓴 압축 한도 기록(schema 5)의 그 도구 사용 한도를 local.conf 에 덧붙인 `window` 로 옮긴다.
+
+    훅·플러그인은 기록의 입력과 local.conf 가 다르면 판정 대신 기록 오류를 낸다(`read_ctx_budget`).
+    `ctx-apply` 는 돌리지 않는다 — 기록의 inputs 사용 한도·W·E·P·경고 지점만 다시 쓰고 모델 행·C·settings 와
+    하네스 설정 파일은 그대로다. P·경고 지점은 기록 inputs 의 비율로 계산한다."""
+    path = dest / ".project_manager" / ".local" / "ctx-budget.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    inputs, entry = record["inputs"], record["harnesses"][harness]
+    inputs[f"harness.{harness}.ctx_window_tokens"] = str(window)
+    effective = min(window, entry["C"])
+    entry.update(W=window, E=effective, P=effective * int(inputs["ctx.compact_at_pct"]) // 100,
+                 checkpoint=effective * int(inputs["ctx.checkpoint_at_pct"]) // 100,
+                 precompact=effective * int(inputs["ctx.precompact_at_pct"]) // 100)
+    path.write_text(json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def _force_opencode_compaction_threshold(dest: Path, model: str) -> None:
     """격리 adopter의 per-harness 예산+선택 모델 limit만 낮춰 native compaction을 강제한다.
 
-    `harness.opencode.ctx_window_tokens`는 PM 59의 격리/per-harness 방식으로 plugin 판정만 옮기고,
+    `harness.opencode.ctx_window_tokens`는 PM 59의 격리/per-harness 방식으로 plugin 판정만 옮기고
+    (압축 한도 기록의 opencode 항목도 같은 값으로 옮긴다 · `_override_ctx_record`),
     실제 `session.compacted`는 같은 모델의 `limit.context-output` native 경계로 유도한다.
     generic 예산이나 출하 template은 바꾸지 않는다.
     """
@@ -217,6 +235,7 @@ def _force_opencode_compaction_threshold(dest: Path, model: str) -> None:
             "\n# T-0621 release compaction probe (isolated adopter, per-harness)\n"
             f"harness.opencode.ctx_window_tokens={_OPENCODE_COMPACTION_CONTEXT}\n"
         )
+    _override_ctx_record(dest, "opencode", _OPENCODE_COMPACTION_CONTEXT)
 
     provider, separator, model_name = model.partition("/")
     assert separator and provider and model_name, f"opencode model 형식은 provider/model 이어야 함: {model!r}"
@@ -1313,8 +1332,9 @@ def _append_tiny_ctx_window(dest: Path) -> None:
 
     사용 한도는 하네스별 키(`harness.claude.ctx_window_tokens`)다 — 공통 한도 키는 없다(T-0923).
     append 한 극소값이 *마지막 줄* 로 이겨(load_local_config 는 KEY 마지막 값 채택) 첫 실 턴이
-    쓴 100% = stop 밴드. 이 값은 훅 판정만 옮긴다 — 설정 파일 반영(`pm-config ctx-apply`)은 돌리지
-    않으므로 Claude Code 의 압축 지점은 출하 값 그대로다.
+    쓴 100% = stop 밴드. 이 값은 훅 판정만 옮긴다 — 압축 한도 기록의 claude 항목도 같은 값으로
+    옮기고(`_override_ctx_record`), 설정 파일 반영(`pm-config ctx-apply`)은 돌리지 않으므로 Claude
+    Code 의 압축 지점은 출하 값 그대로다.
     """
     conf_path = dest / ".project_manager" / "local.conf"
     conf_path.write_text(
@@ -1322,6 +1342,7 @@ def _append_tiny_ctx_window(dest: Path) -> None:
         + f"\nharness.claude.ctx_window_tokens={_TINY_CTX_WINDOW}\n",
         encoding="utf-8",
     )
+    _override_ctx_record(dest, "claude", _TINY_CTX_WINDOW)
 
 
 def _claude_project_slug(cwd: Path) -> str:
@@ -1701,6 +1722,38 @@ def test_claude_recovery_delivery_reads_durable_transcript_attachment(tmp_path):
     )
 
     assert _claude_recovery_deliveries(transcript) == 1
+
+
+@pytest.mark.parametrize("harness", ["claude", "opencode"])
+def test_ctx_record_override_matches_local_conf(tmp_path, harness):
+    """라이브 두 도우미가 local.conf 와 함께 압축 한도 기록을 옮겨 훅·플러그인의 읽기가 통과한다(T-0943 F-002).
+
+    설치가 쓴 기록(사용 한도 200,000)에 극소 사용 한도를 덧붙인 뒤 `read_ctx_budget` 은 그 값을 E 로 내고
+    세션 모델 경고가 없다. 기록의 모델 행·C·settings 는 그대로이고 Claude 설정 파일은 바이트가 같다."""
+    from test_harness_ctx_limits import _load, install_ctx_record
+
+    local_conf = _load("local_conf")
+    session_model = install_ctx_record(tmp_path, {f"harness.{harness}.ctx_window_tokens": "200000"}, harness)
+    record_path = tmp_path / local_conf.CTX_BUDGET_RELPATH
+    before = json.loads(record_path.read_text(encoding="utf-8"))["harnesses"][harness]
+    settings = tmp_path / ".claude" / "settings.json"
+    settings_before = settings.read_bytes() if harness == "claude" else None
+    if harness == "claude":
+        _append_tiny_ctx_window(tmp_path)
+        window = _TINY_CTX_WINDOW
+    else:
+        _force_opencode_compaction_threshold(tmp_path, session_model)
+        window = _OPENCODE_COMPACTION_CONTEXT
+
+    values = local_conf.load(tmp_path / ".project_manager" / "local.conf").values
+    budget = local_conf.read_ctx_budget(tmp_path, values, harness, session_model)
+    compact_at = int(local_conf.ctx_input_values(values)["ctx.compact_at_pct"])
+    assert (budget["E"], budget["P"], budget["warning"]) == (window, window * compact_at // 100, None)
+    after = json.loads(record_path.read_text(encoding="utf-8"))["harnesses"][harness]
+    assert {key: after[key] for key in ("models", "C", "settings")} == {
+        key: before[key] for key in ("models", "C", "settings")}
+    if harness == "claude":
+        assert settings.read_bytes() == settings_before
 
 
 def test_opencode_full_wave_uses_compaction_evidence_from_initial_run(

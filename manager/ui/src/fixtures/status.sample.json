@@ -143,11 +143,7 @@
       "started": "2026-09-07T14:59:02+00:00",
       "slots": [],
       "todos": [
-        {
-          "id": 1,
-          "text": "슬롯 쓰기 가드 실측",
-          "created": "2026-09-16T00:00:00+00:00"
-        }
+        { "id": 1, "text": "슬롯 쓰기 가드 실측", "created": "2026-09-16T00:00:00+00:00" }
       ]
     }
   ],
@@ -180,66 +176,37 @@
     "claude"
   ],
   "conf": {
-    "ctx_applied": {
+    "ctx_budget": {
       "claude": {
-        "status": "unknown",
-        "reason": "성공 반영 증언 없음",
-        "W": 200000,
-        "E": null,
-        "P": null,
-        "native_window": null,
-        "applied_at": null
+        "status": "ok",
+        "E": 200000,
+        "P": 180000,
+        "checkpoint": 140000,
+        "precompact": 160000,
+        "checkpoint_at_pct": 70,
+        "precompact_at_pct": 80,
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "applied_at": "2026-10-07T03:00:00+00:00",
+        "warning": null,
+        "C": 967000,
+        "basis_text": "Claude Code 조회 · 모델 창 1,000,000 − 압축 예약 33,000"
       },
       "codex": {
-        "status": "unknown",
-        "reason": "성공 반영 증언 없음",
-        "W": 200000,
-        "E": null,
-        "P": null,
-        "native_window": null,
-        "applied_at": null
+        "status": "error",
+        "reason": "codex 압축 한도 기록이 없습니다 (/projects/demo/.project_manager/.local/ctx-budget.json) — `pm_config.py ctx-apply` 를 다시 실행하십시오."
       },
       "opencode": {
-        "status": "unknown",
-        "reason": "성공 반영 증언 없음",
-        "W": 200000,
-        "E": null,
-        "P": null,
-        "native_window": null,
-        "applied_at": null
+        "status": "error",
+        "reason": "opencode 압축 한도 기록이 없습니다 (/projects/demo/.project_manager/.local/ctx-budget.json) — `pm_config.py ctx-apply` 를 다시 실행하십시오."
       }
     },
     "missing_required": [],
     "legacy": [],
     "unknown": [],
     "nonstandard": [],
-    "missing_for_latest": [],
-    "ctx_budget": {
-      "claude": {
-        "status": "known",
-        "reason": null,
-        "W": 200000,
-        "C": 200000,
-        "E": 200000,
-        "P": 180000
-      },
-      "codex": {
-        "status": "unknown",
-        "reason": "'codex'",
-        "W": 200000,
-        "C": null,
-        "E": null,
-        "P": null
-      },
-      "opencode": {
-        "status": "unknown",
-        "reason": "'opencode'",
-        "W": 200000,
-        "C": null,
-        "E": null,
-        "P": null
-      }
-    }
+    "missing_for_latest": []
   },
   "board": {
     "counts": {

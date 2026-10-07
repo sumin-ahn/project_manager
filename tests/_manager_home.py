@@ -81,18 +81,19 @@ def _run(argv: list[str], *, cwd: Path | None = None) -> subprocess.CompletedPro
     return completed
 
 
-# 자식 fixture는 HOME이 격리돼도 pytest 설치 위치에 의존하지 않는 stdlib mock이다.
-_KNOWN_CTX_READER_PY = "_CTX_FIXTURE_SOURCE_ROOT=" + repr(str(REPO.resolve())) + "\n" + r"""
+# 모델 한도 조회 교체 지점 두 곳(`_read_harness_ctx_metadata`·`_ctx_claude_threshold`)의 고정 값.
+# 자식 프로세스에도 그대로 넘기므로 표준 라이브러리만 쓴다.
+_KNOWN_CTX_READER_PY = r"""
 from pathlib import Path
-import json
 import os
-import shutil
 import tempfile
 from contextlib import contextmanager
 from unittest.mock import patch
 
 @contextmanager
 def fixture_native_installation(folder=None):
+    # 실제 claude·codex·opencode 자리에 바로 끝나는 실행 파일을 둔다 — 교체하지 않은 조회가 실제
+    # CLI 를 부르지 않고 실패한다.
     inherited=os.environ.get('_KNOWN_CTX_FIXTURE_BIN')
     if inherited and folder is None:
         yield Path(inherited)
@@ -109,45 +110,38 @@ def fixture_native_installation(folder=None):
                                     '_KNOWN_CTX_FIXTURE_BIN':str(native)}):
             yield native
 
-def fixture_reader(module,capacity=200000,context=1000000):
+def fixture_reader(capacity=200000,context=1000000,model='fixture-model'):
+    # 모델 행 [{id, provider, C, basis}] — Claude 압축 예약 d 는 0(autoCompactWindow = P). d 를 쓰는
+    # 계산은 test_harness_ctx_limits 의 t0943_claude 가 실측 값으로 잰다. opencode 는 대상 모델마다 한 행.
     def reader(root,harness,documents,models):
-        if Path(root).resolve() == Path(_CTX_FIXTURE_SOURCE_ROOT).resolve():
-            raise ValueError('fixture source root write refused')
-        source=Path(root)/'.project_manager/independent-runtime-fixture.json'
-        source.parent.mkdir(parents=True,exist_ok=True)
-        if not source.exists():
-            source.write_text(json.dumps({'generation':'fixture-generation','usable':capacity,'context':context}),encoding='utf-8')
-        identities=[{'model':m,'provider':p,'profile':''} for p,m in models] if harness=='opencode' else [{'model':'fixture-model','provider':'fixture-provider','profile':''}]
-        rows=[]
-        for identity in identities:
-            metadata={**identity,'source':'independent-runtime-fixture','generation':'fixture-generation',
-                'observed_at':'2026-10-02T00:00:00+00:00','valid_until':'2099-01-01T00:00:00+00:00',
-                'independent':True,'semantics':'usable','usable':capacity,'context':context,'output':128000,
-                'effective_output':32000,'native_formula':'input-reserved'}
-            rows.append({'identity':identity,'metadata':metadata})
-        # native 설치는 호출 범위의 PATH로 제공하며 전역 which와 목적지 트리는 수정하지 않는다.
-        native=Path(shutil.which(harness) or '')
-        if not native.is_file():
-            raise ValueError('fixture native installation missing')
-        native=native.resolve()
-        evidence={str(source.resolve()):module.content_sha256(source.read_bytes())}
         if harness=='claude':
-            settings=[str(source.resolve()),str(Path(root)/'.claude/settings.local.json'),str(Path(root)/'.project_manager/mock-managed.json')]
-            roles={'settings':settings,'managed_bundle':'/etc/claude-code/managed-settings.d'}
-            for path in settings:evidence[path]=module._ctx_file_digest(Path(path))
-        elif harness=='codex':
-            auth=str(Path(root)/'.project_manager/mock-auth.json');evidence[auth]=None
-            roles={'manifest':str(source.resolve()),'selection':str(source.resolve()),'catalog':str(source.resolve()),'auth':auth}
-        else:roles={'manifest':str(source.resolve())}
-        return {'models':rows,'evidence':evidence,'roles':roles,
-                'native_commands':{harness:str(native)},'native_files':{str(native):module._ctx_native_stat(native)}}
+            return [{'id':model,'provider':'firstParty','C':capacity,
+                     'basis':{'model_window':capacity,'auto_compact_threshold':capacity}}]
+        if harness=='codex':
+            return [{'id':model,'provider':'openai','C':capacity,
+                     'basis':{'context_window':context,'max_context_window':None,
+                              'model_context_window':None,'percent':100}}]
+        return [{'id':target,'provider':provider,'C':capacity,
+                 'basis':{'context':context,'output':output,'source':'fixture'}}
+                for (provider,target),output in models.items()]
     return reader
+
+def fixture_threshold(root,window):
+    return window
+
+def install_fixture_capacity(module,capacity=200000,context=1000000):
+    module._read_harness_ctx_metadata=fixture_reader(capacity,context)
+    module._ctx_claude_threshold=fixture_threshold
+    return module
 """
 
-def known_ctx_reader(module, *, capacity=200000, context=1000000):
-    namespace={}
-    exec(_KNOWN_CTX_READER_PY,namespace)
-    return namespace['fixture_reader'](module,capacity,context)
+
+def known_ctx_seams(*, capacity=200000, context=1000000, model="fixture-model") -> dict:
+    """모델 한도 조회 교체 지점 이름 → 고정 값 함수 (monkeypatch 로 붙인다)."""
+    namespace = {}
+    exec(_KNOWN_CTX_READER_PY, namespace)
+    return {"_read_harness_ctx_metadata": namespace["fixture_reader"](capacity, context, model),
+            "_ctx_claude_threshold": namespace["fixture_threshold"]}
 
 
 @pytest.fixture(autouse=True)
@@ -163,42 +157,24 @@ def _known_ctx_installation(tmp_path,monkeypatch):
 
 
 def known_ctx_module(module, *, capacity=200000, context=1000000):
-    """정상 unit 설치 factory가 명시 호출하는 독립 mock, verified loader는 먼저 실행한다."""
-    import os
-    import shutil
-    from functools import wraps
-    from unittest.mock import patch
+    """모듈(과 그 모듈이 싣는 pm_import·pm_update)의 모델 한도 조회를 고정 값으로 바꾼다."""
     namespace = {}
     exec(_KNOWN_CTX_READER_PY, namespace)
     if hasattr(module, '_read_harness_ctx_metadata'):
-        module._read_harness_ctx_metadata = namespace['fixture_reader'](module, capacity, context)
-    if getattr(module, '_t0932_known_ctx_loader', False):
+        namespace['install_fixture_capacity'](module, capacity, context)
+    if getattr(module, '_known_ctx_loader', False):
         return module
-    for name in ('main', '_apply_harness_ctx_values'):
-        original=getattr(module,name,None)
-        if original is None:continue
-        @wraps(original)
-        def installed(*args,_original=original,**kwargs):
-            with namespace['fixture_native_installation']() as folder:
-                previous=shutil.which
-                def which(command,*args,**kwargs):
-                    if command in ('claude','codex','opencode'):
-                        return str(folder/(command+'.exe' if os.name=='nt' else command))
-                    return previous(command,*args,**kwargs)
-                with patch.object(shutil,'which',which):
-                    return _original(*args,**kwargs)
-        setattr(module,name,installed)
     for name in ('_load_pm_import', '_load_pm_update', '_load_module'):
         original = getattr(module, name, None)
         if original is None:
             continue
-        def verified(*args, _original=original, **kwargs):
-            loaded = _original(*args, **kwargs)
-            if any(hasattr(loaded, key) for key in ('_read_harness_ctx_metadata', '_load_pm_import', '_load_pm_update', '_load_module')):
-                known_ctx_module(loaded, capacity=capacity, context=context)
-            return loaded
-        setattr(module, name, verified)
-    module._t0932_known_ctx_loader = True
+        def loaded(*args, _original=original, **kwargs):
+            result = _original(*args, **kwargs)
+            if any(hasattr(result, key) for key in ('_read_harness_ctx_metadata', '_load_pm_import', '_load_pm_update', '_load_module')):
+                known_ctx_module(result, capacity=capacity, context=context)
+            return result
+        setattr(module, name, loaded)
+    module._known_ctx_loader = True
     return module
 
 
@@ -220,14 +196,14 @@ raise SystemExit(entry.main(sys.argv[1:]))
 
 
 def known_ctx_argv(argv):
-    """정상 setup/갱신 fixture 자식 하나에만 독립 mock을 전달한다."""
+    """정상 setup/갱신 fixture 자식 하나에만 고정 모델 한도를 전달한다."""
     for index, part in enumerate(argv):
         if Path(str(part)).name in ('pm_import.py', 'pm_update.py', 'pm_config.py'):
             return [*argv[:index], '-c', _KNOWN_CTX_ENTRY_CHILD, *argv[index:]]
     return argv
 
 
-# 정상 설치 baseline의 독립 C는 제품 source가 아닌 고정 unit metadata다.
+# 정상 설치 baseline의 모델 한도 C는 제품 조회가 아닌 고정 값이다.
 # 주입은 make_pm_home setup 자식 하나에만 적용하며 후속 CLI/실제 환경으로 전파하지 않는다.
 _KNOWN_SETUP_CHILD = _KNOWN_CTX_READER_PY + r"""
 import importlib.util,sys
@@ -235,7 +211,7 @@ from pathlib import Path
 path=Path(sys.argv[1])
 spec=importlib.util.spec_from_file_location('known_setup_importer',path)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-module._read_harness_ctx_metadata=fixture_reader(module)
+install_fixture_capacity(module)
 with fixture_native_installation():
     raise SystemExit(module.main(sys.argv[2:]))
 """
@@ -419,20 +395,3 @@ def close_session(pool, session: str) -> None:
     assert held, f"세션 {session!r} 이 잡은 행이 장부에 없다"
     for slot in held:
         pool.force_release(slot)
-
-
-def reanchor_ctx_record(home: Path, previous_home: Path) -> None:
-    """복제한 현재 schema4 fixture의 root와 경로를 실제 사본에 재결속한다."""
-    path=home/'.project_manager/.local/ctx-budget.json'
-    if not path.is_file():return
-    document=json.loads(path.read_text(encoding='utf-8'))
-    before,after=str(previous_home),str(home)
-    def replace(value):
-        if isinstance(value,str):return after+value[len(before):] if value==before or value.startswith(before+os.sep) else value
-        if isinstance(value,list):return [replace(item) for item in value]
-        if isinstance(value,dict):return {replace(key):replace(item) for key,item in value.items()}
-        return value
-    document=replace(document)
-    from test_harness_ctx_limits import _load
-    document['projection_sha256']=_load('local_conf').ctx_record_digest(document)
-    path.write_text(json.dumps(document,ensure_ascii=False,sort_keys=True)+'\n',encoding='utf-8')

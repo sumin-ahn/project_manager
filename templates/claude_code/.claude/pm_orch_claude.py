@@ -318,8 +318,9 @@ class ClaudeCliDriver:
         # ctx 회전 판정과 SpawnResult 생성은 엔진 소유 헬퍼/타입 주입(DI). 어느 ctx 신호든
         # 빠지면 가드는 no-op 이라 기존 단위·부트 경로에 영향을 주지 않는다.
         self._ctx_budget = ctx_budget
+        # budget_reader(세션 모델) → (적용 한도, 압축 임박 경고 %, 모델 불일치 경고) — turn 마다 다시 읽는다.
         self._budget_reader = budget_reader
-        self._budget_identity = None
+        self._session_model = None
         self._precompact_at_pct = precompact_at_pct
         self._root = Path(root) if root is not None else None
         self._mark_stop = mark_stop
@@ -403,29 +404,25 @@ class ClaudeCliDriver:
         elif not (completed.stdout or ""):
             sys.stderr.write("[pm-orch] claude turn 무출력(rc 0) — stdin/파싱 점검\n")
 
-        self._budget_identity = None
+        self._session_model = None
         for raw in (completed.stdout or "").splitlines():
             try:
                 event = json.loads(raw)
             except (ValueError, TypeError):
                 continue
-            if not isinstance(event, dict):
-                continue
-            info = event.get("info") or event.get("message") or event
-            if not isinstance(info, dict):
-                continue
-            model = info.get("modelID") or info.get("model")
-            provider = info.get("providerID") or info.get("provider") or info.get("model_provider")
-            profile = info.get("profile")
-            if isinstance(model, str) and isinstance(provider, str) and isinstance(profile, str):
-                self._budget_identity = {"model": model, "provider": provider, "profile": profile}
+            message = event.get("message") if isinstance(event, dict) and event.get("type") == "assistant" else None
+            # 사용량이 있는 응답의 모델만 쓴다 — 합성 응답(API 오류 등)은 사용량 0 이다(훅과 같은 규칙).
+            if isinstance(message, dict) and (ctx_guard._usage_input_tokens(message.get("usage")) or 0) > 0:
+                self._session_model = message.get("model")
         lines = (completed.stdout or "").splitlines()
         return self._parse(lines)
 
     def _maybe_mark_ctx(self, session_id: str, used_tokens: int | None) -> None:
         """주입된 usage·예산 신호가 모두 있으면 엔진의 post-turn 회전 헬퍼를 호출한다."""
         if self._budget_reader is not None:
-            self._ctx_budget, self._precompact_at_pct = self._budget_reader(self._budget_identity)
+            self._ctx_budget, self._precompact_at_pct, warning = self._budget_reader(self._session_model)
+            if warning:
+                sys.stderr.write(f"[pm-orch] {warning}\n")
 
         ctx_di_complete = all(value is not None for value in (
             self._ctx_budget, self._precompact_at_pct, self._root, self._mark_stop,
@@ -482,14 +479,12 @@ def main(argv: list[str] | None = None) -> int:
     engine, root = _load_engine()
 
     cwd = args.cwd or os.getcwd()
-    conf = ctx_guard.load_local_config(root)
-    ctx_budget = ctx_guard.resolve_budget(conf, "claude", root=root)
-    precompact_at_pct = ctx_guard.ctx_thresholds(conf)["precompact_at_pct"]
-    engine.validate_relay_budget(ctx_budget, precompact_at_pct)
+    # 압축 한도 기록이 없거나 손상·입력 불일치면 시작하지 않는다(CtxBudgetError).
+    ctx_budget, precompact_at_pct, _warning = engine.ctx_budget(root, "claude", None)
     driver = ClaudeCliDriver(
         engine.parse_stream_json,
         ctx_budget=ctx_budget,
-        budget_reader=lambda identity: engine.bound_ctx_budget(root, "claude", identity),
+        budget_reader=lambda model: engine.ctx_budget(root, "claude", model),
         precompact_at_pct=precompact_at_pct,
         root=root,
         mark_stop=engine.mark_ctx_post_turn_if_over,

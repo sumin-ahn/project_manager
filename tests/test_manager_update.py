@@ -79,8 +79,6 @@ def base_home(tmp_path_factory, source, upstream) -> Path:
 def pm_home(base_home, tmp_path) -> Path:
     home = tmp_path / "demo"
     shutil.copytree(base_home, home, symlinks=True)
-    from _manager_home import reanchor_ctx_record
-    reanchor_ctx_record(home,base_home)
     return home
 
 

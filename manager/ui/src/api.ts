@@ -134,37 +134,12 @@ export type StatusDocument = {
   adapters: AdapterDocument | null;
 };
 
+/** 압축 한도 기록의 도구 항목(`local_conf.ctx_budget_status`) — 적용할 때 조회한 모델 가용 한도 C·적용 한도 E·압축 지점 P. */
+export type CtxBudget =
+  | { status: "ok"; models: string[]; C: number; E: number; P: number; applied_at: string; basis_text: string }
+  | { status: "error"; reason: string };
 /** 설정 완전성 다섯 목록. `missing_for_latest` 는 소스가 해소된 호출에서만 배열이고 아니면 null(모름). */
-export type CtxBudget = {
-  status: "known" | "unknown"; reason: string | null;
-  W: number; C: number | null; E: number | null; P: number | null;
-};
-export type CtxCapacity = {
-  schema: 1 | 2; harness: string; status: "known" | "unknown"; reason: string | null;
-  C: number | null; observed_at: string | null; valid_until: string | null;
-  verification?: {
-    status: "verified" | "apply-required" | "unknown" | "changed" | "write-failed" | "update-required";
-    reason: string | null; verified_at: string | null; revision: string | null; evidence_changed: boolean;
-  };
-  budget?: CtxBudget;
-  candidate?: { W: number; C: number; E: number; P: number; native_window: number;
-    managed: { path: string[]; value: number | null }[] } | null;
-  applied?: CtxApplied | null;
-};
-/** 클라이언트 스케줄러 표시 전용. ctx_capacity wire에는 포함하지 않는다. */
-export type CtxCapacityView = CtxCapacity & {
-  activity: { phase: "idle" | "querying" | "waiting"; retry_at: number | null; reason: string | null };
-};
-/** 한도 응답의 실패 상태 이름은 일반 설정 배지 목록과 별도로 관리한다. */
-export function isCapacityQueryFailure(capacity: (CtxCapacity & Partial<Pick<CtxCapacityView, "activity">>) | undefined): boolean {
-  return capacity?.verification?.status === "unknown" || capacity?.activity?.reason?.startsWith("최근 조회 실패") === true;
-}
-export type CtxApplied = {
-  status: "known" | "unknown"; reason: string | null; W: number;
-  E: number | null; P: number | null; native_window: number | null; applied_at: string | null;
-};
 export type ConfSection = {
-  ctx_applied?: Record<string, CtxApplied>;
   ctx_budget?: Record<string, CtxBudget>;
   missing_required: string[];
   legacy: { key: string; replacement: string | null }[];
@@ -329,8 +304,6 @@ export type Bridge = {
   pick_folder(): Promise<{ path: string | null } | ErrorResponse>;
   conf_keys(path: string): Promise<ConfKeysDocument | ErrorResponse>;
   conf_values(path: string): Promise<ConfValuesDocument | ErrorResponse>;
-  ctx_capacity(path: string, harness: string, validateOnly?: boolean):
-    Promise<CtxCapacity | ErrorResponse>;
   /** 값 null 은 그 줄을 지운다(엔진 conf writer 의 삭제). */
   conf_save(path: string, updates: Record<string, string | null>):
     Promise<ConfSaveResult | ErrorResponse>;
@@ -395,8 +368,6 @@ export function httpBridge(): Bridge {
     conf_keys: (path) => call("conf_keys", path) as Promise<ConfKeysDocument | ErrorResponse>,
     conf_values: (path) =>
       call("conf_values", path) as Promise<ConfValuesDocument | ErrorResponse>,
-    ctx_capacity: (path, harness, validateOnly = false) =>
-      call("ctx_capacity", path, harness, validateOnly) as Promise<CtxCapacity | ErrorResponse>,
     conf_save: (path, updates) =>
       call("conf_save", path, updates) as Promise<ConfSaveResult | ErrorResponse>,
     conf_reset: (path, key) =>

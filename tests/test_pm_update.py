@@ -41,12 +41,13 @@ def _load_pm_update():
 
 @pytest.fixture(autouse=True)
 def _known_native_capacity(pm_update,monkeypatch):
-    """정상 update baseline의 독립 C=1000000, raw T=2000000 고정 mock."""
-    from _manager_home import known_ctx_reader
+    """갱신이 싣는 pm_import 의 모델 한도 조회를 고정 값(C=1000000, 모델 창 2000000)으로 바꾼다."""
+    from _manager_home import known_ctx_seams
     original=pm_update._load_pm_import
     def load():
         module=original()
-        module._read_harness_ctx_metadata=known_ctx_reader(module,capacity=1000000,context=2000000)
+        for name,seam in known_ctx_seams(capacity=1000000,context=2000000).items():
+            setattr(module,name,seam)
         return module
     monkeypatch.setattr(pm_update,'_load_pm_import',load)
 
@@ -8158,8 +8159,7 @@ module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 original=module._load_pm_import
 def load():
     pmi=original()
-    pmi._read_harness_ctx_metadata=fixture_reader(pmi,capacity=1000000,context=2000000)
-    return pmi
+    return install_fixture_capacity(pmi,1000000,2000000)
 module._load_pm_import=load
 raise SystemExit(module.main(sys.argv[2:]))
 """

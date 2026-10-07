@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import importlib.util
 import re
-import pytest
 from pathlib import Path
 
 from _git_fixture import init_git_repo
@@ -730,37 +729,3 @@ def test_facade_guard_is_sensitive_to_missing_facade():
     assert missing == expected, (
         f"facade 가드가 누락을 못 잡음(vacuous 위험) — 검출 {missing}, 예상 {expected}"
     )
-
-
-def test_t0937_schema2_scoped_runtime_in_all_flavors(tmp_path,monkeypatch):
-    import json
-    from test_harness_ctx_limits import _t0937_actual_fixture,_snapshot_fixture_bytes
-    f=_t0937_actual_fixture(tmp_path,monkeypatch)
-    # schema2의 catalog strict 계약 대조군. schema3 snapshot 예외는 AT1에서 검증한다.
-    legacy=dict(f.record);legacy['schema']=2;legacy.pop('applied');legacy.pop('applied_at')
-    legacy['projection_sha256']=f.leaf.ctx_record_digest(legacy)
-    (f.root/f.leaf.CTX_BUDGET_RELPATH).write_text(json.dumps(legacy),encoding='utf-8')
-    (f.codex/'models_cache.json').write_text('{"client_version":"0.150.0","models":[]}',encoding='utf-8')
-    f.registry.write_text('{}',encoding='utf-8')
-    before=_snapshot_fixture_bytes(f.root);calls=list(f.calls)
-    for flavor in ('claude_code','codex','opencode'):
-        spec=importlib.util.spec_from_file_location('scoped_shipping_'+flavor,REPO/'templates'/flavor/'.project_manager/tools/local_conf.py')
-        leaf=importlib.util.module_from_spec(spec);spec.loader.exec_module(leaf)
-        for harness,budget in f.record['budgets'].items():
-            row=leaf.read_ctx_budget(f.root,f.values,harness,budget['identity'])
-            assert row['status']==('unknown' if harness=='codex' else 'known'),(flavor,harness,row)
-            assert row['E']==(None if harness=='codex' else budget['E'])
-        monkeypatch.setenv('ANTHROPIC_MODEL','changed-own-model')
-        assert leaf.read_ctx_budget(f.root,f.values,'claude',f.record['budgets']['claude']['identity'])['status']=='unknown'
-        assert leaf.read_ctx_budget(f.root,f.values,'opencode',f.record['budgets']['opencode']['identity'])['status']=='known'
-        monkeypatch.delenv('ANTHROPIC_MODEL')
-    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
-
-
-@pytest.mark.parametrize('name',['local_conf.py','pm_import.py','pm_config.py'])
-def test_t0941_current_verification_core_shipping(name):
-    source=(TOOLS/name).read_bytes()
-    for flavor in ('claude_code','codex','opencode'):
-        target=REPO/'templates'/flavor/'.project_manager/tools'/name
-        assert target.read_bytes()==source
-        assert '.project_manager/tools/'+name in (REPO/'templates'/flavor/'.project_manager/engine.manifest').read_text(encoding='utf-8')

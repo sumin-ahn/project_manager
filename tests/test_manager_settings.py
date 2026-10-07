@@ -72,25 +72,26 @@ path=Path(sys.argv[1])
 spec=importlib.util.spec_from_file_location('ctx_fixture_entry',path)
 entry=importlib.util.module_from_spec(spec);spec.loader.exec_module(entry)
 if path.name=='pm_import.py':
-    entry._read_harness_ctx_metadata=fixture_reader(entry)
+    install_fixture_capacity(entry)
 else:
     original=entry._load_module
-    pmi=original('pm_import','pm_import.py')
-    pmi._read_harness_ctx_metadata=fixture_reader(pmi)
+    pmi=install_fixture_capacity(original('pm_import','pm_import.py'))
     entry._load_module=lambda name,filename: pmi if name=='pm_import' else original(name,filename)
 raise SystemExit(entry.main(sys.argv[2:]))
 """
 
 @pytest.fixture(autouse=True)
-def _known_ctx_child_reader(request,monkeypatch):
-    if 't0932' in request.node.name:return
+def _known_ctx_child_reader(monkeypatch):
+    """`ctx-apply` 자식의 교체 스크립트 — 테스트가 `["child"]` 를 바꿔 다른 조회 결과를 준다."""
     import manager.bridge_settings as bridge
     original=bridge._run
+    holder={'child':_KNOWN_CTX_CHILD}
     def run(home,argv,**kwargs):
         if 'ctx-apply' in argv:
-            argv=[argv[0],'-c',_KNOWN_CTX_CHILD,argv[1],*argv[2:]]
+            argv=[argv[0],'-c',holder['child'],argv[1],*argv[2:]]
         return original(home,argv,**kwargs)
     monkeypatch.setattr(bridge,'_run',run)
+    return holder
 
 @pytest.fixture(scope="module")
 def base_home(tmp_path_factory) -> Path:
@@ -102,8 +103,6 @@ def base_home(tmp_path_factory) -> Path:
 def pm_home(base_home, tmp_path) -> Path:
     home = tmp_path / "demo"
     shutil.copytree(base_home, home, symlinks=True)
-    from _manager_home import reanchor_ctx_record
-    reanchor_ctx_record(home,base_home)
     return home
 
 
@@ -200,7 +199,7 @@ def test_the_five_lists_are_the_copys_verdict_not_a_manager_calculation(api, pm_
 
     verdict = api.status(str(pm_home))["conf"]
     assert set(verdict) == {
-        "missing_required", "legacy", "unknown", "nonstandard", "missing_for_latest", "ctx_budget", "ctx_applied"}
+        "missing_required", "legacy", "unknown", "nonstandard", "missing_for_latest", "ctx_budget"}
     # 가벼운 절은 소스를 해소하지 않는다 — "갱신하면 필요" 는 없음([])이 아니라 모름(null)이다.
     assert verdict["missing_for_latest"] is None
 
@@ -588,40 +587,49 @@ def test_the_model_query_waits_on_the_heavy_limit(api, pm_home, monkeypatch):
     assert response["error"]["kind"] == "timeout"
 
 
-def test_t0932_budget_display_unknown_mixed_and_unrelated(api,pm_home,monkeypatch):
-    import manager.bridge_settings as bridge
-    original=bridge._run
-    child=_KNOWN_CTX_CHILD.replace("entry._read_harness_ctx_metadata=fixture_reader(entry)",
-        "entry._ctx_native_protocol=lambda *a,**kw: (_ for _ in ()).throw(ValueError('fixture native 근거 없음'))")
-    # pm_config의 검증된 importer에도 같은 subprocess 거부를 주입한다.
-    child=child.replace("pmi._read_harness_ctx_metadata=fixture_reader(pmi)",
-        "pmi._ctx_native_protocol=lambda *a,**kw: (_ for _ in ()).throw(ValueError('fixture native 근거 없음'))")
-    def run(home,argv,**kwargs):
-        if 'ctx-apply' in argv:argv=[argv[0],'-c',child,argv[1],*argv[2:]]
-        return original(home,argv,**kwargs)
-    monkeypatch.setattr(bridge,'_run',run)
-    record=pm_home/'.project_manager/.local/ctx-budget.json';record.unlink()
-    api.status(str(pm_home))
-    before=tree_snapshot(pm_home)
-    refused=api.conf_save(str(pm_home),{'ctx.compact_at_pct':'94','identity.user':'must-not-save@example.invalid'})
-    assert refused['error']['rc']==3 and 'unknown' in refused['error']['message']
-    assert tree_snapshot(pm_home)==before
-    saved=api.conf_save(str(pm_home),{'identity.user':'allowed@example.invalid'})
-    assert saved['changed'] and _values(pm_home)['identity.user']=='allowed@example.invalid'
-    after=tree_snapshot(pm_home)
-    assert {name for name in set(before)|set(after) if before.get(name)!=after.get(name)}=={'.project_manager/local.conf'}
-    assert saved['conf']['ctx_budget']['claude']['status']=='unknown'
+# 화면에 내지 않는 내부 용어 — 출처 설명(basis_text)은 사람이 읽는 말이다.
+_T0943_HIDDEN_TERMS = ("verification", "physical", "receipt", "native", "metadata", "evidence", "schema", "unknown")
 
 
-def test_t0932_budget_display_same_commit_projection(api,pm_home,monkeypatch):
-    import manager.bridge_settings as bridge
-    original=bridge._run
-    def run(home,argv,**kwargs):
-        if 'ctx-apply' in argv:argv=[argv[0],'-c',_KNOWN_CTX_CHILD,argv[1],*argv[2:]]
-        return original(home,argv,**kwargs)
-    monkeypatch.setattr(bridge,'_run',run)
-    saved=api.conf_save(str(pm_home),{'harness.claude.ctx_window_tokens':'600000','ctx.checkpoint_at_pct':'80','ctx.precompact_at_pct':'90','ctx.compact_at_pct':'94'})
-    row=saved['conf']['ctx_budget']['claude']
-    assert (row['W'],row['C'],row['E'],row['P'])==(600000,200000,200000,188000)
-    assert _values(pm_home)['harness.claude.ctx_window_tokens']=='600000'
-    assert saved['conf']==api.status(str(pm_home))['conf']
+def test_t0943_budget_display_after_single_save(api, pm_home):
+    """T-0943 AT-012 — 저장 한 번이 C 를 조회해 기록하고, 응답·현황의 표시 자료가 같다."""
+    from manager.bridge_settings import SettingsApi
+    assert not hasattr(SettingsApi, "ctx_capacity") and not hasattr(api, "ctx_capacity")
+    saved = api.conf_save(str(pm_home), {"harness.claude.ctx_window_tokens": "600000",
+                                         "ctx.checkpoint_at_pct": "80", "ctx.precompact_at_pct": "90",
+                                         "ctx.compact_at_pct": "94"})
+    conf = saved["conf"]
+    assert "ctx_applied" not in conf
+    row = conf["ctx_budget"]["claude"]
+    assert row["status"] == "ok"
+    assert (row["C"], row["E"], row["P"]) == (200000, 200000, 188000)
+    assert row["models"] == ["fixture-model"] and row["warning"] is None
+    assert isinstance(row["applied_at"], str) and row["applied_at"].endswith("+00:00")
+    assert "200,000" in row["basis_text"]
+    assert not any(term in row["basis_text"].lower() for term in _T0943_HIDDEN_TERMS), row["basis_text"]
+    assert _values(pm_home)["harness.claude.ctx_window_tokens"] == "600000"
+    assert conf == api.status(str(pm_home))["conf"]
+
+
+def test_t0943_budget_error_and_refused_reread(api, pm_home, _known_ctx_child_reader):
+    """기록이 없으면 현황은 사유와 함께 오류다. C 를 읽지 못한 저장은 아무것도 쓰지 않고, 사용 한도와
+    무관한 저장은 그대로 된다."""
+    (pm_home / ".project_manager/.local/ctx-budget.json").unlink()
+    row = api.status(str(pm_home))["conf"]["ctx_budget"]["claude"]
+    assert row["status"] == "error" and "ctx-apply" in row["reason"]
+
+    refuse = "(lambda *a, **k: (_ for _ in ()).throw(ValueError('조회 응답 없음')))"
+    _known_ctx_child_reader["child"] = _KNOWN_CTX_CHILD.replace(
+        "install_fixture_capacity(entry)", f"entry._ctx_native_protocol={refuse}").replace(
+        "pmi=install_fixture_capacity(original('pm_import','pm_import.py'))",
+        f"pmi=original('pm_import','pm_import.py');pmi._ctx_native_protocol={refuse}")
+    before = tree_snapshot(pm_home)
+    refused = api.conf_save(str(pm_home), {"ctx.compact_at_pct": "94",
+                                           "identity.user": "must-not-save@example.invalid"})
+    assert refused["error"]["rc"] == 3 and "조회 응답 없음" in refused["error"]["message"], refused
+    assert tree_snapshot(pm_home) == before
+    plain = api.conf_save(str(pm_home), {"identity.user": "allowed@example.invalid"})
+    assert plain["changed"] and _values(pm_home)["identity.user"] == "allowed@example.invalid"
+    after = tree_snapshot(pm_home)
+    assert {name for name in set(before) | set(after) if before.get(name) != after.get(name)} == {
+        ".project_manager/local.conf"}

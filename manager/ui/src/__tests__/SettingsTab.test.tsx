@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Entry, SettingsEntry } from "../App";
 import type {
@@ -708,171 +708,58 @@ describe("실패", () => {
   });
 });
 
-it("T-0932 희망값과 실제 한도·적용 기준의 읽기 전용 표시", () => {
-  const conf: ConfSection = {...CONF, ctx_budget: {
-    claude: {status:"known",reason:null,W:600000,C:200000,E:200000,P:188000},
-    codex: {status:"unknown",reason:"모델 정체 불일치",W:600000,C:null,E:null,P:null},
-  }};
-  mounted(makeBridge(),false,null,settingsEntry({...VALUES,"harness.claude.ctx_window_tokens":"600000"}),lightEntry(conf));
-  openGroup("harness");
-  expect(screen.getByTestId("budget-claude").textContent).toContain("현재 예산 근거 확인 · 기준 200000 · 압축 지점 188000 토큰");
-  expect((screen.getByLabelText("harness.claude.ctx_window_tokens") as HTMLInputElement).value).toBe("600000");
-  expect(screen.getByTestId("budget-codex").textContent).toContain("현재 예산 확인 불가 (모델 정체 불일치)");
-  expect(screen.queryByLabelText("actual_capacity")).toBeNull();
-});
-
-it("T-0937 다른 도구의 원천 변경에서 확인된 도구별 예산을 유지한다", () => {
-  const bridge=makeBridge();
-  const conf: ConfSection={...CONF,ctx_budget:{
-    claude:{status:"known",reason:null,W:600000,C:967000,E:600000,P:564000},
-    codex:{status:"unknown",reason:"모델 선택/native/metadata 근거 변경",W:600000,C:null,E:null,P:null},
-    opencode:{status:"known",reason:null,W:200000,C:1015808,E:200000,P:188000},
-  }};
-  mounted(bridge,false,null,settingsEntry({...VALUES,"harness.codex.ctx_window_tokens":"600000"}),lightEntry(conf));
-  openGroup("harness");
-  expect(screen.getByTestId("budget-claude")).toHaveTextContent("현재 예산 근거 확인 · 기준 600000 · 압축 지점 564000 토큰");
-  expect(screen.getByTestId("budget-opencode")).toHaveTextContent("현재 예산 근거 확인 · 기준 200000 · 압축 지점 188000 토큰");
-  expect(screen.getByTestId("budget-codex")).toHaveTextContent("현재 예산 확인 불가 (모델 선택/native/metadata 근거 변경)");
-  expect(screen.getByTestId("budget-codex")).not.toHaveTextContent("570000");
-  expect((screen.getByLabelText("harness.codex.ctx_window_tokens") as HTMLInputElement).value).toBe("600000");
-  expect(bridge.conf_save).not.toHaveBeenCalled();
-});
-
-
-it("T0938_AT4_current_and_applied_separation", () => {
-  const bridge = makeBridge();
-  const conf: ConfSection = { ...CONF, ctx_budget: {
-    claude: { status: "unknown", reason: "모델 선택/native/metadata 근거 변경", W: 600000, C: null, E: null, P: null },
+describe("T0943 압축 한도 기록", () => {
+  const BUDGET: ConfSection = { ...CONF, ctx_budget: {
+    claude: { status: "ok", models: ["claude-opus-5-5"], C: 967000, E: 600000, P: 564000,
+              applied_at: "2026-10-07T03:00:00+00:00",
+              basis_text: "Claude Code 조회 · 모델 창 1,000,000 − 압축 예약 33,000" },
+    codex: { status: "error", reason: "codex 압축 한도 기록이 없습니다" },
+    opencode: { status: "error", reason: "opencode 압축 한도 기록이 없습니다" },
   } };
-  render(<SettingsTab bridge={bridge} path={DEMO} light={lightEntry(conf)}
-    settings={settingsEntry({ ...VALUES, "harness.claude.ctx_window_tokens": "600000" })}
-    onReload={vi.fn()} startAsking={false} adapterConf={null} onAdapterConf={vi.fn()}
-    capacities={{ claude: { schema: 1, harness: "claude", status: "known", reason: null, C: 967000,
-      observed_at: "2026-10-04T00:00:00Z", valid_until: null } }} />);
-  openGroup("harness");
-  expect(screen.getByTestId("capacity-claude")).toHaveTextContent("현재 가용 한도 967000 토큰");
-  expect(screen.getByTestId("budget-claude")).toHaveTextContent("설정 반영 확인 불가");
-  expect(screen.getByTestId("budget-claude")).not.toHaveTextContent("적용 기준 600000");
-  expect((screen.getByLabelText("harness.claude.ctx_window_tokens") as HTMLInputElement).value).toBe("600000");
-  expect(bridge.conf_save).not.toHaveBeenCalled();
-});
+  /** 가벼운 현황 조회의 설치 도구 목록(`harnesses`)과 판정 — 기록 블록은 설치된 도구 행에만 선다. */
+  const installed = (harnesses: string[]): Entry => ({ status: { conf: BUDGET, harnesses } as StatusDocument });
+  const SAVED = { ...VALUES, "harness.claude.ctx_window_tokens": "600000" };
 
-it('T-0939 만료된 예산과 마지막 설정 반영의 분리', () => {
-  const conf = {...CONF,ctx_budget:{codex:{status:'unknown',reason:'metadata 만료',W:600000,C:null,E:null,P:null}},
-    ctx_applied:{codex:{status:'known',reason:null,W:600000,E:570000,P:535800,native_window:535800,applied_at:'2026-10-05T00:00:00Z'}}} as ConfSection;
-  mounted(makeBridge(),false,null,settingsEntry(),lightEntry(conf));openGroup('harness');
-  expect(screen.getByTestId('budget-codex')).toHaveTextContent('설정 반영 확인');
-  expect(screen.getByTestId('budget-codex')).toHaveTextContent('마지막 반영 기준 570000');
-  expect(screen.getByTestId('budget-codex')).toHaveTextContent('현재 예산 확인 불가');
-});
+  it("T0943 기록 표시와 다시 적용 버튼 — 편집이 없으면 저장된 값으로 저장 경로를 탄다", async () => {
+    const bridge = makeBridge();
+    mounted(bridge, false, null, settingsEntry(SAVED), installed(["claude", "codex"]));
+    openGroup("harness");
+    const claude = screen.getByTestId("budget-claude");
+    expect(claude).toHaveTextContent("claude-opus-5-5 · 모델 가용 한도 967000 (Claude Code 조회 · 모델 창 1,000,000 − 압축 예약 33,000)");
+    expect(claude).not.toHaveTextContent("firstParty");
+    expect(claude).toHaveTextContent("적용 한도 600000 · 압축 지점 564000");
+    expect(claude).toHaveTextContent(`기록 시각 ${new Date("2026-10-07T03:00:00+00:00").toLocaleString()}`);
+    expect(claude).not.toHaveTextContent("적용 시각");
+    expect(screen.getByTestId("budget-codex")).toHaveTextContent("압축 한도 기록 확인 불가 (codex 압축 한도 기록이 없습니다)");
+    for (const word of ["verification", "physical", "receipt", "native", "metadata", "evidence", "schema",
+                        "unknown", "자동 재검증", "자동 재시도"]) {
+      expect(`${claude.textContent}${screen.getByTestId("budget-codex").textContent}`).not.toContain(word);
+    }
+    expect(bridge.conf_save).not.toHaveBeenCalled();
+    fireEvent.click(within(claude).getByRole("button", { name: "한도 다시 읽고 적용" }));
+    await waitFor(() => expect(bridge.conf_save).toHaveBeenCalledTimes(1));
+    expect(savedUpdates(bridge)).toEqual({ "harness.claude.ctx_window_tokens": "600000" });
+  });
 
-it('T-0939 관리 설정 변경의 반영 확인 거부와 현재 C 유지', () => {
-  const conf: ConfSection={...CONF,ctx_budget:{codex:{status:'unknown',reason:'관리 값 변경',W:600000,C:null,E:null,P:null}},
-    ctx_applied:{codex:{status:'unknown',reason:'관리 설정 변경',W:600000,E:null,P:null,native_window:null,applied_at:null}}};
-  const bridge=makeBridge();
-  render(<SettingsTab bridge={bridge} path={DEMO} light={lightEntry(conf)} settings={settingsEntry({...VALUES,'harness.codex.ctx_window_tokens':'600000'})}
-    onReload={vi.fn()} startAsking={false} adapterConf={null} onAdapterConf={vi.fn()}
-    capacities={{codex:{schema:1,harness:'codex',status:'known',reason:null,C:570000,observed_at:'2026-10-05T00:00:00Z',valid_until:null}}}/>);
-  openGroup('harness');
-  expect(screen.getByTestId('capacity-codex')).toHaveTextContent('현재 가용 한도 570000');
-  expect(screen.getByTestId('budget-codex')).toHaveTextContent('설정 반영 확인 불가 (관리 설정 변경)');
-  expect(screen.getByTestId('budget-codex')).not.toHaveTextContent('마지막 반영 기준');
-  expect((screen.getByLabelText('harness.codex.ctx_window_tokens') as HTMLInputElement).value).toBe('600000');
-  expect(bridge.conf_save).not.toHaveBeenCalled();
-});
+  it("T0943 저장하지 않은 편집이 있으면 버튼이 잠기고 편집이 그대로 남는다", () => {
+    const bridge = makeBridge();
+    mounted(bridge, false, null, settingsEntry(SAVED), installed(["claude", "codex"]));
+    openGroup("harness");
+    fireEvent.change(screen.getByLabelText("harness.claude.ctx_window_tokens"), { target: { value: "300000" } });
+    const button = within(screen.getByTestId("budget-claude")).getByRole("button", { name: "한도 다시 읽고 적용" });
+    expect(button).toBeDisabled();
+    expect(within(screen.getByTestId("budget-codex")).getByRole("button", { name: "한도 다시 읽고 적용" })).toBeDisabled();
+    expect(screen.getByTestId("budget-claude")).toHaveTextContent("편집 내용을 저장한 뒤 한도를 다시 읽으십시오.");
+    fireEvent.click(button);
+    expect(bridge.conf_save).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("harness.claude.ctx_window_tokens")).toHaveValue("300000");
+  });
 
-it("T0941 verified current settings with unknown physical history", () => {
-  const budget = { status: "known" as const, reason: null, W: 600000, C: 967000, E: 600000, P: 564000 };
-  const applied = { status: "unknown" as const, reason: "과거 원천 변경", W: 600000, E: null, P: null, native_window: null, applied_at: null };
-  render(<SettingsTab bridge={makeBridge()} path={DEMO} light={lightEntry({ ...CONF, ctx_budget: { claude: budget }, ctx_applied: { claude: applied } })}
-    settings={settingsEntry({ ...VALUES, "harness.claude.ctx_window_tokens": "600000" })}
-    onReload={vi.fn()} startAsking={false} adapterConf={null} onAdapterConf={vi.fn()}
-    capacities={{ claude: { schema: 2, harness: "claude", status: "known", reason: null, C: 967000, observed_at: "2026-10-05T00:00:00Z", valid_until: null,
-      verification: { status: "verified", reason: null, verified_at: "2026-10-05T00:00:00Z", revision: "a".repeat(64), evidence_changed: true }, budget, applied } }} />);
-  openGroup("harness");
-  expect(screen.getByTestId("budget-claude")).toHaveTextContent("현재 설정 검증 완료 · 기준 600000 · 압축 지점 564000 토큰");
-  expect(screen.getByTestId("budget-claude")).not.toHaveTextContent("설정 반영 확인 불가");
-  expect(screen.getByTestId("budget-claude")).not.toHaveTextContent("재확인 필요");
-  expect(screen.getByText("마지막 물리 반영 이력 미확인")).toBeInTheDocument();
-});
-
-it.each([true,false])("T0941 explicit candidate apply preserves saved unset semantics (%s)", async (configured) => {
-  const bridge=makeBridge();const key="harness.codex.ctx_window_tokens";
-  const values={ ...VALUES, ...(configured ? { [key]:"600000" } : {}) };
-  const props={ bridge, path:DEMO, light:lightEntry(), settings:settingsEntry(values), onReload:vi.fn(), startAsking:false,
-    adapterConf:null, onAdapterConf:vi.fn(), capacities:{codex:{schema:2 as const,harness:"codex",status:"known" as const,reason:null,C:570000,observed_at:null,valid_until:null,
-      verification:{status:"apply-required" as const,reason:"불일치",verified_at:null,revision:null,evidence_changed:false},
-      budget:{status:"unknown" as const,reason:"불일치",W:600000,C:null,E:null,P:null},
-      candidate:{W:600000,C:570000,E:570000,P:535800,native_window:535800,managed:[{path:["model_auto_compact_token_limit"],value:535800}]}}}};
-  const view=render(<SettingsTab {...props}/>);openGroup("harness");
-  expect(screen.getByTestId("budget-codex")).toHaveTextContent("적용 필요 (저장값 기준) · 기준 570000 · 압축 지점 535800 · native 535800 토큰");
-  fireEvent.click(screen.getByText("현재 기준 적용"));
-  await waitFor(()=>expect(bridge.conf_save).toHaveBeenCalledWith(DEMO,{[key]:configured ? "600000" : null}));
-  expect(props.onReload).toHaveBeenCalled();
-  // Polling/query props must not reset unrelated unsaved edits or enable apply over them.
-  if (configured) {
-    fireEvent.change(screen.getByLabelText(key),{target:{value:"610000"}});
-    view.rerender(<SettingsTab {...props} capacities={{codex:{...props.capacities.codex,observed_at:"2026-10-05T00:00:01Z"}}}/>);
-    expect(screen.getByLabelText(key)).toHaveValue("610000");
-    expect(screen.getByText("현재 기준 적용")).toBeDisabled();
-    expect(screen.getByText("편집 내용을 저장한 후 검증하십시오.")).toBeInTheDocument();
-  }
-});
-
-it("T0941 writer failure retains the actual last budget without a new verification claim", () => {
-  const budget={status:"known" as const,reason:null,W:600000,C:967000,E:600000,P:564000};
-  render(<SettingsTab bridge={makeBridge()} path={DEMO} light={lightEntry({...CONF,ctx_budget:{claude:budget}})}
-    settings={settingsEntry({...VALUES,"harness.claude.ctx_window_tokens":"600000"})} onReload={vi.fn()} startAsking={false} adapterConf={null} onAdapterConf={vi.fn()}
-    capacities={{claude:{schema:2,harness:"claude",status:"unknown",reason:"metadata 조회 실패",C:null,observed_at:null,valid_until:null,budget,
-      verification:{status:"write-failed",reason:"이전 저장 근거 유지",verified_at:"2026-10-05T00:00:00Z",revision:"a".repeat(64),evidence_changed:false}}}}/>);
-  openGroup("harness");
-  expect(screen.getByTestId("budget-claude")).toHaveTextContent("마지막 검증 예산 유지 · 기준 600000 · 압축 지점 564000 토큰");
-  expect(screen.getByTestId("budget-claude")).toHaveTextContent("최신 검증 근거 저장 실패");
-  expect(screen.getByTestId("budget-claude")).not.toHaveTextContent("현재 설정 검증 완료");
-});
-
-it("T0941 failed invalidation keeps the trusted candidate and explicit action", () => {
-  const budget={status:"known" as const,reason:null,W:600000,C:967000,E:600000,P:564000};
-  render(<SettingsTab bridge={makeBridge()} path={DEMO} light={lightEntry()} settings={settingsEntry({...VALUES,"harness.claude.ctx_window_tokens":"600000"})}
-    onReload={vi.fn()} startAsking={false} adapterConf={null} onAdapterConf={vi.fn()}
-    capacities={{claude:{schema:2,harness:"claude",status:"known",reason:null,C:567000,observed_at:null,valid_until:null,budget,
-      verification:{status:"write-failed",reason:"근거 철회 실패",verified_at:null,revision:null,evidence_changed:false},
-      candidate:{W:600000,C:567000,E:567000,P:532980,native_window:565980,managed:[{path:["autoCompactWindow"],value:565980}]}}}}/>);
-  openGroup("harness");
-  expect(screen.getByTestId("budget-claude")).toHaveTextContent("최신 후보 (저장값 기준) · 기준 567000 · 압축 지점 532980");
-  expect(screen.getByText("현재 기준 적용")).toBeEnabled();
-  expect(screen.getByTestId("budget-claude")).not.toHaveTextContent("현재 설정 검증 완료");
-});
-
-it.each([
-  ["querying", "changed", false, "자동 재검증 중"],
-  ["waiting", "changed", false, "자동 재검증 대기"],
-  ["waiting", "unknown", false, "자동 재시도 대기"],
-  ["waiting", "write-failed", true, "자동 재시도 대기"],
-  ["idle", "apply-required", false, "적용 필요 (저장값 기준)"],
-  ["idle", "update-required", false, "엔진 갱신 후 현재 설정 검증 필요"],
-  ["idle", "unknown", false, "현재 예산 확인 불가"],
-] as const)("T0942_AT3_activity_matrix_%s_%s", (phase,verification,retained,label)=>{
-  const key="harness.codex.ctx_window_tokens";
-  const budget={status:retained?"known" as const:"unknown" as const,reason:retained?null:"원천 변경",W:600000,C:retained?570000:null,E:retained?570000:null,P:retained?535800:null};
-  const capacity={schema:2 as const,harness:"codex",status:"known" as const,reason:null,C:570000,observed_at:null,valid_until:null,budget,
-    verification:{status:verification,reason:"실제 오류 사유",verified_at:null,revision:null,evidence_changed:false},
-    activity:{phase,retry_at:phase==="waiting"?new Date("2026-10-05T00:00:05Z").getTime():null,reason:phase==="waiting"?"실제 오류 사유":null},
-    candidate:{W:600000,C:570000,E:570000,P:535800,native_window:535800,managed:[]},
-    applied:{status:"known" as const,reason:null,W:600000,E:570000,P:535800,native_window:535800,applied_at:"2026-10-05T00:00:00Z"}};
-  const bridge=makeBridge();const props={bridge,path:DEMO,light:lightEntry(),settings:settingsEntry({...VALUES,[key]:"600000"}),onReload:vi.fn(),startAsking:false,adapterConf:null,onAdapterConf:vi.fn()};
-  const view=render(<SettingsTab {...props} capacities={{codex:capacity}}/>);openGroup("harness");
-  const hint=screen.getByTestId("budget-codex");expect(hint).toHaveTextContent(label);
-  expect(hint).not.toHaveTextContent("재확인 필요");expect(hint).not.toHaveTextContent("현재 설정 검증 완료");
-  expect(hint).toHaveTextContent("마지막 반영 기준 570000");
-  if(phase!=="idle") {expect(hint).not.toHaveTextContent("현재 가용 한도");expect(hint).toHaveTextContent("마지막 조회 한도");}
-  if(phase==="waiting") expect(hint).toHaveTextContent("다음 시도");
-  if(verification==="unknown"&&phase==="waiting") expect(hint).toHaveTextContent("최근 조회 실패 (실제 오류 사유)");
-  if(verification==="write-failed") {expect(hint).toHaveTextContent("마지막 검증 예산 유지");expect(hint).toHaveTextContent("최신 검증 근거 저장 실패 (실제 오류 사유)");}
-  if(phase==="querying") expect(screen.queryByText("현재 기준 적용")).toBeNull();
-  if(verification==="apply-required") expect(screen.getByText("현재 기준 적용")).toBeEnabled();
-  fireEvent.change(screen.getByLabelText(key),{target:{value:"610000"}});const input=screen.getByLabelText(key);
-  view.rerender(<SettingsTab {...props} capacities={{codex:{...capacity,activity:{phase:"querying",retry_at:null,reason:null}}}}/>);
-  expect(screen.getByLabelText(key)).toBe(input);expect(input).toHaveValue("610000");
-  expect(screen.queryByText("현재 기준 적용")).toBeNull();expect(bridge.conf_save).not.toHaveBeenCalled();
+  it("T0943 설치되지 않은 도구 행에는 기록 블록이 없다", () => {
+    mounted(makeBridge(), false, null, settingsEntry(SAVED), installed(["claude"]));
+    openGroup("harness");
+    expect(screen.getByTestId("budget-claude")).toHaveTextContent("적용 한도 600000");
+    expect(screen.queryByTestId("budget-codex")).toBeNull();
+    expect(screen.queryByTestId("budget-opencode")).toBeNull();
+  });
 });

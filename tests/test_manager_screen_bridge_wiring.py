@@ -79,7 +79,7 @@ def test_the_screen_names_are_the_python_bridge_names_measured_in_one_run():
 
     assert _bridge_type_names() == python_names
     assert _bridge_wiring_names() == python_names
-    assert len(python_names) == 22
+    assert len(python_names) == 21
 
 
 def test_a_new_python_method_makes_the_screen_red_until_it_follows():
@@ -90,7 +90,7 @@ def test_a_new_python_method_makes_the_screen_red_until_it_follows():
 
     grown = set(api_names(WithOneMore(folder_picker=lambda: None)))
 
-    assert len(grown) == 23
+    assert len(grown) == 22
     assert _bridge_type_names() != grown
 
 

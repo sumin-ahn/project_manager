@@ -56,8 +56,6 @@ def base_home(tmp_path_factory, source) -> Path:
 def pm_home(base_home, tmp_path) -> Path:
     home = tmp_path / "demo"
     shutil.copytree(base_home, home, symlinks=True)
-    from _manager_home import reanchor_ctx_record
-    reanchor_ctx_record(home,base_home)
     return home
 
 
@@ -115,7 +113,7 @@ def test_the_section_carries_the_conf_verdict_of_the_same_call(api, pm_home):
 
     conf = section["conf"]
     assert set(conf) == {"missing_required", "legacy", "unknown", "nonstandard",
-                         "missing_for_latest", "ctx_budget", "ctx_applied"}
+                         "missing_for_latest", "ctx_budget"}
     assert conf["missing_for_latest"] == []                   # 없음 — 모름(null)과 다른 값이다
     light = api.status(str(pm_home))["conf"]
     assert light["missing_for_latest"] is None                # 같은 사본의 가벼운 절은 모름

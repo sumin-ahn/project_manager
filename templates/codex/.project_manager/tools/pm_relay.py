@@ -227,25 +227,16 @@ def _load_ctx_leaf():
     return _load_module_from_path(path, "local_conf.py", verifier=_verify_engine_rev, cache=True)
 
 
-def resolve_ctx_budget(root, conf, harness, identity=None):
-    result = _load_ctx_leaf().read_ctx_budget(root, conf, harness, identity)
-    if result["status"] != "known":
-        return None
-    return result["E"]
+def ctx_budget(root, harness, session_model):
+    """relay·훅이 쓰는 (적용 한도 E, 압축 임박 경고 %, 모델 불일치 경고 또는 None).
 
-
-def bound_ctx_budget(root, harness, identity):
+    압축 한도 기록 부재·손상·입력 불일치는 `local_conf.CtxBudgetError` 로 올린다(기본값 대체 없음).
+    회전 임계가 bootstrap 상한 이하면 `validate_relay_budget` 이 멈춘다."""
     leaf = _load_ctx_leaf()
-    values = leaf.load(Path(root) / ".project_manager/local.conf").values
-    budget = resolve_ctx_budget(root, values, harness, identity)
-    try:
-        precompact = int(leaf.ctx_input_values(values)["ctx.precompact_at_pct"])
-    except ValueError:
-        if budget is not None:
-            raise
-        precompact = int(leaf.default_for("ctx.precompact_at_pct"))
-    validate_relay_budget(budget, precompact)
-    return budget, precompact
+    values = leaf.load_checked(Path(root) / ".project_manager" / "local.conf")
+    budget = leaf.read_ctx_budget(root, values, harness, session_model)
+    validate_relay_budget(budget["E"], budget["precompact_at_pct"])
+    return budget["E"], budget["precompact_at_pct"], budget["warning"]
 
 
 # marker 디렉토리 — ctx_stop_hook.py 의 _MARKER_DIR 와 동일해야 한다(읽기 측·hook 이 쓰는 측).
@@ -308,15 +299,12 @@ GUARD_TRIPPED_RC = 1
 RELAY_BOOTSTRAP_COST_TOKENS = 40_400
 
 
-def validate_relay_budget(budget: int | None, precompact_at_pct: int) -> None:
-    """주입된 relay ctx 예산의 유효 회전 임계가 bootstrap 상한보다 큰지 검증한다.
+def validate_relay_budget(budget: int, precompact_at_pct: int) -> None:
+    """relay ctx 예산의 유효 회전 임계가 bootstrap 상한보다 큰지 검증한다.
 
-    ``None`` 은 예산 가드 미주입이므로 통과한다. 값이 주입됐다면 회전 임계
-    ``budget × precompact_at_pct / 100``(압축 임박 경고 = 쓴 %)이 실측 bootstrap 상한을
+    회전 임계 ``budget × precompact_at_pct / 100``(압축 임박 경고 = 쓴 %)이 실측 bootstrap 상한을
     엄격히 초과해야 한다.
     """
-    if budget is None:
-        return
     effective_threshold_x100 = budget * precompact_at_pct
     if effective_threshold_x100 <= RELAY_BOOTSTRAP_COST_TOKENS * 100:
         effective_threshold = effective_threshold_x100 / 100
@@ -324,9 +312,8 @@ def validate_relay_budget(budget: int | None, precompact_at_pct: int) -> None:
             f"[relay] ctx 예산 {budget} tok·압축 임박 경고 {precompact_at_pct}%의 유효 회전 임계 "
             f"{effective_threshold:g} tok은 bootstrap 실측 상한 "
             f"{RELAY_BOOTSTRAP_COST_TOKENS} tok 이하여서 즉시 세션 회전 위험. "
-            "희망 기준(`harness.<이름>.ctx_window_tokens`)은 실제 C 이하로 제한됩니다. "
-            "독립 모델의 실제 가용 한도와 적용 기준을 확인하고 "
-            "기존 모델 선택과 `ctx.precompact_at_pct` 설정으로 bootstrap 예산을 확보하십시오."
+            "적용 한도는 사용 한도(`harness.<이름>.ctx_window_tokens`)와 모델 가용 한도 중 작은 값입니다. "
+            "더 큰 모델을 쓰거나 `ctx.precompact_at_pct` 를 높인 뒤 `pm_config.py ctx-apply` 를 다시 실행하십시오."
         )
 
 # 위임/추가 리뷰 raw 위치 장부. 두 실행 표면이 같은 파일을 갱신하므로 파일락 아래

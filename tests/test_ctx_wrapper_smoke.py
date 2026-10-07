@@ -77,8 +77,8 @@ def _make_ctx_repo(tmp_path: Path) -> tuple[Path, Path]:
     pm = root / ".project_manager"
     pm.mkdir()
     (pm / "local.conf").write_text("", encoding="utf-8")  # repo_root 앵커 + 기본 임계(빈 conf).
-    from test_harness_ctx_limits import _t0932_install_budget_fixture
-    _t0932_install_budget_fixture(root, capacity=2000000)
+    from test_harness_ctx_limits import install_ctx_record
+    install_ctx_record(root, capacity=2000000)
     return root, claude
 
 
@@ -110,8 +110,6 @@ def _run(wrapper: Path, payload, env: dict) -> subprocess.CompletedProcess:
 
     payload 가 dict 면 json.dumps(하네스와 동일 escape), str 이면 그대로 준다(malformed 케이스).
     """
-    if isinstance(payload, dict):
-        payload = {**payload, 'model': {'id': 'fixture-model'}, 'model_provider': 'fixture-provider', 'profile': ''}
     stdin = payload if isinstance(payload, str) else json.dumps(payload)
     return subprocess.run(
         # Git Bash 는 argv 의 `\\` 를 escape 로 소실한다 → as_posix(forward-slash)로 넘긴다(POSIX 무변경).
@@ -192,7 +190,7 @@ def test_statusline_wrapper_malformed_graceful(tmp_path):
 
     proc = _run(claude / _STATUSLINE_WRAPPER, "{not valid json", env)
     assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
-    assert "ctx unknown" in proc.stdout, f"malformed 폴백(`ctx 0%`) 실패: {proc.stdout!r}"
+    assert "ctx 0%" in proc.stdout, f"malformed 폴백(`ctx 0%`) 실패: {proc.stdout!r}"
     assert "Traceback" not in proc.stderr, f"비정상 종료(traceback): {proc.stderr!r}"
 
 

@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Entry, SettingsEntry } from "../App";
 import type {
   Bridge, BridgeError, ConfChoices, ConfGovernor, ConfKeysDocument, ConfSection,
-  DelegateModelsDocument, CtxCapacityView,
+  DelegateModelsDocument,
 } from "../api";
-import { isError, isCapacityQueryFailure } from "../api";
+import { isError } from "../api";
 import AdapterSection from "../components/AdapterSection";
 import QuestionMode from "../components/QuestionMode";
 import { foldable, markedKeys, offReason, PICK, SET_TOGGLE, unsetHint } from "../lib/settings-rows";
@@ -255,11 +255,10 @@ function ValueField({ row, value, options, dependsValue, dependsLabel, fetched, 
 }
 
 export default function SettingsTab({ bridge, path, light, settings, onReload, startAsking,
-                                     adapterConf, onAdapterConf, capacities }:
+                                     adapterConf, onAdapterConf }:
   { bridge: Bridge; path: string | null; light: Entry | undefined;
     settings: SettingsEntry | undefined; onReload: () => void; startAsking: boolean;
-    adapterConf: ConfSection | null; onAdapterConf: (conf: ConfSection) => void;
-    capacities?: Record<string, import("../api").CtxCapacity & Partial<Pick<CtxCapacityView, "activity">>> }) {
+    adapterConf: ConfSection | null; onAdapterConf: (conf: ConfSection) => void }) {
   const [error, setError] = useState<BridgeError | null>(null);
   const [edits, setEdits] = useState<Edits>({});
   const [newKey, setNewKey] = useState("");
@@ -496,52 +495,29 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     </td>
   );
 
-  // 군 이름 하나가 멤버 전부에 붙으면 같은 이름이 여러 줄에 선다 — 갈리는 이름이 있으면 그것을
-  // 쓴다. 갈리는지 아닌지의 주인은 엔진 키 목록(`unit_labels`)이고 화면은 있으면 쓸 뿐이다.
-  const budgetHint = (key: string) => {
-    const match = /^harness\.(claude|codex|opencode)\.ctx_window_tokens$/.exec(key);
-    if (!match) return null;
-    const budget = capacities?.[match[1]]?.budget ?? conf.ctx_budget?.[match[1]];
-    const capacity = capacities?.[match[1]];
-    const phase = capacity?.activity?.phase ?? "idle";
-    const pending = phase !== "idle";
-    const applied = capacity?.applied ?? conf.ctx_applied?.[match[1]];
-    const verified = !pending && capacity?.verification?.status === "verified" && budget?.status === "known";
-    return <span className="block text-[11px] text-slate-500" data-testid={`budget-${match[1]}`}>
-      <span data-testid={`capacity-${match[1]}`}>
-        {capacity?.status === "known" ? `${pending ? "마지막 조회 한도" : "현재 가용 한도"} ${capacity.C} 토큰`
-          : `현재 모델 한도 확인 불가 (${capacity?.reason ?? "현재 metadata 미보유"})`}
-      </span>
-      {pending && <span className="block">
-        {phase === "querying" ? "자동 재검증 중" : (isCapacityQueryFailure(capacity) || capacity?.verification?.status === "write-failed" || capacity?.activity?.reason?.startsWith("최신 검증 근거 저장 실패")) ? "자동 재시도 대기" : "자동 재검증 대기"}
-        {phase === "waiting" && capacity?.activity?.retry_at ? ` · 다음 시도 ${new Date(capacity.activity.retry_at).toLocaleTimeString()}` : ""}
-        {capacity?.activity?.reason ? ` (${capacity.activity.reason})` : ""}
-      </span>}
-      {phase === "waiting" && isCapacityQueryFailure(capacity) && !capacity?.activity?.reason?.startsWith("최근 조회 실패") && <span className="block">최근 조회 실패 ({capacity?.verification?.reason ?? capacity?.reason})</span>}
-      <span className="block">
-        {verified ? `현재 설정 검증 완료 · 기준 ${budget.E} · 압축 지점 ${budget.P} 토큰`
-          : applied?.status === "known"
-          ? `설정 반영 확인 · 마지막 반영 기준 ${applied.E} · 압축 지점 ${applied.P} 토큰`
-          : `설정 반영 확인 불가 (${applied?.reason ?? "성공 반영 증언 없음"})`}
-      </span>
-      {!verified && <span className="block">
-        {budget?.status === "known"
-          ? `${capacity?.verification?.status === "write-failed" ? "마지막 검증 예산 유지" : pending ? "마지막 검증 예산" : "현재 예산 근거 확인"} · 기준 ${budget.E} · 압축 지점 ${budget.P} 토큰`
-          : `현재 예산 확인 불가 (${budget?.reason ?? "검증된 예산 기록 없음"})`}
-      </span>}
-      {verified && applied?.status === "known" && <span className="block">마지막 반영 시각 {applied.applied_at}</span>}
-      {verified && applied?.status !== "known" && <span className="block">마지막 물리 반영 이력 미확인</span>}
-      {capacity?.verification?.status === "write-failed" && <span className="block">최신 검증 근거 저장 실패 ({capacity.verification.reason})</span>}
-      {capacity?.verification?.status === "update-required" && <span className="block">엔진 갱신 후 현재 설정 검증 필요 ({capacity.verification.reason})</span>}
-      {phase !== "querying" && ["apply-required","write-failed"].includes(capacity?.verification?.status ?? "") && capacity?.candidate && <span className="block">
-        {capacity.verification?.status === "apply-required" ? "적용 필요" : "최신 후보"} (저장값 기준) · 기준 {capacity.candidate.E} · 압축 지점 {capacity.candidate.P} · native {capacity.candidate.native_window} 토큰
+  // 도구별 사용 한도 행 아래의 압축 한도 기록 — 적용할 때 조회한 값이고 화면이 다시 조회하지 않는다.
+  // 버튼은 그 키의 저장된 값으로 저장 경로(ctx-apply)를 다시 태워 모델 한도를 다시 읽는다. 저장은 화면의
+  // 편집을 비우므로 편집이 남아 있으면 누를 수 없다. 설치되지 않은 도구는 적용이 기록하지 않아 블록이 없다.
+  // 기록 시각은 지금 기록 값이 처음 쓰인 시각이다(값이 같은 재적용은 기록을 다시 쓰지 않는다).
+  const budgetBlock = (key: string) => {
+    const harness = /^harness\.(claude|codex|opencode)\.ctx_window_tokens$/.exec(key)?.[1];
+    const budget = harness === undefined ? undefined : conf.ctx_budget?.[harness];
+    if (harness === undefined || budget === undefined || !light?.status?.harnesses.includes(harness)) return null;
+    return (
+      <span className="block text-[11px] text-slate-500" data-testid={`budget-${harness}`}>
+        {budget.status === "ok" ? <>
+          <span className="block">{budget.models.join(", ")} · 모델 가용 한도 {budget.C} ({budget.basis_text})</span>
+          <span className="block">적용 한도 {budget.E} · 압축 지점 {budget.P} · 기록 시각 {new Date(budget.applied_at).toLocaleString()}</span>
+        </> : <span className="block">압축 한도 기록 확인 불가 ({budget.reason})</span>}
         <button type="button" disabled={busy || changedCount > 0} onClick={() => void save({ [key]: values[key] ?? null })}
-                className="ml-2 rounded border border-slate-200 px-1">현재 기준 적용</button>
-        {changedCount > 0 && <span className="block">편집 내용을 저장한 후 검증하십시오.</span>}
-      </span>}
-    </span>;
+                className="rounded border border-slate-200 px-1">한도 다시 읽고 적용</button>
+        {changedCount > 0 && <span className="block">편집 내용을 저장한 뒤 한도를 다시 읽으십시오.</span>}
+      </span>
+    );
   };
 
+  // 군 이름 하나가 멤버 전부에 붙으면 같은 이름이 여러 줄에 선다 — 갈리는 이름이 있으면 그것을
+  // 쓴다. 갈리는지 아닌지의 주인은 엔진 키 목록(`unit_labels`)이고 화면은 있으면 쓸 뿐이다.
   const keyRow = (row: Row) => {
     const on = setKeys[row.key] ?? present(row.key);
     const off = switchedOff(row) !== null;
@@ -551,7 +527,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
         <td className="w-6 py-0.5">{!row.readonly && checkbox(row.key, [row], on, off)}</td>
         <td className="py-0.5 pr-2">
           {on && !off && !row.readonly ? field(row) : grey(row, on)}
-          {budgetHint(row.key)}
+          {budgetBlock(row.key)}
         </td>
         <td className="w-32 py-0.5 pr-2 text-[11px]">
           <span className="flex gap-1 overflow-hidden whitespace-nowrap">

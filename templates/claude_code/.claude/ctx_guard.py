@@ -5,16 +5,15 @@ statusLine 과 PreToolUse/UserPromptSubmit 넛지가 **같은 임계 로직**을
 두 진입점(``ctx_statusline.py`` · ``ctx_stop_hook.py``)이 여기 함수를 호출한다.
 
 엔진 계약:
-  - 임계값 = local.conf ``ctx.checkpoint_at_pct`` / ``ctx.precompact_at_pct`` — 사용 한도 대비 **쓴**
-    % (없으면 엔진 기본 70/80). 훅/statusline 은 board.py 를 import 하지 않고 **local.conf 를 직접
-    파싱**한다(어댑터는 엔진 사본 경로에 묶이지 않게).
+  - 분모(적용 한도 E)와 임계(``ctx.checkpoint_at_pct`` / ``ctx.precompact_at_pct`` · 적용 한도 대비
+    **쓴** %)는 엔진의 압축 한도 기록에서 읽는다(``local_conf.read_ctx_budget``). 기록이 없거나
+    손상됐거나 local.conf 와 다르면 ``CtxBudgetError`` 이고, 세션 모델이 기록 모델과 다르면 값은 그대로
+    쓰되 경고를 낸다. 훅/statusline 은 board.py 를 import 하지 않고 **local.conf 를 직접 파싱**한다.
   - ``stop`` 분류는 statusline/relay 소비를 위해 유지하지만 훅에서는 최종 비차단 넛지로 소비한다.
   - 압축 비율(``ctx.compact_at_pct``)은 여기서 읽지 않는다 — 엔진이 그 값으로 ``settings.json`` 의
     ``autoCompactWindow`` 를 쓰고(``pm_import.apply_harness_ctx``) 압축은 Claude Code 가 한다.
 
-컨텍스트 % 모델 (분모 = 해소된 예산 하나·물리 window% 폐기):
-  - 분모는 engine의 검증된 적용 기록 E다. 입력·원천·native·현재 모델이 일치해야 사용한다.
-    metadata 부재·손상·만료·모델 변경은 None이며 W/default 또는 0%로 대체하지 않는다.
+컨텍스트 % 모델 (분모 = 적용 한도 E 하나·물리 window% 폐기):
   - statusLine stdin 의 ``context_window`` 에서 used_tokens = current_usage(input+cache 합) >
     total_input_tokens. current_usage null/부재(세션초·/compact 직후)면 0% graceful. native
     ``used_percentage``(물리%)는 **안 읽는다**.
@@ -32,19 +31,11 @@ import json
 import sys
 from pathlib import Path
 
-# ── 엔진 기본값 사본 (local_conf 레지스트리와 동일 — 어댑터는 import 안 하고 미러) ──
-# 쓴 % 기준(tests/test_ctx_default_mirror.py 가 레지스트리·네 어댑터 사이트를 대조한다).
-CTX_CHECKPOINT_AT_PCT_DEFAULT = 70   # 사용 >= 이 % → ticket/checkpoint 넛지.
-CTX_PRECOMPACT_AT_PCT_DEFAULT = 80   # 사용 >= 이 % → 최종 넛지(자동 압축 임박).
-
 # 2단(strong) nudge 임계 마진 (%p·파생값). nudge2 밴드 = max(precompact_at − 이 마진,
 # checkpoint_at) <= 사용 < precompact_at — 최종 밴드 직전 강화 유도(1단을 모델이 무시해도 재안내).
 # config 노브 신설 없이 precompact_at 에서 파생(config surface 최소). opencode
 # ctx-guard-core.cjs NUDGE2_MARGIN_PCT 와 미러(양 하네스 파리티).
 CTX_NUDGE2_MARGIN_PCT = 3
-
-# 사용 한도 기본값(분모) — local.conf ``harness.<name>.ctx_window_tokens`` 가 없을 때.
-CTX_WINDOW_TOKENS_DEFAULT = 200_000
 
 
 # ── local.conf 직접 파싱 (board.local_config 와 동일 포맷·KEY=value) ──────────
@@ -149,29 +140,6 @@ def load_local_config(root: Path) -> dict[str, str]:
     return conf
 
 
-def _int_conf(conf: dict[str, str], key: str, default: int) -> int:
-    raw = conf.get(key)
-    if raw is None:
-        return default
-    try:
-        return int(str(raw).strip())
-    except (ValueError, AttributeError):
-        return default
-
-
-def ctx_thresholds(conf: dict[str, str]) -> dict[str, int]:
-    """checkpoint_at_pct / precompact_at_pct(쓴 %)를 conf 에서 읽는다. sanity 검증 포함.
-
-    ``0 < checkpoint_at < precompact_at < 100`` 이 아니면(비정수·역전·범위 밖) 둘 다 엔진 기본값이다.
-    압축 비율을 포함한 전체 순서는 쓰기 경로의 검사(``pm_import.validate_harness_ctx``)가 본다.
-    """
-    checkpoint = _int_conf(conf, "ctx.checkpoint_at_pct", CTX_CHECKPOINT_AT_PCT_DEFAULT)
-    precompact = _int_conf(conf, "ctx.precompact_at_pct", CTX_PRECOMPACT_AT_PCT_DEFAULT)
-    if not (0 < checkpoint < precompact < 100):
-        checkpoint, precompact = CTX_CHECKPOINT_AT_PCT_DEFAULT, CTX_PRECOMPACT_AT_PCT_DEFAULT
-    return {"checkpoint_at_pct": checkpoint, "precompact_at_pct": precompact}
-
-
 def _ctx_leaf(root):
     import importlib.util
     path = Path(root) / ".project_manager/tools/repo_owned_files.py"
@@ -184,53 +152,9 @@ def _ctx_leaf(root):
     return loader.load_module(path.with_name("local_conf.py"), "local_conf.py", verifier=verify, cache=True)
 
 
-def session_identity(payload):
-    if not isinstance(payload, dict):
-        return None
-    model = payload.get("model")
-    if isinstance(model, dict):
-        model = model.get("id")
-    provider = payload.get("provider") or payload.get("model_provider")
-    profile = payload.get("profile")
-    if not model or not provider or not isinstance(profile, str):
-        return None
-    return {"model": model, "provider": provider, "profile": profile}
-
-
-def _native_session_identity(payload, root, conf):
-    identity = session_identity(payload)
-    if identity is not None or not isinstance(payload, dict) or root is None:
-        return identity
-    if payload.get("provider") is not None or payload.get("model_provider") is not None or payload.get("profile") is not None:
-        return None
-    model = payload.get("model")
-    if isinstance(model, dict):
-        model = model.get("id")
-    if not isinstance(model, str) or not model:
-        return None
-    # 표준 statusLine의 현재 모델·버전을 검증된 native receipt와만 결합한다.
-    try:
-        row = _ctx_leaf(root).ctx_budget_status(root, conf)["claude"]
-        metadata, selected = row.get("metadata", {}), row.get("identity", {})
-        if (row.get("status") == "known" and metadata.get("source") == "claude-sdk-neutral"
-                and metadata.get("semantics") == "claude-cutoff" and payload.get("version") == metadata.get("source_version")
-                and selected.get("model") == model):
-            return selected
-    except (OSError, ImportError, AttributeError, ValueError, RuntimeError, KeyError):
-        return None
-    return None
-
-
-def resolve_budget(conf: dict[str, str], harness: str = "claude", *, root=None, identity=None) -> int | None:
-    """같은 engine 적용 기록 E를 소비한다. 미확정은 None이며 W로 대체하지 않는다."""
-    if root is None:
-        return None
-    try:
-        result = _ctx_leaf(root).read_ctx_budget(root, conf, harness, identity)
-        return result["E"] if result["status"] == "known" else None
-    except (OSError, ImportError, AttributeError, ValueError, RuntimeError) as exc:
-        print(f"[ctx-budget-unknown] {exc}", file=sys.stderr)
-        return None
+def read_budget(root, conf: dict[str, str], session_model: str | None) -> dict:
+    """claude 압축 한도 기록 — E·경고 비율·경고(``local_conf.read_ctx_budget``). 기록 문제는 ``CtxBudgetError``."""
+    return _ctx_leaf(root).read_ctx_budget(root, conf, "claude", session_model)
 
 
 # ── statusLine: context_window → used % (분모 = 해소된 예산) ──────────
@@ -272,8 +196,6 @@ def context_used_pct_from_statusline(stdin: dict, budget: int) -> int:
     used_percentage)는 폐기 — hook 과 같은 예산 분모로 표시와 넛지 판정을 일치시킨다. 신호 없으면 0
     (세션초·/compact 직후 graceful). budget<=0(비정상)도 0.
     """
-    if budget is None:
-        return None
     if budget <= 0:
         return 0
     cw = stdin.get("context_window")
@@ -305,12 +227,13 @@ def _usage_input_tokens(usage: dict) -> int | None:
     return total if seen else None
 
 
-def context_tokens_from_transcript(transcript_path) -> int:
-    """transcript JSONL 을 읽어 **현재 컨텍스트 점유 토큰**을 산출.
+def context_tokens_from_transcript(transcript_path) -> tuple[int, str | None]:
+    """transcript JSONL 을 읽어 **현재 컨텍스트 점유 토큰**과 그 요청의 모델(``message.model``)을 낸다.
 
     마지막 compact 경계 이후 가장 최근 assistant 메시지의 usage 입력 토큰합을 쓴다 — 그게
     그 시점의 실제 컨텍스트 점유다 (omc 는 누적합도 쓰지만 컨텍스트 점유는 last-request 입력이
-    정확). 경계 뒤 usage 가 없거나 어떤 usage 도 못 찾으면 0.
+    정확). 경계 뒤 usage 가 없거나 어떤 usage 도 못 찾으면 (0, None). 훅 입력에는 모델이 없어
+    (PreToolUse·UserPromptSubmit) 세션 모델은 이 항목의 것을 쓴다.
 
     Claude Code 2.1.222 환경에서 확인한 저장 transcript 경계 형식은 top-level
     ``{"type":"system", "subtype":"compact_boundary", "compactMetadata":{
@@ -323,7 +246,7 @@ def context_tokens_from_transcript(transcript_path) -> int:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except (FileNotFoundError, OSError):
-        return 0
+        return 0, None
     # 파일 끝에서부터 첫 usable usage 를 찾는다 (가장 최신 요청 = 현재 점유).
     for line in reversed(lines):
         line = line.strip()
@@ -338,19 +261,18 @@ def context_tokens_from_transcript(transcript_path) -> int:
         # compact 경계를 usage 보다 먼저 판정한다. 경계 엔트리 자체에 usage-like 필드가 추가돼도
         # 압축 전 assistant usage 로 넘어가지 않도록 이 지점에서 역탐색을 끝낸다.
         if entry.get("type") == "system" and entry.get("subtype") == "compact_boundary":
-            return 0
+            return 0, None
         message = entry.get("message")
         usage = message.get("usage") if isinstance(message, dict) else None
         tokens = _usage_input_tokens(usage) if usage is not None else None
         if tokens is not None and tokens > 0:
-            return tokens
-    return 0
+            model = message.get("model")
+            return tokens, model if isinstance(model, str) else None
+    return 0, None
 
 
 def context_used_pct_from_tokens(tokens: int, window_tokens: int) -> int:
     """raw 점유 토큰 / 윈도 크기 → 사용 % (정수 반올림·0%도 유효 측정일 수 있음)."""
-    if window_tokens is None:
-        return None
     if window_tokens <= 0:
         return 0
     if tokens <= 0:
@@ -361,7 +283,7 @@ def context_used_pct_from_tokens(tokens: int, window_tokens: int) -> int:
 def context_used_pct_from_transcript(transcript_path, window_tokens: int) -> int:
     """transcript 점유 토큰 / 윈도 크기 → 사용 %."""
     return context_used_pct_from_tokens(
-        context_tokens_from_transcript(transcript_path), window_tokens)
+        context_tokens_from_transcript(transcript_path)[0], window_tokens)
 
 
 # ── 서브에이전트(sidechain) 감지 (메인 세션만 checkpoint 넛지) ──────────────

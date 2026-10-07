@@ -7970,59 +7970,62 @@ def adapter_config_drift_summary(judgment: AdapterConfigJudgment,
             f"첫 차이 {first_diff}줄")
 
 
-# ── 하네스 희망 기준과 실제 모델 한도의 동결 적용 ─────────────────
-# W는 사용자 희망값, C는 독립 metadata의 가용 창, E=min(W,C), P=floor(E×compact/100)다.
-# 준비는 무쓰기이며 입력·정체·원천·native·원장 바이트의 같은 계획을 commit과 표시가 소비한다.
-# Claude는 예약을 보상한 창, Codex는 P를 적용하고 엔진 최상위 창 override를 제거한다.
-# OpenCode는 원본 context/output을 보존하며 운용 input=E, reserved=E−P로 native 식을 검증한다.
-# 전역 설정과 registry는 읽기 전용이다.
+# ── 하네스 사용 한도·압축 비율 반영 (local.conf → 하네스 설정 파일·압축 한도 기록) ─────────
+# 적용 경로(ctx-apply·설치·add-harness·pm_update·어댑터 수용)가 local.conf 쓰기 락 안에서 도구마다
+# 모델 한도 C 를 한 번 조회하고 적용 한도 E = min(W, C)·압축 지점 P = floor(E × compact_at / 100) 를
+# 하네스 설정 파일과 압축 한도 기록(`local_conf.CTX_BUDGET_RELPATH`)에 쓴다. 런타임은 기록만 읽는다.
+#   claude   `.claude/settings.json`     autoCompactWindow = P + d (d = 모델 창 − 기본 압축 기준)
+#   codex    `.codex/config.toml`        model_auto_compact_token_limit = P
+#   opencode `.opencode/opencode.jsonc`  대상 모델마다 limit.context(원본)·limit.input = E ·
+#            limit.output(있으면 유지, 없으면 32000) · 최상위 compaction.reserved = E − P
+# 쓰는 바이트는 이 관리 키의 값 자리(없어서 넣는 멤버·구분 쉼표 포함)뿐이다 — 재직렬화하지 않는다.
+# opencode 전역 설정과 모델 목록 캐시는 읽기만 한다.
 class _HarnessCtxRule(NamedTuple):
-    """설정 파일 하나의 반영 규칙 — 판정 코드는 하나이고 파일마다 다른 것은 이 값들뿐이다.
-
-    `keys`는 (관리 키 경로, 유효 기준 E와 native 설정값의 값 식)이다.
-    `point_range`는 clamp 이후 native 설정값 범위, `model_limits`는 모델별 native encoding 여부다."""
+    """설정 파일 하나의 반영 규칙 — `keys` 는 (관리 키 경로, 값 식(도구 기록 항목)), `model_limits` 는 모델마다
+    `limit` 을 쓰는 형식인가, `capacity_reader` 는 모델 한도 C 조회, `check` 는 쓰기 전 설정 형식 확인이다."""
     label: str
-    keys: tuple[tuple[tuple[str, ...], Callable[[int, int], int]], ...]
-    point_range: tuple[int, int] | None
+    keys: tuple[tuple[tuple[str, ...], Callable[[dict], int]], ...]
     model_limits: bool
-    native_manifest: str | None
-    metadata_reader: Callable[..., None]
+    capacity_reader: Callable[[Path, list, dict], list]
+    check: Callable[[Path, dict], None]
 
 
 # 설정 파일 relpath → 반영 규칙. 어느 하네스가 그 파일을 갖는지는 어댑터 config 채널
 # (`ADAPTER_CONFIG_CHANNEL`)이 정한다 — 하네스 이름 표를 여기 두 번째로 두지 않는다.
 HARNESS_CTX_RULES: dict[str, _HarnessCtxRule] = {
-    # Claude Code 2.1.284: `autoCompactWindow` 는 "100k–1M tokens" 만 받는다(실행 파일 문구).
     ".claude/settings.json": _HarnessCtxRule(
-        "Claude Code", ((("autoCompactWindow",), lambda window, point: point),),
-        (100_000, 1_000_000), False, None, lambda *args: _ctx_claude_metadata(*args)),
-    # Codex의 effective percent는 독립 C 정규화에서 한 번만 적용한다.
+        "Claude Code", ((("autoCompactWindow",), lambda entry: _ctx_claude_window(entry)),),
+        False, lambda *args: _ctx_claude_capacity(*args), lambda *args: _ctx_claude_check(*args)),
     ".codex/config.toml": _HarnessCtxRule(
-        "Codex",
-        ((("model_auto_compact_token_limit",), lambda window, point: point),),
-        None, False, "codex-package.json", lambda *args: _ctx_catalog_percent_metadata(*args)),
+        "Codex", ((("model_auto_compact_token_limit",), lambda entry: entry["P"]),),
+        False, lambda *args: _ctx_codex_capacity(*args), lambda *args: _ctx_codex_check(*args)),
     # opencode 1.18.33: `limit.input` 이 있으면 `input − compaction.reserved` 에서 압축한다.
     ".opencode/opencode.jsonc": _HarnessCtxRule(
-        "opencode", ((("compaction", "reserved"), lambda window, point: window - point),),
-        None, True, None, lambda *args: _ctx_registry_output_metadata(*args)),
+        "opencode", ((("compaction", "reserved"), lambda entry: entry["E"] - entry["P"]),),
+        True, lambda *args: _ctx_opencode_capacity(*args), lambda root, entry: None),
 }
 # 하네스 이름 → 반영 대상 설정 파일(규칙 표 순서).
 HARNESS_CTX_FILES: dict[str, str] = {
     harness: relpath
     for relpath in HARNESS_CTX_RULES
     for harness, channel in ADAPTER_CONFIG_CHANNEL.items() if relpath in channel}
+# Claude Code `autoCompactWindow` 가 받는 범위(`claude --help` 의 "100k~1M tokens").
+CLAUDE_AUTO_COMPACT_WINDOW_RANGE = (100_000, 1_000_000)
+# Codex 압축 지점 상한 — 실효 창 대비 %.
+CODEX_COMPACT_LIMIT_PCT = 90
+# 무턴 조회 응답 대기 상한(초) — 실측 Claude Code 1.6초·Codex 0.2초.
+_CTX_PROTOCOL_TIMEOUT_SECONDS = 30
 # opencode 전역 설정 — `<설정 기준 폴더>/opencode` 아래 세 이름을 이 순서로 읽어 깊은 병합한다
 # (뒤가 이긴다 · opencode 1.18.33 실측).
 OPENCODE_GLOBAL_CONFIG_SUBDIR = "opencode"
 OPENCODE_GLOBAL_CONFIG_NAMES = ("config.json", "opencode.json", "opencode.jsonc")
-# 어느 설정 파일에도 `limit.output` 이 없는 대상 모델에 쓰는 값. opencode 는 출력 상한이 없는
-# 모델에 OUTPUT_TOKEN_MAX(32000)를 쓰므로 동작이 바뀌지 않는다. 설치본 규격이 파일마다 `limit`
-# 안의 context·output 을 함께 요구해 비워 둘 수 없다(어기면 opencode 가 기동하지 못한다).
+# 어느 설정 파일에도 `limit.output` 이 없는 대상 모델에 쓰는 값이자 opencode 의 출력 예약 상한
+# (OUTPUT_TOKEN_MAX·`OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX` 가 있으면 그 값). 설치본 규격이 파일마다
+# `limit` 안의 context·output 을 함께 요구해 비워 둘 수 없다(어기면 opencode 가 기동하지 못한다).
 OPENCODE_LIMIT_OUTPUT_DEFAULT = 32000
-# 모델마다 쓰는 `limit` 세 키 — context·input 은 사용 한도, output 은 모델별 값이다.
+# 모델마다 쓰는 `limit` 세 키 — context 는 원본 창, input 은 적용 한도, output 은 모델별 값이다.
 _MODEL_LIMIT_KEYS = ("context", "input", "output")
 _HARNESS_CTX_RATIO_KEYS = ("ctx.checkpoint_at_pct", "ctx.precompact_at_pct", "ctx.compact_at_pct")
-_HARNESS_CTX_COMPACT_KEY = "ctx.compact_at_pct"
 _HARNESS_CTX_WINDOW_SUFFIX = "ctx_window_tokens"
 # TOML 표 머리 줄(`[표]`·`[[표 배열]]`) — 최상위 키가 들어갈 구간의 끝이다. 괄호 안은 TOML 키
 # 문법(맨 키·큰따옴표 키·작은따옴표 키를 점으로 이은 것)이고, 줄 끝 앞의 CR 은 CRLF 파일의 개행이다.
@@ -8036,10 +8039,7 @@ _TOML_TABLE_HEADER_RE = re.compile(
 
 class HarnessCtxError(ValueError):
     """사용 한도·압축 비율을 하네스 설정 파일에 반영할 수 없다 — 위반 전부를 한국어 줄로 담는다.
-
-    검사·읽기 단계(쓰기 전)에서 난 이 예외는 local.conf·설정 파일·원장 어느 것도 쓰지 않았다는
-    뜻이다(검사·읽기가 쓰기보다 먼저다). 쓰기 단계에서 나면 `written` 에 교체를 마친 설정 파일을
-    넘겨 첫 줄이 그 사실을 말하고, 위반 줄이 쓰지 못한 파일·원장 기록을 확인하지 못한 파일을 적는다."""
+    검사·조회 단계에서 나면 어느 파일도 쓰지 않았고, 쓰기 단계에서 나면 `written` 이 교체를 마친 파일이다."""
 
     def __init__(self, violations, *, written=()) -> None:
         self.written = tuple(written)
@@ -8094,7 +8094,7 @@ def validate_harness_ctx(values, present: frozenset) -> None:
     `present` 는 설정 파일이 있는 하네스 이름 집합이다. 규칙:
       (1) 비율 3개는 정수이고 `0 < checkpoint_at < precompact_at < compact_at < 100`
       (2) 있는 하네스의 사용 한도는 양의 정수
-    빈 키는 기존 레지스트리 기본값이다. native P 범위와 예약은 C를 해소한 계획에서 검사한다."""
+    빈 키는 레지스트리 기본값이다. 설정 형식이 받는 값의 범위는 모델 한도를 적용한 뒤 본다."""
     violations: list[str] = []
     ratios: dict[str, int] = {}
     for key in _HARNESS_CTX_RATIO_KEYS:
@@ -8112,7 +8112,7 @@ def validate_harness_ctx(values, present: frozenset) -> None:
             violations.append(
                 f"`{low_key}={low}` 는 `{high_key}={high}` 보다 작아야 합니다"
                 " (중간 기록 권고 < 압축 임박 경고 < 압축).")
-    for harness, relpath in HARNESS_CTX_FILES.items():
+    for harness in HARNESS_CTX_FILES:
         if harness not in present:
             continue
         key = _harness_ctx_window_key(harness)
@@ -8120,1578 +8120,436 @@ def validate_harness_ctx(values, present: frozenset) -> None:
         window = _harness_ctx_integer(text)
         if window is None or window <= 0:
             violations.append(f"`{key}={text}` 는 양의 정수여야 합니다.")
-            window = None
     if violations:
         raise HarnessCtxError(violations)
 
 
-def harness_ctx_targets(values, opencode_models, budgets) -> dict[str, dict[tuple[str, ...], int]]:
-    """설정 파일 relpath → {관리 키 경로 조각 튜플: 값}. 빈 키는 레지스트리 기본값이다.
+def harness_ctx_targets(opencode_models, entries) -> dict[str, dict[tuple[str, ...], int]]:
+    """설정 파일 relpath → {관리 키 경로 조각 튜플: 값} — 도구 기록 항목(`entries`)에서 만든다.
 
     `opencode_models` 는 대상 모델 `(provider, 모델 id) → limit.output` 이다. 모델 id 는 문서 키
-    그대로 쓴다(점·슬래시·콜론에서 가르지 않는다). 값의 검사는 `validate_harness_ctx` 몫이다."""
+    그대로 쓴다(점·슬래시·콜론에서 가르지 않는다)."""
     targets: dict[str, dict[tuple[str, ...], int]] = {}
     for harness, relpath in HARNESS_CTX_FILES.items():
-        rule = HARNESS_CTX_RULES[relpath]
-        if harness not in budgets:
+        if harness not in entries:
             continue
-        window = budgets[harness]["E"]
-        point = budgets[harness]["P"]
-        entries: dict[tuple[str, ...], int] = {}
+        rule, entry = HARNESS_CTX_RULES[relpath], entries[harness]
+        values: dict[tuple[str, ...], int] = {}
         if rule.model_limits:
+            contexts = {(row["provider"], row["id"]): row["basis"]["context"] for row in entry["models"]}
             for (provider, model), output in opencode_models.items():
-                row = next(m for m in budgets[harness]["models"] if m["identity"]["provider"] == provider and m["identity"]["model"] == model)
-                raw = row["metadata"]
-                context = raw.get("context")
-                raw_output = raw.get("output")
-                effective_output = raw.get("effective_output")
-                if (type(context) is not int or type(raw_output) is not int or not 0 < output <= raw_output or output >= context
-                        or type(effective_output) is not int or effective_output < 0 or effective_output > raw_output
-                            or window + effective_output > context or raw.get("native_formula") != "input-reserved"):
-                    raise HarnessCtxError([f"opencode {provider}/{model} native encoding 근거 또는 출력 한도 불일치"])
-                limit_values = {"context": context, "input": window, "output": output}
+                limit = {"context": contexts[(provider, model)], "input": entry["E"], "output": output}
                 for name in _MODEL_LIMIT_KEYS:
-                    entries[("provider", provider, "models", model, "limit", name)] = \
-                        limit_values[name]
+                    values[("provider", provider, "models", model, "limit", name)] = limit[name]
         for path, formula in rule.keys:
-            entries[path] = formula(window, budgets[harness]["native_window"])
-        targets[relpath] = entries
+            values[path] = formula(entry)
+        targets[relpath] = values
     return targets
 
 
 def apply_harness_ctx(dest_root: Path, *, write: bool, opencode_config_dir: Path) -> tuple[str, ...]:
     """local.conf 의 사용 한도·압축 비율을 설정 파일이 있는 하네스에 반영한다 — 바뀐 줄 목록.
 
-    conf 는 공용 로더로 읽고 옛 키가 남았으면 멈춘다(`assert_no_legacy`). 순서가 곧 계약이다:
-    검사 → 세 설정 파일과 opencode 전역 설정 읽기 → 새 내용 계산·재판독 확인 → (`write`) 원자 쓰기
-    → 원장. 앞 단계가 실패하면(`HarnessCtxError`) 어떤 파일도 쓰지 않는다. 쓰기 단계에서 멈추면
-    교체를 마친 파일의 원장을 기록한 뒤 교체한 파일과 못 한 파일을 나눠 알린다. `write=False` 는
-    줄만 낸다. 반환 줄은 "<relpath> <경로> <옛 값> → <새 값>" 꼴이고, 없던 키의 옛 값은 `(없음)`,
-    경로는 조각을 점으로 잇되 점이 든 조각을 큰따옴표로 감싼다(`provider.ollama.models."glm-5.2:cloud"…`).
+    순서: 검사(옛 키면 멈춤) → 설정 파일·opencode 전역 설정 읽기 → 도구별 모델 한도 조회·계산·설정 형식
+    확인 → 새 내용 재판독 확인 → (`write`) 원자 쓰기 → 원장 → 압축 한도 기록. 앞 단계의 `HarnessCtxError`
+    는 어떤 파일도 쓰지 않았다는 뜻이다. 반환 줄은 "<relpath> <경로> <옛 값> → <새 값>"(없던 키는 `(없음)`,
+    점이 든 경로 조각은 큰따옴표: `provider.ollama.models."glm-5.2:cloud"…`).
 
     원장 규칙: 반영 직전 파일을 원장이 증언하면(`_baseline_attests_dest`) 그 항목의 `sha256` 만 새
     내용 해시로 바꾸고 `recorded_at`·`template_rev` 는 둔다 — 무편집 판정이 반영 뒤에도 유지된다.
     편집됨·원장 없음은 원장을 건드리지 않는다. 원장이 상위 schema 면 파일을 쓰지 않고 멈춘다.
     `harness.opencode.pro_model` 은 읽지 않는다 — 대상 모델은 설정 파일에 적힌 모델 전부다."""
+    return _apply_harness_ctx(dest_root, write=write, opencode_config_dir=opencode_config_dir)[1]
+
+
+def _apply_harness_ctx(dest_root: Path, *, write: bool, opencode_config_dir: Path, updates=None):
+    """반영 본문 — (local.conf 가 바뀌었나, 바뀐 줄, 도구 기록 항목). `write` 면 local.conf 쓰기 락 안에서
+    계획(`_harness_ctx_plan`)과 쓰기(local.conf → 설정 파일 → 기록)를 한 번에 한다. 쓰기 단계에서 멈추면
+    `HarnessCtxError.written` 이 바꾼 파일을 적고 `write_stage` 가 참이다(바꾼 파일이 없어도 검사 거부가 아니다)."""
     dest_root = Path(dest_root)
-    module = _load_local_conf()
-    result = module.load(dest_root / ".project_manager" / "local.conf")
-    module.assert_no_legacy(result)
-    return _apply_harness_ctx_values(
-        dest_root, result.values, write=write, opencode_config_dir=opencode_config_dir)
-
-
-def _ctx_file_bytes(path):
-    return _read_bytes_shared(path) if path.is_file() else None
-
-
-def _ctx_file_digest(path):
-    raw = _ctx_file_bytes(path)
-    if raw is not None:return content_sha256(raw)
-    shape = _ctx_target_shape(path)
-    return None if shape is None else f"shape:{shape}"
-
-
-def _ctx_target_shape(path):
-    """부재와 일반 파일·링크·디렉터리를 구분해 계획 대상 형상을 동결한다."""
-    import stat
-    try:
-        info = path.lstat()
-    except FileNotFoundError:
-        return None
-    return stat.S_IFMT(info.st_mode)
-
-
-def _ctx_native_stat(path):
-    stat = Path(path).stat()
-    return {key: str(getattr(stat, key)) for key in ("st_dev", "st_ino", "st_size", "st_mtime_ns")}
-
-
-def _ctx_native_install(harness, evidence, native_files, native_commands):
-    """실행 없이 설치 파일의 버전·정책을 확인한다. 런타임은 stat 세대만 검사한다."""
-    found = shutil.which(harness)
-    if not found:
-        raise ValueError(f"{harness} 설치 원천 없음")
-    entry = Path(found).resolve()
-    native_commands[harness] = str(entry)
-    rule = HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]]
-    candidates = [entry.parent.parent / rule.native_manifest] if rule.native_manifest else []
-    candidates += [parent / "package.json" for parent in entry.parents[:3]]
-    manifest = next((path for path in candidates if path.is_file()), None)
-    if manifest is None:
-        raise ValueError(f"{harness} 설치 버전 확인 불가")
-    raw = _ctx_file_bytes(manifest)
-    evidence[str(manifest)] = content_sha256(raw)
-    package = json.loads(raw.decode("utf-8"))
-    version = package.get("version")
-    if not isinstance(version, str) or not version:
-        raise ValueError("설치 버전 손상")
-    binary = entry
-    if entry.suffix in (".js", ".mjs"):
-        matches = list(manifest.parent.glob("vendor/*/codex/codex")) + list(manifest.parent.glob("vendor/*/codex/codex.exe"))
-        if len(matches) != 1:
-            raise ValueError("Codex native binary 정체 확인 불가")
-        binary = matches[0].resolve()
-    before = _ctx_native_stat(binary)
-    data = _ctx_file_bytes(binary)
-    if _ctx_native_stat(binary) != before:
-        raise ValueError("native 설치가 판독 중 변경됨")
-    native_files[str(binary)] = before
-    native_files[str(entry)] = _ctx_native_stat(entry)
-    return version, data
-
-
-def _ctx_codex_cache_identity(provider, file_auth=None):
-    """Codex models-cache-v1의 무인증 또는 stable-owner 파일 ChatGPT 정체.
-
-    원천: openai/codex model-provider/src/models_identity.rs. credential/header는 기록하지 않는다.
-    """
-    import hashlib
-    if any(provider.get(k) for k in ("auth", "gateway_oauth", "aws", "experimental_bearer_token", "env_key")):
-        raise ValueError("Codex provider/auth 정체를 독립적으로 확인할 수 없음")
-    authenticated = provider.get("requires_openai_auth", False)
-    claims = None
-    if authenticated:
-        # 실제 토큰 값과 식별 claim은 이 함수의 메모리 밖으로 전달하지 않는다.
-        import base64
+    conf_path = dest_root / ".project_manager" / "local.conf"
+    if not write:
+        return (False, *_harness_ctx_plan(dest_root, conf_path, opencode_config_dir, updates)[3:])
+    with _local_conf_write_lock(conf_path):
+        module, values, changed, lines, entries = _harness_ctx_plan(dest_root, conf_path, opencode_config_dir, updates)
+        if changed:
+            _harness_ctx_baseline_writable(dest_root)
+        conf_changed = _write_conf_keys_locked(conf_path, updates) if updates else False
+        written = (".project_manager/local.conf",) if conf_changed else ()
+        record = {"schema": module.CTX_BUDGET_SCHEMA, "inputs": module.ctx_input_values(values),
+                  "applied_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+                  "harnesses": entries}
+        payload = (json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
         try:
-            if not isinstance(file_auth, dict): raise ValueError()
-            mode = file_auth.get("auth_mode")
-            if mode is None:
-                if any(file_auth.get(k) is not None for k in ("personal_access_token", "bedrock_api_key", "bedrock_access_keys", "OPENAI_API_KEY")):
-                    raise ValueError()
-                mode = "chatgpt"
-            if mode != "chatgpt": raise ValueError()
-            tokens = file_auth["tokens"]
-            if any(not isinstance(tokens.get(k),str) for k in ("id_token","access_token","refresh_token")): raise ValueError()
-            refreshed = file_auth.get("last_refresh")
-            if refreshed is not None: _load_local_conf()._ctx_time(refreshed)
-            account = tokens.get("account_id")
-            segments = tokens["id_token"].split(".")
-            if len(segments) != 3 or not all(segments) or not re.fullmatch(r"[A-Za-z0-9_-]+", segments[1]): raise ValueError()
-            decoded = json.loads(base64.urlsafe_b64decode(segments[1]+"="*((-len(segments[1]))%4)))
-            if not isinstance(decoded,dict): raise ValueError()
-            auth_claims = decoded.get("https://api.openai.com/auth")
-            profile_claims = decoded.get("https://api.openai.com/profile")
-            auth_claims = {} if auth_claims is None else auth_claims
-            profile_claims = {} if profile_claims is None else profile_claims
-            if not isinstance(auth_claims,dict) or not isinstance(profile_claims,dict): raise ValueError()
-            if any(auth_claims.get(k) is not None and not isinstance(auth_claims[k],str)
-                   for k in ("chatgpt_user_id","user_id","chatgpt_account_id")): raise ValueError()
-            if any(d.get("email") is not None and not isinstance(d["email"],str) for d in (decoded,profile_claims)): raise ValueError()
-            user = auth_claims.get("chatgpt_user_id")
-            if user is None: user = auth_claims.get("user_id")
-            email = decoded.get("email")
-            if email is None: email = profile_claims.get("email")
-            if account is None or (user is None and email is None): raise ValueError()
-            def option(value):
-                if value is None: return "None"
-                # Rust Debug과 JSON의 공통 표현만 지원한다. 임의 유니코드/제어문자는 거부한다.
-                if not isinstance(value,str) or any(ord(c)<32 or ord(c)>126 for c in value): raise ValueError()
-                return "Some("+json.dumps(value,ensure_ascii=False)+")"
-            plan = auth_claims.get("chatgpt_plan_type")
-            if plan is not None and not isinstance(plan,str): raise ValueError()
-            known = {"free":"Free","go":"Go","plus":"Plus","pro":"Pro","prolite":"ProLite","promax":"ProMax",
-                     "team":"Team","business":"Business","ent26":"Ent26","self_serve_business_prolite":"SelfServeBusinessProLite",
-                     "self_serve_business_usage_based":"SelfServeBusinessUsageBased","enterprise_cbp_automation":"EnterpriseCbpAutomation",
-                     "enterprise_cbp_usage_based":"EnterpriseCbpUsageBased","enterprise":"Enterprise","hc":"Enterprise",
-                     "edu":"Edu","education":"Edu","edu_plus":"EduPlus","edu_pro":"EduPro"}
-            typed = known.get(plan,"Unknown")
-            raw = {"hc":"enterprise","education":"edu"}.get(plan,plan) if file_auth.get("last_refresh") is not None else None
-            fedramp = auth_claims.get("chatgpt_account_is_fedramp",False)
-            if type(fedramp) is not bool: raise ValueError()
-            claims = (option(account),option(user),option(email),"Some("+typed+")",option(raw),bytes([fedramp]))
-        except (KeyError, TypeError, ValueError, AttributeError, UnicodeError):
-            raise ValueError("Codex stable-owner 파일 ChatGPT claim 형상 미지원") from None
-    elif file_auth is not None:
-        raise ValueError("Codex 파일 인증과 provider 정체 불일치")
-    name, base = provider.get("name"), provider.get("base_url")
-    if not isinstance(name, str) or not isinstance(base, str) or not name or not base:
-        raise ValueError("Codex provider 경로/정체 확인 불가")
-    if provider.get("env_http_headers"):
-        raise ValueError("Codex 동적 auth/header 정체 확인 불가")
-    digest = hashlib.sha256()
-    def field(value):
-        raw = value if isinstance(value, bytes) else value.encode("utf-8")
-        digest.update(len(raw).to_bytes(8, "little")); digest.update(raw)
-    field("models-cache-v1"); field(name); field(base)
-    if provider.get("model_catalog_url"):
-        field("model_catalog_url"); field(provider["model_catalog_url"])
-    query = sorted((provider.get("query_params") or {}).items())
-    field(len(query).to_bytes(8, "little"))
-    for key,value in query: field(key); field(value)
-    field(bytes([bool(authenticated)])); field(b"\x00"); field("Some(Chatgpt)" if authenticated else "None")
-    if claims:
-        for value in claims: field(value)
-    headers = sorted((provider.get("http_headers") or {}).items())
-    field(len(headers).to_bytes(8, "little"))
-    for key,value in headers: field(key.lower()); field(value)
-    return digest.hexdigest()
+            if changed:
+                _harness_ctx_write(dest_root, changed)
+            if not (_ctx_record_unchanged(dest_root / module.CTX_BUDGET_RELPATH, record)
+                    or _atomic_write_dest_bytes(dest_root, module.CTX_BUDGET_RELPATH, payload)):
+                raise HarnessCtxError([f"압축 한도 기록({module.CTX_BUDGET_RELPATH.as_posix()})을 쓰지 못했습니다."], written=tuple(changed))
+        except HarnessCtxError as exc:
+            failure = HarnessCtxError(exc.violations, written=written + exc.written)
+            failure.write_stage = True
+            raise failure from exc
+        return conf_changed, lines, entries
 
 
-def _ctx_opencode_policy(data):
-    """현재 설치의 두 overflow 분기와 출력 getter를 검증한다. 실행·버전별 C 표는 없다."""
-    if not (b".limit.input?Math.max(0," in data and b".compaction?.reserved" in data and b".limit.context" in data):
-        raise ValueError("OpenCode input/reserved native 식 확인 불가")
-    exported = re.search(rb"maxOutputTokens:\(\)=>\s*([A-Za-z_$][A-Za-z0-9_$]*)", data)
-    nearby = data[max(0, exported.start()-500):exported.end()+500] if exported else b""
-    default_export = re.search(rb"OUTPUT_TOKEN_MAX:\(\)=>\s*([A-Za-z_$][A-Za-z0-9_$]*)", nearby)
-    if not exported or not default_export:
-        raise ValueError("OpenCode 실제 출력 예약 getter 확인 불가")
-    name, constant = exported.group(1), default_export.group(1)
-    boundary = data.find(b"\x00", exported.end())
-    region = data[max(0, exported.start()-200):boundary if boundary >= 0 else len(data)]
-    amount = re.search(rb"(?:var|let|const)\s+"+re.escape(constant)+rb"=([0-9]+)", region)
-    symbol = rb"[A-Za-z_$][A-Za-z0-9_$]*"
-    getter = re.search(rb"function\s+"+re.escape(name)+rb"\(("+symbol+rb"),("+symbol+rb")="+re.escape(constant)+rb"\)\{return Math\.min\(\1\.limit\.output,\2\)\|\|\2\}", region)
-    if not amount or not getter:
-        raise ValueError("OpenCode 실제 출력 식 손상 또는 미지원")
-    # 입력 분기는 예약 margin, context 분기는 실제 출력 getter를 한 번 차감한다.
-    formula = re.compile(rb"function\s+"+symbol+rb"\((?P<arg>"+symbol+rb")\)\{let (?P<context>"+symbol+rb")=(?P=arg)\.model\.limit\.context;"
-        rb"(?:if\((?P=context)===0\)return 0;)?let (?P<reserved>"+symbol+rb")=(?P=arg)\.cfg\.compaction\?\.reserved\?\?Math\.min\((?P<margin>[0-9]+|"+symbol+rb"),"
-        rb"(?P<getter>"+symbol+rb"(?:\.maxOutputTokens)?)\((?P=arg)\.model,(?P=arg)\.outputTokenMax\)\);"
-        rb"return (?P=arg)\.model\.limit\.input\?Math\.max\(0,(?P=arg)\.model\.limit\.input-(?P=reserved)\):"
-        rb"Math\.max\(0,(?P=context)-(?P=getter)\((?P=arg)\.model,(?P=arg)\.outputTokenMax\)\)\}")
-    matches = list(formula.finditer(data))
-    if len(matches) != 1:
-        raise ValueError("OpenCode overflow 두 분기의 예약 값 흐름 미지원")
-    call = matches[0].group("getter")
-    if call != name:
-        namespace = call.removesuffix(b".maxOutputTokens")
-        overflow_region = data[max(0, data.rfind(b"\x00", 0, matches[0].start())):matches[0].start()]
-        imported = re.search(rb"(?:\{|,)("+symbol+rb") as "+re.escape(namespace)+rb"(?:,|\})", overflow_region)
-        exported_namespace = re.search(rb"ProviderTransform:\(\)=>\s*("+symbol+rb")", nearby)
-        if not imported or not exported_namespace or not re.search(re.escape(exported_namespace.group(1))+rb" as "+re.escape(imported.group(1))+rb"(?:,|\})", region):
-            raise ValueError("OpenCode overflow 출력 getter 결속 미지원")
-    margin = matches[0].group("margin")
-    if not margin.isdigit() and not re.search(rb"(?:var|let|const)\s+"+re.escape(margin)+rb"=20000(?:;|,)", data):
-        raise ValueError("OpenCode 기본 예약 margin 결속 미지원")
-    output_max = int(amount.group(1))
-    configured = os.environ.get("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX")
-    if configured:
-        if not re.fullmatch(r"[0-9]+", configured) or int(configured) <= 0:
-            raise ValueError("OpenCode native 출력 환경 값 손상")
-        output_max = int(configured)
-    return output_max
+def _harness_ctx_plan(dest_root: Path, conf_path: Path, opencode_config_dir: Path, updates):
+    """읽기·`updates` 덮기(None 은 줄 삭제)·검사·조회·계산 — (local.conf 모듈, 입력, 바뀔 설정 파일, 줄, 기록 항목)."""
+    module = _load_local_conf()
+    loaded = module.load(conf_path)
+    module.assert_no_legacy(loaded)
+    values = {key: value for key, value in loaded.values.items() if key not in (updates or {})}
+    if updates:
+        values.update({key: value for key, value in updates.items() if value})
+        module.assert_values_no_legacy(values, conf_path)
+    present = frozenset(harness for harness, relpath in HARNESS_CTX_FILES.items()
+                        if (dest_root / relpath).is_file())
+    validate_harness_ctx(values, present)
+    jsonc = _harness_ctx_jsonc_seam()
+    texts = {relpath: _harness_ctx_read_text(dest_root / relpath, relpath)
+             for harness, relpath in HARNESS_CTX_FILES.items() if harness in present}
+    documents = {relpath: _harness_ctx_parse(relpath, text, jsonc) for relpath, text in texts.items()}
+    sources: dict[str, list[dict]] = {}
+    models: dict[tuple[str, str], int] = {}
+    for harness, relpath in HARNESS_CTX_FILES.items():
+        if harness not in present:
+            continue
+        sources[harness] = [documents[relpath]]
+        if HARNESS_CTX_RULES[relpath].model_limits:
+            global_documents = _opencode_global_documents(opencode_config_dir, jsonc)
+            models = _opencode_target_models(documents[relpath], relpath, global_documents)
+            sources[harness] = [document for _label, document in global_documents] + [documents[relpath]]
+    entries = {harness: _harness_ctx_entry(dest_root, harness, values, sources[harness], models)
+               for harness in HARNESS_CTX_FILES if harness in present}
+    targets = harness_ctx_targets(models, entries)
+    lines: list[str] = []
+    changed: dict[str, tuple[str, str]] = {}
+    for relpath, text in texts.items():
+        new_text, file_lines = _harness_ctx_edit(relpath, text, targets[relpath], jsonc)
+        lines.extend(file_lines)
+        if new_text != text:
+            changed[relpath] = (text, new_text)
+    for harness, entry in entries.items():
+        entry["settings"] = {_harness_ctx_dotted(path): value
+                             for path, value in targets[HARNESS_CTX_FILES[harness]].items()}
+    return module, values, changed, tuple(lines), entries
+
+
+def _ctx_record_unchanged(path: Path, record: dict) -> bool:
+    """기존 기록이 적용 시각 밖에서 같은가(같은 재적용은 트리를 바꾸지 않는다) — 없거나 손상이면 새로 쓴다."""
+    try:
+        previous = json.loads(_read_bytes_shared(path).decode("utf-8"))
+    except (FileNotFoundError, ValueError):
+        return False
+    return isinstance(previous, dict) and {**previous, "applied_at": None} == {**record, "applied_at": None}
+
+
+def _harness_ctx_entry(dest_root: Path, harness: str, values, documents: list, models: dict) -> dict:
+    """도구 기록 항목 — 모델 행·W·C·E·P·경고 지점. 조회 결과가 대상과 다르거나 설정 형식이 받지
+    않는 값이면 `HarnessCtxError`."""
+    rule = HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]]
+    positive = _load_local_conf()._ctx_positive
+    found = _read_harness_ctx_metadata(dest_root, harness, documents, models)
+    if not found:
+        raise HarnessCtxError([f"{rule.label} 모델 한도를 확인할 대상 모델이 없습니다."])
+    if any(not isinstance(row, dict) or not isinstance(row.get("id"), str) or not isinstance(row.get("provider"), str)
+           or not positive(row.get("C")) or not isinstance(row.get("basis"), dict)
+           or (rule.model_limits and not positive(row["basis"].get("context"))) for row in found):
+        raise HarnessCtxError([f"{rule.label} 모델 한도 조회 결과의 형식이 맞지 않습니다."])
+    rows = [{key: row[key] for key in ("id", "provider", "C", "basis")} for row in found]
+    identities = [(row["provider"], row["id"]) for row in rows]
+    mismatched = (len(set(identities)) != len(rows) or set(identities) != set(models)) if rule.model_limits \
+        else len(rows) != 1
+    if mismatched:
+        raise HarnessCtxError([f"{rule.label} 모델 한도 조회 결과가 대상 모델과 맞지 않습니다."])
+    window = int(_harness_ctx_value(values, _harness_ctx_window_key(harness)))
+    checkpoint_at, precompact_at, compact_at = (int(_harness_ctx_value(values, key)) for key in _HARNESS_CTX_RATIO_KEYS)
+    capacity = min(row["C"] for row in rows)
+    effective = min(window, capacity)
+    entry = {"models": rows, "W": window, "C": capacity, "E": effective, "P": effective * compact_at // 100,
+             "checkpoint": effective * checkpoint_at // 100, "precompact": effective * precompact_at // 100}
+    rule.check(dest_root, entry)
+    return entry
+
+
+def _read_harness_ctx_metadata(dest_root, harness, documents, models):
+    """도구의 모델 한도 조회 — 모델 행 `[{id, provider, C, basis}]` (테스트 교체 지점). `documents` 는 그 도구
+    설정 문서(병합 순서), `models` 는 opencode 대상 모델이다. 조회하지 못하면 `HarnessCtxError`."""
+    rule = HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]]
+    try:
+        return rule.capacity_reader(Path(dest_root), documents, models)
+    except (OSError, ValueError) as exc:
+        raise HarnessCtxError([f"{rule.label} 모델 한도를 확인하지 못했습니다 ({exc})."]) from exc
 
 
 def _ctx_native_protocol(command, root, requests):
-    """기존 native metadata protocol만 조회한다. user/turn 요청과 진단 원문은 내보내지 않는다."""
+    """도구의 JSON 줄 제어 프로토콜로 (이름, 요청, 응답 뒤 알림 또는 None) 을 차례로 보내고 `{이름: 응답}` 을
+    낸다 (테스트 교체 지점). 모델 답변 요청은 보내지 않으며 답변 흐름이 보이면 멈춘다."""
     import queue
     import threading
     import time
-    from datetime import datetime, timezone
-    incoming = queue.Queue()
-    diagnostics = []
-    proc = subprocess.Popen(command, cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1)
+    executable = shutil.which(command[0])
+    if executable is None:
+        raise ValueError(f"{command[0]} 실행 파일을 찾지 못했습니다")
+    incoming: queue.Queue = queue.Queue()
+    proc = subprocess.Popen([executable, *command[1:]], cwd=root, stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                            encoding="utf-8", bufsize=1)
+
     def receive():
         for line in proc.stdout:
             try:
                 incoming.put(json.loads(line))
             except ValueError:
                 incoming.put(None)
-    def discard_diagnostics():
-        for line in proc.stderr:
-            lowered = line.lower()
-            if "bundled" in lowered or "failed to refresh" in lowered:
-                diagnostics.append("catalog-fallback")
-    workers = [threading.Thread(target=receive, daemon=True),
-               threading.Thread(target=discard_diagnostics, daemon=True)]
-    for worker in workers:
-        worker.start()
-    responses, frames, receipt = {}, [], None
-    deadline = time.monotonic() + 30
+    worker = threading.Thread(target=receive, daemon=True)
+    worker.start()
+    responses = {}
+    deadline = time.monotonic() + _CTX_PROTOCOL_TIMEOUT_SECONDS
     try:
         for name, message, notification in requests:
-            proc.stdin.write(json.dumps(message) + "\n"); proc.stdin.flush()
-            while True:
+            proc.stdin.write(json.dumps(message) + "\n")
+            proc.stdin.flush()
+            expected = message.get("request_id", message.get("id"))
+            while name not in responses:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise ValueError("native metadata 응답 시간 초과")
+                    raise ValueError(f"{command[0]} 응답 시간 초과")
                 try:
                     frame = incoming.get(timeout=min(remaining, 0.25))
                 except queue.Empty:
                     if proc.poll() is not None:
-                        raise ValueError("native metadata 응답 전에 종료됨")
+                        raise ValueError(f"{command[0]} 가 응답 전에 종료됨") from None
                     continue
                 if not isinstance(frame, dict):
-                    raise ValueError("native metadata protocol 손상")
+                    raise ValueError(f"{command[0]} 응답 형식 손상")
                 if frame.get("type") in ("user", "assistant", "result"):
-                    raise ValueError("native metadata 조회에서 모델 turn 발생")
-                if frame.get("type") == "autocompact_state":
-                    frames.append({"type":"autocompact_state", "value":frame.get("value")})
+                    raise ValueError(f"{command[0]} 조회에서 모델 답변이 시작됨")
                 control = frame.get("response") if frame.get("type") == "control_response" else None
                 identifier = control.get("request_id") if isinstance(control, dict) else frame.get("id")
-                expected = message.get("request_id", message.get("id"))
                 if identifier != expected:
                     continue
-                if "error" in frame or (control and control.get("subtype") != "success"):
-                    raise ValueError("native metadata 요청 거부")
-                responses[name] = control.get("response") if control else frame.get("result")
-                if not isinstance(responses[name], dict):
-                    raise ValueError("native metadata 응답 구조 손상")
-                break
+                if "error" in frame or (control is not None and control.get("subtype") != "success"):
+                    raise ValueError(f"{command[0]} 가 {name} 요청을 거부함")
+                response = control.get("response") if control is not None else frame.get("result")
+                if not isinstance(response, dict):
+                    raise ValueError(f"{command[0]} {name} 응답 형식 손상")
+                responses[name] = response
             if notification:
-                proc.stdin.write(json.dumps(notification) + "\n"); proc.stdin.flush()
-        receipt = {"responses":responses, "frames":frames, "sent_user_turns":0,
-                   "observed_at":datetime.now(timezone.utc).isoformat()}
-        return receipt
+                proc.stdin.write(json.dumps(notification) + "\n")
+                proc.stdin.flush()
+        return responses
     finally:
         proc.stdin.close()
         try:
             proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
-            proc.terminate()
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                proc.kill(); proc.wait()
-        for worker in workers:
-            worker.join(timeout=1)
-        if any(worker.is_alive() for worker in workers):
-            raise ValueError("native metadata 수집 미완료")
-        if receipt is not None:
-            receipt["catalog_fallback"] = bool(diagnostics)
+            proc.kill()
+            proc.wait()
+        worker.join(timeout=1)
 
 
-def _ctx_claude_policy(data):
-    """좁은 native 식과 합성 caller의 back-reference를 확인한다 (실행 없음)."""
-    # 문자열/주석 속 식은 실행 정책의 증언이 아니다. 식을 숨기는 template도 제외한다.
-    symbol = rb"[A-Za-z_$][A-Za-z0-9_$]*"
-    reserve = re.compile(rb"function (?P<name>"+symbol+rb")\((?P<a>"+symbol+rb"),(?P<b>"+symbol+rb")\)\{let (?P<r>"+symbol+rb")=Math\.min\((?P=a)\.maxOutputTokens,(?P<const>"+symbol+rb")\),(?P<s>"+symbol+rb")=(?P<gate>"+symbol+rb")\(\)\?(?P=b):void 0,\{window:(?P<w>"+symbol+rb")\}=(?P<window>"+symbol+rb")\((?P=a),(?P=s)\);return (?P=w)-(?P=r)\}")
-    cutoff = re.compile(rb"function (?P<name>"+symbol+rb")\((?P<a>"+symbol+rb"),(?P<b>"+symbol+rb")\)\{let (?P<r>"+symbol+rb")=(?P=a)-13000,(?P<s>"+symbol+rb")=(?P=b)\.testPctOverride;if\((?P=s)!==void 0&&!isNaN\((?P=s)\)&&(?P=s)>0&&(?P=s)<=100\)return Math\.min\(Math\.floor\((?P=a)\*\((?P=s)/100\)\),(?P=r)\);return (?P=r)\}")
-    # Literal provenance is established from the original NUL-delimited source
-    # context, before extracting a policy unit. This only skips literals/comments;
-    # it does not parse or evaluate JavaScript statements or lexical scopes.
-    contexts={(data.rfind(b"\0",0,m.start())+1,
-               data.find(b"\0",m.end()) if b"\0" in data[m.end():] else len(data))
-              for m in reserve.finditer(data)}
-    quoted=re.compile(rb"\"(?:\\.|[^\"\\\r\n])*\"|'(?:\\.|[^'\\\r\n])*'",re.S)
-    word=re.compile(rb"[A-Za-z_$][A-Za-z0-9_$]*|[0-9]+(?:\.[0-9]+)?")
-    regexp=re.compile(rb"/(?![/*])(?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\r\n\\])+/[dgimsuvy]*")
-    policies=set()
-    for lower,upper in sorted(contexts):
-        context=data[lower:upper]; masked=bytearray(context)
-        stack=[]; spans=[]; position=0; previous=b""
-        while position<len(context):
-            if stack and stack[-1][0]=="template":
-                if context[position]==92:
-                    position+=2;continue
-                if context[position]==96:
-                    _,opened,_=stack.pop();spans.append((opened,position+1))
-                    position+=1;previous=b"value";continue
-                if context[position:position+2]==b"${":
-                    stack.append(("expression",position,1));position+=2;previous=b"{";continue
-                position+=1;continue
-            char=context[position]
-            if char in (34,39):
-                token=quoted.match(context,position)
-                if token is None:
-                    spans.append((position,len(context)));break
-                spans.append((position,token.end()));position=token.end();previous=b"value";continue
-            if char==96:
-                stack.append(("template",position,0));position+=1;continue
-            pair=context[position:position+2]
-            if pair in (b"//",b"/*"):
-                end=context.find(b"\n" if pair==b"//" else b"*/",position+2)
-                end=len(context) if end<0 else end+(2 if pair==b"/*" else 0)
-                spans.append((position,end));position=end;continue
-            if char==47 and previous in (b"",b"=",b"(",b",",b":",b"!",b"&",b"|",b"?",b";",b"{",b"[",b"=>",
-                                          b"return",b"throw",b"case",b"yield",b"void",b"typeof",b"delete",b"await"):
-                token=regexp.match(context,position)
-                if token is None:
-                    spans.append((position,len(context)));break
-                spans.append((position,token.end()));position=token.end();previous=b"value";continue
-            if stack and stack[-1][0]=="expression" and char in (123,125):
-                kind,opened,depth=stack[-1];depth+=1 if char==123 else -1
-                if depth==0:
-                    stack.pop();position+=1;continue
-                stack[-1]=(kind,opened,depth)
-            token=word.match(context,position)
-            if token is not None:
-                previous=token[0];position=token.end();continue
-            if char not in b" \t\r\n":
-                previous=b"=>" if pair==b"=>" else bytes([char])
-            position+=2 if pair==b"=>" else 1
-        for kind,opened,_ in stack:
-            if kind=="template":spans.append((opened,len(context)))
-        for lower_span,upper_span in spans:
-            masked[lower_span:upper_span]=b" "*(upper_span-lower_span)
-        code=bytes(masked)
-        for res in reserve.finditer(code):
-            amounts=re.findall(rb"(?:var|let|const) "+re.escape(res['const'])+rb"=([0-9]+)(?:;|,)",code)
-            if not amounts or set(amounts)!={b'20000'}:
-                raise ValueError("Claude 출력 예약 상수 결속 미지원")
-            connected=False
-            for cut in cutoff.finditer(code):
-                caller=re.compile(rb"function (?P<name>"+symbol+rb")\((?P<a>"+symbol+rb"),(?P<b>"+symbol+rb")\)\{return "+re.escape(cut['name'])+rb"\("+re.escape(res['name'])+rb"\((?P=a),(?P=b)\),(?P<options>"+symbol+rb")\((?P=a),(?P=b)\)\)\}")
-                for call in caller.finditer(code):
-                    wrapper=re.compile(rb"function (?P<name>"+symbol+rb")\((?P<a>"+symbol+rb"),(?P<b>"+symbol+rb")\)\{return "+re.escape(cut['name'])+rb"\("+re.escape(res['name'])+rb"\((?P=a),(?P=b)\),\{\.\.\."+re.escape(call['options'])+rb"\((?P=a),(?P=b)\),testPctOverride:void 0\}\)\}")
-                    wrappers=list(wrapper.finditer(code))
-                    if not wrappers:
-                        raise ValueError("Claude 기본 caller 결속 미지원")
-                    for wrapped in wrappers:
-                        # Check all four connected names, including conflicting declarations.
-                        for name,pattern in ((res['name'],reserve),(cut['name'],cutoff),
-                                             (call['name'],caller),(wrapped['name'],wrapper)):
-                            declarations=list(re.finditer(rb"function "+re.escape(name)+rb"\(",code))
-                            supported=[m for m in pattern.finditer(code) if m['name']==name]
-                            if len(declarations)!=len(supported):
-                                raise ValueError("Claude 연결 정책의 상이한 선언")
-                        policies.add((res['gate'],res['window'],call['options']))
-                        connected=True
-            if not connected:
-                raise ValueError("Claude 정책의 caller 연결 미지원")
-    if len(policies) != 1:
-        raise ValueError("Claude native 예약/cutoff/caller 식 미지원 또는 모호")
-    return 20000, 13000
+# Claude Code 무턴 조회 — 설정 파일 세 층만 읽고 MCP·도구를 비운 채 제어 요청만 보낸다.
+_CLAUDE_CONTEXT_QUERY = (
+    "claude", "-p", "--verbose", "--input-format", "stream-json", "--output-format", "stream-json",
+    "--no-session-persistence", "--safe-mode", "--setting-sources", "user,project,local",
+    "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--permission-mode", "plan", "--tools", "")
 
 
-def _ctx_claude_metadata(harness, documents, models, read, row, evidence, native_files, native_commands):
-    from datetime import datetime, timezone
-    root = Path(documents["_ctx_root"])
-    entry = Path(shutil.which(harness) or "").resolve()
-    if not entry.is_file():
-        raise ValueError("Claude native 설치 원천 없음")
-    before = _ctx_native_stat(entry)
-    native = _ctx_file_bytes(entry)
-    if _ctx_native_stat(entry) != before:
-        raise ValueError("Claude native 설치 판독 경쟁")
-    versions = set(re.findall(rb"// Version: ([0-9]+\.[0-9]+\.[0-9]+)", native))
-    if len(versions) != 1:
-        raise ValueError("Claude 설치 정책 버전 미지원")
-    version = next(iter(versions)).decode("ascii")
-    reply_max, buffer = _ctx_claude_policy(native)
-    native_files[str(entry)] = before; native_commands[harness] = str(entry)
-    home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home()/".claude")
-    documents["_ctx_roles"] = {"settings":[str((home/"settings.json").resolve()),str(root/".claude/settings.local.json"),
-        "/etc/claude-code/managed-settings.json"],"managed_bundle":"/etc/claude-code/managed-settings.d"}
-    evidence[documents["_ctx_roles"]["managed_bundle"]] = _ctx_file_digest(Path(documents["_ctx_roles"]["managed_bundle"]))
-    if Path("/etc/claude-code/managed-settings.d").exists():
-        raise ValueError("Claude managed 설정 묶음의 선택 근거 미지원")
-    settings = [read(home/"settings.json"), documents[HARNESS_CTX_FILES[harness]], read(root/".claude/settings.local.json"),
-                read(Path("/etc/claude-code/managed-settings.json"))]
-    effective = dict(os.environ)
-    for setting in settings:
-        if not isinstance(setting, dict) or not isinstance(setting.get("env", {}), dict):
-            raise ValueError("Claude 설정 구조 손상")
-        effective.update(setting.get("env", {}))
-        if any(setting.get(k) for k in ("profile", "authProfile", "apiKeyHelper")):
-            raise ValueError("Claude ordinary profile 외 선택 근거 미확정")
-    unsupported = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
-                   "CLAUDE_CODE_USE_ANTHROPIC_AWS", "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD", "CLAUDE_CODE_USE_MANTLE",
-                   "ANTHROPIC_UNIX_SOCKET", "ANTHROPIC_WIF_PROFILE", "ANTHROPIC_AUTH_TOKEN_FILE_DESCRIPTOR")
-    if any(effective.get(k) for k in unsupported):
-        raise ValueError("Claude provider/profile/transport 결속 미지원")
-    origin = effective.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
-    if origin.rstrip("/") != "https://api.anthropic.com":
-        raise ValueError("Claude custom origin의 독립 provider 창 근거 없음")
-    if effective.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW"):
-        raise ValueError("Claude 환경 압축창이 neutral 원천을 가림")
-    receipt = _ctx_native_protocol([str(entry), "-p", "--verbose", "--input-format", "stream-json",
-        "--output-format", "stream-json", "--no-session-persistence", "--safe-mode", "--setting-sources", "user,project,local",
-        "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--permission-mode", "plan", "--tools", "",
-        "--autocompact", "auto"], root, [
-        ("initialize", {"type":"control_request", "request_id":"ctx-init", "request":{"subtype":"initialize", "hooks":{}, "skills":[]}}, None),
-        ("context", {"type":"control_request", "request_id":"ctx-context", "request":{"subtype":"get_context_usage", "detail":"summary"}}, None)])
-    if _ctx_native_stat(entry) != before:
-        raise ValueError("Claude protocol 중 설치 변경")
-    responses = receipt["responses"]; account = responses["initialize"].get("account", {})
-    context = responses["context"]
-    if (receipt.get("sent_user_turns") != 0 or account.get("apiProvider") != "firstParty"
-            or context.get("apiUsage") is not None or context.get("isAutoCompactEnabled") is not True
-            or context.get("autocompactSource") != "model-default"):
-        raise ValueError("Claude neutral zero-turn 원천/provider 불일치")
+def _ctx_claude_query(root, autocompact) -> dict:
+    """`--autocompact <autocompact>` 로 연 Claude Code 의 initialize·get_context_usage 응답."""
+    responses = _ctx_native_protocol([*_CLAUDE_CONTEXT_QUERY, "--autocompact", str(autocompact)], root, [
+        ("initialize", {"type": "control_request", "request_id": "ctx-init",
+                        "request": {"subtype": "initialize", "hooks": {}, "skills": []}}, None),
+        ("context", {"type": "control_request", "request_id": "ctx-context",
+                     "request": {"subtype": "get_context_usage", "detail": "summary"}}, None)])
+    context, positive = responses["context"], _load_local_conf()._ctx_positive
+    if (not positive(context.get("rawMaxTokens")) or not positive(context.get("autoCompactThreshold"))
+            or not context["autoCompactThreshold"] < context["rawMaxTokens"]):
+        raise ValueError("Claude Code 조회 응답에 모델 창·압축 기준이 없습니다")
+    return responses
+
+
+def _ctx_claude_capacity(root, documents, models) -> list:
+    """Claude C = 기본 창 조회의 압축 기준(autoCompactThreshold) — 모델 창에서 압축 예약 d 를 뺀 값."""
+    responses = _ctx_claude_query(root, "auto")
+    context, account = responses["context"], responses["initialize"].get("account")
     model = context.get("model")
-    if not isinstance(model, str) or not model or re.search(r"\[1m\]", model, re.I):
-        raise ValueError("Claude model suffix/선택 미확정")
-    initialized_models=responses["initialize"].get("models")
-    if (not isinstance(initialized_models,list) or not any(isinstance(item,dict)
-            and model in (item.get("resolvedModel"),item.get("value")) for item in initialized_models)):
-        raise ValueError("Claude 초기 모델 목록/실제 선택 불일치")
-    window, point = context.get("rawMaxTokens"), context.get("autoCompactThreshold")
-    if type(window) is not int or not 100000 <= window <= 1000000 or context.get("maxTokens") != window or type(point) is not int:
-        raise ValueError("Claude 원본 창/cutoff 구조 손상")
-    percent_text = effective.get("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")
-    percent = float(percent_text) if percent_text else None
-    categories = context.get("categories")
-    buffers = [item.get("tokens") for item in categories if isinstance(item, dict) and item.get("kind") == "buffer"] if isinstance(categories, list) else []
-    if len(buffers) != 1 or type(buffers[0]) is not int or buffers[0] != window-point:
-        raise ValueError("Claude neutral buffer/cutoff 불일치")
-    reserved = window-point-buffer
-    if percent is not None:
-        # 비율 branch는 buffer category가 원래의 출력 예약도 증언하지 않는다.
-        raise ValueError("Claude native 비율 override의 독립 예약 미확정")
-    if not 0 <= reserved <= reply_max:
-        raise ValueError("Claude 실제 출력 예약과 설치 policy 불일치")
-    raw = {"context":window, "native_context":window, "native_window_min":100000, "native_window_max":1000000,
-           "reserved":reserved, "summary_buffer":buffer, "native_formula":"claude-cutoff", "native_percent":percent}
-    projection = {"model":model, "provider":"firstParty", "profile":"", "origin":origin,
-                  "context":raw, "native_sha256":content_sha256(native)}
-    generation = content_sha256(json.dumps(projection, sort_keys=True).encode("utf-8"))
-    observed = receipt.get("observed_at") or datetime.now(timezone.utc).isoformat()
-    row({"model":model, "provider":"firstParty", "profile":""}, raw, "claude-sdk-neutral", generation,
-        observed, None, "claude-cutoff", version)
+    provider = account.get("apiProvider") if isinstance(account, dict) else None
+    if not isinstance(model, str) or not model or not isinstance(provider, str) or not provider:
+        raise ValueError("Claude Code 조회 응답에 모델·provider 가 없습니다")
+    return [{"id": model, "provider": provider, "C": context["autoCompactThreshold"],
+             "basis": {"model_window": context["rawMaxTokens"],
+                       "auto_compact_threshold": context["autoCompactThreshold"]}}]
 
 
-def _ctx_codex_config_selection(document):
-    """native collector와 반영 조회가 공유하는 선택 항목."""
-    keys = ("model", "model_provider", "profile", "model_context_window", "cli_auth_credentials_store",
-            "model_providers", "forced_login_method", "forced_chatgpt_workspace_id", "chatgpt_base_url", "data_residency")
-    return {key:document.get(key) for key in keys}
+def _ctx_claude_threshold(root, window: int) -> int:
+    """`autoCompactWindow = window` 일 때 Claude Code 의 압축 기준 — 확인 조회 (테스트 교체 지점)."""
+    return _ctx_claude_query(root, window)["context"]["autoCompactThreshold"]
 
 
-def _ctx_codex_native_selection(root, entry, read, evidence, native_files):
-    """실제 cwd의 native 선택과 catalog 경로를 결속한다. 반환값에 비밀값을 싣지 않는다."""
-    previous_files = dict(evidence)
-    receipt = _ctx_native_protocol([str(entry), "app-server", "--stdio"], root, [
-        ("initialize", {"id":1,"method":"initialize","params":{"clientInfo":{"name":"pm-ctx","version":"1"},
-            "capabilities":{"experimentalApi":True,"explicitGatewayOauth":True}}}, {"method":"initialized"}),
-        ("config", {"id":2,"method":"config/read","params":{"includeLayers":True,"cwd":str(root)}}, None),
-        ("gateway", {"id":3,"method":"account/gatewayOAuth/read","params":{}}, None),
-        ("models", {"id":4,"method":"model/list","params":{"includeHidden":True,"limit":100}}, None),
-        ("config_after", {"id":5,"method":"config/read","params":{"includeLayers":True,"cwd":str(root)}}, None)])
-    if receipt.get("sent_user_turns") != 0 or receipt.get("catalog_fallback"):
-        raise ValueError("Codex catalog fallback 또는 모델 turn 원천 거부")
-    responses = receipt["responses"]
-    before, after = responses["config"], responses["config_after"]
-    keys = tuple(_ctx_codex_config_selection({}))
-    def selection(document):
-        config, layers = document.get("config"), document.get("layers")
-        if not isinstance(config, dict) or not isinstance(layers, list) or not layers:
-            raise ValueError("Codex native 선택 계층 구조 손상")
-        projected = []
-        for layer in layers:
-            if not isinstance(layer, dict) or not isinstance(layer.get("name"), dict) or not layer.get("version"):
-                raise ValueError("Codex native 계층 세대 미확정")
-            projected.append({"name":layer["name"], "version":layer["version"], "disabled":layer.get("disabledReason"),
-                              "config":{k:layer.get("config",{}).get(k) for k in keys if k in layer.get("config",{})}})
-        return {"config":{k:config.get(k) for k in keys}, "layers":projected}
-    selected = selection(before)
-    if selected != selection(after):
-        raise ValueError("Codex native 설정 조회 경쟁")
-    config = selected["config"]
-    provider = config.get("model_provider") or "openai"
-    gateway = responses["gateway"]
-    if gateway.get("providerId") != provider or gateway.get("error") or gateway.get("required") is not False:
-        raise ValueError("Codex native provider/auth 경로 미확정")
-    override = None
-    for layer in selected["layers"]:
-        name = layer["name"]
-        file = name.get("file")
-        if name.get("type") == "project":
-            folder = name.get("dotCodexFolder")
-            if not isinstance(folder, str):
-                raise ValueError("Codex 프로젝트 계층 경로 손상")
-            file = str(Path(folder)/"config.toml")
-        if file:
-            path = Path(file).resolve()
-            digest = _ctx_file_digest(path)
-            if str(path) in previous_files and previous_files[str(path)] != digest:
-                raise ValueError("Codex native 설정 파일 조회 경쟁")
-            evidence[str(path)] = digest
-        if layer["disabled"]:
-            continue
-        # 계층은 native의 우선순위 순서다. 제거할 framework window만 제외한다.
-        owned = name.get("type") == "project" and Path(name["dotCodexFolder"]).resolve() == root/".codex"
-        if not owned and override is None and "model_context_window" in layer["config"]:
-            override = layer["config"]["model_context_window"]
-    model, profile = config.get("model"), config.get("profile") or ""
-    if not isinstance(model, str) or not model or not isinstance(profile, str):
-        raise ValueError("Codex native 모델/profile 선택 미확정")
-    listed = responses["models"].get("data")
-    if not isinstance(listed, list) or not any(m.get("id") == model or m.get("model") == model for m in listed if isinstance(m, dict)):
-        raise ValueError("Codex native 모델 목록과 선택 불일치")
-    return {"model":model,"provider":provider,"profile":profile}, override, selected
+def _ctx_claude_window(entry: dict) -> int:
+    """autoCompactWindow = P + d — d 는 기본 창 조회의 모델 창 − 압축 기준(창 크기와 무관·실측 33,000)."""
+    basis = entry["models"][0]["basis"]
+    return entry["P"] + basis["model_window"] - basis["auto_compact_threshold"]
 
 
-def _ctx_catalog_percent_metadata(harness, documents, models, read, row, evidence, native_files, native_commands):
-    from datetime import timedelta
-    version, native = _ctx_native_install(harness, evidence, native_files, native_commands)
-    documents["_ctx_roles"] = {"manifest":next(iter(evidence))}
-    if version not in ("0.159.3", "0.160.0"):
-        raise ValueError("Codex 설치 버전의 설정 선택 규칙 미확인")
-    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
-    documents["_ctx_roles"].update(selection=str((home/"config.toml").resolve()),auth=str((home/"auth.json").resolve()),
-                                  catalog=str((home/"models_cache.json").resolve()))
-    global_conf = read(home / "config.toml", toml=True)
-    profile = global_conf.get("profile", "")
-    selected = {**global_conf, **global_conf.get("profiles", {}).get(profile, {})}
-    project = documents[HARNESS_CTX_FILES[harness]]
-    if "model" in project:
-        # 프로젝트 provider/profile은 native denylist에 포함된다. 모델만 신뢰된 계층에서 선택한다.
-        project_root = documents["_ctx_root"]
-        trust = global_conf.get("projects", {}).get(project_root, {}).get("trust_level")
-        if trust != "trusted":
-            raise ValueError("Codex 프로젝트 설정의 신뢰/선택 미확정")
-        selected["model"] = project["model"]
-    model, provider_id = selected.get("model"), selected.get("model_provider", "openai")
-    provider = global_conf.get("model_providers", {}).get(provider_id)
-    use_native = not isinstance(provider, dict) or provider.get("requires_openai_auth") or (home/"auth.json").exists()
-    evidence[str((home/"auth.json").resolve())] = _ctx_file_digest(home/"auth.json")
-    if use_native:
-        if version != "0.160.0":
-            raise ValueError("Codex 인증 catalog protocol 설치 버전 미지원")
-        identity, override, native_selected = _ctx_codex_native_selection(Path(documents["_ctx_root"]), Path(native_commands[harness]),
-                                                                         read, evidence, native_files)
-        model, provider_id, profile = (identity[k] for k in ("model","provider","profile"))
-        config = native_selected["config"]
-        forbidden_env = ("CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "OPENAI_API_KEY", "OPENAI_BASE_URL",
-                         "OPENAI_ORGANIZATION", "OPENAI_PROJECT", "CODEX_AUTH_JSON")
-        if (provider_id != "openai" or profile or any(k in os.environ for k in forbidden_env)
-                or config.get("cli_auth_credentials_store") not in (None,"file")
-                or any(config.get(k) for k in ("forced_login_method","forced_chatgpt_workspace_id","data_residency"))
-                or config.get("chatgpt_base_url") not in (None,"https://chatgpt.com/backend-api/","https://chatgpt.com/backend-api")):
-            raise ValueError("Codex native 승인 catalog 세대의 파일 인증 경로 미지원")
-        if any(layer["config"].get("chatgpt_base_url") for layer in native_selected["layers"] if not layer["disabled"]):
-            raise ValueError("Codex 명시 ChatGPT origin 미지원")
-        # 기본 provider가 RPC에서 확장되지 않으면 검증된 설치 0.160.0의 builtin 형상만 사용한다.
-        # 사용자 provider override가 있으면 builtin으로 조용히 대체하지 않는다.
-        if any(layer["config"].get("model_providers",{}).get("openai") for layer in native_selected["layers"]):
-            raise ValueError("Codex OpenAI provider 사용자 override 미지원")
-        builtin = config.get("model_providers") or {}
-        provider = builtin.get("openai") or {"name":"OpenAI","requires_openai_auth":True,
-            "http_headers":{"version":version}}
-        if (provider.get("name") != "OpenAI" or provider.get("requires_openai_auth") is not True
-                or provider.get("base_url") is not None or provider.get("model_catalog_url") is not None
-                or provider.get("query_params") or any(provider.get(k) for k in ("env_key","auth","experimental_bearer_token","gateway_oauth","aws"))
-                or provider.get("http_headers") != {"version":version}
-                or provider.get("env_http_headers") not in (None,{}, {"OpenAI-Organization":"OPENAI_ORGANIZATION","OpenAI-Project":"OPENAI_PROJECT"})):
-            raise ValueError("Codex builtin provider 원형 불일치")
-        provider = {**provider,"base_url":"https://chatgpt.com/backend-api/codex","env_http_headers":{}}
-        auth_path = home / "auth.json"
-        try:
-            file_auth = read(auth_path)
-            expected_identity = _ctx_codex_cache_identity(provider, file_auth)
-        except (ValueError,UnicodeError,TypeError,KeyError):
-            raise ValueError("Codex 파일 인증 정체 확인 불가") from None
-        if _ctx_file_digest(auth_path) != evidence[str(auth_path.resolve())]:
-            raise ValueError("Codex 파일 인증 판독 경쟁")
-    else:
-        expected_identity = _ctx_codex_cache_identity(provider)
-        override = selected.get("model_context_window")
-    path = home / "models_cache.json"
-    before_catalog = _ctx_native_stat(path)
-    catalog_bytes = _ctx_file_bytes(path)
-    if _ctx_native_stat(path) != before_catalog:
-        raise ValueError("Codex catalog 판독 경쟁")
-    catalog = json.loads(catalog_bytes.decode("utf-8"))
-    evidence[str(path.resolve())] = content_sha256(catalog_bytes)
-    opaque = catalog.get("identity")
-    # 최적화된 설치 binary에 짧은 hash marker literal이 남는다고 가정하지 않는다.
-    # 검증된 설치 버전의 해시 식과 실제 cache identity 일치가 provider/auth 근거다.
-    if (not isinstance(opaque, str) or not opaque or opaque != expected_identity or catalog.get("client_version") != version):
-        raise ValueError("Codex catalog provider/auth/설치 버전 불일치")
-    observed = _load_local_conf()._ctx_time(catalog.get("fetched_at"))
-    # 실제 native models-manager의 cache TTL (300초). raw cache에 expiry 키를 요구하지 않는다.
-    expiry = observed + timedelta(seconds=300)
-    found = [m for m in catalog.get("models", []) if m.get("slug") == model]
-    if len(found) != 1: raise ValueError("Codex 정확 모델 행 없음 또는 중복")
-    raw = {"context": found[0].get("context_window"), "max_context":found[0].get("max_context_window"),
-           "effective_percent": found[0].get("effective_context_window_percent"), "window_override":override}
-    active = raw["context"]
-    if override is not None:
-        if type(override) is not int or override <= 0 or (raw["max_context"] is None and override > active):
-            raise ValueError("Codex 사용자 override의 독립 max 근거 없음")
-        active = min(override, raw["max_context"]) if raw["max_context"] is not None else override
-    raw["native_compact_max"] = active*9//10
-    if _ctx_file_digest(path) != evidence[str(path.resolve())]:
-        raise ValueError("Codex catalog 판독 경쟁")
-    row({"model":model,"provider":provider_id,"profile":profile},raw,path,
-        content_sha256(catalog_bytes),observed.isoformat(),expiry.isoformat(),"context-percent",version)
+def _ctx_claude_check(root, entry: dict) -> None:
+    """autoCompactWindow 범위와 확인 조회(그 창의 압축 기준 = P)."""
+    window = _ctx_claude_window(entry)
+    low, high = CLAUDE_AUTO_COMPACT_WINDOW_RANGE
+    if not low <= window <= high:
+        raise HarnessCtxError([
+            f"Claude Code autoCompactWindow {window}(압축 지점 {entry['P']} + 압축 예약 {window - entry['P']})은 "
+            f"{low}~{high} 이어야 합니다 — 사용 한도나 압축 비율을 조정하십시오."])
+    try:
+        threshold = _ctx_claude_threshold(root, window)
+    except (OSError, ValueError) as exc:
+        raise HarnessCtxError([f"Claude Code 확인 조회 실패 ({exc})."]) from exc
+    if threshold != entry["P"]:
+        raise HarnessCtxError([
+            f"Claude Code 확인 조회: autoCompactWindow {window} 의 압축 기준이 {threshold} 로 압축 지점 "
+            f"{entry['P']} 와 다릅니다 (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE 같은 환경 설정을 확인하십시오)."])
+
+
+def _ctx_codex_window(basis: dict) -> int:
+    """Codex 실효 창 — 설정 model_context_window(없으면 모델 창)를 모델 최대 창으로 자른 값."""
+    window = basis["model_context_window"] or basis["context_window"]
+    return window if basis["max_context_window"] is None else min(window, basis["max_context_window"])
+
+
+# Codex 앱 서버(무턴 조회)와 opencode 모델 목록 캐시(`<캐시 기준 폴더>/opencode/models.json`).
+_CODEX_APP_SERVER_QUERY = ("codex", "app-server", "--stdio")
+_OPENCODE_MODEL_CATALOG = ("opencode", "models.json")
+
+
+def _ctx_codex_capacity(root, documents, models) -> list:
+    """Codex C = floor(실효 창 × 유효 비율 ÷ 100) — 앱 서버의 실효 설정과 Codex 모델 캐시의 그 모델 행."""
+    responses = _ctx_native_protocol(_CODEX_APP_SERVER_QUERY, root, [
+        ("initialize", {"id": 1, "method": "initialize", "params": {
+            "clientInfo": {"name": "pm-ctx", "version": "1"}, "capabilities": {"experimentalApi": True}}},
+         {"method": "initialized"}),
+        ("config", {"id": 2, "method": "config/read", "params": {"includeLayers": True, "cwd": str(root)}}, None),
+        # 모델 목록 요청이 Codex 에게 지금 인증으로 모델 캐시를 받게 한다(창 크기는 캐시 파일에만 있다).
+        ("models", {"id": 3, "method": "model/list", "params": {"includeHidden": True, "limit": 100}}, None)])
+    config = responses["config"].get("config")
+    model = config.get("model") if isinstance(config, dict) else None
+    if not isinstance(model, str) or not model:
+        raise ValueError("Codex 실효 설정에 모델이 없습니다")
+    cache = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "models_cache.json"
+    document = json.loads(_read_bytes_shared(cache).decode("utf-8"))
+    listed = document.get("models") if isinstance(document, dict) else None
+    rows = [row for row in listed if isinstance(row, dict) and row.get("slug") == model] if isinstance(listed, list) else []
+    if len(rows) != 1:
+        raise ValueError(f"Codex 모델 캐시({cache})에 {model} 행이 없거나 둘 이상입니다")
+    basis = {"context_window": rows[0].get("context_window"), "max_context_window": rows[0].get("max_context_window"),
+             "model_context_window": config.get("model_context_window"),
+             "percent": rows[0].get("effective_context_window_percent")}
+    positive = _load_local_conf()._ctx_positive
+    if (not positive(basis["context_window"]) or not positive(basis["percent"]) or basis["percent"] > 100
+            or any(basis[key] is not None and not positive(basis[key])
+                   for key in ("max_context_window", "model_context_window"))):
+        raise ValueError(f"Codex 모델 캐시·설정의 {model} 창 크기 형식 오류")
+    # model_provider 가 없으면 Codex 는 openai 를 쓴다(기록의 표시용 이름).
+    return [{"id": model, "provider": config.get("model_provider") or "openai",
+             "C": _ctx_codex_window(basis) * basis["percent"] // 100, "basis": basis}]
+
+
+def _ctx_codex_check(root, entry: dict) -> None:
+    """Codex 압축 지점은 실효 창의 `CODEX_COMPACT_LIMIT_PCT`% 이하."""
+    limit = _ctx_codex_window(entry["models"][0]["basis"]) * CODEX_COMPACT_LIMIT_PCT // 100
+    if entry["P"] > limit:
+        raise HarnessCtxError([
+            f"Codex 압축 지점 {entry['P']} 은 실효 창의 {CODEX_COMPACT_LIMIT_PCT}%({limit}) 이하여야 합니다 — "
+            "압축 비율을 낮추십시오."])
+
+
+def _ctx_opencode_output_max() -> int:
+    """opencode 출력 예약 상한 — `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX` 가 있으면 그 값."""
+    configured = os.environ.get("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX")
+    if not configured:
+        return OPENCODE_LIMIT_OUTPUT_DEFAULT
+    if not re.fullmatch(r"[0-9]+", configured) or int(configured) <= 0:
+        raise ValueError(f"OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX={configured} 는 양의 정수가 아닙니다")
+    return int(configured)
+
+
+def _ctx_opencode_route(documents: list, provider: str, model: str) -> tuple:
+    """설정 문서(병합 순서·뒤가 이긴다)의 그 모델 경로 — (baseURL, npm, API 모델 id)."""
+    origin, npm, api_model = None, None, model
+    for document in documents:
+        configured = (document.get("provider") or {}).get(provider) or {}
+        origin = (configured.get("options") or {}).get("baseURL", origin)
+        npm = configured.get("npm", npm)
+        api_model = ((configured.get("models") or {}).get(model) or {}).get("id", api_model)
+    return origin, npm, api_model
+
+
+def _ctx_opencode_capacity(root, documents, models) -> list:
+    """opencode 대상 모델마다 C = min(원본 input, context − 실효 출력) — models.dev 캐시 행이 없으면
+    OpenAI 호환(Ollama) 주소의 모델 정보."""
+    output_max, positive = _ctx_opencode_output_max(), _load_local_conf()._ctx_positive
+    catalog_path = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache", *_OPENCODE_MODEL_CATALOG)
+    catalog = json.loads(_read_bytes_shared(catalog_path).decode("utf-8")) if catalog_path.is_file() else {}
+    if not isinstance(catalog, dict):
+        raise ValueError(f"opencode 모델 목록({catalog_path}) 형식 오류")
+    rows = []
+    for (provider, model), output in models.items():
+        origin, npm, api_model = _ctx_opencode_route(documents, provider, model)
+        provider_row = catalog.get(provider) or {}
+        listed = provider_row.get("models") if isinstance(provider_row, dict) else None
+        listed = listed.get(model) if isinstance(listed, dict) else None
+        if isinstance(listed, dict):
+            if api_model != model or origin not in (None, provider_row.get("api")):
+                raise ValueError(f"{provider}/{model} 의 설정 주소·모델 id 가 모델 목록과 다릅니다")
+            limit = listed.get("limit") or {}
+            context, input_limit = limit.get("context"), limit.get("input")
+            if (not positive(context) or not positive(limit.get("output"))
+                    or (input_limit is not None and not positive(input_limit))):
+                raise ValueError(f"opencode 모델 목록의 {provider}/{model} limit 형식 오류")
+            effective, source = min(limit["output"], output, output_max), "models.dev 목록"
+        else:
+            if npm != "@ai-sdk/openai-compatible" or not isinstance(origin, str) or not isinstance(api_model, str):
+                raise ValueError(f"{provider}/{model} 이 모델 목록에 없고 OpenAI 호환 주소도 아닙니다")
+            info = _ctx_ollama_show(origin, api_model).get("model_info")
+            architecture = info.get("general.architecture") if isinstance(info, dict) else None
+            context = info.get(f"{architecture}.context_length") if isinstance(architecture, str) else None
+            if not positive(context):
+                raise ValueError(f"{origin} 의 {api_model} 모델 정보에 context 길이가 없습니다")
+            input_limit, effective, source = None, min(output, output_max), origin
+        capacity = context - effective if input_limit is None else min(input_limit, context - effective)
+        if capacity <= 0:
+            raise ValueError(f"{provider}/{model} 의 출력 예약 {effective} 가 창 {context} 이상입니다")
+        basis = {"context": context, "output": effective, "source": source}
+        if input_limit is not None:
+            basis["input"] = input_limit
+        rows.append({"id": model, "provider": provider, "C": capacity, "basis": basis})
+    return rows
 
 
 def _ctx_ollama_show(origin, model):
-    """정확 authority/tag의 기존 metadata API만 조회한다. generate/chat 요청은 없다."""
+    """Ollama `/api/show` 모델 정보 — OpenAI 호환 주소(`…/v1`)의 같은 서버에 묻는다(생성 요청 없음)."""
     from urllib import request, error
     from urllib.parse import urlsplit, urlunsplit
-    from datetime import datetime, timezone
     address = urlsplit(origin)
     prefix = address.path.rstrip("/")
     if (address.scheme not in ("http", "https") or not address.hostname or address.username or address.password
             or address.query or address.fragment or not prefix.endswith("/v1")):
-        raise ValueError("Ollama metadata origin 형상 미지원")
-    endpoint = urlunsplit((address.scheme,address.netloc,prefix[:-3]+"/api/show","",""))
-    payload = json.dumps({"model":model,"verbose":False}).encode("utf-8")
-    message = request.Request(endpoint, data=payload, headers={"Content-Type":"application/json"}, method="POST")
+        raise ValueError(f"Ollama 주소 형식 미지원 ({origin})")
+    endpoint = urlunsplit((address.scheme, address.netloc, prefix[:-3] + "/api/show", "", ""))
+    payload = json.dumps({"model": model, "verbose": False}).encode("utf-8")
+    message = request.Request(endpoint, data=payload, headers={"Content-Type": "application/json"}, method="POST")
     try:
         with request.urlopen(message, timeout=15) as response:
-            raw = response.read(1024*1024+1)
-            if response.status != 200 or len(raw)>1024*1024:
-                raise ValueError("Ollama metadata 응답 거부/크기 초과")
-    except error.HTTPError as exc:
-        raise ValueError("Ollama 정확 target retired" if exc.code==410 else "Ollama 정확 target metadata 조회 거부") from None
-    except error.URLError:
-        raise ValueError("Ollama metadata 원천 접근 실패") from None
-    return {"model":model,"origin":origin,"body":json.loads(raw.decode("utf-8")),
-            "generation":content_sha256(raw),"observed_at":datetime.now(timezone.utc).isoformat()}
-
-
-def _ctx_ollama_rows(documents, models, output_max, row, version):
-    """사용자 limit와 원본 show를 구분한다. target을 숫자로 추정하거나 제외하지 않는다."""
-    sources = documents["_opencode_sources"]
-    for provider, model in models:
-        origin, npm, api_model = None, None, model
-        for config in sources:
-            configured = config.get("provider",{}).get(provider,{})
-            origin = configured.get("options",{}).get("baseURL",origin)
-            npm = configured.get("npm",npm)
-            api_model = configured.get("models",{}).get(model,{}).get("id",api_model)
-        if npm != "@ai-sdk/openai-compatible" or not isinstance(origin,str) or not isinstance(api_model,str) or not api_model:
-            raise ValueError("OpenCode 독립 registry 정확 모델 없음/custom provider/API 모델 정체 미확정")
-        received = _ctx_ollama_show(origin,api_model)
-        if received.get("model") != api_model or received.get("origin") != origin:
-            raise ValueError("Ollama authority/정확 API tag 불일치")
-        info = received["body"].get("model_info",{})
-        architecture = info.get("general.architecture")
-        context = info.get(f"{architecture}.context_length") if isinstance(architecture,str) and architecture else None
-        if type(context) is not int or context<=0:
-            raise ValueError("Ollama architecture에 결속된 원본 context 없음")
-        output = models[(provider,model)]
-        payload = {"context":context,"output":output,"effective_output":min(output,output_max),
-                   "native_formula":"input-reserved"}
-        row({"model":model,"provider":provider,"profile":""},payload,origin+"/api/show",received["generation"],
-            received["observed_at"],None,"input-context-output",version)
-
-
-def _ctx_registry_output_metadata(harness, documents, models, read, row, evidence, native_files, native_commands):
-    from datetime import datetime, timezone
-    version, native = _ctx_native_install(harness, evidence, native_files, native_commands)
-    documents["_ctx_roles"] = {"manifest":next(iter(evidence))}
-    output_max = _ctx_opencode_policy(native)
-    path = Path(os.environ.get("XDG_CACHE_HOME") or Path.home()/".cache")/"opencode/models.json"
-    catalog = read(path)
-    observed = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat() if path.is_file() else None
-    generation = evidence[str(path.resolve())]
-    sources = documents.get("_opencode_sources") or [documents[HARNESS_CTX_FILES[harness]]]
-    for provider,model in models:
-        provider_row = catalog.get(provider) or {}
-        if provider_row.get("id", provider) != provider:
-            raise ValueError("OpenCode registry provider 정체 불일치")
-        raw = provider_row.get("models", {}).get(model)
-        if not isinstance(raw, dict):
-            _ctx_ollama_rows(documents,{(provider,model):models[(provider,model)]},output_max,row,version)
-            continue
-        if raw.get("id", model) != model:
-            raise ValueError("OpenCode registry 모델 정체 불일치")
-        for config in sources:
-            configured = config.get("provider", {}).get(provider, {})
-            entry = configured.get("models", {}).get(model, {})
-            if entry.get("id", model) != model: raise ValueError("OpenCode API 모델 별칭 정체 불일치")
-            if configured.get("options", {}).get("baseURL") not in (None,provider_row.get("api")):
-                raise ValueError("OpenCode 실제 provider endpoint와 원본 registry 불일치")
-        limit = raw.get("limit") or {}
-        raw_output = limit.get("output")
-        if type(raw_output) is not int or raw_output <= 0: raise ValueError("OpenCode 원본 output 한도 손상")
-        output = models[(provider,model)]
-        effective_output = min(raw_output, output, output_max)
-        payload = {**limit,"effective_output":effective_output,"native_formula":"input-reserved"}
-        # native input은 독립 입력 상한이다. E−P는 압축 margin이며 C에서 다시 빼지 않는다.
-        row({"model":model,"provider":provider,"profile":""},payload,path,generation,
-            observed,None,"input-context-output",version)
-        documents["_ctx_roles"]["catalog"] = str(path.resolve())
-        documents["_ctx_registry"] = True
-    if not documents.get("_ctx_registry"):
-        documents["_ctx_unused_sources"] = [str(path.resolve())]
-
-
-def _read_harness_ctx_metadata(dest_root, harness, documents, models):
-    """실제 native catalog 형식을 읽고 선택·설치 정책과 결속한다. 외부 실행은 없다."""
-    evidence, rows, native_files, native_commands = {}, [], {}, {}
-    documents = dict(documents)
-    def read(path, toml=False):
-        path = Path(path).resolve()
-        raw = _ctx_file_bytes(path)
-        evidence[str(path)] = content_sha256(raw) if raw is not None else None
-        if raw is None: return {}
-        return tomllib.loads(raw.decode("utf-8")) if toml else json.loads(raw.decode("utf-8"))
-    def row(identity, raw, source, generation, observed, expiry, semantics, version):
-        metadata = {**raw, **identity, "source": str(source), "generation": generation,
-                    "observed_at": observed, "valid_until": expiry, "source_version": version,
-                    "independent": True, "semantics": semantics}
-        rows.append({"identity": identity, "metadata": metadata})
-    try:
-        rule = HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]]
-        rule.metadata_reader(harness, documents, models, read, row, evidence, native_files, native_commands)
-        runtime_evidence = {path:digest for path,digest in evidence.items() if path not in documents.get("_ctx_unused_sources",())}
-        registry = documents.get("_ctx_registry",False)
-        return {"models":rows,"evidence":evidence,"runtime_evidence":runtime_evidence,"registry":registry,
-                "roles":documents.get("_ctx_roles",{}),"native_files":native_files,"native_commands":native_commands}
-    except (OSError, UnicodeError, ValueError, TypeError, AttributeError, KeyError) as exc:
-        return {"models":[],"evidence":evidence,"reason":str(exc)}
-
-
-def preview_ctx_capacity(dest_root, harness, *, receipt=None, check=False, now=None):
-    """현재 C query와 결속 check. 적용 원장·설정 writer를 호출하지 않는다."""
-    root = Path(dest_root).resolve()
-    module = _load_local_conf()
-    if harness not in HARNESS_CTX_FILES:
-        raise ValueError("미지원 harness")
-    mode = "check" if check or receipt is not None else "query"
-    result = {"mode":mode,"schema":1,"harness":harness,"status":"unknown","reason":"현재 모델 metadata 미보유"}
-    if mode == "query":
-        result.update(C=None,observed_at=None,valid_until=None,receipt=None)
-    def digest(document):
-        return content_sha256(json.dumps({k:v for k,v in document.items() if k != "digest"},
-            ensure_ascii=False,sort_keys=True,separators=(",",":")).encode("utf-8"))
-    values = module.load(root/".project_manager/local.conf").values
-    scoped_keys = (f"harness.{harness}.ctx_window_tokens",) + module.CTX_INPUT_KEYS[-3:]
-    inputs = {k:v for k,v in module.ctx_input_values(values).items() if k in scoped_keys}
-    rule = module._CTX_INPUT_BINDING_RULES[f"harness.{harness}.ctx_window_tokens"]
-    target = str(root/HARNESS_CTX_FILES[harness])
-    global_dir = opencode_global_config_dir(os.environ, Path.home())
-    def current_environment(*,registry=True):
-        fingerprints=module.ctx_environment_fingerprints(harness,registry=registry)
-        if "settings" in rule["roles"]:
-            # Preview-only authentication binding; runtime/apply declarations stay intact.
-            fingerprints.update({key:content_sha256(os.environ[key].encode("utf-8")) if key in os.environ else None
-                for key in ("ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","CLAUDE_CODE_OAUTH_TOKEN")})
-        return fingerprints
-    if mode == "check":
-        # Shape/digest/path permissions are checked before any submitted file is read.
-        if not isinstance(receipt,dict) or set(receipt)!={"schema","root","harness","inputs","binding","models","digest"}:
-            raise ValueError("receipt 형식 오류")
-        if not isinstance(receipt["inputs"],dict):
-            raise ValueError("receipt 입력 object 형식 오류")
-        binding, rows = receipt["binding"], receipt["models"]
-        if type(receipt["schema"]) is not int or receipt["schema"]!=1 or receipt["root"]!=str(root) or receipt["harness"]!=harness:
-            raise ValueError("receipt 귀속 오류")
-        fields={"harness","target","fingerprints","required_files","roles","registry","native_files","native_commands","environment"}
-        if not isinstance(binding,dict) or set(binding)!=fields or binding["harness"]!=harness or binding["target"]!=target or type(binding["registry"]) is not bool:
-            raise ValueError("receipt binding 형식 오류")
-        if any(not isinstance(binding[k],dict) for k in ("fingerprints","roles","native_files","native_commands","environment")):
-            raise ValueError("receipt 원천 형식 오류")
-        files = binding["fingerprints"]
-        if not isinstance(binding["required_files"],list) or len(binding["required_files"])!=len(set(binding["required_files"])) or set(binding["required_files"])!=set(files):
-            raise ValueError("receipt 필수 원천 오류")
-        if not isinstance(rows,list) or not rows or any(not isinstance(row,dict) or set(row)!={"identity","metadata"}
-                or not isinstance(row["identity"],dict) or not isinstance(row["metadata"],dict) for row in rows):
-            raise ValueError("receipt 모델 형식 오류")
-        expected_roles = dict(rule["live_roles"](root,binding["registry"]))
-        expected_roles.update(rule["role_values"])
-        command = shutil.which(harness)
-        if not command:
-            result["reason"]="native 설치 부재"; return result
-        entry = Path(command).resolve()
-        allowed_native={str(entry)}
-        if "manifest" in rule["roles"]:
-            preferred=rule.get("native_manifest")
-            candidates=([entry.parent.parent/preferred] if preferred else [])+[parent/"package.json" for parent in entry.parents[:3]]
-            manifest=next((path for path in candidates if path.is_file()),None)
-            if manifest is None:
-                result["reason"]="native manifest 부재"; return result
-            expected_roles["manifest"]=str(manifest)
-            if entry.suffix in (".js",".mjs"):
-                binaries=list(manifest.parent.glob("vendor/*/codex/codex"))+list(manifest.parent.glob("vendor/*/codex/codex.exe"))
-                if len(binaries)!=1:
-                    result["reason"]="native binary 정체 미확정";return result
-                allowed_native.add(str(binaries[0].resolve()))
-            if rule["registry"]:
-                expected_roles["global"]=sorted(str((global_dir/name).resolve()) for name in OPENCODE_GLOBAL_CONFIG_NAMES)
-        if "selection" in rule["roles"] and "layers" in binding["roles"]:
-            layers=binding["roles"]["layers"]
-            allowed_layers={str(parent/".codex/config.toml") for parent in (root,*root.parents)}
-            allowed_layers.update(("/etc/codex/config.toml","/etc/codex/managed_config.toml"))
-            if (not isinstance(layers,list) or not layers or len(layers)!=len(set(layers))
-                    or any(path not in allowed_layers for path in layers)):
-                raise ValueError("receipt native 계층 허용 경로 오류")
-            expected_roles["layers"]=layers
-        if binding["roles"] != expected_roles:
-            raise ValueError("receipt 현재 역할/경로 불일치")
-        allowed={target}
-        for paths in expected_roles.values():
-            allowed.update(paths if isinstance(paths,list) else [paths])
-        if set(files)!=allowed or set(binding["native_files"])!=allowed_native or binding["native_commands"]!={harness:str(entry)}:
-            raise ValueError("receipt 허용 원천 집합 불일치")
-        if any(not Path(path).is_absolute() or (value is not None and (not isinstance(value,str) or not re.fullmatch(r"[0-9a-f]{64}",value))) for path,value in files.items()):
-            raise ValueError("receipt 경로/지문 오류")
-        if any(not isinstance(stat,dict) or set(stat)!={"st_dev","st_ino","st_size","st_mtime_ns"} or any(not isinstance(v,str) for v in stat.values()) for stat in binding["native_files"].values()):
-            raise ValueError("receipt native stat 오류")
-        if receipt["digest"]!=digest(receipt):
-            raise ValueError("receipt digest 오류")
-        try:
-            if receipt["inputs"]!=inputs or binding["environment"]!=current_environment(registry=binding["registry"]):
-                raise ValueError("현재 입력/환경 변경")
-            if not module._ctx_native_matches(binding):
-                raise ValueError("native 설치 변경")
-            # Acquired catalog replacement exception belongs only to this current-C check.
-            checked_files={k:v for k,v in files.items() if "selection" not in rule["roles"] or k!=expected_roles["catalog"]}
-            if not module._ctx_fingerprints_match(checked_files):
-                raise ValueError("현재 선택/인증/원천 변경")
-            for row in rows:
-                metadata=row["metadata"]
-                if "selection" in rule["roles"]:
-                    from datetime import timedelta
-                    if (metadata.get("source")!=expected_roles["catalog"] or metadata.get("generation")!=files[expected_roles["catalog"]]
-                            or module._ctx_time(metadata["valid_until"])!=module._ctx_time(metadata["observed_at"])+timedelta(seconds=300)):
-                        raise ValueError("acquired Codex snapshot 원래 세대/만료 오류")
-                module._normalize_ctx_capacity(row["identity"],metadata,now=now)
-            result.update(status="known",reason=None)
-        except (OSError,ValueError,TypeError,KeyError,AttributeError):
-            result["reason"]="현재 metadata 결속 변경 또는 만료"
-        return result
-    try:
-        jsonc=_harness_ctx_jsonc_seam()
-        text=_harness_ctx_read_text(Path(target),HARNESS_CTX_FILES[harness])
-        documents={HARNESS_CTX_FILES[harness]:_harness_ctx_parse(HARNESS_CTX_FILES[harness],text,jsonc),"_ctx_root":str(root)}
-        models={}; global_files={}
-        if rule["registry"]:
-            global_documents=_opencode_global_documents(global_dir,jsonc)
-            models=_opencode_target_models(documents[HARNESS_CTX_FILES[harness]],HARNESS_CTX_FILES[harness],global_dir,jsonc,global_documents=global_documents)
-            documents["_opencode_sources"]=[d for _,d in global_documents]+[documents[HARNESS_CTX_FILES[harness]]]
-            global_files={str((global_dir/name).resolve()):_ctx_file_digest(global_dir/name) for name in OPENCODE_GLOBAL_CONFIG_NAMES}
-        environment=current_environment()
-        snapshot=_read_harness_ctx_metadata(root,harness,documents,models)
-        rows=snapshot.get("models") or []
-        if not rows:raise ValueError(snapshot.get("reason") or "독립 metadata 없음")
-        capacities=[module._normalize_ctx_capacity(row["identity"],row["metadata"],now=now) for row in rows]
-        if rule["registry"] and (len(rows)!=len(models) or {(r["identity"]["provider"],r["identity"]["model"]) for r in rows}!=set(models)):
-            raise ValueError("등록 모델 집합 불일치")
-        files={**snapshot.get("runtime_evidence",snapshot["evidence"]),**global_files,target:content_sha256(text.encode("utf-8"))}
-        if not module._ctx_fingerprints_match(files) or not module._ctx_native_matches(snapshot):
-            raise ValueError("query 원천 판독 경쟁")
-        if current_environment()!=environment or module.ctx_input_values(module.load(root/".project_manager/local.conf").values)!=module.ctx_input_values(values):
-            raise ValueError("query 입력/환경 경쟁")
-        roles=dict(snapshot.get("roles",{}))
-        if "selection" in rule["roles"]:
-            base_files={target,*roles.values()}
-            layers=sorted(set(files)-base_files)
-            if layers:
-                allowed_layers={str(parent/".codex/config.toml") for parent in (root,*root.parents)}
-                allowed_layers.update(("/etc/codex/config.toml","/etc/codex/managed_config.toml"))
-                if any(path not in allowed_layers for path in layers):
-                    raise ValueError("native metadata 추가 계층 경로 미지원")
-                roles["layers"]=layers
-        if rule["registry"]:roles["global"]=sorted(global_files)
-        binding={"harness":harness,"target":target,"fingerprints":files,"required_files":sorted(files),"roles":roles,
-            "registry":snapshot.get("registry",False),"native_files":snapshot.get("native_files",{}),"native_commands":snapshot.get("native_commands",{}),
-            "environment":current_environment(registry=snapshot.get("registry",False))}
-        minted={"schema":1,"root":str(root),"harness":harness,"inputs":inputs,"binding":binding,"models":rows}
-        minted["digest"]=digest(minted)
-        expiry=[row["metadata"]["valid_until"] for row in rows if row["metadata"].get("valid_until")]
-        result.update(status="known",reason=None,C=min(capacities),observed_at=max(row["metadata"]["observed_at"] for row in rows),
-            valid_until=min(expiry) if expiry else None,receipt=minted)
-    except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError):
-        result["reason"]="독립 모델 metadata 확인 불가 또는 판독 경쟁"
-    return result
-
-
-def _ctx_query_revision(record, harness):
-    if record is None:
-        return None
-    value = record.get("harnesses", {}).get(harness) if record.get("schema") == 4 else record
-    return content_sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
-
-
-def _ctx_load_evidence(root, module):
-    raw = _ctx_file_bytes(root/module.CTX_BUDGET_RELPATH)
-    if raw is None:
-        return None
-    record = json.loads(raw.decode("utf-8"), object_pairs_hook=module._ctx_record_pairs)
-    if not isinstance(record, dict) or type(record.get("schema")) is not int:
-        raise ValueError("ctx 원장 구조 손상")
-    if record["schema"] not in (1, 2, 3, 4):
-        raise ValueError("ctx 원장 세대 미지원, 엔진 갱신 필요")
-    if record["schema"] == 4:
-        return module._ctx_schema4_structure(record, root)
-    if (any(not isinstance(record.get(k), dict) for k in
-            ("inputs", "environment", "budgets", "fingerprints", "native_files", "native_commands"))
-            or record.get("projection_sha256") != module.ctx_record_digest(record)):
-        raise ValueError("ctx 이전 원장 구조/digest 손상")
-    if record["schema"] in (2, 3):
-        module._ctx_binding_structure(record, root)
-        if record["schema"] == 3:
-            for h,binding in record["bindings"].items():
-                module._ctx_schema3_snapshot(record, binding, record["inputs"], h,check_manifest=False)
-    return record
-
-
-def _ctx_snapshot(inputs, binding, budget, proof):
-    harness = binding["harness"]
-    module = _load_local_conf()
-    keys = (f"harness.{harness}.ctx_window_tokens",) + module.CTX_INPUT_KEYS[-3:]
-    return {"inputs": {k:inputs[k] for k in keys}, "binding": binding, "budget": budget, "proof": proof}
-
-
-def _ctx_migrate_evidence(root, module, previous, values):
-    if previous is not None and previous["schema"] == 4:
-        return json.loads(json.dumps(previous))
-    record = {"schema": 4, "root": str(root), "harnesses": {}}
-    if previous is not None and previous["schema"] in (2, 3):
-        for harness,binding in previous["bindings"].items():
-            physical = None
-            verification = None
-            if previous["schema"] == 3:
-                snapshot = _ctx_snapshot(previous["inputs"], binding, previous["budgets"][harness], previous["applied"][harness])
-                physical = {"applied_at": previous["applied_at"], "snapshot": snapshot}
-            # Current conversion never inherits the acquired-C catalog exception.
-            try:
-                _,_,budget = module._read_ctx_legacy_record(previous,root,values,harness)
-                if not module._ctx_fingerprints_match(binding["fingerprints"]):
-                    raise ValueError("현재 원천 변경")
-                module._ctx_budget_semantics(budget,previous["inputs"],values,harness,budget["identity"])
-                rel = HARNESS_CTX_FILES[harness]
-                document = _harness_ctx_parse(rel,_harness_ctx_read_text(root/rel,rel),_harness_ctx_jsonc_seam())
-                proof = _ctx_managed_proof(harness,document,values,{harness:budget})
-                snapshot = _ctx_snapshot(previous["inputs"], binding,budget,proof)
-                snapshot = json.loads(json.dumps(snapshot))
-                snapshot["binding"]["environment"] = module.ctx_receipt_environment(harness,registry=binding["registry"])
-                if "selection" in module._CTX_INPUT_BINDING_RULES[f"harness.{harness}.ctx_window_tokens"]["roles"]:
-                    roles = snapshot["binding"]["roles"]
-                    layers = sorted(set(binding["fingerprints"]) - {binding["target"], *(p for value in roles.values() for p in (value if isinstance(value,list) else [value]))})
-                    if layers:roles["layers"] = layers
-                from datetime import datetime,timezone
-                stamp = previous.get("applied_at") or datetime.now(timezone.utc).isoformat()
-                verification = {"verified_at": stamp, "snapshot": snapshot}
-            except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError,HarnessCtxError):
-                pass  # Old current failure does not erase a valid historical physical snapshot.
-            if verification is not None or physical is not None:
-                record["harnesses"][harness] = {"verification": verification, "physical": physical}
-    return record
-
-
-_CTX_METADATA_KEYS = ("model", "provider", "profile", "source", "generation", "observed_at", "valid_until", "independent",
-    "source_version", "semantics", "usable", "context", "input", "output", "reserved", "effective_output", "effective_percent", "native_formula",
-    "native_context", "native_window_min", "native_window_max", "summary_buffer", "native_percent", "max_context", "window_override", "native_compact_max")
-
-
-def _ctx_capacity_budget(module, inputs, harness, models):
-    ratios = tuple(int(inputs[k]) for k in module.CTX_INPUT_KEYS[-3:])
-    window = int(inputs[f"harness.{harness}.ctx_window_tokens"])
-    results = [module.resolve_ctx_capacity(window,ratios,row["identity"],row["metadata"]) for row in models]
-    if not results or any(row["status"] != "known" for row in results):
-        raise ValueError("전체 모델 native 예산 확인 불가")
-    identities = [tuple(row["identity"].get(k) for k in ("model", "provider", "profile")) for row in results]
-    if len(set(identities)) != len(identities) or (not HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]].model_limits and len(results) != 1):
-        raise ValueError("현재 모델 집합 불일치")
-    for row in results:
-        row["metadata"] = {key:row["metadata"][key] for key in _CTX_METADATA_KEYS if key in row["metadata"]}
-    common = min(results,key=lambda row:row["C"])
-    common_models = [{**row, **{key:common[key] for key in ("E", "P", "checkpoint", "precompact")},
-        "native_window":module._ctx_native_window(common["P"],row["metadata"])} for row in results]
-    budget = {**common,"models":common_models}
-    rule = HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]]
-    if rule.point_range is not None and not rule.point_range[0] <= budget["native_window"] <= rule.point_range[1]:
-        raise ValueError("native 설정 인코딩 범위 불일치")
-    return budget
-
-
-def _ctx_public_budget(row):
-    return {k:row.get(k) for k in ("status", "reason", "W", "C", "E", "P")}
-
-
-def _ctx_capacity_candidate(root, module, harness, receipt, values):
-    budget = _ctx_capacity_budget(module,receipt["inputs"],harness,receipt["models"])
-    rel = HARNESS_CTX_FILES[harness]
-    document = _harness_ctx_parse(rel,_harness_ctx_read_text(root/rel,rel),_harness_ctx_jsonc_seam())
-    models = {(m["identity"]["provider"],m["identity"]["model"]):
-        _document_key_value_path(document,("provider",m["identity"]["provider"],"models",m["identity"]["model"],"limit","output"))[1]
-        for m in budget["models"]} if HARNESS_CTX_RULES[rel].model_limits else {}
-    targets = harness_ctx_targets(values,models,{harness:budget})[rel]
-    if rel.endswith(".toml"):
-        targets[("model_context_window",)] = None
-    candidate = {**{k:budget[k] for k in ("W","C","E","P","native_window")},
-        "managed":[{"path":list(path),"value":value} for path,value in targets.items()]}
-    return budget,document,candidate
-
-
-def _ctx_query_witnesses(root, module, harness, previous):
-    """획득 전 allowlisted 현재 source/native/env만 동결한다. 외부 조회는 없다."""
-    rule = module._CTX_INPUT_BINDING_RULES[f"harness.{harness}.ctx_window_tokens"]
-    binding = None
-    if previous is not None:
-        if previous["schema"] == 4:
-            entry = previous["harnesses"].get(harness,{})
-            proof = entry.get("verification") or entry.get("physical")
-            if proof is not None:binding = proof["snapshot"]["binding"]
-        elif previous["schema"] in (2,3):binding = previous["bindings"].get(harness)
-    registry = binding["registry"] if binding is not None else rule["registry"]
-    paths = {str(root/rule["target"])}
-    roles = {**rule["live_roles"](root,registry), **rule["role_values"]}
-    for value in roles.values():paths.update(value if isinstance(value,list) else [value])
-    if rule["registry"]:
-        global_dir = opencode_global_config_dir(os.environ,Path.home())
-        paths.update(str((global_dir/name).resolve()) for name in OPENCODE_GLOBAL_CONFIG_NAMES)
-    if "selection" in rule["roles"]:
-        paths.update(str(parent/".codex/config.toml") for parent in (root,*root.parents))
-        paths.update(("/etc/codex/config.toml","/etc/codex/managed_config.toml"))
-    command = shutil.which(harness)
-    native = {}
-    if command:
-        entry = Path(command).resolve()
-        if entry.is_file():native[str(entry)] = _ctx_native_stat(entry)
-        preferred = rule.get("native_manifest")
-        manifests = ([entry.parent.parent/preferred] if preferred else [])+[parent/"package.json" for parent in entry.parents[:3]]
-        paths.update(str(path) for path in manifests)
-        if entry.suffix in (".js",".mjs") and "manifest" in rule["roles"]:
-            for manifest in manifests:
-                for binary in list(manifest.parent.glob("vendor/*/codex/codex"))+list(manifest.parent.glob("vendor/*/codex/codex.exe")):
-                    native[str(binary.resolve())] = _ctx_native_stat(binary)
-        command = str(entry)
-    return {"environment":module.ctx_receipt_environment(harness,registry=registry),"command":command,
-        "native":native,"source":{path:_ctx_file_digest(Path(path)) for path in sorted(paths)}}
-
-
-def query_ctx_capacity(dest_root, harness, *, receipt=None, check=False):
-    """CLI query의 단일 terminal 근거 교체/철회. check와 reader는 순수 읽기다."""
-    from datetime import datetime,timezone
-    root = Path(dest_root).resolve()
-    module = _load_local_conf()
-    conf = root/".project_manager/local.conf"
-    values = module.load(conf).values
-    result = {"schema":2,"mode":"check" if check else "query","harness":harness,
-        "status":"unknown","reason":"현재 metadata 미보유","C":None,"observed_at":None,"valid_until":None,
-        "verification":{"status":"unknown","reason":"현재 검증 근거 없음","verified_at":None,"revision":None,"evidence_changed":False},
-        "candidate":None,"receipt":None}
-    committed_revision = None
-    def finish():
-        result["budget"] = _ctx_public_budget(module.ctx_budget_status(root,module.load(conf).values)[harness])
-        result["applied"] = ctx_applied_status(root,module.load(conf).values)[harness]
-        if committed_revision is not None:
-            try: current_revision = _ctx_query_revision(_ctx_load_evidence(root,module),harness)
-            except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError):current_revision = None
-            if current_revision != committed_revision:
-                result["verification"].update(status="changed",reason="근거 저장 후 다른 검증의 변경")
-        if result["verification"]["status"] == "verified" and result["budget"]["status"] != "known":
-            result["verification"].update(status="changed",reason="저장 후 현재 근거 변경")
-        return result
-    if check:
-        observed = preview_ctx_capacity(root,harness,receipt=receipt,check=True)
-        result.update({k:observed[k] for k in ("status","reason")})
-        if result["status"] == "known":
-            capacities = [module._normalize_ctx_capacity(m["identity"],m["metadata"]) for m in receipt["models"]]
-            expiries = [m["metadata"]["valid_until"] for m in receipt["models"] if m["metadata"].get("valid_until")]
-            result.update(C=min(capacities),observed_at=max(m["metadata"]["observed_at"] for m in receipt["models"]),
-                valid_until=min(expiries) if expiries else None)
-        finish()
-        entry = None
-        try:
-            saved = _ctx_load_evidence(root,module)
-            entry = saved["harnesses"][harness]["verification"] if saved is not None and saved["schema"] == 4 else None
-            if entry is not None and result["budget"]["status"] == "known" and result["status"] == "known":
-                result["verification"].update(status="verified",reason=None,verified_at=entry["verified_at"],revision=_ctx_query_revision(entry,""))
-            else:result["verification"].update(status="changed",reason="현재 검증 근거 변경 또는 만료")
-        except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError):
-            result["verification"].update(status="changed",reason="현재 검증 근거 변경 또는 만료")
-        if result["status"] == "known":
-            try:
-                budget,document,result["candidate"] = _ctx_capacity_candidate(root,module,harness,receipt,values)
-                proof = _ctx_managed_proof(harness,document,values,{harness:budget})
-                if entry is not None and entry["snapshot"] != _ctx_snapshot(receipt["inputs"],receipt["binding"],budget,proof):
-                    result["verification"].update(status="changed",reason="최신 획득 근거의 저장 미확인")
-            except HarnessCtxError:
-                result["verification"].update(status="apply-required" if result["budget"]["status"]=="unknown" else "changed",
-                    reason="현재 관리 설정과 최신 모델 예산 불일치")
-            except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError):
-                result["verification"].update(status="unknown",reason="현재 native 예산 확인 불가")
-        return result
-    try:
-        previous = _ctx_load_evidence(root,module)
-        revision = _ctx_query_revision(previous,harness)
-        root_stat = root.stat()
-        root_identity = (root_stat.st_dev,root_stat.st_ino)
-        shapes = {rel:_ctx_target_shape(root/rel) for rel in HARNESS_CTX_FILES.values()}
-        before = {str(conf):_ctx_file_digest(conf),str(root/ADAPTER_BASELINE_RELPATH):_ctx_file_digest(root/ADAPTER_BASELINE_RELPATH)}
-        before.update({str(root/".project_manager/tools"/name):_ctx_file_digest(root/".project_manager/tools"/name)
-            for name in ("local_conf.py","pm_import.py","pm_config.py")})
-        witnesses = _ctx_query_witnesses(root,module,harness,previous)
-        if _load_adapter_baseline_document(root).status == "newer-schema":raise ValueError("어댑터 원장 세대 미지원")
-    except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError):
-        result["verification"].update(status="update-required",reason="원장/엔진 근거 확인 불가, 갱신 필요")
-        return finish()
-    observed = preview_ctx_capacity(root,harness)
-    result.update({k:observed[k] for k in ("status","reason","C","observed_at","valid_until","receipt")})
-    snapshot = None
-    validation = None
-    stamp = datetime.now(timezone.utc).isoformat()
-    if observed["status"] == "known":
-        try:
-            receipt = observed["receipt"]
-            if preview_ctx_capacity(root,harness,receipt=receipt,check=True)["status"] != "known":
-                raise ValueError("획득 후 근거 변경")
-        except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError):
-            result["verification"].update(status="changed",reason="획득한 metadata 근거 변경")
-            return finish()
-        try:
-            budget,document,result["candidate"] = _ctx_capacity_candidate(root,module,harness,receipt,values)
-            proof = _ctx_managed_proof(harness,document,values,{harness:budget})
-            snapshot = _ctx_snapshot(receipt["inputs"],receipt["binding"],budget,proof)
-            validation = {"schema":4,"root":str(root),"harnesses":{harness:{"verification":{"verified_at":stamp,"snapshot":snapshot},"physical":None}}}
-            validation["projection_sha256"] = module.ctx_record_digest(validation)
-            module._ctx_schema4_read(validation,root,values,harness)
-            result["verification"].update(status="verified",reason=None)
-        except HarnessCtxError:
-            result["verification"].update(status="apply-required",reason="현재 관리 설정과 최신 모델 예산 불일치")
-        except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError):
-            snapshot = None;validation = None
-            result["verification"].update(status="unknown",reason="전체 모델 native 예산 확인 불가")
-    else:result["verification"].update(status="unknown",reason=observed["reason"])
-    # One mutually exclusive terminal action: a fresh matching proof, nullification, or no-op.
-    latest_cause = result["verification"]["reason"]
-    prior_claim = (previous is not None and ((previous["schema"] == 4 and
-        previous["harnesses"].get(harness,{}).get("verification") is not None) or
-        (previous["schema"] in (2,3) and harness in previous["budgets"])))
-    if snapshot is None and not prior_claim:
-        try:
-            if _ctx_query_revision(_ctx_load_evidence(root,module),harness) != revision:
-                result["verification"].update(status="changed",reason="조회 중 다른 검증의 변경")
-        except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError):
-            result["verification"].update(status="changed",reason="조회 중 원장 근거 변경")
-        return finish()
-    try:
-        lock = _load_file_lock()
-        if _conf_lock_section(lock,conf) is None or not callable(_atomic_write_dest_bytes):raise OSError("실제 conf 락/atomic writer 부재")
-        with _local_conf_write_lock(conf) as held_lock:
-            if held_lock is None:raise OSError("실제 conf 락 부재")
-            current = _ctx_load_evidence(root,module)
-            stat = root.stat()
-            if (root.resolve() != root or (stat.st_dev,stat.st_ino) != root_identity
-                    or any(_ctx_target_shape(root/rel) != shape for rel,shape in shapes.items())
-                    or any(_ctx_file_digest(Path(path)) != digest for path,digest in before.items())
-                    or _ctx_query_revision(current,harness) != revision
-                    or _ctx_query_witnesses(root,module,harness,previous) != witnesses):
-                raise ValueError("획득 전 root/설정/native/원천/엔진/원장 근거 변경")
-            current_values = module.load(conf).values
-            if observed["status"] == "known":
-                if preview_ctx_capacity(root,harness,receipt=receipt,check=True)["status"] != "known" or not module._ctx_fingerprints_match(receipt["binding"]["fingerprints"]):
-                    raise ValueError("첫 쓰기 전 fresh metadata 결속 변경")
-            if snapshot is not None:
-                module._ctx_schema4_read(validation,root,current_values,harness)
-                rel = HARNESS_CTX_FILES[harness]
-                actual = _harness_ctx_parse(rel,_harness_ctx_read_text(root/rel,rel),_harness_ctx_jsonc_seam())
-                if _ctx_managed_proof(harness,actual,current_values,{harness:budget}) != proof:
-                    raise ValueError("첫 쓰기 전 실제 관리/선택 변경")
-            if snapshot is not None and current is not None and current["schema"] == 4:
-                saved = current["harnesses"].get(harness,{}).get("verification")
-                if saved is not None and saved["snapshot"] == snapshot:
-                    committed_revision = _ctx_query_revision(current,harness)
-                    result["verification"].update(verified_at=saved["verified_at"],revision=_ctx_query_revision(saved,""))
-                    return finish()
-            if snapshot is None:
-                had_current = (current is not None and ((current["schema"] == 4 and
-                    current["harnesses"].get(harness,{}).get("verification") is not None) or
-                    (current["schema"] in (2,3) and harness in current["budgets"])))
-                if not had_current:return finish()
-            merged = _ctx_migrate_evidence(root,module,current,current_values)
-            entry = merged["harnesses"].setdefault(harness,{"verification":None,"physical":None})
-            if snapshot is None:
-                entry["verification"] = None
-            elif entry["verification"] is None or entry["verification"]["snapshot"] != snapshot:
-                entry["verification"] = {"verified_at":stamp,"snapshot":snapshot}
-            merged["projection_sha256"] = module.ctx_record_digest(merged)
-            module._ctx_schema4_structure(merged,root)
-            raw = (json.dumps(merged,ensure_ascii=False,sort_keys=True)+"\n").encode("utf-8")
-            changed = _ctx_file_bytes(root/module.CTX_BUDGET_RELPATH) != raw
-            if changed and not _atomic_write_dest_bytes(root,module.CTX_BUDGET_RELPATH,raw):raise OSError("검증 근거 저장 실패")
-            committed_revision = _ctx_query_revision(merged,harness)
-            result["verification"].update(verified_at=entry["verification"]["verified_at"] if entry["verification"] is not None else None,
-                revision=_ctx_query_revision(entry["verification"],"") if snapshot is not None else committed_revision,evidence_changed=changed)
-    except (OSError,UnicodeError):
-        provenance = previous["harnesses"].get(harness,{}).get("verification") if previous is not None and previous["schema"] == 4 else None
-        result["verification"].update(status="write-failed",reason="최신 검증 근거 저장 실패, 이전 저장 근거 유지"+(f" ({latest_cause})" if latest_cause else ""),
-            verified_at=provenance["verified_at"] if provenance is not None else None,revision=_ctx_query_revision(provenance,"") if provenance is not None else None,evidence_changed=False)
-    except (ValueError,TypeError,KeyError,AttributeError,HarnessCtxError):
-        result["verification"].update(status="changed",reason="현재 검증 근거 변경, 저장 계획 거절",evidence_changed=False)
-    return finish()
-
-
-def _ctx_target_selection(harness, document):
-    """관리 값을 제외한 collector 선택 projection의 지문. 원문 비밀은 저장하지 않는다."""
-    if HARNESS_CTX_FILES[harness].endswith(".toml"):
-        selected = _ctx_codex_config_selection(document)
-        selected.pop("model_context_window")
-        selected["profiles"] = {name:_ctx_codex_config_selection(profile)
-            for name,profile in document.get("profiles",{}).items()}
-    elif not HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]].model_limits:
-        selected = {key:document.get(key) for key in ("model", "profile", "authProfile", "apiKeyHelper")}
-        managed = {path[-1] for path,formula in HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]].keys}
-        names = _load_local_conf().ctx_environment_fingerprints(harness)
-        selected["env"] = {key:value for key,value in document.get("env",{}).items()
-                           if key not in managed and (key in names or key.startswith("ANTHROPIC_"))}
-    else:
-        selected = {"model":document.get("model"), "provider":{}}
-        for name,provider in document.get("provider",{}).items():
-            entry = {key:provider.get(key) for key in ("npm", "api", "options", "env") if key in provider}
-            entry["models"] = {}
-            for model,definition in provider.get("models",{}).items():
-                item = {key:value for key,value in definition.items() if key != "limit"}
-                item["limit"] = {key:value for key,value in definition.get("limit",{}).items()
-                                 if key not in _MODEL_LIMIT_KEYS}
-                entry["models"][model] = item
-            selected["provider"][name] = entry
-        selected["compaction"] = {key:value for key,value in document.get("compaction",{}).items() if key != "reserved"}
-    return content_sha256(json.dumps(selected,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode("utf-8"))
-
-
-def _ctx_managed_proof(harness, document, values, budgets):
-    """기존 targets로 관리 경로와 값을 재구성하고 실제 문서와 비교한다."""
-    models = {}
-    maximum = None
-    if HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]].model_limits:
-        for row in budgets[harness]["models"]:
-            identity = row["identity"]
-            path = ("provider",identity["provider"],"models",identity["model"],"limit","output")
-            present,value = _document_key_value_path(document,path)
-            if not present: raise HarnessCtxError(["관리 output 없음"])
-            metadata = row["metadata"]
-            if metadata.get("semantics") == "input-context-output":
-                if maximum is None:
-                    maximum = _ctx_opencode_policy(_ctx_file_bytes(Path(shutil.which(harness)).resolve()))
-                if (type(value) is not int or value <= 0 or metadata["effective_output"] != min(value,metadata["output"],maximum)
-                        or (metadata["source"].endswith("/api/show") and value != metadata["output"])):
-                    raise HarnessCtxError(["실제 output과 독립 출력 예약 불일치"])
-            models[(identity["provider"],identity["model"])] = value
-    entries = harness_ctx_targets(values,models,{harness:budgets[harness]})[HARNESS_CTX_FILES[harness]]
-    if HARNESS_CTX_FILES[harness].endswith(".toml"): entries[("model_context_window",)] = None
-    result = []
-    for path,value in entries.items():
-        present,actual = _document_key_value_path(document,path)
-        if (value is None and present) or (value is not None and (not present or type(actual) is not int or actual != value)):
-            raise HarnessCtxError(["실제 관리 설정 값 불일치"])
-        result.append({"path":list(path),"value":value})
-    return {"managed":result,"selection_sha256":_ctx_target_selection(harness,document)}
-
-
-def ctx_applied_status(root, values):
-    """마지막 성공 반영과 현재 관리 값의 읽기 전용 대조. 현재 C는 공개하지 않는다."""
-    module = _load_local_conf()
-    result = {}
-    jsonc = _harness_ctx_jsonc_seam()
-    for harness,rel in HARNESS_CTX_FILES.items():
-        row = {"status":"unknown", "reason":"설정 반영 증언 없음", "W":module.ctx_input_values(values)[_harness_ctx_window_key(harness)],
-               "E":None,"P":None,"native_window":None,"applied_at":None}
-        try:
-            row["W"] = int(row["W"])
-            record,binding,budget = module._read_ctx_record(root,values,harness,applied=True)
-            document = _harness_ctx_parse(rel,_harness_ctx_read_text(Path(root)/rel,rel),jsonc)
-            proof = _ctx_managed_proof(harness,document,values,record["budgets"])
-            if proof != record["applied"][harness]: raise ValueError("관리 설정 또는 모델 선택 변경")
-            row.update(status="known",reason=None,W=budget["W"],E=budget["E"],P=budget["P"],
-                       native_window=budget["native_window"],applied_at=record["applied_at"])
-        except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError,HarnessCtxError):
-            row["reason"] = "설정 반영 근거 불일치, ctx-apply로 재확인 필요"
-        result[harness] = row
-    return result
-
-
-def _prepare_harness_ctx(dest_root, values, *, opencode_config_dir, updates=None):
-    """전체 입력·metadata·편집을 JSON 문자열 하나로 동결한다. 준비는 무쓰기다."""
-    dest_root = Path(dest_root).resolve()
-    module = _load_local_conf()
-    environment = module.ctx_environment_fingerprints()
-    conf_path = dest_root / ".project_manager/local.conf"
-    conf_digest = _ctx_file_digest(conf_path)
-    receipt_environment = {h:module.ctx_receipt_environment(h) for h in HARNESS_CTX_FILES}
-    current_values = module.load(conf_path).values
-    merged_values = {**current_values, **(updates or {})}
-    if module.ctx_input_values(merged_values) != module.ctx_input_values(values):
-        raise HarnessCtxError(["ctx 계획 stale: 입력을 읽은 뒤 local.conf가 변경됨"])
-    present = frozenset(h for h, rel in HARNESS_CTX_FILES.items() if (dest_root / rel).is_file())
-    shapes = {rel: _ctx_target_shape(dest_root / rel) for rel in HARNESS_CTX_FILES.values()}
-    import stat
-    if any(shape not in (None, stat.S_IFREG) for shape in shapes.values()):
-        raise HarnessCtxError(["ctx 대상 설정의 파일 형상 미지원"])
-    validate_harness_ctx(values, present)
-    jsonc = _harness_ctx_jsonc_seam()
-    texts = {HARNESS_CTX_FILES[h]: _harness_ctx_read_text(dest_root / HARNESS_CTX_FILES[h], HARNESS_CTX_FILES[h]) for h in HARNESS_CTX_FILES if h in present}
-    documents = {rel: _harness_ctx_parse(rel, text, jsonc) for rel, text in texts.items()}
-    documents["_ctx_root"] = str(dest_root)
-    global_fingerprints, models = {}, {}
-    for harness, rel in HARNESS_CTX_FILES.items():
-        if harness not in present or not HARNESS_CTX_RULES[rel].model_limits:
-            continue
-        global_fingerprints.update({str((Path(opencode_config_dir) / name).resolve()): _ctx_file_digest(Path(opencode_config_dir) / name)
-                                    for name in OPENCODE_GLOBAL_CONFIG_NAMES})
-        global_documents = _opencode_global_documents(opencode_config_dir, jsonc)
-        models = _opencode_target_models(documents[rel], rel, opencode_config_dir, jsonc, global_documents=global_documents)
-        documents["_opencode_sources"] = [document for _,document in global_documents] + [documents[rel]]
-    fingerprints = {str(dest_root / rel): content_sha256(texts[rel].encode("utf-8")) if rel in texts else None
-                    for rel in HARNESS_CTX_FILES.values()}
-    fingerprints.update(global_fingerprints)
-    conf = dest_root / ".project_manager/local.conf"
-    before = {str(dest_root/".project_manager/tools"/name): _ctx_file_digest(dest_root/".project_manager/tools"/name)
-              for name in ("local_conf.py", "pm_import.py", "pm_config.py")}
-    before.update({str(conf): conf_digest, str(dest_root / ADAPTER_BASELINE_RELPATH): _ctx_file_digest(dest_root / ADAPTER_BASELINE_RELPATH),
-              str(dest_root / module.CTX_BUDGET_RELPATH): _ctx_file_digest(dest_root / module.CTX_BUDGET_RELPATH)})
-    if _load_adapter_baseline_document(dest_root).status == "newer-schema":
-        raise HarnessCtxError(["어댑터 config 원장 schema가 엔진 지원 상한보다 새롭습니다."])
-    budgets, bindings, native_files, native_commands = {}, {}, {}, {}
-    ratios = tuple(int(_harness_ctx_value(values, key)) for key in _HARNESS_CTX_RATIO_KEYS)
-    for harness in HARNESS_CTX_FILES:
-        if harness not in present:
-            continue
-        snapshot = _read_harness_ctx_metadata(dest_root, harness, documents, models)
-        rows = snapshot.get("models") or []
-        if not rows or not snapshot.get("evidence"):
-            raise HarnessCtxError([f"{harness} actual C unknown: {snapshot.get('reason') or '독립 metadata/근거 없음'}"])
-        fingerprints.update(snapshot["evidence"])
-        native_files.update(snapshot.get("native_files",{}))
-        native_commands.update(snapshot.get("native_commands",{}))
-        own_fingerprints = dict(snapshot.get("runtime_evidence",snapshot["evidence"]))
-        own_fingerprints[str(dest_root/HARNESS_CTX_FILES[harness])] = fingerprints[str(dest_root/HARNESS_CTX_FILES[harness])]
-        if HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]].model_limits:own_fingerprints.update(global_fingerprints)
-        bindings[harness] = {"harness":harness,"fingerprints":own_fingerprints,"registry":snapshot.get("registry",False),
-            "native_files":snapshot.get("native_files",{}),"native_commands":snapshot.get("native_commands",{}),
-            "environment":module.ctx_environment_fingerprints(harness,registry=snapshot.get("registry",False)),
-            "target":str(dest_root/HARNESS_CTX_FILES[harness]),"required_files":sorted(own_fingerprints),"roles":snapshot.get("roles",{})}
-        if HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]].model_limits:bindings[harness]["roles"]["global"] = sorted(global_fingerprints)
-        if "selection" in module._CTX_INPUT_BINDING_RULES[f"harness.{harness}.ctx_window_tokens"]["roles"]:
-            roles = bindings[harness]["roles"]
-            layers = sorted(set(own_fingerprints) - {str(dest_root/HARNESS_CTX_FILES[harness]), *roles.values()})
-            if layers:
-                roles["layers"] = layers
-        window = int(_harness_ctx_value(values, _harness_ctx_window_key(harness)))
-        results = [module.resolve_ctx_capacity(window, ratios, row.get("identity", {}), row.get("metadata")) for row in rows]
-        if any(row["status"] != "known" for row in results):
-            raise HarnessCtxError([f"{harness} actual C unknown: {row['reason']}" for row in results if row["status"] != "known"])
-        if HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]].model_limits:
-            declared = {(r["identity"]["provider"], r["identity"]["model"]) for r in results}
-            if declared != set(models) or len(results) != len(models):
-                raise HarnessCtxError(["opencode actual C unknown: 대상 모델 집합 불일치"])
-        elif len(results) != 1:
-            raise HarnessCtxError([f"{harness} actual C unknown: 선택 모델 미확정"])
-        # 기록은 가용 창 의미·정체·원천 검증에 필요한 metadata만 보존한다.
-        for row in results:
-            row["metadata"] = {key: row["metadata"][key] for key in _CTX_METADATA_KEYS if key in row["metadata"]}
-        common = min(results, key=lambda row: row["C"])
-        common_models = [{**row, **{key: common[key] for key in ("E", "P", "checkpoint", "precompact")},
-                          "native_window": module._ctx_native_window(common["P"], row["metadata"])} for row in results]
-        budget = {**common, "models": common_models}
-        rule = HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]]
-        if rule.point_range is not None and not rule.point_range[0] <= budget["native_window"] <= rule.point_range[1]:
-            raise HarnessCtxError([f"{harness} native 설정값 {budget['native_window']}은 {rule.point_range[0]}~{rule.point_range[1]} 이어야 합니다."])
-        budgets[harness] = budget
-    targets = harness_ctx_targets(values, models, budgets)
-    changed, lines, applied = {}, [], {}
-    for rel, text in texts.items():
-        new_text, file_lines = _harness_ctx_edit(rel, text, targets[rel], jsonc)
-        if rel == ".codex/config.toml":
-            new_text, deleted = _toml_remove_ctx_window(new_text)
-            file_lines.extend(deleted)
-        harness = next(h for h,path in HARNESS_CTX_FILES.items() if path == rel)
-        applied[harness] = _ctx_managed_proof(harness,_harness_ctx_parse(rel,new_text,jsonc),values,budgets)
-        lines.extend(file_lines)
-        if new_text != text:
-            changed[rel] = [text, new_text]
-    return json.dumps({"root": str(dest_root), "environment": environment, "inputs": module.ctx_input_values(values), "budgets": budgets,
-                       "fingerprints": fingerprints, "native_files": native_files, "native_commands": native_commands, "before": before, "changed": changed, "lines": lines,
-                       "target_shapes": shapes, "receipt_environment": receipt_environment, "bindings":bindings, "applied":applied, "updates": updates or {}}, ensure_ascii=False)
-
-
-def _commit_harness_ctx(plan):
-    """동결 근거를 락 안에서 확인하고 같은 편집·원장을 반영한다. 재해소는 없다."""
-    document = json.loads(plan)
-    root = Path(document["root"])
-    module = _load_local_conf()
-    with _local_conf_write_lock(root / ".project_manager/local.conf"):
-        if any(_ctx_target_shape(root / rel) != shape for rel, shape in document["target_shapes"].items()):
-            raise HarnessCtxError(["ctx 계획 stale: 대상 설정 존재/형상 변경"])
-        if document["environment"] != module.ctx_environment_fingerprints() or any(
-                document["receipt_environment"][h] != module.ctx_receipt_environment(h) for h in document["budgets"]):
-            raise HarnessCtxError(["ctx 계획 stale: native 모델/provider 환경 변경"])
-        for path, digest in {**document["fingerprints"], **document["before"]}.items():
-            if _ctx_file_digest(Path(path)) != digest:
-                raise HarnessCtxError([f"ctx 계획 stale: {path} 근거 바이트 변경"])
-        if not module._ctx_native_matches(document):
-            raise HarnessCtxError(["ctx 계획 stale: native 설치 세대 변경"])
-        from datetime import datetime, timezone
-        applied_at = datetime.now(timezone.utc)
-        try:
-            module._ctx_binding_structure(document,root)
-            for harness,budget in document["budgets"].items():
-                module._ctx_role_source_correlation(document["bindings"][harness],budget,root)
-                module._ctx_budget_semantics(budget,document["inputs"],document["inputs"],harness,budget["identity"],now=applied_at)
-        except (ValueError,TypeError,KeyError,AttributeError) as exc:
-            raise HarnessCtxError([f"ctx 계획 stale: {exc}"]) from None
-        ratios = tuple(int(document["inputs"][k]) for k in _HARNESS_CTX_RATIO_KEYS)
-        for budget in document["budgets"].values():
-            for row in budget["models"]:
-                current = module.resolve_ctx_capacity(row["W"], ratios, row["identity"], row["metadata"], now=applied_at)
-                if current["status"] != "known" or current["C"] != row["C"]:
-                    raise HarnessCtxError([f"ctx 계획 stale: metadata {current['reason']}"])
-        try:
-            previous = _ctx_load_evidence(root,module)
-            record = _ctx_migrate_evidence(root,module,previous,document["inputs"])
-        except (OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError) as exc:
-            raise HarnessCtxError(["ctx 원장 구조/세대 검증 실패"]) from exc
-        changed = False
-        if document["updates"]:
-            changed = _write_conf_keys_locked(root / ".project_manager/local.conf", document["updates"])
-        native_written = None
-        try:
-            _harness_ctx_write(root, document["changed"])
-            native_written = tuple(document["changed"])
-            for harness,proof in document["applied"].items():
-                rel = HARNESS_CTX_FILES[harness]
-                actual = _harness_ctx_parse(rel,_harness_ctx_read_text(root/rel,rel),_harness_ctx_jsonc_seam())
-                if _ctx_managed_proof(harness,actual,document["inputs"],document["budgets"]) != proof:
-                    raise HarnessCtxError(["성공 후 실제 설정 검증 실패"])
-        except (HarnessCtxError,OSError,UnicodeError,ValueError,TypeError,KeyError,AttributeError) as exc:
-            if native_written is None:
-                if not isinstance(exc,HarnessCtxError):
-                    raise
-                violations, written = exc.violations, exc.written
-            else:
-                violations, written = ["성공 후 실제 설정 재판독 또는 관리 정책 검증 실패"], native_written
-            failure = HarnessCtxError(violations, written=((".project_manager/local.conf",) if changed else ()) + written)
-            failure.phase = "commit"
-            raise failure from exc
-        if not document["budgets"]:
-            return changed, tuple(document["lines"]), {}
-        # 성공한 native 상태만 증언한다. conf 전체는 unrelated 저장을 막지 않는다.
-        fingerprints = dict(document["fingerprints"])
-        for rel, (_, after) in document["changed"].items():
-            fingerprints[str(root / rel)] = content_sha256(after.encode("utf-8"))
-            for binding in document["bindings"].values():
-                if str(root/rel) in binding["fingerprints"]:binding["fingerprints"][str(root/rel)]=fingerprints[str(root/rel)]
-        for harness,budget in document["budgets"].items():
-            binding = document["bindings"][harness]
-            binding["environment"] = module.ctx_receipt_environment(harness,registry=binding["registry"])
-            snapshot = _ctx_snapshot(document["inputs"],binding,budget,document["applied"][harness])
-            entry = record["harnesses"].setdefault(harness,{"verification":None,"physical":None})
-            for kind,time_key in (("verification","verified_at"),("physical","applied_at")):
-                if entry[kind] is None or entry[kind]["snapshot"] != snapshot:
-                    entry[kind] = {time_key:applied_at.isoformat(),"snapshot":snapshot}
-        record["projection_sha256"] = module.ctx_record_digest(record)
-        raw = (json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
-        if _ctx_file_bytes(root / module.CTX_BUDGET_RELPATH) != raw:
-            if not _atomic_write_dest_bytes(root, module.CTX_BUDGET_RELPATH, raw):
-                failure = HarnessCtxError(["ctx 적용 기록 쓰기 실패"], written=((".project_manager/local.conf",) if changed else ()) + tuple(document["changed"]))
-                failure.phase = "commit"
-                raise failure
-    return changed, tuple(document["lines"]), document["budgets"]
-
-
-def _apply_harness_ctx_values(dest_root: Path, values, *, write: bool, opencode_config_dir: Path) -> tuple[str, ...]:
-    plan = _prepare_harness_ctx(dest_root, values, opencode_config_dir=opencode_config_dir)
-    return _commit_harness_ctx(plan)[1] if write else tuple(json.loads(plan)["lines"])
-
-
-def _toml_remove_ctx_window(text):
-    """엔진 최상위 창 override만 제거한다. profile·문자열·주석은 보존한다."""
-    key = "model_context_window"
-    doc = tomllib.loads(text)
-    if key not in doc:
-        return text, []
-    header = _toml_first_table_header(text)
-    end = header.start() if header else len(text)
-    pattern = re.compile(r'^([ \t]*(?:model_context_window|"model_context_window"|\'model_context_window\')[ \t]*=[^\r\n]*)(\r?\n|$)', re.MULTILINE)
-    for match in pattern.finditer(text, 0, end):
-        # 열린 여러 줄 문자열 내부는 삭제하지 않는다.
-        try:
-            tomllib.loads(text[:match.start()])
-        except tomllib.TOMLDecodeError:
-            continue
-        candidate = text[:match.start()] + text[match.end():]
-        parsed = tomllib.loads(candidate)
-        if key in parsed or {k:v for k,v in doc.items() if k != key} != parsed:
-            continue
-        comment = match.group(1).partition("#")[2]
-        if comment:
-            candidate = text[:match.start()] + "#" + comment + match.group(2) + text[match.end():]
-        return candidate, [f".codex/config.toml {key} {doc[key]} → (제거)"]
-    raise HarnessCtxError(["Codex 최상위 model_context_window의 안전한 제거 불가"])
+            raw = response.read(1024 * 1024 + 1)
+            if response.status != 200 or len(raw) > 1024 * 1024:
+                raise ValueError(f"Ollama 모델 정보 응답 거부/크기 초과 ({endpoint})")
+    except error.URLError as exc:  # HTTPError 포함
+        raise ValueError(f"Ollama 모델 정보 조회 실패 ({endpoint} {model}: {exc})") from None
+    body = json.loads(raw.decode("utf-8"))
+    if not isinstance(body, dict):
+        raise ValueError(f"Ollama 모델 정보 형식 오류 ({endpoint})")
+    return body
 
 
 def _harness_ctx_jsonc_seam():
@@ -9777,8 +8635,8 @@ def _opencode_global_documents(config_dir: Path, jsonc) -> list[tuple[str, dict]
     return documents
 
 
-def _opencode_target_models(project_document: dict, project_label: str, config_dir: Path,
-                            jsonc, *, global_documents=None) -> dict[tuple[str, str], int]:
+def _opencode_target_models(project_document: dict, project_label: str,
+                            global_documents: list) -> dict[tuple[str, str], int]:
     """opencode 대상 모델 `(provider, 모델 id) → limit.output` — 프로젝트 파일과 전역 설정의 합집합.
 
     순서는 프로젝트 파일 등장 순, 그다음 전역 파일을 병합 순서대로 본 등장 순이다. `limit.output` 은
@@ -9788,8 +8646,7 @@ def _opencode_target_models(project_document: dict, project_label: str, config_d
     project_outputs: dict[tuple[str, str], tuple[str, object]] = {}
     global_outputs: dict[tuple[str, str], tuple[str, object]] = {}
     sources = [(project_label, project_document, project_outputs),
-               *((label, document, global_outputs)
-                 for label, document in (global_documents if global_documents is not None else _opencode_global_documents(config_dir, jsonc)))]
+               *((label, document, global_outputs) for label, document in global_documents)]
     for label, document, outputs in sources:
         _harness_ctx_check_objects(label, document)
         for provider, entry in (document.get("provider") or {}).items():
@@ -9800,11 +8657,8 @@ def _opencode_target_models(project_document: dict, project_label: str, config_d
                 if "output" in limit:
                     outputs[(provider, model)] = (label, limit["output"])
     selected = None
-    for label, document, _outputs in sources[1:]:
-        if "model" in document:
-            selected = document["model"]
-    if "model" in project_document:
-        selected = project_document["model"]
+    for _label, document, _outputs in [*sources[1:], sources[0]]:  # 프로젝트 파일이 전역 설정을 이긴다
+        selected = document.get("model", selected)
     if selected is not None:
         if not isinstance(selected, str):
             raise HarnessCtxError(["opencode 실제 선택 모델 형식 불일치"])
@@ -9920,17 +8774,20 @@ def _toml_set_top_level_integer(text: str, key: str, value: int) -> tuple[str, s
     return text[:insert_at] + line + text[insert_at:], None
 
 
+def _harness_ctx_baseline_writable(dest_root: Path) -> None:
+    """원장이 이 엔진보다 새 schema 면 `HarnessCtxError` — 반영이 어떤 파일도 쓰기 전에 본다."""
+    if _load_adapter_baseline_document(dest_root).status == "newer-schema":
+        raise HarnessCtxError([
+            f"어댑터 config 원장 schema 가 이 엔진(지원 상한 {ADAPTER_BASELINE_SCHEMA})보다 새로워 "
+            "기록할 수 없어 설정 파일을 쓰지 않았습니다 — 엔진을 갱신한 뒤 다시 실행하십시오."])
+
+
 def _harness_ctx_write(dest_root: Path, changed: dict[str, tuple[str, str]]) -> None:
     """바뀐 설정 파일을 원자 쓰기하고 원장 규칙을 적용한다(`apply_harness_ctx` docstring).
 
     파일마다 교체를 시도해 결과를 모은 뒤, 교체에 성공한 원장 증언 파일의 `sha256` 을 먼저 기록하고
     나서 쓰지 못한 파일이 있으면 멈춘다 — 이미 바뀐 파일이 원장의 옛 해시에 걸려 편집됨으로 판정되지
-    않게 한다(편집됨 판정은 세트 수용에서도 그 파일을 뺀다). 원장이 상위 schema 면 아무것도 쓰기 전에
-    멈춘다."""
-    if _load_adapter_baseline_document(dest_root).status == "newer-schema":
-        raise HarnessCtxError([
-            f"어댑터 config 원장 schema 가 이 엔진(지원 상한 {ADAPTER_BASELINE_SCHEMA})보다 새로워 "
-            "기록할 수 없어 설정 파일을 쓰지 않았습니다 — 엔진을 갱신한 뒤 다시 실행하십시오."])
+    않게 한다(편집됨 판정은 세트 수용에서도 그 파일을 뺀다)."""
     document = read_adapter_baseline(dest_root)
     files = dict(document.get("files") or {})
     attested: dict[str, str] = {}

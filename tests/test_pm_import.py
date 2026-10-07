@@ -125,14 +125,16 @@ def pm_update():
 
 @pytest.fixture(autouse=True)
 def _known_install_capacity_fixture(request,tmp_path,pm_import,pm_update,monkeypatch):
-    """정상 설치/반영 fixture만 같은 독립 reader seam으로 고정한다."""
-    from _manager_home import known_ctx_reader
-    reader=known_ctx_reader(pm_import,capacity=200000,context=232000)
-    monkeypatch.setattr(pm_import,'_read_harness_ctx_metadata',reader)
+    """설치·반영의 모델 한도 조회를 고정 값으로 바꾼다(pm_update 가 싣는 pm_import 포함)."""
+    from _manager_home import known_ctx_seams
+    seams=known_ctx_seams(capacity=200000,context=232000)
+    for name,seam in seams.items():
+        monkeypatch.setattr(pm_import,name,seam)
     original=pm_update._load_pm_import
     def load():
         module=original()
-        module._read_harness_ctx_metadata=reader
+        for name,seam in seams.items():
+            setattr(module,name,seam)
         return module
     monkeypatch.setattr(pm_update,'_load_pm_import',load)
 
@@ -5657,13 +5659,10 @@ def _assert_adopter_bytes_kept(pm_import, dest: Path, rel: str, local_bytes: byt
         assert after == local_bytes
         return
     assert after.startswith(local_bytes), after
-    values = pm_import._load_local_conf().load(dest / ".project_manager" / "local.conf").values
-    record=json.loads((dest / ".project_manager/.local/ctx-budget.json").read_text(encoding="utf-8"))
-    assert record["schema"]==4
-    budgets={h:entry["verification"]["snapshot"]["budget"] for h,entry in record["harnesses"].items()}
-    targets = pm_import.harness_ctx_targets(values, {}, budgets)[rel]
-    assert tomllib.loads(after[len(local_bytes):].decode("utf-8")) == {
-        path[0]: value for path, value in targets.items()}
+    record = json.loads((dest / ".project_manager/.local/ctx-budget.json").read_text(encoding="utf-8"))
+    assert record["schema"] == 5
+    harness = next(name for name, relpath in pm_import.HARNESS_CTX_FILES.items() if relpath == rel)
+    assert tomllib.loads(after[len(local_bytes):].decode("utf-8")) == record["harnesses"][harness]["settings"]
 
 
 @pytest.mark.parametrize("rel", (".codex/config.toml", ".codex/hooks.json"))
