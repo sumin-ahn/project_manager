@@ -911,19 +911,6 @@ def test_t0943_record_write_failure_returns_rc1(pm_import, local_conf, tmp_path,
 
 
 def _t0943_claude_protocol(calls, *, offset=T0943_CLAUDE_RESERVE):
-    """Claude Code 무턴 조회 응답 — 기본 창 1,000,000/967,000, 창 X 지정이면 X/X − offset."""
-    def protocol(command, root, requests):
-        calls.append(list(command))
-        assert command[0] == "claude" and [name for name, _request, _note in requests] == ["initialize", "context"]
-        window = command[command.index("--autocompact") + 1]
-        raw = 1000000 if window == "auto" else int(window)
-        threshold = 967000 if window == "auto" else raw - offset
-        return {"initialize": {"account": {"apiProvider": "firstParty"}},
-                "context": {"model": "claude-opus-5-5", "rawMaxTokens": raw, "autoCompactThreshold": threshold}}
-    return protocol
-
-
-def _t0943_claude_protocol(calls, *, offset=T0943_CLAUDE_RESERVE):
     """Claude Code 무턴 조회 응답 — 기본 창 1,000,000/967,000, 창 X 를 주면 X/X − offset."""
     def protocol(command, root, requests):
         calls.append(command[command.index("--autocompact") + 1])
