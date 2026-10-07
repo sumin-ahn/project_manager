@@ -28,7 +28,6 @@ REPO = Path(__file__).resolve().parents[1]
 MANAGER_SOURCES = sorted((REPO / "manager").glob("*.py"))
 # 창이 주입하던 이름 그대로 — 이 목록은 **기대값**이고 구현이 읽는 자리가 아니다.
 EXPECTED_NAMES = {
-    "ctx_capacity",
     "list_projects", "add_project", "remove_project", "status", "latest_tags", "pick_folder",
     "run", "conf_keys", "conf_values", "conf_save", "delegate_models", "conf_reset", "adapters",
     "adapter_accept", "adapter_matrix", "upstream_show", "upstream_set", "update_preview",
@@ -131,7 +130,7 @@ def test_the_http_names_are_the_bridge_methods_measured_in_one_run(api, dist):
     """양쪽을 같은 실행에서 잰다 — 목록을 적어 둔 자리가 없다는 것이 이 단언의 뜻이다."""
     derived = set(manager_server.api_names(api))
     assert derived == EXPECTED_NAMES
-    assert len(derived) == 22
+    assert len(derived) == 21
 
     server = ManagerServer(echo_api(derived), dist=dist)
     server.start()
@@ -151,7 +150,7 @@ def test_a_new_bridge_method_shows_up_without_touching_the_server(dist):
     server = ManagerServer(WithOneMore(), dist=dist)
     server.start()
     try:
-        assert len(manager_server.api_names(server.api)) == 23
+        assert len(manager_server.api_names(server.api)) == 22
         assert post(server, "board_open", "/어디") == {"path": "/어디"}
     finally:
         server.stop()
@@ -372,107 +371,14 @@ def test_a_read_of_the_busy_project_is_refused_instead_of_calling_a_half_replace
     thread.join(REQUEST_TIMEOUT_SECONDS)
 
 
-def test_t0941_at3_actual_query_fence_and_events(tmp_path,monkeypatch):
-    import subprocess
-    from concurrent.futures import ThreadPoolExecutor,Future
-    from manager import bridge_settings as settings
-    from test_harness_ctx_limits import _t0941_fixture
-    f=_t0941_fixture(tmp_path,monkeypatch)
-    class FenceApi(Api):
-        def conf_save(self,path:str,updates:dict)->dict:return {'changed':False}
-        def status(self,path:str,with_board=False,with_adapters=False)->dict:return {'path':path}
-    api=FenceApi(folder_picker=lambda:None);server=ManagerServer(api);listener=server.events.subscribe()
-    started=threading.Event();release=threading.Event();joined=threading.Event();other_started=threading.Event();calls=[]
-    class Joining(Future):
-        def result(self,timeout=None):joined.set();return super().result(timeout)
-    monkeypatch.setattr(settings,'Future',Joining)
-    monkeypatch.setattr(settings.runner,'interpreter',lambda home:['python3'])
-    def run(home,argv,*,timeout,input=None):
-        request=json.loads(input);calls.append(request)
-        if request['harness']=='codex':started.set();assert release.wait(5)
-        if request['harness']=='opencode':other_started.set()
-        result=f.importer.query_ctx_capacity(home,request['harness'],receipt=request.get('receipt'),check='receipt' in request)
-        return subprocess.CompletedProcess(argv,0,json.dumps(result),'')
-    monkeypatch.setattr(settings,'_run',run)
-    # Ensure evidence commit produces a revision event for both participating harnesses.
-    path=f.root/f.leaf.CTX_BUDGET_RELPATH;r=json.loads(path.read_bytes())
-    for h in ('codex','opencode'):r['harnesses'][h]['verification']=None
-    r['projection_sha256']=f.leaf.ctx_record_digest(r);path.write_text(json.dumps(r),encoding='utf-8')
+def test_t0943_ctx_capacity_is_not_a_bridge_name(tmp_path, dist):
+    """T-0943 — 관리자 전용 한도 조회 경로는 없다. 실제 브리지에 그 이름이 없고 HTTP 호출은 거절된다."""
+    api = Api(folder_picker=lambda: None, registry_file=tmp_path / "config" / "projects.json")
+    assert "ctx_capacity" not in manager_server.api_names(api)
+    server = ManagerServer(api, dist=dist)
+    server.start()
     try:
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            first=pool.submit(server.call,'ctx_capacity',[str(f.root),'codex'],client=BROWSER_CLIENT);assert started.wait(5)
-            second=pool.submit(server.call,'ctx_capacity',[str(f.root),'codex'],client=BROWSER_CLIENT);assert joined.wait(5)
-            third=pool.submit(server.call,'ctx_capacity',[str(f.root),'opencode'],client=BROWSER_CLIENT);assert other_started.wait(5)
-            assert server.call('conf_save',[str(f.root),{}],client=BROWSER_CLIENT)['error']['kind']=='not-allowed'
-            assert server.call('update_apply',[str(f.root)],client=BROWSER_CLIENT)['error']['kind']=='not-allowed'
-            assert server.call('conf_save',[str(tmp_path/'other'),{}],client=BROWSER_CLIENT)=={'changed':False}
-            assert server.call('ctx_capacity',[str(f.root),'claude',True],client=BROWSER_CLIENT)['status']=='unknown'
-            c=third.result(5);assert c['verification']['status']=='verified'
-            committed_other=json.loads(path.read_bytes())['harnesses']['opencode']
-            # Only unrelated root save may emit until the last capacity participant exits.
-            assert listener.get(timeout=5)['path']==str(tmp_path/'other') and listener.empty()
-            release.set();a,b=first.result(5),second.result(5)
-        assert a==b and a['verification']['status']=='verified'
-        events=[listener.get(timeout=5),listener.get(timeout=5)]
-        assert {e['harness'] for e in events}=={'codex','opencode'} and listener.empty()
-        assert sum(r['harness']=='codex' for r in calls)==1
-        assert all(e['name']=='ctx_capacity' and e['revision'] for e in events)
-        # Reobserving identical Codex receipt, read/check and failures never emit a query event.
-        assert server.call('ctx_capacity',[str(f.root),'codex'],client=BROWSER_CLIENT)['verification']['evidence_changed'] is False
-        assert server.call('ctx_capacity',[str(f.root),'codex',True],client=BROWSER_CLIENT)['verification']['status']=='verified'
-        assert listener.empty()
-        assert server.call('ctx_capacity',[str(f.root),'codex'],client='')['error']['kind']=='not-allowed'
-        assert json.loads(path.read_bytes())['harnesses']['opencode']==committed_other
-        assert f.leaf.ctx_budget_status(f.root,f.values)['opencode']['status']=='known'
-    finally:release.set();server.stop()
-
-
-def test_t0941_at3_query_rejected_during_exclusive_write(tmp_path,monkeypatch):
-    from concurrent.futures import ThreadPoolExecutor
-    api=FakeApi();server=ManagerServer(api);calls=[]
-    monkeypatch.setattr(api,'ctx_capacity',lambda path,harness,validate_only=False: calls.append((path,harness,validate_only)) or {})
-    try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            write=pool.submit(server.call,'update_apply',[str(tmp_path)],client=BROWSER_CLIENT)
-            assert api.started.wait(5)
-            assert server.call('ctx_capacity',[str(tmp_path),'codex'],client=BROWSER_CLIENT)['error']['kind']=='not-allowed'
-            assert not calls
-            api.release.set();assert write.result(5)['rc']==0
-    finally:api.release.set();server.stop()
-
-
-@pytest.mark.parametrize('persist',['success','writer-failed'])
-def test_t0941_at3_invalidation_shared_event_and_retained_proof(tmp_path,monkeypatch,persist):
-    import subprocess
-    from concurrent.futures import ThreadPoolExecutor,Future
-    from manager import bridge_settings as settings
-    from test_harness_ctx_limits import _t0941_fixture
-    f=_t0941_fixture(tmp_path,monkeypatch);api=Api(folder_picker=lambda:None);server=ManagerServer(api)
-    listener=server.events.subscribe();started=threading.Event();joined=threading.Event();release=threading.Event();calls=[]
-    class Joining(Future):
-        def result(self,timeout=None):joined.set();return super().result(timeout)
-    monkeypatch.setattr(settings,'Future',Joining);monkeypatch.setattr(settings.runner,'interpreter',lambda home:['python3'])
-    monkeypatch.setattr(f.importer,'_ctx_native_protocol',lambda *a,**kw:(_ for _ in ()).throw(ValueError('unavailable')))
-    if persist=='writer-failed':monkeypatch.setattr(f.importer,'_atomic_write_dest_bytes',lambda *a,**kw:False)
-    def run(home,argv,*,timeout,input=None):
-        request=json.loads(input);calls.append(request);started.set();assert release.wait(5)
-        result=f.importer.query_ctx_capacity(home,request['harness'])
-        return subprocess.CompletedProcess(argv,0,json.dumps(result),'')
-    monkeypatch.setattr(settings,'_run',run)
-    try:
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            a=pool.submit(server.call,'ctx_capacity',[str(f.root),'claude'],client=BROWSER_CLIENT);assert started.wait(5)
-            b=pool.submit(server.call,'ctx_capacity',[str(f.root),'claude'],client=BROWSER_CLIENT);assert joined.wait(5)
-            assert listener.empty();release.set();first,second=a.result(5),b.result(5)
-        assert first==second and len(calls)==1
-        if persist=='success':
-            event=listener.get(timeout=5)
-            assert event=={'name':'ctx_capacity','path':str(f.root),'harness':'claude','revision':first['verification']['revision']}
-            assert first['verification']['status']=='unknown' and first['budget']['status']=='unknown'
-            repeated=server.call('ctx_capacity',[str(f.root),'claude'],client=BROWSER_CLIENT)
-            assert repeated['verification']['evidence_changed'] is False
-        else:
-            assert first['verification']['status']=='write-failed' and first['budget']['status']=='known'
-            assert first['verification']['evidence_changed'] is False
-        assert listener.empty()
-    finally:release.set();server.stop()
+        refused = post(server, "ctx_capacity", str(tmp_path), "claude")
+    finally:
+        server.stop()
+    assert refused["error"]["kind"] == "not-allowed" and "ctx_capacity" in refused["error"]["message"]

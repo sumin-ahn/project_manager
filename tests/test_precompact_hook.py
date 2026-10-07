@@ -80,10 +80,10 @@ def _declare_slot_git_pointer(pm_home: Path, worktree: Path, repo: str = "produc
 
 
 def _known_budget_payload(root, payload):
-    """기존 known band 시험의 독립 cap와 실제 적용 기록을 명시 설치한다."""
-    from test_harness_ctx_limits import _t0932_install_budget_fixture
-    identity = _t0932_install_budget_fixture(root, capacity=2000000)
-    return {**payload, 'model': {'id': identity['model']}, 'model_provider': identity['provider'], 'profile': identity['profile']}
+    """밴드 판정의 분모가 될 압축 한도 기록을 설치한다 — 훅 입력은 그대로(PreCompact 입력에 모델은 없다)."""
+    from test_harness_ctx_limits import install_ctx_record
+    install_ctx_record(root, capacity=2000000)
+    return payload
 
 
 def _run_hook(hook_path: Path, payload: dict | None = None) -> subprocess.CompletedProcess:

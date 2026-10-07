@@ -37,8 +37,6 @@ from pathlib import Path
 
 import pytest
 
-from test_harness_ctx_limits import _legacy_native_fixture
-
 from _textio import utf8_child_env
 from _win_skip import posix_bash_supported
 from _hook_commands import inline_script_payloads, powershell_native_arguments
@@ -673,11 +671,13 @@ def _adopter_root(tmp_path: Path, *, conf: str = "", pm_log_body: str | None = N
     (root / ".project_manager" / "local.conf").write_text(conf, encoding="utf-8")
     if pm_log_body is not None:
         (tools / "pm_log.py").write_text(pm_log_body, encoding="utf-8")
-    from test_harness_ctx_limits import _t0932_install_budget_fixture
-    _t0932_install_budget_fixture(root,harness='codex')
-    for name in ('pm_relay.py','local_conf.py','repo_owned_files.py','file_lock.py','console_encoding.py'):
-        shutil.copyfile(REPO/'.project_manager/tools'/name,tools/name)
+    from test_harness_ctx_limits import install_ctx_record
+    install_ctx_record(root, harness="codex", model=_RECORD_MODEL)
     return root
+
+
+# 압축 한도 기록의 Codex 모델 — 라이브 첫 turn 훅 입력(codex-cli 0.147.0)의 `model` 과 같다.
+_RECORD_MODEL = "gpt-oss:20b"
 
 
 # 밴드 안에 들어가는 예산 — 라이브 점유 15328 / 20000 = 77% (쓴 % 77 → nudge2 밴드).
@@ -693,7 +693,7 @@ _STUB_PM_LOG = (
 def _payload(rollout: Path, **extra) -> dict:
     payload = {
         "hook_event_name": "PreToolUse",
-        "model":"fixture-model", "provider":"fixture-provider", "profile":"",
+        "model": _RECORD_MODEL,
         "tool_name": "Bash",
         "tool_input": {"command": "echo hi"},
         "session_id": "01a029b8-dd2b-7cc0-aac8-65158e5d120b",
@@ -911,47 +911,15 @@ def test_prose_does_not_claim_first_turn_coverage(codex_ctx):
             f"{label}: direct TUI 미실측 caveat 부재")
 
 
-# ── 4.2 임계·예산·밴드가 claude 와 같은 키·같은 값인가 ───────────────────────
+# ── 4.2 밴드가 claude 와 같은 값인가 ─────────────────────────────────────────
 
-@pytest.mark.parametrize("conf", (
-    {},
-    {"ctx.checkpoint_at_pct": "60", "ctx.precompact_at_pct": "75"},
-    {"ctx.checkpoint_at_pct": "90", "ctx.precompact_at_pct": "80"},   # 역전 → 둘 다 엔진 기본 폴백.
-    {"ctx.precompact_at_pct": "100"},                                 # 범위 밖 → 폴백.
-    {"ctx.checkpoint_at_pct": "abc", "ctx.precompact_at_pct": "  75 "},
+@pytest.mark.parametrize("thresholds", (
+    {"checkpoint_at_pct": 70, "precompact_at_pct": 80},
+    {"checkpoint_at_pct": 60, "precompact_at_pct": 75},
+    {"checkpoint_at_pct": 70, "precompact_at_pct": 95},
 ))
-def test_thresholds_mirror_claude_keys_and_sanity(codex_ctx, claude_ctx, conf):
-    """`ctx.checkpoint_at_pct`/`ctx.precompact_at_pct` 해소와 sanity 폴백이 claude 와 값으로 같다."""
-    assert codex_ctx.ctx_thresholds(conf) == claude_ctx.ctx_thresholds(conf)
-
-
-@pytest.mark.parametrize("conf", (
-    {},
-    {"ctx.window_tokens": "500000"},
-    {"harness.codex.ctx_window_tokens": "300000"},
-    {"harness.codex.ctx_window_tokens": "0"},
-    {"harness.codex.ctx_window_tokens": "nope"},
-))
-def test_budget_precedence_mirrors_claude_per_harness_keys(codex_ctx, claude_ctx, conf):
-    """예산 = `harness.codex.ctx_window_tokens`(사용 한도) > 200000 — claude 와 같은 해소."""
-    assert codex_ctx.resolve_ctx_budget(conf) == claude_ctx.resolve_budget(conf, "codex")
-
-
-def test_budget_precedence_values_are_pinned(codex_ctx):
-    """예산의 실값 — 미러 대조만으로는 두 사이트가 함께 틀릴 수 있다. 공통 층은 없다."""
-    assert codex_ctx.resolve_ctx_budget({"harness.codex.ctx_window_tokens": "300000"}) is None
-    assert codex_ctx.resolve_ctx_budget({"ctx.window_tokens": "500000"}) is None
-    assert codex_ctx.resolve_ctx_budget({}) is None
-    assert codex_ctx.CTX_WINDOW_TOKENS_DEFAULT == 200_000
-
-
-@pytest.mark.parametrize("conf", (
-    {}, {"ctx.checkpoint_at_pct": "60", "ctx.precompact_at_pct": "75"},
-    {"ctx.precompact_at_pct": "95"},
-))
-def test_band_classification_mirrors_claude_for_every_used_pct(codex_ctx, claude_ctx, conf):
+def test_band_classification_mirrors_claude_for_every_used_pct(codex_ctx, claude_ctx, thresholds):
     """0~100% 전 구간에서 밴드 이름이 claude 와 같다 — codex 전용 경계 신설 0."""
-    thresholds = codex_ctx.ctx_thresholds(conf)
     assert codex_ctx.nudge2_threshold(thresholds) == claude_ctx.nudge2_threshold(thresholds)
     for used_pct in range(0, 101):
         assert (codex_ctx.classify(used_pct, thresholds)
@@ -1079,8 +1047,8 @@ def test_measured_ok_rearms_the_cycle_but_unmeasured_ok_does_not(codex_ctx, tmp_
                                                           encoding="utf-8")
     assert codex_ctx.ctx_nudge_envelope(_payload(rollout), root) == {}
     assert list(marker_dir.iterdir())  # 입력 변경 후 stale 기록으로 재무장하지 않는다.
-    from test_harness_ctx_limits import _t0932_install_budget_fixture
-    _t0932_install_budget_fixture(root,harness="codex")
+    from test_harness_ctx_limits import install_ctx_record
+    install_ctx_record(root, harness="codex", model=_RECORD_MODEL)
     assert codex_ctx.ctx_nudge_envelope(_payload(rollout), root) == {}
     assert not list(marker_dir.iterdir())
 
@@ -1289,44 +1257,41 @@ def test_self_reconstructed_from_root_would_miss_the_flat_layout(tmp_path):
     assert Path(fixed_self) != old_root_derived_self
 
 
-def test_t0932_model_capacity_actual_catalog_native_and_runtime(tmp_path,monkeypatch,codex_ctx):
-    from test_harness_ctx_limits import _load,_project,_global_dir,_sha,_legacy_schema3_record
-    module=_load('pm_import');leaf=_load('local_conf')
-    root=_project(tmp_path,harnesses=('codex',),conf='harness.codex.ctx_window_tokens=600000\nctx.checkpoint_at_pct=80\nctx.precompact_at_pct=90\nctx.compact_at_pct=94\n',texts={'.codex/config.toml':'model_context_window = 900000\n[profiles.user]\nmodel_context_window = 128000\n'})
-    from test_harness_ctx_limits import _t0932_codex_native_catalog
-    home,data=_t0932_codex_native_catalog(tmp_path,monkeypatch)
-    global_conf=home/'config.toml';catalog=home/'models_cache.json';before=global_conf.read_bytes()
-    module.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
-    # schema2의 엄격한 catalog 세대 검사 대조군. schema3 수명주기는 T-0939 AT1에서 검증한다.
-    record_path=root/leaf.CTX_BUDGET_RELPATH
-    legacy=_legacy_schema3_record(root,leaf);legacy['schema']=2
-    legacy.pop('applied');legacy.pop('applied_at');legacy['projection_sha256']=leaf.ctx_record_digest(legacy)
-    record_path.write_text(json.dumps(legacy),encoding='utf-8')
-    native=tomllib.loads((root/'.codex/config.toml').read_text(encoding='utf-8'))
-    assert 'model_context_window' not in native and native['profiles']['user']['model_context_window']==128000
-    assert native['model_auto_compact_token_limit']==258400*94//100
-    assert global_conf.read_bytes()==before
-    identity={'model':'exact-model','provider':'fixture','profile':'team'}
-    conf=leaf.load(root/'.project_manager/local.conf').values
-    assert codex_ctx.resolve_ctx_budget(conf,root=root,identity=identity)==258400
-    assert codex_ctx.resolve_ctx_budget(conf,root=root,identity={**identity,'provider':'other'}) is None
-    catalog.write_text(catalog.read_text(encoding='utf-8').replace('native-generation','native-generation-2'), encoding='utf-8')
-    assert codex_ctx.resolve_ctx_budget(conf,root=root,identity=identity) is None
+# ── 4.7 세션 모델 확인과 기록 오류 (T-0943 AT-007) ────────────────────────────
+# 실제 Codex 훅 입력 필드(codex-cli 0.147.0 실측) — provider·profile 은 없다.
 
 
-def test_t0937_codex_scoped_budget_runtime(tmp_path,monkeypatch,codex_ctx):
-    from test_harness_ctx_limits import _t0937_actual_fixture,_snapshot_fixture_bytes
-    f=_t0937_actual_fixture(tmp_path,monkeypatch)
-    # schema2의 엄격한 catalog 세대 검사 대조군.
-    legacy=dict(f.record);legacy['schema']=2;legacy.pop('applied');legacy.pop('applied_at')
-    legacy['projection_sha256']=f.leaf.ctx_record_digest(legacy)
-    (f.root/f.leaf.CTX_BUDGET_RELPATH).write_text(json.dumps(legacy),encoding='utf-8')
-    identity=f.record['budgets']['codex']['identity']
-    Path(f.record['bindings']['claude']['roles']['settings'][0]).write_text('{}\n',encoding='utf-8')
-    (f.global_dir/'opencode.json').write_text('{}',encoding='utf-8');f.registry.write_text('{}',encoding='utf-8')
-    calls=list(f.calls)
-    assert codex_ctx.resolve_ctx_budget(f.values,root=f.root,identity=identity)==570000
-    assert codex_ctx.resolve_ctx_budget(f.values,root=f.root,identity={**identity,'profile':'other'}) is None
-    (f.codex/'models_cache.json').write_text('{"client_version":"0.150.0","models":[]}',encoding='utf-8')
-    assert codex_ctx.resolve_ctx_budget(f.values,root=f.root,identity=identity) is None
-    assert f.values['harness.codex.ctx_window_tokens']=='600000' and calls==f.calls
+def _t0943_hook_input(rollout: Path, root: Path, event: str, model: str) -> dict:
+    payload = {"session_id": "01a029b8-dd2b-7cc0-aac8-65158e5d120b", "turn_id": "t0943-turn",
+               "transcript_path": str(rollout), "cwd": str(root), "hook_event_name": event,
+               "model": model, "permission_mode": "default"}
+    if event == "PreToolUse":
+        payload.update(tool_name="Bash", tool_input={"command": "echo hi"}, tool_use_id="call_t0943")
+    else:
+        payload.update(prompt="계속")
+    return payload
+
+
+def test_t0943_model_only_hook_input_runs_the_band(codex_ctx, tmp_path):
+    """`model` 만 있는 실제 입력이 기록 모델과 같으면 밴드 판정이 돈다(경고 없음)."""
+    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    envelope = codex_ctx.ctx_nudge_envelope(
+        _t0943_hook_input(_write_rollout(tmp_path), root, "PreToolUse", _RECORD_MODEL), root)
+    assert "ctx-guidance --band nudge2" in envelope["hookSpecificOutput"]["additionalContext"]
+    assert "systemMessage" not in envelope
+
+
+def test_t0943_other_model_and_missing_record_use_system_message(codex_ctx, tmp_path):
+    """다른 모델은 판정을 계속하며 `systemMessage` 경고, 기록이 없으면 `systemMessage` 오류."""
+    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    rollout = _write_rollout(tmp_path)
+    envelope = codex_ctx.ctx_nudge_envelope(
+        _t0943_hook_input(rollout, root, "UserPromptSubmit", "gpt-other"), root)
+    assert "ctx-guidance --band nudge2" in envelope["hookSpecificOutput"]["additionalContext"]
+    assert "모델이 바뀌었습니다" in envelope["systemMessage"] and "gpt-other" in envelope["systemMessage"]
+
+    (root / ".project_manager/.local/ctx-budget.json").unlink()
+    envelope = codex_ctx.ctx_nudge_envelope(
+        _t0943_hook_input(rollout, root, "UserPromptSubmit", _RECORD_MODEL), root)
+    assert set(envelope) == {"systemMessage"}
+    assert envelope["systemMessage"].startswith("[ctx-budget]") and "ctx-apply" in envelope["systemMessage"]

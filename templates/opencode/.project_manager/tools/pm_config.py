@@ -2616,9 +2616,7 @@ def _status_json_conf(source_root: Path | None) -> dict:
     result = local_conf.load(REPO / ".project_manager" / "local.conf")
     values = result.values
     return {
-        "ctx_budget": {h:{k:row.get(k) for k in ("status","reason","W","C","E","P")}
-                       for h,row in local_conf.ctx_budget_status(REPO,values).items()},
-        "ctx_applied": _load_module("pm_import", "pm_import.py").ctx_applied_status(REPO, values),
+        "ctx_budget": local_conf.ctx_budget_status(REPO, values),
         "missing_required": list(local_conf.missing_required(values)),
         "legacy": [{"key": key, "replacement": replacement}
                    for key, replacement in sorted(result.legacy.items())],
@@ -5071,39 +5069,16 @@ def cmd_ctx_apply(args, *, pm_import=None, dest_root: Path | None = None) -> int
     """`ctx-apply [--json] [--set 키=값 ...]` — 사용 한도·압축 비율 검사 → local.conf 기록 → 반영.
 
     관리자 저장·초기화가 ctx 입력 키(`pm_import.is_harness_ctx_input_key`)가 든 저장을 이 명령 한
-    번으로 보낸다. 검사는 현재 conf(`--set` 이 있으면 그 값을 덮은 conf)로 설정 파일까지 미리 계산해
-    보는 것이고, 통과해야 local.conf 에 쓰고(`_write_conf_keys` · 빈 값은 줄 삭제) 반영한다 — 거부되면
-    local.conf·설정 파일 어느 것도 바뀌지 않는다. `--set` 은 ctx 밖 키도 받는다(한 저장이 여러 키를
-    함께 보낸다).
+    번으로 보낸다. local.conf 쓰기 락 안에서 현재 conf 에 `--set` 값을 덮어 검사하고 도구별 모델 한도를
+    조회해 설정 파일까지 계산한 뒤, 통과해야 local.conf(빈 값은 줄 삭제)·설정 파일·압축 한도 기록을
+    쓴다(`pm_import._apply_harness_ctx`) — 거부되면 어느 것도 바뀌지 않는다. `--set` 은 ctx 밖 키도
+    받는다(한 저장이 여러 키를 함께 보낸다).
 
-    rc 0 반영(바뀐 줄 0 포함) · 3 검사 거부(local.conf·설정 파일 무변경 · 사유는 stderr) · 1 그 밖의
-    실패(엔진·local.conf 부재, 검사 뒤 쓰기 단계 실패, 처리하지 못한 예외 — 쓰기 단계에서 멈추면
+    rc 0 반영(바뀐 줄 0 포함) · 3 검사 거부(local.conf·설정 파일·기록 무변경 · 사유는 stderr) · 1 그
+    밖의 실패(엔진·local.conf 부재, 쓰기 단계 실패, 처리하지 못한 예외 — 쓰기 단계에서 멈추면
     local.conf 와 설정 파일 일부가 이미 바뀌었을 수 있고 stderr 가 교체한 파일을 적는다) · 2 인자
-    오류(argparse). `--json` 은 한 줄 `{"changed": local.conf 가 바뀌었나, "applied": 바뀐 설정 줄}` 이다."""
-    if getattr(args,"preview",False):
-        if not getattr(args,"json",False) or getattr(args,"set",None):
-            print("preview 인자 조합 오류",file=sys.stderr);return 2
-        module=pm_import or _load_module("pm_import","pm_import.py")
-        try:
-            stream=getattr(sys.stdin,"buffer",sys.stdin)
-            raw=stream.read(262145)
-            if isinstance(raw,str):raw=raw.encode("utf-8")
-            if len(raw)>262144:raise ValueError()
-            def pairs(items):
-                document={}
-                for key,value in items:
-                    if key in document:raise ValueError()
-                    document[key]=value
-                return document
-            request=json.loads(raw.decode("utf-8"),object_pairs_hook=pairs)
-            if not isinstance(request,dict) or set(request) not in ({"harness"},{"harness","receipt"}) or request["harness"] not in module.HARNESS_CTX_FILES:
-                raise ValueError()
-            if "receipt" in request and not isinstance(request["receipt"],dict):raise ValueError()
-            result=module.query_ctx_capacity(dest_root if dest_root is not None else REPO,request["harness"],
-                check="receipt" in request,receipt=request.get("receipt"))
-        except (ValueError,TypeError,KeyError,UnicodeError):
-            print("preview JSON 또는 receipt 형식 오류",file=sys.stderr);return 2
-        _write_machine_line(json.dumps(result,ensure_ascii=False));return 0
+    오류(argparse). `--json` 은 한 줄 `{"changed": local.conf 가 바뀌었나, "applied": 바뀐 설정 줄,
+    "ctx_budget": 압축 한도 기록의 도구 항목}` 이다."""
     pm_import_mod = pm_import or _load_module("pm_import", "pm_import.py")
     if pm_import_mod is None:
         print(
@@ -5120,22 +5095,14 @@ def cmd_ctx_apply(args, *, pm_import=None, dest_root: Path | None = None) -> int
               file=sys.stderr)
         return 1
     opencode_dir = pm_import_mod.opencode_global_config_dir(os.environ, Path.home())
-    local_conf = _load_local_conf()
     try:
-        result = local_conf.load(conf_file)
-        local_conf.assert_no_legacy(result)
-        values = result.values
-        if updates:
-            values = {key: value for key, value in result.values.items() if key not in updates}
-            values.update({key: value for key, value in updates.items() if value})
-            local_conf.assert_values_no_legacy(values, conf_file)
-        # 검사 — 쓰기 전에 설정 파일까지 계산해 본다(읽기 실패로 반영이 멈출 값을 conf 에 남기지 않는다).
-        plan = pm_import_mod._prepare_harness_ctx(
-            dest, values, opencode_config_dir=opencode_dir,
+        changed, applied, budgets = pm_import_mod._apply_harness_ctx(
+            dest, write=True, opencode_config_dir=opencode_dir,
             updates={key: value or None for key, value in updates.items()})
     except pm_import_mod.HarnessCtxError as exc:
         print(f"[중단] {exc}", file=sys.stderr)
-        return _CTX_APPLY_REJECTED
+        # 쓰기 단계에서 바꾼 파일이 있으면 검사 거부가 아니다(무변경 약속을 지킬 수 없다).
+        return 1 if exc.written else _CTX_APPLY_REJECTED
     except RuntimeError as exc:
         if _is_engine_rev_skew(exc):
             raise
@@ -5144,11 +5111,6 @@ def cmd_ctx_apply(args, *, pm_import=None, dest_root: Path | None = None) -> int
             raise
         print(f"[중단] {exc}", file=sys.stderr)
         return _CTX_APPLY_REJECTED
-    try:
-        changed, applied, budgets = pm_import_mod._commit_harness_ctx(plan)
-    except pm_import_mod.HarnessCtxError as exc:
-        print(f"[중단] {exc}", file=sys.stderr)
-        return 1 if getattr(exc, "phase", None) == "commit" or getattr(exc, "written", ()) else _CTX_APPLY_REJECTED
     if getattr(args, "json", False):
         _write_machine_line(json.dumps(
             {"changed": bool(changed), "applied": list(applied), "ctx_budget": budgets}, ensure_ascii=False))
@@ -5635,7 +5597,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
         help="기계 판독 한 줄 `{\"changed\", \"applied\"}` 로 낸다.",
     )
-    p_ctx_apply.add_argument("--preview",action="store_true",help="현재 모델 한도 읽기 전용 조회/검증")
     p_ctx_apply.set_defaults(func=cmd_ctx_apply)
 
     # delegate models --harness <h> --json — 위임 모델 목록 조회(읽기 전용·장부 변경 0).

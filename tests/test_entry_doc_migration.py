@@ -681,19 +681,3 @@ def test_finding_printer_migrated_backup(pm_update, capsys):
     out = capsys.readouterr().out
     assert "세대 마이그레이션 전환" in out
     assert ".pm_import_backups/2026-07-21" in out
-
-
-def test_t0932_fixture_reader_refuses_actual_source_before_mkdir(monkeypatch):
-    """실제 source에 unit 모델 원천을 만들거나 기존 원천을 소비하지 않는다."""
-    from _manager_home import _KNOWN_CTX_READER_PY
-    namespace = {}
-    exec(_KNOWN_CTX_READER_PY, namespace)
-    reader = namespace['fixture_reader'](object())
-    artifact = REPO / '.project_manager/independent-runtime-fixture.json'
-    before = artifact.read_bytes() if artifact.exists() else None
-    def forbidden_mkdir(*_args, **_kwargs):
-        raise AssertionError('source guard 이전 mkdir')
-    monkeypatch.setattr(Path, 'mkdir', forbidden_mkdir)
-    with pytest.raises(ValueError, match='source root write refused'):
-        reader(REPO, 'claude', {}, {})
-    assert (artifact.read_bytes() if artifact.exists() else None) == before

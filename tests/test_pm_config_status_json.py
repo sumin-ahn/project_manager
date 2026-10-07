@@ -36,8 +36,6 @@ from pathlib import Path
 
 import pytest
 
-from test_harness_ctx_limits import _legacy_native_fixture
-
 from _git_fixture import remove_git_tree
 # T-0908 의 URL 캐시 픽스처(로컬 bare + `file://` · 네트워크 0)를 그대로 쓴다 — 캐시 자리·
 # 형상 판정을 두 벌로 만들지 않는다.
@@ -1093,299 +1091,39 @@ def test_status_json_slot_rows_include_folders(home):
     assert "[중단]" in done.stderr and "cone" in done.stderr
 
 
-def test_t0932_ctx_budget_readonly_unknown_and_bound(tmp_path,monkeypatch):
-    from test_harness_ctx_limits import _t0932_install_budget_fixture,_load as load_engine,_snapshot_fixture_bytes
-    module=load_engine('pm_config');leaf=load_engine('local_conf')
-    conf={'harness.claude.ctx_window_tokens':'600000','ctx.checkpoint_at_pct':'80','ctx.precompact_at_pct':'90','ctx.compact_at_pct':'94'}
-    identity=_t0932_install_budget_fixture(tmp_path,conf,capacity=200000)
-    monkeypatch.setattr(module,'REPO',tmp_path)
-    before=_snapshot_fixture_bytes(tmp_path)
-    row=module._status_json_conf(None)['ctx_budget']['claude']
-    assert (row['W'],row['C'],row['E'],row['P'])==(600000,200000,200000,188000)
-    assert before==_snapshot_fixture_bytes(tmp_path)
-    source=tmp_path/'.project_manager/independent-runtime-fixture.json';source.write_text('changed source generation', encoding='utf-8')
-    stale=module._status_json_conf(None)['ctx_budget']['claude']
-    assert stale['status']=='unknown' and stale['E'] is None
-    assert '변경' in stale['reason']
+# ── T-0943 상태 JSON 의 압축 한도 표시와 `--preview` 삭제 (AT-010) ──────────────
+
+_T0943_CONF = {"harness.claude.ctx_window_tokens": "600000", "ctx.checkpoint_at_pct": "80",
+               "ctx.precompact_at_pct": "90", "ctx.compact_at_pct": "94"}
 
 
-@pytest.mark.parametrize('record', [[], None, {'budgets': None}])
-def test_t0932_review_damaged_ctx_record(tmp_path, record):
-    from test_harness_ctx_limits import _load, _t0932_install_budget_fixture
-    leaf = _load('local_conf')
-    target = tmp_path / leaf.CTX_BUDGET_RELPATH
-    target.parent.mkdir(parents=True)
-    target.write_text(json.dumps(record), encoding='utf-8')
-    statuses = leaf.ctx_budget_status(tmp_path, {})
-    assert all(value['status'] == 'unknown' and value['E'] is None for value in statuses.values())
-
-
-def test_t0937_status_ctx_budget_scoped_readonly(tmp_path,monkeypatch):
-    from test_harness_ctx_limits import _t0937_actual_fixture,_snapshot_fixture_bytes,_load
-    f=_t0937_actual_fixture(tmp_path,monkeypatch);module=_load('pm_config');monkeypatch.setattr(module,'REPO',f.root)
-    legacy=dict(f.record);legacy['schema']=2;legacy.pop('applied');legacy.pop('applied_at');legacy['projection_sha256']=f.leaf.ctx_record_digest(legacy)
-    (f.root/f.leaf.CTX_BUDGET_RELPATH).write_text(json.dumps(legacy),encoding='utf-8')
-    (f.codex/'models_cache.json').write_text('{"client_version":"0.150.0","models":[]}',encoding='utf-8')
-    before=_snapshot_fixture_bytes(f.root);calls=list(f.calls)
-    rows=module._status_json_conf(None)['ctx_budget']
-    assert rows['claude']['status']=='known' and rows['claude']['E']==600000
-    assert rows['opencode']['status']=='known' and rows['opencode']['E']==200000
-    assert rows['codex']['status']=='unknown' and rows['codex']['C'] is None and rows['codex']['E'] is None
-    assert '변경' in rows['codex']['reason']
-    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
-
-
-def test_t0937_gui_projection_preserves_scoped_unknown(tmp_path,monkeypatch):
-    from test_harness_ctx_limits import _t0937_actual_fixture,_snapshot_fixture_bytes,_load
-    f=_t0937_actual_fixture(tmp_path,monkeypatch);module=_load('pm_config');monkeypatch.setattr(module,'REPO',f.root)
-    legacy=dict(f.record);legacy['schema']=2;legacy.pop('applied');legacy.pop('applied_at');legacy['projection_sha256']=f.leaf.ctx_record_digest(legacy)
-    (f.root/f.leaf.CTX_BUDGET_RELPATH).write_text(json.dumps(legacy),encoding='utf-8')
-    (f.codex/'models_cache.json').write_text('{}',encoding='utf-8')
-    before=_snapshot_fixture_bytes(f.root);calls=list(f.calls)
-    rows=module._status_json_conf(None)['ctx_budget']
-    assert rows['codex']['W']==600000 and all(rows['codex'][k] is None for k in ('C','E','P'))
-    assert all(rows[h]['status']=='known' for h in ('claude','opencode'))
-    assert all(k not in json.dumps(rows) for k in ('bindings','environment','native_commands','native_files','fingerprints','access_token','refresh_token'))
-    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
-
-
-@pytest.mark.parametrize('case',['query','check','set','large','duplicate','extra','trailing','harness','null','array',
-    'digest','root','wrong-harness','missing','swap','duplicate-path','extra-path','relative','sentinel','encoding'])
-def test_t0938_at2_preview_stdin_and_no_write(tmp_path, monkeypatch, capsys, case):
-    from types import SimpleNamespace
-    from io import StringIO
-    from test_harness_ctx_limits import _load, _project, _snapshot_fixture_bytes, _t0932_control_claude_fixture, _T0938_CLAUDE
-    importer = _load('pm_import'); config = _load('pm_config')
-    root = _project(tmp_path, harnesses=('claude',), conf='harness.claude.ctx_window_tokens=1000\n')
-    native = _t0932_control_claude_fixture(tmp_path, monkeypatch)
-    Path(shutil.which('claude')).write_bytes(b'// Version: 2.1.289\n'+_T0938_CLAUDE)
-    calls=[]
-    def protocol(*a):calls.append(a);return native
-    monkeypatch.setattr(importer, '_ctx_native_protocol', protocol)
-    minted=importer.preview_ctx_capacity(root,'claude');assert minted['C']==967000
-    calls.clear();request={'harness':'claude'};raw=None
-    if case in {'check','digest','root','wrong-harness','missing','swap','duplicate-path','extra-path','relative'}:
-        request['receipt']=json.loads(json.dumps(minted['receipt']));receipt=request['receipt'];binding=receipt['binding']
-        if case=='digest':receipt['digest']='0'*64
-        if case=='root':receipt['root']=str(tmp_path/'other')
-        if case=='wrong-harness':receipt['harness']='codex'
-        if case=='missing':binding['required_files'].pop()
-        if case=='swap':binding['roles']['settings'][0],binding['roles']['settings'][1]=binding['roles']['settings'][1],binding['roles']['settings'][0]
-        if case=='duplicate-path':binding['required_files'].append(binding['required_files'][0])
-        if case=='extra-path':binding['fingerprints'][str(tmp_path/'credential')]='0'*64;binding['required_files'].append(str(tmp_path/'credential'))
-        if case=='relative':binding['roles']['settings'][0]='relative.json'
-    if case=='large':raw=' '*262145
-    if case=='duplicate':raw='{"harness":"claude","harness":"claude"}'
-    if case=='extra':request['extra']='secret'
-    if case=='trailing':raw='{"harness":"claude"} {}'
-    if case=='harness':request['harness']='other'
-    if case=='null':request['receipt']=None
-    if case=='array':request['receipt']=[]
-    if case=='sentinel':raw='SECRET_CREDENTIAL_SENTINEL'
-    if case=='encoding':raw='{"harness":"claude","receipt":"'+('한'*90000)+'"}'
-    class Unreadable:
-        def read(self,*a):raise AssertionError('preview --set read stdin')
-    monkeypatch.setattr(sys,'stdin',Unreadable() if case=='set' else StringIO(raw if raw is not None else json.dumps(request)))
-    before=_snapshot_fixture_bytes(root)
-    native_before={p:p.read_bytes() for p in (Path(shutil.which('claude')),Path(os.environ['CLAUDE_CONFIG_DIR'])/'settings.json')}
-    rc=config.cmd_ctx_apply(SimpleNamespace(preview=True,json=True,set=[('ctx.compact_at_pct','94')] if case=='set' else None),pm_import=importer,dest_root=root)
-    captured=capsys.readouterr()
-    assert 'SECRET_CREDENTIAL_SENTINEL' not in captured.out+captured.err
-    assert rc==(0 if case in {'query','check'} else 2)
-    if rc==0:
-        result=json.loads(captured.out)
-        assert 'E' not in result and 'P' not in result
-        if case=='query':assert result['mode']=='query' and result['C']==967000 and len(calls)==1
-        else:assert result['schema']==2 and result['mode']=='check' and result['status']=='known' and calls==[]
-        assert set(result['budget'])=={'status','reason','W','C','E','P'}
-    else:assert calls==[]
-    assert _snapshot_fixture_bytes(root)==before
-    assert all(p.read_bytes()==b for p,b in native_before.items())
-    # C is independent from W; the original encoding rejection still applies.
-    leaf=importer._load_local_conf();metadata=minted['receipt']['models'][0]
-    assert leaf.resolve_ctx_capacity(1000,(70,85,94),metadata['identity'],metadata['metadata'])['status']=='unknown'
-
-
-@pytest.mark.parametrize('case',['valid','expired','inputs-array','identity-array','metadata-array'])
-def test_t0938_review_preview_nested_receipt_shape(tmp_path,monkeypatch,capsys,case):
-    import copy,io
-    from types import SimpleNamespace
-    from test_harness_ctx_limits import _load,_project,_t0932_control_claude_fixture,_T0938_CLAUDE,_snapshot_fixture_bytes
-    importer=_load('pm_import');config=_load('pm_config')
-    root=_project(tmp_path,harnesses=('claude',),conf='harness.claude.ctx_window_tokens=600000\n')
-    native=_t0932_control_claude_fixture(tmp_path,monkeypatch)
-    Path(shutil.which('claude')).write_bytes(b'// Version: 2.1.289\n'+_T0938_CLAUDE);trace=[]
-    def protocol(*a):trace.append('metadata');return copy.deepcopy(native)
-    monkeypatch.setattr(importer,'_ctx_native_protocol',protocol)
-    receipt=importer.preview_ctx_capacity(root,'claude')['receipt']
-    if case=='inputs-array':receipt['inputs']=[]
-    if case=='identity-array':receipt['models'][0]['identity']=[]
-    if case=='metadata-array':receipt['models'][0]['metadata']=[]
-    if case=='expired':receipt['models'][0]['metadata']['valid_until']='2020-01-01T00:00:00+00:00'
-    receipt['digest']=hashlib.sha256(json.dumps({k:v for k,v in receipt.items() if k!='digest'},ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
-    before=_snapshot_fixture_bytes(tmp_path)
-    monkeypatch.setattr(sys,'stdin',io.StringIO(json.dumps({'harness':'claude','receipt':receipt})))
-    rc=config.cmd_ctx_apply(SimpleNamespace(preview=True,json=True,set=None),pm_import=importer,dest_root=root)
-    out=capsys.readouterr()
-    assert rc==(0 if case in {'valid','expired'} else 2)
-    if rc==0:
-        response=json.loads(out.out)
-        assert response['status']==('known' if case=='valid' else 'unknown')
-        assert response['schema']==2
-        assert set(response)=={'mode','schema','harness','status','reason','C','observed_at','valid_until','verification','budget','candidate','applied','receipt'}
-    assert trace==['metadata']
-    assert before==_snapshot_fixture_bytes(tmp_path)
-
-@pytest.mark.parametrize('phase',['deleted','expired','managed','auth'])
-def test_t0939_at3_status_two_readonly_projections(tmp_path,monkeypatch,phase):
-    from datetime import timedelta
-    from test_harness_ctx_limits import _t0937_actual_fixture,_snapshot_fixture_bytes,_load
-    f=_t0937_actual_fixture(tmp_path,monkeypatch);module=_load('pm_config');monkeypatch.setattr(module,'REPO',f.root)
-    if phase=='deleted':(f.codex/'models_cache.json').unlink()
-    elif phase=='expired':
-        now=f.leaf._ctx_time(f.record['budgets']['codex']['metadata']['observed_at'])+timedelta(seconds=300)
-        original=f.leaf.resolve_ctx_capacity
-        monkeypatch.setattr(f.leaf,'resolve_ctx_capacity',lambda w,r,i,m,**kw:original(w,r,i,m,now=kw.get('now') or now))
-    elif phase=='managed':(f.root/'.codex/config.toml').write_text('model_auto_compact_token_limit=1\n',encoding='utf-8')
-    else:(f.codex/'auth.json').write_text('{"secret":"DO-NOT-OUTPUT"}',encoding='utf-8')
-    calls=list(f.calls);before=_snapshot_fixture_bytes(f.root)
-    conf=module._status_json_conf(None)
-    applied=conf['ctx_applied']['codex'];budget=conf['ctx_budget']['codex']
-    assert applied['status']==('known' if phase in ('deleted','expired','auth') else 'unknown')
-    assert budget['status']==('known' if phase=='deleted' else 'unknown')
-    if applied['status']=='known':assert (applied['E'],applied['P'])==(570000,535800)
-    assert 'C' not in applied
-    assert all(secret not in json.dumps(conf) for secret in ('DO-NOT-OUTPUT','access_token','refresh_token','bindings','native_files'))
-    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
-
-
-def test_t0939_at3_query_and_check_no_settings_writer(tmp_path,monkeypatch):
-    from test_harness_ctx_limits import _t0937_actual_fixture,_snapshot_fixture_bytes
-    f=_t0937_actual_fixture(tmp_path,monkeypatch)
-    before=_snapshot_fixture_bytes(f.root);count=len(f.calls)
-    for name in ('_harness_ctx_write','_atomic_write_dest_bytes','_write_conf_keys_locked'):
-        monkeypatch.setattr(f.importer,name,lambda *a,**kw:pytest.fail('조회 writer 호출'))
-    queried=f.importer.preview_ctx_capacity(f.root,'codex')
-    assert queried['status']=='known' and queried['C']==570000
-    # Fixture's selected custom provider uses file metadata; no turn/CLI/API occurs.
-    assert len(f.calls)==count
-    (f.codex/'models_cache.json').unlink()
-    checked=f.importer.preview_ctx_capacity(f.root,'codex',receipt=queried['receipt'],check=True)
-    assert checked['status']=='known' and 'C' not in checked
-    assert len(f.calls)==count and before==_snapshot_fixture_bytes(f.root)
-    assert 'DO-NOT-OUTPUT' not in json.dumps(checked)
-
-
-@pytest.mark.parametrize('source',['baseline','auth-account','auth-delete','global-model','global-endpoint','layer-change','target-managed'])
-def test_t0940_at3_status_projection(tmp_path,monkeypatch,source):
-    from test_harness_ctx_limits import (_t0940_actual_fixture,_t0940_change_external,
-        _t0940_readonly_guards,_snapshot_fixture_bytes,_load)
-    f = _t0940_actual_fixture(tmp_path,monkeypatch)
-    module = _load('pm_config');monkeypatch.setattr(module,'REPO',f.root)
-    preview = f.importer.preview_ctx_capacity(f.root,'codex')
-    assert preview['status']=='known' and preview['C']==570000
-    if source=='target-managed':(f.root/'.codex/config.toml').write_text('model_auto_compact_token_limit=1\n',encoding='utf-8')
-    else:_t0940_change_external(f,source)
-    checked = f.importer.preview_ctx_capacity(f.root,'codex',receipt=preview['receipt'],check=True)
-    assert checked['status']==('known' if source=='baseline' else 'unknown') and 'C' not in checked
-    _t0940_readonly_guards(f,monkeypatch)
-    monkeypatch.setattr(module,'_write_machine_line',lambda *a:pytest.fail('status 조회 출력 writer 호출'))
-    before = _snapshot_fixture_bytes(tmp_path);calls = list(f.calls)
+def test_t0943_status_ctx_budget_shape_and_readonly(tmp_path, monkeypatch):
+    """`conf.ctx_budget` 은 도구마다 ok(표시 자료) 또는 error(사유)이고 `ctx_applied` 는 없다. 조회는 쓰지 않는다."""
+    from test_harness_ctx_limits import install_ctx_record, _load as load_engine, _snapshot_fixture_bytes
+    module = load_engine("pm_config")
+    install_ctx_record(tmp_path, _T0943_CONF, capacity=200000)
+    monkeypatch.setattr(module, "REPO", tmp_path)
+    before = _snapshot_fixture_bytes(tmp_path)
     conf = module._status_json_conf(None)
-    applied = conf['ctx_applied']['codex'];budget = conf['ctx_budget']['codex']
-    assert applied['status']==('unknown' if source=='target-managed' else 'known')
-    assert budget['status']==('known' if source=='baseline' else 'unknown')
-    if applied['status']=='known':assert (applied['E'],applied['P'])==(570000,535800)
-    assert 'C' not in applied
-    if budget['status']=='unknown':assert all(budget[k] is None for k in ('C','E','P'))
-    assert all(conf['ctx_applied'][h]['status']=='known' for h in ('claude','opencode'))
-    assert all(secret not in json.dumps(conf) for secret in ('DO-NOT-OUTPUT','access_token','refresh_token','fixture-account','header.','bindings','native_files'))
-    assert before==_snapshot_fixture_bytes(tmp_path) and calls==f.calls
+    assert "ctx_applied" not in conf
+    claude = conf["ctx_budget"]["claude"]
+    assert set(claude) == {"status", "E", "P", "checkpoint", "precompact", "checkpoint_at_pct", "precompact_at_pct",
+                           "models", "applied_at", "warning", "C", "basis_text"}
+    assert (claude["status"], claude["C"], claude["E"], claude["P"]) == ("ok", 200000, 200000, 188000)
+    for harness in ("codex", "opencode"):
+        row = conf["ctx_budget"][harness]
+        assert set(row) == {"status", "reason"} and row["status"] == "error" and "ctx-apply" in row["reason"]
+    assert _snapshot_fixture_bytes(tmp_path) == before
 
 
-@pytest.mark.parametrize('harness',['claude','codex','opencode'])
-def test_t0941_at5_cli_postcommit_public_status(tmp_path,monkeypatch,capsys,harness):
-    from test_harness_ctx_limits import _t0941_fixture,_t0941_cli,_load,_snapshot_fixture_bytes
-    f=_t0941_fixture(tmp_path,monkeypatch);path=f.root/f.leaf.CTX_BUDGET_RELPATH
-    r=json.loads(path.read_bytes());r['harnesses'][harness]['verification']=None
-    r['projection_sha256']=f.leaf.ctx_record_digest(r);path.write_text(json.dumps(r),encoding='utf-8')
-    result=_t0941_cli(f,harness,monkeypatch,capsys)
-    assert result['schema']==2 and result['verification']['status']=='verified'
-    config=_load('pm_config');monkeypatch.setattr(config,'REPO',f.root)
-    monkeypatch.setattr(config,'_load_local_conf',lambda:f.leaf)
-    monkeypatch.setattr(config,'_load_module',lambda *a:f.importer)
-    before=_snapshot_fixture_bytes(tmp_path);external=list(f.calls)
-    projected=config._status_json_conf(None)
-    assert projected['ctx_budget'][harness]==result['budget']
-    assert projected['ctx_applied'][harness]==result['applied']
-    assert set(projected['ctx_budget'][harness])=={'status','reason','W','C','E','P'}
-    checked=_t0941_cli(f,harness,monkeypatch,capsys,result['receipt'])
-    assert checked['verification']['status']=='verified' and checked['budget']==result['budget']
-    assert before==_snapshot_fixture_bytes(tmp_path) and external==f.calls
-    assert all(s not in json.dumps(projected) for s in ('DO-NOT-OUTPUT','binding','source','metadata','models','access_token'))
-
-
-@pytest.mark.parametrize('bad',['duplicate','extra','trailing','utf8','large','receipt-root','receipt-path','set'])
-def test_t0941_at5_stdin_fail_closed(tmp_path,monkeypatch,capsys,bad):
-    import io
-    from types import SimpleNamespace
-    from test_harness_ctx_limits import _t0941_fixture,_load,_snapshot_fixture_bytes
-    f=_t0941_fixture(tmp_path,monkeypatch);config=_load('pm_config')
-    raw=b'{"harness":"codex"}'
-    if bad=='duplicate':raw=b'{"harness":"codex","harness":"codex"}'
-    elif bad=='extra':raw=b'{"harness":"codex","secret":"DO-NOT-OUTPUT"}'
-    elif bad=='trailing':raw+=b'{}'
-    elif bad=='utf8':raw=b'\xff'
-    elif bad=='large':raw=b' '*262145
-    elif bad.startswith('receipt-'):
-        receipt=f.importer.preview_ctx_capacity(f.root,'codex')['receipt']
-        if bad=='receipt-root':receipt['root']=str(f.root.parent)
-        else:receipt['binding']['roles']['auth']=str(f.root.parent/'DO-NOT-OUTPUT.json')
-        raw=json.dumps({'harness':'codex','receipt':receipt}).encode('utf-8')
-    monkeypatch.setattr(sys,'stdin',io.TextIOWrapper(io.BytesIO(raw),encoding='utf-8'))
-    before=_snapshot_fixture_bytes(tmp_path)
-    rc=config.cmd_ctx_apply(SimpleNamespace(preview=True,json=True,set=[('ctx.compact_at_pct','94')] if bad=='set' else None),pm_import=f.importer,dest_root=f.root)
-    output=capsys.readouterr()
-    assert rc==2 and output.out=='' and 'DO-NOT-OUTPUT' not in output.err
-    assert before==_snapshot_fixture_bytes(tmp_path)
-
-
-def test_t0941_at5_fresh_c_write_failure(tmp_path,monkeypatch,capsys):
-    from test_harness_ctx_limits import _t0941_fixture,_t0941_cli,_snapshot_fixture_bytes
-    f=_t0941_fixture(tmp_path,monkeypatch)
-    auth=f.codex/'auth.json';auth.write_text(auth.read_text(encoding='utf-8')+'\n',encoding='utf-8')
-    monkeypatch.setattr(f.importer,'_atomic_write_dest_bytes',lambda *a,**kw:False)
-    before=_snapshot_fixture_bytes(tmp_path,excluded_names=('local-conf.lock',))
-    result=_t0941_cli(f,'codex',monkeypatch,capsys)
-    assert result['status']=='known' and result['C']==570000
-    assert result['verification']['status']=='write-failed' and result['budget']['status']=='unknown'
-    assert result['candidate']['E']==570000 and result['candidate']['P']==535800
-    assert before==_snapshot_fixture_bytes(tmp_path,excluded_names=('local-conf.lock',))
-
-
-def test_t0941_at5_failed_invalidation_public_truth(tmp_path,monkeypatch,capsys):
-    from test_harness_ctx_limits import _t0941_fixture,_t0941_cli,_load,_snapshot_fixture_bytes
-    f=_t0941_fixture(tmp_path,monkeypatch)
-    monkeypatch.setattr(f.importer,'_ctx_native_protocol',lambda *a,**kw:(_ for _ in ()).throw(ValueError('unavailable')))
-    monkeypatch.setattr(f.importer,'_atomic_write_dest_bytes',lambda *a,**kw:False)
-    before=_snapshot_fixture_bytes(tmp_path,excluded_names=('local-conf.lock',))
-    result=_t0941_cli(f,'claude',monkeypatch,capsys)
-    assert result['status']=='unknown' and result['C'] is None
-    assert result['verification']['status']=='write-failed' and result['budget']['status']=='known'
-    config=_load('pm_config');monkeypatch.setattr(config,'REPO',f.root)
-    monkeypatch.setattr(config,'_load_local_conf',lambda:f.leaf);monkeypatch.setattr(config,'_load_module',lambda *a:f.importer)
-    conf=config._status_json_conf(None)
-    assert conf['ctx_budget']['claude']==result['budget'] and conf['ctx_applied']['claude']==result['applied']
-    assert before==_snapshot_fixture_bytes(tmp_path,excluded_names=('local-conf.lock',))
-    assert not {'receipt','binding','metadata','environment'} & set(conf['ctx_budget']['claude'])
-
-
-def test_t0941_at5_uncommitted_receipt_is_not_new_verification(tmp_path,monkeypatch,capsys):
-    from test_harness_ctx_limits import _t0941_fixture,_t0941_remote_claude,_t0941_cli,_snapshot_fixture_bytes
-    f=_t0941_fixture(tmp_path,monkeypatch);_t0941_remote_claude(f,monkeypatch)
-    receipt=f.importer.preview_ctx_capacity(f.root,'claude')['receipt']
-    before=_snapshot_fixture_bytes(tmp_path);external=list(f.calls)
-    result=_t0941_cli(f,'claude',monkeypatch,capsys,receipt)
-    assert result['status']=='known' and result['budget']['status']=='known'
-    assert result['verification']['status']=='changed' and result['verification']['evidence_changed'] is False
-    assert before==_snapshot_fixture_bytes(tmp_path) and external==f.calls
+def test_t0943_ctx_apply_preview_is_an_argument_error(tmp_path, monkeypatch, capsys):
+    """`ctx-apply --preview` 는 없는 인자다(rc 2) — 조회만 하고 기록을 쓰던 길이 없다."""
+    from test_harness_ctx_limits import install_ctx_record, _load as load_engine, _snapshot_fixture_bytes
+    module = load_engine("pm_config")
+    install_ctx_record(tmp_path, _T0943_CONF, capacity=200000)
+    monkeypatch.setattr(module, "REPO", tmp_path)
+    before = _snapshot_fixture_bytes(tmp_path)
+    with pytest.raises(SystemExit) as caught:
+        module.main(["ctx-apply", "--json", "--preview"])
+    assert caught.value.code == 2 and "--preview" in capsys.readouterr().err
+    assert _snapshot_fixture_bytes(tmp_path) == before

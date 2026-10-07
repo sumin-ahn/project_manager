@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type {
-  Bridge, BridgeError, CtxCapacity, CtxCapacityView, CtxBudget, CtxApplied, ConfKeysDocument, DelegateModelsDocument, Project, StatusDocument,
+  Bridge, BridgeError, ConfKeysDocument, DelegateModelsDocument, Project, StatusDocument,
   TagsResponse } from "./api";
 import { chooseFolder, isError, subscribeChanges } from "./api";
 import AdapterMatrix from "./components/AdapterMatrix";
@@ -71,212 +71,6 @@ export default function App({ bridge }: { bridge: Bridge }) {
   // 무엇이든 고르면 풀린다 · 같은 프로젝트를 다시 고를 때마다 질문형이 되지 않는다).
   const [appliedPath, setAppliedPath] = useState<string | null>(null);
 
-  const [capacities, setCapacities] = useState<Record<string, Record<string, CtxCapacityView>>>({});
-  const capacityPairs = useRef(new Map<string, {
-    generation: number; future?: Promise<void>; kind?: "query" | "check"; failures: number; nextDue: number; lastQuery: number; failureReason?: string;
-  }>());
-  const statusGeneration = useRef<Record<string, number>>({});
-  const lightRef = useRef(light);
-  lightRef.current = light;
-  const selectedRef = useRef(selected);
-  const selectionGeneration = useRef(0);
-  if (selectedRef.current !== selected) selectionGeneration.current += 1;
-  selectedRef.current = selected;
-  const visibleRef = useRef(visible);
-  visibleRef.current = visible;
-
-  // Dispatch order is shared by every budget-bearing channel, independently admitted per harness.
-  const requestSequence = useRef<Record<string, number>>({});
-  const admitted = useRef(new Map<string, {
-    sequence: number; budget?: CtxBudget; applied?: CtxApplied | null; value?: CtxCapacity;
-  }>());
-  const dispatchSequence = useCallback((path: string) =>
-    requestSequence.current[path] = (requestSequence.current[path] ?? 0) + 1, []);
-  const admit = useCallback((path: string, harness: string, sequence: number,
-                            facts: { budget?: CtxBudget; applied?: CtxApplied | null; value?: CtxCapacity }) => {
-    const key = `${path}\0${harness}`;
-    const previous = admitted.current.get(key);
-    if (previous && sequence < previous.sequence) return false;
-    let value = facts.value ?? previous?.value;
-    const budget = facts.budget ?? previous?.budget;
-    const applied = facts.applied === undefined ? previous?.applied : facts.applied;
-    if (value && !facts.value) value = { ...value,
-      budget: value.verification?.status === "update-required" ? value.budget : budget,
-      applied,
-      verification: budget?.status === "unknown" && value.verification?.status === "verified"
-        ? { ...value.verification, status: "changed", reason: budget.reason } : value.verification };
-    admitted.current.set(key, { sequence, budget, applied, value });
-    return true;
-  }, []);
-  const activityFor = useCallback((path: string, harness: string, value: CtxCapacity): CtxCapacityView["activity"] => {
-    const pair = capacityPairs.current.get(`${path}\0${harness}`);
-    if (pair?.future && pair.kind === "query") return { phase: "querying", retry_at: null, reason: null };
-    const terminal = ["apply-required", "update-required"].includes(value.verification?.status ?? "");
-    const invalid = value.status === "unknown" || value.budget?.status === "unknown" ||
-      ["unknown", "changed", "write-failed"].includes(value.verification?.status ?? "");
-    if (!terminal && invalid && typeof bridge.ctx_capacity === "function" && selectedRef.current === path && visibleRef.current)
-      return { phase: "waiting", retry_at: pair?.nextDue || null,
-        reason: pair?.failureReason ?? value.verification?.reason ?? value.budget?.reason ?? value.reason };
-    return { phase: "idle", retry_at: null, reason: null };
-  }, [bridge]);
-  const publishCapacities = useCallback((path: string, valid: () => boolean = () => true) => {
-    setCapacities((previous) => {
-      if (!valid()) return previous;
-      const rows = { ...previous[path] };
-      for (const [key, facts] of admitted.current) {
-        const [factPath, harness] = key.split("\0");
-        if (factPath !== path || !facts.value) continue;
-        const updated = { ...facts.value, activity: activityFor(path, harness, facts.value) };
-        if (JSON.stringify(rows[harness]) !== JSON.stringify(updated)) rows[harness] = updated;
-      }
-      const oldRows = previous[path] ?? {};
-      if (Object.keys(rows).length === Object.keys(oldRows).length &&
-          Object.keys(rows).every(h => rows[h] === oldRows[h])) return previous;
-      return { ...previous, [path]: rows };
-    });
-  }, [activityFor]);
-  const statusCanAdmit = useCallback((path: string, epoch: number, selectionEpoch: number | null = null) =>
-    (selectionEpoch === null || (selectedRef.current === path && selectionGeneration.current === selectionEpoch)) &&
-    (statusGeneration.current[path] ?? 0) === epoch &&
-      ![...capacityPairs.current].some(([key, pair]) => key.startsWith(`${path}\0`) && pair.future), []);
-  const syncCapacityStatus = useCallback((path: string, status: StatusDocument, sequence: number, epoch: number, selectionEpoch: number | null = null) => {
-    if (statusCanAdmit(path, epoch, selectionEpoch)) {
-      const harnesses = new Set([...Object.keys(status.conf.ctx_budget ?? {}), ...Object.keys(status.conf.ctx_applied ?? {})]);
-      for (const harness of harnesses) admit(path, harness, sequence, {
-        budget: status.conf.ctx_budget?.[harness], applied: status.conf.ctx_applied?.[harness] });
-    }
-    publishCapacities(path);
-  }, [admit, publishCapacities, statusCanAdmit]);
-  const projectStatus = useCallback((path: string, status: StatusDocument, epoch: number, selectionEpoch: number | null = null): StatusDocument => {
-    // Re-read admitted facts in the deferred updater too. Unrelated status fields remain usable.
-    const allowed = statusCanAdmit(path, epoch, selectionEpoch);
-    const budgets = allowed ? { ...status.conf.ctx_budget } : {};
-    const applied = allowed ? { ...status.conf.ctx_applied } : {};
-    for (const [key, facts] of admitted.current) {
-      const [factPath, harness] = key.split("\0");
-      if (factPath !== path) continue;
-      if (facts.budget) budgets[harness] = facts.budget;
-      if (facts.applied === null) delete applied[harness];
-      else if (facts.applied) applied[harness] = facts.applied;
-    }
-    return { ...status, conf: { ...status.conf, ctx_budget: budgets, ctx_applied: applied } };
-  }, [statusCanAdmit]);
-
-  const refreshCapacity = useCallback(async (path: string, validateOnly = false, harnesses?: string[], automatic = false) => {
-    if (!bridge.ctx_capacity || selectedRef.current !== path || !visibleRef.current) return;
-    const wanted = harnesses ?? lightRef.current[path]?.status?.harnesses ?? [];
-    await Promise.all(wanted.filter((h) => ["claude", "codex", "opencode"].includes(h)).map((harness) => {
-      const key = `${path}\0${harness}`;
-      let pair = capacityPairs.current.get(key);
-      if (pair?.future && (validateOnly || pair.kind === "query")) return pair.future;
-      if (!pair) {
-        if (capacityPairs.current.size >= 96) {
-          const inactive = [...capacityPairs.current].find(([k, value]) => !value.future && !k.startsWith(`${path}\0`));
-          if (!inactive) return;
-          capacityPairs.current.delete(inactive[0]);
-          admitted.current.delete(inactive[0]);
-          const [oldPath, oldHarness] = inactive[0].split("\0");
-          setCapacities((previous) => {
-            const rows = { ...previous[oldPath] }; delete rows[oldHarness];
-            const next = { ...previous };
-            if (Object.keys(rows).length > 0) next[oldPath] = rows; else delete next[oldPath];
-            return next;
-          });
-        }
-        pair = { generation: 0, failures: 0, nextDue: 0, lastQuery: -Infinity };
-        capacityPairs.current.set(key, pair);
-      }
-      if (!validateOnly && automatic && Date.now() < pair.nextDue) return;
-      const active = pair;
-      const selectionEpoch = selectionGeneration.current;
-      const generation = ++active.generation;
-      const sequence = dispatchSequence(path);
-      active.kind = validateOnly ? "check" : "query";
-      if (!validateOnly) {
-        active.lastQuery = Date.now();
-        statusGeneration.current[path] = (statusGeneration.current[path] ?? 0) + 1;
-      }
-      const valid = () => active.generation === generation && selectedRef.current === path && selectionGeneration.current === selectionEpoch;
-      const run = async () => {
-        const response = await bridge.ctx_capacity(path, harness, validateOnly);
-        if (!valid()) return;
-        const value: CtxCapacity = isError(response) ? {
-          schema: 2, harness, status: "unknown", reason: response.error.message, C: null,
-          observed_at: null, valid_until: null,
-          verification: { status: response.error.kind === "old-generation" ? "update-required" : "unknown", reason: response.error.message, verified_at: null, revision: null, evidence_changed: false },
-        } : response;
-        if (!validateOnly) {
-          const success = value.verification?.status === "verified" || value.verification?.status === "apply-required";
-          active.failures = success ? 0 : active.failures + 1;
-          active.failureReason = success ? undefined : `${value.verification?.status === "write-failed" ? "최신 검증 근거 저장 실패" : "최근 조회 실패"} (${value.verification?.reason ?? value.reason ?? "원인 미확인"})`;
-          active.nextDue = Date.now() + (success ? 5000 : Math.min(60000, 5000 * 2 ** Math.min(4, active.failures - 1)));
-        }
-        if (!admit(path, harness, sequence, { value, budget: value.budget, applied: value.applied })) return;
-        publishCapacities(path, valid);
-        if (value.budget || value.applied) {
-          const install = (previous: Record<string, Entry>) => {
-            if (!valid()) return previous;
-            const current = previous[path];
-            if (!current?.status) return previous;
-            return { ...previous, [path]: { ...current,
-              status: projectStatus(path, current.status, statusGeneration.current[path] ?? 0) } };
-          };
-          setLight(install); setHeavy(install);
-        }
-        if (validateOnly && automatic && value.verification?.status !== "update-required" && (value.status === "unknown" ||
-            ["changed", "unknown", "write-failed"].includes(value.verification?.status ?? ""))) {
-          if (Date.now() >= active.nextDue && selectedRef.current === path && visibleRef.current) {
-            active.future = undefined;
-            await refreshCapacity(path, false, [harness], true);
-          }
-        }
-      };
-      const future = run().finally(async () => {
-        if (active.future !== future) return;
-        active.future = undefined;
-        publishCapacities(path);
-        if (!validateOnly) {
-          statusGeneration.current[path] = (statusGeneration.current[path] ?? 0) + 1;
-          if (selectedRef.current !== path || [...capacityPairs.current].some(([k,p]) => k.startsWith(`${path}\0`) && p.future)) return;
-          const epoch = statusGeneration.current[path];
-          const statusSequence = dispatchSequence(path);
-          const status = await bridge.status(path, false, false);
-          if (selectedRef.current !== path || isError(status)) return;
-          syncCapacityStatus(path, status, statusSequence, epoch, selectionEpoch);
-          setLight((previous) => ({ ...previous, [path]: merged(previous[path], projectStatus(path, status, epoch, selectionEpoch), Date.now(), false) }));
-        }
-      });
-      active.future = future;
-      if (!validateOnly) publishCapacities(path, valid);
-      return future;
-    }));
-  }, [bridge, syncCapacityStatus, dispatchSequence, admit, publishCapacities, projectStatus]);
-
-  // 최초 expiry에서 현재 주장을 철회한다. fresh 획득은 표시 중인 프로젝트의 light tick이 수행한다.
-  useEffect(() => {
-    if (!visible || selected === null) return;
-    const expiries = Object.values(capacities[selected] ?? {})
-      .filter((row) => row.status === "known" && row.valid_until !== null)
-      .map((row) => Date.parse(row.valid_until!));
-    if (expiries.length === 0) return;
-    const timer = setTimeout(() => {
-      for (const [key, facts] of admitted.current) {
-        const row = facts.value;
-        if (!row || row.status !== "known" || !row.valid_until || Date.parse(row.valid_until) > Date.now()) continue;
-        const budget = row.budget ? { ...row.budget, status: "unknown" as const, C: null, E: null, P: null, reason: "metadata 유효기간 만료" } : undefined;
-        admitted.current.set(key, { ...facts, budget, value: { ...row, budget,
-          status: "unknown", C: null, reason: "metadata 유효기간 만료",
-          verification: row.verification ? { ...row.verification, status: "changed", reason: "metadata 유효기간 만료" } : undefined } });
-      }
-      publishCapacities(selected);
-    }, Math.max(0, Math.min(...expiries) - Date.now()));
-    return () => clearTimeout(timer);
-  }, [capacities, selected, visible, publishCapacities]);
-
-  useEffect(() => {
-    for (const path of Object.keys(requestSequence.current)) publishCapacities(path);
-  }, [selected, visible, publishCapacities]);
-
   const loadProjects = useCallback(async (): Promise<Project[]> => {
     const response = await bridge.list_projects();
     if (isError(response)) {
@@ -289,42 +83,30 @@ export default function App({ bridge }: { bridge: Bridge }) {
     return response.projects;
   }, [bridge]);
 
-  const refreshLight = useCallback(async (paths: string[], explicit = true, automaticCapacity = true) => {
+  const refreshLight = useCallback(async (paths: string[], explicit = true) => {
     if (paths.length === 0) return;
     setBusy((current) => ({ ...current, light: true }));
-    const epochs = Object.fromEntries(paths.map((path) => [path, statusGeneration.current[path] ?? 0]));
-    const sequences = Object.fromEntries(paths.map(path => [path, dispatchSequence(path)]));
-    const selections = Object.fromEntries(paths.map(path => [path, selectedRef.current === path ? selectionGeneration.current : null]));
     const results = await Promise.all(
       paths.map(async (path) => [path, await bridge.status(path, false, false)] as const));
-    for (const [path,response] of results) {
-      if (!isError(response)) syncCapacityStatus(path, response, sequences[path], epochs[path], selections[path]);
-    }
-    if (!explicit) void Promise.all(results.map(([path, response]) =>
-      refreshCapacity(path, true, isError(response) ? [] : response.harnesses, automaticCapacity)));
     const at = Date.now();
     setLight((previous) => {
       const next = { ...previous };
       for (const [path, response] of results) {
-        next[path] = merged(previous[path], isError(response) ? response : projectStatus(path, response, epochs[path], selections[path]), at, explicit);
+        next[path] = merged(previous[path], response, at, explicit);
       }
       return next;
     });
     setBusy((current) => ({ ...current, light: false }));
-  }, [bridge, refreshCapacity, syncCapacityStatus, dispatchSequence, projectStatus]);
+  }, [bridge]);
 
   const refreshHeavy = useCallback(async (path: string, explicit = true) => {
     setBusy((current) => ({ ...current, heavy: true }));
-    const epoch = statusGeneration.current[path] ?? 0;
-    const selectionEpoch = selectedRef.current === path ? selectionGeneration.current : null;
-    const sequence = dispatchSequence(path);
     const response = await bridge.status(path, true, false);
-    if (!isError(response)) syncCapacityStatus(path, response, sequence, epoch, selectionEpoch);
     const at = Date.now();
     setHeavy((previous) => ({ ...previous,
-                              [path]: merged(previous[path], isError(response) ? response : projectStatus(path, response, epoch, selectionEpoch), at, explicit) }));
+                              [path]: merged(previous[path], response, at, explicit) }));
     setBusy((current) => ({ ...current, heavy: false }));
-  }, [bridge, dispatchSequence, syncCapacityStatus, projectStatus]);
+  }, [bridge]);
 
   /**
    * 모델 목록 배경 선읽기 — 기다리지 않는다.
@@ -431,23 +213,16 @@ export default function App({ bridge }: { bridge: Bridge }) {
     return () => clearInterval(timer);
   }, [visible, projects, refreshLight]);
 
-  const installedHarnesses = selected === null ? "" : (light[selected]?.status?.harnesses ?? []).join("\0");
-
-  useEffect(() => {
-    if (selected !== null && visible && installedHarnesses)
-      void refreshCapacity(selected, true, installedHarnesses.split("\0"), true);
-  }, [selected, visible, installedHarnesses, refreshCapacity]);
-
   // 선택한 프로젝트만 무거운 절 1회 + 설정 두 조회 선읽기(탭을 열기 전에 채워 둔다).
   useEffect(() => {
-    if (selected === null || !visible) return;
+    if (selected === null) return;
     void refreshHeavy(selected);
     void refreshSettings(selected);
-  }, [selected, visible, refreshCapacity, refreshHeavy, refreshSettings]);
+  }, [selected, refreshHeavy, refreshSettings]);
 
   // 다른 손님(창·브라우저)이 저장·적용을 끝내면 서버가 알린다 — 그 신호로 다시 읽는다.
   useEffect(() => subscribeChanges(() => {
-    void refreshLight(projects.map((project) => project.path), false, false);
+    void refreshLight(projects.map((project) => project.path), false);
     if (selected !== null) {
       void refreshHeavy(selected, false);
       void refreshSettings(selected, false);
@@ -500,15 +275,15 @@ export default function App({ bridge }: { bridge: Bridge }) {
 
   const refreshSelected = useCallback(async () => {
     if (selected === null) return;
-    await Promise.all([refreshCapacity(selected), refreshLight([selected]), refreshHeavy(selected), refreshTags(),
+    await Promise.all([refreshLight([selected]), refreshHeavy(selected), refreshTags(),
                        refreshSettings(selected), refreshRemote([selected])]);
-  }, [selected, refreshCapacity, refreshLight, refreshHeavy, refreshTags, refreshSettings, refreshRemote]);
+  }, [selected, refreshLight, refreshHeavy, refreshTags, refreshSettings, refreshRemote]);
 
   // 설정을 저장한 직후 — 값(설정 조회)과 판정(가벼운 절)을 다시 읽는다. 낙관적 갱신은 없다.
   const reloadSettings = useCallback(() => {
     if (selected === null) return;
-    void Promise.all([refreshCapacity(selected), refreshSettings(selected), refreshLight([selected])]);
-  }, [selected, refreshCapacity, refreshSettings, refreshLight]);
+    void Promise.all([refreshSettings(selected), refreshLight([selected])]);
+  }, [selected, refreshSettings, refreshLight]);
 
   const selectedLight = selected === null ? undefined : light[selected];
   const selectedHeavy = selected === null ? undefined : heavy[selected];
@@ -540,8 +315,7 @@ export default function App({ bridge }: { bridge: Bridge }) {
           tags={{ at: tagsAt, error: tagsError, busy: busy.tags }}
           onRefresh={refreshSelected}
         />
-        <Tabs capacities={selected === null ? undefined : capacities[selected]}
-              onSettingsEntry={refreshCapacity} bridge={bridge} path={selected} light={selectedLight} heavy={selectedHeavy}
+        <Tabs bridge={bridge} path={selected} light={selectedLight} heavy={selectedHeavy}
               remote={selected === null ? undefined : remote[selected]}
               settings={selected === null ? undefined : settings[selected]}
               latestTag={selected === null ? null : latestTagOf(tags, selected)}

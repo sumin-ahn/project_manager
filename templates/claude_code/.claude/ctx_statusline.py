@@ -47,16 +47,16 @@ def render_line(used_pct: int, state: str) -> str:
     return f"{color}{body}{_RESET}"
 
 
-def build_statusline(stdin: dict, conf: dict, *, root=None) -> str:
-    # 분모 = 해소된 claude 예산 — hook 과 같은 예산으로 표시=밴드 일관.
-    identity = ctx_guard._native_session_identity(stdin, root, conf) if hasattr(ctx_guard, "_native_session_identity") else ctx_guard.session_identity(stdin)
-    budget = ctx_guard.resolve_budget(conf, "claude", root=root, identity=identity)
-    if budget is None:
-        return "ctx unknown (모델 한도 확인 불가)"
-    used = ctx_guard.context_used_pct_from_statusline(stdin, budget)
-    thresholds = ctx_guard.ctx_thresholds(conf)
-    state = ctx_guard.classify(used, thresholds)
-    return render_line(used, state)
+def build_statusline(stdin: dict, conf: dict, *, root: Path) -> str:
+    # 분모 = 적용 한도 E(압축 한도 기록) — hook 과 같은 기록으로 표시=밴드 일관.
+    model = stdin.get("model")
+    try:
+        budget = ctx_guard.read_budget(root, conf, model.get("id") if isinstance(model, dict) else None)
+    except ValueError as exc:  # 기록 부재·손상·입력 불일치
+        return f"{_RED}ctx 한도 기록 오류 — {exc}{_RESET}"
+    used = ctx_guard.context_used_pct_from_statusline(stdin, budget["E"])
+    line = render_line(used, ctx_guard.classify(used, budget))
+    return f"{line} {_YELLOW}{budget['warning']}{_RESET}" if budget["warning"] else line
 
 
 def main(argv: list[str] | None = None) -> int:

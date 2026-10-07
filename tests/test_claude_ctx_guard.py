@@ -5,7 +5,7 @@ importlib 로 직접 로드해 검증한다. stdlib only — 라이브 claude·s
 가짜 transcript JSONL·가짜 statusline stdin·격리 tmp 만 본다.
 
 검증 축:
-  1. 임계 config — local.conf nudge/stop 읽기 + sanity 폴백 (codex 인계).
+  1. 분모·임계 — 압축 한도 기록(E·비율)과 세션 모델 확인(T-0943).
   2. statusLine — context_window → used % (current_usage 단일 소스·ADR-0041) + 색/문구 넛지.
   3. 훅 — 세 밴드 모두 PreToolUse/UserPromptSubmit additionalContext 비차단 주입 +
      채널 공유 사이클별 marker 멱등.
@@ -23,8 +23,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-from test_harness_ctx_limits import _legacy_native_fixture
 
 from _textio import normalize_newline_bytes, utf8_child_env, write_lf
 from _win_skip import posix_mode_supported
@@ -128,38 +126,11 @@ def _compact_boundary(*, post_tokens=11_387) -> dict:
     }
 
 
-# ── 1. 임계 config (local.conf 읽기 + sanity 폴백) ──────────────────────────
-
-def test_thresholds_defaults(guard):
-    assert guard.ctx_thresholds({}) == {"checkpoint_at_pct": 70, "precompact_at_pct": 80}
-    assert guard.CTX_CHECKPOINT_AT_PCT_DEFAULT == 70
-    assert guard.CTX_PRECOMPACT_AT_PCT_DEFAULT == 80
-
-
-def test_thresholds_reads_conf(guard):
-    th = guard.ctx_thresholds({"ctx.checkpoint_at_pct": "70", "ctx.precompact_at_pct": "95"})
-    assert th == {"checkpoint_at_pct": 70, "precompact_at_pct": 95}
-
-
-def test_thresholds_sanity_fallback(guard):
-    defaults = {"checkpoint_at_pct": 70, "precompact_at_pct": 80}
-    # 역전(checkpoint_at > precompact_at) → 기본 폴백.
-    assert guard.ctx_thresholds(
-        {"ctx.checkpoint_at_pct": "95", "ctx.precompact_at_pct": "70"}) == defaults
-    # 같음 — 순서는 엄격하다(0 < checkpoint_at < precompact_at < 100).
-    assert guard.ctx_thresholds(
-        {"ctx.checkpoint_at_pct": "80", "ctx.precompact_at_pct": "80"}) == defaults
-    # 음수 → 기본 폴백.
-    assert guard.ctx_thresholds({"ctx.checkpoint_at_pct": "-3"}) == defaults
-    # 비정수 → 기본 폴백.
-    assert guard.ctx_thresholds({"ctx.precompact_at_pct": "abc"}) == defaults
-    # 100 이상 → 기본 폴백.
-    assert guard.ctx_thresholds({"ctx.precompact_at_pct": "100"}) == defaults
-
+# ── 1. local.conf 읽기 ───────────────────────────────────────────────────────
 
 def test_load_local_config_parses(guard, tmp_path):
     pm = tmp_path / ".project_manager"
-    pm.mkdir()
+    pm.mkdir(exist_ok=True)
     (pm / "local.conf").write_text(
         "# comment\nctx.checkpoint_at_pct=75\n\nctx.precompact_at_pct = 92\nprefix=PAY\n",
         encoding="utf-8"
@@ -171,46 +142,7 @@ def test_load_local_config_parses(guard, tmp_path):
 
 
 def test_load_local_config_missing(guard, tmp_path):
-    assert guard.load_local_config(tmp_path) == {}
-
-
-# ── 1b. resolve_budget: 하네스별 사용 한도 (T-0923) ────────────────────────
-# 분모 = harness.<harness>.ctx_window_tokens > 200000 (>0 sanity). 공통 층은 없다.
-
-def test_resolve_budget_defaults_to_200k(guard):
-    assert guard.resolve_budget({}, "claude") is None
-    assert guard.resolve_budget({}, "opencode") is None
-    assert guard.resolve_budget({}) is None
-
-
-def test_resolve_budget_has_no_common_layer(guard):
-    # 옛 공통 키는 더 이상 분모가 아니다 — 하네스 키가 없으면 기본값이다.
-    assert guard.resolve_budget({"ctx.window_tokens": "1000000"}, "claude") is None
-    assert guard.resolve_budget({"ctx.window_tokens": "1000000"}, "opencode") is None
-
-
-def test_resolve_budget_harness_key_is_the_budget(guard):
-    conf = {
-        "harness.claude.ctx_window_tokens": "1000000",
-        "harness.opencode.ctx_window_tokens": "200000",
-    }
-    assert guard.resolve_budget(conf, "claude") is None
-    assert guard.resolve_budget(conf, "opencode") is None
-
-
-def test_resolve_budget_independent_harnesses(guard):
-    # claude·opencode 사용 한도 키 완전 독립 (동시 운용·각자 해소).
-    conf = {"harness.claude.ctx_window_tokens": "500000", "harness.opencode.ctx_window_tokens": "200000"}
-    assert guard.resolve_budget(conf, "claude") is None
-    assert guard.resolve_budget(conf, "opencode") is None
-    # 다른 하네스 키만 있고 대상 하네스 키 없으면 → 200K.
-    assert guard.resolve_budget({"harness.opencode.ctx_window_tokens": "999"}, "claude") is None
-
-
-@pytest.mark.parametrize("bad", ["0", "-5", "abc", "", "  "])
-def test_resolve_budget_sanity_falls_through(guard, bad):
-    # 사용 한도가 ≤0/비정수 → 200K (>0 sanity).
-    assert guard.resolve_budget({"harness.claude.ctx_window_tokens": bad}, "claude") is None
+    assert guard.load_local_config(tmp_path / "elsewhere") == {}
 
 
 # ── 2. statusLine: context_window → used % (분모=예산·ADR-0041) + 넛지 ────────
@@ -294,7 +226,9 @@ def test_statusline_render_colors_respects_budget_override(guard, statusline,tmp
     # 기본 200K: 92% used → stop(빨강).
     stop = statusline.build_statusline(sl, {},root=tmp_path)
     assert "\033[31m" in stop and "checkpoint 최종 알림" in stop
-    # claude 오버라이드 1M: 18% used → ok(회색).
+    # claude 오버라이드 1M(다시 적용한 기록): 18% used → ok(회색).
+    from test_harness_ctx_limits import install_ctx_record
+    install_ctx_record(tmp_path, {"harness.claude.ctx_window_tokens": "1000000"})
     ok = statusline.build_statusline(sl, {"harness.claude.ctx_window_tokens": "1000000"},root=tmp_path)
     assert "\033[90m" in ok and "ctx 18%" in ok and "checkpoint" not in ok
 
@@ -333,7 +267,7 @@ def test_transcript_tokens_last_request(guard, tmp_path):
         ("assistant", {"input_tokens": 100_000, "cache_creation_input_tokens": 50_000,
                        "cache_read_input_tokens": 30_000}),
     ])
-    assert guard.context_tokens_from_transcript(path) == 180_000
+    assert guard.context_tokens_from_transcript(path) == (180_000, None)
 
 
 def test_transcript_tokens_stop_at_compact_boundary_without_new_usage(guard, tmp_path):
@@ -342,7 +276,7 @@ def test_transcript_tokens_stop_at_compact_boundary_without_new_usage(guard, tmp
 
     # compactMetadata.postTokens 는 compact 결과 크기지만 아직 새 assistant 요청의 usage 실측이
     # 아니다. 경계 뒤 usage 가 없으면 측정불가 0으로 두어 이전 사이클 usage를 재사용하지 않는다.
-    assert guard.context_tokens_from_transcript(path) == 0
+    assert guard.context_tokens_from_transcript(path) == (0, None)
 
 
 def test_transcript_tokens_only_use_usage_after_compact_boundary(guard, tmp_path):
@@ -357,7 +291,7 @@ def test_transcript_tokens_only_use_usage_after_compact_boundary(guard, tmp_path
         }},
     })
 
-    assert guard.context_tokens_from_transcript(path) == 150_002
+    assert guard.context_tokens_from_transcript(path) == (150_002, None)
 
 
 def test_transcript_used_pct(guard, tmp_path):
@@ -368,7 +302,7 @@ def test_transcript_used_pct(guard, tmp_path):
 
 
 def test_transcript_missing_file_zero(guard, tmp_path):
-    assert guard.context_tokens_from_transcript(tmp_path / "nope.jsonl") == 0
+    assert guard.context_tokens_from_transcript(tmp_path / "nope.jsonl") == (0, None)
     assert guard.context_used_pct_from_transcript(tmp_path / "nope.jsonl", 200_000) == 0
 
 
@@ -380,7 +314,7 @@ def test_transcript_malformed_lines_skipped(guard, tmp_path):
         + "{broken\n",
         encoding="utf-8",
     )
-    assert guard.context_tokens_from_transcript(path) == 20_000
+    assert guard.context_tokens_from_transcript(path) == (20_000, None)
 
 
 def test_hook_evaluate_ok_passes(guard, stop_hook, tmp_path):
@@ -400,11 +334,9 @@ def test_precompact_auto_band_mismatch_four_quadrants(
     stop_hook, tmp_path, monkeypatch, band_present, observation_present,
 ):
     """auto PreCompact의 marker 有/無 × 관측 有/無가 엔진 인자로 그대로 전달된다."""
+    from test_harness_ctx_limits import install_ctx_record
     manager = tmp_path / ".project_manager"
-    manager.mkdir()
-    (manager / "local.conf").write_text(
-        "harness.claude.ctx_window_tokens=600000\n", encoding="utf-8",
-    )
+    install_ctx_record(tmp_path, {"harness.claude.ctx_window_tokens": "600000"})
     session_id = "auto-quadrant"
     if band_present:
         marker = manager / ".local" / "ctx-stop" / f"{session_id}.final"
@@ -466,7 +398,7 @@ def test_hook_new_checkpoint_options_retry_old_engine_once(
 ):
     """구 pm_log가 진단 옵션을 거부해도 구 argv로 compaction checkpoint를 남긴다."""
     engine = tmp_path / ".project_manager" / "tools" / "pm_log.py"
-    engine.parent.mkdir(parents=True)
+    engine.parent.mkdir(parents=True, exist_ok=True)
     engine.write_text("# old engine probe\n", encoding="utf-8")
     calls = []
 
@@ -649,10 +581,10 @@ def test_hook_session_id_sanitized(stop_hook):
 
 # ── 4. main() stdin 경로 (가짜 stdin → stdout JSON) ────────────────────────
 
-def test_statusline_main_emits_line(statusline, monkeypatch, capsys):
+def test_statusline_main_emits_line(statusline, monkeypatch, capsys, tmp_path):
     import io
-    # load_local_config 를 빈 conf 로 고정 → resolve_budget 200K 결정론(실 repo local.conf 무관).
-    monkeypatch.setattr(statusline.ctx_guard, "load_local_config", lambda root: {})
+    # 저장소 루트를 기록이 있는 tmp 로 고정 → 분모 200K 결정론(실 repo local.conf·기록 무관).
+    monkeypatch.setattr(statusline.ctx_guard, "repo_root", lambda start: tmp_path)
     stdin = {"context_window": {"current_usage": {"input_tokens": 190_000}}}  # 95% of 200K.
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(stdin)))
     rc = statusline.main()
@@ -661,8 +593,9 @@ def test_statusline_main_emits_line(statusline, monkeypatch, capsys):
     assert "ctx 95%" in out and "checkpoint 최종 알림" in out
 
 
-def test_statusline_main_empty_stdin(statusline, monkeypatch, capsys):
+def test_statusline_main_empty_stdin(statusline, monkeypatch, capsys, tmp_path):
     import io
+    monkeypatch.setattr(statusline.ctx_guard, "repo_root", lambda start: tmp_path)
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
     rc = statusline.main()
     out = capsys.readouterr().out
@@ -798,6 +731,8 @@ def test_hook_ok_rearms_all_cycle_markers(stop_hook, tmp_path):
 
 def test_hook_zero_pct_with_raw_tokens_rearms_cycle_markers(stop_hook, tmp_path):
     """1M 예산의 raw 4K는 정수 0%여도 유효 측정이므로 ok 사이클을 재무장한다."""
+    from test_harness_ctx_limits import install_ctx_record
+    install_ctx_record(tmp_path, {"harness.claude.ctx_window_tokens": "1000000"})
     sid = "sess-measured-zero-pct"
     marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     marker_dir.mkdir(parents=True)
@@ -986,10 +921,9 @@ def _postcompact_durable_mismatch_subprocess_probe(
         }),
     )
 
-    from test_harness_ctx_limits import _t0932_install_budget_fixture
-    known_identity=_t0932_install_budget_fixture(root,{'harness.claude.ctx_window_tokens':'600000'})
+    from test_harness_ctx_limits import install_ctx_record
+    install_ctx_record(root, {"harness.claude.ctx_window_tokens": "600000"})
     def run_hook(payload: dict, *args: str) -> dict | None:
-        payload={**known_identity,**payload}
         result = subprocess.run(
             [sys.executable, str(claude / "ctx_stop_hook.py"), *args],
             cwd=root,
@@ -1381,10 +1315,9 @@ elif args and args[0] == "snapshot":
         "isSidechain": False,
     }) + "\n", encoding="utf-8")
 
-    from test_harness_ctx_limits import _t0932_install_budget_fixture
-    known_identity=_t0932_install_budget_fixture(worktree,{'harness.claude.ctx_window_tokens':'600000'})
+    from test_harness_ctx_limits import install_ctx_record
+    install_ctx_record(worktree, {"harness.claude.ctx_window_tokens": "600000"})
     def run_hook(payload: dict, *args: str) -> subprocess.CompletedProcess:
-        payload={**known_identity,**payload}
         return subprocess.run(
             [sys.executable, str(claude / "ctx_stop_hook.py"), *args],
             cwd=worktree,
@@ -1801,78 +1734,75 @@ def test_settings_auto_compact_enabled_true():
     )
 
 @pytest.fixture(autouse=True)
-def _known_legacy_ctx_fixture(request,tmp_path,monkeypatch,guard,statusline,stop_hook,_legacy_native_fixture):
-    if 't0932' in request.node.name or 't0937' in request.node.name:return
-    from test_harness_ctx_limits import _t0932_known_leaf
-    leaf,identity=_t0932_known_leaf(tmp_path/'known-capacity')
-    # marker 경쟁 대역이 os.open을 변형하기 전에 fixture 예산을 준비한다.
-    leaf.read_ctx_budget(tmp_path,{},'claude',identity)
-    for module in (guard,statusline.ctx_guard,stop_hook.ctx_guard):
-        monkeypatch.setattr(module,'_ctx_leaf',lambda root:leaf)
-        monkeypatch.setattr(module,'session_identity',lambda payload:identity)
+def _ctx_record(tmp_path):
+    """밴드 판정·표시의 분모 — tmp_path 에 기본 입력(사용 한도 200,000)으로 적용한 압축 한도 기록."""
+    from test_harness_ctx_limits import install_ctx_record
+    install_ctx_record(tmp_path)
 
 
-def test_t0932_budget_binding_statusline_hook_unknown(guard,statusline,stop_hook,tmp_path,monkeypatch):
-    from test_harness_ctx_limits import _t0932_install_budget_fixture
-    conf={'harness.claude.ctx_window_tokens':'600000','ctx.checkpoint_at_pct':'80','ctx.precompact_at_pct':'90','ctx.compact_at_pct':'94'}
-    (tmp_path/'.project_manager').mkdir()
-    (tmp_path/'.project_manager/local.conf').write_text(''.join(f'{k}={v}\n' for k,v in conf.items()), encoding='utf-8')
-    identity=_t0932_install_budget_fixture(tmp_path,conf,capacity=200000)
-    assert guard.resolve_budget(conf,root=tmp_path,identity=identity)==200000
-    payload={**identity,'context_window':{'current_usage':{'input_tokens':180000}}}
-    assert 'ctx 90%' in statusline.build_statusline(payload,conf,root=tmp_path)
-    assert 'unknown' not in statusline.build_statusline({**identity,'context_window':{'current_usage':{'input_tokens':0}}},conf,root=tmp_path)
-    transcript=_write_transcript(tmp_path,[('assistant',{'input_tokens':180000})])
-    stdin={**identity,'hook_event_name':'UserPromptSubmit','session_id':'t0932-known','transcript_path':str(transcript)}
-    monkeypatch.setattr(stop_hook,'_build_ctx_guidance',lambda *a,**kw:f"E=200000 used={kw['used_pct']}%")
-    rc,out=stop_hook.evaluate(stdin,tmp_path,conf)
-    assert rc==0 and 'used=90%' in json.dumps(out)
-    unknown={**identity,'model':'other'}
-    assert guard.resolve_budget(conf,root=tmp_path,identity=unknown) is None
-    assert 'ctx unknown' in statusline.build_statusline({**payload,**unknown},conf,root=tmp_path)
-    marker=stop_hook._final_marker_path(tmp_path,'t0932-known');assert marker.exists()
-    assert stop_hook.evaluate({**stdin,**unknown},tmp_path,conf)==(0,None)
-    assert marker.exists()
+# ── T-0943 세션 모델 확인과 기록 오류 (AT-006) ─────────────────────────────────
+# 실제 훅 입력에는 모델이 없다(Claude Code 2.1.292 · PreToolUse·UserPromptSubmit·Stop 공통 필드).
+_T0943_CONF = {"harness.claude.ctx_window_tokens": "600000", "ctx.checkpoint_at_pct": "80",
+               "ctx.precompact_at_pct": "90", "ctx.compact_at_pct": "94"}
 
 
-@pytest.mark.parametrize('changed',[None,'model','origin','version','partial'])
-def test_t0932_native_standard_statusline_receipt_binding(guard,statusline,tmp_path,monkeypatch,changed):
-    from test_harness_ctx_limits import _load as engine,_project,_global_dir,_t0932_control_claude_fixture,_snapshot_fixture_bytes
-    guard=_load('ctx_guard')
-    importer=engine('pm_import');leaf=engine('local_conf')
-    root=_project(tmp_path,harnesses=('claude',),conf='harness.claude.ctx_window_tokens=600000\n')
-    receipt=_t0932_control_claude_fixture(tmp_path,monkeypatch)
-    monkeypatch.setattr(importer,'_ctx_native_protocol',lambda *a,**kw:receipt)
-    importer.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
-    monkeypatch.setattr(guard,'_ctx_leaf',lambda root:leaf);monkeypatch.setattr(statusline,'ctx_guard',guard)
-    payload={'version':'2.1.287','model':{'id':'claude-opus-5-5'},'context_window':{'current_usage':{'input_tokens':300000}}}
-    if changed=='model':payload['model']['id']='glm-5.3:cloud'
-    if changed=='origin':monkeypatch.setenv('ANTHROPIC_BASE_URL','http://localhost:11434')
-    if changed=='version':payload['version']='2.1.288'
-    if changed=='partial':payload['provider']='firstParty'
-    before=_snapshot_fixture_bytes(root)
-    rendered=statusline.build_statusline(payload,leaf.load(root/'.project_manager/local.conf').values,root=root)
-    assert ('ctx 50%' in rendered) if changed is None else ('unknown' in rendered)
-    assert _snapshot_fixture_bytes(root)==before
+def _t0943_model_transcript(root: Path, input_tokens: int, model: str) -> Path:
+    path = root / "transcript-model.jsonl"
+    path.write_text(json.dumps({"type": "assistant", "isSidechain": False, "message": {
+        "role": "assistant", "model": model, "usage": {"input_tokens": input_tokens}}}) + "\n",
+        encoding="utf-8")
+    return path
 
 
-def test_t0937_claude_scoped_budget_statusline_hook(guard,statusline,stop_hook,tmp_path,monkeypatch):
-    from test_harness_ctx_limits import _t0937_actual_fixture,_snapshot_fixture_bytes
-    f=_t0937_actual_fixture(tmp_path,monkeypatch);guard=_load('ctx_guard')
-    monkeypatch.setattr(guard,'_ctx_leaf',lambda root:f.leaf);monkeypatch.setattr(statusline,'ctx_guard',guard)
-    monkeypatch.setattr(stop_hook,'ctx_guard',guard)
-    identity=f.record['budgets']['claude']['identity']
-    (f.codex/'models_cache.json').write_text('{}',encoding='utf-8');f.registry.write_text('{}',encoding='utf-8')
-    before=_snapshot_fixture_bytes(f.root);calls=list(f.calls)
-    assert guard.resolve_budget(f.values,root=f.root,identity=identity)==600000
-    payload={**identity,'context_window':{'current_usage':{'input_tokens':540000}}}
-    assert 'ctx 90%' in statusline.build_statusline(payload,f.values,root=f.root)
-    assert before==_snapshot_fixture_bytes(f.root) and calls==f.calls
-    transcript=_write_transcript(f.root,[('assistant',{'input_tokens':540000})])
-    stdin={**identity,'hook_event_name':'UserPromptSubmit','session_id':'t0937','transcript_path':str(transcript)}
-    monkeypatch.setattr(stop_hook,'_build_ctx_guidance',lambda *a,**kw:f"E600000 used={kw['used_pct']}")
-    rc,out=stop_hook.evaluate(stdin,f.root,f.values);assert rc==0 and 'used=90' in json.dumps(out)
-    Path(f.record['bindings']['claude']['roles']['settings'][0]).write_text('{"env":{"ANTHROPIC_MODEL":"other"}}',encoding='utf-8')
-    assert guard.resolve_budget(f.values,root=f.root,identity=identity) is None
-    assert 'unknown' in statusline.build_statusline(payload,f.values,root=f.root)
-    assert stop_hook.evaluate(stdin,f.root,f.values)==(0,None) and calls==f.calls
+def _t0943_hook_input(root: Path, event: str, transcript: Path) -> dict:
+    payload = {"session_id": "t0943-session", "transcript_path": str(transcript), "cwd": str(root),
+               "permission_mode": "default", "hook_event_name": event}
+    if event == "PreToolUse":
+        payload.update(tool_name="Bash", tool_input={"command": "ls"}, tool_use_id="toolu_t0943")
+    else:
+        payload.update(prompt="계속")
+    return payload
+
+
+def test_t0943_statusline_model_check_and_record_error(statusline, tmp_path):
+    """상태줄 — 기록 모델과 같은 `model.id` 면 E 대비 사용 %, 다르면 같은 % 와 경고, 기록이 없으면 오류 문구."""
+    from test_harness_ctx_limits import install_ctx_record
+    model = install_ctx_record(tmp_path, _T0943_CONF, capacity=200000)
+    payload = {"model": {"id": model, "display_name": "Fixture"},
+               "transcript_path": str(tmp_path / "t.jsonl"),
+               "context_window": {"current_usage": {"input_tokens": 180000}}}
+    line = statusline.build_statusline(payload, _T0943_CONF, root=tmp_path)
+    assert "ctx 90%" in line and "모델이 바뀌었습니다" not in line
+    other = statusline.build_statusline({**payload, "model": {"id": "claude-other"}}, _T0943_CONF, root=tmp_path)
+    assert "ctx 90%" in other and "모델이 바뀌었습니다" in other and "claude-other" in other
+    (tmp_path / ".project_manager/.local/ctx-budget.json").unlink()
+    missing = statusline.build_statusline(payload, _T0943_CONF, root=tmp_path)
+    assert "ctx 한도 기록 오류" in missing and "ctx-apply" in missing
+
+
+def test_t0943_hook_real_input_fields_nudge_and_model_warning(stop_hook, tmp_path):
+    """훅 — 모델 없는 실제 입력에 transcript 사용량 항목의 모델로 확인한다. 같으면 80% 넛지, 다르면
+    UserPromptSubmit `systemMessage` 경고(넛지는 그대로)."""
+    from test_harness_ctx_limits import install_ctx_record
+    model = install_ctx_record(tmp_path, _T0943_CONF, capacity=200000)
+    transcript = _t0943_model_transcript(tmp_path, 162000, model)               # 81%
+    rc, output = stop_hook.evaluate(_t0943_hook_input(tmp_path, "PreToolUse", transcript), tmp_path, _T0943_CONF)
+    assert rc == 0 and "additionalContext" in output["hookSpecificOutput"] and "systemMessage" not in output
+
+    transcript = _t0943_model_transcript(tmp_path, 182000, "claude-other")      # 91%
+    rc, output = stop_hook.evaluate(_t0943_hook_input(tmp_path, "UserPromptSubmit", transcript), tmp_path,
+                                    _T0943_CONF)
+    assert rc == 0 and "additionalContext" in output["hookSpecificOutput"]
+    assert "모델이 바뀌었습니다" in output["systemMessage"] and "claude-other" in output["systemMessage"]
+
+
+def test_t0943_hook_missing_record_is_reported(stop_hook, tmp_path, capsys):
+    """기록이 없으면 UserPromptSubmit 은 `systemMessage`, PreToolUse 는 stderr 로 알린다(조용히 넘기지 않는다)."""
+    (tmp_path / ".project_manager/.local/ctx-budget.json").unlink()
+    transcript = _t0943_model_transcript(tmp_path, 190000, "fixture-model")
+    rc, output = stop_hook.evaluate(_t0943_hook_input(tmp_path, "UserPromptSubmit", transcript), tmp_path, {})
+    assert rc == 0 and output == {"systemMessage": output["systemMessage"]}
+    assert output["systemMessage"].startswith("[ctx-budget]") and "ctx-apply" in output["systemMessage"]
+    capsys.readouterr()
+    assert stop_hook.evaluate(_t0943_hook_input(tmp_path, "PreToolUse", transcript), tmp_path, {}) == (0, None)
+    assert "[ctx-budget]" in capsys.readouterr().err

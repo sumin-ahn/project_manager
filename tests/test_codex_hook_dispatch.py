@@ -717,7 +717,8 @@ def test_dispatch_output_is_ascii_safe(dispatcher, tmp_path):
 
 def _adopter_tree(tmp_path: Path, *, conf_lines: tuple[str, ...],
                   dispatcher_body: str | None = None) -> Path:
-    """실 엔진 사본 + 디스패처 + local.conf 로 codex 채택자 형상을 만든다."""
+    """실 엔진 사본 + 디스패처 + local.conf + 압축 한도 기록으로 codex 채택자 형상을 만든다(기록이 없으면
+    UserPromptSubmit 이 다시 적용하라고 알린다)."""
     root = tmp_path / "adopter"
     shutil.copytree(TOOLS, root / ".project_manager" / "tools")
     (root / ".codex").mkdir(parents=True)
@@ -728,6 +729,8 @@ def _adopter_tree(tmp_path: Path, *, conf_lines: tuple[str, ...],
                                            newline="\n")
     (root / ".project_manager" / "local.conf").write_text(
         "\n".join(conf_lines) + "\n", encoding="utf-8", newline="\n")
+    from test_harness_ctx_limits import install_ctx_record
+    install_ctx_record(root, harness="codex")
     return root
 
 

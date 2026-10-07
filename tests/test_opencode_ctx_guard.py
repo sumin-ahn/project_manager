@@ -31,8 +31,6 @@ from pathlib import Path
 
 import pytest
 
-from test_harness_ctx_limits import _legacy_native_fixture
-
 REPO = Path(__file__).resolve().parents[1]
 OPENCODE = REPO / "templates" / "opencode" / ".opencode"
 
@@ -452,38 +450,24 @@ def test_plugin_subscribes_compaction_events_with_local_observation_count():
     assert "notifyCompacted" in src, "압축 후 사람용 toast 없음"
 
 
-def test_plugin_reads_thresholds_from_local_conf():
-    """임계값을 엔진 local.conf 의 쓴 % 두 키에서 읽는다 (T-0013 계약 · T-0923 키 이름).
+# ── 2c. ctx 예산 (ADR-0041 · T-0943): 압축 한도 기록 · modelLimit 폐기 ─────────
 
-    판독 자리(`readPct("<키>"`)로 본다 — 차단 구키 생성 블록에도 옛 이름이 있어 문자열 존재만
-    보면 옛 키를 읽어도 green 이 된다."""
+def test_plugin_reads_budget_and_ratios_from_the_engine_record():
+    """분모 E 와 두 비율은 엔진 압축 한도 기록(`local_conf.read_ctx_budget`)에서 온다 — 플러그인이
+    local.conf 비율을 따로 해석하거나 기본값으로 바꾸지 않는다(T-0943 · 설계 Q1)."""
     src = _plugin_src()
-    assert 'readPct("ctx.checkpoint_at_pct"' in src, "ctx.checkpoint_at_pct 임계 판독 없음"
-    assert 'readPct("ctx.precompact_at_pct"' in src, "ctx.precompact_at_pct 임계 판독 없음"
-    assert 'readPct("ctx.checkpoint_pct"' not in src and 'readPct("ctx.precompact_pct"' not in src
-    assert "local.conf" in src, "local.conf 직접 파싱 경로 참조 없음"
+    assert "function readBudget" in src
+    assert 'leaf.read_ctx_budget(root,conf,"opencode",model)' in src
+    assert "readBudget(loadLocalConf(root), root, `${info.providerID}/${info.modelID}`)" in src
+    assert "const t = result.budget;" in src and "computeCtxState(used, t.E, t)" in src
+    for removed in ("readPct(", "resolveThresholds", "resolveBudget", "validatedBudget",
+                    "CTX_WINDOW_TOKENS_DEFAULT", "CHECKPOINT_AT_PCT_DEFAULT", "PRECOMPACT_AT_PCT_DEFAULT"):
+        assert removed not in src, removed
 
 
-# ── 2c. ctx 예산 전환 (ADR-0041 · T-0235): resolveBudget · modelLimit 폐기 ─────
-
-def test_plugin_uses_resolve_budget_not_model_limit():
-    """정지/넛지 분모가 모델 물리한도가 아니라 해소된 예산이다 (ADR-0041).
-
-    resolveBudget(conf,"opencode") 신설·event limit 주입원 교체 + modelLimit()/cachedLimit/
-    providers 조회가 완전히 사라졌음(물리한도 개념 폐기)을 정적으로 단언한다.
-    """
+def test_plugin_uses_engine_budget_not_model_limit():
+    """정지/넛지 분모가 모델 물리한도 조회가 아니라 기록의 적용 한도다 (ADR-0041)."""
     src = _plugin_src()
-    # 예산 해소 순수함수 + 200K 기본 상수 신설.
-    assert "function resolveBudget" in src, "resolveBudget 순수함수 신설 없음"
-    assert re.search(r"CTX_WINDOW_TOKENS_DEFAULT\s*=\s*200000", src), (
-        "CTX_WINDOW_TOKENS_DEFAULT=200000 상수 없음 (board.py 미러)"
-    )
-    # 하네스별 오버라이드 키 참조 (precedence 상위층).
-    assert "leaf.read_ctx_budget(root,conf,harness,identity)" in src
-    # event 핸들러가 resolveBudget 로 limit 을 주입한다("opencode" 고정·conf 캐시 재사용).
-    assert 'validatedBudget(loadConf(), "opencode", root, identity)' in src and 'const limit = budget.E' in src, (
-        "event 분모가 공유 leaf에서 검증한 E와 연결되지 않음"
-    )
     # 물리한도 조회(modelLimit·cachedLimit·config.providers)가 완전히 폐기됐다.
     assert "modelLimit" not in src, "modelLimit() 폐기 안 됨 (ADR-0041 물리한도 개념 제거 위반)"
     assert "cachedLimit" not in src, "cachedLimit 캐시 폐기 안 됨 (ADR-0041 위반)"
@@ -2291,10 +2275,12 @@ def _run_node_check(
     # project_root 를 주면 그 픽스처의 설치 사본(`<root>/.opencode/lib/`)에서 돌린다 —
     # 팩토리가 쓰는 엔진 루트가 픽스처 루트여야 산출물이 소스 트리에 남지 않는다.
     if project_root is not None:
-        from test_harness_ctx_limits import _t0932_install_budget_fixture
-        _t0932_install_budget_fixture(project_root,harness='opencode',capacity=2000000)
+        # 분모 = 기본 입력(사용 한도 200,000)으로 적용한 압축 한도 기록. 메시지에는 기록 모델의
+        # providerID·modelID(opencode AssistantMessage 실제 필드)를 싣는다.
+        from test_harness_ctx_limits import install_ctx_record
+        install_ctx_record(project_root, harness="opencode", capacity=2000000)
         script=re.sub(r'role\s*:\s*(["\'])assistant\1',
-            'modelID:"glm-5.2:cloud", providerID:"ollama", profile:"", role:"assistant"',script)
+            'modelID:"glm-5.2:cloud", providerID:"ollama", role:"assistant"',script)
     proc = subprocess.run(
         [_NODE, "-e", script, *(node_args or [])],
         cwd=str(CORE_DIR if project_root is None else project_root / ".opencode" / "lib"),
@@ -2309,8 +2295,8 @@ def _run_node_check(
 def test_plugin_pure_logic_node_selfcheck():
     """node 로 plugin 의 순수 결정 로직을 자가검증 (이벤트/opencode 런타임 없이).
 
-    검증: 임계 분기(nudge/stop 경계·쓴 %) · sanity 폴백(역전·음수) ·
-    토큰 누적 · limit 미상 시 정지 보류. node 부재 시 skip (정적 검증으로 게이트).
+    검증: 임계 분기(nudge/stop 경계·쓴 %) · 토큰 누적 · 비율 기본값 대체 함수 부재(T-0943).
+    node 부재 시 skip (정적 검증으로 게이트).
     """
     if _NODE is None:
         import pytest
@@ -2322,18 +2308,12 @@ const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
 
 // export 표면 (테스트 가능한 순수 함수가 떼어져 있어야 한다).
-for (const fn of ["parseLocalConf","resolveThresholds","accumulateTokens","computeCtxState","CtxGuardPlugin"]) {
+for (const fn of ["parseLocalConf","readBudget","accumulateTokens","computeCtxState","CtxGuardPlugin"]) {
   assert.strictEqual(typeof m[fn], "function", "missing export: " + fn);
 }
-
-// 임계 해석 + sanity 폴백 (엔진 기본 쓴 % 70/80).
-const defaults = {checkpoint_at_pct:70, precompact_at_pct:80};
-assert.deepStrictEqual(m.resolveThresholds({}), defaults);                                           // 미설정→기본
-assert.deepStrictEqual(m.resolveThresholds({"ctx.checkpoint_at_pct":"75","ctx.precompact_at_pct":"88"}), {checkpoint_at_pct:75, precompact_at_pct:88});
-assert.deepStrictEqual(m.resolveThresholds({"ctx.checkpoint_at_pct":"95","ctx.precompact_at_pct":"70"}), defaults); // 역전→폴백
-assert.deepStrictEqual(m.resolveThresholds({"ctx.checkpoint_at_pct":"80","ctx.precompact_at_pct":"80"}), defaults); // 같음→폴백
-assert.deepStrictEqual(m.resolveThresholds({"ctx.checkpoint_at_pct":"-5","ctx.precompact_at_pct":"97"}), defaults); // 음수→폴백
-assert.deepStrictEqual(m.resolveThresholds({"ctx.precompact_at_pct":"100"}), defaults);              // 100→폴백
+for (const removed of ["resolveThresholds","resolveBudget","CHECKPOINT_AT_PCT_DEFAULT","CTX_WINDOW_TOKENS_DEFAULT"]) {
+  assert.strictEqual(m[removed], undefined, "removed export present: " + removed);
+}
 
 // 토큰 누적.
 assert.strictEqual(m.accumulateTokens({input:100,output:20,reasoning:5,cache:{read:10,write:3}}), 138);
@@ -2347,54 +2327,11 @@ assert.strictEqual(m.computeCtxState(850, 1000, t).level, "nudge"); // 쓴 85%
 assert.strictEqual(m.computeCtxState(900, 1000, t).level, "stop");  // 쓴 90% (경계·>=)
 assert.strictEqual(m.computeCtxState(950, 1000, t).level, "stop");  // 쓴 95%
 assert.strictEqual("remainingPct" in m.computeCtxState(500, 1000, t), false); // 남은 % 는 없다
-assert.strictEqual(m.computeCtxState(999, 0, t).level, "unknown");       // limit 미상→정지 보류(안전)
 
 console.log("NODE_SELFCHECK_OK");
 """
     out = _run_node_check(script)
     assert "NODE_SELFCHECK_OK" in out, f"node 순수 로직 자가검증 실패. out={out!r}"
-
-
-def test_js_resolve_budget_pure_unit():
-    """node 로 resolveBudget 순수 함수(ADR-0041 예산 precedence)를 자가검증.
-
-    예산 = harness.<name>.ctx_window_tokens(사용 한도) > CTX_WINDOW_TOKENS_DEFAULT(200000). >0 정수
-    sanity(≤0·비정수·미설정 → 기본값). 공통 층(옛 `ctx.window_tokens`)은 없다.
-    분모 통일 확인: resolveBudget 결과를 computeCtxState 가 stop/nudge/ok 로 판정한다.
-    node 부재 시 skip (정적 검증 test_plugin_uses_resolve_budget_not_model_limit 로 게이트).
-    """
-    if _NODE is None:
-        import pytest
-
-        pytest.skip("node 없음 — resolveBudget 순수 단위 skip (정적 검증만 적용)")
-
-    script = r"""
-const m = require("./ctx-guard-core.cjs");
-const assert = require("node:assert");
-assert.strictEqual(typeof m.resolveBudget, "function", "missing export: resolveBudget");
-assert.strictEqual(m.CTX_WINDOW_TOKENS_DEFAULT, 200000, "CTX_WINDOW_TOKENS_DEFAULT 미러(200000) 아님");
-
-// 입력 W가 있어도 적용 기록/현재 모델 결속이 없으면 unknown이다.
-for (const conf of [{"harness.opencode.ctx_window_tokens":"500000"},{"ctx.window_tokens":"1000000"},{},null]) {
-  assert.strictEqual(m.resolveBudget(conf,"opencode"),null);
-}
-for (const bad of ["0","-5","abc","1.5","  "]) {
-  assert.strictEqual(m.resolveBudget({"harness.opencode.ctx_window_tokens":bad},"opencode"),null);
-}
-// (e) 분모 통일: resolveBudget 예산으로 computeCtxState 가 stop/nudge/ok 판정(쓴 % 70/80).
-const t = {checkpoint_at_pct:70, precompact_at_pct:80};
-const lim = 1000; // 순수 비율 계산 fixture, actual C 해소와 별도 검사.
-assert.strictEqual(lim, 1000);
-assert.strictEqual(m.computeCtxState(500, lim, t).level, "ok");    // 쓴 50%
-assert.strictEqual(m.computeCtxState(700, lim, t).level, "nudge"); // 쓴 70% (넛지 경계·>=)
-assert.strictEqual(m.computeCtxState(750, lim, t).level, "nudge"); // 쓴 75%
-assert.strictEqual(m.computeCtxState(800, lim, t).level, "stop");  // 쓴 80% (정지 경계·>=)
-assert.strictEqual(m.computeCtxState(850, lim, t).level, "stop");  // 쓴 85%
-
-console.log("JS_RESOLVE_BUDGET_OK");
-"""
-    out = _run_node_check(script)
-    assert "JS_RESOLVE_BUDGET_OK" in out, f"resolveBudget 순수 단위 실패. out={out!r}"
 
 
 def test_plugin_requires_cleanly_in_node():
@@ -2652,7 +2589,7 @@ def test_live_gate_rejects_broken_object_export(tmp_path):
         "// T-0283 원 버그 재현(대조군) — CJS 객체 export = opencode 가 함수 아니라며 로드 거부.\n"
         'const core = require("../lib/ctx-guard-core.cjs");\n'
         "module.exports = { CtxGuardPlugin: core.CtxGuardPlugin, "
-        "parseLocalConf: core.parseLocalConf, CHECKPOINT_AT_PCT_DEFAULT: core.CHECKPOINT_AT_PCT_DEFAULT };\n"
+        "parseLocalConf: core.parseLocalConf, accumulateTokens: core.accumulateTokens };\n"
     )
     td = tmp_path / "live-broken"
     td.mkdir()
@@ -2667,163 +2604,71 @@ def test_live_gate_rejects_broken_object_export(tmp_path):
     )
 
 
-def test_t0932_model_capacity_common_engine_record_sdk_and_cache(tmp_path,monkeypatch):
-    from test_harness_ctx_limits import _load,_project,_global_dir,_t0932_reader
-    module=_load('pm_import')
-    conf='harness.opencode.ctx_window_tokens=600000\nctx.checkpoint_at_pct=80\nctx.precompact_at_pct=90\nctx.compact_at_pct=94\n'
-    root=_project(tmp_path,harnesses=('opencode',),conf=conf,texts={'.opencode/opencode.jsonc':'{"provider":{"p":{"models":{"a":{},"b":{}}}}}'})
-    _install_core(root)
-    tools=root/'.project_manager/tools';tools.mkdir()
-    (tools/'python_floor.py').write_bytes((REPO/'.project_manager/tools/python_floor.py').read_bytes())
-    for name in ('local_conf.py', 'repo_owned_files.py', 'file_lock.py', 'console_encoding.py', 'pm_relay.py'):
-        shutil.copyfile(REPO/'.project_manager/tools'/name, tools/name)
-    (tools/'pm_log.py').write_text('import sys\nsys.stdout.write(" ".join(sys.argv[1:]))\n',encoding='utf-8')
-    def reader(*a):
-        snapshot=_t0932_reader(module,*a,capacity=200000)
-        snapshot['models'][1]['metadata']['usable']=150000
-        return snapshot
-    monkeypatch.setattr(module,'_read_harness_ctx_metadata',reader)
-    module.apply_harness_ctx(root,write=True,opencode_config_dir=_global_dir(tmp_path))
-    before=(root/'.opencode/opencode.jsonc').read_bytes()
-    script=r'''
-const m=require('./ctx-guard-core.cjs'),fs=require('node:fs'),path=require('node:path'),assert=require('node:assert');
-const root=process.argv[1];
-const conf=m.parseLocalConf(fs.readFileSync(path.join(root,'.project_manager/local.conf'),'utf8'));
-const identity={model:'a',provider:'p',profile:''};
-assert.strictEqual(m.resolveBudget(conf,'opencode',root,identity),150000);
-assert.strictEqual(m.computeCtxState(0,null,m.resolveThresholds(conf)).level,'unknown');
-(async()=>{
- const hooks=await m.CtxGuardPlugin({directory:root,client:{session:{get:async ({path})=>({data:{id:path.id}})}}});
- const event=(sid,extra={})=>({event:{type:'message.updated',properties:{info:{sessionID:sid,role:'assistant',modelID:'a',providerID:'p',profile:'',tokens:{input:135000},...extra}}}});
- await hooks.event(event('known'));
- const output={system:[]};await hooks['experimental.chat.system.transform']({sessionID:'known'},output);
- assert.strictEqual(output.system.length,1);assert(output.system[0].includes('--used-pct 90'));
- fs.writeFileSync(path.join(root,'.project_manager/local.conf'),fs.readFileSync(path.join(root,'.project_manager/local.conf'),'utf8').replace('600000','700000'));
- await hooks.event(event('changed-conf'));const stale={system:[]};await hooks['experimental.chat.system.transform']({sessionID:'changed-conf'},stale);
- assert.deepStrictEqual(stale.system,[]);assert.strictEqual(m.resolveBudget(m.parseLocalConf(fs.readFileSync(path.join(root,'.project_manager/local.conf'),'utf8')),'opencode',root,identity),null);
- assert.strictEqual(m.resolveBudget(conf,'opencode',root,{...identity,provider:'other'}),null);
- fs.writeFileSync(path.join(root,'.project_manager/independent-runtime-fixture.json'),'new source generation');
- assert.strictEqual(m.resolveBudget(conf,'opencode',root,identity),null);
- console.log('T0932_JS_CAPACITY_OK');
-})().catch(e=>{console.error(e);process.exitCode=1});
+# ── T-0943 세션 모델 집합 확인과 기록 오류 (AT-008) ───────────────────────────
+
+
+_T0943_CONF = {"harness.opencode.ctx_window_tokens": "600000", "ctx.checkpoint_at_pct": "80",
+               "ctx.precompact_at_pct": "90", "ctx.compact_at_pct": "94"}
+_T0943_SCRIPT = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const [providerID, modelID, input] = [process.argv[1], process.argv[2], Number(process.argv[3])];
+(async () => {
+  const toasts = [];
+  const hooks = await m.CtxGuardPlugin({client:{
+    session:{get: async ({path}) => ({data:{id:path.id}})},
+    tui:{showToast: async (toast) => { toasts.push(toast.body.message); }},
+  }, directory: process.cwd()});
+  const event = {event:{type:"message.updated", properties:{info:{
+    sessionID:"t0943", role:"assistant", providerID, modelID, tokens:{input}}}}};
+  await hooks.event(event);
+  await hooks.event(event);
+  const output = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID:"t0943"}, output);
+  console.log(JSON.stringify({toasts, system: output.system}));
+})().catch((err) => { console.error(err); process.exitCode = 1; });
 '''
-    completed=subprocess.run([_NODE,'-e',script,str(root)],cwd=root/'.opencode/lib',capture_output=True,text=True,timeout=30)
-    assert completed.returncode==0,completed.stderr
-    assert 'T0932_JS_CAPACITY_OK' in completed.stdout
-    assert (root/'.opencode/opencode.jsonc').read_bytes()==before
 
 
-@pytest.mark.parametrize('own',[False,True])
-def test_t0937_opencode_scoped_budget_runtime_pending(tmp_path,monkeypatch,own):
-    from test_harness_ctx_limits import _t0937_actual_fixture
-    f=_t0937_actual_fixture(tmp_path,monkeypatch);root=f.root;_install_core(root)
-    tools=root/'.project_manager/tools';tools.mkdir()
-    for name in ('local_conf.py','repo_owned_files.py','file_lock.py','console_encoding.py','pm_relay.py','python_floor.py'):
-        shutil.copyfile(REPO/'.project_manager/tools'/name,tools/name)
-    (tools/'pm_log.py').write_text('import sys\nprint(" ".join(sys.argv[1:]))\n',encoding='utf-8')
-    script=r'''
-const m=require('./ctx-guard-core.cjs'),fs=require('node:fs'),path=require('node:path'),assert=require('node:assert');
-const [root,catalog,registry,own]=process.argv.slice(1),confPath=path.join(root,'.project_manager/local.conf');
-const conf=()=>m.parseLocalConf(fs.readFileSync(confPath,'utf8'));
-const identity={model:'glm-5.2:cloud',provider:'ollama',profile:''};
-assert.strictEqual(m.resolveBudget(conf(),'opencode',root,identity),200000);
-(async()=>{
- const hooks=await m.CtxGuardPlugin({directory:root,client:{session:{get:async({path})=>({data:{id:path.id}})}}});
- await hooks.event({event:{type:'message.updated',properties:{info:{sessionID:'scope',role:'assistant',modelID:identity.model,providerID:identity.provider,profile:'',tokens:{input:180000}}}}});
- fs.writeFileSync(catalog,'{}');fs.writeFileSync(registry,'{}');
- const before=fs.readFileSync(confPath,'utf8');
- fs.writeFileSync(confPath,before.replace(own==='true'?'harness.opencode.ctx_window_tokens=200000':'harness.codex.ctx_window_tokens=600000',
-    own==='true'?'harness.opencode.ctx_window_tokens=210000':'harness.codex.ctx_window_tokens=700000'));
- const output={system:[]};await hooks['experimental.chat.system.transform']({sessionID:'scope'},output);
- if(own==='true'){assert.deepStrictEqual(output.system,[]);assert.strictEqual(m.resolveBudget(conf(),'opencode',root,identity),null);}
- else{assert.strictEqual(output.system.length,1);assert(output.system[0].includes('--used-pct 90'));assert.strictEqual(m.resolveBudget(conf(),'opencode',root,identity),200000);}
-})().catch(e=>{console.error(e);process.exitCode=1});
-'''
-    done=subprocess.run([_NODE,'-e',script,str(root),str(f.codex/'models_cache.json'),str(f.registry),str(own).lower()],
-        cwd=root/'.opencode/lib',capture_output=True,text=True,timeout=30)
-    assert done.returncode==0,done.stderr
+def _t0943_project(tmp_path: Path) -> Path:
+    """설치 형상의 최소 트리 — pm_log 는 받은 인자를 그대로 내는 대역(안내 문구에 밴드·% 가 보인다)."""
+    root = _make_ctx_guard_project(tmp_path, snapshot=False)
+    (root / ".project_manager" / "tools" / "pm_log.py").write_text(
+        "import sys\nsys.stdout.write(' '.join(sys.argv[1:]))\n", encoding="utf-8")
+    return root
 
 
-@pytest.mark.parametrize('damage', ['top', 'model-point', 'model-set', 'metadata'])
-def test_t0932_review_js_record_semantics(tmp_path, damage):
-    from test_harness_ctx_limits import _load, _t0932_install_budget_fixture
-    leaf = _load('local_conf')
-    conf = {'harness.opencode.ctx_window_tokens': '600000', 'ctx.checkpoint_at_pct': '80',
-        'ctx.precompact_at_pct': '90', 'ctx.compact_at_pct': '94'}
-    identity = _t0932_install_budget_fixture(tmp_path, conf, harness='opencode', capacity=200000)
-    record_path = tmp_path / leaf.CTX_BUDGET_RELPATH
-    record = json.loads(record_path.read_text(encoding='utf-8'))
-    assert record['schema']==4
-    row = record['harnesses']['opencode']['verification']['snapshot']['budget']
-    if damage == 'top':
-        row.update(C=600000, E=600000, P=564000, checkpoint=480000, precompact=540000)
-    elif damage == 'model-point':
-        row['models'][0]['P'] += 1
-    elif damage == 'model-set':
-        row['models'].append(row['models'][0].copy())
-    else:
-        row['metadata']['usable'] += 1
-    record['projection_sha256'] = leaf.ctx_record_digest(record)
-    record_path.write_text(json.dumps(record), encoding='utf-8')
-    python_status = leaf.read_ctx_budget(tmp_path, conf, 'opencode', identity)
-    assert python_status['status'] == 'unknown'
-    core = REPO / 'templates/opencode/.opencode/lib/ctx-guard-core.cjs'
-    script = 'const m=require(process.argv[1]);console.log(JSON.stringify(m.resolveBudget(JSON.parse(process.argv[3]),"opencode",process.argv[2],JSON.parse(process.argv[4]))));'
-    child = subprocess.run([shutil.which('node'), '-e', script, str(core), str(tmp_path), json.dumps(conf), json.dumps(identity)],
-        text=True, capture_output=True, check=True)
-    print('Python 상태:', python_status['status'], 'JS E:', child.stdout.strip(), '독립 C:', row['metadata']['usable'])
-    assert json.loads(child.stdout) is None
+def _t0943_plugin_run(root: Path, provider: str, model: str, tokens: int) -> dict:
+    proc = subprocess.run([_NODE, "-e", _T0943_SCRIPT, provider, model, str(tokens)],
+                          cwd=str(root / ".opencode" / "lib"), capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
+@pytest.mark.skipif(_NODE is None, reason="node 없음")
+def test_t0943_plugin_recorded_model_nudges_other_model_warns(tmp_path):
+    """기록에 있는 `provider/model` 이면 경고 없이 넛지, 다른 모델이면 같은 넛지에 toast 경고 한 번."""
+    from test_harness_ctx_limits import install_ctx_record
+    root = _t0943_project(tmp_path)
+    assert install_ctx_record(root, _T0943_CONF, harness="opencode", capacity=200000) == "ollama/glm-5.2:cloud"
+    same = _t0943_plugin_run(root, "ollama", "glm-5.2:cloud", 162000)              # 81% of E 200,000
+    assert len(same["system"]) == 1 and "--used-pct 81" in same["system"][0]
+    assert not [text for text in same["toasts"] if "[ctx-budget]" in text]
+    other = _t0943_plugin_run(root, "openrouter", "glm-5.2:cloud", 162000)
+    assert len(other["system"]) == 1 and "--used-pct 81" in other["system"][0]
+    warnings = [text for text in other["toasts"] if "[ctx-budget]" in text]
+    assert len(warnings) == 1 and "모델이 바뀌었습니다" in warnings[0] and "openrouter/glm-5.2:cloud" in warnings[0]
 
-@pytest.mark.parametrize('change', ['window', 'checkpoint', 'precompact', 'compact', 'other-window', 'third-window', 'model', 'provider', 'profile', 'source', 'record', 'none', 'rearm', 'consume-model'])
-def test_t0932_review_pending_band_binding(tmp_path, change):
-    from test_harness_ctx_limits import _load, _t0932_install_budget_fixture
-    conf = {'harness.opencode.ctx_window_tokens': '600000', 'ctx.checkpoint_at_pct': '80',
-        'ctx.precompact_at_pct': '90', 'ctx.compact_at_pct': '94'}
-    _t0932_install_budget_fixture(tmp_path, conf, harness='opencode', capacity=200000)
-    core = tmp_path / '.opencode/lib/ctx-guard-core.cjs'
-    core.parent.mkdir(parents=True)
-    shutil.copyfile(REPO / 'templates/opencode/.opencode/lib/ctx-guard-core.cjs', core)
-    for name in ('delegate-channel-core.cjs', 'warning-channel-core.cjs'):
-        shutil.copyfile(REPO / 'templates/opencode/.opencode/lib' / name, core.parent / name)
-    (tmp_path / '.project_manager/tools/python_floor.py').write_bytes((REPO / '.project_manager/tools/python_floor.py').read_bytes())
-    (tmp_path / '.project_manager/tools/pm_log.py').write_text('import sys\nsys.stdout.write(" ".join(sys.argv[1:]))\n', encoding='utf-8')
-    script = r'''
-const m=require(process.argv[1]),fs=require('node:fs'),path=require('node:path'),assert=require('node:assert');
-const root=process.argv[2];
-(async()=>{
-const hooks=await m.CtxGuardPlugin({directory:root,client:{session:{get:async ({path})=>({data:{id:path.id}})}}});
-const event=(extra={})=>({event:{type:'message.updated',properties:{info:{sessionID:'same',role:'assistant',modelID:'glm-5.2:cloud',providerID:'ollama',tokens:{input:180000},...extra}}}});
-await hooks.event(event());
-const file=path.join(root,'.project_manager/local.conf');
-const change=process.argv[3];
-const replacements={window:['600000','700000'],checkpoint:['ctx.checkpoint_at_pct=80','ctx.checkpoint_at_pct=81'],precompact:['ctx.precompact_at_pct=90','ctx.precompact_at_pct=91'],compact:['ctx.compact_at_pct=94','ctx.compact_at_pct=95']};
-if(replacements[change]) fs.writeFileSync(file,fs.readFileSync(file,'utf8').replace(...replacements[change]));
-if(change==='other-window') fs.appendFileSync(file,'harness.codex.ctx_window_tokens=300000\n');
-if(change==='third-window') fs.appendFileSync(file,'harness.claude.ctx_window_tokens=300000\n');
-if(change==='source') fs.writeFileSync(path.join(root,'.project_manager/independent-runtime-fixture.json'),'new evidence generation');
-if(change==='record') {
- const record=path.join(root,'.project_manager/.local/ctx-budget.json'),data=JSON.parse(fs.readFileSync(record));
- data.application_generation='new generation';fs.writeFileSync(record,JSON.stringify(data));
-}
-if(change==='rearm') {
- const original=fs.readFileSync(file,'utf8');fs.writeFileSync(file,original.replace('600000','700000'));
- await hooks.event(event());fs.writeFileSync(file,original);await hooks.event(event());
-}
-const extra={model:{modelID:'other'},provider:{providerID:'other'},profile:{profile:'other'}}[change];
-if(extra) await hooks.event(event(extra));
-// 입력/근거 변경은 추가 message.updated 없이도 소비 직전에 검증한다.
 
-const output={system:[]};
-await hooks['experimental.chat.system.transform'](change==='consume-model'?{sessionID:'same',model:{id:'other',providerID:'ollama'}}:{sessionID:'same'},output);
-console.log(JSON.stringify(output));
-if(['none','rearm','other-window','third-window'].includes(change)) {assert.strictEqual(output.system.length,1);assert(output.system[0].includes('--used-pct 90'));}
-else assert.deepStrictEqual(output.system,[]);
-const second={system:[]};await hooks['experimental.chat.system.transform']({sessionID:'same'},second);
-assert.deepStrictEqual(second.system,[]);
-})().catch(error=>{console.error(error);process.exitCode=1});
-'''
-    child = subprocess.run([shutil.which('node'), '-e', script, str(core), str(tmp_path), change], text=True, capture_output=True)
-    print('변경 이후 대기 안내:', child.stdout.strip())
-    assert child.returncode == 0, child.stderr
+@pytest.mark.skipif(_NODE is None, reason="node 없음")
+def test_t0943_plugin_missing_record_toasts_error(tmp_path):
+    """기록이 없으면 toast 로 오류를 알리고(무음 반환 아님) 넛지는 만들지 않는다. 대기 결속 상태는 없다."""
+    root = _t0943_project(tmp_path)
+    (root / ".project_manager" / "local.conf").write_text("", encoding="utf-8")
+    for name in ("local_conf.py", "repo_owned_files.py", "file_lock.py", "console_encoding.py"):
+        shutil.copyfile(REPO / ".project_manager" / "tools" / name, root / ".project_manager" / "tools" / name)
+    result = _t0943_plugin_run(root, "ollama", "glm-5.2:cloud", 190000)
+    assert result["system"] == []
+    errors = [text for text in result["toasts"] if "[ctx-budget]" in text]
+    assert len(errors) == 1 and "압축 한도 기록이 없습니다" in errors[0] and "ctx-apply" in errors[0]
+    assert "pendingBandBinding" not in _plugin_src() and "observedIdentity" not in _plugin_src()

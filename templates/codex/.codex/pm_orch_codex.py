@@ -22,9 +22,9 @@ codex thread_id 발급(claude 와 다른 핵심·opencode 동형): claude 는 `-
 ctx 기계 가드: 세 하네스 모두 driver 가 usage 로 예산 초과를 판정해
 **post-turn** 회전 marker 를 박제한다(엔진 `write_post_turn_marker` DI·Supervisor 무수정 회전).
 marker 는 turn *실행 후* 박제 단일 의미론 — Supervisor 는 그 입력을 다시 보내지 않고 다음 입력 전
-회전한다(세션 안 가드는 marker 를 만들지 않는다·비차단 안내 전용). 예산 = local.conf
-`harness.codex.ctx_window_tokens`(codex 사용 한도) > 200000. 같은 한도로 엔진이 `.codex/config.toml`
-의 `model_context_window`·`model_auto_compact_token_limit` 을 쓴다(`pm_import.apply_harness_ctx`).
+회전한다(세션 안 가드는 marker 를 만들지 않는다·비차단 안내 전용). 예산 = 엔진 압축 한도 기록의
+codex 적용 한도 E(`local_conf.read_ctx_budget`)이고, 엔진은 같은 기록으로 `.codex/config.toml` 의
+`model_auto_compact_token_limit` 을 쓴다(`pm_import.apply_harness_ctx`).
 
 codex 어댑터는 claude 와 달리 옆에 Python `ctx_guard` 모듈이 없다(claude=`.claude/ctx_guard.py`·
 opencode=JS core) — 그래서 엔진 루트 탐색·local.conf 파싱을 driver 자체에 둔다(opencode driver 동형).
@@ -51,18 +51,13 @@ from typing import NamedTuple
 CODEX_BIN = "codex"
 TURN_TIMEOUT_SEC = 600  # subprocess 당 hard hang 가드(상한 — 한 turn 이 길 수 있음·codex reasoning).
 
-# ── ctx 기계 가드 상수 (엔진 레지스트리 미러 · 쓴 % 기준) ──────────
+# ── ctx 기계 가드 (쓴 % 기준) ──────────
 # 엔진 밴드 "사용 >= ctx.precompact_at_pct" 는 세션 안에서 최종 checkpoint 넛지(비차단)로 소비된다 —
 # relay 경로는 그 같은 경계에서 driver 가 usage 로 **회전** 한다(post-turn marker → Supervisor 가 새
-# 세션으로 교체·실보호는 회전이 한다). 두 축 모두 아래 `ctx_thresholds` 한 해소를 쓴다(claude
-# ctx_guard.ctx_thresholds 대칭 · tests/test_ctx_default_mirror.py 가 네 어댑터 사이트를 대조).
-CTX_CHECKPOINT_AT_PCT_DEFAULT = 70  # 사용 >= 이 % → 1단 넛지.
-CTX_PRECOMPACT_AT_PCT_DEFAULT = 80  # 사용 >= 이 % → 최종 넛지 · relay 회전.
+# 세션으로 교체·실보호는 회전이 한다). 두 축 모두 압축 한도 기록의 비율을 쓴다.
 # 2단(strong) 넛지 마진(%p·파생값) — claude ctx_guard.CTX_NUDGE2_MARGIN_PCT·opencode
 # NUDGE2_MARGIN_PCT 미러. nudge2 밴드 = max(precompact_at − 이 마진, checkpoint_at) <= 사용 < precompact_at.
 CTX_NUDGE2_MARGIN_PCT = 3
-# 사용 한도 기본값(분모) — local.conf harness.codex.ctx_window_tokens 미설정 시.
-CTX_WINDOW_TOKENS_DEFAULT = 200_000
 
 
 def repo_root(start: Path) -> Path:
@@ -179,16 +174,6 @@ def load_local_config(root: Path) -> dict[str, str]:
     return conf
 
 
-def resolve_ctx_budget(conf: dict[str, str], *, root=None, identity=None) -> int | None:
-    if root is None:
-        return None
-    try:
-        engine, _ = _load_engine()
-        return engine.resolve_ctx_budget(root, conf, "codex", identity)
-    except (OSError, ImportError, AttributeError, RuntimeError):
-        return None
-
-
 def _resolve_rollout_file(session_id: str) -> Path | None:
     """CODEX_HOME 아래에서 thread id가 든 최신 rollout 파일을 찾는다(fail-soft)."""
     if not session_id:
@@ -280,7 +265,7 @@ class CodexCliDriver:
     """
 
     def __init__(self, parse_codex_json, *, ctx_budget: int | None = None,
-                 precompact_at_pct: int = CTX_PRECOMPACT_AT_PCT_DEFAULT, mark_stop=None,
+                 precompact_at_pct: int | None = None, mark_stop=None,
                  mark_ctx_if_over=None, spawn_result=None,
                  codex_bin: str = CODEX_BIN, timeout: int = TURN_TIMEOUT_SEC,
                  runner=subprocess.run, root: Path | None = None, budget_reader=None) -> None:
@@ -299,9 +284,9 @@ class CodexCliDriver:
             or (lambda sid, reply: (sid, reply))
         )
         self._ctx_budget = ctx_budget
+        # budget_reader(세션 모델) → (적용 한도, 압축 임박 경고 %, 모델 불일치 경고) — turn 마다 다시 읽는다.
         self._budget_reader = budget_reader
-        self._budget_identity = None
-        # 회전 임계(쓴 %) — main 이 local.conf ctx.precompact_at_pct 로 해소해 주입.
+        # 회전 임계(쓴 %) — main 이 압축 한도 기록에서 읽어 주입.
         self._precompact_at_pct = precompact_at_pct
         self._root = Path(root) if root is not None else None
         self.codex_bin = codex_bin
@@ -391,25 +376,17 @@ class CodexCliDriver:
         elif not (completed.stdout or ""):
             sys.stderr.write("[pm-orch] codex turn 무출력(rc 0) — stdin/파싱 점검\n")
 
-        self._budget_identity = None
-        for raw in (completed.stdout or "").splitlines():
-            try:
-                event = json.loads(raw)
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(event, dict):
-                continue
-            info = event.get("info") or event.get("message") or event
-            if not isinstance(info, dict):
-                continue
-            model = info.get("modelID") or info.get("model")
-            provider = info.get("providerID") or info.get("provider") or info.get("model_provider")
-            profile = info.get("profile")
-            if isinstance(model, str) and isinstance(provider, str) and isinstance(profile, str):
-                self._budget_identity = {"model": model, "provider": provider, "profile": profile}
         return self._parse((completed.stdout or "").splitlines())
 
     # ── driver-side ctx 기계 가드 (relay 경로 전용) ─────────────────
+
+    def _rollout_file(self, session_id: str) -> Path | None:
+        rollout = self._rollout_files.get(session_id)
+        if rollout is None or not rollout.is_file():
+            rollout = _resolve_rollout_file(session_id)
+            if rollout is not None:
+                self._rollout_files[session_id] = rollout
+        return rollout
 
     def _maybe_mark_ctx(self, session_id: str, usage) -> None:
         """turn usage 가 ctx 예산 회전점(사용 >= precompact_at_pct)에 도달하면 **post-turn** 회전 marker 를 박제한다.
@@ -435,10 +412,13 @@ class CodexCliDriver:
         상한 근사다.
         marker 박제 실패는 fail-soft."""
         if self._budget_reader is not None:
-            self._ctx_budget, self._precompact_at_pct = self._budget_reader(self._budget_identity)
-
-        if not (self._ctx_budget and usage and self._root and self._mark_stop
-                and self._mark_ctx_if_over):
+            rollout = self._rollout_file(session_id)  # 세션 모델 = rollout 마지막 turn_context 모델
+            self._ctx_budget, self._precompact_at_pct, warning = self._budget_reader(
+                _rollout_turn_model(rollout) if rollout is not None else None)
+            if warning:
+                sys.stderr.write(f"[pm-orch] {warning}\n")
+        if not (self._ctx_budget and self._precompact_at_pct and usage and self._root
+                and self._mark_stop and self._mark_ctx_if_over):
             return
         # codex upstream usage fixture 상 output_tokens 는 reasoning 포함:
         # 100+10(내 reasoning 5)=110. 따라서 reasoning_output 재가산 금지.
@@ -446,11 +426,7 @@ class CodexCliDriver:
         delta = total - self._last_total.get(session_id, 0)
         self._last_total[session_id] = total
 
-        rollout = self._rollout_files.get(session_id)
-        if rollout is None or not rollout.is_file():
-            rollout = _resolve_rollout_file(session_id)
-            if rollout is not None:
-                self._rollout_files[session_id] = rollout
+        rollout = self._rollout_file(session_id)
         precise = (
             _last_rollout_turn_tokens(rollout, usage.get("input"))
             if rollout is not None else None
@@ -494,29 +470,6 @@ CTX_BAND_GUIDANCE_ARG = {"nudge": "nudge", "nudge2": "nudge2", "stop": "final"}
 CTX_BAND_MARKER_SUFFIX = {"nudge": "nudge", "nudge2": "nudge2", "stop": "final"}
 # 넛지를 주입할 수 있는 훅 이벤트 — 두 이벤트 모두 `additionalContext` 를 갖는다(스키마 실측).
 CTX_NUDGE_EVENTS = ("PreToolUse", "UserPromptSubmit")
-
-
-def _int_conf(conf: dict[str, str], key: str, default: int) -> int:
-    """local.conf 정수 값 — 부재·비정수면 default (claude ctx_guard._int_conf 미러)."""
-    raw = conf.get(key)
-    if raw is None:
-        return default
-    try:
-        return int(str(raw).strip())
-    except (ValueError, AttributeError):
-        return default
-
-
-def ctx_thresholds(conf: dict[str, str]) -> dict[str, int]:
-    """밴드 임계(쓴 %) — `ctx.checkpoint_at_pct`/`ctx.precompact_at_pct` (claude ctx_thresholds 미러).
-
-    `0 < checkpoint_at < precompact_at < 100` 위반이면 **둘 다** 엔진 기본으로 폴백한다(오타·역전에
-    robust). 세션 안 넛지와 relay 회전(`precompact_at_pct`)이 이 한 해소를 쓴다."""
-    checkpoint = _int_conf(conf, "ctx.checkpoint_at_pct", CTX_CHECKPOINT_AT_PCT_DEFAULT)
-    precompact = _int_conf(conf, "ctx.precompact_at_pct", CTX_PRECOMPACT_AT_PCT_DEFAULT)
-    if not (0 < checkpoint < precompact < 100):
-        checkpoint, precompact = CTX_CHECKPOINT_AT_PCT_DEFAULT, CTX_PRECOMPACT_AT_PCT_DEFAULT
-    return {"checkpoint_at_pct": checkpoint, "precompact_at_pct": precompact}
 
 
 def nudge2_threshold(thresholds: dict[str, int]) -> int:
@@ -592,6 +545,15 @@ def rollout_context_tokens(transcript_path) -> int:
     rollout writer 공유라 같은 양상일 것으로 예상하나 확인된 사실이 아니다."""
     if not isinstance(transcript_path, str) or not transcript_path.strip():
         return 0
+    for raw_line in reversed(_rollout_tail(transcript_path)):
+        tokens = _rollout_input_tokens(raw_line)
+        if tokens is not None:
+            return tokens
+    return 0
+
+
+def _rollout_tail(transcript_path) -> list[bytes]:
+    """rollout JSONL 꼬리(`CTX_ROLLOUT_TAIL_BYTES`)의 줄 — 부재·읽기 실패는 빈 목록."""
     try:
         with Path(transcript_path).open("rb") as stream:
             stream.seek(0, os.SEEK_END)
@@ -600,15 +562,22 @@ def rollout_context_tokens(transcript_path) -> int:
             stream.seek(start)
             tail = stream.read()
     except (OSError, ValueError):
-        return 0
+        return []
     lines = tail.split(b"\n")
-    if start > 0:
-        lines = lines[1:]  # 꼬리 첫 줄은 잘려 있어 JSON 이 아니다.
-    for raw_line in reversed(lines):
-        tokens = _rollout_input_tokens(raw_line)
-        if tokens is not None:
-            return tokens
-    return 0
+    return lines[1:] if start > 0 else lines  # 꼬리 첫 줄은 잘려 있어 JSON 이 아니다.
+
+
+def _rollout_turn_model(transcript_path) -> str | None:
+    """rollout 마지막 `turn_context` 의 모델 — relay 의 세션 모델(못 찾으면 None)."""
+    for raw_line in reversed(_rollout_tail(transcript_path)):
+        try:
+            event = json.loads(raw_line)
+        except ValueError:
+            continue
+        payload = event.get("payload") if isinstance(event, dict) and event.get("type") == "turn_context" else None
+        if isinstance(payload, dict) and isinstance(payload.get("model"), str):
+            return payload["model"]
+    return None
 
 
 def _hook_session_id(payload: dict) -> str:
@@ -703,6 +672,8 @@ def ctx_nudge_envelope(payload: dict, root: Path, *,
                        timeout: float = CTX_GUIDANCE_TIMEOUT_SEC,
                        runner=subprocess.run) -> dict:
     """세션 안 ctx 밴드 판정 → 비차단 안내 엔벨로프. 밴드 밖·측정 실패는 **빈 엔벨로프**.
+    압축 한도 기록 부재·손상·입력 불일치와 세션 모델 불일치(훅 입력 `model`)는 UserPromptSubmit 의
+    `systemMessage` 로 알린다(불일치면 판정은 기록 값으로 계속한다).
 
     빈 엔벨로프는 디스패처 합본에서 기여 0이라 이 기능이 침묵한 호출의 stdout 은 이 가드가
     없던 때와 **바이트 동일**하다(측정된 통과 형태). 차단·회전 판정은 내지 않는다.
@@ -722,18 +693,25 @@ def ctx_nudge_envelope(payload: dict, root: Path, *,
     if hook_is_subagent(payload):
         return {}
     root = Path(root)
+    engine, _ = _load_engine()
+    try:
+        budget = engine._load_ctx_leaf().read_ctx_budget(
+            root, load_local_config(root), "codex", payload.get("model"))
+    except ValueError as exc:  # 압축 한도 기록 부재·손상·입력 불일치 — 프롬프트 제출 때 알린다.
+        return {"systemMessage": f"[ctx-budget] {exc}"} if event == "UserPromptSubmit" else {}
+    envelope = _ctx_band_envelope(event, root, payload, budget, timeout=timeout, runner=runner)
+    if budget["warning"] and event == "UserPromptSubmit":
+        envelope = {**envelope, "systemMessage": f"[ctx-budget] {budget['warning']}"}
+    return envelope
+
+
+def _ctx_band_envelope(event: str, root: Path, payload: dict, budget: dict, *, timeout: float,
+                       runner) -> dict:
+    """적용 한도 대비 사용 % 의 밴드 안내 엔벨로프 — 사이클당 한 번(marker)."""
     session_id = _hook_session_id(payload)
     tokens = rollout_context_tokens(payload.get("transcript_path"))
-    if tokens <= 0:
-        return {}
-    conf = load_local_config(root)
-    identity = {k: payload.get(k) for k in ("model", "provider", "profile")}
-    budget = resolve_ctx_budget(conf, root=root, identity=identity)
-    if budget is None:
-        return {}
-    used_pct = context_used_pct_from_tokens(tokens, budget)
-    thresholds = ctx_thresholds(conf)
-    band = classify(used_pct, thresholds)
+    used_pct = context_used_pct_from_tokens(tokens, budget["E"])
+    band = classify(used_pct, budget)
     if band == "ok":
         # 정수 used=0 은 큰 예산에서 작은 양의 측정값일 수도 있다 — 재무장은 **실측된 ok**
         # (점유 토큰 > 0)에서만 한다. 측정 실패(0)는 marker 를 보존해 중복 주입을 막는다.
@@ -741,7 +719,7 @@ def ctx_nudge_envelope(payload: dict, root: Path, *,
             _rearm_ctx_cycle(root, session_id)
         return {}
     guidance = _ctx_guidance_text(
-        root, band=band, used_pct=used_pct, thresholds=thresholds,
+        root, band=band, used_pct=used_pct, thresholds=budget,
         timeout=max(0.1, min(CTX_GUIDANCE_TIMEOUT_SEC, timeout)), runner=runner)
     if not guidance:
         return {}  # 문구를 못 읽으면 침묵 — marker 도 안 쓴다(다음 호출이 다시 시도).
@@ -1618,15 +1596,13 @@ def main(argv: list[str] | None = None) -> int:
     engine, root = _load_engine()
 
     cwd = args.cwd or os.getcwd()
-    conf = load_local_config(root)
-    ctx_budget = resolve_ctx_budget(conf, root=root)
-    precompact_at_pct = ctx_thresholds(conf)["precompact_at_pct"]
-    engine.validate_relay_budget(ctx_budget, precompact_at_pct)
-    # driver-side ctx 가드 원천 — local.conf 예산·회전 임계 해소 + 엔진 post-turn marker writer 주입.
+    # driver-side ctx 가드 원천 — 압축 한도 기록의 예산·회전 임계 + 엔진 post-turn marker writer 주입.
+    # 기록이 없거나 손상·입력 불일치면 시작하지 않는다(CtxBudgetError).
+    ctx_budget, precompact_at_pct, _warning = engine.ctx_budget(root, "codex", None)
     driver = CodexCliDriver(
         engine.parse_codex_json,
         ctx_budget=ctx_budget,
-        budget_reader=lambda identity: engine.bound_ctx_budget(root, "codex", identity),
+        budget_reader=lambda model: engine.ctx_budget(root, "codex", model),
         precompact_at_pct=precompact_at_pct,
         mark_stop=engine.write_post_turn_marker,
         mark_ctx_if_over=engine.mark_ctx_post_turn_if_over,

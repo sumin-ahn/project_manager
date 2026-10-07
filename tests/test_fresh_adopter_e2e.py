@@ -1588,15 +1588,13 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
         f"{base}→{added}: add-harness 가 기존 파일을 변경(engine.manifest·설치 기록·config 원장 "
         f"외·byte diff≠0·clobber 재발): {changed}")
 
-    # 적용 기록은 추가 하네스와 바뀐 지문만 갱신하며 기존 하네스의 budget은 보존한다.
-    from test_harness_ctx_limits import _load as load_ctx_engine
+    # 압축 한도 기록에는 추가 하네스 항목이 생기고 기존 하네스 항목은 그대로다.
     old_ctx = json.loads(before[_CTX_RECORD_REL].decode('utf-8'))
     new_ctx = json.loads(after[_CTX_RECORD_REL].decode('utf-8'))
-    assert new_ctx['schema']==old_ctx['schema']==4
-    assert new_ctx['harnesses'][base]['verification']['snapshot']['budget'] == old_ctx['harnesses'][base]['verification']['snapshot']['budget']
+    assert new_ctx['schema'] == old_ctx['schema'] == 5
+    assert new_ctx['harnesses'][base] == old_ctx['harnesses'][base]
     assert set(new_ctx['harnesses']) == {base, added}
-    assert new_ctx['harnesses'][added]['verification']['snapshot']['budget']['E'] == 200000
-    assert new_ctx['projection_sha256'] == load_ctx_engine('local_conf').ctx_record_digest(new_ctx)
+    assert new_ctx['harnesses'][added]['E'] == 200000
 
     # (3-a) 설치 기록의 변경 내용 — 정확히 base∪added(registry 순서)여야 한다. 표기 독자 집합이
     #   여기서 갈리므로 하나라도 빠지면 이후 공유 문서 재렌더가 그 하네스 표기를 지운다.

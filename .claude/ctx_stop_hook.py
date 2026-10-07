@@ -364,7 +364,7 @@ def capture_precompact(stdin: dict, root: Path) -> int:
     auto_compact = stdin.get("trigger") == "auto"
     band_fired = False
     observed_tokens = 0
-    window_tokens = 0
+    window_tokens = None
     if auto_compact:
         band_fired = any(
             marker.is_file()
@@ -375,12 +375,15 @@ def capture_precompact(stdin: dict, root: Path) -> int:
             )
         )
         transcript_path = stdin.get("transcript_path")
-        observed_tokens = (
+        observed_tokens, session_model = (
             ctx_guard.context_tokens_from_transcript(transcript_path)
-            if isinstance(transcript_path, str) and transcript_path else 0
+            if isinstance(transcript_path, str) and transcript_path else (0, None)
         )
-        current_conf = ctx_guard.load_local_config(root)
-        window_tokens = ctx_guard.resolve_budget(current_conf, "claude", root=root, identity=ctx_guard._native_session_identity(stdin, root, current_conf) if hasattr(ctx_guard, "_native_session_identity") else ctx_guard.session_identity(stdin))
+        try:
+            window_tokens = ctx_guard.read_budget(
+                root, ctx_guard.load_local_config(root), session_model)["E"]
+        except ValueError as exc:  # 압축 한도 기록 문제 — PreCompact 의 알림 채널은 stderr 다.
+            print(f"[ctx-budget] {exc}", file=sys.stderr)
     checkpointed = _create_checkpoint(
         root,
         stdin,
@@ -625,26 +628,43 @@ def _evaluate_ctx_bands(stdin: dict, root: Path, conf: dict) -> tuple[int, dict 
         if snapshot is not None:
             return 0, nudge_output(stdin, snapshot)
 
-    # 분모 = 해소된 claude 예산(per-harness) — statusLine 과 같은 예산.
-    window = ctx_guard.resolve_budget(conf, "claude", root=root, identity=ctx_guard._native_session_identity(stdin, root, conf) if hasattr(ctx_guard, "_native_session_identity") else ctx_guard.session_identity(stdin))
-    if window is None:
-        print("[ctx-budget-unknown] 독립 한도와 현재 모델 결속을 확인할 수 없음", file=sys.stderr)
-        return 0, None
-    thresholds = ctx_guard.ctx_thresholds(conf)
-
-    raw_tokens = (
+    # 분모 = 적용 한도 E(압축 한도 기록) — statusLine 과 같은 기록. 훅 입력에는 모델이 없어 세션
+    # 모델은 사용량을 읽은 transcript 항목의 것이다.
+    raw_tokens, session_model = (
         ctx_guard.context_tokens_from_transcript(transcript)
         if isinstance(transcript, str) and transcript
-        else 0
+        else (0, None)
     )
-    used = ctx_guard.context_used_pct_from_tokens(raw_tokens, window)
-    state = ctx_guard.classify(used, thresholds)
+    try:
+        budget = ctx_guard.read_budget(root, conf, session_model)
+    except ValueError as exc:  # 기록 부재·손상·입력 불일치 — 밴드를 판정하지 못한 사실을 알린다.
+        return 0, _budget_notice(stdin, None, f"[ctx-budget] {exc}", error=True)
+    output = _band_output(stdin, root, session_id, raw_tokens, budget)
+    if budget["warning"]:
+        output = _budget_notice(stdin, output, f"[ctx-budget] {budget['warning']}", error=False)
+    return 0, output
+
+
+def _budget_notice(stdin: dict, output: dict | None, text: str, *, error: bool) -> dict | None:
+    """압축 한도 기록 경고·에러 — UserPromptSubmit 은 `systemMessage`, 그 밖 이벤트의 에러는 stderr."""
+    event = stdin.get("hook_event_name") or stdin.get("hookEventName")
+    if event == "UserPromptSubmit":
+        return {**(output or {}), "systemMessage": text}
+    if error:
+        print(text, file=sys.stderr)
+    return output
+
+
+def _band_output(stdin: dict, root: Path, session_id: str, raw_tokens: int, budget: dict) -> dict | None:
+    """적용 한도 대비 사용 % 의 밴드 안내 — 사이클당 한 번(marker)."""
+    used = ctx_guard.context_used_pct_from_tokens(raw_tokens, budget["E"])
+    state = ctx_guard.classify(used, budget)
     if state == "ok":
         # 정수 used=0은 큰 예산에서 작은 양의 측정값도 될 수 있다. raw 토큰이 양수일 때만 유효한
         # ok 실측으로 재무장하고, transcript 부재·읽기 실패·usage 미검출(raw 0)은 marker를 보존한다.
         if raw_tokens > 0:
             _rearm_cycle(root, session_id)
-        return 0, None
+        return None
 
     if state == "nudge":
         # 모델-facing 비차단 안내 주입. marker 는 채널과 무관하게 사이클당 1회이며,
@@ -652,16 +672,16 @@ def _evaluate_ctx_bands(stdin: dict, root: Path, conf: dict) -> tuple[int, dict 
         output = nudge_output(
             stdin,
             _build_ctx_guidance(
-                root, band="nudge", used_pct=used, thresholds=thresholds,
+                root, band="nudge", used_pct=used, thresholds=budget,
             ),
         )
         if output is None:
-            return 0, None
+            return None
         if not _claim_marker(
             _nudge_marker_path(root, session_id), "ctx-nudge injected\n"
         ):
-            return 0, None
-        return 0, output
+            return None
+        return output
 
     if state == "nudge2":
         # 강화 넛지. 멱등(사이클 1회·.nudge2 marker). 1단(.nudge)과 독립이라 1단 창을
@@ -670,31 +690,31 @@ def _evaluate_ctx_bands(stdin: dict, root: Path, conf: dict) -> tuple[int, dict 
         output = nudge_output(
             stdin,
             _build_ctx_guidance(
-                root, band="nudge2", used_pct=used, thresholds=thresholds,
+                root, band="nudge2", used_pct=used, thresholds=budget,
             ),
         )
         if output is None:
-            return 0, None
+            return None
         if not _claim_marker(
             _nudge2_marker_path(root, session_id), "ctx-nudge2 injected\n"
         ):
-            return 0, None
-        return 0, output
+            return None
+        return output
 
     # state == "stop" — 구 차단형 대신 최종 비차단 넛지(사이클당 1회·`.final`).
     output = nudge_output(
         stdin,
         _build_ctx_guidance(
-            root, band="final", used_pct=used, thresholds=thresholds,
+            root, band="final", used_pct=used, thresholds=budget,
         ),
     )
     if output is None:
-        return 0, None
+        return None
     if not _claim_marker(
         _final_marker_path(root, session_id), "ctx-final nudge injected\n"
     ):
-        return 0, None
-    return 0, output
+        return None
+    return output
 
 
 def main(argv: list[str] | None = None) -> int:
