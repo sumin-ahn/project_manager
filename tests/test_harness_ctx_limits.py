@@ -794,7 +794,7 @@ def test_t0943_reader_value_survives_time_cache_environment_and_path(pm_import, 
     root, values = _t0943_applied(pm_import, local_conf, tmp_path, monkeypatch)
     first = {harness: local_conf.read_ctx_budget(root, values, harness) for harness in local_conf.CTX_HARNESSES}
     assert first["claude"] == {"E": 600000, "P": 564000, "checkpoint": 480000, "precompact": 540000,
-                               "checkpoint_at_pct": 80, "precompact_at_pct": 90, "models": ["firstParty/claude-opus-5-5"],
+                               "checkpoint_at_pct": 80, "precompact_at_pct": 90, "models": ["claude-opus-5-5"],
                                "applied_at": first["claude"]["applied_at"], "warning": None}
     assert [first[harness]["E"] for harness in local_conf.CTX_HARNESSES] == [600000, 570000, 200000]
 
@@ -820,9 +820,10 @@ def test_t0943_reader_value_survives_time_cache_environment_and_path(pm_import, 
     assert all(row["status"] == "ok" for row in local_conf.ctx_budget_status(root, values).values())
 
 
-@pytest.mark.parametrize("damage", ["missing", "broken", "schema4", "tool", "window", "ratio"])
+@pytest.mark.parametrize("damage", ["missing", "broken", "schema4", "tool", "window", "ratio", "basis", "basis-type"])
 def test_t0943_reader_errors_name_ctx_apply(pm_import, local_conf, tmp_path, monkeypatch, damage):
-    """AT-002 — 부재·손상·이전 형식·도구 항목 없음·입력 변경은 `CtxBudgetError`("ctx-apply" 안내)다."""
+    """AT-002 — 부재·손상·이전 형식·도구 항목 없음·입력 변경은 `CtxBudgetError`("ctx-apply" 안내)다.
+    모델 출처(basis)가 세 형식의 키를 갖추지 않았거나 값 형식이 다르면 읽기 단계의 기록 손상이다(F-004)."""
     root, values = _t0943_applied(pm_import, local_conf, tmp_path, monkeypatch)
     path = root / local_conf.CTX_BUDGET_RELPATH
     record = json.loads(path.read_text(encoding="utf-8"))
@@ -834,6 +835,11 @@ def test_t0943_reader_errors_name_ctx_apply(pm_import, local_conf, tmp_path, mon
         path.write_text(json.dumps({**record, "schema": 4}), encoding="utf-8")
     elif damage == "tool":
         del record["harnesses"]["claude"]
+        path.write_text(json.dumps(record), encoding="utf-8")
+    elif damage in ("basis", "basis-type"):
+        basis = record["harnesses"]["claude"]["models"][0]["basis"]
+        record["harnesses"]["claude"]["models"][0]["basis"] = {} if damage == "basis" else {
+            **basis, "model_window": str(basis["model_window"])}
         path.write_text(json.dumps(record), encoding="utf-8")
     elif damage == "window":
         values = {**values, "harness.claude.ctx_window_tokens": "500000"}
@@ -853,11 +859,55 @@ def test_t0943_reader_session_model_mismatch_warns_and_keeps_budget(pm_import, l
     assert read(root, values, "claude", "claude-opus-5-5")["warning"] is None
     assert read(root, values, "codex", "gpt-6.1-sol")["warning"] is None
     assert read(root, values, "opencode", "ollama/glm-5.2:cloud")["warning"] is None
+    assert read(root, values, "claude", "firstParty/claude-opus-5-5")["warning"] is None
     other = read(root, values, "claude", "claude-sonnet-5")
     assert other["E"] == 600000 and other["P"] == 564000
-    assert "claude-opus-5-5" in other["warning"] and "claude-sonnet-5" in other["warning"]
+    assert "기록 claude-opus-5-5 · 현재 claude-sonnet-5" in other["warning"] and "firstParty" not in other["warning"]
     assert "ctx-apply" in other["warning"]
     assert read(root, values, "opencode", "openrouter/glm-5.2:cloud")["warning"]
+
+
+@pytest.mark.parametrize("basis", [
+    {"context_window": 272000, "max_context_window": None, "model_context_window": None, "percent": 95},
+    {"context": 400000, "input": 272000, "output": 16000, "source": "models.dev 목록"}])
+def test_t0943_reader_accepts_every_basis_form(pm_import, local_conf, tmp_path, monkeypatch, basis):
+    """F-004 역방향 — 출처 형식 검사는 적용이 쓰는 형식을 거부하지 않는다. 세 도구 기본 형식은 AT-002 의
+    `ctx_budget_status` 전부 ok 가 덮고, 여기는 Codex 설정 창 null·opencode input 있음을 본다(도구 이름 무관)."""
+    root, values = _t0943_applied(pm_import, local_conf, tmp_path, monkeypatch)
+    path = root / local_conf.CTX_BUDGET_RELPATH
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["harnesses"]["claude"]["models"][0]["basis"] = basis
+    path.write_text(json.dumps(record), encoding="utf-8")
+    assert local_conf.read_ctx_budget(root, values, "claude")["E"] == 600000
+    status = local_conf.ctx_budget_status(root, values)["claude"]
+    assert status["status"] == "ok" and status["basis_text"]
+
+
+def test_t0943_record_write_failure_returns_rc1(pm_import, local_conf, tmp_path, monkeypatch, capsys):
+    """F-005 — 쓰기 단계 실패는 바꾼 파일이 없어도 `ctx-apply` rc 1 이다. 같은 입력의 재적용에서 Claude 출처
+    표시값만 달라 기록만 다시 써야 할 때 기록 쓰기가 실패하면 local.conf·설정 파일·기록은 그대로다.
+    조회·검사 단계의 거부는 그대로 rc 3 이다(역방향)."""
+    _t0943_seams(pm_import, monkeypatch)
+    pm_config = _load("pm_config")
+    parser = pm_config.build_parser()
+    root = _project(tmp_path, harnesses=("claude",), conf=T0943_CONF)
+    assert pm_config.cmd_ctx_apply(parser.parse_args(["ctx-apply"]), pm_import=pm_import, dest_root=root) == 0
+    before = _t0943_watched(root)
+    row = {**T0943_CLAUDE_ROW, "basis": {"model_window": 1000100, "auto_compact_threshold": 967100}}  # d 33,000 그대로
+    monkeypatch.setattr(pm_import, "_read_harness_ctx_metadata", lambda *args: [dict(row)])
+    replace = pm_import._atomic_write_dest_bytes
+    monkeypatch.setattr(pm_import, "_atomic_write_dest_bytes", lambda dest_root, rel, payload, **kwargs: (
+        False if Path(rel) == local_conf.CTX_BUDGET_RELPATH else replace(dest_root, rel, payload, **kwargs)))
+    capsys.readouterr()
+
+    assert pm_config.cmd_ctx_apply(parser.parse_args(["ctx-apply"]), pm_import=pm_import, dest_root=root) == 1
+    assert "압축 한도 기록(.project_manager/.local/ctx-budget.json)을 쓰지 못했습니다" in capsys.readouterr().err
+    assert _t0943_watched(root) == before
+
+    refused = pm_config.cmd_ctx_apply(parser.parse_args(["ctx-apply", "--set", "ctx.precompact_at_pct=95"]),
+                                      pm_import=pm_import, dest_root=root)
+    assert refused == 3 and "ctx.precompact_at_pct=95" in capsys.readouterr().err
+    assert _t0943_watched(root) == before
 
 
 def _t0943_claude_protocol(calls, *, offset=T0943_CLAUDE_RESERVE):

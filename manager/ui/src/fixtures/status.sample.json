@@ -186,7 +186,7 @@
         "checkpoint_at_pct": 70,
         "precompact_at_pct": 80,
         "models": [
-          "firstParty/claude-opus-5-5"
+          "claude-opus-5-5"
         ],
         "applied_at": "2026-10-07T03:00:00+00:00",
         "warning": null,

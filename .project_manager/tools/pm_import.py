@@ -8088,10 +8088,6 @@ def _harness_ctx_integer(text: str) -> int | None:
     return int(text) if re.fullmatch(r"[+-]?[0-9]+", text) else None
 
 
-def _ctx_positive(value) -> bool:
-    return type(value) is int and value > 0
-
-
 def validate_harness_ctx(values, present: frozenset) -> None:
     """반영 전 검사 — 위반을 모두 모아 `HarnessCtxError` 한 번으로 올린다.
 
@@ -8169,7 +8165,7 @@ def apply_harness_ctx(dest_root: Path, *, write: bool, opencode_config_dir: Path
 def _apply_harness_ctx(dest_root: Path, *, write: bool, opencode_config_dir: Path, updates=None):
     """반영 본문 — (local.conf 가 바뀌었나, 바뀐 줄, 도구 기록 항목). `write` 면 local.conf 쓰기 락 안에서
     계획(`_harness_ctx_plan`)과 쓰기(local.conf → 설정 파일 → 기록)를 한 번에 한다. 쓰기 단계에서 멈추면
-    `HarnessCtxError.written` 이 바꾼 파일을 적는다."""
+    `HarnessCtxError.written` 이 바꾼 파일을 적고 `write_stage` 가 참이다(바꾼 파일이 없어도 검사 거부가 아니다)."""
     dest_root = Path(dest_root)
     conf_path = dest_root / ".project_manager" / "local.conf"
     if not write:
@@ -8180,21 +8176,20 @@ def _apply_harness_ctx(dest_root: Path, *, write: bool, opencode_config_dir: Pat
             _harness_ctx_baseline_writable(dest_root)
         conf_changed = _write_conf_keys_locked(conf_path, updates) if updates else False
         written = (".project_manager/local.conf",) if conf_changed else ()
-        if changed:
-            try:
-                _harness_ctx_write(dest_root, changed)
-            except HarnessCtxError as exc:
-                raise HarnessCtxError(exc.violations, written=written + exc.written) from exc
-        written += tuple(changed)
         record = {"schema": module.CTX_BUDGET_SCHEMA, "inputs": module.ctx_input_values(values),
                   "applied_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
                   "harnesses": entries}
-        if _ctx_record_unchanged(dest_root / module.CTX_BUDGET_RELPATH, record):
-            return conf_changed, lines, entries
         payload = (json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
-        if not _atomic_write_dest_bytes(dest_root, module.CTX_BUDGET_RELPATH, payload):
-            raise HarnessCtxError([f"압축 한도 기록({module.CTX_BUDGET_RELPATH.as_posix()})을 쓰지 못했습니다."],
-                                  written=written)
+        try:
+            if changed:
+                _harness_ctx_write(dest_root, changed)
+            if not (_ctx_record_unchanged(dest_root / module.CTX_BUDGET_RELPATH, record)
+                    or _atomic_write_dest_bytes(dest_root, module.CTX_BUDGET_RELPATH, payload)):
+                raise HarnessCtxError([f"압축 한도 기록({module.CTX_BUDGET_RELPATH.as_posix()})을 쓰지 못했습니다."], written=tuple(changed))
+        except HarnessCtxError as exc:
+            failure = HarnessCtxError(exc.violations, written=written + exc.written)
+            failure.write_stage = True
+            raise failure from exc
         return conf_changed, lines, entries
 
 
@@ -8253,12 +8248,13 @@ def _harness_ctx_entry(dest_root: Path, harness: str, values, documents: list, m
     """도구 기록 항목 — 모델 행·W·C·E·P·경고 지점. 조회 결과가 대상과 다르거나 설정 형식이 받지
     않는 값이면 `HarnessCtxError`."""
     rule = HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]]
+    positive = _load_local_conf()._ctx_positive
     found = _read_harness_ctx_metadata(dest_root, harness, documents, models)
     if not found:
         raise HarnessCtxError([f"{rule.label} 모델 한도를 확인할 대상 모델이 없습니다."])
     if any(not isinstance(row, dict) or not isinstance(row.get("id"), str) or not isinstance(row.get("provider"), str)
-           or not _ctx_positive(row.get("C")) or not isinstance(row.get("basis"), dict)
-           or (rule.model_limits and not _ctx_positive(row["basis"].get("context"))) for row in found):
+           or not positive(row.get("C")) or not isinstance(row.get("basis"), dict)
+           or (rule.model_limits and not positive(row["basis"].get("context"))) for row in found):
         raise HarnessCtxError([f"{rule.label} 모델 한도 조회 결과의 형식이 맞지 않습니다."])
     rows = [{key: row[key] for key in ("id", "provider", "C", "basis")} for row in found]
     identities = [(row["provider"], row["id"]) for row in rows]
@@ -8367,8 +8363,8 @@ def _ctx_claude_query(root, autocompact) -> dict:
                         "request": {"subtype": "initialize", "hooks": {}, "skills": []}}, None),
         ("context", {"type": "control_request", "request_id": "ctx-context",
                      "request": {"subtype": "get_context_usage", "detail": "summary"}}, None)])
-    context = responses["context"]
-    if (not _ctx_positive(context.get("rawMaxTokens")) or not _ctx_positive(context.get("autoCompactThreshold"))
+    context, positive = responses["context"], _load_local_conf()._ctx_positive
+    if (not positive(context.get("rawMaxTokens")) or not positive(context.get("autoCompactThreshold"))
             or not context["autoCompactThreshold"] < context["rawMaxTokens"]):
         raise ValueError("Claude Code 조회 응답에 모델 창·압축 기준이 없습니다")
     return responses
@@ -8449,8 +8445,9 @@ def _ctx_codex_capacity(root, documents, models) -> list:
     basis = {"context_window": rows[0].get("context_window"), "max_context_window": rows[0].get("max_context_window"),
              "model_context_window": config.get("model_context_window"),
              "percent": rows[0].get("effective_context_window_percent")}
-    if (not _ctx_positive(basis["context_window"]) or not _ctx_positive(basis["percent"]) or basis["percent"] > 100
-            or any(basis[key] is not None and not _ctx_positive(basis[key])
+    positive = _load_local_conf()._ctx_positive
+    if (not positive(basis["context_window"]) or not positive(basis["percent"]) or basis["percent"] > 100
+            or any(basis[key] is not None and not positive(basis[key])
                    for key in ("max_context_window", "model_context_window"))):
         raise ValueError(f"Codex 모델 캐시·설정의 {model} 창 크기 형식 오류")
     # model_provider 가 없으면 Codex 는 openai 를 쓴다(기록의 표시용 이름).
@@ -8491,7 +8488,7 @@ def _ctx_opencode_route(documents: list, provider: str, model: str) -> tuple:
 def _ctx_opencode_capacity(root, documents, models) -> list:
     """opencode 대상 모델마다 C = min(원본 input, context − 실효 출력) — models.dev 캐시 행이 없으면
     OpenAI 호환(Ollama) 주소의 모델 정보."""
-    output_max = _ctx_opencode_output_max()
+    output_max, positive = _ctx_opencode_output_max(), _load_local_conf()._ctx_positive
     catalog_path = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache", *_OPENCODE_MODEL_CATALOG)
     catalog = json.loads(_read_bytes_shared(catalog_path).decode("utf-8")) if catalog_path.is_file() else {}
     if not isinstance(catalog, dict):
@@ -8507,8 +8504,8 @@ def _ctx_opencode_capacity(root, documents, models) -> list:
                 raise ValueError(f"{provider}/{model} 의 설정 주소·모델 id 가 모델 목록과 다릅니다")
             limit = listed.get("limit") or {}
             context, input_limit = limit.get("context"), limit.get("input")
-            if (not _ctx_positive(context) or not _ctx_positive(limit.get("output"))
-                    or (input_limit is not None and not _ctx_positive(input_limit))):
+            if (not positive(context) or not positive(limit.get("output"))
+                    or (input_limit is not None and not positive(input_limit))):
                 raise ValueError(f"opencode 모델 목록의 {provider}/{model} limit 형식 오류")
             effective, source = min(limit["output"], output, output_max), "models.dev 목록"
         else:
@@ -8517,7 +8514,7 @@ def _ctx_opencode_capacity(root, documents, models) -> list:
             info = _ctx_ollama_show(origin, api_model).get("model_info")
             architecture = info.get("general.architecture") if isinstance(info, dict) else None
             context = info.get(f"{architecture}.context_length") if isinstance(architecture, str) else None
-            if not _ctx_positive(context):
+            if not positive(context):
                 raise ValueError(f"{origin} 의 {api_model} 모델 정보에 context 길이가 없습니다")
             input_limit, effective, source = None, min(output, output_max), origin
         capacity = context - effective if input_limit is None else min(input_limit, context - effective)
@@ -8790,9 +8787,7 @@ def _harness_ctx_write(dest_root: Path, changed: dict[str, tuple[str, str]]) -> 
 
     파일마다 교체를 시도해 결과를 모은 뒤, 교체에 성공한 원장 증언 파일의 `sha256` 을 먼저 기록하고
     나서 쓰지 못한 파일이 있으면 멈춘다 — 이미 바뀐 파일이 원장의 옛 해시에 걸려 편집됨으로 판정되지
-    않게 한다(편집됨 판정은 세트 수용에서도 그 파일을 뺀다). 원장이 상위 schema 면 아무것도 쓰기 전에
-    멈춘다."""
-    _harness_ctx_baseline_writable(dest_root)
+    않게 한다(편집됨 판정은 세트 수용에서도 그 파일을 뺀다)."""
     document = read_adapter_baseline(dest_root)
     files = dict(document.get("files") or {})
     attested: dict[str, str] = {}

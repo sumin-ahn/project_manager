@@ -5101,8 +5101,8 @@ def cmd_ctx_apply(args, *, pm_import=None, dest_root: Path | None = None) -> int
             updates={key: value or None for key, value in updates.items()})
     except pm_import_mod.HarnessCtxError as exc:
         print(f"[중단] {exc}", file=sys.stderr)
-        # 쓰기 단계에서 바꾼 파일이 있으면 검사 거부가 아니다(무변경 약속을 지킬 수 없다).
-        return 1 if exc.written else _CTX_APPLY_REJECTED
+        # 쓰기 단계 실패는 바꾼 파일이 없어도 검사 거부가 아니다 — `_apply_harness_ctx` 가 `write_stage` 로 표시한다.
+        return 1 if getattr(exc, "write_stage", False) else _CTX_APPLY_REJECTED
     except RuntimeError as exc:
         if _is_engine_rev_skew(exc):
             raise

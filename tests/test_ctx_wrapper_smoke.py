@@ -110,8 +110,6 @@ def _run(wrapper: Path, payload, env: dict) -> subprocess.CompletedProcess:
 
     payload 가 dict 면 json.dumps(하네스와 동일 escape), str 이면 그대로 준다(malformed 케이스).
     """
-    if isinstance(payload, dict):
-        payload = {**payload, 'model': {'id': 'fixture-model'}, 'model_provider': 'fixture-provider', 'profile': ''}
     stdin = payload if isinstance(payload, str) else json.dumps(payload)
     return subprocess.run(
         # Git Bash 는 argv 의 `\\` 를 escape 로 소실한다 → as_posix(forward-slash)로 넘긴다(POSIX 무변경).

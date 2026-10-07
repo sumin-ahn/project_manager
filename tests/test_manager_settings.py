@@ -603,7 +603,7 @@ def test_t0943_budget_display_after_single_save(api, pm_home):
     row = conf["ctx_budget"]["claude"]
     assert row["status"] == "ok"
     assert (row["C"], row["E"], row["P"]) == (200000, 200000, 188000)
-    assert row["models"] == ["firstParty/fixture-model"] and row["warning"] is None
+    assert row["models"] == ["fixture-model"] and row["warning"] is None
     assert isinstance(row["applied_at"], str) and row["applied_at"].endswith("+00:00")
     assert "200,000" in row["basis_text"]
     assert not any(term in row["basis_text"].lower() for term in _T0943_HIDDEN_TERMS), row["basis_text"]

@@ -496,19 +496,22 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
   );
 
   // 도구별 사용 한도 행 아래의 압축 한도 기록 — 적용할 때 조회한 값이고 화면이 다시 조회하지 않는다.
-  // 버튼은 그 키의 현재 값으로 저장 경로(ctx-apply)를 다시 태워 모델 한도를 다시 읽는다.
+  // 버튼은 그 키의 저장된 값으로 저장 경로(ctx-apply)를 다시 태워 모델 한도를 다시 읽는다. 저장은 화면의
+  // 편집을 비우므로 편집이 남아 있으면 누를 수 없다. 설치되지 않은 도구는 적용이 기록하지 않아 블록이 없다.
+  // 기록 시각은 지금 기록 값이 처음 쓰인 시각이다(값이 같은 재적용은 기록을 다시 쓰지 않는다).
   const budgetBlock = (key: string) => {
     const harness = /^harness\.(claude|codex|opencode)\.ctx_window_tokens$/.exec(key)?.[1];
     const budget = harness === undefined ? undefined : conf.ctx_budget?.[harness];
-    if (budget === undefined) return null;
+    if (harness === undefined || budget === undefined || !light?.status?.harnesses.includes(harness)) return null;
     return (
       <span className="block text-[11px] text-slate-500" data-testid={`budget-${harness}`}>
         {budget.status === "ok" ? <>
           <span className="block">{budget.models.join(", ")} · 모델 가용 한도 {budget.C} ({budget.basis_text})</span>
-          <span className="block">적용 한도 {budget.E} · 압축 지점 {budget.P} · 적용 시각 {new Date(budget.applied_at).toLocaleString()}</span>
+          <span className="block">적용 한도 {budget.E} · 압축 지점 {budget.P} · 기록 시각 {new Date(budget.applied_at).toLocaleString()}</span>
         </> : <span className="block">압축 한도 기록 확인 불가 ({budget.reason})</span>}
-        <button type="button" disabled={busy} onClick={() => void save({ [key]: values[key] ?? null })}
+        <button type="button" disabled={busy || changedCount > 0} onClick={() => void save({ [key]: values[key] ?? null })}
                 className="rounded border border-slate-200 px-1">한도 다시 읽고 적용</button>
+        {changedCount > 0 && <span className="block">편집 내용을 저장한 뒤 한도를 다시 읽으십시오.</span>}
       </span>
     );
   };

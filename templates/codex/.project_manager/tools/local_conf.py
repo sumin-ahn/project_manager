@@ -730,7 +730,8 @@ def key_spec(key: str) -> KeySpec | None:
 
 # 압축 한도 기록 — 적용 경로(ctx-apply·설치·add-harness·pm_update·어댑터 수용)가 조회한 모델 한도 C 와
 # 계산 결과를 한 번 쓰고, 훅·상태줄·구동기·상태 조회는 읽기만 한다. 시간·도구 갱신·환경변수로
-# 값이 무효가 되지 않는다 — 같은 모델의 한도가 바뀌면 사용자가 다시 적용한다.
+# 값이 무효가 되지 않는다 — 같은 모델의 한도가 바뀌면 사용자가 다시 적용한다. `applied_at` 은 지금
+# 기록 값이 처음 쓰인 시각이다(값이 같은 재적용은 기록을 다시 쓰지 않는다).
 CTX_BUDGET_RELPATH = Path(".project_manager/.local/ctx-budget.json")
 CTX_BUDGET_SCHEMA = 5
 CTX_HARNESSES = ("claude", "codex", "opencode")
@@ -738,6 +739,9 @@ CTX_INPUT_KEYS = tuple(f"harness.{name}.ctx_window_tokens" for name in CTX_HARNE
     "ctx.checkpoint_at_pct", "ctx.precompact_at_pct", "ctx.compact_at_pct")
 _CTX_ENTRY_INTEGERS = ("W", "C", "E", "P", "checkpoint", "precompact")
 _CTX_RERUN = "`pm_config.py ctx-apply` 를 다시 실행하십시오"
+# 모델 가용 한도 출처(basis)의 형식 — Claude Code 조회 · Codex 모델 목록 · opencode 모델 목록(input 은 원본에 있을 때만).
+_CTX_BASIS_FORMS = ({"model_window", "auto_compact_threshold"}, {"context_window", "max_context_window", "model_context_window", "percent"},
+                    {"context", "output", "source"}, {"context", "output", "source", "input"})
 
 
 class CtxBudgetError(ValueError):
@@ -779,7 +783,10 @@ def _ctx_record_entry(root, values, harness):
             or any(not _ctx_positive(entry.get(key)) for key in _CTX_ENTRY_INTEGERS)
             or any(not isinstance(model, dict) or not isinstance(model.get("id"), str)
                    or not isinstance(model.get("provider"), str) or not _ctx_positive(model.get("C"))
-                   or not isinstance(model.get("basis"), dict) for model in models)):
+                   or not isinstance(model.get("basis"), dict) or set(model["basis"]) not in _CTX_BASIS_FORMS
+                   or not all(_ctx_positive(value) or (key == "source" and isinstance(value, str)) or (value is None and key in (
+                       "max_context_window", "model_context_window")) for key, value in model["basis"].items())
+                   for model in models)):
         raise CtxBudgetError(damaged)
     current = ctx_input_values(values)
     changed = [key for key in (f"harness.{harness}.ctx_window_tokens", *CTX_INPUT_KEYS[-3:])
@@ -795,13 +802,11 @@ def _ctx_model_name(model: dict) -> str:
 
 
 def _ctx_budget_view(record, entry, harness, session_model):
-    """세션 모델은 기록 모델의 이름이나 `provider/이름`과 같아야 한다(도구마다 세션이 알리는 형식이 다르다)."""
-    names = [_ctx_model_name(model) for model in entry["models"]]
+    """세션 모델은 기록 모델의 id 나 `provider/id` 와 같아야 한다(도구마다 세션이 알리는 형식이 다르다)."""
+    names = [model["id"] for model in entry["models"]]
     warning = None
-    if session_model is not None and not any(session_model in (model["id"], name)
-                                             for model, name in zip(entry["models"], names)):
-        warning = (f"{harness} 모델이 바뀌었습니다 (기록 {', '.join(names)} · 현재 {session_model}) — "
-                   f"{_CTX_RERUN}.")
+    if session_model is not None and session_model not in names + [_ctx_model_name(model) for model in entry["models"]]:
+        warning = f"{harness} 모델이 바뀌었습니다 (기록 {', '.join(names)} · 현재 {session_model}) — {_CTX_RERUN}."
     inputs = record["inputs"]
     return {"E": entry["E"], "P": entry["P"], "checkpoint": entry["checkpoint"],
             "precompact": entry["precompact"], "checkpoint_at_pct": int(inputs["ctx.checkpoint_at_pct"]),
@@ -818,7 +823,7 @@ def read_ctx_budget(root, values, harness, session_model=None) -> dict:
 
 
 def _ctx_basis_text(model: dict) -> str:
-    """모델 가용 한도의 출처 한 줄 (관리자 표시용) — 조회 근거의 형식(도구마다 다르다)으로 고른다."""
+    """모델 가용 한도의 출처 한 줄 (관리자 표시용) — 읽기가 확인한 출처 형식(`_CTX_BASIS_FORMS`)으로 고른다."""
     basis = model["basis"]
     if "auto_compact_threshold" in basis:
         return (f"Claude Code 조회 · 모델 창 {basis['model_window']:,} − 압축 예약 "

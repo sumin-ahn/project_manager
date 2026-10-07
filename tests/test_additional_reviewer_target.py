@@ -1922,7 +1922,7 @@ def _assert_relay_conf_isolation(source):
             elif isinstance(node, ast.ClassDef):
                 collect(node.body, prefix + node.name + '.')
     collect(tree.body)
-    forbidden = {'_load_ctx_leaf', 'resolve_ctx_budget', 'bound_ctx_budget', 'load_conf', 'read_ctx_budget'}
+    forbidden = {'_load_ctx_leaf', 'ctx_budget', 'load_conf', 'read_ctx_budget'}
     roots = [name for name in functions if name.startswith('Supervisor.') or 'raw' in name.lower()]
     top = ast.Module(body=[node for node in tree.body if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))], type_ignores=[])
     functions['<import>'] = top
@@ -1968,12 +1968,12 @@ def test_t0932_relay_dag_cycle_sensitivity(monkeypatch):
 def test_t0932_relay_conf_path_sensitivity(mutation):
     source = (TOOLS / 'pm_relay.py').read_text(encoding='utf-8')
     if mutation == 'import':
-        source += '\nbound_ctx_budget(None, None, None)\n'
+        source += '\nctx_budget(None, "fixture", None)\n'
     elif mutation == 'Supervisor':
-        source += '\nSupervisor._guard_probe = bound_ctx_budget\n'
-        source = source.replace('def stop_marker_present(self, session_id: str) -> bool:', 'def stop_marker_present(self, session_id: str) -> bool:\n        bound_ctx_budget(None, None, None)')
+        source += '\nSupervisor._guard_probe = ctx_budget\n'
+        source = source.replace('def stop_marker_present(self, session_id: str) -> bool:', 'def stop_marker_present(self, session_id: str) -> bool:\n        ctx_budget(None, "fixture", None)')
     else:
-        source += '\ndef _raw_guard_probe():\n    resolve_ctx_budget(None, {}, "fixture")\n'
+        source += '\ndef _raw_guard_probe():\n    ctx_budget(None, "fixture", None)\n'
     with pytest.raises(AssertionError, match='conf 소비 도달'):
         _assert_relay_conf_isolation(source)
 

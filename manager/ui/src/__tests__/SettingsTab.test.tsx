@@ -708,29 +708,58 @@ describe("실패", () => {
   });
 });
 
-it("T0943 압축 한도 기록 표시와 다시 적용 버튼", async () => {
-  const bridge = makeBridge();
-  const conf: ConfSection = { ...CONF, ctx_budget: {
-    claude: { status: "ok", models: ["firstParty/claude-opus-5-5"], C: 967000, E: 600000, P: 564000,
+describe("T0943 압축 한도 기록", () => {
+  const BUDGET: ConfSection = { ...CONF, ctx_budget: {
+    claude: { status: "ok", models: ["claude-opus-5-5"], C: 967000, E: 600000, P: 564000,
               applied_at: "2026-10-07T03:00:00+00:00",
               basis_text: "Claude Code 조회 · 모델 창 1,000,000 − 압축 예약 33,000" },
     codex: { status: "error", reason: "codex 압축 한도 기록이 없습니다" },
+    opencode: { status: "error", reason: "opencode 압축 한도 기록이 없습니다" },
   } };
-  mounted(bridge, false, null,
-          settingsEntry({ ...VALUES, "harness.claude.ctx_window_tokens": "600000" }), lightEntry(conf));
-  openGroup("harness");
-  const claude = screen.getByTestId("budget-claude");
-  expect(claude).toHaveTextContent("firstParty/claude-opus-5-5 · 모델 가용 한도 967000 (Claude Code 조회 · 모델 창 1,000,000 − 압축 예약 33,000)");
-  expect(claude).toHaveTextContent("적용 한도 600000 · 압축 지점 564000");
-  expect(claude).toHaveTextContent(`적용 시각 ${new Date("2026-10-07T03:00:00+00:00").toLocaleString()}`);
-  expect(screen.getByTestId("budget-codex")).toHaveTextContent("압축 한도 기록 확인 불가 (codex 압축 한도 기록이 없습니다)");
-  expect(screen.queryByTestId("budget-opencode")).toBeNull();
-  for (const word of ["verification", "physical", "receipt", "native", "metadata", "evidence", "schema",
-                      "unknown", "자동 재검증", "자동 재시도"]) {
-    expect(`${claude.textContent}${screen.getByTestId("budget-codex").textContent}`).not.toContain(word);
-  }
-  expect(bridge.conf_save).not.toHaveBeenCalled();
-  fireEvent.click(within(claude).getByRole("button", { name: "한도 다시 읽고 적용" }));
-  await waitFor(() => expect(bridge.conf_save).toHaveBeenCalledTimes(1));
-  expect(savedUpdates(bridge)).toEqual({ "harness.claude.ctx_window_tokens": "600000" });
+  /** 가벼운 현황 조회의 설치 도구 목록(`harnesses`)과 판정 — 기록 블록은 설치된 도구 행에만 선다. */
+  const installed = (harnesses: string[]): Entry => ({ status: { conf: BUDGET, harnesses } as StatusDocument });
+  const SAVED = { ...VALUES, "harness.claude.ctx_window_tokens": "600000" };
+
+  it("T0943 기록 표시와 다시 적용 버튼 — 편집이 없으면 저장된 값으로 저장 경로를 탄다", async () => {
+    const bridge = makeBridge();
+    mounted(bridge, false, null, settingsEntry(SAVED), installed(["claude", "codex"]));
+    openGroup("harness");
+    const claude = screen.getByTestId("budget-claude");
+    expect(claude).toHaveTextContent("claude-opus-5-5 · 모델 가용 한도 967000 (Claude Code 조회 · 모델 창 1,000,000 − 압축 예약 33,000)");
+    expect(claude).not.toHaveTextContent("firstParty");
+    expect(claude).toHaveTextContent("적용 한도 600000 · 압축 지점 564000");
+    expect(claude).toHaveTextContent(`기록 시각 ${new Date("2026-10-07T03:00:00+00:00").toLocaleString()}`);
+    expect(claude).not.toHaveTextContent("적용 시각");
+    expect(screen.getByTestId("budget-codex")).toHaveTextContent("압축 한도 기록 확인 불가 (codex 압축 한도 기록이 없습니다)");
+    for (const word of ["verification", "physical", "receipt", "native", "metadata", "evidence", "schema",
+                        "unknown", "자동 재검증", "자동 재시도"]) {
+      expect(`${claude.textContent}${screen.getByTestId("budget-codex").textContent}`).not.toContain(word);
+    }
+    expect(bridge.conf_save).not.toHaveBeenCalled();
+    fireEvent.click(within(claude).getByRole("button", { name: "한도 다시 읽고 적용" }));
+    await waitFor(() => expect(bridge.conf_save).toHaveBeenCalledTimes(1));
+    expect(savedUpdates(bridge)).toEqual({ "harness.claude.ctx_window_tokens": "600000" });
+  });
+
+  it("T0943 저장하지 않은 편집이 있으면 버튼이 잠기고 편집이 그대로 남는다", () => {
+    const bridge = makeBridge();
+    mounted(bridge, false, null, settingsEntry(SAVED), installed(["claude", "codex"]));
+    openGroup("harness");
+    fireEvent.change(screen.getByLabelText("harness.claude.ctx_window_tokens"), { target: { value: "300000" } });
+    const button = within(screen.getByTestId("budget-claude")).getByRole("button", { name: "한도 다시 읽고 적용" });
+    expect(button).toBeDisabled();
+    expect(within(screen.getByTestId("budget-codex")).getByRole("button", { name: "한도 다시 읽고 적용" })).toBeDisabled();
+    expect(screen.getByTestId("budget-claude")).toHaveTextContent("편집 내용을 저장한 뒤 한도를 다시 읽으십시오.");
+    fireEvent.click(button);
+    expect(bridge.conf_save).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("harness.claude.ctx_window_tokens")).toHaveValue("300000");
+  });
+
+  it("T0943 설치되지 않은 도구 행에는 기록 블록이 없다", () => {
+    mounted(makeBridge(), false, null, settingsEntry(SAVED), installed(["claude"]));
+    openGroup("harness");
+    expect(screen.getByTestId("budget-claude")).toHaveTextContent("적용 한도 600000");
+    expect(screen.queryByTestId("budget-codex")).toBeNull();
+    expect(screen.queryByTestId("budget-opencode")).toBeNull();
+  });
 });
