@@ -817,7 +817,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   줄어든 것은 그 실행이 부르지 않던 코드뿐이다. 현재화한 것은 기대 SHA 하나뿐이다.
 #   같은 티켓의 수정 라운드에서 한 번 더 이동했다 — `plan()` docstring 의 낱말 하나("모듈 밖
 #   호출부")뿐이고 실행 코드·배달 경계는 무편집이다.
-_T0585_PM_UPDATE_SHA256 = "2ebb31f074849cc47b541b788dc4522178cd27aae8115fe5fbfc853401d53129"
+_T0585_PM_UPDATE_SHA256 = "d8d8e7be10e6871a77775a4dcaa89d7e91e2f437767bc7eb60e956dacec1600b"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -1077,6 +1077,14 @@ def _t0585_pm_update_source() -> str:
     선통과했으며 _main·plan·apply·sync_adapter_configs·_adapter_config_gate_failed의 AST는
     기준 HEAD와 동일하다. 이 합성 시나리오에는 이동할 옛 키가 없어 새 실패 분기가 발화하지
     않는다. 실제 v1.7.13 프로세스 검증은 별도 고정 커밋과 blob을 사용한다.
+    T-0944 — claude 카드 effort 렌더를 위해 추론 허용집합 로더 `_reasoning_allowed`
+    (`pm_relay.REASONING_ALLOWED` 반환)를 더하고 `_render_text`·`apply` 렌더 분기의 `render_adapter`
+    호출에 `reasoning_allowed=` 인자를 한 줄씩 넣었다. 역적용 delta 의 marker 는 전부 그 구간 밖이라
+    그대로 유일 해소됐고(marker assert 선통과) anachronism 부재 단언도 통과했다. 배달 경계
+    (source/manifest planning → apply → self-update 순서)와 배달 파일 집합은 불변이다: 새 인자는
+    카드에 채울 추론 값이 있을 때만 검증을 발화시키는데, 이 fixture 의 fresh codex 채택자 local.conf
+    에는 `delegate.*.reasoning` 값이 없어(pm_import 는 `delegate.*` 키를 쓰지 않는다) 검증이 발화하지
+    않고 렌더 산출이 종전과 같다. 현재화한 것은 기대 SHA 하나뿐이다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -1202,7 +1210,7 @@ def _install_t0585_updater(dest: Path) -> None:
 # T-0887: 온보딩 opt-in 일습 삭제로 역적용 delta 의 exact-marker 목록이 두 항목으로 줄고
 # (되돌릴 원문이 사라졌다) 그만큼 historical 전문 SHA 도 이동했다. 퇴역 경로 delta 의 marker 는
 # 전부 그 절 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "247219e9d7ef0f88f0cdb80bd8feaca6e6b386bffe92dc2ba0afa0eacdc7ce4e"
+_PRE_T0876_PM_UPDATE_SHA256 = "b615d25ffb68bc5693d56068ec687a2bbf797bf38fdddc18dcecb6d6978572b8"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -1255,6 +1263,12 @@ def _pre_t0876_pm_update_source() -> str:
     exact-marker가 선통과하고 _main·plan·apply·sync_adapter_configs·
     _adapter_config_gate_failed의 AST가 기준 HEAD와 동일함을 확인했다. 이 시나리오는 이동할
     옛 conf 키가 없어 새 실패 분기가 발화하지 않는다. 합성본 지문만 갱신했다.
+    T-0944 — 추론 허용집합 로더 `_reasoning_allowed` 추가와 `_render_text`·`apply` 의
+    `render_adapter` 호출 인자 한 줄씩이다. 이 fixture 가 역적용하는 T-0878·T-0876 delta(retired-path
+    선언 검증·legacy flavor 선택 판정)와 겹치지 않아 exact-marker 는 모두 그대로 유일 해소됐고
+    (marker assert 선통과), RUN1 이 검증하는 배달 경계(신 reviewer 설치 → 두 번째 실행의 구 파일
+    퇴역)도 그대로다 — fresh codex 채택자 local.conf 에 `delegate.*.reasoning` 값이 없어 새 검증이
+    발화하지 않는다. 합성본 bytes 차이만 SHA 에 반영했다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")

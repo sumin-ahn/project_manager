@@ -2,6 +2,7 @@
 name: developer-hard
 description: "{{PROJECT_NAME}} 프로젝트의 단일 ticket 구현 전문 서브에이전트(난제=hard 티어). developer 와 같은 역할이나 상향 프로필 — orchestrator(PM)가 엔진 코어·파서·비파괴 계약·cross-module·보안·회귀 광범위 ticket(T-NNNN)을 위임할 때 사용. ticket 본문의 목표/인터페이스/결정/DoD대로 코드+테스트를 작성한다. board.py 조작과 status.md/log/current.md 갱신은 하지 않는다(orchestrator 담당)."
 model: "{{DELEGATE_MODEL_DEVELOPER_HARD}}"
+effort: "{{DELEGATE_REASONING_DEVELOPER_HARD}}"
 tools: Read, Edit, Write, Bash, Glob, Grep
 ---
 

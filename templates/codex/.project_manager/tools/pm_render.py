@@ -38,6 +38,7 @@ neutralize_model_todo·neutralize_delegate_model_todo 참조. 그 밖의 미해�
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 # baked 엔진 rev — engine_rev.py --bump가 기계 일괄 재작성한다.
@@ -49,11 +50,10 @@ ENGINE_REV = "v1.8.0"
 # `delegate.<role>[.<tier>].{model,reasoning}` 의 렌더 파생물이고, 그 밖의 출처를 갖지 않는다.
 #
 # hard 티어(`developer-hard`)는 **별도 완전 세트**다 — normal 프로필을 상속하지 않는다(엔진의
-# 프로필 해소와 같은 규칙). reasoning 토큰은 그 값을 실제로 소비하는 카드가 있는 것만 둔다
-# (codex `model_reasoning_effort`) — 소비처 없는 토큰은 배선만 늘리고 해소를 못 검증한다.
-# 역할 축 4개도 codex 카드가 그 필드를 갖게 되면서 소비처가 생겼으므로 표에 함께 선다. claude·
-# opencode 카드 frontmatter 에는 추론을 실을 필드가 없어 그 두 타깃은 모델 토큰만 소비한다 —
-# 하네스 예외가 아니라 카드 **형식** 차이이며 판정은 CARD_FIELD_TOKEN_PREFIXES 가 소유한다.
+# 프로필 해소와 같은 규칙). reasoning 토큰은 그 값을 실제로 소비하는 카드가 있는 것만 둔다 —
+# 소비처 없는 토큰은 배선만 늘리고 해소를 못 검증한다. 추론 토큰 소비는 claude `effort`·codex
+# `model_reasoning_effort` 이고, opencode 카드는 모델 토큰만 소비한다 — 하네스 예외가 아니라 카드
+# **형식** 차이이며 판정은 CARD_FIELD_TOKEN_PREFIXES 가 소유한다.
 #
 # pm_update 는 이 표를 **역전해** local.conf 채널 배선을 만든다(`_local_conf_operational_map`) —
 # 손으로 재타이핑한 사본을 두면 새 역할/티어가 한쪽에만 늘어 조용히 미배선된다.
@@ -70,12 +70,15 @@ DELEGATE_MODEL_CONF_KEYS: dict[str, str] = {
     "DELEGATE_REASONING_CODE_REVIEWER": "delegate.code-reviewer.reasoning",
 }
 
-# 토큰 접두 → 그 값을 실을 수 있는 카드 필드. **카드 형식이 소비 기대를 정한다**(하네스별 예외
-# 아님): claude·opencode 는 frontmatter 에 모델 한 줄만 있고, codex TOML 만 추론 강도 키를 갖는다.
-# 소비 가드가 이 선언을 읽어 (토큰, 타깃) 기대를 파생하므로 손열거 표를 따로 두지 않는다.
-CARD_FIELD_TOKEN_PREFIXES: dict[str, str] = {
-    "DELEGATE_MODEL_": "model",
-    "DELEGATE_REASONING_": "model_reasoning_effort",
+# 어댑터 네임스페이스 디렉터리 → (토큰 접두 → 그 값을 실을 카드 필드). **카드 형식이 소비 기대를
+# 정한다**(하네스별 예외 아님): 형식은 카드가 놓인 어댑터 디렉터리가 정하므로 키도 그 디렉터리다.
+# `.claude` frontmatter 는 `model`·`effort`, `.codex` TOML 은 `model`·`model_reasoning_effort`,
+# `.opencode` frontmatter 는 `model` 만 싣는다. 키 집합은 CARD_HARNESS_BY_ADAPTER_DIR 의 키 집합과
+# 같다. 소비 가드·중화 줄 판정(`_MODEL_FIELD_LINE_RE`)·렌더의 추론 값 검증이 이 선언 하나를 읽는다.
+CARD_FIELD_TOKEN_PREFIXES: dict[str, dict[str, str]] = {
+    ".claude": {"DELEGATE_MODEL_": "model", "DELEGATE_REASONING_": "effort"},
+    ".codex": {"DELEGATE_MODEL_": "model", "DELEGATE_REASONING_": "model_reasoning_effort"},
+    ".opencode": {"DELEGATE_MODEL_": "model"},
 }
 
 
@@ -154,11 +157,18 @@ OPENCODE_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
 _OPENCODE_MODEL_KEY = "OPENCODE_PRO_MODEL"  # bare operational key — all_empty 판정용(빈값 vs 부재)
 _MODEL_TODO_PLACEHOLDER = "<provider/model>"
 
-# 중화 대상 줄 = **모델 필드 줄**. 하네스마다 표기가 다르다(YAML frontmatter `model:` · codex
-# TOML `model = `/`model_reasoning_effort = `)나 판정은 하나여야 import 와 self-update 가 같은
-# 산출을 낸다. 산문/헤더의 토큰은 비대상(주석화하면 markdown/TOML 이 깨진다) — 그 위치의 미해소
-# 토큰은 계속 `_assert_no_leak` 가 표면화한다.
-_MODEL_FIELD_LINE_RE = re.compile(r"^(?:model|model_reasoning_effort)\s*[:=]")
+# 중화 대상 줄 = **카드 필드 줄**. 하네스마다 필드 이름과 대입 표기(YAML `:` · TOML `=`)가 다르나
+# 판정은 하나여야 import 와 self-update 가 같은 산출을 낸다. 필드 이름은 CARD_FIELD_TOKEN_PREFIXES
+# 의 합집합에서 파생한다(손열거 사본 0 — 표에 필드가 늘면 중화 대상도 같이 는다). 긴 이름부터
+# 나열해 패턴이 결정적이다. 산문/헤더의 토큰은 비대상(주석화하면 markdown/TOML 이 깨진다) — 그
+# 위치의 미해소 토큰은 계속 `_assert_no_leak` 가 표면화한다.
+_CARD_FIELD_NAMES: tuple[str, ...] = tuple(sorted(
+    {field for fields in CARD_FIELD_TOKEN_PREFIXES.values() for field in fields.values()},
+    key=lambda field: (-len(field), field),
+))
+_MODEL_FIELD_LINE_RE = re.compile(
+    r"^(?:" + "|".join(re.escape(field) for field in _CARD_FIELD_NAMES) + r")\s*[:=]"
+)
 
 _DELEGATE_MODEL_TODO_PLACEHOLDER = "<model>"
 _DELEGATE_REASONING_TODO_PLACEHOLDER = "<reasoning>"
@@ -185,12 +195,22 @@ def card_harness_from_path(card_path: str | None) -> str | None:
     경로가 없거나(인메모리 렌더·호출부 미배선) 어댑터 밖이면 None — 그때는 하네스 판정을
     요구하는 규칙(미사용 프로필)이 발화하지 않고 현행 해소가 그대로 간다.
     """
+    adapter_dir = _card_adapter_dir(card_path)
+    return CARD_HARNESS_BY_ADAPTER_DIR[adapter_dir] if adapter_dir else None
+
+
+def _card_adapter_dir(card_path: str | None) -> str | None:
+    """**인스턴스 상대** 카드 경로 → 그 카드의 어댑터 네임스페이스 디렉터리 (판정 불가면 None).
+
+    `card_harness_from_path` 와 같은 첫 컴포넌트 판정이다 — 카드 필드 표(CARD_FIELD_TOKEN_PREFIXES)
+    조회 키가 이 디렉터리다."""
     if not card_path:
         return None
     rel = str(card_path).replace("\\", "/").lstrip("/")
     if not rel:
         return None
-    return CARD_HARNESS_BY_ADAPTER_DIR.get(rel.split("/", 1)[0])
+    first = rel.split("/", 1)[0]
+    return first if first in CARD_HARNESS_BY_ADAPTER_DIR else None
 
 
 def unused_delegate_profiles(
@@ -303,9 +323,9 @@ def _comment_out_model_line(
     """모델 필드 줄의 미해소 `token` 을 주석화·중화하는 공유 줄-변환 (판정 사본 금지).
 
     모델 토큰이 여럿(opencode 어댑터·역할 카드·티어 프로필)이라도 **줄 판정은 하나**여야 import 와
-    self-update 가 같은 산출을 낸다. 대상은 모델 필드 줄(`_MODEL_FIELD_LINE_RE` — YAML
-    frontmatter 의 `model:` 과 codex TOML 의 `model =`/`model_reasoning_effort =`)뿐이고, 이미
-    주석이거나 `TODO` 가 붙은 줄은 비파괴·멱등으로 건너뛴다.
+    self-update 가 같은 산출을 낸다. 대상은 카드 필드 줄(`_MODEL_FIELD_LINE_RE` — 필드 이름은
+    CARD_FIELD_TOKEN_PREFIXES 파생)뿐이고, 이미 주석이거나 `TODO` 가 붙은 줄은 비파괴·멱등으로
+    건너뛴다.
     """
     if token not in text:
         return text, False
@@ -372,7 +392,10 @@ def neutralize_delegate_model_todo(
 
 
 class RenderLeakError(RuntimeError):
-    """렌더 산출물에 리터럴 `{{...}}` 또는 stray omit-marker 가 잔존 — 미해소 leak(자족 산출물 위반)."""
+    """렌더가 자족 산출물 또는 카드 값 조건을 위반했다.
+
+    자족 위반은 리터럴 `{{...}}`·stray omit-marker 잔존(미해소 leak)이고, 카드 값 조건 위반은
+    카드에 채울 추론 값이 그 카드 하네스의 허용집합 밖이거나 검증할 수 없는 경우다."""
 
 
 # 스킬 호출 표기의 단일 진실. 키는 공개 harness 별칭이 아니라 `templates/` 아래 실 디렉터리명이다.
@@ -575,6 +598,56 @@ def _fill_operational(text: str, operational: dict) -> tuple[str, list[str]]:
     return text, empty_keys
 
 
+def _check_card_reasoning_values(
+    text: str,
+    operational: dict,
+    *,
+    card_path: str | None,
+    reasoning_allowed: Mapping[str, Sequence[str]] | None,
+    source: str | None,
+) -> None:
+    """카드에 채울 추론 값이 그 카드 하네스의 허용집합 원소인지 검증한다(밖이면 RenderLeakError).
+
+    대상은 텍스트에 토큰이 있고 operational 에 비어 있지 않은 값이 있는 추론 토큰뿐이다 — 부재는
+    중화가, 빈 값은 `_assert_no_leak` 가 처리한다. 허용집합은 호출자가 넘기는 것 하나만 쓴다
+    (pm_update 가 `pm_relay.REASONING_ALLOWED` 를 넘긴다 — 이 모듈에 값 사본을 두지 않는다).
+    하네스가 무효 값을 에러 없이 버리는 경우가 있어(claude 는 디버그 로그 한 줄 뒤 effort 없이
+    스폰) 값을 빼거나 기본값으로 바꾸지 않고 렌더를 멈춘다. 채울 값이 있는데 카드 하네스를 판정할
+    수 없거나, 그 형식에 추론 필드가 없거나, 허용집합이 전달되지 않았으면 검증할 수 없으므로 역시
+    멈춘다.
+    """
+    adapter_dir = _card_adapter_dir(card_path)
+    card_harness = card_harness_from_path(card_path)
+    where = f" ({source})" if source else ""
+    for token_key, conf_key in DELEGATE_MODEL_CONF_KEYS.items():
+        if not token_key.startswith(_DELEGATE_REASONING_TOKEN_PREFIX):
+            continue
+        value = operational.get(token_key)
+        token = "{{" + token_key + "}}"
+        if value is None or str(value) == "" or token not in text:
+            continue
+        setting = f"`{conf_key}={value}`"
+        if adapter_dir is None:
+            raise RenderLeakError(
+                f"추론 값 렌더{where} 실패 — 카드 하네스를 판정할 수 없어 {setting} 를 검증할 수 "
+                f"없다(card_path={card_path!r}). 추론 값은 하네스가 정해진 카드에만 채운다.")
+        if _DELEGATE_REASONING_TOKEN_PREFIX not in CARD_FIELD_TOKEN_PREFIXES[adapter_dir]:
+            raise RenderLeakError(
+                f"추론 값 렌더{where} 실패 — {card_harness} 카드 형식에는 추론 필드가 없다. "
+                f"{token} 를 이 카드에 둘 수 없다({setting}).")
+        allowed = (reasoning_allowed or {}).get(card_harness)
+        if allowed is None:
+            raise RenderLeakError(
+                f"추론 값 렌더{where} 실패 — {card_harness} 추론 허용집합이 전달되지 않아 "
+                f"{setting} 를 검증할 수 없다. 호출자는 pm_relay.REASONING_ALLOWED 를 "
+                "reasoning_allowed 로 넘긴다.")
+        if str(value) not in allowed:
+            raise RenderLeakError(
+                f"추론 값 렌더{where} 실패 — {setting} 는 {card_harness} 카드 허용값"
+                f"({', '.join(allowed)}) 밖이다. 하네스는 무효 값을 에러 없이 버리므로 카드에 "
+                "싣지 않고 멈춘다 — local.conf 값을 허용값으로 고친다.")
+
+
 def render_adapter(
     template_text: str,
     operational: dict | None = None,
@@ -584,6 +657,7 @@ def render_adapter(
     template_dir: str | tuple[str, ...] | list[str] | None = None,
     delegate_harness: dict[str, str] | None = None,
     card_path: str | None = None,
+    reasoning_allowed: Mapping[str, Sequence[str]] | None = None,
 ) -> str:
     """어댑터 템플릿 → 자족 .md (operational plain replace).
 
@@ -594,6 +668,9 @@ def render_adapter(
     에서 해소). 카드 하네스와 다르면 그 토큰은 미사용 프로필이라 값 대신 이유를 중화로 남긴다.
     card_path: 이 산출물의 **인스턴스 상대 경로**(선택·pm_update 가 계획의 dest 좌표를 넘긴다).
     카드 하네스 판정의 유일한 입력이다 — 미배선이면 미사용 프로필 규칙이 발화하지 않는다.
+    reasoning_allowed: 하네스 → 추론 허용값(선택·pm_update 가 `pm_relay.REASONING_ALLOWED` 를
+    넘긴다). 카드에 추론 값을 채울 때 그 카드 하네스의 허용값 밖이면 RenderLeakError 다
+    (`_check_card_reasoning_values`).
 
     template_dir가 주어지면 operational보다 먼저 canonical 스킬 호출 토큰을 그 하네스 값으로
     치환한다. 값은 SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR 단일 registry에서만 읽는다.
@@ -617,6 +694,11 @@ def render_adapter(
         )
         if template_dir is not None
         else template_text
+    )
+    # 추론 값 검증은 미사용 프로필을 뺀 **뒤**, 치환 **전**이다 — 이 카드에 실제로 채울 값만 본다.
+    _check_card_reasoning_values(
+        result, operational, card_path=card_path,
+        reasoning_allowed=reasoning_allowed, source=source,
     )
     result, detected_empty = _fill_operational(result, operational)
     # pm_update 가 excluded 한 빈값 key(empty_keys) + 렌더러가 직접 감지한 빈값 key 를 합쳐

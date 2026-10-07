@@ -7961,6 +7961,105 @@ def test_agent_card_empty_delegate_model_is_loud_leak(pm_update, tmp_path):
         )
 
 
+# PM 홈(adopter#0) 위임 설정 15줄 — 전 역할 claude·opus, 구현·조사 high, 설계·리뷰 max.
+_ADOPTER0_DELEGATE_CONF = "".join(
+    f"delegate.{profile}.{key}={value}\n"
+    for profile, reasoning in (
+        ("developer", "high"),
+        ("developer.hard", "high"),
+        ("researcher", "high"),
+        ("architect", "max"),
+        ("code-reviewer", "max"),
+    )
+    for key, value in (("harness", "claude"), ("model", "opus"), ("reasoning", reasoning))
+)
+
+
+def _card_effort_line(text: str) -> str:
+    """claude 카드 frontmatter 의 effort 줄(해소·중화 양쪽) — 없으면 빈 문자열."""
+    for line in text.splitlines():
+        if line.lstrip("# ").startswith("effort:"):
+            return line
+    return ""
+
+
+def test_render_text_claude_cards_render_conf_reasoning(pm_update, tmp_path):
+    """claude 카드 5장이 `_render_text` 실 경로로 conf 의 reasoning 을 `effort` 로 싣는다.
+
+    허용집합은 `pm_relay.REASONING_ALLOWED` 배선 그대로다(리터럴 주입 없음). 카드에 effort 가
+    없으면 서브에이전트는 PM 세션 effort 를 물려받아 conf 선언이 실행면에 닿지 않는다."""
+    dest = tmp_path / "dest"
+    _write_local_conf(dest, "project.name=Acme\n" + _ADOPTER0_DELEGATE_CONF)
+    expected = {
+        "architect.md": "max",
+        "code-reviewer.md": "max",
+        "developer.md": "high",
+        "developer-hard.md": "high",
+        "researcher.md": "high",
+    }
+    for name, effort in expected.items():
+        rendered = pm_update._render_text(
+            REPO / ".claude" / "agents" / name, dest, card_path=f".claude/agents/{name}")
+        assert _card_effort_line(rendered) == f'effort: "{effort}"', \
+            f"{name} 의 effort 가 conf reasoning 으로 렌더되지 않았다"
+        assert _card_model_line(rendered) == 'model: "opus"', name
+        assert "{{" not in rendered, f"{name}: 미해소 토큰 잔존"
+
+
+def test_render_text_rejects_reasoning_outside_harness_ladder(pm_update, tmp_path):
+    """conf reasoning 이 카드 하네스 허용값 밖이면 `_render_text` 가 RenderLeakError 로 멈춘다."""
+    dest = tmp_path / "dest"
+    _write_local_conf(
+        dest,
+        "project.name=Acme\n"
+        + _ADOPTER0_DELEGATE_CONF.replace(
+            "delegate.architect.reasoning=max", "delegate.architect.reasoning=ultra"),
+    )
+    # RenderLeakError 는 RuntimeError 서브클래스 — pm_update 가 pm_render 를 격리 로드하므로
+    # 클래스 동일성 대신 base + 이름으로 잡는다.
+    with pytest.raises(RuntimeError) as excinfo:
+        pm_update._render_text(
+            REPO / ".claude" / "agents" / "architect.md", dest,
+            card_path=".claude/agents/architect.md")
+    assert type(excinfo.value).__name__ == "RenderLeakError", excinfo.value
+    assert "delegate.architect.reasoning=ultra" in str(excinfo.value)
+
+
+def test_apply_writes_claude_card_effort_and_stops_outside_ladder(pm_update, tmp_path):
+    """`apply` 의 렌더 분기도 같은 허용집합 배선을 탄다 — 계획 판정(`_render_text`)과 기록이 갈리지 않는다.
+
+    conf reasoning 은 카드 effort 로 기록되고, 허용값 밖 값은 RenderLeakError 로 멈춰 카드를 고치지
+    않는다(무효 effort 를 실은 카드가 남지 않는다)."""
+    source = tmp_path / "src"
+    shutil.copytree(REPO / ".claude" / "agents", source / ".claude" / "agents")
+    manifest_file = source / ".project_manager" / "engine.manifest"
+    manifest_file.parent.mkdir(parents=True)
+    manifest_file.write_text(".claude/agents    @render\n", encoding="utf-8")
+    _track_source_tree(source)
+    manifest = pm_update.read_manifest(manifest_file)
+    dest = tmp_path / "dest"
+    conf = _write_local_conf(dest, "project.name=Acme\n" + _ADOPTER0_DELEGATE_CONF)
+
+    changes, missing = pm_update.plan(source, manifest, dest_root=dest)
+    assert missing == []
+    pm_update.apply(changes)
+    card = dest / ".claude" / "agents" / "architect.md"
+    assert _card_effort_line(card.read_text(encoding="utf-8")) == 'effort: "max"'
+    settled = card.read_bytes()
+
+    conf.write_text(
+        conf.read_text(encoding="utf-8").replace(
+            "delegate.architect.reasoning=max", "delegate.architect.reasoning=ultra"),
+        encoding="utf-8",
+    )
+    changes, _missing = pm_update.plan(source, manifest, dest_root=dest)
+    with pytest.raises(RuntimeError) as excinfo:  # RenderLeakError (격리 로드·base 로 잡음)
+        pm_update.apply(changes)
+    assert type(excinfo.value).__name__ == "RenderLeakError", excinfo.value
+    assert "delegate.architect.reasoning=ultra" in str(excinfo.value)
+    assert card.read_bytes() == settled, "허용값 밖 값으로 카드가 다시 기록됐다"
+
+
 def _import_adopter(pm_import, dest: Path, harness: str = "claude") -> None:
     """fresh 채택자 설치 (출력 삼킴·라이브 하네스 미호출)."""
     import io

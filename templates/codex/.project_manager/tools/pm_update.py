@@ -1916,6 +1916,20 @@ def _load_pm_render():
     )
 
 
+def _reasoning_allowed():
+    """하네스 → 추론 허용값 — `pm_relay.REASONING_ALLOWED` 단일 진실을 렌더에 넘긴다.
+
+    카드 렌더(`pm_render.render_adapter(reasoning_allowed=...)`)가 카드에 채울 추론 값을 이 집합으로
+    검증한다. pm_render 에 값 사본을 두지 않으려고 같은 tools/ 의 pm_relay 에서 읽는다
+    (`_load_pm_render` 와 같은 로드). 로드 실패는 그대로 올린다 — 검증 없이 카드를 렌더하는 경로를
+    두지 않는다.
+    """
+    relay_py = Path(__file__).resolve().parent / "pm_relay.py"
+    return _load_module_from_path(
+        relay_py, "pm_relay.py", allow_unverified=True,
+    ).REASONING_ALLOWED
+
+
 def _load_pm_import():
     """pm_import 모듈을 같은 tools/ 에서 직접 로드 (_load_pm_render 패턴 동형).
 
@@ -3710,6 +3724,7 @@ def _render_text(
         source=str(source_path),
         delegate_harness=_delegate_harness_from_local_conf(dest_root),
         card_path=card_path,
+        reasoning_allowed=_reasoning_allowed(),
     )
     if flat_command_skill is not None:
         rendered = _render_flat_command_reference(rendered, flat_command_skill)
@@ -4752,6 +4767,7 @@ def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
                 source=str(sp),
                 delegate_harness=_delegate_harness_from_local_conf(dest_root),
                 card_path=str(_r).replace("\\", "/"),
+                reasoning_allowed=_reasoning_allowed(),
             )
             if getattr(dst, "flat_command_skill", None) is not None:
                 rendered = _render_flat_command_reference(
