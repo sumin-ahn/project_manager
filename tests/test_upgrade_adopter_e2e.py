@@ -134,6 +134,31 @@ def test_t0927_old_process_boundary_requires_fresh_run2(t0927_old_adopter, t0927
     assert "ctx.precompact_at_pct=90" in text
 
 
+def test_t0944_old_process_run1_renders_claude_effort(t0927_old_adopter, t0927_upstream):
+    """v1.7.13 프로세스가 도는 첫 갱신이 claude 카드 effort 렌더에서 멈추지 않는다 (T-0944).
+
+    첫 실행은 메모리에 옛 pm_update 가 있고, 카드 렌더 직전에 새로 복사된 pm_render 를 디스크에서
+    읽는다. 새 pm_render 가 추론 허용값을 호출자 인자로 요구하면 옛 호출자는 그 인자를 몰라 rc 1 로
+    멈춘다(리뷰 F-001 재현). 위 경계 테스트의 채택자에는 위임 추론 값이 없어 이 경로를 지나지 않으므로
+    추론 값을 둔 claude 채택자로 따로 고정한다.
+    """
+    dest = t0927_old_adopter
+    conf = dest / ".project_manager/local.conf"
+    conf.write_text(
+        conf.read_text(encoding="utf-8")
+        + "delegate.developer.model=sonnet\ndelegate.developer.reasoning=high\n",
+        encoding="utf-8", newline="\n")
+    card = dest / ".claude/agents/developer.md"
+    assert "effort:" not in card.read_text(encoding="utf-8")
+    run1 = _t0927_direct_update(dest)
+    assert run1.returncode == 0, f"{run1.stdout}\n{run1.stderr}"
+    run2 = _t0927_direct_update(dest)
+    assert run2.returncode == 0, f"{run2.stdout}\n{run2.stderr}"
+    lines = card.read_text(encoding="utf-8").splitlines()
+    assert 'effort: "high"' in lines, "\n".join(lines[:8])
+    assert 'model: "sonnet"' in lines, "\n".join(lines[:8])
+
+
 
 
 def _card_with_operational_details(path: Path) -> str:

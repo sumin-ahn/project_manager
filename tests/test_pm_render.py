@@ -11,8 +11,12 @@
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
+import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -936,6 +940,10 @@ _CODEX_HARD_TOML = (
 _CODEX_HARD_SOURCE = "templates/codex/.codex/agents/developer-hard.toml"
 # 하네스 판정 입력은 **인스턴스 상대 좌표**다(상류 경로 아님) — 계획의 dest 좌표.
 _CODEX_HARD_CARD = ".codex/agents/developer-hard.toml"
+# 추론 필드가 있는 두 형식(claude·codex)의 허용값 — 렌더가 그대로 싣는지 재는 기대값이다. 렌더는
+# 이 값을 넘겨받지 않고 같은 tools/ 의 `pm_relay.REASONING_ALLOWED` 를 직접 읽는다(두 값이 같은지는
+# `test_reasoning_allowed_is_read_from_sibling_pm_relay` 가 확인한다).
+_REASONING_LADDER = ("low", "medium", "high", "xhigh", "max")
 
 
 def _model_fields(text: str) -> dict:
@@ -1057,3 +1065,338 @@ def test_delegate_harness_unknown_keeps_current_render(pm_render):
         tpl, operational={"DELEGATE_MODEL_DEVELOPER": "sonnet"},
         card_path=".codex/agents/developer.toml", delegate_harness={})
     assert out == 'model: "sonnet"\n'
+
+
+# ── 카드 필드 표 · claude `effort` 렌더 · 추론 값 검증 ───────────────────────────
+
+_CLAUDE_ARCHITECT_CARD = ".claude/agents/architect.md"
+_CLAUDE_ARCHITECT_TEMPLATE = (
+    "---\n"
+    "name: architect\n"
+    'model: "{{DELEGATE_MODEL_ARCHITECT}}"\n'
+    'effort: "{{DELEGATE_REASONING_ARCHITECT}}"\n'
+    "---\n"
+)
+_CLAUDE_ARCHITECT_HARNESS = {
+    "DELEGATE_MODEL_ARCHITECT": "claude",
+    "DELEGATE_REASONING_ARCHITECT": "claude",
+}
+
+
+def _effort_line(text: str) -> str:
+    """claude 카드 frontmatter 의 effort 줄(해소·중화 양쪽) — 없으면 빈 문자열."""
+    for line in text.splitlines():
+        if line.lstrip("# ").startswith("effort:"):
+            return line
+    return ""
+
+
+def test_card_field_table_is_per_adapter_dir(pm_render):
+    """카드 필드 표는 어댑터 디렉터리 행 셋이고, 중화 줄 판정 정규식은 그 필드 합집합에서 파생된다."""
+    assert pm_render.CARD_FIELD_TOKEN_PREFIXES == {
+        ".claude": {"DELEGATE_MODEL_": "model", "DELEGATE_REASONING_": "effort"},
+        ".codex": {"DELEGATE_MODEL_": "model", "DELEGATE_REASONING_": "model_reasoning_effort"},
+        ".opencode": {"DELEGATE_MODEL_": "model"},
+    }
+    assert set(pm_render.CARD_FIELD_TOKEN_PREFIXES) == set(
+        pm_render.CARD_HARNESS_BY_ADAPTER_DIR), \
+        "카드 필드 표의 키가 어댑터 네임스페이스 디렉터리 집합과 갈렸다"
+    assert set(pm_render._CARD_FIELD_NAMES) == {
+        field
+        for fields in pm_render.CARD_FIELD_TOKEN_PREFIXES.values()
+        for field in fields.values()
+    }, "중화 줄 판정의 필드 이름이 표의 합집합에서 파생되지 않았다"
+    field_line = pm_render._MODEL_FIELD_LINE_RE
+    for line in ('effort: "x"', 'model: "x"', 'model = "x"', 'model_reasoning_effort = "x"'):
+        assert field_line.match(line), f"카드 필드 줄인데 판정이 놓쳤다: {line!r}"
+    for line in ("efforts: x", "reasoning: x", "modelx: y"):
+        assert not field_line.match(line), f"카드 필드 줄이 아닌데 판정이 잡았다: {line!r}"
+
+
+def test_claude_effort_renders_conf_value(pm_render):
+    """claude 카드의 `effort` 줄이 그 프로필의 `delegate.<role>.reasoning` 값으로 렌더된다."""
+    out = pm_render.render_adapter(
+        _CLAUDE_ARCHITECT_TEMPLATE,
+        operational={
+            "DELEGATE_MODEL_ARCHITECT": "opus",
+            "DELEGATE_REASONING_ARCHITECT": "max",
+        },
+        card_path=_CLAUDE_ARCHITECT_CARD,
+        delegate_harness=_CLAUDE_ARCHITECT_HARNESS,
+    )
+    assert out == '---\nname: architect\nmodel: "opus"\neffort: "max"\n---\n'
+
+
+def test_claude_effort_unresolved_is_neutralized(pm_render):
+    """추론 키 부재(위임 매핑 미설정)는 leak 이 아니라 model 줄과 같은 TODO 중화다.
+
+    채울 값이 없으면 검증도 없다(pm_import 최초 렌더가 이 형상이다).
+    """
+    out = pm_render.render_adapter(
+        _CLAUDE_ARCHITECT_TEMPLATE,
+        operational={"DELEGATE_MODEL_ARCHITECT": "opus"},
+        card_path=_CLAUDE_ARCHITECT_CARD,
+    )
+    line = _effort_line(out)
+    assert line.startswith('# effort: "<reasoning>"'), line
+    assert "delegate.architect.reasoning=" in line, "TODO 가 채울 conf 키를 지목하지 않는다"
+    assert 'model: "opus"\n' in out, "추론 중화가 해소된 model 줄을 건드렸다"
+    assert "{{" not in out
+    assert pm_render.render_adapter(
+        out, operational={"DELEGATE_MODEL_ARCHITECT": "opus"},
+        card_path=_CLAUDE_ARCHITECT_CARD) == out, "중화 산출물 재렌더가 멱등하지 않다"
+
+
+def test_claude_effort_unused_profile_is_neutralized(pm_render):
+    """conf 하네스 ≠ claude 면 effort 줄도 model 줄과 함께 사유 중화된다(값은 싣지 않는다)."""
+    out = pm_render.render_adapter(
+        _CLAUDE_ARCHITECT_TEMPLATE,
+        operational={
+            "DELEGATE_MODEL_ARCHITECT": "gpt-5.6-sol",
+            "DELEGATE_REASONING_ARCHITECT": "max",
+        },
+        card_path=_CLAUDE_ARCHITECT_CARD,
+        delegate_harness={
+            "DELEGATE_MODEL_ARCHITECT": "codex",
+            "DELEGATE_REASONING_ARCHITECT": "codex",
+        },
+    )
+    line = _effort_line(out)
+    assert line.startswith('# effort: "<reasoning>"'), line
+    assert "codex" in line and "delegate.architect.harness" in line, \
+        "중화 사유(conf 하네스 키)가 안 실렸다"
+    assert out.splitlines()[2].startswith('# model: "<model>"'), "model 줄이 함께 중화되지 않았다"
+    assert "max" not in out and "gpt-5.6-sol" not in out, "다른 하네스 값이 카드에 새어 들어갔다"
+
+
+def test_unused_profile_skips_reasoning_value_check(pm_render):
+    """미사용 프로필의 추론 값은 이 카드에 실리지 않으므로 이 카드 하네스의 허용값으로 재지 않는다.
+
+    opencode 로 가는 역할의 `minimal`(opencode 허용값·claude 허용값 밖)이 claude 카드 렌더를
+    멈추면, 그 역할을 다른 하네스로 보낸 정상 형상에서 갱신 전체가 막힌다.
+    """
+    out = pm_render.render_adapter(
+        _CLAUDE_ARCHITECT_TEMPLATE,
+        operational={
+            "DELEGATE_MODEL_ARCHITECT": "ollama/glm-5.2:cloud",
+            "DELEGATE_REASONING_ARCHITECT": "minimal",
+        },
+        card_path=_CLAUDE_ARCHITECT_CARD,
+        delegate_harness={
+            "DELEGATE_MODEL_ARCHITECT": "opencode",
+            "DELEGATE_REASONING_ARCHITECT": "opencode",
+        },
+    )
+    assert _effort_line(out).startswith('# effort: "<reasoning>"')
+    assert "minimal" not in out
+
+
+def test_claude_effort_empty_value_is_loud_leak(pm_render):
+    """`delegate.<role>.reasoning=` 빈값(오설정)은 중화하지 않고 leak 으로 표면화한다."""
+    for operational, empty_keys in (
+        ({"DELEGATE_MODEL_ARCHITECT": "opus"}, ["DELEGATE_REASONING_ARCHITECT"]),
+        ({"DELEGATE_MODEL_ARCHITECT": "opus", "DELEGATE_REASONING_ARCHITECT": ""}, None),
+    ):
+        with pytest.raises(pm_render.RenderLeakError) as excinfo:
+            pm_render.render_adapter(
+                _CLAUDE_ARCHITECT_TEMPLATE, operational=operational, empty_keys=empty_keys,
+                card_path=_CLAUDE_ARCHITECT_CARD, delegate_harness=_CLAUDE_ARCHITECT_HARNESS,
+                    )
+        assert "delegate.architect.reasoning=" in str(excinfo.value), excinfo.value
+
+
+@pytest.mark.parametrize("value", ["ultra", "3", "minimal", "HIGH"])
+def test_reasoning_outside_ladder_fails_render(pm_render, value):
+    """claude 카드에 채울 추론 값이 허용값 밖이면(정수·다른 하네스 어휘·대소문자 포함) 렌더 에러다.
+
+    claude 는 무효 effort 를 에러 없이 버리고 세션 effort 로 스폰한다 — 렌더가 멈추지 않으면 conf
+    선언이 실행면에 닿지 않는 사실이 조용히 묻힌다.
+    """
+    with pytest.raises(pm_render.RenderLeakError) as excinfo:
+        pm_render.render_adapter(
+            _CLAUDE_ARCHITECT_TEMPLATE,
+            operational={
+                "DELEGATE_MODEL_ARCHITECT": "opus",
+                "DELEGATE_REASONING_ARCHITECT": value,
+            },
+            card_path=_CLAUDE_ARCHITECT_CARD,
+            delegate_harness=_CLAUDE_ARCHITECT_HARNESS,
+            )
+    message = str(excinfo.value)
+    assert f"delegate.architect.reasoning={value}" in message, message
+    assert "xhigh" in message, "허용값 목록을 메시지에 싣지 않는다"
+
+
+def test_codex_reasoning_outside_ladder_fails_render(pm_render):
+    """codex 카드도 같은 규칙이다 — `model_reasoning_effort` 에 허용값 밖 값을 싣지 않는다."""
+    with pytest.raises(pm_render.RenderLeakError) as excinfo:
+        pm_render.render_adapter(
+            _CODEX_HARD_TOML,
+            operational={
+                "DELEGATE_MODEL_DEVELOPER_HARD": "gpt-5.6-sol",
+                "DELEGATE_REASONING_DEVELOPER_HARD": "ultra",
+            },
+            source=_CODEX_HARD_SOURCE,
+            card_path=_CODEX_HARD_CARD,
+            )
+    assert "delegate.developer.hard.reasoning=ultra" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("value", _REASONING_LADDER)
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+def test_reasoning_ladder_values_render_on_both_formats(pm_render, harness, value):
+    """허용값 5개는 claude·codex 두 형식 모두에서 그대로 렌더된다(검증이 정상 값을 막지 않는다)."""
+    if harness == "claude":
+        template, card_path, token = (
+            _CLAUDE_ARCHITECT_TEMPLATE, _CLAUDE_ARCHITECT_CARD, "ARCHITECT")
+        expected = f'effort: "{value}"'
+    else:
+        template, card_path, token = _CODEX_HARD_TOML, _CODEX_HARD_CARD, "DEVELOPER_HARD"
+        expected = f'model_reasoning_effort = "{value}"'
+    out = pm_render.render_adapter(
+        template,
+        operational={f"DELEGATE_MODEL_{token}": "m", f"DELEGATE_REASONING_{token}": value},
+        card_path=card_path,
+    )
+    assert expected in out.splitlines(), out
+
+
+def test_reasoning_fill_without_card_harness_fails(pm_render):
+    """채울 추론 값이 있는데 카드 하네스를 판정할 수 없으면(card_path 부재) 렌더 에러다."""
+    with pytest.raises(pm_render.RenderLeakError) as excinfo:
+        pm_render.render_adapter(
+            _CLAUDE_ARCHITECT_TEMPLATE,
+            operational={
+                "DELEGATE_MODEL_ARCHITECT": "opus",
+                "DELEGATE_REASONING_ARCHITECT": "max",
+            },
+            )
+    assert "delegate.architect.reasoning=max" in str(excinfo.value)
+
+
+def test_reasoning_token_on_format_without_reasoning_field_fails(pm_render):
+    """추론 필드가 없는 형식(opencode 카드)에 채울 추론 값이 있으면 렌더 에러다."""
+    with pytest.raises(pm_render.RenderLeakError) as excinfo:
+        pm_render.render_adapter(
+            'model: "{{DELEGATE_MODEL_DEVELOPER}}"\n'
+            'effort: "{{DELEGATE_REASONING_DEVELOPER}}"\n',
+            operational={
+                "DELEGATE_MODEL_DEVELOPER": "ollama/glm-5.2:cloud",
+                "DELEGATE_REASONING_DEVELOPER": "high",
+            },
+            card_path=".opencode/agents/developer.md",
+        )
+    message = str(excinfo.value)
+    assert "추론 필드가 없다" in message, message
+    assert "{{DELEGATE_REASONING_DEVELOPER}}" in message, message
+
+
+# ── 허용값 판독 위치 — pm_render 가 같은 tools/ 의 pm_relay 를 직접 읽는다 ──────────────────
+
+def test_reasoning_allowed_is_read_from_sibling_pm_relay(pm_render):
+    """허용값은 같은 tools/ 의 `pm_relay.REASONING_ALLOWED` 하나에서 오고 pm_render 에 사본이 없다."""
+    relay = _load("pm_relay")
+    assert pm_render._load_reasoning_allowed() == relay.REASONING_ALLOWED
+    assert relay.REASONING_ALLOWED["claude"] == relay.REASONING_ALLOWED["codex"] == _REASONING_LADDER, \
+        "이 파일의 기대값이 pm_relay 허용값과 갈렸다"
+    tree = ast.parse((TOOLS / "pm_render.py").read_text(encoding="utf-8"))
+    literals = {
+        node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert not set(_REASONING_LADDER) & literals, "pm_render 에 허용값 사본이 생겼다"
+
+
+def test_reasoning_allowed_is_read_only_when_a_value_is_filled(pm_render, monkeypatch):
+    """pm_relay 판독은 카드에 채울 추론 값이 있을 때만 일어난다.
+
+    추론 값이 없는 렌더(pm_import 최초 설치·위임 키 없는 채택자), 미사용 프로필 카드, 위임 토큰이
+    없는 문서는 pm_relay 를 읽지 않는다 — 형제 로드가 렌더 전반의 의존이 되지 않는다.
+    """
+    loads = []
+    real_loader = pm_render._load_module_from_path
+
+    def recording_loader(path, expected_filename, **kwargs):
+        loads.append(expected_filename)
+        return real_loader(path, expected_filename, **kwargs)
+
+    monkeypatch.setattr(pm_render, "_load_module_from_path", recording_loader)
+    pm_render.render_adapter(
+        _CLAUDE_ARCHITECT_TEMPLATE, operational={"DELEGATE_MODEL_ARCHITECT": "opus"},
+        card_path=_CLAUDE_ARCHITECT_CARD)
+    pm_render.render_adapter(
+        _CLAUDE_ARCHITECT_TEMPLATE,
+        operational={"DELEGATE_MODEL_ARCHITECT": "m", "DELEGATE_REASONING_ARCHITECT": "minimal"},
+        card_path=_CLAUDE_ARCHITECT_CARD,
+        delegate_harness={
+            "DELEGATE_MODEL_ARCHITECT": "opencode",
+            "DELEGATE_REASONING_ARCHITECT": "opencode",
+        })
+    pm_render.render_adapter(
+        "session for {{PROJECT_NAME}}\n", operational={"PROJECT_NAME": "Acme"})
+    assert loads == [], f"채울 추론 값이 없는 렌더가 형제 모듈을 읽었다: {loads}"
+    pm_render.render_adapter(
+        _CLAUDE_ARCHITECT_TEMPLATE,
+        operational={"DELEGATE_MODEL_ARCHITECT": "opus", "DELEGATE_REASONING_ARCHITECT": "max"},
+        card_path=_CLAUDE_ARCHITECT_CARD)
+    assert loads == ["pm_relay.py"]
+
+
+@pytest.fixture
+def isolated_tools(tmp_path):
+    """pm_render·pm_relay·repo_owned_files 만 담은 별도 tools/ (형제 사본 상태를 바꿔 보는 자리)."""
+    tools = tmp_path / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    for name in ("pm_render.py", "pm_relay.py", "repo_owned_files.py"):
+        shutil.copy2(TOOLS / name, tools / name)
+    yield tools
+    sys.modules.pop(
+        "_project_manager_repo_owned_files_bootstrap:"
+        f"{(tools / 'repo_owned_files.py').resolve()}", None)
+
+
+def _isolated_pm_render(tools: Path, relay_edit):
+    """`relay_edit` 로 고친 pm_relay 옆의 pm_render 를 적재한다."""
+    relay = tools / "pm_relay.py"
+    relay.write_text(relay_edit(relay.read_text(encoding="utf-8")), encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("pm_render_isolated", tools / "pm_render.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_ARCHITECT_MAX = {"DELEGATE_MODEL_ARCHITECT": "opus", "DELEGATE_REASONING_ARCHITECT": "max"}
+
+
+def test_reasoning_allowed_read_survives_sibling_rev_mix(isolated_tools):
+    """pm_relay 사본의 rev 가 pm_render 와 달라도(자기 갱신 mid-sync) 허용값을 읽어 렌더한다.
+
+    읽는 것이 선언 데이터뿐이라 rev 대조를 걸지 않는다(engine_rev.EXEMPT_UNVERIFIED_DEEP_IMPORTS).
+    결속을 걸면 형제 rev 가 섞인 순간 skew 로 카드 렌더 전체를 잃는다.
+    """
+    module = _isolated_pm_render(isolated_tools, lambda text: re.sub(
+        r'^ENGINE_REV = "[^"]*"', 'ENGINE_REV = "v0.0.0-older"', text, count=1,
+        flags=re.MULTILINE))
+    out = module.render_adapter(
+        _CLAUDE_ARCHITECT_TEMPLATE, operational=_ARCHITECT_MAX, card_path=_CLAUDE_ARCHITECT_CARD)
+    assert 'effort: "max"' in out.splitlines()
+
+
+@pytest.mark.parametrize(("relay_edit", "error"), [
+    (lambda text: re.sub(r"^REASONING_ALLOWED\b", "_RETIRED_REASONING_ALLOWED", text, count=1,
+                         flags=re.MULTILINE), AttributeError),
+    (lambda text: text + "\nREASONING_ALLOWED = None\n", TypeError),
+], ids=["attribute-missing", "malformed"])
+def test_reasoning_allowed_missing_or_malformed_fails_loud(isolated_tools, relay_edit, error):
+    """허용값 표가 없거나 형식이 틀린 pm_relay 사본이면 예외로 멈춘다(빈 값으로 바꿔 통과시키지 않는다).
+
+    채울 값이 없는 렌더는 pm_relay 를 읽지 않으므로 같은 트리에서도 통과한다.
+    """
+    module = _isolated_pm_render(isolated_tools, relay_edit)
+    module.render_adapter(
+        _CLAUDE_ARCHITECT_TEMPLATE, operational={"DELEGATE_MODEL_ARCHITECT": "opus"},
+        card_path=_CLAUDE_ARCHITECT_CARD)
+    with pytest.raises(error):
+        module.render_adapter(
+            _CLAUDE_ARCHITECT_TEMPLATE, operational=_ARCHITECT_MAX,
+            card_path=_CLAUDE_ARCHITECT_CARD)

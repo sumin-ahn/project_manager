@@ -32,16 +32,152 @@ graceful 중화한다(pm_import --fill manual 과 대칭·채택자-fill 대기)
 neutralize_model_todo·neutralize_delegate_model_todo 참조. 그 밖의 미해소 토큰은
 여전히 fail-loud(false-green 근절 유지).
 
-순수 함수 중심(stdlib). pm_update(재렌더)·pm_import(최초) 양쪽이 호출한다.
+순수 함수 중심(stdlib). pm_update(재렌더)·pm_import(최초) 양쪽이 호출한다. 형제 로드는 카드에
+추론 값을 채울 때 허용값(`pm_relay.REASONING_ALLOWED`)을 읽는 한 곳뿐이다.
 """
 
 from __future__ import annotations
 
+import os
 import re
+import sys
 from pathlib import Path
+
+_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
+_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
+    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
+)
+_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
+_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
+_TOOLS_BOOTSTRAP_SENTINEL = object()
+try:
+    if (
+        _TOOLS_BOOTSTRAP_MODULE is not None
+        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
+        != _TOOLS_BOOTSTRAP_FILE
+    ):
+        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
+        _TOOLS_BOOTSTRAP_MODULE = None
+    if _TOOLS_BOOTSTRAP_MODULE is None:
+        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
+            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
+        )
+        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
+        if _TOOLS_BOOTSTRAP_ADDED:
+            sys.path.insert(0, _TOOLS_BOOTSTRAP)
+        try:
+            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
+            if (
+                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
+                != _TOOLS_BOOTSTRAP_FILE
+            ):
+                raise ImportError(
+                    "repo_owned_files 형제 경로 불일치: "
+                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
+                )
+            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
+        finally:
+            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
+            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
+            if _TOOLS_BOOTSTRAP_ADDED:
+                try:
+                    sys.path.remove(_TOOLS_BOOTSTRAP)
+                except ValueError:
+                    pass
+            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
+                sys.modules.pop("repo_owned_files", None)
+            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
+                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
+    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
+except Exception as _TOOLS_BOOTSTRAP_ERROR:
+    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
+        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
+
+    def _load_module_from_path(
+        path,
+        expected_filename,
+        *,
+        verifier=None,
+        allow_unverified=False,
+        cache=False,
+        cache_key=None,
+    ):
+        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
+        target = os.path.realpath(os.fspath(path))
+        if os.path.basename(target) != expected_filename:
+            raise ValueError(
+                f"module filename mismatch: expected {expected_filename!r}, "
+                f"got {os.path.basename(target)!r}"
+            )
+        if verifier is not None and allow_unverified:
+            raise ValueError("choose verifier or allow_unverified=True, not both")
+        if verifier is None and not allow_unverified:
+            raise ValueError(
+                "module load requires verifier or explicit allow_unverified=True"
+            )
+        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
+        module = sys.modules.get(module_key) if cache else None
+        inserted = False
+        try:
+            if module is None:
+                if (
+                    target == _TOOLS_BOOTSTRAP_FILE
+                    and _TOOLS_BOOTSTRAP_MODULE is not None
+                ):
+                    module = _TOOLS_BOOTSTRAP_MODULE
+                else:
+                    import_name = os.path.splitext(expected_filename)[0]
+                    previous = sys.modules.pop(
+                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
+                    )
+                    parent = os.path.dirname(target)
+                    # 런타임에 만든 형제 모듈(중앙 로더 선복구가 방금 복사한 seam 등)을
+                    # 이름으로 import 한다 — FileFinder 는 디렉터리 목록을 mtime 으로 캐시하고
+                    # 인터프리터 시작 뒤 생긴 파일은 invalidate 없이는 인식이 보장되지 않는다
+                    # (Python 문서 `importlib.invalidate_caches` · Windows 실측 간헐
+                    # ModuleNotFoundError). 블록은 stdlib-only 라 지역 import 로 두되 sys.path 에
+                    # parent 를 넣기 전에 가져와 그 트리의 동명 파일이 stdlib 를 가리지 않게 한다.
+                    import importlib as _bootstrap_importlib
+                    added = not sys.path or sys.path[0] != parent
+                    if added:
+                        sys.path.insert(0, parent)
+                    try:
+                        _bootstrap_importlib.invalidate_caches()
+                        module = __import__(import_name)
+                        if os.path.realpath(getattr(module, "__file__", "")) != target:
+                            raise ImportError(
+                                f"{expected_filename} 형제 경로 불일치"
+                            )
+                    finally:
+                        if added:
+                            try:
+                                sys.path.remove(parent)
+                            except ValueError:
+                                pass
+                        if sys.modules.get(import_name) is module:
+                            sys.modules.pop(import_name, None)
+                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
+                            sys.modules[import_name] = previous
+                if cache:
+                    sys.modules[module_key] = module
+                    inserted = True
+            if verifier is not None:
+                verifier(module, expected_filename)
+            return module
+        except Exception as exc:
+            if cache and (inserted or sys.modules.get(module_key) is module):
+                sys.modules.pop(module_key, None)
+            if target == _TOOLS_BOOTSTRAP_FILE:
+                raise RuntimeError(
+                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
+                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
+                ) from exc
+            raise
+
 
 # baked 엔진 rev — engine_rev.py --bump가 기계 일괄 재작성한다.
 ENGINE_REV = "v1.8.0"
+
 
 # 하네스 agent 카드의 역할별 모델/추론 토큰 → local.conf 해소 키. **위임 토큰의 단일 표**다
 # (하네스별 사본 금지): claude `.claude/agents/*.md`·codex `.codex/agents/*.toml`·opencode
@@ -49,11 +185,10 @@ ENGINE_REV = "v1.8.0"
 # `delegate.<role>[.<tier>].{model,reasoning}` 의 렌더 파생물이고, 그 밖의 출처를 갖지 않는다.
 #
 # hard 티어(`developer-hard`)는 **별도 완전 세트**다 — normal 프로필을 상속하지 않는다(엔진의
-# 프로필 해소와 같은 규칙). reasoning 토큰은 그 값을 실제로 소비하는 카드가 있는 것만 둔다
-# (codex `model_reasoning_effort`) — 소비처 없는 토큰은 배선만 늘리고 해소를 못 검증한다.
-# 역할 축 4개도 codex 카드가 그 필드를 갖게 되면서 소비처가 생겼으므로 표에 함께 선다. claude·
-# opencode 카드 frontmatter 에는 추론을 실을 필드가 없어 그 두 타깃은 모델 토큰만 소비한다 —
-# 하네스 예외가 아니라 카드 **형식** 차이이며 판정은 CARD_FIELD_TOKEN_PREFIXES 가 소유한다.
+# 프로필 해소와 같은 규칙). reasoning 토큰은 그 값을 실제로 소비하는 카드가 있는 것만 둔다 —
+# 소비처 없는 토큰은 배선만 늘리고 해소를 못 검증한다. 추론 토큰 소비는 claude `effort`·codex
+# `model_reasoning_effort` 이고, opencode 카드는 모델 토큰만 소비한다 — 하네스 예외가 아니라 카드
+# **형식** 차이이며 판정은 CARD_FIELD_TOKEN_PREFIXES 가 소유한다.
 #
 # pm_update 는 이 표를 **역전해** local.conf 채널 배선을 만든다(`_local_conf_operational_map`) —
 # 손으로 재타이핑한 사본을 두면 새 역할/티어가 한쪽에만 늘어 조용히 미배선된다.
@@ -70,12 +205,15 @@ DELEGATE_MODEL_CONF_KEYS: dict[str, str] = {
     "DELEGATE_REASONING_CODE_REVIEWER": "delegate.code-reviewer.reasoning",
 }
 
-# 토큰 접두 → 그 값을 실을 수 있는 카드 필드. **카드 형식이 소비 기대를 정한다**(하네스별 예외
-# 아님): claude·opencode 는 frontmatter 에 모델 한 줄만 있고, codex TOML 만 추론 강도 키를 갖는다.
-# 소비 가드가 이 선언을 읽어 (토큰, 타깃) 기대를 파생하므로 손열거 표를 따로 두지 않는다.
-CARD_FIELD_TOKEN_PREFIXES: dict[str, str] = {
-    "DELEGATE_MODEL_": "model",
-    "DELEGATE_REASONING_": "model_reasoning_effort",
+# 어댑터 네임스페이스 디렉터리 → (토큰 접두 → 그 값을 실을 카드 필드). **카드 형식이 소비 기대를
+# 정한다**(하네스별 예외 아님): 형식은 카드가 놓인 어댑터 디렉터리가 정하므로 키도 그 디렉터리다.
+# `.claude` frontmatter 는 `model`·`effort`, `.codex` TOML 은 `model`·`model_reasoning_effort`,
+# `.opencode` frontmatter 는 `model` 만 싣는다. 키 집합은 CARD_HARNESS_BY_ADAPTER_DIR 의 키 집합과
+# 같다. 소비 가드·중화 줄 판정(`_MODEL_FIELD_LINE_RE`)·렌더의 추론 값 검증이 이 선언 하나를 읽는다.
+CARD_FIELD_TOKEN_PREFIXES: dict[str, dict[str, str]] = {
+    ".claude": {"DELEGATE_MODEL_": "model", "DELEGATE_REASONING_": "effort"},
+    ".codex": {"DELEGATE_MODEL_": "model", "DELEGATE_REASONING_": "model_reasoning_effort"},
+    ".opencode": {"DELEGATE_MODEL_": "model"},
 }
 
 
@@ -154,11 +292,18 @@ OPENCODE_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
 _OPENCODE_MODEL_KEY = "OPENCODE_PRO_MODEL"  # bare operational key — all_empty 판정용(빈값 vs 부재)
 _MODEL_TODO_PLACEHOLDER = "<provider/model>"
 
-# 중화 대상 줄 = **모델 필드 줄**. 하네스마다 표기가 다르다(YAML frontmatter `model:` · codex
-# TOML `model = `/`model_reasoning_effort = `)나 판정은 하나여야 import 와 self-update 가 같은
-# 산출을 낸다. 산문/헤더의 토큰은 비대상(주석화하면 markdown/TOML 이 깨진다) — 그 위치의 미해소
-# 토큰은 계속 `_assert_no_leak` 가 표면화한다.
-_MODEL_FIELD_LINE_RE = re.compile(r"^(?:model|model_reasoning_effort)\s*[:=]")
+# 중화 대상 줄 = **카드 필드 줄**. 하네스마다 필드 이름과 대입 표기(YAML `:` · TOML `=`)가 다르나
+# 판정은 하나여야 import 와 self-update 가 같은 산출을 낸다. 필드 이름은 CARD_FIELD_TOKEN_PREFIXES
+# 의 합집합에서 파생한다(손열거 사본 0 — 표에 필드가 늘면 중화 대상도 같이 는다). 긴 이름부터
+# 나열해 패턴이 결정적이다. 산문/헤더의 토큰은 비대상(주석화하면 markdown/TOML 이 깨진다) — 그
+# 위치의 미해소 토큰은 계속 `_assert_no_leak` 가 표면화한다.
+_CARD_FIELD_NAMES: tuple[str, ...] = tuple(sorted(
+    {field for fields in CARD_FIELD_TOKEN_PREFIXES.values() for field in fields.values()},
+    key=lambda field: (-len(field), field),
+))
+_MODEL_FIELD_LINE_RE = re.compile(
+    r"^(?:" + "|".join(re.escape(field) for field in _CARD_FIELD_NAMES) + r")\s*[:=]"
+)
 
 _DELEGATE_MODEL_TODO_PLACEHOLDER = "<model>"
 _DELEGATE_REASONING_TODO_PLACEHOLDER = "<reasoning>"
@@ -185,12 +330,22 @@ def card_harness_from_path(card_path: str | None) -> str | None:
     경로가 없거나(인메모리 렌더·호출부 미배선) 어댑터 밖이면 None — 그때는 하네스 판정을
     요구하는 규칙(미사용 프로필)이 발화하지 않고 현행 해소가 그대로 간다.
     """
+    adapter_dir = _card_adapter_dir(card_path)
+    return CARD_HARNESS_BY_ADAPTER_DIR[adapter_dir] if adapter_dir else None
+
+
+def _card_adapter_dir(card_path: str | None) -> str | None:
+    """**인스턴스 상대** 카드 경로 → 그 카드의 어댑터 네임스페이스 디렉터리 (판정 불가면 None).
+
+    `card_harness_from_path` 와 같은 첫 컴포넌트 판정이다 — 카드 필드 표(CARD_FIELD_TOKEN_PREFIXES)
+    조회 키가 이 디렉터리다."""
     if not card_path:
         return None
     rel = str(card_path).replace("\\", "/").lstrip("/")
     if not rel:
         return None
-    return CARD_HARNESS_BY_ADAPTER_DIR.get(rel.split("/", 1)[0])
+    first = rel.split("/", 1)[0]
+    return first if first in CARD_HARNESS_BY_ADAPTER_DIR else None
 
 
 def unused_delegate_profiles(
@@ -303,9 +458,9 @@ def _comment_out_model_line(
     """모델 필드 줄의 미해소 `token` 을 주석화·중화하는 공유 줄-변환 (판정 사본 금지).
 
     모델 토큰이 여럿(opencode 어댑터·역할 카드·티어 프로필)이라도 **줄 판정은 하나**여야 import 와
-    self-update 가 같은 산출을 낸다. 대상은 모델 필드 줄(`_MODEL_FIELD_LINE_RE` — YAML
-    frontmatter 의 `model:` 과 codex TOML 의 `model =`/`model_reasoning_effort =`)뿐이고, 이미
-    주석이거나 `TODO` 가 붙은 줄은 비파괴·멱등으로 건너뛴다.
+    self-update 가 같은 산출을 낸다. 대상은 카드 필드 줄(`_MODEL_FIELD_LINE_RE` — 필드 이름은
+    CARD_FIELD_TOKEN_PREFIXES 파생)뿐이고, 이미 주석이거나 `TODO` 가 붙은 줄은 비파괴·멱등으로
+    건너뛴다.
     """
     if token not in text:
         return text, False
@@ -372,7 +527,10 @@ def neutralize_delegate_model_todo(
 
 
 class RenderLeakError(RuntimeError):
-    """렌더 산출물에 리터럴 `{{...}}` 또는 stray omit-marker 가 잔존 — 미해소 leak(자족 산출물 위반)."""
+    """렌더가 자족 산출물 또는 카드 값 조건을 위반했다.
+
+    자족 위반은 리터럴 `{{...}}`·stray omit-marker 잔존(미해소 leak)이고, 카드 값 조건 위반은
+    카드에 채울 추론 값이 그 카드 하네스의 허용집합 밖이거나 검증할 수 없는 경우다."""
 
 
 # 스킬 호출 표기의 단일 진실. 키는 공개 harness 별칭이 아니라 `templates/` 아래 실 디렉터리명이다.
@@ -575,6 +733,67 @@ def _fill_operational(text: str, operational: dict) -> tuple[str, list[str]]:
     return text, empty_keys
 
 
+def _load_reasoning_allowed() -> dict[str, tuple[str, ...]]:
+    """하네스 → 추론 허용값 — 같은 tools/ 의 `pm_relay.REASONING_ALLOWED`(단일 진실)를 읽는다.
+
+    호출자 인자로 받지 않는다. 이전 엔진의 pm_update 가 메모리에 남은 첫 갱신에서도 카드 렌더 전에
+    pm_render·pm_relay 새 사본이 이미 복사돼 있으므로(engine.manifest 의 tools 행이 카드 행보다
+    앞선다) 새 계약을 모르는 호출자가 불러도 검증이 성립한다. 읽는 것이 선언 데이터뿐이라 rev
+    대조 없이 로드한다(engine_rev.EXEMPT_UNVERIFIED_DEEP_IMPORTS 등재). 로드 실패·속성 부재·형식
+    오류는 그대로 올린다.
+    """
+    relay_py = Path(__file__).resolve().parent / "pm_relay.py"
+    return _load_module_from_path(
+        relay_py, "pm_relay.py", allow_unverified=True,
+    ).REASONING_ALLOWED
+
+
+def _check_card_reasoning_values(
+    text: str,
+    operational: dict,
+    *,
+    card_path: str | None,
+    source: str | None,
+) -> None:
+    """카드에 채울 추론 값이 그 카드 하네스의 허용집합 원소인지 검증한다(밖이면 RenderLeakError).
+
+    대상은 텍스트에 토큰이 있고 operational 에 비어 있지 않은 값이 있는 추론 토큰뿐이다 — 부재는
+    중화가, 빈 값은 `_assert_no_leak` 가 처리한다. 허용집합은 그런 값이 있을 때만 pm_relay 에서
+    읽는다(`_load_reasoning_allowed` · 이 모듈에 값 사본을 두지 않는다 · 채울 값이 없는 렌더는
+    pm_relay 를 읽지 않는다). 하네스가 무효 값을 에러 없이 버리는 경우가 있어(claude 는 디버그 로그
+    한 줄 뒤 effort 없이 스폰) 값을 빼거나 기본값으로 바꾸지 않고 렌더를 멈춘다. 채울 값이 있는데
+    카드 하네스를 판정할 수 없거나 그 형식에 추론 필드가 없으면 검증할 수 없으므로 역시 멈춘다.
+    """
+    adapter_dir = _card_adapter_dir(card_path)
+    card_harness = card_harness_from_path(card_path)
+    where = f" ({source})" if source else ""
+    allowed_by_harness = None
+    for token_key, conf_key in DELEGATE_MODEL_CONF_KEYS.items():
+        if not token_key.startswith(_DELEGATE_REASONING_TOKEN_PREFIX):
+            continue
+        value = operational.get(token_key)
+        token = "{{" + token_key + "}}"
+        if value is None or str(value) == "" or token not in text:
+            continue
+        setting = f"`{conf_key}={value}`"
+        if adapter_dir is None:
+            raise RenderLeakError(
+                f"추론 값 렌더{where} 실패 — 카드 하네스를 판정할 수 없어 {setting} 를 검증할 수 "
+                f"없다(card_path={card_path!r}). 추론 값은 하네스가 정해진 카드에만 채운다.")
+        if _DELEGATE_REASONING_TOKEN_PREFIX not in CARD_FIELD_TOKEN_PREFIXES[adapter_dir]:
+            raise RenderLeakError(
+                f"추론 값 렌더{where} 실패 — {card_harness} 카드 형식에는 추론 필드가 없다. "
+                f"{token} 를 이 카드에 둘 수 없다({setting}).")
+        if allowed_by_harness is None:
+            allowed_by_harness = _load_reasoning_allowed()
+        allowed = allowed_by_harness[card_harness]
+        if str(value) not in allowed:
+            raise RenderLeakError(
+                f"추론 값 렌더{where} 실패 — {setting} 는 {card_harness} 카드 허용값"
+                f"({', '.join(allowed)}) 밖이다. 하네스는 무효 값을 에러 없이 버리므로 카드에 "
+                "싣지 않고 멈춘다 — local.conf 값을 허용값으로 고친다.")
+
+
 def render_adapter(
     template_text: str,
     operational: dict | None = None,
@@ -594,6 +813,8 @@ def render_adapter(
     에서 해소). 카드 하네스와 다르면 그 토큰은 미사용 프로필이라 값 대신 이유를 중화로 남긴다.
     card_path: 이 산출물의 **인스턴스 상대 경로**(선택·pm_update 가 계획의 dest 좌표를 넘긴다).
     카드 하네스 판정의 유일한 입력이다 — 미배선이면 미사용 프로필 규칙이 발화하지 않는다.
+    카드에 추론 값을 채울 때 그 값이 카드 하네스의 허용값(`pm_relay.REASONING_ALLOWED`) 밖이면
+    RenderLeakError 다(`_check_card_reasoning_values`).
 
     template_dir가 주어지면 operational보다 먼저 canonical 스킬 호출 토큰을 그 하네스 값으로
     치환한다. 값은 SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR 단일 registry에서만 읽는다.
@@ -617,6 +838,10 @@ def render_adapter(
         )
         if template_dir is not None
         else template_text
+    )
+    # 추론 값 검증은 미사용 프로필을 뺀 **뒤**, 치환 **전**이다 — 이 카드에 실제로 채울 값만 본다.
+    _check_card_reasoning_values(
+        result, operational, card_path=card_path, source=source,
     )
     result, detected_empty = _fill_operational(result, operational)
     # pm_update 가 excluded 한 빈값 key(empty_keys) + 렌더러가 직접 감지한 빈값 key 를 합쳐

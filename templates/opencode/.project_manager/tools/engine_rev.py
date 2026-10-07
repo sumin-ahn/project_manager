@@ -246,6 +246,11 @@ EXEMPT_UNVERIFIED_DEEP_IMPORTS = {
         "에서 이 로드가 skew 로 터져 훅 세트 상류 세대 선언을 통째로 잃는다(자리를 묻다가 "
         "판정을 잃는다). 구세대 사본이면 자리 이름이 달라질 뿐이고 그 트리는 만든 호출이 "
         "곧바로 지운다",
+    ("pm_render.py", "_load_reasoning_allowed"):
+        "카드에 채울 추론 값의 허용값(`pm_relay.REASONING_ALLOWED`)을 읽는 지연 로드다. 읽는 것은 "
+        "선언 데이터뿐이고 판정 코드는 실행 중 pm_render 것을 쓴다. 결속을 걸면 자기 갱신 "
+        "mid-sync(형제 rev 혼합)에서 이 로드가 skew 로 터져 카드 렌더 전체를 잃는다. 그 표가 없는 "
+        "구세대 사본이면 속성 부재로 loud 하게 터진다",
     ("pm_import.py", "_upstream_hook_set_declarations"):
         "훅 세트 세대 선언을 읽으려 **다른 세대**의 상류 pm_import 를 의도적으로 로드한다 — "
         "rev 대조로 거르면 이 판정의 목적(세대 차 확인) 자체가 불가능해진다. 읽는 것은 선언 "
