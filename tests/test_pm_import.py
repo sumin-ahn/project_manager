@@ -35,6 +35,11 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 
+def _local_conf_of(pm_update, root):
+    """dest 의 local.conf 값 — 계획·렌더가 받는 conf (디스크 읽기는 호출 경계 한 번)."""
+    return pm_update._read_local_conf(Path(root) / ".project_manager" / "local.conf")
+
+
 def _track_source_tree(root: Path) -> None:
     """pm-update tracked-only 출하 fixture를 임시 checkout으로 만든다."""
     subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
@@ -2164,7 +2169,7 @@ def test_combination_install_manifest_is_selected_tree_union(pm_import, pm_updat
 
     # 디렉터리 선언을 실제 파일로 펼친 관리 plan에도 opencode 산출물이 실린다.
     empty_dest = tmp_path / "empty-plan"
-    changes, missing = pm_update.plan(REPO, installed, dest_root=empty_dest)
+    changes, missing = pm_update.plan(REPO, installed, dest_root=empty_dest, conf=_local_conf_of(pm_update, empty_dest))
     opencode_files = {
         str(rel).replace("\\", "/")
         for rel, _src, _dst, _kind in changes
@@ -3860,19 +3865,6 @@ def test_dry_run_claude_only_no_model_plan(pm_import, tmp_path, capsys):
 
 # ── seam·파싱 단위 ───────────────────────────────────────────────────────────
 
-def test_parse_opencode_models_filters_blanks_and_banner(pm_import):
-    """_parse_opencode_models: 빈 줄·슬래시 없는 배너 줄 제외, provider/model 만 추출."""
-    raw = (
-        "사용 가능한 모델:\n"      # 배너(슬래시 없음) → 제외.
-        "\n"                       # 빈 줄 → 제외.
-        "ollama/gemma4:26b\n"
-        "  opencode/big-pickle  \n"  # 앞뒤 공백 strip.
-        "anthropic/claude-x\n"
-    )
-    models = pm_import._parse_opencode_models(raw)
-    assert models == ["ollama/gemma4:26b", "opencode/big-pickle", "anthropic/claude-x"]
-
-
 def test_prompt_model_choice_out_of_range_returns_none(pm_import):
     """_prompt_model_choice: 범위 밖·비숫자·빈 입력 → None(미선택 → TODO 폴백)."""
     models = ["a/b", "c/d"]
@@ -3899,187 +3891,50 @@ def test_substitute_model_token_scoped_to_copied(pm_import, tmp_path):
         "_substitute_model_token 이 copied_relpaths 밖 파일을 치환함(비파괴 위반)."
 
 
-class _LiveSource:
-    """조회 원천 모사 — 러너가 보는 필드만(`command`·`parse`). 표의 실값과 같은 모양이다."""
-
-    command = ("opencode", "models")
-    parse = "lines"
+# ── 설치 대조·콘솔 `[m]` 의 모델 목록 — `pm_relay.model_listing` 래퍼 ───────────────────────
+# 조회 실행·판독·시간 상한의 시험은 주인(pm_relay)으로 옮겼다(`tests/test_pm_relay_opencode.py`).
+# 여기서는 래퍼 계약만 본다: 조회 실패 → (False, []) + stderr 한 줄, 성공 → (True, 목록).
 
 
-_LIVE_SOURCE = _LiveSource()
+class _ListingRelay:
+    """`_load_watchdog()` 대역 — 받은 인자를 적고 정해 둔 결과(또는 조회 실패)를 낸다."""
+
+    class HarnessContractError(RuntimeError):
+        pass
+
+    def __init__(self, result=None, failure=None):
+        self.result = result
+        self.failure = failure
+        self.seen = []
+
+    def model_listing(self, source, *, cwd, env):
+        self.seen.append((source, cwd, env))
+        if self.failure is not None:
+            raise self.HarnessContractError(self.failure)
+        return self.result
 
 
-def test_real_models_runner_no_binary_fail_soft(pm_import, monkeypatch):
-    """_real_models_runner: opencode 바이너리 부재(which None) → (False, []) fail-soft.
+def test_real_models_runner_turns_a_lookup_failure_into_a_skip_line(pm_import, monkeypatch, capsys):
+    """조회 실패는 설치를 깨지 않는다 — (False, []) 와 사유 한 줄(`… — 모델 자동해소 skip`)."""
+    relay = _ListingRelay(failure="opencode 실행 파일 PATH 부재 — 확인할 수 없다")
+    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: relay)
 
-    subprocess 도 안 띄운다(라이브 CLI 미실행 보장) — which 가 None 이면 즉시 폴백.
-    """
-    monkeypatch.setattr(pm_import.shutil, "which", lambda b: None)
-    monkeypatch.setattr(
-        pm_import.subprocess, "run",
-        lambda *a, **k: pytest.fail("which None 인데 subprocess 가 호출됨 — 라이브 CLI 위험."),
-    )
-    ok, models = pm_import._real_models_runner(_LIVE_SOURCE)
-    assert ok is False and models == []
-
-
-# ── T-0127: _real_models_runner 실패 사유 stderr surface (침묵 무력화 해소) ──────
-# fail-soft 는 유지(반환 계약 불변)하되 *왜* 실패했는지 stderr 로 1줄 surface. monkeypatch 로
-# subprocess.run 에 가짜 result/예외를 주입하고 capsys 로 stderr 를 캡처해 사유 출력을 단언한다.
-
-class _FakeResult:
-    """subprocess.run 반환 모사 — _real_models_runner 가 보는 필드만(returncode/stdout/stderr)."""
-
-    def __init__(self, returncode=0, stdout="", stderr=""):
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
-
-
-def test_real_models_runner_no_binary_surfaces_reason(pm_import, monkeypatch, capsys):
-    """which None → (False, []) 유지 + stderr 에 PATH 부재 사유 surface."""
-    monkeypatch.setattr(pm_import.shutil, "which", lambda b: None)
-    ok, models = pm_import._real_models_runner(_LIVE_SOURCE)
-    assert ok is False and models == []
+    assert pm_import._real_models_runner("source-row") == (False, [])
     err = capsys.readouterr().err
-    assert "PATH 부재" in err
+    assert err == "opencode 실행 파일 PATH 부재 — 확인할 수 없다 — 모델 자동해소 skip\n"
+    assert relay.seen[0][0] == "source-row"
+    assert relay.seen[0][1] == Path.cwd() and relay.seen[0][2] == dict(os.environ)
 
 
-def test_real_models_runner_nonzero_rc_surfaces_reason(pm_import, monkeypatch, capsys):
-    """rc≠0 → (False, []) 유지 + stderr 에 rc + stderr 앞부분 surface."""
-    monkeypatch.setattr(pm_import.shutil, "which", lambda b: "/usr/bin/opencode")
-    monkeypatch.setattr(
-        pm_import.subprocess, "run",
-        lambda *a, **k: _FakeResult(returncode=2, stdout="", stderr="boom failure detail"),
-    )
-    ok, models = pm_import._real_models_runner(_LIVE_SOURCE)
-    assert ok is False and models == []
-    err = capsys.readouterr().err
-    assert "rc=2" in err
-    assert "boom failure detail" in err
+def test_real_models_runner_returns_the_listed_models(pm_import, monkeypatch, capsys):
+    """조회 성공은 (True, 모델 목록) 이고 stderr 는 조용하다."""
+    relay = _ListingRelay(result=SimpleNamespace(
+        models=("ollama/gemma4:26b", "opencode/big-pickle"), variants=None))
+    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: relay)
 
-
-def test_real_models_runner_nonzero_rc_truncates_stderr(pm_import, monkeypatch, capsys):
-    """rc≠0 의 stderr 는 앞 200자까지만 surface(로그 폭증 방지)."""
-    monkeypatch.setattr(pm_import.shutil, "which", lambda b: "/usr/bin/opencode")
-    long_detail = "x" * 500
-    monkeypatch.setattr(
-        pm_import.subprocess, "run",
-        lambda *a, **k: _FakeResult(returncode=1, stdout="", stderr=long_detail),
-    )
-    pm_import._real_models_runner(_LIVE_SOURCE)
-    err = capsys.readouterr().err
-    assert "x" * 200 in err
-    assert "x" * 201 not in err
-
-
-def test_real_models_runner_timeout_surfaces_reason(pm_import, monkeypatch, capsys):
-    """TimeoutExpired → (False, []) 유지 + stderr 에 timeout 값 + env override 안내 surface."""
-    monkeypatch.setattr(pm_import.shutil, "which", lambda b: "/usr/bin/opencode")
-    monkeypatch.delenv("PM_OPENCODE_MODELS_TIMEOUT", raising=False)
-
-    def _raise_timeout(*a, **k):
-        raise pm_import.subprocess.TimeoutExpired(cmd="opencode models", timeout=60)
-
-    monkeypatch.setattr(pm_import.subprocess, "run", _raise_timeout)
-    ok, models = pm_import._real_models_runner(_LIVE_SOURCE)
-    assert ok is False and models == []
-    err = capsys.readouterr().err
-    assert "60s timeout 초과" in err
-    assert "PM_OPENCODE_MODELS_TIMEOUT" in err
-
-
-def test_real_models_runner_exception_surfaces_reason(pm_import, monkeypatch, capsys):
-    """기타 예외 → (False, []) 유지 + stderr 에 예외 메시지 surface(import 안 깸)."""
-    monkeypatch.setattr(pm_import.shutil, "which", lambda b: "/usr/bin/opencode")
-
-    def _raise(*a, **k):
-        raise RuntimeError("unexpected explosion")
-
-    monkeypatch.setattr(pm_import.subprocess, "run", _raise)
-    ok, models = pm_import._real_models_runner(_LIVE_SOURCE)
-    assert ok is False and models == []
-    err = capsys.readouterr().err
-    assert "예외" in err
-    assert "unexpected explosion" in err
-
-
-def test_real_models_runner_parse_zero_surfaces_reason(pm_import, monkeypatch, capsys):
-    """rc=0 이나 파싱 0개 → (True, []) 유지(호출부가 TODO 폴백) + stderr 에 형식 확인 안내 surface."""
-    monkeypatch.setattr(pm_import.shutil, "which", lambda b: "/usr/bin/opencode")
-    # 슬래시 없는 배너만 → _parse_opencode_models 가 빈 리스트.
-    monkeypatch.setattr(
-        pm_import.subprocess, "run",
-        lambda *a, **k: _FakeResult(returncode=0, stdout="banner line\nno slash here\n"),
-    )
-    ok, models = pm_import._real_models_runner(_LIVE_SOURCE)
-    assert ok is True and models == []
-    err = capsys.readouterr().err
-    assert "모델 0개 파싱" in err
-
-
-def test_real_models_runner_success_no_reason(pm_import, monkeypatch, capsys):
-    """정상(rc=0·모델 N개) → (True, [모델]) + stderr 무음(반환 계약·무사유 확인)."""
-    monkeypatch.setattr(pm_import.shutil, "which", lambda b: "/usr/bin/opencode")
-    monkeypatch.setattr(
-        pm_import.subprocess, "run",
-        lambda *a, **k: _FakeResult(
-            returncode=0, stdout="ollama/gemma4:26b\nopencode/big-pickle\n"
-        ),
-    )
-    ok, models = pm_import._real_models_runner(_LIVE_SOURCE)
-    assert ok is True
-    assert models == ["ollama/gemma4:26b", "opencode/big-pickle"]
+    assert pm_import._real_models_runner("source-row") == (
+        True, ["ollama/gemma4:26b", "opencode/big-pickle"])
     assert capsys.readouterr().err == ""
-
-
-# ── T-0127: _opencode_models_timeout env override (T-0070 PM_SUBMODULE_TIMEOUT 동형) ──
-
-def test_opencode_models_timeout_default_when_unset(pm_import, monkeypatch):
-    """env 미설정 → 기본 60."""
-    monkeypatch.delenv("PM_OPENCODE_MODELS_TIMEOUT", raising=False)
-    assert pm_import._opencode_models_timeout() == 60
-
-
-def test_opencode_models_timeout_env_override(pm_import, monkeypatch):
-    """PM_OPENCODE_MODELS_TIMEOUT=120 → 120(양의 정수 채택)."""
-    monkeypatch.setenv("PM_OPENCODE_MODELS_TIMEOUT", "120")
-    assert pm_import._opencode_models_timeout() == 120
-
-
-def test_opencode_models_timeout_strips_whitespace(pm_import, monkeypatch):
-    """env 값 앞뒤 공백 strip 후 int 파싱."""
-    monkeypatch.setenv("PM_OPENCODE_MODELS_TIMEOUT", "  90  ")
-    assert pm_import._opencode_models_timeout() == 90
-
-
-def test_opencode_models_timeout_non_numeric_falls_back(pm_import, monkeypatch):
-    """비숫자 env → 기본 60 폴백(무해)."""
-    monkeypatch.setenv("PM_OPENCODE_MODELS_TIMEOUT", "soon")
-    assert pm_import._opencode_models_timeout() == 60
-
-
-def test_opencode_models_timeout_non_positive_falls_back(pm_import, monkeypatch):
-    """≤0 env(0·음수) → 기본 60 폴백(무제한 두지 않음 — 빠른 로컬 조회 가정)."""
-    monkeypatch.setenv("PM_OPENCODE_MODELS_TIMEOUT", "0")
-    assert pm_import._opencode_models_timeout() == 60
-    monkeypatch.setenv("PM_OPENCODE_MODELS_TIMEOUT", "-5")
-    assert pm_import._opencode_models_timeout() == 60
-
-
-def test_real_models_runner_uses_resolved_timeout(pm_import, monkeypatch):
-    """_real_models_runner 가 subprocess.run 의 timeout= 으로 _opencode_models_timeout() 값을 쓴다."""
-    monkeypatch.setattr(pm_import.shutil, "which", lambda b: "/usr/bin/opencode")
-    monkeypatch.setenv("PM_OPENCODE_MODELS_TIMEOUT", "200")
-    seen = {}
-
-    def _capture(*a, **k):
-        seen["timeout"] = k.get("timeout")
-        return _FakeResult(returncode=0, stdout="ollama/gemma4:26b\n")
-
-    monkeypatch.setattr(pm_import.subprocess, "run", _capture)
-    pm_import._real_models_runner(_LIVE_SOURCE)
-    assert seen["timeout"] == 200
 
 
 def test_main_opencode_flag_end_to_end(pm_import, tmp_path):
@@ -5215,7 +5070,7 @@ def test_add_harness_claude_guest_survives_pm_update_roundtrip(pm_import, pm_upd
     sh = pm_update.resolve_manifest_selfheal(oc, REPO)
     if sh["manifest"] is not None:
         manifest = sh["manifest"]
-    changes, _m = pm_update.plan(REPO, manifest, dest_root=oc)
+    changes, _m = pm_update.plan(REPO, manifest, dest_root=oc, conf=_local_conf_of(pm_update, oc))
     assert not any(str(r).replace("\\", "/") == ".project_manager/engine.manifest"
                    for r, _s, _d, _k in changes), "claude guest 절로 engine.manifest 영구 churn"
 
@@ -6371,32 +6226,3 @@ def test_sync_adapter_config_accept_reports_failure_rc_without_success_claim(
     assert rc == 1, "원장 기록 실패인데 성공 rc"
     assert "ledger-failed" in captured.err, captured.err
     assert "자동 갱신 궤도" not in captured.out, f"거짓 성공 안내: {captured.out!r}"
-
-
-def test_the_json_catalog_parser_takes_slugs_and_nothing_else(pm_import):
-    """`codex debug models` 산출 판독 — `models[].slug` 만 모은다(빈 값·비문자열 제외).
-
-    카탈로그는 slug 말고도 설명·추론 등급을 잔뜩 싣는다. 그 중 모델 칸에 적을 수 있는 값은
-    slug 뿐이라 나머지를 끌고 오면 화면이 고를 수 없는 값을 보인다.
-    """
-    output = json.dumps({"models": [
-        {"slug": "gpt-6-astra", "display_name": "GPT-6-Astra"},
-        {"slug": "  ", "display_name": "공백"},
-        {"display_name": "slug 없음"},
-        {"slug": 3},
-        {"slug": "gpt-5.6-sol"},
-    ]})
-
-    assert pm_import._parse_models("json-slug", output) == ["gpt-6-astra", "gpt-5.6-sol"]
-
-
-def test_a_catalog_that_is_not_json_parses_to_nothing(pm_import):
-    """판독 실패는 빈 목록이다 — 러너가 그것을 '0개 파싱' 으로 loud 하게 만든다(성공 위장 0)."""
-    assert pm_import._parse_models("json-slug", "not json at all") == []
-    assert pm_import._parse_models("json-slug", '{"models": "wrong shape"}') == []
-
-
-def test_an_undeclared_parse_name_yields_nothing(pm_import):
-    """표가 모르는 판독 이름은 조용히 아무 형식으로나 읽지 않는다."""
-    assert pm_import._parse_models(None, "anything") == []
-    assert pm_import._parse_models("nope", "anything") == []

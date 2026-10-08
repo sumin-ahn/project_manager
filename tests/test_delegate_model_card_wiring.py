@@ -10,11 +10,11 @@
   (1) **양방향 대조** — 토큰 표(`pm_render.DELEGATE_MODEL_CONF_KEYS`)가 소비를 기대하는데 카드에
       없으면 red, 카드가 쓰는데 표에 없으면 red. 기대는 손열거 표가 아니라 **카드 형식**에서
       파생한다(`pm_render.CARD_FIELD_TOKEN_PREFIXES` 의 그 트리 어댑터 디렉터리 행) — 모델
-      토큰은 세 타깃 전부, 추론 토큰은 claude `effort`·codex `model_reasoning_effort`. opencode
-      frontmatter 에 추론을 싣지 않는 건 하네스 예외가 아니라 형식 차이다.
+      토큰과 추론 토큰 모두 세 타깃 전부다(추론 필드는 claude `effort`·codex
+      `model_reasoning_effort`·opencode `variant`).
   (2) **실 해소 경로** — 문자열 존재 검사가 아니라 `local.conf` → `pm_update._render_text`
-      (추론 허용집합 배선 포함) 를 그대로 태워 렌더된 필드 값이 conf 값과 같은지 본다. 카드와
-      conf 가 어긋나면 그 자리에서 red 다.
+      (추론 허용집합 확인 포함 — opencode 는 가짜 실행 파일의 모델 목록 조회) 를 그대로 태워
+      렌더된 필드 값이 conf 값과 같은지 본다. 카드와 conf 가 어긋나면 그 자리에서 red 다.
   (3) **민감도** — 카드 한 장에서 토큰 한 줄을 지우면 (1) 이 실제로 red 를 내는지 실측한다.
       가드가 자기 표면을 덮는지 스스로 증명하지 못하면 시야는 언제든 표면보다 좁아진다.
   (4) **손열거 표면 시야** — 카드 집합을 손으로 적어 둔 다섯 자리(다른 테스트 모듈의 상수 + 가드
@@ -22,7 +22,8 @@
       출하를 만드는 자리다.
   (5) **전파 전제** — 새 카드가 git tracked 여야 출하 인벤토리(`TRACKED_ONLY`)에 들어간다.
 
-stdlib + tomllib(3.11+) + pyyaml(엔진 런타임 의존). CLI 미실행·파일 iterate(hermetic).
+stdlib + tomllib(3.11+) + pyyaml(엔진 런타임 의존). 실 CLI 미실행(opencode 조회는 PATH 앞의 가짜
+실행 파일 — `_fake_opencode`)·파일 iterate(hermetic).
 """
 from __future__ import annotations
 
@@ -37,11 +38,19 @@ from pathlib import Path
 import pytest
 import yaml
 
+from _fake_opencode import install_fake_opencode, listing_for, path_with
+from _win_skip import posix_bash_supported
+
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 DELEGATE_TOKEN_RE = re.compile(r"\{\{(DELEGATE_[A-Z0-9_]+)\}\}")
+
+
+def _local_conf_of(pm_update, root):
+    """dest 의 local.conf 값 — 계획·렌더가 받는 conf (디스크 읽기는 호출 경계 한 번)."""
+    return pm_update._read_local_conf(Path(root) / ".project_manager" / "local.conf")
 
 
 def _load_tool(name: str):
@@ -229,18 +238,17 @@ def test_expected_consumption_covers_the_whole_token_table(pm_render):
     )
 
 
-def test_reasoning_tokens_are_expected_only_where_the_format_carries_them(pm_render):
-    """추론 토큰 기대는 claude·codex 트리에 5종 전부, opencode 트리엔 0 — 형식 차이다.
+def test_reasoning_tokens_are_expected_in_every_card_format(pm_render):
+    """추론 토큰 기대는 네 카드 트리 모두 5종 전부다 — 세 카드 형식이 모두 추론 필드를 갖는다.
 
-    claude frontmatter `effort`·codex TOML `model_reasoning_effort` 에서 기대를 빼면 그 카드의
-    추론이 conf 밖으로 새고(서브에이전트가 세션 effort 를 물려받는다), opencode 처럼 추론 필드가
-    없는 형식에 기대를 걸면 영구 red 다.
+    claude frontmatter `effort`·codex TOML `model_reasoning_effort`·opencode frontmatter `variant`
+    에서 기대를 빼면 그 카드의 추론이 conf 밖으로 샌다(서브에이전트가 세션 값을 물려받는다).
     """
     all_reasoning = {
         token for token in pm_render.DELEGATE_MODEL_CONF_KEYS
         if token.startswith("DELEGATE_REASONING_")
     }
-    expected_by_harness = {"claude": all_reasoning, "codex": all_reasoning, "opencode": set()}
+    assert len(all_reasoning) == 5
     for tree in CARD_TREES:
         reasoning = {
             token
@@ -251,7 +259,7 @@ def test_reasoning_tokens_are_expected_only_where_the_format_carries_them(pm_ren
         assert pm_render.CARD_HARNESS_BY_ADAPTER_DIR[tree.adapter_dir] == tree.harness, (
             f"{tree.label}: 어댑터 디렉터리 {tree.adapter_dir} 의 하네스가 트리 선언과 다르다"
         )
-        assert reasoning == expected_by_harness[tree.harness], (
+        assert reasoning == all_reasoning, (
             f"{tree.label}: 추론 토큰 기대가 형식과 다르다 — {sorted(reasoning)}"
         )
 
@@ -268,6 +276,7 @@ def test_reasoning_tokens_are_expected_only_where_the_format_carries_them(pm_ren
         ("codex(templates)", "developer", "model"),
         ("codex(templates)", "architect", "model_reasoning_effort"),
         ("opencode(templates)", "developer-hard", "model"),
+        ("opencode(templates)", "architect", "variant"),
     ],
 )
 def test_guard_is_sensitive_to_one_missing_token(
@@ -333,9 +342,36 @@ def _write_local_conf(dest_root: Path, text: str) -> Path:
 
 
 # claude·codex 카드가 받는 추론 허용값(`pm_relay.REASONING_ALLOWED` 의 두 하네스 공통 값). 실 경로
-# 테스트가 이 값을 `_render_text` 의 허용집합 배선에 통과시키므로, 엔진 허용집합이 바뀌면 여기서
-# red 가 난다.
+# 테스트가 이 값을 `_render_text` 의 허용집합 확인에 통과시키므로, 엔진 허용집합이 바뀌면 여기서
+# red 가 난다. opencode 카드는 가짜 모델 목록이 각 모델에 같은 값을 variants 로 준다.
 _REASONING_LADDER = ("low", "medium", "high", "xhigh", "max")
+
+# 모델별 허용값 하네스(opencode)의 트리는 렌더가 모델 목록을 조회한다 — 가짜 실행 파일(POSIX sh)을
+# 쓰므로 그 매개변수만 POSIX 전용이다. 트리 고르기는 하네스 이름이 아니라 pm_relay 표 소속이다.
+_PER_MODEL_HARNESSES = _load_tool("pm_relay").PER_MODEL_REASONING_HARNESSES
+_TREE_PARAMS = tuple(
+    pytest.param(tree, id=tree.label, marks=pytest.mark.skipif(
+        tree.harness in _PER_MODEL_HARNESSES and not posix_bash_supported(),
+        reason="가짜 opencode 는 POSIX sh 스크립트다"))
+    for tree in CARD_TREES
+)
+
+
+def _model_value(token: str) -> str:
+    """모델 토큰의 conf 값 — 프로필마다 다르고 `provider/model` 꼴이다(가짜 모델 목록의 이름)."""
+    return "fixture/" + token.lower().replace("delegate_", "")
+
+
+@pytest.fixture
+def fake_model_listing(pm_render, tmp_path, monkeypatch):
+    """PATH 앞에 `_conf_text` 의 모델 다섯을 내는 가짜 opencode 를 둔다(각 모델 variants = 허용값 5)."""
+    models = {
+        _model_value(token): _REASONING_LADDER
+        for token in pm_render.DELEGATE_MODEL_CONF_KEYS if token.startswith("DELEGATE_MODEL_")
+    }
+    fakebin = install_fake_opencode(tmp_path / "fakebin", listing_for(models))
+    monkeypatch.setenv("PATH", path_with(fakebin))
+    return fakebin
 
 
 def _conf_text(pm_render_module, harness: str) -> tuple[str, dict[str, str]]:
@@ -352,7 +388,7 @@ def _conf_text(pm_render_module, harness: str) -> tuple[str, dict[str, str]]:
         if token.startswith("DELEGATE_REASONING_"):
             value = next(reasoning_values)
         else:
-            value = token.lower().replace("delegate_", "")
+            value = _model_value(token)
         lines.append(f"{conf_key}={value}")
         expected[token] = value
     for conf_key in sorted({
@@ -363,27 +399,27 @@ def _conf_text(pm_render_module, harness: str) -> tuple[str, dict[str, str]]:
     return "\n".join(lines) + "\n", expected
 
 
-@pytest.mark.parametrize("tree", CARD_TREES, ids=lambda tree: tree.label)
+@pytest.mark.parametrize("tree", _TREE_PARAMS)
 def test_cards_render_local_conf_values_through_the_real_path(
-    pm_render, pm_update, tmp_path, tree
+    pm_render, pm_update, tmp_path, tree, fake_model_listing
 ):
     """`local.conf` → 해소 → 렌더까지 실 경로를 태워 카드 필드가 conf 값이 되는지 본다.
 
     문자열 존재 검사가 아니라 **반환값**을 본다: 토큰이 있어도 채널 배선이 빠지면 여기서 red 다
     (선언이 실행면에 닿지 않는 상태를 그 자리에서 표면화한다). 렌더는 `pm_update._render_text` 를
-    거친다 — 추론 허용집합(`pm_relay.REASONING_ALLOWED`) 배선까지 실 경로다.
+    거친다 — 추론 허용집합 확인(`pm_relay.reasoning_allowed`)까지 실 경로다.
     """
     dest = tmp_path / f"dest-{tree.harness}"
     conf_text, expected = _conf_text(pm_render, tree.harness)
     _write_local_conf(dest, conf_text)
 
-    _operational, empty_keys = pm_update._operational_from_local_conf(dest)
+    _operational, empty_keys = pm_update._operational_from_local_conf(_local_conf_of(pm_update, dest))
     assert empty_keys == []
 
     for stem in _expected_stems(pm_render):
         relative = _instance_card_path(tree, stem)
         source = tree.directory(REPO) / f"{stem}{tree.suffix}"
-        rendered = pm_update._render_text(source, dest, card_path=relative)
+        rendered = pm_update._render_text(source, _local_conf_of(pm_update, dest), pm_update._load_pm_render(), card_path=relative)
         assert "{{" not in rendered, f"{relative}: 미해소 토큰 잔존"
         for field, token in _expected_tokens(pm_render, tree, stem).items():
             line = f"{field}{tree.assignment}\"{expected[token]}\""
@@ -396,9 +432,9 @@ def test_cards_render_local_conf_values_through_the_real_path(
                 assert data[field] == expected[token]
 
 
-@pytest.mark.parametrize("tree", CARD_TREES, ids=lambda tree: tree.label)
+@pytest.mark.parametrize("tree", _TREE_PARAMS)
 def test_card_conf_mismatch_is_red_on_the_resolution_path(
-    pm_render, pm_update, tmp_path, tree
+    pm_render, pm_update, tmp_path, tree, fake_model_listing
 ):
     """카드가 conf 와 어긋나면(토큰이 다른 역할 것으로 바뀌면) 해소 결과가 달라져 red.
 
@@ -420,7 +456,7 @@ def test_card_conf_mismatch_is_red_on_the_resolution_path(
             original_line, tree.field_line("model", "DELEGATE_MODEL_ARCHITECT")),
         encoding="utf-8",
     )
-    rendered = pm_update._render_text(swapped, dest, card_path=relative)
+    rendered = pm_update._render_text(swapped, _local_conf_of(pm_update, dest), pm_update._load_pm_render(), card_path=relative)
     developer_line = f"model{tree.assignment}\"{expected['DELEGATE_MODEL_DEVELOPER']}\""
     assert developer_line not in rendered, (
         "카드 토큰을 다른 역할 것으로 바꿨는데 해소 결과가 그대로다 — 값을 재지 않고 있다"
@@ -437,13 +473,7 @@ def _active_card_fields(tree: CardTree, rendered: str) -> set[str]:
     return set(yaml.safe_load(rendered[4:end]) or {})
 
 
-# 추론 필드를 갖는 형식의 트리 — 미사용 프로필이면 model 줄과 추론 줄이 함께 중화돼야 한다.
-_REASONING_FIELD_TREES = tuple(
-    tree for tree in CARD_TREES if tree.harness in {"claude", "codex"}
-)
-
-
-@pytest.mark.parametrize("tree", _REASONING_FIELD_TREES, ids=lambda tree: tree.label)
+@pytest.mark.parametrize("tree", CARD_TREES, ids=lambda tree: tree.label)
 def test_unused_profile_neutralizes_model_and_reasoning_together(
     pm_render, pm_update, tmp_path, tree
 ):
@@ -462,7 +492,7 @@ def test_unused_profile_neutralizes_model_and_reasoning_together(
     for stem in _expected_stems(pm_render):
         relative = _instance_card_path(tree, stem)
         source = tree.directory(REPO) / f"{stem}{tree.suffix}"
-        rendered = pm_update._render_text(source, dest, card_path=relative)
+        rendered = pm_update._render_text(source, _local_conf_of(pm_update, dest), pm_update._load_pm_render(), card_path=relative)
         assert "{{" not in rendered, f"{relative}: 중화 후에도 토큰 잔존"
         assert not card_fields & _active_card_fields(tree, rendered), (
             f"{relative}: 미사용 프로필인데 {sorted(card_fields)} 중 살아 있는 키가 있다"
@@ -478,63 +508,6 @@ def test_unused_profile_neutralizes_model_and_reasoning_together(
             )
 
 
-def test_reasoning_token_on_a_format_without_reasoning_field_fails_loud(
-    pm_render, pm_update, tmp_path
-):
-    """추론 필드가 없는 형식(opencode)에 추론 토큰을 넣으면 렌더가 `RenderLeakError` 로 막는다.
-
-    값이 있으면 렌더의 추론 값 검증이, 값이 없고 필드 줄도 아니면 잔여 토큰 검사가 멈춘다 — 두
-    경우 모두 아무도 안 읽는 필드에 값이 실린 것처럼 보이는 출하를 막는다. 값이 없는 필드 이름
-    줄(`effort:`)은 중화 정규식이 하네스 무관 합집합이라 렌더가 통과시키므로, 그 자리는 정적
-    배선 가드(`_wiring_problems`)가 잡는다는 것도 함께 단언한다.
-    """
-    relative = ".opencode/agents/developer-hard.md"
-    source = (REPO / "templates/opencode" / relative).read_text(encoding="utf-8")
-    model_line = 'model: "{{DELEGATE_MODEL_DEVELOPER_HARD}}"'
-    assert model_line in source, f"변이 전제 실패: {model_line!r} 가 없다"
-    cases = (
-        ("effort", "delegate.developer.hard.reasoning=high\n"),
-        ("reasoning", ""),
-    )
-    for field, reasoning_conf in cases:
-        dest = tmp_path / f"dest-{field}"
-        _write_local_conf(
-            dest,
-            "project.name=Acme\ndelegate.developer.hard.model=opus\n" + reasoning_conf,
-        )
-        injected = tmp_path / f"src-{field}" / relative
-        injected.parent.mkdir(parents=True)
-        injected.write_text(
-            source.replace(
-                model_line,
-                model_line + f'\n{field}: "{{{{DELEGATE_REASONING_DEVELOPER_HARD}}}}"',
-            ),
-            encoding="utf-8",
-        )
-        with pytest.raises(RuntimeError) as excinfo:
-            pm_update._render_text(injected, dest, card_path=relative)
-        assert type(excinfo.value).__name__ == "RenderLeakError", excinfo.value
-        assert "DELEGATE_REASONING_DEVELOPER_HARD" in str(excinfo.value), (field, excinfo.value)
-
-    root = tmp_path / "mutated"
-    for candidate in CARD_TREES:
-        destination = candidate.directory(root)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(candidate.directory(REPO), destination)
-    opencode = next(t for t in CARD_TREES if t.harness == "opencode")
-    target = opencode.directory(root) / "developer-hard.md"
-    target.write_text(
-        source.replace(
-            model_line, model_line + '\neffort: "{{DELEGATE_REASONING_DEVELOPER_HARD}}"'),
-        encoding="utf-8",
-    )
-    problems = _wiring_problems(pm_render, root)
-    assert any(
-        "DELEGATE_REASONING_DEVELOPER_HARD" in problem and "opencode" in problem
-        for problem in problems
-    ), f"opencode 카드의 추론 토큰을 정적 가드가 잡지 못했다: {problems}"
-
-
 def test_empty_hard_model_fails_loud_with_the_conf_key(pm_render, pm_update, tmp_path):
     """`delegate.developer.hard.model=` (빈값)은 중화가 아니라 fail-loud 다 — 오설정 신호.
 
@@ -543,7 +516,7 @@ def test_empty_hard_model_fails_loud_with_the_conf_key(pm_render, pm_update, tmp
     """
     dest = tmp_path / "dest"
     _write_local_conf(dest, "delegate.developer.hard.model=\n")
-    operational, empty_keys = pm_update._operational_from_local_conf(dest)
+    operational, empty_keys = pm_update._operational_from_local_conf(_local_conf_of(pm_update, dest))
     assert empty_keys == ["DELEGATE_MODEL_DEVELOPER_HARD"]
 
     source = (REPO / ".claude/agents/developer-hard.md").read_text(encoding="utf-8")

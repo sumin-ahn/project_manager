@@ -1,18 +1,18 @@
 """`pm-config delegate models --harness <h> --json` — 모델 목록 읽기 전용 조회 (T-0916).
 
 설정 화면과 사람이 "이 하네스에 무엇을 적나" 를 받는 자리다. 목록의 원천은 `pm_relay.MODEL_SOURCE`
-한 표이고, 이 명령은 그 표의 `kind` 로만 갈린다(하네스 이름 조건 분기 0). 이 파일이 못박는 계약:
+한 표이고 조회는 `pm_relay.model_listing` 하나다(하네스 이름 조건 분기 0). 이 파일이 못박는 계약:
 
-  - 응답은 `{"harness", "kind", "models"}` 한 줄이다. `free_text` 는 싣지 않는다 — 그 사실은 키
+  - 응답은 `{"harness", "kind", "models", "variants"}` 한 줄이다. `variants` 는 모델별 추론 강도이고
+    그것을 내는 원천(opencode)만 채운다(나머지 null). `free_text` 는 싣지 않는다 — 그 사실은 키
     레지스트리의 `choices.free_text` 가 소유하고, 두 자리에 두면 갈린다.
   - rc 는 0(성공) · 1(엔진 사본 부재 — 원천 표를 못 읽음) · 2(`--harness`/`--json` 미지정·미지원) ·
     3(조회 실패) 이다. **빈 목록 성공은 없다** — 0개면 실패이고 사유가 stderr 로 나온다.
   - 조회는 읽기 전용이다. 실행 전후로 트리가 한 바이트도 바뀌지 않는다.
 
-live 원천(codex·opencode)은 **실 subprocess 층**으로 친다: 조회 seam(`pm_import._real_models_runner`)
-을 가짜로 갈아끼우지 않고, 그 실행 파일이 없는 격리 PATH 로 자식을 돌려 `shutil.which` 분기가 실제로
-도는 것을 본다(라이브 CLI 의존 0 — 있는 환경 전용 단언은 두지 않는다). 두 하네스가 다른 것은 원천
-표의 `command`·`parse` 값뿐이라 판정이 하네스 이름이 아니라 kind 로만 갈린다.
+live 원천(codex·opencode)은 **실 subprocess 층**으로 친다: 조회 함수를 갈아끼우지 않고, 실행 파일이
+없는 격리 PATH 나 실제 출력 형식을 내는 가짜 실행 파일(`_fake_opencode`)을 PATH 앞에 둔 자식을 돌린다
+(라이브 CLI 의존 0). 두 하네스가 다른 것은 원천 표의 `command`·`parse` 값뿐이다.
 """
 from __future__ import annotations
 
@@ -27,8 +27,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from _fake_opencode import OLLAMA_LISTING, install_fake_opencode, path_with
 from _manager_home import tree_snapshot
 from _textio import utf8_child_env
+from _win_skip import posix_bash_supported
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -93,24 +95,44 @@ def test_an_alias_harness_answers_from_the_declared_table(relay):
     document = _payload(_run(*MODELS_ARGV, "--harness", "claude", "--json"))
 
     assert document == {"harness": "claude", "kind": "alias",
-                        "models": list(relay.MODEL_SOURCE["claude"].values)}
+                        "models": list(relay.MODEL_SOURCE["claude"].values), "variants": None}
 
 
-def test_the_response_never_carries_the_free_text_axis(pc, capsys):
-    """응답 키는 셋뿐이다 — `free_text` 는 레지스트리 `choices` 가 소유한다(두 자리 금지).
+def test_the_response_never_carries_the_free_text_axis(pc, relay, capsys):
+    """응답 키는 넷뿐이다 — `free_text` 는 레지스트리 `choices` 가 소유한다(두 자리 금지).
 
-    두 kind 를 다 본다: alias 는 실 서브프로세스로, live 는 조회 seam 주입으로(라이브 CLI 를
+    두 kind 를 다 본다: alias 는 실 서브프로세스로, live 는 조회 함수 주입으로(라이브 CLI 를
     테스트 통과 조건으로 삼지 않는다).
     """
     alias = _payload(_run(*MODELS_ARGV, "--harness", "claude", "--json"))
 
-    rc = pc.cmd_delegate_models(SimpleNamespace(harness="opencode", json=True),
-                                models_runner=lambda source=None: (True, ["provider/model"]))
+    rc = pc.cmd_delegate_models(
+        SimpleNamespace(harness="opencode", json=True),
+        listing=lambda source: relay.ModelListing(("provider/model",), {"provider/model": ()}))
     live = json.loads(capsys.readouterr().out.strip())
 
     assert rc == 0
+    assert live["variants"] == {"provider/model": []}
     for document in (alias, live):
-        assert set(document) == {"harness", "kind", "models"}, document
+        assert set(document) == {"harness", "kind", "models", "variants"}, document
+
+
+@pytest.mark.skipif(not posix_bash_supported(), reason="가짜 opencode 는 POSIX sh 스크립트다")
+def test_live_response_carries_variants_only_for_per_model_sources(tmp_path):
+    """opencode 응답은 모델과 모델별 variants 를 같은 한 번의 조회에서 싣고, 별칭 원천은 null 이다."""
+    fakebin = install_fake_opencode(tmp_path / "fakebin", OLLAMA_LISTING)
+
+    document = _payload(_run(*MODELS_ARGV, "--harness", "opencode", "--json",
+                             env_extra={"PATH": path_with(fakebin)}))
+    claude = _payload(_run(*MODELS_ARGV, "--harness", "claude", "--json"))
+
+    assert document == {
+        "harness": "opencode", "kind": "live",
+        "models": ["ollama/glm-5.2:cloud", "ollama/ornith1.5:35b-a3b"],
+        "variants": {"ollama/glm-5.2:cloud": [], "ollama/ornith1.5:35b-a3b": ["low", "medium", "high"]},
+    }
+    assert claude["variants"] is None
+    assert (fakebin / "opencode-calls.txt").read_text(encoding="utf-8").count("\n") == 1
 
 
 # ── ② live 원천(codex·opencode) — 실 subprocess 층 ─────────────────────────
@@ -140,12 +162,14 @@ def test_a_live_harness_without_its_binary_fails_loudly(tmp_path):
     assert "PATH 부재" in completed.stderr, "조회 seam 의 사유가 사라졌다"
 
 
-def test_the_live_lookup_reuses_the_import_engine_query_seam(pc):
-    """두 번째 opencode 조회 코드를 만들지 않는다 — 기존 seam 을 그대로 부른다."""
-    source = inspect.getsource(pc._delegate_models)
+def test_the_live_lookup_reuses_the_relay_model_listing(pc):
+    """두 번째 조회 코드를 만들지 않는다 — pm_config 와 설치 래퍼가 같은 `model_listing` 을 부른다."""
+    source = inspect.getsource(pc.cmd_delegate_models)
+    wrapper = inspect.getsource(_load("pm_import_for_delegate_models", TOOLS / "pm_import.py")
+                                ._real_models_runner)
 
-    assert "_real_models_runner" in source
-    assert "subprocess" not in source, "조회를 여기서 다시 구현했다"
+    assert "model_listing" in source and "model_listing" in wrapper
+    assert "subprocess" not in source and "subprocess" not in wrapper, "조회를 여기서 다시 구현했다"
 
 
 def test_the_lookup_declares_no_new_timeout_knob():
@@ -153,21 +177,17 @@ def test_the_lookup_declares_no_new_timeout_knob():
     assert "PM_OPENCODE_MODELS_TIMEOUT" not in PM_CONFIG_PY.read_text(encoding="utf-8")
 
 
-def test_an_empty_live_list_is_never_a_success(pc, relay):
+@pytest.mark.skipif(not posix_bash_supported(), reason="가짜 opencode 는 POSIX sh 스크립트다")
+def test_an_empty_live_list_is_never_a_success(tmp_path):
     """조회가 0개를 주면 성공이 아니다 — 빈 목록을 성공으로 위장하지 않는다."""
-    args = SimpleNamespace(harness="opencode", json=True)
+    fakebin = install_fake_opencode(tmp_path / "fakebin", "")
 
-    rc = pc.cmd_delegate_models(args, models_runner=lambda source=None: (True, []))
+    completed = _run(*MODELS_ARGV, "--harness", "opencode", "--json",
+                     env_extra={"PATH": path_with(fakebin)})
 
-    assert rc == 3
-
-
-def test_an_unknown_source_kind_is_fail_loud(pc):
-    """표에 없는 `kind` 는 선언과 판정이 갈린 것이다 — 조용히 빈 목록으로 내려가지 않는다."""
-    with pytest.raises(ValueError):
-        pc._delegate_models(SimpleNamespace(
-            kind="nope", values=(), command=None, parse=None,
-            value_format="", how_to_check=""))
+    assert completed.returncode == 3, completed.stdout
+    assert completed.stdout == ""
+    assert "모델 0개" in completed.stderr
 
 
 # ── ④ 받는 모양 — rc 2 ─────────────────────────────────────────────────────

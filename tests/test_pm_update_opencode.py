@@ -16,6 +16,11 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 
+def _local_conf_of(pm_update, root):
+    """dest 의 local.conf 값 — 계획·렌더가 받는 conf (디스크 읽기는 호출 경계 한 번)."""
+    return pm_update._read_local_conf(Path(root) / ".project_manager" / "local.conf")
+
+
 def _load_pm_update():
     spec = importlib.util.spec_from_file_location("pm_update", TOOLS / "pm_update.py")
     mod = importlib.util.module_from_spec(spec)
@@ -144,7 +149,7 @@ def test_plan_with_dest_root_new_files(pm_update, tmp_path):
     _make_source(source, {".project_manager/tools/board.py": "# board"})
 
     manifest = [".project_manager/tools/board.py"]
-    changes, missing = pm_update.plan(source, manifest, dest_root=dest)
+    changes, missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert len(changes) == 1
     rel, src_path, dst_path, kind = changes[0]
@@ -161,7 +166,7 @@ def test_plan_with_dest_root_update_when_different(pm_update, tmp_path):
     _make_source(dest, {".project_manager/tools/board.py": "# old content"})
 
     manifest = [".project_manager/tools/board.py"]
-    changes, missing = pm_update.plan(source, manifest, dest_root=dest)
+    changes, missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert len(changes) == 1
     assert changes[0][3] == "update"
@@ -176,7 +181,7 @@ def test_plan_with_dest_root_no_change_when_identical(pm_update, tmp_path):
     _make_source(dest, {".project_manager/tools/board.py": content})
 
     manifest = [".project_manager/tools/board.py"]
-    changes, missing = pm_update.plan(source, manifest, dest_root=dest)
+    changes, missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert len(changes) == 0
     assert len(missing) == 0
@@ -195,7 +200,7 @@ def test_plan_without_dest_root_defaults_to_repo(pm_update, tmp_path):
     init_git_repo(source, commit="seed")
 
     manifest = [rel]
-    changes, missing = pm_update.plan(source, manifest, dest_root=None)
+    changes, missing = pm_update.plan(source, manifest, dest_root=None, conf=_local_conf_of(pm_update, pm_update.REPO))
 
     # REPO 하위에 파일이 없으므로 "new" 로 계획돼야 한다
     assert len(changes) == 1
@@ -240,7 +245,7 @@ def test_plan_dest_is_repo_templates_when_source_is_external(pm_update, tmp_path
     dest = REPO / "templates" / "opencode"
 
     manifest = [".project_manager/tools/board.py"]
-    changes, missing = pm_update.plan(source, manifest, dest_root=dest)
+    changes, missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     # changes 가 있든 없든 dst 가 항상 dest(REPO/templates/opencode) 하위여야 한다
     for _rel, _src, dst_path, _kind in changes:

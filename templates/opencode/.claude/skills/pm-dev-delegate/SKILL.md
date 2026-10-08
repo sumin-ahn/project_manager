@@ -78,10 +78,12 @@ python3 .project_manager/tools/board.py regression run --task <이름>
 
 ## 위임 설정 조회와 transport 선택 (`pm_delegate`)
 
-`local.conf`의 `delegate.<role>[.<tier>]` 매핑은 native와 cross 모두가 읽는 위임 설정의 단일
-진실이다. 위임 전 target이 PM과 같은 하네스인지 판정해 같은 하네스면 native transport, 다른
-하네스면 `pm_delegate.py` cross transport를 선택한다. native agent 카드의 모델은 conf와 일치해야
-하며 가드가 불일치를 경고하되 spawn을 막거나 카드를 자동 수정하지 않는다. `delegate.enabled`는
+transport 규칙은 한 문장이다. 리뷰(`code-reviewer`)는 하네스와 무관하게 엔진이
+실행한다(`pm_delegate.py --role code-reviewer --cluster`). 설계·구현·조사는 target 하네스 == PM
+하네스면 native, 다르면 `pm_delegate.py` cross 다. 리뷰만 엔진이 실행하는 이유는 §code-reviewer 위임에 있다.
+
+`local.conf`의 `delegate.<role>[.<tier>]` 매핑은 native transport와 cross transport가 모두 읽는 위임
+설정의 단일 진실이다. native agent 카드의 모델은 conf와 일치해야 하며 가드가 불일치를 경고하되 spawn을 막거나 카드를 자동 수정하지 않는다. `delegate.enabled`는
 위임 전체의 마스터 스위치(기본 허용·채널 무관)이며 native/cross 어느 쪽도 예외가 아니다.
 cross 위임은 통상 과금이 발생하는 유료 호출이다 — 그 승인은 도구 승인 축이 소유하며 이
 스위치가 대신하지 않는다.
@@ -99,7 +101,7 @@ developer·code-reviewer·architect·researcher는 PM 홈 티켓을 직접 편�
 
   ```bash
   python3 .project_manager/tools/pm_delegate.py ticket prepare \
-      --cluster <C-이름> --role <developer|code-reviewer|architect|researcher> \
+      --cluster <C-이름> --role <developer|architect> \
       --cwd <작업 worktree 절대경로>
   # 티켓마다 stdout JSON 한 줄 — `copy`(라운드 파일 절대경로)만 native Agent 프롬프트에 주입한다.
   # native 위임 종료 뒤(rc/판정과 무관) — run-dir 을 주면 그 run 의 티켓 전부를 한 번에 회수한다:
@@ -116,6 +118,7 @@ developer·code-reviewer·architect·researcher는 PM 홈 티켓을 직접 편�
   남기지 않는다.
   **`ticket prepare`는 역할이 native(하네스가 PM 하네스와 일치)일 때만 통과한다** — cross 역할은
   고아 시드를 막기 위해 rc≠0 으로 거부되며, 아래 `--ticket` 실 실행이 자동 준비하라는 처방을 낸다.
+  리뷰는 준비 대상이 아니다(엔진 실행 · `--role code-reviewer` 는 rc 2).
 
 - **cross 자동 후처리**: 아래 실 실행에 `--ticket T-NNNN`을 주면 `pm_delegate.py`가 prepare,
   라운드 파일 경로 preamble 합성, subprocess 실행, `finally` harvest를 한 호출에서 수행한다.
@@ -162,8 +165,9 @@ cross는 **`--tier hard`**, native는 그 하네스의 hard 카드(`developer-ha
 
 ### 2. native/cross
 
-- **target harness == PM 하네스**: 아래 실행 패턴대로 native 위임(claude=Agent 툴 `subagent_type`, codex=`spawn_agent`, opencode=subagent). `pm_delegate`를 호출하지 않는다.
-- **target harness != PM 하네스**: 아래 `pm_delegate` 호출.
+- **설계·구현·조사 — target harness == PM 하네스**: 아래 실행 패턴대로 native 위임(claude=Agent 툴 `subagent_type`, codex=`spawn_agent`, opencode=subagent). `pm_delegate`를 호출하지 않는다.
+- **설계·구현·조사 — target harness != PM 하네스**: 아래 `pm_delegate` 호출.
+- **리뷰**: §code-reviewer 위임(엔진 실행, 하네스 무관).
 
 ### 3. cross 실행
 
@@ -178,7 +182,7 @@ python3 .project_manager/tools/pm_delegate.py --role <역할> \
     --prompt-file <프롬프트 파일 절대경로> --cwd <작업 worktree 절대경로> [--tier normal|hard] [--ticket T-NNNN]
 ```
 
-- `--prompt-file`: self-contained task 프롬프트 파일. 아래 developer/code-reviewer 위임 본문을 그대로 저장한다. 해소된 `--cwd` 하위 또는 이 repo `.project_manager/` 하위만 허용하며 repo 밖은 fail-loud·유출 차단.
+- `--prompt-file`: self-contained task 프롬프트 파일. 아래 developer 위임 본문을 그대로 저장한다(리뷰 프롬프트는 엔진이 조립한다). 해소된 `--cwd` 하위 또는 이 repo `.project_manager/` 하위만 허용하며 repo 밖은 fail-loud·유출 차단.
 - `--cwd`: 구현할 worktree **절대경로**. 모든 역할 필수(기본값 없음). task-mode 해소값을 실값으로 넣는다.
 - `--tier`: developer에만 사용.
 - role preamble(역할 정체성, commit/push 등 git 비가역·board 조작·어댑터 `.claude/.codex/.opencode` 수정 금지)은 엔진이 자동 합성한다. 프롬프트 파일에는 작업만 담고 금지 문구를 중복하지 않는다.
@@ -290,7 +294,9 @@ Agent 툴 호출:
 ### code-reviewer 위임 (묶음 1회)
 
 리뷰 단위는 묶음이다. **격리 스냅샷·프롬프트 조립·라운드 자리 예약을 엔진이 한다 — PM 의 손 git 은
-0이다.** PM 이 넣는 것은 검토 중점 문단 하나(`--focus`)뿐이다.
+0이다.** PM 이 넣는 것은 검토 중점 문단 하나(`--focus`)뿐이다. 리뷰가 PM 과 같은 하네스여도 native
+위임을 쓰지 않는 이유: 하네스 프로세스의 실행 위치를 격리 스냅샷으로 옮기는 것과 라운드 상한·발산
+판정은 별도 프로세스로만 가능하다(native 위임 도구에는 작업 디렉터리 인자가 없다).
 
 ```bash
 python3 .project_manager/tools/pm_delegate.py --role code-reviewer \

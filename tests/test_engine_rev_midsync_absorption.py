@@ -59,6 +59,8 @@ _RECOVERY_MARKER = "_absorb_engine_rev_skew_for_recovery"
 #                       도달하게 되면 red → 그 지점을 흡수 경계로 감싸야 한다.
 #   "caller-absorbs"    이 함수는 skew 를 그대로 올리고 **호출부**가 등록된 경계로 흡수한다.
 #                       (여기서 흡수해 drift 로 내리면 혼합 트리의 엔진으로 훅을 생성·설치한다.)
+#   "not-sync-path"     설정 저장(`apply_conf` · `pm-config apply`)의 호출이다. 동기 실행(`_main`)에서
+#                       도달하지 않으므로 skew 는 실결함 신호로 그대로 올린다(동기 밖 fail-loud).
 _UNABSORBED_SIBLING_CALLS = {
     ("resolve_hook_set_predicate", "pm_import.is_live_hook_set_path"): "no-verified-load",
     ("_shipping_inventory", "repo_files._real_git_runner"): "no-verified-load",
@@ -77,6 +79,14 @@ _UNABSORBED_SIBLING_CALLS = {
     ("_protected_hook_in_sync", "pm_config.protected_hook_wired"): "caller-absorbs",
     ("_protected_hook_in_sync", "pm_config._protected_push_gate_config"): "caller-absorbs",
     ("_protected_hook_in_sync", "worktree_pool.protected_hook_artifacts"): "caller-absorbs",
+    ("apply_conf", "pm_import._conf_values"): "not-sync-path",
+    ("apply_conf", "pm_import._write_conf_keys_locked"): "not-sync-path",
+    ("_installed_generation_source", "pm_import.classify_upstream"): "not-sync-path",
+    ("_installed_generation_source", "pm_import.upstream_cache_dir"): "not-sync-path",
+    ("_installed_generation_source", "pm_import.read_upstream_rev"): "not-sync-path",
+    ("_plan_harness_ctx", "pm_import._harness_ctx_plan"): "not-sync-path",
+    ("_plan_harness_ctx", "pm_import._harness_ctx_baseline_writable"): "not-sync-path",
+    ("_commit_harness_ctx", "pm_import._harness_ctx_commit"): "not-sync-path",
 }
 
 
@@ -310,6 +320,39 @@ def test_unabsorbed_sibling_apis_cannot_reach_a_verified_load(function, api):
     assert path is None, (
         f"{function} 이 흡수 없이 부르는 {api} 가 verifier 로드에 도달한다: {' → '.join(path or [])}"
     )
+
+
+@pytest.mark.parametrize(
+    "function",
+    sorted({function for (function, _api), reason in _UNABSORBED_SIBLING_CALLS.items()
+            if reason == "not-sync-path"}),
+)
+def test_not_sync_path_sibling_callers_are_unreachable_from_the_sync_entry(function):
+    """설정 저장 경로로 선언한 함수는 동기 실행 입구(`_main`)에서 도달하지 않아야 한다.
+
+    도달하게 되면 그 형제 호출은 동기 실행 경로의 것이므로 흡수 경계로 감싸야 한다 — 선언을 판정으로
+    유지하는 장치다. 간선은 함수·모듈 수준 이름이 참조하는 이름 전부다(키 묶음 표의 함수 참조 포함)."""
+    tree = ast.parse((TOOLS / "pm_update.py").read_text(encoding="utf-8"))
+    graph: dict[str, set[str]] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            owners = [node.name]
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            owners = [target.id for target in targets if isinstance(target, ast.Name)]
+        else:
+            continue
+        names = {child.id for child in ast.walk(node) if isinstance(child, ast.Name)}
+        for owner in owners:
+            graph.setdefault(owner, set()).update(names - {owner})
+    assert function in graph, function
+    seen, queue = {"_main"}, collections.deque(["_main"])
+    while queue:
+        for name in graph.get(queue.popleft(), ()):
+            if name in graph and name not in seen:
+                seen.add(name)
+                queue.append(name)
+    assert function not in seen, f"{function} 이 동기 실행 입구(_main)에서 도달한다 — 흡수 경계로 감싸야 한다"
 
 
 def test_protected_hook_in_sync_is_covered_by_an_absorbing_caller():

@@ -24,8 +24,10 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 OPENCODE_BIN = "opencode"
@@ -154,7 +156,8 @@ class OpencodeCliDriver:
                  precompact_at_pct: int | None = None, root: Path | None = None,
                  mark_stop=None, spawn_result=None, agent: str = DEFAULT_AGENT,
                  opencode_bin: str = OPENCODE_BIN, timeout: int = TURN_TIMEOUT_SEC,
-                 runner=subprocess.run, stall_error=None) -> None:
+                 runner=subprocess.run, stall_error=None, temp_root=None, attached_message=None,
+                 assert_prompt_in_cwd=None) -> None:
         # parse_opencode_json 은 엔진 순수 헬퍼 주입(DI) — driver 가 파싱 로직을 중복 보유하지 않음.
         self._parse = parse_opencode_json
         self._ctx_budget = ctx_budget
@@ -169,6 +172,13 @@ class OpencodeCliDriver:
             spawn_result or parser_globals.get("SpawnResult")
             or (lambda sid, reply: (sid, reply))
         )
+        # 프롬프트는 cross 위임과 같이 `--dir` 안 파일로 `--file` 전달한다 — 자리(`temp_root`)·첨부 안내
+        # 문구·containment 검사는 엔진(pm_relay) 것을 쓴다(사본 없음). main 은 명시 주입하고, parser 만
+        # 주입한 단위 경로는 parser 를 소유한 엔진 것을 쓴다. 둘 다 없으면 여기서 멈춘다(KeyError).
+        self._temp_root = temp_root or parser_globals["temp_root"]
+        self._attached_message = attached_message or parser_globals["OPENCODE_ATTACHED_MSG"]
+        self._assert_prompt_in_cwd = (
+            assert_prompt_in_cwd or parser_globals["assert_opencode_prompt_in_cwd"])
         self.agent = agent
         self.opencode_bin = opencode_bin
         self.timeout = timeout
@@ -220,16 +230,29 @@ class OpencodeCliDriver:
 
         - new_session=True: `--agent <agent>` 로 fresh 세션(opencode 가 sid 발급).
         - session_id 주어지면: `-s <sid>` 로 그 세션 resume.
-        child cwd 격리 — `--dir <cwd>` 로 PM repo root 를 명시(엔진 제약)."""
-        cmd = [self.opencode_bin, "run", "--format", "json"]
-        if new_session:
-            cmd += ["--agent", self.agent]
-        if session_id:
-            cmd += ["-s", session_id]
-        if cwd is not None:
-            cmd += ["--dir", cwd]  # child cwd 격리(PM repo root).
-        cmd.append(prompt)  # message positional 은 맨 끝.
+        child cwd 격리 — `--dir <cwd>` 로 PM repo root 를 명시(엔진 제약).
+        프롬프트는 실행 인자가 아니라 `--dir` 안 프롬프트 파일(`--file`)이다(cross 위임과 같다). 여러 줄
+        프롬프트를 실행 인자에 실으면 Windows 에서 `opencode.cmd` 를 거칠 때 cmd.exe 가 첫 줄 뒤를 버린다."""
+        sandbox = Path(cwd if cwd is not None else os.getcwd())
+        prompt_dir = Path(tempfile.mkdtemp(prefix="pm-orch-opencode-", dir=self._temp_root(sandbox)))
+        try:
+            prompt_file = prompt_dir / "prompt.md"
+            prompt_file.write_text(prompt, encoding="utf-8", newline="\n")
+            self._assert_prompt_in_cwd(sandbox, prompt_file)
+            cmd = [self.opencode_bin, "run", self._attached_message, "--file", str(prompt_file),
+                   "--format", "json"]
+            if new_session:
+                cmd += ["--agent", self.agent]
+            if session_id:
+                cmd += ["-s", session_id]
+            if cwd is not None:
+                cmd += ["--dir", cwd]  # child cwd 격리(PM repo root).
+            return self._run_turn(cmd)
+        finally:
+            shutil.rmtree(prompt_dir)
 
+    def _run_turn(self, cmd):
+        """한 turn 실행·진단·파싱 — (observed_session_id, reply_text, used_tokens)."""
         try:
             completed = self.runner(
                 cmd, capture_output=True, text=True, timeout=self.timeout,
@@ -329,6 +352,9 @@ def main(argv: list[str] | None = None) -> int:
         agent=args.agent,
         runner=_make_watchdog_runner(engine),
         stall_error=engine.StallWatchdogError,
+        temp_root=engine.temp_root,
+        attached_message=engine.OPENCODE_ATTACHED_MSG,
+        assert_prompt_in_cwd=engine.assert_opencode_prompt_in_cwd,
     )
     supervisor = engine.Supervisor(driver, root=root, task=args.task)
 

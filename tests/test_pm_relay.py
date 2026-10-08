@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -833,7 +834,7 @@ def test_watched_popen_defaults_stdin_to_devnull(orch, monkeypatch):
         return _FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    proc = orch._WatchedPopen(["child"], input_text=None)
+    proc = orch._WatchedPopen([sys.executable], input_text=None)
     proc.communicate(timeout=1)
     assert captured["kwargs"]["stdin"] == subprocess.DEVNULL
 
@@ -948,7 +949,8 @@ def test_claude_driver_turn_closes_supervisor_stdin(orch, driver_mod):
 
     driver = driver_mod.ClaudeCliDriver(orch.parse_stream_json, runner=fake_run)
     assert driver.relay_turn("uuid", "prompt") == "ok"
-    assert captured["kwargs"]["stdin"] == subprocess.DEVNULL
+    # 프롬프트 전문을 stdin 으로 쓰고 닫는다(`input=`) — supervisor 의 stdin 은 child 에 가지 않는다.
+    assert captured["kwargs"]["input"] == "prompt" and "stdin" not in captured["kwargs"]
 
 
 def test_claude_driver_rc0_empty_stdout_warns(orch, driver_mod, capsys):
@@ -975,7 +977,7 @@ def test_claude_driver_relay_uses_resume(orch, driver_mod):
     cmd = captured["cmd"]
     assert "--resume" in cmd and "uuid-abc" in cmd
     assert "--session-id" not in cmd  # resume 은 새 id 안 발급.
-    assert "ping" in cmd
+    assert "ping" not in cmd  # 프롬프트는 stdin 이다(실행 인자 아님).
 
 
 def test_claude_driver_relay_reuses_spawn_cwd(orch, driver_mod):
@@ -1273,7 +1275,7 @@ def test_t0943_relay_budget_errors_without_default(orch, tmp_path, damage):
         conf = tmp_path / ".project_manager/local.conf"
         conf.write_text(conf.read_text(encoding="utf-8").replace("ctx.precompact_at_pct=90", "ctx.precompact_at_pct=abc"),
                         encoding="utf-8")
-    with pytest.raises(ValueError, match="ctx-apply"):
+    with pytest.raises(ValueError, match="`pm_config.py apply`"):
         orch.ctx_budget(tmp_path, "codex", None)
     with pytest.raises(TypeError):
         orch.validate_relay_budget(None, 90)

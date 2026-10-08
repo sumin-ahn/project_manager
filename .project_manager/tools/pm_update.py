@@ -60,6 +60,7 @@ import sys
 import tempfile
 import warnings
 import zlib
+from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, NamedTuple
@@ -1294,7 +1295,13 @@ def _read_local_conf(path: Path) -> dict[str, str]:
     apply 경로가 이 함수를 지난다 — 구표기 conf 를 가진 채택자도 **엔진 파일은 받아야** 안내대로
     고칠 수 있다. 그래서 여기서는 `assert_no_legacy` 를 부르지 않는다(값을 실제로 소비하는
     지점이 부른다·§교체 절차). 미존재/읽기 실패 → {}.
+
+    파일이 없으면 형제 로더를 읽지 않고 {} 다(`print_conf_migration_notice` 와 같은 규칙) — 갱신 입구가
+    계획에 넘길 conf 를 한 번 읽는데, conf 가 없는 트리(init 전·출하 템플릿·형제가 빠진 복구 트리)에서
+    없는 파일을 읽으려고 형제를 싣다 멈추면 그 형제를 되살릴 동기 자신이 죽는다.
     """
+    if not Path(path).is_file():
+        return {}
     return _load_local_conf().load(path).values
 
 
@@ -1929,6 +1936,17 @@ def _load_pm_import():
     import_py = Path(__file__).resolve().parent / "pm_import.py"
     return _load_module_from_path(
         import_py, "pm_import.py", allow_unverified=True,
+    )
+
+
+def _load_relay():
+    """pm_relay(하네스 계약 — 추론 허용값·모델 목록 조회)를 같은 tools/ 에서 직접 로드한다
+    (`_load_pm_import` 와 같은 무검증 로드 — 이 모듈은 복구 채널이라 `EXEMPT_FROM_STAMP` 가 덮는다).
+
+    한 번 읽은 인스턴스를 호출부가 쥐고 쓴다 — 모델 목록 조회 기억이 그 인스턴스의 수명이다."""
+    relay_py = Path(__file__).resolve().parent / "pm_relay.py"
+    return _load_module_from_path(
+        relay_py, "pm_relay.py", allow_unverified=True,
     )
 
 
@@ -3581,7 +3599,7 @@ def _local_conf_operational_map() -> dict[str, str]:
     }
 
 
-def _delegate_harness_from_local_conf(dest_root: Path) -> dict[str, str]:
+def _delegate_harness_from_local_conf(conf: Mapping[str, str]) -> dict[str, str]:
     """위임 token-key → 그 역할/티어의 conf 하네스 — 카드의 **미사용 프로필** 판정 입력.
 
     카드가 선언하는 하네스(렌더 소스 경로)와 이 값이 다르면 그 카드는 이번 형상에서 스폰되지
@@ -3589,7 +3607,6 @@ def _delegate_harness_from_local_conf(dest_root: Path) -> dict[str, str]:
     키 부재/빈값은 담지 않는다(판정 불가 = 현행 거동 유지).
     """
     harness_keys = _load_pm_render().DELEGATE_HARNESS_CONF_KEYS
-    conf = _read_local_conf(dest_root / ".project_manager" / "local.conf")
     return {
         token_key: conf[conf_key]
         for token_key, conf_key in harness_keys.items()
@@ -3597,8 +3614,8 @@ def _delegate_harness_from_local_conf(dest_root: Path) -> dict[str, str]:
     }
 
 
-def _operational_from_local_conf(dest_root: Path) -> tuple[dict[str, str], list[str]]:
-    """local.conf 의 operational 해소값을 pm_render 의 token-key dict 로 변환.
+def _operational_from_local_conf(conf: Mapping[str, str]) -> tuple[dict[str, str], list[str]]:
+    """local.conf 값(`conf`)의 operational 해소값을 pm_render 의 token-key dict 로 변환.
 
     local.conf 키(lowercase) → operational token key(uppercase). board.py init 이 안 쓴 키는
     포함하지 않는다(빈값 강제 안 함). 출하 어댑터의 operational 토큰은 import sed 로 이미
@@ -3611,9 +3628,9 @@ def _operational_from_local_conf(dest_root: Path) -> tuple[dict[str, str], list[
     render 의 _assert_no_leak 가 leak 으로 잡는다(silent-empty = leak 클래스). 제외된 빈값
     token-key 목록을 함께 반환해 render_adapter 가 leak 힌트("값을 채우라")에 싣게 한다.
 
-    반환: (operational dict, 빈값이라 제외된 token-key 목록).
+    반환: (operational dict, 빈값이라 제외된 token-key 목록). 디스크 읽기는 호출 경계에서 실행당 한
+    번이다 — 저장(`apply_conf`)은 쓰기 전의 제안 값을, 갱신은 dest local.conf 를 넘긴다.
     """
-    conf = _read_local_conf(dest_root / ".project_manager" / "local.conf")
     operational: dict[str, str] = {}
     empty_keys: list[str] = []
     for conf_key, token_key in _local_conf_operational_map().items():
@@ -3683,24 +3700,28 @@ def _write_rendered_text(dst: Path, source, rendered: str) -> None:
 
 def _render_text(
     source_path: Path,
-    dest_root: Path,
+    conf: Mapping[str, str],
+    render_mod,
     entry_notation_template: str | tuple[str, ...] | list[str] | None = None,
     flat_command_skill: str | None = None,
     codex_operational_skill: str | None = None,
     card_path: str | None = None,
 ) -> str:
-    """source 템플릿을 채택자 local.conf(operational)로 렌더한 텍스트.
+    """source 템플릿을 local.conf 값(`conf`)으로 렌더한 텍스트 — `@render` 렌더 규칙의 유일한 구현.
 
     local.conf 의 operational 값을 plain replace 로 채운다(free-form 은 pm_import FILL 채널이
     canonical home 에서 전담). 결과는 자족(잔여 `{{...}}` 0·assertion).
-    호출부(apply/plan)가 dst 와 비교/기록한다.
+    호출부(plan·apply·저장 `apply_conf`)가 dst 와 비교/기록한다.
+
+    렌더러(`render_mod`)는 호출부가 한 번 읽어 넘긴다 — 계획은 설치 렌더러, `apply` 는 tools 를 쓴 뒤의
+    렌더러다. 렌더 거부는 그 인스턴스의 `RenderLeakError` 로 올라간다(pm_render 는 캐시 없이 읽혀
+    클래스가 로드마다 다르므로, 거부를 가르는 호출부가 같은 인스턴스를 쥐어야 한다).
 
     `card_path` 는 이 산출물의 **인스턴스 상대 좌표**(계획의 dest 경로)다 — 카드 하네스 판정
     (미사용 프로필 중화)의 입력이라, 상류 절대경로가 아니라 dest 좌표를 넘겨야 체크아웃 위치가
     판정을 흔들지 않는다.
     """
-    render_mod = _load_pm_render()
-    operational, empty_keys = _operational_from_local_conf(dest_root)
+    operational, empty_keys = _operational_from_local_conf(conf)
     text = _read_text_shared(Path(source_path), encoding="utf-8")
     rendered = render_mod.render_adapter(
         text,
@@ -3708,7 +3729,7 @@ def _render_text(
         empty_keys=empty_keys,
         template_dir=entry_notation_template,
         source=str(source_path),
-        delegate_harness=_delegate_harness_from_local_conf(dest_root),
+        delegate_harness=_delegate_harness_from_local_conf(conf),
         card_path=card_path,
     )
     if flat_command_skill is not None:
@@ -3896,6 +3917,8 @@ def _render_eq_dst(
     sp: Path,
     dst: Path,
     dest_root: Path,
+    conf: Mapping[str, str],
+    render_mod,
     entry_notation_template: str | tuple[str, ...] | list[str] | None = None,
     flat_command_skill: str | None = None,
     codex_operational_skill: str | None = None,
@@ -3903,14 +3926,17 @@ def _render_eq_dst(
     """render path 의 '변경 없음' 정직 판정 — 렌더 산출물 == dst 현재 내용.
 
     filecmp.cmp(템플릿, dst) 는 render path 에 *틀림*(템플릿은 렌더 산출물과 byte-equal 일 수
-    없어 항상 update 오보). 대신 source 를 dest 의 local.conf(operational)로 렌더해 dst 와 비교한다.
-    렌더 실패(렌더러 부재·assertion)는 보수적으로 '다름'(False) 취급 — plan 이 그 path 를
-    change 로 띄워 apply 가 실제 렌더에서 명확히 실패하게 한다(침묵 폴백 금지). 대조 규칙 자체는
+    없어 항상 update 오보). 대신 source 를 local.conf 값(`conf`)으로 렌더해 dst 와 비교한다.
+    렌더 실패(assertion)는 '다름'(False) 취급 — plan 이 그 path 를 change 로 띄우고, 실제 렌더는
+    apply(또는 저장 `apply_conf`)가 해서 거기서 실패하면 명확히 멈춘다. 이 흡수가 필요한 이유는 계획의
+    렌더러가 **설치된** 렌더러라는 데 있다: 렌더러가 바뀌는 갱신에서는 설치 렌더러가 다음 세대 템플릿을
+    그리지 못하고, 실제 렌더는 tools 를 복사한 뒤의 새 렌더러가 한다. 그 원인(계획의 렌더러 세대)은
+    갱신 절차 전환이 렌더를 완료 프로세스로 옮길 때 함께 없어진다. 대조 규칙 자체는
     `_rendered_text_matches_dest` 하나뿐이다(최소 렌더 분기와 판정 사본 0).
     """
     try:
         rendered = _render_text(
-            sp, dest_root, entry_notation_template, flat_command_skill,
+            sp, conf, render_mod, entry_notation_template, flat_command_skill,
             codex_operational_skill, _dest_relative_path(dst, dest_root),
         )
     except Exception:  # noqa: BLE001 — 렌더 실패는 '다름'으로 보수 처리.
@@ -3930,10 +3956,19 @@ def plan(
     inventory_out: set[str] | None = None,
     dest_inventory_out: set[str] | None = None,
     guest_backfill_lines: list[str] | None = None,
+    conf: Mapping[str, str],
+    render_mod=None,
 ) -> tuple[list[tuple], list[str]]:
     """(changes, missing) 반환. changes = [(rel, src, dst, kind)] (kind: new|update).
 
     dest_root: 동기화 대상 루트. None 이면 REPO(self-location) 사용.
+
+    conf: render path 판정에 쓸 local.conf 값. 갱신은 dest local.conf 를, 저장(`apply_conf`)은 쓰기 전의
+    제안 값을 넘긴다 — 계획이 디스크를 따로 읽지 않는다.
+
+    render_mod: render path 판정에 쓸 렌더러. 저장(`apply_conf`)은 산출물을 그릴 렌더러를 넘겨 계획 판정과
+    그리기가 인스턴스 하나(모델 목록 조회 기억 하나)를 쓴다. 넘기지 않으면 첫 render path 판정 때 설치
+    렌더러를 한 번 읽는다.
 
     manifest 항목이 `ManifestEntry`(render 플래그 운반·read_manifest 산출)면 그 path 의 render
     여부를 dst(`_RenderDst` 래퍼)에 실어 apply 가 byte-copy vs render 를 분기하게 한다. 평문
@@ -4087,8 +4122,10 @@ def plan(
             elif file_render:
                 # render path: 템플릿이 산출물과 byte-equal 일 수 없으므로 filecmp 는 항상 오보.
                 # 렌더한 결과가 dst 와 다를 때만 update(정직 판정).
+                if render_mod is None:
+                    render_mod = _load_pm_render()
                 if not _render_eq_dst(
-                    sp, dst, effective_dest, item_notation_template,
+                    sp, dst, effective_dest, conf, render_mod, item_notation_template,
                     flat_command_skill,
                     codex_operational_skill,
                 ):
@@ -4144,10 +4181,14 @@ def _resolve_engine_sync_plan(
     inventory_out: set[str] | None = None,
     dest_inventory_out: set[str] | None = None,
     report: bool = False,
+    conf: Mapping[str, str],
+    render_mod=None,
 ) -> dict:
     """manifest 자기치유 → notation 템플릿 해소 → guest backfill 기록 판정 → `plan()` 을 한
     호출로 묶어 반환하는 **구조화 계획**. `_main`(self-update·`--target` export 공용)과 드리프트
     게이트(`drift_changes`)가 이 함수를 실제로 공동 호출한다 — 별도 diff/계획 구현을 두지 않는다.
+    `conf` 는 `plan()` 의 render path 판정 값이다(저장 `apply_conf` 는 쓰기 전의 제안 값을 넘긴다).
+    `render_mod` 는 `plan()` 에 그대로 넘긴다(저장은 산출물을 그릴 렌더러를 넘긴다).
 
     `guest_entries`/`guest_backfill`/`guest_backfill_flavors` 는 호출부가 이미 해소했으면 넘기고
     (중복 IO 회피), 없으면(`guest_backfill is None`) 여기서 해소한다.
@@ -4264,6 +4305,8 @@ def _resolve_engine_sync_plan(
         inventory_out=inventory_out,
         dest_inventory_out=dest_inventory_out,
         guest_backfill_lines=persisted_guest_backfill,
+        conf=conf,
+        render_mod=render_mod,
     )
     return {
         "changes": changes,
@@ -4299,7 +4342,8 @@ def drift_changes(engine_root: Path) -> list[str] | None:
     """
     engine_root = Path(engine_root)
     local_conf = engine_root / ".project_manager" / "local.conf"
-    stored = _read_local_conf(local_conf).get("upstream.path", "").strip()
+    conf = _read_local_conf(local_conf)
+    stored = conf.get("upstream.path", "").strip()
     if not stored:
         return None
     try:
@@ -4313,7 +4357,7 @@ def drift_changes(engine_root: Path) -> list[str] | None:
     if not source_root.is_dir():
         return None
     try:
-        sync_plan = _resolve_engine_sync_plan(engine_root, source_root, report=False)
+        sync_plan = _resolve_engine_sync_plan(engine_root, source_root, report=False, conf=conf)
     except FileNotFoundError:
         return None
     except _EngineSyncNotationContextError:
@@ -4717,11 +4761,47 @@ def _copy_manifest_preserving_guest(
     _write_rendered_text(dst, sp, _reattach_guest_block(new_text, guest_block))
 
 
+class _RenderOutput(NamedTuple):
+    """메모리에서 다 그린 `@render` 산출물 하나 — 쓰기는 전부 그린 뒤에만 한다."""
+    relpath: str
+    dst: Path
+    source: Path
+    text: str
+
+
+def _render_outputs(changes: list[tuple], conf: Mapping[str, str], render_mod) -> list[_RenderOutput]:
+    """render change 전부를 `_render_text` 로 메모리에서 그린다 — 하나라도 렌더가 거부되면 그 예외가
+    그대로 올라가고 아무 파일도 쓰지 않는다(뒤 카드의 실패가 앞 카드를 바꾼 채 남기지 않는다)."""
+    outputs: list[_RenderOutput] = []
+    for rel, sp, dst, _kind in changes:
+        relpath = str(rel).replace("\\", "/")
+        outputs.append(_RenderOutput(relpath, Path(dst), Path(sp), _render_text(
+            Path(sp), conf, render_mod,
+            getattr(dst, "entry_notation_template", None),
+            getattr(dst, "flat_command_skill", None),
+            getattr(dst, "codex_operational_skill", None),
+            card_path=relpath,
+        )))
+    return outputs
+
+
+def _write_render_outputs(outputs) -> None:
+    """다 그린 산출물을 차례로 쓴다 — dest 의 현재 개행 표기를 지킨다(`_write_rendered_text`)."""
+    for output in outputs:
+        output.dst.parent.mkdir(parents=True, exist_ok=True)
+        _write_rendered_text(output.dst, output.source, output.text)
+
+
 def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
-    """change 적용 — render=False(기본)는 순수 copy2, render=True 는 render_adapter 후 기록.
+    """change 적용 — render 아닌 change 를 계획 순서대로 쓴 뒤, render change 전부를 그리고 나서 쓴다.
 
     dst 가 `_RenderDst`(render 플래그 운반·plan 산출)면 그 플래그로 분기한다. 평문 Path dst
     (레거시 직접 호출)는 render 비대상 → copy2(후방호환·현 pm_update 동작 불변).
+
+    두 단계다. (1) render 아닌 change(tools 포함)를 순서대로 쓴다 — 렌더러(pm_render·pm_relay)도 여기서
+    바뀐다. (2) 렌더러를 한 번 읽어 render change 전부를 메모리에서 그리고(`_render_outputs`), 전부
+    그린 뒤에만 쓴다(`_write_render_outputs`). 렌더가 하나라도 거부되면 render 파일은 하나도 바뀌지
+    않는다(앞 단계의 파일은 이미 쓰였을 수 있다). 렌더 값은 dest local.conf 를 한 번 읽은 것이다.
 
     engine.manifest self-prop overwrite 는 add-harness guest 절을 재부착한다(위 헬퍼). 그 재부착에
     함께 기록할 파생 엔진 행은 dst(`_RenderDst.guest_backfill_lines`)가 실어 나른다 — `entry_
@@ -4735,34 +4815,13 @@ def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
     """
     hook_set_path = (is_hook_set_path if is_hook_set_path is not None
                      else resolve_hook_set_predicate())
-    render_mod = None  # render path 가 있을 때만 lazy-load.
+    render_mod = None  # 렌더러가 필요한 첫 자리에서 한 번 읽는다(tools 를 쓴 뒤다).
+    render_changes = [change for change in changes if getattr(change[2], "render", False)]
     for _r, sp, dst, _kind in changes:
-        dst.parent.mkdir(parents=True, exist_ok=True)
         if getattr(dst, "render", False):
-            dest_root = _dest_root_for(dst, _r)
-            if render_mod is None:
-                render_mod = _load_pm_render()
-            operational, empty_keys = _operational_from_local_conf(dest_root)
-            text = _read_text_shared(Path(sp), encoding="utf-8")
-            rendered = render_mod.render_adapter(
-                text,
-                operational=operational,
-                empty_keys=empty_keys,
-                template_dir=getattr(dst, "entry_notation_template", None),
-                source=str(sp),
-                delegate_harness=_delegate_harness_from_local_conf(dest_root),
-                card_path=str(_r).replace("\\", "/"),
-            )
-            if getattr(dst, "flat_command_skill", None) is not None:
-                rendered = _render_flat_command_reference(
-                    rendered, dst.flat_command_skill
-                )
-            if getattr(dst, "codex_operational_skill", None) is not None:
-                rendered = _render_codex_operational_detail(
-                    rendered, dst.codex_operational_skill
-                )
-            _write_rendered_text(Path(dst), Path(sp), rendered)
-        elif (
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if (
             getattr(dst, "entry_notation_template", None) is not None
             or getattr(dst, "flat_command_skill", None) is not None
             or getattr(dst, "codex_operational_skill", None) is not None
@@ -4794,6 +4853,13 @@ def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
             _atomic_copy2(Path(sp), Path(dst))
         else:
             shutil.copy2(sp, dst)
+    if not render_changes:
+        return
+    if render_mod is None:
+        render_mod = _load_pm_render()
+    first_rel, _sp, first_dst, _kind = render_changes[0]
+    conf = _read_local_conf(_dest_root_for(first_dst, first_rel) / ".project_manager" / "local.conf")
+    _write_render_outputs(_render_outputs(render_changes, conf, render_mod))
 
 
 def _dest_root_for(dst: Path, rel: str) -> Path:
@@ -4808,6 +4874,244 @@ def _dest_root_for(dst: Path, rel: str) -> Path:
     for _ in parts:
         root = root.parent
     return root
+
+
+# ── local.conf 반영 (`pm-config apply`) ──────────────────────────────────────
+# 설정 저장의 입구는 하나다. 제안 값(현재 local.conf + `--set`)을 만들고, 바뀐 키가 걸리는 반영 단계의
+# 계획을 전부 끝낸 뒤에만 local.conf → 단계 순서대로 산출물을 쓴다. 계획 단계의 거부는 아무것도 쓰지
+# 않았다는 뜻이고 되돌리기 쓰기는 없다. 단계는 키 묶음 표(`CONF_APPLY_STEPS`) 하나로 고르며, 어느
+# 묶음에도 없는 키는 local.conf 기록만 한다. 저장 한 번은 렌더러를 한 번 읽어 모든 단계에 넘긴다 —
+# 추론 값 확인·계획 판정·산출물 그리기가 같은 pm_relay 인스턴스(모델 목록 조회 기억)를 쓴다.
+_LOCAL_CONF_RELPATH = ".project_manager/local.conf"
+
+
+class ConfApplyError(ValueError):
+    """설정 반영 실패 — `write_stage` 가 거짓이면 반영 전 거부(아무 파일도 쓰지 않았다), 참이면 쓰기 단계에서
+    멈췄고 `written` 이 그때까지 바꾼 파일이다(바꾼 파일이 없어도 거부가 아니다)."""
+
+    def __init__(self, violations, *, written=(), write_stage: bool = False) -> None:
+        self.violations = tuple(violations)
+        self.written = tuple(written)
+        self.write_stage = write_stage
+        if self.written:
+            lead = f"{', '.join(self.written)} 를 바꾼 뒤 멈췄습니다"
+        elif write_stage:
+            lead = "쓰기 단계에서 멈췄습니다 (바꾼 파일 없음)"
+        else:
+            lead = "설정을 반영하지 않았습니다 (local.conf·파생 파일 그대로)"
+        super().__init__("\n".join((
+            f"{lead} — 아래를 고친 뒤 다시 실행하십시오.",
+            *(f"  - {violation}" for violation in self.violations))))
+
+
+class ConfApplyResult(NamedTuple):
+    """`apply_conf` 결과 — local.conf 가 바뀌었나, 파생 파일에 반영한 줄."""
+    changed: bool
+    applied: tuple[str, ...]
+
+
+def render_input_conf_keys() -> frozenset[str]:
+    """`@render` 산출물의 렌더 값이 되는 local.conf 키 — 운영 키·위임 모델/추론 키와 위임 하네스 키.
+
+    새 표를 두지 않는다: 렌더 값을 만드는 두 함수(`_operational_from_local_conf`·
+    `_delegate_harness_from_local_conf`)가 읽는 표에서 파생한다."""
+    return (frozenset(_local_conf_operational_map())
+            | frozenset(_load_pm_render().DELEGATE_HARNESS_CONF_KEYS.values()))
+
+
+def _installed_generation_source(dest_root: Path, conf: Mapping[str, str], pm_import) -> Path:
+    """렌더 원본 — 설치 세대(`upstream.rev`)와 같은 커밋의 상류 트리. 다르면 `ConfApplyError`.
+
+    fetch 하지 않는다: URL upstream 은 갱신이 받아 둔 캐시 폴더를 그대로 본다. 원본이 설치 세대보다
+    앞서 있으면 카드 본문만 다음 세대로 앞서는 부분 흡수가 되므로 렌더하지 않고 거부한다."""
+    stored = conf.get("upstream.path", "").strip()
+    if not stored:
+        raise ConfApplyError([
+            "upstream 미등록 — 렌더 원본을 알 수 없습니다. `pm-config upstream set <url|path>` 로 "
+            "등록한 뒤 다시 실행하십시오."])
+    if pm_import.classify_upstream(stored) == "url":
+        source_root = pm_import.upstream_cache_dir(dest_root, stored)
+    else:
+        source_root = Path(stored).resolve()
+    if not source_root.is_dir():
+        raise ConfApplyError([
+            f"렌더 원본 폴더가 없습니다 ({source_root}) — `pm-config update`(또는 관리자 갱신 탭 "
+            "[적용])로 원본을 받은 뒤 다시 실행하십시오."])
+    installed = conf.get("upstream.rev", "").strip()
+    current = pm_import.read_upstream_rev(source_root)
+    if not installed or current != installed:
+        raise ConfApplyError([
+            f"렌더 원본({source_root})의 세대 {current or '(알 수 없음)'} 가 설치 세대 `upstream.rev`"
+            f"({installed or '없음'})와 다릅니다 — `pm-config update`(또는 관리자 갱신 탭 [적용])로 "
+            "설치 세대를 원본에 맞춘 뒤 다시 실행하십시오."])
+    return source_root
+
+
+def _plan_harness_ctx(dest_root: Path, values: dict, pm_import, opencode_config_dir: Path, _render_mod):
+    """사용 한도 묶음 계획 — 검사·모델 한도 조회·계산과 원장 쓰기 가능 확인. 거부는 `ConfApplyError`."""
+    try:
+        changed, lines, entries = pm_import._harness_ctx_plan(dest_root, values, opencode_config_dir)
+        if changed:
+            pm_import._harness_ctx_baseline_writable(dest_root)
+    except pm_import.HarnessCtxError as exc:
+        raise ConfApplyError(exc.violations) from exc
+    return values, changed, lines, entries
+
+
+def _commit_harness_ctx(dest_root: Path, planned, pm_import) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """사용 한도 묶음 기록 — 하네스 설정 파일·압축 한도 기록. (반영 줄, 바꾼 파일)."""
+    values, changed, lines, entries = planned
+    try:
+        written = pm_import._harness_ctx_commit(dest_root, values, changed, entries)
+    except pm_import.HarnessCtxError as exc:
+        raise ConfApplyError(exc.violations, written=exc.written, write_stage=True) from exc
+    return lines, written
+
+
+def _plan_render_outputs(dest_root: Path, values: dict, pm_import, _opencode_config_dir: Path, render_mod):
+    """렌더 입력 묶음 계획 — 설치 세대 원본을 확인하고, 제안 값으로 계획한 render change 전부를 메모리에서
+    그린다. 계획 판정과 그리기가 렌더러 `render_mod` 하나를 쓴다. 렌더 거부는 `ConfApplyError`(같은 세대라
+    설치 렌더러의 실패는 확정 실패다)."""
+    source_root = _installed_generation_source(dest_root, values, pm_import)
+    sync_plan = _resolve_engine_sync_plan(dest_root, source_root, conf=values, render_mod=render_mod)
+    render_changes = [change for change in sync_plan["changes"] if getattr(change[2], "render", False)]
+    try:
+        return _render_outputs(render_changes, values, render_mod)
+    except render_mod.RenderLeakError as exc:
+        raise ConfApplyError([str(exc)]) from exc
+
+
+def _commit_render_outputs(_dest_root: Path, outputs, _pm_import) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """렌더 입력 묶음 기록 — 다 그린 산출물을 쓴다. (반영 줄 `<relpath> 다시 그림`, 바꾼 파일)."""
+    written: list[str] = []
+    for output in outputs:
+        try:
+            _write_render_outputs((output,))
+        except OSError as exc:
+            raise ConfApplyError([f"{output.relpath} 를 쓰지 못했습니다 ({exc})."],
+                                 written=written, write_stage=True) from exc
+        written.append(output.relpath)
+    return tuple(f"{output.relpath} 다시 그림" for output in outputs), tuple(written)
+
+
+def _is_reasoning_profile_key(key: str) -> bool:
+    """추론 값이 있는 프로필(위임 세트·대체 세트·추가 리뷰어)의 선택 축 키(`.harness`·`.model`·`.reasoning`)인가.
+
+    새 표를 두지 않는다: 레지스트리에서 그 키의 축이 프로필 축(`local_conf._ROLE_SUFFIXES`)이고 같은 세트의
+    `.reasoning` 키 축이 `reasoning` 인지로 판정한다. 하네스·모델만 바꿔도 남은 추론 값이 그 모델 밖이 될 수
+    있어 셋 다 건다."""
+    local_conf = _load_local_conf()
+    spec = local_conf.key_spec(key)
+    if spec is None or spec.choices not in local_conf._ROLE_SUFFIXES:
+        return False
+    reasoning = local_conf.key_spec(f"{key.rsplit('.', 1)[0]}.reasoning")
+    return reasoning is not None and reasoning.choices == "reasoning"
+
+
+def _reasoning_values(conf: Mapping[str, str]) -> list[tuple[str, str, str, str | None]]:
+    """값이 있는 추론 키 — (키, 값, 같은 세트의 하네스, 모델). 레지스트리 축이 `reasoning` 인 키(위임 세트·대체
+    세트·추가 리뷰어)다. 갱신의 정리(`prune_unavailable_reasoning`)와 저장의 확인(`_plan_per_model_reasoning`)이
+    같은 열거를 쓰고, 각자 `PER_MODEL_REASONING_HARNESSES` 하네스만 확인한다. 값이 하나도 없으면 레지스트리를
+    읽지 않는다(형제 사본이 덜 깔린 갱신 복구 경로에서도 추론 값이 없으면 지나간다)."""
+    filled = [(key, value) for key, value in conf.items() if (value or "").strip()]
+    if not filled:
+        return []
+    local_conf = _load_local_conf()
+    found: list[tuple[str, str, str, str | None]] = []
+    for key, value in filled:
+        spec = local_conf.key_spec(key)
+        if spec is None or spec.choices != "reasoning":
+            continue
+        profile = key.rsplit(".", 1)[0]
+        found.append((key, value, (conf.get(f"{profile}.harness") or "").strip(),
+                      (conf.get(f"{profile}.model") or "").strip() or None))
+    return found
+
+
+def _plan_per_model_reasoning(dest_root: Path, values: dict, _pm_import, _opencode_config_dir: Path,
+                              render_mod) -> None:
+    """추론 값 묶음 계획 — 모델별 허용값 하네스 프로필(주·대체·추가 리뷰어)의 제안 추론 값이 그 모델이 받는
+    값인지 카드 유무와 무관하게 확인한다. 밖이거나 판정할 수 없으면(조회 실패·모델 값 없음·목록에 모델
+    없음) `ConfApplyError` 다. 저장은 값을 지우지 않는다. 조회는 렌더러의 pm_relay(`render_mod._load_relay`)로
+    해 같은 저장의 카드 렌더 확인과 조회 기억을 나눈다."""
+    relay = render_mod._load_relay()
+    violations: list[str] = []
+    for key, value, harness, model in _reasoning_values(values):
+        if harness not in relay.PER_MODEL_REASONING_HARNESSES:
+            continue
+        try:
+            allowed = relay.reasoning_allowed(harness, model, cwd=Path(dest_root), env=dict(os.environ))
+        except relay.HarnessContractError as exc:
+            raise ConfApplyError([
+                f"{key}={value} 를 확인할 수 없습니다 — {exc}. {harness} 를 이 프로세스의 PATH 에서 실행할 수 "
+                "있게 하거나 그 값을 비운 뒤 다시 실행하십시오."]) from exc
+        if relay.normalize_reasoning(value) not in allowed:
+            violations.append(
+                f"{key}={value} 는 {harness} {model} 이 받는 값({', '.join(allowed) or '없음'}) 밖입니다 — "
+                "하네스는 이 값을 오류 없이 버리므로 저장하지 않습니다. 받는 값을 고르거나 비우십시오.")
+    if violations:
+        raise ConfApplyError(violations)
+
+
+def _commit_per_model_reasoning(_dest_root: Path, _planned, _pm_import) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """추론 값 묶음 기록 — 확인만 하는 묶음이라 파생 파일이 없다(local.conf 기록은 `apply_conf` 몫)."""
+    return (), ()
+
+
+class _ConfApplyStep(NamedTuple):
+    """키 묶음 하나의 반영. `key_filter(pm_import)` 는 그 묶음 키 판정, `plan(dest_root, 제안 값, pm_import,
+    opencode 전역 설정 폴더, 렌더러)` 은 쓰기 전 계획(거부는 `ConfApplyError`), `commit(dest_root, 계획,
+    pm_import)` 은 그 계획의 기록이다(반영 줄, 바꾼 파일)."""
+    key_filter: Callable
+    plan: Callable
+    commit: Callable
+
+
+# 키 묶음 표 — 이 순서로 계획하고 기록한다. 한 키가 여러 묶음에 걸리면 그 묶음을 모두 돈다(위임 세트
+# 키는 추론 값 묶음과 렌더 입력 묶음 둘 다다). 사용 한도 키(`ctx.`·`harness.<이름>.ctx_window_tokens`)는
+# 다른 두 묶음과 겹치지 않는다. 추론 값 묶음을 렌더 앞에 두어 무효 값은 렌더 계획 전에 저장 문구로 거부한다.
+CONF_APPLY_STEPS: tuple[_ConfApplyStep, ...] = (
+    _ConfApplyStep(lambda pm_import: pm_import.is_harness_ctx_input_key,
+                   _plan_harness_ctx, _commit_harness_ctx),
+    _ConfApplyStep(lambda _pm_import: _is_reasoning_profile_key,
+                   _plan_per_model_reasoning, _commit_per_model_reasoning),
+    _ConfApplyStep(lambda _pm_import: render_input_conf_keys().__contains__,
+                   _plan_render_outputs, _commit_render_outputs),
+)
+
+
+def apply_conf(dest_root: Path, *, updates: Mapping[str, str | None] | None,
+               opencode_config_dir: Path) -> ConfApplyResult:
+    """local.conf 에 `updates`(None 은 줄 삭제)를 쓰고 파생 파일에 반영한다 — `pm-config apply` 의 본문.
+
+    `updates` 가 없으면 모든 반영 단계를, 있으면 바뀐 키가 걸리는 단계만 돈다. 순서: local.conf 쓰기 락 →
+    제안 값(`pm_import._conf_values`, 옛 키면 멈춤) → 선택된 단계의 계획 전부 → local.conf 기록 → 단계
+    순서대로 기록. 렌더러는 한 번 읽어 모든 단계 계획에 넘긴다(저장 한 번의 모델 목록 조회는 한 번).
+    계획의 거부는 `ConfApplyError`(`write_stage` 거짓)이고 어느 파일도 바꾸지 않는다.
+    기록 실패는 `ConfApplyError(write_stage=True, written=바꾼 파일)` 이다. 락 안에서 부르는 함수는 락을
+    다시 잡지 않는다(같은 락 파일을 두 번 잡으면 교착)."""
+    dest_root = Path(dest_root)
+    conf_path = dest_root / _LOCAL_CONF_RELPATH
+    pm_import = _load_pm_import()
+    with _local_conf_write_lock(conf_path):
+        values = pm_import._conf_values(conf_path, updates)
+        steps = [step for step in CONF_APPLY_STEPS
+                 if not updates or any(map(step.key_filter(pm_import), updates))]
+        render_mod = _load_pm_render()
+        planned = [(step, step.plan(dest_root, values, pm_import, opencode_config_dir, render_mod))
+                   for step in steps]
+        changed = pm_import._write_conf_keys_locked(conf_path, dict(updates)) if updates else False
+        written: list[str] = [_LOCAL_CONF_RELPATH] if changed else []
+        applied: list[str] = []
+        for step, step_plan in planned:
+            try:
+                lines, step_written = step.commit(dest_root, step_plan, pm_import)
+            except ConfApplyError as exc:
+                raise ConfApplyError(exc.violations, written=(*written, *exc.written),
+                                     write_stage=True) from exc
+            applied.extend(lines)
+            written.extend(step_written)
+    return ConfApplyResult(bool(changed), tuple(applied))
 
 
 def resolve_target_root(target_name: str) -> Path:
@@ -5751,6 +6055,64 @@ def idle_legacy_slot_session_rows(effective_dest: Path, *, write: bool) -> int:
     return len(moved)
 
 
+class ReasoningPruneError(RuntimeError):
+    """갱신의 추론 값 정리가 판정하지 못했거나(조회 실패·모델 없음) 판정 중 local.conf 가 바뀌어 아무것도
+    지우지 않고 멈췄다."""
+
+
+def prune_unavailable_reasoning(dest_root: Path, conf: Mapping[str, str], *,
+                                write: bool) -> dict[str, str]:
+    """모델별 허용값 하네스 프로필의 추론 값 중 그 모델이 받지 않는 값을 local.conf 에서 지우고 알린다.
+
+    대상은 레지스트리 축이 `reasoning` 인 키(위임 세트·대체 세트·추가 리뷰어) 중 값이 있고 같은 세트의
+    하네스가 `pm_relay.PER_MODEL_REASONING_HARNESSES`(opencode)인 것이다. 정적 허용값(claude·codex)은
+    대상이 아니다 — 엔진이 정한 값이라 바뀌지 않고, 틀리면 렌더가 멈춘다. 판정은 설치 폴더·이 프로세스
+    env 의 모델 목록 조회다(`pm_relay.reasoning_allowed`). 하나라도 판정하지 못하면(조회 실패·모델 값
+    없음·목록에 모델 없음) 아무것도 지우지 않고 `ReasoningPruneError` 다.
+
+    쓰기는 판정 뒤 local.conf 쓰기 락 안에서 다시 읽어 값이 판정 때와 같을 때만 한 번에 지운다(다르면
+    `ReasoningPruneError`). `write=False` 면 출력만 하고 쓰지 않는다. 반환은 지운(지울) 키를 뺀 conf 다 —
+    호출부가 계획·렌더에 그대로 넘긴다. 갱신의 전량 동기에서 계획보다 먼저 돈다(렌더가 무효 값을
+    만나기 전에 정리한다)."""
+    reasoning_values = _reasoning_values(conf)
+    if not reasoning_values:
+        return dict(conf)
+    relay = _load_relay()
+    misses: list[tuple[str, str, str, str | None, tuple[str, ...]]] = []
+    for key, value, harness, model in reasoning_values:
+        if harness not in relay.PER_MODEL_REASONING_HARNESSES:
+            continue
+        try:
+            allowed = relay.reasoning_allowed(
+                harness, model, cwd=Path(dest_root), env=dict(os.environ))
+        except relay.HarnessContractError as exc:
+            raise ReasoningPruneError(
+                f"conf 이관: {key}={value} 를 판정할 수 없어 지우지 않았다 — {exc}. opencode 를 이 "
+                "프로세스의 PATH 에서 실행할 수 있게 한 뒤 다시 실행하거나 local.conf 의 그 줄을 직접 "
+                "고친다.") from exc
+        if relay.normalize_reasoning(value) not in allowed:
+            misses.append((key, value, harness, model, allowed))
+    if not misses:
+        return dict(conf)
+    if write:
+        conf_path = Path(dest_root) / _LOCAL_CONF_RELPATH
+        with _local_conf_write_lock(conf_path):
+            current = _read_local_conf(conf_path)
+            if any(current.get(key) != value for key, value, *_ in misses):
+                raise ReasoningPruneError("local.conf 가 판정 중에 바뀌었다 — 다시 실행한다")
+            _load_pm_import()._write_conf_keys_locked(
+                conf_path, {key: None for key, *_ in misses})
+    lead = (f"  ✓ local.conf 추론 값 {len(misses)}개 지움" if write
+            else f"[dry-run] local.conf 추론 값 {len(misses)}개 지울 예정")
+    print(f"{lead} — 그 모델이 받지 않는 variant 라 갱신이 지운다(OpenCode 는 이 값을 오류 없이 "
+          "버린다):")
+    for key, value, harness, model, allowed in misses:
+        print(f"    {key}={value} ({harness} {model} · 받는 값: "
+              f"{', '.join(allowed) if allowed else '없음'})")
+    removed = {key for key, *_ in misses}
+    return {key: value for key, value in conf.items() if key not in removed}
+
+
 def migrate_renamed_conf_keys(effective_dest: Path, *, write: bool) -> dict[str, str]:
     """local.conf 이름 이동의 읽기·계획·쓰기·후조건을 공용 락 안에서 수행한다.
 
@@ -5852,7 +6214,8 @@ def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -
             result["status"] = "no_new_template"
             return result
         # operational: 포획값(tagline 등 local.conf 미보유분) + local.conf(현재 진실·py/name/test_cmd 우선).
-        local_op, _empty = _operational_from_local_conf(dest)
+        local_op, _empty = _operational_from_local_conf(
+            _read_local_conf(dest / ".project_manager" / "local.conf"))
         operational = {**captured, **local_op}
         new_text = _render_new_entry_doc(
             _read_text_shared(new_tmpl_path, encoding="utf-8"), operational, operational_keys)
@@ -7018,6 +7381,16 @@ def _main(argv: list[str] | None = None) -> int:
     # 은퇴 판정은 **dest 좌표만** 대조한다 — `--paths` 오타 검출용 합집합에는 상류 좌표가 섞여 있어,
     #   그대로 넘기면 우연한 문자열 일치로 잔존물이 "상류가 공급함" 으로 접힌다(false negative).
     plan_dest_inventory: set[str] = set()
+    # ── 추론 값 정리(conf 이관) — **계획·렌더보다 먼저**. 그 모델이 받지 않는 opencode 추론 값이 남아
+    #    있으면 렌더가 그 카드에서 멈추므로 여기서 지우고 알린다. 경계는 아래 키 이름 이관과 같다
+    #    (`--target` 내보내기·`--paths` 부분 전파는 conf 를 건드리지 않는다). 돌려받은 conf 로 계획한다.
+    conf = _read_local_conf(effective_dest / ".project_manager" / "local.conf")
+    if not args.target and not scope_paths:
+        try:
+            conf = prune_unavailable_reasoning(effective_dest, conf, write=not args.dry_run)
+        except ReasoningPruneError as exc:
+            print(f"[중단] {exc}", file=sys.stderr)
+            return 1
     # manifest 자기치유 → notation 템플릿 → guest backfill 기록 판정 → `plan()` 을 한 함수로 묶어
     #   호출한다 — self-update/`--target` export 경로와 drift 게이트(`drift_changes`)가 **같은
     #   함수**를 공유한다(복제 금지). `report=True` 는 기존과 같은 지점·같은 문구로 안내를 낸다.
@@ -7031,6 +7404,7 @@ def _main(argv: list[str] | None = None) -> int:
             inventory_out=plan_inventory,
             dest_inventory_out=plan_dest_inventory,
             report=True,
+            conf=conf,
         )
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)

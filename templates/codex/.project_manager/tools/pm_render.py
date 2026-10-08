@@ -33,7 +33,8 @@ neutralize_model_todo·neutralize_delegate_model_todo 참조. 그 밖의 미해�
 여전히 fail-loud(false-green 근절 유지).
 
 순수 함수 중심(stdlib). pm_update(재렌더)·pm_import(최초) 양쪽이 호출한다. 형제 로드는 카드에
-추론 값을 채울 때 허용값(`pm_relay.REASONING_ALLOWED`)을 읽는 한 곳뿐이다.
+추론 값을 채울 때 하네스 계약(`pm_relay.reasoning_allowed`)을 부르는 한 곳이고, opencode 카드는
+이때 모델 목록 조회가 돈다.
 """
 
 from __future__ import annotations
@@ -187,8 +188,8 @@ ENGINE_REV = "v1.8.0"
 # hard 티어(`developer-hard`)는 **별도 완전 세트**다 — normal 프로필을 상속하지 않는다(엔진의
 # 프로필 해소와 같은 규칙). reasoning 토큰은 그 값을 실제로 소비하는 카드가 있는 것만 둔다 —
 # 소비처 없는 토큰은 배선만 늘리고 해소를 못 검증한다. 추론 토큰 소비는 claude `effort`·codex
-# `model_reasoning_effort` 이고, opencode 카드는 모델 토큰만 소비한다 — 하네스 예외가 아니라 카드
-# **형식** 차이이며 판정은 CARD_FIELD_TOKEN_PREFIXES 가 소유한다.
+# `model_reasoning_effort`·opencode `variant` 이고, 필드 이름은 카드 **형식**이 정한다
+# (CARD_FIELD_TOKEN_PREFIXES).
 #
 # pm_update 는 이 표를 **역전해** local.conf 채널 배선을 만든다(`_local_conf_operational_map`) —
 # 손으로 재타이핑한 사본을 두면 새 역할/티어가 한쪽에만 늘어 조용히 미배선된다.
@@ -208,12 +209,12 @@ DELEGATE_MODEL_CONF_KEYS: dict[str, str] = {
 # 어댑터 네임스페이스 디렉터리 → (토큰 접두 → 그 값을 실을 카드 필드). **카드 형식이 소비 기대를
 # 정한다**(하네스별 예외 아님): 형식은 카드가 놓인 어댑터 디렉터리가 정하므로 키도 그 디렉터리다.
 # `.claude` frontmatter 는 `model`·`effort`, `.codex` TOML 은 `model`·`model_reasoning_effort`,
-# `.opencode` frontmatter 는 `model` 만 싣는다. 키 집합은 CARD_HARNESS_BY_ADAPTER_DIR 의 키 집합과
-# 같다. 소비 가드·중화 줄 판정(`_MODEL_FIELD_LINE_RE`)·렌더의 추론 값 검증이 이 선언 하나를 읽는다.
+# `.opencode` frontmatter 는 `model`·`variant` 를 싣는다. 키 집합은 CARD_HARNESS_BY_ADAPTER_DIR 의 키
+# 집합과 같다. 소비 가드·중화 줄 판정(`_MODEL_FIELD_LINE_RE`)·렌더의 추론 값 검증이 이 선언 하나를 읽는다.
 CARD_FIELD_TOKEN_PREFIXES: dict[str, dict[str, str]] = {
     ".claude": {"DELEGATE_MODEL_": "model", "DELEGATE_REASONING_": "effort"},
     ".codex": {"DELEGATE_MODEL_": "model", "DELEGATE_REASONING_": "model_reasoning_effort"},
-    ".opencode": {"DELEGATE_MODEL_": "model"},
+    ".opencode": {"DELEGATE_MODEL_": "model", "DELEGATE_REASONING_": "variant"},
 }
 
 
@@ -544,13 +545,18 @@ SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR: dict[str, str] = {
 }
 
 
+def _installed_project_root() -> Path:
+    """이 렌더러가 설치된 폴더(`<root>/.project_manager/tools/pm_render.py` 의 `<root>`)."""
+    return Path(__file__).resolve().parents[2]
+
+
 def _installed_skill_entry_names() -> tuple[str, ...]:
     """현재 설치 root의 모든 실제 스킬 카드 이름을 파생한다.
 
     canonical/Claude/OpenCode는 ``.claude/skills``, Codex는 ``.agents/skills``를 쓴다.
     두 root를 모두 열어 특정 접두사나 손 목록 없이 ``*/SKILL.md`` 실재 카드만 소비한다.
     """
-    project_root = Path(__file__).resolve().parents[2]
+    project_root = _installed_project_root()
     return tuple(sorted({
         card.parent.name
         for skills_root in (
@@ -733,19 +739,30 @@ def _fill_operational(text: str, operational: dict) -> tuple[str, list[str]]:
     return text, empty_keys
 
 
-def _load_reasoning_allowed() -> dict[str, tuple[str, ...]]:
-    """하네스 → 추론 허용값 — 같은 tools/ 의 `pm_relay.REASONING_ALLOWED`(단일 진실)를 읽는다.
+_RELAY_MODULE = None  # `_load_relay` 가 처음 읽은 pm_relay — 조회 기억의 수명이 이 인스턴스다.
+
+
+def _load_relay():
+    """같은 tools/ 의 pm_relay(하네스 계약) — 첫 호출에 읽어 이 모듈에 둔다.
 
     호출자 인자로 받지 않는다. 이전 엔진의 pm_update 가 메모리에 남은 첫 갱신에서도 카드 렌더 전에
     pm_render·pm_relay 새 사본이 이미 복사돼 있으므로(engine.manifest 의 tools 행이 카드 행보다
-    앞선다) 새 계약을 모르는 호출자가 불러도 검증이 성립한다. 읽는 것이 선언 데이터뿐이라 rev
-    대조 없이 로드한다(engine_rev.EXEMPT_UNVERIFIED_DEEP_IMPORTS 등재). 로드 실패·속성 부재·형식
-    오류는 그대로 올린다.
+    앞선다) 새 계약을 모르는 호출자가 불러도 확인이 성립한다. rev 대조 없이 로드한다
+    (engine_rev.EXEMPT_UNVERIFIED_DEEP_IMPORTS 등재). 모듈 변수에 두는 이유는 pm_relay 의 조회
+    기억이 인스턴스마다라서다 — 렌더마다 새로 읽으면 카드마다 모델 목록 조회가 다시 돈다. 로드
+    실패·속성 부재는 그대로 올린다.
     """
-    relay_py = Path(__file__).resolve().parent / "pm_relay.py"
-    return _load_module_from_path(
-        relay_py, "pm_relay.py", allow_unverified=True,
-    ).REASONING_ALLOWED
+    global _RELAY_MODULE
+    if _RELAY_MODULE is None:
+        relay_py = Path(__file__).resolve().parent / "pm_relay.py"
+        _RELAY_MODULE = _load_module_from_path(relay_py, "pm_relay.py", allow_unverified=True)
+    return _RELAY_MODULE
+
+
+# 프로필 conf 키(`delegate.<role>[.<tier>]`) + `.model` → 그 모델 토큰. 위 표에서 파생한다(사본 0).
+_MODEL_TOKEN_BY_CONF_KEY: dict[str, str] = {
+    conf_key: token_key for token_key, conf_key in DELEGATE_MODEL_CONF_KEYS.items()
+}
 
 
 def _check_card_reasoning_values(
@@ -755,19 +772,18 @@ def _check_card_reasoning_values(
     card_path: str | None,
     source: str | None,
 ) -> None:
-    """카드에 채울 추론 값이 그 카드 하네스의 허용집합 원소인지 검증한다(밖이면 RenderLeakError).
+    """카드에 채울 추론 값이 그 카드 하네스·모델의 허용집합 원소인지 확인한다(밖이면 RenderLeakError).
 
     대상은 텍스트에 토큰이 있고 operational 에 비어 있지 않은 값이 있는 추론 토큰뿐이다 — 부재는
-    중화가, 빈 값은 `_assert_no_leak` 가 처리한다. 허용집합은 그런 값이 있을 때만 pm_relay 에서
-    읽는다(`_load_reasoning_allowed` · 이 모듈에 값 사본을 두지 않는다 · 채울 값이 없는 렌더는
-    pm_relay 를 읽지 않는다). 하네스가 무효 값을 에러 없이 버리는 경우가 있어(claude 는 디버그 로그
-    한 줄 뒤 effort 없이 스폰) 값을 빼거나 기본값으로 바꾸지 않고 렌더를 멈춘다. 채울 값이 있는데
-    카드 하네스를 판정할 수 없거나 그 형식에 추론 필드가 없으면 검증할 수 없으므로 역시 멈춘다.
+    중화가, 빈 값은 `_assert_no_leak` 가 처리한다. 허용집합은 그런 값이 있을 때만 하네스 계약
+    (`pm_relay.reasoning_allowed`)에 묻는다 — 정적 허용값 하네스는 표를, 모델별 허용값 하네스
+    (opencode)는 같은 프로필 모델의 variants 를 설치 폴더·이 프로세스 env 로 조회한다. 채울 값이
+    없는 렌더는 pm_relay 를 읽지 않는다. 하네스가 무효 값을 에러 없이 버리므로 값을 빼거나 기본값으로
+    바꾸지 않고 렌더를 멈춘다. 카드 하네스를 판정할 수 없거나 허용집합을 확인할 수 없어도 멈춘다.
     """
     adapter_dir = _card_adapter_dir(card_path)
     card_harness = card_harness_from_path(card_path)
     where = f" ({source})" if source else ""
-    allowed_by_harness = None
     for token_key, conf_key in DELEGATE_MODEL_CONF_KEYS.items():
         if not token_key.startswith(_DELEGATE_REASONING_TOKEN_PREFIX):
             continue
@@ -780,18 +796,26 @@ def _check_card_reasoning_values(
             raise RenderLeakError(
                 f"추론 값 렌더{where} 실패 — 카드 하네스를 판정할 수 없어 {setting} 를 검증할 수 "
                 f"없다(card_path={card_path!r}). 추론 값은 하네스가 정해진 카드에만 채운다.")
-        if _DELEGATE_REASONING_TOKEN_PREFIX not in CARD_FIELD_TOKEN_PREFIXES[adapter_dir]:
+        model_token = _MODEL_TOKEN_BY_CONF_KEY[conf_key.rsplit(".", 1)[0] + ".model"]
+        model = str(operational.get(model_token) or "") or None
+        relay = _load_relay()
+        try:
+            allowed = relay.reasoning_allowed(
+                card_harness, model, cwd=_installed_project_root(), env=dict(os.environ))
+        except relay.HarnessContractError as exc:
             raise RenderLeakError(
-                f"추론 값 렌더{where} 실패 — {card_harness} 카드 형식에는 추론 필드가 없다. "
-                f"{token} 를 이 카드에 둘 수 없다({setting}).")
-        if allowed_by_harness is None:
-            allowed_by_harness = _load_reasoning_allowed()
-        allowed = allowed_by_harness[card_harness]
+                f"추론 값 렌더{where} 실패 — {setting} 를 확인할 수 없다: {exc}. opencode 를 이 "
+                "프로세스에서 실행할 수 있게 하거나 local.conf 의 그 줄을 고친 뒤 다시 실행한다."
+            ) from exc
         if str(value) not in allowed:
+            subject = f"{card_harness} {model}" if model else card_harness
             raise RenderLeakError(
-                f"추론 값 렌더{where} 실패 — {setting} 는 {card_harness} 카드 허용값"
-                f"({', '.join(allowed)}) 밖이다. 하네스는 무효 값을 에러 없이 버리므로 카드에 "
-                "싣지 않고 멈춘다 — local.conf 값을 허용값으로 고친다.")
+                f"추론 값 렌더{where} 실패 — {setting} 는 {subject} 허용집합"
+                f"({', '.join(allowed) if allowed else '없음'}) 밖이다. 하네스는 허용집합 밖 값을 "
+                "오류 없이 버리므로 카드에 싣지 않고 멈춘다. 저장이면 허용집합 안 값을 고르거나 "
+                "비운다. 갱신 중이면 local.conf 의 그 줄을 고치거나, OpenCode variant 처럼 모델마다 "
+                "허용집합이 다른 값은 pm-config update 를 다시 실행한다(새 갱신기의 conf 이관이 그 "
+                "줄을 지우고 알린다).")
 
 
 def render_adapter(
@@ -813,8 +837,8 @@ def render_adapter(
     에서 해소). 카드 하네스와 다르면 그 토큰은 미사용 프로필이라 값 대신 이유를 중화로 남긴다.
     card_path: 이 산출물의 **인스턴스 상대 경로**(선택·pm_update 가 계획의 dest 좌표를 넘긴다).
     카드 하네스 판정의 유일한 입력이다 — 미배선이면 미사용 프로필 규칙이 발화하지 않는다.
-    카드에 추론 값을 채울 때 그 값이 카드 하네스의 허용값(`pm_relay.REASONING_ALLOWED`) 밖이면
-    RenderLeakError 다(`_check_card_reasoning_values`).
+    카드에 추론 값을 채울 때 그 값이 카드 하네스·모델의 허용집합(`pm_relay.reasoning_allowed`) 밖이거나
+    확인할 수 없으면 RenderLeakError 다(`_check_card_reasoning_values`).
 
     template_dir가 주어지면 operational보다 먼저 canonical 스킬 호출 토큰을 그 하네스 값으로
     치환한다. 값은 SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR 단일 registry에서만 읽는다.

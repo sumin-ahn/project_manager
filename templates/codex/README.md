@@ -191,12 +191,14 @@ codex          # 대화형 — AGENTS.md(공통 코어)를 자동 로드해 그 
   엔진이 하네스를 감지(`CODEX_THREAD_ID`/`CODEX_CI` env)해 카드 끝에 **codex 절**을 발화한다 — 실행
   모델·위임 규약·trust 힌트가 여기로 전달된다(정적 진입 doc 이 없는 C-v2 구조의 유일 전달 채널).
 
-## 위임 (in-session spawn · 4축)
+## 위임 (transport 규칙 · in-session spawn)
 
-위임은 codex **multi_agent in-session spawn** 이다 — PM(메인세션)이 세션 *안에서* 명명 custom
-agent 를 스폰한다(부모 sandbox 상속·`codex exec --agent` 플래그 부재라 **자식 프로세스 위임 없음**).
+리뷰(`code-reviewer`)는 하네스와 무관하게 엔진이 실행한다(`pm_delegate.py --role code-reviewer --cluster`).
+설계·구현·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다. codex 의 native
+위임은 **multi_agent in-session spawn** 이다 — PM(메인세션)이 세션 *안에서* 명명 custom agent
+(`architect`·`developer`·`researcher`)를 스폰한다(부모 sandbox 상속·`codex exec --agent` 플래그 부재).
 
-- 4축 = `.codex/agents/{architect,code-reviewer,developer,researcher}.toml`. 각 TOML 은 필수 필드
+- 역할 카드 = `.codex/agents/{architect,code-reviewer,developer,researcher}.toml`. 각 TOML 은 필수 필드
   `name`/`description`/`developer_instructions`(≈system prompt) + `sandbox_mode`(developer/architect=
   `workspace-write`·code-reviewer=`workspace-write`(지정된 라운드 파일만 write·코드/board/git 금지)·
   researcher=`read-only`)를 담는다. `model` 키는 없다 — 사용자

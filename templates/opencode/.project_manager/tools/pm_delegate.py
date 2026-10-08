@@ -8562,13 +8562,19 @@ def _validate_harness(harness: str) -> str:
         raise DelegateError(str(exc)) from exc
 
 
-def _validate_reasoning(harness: str, reasoning: str | None) -> str | None:
-    """reasoning 값을 드라이버별 허용집합으로 검증(공용 계약 wrapper). 미지정=None(플래그 생략).
+def _validate_reasoning(
+    harness: str, reasoning: str | None, *, model: str, cwd: Path,
+) -> str | None:
+    """실행 직전 확인 — reasoning 이 그 하네스·모델의 허용집합 원소인가(공용 계약 wrapper).
 
-    허용집합 밖이거나 capability 미확정이면 fail-loud — 조용한 무시/자동 강등 금지."""
+    허용집합은 실행과 같은 cwd·env(`build_env(harness)`)로 해소한다 — opencode 는 그 조건의 모델
+    목록 조회 결과가 정한다. 밖이거나 확인할 수 없으면 fail-loud(조용한 무시/자동 강등 금지).
+    미지정=None(조회 없음). 해소 함수(`resolve_delegate`·`resolve_fallback`)는 실행하지 않는
+    경로(채널 가드 훅·프로필 비교)에서도 불리므로 이 확인을 하지 않는다."""
     relay = _load_relay()
     try:
-        return relay.validate_reasoning(harness, reasoning)
+        return relay.validate_reasoning(
+            harness, reasoning, model=model, cwd=cwd, env=build_env(harness))
     except relay.HarnessContractError as exc:
         raise DelegateError(str(exc)) from exc
 
@@ -8592,8 +8598,7 @@ def resolve_delegate(
         if not (cli_harness and cli_model):
             raise DelegateError("--harness 와 --model 은 동반 필수(부분 override 금지·원자 tuple).")
         harness = _validate_harness(cli_harness)
-        reasoning = _validate_reasoning(harness, cli_reasoning)
-        return harness, cli_model, reasoning
+        return harness, cli_model, _load_relay().normalize_reasoning(cli_reasoning)
 
     key = f"delegate.{role}" + (".hard" if tier == "hard" else "")
     harness = (conf.get(f"{key}.harness") or "").strip()
@@ -8611,8 +8616,7 @@ def resolve_delegate(
             "local.conf 에 delegate.<role>.harness/.model 을 설정하라."
         )
     harness = _validate_harness(harness)
-    reasoning = _validate_reasoning(harness, reasoning)
-    return harness, model, reasoning
+    return harness, model, _load_relay().normalize_reasoning(reasoning)
 
 
 def resolve_fallback(
@@ -8641,8 +8645,7 @@ def resolve_fallback(
             "부분 설정/조용한 기본값은 허용하지 않는다."
         )
     harness = _validate_harness(harness)
-    reasoning = _validate_reasoning(harness, reasoning_raw)
-    return harness, model, reasoning
+    return harness, model, _load_relay().normalize_reasoning(reasoning_raw)
 
 
 # ── 3 드라이버 argv 빌더 (pm_relay 공용 계약의 얇은 wrapper) ──────────────────
@@ -12780,25 +12783,22 @@ def _session_harness(env: dict[str, str]) -> str | None:
     return matches[0] if len(matches) == 1 else None
 
 
-def native_advisory(harness: str | None, *, metered_gate: bool = False) -> str | None:
-    """target 하네스 == PM 하네스면 "네이티브가 더 저렴" advisory 1줄(never-block).
+def native_advisory(harness: str | None, role: str) -> str | None:
+    """설계·구현·조사를 target 하네스 == PM 하네스로 CLI 실행하면 native 규칙 안내 1줄(never-block).
 
-    PM 하네스 env 마커(codex CODEX_THREAD_ID·claude CLAUDECODE·opencode OPENCODE)를 감지해
-    same-harness 위임이면
+    규칙: 리뷰(`code-reviewer`)는 하네스와 무관하게 엔진이 실행하고, 그 밖 역할은 같은 하네스면
+    native 위임이다. 판정 입력은 역할과 하네스뿐이다. PM 하네스 env 마커(codex CODEX_THREAD_ID·
+    claude CLAUDECODE·opencode OPENCODE)를 감지해 안내가 필요하면
     경고 문자열을 반환한다(호출부가 stderr 로 냄). 1차 판정은 어댑터 스킬 카드·이건 백스톱."""
+    if role == INTERNAL_REVIEW_ROLE:
+        return None
     # 직접 호출 seam 에도 공개 하네스 도메인을 적용한다. 이 진단은 하네스 이름별 표현을 소유한다.
     if harness not in HARNESS_CHOICES:
         return None
     pm_harness = _session_harness(os.environ)
     if pm_harness == harness:
-        if metered_gate:
-            return (
-                f"[pm-delegate] target 하네스({harness}) == PM 하네스 — native는 비용 절감 "
-                "advisory지만 이 code-reviewer 게이트는 계측 장부를 위해 pm_delegate CLI로 "
-                "실행합니다(subprocess 실행·과금)."
-            )
-        return (f"[pm-delegate] target 하네스({harness}) == PM 하네스 — 네이티브 위임이 더 저렴하다"
-                "(subprocess 스폰 불요). 어댑터 스킬 카드의 native 단락을 우선하라(advisory).")
+        return (f"[pm-delegate] target 하네스({harness}) == PM 하네스 — 설계·구현·조사는 native "
+                "위임이 규칙이다(어댑터 스킬 카드 transport 절). 리뷰만 엔진 실행이다(advisory).")
     return None
 
 # ── config lint (동일-모델 dev/reviewer 경고·never-block) ────────────────
@@ -13046,7 +13046,9 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
         help="클러스터 장부의 멤버 전부에 라운드를 예약한다(run-dir 1 · 라운드 파일 N)",
     )
     prepare.add_argument(
-        "--role", required=True, choices=tuple(sorted(TICKET_COPY_PREPARE_ROLES)),
+        "--role", required=True,
+        # 리뷰는 엔진이 실행한다(묶음 리뷰가 `prepare_cluster_copy` 를 직접 부른다) — native 준비 없음.
+        choices=tuple(sorted(TICKET_COPY_PREPARE_ROLES - {INTERNAL_REVIEW_ROLE})),
     )
     prepare.add_argument(
         "--tier", default=None, choices=TIER_CHOICES,
@@ -15124,11 +15126,16 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
         )
         return 3  # 명시적 비성공(rc=0 no-op 금지·빈 stdout 성공 오인 차단)
 
-    # config 해소 (원자 tuple·fail-loud rc=1)
+    # config 해소 (원자 tuple·fail-loud rc=1). 추론 값 확인은 해소 뒤 실행 cwd·env 로 한다(dry-run 포함).
     try:
         harness, model, reasoning = resolve_delegate(
             conf, args.role, tier, args.harness, args.model, args.reasoning)
         fallback = resolve_fallback(conf, args.role, tier)
+        _validate_reasoning(harness, reasoning, model=model, cwd=cwd)
+        if fallback is not None:
+            fallback_harness, fallback_model, fallback_reasoning = fallback
+            _validate_reasoning(
+                fallback_harness, fallback_reasoning, model=fallback_model, cwd=cwd)
     except DelegateError as exc:
         print(f"오류: {exc}\n  · local.conf: {conf_path}", file=sys.stderr)
         return 1
@@ -15543,9 +15550,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
                     f"하네스 {harness}(model={model}) 실행 중 (유료 호출).",
                     file=sys.stderr,
                 )
-                advisory = native_advisory(
-                    harness, metered_gate=bool(internal_gate),
-                )
+                advisory = native_advisory(harness, args.role)
                 if advisory is not None:
                     print(advisory, file=sys.stderr)
                 _ticket_copy_handed_off = True  # 여기부터 harvest 가 정리를 넘겨받는다
@@ -15867,10 +15872,7 @@ def _execute_and_collect(
             "(과금·1단 폴백).",
             file=sys.stderr,
         )
-        advisory = native_advisory(
-            fallback_harness,
-            metered_gate=bool(internal_trace and internal_trace.budget.reserved),
-        )
+        advisory = native_advisory(fallback_harness, args.role)
         if advisory is not None:
             print(advisory, file=sys.stderr)
         try:

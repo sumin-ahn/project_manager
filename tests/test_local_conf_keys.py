@@ -948,8 +948,27 @@ def test_reasoning_choices_are_the_relay_allowed_sets_bucketed_by_harness(
     for row in rows:
         values = row["choices"]["values"]
         assert {harness: set(listed) for harness, listed in values.items()} == expected
-        assert row["choices"]["fetch"] is None
         assert row["choices"]["free_text"] is False
+
+
+def test_reasoning_rows_fetch_the_sibling_model_variants(conf_module, keys_document):
+    """추론 행은 같은 세트 모델의 variant 를 모델 목록 조회 응답에서 받는다(정적 버킷은 claude·codex 뿐).
+
+    모델마다 추론 강도가 다른 하네스(opencode)는 버킷이 없고, 화면은 `fetch.variants_of` 가 가리키는
+    모델 키의 현재 값으로 응답의 `variants` 를 고른다. 직접 입력은 없다.
+    """
+    rows = _choice_rows(keys_document, "reasoning")
+
+    assert len(rows) == 1 + 10, [row["key"] for row in rows]
+    for row in rows:
+        sibling = row["key"].rsplit(".", 1)[0] + ".model"
+        assert row["choices"]["fetch"] == {
+            "command": "delegate models", "arg": "harness", "variants_of": sibling}, row["key"]
+        assert set(row["choices"]["values"]) == {"claude", "codex"}, row["key"]
+        assert row["choices"]["free_text"] is False
+        assert conf_module.key_spec(sibling) is not None, sibling
+    for row in _choice_rows(keys_document, "model"):
+        assert "variants_of" not in (row["choices"]["fetch"] or {}), row["key"]
 
 
 def test_reasoning_descriptions_point_at_the_owner_instead_of_copying_the_ladder(
@@ -1011,9 +1030,11 @@ def test_the_listed_choices_all_pass_the_unchanged_validators(keys_document, rel
     reasoning_row = _choice_rows(keys_document, "reasoning")[0]
     for harness, values in reasoning_row["choices"]["values"].items():
         for value in values:
-            assert relay_module.validate_reasoning(harness, value) == value
+            assert relay_module.validate_reasoning(
+                harness, value, model="m", cwd=REPO, env={}) == value
     with pytest.raises(relay_module.HarnessContractError):
-        relay_module.validate_reasoning("codex", "nope")      # 닫힌 집합은 여전히 닫혀 있다
+        relay_module.validate_reasoning(                      # 닫힌 집합은 여전히 닫혀 있다
+            "codex", "nope", model="m", cwd=REPO, env={})
 
 
 def test_recommended_is_declared_only_where_there_is_evidence(conf_module, keys_document):

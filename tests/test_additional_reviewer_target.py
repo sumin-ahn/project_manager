@@ -38,6 +38,9 @@ from pathlib import Path
 
 import pytest
 
+from _fake_opencode import OLLAMA_LISTING, install_fake_opencode, path_with
+from _win_skip import posix_bash_supported
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -264,7 +267,8 @@ def test_partial_tuple_names_the_missing_key(external, missing):
 
 
 def test_reasoning_is_optional_and_validated(external):
-    """reasoning 은 선택(생략=플래그 없음)이고, 주면 드라이버 허용집합으로 검증한다."""
+    """reasoning 은 선택(생략=플래그 없음)이고 해소는 정리만 한다 — 허용집합 확인은 실행 직전
+    `check_reviewer_reasoning` 이 실행 cwd·env 로 한다(해소는 비교 경로에서도 불린다)."""
     without = external.resolve_reviewer_target(
         {"additional_reviewer.harness": "codex", "additional_reviewer.model": "m"})
     assert without.reasoning is None
@@ -285,17 +289,19 @@ def test_reasoning_is_optional_and_validated(external):
 @pytest.mark.parametrize("harness,reasoning,fragment", [
     ("gemini", None, "미지원 harness"),
     ("codex", "ultra", "허용집합"),
-    ("opencode", "xhigh", "허용집합"),
     ("claude", "minimal", "허용집합"),
 ])
 def test_unsupported_harness_or_reasoning_is_fail_loud(
-        external, relay, harness, reasoning, fragment):
-    """허용집합 밖 값은 조용한 무시/강등 없이 중단하고, 문구는 공용 계약(pm_relay)이 소유한다."""
+        external, relay, tmp_path, harness, reasoning, fragment):
+    """허용집합 밖 값은 조용한 무시/강등 없이 중단하고, 문구는 공용 계약(pm_relay)이 소유한다.
+
+    하네스는 해소가, 추론 값은 실행 직전 확인(`check_reviewer_reasoning`)이 거부한다."""
     conf = {"additional_reviewer.harness": harness, "additional_reviewer.model": "m"}
     if reasoning is not None:
         conf["additional_reviewer.reasoning"] = reasoning
     with pytest.raises(external.ReviewerTargetError) as caught:
-        external.resolve_reviewer_target(conf)
+        external.check_reviewer_reasoning(
+            external.resolve_reviewer_target(conf), cwd=tmp_path)
     message = str(caught.value)
     assert fragment in message
     # 같은 오설정이 두 표면에서 다르게 설명되지 않는다 — relay 문구를 그대로 감싼다.
@@ -303,8 +309,28 @@ def test_unsupported_harness_or_reasoning_is_fail_loud(
         if reasoning is None:
             relay.validate_harness(harness)
         else:
-            relay.validate_reasoning(harness, reasoning)
+            relay.validate_reasoning(harness, reasoning, model="m", cwd=tmp_path, env={})
     assert str(contract.value) in message
+
+
+@pytest.mark.skipif(not posix_bash_supported(), reason="가짜 opencode 는 POSIX sh 스크립트다")
+def test_opencode_reviewer_reasoning_checked_before_call(external, tmp_path, monkeypatch):
+    """opencode 리뷰어의 추론 값은 실행 cwd·env 로 그 모델의 variants 를 조회해 호출 전에 확인한다."""
+    fakebin = install_fake_opencode(tmp_path / "fakebin", OLLAMA_LISTING)
+    monkeypatch.setenv("PATH", path_with(fakebin))
+
+    def target(model, reasoning):
+        conf = {"additional_reviewer.harness": "opencode", "additional_reviewer.model": model}
+        if reasoning is not None:
+            conf["additional_reviewer.reasoning"] = reasoning
+        return external.resolve_reviewer_target(conf)
+
+    glm_high = target("ollama/glm-5.2:cloud", "high")  # 해소는 확인하지 않는다(비교 경로 공용)
+    with pytest.raises(external.ReviewerTargetError) as caught:
+        external.check_reviewer_reasoning(glm_high, cwd=tmp_path)
+    assert "ollama/glm-5.2:cloud" in str(caught.value) and "허용집합 (없음)" in str(caught.value)
+    external.check_reviewer_reasoning(target("ollama/glm-5.2:cloud", None), cwd=tmp_path)
+    external.check_reviewer_reasoning(target("ollama/ornith1.5:35b-a3b", "high"), cwd=tmp_path)
 
 
 @pytest.mark.parametrize("model", [
@@ -520,8 +546,10 @@ def test_opencode_prompt_file_is_0600_and_removed_after_success_and_failure(
     "소유자 전용" 의 수단은 플랫폼마다 다르다(POSIX 퍼미션 0600 / Windows ACL) — 판정은
     퍼미션 비트가 아니라 `file_lock.owner_only_access` 로 OS 에 되묻는다(`_owner_only`).
     """
+    # 추론 값을 두지 않는다 — opencode 추론 값은 실행 직전 모델 목록 조회로 확인되고(그 시험은
+    # `test_opencode_reviewer_reasoning_checked_before_call`) 이 시험의 대상은 프롬프트 파일이다.
     repo = _repo(tmp_path / "repo", _conf(harness="opencode", model="zai/glm-4.6",
-                                          reasoning="medium"))
+                                          reasoning=None))
     reviewer = _FakeReviewer(stdout=_wire("opencode"), rc=rc)
     _wire_main(external, monkeypatch, repo, reviewer)
 
@@ -556,8 +584,10 @@ def test_prompt_file_cleanup_failure_is_loud_and_does_not_mask_the_result(
 
     이 임시 파일에는 검토 대상 diff 원문이 들어 있다. 조용히 삼키면 잔존 사실이 어느 표면에도
     남지 않아, 누출 흔적을 사람이 알 방법이 없다."""
+    # 추론 값을 두지 않는다 — opencode 추론 값은 실행 직전 모델 목록 조회로 확인되고(그 시험은
+    # `test_opencode_reviewer_reasoning_checked_before_call`) 이 시험의 대상은 프롬프트 파일이다.
     repo = _repo(tmp_path / "repo", _conf(harness="opencode", model="zai/glm-4.6",
-                                          reasoning="medium"))
+                                          reasoning=None))
     reviewer = _FakeReviewer(stdout=_wire("opencode"))
     _wire_main(external, monkeypatch, repo, reviewer)
     _failing_prompt_unlink(external, monkeypatch)
@@ -967,7 +997,9 @@ def test_early_refund_never_charges_a_wave_that_was_reset_meanwhile(
     예약 구간 락은 이미 풀린 뒤라, 준비 구간 중 다른 실행이 `--ack-wave` 로 새 wave 를 여는 순서는
     실제 동시 실행과 같다. 세대 확인이 없으면 옛 실행의 실패가 새 예산을 깎아 승인 1회로 예산이
     늘어난다."""
-    repo = _repo(tmp_path / "repo", _conf())
+    # 추론 값이 있으면 실행 직전 확인(`check_reviewer_reasoning`)이 예약 **전**에 env 를 만든다 — 이
+    # 시험은 예약 뒤 구간의 env 구성 실패를 재므로 추론 값을 두지 않는다.
+    repo = _repo(tmp_path / "repo", _conf(reasoning=None))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     delegate = external._load_pm_delegate()
@@ -1009,7 +1041,9 @@ def test_unexpected_failure_preparing_the_reviewer_environment_refunds_too(
     환불 조건은 예외 종류가 아니라 '스폰 전 구간'이다 — 알려진 예외만 되돌리면 나머지 예외가
     호출 0 인 실행의 예약을 미완 레코드로 남겨, `incomplete_limit=1` 형상에서 다음 **정상** 호출이
     곧바로 rc=4 로 막힌다. 반대로 rc 로 삼켜서도 안 된다(진단이 사라진다)."""
-    repo = _repo(tmp_path / "repo", _conf(incomplete_rounds_max="1"))
+    # 추론 값이 있으면 실행 직전 확인(`check_reviewer_reasoning`)이 예약 **전**에 env 를 만든다 — 이
+    # 시험은 예약 뒤 구간의 env 구성 실패를 재므로 추론 값을 두지 않는다.
+    repo = _repo(tmp_path / "repo", _conf(reasoning=None, incomplete_rounds_max="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     restore = _break_env_preparation(external, monkeypatch, failure)
@@ -2003,7 +2037,7 @@ def test_delegate_public_wrappers_still_speak_the_shared_contract():
     assert delegate.build_opencode_argv("m", "high", "developer", "/w", "/p") == \
         shared.build_opencode_argv("m", "high", "developer", "/w", "/p")
     # codex `max` 는 두 표면에서 같은 판정을 받는다(테이블이 하나라서).
-    assert delegate._validate_reasoning("codex", "max") == "max"
+    assert delegate._validate_reasoning("codex", "max", model="m", cwd=REPO) == "max"
     # 회신 파서 계약 — 같은 wire 를 같은 텍스트로 읽는다.
     for harness in ("codex", "claude", "opencode"):
         wire = _wire(harness)
@@ -2052,12 +2086,13 @@ def test_delegate_and_reviewer_reject_the_same_misconfiguration_wording():
     delegate = _load("pm_delegate")
     external = _load("additional_reviewer")
     with pytest.raises(delegate.DelegateError) as delegate_error:
-        delegate._validate_reasoning("opencode", "xhigh")
+        delegate._validate_reasoning("claude", "minimal", model="m", cwd=REPO)
+    target = external.resolve_reviewer_target(
+        {"additional_reviewer.harness": "claude",
+         "additional_reviewer.model": "m",
+         "additional_reviewer.reasoning": "minimal"})
     with pytest.raises(external.ReviewerTargetError) as reviewer_error:
-        external.resolve_reviewer_target(
-            {"additional_reviewer.harness": "opencode",
-             "additional_reviewer.model": "m",
-             "additional_reviewer.reasoning": "xhigh"})
+        external.check_reviewer_reasoning(target, cwd=REPO)
     assert str(delegate_error.value) in str(reviewer_error.value)
 
 

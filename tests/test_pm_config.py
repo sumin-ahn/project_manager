@@ -620,10 +620,17 @@ def test_accept_reapplies_harness_ctx(pc, pim, tmp_path, capsys):
     assert judged[".codex/config.toml"] == "unedited"
 
 
-def test_ctx_apply_checks_before_writing_and_reports_json(pc, pim, tmp_path, capsys):
-    """`ctx-apply --set` — 거부된 값은 local.conf·설정 파일 어디에도 쓰이지 않는다(검사 거부 rc 3).
+def _ctx_budget_record(dest: Path) -> dict:
+    """압축 한도 기록 — 반영이 조회해 고정한 도구 항목(`harnesses`)을 파일에서 읽는다."""
+    return json.loads((dest / ".project_manager" / ".local" / "ctx-budget.json").read_text(encoding="utf-8"))
 
-    통과하면 conf 에 쓰고 반영한 뒤 JSON 한 줄 `{"changed", "applied"}` 을 낸다. `키=` 는 줄 삭제다."""
+
+def test_apply_checks_before_writing_and_reports_json(pc, tmp_path, capsys):
+    """`apply --set` — 거부된 값은 local.conf·설정 파일 어디에도 쓰이지 않는다(반영 전 거부 rc 3).
+
+    통과하면 conf 에 쓰고 반영한 뒤 JSON 한 줄 `{"changed", "applied"}` 을 낸다. `키=` 는 줄 삭제다.
+    `--set` 이 사용 한도 키만이면 렌더 단계는 돌지 않는다(렌더 원본이 없는 트리에서도 반영된다). 인자
+    없는 반영은 모든 단계를 돌아 렌더 원본(upstream)을 요구한다."""
     dest = tmp_path / "dest"
     (dest / ".claude").mkdir(parents=True)
     (dest / ".project_manager").mkdir()
@@ -634,48 +641,85 @@ def test_ctx_apply_checks_before_writing_and_reports_json(pc, pim, tmp_path, cap
     parser = pc.build_parser()
     conf_before, settings_before = conf.read_bytes(), settings.read_bytes()
 
-    refused = pc.cmd_ctx_apply(
-        parser.parse_args(["ctx-apply", "--json", "--set", "ctx.precompact_at_pct=85"]),
-        pm_import=pim, dest_root=dest)
+    refused = pc.cmd_apply(
+        parser.parse_args(["apply", "--json", "--set", "ctx.precompact_at_pct=85"]), dest_root=dest)
     captured = capsys.readouterr()
     assert refused == 3
     assert "ctx.precompact_at_pct=85" in captured.err and captured.out == ""
     assert conf.read_bytes() == conf_before and settings.read_bytes() == settings_before
 
-    # `--set` 없이 — 현재 conf(압축 85%)로 검사·반영만 한다(conf 는 바꾸지 않는다).
-    current = pc.cmd_ctx_apply(parser.parse_args(["ctx-apply", "--json"]), pm_import=pim,
-                               dest_root=dest)
+    # 인자 없는 반영 — 렌더 단계까지 돌아 upstream 미등록으로 거부된다(무변경).
+    bare = pc.cmd_apply(parser.parse_args(["apply", "--json"]), dest_root=dest)
+    captured = capsys.readouterr()
+    assert bare == 3 and "upstream 미등록" in captured.err and captured.out == ""
+    assert conf.read_bytes() == conf_before and settings.read_bytes() == settings_before
+
+    # 같은 값 — 현재 conf(압축 85%)로 검사·반영만 한다(conf 는 바꾸지 않는다).
+    current = pc.cmd_apply(parser.parse_args(["apply", "--json", "--set", "ctx.compact_at_pct=85"]),
+                           dest_root=dest)
     assert current == 0
-    document = json.loads(capsys.readouterr().out)
-    assert document["ctx_budget"]["claude"]["E"] == 200000
-    assert {key: value for key, value in document.items() if key != "ctx_budget"} == {
+    assert json.loads(capsys.readouterr().out) == {
         "changed": False,
         "applied": [".claude/settings.json autoCompactWindow 180000 → 170000"]}
+    assert _ctx_budget_record(dest)["harnesses"]["claude"]["E"] == 200000
     assert conf.read_bytes() == conf_before
 
-    applied = pc.cmd_ctx_apply(
-        parser.parse_args(["ctx-apply", "--json", "--set", "ctx.compact_at_pct=",
+    applied = pc.cmd_apply(
+        parser.parse_args(["apply", "--json", "--set", "ctx.compact_at_pct=",
                            "--set", "identity.user=me@example.invalid"]),
-        pm_import=pim, dest_root=dest)
+        dest_root=dest)
     captured = capsys.readouterr()
     assert applied == 0, captured.err
-    document = json.loads(captured.out)
-    assert document["ctx_budget"]["claude"]["P"] == 180000
-    assert {key: value for key, value in document.items() if key != "ctx_budget"} == {
+    assert json.loads(captured.out) == {
         "changed": True,
         "applied": [".claude/settings.json autoCompactWindow 170000 → 180000"]}
+    assert _ctx_budget_record(dest)["harnesses"]["claude"]["P"] == 180000
     text = conf.read_text(encoding="utf-8")
     assert "ctx.compact_at_pct" not in text and "identity.user=me@example.invalid" in text
 
     # 바뀐 값이 없으면 changed=false · applied 빈 목록(멱등).
-    again = pc.cmd_ctx_apply(parser.parse_args(["ctx-apply", "--json"]), pm_import=pim,
-                             dest_root=dest)
+    again = pc.cmd_apply(parser.parse_args(["apply", "--json", "--set", "ctx.compact_at_pct="]),
+                         dest_root=dest)
     assert again == 0
-    document = json.loads(capsys.readouterr().out)
-    assert document["ctx_budget"]["claude"]["E"] == 200000
-    assert {key: value for key, value in document.items() if key != "ctx_budget"} == {"changed": False, "applied": []}
+    assert json.loads(capsys.readouterr().out) == {"changed": False, "applied": []}
 
     # `키=값` 꼴이 아니면 인자 오류(rc 2)다.
     with pytest.raises(SystemExit) as caught:
-        parser.parse_args(["ctx-apply", "--set", "no-equals"])
+        parser.parse_args(["apply", "--set", "no-equals"])
     assert caught.value.code == 2
+
+
+def test_apply_cli_contract(pc, tmp_path, capsys):
+    """AT-006 — 저장 명령은 `apply` 하나다: 옛 이름은 없는 명령(rc 2)이고, 반영 전 거부는 rc 3 으로
+    local.conf·설정 파일을 바꾸지 않으며, `--json` 응답 키는 `changed`·`applied` 둘뿐이다."""
+    from _manager_home import make_committed_source, make_pm_home
+    with pytest.raises(SystemExit) as caught:
+        pc.main(["ctx-apply", "--json"])
+    assert caught.value.code == 2
+    capsys.readouterr()
+
+    source = make_committed_source(tmp_path / "source")
+    home = make_pm_home(tmp_path / "home", upstream=source, source=source)
+    parser = pc.build_parser()
+    conf = home / ".project_manager" / "local.conf"
+    settings = home / ".claude" / "settings.json"
+    conf_before, settings_before = conf.read_bytes(), settings.read_bytes()
+
+    refused = pc.cmd_apply(parser.parse_args(["apply", "--json", "--set", "ctx.precompact_at_pct=95"]),
+                           dest_root=home)
+    captured = capsys.readouterr()
+    assert refused == 3 and "ctx.precompact_at_pct=95" in captured.err and captured.out == ""
+    assert conf.read_bytes() == conf_before and settings.read_bytes() == settings_before
+
+    saved = pc.cmd_apply(parser.parse_args([
+        "apply", "--json", "--set", "delegate.architect.harness=claude",
+        "--set", "delegate.architect.model=opus", "--set", "delegate.architect.reasoning=high"]),
+        dest_root=home)
+    captured = capsys.readouterr()
+    assert saved == 0, captured.err
+    document = json.loads(captured.out)
+    assert set(document) == {"changed", "applied"}, document
+    assert document["changed"] is True
+    assert ".claude/agents/architect.md 다시 그림" in document["applied"], document
+    assert 'effort: "high"' in (home / ".claude" / "agents" / "architect.md").read_text(
+        encoding="utf-8").splitlines()

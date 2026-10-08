@@ -239,7 +239,7 @@ def _record_growth_review_disposition(pd, source: Path, ticket: str) -> str:
     )
 
 def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
-                            target: str, model: str, reasoning: str,
+                            target: str, model: str, reasoning: str | None,
                             timeout: int) -> None:
     """선택 main→target 한 경로에서 고정 4라운드를 실행하고 canonical 재조회를 단언한다."""
     ticket = {"codex": "T-9101", "opencode": "T-9102", "claude": "T-9103"}[target]
@@ -450,12 +450,13 @@ def test_delegate_live_opencode(tmp_path, monkeypatch, capsys):
     """claude/codex PM → **opencode**(glm-5.2:cloud·$0) researcher 위임 1회 — reply marker + rc0 + raw.
 
     `--file` 프롬프트 채널·`--dir` cwd 핀·`--agent researcher`(런타임 role config로
-    edit/bash deny)·`--variant high`(passthrough)."""
+    edit/bash deny). 추론 값은 싣지 않는다 — 테스트 env 모델은 variants 가 없어 어떤 값이든 실행 직전
+    확인이 거부한다(`--variant` 확인은 가짜 실행 파일 단위 시험이 맡는다)."""
     pd = _load_pd()
     repo, prompt = _seed_repo(tmp_path)
     out_dir = tmp_path / "raw"
     rc, reply, err = _delegate(pd, monkeypatch, capsys, repo, prompt, "opencode",
-                               LIVE_MODEL, "high", out_dir, _OPENCODE_TIMEOUT)
+                               LIVE_MODEL, None, out_dir, _OPENCODE_TIMEOUT)
     _assert_delegate_ok(rc, reply, err, out_dir, "opencode")
 
 
@@ -590,7 +591,7 @@ def test_ticket_growth_cross_claude_to_opencode_release(tmp_path, monkeypatch, c
     """Claude main이 쓰는 cross OpenCode transport에서 성장 역할 3종을 실제 왕복한다."""
     _run_cross_growth_route(
         _load_pd(), monkeypatch, capsys, tmp_path, target="opencode", model=LIVE_MODEL,
-        reasoning="high", timeout=_OPENCODE_TIMEOUT,
+        reasoning=None, timeout=_OPENCODE_TIMEOUT,
     )
 
 
@@ -617,12 +618,11 @@ def test_pm_delegate_backbone_shipped_and_loadable():
 
 
 def test_reasoning_allowed_measured_sets_pinned():
-    """reasoning 허용집합이 라이브 실측값을 보유 — 빈 집합 회귀/실측값 소실을 red 로 잡는다.
+    """reasoning 정적 허용집합이 라이브 실측값을 보유 — 빈 집합 회귀/실측값 소실을 red 로 잡는다.
 
-    claude `--effort`=low/medium/high/xhigh/max(CLI-authoritative)·opencode `--variant`=minimal/low/
-    medium/high/max(문서 ladder·passthrough typo-guard)·codex `-c model_reasoning_effort`=low/medium/
-    high/xhigh/max(0.145.0 xhigh 실측 + T-0590 max 편입). 실측 전 '미확정 빈 집합'으로 되돌아가면
-    (silent-무시 재발) 여기서 red.
+    claude `--effort`=low/medium/high/xhigh/max(CLI-authoritative)·codex `-c model_reasoning_effort`=
+    low/medium/high/xhigh/max(0.145.0 xhigh 실측 + T-0590 max 편입). 실측 전 '미확정 빈 집합'으로
+    되돌아가면(silent-무시 재발) 여기서 red. opencode 는 정적 표가 없다(모델별 variants 조회).
 
     테이블 소유자는 위임/추가 리뷰어 공용 계약 모듈 `pm_relay` 다(T-0590) — 위임은 그 검증을 부르는
     wrapper 이므로 실효 판정을 `_validate_reasoning` 으로도 함께 못박는다."""
@@ -630,9 +630,7 @@ def test_reasoning_allowed_measured_sets_pinned():
     allowed = pd._load_relay().REASONING_ALLOWED
     assert allowed["codex"] == ("low", "medium", "high", "xhigh", "max")
     assert allowed["claude"] == ("low", "medium", "high", "xhigh", "max")
-    assert allowed["opencode"] == ("minimal", "low", "medium", "high", "max")
-    assert pd._validate_reasoning("codex", "max") == "max"
-    assert pd._validate_reasoning("opencode", "minimal") == "minimal"
+    assert pd._validate_reasoning("codex", "max", model="gpt-x", cwd=Path.cwd()) == "max"
 
 
 def test_marker_absent_from_prompt_present_in_readme(tmp_path):

@@ -417,16 +417,17 @@ OPENCODE_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
 # 이 토큰을 해소할 때 가용 모델을 조회하는 원천의 하네스 키(`pm_relay.MODEL_SOURCE`).
 OPENCODE_MODEL_SOURCE_HARNESS = "opencode"
 
-# `opencode models` 조회 명령 — 가용 모델의 단일 진실(LLM 추측 아님). 줄당 `provider/model`.
 # fill 실 하니스 구동 게이트 환경변수(호출 횟수 축 — 무엇을 보여줄지가 아니라 몇 번 부를지다).
 # PM_IMPORT_LIVE_HARNESS=1
 # AND --fill auto 동시 충족 시만 실 runner 호출 — 둘 중 하나라도 없으면 stub/manual 강제.
 LIVE_HARNESS_ENV = "PM_IMPORT_LIVE_HARNESS"
 
 # 하니스 헤드리스 구동 명령 (fill auto). claude 는 stdout 캡처, opencode 는 --format json 파싱,
-# codex 는 `exec --json` JSONL 파싱(최종 agent_message). codex 는 stdin 미닫힘 시 무기한 대기(실측·
-# spike )라 _real_harness_runner 가 빈 stdin PIPE를 즉시 닫아 EOF를 주고, -s workspace-write·--skip-git-repo-check·
-# -C <dest> 는 _build_runner_argv 가 붙인다. codex 는 `model` 생략=사용자 config 상속(harness-특수 분기 0).
+# codex 는 `exec --json` JSONL 파싱(최종 agent_message). 프롬프트는 cross 위임과 같은 방식으로 넘긴다 —
+# claude·codex 는 표준 입력(전문을 쓰고 닫아 EOF), opencode 는 대상 폴더 안 프롬프트 파일(`--file`).
+# 여러 줄 프롬프트를 실행 인자에 싣지 않는다: Windows 에서 실행 파일이 npm 셈(`.cmd`)이면 cmd.exe 가
+# 인자를 해석해 첫 줄 뒤를 조용히 버린다(VM 실측). -s workspace-write·--skip-git-repo-check·
+# -C <dest>·--dir <dest> 는 _build_runner_argv 가 붙인다. codex 는 `model` 생략=사용자 config 상속.
 CLAUDE_FILL_CMD = ("claude", "-p")
 OPENCODE_FILL_CMD = ("opencode", "run")
 CODEX_FILL_CMD = ("codex", "exec")
@@ -435,14 +436,17 @@ CODEX_FILL_CMD = ("codex", "exec")
 # cloud idle 임계보다 먼저 발화해 무진행 판정을 사실상 무력화했고, opencode 로컬 GPU 축의 실측
 # 장시간 실행도 잘랐다. 채택 시점 1회성이라는 UX 차이는 별도 판정값의 근거가 아니므로 제거한다.
 # 배포 환경 차이는 대상 repo local.conf 의 `harness.<name>.{idle,wall}_timeout` 으로 조정한다.
-# 실제 fill argv 계약을 선언한다: (하네스, 증분 진행 신호 유무, stdin 입력).
+# 실제 fill argv 계약을 선언한다: (하네스, 증분 진행 신호 유무, 프롬프트 전달 방식).
 # claude `-p`는 종료 시 평문 blob 하나를 내므로 profile의 일반 CLI event-stream 선언을 그대로
 # 적용하면 정상 침묵도 idle kill한다. 반면 opencode `--format json`·codex `--json`은 실행 중
-# 이벤트를 내므로 profile 신호를 소비한다. codex만 빈 PIPE를 닫아 즉시 EOF를 전달한다.
+# 이벤트를 내므로 profile 신호를 소비한다. 표준 입력 전달은 전문을 쓴 뒤 닫아 EOF 를 준다(codex 는
+# stdin 이 열려 있으면 추가 입력을 무기한 기다린다).
+FILL_PROMPT_STDIN = "stdin"   # 표준 입력으로 전문을 쓴다
+FILL_PROMPT_FILE = "file"     # argv 의 `--file` 프롬프트 파일(run_fill 이 대상 폴더 안에 쓴다)
 FILL_DRIVER_BY_CMD = {
-    CLAUDE_FILL_CMD: ("claude", False, None),
-    OPENCODE_FILL_CMD: ("opencode", True, None),
-    CODEX_FILL_CMD: ("codex", True, ""),
+    CLAUDE_FILL_CMD: ("claude", False, FILL_PROMPT_STDIN),
+    OPENCODE_FILL_CMD: ("opencode", True, FILL_PROMPT_FILE),
+    CODEX_FILL_CMD: ("codex", True, FILL_PROMPT_STDIN),
 }
 
 # fill 가능 여부는 runner argv 계약 선언에서 파생한다. 등록 하네스 전체가 자동 fill을 할 수 있다는
@@ -454,27 +458,6 @@ FILL_CAPABLE_HARNESSES = tuple(
 # ``--fill-harness`` argparse choices는 등록 adapter 전부다. auto 가능 여부는 설치 전
 # ``FILL_CAPABLE_HARNESSES`` 게이트가 별도로 판정하므로 manual 경로를 여기서 막지 않는다.
 FILL_HARNESS_CHOICES = REGISTERED_HARNESSES
-
-# `opencode models` 조회 타임아웃 (초). 모델 목록 나열은 빠른 로컬 명령 가정이나, 회사 Pro/원격
-# 게이트웨이는 cold 콜 지연이 커 15s 로는 부족.
-# 기본을 60 으로 올리고, env override 로 환경별 재조정.
-# (LLM 헤드리스 구동의 하네스 프로필 wall 값은 모델 조회엔 과대. --opencode-model 명시 경로의
-# 대조-조회가 import UX 를 길게 막지 않도록 fail-soft + 적당한 별도 상한.)
-OPENCODE_MODELS_TIMEOUT_SECONDS = 60
-
-
-# env override: 회사 Pro·느린 원격에서 60s 도 모자라면
-#   코드 수정 없이 `PM_OPENCODE_MODELS_TIMEOUT`(초)로 늘린다. 양의 정수만 채택 — 미설정/비숫자/≤0
-#   은 기본 OPENCODE_MODELS_TIMEOUT_SECONDS(60) 로 폴백(무해). 빠른 로컬 조회라 무제한은 두지 않는다.
-def _opencode_models_timeout() -> int:
-    raw = os.environ.get("PM_OPENCODE_MODELS_TIMEOUT")
-    if raw is None:
-        return OPENCODE_MODELS_TIMEOUT_SECONDS
-    try:
-        val = int(raw.strip())
-    except (ValueError, AttributeError):
-        return OPENCODE_MODELS_TIMEOUT_SECONDS
-    return val if val > 0 else OPENCODE_MODELS_TIMEOUT_SECONDS
 
 # add_harness어댑터 네임스페이스 = {adapter dir(들), root doc}. 라이브 인스턴스에 두 번째
 # harness 를 *비파괴로 추가*할 때 복사 스코프 = 이 네임스페이스 ∪ **guest flavor 가 `@render` 로 선언한
@@ -3784,89 +3767,20 @@ class ModelResolveResult:
 
 
 def _real_models_runner(source) -> tuple[bool, list[str]]:
-    """표가 선언한 조회 명령을 subprocess 로 돌린다(fail-soft). 반환: (성공 여부, 모델 목록).
+    """설치 대조·콘솔 `[m]` 용 모델 목록 — `pm_relay.model_listing` 을 감싼다. 반환: (성공 여부, 모델 목록).
 
-    명령과 산출 판독 방식은 `pm_relay.MODEL_SOURCE` 의 `command`·`parse` 가 **값으로** 정한다 —
-    이 함수에 하네스 이름 분기는 없다. _real_harness_runner 선례대로 예외를 raise 하지 않고
-    (False, []) 로 감싼다. 바이너리가 PATH 에 없으면 subprocess 도 안 띄우고 즉시 (False, []).
-
-    fail-soft 는 유지(import 안 깸)하되 *침묵*은 제거한다 — 각 실패 분기에서 stderr 로 사유
-    1줄을 surface 해 왜 자동해소가 실패했는지(PATH/rc/timeout/parse)를 남긴다. 타임아웃은
-    _opencode_models_timeout()(env PM_OPENCODE_MODELS_TIMEOUT > 기본 60) 하나다 — 조회 축이
-    하나라 노브도 하나다.
+    조회 실행·판독·시간 상한의 주인은 pm_relay 하나다(이 함수에 조회 코드 0). 조회 실패
+    (`HarnessContractError` — PATH 부재·rc·timeout·판독 실패·모델 0개)는 그 사유를 stderr 한 줄로 남기고
+    (False, []) 로 돌린다 — 설치를 깨지 않고 형식 안내로 강등하는 이 두 소비자의 계약이다. 그 밖의
+    예외는 잡지 않는다.
     """
-    command = list(getattr(source, "command", None) or ())
-    if not command:
-        print("조회 명령이 선언되지 않은 모델 원천 — 자동해소 skip", file=sys.stderr)
-        return False, []
-    shown = " ".join(command)
-    if shutil.which(command[0]) is None:
-        print(f"{command[0]} 바이너리 PATH 부재 — 모델 자동해소 skip", file=sys.stderr)
-        return False, []
-    timeout = _opencode_models_timeout()
+    relay = _load_watchdog()
     try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
-        if result.returncode != 0:
-            print(
-                f"{shown} 실패 rc={result.returncode}: "
-                f"{(result.stderr or '').strip()[:200]}",
-                file=sys.stderr,
-            )
-            return False, []
-        models = _parse_models(getattr(source, "parse", None), result.stdout or "")
-        if not models:
-            print(f"{shown} 출력에서 모델 0개 파싱 — 형식 확인", file=sys.stderr)
-        return True, models
-    except subprocess.TimeoutExpired:
-        print(
-            f"{shown} {timeout}s timeout 초과 — "
-            "PM_OPENCODE_MODELS_TIMEOUT 로 늘리세요",
-            file=sys.stderr,
-        )
+        listing = relay.model_listing(source, cwd=Path.cwd(), env=dict(os.environ))
+    except relay.HarnessContractError as exc:
+        print(f"{exc} — 모델 자동해소 skip", file=sys.stderr)
         return False, []
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 어떤 예외도 import 를 깨지 않는다.
-        print(f"{shown} 예외: {exc}", file=sys.stderr)
-        return False, []
-
-
-def _parse_models(parse: str | None, output: str) -> list[str]:
-    """조회 산출 → 모델 목록. 방식 이름의 주인은 `pm_relay.MODEL_SOURCE.parse` 다."""
-    if parse == "json-slug":
-        try:
-            document = json.loads(output)
-        except ValueError:
-            return []
-        entries = document.get("models") if isinstance(document, dict) else None
-        if not isinstance(entries, list):
-            return []
-        return [entry["slug"] for entry in entries
-                if isinstance(entry, dict) and isinstance(entry.get("slug"), str)
-                and entry["slug"].strip()]
-    if parse == "lines":
-        return _parse_opencode_models(output)
-    return []
-
-
-def _parse_opencode_models(output: str) -> list[str]:
-    """`opencode models` stdout → provider/model 목록. 빈 줄·배너 제외.
-
-    실측 형식: 줄당 `provider/model`(예 'ollama/gemma4:26b'·'opencode/big-pickle'). 슬래시가
-    있는 줄만 모델로 본다(배너·헤더 줄 제외). 앞뒤 공백 strip, 순서·중복은 입력대로 보존.
-    """
-    models: list[str] = []
-    for line in output.splitlines():
-        stripped = line.strip()
-        if not stripped or "/" not in stripped:
-            continue
-        models.append(stripped)
-    return models
+    return True, list(listing.models)
 
 
 def _substitute_model_token(
@@ -4216,7 +4130,7 @@ def _temp_root(root) -> Path:
 
 
 def _fill_driver(argv: list[str]) -> tuple[str, bool, str | None]:
-    """실제 fill argv를 (하네스·증분 신호·stdin) 선언으로 해소한다."""
+    """실제 fill argv를 (하네스·증분 신호·프롬프트 전달 방식) 선언으로 해소한다."""
     for command, driver in FILL_DRIVER_BY_CMD.items():
         if tuple(argv[:len(command)]) != command:
             continue
@@ -4233,11 +4147,11 @@ def _fill_driver(argv: list[str]) -> tuple[str, bool, str | None]:
             if not has_json_format:
                 break
         elif command == CODEX_FILL_CMD and "--json" not in argv[len(command):]:
-            # 출력이 평문이면 증분 신호/프로필은 보수적으로 미지 축에 두되, codex의 stdin EOF
-            # 정책은 출력 형식과 무관하다. 빈 PIPE를 닫지 않으면 추가 입력 대기로 돌아간다.
+            # 출력이 평문이면 증분 신호/프로필은 보수적으로 미지 축에 두되, codex의 프롬프트 전달
+            # (표준 입력 후 EOF)은 출력 형식과 무관하다.
             return "", False, driver[2]
         return driver
-    # 내부 빌더 밖의 주입 호출은 미지 프로필로 보수 처리한다: 신호·stdin을 추정하지 않고
+    # 내부 빌더 밖의 주입 호출은 미지 프로필로 보수 처리한다: 신호·프롬프트 전달을 추정하지 않고
     # 가장 관대한 wall만 적용한다. basename이 알려진 이름이어도 argv 계약이 다르면 미지 축이다.
     return "", False, None
 
@@ -4300,6 +4214,14 @@ def _fill_failure_with_partial(head: str, exc: BaseException) -> str:
 
 def _save_fill_failure_output(dest_root: Path, harness: str, output: str) -> Path:
     """fill 실패 원문을 repo 안 private raw 파일로 이식 가능하게 박제한다."""
+    return _write_fill_private_file(
+        dest_root, f"pm_import_fill_{harness}_{datetime.datetime.now():%Y%m%d_%H%M%S}_", ".txt", output)
+
+
+def _write_fill_private_file(dest_root: Path, prefix: str, suffix: str, text: str) -> Path:
+    """`<dest>/.project_manager/.local/fill/<prefix><무작위><suffix>` 에 0600·O_EXCL 로 쓴다(fill 실패 원문·
+    opencode 프롬프트 파일). 경로 조상이 repo 밖을 가리키거나 부모가 symlink 면 `OSError` 다. 반환 경로는
+    `dest_root` 기준 lexical 경로다(opencode `--dir <dest>` 와 같은 접두)."""
     dest_root = Path(dest_root)
     repo_root = dest_root.resolve(strict=True)
     if not repo_root.is_dir():
@@ -4326,13 +4248,12 @@ def _save_fill_failure_output(dest_root: Path, harness: str, output: str) -> Pat
         raise NotADirectoryError(f"fill raw 부모가 디렉터리가 아님: {raw_dir}")
     os.chmod(raw_dir, 0o700)
 
-    prefix = f"pm_import_fill_{harness}_{datetime.datetime.now():%Y%m%d_%H%M%S}_"
     file_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     file_flags |= getattr(os, "O_NOFOLLOW", 0)
     fd = None
     raw_basename = ""
     for _attempt in range(100):
-        raw_basename = f"{prefix}{secrets.token_hex(4)}.txt"
+        raw_basename = f"{prefix}{secrets.token_hex(4)}{suffix}"
         try:
             fd = os.open(raw_dir / raw_basename, file_flags, 0o600)
             break
@@ -4352,7 +4273,7 @@ def _save_fill_failure_output(dest_root: Path, harness: str, output: str) -> Pat
         raise
     with os.fdopen(
             fd, "w", encoding="utf-8", errors="replace", newline="\n") as handle:
-        handle.write(output)
+        handle.write(text)
     return dest_root.joinpath(*raw_parts, raw_basename)
 
 
@@ -4362,7 +4283,8 @@ def _real_harness_runner(
     """실 하니스 바이너리를 subprocess 로 구동(fail-soft). 반환: (성공 여부, stdout).
 
     additional_reviewer._run_reviewer_ex 선례 — 예외를 raise 하지 않고 (False, 에러텍스트)로 감싼다.
-    프롬프트는 argv 마지막 인자로 전달한다(claude -p "<prompt>" / opencode run "<prompt>" ...).
+    프롬프트는 FILL_DRIVER_BY_CMD 의 전달 방식대로 넘긴다 — 표준 입력이면 여기서 전문을 쓰고 닫는다,
+    `--file` 이면 argv 가 이미 run_fill 이 쓴 파일을 가리킨다. 실행 인자에는 싣지 않는다.
 
     SF: cwd 가 주어지면 *대상 repo* 에서 구동한다(run_fill 이 dest_root 를 바인딩). 호출자
     cwd 가 아니라 import 대상에서 돌아야 하니스의 작업 디렉토리·파일 접근이 분석 대상과 맞는다.
@@ -4372,8 +4294,8 @@ def _real_harness_runner(
     override도 같은 해소기를 탄다. startup stall만 선언된 유한 재시도를 하고, idle/wall kill은
     중복 과금·중복 호출을 피하려 자동 재시도하지 않은 채 부분 산출물과 함께 fail-soft 한다.
 
-    codex 경로(`codex exec …`)는 **빈 stdin PIPE를 즉시 닫아 EOF를 전달**한다 — stdin 미닫힘 시
-    "Reading additional input from stdin..." 로 무기한 대기. stdin·진행 신호 정책은 실제 argv와
+    표준 입력 전달은 전문을 쓴 뒤 **stdin 을 닫아 EOF를 전달**한다 — codex 는 stdin 미닫힘 시
+    "Reading additional input from stdin..." 로 무기한 대기. 전달 방식·진행 신호 정책은 실제 argv와
     함께 FILL_DRIVER_BY_CMD에 선언돼 하네스 판정 코드와 분리된다."""
     try:
         engine = _load_watchdog()
@@ -4383,7 +4305,8 @@ def _real_harness_runner(
         return False, _fill_failure_with_partial(f"[하니스 워치독 로드 오류: {exc}]", exc)
 
     try:
-        harness, emits_progress, input_text = _fill_driver(argv)
+        harness, emits_progress, prompt_transport = _fill_driver(argv)
+        input_text = prompt if prompt_transport == FILL_PROMPT_STDIN else None
         profile = engine.resolve_harness_profile(harness, _fill_local_config(cwd))
         progress_signal = (
             profile.progress_signal if emits_progress else engine.PROGRESS_SIGNAL_NONE
@@ -4477,29 +4400,29 @@ def _build_fill_prompt(dest_root: Path, tokens: list[str]) -> str:
     )
 
 
-def _build_runner_argv(
-    harness: str, prompt: str, dest_root: Path | None = None
-) -> list[str]:
-    """하니스별 헤드리스 구동 명령 조립(runner 매핑·명시 등록).
+def _build_runner_argv(harness: str, dest_root: Path, prompt_file: Path | None) -> list[str]:
+    """하니스별 헤드리스 구동 명령 조립(runner 매핑·명시 등록). 프롬프트는 실행 인자에 없다.
 
-      claude   → `claude -p "<p>"`
-      opencode → `opencode run "<p>" --format json` (token/cost 파싱 위해 json 출력)
-      codex    → `codex exec --json -s workspace-write --skip-git-repo-check [-C <dest>] "<p>"`
-                 (프롬프트=마지막 positional·빈 stdin PIPE EOF는 _real_harness_runner가 부여)
+      claude   → `claude -p` (프롬프트 = 표준 입력)
+      opencode → `opencode run "<첨부 안내>" --file <prompt_file> --format json --dir <dest>`
+                 (cross 위임과 같은 `--file` 전달·안내 문구는 pm_relay 의 한 줄 상수)
+      codex    → `codex exec --json -s workspace-write --skip-git-repo-check -C <dest>` (표준 입력)
+
+    `prompt_file` 은 `--file` 전달 하네스에 run_fill 이 `dest_root` 안에 쓴 프롬프트 파일이다(opencode
+    `--dir` 하위). 표준 입력 전달 하네스는 None 이다.
 
     미지원 harness 는 **fail-loud**(ValueError). 과거 codex 가 이 매핑에 없어 조용히 `claude -p`
     로 폴백해 *잘못된 바이너리*를 호출하고 출력만 harness=codex 로 오표기하던 클래스를 닫는다 —
     모르는 harness 는 명시 등록을 강제(silent 폴백 금지)."""
     if harness == "claude":
-        return [*CLAUDE_FILL_CMD, prompt]
+        return [*CLAUDE_FILL_CMD]
     if harness == "opencode":
-        return [*OPENCODE_FILL_CMD, prompt, "--format", "json"]
+        return [*OPENCODE_FILL_CMD, _load_watchdog().OPENCODE_ATTACHED_MSG, "--file", str(prompt_file),
+                "--format", "json", "--dir", str(dest_root)]
     if harness == "codex":
-        argv = [*CODEX_FILL_CMD, "--json", "-s", "workspace-write", "--skip-git-repo-check"]
-        if dest_root is not None:
-            argv += ["-C", str(dest_root)]     # workdir 핀(codex 는 -C 로 작업 디렉토리 고정)
-        argv.append(prompt)                    # 프롬프트 = 마지막 positional
-        return argv
+        # workdir 핀(codex 는 -C 로 작업 디렉토리 고정).
+        return [*CODEX_FILL_CMD, "--json", "-s", "workspace-write", "--skip-git-repo-check",
+                "-C", str(dest_root)]
     supported = "·".join(FILL_CAPABLE_HARNESSES)
     raise ValueError(
         f"_build_runner_argv: 미지원 fill harness {harness!r} — 지원: {supported}. "
@@ -4840,7 +4763,6 @@ def run_fill(
         return FillResult(mode="manual", note="자유서술 placeholder 가 트리에 없음 — 처리 불필요.")
 
     prompt = _build_fill_prompt(dest_root, tokens)
-    argv = _build_runner_argv(harness, prompt, dest_root)   # codex 는 -C <dest> workdir 핀 필요
 
     # 실 runner 결정: 주입 stub 이 있으면 그걸(테스트). 없고 live 면 실 바이너리. 아니면 미구동.
     # SF: 실 바이너리는 대상 repo(dest_root)에서 구동되도록 cwd 를 바인딩한다(호출자 cwd 아님).
@@ -4862,7 +4784,20 @@ def run_fill(
             note="하니스 미구동(게이트 미통과·stub 없음) — 제안 없음. manual 폴백 권장.",
         )
 
-    ok, output = effective_runner(argv, prompt)
+    # 프롬프트 전달 방식은 FILL_DRIVER_BY_CMD 선언이 정한다. `--file` 전달이면 대상 폴더 안
+    # (opencode `--dir` 하위·gitignore 된 `.local/fill`)에 프롬프트 파일을 쓰고 실행 뒤 지운다.
+    prompt_transport = next(
+        driver[2] for driver in FILL_DRIVER_BY_CMD.values() if driver[0] == harness)
+    prompt_file = (
+        _write_fill_private_file(
+            dest_root, f"pm_import_fill_prompt_{datetime.datetime.now():%Y%m%d_%H%M%S}_", ".md", prompt)
+        if prompt_transport == FILL_PROMPT_FILE else None)
+    try:
+        argv = _build_runner_argv(harness, dest_root, prompt_file)
+        ok, output = effective_runner(argv, prompt)
+    finally:
+        if prompt_file is not None:
+            prompt_file.unlink()
     result = FillResult(mode="auto", harness=harness, live=live)
     result.runner_calls.append(list(argv))
     if not ok:
@@ -7971,7 +7906,7 @@ def adapter_config_drift_summary(judgment: AdapterConfigJudgment,
 
 
 # ── 하네스 사용 한도·압축 비율 반영 (local.conf → 하네스 설정 파일·압축 한도 기록) ─────────
-# 적용 경로(ctx-apply·설치·add-harness·pm_update·어댑터 수용)가 local.conf 쓰기 락 안에서 도구마다
+# 적용 경로(pm-config apply·설치·add-harness·pm_update·어댑터 수용)가 local.conf 쓰기 락 안에서 도구마다
 # 모델 한도 C 를 한 번 조회하고 적용 한도 E = min(W, C)·압축 지점 P = floor(E × compact_at / 100) 를
 # 하네스 설정 파일과 압축 한도 기록(`local_conf.CTX_BUDGET_RELPATH`)에 쓴다. 런타임은 기록만 읽는다.
 #   claude   `.claude/settings.json`     autoCompactWindow = P + d (d = 모델 창 − 기본 압축 기준)
@@ -8159,42 +8094,23 @@ def apply_harness_ctx(dest_root: Path, *, write: bool, opencode_config_dir: Path
     내용 해시로 바꾸고 `recorded_at`·`template_rev` 는 둔다 — 무편집 판정이 반영 뒤에도 유지된다.
     편집됨·원장 없음은 원장을 건드리지 않는다. 원장이 상위 schema 면 파일을 쓰지 않고 멈춘다.
     `harness.opencode.pro_model` 은 읽지 않는다 — 대상 모델은 설정 파일에 적힌 모델 전부다."""
-    return _apply_harness_ctx(dest_root, write=write, opencode_config_dir=opencode_config_dir)[1]
-
-
-def _apply_harness_ctx(dest_root: Path, *, write: bool, opencode_config_dir: Path, updates=None):
-    """반영 본문 — (local.conf 가 바뀌었나, 바뀐 줄, 도구 기록 항목). `write` 면 local.conf 쓰기 락 안에서
-    계획(`_harness_ctx_plan`)과 쓰기(local.conf → 설정 파일 → 기록)를 한 번에 한다. 쓰기 단계에서 멈추면
-    `HarnessCtxError.written` 이 바꾼 파일을 적고 `write_stage` 가 참이다(바꾼 파일이 없어도 검사 거부가 아니다)."""
     dest_root = Path(dest_root)
     conf_path = dest_root / ".project_manager" / "local.conf"
     if not write:
-        return (False, *_harness_ctx_plan(dest_root, conf_path, opencode_config_dir, updates)[3:])
+        return _harness_ctx_plan(dest_root, _conf_values(conf_path, None), opencode_config_dir)[1]
     with _local_conf_write_lock(conf_path):
-        module, values, changed, lines, entries = _harness_ctx_plan(dest_root, conf_path, opencode_config_dir, updates)
+        values = _conf_values(conf_path, None)
+        changed, lines, entries = _harness_ctx_plan(dest_root, values, opencode_config_dir)
         if changed:
             _harness_ctx_baseline_writable(dest_root)
-        conf_changed = _write_conf_keys_locked(conf_path, updates) if updates else False
-        written = (".project_manager/local.conf",) if conf_changed else ()
-        record = {"schema": module.CTX_BUDGET_SCHEMA, "inputs": module.ctx_input_values(values),
-                  "applied_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-                  "harnesses": entries}
-        payload = (json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
-        try:
-            if changed:
-                _harness_ctx_write(dest_root, changed)
-            if not (_ctx_record_unchanged(dest_root / module.CTX_BUDGET_RELPATH, record)
-                    or _atomic_write_dest_bytes(dest_root, module.CTX_BUDGET_RELPATH, payload)):
-                raise HarnessCtxError([f"압축 한도 기록({module.CTX_BUDGET_RELPATH.as_posix()})을 쓰지 못했습니다."], written=tuple(changed))
-        except HarnessCtxError as exc:
-            failure = HarnessCtxError(exc.violations, written=written + exc.written)
-            failure.write_stage = True
-            raise failure from exc
-        return conf_changed, lines, entries
+        _harness_ctx_commit(dest_root, values, changed, entries)
+        return lines
 
 
-def _harness_ctx_plan(dest_root: Path, conf_path: Path, opencode_config_dir: Path, updates):
-    """읽기·`updates` 덮기(None 은 줄 삭제)·검사·조회·계산 — (local.conf 모듈, 입력, 바뀔 설정 파일, 줄, 기록 항목)."""
+def _conf_values(conf_path: Path, updates) -> dict[str, str]:
+    """local.conf 값에 `updates`(None·빈 값은 줄 삭제)를 덮은 제안 값 — 옛 키가 남았거나 들어오면 멈춘다.
+
+    저장(`pm_update.apply_conf`)의 모든 반영 단계와 이 모듈의 반영이 같은 값 하나를 쓴다."""
     module = _load_local_conf()
     loaded = module.load(conf_path)
     module.assert_no_legacy(loaded)
@@ -8202,6 +8118,36 @@ def _harness_ctx_plan(dest_root: Path, conf_path: Path, opencode_config_dir: Pat
     if updates:
         values.update({key: value for key, value in updates.items() if value})
         module.assert_values_no_legacy(values, conf_path)
+    return values
+
+
+def _harness_ctx_commit(dest_root: Path, values, changed: dict[str, tuple[str, str]], entries) -> tuple[str, ...]:
+    """계획(`_harness_ctx_plan`)대로 설정 파일과 압축 한도 기록을 쓴다 — 바꾼 파일 relpath.
+
+    local.conf 쓰기 락 안에서 부른다(락을 다시 잡지 않는다). 쓰기 단계에서 멈추면 `HarnessCtxError.written`
+    이 바꾼 파일을 적고 `write_stage` 가 참이다(바꾼 파일이 없어도 검사 거부가 아니다)."""
+    module = _load_local_conf()
+    record = {"schema": module.CTX_BUDGET_SCHEMA, "inputs": module.ctx_input_values(values),
+              "applied_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+              "harnesses": entries}
+    payload = (json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    record_relpath = module.CTX_BUDGET_RELPATH.as_posix()
+    try:
+        if changed:
+            _harness_ctx_write(dest_root, changed)
+        if _ctx_record_unchanged(dest_root / module.CTX_BUDGET_RELPATH, record):
+            return tuple(changed)
+        if not _atomic_write_dest_bytes(dest_root, module.CTX_BUDGET_RELPATH, payload):
+            raise HarnessCtxError([f"압축 한도 기록({record_relpath})을 쓰지 못했습니다."], written=tuple(changed))
+    except HarnessCtxError as exc:
+        failure = HarnessCtxError(exc.violations, written=exc.written)
+        failure.write_stage = True
+        raise failure from exc
+    return (*changed, record_relpath)
+
+
+def _harness_ctx_plan(dest_root: Path, values, opencode_config_dir: Path):
+    """제안 값(`_conf_values`) 검사·조회·계산 — (바뀔 설정 파일, 바뀐 줄, 기록 항목). 아무것도 쓰지 않는다."""
     present = frozenset(harness for harness, relpath in HARNESS_CTX_FILES.items()
                         if (dest_root / relpath).is_file())
     validate_harness_ctx(values, present)
@@ -8232,7 +8178,7 @@ def _harness_ctx_plan(dest_root: Path, conf_path: Path, opencode_config_dir: Pat
     for harness, entry in entries.items():
         entry["settings"] = {_harness_ctx_dotted(path): value
                              for path, value in targets[HARNESS_CTX_FILES[harness]].items()}
-    return module, values, changed, tuple(lines), entries
+    return changed, tuple(lines), entries
 
 
 def _ctx_record_unchanged(path: Path, record: dict) -> bool:
@@ -8288,9 +8234,7 @@ def _ctx_native_protocol(command, root, requests):
     import queue
     import threading
     import time
-    executable = shutil.which(command[0])
-    if executable is None:
-        raise ValueError(f"{command[0]} 실행 파일을 찾지 못했습니다")
+    executable = _load_watchdog().resolve_executable(command[0], None)  # 없으면 FileNotFoundError(PATH 부재)
     incoming: queue.Queue = queue.Queue()
     proc = subprocess.Popen([executable, *command[1:]], cwd=root, stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,

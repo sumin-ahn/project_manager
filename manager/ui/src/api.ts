@@ -152,14 +152,19 @@ export type ConfSection = {
  * 그 키에 고를 수 있는 값 — 엔진 레지스트리가 소유한다(화면에 목록 상수를 두지 않는다).
  *
  * `values` 는 **버킷** 표다: `depends_on` 이 없으면 키가 `""` 인 한 칸이고, 있으면 그 키의 현재
- * 값이 버킷 이름이다(하네스마다 다른 추론 강도). `fetch` 가 있는 칸은 목록을 미리 들고 있지
- * 않고 그 명령으로 받아 온다. `free_text` 는 목록 밖 값도 유효하다는 뜻이다.
+ * 값이 버킷 이름이다(하네스마다 다른 추론 강도). 목록 원천 규칙은 하나다: 버킷이 `values` 에 있으면
+ * 그 목록, 없고 `fetch` 가 있으면 그 명령으로 받아 온 응답에서 `fetch.variants_of` 가 있으면
+ * `variants[그 키의 현재 값]`, 없으면 `models`. `free_text` 는 목록 밖 값도 유효하다는 뜻이고 그런
+ * 칸에만 직접 입력이 열린다.
  */
 export type ConfChoices = {
   depends_on: string | null;
   values: Record<string, string[]>;
-  /** `value` 는 조회 대상이 키에 이미 박혀 있을 때다(하네스 군) — 종속 키를 볼 것이 없다. */
-  fetch: { command: string; arg: string; value?: string } | null;
+  /**
+   * `value` 는 조회 대상이 키에 이미 박혀 있을 때다(하네스 군) — 종속 키를 볼 것이 없다.
+   * `variants_of` 는 응답의 모델별 변형(추론 강도)을 고를 모델 키다(같은 세트의 모델 칸).
+   */
+  fetch: { command: string; arg: string; value?: string; variants_of?: string } | null;
   free_text: boolean;
 };
 
@@ -222,8 +227,14 @@ export type ConfValuesDocument = { values: Record<string, string> };
  * (`<파일> <경로> <옛 값> → <새 값>` · 그 밖의 저장은 빈 목록).
  */
 export type ConfSaveResult = { changed: boolean; conf: ConfSection; applied: string[] };
-/** `delegate models --harness <h> --json` 산출 그대로 — 빈 목록 성공은 없다(0개면 실패다). */
-export type DelegateModelsDocument = { harness: string; kind: string; models: string[] };
+/**
+ * `delegate models --harness <h> --json` 산출 그대로 — 빈 목록 성공은 없다(0개면 실패다).
+ * `variants` 는 모델별 변형(추론 강도) 목록이고 그것을 내는 원천만 채운다(나머지는 null). 변형이
+ * 없는 모델은 빈 배열이다.
+ */
+export type DelegateModelsDocument = {
+  harness: string; kind: string; models: string[]; variants: Record<string, string[]> | null;
+};
 
 export type AdapterFeature = {
   name: string;

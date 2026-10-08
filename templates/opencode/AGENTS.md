@@ -52,7 +52,7 @@ env prefix 없이 호출한다:
   {{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 예: --repo myproj --slot 1
   ```
   `--repo`가 repo prefix를 유도한다. 활성 슬롯 lease가 1개면 `--repo/--slot` 생략 가능하다. 식별 우선순위는 `--repo`/`--slot` > `$PM_SESSION_NAME`(구 `$CLAUDE_SESSION_NAME` deprecated alias) > 활성 슬롯 lease가 정확히 1개면 그 세션(단일-lease 유도) > 미해소면 귀속 쓰기 fail-loud 및 `--repo <repo> --slot <N>` 요구. lease 장부에 행이 하나도 없는 홈은 아직 작업 폴더가 없는 것이라 같은 fail-loud 로 떨어지며, `pm-config worktree add <repo> --user-ack <repo>` 로 작업 폴더를 먼저 만든다.
-- 위임 식별 라벨: `orch-dev-TNNNN` / `orch-review-TNNNN`(위임 규약은 하네스 네이티브 채널).
+- 위임 식별 라벨: `orch-dev-TNNNN` / `orch-review-TNNNN`.
 
 ### 첫 turn 권장 보고 (부트스트랩 직후)
 
@@ -134,9 +134,9 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 {{PY}} .project_manager/tools/pm_update.py --from <upstream> --dry-run
 ```
 
-위임(dev/reviewer/architect/researcher)은 하네스 네이티브 채널로 한다. 도구·프롬프트·role 매핑은 하네스별 운영 지침이 단일 진실이다.
+리뷰(`code-reviewer`)는 하네스와 무관하게 엔진이 실행한다(`pm_delegate.py --role code-reviewer --cluster`). 설계·구현·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다. 도구·프롬프트·role 매핑은 하네스별 운영 지침이 단일 진실이다.
 
-컨텍스트 압축 기준은 하네스별 희망 기준 `harness.<name>.ctx_window_tokens`(기본 200000토큰)와 공통 비율 3개로 설정한다. 설정한 희망 기준을 보존하며, 실제 적용 기준은 독립 근거로 확인한 모델의 가용 한도 이하로 제한합니다. 모델 가용 한도 C는 적용(`/pm-update`·`pm-config ctx-apply`·관리자 저장) 때 한 번 조회해 압축 한도 기록에 고정하고, 실제 적용 기준 E=min(W,C)를 체크포인트·경고·압축·relay가 함께 사용한다. 비율은 E 대비 사용률이며 `ctx.checkpoint_at_pct`(체크포인트·기본70%)·`ctx.precompact_at_pct`(압축 임박 경고·기본80%)·`ctx.compact_at_pct`(압축·기본90%)다. C를 조회하지 못하면 적용 전에 거부하고 설정 파일·기록을 바꾸지 않는다. 입력은 local.conf에서 설정한다. 실행 중에는 기록만 읽으며, 세션 모델이 기록 모델과 다르면 경고하고 기록이 없거나 local.conf 입력과 다르면 오류로 알린다. 같은 모델의 한도가 바뀌거나 경고·오류가 나면 `pm-config ctx-apply`를 다시 실행한다.
+컨텍스트 압축 기준은 하네스별 희망 기준 `harness.<name>.ctx_window_tokens`(기본 200000토큰)와 공통 비율 3개로 설정한다. 설정한 희망 기준을 보존하며, 실제 적용 기준은 독립 근거로 확인한 모델의 가용 한도 이하로 제한합니다. 모델 가용 한도 C는 적용(`/pm-update`·`pm-config apply`·관리자 저장) 때 한 번 조회해 압축 한도 기록에 고정하고, 실제 적용 기준 E=min(W,C)를 체크포인트·경고·압축·relay가 함께 사용한다. 비율은 E 대비 사용률이며 `ctx.checkpoint_at_pct`(체크포인트·기본70%)·`ctx.precompact_at_pct`(압축 임박 경고·기본80%)·`ctx.compact_at_pct`(압축·기본90%)다. C를 조회하지 못하면 적용 전에 거부하고 설정 파일·기록을 바꾸지 않는다. 입력은 local.conf에서 설정한다. 실행 중에는 기록만 읽으며, 세션 모델이 기록 모델과 다르면 경고하고 기록이 없거나 local.conf 입력과 다르면 오류로 알린다. 같은 모델의 한도가 바뀌거나 경고·오류가 나면 `pm-config apply`를 다시 실행한다.
 
 ## 8. 핵심 디렉토리
 

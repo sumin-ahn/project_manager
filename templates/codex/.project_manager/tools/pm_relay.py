@@ -31,6 +31,7 @@ import json
 import math
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -313,7 +314,7 @@ def validate_relay_budget(budget: int, precompact_at_pct: int) -> None:
             f"{effective_threshold:g} tok은 bootstrap 실측 상한 "
             f"{RELAY_BOOTSTRAP_COST_TOKENS} tok 이하여서 즉시 세션 회전 위험. "
             "적용 한도는 사용 한도(`harness.<이름>.ctx_window_tokens`)와 모델 가용 한도 중 작은 값입니다. "
-            "더 큰 모델을 쓰거나 `ctx.precompact_at_pct` 를 높인 뒤 `pm_config.py ctx-apply` 를 다시 실행하십시오."
+            "더 큰 모델을 쓰거나 `ctx.precompact_at_pct` 를 높인 뒤 `pm_config.py apply` 를 다시 실행하십시오."
         )
 
 # 위임/추가 리뷰 raw 위치 장부. 두 실행 표면이 같은 파일을 갱신하므로 파일락 아래
@@ -1077,24 +1078,24 @@ HARNESS_CHOICES: tuple[str, ...] = ("claude", "codex", "opencode")
 WRITE_ROLES: frozenset[str] = frozenset({"developer", "architect"})
 READ_ROLES: frozenset[str] = frozenset({"researcher", "code-reviewer"})
 
-# reasoning 드라이버별 허용집합 — (codex-cli 0.145.0·claude 2.1.218·
-# opencode 1.18.4). 허용집합 밖 지정은 fail-loud(조용한 무시/강등 금지):
+# reasoning 드라이버별 정적 허용집합 — (codex-cli 0.145.0·claude 2.1.218). 허용집합 밖 지정은
+# fail-loud(조용한 무시/강등 금지):
 #   · codex(`-c model_reasoning_effort`): low/medium/high/xhigh/max — 0.145.0 xhigh 실측 수용(exec
 #     앞/뒤 위치 무관 rc=0). `max` 는 추가 리뷰어 기본 프로필(gpt-5.6-sol)이 쓰는 ladder 상단이며,
 #     codex 는 미지원값을 provider 로 넘기지 않고 CLI 에서 세우므로 허용집합에 명시 등재한다.
 #   · claude(`--effort`): low/medium/high/xhigh/max — claude CLI 가 미지원값에 "Valid values: low,
 #     medium, high, xhigh, max" 경고를 뱉어 **CLI-authoritative 실측**.
-#   · opencode(`--variant`): minimal/low/medium/high/max — opencode 는 `--variant` 를 **CLI 검증하지
-#     않고 provider 로 passthrough**(valid/invalid 모두 rc=0·미지원값은 provider 가 silent-ignore).
-#     그래서 이 집합은 opencode 문서화 ladder 를 **typo-guard** 로 인코딩한 것 — silent no-op 을
-#     호출 전에 차단한다. provider 별 실지원은 다를 수 있다(passthrough 특성).
+#   opencode 는 이 표에 없다. 추론 강도(카드 `variant`·cross `--variant`)는 그 모델의 `variants` 키
+#   중 하나여야 적용되고, 없는 이름은 오류 없이 버려진다(1.18.5·1.18.34 실행 파일 판독). 모델마다
+#   variants 가 다르므로(없음·low/medium/high 등) 허용값은 정적 표가 아니라 모델 목록 조회
+#   (`opencode models --verbose`)의 `variants` 에서 얻는다 — `PER_MODEL_REASONING_HARNESSES`·
+#   `reasoning_allowed`.
 #   값이 **tuple 리터럴**인 것은 형식이 아니라 계약이다: 설정 키 레지스트리가 이 선언을 소스
 #   텍스트로(`ast.literal_eval`) 읽어 설정 화면의 선택지를 만든다 — `frozenset({...})` 는 Call
 #   노드라 읽히지 않고, 그 실패는 fail-soft 라 선택지가 조용히 빈 목록이 된다. 순서는 ladder 순이다.
 REASONING_ALLOWED: dict[str, tuple[str, ...]] = {
     "codex": ("low", "medium", "high", "xhigh", "max"),
     "claude": ("low", "medium", "high", "xhigh", "max"),
-    "opencode": ("minimal", "low", "medium", "high", "max"),
 }
 
 
@@ -1105,7 +1106,8 @@ class ModelSource(NamedTuple):
     갈린다(하네스 이름 분기 0):
       · `alias`  — CLI 가 계약한 별칭이 `values` 에 있다(그 CLI `--help` 실측).
       · `live`   — `command` 가 목록을 준다. 산출 형식은 CLI 마다 달라 `parse` 가 **값으로**
-                   고른다(하네스 이름 분기 0 · 조회 seam 은 `pm_import._real_models_runner`).
+                   고른다(하네스 이름 분기 0). 조회 실행은 `model_listing` 하나다. 판독 이름은
+                   `json-slug`(모델 목록만)와 `opencode-verbose`(모델 목록과 모델별 variants)다.
 
     `value_format`·`how_to_check` 는 사람 안내 문구다(`pm_config` 의 `[m]` 위임 모델 안내).
     """
@@ -1129,9 +1131,186 @@ MODEL_SOURCE: dict[str, ModelSource] = {
     # 바이너리에 번들돼 있어 사실상 로컬 조회다 — 실측 0.34초(cold) · 0.02초(warm).
     "codex": ModelSource("live", (), ("codex", "debug", "models"), "json-slug",
                          "카탈로그의 slug 또는 풀네임", "`codex debug models`"),
-    "opencode": ModelSource("live", (), ("opencode", "models"), "lines",
-                            "provider/model", "`opencode models`"),
+    # `--verbose` 는 모델마다 머리 줄 `provider/id` 뒤에 모델 객체 JSON 을 낸다. 그 객체의
+    # `variants` 키가 그 모델이 받는 추론 강도다(1.18.5·1.18.34 같은 코드).
+    "opencode": ModelSource("live", (), ("opencode", "models", "--verbose"), "opencode-verbose",
+                            "provider/model", "`opencode models --verbose`"),
 }
+
+
+# 모델 목록 조회 시간 상한(초). 회사 Pro·원격 게이트웨이는 첫 호출 지연이 커 15초로는 모자랐다.
+# 코드 수정 없이 `PM_OPENCODE_MODELS_TIMEOUT`(초)로 늘린다. 값이 있으면 양의 정수만 받고 그 밖은 멈춘다
+# (늘렸다고 믿는 값을 기본값으로 바꾸지 않는다). 미설정만 기본값이다. 빠른 로컬 조회라 무제한은 두지 않는다.
+MODELS_TIMEOUT_SECONDS = 60
+
+
+def models_timeout() -> int:
+    """모델 목록 조회 시간 상한 — env `PM_OPENCODE_MODELS_TIMEOUT` > 기본 `MODELS_TIMEOUT_SECONDS`.
+
+    env 가 있는데 양의 정수(앞뒤 공백 허용)가 아니면 `HarnessContractError` 다."""
+    raw = os.environ.get("PM_OPENCODE_MODELS_TIMEOUT")
+    if raw is None:
+        return MODELS_TIMEOUT_SECONDS
+    text = raw.strip()
+    if not (text.isascii() and text.isdigit()) or int(text) <= 0:
+        raise HarnessContractError(
+            f"PM_OPENCODE_MODELS_TIMEOUT 값 {raw!r} 이 양의 정수가 아니다 — 초 단위 양의 정수로 "
+            "고치거나 지운 뒤 다시 실행한다")
+    return int(text)
+
+
+class ModelListing(NamedTuple):
+    """모델 목록 조회 한 번의 결과.
+
+    `variants` 는 모델별 추론 강도를 내는 판독(`opencode-verbose`)만 채운다 — 모델 이름 →
+    variants 키(조회 산출 순서). 별칭 원천과 `json-slug` 판독은 `None` 이다(모델별 값이 없다).
+    """
+
+    models: tuple[str, ...]
+    variants: dict[str, tuple[str, ...]] | None
+
+
+def _parse_json_slug(output: str) -> ModelListing:
+    """`codex debug models` 산출 → `models[].slug`. 형식이 다르면 `HarnessContractError`."""
+    try:
+        document = json.loads(output)
+    except ValueError as exc:
+        raise HarnessContractError(f"JSON 이 아니다 ({exc})") from exc
+    entries = document.get("models") if isinstance(document, dict) else None
+    if not isinstance(entries, list):
+        raise HarnessContractError("`models` 배열이 없다")
+    slugs: list[str] = []
+    for entry in entries:
+        slug = entry.get("slug") if isinstance(entry, dict) else None
+        if not isinstance(slug, str) or not slug.strip():
+            raise HarnessContractError(f"slug 형식이 아닌 항목 {entry!r}")
+        slugs.append(slug)
+    return ModelListing(tuple(slugs), None)
+
+
+def _parse_opencode_verbose(output: str) -> ModelListing:
+    """`opencode models --verbose` 산출 → 모델 목록과 모델별 variants.
+
+    형식(실행 파일 판독): 모델마다 머리 줄 `provider/id` 뒤에 `JSON.stringify(모델, null, 2)`.
+    모델 객체는 늘 `variants` 객체를 갖는다(없는 모델은 `{}`). 머리 줄 순서와 variants 키 순서를
+    그대로 지킨다. 형식이 다르면 `HarnessContractError` 다(빈 목록으로 바꾸지 않는다).
+    """
+    decoder = json.JSONDecoder()
+    models: list[str] = []
+    variants: dict[str, tuple[str, ...]] = {}
+    position = 0
+    length = len(output)
+    while True:
+        while position < length and output[position].isspace():
+            position += 1
+        if position >= length:
+            break
+        line_end = output.find("\n", position)
+        header = output[position:line_end if line_end != -1 else length].strip()
+        if line_end == -1 or "/" not in header or header.startswith("{"):
+            raise HarnessContractError(f"모델 머리 줄 `provider/id` 가 아니다: {header[:80]!r}")
+        position = line_end + 1
+        while position < length and output[position].isspace():
+            position += 1
+        try:
+            model, position = decoder.raw_decode(output, position)
+        except json.JSONDecodeError as exc:
+            raise HarnessContractError(f"{header} 의 모델 객체가 JSON 이 아니다 ({exc})") from exc
+        named = model.get("variants") if isinstance(model, dict) else None
+        if not isinstance(named, dict):
+            raise HarnessContractError(f"{header} 의 모델 객체에 `variants` 객체가 없다")
+        models.append(header)
+        variants[header] = tuple(named)
+    return ModelListing(tuple(models), variants)
+
+
+def resolve_executable(name: str, env: dict[str, str] | None) -> str:
+    """실행할 프로그램 이름 → 실행 파일 경로 — 하네스 CLI 를 실행하는 자리가 모두 이 함수를 쓴다.
+
+    자식이 받을 `env` 의 실행 경로 목록(`os.get_exec_path(env)` — None 이면 이 프로세스 env, PATH 가 없으면
+    `os.defpath`. POSIX `subprocess` 가 이름을 찾는 목록과 같다)에서 `shutil.which` 로 찾는다. Windows 는 PATHEXT 까지
+    붙여 찾으므로 npm 셈(`opencode.cmd`)도 해소된다 — 이름 그대로 넘기면 CreateProcess 는 `.exe` 만
+    붙여 찾아 실패한다. 경로 성분이 있는 이름은 그 경로만 본다. POSIX 결과는 이름 그대로 실행할 때
+    찾는 파일과 같다.
+
+    찾지 못하면 `FileNotFoundError`(filename=이름)다 — 호출부가 이미 다루는 "실행 파일 없음" 예외와
+    같은 종류라 확정 기동 실패·PATH 부재 문구 처리가 그대로 선다. 빈 값으로 바꾸지 않는다.
+    실행 인자가 `.cmd`·`.bat` 을 거쳐 cmd.exe 가 해석해도 깨지지 않도록 엔진의 실행 인자에는 여러 줄
+    값을 싣지 않는다(프롬프트는 표준 입력이나 `--file`)."""
+    found = shutil.which(name, path=os.pathsep.join(os.get_exec_path(env)))
+    if found is None:
+        raise FileNotFoundError(
+            errno.ENOENT,
+            f"{name} 실행 파일 PATH 부재 — 이 프로세스의 PATH 에서 찾지 못했다. {name} 를 설치하거나 "
+            "PATH 에 넣은 뒤 다시 실행한다",
+            name)
+    return found
+
+
+# 판독 이름 → 판독 함수. 키는 산출 형식 이름이다(하네스 표가 아니다 — `MODEL_SOURCE.parse` 가 고른다).
+_MODEL_LISTING_PARSERS = {
+    "json-slug": _parse_json_slug,
+    "opencode-verbose": _parse_opencode_verbose,
+}
+
+# 조회 기억 — 한 프로세스 안에서 같은 조건의 조회를 다시 실행하지 않는다. 키는 (명령, cwd 절대경로,
+# env 전체)다. 실행 파일 위치는 env 의 PATH 가 정하므로 따로 넣지 않는다. 디스크에는 두지 않는다 —
+# opencode 판·카탈로그 갱신으로 낡은 기록이 허용집합 밖 값을 통과시키면 조용한 무시가 되살아난다.
+_MODEL_LISTING_MEMO: dict[tuple, ModelListing] = {}
+
+
+def model_listing(source: ModelSource, *, cwd: Path | str, env: dict[str, str]) -> ModelListing:
+    """모델 원천 한 행의 모델 목록(과 모델별 variants) — 모델 목록 조회의 유일한 실행 자리다.
+
+    `alias` 는 표의 값 그대로다. `live` 는 `source.command` 를 `cwd`·`env` 로 실행한다(첫 인자는
+    `resolve_executable` 로 `env` 의 PATH 에서 찾는다 — cross 실행과 같은 실행 파일 찾기). 실행 파일 없음·시간 초과·rc≠0·판독 실패·
+    모델 0개는 전부 `HarnessContractError` 다. 빈 목록이나 기본값으로 바꾸지 않는다.
+    """
+    if source.kind == "alias":
+        return ModelListing(tuple(source.values), None)
+    if source.kind != "live":
+        raise HarnessContractError(
+            f"모르는 모델 원천 kind {source.kind!r} — MODEL_SOURCE 선언과 이 판정이 갈렸다.")
+    parser = _MODEL_LISTING_PARSERS.get(source.parse)
+    if parser is None or not source.command:
+        raise HarnessContractError(
+            f"모르는 판독 이름 {source.parse!r} 또는 조회 명령 없음 — MODEL_SOURCE 선언과 이 판정이 "
+            "갈렸다.")
+    command = tuple(source.command)
+    key = (command, str(Path(cwd).resolve()), tuple(sorted(env.items())))
+    remembered = _MODEL_LISTING_MEMO.get(key)
+    if remembered is not None:
+        return remembered
+    shown = " ".join(command)
+    timeout = models_timeout()
+    try:
+        result = subprocess.run(
+            [resolve_executable(command[0], env), *command[1:]], cwd=str(cwd), env=dict(env),
+            capture_output=True, text=True, encoding="utf-8", timeout=timeout,
+        )
+    except FileNotFoundError as exc:
+        if exc.filename not in (None, command[0]):
+            raise  # 실행 파일이 아니라 다른 경로(cwd 등)가 없다 — 이 판정의 몫이 아니다.
+        raise HarnessContractError(
+            f"{command[0]} 실행 파일 PATH 부재 — 이 프로세스의 PATH 에서 찾지 못해 모델 목록과 "
+            f"variant 를 확인할 수 없다. {command[0]} 를 설치하거나 PATH 에 넣은 뒤 다시 실행한다"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HarnessContractError(
+            f"{shown} {timeout}s timeout 초과 — PM_OPENCODE_MODELS_TIMEOUT 로 늘린다") from exc
+    except UnicodeDecodeError as exc:
+        raise HarnessContractError(f"{shown} 출력 판독 실패 — UTF-8 이 아니다 ({exc})") from exc
+    if result.returncode != 0:
+        raise HarnessContractError(
+            f"{shown} 실패 rc={result.returncode}: {(result.stderr or '').strip()[:200]}")
+    try:
+        listing = parser(result.stdout or "")
+    except HarnessContractError as exc:
+        raise HarnessContractError(f"{shown} 출력 판독 실패 — {exc}") from exc
+    if not listing.models:
+        raise HarnessContractError(f"{shown} 출력에서 모델 0개 — 형식을 확인한다")
+    _MODEL_LISTING_MEMO[key] = listing
+    return listing
 
 # codex sandbox 모드 — write=workspace-write·read=read-only.
 # **실측(0.145.0)**: read-only 는 worktree 밖 `/tmp` 쓰기까지 차단해 pytest 기동이 막힌다(테스트
@@ -1270,21 +1449,67 @@ def validate_harness(harness: str) -> str:
     return harness
 
 
-def validate_reasoning(harness: str, reasoning: str | None) -> str | None:
-    """reasoning 값을 드라이버별 허용집합으로 검증. 미지정=None(플래그 생략).
+# 정적 허용값이 없는 하네스 — 추론 허용값을 모델 목록 조회의 `variants` 에서 얻는다(파생·이름 리터럴 0).
+PER_MODEL_REASONING_HARNESSES: tuple[str, ...] = tuple(
+    name for name in HARNESS_CHOICES if name not in REASONING_ALLOWED)
 
-    허용집합 밖이거나 capability 미확정이면 fail-loud — 조용한 무시/자동 강등 금지."""
-    if reasoning is None or not reasoning.strip():
+
+def normalize_reasoning(value: str | None) -> str | None:
+    """추론 값 정리 — 앞뒤 공백 제거, 빈 값은 None(플래그 생략). 확인은 하지 않는다."""
+    if value is None:
         return None
-    reasoning = reasoning.strip()
-    allowed = REASONING_ALLOWED.get(harness, ())
-    if reasoning not in allowed:
-        known = ", ".join(sorted(allowed)) if allowed else "(미확정 라이브 실측 전)"
+    return value.strip() or None
+
+
+def reasoning_allowed(
+    harness: str, model: str | None, *, cwd: Path | str, env: dict[str, str],
+) -> tuple[str, ...]:
+    """그 하네스·모델이 받는 추론 강도 — 정적 허용값이 있으면 그 표, 없으면 모델 목록 조회의 variants.
+
+    모델별 허용값 하네스에서 모델 값이 없거나, 조회 결과에 그 모델이 없거나, 원천이 variants 를
+    내지 않으면 판정할 수 없으므로 `HarnessContractError` 다(조회 실패도 그대로 올라간다).
+    """
+    validate_harness(harness)
+    static = REASONING_ALLOWED.get(harness)
+    if static is not None:
+        return static
+    source = MODEL_SOURCE[harness]
+    name = (model or "").strip()
+    if not name:
         raise HarnessContractError(
-            f"reasoning {reasoning!r} 은 {harness} 드라이버 허용집합 {known} 밖 — "
-            "조용한 무시/강등 금지·명시 설정을 요구한다."
+            f"{harness} 추론 강도는 모델마다 다르다 — 모델 값이 없어 허용집합을 정할 수 없다. "
+            "같은 프로필의 모델을 채운다.")
+    listing = model_listing(source, cwd=cwd, env=env)
+    if listing.variants is None:
+        raise HarnessContractError(
+            f"{harness} 모델 원천({source.how_to_check})은 모델별 추론 강도를 내지 않는다 — "
+            "MODEL_SOURCE 선언과 이 판정이 갈렸다.")
+    if name not in listing.variants:
+        raise HarnessContractError(
+            f"{harness} 모델 목록({source.how_to_check})에 {name} 이 없다 — 그 모델의 추론 강도를 "
+            "확인할 수 없다. 모델 이름을 고치거나 그 모델을 쓸 수 있게 설정한다.")
+    return listing.variants[name]
+
+
+def validate_reasoning(
+    harness: str, reasoning: str | None, *, model: str | None, cwd: Path | str,
+    env: dict[str, str],
+) -> str | None:
+    """실행 직전 확인 — reasoning 이 그 하네스·모델의 허용집합 원소인가. 미지정=None(조회 없음).
+
+    허용집합은 `reasoning_allowed` 가 정한다(실행과 같은 cwd·env 로 조회). 밖이면 fail-loud 다 —
+    하네스는 허용집합 밖 값을 오류 없이 버리므로 조용한 무시를 호출 전에 막는다."""
+    value = normalize_reasoning(reasoning)
+    if value is None:
+        return None
+    allowed = reasoning_allowed(harness, model, cwd=cwd, env=env)
+    if value not in allowed:
+        known = ", ".join(allowed) if allowed else "없음"
+        raise HarnessContractError(
+            f"reasoning {value!r} 은 {harness} {model} 허용집합 ({known}) 밖 — 하네스는 허용집합 "
+            "밖 값을 오류 없이 버리므로 멈춘다. 추론 강도를 비우거나 허용집합 안 값으로 고친다."
         )
-    return reasoning
+    return value
 
 
 def perm_axis(role: str) -> str:
@@ -2203,7 +2428,10 @@ class _WatchedPopen:
             # 실제 자식 생성도 try 안에 둔다. Popen이 핸들을 반환한 직후부터 아래 후속 초기화
             # (Event/Lock/Thread 생성·start)가 실패해도 같은 트랜잭션에서 자식을 회수한다.
             try:
-                spawned = subprocess.Popen(argv, **popen_kwargs)
+                # 첫 인자는 자식 env 의 PATH 로 해소한다(Windows npm 셈 `.cmd` — `resolve_executable`).
+                # 해소 실패는 `FileNotFoundError` 라 아래 확정 기동 실패로 같이 표식된다.
+                spawned = subprocess.Popen(
+                    [resolve_executable(argv[0], env), *argv[1:]], **popen_kwargs)
             except _DEFINITE_LAUNCH_FAILURES as launch_failure:
                 # exec 자체가 실패한 확정 기동 실패다 — CPython 은 이때 자기가 만든 자식을
                 # errpipe 로 확인하고 회수하며, 프롬프트를 밀어 넣는 stdin 펌프는 `Popen` 이

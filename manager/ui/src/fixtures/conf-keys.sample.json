@@ -452,16 +452,13 @@
             "high",
             "xhigh",
             "max"
-          ],
-          "opencode": [
-            "minimal",
-            "low",
-            "medium",
-            "high",
-            "max"
           ]
         },
-        "fetch": null,
+        "fetch": {
+          "command": "delegate models",
+          "arg": "harness",
+          "variants_of": "additional_reviewer.model"
+        },
         "free_text": false
       },
       "recommended": null,
@@ -852,16 +849,13 @@
                 "high",
                 "xhigh",
                 "max"
-              ],
-              "opencode": [
-                "minimal",
-                "low",
-                "medium",
-                "high",
-                "max"
               ]
             },
-            "fetch": null,
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness",
+              "variants_of": "delegate.developer.model"
+            },
             "free_text": false
           },
           "recommended": "high",
@@ -955,16 +949,13 @@
                 "high",
                 "xhigh",
                 "max"
-              ],
-              "opencode": [
-                "minimal",
-                "low",
-                "medium",
-                "high",
-                "max"
               ]
             },
-            "fetch": null,
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness",
+              "variants_of": "delegate.developer.hard.model"
+            },
             "free_text": false
           },
           "recommended": "high",
@@ -1058,16 +1049,13 @@
                 "high",
                 "xhigh",
                 "max"
-              ],
-              "opencode": [
-                "minimal",
-                "low",
-                "medium",
-                "high",
-                "max"
               ]
             },
-            "fetch": null,
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness",
+              "variants_of": "delegate.developer.fallback.model"
+            },
             "free_text": false
           },
           "recommended": null,
@@ -1161,16 +1149,13 @@
                 "high",
                 "xhigh",
                 "max"
-              ],
-              "opencode": [
-                "minimal",
-                "low",
-                "medium",
-                "high",
-                "max"
               ]
             },
-            "fetch": null,
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness",
+              "variants_of": "delegate.developer.hard.fallback.model"
+            },
             "free_text": false
           },
           "recommended": null,
@@ -1264,16 +1249,13 @@
                 "high",
                 "xhigh",
                 "max"
-              ],
-              "opencode": [
-                "minimal",
-                "low",
-                "medium",
-                "high",
-                "max"
               ]
             },
-            "fetch": null,
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness",
+              "variants_of": "delegate.researcher.model"
+            },
             "free_text": false
           },
           "recommended": "medium",
@@ -1367,16 +1349,13 @@
                 "high",
                 "xhigh",
                 "max"
-              ],
-              "opencode": [
-                "minimal",
-                "low",
-                "medium",
-                "high",
-                "max"
               ]
             },
-            "fetch": null,
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness",
+              "variants_of": "delegate.researcher.fallback.model"
+            },
             "free_text": false
           },
           "recommended": null,
@@ -1470,16 +1449,13 @@
                 "high",
                 "xhigh",
                 "max"
-              ],
-              "opencode": [
-                "minimal",
-                "low",
-                "medium",
-                "high",
-                "max"
               ]
             },
-            "fetch": null,
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness",
+              "variants_of": "delegate.architect.model"
+            },
             "free_text": false
           },
           "recommended": "xhigh",
@@ -1573,16 +1549,13 @@
                 "high",
                 "xhigh",
                 "max"
-              ],
-              "opencode": [
-                "minimal",
-                "low",
-                "medium",
-                "high",
-                "max"
               ]
             },
-            "fetch": null,
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness",
+              "variants_of": "delegate.architect.fallback.model"
+            },
             "free_text": false
           },
           "recommended": null,
@@ -1676,16 +1649,13 @@
                 "high",
                 "xhigh",
                 "max"
-              ],
-              "opencode": [
-                "minimal",
-                "low",
-                "medium",
-                "high",
-                "max"
               ]
             },
-            "fetch": null,
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness",
+              "variants_of": "delegate.code-reviewer.model"
+            },
             "free_text": false
           },
           "recommended": "xhigh",
@@ -1779,16 +1749,13 @@
                 "high",
                 "xhigh",
                 "max"
-              ],
-              "opencode": [
-                "minimal",
-                "low",
-                "medium",
-                "high",
-                "max"
               ]
             },
-            "fetch": null,
+            "fetch": {
+              "command": "delegate models",
+              "arg": "harness",
+              "variants_of": "delegate.code-reviewer.fallback.model"
+            },
             "free_text": false
           },
           "recommended": null,

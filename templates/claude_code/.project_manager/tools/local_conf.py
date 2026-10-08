@@ -396,7 +396,8 @@ class KeySpec:
 
     `choices` 는 이 키가 고르는 **값의 축 이름**(`harness`·`model`·`reasoning` = `_ROLE_SUFFIXES`)
     이고 목록 자체는 담지 않는다 — 목록의 정본은 형제 선언(`pm_relay.HARNESS_CHOICES`·
-    `REASONING_ALLOWED`·`MODEL_SOURCE`)이라 여기 복제하면 두 자리가 갈린다. 고를 목록이 없는 키는
+    `REASONING_ALLOWED`·`MODEL_SOURCE`)이라 여기 복제하면 두 자리가 갈린다. reasoning 은 정적 허용값
+    버킷(claude·codex)이거나 모델 목록 조회 응답의 그 모델 variant(opencode)다. 고를 목록이 없는 키는
     `None` 이고, 선택지는 **검증이 아니다**(harness·reasoning 은 닫힌 집합, model 은 자유 문자열).
     """
 
@@ -728,7 +729,7 @@ def key_spec(key: str) -> KeySpec | None:
     return spec
 
 
-# 압축 한도 기록 — 적용 경로(ctx-apply·설치·add-harness·pm_update·어댑터 수용)가 조회한 모델 한도 C 와
+# 압축 한도 기록 — 적용 경로(pm-config apply·설치·add-harness·pm_update·어댑터 수용)가 조회한 모델 한도 C 와
 # 계산 결과를 한 번 쓰고, 훅·상태줄·구동기·상태 조회는 읽기만 한다. 시간·도구 갱신·환경변수로
 # 값이 무효가 되지 않는다 — 같은 모델의 한도가 바뀌면 사용자가 다시 적용한다. `applied_at` 은 지금
 # 기록 값이 처음 쓰인 시각이다(값이 같은 재적용은 기록을 다시 쓰지 않는다).
@@ -738,7 +739,7 @@ CTX_HARNESSES = ("claude", "codex", "opencode")
 CTX_INPUT_KEYS = tuple(f"harness.{name}.ctx_window_tokens" for name in CTX_HARNESSES) + (
     "ctx.checkpoint_at_pct", "ctx.precompact_at_pct", "ctx.compact_at_pct")
 _CTX_ENTRY_INTEGERS = ("W", "C", "E", "P", "checkpoint", "precompact")
-_CTX_RERUN = "`pm_config.py ctx-apply` 를 다시 실행하십시오"
+_CTX_RERUN = "`pm_config.py apply` 를 다시 실행하십시오"
 # 모델 가용 한도 출처(basis)의 형식 — Claude Code 조회 · Codex 모델 목록 · opencode 모델 목록(input 은 원본에 있을 때만).
 _CTX_BASIS_FORMS = ({"model_window", "auto_compact_threshold"}, {"context_window", "max_context_window", "model_context_window", "percent"},
                     {"context", "output", "source"}, {"context", "output", "source", "input"})
@@ -996,7 +997,8 @@ def _axis_values(axis: str) -> dict[str, list[str]]:
     """값의 축 이름 → `{버킷: 고를 수 있는 값}`. 목록은 형제 선언에서 읽는다(여기 복제 0).
 
     `harness` 는 버킷이 없어 `""` 한 칸이고, `reasoning` 은 CLI 마다 ladder 가 달라 하네스가
-    버킷이다. `model` 은 닫힌 목록이 없다(자유 문자열 + 조회 명령) — 빈 표다.
+    버킷이다 — 버킷은 정적 허용값 하네스뿐이고 모델마다 값이 다른 하네스는 조회 응답에서 받는다.
+    `model` 은 닫힌 목록이 없다(자유 문자열 + 조회 명령) — 빈 표다.
     """
     if axis == "harness":
         return {"": list(_harness_names())}
@@ -1023,18 +1025,22 @@ def _choices_json(key: str) -> dict | None:
     """이 키가 고를 수 있는 값 — 화면이 읽는 규칙 한 벌 (축이 없는 키는 None).
 
     화면이 쓰는 규칙은 셋이다. 첫째 `bucket = depends_on ? (그 키의 현재 값 ?? "") : ""`,
-    둘째 `list = values[bucket] ?? []`, 셋째 `fetch` 가 있으면 그 명령으로 받은 목록이 `list` 를
-    대신하고 `free_text` 면 직접 입력도 연다. 판별자(`kind`)를 두지 않아 화면에 분기가 생기지
-    않는다. 종속 키는 같은 세트의 `harness` 키다 — 세트를 통째로 쓰는 위임 키와 추가 리뷰어 키가
-    같은 규칙으로 읽힌다.
+    둘째 목록 원천 — 버킷이 `values` 에 있으면 그 목록, 없고 `fetch` 가 있으면 그 명령으로 받은
+    응답에서 `fetch.variants_of` 가 있으면 `variants[그 키의 현재 값]`, 없으면 `models` 다. 셋째
+    `free_text` 면 직접 입력도 연다. 판별자(`kind`)를 두지 않아 화면에 분기가 생기지 않는다. 종속
+    키는 같은 세트의 `harness` 키이고 `variants_of` 는 같은 세트의 `model` 키다 — 세트를 통째로
+    쓰는 위임 키와 추가 리뷰어 키가 같은 규칙으로 읽힌다.
     """
     spec = key_spec(key)
     axis = None if spec is None else spec.choices
     if axis is None:
         return None
     harness = _harness_of(key)
-    fetch = dict(_MODEL_FETCH) if axis == "model" else None
-    if fetch is not None and harness is not None:
+    fetch = dict(_MODEL_FETCH) if axis in ("model", "reasoning") else None
+    if axis == "reasoning":
+        # 모델마다 추론 강도가 다른 하네스는 같은 세트 모델의 variant 를 조회 응답에서 받는다.
+        fetch["variants_of"] = f"{key.rsplit('.', 1)[0]}.model"
+    if axis == "model" and harness is not None:
         # 하네스가 키에 박힌 군은 종속 키를 볼 것이 없다 — 무엇으로 조회할지를 표가 실어 준다.
         fetch["value"] = harness
     depends_on = None

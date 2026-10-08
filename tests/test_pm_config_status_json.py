@@ -1112,18 +1112,18 @@ def test_t0943_status_ctx_budget_shape_and_readonly(tmp_path, monkeypatch):
     assert (claude["status"], claude["C"], claude["E"], claude["P"]) == ("ok", 200000, 200000, 188000)
     for harness in ("codex", "opencode"):
         row = conf["ctx_budget"][harness]
-        assert set(row) == {"status", "reason"} and row["status"] == "error" and "ctx-apply" in row["reason"]
+        assert set(row) == {"status", "reason"} and row["status"] == "error" and "`pm_config.py apply`" in row["reason"]
     assert _snapshot_fixture_bytes(tmp_path) == before
 
 
-def test_t0943_ctx_apply_preview_is_an_argument_error(tmp_path, monkeypatch, capsys):
-    """`ctx-apply --preview` 는 없는 인자다(rc 2) — 조회만 하고 기록을 쓰던 길이 없다."""
+def test_t0943_apply_preview_is_an_argument_error(tmp_path, monkeypatch, capsys):
+    """`apply --preview` 는 없는 인자다(rc 2) — 조회만 하고 기록을 쓰던 길이 없다."""
     from test_harness_ctx_limits import install_ctx_record, _load as load_engine, _snapshot_fixture_bytes
     module = load_engine("pm_config")
     install_ctx_record(tmp_path, _T0943_CONF, capacity=200000)
     monkeypatch.setattr(module, "REPO", tmp_path)
     before = _snapshot_fixture_bytes(tmp_path)
     with pytest.raises(SystemExit) as caught:
-        module.main(["ctx-apply", "--json", "--preview"])
+        module.main(["apply", "--json", "--preview"])
     assert caught.value.code == 2 and "--preview" in capsys.readouterr().err
     assert _snapshot_fixture_bytes(tmp_path) == before

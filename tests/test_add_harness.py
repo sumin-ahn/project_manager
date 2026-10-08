@@ -340,7 +340,7 @@ def test_add_harness_applies_ctx_values(pm_import, tmp_path, capsys):
     assert settings["autoCompactWindow"] == 170000
 
 
-def test_add_harness_skips_ctx_apply_while_legacy_keys_remain(pm_import, tmp_path, capsys):
+def test_add_harness_skips_harness_ctx_apply_while_legacy_keys_remain(pm_import, tmp_path, capsys):
     """옛 키(`ctx.window_tokens`)가 남은 conf 에서도 add-harness 는 끝까지 간다(rc 0).
 
     반영만 건너뛰고 그 사실과 옛 키를 한 줄로 알린다 — 이름 이동은 pm-update 가 하고 그 실행이

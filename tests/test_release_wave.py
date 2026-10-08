@@ -208,7 +208,7 @@ def _override_ctx_record(dest: Path, harness: str, window: int) -> None:
     """설치가 쓴 압축 한도 기록(schema 5)의 그 도구 사용 한도를 local.conf 에 덧붙인 `window` 로 옮긴다.
 
     훅·플러그인은 기록의 입력과 local.conf 가 다르면 판정 대신 기록 오류를 낸다(`read_ctx_budget`).
-    `ctx-apply` 는 돌리지 않는다 — 기록의 inputs 사용 한도·W·E·P·경고 지점만 다시 쓰고 모델 행·C·settings 와
+    `pm-config apply` 는 돌리지 않는다 — 기록의 inputs 사용 한도·W·E·P·경고 지점만 다시 쓰고 모델 행·C·settings 와
     하네스 설정 파일은 그대로다. P·경고 지점은 기록 inputs 의 비율로 계산한다."""
     path = dest / ".project_manager" / ".local" / "ctx-budget.json"
     record = json.loads(path.read_text(encoding="utf-8"))
@@ -1333,7 +1333,7 @@ def _append_tiny_ctx_window(dest: Path) -> None:
     사용 한도는 하네스별 키(`harness.claude.ctx_window_tokens`)다 — 공통 한도 키는 없다(T-0923).
     append 한 극소값이 *마지막 줄* 로 이겨(load_local_config 는 KEY 마지막 값 채택) 첫 실 턴이
     쓴 100% = stop 밴드. 이 값은 훅 판정만 옮긴다 — 압축 한도 기록의 claude 항목도 같은 값으로
-    옮기고(`_override_ctx_record`), 설정 파일 반영(`pm-config ctx-apply`)은 돌리지 않으므로 Claude
+    옮기고(`_override_ctx_record`), 설정 파일 반영(`pm-config apply`)은 돌리지 않으므로 Claude
     Code 의 압축 지점은 출하 값 그대로다.
     """
     conf_path = dest / ".project_manager" / "local.conf"

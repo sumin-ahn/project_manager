@@ -540,9 +540,10 @@ spawn까지 막지는 못한다. Claude native agent 카드의 `model:`이 설�
 가드가 비차단 경고를 내며, 설정이나 카드를 자동으로 고치지 않는다.
 
 역할·티어 카드는 세 하네스가 **같은 규칙**을 쓴다 — claude `.claude/agents/*.md` · codex
-`.codex/agents/*.toml` · opencode `.opencode/agents/*.md` 의 모델(과 codex TOML 이 함께 갖는
-추론 강도)은 전부 `local.conf` 의 렌더 파생물이고 다른 출처를 갖지 않는다. 난제 티어
-`developer-hard` 도 세 하네스가 모두 카드를 갖는다(평시 프로필을 상속하지 않는 별도 세트).
+`.codex/agents/*.toml` · opencode `.opencode/agents/*.md` 의 모델과 추론 강도(claude `effort` ·
+codex `model_reasoning_effort` · opencode `variant`)는 전부 `local.conf` 의 렌더 파생물이고 다른
+출처를 갖지 않는다. 난제 티어 `developer-hard` 도 세 하네스가 모두 카드를 갖는다(평시 프로필을
+상속하지 않는 별도 세트).
 
 **모델 값에 무엇을 넣는가**는 하네스마다 형식이 다르다(claude=별칭 또는 풀네임 ·
 opencode=`provider/model` · codex=사용자 codex config 가 인정하는 문자열). 값 목록을 문서에
@@ -575,8 +576,9 @@ wrapper 소유이며 board는 이 프로토콜만 검증한다. wrapper는 자�
 
 역할 모델을 고를 때는 **generate≠evaluate**가 기준이다. 위임은 매번 새 세션이라 모델이 같아도
 전사 공유가 없지만, `delegate.code-reviewer.model`을 developer와 다르게 두면 맹점을 공유하지 않아
-검출력이 는다(하네스는 달라도 된다). `.reasoning`은 codex가 `low/medium/high/xhigh`를 받고,
-claude·opencode는 실측 후 적용되며 그 전에 지정하면 fail-loud다.
+검출력이 는다(하네스는 달라도 된다). `.reasoning`은 claude·codex 는 엔진이 정한 허용값 중
+하나여야 하고, opencode 는 그 모델의 variant(`opencode models --verbose` 의 `variants`) 중 하나여야
+한다. 아니면 저장과 위임이 멈추고, 갱신은 그 opencode 줄을 지우고 알린다.
 
 **추가 리뷰어**(additional reviewer) 는 developer·architect·code-reviewer 와 같이 **부르면 도는
 역할**이다 — 채널을 켜고 끄는 스위치도, 이 역할만의 별도 승인 축도 없다. 쓰려면 `local.conf` 에
@@ -612,7 +614,7 @@ additional_reviewer.reasoning=max
 | P | E에 압축 비율을 곱하고 내림한 압축 임계(토큰) |
 
 설정한 희망 기준을 보존하며, 실제 적용 기준은 독립 근거로 확인한 모델의 가용 한도 이하로 제한합니다. C는
-적용(`pm-config ctx-apply`·설치·하네스 추가·`pm-update`·어댑터 설정 수용·관리자 저장) 때 한 번 조회해 압축
+적용(`pm-config apply`·설치·하네스 추가·`pm-update`·어댑터 설정 수용·관리자 저장) 때 한 번 조회해 압축
 한도 기록(`.project_manager/.local/ctx-budget.json`)에 고정한다. 시간이 지나거나 도구·캐시가 갱신돼도 기록
 값은 바뀌지 않으며, 같은 모델의 한도가 바뀌면 다시 적용한다. 체크포인트·압축 임박 경고·압축·relay와
 관리자 표시는 이 기록을 사용한다. 검증용 예시에서 W=600000토큰·C=200000토큰·공통 비율 80/90/94%이면
@@ -622,14 +624,15 @@ C 조회 방법은 도구마다 다르다. Claude Code는 모델 답변 없이 �
 앱 서버의 실효 설정과 Codex 모델 목록 캐시의 해당 모델 행을 읽는다. OpenCode는 models.dev 모델 목록
 캐시를 읽고, 목록에 없는 모델은 OpenAI 호환(Ollama) 서버의 모델 정보를 읽는다. C를 조회하지 못하거나
 계산한 설정값을 도구가 받지 않으면 적용 전체를 거부하고 local.conf·설정 파일·기록을 바꾸지 않는다.
-컨텍스트 항목을 포함한 저장 요청도 같은 규칙으로 전체를 거부한다. 다른 설정만 저장하는 요청은 기존
-절차를 따른다.
+컨텍스트 항목을 포함한 저장 요청도 같은 규칙으로 전체를 거부한다. 관리자 저장은 키와 무관하게
+`pm-config apply` 한 번이고, 반영 전 검사를 통과하지 못하면 아무것도 쓰지 않는다. 렌더 산출물은 저장이
+바로 다시 그린다.
 
 적용값은 Claude Code의 `autoCompactWindow`(P + 압축 예약), Codex의 `model_auto_compact_token_limit`(P),
 OpenCode의 모델별 `limit`(`input`은 E) 및 `compaction.reserved`(E − P)에 쓴다. OpenCode 원본 모델 목록과
 전역 설정 파일은 읽기 전용이다. 훅·상태줄·relay는 기록만 읽는다. 실행 중인 세션 모델이 기록 모델과
 다르면 경고하고 기록 값을 그대로 쓴다. 기록이 없거나 손상됐거나 이전 형식이거나 local.conf 입력이
-기록과 다르면 오류로 알리고 `pm-config ctx-apply` 재실행을 안내한다. 엔진 갱신에서 완료된 파일 배달과
+기록과 다르면 오류로 알리고 `pm-config apply` 재실행을 안내한다. 엔진 갱신에서 완료된 파일 배달과
 압축 설정 미적용은 구분해 보고한다.
 
 레지스트리와 옛 flat 표기 어느 쪽에도 없는 키(오타·폐기 키)는 조용히 무시되지 않는다 —

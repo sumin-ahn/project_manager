@@ -33,8 +33,8 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config upstream show | set <url|path>               # upstream 조회/전환 (검증·fail-closed)
     pm-config add-harness <harness> [--from <src>] [--dry-run]  # 라이브 인스턴스에 두 번째 harness 어댑터 추가
     pm-config sync-adapter-config [--list | --check | --accept <경로> | --accept-all] # 어댑터 config 판정 조회 / 수렴 게이트 / 상류 값 수용(단건·세트)
-    pm-config ctx-apply [--json] [--set 키=값 ...]         # 사용 한도·압축 비율 검사 → local.conf 기록 → 하네스 설정 파일 반영 (검사 거부 rc 3)
-    pm-config delegate models --harness <h> --json         # 그 하네스가 인정하는 모델 목록 조회 (읽기 전용·JSON 한 줄)
+    pm-config apply [--json] [--set 키=값 ...]             # 값 검사 → local.conf 기록 → 파생 파일 반영 (반영 전 거부 rc 3)
+    pm-config delegate models --harness <h> --json         # 그 하네스가 인정하는 모델 목록과 모델별 추론 강도(variant) 조회 (읽기 전용·JSON 한 줄)
 
 서브커맨드별 엔진 배선:
   - init      → board.main(["init", ...]) verbatim forward (clone 당 1회 셋업·N=1·M=1 ~ N×M 공용).
@@ -60,18 +60,17 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
   - add-harness → pm_import.add_harness_cli(dest, harness, dry_run=, source_root=) verbatim forward
                   (복사 스코프+인터페이스 예외 번역+소스 해소는 pm_import 단일 진실·
                   중복 0). `--from` 생략 시 dest local.conf upstream.path 자동 해소(imported 인스턴스).
-  - delegate models → pm_relay.MODEL_SOURCE(모델 원천 표 단일 진실)의 `kind` 로만 갈린다:
-                  별칭 표 그대로 / 표가 선언한 조회 명령(pm_import._real_models_runner 실행).
+  - delegate models → pm_relay.model_listing(모델 원천 표 `MODEL_SOURCE` 한 행의 조회 — 별칭 표 그대로 /
+                  표가 선언한 조회 명령 실행). 응답에 모델별 `variants`(opencode)가 실린다.
                   읽기 전용이고 조회 실패는 빈 목록이 아니라 rc 3 이다(사유는 stderr 한 줄).
   - sync-adapter-config → pm_import.judge_adapter_configs(조회) / accept_adapter_config(수용·백업
                   후 template 채택 + 원장 기록). manifest 밖 instance-owned config 는 동기가 무편집
                   분만 자동 갱신하고 나머지는 보존+보고하므로, 이 커맨드가 보존분을 채택자가
                   명시적으로 받는 유일한 채널이다(소스 해소는 add-harness 와 같은 규칙).
                   수용한 파일이 하네스 설정 파일이면 수용 직후 사용 한도를 다시 반영한다.
-  - ctx-apply → pm_import.validate_harness_ctx(검사)·_write_conf_keys(`--set` 기록)·
-                  apply_harness_ctx(반영). 관리자 저장이 ctx 입력 키를 이 명령 한 번으로 보낸다.
-                  검사 거부는 rc 3 이고 local.conf·설정 파일을 바꾸지 않는다 — 처리하지 못한
-                  예외의 rc 1 과 겹치지 않아 관리자 화면은 rc 3 만 잘못된 값으로 보인다.
+  - apply → pm_update.apply_conf(키 묶음 표·한 락·전부 계획 뒤 기록). 관리자 저장은 키와 무관하게
+                  이 명령 한 번이다. 반영 전 거부는 rc 3 이고 local.conf·파생 파일을 바꾸지 않는다 —
+                  처리하지 못한 예외의 rc 1 과 겹치지 않아 관리자 화면은 rc 3 만 잘못된 값으로 보인다.
 
 
   - thin forwarder(`pm-config.sh/.cmd`)는 로직 0 — 이 디스패처가 엔진 배선의 단일 지점.
@@ -4958,9 +4957,10 @@ def _print_delegate_model_guidance(
             file=sys.stderr,
         )
         return 1
-    model_source = _load_model_source_table()
-    if model_source is None:
+    relay = _load_relay_contract()
+    if relay is None:
         return 1
+    model_source = relay.MODEL_SOURCE
 
     print("\n## 위임 모델 안내 (local.conf `delegate.<role>[.hard].model` 단일 진실):")
     installed = _installed_harnesses(pm_import_mod)
@@ -5006,14 +5006,14 @@ def _console_delegate_models() -> None:
 
 
 # ── 모델 목록 조회 (`delegate models --harness <h> --json`) ────────────────────
-# 설정 화면과 사람이 "이 하네스에 무엇을 적나" 를 받는 **읽기 전용** 자리다. 목록의 원천은
-# `pm_relay.MODEL_SOURCE` 한 표이고 이 명령은 그 표의 `kind` 로만 갈린다(하네스 이름 분기 0).
-# 조회는 파일을 쓰지 않고, 실패를 빈 목록으로 위장하지 않는다 — 0개면 성공이 아니라 rc 3 이다.
+# 설정 화면과 사람이 "이 하네스에 무엇을 적나" 를 받는 **읽기 전용** 자리다. 조회는 `pm_relay.model_listing`
+# 하나이고(하네스 이름 분기 0) 응답은 `{"harness", "kind", "models", "variants"}` 네 필드다. 조회는 파일을
+# 쓰지 않고, 실패를 빈 목록으로 위장하지 않는다 — 실패(0개 포함)는 rc 3 이다.
 _DELEGATE_MODELS_QUERY_FAILED = 3
 
 
-def _load_model_source_table():
-    """모델 원천 표(`pm_relay.MODEL_SOURCE`) — 부재/로드 실패는 명시 에러 후 None.
+def _load_relay_contract():
+    """하네스 계약(`pm_relay` — 모델 원천 표·모델 목록 조회) — 부재/로드 실패는 명시 에러 후 None.
 
     표의 소유자는 하네스 CLI 계약을 단일 소유하는 `pm_relay` 다(여기 사본을 두지 않는다).
     """
@@ -5024,31 +5024,7 @@ def _load_model_source_table():
             f"({TOOLS_DIR / 'pm_relay.py'} 부재 또는 로드 실패).",
             file=sys.stderr,
         )
-        return None
-    return relay.MODEL_SOURCE
-
-
-def _delegate_models(source, *, models_runner=None) -> tuple[list[str], str | None]:
-    """모델 원천 한 행 → (모델 목록, 실패 사유). 갈림은 `kind` 뿐이다.
-
-    `live` 조회 seam 은 `pm_import._real_models_runner`(PATH 부재·rc·timeout·파싱 0 을 stderr
-    한 줄로 남기는 fail-soft) 를 **그대로 재사용**한다 — 두 번째 조회 코드를 만들지 않는다.
-    """
-    if source.kind == "alias":
-        return list(source.values), None
-    if source.kind == "live":
-        runner = models_runner
-        if runner is None:
-            pm_import_mod = _load_module("pm_import", "pm_import.py")
-            if pm_import_mod is None:
-                return [], f"{TOOLS_DIR / 'pm_import.py'} 부재 또는 로드 실패"
-            runner = pm_import_mod._real_models_runner
-        ok, models = runner(source)
-        if not ok or not models:
-            return [], f"{source.how_to_check} 조회 실패 (사유는 위 stderr 한 줄)"
-        return models, None
-    raise ValueError(
-        f"모르는 모델 원천 kind {source.kind!r} — pm_relay.MODEL_SOURCE 선언과 이 판정이 갈렸다.")
+    return relay
 
 
 def _conf_assignment(text: str) -> tuple[str, str]:
@@ -5059,31 +5035,29 @@ def _conf_assignment(text: str) -> tuple[str, str]:
     return key.strip(), value.strip()
 
 
-# ctx-apply 검사 거부 — 처리하지 못한 예외로 끝난 파이썬의 1 과 argparse 인자 오류의 2 와 겹치지
-# 않는 전용 값이다. 관리자 저장은 이 값만 "잘못된 값"(`invalid-value`)으로 보인다
-# (`manager/bridge_settings.py` 의 `CTX_APPLY_REJECTED_RC`).
-_CTX_APPLY_REJECTED = 3
+# 반영 전 거부 — 처리하지 못한 예외로 끝난 파이썬의 1 과 argparse 인자 오류의 2 와 겹치지 않는 전용
+# 값이다. 관리자 저장은 이 값만 "잘못된 값"(`invalid-value`)으로 보인다
+# (`manager/bridge_settings.py` 의 `APPLY_REFUSED_RC`).
+_APPLY_REFUSED = 3
 
 
-def cmd_ctx_apply(args, *, pm_import=None, dest_root: Path | None = None) -> int:
-    """`ctx-apply [--json] [--set 키=값 ...]` — 사용 한도·압축 비율 검사 → local.conf 기록 → 반영.
+def cmd_apply(args, *, pm_update=None, dest_root: Path | None = None) -> int:
+    """`apply [--json] [--set 키=값 ...]` — 값 검사 → local.conf 기록 → 파생 파일 반영.
 
-    관리자 저장·초기화가 ctx 입력 키(`pm_import.is_harness_ctx_input_key`)가 든 저장을 이 명령 한
-    번으로 보낸다. local.conf 쓰기 락 안에서 현재 conf 에 `--set` 값을 덮어 검사하고 도구별 모델 한도를
-    조회해 설정 파일까지 계산한 뒤, 통과해야 local.conf(빈 값은 줄 삭제)·설정 파일·압축 한도 기록을
-    쓴다(`pm_import._apply_harness_ctx`) — 거부되면 어느 것도 바뀌지 않는다. `--set` 은 ctx 밖 키도
-    받는다(한 저장이 여러 키를 함께 보낸다).
+    설정 저장의 유일한 입구다(관리자 저장·[기본값으로] 포함). `--set` 이 있으면 바뀐 키가 걸리는 반영
+    단계만, 없으면 모든 단계를 다시 돈다(손으로 고친 local.conf 를 반영할 때). 단계는 사용 한도(하네스
+    설정 파일·압축 한도 기록)와 렌더 입력(`@render` 산출물을 설치 세대 원본으로 다시 그림) 둘이고,
+    어느 묶음에도 없는 키는 local.conf 기록만 한다(`pm_update.apply_conf`).
 
-    rc 0 반영(바뀐 줄 0 포함) · 3 검사 거부(local.conf·설정 파일·기록 무변경 · 사유는 stderr) · 1 그
-    밖의 실패(엔진·local.conf 부재, 쓰기 단계 실패, 처리하지 못한 예외 — 쓰기 단계에서 멈추면
-    local.conf 와 설정 파일 일부가 이미 바뀌었을 수 있고 stderr 가 교체한 파일을 적는다) · 2 인자
-    오류(argparse). `--json` 은 한 줄 `{"changed": local.conf 가 바뀌었나, "applied": 바뀐 설정 줄,
-    "ctx_budget": 압축 한도 기록의 도구 항목}` 이다."""
-    pm_import_mod = pm_import or _load_module("pm_import", "pm_import.py")
-    if pm_import_mod is None:
+    rc 0 반영(바뀐 줄 0 포함) · 3 반영 전 거부(값 검사·모델 한도 조회·렌더 검사·렌더 원본 세대·옛 키 —
+    local.conf·파생 파일 무변경 · 사유는 stderr) · 1 그 밖의 실패(엔진·local.conf 부재, 쓰기 단계 실패,
+    처리하지 못한 예외 — 쓰기 단계에서 멈추면 stderr 가 교체한 파일을 적는다) · 2 인자 오류(argparse).
+    `--json` 은 한 줄 `{"changed": local.conf 가 바뀌었나, "applied": 반영 줄}` 이다."""
+    pm_update_mod = pm_update or _load_module("pm_update", "pm_update.py")
+    if pm_update_mod is None:
         print(
-            "[중단] pm_import.py 엔진을 찾을 수 없다 — 사용 한도 반영 불가 "
-            f"({TOOLS_DIR / 'pm_import.py'} 부재 또는 로드 실패).",
+            "[중단] pm_update.py 엔진을 찾을 수 없다 — 설정 반영 불가 "
+            f"({TOOLS_DIR / 'pm_update.py'} 부재 또는 로드 실패).",
             file=sys.stderr,
         )
         return 1
@@ -5094,59 +5068,69 @@ def cmd_ctx_apply(args, *, pm_import=None, dest_root: Path | None = None) -> int
         print(f"[중단] local.conf 없음 ({conf_file}) — 먼저 `pm-config init` 으로 셋업하라.",
               file=sys.stderr)
         return 1
-    opencode_dir = pm_import_mod.opencode_global_config_dir(os.environ, Path.home())
+    pm_import_mod = pm_update_mod._load_pm_import()
     try:
-        changed, applied, budgets = pm_import_mod._apply_harness_ctx(
-            dest, write=True, opencode_config_dir=opencode_dir,
-            updates={key: value or None for key, value in updates.items()})
-    except pm_import_mod.HarnessCtxError as exc:
+        result = pm_update_mod.apply_conf(
+            dest, updates={key: value or None for key, value in updates.items()},
+            opencode_config_dir=pm_import_mod.opencode_global_config_dir(os.environ, Path.home()))
+    except pm_update_mod.ConfApplyError as exc:
         print(f"[중단] {exc}", file=sys.stderr)
-        # 쓰기 단계 실패는 바꾼 파일이 없어도 검사 거부가 아니다 — `_apply_harness_ctx` 가 `write_stage` 로 표시한다.
-        return 1 if getattr(exc, "write_stage", False) else _CTX_APPLY_REJECTED
+        return 1 if exc.write_stage else _APPLY_REFUSED
     except RuntimeError as exc:
         if _is_engine_rev_skew(exc):
             raise
-        # 옛 키가 남은 conf(또는 `--set` 이 옛 키) — 값을 읽는 지점의 fail-loud 를 검사 거부로 낸다.
+        # 옛 키가 남은 conf(또는 `--set` 이 옛 키) — 값을 읽는 지점의 fail-loud 를 반영 전 거부로 낸다.
         if not getattr(exc, "_legacy_conf_key", False):
             raise
         print(f"[중단] {exc}", file=sys.stderr)
-        return _CTX_APPLY_REJECTED
+        return _APPLY_REFUSED
     if getattr(args, "json", False):
         _write_machine_line(json.dumps(
-            {"changed": bool(changed), "applied": list(applied), "ctx_budget": budgets}, ensure_ascii=False))
+            {"changed": result.changed, "applied": list(result.applied)}, ensure_ascii=False))
         return 0
-    if changed:
+    if result.changed:
         print(f"✓ local.conf 기록: {', '.join(updates)}")
-    for line in applied:
-        print(f"✓ 하네스 설정 반영: {line}")
-    if not applied:
-        print("하네스 설정 파일: 바뀐 줄 없음 (이미 local.conf 값과 같다).")
+    for line in result.applied:
+        print(f"✓ 반영: {line}")
+    if not result.applied:
+        print("파생 파일: 바뀐 줄 없음 (이미 local.conf 값과 같다).")
     return 0
 
 
-def cmd_delegate_models(args, *, models_runner=None) -> int:
+def cmd_delegate_models(args, *, listing=None) -> int:
     """`delegate models --harness <h> --json` — 그 하네스가 인정하는 모델 목록(읽기 전용).
 
-    응답은 `{"harness", "kind", "models"}` 하나다. `free_text`(모델은 검증상 언제나 자유 문자열)는
+    응답은 `{"harness", "kind", "models", "variants"}` 하나다. `variants` 는 모델별 추론 강도
+    (`{모델: [variant…]}`, variant 없는 모델은 `[]`)이고 그것을 내는 원천(opencode)만 채운다 — 나머지는
+    null. 모델 목록과 같은 한 번의 조회에서 나온다. `free_text`(모델은 검증상 언제나 자유 문자열)는
     싣지 않는다 — 그 사실은 키 레지스트리의 `choices.free_text` 가 소유하고, 두 자리에 두면 갈린다.
+    `listing` 은 조회 함수(원천 행 → `ModelListing`)이고 기본은 `pm_relay.model_listing` 을 이 사본
+    폴더·이 프로세스 env 로 부르는 것이다.
     rc: 0 성공 · 1 엔진 사본 부재(`pm_relay.py` 없음 — 원천 표 자체를 못 읽음) · 2
     `--harness`/`--json` 미지정·미지원 · 3 조회 실패(사유는 stderr 한 줄). 1 과 3 은 다른
     사실이다 — 물어볼 표가 없는 것과 표대로 물었는데 답을 못 얻은 것.
     """
-    table = _load_model_source_table()
-    if table is None:
+    relay = _load_relay_contract()
+    if relay is None:
         return 1
+    table = relay.MODEL_SOURCE
     source = table.get(args.harness)
     if source is None:
         print(f"[중단] 미지원 harness {args.harness!r} — 지원: {', '.join(table)}.",
               file=sys.stderr)
         return 2
-    models, failure = _delegate_models(source, models_runner=models_runner)
-    if failure is not None:
-        print(f"[중단] {args.harness} 모델 목록을 얻지 못했다 — {failure}", file=sys.stderr)
+    lookup = listing if listing is not None else (
+        lambda row: relay.model_listing(row, cwd=REPO, env=dict(os.environ)))
+    try:
+        result = lookup(source)
+    except relay.HarnessContractError as exc:
+        print(f"[중단] {args.harness} 모델 목록을 얻지 못했다 — {exc}", file=sys.stderr)
         return _DELEGATE_MODELS_QUERY_FAILED
+    variants = None if result.variants is None else {
+        model: list(names) for model, names in result.variants.items()}
     _write_machine_line(json.dumps(
-        {"harness": args.harness, "kind": source.kind, "models": models},
+        {"harness": args.harness, "kind": source.kind, "models": list(result.models),
+         "variants": variants},
         ensure_ascii=False))
     return 0
 
@@ -5584,20 +5568,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_sync_cfg.set_defaults(func=cmd_sync_adapter_config)
 
-    # ctx-apply [--json] [--set 키=값 ...] — 사용 한도·압축 비율 검사 → conf 기록 → 설정 파일 반영.
-    p_ctx_apply = sub.add_parser(
-        "ctx-apply",
-        help="사용 한도·압축 비율을 검사하고 local.conf 에 기록한 뒤 하네스 설정 파일에 반영",
+    # apply [--json] [--set 키=값 ...] — 값 검사 → conf 기록 → 파생 파일 반영(설정 저장의 유일한 입구).
+    p_apply = sub.add_parser(
+        "apply",
+        help="local.conf 값을 검사·기록하고 하네스 설정 파일과 렌더 산출물에 반영 "
+             "(`--set` 이 없으면 현재 local.conf 전체를 다시 반영)",
     )
-    p_ctx_apply.add_argument(
+    p_apply.add_argument(
         "--set", action="append", type=_conf_assignment, metavar="키=값", default=None,
-        help="local.conf 에 쓸 값(여러 번 가능·`키=` 는 줄 삭제). 검사를 통과해야 쓴다.",
+        help="local.conf 에 쓸 값(여러 번 가능·`키=` 는 줄 삭제). 반영 전 검사를 통과해야 쓴다.",
     )
-    p_ctx_apply.add_argument(
+    p_apply.add_argument(
         "--json", action="store_true",
         help="기계 판독 한 줄 `{\"changed\", \"applied\"}` 로 낸다.",
     )
-    p_ctx_apply.set_defaults(func=cmd_ctx_apply)
+    p_apply.set_defaults(func=cmd_apply)
 
     # delegate models --harness <h> --json — 위임 모델 목록 조회(읽기 전용·장부 변경 0).
     #   `--harness` 값의 닫힌 집합은 `pm_relay.MODEL_SOURCE` 의 키다. 그 표를 파서 조립 시점에

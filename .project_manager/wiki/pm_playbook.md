@@ -68,9 +68,14 @@ run-dir(`.project_manager/.local/delegate-ticket-copies/` 아래) 하나에 티�
 
 > **harness 노트:** 아래 예시는 **claude(`Agent` 툴·`run_in_background`·`.claude/agents/`)** 기준. **opencode 는 네이티브 `task` 툴**(자식 세션)로 위임한다 — `.opencode/pm-instructions.md`(위임 규약·`AGENTS.md` 공통 코어와 함께 자동 로드)·`.opencode/agents/` 참조. **codex 는 `.codex/agents/`(TOML 카드)** 를 쓰고 위임 채널은 하네스 네이티브다(`AGENTS.md` 공통 코어 + 하네스 운영 지침이 단일 진실). 역할 카드 경로는 하네스마다 다르므로(디렉토리·확장자 모두) 아래 목록은 카드를 `subagent_type` 이름으로만 가리킨다. 축 분리·touches disjoint·single-source 프롬프트·PM 산출 비준 원칙은 동일하다.
 
-`local.conf`의 `delegate.<role>[.<tier>].{harness,model,reasoning}`은 native/cross 공통 위임
-설정이다. target이 현재 PM 하네스면 native agent transport, 다르면
-`pm_delegate.py` cross transport를 고른다. `delegate.enabled`는 위임 전체의 마스터 스위치
+transport 규칙은 한 문장이다. 리뷰(`code-reviewer`)는 하네스와 무관하게 엔진이
+실행한다(`pm_delegate.py --role code-reviewer --cluster`). 설계·구현·조사는 target 하네스 == PM
+하네스면 native, 다르면 `pm_delegate.py` cross 다. 리뷰만 엔진이 실행하는 이유(실행 위치를 격리
+스냅샷으로 옮기는 것과 라운드 상한·발산 판정은 별도 프로세스로만 가능하다)는 `/pm-dev-delegate`
+리뷰 절에 있다.
+
+`local.conf`의 `delegate.<role>[.<tier>].{harness,model,reasoning}`은 native transport와
+cross transport가 함께 읽는 위임 설정이다. `delegate.enabled`는 위임 전체의 마스터 스위치
 (기본 허용·채널 무관)이고, 끄면 `pm_delegate` 실행·`ticket prepare`·훅이 깔린 하네스의 역할
 spawn이 함께 막힌다. Claude native 카드의 `model:` drift는 가드가 비차단 경고로 표면화하며
 설정·카드를 자동 수정하지 않는다.
@@ -81,21 +86,21 @@ PM 이 `Agent` 툴로 spawn 하고 `subagent_type` 으로 전용 정의를 쓴�
 
 - **설계(architect)** — `subagent_type: architect` (Opus). idea 검토·ADR 초안·spec 추출·가설 검증·인터페이스. **산출은 PM 이 비준** — 발행·board·idea promote 는 PM.
 - **구현(developer)** — `subagent_type: developer`
-- **검토(code-reviewer)** — `subagent_type: code-reviewer`
+- **검토(code-reviewer)** — 서브에이전트로 띄우지 않는다. `/pm-dev-delegate` 리뷰 절(엔진 실행 ·
+  `pm_delegate.py --role code-reviewer --cluster`)을 따른다.
 
-세 정의가 역할·제약·부트스트랩·프로젝트 제약을 담으므로 프롬프트는 한 줄이면 된다(구현/검토는 `/pm-dev-delegate` skill 이 표준 프롬프트를 dump):
+두 정의가 역할·제약·부트스트랩·프로젝트 제약을 담으므로 프롬프트는 한 줄이면 된다(구현은 `/pm-dev-delegate` skill 이 표준 프롬프트를 dump):
 
 ```
 Idea-00NN 을 promote/kill 분석하고 promote 면 ADR 초안을 내라. (architect)
 T-NNNN 을 구현하라. (developer)
-T-NNNN 의 변경을 검토하라. 변경 파일: <경로>. (code-reviewer)
 ```
 
 설계 spike 는 PM 이 비준한다. architect 의 ADR/spec/idea-promote 초안·권고를 검토해 PM 이 ADR 발행 / `board.py idea promote` / spec 승격 / log entry 를 한다. 구현은 ticket 으로 발행해 developer 에 위임한다.
 
 **board.py claim/complete 와 status.md/log/current.md 갱신은 orchestrator(PM)가 한다** — 서브에이전트는 구현/검토만.
 
-⚠️ code-reviewer 프롬프트에 "`status.md`/`log/current.md` 갱신은 orchestrator 담당 — 그 누락은 developer must-fix 아님" 을 덧붙인다.
+⚠️ 리뷰 검토 중점 문단(`--focus`)에 "`status.md`/`log/current.md` 갱신은 orchestrator 담당 — 그 누락은 developer must-fix 아님" 을 적는다.
 
 **검토 루프:** 단계 준비·회수는 `/pm-dev-delegate`, 확인 생성과 처분은 `pm_delegate.py rounds resolve
 --cluster <C-이름> --pm-verified`, 종결은 `ticket_finish.py --cluster`가 수행한다. 수렴 불변식은

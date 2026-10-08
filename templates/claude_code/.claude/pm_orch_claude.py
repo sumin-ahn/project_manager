@@ -372,8 +372,10 @@ class ClaudeCliDriver:
         """비대화 claude turn 1회. (observed_session_id, result_text, used_tokens) 반환.
 
         child cwd 격리 — subprocess cwd 를 PM repo root 로 명시(엔진 제약). resume 은
-        같은 세션을 cwd 인자 없이 잇는다(claude 가 세션에 cwd 를 묶음)."""
-        cmd = [self.claude_bin, "-p", prompt,
+        같은 세션을 cwd 인자 없이 잇는다(claude 가 세션에 cwd 를 묶음).
+        프롬프트는 표준 입력이다(cross 위임 `build_claude_argv` 와 같다 — 여러 줄 프롬프트를 실행 인자에
+        실으면 Windows 에서 `claude.cmd` 를 거칠 때 cmd.exe 가 첫 줄 뒤를 버린다)."""
+        cmd = [self.claude_bin, "-p",
                "--output-format", "stream-json", "--verbose",
                "--model", self.model]
         if session_id:
@@ -383,8 +385,8 @@ class ClaudeCliDriver:
 
         run_kwargs = dict(
             capture_output=True, text=True, timeout=self.timeout,
-            # relay supervisor 의 파이프 stdin 을 child 가 삼키지 않게 즉시 EOF 로 격리.
-            stdin=subprocess.DEVNULL,
+            # 프롬프트 전문을 stdin 으로 쓰고 닫는다 — relay supervisor 의 파이프 stdin 은 child 에 가지 않는다.
+            input=prompt,
         )
         if cwd is not None:
             run_kwargs["cwd"] = cwd  # child cwd 격리(PM repo root).
@@ -465,6 +467,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _make_resolving_runner(engine):
+    """프로덕션 runner — 실행 파일을 엔진 해소 함수(`pm_relay.resolve_executable`)로 찾아 실행한다.
+
+    Windows npm 설치의 `claude.cmd` 는 이름 그대로 실행하지 못한다. 해소 실패는 `FileNotFoundError`
+    (PATH 부재)라 driver `_turn` 의 실행 실패 처리를 그대로 탄다."""
+    def runner(cmd, **kwargs):
+        return subprocess.run(
+            [engine.resolve_executable(cmd[0], kwargs.get("env")), *cmd[1:]], **kwargs)
+    return runner
+
+
 def main(argv: list[str] | None = None) -> int:
     actual_argv = list(sys.argv[1:] if argv is None else argv)
     hook_requested = "--git-anchor-hook" in actual_argv
@@ -483,6 +496,7 @@ def main(argv: list[str] | None = None) -> int:
     ctx_budget, precompact_at_pct, _warning = engine.ctx_budget(root, "claude", None)
     driver = ClaudeCliDriver(
         engine.parse_stream_json,
+        runner=_make_resolving_runner(engine),
         ctx_budget=ctx_budget,
         budget_reader=lambda model: engine.ctx_budget(root, "claude", model),
         precompact_at_pct=precompact_at_pct,

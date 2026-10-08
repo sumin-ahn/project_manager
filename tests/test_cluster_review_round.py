@@ -661,6 +661,51 @@ def test_delegation_lays_a_reviewer_seat_per_ticket_and_runs_in_the_snapshot(
         assert rounds and rounds[-1]["verdict"] == 0
 
 
+_SESSION_MARKER_KEYS = (
+    "CODEX_THREAD_ID", "CODEX_CI", "CLAUDECODE", "CLAUDE_CONFIG_DIR",
+    "OPENCODE", "OPENCODE_PID", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR",
+)
+
+
+@requires_git
+def test_cluster_review_emits_no_native_cheaper_advisory(
+        pd, review_env, monkeypatch, capsys):
+    """리뷰는 하네스와 무관하게 엔진이 실행한다 — PM 과 같은 하네스여도 native 안내가 없다.
+
+    PM 세션 claude · 리뷰 target claude 로 묶음 리뷰(`--cluster`)를 가짜 run_fn 으로 실행한다.
+    `--cluster` 는 `--gate`·`--ticket` 을 주지 않아 옛 판정(`metered_gate`)이 이 실행을 계측
+    실행으로 보지 못하고 "더 저렴" 안내를 냈다.
+    """
+    home, _tickets = review_env
+    _reserve_prior_rounds(pd, home, ("architect", "developer"))
+    for key in _SESSION_MARKER_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setattr(pd, "local_config", lambda *_a, **_k: {
+        "delegate_enabled": "true",
+        "delegate.code-reviewer.harness": "claude",
+        "delegate.code-reviewer.model": "sonnet",
+    })
+    executed: list = []
+
+    def _run_fn(argv, *, stdin_text, cwd, env, timeout, harness):
+        executed.append(harness)
+        return {"returncode": 0, "stdout": "", "stderr": "", "timed_out": False}
+
+    pd.main(
+        ["--role", "code-reviewer", "--cluster", _CLUSTER, "--cwd", str(home),
+         "--output-dir", str(home / "raw")],
+        run_fn=_run_fn,
+    )
+
+    err = capsys.readouterr().err
+    # 안내 판정 지점(실행 직전)까지 실제로 도달했다 — 거부로 일찍 끝난 실행이 아니다.
+    assert executed == ["claude"], err
+    assert "하네스 claude(model=sonnet) 실행 중" in err
+    assert "더 저렴" not in err
+    assert "native 위임이 규칙" not in err
+
+
 @requires_git
 def test_delegation_refuses_when_the_cluster_budget_is_spent(pd, review_env, capsys):
     """묶음 예산은 리뷰 위임 표면에서도 같은 판정이다(우회 인자 없음)."""

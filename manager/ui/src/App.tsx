@@ -115,7 +115,8 @@ export default function App({ bridge }: { bridge: Bridge }) {
    * 한다. 프로젝트를 고르는 시점에 **await 없이** 던져 두면 도착하는 대로 모델 칸이
    * 드롭다운이 되고, 도착 전에는 지금처럼 텍스트 칸 + [목록 불러오기] 다. 어느 하네스를
    * 물을지는 키 레지스트리가 정한다(`choices.fetch` 가 있는 행의 `depends_on` 현재 값) —
-   * 화면이 하네스 이름을 들지 않는다.
+   * 화면이 하네스 이름을 들지 않는다. 생각 깊이 칸도 같은 하네스의 같은 응답(`variants`)을 쓰므로
+   * 조회가 늘지 않는다.
    */
   const prefetchModels = useCallback((
     path: string, keys: ConfKeysDocument, values: Record<string, string>,

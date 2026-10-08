@@ -700,7 +700,9 @@ def install_ctx_record(root, values=None, harness="claude", capacity=2000000, mo
             shutil.copyfile(TOOLS / name, tools / name)
     for name, seam in known_ctx_seams(capacity=capacity, context=3000000, model=model).items():
         setattr(module, name, seam)
-    module._apply_harness_ctx(root, write=True, opencode_config_dir=root / "global", updates=values)
+    if values:
+        module._write_conf_keys(conf, dict(values))
+    module.apply_harness_ctx(root, write=True, opencode_config_dir=root / "global")
     return "ollama/glm-5.2:cloud" if harness == "opencode" else model
 
 
@@ -748,6 +750,13 @@ def _t0943_watched(root: Path) -> dict:
     paths = [root / relpath for _template, relpath in TEMPLATE_FILES.values()]
     paths += [root / ".project_manager" / "local.conf", root / ".project_manager" / ".local" / "ctx-budget.json"]
     return {path: path.read_bytes() if path.exists() else None for path in paths}
+
+
+def _t0945_pm_update(pm_import, monkeypatch):
+    """설정 저장 본문(`pm_update.apply_conf`)이 이 테스트의 pm_import(조회 교체 지점 포함)를 쓰게 한다."""
+    pm_update = _load("pm_update")
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    return pm_update
 
 
 def test_t0943_record_three_tools_fields_and_values(pm_import, local_conf, tmp_path, monkeypatch):
@@ -821,8 +830,8 @@ def test_t0943_reader_value_survives_time_cache_environment_and_path(pm_import, 
 
 
 @pytest.mark.parametrize("damage", ["missing", "broken", "schema4", "tool", "window", "ratio", "basis", "basis-type"])
-def test_t0943_reader_errors_name_ctx_apply(pm_import, local_conf, tmp_path, monkeypatch, damage):
-    """AT-002 — 부재·손상·이전 형식·도구 항목 없음·입력 변경은 `CtxBudgetError`("ctx-apply" 안내)다.
+def test_t0943_reader_errors_name_the_apply_command(pm_import, local_conf, tmp_path, monkeypatch, damage):
+    """AT-002 — 부재·손상·이전 형식·도구 항목 없음·입력 변경은 `CtxBudgetError`(`pm_config.py apply` 안내)다.
     모델 출처(basis)가 세 형식의 키를 갖추지 않았거나 값 형식이 다르면 읽기 단계의 기록 손상이다(F-004)."""
     root, values = _t0943_applied(pm_import, local_conf, tmp_path, monkeypatch)
     path = root / local_conf.CTX_BUDGET_RELPATH
@@ -845,10 +854,11 @@ def test_t0943_reader_errors_name_ctx_apply(pm_import, local_conf, tmp_path, mon
         values = {**values, "harness.claude.ctx_window_tokens": "500000"}
     else:
         values = {**values, "ctx.compact_at_pct": "93"}
-    with pytest.raises(local_conf.CtxBudgetError, match="ctx-apply"):
+    with pytest.raises(local_conf.CtxBudgetError, match="`pm_config.py apply`"):
         local_conf.read_ctx_budget(root, values, "claude", "claude-opus-5-5")
     status = local_conf.ctx_budget_status(root, values)["claude"]
-    assert status == {"status": "error", "reason": status["reason"]} and "ctx-apply" in status["reason"]
+    assert status == {"status": "error", "reason": status["reason"]}
+    assert "`pm_config.py apply`" in status["reason"]
 
 
 def test_t0943_reader_session_model_mismatch_warns_and_keeps_budget(pm_import, local_conf, tmp_path,
@@ -863,7 +873,7 @@ def test_t0943_reader_session_model_mismatch_warns_and_keeps_budget(pm_import, l
     other = read(root, values, "claude", "claude-sonnet-5")
     assert other["E"] == 600000 and other["P"] == 564000
     assert "기록 claude-opus-5-5 · 현재 claude-sonnet-5" in other["warning"] and "firstParty" not in other["warning"]
-    assert "ctx-apply" in other["warning"]
+    assert "`pm_config.py apply`" in other["warning"]
     assert read(root, values, "opencode", "openrouter/glm-5.2:cloud")["warning"]
 
 
@@ -884,14 +894,16 @@ def test_t0943_reader_accepts_every_basis_form(pm_import, local_conf, tmp_path, 
 
 
 def test_t0943_record_write_failure_returns_rc1(pm_import, local_conf, tmp_path, monkeypatch, capsys):
-    """F-005 — 쓰기 단계 실패는 바꾼 파일이 없어도 `ctx-apply` rc 1 이다. 같은 입력의 재적용에서 Claude 출처
+    """F-005 — 쓰기 단계 실패는 바꾼 파일이 없어도 `apply` rc 1 이다. 같은 입력의 재적용에서 Claude 출처
     표시값만 달라 기록만 다시 써야 할 때 기록 쓰기가 실패하면 local.conf·설정 파일·기록은 그대로다.
-    조회·검사 단계의 거부는 그대로 rc 3 이다(역방향)."""
+    조회·검사 단계의 거부는 그대로 rc 3 이다(역방향). 사용 한도 키만 보내 렌더 단계는 돌지 않는다."""
     _t0943_seams(pm_import, monkeypatch)
     pm_config = _load("pm_config")
+    pm_update = _t0945_pm_update(pm_import, monkeypatch)
     parser = pm_config.build_parser()
     root = _project(tmp_path, harnesses=("claude",), conf=T0943_CONF)
-    assert pm_config.cmd_ctx_apply(parser.parse_args(["ctx-apply"]), pm_import=pm_import, dest_root=root) == 0
+    same = ["apply", "--set", "ctx.compact_at_pct=94"]
+    assert pm_config.cmd_apply(parser.parse_args(same), pm_update=pm_update, dest_root=root) == 0
     before = _t0943_watched(root)
     row = {**T0943_CLAUDE_ROW, "basis": {"model_window": 1000100, "auto_compact_threshold": 967100}}  # d 33,000 그대로
     monkeypatch.setattr(pm_import, "_read_harness_ctx_metadata", lambda *args: [dict(row)])
@@ -900,12 +912,12 @@ def test_t0943_record_write_failure_returns_rc1(pm_import, local_conf, tmp_path,
         False if Path(rel) == local_conf.CTX_BUDGET_RELPATH else replace(dest_root, rel, payload, **kwargs)))
     capsys.readouterr()
 
-    assert pm_config.cmd_ctx_apply(parser.parse_args(["ctx-apply"]), pm_import=pm_import, dest_root=root) == 1
+    assert pm_config.cmd_apply(parser.parse_args(same), pm_update=pm_update, dest_root=root) == 1
     assert "압축 한도 기록(.project_manager/.local/ctx-budget.json)을 쓰지 못했습니다" in capsys.readouterr().err
     assert _t0943_watched(root) == before
 
-    refused = pm_config.cmd_ctx_apply(parser.parse_args(["ctx-apply", "--set", "ctx.precompact_at_pct=95"]),
-                                      pm_import=pm_import, dest_root=root)
+    refused = pm_config.cmd_apply(parser.parse_args(["apply", "--set", "ctx.precompact_at_pct=95"]),
+                                  pm_update=pm_update, dest_root=root)
     assert refused == 3 and "ctx.precompact_at_pct=95" in capsys.readouterr().err
     assert _t0943_watched(root) == before
 
@@ -949,9 +961,11 @@ def test_t0943_claude_refuses_without_writing(local_conf, tmp_path, monkeypatch,
     root = _project(tmp_path, harnesses=("claude",), conf=T0943_CONF)
     before = _t0943_watched(root)
     window = "600000" if case == "threshold" else "70000"          # 70,000 → P 65,800 → 창 98,800
-    with pytest.raises(engine.HarnessCtxError) as caught:
-        engine._apply_harness_ctx(root, write=True, opencode_config_dir=_global_dir(tmp_path),
-                                  updates={"harness.claude.ctx_window_tokens": window})
+    pm_update = _t0945_pm_update(engine, monkeypatch)
+    with pytest.raises(pm_update.ConfApplyError) as caught:
+        pm_update.apply_conf(root, opencode_config_dir=_global_dir(tmp_path),
+                             updates={"harness.claude.ctx_window_tokens": window})
+    assert caught.value.write_stage is False
     assert _t0943_watched(root) == before
     if case == "threshold":
         assert calls == ["auto", "597000"] and "567000" in str(caught.value) and "564000" in str(caught.value)
@@ -1007,10 +1021,12 @@ def test_t0943_codex_refuses_without_writing(local_conf, tmp_path, monkeypatch, 
     _t0943_codex_cache(tmp_path, monkeypatch, rows)
     root = _project(tmp_path, harnesses=("codex",), conf=T0943_CONF)
     before = _t0943_watched(root)
-    with pytest.raises(engine.HarnessCtxError) as caught:
+    pm_update = _t0945_pm_update(engine, monkeypatch)
+    with pytest.raises(pm_update.ConfApplyError) as caught:
         # 95% → P 541,500 > 600,000 × 90% = 540,000
-        engine._apply_harness_ctx(root, write=True, opencode_config_dir=_global_dir(tmp_path),
-                                  updates={"ctx.compact_at_pct": "94" if case == "missing-row" else "95"})
+        pm_update.apply_conf(root, opencode_config_dir=_global_dir(tmp_path),
+                             updates={"ctx.compact_at_pct": "94" if case == "missing-row" else "95"})
+    assert caught.value.write_stage is False
     assert _t0943_watched(root) == before
     expected = "gpt-6.1-sol 행이 없거나" if case == "missing-row" else "541500"
     assert expected in str(caught.value), caught.value

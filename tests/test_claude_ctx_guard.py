@@ -1777,7 +1777,7 @@ def test_t0943_statusline_model_check_and_record_error(statusline, tmp_path):
     assert "ctx 90%" in other and "모델이 바뀌었습니다" in other and "claude-other" in other
     (tmp_path / ".project_manager/.local/ctx-budget.json").unlink()
     missing = statusline.build_statusline(payload, _T0943_CONF, root=tmp_path)
-    assert "ctx 한도 기록 오류" in missing and "ctx-apply" in missing
+    assert "ctx 한도 기록 오류" in missing and "`pm_config.py apply`" in missing
 
 
 def test_t0943_hook_real_input_fields_nudge_and_model_warning(stop_hook, tmp_path):
@@ -1802,7 +1802,7 @@ def test_t0943_hook_missing_record_is_reported(stop_hook, tmp_path, capsys):
     transcript = _t0943_model_transcript(tmp_path, 190000, "fixture-model")
     rc, output = stop_hook.evaluate(_t0943_hook_input(tmp_path, "UserPromptSubmit", transcript), tmp_path, {})
     assert rc == 0 and output == {"systemMessage": output["systemMessage"]}
-    assert output["systemMessage"].startswith("[ctx-budget]") and "ctx-apply" in output["systemMessage"]
+    assert output["systemMessage"].startswith("[ctx-budget]") and "`pm_config.py apply`" in output["systemMessage"]
     capsys.readouterr()
     assert stop_hook.evaluate(_t0943_hook_input(tmp_path, "PreToolUse", transcript), tmp_path, {}) == (0, None)
     assert "[ctx-budget]" in capsys.readouterr().err
