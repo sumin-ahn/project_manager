@@ -348,8 +348,12 @@ def test_only_the_latest_developer_round_is_the_judgment_input(pd, rounds_env, c
 
 # ── (4) 진입점 파리티 ──────────────────────────────────────────────────────
 
-def test_ticket_prepare_cli_is_rc_zero_and_names_the_round(pd, rounds_env, capsys, monkeypatch):
-    """진입점 1 — `ticket prepare --role code-reviewer`(rc + stderr 라운드 이름)."""
+def test_ticket_prepare_cli_refuses_the_review_role_without_a_round(
+        pd, rounds_env, capsys, monkeypatch):
+    """리뷰는 엔진이 실행한다 — `ticket prepare --role code-reviewer` 는 rc 2 이고 라운드를 남기지 않는다.
+
+    리뷰 라운드 준비 진입점은 엔진 실행 경로(아래 cross 자동 준비·묶음 리뷰)뿐이다.
+    """
     pm_home, slot, tickets, _board = rounds_env
     _write_spec(tickets, "T-7807", rounds=("developer", "code-reviewer"))
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
@@ -358,14 +362,15 @@ def test_ticket_prepare_cli_is_rc_zero_and_names_the_round(pd, rounds_env, capsy
     ]) == 0
     capsys.readouterr()
 
-    rc = pd._cmd_ticket([
-        "prepare", "--ticket", "T-7807", "--role", "code-reviewer", "--cwd", str(slot),
-    ])
+    with pytest.raises(SystemExit) as exc:
+        pd._cmd_ticket([
+            "prepare", "--ticket", "T-7807", "--role", "code-reviewer", "--cwd", str(slot),
+        ])
 
-    captured = capsys.readouterr()
-    assert rc == 0, "경고다 — 거부가 아니다"
-    assert WARNING_MARK in captured.err and "02-developer.md" in captured.err
-    assert json.loads(captured.out.splitlines()[-1])["ordinal"] == 3
+    assert exc.value.code == 2
+    assert sorted(path.name for path in _rounds_dir(pm_home, "T-7807").iterdir()) == [
+        "01-architect.md", "02-developer.md",
+    ]
 
 
 def test_cross_auto_prepare_shares_the_prepare_seam(pd, rounds_env, capsys, monkeypatch, tmp_path):

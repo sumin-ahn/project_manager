@@ -13,6 +13,8 @@
 
 ### Changed
 
+- 위임 카드·운영 지침·playbook의 transport 규칙을 한 문장으로 맞춘다. 리뷰는 하네스와 무관하게 엔진이 실행하고(`pm_delegate.py --role code-reviewer --cluster`), 설계·구현·조사만 같은 하네스면 native로 위임한다. 리뷰 실행에는 더 이상 "네이티브가 더 저렴" 안내가 나오지 않으며, `ticket prepare --role` 은 `developer`·`architect` 만 받는다.
+
 - `pm-config delegate models` 응답에 모델별 추론 강도(`variants`)를 싣고, 설정 화면의 OpenCode 생각 깊이 칸은 그 모델의 목록에서 고른다(목록이 비면 "없음"이고 값을 비운다).
 
 - 개발 회귀와 릴리즈 플랫폼 검증을 분리한다. 일반 회귀는 현재 플랫폼의 테스트만 실행하고, 선언한 추가 플랫폼 전체는 릴리즈 게이트에서 같은 커밋으로 검증한다. 회귀는 백그라운드로 실행해 별도 작업 트리의 개발을 계속할 수 있다.

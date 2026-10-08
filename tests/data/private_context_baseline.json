@@ -1,5 +1,5 @@
 {
-  "count": 396,
+  "count": 394,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -1337,17 +1337,7 @@
       },
       {
         "count": 1,
-        "hash": "793c661027eaa96c84bed2b38cdd3e5d0ad82392c17ce1cdfc5594b00f6dfb09",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
         "hash": "9bad24cadea980861bbe1b6d9c38ac0a691d7a6f9d4de2de8b653a5562e27398",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "c2b7628474676c3b4a22e29cdbf3b51eb07aad695426932276cc7d3062a0091c",
         "kind": "session_stamp"
       },
       {
@@ -1858,7 +1848,7 @@
       },
       {
         "count": 1,
-        "hash": "4450304bb23605921ee64a6c26edc2089fc1bebd8d6fea23d74be40588203554",
+        "hash": "53cd3c4d28a528ff046bc837e4db677f233d82006876651a3353fe965479a749",
         "kind": "session_stamp"
       },
       {

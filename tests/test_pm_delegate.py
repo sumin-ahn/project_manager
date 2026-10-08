@@ -5836,7 +5836,7 @@ def test_native_advisory_accepts_measured_codex_markers(pd, monkeypatch, key):
     _clear_native_advisory_env(monkeypatch)
     monkeypatch.setenv(key, "session-marker")
 
-    assert pd.native_advisory("codex") is not None
+    assert pd.native_advisory("codex", "developer") is not None
 
 
 def test_native_advisory_claude_survives_opencode_config_dir(pd, monkeypatch):
@@ -5845,8 +5845,8 @@ def test_native_advisory_claude_survives_opencode_config_dir(pd, monkeypatch):
     monkeypatch.setenv("CLAUDECODE", "session-marker")
     monkeypatch.setenv("OPENCODE_CONFIG_DIR", "/user-config/opencode")
 
-    assert pd.native_advisory("claude") is not None
-    assert pd.native_advisory("opencode") is None
+    assert pd.native_advisory("claude", "developer") is not None
+    assert pd.native_advisory("opencode", "developer") is None
 
 
 @pytest.mark.parametrize("key", ("CLAUDE_CONFIG_DIR", "OPENCODE_CONFIG",
@@ -5856,9 +5856,9 @@ def test_native_advisory_ignores_config_and_unmeasured_keys(pd, monkeypatch, key
     _clear_native_advisory_env(monkeypatch)
     monkeypatch.setenv(key, "configured")
 
-    assert pd.native_advisory("codex") is None
-    assert pd.native_advisory("claude") is None
-    assert pd.native_advisory("opencode") is None
+    assert pd.native_advisory("codex", "developer") is None
+    assert pd.native_advisory("claude", "developer") is None
+    assert pd.native_advisory("opencode", "developer") is None
 
 
 @pytest.mark.parametrize("key", ("OPENCODE", "OPENCODE_PID"))
@@ -5867,7 +5867,7 @@ def test_native_advisory_accepts_measured_opencode_markers(pd, monkeypatch, key)
     _clear_native_advisory_env(monkeypatch)
     monkeypatch.setenv(key, "opencode-session")
 
-    assert pd.native_advisory("opencode") is not None
+    assert pd.native_advisory("opencode", "developer") is not None
 
 
 def test_native_advisory_nested_claude_opencode_is_ambiguous(pd, monkeypatch):
@@ -5876,8 +5876,8 @@ def test_native_advisory_nested_claude_opencode_is_ambiguous(pd, monkeypatch):
     monkeypatch.setenv("CLAUDECODE", "claude-parent")
     monkeypatch.setenv("OPENCODE", "opencode-child")
 
-    assert pd.native_advisory("claude") is None
-    assert pd.native_advisory("opencode") is None
+    assert pd.native_advisory("claude", "developer") is None
+    assert pd.native_advisory("opencode", "developer") is None
 
 
 def test_native_advisory_multiple_harness_markers_are_ambiguous(pd, monkeypatch):
@@ -5886,16 +5886,62 @@ def test_native_advisory_multiple_harness_markers_are_ambiguous(pd, monkeypatch)
     monkeypatch.setenv("CODEX_THREAD_ID", "codex-session")
     monkeypatch.setenv("CLAUDECODE", "claude-session")
 
-    assert pd.native_advisory("codex") is None
-    assert pd.native_advisory("claude") is None
+    assert pd.native_advisory("codex", "developer") is None
+    assert pd.native_advisory("claude", "developer") is None
 
 
 def test_native_advisory_rejects_values_outside_public_domain(pd, monkeypatch):
     """공개 하네스 도메인 밖 값과 미지정 값은 native 안내 대상이 아니다."""
     _clear_native_advisory_env(monkeypatch)
 
-    assert pd.native_advisory("gemini") is None
-    assert pd.native_advisory(None) is None
+    assert pd.native_advisory("gemini", "developer") is None
+    assert pd.native_advisory(None, "developer") is None
+
+
+def test_native_advisory_is_silent_for_review_role(pd, monkeypatch):
+    """안내 판정 입력은 역할 하나다 — 리뷰는 하네스와 무관하게 엔진 실행이라 안내가 없다.
+
+    설계·구현·조사 역할은 같은 하네스로 CLI 실행하면 그대로 native 규칙을 안내한다(역방향).
+    """
+    _clear_native_advisory_env(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+
+    assert pd.native_advisory("claude", pd.INTERNAL_REVIEW_ROLE) is None
+    for role in ("developer", "architect", "researcher"):
+        advisory = pd.native_advisory("claude", role)
+        assert advisory is not None, role
+        assert "native 위임이 규칙" in advisory and "더 저렴" not in advisory
+
+
+def test_ticket_prepare_rejects_review_role(pd, monkeypatch, tmp_path):
+    """`ticket prepare` 역할은 developer·architect 뿐이다 — 리뷰는 엔진이 실행하고 native 준비가 없다.
+
+    같은 호출이 developer 로는 준비까지 도달한다(역방향 — 정상 준비를 막지 않는다).
+    """
+    _clear_native_advisory_env(monkeypatch)
+    slot = tmp_path / "slot"
+    slot.mkdir()
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: tmp_path / "pm")
+    prepared_roles: list[str] = []
+
+    def _prepare(**kwargs):
+        prepared_roles.append(kwargs["role"])
+        return pd.TicketCopyPlan(
+            slot / "01-developer.md", slot, "T-7807", kwargs["role"], 1,
+            tmp_path / "pm" / "01-developer.md", "a" * 32, "",
+        )
+
+    monkeypatch.setattr(pd, "prepare_ticket_copy", _prepare)
+
+    assert pd._cmd_ticket([
+        "prepare", "--ticket", "T-7807", "--role", "developer", "--cwd", str(slot),
+    ]) == 0
+    with pytest.raises(SystemExit) as exc:
+        pd._cmd_ticket([
+            "prepare", "--ticket", "T-7807", "--role", "code-reviewer", "--cwd", str(slot),
+        ])
+    assert exc.value.code == 2
+    assert prepared_roles == ["developer"]
 
 
 # ══ T-0650 위임 루프 기계 가드([R]·[P]·[A]·[C]) ═════════════════════════════

@@ -1,13 +1,14 @@
 ---
 name: pm-dev-delegate
-description: "Codex native spawn_agent 기반 architect/developer/code-reviewer 위임 표준 프롬프트 + touches disjoint 안전성 cross-check. claim 은 별도 (pm-wave-claim). reviewer 위임 시 status.md/log/current.md 갱신 책임 명시. Triggers: 'dev 위임', 'reviewer 위임', 'T-NNNN 위임', 'pm-dev-delegate'."
+description: "Codex native spawn_agent 기반 architect/developer 위임 표준 프롬프트 + code-reviewer 엔진 실행 + touches disjoint 안전성 cross-check. claim 은 별도 (pm-wave-claim). reviewer 위임 시 status.md/log/current.md 갱신 책임 명시. Triggers: 'dev 위임', 'reviewer 위임', 'T-NNNN 위임', 'pm-dev-delegate'."
 audience: pm-internal
 ---
 
 # $pm-dev-delegate T-NNNN [--role architect|developer|code-reviewer] — orchestrator 위임
 
 > {{PROJECT_NAME}} PM 의 Codex native `spawn_agent` 위임 표준 프롬프트. 역할은
-> `agent_type="architect|developer|code-reviewer"`로 고르고, spawn 이 반환한 thread 는 비동기로 진행된다.
+> `agent_type="architect|developer"`로 고르고, spawn 이 반환한 thread 는 비동기로 진행된다.
+> 리뷰는 spawn 하지 않는다 — 엔진이 실행한다(§code-reviewer 위임).
 > ticket 본문이 self-contained 의무를 충족하면 위임 프롬프트는 한 줄이다.
 
 환경별 명령 문법은 부트스트랩의 "현재 환경" 표시에 맞춰 [Windows 안내](../references/environment-windows.md) 또는 [Linux/macOS 안내](../references/environment-posix.md)를 참조한다.
@@ -88,7 +89,7 @@ architect·developer·code-reviewer·researcher는 PM 홈 티켓을 직접 편�
 
 ```bash
 python3 .project_manager/tools/pm_delegate.py ticket prepare \
-    --cluster <C-이름> --role <architect|developer|code-reviewer|researcher> \
+    --cluster <C-이름> --role <architect|developer> \
     --cwd <작업 worktree 절대경로>
 # 티켓마다 stdout JSON 한 줄 — `copy`(라운드 파일 절대경로)만 agent message에 넣는다.
 
@@ -104,15 +105,18 @@ prepare 실패 시 spawn하지 않는다. harvest 실패 시 같은 copy로 재�
 회수 성공 = run-dir 삭제 = run 닫힘이라 재회수 개념이 없고, 산출이 시드 그대로면 board를 바꾸지 않고
 경고만 내며 run-dir 을 남긴다(게이트 아님). 거부 판정(역할·상태·예산·순서)은 **전부 예약 앞**이라
 거부된 준비가 board 에 고아 라운드를 남기지 않는다. 에이전트는 자기 라운드 파일만 쓰고 명세·이전
-라운드는 읽기 전용으로 읽는다. code-reviewer native profile은 그 파일을 쓰도록 `workspace-write`지만
-코드·board·git 수정은 금지이며, spawn 전후 `git status --short`·`git diff --name-only` 감사가 위반을
-loud 표면화한다. **`ticket prepare`는 역할이 native(하네스가 PM 하네스와 일치)일 때만 통과한다** —
+라운드는 읽기 전용으로 읽는다. **`ticket prepare`는 역할이 native(하네스가 PM 하네스와 일치)일 때만 통과한다** —
 cross 역할은 고아 시드를 막기 위해 rc≠0 으로 거부되며, `--ticket` 실 실행(아래 cross-harness 위임)이
-자동 준비하라는 처방을 낸다.
+자동 준비하라는 처방을 낸다. 리뷰는 준비 대상이 아니다(엔진 실행 · `--role code-reviewer` 는 rc 2).
 
 ## cross-harness 위임 판정 (native 단락 · pm_delegate 채널 · ADR-0075)
 
-역할 노동을 위임하기 전, 대상이 **내(PM) 하네스 네이티브로 도는지**(native) **다른 하네스 CLI 로
+transport 규칙은 한 문장이다. 리뷰(`code-reviewer`)는 하네스와 무관하게 엔진이
+실행한다(`pm_delegate.py --role code-reviewer --cluster`). 설계·구현·조사는 target 하네스 == PM
+하네스면 native, 다르면 `pm_delegate.py` cross 다. 리뷰만 엔진이 실행하는 이유는 §code-reviewer
+위임에 있다.
+
+설계·구현·조사를 위임하기 전, 대상이 **내(PM) 하네스 네이티브로 도는지**(native) **다른 하네스 CLI 로
 나가야 하는지**(cross)를 먼저 판정한다. 판정 1차 = 이 카드(PM)이고, `pm_delegate.py` 의 same-harness
 경고는 백스톱(never-block·spike §3.6). 매핑은 `local.conf` 의 `delegate.<role>[.<tier>]` 키가 소유한다.
 
@@ -159,11 +163,13 @@ claude `.claude/agents/developer-hard.md` · opencode `.opencode/agents/develope
 
 ### 2. native 단락 판정
 
-해소된 **target harness == 내(PM) 하네스**면 → **네이티브 위임**을 쓴다. codex PM 은 아래 §실행 패턴의
-`spawn_agent` 네이티브 위임을 그대로 쓴다(다른 하네스가 PM 일 때는 각자의 네이티브 서브에이전트 위임).
-pm_delegate 를 부르지 않는다 — 같은 프로세스 계열이라 더 저렴하다.
+설계·구현·조사에서 해소된 **target harness == 내(PM) 하네스**면 → **네이티브 위임**을 쓴다. codex PM 은
+아래 §실행 패턴의 `spawn_agent` 네이티브 위임을 그대로 쓴다(다른 하네스가 PM 일 때는 각자의 네이티브
+서브에이전트 위임). pm_delegate 를 부르지 않는다.
 
-해소된 **target harness != 내 하네스**(cross)면 → 아래 §3 pm_delegate 호출.
+설계·구현·조사에서 해소된 **target harness != 내 하네스**(cross)면 → 아래 §3 pm_delegate 호출.
+
+리뷰는 §code-reviewer 위임(엔진 실행, 하네스 무관)이다.
 
 ### 3. cross 위임 실행 (pm_delegate.py)
 
@@ -175,7 +181,7 @@ python3 .project_manager/tools/pm_delegate.py --role <역할> \
 ```
 
 - `--prompt-file` — PM 이 만든 **self-contained task 프롬프트**를 담은 파일. 아래 §실행 패턴의 위임
-  프롬프트 본문(developer/code-reviewer)을 그대로 파일로 저장해 넘긴다. 경로는 해소된 `--cwd` 하위
+  프롬프트 본문(developer)을 그대로 파일로 저장해 넘긴다(리뷰 프롬프트는 엔진이 조립한다). 경로는 해소된 `--cwd` 하위
   또는 이 repo `.project_manager/` 하위만 허용(repo 경계 밖 = fail-loud·유출 차단).
 - `--cwd` — dev 가 구현할 **작업 worktree 절대경로**. F6 해소값(task-mode 는 위 §task-mode 주입 절
   참조)을 실값으로 박는다. 모든 역할 필수(기본값 없음).
@@ -306,7 +312,9 @@ spawn_agent(
 ### code-reviewer 위임 (묶음 1회)
 
 리뷰 단위는 묶음이다. **격리 스냅샷·프롬프트 조립·라운드 자리 예약을 엔진이 한다 — PM 의 손 git 은
-0이다.** PM 이 넣는 것은 검토 중점 문단 하나(`--focus`)뿐이다.
+0이다.** PM 이 넣는 것은 검토 중점 문단 하나(`--focus`)뿐이다. 리뷰가 PM 과 같은 하네스여도 native
+위임을 쓰지 않는 이유: 하네스 프로세스의 실행 위치를 격리 스냅샷으로 옮기는 것과 라운드 상한·발산
+판정은 별도 프로세스로만 가능하다(native 위임 도구에는 작업 디렉터리 인자가 없다).
 
 ```bash
 python3 .project_manager/tools/pm_delegate.py --role code-reviewer \

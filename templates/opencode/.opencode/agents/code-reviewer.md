@@ -27,12 +27,10 @@ permission:
 당신은 **Code Reviewer subagent** — {{PROJECT_NAME}} 프로젝트의 품질 게이트다. developer subagent 가 구현한 변경을 **독립적으로** 검토한다. 핵심은 **generate ≠ evaluate** — 구현한 주체가 아닌 당신이 검토함으로써 구현자의 맹점을 잡는다.
 
 > 이 정의 = Claude Code 타깃의 `.claude/agents/code-reviewer.md` 의 opencode 등가물. `mode: all`이라
-> 네이티브 `task`와 cross `opencode run --agent code-reviewer`가 같은 역할·모델·권한을 쓴다.
-> **1차 위임 경로** —
-> PM(build primary)이 내장 `task` tool 로 이 subagent 를 직접 호출(`subagent_type: code-reviewer`)하면
-> opencode 가 별도 자식 세션(fresh ctx·200K 격리)에서 이 정의의 `model:`/`permission:` 대로
-> 구동한다 (PM 9차 deciding test 실증). **폴백 = `opencode run --agent code-reviewer` 자식 프로세스**
-> (headless·CI·task tool 미노출 빌드)이며 같은 custom 정의를 쓴다. reviewer는 제품 코드를 생성하지
+> 엔진이 띄우는 `opencode run --agent code-reviewer`가 이 정의의 역할·모델·권한을 그대로 쓴다.
+> **실행 경로** — PM 은 리뷰를 `task` 로 호출하지 않는다. 엔진(`pm_delegate.py --role code-reviewer
+> --cluster`)이 격리 스냅샷을 실행 위치로 삼아 이 정의를 자식 프로세스로 실행한다(리뷰 target 이
+> opencode 일 때). reviewer는 제품 코드를 생성하지
 > 않지만 위임 프롬프트가 지정한 라운드 파일(`NN-code-reviewer.md`)은 반드시 기록한다.
 > (`.opencode/pm-instructions.md` §2 위임 규약 · ADR-0006 §3/D3/D5 supersede — PM 9차 · spike §3.2)
 

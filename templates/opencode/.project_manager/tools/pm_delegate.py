@@ -12783,25 +12783,22 @@ def _session_harness(env: dict[str, str]) -> str | None:
     return matches[0] if len(matches) == 1 else None
 
 
-def native_advisory(harness: str | None, *, metered_gate: bool = False) -> str | None:
-    """target 하네스 == PM 하네스면 "네이티브가 더 저렴" advisory 1줄(never-block).
+def native_advisory(harness: str | None, role: str) -> str | None:
+    """설계·구현·조사를 target 하네스 == PM 하네스로 CLI 실행하면 native 규칙 안내 1줄(never-block).
 
-    PM 하네스 env 마커(codex CODEX_THREAD_ID·claude CLAUDECODE·opencode OPENCODE)를 감지해
-    same-harness 위임이면
+    규칙: 리뷰(`code-reviewer`)는 하네스와 무관하게 엔진이 실행하고, 그 밖 역할은 같은 하네스면
+    native 위임이다. 판정 입력은 역할과 하네스뿐이다. PM 하네스 env 마커(codex CODEX_THREAD_ID·
+    claude CLAUDECODE·opencode OPENCODE)를 감지해 안내가 필요하면
     경고 문자열을 반환한다(호출부가 stderr 로 냄). 1차 판정은 어댑터 스킬 카드·이건 백스톱."""
+    if role == INTERNAL_REVIEW_ROLE:
+        return None
     # 직접 호출 seam 에도 공개 하네스 도메인을 적용한다. 이 진단은 하네스 이름별 표현을 소유한다.
     if harness not in HARNESS_CHOICES:
         return None
     pm_harness = _session_harness(os.environ)
     if pm_harness == harness:
-        if metered_gate:
-            return (
-                f"[pm-delegate] target 하네스({harness}) == PM 하네스 — native는 비용 절감 "
-                "advisory지만 이 code-reviewer 게이트는 계측 장부를 위해 pm_delegate CLI로 "
-                "실행합니다(subprocess 실행·과금)."
-            )
-        return (f"[pm-delegate] target 하네스({harness}) == PM 하네스 — 네이티브 위임이 더 저렴하다"
-                "(subprocess 스폰 불요). 어댑터 스킬 카드의 native 단락을 우선하라(advisory).")
+        return (f"[pm-delegate] target 하네스({harness}) == PM 하네스 — 설계·구현·조사는 native "
+                "위임이 규칙이다(어댑터 스킬 카드 transport 절). 리뷰만 엔진 실행이다(advisory).")
     return None
 
 # ── config lint (동일-모델 dev/reviewer 경고·never-block) ────────────────
@@ -13049,7 +13046,9 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
         help="클러스터 장부의 멤버 전부에 라운드를 예약한다(run-dir 1 · 라운드 파일 N)",
     )
     prepare.add_argument(
-        "--role", required=True, choices=tuple(sorted(TICKET_COPY_PREPARE_ROLES)),
+        "--role", required=True,
+        # 리뷰는 엔진이 실행한다(묶음 리뷰가 `prepare_cluster_copy` 를 직접 부른다) — native 준비 없음.
+        choices=tuple(sorted(TICKET_COPY_PREPARE_ROLES - {INTERNAL_REVIEW_ROLE})),
     )
     prepare.add_argument(
         "--tier", default=None, choices=TIER_CHOICES,
@@ -15551,9 +15550,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
                     f"하네스 {harness}(model={model}) 실행 중 (유료 호출).",
                     file=sys.stderr,
                 )
-                advisory = native_advisory(
-                    harness, metered_gate=bool(internal_gate),
-                )
+                advisory = native_advisory(harness, args.role)
                 if advisory is not None:
                     print(advisory, file=sys.stderr)
                 _ticket_copy_handed_off = True  # 여기부터 harvest 가 정리를 넘겨받는다
@@ -15875,10 +15872,7 @@ def _execute_and_collect(
             "(과금·1단 폴백).",
             file=sys.stderr,
         )
-        advisory = native_advisory(
-            fallback_harness,
-            metered_gate=bool(internal_trace and internal_trace.budget.reserved),
-        )
+        advisory = native_advisory(fallback_harness, args.role)
         if advisory is not None:
             print(advisory, file=sys.stderr)
         try:

@@ -35,6 +35,9 @@ from pathlib import Path
 
 import pytest
 
+# transport 규칙 문장의 단일 진실은 문구 검사 모듈 하나다(사본을 두지 않는다).
+from test_delegate_transport_rule import TRANSPORT_RULE
+
 REPO = Path(__file__).resolve().parents[1]
 CODEX = REPO / "templates" / "codex"
 AGENTS_DIR = CODEX / ".codex" / "agents"
@@ -396,6 +399,15 @@ def test_pm_dev_delegate_documents_only_native_codex_spawn_fields():
     )
     assert "--role code-reviewer" in text and "--cluster" in text, (
         "codex 카드에 묶음 리뷰 실행(--role code-reviewer --cluster)이 없음"
+    )
+    # 손 spawn 역할 둘과 같은 규칙이 문장·준비 명령에도 있다 — 리뷰는 엔진 실행(T-0947).
+    flat = re.sub(r"\s+", " ", text)
+    assert TRANSPORT_RULE in flat, "codex 카드에 transport 규칙(R1) 문장이 없음"
+    prepare_roles = re.findall(
+        r"ticket prepare (?:\\ )?--cluster <C-이름> --role <([^>]+)>", flat,
+    )
+    assert prepare_roles == ["architect|developer"], (
+        f"codex 카드 준비 역할 목록이 손 spawn 역할(architect·developer)과 다름: {prepare_roles}"
     )
     for stale_field in ("subagent_type", "run_in_background"):
         assert stale_field not in text, f"Codex pm-dev-delegate에 타 harness 필드 잔존: {stale_field}"

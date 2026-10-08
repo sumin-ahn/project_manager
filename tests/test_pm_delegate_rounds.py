@@ -4548,19 +4548,19 @@ def _prepare_cli(pd, slot: Path, ticket: str, role: str, *, tier: str | None = N
 
 def test_cross_role_prepare_is_denied_with_no_board_or_ledger_side_effect(
         pd, rounds_env, monkeypatch, capsys):
-    """실 ② PM 홈 형상(code-reviewer=codex) 재현 — cross 수동 prepare 는 rc≠0·부작용 0."""
+    """실 ② PM 홈 형상(architect=codex) 재현 — cross 수동 prepare 는 rc≠0·부작용 0."""
     pm_home, slot, tickets, _sync = rounds_env
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
     _write_local_conf(pm_home, {
         "delegate.enabled": "true",
-        "delegate.code-reviewer.harness": "codex",
-        "delegate.code-reviewer.model": "gpt-5.6-sol",
+        "delegate.architect.harness": "codex",
+        "delegate.architect.model": "gpt-5.6-sol",
     })
     _isolate_harness_env(monkeypatch)
     monkeypatch.setenv("CLAUDECODE", "1")
     _write_spec(tickets, "T-7900")
 
-    rc = _prepare_cli(pd, slot, "T-7900", "code-reviewer")
+    rc = _prepare_cli(pd, slot, "T-7900", "architect")
 
     captured = capsys.readouterr()
     assert rc != 0
@@ -4607,22 +4607,22 @@ def test_prepare_denial_follows_conf_not_role_name(pd, rounds_env, monkeypatch, 
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
     _isolate_harness_env(monkeypatch)
     monkeypatch.setenv("CLAUDECODE", "1")
-    _write_spec(tickets, "T-7902", rounds=("code-reviewer",))
+    _write_spec(tickets, "T-7902", rounds=("architect",))
 
     _write_local_conf(pm_home, {
         "delegate.enabled": "true",
-        "delegate.code-reviewer.harness": "codex",
-        "delegate.code-reviewer.model": "gpt-5.6-sol",
+        "delegate.architect.harness": "codex",
+        "delegate.architect.model": "gpt-5.6-sol",
     })
-    assert _prepare_cli(pd, slot, "T-7902", "code-reviewer") != 0
+    assert _prepare_cli(pd, slot, "T-7902", "architect") != 0
     capsys.readouterr()
 
     _write_local_conf(pm_home, {
         "delegate.enabled": "true",
-        "delegate.code-reviewer.harness": "claude",
-        "delegate.code-reviewer.model": "opus",
+        "delegate.architect.harness": "claude",
+        "delegate.architect.model": "opus",
     })
-    assert _prepare_cli(pd, slot, "T-7902", "code-reviewer") == 0
+    assert _prepare_cli(pd, slot, "T-7902", "architect") == 0
 
 
 def test_tier_hard_is_denied_when_only_hard_maps_cross(pd, rounds_env, monkeypatch, capsys):
@@ -4676,13 +4676,13 @@ def test_fail_open_when_pm_harness_marker_is_absent(pd, rounds_env, monkeypatch,
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
     _write_local_conf(pm_home, {
         "delegate.enabled": "true",
-        "delegate.code-reviewer.harness": "codex",
-        "delegate.code-reviewer.model": "gpt-5.6-sol",
+        "delegate.architect.harness": "codex",
+        "delegate.architect.model": "gpt-5.6-sol",
     })
     _isolate_harness_env(monkeypatch)
-    _write_spec(tickets, "T-7905", rounds=("code-reviewer",))
+    _write_spec(tickets, "T-7905", rounds=("architect",))
 
-    rc = _prepare_cli(pd, slot, "T-7905", "code-reviewer")
+    rc = _prepare_cli(pd, slot, "T-7905", "architect")
 
     captured = capsys.readouterr()
     assert rc == 0
@@ -4695,15 +4695,15 @@ def test_fail_open_when_pm_harness_markers_collide(pd, rounds_env, monkeypatch, 
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
     _write_local_conf(pm_home, {
         "delegate.enabled": "true",
-        "delegate.code-reviewer.harness": "codex",
-        "delegate.code-reviewer.model": "gpt-5.6-sol",
+        "delegate.architect.harness": "codex",
+        "delegate.architect.model": "gpt-5.6-sol",
     })
     _isolate_harness_env(monkeypatch)
     monkeypatch.setenv("CLAUDECODE", "1")
     monkeypatch.setenv("OPENCODE", "1")
-    _write_spec(tickets, "T-7906", rounds=("code-reviewer",))
+    _write_spec(tickets, "T-7906", rounds=("architect",))
 
-    rc = _prepare_cli(pd, slot, "T-7906", "code-reviewer")
+    rc = _prepare_cli(pd, slot, "T-7906", "architect")
 
     captured = capsys.readouterr()
     assert rc == 0
@@ -4717,9 +4717,9 @@ def test_fail_open_and_not_silent_when_no_delegate_mapping_exists(
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
     _isolate_harness_env(monkeypatch)
     monkeypatch.setenv("CLAUDECODE", "1")
-    _write_spec(tickets, "T-7907", rounds=("code-reviewer",))
+    _write_spec(tickets, "T-7907", rounds=("architect",))
 
-    rc = _prepare_cli(pd, slot, "T-7907", "code-reviewer")
+    rc = _prepare_cli(pd, slot, "T-7907", "architect")
 
     captured = capsys.readouterr()
     assert rc == 0
@@ -4764,8 +4764,8 @@ def test_prepare_denies_using_owner_conf_even_when_engine_copy_conf_lacks_mappin
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", None)
     _write_local_conf(pm_home, {
         "delegate.enabled": "true",
-        "delegate.code-reviewer.harness": "codex",
-        "delegate.code-reviewer.model": "gpt-5.6-sol",
+        "delegate.architect.harness": "codex",
+        "delegate.architect.model": "gpt-5.6-sol",
     })
     _isolate_harness_env(monkeypatch)
     monkeypatch.setenv("CLAUDECODE", "1")
@@ -4774,7 +4774,7 @@ def test_prepare_denies_using_owner_conf_even_when_engine_copy_conf_lacks_mappin
     # 선-단언 — REPO(엔진 사본) conf 로 읽으면 매핑이 비어 no-op 이 된다는 전제 자체를 확인한다.
     assert pd.local_config() == {}
 
-    rc = _prepare_cli(pd, slot, "T-7908", "code-reviewer")
+    rc = _prepare_cli(pd, slot, "T-7908", "architect")
 
     assert rc != 0
     assert _ledger_rows(pm_home) == []
@@ -4830,8 +4830,8 @@ def test_cross_role_prepare_denial_survives_a_reworded_deny_reason(
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
     _write_local_conf(pm_home, {
         "delegate.enabled": "true",
-        "delegate.code-reviewer.harness": "codex",
-        "delegate.code-reviewer.model": "gpt-5.6-sol",
+        "delegate.architect.harness": "codex",
+        "delegate.architect.model": "gpt-5.6-sol",
     })
     _isolate_harness_env(monkeypatch)
     monkeypatch.setenv("CLAUDECODE", "1")
@@ -4848,7 +4848,7 @@ def test_cross_role_prepare_denial_survives_a_reworded_deny_reason(
 
     monkeypatch.setattr(guard, "decide", _reworded_decide)
 
-    rc = _prepare_cli(pd, slot, "T-7912", "code-reviewer")
+    rc = _prepare_cli(pd, slot, "T-7912", "architect")
 
     captured = capsys.readouterr()
     assert rc != 0
