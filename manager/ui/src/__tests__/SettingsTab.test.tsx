@@ -784,7 +784,7 @@ describe("T0943 압축 한도 기록", () => {
   const BUDGET: ConfSection = { ...CONF, ctx_budget: {
     claude: { status: "ok", models: ["claude-opus-5-5"], C: 967000, E: 600000, P: 564000,
               applied_at: "2026-10-07T03:00:00+00:00",
-              basis_text: "Claude Code 조회 · 모델 창 1,000,000 − 압축 예약 33,000" },
+              basis_text: "Claude Code 조회 · 모델 창 1,000,000 − 압축 예약 33,000", settings_mismatch: [] },
     codex: { status: "error", reason: "codex 압축 한도 기록이 없습니다" },
     opencode: { status: "error", reason: "opencode 압축 한도 기록이 없습니다" },
   } };
@@ -802,7 +802,9 @@ describe("T0943 압축 한도 기록", () => {
     expect(claude).toHaveTextContent("적용 한도 600000 · 압축 지점 564000");
     expect(claude).toHaveTextContent(`기록 시각 ${new Date("2026-10-07T03:00:00+00:00").toLocaleString()}`);
     expect(claude).not.toHaveTextContent("적용 시각");
-    expect(screen.getByTestId("budget-codex")).toHaveTextContent("압축 한도 기록 확인 불가 (codex 압축 한도 기록이 없습니다)");
+    expect(screen.getByTestId("budget-codex")).toHaveTextContent("압축 한도 확인 불가 (codex 압축 한도 기록이 없습니다)");
+    expect(screen.queryByTestId("budget-mismatch-claude")).toBeNull();
+    expect(screen.queryByTestId("budget-mismatch-codex")).toBeNull();
     for (const word of ["verification", "physical", "receipt", "native", "metadata", "evidence", "schema",
                         "unknown", "자동 재검증", "자동 재시도"]) {
       expect(`${claude.textContent}${screen.getByTestId("budget-codex").textContent}`).not.toContain(word);
@@ -833,5 +835,60 @@ describe("T0943 압축 한도 기록", () => {
     expect(screen.getByTestId("budget-claude")).toHaveTextContent("적용 한도 600000");
     expect(screen.queryByTestId("budget-codex")).toBeNull();
     expect(screen.queryByTestId("budget-opencode")).toBeNull();
+  });
+});
+
+describe("T0949 설정 파일 값 차이", () => {
+  const OK = { status: "ok" as const, models: ["fixture-model"], C: 200000, E: 200000, P: 180000,
+               applied_at: "2026-10-08T03:00:00+00:00", basis_text: "Claude Code 조회 · 모델 창 200,000 − 압축 예약 0" };
+  const SAVED = { ...VALUES, "harness.claude.ctx_window_tokens": "200000" };
+  const shown = (ctx_budget: ConfSection["ctx_budget"]) => {
+    const conf: ConfSection = { ...CONF, ctx_budget };
+    mounted(makeBridge(), false, null, settingsEntry(SAVED),
+            { status: { conf, harnesses: ["claude", "codex", "opencode"] } as StatusDocument });
+    openGroup("harness");
+  };
+
+  it("T0949 차이가 있으면 기록 블록에 한 줄 — 경로·설정 파일 값·이 머신 값과 버튼 안내", () => {
+    shown({
+      claude: { ...OK, settings_mismatch: [{ path: "autoCompactWindow", file: 190000, record: 180000 }] },
+      codex: { ...OK, settings_mismatch: [] },
+      opencode: { status: "error", reason: ".opencode/opencode.jsonc 를 읽지 못했습니다" },
+    });
+    const line = screen.getByTestId("budget-mismatch-claude");
+    expect(line.textContent).toBe(
+      "autoCompactWindow 설정 파일 값 190000 · 이 머신 값 180000 · [한도 다시 읽고 적용]으로 이 머신 값에 맞춥니다");
+    expect(within(screen.getByTestId("budget-claude")).getByRole("button", { name: "한도 다시 읽고 적용" })).toBeEnabled();
+    expect(screen.getByTestId("budget-opencode")).toHaveTextContent("압축 한도 확인 불가 (.opencode/opencode.jsonc 를 읽지 못했습니다)");
+  });
+
+  it("T0949 여러 항목은 한 줄에 쉼표로 잇고, 키가 없으면 없음·문자열은 따옴표로 그린다", () => {
+    shown({
+      claude: { ...OK, settings_mismatch: [] },
+      codex: { ...OK, settings_mismatch: [{ path: "model_auto_compact_token_limit", file: "535800", record: 535800 }] },
+      opencode: { ...OK, settings_mismatch: [
+        { path: "compaction.reserved", file: 13000, record: 12000 },
+        { path: 'provider.ollama.models."glm-5.2:cloud".limit.input', file: null, record: 200000 }] },
+    });
+    expect(screen.getByTestId("budget-mismatch-opencode").textContent).toBe(
+      "compaction.reserved 설정 파일 값 13000 · 이 머신 값 12000, " +
+      'provider.ollama.models."glm-5.2:cloud".limit.input 설정 파일 값 없음 · 이 머신 값 200000 · ' +
+      "[한도 다시 읽고 적용]으로 이 머신 값에 맞춥니다");
+    expect(screen.getByTestId("budget-mismatch-codex").textContent).toBe(
+      'model_auto_compact_token_limit 설정 파일 값 "535800" · 이 머신 값 535800 · [한도 다시 읽고 적용]으로 이 머신 값에 맞춥니다');
+    expect(within(screen.getByTestId("budget-opencode")).getAllByText(/설정 파일 값/)).toHaveLength(1);
+  });
+
+  it("T0949 차이가 없거나 오류 행이면 차이 줄이 없다", () => {
+    shown({
+      claude: { ...OK, settings_mismatch: [] },
+      codex: { status: "error", reason: ".codex/config.toml 를 풀지 못했습니다 (Invalid statement)" },
+      opencode: { ...OK, settings_mismatch: [] },
+    });
+    for (const harness of ["claude", "codex", "opencode"]) {
+      expect(screen.queryByTestId(`budget-mismatch-${harness}`)).toBeNull();
+      expect(screen.getByTestId(`budget-${harness}`)).not.toHaveTextContent("설정 파일 값");
+    }
+    expect(screen.getByTestId("budget-claude")).toHaveTextContent("적용 한도 200000 · 압축 지점 180000");
   });
 });

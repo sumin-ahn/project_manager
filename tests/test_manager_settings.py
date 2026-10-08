@@ -711,3 +711,33 @@ def test_mixed_ctx_and_render_save_applies_both(api, committed_home):
     assert '"autoCompactWindow": 170000' in settings
     values = _values(committed_home)
     assert (values["ctx.compact_at_pct"], values["delegate.architect.reasoning"]) == ("85", "high")
+
+
+# ── ⑧ 설정 파일 값과 이 머신 기록 값의 차이 (T-0949) ─────────────────────────────
+
+
+def test_t0949_settings_file_mismatch_shown_and_cleared(api, committed_home):
+    """AT-005 — 다른 머신의 반영 값이 들어온 설정 파일을 현황이 기록 settings 와의 차이로 보이고(조회는 쓰지
+    않는다), 사용 한도 저장(`pm-config apply`) 한 번 뒤에는 이 머신 값으로 돌아와 차이가 없다."""
+    settings = committed_home / ".claude" / "settings.json"
+    record = committed_home / ".project_manager" / ".local" / "ctx-budget.json"
+    first = api.status(str(committed_home))["conf"]["ctx_budget"]["claude"]
+    assert first["status"] == "ok" and first["settings_mismatch"] == [], first
+    text = settings.read_text(encoding="utf-8")
+    assert text.count('"autoCompactWindow": 180000') == 1
+    settings.write_text(text.replace('"autoCompactWindow": 180000', '"autoCompactWindow": 190000'), encoding="utf-8")
+    watched = (settings, conf_path(committed_home), record)
+    before = [path.read_bytes() for path in watched]
+
+    row = api.status(str(committed_home))["conf"]["ctx_budget"]["claude"]
+
+    assert row["status"] == "ok"
+    assert row["settings_mismatch"] == [{"path": "autoCompactWindow", "file": 190000, "record": 180000}]
+    assert [path.read_bytes() for path in watched] == before
+
+    saved = api.conf_save(str(committed_home), {"ctx.compact_at_pct": _values(committed_home)["ctx.compact_at_pct"]})
+
+    assert "error" not in saved, saved
+    assert saved["applied"] == [".claude/settings.json autoCompactWindow 190000 → 180000"], saved["applied"]
+    assert saved["conf"]["ctx_budget"]["claude"]["settings_mismatch"] == []
+    assert '"autoCompactWindow": 180000' in settings.read_text(encoding="utf-8")

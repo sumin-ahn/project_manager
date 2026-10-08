@@ -823,36 +823,6 @@ def read_ctx_budget(root, values, harness, session_model=None) -> dict:
     return _ctx_budget_view(record, entry, harness, session_model)
 
 
-def _ctx_basis_text(model: dict) -> str:
-    """모델 가용 한도의 출처 한 줄 (관리자 표시용) — 읽기가 확인한 출처 형식(`_CTX_BASIS_FORMS`)으로 고른다."""
-    basis = model["basis"]
-    if "auto_compact_threshold" in basis:
-        return (f"Claude Code 조회 · 모델 창 {basis['model_window']:,} − 압축 예약 "
-                f"{basis['model_window'] - basis['auto_compact_threshold']:,}")
-    if "percent" in basis:
-        window = basis["model_context_window"] or basis["context_window"]
-        maximum = f" · 최대 {basis['max_context_window']:,}" if basis["max_context_window"] else ""
-        return f"Codex 모델 목록 · 창 {window:,}{maximum} × {basis['percent']}%"
-    limit = f"입력 한도 {basis['input']:,} · " if basis.get("input") else ""
-    return (f"{_ctx_model_name(model)} · {limit}창 {basis['context']:,} − 출력 "
-            f"{basis['output']:,} ({basis['source']})")
-
-
-def ctx_budget_status(root, values) -> dict:
-    """상태 조회·관리자 표시 — 도구마다 `{"status": "ok", …}` 또는 `{"status": "error", "reason"}`."""
-    result = {}
-    for harness in CTX_HARNESSES:
-        try:
-            record, entry = _ctx_record_entry(root, values, harness)
-        except CtxBudgetError as exc:
-            result[harness] = {"status": "error", "reason": str(exc)}
-            continue
-        smallest = min(entry["models"], key=lambda model: model["C"])
-        result[harness] = {"status": "ok", **_ctx_budget_view(record, entry, harness, None),
-                           "C": entry["C"], "basis_text": _ctx_basis_text(smallest)}
-    return result
-
-
 def default_for(key: str) -> str | None:
     """이 키의 엔진 기본값(conf 표기 그대로) — 선언이 없거나 모르는 키면 None."""
     spec = key_spec(key)

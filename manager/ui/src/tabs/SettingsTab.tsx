@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Entry, SettingsEntry } from "../App";
 import type {
-  Bridge, BridgeError, ConfChoices, ConfGovernor, ConfKeysDocument, ConfSection,
+  Bridge, BridgeError, ConfChoices, ConfGovernor, ConfKeysDocument, ConfSection, CtxBudgetMismatch,
   DelegateModelsDocument,
 } from "../api";
 import { isError } from "../api";
@@ -45,6 +45,16 @@ export const UPSTREAM_PATH_KEY = "upstream.path";
 /** 저장이 파생 파일(하네스 설정 파일·다시 그린 렌더 산출물)에 반영한 줄 — 없으면 결과 칸을 비운다. */
 function appliedText(applied: string[]): string | null {
   return applied.length > 0 ? `반영:\n${applied.join("\n")}` : null;
+}
+
+/** 압축 한도 블록의 다시 적용 버튼 라벨 — 설정 파일 값 차이 줄의 안내가 같은 상수로 그 버튼을 가리킨다. */
+const REAPPLY_LABEL = "한도 다시 읽고 적용";
+
+/** 기록과 다른 설정 파일 값 한 줄 — 경로마다 "설정 파일 값 · 이 머신 값"을 쉼표로 잇고 안내를 붙인다. */
+function mismatchText(rows: CtxBudgetMismatch[]): string {
+  const items = rows.map((row) =>
+    `${row.path} 설정 파일 값 ${row.file === null ? "없음" : JSON.stringify(row.file)} · 이 머신 값 ${row.record}`);
+  return `${items.join(", ")} · [${REAPPLY_LABEL}]으로 이 머신 값에 맞춥니다`;
 }
 
 /** 왼쪽 목록의 마지막 항목 — 레지스트리 그룹이 아니라 버튼으로만 도는 어댑터 파일 절이다. */
@@ -537,6 +547,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
   // 버튼은 그 키의 저장된 값으로 저장 경로(`pm-config apply`)를 다시 태워 모델 한도를 다시 읽는다. 저장은 화면의
   // 편집을 비우므로 편집이 남아 있으면 누를 수 없다. 설치되지 않은 도구는 적용이 기록하지 않아 블록이 없다.
   // 기록 시각은 지금 기록 값이 처음 쓰인 시각이다(값이 같은 재적용은 기록을 다시 쓰지 않는다).
+  // 설정 파일 값이 이 머신 기록 값과 다르면(다른 머신의 반영이 pull 로 들어온 경우) 그 차이를 한 줄 더 그린다.
   const budgetBlock = (key: string) => {
     const harness = /^harness\.(claude|codex|opencode)\.ctx_window_tokens$/.exec(key)?.[1];
     const budget = harness === undefined ? undefined : conf.ctx_budget?.[harness];
@@ -546,9 +557,13 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
         {budget.status === "ok" ? <>
           <span className="block">{budget.models.join(", ")} · 모델 가용 한도 {budget.C} ({budget.basis_text})</span>
           <span className="block">적용 한도 {budget.E} · 압축 지점 {budget.P} · 기록 시각 {new Date(budget.applied_at).toLocaleString()}</span>
-        </> : <span className="block">압축 한도 기록 확인 불가 ({budget.reason})</span>}
+          {budget.settings_mismatch.length > 0 && (
+            <span className="block text-amber-700" data-testid={`budget-mismatch-${harness}`}>
+              {mismatchText(budget.settings_mismatch)}
+            </span>)}
+        </> : <span className="block">압축 한도 확인 불가 ({budget.reason})</span>}
         <button type="button" disabled={busy || changedCount > 0} onClick={() => void save({ [key]: values[key] ?? null })}
-                className="rounded border border-slate-200 px-1">한도 다시 읽고 적용</button>
+                className="rounded border border-slate-200 px-1">{REAPPLY_LABEL}</button>
         {changedCount > 0 && <span className="block">편집 내용을 저장한 뒤 한도를 다시 읽으십시오.</span>}
       </span>
     );

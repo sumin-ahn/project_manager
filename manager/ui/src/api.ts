@@ -134,9 +134,15 @@ export type StatusDocument = {
   adapters: AdapterDocument | null;
 };
 
-/** 압축 한도 기록의 도구 항목(`local_conf.ctx_budget_status`) — 적용할 때 조회한 모델 가용 한도 C·적용 한도 E·압축 지점 P. */
+/** 설정 파일 값이 이 머신 기록 값과 다른 경로 하나 — `file` 은 설정 파일에서 읽은 값 그대로이고 키가 없으면 null. */
+export type CtxBudgetMismatch = { path: string; file: unknown; record: number };
+/**
+ * 압축 한도 기록의 도구 항목(`pm_import.ctx_budget_status`) — 적용할 때 조회한 모델 가용 한도 C·적용 한도 E·압축 지점 P와
+ * 설정 파일 값이 기록과 다른 경로(`settings_mismatch`, 같으면 빈 배열).
+ */
 export type CtxBudget =
-  | { status: "ok"; models: string[]; C: number; E: number; P: number; applied_at: string; basis_text: string }
+  | { status: "ok"; models: string[]; C: number; E: number; P: number; applied_at: string; basis_text: string;
+      settings_mismatch: CtxBudgetMismatch[] }
   | { status: "error"; reason: string };
 /** 설정 완전성 다섯 목록. `missing_for_latest` 는 소스가 해소된 호출에서만 배열이고 아니면 null(모름). */
 export type ConfSection = {

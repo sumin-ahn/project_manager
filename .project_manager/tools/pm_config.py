@@ -2605,17 +2605,18 @@ def _source_missing_required(source_root: Path, values: dict) -> list[str]:
     return list(module.missing_required(values))
 
 
-def _status_json_conf(source_root: Path | None) -> dict:
+def _status_json_conf(pm_import_mod, source_root: Path | None) -> dict:
     """설정 완전성 — 필수 누락·폐지 키·미지 키·표준과 다른 값·최신 기준 누락 다섯 목록.
 
-    판정은 `local_conf` 레지스트리 하나가 낸다(값 해석 사본 0). `missing_for_latest` 는 소스
+    판정은 `local_conf` 레지스트리 하나가 낸다(값 해석 사본 0). 압축 한도(`ctx_budget`)는 기록과
+    도구 설정 파일을 함께 읽는 `pm_import.ctx_budget_status` 가 낸다. `missing_for_latest` 는 소스
     checkout 이 해소된 호출(`--from` 또는 `--with-adapters`)에서만 채워지고 그 밖에는 null 이다.
     """
     local_conf = _load_local_conf()
     result = local_conf.load(REPO / ".project_manager" / "local.conf")
     values = result.values
     return {
-        "ctx_budget": local_conf.ctx_budget_status(REPO, values),
+        "ctx_budget": pm_import_mod.ctx_budget_status(REPO, values),
         "missing_required": list(local_conf.missing_required(values)),
         "legacy": [{"key": key, "replacement": replacement}
                    for key, replacement in sorted(result.legacy.items())],
@@ -2676,7 +2677,7 @@ def _status_json_document(args, wp, *, board_mod, pm_import_mod,
         "git": _status_json_git(git_runner),
         "repos": _status_json_repos(),
         "harnesses": list(pm_import_mod.installed_harnesses(REPO)),
-        "conf": _status_json_conf(source_root),
+        "conf": _status_json_conf(pm_import_mod, source_root),
         "board": None if board_mod is None else board_mod.status_snapshot(),
         "adapters": (None if not getattr(args, "with_adapters", False)
                      else _status_json_adapters(pm_import_mod, source_root)),

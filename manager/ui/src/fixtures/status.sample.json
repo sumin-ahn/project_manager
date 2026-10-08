@@ -191,7 +191,8 @@
         "applied_at": "2026-10-07T03:00:00+00:00",
         "warning": null,
         "C": 967000,
-        "basis_text": "Claude Code 조회 · 모델 창 1,000,000 − 압축 예약 33,000"
+        "basis_text": "Claude Code 조회 · 모델 창 1,000,000 − 압축 예약 33,000",
+        "settings_mismatch": []
       },
       "codex": {
         "status": "error",
