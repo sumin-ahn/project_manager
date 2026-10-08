@@ -14533,6 +14533,22 @@ def cluster_members(cluster: str) -> tuple[str, ...]:
     return tuple(cluster_tickets(fm)) if fm is not None else ()
 
 
+def cluster_live_members(cluster: str) -> tuple[str, ...]:
+    """선언 멤버 중 처분 종결(`discarded`)이 아닌 멤버 — 라운드 준비·리뷰·처분의 대상.
+
+    처분된 멤버는 코드 산출이 없어 라운드·리뷰 입력·확인 처분의 대상이 아니다(종결의 "처분 종결
+    멤버"와 같은 규칙). 선언 목록(`cluster_members`)은 장부 그대로 두고, 대상 판정은 이 함수
+    하나가 한다. board 에서 찾지 못한 멤버는 남겨 두어 소비처가 부재를 그대로 드러내게 한다.
+    """
+    live = []
+    for tid in cluster_members(cluster):
+        found = find_ticket_exact(tid)
+        if found is not None and found[0] == "discarded":
+            continue
+        live.append(tid)
+    return tuple(live)
+
+
 def _cluster_of_record(tid: str) -> str | None:
     """**장부 파일이** 이 티켓을 멤버로 담고 있는 클러스터 id (없으면 None).
 

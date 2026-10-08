@@ -2044,7 +2044,7 @@ def prepare_cluster_copy(
     cluster = str(cluster or "").strip()
     if not _is_valid_cluster_id(cluster):
         raise DelegateError(f"클러스터 id 형식이 아닙니다: {cluster!r}")
-    members = tuple(tickets) if tickets else board.cluster_members(cluster)
+    members = tuple(tickets) if tickets else board.cluster_live_members(cluster)
     if not members:
         raise DelegateError(
             f"클러스터 멤버가 없습니다: {cluster} — `board.py cluster show {cluster}` 로 "
@@ -13547,7 +13547,7 @@ def _cmd_review(argv: list[str]) -> int:
         return _cmd_review_ticket(args, args.ticket)
     try:
         owner = _activate_internal_rounds_cli_owner()
-        members = _load_board_for_repo(owner).cluster_members(args.cluster)
+        members = _load_board_for_repo(owner).cluster_live_members(args.cluster)
     except (DelegateError, OSError, UnicodeError, ValueError) as exc:
         print(f"오류: review {args.review_command} 실패: {exc}", file=sys.stderr)
         return 1
@@ -14023,7 +14023,7 @@ def _cmd_rounds_resolve_cluster(
     실패한 자리만 다시 부르면 이어진다(회수와 같은 규율).
     """
     board = _load_board_for_repo(owner)
-    members = board.cluster_members(cluster)
+    members = board.cluster_live_members(cluster)
     if not members:
         print(
             f"오류: 클러스터 멤버가 없습니다: {cluster} — "
@@ -14288,7 +14288,7 @@ def cluster_review_input(
             f"묶음 장부에 통합 브랜치 좌표가 없습니다: {cluster} "
             f"(branch={branch or '—'} · base_branch={base_branch or '—'})"
         )
-    members = tuple(board.cluster_members(cluster))
+    members = tuple(board.cluster_live_members(cluster))
     if not members:
         raise DelegateError(f"클러스터 멤버가 없습니다: {cluster}")
     merge_base = _cluster_git(

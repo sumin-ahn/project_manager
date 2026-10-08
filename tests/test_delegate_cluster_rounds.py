@@ -726,3 +726,36 @@ def test_cli_prepare_and_harvest_round_trip_over_a_run_dir(
     assert "교체 2 · 산출 없음 0 · 거부 0" in out
     assert len(_machine_lines(out)) == 2
     assert not run_dir.exists()
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 처분 종결 멤버 — 라운드·리뷰 대상 밖
+# ════════════════════════════════════════════════════════════════════════
+
+def _discard_member(tickets: Path, ticket: str) -> None:
+    """장부에 선언된 멤버 하나를 `discarded/` 로 옮긴다(`board.py discard` 의 결과 형상)."""
+    source = tickets / f"{ticket}-cluster.md"
+    target_dir = tickets.parent / "discarded"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    text = source.read_text(encoding="utf-8").replace(
+        "status: claimed\n", "status: discarded\n", 1)
+    (target_dir / source.name).write_text(text, encoding="utf-8", newline="\n")
+    source.unlink()
+
+
+def test_cluster_prepare_skips_a_discarded_member(pd, cluster_env):
+    """선언 멤버 중 처분된 티켓은 묶음 라운드 준비 대상이 아니다(종결의 처분 종결 멤버와 같은 규칙)."""
+    pm_home, slot, tickets = cluster_env
+    _seed_cluster(pm_home, tickets, "C-wave", ["T-6001", "T-6002"])
+    _discard_member(tickets, "T-6002")
+
+    plan = pd.prepare_cluster_copy(
+        cluster="C-wave", role="architect", cwd=slot, pm_home=pm_home,
+    )
+
+    assert [round_plan.ticket for round_plan in plan.rounds] == ["T-6001"]
+    assert sorted(item.name for item in plan.run_dir.iterdir()) == ["T-6001"]
+    assert not _rounds_dir(pm_home, "T-6002").exists()
+    board = _fixture_board(pd, pm_home)
+    assert board.cluster_members("C-wave") == ("T-6001", "T-6002")
+    assert board.cluster_live_members("C-wave") == ("T-6001",)
