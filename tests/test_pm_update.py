@@ -8496,8 +8496,9 @@ def test_apply_renders_every_render_change_before_writing(pm_update, tmp_path):
     assert {card.name: card.read_bytes() for card in cards} == settled
 
 
-def test_conf_apply_key_groups_are_disjoint(pm_update):
-    """키 묶음 두 판정은 교집합이 없다 — 한 키가 두 반영 단계에 동시에 걸리지 않는다."""
+def test_conf_apply_key_groups_select_steps(pm_update):
+    """키 묶음 판정 — 사용 한도 키는 다른 묶음과 겹치지 않고, 추론 값 묶음은 추론 값이 있는 프로필(위임
+    세트·대체 세트·추가 리뷰어)의 하네스·모델·추론 키 전부다. 위임 세트 키는 렌더 입력 묶음에도 걸린다."""
     pm_import = pm_update._load_pm_import()
     render_keys = pm_update.render_input_conf_keys()
     local_conf = pm_update._load_local_conf()
@@ -8506,9 +8507,17 @@ def test_conf_apply_key_groups_are_disjoint(pm_update):
     assert all(pm_import.is_harness_ctx_input_key(key) for key in ctx_keys)
     assert not any(pm_import.is_harness_ctx_input_key(key) for key in render_keys)
     assert not render_keys & ctx_keys
-    assert [step.key_filter(pm_import)("ctx.compact_at_pct") for step in pm_update.CONF_APPLY_STEPS] == [True, False]
-    assert [step.key_filter(pm_import)("delegate.architect.harness")
-            for step in pm_update.CONF_APPLY_STEPS] == [False, True]
+    expected = {
+        "ctx.compact_at_pct": [True, False, False],
+        "delegate.architect.harness": [False, True, True],
+        "delegate.developer.hard.reasoning": [False, True, True],
+        "delegate.researcher.fallback.model": [False, True, False],
+        "additional_reviewer.reasoning": [False, True, False],
+        "additional_reviewer.progress_signal": [False, False, False],
+        "identity.user": [False, False, False],
+    }
+    for key, steps in expected.items():
+        assert [step.key_filter(pm_import)(key) for step in pm_update.CONF_APPLY_STEPS] == steps, key
 
 
 # ── 갱신의 추론 값 정리(conf 이관) — 그 모델이 받지 않는 opencode 추론 값을 지우고 알린다 (T-0946) ──
@@ -8588,3 +8597,99 @@ def test_prune_unavailable_reasoning_stops_without_deleting(pm_update, tmp_path,
         assert "delegate.researcher.reasoning=high" in message, (name, message)
         assert "지우지 않았다" in message, (name, message)
         assert conf_path.read_bytes() == before, name
+
+
+# ── 저장의 추론 값 확인(T-0946 리뷰 03 F-002·F-003) — 카드 유무와 무관하게 거부, 저장 한 번에 조회 한 번 ──
+_GLM = "ollama/glm-5.2:cloud"           # variants 없음
+_ORNITH = "ollama/ornith1.5:35b-a3b"    # low·medium·high
+
+
+def _home_pm_update(home: Path):
+    """그 홈에 설치된 pm_update — 렌더러·pm_relay 도 그 홈의 tools 에서 읽는다(설치 폴더 = 조회 cwd)."""
+    spec = importlib.util.spec_from_file_location(
+        "home_pm_update", home / ".project_manager" / "tools" / "pm_update.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@_needs_posix_fake
+def test_apply_conf_refuses_per_model_reasoning_outside_variants(pm_update, tmp_path, monkeypatch):
+    """claude 홈(opencode 카드 없음)에서도 opencode 프로필의 무효 추론 값 저장은 반영 전 거부다.
+
+    추가 리뷰어·대체 세트·카드 없는 주 프로필, 모델만 바꿔 남은 값이 밖이 되는 경우, 판정할 수 없는 모델
+    모두 `ConfApplyError`(write_stage 거짓)이고 트리는 그대로다. `pm-config apply` 는 rc 3 이다. 그 모델이
+    받는 값은 저장된다."""
+    from _manager_home import tree_snapshot
+    fakebin = install_fake_opencode(tmp_path / "fakebin", OLLAMA_LISTING)
+    monkeypatch.setenv("PATH", path_with(fakebin))
+    home, _source = _t0945_home(tmp_path)
+    opencode_dir = tmp_path / "global"
+
+    accepted = pm_update.apply_conf(home, updates={
+        "additional_reviewer.harness": "opencode", "additional_reviewer.model": _ORNITH,
+        "additional_reviewer.reasoning": "high"}, opencode_config_dir=opencode_dir)
+    assert accepted == pm_update.ConfApplyResult(True, ())
+    assert "additional_reviewer.reasoning=high" in _t0945_conf_lines(home)
+
+    refused = {
+        "additional-reviewer": ({"additional_reviewer.model": _GLM}, "additional_reviewer.reasoning=high"),
+        "fallback": ({"delegate.researcher.fallback.harness": "opencode",
+                      "delegate.researcher.fallback.model": _GLM,
+                      "delegate.researcher.fallback.reasoning": "high"},
+                     "delegate.researcher.fallback.reasoning=high"),
+        "main-without-card": ({"delegate.researcher.harness": "opencode",
+                               "delegate.researcher.model": _GLM,
+                               "delegate.researcher.reasoning": "high"},
+                              "delegate.researcher.reasoning=high"),
+        "model-not-listed": ({"additional_reviewer.model": "ollama/qwen3.8:27b-unc"},
+                             "확인할 수 없습니다"),
+    }
+    for name, (updates, needle) in refused.items():
+        before = tree_snapshot(home)
+        with pytest.raises(pm_update.ConfApplyError) as caught:
+            pm_update.apply_conf(home, updates=updates, opencode_config_dir=opencode_dir)
+        assert caught.value.write_stage is False and caught.value.written == (), name
+        assert needle in str(caught.value), (name, str(caught.value))
+        assert tree_snapshot(home) == before, name
+
+    before = tree_snapshot(home)
+    run = subprocess.run(
+        [sys.executable, str(home / ".project_manager" / "tools" / "pm_config.py"), "apply", "--json",
+         "--set", f"additional_reviewer.model={_GLM}"],
+        cwd=str(home), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    assert run.returncode == 3, run.stdout + run.stderr
+    assert "additional_reviewer.reasoning=high" in run.stderr
+    assert tree_snapshot(home) == before
+
+
+@_needs_posix_fake
+def test_apply_conf_lists_models_once_per_save(tmp_path, monkeypatch):
+    """opencode 카드에 추론 값을 싣는 저장 한 번은 모델 목록 조회 한 번이다(반영·거부 모두).
+
+    추론 값 확인·계획 판정·산출물 그리기가 렌더러 하나(pm_relay 조회 기억 하나)를 쓴다."""
+    from _manager_home import _KNOWN_SETUP_CHILD, _run, make_committed_source
+    from _fake_opencode import calls
+    fakebin = install_fake_opencode(tmp_path / "fakebin", OLLAMA_LISTING)
+    monkeypatch.setenv("PATH", path_with(fakebin))
+    source = make_committed_source(tmp_path / "source")
+    home = tmp_path / "home"
+    _run([sys.executable, "-c", _KNOWN_SETUP_CHILD, str(TOOLS / "pm_import.py"), "--new", str(home),
+          "--harness", "opencode", "--from", str(source), "--upstream", str(source)], cwd=REPO)
+    module = _home_pm_update(home)
+    card = home / ".opencode" / "agents" / "developer.md"
+
+    installed = len(calls(fakebin))
+    result = module.apply_conf(home, updates={
+        "delegate.developer.harness": "opencode", "delegate.developer.model": _ORNITH,
+        "delegate.developer.reasoning": "high"}, opencode_config_dir=tmp_path / "global")
+    assert ".opencode/agents/developer.md 다시 그림" in result.applied, result.applied
+    assert 'variant: "high"' in card.read_text(encoding="utf-8").splitlines()
+    assert len(calls(fakebin)) - installed == 1, "\n".join(map(str, calls(fakebin)))
+
+    module = _home_pm_update(home)
+    saved = len(calls(fakebin))
+    with pytest.raises(module.ConfApplyError):
+        module.apply_conf(home, updates={"delegate.developer.model": _GLM},
+                          opencode_config_dir=tmp_path / "global")
+    assert len(calls(fakebin)) - saved == 1, calls(fakebin)

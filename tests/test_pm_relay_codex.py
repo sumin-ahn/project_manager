@@ -9,7 +9,7 @@
   ① parse_codex_json 순수 — thread.started→tid · item.* agent_message→reply · turn.completed.usage
      → usage · 비-JSON/비-dict skip · edge.
   ② driver spawn — 엔진 uuid4 **무시** 하고 출력 파싱 thread_id 반환 · `--json` · `--skip-git-repo-check`
-     · `-C` 격리 · **stdin=DEVNULL**(⚠ 미닫힘 시 codex 무기한 대기·실측) · resume 없음.
+     · `-C` 격리 · **프롬프트 = stdin**(전문을 쓰고 닫아 EOF — 미닫힘 시 codex 무기한 대기·실측) · resume 없음.
   ③ driver relay_turn — `resume <tid>` · reply 파싱 · spawn cwd 재사용.
   ④ driver close — 세션 cwd 메타 정리.
   ⑤ fail-soft — timeout·OSError → 빈 reply(루프 생존) · subprocess 폭발 가드.
@@ -283,7 +283,7 @@ class _FakeCompleted:
         self.returncode = returncode
 
 
-# ── ② driver spawn (엔진 uuid4 무시·출력 tid 반환·--json·--skip-git-repo-check·-C·stdin=DEVNULL) ─
+# ── ② driver spawn (엔진 uuid4 무시·출력 tid 반환·--json·--skip-git-repo-check·-C·프롬프트=stdin) ─
 
 def test_codex_driver_spawn_ignores_uuid_returns_thread_id(orch, driver_mod):
     """spawn 이 엔진 uuid4 인자를 **무시** 하고 codex 출력에서 파싱한 thread_id 를 반환한다
@@ -310,9 +310,10 @@ def test_codex_driver_spawn_ignores_uuid_returns_thread_id(orch, driver_mod):
     assert cmd[:6] == ["codex", "exec", "--json", "-s", "workspace-write", "--skip-git-repo-check"]
     assert "-C" in cmd and "/repo/root" in cmd  # child cwd 격리.
     assert "resume" not in cmd  # 첫 spawn 은 resume 안 함.
-    assert cmd[-1] == "bootstrap text"  # PROMPT positional 은 맨 끝.
-    # ⚠ stdin close 필수 — 미닫힘 시 codex 가 stdin 무기한 대기(라이브 실측·spike §D3).
-    assert captured["kwargs"].get("stdin") == subprocess.DEVNULL
+    # 프롬프트는 실행 인자가 아니라 stdin 이다(cross `build_codex_argv` 와 같다). `input=` 은 전문을 쓰고
+    # 닫는다 — 미닫힘 시 codex 가 stdin 무기한 대기(라이브 실측·spike §D3).
+    assert "bootstrap text" not in cmd
+    assert captured["kwargs"]["input"] == "bootstrap text" and "stdin" not in captured["kwargs"]
 
 
 def test_codex_driver_spawn_without_engine_type_falls_back_to_tuple(driver_mod):
@@ -346,7 +347,7 @@ def test_codex_driver_spawn_thread_parse_failure_raises(orch, driver_mod):
 # ── ③ driver relay_turn (resume <tid>·reply 파싱·spawn cwd 재사용) ────────────
 
 def test_codex_driver_relay_uses_resume(orch, driver_mod):
-    """relay_turn 이 `resume <tid>` 로 같은 세션을 이어가고 reply 를 반환 + stdin=DEVNULL."""
+    """relay_turn 이 `resume <tid> -` 로 같은 세션을 이어가고 reply 를 반환 + 프롬프트=stdin."""
     captured = {}
 
     def fake_run(cmd, **kwargs):
@@ -360,8 +361,8 @@ def test_codex_driver_relay_uses_resume(orch, driver_mod):
     cmd = captured["cmd"]
     assert "resume" in cmd
     assert cmd[cmd.index("resume") + 1] == "tid_r"
-    assert cmd[-1] == "ping"
-    assert captured["kwargs"].get("stdin") == subprocess.DEVNULL
+    assert cmd[-1] == "-" and "ping" not in cmd
+    assert captured["kwargs"]["input"] == "ping"
 
 
 def test_codex_driver_dash_c_precedes_resume(orch, driver_mod):
@@ -721,7 +722,7 @@ def test_supervisor_with_codex_driver_post_turn_no_resend(orch, driver_mod, tmp_
         if "resume" not in cmd:  # spawn(fresh exec) → 새 thread_id 발급.
             spawn_count["n"] += 1
             return _FakeCompleted(_codex_stream(f"tid{spawn_count['n']}", "READY", usage=None))
-        prompt = cmd[-1]
+        prompt = kwargs["input"]
         relayed.append(prompt)
         tid = cmd[cmd.index("resume") + 1]
         # 'first' turn 만 예산 초과(실 wire 키) → driver 가 post-turn marker 박제(그 turn 은 이미 실행됨).
@@ -759,8 +760,8 @@ def test_supervisor_codex_spawn_marker_rotates_before_first_input(orch, driver_m
                      if spawn_count["n"] == 1 else None)
             return _FakeCompleted(_codex_stream(f"tid{spawn_count['n']}", "READY", usage=usage))
         tid = cmd[cmd.index("resume") + 1]
-        relayed.append((tid, cmd[-1]))
-        return _FakeCompleted(_codex_stream(tid, f"reply:{cmd[-1]}", usage=None))
+        relayed.append((tid, kwargs["input"]))
+        return _FakeCompleted(_codex_stream(tid, f"reply:{kwargs['input']}", usage=None))
 
     import io
     driver = driver_mod.CodexCliDriver(
@@ -890,7 +891,7 @@ class _CodexHomeRunner:
 
     driver 는 turn subprocess 에 env 를 안 넘긴다(어댑터=부모 env 상속) — 라이브 테스트가 실 ~/.codex
     를 오염시키지 않도록 여기서 격리 홈(auth 복사본)을 주입한다. 기록한 stdout 은 usage 2턴 대조
-    (input_tokens 누적 vs per-turn 실측)에 쓴다. driver 가 주는 stdin=DEVNULL 등 kwargs 는 그대로 전달."""
+    (input_tokens 누적 vs per-turn 실측)에 쓴다. driver 가 주는 input(프롬프트) 등 kwargs 는 그대로 전달."""
 
     def __init__(self, home: Path):
         self._home = home
@@ -920,7 +921,7 @@ def test_live_codex_thread_marker_identity_smoke(orch, driver_mod, tmp_path):
         input이 누계임(turn2 ⊃ turn1)을 단언한다. driver는 이 누계를 turn별 차분 폴백에 쓰고,
         rollout 정밀 신호가 있으면 `total_token_usage.input_tokens` 신선도 anchor와 대조한다.
 
-    ⚠ stdin close(codex 무기한 대기 방어)는 driver 가 stdin=DEVNULL 로 박제. 격리 CODEX_HOME(auth
+    ⚠ stdin close(codex 무기한 대기 방어)는 driver 가 프롬프트를 stdin 으로 쓰고 닫아 박제. 격리 CODEX_HOME(auth
     복사·종료 시 삭제·runner 가 주입). 기본 skip(라이브 env 미설정·CI green 불변). **@release** — codex
     라이브 green 을 릴리즈 pin(수집 N)에 편입한다(ADR-0070 D7·pin 16→17 커플드 sweep: board.py·
     `test_release_wave._EXPECTED_RELEASE_TESTS`+`_RELEASE_TEST_FILES`·`test_worktree_pool._LIVEGATE_RELEASE_PIN`·

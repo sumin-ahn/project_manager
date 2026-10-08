@@ -31,6 +31,7 @@ import json
 import math
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -1138,21 +1139,24 @@ MODEL_SOURCE: dict[str, ModelSource] = {
 
 
 # 모델 목록 조회 시간 상한(초). 회사 Pro·원격 게이트웨이는 첫 호출 지연이 커 15초로는 모자랐다.
-# 코드 수정 없이 `PM_OPENCODE_MODELS_TIMEOUT`(초)로 늘린다. 양의 정수만 받고 미설정·비숫자·0 이하는
-# 기본값이다. 빠른 로컬 조회라 무제한은 두지 않는다.
+# 코드 수정 없이 `PM_OPENCODE_MODELS_TIMEOUT`(초)로 늘린다. 값이 있으면 양의 정수만 받고 그 밖은 멈춘다
+# (늘렸다고 믿는 값을 기본값으로 바꾸지 않는다). 미설정만 기본값이다. 빠른 로컬 조회라 무제한은 두지 않는다.
 MODELS_TIMEOUT_SECONDS = 60
 
 
 def models_timeout() -> int:
-    """모델 목록 조회 시간 상한 — env `PM_OPENCODE_MODELS_TIMEOUT` > 기본 `MODELS_TIMEOUT_SECONDS`."""
+    """모델 목록 조회 시간 상한 — env `PM_OPENCODE_MODELS_TIMEOUT` > 기본 `MODELS_TIMEOUT_SECONDS`.
+
+    env 가 있는데 양의 정수(앞뒤 공백 허용)가 아니면 `HarnessContractError` 다."""
     raw = os.environ.get("PM_OPENCODE_MODELS_TIMEOUT")
     if raw is None:
         return MODELS_TIMEOUT_SECONDS
-    try:
-        val = int(raw.strip())
-    except (ValueError, AttributeError):
-        return MODELS_TIMEOUT_SECONDS
-    return val if val > 0 else MODELS_TIMEOUT_SECONDS
+    text = raw.strip()
+    if not (text.isascii() and text.isdigit()) or int(text) <= 0:
+        raise HarnessContractError(
+            f"PM_OPENCODE_MODELS_TIMEOUT 값 {raw!r} 이 양의 정수가 아니다 — 초 단위 양의 정수로 "
+            "고치거나 지운 뒤 다시 실행한다")
+    return int(text)
 
 
 class ModelListing(NamedTuple):
@@ -1220,6 +1224,29 @@ def _parse_opencode_verbose(output: str) -> ModelListing:
     return ModelListing(tuple(models), variants)
 
 
+def resolve_executable(name: str, env: dict[str, str] | None) -> str:
+    """실행할 프로그램 이름 → 실행 파일 경로 — 하네스 CLI 를 실행하는 자리가 모두 이 함수를 쓴다.
+
+    자식이 받을 `env` 의 실행 경로 목록(`os.get_exec_path(env)` — None 이면 이 프로세스 env, PATH 가 없으면
+    `os.defpath`. POSIX `subprocess` 가 이름을 찾는 목록과 같다)에서 `shutil.which` 로 찾는다. Windows 는 PATHEXT 까지
+    붙여 찾으므로 npm 셈(`opencode.cmd`)도 해소된다 — 이름 그대로 넘기면 CreateProcess 는 `.exe` 만
+    붙여 찾아 실패한다. 경로 성분이 있는 이름은 그 경로만 본다. POSIX 결과는 이름 그대로 실행할 때
+    찾는 파일과 같다.
+
+    찾지 못하면 `FileNotFoundError`(filename=이름)다 — 호출부가 이미 다루는 "실행 파일 없음" 예외와
+    같은 종류라 확정 기동 실패·PATH 부재 문구 처리가 그대로 선다. 빈 값으로 바꾸지 않는다.
+    실행 인자가 `.cmd`·`.bat` 을 거쳐 cmd.exe 가 해석해도 깨지지 않도록 엔진의 실행 인자에는 여러 줄
+    값을 싣지 않는다(프롬프트는 표준 입력이나 `--file`)."""
+    found = shutil.which(name, path=os.pathsep.join(os.get_exec_path(env)))
+    if found is None:
+        raise FileNotFoundError(
+            errno.ENOENT,
+            f"{name} 실행 파일 PATH 부재 — 이 프로세스의 PATH 에서 찾지 못했다. {name} 를 설치하거나 "
+            "PATH 에 넣은 뒤 다시 실행한다",
+            name)
+    return found
+
+
 # 판독 이름 → 판독 함수. 키는 산출 형식 이름이다(하네스 표가 아니다 — `MODEL_SOURCE.parse` 가 고른다).
 _MODEL_LISTING_PARSERS = {
     "json-slug": _parse_json_slug,
@@ -1235,8 +1262,8 @@ _MODEL_LISTING_MEMO: dict[tuple, ModelListing] = {}
 def model_listing(source: ModelSource, *, cwd: Path | str, env: dict[str, str]) -> ModelListing:
     """모델 원천 한 행의 모델 목록(과 모델별 variants) — 모델 목록 조회의 유일한 실행 자리다.
 
-    `alias` 는 표의 값 그대로다. `live` 는 `source.command` 를 `cwd`·`env` 로 실행한다(첫 인자를
-    그대로 넘긴다 — cross 실행과 같은 실행 파일 찾기). 실행 파일 없음·시간 초과·rc≠0·판독 실패·
+    `alias` 는 표의 값 그대로다. `live` 는 `source.command` 를 `cwd`·`env` 로 실행한다(첫 인자는
+    `resolve_executable` 로 `env` 의 PATH 에서 찾는다 — cross 실행과 같은 실행 파일 찾기). 실행 파일 없음·시간 초과·rc≠0·판독 실패·
     모델 0개는 전부 `HarnessContractError` 다. 빈 목록이나 기본값으로 바꾸지 않는다.
     """
     if source.kind == "alias":
@@ -1258,8 +1285,8 @@ def model_listing(source: ModelSource, *, cwd: Path | str, env: dict[str, str]) 
     timeout = models_timeout()
     try:
         result = subprocess.run(
-            list(command), cwd=str(cwd), env=dict(env), capture_output=True, text=True,
-            encoding="utf-8", timeout=timeout,
+            [resolve_executable(command[0], env), *command[1:]], cwd=str(cwd), env=dict(env),
+            capture_output=True, text=True, encoding="utf-8", timeout=timeout,
         )
     except FileNotFoundError as exc:
         if exc.filename not in (None, command[0]):
@@ -2401,7 +2428,10 @@ class _WatchedPopen:
             # 실제 자식 생성도 try 안에 둔다. Popen이 핸들을 반환한 직후부터 아래 후속 초기화
             # (Event/Lock/Thread 생성·start)가 실패해도 같은 트랜잭션에서 자식을 회수한다.
             try:
-                spawned = subprocess.Popen(argv, **popen_kwargs)
+                # 첫 인자는 자식 env 의 PATH 로 해소한다(Windows npm 셈 `.cmd` — `resolve_executable`).
+                # 해소 실패는 `FileNotFoundError` 라 아래 확정 기동 실패로 같이 표식된다.
+                spawned = subprocess.Popen(
+                    [resolve_executable(argv[0], env), *argv[1:]], **popen_kwargs)
             except _DEFINITE_LAUNCH_FAILURES as launch_failure:
                 # exec 자체가 실패한 확정 기동 실패다 — CPython 은 이때 자기가 만든 자식을
                 # errpipe 로 확인하고 회수하며, 프롬프트를 밀어 넣는 stdin 펌프는 `Popen` 이

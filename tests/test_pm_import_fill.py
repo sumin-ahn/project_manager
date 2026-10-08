@@ -108,7 +108,7 @@ def test_exposes_fill_symbols(pm_import):
 def test_fill_capability_and_runner_mapping_are_registry_derived(pm_import, tmp_path):
     """선언된 모든 fill 가능 하네스는 argv runner 매핑을 가져야 한다."""
     for harness in pm_import.FILL_CAPABLE_HARNESSES:
-        argv = pm_import._build_runner_argv(harness, "PROMPT", tmp_path)
+        argv = pm_import._build_runner_argv(harness, tmp_path, tmp_path / "prompt.md")
         assert argv
 
 
@@ -414,35 +414,63 @@ def test_run_fill_live_false_no_runner_does_not_call_real(pm_import, tmp_path, m
 # ── DoD ④: claude/opencode runner 분기 — 명령 조립 검증 ──────────────────────
 
 def test_runner_argv_claude_branch(pm_import, tmp_path):
-    """claude 분기: stub 에 `claude -p "<프롬프트>"` 형태로 조립돼 전달된다."""
+    """claude 분기: stub 에 `claude -p` 만 조립돼 전달된다 — 프롬프트는 실행 인자가 아니다(표준 입력)."""
     dest = _make_imported_tree(pm_import, tmp_path, harness="claude", name="ArgvClaude")
     stub = _StubRunner()
     pm_import.run_fill(dest, "claude", live=False, runner=stub)
     assert len(stub.calls) == 1
     argv, prompt = stub.calls[0]
-    assert argv[0] == "claude" and "-p" in argv
-    # 마지막 인자가 프롬프트(repo 분석 지시).
-    assert argv[-1] == prompt
-    assert "--format" not in argv, "claude 분기에 opencode json 플래그가 섞임."
+    assert argv == ["claude", "-p"]
+    assert prompt.strip() and prompt not in argv
+
+
+class _FileReadingRunner(_StubRunner):
+    """`--file` 프롬프트 파일을 호출 시점에 읽어 둔다(run_fill 은 호출 뒤 그 파일을 지운다)."""
+
+    def __call__(self, argv, prompt):
+        self.read = Path(argv[argv.index("--file") + 1]).read_text(encoding="utf-8")
+        return super().__call__(argv, prompt)
 
 
 def test_runner_argv_opencode_branch(pm_import, tmp_path):
-    """opencode 분기: `opencode run "<프롬프트>" --format json` 형태로 조립된다."""
+    """opencode 분기: `opencode run "<첨부 안내>" --file <대상 폴더 안 파일> --format json --dir <dest>`.
+
+    cross 위임과 같은 `--file` 전달이다 — 파일 내용이 프롬프트이고, 실행 뒤 파일은 지워진다."""
     dest = _make_imported_tree(pm_import, tmp_path, harness="opencode", name="ArgvOpen")
-    stub = _StubRunner(ok=True, output='{"result": "텍스트"}')
+    stub = _FileReadingRunner(ok=True, output='{"result": "텍스트"}')
     pm_import.run_fill(dest, "opencode", live=False, runner=stub)
     assert len(stub.calls) == 1
-    argv, _ = stub.calls[0]
-    assert argv[0] == "opencode" and argv[1] == "run"
-    assert "--format" in argv and "json" in argv, "opencode 분기에 --format json 누락."
+    argv, prompt = stub.calls[0]
+    relay = pm_import._load_watchdog()
+    prompt_file = Path(argv[argv.index("--file") + 1])
+    assert argv == ["opencode", "run", relay.OPENCODE_ATTACHED_MSG, "--file", str(prompt_file),
+                    "--format", "json", "--dir", str(dest)]
+    assert prompt_file.parent == dest / ".project_manager" / ".local" / "fill"
+    assert stub.read == prompt and prompt not in argv
+    assert not prompt_file.exists(), "fill 이 프롬프트 파일을 남겼다"
 
 
-def test_build_runner_argv_units(pm_import):
-    """_build_runner_argv 단위: 분기별 명령 조립 직접 검증."""
-    claude_argv = pm_import._build_runner_argv("claude", "PROMPT")
-    assert claude_argv == ["claude", "-p", "PROMPT"]
-    open_argv = pm_import._build_runner_argv("opencode", "PROMPT")
-    assert open_argv == ["opencode", "run", "PROMPT", "--format", "json"]
+def test_build_runner_argv_units(pm_import, tmp_path):
+    """_build_runner_argv 단위: 분기별 명령 조립 직접 검증(프롬프트 텍스트는 어느 argv 에도 없다)."""
+    prompt_file = tmp_path / "prompt.md"
+    assert pm_import._build_runner_argv("claude", tmp_path, None) == ["claude", "-p"]
+    open_argv = pm_import._build_runner_argv("opencode", tmp_path, prompt_file)
+    assert open_argv == ["opencode", "run", pm_import._load_watchdog().OPENCODE_ATTACHED_MSG,
+                         "--file", str(prompt_file), "--format", "json", "--dir", str(tmp_path)]
+
+
+@pytest.mark.parametrize("harness", ("claude", "opencode", "codex"))
+def test_fill_argv_carries_no_multiline_value(pm_import, tmp_path, harness):
+    """fill 실행 인자에는 여러 줄 값이 없다 — 프롬프트는 표준 입력이나 `--file` 로만 간다.
+
+    Windows 에서 실행 파일이 npm 셈(`.cmd`)이면 cmd.exe 가 인자를 해석해 첫 줄 뒤를 조용히 버린다
+    (PM VM 실측: `"line1\nline2 & echo INJECTED"` → node argv `["line1"]`·rc 0)."""
+    dest = _make_imported_tree(pm_import, tmp_path, harness=harness, name=f"Multi{harness}")
+    stub = _StubRunner(ok=True, output="{}")
+    pm_import.run_fill(dest, harness, live=False, runner=stub)
+    argv, prompt = stub.calls[0]
+    assert "\n" in prompt, "전제: fill 프롬프트는 여러 줄이다"
+    assert [part for part in argv if "\n" in part or "\r" in part] == []
 
 
 def test_opencode_json_text_extracted(pm_import, tmp_path):
@@ -473,25 +501,18 @@ def test_fill_harness_resolution(pm_import, monkeypatch):
 # 수정: codex runner 명시 등록(codex exec --json·stdin DEVNULL·codex JSONL 파서) + 미지원 harness fail-loud.
 
 def test_build_runner_argv_codex(pm_import, tmp_path):
-    """codex → `codex exec --json -s workspace-write --skip-git-repo-check -C <dest> <prompt>`
-    (과거 silent `claude -p` 폴백 소멸). dest_root 생략 시 -C 없이 조립(cwd 바인딩이 workdir 담당)."""
-    argv = pm_import._build_runner_argv("codex", "PROMPT", tmp_path)
-    assert argv[:2] == ["codex", "exec"]
-    assert "--json" in argv and "--skip-git-repo-check" in argv
-    assert argv[argv.index("-s") + 1] == "workspace-write"
-    assert argv[argv.index("-C") + 1] == str(tmp_path)
-    assert argv[-1] == "PROMPT"                          # 프롬프트 = 마지막 positional
-    assert argv[0] != "claude"                           # 오폴백 회귀 방지(회귀 가드)
-    # dest_root 생략 → -C 없이 조립.
-    argv2 = pm_import._build_runner_argv("codex", "P")
-    assert argv2[:2] == ["codex", "exec"] and "-C" not in argv2
+    """codex → `codex exec --json -s workspace-write --skip-git-repo-check -C <dest>`, 프롬프트는 표준 입력
+    (과거 silent `claude -p` 폴백 소멸)."""
+    argv = pm_import._build_runner_argv("codex", tmp_path, None)
+    assert argv == ["codex", "exec", "--json", "-s", "workspace-write", "--skip-git-repo-check",
+                    "-C", str(tmp_path)]
 
 
 def test_build_runner_argv_unknown_harness_fail_loud(pm_import):
     """미지원 harness 는 silent claude 폴백이 아니라 fail-loud (잘못된 바이너리 호출·오표기 방지·
     제4 하네스 재발 방지·ADR-0070 D5)."""
     with pytest.raises(ValueError) as exc:
-        pm_import._build_runner_argv("bogus", "P")
+        pm_import._build_runner_argv("bogus", Path("."), None)
     assert "bogus" in str(exc.value)
 
 
@@ -528,8 +549,9 @@ def test_run_fill_codex_uses_codex_parser_and_labels_codex(pm_import, tmp_path):
     assert "-C" in argv0
 
 
-def test_real_harness_runner_codex_stdin_eof(pm_import, monkeypatch):
-    """공용 워치독에서도 codex stdin 은 즉시 EOF, claude 는 기존 상속을 유지한다."""
+def test_real_harness_runner_delivers_prompt_by_declared_transport(pm_import, monkeypatch, tmp_path):
+    """표준 입력 전달 하네스(claude·codex)는 프롬프트 전문을 stdin 으로 쓰고 닫는다(EOF), `--file` 전달
+    하네스(opencode)는 stdin 을 쓰지 않는다."""
     captured: dict = {}
     relay = pm_import._load_watchdog()
 
@@ -543,24 +565,21 @@ def test_real_harness_runner_codex_stdin_eof(pm_import, monkeypatch):
 
     monkeypatch.setattr(pm_import, "_load_watchdog", lambda: _FakeRelay())
     monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
-    # codex → 빈 stdin PIPE를 닫아 EOF.
-    pm_import._real_harness_runner(pm_import._build_runner_argv("codex", "P"), "P")
-    assert captured["input_text"] == ""
-    # claude → None(상속·현행 무변경 — codex-특수 stdin 이 다른 하니스에 새지 않음).
-    captured.clear()
-    pm_import._real_harness_runner(pm_import._build_runner_argv("claude", "P"), "P")
-    assert captured["input_text"] is None
+    prompt = "첫 줄\n둘째 줄"
+    for harness, expected in (("codex", prompt), ("claude", prompt), ("opencode", None)):
+        captured.clear()
+        argv = pm_import._build_runner_argv(harness, tmp_path, tmp_path / "prompt.md")
+        pm_import._real_harness_runner(argv, prompt)
+        assert captured["input_text"] == expected, harness
 
 
 def test_fill_driver_codex_plain_keeps_stdin_eof_without_incremental_signal(pm_import):
     """codex 평문 출력도 stdin EOF는 유지하되 JSONL 증분 신호로 오인하지 않는다."""
-    harness, emits_progress, input_text = pm_import._fill_driver(
-        ["codex", "exec", "prompt"]
-    )
+    harness, emits_progress, prompt_transport = pm_import._fill_driver(["codex", "exec"])
 
     assert harness == ""
     assert emits_progress is False
-    assert input_text == ""
+    assert prompt_transport == pm_import.FILL_PROMPT_STDIN
 
 
 # ── codex live fill (gated·실 실행은 T-0407·과금) ─────────────────────────────

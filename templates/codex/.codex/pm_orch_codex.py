@@ -342,7 +342,8 @@ class CodexCliDriver:
         - resume_id 주어지면: `resume <tid>` 로 그 세션 이어감.
         child cwd 격리 — `-C <cwd>` 로 PM repo root 를 명시(opencode `--dir` 대칭).
         커맨드 형 = `codex exec --json -s workspace-write --skip-git-repo-check [-C <cwd>]
-        [resume <tid>] <prompt>` (티켓 명세 순). `-C` 는 exec-레벨 플래그라 `resume` 서브커맨드
+        [resume <tid> -]` 이고 프롬프트는 표준 입력이다(cross 위임 `build_codex_argv` 와 같다 — 여러 줄
+        프롬프트를 실행 인자에 실으면 Windows 에서 `codex.cmd` 를 거칠 때 cmd.exe 가 첫 줄 뒤를 버린다). `-C` 는 exec-레벨 플래그라 `resume` 서브커맨드
         *앞*에 둔다 — resume 뒤에 두면 resume 이 -C 를 거부할 때 cwd 격리가 파손된다.
         (resume+-C 실효는 라이브 확인 전제.)
         sandbox 는 `-s workspace-write` 로 **명시 핀** — PM relay 세션은 파일 수정/테스트
@@ -352,15 +353,14 @@ class CodexCliDriver:
         if cwd is not None:
             cmd += ["-C", cwd]  # exec-레벨 workdir 핀(resume 앞·child cwd 격리·PM repo root).
         if resume_id:
-            cmd += ["resume", resume_id]  # codex exec resume <thread_id>.
-        cmd.append(prompt)  # PROMPT positional 은 맨 끝.
+            cmd += ["resume", resume_id, "-"]  # codex exec resume <thread_id> - (프롬프트 = stdin).
 
         try:
             completed = self.runner(
                 cmd, capture_output=True, text=True, timeout=self.timeout,
-                # ⚠⚠ stdin close 필수 — 미닫힘 시 codex 가 "Reading additional input from
-                # stdin..." 로 무기한 대기(라이브 실측·3m timeout 재현).
-                stdin=subprocess.DEVNULL,
+                # 프롬프트 전문을 stdin 으로 쓰고 닫는다 — 미닫힘 시 codex 가 "Reading additional
+                # input from stdin..." 로 무기한 대기(라이브 실측·3m timeout 재현).
+                input=prompt,
             )
         except subprocess.TimeoutExpired:
             sys.stderr.write(f"[pm-orch] codex turn timeout ({self.timeout}s)\n")
@@ -1577,6 +1577,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _make_resolving_runner(engine):
+    """프로덕션 runner — 실행 파일을 엔진 해소 함수(`pm_relay.resolve_executable`)로 찾아 실행한다.
+
+    Windows npm 설치의 `codex.cmd` 는 이름 그대로 실행하지 못한다. 해소 실패는 `FileNotFoundError`
+    (PATH 부재)라 driver `_turn` 의 실행 실패 처리를 그대로 탄다."""
+    def runner(cmd, **kwargs):
+        return subprocess.run(
+            [engine.resolve_executable(cmd[0], kwargs.get("env")), *cmd[1:]], **kwargs)
+    return runner
+
+
 def main(argv: list[str] | None = None) -> int:
     actual_argv = sys.argv[1:] if argv is None else argv
     # 훅 축은 relay 부팅(엔진 적재·local.conf·supervisor)을 타지 않는다 — 훅은 매 도구 호출마다
@@ -1601,6 +1612,7 @@ def main(argv: list[str] | None = None) -> int:
     ctx_budget, precompact_at_pct, _warning = engine.ctx_budget(root, "codex", None)
     driver = CodexCliDriver(
         engine.parse_codex_json,
+        runner=_make_resolving_runner(engine),
         ctx_budget=ctx_budget,
         budget_reader=lambda model: engine.ctx_budget(root, "codex", model),
         precompact_at_pct=precompact_at_pct,

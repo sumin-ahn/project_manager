@@ -993,7 +993,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   줄어든 것은 그 실행이 부르지 않던 코드뿐이다. 현재화한 것은 기대 SHA 하나뿐이다.
 #   같은 티켓의 수정 라운드에서 한 번 더 이동했다 — `plan()` docstring 의 낱말 하나("모듈 밖
 #   호출부")뿐이고 실행 코드·배달 경계는 무편집이다.
-_T0585_PM_UPDATE_SHA256 = "1ef1ca67445fd2aad93167f719ad87d2dd8d6ce6d61b59f5872d4db6af33afa4"
+_T0585_PM_UPDATE_SHA256 = "ecfd51ec47f135b1cb2766f367572c06214a17bdc02dd154ee08f696fed3bcaa"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -1267,7 +1267,11 @@ def _t0585_pm_update_source() -> str:
     모델별 허용값 하네스(opencode) 프로필에 추론 값이 있을 때만 판정하고, 이 fixture 의 conf 에는 그런
     줄이 없어 아무것도 지우지 않는다. 배달 파일 집합과 배달 경계(source/manifest planning → apply →
     self-update 순서)는 그대로이고, 역델타 marker 와 시대착오 부재 단언은 선통과했다 — 현재화한 것은
-    기대 SHA 하나뿐이다.
+    기대 SHA 하나뿐이다. 같은 티켓의 수정 라운드에서 저장(`apply_conf`)에 추론 값 묶음을 더하고 저장의
+    계획 판정과 그리기가 렌더러 하나를 쓰게(`plan`·`_resolve_engine_sync_plan` 의 선택 인자 `render_mod`)
+    했으며, 정리와 저장 확인이 추론 값 열거 하나(`_reasoning_values`)를 쓰게 했다. 갱신 실행은
+    `render_mod` 를 넘기지 않아 계획 렌더러 로드가 그대로이고 배달 경계도 그대로다 — 현재화한 것은 기대
+    SHA 하나뿐이다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -1393,7 +1397,7 @@ def _install_t0585_updater(dest: Path) -> None:
 # T-0887: 온보딩 opt-in 일습 삭제로 역적용 delta 의 exact-marker 목록이 두 항목으로 줄고
 # (되돌릴 원문이 사라졌다) 그만큼 historical 전문 SHA 도 이동했다. 퇴역 경로 delta 의 marker 는
 # 전부 그 절 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "3bae0d932932f5f56d80ba83b8c629a52fc37f5c320fde3f4f7c217a11648590"
+_PRE_T0876_PM_UPDATE_SHA256 = "2b0240400140f4cbde5e492e066d65dd4f6ed6f21f1dad692622c0e175ff2c28"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -1454,7 +1458,9 @@ def _pre_t0876_pm_update_source() -> str:
     T-0946 — 계획 직전의 추론 값 정리(`prune_unavailable_reasoning`)를 더했다. opencode 프로필의 추론
     값이 있을 때만 판정하며 이 fixture 의 conf 에는 그런 줄이 없다. 퇴역 경로 delta(T-0878·T-0876)의
     exact-marker 는 그 절 밖이라 그대로 유일 해소되고, RUN1 이 검증하는 배달 경계(신 reviewer 설치 →
-    두 번째 실행의 구 파일 퇴역)는 무편집이다. 합성본 지문만 갱신했다.
+    두 번째 실행의 구 파일 퇴역)는 무편집이다. 합성본 지문만 갱신했다. 같은 티켓의 수정 라운드에서
+    저장의 추론 값 묶음과 렌더러 하나 공유(`plan` 의 선택 인자 `render_mod`)를 더했다. 퇴역 경로 delta 의
+    exact-marker 와 배달 경계는 그대로다 — 합성본 지문만 갱신했다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")

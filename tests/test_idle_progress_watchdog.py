@@ -1534,12 +1534,12 @@ def _wire_relay(pd, monkeypatch, fake, conf=None):
 
 @pytest.mark.parametrize("harness", FILL_CAPABLE_HARNESSES)
 def test_fill_routes_every_driver_through_shared_watchdog(
-        pm_import, relay, monkeypatch, harness):
+        pm_import, relay, monkeypatch, harness, tmp_path):
     """세 번째 표면 fill도 3 드라이버 전부 같은 profile+watchdog 판정을 탄다."""
     fake = _RecordingRelay()
     monkeypatch.setattr(pm_import, "_load_watchdog", lambda: fake)
     monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
-    argv = pm_import._build_runner_argv(harness, "prompt")
+    argv = pm_import._build_runner_argv(harness, tmp_path, tmp_path / "prompt.md")
 
     ok, _output = pm_import._real_harness_runner(argv, "prompt")
 
@@ -1579,12 +1579,12 @@ def test_fill_reads_target_repo_profile_overrides(pm_import, monkeypatch, tmp_pa
 
 
 def test_fill_claude_plain_blob_disables_idle_from_actual_argv(
-        pm_import, relay, monkeypatch):
+        pm_import, relay, monkeypatch, tmp_path):
     """평문 `claude -p`는 event-stream 프로필을 소비하지 않아 정상 실행을 idle kill하지 않는다."""
     fake = _RecordingRelay()
     monkeypatch.setattr(pm_import, "_load_watchdog", lambda: fake)
     monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
-    argv = pm_import._build_runner_argv("claude", "prompt")
+    argv = pm_import._build_runner_argv("claude", tmp_path, None)
 
     pm_import._real_harness_runner(argv, "prompt")
 
@@ -2901,7 +2901,7 @@ def test_definite_launch_failure_from_popen_keeps_the_refund_contract(
 
     monkeypatch.setattr(relay, "subprocess", _PopenPatchedSubprocess(_boom))
     with pytest.raises(exc_type) as excinfo:
-        relay._WatchedPopen(["drv"])
+        relay._WatchedPopen([sys.executable])
     assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is True
 
 
@@ -2951,7 +2951,7 @@ def test_popen_exception_after_a_child_exists_is_not_ruled_a_no_child(
                         _PopenPatchedSubprocess(_ChildThenRaisePopen(exc, spawned)))
     try:
         with pytest.raises(type(exc)) as excinfo:
-            relay._WatchedPopen(["drv"])
+            relay._WatchedPopen([sys.executable])
         assert spawned, "반례 형상이 성립하려면 자식이 실제로 떠야 한다"
         assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR, None) is not True, (
             "자식이 있었는데 '자식 없음'으로 확정했다 — 나간 호출이 환불된다")
@@ -2973,7 +2973,7 @@ def test_same_exception_class_splits_by_boundary_not_by_kind(relay, monkeypatch)
             _ChildThenRaisePopen(ValueError("embedded null byte"), spawned)))
     try:
         with pytest.raises(ValueError) as post:
-            relay._WatchedPopen(["drv"])
+            relay._WatchedPopen([sys.executable])
         assert getattr(pre.value, relay.SPAWN_FAILED_ATTR) is True
         assert getattr(post.value, relay.SPAWN_FAILED_ATTR, None) is not True
     finally:

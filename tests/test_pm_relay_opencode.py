@@ -245,7 +245,7 @@ def _json_stream(sid: str, reply: str, *, tokens: dict | None = None) -> str:
 
 # ── ② driver spawn (엔진 uuid4 무시·출력 sid 반환·--agent·--dir·--format json) ─
 
-def test_opencode_driver_spawn_ignores_uuid_returns_parsed_sid(orch, driver_mod):
+def test_opencode_driver_spawn_ignores_uuid_returns_parsed_sid(orch, driver_mod, tmp_path):
     """spawn 이 엔진 uuid4 인자를 **무시** 하고 opencode 출력에서 파싱한 sid 를 반환한다
     (opencode sid 사전지정 불가·실측 → 출력 파싱이 권위)."""
     captured = {}
@@ -254,28 +254,33 @@ def test_opencode_driver_spawn_ignores_uuid_returns_parsed_sid(orch, driver_mod)
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
         captured["kwargs"] = kwargs
+        captured["prompt"] = Path(cmd[cmd.index("--file") + 1]).read_text(encoding="utf-8")
         return _FakeCompleted(_json_stream(opencode_sid, "READY"))
 
     driver = driver_mod.OpencodeCliDriver(
         orch.parse_opencode_json, runner=fake_run, spawn_result=orch.SpawnResult,
     )
     engine_uuid = "11111111-2222-3333-4444-555555555555"
-    spawned = driver.spawn("/repo/root", engine_uuid, "bootstrap text")
+    spawned = driver.spawn(str(tmp_path), engine_uuid, "bootstrap text")
     # 엔진 uuid4 가 아니라 opencode 가 발급한 sid 를 반환.
     assert isinstance(spawned, orch.SpawnResult)
     assert spawned.session_id == opencode_sid
     assert spawned.session_id != engine_uuid
     assert spawned.reply == "READY"
     cmd = captured["cmd"]
-    assert cmd[:3] == ["opencode", "run", "--format"]  # run + json 포맷.
-    assert "json" in cmd
+    prompt_file = Path(cmd[cmd.index("--file") + 1])
+    assert cmd[:5] == ["opencode", "run", orch.OPENCODE_ATTACHED_MSG, "--file", str(prompt_file)]
+    assert cmd[cmd.index("--format") + 1] == "json"
     assert "--agent" in cmd and "pm" in cmd  # PM primary 기본 spawn 타깃(T-0045).
-    assert "--dir" in cmd and "/repo/root" in cmd  # child cwd 격리.
+    assert "--dir" in cmd and str(tmp_path) in cmd  # child cwd 격리.
     assert "-s" not in cmd  # 첫 spawn 은 resume 안 함.
-    assert cmd[-1] == "bootstrap text"  # message positional 은 맨 끝.
+    # 프롬프트는 실행 인자가 아니라 `--dir` 안 프롬프트 파일이다(cross 위임과 같은 `--file` 전달).
+    assert captured["prompt"] == "bootstrap text" and "bootstrap text" not in cmd
+    assert prompt_file.parent.parent == tmp_path / ".project_manager" / ".local" / "tmp"
+    assert not prompt_file.exists(), "turn 뒤 프롬프트 파일이 남았다"
 
 
-def test_opencode_driver_spawn_agent_arg(orch, driver_mod):
+def test_opencode_driver_spawn_agent_arg(orch, driver_mod, tmp_path):
     """`--agent` 인자화 — build 폴백 등 커스텀 agent 지정 가능."""
     captured = {}
 
@@ -286,7 +291,7 @@ def test_opencode_driver_spawn_agent_arg(orch, driver_mod):
     driver = driver_mod.OpencodeCliDriver(
         orch.parse_opencode_json, agent="build", runner=fake_run
     )
-    driver.spawn("/r", "uuid", "boot")
+    driver.spawn(str(tmp_path), "uuid", "boot")
     cmd = captured["cmd"]
     assert "--agent" in cmd
     assert cmd[cmd.index("--agent") + 1] == "build"
@@ -315,7 +320,7 @@ def test_opencode_driver_rc0_empty_stdout_warns(orch, driver_mod, capsys):
     )
 
 
-def test_opencode_driver_spawn_sid_parse_failure_raises(orch, driver_mod):
+def test_opencode_driver_spawn_sid_parse_failure_raises(orch, driver_mod, tmp_path):
     """sid 파싱 실패 = 치명·명시 중단 (codex T-0048).
 
     opencode 는 sid 사전지정 불가라 엔진 uuid 폴백 시 그 세션이 존재하지 않아 다음 relay_turn 의
@@ -328,7 +333,7 @@ def test_opencode_driver_spawn_sid_parse_failure_raises(orch, driver_mod):
 
     driver = driver_mod.OpencodeCliDriver(orch.parse_opencode_json, runner=fake_run)
     with pytest.raises(RuntimeError, match="sessionID"):
-        driver.spawn("/r", "engine-uuid-ignored", "boot")
+        driver.spawn(str(tmp_path), "engine-uuid-ignored", "boot")
 
 
 # ── ③ driver relay_turn (-s resume·reply 파싱·spawn cwd 재사용) ───────────────
@@ -348,10 +353,10 @@ def test_opencode_driver_relay_uses_session_flag(orch, driver_mod):
     assert "-s" in cmd
     assert cmd[cmd.index("-s") + 1] == "ses_r"
     assert "--agent" not in cmd  # resume 은 새 세션 발급 안 함.
-    assert cmd[-1] == "ping"
+    assert "ping" not in cmd and "--file" in cmd
 
 
-def test_opencode_driver_relay_reuses_spawn_cwd(orch, driver_mod):
+def test_opencode_driver_relay_reuses_spawn_cwd(orch, driver_mod, tmp_path):
     """relay 가 spawn 때의 cwd(--dir)를 재사용한다 — child cwd 격리 일관."""
     dirs = []
 
@@ -366,10 +371,10 @@ def test_opencode_driver_relay_reuses_spawn_cwd(orch, driver_mod):
         return _FakeCompleted(_json_stream("ses_cwd", "ok"))
 
     driver = driver_mod.OpencodeCliDriver(orch.parse_opencode_json, runner=fake_run)
-    spawned = driver.spawn("/repo/root", "uuid", "boot")
+    spawned = driver.spawn(str(tmp_path), "uuid", "boot")
     sid, _ = spawned
     driver.relay_turn(sid, "msg")
-    assert dirs == ["/repo/root", "/repo/root"]
+    assert dirs == [str(tmp_path), str(tmp_path)]
 
 
 def test_opencode_driver_relay_unknown_session_no_dir(orch, driver_mod):
@@ -388,12 +393,12 @@ def test_opencode_driver_relay_unknown_session_no_dir(orch, driver_mod):
 
 # ── ④ driver close (no-op·세션 cwd 메타 정리) ────────────────────────────────
 
-def test_opencode_driver_close_is_noop_and_clears_meta(orch, driver_mod):
+def test_opencode_driver_close_is_noop_and_clears_meta(orch, driver_mod, tmp_path):
     def fake_run(cmd, **kwargs):
         return _FakeCompleted(_json_stream("ses_c", "READY"))
 
     driver = driver_mod.OpencodeCliDriver(orch.parse_opencode_json, runner=fake_run)
-    spawned = driver.spawn("/r", "uuid", "boot")
+    spawned = driver.spawn(str(tmp_path), "uuid", "boot")
     sid, _ = spawned
     assert sid in driver._session_cwd
     assert driver.close(sid) is None
@@ -445,7 +450,7 @@ def test_opencode_driver_spawn_marks_after_turn_and_returns_spawn_result(
             _json_stream("ses_spawn_usage", "READY", tokens=tokens)
         ),
     )
-    result = driver.spawn("/repo", "ignored-uuid", "boot")
+    result = driver.spawn(str(tmp_path), "ignored-uuid", "boot")
     assert result == orch.SpawnResult("ses_spawn_usage", "READY")
     assert calls == [(tmp_path, "ses_spawn_usage", 8131, 10_000, 80)]
 
@@ -558,6 +563,9 @@ def test_opencode_main_forwards_task_and_budget(driver_mod, monkeypatch, tmp_pat
     from test_harness_ctx_limits import install_ctx_record, _load as load_ctx_engine
     install_ctx_record(tmp_path, harness="opencode")
     engine = load_ctx_engine("pm_relay")
+    _FakeEngine.temp_root = staticmethod(engine.temp_root)
+    _FakeEngine.OPENCODE_ATTACHED_MSG = engine.OPENCODE_ATTACHED_MSG
+    _FakeEngine.assert_opencode_prompt_in_cwd = staticmethod(engine.assert_opencode_prompt_in_cwd)
     _FakeEngine.ctx_budget = staticmethod(
         lambda root, harness, model: captured.setdefault("budget", engine.ctx_budget(root, harness, model)))
     monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
@@ -617,7 +625,7 @@ def test_opencode_driver_repo_root_is_the_adapter_parent(driver_mod, tmp_path):
 
 # ── ⑥ subprocess 폭발 가드 (driver 가 실 opencode 안 부름) ────────────────────
 
-def test_opencode_driver_does_not_spawn_real_subprocess(orch, driver_mod, monkeypatch):
+def test_opencode_driver_does_not_spawn_real_subprocess(orch, driver_mod, monkeypatch, tmp_path):
     """driver 경로가 (FakeRunner 주입 시) 실 subprocess.run 을 호출하지 않는다."""
     import subprocess as _sp
 
@@ -631,7 +639,7 @@ def test_opencode_driver_does_not_spawn_real_subprocess(orch, driver_mod, monkey
         return _FakeCompleted(_json_stream("ses_safe", "READY"))
 
     driver = driver_mod.OpencodeCliDriver(orch.parse_opencode_json, runner=fake_run)
-    spawned = driver.spawn("/r", "uuid", "boot")
+    spawned = driver.spawn(str(tmp_path), "uuid", "boot")
     sid, _ = spawned
     assert driver.relay_turn(sid, "x") == "READY"
 
@@ -670,7 +678,7 @@ def test_supervisor_with_opencode_driver_rotation(orch, driver_mod, tmp_path):
         runner=fake_run,
     )
     sup = orch.Supervisor(driver, root=tmp_path)
-    rc = sup.run_loop("/repo/root", io.StringIO("first\nsecond\n"), io.StringIO())
+    rc = sup.run_loop(str(tmp_path), io.StringIO("first\nsecond\n"), io.StringIO())
     assert rc == 0
     assert counts == {"spawn": 2, "relay": 2}
 
@@ -823,6 +831,7 @@ def test_model_listing_stops_on_lookup_failure(orch, tmp_path, monkeypatch):
         raise subprocess.TimeoutExpired(cmd="opencode models --verbose", timeout=60)
 
     monkeypatch.delenv("PM_OPENCODE_MODELS_TIMEOUT", raising=False)
+    monkeypatch.setattr(orch, "resolve_executable", lambda name, env: name)
     monkeypatch.setattr(orch.subprocess, "run", _raise_timeout)
     with pytest.raises(orch.HarnessContractError) as excinfo:
         orch.model_listing(source, cwd=tmp_path / "timeout", env={"PATH": str(empty)})
@@ -851,6 +860,14 @@ def test_reasoning_allowed_sources_partition_the_harnesses(orch, tmp_path):
 # ── 조회 실패 사유 — 사유 한 줄이 원인을 지목한다(pm_import 에서 옮긴 시험) ──────────────────
 
 
+@pytest.fixture
+def bare_executable(orch, monkeypatch):
+    """`subprocess.run` 을 대역으로 바꾸는 조회 시험 — 실행 파일 해소는 이름 그대로 둔다(이 기계 PATH 무관).
+
+    해소 자체는 `test_harness_cli_spawns_resolve_executable_*` 가 본다."""
+    monkeypatch.setattr(orch, "resolve_executable", lambda name, env: name)
+
+
 class _FakeListingRun:
     """subprocess.run 반환 모사 — 조회가 보는 필드만."""
 
@@ -864,7 +881,7 @@ def _codex_source(orch):
     return orch.MODEL_SOURCE["codex"]
 
 
-def test_model_listing_rc_failure_truncates_stderr_to_200(orch, tmp_path, monkeypatch):
+def test_model_listing_rc_failure_truncates_stderr_to_200(orch, tmp_path, monkeypatch, bare_executable):
     """rc≠0 의 stderr 는 앞 200자까지만 사유에 싣는다(로그 폭증 방지)."""
     monkeypatch.setattr(orch.subprocess, "run",
                         lambda *a, **k: _FakeListingRun(returncode=1, stderr="x" * 500))
@@ -874,7 +891,7 @@ def test_model_listing_rc_failure_truncates_stderr_to_200(orch, tmp_path, monkey
     assert "rc=1" in message and "x" * 200 in message and "x" * 201 not in message
 
 
-def test_model_listing_zero_models_is_a_failure(orch, tmp_path, monkeypatch):
+def test_model_listing_zero_models_is_a_failure(orch, tmp_path, monkeypatch, bare_executable):
     """rc 0 이어도 모델이 0개면 성공이 아니다(빈 목록 성공 위장 0)."""
     monkeypatch.setattr(orch.subprocess, "run",
                         lambda *a, **k: _FakeListingRun(stdout=json.dumps({"models": []})))
@@ -883,7 +900,7 @@ def test_model_listing_zero_models_is_a_failure(orch, tmp_path, monkeypatch):
     assert "모델 0개" in str(excinfo.value)
 
 
-def test_model_listing_uses_the_resolved_timeout(orch, tmp_path, monkeypatch):
+def test_model_listing_uses_the_resolved_timeout(orch, tmp_path, monkeypatch, bare_executable):
     """조회는 `models_timeout()` 값을 `timeout=` 으로 쓰고 cwd·env 를 그대로 넘긴다."""
     monkeypatch.setenv("PM_OPENCODE_MODELS_TIMEOUT", "200")
     seen = {}
@@ -901,18 +918,26 @@ def test_model_listing_uses_the_resolved_timeout(orch, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(("raw", "expected"), [
-    (None, 60), ("120", 120), ("  90  ", 90), ("soon", 60), ("0", 60), ("-5", 60),
-], ids=["unset", "override", "strip", "non-numeric", "zero", "negative"])
+    (None, 60), ("120", 120), ("  90  ", 90),
+    ("soon", None), ("0", None), ("-5", None), ("", None), ("1_000", None), ("+5", None),
+], ids=["unset", "override", "strip", "non-numeric", "zero", "negative", "empty", "underscore",
+        "signed"])
 def test_models_timeout_env_override(orch, monkeypatch, raw, expected):
-    """`PM_OPENCODE_MODELS_TIMEOUT` 는 양의 정수만 받고 나머지는 기본 60 이다."""
+    """`PM_OPENCODE_MODELS_TIMEOUT` 는 미설정이면 기본 60, 있으면 양의 정수만 받고 그 밖은 멈춘다.
+
+    늘렸다고 믿는 값을 기본값으로 바꾸지 않는다(expected None = `HarnessContractError`)."""
     if raw is None:
         monkeypatch.delenv("PM_OPENCODE_MODELS_TIMEOUT", raising=False)
     else:
         monkeypatch.setenv("PM_OPENCODE_MODELS_TIMEOUT", raw)
-    assert orch.models_timeout() == expected
+    if expected is None:
+        with pytest.raises(orch.HarnessContractError, match="PM_OPENCODE_MODELS_TIMEOUT"):
+            orch.models_timeout()
+    else:
+        assert orch.models_timeout() == expected
 
 
-def test_the_json_catalog_parser_takes_slugs(orch, tmp_path, monkeypatch):
+def test_the_json_catalog_parser_takes_slugs(orch, tmp_path, monkeypatch, bare_executable):
     """`codex debug models` 산출은 `models[].slug` 만 모은다(설명·추론 등급은 끌고 오지 않는다)."""
     output = json.dumps({"models": [
         {"slug": "gpt-6-astra", "display_name": "GPT-6-Astra", "supported_reasoning_levels": []},
@@ -930,7 +955,7 @@ def test_the_json_catalog_parser_takes_slugs(orch, tmp_path, monkeypatch):
     json.dumps({"models": [{"display_name": "slug 없음"}]}),
     json.dumps({"models": [{"slug": 3}]}),
 ], ids=["not-json", "wrong-shape", "blank-slug", "missing-slug", "non-string-slug"])
-def test_a_catalog_that_does_not_parse_is_a_failure(orch, tmp_path, monkeypatch, output):
+def test_a_catalog_that_does_not_parse_is_a_failure(orch, tmp_path, monkeypatch, output, bare_executable):
     """판독 실패는 빈 목록이 아니라 HarnessContractError 다(항목을 조용히 빼지 않는다)."""
     monkeypatch.setattr(orch.subprocess, "run", lambda *a, **k: _FakeListingRun(stdout=output))
     with pytest.raises(orch.HarnessContractError) as excinfo:
@@ -956,3 +981,207 @@ def test_listing_for_matches_the_verbose_output_shape():
     assert '  "variants": {\n    "low": {},\n    "medium": {},\n    "high": {}\n  }\n}\n' \
         in OLLAMA_LISTING
     assert listing_for({}) == ""
+
+
+# ── 실행 파일 해소 한 곳(`resolve_executable`) — 세 실행 자리가 쓴다 (T-0946 리뷰 03 F-001) ─────────────
+# Windows 는 npm 셈(`opencode.cmd`)을 이름 그대로 실행하지 못한다(CreateProcess 는 `.exe` 만 붙인다).
+# 해소는 `shutil.which`(PATHEXT 포함)이고, 해소 결과가 `.cmd` 면 cmd.exe 가 인자를 해석하므로 엔진의
+# 실행 인자에는 여러 줄 값을 싣지 않는다.
+
+
+class _RecordingPopen:
+    """`Popen` 기록 대역 — 받은 argv 를 남기고 바로 끝나는 자식처럼 군다."""
+
+    def __init__(self):
+        self.argv = None
+
+    def __call__(self, argv, **kwargs):
+        import io
+        self.argv = list(argv)
+        recorder = self
+
+        class _Proc:
+            pid = 0
+            returncode = 0
+            stdin = None
+            stdout = io.StringIO("")
+            stderr = io.StringIO("")
+
+            def wait(self, timeout=None):
+                return 0
+
+            def poll(self):
+                return 0
+
+        recorder.proc = _Proc()
+        return recorder.proc
+
+
+def test_harness_cli_spawns_resolve_executable_to_the_found_path(orch, tmp_path, monkeypatch):
+    """세 자리가 이름이 아니라 해소한 경로로 실행한다 — Windows 의 `opencode.cmd` 해소를 모사한다.
+
+    `shutil.which` 가 `.cmd` 경로를 돌려주면(Windows PATHEXT 해소) model_listing 의 `subprocess.run` 과
+    `_WatchedPopen` 의 `Popen` 이 그 경로를 첫 인자로 받고 나머지 인자는 그대로다."""
+    shim = str(tmp_path / "npm" / "opencode.cmd")
+    looked_up = []
+
+    def _which(name, path=None):
+        looked_up.append((name, path))
+        return shim if name == "opencode" else None
+
+    monkeypatch.setattr(orch.shutil, "which", _which)
+    seen = {}
+
+    def _run(argv, **kwargs):
+        seen["argv"] = list(argv)
+        return _FakeListingRun(stdout=OLLAMA_LISTING)
+
+    monkeypatch.setattr(orch.subprocess, "run", _run)
+    env = {"PATH": str(tmp_path / "npm")}
+    orch.model_listing(orch.MODEL_SOURCE["opencode"], cwd=tmp_path / "listing", env=env)
+    assert seen["argv"] == [shim, "models", "--verbose"]
+    assert looked_up[-1] == ("opencode", str(tmp_path / "npm")), "해소가 자식 env 의 PATH 를 보지 않았다"
+
+    recorder = _RecordingPopen()
+    monkeypatch.setattr(orch.subprocess, "Popen", recorder)
+    orch._WatchedPopen(["opencode", "run", "--format", "json"], env=env)
+    assert recorder.argv == [shim, "run", "--format", "json"]
+
+
+def test_harness_cli_spawns_resolve_executable_failure_keeps_the_path_message(orch, tmp_path, monkeypatch):
+    """해소 실패는 실행 없이 PATH 부재로 멈춘다 — model_listing 은 지금 문구의 HarnessContractError,
+    `_WatchedPopen` 은 확정 기동 실패(`FileNotFoundError`·자식 없음 표식)다."""
+    monkeypatch.setattr(orch.subprocess, "run",
+                        lambda *a, **k: pytest.fail("해소 실패인데 실행했다"))
+    monkeypatch.setattr(orch.subprocess, "Popen",
+                        lambda *a, **k: pytest.fail("해소 실패인데 실행했다"))
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    env = {"PATH": str(empty)}
+    with pytest.raises(orch.HarnessContractError) as listing_error:
+        orch.model_listing(orch.MODEL_SOURCE["opencode"], cwd=tmp_path / "missing", env=env)
+    assert str(listing_error.value).startswith(
+        "opencode 실행 파일 PATH 부재 — 이 프로세스의 PATH 에서 찾지 못해 모델 목록과 variant 를 확인할 수 없다.")
+
+    with pytest.raises(FileNotFoundError) as spawn_error:
+        orch._WatchedPopen(["opencode", "run"], env=env)
+    assert "opencode 실행 파일 PATH 부재" in str(spawn_error.value)
+    assert spawn_error.value.filename == "opencode"
+    assert getattr(spawn_error.value, orch.SPAWN_FAILED_ATTR) is True
+
+
+@_needs_posix_fake
+def test_harness_cli_spawns_resolve_executable_posix_unchanged(orch, tmp_path):
+    """POSIX 는 이름 그대로 실행할 때 찾는 파일과 같은 파일을 실행한다 — 자식 env 의 PATH 가 정한다."""
+    fakebin = install_fake_opencode(tmp_path / "fakebin", OLLAMA_LISTING)
+    env = _fake_env(fakebin)
+    resolved = orch.resolve_executable("opencode", env)
+    assert resolved == shutil.which("opencode", path=env["PATH"]) == str(fakebin / "opencode")
+    proc = orch._WatchedPopen(["opencode", "models", "--verbose"], cwd=str(tmp_path), env=env)
+    stdout, _stderr = proc.communicate(timeout=30)
+    assert proc.returncode == 0 and stdout.startswith("ollama/glm-5.2:cloud")
+    with pytest.raises(FileNotFoundError):
+        orch.resolve_executable("opencode", {"PATH": str(tmp_path / "nowhere")})
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PATHEXT 해소 — 실측은 Windows 에서만")
+def test_harness_cli_spawns_resolve_executable_finds_npm_cmd_shim_on_windows(orch, tmp_path):
+    """PATH 에 `opencode.cmd` 하나만 있으면 그 경로로 해소된다(이름 그대로는 CreateProcess 가 못 찾는다)."""
+    shim_dir = tmp_path / "npm"
+    shim_dir.mkdir()
+    (shim_dir / "opencode.cmd").write_text("@echo ollama/glm-5.2:cloud\r\n", encoding="utf-8")
+    env = {**os.environ, "PATH": str(shim_dir)}
+    resolved = orch.resolve_executable("opencode", env)
+    assert Path(resolved).parent == shim_dir and resolved.lower().endswith(".cmd")
+
+
+def test_ctx_native_protocol_resolves_through_the_relay(tmp_path):
+    """사용 한도 조회(`pm_import._ctx_native_protocol`)도 같은 해소를 쓴다 — 없으면 PATH 부재."""
+    pm_import = _load("pm_import_ctx_resolve", TOOLS / "pm_import.py")
+    with pytest.raises(FileNotFoundError) as excinfo:
+        pm_import._ctx_native_protocol(["no-such-harness-cli-xyz", "-p"], tmp_path, [])
+    assert "no-such-harness-cli-xyz 실행 파일 PATH 부재" in str(excinfo.value)
+
+
+_MULTILINE_PROMPT = "첫 줄\n둘째 줄 & echo INJECTED\r\n셋째 줄"
+
+
+def _relay_driver_argvs(orch, driver_mod, tmp_path) -> list[list[str]]:
+    """relay 세션 회전 드라이버 셋(claude·codex·opencode)이 여러 줄 프롬프트로 spawn·relay 할 때의 실행 인자."""
+    argvs: list[list[str]] = []
+    prompts: list[str] = []
+
+    def recording(stdout):
+        def runner(cmd, **kwargs):
+            argvs.append(list(cmd))
+            if "--file" in cmd:
+                with open(cmd[cmd.index("--file") + 1], encoding="utf-8", newline="") as handle:
+                    prompts.append(handle.read())
+            else:
+                prompts.append(kwargs["input"])
+            return _FakeCompleted(stdout)
+        return runner
+
+    opencode = driver_mod.OpencodeCliDriver(
+        orch.parse_opencode_json, runner=recording(_json_stream("ses_m", "ok")))
+    sid, _ = opencode.spawn(str(tmp_path), "uuid", _MULTILINE_PROMPT)
+    opencode.relay_turn(sid, _MULTILINE_PROMPT)
+
+    codex_mod = _load("pm_orch_codex_multiline", REPO / "templates" / "codex" / ".codex" / "pm_orch_codex.py")
+    codex_stream = "\n".join((json.dumps({"type": "thread.started", "thread_id": "tid_m"}), json.dumps(
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}})))
+    codex = codex_mod.CodexCliDriver(orch.parse_codex_json, runner=recording(codex_stream))
+    tid, _ = codex.spawn(str(tmp_path), "uuid", _MULTILINE_PROMPT)
+    codex.relay_turn(tid, _MULTILINE_PROMPT)
+
+    claude_mod = _load("pm_orch_claude_multiline",
+                       REPO / "templates" / "claude_code" / ".claude" / "pm_orch_claude.py")
+    claude = claude_mod.ClaudeCliDriver(
+        orch.parse_stream_json, runner=recording(json.dumps({"type": "result", "result": "ok"})))
+    claude.relay_turn("uuid-m", _MULTILINE_PROMPT)
+    assert prompts == [_MULTILINE_PROMPT] * len(argvs), "드라이버가 프롬프트 전문을 전달하지 않았다"
+    return argvs
+
+
+def test_engine_spawn_argv_carries_no_multiline_value(orch, driver_mod, tmp_path):
+    """엔진·어댑터가 하네스 CLI 에 넘기는 실행 인자에는 여러 줄 값이 없다 — cross·추가 리뷰어 빌더, 모델
+    목록 조회 명령, opencode 첨부 안내, relay 드라이버 셋. 프롬프트는 표준 입력이나 `--file` 이다
+    (fill 은 test_pm_import_fill). Windows `.cmd` 는 cmd.exe 가 인자를 해석해 첫 줄 뒤를 조용히 버린다."""
+    argvs = [list(source.command) for source in orch.MODEL_SOURCE.values() if source.command]
+    for role in (*orch.WRITE_ROLES, *orch.READ_ROLES):
+        argvs.append(orch.build_claude_argv("sonnet", "high", role))
+        argvs.append(orch.build_codex_argv("gpt-6", "high", role, cwd=str(tmp_path)))
+        argvs.append(orch.build_opencode_argv(
+            "ollama/m", "high", role, str(tmp_path), str(tmp_path / "prompt.md")))
+    argvs.extend(_relay_driver_argvs(orch, driver_mod, tmp_path))
+    multiline = [(argv, part) for argv in argvs for part in argv if "\n" in part or "\r" in part]
+    assert multiline == []
+
+
+@pytest.mark.parametrize(("module_name", "relative"), [
+    ("pm_orch_codex_runner", "templates/codex/.codex/pm_orch_codex.py"),
+    ("pm_orch_claude_runner", "templates/claude_code/.claude/pm_orch_claude.py"),
+])
+def test_relay_driver_runner_resolve_executable(orch, monkeypatch, module_name, relative):
+    """codex·claude relay 의 프로덕션 runner 는 엔진 해소 함수로 찾은 경로로 실행한다(opencode relay 는
+    엔진 워치독 `_WatchedPopen` 이 해소한다). 해소 실패는 실행 없이 `FileNotFoundError`(PATH 부재)다."""
+    driver = _load(module_name, REPO / relative)
+    seen = {}
+
+    def _run(argv, **kwargs):
+        seen["argv"] = list(argv)
+        seen["kwargs"] = kwargs
+        return _FakeCompleted("")
+
+    monkeypatch.setattr(driver.subprocess, "run", _run)
+    monkeypatch.setattr(orch.shutil, "which", lambda name, path=None: rf"C:\npm\{name}.cmd")
+    runner = driver._make_resolving_runner(orch)
+    runner(["codex", "exec", "--json"], input="첫 줄\n둘째 줄", capture_output=True)
+    assert seen["argv"] == [r"C:\npm\codex.cmd", "exec", "--json"]
+    assert seen["kwargs"]["input"] == "첫 줄\n둘째 줄"
+
+    seen.clear()
+    monkeypatch.setattr(orch.shutil, "which", lambda name, path=None: None)
+    with pytest.raises(FileNotFoundError, match="codex 실행 파일 PATH 부재"):
+        runner(["codex", "exec"], input="x")
+    assert seen == {}
