@@ -417,7 +417,6 @@ OPENCODE_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
 # 이 토큰을 해소할 때 가용 모델을 조회하는 원천의 하네스 키(`pm_relay.MODEL_SOURCE`).
 OPENCODE_MODEL_SOURCE_HARNESS = "opencode"
 
-# `opencode models` 조회 명령 — 가용 모델의 단일 진실(LLM 추측 아님). 줄당 `provider/model`.
 # fill 실 하니스 구동 게이트 환경변수(호출 횟수 축 — 무엇을 보여줄지가 아니라 몇 번 부를지다).
 # PM_IMPORT_LIVE_HARNESS=1
 # AND --fill auto 동시 충족 시만 실 runner 호출 — 둘 중 하나라도 없으면 stub/manual 강제.
@@ -454,27 +453,6 @@ FILL_CAPABLE_HARNESSES = tuple(
 # ``--fill-harness`` argparse choices는 등록 adapter 전부다. auto 가능 여부는 설치 전
 # ``FILL_CAPABLE_HARNESSES`` 게이트가 별도로 판정하므로 manual 경로를 여기서 막지 않는다.
 FILL_HARNESS_CHOICES = REGISTERED_HARNESSES
-
-# `opencode models` 조회 타임아웃 (초). 모델 목록 나열은 빠른 로컬 명령 가정이나, 회사 Pro/원격
-# 게이트웨이는 cold 콜 지연이 커 15s 로는 부족.
-# 기본을 60 으로 올리고, env override 로 환경별 재조정.
-# (LLM 헤드리스 구동의 하네스 프로필 wall 값은 모델 조회엔 과대. --opencode-model 명시 경로의
-# 대조-조회가 import UX 를 길게 막지 않도록 fail-soft + 적당한 별도 상한.)
-OPENCODE_MODELS_TIMEOUT_SECONDS = 60
-
-
-# env override: 회사 Pro·느린 원격에서 60s 도 모자라면
-#   코드 수정 없이 `PM_OPENCODE_MODELS_TIMEOUT`(초)로 늘린다. 양의 정수만 채택 — 미설정/비숫자/≤0
-#   은 기본 OPENCODE_MODELS_TIMEOUT_SECONDS(60) 로 폴백(무해). 빠른 로컬 조회라 무제한은 두지 않는다.
-def _opencode_models_timeout() -> int:
-    raw = os.environ.get("PM_OPENCODE_MODELS_TIMEOUT")
-    if raw is None:
-        return OPENCODE_MODELS_TIMEOUT_SECONDS
-    try:
-        val = int(raw.strip())
-    except (ValueError, AttributeError):
-        return OPENCODE_MODELS_TIMEOUT_SECONDS
-    return val if val > 0 else OPENCODE_MODELS_TIMEOUT_SECONDS
 
 # add_harness어댑터 네임스페이스 = {adapter dir(들), root doc}. 라이브 인스턴스에 두 번째
 # harness 를 *비파괴로 추가*할 때 복사 스코프 = 이 네임스페이스 ∪ **guest flavor 가 `@render` 로 선언한
@@ -3784,89 +3762,20 @@ class ModelResolveResult:
 
 
 def _real_models_runner(source) -> tuple[bool, list[str]]:
-    """표가 선언한 조회 명령을 subprocess 로 돌린다(fail-soft). 반환: (성공 여부, 모델 목록).
+    """설치 대조·콘솔 `[m]` 용 모델 목록 — `pm_relay.model_listing` 을 감싼다. 반환: (성공 여부, 모델 목록).
 
-    명령과 산출 판독 방식은 `pm_relay.MODEL_SOURCE` 의 `command`·`parse` 가 **값으로** 정한다 —
-    이 함수에 하네스 이름 분기는 없다. _real_harness_runner 선례대로 예외를 raise 하지 않고
-    (False, []) 로 감싼다. 바이너리가 PATH 에 없으면 subprocess 도 안 띄우고 즉시 (False, []).
-
-    fail-soft 는 유지(import 안 깸)하되 *침묵*은 제거한다 — 각 실패 분기에서 stderr 로 사유
-    1줄을 surface 해 왜 자동해소가 실패했는지(PATH/rc/timeout/parse)를 남긴다. 타임아웃은
-    _opencode_models_timeout()(env PM_OPENCODE_MODELS_TIMEOUT > 기본 60) 하나다 — 조회 축이
-    하나라 노브도 하나다.
+    조회 실행·판독·시간 상한의 주인은 pm_relay 하나다(이 함수에 조회 코드 0). 조회 실패
+    (`HarnessContractError` — PATH 부재·rc·timeout·판독 실패·모델 0개)는 그 사유를 stderr 한 줄로 남기고
+    (False, []) 로 돌린다 — 설치를 깨지 않고 형식 안내로 강등하는 이 두 소비자의 계약이다. 그 밖의
+    예외는 잡지 않는다.
     """
-    command = list(getattr(source, "command", None) or ())
-    if not command:
-        print("조회 명령이 선언되지 않은 모델 원천 — 자동해소 skip", file=sys.stderr)
-        return False, []
-    shown = " ".join(command)
-    if shutil.which(command[0]) is None:
-        print(f"{command[0]} 바이너리 PATH 부재 — 모델 자동해소 skip", file=sys.stderr)
-        return False, []
-    timeout = _opencode_models_timeout()
+    relay = _load_watchdog()
     try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
-        if result.returncode != 0:
-            print(
-                f"{shown} 실패 rc={result.returncode}: "
-                f"{(result.stderr or '').strip()[:200]}",
-                file=sys.stderr,
-            )
-            return False, []
-        models = _parse_models(getattr(source, "parse", None), result.stdout or "")
-        if not models:
-            print(f"{shown} 출력에서 모델 0개 파싱 — 형식 확인", file=sys.stderr)
-        return True, models
-    except subprocess.TimeoutExpired:
-        print(
-            f"{shown} {timeout}s timeout 초과 — "
-            "PM_OPENCODE_MODELS_TIMEOUT 로 늘리세요",
-            file=sys.stderr,
-        )
+        listing = relay.model_listing(source, cwd=Path.cwd(), env=dict(os.environ))
+    except relay.HarnessContractError as exc:
+        print(f"{exc} — 모델 자동해소 skip", file=sys.stderr)
         return False, []
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 어떤 예외도 import 를 깨지 않는다.
-        print(f"{shown} 예외: {exc}", file=sys.stderr)
-        return False, []
-
-
-def _parse_models(parse: str | None, output: str) -> list[str]:
-    """조회 산출 → 모델 목록. 방식 이름의 주인은 `pm_relay.MODEL_SOURCE.parse` 다."""
-    if parse == "json-slug":
-        try:
-            document = json.loads(output)
-        except ValueError:
-            return []
-        entries = document.get("models") if isinstance(document, dict) else None
-        if not isinstance(entries, list):
-            return []
-        return [entry["slug"] for entry in entries
-                if isinstance(entry, dict) and isinstance(entry.get("slug"), str)
-                and entry["slug"].strip()]
-    if parse == "lines":
-        return _parse_opencode_models(output)
-    return []
-
-
-def _parse_opencode_models(output: str) -> list[str]:
-    """`opencode models` stdout → provider/model 목록. 빈 줄·배너 제외.
-
-    실측 형식: 줄당 `provider/model`(예 'ollama/gemma4:26b'·'opencode/big-pickle'). 슬래시가
-    있는 줄만 모델로 본다(배너·헤더 줄 제외). 앞뒤 공백 strip, 순서·중복은 입력대로 보존.
-    """
-    models: list[str] = []
-    for line in output.splitlines():
-        stripped = line.strip()
-        if not stripped or "/" not in stripped:
-            continue
-        models.append(stripped)
-    return models
+    return True, list(listing.models)
 
 
 def _substitute_model_token(

@@ -1442,7 +1442,9 @@ def resolve_reviewer_target(conf: dict[str, str]) -> ReviewerTarget:
     · model 이 **예약 sentinel**(`RESERVED_MODEL_VALUES` — 엔진이 '모델 미고정'을 뜻하는 낱말)이면
       거부한다. 값이 비어있지 않다는 것만으로 통과시키면 `additional_reviewer.model=default` 가
       "고정했다"는 선언과 함께 미고정 라벨을 장부에 박아, 감사가 자기 모순을 기록한다.
-    · harness/reasoning 값 검증은 공용 드라이버 계약(pm_relay)이 소유한다.
+    · harness 값 검증은 공용 드라이버 계약(pm_relay)이 소유한다. reasoning 은 정리만 하고, 그 모델이
+      받는 값인지는 실행 직전 `check_reviewer_reasoning` 이 실행 cwd·env 로 확인한다(이 함수는
+      비교용 `reviewer_profile_config` 에서도 불린다 — 거기서 모델 목록을 조회하지 않는다).
 
     모든 거부는 **호출·라운드 예약·raw 예약 전**에 성립한다 — 호출부가 이 함수를 그 게이트들
     앞에서 부르고, 이 함수 자체는 부작용이 없다.
@@ -1488,12 +1490,11 @@ def resolve_reviewer_target(conf: dict[str, str]) -> ReviewerTarget:
     relay = _load_relay()
     try:
         harness = relay.validate_harness(harness)
-        reasoning = relay.validate_reasoning(
-            harness, declared[ADDITIONAL_REVIEWER_REASONING_KEY] or None)
     except relay.HarnessContractError as exc:
         raise ReviewerTargetError(
             f"추가 리뷰어 프로필 값 오류 — {exc}"
         ) from exc
+    reasoning = relay.normalize_reasoning(declared[ADDITIONAL_REVIEWER_REASONING_KEY])
 
     command = shlex.join(_structured_reviewer_argv(
         harness, model, reasoning,
@@ -1503,6 +1504,22 @@ def resolve_reviewer_target(conf: dict[str, str]) -> ReviewerTarget:
         source=REVIEWER_SOURCE_STRUCTURED, command=command,
         harness=harness, model=model, reasoning=reasoning,
     )
+
+
+def check_reviewer_reasoning(target: ReviewerTarget, *, cwd: Path) -> None:
+    """실행 직전 확인 — 대상의 reasoning 이 그 하네스·모델의 허용집합 원소인가(밖이면 ReviewerTargetError).
+
+    허용집합은 실행과 같은 cwd·env(`pm_delegate.build_env`)로 해소한다 — opencode 는 그 조건의 모델
+    목록 조회 결과가 정한다. 추론 값이 없으면 조회하지 않는다."""
+    if target.reasoning is None:
+        return
+    relay = _load_relay()
+    try:
+        relay.validate_reasoning(
+            target.harness, target.reasoning, model=target.model, cwd=cwd,
+            env=_load_pm_delegate().build_env(target.harness))
+    except relay.HarnessContractError as exc:
+        raise ReviewerTargetError(f"추가 리뷰어 프로필 값 오류 — {exc}") from exc
 
 
 def _running_on_windows() -> bool:
@@ -5813,6 +5830,7 @@ def _main(argv: list[str] | None = None) -> int:
     # 여기까지의 앵커 해소는 읽기 전용이고, 이 함수 자체도 부작용이 없다.
     try:
         target = resolve_reviewer_target(conf)
+        check_reviewer_reasoning(target, cwd=diff_root)
     except ReviewerTargetError as exc:
         print(
             f"오류: 추가 리뷰어 대상 해소 실패 — 호출 전에 중단합니다: {exc}\n"

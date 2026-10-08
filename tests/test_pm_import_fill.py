@@ -1121,4 +1121,4 @@ def test_resolve_opencode_model_real_runner_gets_the_opencode_source(pm_import, 
     result = pm_import.resolve_opencode_model(
         tmp_path, {Path(".opencode/agents/pm.md")}, model_arg="ollama/x")
     assert result.path == "flag"
-    assert seen == [("opencode", "models")]
+    assert seen == [("opencode", "models", "--verbose")]

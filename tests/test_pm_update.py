@@ -8509,3 +8509,82 @@ def test_conf_apply_key_groups_are_disjoint(pm_update):
     assert [step.key_filter(pm_import)("ctx.compact_at_pct") for step in pm_update.CONF_APPLY_STEPS] == [True, False]
     assert [step.key_filter(pm_import)("delegate.architect.harness")
             for step in pm_update.CONF_APPLY_STEPS] == [False, True]
+
+
+# ── 갱신의 추론 값 정리(conf 이관) — 그 모델이 받지 않는 opencode 추론 값을 지우고 알린다 (T-0946) ──
+from _fake_opencode import OLLAMA_LISTING, install_fake_opencode, path_with  # noqa: E402
+from _win_skip import posix_bash_supported  # noqa: E402
+
+_PRUNE_CONF = (
+    "delegate.researcher.harness=opencode\n"
+    "delegate.researcher.model=ollama/glm-5.2:cloud\n"
+    "delegate.researcher.reasoning=high\n"
+    "delegate.developer.harness=opencode\n"
+    "delegate.developer.model=ollama/ornith1.5:35b-a3b\n"
+    "delegate.developer.reasoning=high\n"
+    "delegate.architect.harness=claude\n"
+    "delegate.architect.model=opus\n"
+    "delegate.architect.reasoning=ultra\n"
+    "additional_reviewer.harness=opencode\n"
+    "additional_reviewer.model=ollama/glm-5.2:cloud\n"
+    "additional_reviewer.reasoning=medium\n"
+)
+_PRUNED_KEYS = ("delegate.researcher.reasoning", "additional_reviewer.reasoning")
+_needs_posix_fake = pytest.mark.skipif(
+    not posix_bash_supported(), reason="가짜 opencode 는 POSIX sh 스크립트다")
+
+
+@_needs_posix_fake
+def test_prune_unavailable_reasoning_removes_per_model_misses(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """모델별 허용값 하네스 프로필의 무효 추론 값만 지운다 — variants 안 값과 정적 하네스 값은 남는다."""
+    fakebin = install_fake_opencode(tmp_path / "fakebin", OLLAMA_LISTING)
+    monkeypatch.setenv("PATH", path_with(fakebin))
+    home = tmp_path / "home"
+    conf_path = _write_local_conf(home, _PRUNE_CONF)
+    before = conf_path.read_bytes()
+    conf = _local_conf_of(pm_update, home)
+
+    previewed = pm_update.prune_unavailable_reasoning(home, conf, write=False)
+    preview = capsys.readouterr().out
+    assert conf_path.read_bytes() == before, "dry-run 이 local.conf 를 바꿨다"
+    assert preview.startswith("[dry-run]"), preview
+    assert not set(_PRUNED_KEYS) & set(previewed)
+
+    pruned = pm_update.prune_unavailable_reasoning(home, conf, write=True)
+    out = capsys.readouterr().out
+    after = _local_conf_of(pm_update, home)
+    assert not set(_PRUNED_KEYS) & set(after), after
+    assert after["delegate.developer.reasoning"] == "high"
+    assert after["delegate.architect.reasoning"] == "ultra"
+    assert pruned == {key: value for key, value in conf.items() if key not in _PRUNED_KEYS}
+    for key in _PRUNED_KEYS:
+        assert key in out, out
+    assert "ollama/glm-5.2:cloud" in out
+
+
+@_needs_posix_fake
+def test_prune_unavailable_reasoning_stops_without_deleting(pm_update, tmp_path, monkeypatch):
+    """판정할 수 없으면(조회 실패·모델 값 없음·목록에 모델 없음) 아무것도 지우지 않고 멈춘다."""
+    cases = {
+        "lookup-fails": (7, _PRUNE_CONF),
+        "model-missing": (0, _PRUNE_CONF.replace(
+            "delegate.researcher.model=ollama/glm-5.2:cloud\n", "")),
+        "model-not-listed": (0, _PRUNE_CONF.replace(
+            "delegate.researcher.model=ollama/glm-5.2:cloud",
+            "delegate.researcher.model=ollama/qwen3.8:27b-unc")),
+    }
+    for name, (rc, text) in cases.items():
+        fakebin = install_fake_opencode(tmp_path / name / "fakebin", OLLAMA_LISTING, rc=rc)
+        monkeypatch.setenv("PATH", path_with(fakebin))
+        home = tmp_path / name / "home"
+        conf_path = _write_local_conf(home, text)
+        before = conf_path.read_bytes()
+
+        with pytest.raises(pm_update.ReasoningPruneError) as excinfo:
+            pm_update.prune_unavailable_reasoning(
+                home, _local_conf_of(pm_update, home), write=True)
+        message = str(excinfo.value)
+        assert "delegate.researcher.reasoning=high" in message, (name, message)
+        assert "지우지 않았다" in message, (name, message)
+        assert conf_path.read_bytes() == before, name

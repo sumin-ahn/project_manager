@@ -25,11 +25,21 @@ const ROW_NAME = CELLS[0].unit!;
 const unitOf = (key: string) => CELLS.find((cell) => cell.key === key)!.unit!;
 const IN_ROW = CELLS.filter((cell) => cell.unit === ROW_NAME);
 const HARNESS_CELL = IN_ROW.find((cell) => cell.choices?.depends_on === null)!;
-const MODEL_CELL = IN_ROW.find((cell) => cell.choices?.fetch !== null)!;
-const REASONING_CELL = IN_ROW.find(
-  (cell) => cell.choices?.depends_on !== null && cell.choices?.fetch === null)!;
+const MODEL_CELL = IN_ROW.find((cell) => cell.choices?.free_text === true)!;
+const REASONING_CELL = IN_ROW.find((cell) => cell.choices?.fetch?.variants_of !== undefined)!;
 const HARNESSES = HARNESS_CELL.choices!.values[""];
 const REASONING = REASONING_CELL.choices!.values;
+/** 정적 목록(버킷)이 없는 도구 — 생각 깊이를 그 모델의 변형 목록에서 받는다(엔진 산출에서 고른다). */
+const PER_MODEL_HARNESS = HARNESSES.find((name) => !(name in REASONING))!;
+
+/** 모델별 변형을 싣는 사본 응답 — 변형 없는 모델 하나와 셋을 받는 모델 하나(2026-10-08 실측 모양). */
+const NO_VARIANT_MODEL = "ollama/glm-5.2:cloud";
+const VARIANT_MODEL = "ollama/ornith1.5:35b-a3b";
+const VARIANTS = ["low", "medium", "high"];
+const LIVE_MODELS = async (_path: string, harness: string) => ({
+  harness, kind: "live", models: [NO_VARIANT_MODEL, VARIANT_MODEL],
+  variants: { [NO_VARIANT_MODEL]: [], [VARIANT_MODEL]: VARIANTS },
+});
 
 /** 교차 검토 세트 — 실명 키인데 세트로 묶이는 행. */
 const REVIEWER = KEYS.keys.filter((entry) => entry.kind === "key" && entry.unit !== null);
@@ -72,7 +82,7 @@ function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
     conf_save: vi.fn(async () => ({ changed: true, conf: CONF, applied: [] })),
     conf_reset: vi.fn(async () => ({ changed: true, conf: CONF, applied: [] })),
     delegate_models: vi.fn(async (_path: string, harness: string) =>
-      ({ harness, kind: "alias", models: MODELS })),
+      ({ harness, kind: "alias", models: MODELS, variants: null })),
     adapters: vi.fn(async () => ({ source: "/projects/framework", files: [], conf: LATEST })),
     adapter_accept: vi.fn(async () => ({ rc: 0, stdout: "", stderr: "" })),
     adapter_matrix: vi.fn(async () => ({})),
@@ -456,19 +466,76 @@ describe("위임 절", () => {
     expect(Object.keys(KEYS.units)).toEqual(expect.arrayContaining([...units, REVIEWER_UNIT]));
   });
 
-  it("추론 선택지는 그 행의 하네스 값에 따라 바뀐다", () => {
-    const other = HARNESSES.find(
-      (name) => REASONING[name].join() !== REASONING[HARNESSES[0]].join())!;
-    mounted(makeBridge());
+  it("정적 목록이 있는 도구의 생각 깊이는 그 목록에서 고른다", () => {
+    const bridge = makeBridge();
+    mounted(bridge);
     openGroup(DELEGATE.group);
 
     const options = () => [...(screen.getByLabelText(REASONING_CELL.key) as HTMLSelectElement)
       .querySelectorAll("option")].map((option) => option.value).filter((value) => value !== "");
     expect(options()).toEqual(REASONING[HARNESSES[0]]);
+    expect(screen.queryByTestId(`models-${REASONING_CELL.key}`)).toBeNull();
+    for (const harness of Object.keys(REASONING)) {
+      fireEvent.change(screen.getByLabelText(HARNESS_CELL.key), { target: { value: harness } });
+      expect(options()).toEqual(REASONING[harness]);
+    }
+    expect(bridge.delegate_models).not.toHaveBeenCalled();     // 정적 목록은 조회하지 않는다
+  });
 
-    fireEvent.change(screen.getByLabelText(HARNESS_CELL.key), { target: { value: other } });
+  const perModelValues = (model: string, reasoning?: string) => settingsEntry({
+    ...VALUES, [HARNESS_CELL.key]: PER_MODEL_HARNESS, [MODEL_CELL.key]: model,
+    ...(reasoning === undefined ? {} : { [REASONING_CELL.key]: reasoning }),
+  });
+  const reasoningCell = () => screen.getByTestId(`conf-${REASONING_CELL.key}`);
 
-    expect(options()).toEqual(REASONING[other]);
+  it("모델마다 값이 다른 도구의 생각 깊이는 그 모델의 variant 에서 고른다", async () => {
+    const bridge = makeBridge({ delegate_models: vi.fn(LIVE_MODELS) });
+    mounted(bridge, false, null, perModelValues(VARIANT_MODEL));
+    openGroup(DELEGATE.group);
+
+    fireEvent.click(screen.getByTestId(`models-${REASONING_CELL.key}`));
+
+    const select = await within(reasoningCell()).findByLabelText(REASONING_CELL.key);
+    expect(select.tagName).toBe("SELECT");
+    expect([...(select as HTMLSelectElement).querySelectorAll("option")]
+      .map((option) => option.value)).toEqual(["", ...VARIANTS]);
+    expect(bridge.delegate_models).toHaveBeenCalledWith(DEMO, PER_MODEL_HARNESS);
+  });
+
+  it("variant 가 없는 모델이면 없음을 보이고 저장하면 그 줄을 지운다", async () => {
+    const bridge = makeBridge({ delegate_models: vi.fn(LIVE_MODELS) });
+    mounted(bridge, false, null, perModelValues(NO_VARIANT_MODEL, "high"));
+    openGroup(DELEGATE.group);
+
+    fireEvent.click(screen.getByTestId(`models-${REASONING_CELL.key}`));
+
+    await waitFor(() => expect(reasoningCell()).toHaveTextContent("없음"));
+    expect(within(reasoningCell()).queryByLabelText(REASONING_CELL.key)).toBeNull();
+    fireEvent.click(screen.getByTestId("save"));
+    await waitFor(() => expect(bridge.conf_save).toHaveBeenCalledTimes(1));
+    expect(savedUpdates(bridge)[REASONING_CELL.key]).toBeNull();
+  });
+
+  it("목록을 받기 전에는 생각 깊이를 칠 칸이 없다", () => {
+    mounted(makeBridge({ delegate_models: vi.fn(LIVE_MODELS) }), false, null,
+            perModelValues(VARIANT_MODEL, "high"));
+    openGroup(DELEGATE.group);
+
+    expect(within(reasoningCell()).queryByLabelText(REASONING_CELL.key)).toBeNull();
+    expect(reasoningCell()).toHaveTextContent("high");                 // 지금 값은 보인다
+    expect(screen.getByTestId(`models-${REASONING_CELL.key}`)).toBeInTheDocument();
+  });
+
+  it("응답에 없는 모델이면 값을 지우지 않고 알린다", async () => {
+    const bridge = makeBridge({ delegate_models: vi.fn(LIVE_MODELS) });
+    mounted(bridge, false, null, perModelValues("ollama/qwen3.8:27b-unc", "high"));
+    openGroup(DELEGATE.group);
+
+    fireEvent.click(screen.getByTestId(`models-${REASONING_CELL.key}`));
+
+    await waitFor(() => expect(reasoningCell()).toHaveTextContent("목록에 이 모델이 없습니다"));
+    expect(reasoningCell()).toHaveTextContent("high");
+    expect(screen.getByTestId("save")).toBeDisabled();                 // 편집 값이 생기지 않는다
   });
 
   it("세트를 켜도 도구가 비면 고를 목록이 없고 그 자리에 무엇을 먼저 고를지 나온다", () => {
@@ -531,7 +598,7 @@ describe("위임 절", () => {
 describe("교차 검토 세트와 절 스위치", () => {
   const TUPLE: Record<string, string> = {
     [REVIEWER.find((entry) => entry.choices?.depends_on === null)!.key]: HARNESSES[0],
-    [REVIEWER.find((entry) => entry.choices?.fetch !== null)!.key]: MODELS[0],
+    [REVIEWER.find((entry) => entry.choices?.free_text === true)!.key]: MODELS[0],
   };
 
   it("세트를 끄면 적혀 있던 줄을 함께 지운다", async () => {

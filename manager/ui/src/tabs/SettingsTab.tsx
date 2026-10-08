@@ -187,20 +187,46 @@ const INPUT = "w-full rounded border border-slate-200 px-1 font-mono text-[11px]
 const GREY = "block truncate text-[11px] text-slate-400";
 
 
+/** 그 모델의 변형(추론 강도) 목록이 비었을 때 칸에 서는 말 — 고를 값이 없다. */
+const NO_VARIANT = "없음";
+/** 조회 응답에 지금 모델이 없을 때 — 값을 지우지 않고(판정 불가) 알리기만 한다. */
+const MODEL_NOT_LISTED = "목록에 이 모델이 없습니다";
+
 /**
  * 값 하나를 고치는 칸 — 모양은 그 키의 `choices` 가 정한다(화면 판정 0). 켠 칸에만 선다.
  *
- *   선택지 없음      → 텍스트 입력
- *   목록 조회 칸     → 텍스트 입력 + [목록 불러오기](누르기 전 조회 0 · 실패는 사유 그대로)
- *   그 밖의 선택지   → `<select>`(고른 값이 목록 밖이면 그 값도 항목으로 남긴다)
+ * 목록 원천 규칙은 하나다: 버킷이 `values` 에 있으면 그 목록(`options`), 없고 `fetch` 가 있으면 받아 온
+ * 응답에서 `fetch.variants_of` 가 있으면 `variants[그 키의 현재 값]`, 없으면 `models`. "직접 입력"은
+ * `free_text` 인 행에만 둔다. 하네스 이름으로 가르지 않는다.
+ *
+ *   선택지 없음            → 텍스트 입력
+ *   버킷 목록              → `<select>`(고른 값이 목록 밖이면 그 값도 항목으로 남긴다)
+ *   조회 칸, 응답 전       → 직접 입력 행은 텍스트 입력, 아니면 현재 값(회색) — 둘 다 [목록 불러오기]
+ *                            (누르기 전 조회 0 · 실패는 사유 그대로)
+ *   조회 칸, 응답 뒤       → `<select>`. 변형 목록이 비면 "없음"이고 값을 비운다(저장이 줄을 지운다).
+ *                            응답에 그 모델이 없으면 알리고 값은 그대로 둔다.
  */
-function ValueField({ row, value, options, dependsValue, dependsLabel, fetched, fetchError, manual,
-                      busy, onChange, onFetch, onManual }: {
-  row: Row; value: string; options: string[]; dependsValue: string | null; dependsLabel: string;
+function ValueField({ row, value, options, dependsValue, dependsLabel, variantsModel, variantsLabel,
+                      fetched, fetchError, manual, busy, onChange, onClear, onFetch, onManual }: {
+  row: Row; value: string; options: string[] | null; dependsValue: string | null; dependsLabel: string;
+  variantsModel: string | null; variantsLabel: string;
   fetched: DelegateModelsDocument | null; fetchError: BridgeError | null; manual: boolean;
-  busy: boolean; onChange: (value: string) => void; onFetch: () => void; onManual: () => void;
+  busy: boolean; onChange: (value: string) => void; onClear: () => void; onFetch: () => void;
+  onManual: () => void;
 }) {
   const choices = row.choices;
+  const blocked = choices !== null && choices.depends_on !== null && dependsValue === "";
+  // 받아 온 응답에서 이 칸이 고를 목록(조회 칸이 아니거나 응답 전이면 null · 응답에 그 모델이 없으면 undefined).
+  const fetchedItems = choices === null || options !== null || choices.fetch === null
+    || fetched === null || manual || blocked || variantsModel === ""
+    ? null
+    : variantsModel === null ? fetched.models : fetched.variants?.[variantsModel];
+  const noVariant = fetchedItems !== null && fetchedItems !== undefined && fetchedItems.length === 0;
+  // 그 모델이 받는 변형이 없으면 지금 값은 버려질 값이다 — 편집 값을 비워 저장이 그 줄을 지우게 한다.
+  useEffect(() => {
+    if (noVariant && value !== "") onClear();
+  }, [noVariant, value, onClear]);
+
   if (choices === null) {
     return (
       <input aria-label={row.key} value={value} className={INPUT}
@@ -210,14 +236,33 @@ function ValueField({ row, value, options, dependsValue, dependsLabel, fetched, 
   // 고른 값이 목록에 없으면(사람이 직접 친 값·다른 세대의 값) 그 값을 지우지 않고 항목으로 남긴다.
   const listed = (items: string[]) => (value === "" || items.includes(value)
     ? items : [value, ...items]);
-  const blocked = choices.depends_on !== null && dependsValue === "";
-  const hint = blocked ? `먼저 ${dependsLabel} 를 고르세요` : null;
+  const hint = blocked ? `먼저 ${dependsLabel} 를 고르세요`
+    : variantsModel === "" ? `먼저 ${variantsLabel} 를 고르세요` : null;
+  const select = (items: string[], manualOption: boolean) => (
+    <span className="flex items-center gap-1">
+      <select aria-label={row.key} value={value} className={INPUT}
+              onChange={(event) => {
+                if (manualOption && event.target.value === MANUAL_OPTION) onManual();
+                else onChange(event.target.value);
+              }}>
+        <option value="">{PICK}</option>
+        {listed(items).map((item) => <option key={item} value={item}>{item}</option>)}
+        {manualOption && <option value={MANUAL_OPTION}>{MANUAL_OPTION}</option>}
+      </select>
+      {hint && <span className="truncate text-[11px] text-slate-500">{hint}</span>}
+    </span>
+  );
 
-  if (choices.fetch !== null && (fetched === null || manual)) {
+  if (options !== null || choices.fetch === null) return select(options ?? [], false);
+  // 직접 입력이 없는 조회 칸은 앞 칸이 비면 고를 것이 없다 — 빈 선택 칸과 무엇을 먼저 고를지.
+  if (!choices.free_text && (blocked || variantsModel === "")) return select([], false);
+  if (fetched === null || manual) {
     return (
       <span className="flex items-center gap-1">
-        <input aria-label={row.key} value={value} className={INPUT}
-               onChange={(event) => onChange(event.target.value)} />
+        {choices.free_text
+          ? <input aria-label={row.key} value={value} className={INPUT}
+                   onChange={(event) => onChange(event.target.value)} />
+          : <span className={GREY} title={value}>{value}</span>}
         {/* 안내는 버튼 위에 둔다 — 같은 줄의 선택 칸이 그 문구를 이미 눈에 보이게 낸다. */}
         <button type="button" data-testid={`models-${row.key}`} disabled={blocked || busy}
                 title={hint ?? undefined} onClick={onFetch}
@@ -232,21 +277,16 @@ function ValueField({ row, value, options, dependsValue, dependsLabel, fetched, 
       </span>
     );
   }
-  const items = fetched === null ? options : fetched.models;
-  return (
-    <span className="flex items-center gap-1">
-      <select aria-label={row.key} value={value} className={INPUT}
-              onChange={(event) => {
-                if (fetched !== null && event.target.value === MANUAL_OPTION) onManual();
-                else onChange(event.target.value);
-              }}>
-        <option value="">{PICK}</option>
-        {listed(items).map((item) => <option key={item} value={item}>{item}</option>)}
-        {fetched !== null && <option value={MANUAL_OPTION}>{MANUAL_OPTION}</option>}
-      </select>
-      {hint && <span className="truncate text-[11px] text-slate-500">{hint}</span>}
-    </span>
-  );
+  if (fetchedItems === undefined) {
+    return (
+      <span className="flex items-center gap-1">
+        <span className={GREY} title={value}>{value}</span>
+        <span className="truncate text-[11px] text-amber-700">{MODEL_NOT_LISTED}</span>
+      </span>
+    );
+  }
+  if (noVariant) return <span className="text-[11px] text-slate-500">{NO_VARIANT}</span>;
+  return select(fetchedItems ?? [], choices.free_text);
 }
 
 export default function SettingsTab({ bridge, path, light, settings, onReload, startAsking,
@@ -446,22 +486,29 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     return <span className={GREY} title={text}>{text}</span>;
   };
 
+  const fieldLabel = (key: string) => keys.unit_fields[fieldOf(key)] ?? labelOfKey(key);
+
   const field = (row: Row) => {
     const choices = row.choices;
     const dependsValue = choices?.depends_on ? valueOf(choices.depends_on) : null;
-    const bucket = choices === null ? []
-      : choices.values[choices.depends_on === null ? "" : (dependsValue ?? "")] ?? [];
+    // 목록 원천의 첫 자리 — 버킷이 있으면 그 목록(없으면 null 이고 조회 응답이 대신한다).
+    const bucket = choices === null ? null
+      : choices.values[choices.depends_on === null ? "" : (dependsValue ?? "")] ?? null;
     const harness = choices?.fetch?.value ?? dependsValue ?? "";
     const depends = choices?.depends_on ?? null;
+    const variantsOf = choices?.fetch?.variants_of ?? null;
     return (
       <ValueField
         row={row} value={valueOf(row.key)} options={bucket} dependsValue={dependsValue}
-        dependsLabel={depends === null ? "" : keys.unit_fields[fieldOf(depends)] ?? labelOfKey(depends)}
+        dependsLabel={depends === null ? "" : fieldLabel(depends)}
+        variantsModel={variantsOf === null ? null : valueOf(variantsOf)}
+        variantsLabel={variantsOf === null ? "" : fieldLabel(variantsOf)}
         fetched={choices?.fetch && harness !== ""
                  ? models[harness] ?? settings?.models?.[harness] ?? null : null}
         fetchError={choices?.fetch && harness !== "" ? modelErrors[harness] ?? null : null}
         manual={manual[row.key] === true} busy={busy}
         onChange={(next) => setEdits((previous) => ({ ...previous, [row.key]: next }))}
+        onClear={() => setEdits((previous) => ({ ...previous, [row.key]: null }))}
         onFetch={() => {
           setManual((previous) => {
             const next = { ...previous };

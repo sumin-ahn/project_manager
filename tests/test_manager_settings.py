@@ -550,7 +550,8 @@ def test_an_alias_harness_comes_back_as_the_copys_own_table(api, pm_home):
 
     response = api.delegate_models(str(pm_home), name)
 
-    assert response == {"harness": name, "kind": "alias", "models": list(source.values)}
+    assert response == {"harness": name, "kind": "alias", "models": list(source.values),
+                        "variants": None}
 
 
 def test_a_live_query_that_fails_is_an_error_dict_not_an_empty_list(api, pm_home, tmp_path,

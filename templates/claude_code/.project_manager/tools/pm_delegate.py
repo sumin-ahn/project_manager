@@ -8562,13 +8562,19 @@ def _validate_harness(harness: str) -> str:
         raise DelegateError(str(exc)) from exc
 
 
-def _validate_reasoning(harness: str, reasoning: str | None) -> str | None:
-    """reasoning 값을 드라이버별 허용집합으로 검증(공용 계약 wrapper). 미지정=None(플래그 생략).
+def _validate_reasoning(
+    harness: str, reasoning: str | None, *, model: str, cwd: Path,
+) -> str | None:
+    """실행 직전 확인 — reasoning 이 그 하네스·모델의 허용집합 원소인가(공용 계약 wrapper).
 
-    허용집합 밖이거나 capability 미확정이면 fail-loud — 조용한 무시/자동 강등 금지."""
+    허용집합은 실행과 같은 cwd·env(`build_env(harness)`)로 해소한다 — opencode 는 그 조건의 모델
+    목록 조회 결과가 정한다. 밖이거나 확인할 수 없으면 fail-loud(조용한 무시/자동 강등 금지).
+    미지정=None(조회 없음). 해소 함수(`resolve_delegate`·`resolve_fallback`)는 실행하지 않는
+    경로(채널 가드 훅·프로필 비교)에서도 불리므로 이 확인을 하지 않는다."""
     relay = _load_relay()
     try:
-        return relay.validate_reasoning(harness, reasoning)
+        return relay.validate_reasoning(
+            harness, reasoning, model=model, cwd=cwd, env=build_env(harness))
     except relay.HarnessContractError as exc:
         raise DelegateError(str(exc)) from exc
 
@@ -8592,8 +8598,7 @@ def resolve_delegate(
         if not (cli_harness and cli_model):
             raise DelegateError("--harness 와 --model 은 동반 필수(부분 override 금지·원자 tuple).")
         harness = _validate_harness(cli_harness)
-        reasoning = _validate_reasoning(harness, cli_reasoning)
-        return harness, cli_model, reasoning
+        return harness, cli_model, _load_relay().normalize_reasoning(cli_reasoning)
 
     key = f"delegate.{role}" + (".hard" if tier == "hard" else "")
     harness = (conf.get(f"{key}.harness") or "").strip()
@@ -8611,8 +8616,7 @@ def resolve_delegate(
             "local.conf 에 delegate.<role>.harness/.model 을 설정하라."
         )
     harness = _validate_harness(harness)
-    reasoning = _validate_reasoning(harness, reasoning)
-    return harness, model, reasoning
+    return harness, model, _load_relay().normalize_reasoning(reasoning)
 
 
 def resolve_fallback(
@@ -8641,8 +8645,7 @@ def resolve_fallback(
             "부분 설정/조용한 기본값은 허용하지 않는다."
         )
     harness = _validate_harness(harness)
-    reasoning = _validate_reasoning(harness, reasoning_raw)
-    return harness, model, reasoning
+    return harness, model, _load_relay().normalize_reasoning(reasoning_raw)
 
 
 # ── 3 드라이버 argv 빌더 (pm_relay 공용 계약의 얇은 wrapper) ──────────────────
@@ -15124,11 +15127,16 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
         )
         return 3  # 명시적 비성공(rc=0 no-op 금지·빈 stdout 성공 오인 차단)
 
-    # config 해소 (원자 tuple·fail-loud rc=1)
+    # config 해소 (원자 tuple·fail-loud rc=1). 추론 값 확인은 해소 뒤 실행 cwd·env 로 한다(dry-run 포함).
     try:
         harness, model, reasoning = resolve_delegate(
             conf, args.role, tier, args.harness, args.model, args.reasoning)
         fallback = resolve_fallback(conf, args.role, tier)
+        _validate_reasoning(harness, reasoning, model=model, cwd=cwd)
+        if fallback is not None:
+            fallback_harness, fallback_model, fallback_reasoning = fallback
+            _validate_reasoning(
+                fallback_harness, fallback_reasoning, model=fallback_model, cwd=cwd)
     except DelegateError as exc:
         print(f"오류: {exc}\n  · local.conf: {conf_path}", file=sys.stderr)
         return 1

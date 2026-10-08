@@ -20,6 +20,7 @@ FakeRunner DI(claude driver 테스트 패턴) 로 subprocess 폭발 없이 CLI �
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -752,3 +753,206 @@ def _live_runner_with_model(model: str):
         return subprocess.run(injected, **kwargs)
 
     return runner
+
+
+# ── 모델 목록 조회(`pm_relay.model_listing`) — 모델과 모델별 variants (T-0946) ──────────────────
+# 조회 실행·판독·시간 상한의 주인은 pm_relay 하나다(pm_import 에서 옮겨 왔다). 가짜 실행 파일은
+# 실제 `opencode models --verbose` 출력 형식을 재현한다(`_fake_opencode`).
+from _fake_opencode import (  # noqa: E402
+    OLLAMA_LISTING, calls, install_fake_opencode, listing_for, path_with,
+)
+from _win_skip import posix_bash_supported  # noqa: E402
+
+_needs_posix_fake = pytest.mark.skipif(
+    not posix_bash_supported(), reason="가짜 opencode 는 POSIX sh 스크립트다")
+
+
+def _fake_env(folder: Path) -> dict[str, str]:
+    """가짜 폴더를 PATH 앞에 둔 env(나머지는 이 프로세스 env 그대로)."""
+    env = dict(os.environ)
+    env["PATH"] = path_with(folder)
+    return env
+
+
+@_needs_posix_fake
+def test_model_listing_reads_models_and_variants(orch, tmp_path):
+    """머리 줄 순서로 모델을, 모델 객체의 `variants` 키를 원문 순서로 읽고 같은 조건은 한 번만 조회한다."""
+    fakebin = install_fake_opencode(tmp_path / "fakebin", OLLAMA_LISTING)
+    env = _fake_env(fakebin)
+
+    listing = orch.model_listing(orch.MODEL_SOURCE["opencode"], cwd=tmp_path, env=env)
+    again = orch.model_listing(orch.MODEL_SOURCE["opencode"], cwd=tmp_path, env=env)
+
+    assert listing.models == ("ollama/glm-5.2:cloud", "ollama/ornith1.5:35b-a3b")
+    assert listing.variants == {
+        "ollama/glm-5.2:cloud": (),
+        "ollama/ornith1.5:35b-a3b": ("low", "medium", "high"),
+    }
+    assert again == listing
+    recorded = calls(fakebin)
+    assert len(recorded) == 1, f"같은 조건의 조회가 다시 실행됐다: {recorded}"
+    assert recorded[0][1] == "models --verbose"
+    assert orch.model_listing(orch.MODEL_SOURCE["claude"], cwd=tmp_path, env={}).variants is None
+
+
+@_needs_posix_fake
+def test_model_listing_stops_on_lookup_failure(orch, tmp_path, monkeypatch):
+    """조회 실패(rc·PATH 부재·시간 초과·판독 실패·모델 0개)는 빈 값이 아니라 HarnessContractError 다."""
+    source = orch.MODEL_SOURCE["opencode"]
+    failing = install_fake_opencode(tmp_path / "failing", OLLAMA_LISTING, rc=7)
+    with pytest.raises(orch.HarnessContractError) as excinfo:
+        orch.model_listing(source, cwd=tmp_path, env=_fake_env(failing))
+    message = str(excinfo.value)
+    assert "opencode models --verbose" in message and "rc=7" in message and "boom" in message
+
+    empty = tmp_path / "empty-bin"
+    empty.mkdir()
+    with pytest.raises(orch.HarnessContractError) as excinfo:
+        orch.model_listing(source, cwd=tmp_path, env={"PATH": str(empty)})
+    assert "PATH 부재" in str(excinfo.value)
+
+    without_variants = OLLAMA_LISTING.replace('  "variants": {}\n', '  "other": {}\n')
+    assert without_variants != OLLAMA_LISTING
+    codex_catalog = json.dumps({"models": [{"slug": "gpt-5.6-sol"}]})
+    for index, listing in enumerate((without_variants, "", codex_catalog)):
+        broken = install_fake_opencode(tmp_path / f"broken-{index}", listing)
+        with pytest.raises(orch.HarnessContractError):
+            orch.model_listing(source, cwd=tmp_path, env=_fake_env(broken))
+
+    def _raise_timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd="opencode models --verbose", timeout=60)
+
+    monkeypatch.delenv("PM_OPENCODE_MODELS_TIMEOUT", raising=False)
+    monkeypatch.setattr(orch.subprocess, "run", _raise_timeout)
+    with pytest.raises(orch.HarnessContractError) as excinfo:
+        orch.model_listing(source, cwd=tmp_path / "timeout", env={"PATH": str(empty)})
+    assert "60s timeout 초과" in str(excinfo.value)
+    assert "PM_OPENCODE_MODELS_TIMEOUT" in str(excinfo.value)
+
+
+def test_reasoning_allowed_sources_partition_the_harnesses(orch, tmp_path):
+    """정적 허용값 하네스와 모델별 허용값 하네스가 지원 하네스를 겹침 없이 나눈다."""
+    static = set(orch.REASONING_ALLOWED)
+    per_model = set(orch.PER_MODEL_REASONING_HARNESSES)
+    assert not static & per_model
+    assert static | per_model == set(orch.HARNESS_CHOICES)
+    assert "opencode" not in orch.REASONING_ALLOWED, "opencode 정적 허용값 행이 남았다"
+    for harness in orch.PER_MODEL_REASONING_HARNESSES:
+        assert orch.MODEL_SOURCE[harness].parse == "opencode-verbose", harness
+    assert orch.MODEL_SOURCE["opencode"].command == ("opencode", "models", "--verbose")
+    assert orch.reasoning_allowed("claude", None, cwd=tmp_path, env={}) == (
+        "low", "medium", "high", "xhigh", "max")
+    with pytest.raises(orch.HarnessContractError):
+        orch.reasoning_allowed("gemini", None, cwd=tmp_path, env={})
+    assert orch.normalize_reasoning("  ") is None
+    assert orch.normalize_reasoning(" high ") == "high"
+
+
+# ── 조회 실패 사유 — 사유 한 줄이 원인을 지목한다(pm_import 에서 옮긴 시험) ──────────────────
+
+
+class _FakeListingRun:
+    """subprocess.run 반환 모사 — 조회가 보는 필드만."""
+
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _codex_source(orch):
+    return orch.MODEL_SOURCE["codex"]
+
+
+def test_model_listing_rc_failure_truncates_stderr_to_200(orch, tmp_path, monkeypatch):
+    """rc≠0 의 stderr 는 앞 200자까지만 사유에 싣는다(로그 폭증 방지)."""
+    monkeypatch.setattr(orch.subprocess, "run",
+                        lambda *a, **k: _FakeListingRun(returncode=1, stderr="x" * 500))
+    with pytest.raises(orch.HarnessContractError) as excinfo:
+        orch.model_listing(_codex_source(orch), cwd=tmp_path / "rc", env={})
+    message = str(excinfo.value)
+    assert "rc=1" in message and "x" * 200 in message and "x" * 201 not in message
+
+
+def test_model_listing_zero_models_is_a_failure(orch, tmp_path, monkeypatch):
+    """rc 0 이어도 모델이 0개면 성공이 아니다(빈 목록 성공 위장 0)."""
+    monkeypatch.setattr(orch.subprocess, "run",
+                        lambda *a, **k: _FakeListingRun(stdout=json.dumps({"models": []})))
+    with pytest.raises(orch.HarnessContractError) as excinfo:
+        orch.model_listing(_codex_source(orch), cwd=tmp_path / "zero", env={})
+    assert "모델 0개" in str(excinfo.value)
+
+
+def test_model_listing_uses_the_resolved_timeout(orch, tmp_path, monkeypatch):
+    """조회는 `models_timeout()` 값을 `timeout=` 으로 쓰고 cwd·env 를 그대로 넘긴다."""
+    monkeypatch.setenv("PM_OPENCODE_MODELS_TIMEOUT", "200")
+    seen = {}
+
+    def _capture(argv, **kwargs):
+        seen.update(kwargs, argv=argv)
+        return _FakeListingRun(stdout=json.dumps({"models": [{"slug": "gpt-6-astra"}]}))
+
+    monkeypatch.setattr(orch.subprocess, "run", _capture)
+    listing = orch.model_listing(_codex_source(orch), cwd=tmp_path, env={"A": "1"})
+    assert listing == orch.ModelListing(("gpt-6-astra",), None)
+    assert seen["timeout"] == 200
+    assert seen["argv"] == ["codex", "debug", "models"]
+    assert seen["cwd"] == str(tmp_path) and seen["env"] == {"A": "1"}
+
+
+@pytest.mark.parametrize(("raw", "expected"), [
+    (None, 60), ("120", 120), ("  90  ", 90), ("soon", 60), ("0", 60), ("-5", 60),
+], ids=["unset", "override", "strip", "non-numeric", "zero", "negative"])
+def test_models_timeout_env_override(orch, monkeypatch, raw, expected):
+    """`PM_OPENCODE_MODELS_TIMEOUT` 는 양의 정수만 받고 나머지는 기본 60 이다."""
+    if raw is None:
+        monkeypatch.delenv("PM_OPENCODE_MODELS_TIMEOUT", raising=False)
+    else:
+        monkeypatch.setenv("PM_OPENCODE_MODELS_TIMEOUT", raw)
+    assert orch.models_timeout() == expected
+
+
+def test_the_json_catalog_parser_takes_slugs(orch, tmp_path, monkeypatch):
+    """`codex debug models` 산출은 `models[].slug` 만 모은다(설명·추론 등급은 끌고 오지 않는다)."""
+    output = json.dumps({"models": [
+        {"slug": "gpt-6-astra", "display_name": "GPT-6-Astra", "supported_reasoning_levels": []},
+        {"slug": "gpt-5.6-sol"},
+    ]})
+    monkeypatch.setattr(orch.subprocess, "run", lambda *a, **k: _FakeListingRun(stdout=output))
+    listing = orch.model_listing(_codex_source(orch), cwd=tmp_path, env={})
+    assert listing.models == ("gpt-6-astra", "gpt-5.6-sol")
+
+
+@pytest.mark.parametrize("output", [
+    "not json at all",
+    '{"models": "wrong shape"}',
+    json.dumps({"models": [{"slug": "  "}]}),
+    json.dumps({"models": [{"display_name": "slug 없음"}]}),
+    json.dumps({"models": [{"slug": 3}]}),
+], ids=["not-json", "wrong-shape", "blank-slug", "missing-slug", "non-string-slug"])
+def test_a_catalog_that_does_not_parse_is_a_failure(orch, tmp_path, monkeypatch, output):
+    """판독 실패는 빈 목록이 아니라 HarnessContractError 다(항목을 조용히 빼지 않는다)."""
+    monkeypatch.setattr(orch.subprocess, "run", lambda *a, **k: _FakeListingRun(stdout=output))
+    with pytest.raises(orch.HarnessContractError) as excinfo:
+        orch.model_listing(_codex_source(orch), cwd=tmp_path, env={})
+    assert "판독 실패" in str(excinfo.value)
+
+
+def test_an_undeclared_source_kind_or_parse_name_is_fail_loud(orch, tmp_path):
+    """표가 모르는 kind·판독 이름은 선언과 판정이 갈린 것이다 — 아무 형식으로나 읽지 않는다."""
+    for source in (
+        orch.ModelSource("nope", (), None, None, "", ""),
+        orch.ModelSource("live", (), ("x",), "nope", "", ""),
+    ):
+        with pytest.raises(orch.HarnessContractError):
+            orch.model_listing(source, cwd=tmp_path, env={})
+
+
+def test_listing_for_matches_the_verbose_output_shape():
+    """가짜 출력은 실측 형식(머리 줄 + indent 2 JSON, variants 없는 모델은 `{}`)을 그대로 낸다."""
+    assert OLLAMA_LISTING.startswith(
+        'ollama/glm-5.2:cloud\n{\n  "id": "glm-5.2:cloud",\n  "providerID": "ollama",\n'
+        '  "variants": {}\n}\nollama/ornith1.5:35b-a3b\n{\n')
+    assert '  "variants": {\n    "low": {},\n    "medium": {},\n    "high": {}\n  }\n}\n' \
+        in OLLAMA_LISTING
+    assert listing_for({}) == ""

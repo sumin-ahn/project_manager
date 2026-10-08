@@ -151,6 +151,8 @@ LOCAL_CONF_WRITERS: dict[tuple[str, str], tuple[str, str]] = {
         (DELEGATES, "`pm-config upstream set` → pm_import._write_conf_keys"),
     ("pm_update.py", "apply_conf"):
         (HOLDS_LOCK, "제안 값→반영 단계 계획 전부→conf 키 쓰기→단계 기록이 공용 락 안 한 흐름"),
+    ("pm_update.py", "prune_unavailable_reasoning"):
+        (HOLDS_LOCK, "판정(모델 목록 조회)은 락 밖, 락 안에서 다시 읽어 판정 때 값과 대조→키 삭제"),
 }
 
 # conf 좌표로 인정하는 식별자 — 이 이름이 코드(주석·docstring 아님)에 실제로 등장해야 후보다.

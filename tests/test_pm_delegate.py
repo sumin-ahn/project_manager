@@ -5,7 +5,8 @@
   ① 3 드라이버 argv 정확성(3하네스×4역할·codex 전역옵션 위치·cwd 핀·reasoning 드라이버 매핑·§3.3).
   ② config 해소 원자성(§3.2) — CLI 완전지정 미참조·부분 override 거부·hard fail-loud·미매핑 fail-loud·
      티어 세트 통째·비-개발 tier usage error.
-  ③ reasoning 드라이버별 허용집합(codex xhigh·claude effort·opencode variant T-0449 실측값 수용·밖 fail-loud·§6).
+  ③ reasoning 허용집합(codex xhigh·claude effort 정적 표·opencode variant 는 그 모델의 variants — 실행
+     cwd·env 로 조회·밖 fail-loud·§6).
   ④ opt-in 게이트 disabled = rc=3(§5.4).
   ⑤ prompt-file containment 거부(§3.1·§4.6).
   ⑥ env allowlist 정제(PM 세션 타 크리덴셜 미상속·§4.7).
@@ -33,9 +34,10 @@ from pathlib import Path
 
 import pytest
 
+from _fake_opencode import OLLAMA_LISTING, calls, install_fake_opencode, path_with
 from _git_fixture import init_git_repo
 from _textio import normalize_newline_bytes
-from _win_skip import _can_symlink, posix_mode_supported
+from _win_skip import _can_symlink, posix_bash_supported, posix_mode_supported
 from conftest import write_cluster_ledger
 
 REPO = Path(__file__).resolve().parents[1]
@@ -248,41 +250,66 @@ def test_resolve_bad_harness_fail_loud(pd):
 
 # ══ ③ reasoning 드라이버별 허용집합 (§6) ══════════════════════════════════════
 
-def test_reasoning_codex_accepts_xhigh(pd):
-    assert pd._validate_reasoning("codex", "xhigh") == "xhigh"
+def test_reasoning_codex_accepts_xhigh(pd, tmp_path):
+    assert pd._validate_reasoning("codex", "xhigh", model="gpt-x", cwd=tmp_path) == "xhigh"
 
 
-def test_reasoning_codex_out_of_set_fail_loud(pd):
+def test_reasoning_codex_out_of_set_fail_loud(pd, tmp_path):
     with pytest.raises(pd.DelegateError, match="허용집합"):
-        pd._validate_reasoning("codex", "ultra")
+        pd._validate_reasoning("codex", "ultra", model="gpt-x", cwd=tmp_path)
 
 
-def test_reasoning_claude_opencode_measured_sets(pd):
-    """claude/opencode reasoning 허용집합 = T-0449 라이브 실측값 — 안은 수용·밖은 fail-loud(§6).
+def test_reasoning_claude_measured_set(pd, tmp_path):
+    """claude reasoning 허용집합 = T-0449 라이브 실측값 — 안은 수용·밖은 fail-loud(§6).
 
-    claude `--effort` = {low,medium,high,xhigh,max}(CLI 경고 authoritative)·opencode `--variant` =
-    {minimal,low,medium,high,max}(문서 ladder·CLI passthrough typo-guard). 실측 전 '미확정 빈 집합'을
-    대체 — 허용값은 통과하고 집합 밖(오타)만 fail-loud 함을 못박는다."""
+    claude `--effort` = {low,medium,high,xhigh,max}(CLI 경고 authoritative). 허용값은 통과하고 집합
+    밖(오타)만 fail-loud 함을 못박는다. 정적 허용값이라 모델 목록을 조회하지 않는다."""
     for r in ("low", "medium", "high", "xhigh", "max"):
-        assert pd._validate_reasoning("claude", r) == r
-    for r in ("minimal", "low", "medium", "high", "max"):
-        assert pd._validate_reasoning("opencode", r) == r
-    # 집합 밖 = fail-loud(조용한 무시/강등 금지).
+        assert pd._validate_reasoning("claude", r, model="opus", cwd=tmp_path) == r
     with pytest.raises(pd.DelegateError, match="허용집합"):
-        pd._validate_reasoning("claude", "ultra")
-    with pytest.raises(pd.DelegateError, match="허용집합"):
-        pd._validate_reasoning("opencode", "bogus")
-    # 드라이버별 집합이 실제로 다르다 — codex/claude 는 `xhigh`·`max` 를 함께 수용하지만
-    # (T-0590 에서 codex `max` 편입: 추가 리뷰어 기본 프로필 ladder 상단), opencode 는 `xhigh` 가
-    # 없다. 집합이 서로의 사본이 아님을 이 대비로 못박는다.
-    assert pd._validate_reasoning("codex", "max") == "max"
-    with pytest.raises(pd.DelegateError, match="허용집합"):
-        pd._validate_reasoning("opencode", "xhigh")
+        pd._validate_reasoning("claude", "ultra", model="opus", cwd=tmp_path)
+    assert pd._validate_reasoning("codex", "max", model="gpt-x", cwd=tmp_path) == "max"
 
 
-def test_reasoning_none_omits_flag(pd):
-    assert pd._validate_reasoning("claude", None) is None
-    assert pd._validate_reasoning("opencode", "") is None
+def test_reasoning_none_omits_flag(pd, tmp_path):
+    assert pd._validate_reasoning("claude", None, model="opus", cwd=tmp_path) is None
+    assert pd._validate_reasoning("opencode", "", model="prov/m", cwd=tmp_path) is None
+
+
+@pytest.mark.skipif(not posix_bash_supported(), reason="가짜 opencode 는 POSIX sh 스크립트다")
+def test_opencode_reasoning_checked_with_run_cwd_and_env(pd, monkeypatch, tmp_path, capsys):
+    """opencode 추론 값은 실행과 같은 cwd·env 로 그 모델의 variants 를 조회해 확인한다(dry-run 포함).
+
+    해소 함수(`resolve_delegate`)는 실행하지 않는 경로(채널 가드 훅·비교)에서도 불려 조회하지 않는다.
+    """
+    fakebin = install_fake_opencode(tmp_path / "fakebin", OLLAMA_LISTING)
+    monkeypatch.setenv("PATH", path_with(fakebin))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    prompt = _write_prompt(tmp_path)
+    conf = {"delegate.enabled": "true", "delegate.researcher.harness": "opencode",
+            "delegate.researcher.model": "ollama/glm-5.2:cloud",
+            "delegate.researcher.reasoning": "high"}
+
+    rc = _run_main(pd, monkeypatch, ["--role", "researcher", "--prompt-file", str(prompt),
+                                     "--cwd", str(repo), "--dry-run"], conf)
+
+    err = capsys.readouterr().err
+    assert rc == 1, err
+    assert "허용집합" in err and "ollama/glm-5.2:cloud" in err
+    recorded = calls(fakebin)
+    assert [Path(cwd).resolve() for cwd, _args in recorded] == [repo.resolve()]
+    assert pd.resolve_delegate(conf, "researcher", "normal", None, None, None) == (
+        "opencode", "ollama/glm-5.2:cloud", "high")
+    assert len(calls(fakebin)) == 1, "해소 단계가 모델 목록을 조회했다"
+
+    # 역방향 — 그 모델이 받는 값은 통과하고 argv 에 `--variant` 로 실린다.
+    accepted = {**conf, "delegate.researcher.model": "ollama/ornith1.5:35b-a3b"}
+    rc = _run_main(pd, monkeypatch, ["--role", "researcher", "--prompt-file", str(prompt),
+                                     "--cwd", str(repo), "--dry-run"], accepted)
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    assert "--variant" in captured.out and "high" in captured.out
 
 
 # ══ ④~⑨ main 통합 (mock run_fn·usage/fail-loud/dry-run) ═════════════════════

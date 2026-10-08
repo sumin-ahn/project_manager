@@ -34,7 +34,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config add-harness <harness> [--from <src>] [--dry-run]  # 라이브 인스턴스에 두 번째 harness 어댑터 추가
     pm-config sync-adapter-config [--list | --check | --accept <경로> | --accept-all] # 어댑터 config 판정 조회 / 수렴 게이트 / 상류 값 수용(단건·세트)
     pm-config apply [--json] [--set 키=값 ...]             # 값 검사 → local.conf 기록 → 파생 파일 반영 (반영 전 거부 rc 3)
-    pm-config delegate models --harness <h> --json         # 그 하네스가 인정하는 모델 목록 조회 (읽기 전용·JSON 한 줄)
+    pm-config delegate models --harness <h> --json         # 그 하네스가 인정하는 모델 목록과 모델별 추론 강도(variant) 조회 (읽기 전용·JSON 한 줄)
 
 서브커맨드별 엔진 배선:
   - init      → board.main(["init", ...]) verbatim forward (clone 당 1회 셋업·N=1·M=1 ~ N×M 공용).
@@ -60,8 +60,8 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
   - add-harness → pm_import.add_harness_cli(dest, harness, dry_run=, source_root=) verbatim forward
                   (복사 스코프+인터페이스 예외 번역+소스 해소는 pm_import 단일 진실·
                   중복 0). `--from` 생략 시 dest local.conf upstream.path 자동 해소(imported 인스턴스).
-  - delegate models → pm_relay.MODEL_SOURCE(모델 원천 표 단일 진실)의 `kind` 로만 갈린다:
-                  별칭 표 그대로 / 표가 선언한 조회 명령(pm_import._real_models_runner 실행).
+  - delegate models → pm_relay.model_listing(모델 원천 표 `MODEL_SOURCE` 한 행의 조회 — 별칭 표 그대로 /
+                  표가 선언한 조회 명령 실행). 응답에 모델별 `variants`(opencode)가 실린다.
                   읽기 전용이고 조회 실패는 빈 목록이 아니라 rc 3 이다(사유는 stderr 한 줄).
   - sync-adapter-config → pm_import.judge_adapter_configs(조회) / accept_adapter_config(수용·백업
                   후 template 채택 + 원장 기록). manifest 밖 instance-owned config 는 동기가 무편집
@@ -4957,9 +4957,10 @@ def _print_delegate_model_guidance(
             file=sys.stderr,
         )
         return 1
-    model_source = _load_model_source_table()
-    if model_source is None:
+    relay = _load_relay_contract()
+    if relay is None:
         return 1
+    model_source = relay.MODEL_SOURCE
 
     print("\n## 위임 모델 안내 (local.conf `delegate.<role>[.hard].model` 단일 진실):")
     installed = _installed_harnesses(pm_import_mod)
@@ -5005,14 +5006,14 @@ def _console_delegate_models() -> None:
 
 
 # ── 모델 목록 조회 (`delegate models --harness <h> --json`) ────────────────────
-# 설정 화면과 사람이 "이 하네스에 무엇을 적나" 를 받는 **읽기 전용** 자리다. 목록의 원천은
-# `pm_relay.MODEL_SOURCE` 한 표이고 이 명령은 그 표의 `kind` 로만 갈린다(하네스 이름 분기 0).
-# 조회는 파일을 쓰지 않고, 실패를 빈 목록으로 위장하지 않는다 — 0개면 성공이 아니라 rc 3 이다.
+# 설정 화면과 사람이 "이 하네스에 무엇을 적나" 를 받는 **읽기 전용** 자리다. 조회는 `pm_relay.model_listing`
+# 하나이고(하네스 이름 분기 0) 응답은 `{"harness", "kind", "models", "variants"}` 네 필드다. 조회는 파일을
+# 쓰지 않고, 실패를 빈 목록으로 위장하지 않는다 — 실패(0개 포함)는 rc 3 이다.
 _DELEGATE_MODELS_QUERY_FAILED = 3
 
 
-def _load_model_source_table():
-    """모델 원천 표(`pm_relay.MODEL_SOURCE`) — 부재/로드 실패는 명시 에러 후 None.
+def _load_relay_contract():
+    """하네스 계약(`pm_relay` — 모델 원천 표·모델 목록 조회) — 부재/로드 실패는 명시 에러 후 None.
 
     표의 소유자는 하네스 CLI 계약을 단일 소유하는 `pm_relay` 다(여기 사본을 두지 않는다).
     """
@@ -5023,31 +5024,7 @@ def _load_model_source_table():
             f"({TOOLS_DIR / 'pm_relay.py'} 부재 또는 로드 실패).",
             file=sys.stderr,
         )
-        return None
-    return relay.MODEL_SOURCE
-
-
-def _delegate_models(source, *, models_runner=None) -> tuple[list[str], str | None]:
-    """모델 원천 한 행 → (모델 목록, 실패 사유). 갈림은 `kind` 뿐이다.
-
-    `live` 조회 seam 은 `pm_import._real_models_runner`(PATH 부재·rc·timeout·파싱 0 을 stderr
-    한 줄로 남기는 fail-soft) 를 **그대로 재사용**한다 — 두 번째 조회 코드를 만들지 않는다.
-    """
-    if source.kind == "alias":
-        return list(source.values), None
-    if source.kind == "live":
-        runner = models_runner
-        if runner is None:
-            pm_import_mod = _load_module("pm_import", "pm_import.py")
-            if pm_import_mod is None:
-                return [], f"{TOOLS_DIR / 'pm_import.py'} 부재 또는 로드 실패"
-            runner = pm_import_mod._real_models_runner
-        ok, models = runner(source)
-        if not ok or not models:
-            return [], f"{source.how_to_check} 조회 실패 (사유는 위 stderr 한 줄)"
-        return models, None
-    raise ValueError(
-        f"모르는 모델 원천 kind {source.kind!r} — pm_relay.MODEL_SOURCE 선언과 이 판정이 갈렸다.")
+    return relay
 
 
 def _conf_assignment(text: str) -> tuple[str, str]:
@@ -5120,29 +5097,40 @@ def cmd_apply(args, *, pm_update=None, dest_root: Path | None = None) -> int:
     return 0
 
 
-def cmd_delegate_models(args, *, models_runner=None) -> int:
+def cmd_delegate_models(args, *, listing=None) -> int:
     """`delegate models --harness <h> --json` — 그 하네스가 인정하는 모델 목록(읽기 전용).
 
-    응답은 `{"harness", "kind", "models"}` 하나다. `free_text`(모델은 검증상 언제나 자유 문자열)는
+    응답은 `{"harness", "kind", "models", "variants"}` 하나다. `variants` 는 모델별 추론 강도
+    (`{모델: [variant…]}`, variant 없는 모델은 `[]`)이고 그것을 내는 원천(opencode)만 채운다 — 나머지는
+    null. 모델 목록과 같은 한 번의 조회에서 나온다. `free_text`(모델은 검증상 언제나 자유 문자열)는
     싣지 않는다 — 그 사실은 키 레지스트리의 `choices.free_text` 가 소유하고, 두 자리에 두면 갈린다.
+    `listing` 은 조회 함수(원천 행 → `ModelListing`)이고 기본은 `pm_relay.model_listing` 을 이 사본
+    폴더·이 프로세스 env 로 부르는 것이다.
     rc: 0 성공 · 1 엔진 사본 부재(`pm_relay.py` 없음 — 원천 표 자체를 못 읽음) · 2
     `--harness`/`--json` 미지정·미지원 · 3 조회 실패(사유는 stderr 한 줄). 1 과 3 은 다른
     사실이다 — 물어볼 표가 없는 것과 표대로 물었는데 답을 못 얻은 것.
     """
-    table = _load_model_source_table()
-    if table is None:
+    relay = _load_relay_contract()
+    if relay is None:
         return 1
+    table = relay.MODEL_SOURCE
     source = table.get(args.harness)
     if source is None:
         print(f"[중단] 미지원 harness {args.harness!r} — 지원: {', '.join(table)}.",
               file=sys.stderr)
         return 2
-    models, failure = _delegate_models(source, models_runner=models_runner)
-    if failure is not None:
-        print(f"[중단] {args.harness} 모델 목록을 얻지 못했다 — {failure}", file=sys.stderr)
+    lookup = listing if listing is not None else (
+        lambda row: relay.model_listing(row, cwd=REPO, env=dict(os.environ)))
+    try:
+        result = lookup(source)
+    except relay.HarnessContractError as exc:
+        print(f"[중단] {args.harness} 모델 목록을 얻지 못했다 — {exc}", file=sys.stderr)
         return _DELEGATE_MODELS_QUERY_FAILED
+    variants = None if result.variants is None else {
+        model: list(names) for model, names in result.variants.items()}
     _write_machine_line(json.dumps(
-        {"harness": args.harness, "kind": source.kind, "models": models},
+        {"harness": args.harness, "kind": source.kind, "models": list(result.models),
+         "variants": variants},
         ensure_ascii=False))
     return 0
 

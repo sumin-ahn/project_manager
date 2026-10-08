@@ -1939,6 +1939,17 @@ def _load_pm_import():
     )
 
 
+def _load_relay():
+    """pm_relay(하네스 계약 — 추론 허용값·모델 목록 조회)를 같은 tools/ 에서 직접 로드한다
+    (`_load_pm_import` 와 같은 무검증 로드 — 이 모듈은 복구 채널이라 `EXEMPT_FROM_STAMP` 가 덮는다).
+
+    한 번 읽은 인스턴스를 호출부가 쥐고 쓴다 — 모델 목록 조회 기억이 그 인스턴스의 수명이다."""
+    relay_py = Path(__file__).resolve().parent / "pm_relay.py"
+    return _load_module_from_path(
+        relay_py, "pm_relay.py", allow_unverified=True,
+    )
+
+
 # ── upstream baseline↔HEAD 변경점 요약 (read-only) ─────────
 # git `name-status` 코드(첫 글자) → 표시용. R(rename)·C(copy)는 첫 글자만 본다(접두).
 _NAME_STATUS_LABELS = {"M": "M", "A": "A", "D": "D", "R": "R", "C": "C", "T": "T"}
@@ -5966,6 +5977,75 @@ def idle_legacy_slot_session_rows(effective_dest: Path, *, write: bool) -> int:
     return len(moved)
 
 
+class ReasoningPruneError(RuntimeError):
+    """갱신의 추론 값 정리가 판정하지 못했거나(조회 실패·모델 없음) 판정 중 local.conf 가 바뀌어 아무것도
+    지우지 않고 멈췄다."""
+
+
+def prune_unavailable_reasoning(dest_root: Path, conf: Mapping[str, str], *,
+                                write: bool) -> dict[str, str]:
+    """모델별 허용값 하네스 프로필의 추론 값 중 그 모델이 받지 않는 값을 local.conf 에서 지우고 알린다.
+
+    대상은 레지스트리 축이 `reasoning` 인 키(위임 세트·대체 세트·추가 리뷰어) 중 값이 있고 같은 세트의
+    하네스가 `pm_relay.PER_MODEL_REASONING_HARNESSES`(opencode)인 것이다. 정적 허용값(claude·codex)은
+    대상이 아니다 — 엔진이 정한 값이라 바뀌지 않고, 틀리면 렌더가 멈춘다. 판정은 설치 폴더·이 프로세스
+    env 의 모델 목록 조회다(`pm_relay.reasoning_allowed`). 하나라도 판정하지 못하면(조회 실패·모델 값
+    없음·목록에 모델 없음) 아무것도 지우지 않고 `ReasoningPruneError` 다.
+
+    쓰기는 판정 뒤 local.conf 쓰기 락 안에서 다시 읽어 값이 판정 때와 같을 때만 한 번에 지운다(다르면
+    `ReasoningPruneError`). `write=False` 면 출력만 하고 쓰지 않는다. 반환은 지운(지울) 키를 뺀 conf 다 —
+    호출부가 계획·렌더에 그대로 넘긴다. 갱신의 전량 동기에서 계획보다 먼저 돈다(렌더가 무효 값을
+    만나기 전에 정리한다)."""
+    candidates = {key: value for key, value in conf.items() if (value or "").strip()}
+    if not candidates:
+        return dict(conf)
+    local_conf = _load_local_conf()
+    reasoning_keys = [
+        key for key in candidates
+        if (spec := local_conf.key_spec(key)) is not None and spec.choices == "reasoning"
+    ]
+    if not reasoning_keys:
+        return dict(conf)
+    relay = _load_relay()
+    misses: list[tuple[str, str, str, str | None, tuple[str, ...]]] = []
+    for key in reasoning_keys:
+        profile = key.rsplit(".", 1)[0]
+        harness = (conf.get(f"{profile}.harness") or "").strip()
+        if harness not in relay.PER_MODEL_REASONING_HARNESSES:
+            continue
+        value = conf[key]
+        model = (conf.get(f"{profile}.model") or "").strip() or None
+        try:
+            allowed = relay.reasoning_allowed(
+                harness, model, cwd=Path(dest_root), env=dict(os.environ))
+        except relay.HarnessContractError as exc:
+            raise ReasoningPruneError(
+                f"conf 이관: {key}={value} 를 판정할 수 없어 지우지 않았다 — {exc}. opencode 를 이 "
+                "프로세스의 PATH 에서 실행할 수 있게 한 뒤 다시 실행하거나 local.conf 의 그 줄을 직접 "
+                "고친다.") from exc
+        if relay.normalize_reasoning(value) not in allowed:
+            misses.append((key, value, harness, model, allowed))
+    if not misses:
+        return dict(conf)
+    if write:
+        conf_path = Path(dest_root) / _LOCAL_CONF_RELPATH
+        with _local_conf_write_lock(conf_path):
+            current = _read_local_conf(conf_path)
+            if any(current.get(key) != value for key, value, *_ in misses):
+                raise ReasoningPruneError("local.conf 가 판정 중에 바뀌었다 — 다시 실행한다")
+            _load_pm_import()._write_conf_keys_locked(
+                conf_path, {key: None for key, *_ in misses})
+    lead = (f"  ✓ local.conf 추론 값 {len(misses)}개 지움" if write
+            else f"[dry-run] local.conf 추론 값 {len(misses)}개 지울 예정")
+    print(f"{lead} — 그 모델이 받지 않는 variant 라 갱신이 지운다(OpenCode 는 이 값을 오류 없이 "
+          "버린다):")
+    for key, value, harness, model, allowed in misses:
+        print(f"    {key}={value} ({harness} {model} · 받는 값: "
+              f"{', '.join(allowed) if allowed else '없음'})")
+    removed = {key for key, *_ in misses}
+    return {key: value for key, value in conf.items() if key not in removed}
+
+
 def migrate_renamed_conf_keys(effective_dest: Path, *, write: bool) -> dict[str, str]:
     """local.conf 이름 이동의 읽기·계획·쓰기·후조건을 공용 락 안에서 수행한다.
 
@@ -7234,6 +7314,16 @@ def _main(argv: list[str] | None = None) -> int:
     # 은퇴 판정은 **dest 좌표만** 대조한다 — `--paths` 오타 검출용 합집합에는 상류 좌표가 섞여 있어,
     #   그대로 넘기면 우연한 문자열 일치로 잔존물이 "상류가 공급함" 으로 접힌다(false negative).
     plan_dest_inventory: set[str] = set()
+    # ── 추론 값 정리(conf 이관) — **계획·렌더보다 먼저**. 그 모델이 받지 않는 opencode 추론 값이 남아
+    #    있으면 렌더가 그 카드에서 멈추므로 여기서 지우고 알린다. 경계는 아래 키 이름 이관과 같다
+    #    (`--target` 내보내기·`--paths` 부분 전파는 conf 를 건드리지 않는다). 돌려받은 conf 로 계획한다.
+    conf = _read_local_conf(effective_dest / ".project_manager" / "local.conf")
+    if not args.target and not scope_paths:
+        try:
+            conf = prune_unavailable_reasoning(effective_dest, conf, write=not args.dry_run)
+        except ReasoningPruneError as exc:
+            print(f"[중단] {exc}", file=sys.stderr)
+            return 1
     # manifest 자기치유 → notation 템플릿 → guest backfill 기록 판정 → `plan()` 을 한 함수로 묶어
     #   호출한다 — self-update/`--target` export 경로와 drift 게이트(`drift_changes`)가 **같은
     #   함수**를 공유한다(복제 금지). `report=True` 는 기존과 같은 지점·같은 문구로 안내를 낸다.
@@ -7247,7 +7337,7 @@ def _main(argv: list[str] | None = None) -> int:
             inventory_out=plan_inventory,
             dest_inventory_out=plan_dest_inventory,
             report=True,
-            conf=_read_local_conf(effective_dest / ".project_manager" / "local.conf"),
+            conf=conf,
         )
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)

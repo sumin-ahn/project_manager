@@ -149,7 +149,8 @@ HARNESS_TABLES: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
     ("pm_relay.py", "MODEL_SOURCE"): (
         "CLI 형식 — 모델 값의 원천(별칭·사용자 config·실조회)이 CLI 마다 다르다", HARNESS_NAMES),
     ("pm_relay.py", "REASONING_ALLOWED"): (
-        "CLI 형식 — reasoning 허용집합이 CLI 마다 다르다(미지원값 fail-loud 용)", HARNESS_NAMES),
+        "CLI 형식 — reasoning 정적 허용집합이 CLI 마다 다르다(미지원값 fail-loud 용 · opencode 는 "
+        "모델별 variants 를 조회하므로 행이 없다)", ("claude", "codex")),
     ("pm_relay.py", "_RUNTIME_ROLE_CONFIG_BUILDERS"): (
         "CLI 형식 — 역할 config 를 argv/파일 중 무엇으로 넘기는지가 CLI 마다 다르다",
         HARNESS_NAMES),
@@ -188,7 +189,7 @@ DELEGATION_AUTHORITY_SITES: dict[LedgerKey, Site] = {
 
 # 원장 총량 상한 — **축소 전용**. 새 자리를 등재하려면 다른 자리를 코드에서 지워야 한다.
 # 현재 총량과 같은 값이라 항목 추가만으로는 통과할 수 없다.
-LEDGER_CEILING = 110
+LEDGER_CEILING = 109
 
 # 하네스 분기 몸통에서 금지하는 효과 — 이 축을 건드리면 등재 자체가 불가능하다.
 PERMISSION_EFFECT_KEYS = ("HOME", "PATH", "CWD", "PERMISSION", "SANDBOX", "MODE")

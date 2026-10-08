@@ -540,9 +540,10 @@ spawn까지 막지는 못한다. Claude native agent 카드의 `model:`이 설�
 가드가 비차단 경고를 내며, 설정이나 카드를 자동으로 고치지 않는다.
 
 역할·티어 카드는 세 하네스가 **같은 규칙**을 쓴다 — claude `.claude/agents/*.md` · codex
-`.codex/agents/*.toml` · opencode `.opencode/agents/*.md` 의 모델(과 codex TOML 이 함께 갖는
-추론 강도)은 전부 `local.conf` 의 렌더 파생물이고 다른 출처를 갖지 않는다. 난제 티어
-`developer-hard` 도 세 하네스가 모두 카드를 갖는다(평시 프로필을 상속하지 않는 별도 세트).
+`.codex/agents/*.toml` · opencode `.opencode/agents/*.md` 의 모델과 추론 강도(claude `effort` ·
+codex `model_reasoning_effort` · opencode `variant`)는 전부 `local.conf` 의 렌더 파생물이고 다른
+출처를 갖지 않는다. 난제 티어 `developer-hard` 도 세 하네스가 모두 카드를 갖는다(평시 프로필을
+상속하지 않는 별도 세트).
 
 **모델 값에 무엇을 넣는가**는 하네스마다 형식이 다르다(claude=별칭 또는 풀네임 ·
 opencode=`provider/model` · codex=사용자 codex config 가 인정하는 문자열). 값 목록을 문서에
@@ -575,8 +576,9 @@ wrapper 소유이며 board는 이 프로토콜만 검증한다. wrapper는 자�
 
 역할 모델을 고를 때는 **generate≠evaluate**가 기준이다. 위임은 매번 새 세션이라 모델이 같아도
 전사 공유가 없지만, `delegate.code-reviewer.model`을 developer와 다르게 두면 맹점을 공유하지 않아
-검출력이 는다(하네스는 달라도 된다). `.reasoning`은 codex가 `low/medium/high/xhigh`를 받고,
-claude·opencode는 실측 후 적용되며 그 전에 지정하면 fail-loud다.
+검출력이 는다(하네스는 달라도 된다). `.reasoning`은 claude·codex 는 엔진이 정한 허용값 중
+하나여야 하고, opencode 는 그 모델의 variant(`opencode models --verbose` 의 `variants`) 중 하나여야
+한다. 아니면 저장과 위임이 멈추고, 갱신은 그 opencode 줄을 지우고 알린다.
 
 **추가 리뷰어**(additional reviewer) 는 developer·architect·code-reviewer 와 같이 **부르면 도는
 역할**이다 — 채널을 켜고 끄는 스위치도, 이 역할만의 별도 승인 축도 없다. 쓰려면 `local.conf` 에
