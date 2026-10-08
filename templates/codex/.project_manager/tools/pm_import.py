@@ -7971,7 +7971,7 @@ def adapter_config_drift_summary(judgment: AdapterConfigJudgment,
 
 
 # ── 하네스 사용 한도·압축 비율 반영 (local.conf → 하네스 설정 파일·압축 한도 기록) ─────────
-# 적용 경로(ctx-apply·설치·add-harness·pm_update·어댑터 수용)가 local.conf 쓰기 락 안에서 도구마다
+# 적용 경로(pm-config apply·설치·add-harness·pm_update·어댑터 수용)가 local.conf 쓰기 락 안에서 도구마다
 # 모델 한도 C 를 한 번 조회하고 적용 한도 E = min(W, C)·압축 지점 P = floor(E × compact_at / 100) 를
 # 하네스 설정 파일과 압축 한도 기록(`local_conf.CTX_BUDGET_RELPATH`)에 쓴다. 런타임은 기록만 읽는다.
 #   claude   `.claude/settings.json`     autoCompactWindow = P + d (d = 모델 창 − 기본 압축 기준)
@@ -8159,42 +8159,23 @@ def apply_harness_ctx(dest_root: Path, *, write: bool, opencode_config_dir: Path
     내용 해시로 바꾸고 `recorded_at`·`template_rev` 는 둔다 — 무편집 판정이 반영 뒤에도 유지된다.
     편집됨·원장 없음은 원장을 건드리지 않는다. 원장이 상위 schema 면 파일을 쓰지 않고 멈춘다.
     `harness.opencode.pro_model` 은 읽지 않는다 — 대상 모델은 설정 파일에 적힌 모델 전부다."""
-    return _apply_harness_ctx(dest_root, write=write, opencode_config_dir=opencode_config_dir)[1]
-
-
-def _apply_harness_ctx(dest_root: Path, *, write: bool, opencode_config_dir: Path, updates=None):
-    """반영 본문 — (local.conf 가 바뀌었나, 바뀐 줄, 도구 기록 항목). `write` 면 local.conf 쓰기 락 안에서
-    계획(`_harness_ctx_plan`)과 쓰기(local.conf → 설정 파일 → 기록)를 한 번에 한다. 쓰기 단계에서 멈추면
-    `HarnessCtxError.written` 이 바꾼 파일을 적고 `write_stage` 가 참이다(바꾼 파일이 없어도 검사 거부가 아니다)."""
     dest_root = Path(dest_root)
     conf_path = dest_root / ".project_manager" / "local.conf"
     if not write:
-        return (False, *_harness_ctx_plan(dest_root, conf_path, opencode_config_dir, updates)[3:])
+        return _harness_ctx_plan(dest_root, _conf_values(conf_path, None), opencode_config_dir)[1]
     with _local_conf_write_lock(conf_path):
-        module, values, changed, lines, entries = _harness_ctx_plan(dest_root, conf_path, opencode_config_dir, updates)
+        values = _conf_values(conf_path, None)
+        changed, lines, entries = _harness_ctx_plan(dest_root, values, opencode_config_dir)
         if changed:
             _harness_ctx_baseline_writable(dest_root)
-        conf_changed = _write_conf_keys_locked(conf_path, updates) if updates else False
-        written = (".project_manager/local.conf",) if conf_changed else ()
-        record = {"schema": module.CTX_BUDGET_SCHEMA, "inputs": module.ctx_input_values(values),
-                  "applied_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-                  "harnesses": entries}
-        payload = (json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
-        try:
-            if changed:
-                _harness_ctx_write(dest_root, changed)
-            if not (_ctx_record_unchanged(dest_root / module.CTX_BUDGET_RELPATH, record)
-                    or _atomic_write_dest_bytes(dest_root, module.CTX_BUDGET_RELPATH, payload)):
-                raise HarnessCtxError([f"압축 한도 기록({module.CTX_BUDGET_RELPATH.as_posix()})을 쓰지 못했습니다."], written=tuple(changed))
-        except HarnessCtxError as exc:
-            failure = HarnessCtxError(exc.violations, written=written + exc.written)
-            failure.write_stage = True
-            raise failure from exc
-        return conf_changed, lines, entries
+        _harness_ctx_commit(dest_root, values, changed, entries)
+        return lines
 
 
-def _harness_ctx_plan(dest_root: Path, conf_path: Path, opencode_config_dir: Path, updates):
-    """읽기·`updates` 덮기(None 은 줄 삭제)·검사·조회·계산 — (local.conf 모듈, 입력, 바뀔 설정 파일, 줄, 기록 항목)."""
+def _conf_values(conf_path: Path, updates) -> dict[str, str]:
+    """local.conf 값에 `updates`(None·빈 값은 줄 삭제)를 덮은 제안 값 — 옛 키가 남았거나 들어오면 멈춘다.
+
+    저장(`pm_update.apply_conf`)의 모든 반영 단계와 이 모듈의 반영이 같은 값 하나를 쓴다."""
     module = _load_local_conf()
     loaded = module.load(conf_path)
     module.assert_no_legacy(loaded)
@@ -8202,6 +8183,36 @@ def _harness_ctx_plan(dest_root: Path, conf_path: Path, opencode_config_dir: Pat
     if updates:
         values.update({key: value for key, value in updates.items() if value})
         module.assert_values_no_legacy(values, conf_path)
+    return values
+
+
+def _harness_ctx_commit(dest_root: Path, values, changed: dict[str, tuple[str, str]], entries) -> tuple[str, ...]:
+    """계획(`_harness_ctx_plan`)대로 설정 파일과 압축 한도 기록을 쓴다 — 바꾼 파일 relpath.
+
+    local.conf 쓰기 락 안에서 부른다(락을 다시 잡지 않는다). 쓰기 단계에서 멈추면 `HarnessCtxError.written`
+    이 바꾼 파일을 적고 `write_stage` 가 참이다(바꾼 파일이 없어도 검사 거부가 아니다)."""
+    module = _load_local_conf()
+    record = {"schema": module.CTX_BUDGET_SCHEMA, "inputs": module.ctx_input_values(values),
+              "applied_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+              "harnesses": entries}
+    payload = (json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    record_relpath = module.CTX_BUDGET_RELPATH.as_posix()
+    try:
+        if changed:
+            _harness_ctx_write(dest_root, changed)
+        if _ctx_record_unchanged(dest_root / module.CTX_BUDGET_RELPATH, record):
+            return tuple(changed)
+        if not _atomic_write_dest_bytes(dest_root, module.CTX_BUDGET_RELPATH, payload):
+            raise HarnessCtxError([f"압축 한도 기록({record_relpath})을 쓰지 못했습니다."], written=tuple(changed))
+    except HarnessCtxError as exc:
+        failure = HarnessCtxError(exc.violations, written=exc.written)
+        failure.write_stage = True
+        raise failure from exc
+    return (*changed, record_relpath)
+
+
+def _harness_ctx_plan(dest_root: Path, values, opencode_config_dir: Path):
+    """제안 값(`_conf_values`) 검사·조회·계산 — (바뀔 설정 파일, 바뀐 줄, 기록 항목). 아무것도 쓰지 않는다."""
     present = frozenset(harness for harness, relpath in HARNESS_CTX_FILES.items()
                         if (dest_root / relpath).is_file())
     validate_harness_ctx(values, present)
@@ -8232,7 +8243,7 @@ def _harness_ctx_plan(dest_root: Path, conf_path: Path, opencode_config_dir: Pat
     for harness, entry in entries.items():
         entry["settings"] = {_harness_ctx_dotted(path): value
                              for path, value in targets[HARNESS_CTX_FILES[harness]].items()}
-    return module, values, changed, tuple(lines), entries
+    return changed, tuple(lines), entries
 
 
 def _ctx_record_unchanged(path: Path, record: dict) -> bool:

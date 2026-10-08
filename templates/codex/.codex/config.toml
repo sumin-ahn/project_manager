@@ -14,7 +14,7 @@ approvals_reviewer = "auto_review"
 # 압축 지점: 독립 모델 한도 C와 사용자 희망 기준 W에서 해소한 E=min(W,C)를 사용한다.
 #   model_auto_compact_token_limit = floor(E × ctx.compact_at_pct / 100).
 #   엔진 최상위 model_context_window override는 두지 않는다. 사용자 global/profile은 보존한다.
-#   metadata가 unknown이면 ctx-apply가 쓰기를 거부한다. 아래 숫자는 기존 출하 seed이며 actual C의 근거가 아니다.
+#   metadata가 unknown이면 `pm-config apply`가 쓰기를 거부한다. 아래 숫자는 기존 출하 seed이며 actual C의 근거가 아니다.
 #   hooks.json PreCompact는 compaction을 통과시키고 직전 내구 경계 이후의 checkpoint 기록을 안내한다.
 model_auto_compact_token_limit = 180000
 

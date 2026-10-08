@@ -728,7 +728,7 @@ def key_spec(key: str) -> KeySpec | None:
     return spec
 
 
-# 압축 한도 기록 — 적용 경로(ctx-apply·설치·add-harness·pm_update·어댑터 수용)가 조회한 모델 한도 C 와
+# 압축 한도 기록 — 적용 경로(pm-config apply·설치·add-harness·pm_update·어댑터 수용)가 조회한 모델 한도 C 와
 # 계산 결과를 한 번 쓰고, 훅·상태줄·구동기·상태 조회는 읽기만 한다. 시간·도구 갱신·환경변수로
 # 값이 무효가 되지 않는다 — 같은 모델의 한도가 바뀌면 사용자가 다시 적용한다. `applied_at` 은 지금
 # 기록 값이 처음 쓰인 시각이다(값이 같은 재적용은 기록을 다시 쓰지 않는다).
@@ -738,7 +738,7 @@ CTX_HARNESSES = ("claude", "codex", "opencode")
 CTX_INPUT_KEYS = tuple(f"harness.{name}.ctx_window_tokens" for name in CTX_HARNESSES) + (
     "ctx.checkpoint_at_pct", "ctx.precompact_at_pct", "ctx.compact_at_pct")
 _CTX_ENTRY_INTEGERS = ("W", "C", "E", "P", "checkpoint", "precompact")
-_CTX_RERUN = "`pm_config.py ctx-apply` 를 다시 실행하십시오"
+_CTX_RERUN = "`pm_config.py apply` 를 다시 실행하십시오"
 # 모델 가용 한도 출처(basis)의 형식 — Claude Code 조회 · Codex 모델 목록 · opencode 모델 목록(input 은 원본에 있을 때만).
 _CTX_BASIS_FORMS = ({"model_window", "auto_compact_threshold"}, {"context_window", "max_context_window", "model_context_window", "percent"},
                     {"context", "output", "source"}, {"context", "output", "source", "input"})

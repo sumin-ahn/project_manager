@@ -159,6 +159,48 @@ def test_t0944_old_process_run1_renders_claude_effort(t0927_old_adopter, t0927_u
     assert 'model: "sonnet"' in lines, "\n".join(lines[:8])
 
 
+# 다음 세대 렌더러만 아는 토큰 — 설치된 렌더러는 이 토큰을 미해소로 보고 렌더를 거부한다.
+_NEXT_GEN_TOKEN = "{{NEXT_GEN_MARK}}"
+
+
+def _teach_renderer_next_gen_token(pm_render_path: Path) -> None:
+    """`render_adapter` 본문 첫 문장으로 다음 세대 토큰 치환을 넣는다(docstring 바로 뒤)."""
+    import ast
+    text = pm_render_path.read_text(encoding="utf-8")
+    function = next(node for node in ast.walk(ast.parse(text))
+                    if isinstance(node, ast.FunctionDef) and node.name == "render_adapter")
+    lines = text.splitlines(keepends=True)
+    indent = " " * function.body[1].col_offset
+    lines.insert(function.body[0].end_lineno,
+                 f'{indent}template_text = template_text.replace("{_NEXT_GEN_TOKEN}", "next-gen")\n')
+    pm_render_path.write_text("".join(lines), encoding="utf-8")
+
+
+def test_update_renders_cards_whose_tokens_only_the_new_renderer_knows(tmp_path):
+    """렌더러가 바뀌는 갱신이 한 번의 `pm-config update` 로 끝난다 (T-0945 AT-005 · 불변식 I7).
+
+    계획은 설치된 렌더러로 `@render` 파일을 판정한다. 다음 세대 템플릿에 설치 렌더러가 모르는 토큰이
+    있으면 그 판정 렌더는 실패하는데, 계획은 그 실패를 "갱신 필요" 로 접고(`_render_eq_dst`), 실제
+    렌더는 tools 를 복사한 뒤의 새 렌더러가 한다. 그 흡수를 지우면 계획 단계에서 멈춰 rc 가 0 이
+    아니다."""
+    from _manager_home import _git, make_committed_source, make_pm_home
+    source = make_committed_source(tmp_path / "source")
+    home = make_pm_home(tmp_path / "home", upstream=source, source=source)
+    card_rel = Path(".claude") / "agents" / "architect.md"
+    _teach_renderer_next_gen_token(source / ".project_manager" / "tools" / "pm_render.py")
+    template = source / card_rel
+    template.write_text(template.read_text(encoding="utf-8")
+                        + f"\n다음 세대 표식: {_NEXT_GEN_TOKEN}\n", encoding="utf-8")
+    _git("-C", str(source), "commit", "-qam", "next-gen renderer token")
+    assert "next-gen" not in (home / card_rel).read_text(encoding="utf-8")
+
+    run = _t0927_direct_update(home)
+
+    assert run.returncode == 0, f"{run.stdout}\n{run.stderr}"
+    rendered = (home / card_rel).read_text(encoding="utf-8")
+    assert "다음 세대 표식: next-gen" in rendered and _NEXT_GEN_TOKEN not in rendered
+
+
 
 
 def _card_with_operational_details(path: Path) -> str:
@@ -842,7 +884,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   줄어든 것은 그 실행이 부르지 않던 코드뿐이다. 현재화한 것은 기대 SHA 하나뿐이다.
 #   같은 티켓의 수정 라운드에서 한 번 더 이동했다 — `plan()` docstring 의 낱말 하나("모듈 밖
 #   호출부")뿐이고 실행 코드·배달 경계는 무편집이다.
-_T0585_PM_UPDATE_SHA256 = "2ebb31f074849cc47b541b788dc4522178cd27aae8115fe5fbfc853401d53129"
+_T0585_PM_UPDATE_SHA256 = "2a1687a5cca14607522eb3c6fa33ca7087997718b6d56ce32ed85e43070c63e3"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -1102,6 +1144,15 @@ def _t0585_pm_update_source() -> str:
     선통과했으며 _main·plan·apply·sync_adapter_configs·_adapter_config_gate_failed의 AST는
     기준 HEAD와 동일하다. 이 합성 시나리오에는 이동할 옛 키가 없어 새 실패 분기가 발화하지
     않는다. 실제 v1.7.13 프로세스 검증은 별도 고정 커밋과 blob을 사용한다.
+    T-0945 — 설정 저장 반영(`apply_conf`·키 묶음 표·설치 세대 원본 확인)을 더하고, 렌더 값이 conf 값을
+    받도록(`_render_text`·`_render_eq_dst`·`plan`·`_resolve_engine_sync_plan` 의 `conf`·렌더러 인자)
+    바꿨으며, `apply` 가 render change 를 render 아닌 change 를 다 쓴 뒤 전부 그리고 나서 쓰게 했다.
+    배달 파일 집합과 배달 경계(source/manifest planning → apply → self-update 순서)는 그대로다 —
+    바뀐 것은 한 apply 안에서 render 파일 쓰기가 맨 뒤로 모인 순서뿐이고, 이 fixture 의 두 실행이
+    단언하는 것(어댑터 수령·리타이어 delta)은 apply 안의 쓰기 순서에 기대지 않는다. 같은 티켓에서
+    `_read_local_conf` 가 파일이 없으면 형제 로더를 읽지 않고 {} 를 내게 했다(갱신 입구가 계획용 conf 를
+    한 번 읽게 되어, conf 없는 복구 트리가 그 읽기에서 멈추지 않게). 역델타 marker 와 시대착오 부재
+    단언은 그대로 선통과했다 — 현재화한 것은 기대 SHA 하나뿐이다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -1227,7 +1278,7 @@ def _install_t0585_updater(dest: Path) -> None:
 # T-0887: 온보딩 opt-in 일습 삭제로 역적용 delta 의 exact-marker 목록이 두 항목으로 줄고
 # (되돌릴 원문이 사라졌다) 그만큼 historical 전문 SHA 도 이동했다. 퇴역 경로 delta 의 marker 는
 # 전부 그 절 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "247219e9d7ef0f88f0cdb80bd8feaca6e6b386bffe92dc2ba0afa0eacdc7ce4e"
+_PRE_T0876_PM_UPDATE_SHA256 = "7892a2961fb17360e53402ceb1df914bfdb4f09ffcdedbe2a7bc911ea974f092"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -1280,6 +1331,11 @@ def _pre_t0876_pm_update_source() -> str:
     exact-marker가 선통과하고 _main·plan·apply·sync_adapter_configs·
     _adapter_config_gate_failed의 AST가 기준 HEAD와 동일함을 확인했다. 이 시나리오는 이동할
     옛 conf 키가 없어 새 실패 분기가 발화하지 않는다. 합성본 지문만 갱신했다.
+    T-0945 — 설정 저장 반영(`apply_conf`)을 더하고 렌더 경로가 conf 값과 렌더러 인스턴스를 받게 했으며
+    `apply` 가 render 파일을 전부 그린 뒤에 쓰게 했다. 퇴역 경로 delta(T-0878·T-0876)의 exact-marker 는
+    그 절 밖이라 그대로 유일 해소되고, RUN1 이 검증하는 배달 경계(신 reviewer 설치 → 두 번째 실행의 구
+    파일 퇴역)는 apply 안 render 쓰기 순서와 무관하다. `_read_local_conf` 의 파일 부재 처리(형제 로더를
+    읽지 않고 {})도 이 fixture 의 배달 경계 밖이다. 합성본 지문만 갱신했다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")

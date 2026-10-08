@@ -22,7 +22,7 @@
   // 없으므로(per-agent 미지원) "전역 기본 켜짐 + PM 은 압축 전 checkpoint 박제" 가 둘 다 지키는 조합이다.
   // 압축 지점(관리 키): 프레임워크가 local.conf 의 opencode 사용 한도(`harness.opencode.ctx_window_tokens`)
   //   와 압축 비율(`ctx.compact_at_pct`)로 최상위 `compaction.reserved`(= 사용 한도 − 압축 지점)와 모델
-  //   항목의 `limit` 을 쓴다 — 값은 local.conf 에서 고친다(pm-update·pm-config ctx-apply 가 다시 쓴다).
+  //   항목의 `limit` 을 쓴다 — 값은 local.conf 에서 고친다(pm-update·pm-config apply 가 다시 쓴다).
   //   opencode 는 `limit.input` 이 있으면 `input − reserved` 에서 압축한다. 사용 한도는 그 하네스에서
   //   쓰는 모델 중 가장 작은 창 이하로 두십시오 — 사용 한도가 실제 창보다 크면 안내가 압축보다 늦게 온다.
   // (토큰추적·넛지·checkpoint 안내는 .opencode/plugins/ctx-guard.js 가 autoload 로 담당 — 차단 없음.)

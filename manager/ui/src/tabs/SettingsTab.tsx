@@ -42,14 +42,9 @@ export const FREE_INPUT_FAMILY = "test.<platform>.cmd";
  */
 export const UPSTREAM_PATH_KEY = "upstream.path";
 
-/** 안내 문서 렌더에 박히는 키 — 저장해도 문서는 갱신 탭 [적용] 이 다시 그린다. */
-const ADAPTER_CARD_KEY = /^(project\.|runtime\.py$|test\.cmd$|delegate\..+\.model$|harness\..+\.pro_model$)/;
-
-const ADAPTER_CARD_NOTE = "안내 문서는 이 저장으로 다시 그려지지 않습니다. 갱신 탭의 [적용]이 다시 그립니다.";
-
-/** 사용 한도 저장이 하네스 설정 파일에서 바꾼 줄 — 없으면 결과 칸을 비운다. */
+/** 저장이 파생 파일(하네스 설정 파일·다시 그린 렌더 산출물)에 반영한 줄 — 없으면 결과 칸을 비운다. */
 function appliedText(applied: string[]): string | null {
-  return applied.length > 0 ? `하네스 설정 파일 반영:\n${applied.join("\n")}` : null;
+  return applied.length > 0 ? `반영:\n${applied.join("\n")}` : null;
 }
 
 /** 왼쪽 목록의 마지막 항목 — 레지스트리 그룹이 아니라 버튼으로만 도는 어댑터 파일 절이다. */
@@ -264,7 +259,6 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
   const [newKey, setNewKey] = useState("");
   const [upstreamDraft, setUpstreamDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
   const [command, setCommand] = useState<string | null>(null);
   const [asking, setAsking] = useState(startAsking);
   // [목록 불러오기] 가 받아 온 것 — 하네스별 최근 응답 하나이고 주기 조회로는 다시 부르지 않는다.
@@ -286,7 +280,6 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
   useEffect(() => {
     setError(null);
     setEdits({});
-    setNote(null);
     setCommand(null);
     setUpstreamDraft(null);
     setModels({});
@@ -315,8 +308,6 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
       setError(null);
       setEdits({});
       setSetKeys({});
-      setNote(Object.keys(updates).some((key) => ADAPTER_CARD_KEY.test(key))
-        ? ADAPTER_CARD_NOTE : null);
       setCommand(appliedText(response.applied));
       onReload();                // 화면 값은 저장 직후 **재조회** 결과다
     }
@@ -496,7 +487,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
   );
 
   // 도구별 사용 한도 행 아래의 압축 한도 기록 — 적용할 때 조회한 값이고 화면이 다시 조회하지 않는다.
-  // 버튼은 그 키의 저장된 값으로 저장 경로(ctx-apply)를 다시 태워 모델 한도를 다시 읽는다. 저장은 화면의
+  // 버튼은 그 키의 저장된 값으로 저장 경로(`pm-config apply`)를 다시 태워 모델 한도를 다시 읽는다. 저장은 화면의
   // 편집을 비우므로 편집이 남아 있으면 누를 수 없다. 설치되지 않은 도구는 적용이 기록하지 않아 블록이 없다.
   // 기록 시각은 지금 기록 값이 처음 쓰인 시각이다(값이 같은 재적용은 기록을 다시 쓰지 않는다).
   const budgetBlock = (key: string) => {
@@ -607,7 +598,6 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
       {error && (
         <p role="alert" className="px-4 py-1 text-red-600">설정 호출이 실패했습니다. {error.message}</p>
       )}
-      {note && <p data-testid="settings-note" className="px-4 py-1 text-amber-700">{note}</p>}
       {command && (
         <pre data-testid="settings-command"
              className="mx-4 my-1 whitespace-pre-wrap bg-slate-50 p-2 font-mono text-[11px]">

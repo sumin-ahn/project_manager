@@ -55,6 +55,11 @@ ENGINE_PATH_BASE_RE = re.compile(
 # 허용되는 뿌리는 둘뿐이다 — 파일 자기 위치 상수 ENGINE_ROOT 와 순수함수가 인자로 받은 root.
 ALLOWED_ENGINE_PATH_BASES = frozenset(("ENGINE_ROOT", "root"))
 
+def _local_conf_of(pm_update, root):
+    """dest 의 local.conf 값 — 계획·렌더가 받는 conf (디스크 읽기는 호출 경계 한 번)."""
+    return pm_update._read_local_conf(Path(root) / ".project_manager" / "local.conf")
+
+
 def _load_pm_update():
     path = REPO / ".project_manager" / "tools" / "pm_update.py"
     spec = importlib.util.spec_from_file_location("t0674_pm_update", path)
@@ -100,7 +105,7 @@ def test_manifest_maps_every_command_to_root_canonical_skill():
 def test_pm_update_plan_generates_and_updates_flat_command_copies(tmp_path):
     pm_update = _load_pm_update()
     entries = _command_entries(pm_update)
-    changes, missing = pm_update.plan(REPO, entries, dest_root=tmp_path, render_enabled=False)
+    changes, missing = pm_update.plan(REPO, entries, dest_root=tmp_path, render_enabled=False, conf=_local_conf_of(pm_update, tmp_path))
     assert missing == []
     assert len(changes) == 15 and {kind for _rel, _src, _dst, kind in changes} == {"new"}
     pm_update.apply(changes)
@@ -120,7 +125,7 @@ def test_pm_update_plan_generates_and_updates_flat_command_copies(tmp_path):
         delegate, "pm-dev-delegate")
 
     generated.write_text("stale\n", encoding="utf-8")
-    changes, missing = pm_update.plan(REPO, entries, dest_root=tmp_path, render_enabled=False)
+    changes, missing = pm_update.plan(REPO, entries, dest_root=tmp_path, render_enabled=False, conf=_local_conf_of(pm_update, tmp_path))
     assert missing == []
     assert [(rel, kind) for rel, _src, _dst, kind in changes] == [
         (".opencode/command/pm-bootstrap.md", "update")
@@ -141,7 +146,7 @@ def _plan_one_command(pm_update, monkeypatch, source_root: Path, manifest: Path,
     with pytest.warns(fallback_warning, match="filesystem 전수 순회"):
         changes, missing = pm_update.plan(
             source_root, pm_update.read_manifest(manifest),
-            dest_root=dest_root, render_enabled=False)
+            dest_root=dest_root, render_enabled=False, conf=_local_conf_of(pm_update, dest_root))
     assert missing == []
     return changes
 

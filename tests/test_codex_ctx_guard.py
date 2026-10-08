@@ -1294,4 +1294,4 @@ def test_t0943_other_model_and_missing_record_use_system_message(codex_ctx, tmp_
     envelope = codex_ctx.ctx_nudge_envelope(
         _t0943_hook_input(rollout, root, "UserPromptSubmit", _RECORD_MODEL), root)
     assert set(envelope) == {"systemMessage"}
-    assert envelope["systemMessage"].startswith("[ctx-budget]") and "ctx-apply" in envelope["systemMessage"]
+    assert envelope["systemMessage"].startswith("[ctx-budget]") and "`pm_config.py apply`" in envelope["systemMessage"]

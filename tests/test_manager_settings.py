@@ -31,7 +31,7 @@ import pytest
 from _manager_home import (
     _known_ctx_installation, conf_path, git_required, install_old_generation_engine, install_old_generation_key_registry,
     install_previous_generation_key_registry, install_slow_engine, make_bare_with_tags,
-    make_pm_home, remove_engine_script, set_conf_key, tree_snapshot,
+    make_committed_source, make_pm_home, remove_engine_script, set_conf_key, tree_snapshot,
 )
 
 from manager import runner
@@ -65,29 +65,39 @@ with pm_import._local_conf_write_lock(conf):
 
 from _manager_home import _KNOWN_CTX_READER_PY
 
+# 사본 `pm_config.py` 자식 — 그 명령이 싣는 pm_import(직접 로드와 저장 본문 pm_update 경유 둘 다)의 모델
+# 한도 조회를 고정 값으로 바꾼다(`prepare`). 거부를 재는 테스트는 `install_fixture_capacity(pmi)` 줄을
+# 다른 준비로 바꾼다.
 _KNOWN_CTX_CHILD = _KNOWN_CTX_READER_PY + r"""
 import sys,importlib.util
 from pathlib import Path
 path=Path(sys.argv[1])
 spec=importlib.util.spec_from_file_location('ctx_fixture_entry',path)
 entry=importlib.util.module_from_spec(spec);spec.loader.exec_module(entry)
-if path.name=='pm_import.py':
-    install_fixture_capacity(entry)
-else:
-    original=entry._load_module
-    pmi=install_fixture_capacity(original('pm_import','pm_import.py'))
-    entry._load_module=lambda name,filename: pmi if name=='pm_import' else original(name,filename)
+def prepare(pmi):
+    install_fixture_capacity(pmi)
+    return pmi
+original=entry._load_module
+def load(name,filename):
+    module=original(name,filename)
+    if name=='pm_import':
+        return prepare(module)
+    if name=='pm_update':
+        loader=module._load_pm_import
+        module._load_pm_import=lambda: prepare(loader())
+    return module
+entry._load_module=load
 raise SystemExit(entry.main(sys.argv[2:]))
 """
 
 @pytest.fixture(autouse=True)
 def _known_ctx_child_reader(monkeypatch):
-    """`ctx-apply` 자식의 교체 스크립트 — 테스트가 `["child"]` 를 바꿔 다른 조회 결과를 준다."""
+    """사본 `apply` 자식의 교체 스크립트 — 테스트가 `["child"]` 를 바꿔 다른 조회 결과를 준다."""
     import manager.bridge_settings as bridge
     original=bridge._run
     holder={'child':_KNOWN_CTX_CHILD}
     def run(home,argv,**kwargs):
-        if 'ctx-apply' in argv:
+        if 'apply' in argv:
             argv=[argv[0],'-c',holder['child'],argv[1],*argv[2:]]
         return original(home,argv,**kwargs)
     monkeypatch.setattr(bridge,'_run',run)
@@ -103,6 +113,21 @@ def base_home(tmp_path_factory) -> Path:
 def pm_home(base_home, tmp_path) -> Path:
     home = tmp_path / "demo"
     shutil.copytree(base_home, home, symlinks=True)
+    return home
+
+
+@pytest.fixture(scope="module")
+def committed_base_home(tmp_path_factory) -> Path:
+    """커밋 소스로 설치한 PM 홈 한 벌 — 렌더 원본(upstream)이 설치 세대(`upstream.rev`) 그대로다."""
+    root = tmp_path_factory.mktemp("settings-committed")
+    source = make_committed_source(root / "source")
+    return make_pm_home(root / "demo", upstream=source, source=source)
+
+
+@pytest.fixture
+def committed_home(committed_base_home, tmp_path) -> Path:
+    home = tmp_path / "committed"
+    shutil.copytree(committed_base_home, home, symlinks=True)
     return home
 
 
@@ -284,7 +309,7 @@ def test_the_screen_value_after_a_save_is_the_requery_not_the_request(api, pm_ho
 def test_saving_an_unchanged_value_reports_no_change(api, pm_home):
     current = _values(pm_home)["test.cmd"]
     assert api.conf_save(str(pm_home), {"test.cmd": current})["changed"] is False
-    # 사용 한도 경로(사본 `ctx-apply`)도 같은 판정을 낸다 — conf 와 설정 파일 둘 다 그대로다.
+    # 사용 한도 키도 같은 사본 명령(`apply`)이 같은 판정을 낸다 — conf 와 설정 파일 둘 다 그대로다.
     ctx = api.conf_save(str(pm_home), {"ctx.compact_at_pct": _values(pm_home)["ctx.compact_at_pct"]})
     assert ctx["changed"] is False and ctx["applied"] == []
 
@@ -347,7 +372,7 @@ def test_a_save_that_cannot_reach_the_project_is_an_error_dict(api, tmp_path):
 
 
 def test_ctx_save_is_checked_before_write_and_reports_applied_lines(api, pm_home):
-    """T-0923 AT-020 — 사용 한도·압축 비율 저장은 그 사본의 `ctx-apply` 한 번이다.
+    """T-0923 AT-020 — 사용 한도·압축 비율 저장은 그 사본의 `apply` 한 번이다.
 
     검사를 통과하지 못한 값은 local.conf·설정 파일 어디에도 쓰이지 않고 오류 종류
     `invalid-value` 로 온다. 통과하면 설정 파일에서 바뀐 줄이 응답의 `applied` 로 온다.
@@ -381,7 +406,7 @@ def test_ctx_save_is_checked_before_write_and_reports_applied_lines(api, pm_home
     reset = api.conf_reset(str(pm_home), "ctx.compact_at_pct")
     assert reset["applied"] == [".claude/settings.json autoCompactWindow 170000 → 180000"]
 
-    # 사용 한도 키가 없는 저장은 지금 경로 그대로 — local.conf 밖 파일은 바뀌지 않는다.
+    # 어느 반영 묶음에도 없는 키의 저장은 local.conf 만 바꾼다.
     before = tree_snapshot(pm_home)
     plain = api.conf_save(str(pm_home), {"identity.user": "me@example.invalid"})
     assert plain["applied"] == []
@@ -390,10 +415,10 @@ def test_ctx_save_is_checked_before_write_and_reports_applied_lines(api, pm_home
             if before.get(name) != after.get(name)} == {".project_manager/local.conf"}
 
 
-def test_ctx_apply_crash_is_not_reported_as_invalid_value(api, pm_home):
-    """T-0923 F-004 — "잘못된 값"(`invalid-value`)은 사본의 검사 거부 전용 rc 3 뿐이다.
+def test_apply_crash_is_not_reported_as_invalid_value(api, pm_home):
+    """T-0923 F-004 — "잘못된 값"(`invalid-value`)은 사본의 반영 전 거부 전용 rc 3 뿐이다.
 
-    사본의 `ctx-apply` 가 처리하지 못한 예외로 끝나면 파이썬 종료 코드는 1 이고, 그것은 저장
+    사본의 `apply` 가 처리하지 못한 예외로 끝나면 파이썬 종료 코드는 1 이고, 그것은 저장
     오류(`old-generation`)다 — traceback 이 값 거부 문구처럼 화면 알림에 서면 안 된다. 예외는 실물로
     낸다: local.conf 가 UTF-8 이 아니면(한글 주석을 ANSI 로 저장한 파일) 사본이 conf 를 쓰는 자리에서
     멈춘다.
@@ -616,13 +641,11 @@ def test_t0943_budget_error_and_refused_reread(api, pm_home, _known_ctx_child_re
     무관한 저장은 그대로 된다."""
     (pm_home / ".project_manager/.local/ctx-budget.json").unlink()
     row = api.status(str(pm_home))["conf"]["ctx_budget"]["claude"]
-    assert row["status"] == "error" and "ctx-apply" in row["reason"]
+    assert row["status"] == "error" and "`pm_config.py apply`" in row["reason"]
 
     refuse = "(lambda *a, **k: (_ for _ in ()).throw(ValueError('조회 응답 없음')))"
     _known_ctx_child_reader["child"] = _KNOWN_CTX_CHILD.replace(
-        "install_fixture_capacity(entry)", f"entry._ctx_native_protocol={refuse}").replace(
-        "pmi=install_fixture_capacity(original('pm_import','pm_import.py'))",
-        f"pmi=original('pm_import','pm_import.py');pmi._ctx_native_protocol={refuse}")
+        "    install_fixture_capacity(pmi)\n", f"    pmi._ctx_native_protocol={refuse}\n")
     before = tree_snapshot(pm_home)
     refused = api.conf_save(str(pm_home), {"ctx.compact_at_pct": "94",
                                            "identity.user": "must-not-save@example.invalid"})
@@ -633,3 +656,57 @@ def test_t0943_budget_error_and_refused_reread(api, pm_home, _known_ctx_child_re
     after = tree_snapshot(pm_home)
     assert {name for name in set(before) | set(after) if before.get(name) != after.get(name)} == {
         ".project_manager/local.conf"}
+
+
+# ── ⑦ 저장 뒤 렌더 산출물 (T-0945) ─────────────────────────────────────────────
+# 저장은 키와 무관하게 사본 `pm-config apply` 한 번이다 — 렌더 입력 키는 `@render` 산출물을 설치
+# 세대 원본으로 다시 그리고, 반영 전 거부(rc 3)는 `invalid-value` 이며 트리를 바꾸지 않는다.
+
+_ARCHITECT_CARD = Path(".claude") / "agents" / "architect.md"
+
+
+def _card_lines(home: Path) -> list[str]:
+    return (home / _ARCHITECT_CARD).read_text(encoding="utf-8").splitlines()
+
+
+def test_delegate_save_rerenders_cards_through_copy(api, committed_home):
+    """AT-007 — 위임 키 저장 직후 카드가 저장 값으로 렌더돼 있다(다음 갱신을 기다리지 않는다)."""
+    assert 'effort: "high"' not in _card_lines(committed_home)
+
+    saved = api.conf_save(str(committed_home), {
+        "delegate.architect.harness": "claude", "delegate.architect.model": "opus",
+        "delegate.architect.reasoning": "high"})
+
+    assert "error" not in saved, saved
+    assert saved["applied"] == [".claude/agents/architect.md 다시 그림"], saved["applied"]
+    lines = _card_lines(committed_home)
+    assert 'effort: "high"' in lines and 'model: "opus"' in lines, "\n".join(lines[:8])
+    assert _values(committed_home)["delegate.architect.reasoning"] == "high"
+
+
+def test_refused_save_leaves_the_project_tree(api, committed_home):
+    """AT-008 — 렌더 검사에 걸린 저장은 `invalid-value` 이고 local.conf·카드 어느 것도 바뀌지 않는다."""
+    api.status(str(committed_home))            # 재조회가 세우는 런타임 잠금 파일까지 세운 뒤가 기준선
+    before = tree_snapshot(committed_home)
+
+    refused = api.conf_save(str(committed_home), {"delegate.architect.reasoning": "ultra"})
+
+    assert refused["error"]["kind"] == "invalid-value", refused
+    assert refused["error"]["rc"] == 3
+    assert "delegate.architect.reasoning=ultra" in refused["error"]["message"]
+    assert tree_snapshot(committed_home) == before
+
+
+def test_mixed_ctx_and_render_save_applies_both(api, committed_home):
+    """AT-009 — 사용 한도 키와 렌더 입력 키가 섞인 저장은 두 묶음을 함께 반영한다(거부·한쪽만 반영 없음)."""
+    saved = api.conf_save(str(committed_home), {"ctx.compact_at_pct": "85",
+                                                "delegate.architect.reasoning": "high"})
+
+    assert "error" not in saved, saved
+    assert saved["applied"] == [".claude/settings.json autoCompactWindow 180000 → 170000",
+                                ".claude/agents/architect.md 다시 그림"], saved["applied"]
+    assert 'effort: "high"' in _card_lines(committed_home)
+    settings = (committed_home / ".claude" / "settings.json").read_text(encoding="utf-8")
+    assert '"autoCompactWindow": 170000' in settings
+    values = _values(committed_home)
+    assert (values["ctx.compact_at_pct"], values["delegate.architect.reasoning"]) == ("85", "high")

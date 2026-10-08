@@ -313,7 +313,7 @@ def validate_relay_budget(budget: int, precompact_at_pct: int) -> None:
             f"{effective_threshold:g} tok은 bootstrap 실측 상한 "
             f"{RELAY_BOOTSTRAP_COST_TOKENS} tok 이하여서 즉시 세션 회전 위험. "
             "적용 한도는 사용 한도(`harness.<이름>.ctx_window_tokens`)와 모델 가용 한도 중 작은 값입니다. "
-            "더 큰 모델을 쓰거나 `ctx.precompact_at_pct` 를 높인 뒤 `pm_config.py ctx-apply` 를 다시 실행하십시오."
+            "더 큰 모델을 쓰거나 `ctx.precompact_at_pct` 를 높인 뒤 `pm_config.py apply` 를 다시 실행하십시오."
         )
 
 # 위임/추가 리뷰 raw 위치 장부. 두 실행 표면이 같은 파일을 갱신하므로 파일락 아래

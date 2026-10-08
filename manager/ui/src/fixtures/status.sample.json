@@ -195,11 +195,11 @@
       },
       "codex": {
         "status": "error",
-        "reason": "codex 압축 한도 기록이 없습니다 (/projects/demo/.project_manager/.local/ctx-budget.json) — `pm_config.py ctx-apply` 를 다시 실행하십시오."
+        "reason": "codex 압축 한도 기록이 없습니다 (/projects/demo/.project_manager/.local/ctx-budget.json) — `pm_config.py apply` 를 다시 실행하십시오."
       },
       "opencode": {
         "status": "error",
-        "reason": "opencode 압축 한도 기록이 없습니다 (/projects/demo/.project_manager/.local/ctx-budget.json) — `pm_config.py ctx-apply` 를 다시 실행하십시오."
+        "reason": "opencode 압축 한도 기록이 없습니다 (/projects/demo/.project_manager/.local/ctx-budget.json) — `pm_config.py apply` 를 다시 실행하십시오."
       }
     },
     "missing_required": [],

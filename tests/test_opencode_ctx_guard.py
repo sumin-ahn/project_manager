@@ -2670,5 +2670,5 @@ def test_t0943_plugin_missing_record_toasts_error(tmp_path):
     result = _t0943_plugin_run(root, "ollama", "glm-5.2:cloud", 190000)
     assert result["system"] == []
     errors = [text for text in result["toasts"] if "[ctx-budget]" in text]
-    assert len(errors) == 1 and "압축 한도 기록이 없습니다" in errors[0] and "ctx-apply" in errors[0]
+    assert len(errors) == 1 and "압축 한도 기록이 없습니다" in errors[0] and "`pm_config.py apply`" in errors[0]
     assert "pendingBandBinding" not in _plugin_src() and "observedIdentity" not in _plugin_src()

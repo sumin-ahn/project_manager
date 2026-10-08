@@ -389,15 +389,20 @@ describe("저장", () => {
     expect(screen.getByTestId("save")).toBeDisabled();
   });
 
-  it("어댑터 카드에 박히는 키를 저장하면 갱신 탭 안내 한 줄이 뜬다", async () => {
-    const bridge = makeBridge();
+  it("저장 응답의 반영 줄은 결과 칸 하나에 서고 갱신 탭 안내 줄은 없다", async () => {
+    const applied = [".claude/agents/architect.md 다시 그림"];
+    const bridge = makeBridge({
+      conf_save: vi.fn(async () => ({ changed: true, conf: CONF, applied })),
+    } as Partial<Bridge>);
     mounted(bridge);
 
     fireEvent.change(screen.getByLabelText("runtime.py"), { target: { value: "python3.12" } });
     fireEvent.click(screen.getByTestId("save"));
 
-    await waitFor(() => expect(screen.getByTestId("settings-note"))
-      .toHaveTextContent("갱신 탭의 [적용]"));
+    await waitFor(() => expect(screen.getByTestId("settings-command"))
+      .toHaveTextContent(applied[0]));
+    expect(screen.getAllByTestId("settings-command")).toHaveLength(1);
+    expect(screen.queryByTestId("settings-note")).toBeNull();
   });
 
   it("자유 입력이 열리는 자리는 `test.<platform>.cmd` 한 군뿐이다", () => {

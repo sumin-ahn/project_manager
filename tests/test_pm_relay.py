@@ -1273,7 +1273,7 @@ def test_t0943_relay_budget_errors_without_default(orch, tmp_path, damage):
         conf = tmp_path / ".project_manager/local.conf"
         conf.write_text(conf.read_text(encoding="utf-8").replace("ctx.precompact_at_pct=90", "ctx.precompact_at_pct=abc"),
                         encoding="utf-8")
-    with pytest.raises(ValueError, match="ctx-apply"):
+    with pytest.raises(ValueError, match="`pm_config.py apply`"):
         orch.ctx_budget(tmp_path, "codex", None)
     with pytest.raises(TypeError):
         orch.validate_relay_budget(None, 90)

@@ -44,6 +44,11 @@ TOOLS = REPO / ".project_manager" / "tools"
 DELEGATE_TOKEN_RE = re.compile(r"\{\{(DELEGATE_[A-Z0-9_]+)\}\}")
 
 
+def _local_conf_of(pm_update, root):
+    """dest 의 local.conf 값 — 계획·렌더가 받는 conf (디스크 읽기는 호출 경계 한 번)."""
+    return pm_update._read_local_conf(Path(root) / ".project_manager" / "local.conf")
+
+
 def _load_tool(name: str):
     spec = importlib.util.spec_from_file_location(
         f"t0766_{name}", TOOLS / f"{name}.py"
@@ -377,13 +382,13 @@ def test_cards_render_local_conf_values_through_the_real_path(
     conf_text, expected = _conf_text(pm_render, tree.harness)
     _write_local_conf(dest, conf_text)
 
-    _operational, empty_keys = pm_update._operational_from_local_conf(dest)
+    _operational, empty_keys = pm_update._operational_from_local_conf(_local_conf_of(pm_update, dest))
     assert empty_keys == []
 
     for stem in _expected_stems(pm_render):
         relative = _instance_card_path(tree, stem)
         source = tree.directory(REPO) / f"{stem}{tree.suffix}"
-        rendered = pm_update._render_text(source, dest, card_path=relative)
+        rendered = pm_update._render_text(source, _local_conf_of(pm_update, dest), pm_update._load_pm_render(), card_path=relative)
         assert "{{" not in rendered, f"{relative}: 미해소 토큰 잔존"
         for field, token in _expected_tokens(pm_render, tree, stem).items():
             line = f"{field}{tree.assignment}\"{expected[token]}\""
@@ -420,7 +425,7 @@ def test_card_conf_mismatch_is_red_on_the_resolution_path(
             original_line, tree.field_line("model", "DELEGATE_MODEL_ARCHITECT")),
         encoding="utf-8",
     )
-    rendered = pm_update._render_text(swapped, dest, card_path=relative)
+    rendered = pm_update._render_text(swapped, _local_conf_of(pm_update, dest), pm_update._load_pm_render(), card_path=relative)
     developer_line = f"model{tree.assignment}\"{expected['DELEGATE_MODEL_DEVELOPER']}\""
     assert developer_line not in rendered, (
         "카드 토큰을 다른 역할 것으로 바꿨는데 해소 결과가 그대로다 — 값을 재지 않고 있다"
@@ -462,7 +467,7 @@ def test_unused_profile_neutralizes_model_and_reasoning_together(
     for stem in _expected_stems(pm_render):
         relative = _instance_card_path(tree, stem)
         source = tree.directory(REPO) / f"{stem}{tree.suffix}"
-        rendered = pm_update._render_text(source, dest, card_path=relative)
+        rendered = pm_update._render_text(source, _local_conf_of(pm_update, dest), pm_update._load_pm_render(), card_path=relative)
         assert "{{" not in rendered, f"{relative}: 중화 후에도 토큰 잔존"
         assert not card_fields & _active_card_fields(tree, rendered), (
             f"{relative}: 미사용 프로필인데 {sorted(card_fields)} 중 살아 있는 키가 있다"
@@ -512,7 +517,7 @@ def test_reasoning_token_on_a_format_without_reasoning_field_fails_loud(
             encoding="utf-8",
         )
         with pytest.raises(RuntimeError) as excinfo:
-            pm_update._render_text(injected, dest, card_path=relative)
+            pm_update._render_text(injected, _local_conf_of(pm_update, dest), pm_update._load_pm_render(), card_path=relative)
         assert type(excinfo.value).__name__ == "RenderLeakError", excinfo.value
         assert "DELEGATE_REASONING_DEVELOPER_HARD" in str(excinfo.value), (field, excinfo.value)
 
@@ -543,7 +548,7 @@ def test_empty_hard_model_fails_loud_with_the_conf_key(pm_render, pm_update, tmp
     """
     dest = tmp_path / "dest"
     _write_local_conf(dest, "delegate.developer.hard.model=\n")
-    operational, empty_keys = pm_update._operational_from_local_conf(dest)
+    operational, empty_keys = pm_update._operational_from_local_conf(_local_conf_of(pm_update, dest))
     assert empty_keys == ["DELEGATE_MODEL_DEVELOPER_HARD"]
 
     source = (REPO / ".claude/agents/developer-hard.md").read_text(encoding="utf-8")

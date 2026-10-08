@@ -27,6 +27,11 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 
+def _local_conf_of(pm_update, root):
+    """dest 의 local.conf 값 — 계획·렌더가 받는 conf (디스크 읽기는 호출 경계 한 번)."""
+    return pm_update._read_local_conf(Path(root) / ".project_manager" / "local.conf")
+
+
 def _load_board():
     """board.py 를 (패키지 아님) importlib 로 경로 로드 — test_board_multipm 와 동일."""
     spec = importlib.util.spec_from_file_location("board", TOOLS / "board.py")
@@ -459,7 +464,7 @@ def test_resolve_engine_sync_plan_applies_notation_rewrite_for_target_render_ent
         pm_render_module, source_root, dest_root, rendered=False)
 
     sync_plan = pm_update_module._resolve_engine_sync_plan(
-        dest_root, source_root, target="codex", report=False)
+        dest_root, source_root, target="codex", report=False, conf=_local_conf_of(pm_update_module, dest_root))
     changes = {str(rel): (kind, dst) for rel, _src, dst, kind in sync_plan["changes"]}
     assert _NOTATION_WIKI_REL in changes, "notation 토큰이 치환될 파일이 계획에 없다"
     kind, dst = changes[_NOTATION_WIKI_REL]

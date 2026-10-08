@@ -35,6 +35,11 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 
+def _local_conf_of(pm_update, root):
+    """dest 의 local.conf 값 — 계획·렌더가 받는 conf (디스크 읽기는 호출 경계 한 번)."""
+    return pm_update._read_local_conf(Path(root) / ".project_manager" / "local.conf")
+
+
 def _track_source_tree(root: Path) -> None:
     """pm-update tracked-only 출하 fixture를 임시 checkout으로 만든다."""
     subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
@@ -2164,7 +2169,7 @@ def test_combination_install_manifest_is_selected_tree_union(pm_import, pm_updat
 
     # 디렉터리 선언을 실제 파일로 펼친 관리 plan에도 opencode 산출물이 실린다.
     empty_dest = tmp_path / "empty-plan"
-    changes, missing = pm_update.plan(REPO, installed, dest_root=empty_dest)
+    changes, missing = pm_update.plan(REPO, installed, dest_root=empty_dest, conf=_local_conf_of(pm_update, empty_dest))
     opencode_files = {
         str(rel).replace("\\", "/")
         for rel, _src, _dst, _kind in changes
@@ -5215,7 +5220,7 @@ def test_add_harness_claude_guest_survives_pm_update_roundtrip(pm_import, pm_upd
     sh = pm_update.resolve_manifest_selfheal(oc, REPO)
     if sh["manifest"] is not None:
         manifest = sh["manifest"]
-    changes, _m = pm_update.plan(REPO, manifest, dest_root=oc)
+    changes, _m = pm_update.plan(REPO, manifest, dest_root=oc, conf=_local_conf_of(pm_update, oc))
     assert not any(str(r).replace("\\", "/") == ".project_manager/engine.manifest"
                    for r, _s, _d, _k in changes), "claude guest 절로 engine.manifest 영구 churn"
 

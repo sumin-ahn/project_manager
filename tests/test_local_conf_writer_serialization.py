@@ -149,8 +149,8 @@ LOCAL_CONF_WRITERS: dict[tuple[str, str], tuple[str, str]] = {
         (DELEGATES, "해소된 opencode 모델 기록"),
     ("pm_config.py", "cmd_upstream"):
         (DELEGATES, "`pm-config upstream set` → pm_import._write_conf_keys"),
-    ("pm_import.py", "_apply_harness_ctx"):
-        (HOLDS_LOCK, "한도 조회·기록·설정 파일 쓰기와 conf 키 쓰기가 공용 락 안 한 흐름"),
+    ("pm_update.py", "apply_conf"):
+        (HOLDS_LOCK, "제안 값→반영 단계 계획 전부→conf 키 쓰기→단계 기록이 공용 락 안 한 흐름"),
 }
 
 # conf 좌표로 인정하는 식별자 — 이 이름이 코드(주석·docstring 아님)에 실제로 등장해야 후보다.
@@ -1048,7 +1048,7 @@ def test_t0927_migration_lock_failure_precedes_baseline(t0927_old_adopter, t0927
 
 
 def test_t0932_commit_writer_lock_sensitivity():
-    source = _source_of('pm_import.py', '_apply_harness_ctx')
+    source = _source_of('pm_update.py', 'apply_conf')
     tree = ast.parse(source)
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and _called_name(n) == '_write_conf_keys_locked']
     assert calls

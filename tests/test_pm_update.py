@@ -32,6 +32,11 @@ TOOLS = REPO / ".project_manager" / "tools"
 SENTINEL_REL = ".project_manager/tools/__pm_update_upstream_sentinel__.py"
 
 
+def _local_conf_of(pm_update, root):
+    """dest 의 local.conf 값 — 계획·렌더가 받는 conf (디스크 읽기는 호출 경계 한 번)."""
+    return pm_update._read_local_conf(Path(root) / ".project_manager" / "local.conf")
+
+
 def _load_pm_update():
     spec = importlib.util.spec_from_file_location("pm_update", TOOLS / "pm_update.py")
     mod = importlib.util.module_from_spec(spec)
@@ -342,7 +347,7 @@ def test_missing_manifest_entry_keeps_existing_missing_report_path(
     changes, missing = pm_update.plan(
         source,
         [".project_manager/tools/absent.py"],
-        dest_root=tmp_path / "dest",
+        dest_root=tmp_path / "dest", conf=_local_conf_of(pm_update, tmp_path / "dest"),
     )
 
     assert changes == []
@@ -1142,7 +1147,7 @@ def test_plan_engine_manifest_self_prop_no_churn_with_guest_block(pm_update, tmp
         core.rstrip("\n") + "\n\n" + begin
         + "\n.codex/agents    @render @target-owned\n" + end + "\n", encoding="utf-8")
     manifest = [pm_update.ManifestEntry(MANIFEST_SELF_REL)]  # bare self-prop.
-    changes, _missing = pm_update.plan(source, manifest, dest_root=dest)
+    changes, _missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
     assert not any(str(r).replace("\\", "/") == MANIFEST_SELF_REL for r, _s, _d, _k in changes), \
         f"guest 절 때문에 engine.manifest 가 영구 churn(update): {changes}"
 
@@ -1162,7 +1167,7 @@ def test_plan_manifest_self_prop_no_churn_with_trailing_blank_upstream(pm_update
         core + begin + "\n.codex/agents    @render @target-owned\n" + end + "\n",
         encoding="utf-8")
     manifest = [pm_update.ManifestEntry(MANIFEST_SELF_REL)]
-    changes, _missing = pm_update.plan(source, manifest, dest_root=dest)
+    changes, _missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
     assert not any(str(r).replace("\\", "/") == MANIFEST_SELF_REL for r, _s, _d, _k in changes), \
         f"트레일링 블랭크 upstream 에서 engine.manifest churn(반복 update): {changes}"
 
@@ -1297,7 +1302,7 @@ def test_plan_manifest_self_prop_updates_on_legacy_guest_marker(pm_update, tmp_p
         encoding="utf-8")
     manifest = [pm_update.ManifestEntry(MANIFEST_SELF_REL)]
 
-    changes, _missing = pm_update.plan(source, manifest, dest_root=dest)
+    changes, _missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert any(str(r).replace("\\", "/") == MANIFEST_SELF_REL for r, _s, _d, _k in changes), \
         "옛 세대 마커 dest 가 계획에 안 실려 마이그레이션이 영영 도달하지 않는다"
@@ -1329,7 +1334,7 @@ def test_plan_multi_harness_manifest_updates_on_legacy_guest_marker(pm_update, t
     manifest = [pm_update.ManifestEntry(MANIFEST_SELF_REL)]
 
     changes, _missing = pm_update.plan(
-        source, manifest, dest_root=dest, manifest_source_text=core)
+        source, manifest, dest_root=dest, manifest_source_text=core, conf=_local_conf_of(pm_update, dest))
 
     assert any(str(r).replace("\\", "/") == MANIFEST_SELF_REL for r, _s, _d, _k in changes), \
         "합집합 분기에서 옛 세대 마커 dest 가 계획에 안 실림(마이그레이션 미도달)"
@@ -1352,7 +1357,7 @@ def test_plan_multi_harness_manifest_no_churn_with_current_marker(pm_update, tmp
     manifest = [pm_update.ManifestEntry(MANIFEST_SELF_REL)]
 
     changes, _missing = pm_update.plan(
-        source, manifest, dest_root=dest, manifest_source_text=core)
+        source, manifest, dest_root=dest, manifest_source_text=core, conf=_local_conf_of(pm_update, dest))
 
     assert not any(str(r).replace("\\", "/") == MANIFEST_SELF_REL for r, _s, _d, _k in changes), \
         f"현행 마커인데 합집합 분기가 영구 update(churn): {changes}"
@@ -2550,7 +2555,7 @@ def test_retirement_heals_and_moves_old_when_local_manifest_already_has_new(
     assert result["removed"] == []
     assert result["retired_removed"] == [_RETIRE_OLD]
     assert result["manifest"] is not None
-    changes, missing = pm_update.plan(source, result["manifest"], dest_root=dest)
+    changes, missing = pm_update.plan(source, result["manifest"], dest_root=dest, conf=_local_conf_of(pm_update, dest))
     assert missing == [], "검증된 OLD가 계획에 남아 source-missing으로 되돌아갔다"
     assert all(rel != _RETIRE_OLD for rel, *_rest in changes)
     pm_update.apply(changes)
@@ -3414,7 +3419,7 @@ def test_target_export_conditionally_renders_only_skill_entry_notation(
         manifest,
         dest_root=dest,
         render_enabled=False,
-        entry_notation_template=template_dir,
+        entry_notation_template=template_dir, conf=_local_conf_of(pm_update, dest),
     )
     assert not missing and len(changes) == 1
     assert changes[0][2].render is False
@@ -3448,7 +3453,7 @@ def test_target_export_wiring_sensitivity_identity_renderer_leaves_wrong_prefix(
         [pm_update.ManifestEntry(".claude/skills", render=True)],
         dest_root=dest,
         render_enabled=False,
-        entry_notation_template="codex",
+        entry_notation_template="codex", conf=_local_conf_of(pm_update, dest),
     )
     assert not missing
     pm_update.apply(changes)
@@ -3479,7 +3484,7 @@ def test_render_comparison_ignores_newline_notation_and_write_preserves_it(
         source,
         [pm_update.ManifestEntry("card.md", render=True)],
         dest_root=dest,
-        entry_notation_template="claude_code",
+        entry_notation_template="claude_code", conf=_local_conf_of(pm_update, dest),
     )
     assert not missing and changes == []
     assert dst.read_bytes() == b"/pm-bootstrap\r\n", "표기만 다른 dest 를 되썼다(churn)"
@@ -3490,7 +3495,7 @@ def test_render_comparison_ignores_newline_notation_and_write_preserves_it(
         source,
         [pm_update.ManifestEntry("card.md", render=True)],
         dest_root=dest,
-        entry_notation_template="claude_code",
+        entry_notation_template="claude_code", conf=_local_conf_of(pm_update, dest),
     )
     assert not missing and [(rel, kind) for rel, _, _, kind in changes] == [
         ("card.md", "update")
@@ -3512,7 +3517,7 @@ def test_render_write_uses_source_notation_for_new_destination(pm_update, tmp_pa
         source,
         [pm_update.ManifestEntry("card.md", render=True)],
         dest_root=dest,
-        entry_notation_template="claude_code",
+        entry_notation_template="claude_code", conf=_local_conf_of(pm_update, dest),
     )
     assert not missing and [(rel, kind) for rel, _, _, kind in changes] == [
         ("card.md", "new")
@@ -3536,7 +3541,7 @@ def test_render_comparison_treats_non_utf8_destination_as_update(pm_update, tmp_
         source,
         [pm_update.ManifestEntry("card.md", render=True)],
         dest_root=dest,
-        entry_notation_template="codex",
+        entry_notation_template="codex", conf=_local_conf_of(pm_update, dest),
     )
     assert not missing and len(changes) == 1 and changes[0][3] == "update"
     pm_update.apply(changes)
@@ -3573,6 +3578,7 @@ def test_multi_harness_render_preserves_per_entry_flavor(pm_update, tmp_path):
         entries,
         dest_root=broken_dest,
         entry_notation_template="opencode",  # 옛 first-manifest 전역 적용
+        conf=_local_conf_of(pm_update, broken_dest),
     )
     pm_update.apply(broken_changes)
     assert (broken_dest / ".agents/skills/pm-bootstrap/SKILL.md").read_text(
@@ -3584,7 +3590,7 @@ def test_multi_harness_render_preserves_per_entry_flavor(pm_update, tmp_path):
         source,
         entries,
         dest_root=dest,
-        entry_notation_templates=contexts,
+        entry_notation_templates=contexts, conf=_local_conf_of(pm_update, dest),
     )
     assert not missing
     pm_update.apply(changes)
@@ -3618,7 +3624,7 @@ def test_multi_harness_shared_path_combines_selected_flavors(pm_update, tmp_path
         source,
         pm_update.merge_manifest_sources([first, second])["entries"],
         dest_root=tmp_path / "dest",
-        entry_notation_templates=contexts,
+        entry_notation_templates=contexts, conf=_local_conf_of(pm_update, tmp_path / "dest"),
     )
     assert not missing
     pm_update.apply(changes)
@@ -3741,7 +3747,7 @@ def test_domain_template_planned_as_managed(pm_update, tmp_path):
     _track_source_tree(src)
 
     # manifest 에 domain/_template.md 만 둔 최소 plan — 동기 대상 인식만 검증.
-    changes, missing = pm_update.plan(src, [DOMAIN_TEMPLATE_REL], dest_root=dst)
+    changes, missing = pm_update.plan(src, [DOMAIN_TEMPLATE_REL], dest_root=dst, conf=_local_conf_of(pm_update, dst))
 
     assert missing == [], "domain/_template.md 가 source 에서 missing 으로 잡힘"
     planned = {rel: kind for rel, _sp, _dst, kind in changes}
@@ -3954,7 +3960,7 @@ def test_plan_specific_file_source_overrides_shared_directory_source(pm_update, 
     ]))
     _track_source_tree(source)
 
-    changes, missing = pm_update.plan(source, entries, dest_root=dest)
+    changes, missing = pm_update.plan(source, entries, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert missing == []
     assert [(rel, src, kind) for rel, src, _dst, kind in changes] == [
@@ -3980,7 +3986,7 @@ def test_plan_missing_specific_override_never_falls_back_to_shared_skill(pm_upda
     ]))
     _track_source_tree(source)
 
-    changes, missing = pm_update.plan(source, entries, dest_root=dest)
+    changes, missing = pm_update.plan(source, entries, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert changes == [], "specific source 부재 때 Claude shared skill로 silent fallback 하면 안 됨"
     assert missing == [override_dest]
@@ -4007,7 +4013,7 @@ def test_plan_specific_override_is_idempotent_not_replaced_by_parent(pm_update, 
     ]))
     _track_source_tree(source)
 
-    changes, missing = pm_update.plan(source, entries, dest_root=dest)
+    changes, missing = pm_update.plan(source, entries, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert missing == []
     assert changes == []
@@ -5833,7 +5839,7 @@ def test_plan_writes_template_to_board_when_separated(pm_update, tmp_path):
     _make_board_separated(dest)
 
     manifest = pm_update.read_manifest(source / ".project_manager" / "engine.manifest")
-    changes, missing = pm_update.plan(source, manifest, dest_root=dest)
+    changes, missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert missing == []
     rels = [c[0] for c in changes]
@@ -5854,7 +5860,7 @@ def test_plan_writes_template_to_wiki_when_legacy(pm_update, tmp_path):
     (dest / ".project_manager").mkdir(parents=True)  # board/ 없음 = legacy
 
     manifest = pm_update.read_manifest(source / ".project_manager" / "engine.manifest")
-    changes, missing = pm_update.plan(source, manifest, dest_root=dest)
+    changes, missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert missing == []
     rels = [c[0] for c in changes]
@@ -5877,7 +5883,7 @@ def test_plan_template_already_at_board_no_change(pm_update, tmp_path):
     board_tmpl.write_text((source / _TEMPLATE_REL).read_text(encoding="utf-8"), encoding="utf-8")
 
     manifest = pm_update.read_manifest(source / ".project_manager" / "engine.manifest")
-    changes, missing = pm_update.plan(source, manifest, dest_root=dest)
+    changes, missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert missing == []
     assert changes == [], f"board 위치에 동일 템플릿이 있는데 변경이 떴다(idempotent 깨짐): {changes}"
@@ -5986,7 +5992,7 @@ def test_self_update_propagates_engine_safety_hook_via_source_remap(pm_update, t
 
     # plan: dest=adopter·render_enabled=True(hook 은 .sh → @render 없어도 byte-copy). @source 라
     #   source_root/src_rel 읽고 dest 엔 dst_rel 로 기록(remap·root 어댑터엔 ctx 훅 부재 비대칭 해소).
-    changes, missing = pm_update.plan(upstream, entries, dest_root=adopter, render_enabled=True)
+    changes, missing = pm_update.plan(upstream, entries, dest_root=adopter, render_enabled=True, conf=_local_conf_of(pm_update, adopter))
     assert not missing, f"@source 소스가 upstream 에 실재하는데 missing(rc2 위험): {missing}"
     assert [c[0] for c in changes] == [dst_rel], f"dest remap 경로 불일치: {[c[0] for c in changes]}"
 
@@ -6016,7 +6022,7 @@ def test_self_update_bare_engine_file_propagates(pm_update, tmp_path):
     frozen.write_text("# OLD frozen tool\n", encoding="utf-8")
 
     entries = _manifest_entries(pm_update, [rel], tmp_path)  # bare (source_rel None → 루트 상대 = rel)
-    changes, missing = pm_update.plan(upstream, entries, dest_root=adopter, render_enabled=True)
+    changes, missing = pm_update.plan(upstream, entries, dest_root=adopter, render_enabled=True, conf=_local_conf_of(pm_update, adopter))
     assert not missing
     assert [c[0] for c in changes] == [rel]
     pm_update.apply(changes)
@@ -6034,7 +6040,7 @@ def test_source_remapped_hook_missing_source_reports_rc2_class(pm_update, tmp_pa
     dst_rel = ".claude/ctx_guard.py"
     src_rel = "templates/claude_code/.claude/ctx_guard.py"
     entries = _manifest_entries(pm_update, [f"{dst_rel}    @source={src_rel}"], tmp_path)
-    changes, missing = pm_update.plan(upstream, entries, dest_root=adopter, render_enabled=True)
+    changes, missing = pm_update.plan(upstream, entries, dest_root=adopter, render_enabled=True, conf=_local_conf_of(pm_update, adopter))
     assert changes == []
     assert missing == [dst_rel], f"@source 소스 부재가 missing(rc2 입력)으로 안 잡힘: {missing}"
     # @source 엔트리는 target_owned=False → main 이 skip 아닌 rc2(엔진 누락).
@@ -7855,7 +7861,7 @@ def test_delegate_harness_from_local_conf_reads_profile_harness(pm_update, tmp_p
         "",
     ]))
 
-    assert pm_update._delegate_harness_from_local_conf(dest) == {
+    assert pm_update._delegate_harness_from_local_conf(_local_conf_of(pm_update, dest)) == {
         "DELEGATE_MODEL_DEVELOPER": "claude",
         "DELEGATE_REASONING_DEVELOPER": "claude",
         "DELEGATE_MODEL_DEVELOPER_HARD": "codex",
@@ -7891,7 +7897,7 @@ def test_agent_card_renders_conf_model_through_local_conf(pm_update, tmp_path):
         "",
     ]))
 
-    operational, empty_keys = pm_update._operational_from_local_conf(dest)
+    operational, empty_keys = pm_update._operational_from_local_conf(_local_conf_of(pm_update, dest))
 
     assert empty_keys == []
     expected = {
@@ -7921,7 +7927,7 @@ def test_agent_card_unset_delegate_model_is_graceful_todo(pm_update, tmp_path):
     dest = tmp_path / "dest"
     _write_local_conf(dest, "project.name=Acme\ndelegate.researcher.model=haiku\n")
 
-    operational, empty_keys = pm_update._operational_from_local_conf(dest)
+    operational, empty_keys = pm_update._operational_from_local_conf(_local_conf_of(pm_update, dest))
     template_tree = REPO / "templates" / "claude_code" / ".claude" / "agents"
     rendered = pm_render.render_adapter(
         (template_tree / "developer.md").read_text(encoding="utf-8"),
@@ -7950,7 +7956,7 @@ def test_agent_card_empty_delegate_model_is_loud_leak(pm_update, tmp_path):
     dest = tmp_path / "dest"
     _write_local_conf(dest, "project.name=Acme\ndelegate.developer.model=\n")
 
-    operational, empty_keys = pm_update._operational_from_local_conf(dest)
+    operational, empty_keys = pm_update._operational_from_local_conf(_local_conf_of(pm_update, dest))
 
     assert empty_keys == ["DELEGATE_MODEL_DEVELOPER"]
     template_tree = REPO / "templates" / "claude_code" / ".claude" / "agents"
@@ -7999,7 +8005,7 @@ def test_render_text_claude_cards_render_conf_reasoning(pm_update, tmp_path):
     }
     for name, effort in expected.items():
         rendered = pm_update._render_text(
-            REPO / ".claude" / "agents" / name, dest, card_path=f".claude/agents/{name}")
+            REPO / ".claude" / "agents" / name, _local_conf_of(pm_update, dest), pm_update._load_pm_render(), card_path=f".claude/agents/{name}")
         assert _card_effort_line(rendered) == f'effort: "{effort}"', \
             f"{name} 의 effort 가 conf reasoning 으로 렌더되지 않았다"
         assert _card_model_line(rendered) == 'model: "opus"', name
@@ -8019,7 +8025,7 @@ def test_render_text_rejects_reasoning_outside_harness_ladder(pm_update, tmp_pat
     # 클래스 동일성 대신 base + 이름으로 잡는다.
     with pytest.raises(RuntimeError) as excinfo:
         pm_update._render_text(
-            REPO / ".claude" / "agents" / "architect.md", dest,
+            REPO / ".claude" / "agents" / "architect.md", _local_conf_of(pm_update, dest), pm_update._load_pm_render(),
             card_path=".claude/agents/architect.md")
     assert type(excinfo.value).__name__ == "RenderLeakError", excinfo.value
     assert "delegate.architect.reasoning=ultra" in str(excinfo.value)
@@ -8040,7 +8046,7 @@ def test_apply_writes_claude_card_effort_and_stops_outside_ladder(pm_update, tmp
     dest = tmp_path / "dest"
     conf = _write_local_conf(dest, "project.name=Acme\n" + _ADOPTER0_DELEGATE_CONF)
 
-    changes, missing = pm_update.plan(source, manifest, dest_root=dest)
+    changes, missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
     assert missing == []
     pm_update.apply(changes)
     card = dest / ".claude" / "agents" / "architect.md"
@@ -8052,7 +8058,7 @@ def test_apply_writes_claude_card_effort_and_stops_outside_ladder(pm_update, tmp
             "delegate.architect.reasoning=max", "delegate.architect.reasoning=ultra"),
         encoding="utf-8",
     )
-    changes, _missing = pm_update.plan(source, manifest, dest_root=dest)
+    changes, _missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
     with pytest.raises(RuntimeError) as excinfo:  # RenderLeakError (격리 로드·base 로 잡음)
         pm_update.apply(changes)
     assert type(excinfo.value).__name__ == "RenderLeakError", excinfo.value
@@ -8377,3 +8383,129 @@ def test_update_applies_limits_to_global_opencode_models(pm_update, tmp_path, mo
     assert models["gemma-t"]["limit"] == {"context": 2000000, "input": 200000, "output": 32000}
     assert "home-model" not in models and "config-dir-model" not in models
     assert global_file.read_bytes() == global_before, "opencode 전역 설정을 썼다"
+
+
+# ── T-0945 설정 저장 반영(`apply_conf`) — 키 묶음 표·설치 세대 원본·전부 그린 뒤 쓰기 ─────────
+# 실물 PM 홈(`make_committed_source` 커밋 소스로 설치·`upstream.rev` = 소스 HEAD)에서 잰다.
+
+_T0945_ARCHITECT_CARD = ".claude/agents/architect.md"
+
+
+def _t0945_home(tmp_path: Path, name: str = "home") -> tuple[Path, Path]:
+    """커밋 소스 하나와 그것으로 설치한 claude PM 홈 — (홈, 소스)."""
+    from _manager_home import make_committed_source, make_pm_home
+    source = make_committed_source(tmp_path / f"{name}-source")
+    return make_pm_home(tmp_path / name, upstream=source, source=source), source
+
+
+def _t0945_conf_lines(home: Path) -> list[str]:
+    return (home / ".project_manager" / "local.conf").read_text(encoding="utf-8").splitlines()
+
+
+def test_apply_conf_rerenders_render_outputs_with_proposed_conf(pm_update, tmp_path):
+    """AT-001 — 위임 키 저장이 local.conf 를 쓰고 그 값으로 카드를 다시 그린다(반영 줄 `다시 그림`)."""
+    home, _source = _t0945_home(tmp_path)
+    card = home / _T0945_ARCHITECT_CARD
+    assert 'effort: "high"' not in card.read_text(encoding="utf-8").splitlines()
+
+    result = pm_update.apply_conf(home, updates={
+        "delegate.architect.harness": "claude", "delegate.architect.model": "opus",
+        "delegate.architect.reasoning": "high"}, opencode_config_dir=tmp_path / "global")
+
+    lines = card.read_text(encoding="utf-8").splitlines()
+    assert 'model: "opus"' in lines and 'effort: "high"' in lines, "\n".join(lines[:8])
+    assert result.changed is True
+    assert f"{_T0945_ARCHITECT_CARD} 다시 그림" in result.applied, result.applied
+    assert "delegate.architect.reasoning=high" in _t0945_conf_lines(home)
+
+
+def test_apply_conf_refusal_leaves_tree_unchanged(pm_update, tmp_path):
+    """AT-002 — 렌더 검사 거부는 반영 전 거부다: local.conf·카드 어느 것도 바뀌지 않는다."""
+    from _manager_home import tree_snapshot
+    home, _source = _t0945_home(tmp_path)
+    before = tree_snapshot(home)
+
+    with pytest.raises(pm_update.ConfApplyError) as caught:
+        pm_update.apply_conf(home, updates={
+            "delegate.architect.harness": "claude", "delegate.architect.model": "opus",
+            "delegate.architect.reasoning": "ultra"}, opencode_config_dir=tmp_path / "global")
+
+    assert caught.value.write_stage is False and caught.value.written == ()
+    assert "delegate.architect.reasoning=ultra" in str(caught.value)
+    assert tree_snapshot(home) == before
+
+
+def test_apply_conf_refuses_render_when_source_moved(pm_update, tmp_path):
+    """AT-003 — 렌더 원본이 설치 세대(`upstream.rev`)와 다르면 렌더 단계가 걸린 저장은 거부(fetch 없음).
+
+    렌더 단계가 걸리지 않는 키(어느 묶음에도 없는 키)의 저장은 원본 세대와 무관하게 local.conf 만 쓴다.
+    인자 없는 반영도 렌더 단계를 포함하므로 같은 거부다."""
+    from _manager_home import _git, tree_snapshot
+    home, source = _t0945_home(tmp_path)
+    _git("-C", str(source), "commit", "-q", "--allow-empty", "-m", "moved")
+    before = tree_snapshot(home)
+
+    for updates in ({"delegate.architect.reasoning": "high"}, None):
+        with pytest.raises(pm_update.ConfApplyError, match="upstream.rev") as caught:
+            pm_update.apply_conf(home, updates=updates, opencode_config_dir=tmp_path / "global")
+        assert caught.value.write_stage is False
+        assert tree_snapshot(home) == before, updates
+
+    result = pm_update.apply_conf(home, updates={"identity.user": "tester"},
+                                  opencode_config_dir=tmp_path / "global")
+    after = tree_snapshot(home)
+    assert result == pm_update.ConfApplyResult(True, ())
+    assert {name for name in set(before) | set(after) if before.get(name) != after.get(name)} == {
+        ".project_manager/local.conf"}
+    assert "identity.user=tester" in _t0945_conf_lines(home)
+
+
+def test_apply_renders_every_render_change_before_writing(pm_update, tmp_path):
+    """AT-004 — 갱신 `apply` 는 render change 전부를 그린 뒤에만 쓴다.
+
+    정렬상 마지막 카드(researcher)의 추론 값이 허용값 밖이면, 앞 카드 넷도 바뀌지 않은 채
+    RenderLeakError 로 멈춘다(앞 카드만 새 값으로 바뀐 반쪽 트리가 남지 않는다)."""
+    source = tmp_path / "src"
+    shutil.copytree(REPO / ".claude" / "agents", source / ".claude" / "agents")
+    manifest_file = source / ".project_manager" / "engine.manifest"
+    manifest_file.parent.mkdir(parents=True)
+    manifest_file.write_text(".claude/agents    @render\n", encoding="utf-8")
+    _track_source_tree(source)
+    manifest = pm_update.read_manifest(manifest_file)
+    dest = tmp_path / "dest"
+    conf = _write_local_conf(dest, "project.name=Acme\n" + _ADOPTER0_DELEGATE_CONF)
+    changes, missing = pm_update.plan(source, manifest, dest_root=dest,
+                                      conf=_local_conf_of(pm_update, dest))
+    assert missing == []
+    pm_update.apply(changes)
+    cards = sorted((dest / ".claude" / "agents").glob("*.md"))
+    assert [card.name for card in cards][-1] == "researcher.md" and len(cards) == 5
+    settled = {card.name: card.read_bytes() for card in cards}
+
+    conf.write_text("project.name=Acme\n" + _ADOPTER0_DELEGATE_CONF.replace(
+        "model=opus", "model=sonnet").replace(
+        "delegate.researcher.reasoning=high", "delegate.researcher.reasoning=ultra"), encoding="utf-8")
+    changes, _missing = pm_update.plan(source, manifest, dest_root=dest,
+                                       conf=_local_conf_of(pm_update, dest))
+    assert sorted(Path(str(rel)).name for rel, _sp, _dst, _kind in changes) == sorted(settled)
+
+    with pytest.raises(RuntimeError) as caught:  # RenderLeakError (격리 로드·base 로 잡음)
+        pm_update.apply(changes)
+    assert type(caught.value).__name__ == "RenderLeakError", caught.value
+    assert "delegate.researcher.reasoning=ultra" in str(caught.value)
+    assert {card.name: card.read_bytes() for card in cards} == settled
+
+
+def test_conf_apply_key_groups_are_disjoint(pm_update):
+    """키 묶음 두 판정은 교집합이 없다 — 한 키가 두 반영 단계에 동시에 걸리지 않는다."""
+    pm_import = pm_update._load_pm_import()
+    render_keys = pm_update.render_input_conf_keys()
+    local_conf = pm_update._load_local_conf()
+    ctx_keys = set(local_conf.CTX_INPUT_KEYS)
+    assert len(render_keys) == 22, sorted(render_keys)
+    assert all(pm_import.is_harness_ctx_input_key(key) for key in ctx_keys)
+    assert not any(pm_import.is_harness_ctx_input_key(key) for key in render_keys)
+    assert not render_keys & ctx_keys
+    assert [step.key_filter(pm_import)("ctx.compact_at_pct") for step in pm_update.CONF_APPLY_STEPS] == [True, False]
+    assert [step.key_filter(pm_import)("delegate.architect.harness")
+            for step in pm_update.CONF_APPLY_STEPS] == [False, True]
