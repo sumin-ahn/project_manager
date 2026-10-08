@@ -1235,6 +1235,13 @@ def test_t0949_apply_reread_refuses_unwritten_value(pm_import, tmp_path, monkeyp
     assert _t0943_watched(root) == before
 
 
+def test_t0949_bool_is_not_integer_one(pm_import):
+    """F-001 — 같음 규칙은 bool 을 정수로 보지 않는다. 파이썬에서 `True == 1` 이라 bool 검사가 판정을 바꾸는
+    기록 값은 1 뿐이다: 설정 파일 true · 기록 1 은 다름, 설정 파일 1 · 기록 1 은 같음."""
+    assert pm_import._harness_ctx_same(True, True, 1) is False
+    assert pm_import._harness_ctx_same(True, 1, 1) is True
+
+
 def _t0949_set_jsonc(pm_import, root: Path, relpath: str, path: tuple[str, ...], value) -> None:
     """엔진 JSONC 편집기로 값 하나를 쓴다(없던 경로는 만든다)."""
     target = root / relpath
