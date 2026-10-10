@@ -8190,6 +8190,57 @@ def _ctx_record_unchanged(path: Path, record: dict) -> bool:
     return isinstance(previous, dict) and {**previous, "applied_at": None} == {**record, "applied_at": None}
 
 
+def _ctx_basis_text(model: dict) -> str:
+    """모델 가용 한도의 출처 한 줄 (관리자 표시용) — 읽기가 확인한 출처 형식(`local_conf._CTX_BASIS_FORMS`)으로 고른다."""
+    basis = model["basis"]
+    if "auto_compact_threshold" in basis:
+        return (f"Claude Code 조회 · 모델 창 {basis['model_window']:,} − 압축 예약 "
+                f"{basis['model_window'] - basis['auto_compact_threshold']:,}")
+    if "percent" in basis:
+        window = basis["model_context_window"] or basis["context_window"]
+        maximum = f" · 최대 {basis['max_context_window']:,}" if basis["max_context_window"] else ""
+        return f"Codex 모델 목록 · 창 {window:,}{maximum} × {basis['percent']}%"
+    limit = f"입력 한도 {basis['input']:,} · " if basis.get("input") else ""
+    return (f"{_load_local_conf()._ctx_model_name(model)} · {limit}창 {basis['context']:,} − 출력 "
+            f"{basis['output']:,} ({basis['source']})")
+
+
+def ctx_budget_status(dest_root, values) -> dict:
+    """상태 조회·관리자 표시 — 도구마다 `{"status": "ok", …}` 또는 `{"status": "error", "reason"}`.
+
+    ok 항목의 `settings_mismatch` 는 기록 `settings` 중 설정 파일 값이 다른 경로의 `{"path", "file",
+    "record"}` 목록이다(키가 없으면 `file` 은 None, 모두 같으면 빈 목록 · 순서는 기록 순서). 설정 파일은
+    반영과 같은 판독으로 읽고 같음 규칙도 반영 재판독과 같다(`_harness_ctx_same`). 모델 한도를 조회하지
+    않고 파일을 쓰지 않는다. 기록 오류는 설정 파일을 읽지 않은 error, 설정 파일을 읽거나 풀지 못하면
+    그 도구만 error(사유는 그 파일과 원인)다."""
+    module = _load_local_conf()
+    jsonc = _harness_ctx_jsonc_seam()
+    result = {}
+    for harness in module.CTX_HARNESSES:
+        relpath = HARNESS_CTX_FILES[harness]
+        try:
+            record, entry = module._ctx_record_entry(dest_root, values, harness)
+        except module.CtxBudgetError as exc:
+            result[harness] = {"status": "error", "reason": str(exc)}
+            continue
+        try:
+            document = _harness_ctx_parse(
+                relpath, _harness_ctx_read_text(Path(dest_root) / relpath, relpath), jsonc)
+        except HarnessCtxError as exc:
+            result[harness] = {"status": "error", "reason": " ".join(exc.violations)}
+            continue
+        mismatch = []
+        for dotted, value in entry["settings"].items():
+            present, actual = _document_key_value_path(document, _harness_ctx_path(dotted))
+            if not _harness_ctx_same(present, actual, value):
+                mismatch.append({"path": dotted, "file": actual if present else None, "record": value})
+        smallest = min(entry["models"], key=lambda model: model["C"])
+        result[harness] = {"status": "ok", **module._ctx_budget_view(record, entry, harness, None),
+                           "C": entry["C"], "basis_text": _ctx_basis_text(smallest),
+                           "settings_mismatch": mismatch}
+    return result
+
+
 def _harness_ctx_entry(dest_root: Path, harness: str, values, documents: list, models: dict) -> dict:
     """도구 기록 항목 — 모델 행·W·C·E·P·경고 지점. 조회 결과가 대상과 다르거나 설정 형식이 받지
     않는 값이면 `HarnessCtxError`."""
@@ -8635,6 +8686,12 @@ def _harness_ctx_dotted(path: tuple[str, ...]) -> str:
     return ".".join(_harness_ctx_path_segment(segment) for segment in path)
 
 
+def _harness_ctx_path(dotted: str) -> tuple[str, ...]:
+    """`_harness_ctx_dotted` 의 역표기 — 큰따옴표로 감싼 조각은 점에서 가르지 않는다.
+    큰따옴표가 든 조각은 표기 규칙이 구분하지 못해 되돌리지 못한다(모델 id 에 큰따옴표가 없다는 전제)."""
+    return tuple(quoted or bare for quoted, bare in re.findall(r'"([^"]*)"|([^.]+)', dotted))
+
+
 def _harness_ctx_edit(relpath: str, text: str, entries: dict[tuple[str, ...], int],
                       jsonc) -> tuple[str, list[str]]:
     """관리 키를 목표값으로 고친 텍스트와 바뀐 줄 — 결과를 다시 읽어 값을 확인한다."""
@@ -8653,11 +8710,17 @@ def _harness_ctx_edit(relpath: str, text: str, entries: dict[tuple[str, ...], in
     document = _harness_ctx_parse(relpath, text, jsonc)
     for path, value in entries.items():
         present, actual = _document_key_value_path(document, path)
-        if not present or isinstance(actual, bool) or actual != value:
+        if not _harness_ctx_same(present, actual, value):
             raise HarnessCtxError([
                 f"{relpath}: 반영 결과를 다시 읽었더니 `{_harness_ctx_dotted(path)}` 가 {value} 가 "
                 "아닙니다 — 파일을 쓰지 않았습니다."])
     return text, lines
+
+
+def _harness_ctx_same(present: bool, actual: object, value: int) -> bool:
+    """설정 문서에서 찾은 값이 반영 목표 정수와 같은가 — bool 은 정수로 보지 않는다.
+    반영의 재판독(`_harness_ctx_edit`)과 상태 비교(`ctx_budget_status`)가 함께 쓴다."""
+    return present and not isinstance(actual, bool) and actual == value
 
 
 def _document_key_value_path(document: dict, path: tuple[str, ...]) -> tuple[bool, object]:

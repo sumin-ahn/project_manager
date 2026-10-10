@@ -826,7 +826,7 @@ def test_t0943_reader_value_survives_time_cache_environment_and_path(pm_import, 
     later = {harness: local_conf.read_ctx_budget(root, values, harness) for harness in local_conf.CTX_HARNESSES}
     for harness in local_conf.CTX_HARNESSES:
         assert {**later[harness], "applied_at": None} == {**first[harness], "applied_at": None}, harness
-    assert all(row["status"] == "ok" for row in local_conf.ctx_budget_status(root, values).values())
+    assert all(row["status"] == "ok" for row in pm_import.ctx_budget_status(root, values).values())
 
 
 @pytest.mark.parametrize("damage", ["missing", "broken", "schema4", "tool", "window", "ratio", "basis", "basis-type"])
@@ -856,7 +856,7 @@ def test_t0943_reader_errors_name_the_apply_command(pm_import, local_conf, tmp_p
         values = {**values, "ctx.compact_at_pct": "93"}
     with pytest.raises(local_conf.CtxBudgetError, match="`pm_config.py apply`"):
         local_conf.read_ctx_budget(root, values, "claude", "claude-opus-5-5")
-    status = local_conf.ctx_budget_status(root, values)["claude"]
+    status = pm_import.ctx_budget_status(root, values)["claude"]
     assert status == {"status": "error", "reason": status["reason"]}
     assert "`pm_config.py apply`" in status["reason"]
 
@@ -889,7 +889,7 @@ def test_t0943_reader_accepts_every_basis_form(pm_import, local_conf, tmp_path, 
     record["harnesses"]["claude"]["models"][0]["basis"] = basis
     path.write_text(json.dumps(record), encoding="utf-8")
     assert local_conf.read_ctx_budget(root, values, "claude")["E"] == 600000
-    status = local_conf.ctx_budget_status(root, values)["claude"]
+    status = pm_import.ctx_budget_status(root, values)["claude"]
     assert status["status"] == "ok" and status["basis_text"]
 
 
@@ -1112,7 +1112,7 @@ def test_t0943_opencode_target_minimum_and_output_cap(local_conf, tmp_path, monk
     assert len(limits) == 5 and all(limit["input"] == 200000 for limit in limits)
     assert document["provider"]["ollama"]["models"]["qwen3.8:27b-unc"]["limit"] == {
         "context": 262144, "input": 200000, "output": 32000}
-    text = local_conf.ctx_budget_status(root, local_conf.load(root / ".project_manager/local.conf").values)[
+    text = engine.ctx_budget_status(root, local_conf.load(root / ".project_manager/local.conf").values)[
         "opencode"]["basis_text"]
     assert text == f"ollama/qwen3.8:27b-unc · 창 262,144 − 출력 {output:,} ({ollama.origin})"
 
@@ -1131,3 +1131,166 @@ def test_t0943_opencode_one_unread_model_refuses_all(local_conf, tmp_path, monke
     finally:
         ollama.close()
     assert "lmstudio/local-x" in str(caught.value) and _t0943_watched(root) == before
+
+
+# ── T-0949 설정 파일 값과 기록 settings 의 차이 ───────────────────────────────
+# 반영(`_t0943_applied`)이 쓴 설정 파일의 값 리터럴을 한 곳 바꿔 차이를 만든다. 상태 조회는 모델 한도를
+# 조회하지 않고(교체 지점 4개가 불리면 실패) 아무 파일도 쓰지 않는다.
+
+T0949_LOOKUPS = ("_read_harness_ctx_metadata", "_ctx_claude_threshold", "_ctx_native_protocol", "_ctx_ollama_show")
+T0949_GLM_INPUT = 'provider.ollama.models."glm-5.2:cloud".limit.input'
+
+
+def _t0949_no_lookup(pm_import, monkeypatch) -> None:
+    for name in T0949_LOOKUPS:
+        monkeypatch.setattr(pm_import, name, lambda *args, _name=name, **kwargs: pytest.fail(f"상태 조회가 {_name} 를 불렀다"))
+
+
+def _t0949_rewrite(root: Path, relpath: str, old: str, new: str) -> None:
+    """반영 결과 리터럴 한 곳을 바꾼다 — 그 리터럴이 파일에 정확히 한 번 있어야 한다."""
+    path = root / relpath
+    text = path.read_text(encoding="utf-8")
+    assert text.count(old) == 1, (relpath, old)
+    path.write_text(text.replace(old, new), encoding="utf-8")
+
+
+def _t0949_status(pm_import, root: Path, values) -> dict:
+    """상태 조회 한 번 — 전후로 설정 파일 3개·local.conf·기록 바이트가 같다."""
+    before = _t0943_watched(root)
+    status = pm_import.ctx_budget_status(root, values)
+    assert _t0943_watched(root) == before
+    return status
+
+
+@pytest.mark.parametrize("harness, relpath, old, new, path, file_value, record_value", [
+    ("claude", ".claude/settings.json", '"autoCompactWindow": 597000', '"autoCompactWindow": 600000',
+     "autoCompactWindow", 600000, 597000),
+    ("codex", ".codex/config.toml", "model_auto_compact_token_limit = 535800",
+     "model_auto_compact_token_limit = 600000", "model_auto_compact_token_limit", 600000, 535800),
+    ("opencode", ".opencode/opencode.jsonc", '"input": 200000', '"input": 210000',
+     T0949_GLM_INPUT, 210000, 200000),
+])
+def test_t0949_settings_mismatch_each_tool(pm_import, local_conf, tmp_path, monkeypatch, harness, relpath, old, new,
+                                           path, file_value, record_value):
+    """AT-001 — 반영 직후 세 도구 모두 빈 목록이고, 한 도구의 값을 바꾸면 그 도구만 경로·파일 값·기록 값 한 건."""
+    root, values = _t0943_applied(pm_import, local_conf, tmp_path, monkeypatch)
+    _t0949_no_lookup(pm_import, monkeypatch)
+    untouched = _t0949_status(pm_import, root, values)
+    assert {name: row["status"] for name, row in untouched.items()} == dict.fromkeys(local_conf.CTX_HARNESSES, "ok")
+    assert {name: row["settings_mismatch"] for name, row in untouched.items()} == dict.fromkeys(
+        local_conf.CTX_HARNESSES, [])
+
+    _t0949_rewrite(root, relpath, old, new)
+    status = _t0949_status(pm_import, root, values)
+    assert status[harness]["settings_mismatch"] == [{"path": path, "file": file_value, "record": record_value}]
+    assert {name: row["settings_mismatch"] for name, row in status.items() if name != harness} == dict.fromkeys(
+        set(local_conf.CTX_HARNESSES) - {harness}, [])
+    # 차이는 오류가 아니다 — 기존 표시 필드 값은 그대로이고 차이 목록만 더한다.
+    assert {key: value for key, value in status[harness].items() if key != "settings_mismatch"} == {
+        key: value for key, value in untouched[harness].items() if key != "settings_mismatch"}
+
+
+def test_t0949_absent_bool_and_unreadable(pm_import, local_conf, tmp_path, monkeypatch):
+    """AT-002 — 키가 없으면 `file` null, bool 은 정수로 보지 않는다. 풀지 못하는 설정 파일은 그 도구만 error 이고
+    사유는 그 파일과 원인이다(반영 머리말 없음)."""
+    root, values = _t0943_applied(pm_import, local_conf, tmp_path, monkeypatch)
+    _t0949_no_lookup(pm_import, monkeypatch)
+    _t0949_rewrite(root, ".codex/config.toml", "model_auto_compact_token_limit = 535800\n", "")
+    _t0949_rewrite(root, ".claude/settings.json", '"autoCompactWindow": 597000', '"autoCompactWindow": true')
+    status = _t0949_status(pm_import, root, values)
+    assert status["codex"]["settings_mismatch"] == [
+        {"path": "model_auto_compact_token_limit", "file": None, "record": 535800}]
+    assert status["claude"]["settings_mismatch"] == [{"path": "autoCompactWindow", "file": True, "record": 597000}]
+    assert status["opencode"]["settings_mismatch"] == []
+
+    codex = root / ".codex/config.toml"
+    codex.write_text("<<<<<<< HEAD\n" + codex.read_text(encoding="utf-8"), encoding="utf-8")
+    status = _t0949_status(pm_import, root, values)
+    assert set(status["codex"]) == {"status", "reason"} and status["codex"]["status"] == "error"
+    assert status["codex"]["reason"].startswith(".codex/config.toml 를 풀지 못했습니다"), status["codex"]["reason"]
+    assert "반영하지 않았습니다" not in status["codex"]["reason"]
+    assert status["claude"]["status"] == "ok" and status["opencode"]["status"] == "ok"
+
+
+def test_t0949_apply_reread_refuses_unwritten_value(pm_import, tmp_path, monkeypatch):
+    """AT-003 — 같음 규칙(`_harness_ctx_same`)을 반영 재판독과 함께 쓴다. 값을 쓰지 않는 JSONC 편집 대역으로
+    반영하면 재판독이 거부하고 어떤 파일도 바뀌지 않는다."""
+    _t0943_seams(pm_import, monkeypatch)
+    root = _project(tmp_path, harnesses=("claude",), conf=T0943_CONF)
+    real = pm_import._harness_ctx_jsonc_seam()
+
+    class Unwritten:
+        _mask_jsonc_comments = staticmethod(real._mask_jsonc_comments)
+        _strip_jsonc_trailing_commas = staticmethod(real._strip_jsonc_trailing_commas)
+
+        @staticmethod
+        def _jsonc_set_value(text, path, value):
+            return text, None
+
+    monkeypatch.setattr(pm_import, "_harness_ctx_jsonc_seam", lambda: Unwritten)
+    before = _t0943_watched(root)
+    with pytest.raises(pm_import.HarnessCtxError) as caught:
+        _apply(pm_import, root, _global_dir(tmp_path))
+    assert "반영 결과를 다시 읽었더니" in str(caught.value) and "autoCompactWindow" in str(caught.value)
+    assert _t0943_watched(root) == before
+
+
+def test_t0949_bool_is_not_integer_one(pm_import):
+    """F-001 — 같음 규칙은 bool 을 정수로 보지 않는다. 파이썬에서 `True == 1` 이라 bool 검사가 판정을 바꾸는
+    기록 값은 1 뿐이다: 설정 파일 true · 기록 1 은 다름, 설정 파일 1 · 기록 1 은 같음."""
+    assert pm_import._harness_ctx_same(True, True, 1) is False
+    assert pm_import._harness_ctx_same(True, 1, 1) is True
+
+
+def _t0949_set_jsonc(pm_import, root: Path, relpath: str, path: tuple[str, ...], value) -> None:
+    """엔진 JSONC 편집기로 값 하나를 쓴다(없던 경로는 만든다)."""
+    target = root / relpath
+    text, _old = pm_import._harness_ctx_jsonc_seam()._jsonc_set_value(target.read_text(encoding="utf-8"), path, value)
+    target.write_text(text, encoding="utf-8")
+
+
+@pytest.mark.parametrize("case", ["string", "float-equal", "other-key", "unrecorded-model", "parent-not-object",
+                                  "missing-file", "not-utf8", "not-object", "record-missing"])
+def test_t0949_file_state_matrix(pm_import, local_conf, tmp_path, monkeypatch, case):
+    """T-0949 열거 — 판독 실패·키 없음·bool(AT-002)·같음·다름 밖의 설정 파일 상태. 기록에 없는 경로·다른 키는
+    비교하지 않고, 판독 실패는 차이 없음으로 접히지 않는다. 기록 오류이면 설정 파일을 읽지 않는다."""
+    root, values = _t0943_applied(pm_import, local_conf, tmp_path, monkeypatch)
+    _t0949_no_lookup(pm_import, monkeypatch)
+    claude, opencode = ".claude/settings.json", ".opencode/opencode.jsonc"
+    expected_claude: object = []
+    if case == "string":
+        _t0949_rewrite(root, claude, '"autoCompactWindow": 597000', '"autoCompactWindow": "597000"')
+        expected_claude = [{"path": "autoCompactWindow", "file": "597000", "record": 597000}]
+    elif case == "float-equal":
+        _t0949_rewrite(root, claude, '"autoCompactWindow": 597000', '"autoCompactWindow": 597000.0')
+    elif case == "other-key":
+        _t0949_set_jsonc(pm_import, root, claude, ("env", "UNRELATED_KEY"), "1")
+    elif case == "unrecorded-model":
+        _t0949_set_jsonc(pm_import, root, opencode, ("provider", "ollama", "models", "new-model", "limit", "input"), 1)
+    elif case == "parent-not-object":
+        _t0949_set_jsonc(pm_import, root, opencode, ("compaction",), 3)
+    elif case == "missing-file":
+        (root / claude).unlink()
+        expected_claude = ".claude/settings.json 를 읽지 못했습니다"
+    elif case == "not-utf8":
+        (root / claude).write_bytes((root / claude).read_bytes().replace(b"{", "{\"한\": 1,".encode("cp949"), 1))
+        expected_claude = ".claude/settings.json 가 UTF-8 이 아닙니다"
+    elif case == "not-object":
+        (root / claude).write_text("[]", encoding="utf-8")
+        expected_claude = ".claude/settings.json 의 최상위가 객체가 아닙니다"
+    else:
+        (root / local_conf.CTX_BUDGET_RELPATH).unlink()
+        (root / claude).unlink()
+        expected_claude = "압축 한도 기록이 없습니다"
+    status = _t0949_status(pm_import, root, values)
+    if isinstance(expected_claude, list):
+        assert status["claude"]["status"] == "ok" and status["claude"]["settings_mismatch"] == expected_claude
+    else:
+        assert set(status["claude"]) == {"status", "reason"} and status["claude"]["status"] == "error"
+        assert status["claude"]["reason"].startswith(expected_claude), status["claude"]["reason"]
+        assert "반영하지 않았습니다" not in status["claude"]["reason"]
+    if case == "parent-not-object":
+        assert status["opencode"]["settings_mismatch"] == [
+            {"path": "compaction.reserved", "file": None, "record": 12000}]
+    elif case != "record-missing":
+        assert status["opencode"]["settings_mismatch"] == [] and status["codex"]["settings_mismatch"] == []
