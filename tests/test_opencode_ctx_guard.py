@@ -2675,7 +2675,8 @@ def _t0943_project(tmp_path: Path) -> Path:
 
 def _t0943_plugin_run(root: Path, provider: str, model: str, tokens: int) -> dict:
     proc = subprocess.run([_NODE, "-e", _T0943_SCRIPT, provider, model, str(tokens)],
-                          cwd=str(root / ".opencode" / "lib"), capture_output=True, text=True, timeout=30)
+                          cwd=str(root / ".opencode" / "lib"), capture_output=True, text=True,
+                          encoding="utf-8", timeout=30)
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout.strip().splitlines()[-1])
 

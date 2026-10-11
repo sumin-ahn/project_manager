@@ -7733,7 +7733,8 @@ def review_resolution_input_problem(ticket_text: str, rounds: Sequence) -> str |
         key=lambda item: item.ordinal,
     )
     if not reviews:
-        frontmatter, _body = _load_board()._parse_ticket_text(ticket_text, "<티켓 명세>")
+        frontmatter, _body = _load_board()._parse_ticket_text(
+            _normalized_newlines(ticket_text), "<티켓 명세>")
         if frontmatter.get("tier") == PM_DIRECT_TIER:
             return None
         return (

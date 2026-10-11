@@ -2174,6 +2174,10 @@ def idle_timeout_for_signal(progress_signal: str,
     return float(normalized)
 
 
+# taskkill 이 대상 PID 를 찾지 못했을 때의 종료 코드(Windows 11 실측).
+_TASKKILL_NOT_FOUND_RC = 128
+
+
 def _kill_process_group(proc, process_group_id: int | None = None) -> None:
     """저장된 process-group ID를 부모 종료 여부와 무관하게 kill한다.
 
@@ -2201,10 +2205,23 @@ def _kill_process_group(proc, process_group_id: int | None = None) -> None:
                 f"프로세스 그룹 kill 실패(pgid={pgid}): {exc}"
             ) from exc
     elif proc.poll() is None:  # pragma: no cover — POSIX 회귀 환경
+        # 직속 자식이 `opencode.cmd` 를 돌리는 cmd.exe 면 그것만 죽여서는 손자(opencode.exe)가
+        # 파이프를 쥔 채 남는다 — 프로세스 트리 전체를 taskkill 로 끝낸다.
         try:
-            proc.kill()
+            killed = subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                capture_output=True, text=True, encoding="oem", errors="replace", check=False,
+            )
         except OSError as exc:
             raise ProcessCleanupError(f"프로세스 kill 실패(pid={proc.pid}): {exc}") from exc
+        # 찾지 못함은 poll 과 taskkill 사이에 스스로 끝난 형상일 때만 성공이다.
+        already_exited = (killed.returncode == _TASKKILL_NOT_FOUND_RC
+                          and proc.poll() is not None)
+        if killed.returncode != 0 and not already_exited:
+            raise ProcessCleanupError(
+                f"프로세스 kill 실패(pid={proc.pid}): taskkill rc={killed.returncode} "
+                f"{killed.stderr.strip()}"
+            )
 
     if proc.poll() is None:
         try:

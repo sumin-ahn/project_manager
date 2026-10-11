@@ -157,8 +157,8 @@ def verify(module,name):
  if getattr(module,"ENGINE_REV",None)!=repo_owned_files.ENGINE_REV: raise RuntimeError("engine revision skew")
 leaf=repo_owned_files.load_module(root/".project_manager/tools/local_conf.py","local_conf.py",verifier=verify,cache=True)
 conf,model=json.loads(sys.argv[2])
-try: print(json.dumps({"budget":leaf.read_ctx_budget(root,conf,"opencode",model)},ensure_ascii=False))
-except leaf.CtxBudgetError as exc: print(json.dumps({"error":str(exc)},ensure_ascii=False))
+try: print(json.dumps({"budget":leaf.read_ctx_budget(root,conf,"opencode",model)}))
+except leaf.CtxBudgetError as exc: print(json.dumps({"error":str(exc)}))
 `;
   const result = childProcess.spawnSync(candidate.command, [...candidate.prefixArgs, "-I", "-B", "-c", script,
     root, JSON.stringify([conf, sessionModel])], {

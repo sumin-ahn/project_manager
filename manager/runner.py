@@ -12,8 +12,9 @@ from pathlib import Path
 
 from . import CallError, ENGINE_LOCK, load_engine_module
 
-# 조회 상한 — 가벼운 절은 실측 0.2~0.3초, `--with-board` 는 티켓 883건에서 4.8초다.
-LIGHT_TIMEOUT_SECONDS = 10
+# 조회 상한 — 가벼운 절은 슬롯마다 git 을 약 12회 부른다. Windows 실측 슬롯 0개 0.73초·5개 8.75초,
+# 6개부터 10초를 넘는다(슬롯당 약 1.6초). `--with-board` 는 티켓 883건에서 4.8초다.
+LIGHT_TIMEOUT_SECONDS = 60
 HEAVY_TIMEOUT_SECONDS = 60
 # Windows 에서 사본을 부를 때 콘솔 창이 깜빡이지 않게 한다(POSIX 에는 이 상수가 없어 0).
 CREATION_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)

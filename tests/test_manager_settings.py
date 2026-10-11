@@ -98,7 +98,9 @@ def _known_ctx_child_reader(monkeypatch):
     holder={'child':_KNOWN_CTX_CHILD}
     def run(home,argv,**kwargs):
         if 'apply' in argv:
-            argv=[argv[0],'-c',holder['child'],argv[1],*argv[2:]]
+            # 인터프리터는 토큰 여럿일 수 있다(Windows `py -3`) — `-c` 는 pm_config.py 경로 바로 앞이다.
+            script=argv.index('apply')-1
+            argv=[*argv[:script],'-c',holder['child'],*argv[script:]]
         return original(home,argv,**kwargs)
     monkeypatch.setattr(bridge,'_run',run)
     return holder

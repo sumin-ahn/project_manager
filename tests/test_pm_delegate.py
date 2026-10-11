@@ -2219,8 +2219,9 @@ def test_opencode_binary_permission_tracks_child_tmpdir(tmp_path):
         path.mkdir()
         env[key] = str(path)
 
+    # Windows 는 npm 셈(`opencode.cmd`)이라 이름 그대로는 CreateProcess 가 찾지 못한다.
     completed = subprocess.run(
-        ["opencode", "agent", "list"],
+        [shutil.which("opencode"), "agent", "list"],
         cwd=sandbox,
         env=env,
         capture_output=True,
@@ -2232,7 +2233,12 @@ def test_opencode_binary_permission_tracks_child_tmpdir(tmp_path):
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert f'"pattern": "{attempt}/opencode/*"' in completed.stdout
+    if os.name == "nt":
+        # Windows opencode 는 TMPDIR 이 아니라 TEMP 를 보간하고 `\` 로 잇는다(출력은 JSON 이스케이프).
+        expected = '"pattern": ' + _json.dumps(f"{allowed}\\opencode\\*", ensure_ascii=False)
+    else:
+        expected = f'"pattern": "{attempt}/opencode/*"'
+    assert expected in completed.stdout
     assert '"pattern": "/tmp/opencode/*"' not in completed.stdout
 
 

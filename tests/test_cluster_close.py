@@ -36,6 +36,10 @@ from _slot_seed import seed_slot
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
+# 픽스처 저장소는 엔진 사본을 커밋한다. 원본 트리의 `__pycache__` 가 실행 순서에 따라 일부만 있어
+# 그대로 복사하면 테스트 중 새로 생긴 바이트코드가 미커밋 잔여로 잡힌다(새 clone 의 Windows 회귀 실측).
+# 복사에서 빼고 픽스처 `.gitignore` 가 `__pycache__/` 를 무시한다.
+_NO_BYTECODE = shutil.ignore_patterns("__pycache__")
 
 requires_git = pytest.mark.skipif(
     shutil.which("git") is None,
@@ -204,7 +208,8 @@ def _write_cluster_ledger(
 def _order_repo(tmp_path: Path) -> tuple[Path, str]:
     """통합 브랜치 + 묶음 브랜치를 가진 실 git — `(트리, 통합 브랜치 tip)`."""
     root = tmp_path / "order-repo"
-    shutil.copytree(TOOLS, root / ".project_manager" / "tools")
+    shutil.copytree(TOOLS, root / ".project_manager" / "tools", ignore=_NO_BYTECODE)
+    (root / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
     board_dir = root / ".project_manager" / "board"
     for status in ("open", "claimed", "blocked", "done"):
         (board_dir / "tickets" / status).mkdir(parents=True)
@@ -699,12 +704,12 @@ def _build_close_env(tf, base: Path, monkeypatch) -> _CloseEnv:
     slot = home / "work" / "code_1"
     board_dir = home / ".project_manager" / "board"
 
-    shutil.copytree(TOOLS, home / ".project_manager" / "tools")
+    shutil.copytree(TOOLS, home / ".project_manager" / "tools", ignore=_NO_BYTECODE)
     (home / ".project_manager" / "wiki" / "log").mkdir(parents=True)
     (home / ".project_manager" / "wiki" / "log" / "current.md").write_text(
         "# log\n", encoding="utf-8")
     (home / ".project_manager" / ".local").mkdir(parents=True)
-    (home / ".gitignore").write_text("work/\n.project_manager/.local/\n",
+    (home / ".gitignore").write_text("work/\n.project_manager/.local/\n__pycache__/\n",
                                      encoding="utf-8")
 
     # board git (+ bare remote — 기록 채널을 실제로 태운다)
@@ -1928,13 +1933,13 @@ def test_close_preflight_refuses_a_member_without_a_harvested_review(
     assert env.slot_log()[0] == "code seed"
 
 
-def _mark_pm_direct(env) -> None:
-    """멤버 명세 frontmatter 에 `tier: pm-direct` 를 더한다."""
+def _mark_pm_direct(env, *, newline: str | None = None) -> None:
+    """멤버 명세 frontmatter 에 `tier: pm-direct` 를 더한다(`newline` 은 쓸 때의 개행 표기)."""
     spec = next((env.board_dir / "tickets" / "claimed").glob(f"{env.ticket}*.md"))
     text = spec.read_text(encoding="utf-8")
     assert "estimate: small\n" in text
     spec.write_text(text.replace("estimate: small\n", "estimate: small\ntier: pm-direct\n", 1),
-                    encoding="utf-8")
+                    encoding="utf-8", newline=newline)
     _git(env.board_dir, "add", "-A")
     _git(env.board_dir, "commit", "-qm", "pm-direct tier")
     _git(env.board_dir, "push", "-q")
@@ -1988,6 +1993,29 @@ def test_close_finishes_a_pm_direct_member_without_review_rounds(
     assert rc == 1, out.out + out.err
     assert "리뷰 확인 입력 미충족" in out.err and reviewed.ticket in out.err
     assert reviewed.board_calls == [] and reviewed.delegate_calls == []
+
+
+@requires_git
+def test_close_finishes_a_crlf_pm_direct_member_without_review_rounds(
+    tf, tmp_path, monkeypatch, capsys,
+):
+    """CRLF 로 체크아웃된 PM-direct 명세도 같은 판정을 받는다(Windows autocrlf 형상).
+
+    리뷰 없음 판정이 명세 원문(newline="")을 그대로 frontmatter 파서에 넘기면 첫 줄이
+    `---\\r\\n` 이라 missing frontmatter 로 죽는다.
+    """
+    env = _build_close_env(tf, tmp_path / "pm-direct-crlf", monkeypatch)
+    _mark_pm_direct(env, newline="\r\n")
+    _drop_rounds(env)
+    spec = next((env.board_dir / "tickets" / "claimed").glob(f"{env.ticket}*.md"))
+    assert spec.read_bytes().startswith(b"---\r\n")
+
+    rc = env.closer().run()
+    out = capsys.readouterr()
+
+    assert rc == 0, out.out + out.err
+    assert "리뷰 라운드가 없습니다" not in out.err
+    assert [args[0] for args in env.board_calls] == ["complete"]
 
 
 @requires_git
@@ -2359,7 +2387,8 @@ def _residual_repo(tf, tmp_path: Path, monkeypatch, *, members: tuple[str, ...])
     아무도 선언하지 않은 경로.
     """
     root = tmp_path / "residual-repo"
-    shutil.copytree(TOOLS, root / ".project_manager" / "tools")
+    shutil.copytree(TOOLS, root / ".project_manager" / "tools", ignore=_NO_BYTECODE)
+    (root / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
     board_dir = root / ".project_manager" / "board"
     for status in ("open", "claimed", "blocked", "done"):
         (board_dir / "tickets" / status).mkdir(parents=True)
@@ -2508,14 +2537,14 @@ def _unborn_repo(tf, tmp_path: Path, monkeypatch, *,
     HEAD 만 딴 브랜치로 돌린다(빈 기준선 판정의 둘째 관측 대조).
     """
     root = tmp_path / "unborn-home"
-    shutil.copytree(TOOLS, root / ".project_manager" / "tools")
+    shutil.copytree(TOOLS, root / ".project_manager" / "tools", ignore=_NO_BYTECODE)
     board_dir = root / ".project_manager" / "board"
     for status in ("open", "claimed", "blocked", "done"):
         (board_dir / "tickets" / status).mkdir(parents=True)
     (root / ".project_manager" / "wiki" / "log").mkdir(parents=True)
     (root / ".project_manager" / "wiki" / "log" / "current.md").write_text(
         "# log\n", encoding="utf-8")
-    (root / ".gitignore").write_text(".project_manager/.local/\n", encoding="utf-8")
+    (root / ".gitignore").write_text(".project_manager/.local/\n__pycache__/\n", encoding="utf-8")
     (root / "src").mkdir()
     for path in (_TOUCH_A, _UNDECLARED):
         (root / path).write_text(_SEED_BODY, encoding="utf-8")
