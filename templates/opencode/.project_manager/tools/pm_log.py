@@ -384,11 +384,6 @@ SNAPSHOT_MAX_BYTES = 24_000
 # 재주입에 펼칠 열린 todo 최대 줄 수 — 그 뒤는 "외 N건" 한 줄로 접고 목록 명령을 가리킨다.
 _TODO_MAX_SHOWN = 8
 _SNAPSHOT_IDENTITY_HEADING = "## PM 정체성 (compaction 복구)"
-_CTX_WINDOW_MISMATCH_READ_FAILED = object()
-_CTX_WINDOW_MISMATCH_READ_WARNING = (
-    "[pm-snapshot] ctx-window-mismatch 원장 판독 실패 — 기존 armed payload를 보존하고 재시도"
-)
-_CTX_DIAGNOSTIC_APPEND_FAILED_SIGNAL = "[pm-checkpoint] ctx-diagnostic-append-failed"
 # ctx 가드의 세션 연속성 정책 단일 진실. Claude/OpenCode/Codex 어댑터는 문구를 복제하지
 # 않고 ``pm_log.py ctx-guidance`` 또는 snapshot을 통해 이 값을 소비한다. checkpoint는
 # compaction 생존 장치일 뿐 세션 수명 전환 명령이 아니라는 경계를 한 문자열로 고정한다.
@@ -693,80 +688,17 @@ def build_checkpoint_entry(
     task: str | None,
     trigger: str = "manual",
     date: str | None = None,
-    *,
-    ctx_band_checked: bool = False,
-    ctx_band_missed: bool = False,
-    ctx_window_tokens: int | None = None,
-    ctx_observed_tokens: int | None = None,
-    harness: str | None = None,
 ) -> str:
     """task 축의 compaction/manual 경계 보충 박제 골격을 만든다."""
     if date is None:
         date = datetime.date.today().isoformat()
     identity_tag = f" | ({_TASK_TAG_PREFIX}{task})" if task else ""
-    ctx_advisory = (
-        build_ctx_window_mismatch_advisory(
-            ctx_window_tokens=ctx_window_tokens,
-            ctx_observed_tokens=ctx_observed_tokens,
-            harness=harness,
-        )
-        if ctx_band_missed else ""
-    )
-    ctx_check = (
-        f"<!-- ctx-band-check: {'missed' if ctx_band_missed else 'fired'} -->\n"
-        if ctx_band_checked else ""
-    )
     return (
         # Consumer grammar: pm_handoff._collect_session_entries() 의 task 태그 판별과
         # 동기화한다.
         f"## [{date}] checkpoint{identity_tag} — {trigger}\n\n"
-        f"{ctx_check}"
-        f"{ctx_advisory}"
         "- 구간: <직전 박제 경계 이후>\n"
         "- 서사: <PM 손>\n"
-    )
-
-
-def build_ctx_window_mismatch_advisory(
-    *,
-    ctx_window_tokens: int | None,
-    ctx_observed_tokens: int | None,
-    harness: str | None = None,
-) -> str:
-    """밴드 미발화 압축의 loud 진단과 고정 처방을 렌더한다.
-
-    어댑터는 marker 판정과 숫자 전달만 맡고, checkpoint/snapshot에 들어갈 최종 텍스트는
-    엔진이 단독 소유한다. 관측 토큰이 없으면 오탐성 숫자를 만들지 않고 정성 처방만 남긴다.
-    """
-    window = ctx_window_tokens if isinstance(ctx_window_tokens, int) and ctx_window_tokens > 0 \
-        else None
-    observed = (
-        ctx_observed_tokens
-        if isinstance(ctx_observed_tokens, int) and ctx_observed_tokens > 0
-        else None
-    )
-    evidence = f"설정 {window:,} tokens" if window is not None else "해소된 설정 창"
-    if observed is not None:
-        evidence += f" · PreCompact 관측 {observed:,} tokens"
-    remedy_limit = (
-        f"관측 사용량 {observed:,} tokens 이하"
-        if observed is not None else "실 auto-compact 지점 이하"
-    )
-    normalized_harness = (
-        harness.strip().lower()
-        if isinstance(harness, str)
-        and re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", harness.strip().lower())
-        else None
-    )
-    config_key = (
-        f"harness.{normalized_harness}.ctx_window_tokens"
-        if normalized_harness is not None else "harness.<이름>.ctx_window_tokens"
-    )
-    return (
-        "> ⚠ [ctx-window-mismatch] 설정 창이 실 압축 지점보다 큼 — 이번 압축 사이클에서 "
-        f"nudge/nudge2/final 밴드가 한 번도 발화하지 않음 ({evidence}).\n"
-        f"> 처방: `.project_manager/local.conf`의 `{config_key}`를 "
-        f"{remedy_limit}로 낮추고 다음 사이클 밴드 발화를 확인.\n\n"
     )
 
 
@@ -1461,41 +1393,14 @@ def _truncate_snapshot_text(text: str) -> str:
     return text[:low]
 
 
-def _truncate_snapshot_text_keep_tail(text: str) -> str:
-    """``_truncate_snapshot_text`` 의 꼬리-보존 변형 — 문자/UTF-8 경계를 지키며 뒤쪽을 남긴다.
-
-    always-keep 접두 자체가 이중 상한을 넘는 극단 형상에서, 나중에
-    추가된 절(전언 경고)이 먼저 온 절(ctx 진단)보다 우선 살아남게 한다.
-    """
-    text = text[-SNAPSHOT_MAX_CHARS:] if len(text) > SNAPSHOT_MAX_CHARS else text
-    if len(text.encode("utf-8")) <= SNAPSHOT_MAX_BYTES:
-        return text
-    low, high = 0, len(text)
-    while low < high:
-        middle = (low + high + 1) // 2
-        candidate = text[-middle:] if middle else ""
-        if len(candidate.encode("utf-8")) <= SNAPSHOT_MAX_BYTES:
-            low = middle
-        else:
-            high = middle - 1
-    return text[-low:] if low else ""
-
-
 def _truncate_identity_keeping_suffix(identity: str, suffix: str) -> str:
-    """identity 를 이중 상한 안으로 절단하되 always-keep 접두(``suffix``)는 뒤에 온전히 붙인다.
-
-    접두 자체가 상한을 넘는 비정상 입력이면 identity 를 버리고 접두를 꼬리-보존으로 안전
-    절단한다(나중에 추가된 절 — 전언 경고 — 이 먼저 온 절보다 우선 산다). 정상 운용에서 접두는
-    몇백 자 수준이라 이 분기는 사실상 도달하지 않는다.
-    """
+    """identity 를 이중 상한 안으로 절단하되 always-keep 접두(``suffix``)는 뒤에 온전히 붙인다."""
     if not suffix:
         return _truncate_snapshot_text(identity.rstrip() + "\n")
     trimmed = identity.rstrip()
     combined = f"{trimmed}\n{suffix}" if trimmed else suffix
     if _snapshot_within_limits(combined):
         return combined
-    if not _snapshot_within_limits(suffix):
-        return _truncate_snapshot_text_keep_tail(suffix)
     low, high = 0, len(identity)
     while low < high:
         middle = (low + high + 1) // 2
@@ -1514,7 +1419,7 @@ def cap_snapshot_sections(
 ) -> str:
     """뒤 절부터 통째로 덜고, 초대형 정체성 절은 안전 절단해 이중 상한을 지킨다.
 
-    ``required`` 는 ``sections`` 앞 N 개(예: ctx 진단+전언 경고)를 tail-drop 대상에서 제외한다
+    ``required`` 는 ``sections`` 앞 N 개(예: 전언 경고)를 tail-drop 대상에서 제외한다
     — 총량 cap 경로에서도 always-keep 절이 살아남는다(이전엔 identity 가
     거의 상한을 채운 상태에서 필수 접두까지 일반 절처럼 pop 돼 사라졌다 — 7,942-char identity
     프로브에서 hearsay_present=False 로 실측). 필수 접두를 포함해도 넘치면 identity 의 가변
@@ -1530,64 +1435,16 @@ def cap_snapshot_sections(
     return _truncate_identity_keeping_suffix(identity, required_text)
 
 
-def _latest_ctx_window_mismatch_section(
-    pm_home: Path,
-    task: str | None,
-) -> str | None | object:
-    """append-only log의 최신 PreCompact 밴드 평가에서 복구용 진단을 읽는다.
-
-    진단 전용 marker나 consume 상태를 만들지 않는다. 같은 사이클 재호출은 같은 평가를
-    다시 append할 수 있고, 최신 ``fired`` 평가는 앞선 경고를 자연스럽게 가린다.
-    """
-    current = Path(pm_home) / ".project_manager" / "wiki" / "log" / "current.md"
-    try:
-        _preamble, entries = split_entries(_read_text_exact(current))
-    except FileNotFoundError:
-        # 아직 log가 생기지 않은 fresh 홈은 판독 실패가 아니라 활성 진단 없음이다.
-        return None
-    except (OSError, UnicodeError):
-        # ``None``은 판독에 성공했고 활성 진단이 없다는 뜻이다. 판독 실패까지 None으로 합치면
-        # PostCompact가 기존 진단 payload를 무진단 snapshot으로 덮어쓸 수 있다.
-        return _CTX_WINDOW_MISMATCH_READ_FAILED
-    for _date, entry in reversed(entries):
-        first_line = entry.partition("\n")[0]
-        if task is not None:
-            owns_entry = (
-                f"({_TASK_TAG_PREFIX}{task})" in first_line
-                and " checkpoint | " in first_line
-            )
-        else:
-            owns_entry = " checkpoint — " in first_line
-        if not owns_entry:
-            continue
-        state = re.search(r"<!-- ctx-band-check: (fired|missed) -->", entry)
-        if state is None:
-            continue
-        if state.group(1) == "fired":
-            return None
-        start = entry.find("> ⚠ [ctx-window-mismatch]")
-        if start < 0:
-            return None
-        end = entry.find("\n\n", start)
-        advisory = entry[start:] if end < 0 else entry[start:end]
-        return "## ctx 설정 진단 (compaction 경계)\n" + advisory.rstrip() + "\n"
-    return None
-
-
 def build_snapshot(
     pm_home: Path,
     cwd: Path,
     *,
     monotonic=time.monotonic,
-    ctx_band_missed: bool = False,
-    ctx_window_tokens: int | None = None,
-    ctx_observed_tokens: int | None = None,
-    harness: str | None = None,
 ) -> tuple[str | None, str | None]:
     """주입 최종 텍스트를 조립한다. 반환은 ``(text, warning)``.
 
     장부 조회는 subprocess·lock 0 (진행 중 작업 절의 WIP git 프로브만 상한 3회의 유일한 예외 —
-    `_wip_slot_line` 참고). 절 순서: [ctx 진단] → 전언 경고(always-keep) → 장부 포인터 →
+    `_wip_slot_line` 참고). 절 순서: 전언 경고(always-keep) → 장부 포인터 →
     진행 중 작업 → 열린 todo → 복구 포인터.
     """
     started = monotonic()
@@ -1598,25 +1455,8 @@ def build_snapshot(
             "[pm-snapshot] 정체성 미해소 — cwd lease 불일치·활성 task 비단일; 재주입 생략. "
             + _load_identity_args().NO_WORK_FOLDER_REMEDY
         )
-    task = identity_name
     identity = _identity_section(pm_home, cwd, identity_name, source)
     sections: list[str] = []
-    mismatch = (
-        "## ctx 설정 진단 (compaction 경계)\n"
-        + build_ctx_window_mismatch_advisory(
-            ctx_window_tokens=ctx_window_tokens,
-            ctx_observed_tokens=ctx_observed_tokens,
-            harness=harness,
-        ).rstrip()
-        + "\n"
-        if ctx_band_missed else _latest_ctx_window_mismatch_section(pm_home, task)
-    )
-    if mismatch is _CTX_WINDOW_MISMATCH_READ_FAILED:
-        # 무진단 snapshot을 만들지 않아 hook의 기존 armed payload가 그대로 남게 한다.
-        return None, _CTX_WINDOW_MISMATCH_READ_WARNING
-    # loud 진단은 compaction 직후 복구 계약의 핵심이므로 tail-drop 최후까지 남는 첫 절이다.
-    if mismatch is not None:
-        sections.append(mismatch)
     # 전언 경고는 always-keep 접두 — 뒤 절부터 폐기하는 timeout 분기·총량 cap 경로 모두에서
     # ``required=always_keep`` 로 cap_snapshot_sections 에 보존 경계를 명시한다.
     sections.append(_hearsay_section())
@@ -1652,21 +1492,13 @@ def build_snapshot(
 def cmd_snapshot(args: argparse.Namespace) -> int:
     cwd = Path(args.cwd).resolve(strict=False) if args.cwd else Path.cwd().resolve(strict=False)
     pm_home = owning_pm_home(REPO)
-    text, warning = build_snapshot(
-        pm_home,
-        cwd,
-        ctx_band_missed=bool(getattr(args, "ctx_band_missed", False)),
-        ctx_window_tokens=getattr(args, "ctx_window_tokens", None),
-        ctx_observed_tokens=getattr(args, "ctx_observed_tokens", None),
-        harness=getattr(args, "harness", None),
-    )
+    text, warning = build_snapshot(pm_home, cwd)
     if warning:
         print(warning, file=sys.stderr)
     if not text:
-        # 주입할 것을 만들지 못한 실행은 실패다 — 정체성 미해소든 원장 판독 실패든 같은 규칙
-        # (특례 0). 실패에 반쪽 답(무응답 엔벨로프)을 내지 않는다: 소비자가 그 한 줄을 "답" 으로
-        # 세면 조용한 생략이 되고, 셸 폴백 배선(`snapshot --json || printf …`)에서는 엔벨로프가
-        # 두 줄이 된다. stdout 0줄 + rc 1 이면 세 하네스가 같은 실패를 같은 자리에서 본다.
+        # 주입할 것을 만들지 못한 실행(정체성 미해소)은 실패다. 실패에 반쪽 답(무응답 엔벨로프)을
+        # 내지 않는다: 소비자가 그 한 줄을 "답" 으로 세면 조용한 생략이 되고, 셸 폴백 배선
+        # (`snapshot --json || printf …`)에서는 엔벨로프가 두 줄이 된다. stdout 0줄 + rc 1 이면 세 하네스가 같은 실패를 같은 자리에서 본다.
         return 1
     if args.json:
         payload = {"systemMessage": text, "suppressOutput": False}
@@ -1879,26 +1711,7 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
     if not CURRENT_FILE.exists():
         print(f"(current.md 없음: {_rel(CURRENT_FILE)} — migrate 먼저)", file=sys.stderr)
         return 2
-    ctx_band_missed = (
-        args.trigger == "compaction" and bool(getattr(args, "ctx_band_missed", False))
-    )
-    ctx_band_checked = (
-        args.trigger == "compaction"
-        and getattr(args, "phase", None) == "pre"
-        and (
-            bool(getattr(args, "ctx_band_checked", False))
-            or ctx_band_missed
-        )
-    )
-    entry = build_checkpoint_entry(
-        task,
-        args.trigger,
-        ctx_band_checked=ctx_band_checked,
-        ctx_band_missed=ctx_band_missed,
-        ctx_window_tokens=getattr(args, "ctx_window_tokens", None),
-        ctx_observed_tokens=getattr(args, "ctx_observed_tokens", None),
-        harness=getattr(args, "harness", None),
-    )
+    entry = build_checkpoint_entry(task, args.trigger)
     breadcrumb = _PRECOMPACT_BREADCRUMB if getattr(args, "breadcrumb", False) else ""
     payload = breadcrumb + "\n" + entry
     # 선행 LF는 기존 파일이 trailing newline 없이 끝나도 새 `##` entry 경계를 보장한다.
@@ -1916,8 +1729,7 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
         boundary_id, phase, implicit_state = _resolve_compaction_boundary(
             args, task=identity_name, current_text=current_text,
         )
-        reevaluated_precompact = phase == "pre" and ctx_band_checked
-        if boundary_id is not None and phase is not None and not reevaluated_precompact:
+        if boundary_id is not None and phase is not None:
             marker = _compaction_marker_path(
                 identity_name, getattr(args, "session_id", None), boundary_id,
             )
@@ -1934,7 +1746,7 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
                     "[pm-checkpoint] dedup 장부 I/O 실패 — durable checkpoint 기록은 계속합니다.",
                     file=sys.stderr,
                 )
-        elif boundary_id is None or phase is None:
+        else:
             print(
                 "[pm-checkpoint] boundary/phase 식별자 없음 — dedup 없이 durable checkpoint를 기록합니다.",
                 file=sys.stderr,
@@ -1947,18 +1759,6 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
                 with contextlib.suppress(OSError):
                     marker.unlink()
             raise
-        if reevaluated_precompact and boundary_id is not None:
-            # 진단은 먼저 durable append한다. 과거 호출이 claim 직후 죽여 둔 marker가 있어도
-            # 재평가 결과를 억제하지 않으며, 이 후속 claim은 기존 checkpoint dedup만 보존한다.
-            marker = _compaction_marker_path(
-                identity_name, getattr(args, "session_id", None), boundary_id,
-            )
-            claimed = claim_compaction_checkpoint(marker, phase=phase)
-            if claimed is None:
-                print(
-                    "[pm-checkpoint] dedup 장부 I/O 실패 — durable 진단 기록은 완료됐습니다.",
-                    file=sys.stderr,
-                )
         if phase == "post":
             _clear_implicit_boundary_state(implicit_state, boundary_id)
     print(f"✓ checkpoint append: task={identity_name} · trigger={args.trigger}")
@@ -2043,37 +1843,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--breadcrumb", action="store_true",
         help="Claude PreCompact breadcrumb를 checkpoint와 같은 PM 홈 append에 포함",
     )
-    p.add_argument(
-        "--ctx-band-checked", action="store_true",
-        help="PreCompact에서 이번 사이클 밴드 발화 여부를 재평가했음을 durable 기록",
-    )
-    p.add_argument(
-        "--ctx-band-missed", action="store_true",
-        help="PreCompact의 사이클 밴드 미발화를 checkpoint/snapshot에 진단",
-    )
-    p.add_argument(
-        "--ctx-window-tokens", type=_positive_int, metavar="N",
-        help="밴드 미발화 당시 해소된 하네스 ctx 설정 창",
-    )
-    p.add_argument(
-        "--ctx-observed-tokens", type=_positive_int, metavar="N",
-        help="밴드 미발화 당시 transcript에서 관측한 사용 토큰",
-    )
-    p.add_argument(
-        "--harness", metavar="NAME",
-        help="진단 처방의 per-harness harness.<name>.ctx_window_tokens 키",
-    )
     p.set_defaults(fn=cmd_checkpoint)
 
     p = sub.add_parser("snapshot", help="compaction 뒤 재주입할 PM 정체성·장부 포인터 출력")
     p.add_argument("--cwd", metavar="PATH", help="훅이 발화한 cwd (기본: 프로세스 cwd)")
-    p.add_argument(
-        "--ctx-band-missed", action="store_true",
-        help="checkpoint append 실패 시 진단을 snapshot payload로 직접 보존",
-    )
-    p.add_argument("--ctx-window-tokens", type=_positive_int, metavar="N")
-    p.add_argument("--ctx-observed-tokens", type=_positive_int, metavar="N")
-    p.add_argument("--harness", metavar="NAME")
     p.add_argument(
         "--json", action="store_true",
         help="Codex hook envelope(systemMessage/suppressOutput) JSON 하나로 출력",
@@ -2081,37 +1854,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_snapshot)
 
     return parser
-
-
-def _legacy_hook_argv(raw_argv: list[str], command: str) -> list[str]:
-    """세대 skew 재시도용으로 신형 hook 인자만 제거한 argv를 만든다."""
-    value_options = {
-        "checkpoint": {
-            "--ctx-window-tokens", "--ctx-observed-tokens", "--harness",
-        },
-        "snapshot": {
-            "--ctx-window-tokens", "--ctx-observed-tokens", "--harness",
-        },
-    }.get(command, set())
-    flag_options = {
-        "checkpoint": {"--ctx-band-checked", "--ctx-band-missed"},
-        "snapshot": {"--ctx-band-missed"},
-    }.get(command, set())
-    stripped: list[str] = []
-    skip_value = False
-    for token in raw_argv:
-        if skip_value:
-            skip_value = False
-            continue
-        if token in flag_options:
-            continue
-        if token in value_options:
-            skip_value = True
-            continue
-        if any(token.startswith(option + "=") for option in value_options):
-            continue
-        stripped.append(token)
-    return stripped
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2151,42 +1893,11 @@ def main(argv: list[str] | None = None) -> int:
                     timeout=timeout,
                     check=False,
                 )
-                diagnostic_requested = (
-                    args.cmd == "checkpoint"
-                    and bool(getattr(args, "ctx_band_missed", False))
-                )
-                diagnostic_append_failed = diagnostic_requested and result.returncode != 0
-                if (
-                    args.cmd == "snapshot"
-                    and bool(getattr(args, "ctx_band_missed", False))
-                    and result.returncode != 0
-                ):
-                    # 구형 PM-home 엔진이 forced-diagnostic 옵션을 모르면 옵션을 버린 snapshot으로
-                    # 강등하지 않는다. 신형 worktree builder가 해소한 PM-home을 직접 읽어 payload를
-                    # 렌더한다. checkpoint의 legacy append 재시도와 역할이 다르다.
-                    return args.fn(args)
-                legacy_forwarded = _legacy_hook_argv(forwarded, args.cmd)
-                if result.returncode != 0 and legacy_forwarded != forwarded:
-                    result = subprocess.run(
-                        [sys.executable, str(canonical), *legacy_forwarded],
-                        cwd=str(pm_home),
-                        timeout=timeout,
-                        check=False,
-                    )
-                if diagnostic_append_failed:
-                    # hook_fail_soft rc0은 세션 지속 계약이다. 진단 append 성공까지 뜻하지 않으므로
-                    # 호출 훅이 pending snapshot fallback을 무장할 수 있는 별도 신호를 보낸다.
-                    print(_CTX_DIAGNOSTIC_APPEND_FAILED_SIGNAL, file=sys.stderr)
                 # snapshot/compaction은 훅 계약상 fail-soft다. 사람이 실행한 manual checkpoint는
                 # 이름 검증·로그 부재·엔진 오류의 하위 rc를 그대로 돌려줘 성공으로 오보고하지 않는다.
                 return 0 if hook_fail_soft else result.returncode
             except (OSError, subprocess.TimeoutExpired) as exc:
                 if hook_fail_soft:
-                    if (
-                        args.cmd == "checkpoint"
-                        and bool(getattr(args, "ctx_band_missed", False))
-                    ):
-                        print(_CTX_DIAGNOSTIC_APPEND_FAILED_SIGNAL, file=sys.stderr)
                     return 0
                 print(f"[pm-{args.cmd}] PM 홈 엔진 실행 실패: {exc}", file=sys.stderr)
                 return 1

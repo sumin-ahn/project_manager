@@ -34,8 +34,6 @@ import ctx_guard  # noqa: E402  (같은 디렉토리 공유 코어)
 _MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"
 _SNAPSHOT_TIMEOUT_SECONDS = 3.0
 _CHECKPOINT_TIMEOUT_SECONDS = 5.0
-_PENDING_CHECKPOINT_DIAGNOSTIC = "<!-- ctx-checkpoint-pending: append-failed -->\n"
-_CHECKPOINT_DIAGNOSTIC_APPEND_FAILED_SIGNAL = "[pm-checkpoint] ctx-diagnostic-append-failed"
 
 
 def _session_id(stdin: dict) -> str:
@@ -97,20 +95,6 @@ def _arm_snapshot(root: Path, session_id: str, payload: str) -> bool:
     if not payload:
         return False
     marker = _snapshot_marker_path(root, session_id)
-    try:
-        existing = marker.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        existing = None
-    except (OSError, UnicodeError):
-        # 기존 marker 상태를 모르면 보수적으로 보존한다. replace가 성공해도 진단을 지울 수 있다.
-        return False
-    if (
-        existing is not None
-        and _PENDING_CHECKPOINT_DIAGNOSTIC in existing
-        and "[ctx-window-mismatch]" not in payload
-    ):
-        # PreCompact append 실패 시 만든 전달 payload는 원장에 아직 없는 진단의 유일한 사본이다.
-        return True
     temp = marker.with_name(f".{marker.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -213,15 +197,7 @@ def _build_ctx_guidance(
     )
 
 
-def _build_snapshot(
-    root: Path,
-    stdin: dict,
-    *,
-    ctx_band_missed: bool = False,
-    ctx_window_tokens: int = 0,
-    ctx_observed_tokens: int = 0,
-    harness: str | None = None,
-) -> str | None:
+def _build_snapshot(root: Path, stdin: dict) -> str | None:
     """엔진 builder stdout만 받는다. 렌더는 pm_log.py 단일 소유, stderr는 훅 프로토콜 밖으로 폐기.
 
     Builder command token: ``pm_log.py snapshot``.
@@ -232,14 +208,6 @@ def _build_snapshot(
     command = [
         sys.executable, str(engine), "snapshot", "--cwd", str(_hook_cwd(stdin, root)),
     ]
-    if ctx_band_missed:
-        command.append("--ctx-band-missed")
-        if ctx_window_tokens > 0:
-            command.extend(("--ctx-window-tokens", str(ctx_window_tokens)))
-        if ctx_observed_tokens > 0:
-            command.extend(("--ctx-observed-tokens", str(ctx_observed_tokens)))
-        if isinstance(harness, str) and harness.strip():
-            command.extend(("--harness", harness.strip()))
     try:
         result = subprocess.run(
             command,
@@ -287,11 +255,6 @@ def _create_checkpoint(
     *,
     phase: str,
     breadcrumb: bool = False,
-    ctx_band_checked: bool = False,
-    ctx_band_missed: bool = False,
-    ctx_window_tokens: int = 0,
-    ctx_observed_tokens: int = 0,
-    harness: str | None = None,
 ) -> bool:
     """compaction 골격 생성 성공 여부. 출력은 흡수하되 실패를 성공으로 합치지 않는다."""
     engine = _pm_log_path(root)
@@ -309,47 +272,18 @@ def _create_checkpoint(
         command.extend(("--boundary-id", boundary_id))
     if breadcrumb:
         command.append("--breadcrumb")
-    legacy_command = list(command)
-    if ctx_band_checked:
-        command.append("--ctx-band-checked")
-    if ctx_band_missed:
-        command.append("--ctx-band-missed")
-        if ctx_window_tokens > 0:
-            command.extend(("--ctx-window-tokens", str(ctx_window_tokens)))
-        if ctx_observed_tokens > 0:
-            command.extend(("--ctx-observed-tokens", str(ctx_observed_tokens)))
-        if isinstance(harness, str) and harness.strip():
-            command.extend(("--harness", harness.strip()))
     try:
         result = subprocess.run(
             command,
             cwd=str(root),
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
+            stderr=subprocess.DEVNULL,
             timeout=_CHECKPOINT_TIMEOUT_SECONDS,
             check=False,
         )
-        succeeded = (
-            result.returncode == 0
-            and _CHECKPOINT_DIAGNOSTIC_APPEND_FAILED_SIGNAL
-            not in (getattr(result, "stderr", "") or "")
-        )
-        # 진단 capability가 없는 구 엔진이어도 compaction checkpoint 자체는 보존한다. 다만 신형
-        # 진단 append는 실패했으므로 False를 돌려 snapshot 전달 fallback도 함께 무장한다.
-        if result.returncode != 0 and command != legacy_command:
-            subprocess.run(
-                legacy_command,
-                cwd=str(root),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=_CHECKPOINT_TIMEOUT_SECONDS,
-                check=False,
-            )
-        return succeeded
     except (OSError, subprocess.TimeoutExpired):
         return False
+    return result.returncode == 0
 
 
 def capture_precompact(stdin: dict, root: Path) -> int:
@@ -357,63 +291,8 @@ def capture_precompact(stdin: dict, root: Path) -> int:
     transcript = stdin.get("transcript_path")
     if isinstance(transcript, str) and transcript and ctx_guard.transcript_is_sidechain(transcript):
         return 0
-    session_id = _session_id(stdin)
-    # Claude PreCompact의 trigger가 auto라고 명시된 경우만 실제 auto-compact 지점의
-    # 관측으로 취급한다. manual /compact와 trigger 부재·미지값은 밴드 불일치에 대한
-    # 정보가 없으므로 breadcrumb/checkpoint만 남기고 진단은 보수적으로 침묵한다.
-    auto_compact = stdin.get("trigger") == "auto"
-    band_fired = False
-    observed_tokens = 0
-    window_tokens = None
-    if auto_compact:
-        band_fired = any(
-            marker.is_file()
-            for marker in (
-                _nudge_marker_path(root, session_id),
-                _nudge2_marker_path(root, session_id),
-                _final_marker_path(root, session_id),
-            )
-        )
-        transcript_path = stdin.get("transcript_path")
-        observed_tokens, session_model = (
-            ctx_guard.context_tokens_from_transcript(transcript_path)
-            if isinstance(transcript_path, str) and transcript_path else (0, None)
-        )
-        try:
-            window_tokens = ctx_guard.read_budget(
-                root, ctx_guard.load_local_config(root), session_model)["E"]
-        except ValueError as exc:  # 압축 한도 기록 문제 — PreCompact 의 알림 채널은 stderr 다.
-            print(f"[ctx-budget] {exc}", file=sys.stderr)
-    checkpointed = _create_checkpoint(
-        root,
-        stdin,
-        phase="pre",
-        breadcrumb=True,
-        ctx_band_checked=auto_compact and window_tokens is not None,
-        ctx_band_missed=auto_compact and window_tokens is not None and not band_fired,
-        ctx_window_tokens=window_tokens or 0,
-        ctx_observed_tokens=observed_tokens,
-        harness="claude",
-    )
-    if auto_compact and window_tokens is not None and not band_fired and not checkpointed:
-        # append 실패여도 세션은 막지 않는다. 엔진이 렌더한 동일 진단을 기존 snapshot 채널에 두어
-        # 다음 prompt 또는 쓰기 복구 뒤 경계가 전달/재시도할 수 있게 한다.
-        fallback = _build_snapshot(
-            root,
-            stdin,
-            ctx_band_missed=True,
-            ctx_window_tokens=window_tokens or 0,
-            ctx_observed_tokens=observed_tokens,
-            harness="claude",
-        )
-        armed = bool(fallback) and _arm_snapshot(
-            root, session_id, _PENDING_CHECKPOINT_DIAGNOSTIC + fallback,
-        )
-        print(
-            "[ctx-checkpoint-append-failure] PreCompact checkpoint append 실패 — "
-            + ("pending 진단 payload로 보존" if armed else "pending 진단 payload 무장도 실패"),
-            file=sys.stderr,
-        )
+    # PreCompact 출력은 래퍼가 버리므로 append 결과와 무관하게 0 으로 끝난다.
+    _create_checkpoint(root, stdin, phase="pre", breadcrumb=True)
     return 0
 
 
@@ -600,10 +479,7 @@ def _evaluate_ctx_bands(stdin: dict, root: Path, conf: dict) -> tuple[int, dict 
     if event == "PostCompact":
         # compaction 완료 경계가 새 상승 사이클의 정본 신호다. PostCompact 는 완료 후 발화하므로
         # 압축 실패/차단 시에는 재무장하지 않는다. transcript 사용률을 판정하지 않고 marker만
-        # best-effort 정리한다. 정상 경로에서 ctx-window-mismatch의 단일 진실은 append-only
-        # checkpoint log이고 snapshot은 그 최신 밴드 평가에서 매번 만드는 파생물이다. 원장 판독
-        # 실패는 pm_log가 무진단과 구분해 payload 생성을 거부하므로 기존 marker를 보존한다. append
-        # 실패 때만 snapshot 채널이 pending 진단의 임시 단일 진실이 된다(subprocess 회귀 대응).
+        # best-effort 정리한다. snapshot 을 만들지 못하면(정체성 미해소 등) 기존 marker 를 보존한다.
         _rearm_cycle(root, session_id)
         snapshot = _build_snapshot(root, stdin)
         if snapshot and not _arm_snapshot(root, session_id, snapshot):
