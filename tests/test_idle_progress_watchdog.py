@@ -868,7 +868,9 @@ def test_keyboard_interrupt_during_post_spawn_initialization_kills_and_drains(
         )
 
     assert excinfo.value is interrupt
-    assert len(spawned) == 1 and spawned[0].poll() is not None
+    # Windows 정리는 taskkill 을 띄운다 — 세는 것은 하네스 자식뿐이다.
+    children = [proc for proc in spawned if proc.args[0] != "taskkill"]
+    assert len(children) == 1 and children[0].poll() is not None
     assert spawned[0].stdout.closed and spawned[0].stderr.closed
 
 
@@ -898,7 +900,9 @@ def test_thread_start_failure_during_post_spawn_initialization_kills_and_drains(
         )
 
     assert excinfo.value is start_error
-    assert len(spawned) == 1 and spawned[0].poll() is not None
+    # Windows 정리는 taskkill 을 띄운다 — 세는 것은 하네스 자식뿐이다.
+    children = [proc for proc in spawned if proc.args[0] != "taskkill"]
+    assert len(children) == 1 and children[0].poll() is not None
     assert spawned[0].stdout.closed and spawned[0].stderr.closed
 
 

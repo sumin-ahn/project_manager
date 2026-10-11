@@ -2207,20 +2207,21 @@ def _kill_process_group(proc, process_group_id: int | None = None) -> None:
     elif proc.poll() is None:  # pragma: no cover — POSIX 회귀 환경
         # 직속 자식이 `opencode.cmd` 를 돌리는 cmd.exe 면 그것만 죽여서는 손자(opencode.exe)가
         # 파이프를 쥔 채 남는다 — 프로세스 트리 전체를 taskkill 로 끝낸다.
+        # 출력은 받지 않는다 — Windows 의 출력 수집은 읽기 스레드를 띄우는데, 이 정리는 스레드
+        # 시작이 실패한 경로에서도 돌아야 한다.
         try:
-            killed = subprocess.run(
+            taskkill_rc = subprocess.run(
                 ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                capture_output=True, text=True, encoding="oem", errors="replace", check=False,
-            )
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+            ).returncode
         except OSError as exc:
             raise ProcessCleanupError(f"프로세스 kill 실패(pid={proc.pid}): {exc}") from exc
         # 찾지 못함은 poll 과 taskkill 사이에 스스로 끝난 형상일 때만 성공이다.
-        already_exited = (killed.returncode == _TASKKILL_NOT_FOUND_RC
+        already_exited = (taskkill_rc == _TASKKILL_NOT_FOUND_RC
                           and proc.poll() is not None)
-        if killed.returncode != 0 and not already_exited:
+        if taskkill_rc != 0 and not already_exited:
             raise ProcessCleanupError(
-                f"프로세스 kill 실패(pid={proc.pid}): taskkill rc={killed.returncode} "
-                f"{killed.stderr.strip()}"
+                f"프로세스 kill 실패(pid={proc.pid}): taskkill rc={taskkill_rc}"
             )
 
     if proc.poll() is None:
