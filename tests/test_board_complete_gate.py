@@ -324,6 +324,13 @@ def test_review_absence_is_non_target_for_existing_tickets(board):
     assert _review_gate_problems(board, tid, spec_path) == []
 
 
+def test_internal_completion_helpers_are_removed(board):
+    """내부 리뷰 기록 완료 판정과 그 판정만 쓰던 통과 조회는 board 에 남지 않는다."""
+    for removed in ("gate_passed", "_internal_review_completion_problem",
+                    "_internal_review_rounds_ledger"):
+        assert not hasattr(board, removed), removed
+
+
 # ════════════════════════════════════════════════════════════════════════
 # (a) §3 status-mention 경고 제거 — status.md 에 ticket 없어도 경고 무발화
 # ════════════════════════════════════════════════════════════════════════

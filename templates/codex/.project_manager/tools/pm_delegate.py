@@ -312,6 +312,8 @@ TIER_CHOICES: tuple[str, ...] = ("normal", "hard")
 TIERED_ROLES: tuple[str, ...] = ("developer",)
 
 INTERNAL_REVIEW_ROLE = "code-reviewer"
+# 위임 라운드 없이 PM 이 직접 편집하는 티켓 등급 — 리뷰 라운드가 없으면 종결이 리뷰를 요구하지 않는다.
+PM_DIRECT_TIER = "pm-direct"
 # 추가 리뷰어(additional_reviewer) 산출이 회수되는 역할. 하네스로 위임되는 역할이 아니라 엔진이
 # 직접 쓰는 채널이라 `ROLE_CHOICES` 에는 없고 라운드 역할 집합에만 있다.
 ADDITIONAL_REVIEWER_ROLE = "additional-reviewer"
@@ -7723,12 +7725,17 @@ def review_resolution_input_problem(ticket_text: str, rounds: Sequence) -> str |
     리뷰 라운드가 없거나, 최대 순번 리뷰 라운드를 돌려받지 않았거나(시드 그대로), 판정 표면
     리뷰 라운드가 없으면(전부 폐기) 각각 사유와 처방을 낸다. 잔여 0 이면 None, 그 밖은
     `pm_verified_resolution_input_problem`(표면 하한 = 잔여)이 판정한다.
+    명세 frontmatter `tier` 가 pm-direct 이고 리뷰 라운드가 하나도 없으면 리뷰 없음 사유를 내지
+    않는다. 리뷰 라운드가 있으면 tier 와 무관하게 위 판정을 그대로 받는다.
     """
     reviews = sorted(
         (item for item in rounds if item.role == INTERNAL_REVIEW_ROLE),
         key=lambda item: item.ordinal,
     )
     if not reviews:
+        frontmatter, _body = _load_board()._parse_ticket_text(ticket_text, "<티켓 명세>")
+        if frontmatter.get("tier") == PM_DIRECT_TIER:
+            return None
         return (
             "code-reviewer 리뷰 라운드가 없습니다 — 묶음 종결은 돌려받은 리뷰가 있어야 "
             "진행합니다. 같은 하네스면 `pm_delegate.py ticket prepare --cluster <C-이름> "
@@ -12149,18 +12156,6 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
             "--since", required=True, metavar="<tag|rev>",
             help="구간 시작 — 코드 체크아웃에서 이 rev 의 커밋 시각을 해소해 완료 시점과 비교한다",
         )
-        return parser
-    if command == "cluster":
-        parser = argparse.ArgumentParser(
-            prog="pm_delegate.py cluster",
-            description="묶음 리뷰 백그라운드 실행의 회수(대기)",
-        )
-        sub = parser.add_subparsers(dest="cluster_command", required=True)
-        wait = sub.add_parser(
-            "wait", help="백그라운드 묶음 리뷰가 끝날 때까지 기다리고 회수 상태를 낸다",
-        )
-        wait.add_argument("--cluster", required=True, metavar="C-<이름>")
-        wait.add_argument("--cwd", required=True, metavar="ABSPATH")
         return parser
     if command != "ticket":
         return None

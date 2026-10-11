@@ -3669,8 +3669,7 @@ class ClusterCloser:
         self._legacy_base_revision_args = tuple(legacy_base_revisions)
         self._user_ack = user_ack
         self._explicit_slot = explicit_slot
-        # 라운드 처분 seam — 묶음 표면이 있으면 한 번, 없으면 티켓별로 반복한다(둘 다 같은
-        # 커맨드의 인자 차이라 여기서 고르는 것은 argv 뿐이다).
+        # 리뷰 처분 실행 함수. 묶음 표면 rounds resolve --cluster 를 한 번 부른다.
         self._run_delegate_fn = run_delegate_fn or self._default_run_delegate
         self._board = _board_module_at(board_py)
         # 장부가 선언한 멤버 전부와, 그중 코드 단계의 대상이 되는 **살아 있는** 멤버.
@@ -3960,15 +3959,16 @@ class ClusterCloser:
         """멤버마다 돌려받은 리뷰와 resolve 가 소비할 확인 입력을 read-only 검증한다.
 
         리뷰 라운드가 없거나 돌려받지 않았거나 전부 폐기된 멤버는 여기서 막힌다 — 종결은 리뷰를
-        돌려받은 묶음만 진행한다. 처분 여부는 여기 없다(처분은 resolve 자신이 하는 일이라
-        비단조다). 판정은 board 소유(`_review_resolution_input_problem`)다.
+        돌려받은 멤버만 진행한다. 예외는 tier: pm-direct 이고 리뷰 라운드가 0개인 멤버다(리뷰
+        라운드가 있으면 pm-direct 도 같은 판정을 받는다). 처분 여부는 여기 없다(처분은 resolve
+        자신이 하는 일이라 비단조다). 판정은 board 소유(`_review_resolution_input_problem`)다.
         """
         problem_fn = self._review_seam("_review_resolution_input_problem")
         problems: list[str] = []
         for tid in self._tickets:
             problem = problem_fn(tid)
             if problem is None:
-                print(f"  ✓ {tid} 리뷰 돌려받음 · 확인 입력 complete")
+                print(f"  ✓ {tid} 리뷰 판정 입력 complete")
             else:
                 problems.append(f"리뷰 확인 입력 미충족 — {tid}: {problem}")
         return problems

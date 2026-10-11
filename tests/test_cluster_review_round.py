@@ -745,6 +745,11 @@ def test_review_cli_has_no_background_or_wait(pd, review_env, capsys):
     assert codes == {" ".join(argv): 2 for argv in _REMOVED_REVIEW_CLI}
 
 
+def test_removed_cluster_subcommand_has_no_parser(pd):
+    """지운 `cluster wait` 는 조회 표면(실행 단일 진실 parser)에도 남지 않는다."""
+    assert pd.build_subcommand_parser("cluster") is None
+
+
 # ════════════════════════════════════════════════════════════════════════
 # 같은 하네스 리뷰 — ticket prepare → 라운드 파일 → ticket harvest (I2)
 # ════════════════════════════════════════════════════════════════════════

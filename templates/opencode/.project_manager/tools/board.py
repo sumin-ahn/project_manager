@@ -8713,11 +8713,6 @@ def _last_round_verdict(entry: dict) -> int | None:
     return verdict if isinstance(verdict, int) and not isinstance(verdict, bool) else None
 
 
-def gate_passed(entry: dict) -> bool:
-    """마지막 라운드가 **통과**(rc 0)로 끝난 게이트인가 (공용 seam)."""
-    return _last_round_verdict(entry) == 0
-
-
 def gate_residual_must_fix(entry: dict) -> int | None:
     """마지막 라운드가 남긴 must-fix 잔여 — 3-상태 (공용 seam).
 

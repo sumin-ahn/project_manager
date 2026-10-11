@@ -1928,6 +1928,68 @@ def test_close_preflight_refuses_a_member_without_a_harvested_review(
     assert env.slot_log()[0] == "code seed"
 
 
+def _mark_pm_direct(env) -> None:
+    """멤버 명세 frontmatter 에 `tier: pm-direct` 를 더한다."""
+    spec = next((env.board_dir / "tickets" / "claimed").glob(f"{env.ticket}*.md"))
+    text = spec.read_text(encoding="utf-8")
+    assert "estimate: small\n" in text
+    spec.write_text(text.replace("estimate: small\n", "estimate: small\ntier: pm-direct\n", 1),
+                    encoding="utf-8")
+    _git(env.board_dir, "add", "-A")
+    _git(env.board_dir, "commit", "-qm", "pm-direct tier")
+    _git(env.board_dir, "push", "-q")
+
+
+def _drop_rounds(env) -> None:
+    """멤버 라운드 디렉터리를 통째로 지운다(위임 라운드를 연 적 없는 형상)."""
+    shutil.rmtree(env.board_dir / "tickets" / "rounds" / env.ticket)
+    _git(env.board_dir, "add", "-A")
+    _git(env.board_dir, "commit", "-qm", "no rounds")
+    _git(env.board_dir, "push", "-q")
+
+
+@requires_git
+def test_close_finishes_a_pm_direct_member_without_review_rounds(
+    tf, tmp_path, monkeypatch, capsys,
+):
+    """PM-direct 멤버는 리뷰 라운드가 하나도 없을 때만 리뷰 없음 사유 없이 종결된다.
+
+    역방향 둘: tier 없는 같은 형상은 리뷰 없음으로 막히고, PM-direct 라도 리뷰 라운드가 있으면
+    미처분 must-fix 판정을 그대로 받는다.
+    """
+    pm_direct = _build_close_env(tf, tmp_path / "pm-direct", monkeypatch)
+    _mark_pm_direct(pm_direct)
+    _drop_rounds(pm_direct)
+
+    rc = pm_direct.closer().run()
+    out = capsys.readouterr()
+
+    assert rc == 0, out.out + out.err
+    assert "리뷰 라운드가 없습니다" not in out.err
+    assert [args[0] for args in pm_direct.board_calls] == ["complete"]
+
+    untiered = _build_close_env(tf, tmp_path / "untiered", monkeypatch)
+    _drop_rounds(untiered)
+
+    rc = untiered.closer().run()
+    out = capsys.readouterr()
+
+    assert rc == 1, out.out + out.err
+    assert "code-reviewer 리뷰 라운드가 없습니다" in out.err
+    assert untiered.board_calls == [] and untiered.delegate_calls == []
+
+    reviewed = _build_close_env(tf, tmp_path / "pm-direct-reviewed", monkeypatch)
+    _mark_pm_direct(reviewed)
+    _write_review_round(reviewed, _review_round_text([_must_fix_finding()]))
+
+    rc = reviewed.closer().run()
+    out = capsys.readouterr()
+
+    assert rc == 1, out.out + out.err
+    assert "리뷰 확인 입력 미충족" in out.err and reviewed.ticket in out.err
+    assert reviewed.board_calls == [] and reviewed.delegate_calls == []
+
+
 @requires_git
 def test_close_stops_before_any_side_effect_when_the_confirmation_is_missing(
     close_env, capsys,
