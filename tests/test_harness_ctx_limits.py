@@ -191,7 +191,7 @@ def test_targets_floor_and_reserved(pm_import):
                          "C": 400000, "basis": {"context": 1000000, "output": 32000, "source": "fixture"}}]}}
     targets = pm_import.harness_ctx_targets({("ollama", "glm-5.2:cloud"): 32768}, entries(200000))
 
-    assert targets[".claude/settings.json"] == {("autoCompactWindow",): 213000}
+    assert targets[".claude/settings.json"] == {("autoCompactWindow",): 213000, ("idleCompaction",): False}
     assert targets[".codex/config.toml"] == {
         ("model_auto_compact_token_limit",): 180000}
     assert targets[".opencode/opencode.jsonc"] == {
@@ -438,6 +438,7 @@ def test_shipped_defaults_and_resolved_native_fixed_point(pm_import, tmp_path):
         "model_auto_compact_token_limit"] == 180000
     assert json.loads(TEMPLATE_FILES["claude"][0].read_text(encoding="utf-8"))[
         "autoCompactWindow"] == 180000
+    assert json.loads(TEMPLATE_FILES["claude"][0].read_text(encoding="utf-8"))["idleCompaction"] is False
 
 
 # ── AT-009 · AT-010 이전 계획 ────────────────────────────────────────────────
@@ -777,7 +778,7 @@ def test_t0943_record_three_tools_fields_and_values(pm_import, local_conf, tmp_p
     assert numbers == {"claude": (600000, 967000, 600000, 564000, 480000, 540000),
                        "codex": (600000, 570000, 570000, 535800, 456000, 513000),
                        "opencode": (200000, 230144, 200000, 188000, 160000, 180000)}
-    assert record["harnesses"]["claude"]["settings"] == {"autoCompactWindow": 597000}
+    assert record["harnesses"]["claude"]["settings"] == {"autoCompactWindow": 597000, "idleCompaction": False}
     assert record["harnesses"]["codex"]["settings"] == {"model_auto_compact_token_limit": 535800}
     assert record["harnesses"]["opencode"]["settings"] == {
         "compaction.reserved": 12000, 'provider.ollama.models."glm-5.2:cloud".limit.context': 262144,
@@ -948,7 +949,7 @@ def test_t0943_claude_default_window_and_confirm_query(local_conf, tmp_path, mon
     entry = json.loads((root / local_conf.CTX_BUDGET_RELPATH).read_text(encoding="utf-8"))["harnesses"]["claude"]
     assert entry["models"] == [T0943_CLAUDE_ROW]
     assert (entry["C"], entry["E"], entry["P"], entry["settings"]) == (
-        967000, 600000, 564000, {"autoCompactWindow": 597000})
+        967000, 600000, 564000, {"autoCompactWindow": 597000, "idleCompaction": False})
 
 
 @pytest.mark.parametrize("case", ["threshold", "below-range"])
@@ -1240,6 +1241,46 @@ def test_t0949_bool_is_not_integer_one(pm_import):
     기록 값은 1 뿐이다: 설정 파일 true · 기록 1 은 다름, 설정 파일 1 · 기록 1 은 같음."""
     assert pm_import._harness_ctx_same(True, True, 1) is False
     assert pm_import._harness_ctx_same(True, 1, 1) is True
+
+
+# ── T-0952 유휴 압축 끄기 관리 키 ─────────────────────────────────────────────
+
+
+def test_t0952_bool_target_equals_only_bool(pm_import):
+    """AT-012 — bool 목표는 같은 bool 만 같다. 정수 0·반대 bool·키 없음은 다르다."""
+    assert pm_import._harness_ctx_same(True, False, False) is True
+    assert pm_import._harness_ctx_same(True, 0, False) is False
+    assert pm_import._harness_ctx_same(True, True, False) is False
+    assert pm_import._harness_ctx_same(False, None, False) is False
+
+
+def test_t0952_apply_manages_idle_compaction_false(pm_import, local_conf, tmp_path):
+    """AT-007 — `idleCompaction` 이 없는 Claude 설정 파일에 반영이 값 자리만 넣고, 기록·차이 표시가 함께 다룬다."""
+    shipped = TEMPLATE_FILES["claude"][0].read_text(encoding="utf-8")
+    idle_line = '  "idleCompaction": false,\n'
+    assert shipped.count(idle_line) == 1
+    without_idle = shipped.replace(idle_line, "", 1)
+    root = _project(tmp_path, harnesses=("claude",), texts={".claude/settings.json": without_idle})
+    config_dir = _global_dir(tmp_path)
+    path = root / ".claude" / "settings.json"
+
+    assert _apply(pm_import, root, config_dir) == (".claude/settings.json idleCompaction (없음) → false",)
+    after = path.read_text(encoding="utf-8")
+    assert _only_insertions(without_idle, after)
+    assert after.count('"idleCompaction": false') == 1
+    assert json.loads(after)["idleCompaction"] is False
+    assert _apply(pm_import, root, config_dir) == ()
+
+    record = json.loads((root / local_conf.CTX_BUDGET_RELPATH).read_text(encoding="utf-8"))
+    assert record["harnesses"]["claude"]["settings"] == {"autoCompactWindow": 180000, "idleCompaction": False}
+    values = local_conf.load(root / ".project_manager" / "local.conf").values
+    assert pm_import.ctx_budget_status(root, values)["claude"]["settings_mismatch"] == []
+
+    path.write_text(after.replace('"idleCompaction": false', '"idleCompaction": true', 1), encoding="utf-8")
+    assert pm_import.ctx_budget_status(root, values)["claude"]["settings_mismatch"] == [
+        {"path": "idleCompaction", "file": True, "record": False}]
+    assert _apply(pm_import, root, config_dir) == (".claude/settings.json idleCompaction true → false",)
+    assert path.read_text(encoding="utf-8") == after
 
 
 def _t0949_set_jsonc(pm_import, root: Path, relpath: str, path: tuple[str, ...], value) -> None:

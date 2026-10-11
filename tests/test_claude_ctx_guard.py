@@ -16,16 +16,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import shutil
-import subprocess
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-from _textio import normalize_newline_bytes, utf8_child_env, write_lf
-from _win_skip import posix_mode_supported
 
 REPO = Path(__file__).resolve().parents[1]
 CLAUDE = REPO / "templates" / "claude_code" / ".claude"
@@ -326,104 +320,78 @@ def test_hook_evaluate_ok_passes(guard, stop_hook, tmp_path):
     assert not (tmp_path / ".project_manager" / ".local" / "ctx-stop").exists()
 
 
-@pytest.mark.parametrize(
-    ("band_present", "observation_present"),
-    [(False, False), (False, True), (True, False), (True, True)],
-)
-def test_precompact_auto_band_mismatch_four_quadrants(
-    stop_hook, tmp_path, monkeypatch, band_present, observation_present,
+def test_t0952_precompact_sends_base_checkpoint_arguments_only(
+    stop_hook, tmp_path, monkeypatch, capsys,
 ):
-    """auto PreCompact의 marker 有/無 × 관측 有/無가 엔진 인자로 그대로 전달된다."""
+    """auto PreCompact 는 기본 checkpoint 인자만 한 번 보내고 실패해도 재시도·대체 무장이 없다(AT-005)."""
     from test_harness_ctx_limits import install_ctx_record
-    manager = tmp_path / ".project_manager"
     install_ctx_record(tmp_path, {"harness.claude.ctx_window_tokens": "600000"})
-    session_id = "auto-quadrant"
-    if band_present:
-        marker = manager / ".local" / "ctx-stop" / f"{session_id}.final"
-        marker.parent.mkdir(parents=True)
-        marker.write_text("ctx-final nudge injected\n", encoding="utf-8")
-    stdin = {"trigger": "auto", "session_id": session_id}
-    if observation_present:
-        stdin["transcript_path"] = str(_write_transcript(
-            tmp_path, [("assistant", {"input_tokens": 30_000})], sidechain=False,
-        ))
-    calls = []
-    monkeypatch.setattr(
-        stop_hook, "_create_checkpoint",
-        lambda root, payload, **kwargs: calls.append((root, payload, kwargs)),
-    )
-
-    assert stop_hook.capture_precompact(stdin, tmp_path) == 0
-    assert len(calls) == 1
-    root, payload, kwargs = calls[0]
-    assert root == tmp_path and payload is stdin
-    assert kwargs["phase"] == "pre" and kwargs["breadcrumb"] is True
-    assert kwargs["ctx_band_checked"] is True
-    assert kwargs["ctx_band_missed"] is (not band_present)
-    assert kwargs["ctx_window_tokens"] == 600_000
-    assert kwargs["ctx_observed_tokens"] == (30_000 if observation_present else 0)
-    assert kwargs["harness"] == "claude"
-
-
-@pytest.mark.parametrize("trigger", ["manual", None, "future-trigger"])
-def test_precompact_non_auto_trigger_conservatively_suppresses_mismatch(
-    stop_hook, tmp_path, monkeypatch, trigger,
-):
-    """manual /compact와 trigger 부재·미지값은 관측치가 있어도 auto 진단을 만들지 않는다."""
+    engine = tmp_path / ".project_manager" / "tools" / "pm_log.py"
+    engine.write_text("", encoding="utf-8")
     transcript = _write_transcript(
         tmp_path, [("assistant", {"input_tokens": 30_000})], sidechain=False,
     )
     stdin = {
-        "session_id": "non-auto-trigger",
+        "trigger": "auto",
+        "session_id": "t0952-args",
         "transcript_path": str(transcript),
+        "cwd": str(tmp_path),
     }
-    if trigger is not None:
-        stdin["trigger"] = trigger
-    calls = []
-    monkeypatch.setattr(
-        stop_hook, "_create_checkpoint",
-        lambda root, payload, **kwargs: calls.append(kwargs),
-    )
-
-    assert stop_hook.capture_precompact(stdin, tmp_path) == 0
-    assert len(calls) == 1
-    assert calls[0]["ctx_band_checked"] is False
-    assert calls[0]["ctx_band_missed"] is False
-    assert calls[0]["ctx_window_tokens"] == 0
-    assert calls[0]["ctx_observed_tokens"] == 0
-
-
-def test_hook_new_checkpoint_options_retry_old_engine_once(
-    stop_hook, tmp_path, monkeypatch,
-):
-    """구 pm_log가 진단 옵션을 거부해도 구 argv로 compaction checkpoint를 남긴다."""
-    engine = tmp_path / ".project_manager" / "tools" / "pm_log.py"
-    engine.parent.mkdir(parents=True, exist_ok=True)
-    engine.write_text("# old engine probe\n", encoding="utf-8")
     calls = []
 
     def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        return SimpleNamespace(returncode=2 if len(calls) == 1 else 0)
+        calls.append(command)
+        return SimpleNamespace(returncode=2)
 
     monkeypatch.setattr(stop_hook.subprocess, "run", fake_run)
 
-    stop_hook._create_checkpoint(
-        tmp_path, {"session_id": "legacy-session"}, phase="pre", breadcrumb=True,
-        ctx_band_checked=True, ctx_band_missed=True, ctx_window_tokens=600_000,
-        ctx_observed_tokens=30_000, harness="claude",
-    )
+    assert stop_hook.capture_precompact(stdin, tmp_path) == 0
+    assert len(calls) == 1
+    assert calls[0][2:] == [
+        "checkpoint", "--trigger", "compaction", "--cwd", str(tmp_path.resolve()),
+        "--phase", "pre", "--session-id", "t0952-args",
+        "--boundary-id", "claude-t0952-args-1", "--breadcrumb",
+    ]
+    snapshot_marker = tmp_path / ".project_manager" / ".local" / "ctx-stop" / "compact-snapshot.t0952-args"
+    assert not snapshot_marker.exists()
+
+    capsys.readouterr()
+    (tmp_path / ".project_manager" / ".local" / "ctx-budget.json").unlink()
+    assert stop_hook.capture_precompact(stdin, tmp_path) == 0
+    assert "[ctx-budget]" not in capsys.readouterr().err
     assert len(calls) == 2
-    new_options = {
-        "--ctx-band-checked", "--ctx-band-missed", "--ctx-window-tokens",
-        "--ctx-observed-tokens", "--harness",
-    }
-    assert new_options & set(calls[0][0]) == new_options
-    assert new_options.isdisjoint(calls[1][0])
-    assert "--breadcrumb" in calls[1][0]
-    assert all(call[1]["stdout"] is stop_hook.subprocess.DEVNULL for call in calls)
-    assert calls[0][1]["stderr"] is stop_hook.subprocess.PIPE
-    assert calls[1][1]["stderr"] is stop_hook.subprocess.DEVNULL
+
+
+def test_t0952_postcompact_arm_replaces_leftover_pending_payload(stop_hook, tmp_path):
+    """옛 대체 무장이 남긴 marker 도 PostCompact 무장이 새 payload 로 바꾼다(AT-006)."""
+    session_id = "t0952-leftover"
+    marker = tmp_path / ".project_manager" / ".local" / "ctx-stop" / f"compact-snapshot.{session_id}"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("<!-- ctx-checkpoint-pending: append-failed -->\nold\n", encoding="utf-8")
+    payload = "## PM 정체성 (compaction 복구)\n- task: main\n"
+
+    assert stop_hook._arm_snapshot(tmp_path, session_id, payload) is True
+    assert marker.read_text(encoding="utf-8") == payload
+
+
+def test_t0952_postcompact_rearm_failure_names_existing_payload_only(
+    stop_hook, tmp_path, monkeypatch, capsys,
+):
+    """PostCompact 재무장 실패 문구는 남아 있는 대상(기존 payload)만 가리킨다(F-001)."""
+    monkeypatch.setattr(
+        stop_hook, "_build_snapshot", lambda root, stdin: "## PM 정체성 (compaction 복구)",
+    )
+    monkeypatch.setattr(stop_hook, "_arm_snapshot", lambda root, session_id, snapshot: False)
+    monkeypatch.setattr(stop_hook, "_create_checkpoint", lambda root, stdin, phase: True)
+
+    rc, output = stop_hook.evaluate(
+        {"hook_event_name": "PostCompact", "session_id": "t0952-rearm"}, tmp_path, {},
+    )
+
+    assert (rc, output) == (0, None)
+    assert capsys.readouterr().err == (
+        "[ctx-snapshot-rearm-failure] snapshot 재무장 실패 — 기존 payload를 다음 경계에 보존\n"
+    )
 
 
 def _stop_transcript(tmp_path: Path) -> Path:
@@ -843,558 +811,6 @@ def test_postcompact_arms_snapshot_then_first_supported_channel_injects_once(
     assert output["hookSpecificOutput"]["additionalContext"] == payload
     assert not marker.exists()
     assert stop_hook.evaluate(prompt, tmp_path, {}) == (0, None)
-
-
-def _postcompact_durable_mismatch_subprocess_probe(
-    tmp_path: Path,
-    *,
-    consume_durable_mismatch: bool = False,
-    failure: str | None = None,
-    read_failure_as_none: bool = False,
-    drop_append_fallback: bool = False,
-) -> dict:
-    """출하 hook과 pm_log CLI를 격리 트리에서 실제 subprocess로 잇는다.
-
-    pm_log의 sibling loader와 hook→engine 경계를 그대로 보존하려고 tools 전체를 복사한다. 단순
-    monkeypatch 단위검사보다 느리지만, T-0661의 쟁점인 "snapshot marker 소비와 append-only 진단
-    원천은 별개"라는 프로세스 간 수명주기를 검증하려면 이 경계를 줄이면 안 된다.
-
-    ``consume_durable_mismatch``는 회귀 감도 확인용 임시 사본 변형이다. 첫 snapshot 조회가 진단
-    원천을 소비하게 만들어, 같은 불변식 단언이 실제로 실패하는지 확인한다. 출하 파일은 안 바꾼다.
-    """
-    root = tmp_path / "repo"
-    shutil.copytree(REPO / ".project_manager" / "tools", root / ".project_manager" / "tools")
-    claude = root / ".claude"
-    claude.mkdir()
-    for name in ("ctx_guard.py", "ctx_stop_hook.py"):
-        shutil.copy2(CLAUDE / name, claude / name)
-
-    if consume_durable_mismatch:
-        pm_log = root / ".project_manager" / "tools" / "pm_log.py"
-        text = pm_log.read_text(encoding="utf-8")
-        anchor = (
-            '    current = Path(pm_home) / ".project_manager" / "wiki" / "log" / "current.md"\n'
-        )
-        mutation = (
-            anchor
-            + '    consumed = current.with_name(".t0661-mismatch-consumed")\n'
-            + "    if consumed.exists():\n"
-            + "        return None\n"
-            + '    consumed.write_text("consumed\\n", encoding="utf-8")\n'
-        )
-        assert text.count(anchor) == 1
-        pm_log.write_text(text.replace(anchor, mutation), encoding="utf-8")
-
-    if read_failure_as_none:
-        pm_log = root / ".project_manager" / "tools" / "pm_log.py"
-        text = pm_log.read_text(encoding="utf-8")
-        mutation = "        return _CTX_WINDOW_MISMATCH_READ_FAILED\n"
-        assert text.count(mutation) == 1
-        pm_log.write_text(text.replace(mutation, "        return None\n"), encoding="utf-8")
-
-    if drop_append_fallback:
-        hook = claude / "ctx_stop_hook.py"
-        text = hook.read_text(encoding="utf-8")
-        fallback = "    if auto_compact and window_tokens is not None and not band_fired and not checkpointed:\n"
-        assert text.count(fallback) == 1
-        hook.write_text(
-            text.replace(fallback, "    if False and auto_compact and window_tokens is not None and not band_fired and not checkpointed:\n"),
-            encoding="utf-8",
-        )
-
-    manager = root / ".project_manager"
-    log_dir = manager / "wiki" / "log"
-    log_dir.mkdir(parents=True)
-    current = log_dir / "current.md"
-    write_lf(current, "# Project Log\n\n> T-0661 subprocess probe\n\n")
-    write_lf(manager / "local.conf", "harness.claude.ctx_window_tokens=600000\n")
-    state = manager / ".local" / "tasks" / "main" / "pm_state.md"
-    state.parent.mkdir(parents=True)
-    write_lf(state, "# main state\n- T-0661 probe\n")
-    cwd = root / "work" / "project_1"
-    cwd.mkdir(parents=True)
-    write_lf(manager / ".local" / "worktree-leases.json",
-        json.dumps({
-            "leases": [{
-                "slot": "work/project_1", "state": "leased", "session": "main",
-            }],
-        }),
-    )
-
-    from test_harness_ctx_limits import install_ctx_record
-    install_ctx_record(root, {"harness.claude.ctx_window_tokens": "600000"})
-    def run_hook(payload: dict, *args: str) -> dict | None:
-        result = subprocess.run(
-            [sys.executable, str(claude / "ctx_stop_hook.py"), *args],
-            cwd=root,
-            input=json.dumps(payload),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            env=utf8_child_env(),
-            timeout=10,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        return json.loads(result.stdout) if result.stdout else None
-
-    marker_dir = manager / ".local" / "ctx-stop"
-    transcript = root / "missed.jsonl"
-    write_lf(transcript, json.dumps({
-        "type": "assistant",
-        "message": {"role": "assistant", "usage": {"input_tokens": 30_000}},
-        "isSidechain": False,
-    }) + "\n")
-    base = {
-        "session_id": "probe-missed", "transcript_path": str(transcript), "cwd": str(cwd),
-    }
-    if failure == "precompact-readonly":
-        current.chmod(0o444)
-    assert run_hook(
-        base | {"hook_event_name": "PreCompact", "trigger": "auto"},
-        "--precompact-capture",
-    ) is None
-    _append_transcript_entry(transcript, _compact_boundary())
-    post = base | {"hook_event_name": "PostCompact"}
-    snapshot_marker = marker_dir / "compact-snapshot.probe-missed"
-
-    assert run_hook(post) is None
-    first = snapshot_marker.read_bytes()
-
-    if failure == "ledger-read":
-        saved_log = current.with_name("current.saved.md")
-        current.rename(saved_log)
-        current.mkdir()
-        assert run_hook(post) is None
-        duplicate_unconsumed = snapshot_marker.read_bytes()
-        return {
-            "first": first,
-            "duplicate_unconsumed": duplicate_unconsumed,
-            "log": saved_log.read_bytes(),
-        }
-
-    if failure == "precompact-readonly":
-        current.chmod(0o644)
-        return {
-            "snapshot": first,
-            "marker": snapshot_marker.exists(),
-            "log": current.read_bytes(),
-        }
-
-    if failure == "marker-write":
-        consumed_output = run_hook(base | {"hook_event_name": "UserPromptSubmit"})
-        assert consumed_output is not None and not snapshot_marker.exists()
-        consumed = consumed_output["hookSpecificOutput"]["additionalContext"].encode("utf-8")
-        marker_dir.chmod(0o555)
-        assert run_hook(post) is None
-        marker_during_failure = snapshot_marker.exists()
-        prompt_during_failure = run_hook(base | {"hook_event_name": "UserPromptSubmit"})
-        durable_log = current.read_bytes()
-        marker_dir.chmod(0o755)
-        assert run_hook(post) is None
-        marker_after_recovery = snapshot_marker.exists()
-        recovered_output = run_hook(base | {"hook_event_name": "UserPromptSubmit"})
-        recovered = (
-            recovered_output["hookSpecificOutput"]["additionalContext"].encode("utf-8")
-            if recovered_output is not None else None
-        )
-        return {
-            "first": first,
-            "consumed": consumed,
-            "marker_during_failure": marker_during_failure,
-            "prompt_during_failure": prompt_during_failure,
-            "log": durable_log,
-            "marker_after_recovery": marker_after_recovery,
-            "recovered": recovered,
-        }
-
-    assert run_hook(post) is None
-    duplicate_unconsumed = snapshot_marker.read_bytes()
-
-    consumed_output = run_hook(base | {"hook_event_name": "UserPromptSubmit"})
-    assert consumed_output is not None
-    consumed = consumed_output["hookSpecificOutput"]["additionalContext"].encode("utf-8")
-    marker_after_take = snapshot_marker.exists()
-    assert run_hook(post) is None
-    after_consume_refire = snapshot_marker.read_bytes()
-
-    clean_transcript = root / "clean.jsonl"
-    write_lf(clean_transcript, json.dumps({
-        "type": "assistant",
-        "message": {"role": "assistant", "usage": {"input_tokens": 30_000}},
-        "isSidechain": False,
-    }) + "\n")
-    clean_sid = "probe-clean"
-    (marker_dir / f"{clean_sid}.final").write_text("fired\n", encoding="utf-8")
-    clean_base = {
-        "session_id": clean_sid,
-        "transcript_path": str(clean_transcript),
-        "cwd": str(cwd),
-    }
-    assert run_hook(
-        clean_base | {"hook_event_name": "PreCompact", "trigger": "auto"},
-        "--precompact-capture",
-    ) is None
-    _append_transcript_entry(clean_transcript, _compact_boundary())
-    assert run_hook(clean_base | {"hook_event_name": "PostCompact"}) is None
-    clean = (marker_dir / f"compact-snapshot.{clean_sid}").read_bytes()
-
-    return {
-        "first": first,
-        "duplicate_unconsumed": duplicate_unconsumed,
-        "consumed": consumed,
-        "marker_after_take": marker_after_take,
-        "after_consume_refire": after_consume_refire,
-        "clean": clean,
-        "log": current.read_bytes(),
-    }
-
-
-def _assert_postcompact_durable_mismatch_matrix(result: dict) -> None:
-    """marker끼리는 바이트 동일성, marker↔전달 payload는 내용 동일성으로 본다(T-0708).
-
-    marker(`first`·`duplicate_unconsumed`·`after_consume_refire`)는 모두 같은 디스크 읽기라 바이트
-    그대로 대조한다. `consumed`는 훅이 marker를 universal-newline으로 읽어 전달한 payload라 CRLF
-    플랫폼에서 표기가 다르다 — 층을 맞춰 내용으로 판정하고, 내용 1자 drift는 여전히 red다.
-    """
-    diagnostic = b"[ctx-window-mismatch]"
-    assert result["first"].count(diagnostic) == 1
-    assert result["duplicate_unconsumed"].count(diagnostic) == 1, (
-        "duplicate-unconsumed PostCompact lost durable ctx-window-mismatch"
-    )
-    assert result["duplicate_unconsumed"] == result["first"]
-    assert normalize_newline_bytes(result["consumed"]) == normalize_newline_bytes(
-        result["first"]
-    ), "consumed payload content diverged from the armed snapshot"
-    assert result["marker_after_take"] is False
-    # 소비 후 같은 경계 재발화는 현행대로 다시 무장한다. 단일 진실이 log라 payload/log 모두 누적 0.
-    assert result["after_consume_refire"] == result["first"]
-    assert result["after_consume_refire"].count(diagnostic) == 1
-    assert result["clean"].count(diagnostic) == 0
-    assert result["log"].count(diagnostic) == 1
-
-
-def test_postcompact_duplicate_preserves_durable_mismatch_snapshot_subprocess(tmp_path):
-    """미소비 중복 payload는 byte-identical·진단 보존, 소비 후 재발화는 누적 없이 재무장."""
-    _assert_postcompact_durable_mismatch_matrix(
-        _postcompact_durable_mismatch_subprocess_probe(tmp_path),
-    )
-
-
-def test_postcompact_durable_mismatch_regression_detects_consuming_source(tmp_path):
-    """진단 원천을 소비성으로 바꾼 임시 실-engine 사본이면 핵심 불변식 단언이 red다."""
-    result = _postcompact_durable_mismatch_subprocess_probe(
-        tmp_path, consume_durable_mismatch=True,
-    )
-    diagnostic = b"[ctx-window-mismatch]"
-    assert result["first"].count(diagnostic) == 1
-    assert result["duplicate_unconsumed"].count(diagnostic) == 0
-    with pytest.raises(AssertionError, match="duplicate-unconsumed"):
-        _assert_postcompact_durable_mismatch_matrix(result)
-
-
-# ── snapshot 표기 축(T-0708) ────────────────────────────────────────────────────
-# 디스크 marker는 훅의 텍스트 쓰기라 플랫폼 개행을 따르고(Windows=CRLF), 전달 payload는 훅의
-# universal-newline 읽기라 항상 LF다. 두 값을 원본 bytes로 맞대면 CRLF 플랫폼에서 내용이 같아도
-# 항상 불일치한다. 아래 합성 결과가 그 형상을 LF 환경에서도 재현한다.
-
-_MISMATCH_SNAPSHOT_LF = (
-    "## PM 정체성 (compaction 복구)\n"
-    "- task: main\n"
-    "- [ctx-window-mismatch] 관측 window가 설정과 다르다\n"
-)
-
-
-def _durable_mismatch_matrix_result(marker: bytes, delivered: bytes) -> dict:
-    """실 probe 산출과 같은 형태의 합성 결과 — 디스크 marker bytes와 전달 payload를 따로 준다."""
-    return {
-        "first": marker,
-        "duplicate_unconsumed": marker,
-        "consumed": delivered,
-        "marker_after_take": False,
-        "after_consume_refire": marker,
-        "clean": "## PM 정체성 (compaction 복구)\n- task: main\n".encode("utf-8"),
-        "log": "## [2026-08-17] checkpoint — [ctx-window-mismatch] 관측 window\n".encode("utf-8"),
-    }
-
-
-def test_durable_mismatch_matrix_accepts_crlf_marker_with_lf_delivery():
-    """T-0708 — 디스크 marker가 CRLF여도 전달 payload 내용이 같으면 불변식은 green이다."""
-    marker = _MISMATCH_SNAPSHOT_LF.replace("\n", "\r\n").encode("utf-8")
-    delivered = _MISMATCH_SNAPSHOT_LF.encode("utf-8")
-    assert marker != delivered, "픽스처가 표기 차이를 못 만들었다"
-    _assert_postcompact_durable_mismatch_matrix(
-        _durable_mismatch_matrix_result(marker, delivered),
-    )
-
-
-def test_durable_mismatch_matrix_detects_single_character_delivery_drift():
-    """개행 정규화가 전달 payload의 실 내용 1자 drift를 가리지 않는다 — 여전히 red다."""
-    marker = _MISMATCH_SNAPSHOT_LF.replace("\n", "\r\n").encode("utf-8")
-    delivered = _MISMATCH_SNAPSHOT_LF.replace("task: main", "task: main2").encode("utf-8")
-    with pytest.raises(AssertionError, match="consumed payload"):
-        _assert_postcompact_durable_mismatch_matrix(
-            _durable_mismatch_matrix_result(marker, delivered),
-        )
-
-
-def _assert_ledger_read_failure_preserves_mismatch(result: dict) -> None:
-    diagnostic = b"[ctx-window-mismatch]"
-    assert result["first"].count(diagnostic) == 1
-    assert result["duplicate_unconsumed"].count(diagnostic) == 1, (
-        "ledger-read failure replaced armed diagnostic with an untrusted snapshot"
-    )
-    assert result["duplicate_unconsumed"] == result["first"]
-
-
-def test_postcompact_ledger_read_failure_preserves_armed_mismatch_subprocess(tmp_path):
-    """원장 판독 불능은 활성 진단 없음이 아니다: 기존 payload를 byte 보존한다."""
-    _assert_ledger_read_failure_preserves_mismatch(
-        _postcompact_durable_mismatch_subprocess_probe(tmp_path, failure="ledger-read"),
-    )
-
-
-def test_ledger_read_failure_regression_detects_none_collapse(tmp_path):
-    """판독 실패를 None으로 합친 임시 engine은 진단 1→0으로 실제 red가 된다."""
-    result = _postcompact_durable_mismatch_subprocess_probe(
-        tmp_path, failure="ledger-read", read_failure_as_none=True,
-    )
-    diagnostic = b"[ctx-window-mismatch]"
-    assert result["first"].count(diagnostic) == 1
-    assert result["duplicate_unconsumed"].count(diagnostic) == 0
-    with pytest.raises(AssertionError, match="ledger-read failure"):
-        _assert_ledger_read_failure_preserves_mismatch(result)
-
-
-def _assert_precompact_append_failure_preserves_delivery(result: dict) -> None:
-    diagnostic = b"[ctx-window-mismatch]"
-    assert result["log"].count(diagnostic) == 0
-    assert result["marker"] is True
-    assert result["snapshot"].count(diagnostic) == 1, (
-        "PreCompact append failure lost the fallback diagnostic delivery"
-    )
-    assert result["snapshot"].count(b"ctx-checkpoint-pending: append-failed") == 1
-
-
-def test_precompact_readonly_log_arms_pending_diagnostic_subprocess(tmp_path):
-    """append 불능이어도 rc0 hook은 원장 밖 pending snapshot으로 진단 1회를 보존한다."""
-    _assert_precompact_append_failure_preserves_delivery(
-        _postcompact_durable_mismatch_subprocess_probe(
-            tmp_path, failure="precompact-readonly",
-        ),
-    )
-
-
-def test_precompact_append_failure_regression_detects_dropped_fallback(tmp_path):
-    """append 실패 fallback을 제거한 임시 hook은 snapshot 진단 0으로 실제 red가 된다."""
-    result = _postcompact_durable_mismatch_subprocess_probe(
-        tmp_path, failure="precompact-readonly", drop_append_fallback=True,
-    )
-    assert result["log"].count(b"[ctx-window-mismatch]") == 0
-    assert result["snapshot"].count(b"[ctx-window-mismatch]") == 0
-    with pytest.raises(AssertionError, match="fallback diagnostic delivery"):
-        _assert_precompact_append_failure_preserves_delivery(result)
-
-
-def _assert_marker_write_failure_retries_from_durable_log(result: dict) -> None:
-    diagnostic = b"[ctx-window-mismatch]"
-    assert result["first"].count(diagnostic) == 1
-    assert result["consumed"].count(diagnostic) == 1
-    assert result["marker_during_failure"] is False
-    assert result["prompt_during_failure"] is None
-    assert result["log"].count(diagnostic) == 1
-    assert result["marker_after_recovery"] is True
-    assert result["recovered"] is not None
-    assert result["recovered"].count(diagnostic) == 1, (
-        "marker write recovery lost the durable ctx-window-mismatch retry source"
-    )
-
-
-@pytest.mark.skipif(
-    not posix_mode_supported(),
-    reason="directory chmod 기반 marker 쓰기 거부는 POSIX mode 의미론 필요",
-)
-def test_marker_write_failure_retries_from_durable_log_subprocess(tmp_path):
-    """marker 쓰기 불능은 rc0·무출력, 권한 복구 뒤 같은 원장 진단으로 전달을 재시도한다."""
-    _assert_marker_write_failure_retries_from_durable_log(
-        _postcompact_durable_mismatch_subprocess_probe(tmp_path, failure="marker-write"),
-    )
-
-
-@pytest.mark.skipif(
-    not posix_mode_supported(),
-    reason="directory chmod 기반 marker 쓰기 거부는 POSIX mode 의미론 필요",
-)
-def test_marker_write_failure_regression_detects_consumed_retry_source(tmp_path):
-    """원장 진단까지 소비하는 임시 engine은 marker 권한 복구 뒤 진단 전달이 red다."""
-    result = _postcompact_durable_mismatch_subprocess_probe(
-        tmp_path, failure="marker-write", consume_durable_mismatch=True,
-    )
-    assert result["log"].count(b"[ctx-window-mismatch]") == 1
-    assert result["recovered"] is not None
-    assert result["recovered"].count(b"[ctx-window-mismatch]") == 0
-    with pytest.raises(AssertionError, match="marker write recovery"):
-        _assert_marker_write_failure_retries_from_durable_log(result)
-
-
-def _worktree_pm_home_checkpoint_probe(tmp_path: Path, canonical_mode: str) -> dict:
-    """신형 worktree hook/engine에서 별도 PM-home canonical engine까지 실제 subprocess로 잇는다."""
-    pm_home = tmp_path / "pm-home"
-    worktree = pm_home / "work" / "product_1"
-    worktree.mkdir(parents=True)
-    # 슬롯이 소유 PM 홈을 선언하는 `.git` 포인터(worktree_pool 실 형상). 소유 판정의 유일한
-    # 입력이라 이 선언이 없으면 이 트리는 아무의 worktree 도 아니다.
-    slot_git_dir = pm_home / ".repos" / "product.git" / "worktrees" / "product_1"
-    slot_git_dir.mkdir(parents=True)
-    (worktree / ".git").write_text(f"gitdir: {slot_git_dir}\n", encoding="utf-8")
-    (slot_git_dir / "commondir").write_text("../..\n", encoding="utf-8")
-    shutil.copytree(
-        REPO / ".project_manager" / "tools",
-        worktree / ".project_manager" / "tools",
-    )
-    claude = worktree / ".claude"
-    claude.mkdir()
-    for name in ("ctx_guard.py", "ctx_stop_hook.py"):
-        shutil.copy2(CLAUDE / name, claude / name)
-
-    canonical_tools = pm_home / ".project_manager" / "tools"
-    if canonical_mode == "old-engine":
-        canonical_tools.mkdir(parents=True)
-        (canonical_tools / "pm_log.py").write_text(
-            """#!/usr/bin/env python3
-import pathlib
-import sys
-
-NEW_OPTIONS = {
-    "--ctx-band-checked", "--ctx-band-missed", "--ctx-window-tokens",
-    "--ctx-observed-tokens", "--harness",
-}
-args = sys.argv[1:]
-if any(token in NEW_OPTIONS for token in args):
-    raise SystemExit(2)
-root = pathlib.Path(__file__).resolve().parents[2]
-current = root / ".project_manager" / "wiki" / "log" / "current.md"
-if args and args[0] == "checkpoint":
-    with current.open("a", encoding="utf-8") as stream:
-        stream.write(
-            "## [2026-08-12] checkpoint | (task:main) — compaction\\n\\n"
-            "- 구간: <legacy checkpoint>\\n- 서사: <PM 손>\\n"
-        )
-elif args and args[0] == "snapshot":
-    sys.stdout.write("## PM 정체성 (compaction 복구)\\n- task: main\\n")
-""",
-            encoding="utf-8",
-        )
-    else:
-        assert canonical_mode in {"normal", "write-failure"}
-        shutil.copytree(REPO / ".project_manager" / "tools", canonical_tools)
-
-    manager = pm_home / ".project_manager"
-    current = manager / "wiki" / "log" / "current.md"
-    current.parent.mkdir(parents=True)
-    current.write_text("# Project Log\n\n> worktree→PM-home probe\n\n", encoding="utf-8")
-    state = manager / ".local" / "tasks" / "main" / "pm_state.md"
-    state.parent.mkdir(parents=True)
-    state.write_text("# main state\n- forwarding probe\n", encoding="utf-8")
-    (manager / ".local" / "worktree-leases.json").write_text(
-        json.dumps({
-            "leases": [{
-                "slot": "work/product_1", "state": "leased", "session": "main",
-            }],
-        }),
-        encoding="utf-8",
-    )
-    (worktree / ".project_manager" / "local.conf").write_text(
-        "harness.claude.ctx_window_tokens=600000\n", encoding="utf-8",
-    )
-    transcript = worktree / "transcript.jsonl"
-    transcript.write_text(json.dumps({
-        "type": "assistant",
-        "message": {"role": "assistant", "usage": {"input_tokens": 30_000}},
-        "isSidechain": False,
-    }) + "\n", encoding="utf-8")
-
-    from test_harness_ctx_limits import install_ctx_record
-    install_ctx_record(worktree, {"harness.claude.ctx_window_tokens": "600000"})
-    def run_hook(payload: dict, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            [sys.executable, str(claude / "ctx_stop_hook.py"), *args],
-            cwd=worktree,
-            input=json.dumps(payload),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            env=utf8_child_env(),
-            timeout=15,
-            check=False,
-        )
-
-    if canonical_mode == "write-failure":
-        current.chmod(0o444)
-    base = {
-        "session_id": "forwarded-session",
-        "transcript_path": str(transcript),
-        "cwd": str(worktree),
-    }
-    pre = run_hook(
-        base | {"hook_event_name": "PreCompact", "trigger": "auto"},
-        "--precompact-capture",
-    )
-    snapshot_marker = (
-        worktree / ".project_manager" / ".local" / "ctx-stop"
-        / "compact-snapshot.forwarded-session"
-    )
-    fallback_armed = snapshot_marker.is_file()
-    fallback = snapshot_marker.read_bytes() if fallback_armed else b""
-
-    _append_transcript_entry(transcript, _compact_boundary())
-    post = run_hook(base | {"hook_event_name": "PostCompact"})
-    preserved = snapshot_marker.read_bytes() if snapshot_marker.is_file() else b""
-    ledger = current.read_bytes()
-    if canonical_mode == "write-failure":
-        current.chmod(0o644)
-    return {
-        "pre_rc": pre.returncode,
-        "post_rc": post.returncode,
-        "pre_stderr": pre.stderr,
-        "fallback_armed": fallback_armed,
-        "fallback": fallback,
-        "preserved": preserved,
-        "ledger": ledger,
-    }
-
-
-@pytest.mark.parametrize(
-    ("canonical_mode", "expected_fallback", "expected_ledger_diagnostic"),
-    [
-        pytest.param(
-            "write-failure", True, 0,
-            marks=pytest.mark.skipif(
-                not posix_mode_supported(),
-                reason="chmod 기반 쓰기 거부 시뮬레이션은 POSIX mode 의미론 필요",
-            ),
-        ),
-        ("old-engine", True, 0),
-        ("normal", False, 1),
-    ],
-)
-def test_worktree_pm_home_diagnostic_append_signal_preserves_never_block(
-    tmp_path, canonical_mode, expected_fallback, expected_ledger_diagnostic,
-):
-    """신형 worktree→쓰기 실패/구형/정상 PM-home의 rc0·fallback·진단 보존 3셀."""
-    result = _worktree_pm_home_checkpoint_probe(tmp_path, canonical_mode)
-    diagnostic = b"[ctx-window-mismatch]"
-    assert result["pre_rc"] == result["post_rc"] == 0
-    assert result["fallback_armed"] is expected_fallback
-    assert result["fallback"].count(diagnostic) == (1 if expected_fallback else 0)
-    assert result["ledger"].count(diagnostic) == expected_ledger_diagnostic
-    assert result["preserved"].count(diagnostic) == 1
-    if expected_fallback:
-        assert "pending 진단 payload로 보존" in result["pre_stderr"]
-    if canonical_mode == "old-engine":
-        assert result["ledger"].count(b"legacy checkpoint") == 2
 
 
 def test_hook_postcompact_waits_for_postboundary_usage_before_refiring(stop_hook, tmp_path):

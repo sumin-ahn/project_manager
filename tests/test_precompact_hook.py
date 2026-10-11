@@ -174,238 +174,64 @@ def test_breadcrumb_appended_when_log_present(tmp_path):
     assert "checkpoint | (task:main) — compaction" in after
 
 
-def test_band_missed_precompact_durably_records_remedy_and_reinjects_after_compaction(
-    tmp_path,
-):
-    """설정 창 때문에 밴드가 0회면 log 박제 + PostCompact 복구 context 모두 loud하다."""
+def _t0952_unbanded_auto_precompact(tmp_path: Path, session_id: str) -> tuple[Path, dict, Path]:
+    """기록이 읽히고 밴드 표식이 하나도 없는 auto PreCompact 준비 — (훅, 입력, log 파일).
+
+    변경 전 훅이 "설정 창이 실 압축 지점보다 큼" 경고를 쓰던 형상이다(설정 1,000,000 · 관측 655,736)."""
     hook = _make_repo(tmp_path, with_log=True)
     (tmp_path / ".project_manager" / "local.conf").write_text(
         "harness.claude.ctx_window_tokens=1000000\n", encoding="utf-8",
     )
     transcript = _write_usage_transcript(tmp_path, 655_736)
-    payload = {
-        "cwd": str(tmp_path),
-        "session_id": "mismatch-session",
-        "transcript_path": str(transcript),
-        "trigger": "auto",
-    }
-    payload = _known_budget_payload(tmp_path, payload)
-
-    pre = _run_hook(hook, payload)
-
-    assert pre.returncode == 0
-    log_file = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
-    text = log_file.read_text(encoding="utf-8")
-    assert "[ctx-window-mismatch] 설정 창이 실 압축 지점보다 큼" in text
-    assert "설정 1,000,000 tokens" in text
-    assert "PreCompact 관측 655,736 tokens" in text
-    assert "`harness.claude.ctx_window_tokens`" in text
-    assert "관측 사용량 655,736 tokens 이하" in text
-
-    duplicate_pre = _run_hook(hook, payload)
-    assert duplicate_pre.returncode == 0
-    duplicate_text = log_file.read_text(encoding="utf-8")
-    assert duplicate_text.count("[ctx-window-mismatch]") == 2
-    assert duplicate_text.count("관측 사용량 655,736 tokens 이하") == 2
-
-    post = _run_python_hook(hook, payload | {"hook_event_name": "PostCompact"})
-    restored = _run_python_hook(hook, payload | {"hook_event_name": "UserPromptSubmit"})
-
-    assert post.returncode == restored.returncode == 0
-    restored_payload = json.loads(restored.stdout)
-    recovery = restored_payload["hookSpecificOutput"]["additionalContext"]
-    assert "## ctx 설정 진단 (compaction 경계)" in recovery
-    assert "[ctx-window-mismatch] 설정 창이 실 압축 지점보다 큼" in recovery
-    assert "관측 사용량 655,736 tokens 이하" in recovery
-
-
-def test_duplicate_postcompact_preserves_unconsumed_window_mismatch_recovery(tmp_path):
-    """같은 완료 경계의 중복 훅이 아직 미소비인 loud 진단 snapshot을 덮지 않는다."""
-    hook = _make_repo(tmp_path, with_log=True)
-    (tmp_path / ".project_manager" / "local.conf").write_text(
-        "harness.claude.ctx_window_tokens=1000000\n", encoding="utf-8",
-    )
-    transcript = _write_usage_transcript(tmp_path, 655_736)
-    payload = {
-        "cwd": str(tmp_path),
-        "session_id": "duplicate-post-session",
-        "transcript_path": str(transcript),
-        "trigger": "auto",
-    }
-    payload = _known_budget_payload(tmp_path, payload)
-
-    assert _run_hook(hook, payload).returncode == 0
-    posts = [
-        _run_python_hook(hook, payload | {"hook_event_name": "PostCompact"})
-        for _ in range(2)
-    ]
-    restored = _run_python_hook(hook, payload | {"hook_event_name": "UserPromptSubmit"})
-
-    assert all(post.returncode == 0 for post in posts)
-    assert all(post.stdout == post.stderr == "" for post in posts)
-    assert restored.returncode == 0
-    recovery = json.loads(restored.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert "## ctx 설정 진단 (compaction 경계)" in recovery
-    assert "[ctx-window-mismatch] 설정 창이 실 압축 지점보다 큼" in recovery
-    assert "관측 사용량 655,736 tokens 이하" in recovery
-
-
-def test_duplicate_postcompact_without_transcript_preserves_unconsumed_mismatch(
-    tmp_path,
-):
-    """관측 transcript가 없어도 같은 완료 경계의 중복 훅은 loud payload를 보존한다."""
-    hook = _make_repo(tmp_path, with_log=True)
-    (tmp_path / ".project_manager" / "local.conf").write_text(
-        "harness.claude.ctx_window_tokens=1000000\n", encoding="utf-8",
-    )
-    payload = {
-        "cwd": str(tmp_path),
-        "session_id": "no-transcript-duplicate-post",
-        "trigger": "auto",
-    }
-    payload = _known_budget_payload(tmp_path, payload)
-
-    assert _run_hook(hook, payload).returncode == 0
-    posts = [
-        _run_python_hook(hook, payload | {"hook_event_name": "PostCompact"})
-        for _ in range(2)
-    ]
-    restored = _run_python_hook(
-        hook, payload | {"hook_event_name": "UserPromptSubmit"},
-    )
-
-    assert all(post.returncode == 0 for post in posts)
-    assert all(post.stdout == post.stderr == "" for post in posts)
-    assert restored.returncode == 0
-    recovery = json.loads(restored.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert "## ctx 설정 진단 (compaction 경계)" in recovery
-    assert "[ctx-window-mismatch] 설정 창이 실 압축 지점보다 큼" in recovery
-    assert "관측 사용량 측정 불가" not in recovery
-    assert "PreCompact 관측" not in recovery
-    assert "실 auto-compact 지점 이하" in recovery
-    state_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
-    assert list(state_dir.glob("ctx-window-mismatch.*")) == []
-    assert list(state_dir.glob("compact-snapshot-receipt.*")) == []
-
-
-def test_precompact_retries_diagnostic_after_prior_process_died_post_claim(tmp_path):
-    """선점 직후 죽은 흔적이 있어도 재실행은 조건을 다시 평가해 진단을 append한다."""
-    hook = _make_repo(tmp_path, with_log=True)
-    (tmp_path / ".project_manager" / "local.conf").write_text(
-        "harness.claude.ctx_window_tokens=1000000\n", encoding="utf-8",
-    )
-    transcript = _write_usage_transcript(tmp_path, 655_736)
-    session_id = "crash-retry-session"
-    boundary_id = f"claude-{session_id}-1"
-    stale_claim = (
-        tmp_path / ".project_manager" / ".local" / "ctx-stop"
-        / f"compact-checkpoint.{session_id}.{boundary_id}"
-    )
-    stale_claim.parent.mkdir(parents=True, exist_ok=True)
-    stale_claim.write_text("compaction checkpoint claimed\nphase=pre\n", encoding="utf-8")
-    payload = {
+    payload = _known_budget_payload(tmp_path, {
         "cwd": str(tmp_path),
         "session_id": session_id,
         "transcript_path": str(transcript),
         "trigger": "auto",
-    }
-    payload = _known_budget_payload(tmp_path, payload)
-
-    rerun = _run_hook(hook, payload)
-
-    assert rerun.returncode == 0
-    current = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
-    assert "[ctx-window-mismatch]" in current.read_text(encoding="utf-8")
-    assert _run_python_hook(
-        hook, payload | {"hook_event_name": "PostCompact"},
-    ).returncode == 0
-    restored = _run_python_hook(
-        hook, payload | {"hook_event_name": "UserPromptSubmit"},
-    )
-    recovery = json.loads(restored.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert "[ctx-window-mismatch]" in recovery
-
-
-@pytest.mark.parametrize("band_suffix", ("nudge", "nudge2", "final"))
-def test_fired_band_precompact_has_no_window_mismatch_false_positive(
-    tmp_path, band_suffix,
-):
-    """이번 사이클 band marker가 하나라도 실재하면 같은 압축의 불일치 진단은 0건이다."""
-    hook = _make_repo(tmp_path, with_log=True)
-    (tmp_path / ".project_manager" / "local.conf").write_text(
-        "harness.claude.ctx_window_tokens=1000000\n", encoding="utf-8",
-    )
-    transcript = _write_usage_transcript(tmp_path, 655_736)
-    marker = (
-        tmp_path / ".project_manager" / ".local" / "ctx-stop"
-        / f"normal-session.{band_suffix}"
-    )
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text("ctx-nudge injected\n", encoding="utf-8")
-
-    result = _run_hook(hook, {
-        "cwd": str(tmp_path),
-        "session_id": "normal-session",
-        "transcript_path": str(transcript),
-        "trigger": "auto",
     })
-
-    assert result.returncode == 0
-    text = (tmp_path / ".project_manager" / "wiki" / "log" / "current.md").read_text(
-        encoding="utf-8",
-    )
-    assert "checkpoint | (task:main) — compaction" in text
-    assert "ctx-window-mismatch" not in text
-    assert "harness.claude.ctx_window_tokens" not in text
-    post = _run_python_hook(hook, {
-        "cwd": str(tmp_path),
-        "session_id": "normal-session",
-        "transcript_path": str(transcript),
-        "trigger": "auto",
-        "hook_event_name": "PostCompact",
-    })
-    restored = _run_python_hook(hook, {
-        "cwd": str(tmp_path),
-        "session_id": "normal-session",
-        "hook_event_name": "UserPromptSubmit",
-    })
-    assert post.returncode == restored.returncode == 0
-    recovery = json.loads(restored.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert "ctx-window-mismatch" not in recovery
-    assert "harness.claude.ctx_window_tokens" not in recovery
+    band_markers = list((tmp_path / ".project_manager" / ".local" / "ctx-stop").glob(f"{session_id}.*"))
+    assert band_markers == []
+    return hook, payload, tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
 
 
-@pytest.mark.parametrize("trigger", ["manual", None, "future-trigger"])
-def test_non_auto_precompact_never_persists_or_reinjects_window_mismatch(
-    tmp_path, trigger,
-):
-    """manual /compact와 trigger 부재·미지값은 낮은 사용량이어도 durable 오탐이 0건이다."""
-    hook = _make_repo(tmp_path, with_log=True)
-    (tmp_path / ".project_manager" / "local.conf").write_text(
-        "harness.claude.ctx_window_tokens=600000\n", encoding="utf-8",
-    )
-    transcript = _write_usage_transcript(tmp_path, 30_000)
-    payload = {
-        "cwd": str(tmp_path),
-        "session_id": "non-auto-session",
-        "transcript_path": str(transcript),
-    }
-    if trigger is not None:
-        payload["trigger"] = trigger
+def _t0952_appended_part(log_file: Path) -> str:
+    return log_file.read_text(encoding="utf-8").split("기존 entry", 1)[1]
+
+
+def test_t0952_auto_precompact_without_band_records_skeleton_only(tmp_path):
+    """안내 없이 난 auto 압축도 breadcrumb·checkpoint 골격만 남기고 압축 지점 추정 경고는 없다(AT-001)."""
+    hook, payload, log_file = _t0952_unbanded_auto_precompact(tmp_path, "t0952-unbanded")
 
     pre = _run_hook(hook, payload)
+
+    assert pre.returncode == 0
+    appended = _t0952_appended_part(log_file)
+    assert appended.count("\n## ") == 1
+    assert appended.count("checkpoint | (task:main) — compaction") == 1
+    assert appended.count(BREADCRUMB_MARKER) == 1
+    for removed in ("ctx-band-check", "ctx-window-mismatch", "harness.claude.ctx_window_tokens"):
+        assert removed not in appended
+
     post = _run_python_hook(hook, payload | {"hook_event_name": "PostCompact"})
     restored = _run_python_hook(hook, payload | {"hook_event_name": "UserPromptSubmit"})
 
-    assert pre.returncode == post.returncode == restored.returncode == 0
-    log_text = (
-        tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
-    ).read_text(encoding="utf-8")
-    assert "checkpoint | (task:main) — compaction" in log_text
-    assert "ctx-window-mismatch" not in log_text
+    assert post.returncode == restored.returncode == 0
     recovery = json.loads(restored.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert "ctx-window-mismatch" not in recovery
-    assert "harness.claude.ctx_window_tokens" not in recovery
+    assert recovery.startswith("## PM 정체성 (compaction 복구)")
+    assert "ctx 설정 진단" not in recovery
+    assert _t0952_appended_part(log_file).count("checkpoint | (task:main) — compaction") == 1
+
+
+def test_t0952_repeated_auto_precompact_same_boundary_appends_once(tmp_path):
+    """같은 경계의 auto PreCompact 재호출은 중복 방지 표식으로 1건만 남긴다(AT-002)."""
+    hook, payload, log_file = _t0952_unbanded_auto_precompact(tmp_path, "t0952-repeat")
+
+    results = [_run_hook(hook, payload) for _ in range(2)]
+
+    assert [result.returncode for result in results] == [0, 0]
+    appended = _t0952_appended_part(log_file)
+    assert appended.count("checkpoint | (task:main) — compaction") == 1
+    assert appended.count(BREADCRUMB_MARKER) == 1
 
 
 def test_sidechain_skips_breadcrumb_and_checkpoint(tmp_path):

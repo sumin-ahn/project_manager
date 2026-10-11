@@ -567,7 +567,7 @@ ADAPTER_CONFIG_REAPPROVAL_NOTE = {
 # `ADAPTER_HOOK_SET[...].entrypoints` 에서 파생한다(선언 중복 0).
 #
 # 하네스 사용 한도 반영(`apply_harness_ctx`)이 쓰는 관리 키는 이 표에 두지 않는다 — 값이 local.conf
-# 에서 오므로 템플릿과의 차이는 채택자 편집이 아니다(claude `autoCompactWindow`·codex
+# 에서 오므로 템플릿과의 차이는 채택자 편집이 아니다(claude `autoCompactWindow`·`idleCompaction`·codex
 # `model_context_window`·`model_auto_compact_token_limit`·opencode `compaction`). opencode 는 모델
 # 항목의 `limit` 이 `provider` 안에 있어 행을 지우지 않고 비교 전에 `limit` 만 뺀다
 # (`_provider_without_model_limits`).
@@ -7909,7 +7909,8 @@ def adapter_config_drift_summary(judgment: AdapterConfigJudgment,
 # 적용 경로(pm-config apply·설치·add-harness·pm_update·어댑터 수용)가 local.conf 쓰기 락 안에서 도구마다
 # 모델 한도 C 를 한 번 조회하고 적용 한도 E = min(W, C)·압축 지점 P = floor(E × compact_at / 100) 를
 # 하네스 설정 파일과 압축 한도 기록(`local_conf.CTX_BUDGET_RELPATH`)에 쓴다. 런타임은 기록만 읽는다.
-#   claude   `.claude/settings.json`     autoCompactWindow = P + d (d = 모델 창 − 기본 압축 기준)
+#   claude   `.claude/settings.json`     autoCompactWindow = P + d (d = 모델 창 − 기본 압축 기준) ·
+#            idleCompaction = false (유휴 압축 끔 — 압축이 압축 지점에서만 나야 압축 전 안내가 성립한다)
 #   codex    `.codex/config.toml`        model_auto_compact_token_limit = P
 #   opencode `.opencode/opencode.jsonc`  대상 모델마다 limit.context(원본)·limit.input = E ·
 #            limit.output(있으면 유지, 없으면 32000) · 최상위 compaction.reserved = E − P
@@ -7919,7 +7920,7 @@ class _HarnessCtxRule(NamedTuple):
     """설정 파일 하나의 반영 규칙 — `keys` 는 (관리 키 경로, 값 식(도구 기록 항목)), `model_limits` 는 모델마다
     `limit` 을 쓰는 형식인가, `capacity_reader` 는 모델 한도 C 조회, `check` 는 쓰기 전 설정 형식 확인이다."""
     label: str
-    keys: tuple[tuple[tuple[str, ...], Callable[[dict], int]], ...]
+    keys: tuple[tuple[tuple[str, ...], Callable[[dict], int | bool]], ...]
     model_limits: bool
     capacity_reader: Callable[[Path, list, dict], list]
     check: Callable[[Path, dict], None]
@@ -7929,7 +7930,8 @@ class _HarnessCtxRule(NamedTuple):
 # (`ADAPTER_CONFIG_CHANNEL`)이 정한다 — 하네스 이름 표를 여기 두 번째로 두지 않는다.
 HARNESS_CTX_RULES: dict[str, _HarnessCtxRule] = {
     ".claude/settings.json": _HarnessCtxRule(
-        "Claude Code", ((("autoCompactWindow",), lambda entry: _ctx_claude_window(entry)),),
+        "Claude Code", ((("autoCompactWindow",), lambda entry: _ctx_claude_window(entry)),
+                        (("idleCompaction",), lambda entry: False)),
         False, lambda *args: _ctx_claude_capacity(*args), lambda *args: _ctx_claude_check(*args)),
     ".codex/config.toml": _HarnessCtxRule(
         "Codex", ((("model_auto_compact_token_limit",), lambda entry: entry["P"]),),
@@ -8059,17 +8061,17 @@ def validate_harness_ctx(values, present: frozenset) -> None:
         raise HarnessCtxError(violations)
 
 
-def harness_ctx_targets(opencode_models, entries) -> dict[str, dict[tuple[str, ...], int]]:
+def harness_ctx_targets(opencode_models, entries) -> dict[str, dict[tuple[str, ...], int | bool]]:
     """설정 파일 relpath → {관리 키 경로 조각 튜플: 값} — 도구 기록 항목(`entries`)에서 만든다.
 
     `opencode_models` 는 대상 모델 `(provider, 모델 id) → limit.output` 이다. 모델 id 는 문서 키
     그대로 쓴다(점·슬래시·콜론에서 가르지 않는다)."""
-    targets: dict[str, dict[tuple[str, ...], int]] = {}
+    targets: dict[str, dict[tuple[str, ...], int | bool]] = {}
     for harness, relpath in HARNESS_CTX_FILES.items():
         if harness not in entries:
             continue
         rule, entry = HARNESS_CTX_RULES[relpath], entries[harness]
-        values: dict[tuple[str, ...], int] = {}
+        values: dict[tuple[str, ...], int | bool] = {}
         if rule.model_limits:
             contexts = {(row["provider"], row["id"]): row["basis"]["context"] for row in entry["models"]}
             for (provider, model), output in opencode_models.items():
@@ -8692,7 +8694,7 @@ def _harness_ctx_path(dotted: str) -> tuple[str, ...]:
     return tuple(quoted or bare for quoted, bare in re.findall(r'"([^"]*)"|([^.]+)', dotted))
 
 
-def _harness_ctx_edit(relpath: str, text: str, entries: dict[tuple[str, ...], int],
+def _harness_ctx_edit(relpath: str, text: str, entries: dict[tuple[str, ...], int | bool],
                       jsonc) -> tuple[str, list[str]]:
     """관리 키를 목표값으로 고친 텍스트와 바뀐 줄 — 결과를 다시 읽어 값을 확인한다."""
     lines: list[str] = []
@@ -8704,23 +8706,25 @@ def _harness_ctx_edit(relpath: str, text: str, entries: dict[tuple[str, ...], in
                 text, old = jsonc._jsonc_set_value(text, path, value)
         except ValueError as exc:
             raise HarnessCtxError([f"{relpath}: {exc}"]) from exc
-        if old != str(value):
+        literal = json.dumps(value)  # 문서에 쓰는 리터럴(정수는 str 과 같고 bool 은 false/true)
+        if old != literal:
             lines.append(f"{relpath} {_harness_ctx_dotted(path)} "
-                         f"{'(없음)' if old is None else old} → {value}")
+                         f"{'(없음)' if old is None else old} → {literal}")
     document = _harness_ctx_parse(relpath, text, jsonc)
     for path, value in entries.items():
         present, actual = _document_key_value_path(document, path)
         if not _harness_ctx_same(present, actual, value):
             raise HarnessCtxError([
-                f"{relpath}: 반영 결과를 다시 읽었더니 `{_harness_ctx_dotted(path)}` 가 {value} 가 "
+                f"{relpath}: 반영 결과를 다시 읽었더니 `{_harness_ctx_dotted(path)}` 가 {json.dumps(value)} 가 "
                 "아닙니다 — 파일을 쓰지 않았습니다."])
     return text, lines
 
 
-def _harness_ctx_same(present: bool, actual: object, value: int) -> bool:
-    """설정 문서에서 찾은 값이 반영 목표 정수와 같은가 — bool 은 정수로 보지 않는다.
-    반영의 재판독(`_harness_ctx_edit`)과 상태 비교(`ctx_budget_status`)가 함께 쓴다."""
-    return present and not isinstance(actual, bool) and actual == value
+def _harness_ctx_same(present: bool, actual: object, value: int | bool) -> bool:
+    """설정 문서에서 찾은 값이 반영 목표와 같은가 — 정수 목표는 bool 이 아닌 같은 정수만, bool 목표는
+    같은 bool 만 같다(bool 은 정수로 보지 않는다). 반영의 재판독(`_harness_ctx_edit`)과 상태 비교
+    (`ctx_budget_status`)가 함께 쓴다."""
+    return present and isinstance(actual, bool) == isinstance(value, bool) and actual == value
 
 
 def _document_key_value_path(document: dict, path: tuple[str, ...]) -> tuple[bool, object]:

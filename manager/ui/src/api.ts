@@ -135,7 +135,7 @@ export type StatusDocument = {
 };
 
 /** 설정 파일 값이 이 머신 기록 값과 다른 경로 하나 — `file` 은 설정 파일에서 읽은 값 그대로이고 키가 없으면 null. */
-export type CtxBudgetMismatch = { path: string; file: unknown; record: number };
+export type CtxBudgetMismatch = { path: string; file: unknown; record: number | boolean };
 /**
  * 압축 한도 기록의 도구 항목(`pm_import.ctx_budget_status`) — 적용할 때 조회한 모델 가용 한도 C·적용 한도 E·압축 지점 P와
  * 설정 파일 값이 기록과 다른 경로(`settings_mismatch`, 같으면 빈 배열).

@@ -19,6 +19,10 @@
 
 - `pm-config delegate models` 응답에 모델별 추론 강도(`variants`)를 싣고, 설정 화면의 OpenCode 생각 깊이 칸은 그 모델의 목록에서 고른다(목록이 비면 "없음"이고 값을 비운다).
 
+- Claude Code 의 유휴 압축(캐시 만료 직전, 요청 없이 압축)을 채택자 설정에서 끈다. `.claude/settings.json` 의 `"idleCompaction": false` 는 `autoCompactWindow` 와 같은 관리 키라 `pm-update`·`pm-config apply`·설치·`add-harness`·어댑터 수용이 그 값 자리만 쓰고(없으면 넣는다), 압축 한도 기록에 실려 설정 파일 값 차이 표시가 함께 다룬다. 압축 전 안내와 checkpoint 는 압축이 압축 지점에서만 난다는 전제다.
+
+- 압축 직전 안내 없이 자동 압축되면 "설정 창이 실 압축 지점보다 크다"고 추정해 사용 한도를 낮추라던 경고(`ctx-window-mismatch`)를 지운다. 유휴·반응·서브에이전트 압축도 같은 신호를 내 처방이 맞지 않았고, 설정 창이 압축 지점보다 큰 경우는 적용 때 모델 한도 조회와 확인 조회가 막는다. PreCompact 훅은 breadcrumb 와 checkpoint 골격만 남기고, 같은 경계의 PreCompact 재호출은 1건만 기록한다. `pm_log.py checkpoint` 의 `--ctx-band-checked`·`--ctx-band-missed`·`--ctx-window-tokens`·`--ctx-observed-tokens`·`--harness` 와 `snapshot` 의 `--ctx-band-missed`·`--ctx-window-tokens`·`--ctx-observed-tokens`·`--harness` 옵션이 없어지고, snapshot 은 log 를 읽지 않는다.
+
 - 개발 회귀와 릴리즈 플랫폼 검증을 분리한다. 일반 회귀는 현재 플랫폼의 테스트만 실행하고, 선언한 추가 플랫폼 전체는 릴리즈 게이트에서 같은 커밋으로 검증한다. 회귀는 백그라운드로 실행해 별도 작업 트리의 개발을 계속할 수 있다.
 
 - 티켓의 공유 승격·실행·종결 전에 실제 제품 branch/base_branch 및 멤버 결속을 확인한다. 코드 트리 없는 draft 작성은 유지하며 승격 전에 기존 cluster new로 결속한다. 옛 branch 없는 크기 1 장부는 명시 재결속이 필요하고 PM 홈과 제품의 동명 main으로 기준을 추측하지 않는다. 최종 제품 기준 판정과 장부 기록은 같은 조회 결과를 사용하며 재읽기 실패는 기록 전에 거부한다.
