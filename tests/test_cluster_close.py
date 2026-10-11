@@ -4,8 +4,8 @@
 
   (1) 사설 참조 preflight 판정이 **미커밋 / 커밋 / 재배치 전 / 재배치 후** 네 형상에서 같은
       값이다. 순서를 규칙으로 지키던 자리를 판정 기준(통합 브랜치 도달 여부)이 대체한다.
-  (2) 측정 폭이 통합 브랜치에서 흡수한 분량을 제외하고, 두 형식 소비자(numstat·unified diff)가
-      같은 폭을 본다.
+  (2) 측정 폭이 통합 브랜치에서 흡수한 분량을 제외하고, unified diff 원문이 단계 표가 정한
+      폭을 본다(기준점은 통합 브랜치와의 merge-base · 해소 못 하면 사유와 함께 멈춘다).
   (3) close 가 첫 부작용 앞에서 막을 조건을 전건 보고하고, 고정 여섯 단계를 순서대로
       실행하며, 중간에서 멈춘 뒤 다시 실행하면 이미 끝난
       단계를 반복하지 않는다(부작용 카운터로 단언). 작업 트리는 묶음 기록의 브랜치를 쥔
@@ -29,7 +29,6 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -58,6 +57,9 @@ _CLUSTER_NAME = "wave"                # 사람 표기 — 장부 id 는 board �
 _CLUSTER = f"C-{_CLUSTER_NAME}"
 _SLOT = "work/code_1"
 _ROUND_FILE = "01-architect.md"      # 라운드 사이드카 한 벌(동형 대조의 위치 값)
+# 종결 전 멤버가 갖춘 라운드 — 구현 표본과 돌려받은 리뷰(판정 표면 · finding 0건 통과).
+_DEVELOPER_ROUND_FILE = "02-developer.md"
+_REVIEW_ROUND_FILE = "03-code-reviewer.md"
 _CLOSED_STATUS = "closed"            # 장부 종결 표시(열거의 소유자는 board)
 _DISCARDED_STATUS = "discarded"      # 처분 종결 상태 디렉토리(열거의 소유자는 board)
 
@@ -145,6 +147,29 @@ def _write_ticket(
         encoding="utf-8",
     )
     return path
+
+
+def _review_round_text(findings: list[dict]) -> str:
+    """돌려받은 리뷰 라운드 본문 — 기계 블록과 산문 두 판정 축이 같은 값을 말한다."""
+    payload = json.dumps(
+        {"version": 2, "findings": findings, "confirmations": []},
+        ensure_ascii=False, separators=(",", ":"),
+    )
+    must_fix = "\n".join(f"- {item['id']}" for item in findings) or "- 없음"
+    verdict = "반려" if findings else "통과"
+    return (
+        "## 리뷰 (code-reviewer · 2026-01-02)\n\n"
+        f"## must-fix\n{must_fix}\n\n## 판정\n판정: {verdict}\n\n"
+        f"```pm-review-v1\n{payload}\n```\n"
+    )
+
+
+def _must_fix_finding(finding_id: str = "F-001") -> dict:
+    return {
+        "id": finding_id, "class": "implementation-defect", "severity": "must-fix",
+        "authority": "티켓 §목표", "evidence": f"{finding_id} 관측",
+        "recommendation": f"{finding_id} 권고", "design_change": False,
+    }
 
 
 def _write_cluster_ledger(
@@ -374,7 +399,7 @@ def test_reconcile_cli_requires_explicit_repo_and_slot_and_rejects_task(
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 측정 폭 — 흡수분 제외 · 두 형식 소비자 동일
+# 측정 폭 — 흡수분 제외 · 단계 표 · 앵커 해소
 # ════════════════════════════════════════════════════════════════════════
 
 _ABSORBED_MARKER = "absorbed_line"
@@ -415,34 +440,128 @@ def test_width_excludes_what_the_integration_branch_already_had(external, tmp_pa
     assert note is None
     assert anchor == _rev(root, _INTEGRATION_BRANCH)
 
-    integration_width = external.diff_line_total(
+    integration_width = external.measured_diff_text(
         root, "HEAD", list(_WIDTH_SCOPE), claimed_rev=anchor)
-    claim_width = external.diff_line_total(
+    claim_width = external.measured_diff_text(
         root, "HEAD", list(_WIDTH_SCOPE), claimed_rev=seed)
 
-    assert integration_width == _OWN_LINES                      # 자기 몫만
-    assert claim_width == _OWN_LINES + _ABSORBED_LINES          # 옛 기준은 흡수분도 쟀다
+    assert integration_width.count(_OWN_MARKER) == _OWN_LINES  # 자기 몫만
+    assert _ABSORBED_MARKER not in integration_width
+    assert claim_width.count(_ABSORBED_MARKER) == _ABSORBED_LINES  # 옛 기준은 흡수분도 쟀다
 
 
 @requires_git
 def test_both_width_consumers_see_the_same_stage(external, tmp_path):
-    """numstat 총량과 unified diff 원문이 **같은 폭**을 본다(정의 지점 하나)."""
+    """unified diff 원문이 단계 표(`_measure_stages`)가 정한 폭을 본다(정의 지점 하나)."""
     root, seed = _width_repo(tmp_path)
     anchor, _note = external.integration_anchor(root, _INTEGRATION_BRANCH)
 
     assert external._measure_stages("HEAD", anchor) == ((anchor, True),)
 
-    numstat = external.measured_numstat_text(
-        root, "HEAD", list(_WIDTH_SCOPE), claimed_rev=anchor)
     diff_text = external.measured_diff_text(
         root, "HEAD", list(_WIDTH_SCOPE), claimed_rev=anchor)
-    assert external._sum_numstat(numstat) == _OWN_LINES
     assert diff_text.count(_OWN_MARKER) == _OWN_LINES
-    assert _ABSORBED_MARKER not in numstat and _ABSORBED_MARKER not in diff_text
+    assert _ABSORBED_MARKER not in diff_text
 
     old_diff = external.measured_diff_text(
         root, "HEAD", list(_WIDTH_SCOPE), claimed_rev=seed)
     assert _ABSORBED_MARKER in old_diff             # 민감도 — 옛 기준에서는 실린다
+
+
+# 통합 브랜치 앵커 해소 형상 — dev 커밋 2 + 통합 브랜치 전진(전파 커밋 2)을 흡수한 저장소.
+_INTEGRATION = "task/main"      # 묶음 장부가 선언하는 통합 브랜치(폭의 기준)
+_DEV_BRANCH = "dev/T-7301"      # 이 작업이 사는 브랜치
+_WAVE_SRC_LINES = 320           # claim 시점 rev 이후 `src/` 에 쌓인 변경량(dev 커밋 2건 합)
+
+
+def _wave_git(root: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(root), *args], check=True,
+                          capture_output=True, text=True, encoding="utf-8")
+
+
+def _write(path: Path, lines: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(f"line{index}\n" for index in range(lines)), encoding="utf-8")
+
+
+def _wave_repo(tmp_path: Path) -> tuple[Path, str]:
+    """dev 커밋 2 + 통합 브랜치 전진(전파 커밋 2)을 흡수한 형상 저장소와 claim 시점 rev.
+
+    리뷰 시점 트리는 clean 이고 마지막 커밋(통합 흡수)은 `src/` 를 안 건드린다 — 작업트리+직전
+    커밋 한 칸으로 재던 옛 폭이 0 으로 접히는 바로 그 배치다. HEAD 는 dev 브랜치이고 통합
+    브랜치는 이 작업을 아직 받지 않았다(그래서 merge-base 는 갈라진 지점이다)."""
+    root = tmp_path / "code"
+    root.mkdir()
+    _wave_git(root, "init", "-q", "-b", _INTEGRATION)
+    _wave_git(root, "config", "user.email", "t@e")
+    _wave_git(root, "config", "user.name", "t")
+    _write(root / "src" / "app.py", 5)
+    _write(root / "docs" / "notes.md", 3)
+    _wave_git(root, "add", "-A")
+    _wave_git(root, "commit", "-qm", "seed")
+    claim_rev = _rev(root)
+
+    _wave_git(root, "checkout", "-q", "-b", _DEV_BRANCH)
+    _write(root / "src" / "app.py", 5 + 200)
+    _wave_git(root, "commit", "-qam", "dev 1")
+    _write(root / "src" / "app.py", 5 + _WAVE_SRC_LINES)
+    _write(root / "docs" / "notes.md", 3 + 50)
+    _wave_git(root, "commit", "-qam", "dev 2")
+
+    _wave_git(root, "checkout", "-q", _INTEGRATION)
+    for index in (1, 2):
+        _write(root / "docs" / f"propagation{index}.md", 4)
+        _wave_git(root, "add", "-A")
+        _wave_git(root, "commit", "-qm", f"propagation {index}")
+    _wave_git(root, "checkout", "-q", _DEV_BRANCH)
+    _wave_git(root, "merge", "-q", "--no-ff", "-m", "통합 흡수", _INTEGRATION)
+    return root, claim_rev
+
+
+def test_the_anchor_picks_one_worktree_inclusive_stage(external):
+    """앵커가 있으면 단계는 하나다 — 그 기준점과 **현재 작업트리**의 차이(untracked 포함)."""
+    assert external._measure_stages("HEAD", "a" * 40) == (("a" * 40, True),)
+
+
+def test_absent_anchor_keeps_the_old_stage_table(external):
+    """앵커가 없으면 옛 폭 그대로다 — 작업트리 → 비면 직전 커밋 한 칸."""
+    assert external._measure_stages("HEAD", None) == (
+        ("HEAD", True), ("HEAD~1..HEAD", False))
+
+
+def test_explicit_base_owns_the_width_over_the_anchor(external):
+    """`--base` 명시는 사용자가 고른 폭이라 앵커가 덮어쓰지 않는다."""
+    assert external._measure_stages("main", "a" * 40) == (("main", False),)
+
+
+@requires_git
+def test_the_anchor_is_the_merge_base_with_the_integration_branch(external, tmp_path):
+    """앵커는 통합 브랜치와의 merge-base 다 — 사유 없이 통과한다."""
+    root, _claim_rev = _wave_repo(tmp_path)
+    expected = _git(root, "merge-base", _INTEGRATION, "HEAD").stdout.strip()
+
+    assert external.integration_anchor(root, _INTEGRATION) == (expected, None)
+
+
+@requires_git
+def test_a_branch_absent_from_this_tree_yields_a_loud_reason(external, tmp_path):
+    """이 트리에 없는 브랜치는 **사유**를 낸다 — 다른 기준점으로 접지 않는다.
+
+    값을 지어내 넘기면 `git diff <rev>` 가 rc≠0 이고 측정은 실패한 실행을 '변경 없음'으로
+    접는다 — 조용한 0 줄(false-green)이 바로 이 축이 닫는 결함이다."""
+    root, _claim_rev = _wave_repo(tmp_path)
+
+    anchor, note = external.integration_anchor(root, "task/absent")
+
+    assert anchor is None and "해소하지 못했다" in note and "task/absent" in note
+
+
+@pytest.mark.parametrize("value", ["", "--output=/tmp/x", "zz" * 20])
+def test_an_unresolvable_reference_never_becomes_an_anchor(external, tmp_path, value):
+    """빈 값·옵션 모양·존재하지 않는 값은 앵커가 되지 못한다(사유와 함께 멈춘다)."""
+    anchor, note = external.integration_anchor(tmp_path, value)
+    assert anchor is None and note
+
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -505,7 +624,6 @@ class _CloseEnv:
             regression_cwd=str(self.slot),
             run_pytest_fn=lambda: (0, "1 passed in 0.01s"),
             run_board_fn=self.run_board,
-            diff_cap_block_fn=lambda tid: None,
             private_ref_block_fn=lambda tid: None,
             dod_block_fn=lambda tid: None,
             residual_block_fn=lambda tid: None,
@@ -621,6 +739,8 @@ def _build_close_env(tf, base: Path, monkeypatch) -> _CloseEnv:
     rounds = board_dir / "tickets" / "rounds" / ticket
     rounds.mkdir(parents=True)
     (rounds / _ROUND_FILE).write_text("## 라운드 표본\n", encoding="utf-8")
+    (rounds / _DEVELOPER_ROUND_FILE).write_text("## 구현 표본\n", encoding="utf-8")
+    (rounds / _REVIEW_ROUND_FILE).write_text(_review_round_text([]), encoding="utf-8")
     _git(board_dir, "add", "-A")
     _git(board_dir, "commit", "-qm", "board seed")
     _git(board_dir, "remote", "add", "origin", str(bare))
@@ -1611,7 +1731,6 @@ def test_close_preflight_calls_the_same_judgement_functions(close_env, monkeypat
         return _fn
 
     finisher = env.finisher(
-        diff_cap_block_fn=_record("diff_cap"),
         private_ref_block_fn=_record("private_ref"),
         dod_block_fn=_record("dod"),
         residual_block_fn=_record("residual"),
@@ -1635,7 +1754,7 @@ def test_close_preflight_calls_the_same_judgement_functions(close_env, monkeypat
     assert closer.preflight() == []
 
     assert calls == [
-        f"diff_cap:{env.ticket}", f"private_ref:{env.ticket}", f"dod:{env.ticket}",
+        f"private_ref:{env.ticket}", f"dod:{env.ticket}",
         f"residual:{env.ticket}", f"binding:{env.ticket}", f"rounds:{env.ticket}",
     ]
     # 소유 판정이 받는 Namespace 는 `board complete` 가 받는 것과 같은 파서 산출이다 —
@@ -1715,24 +1834,176 @@ def test_close_records_progress_in_the_cluster_ledger(close_env):
     assert ledger["status"] == "closed"
 
 
+def _write_review_round(env, text: str) -> Path:
+    path = env.board_dir / "tickets" / "rounds" / env.ticket / _REVIEW_ROUND_FILE
+    path.write_text(text, encoding="utf-8")
+    _git(env.board_dir, "add", "-A")
+    _git(env.board_dir, "commit", "-qm", "review round")
+    _git(env.board_dir, "push", "-q")
+    return path
+
+
+def _append_disposition(env, decision: str) -> None:
+    """멤버 명세 PM 영역에 F-001 처분 블록을 더한다(리뷰 라운드 03 대상)."""
+    spec = next((env.board_dir / "tickets" / "claimed").glob(f"{env.ticket}*.md"))
+    payload = json.dumps({
+        "version": 1, "reviewer_role": "code-reviewer", "reviewer_ordinal": 3,
+        "dispositions": [{
+            "id": "F-001", "decision": decision, "reason": f"PM {decision} 근거",
+            "scope": "F-001 범위" if decision == "accepted" else "", "prerequisite": "",
+        }],
+    }, ensure_ascii=False, separators=(",", ":"))
+    spec.write_text(
+        spec.read_text(encoding="utf-8")
+        + f"\n```pm-review-disposition-v1\n{payload}\n```\n",
+        encoding="utf-8",
+    )
+    _git(env.board_dir, "add", "-A")
+    _git(env.board_dir, "commit", "-qm", "disposition")
+    _git(env.board_dir, "push", "-q")
+
+
+@requires_git
+def test_close_refuses_an_undisposed_review_must_fix_then_passes_after_disposition(
+    close_env, capsys,
+):
+    """AT-002 — 내부 기록 없이 리뷰 라운드 파일의 미처분 must-fix 가 첫 부작용 앞에서 막힌다.
+
+    판정 입력 이전 전에는 이 형상의 `_pending_gates` 가 빈 목록이라 종결이 그대로 진행했다.
+    처분(기각) 기입 뒤에는 같은 종결이 끝까지 간다(정상 사용 차단 없음).
+    """
+    env = close_env
+    _write_review_round(env, _review_round_text([_must_fix_finding()]))
+    assert not (env.home / ".project_manager" / ".local" / "internal_review_rounds.json").exists()
+
+    rc = env.closer().run()
+    out = capsys.readouterr()
+
+    assert rc == 1, out.out + out.err
+    assert "리뷰 확인 입력 미충족" in out.err and env.ticket in out.err
+    assert env.board_calls == []
+    assert env.delegate_calls == []
+    assert env.slot_log()[0] == "code seed"
+    assert env.lease_state() == "leased"
+
+    _append_disposition(env, "rejected")
+    rc = env.closer().run()
+    out = capsys.readouterr()
+
+    assert rc == 0, out.out + out.err
+    assert [args[0] for args in env.board_calls] == ["complete"]
+    assert env.delegate_calls == []          # 처분된 잔여는 resolve 대상이 아니다
+    assert not (env.home / ".project_manager" / ".local" / "internal_review_rounds.json").exists()
+
+
+@requires_git
+@pytest.mark.parametrize("shape", ["absent", "pending"])
+def test_close_preflight_refuses_a_member_without_a_harvested_review(
+    close_env, capsys, shape,
+):
+    """AT-015 — 리뷰 라운드가 없거나 돌려받지 않은(시드 그대로) 멤버는 종결이 거부한다."""
+    env = close_env
+    review = env.board_dir / "tickets" / "rounds" / env.ticket / _REVIEW_ROUND_FILE
+    if shape == "absent":
+        review.unlink()
+        expected = "code-reviewer 리뷰 라운드가 없습니다"
+    else:
+        board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
+        spec = next((env.board_dir / "tickets" / "claimed").glob(f"{env.ticket}*.md"))
+        review.write_text(
+            board._load_ticket_rounds().render_round_seed(
+                "code-reviewer", spec.read_text(encoding="utf-8"), today="2026-01-02"),
+            encoding="utf-8")
+        expected = "돌려받지 않았습니다"
+    _git(env.board_dir, "add", "-A")
+    _git(env.board_dir, "commit", "-qm", f"review {shape}")
+    _git(env.board_dir, "push", "-q")
+
+    rc = env.closer().run()
+    out = capsys.readouterr()
+
+    assert rc == 1, out.out + out.err
+    assert expected in out.err
+    assert env.board_calls == [] and env.delegate_calls == []
+    assert env.slot_log()[0] == "code seed"
+
+
+def _mark_pm_direct(env) -> None:
+    """멤버 명세 frontmatter 에 `tier: pm-direct` 를 더한다."""
+    spec = next((env.board_dir / "tickets" / "claimed").glob(f"{env.ticket}*.md"))
+    text = spec.read_text(encoding="utf-8")
+    assert "estimate: small\n" in text
+    spec.write_text(text.replace("estimate: small\n", "estimate: small\ntier: pm-direct\n", 1),
+                    encoding="utf-8")
+    _git(env.board_dir, "add", "-A")
+    _git(env.board_dir, "commit", "-qm", "pm-direct tier")
+    _git(env.board_dir, "push", "-q")
+
+
+def _drop_rounds(env) -> None:
+    """멤버 라운드 디렉터리를 통째로 지운다(위임 라운드를 연 적 없는 형상)."""
+    shutil.rmtree(env.board_dir / "tickets" / "rounds" / env.ticket)
+    _git(env.board_dir, "add", "-A")
+    _git(env.board_dir, "commit", "-qm", "no rounds")
+    _git(env.board_dir, "push", "-q")
+
+
+@requires_git
+def test_close_finishes_a_pm_direct_member_without_review_rounds(
+    tf, tmp_path, monkeypatch, capsys,
+):
+    """PM-direct 멤버는 리뷰 라운드가 하나도 없을 때만 리뷰 없음 사유 없이 종결된다.
+
+    역방향 둘: tier 없는 같은 형상은 리뷰 없음으로 막히고, PM-direct 라도 리뷰 라운드가 있으면
+    미처분 must-fix 판정을 그대로 받는다.
+    """
+    pm_direct = _build_close_env(tf, tmp_path / "pm-direct", monkeypatch)
+    _mark_pm_direct(pm_direct)
+    _drop_rounds(pm_direct)
+
+    rc = pm_direct.closer().run()
+    out = capsys.readouterr()
+
+    assert rc == 0, out.out + out.err
+    assert "리뷰 라운드가 없습니다" not in out.err
+    assert [args[0] for args in pm_direct.board_calls] == ["complete"]
+
+    untiered = _build_close_env(tf, tmp_path / "untiered", monkeypatch)
+    _drop_rounds(untiered)
+
+    rc = untiered.closer().run()
+    out = capsys.readouterr()
+
+    assert rc == 1, out.out + out.err
+    assert "code-reviewer 리뷰 라운드가 없습니다" in out.err
+    assert untiered.board_calls == [] and untiered.delegate_calls == []
+
+    reviewed = _build_close_env(tf, tmp_path / "pm-direct-reviewed", monkeypatch)
+    _mark_pm_direct(reviewed)
+    _write_review_round(reviewed, _review_round_text([_must_fix_finding()]))
+
+    rc = reviewed.closer().run()
+    out = capsys.readouterr()
+
+    assert rc == 1, out.out + out.err
+    assert "리뷰 확인 입력 미충족" in out.err and reviewed.ticket in out.err
+    assert reviewed.board_calls == [] and reviewed.delegate_calls == []
+
+
 @requires_git
 def test_close_stops_before_any_side_effect_when_the_confirmation_is_missing(
-    close_env, capsys, monkeypatch,
+    close_env, capsys,
 ):
-    """기계 확인이 미충족이면 첫 부작용 앞에서 멈춘다 — board·git 어디도 건드리지 않는다."""
+    """accepted 잔여의 기계 확인 입력(verify 선언)이 없으면 첫 부작용 앞에서 멈춘다."""
     env = close_env
-    board = env.tf._board_module_at(env.board_dir.parent / "tools" / "board.py")
-    ledger_path = board._internal_review_rounds_ledger()
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    ledger_path.write_text(json.dumps({env.ticket: {"rounds": [
-        {"sequence": 1, "must_fix": 2, "verdict": 1},
-    ]}}), encoding="utf-8")
+    _write_review_round(env, _review_round_text([_must_fix_finding()]))
+    _append_disposition(env, "accepted")
 
     rc = env.closer().run()
     out = capsys.readouterr()
 
     assert rc == 1
-    assert "final-fix 확인 입력 미충족" in out.err
+    assert "리뷰 확인 입력 미충족" in out.err and "verify 선언이 없습니다" in out.err
     assert env.board_calls == []
     assert env.delegate_calls == []
     assert env.slot_log()[0] == "code seed"
@@ -1743,27 +2014,25 @@ def test_close_stops_before_any_side_effect_when_the_confirmation_is_missing(
 def test_close_preflight_precedes_resolve_in_dry_run_and_actual(
     close_env, capsys, monkeypatch,
 ):
-    """선검사가 confirmation 부재를 허용하는 입력 판정, step 1이 실제 생성·처분 소유자다."""
+    """선검사가 confirmation 부재를 허용하는 입력 판정, step 1이 실제 생성 소유자다."""
     env = close_env
     first_key, _first_label, first_precheck = env.tf.ClusterCloser.STEPS[0]
     assert (first_key, first_precheck) == ("resolve", "_pre_resolve")
 
     dry_events: list[str] = []
     dry = env.closer(dry_run=True)
-    monkeypatch.setattr(dry, "_pending_gates", lambda: [env.ticket])
-    monkeypatch.setattr(dry, "_gate_ledger", lambda: {env.ticket: {}})
-    monkeypatch.setattr(dry, "_delegate_supports_cluster", lambda: True)
+    assert dry._resolve_members() is None
     monkeypatch.setattr(
-        dry._board, "_pm_verified_resolution_input_problem",
+        dry._board, "_review_resolution_input_problem",
         lambda *_a, **_k: dry_events.append("preflight") or None,
     )
     monkeypatch.setattr(
-        dry._board, "_pm_verified_evidence_problem",
-        lambda *_a, **_k: pytest.fail("선검사가 post-resolution evidence를 선호출했다"),
+        dry._board, "_review_completion_problem",
+        lambda *_a, **_k: dry_events.append("pending") or "잔여",
     )
     assert dry._pre_resolve() == []
     assert dry._step_resolve() is None
-    assert dry_events == ["preflight"]
+    assert dry_events == ["preflight", "pending"]
     assert env.delegate_calls == []
     assert "rounds resolve --cluster" in capsys.readouterr().out
 
@@ -1774,12 +2043,13 @@ def test_close_preflight_precedes_resolve_in_dry_run_and_actual(
         return 0, "resolved"
 
     actual = env.closer(run_delegate_fn=resolve)
-    monkeypatch.setattr(actual, "_pending_gates", lambda: [env.ticket])
-    monkeypatch.setattr(actual, "_gate_ledger", lambda: {env.ticket: {}})
-    monkeypatch.setattr(actual, "_delegate_supports_cluster", lambda: True)
+    assert actual._resolve_members() is None
     monkeypatch.setattr(
-        actual._board, "_pm_verified_resolution_input_problem",
+        actual._board, "_review_resolution_input_problem",
         lambda *_a, **_k: actual_events.append("preflight") or None,
+    )
+    monkeypatch.setattr(
+        actual._board, "_review_completion_problem", lambda *_a, **_k: "잔여",
     )
     assert actual._pre_resolve() == []
     assert actual._step_resolve() is None
@@ -1787,24 +2057,32 @@ def test_close_preflight_precedes_resolve_in_dry_run_and_actual(
 
 
 @requires_git
-def test_close_resolves_each_gate_when_the_bundle_surface_is_absent(
-    close_env, capsys, monkeypatch,
-):
-    """묶음 처분 표면이 없으면 티켓별 처분을 반복한다(있으면 한 번) — seam 하나로 갈린다."""
+def test_close_resolves_the_cluster_once(close_env, monkeypatch):
+    """처분은 묶음 표면 `rounds resolve --cluster` 한 번이다(티켓별 반복 경로 없음)."""
     env = close_env
     closer = env.closer()
-    monkeypatch.setattr(closer, "_delegate_supports_cluster", lambda: False)
     monkeypatch.setattr(closer, "_pending_gates", lambda: [env.ticket])
 
     assert closer._step_resolve() is None
     assert env.delegate_calls == [
-        ["rounds", "resolve", "--gate", env.ticket, "--pm-verified"]]
-
-    monkeypatch.setattr(closer, "_delegate_supports_cluster", lambda: True)
-    env.delegate_calls.clear()
-    assert closer._step_resolve() is None
-    assert env.delegate_calls == [
         ["rounds", "resolve", "--cluster", _CLUSTER, "--pm-verified"]]
+    for removed in ("_gate_ledger", "_resolve_argv_sets", "_delegate_supports_cluster"):
+        assert not hasattr(env.tf.ClusterCloser, removed), removed
+
+
+@requires_git
+def test_close_review_seam_absence_is_an_observation_failure(close_env, monkeypatch):
+    """판정 seam 이 없는 board 사본은 잔여 없음이 아니라 관측 실패로 멈춘다."""
+    env = close_env
+    closer = env.closer()
+    monkeypatch.delattr(closer._board, "_review_completion_problem")
+    monkeypatch.delattr(closer._board, "_review_resolution_input_problem")
+
+    with pytest.raises(env.tf._CloseObservationFailure, match="_review_completion_problem"):
+        closer._pending_gates()
+    with pytest.raises(env.tf._CloseObservationFailure,
+                       match="_review_resolution_input_problem"):
+        closer._pre_resolve()
 
 
 @requires_git
@@ -1818,7 +2096,6 @@ def test_close_task_identity_is_forwarded_to_resolve_without_ambient_env(
     closer = env.closer(
         task="main", board_identity_args=["--task", "main"],
     )
-    monkeypatch.setattr(closer, "_delegate_supports_cluster", lambda: True)
     monkeypatch.setattr(closer, "_pending_gates", lambda: [env.ticket])
 
     assert closer._step_resolve() is None
@@ -1897,107 +2174,6 @@ def test_size_one_cluster_matches_the_single_ticket_finish(close_env, capsys):
     for line in ("[1/5] 회귀 실행 중...", "[3/5] board.py complete...",
                  "[4/5] git stage (선언 경로 스코프)..."):
         assert line in direct_out and line in cluster_out
-
-
-# ════════════════════════════════════════════════════════════════════════
-# 리뷰 호출 폭 — 실제 진입점(`_diff_cap_refusal`)이 통합 merge-base 로 잰다
-# ════════════════════════════════════════════════════════════════════════
-
-def _cap_refusal(external, root: Path, *, cap: int) -> tuple[str | None, str]:
-    """리뷰 호출 서킷브레이커를 **실제 진입점으로** 부른다 — `(차단 문자열, stderr)`.
-
-    helper 를 따로 부르면 진입점이 그 helper 에 무엇을 넘기는지가 검증되지 않는다(폭 기준이
-    진입점에서만 갈린 실측이 있다)."""
-    args = SimpleNamespace(ticket=_TICKET, gate=None, base="HEAD")
-    buffer = io.StringIO()
-    with contextlib.redirect_stderr(buffer):
-        block = external._diff_cap_refusal(
-            args, {"diff_cap.small": str(cap)},
-            root=root, paths=list(_WIDTH_SCOPE), pm_home=root,
-        )
-    return block, buffer.getvalue()
-
-
-def _cap_total(external, root: Path) -> int:
-    """그 실행이 실제로 잰 총량 — 상한 0 이면 0 줄이 아닌 한 항상 차단이라 값이 나온다."""
-    block, _stderr = _cap_refusal(external, root, cap=0)
-    matched = re.search(r"diff (\d+)줄", block or "")
-    assert matched is not None, block
-    return int(matched.group(1))
-
-
-@requires_git
-def test_review_width_is_the_same_before_and_after_commit_and_rebase(external, tmp_path):
-    """리뷰 호출 폭이 미커밋 / 커밋 / 재배치 전 / 재배치 후 네 형상에서 같은 값이다.
-
-    옛 기준(claim 앵커)은 재배치 뒤 흡수분을 자기 폭으로 실어 형상 4 만 값이 뛰었다.
-    """
-    root, _seed = _order_repo(tmp_path)
-    # 픽스처 board 파일을 묶음 브랜치에 먼저 커밋한다 — 통합 브랜치 쪽 커밋이 그것들을 통합
-    # 브랜치에 실으면 묶음 브랜치로 돌아올 때 git 이 티켓·장부 파일을 지운다(조회 불능).
-    _commit(root, "board fixture")
-    # 통합 브랜치가 앞서 나간다 — 이 작업이 재배치로 흡수할 분량(자기 폭이 아니다).
-    _git(root, "checkout", "-q", _INTEGRATION_BRANCH)
-    (root / _ABSORBED_TOUCH).write_text(
-        "".join(f"# {_ABSORBED_MARKER} {index}\n" for index in range(_ABSORBED_LINES)),
-        encoding="utf-8",
-    )
-    _commit(root, "integration adds lines")
-    _git(root, "checkout", "-q", _CLUSTER_BRANCH)
-    # 이 작업의 변경(자기 몫).
-    (root / _TOUCH).write_text(
-        _BASE_BODY + "".join(f"# {_OWN_MARKER} {index}\n" for index in range(_OWN_LINES)),
-        encoding="utf-8",
-    )
-
-    totals = [_cap_total(external, root)]                    # 형상 1 — 미커밋
-    _commit(root, "cluster work")
-    totals.append(_cap_total(external, root))                # 형상 2 — 커밋
-    _git(root, "checkout", "-q", _INTEGRATION_BRANCH)
-    (root / "unrelated.txt").write_text("x\n", encoding="utf-8")
-    _commit(root, "integration moves on")
-    _git(root, "checkout", "-q", _CLUSTER_BRANCH)
-    totals.append(_cap_total(external, root))                # 형상 3 — 재배치 전
-    assert _git(root, "rebase", _INTEGRATION_BRANCH).returncode == 0
-    totals.append(_cap_total(external, root))                # 형상 4 — 재배치 후
-
-    assert totals == [_OWN_LINES] * 4, totals
-
-
-@requires_git
-def test_review_width_refuses_when_the_integration_branch_is_undeclared(
-    external, tmp_path,
-):
-    """통합 브랜치 선언이 없으면 리뷰 호출을 거부한다 — 다른 기준으로 재지 않는다."""
-    root, _seed = _width_repo(tmp_path)
-
-    declared_block, declared_stderr = _cap_refusal(external, root, cap=0)
-    assert f"diff {_OWN_LINES}줄" in declared_block
-    assert external.INTEGRATION_TIP_UNDECLARED_NOTE not in declared_stderr
-
-    _write_cluster_ledger(root / ".project_manager" / "board", tickets=(_TICKET,),
-                          base_branch=None)
-    refusal, stderr = _cap_refusal(external, root, cap=0)
-
-    assert "기준점을 해소하지 못했습니다" in refusal
-    assert external.INTEGRATION_TIP_UNDECLARED_NOTE in refusal
-    assert "diff" not in refusal          # 재지 않은 값을 문구에 싣지 않는다
-    assert stderr == ""
-
-
-@requires_git
-def test_review_width_refuses_when_the_integration_branch_is_unresolvable(
-    external, tmp_path,
-):
-    """선언한 통합 브랜치가 이 트리에 없어도 같은 거부다(옛 폭으로 접지 않는다)."""
-    root, _seed = _width_repo(tmp_path)
-    _write_cluster_ledger(root / ".project_manager" / "board", tickets=(_TICKET,),
-                          base_branch="task/absent")
-
-    block, stderr = _cap_refusal(external, root, cap=0)
-
-    assert external.INTEGRATION_TIP_UNRESOLVED_NOTE.format(ref="task/absent") in block
-    assert stderr == ""
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -2152,7 +2328,11 @@ def test_the_ticket_form_and_the_cluster_form_take_the_same_path(tf, tmp_path,
     rc, board, rounds, ledger = ticket_side
     assert rc == 0, out
     assert board == (("complete", _TICKET, "--tests-pass", "--cluster-close", _CLUSTER),)
-    assert rounds == ((f"tickets/rounds/{_TICKET}/{_ROUND_FILE}", "## 라운드 표본\n"),)
+    assert rounds == (
+        (f"tickets/rounds/{_TICKET}/{_ROUND_FILE}", "## 라운드 표본\n"),
+        (f"tickets/rounds/{_TICKET}/{_DEVELOPER_ROUND_FILE}", "## 구현 표본\n"),
+        (f"tickets/rounds/{_TICKET}/{_REVIEW_ROUND_FILE}", _review_round_text([])),
+    )
     assert dict(ledger)["close_step"] == tf.ClusterCloser.STEPS[-1][0]
     assert dict(ledger)["status"] == _CLOSED_STATUS
 

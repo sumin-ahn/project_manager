@@ -4,7 +4,7 @@ description: "orchestrator dev/code-reviewer 위임 표준 프롬프트 + touche
 audience: pm-internal
 ---
 
-# /pm-dev-delegate T-NNNN [--role architect|developer|code-reviewer] [--background] — orchestrator 위임
+# /pm-dev-delegate T-NNNN [--role architect|developer|code-reviewer] — orchestrator 위임
 
 > **harness 노트:** 아래 위임 블록은 **claude**(`Agent` 툴 · `subagent_type` · `run_in_background`) 표기다. **opencode** 는 같은 `description`·`subagent_type`·`prompt` 를 native `task` 툴로 부르고 background 필드가 없다(병렬은 호출측 동시 실행). **codex** 는 `spawn_agent(agent_type=…)` 를 쓰며 카드를 `.agents/skills/pm-dev-delegate/SKILL.md` 로 따로 출하한다. 필드 이름만 다르고 prepare→spawn→harvest 절차와 프롬프트 본문은 세 하네스가 같다. ticket 본문이 self-contained 의무 충족 시 위임 프롬프트는 한 줄.
 
@@ -23,22 +23,23 @@ audience: pm-internal
 | 묶음 선언 | `board.py cluster new` | 묶음 1 | — |
 | 설계 | `ticket prepare --cluster --role architect` | 세션 1 · 라운드 파일 N | `01-architect` |
 | 구현 | `ticket prepare --cluster --role developer` | 티켓당 1 | `02-developer` |
-| 리뷰 | `--role code-reviewer --cluster` | 세션 1 · 라운드 파일 N | `03-code-reviewer` |
+| 리뷰 | `ticket prepare --cluster --role code-reviewer`(같은 하네스) 또는 `--role code-reviewer --cluster`(다른 하네스) | 세션 1 · 라운드 파일 N | `03-code-reviewer` |
 | fix | `ticket prepare --cluster --role developer` | 묶음 브랜치 1명 | `04-developer` |
-| 종결 | `rounds resolve --cluster` → `ticket_finish.py --cluster` | 묶음 1 | — |
+| 종결 | `ticket_finish.py --cluster`(종결이 `rounds resolve --cluster` 를 부른다) | 묶음 1 | — |
 
 ```bash
 python3 .project_manager/tools/board.py cluster new <이름> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로> --repo <이름> --slot <N>
 python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster <C-이름> --role architect --cwd <worktree 절대경로>
 python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster <C-이름> --role developer --cwd <worktree 절대경로>
-python3 .project_manager/tools/pm_delegate.py --role code-reviewer --cluster <C-이름> --cwd <worktree 절대경로> --focus <검토 중점 파일> --background
-python3 .project_manager/tools/pm_delegate.py cluster wait --cluster <C-이름> --cwd <worktree 절대경로>
+python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster <C-이름> --role code-reviewer --cwd <worktree 절대경로> --focus <검토 중점 파일>
+python3 .project_manager/tools/pm_delegate.py --role code-reviewer --cluster <C-이름> --cwd <worktree 절대경로> --focus <검토 중점 파일>
 python3 .project_manager/tools/ticket_finish.py --cluster <C-이름>
 ```
 
 - 수열·테스트·종결의 규범은 [`pm_principles.md`](../../../.project_manager/wiki/pm_principles.md)
   §"티켓과 위임"만 소유한다. 이 카드는 위 표의 prepare/harvest 호출 절차만 제공한다.
-- 현재 장부 단계는 `python3 .project_manager/tools/pm_delegate.py cluster show --cluster <C-이름>`으로 확인한다.
+- 리뷰 행의 두 명령은 하네스로 고른다 — 같은 하네스면 준비(`ticket prepare`), 다르면 교차 실행이다(§code-reviewer 위임).
+- 현재 장부 단계는 `python3 .project_manager/tools/board.py cluster show <C-이름>`으로 확인한다.
 - **게이트 처분은 종결이 실행한다** — 종결 2단계가 `pm_delegate.py rounds resolve --cluster <C-이름> --pm-verified` 를 부르고 확인 커맨드도 엔진이 돌린다. PM 이 따로 부를 일은 처분만 먼저 확인할 때뿐이다.
 - 자동 크기 1 장부를 실행 묶음으로 사용하기 전에 기존 `board.py cluster new`로 실제 제품 트리의 branch/base_branch와 멤버를 명시 결속한다. 미결속인 branch 없는 옛 장부는 기준 브랜치 이름만으로 제품 출처를 입증할 수 없어 실행·종결 전에 거부한다. 동명 main·PM 홈·created_by·현재 cwd·단일 슬롯을 결속 근거로 사용하지 않으며 장부를 자동 덮어쓰지 않는다. 코드 트리 없는 draft 작성은 유지하고 공유 승격 전에 같은 명령으로 결속한다.
 
@@ -78,9 +79,8 @@ python3 .project_manager/tools/board.py regression run --task <이름>
 
 ## 위임 설정 조회와 transport 선택 (`pm_delegate`)
 
-transport 규칙은 한 문장이다. 리뷰(`code-reviewer`)는 하네스와 무관하게 엔진이
-실행한다(`pm_delegate.py --role code-reviewer --cluster`). 설계·구현·조사는 target 하네스 == PM
-하네스면 native, 다르면 `pm_delegate.py` cross 다. 리뷰만 엔진이 실행하는 이유는 §code-reviewer 위임에 있다.
+transport 규칙은 한 문장이다. 설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면
+`pm_delegate.py` cross 다.
 
 `local.conf`의 `delegate.<role>[.<tier>]` 매핑은 native transport와 cross transport가 모두 읽는 위임
 설정의 단일 진실이다. native agent 카드의 모델은 conf와 일치해야 하며 가드가 불일치를 경고하되 spawn을 막거나 카드를 자동 수정하지 않는다. `delegate.enabled`는
@@ -117,10 +117,11 @@ developer·code-reviewer·architect·researcher는 PM 홈 티켓을 직접 편�
   거부 판정(역할·상태·예산·순서)은 **전부 예약 앞**이라 거부된 준비가 board 에 고아 라운드를
   남기지 않는다.
   **`ticket prepare`는 역할이 native(하네스가 PM 하네스와 일치)일 때만 통과한다** — cross 역할은
-  고아 시드를 막기 위해 rc≠0 으로 거부되며, 아래 `--ticket` 실 실행이 자동 준비하라는 처방을 낸다.
-  리뷰는 준비 대상이 아니다(엔진 실행 · `--role code-reviewer` 는 rc 2).
+  고아 시드를 막기 위해 rc≠0 으로 거부되며, 아래 실 실행(리뷰 `--cluster <C-이름>`, 그 밖
+  `--ticket <T-NNNN>`)이 자동 준비하라는 처방을 낸다. 리뷰 준비는 `--cluster` 로만 받는다
+  (`--ticket` 리뷰 준비는 rc 2).
 
-- **cross 자동 후처리**: 아래 실 실행에 `--ticket T-NNNN`을 주면 `pm_delegate.py`가 prepare,
+- **cross 자동 후처리**: 아래 실 실행에 `--ticket T-NNNN`(리뷰는 `--cluster <C-이름>`)을 주면 `pm_delegate.py`가 prepare,
   라운드 파일 경로 preamble 합성, subprocess 실행, `finally` harvest를 한 호출에서 수행한다.
   하네스 rc 비정상·runner 예외에도 harvest를 시도하며, harvest 실패는 원래 rc보다 강한 비정상 종료와
   진단을 stderr에 낸다. 실패 시 남은 run-dir 을 진단한 뒤 같은 `--copy`로 재회수하거나 새
@@ -144,8 +145,11 @@ developer·code-reviewer·architect·researcher는 PM 홈 티켓을 직접 편�
 
 ```bash
 python3 .project_manager/tools/pm_delegate.py --dry-run \
-    --role <developer|researcher|architect|code-reviewer> \
+    --role <developer|researcher|architect> \
     --prompt-file <task 프롬프트 파일 절대경로> --cwd <작업 worktree 절대경로> [--tier normal|hard]
+# 리뷰 미리보기는 프롬프트 파일 없이 묶음으로 준다:
+python3 .project_manager/tools/pm_delegate.py --dry-run \
+    --role code-reviewer --cluster <C-이름> --cwd <작업 worktree 절대경로>
 ```
 
 - 출력: 해소된 `(harness, model, reasoning)` + 합성 프롬프트 + argv. 하네스를 부르지 않는다.
@@ -165,9 +169,8 @@ cross는 **`--tier hard`**, native는 그 하네스의 hard 카드(`developer-ha
 
 ### 2. native/cross
 
-- **설계·구현·조사 — target harness == PM 하네스**: 아래 실행 패턴대로 native 위임(claude=Agent 툴 `subagent_type`, codex=`spawn_agent`, opencode=subagent). `pm_delegate`를 호출하지 않는다.
-- **설계·구현·조사 — target harness != PM 하네스**: 아래 `pm_delegate` 호출.
-- **리뷰**: §code-reviewer 위임(엔진 실행, 하네스 무관).
+- **target harness == PM 하네스**: 아래 실행 패턴대로 native 위임(claude=Agent 툴 `subagent_type`, codex=`spawn_agent`, opencode=subagent). 리뷰도 같다 — 준비가 낸 프롬프트 파일을 code-reviewer 서브에이전트에 넘긴다(§code-reviewer 위임).
+- **target harness != PM 하네스**: 아래 `pm_delegate` 호출(리뷰는 `--role code-reviewer --cluster`).
 
 ### 3. cross 실행
 
@@ -186,7 +189,7 @@ python3 .project_manager/tools/pm_delegate.py --role <역할> \
 - `--cwd`: 구현할 worktree **절대경로**. 모든 역할 필수(기본값 없음). task-mode 해소값을 실값으로 넣는다.
 - `--tier`: developer에만 사용.
 - role preamble(역할 정체성, commit/push 등 git 비가역·board 조작·어댑터 `.claude/.codex/.opencode` 수정 금지)은 엔진이 자동 합성한다. 프롬프트 파일에는 작업만 담고 금지 문구를 중복하지 않는다.
-- developer·code-reviewer·architect의 정식 실행은 `--ticket`을 받아 라운드 파일을 자동 준비하고, 그 절대경로 하나만 편집한다. Codex reviewer는 실행 root를 격리 tmp로 옮긴 `workspace-write`와 정확한 copy run-dir `--add-dir`만 사용해 원 worktree를 read-only로 둔다. OpenCode는 native에서 `mode: all` custom 역할 카드, cross에서 `run --agent <role>`와 엔진 소유 런타임 role config를 쓴다. 수신 저장소에 `.opencode/agents`가 없어도 정제된 env에 이번 역할 하나의 mode/permission을 주입하고 모델은 CLI로 명시해 default build/plan 폴백을 막는다. reviewer는 라운드 파일 기록을 위해 edit 가능하며 추가-dir 기능이 없어 repo 쓰기 표면을 경고한다. Claude·OpenCode처럼 단일 경로 쓰기 격리를 보장하지 못해도 경고 후 사용자가 고른 target으로 계속 실행하며, 역할 규약과 위임 전후 git/touches 감사가 범위 밖 변경을 loud하게 표면화한다. target 자동 대체·새 reviewer opt-in·새 sandbox는 추가하지 않는다.
+- developer·architect의 정식 실행은 `--ticket`, code-reviewer 는 `--cluster` 를 받아 라운드 파일을 자동 준비하고, 그 절대경로만 편집한다. Codex reviewer는 실행 root를 격리 tmp로 옮긴 `workspace-write`와 정확한 copy run-dir `--add-dir`만 사용해 원 worktree를 read-only로 둔다. OpenCode는 native에서 `mode: all` custom 역할 카드, cross에서 `run --agent <role>`와 엔진 소유 런타임 role config를 쓴다. 수신 저장소에 `.opencode/agents`가 없어도 정제된 env에 이번 역할 하나의 mode/permission을 주입하고 모델은 CLI로 명시해 default build/plan 폴백을 막는다. reviewer는 라운드 파일 기록을 위해 edit 가능하며 추가-dir 기능이 없어 repo 쓰기 표면을 경고한다. Claude·OpenCode처럼 단일 경로 쓰기 격리를 보장하지 못해도 경고 후 사용자가 고른 target으로 계속 실행하며, 역할 규약과 위임 전후 git/touches 감사가 범위 밖 변경을 loud하게 표면화한다. target 자동 대체·새 reviewer opt-in·새 sandbox는 추가하지 않는다.
 - 병렬 wave는 호출측 PM 하네스의 background 실행(claude Bash `run_in_background` 등)으로 동기·stateless `pm_delegate` 호출을 병렬화한다.
 - 같은 세션이 claim 중인 다른 ticket과 `touches`가 겹치면(dry-run 포함) `pm_delegate`가 이미 `=== 병렬 위임 touches 겹침 ===` 경고를 stderr에 낸다(never-block·처방: 순차 실행 또는 슬롯 분리). 이 경고 하나만으로 "겹치니 직렬"로 판단하지 않는다 — `board.py new`/`promote`가 발행 시점에 낸 가용(idle) 슬롯 수 재료를 함께 보고, 슬롯이 남아 있으면 순차 대신 슬롯 분리로 병렬을 유지한다.
 - 결과: `rc=0` 성공(stdout 첫 줄=실행 provenance, 폴백 시 실제 하네스 포함; 이후 최종 reply; raw 파일 박제), `rc=1` 실패(loud·raw 경로 stderr), `rc=3` 위임 스위치 off. PM이 reply를 검토하고 board를 갱신하며 위임 대상은 board를 조작하지 않는다.
@@ -293,31 +296,55 @@ Agent 툴 호출:
 
 ### code-reviewer 위임 (묶음 1회)
 
-리뷰 단위는 묶음이다. **격리 스냅샷·프롬프트 조립·라운드 자리 예약을 엔진이 한다 — PM 의 손 git 은
-0이다.** PM 이 넣는 것은 검토 중점 문단 하나(`--focus`)뿐이다. 리뷰가 PM 과 같은 하네스여도 native
-위임을 쓰지 않는 이유: 하네스 프로세스의 실행 위치를 격리 스냅샷으로 옮기는 것과 라운드 상한·발산
-판정은 별도 프로세스로만 가능하다(native 위임 도구에는 작업 디렉터리 인자가 없다).
+리뷰 단위는 묶음이다. **프롬프트 조립·라운드 자리 예약은 엔진이 한다 — PM 이 넣는 것은 검토 중점
+문단 하나(`--focus`)뿐이다.** 실행은 다른 역할과 같은 규칙이다 — 리뷰 하네스가 PM 하네스와 같으면
+native 서브에이전트, 다르면 `pm_delegate.py` 교차 실행이다.
+
+**같은 하네스 — 준비 → spawn → 돌려받기**:
+
+```bash
+python3 .project_manager/tools/pm_delegate.py ticket prepare \
+    --cluster <C-이름> --role code-reviewer \
+    --cwd <작업 worktree 절대경로> --focus <검토 중점 문단 파일 절대경로>
+# 멤버마다 stdout JSON 한 줄 — `copy`(그 티켓 라운드 파일)·`prompt`(엔진이 조립한 리뷰 프롬프트 파일·멤버 공통).
+# 서브에이전트 종료 뒤(판정과 무관) run-dir 하나로 멤버 전부를 돌려받는다:
+python3 .project_manager/tools/pm_delegate.py ticket harvest \
+    --copy <prepare JSON의 copy 또는 그 run-dir> --cwd <작업 worktree 절대경로>
+```
+
+```
+Agent 툴 호출:
+  description: "<C-이름> review"
+  subagent_type: code-reviewer
+  run_in_background: false
+  prompt:
+    "리뷰 프롬프트 파일(절대경로): <prepare JSON의 prompt> — 이 파일을 읽고 그 지시대로 묶음을
+     검토하라. 작업 위치·변경 범위·멤버별 라운드 파일 경로는 그 파일이 단일 진실이다."
+```
+
+**다른 하네스 — 전경 실행**:
 
 ```bash
 python3 .project_manager/tools/pm_delegate.py --role code-reviewer \
     --cluster <C-이름> --cwd <작업 worktree 절대경로> \
-    --focus <검토 중점 문단 파일 절대경로> --background
-python3 .project_manager/tools/pm_delegate.py cluster wait \
-    --cluster <C-이름> --cwd <작업 worktree 절대경로>
+    --focus <검토 중점 문단 파일 절대경로>
 ```
 
+엔진이 같은 준비를 한 뒤 리뷰 하네스를 슬롯(`--cwd`)에서 실행하고, 끝나면(rc 와 무관) 멤버 라운드를
+돌려받는다. `--prompt-file` 은 이 경로에 주지 않는다.
+
 - **리뷰 입력** = 장부의 통합 브랜치와 묶음 브랜치의 merge-base 이후 묶음 브랜치 변경 전부다.
-  통합 브랜치가 그동안 앞서 갔어도 흡수분은 조상이라 빠진다.
-- **격리 스냅샷**은 엔진이 저장소 밖에 만들고 실행 root 로 준다. 스냅샷 직전에 트리가 묶음 브랜치
-  tip 인지 다시 결속하며, 리뷰 대상 파일에 커밋되지 않은 변경이 있으면 거부한다(프롬프트 diff 와
-  모델이 읽는 파일이 갈리는 것을 막는다). 리뷰 뒤 스냅샷 정리도 엔진이 한다.
-- **프롬프트**는 엔진이 조립한다 — 리뷰 단위·스냅샷 경로·입력 범위·변경 파일 목록·멤버 티켓 본문 N·
-  PM 검토 중점이 실값으로 실린다. `--prompt-file` 은 이 경로에 주지 않는다.
+  통합 브랜치가 그동안 앞서 갔어도 흡수분은 조상이라 빠진다. 리뷰어는 슬롯을 그대로 읽는다.
+- **리뷰 트리 검사**: 준비는 슬롯이 묶음 브랜치이고 작업 트리 변경이 0 일 때만 통과한다(커밋하지 않은
+  변경이 있으면 예약 전에 거부한다). 돌려받기는 슬롯 HEAD·작업 트리가 준비 시점과 같을 때만 통과한다 —
+  리뷰어가 sensitivity 확인으로 파일을 임시로 고쳤다면 종료 전에 원상 복원해야 한다. 무시되는
+  `.project_manager/.local/` 아래 라운드 파일만 바뀐 것은 변경이 아니다.
+- **프롬프트**는 엔진이 조립한다 — 슬롯 절대경로·입력 범위·변경 파일 목록·diff·멤버 티켓 본문 N·
+  PM 검토 중점·멤버별 라운드 파일 경로와 다음 finding ID 가 실값으로 실린다.
 - **산출 자리**는 run-dir 하나 안의 티켓별 `NN-code-reviewer.md` N개다. finding 은 그 티켓 파일에
   쓰고, 티켓 경계에 걸친 결함은 그 파일을 touches 로 소유한 티켓 파일에 쓴다. 스키마·다음 finding
   ID 실값은 엔진이 시드한 골격이 단일 진실이다(낱말을 손으로 만들지 않는다).
-- `--background` 는 분리 세션으로 띄우고 즉시 반환한다. 회수 판정은 rc 가 아니라 라운드 회수
-  상태이며 `cluster wait` 가 낸다 — 미회수 라운드가 있으면 rc≠0 이다.
+- 판정은 돌려받은 라운드 파일에서 읽는다 — 완료·종결은 그 라운드의 미처분 must-fix 를 거부한다.
 - 검토 중점 문단에는 이 wave 에서 특히 볼 축을 적는다. `status.md`/`log/current.md` 갱신은 PM 담당
   이므로 그 누락은 developer must-fix 가 아니라는 점도 여기에 적는다.
 

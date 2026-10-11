@@ -139,8 +139,8 @@ rc=1), 그 밖의 티켓에는 규범으로 적용한다. **설계 면제 값은
 `design: done` 으로 올린다(면제를 남기면 그 티켓만 순번이 어긋난다).
 
 리뷰도 묶음 1회다. 리뷰 입력은 통합 브랜치와 묶음 브랜치의 merge-base 이후 묶음 브랜치 변경 전부이고,
-격리 스냅샷 생성·프롬프트 조립·라운드 자리 예약을 엔진이 한다(PM의 손 git 0 — 구현 산출은 그
-라운드를 돌려받을 때 이미 커밋돼 있다). reviewer finding은
+프롬프트 조립·라운드 자리 예약을 엔진이 한다(PM의 손 git 0 — 구현 산출은 그 라운드를 돌려받을 때
+이미 커밋돼 있다). 리뷰어는 슬롯을 그대로 읽으며, 실행은 다른 역할과 같은 transport 규칙을 따른다. reviewer finding은
 PM 판정 전 증거·제안이며 developer 명령이 아니다. PM은 versioned disposition으로 전수 판정하고
 `pm_delegate.py review delta --cluster`가 accepted-only delta를 렌더한다. 그 출력은 fix 준비의
 입력이고, decision-required는 사용자 결정 요청 표면으로 전달된다. 라운드 파일의

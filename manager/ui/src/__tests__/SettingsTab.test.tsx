@@ -129,7 +129,7 @@ describe("항목 목록 구성", () => {
     const sections = buildSections(KEYS, VALUES);
     const keys = sections.flatMap((section) => section.rows.map((row) => row.key));
 
-    expect(keys).toContain("diff_cap.large");             // 전개된 패턴 멤버
+    expect(keys).toContain("harness.claude.ctx_window_tokens"); // 전개된 패턴 멤버
     expect(keys).toContain(MODEL_CELL.key);
     expect(keys).not.toContain(FREE_INPUT_FAMILY);        // 군 이름 자체는 행이 아니다
     const extra = sections.find((section) => section.group === EXTRA_GROUP);
@@ -283,14 +283,17 @@ describe("다섯 목록의 배너와 행 표시", () => {
   it("군 안에서 갈리는 이름이 있으면 그 이름이 선다 — 같은 이름 세 줄이 서지 않는다", () => {
     const bridge = makeBridge();
     mounted(bridge);
-    openGroup("additional_reviewer");
+    openGroup("harness");
     fireEvent.click(screen.getByTestId("show-unset"));
-    const names = ["diff_cap.small", "diff_cap.medium", "diff_cap.large"]
-      .map((key) => screen.getByTestId(`conf-${key}`).textContent ?? "");
+    const names = [
+      "harness.claude.ctx_window_tokens",
+      "harness.codex.ctx_window_tokens",
+      "harness.opencode.ctx_window_tokens",
+    ].map((key) => screen.getByTestId(`conf-${key}`).textContent ?? "");
     expect(new Set(names).size).toBe(3);
     expect(names[0]).toContain(
-      KEYS.keys.find((entry) => entry.key.startsWith("diff_cap."))!
-        .unit_labels["diff_cap.small"]);
+      KEYS.keys.find((entry) => entry.key.startsWith("harness."))!
+        .unit_labels["harness.claude.ctx_window_tokens"]);
   });
 
   it("행은 자기 키 문자열을 글자로 세우지 않는다 — 코드 좌표는 툴팁에만 남는다", () => {

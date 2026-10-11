@@ -8693,3 +8693,38 @@ def test_apply_conf_lists_models_once_per_save(tmp_path, monkeypatch):
         module.apply_conf(home, updates={"delegate.developer.model": _GLM},
                           opencode_config_dir=tmp_path / "global")
     assert len(calls(fakebin)) - saved == 1, calls(fakebin)
+
+
+_GATE_SNAPSHOT_OLD = ".project_manager/tools/gate_snapshot.py"
+_GATE_SNAPSHOT_NEW = ".project_manager/tools/pm_delegate.py"
+
+
+def test_gate_snapshot_retirement_is_declared_in_every_manifest(pm_update, tmp_path):
+    """AT-022 — 4벌 manifest 가 `gate_snapshot.py` 행 없이 은퇴 지시를 싣고, 옛 행이 남은 채택자는 heal 이다.
+
+    지시 없이 행만 지우면 옛 행이 로컬 전용 경로가 되어 diverged(갱신 rc 2)로 멈춘다.
+    """
+    manifests = [
+        REPO / ".project_manager" / "engine.manifest",
+        *(REPO / "templates" / flavor / ".project_manager" / "engine.manifest"
+          for flavor in ("claude_code", "codex", "opencode")),
+    ]
+    for manifest in manifests:
+        entries = {str(entry).replace("\\", "/") for entry in pm_update.read_manifest(manifest)}
+        assert _GATE_SNAPSHOT_OLD not in entries, manifest
+        assert (_GATE_SNAPSHOT_OLD, _GATE_SNAPSHOT_NEW) in (
+            pm_update.validated_retired_path_directives(REPO, [manifest])
+        ), manifest
+
+    flavor_manifest = REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest"
+    dest = tmp_path / "dest"
+    local = _write_dest_manifest(dest, [])
+    local.write_text(
+        flavor_manifest.read_text(encoding="utf-8") + _GATE_SNAPSHOT_OLD + "\n",
+        encoding="utf-8",
+    )
+
+    result = pm_update.resolve_manifest_selfheal(dest, REPO)
+
+    assert result["status"] == "heal"
+    assert _GATE_SNAPSHOT_OLD in result["retired_removed"]

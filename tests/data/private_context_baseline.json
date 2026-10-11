@@ -1,10 +1,10 @@
 {
-  "count": 394,
+  "count": 393,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
         "count": 1,
-        "hash": "9c3ee395e22fbe22ca4cecd6d785fe98c3a4061e56f022d5697f8f71799e7038",
+        "hash": "b10e1977add93749cd8743e78361eb94d9be5834eec5c8e87cff2ab5b480b7f2",
         "kind": "session_stamp"
       }
     ],
@@ -412,7 +412,7 @@
     "templates/claude_code/.claude/agents/code-reviewer.md": [
       {
         "count": 1,
-        "hash": "9c3ee395e22fbe22ca4cecd6d785fe98c3a4061e56f022d5697f8f71799e7038",
+        "hash": "b10e1977add93749cd8743e78361eb94d9be5834eec5c8e87cff2ab5b480b7f2",
         "kind": "session_stamp"
       }
     ],
@@ -1337,12 +1337,7 @@
       },
       {
         "count": 1,
-        "hash": "9bad24cadea980861bbe1b6d9c38ac0a691d7a6f9d4de2de8b653a5562e27398",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "eb3b6b1cd6782e2bbcbea79da829d093db050729d3671095ef9b9ab0bdd4750e",
+        "hash": "8edd8299d72edad8d6d7036d196a18d141b8e37894a33420ba11d0009cb6de91",
         "kind": "session_stamp"
       }
     ],
@@ -1848,7 +1843,7 @@
       },
       {
         "count": 1,
-        "hash": "53cd3c4d28a528ff046bc837e4db677f233d82006876651a3353fe965479a749",
+        "hash": "9569d7c98bcdb66dbdbfa467b5e41b103a0fe8d22a8566fb2bce187849332e5f",
         "kind": "session_stamp"
       },
       {

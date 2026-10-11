@@ -114,7 +114,6 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int] | None = None, c
     monkeypatch.setattr(
         external, "extract_diff",
         lambda *a, **k: "diff --git a/x b/x\n@@ -1 +1 @@\n-o\n+n\n")
-    monkeypatch.setattr(external, "_diff_cap_refusal", lambda *a, **k: None)
     # 이 파일의 스코프는 회계 축 하나다. 리뷰 뒤 게이트 티켓에 additional-reviewer 절을 기록하는
     # 회수(T-0696)는 실 보드 왕복이 필요한 별도 축이라 여기서는 격리한다 — 그 회귀는
     # tests/test_additional_reviewer_ticket_harvest.py 가 소유한다(run_review stub 과 같은 결).

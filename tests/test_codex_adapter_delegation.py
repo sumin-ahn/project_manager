@@ -382,33 +382,26 @@ def _documented_native_spawns(text: str) -> list[dict[str, str]]:
 
 
 def test_pm_dev_delegate_documents_only_native_codex_spawn_fields():
-    """Codex 출하 스킬이 손-스폰 역할의 native spawn 4필드를 정확히 안내한다.
+    """Codex 출하 스킬이 세 역할(developer·architect·code-reviewer)의 native spawn 4필드를 정확히 안내한다.
 
     `subagent_type`/`run_in_background`는 다른 harness의 필드라 Codex 실행 예시에 존재하면 첫 위임이
     schema 단계에서 거부된다. spawn 자체가 비동기 thread를 반환한다는 운영 규칙도 문서화해야 한다.
-    손-스폰 역할은 둘(developer·architect)이다 — 리뷰는 엔진이 스냅샷·프롬프트·라운드 자리를 만들어
-    직접 스폰하므로 카드에 손 spawn 예시가 없다(있으면 두 경로가 갈린다).
+    리뷰도 같은 하네스면 native 다 — 준비(`ticket prepare --cluster --role code-reviewer`)가 만든 프롬프트
+    파일을 spawn 에 넘기고, 다른 하네스면 `--role code-reviewer --cluster` 교차 실행이다(T-0950).
     """
     text = PM_DEV_DELEGATE.read_text(encoding="utf-8")
     calls = _documented_native_spawns(text)
-    assert len(calls) == 2, "developer/architect 각각 하나의 native spawn_agent 예시가 필요"
-    assert {call.get("agent_type") for call in calls} == {"developer", "architect"}
+    assert len(calls) == 3, "developer/architect/code-reviewer 각각 하나의 native spawn_agent 예시가 필요"
+    assert {call.get("agent_type") for call in calls} == {"developer", "architect", "code-reviewer"}
     assert all(_native_spawn_is_accepted(call) for call in calls)
-    assert 'agent_type="code-reviewer"' not in text, (
-        "리뷰가 손 spawn 예시로 되살아남 — 묶음 리뷰는 엔진 경로 하나다"
-    )
-    assert "--role code-reviewer" in text and "--cluster" in text, (
-        "codex 카드에 묶음 리뷰 실행(--role code-reviewer --cluster)이 없음"
-    )
-    # 손 spawn 역할 둘과 같은 규칙이 문장·준비 명령에도 있다 — 리뷰는 엔진 실행(T-0947).
     flat = re.sub(r"\s+", " ", text)
     assert TRANSPORT_RULE in flat, "codex 카드에 transport 규칙(R1) 문장이 없음"
-    prepare_roles = re.findall(
-        r"ticket prepare (?:\\ )?--cluster <C-이름> --role <([^>]+)>", flat,
+    assert "ticket prepare --cluster <C-이름> --role code-reviewer" in flat, (
+        "codex 카드에 같은 하네스 리뷰 준비 명령이 없음"
     )
-    assert prepare_roles == ["architect|developer"], (
-        f"codex 카드 준비 역할 목록이 손 spawn 역할(architect·developer)과 다름: {prepare_roles}"
-    )
+    assert "--role code-reviewer --cluster" in flat, "codex 카드에 교차 리뷰 실행이 없음"
+    for stale in ("--background", "cluster wait"):
+        assert stale not in text, f"codex 카드에 지운 리뷰 표면 잔존: {stale}"
     for stale_field in ("subagent_type", "run_in_background"):
         assert stale_field not in text, f"Codex pm-dev-delegate에 타 harness 필드 잔존: {stale_field}"
     assert "비동기로 진행" in text, "spawn 반환 thread의 비동기 운영 규칙 누락"

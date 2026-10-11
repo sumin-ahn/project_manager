@@ -867,18 +867,3 @@ def test_engine_guidance_names_the_knob_keys():
     assert core.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY in round_guidance
     assert "additional_reviewer.round_limit" not in round_guidance
     assert core.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY in core._WAVE_BUDGET_GUIDANCE
-
-
-def test_internal_round_guidance_names_its_own_knob_key():
-    """내부 축 거부 안내도 같은 규율이다 — 설정값·조정 키를 문구가 스스로 말한다."""
-    delegate = _load("pm_delegate")
-    assert (delegate.INTERNAL_REVIEW_ROUNDS_MAX_KEY
-            == f"delegate.{delegate.INTERNAL_REVIEW_ROLE}.rounds_max")
-    guidance = delegate._INTERNAL_ROUND_REFUSAL
-    assert "{knob}" in guidance and "{default}" in guidance
-    assert "상한 3" not in guidance                  # 값 재타이핑 금지(설정값 주입)
-    # 신키는 레지스트리에도 있다 — 채택자가 적으면 '모르는 키' 경고가 나면 안 된다.
-    conf_module = _load("local_conf")
-    assert delegate.INTERNAL_REVIEW_ROUNDS_MAX_KEY in conf_module.KNOWN_KEYS
-    assert conf_module.unknown_keys(
-        {delegate.INTERNAL_REVIEW_ROUNDS_MAX_KEY: "5"}) == ()

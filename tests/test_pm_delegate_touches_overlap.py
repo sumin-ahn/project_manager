@@ -439,27 +439,21 @@ def test_board_git_split_layout_is_read(pd, monkeypatch, tmp_path, capsys):
 def test_read_only_role_is_not_subject_to_overlap_warning(
     pd, monkeypatch, tmp_path, capsys,
 ):
-    """리뷰어는 격리 스냅샷을 읽기 전용으로 본다 — 겹침 경고 대상이 아니다."""
+    """읽기 역할(researcher·code-reviewer)은 트리를 바꾸지 않는다 — 겹침 경고 대상이 아니다."""
     workspace, prompt = _overlap_workspace(
         tmp_path, monkeypatch, pd,
         tickets=[
             (TARGET_TICKET, "claimed", SESSION, ["work/demo_1/src/shared.py"]),
             ("T-9702", "claimed", SESSION, ["work/demo_1/src"]),
         ],
-        rounds=("code-reviewer",),
+        rounds=("developer",),
     )
-    # codex code-reviewer preflight(`_preflight_codex_read_exec_root` — T-0844)의
-    # staged-nonzero 요건 — workspace 자신의 독립 index에 변경 하나를 얹는다.
-    (workspace / "staged.txt").write_text("staged\n", encoding="utf-8")
-    subprocess.run(
-        ["git", "add", "staged.txt"], cwd=workspace, check=True, capture_output=True,
-    )
-    conf = _enabled_conf(**{"delegate.code-reviewer.harness": "codex",
-                            "delegate.code-reviewer.model": "gpt-r"})
+    conf = _enabled_conf(**{"delegate.researcher.harness": "codex",
+                            "delegate.researcher.model": "gpt-r"})
     fake = _WritingRun(workspace)
     rc = _run_main(
         pd, monkeypatch,
-        ["--role", "code-reviewer", "--prompt-file", str(prompt),
+        ["--role", "researcher", "--prompt-file", str(prompt),
          "--cwd", str(workspace), "--ticket", TARGET_TICKET,
          "--output-dir", str(tmp_path / "raw")],
         conf, fake,
@@ -594,7 +588,7 @@ def test_out_of_scope_warning_survives_overlap_axis_failure(pd, tmp_path, capsys
 
 
 def test_overlap_warning_caps_ticket_and_path_lists(pd):
-    """F-004: 목록은 8건까지만 싣고 나머지는 건수로 접는다(gate_snapshot 표시 관례)."""
+    """F-004: 목록은 8건까지만 싣고 나머지는 건수로 접는다."""
     overlaps = tuple(
         pd.TicketTouchOverlap(
             f"T-97{index:02d}", SESSION,

@@ -9,8 +9,9 @@ root·`--add-dir` 는 추가만 한다 — "주 워크스페이스는 read-only�
 못해 "저장소가 아니다/테스트가 없다"로 반려했다 — 세 라운드 모두 `--cwd` 자신은 정상이었다.
 
 이 preflight(`_preflight_codex_read_exec_root`)는 재앵커 **이전**의 `--cwd` 가 리뷰 가능한
-형상인지(저장소인가·toplevel 이 `--cwd` 자신인가·code-reviewer 는 staged 가 있는가)를 스폰 전에
-기계로 확정해, 불량 입력으로 인한 무의미한 유료 라운드를 과금 전에 끊는다.
+형상인지(저장소인가·toplevel 이 `--cwd` 자신인가)를 스폰 전에 기계로 확정해, 불량 입력으로 인한
+무의미한 유료 라운드를 과금 전에 끊는다. 역할과 무관한 검사다 — 리뷰는 커밋된 슬롯 HEAD 를 보므로
+(준비가 깨끗한 작업 트리를 요구한다) staged 변경을 요구하지 않는다.
 """
 from __future__ import annotations
 
@@ -133,24 +134,16 @@ def test_subdirectory_cwd_toplevel_mismatch_blocks(pd, tmp_path):
         )
 
 
-def test_zero_staged_blocks_code_reviewer(pd, tmp_path):
-    """저장소·toplevel 은 정상이어도 staged 변경 0 이면 code-reviewer 를 끊는다."""
-    repo = tmp_path / "repo"
-    _init_repo(repo, staged=False)
-
-    with pytest.raises(pd.DelegateError, match="staged 변경 0"):
-        _run_attempt(
-            pd, harness="codex", role="code-reviewer", cwd=repo, tmp_path=tmp_path,
-            run_fn=_fail_if_called,
-        )
-
-
 # ── (b) 오차단 0 — 정상 형상은 막히지 않는다 ──────────────────────────────────
 
-def test_normal_shape_code_reviewer_passes(pd, tmp_path):
-    """저장소·toplevel 일치·staged 존재 — codex code-reviewer 는 정상 스폰된다."""
+def test_code_reviewer_needs_no_staged_changes(pd, tmp_path):
+    """AT-011 — staged 변경 0 인 깨끗한 저장소(toplevel 일치)에서도 codex code-reviewer 는 스폰된다.
+
+    리뷰 대상은 커밋된 슬롯 HEAD 다 — 준비가 깨끗한 작업 트리를 요구하므로 staged 요구는 교차 codex
+    리뷰를 항상 막는다.
+    """
     repo = tmp_path / "repo"
-    _init_repo(repo, staged=True)
+    _init_repo(repo, staged=False)
     calls = []
 
     def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
@@ -160,24 +153,6 @@ def test_normal_shape_code_reviewer_passes(pd, tmp_path):
 
     _run_attempt(
         pd, harness="codex", role="code-reviewer", cwd=repo, tmp_path=tmp_path,
-        run_fn=_capture,
-    )
-    assert len(calls) == 1
-
-
-def test_researcher_role_is_exempt_from_staged_requirement(pd, tmp_path):
-    """researcher 는 '조사·분석만' 계약이라 staged 0 이어도 오차단되지 않는다."""
-    repo = tmp_path / "repo"
-    _init_repo(repo, staged=False)
-    calls = []
-
-    def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
-        calls.append(argv)
-        return {"returncode": 0, "stdout": _codex_stdout("조사 완료"),
-                "stderr": "", "timed_out": False}
-
-    _run_attempt(
-        pd, harness="codex", role="researcher", cwd=repo, tmp_path=tmp_path,
         run_fn=_capture,
     )
     assert len(calls) == 1
@@ -286,8 +261,8 @@ def test_dry_run_prompt_carries_three_absolute_values(pd, tmp_path, capsys):
     prompt_file.write_text("임의 프롬프트 본문", encoding="utf-8")
 
     rc = pd.main([
-        "--role", "code-reviewer", "--harness", "codex", "--model", "gpt-x",
-        "--ticket", "T-0844", "--prompt-file", str(prompt_file),
+        "--role", "researcher", "--harness", "codex", "--model", "gpt-x",
+        "--prompt-file", str(prompt_file),
         "--cwd", str(repo), "--dry-run",
     ])
     out = capsys.readouterr().out
@@ -337,8 +312,8 @@ def test_dry_run_no_reanchor_when_read_tmp_strategy_unavailable(
     prompt_file.write_text("임의 프롬프트 본문", encoding="utf-8")
 
     rc = pd.main([
-        "--role", "code-reviewer", "--harness", "codex", "--model", "gpt-x",
-        "--ticket", "T-0844", "--prompt-file", str(prompt_file),
+        "--role", "researcher", "--harness", "codex", "--model", "gpt-x",
+        "--prompt-file", str(prompt_file),
         "--cwd", str(repo), "--dry-run",
     ])
     out = capsys.readouterr().out

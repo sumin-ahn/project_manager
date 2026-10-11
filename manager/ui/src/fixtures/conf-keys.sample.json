@@ -347,32 +347,6 @@
       "readonly": false
     },
     {
-      "key": "delegate.code-reviewer.rounds_max",
-      "group": "delegate",
-      "label": "검토 최대 횟수",
-      "description": "같은 작업을 다시 검토할 최대 횟수입니다.",
-      "default": "3",
-      "unset": null,
-      "required": false,
-      "kind": "key",
-      "members": null,
-      "unit_labels": {},
-      "choices": null,
-      "recommended": null,
-      "unit": null,
-      "governed_by": {
-        "key": "delegate.enabled",
-        "on": [
-          "true",
-          "1",
-          "yes",
-          "on"
-        ],
-        "reason": "위임 사용이 켜져 있어야 쓰입니다."
-      },
-      "readonly": false
-    },
-    {
       "key": "additional_reviewer.harness",
       "group": "additional_reviewer",
       "label": "교차 검토 도구",
@@ -1800,58 +1774,6 @@
       "kind": "pattern",
       "members": [],
       "unit_labels": {},
-      "choices": null,
-      "recommended": null,
-      "unit": null,
-      "governed_by": null,
-      "readonly": false
-    },
-    {
-      "key": "diff_cap.<estimate>",
-      "group": "additional_reviewer",
-      "label": "작업 크기별 변경 줄 수 상한",
-      "description": "작업을 마칠 때와 교차 검토 전에 확인합니다. 추가·삭제 줄 수 합계가 넘으면 멈추고, 모르는 크기에는 제한을 두지 않습니다.",
-      "default": null,
-      "unset": "제한을 두지 않습니다.",
-      "required": false,
-      "kind": "pattern",
-      "members": [
-        {
-          "key": "diff_cap.small",
-          "default": "300",
-          "unset": null,
-          "choices": null,
-          "recommended": null,
-          "unit": null,
-          "governed_by": null,
-          "readonly": false
-        },
-        {
-          "key": "diff_cap.medium",
-          "default": "1000",
-          "unset": null,
-          "choices": null,
-          "recommended": null,
-          "unit": null,
-          "governed_by": null,
-          "readonly": false
-        },
-        {
-          "key": "diff_cap.large",
-          "default": "2500",
-          "unset": null,
-          "choices": null,
-          "recommended": null,
-          "unit": null,
-          "governed_by": null,
-          "readonly": false
-        }
-      ],
-      "unit_labels": {
-        "diff_cap.small": "작업 크기별 변경 줄 수 상한 (작은 작업)",
-        "diff_cap.medium": "작업 크기별 변경 줄 수 상한 (보통 작업)",
-        "diff_cap.large": "작업 크기별 변경 줄 수 상한 (큰 작업)"
-      },
       "choices": null,
       "recommended": null,
       "unit": null,

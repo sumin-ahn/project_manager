@@ -350,9 +350,10 @@ def test_only_the_latest_developer_round_is_the_judgment_input(pd, rounds_env, c
 
 def test_ticket_prepare_cli_refuses_the_review_role_without_a_round(
         pd, rounds_env, capsys, monkeypatch):
-    """리뷰는 엔진이 실행한다 — `ticket prepare --role code-reviewer` 는 rc 2 이고 라운드를 남기지 않는다.
+    """리뷰 단위는 묶음이다 — `ticket prepare --ticket … --role code-reviewer` 는 rc 2 이고 라운드를
+    남기지 않는다.
 
-    리뷰 라운드 준비 진입점은 엔진 실행 경로(아래 cross 자동 준비·묶음 리뷰)뿐이다.
+    리뷰 라운드 준비 진입점은 묶음 준비(`ticket prepare --cluster` · 아래 cross `--cluster` 자동 준비)뿐이다.
     """
     pm_home, slot, tickets, _board = rounds_env
     _write_spec(tickets, "T-7807", rounds=("developer", "code-reviewer"))
@@ -374,8 +375,8 @@ def test_ticket_prepare_cli_refuses_the_review_role_without_a_round(
 
 
 def test_cross_auto_prepare_shares_the_prepare_seam(pd, rounds_env, capsys, monkeypatch, tmp_path):
-    """진입점 2 — cross 위임 실행(`pd.main`)의 자동 준비가 실제로 시드 dev 라운드를 경고·
-    review 라운드로 예약·장부화한다.
+    """진입점 2 — cross 묶음 리뷰 실행(`pd.main --cluster`)의 자동 준비가 실제로 시드 dev 라운드를
+    경고·review 라운드로 예약·장부화한다.
 
     문자열 개수 단언(소스에서 `prepare_ticket_copy(` 를 지운 흉내)이 아니라 `_main` 을 로컬 가짜
     하네스 경계(`run_fn` DI)까지 실제로 실행해 rc·stderr·라운드 파일·장부 행을 값으로 본다. 외부
@@ -386,22 +387,25 @@ def test_cross_auto_prepare_shares_the_prepare_seam(pd, rounds_env, capsys, monk
     _write_spec(tickets, ticket, rounds=("developer", "code-reviewer"))
     _prepare(pd, pm_home, slot, ticket, "developer")  # 02-developer.md 를 시드로 남긴다
     capsys.readouterr()
+    # 준비 I1 — 묶음 장부가 통합 브랜치를 선언하고 슬롯이 그 브랜치에 있어야 한다.
+    write_cluster_ledger(
+        tickets.parent.parent, ticket, base_branch="task/main", branch="task/review",
+        rounds=_FIXED_ROUNDS,
+    )
+    assert _git(slot, "branch", "task/main").returncode == 0
+    assert _git(slot, "switch", "-q", "-c", "task/review").returncode == 0
+    (slot / "tracked.txt").write_text("seed\nreview\n", encoding="utf-8", newline="\n")
+    assert _git(slot, "commit", "-qam", "review target").returncode == 0
 
-    # config/board 소유 해소 — 실 board 트리는 pm_home 이지 slot(cwd) 이 아니다(rounds_env 형상과
-    # 같다). 하네스 스폰 앞의 게이트만 우회하고, 준비·예약·장부는 전부 실 코드가 만든다.
     external = pd._load_additional_reviewer()
     monkeypatch.setattr(external, "repo_root_from_cwd", lambda _cwd: slot)
     monkeypatch.setattr(external, "resolve_pm_home_for_repo", lambda *_a, **_kw: pm_home)
     monkeypatch.setattr(external, "_owns_real_board", lambda _path: False)
     monkeypatch.setattr(pd, "_load_additional_reviewer", lambda: external)
     monkeypatch.setattr(pd, "local_config", lambda: {pd.DELEGATE_ENABLED_KEY: "true"})
-    # 범위 감사·codex egress 승격은 이 진입점 판정과 독립 축이다(전용 회귀가 각각 소유) —
-    # 여기서 죽이면 준비/예약/장부 축만 남는다.
+    # 범위 감사는 이 진입점 판정과 독립 축이다(전용 회귀가 소유) — 여기서 죽이면 준비/예약/장부
+    # 축만 남는다.
     monkeypatch.setattr(pd, "begin_scope_audit", lambda *_a, **_kw: None)
-
-    # --prompt-file 은 containment 게이트가 --cwd 하위만 허용한다(유출 경로 차단) — slot 안에 둔다.
-    prompt = slot / "prompt.md"
-    prompt.write_text("이 구현을 검토하라.\n", encoding="utf-8")
 
     class _FakeRun:
         """`run_fn` seam — 실제 하네스는 절대 스폰하지 않는다(로컬 가짜 경계)."""
@@ -410,20 +414,19 @@ def test_cross_auto_prepare_shares_the_prepare_seam(pd, rounds_env, capsys, monk
             return {
                 "returncode": 0,
                 "stdout": json.dumps({
-                    "type": "result", "result": "판정: 통과\n\n**must-fix**:\n- 없음\n",
+                    "type": "result", "result": "라운드 파일에 판정을 기록했다.",
                     "session_id": "fake-session",
                 }),
                 "stderr": "", "timed_out": False,
             }
 
-    rc = pd.main([
-        "--role", "code-reviewer", "--prompt-file", str(prompt), "--cwd", str(slot),
-        "--harness", "claude", "--model", "opus", "--ticket", ticket,
+    pd.main([
+        "--role", "code-reviewer", "--cluster", f"C-{ticket}", "--cwd", str(slot),
+        "--harness", "claude", "--model", "opus",
         "--output-dir", str(tmp_path / "raw"),
     ], run_fn=_FakeRun())
 
     error = capsys.readouterr().err
-    assert rc == 0, "경고다 — 거부가 아니다"
     assert WARNING_MARK in error and "02-developer.md" in error
 
     rounds = _loaded_rounds(pd, pm_home, ticket)
@@ -433,7 +436,7 @@ def test_cross_auto_prepare_shares_the_prepare_seam(pd, rounds_env, capsys, monk
         row for row in _ledger_rows(pm_home)
         if row["role"] == "code-reviewer" and row["ordinal"] == 3
     ][-1]
-    assert review_row["ticket"] == ticket and review_row["harvested_at"] is None
+    assert review_row["ticket"] == ticket
 
 
 def test_board_section_add_applies_the_same_rule(pd, rounds_env, capsys):
@@ -599,17 +602,7 @@ def _wire_external(external, monkeypatch, pm_home: Path, *, conf=None):
 
 
 def _stub_real_send_external(external, monkeypatch, tmp_path, prompts: list[str]):
-    """실 스폰 경계 스텁 — 격리 거울·리뷰 실행·산출 회수·측정 폭 기준점(다른 축 소유)을 자른다.
-
-    측정 폭의 기준점은 묶음 장부가 선언한 통합 브랜치와의 merge-base 다. 이 픽스처의 PM 홈은
-    코드 git 이 아니라 그 해소가 성립하지 않으므로 해소된 값을 그 자리에 넣는다 — 기준점
-    해소·거부 자체는 전용 파일(`test_additional_reviewer_diff_cap.py`)이 실 git 으로 소유한다.
-    """
-    monkeypatch.setattr(
-        external, "cluster_integration_tip", lambda *a, **k: ("task/main", None))
-    monkeypatch.setattr(
-        external, "integration_anchor", lambda *a, **k: ("a" * 40, None))
-
+    """실 스폰 경계 스텁 — 리뷰 실행·산출 회수(다른 축 소유)를 자른다."""
     def _run_review(prompt, *args, **kwargs):
         prompts.append(prompt)
         return {

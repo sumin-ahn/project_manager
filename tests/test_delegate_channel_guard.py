@@ -449,6 +449,37 @@ def test_hook_deny_remediation_materializes_payload_cwd(guard, tmp_path):
     assert "<worktree>" not in reason
 
 
+def test_code_reviewer_deny_remediation_uses_the_cluster_form(guard, tmp_path):
+    """AT-019 — 리뷰 거부 처방은 묶음 실행 형식(`--cluster`)이다. 프롬프트 파일·`--ticket` 을 싣지 않는다.
+
+    리뷰 실 실행은 `--cluster` 만 받는다 — `--ticket`/`--prompt-file` 처방은 그대로 실행하면 rc 2 사용
+    오류로 끝난다. 처방은 역할 축으로 갈리고 developer 는 `--ticket` 형식을 지킨다.
+    """
+    conf = {
+        "delegate.enabled": "true",
+        "delegate.code-reviewer.harness": "codex",
+        "delegate.code-reviewer.model": "gpt",
+        "delegate.developer.harness": "codex",
+        "delegate.developer.model": "gpt",
+    }
+    review_payload = _payload("code-reviewer")
+    review_payload["cwd"] = str(tmp_path)
+    review = guard.evaluate_hook(review_payload, config_loader=lambda: conf)[
+        "hookSpecificOutput"]["permissionDecisionReason"]
+    assert (
+        f".project_manager/tools/pm_delegate.py --role code-reviewer --cluster <C-이름> --cwd {tmp_path}"
+    ) in review
+    assert "--prompt-file" not in review
+    assert "--ticket" not in review
+
+    developer_payload = _payload("developer")
+    developer_payload["cwd"] = str(tmp_path)
+    developer = guard.evaluate_hook(developer_payload, config_loader=lambda: conf)[
+        "hookSpecificOutput"]["permissionDecisionReason"]
+    assert "--ticket <T-NNNN>" in developer
+    assert "--cluster" not in developer
+
+
 def test_deny_remediation_uses_windows_quoting_when_running_on_windows(
     guard, monkeypatch
 ):

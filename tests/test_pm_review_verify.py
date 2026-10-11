@@ -775,28 +775,6 @@ def test_pm_verified_evidence_problem_fails_loud_when_the_channel_is_not_given(p
         pd._pm_review_machine_confirmation_count(spec_ok)
 
 
-def test_machine_confirmation_flow_leaves_internal_ledger_bytes_unchanged(pd, tmp_path):
-    """기계 확인은 스폰이 없어 라운드 장부에 아무것도 남기지 않는다(불변식 11)."""
-    ledger = tmp_path / "internal_review_rounds.json"
-    original = b'{"T-0786": {"count": 2, "rounds": []}}'
-    ledger.write_bytes(original)
-
-    spec, rounds = _basic_ticket(pd)
-    spec_ok = spec + _confirmation_block(pd, 2, [_confirmation_row("F-001", "resolved")])
-    # 시드·판정면·CLI 판정 재료(verify-template) 전부 이 장부 경로를 인자로도 받지 않는다 —
-    # 실제로 만지지 않는다는 사실을 bytes 대조로 못박는다.
-    pd.render_ticket_growth_section_seed(
-        "developer", _with_design_waiver(spec), rounds=rounds,
-    )
-    pd.parse_pm_review_delta(spec_ok, rounds)
-    pd.pm_review_verify_template(spec, rounds)
-    pd.pm_verified_evidence_problem(
-        spec_ok, rounds, reviewer_role=pd.INTERNAL_REVIEW_ROLE, surface_floor=1,
-    )
-
-    assert ledger.read_bytes() == original
-
-
 # ── 시드 골격 bytes 불변(accepted 0) ─────────────────────────────────────
 
 def test_accepted_zero_developer_seed_bytes_are_unchanged_from_pre_t0786(pd):

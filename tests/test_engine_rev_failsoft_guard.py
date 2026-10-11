@@ -1195,7 +1195,12 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   ClusterCloser` 의 `_default_release`(반납 거부 사유를 값으로)와 `_slot_state`(대여 상태
     #   관측)가 함께 없어졌다. 작업 트리 해소는 `_integration_worktree` 가 쓰던 목록 조회 자리
     #   (`_worktree_list`)를 같이 써서 새 경계를 열지 않는다.
-    assert len(report.boundaries) == 252, "propagation sweep boundary ratchet changed"
+    # 246 = 252 − T-0950 이 지운 여섯 경계. 묶음 리뷰 분리 실행의 마감 기록(`pm_delegate.main` 의
+    #   분리 실행 인계)·내부 리뷰 기록(`_internal_recorded_reply`·`_recalculate_internal_review_rounds`)·
+    #   종결의 묶음 리뷰 지원 조회(`ClusterCloser._delegate_supports_cluster`)·변경량 상한의 통합
+    #   브랜치 해소(`cluster_integration_tip`)와 작업 크기 판독(`_parse_ticket_scalar`)이 코드째
+    #   없어졌다 — 흡수 규칙이 느슨해진 게 아니다.
+    assert len(report.boundaries) == 246, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

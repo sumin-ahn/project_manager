@@ -20,8 +20,8 @@ claude_code LLM 세션이 `CLAUDE.md` 를 진입으로 PM 을 구동한다 — o
 
 ### 위임 기제 = `Agent` 툴 `subagent_type`
 
-PM(메인 세션)이 `Agent` 툴을 `subagent_type=developer|architect|researcher` 로
-호출하면 `.claude/agents/*.md` 정의가 별도 자식 세션에서 구동된다. 리뷰(`code-reviewer`)는 하네스와 무관하게 엔진이 실행한다(`pm_delegate.py --role code-reviewer --cluster`). 설계·구현·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다. 표준 위임 프롬프트는
+PM(메인 세션)이 `Agent` 툴을 `subagent_type=developer|architect|code-reviewer|researcher` 로
+호출하면 `.claude/agents/*.md` 정의가 별도 자식 세션에서 구동된다. 설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다. 표준 위임 프롬프트는
 `/pm-dev-delegate` skill. (위임 *개념*·generate≠evaluate 는 루트 README 사용법·특징 절.)
 
 ## 채택 (pm_import — 정규 경로)

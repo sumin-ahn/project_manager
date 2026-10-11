@@ -25,40 +25,33 @@ def test_shape_a_pm_home_and_registered_worktree_keep_existing_owner(tmp_path):
 def test_shape_b_unregistered_gate_worktree_uses_pm_home_for_delegate(
     tmp_path, monkeypatch, capsys,
 ):
-    """형상 B: 같은 저장소 미등록 gate worktree도 PM 홈 config/board 앵커를 공유한다."""
+    """형상 B: 같은 저장소 미등록 linked worktree도 PM 홈 config/board 앵커를 공유한다."""
     home, worktree, ticket = _managed_worktree(tmp_path)
     local_conf = home / ".project_manager" / "local.conf"
     local_conf.write_text(
         local_conf.read_text(encoding="utf-8")
-        + "delegate.code-reviewer.harness=codex\n"
-        + "delegate.code-reviewer.model=gpt-test\n",
+        + "delegate.researcher.harness=codex\n"
+        + "delegate.researcher.model=gpt-test\n",
         encoding="utf-8",
     )
-    snapshot = tmp_path / "scratch" / "gate-X"
-    snapshot.parent.mkdir()
-    _git(worktree, "worktree", "add", "-q", "--detach", str(snapshot), "HEAD")
-    prompt = snapshot / "prompt.md"
-    prompt.write_text("review the isolated gate snapshot", encoding="utf-8")
+    linked = tmp_path / "scratch" / "linked-X"
+    linked.parent.mkdir()
+    _git(worktree, "worktree", "add", "-q", "--detach", str(linked), "HEAD")
+    prompt = linked / "prompt.md"
+    prompt.write_text("investigate the linked worktree", encoding="utf-8")
 
-    external = _load("additional_reviewer_shape_b_gate_owner")
-    assert external.resolve_pm_home_for_repo(snapshot) == home.resolve()
+    external = _load("additional_reviewer_shape_b_linked_owner")
+    assert external.resolve_pm_home_for_repo(linked) == home.resolve()
 
-    delegate = _load("pm_delegate_shape_b_gate_owner")
+    delegate = _load("pm_delegate_shape_b_linked_owner")
     monkeypatch.setattr(delegate, "REPO", worktree)
-    base_args = [
-        "--role", "code-reviewer", "--prompt-file", str(prompt),
-        "--cwd", str(snapshot), "--dry-run",
-    ]
-    assert delegate.main([*base_args, "--gate", ticket]) == 0
-    first = capsys.readouterr()
-    assert f"local_conf={local_conf}" in first.err
-    assert "PM 홈 해소 실패" not in first.err
-    assert delegate._CONFIG_REPO_OVERRIDE == home.resolve()
-
-    assert delegate.main([*base_args, "--ticket", ticket]) == 0
-    second = capsys.readouterr()
-    assert f"local_conf={local_conf}" in second.err
-    assert f"내부 리뷰 게이트: {ticket}" in second.out
+    assert delegate.main([
+        "--role", "researcher", "--prompt-file", str(prompt),
+        "--cwd", str(linked), "--dry-run", "--ticket", ticket,
+    ]) == 0
+    captured = capsys.readouterr()
+    assert f"local_conf={local_conf}" in captured.err
+    assert "PM 홈 해소 실패" not in captured.err
     assert delegate._CONFIG_REPO_OVERRIDE == home.resolve()
 
 
@@ -120,26 +113,27 @@ def test_shape_c_unrelated_repository_cannot_reuse_pm_home(tmp_path):
         external.resolve_pm_home_for_repo(snapshot)
 
 
-def test_code_reviewer_gate_and_ticket_share_required_owner_failure(
+def test_code_reviewer_cluster_and_ticket_share_required_owner_failure(
     tmp_path, monkeypatch, capsys,
 ):
-    """무관 linked repo의 --gate/--ticket은 모두 self-demotion 없이 같은 해소 오류를 낸다."""
-    _source, snapshot = _unregistered_worktree(tmp_path)
-    prompt = snapshot / "prompt.md"
+    """무관 linked repo의 --cluster/--ticket은 모두 self-demotion 없이 같은 해소 오류를 낸다."""
+    _source, linked = _unregistered_worktree(tmp_path)
+    prompt = linked / "prompt.md"
     prompt.write_text("review unrelated repository", encoding="utf-8")
-    delegate = _load("pm_delegate_gate_required_owner")
-    monkeypatch.setattr(delegate, "REPO", snapshot)
-    base_args = [
-        "--role", "code-reviewer", "--prompt-file", str(prompt),
-        "--cwd", str(snapshot), "--dry-run",
-    ]
+    delegate = _load("pm_delegate_cluster_required_owner")
+    monkeypatch.setattr(delegate, "REPO", linked)
 
-    assert delegate.main([*base_args, "--gate", "T-9191"]) == 1
-    gate_error = capsys.readouterr().err
-    assert delegate.main([*base_args, "--ticket", "T-9191"]) == 1
+    assert delegate.main([
+        "--role", "code-reviewer", "--cluster", "C-9191", "--cwd", str(linked), "--dry-run",
+    ]) == 1
+    cluster_error = capsys.readouterr().err
+    assert delegate.main([
+        "--role", "developer", "--prompt-file", str(prompt), "--cwd", str(linked),
+        "--dry-run", "--ticket", "T-9191",
+    ]) == 1
     ticket_error = capsys.readouterr().err
 
-    assert gate_error == ticket_error
-    assert "오류: --cwd 소유 PM 홈 해소 실패" in gate_error
-    assert "PM 홈을 찾지 못했습니다" in gate_error
-    assert "board가 필요 없는 실행" not in gate_error
+    assert cluster_error == ticket_error
+    assert "오류: --cwd 소유 PM 홈 해소 실패" in cluster_error
+    assert "PM 홈을 찾지 못했습니다" in cluster_error
+    assert "board가 필요 없는 실행" not in cluster_error

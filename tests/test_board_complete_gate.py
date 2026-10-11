@@ -91,58 +91,13 @@ def _write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _write_internal_rounds(board, data: dict) -> None:
-    path = board._internal_review_rounds_ledger()
-    _write(path, json.dumps(data, ensure_ascii=False))
-
-
-def test_internal_review_absence_is_non_target_for_existing_tickets(board):
-    """장부/해당 entry/완료 rounds 부재는 소급 차단하지 않는다."""
-    assert board._complete_gate("T-9999", _gate_args()) == []
-    _write_internal_rounds(board, {
-        "T-OTHER-001": {"rounds": [{"sequence": 1, "verdict": 1}]},
-        "T-9999": {"records": [{"id": "reservation-only"}], "rounds": []},
-    })
-    assert board._complete_gate("T-9999", _gate_args()) == []
-
-
-@pytest.mark.parametrize("verdict", [1, None])
-def test_internal_review_recorded_nonpass_blocks_completion(board, verdict):
-    """라운드가 하나라도 있으면 반려·unknown 모두 완료 증거가 아니다."""
-    _write_internal_rounds(board, {
-        "T-PAY-001": {"rounds": [{"sequence": 1, "verdict": verdict}]},
-    })
-
-    problems = board._complete_gate("T-PAY-001", _gate_args())
-
-    assert len(problems) == 1
-    assert "internal code-reviewer" in problems[0]
-    assert "통과가 아닙니다" in problems[0]
-
-
-def test_internal_review_latest_sequence_pass_opens_completion(board):
-    """append 순서가 아니라 예약 sequence상 마지막 장부 라운드의 통과를 인정한다."""
-    _write_internal_rounds(board, {
-        "T-PAY-001": {"rounds": [
-            {"sequence": 2, "verdict": 0},
-            {"sequence": 1, "verdict": 1},
-        ]},
-    })
-
-    assert board._complete_gate("T-PAY-001", _gate_args()) == []
-
-
-def test_internal_legacy_pm_fixed_resolution_is_unrecognized(board):
+def test_legacy_pm_fixed_resolution_is_unrecognized(board):
+    """옛 처분 종류(`pm-fixed`)는 처분으로 읽히지 않는다(공용 처분 판독 seam)."""
     entry = {
         "rounds": [{"sequence": 1, "verdict": 1, "must_fix": 1}],
         "resolution": {"kind": "pm-fixed", "round_sequence": 1, "rounds": 1},
     }
-    gate = "T-PMF-101"
-    _write_internal_rounds(board, {gate: entry})
-
-    problems = board._complete_gate(gate, _gate_args())
     assert board.gate_resolution(entry) is None
-    assert problems and "처분 선언 없음" in problems[0]
 
 
 # ── T-0786(D1) — `pm-verified` 완료 게이트(기계 확인 증거) ────────────────
@@ -161,7 +116,9 @@ def _write_ticket_with_rounds(board, tid: str, spec_body: str, rounds: list[tupl
             "created: '2026-08-21'\n"
             "created_by: test\n"
             "---\n"
-            f"# {tid}\n\n## 목표\n게이트 픽스처.\n\n{spec_body}"
+            f"# {tid}\n\n## 목표\n게이트 픽스처.\n\n"
+            "## 완료 조건 (Definition of Done)\n- [x] 픽스처\n\n"
+            f"{spec_body}"
         ),
         encoding="utf-8", newline="",
     )
@@ -247,57 +204,131 @@ def _pm_delegate_module():
     return module
 
 
+def _passed_review_round_text(pd) -> str:
+    payload = {"version": pd.PM_REVIEW_VERSION, "findings": [], "confirmations": []}
+    return (
+        "## 리뷰 (code-reviewer · 2026-08-21)\n\n## must-fix\n- 없음\n\n"
+        "## 판정\n판정: 통과\n\n"
+        f"```{pd.PM_REVIEW_BLOCK}\n"
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n```\n"
+    )
+
+
+def _gate_spec_and_body(spec_path: Path) -> tuple[str, str]:
+    """`cmd_complete` 가 넘기는 두 입력 — 명세 전문과 본문."""
+    spec_text = spec_path.read_text(encoding="utf-8")
+    return spec_text, spec_text.split("---\n", 2)[2]
+
+
+def _review_gate_problems(board, tid: str, spec_path: Path) -> list[str]:
+    spec_text, body = _gate_spec_and_body(spec_path)
+    return board._complete_gate(tid, _gate_args(), body, spec_text=spec_text)
+
+
 def test_pm_verified_completion_gate_opens_only_with_machine_confirmation_evidence(board):
-    """(D1) `pm-verified` 처분은 accepted==() + 기계 확인 ≥1 일 때만 완료를 연다."""
+    """(D1) 리뷰 라운드 잔여는 accepted==() + 기계 확인 ≥1 일 때만 완료를 연다(장부 없음)."""
     pd = _pm_delegate_module()
     tid = "T-PVF-201"
     spec_body = _pm_body(pd, "F-001", machine_confirmed=True)
-    _write_ticket_with_rounds(board, tid, spec_body, [
+    spec_path = _write_ticket_with_rounds(board, tid, spec_body, [
         (1, "code-reviewer", _reviewer_round_text(pd, "F-001")),
         (2, "developer", _developer_round_text(pd, "F-001")),
     ])
-    entry = {
-        "count": 2,
-        "rounds": [
-            {"sequence": 1, "verdict": 1, "must_fix": 1},
-            {"sequence": 2, "verdict": 1, "must_fix": 1},
-        ],
-        "resolution": {
-            "kind": board.GATE_RESOLUTION_PM_VERIFIED,
-            "round_sequence": 2, "rounds": 2, "ts": "2026-08-21T00:00:00+00:00",
-        },
-    }
-    _write_internal_rounds(board, {tid: entry})
 
-    assert board._complete_gate(tid, _gate_args()) == []
+    assert _review_gate_problems(board, tid, spec_path) == []
+    assert not (board.LOCAL_DIR / "internal_review_rounds.json").exists()
 
 
 def test_pm_verified_completion_gate_rejects_when_accepted_finding_still_pending(board):
-    """기계 확인이 없어 delta 의 accepted 가 비지 않으면 `pm-verified` 재검증이 거부한다."""
+    """기계 확인이 없어 delta 의 accepted 가 비지 않으면 리뷰 잔여가 완료를 막는다."""
     pd = _pm_delegate_module()
     tid = "T-PVF-202"
     spec_body = _pm_body(pd, "F-001", machine_confirmed=False)   # 기계 확인 없음
-    _write_ticket_with_rounds(board, tid, spec_body, [
+    spec_path = _write_ticket_with_rounds(board, tid, spec_body, [
         (1, "code-reviewer", _reviewer_round_text(pd, "F-001")),
         (2, "developer", _developer_round_text(pd, "F-001")),
     ])
-    entry = {
-        "count": 2,
-        "rounds": [
-            {"sequence": 1, "verdict": 1, "must_fix": 1},
-            {"sequence": 2, "verdict": 1, "must_fix": 1},
-        ],
-        "resolution": {
-            "kind": board.GATE_RESOLUTION_PM_VERIFIED,
-            "round_sequence": 2, "rounds": 2, "ts": "2026-08-21T00:00:00+00:00",
-        },
-    }
-    _write_internal_rounds(board, {tid: entry})
 
-    problems = board._complete_gate(tid, _gate_args())
+    problems = _review_gate_problems(board, tid, spec_path)
 
     assert len(problems) == 1
-    assert "발동 조건 재검증 실패" in problems[0]
+    assert "code-reviewer 리뷰 라운드 01" in problems[0]
+    assert "accepted 잔여" in problems[0] and "F-001" in problems[0]
+
+
+def test_review_round_must_fix_blocks_completion_without_internal_ledger(board):
+    """AT-003 — 내부 기록 파일 없이 리뷰 라운드 파일의 미처분 must-fix 가 완료를 막는다.
+
+    판정 입력 이전 전에는 이 형상에서 DoD·라운드 사유만 나오고 리뷰 잔여는 보이지 않았다.
+    역방향: 통과 리뷰 라운드(must-fix 0)는 리뷰 사유를 만들지 않는다.
+    """
+    pd = _pm_delegate_module()
+    blocked = "T-RVW-301"
+    blocked_spec = _write_ticket_with_rounds(board, blocked, "", [
+        (1, "code-reviewer", _reviewer_round_text(pd, "F-001")),
+    ])
+    assert not (board.LOCAL_DIR / "internal_review_rounds.json").exists()
+
+    problems = _review_gate_problems(board, blocked, blocked_spec)
+
+    review = [item for item in problems if "code-reviewer 리뷰 라운드" in item]
+    assert len(review) == 1, problems
+    assert "must-fix 1건" in review[0] and "01" in review[0]
+
+    passed = "T-RVW-302"
+    passed_spec = _write_ticket_with_rounds(board, passed, "", [
+        (1, "code-reviewer", _passed_review_round_text(pd)),
+    ])
+    assert not [
+        item for item in _review_gate_problems(board, passed, passed_spec)
+        if "code-reviewer" in item
+    ]
+    assert not (board.LOCAL_DIR / "internal_review_rounds.json").exists()
+
+
+def test_review_round_unknown_verdict_blocks_completion(board):
+    """판정 불능 리뷰 라운드(두 축 모두 판정 없음)는 통과가 아니다 — 미상으로 막는다."""
+    tid = "T-RVW-303"
+    spec_path = _write_ticket_with_rounds(board, tid, "", [
+        (1, "code-reviewer", "## 리뷰 (code-reviewer · 2026-08-21)\n\n판정 없이 끝난 산출.\n"),
+    ])
+
+    problems = _review_gate_problems(board, tid, spec_path)
+
+    assert len(problems) == 1
+    assert "미상(판정 무효)" in problems[0]
+    assert "판정 추출 진단" in problems[0]
+
+
+def test_review_residual_reads_the_latest_review_round(board):
+    """최대 순번 리뷰 라운드가 잔여 입력이다 — 앞 라운드의 반려는 뒤 통과에 덮인다."""
+    pd = _pm_delegate_module()
+    tid = "T-RVW-304"
+    spec_path = _write_ticket_with_rounds(board, tid, "", [
+        (1, "code-reviewer", _reviewer_round_text(pd, "F-001")),
+        (2, "developer", _developer_round_text(pd, "F-001")),
+        (3, "code-reviewer", _passed_review_round_text(pd)),
+    ])
+
+    assert not [
+        item for item in _review_gate_problems(board, tid, spec_path)
+        if "code-reviewer 리뷰 라운드" in item
+    ]
+
+
+def test_review_absence_is_non_target_for_existing_tickets(board):
+    """리뷰 라운드가 없는 티켓은 이 축의 대상이 아니다(소급 차단 없음)."""
+    tid = "T-RVW-305"
+    spec_path = _write_ticket_with_rounds(board, tid, "", [])
+
+    assert _review_gate_problems(board, tid, spec_path) == []
+
+
+def test_internal_completion_helpers_are_removed(board):
+    """내부 리뷰 기록 완료 판정과 그 판정만 쓰던 통과 조회는 board 에 남지 않는다."""
+    for removed in ("gate_passed", "_internal_review_completion_problem",
+                    "_internal_review_rounds_ledger"):
+        assert not hasattr(board, removed), removed
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -911,16 +942,6 @@ def _internal_round(
     }
 
 
-def _internal_resolution(board, entry: dict, *, kind: str, target: str) -> dict:
-    return {
-        "kind": kind,
-        "ticket" if kind == board.GATE_RESOLUTION_INTO else "evidence_gate": target,
-        "ts": "2026-08-12T00:02:00+00:00",
-        "must_fix": board.gate_residual_must_fix(entry),
-        **board.gate_round_binding(entry),
-    }
-
-
 def test_cmd_complete_blocks_unchecked_dod_and_keeps_ticket_claimed(
     live_board, capsys
 ):
@@ -951,43 +972,32 @@ def test_cmd_complete_passes_with_checked_and_deferred_dod(live_board):
     assert list((live_board.tickets_dir() / "done").glob("T-9002*")), "done/ 이동 안 함"
 
 
-def test_cmd_complete_requires_last_recorded_internal_round_to_pass(
-    live_board, capsys,
-):
-    """실 complete 경로도 장부 반려를 막고, 후속 계측 통과 뒤에만 done으로 옮긴다."""
-    tid = "T-PAY-902"
+def test_cmd_complete_blocks_an_undisposed_review_must_fix(live_board, capsys):
+    """실 complete 경로도 리뷰 라운드 파일의 미처분 must-fix 를 막고, 처분 뒤에만 done 으로 옮긴다."""
+    pd = _pm_delegate_module()
+    tid = "T-9902"
     claimed = _seed_ticket(live_board, tid, _dod_body("- [x] 코드"))
-    _write_internal_rounds(live_board, {
-        tid: {"rounds": [{"sequence": 1, "verdict": 1}]},
-    })
+    _write_round(live_board, tid, "01-code-reviewer.md", _reviewer_round_text(pd, "F-001"))
 
     assert live_board.cmd_complete(_complete_args(tid)) == 1
     assert claimed.exists()
-    assert "internal code-reviewer" in capsys.readouterr().err
+    assert "code-reviewer 리뷰 라운드 01" in capsys.readouterr().err
 
-    _write_internal_rounds(live_board, {
-        tid: {"rounds": [
-            {"sequence": 1, "verdict": 1},
-            {"sequence": 2, "verdict": 0},
-        ]},
-    })
+    rejected = {
+        "version": pd.PM_REVIEW_DISPOSITION_VERSION, "reviewer_ordinal": 1,
+        "dispositions": [{
+            "id": "F-001", "decision": "rejected", "reason": "PM 기각 근거",
+            "scope": "", "prerequisite": "",
+        }],
+    }
+    claimed.write_text(
+        claimed.read_text(encoding="utf-8")
+        + f"\n```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n"
+        + json.dumps(rejected, ensure_ascii=False, separators=(",", ":")) + "\n```\n",
+        encoding="utf-8",
+    )
     assert live_board.cmd_complete(_complete_args(tid)) == 0
     assert list((live_board.tickets_dir() / "done").glob(f"{tid}*"))
-
-
-def test_internal_legacy_into_resolution_never_completes(live_board):
-    gate = "T-9201"
-    claimed = _seed_ticket(live_board, gate, _dod_body("- [x] 코드"))
-    entry = {"rounds": [_internal_round(
-        1, 1, 2, started_at="2026-08-12T00:00:00+00:00",
-        ts="2026-08-12T00:01:00+00:00", target_rev="a" * 40,
-    )]}
-    entry["resolution"] = {"kind": "into", "ticket": "T-9202",
-                           **live_board.gate_round_binding(entry)}
-    _write_internal_rounds(live_board, {gate: entry})
-
-    assert live_board.cmd_complete(_complete_args(gate)) == 1
-    assert claimed.exists() and live_board.gate_resolution(entry) is None
 
 
 def test_internal_legacy_fixed_resolution_is_unrecognized(board):
@@ -998,33 +1008,6 @@ def test_internal_legacy_fixed_resolution_is_unrecognized(board):
     entry["resolution"] = {"kind": "fixed", "evidence_gate": "T-9302",
                            **board.gate_round_binding(entry)}
     assert board.gate_resolution(entry) is None
-
-
-def test_internal_resolution_becomes_stale_after_new_rejection(board):
-    gate = "T-9401"
-    first = _internal_round(
-        1, 1, 2,
-        started_at="2026-08-12T00:00:00+00:00",
-        ts="2026-08-12T00:01:00+00:00",
-        target_rev="a" * 40,
-    )
-    entry = {"rounds": [first]}
-    entry["resolution"] = {
-        "kind": board.GATE_RESOLUTION_PM_VERIFIED,
-        **board.gate_round_binding(entry),
-    }
-    entry["rounds"].append(_internal_round(
-        2, 1, 1,
-        started_at="2026-08-12T00:03:00+00:00",
-        ts="2026-08-12T00:04:00+00:00",
-        target_rev="b" * 40,
-    ))
-    _write_internal_rounds(board, {gate: entry})
-
-    problems = board._complete_gate(gate, _gate_args())
-
-    assert problems
-    assert "새 라운드" in problems[0]
 
 
 def test_done_tickets_are_not_retroactively_checked(live_board):
@@ -1183,22 +1166,14 @@ def test_pending_round_does_not_block_completion(live_board, capsys):
 
 
 def test_pending_round_survives_a_sibling_harvest_in_the_gate(live_board, capsys):
-    """같은 역할 병렬 2라운드 — 01 회수 뒤에도 02 는 미회수 정보로 남는다(차단은 아니다)."""
+    """같은 역할 병렬 2라운드 — 01 회수 뒤에도 02 는 미회수 정보로 남는다(차단은 아니다).
+
+    01 은 통과 리뷰다 — 반려 리뷰는 리뷰 잔여 축이 막으므로(별도 테스트) 이 축의 관심사 밖이다.
+    """
     path = _seed_ticket(live_board, "T-9107", _dod_body("- [x] 코드"))
-    block = json.dumps({
-        "version": 2,
-        "findings": [{
-            "id": "F-001", "class": "implementation-defect", "severity": "must-fix",
-            "authority": "설계 §경계", "evidence": "probe rc=1",
-            "recommendation": "F-001 수정", "design_change": False,
-        }],
-        "confirmations": [],
-    }, ensure_ascii=False)
     _write_round(
         live_board, "T-9107", "01-code-reviewer.md",
-        "## 리뷰 (code-reviewer · 2026-01-03)\n\n## must-fix\n- F-001\n\n"
-        "## 판정\n판정: 반려 · finding 1건(must-fix 1건)\n\n"
-        f"```pm-review-v1\n{block}\n```\n",
+        _passed_review_round_text(_pm_delegate_module()),
     )
     _write_round(
         live_board, "T-9107", "02-code-reviewer.md",
@@ -1213,22 +1188,30 @@ def test_pending_round_survives_a_sibling_harvest_in_the_gate(live_board, capsys
 
 
 def test_round_name_violation_is_information_only(live_board, capsys):
-    """이름 문법 위반은 표시용이다 — 완료 게이트의 차단 사유가 아니다."""
-    _seed_ticket(live_board, "T-9104", _dod_body("- [x] 코드"))
+    """이름 문법 위반은 라운드 판정에서 표시용이다 — 다만 라운드를 읽을 수 없게 만든다.
+
+    순번 판정(`_round_completion_problems`)의 차단 사유는 아니다. 완료 게이트의 리뷰 잔여
+    판정은 라운드를 읽어야 하므로, 읽지 못하면 통과가 아니라 판정 불능 사유로 막는다.
+    """
+    path = _seed_ticket(live_board, "T-9104", _dod_body("- [x] 코드"))
     _write_round(live_board, "T-9104", "notes.md", "라운드가 아닌 파일\n")
+
+    assert live_board._round_completion_problems(
+        "T-9104", path.read_text(encoding="utf-8")) == []
+    assert "round-name" in capsys.readouterr().err
 
     rc = live_board.cmd_complete(_complete_args("T-9104"))
 
-    assert rc == 0
-    assert "round-name" in capsys.readouterr().err
+    assert rc == 1
+    assert "리뷰 잔여를 판정할 수 없습니다" in capsys.readouterr().err
 
 
 def test_harvested_rounds_in_sequence_pass_the_gate(live_board):
-    """1..N 연속·중복 없음 → 게이트 무영향(정상 경로 회귀)."""
+    """1..N 연속·중복 없음 → 게이트 무영향(정상 경로 회귀 · 리뷰 라운드는 통과 판정)."""
     _seed_ticket(live_board, "T-9105", _dod_body("- [x] 코드"))
     _write_round(live_board, "T-9105", "01-developer.md", _harvested_round_text("developer"))
     _write_round(live_board, "T-9105", "02-code-reviewer.md",
-                 _harvested_round_text("code-reviewer"))
+                 _passed_review_round_text(_pm_delegate_module()))
 
     assert live_board.cmd_complete(_complete_args("T-9105")) == 0
     assert list((live_board.tickets_dir() / "done").glob("T-9105*"))

@@ -207,7 +207,7 @@ def test_pid_liveness_is_only_asked_about_delegate_children():
                     callers.append(path.name)
 
     assert set(callers) == {_CHILD_PROCESS_OWNER}, f"세션 축에서 생존을 조회한다: {sorted(set(callers))}"
-    assert callers.count(_CHILD_PROCESS_OWNER) == 4, "위임 자식 조회 자리 수가 바뀌었다"
+    assert callers.count(_CHILD_PROCESS_OWNER) == 3, "위임 자식 조회 자리 수가 바뀌었다"
 
 
 def test_no_engine_source_reintroduces_a_pool_liveness_helper():

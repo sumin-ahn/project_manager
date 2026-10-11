@@ -225,10 +225,13 @@ def _manifest_path_set(manifest: Path) -> set[str]:
 def test_reviewer_retired_path_directive_is_identical_and_comment_compatible():
     """4 manifest가 같은 이주를 선언하고 기존 path parser에는 행으로 안 샌다."""
     pm_update = _load_pm_update()
-    for manifest in (ROOT_MANIFEST, CC_MANIFEST, OC_MANIFEST, CODEX_MANIFEST):
-        assert pm_update.parse_retired_path_directives(manifest) == [
-            RETIRED_REVIEWER_PATH,
-        ]
+    directives = {
+        manifest: pm_update.parse_retired_path_directives(manifest)
+        for manifest in (ROOT_MANIFEST, CC_MANIFEST, OC_MANIFEST, CODEX_MANIFEST)
+    }
+    assert len({tuple(found) for found in directives.values()}) == 1, directives
+    for manifest in directives:
+        assert RETIRED_REVIEWER_PATH in directives[manifest]
         entries = {str(entry) for entry in pm_update.read_manifest(manifest)}
         assert RETIRED_REVIEWER_PATH[1] in entries
         assert RETIRED_REVIEWER_PATH[0] not in entries

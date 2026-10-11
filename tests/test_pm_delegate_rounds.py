@@ -3394,70 +3394,6 @@ def test_cross_delegation_binds_run_id_and_copy_to_its_delegate_rounds_reservati
     assert raw_row["copy"] == round_row["copy"]
 
 
-def test_cross_delegation_prompt_carries_the_next_finding_id(pd, refund_env, monkeypatch):
-    """실행 경로 — 하네스로 나가는 프롬프트가 시드와 **같은** 다음 finding ID 를 싣는다.
-
-    리뷰어 세션은 라운드마다 fresh 라 이전 번호를 모른다. 사본을 열기 전에 프롬프트만 읽는
-    위임에서 번호가 추측이 되면 그 라운드는 재선언으로 회수되지 않는다.
-    """
-    home, tickets = refund_env
-    ticket = "T-9107"
-    _write_spec(tickets, ticket, rounds=("code-reviewer",))
-    (home / ".project_manager" / "local.conf").write_text(
-        "delegate.enabled=true\n"
-        "delegate.code-reviewer.harness=claude\n"
-        "delegate.code-reviewer.model=opus\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(pd, "local_config", lambda: {
-        "delegate.enabled": "true",
-        "delegate.code-reviewer.harness": "claude",
-        "delegate.code-reviewer.model": "opus",
-    })
-    captured_plan: dict[str, object] = {}
-    real_prepare = pd.prepare_ticket_copy
-
-    def _prepare_spy(**kwargs):
-        plan = real_prepare(**kwargs)
-        captured_plan["plan"] = plan
-        return plan
-
-    monkeypatch.setattr(pd, "prepare_ticket_copy", _prepare_spy)
-    prompts: list[str] = []
-
-    def _run_fn(argv, *, stdin_text, cwd, env, timeout, harness):
-        prompts.append(stdin_text)
-        plan = captured_plan["plan"]
-        _write_round_output(
-            plan.path, _review_body(pd, "code-reviewer", [plan.next_finding_id]),
-        )
-        return {
-            "returncode": 0,
-            "stdout": json.dumps({
-                "type": "result", "result": "라운드 파일에 판정을 기록했다.",
-                "session_id": "session-1",
-            }),
-            "stderr": "", "timed_out": False,
-        }
-
-    prompt = home / "task.md"
-    prompt.write_text("구현을 검토하라.", encoding="utf-8")
-
-    rc = pd.main(
-        ["--role", "code-reviewer", "--prompt-file", str(prompt), "--cwd", str(home),
-         "--ticket", ticket, "--output-dir", str(home / "raw")],
-        run_fn=_run_fn,
-    )
-
-    assert rc == 0
-    plan = captured_plan["plan"]
-    assert plan.next_finding_id == "F-001"
-    assert f"`{plan.next_finding_id}` 부터" in prompts[0]
-    # 프롬프트가 지시한 번호로 쓴 산출이 그대로 회수된다(자기 충돌 0).
-    assert not plan.run_dir.exists()
-    assert '"id":"F-001"' in plan.board_path.read_text(encoding="utf-8").replace(" ", "")
-
-
 def test_two_cross_runs_of_the_same_ticket_and_role_bind_1to1_not_swapped(
         pd, refund_env, monkeypatch):
     """같은 (ticket, role) 의 서로 다른 run 두 건이 각자 자기 예약에만 결속된다.
@@ -3534,82 +3470,6 @@ def test_two_cross_runs_of_the_same_ticket_and_role_bind_1to1_not_swapped(
 
     # 서로 다른 run 이므로 raw 행의 copy 도 서로 다르다(같은 예약으로 뒤섞이지 않는다).
     assert raw_rows[0]["copy"] != raw_rows[1]["copy"]
-def test_configured_convergence_limit_runs_every_round_through_main(
-    pd, refund_env, monkeypatch,
-):
-    """설정된 수렴 상한(`delegate.code-reviewer.rounds_max=5`)에서 `main()` 경유 5회가 전부
-    성공하고, 그 다음 요청은 rc 1 로 막힌다(상한 뒤 창 0)."""
-    home, tickets = refund_env
-    ticket = "T-9105"
-    rounds_max = 5
-    # 장부 예산은 수렴 상한보다 한 자리 넉넉히 선언한다 — 예산이 먼저 소진되면 이 테스트가
-    # 재려는 수렴 게이트에 도달하지 못한다.
-    _write_spec(tickets, ticket, rounds=_round_plan("code-reviewer", rounds_max + 1))
-    # 실 conf 파일 하나를 단일 진실로 쓴다 — `main()`(prepare/reserve)과 board 의 완료
-    # 재검증(별도로 로드되는 pm_delegate 사본)이 같은 파일을 읽어야 F-001 이 재현·검증된다.
-    (home / ".project_manager" / "local.conf").write_text(
-        "delegate.enabled=true\n"
-        "delegate.code-reviewer.harness=claude\n"
-        "delegate.code-reviewer.model=opus\n"
-        f"{pd.INTERNAL_REVIEW_ROUNDS_MAX_KEY}={rounds_max}\n",
-        encoding="utf-8",
-    )
-    # `refund_env` 가 이미 `local_config` 를 developer 프로필 dict 로 monkeypatch 해 뒀다 —
-    # 여기서 code-reviewer 프로필(+ 수렴 상한)을 포함하도록 덮어써 `main()` 호출이 그 값을 본다.
-    # board 의 완료 재검증은 별도 로드되는 pm_delegate 사본이라 이 monkeypatch 가 안 닿는다 —
-    # 그쪽은 위에서 쓴 실 conf 파일을 그대로 읽는다(같은 값 · 한 진실).
-    monkeypatch.setattr(pd, "local_config", lambda: {
-        "delegate.enabled": "true",
-        "delegate.code-reviewer.harness": "claude",
-        "delegate.code-reviewer.model": "opus",
-        pd.INTERNAL_REVIEW_ROUNDS_MAX_KEY: str(rounds_max),
-    })
-
-    # 내부 code-reviewer 판정은 회수될 라운드 파일 bytes 에서 나온다(터미널 회신은 `--ticket`
-    # 없는 실행의 대체 입력일 뿐이다) — 그래서 `_run_fn` 은 준비가 넘긴 실제 슬롯 경로에
-    # must-fix 1건짜리 반려 본문을 직접 써 넣는다. finding ID 는 라운드마다 새로 발급한다
-    # (같은 ID 재선언은 harvest 가 별도 축으로 거부한다 — 여기서 재는 축이 아니다).
-    captured_plan: dict[str, object] = {}
-    real_prepare = pd.prepare_ticket_copy
-
-    def _prepare_spy(**kwargs):
-        plan = real_prepare(**kwargs)
-        captured_plan["plan"] = plan
-        return plan
-
-    monkeypatch.setattr(pd, "prepare_ticket_copy", _prepare_spy)
-    finding_counter = iter(range(1, rounds_max + 2))
-
-    def _run_fn(argv, *, stdin_text, cwd, env, timeout, harness):
-        finding_id = f"F-{next(finding_counter):03d}"
-        body = _review_body(pd, "code-reviewer", [finding_id])
-        _write_round_output(captured_plan["plan"].path, body)
-        return {
-            "returncode": 0,
-            "stdout": json.dumps({
-                "type": "result", "result": "라운드 파일에 판정을 기록했다.",
-                "session_id": "session-1",
-            }),
-            "stderr": "", "timed_out": False,
-        }
-
-    prompt = home / "task.md"
-    prompt.write_text("구현을 검토하라.", encoding="utf-8")
-
-    for index in range(rounds_max):
-        rc = pd.main(
-            ["--role", "code-reviewer", "--prompt-file", str(prompt), "--cwd", str(home),
-             "--ticket", ticket, "--output-dir", str(home / "raw")],
-            run_fn=_run_fn,
-        )
-        assert rc == 0, f"일반 라운드 {index + 1}/{rounds_max} 는 설정된 상한 안이다"
-
-    rc = pd.main(
-        ["--role", "code-reviewer", "--prompt-file", str(prompt), "--cwd", str(home),
-         "--ticket", ticket, "--output-dir", str(home / "raw")],
-        run_fn=_run_fn,
-    )
-    assert rc == 1, "수렴 상한을 넘긴 요청은 예약되지 않는다"
 
 
 # ── T-0846 — 단일 정리 경계(지점 삽입 대체) ─────────────────────────────────
@@ -3657,49 +3517,6 @@ def test_propagated_exception_before_handoff_refunds_the_reserved_ticket_copy(
         _refund_unterminated_ledger_rows(pd, home, ticket),
     )
     assert after == (0, 0, 0), f"전파 예외 뒤 잔류 — before={before} after={after}"
-
-
-def test_internal_verdict_cap_refusal_refunds_the_reserved_ticket_copy(
-    pd, refund_env, monkeypatch,
-):
-    """T-0846 — 내부 verdict 상한 거부(`internal_budget.refused_rc`)는 harvest 를 도는 안쪽
-    finally 안에 중첩된 반환 지점이라, 지점 삽입 방식에선 이미 환불된 예약을 harvest 가 다시
-    건드려(이미 포기됨 오류) 원 rc 를 덮었다(라운드 7 구조적 결함). 단일 경계 아래에서는
-    `_ticket_copy_handed_off` 가 False 라 harvest 를 건너뛰고 환불만 한 번 돈다."""
-    home, tickets = refund_env
-    ticket = "T-9107"
-    _write_spec(tickets, ticket)
-    monkeypatch.setattr(pd, "local_config", lambda: {
-        "delegate_enabled": "true",
-        "delegate.code-reviewer.harness": "codex", "delegate.code-reviewer.model": "gpt-x",
-    })
-    monkeypatch.setattr(
-        pd, "_reserve_internal_review_round",
-        lambda *a, **k: pd.InternalRoundBudget(refused_rc=1),
-    )
-
-    before = (
-        _refund_round_file_count(pd, home, ticket),
-        _refund_run_dir_count(pd, home, ticket),
-        _refund_unterminated_ledger_rows(pd, home, ticket),
-    )
-    assert before == (0, 0, 0)
-
-    prompt = home / "task.md"
-    prompt.write_text("리뷰 요청", encoding="utf-8")
-    rc = pd.main(
-        ["--role", "code-reviewer", "--prompt-file", str(prompt), "--cwd", str(home),
-         "--ticket", ticket, "--output-dir", str(home / "raw")],
-        run_fn=lambda *a, **k: pytest.fail("내부 verdict 상한 거부 뒤 스폰되면 안 됨"),
-    )
-    assert rc == 1
-
-    after = (
-        _refund_round_file_count(pd, home, ticket),
-        _refund_run_dir_count(pd, home, ticket),
-        _refund_unterminated_ledger_rows(pd, home, ticket),
-    )
-    assert after == (0, 0, 0), f"내부 verdict 상한 거부 뒤 잔류 — before={before} after={after}"
 
 
 def test_cleanup_failure_does_not_mask_the_original_rejection(

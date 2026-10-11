@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import inspect
 import os
 import shutil
 import subprocess
@@ -1137,7 +1138,7 @@ def test_default_python_venv_absent_falls_back_to_sys_executable(tf, tmp_path, m
 # ADR-0027 다중슬롯 형상(PM 홈 ② + worktree 슬롯 여럿)에선 `_regression_cwd(None)` 자동해소가
 # 모호해져 ② 홈(tests/ 부재)으로 폴백 → 회귀 red("no tests ran") → finish 가 *조용히* 차단됐다
 # (라이브 발견·PM 59차). `--repo`/`--slot`(ADR-0057 decomposed) 은 그 슬롯을 disambiguate 하고,
-# `--no-pytest` 는 **회귀 실행만** skip 한다(코드 트리 해소는 그대로 — diff 서킷브레이커·stage 가
+# `--no-pytest` 는 **회귀 실행만** skip 한다(코드 트리 해소는 그대로 — 사설 참조 측정·stage 가
 # 같은 트리를 쓴다). 다중슬롯인데 미지정+진짜 모호면 조용한 false-red 대신 fail-loud 로 중단한다.
 # pm_handoff `_resolve_explicit_identity_slot`(M3 조인검증) 재사용(DRY).
 
@@ -1290,7 +1291,7 @@ def test_main_unresolved_identity_fails_loud_before_regression(tf, monkeypatch, 
 
     fail-loud 는 run() 진입 *전*이라 회귀가 시작조차 안 된다([1/5] 미출력). 처방은 `--repo
     <name> [--slot <N>]` 또는 `--task <이름>` 이다 — 회귀 skip 은 처방이 아니다(같은 코드 트리를
-    diff 서킷브레이커·stage 가 함께 쓴다).
+    사설 참조 측정·stage 가 함께 쓴다).
     """
     monkeypatch.setattr(
         tf, "_load_pm_log",
@@ -1388,8 +1389,6 @@ def test_main_repo_slot_forwards_identity_to_board_complete(tf, monkeypatch):
         "--repo", "project_manager", "--slot", "1"]
 
 
-
-
 @pytest.mark.parametrize("identity, slot_identity, expected", [
     (SimpleNamespace(repo="pay", slot=2, task=None), None,
      ["--repo", "pay", "--slot", "2"]),
@@ -1408,7 +1407,7 @@ def test_main_no_pytest_still_gates_unresolved_identity(tf, monkeypatch, capsys)
     """--no-pytest + 정체성 미해소 → rc 1 + `--task` 처방(회귀 skip 으로 풀리지 않는다).
 
     옛 규칙은 `--no-pytest` 면 슬롯 해소 자체를 건너뛰었다 — 회귀 cwd 가 pytest 전용 값이던
-    시점의 결정이다. 그 뒤 같은 해소 결과(코드 트리)를 diff 서킷브레이커·[4/5] stage·PM-direct
+    시점의 결정이다. 그 뒤 같은 해소 결과(코드 트리)를 사설 참조 측정·[4/5] stage·PM-direct
     재검이 소비하게 됐으므로, 회귀 skip 이 해소를 우회하면 그 소비자들이 PM 홈(분리 형상에선
     엔진 import 사본)을 잰다. 그래서 회귀 skip 과 트리 해소를 분리했고, 모호를 푸는 수단은
     `--repo/--slot`·`--task` 명시뿐이다.
@@ -1460,8 +1459,6 @@ def test_main_no_pytest_forwards_the_skip_but_no_code_tree(tf, monkeypatch):
     assert captured["slot"] == "work/project_manager_1"
 
 
-
-
 def test_main_slot_without_repo_rejected(tf, capsys):
     """--slot 단독(--repo 없음) — identity_args.parse_identity 가 ValueError → parser.error(fail-loud).
 
@@ -1470,8 +1467,6 @@ def test_main_slot_without_repo_rejected(tf, capsys):
     with pytest.raises(SystemExit):
         tf.main(["T-1234", "--slot", "4"])
     assert "--repo" in capsys.readouterr().err
-
-
 
 
 def test_resolve_finish_slot_solo_returns_none(tf, monkeypatch):
@@ -2031,51 +2026,11 @@ def test_coordinate_loader_old_sibling_reports_explicit_skew(
         tf._load_repo_coordinates()
 
 
-# ── diff 서킷브레이커 진입 검사 (T-0593) ─────────────────────────────────────
-#
-# 리뷰 라운드가 수렴하지 않는 두 번째 원인은 구현 스코프 팽창이다(실측 5,018줄 단일 티켓).
-# estimate 를 넘긴 스코프는 회귀가 green 이어도 완료 대상이 아니라 분할 대상이라, 어떤 부작용
-# (회귀 실행·log append·board complete·git stage)도 나기 전에 멈춘다. 상한 표와 측정식은
-# additional_reviewer 가 소유하고 여기서는 판정만 소비한다(사본 0).
+# ── 진입 게이트 공용 대역 ───────────────────────────────────────────────────
 
 
 def _boom_pytest():
     raise AssertionError("차단된 완료는 회귀를 돌리지 않는다")
-
-
-def test_diff_cap_block_stops_before_any_side_effect(tf, tmp_path, capsys):
-    """상한 초과 → rc 1 · 회귀/log/board/git 어느 것도 건드리지 않는다 (진입 검사·DoD)."""
-    log_file = tmp_path / "log.md"
-    finisher = tf.TicketFinisher(
-        run_pytest_fn=_boom_pytest,
-        run_board_fn=lambda args: (_ for _ in ()).throw(AssertionError("board 미호출")),
-        run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("git 미호출")),
-        board_count_fn=lambda: 10,
-        ticket_title_fn=lambda tid: "t",
-        affected_domain_fn=lambda tid: [],
-        diff_cap_block_fn=lambda tid: f"diff 서킷브레이커 차단 — {tid} · 분할하세요",
-        log_file=log_file,
-    )
-    assert finisher.run("T-1234", section=None, dry_run=False) == 1
-    assert not log_file.exists()
-    err = capsys.readouterr().err
-    assert "[중단]" in err and "서킷브레이커" in err and "T-1234" in err
-
-
-def test_diff_cap_pass_completes_normally(tf, tmp_path, capsys):
-    """상한 이내(None)면 종전 흐름 그대로 완료된다 (정상 경로 무영향·DoD)."""
-    finisher = tf.TicketFinisher(
-        run_pytest_fn=_green_pytest(100),
-        run_board_fn=lambda args: (0, "board ok"),
-        run_git_fn=lambda args: (0, ""),
-        board_count_fn=lambda: 10,
-        ticket_title_fn=lambda tid: "t",
-        affected_domain_fn=lambda tid: [],
-        diff_cap_block_fn=lambda tid: None,
-        log_file=tmp_path / "log.md",
-    )
-    assert finisher.run("T-1234", section=None, dry_run=False) == 0
-    assert "[완료] T-1234 기록 완료." in capsys.readouterr().out
 
 
 def test_unterminated_frontmatter_fallback_keeps_finish_flow_open(
@@ -2131,64 +2086,19 @@ def test_unterminated_frontmatter_fallback_keeps_finish_flow_open(
     assert "T-9001" in (tmp_path / "log.md").read_text(encoding="utf-8")
 
 
-def test_default_diff_cap_seam_consumes_the_additional_reviewer_policy(
-        tf, tmp_path, monkeypatch):
-    """기본 seam 은 additional_reviewer 의 상한 표·측정식을 그대로 쓴다 (사본 0·배선 고정)."""
-    external = tf._load_additional_reviewer()
-    assert external is not None
-    monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["src/pay.py"])
-    monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
-    monkeypatch.setattr(external, "local_config", lambda repo=None: {})
-    monkeypatch.setattr(external, "diff_line_total", lambda *a, **k: 301)
-    monkeypatch.setattr(tf, "_load_additional_reviewer", lambda: external)
-
-    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
-    block = finisher._default_diff_cap_block("T-1234")
-    assert block is not None and "small" in block and "301줄" in block and "300줄" in block
-
-    # 상한 이내면 통과, estimate 미선언이면 가드 off (엔진이 상한을 지어내지 않는다).
-    monkeypatch.setattr(external, "diff_line_total", lambda *a, **k: 300)
-    assert finisher._default_diff_cap_block("T-1234") is None
-    monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: None)
-    monkeypatch.setattr(external, "diff_line_total", lambda *a, **k: 99999)
-    assert finisher._default_diff_cap_block("T-1234") is None
-
-
-def test_default_diff_cap_seam_is_off_without_touches(tf, tmp_path, monkeypatch):
-    """touches 가 없으면 측정 범위가 없다 — 가드 off(완료를 막지 않는다)."""
-    monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: [])
-    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
-    assert finisher._default_diff_cap_block("T-1234") is None
-
-
-def test_default_diff_cap_seam_is_off_when_additional_reviewer_is_absent(
-        tf, tmp_path, monkeypatch):
-    """additional_reviewer 사본이 없으면 가드 off — 부분 설치가 완료를 벽돌로 만들지 않는다."""
-    monkeypatch.setattr(tf, "_load_additional_reviewer", lambda: None)
-    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
-    assert finisher._default_diff_cap_block("T-1234") is None
-
-
-def test_default_diff_cap_seam_stops_without_the_measurement_anchor_symbol(
-        tf, tmp_path, monkeypatch):
+def test_measurement_anchor_stops_without_the_anchor_symbol(tf, tmp_path, monkeypatch):
     """사본은 있으나 앵커 seam 이 없는 구형/부분 설치는 멈춘다 — 폭을 물을 수 없다.
 
-    사본 부재(위 테스트)와 달리 사본은 있고 다른 seam(측정 numstat)은 갖췄는데 이 seam 만 없는
-    형상이다. 기준점 없이 잰 값으로 상한을 판정하면 같은 게이트가 설치 상태에 따라 다른 폭을
-    재게 되므로, 가드 off 가 아니라 정지다."""
+    기준점 없이 잰 값으로 판정하면 같은 게이트가 설치 상태에 따라 다른 폭을 재게 되므로,
+    가드 off 가 아니라 정지다."""
     external = tf._load_additional_reviewer()
     assert external is not None
     monkeypatch.delattr(external, "integration_anchor", raising=False)
-    monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["src/pay.py"])
-    monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
-    monkeypatch.setattr(external, "local_config", lambda repo=None: {})
-    monkeypatch.setattr(external, "diff_line_total", lambda *a, **k: 301)
-    monkeypatch.setattr(tf, "_load_additional_reviewer", lambda: external)
 
     finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
 
     with pytest.raises(tf._CloseObservationFailure) as caught:
-        finisher._default_diff_cap_block("T-1234")
+        finisher._measurement_anchor("T-1234", external)
 
     assert "integration_anchor 부재" in str(caught.value)
 
@@ -2196,7 +2106,7 @@ def test_default_diff_cap_seam_stops_without_the_measurement_anchor_symbol(
 # ── 측정 스코프 정규화 · 기계 mirror 제외 (T-0601 ①⑧) ────────────────────────
 #
 # ⑧ PM 홈 좌표 touches(`work/<repo>_<N>/…`)를 그대로 재면 측정 트리에 그 경로가 없어 diff 가 0 이
-#    나오고 상한이 조용히 우회된다. 정규화는 stage 경로와 **같은** `repo_coordinates` seam 이다.
+#    나온다. 정규화는 stage 경로와 **같은** `repo_coordinates` seam 이다.
 # ① 기계 mirror 제외는 additional_reviewer 측정 seam 이 소유한다 — 완료 기록은 그 판정을 빌려 쓴다.
 
 
@@ -2205,172 +2115,30 @@ def test_measured_touches_normalizes_pm_home_coordinates(tf, tmp_path, monkeypat
     workspace = tmp_path / "work" / "proj_1"
     workspace.mkdir(parents=True)
     monkeypatch.setattr(tf, "REPO", tmp_path)
-    monkeypatch.setattr(
-        tf, "get_ticket_touches",
-        lambda board_py, tid: ["work/proj_1/.project_manager/tools/board.py",
-                               "work/proj_1/tests/"])
 
     finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", task_workspace=workspace)
-    assert finisher._measured_touches("T-1") == [
+    assert finisher._normalize_measured_touches(
+        ["work/proj_1/.project_manager/tools/board.py", "work/proj_1/tests/"]) == [
         ".project_manager/tools/board.py", "tests"]
 
 
 def test_measured_touches_leaves_plain_repo_paths_untouched(tf, tmp_path, monkeypatch):
     """접두 없는 채택자 형상은 normalizer 를 타지 않는다 (경량 판정·현행 무변경)."""
-    monkeypatch.setattr(tf, "get_ticket_touches",
-                        lambda board_py, tid: [".project_manager/tools/board.py"])
     monkeypatch.setattr(tf, "_load_repo_coordinates",
                         lambda: (_ for _ in ()).throw(AssertionError("normalizer 미호출")))
     finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
-    assert finisher._measured_touches("T-1") == [".project_manager/tools/board.py"]
+    assert finisher._normalize_measured_touches(
+        [".project_manager/tools/board.py"]) == [".project_manager/tools/board.py"]
 
 
-def test_measured_touches_slot_mismatch_is_loud_guard_off(tf, tmp_path, monkeypatch, capsys):
-    """슬롯 불일치는 **경고 1줄 + 가드 off** 다 — 조용한 diff 0 으로 접지 않는다."""
+def test_measured_touches_slot_mismatch_is_unresolved(tf, tmp_path, monkeypatch):
+    """슬롯 불일치는 정규화 불능(None)이다 — 조용한 diff 0 으로 접지 않는다."""
     workspace = tmp_path / "work" / "proj_1"
     workspace.mkdir(parents=True)
     monkeypatch.setattr(tf, "REPO", tmp_path)
-    monkeypatch.setattr(tf, "get_ticket_touches",
-                        lambda board_py, tid: ["work/other_2/tools/board.py"])
 
     finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", task_workspace=workspace)
-    assert finisher._measured_touches("T-1") is None
-    assert "좌표 정규화 실패" in capsys.readouterr().err
-
-
-def test_diff_cap_measures_the_normalized_scope(tf, tmp_path, monkeypatch):
-    """서킷브레이커가 **정규화된 스코프**로 잰다 — 접두 불일치로 상한이 우회되던 구멍 폐쇄."""
-    workspace = tmp_path / "work" / "proj_1"
-    workspace.mkdir(parents=True)
-    _git_seed(workspace)
-    external = tf._load_additional_reviewer()
-    seen: dict[str, object] = {}
-
-    def _measure(root, base, paths, **kwargs):
-        # 측정 기준점(앵커)은 이 케이스의 축이 아니다 — 받기만 하고 스코프만 관측한다.
-        seen["root"], seen["paths"] = root, list(paths)
-        return 301
-
-    monkeypatch.setattr(tf, "REPO", tmp_path)
-    monkeypatch.setattr(tf, "get_ticket_touches",
-                        lambda board_py, tid: ["work/proj_1/src/pay.py"])
-    monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
-    monkeypatch.setattr(external, "local_config", lambda repo=None: {})
-    monkeypatch.setattr(external, "diff_line_total", _measure)
-    monkeypatch.setattr(tf, "_load_additional_reviewer", lambda: external)
-
-    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", task_workspace=workspace)
-    block = finisher._default_diff_cap_block("T-1")
-    assert seen["paths"] == ["src/pay.py"], "PM 홈 좌표 그대로 측정하면 diff 0 으로 우회된다"
-    assert seen["root"] == workspace
-    assert block is not None and "301줄" in block
-
-
-# ── untracked 신규 파일 측정 (T-0604 ③) ─────────────────────────────────────
-#
-# 완료 기록은 **[0/5] 서킷브레이커 → … → [4/5] git stage** 순서다. `git diff` 가 아직 add 되지
-# 않은 파일을 못 보던 동안에는 그 순서 자체가 결함이었다 — 대형 신규 파일이 0 줄로 측정돼 상한을
-# 통과한 뒤, 바로 다음 단계에서 stage 됐다. 측정이 untracked 를 포함하면 그 창이 닫힌다.
-
-
-def _git_tree_with_untracked(tmp_path: Path, relpath: str, lines: int) -> Path:
-    """커밋 하나 + **add 되지 않은** 신규 파일이 있는 실 git 트리 (측정 입력)."""
-    root = tmp_path / "code"
-    root.mkdir()
-    for args in (["init"], ["config", "user.email", "t@e"], ["config", "user.name", "t"]):
-        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
-    (root / "seed.py").write_text("seed\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(root), "commit", "-m", "seed"], check=True,
-                   capture_output=True)
-    target = root / relpath
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("".join(f"n{i}\n" for i in range(lines)), encoding="utf-8")
-    return root
-
-
-def test_a_large_untracked_file_is_measured_before_staging(tf, tmp_path, monkeypatch):
-    """stage 전에 잰다 — 상한을 넘는 신규 파일은 **측정 시점에** 잡혀 완료가 막힌다.
-
-    실 git 트리로 `diff_line_total` 을 그대로 태운다(측정 스텁 없음) — 이 순서 결함은 측정식이
-    아니라 '무엇이 diff 에 들어오나'의 문제였기 때문이다."""
-    root = _git_tree_with_untracked(tmp_path, "src/new_module.py", 400)
-    external = tf._load_additional_reviewer()
-    monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["src/"])
-    monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
-    monkeypatch.setattr(external, "local_config", lambda repo=None: {})
-    monkeypatch.setattr(tf, "_load_additional_reviewer", lambda: external)
-
-    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", regression_cwd=root)
-    block = finisher._default_diff_cap_block("T-0604")
-
-    assert block is not None and "400줄" in block and "300줄" in block
-
-
-def test_an_untracked_file_within_the_cap_still_completes(tf, tmp_path, monkeypatch):
-    """상한 이내면 종전대로 통과한다 — 포함이 정당한 완료를 오차단하지 않는다."""
-    root = _git_tree_with_untracked(tmp_path, "src/new_module.py", 40)
-    external = tf._load_additional_reviewer()
-    monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["src/"])
-    monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
-    monkeypatch.setattr(external, "local_config", lambda repo=None: {})
-    monkeypatch.setattr(tf, "_load_additional_reviewer", lambda: external)
-
-    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", regression_cwd=root)
-
-    assert finisher._default_diff_cap_block("T-0604") is None
-
-
-def test_diff_cap_guard_is_off_without_a_baseline(tf, tmp_path, monkeypatch, capsys):
-    """touches 를 선언해도 커밋 0 트리엔 잴 표면이 없다 — 가드 off + loud 한 줄.
-
-    새 채택자(`pm_import --new` 직후)의 첫 티켓 형상이다. 기준선(통합 브랜치 tip)도 HEAD 도
-    없으므로 폭을 물을 수 없는데, 그 상태로 멈추면 첫 티켓이 닫히지 않고 조용히 통과하면
-    상한이 꺼진 사실이 아무 데도 남지 않는다. 같은 트리에 커밋 하나가 생기면 같은 파일이
-    상한 초과로 잡힌다 — 원래부터 통과라서 조용한 것이 아니다.
-    """
-    root = tmp_path / "code"
-    root.mkdir()
-    for args in (["init", "-q", "-b", "main"], ["config", "user.email", "t@e"],
-                 ["config", "user.name", "t"]):
-        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
-    (root / "src").mkdir()
-    (root / "src" / "new_module.py").write_text(
-        "".join(f"n{index}\n" for index in range(400)), encoding="utf-8")
-    external = tf._load_additional_reviewer()
-    monkeypatch.setattr(tf, "_cluster_integration_branch",
-                        lambda _board_py, _ticket_id: "main")
-    monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["src/"])
-    monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
-    monkeypatch.setattr(external, "local_config", lambda repo=None: {})
-    monkeypatch.setattr(tf, "_load_additional_reviewer", lambda: external)
-    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", regression_cwd=root)
-
-    assert finisher._default_diff_cap_block("T-0896") is None
-    stderr = capsys.readouterr().err
-    assert "기준선 없음" in stderr and stderr.count("\n") == 1
-
-    subprocess.run(["git", "-C", str(root), "commit", "-q", "--allow-empty",
-                    "-m", "seed"], check=True, capture_output=True)
-    block = tf.TicketFinisher(
-        log_file=tmp_path / "log.md", regression_cwd=root,
-    )._default_diff_cap_block("T-0896")
-
-    assert block is not None and "400줄" in block and "300줄" in block
-
-
-def test_completion_surface_carries_the_shared_measurement_meaning(
-        tf, tmp_path, monkeypatch):
-    """완료 기록 안내도 '측정=손작업 스코프(기계 mirror 제외)'를 싣는다 (문구 단일 출처)."""
-    external = tf._load_additional_reviewer()
-    monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["templates/"])
-    monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
-    monkeypatch.setattr(external, "local_config", lambda repo=None: {})
-    monkeypatch.setattr(external, "diff_line_total", lambda *a, **k: 301)
-    monkeypatch.setattr(tf, "_load_additional_reviewer", lambda: external)
-
-    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
-    assert external.MEASURED_SCOPE_NOTE in finisher._default_diff_cap_block("T-1")
+    assert finisher._normalize_measured_touches(["work/other_2/tools/board.py"]) is None
 
 
 # ── DoD 기록 게이트 preflight (T-0601 ②) ─────────────────────────────────────
@@ -2389,7 +2157,6 @@ def _dod_finisher(tf, tmp_path, *, dod_block, log_file: Path | None = None):
         board_count_fn=lambda: 10,
         ticket_title_fn=lambda tid: "t",
         affected_domain_fn=lambda tid: [],
-        diff_cap_block_fn=lambda tid: None,
         dod_block_fn=lambda tid: dod_block,
         log_file=log_file if log_file is not None else tmp_path / "log.md",
     )
@@ -2416,20 +2183,20 @@ def test_repeated_dod_block_never_duplicates_the_skeleton(tf, tmp_path):
     assert log_file.read_text(encoding="utf-8") == "# log\n"
 
 
-def test_dod_preflight_runs_after_the_diff_cap(tf, tmp_path, capsys):
-    """진입 게이트 순서 = 서킷브레이커 → DoD (더 넓은 거절이 먼저·안내 1개만 뜬다)."""
+def test_dod_preflight_runs_after_the_private_ref(tf, tmp_path, capsys):
+    """진입 게이트 순서 = 사설 참조 → DoD (앞선 거절이 먼저·안내 1개만 뜬다)."""
     finisher = tf.TicketFinisher(
         run_pytest_fn=_boom_pytest,
         board_count_fn=lambda: 10,
         ticket_title_fn=lambda tid: "t",
         affected_domain_fn=lambda tid: [],
-        diff_cap_block_fn=lambda tid: "서킷브레이커 차단",
+        private_ref_block_fn=lambda tid: "사설 참조 차단",
         dod_block_fn=lambda tid: (_ for _ in ()).throw(
-            AssertionError("cap 차단 뒤에는 DoD 판정을 묻지 않는다")),
+            AssertionError("사설 참조 차단 뒤에는 DoD 판정을 묻지 않는다")),
         log_file=tmp_path / "log.md",
     )
     assert finisher.run("T-1234", section=None, dry_run=False) == 1
-    assert "서킷브레이커 차단" in capsys.readouterr().err
+    assert "사설 참조 차단" in capsys.readouterr().err
 
 
 def test_dry_run_is_also_refused_by_the_dod_preflight(tf, tmp_path):
@@ -2453,7 +2220,6 @@ def _residual_finisher(tf, tmp_path, *, residual_block, log_file: Path | None = 
         board_count_fn=lambda: 10,
         ticket_title_fn=lambda tid: "t",
         affected_domain_fn=lambda tid: [],
-        diff_cap_block_fn=lambda tid: None,
         dod_block_fn=lambda tid: None,
         residual_block_fn=lambda tid: residual_block,
         log_file=log_file if log_file is not None else tmp_path / "log.md",
@@ -2473,13 +2239,12 @@ def test_residual_preflight_blocks_before_the_log_skeleton(tf, tmp_path, capsys)
 
 
 def test_residual_preflight_runs_after_the_dod_block(tf, tmp_path, capsys):
-    """진입 게이트 순서 = 서킷브레이커 → DoD → 잔여(더 넓은/앞선 거절이 먼저·안내 1개만 뜬다)."""
+    """진입 게이트 순서 = 사설 참조 → DoD → 잔여(더 넓은/앞선 거절이 먼저·안내 1개만 뜬다)."""
     finisher = tf.TicketFinisher(
         run_pytest_fn=_boom_pytest,
         board_count_fn=lambda: 10,
         ticket_title_fn=lambda tid: "t",
         affected_domain_fn=lambda tid: [],
-        diff_cap_block_fn=lambda tid: None,
         dod_block_fn=lambda tid: "DoD 미마감 — T-1234",
         residual_block_fn=lambda tid: (_ for _ in ()).throw(
             AssertionError("DoD 차단 뒤에는 잔여 판정을 묻지 않는다")),
@@ -2489,17 +2254,15 @@ def test_residual_preflight_runs_after_the_dod_block(tf, tmp_path, capsys):
     assert "DoD 미마감" in capsys.readouterr().err
 
 
-def test_preflight_seam_order_is_diff_cap_private_ref_dod_residual_self_axis(tf, tmp_path):
-    """다섯 진입 게이트 seam 의 호출 배열을 값으로 고정한다 — diff_cap → private_ref → dod →
-    residual → self_axis(사설 참조는 같은 claim 앵커 측정 폭을 재는 diff 축 판정이라 diff_cap
-    바로 뒤). residual 이 차단하면 self_axis(poison)는 **불리지 않는다**(순서가 값으로
+def test_preflight_seam_order_is_private_ref_dod_residual_self_axis(tf, tmp_path):
+    """네 진입 게이트 seam 의 호출 배열을 값으로 고정한다 — private_ref → dod → residual →
+    self_axis. residual 이 차단하면 self_axis(poison)는 **불리지 않는다**(순서가 값으로
     확인되지 않으면 이후 게이트 삽입이 뒤로 밀려도 코드 리뷰로만 잡힌다)."""
     calls: list[str] = []
     finisher = tf.TicketFinisher(
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("회귀 미호출이어야 한다")),
         run_board_fn=lambda args: (_ for _ in ()).throw(AssertionError("board 미호출")),
         run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("git 미호출")),
-        diff_cap_block_fn=lambda tid: calls.append("diff_cap") or None,
         private_ref_block_fn=lambda tid: calls.append("private_ref") or None,
         dod_block_fn=lambda tid: calls.append("dod") or None,
         residual_block_fn=lambda tid: calls.append("residual") or "잔여 1건 — T-1234",
@@ -2507,7 +2270,7 @@ def test_preflight_seam_order_is_diff_cap_private_ref_dod_residual_self_axis(tf,
         log_file=tmp_path / "log.md",
     )
     assert finisher.run("T-1234", section=None, dry_run=False) == 1
-    assert calls == ["diff_cap", "private_ref", "dod", "residual"], (
+    assert calls == ["private_ref", "dod", "residual"], (
         "residual 차단인데 self_axis 가 불렸다"
     )
 
@@ -2631,24 +2394,6 @@ def test_default_dod_preflight_is_off_without_the_board_gate(tf, tmp_path):
     assert finisher._default_dod_block("T-1234") is None
 
 
-def test_ticket_estimate_reads_frontmatter(tf, tmp_path):
-    """`estimate` 는 board frontmatter 에서 읽고, 부재/비-문자열은 None 이다."""
-    board_py = tmp_path / "estimate_board.py"
-    board_py.write_text(
-        f"ENGINE_REV = {_real_engine_rev()!r}\n"   # T-0397 rev 스탬프
-        "def find_ticket_exact(ticket_id, **kwargs):\n"
-        "    return ('claimed', ticket_id)\n"
-        "def load_ticket(path):\n"
-        "    table = {'T-1': {'estimate': ' medium '}, 'T-2': {},\n"
-        "             'T-3': {'estimate': 7}}\n"
-        "    return (table[path], 'body')\n",
-        encoding="utf-8",
-    )
-    assert tf.get_ticket_estimate(board_py, "T-1") == "medium"
-    assert tf.get_ticket_estimate(board_py, "T-2") is None
-    assert tf.get_ticket_estimate(board_py, "T-3") is None
-
-
 # ── PM-direct 완료 재검 (T-0677) ───────────────────────────────────────────────
 
 def test_pm_direct_warns_when_touches_exceed_two_files(tf):
@@ -2711,7 +2456,6 @@ def test_pm_direct_warning_is_never_block_and_preserves_finish_rc(
         affected_domain_fn=lambda _tid: [],
         status_entries_fn=lambda: ((" M", "src/app.py"),),
         stage_scope_fn=lambda _tid: tf.StageScope((), None),
-        diff_cap_block_fn=lambda _tid: None,
         dod_block_fn=lambda _tid: None,
         # 잔여 preflight 는 별도 관심사 — 이 fixture의 scope=() + dirty 1건은 PM-direct
         # 재검용 대역일 뿐 잔여 판정 대상이 아니다. off로 이 테스트의 초점(경고가 rc를 절대
@@ -2778,24 +2522,15 @@ def test_pm_direct_finish_wires_directory_expansion_into_condition_a(
     assert "3개 파일" in err
 
 
-# ── 측정 폭 = 통합 브랜치와의 merge-base (dev 커밋 누적) ─────────────────────
+# ── 완료 기록 변경량 상한 없음 (T-0950) ─────────────────────────────────────
 #
-# 옛 폭(작업트리 → 비면 직전 커밋 한 칸)은 dev 커밋이 쌓인 형상에서 0 에 수렴했다 — 완료 기록
-# 시점 트리는 clean 이고 마지막 커밋이 전파/기록이라 티켓 경로 교집합이 비기 때문이다(상한을
-# 넘긴 작업이 그대로 통과한 실측). 기준점은 묶음 장부가 선언한 통합 브랜치와의 merge-base 이고,
-# 그 값은 커밋·재배치 순서와 무관하다. 아래 형상은 실 git 저장소 + 엔진 사본으로 dev 커밋 →
-# 통합 브랜치 전진 → 흡수 순서를 그대로 재현한다.
-#
-# claim 표면(박제 위치·코드 트리 해소 3형상·비-git 경고) 자체의 계약은 여기서 재현하지 않는다 —
-# 그 축은 `tests/test_board_claim_strict.py` 가 소유한다(claim 계약 회귀는 그 파일에서 찾는다).
-# 아래는 **선언된 기준점을 소비하는 측정 폭** 케이스만이다.
+# 작업 크기별 변경 줄 수 상한은 사용자 결정(2026-10-10)으로 지웠다. 아래 형상은 실 git 저장소 +
+# 엔진 사본(claim · 묶음 장부 · 통합 브랜치)으로 옛 small 상한(300줄)을 넘는 변경을 만들고, 진입
+# 게이트의 측정 소비자(사설 참조)가 그대로 도는 채로 완료 기록이 끝나는지 본다.
 
 _WAVE_INTEGRATION = "task/main"   # 묶음 장부가 선언하는 통합 브랜치(판정 기준)
 _WAVE_TICKET = "T-7301"
-_WAVE_OTHER_TICKET = "T-7302"
-_WAVE_SRC_LINES = 320          # claim 이후 `src/` 누적(dev 커밋 2건) — small 상한 300 초과
-_WAVE_DOCS_LINES = 50          # 같은 wave 가 `docs/` 에 남긴 변경(타 claimed 티켓 전용 몫)
-_WAVE_PROPAGATION_LINES = 4    # merge 뒤 전파 커밋이 만든 신규 파일 1건당 줄 수
+_WAVE_CHANGED_LINES = 400      # claim 뒤 `src/` 에 더한 줄 수 — 옛 small 상한 300 초과
 
 
 def _wave_git(root: Path, *args: str) -> subprocess.CompletedProcess:
@@ -2881,117 +2616,37 @@ def _wave_claim(board, ticket_id: str = _WAVE_TICKET) -> int:
             os.environ["PM_SESSION_NAME"] = saved
 
 
-def _wave_ticket_path(root: Path, ticket_id: str = _WAVE_TICKET) -> Path:
-    return (root / ".project_manager" / "board" / "tickets" / "claimed"
-            / f"{ticket_id}-wave.md")
-
-
-def _wave_work(root: Path) -> None:
-    """claim 기록 커밋 → dev 커밋 2건 → 통합 브랜치 전진(전파 커밋 2건) → 그 분량 흡수.
-
-    끝난 트리는 clean 이고 HEAD 는 dev 브랜치다. 통합 브랜치가 이미 가진 전파 분량은
-    merge-base 의 조상이라 폭에서 빠지고, 이 작업의 커밋 누적만 남는다 — 작업트리+직전 커밋
-    한 칸으로 재던 옛 폭이 0 으로 접히던 바로 그 배치다."""
+def test_completion_has_no_change_size_cap(tmp_path, capsys):
+    """estimate small 티켓이 선언 경로 안에서 400줄을 바꿔도 진입 게이트가 막지 않는다."""
+    root, board = _wave_repo(tmp_path)
+    assert _wave_claim(board) == 0
     _wave_git(root, "add", "-A")
     _wave_git(root, "commit", "-qm", "claim 기록")
-    _wave_git(root, "checkout", "-q", "-b", f"dev/{_WAVE_TICKET}")
-    _wave_write(root / "src" / "app.py", 5 + 200)
-    _wave_git(root, "commit", "-qam", "dev 1")
-    _wave_write(root / "src" / "app.py", 5 + _WAVE_SRC_LINES)
-    _wave_write(root / "docs" / "notes.md", 3 + _WAVE_DOCS_LINES)
-    _wave_git(root, "commit", "-qam", "dev 2")
-    _wave_git(root, "checkout", "-q", _WAVE_INTEGRATION)
-    for index in (1, 2):
-        _wave_write(root / "docs" / f"propagation{index}.md", _WAVE_PROPAGATION_LINES)
-        _wave_git(root, "add", "-A")
-        _wave_git(root, "commit", "-qm", f"propagation {index}")
-    _wave_git(root, "checkout", "-q", f"dev/{_WAVE_TICKET}")
-    _wave_git(root, "merge", "-q", "--no-ff", "-m", "통합 흡수", _WAVE_INTEGRATION)
-
-
-def _wave_finisher(root: Path, tmp_path: Path):
-    """tmp 저장소를 코드 트리로 쓰는 완료 기록 인스턴스·additional_reviewer 사본·엔진 모듈."""
+    _wave_write(root / "src" / "app.py", 5 + _WAVE_CHANGED_LINES)
     finish = _load_tool_copy(root, "ticket_finish")
+    completed: list[list[str]] = []
     finisher = finish.TicketFinisher(
+        run_pytest_fn=_green_pytest(100),
+        run_board_fn=lambda args: (completed.append(args), (0, "board ok"))[1],
+        run_git_fn=lambda args: (0, ""),
+        board_count_fn=lambda: 10,
+        ticket_title_fn=lambda tid: "wave",
+        affected_domain_fn=lambda tid: [],
+        dod_block_fn=lambda tid: None,
+        residual_block_fn=lambda tid: None,
+        self_axis_block_fn=lambda tid: None,
         board_py=root / ".project_manager" / "tools" / "board.py",
         regression_cwd=root,
         log_file=tmp_path / "log.md",
     )
-    external = finish._load_additional_reviewer()
-    assert external is not None
-    return finisher, external, finish
 
-
-def test_merge_wave_is_measured_from_the_integration_base(tmp_path):
-    """dev 커밋 누적이 완료 기록 서킷브레이커에 잡힌다(옛 폭에선 0 이던 형상)."""
-    root, board = _wave_repo(tmp_path)
-    assert _wave_claim(board) == 0
-    _wave_work(root)
-    finisher, external, _finish = _wave_finisher(root, tmp_path)
-
-    assert external.diff_line_total(root, "HEAD", ["src/"]) == 0, \
-        "옛 폭이 이 형상을 0 으로 재던 사실이 사라졌다 — 대조군 소실."
-    block = finisher._default_diff_cap_block(_WAVE_TICKET)
-
-    assert block is not None
-    assert f"{_WAVE_SRC_LINES}줄" in block and "300줄" in block
-
-
-def test_uncommitted_work_still_rides_the_measured_width(tmp_path):
-    """작업트리 미커밋 변경도 같은 폭이다 — 커밋 누적 + 작업트리 한 폭으로 잰다."""
-    root, board = _wave_repo(tmp_path)
-    assert _wave_claim(board) == 0
-    _wave_work(root)
-    _wave_write(root / "src" / "app.py", 5 + _WAVE_SRC_LINES + 11)
-    _finisher, external, _finish = _wave_finisher(root, tmp_path)
-    fm, _body = board.load_ticket(_wave_ticket_path(root))
-
-    assert external.diff_line_total(
-        root, "HEAD", ["src/"], claimed_rev=fm["claimed_rev"]
-    ) == _WAVE_SRC_LINES + 11
-
-
-def test_other_claimed_ticket_share_is_excluded_under_the_anchor(tmp_path):
-    """타 claimed 티켓 전용 몫 제외는 새 폭에서도 그대로다 (귀속 보정 무변경)."""
-    root, board = _wave_repo(tmp_path)
-    assert _wave_claim(board) == 0
-    _wave_ticket(root, _WAVE_OTHER_TICKET, status="claimed", touch="docs/")
-    _wave_work(root)
-    finisher, _external, _finish = _wave_finisher(root, tmp_path)
-
-    block = finisher._default_diff_cap_block(_WAVE_TICKET)
-
-    # 전파 커밋은 통합 브랜치가 이미 가진 분량이라 폭 밖이다 — 남는 타 티켓 몫은 dev 가
-    # `docs/` 에 남긴 줄뿐이다.
-    assert block is not None and f"{_WAVE_SRC_LINES}줄" in block
-    assert f"귀속 제외: {_WAVE_DOCS_LINES}줄" in block and _WAVE_OTHER_TICKET in block
-
-
-def test_a_ticket_without_an_integration_declaration_stops(tmp_path):
-    """장부 선언이 없으면 다른 기준으로 접지 않고 멈춘다(구 티켓도 예외가 아니다)."""
-    root, board = _wave_repo(tmp_path, base_branch=None)
-    assert _wave_claim(board) == 0
-    _wave_work(root)
-    finisher, _external, finish = _wave_finisher(root, tmp_path)
-
-    with pytest.raises(finish._CloseObservationFailure) as caught:
-        finisher._default_diff_cap_block(_WAVE_TICKET)
-
-    assert "통합 브랜치(base_branch)를 선언하지 않았다" in str(caught.value)
-
-
-def test_an_integration_branch_absent_from_this_tree_stops(tmp_path):
-    """선언은 있는데 이 트리에 없는 브랜치도 같은 처방이다 — 조용한 0 줄로 접지 않는다."""
-    root, board = _wave_repo(tmp_path, base_branch="task/absent")
-    assert _wave_claim(board) == 0
-    _wave_work(root)
-    finisher, _external, finish = _wave_finisher(root, tmp_path)
-
-    with pytest.raises(finish._CloseObservationFailure) as caught:
-        finisher._default_diff_cap_block(_WAVE_TICKET)
-
-    assert "task/absent" in str(caught.value)
-
+    assert finisher.run(_WAVE_TICKET, section=None, dry_run=False) == 0
+    captured = capsys.readouterr()
+    assert "서킷브레이커" not in captured.out + captured.err
+    assert completed == [["complete", _WAVE_TICKET, "--tests-pass"]]
+    assert "diff_cap_block_fn" not in inspect.signature(finish.TicketFinisher).parameters
+    for name in ("get_ticket_estimate", "DiffAttribution", "_default_diff_cap_block"):
+        assert not hasattr(finish, name) and not hasattr(finish.TicketFinisher, name), name
 
 
 # ── 완료 대상 작업 트리 자기 축 회귀 ─────────────────────────────────────────
@@ -3569,12 +3224,11 @@ def test_source_never_calls_merge_tree_for_self_axis_judgment(tf):
 
 # ── preflight 튜플 배선 (순서·`--no-pytest`·DI 기본값) ────────────────────────
 
-def test_self_axis_preflight_runs_last_after_diff_cap_and_dod_pass(tf, tmp_path):
+def test_self_axis_preflight_runs_last_after_private_ref_and_dod_pass(tf, tmp_path):
     finisher = tf.TicketFinisher(
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("회귀 미호출이어야 한다")),
         run_board_fn=lambda args: (_ for _ in ()).throw(AssertionError("board 미호출")),
         run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("git 미호출")),
-        diff_cap_block_fn=lambda tid: None,
         dod_block_fn=lambda tid: None,
         self_axis_block_fn=lambda tid: f"자기 축 회귀 신규 실패 — {tid}",
         log_file=tmp_path / "log.md",
@@ -3582,24 +3236,10 @@ def test_self_axis_preflight_runs_last_after_diff_cap_and_dod_pass(tf, tmp_path)
     assert finisher.run("T-1234", section=None, dry_run=False) == 1
 
 
-def test_self_axis_preflight_is_never_called_when_diff_cap_blocks_first(tf, tmp_path):
-    calls: list[str] = []
-    finisher = tf.TicketFinisher(
-        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("회귀 미호출이어야 한다")),
-        diff_cap_block_fn=lambda tid: "서킷브레이커 차단",
-        dod_block_fn=lambda tid: None,
-        self_axis_block_fn=lambda tid: calls.append(tid) or None,
-        log_file=tmp_path / "log.md",
-    )
-    assert finisher.run("T-1234", section=None, dry_run=False) == 1
-    assert calls == []
-
-
 def test_self_axis_preflight_is_never_called_when_dod_blocks(tf, tmp_path):
     calls: list[str] = []
     finisher = tf.TicketFinisher(
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("회귀 미호출이어야 한다")),
-        diff_cap_block_fn=lambda tid: None,
         dod_block_fn=lambda tid: "DoD 미마감",
         self_axis_block_fn=lambda tid: calls.append(tid) or None,
         log_file=tmp_path / "log.md",
@@ -3612,7 +3252,6 @@ def test_self_axis_preflight_still_fires_with_no_pytest(tf, tmp_path):
     """T8 — `--no-pytest` 로 [1/5] 회귀를 건너뛰어도 자기 축 preflight 는 그대로 발화한다."""
     finisher = tf.TicketFinisher(
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("skip_pytest 라 미호출")),
-        diff_cap_block_fn=lambda tid: None,
         dod_block_fn=lambda tid: None,
         self_axis_block_fn=lambda tid: f"자기 축 회귀 신규 실패 — {tid}",
         log_file=tmp_path / "log.md",
