@@ -26,6 +26,10 @@ manifest 밖이라 절대 건드리지 않으므로, upstream 갱신이 인스�
     python3 .project_manager/tools/pm_update.py --changes [--from <checkout>] [--count-only] [--log]
 
 동작:
+  자기 갱신은 두 프로세스다. 디스크에 있던 갱신기는 엔진 코드(.project_manager/tools/)만 옮기고,
+  옮겨 받은 갱신기를 같은 인자로 새 프로세스에서 띄워 나머지(렌더·진입 doc 이관·훅·어댑터 설정·
+  upstream.rev 기록)를 끝낸다. 종료 코드와 출력은 그 프로세스의 것이다. 엔진 코드가 바뀌는 갱신의
+  --dry-run 은 받을 엔진 코드만 보여 주고, --paths 는 엔진 코드 변경이 남아 있으면 거부한다.
   engine.manifest 의 각 경로를 <upstream>/<path> → <dest-root>/<path> 로 복사(overwrite).
   디렉토리는 재귀. manifest 에 없는 경로는 무시. --dry-run = 변경 예정만 출력(미적용).
   --paths 지정 시 그 경로(파일 또는 디렉토리) 아래만 전파한다 — manifest 등재분에 한정하고
@@ -50,14 +54,16 @@ import contextlib
 import datetime
 import filecmp
 import hashlib
-import inspect
+import io
 import json
 import os
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
+import threading
 import warnings
 import zlib
 from collections.abc import Callable, Mapping
@@ -207,273 +213,6 @@ def _is_engine_rev_skew(exc) -> bool:
     """stamped sibling 로더가 표시한 사본 불일치인가."""
     return getattr(exc, "_engine_rev_skew", False)
 
-
-# ── 동기 실행 중 사본 rev 혼합 = 정상 과도 상태 ────────────────────────────
-# `apply` 는 per-file 순차 write 라(원자 교체는 파일 단위·트리 단위가 아니다) 실행 중 목적지
-# 트리에는 구/신 `ENGINE_REV` 가 공존한다. 그 사이에 일어나는 **중첩 로드**(pm_update 가 형제
-# pm_import·목적지 pm_config 를 불러오고, 그 형제가 다시 자기 형제를 verifier 로 로드하는 계층)는
-# 이 혼합을 marked skew 로 올린다. 동기 채널은 skew 를 *고치는* 유일한 복구 경로이므로 자기
-# 실행 중 그걸 사유로 죽으면 채택자는 복구 수단을 잃는다(engine_rev.EXEMPT_FROM_STAMP 의
-# `pm_update.py` 면제와 같은 논거 · v1.7.0 흡수 실행에서 실측 1회).
-#
-# **불변식**: 동기 실행 경로의 어떤 중첩 로드도 rev 혼합을 사유로 동기를 중단하지 않는다. 대신
-# 각 경계는 자기 fail-soft 로 내려가고(사유는 아래 장부에 등재), 실행 **종료 시** 한 번
-# 수렴을 검증한다(`_verify_engine_rev_convergence`) — 흡수가 침묵으로 전락하지 않게 하는 짝이다.
-#
-# **범위**: 여기서 흡수하는 것은 pm_update 안의 경계뿐이다. 동기 실행 밖(board.py 등 일반 CLI 의
-# 형제 로드)에서 skew 는 여전히 실결함 신호라 fail-loud 를 유지한다.
-#
-# 이번 실행이 흡수한 경계 목록 — 종료 시 수렴 검증이 소비한다(실행마다 초기화).
-_ABSORBED_ENGINE_REV_SKEW: list[str] = []
-_ENGINE_REV_SKEW_RECOVERY_REASONS = {
-    "migrate_renamed_conf_keys": (
-        "이름 이동은 apply 이후에 돈다. 형제 사본 rev 혼합은 엔진 배달을 원복하지 않고 "
-        "이관 실패 진단으로 변환한다. 완료 baseline 기록은 중단하고 잔존 키를 보존한다"
-    ),
-    "apply_harness_ctx_limits": (
-        "하네스 설정 반영도 apply **이후**(어댑터 config 채널 뒤)에 돈다 — 형제 pm_import 가 다시 "
-        "형제 local_conf·file_lock 을 verifier 로 로드하므로 혼합 트리에서 올리면 이미 착지한 엔진 "
-        "파일 위에서 동기가 traceback 으로 죽는다. 반영은 멱등이라 건너뛴 몫을 다음 pm-update 가 "
-        "그대로 한다"
-    ),
-    "reinstall_protected_hooks": (
-        "동기화가 끝난 뒤의 훅 재설치가 부분 동기 목적지 엔진 때문에 실패해도 "
-        "다음 pm-update 재실행 경로를 열어 둔다"
-    ),
-    "resolve_hook_set_generation": (
-        "훅 세트 세대 선언은 상류/형제 pm_import 사본에서 읽는다 — 그 사본의 rev 가 실행 중 "
-        "엔진과 갈리는 것이 업그레이드의 정상 경로이므로, 여기서 skew 를 올리면 엔진이 반쯤 적용된 "
-        "채 죽는다. 해소 실패는 '미해소' 로 내려가 소비자별 정책(조회=loud 폴백·게이트=fail-closed)이 "
-        "판정한다(사본 불일치 자체는 동기 본류의 skew 표면이 진단한다)"
-    ),
-    "resolve_hook_set_predicate": (
-        "원자 write 판정자는 선언 해소가 실패한 뒤에도 **구세대 형제가 아는 만큼**(설치본 선언 "
-        "기준 훅 경로 판정)을 살리려 그 사본의 판정 API 를 조회한다 — 손상/혼합 사본은 로드가 "
-        "아니라 속성 접근에서 발화하므로, 그 조회가 혼합 트리에서 터지면 판정자만 무판정으로 "
-        "내려가고(훅 파일이 일반 복사로 떨어지는 사실은 loud) 동기 자체는 완주한다"
-    ),
-    "installed_entry_notation_manifests": (
-        "설치 하네스 판별은 형제 pm_import 가 상류 출하물을 열거하려 다시 형제 repo_owned_files 를 "
-        "verifier 로 로드하는 계층이라 **계획 수립 전** 혼합 트리에서 바로 발화한다"
-        "(v1.7.0 흡수 실측 지점) — 표기 context 는 core manifest 만으로도 성립하므로 guest 보탬을 "
-        "포기하고 동기를 계속한다"
-    ),
-    "sync_adapter_configs.judge": (
-        "어댑터 config 판정 채널이 형제 pm_import 를 통해 revved 형제까지 들어간다 — 판정 불가는 "
-        "`unavailable` 로 내려가 완료 게이트가 rc1 로 재실행을 요구하고(엔진 적용은 보존), "
-        "여기서 올리면 이미 착지한 엔진 파일 위에서 동기가 traceback 으로 죽는다"
-    ),
-    "instance_owned_template_delta": (
-        "인스턴스 소유 세대 요약도 형제 pm_import 를 통해 revved 형제까지 들어간다 — 동기 시작의 "
-        "구 사본으로 판정하지 못해도 엔진 적용을 완주하고, 종료 수렴 검증 뒤 다음 실행이 같은 "
-        "요약을 재판정한다"
-    ),
-    "sync_adapter_configs.accept": (
-        "한 파일 수용은 백업·원자 교체·원장 기록이라 형제 락 seam 까지 들어간다 — 한 파일의 "
-        "사본 불일치가 나머지 파일과 이미 끝난 엔진 동기를 되돌리지 않게 보존으로 내린다"
-    ),
-    "sync_adapter_configs.record_baseline": (
-        "원장 기록 실패는 파일 적용을 되돌리지 않는다 — `degraded` 로 내려가 쓰기 후 재판정이 "
-        "같은 red 를 올리고, 다음 실행이 원장을 수렴시킨다"
-    ),
-    "check_adapter_hook_sets": (
-        "훅 세트 세대 검사는 형제 pm_import 판정을 빌려 쓰는 **가드**다 — 판정 채널이 혼합 트리 "
-        "때문에 안 열리면 검사를 unavailable 로 접고(경고는 loud) 동기 자체는 완주시킨다"
-    ),
-    "refuse_partial_hook_set_scope": (
-        "경로 스코프 반쪽 갱신 가드도 같은 판정 채널을 쓴다 — 복구 전파(부분 동기 트리에서 "
-        "돌리는 pm-update)가 자기 가드의 로드 실패로 자기잠금하면 안 된다"
-    ),
-    "record_upstream_revs.write": (
-        "baseline 기록은 형제 pm_import 의 conf writer(다시 형제 file_lock 을 verifier 로 로드)를 "
-        "재사용한다 — best-effort 단계라 혼합 트리에서는 기록을 건너뛰고(다음 실행이 기록) 이미 "
-        "적용된 엔진 파일을 traceback 으로 덮지 않는다"
-    ),
-    "shared_read_seam": (
-        "판독도 같은 형제(`file_lock`)를 지나는데 pm_update 는 **복구 채널**이라 엔진 사본이 "
-        "깨진 채택자에게도 떠야 한다 — 여기서 올리면 중단된 업데이트를 진단할 판독조차 못 해 "
-        "자기 자신을 못 고친다(`atomic_copy_replace_seam` 과 같은 근거의 판독 쪽 짝). 강등은 "
-        "loud(stderr·프로세스당 1회)이고, 잃는 것은 Windows 에서 그 판독이 열려 있는 동안의 "
-        "원자 교체뿐이다"
-    ),
-    "atomic_copy_replace_seam": (
-        "원자 교체 프리미티브를 형제 file_lock 에서 가져오는데, 이 쓰기(`_predeploy_central_loader` "
-        "부트스트랩 포함)는 **그 형제를 설치하는 경로**라 형제가 아직 없거나 손상일 수 있다 — "
-        "여기서 올리면 중단된 업데이트로 반쯤 복사된 트리를 채택자가 스스로 고칠 수 없다. "
-        "강등은 loud(stderr)이고, 잃는 것은 Windows 에서 대상이 열려 있을 때 그 한 번의 교체뿐이다"
-    ),
-}
-
-
-def _absorb_engine_rev_skew_for_recovery(exc, boundary: str) -> bool:
-    """동기 실행 중 경계가 marked skew를 의도적으로 흡수했음을 표시한다 (True=흡수).
-
-    실행 중 목적지 트리의 rev 혼합은 정상 과도 상태이므로(위 불변식), 등록된 경계는 이 판정으로
-    자기 fail-soft 경로에 내려간다. 호출부는 반환값으로 일반 실패와 사본 불일치를 구분해 loud
-    진단하되 update 성공을 되돌리지 않는다. 사유가 등재되지 않은 경계는 fail-loud(ValueError) —
-    흡수는 장부에 남은 판단이어야 감사 가능하다.
-    """
-    reason = _ENGINE_REV_SKEW_RECOVERY_REASONS.get(boundary, "").strip()
-    if not reason:
-        raise ValueError(f"등록되지 않았거나 사유가 빈 복구 경계: {boundary!r}")
-    absorbed = _is_engine_rev_skew(exc)
-    if absorbed:
-        _ABSORBED_ENGINE_REV_SKEW.append(boundary)
-    return absorbed
-
-
-# 종료 시 수렴을 검증할 실행 스코프 `(dest, source, write)`. `_main` 이 좌표를 해소하는 즉시
-# 기록하고 `main` 의 종료 경로가 소비한다 — 중간 return(게이트 rc1·오류 rc2·예외)이 몇 개든
-# 검증이 빠질 자리가 없게 종료 지점을 하나로 묶는다. 부분 전파(`--paths`)는 혼합이 *정상 결과*라
-# 기록하지 않는다(그 경로의 rev 혼재 경고는 스코프 분기가 이미 낸다).
-_SYNC_RUN_SCOPE: tuple[Path, Path, bool] | None = None
-# 부분 전파(`--paths`) 실행의 **흡수 장부 보고** 대상. 수렴 검증은 하지 않는다(혼합이 정상 결과라
-# 미수렴 보고가 거짓 경보가 된다) — 그렇다고 장부까지 버리면 계획-전 형제 로드
-# (`_installed_entry_notation_manifests` 등)가 삼킨 skew 가 비엔진 경로만 지목한 rc0 실행에서
-# 조용히 사라진다. 그래서 이 실행은 **report-only** 다: 흡수 사실만 남기고 rc 는 건드리지 않는다.
-_PARTIAL_RUN_SCOPE: tuple[Path, Path] | None = None
-# 실행당 수렴 판정 1회 — baseline 억제와 종료 rc 가 **같은 판정**을 쓰고 보고는 한 번만 나간다.
-_ENGINE_REV_CONVERGENCE: bool | None = None
-# 미수렴 종료 rc — 파일 적용 자체는 서지만 실행은 성공이 아니다(게이트 rc1 관례와 같은 값).
-_UNCONVERGED_RC = 1
-# baked 리터럴 스캐너 — engine_rev.read_literal 과 같은 패턴이지만 **형제를 로드하지 않는다**.
-# 혼합 트리를 진단하는 쪽이 그 혼합 때문에 로드로 죽으면 검증 자체가 성립하지 않는다.
-_ENGINE_REV_LITERAL_RE = re.compile(r'^ENGINE_REV = "([^"]*)"', re.MULTILINE)
-
-
-def _load_engine_rev(tools_dir: Path):
-    """`engine_rev.py`(스탬프 단일 진실)를 로드한다 — 활성 inventory·기대 rev 의 출처.
-
-    복구 채널 면제 로드다(`allow_unverified=True`·engine_rev 는 `EXEMPT_FROM_STAMP`): 혼합 트리를
-    *진단하는* 쪽이 그 혼합 때문에 로드로 죽으면 검증 자체가 성립하지 않는다. 부재·손상은 None
-    (호출부가 판정 불가로 강등)."""
-    path = Path(tools_dir) / "engine_rev.py"
-    if not path.is_file():
-        return None
-    try:
-        return _load_module_from_path(path, "engine_rev.py", allow_unverified=True)
-    except Exception:  # noqa: BLE001 — 진단 보조 로드 실패는 판정 불가로 강등(동기는 계속).
-        return None
-
-
-def engine_rev_expectation(source_root: Path) -> tuple[tuple[str, ...], str | None]:
-    """`(활성 stamped inventory, 상류 기대 rev)` — 수렴 판정의 두 입력.
-
-    **inventory 는 `engine_rev.STAMPED_MODULES` 다**(디렉토리 glob 아님). glob 은 두 방향으로 틀린다:
-    스탬프 리터럴이 없는 **구형 활성 모듈**을 판정 대상에서 빼 미해소 skew 를 침묵시키고, 동기가
-    지우지 않는 **폐기 모듈**까지 세어 영구 오경고를 낸다. 활성 목록은 상류가 소유하므로 상류에서 읽고,
-    못 읽으면 실행 중 엔진의 사본으로 물러난다(둘 다 없으면 판정 불가).
-
-    기대 rev 는 **상류 값만** 인정한다 — 목적지 다수결은 중단 초기(구 rev 다수) 형상에서 방금
-    착지한 새 파일을 straggler 로 오지목한다. 상류 미해소면 None 이고 보고가 rev별 그룹으로
-    강등된다."""
-    upstream = _load_engine_rev(Path(source_root) / ".project_manager" / "tools")
-    inventory = tuple(getattr(upstream, "STAMPED_MODULES", ()) or ())
-    if not inventory:
-        running = _load_engine_rev(Path(__file__).resolve().parent)
-        inventory = tuple(getattr(running, "STAMPED_MODULES", ()) or ())
-    return inventory, getattr(upstream, "ENGINE_REV", None)
-
-
-def baked_engine_revs(dest_root: Path, inventory) -> tuple[dict[str, str], list[str]]:
-    """`(파일 → baked rev, 리터럴 없는 파일)` — **활성 inventory 안에 실재하는** 사본만 본다.
-
-    리터럴 부재는 "스탬프 이전 세대의 활성 모듈" 이라 verifier 가 skew 로 판정하는 상태다 →
-    별도 버킷으로 올려 미수렴으로 센다. 부재 *파일*은 여기 관심사가 아니다(부분 전파·manifest
-    누락은 다른 축이 진단한다)."""
-    revs: dict[str, str] = {}
-    unstamped: list[str] = []
-    tools = Path(dest_root) / ".project_manager" / "tools"
-    for name in inventory:
-        path = tools / name
-        try:
-            text = _read_text_shared(path, encoding="utf-8")
-        except (OSError, UnicodeError):
-            continue                   # 부재·읽기 실패 — 다른 축 소관.
-        match = _ENGINE_REV_LITERAL_RE.search(text)
-        if match:
-            revs[name] = match.group(1)
-        else:
-            unstamped.append(name)
-    return revs, sorted(unstamped)
-
-
-def _engine_rev_divergence_report(revs: dict[str, str], unstamped: list[str],
-                                  expected: str | None) -> str:
-    """미수렴 내역 1줄 — 기대 rev 를 알면 어긋난 사본을, 모르면 rev별 그룹을 지목한다."""
-    if expected is not None:
-        off = sorted(f"{name}({rev})" for name, rev in revs.items() if rev != expected)
-        off += [f"{name}(스탬프 없음)" for name in unstamped]
-        return f"상류 기대 rev {expected} 와 어긋난 사본 {len(off)}건: {', '.join(off)}"
-    groups = []
-    for rev in sorted(set(revs.values())):
-        names = sorted(name for name, value in revs.items() if value == rev)
-        groups.append(f"{rev}: {', '.join(names)}")
-    if unstamped:
-        groups.append(f"스탬프 없음: {', '.join(unstamped)}")
-    return "상류 기대 rev 미해소 — rev별 사본 " + " / ".join(groups)
-
-
-def _verify_engine_rev_convergence(dest_root: Path, source_root: Path) -> bool:
-    """동기 종료 시 목적지 엔진 사본이 상류 rev 로 수렴했는지 본다 (True=수렴·실행당 1회 판정).
-
-    실행 중 흡수의 **짝**이다. 흡수가 옳은 이유는 "혼합은 실행 중의 과도 상태" 라는 전제인데,
-    **끝난 뒤에도** 혼합이면 그 전제가 깨진 것(미해소 skew)이므로 침묵하면 안 된다. 수렴이면 완전히
-    조용하고(steady-state 무출력), 아니면 stderr 한 줄 + 처방을 낸다.
-
-    미수렴은 baseline 억제(`converge_upstream_revs`)와 비영 rc 로 이어진다 — 혼합 `--from` 트리를
-    그대로 복사한 실행을 성공으로 보고하면 baseline 이 "여기까지 흡수함" 으로 박혀 drift-lint 가
-    침묵하고, 소스 자체가 혼합이면 재실행도 영영 못 고치는 침묵 루프가 된다. 판정 불가(활성
-    inventory 를 어디서도 못 읽음)는 미수렴이 아니라 **무판정**이다(엔진 트리가 아닌 형상)."""
-    global _ENGINE_REV_CONVERGENCE
-    if _ENGINE_REV_CONVERGENCE is not None:
-        return _ENGINE_REV_CONVERGENCE     # 같은 실행에서 두 번 보고하지 않는다.
-    inventory, expected = engine_rev_expectation(source_root)
-    revs, unstamped = baked_engine_revs(dest_root, inventory)
-    if not inventory or (not revs and not unstamped):
-        # 활성 모듈 사본이 **하나도 없는** 트리는 판정 대상이 아니다(스캐폴드·부분 픽스처) —
-        #   미수렴이 아니라 무판정이다. 사본이 있는데 전부 리터럴 없는 구형이면 그건 무판정이
-        #   아니라 **미수렴**이다(verifier 가 곧 skew 로 판정할 상태) — 아래로 내려간다.
-        _ENGINE_REV_CONVERGENCE = True
-        return True
-    observed = set(revs.values())
-    converged = not unstamped and (
-        observed == {expected} if expected is not None else len(observed) <= 1)
-    _ENGINE_REV_CONVERGENCE = converged
-    if converged:
-        return True
-    absorbed = len(_ABSORBED_ENGINE_REV_SKEW)
-    print(
-        "[경고] 동기 종료 시 엔진 사본 rev 가 수렴하지 않았다 — "
-        + _engine_rev_divergence_report(revs, unstamped, expected) + "."
-        + (f" 이번 실행이 중첩 로드 skew {absorbed}건을 흡수했으나 아직 해소되지 않았다."
-           if absorbed else "")
-        + "\n  → pm-update 를 한 번 더 돌려라. 그래도 남으면 `--from` 트리 자신이 혼합이다 "
-        "(그 checkout 을 먼저 수렴시켜라 — 여기서 재실행해도 같은 혼합이 복사된다).",
-        file=sys.stderr,
-    )
-    return False
-
-
-def _report_partial_run_absorption() -> None:
-    """부분 전파(`--paths`) 실행이 흡수한 skew 를 종료 시 보고한다 (report-only·rc 불변).
-
-    `--paths` 는 수렴 검증 대상이 아니다 — 요청 경로만 옮기므로 혼합이 *정상 결과*이고, 거기에
-    미수렴 rc 를 세우면 정당한 부분 전파가 전부 실패로 보인다. 그렇다고 흡수 장부를 그대로 버리면
-    관측이 사라진다: 계획-전 형제 로드(`_installed_entry_notation_manifests` 등)는 스코프와 무관하게
-    돌아 marked skew 를 흡수하는데, 비엔진 경로만 지목한 실행은 그 뒤 훅/어댑터 채널을 전부 건너뛰고
-    rc0 으로 끝나므로 흡수 사실을 알릴 자리가 어디에도 없다. 사실만 남기고 rc 는 호출부가 정한
-    값 그대로 둔다."""
-    if not _ABSORBED_ENGINE_REV_SKEW:
-        return
-    boundaries = ", ".join(sorted(set(_ABSORBED_ENGINE_REV_SKEW)))
-    print(
-        f"[알림] 경로 스코프 실행이 엔진 사본 rev 혼합 skew {len(_ABSORBED_ENGINE_REV_SKEW)}건을 "
-        f"흡수했다({boundaries}) — 부분 전파는 혼합이 정상 결과라 수렴을 검증하지 않으므로 이 실행의 "
-        "rc 는 그대로다.\n  → 스코프 없이 pm-update 를 한 번 돌려 사본을 수렴시켜라(그 실행이 "
-        "수렴을 검증한다).",
-        file=sys.stderr,
-    )
 
 # manifest 의 render 태그 — path 행 끝 `  @render` 면 byte-copy 대신 render_adapter.
 RENDER_TAG = "@render"
@@ -674,10 +413,10 @@ def _shared_read_api(name: str):
     global _shared_read_degraded
     try:
         seam = _load_file_lock()
-    except Exception as exc:  # noqa: BLE001 — 부재/손상/혼합은 이 판독의 정상 입력이다.
-        skew = _absorb_engine_rev_skew_for_recovery(exc, "shared_read_seam")
-        cause = f"엔진 사본 불일치 — {exc}" if skew else f"{type(exc).__name__}: {exc}"
-        _warn_shared_read_degraded(cause)
+    except Exception as exc:  # noqa: BLE001 — 부재/손상은 이 판독의 정상 입력이다(표식 skew 는 올린다).
+        if _is_engine_rev_skew(exc):
+            raise
+        _warn_shared_read_degraded(f"{type(exc).__name__}: {exc}")
         return None
     api = getattr(seam, name, None)
     if api is None:
@@ -713,62 +452,17 @@ def _open_shared(path, *, binary, encoding=None, errors=None, newline=None):
     return open(path, "r", encoding=encoding, errors=errors, newline=newline)
 
 
-def _local_conf_lock_path(conf_path: Path) -> Path:
-    """local.conf writer 직렬화 락 경로 — 공용 seam 의 유도 규칙을 그대로 쓴다.
-
-    같은 conf 를 건드리는 **모든** writer(board init 의 전체/병합 write·pm_import 의 키 writer)가
-    같은 파일에 도달해야 배타가 성립한다. 규칙을 도구마다 복제하면 한
-    사본만 어긋나도 직렬화가 조용히 사라지므로 `file_lock.conf_lock_path` 한 곳이 소유한다.
-    `conf_lock_path` 를 못 읽는 사본(형제를 아예 못 읽는 손상 사본·그 함수 이전의 구세대 사본)에서는
-    같은 규칙의 인라인 폴백으로 계산한다. 손상 사본에서는 락 자체가 없어(아래
-    `_local_conf_write_lock`) 이 경로가 진단용이지만, 구 `exclusive_file_lock` 만 있는 사본에서는
-    **실제로 잡는 경로**다(`_conf_lock_section`) — 그래서 폴백이 공용 seam 과 글자 단위로 같아야 한다.
-    """
-    try:
-        return _load_file_lock().conf_lock_path(conf_path)
-    except Exception:  # noqa: BLE001 — 복구 채널은 형제 손상으로 죽지 않는다.
-        return Path(conf_path).parent / ".local" / "local-conf.lock"
-
-
-def _conf_lock_section(lock, conf_path: Path):
-    """로드된 `file_lock` 사본의 API 형상에 맞는 conf 락 구간을 만든다 (부분 업그레이드 호환).
-
-    새 `local_conf_write_lock` 이 있으면 그것을 쓴다. 없고 구 `exclusive_file_lock` 만 있는 사본
-    (같은 rev 로 찍혔지만 새 seam 이전 파일 — `ENGINE_REV` 는 릴리스 단위라 같은 rev 안에서도 API
-    형상이 갈릴 수 있고 이 로더는 rev 를 확인하지 않는다)에서는 **같은 락 파일**을 구 API 로
-    잡는다: AttributeError 로 죽으면 복구 채널이 자기 자신을 못 고치고, 다른 파일을 잡으면 배타가
-    조용히 사라진다. 둘 다 없으면 None = 종전 복구 계약의 무락 진행(프리미티브 *부재* 에만 허용).
-    """
-    section = getattr(lock, "local_conf_write_lock", None)
-    if callable(section):
-        return section(conf_path)
-    legacy = getattr(lock, "exclusive_file_lock", None)
-    if callable(legacy):
-        return legacy(_local_conf_lock_path(conf_path))
-    return None
-
-
 @contextlib.contextmanager
 def _local_conf_write_lock(conf_path: Path):
-    """conf 커밋 구간의 배타락 — 락 seam 을 못 읽으면 무락으로 진행한다(fail-soft).
-
-    무락 폴백은 `file_lock` 자신의 규약과 같은 선택이다(프리미티브 *부재* 에만 허용). 여기서
-    부재는 형제 모듈을 못 읽는 손상 사본이거나 락 프리미티브가 없는 구세대 사본
-    (`_conf_lock_section`)이고, 그때도 재읽기→재판정→쓰기라는 좁은 구간은 그대로 남는다.
+    """conf 커밋 구간의 배타락 — 공용 seam(`file_lock.local_conf_write_lock`)이 유일한 락 규칙이다.
 
     구간의 단위는 write 가 아니라 **"이 conf 를 읽고 판단하고 쓰는" 전체**다 — 현재 상태를 락
     밖에서 읽어 계획을 세우면 커밋 시점엔 이미 낡은 계획(stale plan)이라 그사이 들어온 결정을
-    잘못된 분기로 덮거나 누락한다.
+    잘못된 분기로 덮거나 누락한다. 형제 적재 실패는 그대로 올라간다(완료 단계는 같은 세대 형제만
+    적재한다 · 락 프리미티브 부재의 무락 진행은 `file_lock` 자신의 규약이다).
     """
-    try:
-        lock = _load_file_lock()
-    except Exception:  # noqa: BLE001 — 복구 채널은 형제 손상으로 죽지 않는다.
-        lock = None
-    section = None if lock is None else _conf_lock_section(lock, conf_path)
-    if section is None:
-        yield lock
-        return
-    with section:
+    lock = _load_file_lock()
+    with lock.local_conf_write_lock(conf_path):
         yield lock
 
 
@@ -882,7 +576,8 @@ def validated_retired_path_directives(
     """선택 upstream manifest들의 strict·출하 가능한 retired-path 선언 합집합.
 
     flavor 선택과 실제 이주가 같은 판정을 소비한다. OLD는 upstream 소유집합에서 빠져 있어야 하고,
-    NEW는 선택 manifest의 bare byte-copy 행이면서 source_root의 regular file이어야 한다.
+    NEW는 선택 manifest 행이 소유(행 경로와 같거나 디렉터리 행 하위·`_path_owned_by`)해야 하며 그 소유
+    행이 모두 bare byte-copy 행이고, source_root의 regular file이어야 한다.
     """
     source_root = Path(source_root)
     declarations: list[tuple[str, str]] = []
@@ -926,7 +621,10 @@ def validated_retired_path_directives(
             raise RetiredPathError(
                 f"retired-path chain/conflict는 허용하지 않음: {old} -> {new}"
             )
-        replacement_entries = entries_by_path.get(new, [])
+        replacement_entries = [
+            entry for path, entries in entries_by_path.items()
+            if _path_owned_by(new, (path,)) for entry in entries
+        ]
         if not replacement_entries:
             raise RetiredPathError(
                 f"replacement가 선택 upstream manifest-owned 경로가 아님: {new}"
@@ -1006,7 +704,7 @@ def _validate_retired_path_plan(
     prospective_replacements = prospective_replacements or {}
     old_paths = {old for old, _new in declarations}
     for old, new in declarations:
-        if new not in owned:
+        if not _path_owned_by(new, owned):
             raise RetiredPathError(f"replacement가 manifest-owned 경로가 아님: {new}")
         if new in old_paths:
             raise RetiredPathError(f"retired-path chain/conflict는 허용하지 않음: {old} -> {new}")
@@ -1075,13 +773,9 @@ def retire_manifest_paths(
     else:
         # lock 파일도 쓰기이므로 선언·경로·hash를 먼저 전부 검증한다.
         _validate_retired_path_plan(dest_root, source_root, manifest, declarations)
-        lock = _load_file_lock()
-        section = getattr(lock, "exclusive_file_lock", None)
-        if not callable(section):
-            raise RetiredPathError("retired-path 전용 배타락 seam을 로드할 수 없음")
         lock_path = dest_root / RETIRED_PATH_LOCK_REL
         _assert_no_link_components(dest_root, lock_path.parent, label="retired lock")
-        with section(lock_path):
+        with _load_file_lock().exclusive_file_lock(lock_path):
             plan = _validate_retired_path_plan(
                 dest_root, source_root, manifest, declarations,
             )
@@ -1128,7 +822,7 @@ def _run_retired_path_migration(
         except (OSError, UnicodeError, RetiredPathError) as exc:
             print(f"[중단] retired-path 이주 실패 — {exc}", file=sys.stderr)
             return False
-        if declared and not any(new in owned for _old, new in declared):
+        if declared and not any(_path_owned_by(new, owned) for _old, new in declared):
             return True
     try:
         prospective = {
@@ -1278,9 +972,10 @@ def _entry_target_owned_flag(entry) -> bool:
 def _load_local_conf():
     """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다.
 
-    이 모듈의 다른 형제 로드와 같이 `allow_unverified=True` 다 — pm_update 는 **세대 혼합을
-    해소하는 쪽**이라 형제 rev 불일치를 이유로 자기 실행을 막으면 그 혼합을 고칠 수단이 사라진다
-    (rev 판정은 `_verify_engine_rev_convergence` 가 동기 대상 트리에 대해 따로 한다).
+    이 모듈의 다른 형제 로드와 같이 `allow_unverified=True` 다 — pm_update 는 **엔진 사본을 고치는
+    쪽**이라 형제 rev 불일치를 이유로 자기 실행을 막으면 그 사본을 고칠 수단이 사라진다. 갱신 중의
+    세대 혼합은 없다 — 전달 프로세스가 엔진 코드를 옮긴 뒤 완료 단계는 받은 갱신기의 새 프로세스가
+    같은 세대 형제만 적재해 실행한다(`_launch_completion`).
     """
     return _load_module_from_path(
         Path(__file__).resolve().parent / "local_conf.py", "local_conf.py",
@@ -1368,9 +1063,9 @@ def _atomic_replace_or_degrade(tmp: Path, dest: Path) -> None:
         replace = getattr(_load_file_lock(), "atomic_replace", None)
         if replace is None:
             degrade_reason = "구세대 file_lock 사본에 atomic_replace 가 없음"
-    except Exception as exc:  # noqa: BLE001 — 부재/손상/혼합 전부 이 부트스트랩의 정상 입력이다.
-        # 등록된 복구 경계: marked skew(혼합 트리)도 여기서는 흡수한다 — 올리면 복구가 죽는다.
-        _absorb_engine_rev_skew_for_recovery(exc, "atomic_copy_replace_seam")
+    except Exception as exc:  # noqa: BLE001 — 부재/손상은 이 부트스트랩의 정상 입력이다(표식 skew 는 올린다).
+        if _is_engine_rev_skew(exc):
+            raise
         replace, degrade_reason = None, f"{type(exc).__name__}: {exc}"
     if replace is not None:
         replace(tmp, dest)
@@ -1405,135 +1100,31 @@ def _resolve_hook_set_generation_and_sibling(source_root=None, *, required: bool
     """`(세대 선언, 그 해소에 쓴 형제 모듈)` — 형제 로드는 **이 한 지점**이다.
 
     `_load_pm_import` 는 캐시가 없어 부를 때마다 사본을 다시 exec 한다. 해소와 소비(원자 write
-    판정자·강등 사다리·세대 검사)가 각자 부르면 한 실행에서 같은 사본을 두 번 적재하고, 두 번째
-    로드는 첫 로드가 등록 경계로 흡수한 바로 그 skew 를 **경계 밖에서** 다시 올릴 수 있다. 한 번
-    받아 함께 돌려주면 그 창이 없어진다(모듈은 `None` 일 수 있다 — 로드 자체가 실패한 경우).
-
-    로드는 됐는데 해소만 실패한 경우 모듈은 그대로 돌려준다 — 그 사본이 구세대라 해소 지점이 없는
-    것이 정확히 강등 사다리가 살려야 하는 상태다."""
-    pm_import = None
-    try:
-        pm_import = _load_pm_import()
-        resolver = getattr(pm_import, "hook_set_declarations", None) if pm_import else None
-        if resolver is not None:
-            return resolver(source_root, required=required), pm_import
-        reason = "형제 pm_import 에 세대 선언 해소 지점 부재(구세대 사본)"
-    except Exception as exc:  # noqa: BLE001 — 구형/손상 사본에서도 동기는 계속된다.
-        # marked skew 도 여기서는 의도적으로 흡수한다(등록된 복구 경계) — apply 도중
-        #   형제 사본이 갈리는 건 업그레이드의 정상 경로다.
-        _absorb_engine_rev_skew_for_recovery(exc, "resolve_hook_set_generation")
-        reason = f"형제 pm_import 로드 실패({type(exc).__name__}: {exc})"
-    return (SimpleNamespace(declarations=None, origin="미해소", reasons=(reason,)),
-            pm_import)
-
-
-def resolve_hook_set_generation(source_root=None):
-    """훅 세트 세대 선언을 해소한다 — pm_update 안 **모든 소비자의 단일 진입**.
-
-    해소 규칙 자체는 pm_import 소유(`hook_set_declarations`)다: 상류 우선, 조회는 로컬 폴백,
-    mutation 게이트는 fail-closed. 여기서는 형제 로드 실패를 흡수해 그 규칙에 태우기만 한다 —
-    사본이 구형/손상이어도 동기 자체는 계속돼야 한다(등록된 복구 경계).
-
-    반환은 pm_import 의 `HookSetGeneration`(declarations·origin·reasons) 형상이고, declarations 가
-    None 이면 판정 근거가 없다는 뜻이다(게이트는 멈추고, 조회는 loud 후 무판정). 형제 모듈까지
-    함께 쓰는 소비자는 `_resolve_hook_set_generation_and_sibling` 로 **한 번만** 로드한다."""
-    return _resolve_hook_set_generation_and_sibling(source_root)[0]
-
-
-def _sibling_accepts_kwarg(func, name: str) -> bool:
-    """그 형제 API 가 이 키워드를 받는가 — **엔진 사본 세대 차** 흡수 지점.
-
-    복구 채널·부분 전파 창에서는 형제 pm_import 가 직전 세대일 수 있다(그 창을 열어 두는 게 복구
-    exemption 의 목적이다). 새 키워드를 무조건 넘기면 그 상태에서 판정이 TypeError 로 죽고, 그걸
-    fail-soft 로 받으면 **그 세대가 이미 제공하던 보호까지** 함께 버린다. 있으면 쓰고 없으면 구
-    시그니처로 강등하되 강등은 loud 다(pm_config `_accepts_kwarg` 와 같은 규약)."""
-    if func is None:
-        return False
-    try:
-        return name in inspect.signature(func).parameters
-    except (TypeError, ValueError):  # 시그니처를 못 읽는 호출가능 객체 — 보수적으로 구형 취급.
-        return False
-
-
-def _warn_hook_set_downgrade(what: str, effect: str) -> None:
-    """구세대 형제 사본 때문에 훅 세트 보호를 낮춰 실행한다는 사실을 알린다(무음 강등 금지)."""
-    print(f"[경고] 형제 pm_import 가 구세대라 {what} 없이 진행한다 — {effect}. "
-          "pm-update 로 엔진 사본을 맞춘 뒤 다시 실행하면 정상 판정을 받는다.", file=sys.stderr)
-
-
-def _print_hook_set_query_fallback(lines_fn, generation) -> None:
-    """조회 축 강등 사유 표면화 — 상류 선언을 못 읽어 설치본 세대로 판정했다는 사실을 남긴다.
-
-    조회 축은 관대 계약이라 여기서 차단하지 않는다(판정을 통째로 잃는 것보다 한 세대 뒤 선언으로라도
-    보는 편이 낫다). 다만 사유까지 버리면 `--check`·변경 0 실행이 **상류 전용 플래그를 못 본 채**
-    green 으로 끝나고, 채택자는 강등된 판정을 정상 판정으로 읽는다 — 침묵만 제거한다.
-
-    **문구는 pm_import 단일 진실**(`hook_set_query_fallback_lines`)이다 — pm-config `--check` 와
-    같은 문장을 써야 두 게이트가 같은 상태를 같은 말로 보고한다. 그 함수가 없는 세대 사본이면
-    조용히 건너뛴다(그 세대엔 이 안내 자체가 없고, 강등 사실은 사다리가 따로 알린다)."""
-    if lines_fn is None:
-        return
-    for line in lines_fn(generation):
-        print(line, file=sys.stderr)
+    판정자·세대 검사)가 각자 부르면 한 실행에서 같은 사본을 두 번 적재하므로 한 번 받아 함께
+    돌려준다. 완료 단계는 같은 세대 형제만 적재하므로 형제는 해소 지점을 늘 갖고 있고, 로드·해소
+    실패는 그대로 올라간다."""
+    pm_import = _load_pm_import()
+    return pm_import.hook_set_declarations(source_root, required=required), pm_import
 
 
 def resolve_hook_set_predicate(source_root=None):
-    """훅 세트 원자-write 판정자 — 위 단일 진입이 준 **상류 세대 선언**으로 만든다.
+    """훅 세트 원자-write 판정자 — 상류 세대 선언(못 읽으면 설치본 선언)으로 만든다.
 
     선언은 pm_import 단일 진실이다(여기 사본을 두면 "검사는 하는데 원자 write 는 안 하는" 파일이
     조용히 생긴다). 해소는 실행당 1회이고 결과를 `apply` 에 넘긴다 — 파일마다 부르면 사본 수만큼
     모듈을 다시 로드한다(`_load_pm_import` 는 캐시 없음).
 
-    조회 성격이라 로컬 폴백까지 관대하되, **전부 실패하면** 훅 파일이 통째로 비원자 copy2 로
-    떨어지므로 조용히 넘어가지 않는다 — torn read 창이 다시 열린 사실을 stderr 한 줄로 남긴다.
-
-    강등은 3단이고 각 단은 loud 다(pm_config `_adapter_accept_decision` 과 같은 사다리):
-      선언 해소됨          상류(또는 로컬) 선언으로 훅 경로를 판정 → 그 파일만 원자 교체.
-      선언 미해소 + 구 API  형제가 선언 주입 이전 세대면 `is_live_hook_set_path` 단일 인자로
-                           강등한다 — **그 세대가 이미 제공하던 보호**(설치본 선언 기준 판정)를
-                           버리지 않는다.
-      둘 다 부재           무판정(전 파일 일반 복사) — 그 사실을 알린다."""
-    # 해소와 소비가 **같은 형제 적재**를 쓴다 — 여기서 따로 로드하면 한 실행에 사본을 두 번
-    #   exec 하고, 두 번째 로드가 첫 로드의 흡수 밖에서 skew 를 올린다.
+    상류를 주고도 그 선언을 못 읽으면 설치본 선언으로 판정하고 그 사실을 stderr 한 줄로 남긴다 —
+    이번 상류가 새로 등재하는 훅 파일은 그 판정에서 빠져 일반 복사로 떨어진다."""
     generation, pm_import = _resolve_hook_set_generation_and_sibling(source_root)
-    declarations = getattr(generation, "declarations", None)
-    reasons = " / ".join(getattr(generation, "reasons", ())) or "사유 미상"
-    try:
-        # 구 API 탐지도 경계 안이다 — 손상/혼합 사본은 로드가 아니라 **속성 접근**에서 발화하므로
-        #   (형제 verifier 계층), 탐지를 밖에 두면 그 예외가 apply 직전에 그대로 올라간다.
-        legacy_predicate = (getattr(pm_import, "is_live_hook_set_path", None)
-                            if pm_import is not None else None)
-    except Exception as exc:  # noqa: BLE001 — 구형/손상 사본에서도 동기는 계속된다.
-        _absorb_engine_rev_skew_for_recovery(exc, "resolve_hook_set_predicate")
-        pm_import = None
-        legacy_predicate = None
-        reasons = f"{reasons} / 형제 판정 API 조회 실패({type(exc).__name__}: {exc})"
-    if declarations is not None and pm_import is not None:
-        if source_root is not None and getattr(generation, "reasons", ()):
-            # 상류를 주고도 그 선언을 못 읽어 **설치본 세대로 강등**됐다 — 이번에 새로 등재되는 훅
-            #   경로는 이 판정자가 모르므로 그 파일만 비원자 복사로 떨어진다. 조용히 넘기지 않는다.
-            print(
-                "[경고] 상류 훅 세트 선언을 읽지 못해 설치본 세대로 판정한다 — 이번 상류가 새로 "
-                f"등재하는 훅 파일은 원자 교체 대상에서 빠진다. {reasons}",
-                file=sys.stderr,
-            )
-        return lambda rel, _t=declarations: bool(
-            pm_import.is_live_hook_set_path(str(rel).replace("\\", "/"), _t))
-    if legacy_predicate is not None:
-        # 선언 해소는 실패했지만 판정 함수 자체는 있다 — 그 사본의 설치본 선언으로 판정한다.
-        #   여기서 무판정으로 내려가면 혼합 세대 복구 중에 훅 파일이 통째로 비원자 복사가 된다.
-        _warn_hook_set_downgrade(
-            "훅 세트 상류 세대 선언",
-            f"설치본 선언으로 원자 write 대상을 정한다(이번 상류가 새로 등재하는 훅 파일은 "
-            f"그 대상에서 빠진다). {reasons}")
-        return lambda rel, _p=legacy_predicate: bool(
-            _p(str(rel).replace("\\", "/")))
-    print(
-        "[경고] 훅 세트 원자 write 판정자를 해소하지 못했다 — 이번 동기는 훅 파일도 일반 복사로 "
-        f"쓴다(실행 중 하네스가 부분 파일을 읽을 창이 열린다). {reasons}",
-        file=sys.stderr,
-    )
-    return lambda _rel: False
+    if source_root is not None and generation.reasons:
+        print(
+            "[경고] 상류 훅 세트 선언을 읽지 못해 설치본 세대로 판정한다 — 이번 상류가 새로 "
+            f"등재하는 훅 파일은 원자 교체 대상에서 빠진다. {' / '.join(generation.reasons)}",
+            file=sys.stderr,
+        )
+    return lambda rel, _t=generation.declarations: bool(
+        pm_import.is_live_hook_set_path(str(rel).replace("\\", "/"), _t))
 
 
 def central_loader_needs_recovery(dest_root: Path) -> bool:
@@ -1998,8 +1589,8 @@ def _path_under_manifest(
     return False
 
 
-# 엔진 도구 접두사 — 이 아래 파일은 rev 스탬프(ENGINE_REV)를 들고 서로를 로드하므로, 부분 전파가
-# 트리 안 rev 를 섞을 수 있다(스코프 경고의 판정 기준).
+# 엔진 코드 접두사 — 이 아래 행이 전달 프로세스가 옮기는 엔진 코드다(`_is_engine_code`). 이 파일들은
+# rev 스탬프(ENGINE_REV)를 들고 서로를 로드하므로 세대 단위로만 옮긴다.
 _ENGINE_TOOLS_PREFIX = ".project_manager/tools/"
 
 
@@ -2429,26 +2020,26 @@ def summarize_upstream_changes(
     return result
 
 
-def _resolve_dest_source(args) -> tuple:
-    """args(--target·--from) → (rc, dest_root, source_root). rc≠0 이면 메시지는 이미 출력됨.
+def _resolve_dest(args) -> tuple:
+    """args(--target) → (rc, dest_root). rc≠0 이면 메시지는 이미 출력됨.
 
-    dest/source 해소는 sync(main)와 read-only --changes가 공유한다 — 둘 다
-    같은 우선순위(명시 --from local.conf upstream.path= 에러)·URL 캐시 해소·stale
-    가드를 거쳐야 일관적이다. 추출로 두 진입이 같은 코드 경로를 탄다(중복 0). 성공 시 rc=0 +
-    (dest_root[None=self-loc], source_root[디렉토리 검증 통과]). 실패 시 rc≠0(메시지 stderr 출력)
-    + (None, None).
-    """
-    # dest_root: --target 지정 시 REPO/templates/<target>/, 아니면 None(self-location=REPO).
-    if args.target:
-        try:
-            dest_root = resolve_target_root(args.target)
-        except (ValueError, FileNotFoundError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 1, None, None
-    else:
-        dest_root = None  # 호출부가 REPO fallback 사용
+    `--target` 지정 시 REPO/templates/<target>/, 아니면 None(self-location=REPO — 호출부가 REPO 를
+    쓴다). 완료 프로세스는 이 값으로 자기 위치를 정하고 인계 값의 dest 와 대조한다."""
+    if not args.target:
+        return 0, None
+    try:
+        return 0, resolve_target_root(args.target)
+    except (ValueError, FileNotFoundError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1, None
 
-    effective_dest = dest_root if dest_root is not None else REPO
+
+def _resolve_source(args, effective_dest: Path) -> tuple:
+    """args(--from)·dest local.conf → (rc, source_root). rc≠0 이면 메시지는 이미 출력됨.
+
+    우선순위는 명시 --from → local.conf upstream.path= → 에러이고, URL 은 로컬 캐시 checkout 으로
+    해소한다. 해소된 upstream 이 디렉토리가 아니면 자동 진행하지 않는다(stale 가드). 완료 프로세스는
+    이 해소를 다시 하지 않는다 — 전달 프로세스가 해소한 source 를 인계 값으로 받는다."""
     # 교체 안내는 **어떤 분기보다 먼저** 나간다 — dry-run·read-only·해소 실패(구표기 `upstream=`
     # 만 있는 채택자는 여기서 rc=1 로 끝난다)까지 포함해 이 실행이 무엇을 하든 채택자는 기본값
     # 변경 1줄과 키 단위 지목을 받는다. 성공 반환 뒤에 두면 통지보다 새 기본값이 먼저 활성화된다.
@@ -2471,38 +2062,56 @@ def _resolve_dest_source(args) -> tuple:
                 "(이 프로젝트를 한 번 pm_import 하면 자동 기록된다).",
                 file=sys.stderr,
             )
-            return 1, None, None
+            return 1, None
         # upstream= 이 URL(릴리스 추적 기본값)이면 그 URL 을 복사 소스로 쓸 **로컬 캐시
         #   checkout** 으로 바꾼다(최초 clone·이후 fetch). 캐시 자리는 dest PM 홈 안
         #   `.project_manager/.local/upstream-cache/<URL 해시>/` 하나이고, 만드는 코드는 엔진에
         #   하나뿐이다(pm_import.resolve_upstream_url_cache — 스킬·관리자·명령줄 공용). clone/fetch
         #   실패는 옛 캐시로 미끄러지지 않고 여기서 rc 1 로 끝난다.
-        try:
-            kind = _load_pm_import().classify_upstream(stored)
-        except Exception:  # noqa: BLE001 — 분류 실패는 보수적으로 경로 취급(기존 동작·fail-soft).
-            kind = "path"
-        if kind == "url":
-            pm_import = _load_pm_import()
+        pm_import = _load_pm_import()
+        if pm_import.classify_upstream(stored) == "url":
             try:
                 source_root = pm_import.resolve_upstream_url_cache(effective_dest, stored)
             except pm_import.UpstreamCacheError as exc:
                 print(f"오류: {exc}", file=sys.stderr)
-                return 1, None, None
+                return 1, None
         else:
             source_root = Path(stored).resolve()
 
-    # stale 가드: 해소된 upstream 이 부재/디렉토리 아님 → 자동 진행 금지(명확한 에러). 기존
-    # missing-manifest(rc 2)와 구분되는 메시지·rc(=1)로 "upstream 자체가 잘못됐다"를 알린다.
-    if not source_root.is_dir():
-        origin = "--from" if args.source else f"local.conf upstream.path= ({effective_dest}/.project_manager/local.conf)"
-        print(
-            f"오류: upstream 경로가 디렉토리가 아니거나 존재하지 않음: {source_root} "
-            f"(출처: {origin}). 체크아웃이 이동/삭제됐다면 --from 으로 올바른 경로를 주거나 "
-            "local.conf 의 upstream.path= 을 갱신하라.",
-            file=sys.stderr,
-        )
-        return 1, None, None
+    origin = ("--from" if args.source
+              else f"local.conf upstream.path= ({effective_dest}/.project_manager/local.conf)")
+    if not _source_dir_exists(source_root, origin):
+        return 1, None
+    return 0, source_root
 
+
+def _source_dir_exists(source_root: Path, origin: str) -> bool:
+    """stale 가드 — 해소된 upstream 이 부재/디렉토리 아님이면 명확한 에러를 내고 False.
+
+    기존 missing-manifest(rc 2)와 구분되는 메시지·rc(=1)로 "upstream 자체가 잘못됐다"를 알린다."""
+    if source_root.is_dir():
+        return True
+    print(
+        f"오류: upstream 경로가 디렉토리가 아니거나 존재하지 않음: {source_root} "
+        f"(출처: {origin}). 체크아웃이 이동/삭제됐다면 --from 으로 올바른 경로를 주거나 "
+        "local.conf 의 upstream.path= 을 갱신하라.",
+        file=sys.stderr,
+    )
+    return False
+
+
+def _resolve_dest_source(args) -> tuple:
+    """args(--target·--from) → (rc, dest_root, source_root). rc≠0 이면 메시지는 이미 출력됨.
+
+    전달 프로세스·`--changes`·내보내기가 같은 해소(`_resolve_dest` → `_resolve_source`)를 탄다.
+    성공 시 rc=0 + (dest_root[None=self-loc], source_root[디렉토리 검증 통과]), 실패 시
+    rc≠0 + (None, None)."""
+    rc, dest_root = _resolve_dest(args)
+    if rc:
+        return rc, None, None
+    rc, source_root = _resolve_source(args, dest_root if dest_root is not None else REPO)
+    if rc:
+        return rc, None, None
     return 0, dest_root, source_root
 
 
@@ -2656,51 +2265,30 @@ def record_upstream_revs(dest_root: Path, source_root: Path) -> tuple[bool, dict
     상태가 생기지 않는다(어긋난 두 키 = 거짓 drift 의 원인이었다). rev 읽기는 pm_import 의
     read_upstream_rev(URL 안전 git 호출), 파일 갱신은 pm_import 의 `_write_conf_keys_locked`(키 중복
     정규화·atomic replace·실효값 검증·record_upstream_rev·pm_config upstream set 과 동일 백엔드의
-    임계 구간 본문)를 재사용한다. git repo 아님·HEAD 해소 실패·pm_import 로드 실패·local.conf
-    부재는 **graceful 생략**(best-effort — sync 자체는 안 깬다).
+    임계 구간 본문)를 재사용한다. git repo 아님·HEAD 해소 실패·local.conf 부재는 **graceful
+    생략**이다. 형제 로드·기록 실패는 그대로 올라간다(완료 단계는 같은 세대 형제만 적재한다).
 
     conf 존재 판정·atomic write·실효값 검증은 **한 락 구간**이다. source rev 읽기(git·네트워크)는
     대상 conf 와 무관하므로 락 밖이다 — 사람/네트워크 대기를 임계 구역에 넣지 않는다는 seam
     규약 그대로다.
     """
-    try:
-        pm_import = _load_pm_import()
-    except Exception:  # noqa: BLE001 — 로드 실패는 baseline best-effort: sync 를 안 깬다.
-        return False, {}
-    # 아래는 형제 pm_import 의 rev 조회·conf writer 를 재사용한다 — writer 가 다시 형제 file_lock 을
-    #   verifier 로 로드하므로 **동기 실행 중 사본 rev 혼합의 표면**이다. baseline 기록은
-    #   best-effort 단계이고 이 지점은 apply 이후라, 여기서 skew 를 올리면 이미 착지한 엔진 파일
-    #   위에서 동기가 traceback 으로 죽는다(등록된 경계로 흡수·다음 실행이 기록한다).
-    try:
-        rev = pm_import.read_upstream_rev(source_root)  # 대상 conf 와 무관(git) — 락 밖.
-        if not rev:
-            return False, {}  # git repo 아님·HEAD 해소 실패 — graceful 생략.
+    pm_import = _load_pm_import()
+    rev = pm_import.read_upstream_rev(source_root)  # 대상 conf 와 무관(git) — 락 밖.
+    if not rev:
+        return False, {}  # git repo 아님·HEAD 해소 실패 — graceful 생략.
 
-        local_conf = dest_root / ".project_manager" / "local.conf"
+    local_conf = dest_root / ".project_manager" / "local.conf"
+    if not local_conf.is_file():
+        # init 전 트리·출하 템플릿처럼 conf 자체가 없는 형상에 락 파일을 만들지 않는 값싼 단축이다
+        # (권위 판정은 아래 락 안에서 다시 한다 — 이 단축은 "쓰지 않는다" 만 결정하고 어떤 write
+        # 계획의 입력도 아니다). conf 가 그사이 생기면 종전처럼 다음 sync 가 기록한다.
+        return _warn_missing_conf_for_rev(local_conf)
+    with _local_conf_write_lock(local_conf):
         if not local_conf.is_file():
-            # init 전 트리·출하 템플릿처럼 conf 자체가 없는 형상에 락 파일을 만들지 않는 값싼 단축이다
-            # (권위 판정은 아래 락 안에서 다시 한다 — 이 단축은 "쓰지 않는다" 만 결정하고 어떤 write
-            # 계획의 입력도 아니다). conf 가 그사이 생기면 종전처럼 다음 sync 가 기록한다.
             return _warn_missing_conf_for_rev(local_conf)
-        if not callable(getattr(pm_import, "_write_conf_keys_locked", None)):
-            # 구세대 pm_import 사본(임계 구간 본문 seam 이전) — 자기-락 writer 로 물러난다. 우리 락을
-            # 쥔 채 부르면 같은 락 파일을 두 fd 로 잡아 데드락이므로 락 밖에서 계획·위임한다(종전
-            # 동작·부분 업그레이드 복구가 크래시보다 우선).
-            updates = _upstream_rev_updates(rev)
-            return pm_import._write_conf_keys(local_conf, updates), updates
-
-        with _local_conf_write_lock(local_conf):
-            if not local_conf.is_file():
-                return _warn_missing_conf_for_rev(local_conf)
-            updates = _upstream_rev_updates(rev)
-            changed = pm_import._write_conf_keys_locked(local_conf, updates)
-        return changed, updates
-    except Exception as exc:  # noqa: BLE001 — 사본 skew 만 생략으로 내린다(그 밖은 종전대로 전파).
-        if not _absorb_engine_rev_skew_for_recovery(exc, "record_upstream_revs.write"):
-            raise
-        print(f"경고: 엔진 사본 rev 혼합으로 upstream.rev 기록을 건너뛴다 ({exc}) — "
-              "다음 pm-update 가 기록한다(엔진 파일 적용은 유지).", file=sys.stderr)
-        return False, {}
+        updates = _upstream_rev_updates(rev)
+        changed = pm_import._write_conf_keys_locked(local_conf, updates)
+    return changed, updates
 
 
 def record_upstream_rev_baseline(dest_root: Path, source_root: Path) -> bool:
@@ -2711,13 +2299,10 @@ def record_upstream_rev_baseline(dest_root: Path, source_root: Path) -> bool:
 def converge_upstream_revs(
     dest_root: Path, source_root: Path, skew_status: str, skew_new: list[str]
 ) -> bool:
-    """skew 안전장치를 보존하며 sync 뒤 revision 키를 수렴·안내한다 (반환=이번 실행의 수렴 여부).
+    """sync 뒤 revision 키를 기록·안내한다 — manifest skew 면 기록을 억제하고 False, 아니면 True.
 
-    반환값은 **엔진 사본이 상류 rev 로 수렴했는가** 하나다(`main` 종료 경로가 쓰는 그 판정 —
-    실행당 1회 캐시). 미수렴이면 이 실행은 종료 rc 가 서는 실패 실행이므로, 호출부는 baseline
-    기록(여기서 이미 억제)에 더해 **후속 opt-in 프롬프트도 건너뛴다** — 성공하지 않은 실행이
-    사용자에게 새 질문을 던지고 그 답을 local.conf 에 적을 자리가 아니다(수렴한 뒤의 실행이
-    묻는다). manifest skew 억제는 rc 축이 아니라 baseline 축이므로 그 판정과 독립이다."""
+    manifest skew(로컬 manifest 구형·신규 등재분 미도달)에서 baseline 을 최신으로 박으면 drift-lint
+    가 "최신" 으로 침묵해 신규 엔진 파일 누락을 은폐한다. 반환값을 쓰는 제품 호출자는 없다."""
     if skew_status == "skew":
         print(
             f"→ manifest skew({len(skew_new)}건)로 upstream.rev baseline(+upstream.seen_rev "
@@ -2725,15 +2310,7 @@ def converge_upstream_revs(
             "둔다. 로컬 engine.manifest 를 reconcile 한 뒤 다시 pm-update 하라(신규 등재분 "
             ")."
         )
-        return _verify_engine_rev_convergence(dest_root, source_root)
-    if not _verify_engine_rev_convergence(dest_root, source_root):
-        # manifest skew 억제와 **같은 패턴**이다 — 사본 rev 가 상류로 수렴하지 않았는데 baseline 을
-        #   박으면 "여기까지 흡수함" 이 되어 drift-lint 가 침묵한다(거짓 최신). 위 경고가 이미
-        #   어긋난 사본을 지목했으므로 여기서는 억제 사실만 한 줄로 남긴다.
-        print("→ 엔진 사본 rev 미수렴으로 upstream.rev baseline(+`upstream.seen_rev`) 갱신을 "
-              "**억제**한다 — 수렴한 뒤의 실행이 기록한다.")
         return False
-
     changed, recorded = record_upstream_revs(dest_root, source_root)
     if changed:
         print("✓ local.conf upstream.rev baseline 갱신 (drift-lint 기준점): "
@@ -3532,17 +3109,9 @@ def _installed_entry_notation_manifests(
     않는다.
     """
     paths = list(upstream_manifests)
-    try:
-        pm_import = _load_pm_import()
-        harnesses = pm_import.installed_harnesses(effective_dest, source_root)
-        template_registry = pm_import.HARNESS_TEMPLATE_DIRS
-    except Exception as exc:  # noqa: BLE001 — pm_import 부재·손상은 core sync 우선.
-        # 사본 rev 혼합도 등록된 경계로 흡수한다 — 이 판별은 **계획 수립 전**에 형제
-        #   pm_import → repo_owned_files(verifier) 계층까지 들어가므로, 올리면 혼합 트리에서 돌린
-        #   pm-update 가 자기 복구 경로를 잃는다(v1.7.0 흡수 실측 지점). 표기 context 는 core
-        #   manifest 만으로도 성립하므로 guest 보탬만 포기하고 동기를 계속한다.
-        _absorb_engine_rev_skew_for_recovery(exc, "installed_entry_notation_manifests")
-        return paths
+    pm_import = _load_pm_import()
+    harnesses = pm_import.installed_harnesses(effective_dest, source_root)
+    template_registry = pm_import.HARNESS_TEMPLATE_DIRS
     seen = {Path(path).resolve() for path in paths}
     for harness in harnesses:
         template_dir = template_registry[harness][0]
@@ -3927,20 +3496,14 @@ def _render_eq_dst(
 
     filecmp.cmp(템플릿, dst) 는 render path 에 *틀림*(템플릿은 렌더 산출물과 byte-equal 일 수
     없어 항상 update 오보). 대신 source 를 local.conf 값(`conf`)으로 렌더해 dst 와 비교한다.
-    렌더 실패(assertion)는 '다름'(False) 취급 — plan 이 그 path 를 change 로 띄우고, 실제 렌더는
-    apply(또는 저장 `apply_conf`)가 해서 거기서 실패하면 명확히 멈춘다. 이 흡수가 필요한 이유는 계획의
-    렌더러가 **설치된** 렌더러라는 데 있다: 렌더러가 바뀌는 갱신에서는 설치 렌더러가 다음 세대 템플릿을
-    그리지 못하고, 실제 렌더는 tools 를 복사한 뒤의 새 렌더러가 한다. 그 원인(계획의 렌더러 세대)은
-    갱신 절차 전환이 렌더를 완료 프로세스로 옮길 때 함께 없어진다. 대조 규칙 자체는
-    `_rendered_text_matches_dest` 하나뿐이다(최소 렌더 분기와 판정 사본 0).
+    렌더 실패는 그대로 올라간다 — 계획의 렌더러는 템플릿과 같은 세대다(갱신의 완료 단계는 엔진 코드를
+    받은 뒤 새 프로세스로 돈다). 대조 규칙 자체는 `_rendered_text_matches_dest` 하나뿐이다(최소 렌더
+    분기와 판정 사본 0).
     """
-    try:
-        rendered = _render_text(
-            sp, conf, render_mod, entry_notation_template, flat_command_skill,
-            codex_operational_skill, _dest_relative_path(dst, dest_root),
-        )
-    except Exception:  # noqa: BLE001 — 렌더 실패는 '다름'으로 보수 처리.
-        return False
+    rendered = _render_text(
+        sp, conf, render_mod, entry_notation_template, flat_command_skill,
+        codex_operational_skill, _dest_relative_path(dst, dest_root),
+    )
     return _rendered_text_matches_dest(rendered, dst)
 
 
@@ -4321,8 +3884,9 @@ def _resolve_engine_sync_plan(
 def drift_changes(engine_root: Path) -> list[str] | None:
     """`engine_root` 의 실행 엔진 사본이 upstream 과 drift 한 relpath 목록.
 
-    `_resolve_engine_sync_plan`(self-update dry-run 이 실제로 호출하는 것과 **같은 함수**) 위의
-    얇은 래퍼다 — 별도 diff 알고리즘을 두지 않는다(render 설정·notation·guest-backfill 인자도
+    엔진 코드 행(`_engine_code_plan`, 전달 프로세스와 같은 계획)을 먼저 보고, 변경이 있으면 그 목록을
+    돌려준다. 없을 때만 `_resolve_engine_sync_plan`(완료 단계 dry-run 이 실제로 호출하는 것과 **같은
+    함수**)으로 간다 — 별도 diff 알고리즘을 두지 않는다(render 설정·notation·guest-backfill 인자도
     dry-run 과 동일하게 태운다).
 
     판정 불능(`None`) — 아래는 전부 같은 "이 형상엔 게이트가 적용되지 않는다"로 수렴한다(거부가
@@ -4346,17 +3910,19 @@ def drift_changes(engine_root: Path) -> list[str] | None:
     stored = conf.get("upstream.path", "").strip()
     if not stored:
         return None
-    try:
-        # 분류 실패는 `_resolve_dest_source` 와 동형으로 보수적 경로 취급(fail-soft).
-        kind = _load_pm_import().classify_upstream(stored)
-    except Exception:  # noqa: BLE001
-        kind = "path"
-    if kind == "url":
+    if _load_pm_import().classify_upstream(stored) == "url":
         return None
     source_root = Path(stored).resolve()
     if not source_root.is_dir():
         return None
     try:
+        # 엔진 코드 행을 먼저 본다 — 엔진 코드가 뒤처진 트리에서 설치 렌더러로 다음 세대 템플릿을
+        #   판정하면 그 렌더가 실패한다. 엔진 코드 변경이 있으면 그 목록이 곧 drift 다.
+        engine = _engine_code_plan(engine_root, source_root)
+        if engine["missing"]:
+            return None
+        if engine["changes"]:
+            return [str(rel) for rel, _src, _dst, _kind in engine["changes"]]
         sync_plan = _resolve_engine_sync_plan(engine_root, source_root, report=False, conf=conf)
     except FileNotFoundError:
         return None
@@ -4970,12 +4536,14 @@ def _commit_harness_ctx(dest_root: Path, planned, pm_import) -> tuple[tuple[str,
 
 def _plan_render_outputs(dest_root: Path, values: dict, pm_import, _opencode_config_dir: Path, render_mod):
     """렌더 입력 묶음 계획 — 설치 세대 원본을 확인하고, 제안 값으로 계획한 render change 전부를 메모리에서
-    그린다. 계획 판정과 그리기가 렌더러 `render_mod` 하나를 쓴다. 렌더 거부는 `ConfApplyError`(같은 세대라
-    설치 렌더러의 실패는 확정 실패다)."""
+    그린다. 계획 판정과 그리기가 렌더러 `render_mod` 하나를 쓴다. 렌더 거부는 계획 판정에서 나든 그리기에서
+    나든 `ConfApplyError`(같은 세대라 설치 렌더러의 실패는 확정 실패다)."""
     source_root = _installed_generation_source(dest_root, values, pm_import)
-    sync_plan = _resolve_engine_sync_plan(dest_root, source_root, conf=values, render_mod=render_mod)
-    render_changes = [change for change in sync_plan["changes"] if getattr(change[2], "render", False)]
     try:
+        sync_plan = _resolve_engine_sync_plan(
+            dest_root, source_root, conf=values, render_mod=render_mod)
+        render_changes = [change for change in sync_plan["changes"]
+                          if getattr(change[2], "render", False)]
         return _render_outputs(render_changes, values, render_mod)
     except render_mod.RenderLeakError as exc:
         raise ConfApplyError([str(exc)]) from exc
@@ -5958,14 +5526,7 @@ def drop_self_lease_rows(effective_dest: Path, *, write: bool) -> int:
     if not ledger.is_file():
         return 0
     seam = _load_file_lock()
-    section = getattr(seam, "exclusive_file_lock", None)
-    replace = getattr(seam, "atomic_replace", None)
-    if not callable(section) or not callable(replace):
-        raise RuntimeError(
-            "리스 장부 마이그레이션에 필요한 file_lock seam"
-            "(exclusive_file_lock·atomic_replace)을 쓸 수 없음"
-        )
-    with section(ledger.parent / "worktree-leases.lock"):
+    with seam.exclusive_file_lock(ledger.parent / "worktree-leases.lock"):
         data = json.loads(_read_text_shared(ledger, encoding="utf-8"))
         leases = data.get("leases") or []
         kept = [row for row in leases if row.get("slot") != "."]
@@ -5982,7 +5543,7 @@ def drop_self_lease_rows(effective_dest: Path, *, write: bool) -> int:
                 json.dumps(data, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8", newline="\n",
             )
-            replace(tmp, ledger)
+            seam.atomic_replace(tmp, ledger)
     return dropped
 
 
@@ -6014,14 +5575,7 @@ def idle_legacy_slot_session_rows(effective_dest: Path, *, write: bool) -> int:
     if not ledger.is_file():
         return 0
     seam = _load_file_lock()
-    section = getattr(seam, "exclusive_file_lock", None)
-    replace = getattr(seam, "atomic_replace", None)
-    if not callable(section) or not callable(replace):
-        raise RuntimeError(
-            "리스 장부 마이그레이션에 필요한 file_lock seam"
-            "(exclusive_file_lock·atomic_replace)을 쓸 수 없음"
-        )
-    with section(ledger.parent / "worktree-leases.lock"):
+    with seam.exclusive_file_lock(ledger.parent / "worktree-leases.lock"):
         data = json.loads(_read_text_shared(ledger, encoding="utf-8"))
         leases = data.get("leases") or []
         moved: list[str] = []
@@ -6051,7 +5605,7 @@ def idle_legacy_slot_session_rows(effective_dest: Path, *, write: bool) -> int:
                 json.dumps(data, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8", newline="\n",
             )
-            replace(tmp, ledger)
+            seam.atomic_replace(tmp, ledger)
     return len(moved)
 
 
@@ -6117,53 +5671,40 @@ def migrate_renamed_conf_keys(effective_dest: Path, *, write: bool) -> dict[str,
     """local.conf 이름 이동의 읽기·계획·쓰기·후조건을 공용 락 안에서 수행한다.
 
     새 키의 사용자 값과 대체 없는 폐지 키를 보존한다. dry-run은 읽기만 한다.
-    형제 사본 부재·skew 또는 이동 가능한 옛 키 잔류는 완료 실패다. 이미 배달한
-    엔진 파일은 보존하며 호출부의 완료 baseline 기록에는 도달하지 않는다.
+    이동 가능한 옛 키 잔류는 완료 실패다. 이미 배달한 엔진 파일은 보존하며 호출부의 완료
+    baseline 기록에는 도달하지 않는다. 형제 로드 실패는 그대로 올라간다.
     """
     conf_path = Path(effective_dest) / ".project_manager" / "local.conf"
     if not conf_path.is_file():
         return {}
-    try:
-        module = _load_local_conf()
-        if not write:
+    module = _load_local_conf()
+    if not write:
+        result = module.load(conf_path)
+        updates = module.rename_updates(result)
+        if not updates:
+            return {}
+        moved = {old: new for old, new in result.legacy.items()
+                 if new is not None and old in updates}
+    else:
+        with _local_conf_write_lock(conf_path):
             result = module.load(conf_path)
             updates = module.rename_updates(result)
             if not updates:
                 return {}
             moved = {old: new for old, new in result.legacy.items()
                      if new is not None and old in updates}
-        else:
-            with _local_conf_write_lock(conf_path):
-                result = module.load(conf_path)
-                updates = module.rename_updates(result)
-                if not updates:
-                    return {}
-                moved = {old: new for old, new in result.legacy.items()
-                         if new is not None and old in updates}
-                pm_import = _load_pm_import()
-                if not callable(getattr(pm_import, "_write_conf_keys_locked", None)):
-                    raise RuntimeError(
-                        "local.conf 키 이동 실패: 형제 pm_import에 삭제 writer가 없다; "
-                        f"잔존 키={', '.join(moved)}. 엔진 사본을 재동기한 뒤 다시 실행하라.")
-                pm_import._write_conf_keys_locked(conf_path, updates)
-                remaining = module.rename_updates(module.load(conf_path))
-                if remaining:
-                    raise RuntimeError(
-                        f"local.conf 키 이동 실패: 잔존 키={', '.join(remaining)}; 파일={conf_path}")
-        prefix = "[dry-run] " if not write else "  ✓ "
-        print(f"{prefix}local.conf 키 이름 {len(moved)}개 이동{' 예정' if not write else ''} — "
-              "갱신이 바꾼 이름이라 갱신이 옮긴다(남은 % 는 쓴 % 로, 공통 사용 한도는 "
-              "하네스마다 같은 값으로).")
-        for line in module.migration_lines(moved):
-            print(f"  {line}")
-        return moved
-    except Exception as exc:  # noqa: BLE001 — skew 진단을 보존한 완료 실패로 변환한다.
-        if not _absorb_engine_rev_skew_for_recovery(exc, "migrate_renamed_conf_keys"):
-            raise
-        raise RuntimeError(
-            f"엔진 사본 rev 혼합으로 local.conf 키 이동 실패 ({exc}); "
-            f"잔존 키는 {conf_path}에 보존됐다. 엔진 사본을 재동기한 뒤 다시 실행하라."
-        ) from exc
+            _load_pm_import()._write_conf_keys_locked(conf_path, updates)
+            remaining = module.rename_updates(module.load(conf_path))
+            if remaining:
+                raise RuntimeError(
+                    f"local.conf 키 이동 실패: 잔존 키={', '.join(remaining)}; 파일={conf_path}")
+    prefix = "[dry-run] " if not write else "  ✓ "
+    print(f"{prefix}local.conf 키 이름 {len(moved)}개 이동{' 예정' if not write else ''} — "
+          "갱신이 바꾼 이름이라 갱신이 옮긴다(남은 % 는 쓴 % 로, 공통 사용 한도는 "
+          "하네스마다 같은 값으로).")
+    for line in module.migration_lines(moved):
+        print(f"  {line}")
+    return moved
 
 
 def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -> dict:
@@ -6337,20 +5878,13 @@ def _instance_owned_template_delta_lines(
         dest_root: Path, source_root: Path) -> list[str]:
     """세대 델타 관측 채널 — 실패도 변경 없음으로 접지 않는 advisory 한 줄."""
     try:
-        pm_import = _load_pm_import()
-        if pm_import is None:
-            raise RuntimeError("pm_import 로드 실패")
-        return pm_import.instance_owned_template_delta_lines(dest_root, source_root)
-    except Exception as exc:  # noqa: BLE001 — sync 결과는 보존하고 관측 불가만 loud.
-        mixed_rev = _absorb_engine_rev_skew_for_recovery(
-            exc, "instance_owned_template_delta")
-        reason = (
-            "동기 실행 중 엔진 사본 혼합(종료 시 수렴 검증·다음 실행에서 재판정)"
-            if mixed_rev else str(exc)
-        )
+        return _load_pm_import().instance_owned_template_delta_lines(dest_root, source_root)
+    except Exception as exc:  # noqa: BLE001 — sync 결과는 보존하고 관측 불가만 loud(표식 skew 는 올린다).
+        if _is_engine_rev_skew(exc):
+            raise
         return [
             "⚠️  인스턴스 소유 템플릿 세대 판정 unavailable — "
-            f"{reason} · 판정 불가(변경 없음 아님)·전량 확인 권장."
+            f"{exc} · 판정 불가(변경 없음 아님)·전량 확인 권장."
         ]
 
 
@@ -6449,17 +5983,13 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
               "backfilled": [], "degraded": [], "blocking": [],
               "managed_converged": False}
     try:
-        # **로드도 try 안**이다 — 부분 전파로 pm_import 사본이 없는 트리에서 로더가 던지면
-        #   그 예외가 CLI 를 통째로 죽인다(엔진 복구 실행이 바로 그 형상이다).
         pm_import = _load_pm_import()
-        if pm_import is None:
-            return {**result, "status": "unavailable", "reason": "pm_import 로드 실패"}
         judgments = pm_import.judge_adapter_configs(dest_root, source_root)
-    except Exception as exc:  # noqa: BLE001 — 판정 실패는 sync 를 막지 않는다(사본 skew 포함).
-        # 사본 rev 혼합은 실행 중의 정상 과도 상태라 등록된 경계로 흡수한다 — 판정 불가는
-        #   `unavailable` 로 내려가 완료 게이트가 rc1 로 재실행을 요구하고, 이미 착지한 엔진
-        #   파일은 그대로 선다(여기서 올리면 그 위에서 traceback 으로 죽는다).
-        _absorb_engine_rev_skew_for_recovery(exc, "sync_adapter_configs.judge")
+    except Exception as exc:  # noqa: BLE001 — 판정 실패는 sync 를 막지 않는다(표식 skew 는 올린다).
+        # 판정 불가는 `unavailable` 로 내려가 완료 게이트가 rc1 로 재실행을 요구한다(이미 착지한
+        #   엔진 파일은 그대로 선다).
+        if _is_engine_rev_skew(exc):
+            raise
         return {**result, "status": "unavailable", "reason": str(exc)}
 
     backfill_candidates = {
@@ -6483,16 +6013,10 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
                     accepted = pm_import.accept_adapter_config(
                         dest_root, source_root, judgment.relpath,
                         expected_sha256=judgment.dest_sha256)
-                except Exception as exc:  # noqa: BLE001 — 아래에서 skew·IO 만 보존으로 내린다.
-                    # 한 파일의 실패가 이미 끝난 엔진 sync 를 traceback 으로 덮지 않게 보존 쪽으로
-                    #   내린다(다음 실행이 같은 판정으로 재시도). 수용은 백업·원자 교체·원장까지
-                    #   가느라 형제 락 seam 을 로드하므로 사본 rev 혼합도 같은 자리에서 보존으로
-                    #   내린다(등록된 경계). 경로 안전 거부·루트 교체는 의도적 hard abort 라
-                    #   그대로 올라간다.
-                    if not _absorb_engine_rev_skew_for_recovery(
-                        exc, "sync_adapter_configs.accept",
-                    ) and not isinstance(exc, (OSError, ValueError)):
-                        raise
+                except (OSError, ValueError) as exc:
+                    # 한 파일의 IO 실패가 이미 끝난 엔진 sync 를 traceback 으로 덮지 않게 보존 쪽으로
+                    #   내린다(다음 실행이 같은 판정으로 재시도). 경로 안전 거부·루트 교체는 의도적
+                    #   hard abort 라 그대로 올라간다.
                     result["preserved"].append({
                         "relpath": judgment.relpath, "status": "update-failed",
                         "summary": str(exc)})
@@ -6521,11 +6045,9 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
         # 갱신분·in-sync backfill 을 한 번에 기록한다(record 는 template 일치분만 담는다).
         try:
             pm_import.record_adapter_baseline(dest_root, source_root)
-        except Exception as exc:  # noqa: BLE001 — 파일 적용은 보존, 재판정이 rc1로 승격.
-            # 사본 rev 혼합도 같은 규칙이다(등록된 경계) — 원장 기록 실패는 아래 재판정이 같은
-            #   red 로 올리고, 다음 실행이 원장을 수렴시킨다.
-            _absorb_engine_rev_skew_for_recovery(
-                exc, "sync_adapter_configs.record_baseline")
+        except Exception as exc:  # noqa: BLE001 — 파일 적용은 보존, 재판정이 rc1로 승격(표식 skew 는 올린다).
+            if _is_engine_rev_skew(exc):
+                raise
             result["degraded"].append({
                 "relpath": ", ".join(sorted(backfill_candidates)) or "adapter_baseline.json",
                 "status": "ledger-failed",
@@ -6537,9 +6059,9 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
     # 그대로 판정하므로 write 0 계약을 유지한다.
     try:
         final_judgments = pm_import.judge_adapter_configs(dest_root, source_root)
-    except Exception as exc:  # noqa: BLE001 — 엔진 적용 결과는 보존하되 게이트는 red.
-        # 첫 판정과 같은 경계·같은 이유로 사본 rev 혼합을 흡수한다(게이트는 여전히 red).
-        _absorb_engine_rev_skew_for_recovery(exc, "sync_adapter_configs.judge")
+    except Exception as exc:  # noqa: BLE001 — 엔진 적용 결과는 보존하되 게이트는 red(표식 skew 는 올린다).
+        if _is_engine_rev_skew(exc):
+            raise
         return {**result, "status": "unavailable", "reason": str(exc)}
     unconverged = pm_import.unconverged_managed_adapter_configs(final_judgments)
     result["blocking"] = [
@@ -6569,39 +6091,22 @@ def apply_harness_ctx_limits(effective_dest: Path, *, write: bool) -> bool:
     반영은 옛 이름을 읽지 않는다. dry-run 은 이름 이동 전의 conf 를 보므로 이 줄이 나오고, 실제
     실행은 이동(`migrate_renamed_conf_keys`)을 먼저 끝낸 뒤 반영한다. 검사를 통과하지 못한 값
     (`HarnessCtxError`)은 설정 파일을 쓰지 않고 멈춘다 — 호출부가 rc 1 로 끝내 upstream.rev 기록에
-    닿지 않는다.
-
-    이 단계도 apply 이후라 형제 사본 rev 혼합은 등록된 경계로 흡수하고, 형제 pm_import 에 반영
-    API 가 없으면(이번 동기가 반영을 모르는 세대를 깐 경우) 반영을 건너뛴다 — 둘 다 loud 이고,
-    반영은 멱등이라 건너뛴 몫을 다음 pm-update 가 그대로 한다."""
+    닿지 않는다. 그 밖의 실패는 그대로 올라간다."""
     prefix = "[dry-run] 하네스 설정 반영 예정" if not write else "  ✓ 하네스 설정 반영"
-    pm_import = None
+    local_conf = _load_local_conf()
+    remaining = local_conf.blocking_legacy(local_conf.load(
+        Path(effective_dest) / ".project_manager" / "local.conf").legacy)
+    if remaining:
+        print(f"{'[dry-run] ' if not write else ''}하네스 설정 반영을 건너뛴다 — local.conf 에 "
+              f"옛 키({', '.join(remaining)})가 남아 있다. 이름 이동과 폐지 키 정리가 끝난 뒤의 "
+              "pm-update 가 반영한다.")
+        return True
+    pm_import = _load_pm_import()
     try:
-        local_conf = _load_local_conf()
-        remaining = local_conf.blocking_legacy(local_conf.load(
-            Path(effective_dest) / ".project_manager" / "local.conf").legacy)
-        if remaining:
-            print(f"{'[dry-run] ' if not write else ''}하네스 설정 반영을 건너뛴다 — local.conf 에 "
-                  f"옛 키({', '.join(remaining)})가 남아 있다. 이름 이동과 폐지 키 정리가 끝난 뒤의 "
-                  "pm-update 가 반영한다.")
-            return True
-        pm_import = _load_pm_import()
-        apply = getattr(pm_import, "apply_harness_ctx", None)
-        if apply is None:
-            print("경고: 형제 pm_import 사본에 하네스 설정 반영이 없어 반영을 건너뛴다 — 엔진 사본이 "
-                  "반영을 아는 세대로 맞춰진 뒤의 pm-update 가 반영한다(엔진 파일 적용은 유지).",
-                  file=sys.stderr)
-            return True
-        lines = apply(
+        lines = pm_import.apply_harness_ctx(
             effective_dest, write=write,
             opencode_config_dir=pm_import.opencode_global_config_dir(os.environ, Path.home()))
-    except Exception as exc:  # noqa: BLE001 — 사본 skew 는 생략, 검사 거부는 멈춤(그 밖은 전파).
-        if _absorb_engine_rev_skew_for_recovery(exc, "apply_harness_ctx_limits"):
-            print(f"경고: 엔진 사본 rev 혼합으로 하네스 설정 반영을 건너뛴다 ({exc}) — "
-                  "다음 pm-update 가 반영한다(엔진 파일 적용은 유지).", file=sys.stderr)
-            return True
-        if pm_import is None or not isinstance(exc, pm_import.HarnessCtxError):
-            raise
+    except pm_import.HarnessCtxError as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return False
     for line in lines:
@@ -6713,41 +6218,23 @@ def check_adapter_hook_sets(dest_root: Path, source_root: Path) -> dict:
     try:
         # 판정 선언은 **상류 세대**를 우선한다 — 상류가 이번에 들여오는 새 플래그를 설치본 선언은
         #   모르므로, 그 세대로 보면 요구를 "선언 밖 플래그" 로 접어 green 이 된다. 조회 성격이라
-        #   상류를 못 읽으면 로컬 선언으로 내려가되(판정을 통째로 잃지 않는다) **사유는 알린다**.
+        #   상류를 못 읽으면 로컬 선언으로 내려가되(판정을 통째로 잃지 않는다) **사유는 알린다**
+        #   (문구는 pm_import `hook_set_query_fallback_lines` 단일 진실 — pm-config `--check` 와 같다).
         #   해소와 판정이 같은 형제 적재를 쓴다(사본 1회 exec).
         generation, pm_import = _resolve_hook_set_generation_and_sibling(source_root)
-        if pm_import is None:
-            return {**result, "status": "unavailable", "reason": "pm_import 로드 실패"}
-        judge = pm_import.judge_adapter_hook_sets
-        if _sibling_accepts_kwarg(judge, "declarations"):
-            _print_hook_set_query_fallback(
-                getattr(pm_import, "hook_set_query_fallback_lines", None), generation)
-            findings = judge(dest_root, source_root,
-                             declarations=generation.declarations)
-        else:
-            # 구세대 형제(선언 주입 이전 시그니처) — 새 키워드를 넘기면 TypeError 로 판정이 통째로
-            #   `unavailable` 이 된다. 그 세대가 제공하던 판정(설치본 선언 기준)은 그대로 살린다.
-            _warn_hook_set_downgrade(
-                "훅 세트 상류 세대 선언 주입",
-                "직전 세대 판정으로 내려간다(이번 상류가 새로 들여오는 플래그·묶음은 판정되지 않지만, "
-                "그 세대가 아는 세대 불일치는 그대로 잡는다)")
-            findings = judge(dest_root, source_root)
+        for line in pm_import.hook_set_query_fallback_lines(generation):
+            print(line, file=sys.stderr)
+        findings = pm_import.judge_adapter_hook_sets(
+            dest_root, source_root, declarations=generation.declarations)
         remedy_lines = pm_import.hook_set_remedy_lines
         # 역방향 진입점 축은 **별도 목록**이다 — 완료 게이트가 소비하는 `findings` 에 섞으면
         #   advisory 가 차단으로 승격돼 훅을 의도적으로 끈 채택자의 흡수가 영구히 막힌다.
-        #   판정 함수가 없는 구세대 형제는 조용히 건너뛴다(그 세대엔 이 개념이 없다).
-        entrypoint_judge = getattr(pm_import, "judge_adapter_hook_entrypoints", None)
-        entrypoint_lines = getattr(pm_import, "hook_entrypoint_advisory_lines", None)
-        entrypoint_findings = (
-            [] if entrypoint_judge is None or entrypoint_lines is None
-            else entrypoint_judge(dest_root, source_root,
-                                  declarations=generation.declarations)
-            if _sibling_accepts_kwarg(entrypoint_judge, "declarations")
-            else entrypoint_judge(dest_root, source_root))
-    except Exception as exc:  # noqa: BLE001 — 판정 실패가 동기를 무효화하지 않는다.
-        # 사본 rev 혼합도 등록된 경계로 흡수한다 — 이건 채널이 아니라 **가드**라, 판정 채널이
-        #   혼합 트리에서 안 열리면 검사를 unavailable 로 접고(경고는 loud) 동기는 완주시킨다.
-        _absorb_engine_rev_skew_for_recovery(exc, "check_adapter_hook_sets")
+        entrypoint_lines = pm_import.hook_entrypoint_advisory_lines
+        entrypoint_findings = pm_import.judge_adapter_hook_entrypoints(
+            dest_root, source_root, declarations=generation.declarations)
+    except Exception as exc:  # noqa: BLE001 — 판정 실패가 동기를 무효화하지 않는다(표식 skew 는 올린다).
+        if _is_engine_rev_skew(exc):
+            raise
         return {**result, "status": "unavailable", "reason": str(exc)}
     result["findings"] = [
         {"harness": finding.harness, "config_relpath": finding.config_relpath,
@@ -6805,9 +6292,7 @@ def refuse_partial_hook_set_scope(scoped_changes, planned_changes,
     방법이 없고, 로컬 묶음 membership 으로 좁히면 "상류만 아는 묶음" 이 정확히 그 틈으로 빠진다
     (탈출구는 스코프 없는 전량 pm-update). 훅과 무관한 부분 전파는 종전대로 통과한다.
 
-    형제가 **선언 주입 이전 세대**면 구 시그니처로 강등해 그 세대의 결합 묶음 판정을 살린다(loud) —
-    새 키워드를 그대로 넘겨 TypeError 로 가드를 통째로 끄면, 그 세대가 이미 막던 반쪽 갱신까지
-    rc0 으로 통과한다. 판정 채널을 못 불러오면 가드를 끄되 조용히 넘어가지 않는다(무진단 침묵 금지)."""
+    판정 채널을 못 불러오면 가드를 끄되 조용히 넘어가지 않는다(무진단 침묵 금지)."""
     updated = _change_dest_paths(scoped_changes)
     unverified: tuple[str, ...] = ()
     pm_import = None
@@ -6815,54 +6300,28 @@ def refuse_partial_hook_set_scope(scoped_changes, planned_changes,
         # 해소와 가드 판정이 같은 형제 적재를 쓴다 — 따로 로드하면 한 실행에 사본을 두 번 exec 한다.
         generation, pm_import = _resolve_hook_set_generation_and_sibling(
             source_root, required=True)
-        partial_update = (getattr(pm_import, "hook_set_partial_update", None)
-                          if pm_import is not None else None)
-        if pm_import is None:
-            partial = None
-            print("[경고] 훅 세트 부분 전파 가드를 건너뛰었다 — 형제 pm_import 로드 실패(판정 "
-                  "채널 없음). 이 스코프가 훅 세트를 반쪽만 갱신해도 막지 못한다.",
-                  file=sys.stderr)
-        elif (partial_update is not None
-                and not _sibling_accepts_kwarg(partial_update, "declarations")):
-            # 구세대 형제(선언 주입 이전 시그니처) — 새 키워드를 넘기면 TypeError 로 가드가 통째로
-            #   꺼지고 반쪽 갱신이 rc0 으로 통과한다. 그 세대의 결합 묶음 판정은 그대로 살린다.
-            _warn_hook_set_downgrade(
-                "훅 세트 상류 세대 선언 주입",
-                "설치본 선언의 결합 묶음으로 반쪽 갱신을 판정한다(상류만 아는 묶음은 못 본다)")
-            # **인식 상태는 선언 미해소 폴백과 같다** — 이 사본에는 해소 지점 자체가 없어 상류
-            #   세대를 확인할 방법이 없다. 그러니 처분도 같아야 한다: 구세대가 아는 묶음 판정은
-            #   유지하되(아래 호출), 훅 네임스페이스 하위를 건드리는 스코프는 fail-closed 로
-            #   거부한다. 강등을 이유로 이 검사만 빼면 **상류에만 추가된 결합 묶음**의 반쪽 전파가
-            #   정확히 이 분기로 빠져나간다(구 판정자는 그 묶음을 정의상 모른다). 네임스페이스
-            #   목록조차 못 얻는 사본은 종전대로 loud 통과다(판정 단위를 얻을 방법이 없고, 거기서
-            #   막으면 채널 없는 트리의 부분 복구가 통째로 잠긴다).
-            unverified = _unverified_hook_scope_paths(pm_import, updated)
-            partial = partial_update(updated, _change_dest_paths(planned_changes))
-        else:
-            if generation.declarations is None:
-                # 조회 폴백(설치본 선언)으로 판정은 계속한다 — 그 세대가 아는 반쪽 갱신은 여전히
-                #   잡는다. 다만 fail-closed 대상은 **로컬 결합 묶음으로 좁히지 않는다**: 상류에만
-                #   있는 묶음은 정의상 로컬이 모르므로, membership 으로 좁히면 지금 닫으려는
-                #   케이스가 그대로 빠져나간다. 훅이 사는 **네임스페이스** 하위를 건드리면 전부
-                #   거부하고, 훅과 무관한 경로는 종전대로 통과시킨다.
-                generation = resolve_hook_set_generation(source_root)
-                namespaces = tuple(
-                    f"{name}/" for name in
-                    pm_import.hook_set_namespaces(generation.declarations))
-                unverified = tuple(
-                    path for path in updated if path.startswith(namespaces))
-            partial = pm_import.hook_set_partial_update(
-                updated, _change_dest_paths(planned_changes),
-                declarations=generation.declarations)
+        if generation.declarations is None:
+            # 조회 폴백(설치본 선언)으로 판정은 계속한다 — 그 세대가 아는 반쪽 갱신은 여전히
+            #   잡는다. 다만 fail-closed 대상은 **로컬 결합 묶음으로 좁히지 않는다**: 상류에만
+            #   있는 묶음은 정의상 로컬이 모르므로, membership 으로 좁히면 지금 닫으려는
+            #   케이스가 그대로 빠져나간다. 훅이 사는 **네임스페이스** 하위를 건드리면 전부
+            #   거부하고, 훅과 무관한 경로는 종전대로 통과시킨다.
+            generation = pm_import.hook_set_declarations(source_root)
+            namespaces = tuple(
+                f"{name}/" for name in
+                pm_import.hook_set_namespaces(generation.declarations))
+            unverified = tuple(
+                path for path in updated if path.startswith(namespaces))
+        partial = pm_import.hook_set_partial_update(
+            updated, _change_dest_paths(planned_changes),
+            declarations=generation.declarations)
     except Exception as exc:  # noqa: BLE001 — 가드 판정 실패가 복구 전파를 자기잠금하면 안 된다.
-        # 사본 rev 혼합도 등록된 경계로 흡수한다 — 부분 동기 트리에서 돌리는 복구 전파가 자기
-        #   가드의 형제 로드 실패로 잠기면 안 된다는 이 함수의 계약이 그대로 적용된다.
-        _absorb_engine_rev_skew_for_recovery(exc, "refuse_partial_hook_set_scope")
+        if _is_engine_rev_skew(exc):
+            raise
         partial = None
         # **인식 상태는 위 폴백과 같다** — 결합 묶음을 검증할 방법이 없다. 그러니 처분도 같아야
-        #   한다: 흡수 경로로 들어왔다는 이유만으로 훅 영역 반쪽 갱신이 rc0 으로 통과하면 이 가드는
-        #   skew 한 줄로 우회된다. 훅 네임스페이스 하위만 거부하고(무관 경로는 종전대로 통과)
-        #   탈출구는 스코프 없는 pm-update 다 — `--paths` 한정이라 복구 채널은 잠기지 않는다.
+        #   한다: 훅 네임스페이스 하위만 거부하고(무관 경로는 종전대로 통과) 탈출구는 스코프 없는
+        #   pm-update 다 — `--paths` 한정이라 복구 채널은 잠기지 않는다.
         unverified = _unverified_hook_scope_paths(pm_import, updated)
         print(f"[경고] 훅 세트 부분 전파 가드를 건너뛰었다 — {exc}.", file=sys.stderr)
     if unverified:
@@ -7020,7 +6479,7 @@ def _protected_hook_in_sync(repo: str, *, pm_config, worktree_pool, board) -> bo
     자랄 때 조용히 갈라진다 — 실제로 그 클래스가 연달아 났다(읽기 실패 축·실행 비트 축).
 
     **모르면 재설치 쪽으로 기운다**(fail-safe): 파일 부재·**읽기 실패**(깨진 본문·권한·IO)·
-    실행권한 상실·명세 부재(구 엔진 사본)·배선 판정 불가(`None`)는 전부 drift 로 수렴한다 —
+    실행권한 상실·배선 판정 불가(`None`)는 전부 drift 로 수렴한다 —
     재설치는 멱등이라 비용이 낮고, 반대 방향(조용히 stale 유지)은 보호가 꺼진 채 침묵하는
     실패모드다.
 
@@ -7029,18 +6488,13 @@ def _protected_hook_in_sync(repo: str, *, pm_config, worktree_pool, board) -> bo
     `unavailable` 은 "dest 엔진/모듈을 못 불렀다"(=판정 자체가 불가능)를 위한 상태지 "파일이
     깨졌다"가 아니다 — 후자를 unavailable 로 흘리면 재설치가 안 돌아 복구 경로가 사라진다."""
     try:
-        artifacts_of = getattr(worktree_pool, "protected_hook_artifacts", None)
-        if artifacts_of is None:
-            return False       # 구 엔진 사본(명세 부재) — 판정 불가 → 재설치.
         # 설치가 받는 것과 **같은 입력**(areas 실효 보호목록)으로 기대 산출물을 유도한다.
         expected_list = list(pm_config._resolve_repo_protected(repo, board=board))
-        gate_config = getattr(pm_config, "_protected_push_gate_config", None)
-        if gate_config is None:
-            return False       # 구 엔진 사본(형상 resolver 부재) — 재설치로 새 계약 배포.
         # read-only drift 판정은 steady-state 무출력 계약을 지킨다. 강등 경고는 실제 설치
         # 깔때기에서 1회 loud하게 나가며, 여기서는 같은 resolver 결과만 소비한다.
-        gate_mode, test_cmd = gate_config(repo, board=board, report_downgrade=False)
-        for artifact in artifacts_of(
+        gate_mode, test_cmd = pm_config._protected_push_gate_config(
+            repo, board=board, report_downgrade=False)
+        for artifact in worktree_pool.protected_hook_artifacts(
                 repo, expected_list, gate_mode=gate_mode, test_cmd=test_cmd):
             if _read_hook_artifact(artifact.path) != artifact.content:
                 return False
@@ -7074,8 +6528,8 @@ def reinstall_protected_hooks(dest_root: Path, *, write: bool) -> dict:
     **fail-soft** — sync 는 이미 성공했다. 일반 엔진 로드 실패(구형 dest)나 레지스트리
     파싱 실패가 update rc 를 바꾸면 안 된다 → 예외를 "unavailable"+사유로 강등하고 호출부가
     경고로 낸다(훅은 추가 가드·`_install_protected_hook` 의 fail-soft 계약과 동형). stamped
-    sibling의 marked rev skew도 이 최외곽 복구 경계에서는 명시적으로 흡수한다. 여기서 update를
-    중단하면 사본 불일치를 고칠 유일한 채널이 자기잠김하기 때문이다.
+    sibling의 marked rev skew 는 그대로 올린다 — 완료 단계는 같은 세대 사본만 적재하므로 그 skew 는
+    동기 대상 트리 자체의 결함이다.
 
     ⚠ **"unavailable" 은 판정 자체가 불가능한 경우만**이다 — dest 엔진/레지스트리를 못 불러
     *어느 repo 도* 손댈 수 없는 상태. **개별 repo 의 훅 파일이 깨진 것은 unavailable 이 아니라
@@ -7118,15 +6572,11 @@ def reinstall_protected_hooks(dest_root: Path, *, write: bool) -> dict:
                 result["failed"].append(repo)
         result["status"] = "done"
         return result
-    except Exception as exc:  # noqa: BLE001 — 재설치 실패가 성공한 sync 를 무효화하면 안 됨.
-        recovery_skew = _absorb_engine_rev_skew_for_recovery(
-            exc, "reinstall_protected_hooks",
-        )
+    except Exception as exc:  # noqa: BLE001 — 재설치 실패가 성공한 sync 를 무효화하면 안 됨(표식 skew 는 올린다).
+        if _is_engine_rev_skew(exc):
+            raise
         result["status"] = "unavailable"
-        result["reason"] = (
-            f"엔진 사본 불일치(복구 sync는 유지): {exc}"
-            if recovery_skew else f"{type(exc).__name__}: {exc}"
-        )
+        result["reason"] = f"{type(exc).__name__}: {exc}"
         return result
 
 
@@ -7158,9 +6608,221 @@ def _print_protected_hook_reinstall_finding(result: dict, *, dry_run: bool = Fal
               "— 미러를 만들면(`pm-config repo add <repo>`) 훅이 걸린다.")
 
 
+def _refuse_missing_sources(missing: list[str], manifest: list) -> int:
+    """source 부재 항목 처리 — `@target-owned` 는 skip 안내, 그 밖의 부재가 있으면 rc 2(없으면 0).
+
+    manifest 의 일부는 *target-owned 어댑터* 일 수 있다 — 엔진 upstream(루트)엔 source 가 없고 타깃
+    자신만 보유하는 경로(예: opencode `.opencode/*`). 그런 항목은 upstream→dest 전파 대상이
+    *아니므로* rc2 로 전체를 막는 대신 graceful skip + 안내 로그로 surface 한다(침묵 skip 금지).
+
+    skip 은 **`@target-owned` 항목 한정**이다(명시 마커). `@render` 를 판별자로 쓰면 틀린다:
+    `.claude/agents @render`·`.claude/skills @render` 처럼 *루트 upstream 에 존재해야 하는 엔진
+    리소스*도 @render 라, 잘못된 --from/upstream 에서 빠지면 rc2 대신 skip 으로 숨겨 엔진 누락을
+    은폐한다. non-`@target-owned` 항목이 source-부재면 진짜 누락(오타·잘못된 --from·전파돼야 하는데
+    빠진 도구·@render 엔진 리소스 포함)이므로 rc2 + 에러다(silent skip 금지). 혼합이면
+    non-@target-owned 가 전체를 막는다.
+
+    이 판별은 **모든 모드(전달 프로세스·완료 프로세스·`--target`) 공통**이다. opencode 채택자의
+    self-update 는 manifest 에 `.opencode/* @target-owned` 가 있으나 upstream=프레임워크 루트
+    (.opencode/ 부재·root=claude)라 source-부재가 정상이다."""
+    if not missing:
+        return 0
+    # missing 은 path 문자열만 운반하므로 manifest 에서 각 path 의 @target-owned 플래그를
+    # 복원한다(plan 의 render_enabled=False 는 copy/render 동작만 끄고 entry 플래그는 보존).
+    target_owned_flag = {str(e): _entry_target_owned_flag(e) for e in manifest}
+    owned = [r for r in missing if target_owned_flag.get(r, False)]
+    engine_missing = [r for r in missing if not target_owned_flag.get(r, False)]
+    for r in owned:
+        print(
+            f"  [skip] {r} — target-owned: upstream source 부재 "
+            "(타깃 고유 @target-owned 어댑터·엔진 upstream 에 없음·전파 대상 아님)"
+        )
+    if not engine_missing:
+        return 0
+    for r in engine_missing:
+        print(f"  [source 에 없음] {r}", file=sys.stderr)
+    print(
+        f"오류: 엔진 경로 {len(engine_missing)}개가 source 에 없음(non-@target-owned) — "
+        "--from 경로가 올바른 엔진 upstream 인지 확인하라 "
+        "(@target-owned 어댑터만 target-owned skip 대상).",
+        file=sys.stderr,
+    )
+    return 2
+
+
+# ── 갱신 절차: 전달 프로세스 → 완료 프로세스 ─────────────────────────────────────
+# 디스크에 있던 갱신기(전달 프로세스)는 엔진 코드(`.project_manager/tools/`)만 옮기고, 옮겨 받은
+# 갱신기를 같은 인자로 새 Python 프로세스(완료 프로세스)에서 띄운다. 렌더·이관·훅·어댑터 설정·기준
+# rev 기록 같은 완료 단계는 완료 프로세스만 실행한다 — 전달하는 프로세스는 자기가 전달한 코드를
+# 실행하지 않으므로 한 프로세스 안에 엔진 사본 세대가 섞이지 않는다. 기동 형태(인터프리터·대상
+# 경로 `.project_manager/tools/pm_update.py`·같은 인자)와 인계 값(아래 환경 변수의 필드 셋)은 세대 간
+# 계약이라 이후 세대가 바꾸지 않는다.
+COMPLETION_ENV = "PM_UPDATE_COMPLETION"
+_COMPLETION_FIELDS = frozenset({"dest", "source", "transferred"})
+
+
+class CompletionHandoffError(ValueError):
+    """완료 단계 인계 값(`PM_UPDATE_COMPLETION`)의 형식이 틀렸다 — 쓰기 전에 멈춘다."""
+
+
+def _take_completion_handoff() -> dict | None:
+    """인계 값을 환경에서 꺼낸다(꺼낸 뒤 환경에 남기지 않는다) — 없으면 None.
+
+    JSON 객체이고 키가 정확히 `dest`·`source`(절대경로 문자열)·`transferred`(0 이상 정수)여야 한다.
+    아니면 `CompletionHandoffError`."""
+    raw = os.environ.pop(COMPLETION_ENV, None)
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError as exc:
+        raise CompletionHandoffError(f"JSON 이 아니다 ({exc})") from exc
+    if not isinstance(value, dict) or set(value) != _COMPLETION_FIELDS:
+        found = sorted(value) if isinstance(value, dict) else type(value).__name__
+        raise CompletionHandoffError(
+            f"키는 정확히 dest·source·transferred 여야 한다 (받은 값: {found})")
+    for key in ("dest", "source"):
+        if not isinstance(value[key], str) or not Path(value[key]).is_absolute():
+            raise CompletionHandoffError(f"{key} 는 절대경로 문자열이어야 한다 ({value[key]!r})")
+    transferred = value["transferred"]
+    if isinstance(transferred, bool) or not isinstance(transferred, int) or transferred < 0:
+        raise CompletionHandoffError(f"transferred 는 0 이상 정수여야 한다 ({transferred!r})")
+    return value
+
+
+def _is_engine_code(rel) -> bool:
+    """manifest 행(또는 change 의 dest 경로)이 엔진 코드인가 — `.project_manager/tools/` 아래."""
+    return str(rel).replace("\\", "/").startswith(_ENGINE_TOOLS_PREFIX)
+
+
+def _engine_code_plan(effective_dest: Path, source_root: Path) -> dict:
+    """엔진 코드 행의 계획 — `{"changes", "missing", "manifest", "selfheal"}`.
+
+    계획 manifest 해소(guest 절·자기치유·은퇴 지시 검증 포함)는 완료 단계와 같은 함수를 쓰고, 계획은
+    엔진 코드 행만 렌더 없이 한다(엔진 코드 행에는 표식이 없어 렌더러를 읽지 않는다). 전달 프로세스가
+    옮길 대상이고, board 드리프트 검사(`drift_changes`)가 먼저 보는 축이다. `manifest` 는 해소된 계획
+    manifest 전체다(부재 판정이 `@target-owned` 표식을 찾는다)."""
+    guest_entries = _dest_guest_manifest_entries(effective_dest)
+    guest_backfill, _flavors = _guest_engine_backfill_entries(
+        effective_dest, source_root, guest_entries)
+    selfheal = resolve_manifest_selfheal(
+        effective_dest, source_root,
+        guest_backfill_paths={str(entry).replace("\\", "/") for entry in guest_backfill})
+    manifest = _resolve_planning_manifest(
+        effective_dest, source_root, selfheal,
+        guest_entries=guest_entries, guest_backfill=guest_backfill)
+    changes, missing = plan(
+        source_root, [entry for entry in manifest if _is_engine_code(entry)],
+        dest_root=effective_dest, render_enabled=False, conf={})
+    return {"changes": changes, "missing": missing, "manifest": manifest, "selfheal": selfheal}
+
+
+def _refuse_scope_with_pending_engine_code(changes) -> int:
+    """`--paths` 는 엔진 코드 변경이 남아 있으면 쓰기 전에 거부한다 — 있으면 rc 1, 없으면 0.
+
+    엔진 코드는 세대 단위로만 옮긴다. 일부만 옮기면 다음 프로세스가 섞인 형제를 적재하고, 하나도
+    옮기지 않으면 옛 렌더러가 새 템플릿을 그린다."""
+    pending = sorted(str(change[0]).replace("\\", "/") for change in changes
+                     if _is_engine_code(change[0]))
+    if not pending:
+        return 0
+    print(
+        f"오류: 엔진 코드 {len(pending)}건이 상류와 달라 부분 전파(--paths)를 하지 않는다. 먼저 "
+        f"--paths 없이 갱신해 엔진 코드를 받은 뒤 다시 실행하라: {', '.join(pending)}",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def _transfer_engine_code(args, argv: list[str], scope_paths: list[str]) -> int:
+    """전달 프로세스 — 엔진 코드만 옮기고 받은 갱신기를 완료 프로세스로 띄운다(rc 는 그 프로세스의 것).
+
+    상류 해소·중앙 로더 선복구(전량 쓰기 실행만)·manifest 자기치유 판정·엔진 코드 계획은 전부
+    복사 **전**에 끝난다. 복사를 시작한 뒤에는 엔진 모듈을 새로 적재하지 않는다. `--dry-run` 은 엔진
+    코드 변경이 있으면 그 변경만 보여 주고 끝난다(받은 갱신기가 디스크에 없어 렌더·훅·어댑터 미리보기를
+    그릴 수 없다). `--paths` 는 엔진 코드 변경이 남아 있으면 어떤 쓰기보다 먼저 거부한다."""
+    rc, _dest_root, source_root = _resolve_dest_source(args)
+    if rc:
+        return rc
+    effective_dest = REPO
+    if not args.dry_run and not scope_paths:
+        try:
+            _predeploy_central_loader(source_root, effective_dest)
+        except (OSError, RuntimeError) as exc:
+            print(f"오류: 중앙 로더 선복구 실패 — {exc}", file=sys.stderr)
+            return 1
+    try:
+        engine = _engine_code_plan(effective_dest, source_root)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except RetiredPathError as exc:
+        print(f"[중단] retired-path manifest 자기치유 실패 — {exc}", file=sys.stderr)
+        return 1
+    changes = engine["changes"]
+    # `--paths` 의 source 부재 판정은 스코프 안 항목만 본다 — 완료 프로세스의 스코프 판정이 한다
+    #   (스코프 밖 부재가 정상 부분 전파를 막지 않는다).
+    rc = (_refuse_scope_with_pending_engine_code(changes) if scope_paths
+          else _refuse_missing_sources(engine["missing"], engine["manifest"]))
+    if rc:
+        return rc
+    for rel, _src, _dst, kind in changes:
+        print(f"  [{kind}] {rel}")
+    if args.dry_run and changes:
+        print(f"[dry-run] 엔진 코드 {len(changes)} 파일 변경 예정 (적용 안 함).")
+        print("  렌더·진입 문서·훅·어댑터 설정 미리보기는 엔진 코드를 받은 뒤 다시 --dry-run 을 "
+              "실행하면 나온다.")
+        return 0
+    if not args.dry_run:
+        # manifest 순서(중앙 로더 먼저 — `read_manifest`)대로 바이트를 옮긴다. `apply` 는 훅 세트
+        #   판정자와 렌더러를 해소하므로 부르지 않는다(엔진 코드 행은 훅 세트·렌더 대상이 아니다).
+        for _rel, src, dst, _kind in changes:
+            Path(dst).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+    return _launch_completion(
+        effective_dest, source_root, 0 if args.dry_run else len(changes), argv)
+
+
+def _launch_completion(dest_root: Path, source_root: Path, transferred: int,
+                       argv: list[str]) -> int:
+    """받은 갱신기를 같은 인자로 새 프로세스에서 띄우고 그 출력과 종료 코드를 그대로 돌려준다.
+
+    출력은 이 프로세스가 받아 같은 스트림에 다시 쓴다 — 완료 프로세스의 부모는 python.exe 라
+    PowerShell 캡처를 알아보지 못하므로, 직접 쓰게 하면 그 파이프에서 한글이 깨진다. 이 프로세스의
+    콘솔 판정(`console_encoding`)이 그대로 적용되게 줄 단위로 중계한다. `PYTHONIOENCODING=utf-8` 은
+    완료 프로세스가 콘솔 설정에 닿기 전의 출력도 UTF-8 로, `PYTHONUNBUFFERED=1` 은 두 스트림의 줄이
+    도착 순서대로 오게 한다. 기동 실패(인터프리터·파일 부재)는 그대로 올라간다. 테스트 교체 지점이다
+    (`tests/_manager_home.complete_in_process`)."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    env = {
+        **os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1",
+        COMPLETION_ENV: json.dumps({"dest": str(dest_root), "source": str(source_root),
+                                    "transferred": transferred}),
+    }
+    updater = Path(dest_root) / ".project_manager" / "tools" / "pm_update.py"
+    proc = subprocess.Popen([sys.executable, str(updater), *argv],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    readers = [threading.Thread(target=_relay_lines, args=(proc.stdout, sys.stdout)),
+               threading.Thread(target=_relay_lines, args=(proc.stderr, sys.stderr))]
+    for reader in readers:
+        reader.start()
+    rc = proc.wait()
+    for reader in readers:
+        reader.join()
+    return rc
+
+
+def _relay_lines(pipe, stream) -> None:
+    """파이프의 UTF-8 줄을 읽어 이 프로세스의 스트림에 그대로 쓴다(줄마다 flush)."""
+    for line in io.TextIOWrapper(pipe, encoding="utf-8", errors="replace"):
+        stream.write(line)
+        stream.flush()
+
+
 def _main(argv: list[str] | None = None) -> int:
-    global _SYNC_RUN_SCOPE          # 종료 시 수렴 검증 대상(아래 dest 해소 지점에서 등록).
-    global _PARTIAL_RUN_SCOPE       # 종료 시 흡수 장부 보고 대상(부분 전파 실행·같은 지점).
+    # 원본 인자 목록 — 완료 프로세스가 같은 인자로 뜬다(`pm_config.py update` 경유면 그 forward 인자).
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     ap = argparse.ArgumentParser(
         prog="pm_update.py",
         description=__doc__,
@@ -7204,7 +6866,8 @@ def _main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "명시한 경로만 전파한다(opt-in 부분 전파·반복 지정 가능). manifest 등재 경로만 "
-            "허용하며 미등재 경로는 거부한다(rc1·조용한 무전파 없음). 경로는 repo 루트 상대 "
+            "허용하며 미등재 경로는 거부한다(rc1·조용한 무전파 없음). 엔진 코드"
+            "(.project_manager/tools/) 변경이 남아 있으면 쓰기 전에 거부한다(rc1). 경로는 repo 루트 상대 "
             "(파일 또는 디렉토리)다. 전량 흡수가 아니므로 upstream.rev baseline 기록·진입 doc "
             "마이그레이션·보호 훅 재설치·동기 후 프롬프트는 건너뛴다(부분 전파를 '최신' 으로 "
             "박으면 drift-lint 가 거짓 침묵한다). --target·--all-targets 와 조합 가능하고 "
@@ -7231,7 +6894,7 @@ def _main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="--changes 와 함께: `git log --oneline baseline..HEAD` 커밋 목록을 꼬리에 출력.",
     )
-    args = ap.parse_args(argv)
+    args = ap.parse_args(raw_argv)
 
     # ── --count-only/--log 는 --changes 전용 (codex suggestion 2·CLI 오사용 차단) ──
     #    --changes 없이 주면 일반 sync 가 돌면서 두 옵션이 조용히 무시된다 → 명확 에러로 멈춘다.
@@ -7274,12 +6937,6 @@ def _main(argv: list[str] | None = None) -> int:
     # 전체 export 는 타깃 집합을 디렉토리에서 매번 발견한다. 단일 타깃 실행을 재사용해
     # manifest/안전 가드/출력의 의미를 갈라놓지 않는다. 한 타깃의 실패는 즉시 반환한다.
     if args.all_targets:
-        # 자식 실행(`main` 재귀)이 모듈 전역 장부(`_SYNC_RUN_SCOPE`·`_ABSORBED_ENGINE_REV_SKEW`·
-        #   수렴 판정 캐시)를 **자기 것으로** 초기화하고 소비한다. 그게 성립하는 전제는 이 분기가
-        #   dest 해소보다 **앞**이라 부모가 스코프를 등록하지 않는다는 것 — 순서가 바뀌면 부모의
-        #   스코프를 자식이 지워 검증이 조용히 사라지므로 전제를 기계로 못박는다.
-        assert _SYNC_RUN_SCOPE is None and _PARTIAL_RUN_SCOPE is None, (
-            "--all-targets 분기는 dest 해소(수렴 검증·흡수 보고 스코프 등록)보다 앞이어야 한다")
         if args.changes:
             print("오류: --all-targets 는 실 동기화 옵션이며 --changes 와 함께 쓸 수 없다.", file=sys.stderr)
             return 1
@@ -7307,20 +6964,38 @@ def _main(argv: list[str] | None = None) -> int:
     if args.changes:
         return _run_changes(args)
 
-    # dest/source 해소(--target·--from·URL 캐시·stale 가드)는 --changes 와 공유한다.
-    rc, dest_root, source_root = _resolve_dest_source(args)
-    if rc != 0:
-        return rc
-    effective_dest = dest_root if dest_root is not None else REPO
-    if not scope_paths:
-        # 종료 시 수렴 검증 대상 등록(흡수의 짝) — 부분 전파는 혼합이 정상 결과라 제외한다.
-        #   dry-run 은 판정·보고만 하고 rc 를 세우지 않는다(무write 실행의 rc 는 "계획이 온전한가"다).
-        _SYNC_RUN_SCOPE = (effective_dest, source_root, not args.dry_run)
+    # ── 자기 갱신은 두 프로세스다: 인계 값이 없으면 이 프로세스는 전달 프로세스(엔진 코드만 옮기고
+    #    받은 갱신기를 띄운다), 있으면 완료 프로세스다. 내보내기(`--target`)는 실행 중인 코드를 바꾸지
+    #    않으므로 한 프로세스로 끝난다.
+    try:
+        handoff = _take_completion_handoff()
+    except CompletionHandoffError as exc:
+        print(f"[중단] 완료 단계 인계 값({COMPLETION_ENV})이 올바르지 않다: {exc}", file=sys.stderr)
+        return 1
+    if handoff is None and not args.target:
+        return _transfer_engine_code(args, raw_argv, scope_paths)
+    if handoff is not None:
+        # 완료 프로세스 — 상류를 다시 해소하지 않고(URL 재조회 없음·교체 안내는 전달 프로세스가 냈다)
+        #   인계 값의 source 를 쓴다. 인계 대상이 이 갱신기의 위치와 다르면 쓰기 전에 멈춘다.
+        rc, dest_root = _resolve_dest(args)
+        if rc != 0:
+            return rc
+        effective_dest = dest_root if dest_root is not None else REPO
+        if Path(handoff["dest"]).resolve() != effective_dest.resolve():
+            print(f"[중단] 완료 단계 인계 값의 대상({handoff['dest']})이 이 갱신기의 위치"
+                  f"({effective_dest})와 다르다.", file=sys.stderr)
+            return 1
+        source_root = Path(handoff["source"])
+        if not _source_dir_exists(source_root, f"완료 단계 인계 값 {COMPLETION_ENV}"):
+            return 1
+        transferred = handoff["transferred"]
     else:
-        # 부분 전파는 수렴 검증 대상이 아니지만 **흡수 장부는 보고 대상**이다 — 계획-전 형제 로드는
-        #   스코프와 무관하게 돌아 skew 를 흡수하는데, 비엔진 경로만 지목한 실행은 그 뒤 채널을
-        #   전부 건너뛰고 rc0 으로 끝나 흡수 사실을 알릴 자리가 없다(report-only·rc 불변).
-        _PARTIAL_RUN_SCOPE = (effective_dest, source_root)
+        # 내보내기 — dest/source 해소(--target·--from·URL 캐시·stale 가드)는 --changes 와 공유한다.
+        rc, dest_root, source_root = _resolve_dest_source(args)
+        if rc != 0:
+            return rc
+        effective_dest = dest_root if dest_root is not None else REPO
+        transferred = 0
 
     # ── guest 절 해소(읽기 전용) — 스코프 선검증·계획·기록이 **같은 산출**을 쓴다. 엔진 행은 upstream
     #    flavor 에서 매 실행 재파생하므로, 절에 아직 기록되지 않은 파생분도 이 시점에 확정된다.
@@ -7423,6 +7098,21 @@ def _main(argv: list[str] | None = None) -> int:
     manifest = sync_plan["manifest"]
     changes, missing = sync_plan["changes"], sync_plan["missing"]
 
+    # 완료 프로세스는 엔진 코드 변경 0건일 때만 진행한다 — 전달 프로세스가 옮긴 뒤 상류가 바뀌었으면
+    #   여기서 옮기면 이 프로세스가 복사한 엔진 모듈을 적재하게 된다. 쓰기 전에 멈추고 재실행을 안내한다.
+    pending_engine = sorted(str(change[0]).replace("\\", "/") for change in changes
+                            if _is_engine_code(change[0]))
+    if handoff is not None and pending_engine:
+        print(f"[중단] 완료 단계에서 엔진 코드 변경 {len(pending_engine)}건을 찾았다. 전달 뒤 상류가 "
+              f"바뀐 것이다. 같은 갱신을 다시 실행하라: {', '.join(pending_engine)}",
+              file=sys.stderr)
+        return 1
+    # 내보내기의 `--paths` 도 같은 규칙이다 — 엔진 코드는 세대 단위로만 옮긴다.
+    if scope_paths:
+        rc = _refuse_scope_with_pending_engine_code(changes)
+        if rc:
+            return rc
+
     skew_manifest = None
     if selfheal["status"] == "legacy_preserved":
         # self-prop 계획 제외는 `_resolve_planning_manifest` 가 한다(미리보기와 공유). 여기선 skew
@@ -7502,19 +7192,6 @@ def _main(argv: list[str] | None = None) -> int:
         ]
         print(f"  경로 스코프: {' '.join(scope_paths)} — 이 경로만 전파한다"
               "(baseline 기록·진입 doc 마이그레이션·훅 재설치·동기 후 프롬프트 생략).")
-        # 엔진 사본은 rev 스탬프를 들고 있다 — 일부만 옮기면 트리 안에 rev 가 섞여 sibling 로더가
-        #   skew 로 볼 수 있다. 부분 전파의 성질이라 차단하지 않고 알리기만 한다(최종 방어는 wave
-        #   말 `--all-targets` 전량 전파 + parity 게이트).
-        stamped = sorted({
-            str(change[0]).replace("\\", "/")
-            for change in changes
-            if str(change[0]).replace("\\", "/").startswith(_ENGINE_TOOLS_PREFIX)
-        })
-        if stamped:
-            print(f"  ⚠️ 엔진 도구 {len(stamped)}건이 스코프에 포함됐다 — 부분 전파는 트리 안 "
-                  f"ENGINE_REV 를 섞을 수 있다(로더 skew 진단 유발 가능). 차단하지 않으니 wave "
-                  f"마감에 `--all-targets` 전량 전파 + parity 로 수렴시켜라: {', '.join(stamped)}",
-                  file=sys.stderr)
         # 훅 세트 반쪽 갱신은 알리는 데서 그치지 않는다 — 하네스가 잠기므로 **쓰기 전에** 거부.
         #   입력은 **해소된 계획**이다(원문 스코프 표기 아님) — `--paths` 는 dest 좌표와 `@source`
         #   상류 좌표를 모두 받으므로, 원문을 그대로 비교하면 상류 좌표 요청이 교집합 0 으로 빠져
@@ -7536,46 +7213,9 @@ def _main(argv: list[str] | None = None) -> int:
         )
         print(f"  [{label}] {r}")
 
-    # ── source 부재 항목 처리 (@target-owned skip · 양 모드 공통) ──
-    # manifest 의 일부는 *target-owned 어댑터* 일 수 있다 — 엔진 upstream(루트)엔 source 가
-    # 없고 타깃 자신만 보유하는 경로(예: opencode `.opencode/*`). 그런 항목은 upstream→dest
-    # 전파 대상이 *아니므로* rc2 로 전체를 막는 대신 graceful skip + 안내 로그로 surface 한다
-    # (침묵 skip 금지).
-    #
-    # skip 은 **`@target-owned` 항목 한정**이다(명시 마커). 옛 구현은 `@render` 를
-    # 판별자로 썼으나 그건 틀렸다(codex 포착): `.claude/agents @render`·`.claude/skills @render`
-    # 처럼 *루트 upstream 에 존재해야 하는 엔진 리소스*도 @render 라, 잘못된 --from/upstream 에서
-    # 빠지면 rc2 대신 skip 으로 숨겨 엔진 누락을 은폐했다. `@target-owned` 는 @render 와 독립인
-    # 명시 마커로, "upstream 이 안 들고 있어도 정상" 을 정확히 표시한다. non-`@target-owned`
-    # 항목이 source-부재면 진짜 누락(오타·잘못된 --from·전파돼야 하는데 빠진 도구·@render 엔진
-    # 리소스 포함)이므로 rc2 + 에러를 유지한다(silent skip 금지). 혼합이면 non-@target-owned 가
-    # 전체를 막는다.
-    #
-    # 이 판별은 **양 모드(--target·self-update) 공통**이다. opencode 채택자의 self-update 는
-    # manifest 에 `.opencode/* @target-owned` 가 있으나 upstream=프레임워크 루트(.opencode/
-    # 부재·root=claude)라 source-부재 → 과거 rc2(전체 update 실패)였다. @target-owned 는 어느
-    # 모드든 판별자이므로 self-update 에서도 skip 한다.
-    if missing:
-        # missing 은 path 문자열만 운반하므로 manifest 에서 각 path 의 @target-owned 플래그를
-        # 복원한다(plan 의 render_enabled=False 는 copy/render 동작만 끄고 entry 플래그는 보존).
-        target_owned_flag = {str(e): _entry_target_owned_flag(e) for e in manifest}
-        owned = [r for r in missing if target_owned_flag.get(r, False)]
-        engine_missing = [r for r in missing if not target_owned_flag.get(r, False)]
-        for r in owned:
-            print(
-                f"  [skip] {r} — target-owned: upstream source 부재 "
-                "(타깃 고유 @target-owned 어댑터·엔진 upstream 에 없음·전파 대상 아님)"
-            )
-        if engine_missing:
-            for r in engine_missing:
-                print(f"  [source 에 없음] {r}", file=sys.stderr)
-            print(
-                f"오류: 엔진 경로 {len(engine_missing)}개가 source 에 없음(non-@target-owned) — "
-                "--from 경로가 올바른 엔진 upstream 인지 확인하라 "
-                "(@target-owned 어댑터만 target-owned skip 대상).",
-                file=sys.stderr,
-            )
-            return 2
+    rc = _refuse_missing_sources(missing, manifest)
+    if rc:
+        return rc
 
     # ── manifest skew 탐지 — upstream engine.manifest 와 로컬(sync 에 쓰인) manifest
     #    를 대조해 "로컬에 없는 upstream 신규 등재 경로"(신규 엔진 파일)를 찾는다. 로컬 manifest
@@ -7653,6 +7293,10 @@ def _main(argv: list[str] | None = None) -> int:
                 _legacy_growth_ticket_files(effective_dest))
 
     if not changes:
+        # 전달 프로세스가 엔진 코드를 옮겼으면 이 실행은 변경이 있었던 실행이다 — 적용 사실을 완료
+        #   단계의 게이트보다 먼저 남긴다(변경 있음 경로의 `✓` 와 같은 자리).
+        if transferred:
+            print(f"✓ {transferred} 파일 동기화")
         # 잔존 은퇴 파일은 changes 와 독립이다 — "변경 없음" 이 곧 "dest 가 상류와 같다" 는 아니다.
         _print_retired_manifest_files(retired_files)
         _print_manifest_selfheal_finding(selfheal, dry_run=args.dry_run)
@@ -7711,7 +7355,8 @@ def _main(argv: list[str] | None = None) -> int:
                 return 1
         else:
             print_instance_owned_delta()
-        print("최신 — 변경 없음.")
+        if not transferred:
+            print("최신 — 변경 없음.")
         # RUN2 수렴 지점: 엔진을 배달한 RUN1은 구 pm_update로 실행될 수 있으므로, 새 엔진의
         # 변경 0 재실행에서도 경로 upstream의 baseline/seen 쌍을 확인한다. dry-run은 기존
         # 계약대로 local.conf를 절대 쓰지 않는다. manifest skew면 has-changes 경로와 동형으로
@@ -7757,8 +7402,7 @@ def _main(argv: list[str] | None = None) -> int:
     #   비원자 copy2 로 떨어진다(원자 write 가 영영 한 세대 늦게 도착).
     apply(changes,  # ← 실패 시 예외 전파 → 아래 전환 미도달(채택자 완전한 구형 유지).
           is_hook_set_path=resolve_hook_set_predicate(source_root))
-    msg = f"✓ {len(changes)} 파일 동기화"
-    print(msg)
+    print(f"✓ {transferred + len(changes)} 파일 동기화")
 
     # apply 완료를 관측한 뒤에만 구 경로를 옮긴다. 이 게이트가 실패하면
     # 아래 instance migration·upstream.rev baseline 모두에 도달하지 않는다.
@@ -7848,22 +7492,14 @@ def main(argv: list[str] | None = None) -> int:
         allow_unverified=True,
     )
     _console_encoding.configure_console_utf8()
-    global _SYNC_RUN_SCOPE, _PARTIAL_RUN_SCOPE, _ENGINE_REV_CONVERGENCE
-    _SYNC_RUN_SCOPE = None
-    _PARTIAL_RUN_SCOPE = None
-    _ENGINE_REV_CONVERGENCE = None
-    _ABSORBED_ENGINE_REV_SKEW.clear()
-    converged = True
-    write_run = False
     try:
-        rc = _main(argv)
+        return _main(argv)
     except EmptyShippingInventoryError as exc:
         print(f"오류: {exc}", file=sys.stderr)
-        rc = 1
+        return 1
     except Exception as exc:
         # 엔진 사본 skew 는 분류 이전에 그대로 올린다 — 아래 분기도 결과적으로 re-raise 하지만,
-        #   skew 가 이 경계를 지난다는 사실을 명시해 둔다(_main 이 설치 하네스 판별을 품은 뒤로
-        #   실제 도달 경로가 생겼다).
+        #   skew 가 이 경계를 지난다는 사실을 명시해 둔다.
         if _is_engine_rev_skew(exc):
             raise
         # 중앙 seam 복구는 _main이 --from을 해소한 뒤 선행한다. 예외 타입 판별 때문에
@@ -7880,24 +7516,7 @@ def main(argv: list[str] | None = None) -> int:
             f"{exc}; 해당 checkout 경로와 git index 상태를 확인·복구한 뒤 다시 실행하라.",
             file=sys.stderr,
         )
-        rc = 1
-    finally:
-        # 실행 중 흡수의 **짝** — 어느 종료 경로(정상 rc·게이트 rc1·오류 rc2·예외 전파)로 나가든
-        #   한 번만 본다(판정은 캐시되어 baseline 억제와 같은 결과를 쓴다). 종료 지점이 늘어도
-        #   검증이 빠질 자리가 없게 여기 하나로 묶는다.
-        scope, _SYNC_RUN_SCOPE = _SYNC_RUN_SCOPE, None
-        partial_scope, _PARTIAL_RUN_SCOPE = _PARTIAL_RUN_SCOPE, None
-        if scope is not None:
-            dest_root, source_root, write_run = scope
-            converged = _verify_engine_rev_convergence(dest_root, source_root)
-        elif partial_scope is not None:
-            # 부분 전파 실행 — 수렴은 판정하지 않고(혼합이 정상 결과) 흡수 사실만 보고한다.
-            #   rc 는 `_main` 이 낸 값 그대로다(report-only).
-            _report_partial_run_absorption()
-    # 미수렴은 성공으로 보고하지 않는다 — 혼합 `--from` 을 그대로 복사한 실행이 rc0 이면 그
-    #   침묵이 다음 실행에도 이어진다(baseline 은 위에서 이미 억제됐다). 무write 실행(dry-run)은
-    #   보고만 하고 rc 를 세우지 않는다.
-    return rc if converged or not write_run else (rc or _UNCONVERGED_RC)
+        return 1
 
 
 if __name__ == "__main__":

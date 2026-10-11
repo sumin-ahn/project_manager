@@ -53,7 +53,8 @@ def _load(name: str):
 
 @pytest.fixture(scope="module")
 def pm_update():
-    return _load("pm_update")
+    from _manager_home import complete_in_process
+    return complete_in_process(_load("pm_update"))
 
 
 @pytest.fixture(scope="module")

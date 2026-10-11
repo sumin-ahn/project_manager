@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -51,12 +52,8 @@ class Cycle:
     def run(self, name: str, argv: list[str]) -> dict:
         if argv and argv[0] == 'add-harness':
             from unittest.mock import patch
-            import manager.bridge_run as bridge
-            from _manager_home import known_ctx_argv
-            original = bridge._run
-            def run(home, command, **kwargs):
-                return original(home, known_ctx_argv(command), **kwargs)
-            with patch.object(bridge, '_run', run):
+            from _manager_home import known_ctx_env
+            with patch.dict(os.environ, known_ctx_env(native_bin=self.home.parent / "known-ctx-native")):
                 result = self.api.run(str(self.home), argv)
         else:
             result = self.api.run(str(self.home), argv)

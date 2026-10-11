@@ -20,8 +20,9 @@ baseline(local.conf `upstream.rev`)과 cache/경로 HEAD 사이 commit 수 및 �
 | 상류 삭제·rename (동기가 지우지 않음) | upstream에서 사라진 등재 경로. 이어지는 `상류 부재 파일` 보고가 dest에 잔존하는 실물을 나열한다(동기는 지우지 않음·수동 정리 판단) |
 
 - **변경 0**: `--changes`는 미리보기일 뿐이므로 동기를 생략하지 않는다. facade를 한 번 실행해
-  manifest 밖 instance-owned config 수렴 채널을 태운다. updater 자체가 바뀐 RUN1 뒤에는 새
-  updater로 **zero-change RUN2**를 실행한다.
+  manifest 밖 instance-owned config 수렴 채널을 태운다. v1.8.0 이상 updater는 한 번의 실행이
+  완료까지 끝내며 두 번째 실행은 **zero-change RUN2** 확인이다. v1.7.13 이하 updater에서 처음
+  받을 때는 RUN2가 완료 단계를 실행하고 세 번째 실행이 변경 0을 확인한다.
 - **변경 > 0**: "엔진 영향(이번 동기가 받는 것)" 목록을 PM에게 보고한 뒤 reconcile → sync.
 - baseline 미기록(첫 동기·구 import): "다음 sync 후 추적" 안내가 정상이며 그대로 진행.
 

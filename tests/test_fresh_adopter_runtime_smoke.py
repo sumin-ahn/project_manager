@@ -331,11 +331,12 @@ def test_live_calls_use_isolated_env(monkeypatch, tmp_path):
     import importlib
     mod = importlib.import_module(__name__)
     monkeypatch.setattr(mod, "PM_ORCH_LIVE_RELEASE", True)
-    from _manager_home import known_ctx_argv
+    from _manager_home import known_ctx_env
     def fixture_update(dest):
-        return real_run(known_ctx_argv([sys.executable, str(dest / '.project_manager/tools/pm_update.py'), '--from', str(REPO)]),
+        return real_run([sys.executable, str(dest / '.project_manager/tools/pm_update.py'), '--from', str(REPO)],
                         cwd=str(dest), capture_output=True, text=True, encoding='utf-8', errors='replace',
-                        env={**os.environ, 'PM_NONINTERACTIVE': '1'})
+                        env=known_ctx_env({**os.environ, 'PM_NONINTERACTIVE': '1'},
+                                          native_bin=dest.parent / 'known-ctx-native'))
     monkeypatch.setattr(mod, '_self_update', fixture_update)
 
     # 2개 라이브 테스트 함수를 각자 별도 자리에서 spy 하에 구동한다(둘이 같은 트리를 쓰면

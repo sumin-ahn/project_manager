@@ -55,7 +55,8 @@ _GEN_GIT_REFS = {0: "0ccc025:templates/opencode/AGENTS.md"}
 
 @pytest.fixture(scope="module")
 def pm_update():
-    return _load_pm_update()
+    from _manager_home import complete_in_process
+    return complete_in_process(_load_pm_update())
 
 
 @pytest.fixture(scope="module")

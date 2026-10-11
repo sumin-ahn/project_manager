@@ -27,6 +27,12 @@
 
 - 티켓의 공유 승격·실행·종결 전에 실제 제품 branch/base_branch 및 멤버 결속을 확인한다. 코드 트리 없는 draft 작성은 유지하며 승격 전에 기존 cluster new로 결속한다. 옛 branch 없는 크기 1 장부는 명시 재결속이 필요하고 PM 홈과 제품의 동명 main으로 기준을 추측하지 않는다. 최종 제품 기준 판정과 장부 기록은 같은 조회 결과를 사용하며 재읽기 실패는 기록 전에 거부한다.
 
+- 엔진 갱신이 두 프로세스로 나뉜다. 디스크에 있던 갱신기는 엔진 코드(`.project_manager/tools/`)만 옮기고, 옮겨 받은 갱신기를 같은 인자로 새 프로세스에서 실행해 렌더·진입 문서 이관·훅·어댑터 설정·기준 rev 기록을 끝낸다. 한 번의 실행으로 갱신이 끝나고 종료 코드와 출력은 완료 프로세스의 것이다. 갱신 중 엔진 사본 세대 혼합을 흡수하던 기록·사유 목록과 종료 시 수렴 검사를 지웠다. v1.7.13 이하에서 처음 받을 때는 같은 명령을 두 번 실행하고(첫 실행은 옛 갱신기) 세 번째 실행으로 변경 0 을 확인한다. v1.8.1 은 v1.8.0 을 거쳐서만 받는다.
+
+- `--dry-run` 은 엔진 코드가 바뀌는 갱신에서 받을 엔진 코드만 보여 준다. `--paths` 는 엔진 코드 변경이 남아 있으면 거부한다.
+
+- 은퇴 경로 지시(`# pm-retired-path: OLD -> NEW`)의 NEW 가 bare 디렉터리 행 아래 파일이어도 된다.
+
 ### Removed
 
 - `gate_snapshot.py`(갱신이 `.pm_import_backups/` 로 옮긴다), 리뷰 `--background`와 `pm_delegate.py cluster wait`, `pm_delegate.py --gate`, `rounds recalculate`·`rounds report`·`--rounds-report`·`rounds resolve --gate`, 내부 리뷰 기록 `.local/internal_review_rounds.json`·`.local/cluster-review-runs.jsonl`(더 이상 읽지 않으며 지워도 된다), 설정 키 `delegate.code-reviewer.rounds_max`(남아 있으면 차단 구키로 알린다).

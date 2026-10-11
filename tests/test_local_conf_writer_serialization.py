@@ -336,27 +336,29 @@ def test_no_lock_holder_calls_another_conf_writer_inside_its_lock_body():
 def test_every_entry_derives_the_same_lock_path(
     board, pm_update, pm_import, file_lock, tmp_path,
 ):
-    """네 진입이 같은 conf 에 대해 같은 락 파일에 도달한다 — 유도 규칙 사본 0."""
+    """세 진입이 같은 conf 에 대해 같은 락 파일에 도달한다 — 유도 규칙 사본 0.
+
+    pm_update 는 경로를 직접 유도하지 않는다 — 공용 seam 의 `local_conf_write_lock` 만 쓴다(T-0951)."""
     conf = tmp_path / ".project_manager" / "local.conf"
     expected = conf.parent / ".local" / "local-conf.lock"
     assert file_lock.conf_lock_path(conf) == expected
     assert board._local_conf_lock_path(conf) == expected
-    assert pm_update._local_conf_lock_path(conf) == expected
     assert pm_import._local_conf_lock_path(conf) == expected
 
 
 def test_the_path_rule_lives_only_in_the_shared_seam():
-    """락 파일명 리터럴은 공용 seam 한 곳 + 두 복구 채널의 구세대-사본 폴백뿐이다.
+    """락 파일명 리터럴은 공용 seam 한 곳 + pm_import 의 구세대-사본 폴백뿐이다.
 
-    pm_import·pm_update 는 부분 업그레이드된 트리에서도 떠야 하는 복구 채널이라, `conf_lock_path`
-    가 없는 구세대 `file_lock` 사본에서 같은 규칙을 인라인으로 계산한다(`_local_conf_lock_path`).
-    두 폴백이 공용 seam 과 같은 파일에 도달하는지는 아래 유도 규약 테스트가 못박는다.
+    pm_import 는 부분 업그레이드된 트리에서도 떠야 하는 복구 채널이라, `conf_lock_path` 가 없는
+    구세대 `file_lock` 사본에서 같은 규칙을 인라인으로 계산한다(`_local_conf_lock_path`). 그 폴백이
+    공용 seam 과 같은 파일에 도달하는지는 위 유도 규약 테스트가 못박는다. pm_update 는 완료 단계가
+    같은 세대 형제만 적재하므로 폴백을 갖지 않는다(T-0951).
     """
     owners = {
         path.name for path in TOOLS.glob("*.py")
         if "local-conf.lock" in path.read_text(encoding="utf-8")
     }
-    assert owners == {"file_lock.py", "pm_import.py", "pm_update.py"}, (
+    assert owners == {"file_lock.py", "pm_import.py"}, (
         f"락 경로 유도 사본이 늘었다: {sorted(owners)}")
 
 
@@ -787,11 +789,13 @@ def test_pm_update_rev_record_takes_the_shared_lock(pm_update, monkeypatch, tmp_
 # ── 축 5: 부분 업그레이드 호환 (구세대 file_lock 사본) ──────────────────────
 #
 # `conf_lock_path`·`local_conf_write_lock` 은 rev 중간에 들어왔고 `ENGINE_REV` 는 릴리스 단위로
-# 찍힌다 — 같은 rev 로 찍힌 트리에도 새 seam 이전 `file_lock.py` 사본이 남을 수 있다. pm_import·
-# pm_update 는 그런 트리를 고치러 들어가는 **복구 채널**이라, 그 자리에서 AttributeError 로 죽으면
+# 찍힌다 — 같은 rev 로 찍힌 트리에도 새 seam 이전 `file_lock.py` 사본이 남을 수 있다. pm_import
+# 는 그런 트리를 고치러 들어가는 **복구 채널**이라, 그 자리에서 AttributeError 로 죽으면
 # 채택자가 자기 트리를 못 고친다. 락은 포기하지 않고(같은 락 파일을 구 API 로) 물러나야 한다.
 
-_LEGACY_MODULES = ("pm_import", "pm_update")
+# pm_update 는 T-0951 에서 이 호환을 지웠다 — 완료 단계는 받은 엔진으로 새 프로세스에서 돌아 같은
+# 세대 형제만 적재한다. 구세대 사본 호환은 복구 채널 pm_import 에만 남는다.
+_LEGACY_MODULES = ("pm_import",)
 
 
 def _legacy_lock_copy(file_lock, *, with_exclusive: bool):
@@ -915,14 +919,8 @@ def test_a_copy_without_any_lock_primitive_keeps_the_lockless_recovery_contract(
     with module._local_conf_write_lock(conf) as lock:
         assert lock is legacy
 
-    if name == "pm_import":
-        assert module._write_conf_keys(conf, {"upstream.rev": "rev-2"}) is True
-        assert _parse_conf(conf.read_text(encoding="utf-8"))["upstream.rev"] == "rev-2"
-    else:
-        conf.write_text("session=pm\nupstream.path=/somewhere\n", encoding="utf-8")
-        _pm_update_rev_writer(module, monkeypatch, "rev-new")
-        assert module.record_upstream_revs(conf.parent.parent, tmp_path / "src")[0]
-        assert _parse_conf(conf.read_text(encoding="utf-8"))["upstream.rev"] == "rev-new"
+    assert module._write_conf_keys(conf, {"upstream.rev": "rev-2"}) is True
+    assert _parse_conf(conf.read_text(encoding="utf-8"))["upstream.rev"] == "rev-2"
 
 
 def test_marked_rev_skew_is_not_absorbed_by_the_conf_lock_seam(pm_import, monkeypatch, tmp_path):
@@ -951,37 +949,6 @@ def test_marked_rev_skew_is_not_absorbed_by_the_conf_lock_seam(pm_import, monkey
         pm_import, "_load_file_lock", lambda: (_ for _ in ()).throw(OSError("손상 사본")))
     assert pm_import._local_conf_lock_path(conf) == conf.parent / ".local" / "local-conf.lock"
     assert pm_import._write_conf_keys(conf, {"upstream.rev": "rev-2"}) is True
-
-
-def test_record_upstream_revs_falls_back_when_the_key_writer_seam_is_old(
-    pm_update, monkeypatch, tmp_path,
-):
-    """구세대 pm_import 사본(임계 구간 본문 seam 부재)에서도 rev 기록이 뜨고 결과가 같다.
-
-    그 사본에서는 자기-락 writer 로 물러난다 — 우리 락을 쥔 채 부르면 같은 락 파일을 두 fd 로
-    잡아 데드락이므로, 이 테스트가 끝나는 것 자체가 "중첩 락 0" 의 실측이다.
-    """
-    conf = _conf_at(tmp_path, "session=pm\nupstream.path=/local/upstream\n")
-    writer = _pm_update_rev_writer(pm_update, monkeypatch, "rev-new")
-    # 구세대 사본의 표면 — 임계 구간 본문(`_write_conf_keys_locked`)이 아직 없다.
-    legacy_writer = SimpleNamespace(
-        read_upstream_rev=writer.read_upstream_rev,
-        classify_upstream=writer.classify_upstream,
-        _write_conf_keys=writer._write_conf_keys,
-    )
-    assert not hasattr(legacy_writer, "_write_conf_keys_locked")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: legacy_writer)
-    taken: list[str] = []
-    _spy_lock(writer._load_file_lock(), monkeypatch, taken)
-
-    changed, updates = pm_update.record_upstream_revs(conf.parent.parent, tmp_path / "src")
-
-    assert changed is True
-    assert updates == {"upstream.rev": "rev-new", "upstream.seen_rev": "rev-new"}
-    # 락은 자기-락 writer 가 **한 번만** 잡는다(우리 구간과 중첩되지 않았다).
-    assert taken == [str(conf.parent / ".local" / "local-conf.lock")]
-    parsed = _parse_conf(conf.read_text(encoding="utf-8"))
-    assert parsed["upstream.rev"] == "rev-new" and parsed["upstream.seen_rev"] == "rev-new"
 
 
 # ── 축 4: 비파괴 (직렬화가 바이트 계약을 바꾸지 않는다) ─────────────────────
@@ -1016,9 +983,15 @@ def test_serialized_writers_preserve_comments_unknown_keys_and_newlines(
         assert "abc#" not in text and "abcrev-2" not in text
 
 
-@pytest.mark.parametrize("failure", ["partial", "old-writer", "skew"])
+@pytest.mark.parametrize("failure", ["partial", "skew"])
 def test_t0927_migration_lock_failure_precedes_baseline(t0927_old_adopter, t0927_upstream,
                                                        monkeypatch, failure):
+    """키 이동이 실패하면 기준 rev 기록 전에 멈추고 conf 를 바꾸지 않는다.
+
+    `partial` 은 키 writer 가 쓰지 못한 형상이라 "키 이동 실패" 로 멈춘다. `skew` 는 표식 skew 가
+    변환 없이 그대로 올라간다(T-0951 — 완료 단계는 같은 세대 형제만 적재하므로 흡수·변환하지 않는다).
+    """
+    from _manager_home import complete_in_process
     dest = t0927_old_adopter
     run1 = _t0927_direct_update(dest)
     assert run1.returncode == 0, f"{run1.stdout}\n{run1.stderr}"
@@ -1027,24 +1000,39 @@ def test_t0927_migration_lock_failure_precedes_baseline(t0927_old_adopter, t0927
     spec = importlib.util.spec_from_file_location("t0927_run2", dest / ".project_manager/tools/pm_update.py")
     updater = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(updater)
+    complete_in_process(updater)
     writer = updater._load_pm_import()
     if failure == "partial":
         monkeypatch.setattr(writer, "_write_conf_keys_locked", lambda *args: False)
-    elif failure == "old-writer":
-        writer = SimpleNamespace()
+    real_load = updater._load_pm_import
+    real_migrate = updater.migrate_renamed_conf_keys
+    migrated = []
 
-    def load_writer():
-        if failure == "skew":
-            error = ImportError("고정 skew 진단")
-            error._engine_rev_skew = True
-            raise error
-        return writer
+    def load_skewed_writer():
+        error = ImportError("고정 skew 진단")
+        error._engine_rev_skew = True
+        raise error
 
-    monkeypatch.setattr(updater, "_load_pm_import", load_writer)
+    def migrate_under_failure(*args, **kwargs):
+        # 주입은 키 이동 단계 안에서만 건다 — 상류 해소 같은 앞 단계의 형제 적재는 실제 사본이다.
+        migrated.append(args)
+        updater._load_pm_import = load_skewed_writer if failure == "skew" else (lambda: writer)
+        try:
+            return real_migrate(*args, **kwargs)
+        finally:
+            updater._load_pm_import = real_load
+
+    monkeypatch.setattr(updater, "migrate_renamed_conf_keys", migrate_under_failure)
     baselines = []
     monkeypatch.setattr(updater, "converge_upstream_revs", lambda *args: baselines.append(args))
-    with pytest.raises(RuntimeError, match="키 이동 실패"):
-        updater.main(["--from", str(t0927_upstream)])
+    if failure == "skew":
+        with pytest.raises(ImportError, match="고정 skew 진단") as raised:
+            updater.main(["--from", str(t0927_upstream)])
+        assert getattr(raised.value, "_engine_rev_skew", False) is True
+    else:
+        with pytest.raises(RuntimeError, match="키 이동 실패"):
+            updater.main(["--from", str(t0927_upstream)])
+    assert migrated, "키 이동 단계에 닿지 않았다(주입이 공허하다)"
     assert baselines == []
     assert conf.read_bytes() == before
 

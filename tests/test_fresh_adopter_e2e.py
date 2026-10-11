@@ -168,7 +168,8 @@ def _load_pm_update():
 
 @pytest.fixture(scope="module")
 def pm_update():
-    return _load_pm_update()
+    from _manager_home import complete_in_process
+    return complete_in_process(_load_pm_update())
 
 
 def test_fresh_adopter_default_installs_every_registered_harness_adapter(
@@ -1076,20 +1077,21 @@ def test_fresh_adopter_central_loader_survives_self_update(pm_import, tmp_path, 
     seam = dest / ".project_manager" / "tools" / "repo_owned_files.py"
     assert seam.is_file() and "def load_module(" in seam.read_text(encoding="utf-8")
 
-    from _manager_home import known_ctx_argv
+    from _manager_home import known_ctx_env
     updated = subprocess.run(
-        known_ctx_argv([
+        [
             sys.executable,
             str(dest / ".project_manager" / "tools" / "pm_update.py"),
             "--from",
             str(REPO),
-        ]),
+        ],
         cwd=dest,
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
-        env={**os.environ, "PM_NONINTERACTIVE": "1"},
+        env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"},
+                          native_bin=dest.parent / "known-ctx-native"),
         timeout=60,
     )
     assert updated.returncode == 0, (

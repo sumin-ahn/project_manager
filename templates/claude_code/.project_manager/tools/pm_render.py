@@ -180,6 +180,20 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 ENGINE_REV = "v1.8.0"
 
 
+def _verify_engine_rev(sibling_module, sibling_filename):
+    """로드한 형제의 baked ENGINE_REV를 이 사본과 대조한다(skew만 fail-loud)."""
+    got = getattr(sibling_module, "ENGINE_REV", None)
+    if got != ENGINE_REV:
+        err = RuntimeError(
+            "엔진 사본 버전 불일치 — 로더 %s(rev=%r)가 형제 %s(rev=%r)를 로드했다 "
+            "(사본 skew: 부분/수동 복사 또는 구형 사본). `pm-update`(또는 pm_update.py)로 "
+            ".project_manager/tools/ 전체를 재동기하라."
+            % (Path(__file__).name, ENGINE_REV, sibling_filename, got)
+        )
+        err._engine_rev_skew = True
+        raise err
+
+
 # 하네스 agent 카드의 역할별 모델/추론 토큰 → local.conf 해소 키. **위임 토큰의 단일 표**다
 # (하네스별 사본 금지): claude `.claude/agents/*.md`·codex `.codex/agents/*.toml`·opencode
 # `.opencode/agents/*.md` 가 같은 토큰 이름을 쓰고 같은 conf 키에서 해소된다. 카드의 model 은
@@ -747,15 +761,16 @@ def _load_relay():
 
     호출자 인자로 받지 않는다. 이전 엔진의 pm_update 가 메모리에 남은 첫 갱신에서도 카드 렌더 전에
     pm_render·pm_relay 새 사본이 이미 복사돼 있으므로(engine.manifest 의 tools 행이 카드 행보다
-    앞선다) 새 계약을 모르는 호출자가 불러도 확인이 성립한다. rev 대조 없이 로드한다
-    (engine_rev.EXEMPT_UNVERIFIED_DEEP_IMPORTS 등재). 모듈 변수에 두는 이유는 pm_relay 의 조회
-    기억이 인스턴스마다라서다 — 렌더마다 새로 읽으면 카드마다 모델 목록 조회가 다시 돈다. 로드
-    실패·속성 부재는 그대로 올린다.
+    앞선다) 새 계약을 모르는 호출자가 불러도 확인이 성립한다. 다른 형제 로드와 같이 rev 를 대조한다
+    — 갱신의 완료 단계는 엔진 코드를 받은 뒤 새 프로세스로 돌아 형제 rev 가 섞이지 않는다. 모듈
+    변수에 두는 이유는 pm_relay 의 조회 기억이 인스턴스마다라서다 — 렌더마다 새로 읽으면 카드마다
+    모델 목록 조회가 다시 돈다. 로드 실패·속성 부재·rev 불일치는 그대로 올린다.
     """
     global _RELAY_MODULE
     if _RELAY_MODULE is None:
         relay_py = Path(__file__).resolve().parent / "pm_relay.py"
-        _RELAY_MODULE = _load_module_from_path(relay_py, "pm_relay.py", allow_unverified=True)
+        _RELAY_MODULE = _load_module_from_path(relay_py, "pm_relay.py",
+                                               verifier=_verify_engine_rev)
     return _RELAY_MODULE
 
 

@@ -24,9 +24,11 @@ ENGINE_REV = "v1.8.0"
 _UTF8_CODEPAGE = 65001
 _TH32CS_SNAPPROCESS = 0x00000002
 _POWERSHELL_PROCESS_NAMES = frozenset({"powershell.exe", "pwsh.exe"})
-# ``py``/``pyw``는 stdio를 그대로 통과시키는 런처다. 반면 ``python``/``pythonw``는
-# 자식 출력을 캡처·디코드할 수 있는 실제 프로세스이므로 투명한 래퍼로 취급하지 않는다.
-_PYTHON_WRAPPER_PROCESS_NAMES = frozenset({"py.exe", "pyw.exe"})
+# stdio를 그대로 자식에게 넘기는 런처·배치 셸. ``py``/``pyw``는 Python 런처이고, ``cmd``는
+# 루트 파사드(``pm-update.cmd`` 등)를 실행하는 배치 셸이다 — PowerShell이 파사드 출력을 캡처하면
+# 사슬이 powershell→cmd→(py→)python 이므로 cmd를 건너뛰어야 PowerShell 부모를 찾는다. 반면
+# ``python``/``pythonw``는 자식 출력을 캡처·디코드할 수 있는 실제 프로세스이므로 건너뛰지 않는다.
+_STDIO_PASSTHROUGH_PROCESS_NAMES = frozenset({"py.exe", "pyw.exe", "cmd.exe"})
 _MAX_ANCESTOR_DEPTH = 8
 _PROCESS_STATE_KEY = "_project_manager_console_encoding_state_v1"
 _TRANSLIT = {
@@ -232,7 +234,7 @@ def _toolhelp_processes() -> list[tuple[int, int, str]]:
 
 
 def _parent_process_name() -> str | None:
-    """Python 래퍼를 건너뛴 첫 조상의 exe 이름을 소문자로 반환한다."""
+    """stdio 통과 런처·배치 셸을 건너뛴 첫 조상의 exe 이름을 소문자로 반환한다."""
     if _probe_os_name() != "nt":
         return None
     try:
@@ -254,7 +256,7 @@ def _parent_process_name() -> str | None:
             if parent is None or not parent[1]:
                 return None
             parent_name = ntpath.basename(parent[1]).lower()
-            if parent_name not in _PYTHON_WRAPPER_PROCESS_NAMES:
+            if parent_name not in _STDIO_PASSTHROUGH_PROCESS_NAMES:
                 return parent_name
             current_pid = parent_pid
         return None

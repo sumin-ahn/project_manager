@@ -29,7 +29,9 @@ from _win_skip import posix_mode_supported
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
-SENTINEL_REL = ".project_manager/tools/__pm_update_upstream_sentinel__.py"
+# 합성 manifest 의 일반 관리 파일 — 엔진 코드(`.project_manager/tools/`) 밖이라 계획·미리보기·완료 단계가
+#   한 실행에 다 보인다(엔진 코드 행은 전달 프로세스가 먼저 옮기고 미리보기를 미룬다).
+SENTINEL_REL = "sentinel/__pm_update_upstream_sentinel__.py"
 
 
 def _local_conf_of(pm_update, root):
@@ -59,7 +61,8 @@ def _known_native_capacity(pm_update,monkeypatch):
 
 @pytest.fixture(scope="module")
 def pm_update():
-    return _load_pm_update()
+    from _manager_home import complete_in_process
+    return complete_in_process(_load_pm_update())
 
 
 def _make_upstream(root: Path, rel: str = SENTINEL_REL) -> None:
@@ -72,6 +75,7 @@ def _make_upstream(root: Path, rel: str = SENTINEL_REL) -> None:
     sentinel.parent.mkdir(parents=True, exist_ok=True)
     sentinel.write_text("# upstream sentinel\n", encoding="utf-8")
     manifest = root / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(rel + "\n", encoding="utf-8")
     _track_source_tree(root)
 
@@ -857,7 +861,7 @@ def test_main_skew_suppression_suppresses_seen_too(pm_update, tmp_path, monkeypa
 
 # ── T-0395: manifest skew → baseline 갱신 억제 (false-최신 차단·drift 은폐 방지) ──
 
-NEW_ENGINE_REL = ".project_manager/tools/__pm_update_new_engine__.py"
+NEW_ENGINE_REL = "sentinel/__pm_update_new_engine__.py"
 
 
 def test_detect_manifest_skew_flags_new_upstream_entries(pm_update, tmp_path):
@@ -3112,6 +3116,7 @@ def test_target_mode_skips_target_owned_source_absent_with_log(pm_update, tmp_pa
     sentinel.write_text("# upstream sentinel\n", encoding="utf-8")
     absent_rel = ".opencode/command/pm-only.md"  # root upstream 엔 없는 target-owned 어댑터
     manifest = stored / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
     # @target-owned 태그 = 타깃 고유 어댑터 신호 → source-부재 시 graceful skip 대상.
     # 실 어댑터는 @render @target-owned 함께지만 skip 판별은 @target-owned 단독으로도 성립.
     manifest.write_text(
@@ -3151,6 +3156,7 @@ def test_target_mode_non_target_owned_source_absent_errors(pm_update, tmp_path, 
     # non-@target-owned 엔진경로가 source 에 부재 — 전파돼야 하는데 빠진 도구(진짜 누락).
     engine_absent = ".project_manager/tools/foo.py"
     manifest = stored / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(SENTINEL_REL + "\n" + engine_absent + "\n", encoding="utf-8")
     _track_source_tree(stored)
     _write_local_conf(target_dir, f"upstream.path={stored}\n")
@@ -3181,6 +3187,7 @@ def test_target_mode_render_only_source_absent_errors(pm_update, tmp_path, monke
     # @render 이지만 @target-owned 가 아닌 엔진 리소스 — source 부재면 진짜 누락(은폐 금지).
     render_only_absent = ".claude/agents/some-engine-agent.md"
     manifest = stored / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
         SENTINEL_REL + "\n" + render_only_absent + "  @render\n", encoding="utf-8")
     _track_source_tree(stored)
@@ -3209,6 +3216,7 @@ def test_target_mode_mixed_absent_engine_missing_wins(pm_update, tmp_path, monke
     owned_absent = ".opencode/command/pm-only.md"       # target-owned 어댑터(부재)
     engine_absent = ".project_manager/tools/foo.py"     # 엔진경로 non-@target-owned(부재)
     manifest = stored / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
         owned_absent + "  @target-owned\n" + engine_absent + "\n", encoding="utf-8")
     _write_local_conf(target_dir, f"upstream.path={stored}\n")
@@ -3271,6 +3279,7 @@ def test_self_location_skips_target_owned_source_absent_with_log(
     _make_upstream(stored)
     absent_rel = ".opencode/command/pm-only.md"  # 채택자 어댑터·root upstream(claude) 부재
     manifest = stored / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
         SENTINEL_REL + "\n" + absent_rel + "  @render @target-owned\n", encoding="utf-8")
     _write_local_conf(fake_repo, f"upstream.path={stored}\n")
@@ -3303,6 +3312,7 @@ def test_self_location_render_only_source_absent_errors(
     _make_upstream(stored)
     render_only_absent = ".claude/agents/some-engine-agent.md"  # @render 엔진 리소스(부재)
     manifest = stored / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
         SENTINEL_REL + "\n" + render_only_absent + "  @render\n", encoding="utf-8")
     _write_local_conf(fake_repo, f"upstream.path={stored}\n")
@@ -3328,8 +3338,9 @@ def test_self_location_mixed_absent_engine_missing_wins(
     stored = tmp_path / "up_self"
     (stored / ".project_manager").mkdir(parents=True)
     owned_absent = ".opencode/command/pm-only.md"       # target-owned 어댑터(부재)
-    engine_absent = ".project_manager/tools/foo.py"     # 엔진경로 non-@target-owned(부재)
+    engine_absent = "engine-scripts/foo.py"             # 엔진경로 non-@target-owned(부재)
     manifest = stored / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
         owned_absent + "  @target-owned\n" + engine_absent + "\n", encoding="utf-8")
     _write_local_conf(fake_repo, f"upstream.path={stored}\n")
@@ -5589,18 +5600,23 @@ def test_retired_path_main_dry_run_predicts_install_then_changes_zero_retires(
     _track_source_tree(source)
     monkeypatch.setattr(pm_update, "REPO", dest)
 
+    # NEW 는 엔진 코드라 이 미리보기는 받을 엔진 코드만 보여 준다(퇴역 예고는 엔진 코드를 받은 뒤의
+    #   미리보기가 낸다).
     assert pm_update.main(["--from", str(source), "--dry-run"]) == 0
     preview = capsys.readouterr().out
-    assert "퇴역 예정" in preview and _RETIRED_REVIEWER_OLD in preview
+    assert f"[new] {_RETIRED_REVIEWER_NEW}" in preview and "엔진 코드 1 파일 변경 예정" in preview
+    assert "퇴역 예정" not in preview
     assert old.is_file() and not (dest / _RETIRED_REVIEWER_NEW).exists()
 
-    # 구 updater가 RUN1에서 신 파일을 설치한 상태를 재현한다. 새 updater의
-    # changes=0 RUN2가 바로 backup+퇴역을 닫아야 하며 baseline보다 먼저다.
+    # 구 updater가 RUN1에서 신 파일을 설치한 상태를 재현한다. 새 updater의 미리보기가
+    # 퇴역을 예고하고, changes=0 RUN2가 바로 backup+퇴역을 닫아야 하며 baseline보다 먼저다.
     (dest / _RETIRED_REVIEWER_NEW).write_bytes(
         (source / _RETIRED_REVIEWER_NEW).read_bytes()
     )
+    assert pm_update.main(["--from", str(source), "--dry-run"]) == 0
+    preview = capsys.readouterr().out
+    assert "퇴역 예정" in preview and _RETIRED_REVIEWER_OLD in preview
     monkeypatch.setattr(pm_update, "converge_upstream_revs", lambda *a, **k: False)
-    monkeypatch.setattr(pm_update, "_verify_engine_rev_convergence", lambda *a, **k: True)
     assert pm_update.main(["--from", str(source)]) == 0
     assert not old.exists()
     backups = list((dest / ".pm_import_backups").glob(
@@ -5668,20 +5684,24 @@ def test_v1711_copy_first_full_sync_stops_on_the_retired_path(
     assert old.is_file(), "멈춘 실행이 dest 를 건드렸다"
 
 
-def test_v1711_copy_updater_scope_run_is_not_blocked_by_the_missing_old_path(
-        pm_update, tmp_path, monkeypatch):
-    """B — 스코프 **밖**의 source-부재 등재는 `--paths` 실행을 막지 않는다(이 티켓의 새 가드).
+def test_v1711_copy_updater_scope_run_is_refused_by_the_current_updater(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """B — 현 갱신기는 엔진 코드 변경이 남은 `--paths` 를 쓰기 전에 거부한다(rc 1).
 
-    막으면 v1.7.11 사본은 어떤 소스로도 갱신하지 못한다 — 두 단계 bridge 의 1회차가 바로 여기다.
+    두 단계 bridge 의 1회차(updater 만 `--paths` 로 self-delivery)는 그 사본의 **옛 갱신기**가 돈다.
+    현 갱신기는 엔진 코드를 세대 단위로만 옮기므로 같은 호출이 아무것도 쓰지 않는다. 스코프 밖
+    source-부재가 정상 부분 전파를 막지 않는 것은 `test_paths_scope_is_refused_while_engine_code_is_pending`
+    의 두 번째 실행이 덮는다.
     """
     source, dest, old = _v1711_copy_fixture(pm_update, tmp_path, monkeypatch, "scope")
 
     rc = pm_update.main(["--from", str(source), "--paths", _V1711_UPDATER_REL])
 
-    assert rc == 0
-    assert (dest / _V1711_UPDATER_REL).read_text(encoding="utf-8") == "# new updater\n"
-    assert old.is_file(), "부분 전파가 퇴역 이주를 태웠다(스코프 밖 write)"
-    assert not (dest / _RETIRED_REVIEWER_NEW).exists(), "스코프 밖 파일이 착지했다"
+    assert rc == 1
+    assert "부분 전파" in capsys.readouterr().err
+    assert (dest / _V1711_UPDATER_REL).read_text(encoding="utf-8") == "# old updater\n"
+    assert old.is_file(), "거부인데 퇴역 이주를 태웠다"
+    assert not (dest / _RETIRED_REVIEWER_NEW).exists(), "거부인데 파일이 착지했다"
 
 
 def test_v1711_copy_second_full_sync_installs_new_and_retires_old(
@@ -5690,9 +5710,7 @@ def test_v1711_copy_second_full_sync_installs_new_and_retires_old(
     source, dest, old = _v1711_copy_fixture(pm_update, tmp_path, monkeypatch, "second")
     # RUN1 이 배달한 새 updater 가 신 manifest 로 계획하는 상태(= 2회차 진입 형상).
     _write_dest_manifest(dest, _V1711_NEW_MANIFEST)
-    # 픽스처 파일에는 rev 스탬프가 없어 수렴 판정이 rc 를 지배한다 — 이 케이스의 축이 아니다.
     monkeypatch.setattr(pm_update, "converge_upstream_revs", lambda *a, **k: False)
-    monkeypatch.setattr(pm_update, "_verify_engine_rev_convergence", lambda *a, **k: True)
 
     rc = pm_update.main(["--from", str(source)])
 
@@ -6262,23 +6280,24 @@ def test_reinstall_protected_hooks_engine_absent_is_fail_soft_loud(pm_update, tm
     assert "[경고]" in cap.err and "pm-update" in cap.err and "repo add" in cap.err
 
 
-def test_reinstall_protected_hooks_absorbs_marked_skew_at_recovery_boundary(
-        pm_update, tmp_path, monkeypatch):
-    """목적지 엔진 skew가 부가 훅 수렴을 막아도 update 복구 채널은 계속 열린다."""
+def test_reinstall_protected_hooks_re_raises_a_marked_skew(pm_update, tmp_path, monkeypatch):
+    """목적지 엔진 skew 는 훅 재설치의 unavailable 로 접히지 않고 그대로 올라간다.
+
+    완료 단계는 같은 세대 사본만 적재하므로 그 skew 는 동기 대상 트리 자체의 결함이다."""
     skew = RuntimeError("injected engine rev skew")
     skew._engine_rev_skew = True
     monkeypatch.setattr(pm_update, "_load_dest_pm_config", lambda _dest: (_ for _ in ()).throw(skew))
 
-    result = pm_update.reinstall_protected_hooks(tmp_path, write=True)
+    with pytest.raises(RuntimeError) as raised:
+        pm_update.reinstall_protected_hooks(tmp_path, write=True)
 
-    assert result["status"] == "unavailable"
-    assert "사본 불일치" in result["reason"] and "복구 sync는 유지" in result["reason"]
+    assert raised.value is skew
 
 
 @_git_required
-def test_main_sync_stays_available_when_post_sync_dest_engine_is_skewed(
+def test_main_sync_raises_a_post_sync_dest_engine_skew(
         pm_update, tmp_path, monkeypatch, capsys):
-    """실제 main sync는 marked skew를 loud하게 보고하고도 파일 복구와 rc=0을 완료한다."""
+    """완료 단계의 marked skew 는 흡수되지 않고 그대로 올라간다 — 적용한 파일은 그대로 남는다."""
     dest = _make_pm_home(tmp_path / "home")
     source = tmp_path / "upstream"
     _make_upstream(source)
@@ -6293,14 +6312,13 @@ def test_main_sync_stays_available_when_post_sync_dest_engine_is_skewed(
         lambda _dest: (_ for _ in ()).throw(skew),
     )
 
-    rc = pm_update.main([])
+    with pytest.raises(RuntimeError) as raised:
+        pm_update.main([])
 
-    assert rc == 0
+    assert raised.value is skew
     assert (dest / SENTINEL_REL).read_text(encoding="utf-8") == (
         source / SENTINEL_REL
     ).read_text(encoding="utf-8")
-    captured = capsys.readouterr()
-    assert "[경고]" in captured.err and "사본 불일치" in captured.err
 
 
 @_git_required
@@ -6638,14 +6656,14 @@ def _make_upstream_tree(root: Path, files: dict, manifest_entries: list) -> None
 
 
 _SCOPE_FILES = {
-    ".project_manager/tools/__scope_alpha__.py": "# alpha\n",
-    ".project_manager/tools/__scope_beta__.py": "# beta\n",
+    "scopefiles/__scope_alpha__.py": "# alpha\n",
+    "scopefiles/__scope_beta__.py": "# beta\n",
     "adapterdir/one.md": "# one\n",
     "adapterdir/two.md": "# two\n",
 }
 _SCOPE_MANIFEST = [
-    ".project_manager/tools/__scope_alpha__.py",
-    ".project_manager/tools/__scope_beta__.py",
+    "scopefiles/__scope_alpha__.py",
+    "scopefiles/__scope_beta__.py",
     "adapterdir",
 ]
 
@@ -6673,10 +6691,10 @@ def test_paths_scope_propagates_only_the_named_file(pm_update, tmp_path, monkeyp
     """명시한 파일 하나만 착지한다 — 같은 manifest 의 나머지 등재분은 손대지 않는다."""
     dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "single")
 
-    rc = pm_update.main(["--paths", ".project_manager/tools/__scope_alpha__.py"])
+    rc = pm_update.main(["--paths", "scopefiles/__scope_alpha__.py"])
 
     assert rc == 0
-    assert _landed(dest) == {".project_manager/tools/__scope_alpha__.py"}
+    assert _landed(dest) == {"scopefiles/__scope_alpha__.py"}
 
 
 def test_paths_scope_picks_one_file_inside_a_directory_entry(pm_update, tmp_path, monkeypatch):
@@ -6707,14 +6725,14 @@ def test_paths_scope_accepts_repeated_and_multi_value_flags(pm_update, tmp_path,
     dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "multi")
 
     rc = pm_update.main([
-        "--paths", ".project_manager/tools/__scope_alpha__.py", "adapterdir/one.md",
-        "--paths", ".project_manager/tools/__scope_beta__.py",
+        "--paths", "scopefiles/__scope_alpha__.py", "adapterdir/one.md",
+        "--paths", "scopefiles/__scope_beta__.py",
     ])
 
     assert rc == 0
     assert _landed(dest) == {
-        ".project_manager/tools/__scope_alpha__.py",
-        ".project_manager/tools/__scope_beta__.py",
+        "scopefiles/__scope_alpha__.py",
+        "scopefiles/__scope_beta__.py",
         "adapterdir/one.md",
     }
 
@@ -6875,8 +6893,8 @@ def test_paths_scope_reports_a_missing_source_entry_that_holds_the_request(
     source = tmp_path / "missing_source"
     _make_upstream_tree(
         source,
-        {".project_manager/tools/__scope_alpha__.py": "# alpha\n"},
-        [".project_manager/tools/__scope_alpha__.py", "adapterdir"],
+        {"scopefiles/__scope_alpha__.py": "# alpha\n"},
+        ["scopefiles/__scope_alpha__.py", "adapterdir"],
     )
     _write_local_conf(dest, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
@@ -6956,22 +6974,6 @@ def test_paths_scope_accepts_guest_clause_path(pm_update, tmp_path, monkeypatch,
     assert "[미등재]" not in err, err
 
 
-def test_paths_scope_warns_on_engine_rev_mixing(pm_update, tmp_path, monkeypatch, capsys):
-    """엔진 도구가 스코프에 들면 rev 혼재 가능성을 알린다 — 차단이 아니라 경고(최종 방어는 전량 전파)."""
-    dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "revmix")
-
-    rc = pm_update.main(["--paths", ".project_manager/tools/__scope_alpha__.py"])
-
-    err = capsys.readouterr().err
-    assert rc == 0
-    assert "ENGINE_REV" in err and "all-targets" in err, err
-    # 어댑터만 옮기는 스코프는 조용하다(경고가 무차별이 아님).
-    dest2, _s2 = _scope_fixture(pm_update, tmp_path, monkeypatch, "revquiet")
-    capsys.readouterr()
-    assert pm_update.main(["--paths", "adapterdir/one.md"]) == 0
-    assert "ENGINE_REV" not in capsys.readouterr().err
-
-
 def test_paths_scope_reports_missing_source_for_source_remapped_entry(
         pm_update, tmp_path, monkeypatch, capsys):
     """`@source` 항목을 **upstream 경로**로 지정했는데 그 source 가 없으면 rc2 — 접히지 않는다.
@@ -6982,8 +6984,8 @@ def test_paths_scope_reports_missing_source_for_source_remapped_entry(
     source = tmp_path / "remap_source"
     _make_upstream_tree(
         source,
-        {".project_manager/tools/__scope_alpha__.py": "# alpha\n"},
-        [".project_manager/tools/__scope_alpha__.py",
+        {"scopefiles/__scope_alpha__.py": "# alpha\n"},
+        ["scopefiles/__scope_alpha__.py",
          ".opencode/agents @render @source=templates/opencode/.opencode/agents"],
     )
     _write_local_conf(dest, f"upstream.path={source}\n")
@@ -7076,8 +7078,9 @@ def test_paths_scope_does_not_touch_the_central_loader(
     assert "경로 스코프 밖이라 건드리지 않는다" in err, err
 
 
-def test_loader_in_scope_is_still_recovered(pm_update, tmp_path, monkeypatch):
-    """그 경로를 스코프에 넣으면 정상 복구된다(기능 제거가 아니라 스코프 준수)."""
+def test_stale_loader_refuses_the_scope_and_full_sync_recovers_it(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """중앙 로더가 뒤처진 상태는 엔진 코드 변경이다 — `--paths` 는 쓰기 전에 거부하고, 전량 갱신이 복구한다."""
     dest = tmp_path / "loader_in_scope"
     source = tmp_path / "loader_source"
     _make_upstream_tree(
@@ -7091,10 +7094,12 @@ def test_loader_in_scope_is_still_recovered(pm_update, tmp_path, monkeypatch):
     stale.write_text("# 구형 seam\n", encoding="utf-8")
     monkeypatch.setattr(pm_update, "REPO", dest)
 
-    rc = pm_update.main(["--paths", _loader_rel()])
+    assert pm_update.main(["--paths", _loader_rel()]) == 1
+    assert "부분 전파" in capsys.readouterr().err
+    assert stale.read_text(encoding="utf-8") == "# 구형 seam\n", "거부인데 로더가 바뀌었다"
 
-    assert rc == 0
-    assert not pm_update.central_loader_needs_recovery(dest), "스코프 안인데 복구되지 않음"
+    assert pm_update.main([]) == 0
+    assert not pm_update.central_loader_needs_recovery(dest), "전량 갱신이 로더를 복구하지 않음"
 
 
 def test_paths_scope_accepts_board_separated_remap(pm_update, tmp_path, monkeypatch):
@@ -7553,7 +7558,10 @@ def test_pm_update_adapter_channel_unavailable_is_rc1(
     local.parent.mkdir(parents=True, exist_ok=True)
     local.write_bytes(sentinel.read_bytes())
     monkeypatch.setattr(pm_update, "REPO", dest)
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: None)
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "judge_adapter_configs",
+                        lambda *_a, **_k: (_ for _ in ()).throw(OSError("판정 채널 고장")))
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
     assert pm_update.main(["--from", str(source)]) == 1
@@ -8034,8 +8042,8 @@ def test_render_text_rejects_reasoning_outside_harness_ladder(pm_update, tmp_pat
 def test_apply_writes_claude_card_effort_and_stops_outside_ladder(pm_update, tmp_path):
     """`apply` 의 렌더 분기도 같은 허용집합 배선을 탄다 — 계획 판정(`_render_text`)과 기록이 갈리지 않는다.
 
-    conf reasoning 은 카드 effort 로 기록되고, 허용값 밖 값은 RenderLeakError 로 멈춰 카드를 고치지
-    않는다(무효 effort 를 실은 카드가 남지 않는다)."""
+    conf reasoning 은 카드 effort 로 기록되고, 허용값 밖 값은 계획 단계에서 RenderLeakError 로 멈춰
+    카드를 고치지 않는다(계획의 렌더러는 템플릿과 같은 세대라 렌더 실패를 "변경" 으로 접지 않는다)."""
     source = tmp_path / "src"
     shutil.copytree(REPO / ".claude" / "agents", source / ".claude" / "agents")
     manifest_file = source / ".project_manager" / "engine.manifest"
@@ -8058,9 +8066,8 @@ def test_apply_writes_claude_card_effort_and_stops_outside_ladder(pm_update, tmp
             "delegate.architect.reasoning=max", "delegate.architect.reasoning=ultra"),
         encoding="utf-8",
     )
-    changes, _missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
     with pytest.raises(RuntimeError) as excinfo:  # RenderLeakError (격리 로드·base 로 잡음)
-        pm_update.apply(changes)
+        pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
     assert type(excinfo.value).__name__ == "RenderLeakError", excinfo.value
     assert "delegate.architect.reasoning=ultra" in str(excinfo.value)
     assert card.read_bytes() == settled, "허용값 밖 값으로 카드가 다시 기록됐다"
@@ -8254,28 +8261,17 @@ def test_unused_profile_card_is_neutralized_not_filled(pm_update, tmp_path, monk
 # 변경 없는 경로(`최신 — 변경 없음.`)를 탄다.
 
 
-from _manager_home import _KNOWN_CTX_READER_PY
-
-_KNOWN_UPDATE_CHILD = _KNOWN_CTX_READER_PY + r"""
-import importlib.util,sys
-from pathlib import Path
-spec=importlib.util.spec_from_file_location('ctx_known_update',Path(sys.argv[1]))
-module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-original=module._load_pm_import
-def load():
-    pmi=original()
-    return install_fixture_capacity(pmi,1000000,2000000)
-module._load_pm_import=load
-raise SystemExit(module.main(sys.argv[2:]))
-"""
-
-
 def _adopter_update(dest: Path, *args: str, env: dict | None = None):
+    """채택자 사본의 pm_update.py 를 고정 모델 한도(C=1000000, 모델 창 2000000)로 돌린다 — 환경으로
+    넘겨 완료 프로세스까지 같은 값을 쓴다."""
+    from _manager_home import known_ctx_env
     return subprocess.run(
-        [sys.executable, "-c", _KNOWN_UPDATE_CHILD, str(dest / ".project_manager" / "tools" / "pm_update.py"),
+        [sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"),
          "--from", str(REPO), *args],
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
-        env={**os.environ, "PM_NONINTERACTIVE": "1", **(env or {})}, timeout=300)
+        env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1", **(env or {})},
+                          native_bin=dest.parent / "known-ctx-native",
+                          capacity=1000000, context=2000000), timeout=300)
 
 
 def _conf_values(dest: Path) -> dict[str, str]:
@@ -8482,12 +8478,15 @@ def test_apply_renders_every_render_change_before_writing(pm_update, tmp_path):
     assert [card.name for card in cards][-1] == "researcher.md" and len(cards) == 5
     settled = {card.name: card.read_bytes() for card in cards}
 
-    conf.write_text("project.name=Acme\n" + _ADOPTER0_DELEGATE_CONF.replace(
-        "model=opus", "model=sonnet").replace(
-        "delegate.researcher.reasoning=high", "delegate.researcher.reasoning=ultra"), encoding="utf-8")
+    # 계획은 허용값 안 값으로 세우고(계획 판정의 렌더 실패는 그대로 올라간다), 기록 직전에 conf 의
+    #   마지막 카드 추론 값을 허용값 밖으로 바꾼다 — `apply` 는 디스크 conf 로 그린다.
+    sonnet_conf = "project.name=Acme\n" + _ADOPTER0_DELEGATE_CONF.replace("model=opus", "model=sonnet")
+    conf.write_text(sonnet_conf, encoding="utf-8")
     changes, _missing = pm_update.plan(source, manifest, dest_root=dest,
                                        conf=_local_conf_of(pm_update, dest))
     assert sorted(Path(str(rel)).name for rel, _sp, _dst, _kind in changes) == sorted(settled)
+    conf.write_text(sonnet_conf.replace(
+        "delegate.researcher.reasoning=high", "delegate.researcher.reasoning=ultra"), encoding="utf-8")
 
     with pytest.raises(RuntimeError) as caught:  # RenderLeakError (격리 로드·base 로 잡음)
         pm_update.apply(changes)
@@ -8668,14 +8667,15 @@ def test_apply_conf_lists_models_once_per_save(tmp_path, monkeypatch):
     """opencode 카드에 추론 값을 싣는 저장 한 번은 모델 목록 조회 한 번이다(반영·거부 모두).
 
     추론 값 확인·계획 판정·산출물 그리기가 렌더러 하나(pm_relay 조회 기억 하나)를 쓴다."""
-    from _manager_home import _KNOWN_SETUP_CHILD, _run, make_committed_source
+    from _manager_home import _run, known_ctx_env, make_committed_source
     from _fake_opencode import calls
     fakebin = install_fake_opencode(tmp_path / "fakebin", OLLAMA_LISTING)
     monkeypatch.setenv("PATH", path_with(fakebin))
     source = make_committed_source(tmp_path / "source")
     home = tmp_path / "home"
-    _run([sys.executable, "-c", _KNOWN_SETUP_CHILD, str(TOOLS / "pm_import.py"), "--new", str(home),
-          "--harness", "opencode", "--from", str(source), "--upstream", str(source)], cwd=REPO)
+    _run([sys.executable, str(TOOLS / "pm_import.py"), "--new", str(home),
+          "--harness", "opencode", "--from", str(source), "--upstream", str(source)], cwd=REPO,
+         env=known_ctx_env(native_bin=tmp_path / "known-ctx-native"))
     module = _home_pm_update(home)
     card = home / ".opencode" / "agents" / "developer.md"
 
@@ -8728,3 +8728,249 @@ def test_gate_snapshot_retirement_is_declared_in_every_manifest(pm_update, tmp_p
 
     assert result["status"] == "heal"
     assert _GATE_SNAPSHOT_OLD in result["retired_removed"]
+
+
+# ── T-0951 갱신 절차 전환 — 전달 프로세스(엔진 코드만)와 완료 프로세스(나머지) ──────────────────────
+# 합성 상류: 엔진 코드 1행(`zz_engine_probe.py`)과 엔진 코드 밖 디렉터리 행(`adapterdir`).
+_T0951_PROBE = ".project_manager/tools/zz_engine_probe.py"
+_T0951_FILES = {_T0951_PROBE: "# probe\n", "adapterdir/one.md": "# one\n", "adapterdir/two.md": "# two\n"}
+# 전달 프로세스가 부르면 안 되는 완료 단계 함수 — 하나라도 불리면 같은 프로세스가 완료 단계를 실행한 것이다.
+_T0951_COMPLETION_STEPS = (
+    "apply", "_load_pm_render", "_installed_entry_notation_manifests", "prune_unavailable_reasoning",
+    "migrate_entry_doc", "drop_self_lease_rows", "idle_legacy_slot_session_rows",
+    "migrate_renamed_conf_keys", "reinstall_protected_hooks", "sync_adapter_configs",
+    "apply_harness_ctx_limits", "check_adapter_hook_sets", "converge_upstream_revs",
+    "_run_retired_path_migration",
+)
+
+
+def _t0951_case(pm_update, tmp_path, monkeypatch, *, manifest=None, files=None):
+    """(dest=self-location REPO, source) — 엔진 코드 1행 + 엔진 코드 밖 행을 가진 상류."""
+    dest = tmp_path / "dest"
+    source = tmp_path / "source"
+    _make_upstream_tree(source, files or _T0951_FILES, manifest or [_T0951_PROBE, "adapterdir"])
+    _write_local_conf(dest, f"upstream.path={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    return dest, source.resolve()
+
+
+def _t0951_tree(root: Path) -> dict[str, bytes]:
+    from test_fresh_adopter_e2e import _snapshot_tree
+    return _snapshot_tree(root)
+
+
+def _t0951_record_launch(pm_update, monkeypatch) -> list:
+    launched: list = []
+    monkeypatch.setattr(pm_update, "_launch_completion",
+                        lambda *args: launched.append(args) or 0)
+    return launched
+
+
+def test_transfer_stage_runs_no_completion_step(pm_update, tmp_path, monkeypatch):
+    """AT-004 — 전달 프로세스는 엔진 코드만 옮기고 완료 단계 함수를 하나도 부르지 않는다."""
+    dest, source = _t0951_case(pm_update, tmp_path, monkeypatch)
+    for name in _T0951_COMPLETION_STEPS:
+        def trapped(*_args, _name=name, **_kwargs):
+            raise AssertionError(f"전달 프로세스가 완료 단계 {_name} 를 불렀다")
+        monkeypatch.setattr(pm_update, name, trapped)
+    launched = _t0951_record_launch(pm_update, monkeypatch)
+
+    assert pm_update.main(["--from", str(source)]) == 0
+
+    assert launched == [(dest, source, 1, ["--from", str(source)])]
+    assert (dest / _T0951_PROBE).read_text(encoding="utf-8") == "# probe\n"
+    assert not (dest / "adapterdir").exists(), "전달 프로세스가 엔진 코드 밖 행을 옮겼다"
+
+
+@pytest.mark.parametrize("case", (
+    "invalid_json", "missing_field", "unknown_field", "dest_mismatch", "missing_source",
+    "pending_engine_code",
+))
+def test_completion_handoff_is_validated_before_any_write(
+        pm_update, tmp_path, monkeypatch, capsys, case):
+    """AT-005 — 인계 값이 틀리거나 완료 단계에 엔진 코드 변경이 남으면 쓰기 전에 rc 1 로 멈춘다.
+
+    엔진 코드 잔존이 아닌 사례는 dest 에 상류와 같은 probe 를 먼저 써 둔다 — 엔진 코드 잔존 거부가
+    대신 rc 1 을 내지 못하게 해서 사례마다 자기 가드의 문구로 멈추는지 본다."""
+    dest, source = _t0951_case(pm_update, tmp_path, monkeypatch)
+    if case != "pending_engine_code":
+        (dest / _T0951_PROBE).parent.mkdir(parents=True, exist_ok=True)
+        (dest / _T0951_PROBE).write_text(_T0951_FILES[_T0951_PROBE], encoding="utf-8")
+    handoff = {"dest": str(dest), "source": str(source), "transferred": 0}
+    raw = {
+        "invalid_json": "{not json",
+        "missing_field": json.dumps({"dest": str(dest), "source": str(source)}),
+        "unknown_field": json.dumps({**handoff, "extra": 1}),
+        "dest_mismatch": json.dumps({**handoff, "dest": str(tmp_path / "elsewhere")}),
+        "missing_source": json.dumps({**handoff, "source": str(tmp_path / "no-such-source")}),
+        "pending_engine_code": json.dumps(handoff),
+    }[case]
+    monkeypatch.setenv(pm_update.COMPLETION_ENV, raw)
+    before = _t0951_tree(dest)
+
+    rc = pm_update.main(["--from", str(source)])
+
+    invalid_handoff = f"인계 값({pm_update.COMPLETION_ENV})이 올바르지 않다"
+    expected_message = {
+        "invalid_json": invalid_handoff,
+        "missing_field": invalid_handoff,
+        "unknown_field": invalid_handoff,
+        "dest_mismatch": "완료 단계 인계 값의 대상(",
+        "missing_source": "출처: 완료 단계 인계 값",
+        "pending_engine_code": "완료 단계에서 엔진 코드 변경",
+    }[case]
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert expected_message in err, err
+    assert _t0951_tree(dest) == before, "인계 값 오류인데 dest 를 바꿨다"
+    assert pm_update.COMPLETION_ENV not in os.environ, "인계 값이 실행 뒤에 남았다"
+
+
+def test_known_ctx_env_requires_a_test_scoped_native_folder(tmp_path):
+    """실행 파일 폴더가 환경에 없으면 `known_ctx_env` 는 호출자가 준 테스트 임시 폴더만 쓴다 —
+    폴더를 스스로 만들어 저장소 임시 자리에 남기지 않는다."""
+    from _manager_home import known_ctx_env
+    base = {key: value for key, value in os.environ.items() if key != "_KNOWN_CTX_FIXTURE_BIN"}
+    with pytest.raises(ValueError, match="native_bin"):
+        known_ctx_env(base)
+
+    folder = tmp_path / "known-ctx-native"
+    environment = known_ctx_env(base, native_bin=folder)
+
+    assert environment["PATH"].split(os.pathsep)[0] == str(folder)
+    assert environment["_KNOWN_CTX_FIXTURE_BIN"] == str(folder)
+
+
+def test_dry_run_defers_preview_while_engine_code_is_pending(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """AT-007 — 엔진 코드 변경이 있는 `--dry-run` 은 그 변경과 미룸 안내만 내고 완료 프로세스를 띄우지 않는다."""
+    files = {**_T0951_FILES, "renderdir/card.md": "# {{PROJECT_NAME}} 카드\n"}
+    dest, source = _t0951_case(pm_update, tmp_path, monkeypatch, files=files,
+                               manifest=[_T0951_PROBE, "adapterdir", "renderdir    @render"])
+    (dest / _T0951_PROBE).parent.mkdir(parents=True)
+    (dest / _T0951_PROBE).write_text("# old probe\n", encoding="utf-8")
+    launched = _t0951_record_launch(pm_update, monkeypatch)
+    before = _t0951_tree(dest)
+
+    assert pm_update.main(["--from", str(source), "--dry-run"]) == 0
+
+    out = capsys.readouterr().out
+    assert f"[update] {_T0951_PROBE}" in out and "엔진 코드 1 파일 변경 예정" in out, out
+    assert "[render]" not in out, "받기 전 렌더러로 렌더 미리보기를 그렸다"
+    assert launched == [] and _t0951_tree(dest) == before
+
+    (dest / _T0951_PROBE).write_text("# probe\n", encoding="utf-8")
+    assert pm_update.main(["--from", str(source), "--dry-run"]) == 0
+    assert launched == [(dest, source, 0, ["--from", str(source), "--dry-run"])]
+
+
+def test_paths_scope_is_refused_while_engine_code_is_pending(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """AT-008 — 엔진 코드 변경이 남은 `--paths` 는 쓰기 전에 거부하고, 엔진 코드가 맞으면 부분 전파한다."""
+    dest, source = _t0951_case(pm_update, tmp_path, monkeypatch)
+    before = _t0951_tree(dest)
+
+    assert pm_update.main(["--paths", "adapterdir/one.md"]) == 1
+    err = capsys.readouterr().err
+    assert "부분 전파" in err and _T0951_PROBE in err, err
+    assert _t0951_tree(dest) == before
+
+    (dest / _T0951_PROBE).parent.mkdir(parents=True)
+    (dest / _T0951_PROBE).write_text("# probe\n", encoding="utf-8")
+    assert pm_update.main(["--paths", "adapterdir/one.md"]) == 0
+    assert (dest / "adapterdir" / "one.md").is_file()
+    assert not (dest / "adapterdir" / "two.md").exists(), "스코프 밖 파일이 착지했다"
+
+    # 내보내기(`--target`)도 같은 규칙이다 — 엔진 코드가 뒤처진 타깃의 부분 전파는 거부한다.
+    repo = tmp_path / "repo"
+    target = repo / "templates" / "tgt"
+    _write_local_conf(target, f"upstream.path={source}\n")
+    monkeypatch.setattr(pm_update, "REPO", repo)
+    target_before = _t0951_tree(target)
+    assert pm_update.main(["--target", "tgt", "--paths", "adapterdir/one.md"]) == 1
+    assert "부분 전파" in capsys.readouterr().err
+    assert _t0951_tree(target) == target_before
+
+
+_T0951_NEXT_GEN = "{{NEXT_GEN_MARK}}"
+
+
+def test_drift_changes_reports_engine_code_before_rendering(pm_update, tmp_path, monkeypatch):
+    """AT-009 — 엔진 코드가 뒤처진 트리의 드리프트는 엔진 코드 목록이다(설치 렌더러로 다음 세대 템플릿을
+    그리지 않는다). 엔진 코드가 맞으면 같은 세대 렌더 실패는 그대로 올라간다."""
+    files = {**_T0951_FILES, "renderdir/card.md": f"# 카드 {_T0951_NEXT_GEN}\n"}
+    dest, _source = _t0951_case(pm_update, tmp_path, monkeypatch, files=files,
+                                manifest=[_T0951_PROBE, "adapterdir", "renderdir    @render"])
+    (dest / "renderdir").mkdir()
+    (dest / "renderdir" / "card.md").write_text("# 카드\n", encoding="utf-8")
+
+    assert pm_update.drift_changes(dest) == [_T0951_PROBE]
+
+    (dest / _T0951_PROBE).parent.mkdir(parents=True)
+    (dest / _T0951_PROBE).write_text("# probe\n", encoding="utf-8")
+    with pytest.raises(RuntimeError) as raised:
+        pm_update.drift_changes(dest)
+    assert type(raised.value).__name__ == "RenderLeakError", raised.value
+
+
+def test_apply_conf_translates_render_failure_found_while_planning(
+        pm_update, tmp_path, monkeypatch):
+    """AT-011 — `pm-config apply` 의 계획 판정에서 난 렌더 거부도 반영 전 거부(`ConfApplyError`)다."""
+    from _manager_home import tree_snapshot
+    home, _source = _t0945_home(tmp_path)
+    before = tree_snapshot(home)
+
+    def refused(_source_path, _conf, render_mod, *_args, **_kwargs):
+        raise render_mod.RenderLeakError("주입한 렌더 거부")
+
+    monkeypatch.setattr(pm_update, "_render_text", refused)
+    with pytest.raises(pm_update.ConfApplyError) as caught:
+        pm_update.apply_conf(home, updates={"delegate.architect.reasoning": "high"},
+                             opencode_config_dir=tmp_path / "global")
+
+    assert caught.value.write_stage is False and caught.value.written == ()
+    assert "주입한 렌더 거부" in str(caught.value)
+    assert tree_snapshot(home) == before
+
+
+_T0951_OLD = ".project_manager/tools/zz_old.py"
+_T0951_NEW = ".project_manager/tools/zz_pkg/zz_new.py"
+_T0951_RETIRE = f"# pm-retired-path: {_T0951_OLD} -> {_T0951_NEW}"
+
+
+def test_retired_replacement_may_live_under_a_directory_row(pm_update, tmp_path):
+    """AT-012 — NEW 를 소유하는 bare 디렉터리 행이 있으면 유효하다(소유 행이 bare 가 아니거나 NEW 가
+    일반 파일이 아니면 거부)."""
+    source = tmp_path / "source"
+    _make_upstream_tree(source, {_T0951_NEW: "# new\n"},
+                        [".project_manager/tools/zz_pkg", _T0951_RETIRE])
+    manifest = source / ".project_manager" / "engine.manifest"
+
+    assert pm_update.validated_retired_path_directives(source, [manifest]) == [
+        (_T0951_OLD, _T0951_NEW)]
+
+    manifest.write_text(f".project_manager/tools/zz_pkg    @render\n{_T0951_RETIRE}\n",
+                        encoding="utf-8")
+    with pytest.raises(pm_update.RetiredPathError, match="bare"):
+        pm_update.validated_retired_path_directives(source, [manifest])
+
+    manifest.write_text(f".project_manager/tools/zz_pkg\n{_T0951_RETIRE}\n", encoding="utf-8")
+    (source / _T0951_NEW).unlink()
+    with pytest.raises(pm_update.RetiredPathError, match="regular file"):
+        pm_update.validated_retired_path_directives(source, [manifest])
+
+
+def test_directory_row_retirement_completes_in_one_update(pm_update, tmp_path, monkeypatch):
+    """AT-013 — 디렉터리 행 아래 NEW 로의 은퇴가 한 번의 갱신(전달 + 완료)으로 끝난다."""
+    dest, source = _t0951_case(pm_update, tmp_path, monkeypatch, files={_T0951_NEW: "# new\n"},
+                               manifest=[".project_manager/tools/zz_pkg", _T0951_RETIRE])
+    old = dest / _T0951_OLD
+    old.parent.mkdir(parents=True)
+    old.write_text("# old\n", encoding="utf-8")
+
+    assert pm_update.main(["--from", str(source)]) == 0
+
+    assert (dest / _T0951_NEW).read_text(encoding="utf-8") == "# new\n"
+    assert not old.exists(), "은퇴 OLD 가 dest 에 남았다"
+    backups = list((dest / ".pm_import_backups").glob(f"*/{_T0951_OLD}"))
+    assert len(backups) == 1 and backups[0].read_text(encoding="utf-8") == "# old\n"

@@ -1200,7 +1200,17 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   종결의 묶음 리뷰 지원 조회(`ClusterCloser._delegate_supports_cluster`)·변경량 상한의 통합
     #   브랜치 해소(`cluster_integration_tip`)와 작업 크기 판독(`_parse_ticket_scalar`)이 코드째
     #   없어졌다 — 흡수 규칙이 느슨해진 게 아니다.
-    assert len(report.boundaries) == 246, "propagation sweep boundary ratchet changed"
+    # 240 = 246 − 16 + 10. T-0951 이 자기 갱신을 전달/완료 두 프로세스로 가르며 `pm_update` 의 흡수
+    #   장부·사유 표를 지웠다. 흡수 경계 16곳 가운데 9곳(`_shared_read_api`·`_atomic_replace_or_degrade`·
+    #   `_instance_owned_template_delta_lines`·`check_adapter_hook_sets`·`refuse_partial_hook_set_scope`·
+    #   `reinstall_protected_hooks`·`sync_adapter_configs` 3곳)은 표식 skew 재전파(reraises)로 바뀌었고,
+    #   7곳은 경계가 아니게 됐다 — try 를 지웠거나(`_installed_entry_notation_manifests`·
+    #   `_resolve_hook_set_generation_and_sibling`·`resolve_hook_set_predicate`·
+    #   `migrate_renamed_conf_keys`·`record_upstream_revs`) 잡는 예외를 좁혔다
+    #   (`apply_harness_ctx_limits` 는 `HarnessCtxError`, `sync_adapter_configs` 의 accept 는
+    #   `(OSError, ValueError)`). 새 재전파 경계 1곳은 `drift_changes` 다 — 엔진 코드 행 계획
+    #   (`_engine_code_plan`)을 같은 `except RuntimeError: raise` 안으로 들였다.
+    assert len(report.boundaries) == 240, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1231,16 +1241,16 @@ def test_guard_turns_red_when_one_reraise_is_removed():
 
 def test_guard_turns_red_when_recovery_marker_is_removed():
     sources = _canonical_sources()
-    tree = ast.parse(sources["pm_update.py"])
+    tree = ast.parse(sources["pm_log.py"])
     call = next(
         node for node in ast.walk(tree)
         if isinstance(node, ast.Call) and _called_name(node) == _RECOVERY_MARKER
     )
     call.func = ast.copy_location(ast.Name(id="_is_engine_rev_skew", ctx=ast.Load()), call.func)
     call.args = call.args[:1]
-    sources["pm_update.py"] = ast.unparse(ast.fix_missing_locations(tree)) + "\n"
+    sources["pm_log.py"] = ast.unparse(ast.fix_missing_locations(tree)) + "\n"
     report = collect_failsoft_report(sources)
-    assert any("pm_update.py" in violation for violation in report.violations)
+    assert any("pm_log.py" in violation for violation in report.violations)
 
 
 def test_guard_excludes_shipped_snapshot_tree(tmp_path):
@@ -1318,20 +1328,20 @@ def test_guard_sensitivity_marker_branches_turn_red(
 
 def test_guard_sensitivity_s6_recovery_marker_turns_red():
     sources = _canonical_sources()
-    tree = ast.parse(sources["pm_update.py"])
+    tree = ast.parse(sources["pm_log.py"])
     call = next(
         node for node in ast.walk(tree)
         if isinstance(node, ast.Call) and _called_name(node) == _RECOVERY_MARKER
     )
     call.func = ast.copy_location(ast.Name(id="_is_engine_rev_skew", ctx=ast.Load()), call.func)
     call.args = call.args[:1]
-    sources["pm_update.py"] = ast.unparse(ast.fix_missing_locations(tree)) + "\n"
+    sources["pm_log.py"] = ast.unparse(ast.fix_missing_locations(tree)) + "\n"
     assert collect_failsoft_report(sources).violations
 
 
 def test_guard_sensitivity_s7_blank_recovery_reason_turns_red():
     sources = _canonical_sources()
-    sources["pm_update.py"] = _blank_recovery_reason(sources["pm_update.py"])
+    sources["pm_log.py"] = _blank_recovery_reason(sources["pm_log.py"])
     assert collect_failsoft_report(sources).violations
 
 

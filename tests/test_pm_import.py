@@ -125,7 +125,8 @@ def pm_update():
     spec = importlib.util.spec_from_file_location("pm_update", TOOLS / "pm_update.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod
+    from _manager_home import complete_in_process
+    return complete_in_process(mod)
 
 
 @pytest.fixture(autouse=True)
