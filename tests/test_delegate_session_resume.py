@@ -142,14 +142,19 @@ def _run_main(pd, monkeypatch, argv, run_fn=None, conf=None):
     return pd.main(list(argv), run_fn=run_fn)
 
 
+# resume 축의 기본 역할 — read 역할이고 `--ticket` 단위로 실행된다. code-reviewer 는 묶음
+# (`--cluster`) 준비를 거쳐 실행되며 그 왕복은 tests/test_cluster_review_round.py 가 소유한다.
+_RESUME_ROLE = "researcher"
+
+
 def _argv(prompt: Path, cwd: Path, out_dir: Path, *extra: str,
-          role: str = "code-reviewer", harness: str = "claude") -> list[str]:
+          role: str = _RESUME_ROLE, harness: str = "claude") -> list[str]:
     argv = [
         "--role", role, "--prompt-file", str(prompt), "--cwd", str(cwd),
         "--harness", harness, "--model", "opus",
         "--output-dir", str(out_dir),
     ]
-    if role == "code-reviewer" and "--ticket" not in extra and "--gate" not in extra:
+    if role == _RESUME_ROLE and "--ticket" not in extra:
         argv += ["--ticket", TICKET_ID]
     return [*argv, *extra]
 
@@ -162,7 +167,7 @@ def _recent_seed_time() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
 
 
-def _seed_record(relay, ledger_path: Path, *, role: str = "code-reviewer",
+def _seed_record(relay, ledger_path: Path, *, role: str = _RESUME_ROLE,
                  rc: int = 0, started: datetime.datetime | None = None,
                  surface: str = "delegate", harness: str = "claude",
                  finish: bool = True, extra: dict | None = None,
@@ -475,7 +480,7 @@ def test_resume_resolution_surfaces_the_unusable_reason(pd, relay, tmp_path, cap
     record_id = _seed_record(relay, ledger_path, start_extra={"ticket": TICKET_ID})
 
     plan = pd.resolve_resume_plan(
-        record_id, harness="claude", role="code-reviewer",
+        record_id, harness="claude", role=_RESUME_ROLE,
         task_text="본문", output_dir=out_dir)
 
     assert plan is None
@@ -748,7 +753,7 @@ def test_review_round_ledger_is_never_touched(pd, monkeypatch, tmp_path, capsys)
 
 def _resume_fixture(pd, tmp_path, *, must_fix=("직전 지적 A", "직전 지적 B"),
                     base_rev="cafebabe", session_id=SESSION_ID,
-                    role="code-reviewer"):
+                    role=_RESUME_ROLE):
     out_dir = tmp_path / "raw"
     out_dir.mkdir()
     ledger_path = out_dir / "raw_outputs.json"
@@ -946,7 +951,12 @@ def test_no_rerun_class_is_pinned_to_the_engine_classification():
     assert set(pd_module().READ_ROLES) <= set(pd_module().RESUME_MUTATING_ROLES)
 
 
-@pytest.mark.parametrize("role", _NO_RERUN_ROLES)
+# `--ticket` 단위 CLI 실행으로 관측하는 역할 — code-reviewer 실행은 묶음(`--cluster`) 준비를
+# 거치며 그 왕복은 tests/test_cluster_review_round.py 가 소유한다(분류 소속은 위 테스트가 본다).
+_TICKET_RUN_ROLES = [role for role in _NO_RERUN_ROLES if role != "code-reviewer"]
+
+
+@pytest.mark.parametrize("role", _TICKET_RUN_ROLES)
 def test_mutating_role_resume_mismatch_fails_loud(pd, monkeypatch, tmp_path, capsys, role):
     """재실행 금지 클래스 불일치 → rc 1 · fresh 재실행 0 · 확인 안내 (중복 기록 차단)."""
     assert role in pd.RESUME_MUTATING_ROLES
@@ -1017,17 +1027,17 @@ def _fallback_conf() -> dict:
     """config 매핑 + 명시 폴백(CLI 완전지정이 아니어야 폴백이 살아 있다)."""
     return {
         "delegate.enabled": "true",
-        "delegate.code-reviewer.harness": "claude",
-        "delegate.code-reviewer.model": "opus",
-        "delegate.code-reviewer.fallback.harness": "codex",
-        "delegate.code-reviewer.fallback.model": "gpt-x",
+        f"delegate.{_RESUME_ROLE}.harness": "claude",
+        f"delegate.{_RESUME_ROLE}.model": "opus",
+        f"delegate.{_RESUME_ROLE}.fallback.harness": "codex",
+        f"delegate.{_RESUME_ROLE}.fallback.model": "gpt-x",
     }
 
 
 def _mapped_argv(prompt: Path, cwd: Path, out_dir: Path, *extra: str) -> list[str]:
     """config 매핑으로 해소되는 argv(--harness/--model 미지정) + 고정 timeout."""
     return [
-        "--role", "code-reviewer", "--prompt-file", str(prompt), "--cwd", str(cwd),
+        "--role", _RESUME_ROLE, "--prompt-file", str(prompt), "--cwd", str(cwd),
         "--output-dir", str(out_dir), "--timeout", "600", "--ticket", TICKET_ID,
         *extra,
     ]
@@ -1041,8 +1051,8 @@ def test_infrastructure_failure_goes_to_fallback_without_a_fresh_rerun(
     위임이 세 번 스폰되고(재사용 → fresh → 폴백) 호출층 상한 선언과 어긋난다."""
     out_dir, _ledger_path, _record_id = _resume_fixture(pd, tmp_path)
     prompt = _write_prompt(tmp_path)
-    # 폴백은 codex 로 떨어진다 — codex code-reviewer preflight(`_preflight_codex_read_exec_root`
-    # — T-0844)가 스폰 전에 --cwd 저장소/staged 형상을 요구한다.
+    # 폴백은 codex 로 떨어진다 — codex read 역할 preflight(`_preflight_codex_read_exec_root`
+    # — T-0844)가 스폰 전에 --cwd 저장소 형상을 요구한다.
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True)
     (tmp_path / "staged.txt").write_text("staged\n", encoding="utf-8")
     subprocess.run(

@@ -163,9 +163,16 @@ def test_conf_keys_comes_from_the_project_copy_registry(api, pm_home):
     assert all(row["members"] is None for row in named)
     assert all(isinstance(row["members"], list) for row in patterns)
     # 패턴 멤버는 전개된 실명이고 각자 자기 기본값을 든다(표의 합성 표기가 아니다).
-    diff_cap = next(row for row in patterns if row["key"].startswith("diff_cap."))
-    assert {member["key"]: member["default"] for member in diff_cap["members"]} == {
-        "diff_cap.small": "300", "diff_cap.medium": "1000", "diff_cap.large": "2500"}
+    harness = next(row for row in patterns if row["key"].startswith("harness."))
+    window_defaults = {
+        member["key"]: member["default"] for member in harness["members"]
+        if member["key"].endswith(".ctx_window_tokens")
+    }
+    assert window_defaults == {
+        "harness.claude.ctx_window_tokens": "200000",
+        "harness.codex.ctx_window_tokens": "200000",
+        "harness.opencode.ctx_window_tokens": "200000",
+    }
 
 
 def test_an_old_generation_copy_cannot_answer_the_key_list(api, pm_home):

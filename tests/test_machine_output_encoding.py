@@ -561,8 +561,7 @@ STDOUT_WRITE_SHAPE = "<stdout>.write(json.dumps(...))"
 
 # stdout 을 담는 이름들. 엔진은 `sys.stdout` 을 `stdout`/`output_stream` 지역 이름으로 넘겨
 # 쓰므로(delegate_channel_guard) 그 별칭 회귀도 가드 시야에 든다. 파일 handle 쓰기
-# (`handle.write(json.dumps(...))` 실측 8건 — gate_snapshot·pm_import·pm_relay)는 이름이 달라
-# 걸리지 않는다.
+# (`<파일 handle>.write(json.dumps(...))` — pm_import 등)는 이름이 달라 걸리지 않는다.
 _STDOUT_WRITER_NAMES = frozenset({"sys.stdout", "stdout", "output_stream"})
 
 # 허용 예외 — (파일 경로, 형태) → 사유. 비어 있는 것이 정상 상태다. 새 항목은 사유와 함께만

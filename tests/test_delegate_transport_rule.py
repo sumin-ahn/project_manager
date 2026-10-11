@@ -1,18 +1,17 @@
-"""위임 transport 규칙 한 문장 — 위임을 안내하는 표면 전부가 같은 규칙을 말한다 (T-0947).
+"""위임 transport 규칙 한 문장 — 위임을 안내하는 표면 전부가 같은 규칙을 말한다 (T-0947 · T-0950).
 
-규칙(R1): 리뷰(`code-reviewer`)는 하네스와 무관하게 엔진이 실행하고, 설계·구현·조사는 target
-하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다. 리뷰가 엔진 실행인 이유는 실행
-위치 격리(스냅샷을 하네스 프로세스의 실행 root 로)와 라운드 상한·발산 판정이다 — native 위임 도구에는
-작업 디렉터리 인자가 없다.
+규칙(R1): 설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다.
+리뷰도 역할 예외가 없다 — 같은 하네스면 `ticket prepare --cluster --role code-reviewer` 가 만든 엔진
+프롬프트 파일을 native 서브에이전트에 넘기고 돌려받는다.
 
 여기서 고정하는 성질:
   (1) R1 문장이 공용 카드·codex 카드·opencode 운영 지침·playbook·opencode 명령 파생본과
       lite 진입 문서 2벌·템플릿 README 3벌·세션 자동 로드 공통 코어 `AGENTS.md` 2벌·opencode PM 카드·
       codex 부트스트랩 카드 절에 있다.
-  (2) 리뷰를 native 로 안내하는 문구(손 spawn·손 프롬프트·"더 저렴"·"하네스 네이티브 채널")가 위 표면과
-      opencode `code-reviewer` 카드·codex `code-reviewer` 카드에 없다.
-  (3) 카드의 `ticket prepare` 역할 목록은 엔진 선택지(developer·architect)와 같다.
-  (4) 역방향 — 설계·구현 native 안내와 리뷰가 쓰는 native `code-reviewer` 카드 파일은 남아 있다.
+  (2) 리뷰를 엔진 전용으로 안내하던 문구(하네스와 무관한 엔진 실행·격리 스냅샷·분리 실행·대기)가 위
+      표면과 `pm_principles.md` 에 없다.
+  (3) 카드의 `ticket prepare` 역할 목록 합집합은 엔진 선택지(developer·architect·code-reviewer)와 같다.
+  (4) 설계·구현·리뷰 native 안내와 리뷰가 쓰는 native `code-reviewer` 카드 파일이 있다.
 """
 from __future__ import annotations
 
@@ -50,30 +49,19 @@ SURFACES = (
 PREPARE_CARDS = (SHARED_CARD, CODEX_CARD, OPENCODE_COMMAND)
 
 TRANSPORT_RULE = (
-    "리뷰(`code-reviewer`)는 하네스와 무관하게 엔진이 실행한다"
-    "(`pm_delegate.py --role code-reviewer --cluster`). 설계·구현·조사는 target 하네스 == PM "
-    "하네스면 native, 다르면 `pm_delegate.py` cross 다."
+    "설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다."
 )
-# 리뷰를 native 로 안내하던 문구 — 손 spawn·손 프롬프트·비용 근거·native 역할 목록·native 폴백 실행.
-NATIVE_REVIEW_GUIDANCE = (
-    "같은 프로세스 계열이라 더 저렴",
-    "subagent_type: code-reviewer",
-    'agent_type="code-reviewer"',
-    "`Agent`(code-reviewer)",
-    "subagent_type=developer|code-reviewer",
-    "`developer`|`code-reviewer`",
-    "<developer|architect|code-reviewer>",
-    "변경을 검토하라",
-    "opencode run --agent code-reviewer",
-    "code-reviewer native profile",
-    "하네스 네이티브 채널",
-    "subagent(developer / code-reviewer",
-    "자식 프로세스 위임 없음",
+PRINCIPLES = REPO / ".project_manager" / "wiki" / "pm_principles.md"
+# 리뷰를 엔진 전용으로 안내하던 문구 — 하네스 무관 엔진 실행·이유 설명·준비 제외·격리 트리·분리 실행·대기.
+ENGINE_ONLY_REVIEW_RULE = (
+    "하네스와 무관하게 엔진이 실행",
+    "리뷰만 엔진",
+    "리뷰는 준비 대상이 아니다",
+    "격리 스냅샷",
+    "cluster wait",
+    "--background",
 )
-# opencode `code-reviewer` 카드는 엔진 실행(`opencode run --agent code-reviewer`)이 쓰므로 그 실행
-# 문구는 남고, PM 의 `task` 직접 호출 안내만 없어야 한다.
-REVIEWER_CARD_NATIVE_GUIDANCE = ("subagent_type: code-reviewer", "1차 위임 경로")
-ENGINE_PREPARE_ROLES = {"developer", "architect"}
+ENGINE_PREPARE_ROLES = {"developer", "architect", "code-reviewer"}
 NATIVE_REVIEWER_CARDS = (
     REPO / ".claude" / "agents" / "code-reviewer.md",
     REPO / "templates" / "codex" / ".codex" / "agents" / "code-reviewer.toml",
@@ -91,44 +79,53 @@ def test_surface_states_the_transport_rule(surface):
     assert TRANSPORT_RULE in _flat(surface)
 
 
-@pytest.mark.parametrize("surface", SURFACES, ids=lambda path: path.relative_to(REPO).as_posix())
-def test_surface_has_no_native_review_guidance(surface):
+@pytest.mark.parametrize(
+    "surface", (*SURFACES, PRINCIPLES), ids=lambda path: path.relative_to(REPO).as_posix(),
+)
+def test_surface_has_no_engine_only_review_rule(surface):
+    """AT-017 — 리뷰를 엔진 전용으로 안내하는 문구가 안내 표면 13개와 `pm_principles.md` 에 없다."""
     text = surface.read_text(encoding="utf-8")
-    remaining = [phrase for phrase in NATIVE_REVIEW_GUIDANCE if phrase in text]
+    remaining = [phrase for phrase in ENGINE_ONLY_REVIEW_RULE if phrase in text]
     assert remaining == []
 
 
-def test_reviewer_card_has_no_native_task_guidance():
-    text = OPENCODE_REVIEWER_CARD.read_text(encoding="utf-8")
-    remaining = [phrase for phrase in REVIEWER_CARD_NATIVE_GUIDANCE if phrase in text]
-    assert remaining == []
-    assert "opencode run --agent code-reviewer" in text  # 역방향 — 엔진 실행 경로는 남는다
+def test_reviewer_card_states_both_execution_paths():
+    """opencode `code-reviewer` 카드는 같은 하네스면 PM 의 `task`, 다르면 엔진의 `opencode run` 을 말한다."""
+    text = _flat(OPENCODE_REVIEWER_CARD)
+    assert "PM 은 리뷰를 `task` 로 호출하지 않는다" not in text
+    assert "PM 이 `task` 로" in text
+    assert "opencode run --agent code-reviewer" in text
 
 
 @pytest.mark.parametrize("card", PREPARE_CARDS, ids=lambda path: path.relative_to(REPO).as_posix())
 def test_prepare_role_list_matches_the_engine_choices(card):
-    lists = re.findall(r"ticket prepare (?:\\ )?--cluster <C-이름> --role <([^>]+)>", _flat(card))
+    """카드의 준비 명령 역할(자리표시 목록과 리터럴 역할)의 합집합이 엔진 선택지와 같다."""
+    lists = re.findall(
+        r"ticket prepare (?:\\ )?--cluster <C-이름> --role (<[^>]+>|[a-z-]+)", _flat(card),
+    )
     assert lists, "카드에 `ticket prepare` 역할 목록이 없다"
-    for roles in lists:
-        assert set(roles.split("|")) == ENGINE_PREPARE_ROLES
+    roles = {role for item in lists for role in item.strip("<>").split("|")}
+    assert roles == ENGINE_PREPARE_ROLES
 
 
-def test_design_and_implementation_native_guidance_remains():
-    """역방향 — 리뷰만 빠졌고 설계·구현 native 위임 안내는 그대로다."""
+def test_native_guidance_covers_design_implementation_and_review():
+    """설계·구현·리뷰 native 위임 안내가 세 하네스 표면에 있다."""
     shared = SHARED_CARD.read_text(encoding="utf-8")
-    assert "subagent_type: developer" in shared and "subagent_type: architect" in shared
+    for role in ("developer", "architect", "code-reviewer"):
+        assert f"subagent_type: {role}" in shared
     codex = CODEX_CARD.read_text(encoding="utf-8")
-    assert 'agent_type="developer"' in codex and 'agent_type="architect"' in codex
+    for role in ("developer", "architect", "code-reviewer"):
+        assert f'agent_type="{role}"' in codex
     instructions = OPENCODE_INSTRUCTIONS.read_text(encoding="utf-8")
-    assert "| developer | `developer` |" in instructions
-    assert "| architect | `architect` |" in instructions
+    for role in ("developer", "architect", "code-reviewer"):
+        assert f"| {role} | `{role}` |" in instructions
 
 
 @pytest.mark.parametrize(
     "card", NATIVE_REVIEWER_CARDS, ids=lambda path: path.relative_to(REPO).as_posix(),
 )
-def test_native_reviewer_card_used_by_engine_execution_remains(card):
-    """리뷰 실행(`opencode run --agent code-reviewer`·codex named profile)이 쓰는 카드는 남는다."""
+def test_native_reviewer_card_remains(card):
+    """리뷰 실행(native 서브에이전트·`opencode run --agent code-reviewer`·codex named profile)이 쓰는 카드."""
     assert card.is_file()
 
 
@@ -145,18 +142,17 @@ def _codex_card_section() -> str:
 
 
 def test_codex_bootstrap_section_states_the_transport_rule():
-    """codex 부트스트랩 카드 절은 R1 을 말하고, 리뷰를 세션 내 spawn 대상으로 열거하지 않는다."""
+    """codex 부트스트랩 카드 절은 R1 을 말하고 리뷰를 세션 내 spawn 대상에 포함한다."""
     section = re.sub(r"\s+", " ", _codex_card_section())
     assert TRANSPORT_RULE in section
-    remaining = [phrase for phrase in (*NATIVE_REVIEW_GUIDANCE, "code-reviewer,researcher}",
-                                       "위임 = 세션 내 spawn") if phrase in section]
+    remaining = [phrase for phrase in ENGINE_ONLY_REVIEW_RULE if phrase in section]
     assert remaining == []
-    assert "{architect,developer,researcher}" in section  # 역방향 — 설계·구현·조사 native 안내는 남는다
+    assert "{architect,code-reviewer,developer,researcher}" in section
 
 
-def test_codex_reviewer_card_describes_engine_execution():
-    """codex `code-reviewer` 카드는 세션 내 spawn 대상이라 말하지 않고 엔진 실행을 말한다."""
+def test_codex_reviewer_card_describes_native_and_cross_execution():
+    """codex `code-reviewer` 카드는 엔진 전용 실행을 말하지 않고 두 실행 경로를 말한다."""
     text = _flat(CODEX_REVIEWER_CARD)
-    assert "in-session spawn" not in text
-    assert "pm_delegate.py --role code-reviewer --cluster" in text
-
+    assert "하네스와 무관하게" not in text
+    assert "PM 이 세션 안에서 띄우지 않는다" not in text
+    assert "spawn_agent" in text

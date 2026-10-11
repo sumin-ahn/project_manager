@@ -13,13 +13,21 @@
 
 ### Changed
 
-- 위임 카드·운영 지침·playbook의 transport 규칙을 한 문장으로 맞춘다. 리뷰는 하네스와 무관하게 엔진이 실행하고(`pm_delegate.py --role code-reviewer --cluster`), 설계·구현·조사만 같은 하네스면 native로 위임한다. 리뷰 실행에는 더 이상 "네이티브가 더 저렴" 안내가 나오지 않으며, `ticket prepare --role` 은 `developer`·`architect` 만 받는다.
+- 위임 transport 규칙을 한 문장으로 맞춘다. 설계·구현·리뷰·조사는 target 하네스가 PM 하네스와 같으면 native 서브에이전트, 다르면 `pm_delegate.py` 교차 실행이다. 같은 하네스 리뷰는 `ticket prepare --cluster <C> --role code-reviewer` 가 엔진 프롬프트 파일을 만들고 서브에이전트가 슬롯에서 검토한 뒤 `ticket harvest` 로 돌려받는다. 리뷰 돌려받기는 준비 뒤 슬롯 HEAD·작업 트리가 바뀌었으면 거부한다.
+
+- 완료·종결 판정의 리뷰 잔여를 리뷰 라운드 파일에서 읽는다. 묶음 종결은 돌려받은 리뷰 라운드가 없는 멤버를 거부한다.
 
 - `pm-config delegate models` 응답에 모델별 추론 강도(`variants`)를 싣고, 설정 화면의 OpenCode 생각 깊이 칸은 그 모델의 목록에서 고른다(목록이 비면 "없음"이고 값을 비운다).
 
 - 개발 회귀와 릴리즈 플랫폼 검증을 분리한다. 일반 회귀는 현재 플랫폼의 테스트만 실행하고, 선언한 추가 플랫폼 전체는 릴리즈 게이트에서 같은 커밋으로 검증한다. 회귀는 백그라운드로 실행해 별도 작업 트리의 개발을 계속할 수 있다.
 
 - 티켓의 공유 승격·실행·종결 전에 실제 제품 branch/base_branch 및 멤버 결속을 확인한다. 코드 트리 없는 draft 작성은 유지하며 승격 전에 기존 cluster new로 결속한다. 옛 branch 없는 크기 1 장부는 명시 재결속이 필요하고 PM 홈과 제품의 동명 main으로 기준을 추측하지 않는다. 최종 제품 기준 판정과 장부 기록은 같은 조회 결과를 사용하며 재읽기 실패는 기록 전에 거부한다.
+
+### Removed
+
+- `gate_snapshot.py`(갱신이 `.pm_import_backups/` 로 옮긴다), 리뷰 `--background`와 `pm_delegate.py cluster wait`, `pm_delegate.py --gate`, `rounds recalculate`·`rounds report`·`--rounds-report`·`rounds resolve --gate`, 내부 리뷰 기록 `.local/internal_review_rounds.json`·`.local/cluster-review-runs.jsonl`(더 이상 읽지 않으며 지워도 된다), 설정 키 `delegate.code-reviewer.rounds_max`(남아 있으면 차단 구키로 알린다).
+
+- 변경량 상한(diff 서킷브레이커). 완료 기록과 추가 리뷰어 호출이 더 이상 티켓 `estimate` 별 변경 줄 수로 멈추지 않는다. 설정 키 `diff_cap.small`·`diff_cap.medium`·`diff_cap.large` 는 남아 있으면 차단 구키로 알린다(그 줄을 지우면 된다). 사설 참조 검사의 측정 범위는 그대로다.
 
 ### Fixed
 

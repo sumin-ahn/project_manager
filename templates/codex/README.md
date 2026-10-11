@@ -193,10 +193,9 @@ codex          # 대화형 — AGENTS.md(공통 코어)를 자동 로드해 그 
 
 ## 위임 (transport 규칙 · in-session spawn)
 
-리뷰(`code-reviewer`)는 하네스와 무관하게 엔진이 실행한다(`pm_delegate.py --role code-reviewer --cluster`).
-설계·구현·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다. codex 의 native
+설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다. codex 의 native
 위임은 **multi_agent in-session spawn** 이다 — PM(메인세션)이 세션 *안에서* 명명 custom agent
-(`architect`·`developer`·`researcher`)를 스폰한다(부모 sandbox 상속·`codex exec --agent` 플래그 부재).
+(`architect`·`developer`·`code-reviewer`·`researcher`)를 스폰한다(부모 sandbox 상속·`codex exec --agent` 플래그 부재).
 
 - 역할 카드 = `.codex/agents/{architect,code-reviewer,developer,researcher}.toml`. 각 TOML 은 필수 필드
   `name`/`description`/`developer_instructions`(≈system prompt) + `sandbox_mode`(developer/architect=

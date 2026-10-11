@@ -79,7 +79,6 @@ def _wire_main(external, monkeypatch, tmp_path: Path, *, conf=None, diff=None):
     monkeypatch.setattr(external, "parse_ticket_touches", lambda *args, **kwargs: ["src/"])
     payload = diff if diff is not None else _raw_diff("src/app.py")
     monkeypatch.setattr(external, "extract_diff", lambda *args, **kwargs: payload)
-    monkeypatch.setattr(external, "_diff_cap_refusal", lambda *args, **kwargs: None)
 
     calls: list[dict] = []
 
@@ -193,23 +192,18 @@ def test_opencode_post_create_containment_failure_cleans_transport(
 
 # 각 tuple이 한 셀의 기대값이다. 특히 no-gate/명시 gate 행은 조건형 고지까지 부재해야 한다.
 @pytest.mark.parametrize(
-    "early_exit,gate_mode,expected_rc,derived_notice,unaccounted_notice,confirmed_notice",
+    "gate_mode,expected_rc,derived_notice,unaccounted_notice,confirmed_notice",
     [
-        ("empty", "derived", 1, True, False, False),
-        ("empty", "no-gate", 1, False, False, False),
-        ("empty", "explicit", 1, False, False, False),
-        ("diff-cap", "derived", 1, True, False, False),
-        ("diff-cap", "no-gate", 1, False, False, False),
-        ("diff-cap", "explicit", 1, False, False, False),
+        ("derived", 1, True, False, False),
+        ("no-gate", 1, False, False, False),
+        ("explicit", 1, False, False, False),
     ],
 )
 def test_early_exit_notice_matrix_has_cell_specific_expectations(
-        external, monkeypatch, tmp_path, capsys, early_exit, gate_mode, expected_rc,
+        external, monkeypatch, tmp_path, capsys, gate_mode, expected_rc,
         derived_notice, unaccounted_notice, confirmed_notice):
-    diff = "" if early_exit == "empty" else _raw_diff("src/app.py")
-    calls = _wire_main(external, monkeypatch, tmp_path, diff=diff)
-    if early_exit == "diff-cap":
-        monkeypatch.setattr(external, "_diff_cap_refusal", lambda *args, **kwargs: "diff-cap 차단")
+    """빈 diff 조기 종료 칸마다 고지가 다르다(호출 0 · 장부 0)."""
+    calls = _wire_main(external, monkeypatch, tmp_path, diff="")
 
     if gate_mode == "derived":
         argv = ["--ticket", "T-0637"]
@@ -232,14 +226,12 @@ def test_early_exit_notice_matrix_has_cell_specific_expectations(
 
 
 def test_gate_and_anchor_order_remains_unambiguous(external):
-    """게이트 해소 → 조기 종료 → 선택 거부 → 앵커 차단 → 예약 순서를 고정한다."""
+    """게이트 해소 → 조기 종료 → 선택 거부 → 예약 순서를 고정한다."""
     source = inspect.getsource(external._main)
     positions = [
         source.index("gate_derivation = _derive_gate_from_ticket(args)"),
         source.index("if not diff.strip():"),
-        source.index("cap_block = _diff_cap_refusal("),
         source.index("if not args.gate and not args.no_gate:"),
-        source.index("anchor_refusal = _gate_snapshot_round_refusal("),
         source.index("budget = _reserve_round_budget("),
     ]
     assert positions == sorted(positions)

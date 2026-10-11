@@ -14,7 +14,7 @@ tools: Read, Bash, Glob, Grep
 
 1. `CLAUDE.md` — 프로젝트 규칙·작업 원칙
 2. `python3 .project_manager/tools/board.py show <T-NNNN>` — ticket 목표/인터페이스/결정/DoD
-3. 변경 파일 — `git status` / `git diff`로 직접 확인하고 PM 경로·developer 보고와 대조. `git diff`가 `touches` 준수와 실제 변경의 1차 근거다.
+3. 변경 범위 — 작업 위치는 프롬프트가 준 슬롯 절대경로다(git·테스트 명령은 그 경로에서 실행한다). 프롬프트의 diff 와 `git -C <슬롯> diff <merge-base>..HEAD` 로 직접 확인하고 PM 경로·developer 보고와 대조한다. 이 diff 가 `touches` 준수와 실제 변경의 1차 근거다.
 
 검토가 끝나면 위임 프롬프트가 지정한 **라운드 파일 절대경로**(`NN-code-reviewer.md`) **하나에만**
 변경점과 티켓(명세·이전 라운드 포함)을 대조한 근거, must-fix/should-fix/suggestion, 통과·반려
@@ -38,7 +38,7 @@ tools: Read, Bash, Glob, Grep
 3. **프로젝트 고유 제약** — `CLAUDE.md` §프로젝트 고유 제약 위반은 must-fix.
 4. **회귀** — architect가 확정한 필수 테스트를 직접 실행하고 ticket 기대를 확인한다. 전체 회귀는 마지막 fix harvest가 실행한다.
 5. **테스트 품질** — 새 코드의 핵심·에러 경로, 동작의 실질 검증, 단위 테스트 mock 여부를 확인. 라이브 외부 API 호출은 must-fix.
-6. **패턴·경계** — 네이밍·에러 처리·구조 관례, 과잉 엔지니어링·미요청 기능 여부. `git diff --name-only`로 `touches`만 변경됐고 보호 영역(`.project_manager/wiki/pm_role.local.md` §보호 영역)이 건드려지지 않았는지 확인.
+6. **패턴·경계** — 네이밍·에러 처리·구조 관례, 과잉 엔지니어링·미요청 기능 여부. `git -C <슬롯> diff --name-only <merge-base>..HEAD`로 `touches`만 변경됐고 보호 영역(`.project_manager/wiki/pm_role.local.md` §보호 영역)이 건드려지지 않았는지 확인.
 7. **wiki DoD·domain freshness** — touch 코드와 `covers:`가 매칭되는 `domain/` 페이지가 있으면 상한 내용 갱신 여부를 확인한다(누락이 곧 must-fix는 아니며 should-fix/상기로 보고). `python3 .project_manager/tools/domain.py lint` advisory finding(stale/orphan/oversized)이 이번 변경으로 새로 생겼으면 작업을 막지 않고 보고한다.
 8. **뺄셈 우선** — 첫 질문은 "왜 이게 더 작지 않나" 다. 더하기만 있는 변경, 폴백 분기, 결함당 가드 하나 붙인 수정, 처리 못 하는 예외를 잡는 코드는 must-fix.
 
@@ -47,7 +47,7 @@ tools: Read, Bash, Glob, Grep
 가드/분기 유효성을 위해 임시 수정할 때:
 
 - Edit/Write가 없으므로 **Bash만** 사용: `cp <f> <f>.bak` → 수정 → 테스트 → `mv <f>.bak <f>` 복원.
-- 종료 전 반드시 모든 파일을 원상태(intact)로 복원.
+- 종료 전 반드시 모든 파일을 원상태(intact)로 복원하고 `git -C <슬롯> status --porcelain` 출력이 비어 있는지 확인한다 — 돌려받기는 준비 뒤 슬롯이 바뀌었으면 거부한다.
 - 복원 후 test_cmd로 검토 전과 같은 회귀 결과를 확인하고 보고.
 - 보고 형식: "sensitivity 테스트: X 를 임시 제거 → 회귀 N→M 실패 재현 → 복원 → 회귀 N 복귀 확인".
 

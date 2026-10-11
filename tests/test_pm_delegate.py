@@ -368,32 +368,12 @@ def test_dry_run_outputs_argv_and_prompt(pd, monkeypatch, tmp_path, capsys):
     assert fake.calls == []  # 미실행
 
 
-def test_t0658_code_reviewer_dry_run_prompt_contains_parser_derived_contract(
-    pd, monkeypatch, tmp_path, capsys,
-):
-    """code-reviewer 실 합성 prompt가 판정 선언·목록 0건·허용 토큰 계약을 모두 싣는다."""
-    prompt = _write_prompt(tmp_path, "T-0658 리뷰 요청")
-    conf = {
-        "delegate.enabled": "false",
-        "delegate.code-reviewer.harness": "codex",
-        "delegate.code-reviewer.model": "gpt-review",
-    }
-    fake = _FakeRun(stdout=_codex_stdout())
-
-    rc = _run_main(
-        pd,
-        monkeypatch,
-        [
-            "--role", "code-reviewer", "--prompt-file", str(prompt),
-            "--cwd", str(tmp_path), "--ticket", "T-0658", "--dry-run",
-        ],
-        conf,
-        fake,
-    )
-    out = capsys.readouterr().out
+def test_t0658_code_reviewer_role_preamble_contains_parser_derived_contract(pd):
+    """code-reviewer 역할 머리말(두 리뷰 경로가 프롬프트 앞에 싣는다)이 판정 선언·목록 0건·허용
+    토큰 계약을 모두 싣는다."""
+    out = pd._role_preamble(pd.INTERNAL_REVIEW_ROLE)
     external = pd._load_additional_reviewer()
 
-    assert rc == 0 and fake.calls == []
     assert "행 선두" in out and "인용문·코드펜스" in out
     assert "`판정: 통과` 또는 `판정: 반려`" in out
     assert "must-fix 절은 markdown 제목 `## must-fix`" in out
@@ -4950,9 +4930,8 @@ def _scope_workspace(
     """PM 홈 + `work/<repo>_<N>` git 워크스페이스 + ticket 을 실물로 세운다.
 
     delegate_scope→board(ticket touches)→repo_coordinates(좌표 정규화)→git status 체인을 mock 없이
-    통과시키기 위한 형상(test_delegate_scope 픽스처 동형). `stage_change=True` 는 codex
-    code-reviewer preflight(`_preflight_codex_read_exec_root` — T-0844)의 staged-nonzero 요건을
-    만족시키려고 workspace 자신에 독립 staged 변경 하나를 얹는다(worktree 는 자기 index 를 갖는다)."""
+    통과시키기 위한 형상(test_delegate_scope 픽스처 동형). `stage_change=True` 는 workspace
+    자신에 독립 staged 변경 하나를 얹는다(worktree 는 자기 index 를 갖는다)."""
     pm_home = tmp_path / "pm_home"
     workspace = pm_home / "work" / "demo_1"
     pm_home.mkdir()
@@ -5007,12 +4986,15 @@ def _scope_workspace(
         pm_home / ".project_manager" / "wiki", TICKET_ID,
         base_branch="task/main",
     )
-    assert len(rounds) == 1 and rounds[0] in {"architect", "developer", "code-reviewer"}
+    assert len(rounds) == 1 and rounds[0] in {
+        "architect", "developer", "code-reviewer", "researcher"}
     current_role = rounds[0]
+    # researcher 는 고정 수열 밖 역할이라 앞선 완료 라운드가 없다.
     preceding = {
         "architect": (),
         "developer": ("architect",),
         "code-reviewer": ("architect", "developer"),
+        "researcher": (),
     }[current_role]
     rounds_dir = (
         pm_home / ".project_manager" / "wiki" / "tickets" / "rounds" / TICKET_ID
@@ -5116,15 +5098,15 @@ def test_in_scope_only_change_has_no_warning(pd, monkeypatch, tmp_path, capsys):
 
 
 def test_read_only_role_write_is_warned(pd, monkeypatch, tmp_path, capsys):
-    """읽기 전용 역할(code-reviewer)은 touches 가 있어도 허용 0 — 쓰기는 전부 경고."""
+    """읽기 전용 역할(researcher)은 touches 가 있어도 허용 0 — 쓰기는 전부 경고."""
     workspace, prompt = _scope_workspace(
-        tmp_path, monkeypatch, pd, stage_change=True, rounds=("code-reviewer",))
-    conf = _enabled_conf(**{"delegate.code-reviewer.harness": "codex",
-                            "delegate.code-reviewer.model": "gpt-r"})
-    fake = _WritingRun(workspace, (["src/review-note.md"], _ok_result("리뷰 완료")))
+        tmp_path, monkeypatch, pd, stage_change=True, rounds=("researcher",))
+    conf = _enabled_conf(**{"delegate.researcher.harness": "codex",
+                            "delegate.researcher.model": "gpt-r"})
+    fake = _WritingRun(workspace, (["src/review-note.md"], _ok_result("조사 완료")))
     rc = _run_main(
         pd, monkeypatch,
-        ["--role", "code-reviewer", "--prompt-file", str(prompt), "--cwd", str(workspace),
+        ["--role", "researcher", "--prompt-file", str(prompt), "--cwd", str(workspace),
          "--ticket", TICKET_ID],
         conf, fake,
     )
@@ -5789,29 +5771,25 @@ def test_default_run_fn_midrun_oserror_is_not_launch(pd, monkeypatch):
 
 
 def test_help_documents_ticket_scope_flag(pd):
-    """reviewer ticket 귀속과 그 밖 역할의 생략 의미를 §help가 알린다."""
+    """ticket 범위 판정·생략 의미와 리뷰 역할의 묶음 단위를 §help가 알린다."""
     # argparse 가 줄바꿈하므로 wrap 에 안전한 토큰으로 본다.
     help_text = " ".join(pd.build_arg_parser().format_help().split())
     assert "--ticket T-NNNN" in help_text
     assert "범위 밖 변경을 경고 판정" in help_text
-    assert "code-reviewer는 --ticket 또는 --gate 필수" in help_text
-    assert "그 밖 역할은 생략 시 허용 경로 0" in help_text
+    assert "생략 시 허용 경로 0" in help_text
+    assert "code-reviewer 는 --cluster 를 쓴다" in help_text
 
 
-def test_code_reviewer_requires_ticket_for_persistent_review(
-        pd, monkeypatch, tmp_path):
-    """T-0684 이후 reviewer는 자문 무기록 경로 없이 항상 ticket 성장 절에 귀속된다."""
-    prompt = _write_prompt(tmp_path, "review")
+def test_code_reviewer_requires_the_cluster(pd, monkeypatch, tmp_path, capsys):
+    """리뷰 단위는 묶음이다 — `--cluster` 없는 code-reviewer 호출은 사용 오류(rc 2)다."""
     monkeypatch.setattr(pd, "local_config", lambda: _enabled_conf(**{
         "delegate.code-reviewer.harness": "codex",
         "delegate.code-reviewer.model": "gpt-r",
     }))
     with pytest.raises(SystemExit) as exc:
-        pd.main([
-            "--role", "code-reviewer", "--prompt-file", str(prompt),
-            "--cwd", str(tmp_path), "--dry-run",
-        ])
+        pd.main(["--role", "code-reviewer", "--cwd", str(tmp_path), "--dry-run"])
     assert exc.value.code == 2
+    assert "code-reviewer 는 --cluster 가 필수다" in capsys.readouterr().err
 
 
 # ══ native advisory 하네스 마커 (T-0497) ══════════════════════════════════
@@ -5898,23 +5876,20 @@ def test_native_advisory_rejects_values_outside_public_domain(pd, monkeypatch):
     assert pd.native_advisory(None, "developer") is None
 
 
-def test_native_advisory_is_silent_for_review_role(pd, monkeypatch):
-    """안내 판정 입력은 역할 하나다 — 리뷰는 하네스와 무관하게 엔진 실행이라 안내가 없다.
-
-    설계·구현·조사 역할은 같은 하네스로 CLI 실행하면 그대로 native 규칙을 안내한다(역방향).
-    """
+def test_native_advisory_applies_to_the_review_role(pd, monkeypatch):
+    """AT-018 — 리뷰도 같은 하네스면 native 위임이 규칙이다(역할 예외 없음)."""
     _clear_native_advisory_env(monkeypatch)
     monkeypatch.setenv("CLAUDECODE", "1")
 
-    assert pd.native_advisory("claude", pd.INTERNAL_REVIEW_ROLE) is None
-    for role in ("developer", "architect", "researcher"):
+    for role in (pd.INTERNAL_REVIEW_ROLE, "developer", "architect", "researcher"):
         advisory = pd.native_advisory("claude", role)
         assert advisory is not None, role
-        assert "native 위임이 규칙" in advisory and "더 저렴" not in advisory
+        assert "설계·구현·리뷰·조사는 native 위임이 규칙" in advisory, role
+        assert "엔진" not in advisory and "더 저렴" not in advisory, role
 
 
-def test_ticket_prepare_rejects_review_role(pd, monkeypatch, tmp_path):
-    """`ticket prepare` 역할은 developer·architect 뿐이다 — 리뷰는 엔진이 실행하고 native 준비가 없다.
+def test_ticket_prepare_rejects_review_role_on_a_ticket(pd, monkeypatch, tmp_path):
+    """`ticket prepare --ticket` 으로는 code-reviewer 를 준비하지 않는다 — 리뷰는 `--cluster` 로만 준비한다.
 
     같은 호출이 developer 로는 준비까지 도달한다(역방향 — 정상 준비를 막지 않는다).
     """
@@ -6068,7 +6043,7 @@ def test_t0650_cold_guard_uses_real_ledger_shapes(
     [
         pytest.param("developer", True, None, 1, id="developer-completed-blocked"),
         pytest.param("architect", True, None, 1, id="architect-completed-blocked"),
-        pytest.param("code-reviewer", True, None, 0, id="reviewer-completed-passes"),
+        pytest.param("researcher", True, None, 0, id="researcher-completed-passes"),
         pytest.param("developer", False, None, 0, id="developer-no-completed-passes"),
         pytest.param(
             "developer", True, "의도적으로 독립 구현 비교", 0,
@@ -6280,7 +6255,7 @@ def test_t0650_codex_resume_capability_and_argv_are_measured_contract(pd):
         )
 
 
-@pytest.mark.parametrize("role", ["developer", "code-reviewer"])
+@pytest.mark.parametrize("role", ["developer", "researcher"])
 def test_t0650_codex_0147_missing_rollout_reruns_fresh_for_write_and_read(
     pd, monkeypatch, tmp_path, capsys, role,
 ):
@@ -6314,7 +6289,6 @@ def test_t0650_codex_0147_missing_rollout_reruns_fresh_for_write_and_read(
                 "--role", role, "--harness", "codex", "--model", "gpt-x",
                 "--prompt-file", str(prompt), "--cwd", str(workspace),
                 "--output-dir", str(output_dir), "--resume-from", record_id,
-                *(["--ticket", TICKET_ID] if role == "code-reviewer" else []),
             ],
         _enabled_conf(),
         fake,
@@ -6452,64 +6426,18 @@ def _corrupt_review_block(text: str) -> str:
     return text.replace('{"version":2', '{"version":2,,', 1)
 
 
-@pytest.fixture()
-def internal_pd(tmp_path, monkeypatch):
-    """라운드 장부를 tmp PM 홈으로 격리한 pm_delegate 인스턴스."""
-    module = _load(f"pm_delegate_round_{tmp_path.name}", TOOLS / "pm_delegate.py")
-    owner = tmp_path / "pm-home"
-    (owner / ".project_manager" / ".local").mkdir(parents=True)
-    monkeypatch.setattr(module, "_CONFIG_REPO_OVERRIDE", owner)
-    return module
-
-
-def _slot_ticket_copy(pd, tmp_path: Path, gate: str, text: str, *, role=None,
-                      ordinal: int = 4, unlink: bool = False):
-    """회수 전 슬롯 run-dir 에 라운드 사본을 깔고 그 좌표를 만든다."""
-    run_dir = tmp_path / "slot" / gate
-    run_dir.mkdir(parents=True, exist_ok=True)
-    board_dir = tmp_path / "board" / gate
-    board_dir.mkdir(parents=True, exist_ok=True)
-    name = f"{ordinal:02d}-{pd.INTERNAL_REVIEW_ROLE}.md"
-    path = run_dir / name
-    path.write_text(text, encoding="utf-8")
-    board_path = board_dir / name
-    # board 사본은 회수 **뒤**에 갱신된다 — 판정이 슬롯 사본을 읽는지 값으로 구분하려고
-    # 일부러 다른 내용을 깔아 둔다.
-    board_path.write_text("## 리뷰 (code-reviewer · 회수 전 board 사본)\n", encoding="utf-8")
-    if unlink:
-        path.unlink()
-    return pd.TicketCopyPlan(
-        path, run_dir, gate, role or pd.INTERNAL_REVIEW_ROLE, ordinal, board_path,
-        "b" * 32, "",
+def _review_completion(pd, text: str) -> str | None:
+    """그 라운드 bytes 하나가 마지막 리뷰 라운드인 티켓의 완료 판정 사유(처분 없음)."""
+    rounds_module = pd._load_ticket_rounds()
+    review = rounds_module.Round(
+        ordinal=3, role=pd.INTERNAL_REVIEW_ROLE,
+        path=Path(rounds_module.round_filename(3, pd.INTERNAL_REVIEW_ROLE)),
+        text=text, pending=False,
     )
+    return pd.review_completion_problem("---\nid: T-0804\n---\n# T-0804\n", [review])
 
 
-def _finish_round(pd, gate: str, *, reply=None, ticket_copy=None, spawned=True):
-    budget = pd._reserve_internal_review_round(
-        gate, wall_timeout_sec=60,
-        target_rev="deadbeef", diff_fingerprint=None,
-    )
-    trace = pd.InternalRoundTrace(budget)
-    trace.start_attempt("raw-1")
-    trace.finish_attempt(
-        {} if spawned else {pd.RUN_RESULT_LAUNCH_FAILED: True}, reply,
-    )
-    return pd._finish_internal_review_round(
-        budget, trace, ticket_copy=ticket_copy,
-    )
-
-
-def _round_entry(pd, gate: str) -> dict:
-    return _json.loads(
-        pd._internal_round_ledger_path().read_text(encoding="utf-8")
-    )[gate]
-
-
-def _last_round(pd, gate: str) -> dict:
-    return _round_entry(pd, gate)["rounds"][-1]
-
-
-# 실측(2026-08-22 · PM 홈 board 라운드 파일 → 현행 장부 기록값). 새 규칙이 이 값을
+# 실측(2026-08-22 · PM 홈 board 라운드 파일 → 당시 장부 기록값). 판정 규칙이 이 값을
 # 뒤집으면 기존 자산을 잠근 것이다.
 _T0804_RECORDED_LEDGER_ROWS = [
     pytest.param(INTERNAL_ROUND_REJECT_BOTH, 1, 1, id="t0783-round1"),
@@ -6519,89 +6447,48 @@ _T0804_RECORDED_LEDGER_ROWS = [
 ]
 
 
-def test_t0804_round_file_block_stands_when_terminal_reply_has_no_verdict(
-    internal_pd, tmp_path, capsys,
-):
-    """T-0783 실측 형상: 회신 서식이 파서 기대와 달라도 권위 블록이 판정을 세운다."""
-    pd = internal_pd
-    gate = "T-0804-BLOCK-STANDS"
-    ticket_copy = _slot_ticket_copy(
-        pd, tmp_path, gate, _round_fixture(INTERNAL_ROUND_REJECT_BOTH),
-    )
+def test_t0804_round_file_block_stands_without_a_prose_free_reply(pd):
+    """T-0783 실측 형상: 권위 블록이 판정을 세운다(진단 없음)."""
+    verdict = pd._internal_round_verdict(_round_fixture(INTERNAL_ROUND_REJECT_BOTH))
 
-    assert _finish_round(
-        pd, gate, reply="검토를 마쳤습니다. 자세한 내용은 라운드 파일에 남겼습니다.",
-        ticket_copy=ticket_copy,
-    ) is None
-    err = capsys.readouterr().err
-    row = _last_round(pd, gate)
-
-    assert row["verdict"] == 1
-    assert row["must_fix"] == 1
-    assert row[pd.INTERNAL_VERDICT_SOURCE_FIELD] == pd.INTERNAL_VERDICT_SOURCE_BLOCK
-    assert pd.INTERNAL_VERDICT_DIAGNOSTIC_FIELD not in row
-    assert "판정 추출 실패" not in err
-    assert "재리뷰" not in err
-    # 구조화 finding ID 투영이 라이브 경로에서 살아난다(legacy 해시 아님).
-    assert row[pd.INTERNAL_FINDING_IDS_FIELD] == ["F-001", "F-002"]
-    assert _round_entry(pd, gate)["records"][-1][
-        pd.INTERNAL_FINDING_IDS_FIELD
-    ] == ["F-001", "F-002"]
+    assert verdict.outcome.verdict == 1
+    assert len(verdict.outcome.must_fix_items) == 1
+    assert verdict.source == pd.INTERNAL_VERDICT_SOURCE_BLOCK
+    assert verdict.diagnostic is None
 
 
-def test_t0804_reject_is_recognised_from_block_alone(internal_pd, tmp_path, capsys):
+def test_t0804_reject_is_recognised_from_block_alone(pd):
     """산문 판정 선언이 아예 없어도 블록 반려는 단독으로 인정한다."""
-    pd = internal_pd
-    gate = "T-0804-BLOCK-ONLY-REJECT"
     text = _drop_prose_verdict(_round_fixture(INTERNAL_ROUND_REJECT_BOTH))
     assert pd._internal_reply_assessment(text).outcome.verdict is None
 
-    _finish_round(
-        pd, gate, reply="", ticket_copy=_slot_ticket_copy(pd, tmp_path, gate, text),
-    )
-    err = capsys.readouterr().err
-    row = _last_round(pd, gate)
+    verdict = pd._internal_round_verdict(text)
 
-    assert (row["verdict"], row["must_fix"]) == (1, 1)
-    assert row[pd.INTERNAL_VERDICT_SOURCE_FIELD] == pd.INTERNAL_VERDICT_SOURCE_BLOCK
-    assert "판정 추출 실패" not in err
+    assert (verdict.outcome.verdict, len(verdict.outcome.must_fix_items)) == (1, 1)
+    assert verdict.source == pd.INTERNAL_VERDICT_SOURCE_BLOCK
+    assert verdict.diagnostic is None
 
 
-def test_t0804_pass_needs_both_axes_and_block_only_pass_stays_unknown(
-    internal_pd, tmp_path, capsys,
-):
-    """블록 단독 통과는 기록하지 않는다 — 실 corpus 의 블록 단독 판정은 전부 통과 방향이다."""
-    pd = internal_pd
-    gate = "T-0804-BLOCK-ONLY-PASS"
+def test_t0804_pass_needs_both_axes_and_block_only_pass_stays_unknown(pd):
+    """블록 단독 통과는 판정하지 않는다 — 실 corpus 의 블록 단독 판정은 전부 통과 방향이다."""
     text = _round_fixture(INTERNAL_ROUND_BLOCK_ONLY_PASS)
     assert pd._internal_block_assessment(text).outcome == pd.InternalReplyOutcome(0, [])
     assert pd._internal_reply_assessment(text).outcome.verdict is None
 
-    _finish_round(
-        pd, gate, reply="", ticket_copy=_slot_ticket_copy(pd, tmp_path, gate, text),
-    )
-    err = capsys.readouterr().err
-    row = _last_round(pd, gate)
-    stored = row[pd.INTERNAL_VERDICT_DIAGNOSTIC_FIELD]
+    verdict = pd._internal_round_verdict(text)
 
-    assert row["verdict"] is None
-    assert row["must_fix"] is None
-    assert row[pd.INTERNAL_VERDICT_SOURCE_FIELD] is None
-    assert stored["code"] == pd.INTERNAL_DIAGNOSTIC_PASS_WITHOUT_ZERO
-    assert "기계 블록은 판정: 통과(must-fix 0건)" in stored["reason"]
+    assert verdict.outcome == pd.InternalReplyOutcome(None, None)
+    assert verdict.source is None
+    assert verdict.diagnostic.code == pd.INTERNAL_DIAGNOSTIC_PASS_WITHOUT_ZERO
+    assert "기계 블록은 판정: 통과(must-fix 0건)" in verdict.diagnostic.reason
     # 처방은 재리뷰가 아니라 산출/직접 판정이다.
-    assert "재리뷰 시" not in stored["repair"]
-    assert "재리뷰(유료 호출)는 필요 없습니다" in stored["repair"]
-    assert "판정 추출 실패" in err
-    assert pd._load_board().gate_has_residual(_round_entry(pd, gate)) is True
+    assert "재리뷰 시" not in verdict.diagnostic.repair
+    assert "재리뷰(유료 호출)는 필요 없습니다" in verdict.diagnostic.repair
+    assert _review_completion(pd, text) is not None
 
 
-def test_t0804_confirmation_only_round_counts_unresolved_confirmations(
-    internal_pd, tmp_path,
-):
+def test_t0804_confirmation_only_round_counts_unresolved_confirmations(pd):
     """`findings: []` + 퇴행 확인은 반려 1건이다 — findings 만 세면 통과로 뒤집힌다."""
-    pd = internal_pd
-    gate = "T-0804-CONFIRM-ONLY"
     text = _round_fixture(INTERNAL_ROUND_CONFIRMATION_REGRESSED)
     block = pd._internal_block_assessment(text).outcome
 
@@ -6609,24 +6496,17 @@ def test_t0804_confirmation_only_round_counts_unresolved_confirmations(
     assert len(block.must_fix_items) == 1
     assert block.must_fix_items[0].startswith("F-007(")
 
-    _finish_round(
-        pd, gate, reply="", ticket_copy=_slot_ticket_copy(pd, tmp_path, gate, text),
-    )
-    row = _last_round(pd, gate)
-    assert (row["verdict"], row["must_fix"]) == (1, 1)
-    assert row[pd.INTERNAL_VERDICT_SOURCE_FIELD] == pd.INTERNAL_VERDICT_SOURCE_BLOCK
+    verdict = pd._internal_round_verdict(text)
+    assert (verdict.outcome.verdict, len(verdict.outcome.must_fix_items)) == (1, 1)
+    assert verdict.source == pd.INTERNAL_VERDICT_SOURCE_BLOCK
 
 
-def test_t0804_severity_unspecified_block_is_unusable_not_zero_pass(
-    internal_pd, tmp_path, capsys,
-):
+def test_t0804_severity_unspecified_block_is_unusable_not_zero_pass(pd):
     """severity 미기재 finding 이 있으면 블록 축은 불능이다 — 0건 통과로 접지 않는다.
 
-    그 라운드의 산문 축은 통과(0건)라서, 결합이 산문 값을 채택하면 처분 선언 없이
-    `gate_passed` 가 열린다. 통과는 두 축 합의로만 인정하므로 결합은 미상이다.
+    그 라운드의 산문 축은 통과(0건)라서, 결합이 산문 값을 채택하면 처분 선언 없이 완료
+    판정이 열린다. 통과는 두 축 합의로만 인정하므로 결합은 미상이다.
     """
-    pd = internal_pd
-    gate = "T-0804-SEVERITY-GAP"
     text = _round_fixture(INTERNAL_ROUND_SEVERITY_UNSPECIFIED)
     block = pd._internal_block_assessment(text)
 
@@ -6635,21 +6515,13 @@ def test_t0804_severity_unspecified_block_is_unusable_not_zero_pass(
     assert pd.PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL in block.diagnostic.reason
     assert pd._internal_reply_assessment(text).outcome == pd.InternalReplyOutcome(0, [])
 
-    _finish_round(
-        pd, gate, reply="", ticket_copy=_slot_ticket_copy(pd, tmp_path, gate, text),
-    )
-    err = capsys.readouterr().err
-    row = _last_round(pd, gate)
+    verdict = pd._internal_round_verdict(text)
 
-    # 산문만 통과인 값을 기록하지 않는다 — 미상으로 남기고 사유를 장부에 박제한다.
-    assert (row["verdict"], row["must_fix"]) == (None, None)
-    assert row[pd.INTERNAL_VERDICT_SOURCE_FIELD] is None
-    assert row[pd.INTERNAL_VERDICT_DIAGNOSTIC_FIELD]["code"] == (
-        pd.INTERNAL_DIAGNOSTIC_BLOCK_UNUSABLE
-    )
-    assert "기계 블록 축 판정 불능" in err
-    assert pd._load_board().gate_passed(_round_entry(pd, gate)) is False
-    assert pd._load_board().gate_has_residual(_round_entry(pd, gate)) is True
+    # 산문만 통과인 값을 판정하지 않는다 — 미상으로 남기고 사유를 진단에 싣는다.
+    assert verdict.outcome == pd.InternalReplyOutcome(None, None)
+    assert verdict.source is None
+    assert verdict.diagnostic.code == pd.INTERNAL_DIAGNOSTIC_BLOCK_UNUSABLE
+    assert _review_completion(pd, text) is not None
 
 
 @pytest.mark.parametrize(
@@ -6667,115 +6539,74 @@ def test_t0804_severity_unspecified_block_is_unusable_not_zero_pass(
         ),
     ],
 )
-def test_t0804_prose_only_pass_does_not_open_the_gate(
-    internal_pd, tmp_path, capsys, mutate, block_reason_fragment,
-):
-    """블록 축이 못 선 라운드의 산문 통과는 기록하지 않는다 — `gate_passed`를 열지 않는다.
+def test_t0804_prose_only_pass_does_not_open_the_gate(pd, mutate, block_reason_fragment):
+    """블록 축이 못 선 라운드의 산문 통과는 판정하지 않는다 — 완료 판정을 열지 않는다.
 
     통과 축은 두 축 합의가 필요하다는 규칙이 **두 방향 모두**에 걸린다. 이 방향(산문만 통과)을
-    열어 두면 severity 미기재·블록 손상 라운드가 처분 선언 없이 완료 게이트를 연다.
+    열어 두면 severity 미기재·블록 손상 라운드가 처분 선언 없이 완료 판정을 연다.
     """
-    pd = internal_pd
-    gate = "T-0804-PROSE-ONLY-PASS"
     text = mutate(pd, _round_fixture(INTERNAL_ROUND_PASS_BOTH))
     assert pd._internal_block_assessment(text).outcome.verdict is None
     assert pd._internal_reply_assessment(text).outcome == pd.InternalReplyOutcome(0, [])
 
-    _finish_round(
-        pd, gate, reply="", ticket_copy=_slot_ticket_copy(pd, tmp_path, gate, text),
-    )
-    err = capsys.readouterr().err
-    entry = _round_entry(pd, gate)
-    row = _last_round(pd, gate)
-    stored = row[pd.INTERNAL_VERDICT_DIAGNOSTIC_FIELD]
+    verdict = pd._internal_round_verdict(text)
+    diagnostic = verdict.diagnostic
 
-    assert (row["verdict"], row["must_fix"]) == (None, None)
-    assert row[pd.INTERNAL_VERDICT_SOURCE_FIELD] is None
-    assert pd._load_board().gate_passed(entry) is False
-    assert pd._load_board().gate_has_residual(entry) is True
+    assert verdict.outcome == pd.InternalReplyOutcome(None, None)
+    assert verdict.source is None
+    assert _review_completion(pd, text) is not None
     # 진단은 두 축이 각각 무엇을 말했는지 함께 적는다(판정 불능을 한쪽 채택으로 위장하지 않는다).
-    assert stored["code"] == pd.INTERNAL_DIAGNOSTIC_BLOCK_UNUSABLE
-    assert block_reason_fragment in stored["reason"]
-    assert "산문은 판정: 통과(must-fix 0건)" in stored["reason"]
+    assert diagnostic.code == pd.INTERNAL_DIAGNOSTIC_BLOCK_UNUSABLE
+    assert block_reason_fragment in diagnostic.reason
+    assert "산문은 판정: 통과(must-fix 0건)" in diagnostic.reason
     # 처방은 없던 증거(기계 블록)를 지목하고 유료 재리뷰를 기본 행동으로 세우지 않는다.
-    assert pd.PM_REVIEW_BLOCK in stored["repair"]
-    assert "재리뷰 시" not in stored["repair"]
-    assert "재리뷰(유료 호출)는 필요 없습니다" in stored["repair"]
-    assert "판정 추출 실패" in err
+    assert pd.PM_REVIEW_BLOCK in diagnostic.repair
+    assert "재리뷰 시" not in diagnostic.repair
+    assert "재리뷰(유료 호출)는 필요 없습니다" in diagnostic.repair
 
 
-# fix 전 실측값(F-008 프로브)이다 — 통과 축을 조이는 변경이 이 세 형상을 건드리면 안 된다.
+# fix 전 실측값(F-008 프로브)이다 — 통과 축을 조이는 변경이 이 두 형상을 건드리면 안 된다.
 _T0804_F008_PRESERVED_SHAPES = [
     pytest.param(
-        INTERNAL_ROUND_PROSE_ONLY, "", 1, 2, "INTERNAL_VERDICT_SOURCE_REPLY",
-        False, True, id="prose-only-reject",
+        INTERNAL_ROUND_PROSE_ONLY, 1, 2, "INTERNAL_VERDICT_SOURCE_REPLY", False,
+        id="prose-only-reject",
     ),
     pytest.param(
-        None, "internal_review_pass_reply.txt", 0, 0, "INTERNAL_VERDICT_SOURCE_REPLY",
-        True, False, id="reply-only-pass-without-round-file",
-    ),
-    pytest.param(
-        INTERNAL_ROUND_PASS_BOTH, "", 0, 0, "INTERNAL_VERDICT_SOURCE_BLOCK",
-        True, False, id="both-axes-pass",
+        INTERNAL_ROUND_PASS_BOTH, 0, 0, "INTERNAL_VERDICT_SOURCE_BLOCK", True,
+        id="both-axes-pass",
     ),
 ]
 
 
 @pytest.mark.parametrize(
-    ("fixture", "reply_fixture", "verdict", "must_fix", "source_const", "passed",
-     "residual"),
+    ("fixture", "verdict", "must_fix", "source_const", "passed"),
     _T0804_F008_PRESERVED_SHAPES,
 )
 def test_t0804_pass_tightening_preserves_the_other_verdict_shapes(
-    internal_pd, tmp_path, fixture, reply_fixture, verdict, must_fix, source_const,
-    passed, residual,
+    pd, fixture, verdict, must_fix, source_const, passed,
 ):
-    """차단을 더한 뒤에도 정상 사용은 그대로다 — 세 형상의 판정·게이트 값이 불변이다.
+    """차단을 더한 뒤에도 정상 사용은 그대로다 — 두 형상의 판정·완료 판정 값이 불변이다.
 
-    `prose-only-reject` 는 반려가 한 축 단독으로도 인정된다는 축이고,
-    `reply-only-pass-without-round-file` 은 라운드 파일을 읽지 않은 실행이라 이 규칙 밖이며,
-    `both-axes-pass` 는 회수된 라운드 파일의 통과 블록이 통과로 기록되는 경로다.
+    `prose-only-reject` 는 반려가 한 축 단독으로도 인정된다는 축이고, `both-axes-pass` 는
+    라운드 파일의 통과 블록이 통과로 판정되는 경로다.
     """
-    pd = internal_pd
-    gate = f"T-0804-PRESERVED-{'REPLY' if fixture is None else fixture[:24]}"
-    reply = (
-        "" if not reply_fixture
-        else (REPO / "tests" / "fixtures" / reply_fixture).read_text(encoding="utf-8")
-    )
-    ticket_copy = (
-        None if fixture is None
-        else _slot_ticket_copy(pd, tmp_path, gate, _round_fixture(fixture))
-    )
+    text = _round_fixture(fixture)
+    judged = pd._internal_round_verdict(text)
 
-    _finish_round(pd, gate, reply=reply, ticket_copy=ticket_copy)
-    entry = _round_entry(pd, gate)
-    row = _last_round(pd, gate)
-
-    assert (row["verdict"], row["must_fix"]) == (verdict, must_fix)
-    assert row[pd.INTERNAL_VERDICT_SOURCE_FIELD] == getattr(pd, source_const)
-    assert pd.INTERNAL_VERDICT_DIAGNOSTIC_FIELD not in row
-    assert pd._load_board().gate_passed(entry) is passed
-    assert pd._load_board().gate_has_residual(entry) is residual
+    assert (judged.outcome.verdict, len(judged.outcome.must_fix_items)) == (verdict, must_fix)
+    assert judged.source == getattr(pd, source_const)
+    assert judged.diagnostic is None
+    assert (_review_completion(pd, text) is None) is passed
 
 
-def test_t0804_prose_only_round_records_reply_axis_with_block_gap_warning(
-    internal_pd, tmp_path, capsys,
-):
-    """블록이 없는 라운드는 산문 값을 기록하고 블록 부재 사유를 경고에 적는다."""
-    pd = internal_pd
-    gate = "T-0804-PROSE-ONLY"
-    text = _round_fixture(INTERNAL_ROUND_PROSE_ONLY)
+def test_t0804_prose_only_round_names_the_block_gap(pd):
+    """블록이 없는 라운드는 산문 값으로 판정하고 블록 부재 사유를 note 에 적는다."""
+    verdict = pd._internal_round_verdict(_round_fixture(INTERNAL_ROUND_PROSE_ONLY))
 
-    _finish_round(
-        pd, gate, reply="", ticket_copy=_slot_ticket_copy(pd, tmp_path, gate, text),
-    )
-    err = capsys.readouterr().err
-    row = _last_round(pd, gate)
-
-    assert (row["verdict"], row["must_fix"]) == (1, 2)
-    assert row[pd.INTERNAL_VERDICT_SOURCE_FIELD] == pd.INTERNAL_VERDICT_SOURCE_REPLY
-    assert f"{pd.PM_REVIEW_BLOCK} block이 정확히 하나여야 합니다(발견 0건)" in err
-    assert "판정 추출 실패" not in err
+    assert (verdict.outcome.verdict, len(verdict.outcome.must_fix_items)) == (1, 2)
+    assert verdict.source == pd.INTERNAL_VERDICT_SOURCE_REPLY
+    assert f"{pd.PM_REVIEW_BLOCK} block이 정확히 하나여야 합니다(발견 0건)" in verdict.note
+    assert verdict.diagnostic is None
 
 
 @pytest.mark.parametrize(
@@ -6803,33 +6634,25 @@ def test_t0804_prose_only_round_records_reply_axis_with_block_gap_warning(
         ),
     ],
 )
-def test_t0804_axis_conflict_records_neither_and_names_both_sources(
-    internal_pd, tmp_path, capsys, fixture, replacements, block_label, reply_label,
+def test_t0804_axis_conflict_judges_neither_and_names_both_sources(
+    pd, fixture, replacements, block_label, reply_label,
 ):
-    """두 축이 다른 값을 세우면 어느 쪽도 기록하지 않고 두 값을 모두 말한다."""
-    pd = internal_pd
-    gate = "T-0804-CONFLICT"
+    """두 축이 다른 값을 세우면 어느 쪽도 판정하지 않고 두 값을 모두 말한다."""
     text = _rewrite_lines(_round_fixture(fixture), replacements)
 
-    _finish_round(
-        pd, gate, reply="", ticket_copy=_slot_ticket_copy(pd, tmp_path, gate, text),
-    )
-    err = capsys.readouterr().err
-    row = _last_round(pd, gate)
-    stored = row[pd.INTERNAL_VERDICT_DIAGNOSTIC_FIELD]
+    verdict = pd._internal_round_verdict(text)
 
-    assert row["verdict"] is None
-    assert row["must_fix"] is None
-    assert row[pd.INTERNAL_VERDICT_SOURCE_FIELD] is None
-    assert stored["code"] == pd.INTERNAL_DIAGNOSTIC_VERDICT_CONFLICT
-    assert row[pd.INTERNAL_VERDICT_CONFLICT_FIELD] == {
+    assert verdict.outcome == pd.InternalReplyOutcome(None, None)
+    assert verdict.source is None
+    assert verdict.diagnostic.code == pd.INTERNAL_DIAGNOSTIC_VERDICT_CONFLICT
+    assert verdict.conflict == {
         pd.INTERNAL_VERDICT_SOURCE_BLOCK: block_label,
         pd.INTERNAL_VERDICT_SOURCE_REPLY: reply_label,
     }
-    assert block_label in stored["reason"] and reply_label in stored["reason"]
-    assert block_label in err and reply_label in err
-    assert "재리뷰 시" not in stored["repair"]
-    assert pd._load_board().gate_has_residual(_round_entry(pd, gate)) is True
+    assert block_label in verdict.diagnostic.reason
+    assert reply_label in verdict.diagnostic.reason
+    assert "재리뷰 시" not in verdict.diagnostic.repair
+    assert _review_completion(pd, text) is not None
 
 
 @pytest.mark.parametrize(
@@ -6847,144 +6670,43 @@ def test_t0804_axis_conflict_records_neither_and_names_both_sources(
         ),
     ],
 )
-def test_t0804_both_axes_unusable_still_warns_and_offers_rereview_last(
-    internal_pd, tmp_path, capsys, mutate, block_reason,
-):
-    """판정 불능은 통과가 아니다 — 계속 경고하되 재리뷰는 대안 뒤 마지막 선택지다."""
-    pd = internal_pd
-    gate = "T-0804-BOTH-UNUSABLE"
+def test_t0804_both_axes_unusable_offers_rereview_last(pd, mutate, block_reason):
+    """판정 불능은 통과가 아니다 — 재리뷰는 대안 뒤 마지막 선택지다."""
     text = mutate(pd, _round_fixture(INTERNAL_ROUND_REJECT_BOTH))
 
-    _finish_round(
-        pd, gate, reply="", ticket_copy=_slot_ticket_copy(pd, tmp_path, gate, text),
-    )
-    err = capsys.readouterr().err
-    row = _last_round(pd, gate)
-    stored = row[pd.INTERNAL_VERDICT_DIAGNOSTIC_FIELD]
+    verdict = pd._internal_round_verdict(text)
+    diagnostic = verdict.diagnostic
 
-    assert row["verdict"] is None
-    assert row[pd.INTERNAL_VERDICT_SOURCE_FIELD] is None
-    assert stored["code"] == pd.INTERNAL_DIAGNOSTIC_MISSING_VERDICT
-    assert block_reason in stored["reason"]
-    assert "판정 추출 실패" in err
+    assert verdict.outcome.verdict is None
+    assert verdict.source is None
+    assert diagnostic.code == pd.INTERNAL_DIAGNOSTIC_MISSING_VERDICT
+    assert block_reason in diagnostic.reason
     # 재리뷰는 유료 호출 표기와 대안 뒤에만 나온다.
-    repair = stored["repair"]
-    assert repair.index("유료 호출") < repair.index("재리뷰 시")
+    assert diagnostic.repair.index("유료 호출") < diagnostic.repair.index("재리뷰 시")
     # 대안은 PM 직접 판정 하나다 — 라운드를 한 번 더 여는 플래그를 처방하지 않는다.
-    assert "--pm-verified" in repair and "--confirm-fix" not in repair
+    assert "--pm-verified" in diagnostic.repair and "--confirm-fix" not in diagnostic.repair
+    assert _review_completion(pd, text) is not None
 
 
-def test_t0804_seed_only_round_output_stays_unknown(internal_pd, tmp_path):
+def test_t0804_seed_only_round_output_stays_unknown(pd):
     """리뷰어가 시드를 그대로 남긴 라운드는 두 축 모두 불능이라 미상이다."""
-    pd = internal_pd
-    gate = "T-0804-SEED"
     seed = pd._load_ticket_rounds().render_round_seed(
         pd.INTERNAL_REVIEW_ROLE, "---\nid: T-0804\n---\n\n# T-0804 — x\n",
         today="2026-01-02",
     )
 
-    _finish_round(
-        pd, gate, reply="판정: 반려\n\n## must-fix\n- 회신에만 남긴 항목\n",
-        ticket_copy=_slot_ticket_copy(pd, tmp_path, gate, seed),
-    )
-    row = _last_round(pd, gate)
+    verdict = pd._internal_round_verdict(seed)
 
-    assert row["verdict"] is None
-    assert row[pd.INTERNAL_VERDICT_SOURCE_FIELD] is None
-
-
-@pytest.mark.parametrize(
-    ("kwargs", "reason_fragment"),
-    [
-        pytest.param({"unlink": True}, "라운드 사본 부재", id="missing-file"),
-        pytest.param({"role": "developer"}, "라운드 사본 역할이", id="role-mismatch"),
-    ],
-)
-def test_t0804_unreadable_slot_copy_degrades_to_reply_without_losing_round(
-    internal_pd, tmp_path, capsys, kwargs, reason_fragment,
-):
-    """슬롯 사본을 못 읽으면 회신 축으로 강등하고 사유를 남긴다(라운드 마감은 유지)."""
-    pd = internal_pd
-    gate = "T-0804-DEGRADE"
-    ticket_copy = _slot_ticket_copy(
-        pd, tmp_path, gate, _round_fixture(INTERNAL_ROUND_REJECT_BOTH), **kwargs,
-    )
-
-    assert _finish_round(
-        pd, gate,
-        reply="판정: 반려\n\n## must-fix\n- 회신 축 항목\n",
-        ticket_copy=ticket_copy,
-    ) is None
-    err = capsys.readouterr().err
-    row = _last_round(pd, gate)
-
-    assert (row["verdict"], row["must_fix"]) == (1, 1)
-    assert row[pd.INTERNAL_VERDICT_SOURCE_FIELD] == pd.INTERNAL_VERDICT_SOURCE_REPLY
-    assert "판정 입력을 터미널 회신으로 강등" in err
-    assert reason_fragment in err
-
-
-def test_t0804_without_round_file_keeps_reply_only_behaviour(internal_pd, capsys):
-    """라운드 파일이 없는 실행(`--ticket` 없는 게이트)은 종전 회신 축 그대로다."""
-    pd = internal_pd
-    gate = "T-0804-NO-COPY"
-    reply = (REPO / "tests" / "fixtures" / "internal_review_reject_reply.txt").read_text(
-        encoding="utf-8",
-    )
-
-    _finish_round(pd, gate, reply=reply, ticket_copy=None)
-    err = capsys.readouterr().err
-    row = _last_round(pd, gate)
-
-    assert (row["verdict"], row["must_fix"]) == (1, 1)
-    assert row[pd.INTERNAL_VERDICT_SOURCE_FIELD] == pd.INTERNAL_VERDICT_SOURCE_REPLY
-    # 회신에는 기계 블록을 실을 서식 강제가 없다 — 그 부재를 이 실행의 결함으로 지목하지 않는다.
-    assert "기계 블록 축 판정 불능" not in err
-    assert "강등" not in err
-
-
-def test_t0804_verdict_reads_the_slot_copy_not_the_board_round_file(
-    internal_pd, tmp_path,
-):
-    """판정 시점(회수 이전)에는 슬롯 사본이 산출이다 — board 사본은 아직 갱신 전이다."""
-    pd = internal_pd
-    gate = "T-0804-SLOT-SOURCE"
-    ticket_copy = _slot_ticket_copy(
-        pd, tmp_path, gate, _round_fixture(INTERNAL_ROUND_REJECT_FOUR),
-    )
-    board_text = ticket_copy.board_path.read_text(encoding="utf-8")
-
-    text, degraded = pd._internal_round_output_text(ticket_copy)
-
-    assert degraded is None
-    assert text != board_text
-    assert pd._internal_round_verdict(text, from_round_file=True).outcome.verdict == 1
-
-    _finish_round(pd, gate, reply="", ticket_copy=ticket_copy)
-    row = _last_round(pd, gate)
-    # 마감이 끝난 시점에도 슬롯 사본은 살아 있다(회수는 이 뒤에 돈다).
-    assert ticket_copy.path.is_file()
-    assert (row["verdict"], row["must_fix"]) == (1, 4)
+    assert verdict.outcome.verdict is None
+    assert verdict.source is None
 
 
 @pytest.mark.parametrize(("fixture", "verdict", "must_fix"), _T0804_RECORDED_LEDGER_ROWS)
-def test_t0804_existing_ledger_rows_do_not_flip_under_the_new_rule(
-    internal_pd, tmp_path, fixture, verdict, must_fix,
-):
-    """이미 판정이 선 장부 행은 verdict·must_fix 수까지 그대로다(flips 0 · count_diffs 0)."""
-    pd = internal_pd
-    gate = f"T-0804-LOCK-{fixture}"
+def test_t0804_existing_round_files_do_not_flip_under_the_rule(pd, fixture, verdict, must_fix):
+    """이미 판정이 선 라운드 파일은 verdict·must_fix 수까지 그대로다(flips 0 · count_diffs 0)."""
+    judged = pd._internal_round_verdict(_round_fixture(fixture))
 
-    _finish_round(
-        pd, gate, reply="",
-        ticket_copy=_slot_ticket_copy(pd, tmp_path, gate, _round_fixture(fixture)),
-    )
-    row = _last_round(pd, gate)
-    record = _round_entry(pd, gate)["records"][-1]
-
-    assert (row["verdict"], row["must_fix"]) == (verdict, must_fix)
-    # 수와 항목 텍스트는 판정을 세운 한 축에서 함께 나온다.
-    assert row["must_fix"] == len(record["must_fix_items"])
+    assert (judged.outcome.verdict, len(judged.outcome.must_fix_items)) == (verdict, must_fix)
 
 
 def test_t0804_block_axis_values_derive_from_the_parser_enums(pd):
@@ -6999,10 +6721,8 @@ def test_t0804_block_axis_values_derive_from_the_parser_enums(pd):
     assert source.count('"resolved", "unresolved", "regressed"') == 1
 
 
-def test_t0804_count_and_items_come_from_the_axis_that_stood(internal_pd, tmp_path):
+def test_t0804_count_and_items_come_from_the_axis_that_stood(pd):
     """실측 과소 계수 형상(한 불릿에 ID 여럿)에서도 수·항목은 판정을 세운 블록에서 나온다."""
-    pd = internal_pd
-    gate = "T-0804-ONE-AXIS-COUNT"
     collapsed: list[str] = []
     merged = False
     for line in _round_fixture(INTERNAL_ROUND_REJECT_FOUR).splitlines():
@@ -7017,14 +6737,9 @@ def test_t0804_count_and_items_come_from_the_axis_that_stood(internal_pd, tmp_pa
     assert len(pd._internal_reply_assessment(text).outcome.must_fix_items) == 1
     assert len(pd._internal_block_assessment(text).outcome.must_fix_items) == 4
 
-    _finish_round(
-        pd, gate, reply="", ticket_copy=_slot_ticket_copy(pd, tmp_path, gate, text),
-    )
-    row = _last_round(pd, gate)
-    record = _round_entry(pd, gate)["records"][-1]
+    verdict = pd._internal_round_verdict(text)
 
-    assert row[pd.INTERNAL_VERDICT_SOURCE_FIELD] == pd.INTERNAL_VERDICT_SOURCE_BLOCK
-    assert row["must_fix"] == 4 == len(record["must_fix_items"])
-    assert [item.split(" — ")[0] for item in record["must_fix_items"]] == [
+    assert verdict.source == pd.INTERNAL_VERDICT_SOURCE_BLOCK
+    assert [item.split(" — ")[0] for item in verdict.outcome.must_fix_items] == [
         "F-001", "F-002", "F-003", "F-004",
     ]

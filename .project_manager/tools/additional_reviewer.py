@@ -39,18 +39,11 @@
   - 수렴-형상 차단(--gate 별) → exit 4 (실행 전 거부). 라운드 장부의 must_fix 추이로 판정한다:
     라운드 수가 상한(local.conf additional_reviewer.rounds_max·기본 2)에 닿았거나 직전 라운드보다 must_fix 가
     늘었으면(발산·조기 차단) 라운드를 더 쓰지 않고 현재 티켓을 정지해 사용자에게 보고한다.
-  - diff 서킷브레이커 → exit 1 (리뷰어 호출 전 거부). 티켓 estimate 별 diff 총량 상한
-    (small 300 / medium 1,000 / large 2,500 · local.conf diff_cap.<estimate>)을 넘긴 스코프는
-    리뷰 라운드로 닫히지 않으므로 현재 티켓을 정지하고 사용자에게 보고한다.
   - 미완 라운드 상한 도달(--gate 별) → exit 4 (실행 전 거부·전용 rc). 같은 게이트로 판정 없이
     끝난 호출 2회
     (local.conf additional_reviewer.incomplete_rounds_max)를 채우면 이후 실행을 기계 차단한다. 성격은
     **무한 루프 차단(anti-loop pause)**이다 — 연장 승인(`--ack-rounds`)은 폐지됐고, 호출하면
     아무것도 하지 않고 거부한다.
-  - 게이트 스냅샷 또는 미등록 linked worktree 자기 앵커 + 게이트 라운드 → exit 1 (실행 전
-    거부). 격리 스냅샷 안 `.local/review_rounds.json` 은 스냅샷 재생성과 함께 사라지므로,
-    스냅샷 마커가 있거나 PM 홈을 해소하지 못한 linked worktree에서는 실 호출 라운드를
-    기록하지 않는다. dry-run·조회·처분과 명시 `--no-gate` 자문은 이 차단 대상이 아니다.
   - wave 예산 소진 → exit 4 (같은 rc·같은 실행 전 거부). 게이트별 상한과 **별개로** wave 단위
     총 라운드 예산(local.conf additional_reviewer.wave_budget·기본 24)을 두어 티켓 수 × 라운드 상한
     으로 비용이 무한 확장되는 구조를 막는다 — 재개는 같은 규율의 `--ack-wave`(예산 리셋).
@@ -340,19 +333,6 @@ class AnchorResolutionError(RuntimeError):
     """명시 입력에서 diff/board/config 앵커를 유일하게 해소하지 못한 오류."""
 
 
-class PmHomeResolutionFacts(NamedTuple):
-    """한 번의 PM-home 해소가 가드에 넘기는 자기-앵커 판정 사실.
-
-    라운드 가드는 이 값을 통해서만 마커/git/lease 판정을 소비한다. 따라서 테스트나 채택자가
-    `resolve_pm_home_for_repo` seam을 고정하면 가드도 같은 해소 경계를 따르고, 호출 뒤 실제
-    checkout 형상을 독자적으로 재조회하지 않는다.
-    """
-
-    anchor: Path
-    pm_home: Path
-    snapshot_marker: Path | None
-
-
 def _load_board():
     """형제 board 엔진을 위치로 로드해 worktree lease 재앵커 판정을 승계한다."""
     path = Path(__file__).resolve().with_name("board.py")
@@ -391,9 +371,7 @@ def _load_pm_log():
     )
 
 
-def resolve_pm_home_for_repo(
-    anchor: Path, *, resolution_sink: list[PmHomeResolutionFacts] | None = None,
-) -> Path:
+def resolve_pm_home_for_repo(anchor: Path) -> Path:
     """repo/worktree가 소속된 PM 홈을 anchor 자신의 선언으로 해소한다 — 답은 하나이거나 예외다.
 
     판정 입력은 `pm_log.owning_pm_home` 유도 하나다: anchor 의 `.git` 포인터가 가리키는 공용
@@ -402,11 +380,8 @@ def resolve_pm_home_for_repo(
     확정된 답이다. 미지 commondir·`.project_manager` 부재는 `AnchorResolutionError` 다 —
     자기 앵커로 강등해 계속 진행하지 않는다.
 
-    앵커가 실 board 를 갖는지는 판정 입력이 아니다. 스냅샷 안에 실 ticket 이 있다는 이유로
+    앵커가 실 board 를 갖는지는 판정 입력이 아니다. 사본 안에 실 ticket 이 있다는 이유로
     조기 반환하면, 소유자를 확정하지 못한 트리가 휘발 장부에 라운드를 기록할 수 있다.
-
-    `resolution_sink` 는 게이트 스냅샷 마커를 포함한 가드 판정 사실을 담아, 호출부가 이
-    resolver seam을 건너뛰고 실제 checkout을 다시 읽지 않게 한다.
     """
     anchor = anchor.resolve()
     pm_log = _load_pm_log()
@@ -414,81 +389,7 @@ def resolve_pm_home_for_repo(
         pm_home = pm_log.owning_pm_home(anchor)
     except pm_log.PmHomeResolutionError as exc:
         raise AnchorResolutionError(str(exc)) from exc
-    _publish_pm_home_resolution(resolution_sink, anchor=anchor, pm_home=pm_home)
     return pm_home
-
-
-_GATE_SNAPSHOT_MARKER = Path(
-    ".project_manager/.local/gate-snapshot.json"
-)
-
-
-def _gate_snapshot_marker(anchor: Path) -> Path | None:
-    """생성기가 남긴 스냅샷 사실 마커를 반환한다(내용 손상도 차단 쪽으로 fail-closed)."""
-    marker = anchor.resolve() / _GATE_SNAPSHOT_MARKER
-    try:
-        marker.lstat()
-    except FileNotFoundError:
-        return None
-    except OSError:
-        # 접근 오류를 '마커 없음'으로 낮추면 손상만으로 가드가 열릴 수 있다.
-        return marker
-    # 생성기는 regular JSON file을 쓰지만, 이후 손상된 symlink/directory도 '없음'으로
-    # 강등하지 않는다. 내용 파싱이나 강등 사유 문자열은 차단 판정 입력이 아니다.
-    return marker
-
-
-def _publish_pm_home_resolution(
-    sink: list[PmHomeResolutionFacts] | None,
-    *,
-    anchor: Path,
-    pm_home: Path,
-) -> None:
-    """resolver가 읽은 자기-앵커 사실을 선택적 sink에 한 번 게시한다."""
-    if sink is None:
-        return
-    resolved_anchor = anchor.resolve()
-    sink.append(PmHomeResolutionFacts(
-        anchor=resolved_anchor,
-        pm_home=pm_home.resolve(),
-        snapshot_marker=_gate_snapshot_marker(resolved_anchor),
-    ))
-
-
-def _gate_snapshot_round_refusal(
-    resolutions: Sequence[PmHomeResolutionFacts],
-    *,
-    diff_root: Path,
-    pm_home: Path,
-    gate: str | None,
-) -> str | None:
-    """게이트 스냅샷의 휘발 장부에 라운드를 기록하면 차단 안내를 반환한다.
-
-    판정 입력은 생성기가 남긴 마커 파일 사실 하나이며, `resolve_pm_home_for_repo`가 게시한
-    facts로만 소비한다. 이 seam이 고정된 하네스에서는 가드도 실제 checkout/마커를 다시 읽지
-    않는다. 미등록 linked worktree는 해소 단계에서 이미 실패하므로 여기까지 오지 않는다.
-    `gate is None` 인 명시 `--no-gate` 자문은 라운드 장부를 쓰지 않아 raw 자기 앵커 복구
-    채널의 기존 계약을 보존한다.
-
-    호출부는 dry-run·조회·처분과 diff-cap 조기 종료가 끝난 뒤 이 함수를 부른다. 따라서 여기서
-    문자열이 나오면 바로 다음 단계가 라운드 예약인 **유료 호출 확정 구간**이다.
-    """
-    if gate is None:
-        return None
-    resolved_diff = diff_root.resolve()
-    resolved_home = pm_home.resolve()
-    resolution = next((
-        fact for fact in resolutions
-        if fact.anchor == resolved_diff and fact.pm_home == resolved_home
-    ), None)
-    if resolution is None or resolution.snapshot_marker is None:
-        return None
-    return _GATE_SNAPSHOT_ROUND_GUIDANCE.format(
-        anchor=resolved_diff,
-        gate=gate,
-        ledger=resolved_home / ".project_manager" / ".local" / "review_rounds.json",
-        marker=resolution.snapshot_marker,
-    )
 
 
 def _registered_worktrees(pm_home: Path) -> tuple[Path, ...]:
@@ -836,19 +737,13 @@ _CONVERGENCE_REASONS: dict[str, str] = {
     CONVERGENCE_CAP_REACHED: "라운드 상한 도달",
 }
 
-# diff 서킷브레이커 — 티켓 `estimate` 별 diff 총량(추가+삭제) 상한. 리뷰 라운드가 수렴하지 않는
-# 두 번째 원인이 **구현 스코프 팽창**이라(실측 5,018줄 단일 티켓), 리뷰/완료 진입에서 총량을
-# 기계로 대조한다. estimate 별 기본 상한의 정본은 레지스트리(`local_conf.DIFF_CAP_DEFAULTS`)이고
-# 채택자는 local.conf `diff_cap.<estimate>` 로 덮어쓴다. estimate 가 없거나 레지스트리가 모르는
-# 값이면 가드 off(None) — 엔진이 보편값을 지어내지 않는다.
-DIFF_CAP_KEY_PREFIX = "diff_cap."
 
-# 측정 제외 subtree — 기계 생성·설치 산출물을 손작업 diff 와 같은 가중으로 합산하지 않는다.
+# 측정 제외 subtree — 기계 생성·설치 산출물을 손작업 diff 와 같은 대상으로 보지 않는다.
 # `templates/<타깃>/.project_manager/`는 그 대부분이 pm_update 가 내보낸 엔진 사본이고,
-# `.opencode/node_modules/`는 패키지 설치 트리다. 이들을 세면 한 티켓의 구현 스코프가 출하 타깃 수나
-# 의존성 크기만큼 부풀어 분할이 필요 없는 티켓을 서킷브레이커가 막는다. 제외는 **subtree 단위**라
-# templates 안의 manifest 밖 손편집 파일도 함께 빠지지만, 오차의 방향은 **측정 축소 = 가드 약화**라
-# 정당한 작업을 오차단하지 않는다. template subtree 자체의 정합은 drift-0 가드가 따로 지키고,
+# `.opencode/node_modules/`는 패키지 설치 트리다. 완료 기록의 사설 참조 검사가 이 제외로 손작업
+# 표면만 본다(엔진 사본의 같은 줄을 출하 타깃 수만큼 다시 지목하지 않는다). 제외는 **subtree 단위**라
+# templates 안의 manifest 밖 손편집 파일도 함께 빠지지만, 오차의 방향은 **측정 축소**다.
+# template subtree 자체의 정합은 drift-0 가드가 따로 지키고,
 # payload와 리뷰어 거울은 아래의 좁은 manifest 예외만 보존하고 나머지 측정 제외분을 함께 뺀다.
 #
 # 이 정규식은 `.project_manager/`(순수 엔진 사본)만 본다 — `templates/<타깃>/`의 나머지(어댑터층
@@ -860,8 +755,6 @@ DIFF_CAP_KEY_PREFIX = "diff_cap."
 _MACHINE_MIRROR_RE = re.compile(
     r"^templates/[^/]+/\.project_manager/|^\.opencode/node_modules/"
 )
-# 사람 표면에 측정 의미를 실어 두는 한 줄 — "왜 내 diff 보다 적게 세나"를 안내가 스스로 답한다.
-MEASURED_SCOPE_NOTE = "측정=손작업 스코프(기계 mirror 제외)"
 
 # wave(세션) 단위 총 라운드 예산 — 게이트별 상한과 **별개** 축이다. 게이트 상한만 있으면 비용이
 # 티켓 수 × 라운드 상한으로 확장되므로, 전 게이트 합계 호출을 이 예산으로 묶는다. 기본 24 는
@@ -1120,7 +1013,7 @@ _ACK_ROUNDS_REMOVED_GUIDANCE = (
 #
 # 고지 **출력 자리**는 해소 결과를 말하는 자리다 — 유도 자체는 인자 파싱 직후에 하지만(뒤따르는
 # 게이트 검사·프롬프트·예약이 모두 그 값을 쓴다), 문구는 stderr **첫 줄 = config provenance** 계약을
-# 깨지 않게 provenance 직후에 낸다. 빈 diff·diff-cap 으로 아직 끝날 수 있는 예약 전 자리이므로,
+# 깨지 않게 provenance 직후에 낸다. 빈 diff 로 아직 끝날 수 있는 예약 전 자리이므로,
 # 장부에 붙었다는 확정형이 아니라 실행 조건형으로만 말한다.
 _GATE_DERIVED_NOTICE = (
     "게이트 자동 유도: --gate {gate} (--ticket 값에서 유도 — 이 실행이 리뷰어를 부르면 라운드 회계가 "
@@ -1150,28 +1043,14 @@ _UNACCOUNTED_OPT_OUT_NOTICE = (
 )
 
 # 실 실행은 회계에 넣거나 명시적으로 빠져야 한다. 어느 쪽도 고르지 않은 실행을 경고만 하고
-# 진행하면 티켓 누락 한 번이 라운드 장부·livegate 누락으로 이어진다. dry-run·조회·처분과
-# diff-cap 조기 종료는 리뷰어를 부르지 않아 이 검사에 도달하지 않는다.
+# 진행하면 티켓 누락 한 번이 라운드 장부·livegate 누락으로 이어진다. dry-run·조회·처분은
+# 리뷰어를 부르지 않아 이 검사에 도달하지 않는다.
 _GATE_ACCOUNTING_REQUIRED_GUIDANCE = (
     "오류: 실 호출에는 게이트 회계 지정 또는 명시 opt-out 이 필요합니다 — "
     "이 실행은 호출하지 않았습니다.\n"
     "  · 라운드 회계에 넣으려면 `--ticket <T-NNNN>`(게이트 자동 유도) 또는 "
     "`--gate <게이트>` 를 지정하세요.\n"
     "  · 회계 밖 자문 실행이면 `--no-gate` 를 명시하세요."
-)
-
-# 게이트 장부는 **휘발하지 않는 PM 홈 또는 lease 등록 worktree**에 있어야 한다. linked worktree가
-# 자기 앵커로 해소됐지만 어떤 PM 홈 lease에도 등록되지 않은 실행에서 라운드를 허용하면, 격리
-# 스냅샷을 재생성할 때 그 안 `.local/review_rounds.json` 도 함께 사라져 수렴 상한·발산 차단·
-# livegate 기록이 조용히 초기화된다. 명시 `--paths` + `--no-gate`는 장부 없는 raw 호출 복구
-# 채널로 기존대로 열어 두되, **장부 기록이 생기는 실 호출**만 예약 직전 fail-loud 한다.
-_GATE_SNAPSHOT_ROUND_GUIDANCE = (
-    "오류: 게이트 스냅샷 마커가 있는 앵커에서는 실 호출 라운드를 기록할 수 없습니다 — "
-    "이 앵커는 경로·PM 홈 후보·lease 상태와 무관하게 reviewer 전용 일회용 산출물이라 외부로 "
-    "호출하지 않았습니다.\n"
-    "  · PM 홈 cwd에서 다시 실행하고, 등록 worktree를 가리키는 `--paths <경로>` 또는 "
-    "`--ticket <T-NNNN>`을 명시하세요.\n"
-    "  · 현재 스냅샷 앵커: {anchor} · gate={gate} · 장부={ledger} · 마커={marker}"
 )
 
 # 판정 블록의 게이트 줄 — 회계 밖 실행은 **끝난 뒤** 여기서 확정형으로 말한다. stderr 경고는 로그를
@@ -1189,18 +1068,6 @@ _GATE_OPT_OUT_CONFLICT_GUIDANCE = (
     "  · 회계에 넣으려면 `--no-gate` 를 빼고, 회계 밖 자문이면 `--gate` 를 빼세요."
 )
 
-# diff 서킷브레이커 차단 안내 — 리뷰/완료 진입에서 같은 문구를 쓴다(두 표면이 다른 말을 하지 않게).
-_DIFF_CAP_GUIDANCE = (
-    "오류: diff 서킷브레이커 차단 — {ticket}(estimate={estimate}) · "
-    "diff {total}줄 > 상한 {cap}줄\n"
-    "  측정 범위: {scope}\n"
-    "  측정 의미: {measured_note}\n"
-    "  · 한 티켓의 구현 스코프가 estimate 를 넘겼습니다 — 리뷰 라운드가 수렴하지 않는 원인입니다.\n"
-    "  · 자동 분할이나 새 티켓 발행 없이 현재 티켓을 정지하고 사용자에게 보고하세요.\n"
-    "  · estimate 자체가 틀렸다면 티켓 frontmatter `estimate` 를 고치세요 "
-    "(상한: small {small} / medium {medium} / large {large}).\n"
-    "  · 프로젝트 상한 조정은 local.conf `{key}`."
-)
 
 # wave 예산 소진 fail-loud 안내. 게이트별 상한을 통과한 호출이라도 wave 합계가 예산을 채우면
 # 같은 자리(추가 리뷰어 호출 전)에서 같은 rc 로 막는다 — 게이트마다 상한을 새로 받는 구조에서는
@@ -1702,29 +1569,6 @@ def _review_rounds_max(conf: dict[str, str]) -> int:
     return value if value >= 0 else default
 
 
-def _diff_cap(conf: dict[str, str], estimate: str | None) -> int | None:
-    """이 estimate 의 diff 총량 상한 — 모르는/빈 estimate 면 None(가드 off).
-
-    채택자 override 는 `diff_cap.<estimate>` 한 키다(`diff_cap.small=500`). 비정수·음수는 엔진
-    기본값으로 fail-soft 하고, **엔진이 모르는 estimate 는 상한을 지어내지 않는다** — 상한은
-    스코프 규약의 함수라 선언되지 않은 구간에 보편값을 씌우면 상시 false-block 이 된다."""
-    if not estimate:
-        return None
-    key = estimate.strip().lower()
-    declared = _conf_default(f"{DIFF_CAP_KEY_PREFIX}{key}")
-    if declared is None:
-        return None                       # 레지스트리가 모르는 estimate — 상한을 지어내지 않는다
-    default = int(declared)
-    raw = conf.get(f"{DIFF_CAP_KEY_PREFIX}{key}", "").strip()
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return value if value >= 0 else default
-
-
 # ── 라운드 상한 장부 ─────────────
 # 추가 리뷰어 호출은 유료 호출이라 라운드가 무한정 이어지면 비용이 쌓인다(PM 10차 실측: 한
 # 게이트 클러스터 25라운드). PM 자의 라운드 집계를 기계 장부로 대체한다
@@ -1762,7 +1606,7 @@ def _round_ledger_path() -> Path:
     자기잠김 금지).
 
     diff 앵커(diff_root)에 매달면 **같은 게이트의 과금 상한이 diff_root 가 바뀔 때마다 조용히
-    리셋된다** — 게이트 스냅샷 worktree 나 새로 판 슬롯에서 같은 `--gate T-NNNN` 을 돌리면
+    리셋된다** — 새로 판 슬롯에서 같은 `--gate T-NNNN` 을 돌리면
     count 가 0 부터 다시 세어져 상한이 무력화된다. 라운드는 이미 `--gate` 키로 분리되므로 슬롯별
     장부 분리가 주는 추가 격리는 없다(옛 "슬롯별 게이트 수명 분리" 근거 대체).
     """
@@ -3273,7 +3117,7 @@ def _untracked_paths(
     """검토 폭 안의 untracked 신규 파일 경로 (`.gitignore` 제외 · 조회 실패는 빈 튜플).
 
     pathspec 을 그대로 넘겨 폭이 diff 와 같게 유지한다. 출력 경로는 cwd(=`root`) 기준 상대라
-    이어지는 `--no-index` 실행과 numstat 판정(`is_machine_mirror_path`)이 같은 좌표를 본다."""
+    이어지는 `--no-index` 실행과 측정 제외 판정(`is_machine_mirror_path`)이 같은 좌표를 본다."""
     _run = run_fn or subprocess.run
     result = _run(
         ["git", "-C", str(root), "ls-files", "--others", "--exclude-standard", "-z",
@@ -3293,8 +3137,7 @@ def _untracked_diff_runs(
     """untracked 신규 파일 각각의 '새 파일 diff' 실행 결과 (index 미변경).
 
     `git diff` 는 index/커밋에 있는 것만 보므로 신규 파일이 통째로 빠진다 — 리뷰는 새 파일을 못
-    보고, 서킷브레이커는 그것을 0 줄로 잰다(완료 기록이 재고 나서 stage 하는 순서라 대형 신규
-    파일이 상한을 그대로 통과했다)."""
+    보고, 완료 기록의 사설 참조 검사는 재고 나서 stage 하는 순서라 신규 파일의 줄을 보지 못한다."""
     _run = run_fn or subprocess.run
     runs: list[subprocess.CompletedProcess] = []
     for path in _untracked_paths(root, paths, run_fn):
@@ -3317,8 +3160,8 @@ def _stage_diff_runs(
 ) -> list[subprocess.CompletedProcess]:
     """한 diff 단계를 이루는 git 실행 결과 — 'HEAD' 단계만 스테이징/언스테이징+untracked 다.
 
-    `extra_args` 는 같은 폭을 **다른 형식**으로 뽑는 데 쓴다(`--numstat`). 폭 자체(단계 표)는
-    한 곳이 정하고 형식만 갈리게 해, 리뷰가 본 diff 와 서킷브레이커가 잰 diff 가 어긋나지 않게 한다.
+    `extra_args` 는 같은 폭을 **다른 형식**으로 뽑는 데 쓴다(문맥 없는 diff). 폭 자체(단계 표)는
+    한 곳이 정하고 형식만 갈리게 해, 리뷰가 본 diff 와 사설 참조 검사가 본 diff 가 어긋나지 않게 한다.
 
     untracked 는 기본적으로 **작업트리 단계('HEAD')에만** 붙는다 — 명시 base·폴백 커밋 단계는
     커밋 사이의 폭이라 아직 커밋되지 않은 신규 파일이 그 폭의 구성원이 아니다. `untracked` 를
@@ -3347,17 +3190,6 @@ def _canonical_measure_path(path: str) -> str:
     return normalized
 
 
-def _numstat_path(field: str) -> str:
-    """`--numstat` 3번째 필드 → 판정 대상 경로 (rename 표기는 **목적지**로 접는다).
-
-    rename 은 `{a => b}/c` 또는 `a => b` 로 나온다. 목적지를 보는 이유는 그게 지금 트리에 있는
-    경로이고, mirror 판정도 "지금 어디에 있나"의 물음이기 때문이다."""
-    if " => " not in field:
-        return field
-    expanded = re.sub(r"\{([^{}]*) => ([^{}]*)\}", r"\2", field)
-    return expanded.split(" => ")[-1].strip()
-
-
 # ── 어댑터층 기계 mirror — engine.manifest `@source=` 방향에서 파생 ────────────────
 # 판정 입력은 그 타깃 engine.manifest 항목 하나뿐이다(새 설정 키·CLI 플래그 0). 항목이
 # bare(마커 없음)면 관례상 소스는 같은 상대경로를 **레포 루트**에서 읽는다는 뜻이라(`pm_update.
@@ -3374,7 +3206,7 @@ def _numstat_path(field: str) -> str:
 _TEMPLATES_FLAVOR_RE = re.compile(r"^templates/([^/]+)/(.+)$")
 
 # flavor 이름 → manifest 항목 리스트(또는 로드 실패 시 None). flavor 당 1회만 읽고 재사용한다 —
-# `_sum_numstat`이 diff 줄마다 호출하므로 매번 재파싱하면 큰 diff에서 I/O 가 선형으로 늘어난다.
+# 측정 제외 판정이 diff 경로마다 호출하므로 매번 재파싱하면 큰 diff에서 I/O 가 선형으로 늘어난다.
 _adapter_manifest_entries_cache: dict[str, list | None] = {}
 
 
@@ -3422,7 +3254,7 @@ def _adapter_layer_machine_mirror(canonical_path: str) -> bool:
     리뷰) — 그 마커는 "upstream 에 source 가 아예 없는 게 정상"이라는 명시 선언이라
     (`pm_update.TARGET_OWNED_TAG`), bare 경로의 관례적 "레포 루트가 source" 폴백을 이 항목에
     적용하면 실재하지 않는 교차 위치와 비교해 기계 mirror로 오분류한다 — 수기 소유 파일이
-    측정에서 통째로 빠져 서킷브레이커를 우회하는 방향이라(과다 제외) 이 판정의 불변식(과다
+    측정에서 통째로 빠져 사설 참조 검사를 우회하는 방향이라(과다 제외) 이 판정의 불변식(과다
     제외 0)을 정면으로 어긴다."""
     match = _TEMPLATES_FLAVOR_RE.match(canonical_path)
     if match is None:
@@ -3453,17 +3285,15 @@ def _adapter_layer_machine_mirror(canonical_path: str) -> bool:
 
 
 def is_machine_mirror_path(path: str) -> bool:
-    """diff 서킷브레이커의 **측정 제외 subtree**인가.
+    """완료 기록 측정의 **측정 제외 subtree**인가.
 
     정책은 pm_update 엔진 사본인 `templates/<타깃>/.project_manager/` 아래와 패키지 설치
     산출물인 `.opencode/node_modules/` 아래, 그리고 그 타깃 engine.manifest 가 `@source=` 방향으로
     선언한 어댑터층 경로(`_adapter_layer_machine_mirror`)를 제외한다. template subtree 의
     파일 전부는 아니다 — manifest 밖 손편집 파일도 있어 통째 제외하면 과소 측정이 생기지만,
-    오차의 방향이
-    **측정 축소 = 가드 약화**라
-    정당한 작업을 오차단하지 않는다(과다 차단이 아니라 과소 차단 쪽으로만 틀린다).
+    오차의 방향이 **측정 축소**라 정당한 작업을 오차단하지 않는다.
 
-    **측정 제외 규칙의 단일 진실** — 리뷰(additional_reviewer)와 완료 기록(ticket_finish)가 같은 판정을
+    **측정 제외 규칙의 단일 진실** — 완료 기록(ticket_finish)의 사설 참조 표면 해소가 이 판정을
     쓴다(사본 0). 판정은 경로 문자열뿐이라 트리 상태에 의존하지 않는다."""
     canonical = _canonical_measure_path(path)
     if _MACHINE_MIRROR_RE.match(canonical) is not None:
@@ -3471,27 +3301,8 @@ def is_machine_mirror_path(path: str) -> bool:
     return _adapter_layer_machine_mirror(canonical)
 
 
-def _sum_numstat(text: str) -> int:
-    """`git diff --numstat` 출력의 추가+삭제 합계 (바이너리 `-`/깨진 줄은 제외).
-
-    **기계 mirror 경로는 세지 않는다**(`is_machine_mirror_path`) — 이 합계의 소비자는 diff
-    서킷브레이커뿐이고, 그 상한은 사람이 손으로 쓴 스코프에 대한 값이다. 선언 경로가 mirror 를
-    포함하는 넓은 접두(`templates/`)여도 여기서 걸러지므로 제외가 선언 형태에 좌우되지 않는다."""
-    total = 0
-    for line in text.splitlines():
-        fields = line.split("\t")
-        if len(fields) < 3:
-            continue
-        if is_machine_mirror_path(_numstat_path(fields[2])):
-            continue
-        for value in fields[:2]:
-            if value.isdigit():
-                total += int(value)
-    return total
-
-
-# ── 서킷브레이커 측정 폭 (앵커) ────────────────────────────────────────────
-# 서킷브레이커가 재야 하는 것은 "이 작업이 통합 브랜치에서 갈라진 뒤 남긴 변경"이다.
+# ── 완료 기록 측정 폭 (앵커) ────────────────────────────────────────────
+# 완료 기록의 사설 참조 검사가 재야 하는 것은 "이 작업이 통합 브랜치에서 갈라진 뒤 남긴 변경"이다.
 # 작업트리+직전 커밋 한 칸이라는 옛 폭은 dev 브랜치를 `--no-ff` merge 로 흡수하는 형상에서
 # 0 에 수렴한다 — 완료 기록 시점 트리는 clean 이고 마지막 커밋이 전파/기록 커밋이면 경로
 # 교집합이 비기 때문이다(실측).
@@ -3509,14 +3320,6 @@ _MERGE_BASE_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 INTEGRATION_TIP_UNRESOLVED_NOTE = (
     "통합 브랜치 {ref} 를 이 트리에서 해소하지 못했다 — 측정 폭의 기준점이 없다. 장부가 선언한 "
     "통합 브랜치가 이 트리에 있는지 확인하라."
-)
-INTEGRATION_TIP_UNDECLARED_NOTE = (
-    "묶음 장부에 통합 브랜치(base_branch) 선언이 없다 — 측정 폭의 기준점이 없다. "
-    "`board.py cluster show <이름>` 으로 장부를 확인하고 선언을 채워라."
-)
-INTEGRATION_TIP_SEAM_ABSENT_NOTE = (
-    "묶음 장부 해소 seam 을 로드하지 못했다(구형/부분 설치) — 측정 폭의 기준점을 물을 수 없다. "
-    "pm-update 로 .project_manager/tools/ 를 재동기하라."
 )
 
 
@@ -3546,62 +3349,16 @@ def integration_anchor(
     return merge_base, None
 
 
-def _load_ticket_finish():
-    """형제 완료 기록 엔진 — 묶음 장부 해소를 **그쪽 단일 정의**에서 빌려 온다(사본 0).
-
-    `_load_board()` 와 같은 형제 로드 규약이다(경로 앵커·순환 import 없음·도구 standalone
-    실행). 같은 값(장부 `base_branch`)을 이 파일이 따로 해석하면 리뷰 호출 폭과 완료 기록 폭이
-    다른 통합 브랜치를 보게 된다 — 두 게이트가 같은 폭을 본다는 성질이 그 사본 하나로 깨진다."""
-    path = Path(__file__).resolve().with_name("ticket_finish.py")
-    return _load_module_from_path(
-        path, "ticket_finish.py", verifier=_verify_engine_rev)
-
-
-def _cluster_board_py(pm_home: Path | None) -> Path:
-    """묶음 장부를 읽을 board 사본 — PM 홈이 주어지면 그 홈의 엔진 사본, 아니면 형제.
-
-    장부 조회는 재앵커 없이 그 사본이 보는 트리를 본다 — 분리 형상에서 형제 사본을 쓰면 이
-    도구가 사는 트리의 board 를 읽어 **다른 장부**를 본다(티켓 조회가 `pm_home` 을 따르는 것과
-    같은 이유)."""
-    if pm_home is not None:
-        candidate = Path(pm_home) / ".project_manager" / "tools" / "board.py"
-        if candidate.is_file():
-            return candidate
-    return Path(__file__).resolve().with_name("board.py")
-
-
-def cluster_integration_tip(
-    ticket_id: str, *, pm_home: Path | None = None,
-) -> tuple[str | None, str | None]:
-    """그 티켓 묶음의 통합 브랜치와 **미해소 사유** — `(브랜치, None)` 또는 `(None, 사유)`.
-
-    폭의 기준점을 고르는 입력이다. 선언이 없거나 장부를 읽지 못하면 값을 지어내지 않고 사유를
-    돌린다 — 그 사유를 받은 호출부는 옛 폭으로 접지 않고 **멈춘다**."""
-    try:
-        finish = _load_ticket_finish()
-        resolver = getattr(finish, "_cluster_integration_branch", None)
-        if resolver is None:
-            return None, INTEGRATION_TIP_SEAM_ABSENT_NOTE
-        branch = resolver(_cluster_board_py(pm_home), ticket_id)
-    except Exception as exc:  # noqa: BLE001 — 조회 실패는 정지 사유다(가드 off 아님).
-        if _is_engine_rev_skew(exc):
-            raise  # 사본 skew 는 삼키지 않는다(fail-loud).
-        return None, INTEGRATION_TIP_SEAM_ABSENT_NOTE
-    if not branch:
-        return None, INTEGRATION_TIP_UNDECLARED_NOTE
-    return branch, None
-
-
 def _measure_stages(
     base: str, anchor: str | None,
 ) -> tuple[tuple[str, bool], ...]:
-    """서킷브레이커가 잴 단계 표 — `(git diff 기준, untracked 포함 여부)`.
+    """완료 기록 측정의 단계 표 — `(git diff 기준, untracked 포함 여부)`.
 
     앵커(`integration_anchor` 가 고른 기준점 — 통합 브랜치와의 merge-base)가 있고
     base 가 기본('HEAD')이면 단계는 하나다: `git diff <앵커>` 는 그 커밋 트리와 **현재
     작업트리**를 비교하므로 기준점 이후의 커밋·스테이징·언스테이징이 한 폭에 들어온다.
-    untracked 신규 파일도 작업트리 구성원이라 함께 센다(stage 전 대형 신규 파일이 0 줄로
-    통과하던 창을 그대로 닫아 둔다).
+    untracked 신규 파일도 작업트리 구성원이라 함께 본다(stage 전 신규 파일이 측정에서
+    빠지는 창을 닫아 둔다).
 
     `--base` 를 명시하면 그 폭이다 — 사용자가 고른 폭을 앵커가 덮어쓰지 않는다(앵커 없는
     호출은 그 명시 폭 하나뿐이다 · 기본 폭에서 기준점을 못 고르면 호출부가 거부한다)."""
@@ -3610,38 +3367,13 @@ def _measure_stages(
     return tuple((stage, stage == "HEAD") for stage in _diff_bases(base))
 
 
-def measured_numstat_text(
-    root: Path, base: str, paths: Sequence[str],
-    run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
-    *, claimed_rev: str | None = None,
-) -> str:
-    """서킷브레이커 측정 폭의 `--numstat` 원문 — **폭의 단일 정의 지점**.
-
-    총량(`diff_line_total`)과 경로별 귀속(완료 기록의 claimed 합집합 분배)이 같은 함수를 소비해,
-    두 소비자가 다른 폭을 재는 어긋남이 생기지 않는다. 실패한 git 실행은 '그 단계에는 변경
-    없음'으로 본다(추출 경로의 폴백 규칙과 같다 — 측정 실패가 게이트를 벽돌로 만들지 않는다)."""
-    for stage_base, untracked in _measure_stages(base, claimed_rev):
-        text = "".join(
-            result.stdout
-            for result in _stage_diff_runs(
-                root, stage_base, paths, run_fn, extra_args=("--numstat",),
-                untracked=untracked,
-            )
-            if result.returncode == 0
-        )
-        if text.strip():
-            return text
-    return ""
-
-
 def measured_diff_text(
     root: Path, base: str, paths: Sequence[str],
     run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
     *, claimed_rev: str | None = None,
 ) -> str:
-    """서킷브레이커 측정 폭의 0-컨텍스트(`--unified=0`) unified diff 원문 —
-    `measured_numstat_text` 와 **같은 폭**, 형식만 다르다(컨텍스트 없는 라인 번호가 필요한
-    소비자용 — 완료 기록의 사설 참조 preflight).
+    """완료 기록 측정 폭의 0-컨텍스트(`--unified=0`) unified diff 원문 — 컨텍스트 없는 라인
+    번호가 필요한 소비자(완료 기록의 사설 참조 preflight)용.
 
     폭의 단일 정의는 `_measure_stages`뿐이고 여기서 사본을 두지 않는다 — 형식만 `extra_args`로
     갈린다(`_stage_diff_runs`)."""
@@ -3657,103 +3389,6 @@ def measured_diff_text(
         if text.strip():
             return text
     return ""
-
-
-def diff_line_total(
-    root: Path, base: str, paths: Sequence[str],
-    run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
-    *, claimed_rev: str | None = None,
-) -> int:
-    """검토 폭의 diff 총량(추가+삭제) — `measured_numstat_text` 폭을 합계로 접는다.
-
-    폭 판정(어느 단계가 이번 측정인가)은 새로 만들지 않고 그 함수를 그대로 재사용하고, 형식만
-    `--numstat` 이다. `claimed_rev` 는 claim 앵커(옵션) — 없으면 종전 폭 그대로다."""
-    return _sum_numstat(
-        measured_numstat_text(root, base, paths, run_fn, claimed_rev=claimed_rev)
-    )
-
-
-_MEASURED_ANCHOR_REFUSAL = (
-    "리뷰 호출 거부 — {ticket} 측정 폭의 기준점을 해소하지 못했습니다.\n"
-    "  {reason}\n"
-    "  · 서킷브레이커 폭은 묶음 통합 브랜치와의 merge-base 를 기준으로 잽니다 — 기준이 없는 "
-    "측정은 커밋·재배치 순서에 따라 다른 값을 내므로 다른 기준으로 접지 않습니다."
-)
-
-
-def _diff_cap_refusal(
-    args, conf: dict[str, str], *, root: Path, paths: Sequence[str],
-    pm_home: Path | None = None,
-) -> str | None:
-    """이번 실행의 diff 서킷브레이커 판정 (통과·가드 off 면 None).
-
-    상한을 고르는 티켓은 `--ticket`(검토 범위를 정한 티켓) 우선, 없으면 `--gate`(게이트 표식)다.
-    측정 폭은 **이번 실행이 실제로 리뷰하는 범위**(해소된 검토 경로)이고, 기준점은 그 티켓
-    묶음의 통합 브랜치와의 merge-base 다(해소 못 하면 거부) — 완료 기록 서킷브레이커와
-    **같은 기준·같은 폭**(`measured_numstat_text` 한 곳)이라 두 게이트가 다른 단계·다른 제외
-    규칙을 보지 않고, 커밋·재배치 순서가 폭을 바꾸지 않는다.
-
-    두 진입점은 같은 폭을 쓰되 **같은 총량을 강제하지 않는다**. 여기서 묻는 것은 "이번에 실제로
-    호출되는 diff 가 얼마인가"라 공유 트리 wave 에서도 union 이 정답이고, 완료 기록이 묻는 것은
-    "이 티켓 **구현**이 estimate 를 넘었나"라 티켓 귀속값이 정답이다(`ticket_finish.
-    _ticket_diff_attribution`). 그래서 완료 기록 쪽의 귀속 보정(창 스냅샷·디렉터리 양보)을 이
-    함수로 옮기면 안 된다 — 리뷰어가 받는 양을 실제보다 작게 재게 된다. 이 비대칭은 우연이
-    아니므로 회귀가 명시 고정한다.
-
-    앵커는 **기본 폭**(미지정 또는 `--base HEAD`)에만 적용된다 — 판정이
-    `args.base == "HEAD"` 문자열 비교라 명시 `--base HEAD` 도 기본과 구분되지 않는다(같은 이름의
-    폭을 고른 것이라 실효 위험은 낮다). `--base` 로 다른 값을 명시하면 그 폭이 우선한다(앵커
-    미적용). 기준점을 해소하지 못한 티켓은 **거부**다 — 다른 기준으로 접으면 같은 게이트가
-    실행마다 다른 폭을 재고, 과소 측정이 리뷰 호출을 통과한다.
-    측정 실패(git 부재·비-repo)는 0 으로 접혀 가드가 조용히 off 된다 — 이 축의 실패로
-    리뷰 채널을 막지 않는다(hard 거부는 예산 축이 소유)."""
-    ticket = args.ticket or args.gate
-    if not ticket:
-        return None
-    estimate = parse_ticket_estimate(ticket, pm_home=pm_home)
-    cap = _diff_cap(conf, estimate)
-    if cap is None:
-        return None
-    anchor: str | None = None
-    if args.base == "HEAD":
-        # 기본 폭일 때만 앵커를 적용한다 — 명시 `--base` 는 사용자가 고른 폭의 주인이다.
-        # 기준점은 그 티켓 묶음의 통합 브랜치와의 merge-base 다(완료 기록 폭과 같은 기준) —
-        # 커밋·재배치가 언제 일어나도 폭이 같고, 통합 브랜치가 이미 가진 분량은 빠진다.
-        integration_ref, reason = cluster_integration_tip(ticket, pm_home=pm_home)
-        if reason is None:
-            anchor, reason = integration_anchor(root, integration_ref)
-        if reason is not None:
-            return _MEASURED_ANCHOR_REFUSAL.format(ticket=ticket, reason=reason)
-    try:
-        total = diff_line_total(root, args.base, list(paths),
-                                claimed_rev=anchor)
-    except OSError:
-        return None
-    return diff_cap_block(
-        total, cap, ticket=ticket, estimate=estimate, scope=list(paths),
-    )
-
-
-def diff_cap_block(
-    total: int, cap: int | None, *,
-    ticket: str, estimate: str | None, scope: Sequence[str],
-) -> str | None:
-    """diff 총량이 estimate 상한을 넘었으면 차단 안내를, 아니면 None 을 돌려준다.
-
-    두 진입 표면(추가 리뷰 · 티켓 완료)이 같은 문구를 쓰도록 판정과 문구를 한 곳에 둔다.
-    안내는 측정 의미(`MEASURED_SCOPE_NOTE`)를 함께 실어, 선언 스코프와 실제 측정 대상이
-    다르다는 사실을 사람이 문구만 보고 알 수 있게 한다."""
-    if cap is None or total <= cap:
-        return None
-    key = f"{DIFF_CAP_KEY_PREFIX}{(estimate or '').strip().lower()}"
-    return _DIFF_CAP_GUIDANCE.format(
-        ticket=ticket, estimate=estimate or "미지정", total=total, cap=cap,
-        scope=", ".join(scope) or "(없음)", key=key,
-        measured_note=MEASURED_SCOPE_NOTE,
-        small=_conf_default_int(f"{DIFF_CAP_KEY_PREFIX}small"),
-        medium=_conf_default_int(f"{DIFF_CAP_KEY_PREFIX}medium"),
-        large=_conf_default_int(f"{DIFF_CAP_KEY_PREFIX}large"),
-    )
 
 
 def _stage_diff_text(
@@ -3823,7 +3458,7 @@ def _find_ticket_file(ticket_id: str, *, pm_home: Path | None = None) -> Path:
 
     조회 판정은 board 의 공용 정확-일치 seam(`find_ticket_exact`)이 소유한다 — `{id}-*.md`
     prefix glob 의 **첫 매칭**을 믿으면 `T-NNNN` 과 `T-NNNN-001` 공존 시 **다른 티켓의
-    estimate/touches** 로 diff 상한이 정해진다(조용한 오판). 사본 판정을 두지 않는 이유는
+    touches** 로 검토 범위가 정해진다(조용한 오판). 사본 판정을 두지 않는 이유는
     같은 클래스가 표면마다 half-fix 로 재발해서다. 슬러그 없는 파일명(`T-NNNN.md`)은 prefix
     충돌이 불가능한 정확 이름이라 seam 이 비면 그 폴백을 그대로 본다(종전 동작).
     """
@@ -4017,8 +3652,8 @@ def _parse_title_from_file(path: Path) -> str | None:
 def _ticket_body_selection_header(path: Path, ticket_id: str) -> str:
     """절 선별이 실제로 일어난 티켓 본문 앞에 붙는 frontmatter 요약 1줄(T-0703 §인터페이스 1).
 
-    estimate 는 diff 서킷브레이커와 같은 board YAML 파서(`_parse_estimate_from_file`)를 그대로
-    호출한다 — 표시용이라고 값이 갈리는 경량 스캐너를 따로 두지 않는다(F-001)."""
+    estimate 는 board YAML 파서(`_parse_estimate_from_file`)를 그대로 호출한다 — 표시용이라고
+    값이 갈리는 경량 스캐너를 따로 두지 않는다(F-001)."""
     title = _parse_title_from_file(path)
     touches = _parse_touches_from_file(path)
     estimate = _parse_estimate_from_file(path)
@@ -4028,44 +3663,15 @@ def _ticket_body_selection_header(path: Path, ticket_id: str) -> str:
     )
 
 
-def parse_ticket_estimate(ticket_id: str, *, pm_home: Path | None = None) -> str | None:
-    """board ticket frontmatter 의 `estimate` 값 (ticket/필드 부재면 None).
-
-    diff 서킷브레이커의 상한 선택 입력이다. 못 찾으면 **가드 off**(None)다 — `--gate` 는 자유
-    문자열이 실사용이라(장부 실측 `wave4-b1`) 티켓이 아닌 이름으로 상한을 지어내면 안 된다.
-    손상 frontmatter 도 같은 축이다(fail-soft) — 다만 엔진 사본 skew 는 삼키지 않는다.
-    조회 실패(ticket 부재·형식 거부·board seam 로드 실패)와 파싱 실패를 **한 깔때기**에서 받는
-    이유는 둘 다 같은 처방(가드 off)이라서다 — 두 try 로 나누면 조회 쪽 새 실패 형상이 그대로
-    실행을 죽인다."""
-    return _parse_ticket_scalar(ticket_id, "estimate", pm_home=pm_home)
-
-
-def _parse_ticket_scalar(
-    ticket_id: str, key: str, *, pm_home: Path | None = None,
-) -> str | None:
-    """티켓 frontmatter 스칼라 하나를 읽는 **단일 fail-soft 깔때기**(조회 + 파싱).
-
-    조회 실패와 파싱 실패가 같은 처방(가드 off)을 쓰므로 흡수 경계도 하나다 — 필드마다 try 를
-    늘리면 같은 규칙의 사본이 늘고 엔진 사본 skew 재전파를 한쪽만 빠뜨린다."""
-    try:
-        return _parse_frontmatter_scalar(
-            _find_ticket_file(ticket_id, pm_home=pm_home), key)
-    except Exception as exc:  # noqa: BLE001 — 조회/파싱 실패는 가드 off(ticket_finish 동형).
-        if _is_engine_rev_skew(exc):
-            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
-        return None
-
-
 def _parse_frontmatter_scalar(path: Path, key: str) -> str | None:
     """ticket frontmatter 의 문자열 스칼라 (없거나 비-문자열이면 None).
 
     board 의 frontmatter 로더(`load_ticket` = YAML)를 형제 seam 으로 재사용한다. 자체 정규식
     파싱은 YAML 이 주석으로 읽는 꼬리(`estimate: small # reviewed`)를 값에 붙여 `small` 을
-    모르는 값으로 만들었다 — 그 결과 리뷰쪽 diff 상한은 조용히 꺼지고(가드 off) 완료쪽
-    (`ticket_finish.get_ticket_estimate`·같은 board 로더)은 `small` 로 읽어 **두 게이트가 다른
-    값을 보는** 형상이 났다. 같은 값을 두 번 해석하지 않는 것이 유일한 해소다.
+    모르는 값으로 만들었다 — board 가 읽는 값과 다른 값을 보였다. 같은 값을 두 번 해석하지
+    않는 것이 유일한 해소다.
 
-    값 정규화도 완료쪽과 같다 — 비-문자열(리스트·숫자)은 값을 지어내지 않고 None 이다."""
+    비-문자열(리스트·숫자)은 값을 지어내지 않고 None 이다."""
     board = _load_board()
     fm, _body = board.load_ticket(path)
     value = fm.get(key) if isinstance(fm, dict) else None
@@ -4073,7 +3679,7 @@ def _parse_frontmatter_scalar(path: Path, key: str) -> str | None:
 
 
 def _parse_estimate_from_file(path: Path) -> str | None:
-    """ticket 파일의 `estimate` 스칼라 — **완료 게이트와 같은 파서**(표시 경로 공유 표면)."""
+    """ticket 파일의 `estimate` 스칼라 — **board 와 같은 파서**(리뷰 입력 머리 표시)."""
     return _parse_frontmatter_scalar(path, "estimate")
 
 
@@ -4889,7 +4495,7 @@ def _raw_storage(output_dir: Path | None = None) -> tuple[Path, Path]:
     """추가 리뷰 raw/공유 장부 위치 — 앵커는 해소된 소유 PM 홈(미해소는 fail-loud).
 
     diff 앵커(`_main` 이 주입하는 REPO=diff_root)가 아니라 `_PM_HOME_OVERRIDE`(= 같은 실행이
-    해소한 소유 PM 홈)를 쓴다. 기록이 슬롯/스냅샷 장부로 갈리면 PM 홈 장부를 읽는
+    해소한 소유 PM 홈)를 쓴다. 기록이 슬롯 장부로 갈리면 PM 홈 장부를 읽는
     `pm_delegate raw` 통합 조회가 게이트 raw 를 영구히 못 본다. PM 홈 해소 불가 형상
     (미등록 worktree·lease 손상)에서는 `_main` 의 해소 자체가 loud 경고와 함께 diff_root
     자기 앵커로 폴백하므로 이 앵커도 그것을 따른다 — 복구 채널 자기잠김 금지.
@@ -5708,16 +5314,12 @@ def _main(argv: list[str] | None = None) -> int:
             return _print_rounds_report(engine_repo, gate=args.gate)
     ticket_selected = bool(args.ticket and not args.paths)
     explicit_paths = bool(args.paths)
-    engine_resolutions: list[PmHomeResolutionFacts] = []
-    diff_owner_resolutions: list[PmHomeResolutionFacts] = []
     ticket_body_source: Path | None = None
     # plain list는 production parser가 만들지 않는다. 기존 회귀 fixture가 touches seam만 주입하고
     # 실 ticket 파일은 제공하지 않은 형상을 명시적으로 식별하는 테스트 전용 호환 축이다.
     ticket_scope_fixture_injected = False
     try:
-        engine_pm_home = resolve_pm_home_for_repo(
-            engine_repo, resolution_sink=engine_resolutions,
-        )
+        engine_pm_home = resolve_pm_home_for_repo(engine_repo)
         scope_from_initial_pm_home = _scope_from_initial_pm_home(
             ticket_selected=ticket_selected, explicit_paths=explicit_paths,
         )
@@ -5755,9 +5357,7 @@ def _main(argv: list[str] | None = None) -> int:
         pm_home = (
             engine_pm_home
             if diff_root.resolve() == engine_repo
-            else resolve_pm_home_for_repo(
-                diff_root, resolution_sink=diff_owner_resolutions,
-            )
+            else resolve_pm_home_for_repo(diff_root)
         )
         if ticket_selected and pm_home != engine_pm_home:
             raise AnchorResolutionError(
@@ -5797,11 +5397,6 @@ def _main(argv: list[str] | None = None) -> int:
     # raw 산출/공유 장부도 board/config 와 같은 소유 경계에 등재한다 — 슬롯(diff_root) 장부에
     # 박제하면 PM 홈 장부를 읽는 `pm_delegate raw` 통합 조회가 이 실행의 raw 를 못 본다.
     _PM_HOME_OVERRIDE = pm_home
-    selected_owner_resolutions = (
-        engine_resolutions
-        if diff_root.resolve() == engine_repo
-        else diff_owner_resolutions
-    )
     if args.rounds_report:
         # selector 를 준 조회 — 기록면이 쓸 장부(diff 소유 PM 홈)를 그대로 읽는다. 여기서 끝내
         # 실행 경로(conf 해소·diff 추출)는 타지 않는다.
@@ -5932,7 +5527,7 @@ def _main(argv: list[str] | None = None) -> int:
         return 1
 
     # 티켓 본문은 실제 프롬프트가 필요한 dry-run 또는 호출 확정 구간에서만 읽는다.
-    # diff-cap/앵커 차단은 본문 파일이나 byte 상한을 건드리지 않는다. ticket touches를
+    # 빈 diff 조기 종료는 본문 파일이나 byte 상한을 건드리지 않는다. ticket touches를
     # 실제 파일에서 읽은 경우 그 exact source를 재사용하고, 명시 --paths 또는 테스트 fixture의
     # plain-list touches seam은 ticket 파일 부재가 scope 해소를 자기잠그지 않게 본문 없이 진행한다.
     ticket_body: str | None = None
@@ -6025,42 +5620,14 @@ def _main(argv: list[str] | None = None) -> int:
         print("=== [dry-run] 리뷰어 호출 생략 ===")
         return 0
 
-    # ── diff 서킷브레이커 (유료 호출 진입 검사) ──────────
-    # 스코프가 estimate 상한을 넘긴 티켓은 리뷰 라운드로 닫히지 않는다 — 리뷰어를 부르기 전에
-    # 멈추고 사용자에게 보고한다. 자리는 **유료 호출이 확정된 구간**이라 미리보기(dry-run)는 이
-    # 검사를 지나지 않는다: 미리보기는 비용이 애초에 없고, 그것을 막으면 분할 판단에 필요한 diff
-    # 확인 채널까지 닫힌다.
-    # estimate 를 못 읽으면(자유 문자열 게이트·티켓 부재) 가드는 조용히 off 다.
-    cap_block = _diff_cap_refusal(
-        args, conf, root=diff_root, paths=paths, pm_home=pm_home,
-    )
-    if cap_block is not None:
-        print(cap_block, file=sys.stderr)
-        return 1
-
     # ── 라운드 상한·wave 예산 게이트: 호출 전 예약 ──────────
     # raw 선점보다 **먼저**다 — 이미 상한에 닿은 호출이 raw 자리를 만들었다 지우면 "호출 없이
-    # 끝나는 실행은 부작용 0" 규율(dry-run·diff-cap 거부와 같은 축)을 이 rc 에서만 깨는 것이다.
-    # dry-run·조회·처분은 이미 반환했고 diff-cap 거부도 호출 없이 종료됐다. 여기까지 온 실행은
+    # 끝나는 실행은 부작용 0" 규율(dry-run 과 같은 축)을 이 rc 에서만 깨는 것이다.
+    # dry-run·조회·처분은 이미 반환했다. 여기까지 온 실행은
     # 리뷰어를 부르므로, `--gate`(또는 `--ticket` 자동 유도) / 명시 `--no-gate` 중 하나가 반드시
     # 있어야 한다. 둘 다 없으면 예약·raw·리뷰어 스폰 전 부작용 0 지점에서 fail-loud 한다.
     if not args.gate and not args.no_gate:
         print(_GATE_ACCOUNTING_REQUIRED_GUIDANCE, file=sys.stderr)
-        return 1
-
-    # lease 미등록 임시 linked worktree의 자기 `.local` 에 라운드를 기록하면 스냅샷 재생성 때
-    # 장부도 사라진다. 강등 기록 유무와 무관하게 git/lease 단일 술어로 판정한다. 이 자리는
-    # dry-run·조회·처분·diff-cap 거부가 모두 반환한 뒤이고, 바로 아래
-    # 예약부터 장부 부작용이 시작되는 경계다. `--no-gate` 는 gate=None 이라 기존 raw 자기-앵커
-    # 복구 채널을 그대로 통과한다.
-    anchor_refusal = _gate_snapshot_round_refusal(
-        selected_owner_resolutions,
-        diff_root=diff_root,
-        pm_home=pm_home,
-        gate=args.gate,
-    )
-    if anchor_refusal is not None:
-        print(anchor_refusal, file=sys.stderr)
         return 1
 
     # 모든 무호출 조기 종료를 지난 뒤, 라운드 예약(부작용) 전 마지막 입력 경계에서 본문을 읽고

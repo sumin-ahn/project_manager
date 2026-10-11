@@ -433,14 +433,14 @@ def _runtime_skill_entry(skill: str) -> str:
 
 
 # codex 절 본문(정적 진입 doc 대체). 카드 렌더 끝에 감지 시 append 된다 —
-# 위임 transport 규칙(리뷰는 엔진 실행, 설계·구현·조사는 같은 하네스면 세션 내 spawn) trust 2단계 힌트
+# 위임 transport 규칙(설계·구현·리뷰·조사는 같은 하네스면 세션 내 spawn) trust 2단계 힌트
 # 방법론 소재(공통 코어 AGENTS.md 자동 로드 + 이 카드 + `.agents/skills`·CLAUDE.md 미로드).
 _CODEX_CARD_SECTION = "\n".join((
     "# codex 하네스 (실행모델·위임 — 정적 진입 doc 없음)",
-    "- **위임** — 리뷰(`code-reviewer`)는 하네스와 무관하게 엔진이 실행한다"
-    "(`pm_delegate.py --role code-reviewer --cluster`). 설계·구현·조사는 target 하네스 == PM 하네스면 "
-    "native, 다르면 `pm_delegate.py` cross 다. codex 의 native 위임은 `.codex/agents/{architect,developer,"
-    "researcher}` 를 codex 가 이 세션 안에서 스폰한다(부모 sandbox 상속·`codex exec --agent` 플래그 부재).",
+    "- **위임** — 설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면 "
+    "`pm_delegate.py` cross 다. codex 의 native 위임은 `.codex/agents/{architect,code-reviewer,"
+    "developer,researcher}` 를 codex 가 이 세션 안에서 스폰한다(부모 sandbox 상속·"
+    "`codex exec --agent` 플래그 부재).",
     "- **trust 2단계** — 대화형 `codex` 1회 열어 프로젝트 trust 수락 `/hooks` 로 hook trust 승인. "
     "`-c projects.<path>.trust_level=trusted` CLI override 는 안 먹음(실측).",
     "- **방법론 소재** — 공통 코어 `AGENTS.md`(codex 자동 로드) + 이 카드 + `.agents/skills`"

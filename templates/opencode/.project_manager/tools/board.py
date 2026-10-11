@@ -8658,18 +8658,12 @@ def _scope_args(touches: list[str]) -> str:
 # additional_reviewer 이고 여기서는 **읽기만** 한다 — deep-import 하지 않는 이유는 방향이다:
 # additional_reviewer 가 board 를 로드하므로(`_load_board`) 역방향 로드는 순환이 된다.
 REVIEW_ROUNDS_LEDGER_NAME = "review_rounds.json"
-INTERNAL_REVIEW_ROUNDS_LEDGER_NAME = "internal_review_rounds.json"
 _REVIEW_LEDGER_WAVE_KEY = "wave"       # 게이트가 아닌 예약 키 (additional_reviewer WAVE_SECTION_KEY)
 
 
 def _review_rounds_ledger() -> Path:
     """추가 리뷰 라운드 장부 경로 — 호출 시점 `LOCAL_DIR` 파생(테스트 격리 추종)."""
     return LOCAL_DIR / REVIEW_ROUNDS_LEDGER_NAME
-
-
-def _internal_review_rounds_ledger() -> Path:
-    """내부 code-reviewer per-clone 장부 경로(pm_delegate writer와 동일 앵커)."""
-    return LOCAL_DIR / INTERNAL_REVIEW_ROUNDS_LEDGER_NAME
 
 
 def round_outcome_order_key(outcome: dict) -> tuple[bool, int]:
@@ -8760,31 +8754,19 @@ def gate_residual_label(entry: dict) -> str:
     return "미상(판정 무효 라운드)" if residual is None else f"{residual}건"
 
 
-def internal_verdict_diagnostic(entry: dict) -> str | None:
-    """마지막 내부 라운드 writer가 보존한 판정 실패 원인+재리뷰 처방."""
-    outcome = gate_last_round(entry)
-    diagnostic = (
-        outcome.get("verdict_diagnostic")
-        if isinstance(outcome, dict)
-        else None
-    )
-    message = diagnostic.get("message") if isinstance(diagnostic, dict) else None
-    return message.strip() if isinstance(message, str) and message.strip() else None
-
-
 # ── 게이트 처분 선언 (장부 `resolution` 절) ────────────────────────────────
 # 라운드 상한으로 종결된 게이트의 **잔여 must-fix 를 어떻게 소화했는가**를 장부에 남기는 절이다.
 # 쓰는 쪽은 additional_reviewer(`--resolve-gate`)지만 **읽는 규칙은 여기 하나**다 — 릴리즈 차단과
 # 조회 표가 각자 해석하면 같은 장부를 놓고 "처분됐다/아니다"가 갈린다. 로드 방향이
 # additional_reviewer → board 라 공용 판정은 board 가 소유한다(`round_outcome_order_key` 와 같은 자리).
-# 기계 확인 증거로 여는 게이트 처분 — 장부마다 `allow_pm_verified` 명시 시에만 인정된다(내부
-# 완료 축·추가 리뷰어 release 축 모두 스코프 인자로 채널 격리해 허용 · 기본 호출은 허용하지 않는다).
+# 기계 확인 증거로 여는 게이트 처분 — 장부마다 `allow_pm_verified` 명시 시에만 인정된다(추가
+# 리뷰어 release 축이 스코프 인자로 채널 격리해 허용 · 기본 호출은 허용하지 않는다).
 GATE_RESOLUTION_PM_VERIFIED = "pm-verified"
-# `pm-verified` 재검증이 스코프하는 **리뷰 채널** — 게이트가 실린 장부가 곧 채널이다. 두 축이
-# 같은 술어를 쓰되 자기 채널만 본다(다른 채널의 accepted 잔여·기계 확인은 이 게이트의 증거가
-# 아니다 — 채널 격리). role 문자열의 단일 진실은 pm_delegate 라 사본을 두지 않고 재검증 시점에
-# 해소한다(`_pm_verified_channel_role`).
-GATE_CHANNEL_INTERNAL = "internal"        # internal_review_rounds.json (내부 code-reviewer)
+# `pm-verified` 재검증이 스코프하는 **리뷰 채널** — 게이트가 실린 장부가 곧 채널이다. 그 채널만
+# 본다(다른 채널의 accepted 잔여·기계 확인은 이 게이트의 증거가 아니다 — 채널 격리). role
+# 문자열의 단일 진실은 pm_delegate 라 사본을 두지 않고 재검증 시점에 해소한다
+# (`_pm_verified_channel_role`). code-reviewer 잔여는 장부가 아니라 리뷰 라운드 파일에서 판정한다
+# (`_review_completion_problem`).
 GATE_CHANNEL_ADDITIONAL = "additional"    # review_rounds.json (추가 리뷰어)
 # 처분 표기 어휘 — 선언 응답(additional_reviewer)과 차단 사유(여기)가 같은 말을 쓰게.
 GATE_RESOLUTION_LABELS: dict[str, str] = {
@@ -10883,11 +10865,11 @@ def find_ticket_exact(
 
     `{tid}-*.md` **prefix glob 의 첫 매칭**을 티켓-ID 조회로 쓰면 legacy ID(`T-NNNN`)가 같은
     번호로 시작하는 prefixed ID(`T-NNNN-001`)에 오인 매칭된다 — 어느 쪽이 잡힐지는 디렉토리
-    순서가 정하고, 그 결과 회귀 강등 스코프·diff 상한(estimate)·완료 게이트가 **무관한 티켓의
+    순서가 정하고, 그 결과 회귀 강등 스코프·완료 게이트가 **무관한 티켓의
     frontmatter** 를 보게 된다(전부 조용한 오판). 그래서 후보 전체를 훑어 frontmatter canonical
     ID(`_canonical_ticket_id`)가 정확히 일치하는 것만 인정한다.
 
-    이 판정을 쓰는 표면이 board 밖에도 있어(추가 리뷰어 estimate 조회·`ticket_finish` 티켓 로드)
+    이 판정을 쓰는 표면이 board 밖에도 있어(추가 리뷰어 티켓 조회·`ticket_finish` 티켓 로드)
     공용 seam 으로 둔다 — 사본을 만들면 그 사본이 다시 첫-매칭으로 흘러 half-fix 가 재발한다.
     `search_dirs` 를 주면 그 (status 라벨, 디렉토리) 순서로만 본다 — 다른 PM 홈의 보드를 읽는
     호출부(`additional_reviewer --pm-home`)가 자기 범위를 명시하는 자리다. 미지정이면 이 board 의
@@ -12608,7 +12590,6 @@ def _pm_verified_channel_role(delegate, channel: str) -> str | None:
 
     role 문자열은 pm_delegate 가 단일 진실이라 board 에 사본을 두지 않는다."""
     return {
-        GATE_CHANNEL_INTERNAL: delegate.INTERNAL_REVIEW_ROLE,
         GATE_CHANNEL_ADDITIONAL: delegate.ADDITIONAL_REVIEWER_ROLE,
     }.get(channel)
 
@@ -12621,10 +12602,9 @@ def _pm_verified_delegate_problem(
     preflight와 post-resolution evidence가 티켓/채널/표면 하한 해소를 복제하지 않게 하는 공용
     배선이다. 실제 판정은 checker_name이 가리키는 pm_delegate 함수만 소유한다.
 
-    **두 축이 같은 규칙을 쓴다**(one rule, no special cases): 내부 완료 게이트는
-    `channel=GATE_CHANNEL_INTERNAL`, 추가 리뷰어 release 게이트는 `GATE_CHANNEL_ADDITIONAL`
-    로 호출하고, 판정 표면 하한은 **그 채널 장부 entry 의 잔여 must-fix 건수**다. 채널 스코프
-    없이 티켓 전역을 보면 다른 채널의 기계 확인이 이 게이트의 잔여를 여는 구멍이 생긴다."""
+    추가 리뷰어 release 게이트는 `GATE_CHANNEL_ADDITIONAL` 로 호출하고, 판정 표면 하한은 **그
+    채널 장부 entry 의 잔여 must-fix 건수**다. 채널 스코프 없이 티켓 전역을 보면 다른 채널의
+    기계 확인이 이 게이트의 잔여를 여는 구멍이 생긴다."""
     found = find_ticket_exact(tid)
     if found is None:
         return f"티켓을 찾지 못했습니다: {tid}"
@@ -12659,16 +12639,6 @@ def _pm_verified_evidence_problem(tid: str, *, channel: str, entry: dict) -> str
     )
 
 
-def _pm_verified_resolution_input_problem(
-    tid: str, *, channel: str, entry: dict,
-) -> str | None:
-    """rounds resolve 전 final-fix 확인 입력 preflight(confirmation 부재는 정상)."""
-    return _pm_verified_delegate_problem(
-        tid, channel=channel, entry=entry,
-        checker_name="pm_verified_resolution_input_problem",
-    )
-
-
 def _gate_pm_verified_problem(
     gate: str, entry: dict, channel: str,
 ) -> Callable[[], str | None]:
@@ -12676,60 +12646,49 @@ def _gate_pm_verified_problem(
 
     `_gate_disposition_problem` 은 이 콜백을 같은 순회 안에서 즉시 호출하지만, 인자를 함수
     시그니처로 고정해 두면 나중에 호출 지점이 지연·재배치되더라도 클로저가 마지막 `gate`/`entry`
-    를 참조하는 사고가 구조적으로 막힌다. 내부 완료 축과 추가 리뷰어 release 축이 이 한
-    factory 를 공유한다 — 채널만 다르고 규칙은 같다."""
+    를 참조하는 사고가 구조적으로 막힌다."""
     return lambda: _pm_verified_evidence_problem(gate, channel=channel, entry=entry)
 
 
-def _internal_review_completion_problem(tid: str) -> str | None:
-    """내부 리뷰 대상 티켓이면 마지막 통과 또는 유효 처분인지 판정한다.
+def _review_problem(tid: str, checker_name: str, spec_text: str | None) -> str | None:
+    """리뷰 잔여 판정 배선 — 명세와 리뷰 라운드 파일을 읽어 pm_delegate 판정 함수에 넘긴다.
 
-    소급 차단을 피하려고 이 티켓의 ``rounds[]`` 산출이 하나도 없으면 무대상이다. 장부가
-    부재·손상돼 기록 존재를 확정할 수 없는 경우도 가드 고장으로 완료를 막지 않는다. 반대로
-    라운드 산출이 하나라도 있으면 native 자문이나 raw reply는 보지 않고 마지막 장부 판정 또는
-    그 라운드 좌표에 결속된 처분만 완료 증거로 인정한다.
+    판정 입력은 board 라운드 파일과 명세 PM 영역뿐이다. 판정 불능(티켓·명세·pm_delegate·
+    판정 seam 부재)은 통과가 아니라 차단 사유다.
     """
-    ledger_path = _internal_review_rounds_ledger()
+    if spec_text is None:
+        found = find_ticket_exact(tid)
+        if found is None:
+            return f"티켓을 찾지 못해 리뷰 잔여를 판정할 수 없습니다: {tid}"
+        try:
+            spec_text = file_lock.read_text_shared(found[1], encoding="utf-8", newline="")
+        except (OSError, UnicodeError) as exc:
+            return f"티켓 명세를 읽을 수 없어 리뷰 잔여를 판정할 수 없습니다: {exc}"
+    delegate = _load_pm_delegate_module()
+    if delegate is None:
+        return "pm_delegate.py 를 불러올 수 없어 리뷰 잔여를 판정할 수 없습니다"
+    checker = getattr(delegate, checker_name, None)
+    if checker is None:
+        return f"pm_delegate.py 에 {checker_name} seam 이 없어 리뷰 잔여를 판정할 수 없습니다"
+    rounds_module = _load_ticket_rounds()
     try:
-        ledger = json.loads(file_lock.read_text_shared(ledger_path, encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeError):
-        return None
-    if not isinstance(ledger, dict):
-        return None
-    entry = ledger.get(tid)
-    if not isinstance(entry, dict):
-        return None
-    rounds = entry.get("rounds")
-    if not isinstance(rounds, list) or not any(isinstance(row, dict) for row in rounds):
-        return None
-    if gate_passed(entry):
-        return None
-    disposition_problem = _gate_disposition_problem(
-        tid,
-        entry,
-        allow_pm_verified=True,
-        # 내부 완료 축도 자기 채널로 스코프한다 — 그 게이트 장부 잔여를 표면 하한으로 삼아
-        # 추가 리뷰어 채널의 기계 확인이 내부 잔여를 여는 경로를 닫는다(채널 격리 양방향).
-        pm_verified_problem=_gate_pm_verified_problem(tid, entry, GATE_CHANNEL_INTERNAL),
-    )
-    if disposition_problem is None:
-        declared = gate_resolution(entry)
-        if declared is not None and declared["kind"] == GATE_RESOLUTION_PM_VERIFIED:
-            print(
-                f"주의: internal code-reviewer 완료 증거는 리뷰 통과가 아니라 "
-                f"{_load_review_rounds().describe_pm_verified_resolution(declared)} 입니다.",
-                file=sys.stderr,
-            )
-        return None
-    verdict = _last_round_verdict(entry)
-    label = "미상(판정 무효)" if verdict is None else f"반려(rc={verdict})"
-    diagnostic = internal_verdict_diagnostic(entry) if verdict is None else None
-    diagnostic_hint = f"\n판정 추출 진단: {diagnostic}" if diagnostic is not None else ""
-    return (
-        f"internal code-reviewer 마지막 장부 라운드가 통과가 아닙니다: {label} — "
-        "통과 라운드 또는 그 잔여에 결속된 유효 처분이 완료 증거로 필요합니다 "
-        f"({_rel_to_repo(ledger_path)}){diagnostic_hint}\n{disposition_problem}"
-    )
+        rounds = rounds_module.load_rounds(tickets_dir(), tid, ticket_text=spec_text)
+    except rounds_module.RoundsError as exc:
+        return f"리뷰 라운드를 읽지 못해 리뷰 잔여를 판정할 수 없습니다: {exc}"
+    return checker(spec_text, rounds)
+
+
+def _review_completion_problem(tid: str, spec_text: str | None = None) -> str | None:
+    """완료 판정의 리뷰 잔여 — 처분·확인되지 않은 잔여가 있으면 사유(없으면 None).
+
+    `spec_text` 를 주면 그 명세로 판정한다(완료 게이트는 lock 안에서 읽은 본문을 넘긴다).
+    """
+    return _review_problem(tid, "review_completion_problem", spec_text)
+
+
+def _review_resolution_input_problem(tid: str) -> str | None:
+    """종결 선검사의 리뷰 입력 — 돌려받은 리뷰가 없거나 확인 입력이 모자라면 사유."""
+    return _review_problem(tid, "review_resolution_input_problem", None)
 
 
 def _round_completion_problems(tid: str, spec_text: str) -> list[str]:
@@ -12762,7 +12721,7 @@ def _complete_gate(tid: str, args: argparse.Namespace,
     The regression check trusts the caller's `--tests-pass` assertion rather
     than re-running the (slow) suite.
 
-    `body` = 완료 대상 티켓 본문(§3 DoD 체크 입력). None 이면 DoD·라운드 검사를 건너뛴다 —
+    `body` = 완료 대상 티켓 본문(§3 DoD 체크 입력). None 이면 DoD·라운드·리뷰 잔여 검사를 건너뛴다 —
     본문 없이 기록 축만 묻는 호출자(단위 테스트 등)를 위한 것이고, 실 complete 경로
     (`cmd_complete`)는 항상 본문과 명세 전문을 넘긴다.
 
@@ -12795,11 +12754,12 @@ def _complete_gate(tid: str, args: argparse.Namespace,
         problems.extend(_round_completion_problems(
             tid, body if spec_text is None else spec_text))
 
-    # 5. 이 티켓에 내부 리뷰 라운드가 실제 기록된 뒤에는 마지막 계측 라운드 통과 또는 그 잔여에
-    #    결속된 유효 처분만 완료 증거다. 장부/entry/rounds 부재는 과거 티켓 무대상이다.
-    internal_review_problem = _internal_review_completion_problem(tid)
-    if internal_review_problem is not None:
-        problems.append(internal_review_problem)
+        # 5. 리뷰 잔여 — 마지막 판정 표면 리뷰 라운드의 must-fix 가 처분·확인돼야 한다(입력은
+        #    리뷰 라운드 파일과 명세 PM 영역). 리뷰 라운드가 없는 티켓은 대상이 아니다.
+        review_problem = _review_completion_problem(
+            tid, body if spec_text is None else spec_text)
+        if review_problem is not None:
+            problems.append(review_problem)
 
     return problems
 

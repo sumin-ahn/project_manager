@@ -596,20 +596,6 @@ def test_design_acceptance_without_authority_reference_is_decision_required(pd):
     assert caught.value.code == "decision-required"
 
 
-def test_internal_round_projection_prefers_structured_ids_and_hashes_legacy(pd):
-    structured = _review_section({
-        "version": BLOCK_VERSION,
-        "findings": [_finding("implementation-defect", finding_id="F-101")],
-        "confirmations": [],
-    })
-    assert pd._internal_projected_finding_ids(
-        structured.round_texts[0], ["legacy prose"],
-    ) == ["F-101"]
-    first = pd._internal_projected_finding_ids("old reply", ["same legacy item"])
-    second = pd._internal_projected_finding_ids("old reply", ["same legacy item"])
-    assert first == second and first[0].startswith("LEGACY-")
-
-
 def _materialize(pd, ticket: _Ticket, tickets_dir: Path, ticket_id: str) -> Path:
     """명세 파일 하나 + `rounds/<id>/NN-<role>.md` 로 라운드를 실제로 깐다."""
     rounds_module = pd._load_ticket_rounds()

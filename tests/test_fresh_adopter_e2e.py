@@ -576,6 +576,17 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
     assert list(board_tickets.glob(f"claimed/{tid}-*.md")), (
         "거부됐는데 티켓이 claimed/ 를 떠났다")
 
+    # 종결은 멤버마다 돌려받은 리뷰 라운드를 요구한다 — 설계·구현·리뷰를 마친 멤버의 형상
+    # (리뷰 판정 = finding 0건 통과)을 라운드 파일로 둔다.
+    rounds_dir = board_tickets / "rounds" / tid
+    rounds_dir.mkdir(parents=True, exist_ok=True)
+    (rounds_dir / "01-architect.md").write_text("## 설계 표본\n", encoding="utf-8", newline="\n")
+    (rounds_dir / "02-developer.md").write_text("## 구현 표본\n", encoding="utf-8", newline="\n")
+    (rounds_dir / "03-code-reviewer.md").write_text(
+        "## 리뷰 (code-reviewer · 2026-01-02)\n\n## must-fix\n- 없음\n\n## 판정\n판정: 통과\n\n"
+        '```pm-review-v1\n{"version":2,"findings":[],"confirmations":[]}\n```\n',
+        encoding="utf-8", newline="\n")
+
     complete = _ticket_finish(dest, "--cluster", "C-four-step", "--no-pytest")
     assert complete.returncode == 0, (
         f"묶음 종결 실패:\n--- stdout ---\n{complete.stdout}\n--- stderr ---\n{complete.stderr}")

@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """리뷰 라운드 장부 공용 seam.
 
-추가 리뷰어(`additional_reviewer.py`)와 내부 code-reviewer(`pm_delegate.py`)는 저장 파일은 서로
-분리하지만, 장부의 gate entry/예약/산출/수렴 판정 스키마는 같이 쓴다. 이 모듈은 두 축에서
-갈리면 안 되는 다음 규칙만 소유한다.
+추가 리뷰어(`additional_reviewer.py`) 라운드 장부의 gate entry/예약/산출/수렴 판정 스키마를
+소유한다(board 는 같은 장부를 읽기만 한다). 이 모듈은 장부를 쓰고 읽는 쪽이 갈리면 안 되는
+다음 규칙만 소유한다.
 
 * JSON 장부 read + PID/UUID 임시 파일을 이용한 원자 write (교체 자체는 공용 `file_lock` seam —
   플랫폼별 rename 의미 차이를 이 모듈이 복제하지 않는다)
 * gate entry 정규화와 단조 sequence 예약/스폰 전 환불
 * 예약 순서 기준 must-fix 추이, 진행 중 예약을 포함한 상한, 발산 조기 차단
 
-파일락의 경로와 임계 구역은 호출자가 소유한다. 두 도구의 저장 파일과 부가 기록(external의
-livegate/wave, internal의 raw attempt 결속)가 다르기 때문이다. 호출자는 반드시 같은 장부 옆의
-파일락 안에서 read-modify-write를 수행한다.
+파일락의 경로와 임계 구역은 호출자가 소유한다. 저장 파일과 부가 기록(livegate/wave)은 호출
+도구가 정한다. 호출자는 반드시 같은 장부 옆의 파일락 안에서 read-modify-write를 수행한다.
 """
 
 from __future__ import annotations
@@ -170,7 +169,7 @@ CONVERGENCE_CAP_REACHED = "cap-reached"
 # 장부가 다시 기록되면 알릴 대상이 없어 자연히 1회다 — 별도 상태 파일 없음).
 RETIRED_ACK_FIELD = "acked_through"
 
-# 기계 확인(pm-review-confirmation-v1) 증거로 여는 내부 게이트 처분. 상한·쿼터 대신
+# 기계 확인(pm-review-confirmation-v1) 증거로 여는 게이트 처분. 상한·쿼터 대신
 # 증거를 요구한다(`pm_delegate.pm_verified_evidence_problem` 이
 # 선언·완료 재검증 공용으로 판정한다). 이 모듈은 표기 문구만 소유한다.
 RESOLUTION_PM_VERIFIED = "pm-verified"

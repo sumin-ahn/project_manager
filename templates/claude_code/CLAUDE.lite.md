@@ -63,10 +63,10 @@
 
 ## 4. 위임 (구현은 서브에이전트에)
 
-PM 은 코드를 직접 짜지 않는다: `claim → 설계·구현 위임 → 리뷰(엔진 실행) → finish`. 리뷰(`code-reviewer`)는 하네스와 무관하게 엔진이 실행한다(`pm_delegate.py --role code-reviewer --cluster`). 설계·구현·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다.
+PM 은 코드를 직접 짜지 않는다: `claim → 설계·구현 위임 → 리뷰 위임 → finish`. 설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다.
 
 - **dev**: `Agent`(developer)에 위임. 프롬프트 = "T-NNNN 구현. 본문이 단일 진실(`board.py show T-NNNN`). board/status/log 는 PM 담당 — 너는 코드+테스트만."
-- **reviewer**: `Agent`로 띄우지 않는다. `pm_delegate.py --role code-reviewer --cluster` 가 독립 검토(generate≠evaluate)를 실행한다. must-fix/should-fix/통과·반려.
+- **reviewer**: `Agent`(code-reviewer)에 위임. 프롬프트는 엔진이 만든다 — `pm_delegate.py ticket prepare --cluster <C-이름> --role code-reviewer` 가 낸 프롬프트 파일 경로를 넘기고 종료 뒤 `ticket harvest` 로 돌려받는다. 독립 검토(generate≠evaluate) — must-fix/should-fix/통과·반려.
 - **병렬 위임은 touches disjoint 일 때만.** reviewer 도 틀릴 수 있으므로 should-fix 는 PM 이 흐름 cross-check 후 적용.
 - skill 표준 프롬프트: `/pm-wave-claim`·`/pm-dev-delegate`·`/pm-wave-finish`.
 

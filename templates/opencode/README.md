@@ -35,8 +35,8 @@ claude_code 의 `CLAUDE.md`+`.claude/` 에 대응하는 opencode 등가물 — �
 ### 위임 규약 단일 진실 = `.opencode/pm-instructions.md §2`
 
 위임 1차는 **opencode 네이티브 `task` tool** 이다 — PM(build primary)이 `task` tool 을
-`subagent_type=developer|architect|researcher` 로 호출하면 opencode 가 `.opencode/agents/*.md`
-를 별도 자식 세션(fresh 200K 격리·subagent `model:` 대로)에서 구동한다. 리뷰(`code-reviewer`)는 하네스와 무관하게 엔진이 실행한다(`pm_delegate.py --role code-reviewer --cluster`). 설계·구현·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다. `opencode run` 외부
+`subagent_type=developer|architect|code-reviewer|researcher` 로 호출하면 opencode 가 `.opencode/agents/*.md`
+를 별도 자식 세션(fresh 200K 격리·subagent `model:` 대로)에서 구동한다. 설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다. `opencode run` 외부
 프로세스는 headless·CI·task tool 미노출 빌드용 **폴백**으로 강등됐다(pm-instructions.md §2.7). 자세한 규약·프롬프트는
 `.opencode/pm-instructions.md §2`(공통 코어 `AGENTS.md` 와 함께 자동 로드)가 단일 진실. 결정 근거는 ADR-0006(§3·D2·D3·D5).
 

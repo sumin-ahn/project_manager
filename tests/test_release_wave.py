@@ -402,7 +402,11 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
         f"reread unless it has exactly those two rows, contains `{_WAVE_FULL_COMMAND}` once, contains "
         f"neither `{_WAVE_TARGETED_COMMAND}` nor a placeholder, and the whole body contains "
         f"{_GROWTH_PIPELINE[1][1]} exactly once. Never fabricate a count.\n"
-        "ROUND 03 code-reviewer: review probe.txt and its regression test. If the known stable fixture is "
+        "ROUND 03 code-reviewer: the review unit is the ticket's size-1 cluster, so prepare it with "
+        "`python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster C-<ticket> --role "
+        "code-reviewer --cwd <slot>` and pass the returned `prompt` file path together with the absolute "
+        "round file to the code-reviewer subagent. "
+        "Review probe.txt and its regression test. If the known stable fixture is "
         "correct, use replacement/truncation, preserve the first header, and make line 2 through EOF equal "
         "the body between BEGIN/END here:\n"
         f"BEGIN EXACT REVIEWER BODY\n{reviewer_zero_body}END EXACT REVIEWER BODY\n"
@@ -436,9 +440,8 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
         f"{_GROWTH_PIPELINE[3][1]} exactly once. Harvest once and open no further human round.\n"
         "(4) after all four harvests, start a fresh board.py show process and verify the exact role order "
         "architect, developer, code-reviewer, developer and all four sentinels, "
-        "(5) if and only if accepted findings exist, run exactly `python3 .project_manager/tools/"
-        "pm_delegate.py rounds resolve --gate <ticket> --pm-verified`; when the review delta is empty, "
-        "skip resolve entirely. Do not search source or help for another gate command. Check all ticket DoD "
+        "(5) do not run a separate resolve command (the closer resolves the review gate). "
+        "Do not search source or help for another gate command. Check all ticket DoD "
         "boxes, update the status row, append one ticket entry to log/current.md, then run exactly "
         "`python3 .project_manager/tools/ticket_finish.py <ticket> --no-pytest` using the sole local lease (publishing put the ticket in a size-1 cluster, so a direct `board.py complete` is rejected without the closer binding; --no-pytest reuses the full regression this wave already recorded). "
         "Do not do further discovery after that command succeeds. "
@@ -1525,8 +1528,9 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     assert "old skeleton follows the sentinel" in prompt
     assert "extract `## 회귀`" in prompt
     assert "exactly two" in prompt and "contains neither" in prompt
-    assert "if and only if accepted findings exist" in prompt
-    assert "skip resolve entirely" in prompt
+    assert "rounds resolve --gate" not in prompt
+    assert "ticket prepare --cluster C-<ticket> --role code-reviewer" in re.sub(r"\s+", " ", prompt)
+    assert "pass the returned `prompt` file path" in prompt
     assert "Do not search source or help" in prompt
     assert "ticket_finish.py <ticket> --no-pytest" in prompt
     # 프롬프트는 "직접 board.py complete 는 거부된다" 를 **설명으로** 담는다. 금지 대상은

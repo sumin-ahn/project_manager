@@ -294,6 +294,12 @@ LEGACY_KEY_MAP: dict[str, str | None] = {
     # 장부, prefix 의 진실은 areas.md 칼럼이다.
     "session": None,
     "prefix": None,
+    # 제거 — 묶음 리뷰는 라운드 파일 판정으로 돌고 엔진이 리뷰 횟수를 세지 않는다(대체 키 없음).
+    "delegate.code-reviewer.rounds_max": None,
+    # 제거 — 작업 크기별 변경 줄 수 상한 축이 없어졌다(대체 키 없음). 남은 행은 지운다.
+    "diff_cap.small": None,
+    "diff_cap.medium": None,
+    "diff_cap.large": None,
 }
 
 # **안내만 하고 막지는 않는 구키** — 읽는 코드가 이미 0인 키다(폴백이 먼저 폐지됐다).
@@ -455,12 +461,7 @@ DELEGATE_ROLE_PATTERN = (
     "delegate.<role>[.hard][.fallback].{" + ",".join(_ROLE_SUFFIXES) + "}")
 DELEGATE_ALIAS_PATTERN = "delegate.model_alias.<name>"
 HARNESS_PATTERN = "harness.<name>.{" + ",".join(_HARNESS_SUFFIXES) + "}"
-DIFF_CAP_PATTERN = "diff_cap.<estimate>"
 PLATFORM_TEST_PATTERN = "test.<platform>.cmd"
-
-# diff 서킷브레이커 상한 — 값이 estimate 마다 달라 군 선언 한 칸에 담기지 않는다. 이 표가
-# estimate 목록의 정본이기도 하다(`_matches_pattern` 이 여기서 이름을 읽는다).
-DIFF_CAP_DEFAULTS: dict[str, str] = {"small": "300", "medium": "1000", "large": "2500"}
 
 # 역할 위임의 **권장 조합** — 키는 `"<role><tier>"`(`_DELEGATE_TIERS` 표기 그대로), 값은 접미
 # (`_ROLE_SUFFIXES`)별 권장값이다. 권장값은 **기본값이 아니다**: 저장 전에는 아무 효과가 없고
@@ -591,10 +592,6 @@ KEY_REGISTRY: dict[str, KeySpec] = {
         "이만큼 출력이 없으면 멈춘 것으로 봅니다.",
         default=None, unset=_TOOL_DEFAULT_TIME, required=False, group="delegate",
         governed_by="delegate.enabled"),
-    "delegate.code-reviewer.rounds_max": KeySpec(
-        "검토 최대 횟수",
-        "같은 작업을 다시 검토할 최대 횟수입니다.",
-        default="3", required=False, group="delegate", governed_by="delegate.enabled"),
     "additional_reviewer.harness": KeySpec(
         "교차 검토 도구",
         "다른 모델로 한 번 더 검토할 때 쓸 도구입니다. 모델과 함께 채웁니다.",
@@ -662,10 +659,6 @@ PATTERN_REGISTRY: dict[str, KeySpec] = {
         "모델 별칭",
         "같은 모델의 다른 표기를 한 이름으로 묶습니다. 구현과 검토가 같은 모델인지 볼 때만 씁니다.",
         default=None, unset="표기가 다르면 다른 모델로 봅니다.", required=False, group="delegate"),
-    DIFF_CAP_PATTERN: KeySpec(
-        "작업 크기별 변경 줄 수 상한",
-        "작업을 마칠 때와 교차 검토 전에 확인합니다. 추가·삭제 줄 수 합계가 넘으면 멈추고, 모르는 크기에는 제한을 두지 않습니다.",
-        default=None, unset="제한을 두지 않습니다.", required=False, group="additional_reviewer"),
     PLATFORM_TEST_PATTERN: KeySpec(
         "운영체제별 테스트 명령",
         "위 '테스트할 운영체제 목록'에 적은 이름마다 하나씩 정합니다. 목록에 없는 이름은 모르는 항목으로 표시합니다.",
@@ -706,10 +699,6 @@ def key_spec(key: str) -> KeySpec | None:
     if pattern is None:
         return None
     spec = PATTERN_REGISTRY[pattern]
-    if pattern == DIFF_CAP_PATTERN:
-        # 상한이 estimate 마다 다르다 — 군 선언은 값을 담지 못하므로 이 키의 값으로 채워 준다.
-        return KeySpec(spec.label, spec.description, default=DIFF_CAP_DEFAULTS[key.split(".")[1]],
-                       required=spec.required, group=spec.group)
     if pattern == DELEGATE_ROLE_PATTERN:
         # 축이 멤버마다 다르다(harness/model/reasoning) — 군 한 칸에 담기지 않으므로 이 키의
         # 접미로 채워 준다(`_delegate_pattern_for` 가 그 접미를 `_ROLE_SUFFIXES` 로 이미 닫았다).
@@ -888,14 +877,12 @@ _KEY_TABLE_HEADERS = ("키", "필수", "기본값", "설명")
 def _key_table_rows(registry: dict[str, KeySpec]) -> list[tuple[str, str, str, str]]:
     """표 한 벌의 행 — 필수는 `필수`/`-`, 선언 없는 기본값은 `-` 로 적는다."""
     return [(key, "필수" if spec.required else "-",
-             _default_display(key, spec), spec.description)
+             _default_display(spec), spec.description)
             for key, spec in registry.items()]
 
 
-def _default_display(key: str, spec: KeySpec) -> str:
-    """표에 적는 기본값 — 군 전체가 한 값을 갖지 않으면 멤버별로 펼쳐 적는다."""
-    if key == DIFF_CAP_PATTERN:
-        return " · ".join(f"{name} {value}" for name, value in DIFF_CAP_DEFAULTS.items())
+def _default_display(spec: KeySpec) -> str:
+    """표에 적는 기본값 — 선언이 없으면 `-` 다."""
     return spec.default if spec.default is not None else "-"
 
 
@@ -936,9 +923,8 @@ def render_key_table() -> str:
 
 
 # ── 키 표의 기계 표면 (`--keys --json`) ──────────────────────────────────
-# 사람 표(`render_key_table`)와 **같은 레지스트리·같은 순서**를 낸다. 다른 점은 셋이다:
-# 표시용 합성 표기(`_default_display` 의 `small 300 · medium 1000 · …`)를 싣지 않고, 패턴 키군의
-# 전개된 실명을 `members` 로 함께 내며, 행마다 `choices`(고를 수 있는 값)·`recommended`(권장값)를
+# 사람 표(`render_key_table`)와 **같은 레지스트리·같은 순서**를 낸다. 다른 점은 둘이다:
+# 패턴 키군의 전개된 실명을 `members` 로 함께 내며, 행마다 `choices`(고를 수 있는 값)·`recommended`(권장값)를
 # 싣는다. 소비자는 관리자 화면이고, 화면은 **그 프로젝트 사본의** 이 산출을 읽는다(세대가 다르면
 # 키 집합이 다르므로 남의 레지스트리로 대신 그리지 않는다).
 #
@@ -1062,10 +1048,6 @@ _HARNESS_SUFFIX_LABELS = {
 }
 
 
-# 작업 크기 세 값의 사람 이름 — 이름이 셋 다 같으면 화면에서 어느 줄인지 갈리지 않는다.
-_ESTIMATE_LABELS = {"small": "작은 작업", "medium": "보통 작업", "large": "큰 작업"}
-
-
 def _pattern_unit_labels(pattern: str) -> dict[str, str]:
     """키군 안에서 행마다 갈리는 이름 `<키> → 사람이 읽는 이름`. 안 갈리는 군은 빈 표다.
 
@@ -1080,9 +1062,6 @@ def _pattern_unit_labels(pattern: str) -> dict[str, str]:
     if pattern == HARNESS_PATTERN:
         return {f"harness.{name}.{suffix}": f"{name} {_HARNESS_SUFFIX_LABELS[suffix]}"
                 for name in _harness_names() for suffix in _harness_suffixes(name)}
-    if pattern == DIFF_CAP_PATTERN:
-        return {f"diff_cap.{name}": f"{PATTERN_REGISTRY[pattern].label} ({label})"
-                for name, label in _ESTIMATE_LABELS.items()}
     return {}
 
 
@@ -1100,8 +1079,6 @@ def _pattern_members(pattern: str) -> list[dict]:
         keys = [f"delegate.{role}{tier}.{suffix}"
                 for role in _role_names() for tier in _role_tiers(role)
                 for suffix in _ROLE_SUFFIXES]
-    elif pattern == DIFF_CAP_PATTERN:
-        keys = [f"diff_cap.{name}" for name in DIFF_CAP_DEFAULTS]
     else:
         keys = []
     return [{"key": key, "default": default_for(key), "unset": unset_for(key),
@@ -1509,9 +1486,6 @@ def pattern_for(key: str) -> str | None:
     if len(segments) < 2:
         return None
     head = segments[0]
-    if head == "diff_cap":
-        return DIFF_CAP_PATTERN if (
-            len(segments) == 2 and segments[1] in DIFF_CAP_DEFAULTS) else None
     if head == "harness":
         return HARNESS_PATTERN if (
             len(segments) == 3 and segments[1] in _harness_names()

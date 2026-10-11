@@ -2586,8 +2586,8 @@ def test_private_ref_preflight_surface_excludes_machine_mirror_copies(pref_tf):
 
 
 def test_private_ref_preflight_runs_before_regression_log_board_git(pref_tf, tmp_path):
-    """이 preflight 가 차단하면 회귀·log·board·git mutation 어떤 부작용도 없다(diff_cap·DoD
-    와 동형인 자리 계약). 실 판정으로 재현한다 — DI 스텁이 아니라 실 판정이 앞자리에서
+    """이 preflight 가 차단하면 회귀·log·board·git mutation 어떤 부작용도 없다(DoD
+    preflight 와 동형인 자리 계약). 실 판정으로 재현한다 — DI 스텁이 아니라 실 판정이 앞자리에서
     막는지를 본다."""
     root = _pref_repo(tmp_path)
     _pref_write_target(root, _PREF_BASE_BODY)

@@ -229,7 +229,6 @@ def test_known_keys_comments_and_blank_lines_produce_no_finding(board, monkeypat
         "test.cmd=pytest -q\n"
         "identity.user=a@b.example\n"
         "delegate.enabled=true\n"
-        "delegate.code-reviewer.rounds_max=3\n"
         "delegate.developer.harness=claude\n"
         "delegate.developer.hard.fallback.model=gpt-x\n"
         "delegate.model_alias.mymodel=gpt-x\n"
@@ -240,7 +239,6 @@ def test_known_keys_comments_and_blank_lines_produce_no_finding(board, monkeypat
         "harness.claude.ctx_window_tokens=200000\n"
         "harness.opencode.pro_model=foo\n"
         "harness.codex.idle_timeout=600\n"
-        "diff_cap.small=4000\n"
         "\n"
         "# 빈 줄과 주석 사이에도 실키가 있을 수 있다\n"
         "upstream.path=/tmp/upstream\n"
@@ -471,7 +469,6 @@ def consumers():
 # 유지하는지가 이관의 불변식이다(키를 늘리거나 줄이는 티켓이 아니다).
 _KEYS_BEFORE_THE_REGISTRY = frozenset({
     "delegate.enabled", "delegate.timeout", "delegate.idle_timeout",
-    "delegate.code-reviewer.rounds_max",
     "additional_reviewer.harness", "additional_reviewer.model",
     "additional_reviewer.reasoning", "additional_reviewer.incomplete_rounds_max",
     "additional_reviewer.wave_budget", "additional_reviewer.rounds_max",
@@ -492,7 +489,7 @@ def test_known_keys_is_derived_from_the_registry_and_keeps_its_members(conf_modu
 
 
 def test_every_registered_key_declares_description_default_and_required(conf_module):
-    """실명 28키 전부가 설명·기본값 표현·필수 bool·표시 묶음을 갖는다 (완전성)."""
+    """실명 27키 전부가 설명·기본값 표현·필수 bool·표시 묶음을 갖는다 (완전성)."""
     for key, spec in conf_module.KEY_REGISTRY.items():
         assert spec.description.strip(), key
         assert spec.default is None or isinstance(spec.default, str), key
@@ -545,7 +542,6 @@ _PATTERN_SAMPLES = (
     ("delegate.model_alias.mymodel", "delegate"),
     ("harness.opencode.pro_model", "harness"),
     ("harness.codex.idle_timeout", "harness"),
-    ("diff_cap.large", "additional_reviewer"),
     ("test.windows.cmd", "runtime"),
 )
 
@@ -614,16 +610,9 @@ _MOVED_DEFAULTS = (
     pytest.param("additional_reviewer.rounds_max", "2",
                  lambda c: c.reviewer._review_rounds_max({}), 2,
                  id="reviewer-rounds-max"),
-    pytest.param("diff_cap.medium", "1000",
-                 lambda c: [c.reviewer._diff_cap({}, e)
-                            for e in ("small", "medium", "large")], [300, 1000, 2500],
-                 id="reviewer-diff-caps"),
     pytest.param("additional_reviewer.wave_budget", "24",
                  lambda c: c.reviewer._wave_budget({}), 24,
                  id="reviewer-wave-budget"),
-    pytest.param("delegate.code-reviewer.rounds_max", "3",
-                 lambda c: c.delegate.internal_review_rounds_max({}), 3,
-                 id="delegate-internal-rounds-max"),
 )
 
 
@@ -674,8 +663,7 @@ def test_nonstandard_compares_only_keys_that_declare_a_default(conf_module):
     """편차 판정은 기본값이 선언된 키만 본다 (기준 없는 자리에 기준을 지어내지 않는다)."""
     deviation = conf_module.nonstandard({
         "ctx.compact_at_pct": "85",          # 선언된 기본과 다름 → 편차
-        "diff_cap.large": "20000",           # 패턴 키도 멤버 기본과 비교한다
-        "harness.claude.ctx_window_tokens": "1000000",  # 하네스 사용 한도도 멤버 기본(200000)과 비교
+        "harness.claude.ctx_window_tokens": "1000000",  # 패턴 키도 멤버 기본(200000)과 비교한다
         "ctx.precompact_at_pct": "80",       # 기본과 같음 → 편차 아님
         "runtime.py": "python3",             # 기본 선언 없음 → 비교 대상 아님
         "additional_reviewer.timeout": "900",  # 하네스 표가 정본 → 비교 대상 아님
@@ -683,13 +671,12 @@ def test_nonstandard_compares_only_keys_that_declare_a_default(conf_module):
     })
     assert deviation == {
         "ctx.compact_at_pct": ("85", "90"),
-        "diff_cap.large": ("20000", "2500"),
         "harness.claude.ctx_window_tokens": ("1000000", "200000"),
     }
 
 
 def test_keys_cli_lists_all_keys(conf_module):
-    """`local_conf.py --keys` 가 실명 28키·패턴 군·기본값을 사람 표면 하나로 낸다."""
+    """`local_conf.py --keys` 가 실명 27키·패턴 군·기본값을 사람 표면 하나로 낸다."""
     proc = subprocess.run(
         [sys.executable, str(LOCAL_CONF_PY), "--keys"],
         capture_output=True, text=True, encoding="utf-8", env=utf8_child_env(),
@@ -699,7 +686,7 @@ def test_keys_cli_lists_all_keys(conf_module):
         assert key in proc.stdout, key
     for pattern in conf_module.PATTERN_REGISTRY:
         assert pattern in proc.stdout, pattern
-    for value in ("70", "80", "90", "24", "300", "1000", "2500"):
+    for value in ("70", "80", "90", "24"):
         assert value in proc.stdout, value
     assert "필수" in proc.stdout                       # 필수 칸이 표에 있다
 
@@ -747,23 +734,8 @@ def test_keys_json_carries_both_registries_split_by_kind(conf_module, keys_docum
 
 def test_pattern_members_take_the_registry_default_not_the_table_string(
         conf_module, keys_document):
-    """멤버의 기본값은 `default_for` 그대로다 — 사람 표의 합성 표기는 JSON 에 없다."""
+    """멤버의 기본값은 `default_for` 그대로다."""
     families = {row["key"]: row for row in keys_document["keys"] if row["kind"] == "pattern"}
-    diff_cap = families[conf_module.DIFF_CAP_PATTERN]
-
-    assert diff_cap["default"] is None                # 군 자체는 한 값을 갖지 않는다
-    # `unset` 은 기본값이 있는 행에선 None 이다 — 안 채웠을 때의 답을 그 값이 이미 한다.
-    plain = {"choices": None, "recommended": None,
-             "unit": None, "governed_by": None, "readonly": False}
-    assert diff_cap["members"] == [
-        {"key": "diff_cap.small", "default": "300", "unset": None, **plain},
-        {"key": "diff_cap.medium", "default": "1000", "unset": None, **plain},
-        {"key": "diff_cap.large", "default": "2500", "unset": None, **plain},
-    ]
-    composed = conf_module._default_display(
-        conf_module.DIFF_CAP_PATTERN, conf_module.PATTERN_REGISTRY[conf_module.DIFF_CAP_PATTERN])
-    assert composed == "small 300 · medium 1000 · large 2500"     # 사람 표에는 있고
-    assert composed not in json.dumps(keys_document, ensure_ascii=False)   # JSON 에는 없다
     for family in families.values():
         for member in family["members"]:
             assert member["default"] == conf_module.default_for(member["key"]), member
@@ -778,8 +750,8 @@ def test_every_expanded_member_resolves_back_to_its_own_family(conf_module, keys
     families = {row["key"]: row for row in keys_document["keys"] if row["kind"] == "pattern"}
     expanded = [(family, member["key"])
                 for family, row in families.items() for member in row["members"]]
-    # 하네스 3×3 + opencode 모델 1 · 역할 (구현 4티어 + 나머지 3역할×2티어)×3 · estimate 3
-    assert len(expanded) == 10 + 30 + 3, expanded
+    # 하네스 3×3 + opencode 모델 1 · 역할 (구현 4티어 + 나머지 3역할×2티어)×3
+    assert len(expanded) == 10 + 30, expanded
     for family, key in expanded:
         assert conf_module.pattern_for(key) == family, key
         assert key not in conf_module.KEY_REGISTRY, key
@@ -804,8 +776,6 @@ def test_every_row_carries_unit_switch_and_readonly(conf_module, keys_document):
         assert key in conf_module.KEY_REGISTRY and conf_module.key_spec(key).governed_by is None
     # 교차 검토 세트 멤버는 스위치가 아니라 세트 체크박스 하나로 켠다.
     assert all(conf_module.key_spec(key).governed_by is None for key in reviewer)
-    # 작업 크기 상한은 작업을 마칠 때도 읽혀서 교차 검토 스위치에 묶이지 않는다.
-    assert all(row["governed_by"] is None for row in rows if row["key"].startswith("diff_cap."))
 
     assert [row["key"] for row in rows if row["readonly"]] == [
         "upstream.rev", "upstream.seen_rev"]
@@ -918,7 +888,7 @@ def test_every_row_carries_the_choices_and_recommended_keys(keys_document):
     """모든 행의 모양이 같다 — 화면이 행마다 분기하지 않게 두 키를 항상 싣는다(없으면 null)."""
     rows = _rows(keys_document)
 
-    assert len(rows) == 28 + 5 + 10 + 30 + 3      # 실명 28 · 군 5 · 하네스 10 · 위임 30 · 상한 3
+    assert len(rows) == 27 + 4 + 10 + 30      # 실명 27 · 군 4 · 하네스 10 · 위임 30
     for row in rows:
         assert "choices" in row and "recommended" in row, row["key"]
 
@@ -1137,3 +1107,39 @@ def test_harness_window_member_label_default_and_rule(conf_module, keys_document
         assert pattern_row["unit_labels"][key] == f"{harness} 사용 한도 (토큰)", key
         spec = conf_module.key_spec(key)
         assert rule in spec.description and "컨텍스트 크기" not in spec.description, key
+
+
+def _assert_blocking_removed_key(conf_module, key: str) -> None:
+    """대체 없는 차단 구키 — 표에 None 으로 있고 비차단 집합 밖이며 어댑터 블록 두 벌에 실린다."""
+    assert key in conf_module.LEGACY_KEY_MAP and conf_module.LEGACY_KEY_MAP[key] is None, key
+    assert key not in conf_module.NON_BLOCKING_LEGACY_KEYS, key
+    assert key not in conf_module.KEY_REGISTRY, key
+    assert conf_module.key_spec(key) is None, key
+    for style in ("python", "js"):
+        assert f'"{key}",' in conf_module.render_adapter_block(style), (style, key)
+
+
+def _assert_conf_line_is_blocked(conf_module, tmp_path: Path, line: str, key: str) -> None:
+    path = _write_conf(tmp_path, f"test.cmd=pytest -q\n{line}\n")
+    with pytest.raises(conf_module.LegacyConfKeyError) as caught:
+        conf_module.load_checked_readable(path)
+    assert f"`{key}` → 제거(대체 키 없음)" in str(caught.value)
+
+
+def test_code_reviewer_rounds_max_is_a_removed_key(conf_module, keys_document, tmp_path):
+    """리뷰 횟수 상한 키는 대체 없이 제거된 차단 구키다 — 관리자 화면에 그 행이 없다."""
+    key = "delegate.code-reviewer.rounds_max"
+    _assert_blocking_removed_key(conf_module, key)
+    assert key not in {row["key"] for row in _rows(keys_document)}
+    assert all(row.get("label") != "검토 최대 횟수" for row in _rows(keys_document))
+    _assert_conf_line_is_blocked(conf_module, tmp_path, f"{key}=3", key)
+
+
+def test_diff_cap_keys_are_removed_keys(conf_module, keys_document, tmp_path):
+    """작업 크기별 변경 줄 수 상한 키 셋은 대체 없이 제거된 차단 구키다 — 군도 레지스트리에 없다."""
+    for estimate in ("small", "medium", "large"):
+        _assert_blocking_removed_key(conf_module, f"diff_cap.{estimate}")
+    assert not any(key.startswith("diff_cap") for key in conf_module.KEY_REGISTRY)
+    assert not any(key.startswith("diff_cap") for key in conf_module.PATTERN_REGISTRY)
+    assert "diff_cap" not in json.dumps(keys_document, ensure_ascii=False)
+    _assert_conf_line_is_blocked(conf_module, tmp_path, "diff_cap.large=20000", "diff_cap.large")
