@@ -45,6 +45,7 @@
 #   호출자 소유(board 를 로드하지 않는다). 신설 도구라 등록 필수(미등록=전파 안 됨).
 .project_manager/tools/ticket_rounds.py
 # pm-retired-path: .project_manager/tools/gate_snapshot.py -> .project_manager/tools/pm_delegate.py
+# pm-retired-path: .claude/precompact_capture_hook.sh -> .project_manager/tools/pm_log.py
 # worktree_pool: repo별 worktree 풀 리스 엔진 (multi-PM 모델). 순수 엔진(git DI seam)
 .project_manager/tools/worktree_pool.py
 # pm_config: multi-PM 셋업/관리 파사드 디스패처. 루트 forwarder pm-config.sh/.cmd 는

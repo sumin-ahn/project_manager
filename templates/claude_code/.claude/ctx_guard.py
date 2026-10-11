@@ -231,8 +231,9 @@ def _usage_input_tokens(usage: dict) -> int | None:
     return total if seen else None
 
 
-def context_tokens_from_transcript(transcript_path) -> tuple[int, str | None]:
-    """transcript JSONL 을 읽어 **현재 컨텍스트 점유 토큰**과 그 요청의 모델(``message.model``)을 낸다.
+def context_tokens_from_transcript(transcript_path) -> tuple[int, str | None, int]:
+    """transcript JSONL 을 읽어 **현재 컨텍스트 점유 토큰**, 그 요청의 모델(``message.model``),
+    파일 전체의 compact 경계 수를 낸다.
 
     마지막 compact 경계 이후 가장 최근 assistant 메시지의 usage 입력 토큰합을 쓴다 — 그게
     그 시점의 실제 컨텍스트 점유다 (omc 는 누적합도 쓰지만 컨텍스트 점유는 last-request 입력이
@@ -245,12 +246,17 @@ def context_tokens_from_transcript(transcript_path) -> tuple[int, str | None]:
     ``compactMetadata.postTokens`` 는 compact 결과 크기로 참고 가능하지만 새 assistant 요청의
     ``message.usage`` 실측은 아니다. 따라서 경계 뒤 usage 가 아직 없는 첫 UserPromptSubmit 에서는
     0(측정불가)을 반환해 r4의 ``raw_tokens > 0`` measured 재무장 신호와 marker 보존 계약을 지킨다.
+
+    경계 수는 주 대화 기록에서 주 세션 압축만 늘린다(서브에이전트 압축의 경계는 서브에이전트 기록에
+    남는다). 훅은 이 수의 증가로 압축을 감지한다. 문자열 ``compact_boundary`` 가 든 줄만 JSON 으로
+    해석해 같은 1회 읽기 안에서 센다. 파일 없음·읽기 실패는 ``(0, None, 0)``.
     """
     path = Path(transcript_path)
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except (FileNotFoundError, OSError):
-        return 0, None
+        return 0, None, 0
+    boundaries = sum(1 for line in lines if _is_compact_boundary_line(line))
     # 파일 끝에서부터 첫 usable usage 를 찾는다 (가장 최신 요청 = 현재 점유).
     for line in reversed(lines):
         line = line.strip()
@@ -264,15 +270,33 @@ def context_tokens_from_transcript(transcript_path) -> tuple[int, str | None]:
             continue
         # compact 경계를 usage 보다 먼저 판정한다. 경계 엔트리 자체에 usage-like 필드가 추가돼도
         # 압축 전 assistant usage 로 넘어가지 않도록 이 지점에서 역탐색을 끝낸다.
-        if entry.get("type") == "system" and entry.get("subtype") == "compact_boundary":
-            return 0, None
+        if _is_compact_boundary_entry(entry):
+            return 0, None, boundaries
         message = entry.get("message")
         usage = message.get("usage") if isinstance(message, dict) else None
         tokens = _usage_input_tokens(usage) if usage is not None else None
         if tokens is not None and tokens > 0:
             model = message.get("model")
-            return tokens, model if isinstance(model, str) else None
-    return 0, None
+            return tokens, model if isinstance(model, str) else None, boundaries
+    return 0, None, boundaries
+
+
+def _is_compact_boundary_entry(entry) -> bool:
+    return (
+        isinstance(entry, dict)
+        and entry.get("type") == "system"
+        and entry.get("subtype") == "compact_boundary"
+    )
+
+
+def _is_compact_boundary_line(line: str) -> bool:
+    """그 줄이 compact 경계 항목인가 — 문자열이 든 줄만 JSON 해석한다(대화 기록 전체 해석 회피)."""
+    if '"compact_boundary"' not in line:
+        return False
+    try:
+        return _is_compact_boundary_entry(json.loads(line))
+    except (ValueError, TypeError):
+        return False
 
 
 def context_used_pct_from_tokens(tokens: int, window_tokens: int) -> int:
@@ -288,39 +312,6 @@ def context_used_pct_from_transcript(transcript_path, window_tokens: int) -> int
     """transcript 점유 토큰 / 윈도 크기 → 사용 %."""
     return context_used_pct_from_tokens(
         context_tokens_from_transcript(transcript_path)[0], window_tokens)
-
-
-# ── 서브에이전트(sidechain) 감지 (메인 세션만 checkpoint 넛지) ──────────────
-
-def transcript_is_sidechain(transcript_path) -> bool:
-    """transcript JSONL 이 서브에이전트(sidechain) 세션의 것인가.
-
-    claude 는 서브에이전트(Task) 대화를 ``<parent>/subagents/agent-*.jsonl`` 에 기록하고 그 엔트리를
-    ``isSidechain: true`` 로 표시한다 — 메인 세션 transcript ``<session>.jsonl`` 은 전 엔트리
-    ``isSidechain: false`` (실측 확인: 서브에이전트 파일은 전 엔트리 true·메인은 전 엔트리 false 로
-    깨끗이 분리). 훅은 stdin ``transcript_path`` 가 가리키는 이 파일을 읽어 세션 성격을 판정한다.
-
-    파일 끝(최신)에서부터 첫 ``isSidechain`` boolean 을 찾아 반환한다. 파일 없음·읽기 실패·신호 부재·
-    파싱 불가는 모두 **False**(메인 취급) — 면제는 sidechain 이 *확실할 때만*(보수적 fail-safe·감지
-    모호 시 메인 세션 넛지 동작 유지). 에이전트 종류는 보지 않는다(isSidechain 단일 기준 — 미래
-    에이전트 자동 커버·ticket §결정).
-    """
-    path = Path(transcript_path)
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (FileNotFoundError, OSError):
-        return False
-    for line in reversed(lines):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except (ValueError, TypeError):
-            continue
-        if isinstance(entry, dict) and isinstance(entry.get("isSidechain"), bool):
-            return entry["isSidechain"]
-    return False
 
 
 # ── 임계 판정 (statusLine·훅 공유) ──────────────────────────────────────────

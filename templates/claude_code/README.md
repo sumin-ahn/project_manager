@@ -51,15 +51,17 @@ longhand·placeholder 표는 루트 [`docs/manual-import.md`](../../docs/manual-
 Claude Code의 native auto-compaction을 켠 채 사용한다. 메인 PM 세션의
 `PreToolUse`/`UserPromptSubmit` 훅은 컨텍스트가 nudge·강화·final 밴드에 들어갈 때
 `additionalContext`로 checkpoint 안내를 사이클당 한 번씩 주입한다. 모든 밴드는 비차단이며 prompt,
-도구 실행, compaction을 거부하지 않는다. `PreCompact`는 durable breadcrumb와 checkpoint 골격을
-만들고, `PostCompact`는 엔진 `pm_log.py snapshot`의 최종 텍스트를 payload marker에 저장한다. 직후
-첫 `PreToolUse`/`UserPromptSubmit`이 이를 `additionalContext`로 한 번 주입하고 marker를 소거한다.
-서브에이전트는 checkpoint 안내 대상에서 제외되고 native compaction으로 독립 정리된다.
+도구 실행, compaction을 거부하지 않는다. 압축 기록은 압축 이벤트가 아니라 같은 훅이 맡는다(압축
+이벤트 입력으로는 주 세션 압축과 서브에이전트 압축을 가를 수 없다). 압축 뒤 첫
+`PreToolUse`/`UserPromptSubmit`이 주 대화 기록의 압축 경계 수 증가를 보고, 경계마다 한 번
+breadcrumb와 checkpoint 골격을 남기고 엔진 `pm_log.py snapshot`의 최종 텍스트를 `additionalContext`로
+주입한다. 기록 대상 task 는 이 세션이 `/pm-bootstrap --task <이름>` 으로 연 task 다. 판정하지 못하면
+엔진 사유 한 줄을 `systemMessage`로 보인다. 서브에이전트의 도구 호출(훅 입력 `agent_id`)은 어떤
+상태도 바꾸지 않고 native compaction으로 독립 정리된다.
 
-자동 골격의 구간·서사 불릿은 PM이 채운다. `ctx_stop_hook`과
-`precompact_capture_hook.sh`는 framework-owned(`@source`)라 `pm_update`가 갱신한다. instance-owned는
-`settings.json`뿐이므로 기존 채택자는 템플릿의 비차단 `PreCompact`/`PostCompact` 설정 델타를 자기
-파일에 병합한다.
+자동 골격의 구간·서사 불릿은 PM이 채운다. `ctx_stop_hook`은 framework-owned(`@source`)라
+`pm_update`가 갱신한다. instance-owned는 `settings.json`뿐이므로 기존 채택자는 자기 파일에 남은
+압축 전·압축 후 이벤트 훅 항목을 지운다(CHANGELOG 안내).
 
 ## 엔진 동기화 (메인테이너 · 루트 → 이 타깃)
 

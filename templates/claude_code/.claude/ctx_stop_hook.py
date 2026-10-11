@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
-"""claude ctx 임계 비차단 넛지 + compaction snapshot 훅.
+"""claude ctx 임계 비차단 넛지 + 압축 기록 훅.
 
-Claude Code 가 PreToolUse(도구 실행 전), UserPromptSubmit(prompt 처리 전),
-PostCompact(compaction 완료 후)에서 호출한다.
-한 스크립트가 stdin 의 ``hook_event_name`` 으로 분기. 훅 입력엔 ``context_window`` 가 **없을 수 있어**
-(statusline 전용) — 그래서 훅은 ``transcript_path`` JSONL 을 읽어 컨텍스트 점유를 자체 산출한다.
+Claude Code 가 PreToolUse(도구 실행 전)와 UserPromptSubmit(prompt 처리 전)에서 호출한다. 그 밖의
+이벤트 입력은 아무것도 바꾸지 않는다. 훅 입력엔 ``context_window`` 가 **없을 수 있어**(statusline
+전용) — 그래서 훅은 ``transcript_path`` JSONL 을 읽어 컨텍스트 점유와 압축 경계 수를 자체 산출한다.
 
-세 밴드(nudge/nudge2/stop) 모두 모델-facing 비차단 안내를 PreToolUse/UserPromptSubmit
-``additionalContext`` 로 주입한다. stop 밴드는 구 차단형 대신 최종 넛지이며 `.final` marker 로
-사이클당 한 번만 주입한다. PostCompact 경계에서는 엔진 snapshot 최종 텍스트를 payload marker에
-저장하고 checkpoint 골격을 생성한 뒤 `.nudge`/`.nudge2`/`.final` marker를 재무장한다. 직후 첫
-PreToolUse/UserPromptSubmit이 payload를 verbatim additionalContext로 1회 주입하고 marker를 소거한다.
-훅은 deny/block/회전 marker 를 만들지 않는다.
+세 밴드(nudge/nudge2/stop) 모두 모델-facing 비차단 안내를 ``additionalContext`` 로 주입한다. stop
+밴드는 구 차단형 대신 최종 넛지이며 `.final` marker 로 사이클당 한 번만 주입한다. 훅은
+deny/block/회전 marker 를 만들지 않는다.
 
-서브에이전트(sidechain) 면제는 유지한다. checkpoint 지시는 메인 PM 세션 전용이며, transcript 의
-``isSidechain`` 필드가 확실히 true 일 때만 면제한다(모호하면 메인 취급).
+압축 감지: PreCompact·PostCompact 입력은 주 세션 압축과 서브에이전트 압축을 구별할 수 없다(둘 다
+주 세션 ID·주 대화 기록으로 온다). 그래서 압축 처리는 주 스레드 훅이 한다 — 주 대화 기록의 압축
+경계 수 N 이 늘면(서브에이전트 경계는 서브에이전트 기록에 남는다) 처리 표식
+``<세션>.compact-<N>`` 을 배타 선점한 호출 하나가 밴드 marker 재무장, ``pm_log.py checkpoint``
+(골격·breadcrumb), ``pm_log.py snapshot`` 주입을 경계마다 한 번 한다. 기록에 실패하면 엔진 사유
+한 줄을 ``systemMessage``·``additionalContext`` 로 보인다.
+
+서브에이전트 면제: 입력에 ``agent_id`` 가 있으면(서브에이전트의 도구 호출) 어떤 상태도 바꾸지 않고
+출력도 없다. ``agent_type`` 은 주 스레드 ``--agent`` 세션에도 실리므로 보지 않는다.
 """
 from __future__ import annotations
 
@@ -23,7 +26,6 @@ import json
 import os
 import subprocess
 import sys
-import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -34,6 +36,8 @@ import ctx_guard  # noqa: E402  (같은 디렉토리 공유 코어)
 _MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"
 _SNAPSHOT_TIMEOUT_SECONDS = 3.0
 _CHECKPOINT_TIMEOUT_SECONDS = 5.0
+_MAIN_THREAD_EVENTS = frozenset({"PreToolUse", "UserPromptSubmit"})
+_COMPACTION_FAILURE_PREFIX = "[ctx-checkpoint] 압축 기록 실패: "
 
 
 def _session_id(stdin: dict) -> str:
@@ -86,54 +90,9 @@ def _final_marker_path(root: Path, session_id: str) -> Path:
     return root / _MARKER_DIR / f"{session_id}.final"
 
 
-def _snapshot_marker_path(root: Path, session_id: str) -> Path:
-    return root / _MARKER_DIR / f"compact-snapshot.{session_id}"
-
-
-def _arm_snapshot(root: Path, session_id: str, payload: str) -> bool:
-    """PostCompact snapshot payload를 원자 교체해 다음 주입 가능 채널을 무장한다."""
-    if not payload:
-        return False
-    marker = _snapshot_marker_path(root, session_id)
-    temp = marker.with_name(f".{marker.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    try:
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        temp.write_text(payload, encoding="utf-8")
-        os.replace(temp, marker)
-        return True
-    except OSError:
-        return False
-    finally:
-        try:
-            temp.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-
-def _take_snapshot(root: Path, session_id: str) -> str | None:
-    """payload marker를 rename으로 배타 선점하고 읽은 뒤 소거한다 (채널 합산 1회)."""
-    marker = _snapshot_marker_path(root, session_id)
-    claimed = marker.with_name(f".{marker.name}.{os.getpid()}.{uuid.uuid4().hex}.claimed")
-    try:
-        os.replace(marker, claimed)
-    except OSError:
-        return None
-    try:
-        payload = claimed.read_text(encoding="utf-8")
-        return payload or None
-    except (OSError, UnicodeError):
-        return None
-    finally:
-        try:
-            claimed.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-
-def _hook_cwd(stdin: dict, root: Path) -> Path:
-    raw = stdin.get("cwd")
-    return Path(raw).resolve(strict=False) if isinstance(raw, str) and raw.strip() \
-        else Path(root).resolve(strict=False)
+def _compaction_marker_path(root: Path, session_id: str, boundaries: int) -> Path:
+    """주 대화 기록 경계 N 의 처리 표식 — 경계 하나에 처리 한 번(배타 선점)."""
+    return root / _MARKER_DIR / f"{session_id}.compact-{boundaries}"
 
 
 def _pm_log_path(root: Path) -> Path:
@@ -197,107 +156,65 @@ def _build_ctx_guidance(
     )
 
 
-def _build_snapshot(root: Path, stdin: dict) -> str | None:
-    """엔진 builder stdout만 받는다. 렌더는 pm_log.py 단일 소유, stderr는 훅 프로토콜 밖으로 폐기.
+def _run_pm_log(root: Path, argv: list[str], timeout: float) -> tuple[int, str, str]:
+    """엔진 ``pm_log.py`` 를 돌려 ``(rc, stdout, stderr)`` 를 받는다 — 압축 기록의 유일한 실행 자리.
 
-    Builder command token: ``pm_log.py snapshot``.
+    렌더는 엔진 단일 소유다(builder command token: ``pm_log.py snapshot``). 엔진 파일이 없으면
+    rc 2, 시간 초과·실행 실패는 rc 1 과 예외 이름·메시지를 stderr 자리에 담아 돌려준다 — 훅은
+    비차단이라 예외로 끝나지 않고, 호출부가 그 사유를 실패 신호로 보인다.
     """
     engine = _pm_log_path(root)
     if not engine.is_file():
-        return None
-    command = [
-        sys.executable, str(engine), "snapshot", "--cwd", str(_hook_cwd(stdin, root)),
-    ]
+        return 2, "", "pm_log.py 없음"
     try:
         result = subprocess.run(
-            command,
+            [sys.executable, str(engine), *argv],
             cwd=str(root),
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
-            timeout=_SNAPSHOT_TIMEOUT_SECONDS,
+            timeout=timeout,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return result.stdout if result.returncode == 0 and result.stdout else None
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 1, "", f"{type(exc).__name__}: {exc}"
+    return result.returncode, result.stdout or "", result.stderr or ""
 
 
-def _compaction_boundary_id(stdin: dict, phase: str) -> str | None:
-    """Claude transcript의 compact boundary 순번으로 pre/post 공통 경계 ID를 만든다."""
-    transcript = stdin.get("transcript_path")
-    if not isinstance(transcript, str) or not transcript:
-        return None
-    try:
-        lines = Path(transcript).read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError):
-        return None
-    count = 0
-    for line in lines:
-        try:
-            entry = json.loads(line)
-        except (ValueError, TypeError):
-            continue
-        if (
-            isinstance(entry, dict)
-            and entry.get("type") == "system"
-            and entry.get("subtype") == "compact_boundary"
-        ):
-            count += 1
-    ordinal = count + 1 if phase == "pre" else max(count, 1)
-    return f"claude-{_session_id(stdin)}-{ordinal}"
+def _compaction_failure_output(event: str, rc: int, stderr: str) -> dict:
+    """압축 기록 실패 신호 — 사람(systemMessage)과 모델(additionalContext) 둘 다에 같은 한 줄."""
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    text = _COMPACTION_FAILURE_PREFIX + (lines[-1] if lines else f"pm_log rc={rc}")
+    return {
+        "systemMessage": text,
+        "hookSpecificOutput": {"hookEventName": event, "additionalContext": text},
+    }
 
 
-def _create_checkpoint(
-    root: Path,
-    stdin: dict,
-    *,
-    phase: str,
-    breadcrumb: bool = False,
-) -> bool:
-    """compaction 골격 생성 성공 여부. 출력은 흡수하되 실패를 성공으로 합치지 않는다."""
-    engine = _pm_log_path(root)
-    if not engine.is_file():
-        return False
-    command = [
-        sys.executable, str(engine), "checkpoint", "--trigger", "compaction",
-        "--cwd", str(_hook_cwd(stdin, root)), "--phase", phase,
-    ]
-    raw_sid = stdin.get("session_id") or stdin.get("sessionId")
-    if isinstance(raw_sid, str) and raw_sid.strip():
-        command.extend(("--session-id", _session_id(stdin)))
-    boundary_id = _compaction_boundary_id(stdin, phase)
-    if boundary_id is not None:
-        command.extend(("--boundary-id", boundary_id))
-    if breadcrumb:
-        command.append("--breadcrumb")
-    try:
-        result = subprocess.run(
-            command,
-            cwd=str(root),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=_CHECKPOINT_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return result.returncode == 0
-
-
-def capture_precompact(stdin: dict, root: Path) -> int:
-    """sidechain 판정 뒤 PM-home 엔진에서 breadcrumb와 checkpoint를 함께 기록한다."""
-    transcript = stdin.get("transcript_path")
-    if isinstance(transcript, str) and transcript and ctx_guard.transcript_is_sidechain(transcript):
-        return 0
-    # PreCompact 출력은 래퍼가 버리므로 append 결과와 무관하게 0 으로 끝난다.
-    _create_checkpoint(root, stdin, phase="pre", breadcrumb=True)
-    return 0
+def _compaction_output(stdin: dict, root: Path, session_id: str, boundaries: int) -> dict:
+    """경계 N 의 checkpoint 골격·breadcrumb 를 남기고 snapshot 을 주입한다(실패면 실패 신호)."""
+    event = stdin.get("hook_event_name") or stdin.get("hookEventName")
+    raw_sid = stdin.get("session_id")
+    raw_sid = raw_sid if isinstance(raw_sid, str) else ""
+    rc, _stdout, stderr = _run_pm_log(
+        root,
+        ["checkpoint", "--trigger", "compaction", "--session-id", raw_sid,
+         "--boundary-id", f"claude-{session_id}-{boundaries}", "--breadcrumb"],
+        _CHECKPOINT_TIMEOUT_SECONDS,
+    )
+    if rc != 0:
+        return _compaction_failure_output(event, rc, stderr)
+    rc, stdout, stderr = _run_pm_log(
+        root, ["snapshot", "--session-id", raw_sid], _SNAPSHOT_TIMEOUT_SECONDS,
+    )
+    if rc != 0 or not stdout:
+        return _compaction_failure_output(event, rc, stderr)
+    return nudge_output(stdin, stdout)
 
 
 def _rearm_cycle(root: Path, session_id: str) -> None:
-    """PostCompact 완료 경계/유효한 ok 복귀 시 marker 를 지워 다음 상승 사이클을 재무장."""
+    """압축 경계 처리/유효한 ok 복귀 시 marker 를 지워 다음 상승 사이클을 재무장."""
     for marker in (
         _nudge_marker_path(root, session_id),
         _nudge2_marker_path(root, session_id),
@@ -399,7 +316,7 @@ def _principle_recall_text(stdin: dict, root: Path) -> str:
 
 
 def _rearm_principle_recall(stdin: dict, root: Path) -> None:
-    """PostCompact 경계에서 원칙 recall marker 를 지워 다음 사이클을 재무장한다."""
+    """압축 경계 처리에서 원칙 recall marker 를 지워 다음 사이클을 재무장한다."""
     module = _load_principles(root)
     if module is None:
         return
@@ -445,80 +362,89 @@ def _merge_additional_context(output: dict | None, event: str, extra_text: str) 
     return output
 
 
+def _is_subagent_call(stdin: dict) -> bool:
+    """서브에이전트 안에서 발화한 훅인가 — ``agent_id`` 하나로 판정한다.
+
+    서브에이전트 훅 입력의 ``session_id``·``transcript_path`` 는 주 세션과 같아 그 둘로는 가를 수
+    없다. ``agent_type`` 은 주 스레드 ``--agent`` 세션에도 실리므로 판정에 쓰지 않는다."""
+    agent_id = stdin.get("agent_id")
+    return isinstance(agent_id, str) and bool(agent_id.strip())
+
+
+def _combine_outputs(first: dict | None, second: dict | None) -> dict | None:
+    """두 훅 출력을 합친다 — ``additionalContext``·``systemMessage`` 는 앞 것 뒤에 줄바꿈으로 잇는다."""
+    if first is None:
+        return second
+    if second is None:
+        return first
+    combined = dict(first)
+    second_message = second.get("systemMessage")
+    if isinstance(second_message, str) and second_message:
+        first_message = combined.get("systemMessage")
+        combined["systemMessage"] = (
+            f"{first_message}\n{second_message}" if first_message else second_message
+        )
+    second_hook = second.get("hookSpecificOutput")
+    if isinstance(second_hook, dict):
+        hook_output = dict(combined.get("hookSpecificOutput") or {})
+        hook_output.setdefault("hookEventName", second_hook.get("hookEventName"))
+        second_context = second_hook.get("additionalContext")
+        if isinstance(second_context, str) and second_context:
+            first_context = hook_output.get("additionalContext")
+            hook_output["additionalContext"] = (
+                f"{first_context}\n{second_context}" if first_context else second_context
+            )
+        combined["hookSpecificOutput"] = hook_output
+    return combined
+
+
 def evaluate(stdin: dict, root: Path, conf: dict) -> tuple[int, dict | None]:
-    """훅 핵심 진입 — ctx 밴드 판정에 원칙 recall 채널을 합본한다(둘 다 비차단).
+    """훅 핵심 진입 — 압축 경계 처리, ctx 밴드 판정, 원칙 recall 채널을 합본한다(모두 비차단).
 
-    ctx 밴드(snapshot/nudge/nudge2/stop)는 `_evaluate_ctx_bands` 가 그대로 소유한다. recall 은
-    독립 채널이라 밴드 판정과 무관하게 매칭되면 additionalContext 에 누적된다 — 레지스트리 부재·
-    파손이어도 ctx 밴드 출력은 그대로 실린다(비차단 계약)."""
-    rc, output = _evaluate_ctx_bands(stdin, root, conf)
-    transcript = stdin.get("transcript_path")
-    if isinstance(transcript, str) and transcript and ctx_guard.transcript_is_sidechain(transcript):
-        return rc, output
+    주 스레드 훅(PreToolUse·UserPromptSubmit, ``agent_id`` 없음)만 판정한다. 대화 기록은 한 번
+    읽어 점유 토큰·모델·경계 수를 함께 얻는다. recall 은 독립 채널이라 밴드 판정과 무관하게
+    매칭되면 additionalContext 에 누적된다 — 레지스트리 부재·파손이어도 다른 출력은 그대로 실린다."""
     event = stdin.get("hook_event_name") or stdin.get("hookEventName")
-    if event == "PostCompact":
-        _rearm_principle_recall(stdin, root)
-        return rc, output
-    if event in {"PreToolUse", "UserPromptSubmit"}:
-        recall_text = _principle_recall_text(stdin, root)
-        if recall_text:
-            output = _merge_additional_context(output, event, recall_text)
-    return rc, output
-
-
-def _evaluate_ctx_bands(stdin: dict, root: Path, conf: dict) -> tuple[int, dict | None]:
-    """ctx 밴드 판정 — (rc, output|None). 모든 경로는 비차단이다."""
+    if event not in _MAIN_THREAD_EVENTS or _is_subagent_call(stdin):
+        return 0, None
     transcript = stdin.get("transcript_path")
-    # 서브에이전트(sidechain) 면제는 다른 모든 밴드 판정보다 먼저 적용한다. checkpoint 서사는
-    # 메인 PM 세션만 쓰므로 서브에이전트는 marker 없이 통과해 native auto-compact 로 자체 정리한다.
-    # 면제는 sidechain 이 확실할 때만 — 신호 부재/모호면 False(메인 취급).
-    if isinstance(transcript, str) and transcript and ctx_guard.transcript_is_sidechain(transcript):
-        return 0, None
-    session_id = _session_id(stdin)
-    event = stdin.get("hook_event_name") or stdin.get("hookEventName")
-    if event == "PostCompact":
-        # compaction 완료 경계가 새 상승 사이클의 정본 신호다. PostCompact 는 완료 후 발화하므로
-        # 압축 실패/차단 시에는 재무장하지 않는다. transcript 사용률을 판정하지 않고 marker만
-        # best-effort 정리한다. snapshot 을 만들지 못하면(정체성 미해소 등) 기존 marker 를 보존한다.
-        _rearm_cycle(root, session_id)
-        snapshot = _build_snapshot(root, stdin)
-        if snapshot and not _arm_snapshot(root, session_id, snapshot):
-            print(
-                "[ctx-snapshot-rearm-failure] snapshot 재무장 실패 — 기존 payload를 다음 경계에 보존",
-                file=sys.stderr,
-            )
-        elif not snapshot and _snapshot_marker_path(root, session_id).exists():
-            print(
-                "[ctx-snapshot-rearm-failure] snapshot 재생성 불가 — 기존 armed payload를 다음 경계에 보존",
-                file=sys.stderr,
-            )
-        if not _create_checkpoint(root, stdin, phase="post"):
-            print(
-                "[ctx-checkpoint-append-failure] PostCompact checkpoint append 실패 — 다음 경계에서 재시도",
-                file=sys.stderr,
-            )
-        return 0, None
-
-    if event in {"PreToolUse", "UserPromptSubmit"}:
-        snapshot = _take_snapshot(root, session_id)
-        if snapshot is not None:
-            return 0, nudge_output(stdin, snapshot)
-
-    # 분모 = 적용 한도 E(압축 한도 기록) — statusLine 과 같은 기록. 훅 입력에는 모델이 없어 세션
-    # 모델은 사용량을 읽은 transcript 항목의 것이다.
-    raw_tokens, session_model = (
+    raw_tokens, session_model, boundaries = (
         ctx_guard.context_tokens_from_transcript(transcript)
         if isinstance(transcript, str) and transcript
-        else (0, None)
+        else (0, None, 0)
     )
+    session_id = _session_id(stdin)
+    output = None
+    if boundaries >= 1 and _claim_marker(
+        _compaction_marker_path(root, session_id, boundaries), "compaction handled\n"
+    ):
+        _rearm_cycle(root, session_id)
+        _rearm_principle_recall(stdin, root)
+        output = _compaction_output(stdin, root, session_id, boundaries)
+    output = _combine_outputs(
+        output, _evaluate_ctx_bands(stdin, root, conf, raw_tokens, session_model),
+    )
+    recall_text = _principle_recall_text(stdin, root)
+    if recall_text:
+        output = _merge_additional_context(output, event, recall_text)
+    return 0, output
+
+
+def _evaluate_ctx_bands(
+    stdin: dict, root: Path, conf: dict, raw_tokens: int, session_model: str | None,
+) -> dict | None:
+    """ctx 밴드 판정 — 출력 또는 None. 모든 경로는 비차단이다."""
+    session_id = _session_id(stdin)
+    # 분모 = 적용 한도 E(압축 한도 기록) — statusLine 과 같은 기록. 훅 입력에는 모델이 없어 세션
+    # 모델은 사용량을 읽은 transcript 항목의 것이다.
     try:
         budget = ctx_guard.read_budget(root, conf, session_model)
     except ValueError as exc:  # 기록 부재·손상·입력 불일치 — 밴드를 판정하지 못한 사실을 알린다.
-        return 0, _budget_notice(stdin, None, f"[ctx-budget] {exc}", error=True)
+        return _budget_notice(stdin, None, f"[ctx-budget] {exc}", error=True)
     output = _band_output(stdin, root, session_id, raw_tokens, budget)
     if budget["warning"]:
         output = _budget_notice(stdin, output, f"[ctx-budget] {budget['warning']}", error=False)
-    return 0, output
+    return output
 
 
 def _budget_notice(stdin: dict, output: dict | None, text: str, *, error: bool) -> dict | None:
@@ -593,7 +519,7 @@ def _band_output(stdin: dict, root: Path, session_id: str, raw_tokens: int, budg
     return output
 
 
-def main(argv: list[str] | None = None) -> int:
+def main() -> int:
     raw = sys.stdin.read()
     try:
         stdin = json.loads(raw) if raw.strip() else {}
@@ -602,10 +528,6 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(stdin, dict):
         stdin = {}
     root = ctx_guard.repo_root(Path(__file__).resolve().parent)
-    if argv is None:
-        argv = sys.argv[1:]
-    if "--precompact-capture" in argv:
-        return capture_precompact(stdin, root)
     conf = ctx_guard.load_local_config(root)
     rc, output = evaluate(stdin, root, conf)
     if output is not None:

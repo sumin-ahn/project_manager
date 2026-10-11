@@ -201,7 +201,7 @@ def test_hooks_precompact_allows_compaction_through_one_entrypoint_and_json_stdo
     )
     checkpoint, guidance = _features("PreCompact")
     assert checkpoint.argv[1:] == ("{tools}/pm_log.py", "checkpoint", "--trigger",
-                                   "compaction", "--phase", "pre", "--cwd", ".")
+                                   "compaction", "--phase", "pre", "--session-id", "{session_id}")
     assert checkpoint.side_effect_only is True, "checkpoint 단계 출력 폐기가 사라졌다"
     assert guidance.argv[1:] == ("{tools}/pm_log.py", "ctx-guidance", "--band",
                                  "precompact", "--json")
@@ -417,10 +417,75 @@ def test_postcompact_wires_snapshot_checkpoint_and_windows_symmetry():
     # subprocess 기능만 — in-process 기능(argv 없음·rearm 등)은 이 대칭 검사의 대상이 아니다.
     checkpoint, snapshot = [f for f in _features("PostCompact") if f.argv]
     assert checkpoint.argv[1:] == ("{tools}/pm_log.py", "checkpoint", "--trigger",
-                                   "compaction", "--phase", "post", "--cwd", ".")
+                                   "compaction", "--phase", "post", "--session-id", "{session_id}")
     assert checkpoint.side_effect_only is True, "checkpoint 단계 출력 폐기가 사라졌다"
-    assert snapshot.argv[1:] == ("{tools}/pm_log.py", "snapshot", "--cwd", ".", "--json")
+    assert snapshot.argv[1:] == ("{tools}/pm_log.py", "snapshot", "--session-id", "{session_id}",
+                                 "--json")
     assert snapshot.side_effect_only is False, "엔벨로프 단계가 답하지 않는다"
+
+
+def test_t0953_compaction_features_pass_session_id_placeholder():
+    """압축 기능의 정체성 입력은 훅 입력 `session_id` 하나다 — cwd 는 넘기지 않는다(AT-016)."""
+    dispatcher = _dispatcher()
+    engine_features = [
+        feature for event in ("PreCompact", "PostCompact") for feature in _features(event)
+        if feature.argv and feature.argv[2] in ("checkpoint", "snapshot")
+    ]
+    assert len(engine_features) == 3
+    for feature in engine_features:
+        index = feature.argv.index("--session-id")
+        assert feature.argv[index + 1] == "{session_id}", feature.feature_id
+        assert "--cwd" not in feature.argv, feature.feature_id
+    snapshot = next(f for f in engine_features if f.argv[2] == "snapshot")
+    root = Path("/tmp/t0953-root")
+    expanded = dispatcher._expand_hook_argv(snapshot.argv, root, {"session_id": "s-9"})
+    assert expanded[expanded.index("--session-id") + 1] == "s-9"
+    expanded = dispatcher._expand_hook_argv(snapshot.argv, root, {})
+    assert expanded[expanded.index("--session-id") + 1] == ""
+
+
+def test_t0953_subagent_compaction_runs_no_feature(tmp_path):
+    """서브에이전트(`agent_id`·`agent_type`) 압축 이벤트는 기능을 하나도 돌리지 않는다(AT-017)."""
+    dispatcher = _dispatcher()
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout=b"{}", stderr=b"")
+
+    for event in ("PostCompact", "PreCompact"):
+        subagent = {"session_id": "s", "agent_id": "a1", "agent_type": "default",
+                    "trigger": "auto", "hook_event_name": event}
+        calls.clear()
+        envelope = dispatcher.dispatch_hook(
+            event, json.dumps(subagent).encode("utf-8"), tmp_path, runner=runner)
+        assert calls == [], event
+        assert "adapter-fallback" not in json.dumps(envelope), event
+
+        main = {key: value for key, value in subagent.items()
+                if key not in ("agent_id", "agent_type")}
+        dispatcher.dispatch_hook(event, json.dumps(main).encode("utf-8"), tmp_path, runner=runner)
+        assert len(calls) == 2, (event, calls)
+
+
+def test_t0953_run_hook_feature_takes_session_id_from_dispatch_payload(tmp_path):
+    """자식 기능의 `{session_id}` 는 `dispatch_hook` 이 해석한 payload 에서 온다 — 바이트를 다시 읽지 않는다(F-002)."""
+    dispatcher = _dispatcher()
+    snapshot = next(feature for feature in _features("PostCompact")
+                    if feature.argv and feature.argv[2] == "snapshot")
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append((list(argv), kwargs["input"]))
+        return subprocess.CompletedProcess(argv, 0, stdout=b"{}", stderr=b"")
+
+    envelope = dispatcher._run_hook_feature(
+        snapshot, {"session_id": "s-9"}, b"{}", tmp_path, runner=runner, timeout=5)
+
+    assert envelope == {}
+    [(argv, stdin)] = calls
+    assert argv[argv.index("--session-id") + 1] == "s-9"
+    assert stdin == b"{}"
 
 
 # 가짜 장부 CLI — checkpoint 단계는 사람글(stdout)과 에러(stderr)를 내고, 엔벨로프 단계만
@@ -1211,7 +1276,7 @@ def test_self_expands_to_the_running_file_in_both_layouts(tmp_path, label):
     dispatcher_copy, root = _copy_dispatcher_to_layout(tmp_path, label)
     module = _load_module(f"pm_orch_codex_layout_{label}", dispatcher_copy)
 
-    expanded = module._expand_hook_argv(("{self}",), root)[0]
+    expanded = module._expand_hook_argv(("{self}",), root, {})[0]
 
     assert Path(expanded).exists(), f"{label}: {{self}} 전개 결과가 실재하지 않음: {expanded}"
     assert Path(expanded) == dispatcher_copy.resolve(), (
@@ -1251,7 +1316,7 @@ def test_self_reconstructed_from_root_would_miss_the_flat_layout(tmp_path):
         "옛 root 파생 경로가 우연히 실재해 민감도 probe 가 판별력을 잃음")
 
     module = _load_module("pm_orch_codex_sensitivity", dispatcher_copy)
-    fixed_self = module._expand_hook_argv(("{self}",), root)[0]
+    fixed_self = module._expand_hook_argv(("{self}",), root, {})[0]
 
     assert Path(fixed_self).exists()
     assert Path(fixed_self) != old_root_derived_self

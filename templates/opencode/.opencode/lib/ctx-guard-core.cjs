@@ -51,6 +51,8 @@ const SESSION_LOOKUP_TIMEOUT_MS = 1000;
 const SNAPSHOT_TIMEOUT_MS = 3000;
 const CHECKPOINT_TIMEOUT_MS = 5000;
 const COMPACTION_SNAPSHOT_RECEIPT_RETAIN = 8;
+// 압축 기록 실패 신호 머리 — claude `ctx_stop_hook` 과 같은 문구(압축 안내 첫 줄).
+const COMPACTION_FAILURE_PREFIX = "[ctx-checkpoint] 압축 기록 실패: ";
 
 // 차단 구키 목록은 엔진이 **생성**한다(어댑터가 매핑표를 복제하면 표와 파서가 갈린다):
 //   python3 .project_manager/tools/local_conf.py --render-adapter-block js
@@ -243,6 +245,7 @@ function buildNudge2Guidance(state) {
 function runPmLog(root, args, options = {}, spawnSync = childProcess.spawnSync) {
   const engine = path.join(root, ".project_manager", "tools", "pm_log.py");
   const capture = options.capture === true;
+  const captureStderr = options.captureStderr === true;
   const timeout = options.timeout || SNAPSHOT_TIMEOUT_MS;
   const candidate = supportedPythonCandidates(root, {
     spawnSync, platform: options.platform, timeout, attempts: options.attempts,
@@ -253,7 +256,7 @@ function runPmLog(root, args, options = {}, spawnSync = childProcess.spawnSync) 
     encoding: "utf8",
     timeout,
     maxBuffer: 32 * 1024,
-    stdio: capture ? ["ignore", "pipe", "ignore"] : ["ignore", "ignore", "ignore"],
+    stdio: ["ignore", capture ? "pipe" : "ignore", captureStderr ? "pipe" : "ignore"],
   }) || null;
 }
 
@@ -288,17 +291,24 @@ function buildEngineCtxGuidance(
   return buildCompactionFallbackGuidance();
 }
 
-function buildCompactionSnapshot(root, cwd, spawnSync = childProcess.spawnSync) {
+function buildCompactionSnapshot(root, sessionID, spawnSync = childProcess.spawnSync) {
   // Builder command token: pm_log.py snapshot. stdout payload는 변형 없이 system[]에 전달한다.
+  // 정체성은 세션 ID 하나다(그 세션이 연 task). 실패면 엔진 stderr 마지막 줄을 실패 신호로 싣는다.
   const result = runPmLog(
     root,
-    ["snapshot", "--cwd", String(cwd || root)],
-    { capture: true, timeout: SNAPSHOT_TIMEOUT_MS },
+    ["snapshot", "--session-id", String(sessionID || "")],
+    { capture: true, captureStderr: true, timeout: SNAPSHOT_TIMEOUT_MS },
     spawnSync,
   );
-  return result && result.status === 0 && typeof result.stdout === "string" && result.stdout
-    ? result.stdout
-    : null;
+  if (result && result.status === 0 && typeof result.stdout === "string" && result.stdout) {
+    return { ok: true, text: result.stdout };
+  }
+  const stderrLines = String((result && result.stderr) || "")
+    .split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const reason = stderrLines.length
+    ? stderrLines[stderrLines.length - 1]
+    : `pm_log status=${result ? result.status : "실행 불가"}`;
+  return { ok: false, text: COMPACTION_FAILURE_PREFIX + reason };
 }
 
 function buildCompactionFallbackGuidance() {
@@ -519,11 +529,9 @@ function createCompactionBoundaryID(sessionID) {
 }
 
 function createCompactionCheckpoint(
-  root, cwd, sessionID, boundaryID, spawnSync = childProcess.spawnSync,
+  root, sessionID, boundaryID, spawnSync = childProcess.spawnSync,
 ) {
-  const args = [
-    "checkpoint", "--trigger", "compaction", "--cwd", String(cwd || root), "--phase", "post",
-  ];
+  const args = ["checkpoint", "--trigger", "compaction", "--phase", "post"];
   if (typeof sessionID === "string" && sessionID.trim()) {
     args.push("--session-id", sessionID.trim());
   }
@@ -534,7 +542,7 @@ function createCompactionCheckpoint(
 }
 
 // ── plugin 팩토리 (진입점 ../plugins/ctx-guard.js 가 ESM named-export 로 재노출·opencode autoload) ──
-const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
+const CtxGuardPlugin = async ({ client, $ }) => {
   // 로드 검증 마커 (env-gated·라이브-로드 게이트 전용·실 세션엔 무음). opencode 는 성공 로드
   // 시 positive 로그를 남기지 않아(실측 1.17.18) — factory 실행을 관측하려면 스스로 마커를 낸다.
   // 훅 로직 무관 — CTX_GUARD_LOAD_PROBE 미설정 시 완전 무음(프로덕션 기본).
@@ -564,7 +572,6 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
   }
 
   const root = ENGINE_ROOT;
-  const hookCwd = directory || worktree || process.cwd();
 
   // OpenCode SDK 표면: client.session.get({ path: { id: sessionID } }) -> { data: Session }.
   // Session.parentID가 있으면 native task가 만든 자식 세션이다. 이때만 Claude의 sub-session
@@ -670,8 +677,10 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
         const compactedGuidance = buildEngineCtxGuidance(
           root, "precompact", null, null,
         );
-        const stagedSnapshot = buildCompactionSnapshot(root, hookCwd);
-        const stagedNotice = stagedSnapshot || compactedGuidance;
+        const stagedSnapshot = buildCompactionSnapshot(root, sessionID);
+        const stagedNotice = stagedSnapshot.ok
+          ? stagedSnapshot.text
+          : `${stagedSnapshot.text}\n${compactedGuidance}`;
         session.pendingNudgeText = stagedNotice;
         // 같은 payload를 프로세스 경계 너머에도 보존한다. 같은 프로세스의
         // 재-compaction은 새 generation stage 성공 후 자기 구 generation만 정리한다.
@@ -685,7 +694,7 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
         }
         // staging 실패 시 memory는 새 payload이어도 구 durable marker 소유권은 보수적으로 유지한다.
         createCompactionCheckpoint(
-          root, hookCwd, sessionID, createCompactionBoundaryID(sessionID),
+          root, sessionID, createCompactionBoundaryID(sessionID),
         );
         await notifyCompacted(compactedGuidance);
         return;

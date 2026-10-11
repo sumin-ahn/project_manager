@@ -83,7 +83,6 @@ CLAUDE_ONLY_PATHS = {
     ".claude/agents",
     ".claude/ctx_guard.py", ".claude/ctx_stop_hook.py", ".claude/ctx_stop_hook.sh",
     ".claude/ctx_statusline.py", ".claude/ctx_statusline.sh",
-    ".claude/precompact_capture_hook.sh",
     ".claude/pm_orch_claude.py",
     ".claude/delegate_channel_guard_hook.sh",
 }
@@ -116,7 +115,6 @@ CODEX_DROPPED_PATHS = CLAUDE_ONLY_PATHS | {".claude/skills"}
 CLAUDE_HOOK_PATHS = frozenset({
     ".claude/ctx_guard.py", ".claude/ctx_stop_hook.py", ".claude/ctx_stop_hook.sh",
     ".claude/ctx_statusline.py", ".claude/ctx_statusline.sh",
-    ".claude/precompact_capture_hook.sh",
     ".claude/pm_orch_claude.py",
     ".claude/delegate_channel_guard_hook.sh",
 })
@@ -235,6 +233,28 @@ def test_reviewer_retired_path_directive_is_identical_and_comment_compatible():
         entries = {str(entry) for entry in pm_update.read_manifest(manifest)}
         assert RETIRED_REVIEWER_PATH[1] in entries
         assert RETIRED_REVIEWER_PATH[0] not in entries
+
+
+RETIRED_PRECOMPACT_PATH = (
+    ".claude/precompact_capture_hook.sh", ".project_manager/tools/pm_log.py",
+)
+
+
+def test_t0953_precompact_capture_hook_retired_in_all_manifests():
+    """옛 압축 전 훅 스크립트는 4 manifest 모두 퇴역 지시로만 남고 출하 트리·훅 세트에 없다(AT-020)."""
+    pm_update = _load_pm_update()
+    manifests = (ROOT_MANIFEST, CC_MANIFEST, OC_MANIFEST, CODEX_MANIFEST)
+    for manifest in manifests:
+        assert RETIRED_PRECOMPACT_PATH in pm_update.parse_retired_path_directives(manifest)
+        assert RETIRED_PRECOMPACT_PATH[0] not in _manifest_path_set(manifest), manifest
+        pm_update.validated_retired_path_directives(REPO, [manifest])
+    assert not (TEMPLATE_ROOTS["claude_code"] / RETIRED_PRECOMPACT_PATH[0]).exists()
+    assert not (REPO / RETIRED_PRECOMPACT_PATH[0]).exists()
+    spec = importlib.util.spec_from_file_location(
+        "pm_import_t0953_retired", REPO / ".project_manager" / "tools" / "pm_import.py")
+    pm_import = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pm_import)
+    assert RETIRED_PRECOMPACT_PATH[0] not in pm_import.ADAPTER_HOOK_SET["claude"].live_files
 
 
 def test_reviewer_executable_has_only_the_new_physical_name_in_all_shipping_trees():
@@ -481,8 +501,7 @@ def test_all_manifests_self_propagate():
 def test_instance_owned_config_not_registered():
     """adopter config(settings.json·opencode.jsonc·루트 doc·local.conf)는 manifest 밖·미전파.
 
-    hooks/driver 는 전파하되 adopter-소유 config 는 전파하지 않는다(customization clobber 방지·ADR-0032 Q3).
-    precompact_capture_hook.sh는 T-0621로 @source 정식 등재되어 이 금지 집합에서 빠졌다."""
+    hooks/driver 는 전파하되 adopter-소유 config 는 전파하지 않는다(customization clobber 방지·ADR-0032 Q3)."""
     forbidden = {
         "root": (ROOT_MANIFEST, {
             ".claude/settings.json", "CLAUDE.md", ".project_manager/local.conf"}),
@@ -582,12 +601,8 @@ def _engine_content_diffs(template_root: Path, manifest_entries=None) -> list[st
     for entry in manifest_entries:
         if getattr(entry, "render", False) or getattr(entry, "target_owned", False):
             continue  # 렌더/타깃소유 = byte-copy 계약 밖
-        if (
-            getattr(entry, "source_rel", None)
-            and str(entry) != ".claude/precompact_capture_hook.sh"
-        ):
-            # 일반 @source adapter remap은 개별 등록 가드가 검증한다. 다만 공개 제품 루트에도
-            # canonical 사본이 실재하는 PreCompact 훅은 byte parity로 drift를 가시화한다.
+        if getattr(entry, "source_rel", None):
+            # @source adapter remap 은 개별 등록 가드가 검증한다.
             continue
         rel = str(entry)
         if rel == SELF_PROP_PATH:
@@ -680,18 +695,6 @@ def test_content_guard_is_sensitive_to_drift(tmp_path):
     # 음성 통제: 동일 입력(canonical=REPO 자신)엔 0 diff (false-positive 아님 확인).
     no_diff = _engine_content_diffs(REPO, manifest_entries=[entry])
     assert no_diff == [], f"동일 트리에 false-positive drift 검출 — {no_diff}"
-
-
-def test_content_guard_does_not_hide_precompact_source_remap_drift(tmp_path):
-    """공개 루트에 실재하는 PreCompact @source 사본은 전면 source_rel 면제 밖이다."""
-    pm_update = _load_pm_update()
-    rel = ".claude/precompact_capture_hook.sh"
-    entry = next(e for e in pm_update.read_manifest(ROOT_MANIFEST) if str(e) == rel)
-    target = tmp_path / rel
-    target.parent.mkdir(parents=True)
-    target.write_bytes((REPO / rel).read_bytes() + b"\n# deliberate drift\n")
-
-    assert _engine_content_diffs(tmp_path, manifest_entries=[entry]) == [rel]
 
 
 # ── 가드 3: facade 정합 (갭3 재발 차단) ──────────────────────────────────────

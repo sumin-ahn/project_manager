@@ -162,7 +162,7 @@ def _opencode_snapshot_receipts(marker_dir: Path) -> frozenset[tuple[str, str]]:
 
 
 def _compaction_checkpoint_markers(marker_dir: Path) -> frozenset[str]:
-    """PreCompact가 남긴 durable marker 이름 집합(격리 adopter의 전후 delta용)."""
+    """압축 checkpoint 가 남긴 durable marker 이름 집합(격리 adopter의 전후 delta용)."""
     return frozenset(
         marker.name
         for marker in marker_dir.glob("compact-checkpoint.*")
@@ -181,8 +181,41 @@ def _claude_session_transcript(session_id: str) -> Path:
     return candidates[0]
 
 
+# 압축 기록·snapshot 의 task 는 세션 ID 로 찾는다(T-0953) — 라이브 웨이브는 그 세션을 이 task 로 기록한다.
+_RELEASE_WAVE_TASK = "release-wave"
+
+
+def _record_wave_task_session(dest: Path, session_id: str) -> None:
+    """격리 채택자 task 기록(`worktree-leases.json` 최상위 `tasks`)에 웨이브 세션을 연 task 로 남긴다.
+
+    웨이브 세션이 부트스트랩으로 이미 연 task(같은 `session` 행)가 있으면 기록을 바꾸지 않는다.
+    같은 세션 행이 둘이면 세션 판정이 미해소가 된다."""
+    assert isinstance(session_id, str) and session_id.strip(), session_id
+    ledger = dest / ".project_manager" / ".local" / "worktree-leases.json"
+    data = json.loads(ledger.read_text(encoding="utf-8")) if ledger.exists() else {}
+    wanted = session_id.strip()
+    if any(str(row.get("session") or "").strip() == wanted for row in data.get("tasks", [])):
+        return
+    tasks = [row for row in data.get("tasks", []) if row.get("name") != _RELEASE_WAVE_TASK]
+    data["tasks"] = [*tasks, {"name": _RELEASE_WAVE_TASK, "session": session_id}]
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+def _opencode_session_id(stdout: str) -> str:
+    """`opencode run --format json` 이벤트 스트림의 첫 `sessionID`(루트 세션)."""
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and isinstance(event.get("sessionID"), str):
+            return event["sessionID"]
+    raise AssertionError(f"opencode 이벤트 스트림에 sessionID 가 없음: {stdout[-1600:]!r}")
+
+
 def _claude_recovery_deliveries(transcript: Path) -> int:
-    """PostCompact snapshot이 hook additional context로 실제 전달된 횟수."""
+    """압축 뒤 첫 주 스레드 훅의 snapshot이 hook additional context로 실제 전달된 횟수."""
     count = 0
     for line in transcript.read_text(encoding="utf-8").splitlines():
         try:
@@ -598,9 +631,9 @@ def test_release_wave_claude_full_wave(tmp_path):
 
     PM 36 라이브 probe(`scratchpad/release_probe.py`·PASS·dev×15·reviewer×21)의 mechanics 를 옮긴 것.
     claude 는 subprocess cwd 를 존중한다(`--dir` 불요). stream-json 으로 위임(subagent_type)을 관측하고
-    side-effect(probe.txt·done)를 먼저 단언한다. 그 뒤 같은 세션을 낮은 native `--autocompact`
-    경계로 resume한다. PostCompact payload marker 생성 → 후속 PreToolUse 전달, checkpoint 1건 이상,
-    모델 sentinel 응답을 함께 확인한다. API 과금.
+    side-effect(probe.txt·done)를 먼저 단언한다. 그 세션을 웨이브 task 를 연 세션으로 task 기록에 남긴
+    뒤 같은 세션을 낮은 native `--autocompact` 경계로 resume한다. 압축 뒤 첫 주 스레드 훅의
+    checkpoint 1건 이상과 snapshot 전달, 모델 sentinel 응답을 함께 확인한다. API 과금.
     """
     dest = _import_adopter(tmp_path, "claude")
     session_id = str(uuid.uuid4())
@@ -639,6 +672,7 @@ def test_release_wave_claude_full_wave(tmp_path):
     _assert_wave_side_effects(dest, proc, "claude")
 
     assert proc.returncode == 0
+    _record_wave_task_session(dest, session_id)
     resume_proc = subprocess.run(
         ["claude", "-p", "--model", CLAUDE_MODEL,
          "--resume", session_id,
@@ -660,11 +694,11 @@ def test_release_wave_claude_full_wave(tmp_path):
         "claude compaction 경계 checkpoint 골격이 log에 생성되지 않음"
     )
     assert _compaction_checkpoint_markers(marker_dir) - checkpoint_markers_before, (
-        "claude PreCompact durable checkpoint marker 증가분이 없음"
+        "claude 압축 checkpoint durable marker 증가분이 없음"
     )
     transcript = _claude_session_transcript(session_id)
     assert _claude_recovery_deliveries(transcript) >= 1, (
-        "claude PostCompact snapshot이 후속 PreToolUse additional context에 도달한 증거가 없음"
+        "claude 압축 뒤 snapshot이 주 스레드 훅 additional context에 도달한 증거가 없음"
     )
 
 
@@ -704,6 +738,8 @@ def test_release_wave_opencode_full_wave(tmp_path):
     gemma 는 느리고 변동 커 timeout 1800s. `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판).
     compaction 경계는 격리 adopter의 `harness.opencode.ctx_window_tokens`(하네스별 키) + 선택
     모델 `limit.context-output`만 낮추고 반복 입력으로 넘긴다. 출하 config/generic 예산은 무변경.
+    두 단계다(T-0953): 첫 실행(`--format json`)에서 루트 세션 ID 를 얻어 task 기록에 남기고, 같은
+    세션(`--continue`)으로 압축을 일으킨다 — 압축 기록의 task 는 세션 ID 로 찾는다.
     """
     dest = _import_adopter(tmp_path, "opencode")
     marker_dir = dest / ".project_manager" / ".local" / "ctx-stop"
@@ -715,7 +751,7 @@ def test_release_wave_opencode_full_wave(tmp_path):
         # `--dangerously-skip-permissions`: 비대화 헤드리스라 opencode 가 `--dir` 디렉토리를
         # external_directory 로 보고 권한을 auto-reject → AGENTS.md 도 못 읽고 wave 시작 실패한다.
         # 이 플래그로 권한을 통과시켜야 wave 완주(throwaway tmp adopter 격리라 안전·PM 36 probe 실측).
-        ["opencode", "run", "--agent", "build", "--dir", str(dest),
+        ["opencode", "run", "--format", "json", "--agent", "build", "--dir", str(dest),
          "--dangerously-skip-permissions", "-m", LIVE_MODEL,
          _full_wave_prompt("AGENTS.md", "opencode")],
         cwd=str(dest), env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
@@ -723,6 +759,7 @@ def test_release_wave_opencode_full_wave(tmp_path):
 
     # side-effect(hard) — full wave 의 핵심 결과(developer 위임 산출 probe.txt·done 전이).
     _assert_wave_side_effects(dest, proc, "opencode")
+    _record_wave_task_session(dest, _opencode_session_id(proc.stdout))
 
     # full wave를 정상 context로 완주한 뒤에만 같은 completed session의 native
     # compaction 경계를 낮춰, 아래 bounded safe turns로 checkpoint+receipt를 관측한다.
@@ -1793,7 +1830,8 @@ def test_opencode_full_wave_uses_compaction_evidence_from_initial_run(
         (marker_dir / "compact-snapshot-receipt.live.generation1").write_text(
             "delivered\n", encoding="utf-8",
         )
-        return subprocess.CompletedProcess(argv, 0, "", "")
+        stdout = json.dumps({"type": "step_start", "sessionID": "ses_wave"}) + "\n"
+        return subprocess.CompletedProcess(argv, 0, stdout, "")
 
     monkeypatch.setitem(
         test_release_wave_opencode_full_wave.__globals__,
@@ -1805,10 +1843,52 @@ def test_opencode_full_wave_uses_compaction_evidence_from_initial_run(
 
     assert len(calls) == 1
     assert "--continue" not in calls[0]
+    ledger = json.loads((tmp_path / ".project_manager" / ".local" / "worktree-leases.json")
+                        .read_text(encoding="utf-8"))
+    assert ledger["tasks"] == [{"name": _RELEASE_WAVE_TASK, "session": "ses_wave"}]
     source = inspect.getsource(test_release_wave_opencode_full_wave)
     assert source.index('_assert_wave_side_effects(dest, proc, "opencode")') < source.index(
+        "_record_wave_task_session(dest, _opencode_session_id(proc.stdout))"
+    ) < source.index(
         "_force_opencode_compaction_threshold(dest, LIVE_MODEL)"
     ) < source.index("_opencode_compaction_probe_prompts()")
+
+
+def test_record_wave_task_session_keeps_the_bootstrapped_task(tmp_path):
+    """웨이브 세션이 부트스트랩으로 연 task 가 있으면 헬퍼가 기록을 바꾸지 않아 세션 판정이 그 task 하나다(T-0953 F-001).
+
+    빈 기록이면 헬퍼가 release-wave 행 하나를 더해 그 task 로 해소된다. 판정은 실 pm_log 의
+    `resolve_session_task` 로 한다."""
+    spec = importlib.util.spec_from_file_location(
+        "pm_log_release_wave",
+        Path(__file__).resolve().parents[1] / ".project_manager" / "tools" / "pm_log.py",
+    )
+    pm_log = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pm_log)
+
+    bootstrapped = tmp_path / "bootstrapped"
+    ledger = bootstrapped / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(json.dumps({
+        "leases": [],
+        "tasks": [
+            {"name": "main", "prefix": None, "session": "ses_wave"},
+            {"name": "other", "prefix": None, "session": "ses_other"},
+        ],
+    }), encoding="utf-8")
+    before = ledger.read_bytes()
+
+    _record_wave_task_session(bootstrapped, "ses_wave")
+
+    assert ledger.read_bytes() == before
+    rows = json.loads(ledger.read_text(encoding="utf-8"))["tasks"]
+    assert [row["name"] for row in rows if row["session"] == "ses_wave"] == ["main"]
+    assert pm_log.resolve_session_task(bootstrapped, "ses_wave") == ("main", None)
+
+    fresh = tmp_path / "fresh"
+    _record_wave_task_session(fresh, "ses_wave")
+
+    assert pm_log.resolve_session_task(fresh, "ses_wave") == (_RELEASE_WAVE_TASK, None)
 
 
 def test_wave_side_effect_guard_rejects_ephemeral_run_hash(tmp_path, monkeypatch):

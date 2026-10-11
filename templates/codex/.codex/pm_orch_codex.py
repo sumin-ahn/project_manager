@@ -873,6 +873,8 @@ CODEX_HOOK_ENTRYPOINT_EVENTS = ("PreToolUse", "UserPromptSubmit", "PostToolUse",
 #   엔진 감독자(delegate_channel_guard.CODEX_SUPERVISOR_TIMEOUT_SECONDS=8)보다 커야 한다 —
 #   감독자보다 짧으면 감독자가 완전한 엔벨로프를 내기 전에 이쪽이 먼저 죽여 사유가 사라진다.
 CODEX_HOOK_DISPATCH_BUDGET_SEC = 12
+# 압축 이벤트 — 서브에이전트(`agent_id`·`agent_type`) 발화면 기능을 하나도 돌리지 않는다.
+CODEX_COMPACTION_EVENTS = frozenset({"PreCompact", "PostCompact"})
 # 어느 층이 답했는지 출력으로 구별된다 — 이 마커는 엔진 상수
 #   `delegate_channel_guard.CODEX_ADAPTER_FALLBACK_MARKER` 와 같은 값이어야 하고 테스트가 결속한다
 #   (훅 실행 시점에 엔진 모듈을 적재하지 않으려고 리터럴을 둔다·shell 폴백과 같은 근거).
@@ -971,12 +973,13 @@ CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
     # 압축 두 이벤트의 옛 커맨드는 **2단**이었다 — 장부 checkpoint(출력 폐기) 다음 엔벨로프 생성.
     #   그 2단을 등재 2행으로 옮긴다(순서 = 옛 셸 순서). 옛 matcher 2개(`^auto$`·`^manual$`)는
     #   `trigger` enum 전수(`{manual, auto}`)라 판별 없음과 값이 같다 — 그래서 판별식이 None 이다.
+    #   정체성은 훅 입력 `session_id`(`{session_id}`) 하나로 판정한다(그 세션이 연 task).
     CodexHookFeature(
         feature_id="compaction-checkpoint-pre",
         event="PreCompact",
         tool_pattern=None,
         argv=("{py}", "{tools}/pm_log.py", "checkpoint", "--trigger", "compaction",
-              "--phase", "pre", "--cwd", "."),
+              "--phase", "pre", "--session-id", "{session_id}"),
         side_effect_only=True,
     ),
     CodexHookFeature(
@@ -991,14 +994,14 @@ CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
         event="PostCompact",
         tool_pattern=None,
         argv=("{py}", "{tools}/pm_log.py", "checkpoint", "--trigger", "compaction",
-              "--phase", "post", "--cwd", "."),
+              "--phase", "post", "--session-id", "{session_id}"),
         side_effect_only=True,
     ),
     CodexHookFeature(
         feature_id="compaction-snapshot",
         event="PostCompact",
         tool_pattern=None,
-        argv=("{py}", "{tools}/pm_log.py", "snapshot", "--cwd", ".", "--json"),
+        argv=("{py}", "{tools}/pm_log.py", "snapshot", "--session-id", "{session_id}", "--json"),
     ),
     CodexHookFeature(
         # raw git cwd-anchor 가드가 claude_code·opencode 두 타깃엔 배선돼 있었는데 codex 엔
@@ -1127,10 +1130,11 @@ def _feature_matches(feature: CodexHookFeature, payload: dict) -> bool:
     return _feature_route(feature, payload).decision == CODEX_HOOK_ROUTE_MATCH
 
 
-def _expand_hook_argv(argv, root: Path) -> list[str]:
+def _expand_hook_argv(argv, root: Path, payload: dict) -> list[str]:
     """registry argv 의 자리표시자를 실값으로 — `{py}`=이 인터프리터·`{tools}`=엔진 도구 디렉토리·
     `{self}`=이 디스패처 파일 자신(자기참조형 기능이 부르는 대상 — git-anchor 는 delegate-channel
-    과 달리 부를 별도 엔진 파일이 없다).
+    과 달리 부를 별도 엔진 파일이 없다)·`{session_id}`=훅 입력 `session_id`(문자열이 아니면 빈
+    문자열 — 엔진이 "세션 ID 없음" 으로 미해소를 낸다).
 
     `{py}`·`{tools}`는 cwd 가 아니라 **엔진 루트**에서 해소한다(훅이 어느 디렉토리에서 발화해도
     같은 자식). `{self}`는 root 파생이 **아니다** — 실행 중인 파일은 자기 위치(`__file__`)를 이미
@@ -1139,29 +1143,35 @@ def _expand_hook_argv(argv, root: Path) -> list[str]:
     가리켜 git-anchor 자식 spawn 이 rc=2 로 죽었다)."""
     tools = str(Path(root) / ".project_manager" / "tools")
     this_file = str(Path(__file__).resolve())
+    session_id = payload.get("session_id")
+    session_id = session_id if isinstance(session_id, str) else ""
     return [str(token).replace("{py}", sys.executable)
                        .replace("{tools}", tools)
                        .replace("{self}", this_file)
+                       .replace("{session_id}", session_id)
             for token in argv]
 
 
-def _run_hook_feature(feature: CodexHookFeature, payload_bytes: bytes, root: Path, *,
-                      runner=subprocess.run, timeout: float) -> dict:
-    """기능 자식을 시간 상한 안에서 돌리고 그 엔벨로프를 그대로 돌려준다(실패는 폴백 경고)."""
+def _run_hook_feature(feature: CodexHookFeature, payload: dict, payload_bytes: bytes,
+                      root: Path, *, runner=subprocess.run, timeout: float) -> dict:
+    """기능 자식을 시간 상한 안에서 돌리고 그 엔벨로프를 그대로 돌려준다(실패는 폴백 경고).
+
+    `payload` 는 `dispatch_hook` 이 해석한 훅 입력이고 argv 자리표시자 `{session_id}` 를 여기서
+    채운다. 자식 stdin 에는 원래 바이트 `payload_bytes` 를 그대로 넘긴다."""
     if feature.side_effect_only:
         # 부작용 단계는 **답하지 않는다** — rc·stdout 을 보지 않고 `{}` 를 기여한다. 옛 압축
         #   커맨드가 이 자식의 출력·rc 를 `>/dev/null 2>&1 || true` 로 버리던 동작을 값 그대로
         #   옮긴 것이라, 여기서 경고를 내면 **모든 압축마다** 없던 소음이 새로 생긴다.
         #   이 침묵은 판정 불능의 조용한 통과와 다르다: 이 기능은 애초에 판정을 하지 않는다.
         try:
-            runner(_expand_hook_argv(feature.argv, root), input=bytes(payload_bytes),
+            runner(_expand_hook_argv(feature.argv, root, payload), input=bytes(payload_bytes),
                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
         except BaseException:  # noqa: BLE001 — 장부 기록 실패가 훅 답을 바꾸지 않는다.
             pass
         return {}
     try:
         completed = runner(
-            _expand_hook_argv(feature.argv, root), input=bytes(payload_bytes),
+            _expand_hook_argv(feature.argv, root, payload), input=bytes(payload_bytes),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout,
         )
         returncode = getattr(completed, "returncode", None)
@@ -1348,6 +1358,10 @@ def dispatch_hook(event: str, payload_bytes: bytes, root: Path, *,
         return hook_fallback_envelope(
             f"dispatch:{event}", "이 디스패처 세대에 없는 진입점 이벤트")
     payload, payload_error = _parse_hook_payload(payload_bytes)
+    if event in CODEX_COMPACTION_EVENTS and hook_is_subagent(payload):
+        # 서브에이전트 압축은 부모와 같은 `session_id` 로 온다 — 기능을 돌리면 부모 task 의 압축
+        #   기록·재무장·snapshot 을 서브에이전트가 쓴다. 압축 이벤트에서는 아무 기능도 돌리지 않는다.
+        return merge_hook_envelopes([])
     deadline = time.monotonic() + budget
     answers: list[dict] = []
     for feature in _registered_features(features):
@@ -1365,7 +1379,7 @@ def dispatch_hook(event: str, payload_bytes: bytes, root: Path, *,
                 feature, payload, root, timeout=timeout))
             continue
         answers.append(_run_hook_feature(
-            feature, payload_bytes, root, runner=runner, timeout=timeout))
+            feature, payload, payload_bytes, root, runner=runner, timeout=timeout))
     return merge_hook_envelopes(answers)
 
 
