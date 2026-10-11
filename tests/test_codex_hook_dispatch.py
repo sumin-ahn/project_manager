@@ -1385,7 +1385,7 @@ def test_shipped_envelope_keys_stay_within_the_event_output_schema(
     for feature in dispatcher.CODEX_HOOK_FEATURES:
         if feature.event != event:
             continue
-        envelope = dispatcher._run_hook_feature(feature, payload_bytes, root,
+        envelope = dispatcher._run_hook_feature(feature, payload, payload_bytes, root,
                                                 timeout=30)
         assert set(envelope) <= allowed, (feature.feature_id, sorted(envelope))
     merged = dispatcher.dispatch_hook(event, payload_bytes, root)

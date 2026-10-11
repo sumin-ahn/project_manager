@@ -1152,12 +1152,12 @@ def _expand_hook_argv(argv, root: Path, payload: dict) -> list[str]:
             for token in argv]
 
 
-def _run_hook_feature(feature: CodexHookFeature, payload_bytes: bytes, root: Path, *,
-                      runner=subprocess.run, timeout: float) -> dict:
+def _run_hook_feature(feature: CodexHookFeature, payload: dict, payload_bytes: bytes,
+                      root: Path, *, runner=subprocess.run, timeout: float) -> dict:
     """기능 자식을 시간 상한 안에서 돌리고 그 엔벨로프를 그대로 돌려준다(실패는 폴백 경고).
 
-    argv 자리표시자 `{session_id}` 는 이 payload 에서 채운다(못 읽은 payload 면 빈 값)."""
-    payload, _payload_error = _parse_hook_payload(payload_bytes)
+    `payload` 는 `dispatch_hook` 이 해석한 훅 입력이고 argv 자리표시자 `{session_id}` 를 여기서
+    채운다. 자식 stdin 에는 원래 바이트 `payload_bytes` 를 그대로 넘긴다."""
     if feature.side_effect_only:
         # 부작용 단계는 **답하지 않는다** — rc·stdout 을 보지 않고 `{}` 를 기여한다. 옛 압축
         #   커맨드가 이 자식의 출력·rc 를 `>/dev/null 2>&1 || true` 로 버리던 동작을 값 그대로
@@ -1379,7 +1379,7 @@ def dispatch_hook(event: str, payload_bytes: bytes, root: Path, *,
                 feature, payload, root, timeout=timeout))
             continue
         answers.append(_run_hook_feature(
-            feature, payload_bytes, root, runner=runner, timeout=timeout))
+            feature, payload, payload_bytes, root, runner=runner, timeout=timeout))
     return merge_hook_envelopes(answers)
 
 

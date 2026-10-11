@@ -186,10 +186,16 @@ _RELEASE_WAVE_TASK = "release-wave"
 
 
 def _record_wave_task_session(dest: Path, session_id: str) -> None:
-    """격리 채택자 task 기록(`worktree-leases.json` 최상위 `tasks`)에 웨이브 세션을 연 task 로 남긴다."""
+    """격리 채택자 task 기록(`worktree-leases.json` 최상위 `tasks`)에 웨이브 세션을 연 task 로 남긴다.
+
+    웨이브 세션이 부트스트랩으로 이미 연 task(같은 `session` 행)가 있으면 기록을 바꾸지 않는다.
+    같은 세션 행이 둘이면 세션 판정이 미해소가 된다."""
     assert isinstance(session_id, str) and session_id.strip(), session_id
     ledger = dest / ".project_manager" / ".local" / "worktree-leases.json"
     data = json.loads(ledger.read_text(encoding="utf-8")) if ledger.exists() else {}
+    wanted = session_id.strip()
+    if any(str(row.get("session") or "").strip() == wanted for row in data.get("tasks", [])):
+        return
     tasks = [row for row in data.get("tasks", []) if row.get("name") != _RELEASE_WAVE_TASK]
     data["tasks"] = [*tasks, {"name": _RELEASE_WAVE_TASK, "session": session_id}]
     ledger.parent.mkdir(parents=True, exist_ok=True)
@@ -1846,6 +1852,43 @@ def test_opencode_full_wave_uses_compaction_evidence_from_initial_run(
     ) < source.index(
         "_force_opencode_compaction_threshold(dest, LIVE_MODEL)"
     ) < source.index("_opencode_compaction_probe_prompts()")
+
+
+def test_record_wave_task_session_keeps_the_bootstrapped_task(tmp_path):
+    """웨이브 세션이 부트스트랩으로 연 task 가 있으면 헬퍼가 기록을 바꾸지 않아 세션 판정이 그 task 하나다(T-0953 F-001).
+
+    빈 기록이면 헬퍼가 release-wave 행 하나를 더해 그 task 로 해소된다. 판정은 실 pm_log 의
+    `resolve_session_task` 로 한다."""
+    spec = importlib.util.spec_from_file_location(
+        "pm_log_release_wave",
+        Path(__file__).resolve().parents[1] / ".project_manager" / "tools" / "pm_log.py",
+    )
+    pm_log = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pm_log)
+
+    bootstrapped = tmp_path / "bootstrapped"
+    ledger = bootstrapped / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(json.dumps({
+        "leases": [],
+        "tasks": [
+            {"name": "main", "prefix": None, "session": "ses_wave"},
+            {"name": "other", "prefix": None, "session": "ses_other"},
+        ],
+    }), encoding="utf-8")
+    before = ledger.read_bytes()
+
+    _record_wave_task_session(bootstrapped, "ses_wave")
+
+    assert ledger.read_bytes() == before
+    rows = json.loads(ledger.read_text(encoding="utf-8"))["tasks"]
+    assert [row["name"] for row in rows if row["session"] == "ses_wave"] == ["main"]
+    assert pm_log.resolve_session_task(bootstrapped, "ses_wave") == ("main", None)
+
+    fresh = tmp_path / "fresh"
+    _record_wave_task_session(fresh, "ses_wave")
+
+    assert pm_log.resolve_session_task(fresh, "ses_wave") == (_RELEASE_WAVE_TASK, None)
 
 
 def test_wave_side_effect_guard_rejects_ephemeral_run_hash(tmp_path, monkeypatch):

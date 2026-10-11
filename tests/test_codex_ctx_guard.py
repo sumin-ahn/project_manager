@@ -468,6 +468,26 @@ def test_t0953_subagent_compaction_runs_no_feature(tmp_path):
         assert len(calls) == 2, (event, calls)
 
 
+def test_t0953_run_hook_feature_takes_session_id_from_dispatch_payload(tmp_path):
+    """자식 기능의 `{session_id}` 는 `dispatch_hook` 이 해석한 payload 에서 온다 — 바이트를 다시 읽지 않는다(F-002)."""
+    dispatcher = _dispatcher()
+    snapshot = next(feature for feature in _features("PostCompact")
+                    if feature.argv and feature.argv[2] == "snapshot")
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append((list(argv), kwargs["input"]))
+        return subprocess.CompletedProcess(argv, 0, stdout=b"{}", stderr=b"")
+
+    envelope = dispatcher._run_hook_feature(
+        snapshot, {"session_id": "s-9"}, b"{}", tmp_path, runner=runner, timeout=5)
+
+    assert envelope == {}
+    [(argv, stdin)] = calls
+    assert argv[argv.index("--session-id") + 1] == "s-9"
+    assert stdin == b"{}"
+
+
 # 가짜 장부 CLI — checkpoint 단계는 사람글(stdout)과 에러(stderr)를 내고, 엔벨로프 단계만
 #   JSON 을 낸다. 진입점 산출에 그 사람글이 섞이면 호스트가 엔벨로프를 못 읽는다.
 _FAKE_PM_LOG = (

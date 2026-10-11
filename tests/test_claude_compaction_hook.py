@@ -192,6 +192,39 @@ def test_t0953_subagent_compaction_leaves_main_state_untouched(tmp_path):
     assert sorted(path.name for path in marker_dir.iterdir()) == ["s-main.final", "s-main.nudge"]
 
 
+def test_t0953_subagent_tool_call_does_not_take_main_boundary(tmp_path):
+    """주 세션 압축 직후 서브에이전트 도구 호출이 먼저 와도 경계 처리권·log·snapshot 을 가져가지 않는다(E1-6).
+
+    주 대화 기록에 새 경계가 있는 상태에서 `agent_id` 입력이 먼저 오고, 이어 오는 주 스레드
+    도구 호출이 그 경계를 한 번 처리한다."""
+    hook = _make_repo(tmp_path, with_log=True)
+    transcript = _write_jsonl(tmp_path / "s-main.jsonl", [
+        _usage(150_000), _compact_boundary(), _usage(1_000),
+    ])
+    marker_dir = _ctx_stop(tmp_path)
+    log_before = _log(tmp_path).read_bytes()
+    base = {"session_id": "s-main", "transcript_path": str(transcript), "cwd": str(tmp_path),
+            "permission_mode": "default", "hook_event_name": "PreToolUse",
+            "tool_name": "Bash", "tool_input": {"command": "ls"}}
+
+    subagent = _run_hook(hook, {**base, "agent_id": "x", "agent_type": "Explore",
+                                "tool_use_id": "toolu_x"}, cwd=tmp_path)
+
+    assert subagent.returncode == 0 and subagent.stdout == "", subagent
+    assert _log(tmp_path).read_bytes() == log_before
+    assert not (marker_dir / "s-main.compact-1").exists()
+    assert list(marker_dir.glob("compact-checkpoint.*")) == []
+
+    main = _run_hook(hook, {**base, "tool_use_id": "toolu_main"}, cwd=tmp_path)
+
+    assert main.returncode == 0, main.stderr
+    context = json.loads(main.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert context.startswith("## PM 정체성 (compaction 복구)") and "- task: main" in context
+    assert (marker_dir / "s-main.compact-1").is_file()
+    appended = _log(tmp_path).read_text(encoding="utf-8").split("기존 entry", 1)[1]
+    assert appended.count(CHECKPOINT_HEADER) == 1
+
+
 # ── ③ 판정·기록 실패 신호 ─────────────────────────────────────────────────────
 
 def test_t0953_unbootstrapped_session_shows_signal_once(tmp_path):
