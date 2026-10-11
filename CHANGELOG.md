@@ -7,73 +7,16 @@
 
 ## [Unreleased]
 
-### Added
-
-- 작업 슬롯 생성·대여의 --folders로 필요한 폴더만 꺼내 사용할 수 있다. 작업 중 확장은 본인 슬롯의 sparse-checkout add와 기존 sync로 진행하고, status에 폴더 목록을 표시한다.
-
-### Changed
-
-- 위임 transport 규칙을 한 문장으로 맞춘다. 설계·구현·리뷰·조사는 target 하네스가 PM 하네스와 같으면 native 서브에이전트, 다르면 `pm_delegate.py` 교차 실행이다. 같은 하네스 리뷰는 `ticket prepare --cluster <C> --role code-reviewer` 가 엔진 프롬프트 파일을 만들고 서브에이전트가 슬롯에서 검토한 뒤 `ticket harvest` 로 돌려받는다. 리뷰 돌려받기는 준비 뒤 슬롯 HEAD·작업 트리가 바뀌었으면 거부한다.
-
-- 완료·종결 판정의 리뷰 잔여를 리뷰 라운드 파일에서 읽는다. 묶음 종결은 돌려받은 리뷰 라운드가 없는 멤버를 거부한다.
-
-- `pm-config delegate models` 응답에 모델별 추론 강도(`variants`)를 싣고, 설정 화면의 OpenCode 생각 깊이 칸은 그 모델의 목록에서 고른다(목록이 비면 "없음"이고 값을 비운다).
-
-- Claude Code 의 유휴 압축(캐시 만료 직전, 요청 없이 압축)을 채택자 설정에서 끈다. `.claude/settings.json` 의 `"idleCompaction": false` 는 `autoCompactWindow` 와 같은 관리 키라 `pm-update`·`pm-config apply`·설치·`add-harness`·어댑터 수용이 그 값 자리만 쓰고(없으면 넣는다), 압축 한도 기록에 실려 설정 파일 값 차이 표시가 함께 다룬다. 압축 전 안내와 checkpoint 는 압축이 압축 지점에서만 난다는 전제다.
-
-- 압축 직전 안내 없이 자동 압축되면 "설정 창이 실 압축 지점보다 크다"고 추정해 사용 한도를 낮추라던 경고(`ctx-window-mismatch`)를 지운다. 유휴·반응·서브에이전트 압축도 같은 신호를 내 처방이 맞지 않았고, 설정 창이 압축 지점보다 큰 경우는 적용 때 모델 한도 조회와 확인 조회가 막는다. `pm_log.py checkpoint` 의 `--ctx-band-checked`·`--ctx-band-missed`·`--ctx-window-tokens`·`--ctx-observed-tokens`·`--harness` 와 `snapshot` 의 `--ctx-band-missed`·`--ctx-window-tokens`·`--ctx-observed-tokens`·`--harness` 옵션이 없어지고, snapshot 은 log 를 읽지 않는다.
-
-- 압축 기록(checkpoint 골격·breadcrumb)과 압축 뒤 복구 주입(snapshot)의 task 를 그 세션이 `/pm-bootstrap --task <이름>` 으로 연 task 로 판정한다. 폴더·열린 task 수로 추측하지 않으므로 열린 task 가 여럿인 PM 홈 루트 세션도 기록이 남고, 판정하지 못하면(부트스트랩 안 한 세션·위임 세션) 사유 한 줄을 보인다. `pm_log.py snapshot` 의 `--cwd` 는 `--session-id` 로 바뀌고 `checkpoint` 의 `--cwd` 는 없어진다. 슬롯 엔진 사본에서 PM 홈 엔진으로 넘기는 경로는 자식 종료 코드를 그대로 돌려준다. Claude 는 압축 이벤트(PreCompact·PostCompact) 입력으로 서브에이전트 압축을 구별할 수 없어 압축 처리를 압축 뒤 첫 주 스레드 훅(PreToolUse·UserPromptSubmit)으로 옮기고 `.claude/precompact_capture_hook.sh` 를 지운다(갱신이 `.pm_import_backups/` 로 옮긴다). 서브에이전트의 도구 호출(`agent_id`)은 주 세션의 압축 기록·안내 표식·snapshot 을 바꾸지 않는다. Codex 는 서브에이전트 압축 이벤트에서 기능을 돌리지 않는다. 기존 Claude 채택자 할 일: `.claude/settings.json` 의 `PreCompact`·`PostCompact` 항목을 지운다(또는 `pm-config sync-adapter-config --accept .claude/settings.json` 뒤 권한 목록을 백업에서 되살린다).
-
-- 개발 회귀와 릴리즈 플랫폼 검증을 분리한다. 일반 회귀는 현재 플랫폼의 테스트만 실행하고, 선언한 추가 플랫폼 전체는 릴리즈 게이트에서 같은 커밋으로 검증한다. 회귀는 백그라운드로 실행해 별도 작업 트리의 개발을 계속할 수 있다.
-
-- 티켓의 공유 승격·실행·종결 전에 실제 제품 branch/base_branch 및 멤버 결속을 확인한다. 코드 트리 없는 draft 작성은 유지하며 승격 전에 기존 cluster new로 결속한다. 옛 branch 없는 크기 1 장부는 명시 재결속이 필요하고 PM 홈과 제품의 동명 main으로 기준을 추측하지 않는다. 최종 제품 기준 판정과 장부 기록은 같은 조회 결과를 사용하며 재읽기 실패는 기록 전에 거부한다.
-
-- 엔진 갱신이 두 프로세스로 나뉜다. 디스크에 있던 갱신기는 엔진 코드(`.project_manager/tools/`)만 옮기고, 옮겨 받은 갱신기를 같은 인자로 새 프로세스에서 실행해 렌더·진입 문서 이관·훅·어댑터 설정·기준 rev 기록을 끝낸다. 한 번의 실행으로 갱신이 끝나고 종료 코드와 출력은 완료 프로세스의 것이다. 갱신 중 엔진 사본 세대 혼합을 흡수하던 기록·사유 목록과 종료 시 수렴 검사를 지웠다. v1.7.13 이하에서 처음 받을 때는 같은 명령을 두 번 실행하고(첫 실행은 옛 갱신기) 세 번째 실행으로 변경 0 을 확인한다. v1.8.1 은 v1.8.0 을 거쳐서만 받는다.
-
-- `--dry-run` 은 엔진 코드가 바뀌는 갱신에서 받을 엔진 코드만 보여 준다. `--paths` 는 엔진 코드 변경이 남아 있으면 거부한다.
-
-- 은퇴 경로 지시(`# pm-retired-path: OLD -> NEW`)의 NEW 가 bare 디렉터리 행 아래 파일이어도 된다.
-
-### Removed
-
-- `gate_snapshot.py`(갱신이 `.pm_import_backups/` 로 옮긴다), 리뷰 `--background`와 `pm_delegate.py cluster wait`, `pm_delegate.py --gate`, `rounds recalculate`·`rounds report`·`--rounds-report`·`rounds resolve --gate`, 내부 리뷰 기록 `.local/internal_review_rounds.json`·`.local/cluster-review-runs.jsonl`(더 이상 읽지 않으며 지워도 된다), 설정 키 `delegate.code-reviewer.rounds_max`(남아 있으면 차단 구키로 알린다).
-
-- 변경량 상한(diff 서킷브레이커). 완료 기록과 추가 리뷰어 호출이 더 이상 티켓 `estimate` 별 변경 줄 수로 멈추지 않는다. 설정 키 `diff_cap.small`·`diff_cap.medium`·`diff_cap.large` 는 남아 있으면 차단 구키로 알린다(그 줄을 지우면 된다). 사설 참조 검사의 측정 범위는 그대로다.
-
-### Fixed
-
-- 관리자 설정 저장이 위임 카드 등 렌더 산출물을 바로 다시 그린다. 저장 명령은 `pm-config apply` 하나이고 반영 전 검사(값·렌더·설치 세대 원본)에 걸리면 아무것도 쓰지 않는다. 전에는 위임 설정을 저장해도 카드가 다음 갱신 때까지 옛 모델·추론 강도로 남았다.
-
-- OpenCode 위임 카드에 추론 강도를 `variant` 로 렌더한다. 그 모델이 받지 않는 값은 저장·cross 위임이 거부하고 갱신이 지우고 알린다(OpenCode 는 없는 variant 를 오류 없이 버린다).
-
-- Claude 위임 카드에 `local.conf` 의 `delegate.<역할>[.hard].reasoning` 값을 `effort` 로 렌더해 서브에이전트에 추론 강도가 적용된다. 그 카드 하네스의 허용값 밖 값(정수 포함)은 렌더 오류로 멈춘다.
-
-- 모델의 실제 가용 한도로 압축·경고 기준을 제한한다. 희망값은 보존하며 입력 6개와 기존 기본값을 유지한다. 모델 가용 한도는 적용(`pm-config apply`·설치·하네스 추가·`pm-update`·어댑터 설정 수용·관리자 저장) 때 도구에서 한 번 조회해 압축 한도 기록에 고정하고, 조회하지 못하거나 도구가 받지 않는 설정값이면 첫 설정 쓰기 전에 거부한다. Claude Code는 모델 답변 없는 제어 요청으로 압축 기준을 조회하고 확인 조회로 같은 압축 지점을 검증한다. Codex는 앱 서버의 실효 설정과 모델 목록 캐시를, OpenCode는 models.dev 목록 캐시 또는 OpenAI 호환 서버의 모델 정보를 읽는다. 훅·상태줄·relay·관리자 표시는 기록만 읽으며, 세션 모델이 기록 모델과 다르면 경고하고 기록이 없거나 입력과 다르면 오류로 알린다. 사용자 global/profile과 OpenCode 원본 모델 목록은 보존한다.
-
-- sparse-checkout과 submodule의 변경 명령에 슬롯 소유 검사를 적용한다. 조회와 본인 슬롯 변경은 허용하고 타 task·idle·readonly·세션 부재의 변경은 차단한다. 초기화된 중첩 submodule도 소유 슬롯에 연결하며 세 하네스가 같은 판정을 사용한다. foreach 실행 명령의 -h/--help 인자는 Git 자체 도움말로 오인하지 않으며 쓰기 소유 검사를 유지한다.
-
-- 빈 submodule 폴더를 상위 슬롯의 dev 저장소로 오판하던 문제를 수정했다. 폴더 밖·미초기화·채워진 경로를 구분하고 inactive·dev·dirty 작업을 보존한다.
-- 작업이 같은 저장소의 슬롯을 여러 개 보유할 때 기존 repo/slot 입력으로 실행 대상을 고른다. 작업 귀속과 선택한 HEAD·브랜치·테스트 명령을 연결하며, 모호한 선택이나 남의 슬롯을 거부하고 기준점 누락을 성공으로 숨기지 않는다.
-- 최신 관리자의 엔진 갱신 적용이 구 updater의 배달 뒤 새 프로세스로 설정 키 이동·완료 검사를 수행한다. 구 직접 CLI 경로는 기존 두 번 실행 절차를 유지하고, 두 번째 단계의 실패를 최종 실패로 보고한다.
-- 정식 라운드 준비가 슬롯 사본·준비 장부를 모두 만든 뒤 새 보드 시드만 기록한다. draft 설계 라운드는 준비·회수 단계에서 공유하지 않고 승격이 공개를 담당한다. 준비 실패의 증거와 로컬 기록·원격 공유의 구분을 유지한다.
-
-- Windows URL upstream 캐시의 긴 경로에서 Git clone이 실패하던 문제를 수정했다. 사용자 Git 설정 격리를 유지하면서 Windows runner에 `core.longpaths=true`를 명시한다.
-- OpenCode가 Windows의 실행 불가한 Python 별칭에서 멈추던 문제를 수정했다. 명시한 실행기 또는 지원되는 후보를 검증해 선택하고, 상태를 쓰는 엔진 명령은 한 번만 실행한다.
-- OpenCode의 내구 스냅샷을 Windows의 두 프로세스가 동시에 선점하던 문제를 수정했다. 같은 세대의 고정 경로를 배타적으로 생성하고, 원본 제거 실패 시 선점 증거를 보존해 중복 전달을 차단한다.
-
-## [1.8.0] - 2026-09-19
+## [1.8.0] - 2026-10-11
 
 ### Added
 
 - **프로젝트 관리자 앱 `pm-manager`** — 등록한 PM 홈들을 창 하나에서 보고 조작한다. 탭은 현황(각 사본의 `pm-config status --json`)·설정(`local.conf` 편집형·질문형)·구성(`pm-config` 명령)·갱신(`pm-config update` 미리보기와 적용)·새 프로젝트 적용(`pm_import --new` 뒤 자동 등록)이고, 등록부는 사용자 설정 폴더의 `projects.json` 하나다. 관리자가 프로젝트 폴더에 직접 쓰는 파일은 없다 — 프로젝트를 바꾸는 일은 전부 그 사본의 명령이 한다. 릴리즈마다 운영체제별 실행 파일 1개(`pm-manager-linux-x86_64` · `pm-manager-windows-x86_64.exe` · `pm-manager-macos-arm64`)를 GitHub Release 자산으로 올린다. 파이썬 인터프리터는 번들하지 않으므로 프로젝트 사본은 그 사본 `local.conf` 의 `runtime.py`(빈값이면 OS 기본 `python3`, Windows `py -3`)로 부른다. 새 프로젝트 적용은 그 OS 기본 인터프리터로 두 단계(`pm_import --new` → `pm-config init`)를 도는데 두 번째 단계가 `board.py` 를 부르므로, 그 인터프리터에 PyYAML 이 있어야 적용이 끝난다(실행 파일에는 엔진 런타임 의존이 들어 있지 않다). 창을 여는 웹뷰는 운영체제 것을 쓰며(Linux GTK 웹킷 · Windows WebView2 런타임), 없으면 설치 명령을 찍고 rc 3 으로 멈춘다(대체 렌더러 없음).
-
 - **브라우저에서도 같은 화면** — 앱을 켜면 같은 프로세스 안의 로컬 서버가 함께 뜨고, 창은 파일이 아니라 그 주소를 연다. 창과 브라우저가 같은 프로세스·같은 데이터를 본다. 켜질 때 `관리자 주소: http://127.0.0.1:<포트>` 한 줄을 낸다. 주소는 `127.0.0.1` 고정이고 외부 주소로 여는 선택지는 없다. `/api/` 요청은 클라이언트 표식(`X-Manager-Client`)을 요구하며, 같은 프로젝트에서 갱신·저장이 도는 동안 다른 쓰기 요청은 사유와 함께 거절된다.
 - **설정 화면이 항목을 사람 말로 보인다** — 키 목록(`local_conf.py --keys --json`)이 항목 이름(`label`)과 **안 채웠을 때 일어나는 일**(`unset`)을 함께 낸다. 화면은 이름을 크게, 설명을 그 아래 작은 글씨로 그린다. 행마다 `직접 정함` 체크박스가 있고, 끄면 입력 칸 대신 안 정했을 때 일어나는 일이 회색 한 줄로 선다 — 기본값이 있으면 `기본값: 200000`, 없으면 엔진이 준 동작 문장(`기본 동작: 교차 검토를 하지 않습니다.` · `기본 동작: 이 역할로 위임하면 설정이 없다며 멈춥니다.` · `기본 동작: 운영체제 기본 파이썬(python3, Windows 는 py -3)을 씁니다.`). 빈 칸은 없다: 레지스트리가 키마다 기본값이나 그 문장 중 하나를 반드시 선언한다(선언을 빠뜨리면 import 가 멈춘다). 체크박스를 끄고 저장하면 `local.conf` 에서 그 줄을 지운다 — 빈 값을 적지 않는다. 엔진이 적는 키(`upstream.rev`·`upstream.seen_rev`)는 체크박스 없이 값만 보인다.
 - **모델을 목록에서 고른다** — 역할별 위임 모델 칸은 하네스가 정해져 있으면 드롭다운이다. 목록은 프로젝트를 고를 때 배경으로 받아 두므로 설정 탭을 여는 것만으로 사본을 부르지 않는다(도착 전에는 텍스트 칸 + [목록 불러오기]). 원천은 하네스마다 다르고 표가 값으로 선언한다 — claude 는 CLI 별칭, codex 는 `codex debug models` 카탈로그, opencode 는 `opencode models` 실조회.
 - **창이 열리지 않으면 이유를 말한다** — 사유마다 사람 말 한 줄과 다음 할 일 한 줄을 표준 출력으로 낸다. 관측하지 않은 원인은 단정하지 않는다.
 - **앱 아이콘** — 창·Windows 실행 파일·브라우저 탭이 같은 자리(`manager/assets`)의 그림 하나를 쓴다.
-
 - **갱신이 바뀐 설정 키 이름을 옮긴다** — 엔진이 키 이름을 바꾸면 `pm-config update` 가 그 프로젝트 `local.conf` 의 옛 줄을 새 이름으로 **값 그대로** 옮기고 옛 줄을 지운다. 이름을 바꾼 것은 갱신이므로 갱신이 옮긴다 — 예전에는 안내만 나가고 채택자가 직접 고칠 때까지 그 값을 쓰는 명령이 멈춰 있었다. 대체 키가 없는 폐지 키는 옮기지 않는다(값이 갈 자리가 없어 옮기는 것이 곧 버리는 것이라, 지울지는 사람이 정한다). 옮길 것이 없으면 파일을 읽기만 하고, 미리보기(`--dry-run`)는 무엇이 옮겨질지만 말한다.
 - **브랜치마다 부모 브랜치를 기록한다** — 브랜치를 만드는 엔진 명령이 그 자리에서 부모 브랜치 이름과 갈라진 커밋을 공용 git 저장소 설정(`branch.<이름>.pm-parent`·`branch.<이름>.pm-fork`)에 적는다. 슬롯 생성(`worktree add`, 부모 = 등록 base), 묶음 브랜치(`cluster new`, 부모 = 통합 브랜치), 새 명령 `pm-config task branch <명의> <슬롯> <브랜치> --from <부모>` 셋이다. 설정은 브랜치에 붙어 있어 슬롯을 반납하거나 브랜치를 옮겨도 남고, `git branch -m` 은 따라가며 `git branch -d` 는 함께 지운다. rebase 는 이 부모를 기준으로 하고 성공하면 갈라진 커밋을 새로 적는다(`--onto` 면 부모도 바꾼다). readonly 슬롯은 브랜치가 없어 슬롯 장부에 따라갈 브랜치를 두고 refresh 가 그 최신 커밋으로 올린다.
 - **슬롯의 부모·자식 브랜치와 원격 브랜치를 본다** — `pm-config status --json` 슬롯 행이 `parent`(이름·갈라진 커밋·비교 ref·앞/뒤 커밋 수, 기록 없으면 null)·`children`(이 브랜치를 부모로 적은 브랜치)·`stashes`(이 브랜치 이름으로 쌓인 stash 수)를 싣는다. `--with-remote` 는 슬롯마다 origin 주소와 연결된 원격 브랜치(`@{u}`)의 이름·끝 커밋·앞/뒤(`remote: {url, upstream}`)를 싣고, 원격에 있는 추적 브랜치만 원격마다 `ls-remote`·fetch 1회로 받는다. 원격에 닿지 못하면 반쪽 대조 없이 rc 1 이다. 관리자 현황·구성 탭 슬롯 행 아래에 `부모 main@커밋 · N 커밋 앞` · 자식 브랜치 · stash 수 · `origin 주소` · `추적 원격 브랜치` 줄이 서고, 원격 조회는 앱 시작과 수동 새로고침 때만 돈다. 구성 탭 repo 행에는 등록된 git 주소가, 슬롯 행에는 브랜치@커밋이 선다. `repo list` 와 `status --json` 의 repo 행에 등록된 원격 주소(`git`)도 나온다.
@@ -83,6 +26,7 @@
 - **슬롯에는 그 슬롯을 잡은 task 의 세션만 쓴다** — 세 하네스 가드가 슬롯(`work/<repo>_<N>`) 안 쓰기를 판정한다. 파일 쓰기·편집 도구(claude `Write`·`Edit`·`NotebookEdit`, opencode `write`·`edit`·`apply_patch`, codex `apply_patch`)와 git 쓰기(`add`·`commit`·`checkout`·`switch`·`restore`·`reset`·`rm`·`mv`·`merge`·`rebase`·`cherry-pick`·`revert`·`stash`·`pull`·`am`·`apply`·`clean`, 보기만 하는 형태 제외)는 이 세션이 연 task 가 잡은 슬롯일 때만 통과한다. 빈 슬롯·남의 슬롯·readonly 슬롯·task 를 열지 않은 세션은 거부하고, 멈춤 지시와 다음 행동 한 줄(task 를 여는 부트스트랩 또는 `pm-config alloc <repo> --task <이름>`)을 낸다. 판정 범위는 훅이 설치된 PM 홈의 슬롯이고, 슬롯 밖(board·wiki·domain·log)은 판정하지 않는다. 셸 명령은 쓰기 대상을 정적으로 정할 수 없어 막지 않고, 명령에 남의 슬롯 경로가 있으면 경고한다. `pm_delegate` 로 띄운 하네스는 세션이 따로라 `PM_DELEGATE_TASK` 환경변수로 받은 task(그 슬롯의 주인, 열려 있을 때만)로 판정한다. opencode native task 가 만든 자식 세션은 부모 세션을 따라 올라간 최상위 세션 ID 로 판정한다(claude·codex 서브에이전트는 부모와 세션 ID 가 같다).
 - **지금 하는 일을 적고 시작한다** — `pm-config task todo add <이름> <할 일 한 줄>` 로 열린 할 일을 적고, `task todo list <이름>` 으로 보고, `task todo done <이름> <ID>` 로 지운다. 완료 표시는 남기지 않는다(무엇을 했는지의 기록은 log 다). 열린 할 일이 하나도 없는 상태에서 파일을 고치면 세 하네스의 쓰기 판정이 경고 한 줄을 붙인다 — 막지는 않는다(셸 쓰기는 대상을 정적으로 정할 수 없어 어차피 이 판정을 타지 않고, 이 축은 나머지 여덟 판정과 달리 명령이 위험한지가 아니라 일을 적었는지를 본다). 목록은 task 마다 따로 있는 파일(`.project_manager/.local/tasks/<이름>/todo.json`)이라 대여 장부와 락을 나눠 쓰지 않는다 — 할 일은 세션 중 수시로 바뀌고 슬롯 대여는 거의 바뀌지 않는다. ID 는 재사용하지 않아 하나를 지워도 남은 줄의 번호가 밀리지 않는다. 부트스트랩 dump·압축 재주입·관리자 현황 탭이 같은 목록을 같은 형식으로 보인다. 옛 사본의 장부 행에 들어 있던 할 일은 처음 읽을 때 이 파일로 옮기고 장부에서 지운다.
 - **슬롯 없는 보존 브랜치를 기록하고 보인다** — 슬롯 제거가 브랜치를 보존하면(보호·기본 브랜치 제외) 쓰던 슬롯·보존 시각·사유를 공용 git 설정(`branch.<이름>.pm-slot`·`pm-preserved-at`·`pm-preserved-reason`)에 적는다. `status` 와 `status --json` 의 `preserved_branches`, 관리자 구성 탭이 목록을 보인다. 그 브랜치가 다시 슬롯에 체크아웃되면 기록을 지운다.
+- 작업 슬롯 생성·대여의 --folders로 필요한 폴더만 꺼내 사용할 수 있다. 작업 중 확장은 본인 슬롯의 sparse-checkout add와 기존 sync로 진행하고, status에 폴더 목록을 표시한다.
 
 ### Changed
 
@@ -95,15 +39,24 @@
 - **PM 홈 자신은 작업 폴더가 아니다** — 홈을 슬롯으로 등재하던 경로를 지웠다. 옛 사본에 그 행이 박혀 있으면 갱신이 지운다.
 - **회귀 테스트 개수를 하한이 아니라 직전 대비 증감으로 본다** — 회귀 줄이 직전 기록 대비 증감을 함께 내고 변화율이 1% 이상이면 눈에 띄게 표시한다. 증가든 감소든 막지 않는다.
 - **엔진이 만드는 임시물은 프로젝트 안에 둔다** — 마지막으로 남아 있던 시스템 임시 폴더 사용처(검토 위임의 격리 자리)를 `.project_manager/.local/tmp` 아래로 옮겼다. 하네스 실행에 넘기는 임시 경로 값만 OS 임시 폴더로 남는다. 그 값은 받는 도구와 그 자식의 것이라 회수 수단이 없고, 프로젝트 안으로 돌리면 그 도구의 쓰기 허용 범위가 우리 트리로 넓어진다.
-
 - **컨텍스트 경고와 하네스의 실제 압축이 같은 사용 한도를 기준으로 삼는다** — 하네스마다 사용 한도 `harness.<이름>.ctx_window_tokens`(설정 화면 `claude 사용 한도 (토큰)` 꼴, 기본 200000)를 두고, 모든 하네스에 공통인 세 비율을 사용 한도 대비 쓴 % 로 정한다: `ctx.checkpoint_at_pct`(`중간 기록 권고 (%)`, 기본 70)·`ctx.precompact_at_pct`(`압축 임박 경고 (%)`, 기본 80)·`ctx.compact_at_pct`(`압축 (%)`, 기본 90). 프레임워크가 사용 한도 × 압축 비율을 하네스 자신의 설정 파일에 압축 지점으로 쓴다. Claude Code 는 `.claude/settings.json` 의 `autoCompactWindow`, Codex 는 `.codex/config.toml` 의 `model_auto_compact_token_limit`, opencode 는 `.opencode/opencode.jsonc` 의 모델별 `limit`(context·input·output)과 최상위 `compaction.reserved` 다. opencode 는 전역 설정과 프로젝트 파일에 적힌 모델 전부가 대상이고 쓰는 곳은 프로젝트 파일 하나다(전역 설정은 읽기만 한다). 전에는 경고 기준(`ctx.window_tokens`)과 하네스의 압축 지점이 따로 놀아 마지막 경고 직후에 압축됐다. 반영은 `pm-update`·설치·`add-harness`·`sync-adapter-config --accept`·관리자 설정 저장과 새 명령 `pm-config apply [--json] [--set 키=값 ...]` 이 하고, 바뀐 줄을 출력한다. 이 관리 키는 설정 파일이 아니라 `local.conf` 에서 고친다. 값은 쓰기 전에 검사하고(0 < `ctx.checkpoint_at_pct` < `ctx.precompact_at_pct` < `ctx.compact_at_pct` < 100, Claude Code `autoCompactWindow` 100000~1000000, Codex 압축 지점은 실효 창의 90% 이하) 통과하지 못한 값은 어디에도 쓰지 않는다. 실제 적용 한도는 사용 한도와 적용 때 조회한 모델 가용 한도 중 작은 값이다. 옛 키는 갱신이 옮긴다. 남은 % 였던 `ctx.nudge_pct`·`ctx.stop_pct`(더 옛 이름 `ctx_nudge_pct`·`ctx_stop_pct` 포함)는 `100 − 옛 값` 으로 바꿔 `ctx.checkpoint_at_pct`·`ctx.precompact_at_pct` 에 쓰고, 공통 한도 `ctx.window_tokens`(더 옛 이름 `ctx_window_tokens`)는 등록 하네스 전부의 비어 있는 사용 한도 키에 같은 값으로 쓴다. 새 키에 이미 값이 있으면 옛 줄만 지우고, 옮길 옛 값이 정수가 아니면 그 키 이름을 담은 오류로 멈춘다.
-
 - **설정 화면이 코드가 아니라 사람 말로 말한다** — 절 이름·줄 이름·칸 이름·안 채웠을 때의 상태를 전부 엔진 키 레지스트리가 소유한다(`group_labels`·`units`·`unit_fields`, 도구별 키군의 `unit_labels` 전개). 화면에서 키 문자열·키군 패턴 문자열(`delegate.<role>[.hard][.fallback].{harness,model,reasoning}`)·영문 접미사(`harness`·`model`·`reasoning`)·영문 절 이름(`runtime`·`ctx`)을 지웠다 — 키는 마우스를 올렸을 때만 보인다. 같은 이름이 12줄 반복되던 도구별 절은 줄마다 이름이 갈린다(`codex 최대 실행 시간 (초)`). 문구의 내부 용어도 일반 용어로 바꿨다: 하네스→도구, 어댑터 문서→안내 문서, 회귀→테스트, 대화 여유→컨텍스트, 검증 플랫폼→테스트할 운영체제, 티켓 크기→작업 크기, 추론 강도→생각 깊이. 화면에 서는 문구에서 그 낱말은 0회다. 설정 탭에 남아 있던 `레지스트리 밖`·`upstream 설정`·`platform 이름` 도 `모르는 항목`·`확인하고 저장`·`운영체제 이름` 이 됐고, 모델 별칭 설명은 실제 쓰임(값을 바꿔 쓰지 않고, 구현과 검토가 같은 모델인지 볼 때만 묶는다)으로 고쳤다. 설명·안 채웠을 때의 문장·스위치가 꺼진 사유와 화면 안내문은 합니다체 문장으로 쓴다(`이 시간을 넘으면 중단합니다.`) — 항목 이름과 버튼은 명사형 그대로다.
 - **task 가 쓰는 슬롯을 분명히 말한다** — 부트스트랩 `--task` 는 슬롯이 없는 task 에 `작업 슬롯: (없음)` 과 잡는 명령(`pm_config.py alloc <repo> --task <이름>`)을 낸다. 출하 스킬 카드의 예시 경로와 엔진 설명의 이름 예시에서 개발용 슬롯 이름을 지웠다.
 - **한 세트로 읽히는 설정은 체크박스가 하나고, 절을 켜는 스위치가 꺼지면 그 절이 잠긴다** — 도구·모델·생각 깊이를 통째로 읽는 세트(역할별 위임 묶음·교차 검토 묶음)는 한 줄에 체크박스 하나다. 칸마다 두던 때는 한 칸만 켜고 저장하면 `additional_reviewer.harness=` 같은 빈 줄이 남았고, 엔진은 줄이 하나라도 있으면 세트 전체를 요구하므로 교차 검토가 멈췄다. 교차 검토 도구가 없으면 교차 검토 절의 나머지 칸이, `delegate.enabled` 가 꺼져 있으면 위임 절의 나머지 칸이 회색으로 잠기고 절 머리에 까닭 한 줄이 선다(값은 지우지 않는다). 스위치 칸은 접히지 않는다. 질문형도 꺼진 절의 항목은 묻지 않는다. 작업 크기별 변경 줄 수 상한은 작업을 마칠 때도 읽혀서 잠기지 않는다. 키 목록은 schema 6 이다(행마다 `unit`·`governed_by`·`readonly`, 문서에 `units`·`unit_fields` · 역할 군의 `field_labels` 와 역할 줄 이름 `unit_labels` 는 `units` 로 옮겨 지웠다).
 - **어디서도 안 읽히는 칸을 지웠다** — 어려운 작업용 묶음(`delegate.<role>.hard.*`)은 구현 역할만 읽는데 설계·조사·검토에도 전개돼 18칸이 서 있었다. 안내 문서 모델 칸(`harness.<name>.pro_model`)도 렌더가 읽는 opencode 밖의 두 칸이 서 있었다. 위임 칸은 48 → 30, 도구별 칸은 12 → 10 이다. 티어를 갖는 역할은 `pm_delegate.TIERED_ROLES` 한 곳에 적고 레지스트리와 `--tier` 판정이 그것을 읽는다. 지운 이름이 `local.conf` 에 있으면 모르는 키 안내가 뜬다.
 - **직접 적던 칸 둘이 목록이 됐다** — `harness.opencode.pro_model` 은 키에 도구 이름이 박혀 있어 종속 칸 없이 그 도구의 모델을 조회하고(`choices.fetch.value`), `additional_reviewer.progress_signal` 은 세 값(`event-stream`·`plaintext`·`none`) 중에서 고른다. 두 목록 다 값의 주인은 엔진이다 — 화면에 목록 상수가 없다.
 - **티켓 마무리는 슬롯을 반납하지 않는다** — `ticket_finish.py`(`/pm-wave-finish`)는 코드 합치기·완료 표시·board 정리만 한다. 슬롯 반납은 task 종료(`pm-config task end`)나 사용자 반납(`pm-config release`) 때만 한다. 마무리가 도는 작업 트리는 대여 기록의 작업 폴더가 속한 저장소에서 묶음 기록의 `branch`(없으면 `base_branch`)를 체크아웃한 작업 트리 하나로 찾는다. 그래서 task 가 슬롯을 여럿 쥐어도(합칠 곳 슬롯과 개발 슬롯) 마무리가 돈다. 그 트리가 없거나 둘 이상이면 첫 부작용 전에 멈춘다. PM 홈 자신은 찾는 곳이 아니다. `--task`·`--repo/--slot` 은 멤버 티켓 소유 확인에만 쓴다.
+- 위임 transport 규칙을 한 문장으로 맞춘다. 설계·구현·리뷰·조사는 target 하네스가 PM 하네스와 같으면 native 서브에이전트, 다르면 `pm_delegate.py` 교차 실행이다. 같은 하네스 리뷰는 `ticket prepare --cluster <C> --role code-reviewer` 가 엔진 프롬프트 파일을 만들고 서브에이전트가 슬롯에서 검토한 뒤 `ticket harvest` 로 돌려받는다. 리뷰 돌려받기는 준비 뒤 슬롯 HEAD·작업 트리가 바뀌었으면 거부한다.
+- 완료·종결 판정의 리뷰 잔여를 리뷰 라운드 파일에서 읽는다. 묶음 종결은 돌려받은 리뷰 라운드가 없는 멤버를 거부한다.
+- `pm-config delegate models` 응답에 모델별 추론 강도(`variants`)를 싣고, 설정 화면의 OpenCode 생각 깊이 칸은 그 모델의 목록에서 고른다(목록이 비면 "없음"이고 값을 비운다).
+- Claude Code 의 유휴 압축(캐시 만료 직전, 요청 없이 압축)을 채택자 설정에서 끈다. `.claude/settings.json` 의 `"idleCompaction": false` 는 `autoCompactWindow` 와 같은 관리 키라 `pm-update`·`pm-config apply`·설치·`add-harness`·어댑터 수용이 그 값 자리만 쓰고(없으면 넣는다), 압축 한도 기록에 실려 설정 파일 값 차이 표시가 함께 다룬다. 압축 전 안내와 checkpoint 는 압축이 압축 지점에서만 난다는 전제다.
+- 압축 직전 안내 없이 자동 압축되면 "설정 창이 실 압축 지점보다 크다"고 추정해 사용 한도를 낮추라던 경고(`ctx-window-mismatch`)를 지운다. 유휴·반응·서브에이전트 압축도 같은 신호를 내 처방이 맞지 않았고, 설정 창이 압축 지점보다 큰 경우는 적용 때 모델 한도 조회와 확인 조회가 막는다. `pm_log.py checkpoint` 의 `--ctx-band-checked`·`--ctx-band-missed`·`--ctx-window-tokens`·`--ctx-observed-tokens`·`--harness` 와 `snapshot` 의 `--ctx-band-missed`·`--ctx-window-tokens`·`--ctx-observed-tokens`·`--harness` 옵션이 없어지고, snapshot 은 log 를 읽지 않는다.
+- 압축 기록(checkpoint 골격·breadcrumb)과 압축 뒤 복구 주입(snapshot)의 task 를 그 세션이 `/pm-bootstrap --task <이름>` 으로 연 task 로 판정한다. 폴더·열린 task 수로 추측하지 않으므로 열린 task 가 여럿인 PM 홈 루트 세션도 기록이 남고, 판정하지 못하면(부트스트랩 안 한 세션·위임 세션) 사유 한 줄을 보인다. `pm_log.py snapshot` 의 `--cwd` 는 `--session-id` 로 바뀌고 `checkpoint` 의 `--cwd` 는 없어진다. 슬롯 엔진 사본에서 PM 홈 엔진으로 넘기는 경로는 자식 종료 코드를 그대로 돌려준다. Claude 는 압축 이벤트(PreCompact·PostCompact) 입력으로 서브에이전트 압축을 구별할 수 없어 압축 처리를 압축 뒤 첫 주 스레드 훅(PreToolUse·UserPromptSubmit)으로 옮기고 `.claude/precompact_capture_hook.sh` 를 지운다(갱신이 `.pm_import_backups/` 로 옮긴다). 서브에이전트의 도구 호출(`agent_id`)은 주 세션의 압축 기록·안내 표식·snapshot 을 바꾸지 않는다. Codex 는 서브에이전트 압축 이벤트에서 기능을 돌리지 않는다. 기존 Claude 채택자 할 일: `.claude/settings.json` 의 `PreCompact`·`PostCompact` 항목을 지운다(또는 `pm-config sync-adapter-config --accept .claude/settings.json` 뒤 권한 목록을 백업에서 되살린다).
+- 개발 회귀와 릴리즈 플랫폼 검증을 분리한다. 일반 회귀는 현재 플랫폼의 테스트만 실행하고, 선언한 추가 플랫폼 전체는 릴리즈 게이트에서 같은 커밋으로 검증한다. 회귀는 백그라운드로 실행해 별도 작업 트리의 개발을 계속할 수 있다.
+- 티켓의 공유 승격·실행·종결 전에 실제 제품 branch/base_branch 및 멤버 결속을 확인한다. 코드 트리 없는 draft 작성은 유지하며 승격 전에 기존 cluster new로 결속한다. 옛 branch 없는 크기 1 장부는 명시 재결속이 필요하고 PM 홈과 제품의 동명 main으로 기준을 추측하지 않는다. 최종 제품 기준 판정과 장부 기록은 같은 조회 결과를 사용하며 재읽기 실패는 기록 전에 거부한다.
+- 엔진 갱신이 두 프로세스로 나뉜다. 디스크에 있던 갱신기는 엔진 코드(`.project_manager/tools/`)만 옮기고, 옮겨 받은 갱신기를 같은 인자로 새 프로세스에서 실행해 렌더·진입 문서 이관·훅·어댑터 설정·기준 rev 기록을 끝낸다. 한 번의 실행으로 갱신이 끝나고 종료 코드와 출력은 완료 프로세스의 것이다. 갱신 중 엔진 사본 세대 혼합을 흡수하던 기록·사유 목록과 종료 시 수렴 검사를 지웠다. v1.7.13 이하에서 처음 받을 때는 같은 명령을 두 번 실행하고(첫 실행은 옛 갱신기) 세 번째 실행으로 변경 0 을 확인한다. v1.8.1 은 v1.8.0 을 거쳐서만 받는다.
+- `--dry-run` 은 엔진 코드가 바뀌는 갱신에서 받을 엔진 코드만 보여 준다. `--paths` 는 엔진 코드 변경이 남아 있으면 거부한다.
+- 은퇴 경로 지시(`# pm-retired-path: OLD -> NEW`)의 NEW 가 bare 디렉터리 행 아래 파일이어도 된다.
 
 ### Removed
 
@@ -115,18 +68,38 @@
 - **모델 원천의 `config` 종류** — 사용자 config 파일에서 현재 값 한 줄을 읽어 그것을 "고를 수 있는 모델"로 내놓던 자리다. codex 가 유일한 사용처였는데 그 CLI 에 카탈로그 조회(`codex debug models`)가 있어 값 하나만 보이던 것 자체가 잘못이었다. `ModelSource` 의 `config_env`·`config_home`·`config_key` 와 그 판독 코드가 함께 사라지고, 조회 명령과 산출 판독 방식이 표의 값(`command`·`parse`)이 됐다. 하네스 이름으로 갈리던 분기 하나도 그 값으로 대체됐다.
 - **설정 키 `regression.min_collected`** — 하한 미달을 실패로 강등하던 검사와 그 전용 rc 라벨(`partial-collection`)이 사라졌다. 수집 0(rc 5)은 여전히 실패다.
 - **마무리의 슬롯 반납 단계와 묶음 브랜치 삭제 시도** — 마무리는 일곱 단계에서 여섯 단계가 됐다. 머지 단계가 합쳐진 묶음 브랜치를 지우려던 시도는 작업 트리가 그 브랜치를 쥔 채라 늘 거부됐다. 합쳐진 브랜치 정리는 슬롯 제거가 한다.
+- `gate_snapshot.py`(갱신이 `.pm_import_backups/` 로 옮긴다), 리뷰 `--background`와 `pm_delegate.py cluster wait`, `pm_delegate.py --gate`, `rounds recalculate`·`rounds report`·`--rounds-report`·`rounds resolve --gate`, 내부 리뷰 기록 `.local/internal_review_rounds.json`·`.local/cluster-review-runs.jsonl`(더 이상 읽지 않으며 지워도 된다), 설정 키 `delegate.code-reviewer.rounds_max`(남아 있으면 차단 구키로 알린다).
+- 변경량 상한(diff 서킷브레이커). 완료 기록과 추가 리뷰어 호출이 더 이상 티켓 `estimate` 별 변경 줄 수로 멈추지 않는다. 설정 키 `diff_cap.small`·`diff_cap.medium`·`diff_cap.large` 는 남아 있으면 차단 구키로 알린다(그 줄을 지우면 된다). 사설 참조 검사의 측정 범위는 그대로다.
+
+### Fixed
+
+- 관리자 설정 저장이 위임 카드 등 렌더 산출물을 바로 다시 그린다. 저장 명령은 `pm-config apply` 하나이고 반영 전 검사(값·렌더·설치 세대 원본)에 걸리면 아무것도 쓰지 않는다. 전에는 위임 설정을 저장해도 카드가 다음 갱신 때까지 옛 모델·추론 강도로 남았다.
+- OpenCode 위임 카드에 추론 강도를 `variant` 로 렌더한다. 그 모델이 받지 않는 값은 저장·cross 위임이 거부하고 갱신이 지우고 알린다(OpenCode 는 없는 variant 를 오류 없이 버린다).
+- Claude 위임 카드에 `local.conf` 의 `delegate.<역할>[.hard].reasoning` 값을 `effort` 로 렌더해 서브에이전트에 추론 강도가 적용된다. 그 카드 하네스의 허용값 밖 값(정수 포함)은 렌더 오류로 멈춘다.
+- 모델의 실제 가용 한도로 압축·경고 기준을 제한한다. 희망값은 보존하며 입력 6개와 기존 기본값을 유지한다. 모델 가용 한도는 적용(`pm-config apply`·설치·하네스 추가·`pm-update`·어댑터 설정 수용·관리자 저장) 때 도구에서 한 번 조회해 압축 한도 기록에 고정하고, 조회하지 못하거나 도구가 받지 않는 설정값이면 첫 설정 쓰기 전에 거부한다. Claude Code는 모델 답변 없는 제어 요청으로 압축 기준을 조회하고 확인 조회로 같은 압축 지점을 검증한다. Codex는 앱 서버의 실효 설정과 모델 목록 캐시를, OpenCode는 models.dev 목록 캐시 또는 OpenAI 호환 서버의 모델 정보를 읽는다. 훅·상태줄·relay·관리자 표시는 기록만 읽으며, 세션 모델이 기록 모델과 다르면 경고하고 기록이 없거나 입력과 다르면 오류로 알린다. 사용자 global/profile과 OpenCode 원본 모델 목록은 보존한다.
+- sparse-checkout과 submodule의 변경 명령에 슬롯 소유 검사를 적용한다. 조회와 본인 슬롯 변경은 허용하고 타 task·idle·readonly·세션 부재의 변경은 차단한다. 초기화된 중첩 submodule도 소유 슬롯에 연결하며 세 하네스가 같은 판정을 사용한다. foreach 실행 명령의 -h/--help 인자는 Git 자체 도움말로 오인하지 않으며 쓰기 소유 검사를 유지한다.
+- 빈 submodule 폴더를 상위 슬롯의 dev 저장소로 오판하던 문제를 수정했다. 폴더 밖·미초기화·채워진 경로를 구분하고 inactive·dev·dirty 작업을 보존한다.
+- 작업이 같은 저장소의 슬롯을 여러 개 보유할 때 기존 repo/slot 입력으로 실행 대상을 고른다. 작업 귀속과 선택한 HEAD·브랜치·테스트 명령을 연결하며, 모호한 선택이나 남의 슬롯을 거부하고 기준점 누락을 성공으로 숨기지 않는다.
+- 최신 관리자의 엔진 갱신 적용이 구 updater의 배달 뒤 새 프로세스로 설정 키 이동·완료 검사를 수행한다. 구 직접 CLI 경로는 기존 두 번 실행 절차를 유지하고, 두 번째 단계의 실패를 최종 실패로 보고한다.
+- 정식 라운드 준비가 슬롯 사본·준비 장부를 모두 만든 뒤 새 보드 시드만 기록한다. draft 설계 라운드는 준비·회수 단계에서 공유하지 않고 승격이 공개를 담당한다. 준비 실패의 증거와 로컬 기록·원격 공유의 구분을 유지한다.
+- Windows URL upstream 캐시의 긴 경로에서 Git clone이 실패하던 문제를 수정했다. 사용자 Git 설정 격리를 유지하면서 Windows runner에 `core.longpaths=true`를 명시한다.
+- OpenCode가 Windows의 실행 불가한 Python 별칭에서 멈추던 문제를 수정했다. 명시한 실행기 또는 지원되는 후보를 검증해 선택하고, 상태를 쓰는 엔진 명령은 한 번만 실행한다.
+- OpenCode의 내구 스냅샷을 Windows의 두 프로세스가 동시에 선점하던 문제를 수정했다. 같은 세대의 고정 경로를 배타적으로 생성하고, 원본 제거 실패 시 선점 증거를 보존해 중복 전달을 차단한다.
+- Windows 에서 PowerShell 이 `.cmd` 파사드(`pm-update.cmd`·`pm-config.cmd`)의 출력을 변수·파이프로 받을 때 한글이 깨지던 문제를 수정했다. cmd.exe 를 출력을 그대로 넘기는 중간 프로세스로 보고 PowerShell 부모를 알아본다(콘솔에 직접 찍는 출력은 그대로 UTF-8).
 
 ### 업그레이드 노트
 
 - **v1.7.11 이하 사본의 첫 full sync 가 `[source 에 없음] .project_manager/tools/external_review.py` 로 rc 2 에서 멈추는 것은 정상 동작이다.** 그 세대의 updater 는 퇴역 선언(`pm-retired-path`)을 모르고 구 reviewer 경로를 일반 소유행으로 읽는다 — manifest 나 reviewer 를 손으로 복사하지 마라.
 - 두 명령으로 완주한다: `./pm-update.sh --from <cache-or-path> --paths .project_manager/tools/pm_update.py`(구 updater 가 이미 소유하는 updater 하나만 먼저 배달) 뒤 `./pm-update.sh --from <cache-or-path>`(신 updater 의 full sync 가 `additional_reviewer.py` 를 설치하고 구 파일을 `.pm_import_backups/` 로 옮긴다).
-
 - 사용자 1회 허용 기록과 허용 기록 쓰기 차단은 하네스 설정의 새 훅 항목이 있어야 켜진다. 채택자 `.claude/settings.json` 은 갱신이 바꾸지 않으므로 `pm-config sync-adapter-config --accept .claude/settings.json` 으로 받는다.
 - 이 버전 전에 만든 브랜치에는 부모 기록이 없다. 현황에 `부모 기록 없음` 으로 보이고, 그 브랜치의 rebase 는 `--onto <부모>` 를 줘야 한다(성공하면 부모가 기록된다). 작업 슬롯 장부에 남은 옛 `git.base` 는 다음 도착 기록 때 빠진다.
 - `regression.min_collected` 가 남아 있는 `local.conf` 는 그대로 둬도 회귀가 막히지 않는다(그 키는 이제 읽히지 않는다). 갱신이 그 줄을 지운다.
 - 슬롯 쓰기 판정은 task 기록의 세션 ID 로 한다. 업그레이드 전에 열린 task 는 세션 ID 가 없어 그 세션의 슬롯 쓰기가 거부된다 — 세션마다 `pm_bootstrap.py --task <이름>` 을 다시 실행한다. codex 는 `.codex/hooks.json` 의 PreToolUse matcher 가 `^(Bash|apply_patch|collaborationspawn_agent)$` 여야 파일 쓰기 도구가 판정된다. 갱신이 이 파일을 바꾸지 않으므로 `pm-config sync-adapter-config --accept .codex/hooks.json` 으로 받는다.
 - 작업 폴더 장부에 `session` 이 옛 슬롯 표기(`<repo>_<N>`)로 남은 대여 행은 갱신(`pm-config update`)이 반납 상태로 옮긴다. 폴더와 그 안의 작업은 그대로이고 다음 `alloc` 이 같은 폴더를 다시 빌려준다 — 그 표기는 task 이름이 될 수 없어 남겨 두면 그 폴더에서 부트스트랩·핸드오프가 정체성을 해소하지 못한다.
 - 세션 살아있음 판정이 바뀌어 옛 세대가 남긴 열린 기록은 자동으로 회수되지 않는다. 관리자 화면의 [강제 닫기] 또는 `pm-config release <슬롯> --force` 로 사용자가 닫는다. 그 슬롯에 커밋하지 않은 변경이 있으면 강제 닫기도 멈추므로 먼저 커밋하거나 직접 stash 한다.
+- **v1.7.13 에서 올 때는 같은 갱신 명령을 두 번 실행한다.** 첫 실행은 디스크에 있던 옛 갱신기가 돌고(그 실행의 출력 인코딩도 옛 코드가 정한다), 두 번째부터 새 갱신기가 전달·완료를 나눠 끝낸다. 세 번째 실행은 `최신 — 변경 없음` 이어야 한다. 관리자 앱의 [적용]은 두 번 실행을 자동으로 한다.
+- **기존 Claude 채택자는 `.claude/settings.json` 의 `PreCompact`·`PostCompact` 항목을 지운다.** 갱신이 `.claude/precompact_capture_hook.sh` 를 `.pm_import_backups/` 로 옮기므로 항목이 남아 있으면 압축 때 없는 파일을 부른다. 이 파일은 채택자 소유라 갱신이 고치지 않는다.
+- 다음 릴리즈(v1.8.1)는 v1.8.0 을 거쳐서만 받는다. v1.7.13 이하에서 v1.8.1 로 바로 올리지 않는다.
 
 ## [1.7.13] - 2026-09-04
 
