@@ -1364,8 +1364,9 @@ def test_interrupted_update_new_pm_update_with_unusable_seam_recovers(
     dest_tools = dest / ".project_manager" / "tools"
     source_tools.mkdir(parents=True)
     dest_tools.mkdir(parents=True)
-    # 상류 분류(`pm_import.classify_upstream`)는 갱신의 입구라 두 트리 모두 pm_import 를 갖는다
-    #   (T-0951 — 분류 실패를 경로로 접던 흡수가 사라졌다). 복구 대상은 그대로 repo_owned_files 다.
+    # 완료 단계의 설치 하네스 판별(`pm_update._installed_entry_notation_manifests`)이 흡수 없이 형제
+    #   pm_import 를 적재하므로(T-0951) 두 트리 모두 pm_import 를 갖는다. 복구 대상은 그대로
+    #   repo_owned_files 다.
     manifest_text = (
         ".project_manager/tools/repo_owned_files.py\n"
         ".project_manager/tools/pm_update.py\n"
@@ -2438,7 +2439,8 @@ def test_pm_update_cli_recovery_survives_unusable_engine_rev(
     root = tmp_path / helper_state
     tools = root / ".project_manager" / "tools"
     tools.mkdir(parents=True)
-    # 상류 분류(`pm_import.classify_upstream`)는 갱신의 입구라 pm_import 를 함께 둔다(T-0951).
+    # 완료 단계의 설치 하네스 판별(`pm_update._installed_entry_notation_manifests`)이 흡수 없이 형제
+    #   pm_import 를 적재하므로 pm_import 를 함께 둔다(T-0951).
     for name in ("pm_update", "pm_import", "repo_owned_files", "console_encoding"):
         shutil.copy2(TOOLS / f"{name}.py", tools / f"{name}.py")
     if helper_state == "old":

@@ -102,7 +102,7 @@ def _direct_update(pm_home: Path, *args: str) -> subprocess.CompletedProcess:
         [sys.executable, str(pm_home / ".project_manager" / "tools" / "pm_config.py"),
          "update", *args],
         cwd=str(pm_home), capture_output=True, text=True, encoding="utf-8", errors="replace",
-        env=known_ctx_env())
+        env=known_ctx_env(native_bin=pm_home.parent / "known-ctx-native"))
 
 
 # ── ① 미리보기는 엔진 출력 원문이다 ──────────────────────────────────────────

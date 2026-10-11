@@ -117,7 +117,8 @@ def _t0927_direct_update(dest):
     return subprocess.run(
         [sys.executable, str(dest / ".project_manager/tools/pm_config.py"), "update"],
         cwd=dest, capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=300, env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"}))
+        timeout=300, env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"},
+                                       native_bin=dest.parent / "known-ctx-native"))
 
 
 def test_t0927_old_process_boundary_requires_fresh_run2(t0927_old_adopter, t0927_upstream):
@@ -195,7 +196,8 @@ def _t0946_install(source: Path, dest: Path, upstream: Path, *, known_ctx: bool)
     argv = [sys.executable, str(source / ".project_manager/tools/pm_import.py"),
             "--new", str(dest), "--harness", "opencode", "--fill", "manual",
             "--from", str(source), "--upstream", str(upstream)]
-    _run(argv, cwd=source, env=known_ctx_env() if known_ctx else None)
+    _run(argv, cwd=source,
+         env=known_ctx_env(native_bin=dest.parent / "known-ctx-native") if known_ctx else None)
     return dest
 
 
@@ -402,7 +404,8 @@ def _run_pm_update(dest: Path, *args: str) -> subprocess.CompletedProcess:
         # 엔진 출력은 UTF-8(한글 포함) — 부모 콘솔 로케일로 디코드하면 캡처가 깨진다.
         encoding="utf-8",
         errors="replace",
-        env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"}),
+        env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"},
+                          native_bin=dest.parent / "known-ctx-native"),
         timeout=300,
     )
     assert proc.returncode == 0, (
@@ -859,7 +862,8 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
     return subprocess.run(
         [sys.executable, str(dest / ".project_manager" / "tools" / tool), *args],
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
-        env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"}), timeout=300,
+        env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"},
+                          native_bin=dest.parent / "known-ctx-native"), timeout=300,
     )
 
 
@@ -1759,7 +1763,8 @@ def test_legacy_updater_run1_delivers_new_reviewer_and_run2_retires_old(tmp_path
             "--fill", "manual", "--from", str(legacy_framework),
         ],
         cwd=str(legacy_framework), capture_output=True, text=True, encoding="utf-8",
-        errors="replace", env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"}), timeout=300,
+        errors="replace", timeout=300,
+        env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"}, native_bin=dest.parent / "known-ctx-native"),
     )
     assert installed.returncode == 0, f"{installed.stdout}\n{installed.stderr}"
 
@@ -2282,7 +2287,8 @@ def _raw_pm_update(dest: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"), *args],
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
-        env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"}), timeout=300,
+        env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"},
+                          native_bin=dest.parent / "known-ctx-native"), timeout=300,
     )
 
 
@@ -2513,7 +2519,8 @@ def test_transferring_process_loads_no_copied_module(tmp_path):
                         encoding="utf-8", newline="\n")
     _git("-C", str(source), "commit", "-qam", "load probe")
     log = tmp_path / "load.log"
-    env = known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1", "P1_LOAD_LOG": str(log)})
+    env = known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1", "P1_LOAD_LOG": str(log)},
+                        native_bin=home.parent / "known-ctx-native")
 
     proc = subprocess.Popen(
         [sys.executable, str(home / ".project_manager/tools/pm_config.py"), "update"],
@@ -2563,7 +2570,8 @@ def test_completion_exit_code_and_output_are_relayed(tmp_path):
     run = subprocess.run(
         [sys.executable, str(home / ".project_manager/tools/pm_update.py"), "--from", str(source)],
         cwd=home, capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=300, env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"}))
+        timeout=300, env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"},
+                                       native_bin=home.parent / "known-ctx-native"))
 
     assert run.returncode == 7, f"{run.stdout}\n{run.stderr}"
     assert "[update] .project_manager/tools/pm_update.py" in run.stdout, run.stdout
@@ -2584,7 +2592,8 @@ def _t0951_pm_update(home: Path, source: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(home / ".project_manager/tools/pm_update.py"), "--from", str(source)],
         cwd=home, capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=300, env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"}))
+        timeout=300, env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"},
+                                       native_bin=home.parent / "known-ctx-native"))
 
 
 def test_stale_sibling_copy_converges_in_one_update(tmp_path):

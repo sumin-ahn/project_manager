@@ -2303,7 +2303,8 @@ def test_task_cli_two_process_rerun_is_idempotent_then_bootstrap_advances(hf, tm
             sys.executable, str(TOOLS / "pm_import.py"), "--new", str(dest),
             "--harness", "codex", "--name", "handoff-task-e2e", "--fill", "manual",
         ],
-        cwd=str(REPO), env=known_ctx_env(env), capture_output=True, text=True,
+        cwd=str(REPO), env=known_ctx_env(env, native_bin=dest.parent / "known-ctx-native"),
+        capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=300,
     )
     assert install.returncode == 0, install.stdout + install.stderr

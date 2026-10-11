@@ -1090,7 +1090,8 @@ def test_fresh_adopter_central_loader_survives_self_update(pm_import, tmp_path, 
         text=True,
         encoding="utf-8",
         errors="replace",
-        env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"}),
+        env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"},
+                          native_bin=dest.parent / "known-ctx-native"),
         timeout=60,
     )
     assert updated.returncode == 0, (

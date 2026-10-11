@@ -8270,6 +8270,7 @@ def _adopter_update(dest: Path, *args: str, env: dict | None = None):
          "--from", str(REPO), *args],
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1", **(env or {})},
+                          native_bin=dest.parent / "known-ctx-native",
                           capacity=1000000, context=2000000), timeout=300)
 
 
@@ -8674,7 +8675,7 @@ def test_apply_conf_lists_models_once_per_save(tmp_path, monkeypatch):
     home = tmp_path / "home"
     _run([sys.executable, str(TOOLS / "pm_import.py"), "--new", str(home),
           "--harness", "opencode", "--from", str(source), "--upstream", str(source)], cwd=REPO,
-         env=known_ctx_env())
+         env=known_ctx_env(native_bin=tmp_path / "known-ctx-native"))
     module = _home_pm_update(home)
     card = home / ".opencode" / "agents" / "developer.md"
 
@@ -8787,8 +8788,14 @@ def test_transfer_stage_runs_no_completion_step(pm_update, tmp_path, monkeypatch
 ))
 def test_completion_handoff_is_validated_before_any_write(
         pm_update, tmp_path, monkeypatch, capsys, case):
-    """AT-005 — 인계 값이 틀리거나 완료 단계에 엔진 코드 변경이 남으면 쓰기 전에 rc 1 로 멈춘다."""
+    """AT-005 — 인계 값이 틀리거나 완료 단계에 엔진 코드 변경이 남으면 쓰기 전에 rc 1 로 멈춘다.
+
+    엔진 코드 잔존이 아닌 사례는 dest 에 상류와 같은 probe 를 먼저 써 둔다 — 엔진 코드 잔존 거부가
+    대신 rc 1 을 내지 못하게 해서 사례마다 자기 가드의 문구로 멈추는지 본다."""
     dest, source = _t0951_case(pm_update, tmp_path, monkeypatch)
+    if case != "pending_engine_code":
+        (dest / _T0951_PROBE).parent.mkdir(parents=True, exist_ok=True)
+        (dest / _T0951_PROBE).write_text(_T0951_FILES[_T0951_PROBE], encoding="utf-8")
     handoff = {"dest": str(dest), "source": str(source), "transferred": 0}
     raw = {
         "invalid_json": "{not json",
@@ -8803,10 +8810,35 @@ def test_completion_handoff_is_validated_before_any_write(
 
     rc = pm_update.main(["--from", str(source)])
 
+    invalid_handoff = f"인계 값({pm_update.COMPLETION_ENV})이 올바르지 않다"
+    expected_message = {
+        "invalid_json": invalid_handoff,
+        "missing_field": invalid_handoff,
+        "unknown_field": invalid_handoff,
+        "dest_mismatch": "완료 단계 인계 값의 대상(",
+        "missing_source": "출처: 완료 단계 인계 값",
+        "pending_engine_code": "완료 단계에서 엔진 코드 변경",
+    }[case]
     assert rc == 1
-    assert "완료 단계" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert expected_message in err, err
     assert _t0951_tree(dest) == before, "인계 값 오류인데 dest 를 바꿨다"
     assert pm_update.COMPLETION_ENV not in os.environ, "인계 값이 실행 뒤에 남았다"
+
+
+def test_known_ctx_env_requires_a_test_scoped_native_folder(tmp_path):
+    """실행 파일 폴더가 환경에 없으면 `known_ctx_env` 는 호출자가 준 테스트 임시 폴더만 쓴다 —
+    폴더를 스스로 만들어 저장소 임시 자리에 남기지 않는다."""
+    from _manager_home import known_ctx_env
+    base = {key: value for key, value in os.environ.items() if key != "_KNOWN_CTX_FIXTURE_BIN"}
+    with pytest.raises(ValueError, match="native_bin"):
+        known_ctx_env(base)
+
+    folder = tmp_path / "known-ctx-native"
+    environment = known_ctx_env(base, native_bin=folder)
+
+    assert environment["PATH"].split(os.pathsep)[0] == str(folder)
+    assert environment["_KNOWN_CTX_FIXTURE_BIN"] == str(folder)
 
 
 def test_dry_run_defers_preview_while_engine_code_is_pending(

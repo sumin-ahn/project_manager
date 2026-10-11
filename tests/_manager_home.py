@@ -12,12 +12,9 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
-
-from _win_skip import PROJECT_TEMP_ROOT
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -139,17 +136,19 @@ def known_ctx_env(env: dict | None = None, *, native_bin: Path | None = None,
     """자식 프로세스 환경 — 그 프로세스와 그 자식(갱신의 완료 프로세스 포함)이 고정 모델 한도를 쓴다.
 
     `PYTHONPATH` 앞에 `_known_ctx_site`(sitecustomize)를 둔다. 실제 하네스 CLI 자리를 대신할 실행
-    파일 폴더(`_KNOWN_CTX_FIXTURE_BIN`)가 환경에 없으면 `native_bin`(없으면 임시 폴더)에 만들어 `PATH`
-    앞에 붙인다. `capacity`·`context` 를 주면 고정 값을 바꾼다(`sitecustomize` 가 읽는 두 변수)."""
+    파일 폴더(`_KNOWN_CTX_FIXTURE_BIN`)가 환경에 없으면 `native_bin`(테스트 임시 폴더 안 경로)에 만들어
+    `PATH` 앞에 붙인다 — 둘 다 없으면 `ValueError`. `capacity`·`context` 를 주면 고정 값을 바꾼다
+    (`sitecustomize` 가 읽는 두 변수)."""
     environment = dict(os.environ if env is None else env)
     environment["PYTHONPATH"] = os.pathsep.join(
         [str(_KNOWN_CTX_SITE), *filter(None, [environment.get("PYTHONPATH")])])
     if not environment.get("_KNOWN_CTX_FIXTURE_BIN"):
+        if native_bin is None:
+            raise ValueError("known_ctx_env: 환경에 _KNOWN_CTX_FIXTURE_BIN 이 없으면 native_bin"
+                             "(테스트 임시 폴더 안 경로)을 넘겨야 한다")
         namespace: dict = {}
         exec(_KNOWN_CTX_READER_PY, namespace)
-        folder = namespace["write_native_commands"](
-            native_bin if native_bin is not None
-            else tempfile.mkdtemp(prefix="known-ctx-native-", dir=PROJECT_TEMP_ROOT))
+        folder = namespace["write_native_commands"](native_bin)
         environment["PATH"] = str(folder) + os.pathsep + environment.get("PATH", "")
         environment["_KNOWN_CTX_FIXTURE_BIN"] = str(folder)
     if capacity is not None:
@@ -202,7 +201,7 @@ def make_pm_home(destination: Path, *, upstream: Path | str | None = None,
             "--harness", "claude", "--from", str(source)]
     if upstream is not None:
         argv += ["--upstream", str(upstream)]
-    _run(argv, cwd=REPO, env=known_ctx_env())
+    _run(argv, cwd=REPO, env=known_ctx_env(native_bin=Path(destination).parent / "known-ctx-native"))
     return Path(destination)
 
 

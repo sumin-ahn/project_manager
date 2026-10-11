@@ -30,6 +30,14 @@ DIRECT_PYTHON_CHAIN = [
     (30, 20, r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"),
     (50, 30, r"C:\Users\u\AppData\Local\Programs\Python\Python312\python.exe"),
 ]
+# PowerShell 이 루트 파사드(pm-update.cmd 등)를 실행: 파사드 배치 셸 cmd.exe 가 python 을 자식으로 띄운다.
+FACADE_CMD_CHAIN = [
+    (10, 0, r"C:\Windows\System32\OpenSSH\sshd.exe"),
+    (20, 10, r"C:\Windows\System32\cmd.exe"),
+    (30, 20, r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"),
+    (35, 30, r"C:\Windows\System32\cmd.exe"),
+    (50, 35, r"C:\Users\u\AppData\Local\Programs\Python\Python312\python.exe"),
+]
 CAPTURING_PYTHON_PARENT_CHAIN = [
     (10, 0, r"C:\Windows\System32\OpenSSH\sshd.exe"),
     (20, 10, r"C:\Windows\System32\cmd.exe"),
@@ -275,6 +283,10 @@ def test_restore_flushes_both_streams_before_codepage_changes(console_encoding, 
                      id="direct-parent-capture"),
         pytest.param(DIRECT_PYTHON_CHAIN, True, "utf-8", "utf-8", 0,
                      id="direct-parent-console"),
+        pytest.param(FACADE_CMD_CHAIN, False, "cp949", "cp949", 1,
+                     id="facade-cmd-chain-capture"),
+        pytest.param(FACADE_CMD_CHAIN, True, "utf-8", "utf-8", 0,
+                     id="facade-cmd-chain-console"),
     ],
 )
 def test_powershell_process_shape_and_destination_matrix(
@@ -286,7 +298,7 @@ def test_powershell_process_shape_and_destination_matrix(
     reader_encoding,
     hint_count,
 ):
-    """실측/직접 부모 형상 각각에서 캡처와 콘솔 bytes가 독자 코덱으로 왕복한다."""
+    """실측/직접 부모/파사드 cmd 형상 각각에서 캡처와 콘솔 bytes가 독자 코덱으로 왕복한다."""
     kernel32 = _FakeKernel32(entries=chain)
     stdout = _Stream(tty=tty)
     stderr = _Stream(tty=tty)
