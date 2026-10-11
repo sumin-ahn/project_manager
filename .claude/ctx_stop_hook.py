@@ -484,7 +484,7 @@ def _evaluate_ctx_bands(stdin: dict, root: Path, conf: dict) -> tuple[int, dict 
         snapshot = _build_snapshot(root, stdin)
         if snapshot and not _arm_snapshot(root, session_id, snapshot):
             print(
-                "[ctx-snapshot-rearm-failure] snapshot 재무장 실패 — 기존 payload/append-only 진단을 다음 경계에 보존",
+                "[ctx-snapshot-rearm-failure] snapshot 재무장 실패 — 기존 payload를 다음 경계에 보존",
                 file=sys.stderr,
             )
         elif not snapshot and _snapshot_marker_path(root, session_id).exists():

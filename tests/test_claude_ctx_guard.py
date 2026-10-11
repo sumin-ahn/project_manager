@@ -374,6 +374,26 @@ def test_t0952_postcompact_arm_replaces_leftover_pending_payload(stop_hook, tmp_
     assert marker.read_text(encoding="utf-8") == payload
 
 
+def test_t0952_postcompact_rearm_failure_names_existing_payload_only(
+    stop_hook, tmp_path, monkeypatch, capsys,
+):
+    """PostCompact 재무장 실패 문구는 남아 있는 대상(기존 payload)만 가리킨다(F-001)."""
+    monkeypatch.setattr(
+        stop_hook, "_build_snapshot", lambda root, stdin: "## PM 정체성 (compaction 복구)",
+    )
+    monkeypatch.setattr(stop_hook, "_arm_snapshot", lambda root, session_id, snapshot: False)
+    monkeypatch.setattr(stop_hook, "_create_checkpoint", lambda root, stdin, phase: True)
+
+    rc, output = stop_hook.evaluate(
+        {"hook_event_name": "PostCompact", "session_id": "t0952-rearm"}, tmp_path, {},
+    )
+
+    assert (rc, output) == (0, None)
+    assert capsys.readouterr().err == (
+        "[ctx-snapshot-rearm-failure] snapshot 재무장 실패 — 기존 payload를 다음 경계에 보존\n"
+    )
+
+
 def _stop_transcript(tmp_path: Path) -> Path:
     # input_tokens 190_000 / window 200_000 = 95% used >= precompact_at 80 → stop.
     return _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
