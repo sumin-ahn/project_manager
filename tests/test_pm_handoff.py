@@ -2297,13 +2297,13 @@ def test_task_cli_two_process_rerun_is_idempotent_then_bootstrap_advances(hf, tm
         )
         assert done.returncode == 0, done.stderr
 
-    from _manager_home import known_ctx_argv
+    from _manager_home import known_ctx_env
     install = subprocess.run(
-        known_ctx_argv([
+        [
             sys.executable, str(TOOLS / "pm_import.py"), "--new", str(dest),
             "--harness", "codex", "--name", "handoff-task-e2e", "--fill", "manual",
-        ]),
-        cwd=str(REPO), env=env, capture_output=True, text=True,
+        ],
+        cwd=str(REPO), env=known_ctx_env(env), capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=300,
     )
     assert install.returncode == 0, install.stdout + install.stderr

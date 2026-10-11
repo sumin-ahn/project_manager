@@ -113,11 +113,11 @@ def t0927_old_adopter(t0927_installed_adopter):
 
 
 def _t0927_direct_update(dest):
-    from _manager_home import known_ctx_argv
+    from _manager_home import known_ctx_env
     return subprocess.run(
-        known_ctx_argv([sys.executable, str(dest / ".project_manager/tools/pm_config.py"), "update"]),
+        [sys.executable, str(dest / ".project_manager/tools/pm_config.py"), "update"],
         cwd=dest, capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=300, env={**os.environ, "PM_NONINTERACTIVE": "1"})
+        timeout=300, env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"}))
 
 
 def test_t0927_old_process_boundary_requires_fresh_run2(t0927_old_adopter, t0927_upstream):
@@ -190,12 +190,12 @@ def t0946_fake_opencode(tmp_path, monkeypatch):
 
 def _t0946_install(source: Path, dest: Path, upstream: Path, *, known_ctx: bool) -> Path:
     """`source` 의 pm_import 로 opencode 채택자를 설치한다. 현재 소스의 설치는 모델 한도를 조회하므로
-    고정 한도(`known_ctx_argv`)로 돌린다(그 조회가 없는 v1.7.13 설치는 그대로)."""
-    from _manager_home import _run, known_ctx_argv
+    고정 한도(`known_ctx_env`)로 돌린다(그 조회가 없는 v1.7.13 설치는 그대로)."""
+    from _manager_home import _run, known_ctx_env
     argv = [sys.executable, str(source / ".project_manager/tools/pm_import.py"),
             "--new", str(dest), "--harness", "opencode", "--fill", "manual",
             "--from", str(source), "--upstream", str(upstream)]
-    _run(known_ctx_argv(argv) if known_ctx else argv, cwd=source)
+    _run(argv, cwd=source, env=known_ctx_env() if known_ctx else None)
     return dest
 
 
@@ -288,10 +288,10 @@ def _teach_renderer_next_gen_token(pm_render_path: Path) -> None:
 def test_update_renders_cards_whose_tokens_only_the_new_renderer_knows(tmp_path):
     """렌더러가 바뀌는 갱신이 한 번의 `pm-config update` 로 끝난다 (T-0945 AT-005 · 불변식 I7).
 
-    계획은 설치된 렌더러로 `@render` 파일을 판정한다. 다음 세대 템플릿에 설치 렌더러가 모르는 토큰이
-    있으면 그 판정 렌더는 실패하는데, 계획은 그 실패를 "갱신 필요" 로 접고(`_render_eq_dst`), 실제
-    렌더는 tools 를 복사한 뒤의 새 렌더러가 한다. 그 흡수를 지우면 계획 단계에서 멈춰 rc 가 0 이
-    아니다."""
+    전달 프로세스는 엔진 코드만 옮기고 렌더하지 않는다. `@render` 파일의 계획과 렌더는 받은 엔진으로
+    도는 완료 프로세스의 새 렌더러가 하므로, 설치 렌더러가 모르는 다음 세대 토큰도 첫 실행에서
+    그려진다. 두 번째 실행은 변경 0 확인이다 — 첫 실행이 완료 단계를 끝내지 못했다면 여기서 변경이
+    난다 (T-0951 AT-002)."""
     from _manager_home import _git, make_committed_source, make_pm_home
     source = make_committed_source(tmp_path / "source")
     home = make_pm_home(tmp_path / "home", upstream=source, source=source)
@@ -308,6 +308,12 @@ def test_update_renders_cards_whose_tokens_only_the_new_renderer_knows(tmp_path)
     assert run.returncode == 0, f"{run.stdout}\n{run.stderr}"
     rendered = (home / card_rel).read_text(encoding="utf-8")
     assert "다음 세대 표식: next-gen" in rendered and _NEXT_GEN_TOKEN not in rendered
+
+    before = _snapshot_tree(home)
+    again = _t0927_direct_update(home)
+    assert again.returncode == 0, f"{again.stdout}\n{again.stderr}"
+    assert "변경 없음" in again.stdout, again.stdout
+    assert _snapshot_tree(home) == before
 
 
 
@@ -386,17 +392,17 @@ def _run_pm_update(dest: Path, *args: str) -> subprocess.CompletedProcess:
 
     upstream 은 명시 `--from REPO` 다 — fresh 인스턴스의 local.conf `upstream.path=` 은 URL 이라
     엔진이 자동 진행하지 않는다(로컬 checkout 명시가 채택자의 실제 절차)."""
-    from _manager_home import known_ctx_argv
+    from _manager_home import known_ctx_env
     proc = subprocess.run(
-        known_ctx_argv([sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"),
-         "--from", str(REPO), *args]),
+        [sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"),
+         "--from", str(REPO), *args],
         cwd=str(dest),
         capture_output=True,
         text=True,
         # 엔진 출력은 UTF-8(한글 포함) — 부모 콘솔 로케일로 디코드하면 캡처가 깨진다.
         encoding="utf-8",
         errors="replace",
-        env={**os.environ, "PM_NONINTERACTIVE": "1"},
+        env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"}),
         timeout=300,
     )
     assert proc.returncode == 0, (
@@ -849,11 +855,11 @@ _LEGACY_BLOCKING_HOOKS = '{"hooks": {"PreCompact": [{"command": "legacy-block"}]
 
 def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.CompletedProcess:
     """채택자 사본 CLI를 hermetic subprocess로 실행 — 성공/실패 판정은 호출 테스트가 한다."""
-    from _manager_home import known_ctx_argv
+    from _manager_home import known_ctx_env
     return subprocess.run(
-        known_ctx_argv([sys.executable, str(dest / ".project_manager" / "tools" / tool), *args]),
+        [sys.executable, str(dest / ".project_manager" / "tools" / tool), *args],
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
-        env={**os.environ, "PM_NONINTERACTIVE": "1"}, timeout=300,
+        env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"}), timeout=300,
     )
 
 
@@ -993,7 +999,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   줄어든 것은 그 실행이 부르지 않던 코드뿐이다. 현재화한 것은 기대 SHA 하나뿐이다.
 #   같은 티켓의 수정 라운드에서 한 번 더 이동했다 — `plan()` docstring 의 낱말 하나("모듈 밖
 #   호출부")뿐이고 실행 코드·배달 경계는 무편집이다.
-_T0585_PM_UPDATE_SHA256 = "ecfd51ec47f135b1cb2766f367572c06214a17bdc02dd154ee08f696fed3bcaa"
+_T0585_PM_UPDATE_SHA256 = "7d66126a3e6b257dcf3dd5b0c50a2003e2a2993c97508e5f15641765c74a9411"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -1093,6 +1099,60 @@ def _reverse_harness_ctx_apply(source: str) -> str:
         assert source.count(current) == 1, current
         source = source.replace(current, legacy, 1)
     assert "not apply_harness_ctx_limits(" not in source      # 호출 지점 0(정의는 동작 축이 아니다)
+    return source
+
+
+# T-0951 의 전달/완료 두 프로세스 분리는 두 동결 세대 updater 에 없던 개념이다 — 전달 분기를
+# 역적용하면 인계 값이 없는 실행이 종전처럼 한 프로세스 안에서 해소·계획·적용을 끝낸다(복사한
+# 엔진 모듈을 같은 프로세스가 다시 불러오던 그 세대의 동작이다). `_transfer_engine_code` 정의는
+# 호출되지 않으므로 남아도 동작 축이 아니다(다른 역델타와 같은 규칙).
+# 같은 티켓의 `--paths` 거부(엔진 코드가 상류와 다르면 부분 전파 거부)도 그 세대엔 없었다 — 구
+# updater 의 `--paths` 단독 자기 배달이 바로 그 세대의 동작이다.
+_TWO_PROCESS_UPDATE_REVERSALS = (
+    "    if handoff is None and not args.target:\n"
+    "        return _transfer_engine_code(args, raw_argv, scope_paths)\n",
+    "    # 내보내기의 `--paths` 도 같은 규칙이다 — 엔진 코드는 세대 단위로만 옮긴다.\n"
+    "    if scope_paths:\n"
+    "        rc = _refuse_scope_with_pending_engine_code(changes)\n"
+    "        if rc:\n"
+    "            return rc\n",
+)
+
+
+# 같은 티켓이 계획 렌더 실패 흡수(`_render_eq_dst` 의 try/except → '다름')를 지웠다. 두 동결 세대
+# updater 는 그 흡수를 가졌고, 그 세대가 다음 세대 템플릿을 그리지 못하는 실행(구 rewrite 대상이
+# 상류에서 사라진 경우)은 흡수 덕에 계획까지 갔다 — 역적용해 그 세대 동작을 되살린다.
+_RENDER_EQ_DST_RAISE = (
+    "    rendered = _render_text(\n"
+    "        sp, conf, render_mod, entry_notation_template, flat_command_skill,\n"
+    "        codex_operational_skill, _dest_relative_path(dst, dest_root),\n"
+    "    )\n"
+    "    return _rendered_text_matches_dest(rendered, dst)\n"
+)
+_RENDER_EQ_DST_ABSORB = (
+    "    try:\n"
+    "        rendered = _render_text(\n"
+    "            sp, conf, render_mod, entry_notation_template, flat_command_skill,\n"
+    "            codex_operational_skill, _dest_relative_path(dst, dest_root),\n"
+    "        )\n"
+    "    except Exception:  # noqa: BLE001 — 렌더 실패는 '다름'으로 보수 처리.\n"
+    "        return False\n"
+    "    return _rendered_text_matches_dest(rendered, dst)\n"
+)
+
+
+def _reverse_render_eq_dst_raise(source: str) -> str:
+    """T-0951 렌더 실패 흡수 삭제 역적용 — marker 는 정확히 한 번 해소돼야 한다."""
+    assert source.count(_RENDER_EQ_DST_RAISE) == 1, _RENDER_EQ_DST_RAISE
+    return source.replace(_RENDER_EQ_DST_RAISE, _RENDER_EQ_DST_ABSORB, 1)
+
+
+def _reverse_two_process_update(source: str) -> str:
+    """T-0951 전달 분기·`--paths` 거부 역적용 — marker 는 각각 정확히 한 번 해소돼야 한다."""
+    for current in _TWO_PROCESS_UPDATE_REVERSALS:
+        assert source.count(current) == 1, current
+        source = source.replace(current, "", 1)
+    assert "return _transfer_engine_code(" not in source   # 호출 지점 0
     return source
 
 
@@ -1272,15 +1332,21 @@ def _t0585_pm_update_source() -> str:
     했으며, 정리와 저장 확인이 추론 값 열거 하나(`_reasoning_values`)를 쓰게 했다. 갱신 실행은
     `render_mod` 를 넘기지 않아 계획 렌더러 로드가 그대로이고 배달 경계도 그대로다 — 현재화한 것은 기대
     SHA 하나뿐이다.
+
+    T-0951 — 자기 갱신이 전달/완료 두 프로세스로 갈리고 흡수 원장·수렴 검사가 사라졌다. 사라진
+    흡수 사유 표의 한 항목을 지우던 첫 역델타는 되돌릴 원문이 없어 함께 지웠고, 적용 분기의 끝
+    marker 는 새 동기화 줄(`transferred + len(changes)`)로 옮겼다. 전달 분기는
+    `_reverse_two_process_update` 로 역적용해 합성본이 그 세대처럼 한 프로세스 안에서 계획·적용을
+    끝내게 했다(전달 분기를 남기면 RUN1 의 완료 단계가 신 updater 로 돌아 구 세대 RUN1 이 아니다).
+    같은 함수가 `--paths` 거부도 걷어낸다(이 fixture 는 스코프 없이 돌아 무동작이다).
+    인계 값이 없는 실행의 `transferred` 는 0 이라 동기화 줄·변경 없음 줄의 출력도 그 세대와 같다.
+    계획 렌더 실패 흡수의 삭제도 `_reverse_render_eq_dst_raise` 로 역적용했다(그 세대는 흡수를 가졌다).
+    같은 티켓이 conf 락의 구세대 `file_lock` 사본 호환(`_conf_lock_section`·`_local_conf_lock_path`)과
+    rev 기록의 구 키 writer 대체 경로도 지웠다. 이 fixture 의 형제 사본은 현행이라 그 분기들은 두
+    실행 모두에서 발화하지 않았다(역적용 없이 지문만 갱신).
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
-    source = _slice_replace(
-        source,
-        '    "instance_owned_template_delta": (\n',
-        '    "sync_adapter_configs.accept": (\n',
-        "",
-    )
     source = _slice_replace(
         source,
         "# pm_import 자체를 아직 못 불러오는 복구 RUN에서도 채널 적용 여부를 판정할 최소 좌표.\n",
@@ -1365,10 +1431,12 @@ def _t0585_pm_update_source() -> str:
     source = _slice_replace(
         source,
         "    # 훅 세트 판정자는 **상류 세대**로 미리 해소해 넘긴다",
-        "    msg = f\"✓ {len(changes)} 파일 동기화\"",
+        "    print(f\"✓ {transferred + len(changes)} 파일 동기화\")",
         "    apply(changes)  # ← 실패 시 예외 전파 → 아래 전환 미도달(채택자 완전한 구형 유지).\n",
     )
     source = _reverse_harness_ctx_apply(source)
+    source = _reverse_two_process_update(source)
+    source = _reverse_render_eq_dst_raise(source)
     # 세대 시대착오 부재를 **기계로** 못박는다 — 전제(“codex 판정이 늘 빈 결과”)에 기대지 않는다.
     #   대조 대상은 `_main` 의 **호출 지점**이다(`apply` 시그니처의 기본값 파라미터는 호출하지
     #   않으면 발화하지 않으므로 이 합성본의 동작 축이 아니다).
@@ -1397,7 +1465,7 @@ def _install_t0585_updater(dest: Path) -> None:
 # T-0887: 온보딩 opt-in 일습 삭제로 역적용 delta 의 exact-marker 목록이 두 항목으로 줄고
 # (되돌릴 원문이 사라졌다) 그만큼 historical 전문 SHA 도 이동했다. 퇴역 경로 delta 의 marker 는
 # 전부 그 절 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "2b0240400140f4cbde5e492e066d65dd4f6ed6f21f1dad692622c0e175ff2c28"
+_PRE_T0876_PM_UPDATE_SHA256 = "b3e91d20e7f014683836dc40ab555e956fb83b64c927cbaf428978a92802982c"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -1461,6 +1529,16 @@ def _pre_t0876_pm_update_source() -> str:
     두 번째 실행의 구 파일 퇴역)는 무편집이다. 합성본 지문만 갱신했다. 같은 티켓의 수정 라운드에서
     저장의 추론 값 묶음과 렌더러 하나 공유(`plan` 의 선택 인자 `render_mod`)를 더했다. 퇴역 경로 delta 의
     exact-marker 와 배달 경계는 그대로다 — 합성본 지문만 갱신했다.
+    T-0951 — 자기 갱신이 전달/완료 두 프로세스로 갈렸다. 전달 분기와 `--paths` 거부는
+    `_reverse_two_process_update` 로 역적용해 합성본이 그 세대처럼 한 프로세스 안에서 계획·적용을
+    끝내고 `--paths` 단독 자기 배달(bridge RUN1)을 하게 했다. 전달 함수 안의
+    retired-path 자기치유 실패 처리도 그 세대엔 없었으므로 두 자리 모두 걷어낸다. 퇴역 경로 delta 의
+    exact-marker 는 그대로 유일 해소되고 배달 경계(신 reviewer 설치 → 두 번째 실행의 구 파일 퇴역)는
+    그대로다. 계획 렌더 실패 흡수의 삭제도 `_reverse_render_eq_dst_raise` 로 역적용했다 — 이 세대
+    updater 의 rewrite 대상(`external_review.py` 실 실행 커맨드)은 상류 카드에 없어 렌더가 실패하고,
+    그 세대는 그 실패를 '다름'으로 흡수해 source 부재 rc2 까지 갔다. conf 락의 구세대 사본 호환과
+    rev 기록의 구 키 writer 대체 경로 삭제는 형제 사본이 현행인 이 fixture 에서 발화하지 않는다.
+    합성본 지문만 갱신했다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -1577,13 +1655,15 @@ def _pre_t0876_pm_update_source() -> str:
         "",
         1,
     )
-    source = source.replace(
+    # 전달 프로세스(T-0951)도 같은 처리를 갖는다 — 두 자리 모두 걷어내야 클래스 정의를 지운
+    #   합성본에 미정의 이름이 남지 않는다(전달 함수는 호출되지 않지만 정의 안의 참조도 지운다).
+    retired_abort = (
         "    except RetiredPathError as exc:\n"
         "        print(f\"[중단] retired-path manifest 자기치유 실패 — {exc}\", file=sys.stderr)\n"
-        "        return 1\n",
-        "",
-        1,
+        "        return 1\n"
     )
+    assert source.count(retired_abort) == 2, retired_abort
+    source = source.replace(retired_abort, "")
     # T-0887 이 온보딩 opt-in 일습을 지워, 그 절을 되돌리던 역전 항목들도 함께 사라졌다
     # (되돌릴 원문이 없다 — 죽은 예외를 남기지 않는다). 남은 것은 개칭 축 하나뿐이다.
     exact_reversals = (
@@ -1629,6 +1709,8 @@ def _pre_t0876_pm_update_source() -> str:
         assert source.count(block) == 1, block
         source = source.replace(block, "", 1)
     source = _reverse_harness_ctx_apply(source)
+    source = _reverse_two_process_update(source)
+    source = _reverse_render_eq_dst_raise(source)
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
     assert digest == _PRE_T0876_PM_UPDATE_SHA256, (
         f"pre-T0876 updater fixture drift: {digest}; retirement delta의 exact-marker와 "
@@ -1668,16 +1750,16 @@ def test_legacy_updater_run1_delivers_new_reviewer_and_run2_retires_old(tmp_path
     """구 full rc2 → updater 단독 self-delivery → 신 full 1회가 rename을 수렴한다."""
     legacy_framework = _make_pre_t0876_codex_framework(tmp_path)
     dest = tmp_path / "legacy-reviewer-adopter"
-    from _manager_home import known_ctx_argv
+    from _manager_home import known_ctx_env
     installed = subprocess.run(
-        known_ctx_argv([
+        [
             sys.executable,
             str(legacy_framework / ".project_manager" / "tools" / "pm_import.py"),
             "--new", str(dest), "--harness", "codex", "--name", _ADOPTER_NAME,
             "--fill", "manual", "--from", str(legacy_framework),
-        ]),
+        ],
         cwd=str(legacy_framework), capture_output=True, text=True, encoding="utf-8",
-        errors="replace", env={**os.environ, "PM_NONINTERACTIVE": "1"}, timeout=300,
+        errors="replace", env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"}), timeout=300,
     )
     assert installed.returncode == 0, f"{installed.stdout}\n{installed.stderr}"
 
@@ -2196,11 +2278,11 @@ def _parse_conf(path: Path) -> dict[str, str]:
 
 def _raw_pm_update(dest: Path, *args: str) -> subprocess.CompletedProcess:
     """rc 를 판정하지 않는 pm_update 실행 — 실패 경로의 출력까지 본다."""
-    from _manager_home import known_ctx_argv
+    from _manager_home import known_ctx_env
     return subprocess.run(
-        known_ctx_argv([sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"), *args]),
+        [sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"), *args],
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
-        env={**os.environ, "PM_NONINTERACTIVE": "1"}, timeout=300,
+        env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"}), timeout=300,
     )
 
 
@@ -2286,8 +2368,9 @@ def test_upgrade_adopter_legacy_conf_is_guided_then_replaced_then_gates_run(tmp_
     assert json.loads((dest / '.claude/settings.json').read_text(encoding='utf-8'))['autoCompactWindow'] == 180000
 
 
-def test_public_update_procedure_documents_the_mandatory_zero_change_run2():
-    """공개 절차(README)가 변경 0 RUN2 를 필수 단계로 적는다 — RUN1 은 구 updater 가 돈다."""
+def test_public_update_procedure_documents_the_v1713_three_runs():
+    """공개 절차(README)가 v1.7.13 경로의 세 실행을 적는다 — RUN1 은 옛 갱신기 배달, RUN2 는 새 갱신기
+    완료, 마지막 실행이 변경 0 확인이다(v1.8.0 이상 사본은 RUN2 가 변경 0 확인)."""
     readme = (REPO / "README.md").read_text(encoding="utf-8")
     section = readme.split("엔진 갱신은 채택자 루트에서 받는다", 1)[1][:900]
 
@@ -2338,3 +2421,205 @@ def test_upgrade_adopter_drops_the_legacy_home_row_on_sync(tmp_path):
     after = ledger.read_bytes()
     _run_pm_update(dest)
     assert ledger.read_bytes() == after, "지울 행이 없는데 재흡수가 장부를 다시 썼다(비멱등)"
+
+
+# ── 전달/완료 두 프로세스 갱신 (T-0951) ─────────────────────────────────────────────────────────────
+# 실제 git 상류(`make_committed_source`)·실제 설치(`pm_import --new`)·서브프로세스 실행만 쓴다.
+
+# v1.7.13 사본의 위임 설정 형상 — 하네스별 프로필 줄(설계 경계 실측 2.1 과 같은 값).
+_T0951_DELEGATE_PROFILES = {
+    "claude": "delegate.developer.model=sonnet\ndelegate.developer.reasoning=high\n",
+    "codex": "delegate.developer.model=gpt-5.5\ndelegate.developer.reasoning=high\n",
+    "opencode": ("delegate.researcher.harness=opencode\n"
+                 "delegate.researcher.model=ollama/ornith1.5:35b-a3b\n"
+                 "delegate.researcher.reasoning=high\n"),
+}
+_T0951_SKEW_NOTICE = "엔진 사본 버전 불일치"
+
+
+@pytest.fixture
+def t0951_opencode_path(request, tmp_path, monkeypatch):
+    """opencode 형상만 가짜 opencode 를 PATH 앞에 둔다(POSIX 아닌 플랫폼은 그 형상만 skip)."""
+    if request.node.callspec.params["harness"] != "opencode":
+        return None
+    return request.getfixturevalue("t0946_fake_opencode")
+
+
+@pytest.mark.parametrize("delegate", [False, True], ids=["plain", "delegate"])
+@pytest.mark.parametrize("harness", ["claude", "codex", "opencode"])
+def test_s1_pinned_v1713_adopter_converges_by_the_third_run(
+        harness, delegate, tmp_path, t0927_legacy_source, t0927_upstream, t0951_opencode_path):
+    """v1.7.13 사본은 RUN1(옛 갱신기 배달)·RUN2(새 갱신기 완료)·RUN3(변경 0) 으로 수렴한다 (AT-001).
+
+    RUN1 은 옛 갱신기가 같은 프로세스에서 새 엔진 모듈을 부른다 — 그 호출면(50개 이름)을 이 티켓이
+    바꾸지 않았는지가 RUN1 rc 0 으로 드러난다. RUN2 는 변경이 있는 실행이라(어댑터 설정·원장·conf,
+    opencode 는 카드 렌더) 변경 0 단언은 RUN3 에 둔다."""
+    from _manager_home import _run
+    dest = tmp_path / f"v1713-{harness}"
+    _run([sys.executable, str(t0927_legacy_source / ".project_manager/tools/pm_import.py"),
+          "--new", str(dest), "--harness", harness, "--fill", "manual",
+          "--from", str(t0927_legacy_source), "--upstream", str(t0927_upstream)],
+         cwd=t0927_legacy_source)
+    assert (dest / ".project_manager/tools/pm_update.py").read_bytes() == (
+        t0927_legacy_source / ".project_manager/tools/pm_update.py").read_bytes()
+    conf = dest / ".project_manager/local.conf"
+    lines = [line for line in conf.read_text(encoding="utf-8").splitlines(keepends=True)
+             if not line.startswith(("ctx.stop_pct=", "ctx.precompact_at_pct="))]
+    text = "".join(lines) + "\nctx.stop_pct=10\nctx.compact_at_pct=94\n"
+    if delegate:
+        text += _T0951_DELEGATE_PROFILES[harness]
+    conf.write_text(text, encoding="utf-8", newline="\n")
+
+    for stage in ("RUN1", "RUN2"):
+        run = _t0927_direct_update(dest)
+        assert run.returncode == 0, f"{stage}\n{run.stdout}\n{run.stderr}"
+    before = _snapshot_tree(dest)
+    run3 = _t0927_direct_update(dest)
+    assert run3.returncode == 0, f"RUN3\n{run3.stdout}\n{run3.stderr}"
+    assert "변경 없음" in run3.stdout, run3.stdout
+    assert _snapshot_tree(dest) == before, "RUN3 이 트리를 바꿨다"
+
+
+def _t0951_engine_code_rows(source: Path) -> list[str]:
+    """상류 manifest 의 엔진 코드 행(`.project_manager/tools/` 아래 `.py`) — 출하 순서 그대로."""
+    rows = []
+    for line in (source / ".project_manager/engine.manifest").read_text(encoding="utf-8").splitlines():
+        rel = line.split("#", 1)[0].split()[0] if line.split("#", 1)[0].split() else ""
+        if rel.startswith(".project_manager/tools/") and rel.endswith(".py"):
+            rows.append(rel)
+    return rows
+
+
+# 적재 기록 한 줄 — 이 줄이 붙은 모듈이 적재되면 적재한 프로세스의 pid 와 파일을 남긴다.
+_T0951_LOAD_PROBE = (
+    '__import__("os").environ.get("P1_LOAD_LOG") and open(__import__("os").environ["P1_LOAD_LOG"], '
+    '"a", encoding="utf-8").write(f"{__import__(\'os\').getpid()} {__file__}\\n")\n')
+
+
+def test_transferring_process_loads_no_copied_module(tmp_path):
+    """전달 프로세스는 엔진 코드를 복사한 뒤 그 사본을 하나도 적재하지 않는다 (AT-003 · 불변식 I1).
+
+    상류의 엔진 코드 전부에 적재 기록 줄을 붙인다. 사본에는 그 줄이 없으므로 기록은 복사 뒤 적재만
+    잡는다. 전달 프로세스(`pm_config.py update` 자신)의 pid 로 남은 줄은 0, 완료 프로세스(다른 pid)의
+    줄은 1개 이상이어야 한다."""
+    from _manager_home import _git, known_ctx_env, make_committed_source, make_pm_home
+    source = make_committed_source(tmp_path / "source")
+    home = make_pm_home(tmp_path / "home", upstream=source, source=source)
+    rows = _t0951_engine_code_rows(source)
+    assert len(rows) >= 30, rows
+    for rel in rows:
+        path = source / rel
+        path.write_text(path.read_text(encoding="utf-8") + "\n" + _T0951_LOAD_PROBE,
+                        encoding="utf-8", newline="\n")
+    _git("-C", str(source), "commit", "-qam", "load probe")
+    log = tmp_path / "load.log"
+    env = known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1", "P1_LOAD_LOG": str(log)})
+
+    proc = subprocess.Popen(
+        [sys.executable, str(home / ".project_manager/tools/pm_config.py"), "update"],
+        cwd=home, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        encoding="utf-8", errors="replace", env=env)
+    stdout, stderr = proc.communicate(timeout=300)
+
+    assert proc.returncode == 0, f"{stdout}\n{stderr}"
+    assert "파일 동기화" in stdout, stdout
+    entries = [line.split(" ", 1) for line in log.read_text(encoding="utf-8").splitlines()]
+    transfer_loads = [path for pid, path in entries if int(pid) == proc.pid]
+    completion_loads = [path for pid, path in entries if int(pid) != proc.pid]
+    assert transfer_loads == [], transfer_loads
+    assert completion_loads, "완료 프로세스가 받은 엔진을 적재하지 않았다"
+
+
+def _t0951_insert_after_imports(path: Path, block: str) -> None:
+    """모듈 최상위의 docstring·import 묶음 바로 뒤에 `block` 을 넣는다."""
+    import ast
+    text = path.read_text(encoding="utf-8")
+    tree = ast.parse(text)
+    last = 0
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)) or (
+                isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)):
+            last = node.end_lineno
+            continue
+        break
+    lines = text.splitlines(keepends=True)
+    lines.insert(last, block)
+    path.write_text("".join(lines), encoding="utf-8", newline="\n")
+
+
+def test_completion_exit_code_and_output_are_relayed(tmp_path):
+    """완료 프로세스의 종료 코드와 한글 출력이 전달 프로세스를 거쳐 그대로 나온다 (AT-006 · 불변식 I4)."""
+    from _manager_home import _git, known_ctx_env, make_committed_source, make_pm_home
+    source = make_committed_source(tmp_path / "source")
+    home = make_pm_home(tmp_path / "home", upstream=source, source=source)
+    _t0951_insert_after_imports(
+        source / ".project_manager/tools/pm_update.py",
+        'if os.environ.get("PM_UPDATE_COMPLETION"):\n'
+        '    print("완료 단계 표식 출력")\n'
+        '    print("완료 단계 표식 오류", file=sys.stderr)\n'
+        '    raise SystemExit(7)\n')
+    _git("-C", str(source), "commit", "-qam", "completion marker")
+
+    run = subprocess.run(
+        [sys.executable, str(home / ".project_manager/tools/pm_update.py"), "--from", str(source)],
+        cwd=home, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=300, env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"}))
+
+    assert run.returncode == 7, f"{run.stdout}\n{run.stderr}"
+    assert "[update] .project_manager/tools/pm_update.py" in run.stdout, run.stdout
+    assert "완료 단계 표식 출력" in run.stdout, run.stdout
+    assert "완료 단계 표식 오류" in run.stderr, run.stderr
+
+
+def _t0951_set_engine_rev(path: Path, rev: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    new_text, count = re.subn(r'^ENGINE_REV = "[^"]*"', f'ENGINE_REV = "{rev}"', text,
+                              count=1, flags=re.MULTILINE)
+    assert count == 1, path
+    path.write_text(new_text, encoding="utf-8", newline="\n")
+
+
+def _t0951_pm_update(home: Path, source: Path) -> subprocess.CompletedProcess:
+    from _manager_home import known_ctx_env
+    return subprocess.run(
+        [sys.executable, str(home / ".project_manager/tools/pm_update.py"), "--from", str(source)],
+        cwd=home, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=300, env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"}))
+
+
+def test_stale_sibling_copy_converges_in_one_update(tmp_path):
+    """옛 rev 의 형제 사본 하나는 한 번의 갱신으로 상류와 같아지고 강등 알림이 없다 (AT-022).
+
+    전달 프로세스는 엔진 모듈을 적재하지 않고 옮기며, 완료 프로세스는 이미 맞춰진 사본만 적재한다
+    — 옛 사본을 검증 적재할 일이 없으므로 버전 불일치 알림도 없다."""
+    from _manager_home import make_committed_source, make_pm_home
+    source = make_committed_source(tmp_path / "source")
+    home = make_pm_home(tmp_path / "home", upstream=source, source=source)
+    stale = home / ".project_manager/tools/pm_import.py"
+    _t0951_set_engine_rev(stale, "v1.7.13")
+
+    run = _t0951_pm_update(home, source)
+
+    assert run.returncode == 0, f"{run.stdout}\n{run.stderr}"
+    assert _T0951_SKEW_NOTICE not in run.stdout + run.stderr
+    assert stale.read_bytes() == (source / ".project_manager/tools/pm_import.py").read_bytes()
+
+
+def test_mixed_source_tree_fails_loud(tmp_path):
+    """상류 자체가 rev 혼합이면 갱신은 0 이 아닌 rc 로 멈추고 기준 rev 를 전진시키지 않는다 (AT-023)."""
+    from _manager_home import _git, make_committed_source, make_pm_home
+    source = make_committed_source(tmp_path / "source")
+    home = make_pm_home(tmp_path / "home", upstream=source, source=source)
+    _t0951_set_engine_rev(source / ".project_manager/tools/pm_import.py", "v1.7.13")
+    _git("-C", str(source), "commit", "-qam", "mixed engine rev")
+    conf = home / ".project_manager/local.conf"
+    revs_before = [line for line in conf.read_text(encoding="utf-8").splitlines()
+                   if line.startswith("upstream.rev=")]
+    assert revs_before, "설치가 기준 rev 를 기록하지 않았다(공허 단언)"
+
+    run = _t0951_pm_update(home, source)
+
+    assert run.returncode != 0, f"{run.stdout}\n{run.stderr}"
+    assert _T0951_SKEW_NOTICE in run.stderr, run.stderr
+    assert [line for line in conf.read_text(encoding="utf-8").splitlines()
+            if line.startswith("upstream.rev=")] == revs_before

@@ -1792,13 +1792,11 @@ def test_conf_writer_exception_still_refuses_to_absorb_a_marked_skew(
     assert target.read_bytes() == b"OLD", "skew 인데 교체가 진행됐다"
 
 
-def test_bootstrap_exception_absorbs_a_marked_skew_through_the_registered_boundary(
-    tmp_path, monkeypatch,
-):
-    """pm_update 부트스트랩은 반대다 — 혼합 트리의 marked skew 도 **등록된 경계**로 흡수한다.
+def test_bootstrap_re_raises_a_marked_skew(tmp_path, monkeypatch):
+    """pm_update 부트스트랩도 marked skew 를 올린다 — 교체를 진행하지 않는다 (T-0951 AT-017).
 
-    동기 실행 중 rev 혼합은 정상 과도 상태라, 여기서 올리면 이미 착지한 엔진 파일 위에서 복구가
-    죽는다(pm_update 의 기존 흡수 규칙과 같다). 흡수는 장부에 남고 강등은 loud 다.
+    갱신의 완료 단계는 엔진 코드를 받은 뒤 새 프로세스로 돌아 실행 중 rev 혼합이 정상 과도 상태가
+    아니다. skew 는 실결함 신호이므로 흡수하지 않고, 대상 파일은 손대지 않는다.
     """
     pm_update = _load(TOOLS / "pm_update.py", "pm_update_atomic_replace_skew")
     raised: list[str] = []
@@ -1811,15 +1809,14 @@ def test_bootstrap_exception_absorbs_a_marked_skew_through_the_registered_bounda
 
     monkeypatch.setattr(pm_update, "_load_file_lock", _skew)
     tmp, target = _pair(tmp_path, "bootstrap_skew")
+    before = target.read_bytes()
 
-    pm_update._atomic_replace_or_degrade(tmp, target)
+    with pytest.raises(RuntimeError, match="엔진 사본 버전 불일치") as exc:
+        pm_update._atomic_replace_or_degrade(tmp, target)
 
-    assert raised == ["skew"], "주입이 no-op — 흡수 경계를 태우지 못했다"
-    assert target.read_bytes() == b"NEW"
-    assert "atomic_copy_replace_seam" in pm_update._ABSORBED_ENGINE_REV_SKEW, \
-        "흡수가 장부에 남지 않았다(감사 불가)"
-    assert pm_update._ENGINE_REV_SKEW_RECOVERY_REASONS[
-        "atomic_copy_replace_seam"].strip(), "등록 사유가 비어 있다"
+    assert getattr(exc.value, "_engine_rev_skew", False)
+    assert raised == ["skew"], "주입이 no-op — 경계를 태우지 못했다"
+    assert target.read_bytes() == before, "skew 인데 교체가 진행됐다"
 
 
 def test_mutation_reintroduced_os_replace_in_a_converged_tool_is_red():

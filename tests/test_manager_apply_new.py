@@ -38,13 +38,6 @@ import sys
 sys.path.insert(0, sys.argv[1])          # 이 repo 루트 — `manager` 패키지가 여기 있다.
 from manager.bridge import Api
 from pathlib import Path
-sys.path.insert(0, str(Path(sys.argv[1]) / 'tests'))
-from _manager_home import known_ctx_argv
-import manager.bridge_update as bridge
-original_run = bridge._run
-def known_run(home, argv, **kwargs):
-    return original_run(home, known_ctx_argv(argv), **kwargs)
-bridge._run = known_run
 
 dest, upstream, registry_file = sys.argv[2], sys.argv[3], sys.argv[4]
 api = Api(folder_picker=lambda: None, registry_file=registry_file)
@@ -71,13 +64,9 @@ def registry_file(tmp_path) -> Path:
 
 
 @pytest.fixture
-def api(registry_file, monkeypatch) -> Api:
-    import manager.bridge_update as bridge
-    from _manager_home import known_ctx_argv
-    original = bridge._run
-    def run(home, argv, **kwargs):
-        return original(home, known_ctx_argv(argv), **kwargs)
-    monkeypatch.setattr(bridge, '_run', run)
+def api(registry_file, tmp_path, monkeypatch) -> Api:
+    from _manager_home import use_known_ctx_env
+    use_known_ctx_env(monkeypatch, tmp_path / "known-ctx-native")
     return Api(folder_picker=lambda: None, registry_file=registry_file)
 
 

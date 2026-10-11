@@ -70,14 +70,15 @@ def test_retired_test_files_are_gone():
 
 def test_a_fresh_home_lists_no_work_folder(tmp_path):
     """갓 만든 홈의 작업 폴더 목록이 비어 있다 — 홈 자신을 행으로 지어내지 않는다(실 서브프로세스)."""
-    from _manager_home import known_ctx_argv
+    from _manager_home import known_ctx_env
     spec_path = TOOLS / "pm_import.py"
     dest = tmp_path / "fresh"
     imported = subprocess.run(
-        known_ctx_argv([sys.executable, str(spec_path), "--new", str(dest), "--harness", "claude",
-         "--name", "Adopter", "--fill", "manual", "--from", str(REPO)]),
+        [sys.executable, str(spec_path), "--new", str(dest), "--harness", "claude",
+         "--name", "Adopter", "--fill", "manual", "--from", str(REPO)],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        env={**os.environ, "PM_NONINTERACTIVE": "1"}, timeout=300,
+        env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"},
+                          native_bin=tmp_path / "known-ctx-native"), timeout=300,
     )
     assert imported.returncode == 0, imported.stderr
 

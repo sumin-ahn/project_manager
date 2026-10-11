@@ -7,15 +7,17 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
-import inspect
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
+
+from _win_skip import PROJECT_TEMP_ROOT
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -72,68 +74,22 @@ raise SystemExit(2)
 '''
 
 
-def _run(argv: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess:
+def _run(argv: list[str], *, cwd: Path | None = None,
+         env: dict | None = None) -> subprocess.CompletedProcess:
     completed = subprocess.run(
         argv, cwd=None if cwd is None else str(cwd), capture_output=True, text=True,
-        encoding="utf-8", errors="replace")
+        encoding="utf-8", errors="replace", env=env)
     assert completed.returncode == 0, (
         f"{' '.join(argv)} rc={completed.returncode}\n{completed.stdout}\n{completed.stderr}")
     return completed
 
 
 # 모델 한도 조회 교체 지점 두 곳(`_read_harness_ctx_metadata`·`_ctx_claude_threshold`)의 고정 값.
-# 자식 프로세스에도 그대로 넘기므로 표준 라이브러리만 쓴다.
-_KNOWN_CTX_READER_PY = r"""
-from pathlib import Path
-import os
-import tempfile
-from contextlib import contextmanager
-from unittest.mock import patch
-
-@contextmanager
-def fixture_native_installation(folder=None):
-    # 실제 claude·codex·opencode 자리에 바로 끝나는 실행 파일을 둔다 — 교체하지 않은 조회가 실제
-    # CLI 를 부르지 않고 실패한다.
-    inherited=os.environ.get('_KNOWN_CTX_FIXTURE_BIN')
-    if inherited and folder is None:
-        yield Path(inherited)
-        return
-    with tempfile.TemporaryDirectory(prefix='known-ctx-native-') as temporary:
-        native=Path(folder or temporary)
-        native.mkdir(parents=True,exist_ok=True)
-        for harness in ('claude','codex','opencode'):
-            command=native/(harness+'.exe' if os.name=='nt' else harness)
-            if not command.exists():
-                command.write_text('#!/bin/sh\nexit 91\n',encoding='utf-8')
-                command.chmod(0o755)
-        with patch.dict(os.environ, {'PATH':str(native)+os.pathsep+os.environ.get('PATH',''),
-                                    '_KNOWN_CTX_FIXTURE_BIN':str(native)}):
-            yield native
-
-def fixture_reader(capacity=200000,context=1000000,model='fixture-model'):
-    # 모델 행 [{id, provider, C, basis}] — Claude 압축 예약 d 는 0(autoCompactWindow = P). d 를 쓰는
-    # 계산은 test_harness_ctx_limits 의 t0943_claude 가 실측 값으로 잰다. opencode 는 대상 모델마다 한 행.
-    def reader(root,harness,documents,models):
-        if harness=='claude':
-            return [{'id':model,'provider':'firstParty','C':capacity,
-                     'basis':{'model_window':capacity,'auto_compact_threshold':capacity}}]
-        if harness=='codex':
-            return [{'id':model,'provider':'openai','C':capacity,
-                     'basis':{'context_window':context,'max_context_window':None,
-                              'model_context_window':None,'percent':100}}]
-        return [{'id':target,'provider':provider,'C':capacity,
-                 'basis':{'context':context,'output':output,'source':'fixture'}}
-                for (provider,target),output in models.items()]
-    return reader
-
-def fixture_threshold(root,window):
-    return window
-
-def install_fixture_capacity(module,capacity=200000,context=1000000):
-    module._read_harness_ctx_metadata=fixture_reader(capacity,context)
-    module._ctx_claude_threshold=fixture_threshold
-    return module
-"""
+# 단일 출처는 환경 주입 폴더의 `sitecustomize.py` 다 — 같은 프로세스 교체(`known_ctx_seams`·
+# `known_ctx_module`)와 `-c` 자식 스크립트도 그 본문을 그대로 쓴다(교체 설치는 `sitecustomize` 로
+# 읽힐 때만 일어난다).
+_KNOWN_CTX_SITE = Path(__file__).resolve().parent / "_known_ctx_site"
+_KNOWN_CTX_READER_PY = (_KNOWN_CTX_SITE / "sitecustomize.py").read_text(encoding="utf-8")
 
 
 def known_ctx_seams(*, capacity=200000, context=1000000, model="fixture-model") -> dict:
@@ -178,43 +134,60 @@ def known_ctx_module(module, *, capacity=200000, context=1000000):
     return module
 
 
-_KNOWN_CTX_ENTRY_CHILD = (
-    "_KNOWN_CTX_READER_PY=" + repr(_KNOWN_CTX_READER_PY) + "\n"
-    + inspect.getsource(known_ctx_module)
-    + r"""
-import sys,importlib.util
-from pathlib import Path
-path=Path(sys.argv[1])
-sys.argv=sys.argv[1:]
-spec=importlib.util.spec_from_file_location('known_ctx_fixture_entry',path)
-entry=importlib.util.module_from_spec(spec)
-spec.loader.exec_module(entry)
-known_ctx_module(entry)
-raise SystemExit(entry.main(sys.argv[1:]))
-"""
-)
+def known_ctx_env(env: dict | None = None, *, native_bin: Path | None = None,
+                  capacity: int | None = None, context: int | None = None) -> dict:
+    """자식 프로세스 환경 — 그 프로세스와 그 자식(갱신의 완료 프로세스 포함)이 고정 모델 한도를 쓴다.
+
+    `PYTHONPATH` 앞에 `_known_ctx_site`(sitecustomize)를 둔다. 실제 하네스 CLI 자리를 대신할 실행
+    파일 폴더(`_KNOWN_CTX_FIXTURE_BIN`)가 환경에 없으면 `native_bin`(없으면 임시 폴더)에 만들어 `PATH`
+    앞에 붙인다. `capacity`·`context` 를 주면 고정 값을 바꾼다(`sitecustomize` 가 읽는 두 변수)."""
+    environment = dict(os.environ if env is None else env)
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(_KNOWN_CTX_SITE), *filter(None, [environment.get("PYTHONPATH")])])
+    if not environment.get("_KNOWN_CTX_FIXTURE_BIN"):
+        namespace: dict = {}
+        exec(_KNOWN_CTX_READER_PY, namespace)
+        folder = namespace["write_native_commands"](
+            native_bin if native_bin is not None
+            else tempfile.mkdtemp(prefix="known-ctx-native-", dir=PROJECT_TEMP_ROOT))
+        environment["PATH"] = str(folder) + os.pathsep + environment.get("PATH", "")
+        environment["_KNOWN_CTX_FIXTURE_BIN"] = str(folder)
+    if capacity is not None:
+        environment["_KNOWN_CTX_CAPACITY"] = str(capacity)
+    if context is not None:
+        environment["_KNOWN_CTX_CONTEXT"] = str(context)
+    return environment
 
 
-def known_ctx_argv(argv):
-    """정상 setup/갱신 fixture 자식 하나에만 고정 모델 한도를 전달한다."""
-    for index, part in enumerate(argv):
-        if Path(str(part)).name in ('pm_import.py', 'pm_update.py', 'pm_config.py'):
-            return [*argv[:index], '-c', _KNOWN_CTX_ENTRY_CHILD, *argv[index:]]
-    return argv
+def use_known_ctx_env(monkeypatch, native_bin: Path) -> None:
+    """이 테스트 프로세스의 환경을 `known_ctx_env` 로 바꾼다 — 환경을 따로 넘기지 않는 자식(관리자
+    브리지 등)과 그 자식의 완료 프로세스가 상속한다."""
+    for key, value in known_ctx_env(native_bin=native_bin).items():
+        if os.environ.get(key) != value:
+            monkeypatch.setenv(key, value)
 
 
-# 정상 설치 baseline의 모델 한도 C는 제품 조회가 아닌 고정 값이다.
-# 주입은 make_pm_home setup 자식 하나에만 적용하며 후속 CLI/실제 환경으로 전파하지 않는다.
-_KNOWN_SETUP_CHILD = _KNOWN_CTX_READER_PY + r"""
-import importlib.util,sys
-from pathlib import Path
-path=Path(sys.argv[1])
-spec=importlib.util.spec_from_file_location('known_setup_importer',path)
-module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-install_fixture_capacity(module)
-with fixture_native_installation():
-    raise SystemExit(module.main(sys.argv[2:]))
-"""
+def complete_in_process(module):
+    """같은 프로세스 테스트의 완료 단계 교체 지점 — 갱신기 `module` 을 돌려준다.
+
+    전달 프로세스는 받은 갱신기를 새 프로세스로 띄운다(`_launch_completion`). 합성 dest 에는 그
+    갱신기가 없으므로 같은 프로세스 테스트는 인계 값(`PM_UPDATE_COMPLETION`)을 환경에 넣고 같은 모듈의
+    `main` 을 부른 뒤 환경을 원래대로 돌린다. 이 교체가 빠진 자기 갱신 호출은 dest 에 갱신기가 없어
+    rc 2 로 실패한다(조용히 지나가지 않는다)."""
+    def launch(dest_root, source_root, transferred, argv):
+        name = module.COMPLETION_ENV
+        previous = os.environ.get(name)
+        os.environ[name] = json.dumps({"dest": str(dest_root), "source": str(source_root),
+                                       "transferred": transferred})
+        try:
+            return module.main(list(argv))
+        finally:
+            if previous is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = previous
+    module._launch_completion = launch
+    return module
 
 
 def make_pm_home(destination: Path, *, upstream: Path | str | None = None,
@@ -229,7 +202,7 @@ def make_pm_home(destination: Path, *, upstream: Path | str | None = None,
             "--harness", "claude", "--from", str(source)]
     if upstream is not None:
         argv += ["--upstream", str(upstream)]
-    _run([argv[0], "-c", _KNOWN_SETUP_CHILD, argv[1], *argv[2:]], cwd=REPO)
+    _run(argv, cwd=REPO, env=known_ctx_env())
     return Path(destination)
 
 

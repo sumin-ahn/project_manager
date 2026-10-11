@@ -1364,18 +1364,21 @@ def _isolated_pm_render(tools: Path, relay_edit):
 _ARCHITECT_MAX = {"DELEGATE_MODEL_ARCHITECT": "opus", "DELEGATE_REASONING_ARCHITECT": "max"}
 
 
-def test_reasoning_allowed_read_survives_sibling_rev_mix(isolated_tools):
-    """pm_relay 사본의 rev 가 pm_render 와 달라도(자기 갱신 mid-sync) 허용값을 물어 렌더한다.
+def test_reasoning_allowed_read_fails_loud_on_sibling_rev_mix(isolated_tools):
+    """pm_relay 사본의 rev 가 pm_render 와 다르면 `_load_relay` 가 표준 대조로 멈춘다 (T-0951 Q2).
 
-    rev 대조를 걸지 않는다(engine_rev.EXEMPT_UNVERIFIED_DEEP_IMPORTS). 결속을 걸면 형제 rev 가 섞인
-    순간 skew 로 카드 렌더 전체를 잃는다.
+    옛 면제(engine_rev.EXEMPT_UNVERIFIED_DEEP_IMPORTS)는 없다 — 갱신의 완료 단계는 엔진 코드를 받은
+    뒤 새 프로세스로 돌아 형제 rev 가 섞이지 않으므로, 섞인 트리는 실결함 신호다(재동기 안내).
     """
     module = _isolated_pm_render(isolated_tools, lambda text: re.sub(
         r'^ENGINE_REV = "[^"]*"', 'ENGINE_REV = "v0.0.0-older"', text, count=1,
         flags=re.MULTILINE))
-    out = module.render_adapter(
-        _CLAUDE_ARCHITECT_TEMPLATE, operational=_ARCHITECT_MAX, card_path=_CLAUDE_ARCHITECT_CARD)
-    assert 'effort: "max"' in out.splitlines()
+    with pytest.raises(RuntimeError, match="엔진 사본 버전 불일치") as raised:
+        module.render_adapter(
+            _CLAUDE_ARCHITECT_TEMPLATE, operational=_ARCHITECT_MAX,
+            card_path=_CLAUDE_ARCHITECT_CARD)
+    assert getattr(raised.value, "_engine_rev_skew", False) is True
+    assert "pm_relay.py" in str(raised.value)
 
 
 @pytest.mark.parametrize(("relay_edit", "error"), [

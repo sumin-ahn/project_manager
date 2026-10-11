@@ -177,8 +177,9 @@ class UpdateApi:
             if dry_run:
                 return _completed(_run(home, update_argv(home, dry_run=True),
                                        timeout=UPDATE_TIMEOUT_SECONDS))
-            # RUN1은 구 코드로 배달할 수 있다. RUN2는 교체된 도구와 현재 runtime.py를
-            # 새 프로세스로 읽어 이관과 완료 게이트까지 실행한다. 재시도는 없다.
+            # v1.8.0 이상 사본: RUN1 이 엔진 코드 전달과 완료 단계를 끝내고 RUN2 는 변경 0건 확인이다.
+            # v1.7.13 이하 사본: RUN1 은 옛 갱신기가 배달만 끝낼 수 있고 RUN2 가 새 갱신기로 완료 단계를
+            # 실행한다. 재시도는 없다.
             for stage in ("RUN1", "RUN2"):
                 completed = _run(home, update_argv(home, dry_run=False),
                                  timeout=UPDATE_TIMEOUT_SECONDS)

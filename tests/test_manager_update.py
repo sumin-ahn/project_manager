@@ -84,12 +84,8 @@ def pm_home(base_home, tmp_path) -> Path:
 
 @pytest.fixture
 def api(tmp_path, monkeypatch) -> Api:
-    import manager.bridge_update as bridge
-    from _manager_home import known_ctx_argv
-    original = bridge._run
-    def run(home, argv, **kwargs):
-        return original(home, known_ctx_argv(argv), **kwargs)
-    monkeypatch.setattr(bridge, '_run', run)
+    from _manager_home import use_known_ctx_env
+    use_known_ctx_env(monkeypatch, tmp_path / "known-ctx-native")
     return Api(folder_picker=lambda: None, registry_file=tmp_path / "config" / "projects.json")
 
 
@@ -101,11 +97,12 @@ def _durable(snapshot: dict[str, str]) -> dict[str, str]:
 
 def _direct_update(pm_home: Path, *args: str) -> subprocess.CompletedProcess:
     """관리자를 거치지 않고 같은 명령을 직접 부른다 — 대조할 두 번째 눈."""
-    from _manager_home import known_ctx_argv
+    from _manager_home import known_ctx_env
     return subprocess.run(
-        known_ctx_argv([sys.executable, str(pm_home / ".project_manager" / "tools" / "pm_config.py"),
-         "update", *args]),
-        cwd=str(pm_home), capture_output=True, text=True, encoding="utf-8", errors="replace")
+        [sys.executable, str(pm_home / ".project_manager" / "tools" / "pm_config.py"),
+         "update", *args],
+        cwd=str(pm_home), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env=known_ctx_env())
 
 
 # ── ① 미리보기는 엔진 출력 원문이다 ──────────────────────────────────────────

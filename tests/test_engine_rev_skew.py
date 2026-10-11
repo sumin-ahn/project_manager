@@ -307,7 +307,8 @@ def test_pm_import_nested_loader_fails_loud_outside_sync(tmp_path):
 def test_engine_rev_skew_absorption_ledger_owners_are_a_closed_set():
     """흡수 장부를 가진 도구는 닫힌 집합이다 — 일반 CLI 는 완화 지점을 갖지 않는다.
 
-    `pm_update` 는 skew 를 실제로 **고치는** 복구 채널이라 자기 실행 중의 rev 혼합을 흡수하고,
+    `pm_update` 는 장부를 갖지 않는다(T-0951) — 자기 갱신의 완료 단계는 엔진 코드를 받은 뒤 새
+    프로세스로 돌아 자기 실행 중의 rev 혼합이 생기지 않으므로 흡수할 경계가 없다.
     `additional_reviewer` 는 스폰 전 중단의 정리 경계 하나만 흡수한다(주 예외를 덮지 않기 위해).
     `delegate_channel_guard` 는 PreToolUse 훅 fail-open 경계 하나만 흡수한다(T-0633 — 가드
     자신의 고장[사본 skew 포함]이 정상 Agent 위임을 막지 않는 것이 계약·skew 진단은 stderr 로
@@ -335,7 +336,7 @@ def test_engine_rev_skew_absorption_ledger_owners_are_a_closed_set():
         )
     assert owners == [
         "additional_reviewer.py", "delegate_channel_guard.py", "pm_delegate.py",
-        "pm_import.py", "pm_log.py", "pm_update.py", "review_rounds.py",
+        "pm_import.py", "pm_log.py", "review_rounds.py",
     ]
 
 

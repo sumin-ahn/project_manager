@@ -50,7 +50,8 @@ def _load_pm_update():
 
 @pytest.fixture
 def pm_update_module():
-    return _load_pm_update()
+    from _manager_home import complete_in_process
+    return complete_in_process(_load_pm_update())
 
 
 def _load_pm_render():
@@ -128,21 +129,25 @@ class _ShellOnlySpy:
 
 _DRIFT_MANIFEST_REL = ".project_manager/tools/widget.py"
 _DRIFT_MANIFEST_TEXT = _DRIFT_MANIFEST_REL + "\n"
+# tools/ 밖 drift 행 — `drift_changes` 는 엔진 코드 행(tools/ 아래)의 차이를 먼저 돌려준다(T-0951).
+#   전체 계획(`_resolve_engine_sync_plan`)의 주입 지점까지 가야 하는 테스트가 이 행을 쓴다.
+_DRIFT_NON_ENGINE_REL = "widget/widget.py"
 
 
-def _seed_engine_drift_fixture(dest_root: Path, upstream_root: Path, *, drift: bool) -> None:
-    """`dest_root`(실행 엔진 사본)·`upstream_root` 에 매칭 `engine.manifest` + 파일 1개를 깐다.
+def _seed_engine_drift_fixture(dest_root: Path, upstream_root: Path, *, drift: bool,
+                               rel: str = _DRIFT_MANIFEST_REL) -> None:
+    """`dest_root`(실행 엔진 사본)·`upstream_root` 에 매칭 `engine.manifest` + 파일 1개(`rel`)를 깐다.
 
     `drift=True` 면 `dest_root` 쪽 파일 바이트를 다르게 써 drift 1건을 만든다. `dest_root` 의
     `local.conf` 에 `upstream.path=<upstream_root>` 를 등록한다(둘 다 로컬 경로 — URL 클래스는
     별도 테스트가 문자열만으로 검증한다·네트워크 0 유지)."""
     for root in (dest_root, upstream_root):
-        (root / ".project_manager" / "tools").mkdir(parents=True, exist_ok=True)
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / ".project_manager").mkdir(parents=True, exist_ok=True)
         (root / ".project_manager" / "engine.manifest").write_text(
-            _DRIFT_MANIFEST_TEXT, encoding="utf-8")
-    (upstream_root / ".project_manager" / "tools" / "widget.py").write_text(
-        "# widget v1\n", encoding="utf-8")
-    (dest_root / ".project_manager" / "tools" / "widget.py").write_text(
+            rel + "\n", encoding="utf-8")
+    (upstream_root / rel).write_text("# widget v1\n", encoding="utf-8")
+    (dest_root / rel).write_text(
         "# widget v1 — drifted\n" if drift else "# widget v1\n", encoding="utf-8")
     (dest_root / ".project_manager" / "local.conf").write_text(
         f"upstream.path={upstream_root}\n", encoding="utf-8")
@@ -286,7 +291,7 @@ def test_drift_changes_reraises_marked_engine_rev_skew(
     통과한다. 다른 판정 불능 클래스(upstream 미설정·URL·경로 부재)는 종전대로 `None` 이다.
     """
     dest, upstream = tmp_path / "dest", tmp_path / "upstream"
-    _seed_engine_drift_fixture(dest, upstream, drift=True)
+    _seed_engine_drift_fixture(dest, upstream, drift=True, rel=_DRIFT_NON_ENGINE_REL)
     skew = RuntimeError("injected engine rev skew")
     skew._engine_rev_skew = True
     monkeypatch.setattr(
@@ -871,7 +876,7 @@ def test_record_overwrites_existing_pass_when_engine_copy_shows_marked_skew(
     잔존 0) rc1 · 라이브 wave(`shell=True` 호출) 미실행. 실 drift 픽스처 위에서 `drift_changes`가
     실제로 부르는 `_resolve_engine_sync_plan`만 스텁으로 skew 를 주입한다(board 경유 전 구간 실행)."""
     upstream = live_board._proj.parent / "upstream"
-    _seed_engine_drift_fixture(live_board.REPO, upstream, drift=True)
+    _seed_engine_drift_fixture(live_board.REPO, upstream, drift=True, rel=_DRIFT_NON_ENGINE_REL)
     live_board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
     live_board.LIVEGATE_FLAG.write_text(json.dumps(
         {"head": "cafef00dcafef00d0011223344556677", "status": "pass",

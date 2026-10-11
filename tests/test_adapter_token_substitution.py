@@ -69,7 +69,8 @@ def pm_import():
 
 @pytest.fixture(scope="module")
 def pm_update():
-    return _load("pm_update")
+    from _manager_home import complete_in_process
+    return complete_in_process(_load("pm_update"))
 
 
 def _import_new(pm_import, dest: Path, harness: str) -> None:
