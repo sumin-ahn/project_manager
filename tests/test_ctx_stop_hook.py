@@ -134,13 +134,18 @@ def test_no_match_and_no_band_returns_none(tmp_path):
     assert output is None
 
 
-def test_postcompact_rearm_does_not_raise_without_registry(tmp_path):
-    """레지스트리·로더 부재에서도 PostCompact 재무장 경로가 예외 없이 통과한다(비차단)."""
+def test_boundary_rearm_does_not_raise_without_registry(tmp_path):
+    """레지스트리·로더 부재에서도 압축 경계 처리(재무장) 경로가 예외 없이 통과한다(비차단)."""
     stop_hook = _load("ctx_stop_hook")
-    stdin = {"hook_event_name": "PostCompact", "session_id": "sess-rearm"}
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(
+        json.dumps({"type": "system", "subtype": "compact_boundary"}) + "\n", encoding="utf-8")
+    stdin = {"hook_event_name": "UserPromptSubmit", "session_id": "sess-rearm",
+             "transcript_path": str(transcript), "prompt": "계속"}
     rc, output = stop_hook.evaluate(stdin, tmp_path, {})
     assert rc == 0
-    assert output is None
+    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-rearm.compact-1").is_file()
+    assert output["systemMessage"] == "[ctx-checkpoint] 압축 기록 실패: pm_log.py 없음"
 
 
 def test_broken_registry_surfaces_a_non_blocking_warning_in_additional_context(tmp_path):

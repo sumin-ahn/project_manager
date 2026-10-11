@@ -226,76 +226,150 @@ def test_checkpoint_task_header_remains_byte_compatible():
     )
 
 
-def _slot_checkpoint_fixture(mod, monkeypatch, tmp_path):
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+# ── 압축 경로 세션 판정 (T-0953) ────────────────────────────────────────────
+
+def _write_task_records(pm_home: Path, tasks: list[dict]) -> Path:
+    """task 기록 파일(`worktree-leases.json` 최상위 `tasks`)을 실 형상으로 쓴다."""
+    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(json.dumps({"leases": [], "tasks": tasks}), encoding="utf-8")
+    return ledger
+
+
+_T0953_TASKS = [
+    {"name": "main", "prefix": None, "session": "s-main", "started": "t"},
+    {"name": "hermes", "prefix": None, "session": "s-hermes", "started": "t"},
+    {"name": "guard-check", "prefix": None, "session": "ses_guard", "started": "t"},
+    {"name": "closed", "prefix": None, "session": "", "started": "t"},
+]
+
+
+def test_t0953_session_task_lookup_rules(tmp_path):
+    """세션 판정은 세션 ID 와 같은 `session` 을 가진 task 기록이 정확히 1개일 때만 해소다(AT-001)."""
+    mod = _load_module()
+    pm_home = tmp_path / "pm-home"
+    ledger = _write_task_records(pm_home, list(_T0953_TASKS))
+
+    assert mod.resolve_session_task(pm_home, "s-main") == ("main", None)
+    assert mod.resolve_session_task(pm_home, "  s-main \n") == ("main", None)
+    assert mod.resolve_session_task(pm_home, "s-zzz") == (
+        None, "이 세션이 연 task 없음 (세션 s-zzz)")
+    for missing in (None, "", "   "):
+        assert mod.resolve_session_task(pm_home, missing) == (None, "세션 ID 없음")
+
+    _write_task_records(pm_home, [*_T0953_TASKS, {"name": "x", "session": "s-hermes"}])
+    assert mod.resolve_session_task(pm_home, "s-hermes") == (
+        None, "이 세션이 연 task 여럿 (세션 s-hermes: hermes, x)")
+
+    ledger.unlink()
+    task, reason = mod.resolve_session_task(pm_home, "s-main")
+    assert task is None and "이 세션이 연 task 없음" in reason
+
+    for broken in ("[1]", '{"tasks": {}}', "{"):
+        ledger.write_text(broken, encoding="utf-8")
+        with pytest.raises(ValueError):
+            mod.resolve_session_task(pm_home, "s-main")
+
+
+def _three_task_pm_home(mod, monkeypatch, tmp_path, tasks: list[dict]) -> Path:
+    """열린 task 3개 PM 홈 — REPO·프로세스 cwd 는 PM 홈 루트, log 에 기존 entry 1개."""
+    pm_home = tmp_path / "pm-home"
+    log_dir, _ = _redirect_paths(mod, monkeypatch, pm_home)
     log_dir.mkdir(parents=True)
-    mod.CURRENT_FILE.write_text(_HEADER, encoding="utf-8")
-    cwd = tmp_path / "work" / "project_manager_1" / "nested"
-    cwd.mkdir(parents=True)
-    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
-        json.dumps({
-            "leases": [{
-                "slot": "work/project_manager_1",
-                "state": "leased",
-                "session": "project_manager_1",
-            }],
-        }),
-        encoding="utf-8",
-    )
-    return cwd
+    mod.CURRENT_FILE.write_text(_HEADER + _ENTRY_A, encoding="utf-8")
+    _write_task_records(pm_home, tasks)
+    for name in ("main", "hermes", "guard-check"):
+        state = pm_home / ".project_manager" / ".local" / "tasks" / name / "pm_state.md"
+        state.parent.mkdir(parents=True)
+        state.write_text(f"# {name}\n", encoding="utf-8")
+    monkeypatch.setattr(mod, "_registered_repos", lambda: set())
+    monkeypatch.chdir(pm_home)
+    return pm_home
 
 
-
-
-
-
-def test_cmd_checkpoint_unresolved_identity_fails_on_every_trigger(
+def test_t0953_compaction_checkpoint_uses_session_task_with_three_open_tasks(
     tmp_path, monkeypatch, capsys,
 ):
-    """정체성 미해소는 트리거와 무관하게 rc 1 · 무기록이다 — compaction 특례가 없다.
+    """PM 홈 루트·열린 task 3개에서도 세션 ID 로 그 세션 task 에 기록하고 경계당 1건이다(AT-002)."""
+    mod = _load_module()
+    pm_home = _three_task_pm_home(mod, monkeypatch, tmp_path, list(_T0953_TASKS))
+    argv = [
+        "checkpoint", "--trigger", "compaction", "--session-id", "s-main",
+        "--boundary-id", "claude-s-main-1", "--breadcrumb",
+    ]
 
-    훅은 이 CLI 의 stdio 를 버리므로 rc 0 "생략" 은 아무도 관측하지 못한다(기록 0건이
-    성공으로 위장한다). 실패는 rc 로 터져야 훅 로그·회귀가 본다. 두 트리거를 **한 판정**
-    으로 보는 이유는 이 성질의 축이 트리거 목록 자체이기 때문이다 — 처방 문구(`--task NAME`)와
-    기존 엔트리 보존까지 같은 자리에서 본다(같은 성질을 두 테스트가 나눠 재지 않는다).
-    """
-    mod = _load_module("pm_log_unresolved_identity")
-    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    assert mod.main(argv) == 0
+    assert "✓ checkpoint append: task=main" in capsys.readouterr().out
+    text = mod.CURRENT_FILE.read_text(encoding="utf-8")
+    assert text.count("checkpoint | (task:main) — compaction") == 1
+    assert text.count(mod._PRECOMPACT_BREADCRUMB.strip()) == 1
+    marker = (pm_home / ".project_manager" / ".local" / "ctx-stop"
+              / "compact-checkpoint.s-main.claude-s-main-1")
+    assert marker.is_file()
+
+    before = mod.CURRENT_FILE.read_bytes()
+    assert mod.main(argv) == 0
+    assert "dedup skip" in capsys.readouterr().out
+    assert mod.CURRENT_FILE.read_bytes() == before
+
+
+@pytest.mark.parametrize("case", ["no-session", "unknown-session", "two-tasks"])
+def test_t0953_checkpoint_unresolved_session_fails_loud(tmp_path, monkeypatch, capsys, case):
+    """세션 task 미해소는 rc 1·stderr 한 줄·무기록이다 — 단일 활성 task 폴더가 있어도 답하지 않는다(AT-003)."""
+    mod = _load_module()
+    pm_home = tmp_path / "pm-home"
+    log_dir, _ = _redirect_paths(mod, monkeypatch, pm_home)
     log_dir.mkdir(parents=True)
-    original = _HEADER + _ENTRY_A          # 비어 있지 않은 기존 log — 무기록은 그 바이트 보존이다.
+    original = _HEADER + _ENTRY_A
     mod.CURRENT_FILE.write_text(original, encoding="utf-8")
+    tasks = [{"name": "main", "session": "s-main"}]
+    if case == "two-tasks":
+        tasks.append({"name": "x", "session": "s-main"})
+    _write_task_records(pm_home, tasks)
+    (pm_home / ".project_manager" / ".local" / "tasks" / "main").mkdir(parents=True)
+    monkeypatch.chdir(pm_home)
+    ctx_stop = pm_home / ".project_manager" / ".local" / "ctx-stop"
+    session_args = {
+        "no-session": [],
+        "unknown-session": ["--session-id", "s-zzz"],
+        "two-tasks": ["--session-id", "s-main"],
+    }[case]
+    reason = {
+        "no-session": "세션 ID 없음",
+        "unknown-session": "이 세션이 연 task 없음 (세션 s-zzz)",
+        "two-tasks": "이 세션이 연 task 여럿 (세션 s-main: main, x)",
+    }[case]
 
-    for trigger in ("manual", "compaction"):
-        args = mod.build_parser().parse_args([
-            "checkpoint", "--trigger", trigger, "--phase", "pre",
-            "--cwd", str(tmp_path),
-        ])
+    rc = mod.main([
+        "checkpoint", "--trigger", "compaction", *session_args, "--boundary-id", "b-1",
+    ])
 
-        rc = args.fn(args)
-
-        captured = capsys.readouterr()
-        assert rc == 1 and captured.out == "", trigger
-        assert "[중단]" in captured.err and "checkpoint 정체성 미해소" in captured.err
-        assert "--task NAME" in captured.err, trigger
-        assert "생략" not in captured.err, trigger
-        assert mod.CURRENT_FILE.read_text(encoding="utf-8") == original
+    captured = capsys.readouterr()
+    assert rc == 1 and captured.out == ""
+    lines = captured.err.splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("[중단] checkpoint 세션 task 미해소:") and reason in lines[0]
+    assert mod.CURRENT_FILE.read_text(encoding="utf-8") == original
+    assert not ctx_stop.exists()
 
 
+@pytest.mark.parametrize("argv", [
+    ["checkpoint", "--trigger", "compaction", "--cwd", "."],
+    ["snapshot", "--cwd", "."],
+])
+def test_t0953_checkpoint_and_snapshot_reject_cwd_option(argv):
+    """압축 경로는 cwd 를 입력으로 받지 않는다 — `--cwd` 는 모르는 인자다(AT-005)."""
+    mod = _load_module()
+    with pytest.raises(SystemExit) as exc_info:
+        mod.build_parser().parse_args(argv)
+    assert exc_info.value.code == 2
 
 
-def _freeform_task_checkpoint(mod, monkeypatch, tmp_path, *, register_task: bool):
-    """`_N` 형상 session(`foo_1`) 이 slot 경로 이름과 어긋난 lease 를 실 장부 파일로 세운다.
-
-    `register_task=True` 면 그 이름을 장부 `tasks` 컬렉션에 **등록**한다 — 축 판정의 단일 진실이
-    등록 membership 이라, 등록 여부만 바꿔 두 축을 대조한다(이름 모양은 두 케이스가 동일).
-    """
+def _freeform_task_checkpoint(mod, monkeypatch, tmp_path):
+    """`_N` 형상 이름(`foo_1`)의 task 를 그 세션 ID 로 연 task 기록을 실 장부 파일로 세운다."""
     log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
     log_dir.mkdir(parents=True)
     mod.CURRENT_FILE.write_text(_HEADER, encoding="utf-8")
-    cwd = tmp_path / "work" / "project_manager_1" / "nested"
-    cwd.mkdir(parents=True)
     ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True)
     payload = {
@@ -304,14 +378,13 @@ def _freeform_task_checkpoint(mod, monkeypatch, tmp_path, *, register_task: bool
             "state": "leased",
             "session": "foo_1",
         }],
+        "tasks": [{"name": "foo_1", "prefix": None, "session": "s-foo", "started": "t"}],
     }
-    if register_task:
-        payload["tasks"] = [{"name": "foo_1", "prefix": None, "started": "t"}]
     ledger.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setattr(mod, "_registered_repos", lambda: set())
 
     rc = mod.cmd_checkpoint(SimpleNamespace(
-        task=None, trigger="manual", cwd=str(cwd), breadcrumb=False,
+        task=None, trigger="manual", session_id="s-foo", breadcrumb=False,
     ))
     entries = mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]
     assert rc == 0 and len(entries) == 1
@@ -326,7 +399,7 @@ def test_checkpoint_registered_freeform_task_name_is_not_misclassified_as_slot(
     판정 근거는 이름 모양이나 slot 경로 대조가 아니라 장부 `tasks` 등록이다.
     """
     mod = _load_module("pm_log_t0686_freeform_task")
-    entry = _freeform_task_checkpoint(mod, monkeypatch, tmp_path, register_task=True)
+    entry = _freeform_task_checkpoint(mod, monkeypatch, tmp_path)
     assert "checkpoint | (task:foo_1) — manual" in entry
 
 
@@ -710,12 +783,9 @@ def test_main_checkpoint_worktree_anchor_forwards_to_pm_home_engine(
         lambda argv, **kwargs: calls.append((argv, kwargs)) or SimpleNamespace(returncode=23),
     )
 
-    rc = mod.main([
-        "checkpoint", "--task", "main", "--trigger", "compaction",
-        "--cwd", str(worktree),
-    ])
+    rc = mod.main(["checkpoint", "--task", "main", "--trigger", "compaction"])
 
-    assert rc == 0 and len(calls) == 1  # compaction hook은 canonical 실패 rc도 밖으로 전파하지 않는다.
+    assert rc == 23 and len(calls) == 1  # 자식 rc 를 그대로 돌려준다(훅이 실패를 본다).
     argv, kwargs = calls[0]
     assert Path(argv[1]) == canonical
     assert argv[2:4] == ["checkpoint", "--task"]
@@ -746,9 +816,7 @@ def test_main_manual_checkpoint_forwards_pm_home_engine_rc(
         mod.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=17),
     )
 
-    assert mod.main([
-        "checkpoint", "--task", "invalid/name", "--cwd", str(worktree),
-    ]) == 17
+    assert mod.main(["checkpoint", "--task", "invalid/name"]) == 17
 
 
 @pytest.mark.parametrize(
@@ -793,10 +861,41 @@ def test_main_external_absolute_lease_uses_file_git_common_dir_pm_home(
     )
 
     assert mod.owning_pm_home(worktree) == pm_home
-    assert mod.main([*argv, "--cwd", str(worktree)]) == 0
+    assert mod.main(argv) == 19
     assert len(calls) == 1  # PM 홈 해소 자체는 git subprocess를 만들지 않는다.
     call_argv, kwargs = calls[0]
     assert Path(call_argv[1]) == canonical and call_argv[2] == command
+    assert kwargs["cwd"] == str(pm_home)
+
+
+@pytest.mark.parametrize("argv", [
+    ["snapshot", "--session-id", "s-main"],
+    ["checkpoint", "--trigger", "compaction", "--session-id", "s-main",
+     "--boundary-id", "claude-s-main-1"],
+])
+def test_t0953_forwarding_returns_child_rc_without_cwd(tmp_path, monkeypatch, argv):
+    """등록 슬롯 엔진 사본은 입력 인자 그대로 PM 홈 엔진에 넘기고 자식 rc 를 돌려준다(AT-006)."""
+    mod = _load_module()
+    pm_home = tmp_path / "pm-home"
+    worktree = pm_home / "work" / "product_1"
+    worktree.mkdir(parents=True)
+    _declare_slot_git_pointer(pm_home, worktree)
+    canonical = pm_home / ".project_manager" / "tools" / "pm_log.py"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text("# canonical test probe\n", encoding="utf-8")
+    monkeypatch.setattr(mod, "REPO", worktree)
+    calls = []
+    monkeypatch.setattr(
+        mod.subprocess, "run",
+        lambda call_argv, **kwargs: calls.append((call_argv, kwargs))
+        or SimpleNamespace(returncode=19),
+    )
+
+    assert mod.main(list(argv)) == 19
+    assert len(calls) == 1
+    call_argv, kwargs = calls[0]
+    assert Path(call_argv[1]) == canonical
+    assert call_argv[2:] == argv and "--cwd" not in call_argv
     assert kwargs["cwd"] == str(pm_home)
 
 
@@ -851,9 +950,15 @@ def _snapshot_home(tmp_path: Path, *, tasks=("main",), lease_session="main"):
         state.parent.mkdir(parents=True)
         state.write_text(f"# {task} state\n- 남은 작업: snapshot 검증\n", encoding="utf-8")
     lease = local / "worktree-leases.json"
+    # task 기록 `session` 은 `s-<이름>` — 압축 경로는 이 값으로 task 를 찾는다(T-0953).
     lease.write_text(
-        '{"leases":[{"slot":"work/product_1","state":"leased","session":"'
-        + lease_session + '"},{"slot":"work/product_2","state":"idle","session":""}]}',
+        json.dumps({
+            "leases": [
+                {"slot": "work/product_1", "state": "leased", "session": lease_session},
+                {"slot": "work/product_2", "state": "idle", "session": ""},
+            ],
+            "tasks": [{"name": task, "session": f"s-{task}"} for task in tasks],
+        }),
         encoding="utf-8",
     )
     for status, count in (("open", 2), ("claimed", 1), ("blocked", 0), ("done", 3)):
@@ -922,7 +1027,7 @@ def test_inflight_section_surfaces_unharvested_raw_claimed_and_wip(tmp_path):
     claimed_dir = pm_home / ".project_manager" / "board" / "tickets" / "claimed"
     (claimed_dir / "T-9999-extra.md").write_text("fixture\n", encoding="utf-8")
 
-    text, warning = mod.build_snapshot(pm_home, cwd)
+    text, warning = mod.build_snapshot(pm_home, "s-main")
 
     assert warning is None
     assert "## 진행 중 작업 (장부 실측)" in text
@@ -938,7 +1043,7 @@ def test_inflight_section_absent_ledgers_render_zero_counts(tmp_path):
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
 
-    text, warning = mod.build_snapshot(pm_home, cwd)
+    text, warning = mod.build_snapshot(pm_home, "s-main")
 
     assert warning is None
     assert "미회수 라운드 준비 0건" in text
@@ -955,7 +1060,7 @@ def test_inflight_section_absorbs_corrupt_delegate_ledger_as_one_line(tmp_path, 
     ledger.parent.mkdir(parents=True, exist_ok=True)
     ledger.write_bytes(b"\xff\xfe \xf8\xa1\xa1\xa1\xa1 not valid utf-8\n")
 
-    text, warning = mod.build_snapshot(pm_home, cwd)
+    text, warning = mod.build_snapshot(pm_home, "s-main")
 
     assert warning is None and text is not None
     assert "## 진행 중 작업 (장부 실측)\n- 조회 실패:" in text
@@ -972,7 +1077,7 @@ def test_inflight_section_absorbs_module_load_failure_as_one_line(tmp_path, monk
         raise FileNotFoundError("pm_delegate.py 형제 부재(시뮬레이션)")
 
     monkeypatch.setattr(mod, "_load_pm_delegate", _boom)
-    text, warning = mod.build_snapshot(pm_home, cwd)
+    text, warning = mod.build_snapshot(pm_home, "s-main")
 
     assert warning is None and text is not None
     assert "## 진행 중 작업 (장부 실측)\n- 조회 실패:" in text
@@ -991,7 +1096,7 @@ def test_inflight_section_absorbs_engine_rev_skew_and_labels_it(tmp_path, monkey
         raise err
 
     monkeypatch.setattr(mod, "_load_pm_delegate", _boom)
-    text, warning = mod.build_snapshot(pm_home, cwd)
+    text, warning = mod.build_snapshot(pm_home, "s-main")
 
     assert warning is None and text is not None
     assert "엔진 사본 불일치" in text
@@ -1014,7 +1119,7 @@ def test_inflight_raw_query_never_enters_ledger_lock(tmp_path, monkeypatch):
     monkeypatch.setattr(real_relay, "_raw_ledger_lock", _fail_if_locked)
     monkeypatch.setattr(mod, "_load_pm_relay", lambda: real_relay)
 
-    text, warning = mod.build_snapshot(pm_home, cwd)
+    text, warning = mod.build_snapshot(pm_home, "s-main")
 
     assert warning is None
     assert "미마감 위임 raw 1건" in text
@@ -1030,7 +1135,7 @@ def test_inflight_section_folds_pathological_counts_within_line_and_section_caps
     for index in range(300):
         (claimed_dir / f"T-{index + 5000:04d}-extra.md").write_text("f\n", encoding="utf-8")
 
-    text, warning = mod.build_snapshot(pm_home, cwd)
+    text, warning = mod.build_snapshot(pm_home, "s-main")
 
     assert warning is None and text is not None
     assert len(text) <= mod.SNAPSHOT_MAX_CHARS
@@ -1052,7 +1157,7 @@ def test_snapshot_cap_keeps_hearsay_when_identity_alone_is_oversized(tmp_path):
     monkeypatch_target = mod._identity_section
     mod._identity_section = lambda *_a, **_k: oversized
     try:
-        text, warning = mod.build_snapshot(pm_home, cwd)
+        text, warning = mod.build_snapshot(pm_home, "s-main")
     finally:
         mod._identity_section = monkeypatch_target
 
@@ -1111,7 +1216,7 @@ def test_inflight_raw_field_newlines_do_not_forge_headings_or_exceed_line_cap(tm
         "started_at": forged_started_at, "raw_path": str(tmp_path / "raw.txt"),
     }])
 
-    text, warning = mod.build_snapshot(pm_home, cwd)
+    text, warning = mod.build_snapshot(pm_home, "s-main")
 
     assert warning is None and text is not None
     headings = [line for line in text.splitlines() if line.startswith("## ")]
@@ -1133,7 +1238,7 @@ def _seed_task_todos(pm_home: Path, task: str, todos: list[dict]) -> None:
     """`_snapshot_home` 픽스처에 그 task 행과 할 일 파일을 얹는다(ID 는 1부터 순서대로)."""
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     data = json.loads(ledger.read_text(encoding="utf-8"))
-    data["tasks"] = [{"name": task, "session": "S-1"}]
+    data["tasks"] = [{"name": task, "session": f"s-{task}"}]
     ledger.write_text(json.dumps(data), encoding="utf-8")
     path = pm_home / ".project_manager" / ".local" / "tasks" / task / "todo.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1150,7 +1255,7 @@ def test_todo_section_lists_open_todos_with_date_and_age(tmp_path):
         {"text": "가드 배선", "created": "2026-09-16T00:00:00+00:00"},
     ])
 
-    text, warning = mod.build_snapshot(pm_home, cwd)
+    text, warning = mod.build_snapshot(pm_home, "s-main")
 
     assert warning is None
     section = text.split("## 열린 todo (파일 실측)\n", 1)[1].split("\n## ", 1)[0]
@@ -1168,7 +1273,7 @@ def test_todo_section_folds_beyond_the_shown_cap(tmp_path):
         for index in range(mod._TODO_MAX_SHOWN + 3)
     ])
 
-    text, _warning = mod.build_snapshot(pm_home, cwd)
+    text, _warning = mod.build_snapshot(pm_home, "s-main")
 
     section = text.split("## 열린 todo (파일 실측)\n", 1)[1].split("\n## ", 1)[0]
     assert section.count("\n") <= mod._TODO_MAX_SHOWN + 1
@@ -1180,7 +1285,7 @@ def test_todo_section_without_open_todos_names_the_write_warning(tmp_path):
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
 
-    text, _warning = mod.build_snapshot(pm_home, cwd)
+    text, _warning = mod.build_snapshot(pm_home, "s-main")
 
     section = text.split("## 열린 todo (파일 실측)\n", 1)[1].split("\n## ", 1)[0]
     assert "없음" in section
@@ -1197,7 +1302,7 @@ def test_inflight_section_multiline_exception_does_not_forge_headings(tmp_path, 
         raise RuntimeError("bad ledger\n## forged-exc-1\n## forged-exc-2")
 
     monkeypatch.setattr(mod, "_load_pm_delegate", _boom)
-    text, warning = mod.build_snapshot(pm_home, cwd)
+    text, warning = mod.build_snapshot(pm_home, "s-main")
 
     assert warning is None and text is not None
     headings = [line for line in text.splitlines() if line.startswith("## ")]
@@ -1257,13 +1362,13 @@ def test_snapshot_max_bytes_fits_opencode_channel_cap():
 
 def test_snapshot_resolves_cwd_lease_before_multiple_active_tasks(tmp_path):
     mod = _load_module()
-    pm_home, cwd = _snapshot_home(tmp_path, tasks=("doc", "main"), lease_session="main")
+    pm_home, _cwd = _snapshot_home(tmp_path, tasks=("doc", "main"), lease_session="main")
 
-    text, warning = mod.build_snapshot(pm_home, cwd)
+    text, warning = mod.build_snapshot(pm_home, "s-main")
 
     assert warning is None
     assert text.startswith(mod._SNAPSHOT_IDENTITY_HEADING)
-    assert "- task: main" in text and "- 해소: cwd→lease" in text
+    assert "- task: main" in text and "- 세션: s-main" in text
     assert "활성 tasks (2): doc, main" in text
     assert "open 2 / claimed 1 / blocked 0 / done 3" in text
     # 주입되는 todo 절은 해소된 task 하나로 좁혀진다 — 다른 활성 task 의 것이 새지 않는다.
@@ -1271,95 +1376,43 @@ def test_snapshot_resolves_cwd_lease_before_multiple_active_tasks(tmp_path):
     assert len(text) <= 8_000 and len(text.encode("utf-8")) <= 24_000
 
 
-def test_snapshot_single_active_task_fallback_and_multi_task_skip(tmp_path):
+def test_folder_identity_keeps_cwd_lease_then_single_active_task(tmp_path):
+    """pm_handoff·ticket_finish 무인자 진입의 폴더 판정은 그대로다 — cwd lease → 단일 활성 task."""
     mod = _load_module()
-    pm_home, _cwd = _snapshot_home(tmp_path / "single", tasks=("only",), lease_session="")
+    pm_home, cwd = _snapshot_home(tmp_path / "lease", tasks=("doc", "main"), lease_session="main")
+    assert mod.resolve_snapshot_identity(pm_home, cwd) == ("main", "cwd→lease")
+
     outside = tmp_path / "outside"
     outside.mkdir()
-    text, warning = mod.build_snapshot(pm_home, outside)
-    assert warning is None and "- task: only" in text and "단일 활성 task" in text
+    single, _ = _snapshot_home(tmp_path / "single", tasks=("only",), lease_session="")
+    assert mod.resolve_snapshot_identity(single, outside) == ("only", "단일 활성 task")
 
-    pm_home2, _ = _snapshot_home(tmp_path / "multi", tasks=("a", "b"), lease_session="")
-    text2, warning2 = mod.build_snapshot(pm_home2, outside)
-    assert text2 is None and warning2.count("\n") == 0
-    assert "정체성 미해소" in warning2
+    multi, _ = _snapshot_home(tmp_path / "multi", tasks=("a", "b"), lease_session="")
+    assert mod.resolve_snapshot_identity(multi, outside) == (None, "정체성 미해소")
 
 
-def test_unresolved_snapshot_warning_carries_the_work_folder_remedy(tmp_path):
-    """정체성 미해소 경고는 다음에 칠 명령을 싣는다 — 작업 폴더가 있는 홈은 종전대로 조용하다.
-
-    문구는 부트스트랩·귀속 쓰기 거부와 **같은 한 문장**(`identity_args` 단일 진실)이다.
-    """
+def test_t0953_snapshot_resolves_by_session_id(tmp_path, monkeypatch, capsys):
+    """snapshot 정체성은 세션 ID 로 찾은 task 다 — 열린 task 3개여도 해소된다(AT-004)."""
     mod = _load_module()
-    identity_args = mod._load_identity_args()
-    pm_home, cwd = _snapshot_home(tmp_path / "home", tasks=("a", "b"), lease_session="product_1")
+    pm_home, _cwd = _snapshot_home(tmp_path, tasks=("main", "hermes", "guard-check"))
 
-    # 홈 루트 세션 — 어느 작업 폴더 안도 아니고 활성 task 도 여럿이라 이름 붙일 세션이 없다.
-    text, warning = mod.build_snapshot(pm_home, pm_home)
-    assert text is None
-    assert "정체성 미해소" in warning
-    assert identity_args.NO_WORK_FOLDER_REMEDY in warning
-    assert "pm-config worktree add" in warning
+    text, warning = mod.build_snapshot(pm_home, "s-main")
 
-    # 같은 홈이라도 작업 폴더 안에서 돌면 해소된다 — 과잉 경고 0.
-    resolved_text, resolved_warning = mod.build_snapshot(pm_home, cwd)
-    assert resolved_warning is None and resolved_text
+    assert warning is None
+    assert text.startswith("## PM 정체성 (compaction 복구)")
+    assert "- task: main" in text and "- 세션: s-main" in text
+    assert "현재 cwd" not in text and "- 해소:" not in text
 
+    text, warning = mod.build_snapshot(pm_home, "s-zzz")
+    assert text is None and warning.count("\n") == 0
+    assert "세션 task 미해소" in warning and "이 세션이 연 task 없음" in warning
+    assert "재주입 생략" in warning
 
-def test_single_active_task_identity_emits_snapshot_and_records_compaction_checkpoint(
-    tmp_path, monkeypatch, capsys,
-):
-    """cwd 가 어느 lease 에도 안 걸리는 단일 활성 task 형상은 두 경계를 모두 살린다.
-
-    [[T-0793]] 이후 정체성 해소는 cwd→lease·단일 활성 task 두 층뿐이다 — 장부(task/lease)가
-    아예 없는 "legacy pm_state" 층은 삭제됐다(`resolve_snapshot_identity` 독스트링: "그 층은
-    없다"). `_pm_state_path` 도 이제 `source` 와 무관하게 task 스코프 경로 하나뿐이라 legacy
-    wiki 최상위 `pm_state.md` 로 갈 곳이 없다 — 이 테스트는 남은 두 층 중 cwd 가 lease 밖인
-    형상(단일 활성 task 폴백)에서 snapshot systemMessage 봉투와 checkpoint 기록이 함께
-    사는지를 고정한다(cwd→lease 층은 `test_snapshot_resolves_cwd_lease_before_multiple_
-    active_tasks` 가 이미 고정한다).
-    """
-    mod = _load_module()
-    pm_home = tmp_path / "solo"
-    manager = pm_home / ".project_manager"
-    wiki = manager / "wiki"
-    log_dir = wiki / "log"
-    log_dir.mkdir(parents=True)
-    # 열린 할 일은 그 홈의 엔진 사본이 읽는다 — 손으로 짓는 홈도 사본을 갖춰야 조회가 선다.
-    shutil.copytree(TOOLS, manager / "tools")
-    (manager / "local.conf").write_text(
-        "# fresh solo adopter\nsession=pm\n", encoding="utf-8",
-    )
-    task_state = manager / ".local" / "tasks" / "pm" / "pm_state.md"
-    task_state.parent.mkdir(parents=True)
-    task_state.write_text(
-        "# pm state\n- 남은 작업: solo compaction 복구\n", encoding="utf-8",
-    )
-    current = log_dir / "current.md"
-    current.write_text(_HEADER, encoding="utf-8")
     monkeypatch.setattr(mod, "REPO", pm_home)
-    monkeypatch.setattr(mod, "WIKI_DIR", wiki)
-    monkeypatch.setattr(mod, "LOG_DIR", log_dir)
-    monkeypatch.setattr(mod, "CURRENT_FILE", current)
-
-    snapshot_args = SimpleNamespace(cwd=str(pm_home), json=True)
-    assert mod.cmd_snapshot(snapshot_args) == 0
-    payload = json.loads(capsys.readouterr().out)
-    snapshot = payload["systemMessage"]
-    assert payload["suppressOutput"] is False
-    assert "- task: pm" in snapshot and "- 해소: 단일 활성 task" in snapshot
-    assert f"- pm_state: {task_state}" in snapshot
-    assert "## 열린 todo (파일 실측)" in snapshot and "task todo add pm" in snapshot
-
-    before = len(mod.split_entries(current.read_text(encoding="utf-8"))[1])
-    checkpoint_args = SimpleNamespace(
-        task=None, trigger="compaction", cwd=str(pm_home), session_id="solo-session",
-        boundary_id="solo-boundary", phase="post", breadcrumb=False,
-    )
-    assert mod.cmd_checkpoint(checkpoint_args) == 0
-    entries = mod.split_entries(current.read_text(encoding="utf-8"))[1]
-    assert len(entries) == before + 1
-    assert "checkpoint | (task:pm) — compaction" in entries[-1][1]
+    assert mod.cmd_snapshot(SimpleNamespace(session_id="s-main", json=True)) == 0
+    out = capsys.readouterr().out
+    assert out.count("\n") == 1
+    assert json.loads(out)["systemMessage"].startswith("## PM 정체성 (compaction 복구)")
 
 
 def test_snapshot_timeout_returns_identity_and_hearsay_only(tmp_path):
@@ -1367,7 +1420,7 @@ def test_snapshot_timeout_returns_identity_and_hearsay_only(tmp_path):
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
     ticks = iter((10.0, 13.1))
-    text, warning = mod.build_snapshot(pm_home, cwd, monotonic=lambda: next(ticks))
+    text, warning = mod.build_snapshot(pm_home, "s-main", monotonic=lambda: next(ticks))
     assert warning is None
     assert text.startswith(mod._SNAPSHOT_IDENTITY_HEADING)
     assert mod.SNAPSHOT_HEARSAY_WARNING.rstrip("\n") in text
@@ -1396,7 +1449,7 @@ def test_t0952_snapshot_ignores_logged_window_mismatch_and_unreadable_log(tmp_pa
     current.write_text(_HEADER + "\n" + _T0952_LOGGED_WINDOW_MISMATCH, encoding="utf-8")
     before = current.read_bytes()
 
-    text, warning = mod.build_snapshot(pm_home, cwd)
+    text, warning = mod.build_snapshot(pm_home, "s-main")
 
     assert text is not None and warning is None
     assert "ctx 설정 진단" not in text and "ctx-window-mismatch" not in text
@@ -1404,7 +1457,7 @@ def test_t0952_snapshot_ignores_logged_window_mismatch_and_unreadable_log(tmp_pa
 
     current.unlink()
     current.mkdir()
-    text, warning = mod.build_snapshot(pm_home, cwd)
+    text, warning = mod.build_snapshot(pm_home, "s-main")
 
     assert text is not None and warning is None
     assert text.startswith(mod._SNAPSHOT_IDENTITY_HEADING)
@@ -1431,7 +1484,7 @@ def test_snapshot_timeout_safely_caps_oversized_identity_on_early_return(
     ticks = iter((10.0, 13.1))
 
     text, warning = mod.build_snapshot(
-        pm_home, cwd, monotonic=lambda: next(ticks),
+        pm_home, "s-main", monotonic=lambda: next(ticks),
     )
 
     assert warning is None and text.startswith(mod._SNAPSHOT_IDENTITY_HEADING)
@@ -1619,7 +1672,7 @@ def test_cmd_snapshot_reads_ledgers_without_subprocess_and_json_envelope_is_sing
         return subprocess.CompletedProcess(argv, 128, stdout="", stderr="fatal: not a git repository")
 
     monkeypatch.setattr(mod.subprocess, "run", _fake_run)
-    args = SimpleNamespace(cwd=str(cwd), json=True)
+    args = SimpleNamespace(session_id="s-main", json=True)
     assert mod.cmd_snapshot(args) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["suppressOutput"] is False
@@ -1629,7 +1682,7 @@ def test_cmd_snapshot_reads_ledgers_without_subprocess_and_json_envelope_is_sing
 
 
 def test_cmd_snapshot_unresolved_identity_returns_one(tmp_path, monkeypatch, capsys):
-    """정체성 미해소 snapshot 은 rc 1 · stdout 0줄이다 — `--json` 도 무응답 엔벨로프를 내지 않는다.
+    """세션 task 미해소 snapshot 은 rc 1 · stdout 0줄이다 — `--json` 도 무응답 엔벨로프를 내지 않는다.
 
     rc 0 + `{"suppressOutput":true}` 는 "주입할 것이 없다" 를 성공으로 위장한다(그 위장이
     compaction 마다 관측 불가였다).
@@ -1641,18 +1694,19 @@ def test_cmd_snapshot_unresolved_identity_returns_one(tmp_path, monkeypatch, cap
 
     for json_mode in (False, True):
         rc = mod.cmd_snapshot(
-            SimpleNamespace(cwd=str(pm_home), json=json_mode))
+            SimpleNamespace(session_id="s-main", json=json_mode))
 
         captured = capsys.readouterr()
         assert rc == 1 and captured.out == "", json_mode
         assert captured.err.count("\n") == 1 and "재주입 생략" in captured.err
+        assert "세션 task 미해소: 이 세션이 연 task 없음 (세션 s-main)" in captured.err
 
 
 def test_snapshot_missing_all_ledgers_is_fail_soft_one_line_warning(tmp_path):
     mod = _load_module()
     pm_home = tmp_path / "empty"
     pm_home.mkdir()
-    text, warning = mod.build_snapshot(pm_home, pm_home)
+    text, warning = mod.build_snapshot(pm_home, "s-main")
     assert text is None
     assert warning and "\n" not in warning and "재주입 생략" in warning
 

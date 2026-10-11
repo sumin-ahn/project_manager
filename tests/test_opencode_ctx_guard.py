@@ -159,7 +159,7 @@ for (const platform of ["linux", "win32"]) {
   for (const capture of [true, false]) {
     for (const outcome of ["success", "rc", "missing", "timeout", "null", "throw"]) {
       const calls = [];
-      const argv = capture ? ["snapshot", "--cwd", "cwd with space"]
+      const argv = capture ? ["snapshot", "--session-id", "ses with space"]
         : ["checkpoint", "--trigger", "compaction", "--phase", "post"];
       const expected = outcome === "success" ? {status:0, stdout:raw, stderr:""}
         : outcome === "rc" ? {status:7, stdout:"", stderr:"engine rc"}
@@ -215,19 +215,19 @@ const fake = (command, args, options) => {
   calls.push({command,args,options});
   if (args[args.length-1] === floor) return {status:0, stdout:"Python 3.12\n"};
   assert.deepStrictEqual(args, [...selected.prefixArgs, engine, "checkpoint", "--trigger", "compaction",
-    "--cwd", root, "--phase", "post", "--session-id", "SID", "--boundary-id", "boundary"]);
+    "--phase", "post", "--session-id", "SID", "--boundary-id", "boundary"]);
   assert.strictEqual(options.timeout, m.CHECKPOINT_TIMEOUT_MS);
   assert.deepStrictEqual(options.stdio, ["ignore","ignore","ignore"]);
   return {status:9};
 };
-m.createCompactionCheckpoint(root, root, " SID ", " boundary ", fake);
+m.createCompactionCheckpoint(root, " SID ", " boundary ", fake);
 assert.strictEqual(calls.length, 2);
 assert.strictEqual(calls[0].command, selected.command);
 assert.deepStrictEqual(calls[0].args, [...selected.prefixArgs, floor]);
 assert.strictEqual(calls[0].options.timeout, m.CHECKPOINT_TIMEOUT_MS);
-const snapshot = m.buildCompactionSnapshot(root, root, (command,args) =>
+const snapshot = m.buildCompactionSnapshot(root, "SID", (command,args) =>
   args[args.length-1] === floor ? {status:0, stdout:"Python 3.12\n"} : {status:0, stdout:raw});
-assert.strictEqual(snapshot, raw);
+assert.deepStrictEqual(snapshot, {ok:true, text:raw});
 console.log("T0934_PM_LOG_ONCE_OK");
 '''
     out = _run_node_check(script, root, [str(root)])
@@ -1959,7 +1959,7 @@ const preservedMarker = __PRESERVED_MARKER__;
 
 
 def test_create_compaction_checkpoint_passes_boundary_and_post_phase():
-    """OpenCode compaction count 기반 경계 ID와 post phase가 엔진 argv에 보존된다."""
+    """경계 ID·post phase·세션 ID 가 엔진 argv 에 보존되고 cwd 는 넘기지 않는다(AT-018)."""
     if _NODE is None:
         import pytest
 
@@ -1968,18 +1968,53 @@ def test_create_compaction_checkpoint_passes_boundary_and_post_phase():
 const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
 let seen = null;
-m.createCompactionCheckpoint("/tmp/project", "/tmp/project", "sid-1", "opencode-sid-1-3",
+m.createCompactionCheckpoint("/tmp/project", "sid-1", "opencode-sid-1-3",
   (command, args) => {
     if (args[args.length-1].endsWith("python_floor.py")) return {status:0, stdout:"Python 3.12\n"};
     seen = {command, args}; return {status:0, stdout:""};
   });
 assert.ok(seen, "spawn was not called");
-assert.ok(seen.args.includes("--phase") && seen.args.includes("post"));
-assert.ok(seen.args.includes("--boundary-id") && seen.args.includes("opencode-sid-1-3"));
+const engine = seen.args.findIndex((arg) => arg.endsWith("pm_log.py"));
+assert.deepStrictEqual(seen.args.slice(engine + 1), ["checkpoint", "--trigger", "compaction",
+  "--phase", "post", "--session-id", "sid-1", "--boundary-id", "opencode-sid-1-3"]);
+assert.ok(!seen.args.includes("--cwd"));
 console.log("JS_COMPACTION_BOUNDARY_ARGV_OK");
 '''
     out = _run_node_check(script)
     assert "JS_COMPACTION_BOUNDARY_ARGV_OK" in out
+
+
+def test_t0953_compaction_snapshot_uses_session_id_and_stages_failure_reason():
+    """snapshot 은 세션 ID 로 부르고 실패면 엔진 사유를 실패 신호 첫 줄로 돌려준다(AT-019)."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — snapshot argv 단위 skip")
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+function fakeWith(result, seen) {
+  return (command, args, options) => {
+    if (args[args.length-1].endsWith("python_floor.py")) return {status:0, stdout:"Python 3.12\n"};
+    seen.push({args, options}); return result;
+  };
+}
+const seen = [];
+const ok = m.buildCompactionSnapshot("/tmp/project", "ses_x",
+  fakeWith({status:0, stdout:"## PM 정체성 (compaction 복구)\n", stderr:""}, seen));
+const engine = seen[0].args.findIndex((arg) => arg.endsWith("pm_log.py"));
+assert.deepStrictEqual(seen[0].args.slice(engine + 1), ["snapshot", "--session-id", "ses_x"]);
+assert.deepStrictEqual(seen[0].options.stdio, ["ignore", "pipe", "pipe"]);
+assert.deepStrictEqual(ok, {ok:true, text:"## PM 정체성 (compaction 복구)\n"});
+const failed = m.buildCompactionSnapshot("/tmp/project", "ses_x", fakeWith({status:1, stdout:"",
+  stderr:"a\n[pm-snapshot] 세션 task 미해소: 이 세션이 연 task 없음 (세션 ses_x). 재주입 생략.\n"}, []));
+assert.strictEqual(failed.ok, false);
+assert.ok(failed.text.startsWith("[ctx-checkpoint] 압축 기록 실패: [pm-snapshot] 세션 task 미해소"),
+  failed.text);
+console.log("JS_COMPACTION_SNAPSHOT_SESSION_OK");
+'''
+    out = _run_node_check(script)
+    assert "JS_COMPACTION_SNAPSHOT_SESSION_OK" in out
 
 
 def test_compaction_boundary_id_remains_unique_after_plugin_restart():
@@ -2060,7 +2095,7 @@ def test_plugin_stages_compacted_notice_after_child_lookup_before_event_hook_set
     src = _plugin_src()
     branch = src.index('if (event.type === "session.compacted")')
     child_check = src.index("if (await isChildSession", branch)
-    snapshot = src.index("buildCompactionSnapshot(root, hookCwd)", branch)
+    snapshot = src.index("buildCompactionSnapshot(root, sessionID)", branch)
     assert child_check < snapshot, "자식 판정 전에 동기 snapshot subprocess를 실행함"
 
     project_root = _make_ctx_guard_project(tmp_path)

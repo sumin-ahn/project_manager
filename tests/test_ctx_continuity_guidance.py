@@ -16,7 +16,6 @@ from _textio import utf8_child_env
 
 ROOT = Path(__file__).resolve().parents[1]
 PM_LOG = ROOT / ".project_manager" / "tools" / "pm_log.py"
-CLAUDE_ROOT = ROOT / ".claude" / "ctx_stop_hook.py"
 CLAUDE_TEMPLATE = ROOT / "templates" / "claude_code" / ".claude" / "ctx_stop_hook.py"
 OPENCODE = ROOT / "templates" / "opencode" / ".opencode" / "lib" / "ctx-guard-core.cjs"
 CODEX_DISPATCHER = ROOT / "templates" / "codex" / ".codex" / "pm_orch_codex.py"
@@ -96,12 +95,10 @@ def test_shipping_harnesses_reference_central_command_without_policy_copy(pm_log
                             if feature.feature_id == "compaction-guidance"]
     assert len(compaction_guidance) == 1, dispatcher.CODEX_HOOK_FEATURES
     sources = {
-        "claude": CLAUDE_ROOT.read_text(encoding="utf-8"),
         "claude-template": CLAUDE_TEMPLATE.read_text(encoding="utf-8"),
         "opencode": OPENCODE.read_text(encoding="utf-8"),
         "codex": " ".join(compaction_guidance[0].argv),
     }
-    assert "ctx-guidance" in sources["claude"]
     assert "ctx-guidance" in sources["claude-template"]
     assert "ctx-guidance" in sources["opencode"]
     assert "ctx-guidance --band precompact --json" in sources["codex"]
@@ -129,6 +126,11 @@ def _snapshot_fixture_pm_home(tmp_path):
     task_state = local / "tasks" / "main" / "pm_state.md"
     task_state.parent.mkdir(parents=True)
     task_state.write_text("# main state\n- 남은 작업: FORBIDDEN 회귀\n", encoding="utf-8")
+    # 압축 경로 정체성은 task 기록의 세션 ID 로 찾는다(T-0953).
+    (local / "worktree-leases.json").write_text(
+        json.dumps({"leases": [], "tasks": [{"name": "main", "session": "s-main"}]}),
+        encoding="utf-8",
+    )
     for status, count in (("open", 1), ("claimed", 1), ("blocked", 0), ("done", 1)):
         directory = pm_home / ".project_manager" / "board" / "tickets" / status
         directory.mkdir(parents=True)
@@ -155,7 +157,7 @@ def _snapshot_fixture_pm_home(tmp_path):
 def test_forbidden_phrases_absent_from_compaction_snapshot(pm_log, tmp_path):
     """T-0787 — 전언 경고·진행 중 작업 절을 포함한 snapshot 전문에 FORBIDDEN 정규식 3종 0 hit."""
     pm_home = _snapshot_fixture_pm_home(tmp_path)
-    text, warning = pm_log.build_snapshot(pm_home, pm_home)
+    text, warning = pm_log.build_snapshot(pm_home, "s-main")
     assert warning is None and text is not None
     assert "## 전언 경고" in text and "## 진행 중 작업" in text
     assert not any(pattern.search(text) for pattern in FORBIDDEN), text
@@ -214,18 +216,20 @@ const m = require("./ctx-guard-core.cjs");
 const root = process.argv[1];
 process.stdout.write(JSON.stringify({
   guidance:m.buildEngineCtxGuidance(root,"nudge",{usedPct:82},{precompact_at_pct:80}),
-  snapshot:m.buildCompactionSnapshot(root,root),
+  snapshot:m.buildCompactionSnapshot(root,"ses_t0934"),
 }));
 '''
     result = subprocess.run([node, "-e", script, str(root)], cwd=lib,
                             capture_output=True, check=True, timeout=30)
     parsed = json.loads(result.stdout)
-    assert parsed == {"guidance": payload.strip(), "snapshot": payload}
-    assert parsed["snapshot"].encode("utf-8") == producer.stdout
+    assert parsed == {"guidance": payload.strip(), "snapshot": {"ok": True, "text": payload}}
+    assert parsed["snapshot"]["text"].encode("utf-8") == producer.stdout
     set_conf_key(root, "runtime.py", str(root / "absent-python"))
     failed = subprocess.run([node, "-e", script, str(root)], cwd=lib,
                             capture_output=True, check=True, timeout=30)
-    assert json.loads(failed.stdout)["snapshot"] is None
+    failed_snapshot = json.loads(failed.stdout)["snapshot"]
+    assert failed_snapshot["ok"] is False
+    assert failed_snapshot["text"].startswith("[ctx-checkpoint] 압축 기록 실패: ")
     assert json.loads(failed.stdout)["guidance"] != payload.strip()
 
 
@@ -261,10 +265,6 @@ def test_codex_json_payload_is_engine_owned_shared_value(pm_log):
         "systemMessage": pm_log.build_ctx_guard_guidance("precompact"),
         "suppressOutput": False,
     }
-
-
-def test_claude_root_and_template_remain_byte_identical():
-    assert CLAUDE_ROOT.read_bytes() == CLAUDE_TEMPLATE.read_bytes()
 
 
 def test_ctx_guidance_takes_used_and_precompact_at(pm_log):

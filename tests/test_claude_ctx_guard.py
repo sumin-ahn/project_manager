@@ -9,8 +9,10 @@ importlib 로 직접 로드해 검증한다. stdlib only — 라이브 claude·s
   2. statusLine — context_window → used % (current_usage 단일 소스·ADR-0041) + 색/문구 넛지.
   3. 훅 — 세 밴드 모두 PreToolUse/UserPromptSubmit additionalContext 비차단 주입 +
      채널 공유 사이클별 marker 멱등.
-  4. re-arm — PostCompact 완료 경계 또는 유효한 ok 실측 시 `.nudge`/`.nudge2`/`.final` 삭제.
-  5. settings 배선 — PreToolUse·UserPromptSubmit·PostCompact 를 ctx 훅에 연결.
+  4. re-arm — 주 대화 기록의 압축 경계 증가(압축 뒤 첫 주 스레드 훅) 또는 유효한 ok 실측 시
+     `.nudge`/`.nudge2`/`.final` 삭제.
+  5. settings 배선 — PreToolUse·UserPromptSubmit 만 ctx 훅에 연결(압축 이벤트 등록 없음).
+  6. 압축 기록(T-0953) — 경계마다 한 번 checkpoint·snapshot, 실패 신호, `agent_id` 면제.
 """
 from __future__ import annotations
 
@@ -261,7 +263,7 @@ def test_transcript_tokens_last_request(guard, tmp_path):
         ("assistant", {"input_tokens": 100_000, "cache_creation_input_tokens": 50_000,
                        "cache_read_input_tokens": 30_000}),
     ])
-    assert guard.context_tokens_from_transcript(path) == (180_000, None)
+    assert guard.context_tokens_from_transcript(path) == (180_000, None, 0)
 
 
 def test_transcript_tokens_stop_at_compact_boundary_without_new_usage(guard, tmp_path):
@@ -270,7 +272,7 @@ def test_transcript_tokens_stop_at_compact_boundary_without_new_usage(guard, tmp
 
     # compactMetadata.postTokens 는 compact 결과 크기지만 아직 새 assistant 요청의 usage 실측이
     # 아니다. 경계 뒤 usage 가 없으면 측정불가 0으로 두어 이전 사이클 usage를 재사용하지 않는다.
-    assert guard.context_tokens_from_transcript(path) == (0, None)
+    assert guard.context_tokens_from_transcript(path) == (0, None, 1)
 
 
 def test_transcript_tokens_only_use_usage_after_compact_boundary(guard, tmp_path):
@@ -285,7 +287,7 @@ def test_transcript_tokens_only_use_usage_after_compact_boundary(guard, tmp_path
         }},
     })
 
-    assert guard.context_tokens_from_transcript(path) == (150_002, None)
+    assert guard.context_tokens_from_transcript(path) == (150_002, None, 1)
 
 
 def test_transcript_used_pct(guard, tmp_path):
@@ -296,7 +298,7 @@ def test_transcript_used_pct(guard, tmp_path):
 
 
 def test_transcript_missing_file_zero(guard, tmp_path):
-    assert guard.context_tokens_from_transcript(tmp_path / "nope.jsonl") == (0, None)
+    assert guard.context_tokens_from_transcript(tmp_path / "nope.jsonl") == (0, None, 0)
     assert guard.context_used_pct_from_transcript(tmp_path / "nope.jsonl", 200_000) == 0
 
 
@@ -308,7 +310,7 @@ def test_transcript_malformed_lines_skipped(guard, tmp_path):
         + "{broken\n",
         encoding="utf-8",
     )
-    assert guard.context_tokens_from_transcript(path) == (20_000, None)
+    assert guard.context_tokens_from_transcript(path) == (20_000, None, 0)
 
 
 def test_hook_evaluate_ok_passes(guard, stop_hook, tmp_path):
@@ -318,80 +320,6 @@ def test_hook_evaluate_ok_passes(guard, stop_hook, tmp_path):
     rc, output = stop_hook.evaluate(stdin, tmp_path, {})
     assert rc == 0 and output is None
     assert not (tmp_path / ".project_manager" / ".local" / "ctx-stop").exists()
-
-
-def test_t0952_precompact_sends_base_checkpoint_arguments_only(
-    stop_hook, tmp_path, monkeypatch, capsys,
-):
-    """auto PreCompact 는 기본 checkpoint 인자만 한 번 보내고 실패해도 재시도·대체 무장이 없다(AT-005)."""
-    from test_harness_ctx_limits import install_ctx_record
-    install_ctx_record(tmp_path, {"harness.claude.ctx_window_tokens": "600000"})
-    engine = tmp_path / ".project_manager" / "tools" / "pm_log.py"
-    engine.write_text("", encoding="utf-8")
-    transcript = _write_transcript(
-        tmp_path, [("assistant", {"input_tokens": 30_000})], sidechain=False,
-    )
-    stdin = {
-        "trigger": "auto",
-        "session_id": "t0952-args",
-        "transcript_path": str(transcript),
-        "cwd": str(tmp_path),
-    }
-    calls = []
-
-    def fake_run(command, **kwargs):
-        calls.append(command)
-        return SimpleNamespace(returncode=2)
-
-    monkeypatch.setattr(stop_hook.subprocess, "run", fake_run)
-
-    assert stop_hook.capture_precompact(stdin, tmp_path) == 0
-    assert len(calls) == 1
-    assert calls[0][2:] == [
-        "checkpoint", "--trigger", "compaction", "--cwd", str(tmp_path.resolve()),
-        "--phase", "pre", "--session-id", "t0952-args",
-        "--boundary-id", "claude-t0952-args-1", "--breadcrumb",
-    ]
-    snapshot_marker = tmp_path / ".project_manager" / ".local" / "ctx-stop" / "compact-snapshot.t0952-args"
-    assert not snapshot_marker.exists()
-
-    capsys.readouterr()
-    (tmp_path / ".project_manager" / ".local" / "ctx-budget.json").unlink()
-    assert stop_hook.capture_precompact(stdin, tmp_path) == 0
-    assert "[ctx-budget]" not in capsys.readouterr().err
-    assert len(calls) == 2
-
-
-def test_t0952_postcompact_arm_replaces_leftover_pending_payload(stop_hook, tmp_path):
-    """옛 대체 무장이 남긴 marker 도 PostCompact 무장이 새 payload 로 바꾼다(AT-006)."""
-    session_id = "t0952-leftover"
-    marker = tmp_path / ".project_manager" / ".local" / "ctx-stop" / f"compact-snapshot.{session_id}"
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text("<!-- ctx-checkpoint-pending: append-failed -->\nold\n", encoding="utf-8")
-    payload = "## PM 정체성 (compaction 복구)\n- task: main\n"
-
-    assert stop_hook._arm_snapshot(tmp_path, session_id, payload) is True
-    assert marker.read_text(encoding="utf-8") == payload
-
-
-def test_t0952_postcompact_rearm_failure_names_existing_payload_only(
-    stop_hook, tmp_path, monkeypatch, capsys,
-):
-    """PostCompact 재무장 실패 문구는 남아 있는 대상(기존 payload)만 가리킨다(F-001)."""
-    monkeypatch.setattr(
-        stop_hook, "_build_snapshot", lambda root, stdin: "## PM 정체성 (compaction 복구)",
-    )
-    monkeypatch.setattr(stop_hook, "_arm_snapshot", lambda root, session_id, snapshot: False)
-    monkeypatch.setattr(stop_hook, "_create_checkpoint", lambda root, stdin, phase: True)
-
-    rc, output = stop_hook.evaluate(
-        {"hook_event_name": "PostCompact", "session_id": "t0952-rearm"}, tmp_path, {},
-    )
-
-    assert (rc, output) == (0, None)
-    assert capsys.readouterr().err == (
-        "[ctx-snapshot-rearm-failure] snapshot 재무장 실패 — 기존 payload를 다음 경계에 보존\n"
-    )
 
 
 def _stop_transcript(tmp_path: Path) -> Path:
@@ -520,25 +448,18 @@ def test_hook_final_pretooluse_injects_without_permission_decision(stop_hook, tm
     assert (marker_dir / "sess-pretool.final").exists()
 
 
-def test_settings_wires_precompact_pretool_userprompt_and_postcompact():
-    # PreCompact는 durable flush+골격, PostCompact는 snapshot marker 무장 채널이다.
-    # T-0202: 이제 래퍼(ctx_stop_hook.sh) 경유 — 래퍼가 인터프리터 self-resolve 후 ctx_stop_hook.py 를
+def test_settings_wires_pretool_and_userprompt_only():
+    # 압축 처리는 주 스레드 훅(PreToolUse·UserPromptSubmit)이 한다 — 압축 이벤트 등록은 없다(T-0953).
+    # T-0202: 래퍼(ctx_stop_hook.sh) 경유 — 래퍼가 인터프리터 self-resolve 후 ctx_stop_hook.py 를
     #   exec(stdin/args/rc 투명 전달). 래퍼→.py 링크는 test_new_wrappers_self_contained 가 커버.
     data = json.loads((CLAUDE / "settings.json").read_text(encoding="utf-8"))
-    for event in ("PreToolUse", "UserPromptSubmit", "PostCompact"):
+    assert set(data["hooks"]) == {"PreToolUse", "UserPromptSubmit"}
+    for event in ("PreToolUse", "UserPromptSubmit"):
         registrations = data["hooks"][event]
         assert isinstance(registrations, list) and registrations
         cmds = [h.get("command", "") for m in registrations for h in m.get("hooks", [])]
-        assert any("ctx_stop_hook.sh" in c for c in cmds), f"{event} 에 ctx_stop_hook 래퍼 누락"
-    # UserPromptSubmit 에는 git-anchor 허용 기록 훅(`--git-anchor-hook`)이 함께 있다 — ctx 훅 그룹만 대조한다.
-    ctx_userprompt = [group for group in data["hooks"]["UserPromptSubmit"]
-                      if "--git-anchor-hook" not in json.dumps(group)]
-    assert data["hooks"]["PostCompact"] == ctx_userprompt, (
-        "PostCompact 등록이 UserPromptSubmit ctx 훅과 동형이 아님")
+        assert any(c.endswith("ctx_stop_hook.sh") for c in cmds), f"{event} 에 ctx_stop_hook 래퍼 누락"
     assert data["hooks"]["PreToolUse"][0].get("matcher") == "*"
-    precompact = json.dumps(data["hooks"]["PreCompact"])
-    assert "precompact_capture_hook.sh" in precompact
-    assert "ctx_stop_hook.sh" not in precompact, "PreCompact가 재무장 훅을 직접 호출함"
 
 
 def test_hook_session_id_sanitized(stop_hook):
@@ -763,59 +684,39 @@ def test_hook_nudge_refires_after_ok_rearm(stop_hook, tmp_path):
     assert second_cycle is not None
 
 
-def test_hook_nudge_refires_after_postcompact_without_ok_observation(stop_hook, tmp_path):
-    """nudge 뒤 ok 관측 없이 PostCompact가 오면 marker를 지워 재상승 넛지를 허용한다."""
-    sid = "sess-postcompact-rearm"
-    high = str(_write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})]))
+def test_hook_nudge_refires_after_boundary_without_ok_observation(
+        stop_hook, tmp_path, monkeypatch):
+    """nudge 뒤 ok 관측 없이 경계가 늘면 첫 주 스레드 훅이 marker를 지워 재상승 넛지를 허용한다."""
+    monkeypatch.setattr(stop_hook, "_compaction_output", lambda *_a: None)
+    sid = "sess-boundary-rearm"
+    transcript = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
     prompt = {
-        "transcript_path": high,
+        "transcript_path": str(transcript),
         "session_id": sid,
         "hook_event_name": "UserPromptSubmit",
     }
 
     rc1, first = stop_hook.evaluate(prompt, tmp_path, {})
     rc2, duplicate = stop_hook.evaluate(prompt, tmp_path, {})
-    rc3, compacting = stop_hook.evaluate({
-        "transcript_path": high,
-        "session_id": sid,
-        "hook_event_name": "PostCompact",
-    }, tmp_path, {})
-    rc4, next_cycle = stop_hook.evaluate(prompt, tmp_path, {})
+    _append_transcript_entry(transcript, _compact_boundary())
+    _append_transcript_entry(transcript, {
+        "type": "assistant",
+        "message": {"role": "assistant", "usage": {"input_tokens": 150_000}},
+    })
+    rc3, next_cycle = stop_hook.evaluate(prompt, tmp_path, {})
+    rc4, duplicate_again = stop_hook.evaluate(prompt, tmp_path, {})
 
     assert rc1 == rc2 == rc3 == rc4 == 0
     assert first is not None and duplicate is None
-    assert compacting is None
-    assert next_cycle is not None
+    assert "ctx-nudge" in next_cycle["hookSpecificOutput"]["additionalContext"]
+    assert duplicate_again is None
 
 
-def test_postcompact_arms_snapshot_then_first_supported_channel_injects_once(
+def test_hook_boundary_waits_for_postboundary_usage_before_refiring(
         stop_hook, tmp_path, monkeypatch):
-    """PostCompact 저장→첫 UserPromptSubmit verbatim 주입→payload 소거 (marker-armed 정본)."""
-    payload = "## PM 정체성 (compaction 복구)\n- task: main\n"
-    checkpoints = []
-    monkeypatch.setattr(stop_hook, "_build_snapshot", lambda root, stdin: payload)
-    monkeypatch.setattr(
-        stop_hook, "_create_checkpoint",
-        lambda root, stdin, **kwargs: checkpoints.append((stdin["session_id"], kwargs)),
-    )
-    boundary = {"session_id": "sess-snapshot", "hook_event_name": "PostCompact"}
-    assert stop_hook.evaluate(boundary, tmp_path, {}) == (0, None)
-    marker = (tmp_path / ".project_manager" / ".local" / "ctx-stop" /
-              "compact-snapshot.sess-snapshot")
-    assert marker.read_text(encoding="utf-8") == payload
-    assert checkpoints == [("sess-snapshot", {"phase": "post"})]
-
-    prompt = {"session_id": "sess-snapshot", "hook_event_name": "UserPromptSubmit"}
-    rc, output = stop_hook.evaluate(prompt, tmp_path, {})
-    assert rc == 0
-    assert output["hookSpecificOutput"]["additionalContext"] == payload
-    assert not marker.exists()
-    assert stop_hook.evaluate(prompt, tmp_path, {}) == (0, None)
-
-
-def test_hook_postcompact_waits_for_postboundary_usage_before_refiring(stop_hook, tmp_path):
-    """compact 직후 첫 prompt는 old usage로 marker를 재생성하지 않고 새 usage를 기다린다."""
-    sid = "sess-postcompact-boundary"
+    """경계 뒤 첫 prompt는 marker를 재무장하고 old usage로 재생성하지 않으며 새 usage를 기다린다."""
+    monkeypatch.setattr(stop_hook, "_compaction_output", lambda *_a: None)
+    sid = "sess-boundary-wait"
     transcript = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
     prompt = {
         "transcript_path": str(transcript),
@@ -830,17 +731,10 @@ def test_hook_postcompact_waits_for_postboundary_usage_before_refiring(stop_hook
     assert markers[-1].exists()
 
     _append_transcript_entry(transcript, _compact_boundary())
-    rc2, compacted = stop_hook.evaluate({
-        "transcript_path": str(transcript),
-        "session_id": sid,
-        "hook_event_name": "PostCompact",
-    }, tmp_path, {})
-    assert rc2 == 0 and compacted is None
-    assert not any(marker.exists() for marker in markers)
-
     rc3, first_prompt = stop_hook.evaluate(prompt, tmp_path, {})
     assert rc3 == 0 and first_prompt is None
     assert not any(marker.exists() for marker in markers)
+    assert (marker_dir / f"{sid}.compact-1").exists()
 
     _append_transcript_entry(transcript, {
         "type": "assistant",
@@ -849,31 +743,6 @@ def test_hook_postcompact_waits_for_postboundary_usage_before_refiring(stop_hook
     rc4, next_high = stop_hook.evaluate(prompt, tmp_path, {})
     assert rc4 == 0 and next_high is not None
     assert markers[-1].exists()
-
-
-def test_hook_precompact_does_not_rearm_before_compaction_completes(stop_hook, tmp_path):
-    """압축 전 발화하는 PreCompact는 실패/차단 가능성이 있으므로 현재 marker를 보존한다."""
-    sid = "sess-precompact-no-rearm"
-    high = str(_write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})]))
-    prompt = {
-        "transcript_path": high,
-        "session_id": sid,
-        "hook_event_name": "UserPromptSubmit",
-    }
-
-    rc1, first = stop_hook.evaluate(prompt, tmp_path, {})
-    rc2, before_compaction = stop_hook.evaluate({
-        "transcript_path": high,
-        "session_id": sid,
-        "hook_event_name": "PreCompact",
-    }, tmp_path, {})
-    rc3, still_same_cycle = stop_hook.evaluate(prompt, tmp_path, {})
-
-    marker = tmp_path / ".project_manager" / ".local" / "ctx-stop" / f"{sid}.nudge"
-    assert rc1 == rc2 == rc3 == 0
-    assert first is not None
-    assert before_compaction is None and still_same_cycle is None
-    assert marker.exists()
 
 
 # ── 7. 강화 넛지 + 최종 넛지 (ADR-0081) ──────────────────────────────────
@@ -1023,125 +892,6 @@ def test_nudge2_margin_mirrors_opencode(guard):
     )
 
 
-# ── 8. 서브에이전트(sidechain) 감지 + 면제 (메인 세션만 checkpoint 넛지) ─────
-# claude 는 서브에이전트(Task) 대화를 <parent>/subagents/agent-*.jsonl 에 전 엔트리 isSidechain:true
-# 로 기록하고, 메인 세션 <session>.jsonl 은 전 엔트리 false (실측 확인). 훅은 transcript_path 로 이
-# 필드를 읽어 서브에이전트면 면제(통과·auto-compact 로 자체 정리)·메인이면 넛지한다. 감지
-# 불능/모호(신호 부재·읽기 실패·비-boolean)는 **메인 취급**(보수적 — 면제는 확실할 때만).
-
-def test_transcript_is_sidechain_true(guard, tmp_path):
-    path = _write_transcript(
-        tmp_path, [("user", None), ("assistant", {"input_tokens": 190_000})], sidechain=True)
-    assert guard.transcript_is_sidechain(path) is True
-
-
-def test_transcript_is_sidechain_false(guard, tmp_path):
-    path = _write_transcript(
-        tmp_path, [("user", None), ("assistant", {"input_tokens": 190_000})], sidechain=False)
-    assert guard.transcript_is_sidechain(path) is False
-
-
-def test_transcript_is_sidechain_no_field_is_false(guard, tmp_path):
-    # isSidechain 필드 부재(신호 없음) → False(메인 취급·보수적). 기존 transcript 픽스처가 이 형태.
-    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
-    assert guard.transcript_is_sidechain(path) is False
-
-
-def test_transcript_is_sidechain_missing_file_is_false(guard, tmp_path):
-    assert guard.transcript_is_sidechain(tmp_path / "nope.jsonl") is False
-
-
-def test_transcript_is_sidechain_malformed_lines_skipped(guard, tmp_path):
-    # 깨진 줄은 건너뛰고 유효 엔트리의 isSidechain 을 읽는다 (transcript 꼬리 부분 파손 견고성).
-    path = tmp_path / "t.jsonl"
-    path.write_text(
-        "not json\n"
-        + json.dumps({"type": "user", "isSidechain": True, "message": {}}) + "\n"
-        + "{broken\n",
-        encoding="utf-8",
-    )
-    assert guard.transcript_is_sidechain(path) is True
-
-
-def test_transcript_is_sidechain_skips_trailing_fieldless_entries(guard, tmp_path):
-    # 파일 끝에서부터 첫 isSidechain boolean 을 찾는다 — isSidechain 없는 후행 엔트리(system·
-    # file-history-snapshot 등·실 transcript 에 섞임)는 건너뛰고 최근 boolean 을 쓴다.
-    path = tmp_path / "t.jsonl"
-    path.write_text(
-        json.dumps({"type": "user", "isSidechain": True, "message": {}}) + "\n"
-        + json.dumps({"type": "system", "content": "no isSidechain"}) + "\n"
-        + json.dumps({"type": "file-history-snapshot"}) + "\n",
-        encoding="utf-8",
-    )
-    assert guard.transcript_is_sidechain(path) is True
-
-
-def test_transcript_is_sidechain_non_bool_ignored(guard, tmp_path):
-    # isSidechain 이 boolean 이 아니면(문자열 "true" 등) 신호로 안 쓴다 → 유효 boolean 없으면 False
-    # (보수적 — 모호하면 메인 취급).
-    path = tmp_path / "t.jsonl"
-    path.write_text(
-        json.dumps({"type": "user", "isSidechain": "true", "message": {}}) + "\n",
-        encoding="utf-8",
-    )
-    assert guard.transcript_is_sidechain(path) is False
-
-
-def test_hook_sidechain_exempt_at_final_band(stop_hook, tmp_path):
-    # 서브에이전트 + stop 밴드 UserPromptSubmit → checkpoint 최종 넛지 없이 통과한다.
-    path = _write_transcript(
-        tmp_path, [("assistant", {"input_tokens": 190_000})], sidechain=True)
-    stdin = {
-        "transcript_path": str(path),
-        "session_id": "sess-sub",
-        "hook_event_name": "UserPromptSubmit",
-    }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert rc == 0 and output is None
-    assert not (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-sub.final").exists()
-
-
-def test_hook_sidechain_exempt_at_nudge_band(stop_hook, tmp_path):
-    # nudge 밴드(used 75)에서도 서브에이전트는 주입 없이 통과 (면제는 밴드 무관·nudge 도 안 함).
-    path = _write_transcript(
-        tmp_path, [("assistant", {"input_tokens": 150_000})], sidechain=True)
-    stdin = {
-        "transcript_path": str(path),
-        "session_id": "sess-sub-nudge",
-        "hook_event_name": "UserPromptSubmit",
-    }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert rc == 0 and output is None
-    ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
-    assert not (ctx / "sess-sub-nudge.nudge").exists()
-
-
-def test_hook_main_session_gets_final_nudge(stop_hook, tmp_path):
-    # 회귀 대칭: isSidechain:false(메인) + stop 밴드 → 최종 넛지 + `.final` marker.
-    path = _write_transcript(
-        tmp_path, [("assistant", {"input_tokens": 190_000})], sidechain=False)
-    stdin = {
-        "transcript_path": str(path),
-        "session_id": "sess-main",
-        "hook_event_name": "UserPromptSubmit",
-    }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert "ctx-nudge/최종" in output["hookSpecificOutput"]["additionalContext"]
-    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-main.final").exists()
-
-
-def test_hook_no_sidechain_field_treated_as_main(stop_hook, tmp_path):
-    # isSidechain 필드 부재(신호 없음) → 메인 취급(보수적) → 최종 넛지.
-    path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
-    stdin = {
-        "transcript_path": str(path),
-        "session_id": "sess-nofield",
-        "hook_event_name": "UserPromptSubmit",
-    }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {})
-    assert "ctx-nudge/최종" in output["hookSpecificOutput"]["additionalContext"]
-
-
 def test_settings_auto_compact_enabled_true():
     # hard-stop 없이 메인/서브에이전트 모두 native compaction 을 허용한다.
     data = json.loads((CLAUDE / "settings.json").read_text(encoding="utf-8"))
@@ -1222,3 +972,173 @@ def test_t0943_hook_missing_record_is_reported(stop_hook, tmp_path, capsys):
     capsys.readouterr()
     assert stop_hook.evaluate(_t0943_hook_input(tmp_path, "PreToolUse", transcript), tmp_path, {}) == (0, None)
     assert "[ctx-budget]" in capsys.readouterr().err
+
+
+# ── T-0953 압축 기록: 경계 감지·서브에이전트 면제·실패 신호 ──────────────────────
+# 훅 입력 필드는 Claude Code 2.1.290·2.1.293 실측 형상이다(설계 3.1절): 주 스레드 PreToolUse 는
+#   `agent_id` 가 없고, 서브에이전트 도구 호출은 `agent_id`·`agent_type` 이 있으며 `session_id`·
+#   `transcript_path` 는 주 세션 값과 같다. 압축 경계는 주 대화 기록의
+#   `{"type":"system","subtype":"compact_boundary"}` 항목이다(설계 3.3절).
+
+_T0953_SNAPSHOT = "## PM 정체성 (compaction 복구)\n- task: main\n"
+
+
+def _t0953_engine(root: Path) -> None:
+    engine = root / ".project_manager" / "tools" / "pm_log.py"
+    engine.parent.mkdir(parents=True, exist_ok=True)
+    engine.write_text("", encoding="utf-8")
+
+
+def _t0953_transcript(root: Path, tokens: list[int], boundaries_before: list[bool]) -> Path:
+    """usage 항목마다 앞에 경계를 둘지 정해 주 대화 기록을 쓴다."""
+    path = root / "main-session.jsonl"
+    path.write_text("", encoding="utf-8")
+    for value, boundary in zip(tokens, boundaries_before):
+        if boundary:
+            _append_transcript_entry(path, _compact_boundary())
+        _append_transcript_entry(path, {
+            "type": "assistant", "isSidechain": False,
+            "message": {"role": "assistant", "usage": {"input_tokens": value}},
+        })
+    return path
+
+
+def _t0953_fake_run(calls: list, *, checkpoint=(0, "", ""), snapshot=(0, _T0953_SNAPSHOT, "")):
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        verb = command[2]
+        rc, stdout, stderr = {
+            "checkpoint": checkpoint, "snapshot": snapshot,
+        }.get(verb, (1, "", ""))
+        return SimpleNamespace(returncode=rc, stdout=stdout, stderr=stderr)
+    return fake_run
+
+
+def _t0953_pretool(transcript: Path, root: Path, **extra) -> dict:
+    return {
+        "session_id": "s-1", "transcript_path": str(transcript), "cwd": str(root),
+        "permission_mode": "default", "hook_event_name": "PreToolUse",
+        "tool_name": "Bash", "tool_input": {"command": "ls"}, "tool_use_id": "toolu_t0953",
+        **extra,
+    }
+
+
+def _t0953_engine_calls(calls: list) -> list:
+    return [command[2:] for command in calls if command[2] in ("checkpoint", "snapshot")]
+
+
+def test_t0953_main_hook_after_boundary_runs_checkpoint_and_snapshot_once(
+        stop_hook, tmp_path, monkeypatch):
+    """경계 N 이 늘면 첫 주 스레드 훅이 한 번 재무장·checkpoint·snapshot 을 한다(AT-007)."""
+    _t0953_engine(tmp_path)
+    transcript = _t0953_transcript(tmp_path, [150_000, 1_000, 2_000], [False, True, True])
+    marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
+    marker_dir.mkdir(parents=True)
+    for suffix in ("nudge", "final"):
+        (marker_dir / f"s-1.{suffix}").write_text("fired\n", encoding="utf-8")
+    calls: list = []
+    monkeypatch.setattr(stop_hook.subprocess, "run", _t0953_fake_run(calls))
+
+    rc, output = stop_hook.evaluate(_t0953_pretool(transcript, tmp_path), tmp_path, {})
+
+    assert rc == 0
+    assert _t0953_engine_calls(calls) == [
+        ["checkpoint", "--trigger", "compaction", "--session-id", "s-1",
+         "--boundary-id", "claude-s-1-2", "--breadcrumb"],
+        ["snapshot", "--session-id", "s-1"],
+    ]
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert context.startswith("## PM 정체성 (compaction 복구)")
+    assert "permissionDecision" not in output["hookSpecificOutput"]
+    assert (marker_dir / "s-1.compact-2").is_file()
+    assert not (marker_dir / "s-1.nudge").exists() and not (marker_dir / "s-1.final").exists()
+
+    calls.clear()
+    rc, output = stop_hook.evaluate(_t0953_pretool(transcript, tmp_path), tmp_path, {})
+    assert rc == 0 and calls == []
+    assert "PM 정체성" not in json.dumps(output, ensure_ascii=False)
+
+
+def test_t0953_subagent_exemption_uses_agent_id_not_agent_type(stop_hook, tmp_path, monkeypatch):
+    """`agent_id` 있는 입력은 아무 상태도 바꾸지 않는다 — `agent_type` 만 있는 주 스레드는 처리한다(AT-008)."""
+    _t0953_engine(tmp_path)
+    transcript = _t0953_transcript(tmp_path, [190_000], [True])   # 경계 1개 뒤 95%
+    marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
+    marker_dir.mkdir(parents=True)
+    (marker_dir / "s-1.nudge").write_text("fired\n", encoding="utf-8")
+    calls: list = []
+    monkeypatch.setattr(stop_hook.subprocess, "run", _t0953_fake_run(calls))
+
+    subagent = _t0953_pretool(transcript, tmp_path, agent_id="a1", agent_type="Explore")
+    assert stop_hook.evaluate(subagent, tmp_path, {}) == (0, None)
+    assert calls == []
+    assert not (marker_dir / "s-1.compact-1").exists()
+    assert (marker_dir / "s-1.nudge").read_text(encoding="utf-8") == "fired\n"
+    assert not (marker_dir / "s-1.final").exists()
+
+    agent_session = _t0953_pretool(transcript, tmp_path, agent_type="pm")
+    rc, output = stop_hook.evaluate(agent_session, tmp_path, {})
+    assert rc == 0 and output is not None
+    assert (marker_dir / "s-1.compact-1").is_file()
+    assert [call[0] for call in _t0953_engine_calls(calls)].count("checkpoint") == 1
+
+
+def test_t0953_failure_signal_carries_engine_reason_once(stop_hook, tmp_path, monkeypatch):
+    """기록 실패는 엔진 stderr 마지막 줄을 `systemMessage`·`additionalContext` 로 한 번 보인다(AT-009)."""
+    _t0953_engine(tmp_path)
+    transcript = _t0953_transcript(tmp_path, [150_000, 1_000, 2_000], [False, True, True])
+    reason = ("[중단] checkpoint 세션 task 미해소: 이 세션이 연 task 없음 (세션 s-1). "
+              "--task 이름 을 주거나 이 세션에서 pm_bootstrap.py --task 이름 으로 task 를 연다.")
+    calls: list = []
+    monkeypatch.setattr(stop_hook.subprocess, "run", _t0953_fake_run(
+        calls, checkpoint=(1, "", f"경고\n{reason}\n")))
+
+    rc, output = stop_hook.evaluate(_t0953_pretool(transcript, tmp_path), tmp_path, {})
+
+    assert rc == 0
+    assert [call[0] for call in _t0953_engine_calls(calls)] == ["checkpoint"]
+    assert output["systemMessage"].startswith(
+        "[ctx-checkpoint] 압축 기록 실패: [중단] checkpoint 세션 task 미해소: 이 세션이 연 task 없음")
+    assert output["systemMessage"] in output["hookSpecificOutput"]["additionalContext"]
+
+    calls.clear()
+    rc, output = stop_hook.evaluate(_t0953_pretool(transcript, tmp_path), tmp_path, {})
+    assert rc == 0 and calls == []
+    assert output is None or "systemMessage" not in output
+
+    _append_transcript_entry(transcript, _compact_boundary())
+    _append_transcript_entry(transcript, {
+        "type": "assistant", "message": {"role": "assistant", "usage": {"input_tokens": 3_000}},
+    })
+    snapshot_reason = "[pm-snapshot] 세션 task 미해소: 세션 ID 없음. 재주입 생략."
+    monkeypatch.setattr(stop_hook.subprocess, "run", _t0953_fake_run(
+        calls, snapshot=(1, "", snapshot_reason + "\n")))
+    rc, output = stop_hook.evaluate(_t0953_pretool(transcript, tmp_path), tmp_path, {})
+    assert rc == 0
+    assert output["systemMessage"] == "[ctx-checkpoint] 압축 기록 실패: " + snapshot_reason
+
+
+def test_t0953_transcript_reading_counts_compact_boundaries(guard, tmp_path):
+    """한 번 읽기로 점유 토큰·모델·경계 수를 낸다 — 비슷한 subtype 과 본문 문자열은 세지 않는다(AT-010)."""
+    path = tmp_path / "boundaries.jsonl"
+    entries = [
+        _compact_boundary(),
+        {"type": "assistant", "message": {"role": "assistant", "model": "m1",
+                                          "usage": {"input_tokens": 5_000}}},
+        {"type": "system", "subtype": "compact_boundary_note"},
+        {"type": "user", "message": {"role": "user", "content": "compact_boundary"}},
+        _compact_boundary(),
+        {"type": "assistant", "message": {"role": "assistant", "model": "m2",
+                                          "usage": {"input_tokens": 7_000}}},
+    ]
+    path.write_text("".join(json.dumps(entry) + "\n" for entry in entries), encoding="utf-8")
+    assert guard.context_tokens_from_transcript(path) == (7_000, "m2", 2)
+
+    three = tmp_path / "three.jsonl"
+    three.write_text("".join(json.dumps(entry) + "\n" for entry in (
+        _compact_boundary(),
+        {"type": "assistant", "message": {"usage": {"input_tokens": 9}}},
+        _compact_boundary(), _compact_boundary(),
+    )), encoding="utf-8")
+    assert guard.context_tokens_from_transcript(three) == (0, None, 3)
+    assert guard.context_tokens_from_transcript(tmp_path / "nope.jsonl") == (0, None, 0)

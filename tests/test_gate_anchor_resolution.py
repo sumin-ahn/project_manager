@@ -162,7 +162,6 @@ _PM_HOME_GUESS_FILES = ("pm_log.py", "board.py", "additional_reviewer.py", "pm_d
 # 자리의 부모다. 세 하네스가 같은 규칙을 받아야 한다(ADR-0095) — 한 하네스만 고친 상태는 그
 # 결정 위반이라, 조상 훑기 관용구 자체를 파일 단위로 막는다.
 _ADAPTER_REPO_ROOT_FILES = (
-    Path(".claude/ctx_guard.py"),
     Path("templates/claude_code/.claude/ctx_guard.py"),
     Path("templates/codex/.codex/pm_orch_codex.py"),
     Path("templates/opencode/.opencode/pm_orch_opencode.py"),

@@ -11,8 +11,8 @@
 #    파일이라 pm_update 가 덮으면 커스터마이즈 손실. 대신 파일 자체가 portable-by-construction —
 #    치환 토큰·절대경로 0(${CLAUDE_PROJECT_DIR} + 래퍼 self-resolve)이라 import 복사만으로 어느
 #    머신/프로젝트에서든 정확 동작(재작성 채널 불요). 머신-특정 오버라이드는 settings.local.json
-#    (gitignore). ⚠️ **훅 스크립트/드라이버 8종은 manifest 안이다** — ctx_guard.py·ctx_stop_hook.py·
-#    ctx_stop_hook.sh·ctx_statusline.py·ctx_statusline.sh·precompact_capture_hook.sh·pm_orch_claude.py·delegate_channel_guard_hook.sh
+#    (gitignore). ⚠️ **훅 스크립트/드라이버 7종은 manifest 안이다** — ctx_guard.py·ctx_stop_hook.py·
+#    ctx_stop_hook.sh·ctx_statusline.py·ctx_statusline.sh·pm_orch_claude.py·delegate_channel_guard_hook.sh
 #    (아래 "서브에이전트 훅/드라이버" 절 등재로 전환). settings.json 과 같은 취급이라던
 #    옛 서술은 실측과 어긋나 정정했다. `.claude/` 안에서 **미등재인 건 settings.json 뿐**이다.
 #    이 소유 분할이 곧 세대 혼합 창이라(config 는 채택자·훅 파일은 엔진) pm_update 가 훅 세트
@@ -51,6 +51,7 @@
 #   호출자 소유(board 를 로드하지 않는다). 신설 도구라 등록 필수(미등록=전파 안 됨).
 .project_manager/tools/ticket_rounds.py
 # pm-retired-path: .project_manager/tools/gate_snapshot.py -> .project_manager/tools/pm_delegate.py
+# pm-retired-path: .claude/precompact_capture_hook.sh -> .project_manager/tools/pm_log.py
 # worktree_pool: repo별 worktree 풀 리스 엔진 (multi-PM 모델). 순수 엔진(git DI seam)
 .project_manager/tools/worktree_pool.py
 # pm_config: multi-PM 셋업/관리 파사드 디스패처. 루트 forwarder pm-config.sh/.cmd 는
@@ -132,13 +133,12 @@
 #   remap 한다(프레임워크 루트 `.claude/` 는 ctx 훅 부재·`--target` self-copy no-op).
 #   치환 토큰 0·portable-by-construction 이라 byte-copy 안전(render 불요·.md 아님).
 #   ⚠️ instance-owned 예외(미등록): settings.json(권한)·CLAUDE.md(루트 doc)·local.conf.
-#   precompact_capture_hook.sh는 경계 보존 load-bearing 출하물이라 @source 정식 등재한다.
+#   압축 기록은 ctx_stop_hook 이 맡는다(옛 압축 전 훅 스크립트는 위 pm-retired-path 지시로 지운다).
 .claude/ctx_guard.py       @source=templates/claude_code/.claude/ctx_guard.py
 .claude/ctx_stop_hook.py   @source=templates/claude_code/.claude/ctx_stop_hook.py
 .claude/ctx_stop_hook.sh   @source=templates/claude_code/.claude/ctx_stop_hook.sh
 .claude/ctx_statusline.py  @source=templates/claude_code/.claude/ctx_statusline.py
 .claude/ctx_statusline.sh  @source=templates/claude_code/.claude/ctx_statusline.sh
-.claude/precompact_capture_hook.sh  @source=templates/claude_code/.claude/precompact_capture_hook.sh
 .claude/pm_orch_claude.py  @source=templates/claude_code/.claude/pm_orch_claude.py
 .claude/delegate_channel_guard_hook.sh  @source=templates/claude_code/.claude/delegate_channel_guard_hook.sh
 

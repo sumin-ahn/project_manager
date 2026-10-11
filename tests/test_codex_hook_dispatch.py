@@ -1252,8 +1252,9 @@ def test_post_compact_names_the_unresolved_identity_that_the_old_wiring_hid(
     """PostCompact 만 옛 배선과 값이 갈린다 — 옛것은 침묵, 새것은 미해소를 이름으로 말한다.
 
     옛 직결 커맨드는 snapshot 실패를 `|| printf '{"suppressOutput":true}'` 로 덮어 압축마다
-    기록 0건이 성공처럼 보였다. 홈 루트 세션은 이름 붙일 세션이 없는 것이 사실이고(작업 폴더
-    행이 곧 세션 정체성), 그 사실을 마커와 처방으로 남기는 것이 이 이관의 값이다.
+    기록 0건이 성공처럼 보였다. 압축 경로의 정체성은 훅 입력 `session_id` 로 찾은 task 다
+    (T-0953). 이 세션은 task 를 연 적이 없으므로 미해소가 사실이고, 그 사실을 마커와 엔진
+    사유로 남기는 것이 이 이관의 값이다.
     """
     legacy_root = _adopter_tree(tmp_path / "legacy", conf_lines=_CROSS_CONF)
     new_root = _adopter_tree(tmp_path / "new", conf_lines=_CROSS_CONF)
@@ -1269,7 +1270,8 @@ def test_post_compact_names_the_unresolved_identity_that_the_old_wiring_hid(
     assert legacy_rc == 0 and new_rc == 0
     assert json.loads(legacy_out) == {"suppressOutput": True}, legacy_out
     assert guard.CODEX_ADAPTER_FALLBACK_MARKER in new_out, new_out
-    assert "pm-config worktree add" in new_out, new_out
+    rendered = json.dumps(json.loads(new_out), ensure_ascii=False)
+    assert "세션 task 미해소: 이 세션이 연 task 없음 (세션 synthetic-session_id)" in rendered, rendered
 
 
 
@@ -1285,9 +1287,9 @@ def test_compaction_normal_traffic_warns_only_where_identity_is_unresolved(
     자식 계약("rc0 + JSON dict")으로 옮기면 모든 압축마다 없던 경고가 새로 나간다. 그 침묵이
     값 그대로 보존됐는지를 실 출하 커맨드 실행으로 본다(PreCompact).
 
-    PostCompact 의 snapshot 은 세션 정체성을 요구한다. 이 홈은 작업 폴더 행이 있어도 세션이
-    **홈 루트**에서 도는 형상이라 어느 작업 폴더 안도 아니다 — 이름 붙일 세션이 없으므로
-    미해소가 정답이고, 디스패처가 그 사실을 마커로 남긴다(조용한 통과 아님·rc 0 유지)."""
+    PostCompact 의 snapshot 은 세션 정체성을 요구한다. 훅 입력 세션 ID 로 연 task 가 이 홈에
+    없으므로 미해소가 정답이고, 디스패처가 그 사실을 마커와 엔진 사유로 남긴다(조용한 통과
+    아님·rc 0 유지)."""
     root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF)
     seed_slot(root)
     entrypoint = _entry_handler(event)["command"]
@@ -1302,21 +1304,18 @@ def test_compaction_normal_traffic_warns_only_where_identity_is_unresolved(
         if event == "PostCompact":
             assert guard.CODEX_ADAPTER_FALLBACK_MARKER in rendered, (trigger, rendered)
             assert "compaction-snapshot" in rendered, (trigger, rendered)
-            # 사람이 다음에 칠 명령이 그 경고 안에 있다(문구 단일 진실 재사용).
-            assert "pm-config worktree add" in rendered, (trigger, rendered)
+            # 엔진의 미해소 사유(세션 판정)가 그 경고 안에 있다.
+            assert "세션 task 미해소" in rendered, (trigger, rendered)
         else:
             assert guard.CODEX_ADAPTER_FALLBACK_MARKER not in rendered, (trigger, rendered)
         assert guard.CODEX_SUPERVISOR_FALLBACK_MARKER not in rendered, trigger
         assert "decision" not in envelope and "continue" not in envelope, trigger
 
 
-# 장부 CLI 자식을 세는 shim — argv 를 그대로 기록하되 `--cwd` 는 실경로로 정규화한다.
-#   옛 커맨드는 `--cwd "$PWD"`, 새 배선은 `--cwd .` 이라 정규화 후 같은 값이어야 동치다.
+# 장부 CLI 자식을 세는 shim — argv 를 그대로 기록한다.
 _COUNTING_PM_LOG = (
     "import json, os, sys\n"
     "argv = list(sys.argv[1:])\n"
-    "if '--cwd' in argv:\n"
-    "    argv[argv.index('--cwd') + 1] = os.path.realpath(argv[argv.index('--cwd') + 1])\n"
     "with open(os.environ['T0806_CHILD_LEDGER'], 'a', encoding='utf-8') as handle:\n"
     "    handle.write(json.dumps(argv) + '\\n')\n"
     "if 'ctx-guidance' in argv:\n"
@@ -1334,10 +1333,10 @@ _COUNTING_PM_LOG = (
 @pytest.mark.parametrize("event", ("PreCompact", "PostCompact"))
 def test_compaction_spawns_the_same_ledger_children_as_the_old_wiring(
         tmp_path, hook_io_schema, event):
-    """압축 1회당 장부 자식 수·인자가 전/후 동일하다 (2건: checkpoint → 엔벨로프).
+    """압축 1회당 장부 자식 수·동사 순서가 전/후 동일하다 (2건: checkpoint → 엔벨로프).
 
-    진입점이 넓어져도 발화 비용이 늘면 안 되고, `--cwd .` 이 옛 `"$PWD"` 와 같은 실경로로
-    해소되는지도 같은 대조에서 값으로 확인된다."""
+    진입점이 넓어져도 발화 비용이 늘면 안 된다. 정체성 인자는 옛 `--cwd "$PWD"` 에서 훅 입력
+    `session_id` 하나(`--session-id`)로 바뀌었다(T-0953) — 새 배선에 cwd 인자가 없음을 값으로 본다."""
     root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF)
     (root / ".project_manager" / "tools" / "pm_log.py").write_text(
         _COUNTING_PM_LOG, encoding="utf-8", newline="\n")
@@ -1354,7 +1353,14 @@ def test_compaction_spawns_the_same_ledger_children_as_the_old_wiring(
                            for line in ledger.read_text(encoding="utf-8").splitlines()]
 
     assert len(recorded["legacy"]) == 2, recorded["legacy"]
-    assert recorded["entrypoint"] == recorded["legacy"], recorded
+    assert len(recorded["entrypoint"]) == 2, recorded["entrypoint"]
+    assert [argv[0] for argv in recorded["entrypoint"]] == [
+        argv[0] for argv in recorded["legacy"]], recorded
+    session_id = json.loads(payload)["session_id"]
+    for argv in recorded["entrypoint"]:
+        assert "--cwd" not in argv, argv
+        if argv[0] in ("checkpoint", "snapshot"):
+            assert argv[argv.index("--session-id") + 1] == session_id, argv
 
 
 @pytest.mark.skipif(not posix_bash_supported(),

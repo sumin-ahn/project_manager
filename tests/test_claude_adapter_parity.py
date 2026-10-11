@@ -4,10 +4,9 @@
 동기화된다(pm_update 전파). 드리프트 시 채택 프로젝트가 옛/다른 동작을 받는다
 ([[verify-engine-template-propagation]]). v2 머지 전 codex 제안 — 핵심 어댑터 산출물의
 양 트리 parity 를 자동 검증한다:
-  - `settings.json` 훅 집합 비대칭: root=기존 PreCompact / template=Pre+PostCompact 기계 경계.
-    양쪽 auto-compact ON(template 은 T-0458 로 autoCompactEnabled:true — 메인은 훅 hard-stop 선행·
-    서브에이전트는 compaction 자체 정리). breadcrumb 은 net-less 도그푸딩 root 전용으로 유지.
-  - `precompact_capture_hook.sh`: template canonical·manifest @source 정식 출하. root 교체는 PM update 몫.
+  - `settings.json` 훅 집합 비대칭: root=git-anchor PreToolUse 만 / template=PreToolUse·UserPromptSubmit.
+    압축 이벤트 등록은 양쪽 다 없다(T-0953 — 압축 기록은 template 주 스레드 훅이 한다). 양쪽
+    auto-compact ON(template 은 T-0458 로 autoCompactEnabled:true).
   - `skills/pm-handoff/SKILL.md`·`skills/pm-dev-delegate/SKILL.md`: byte-identical.
   - `agents/*.md`: byte-identical(5파일 — 4 역할 축 + developer hard 티어).
 
@@ -62,30 +61,20 @@ def test_settings_present_both_trees():
 
 
 def test_hook_registration_sets_asymmetric_both_autocompact_on():
-    """root PreCompact breadcrumb / template PostCompact 재무장 비대칭과 auto-compact ON을 고정.
+    """root git-anchor 전용 / template 주 스레드 ctx 훅 비대칭과 auto-compact ON 을 고정(AT-014).
 
-    - root(도그푸딩·ctx hard-stop 훅 부재·auto-compact **ON**): PreCompact breadcrumb 존재
-      → `precompact_capture_hook.sh` 를 가리킴 (압축이 수동 핸드오프를 선점할 수 있는 유일한
-      net-less tree 라 1줄 신호 보존).
-    - template(auto-compact **ON**·T-0458): PreToolUse/UserPromptSubmit 넛지 +
-      PostCompact 완료 후 재무장.
-      압축 전 발화하는 PreCompact에는 재무장 훅을 등록하지 않아 실패/차단 시 marker를 보존한다.
+    - root(도그푸딩·auto-compact **ON**): PreToolUse(Bash) git-anchor 하나. 압축 체인(PreCompact
+      와 루트 훅 사본)은 없다 — 슬롯에서 띄운 위임 세션의 압축을 task 로 오귀속하던 경로다(T-0953).
+    - template(auto-compact **ON**·T-0458): PreToolUse/UserPromptSubmit 넛지와 압축 기록.
+      압축 이벤트 입력은 주 세션 압축과 서브에이전트 압축을 가를 수 없어 등록하지 않는다.
     """
     root = json.loads((ROOT_CLAUDE / "settings.json").read_text(encoding="utf-8"))
     tmpl = json.loads((TEMPLATE_CLAUDE / "settings.json").read_text(encoding="utf-8"))
-    assert set(root.get("hooks", {})) == {"PreToolUse", "PreCompact"}, (
+    assert set(root.get("hooks", {})) == {"PreToolUse"}, (
         f"root 등록 훅 집합 드리프트: {set(root.get('hooks', {}))}"
     )
-    assert set(tmpl.get("hooks", {})) == {
-        "PreToolUse", "UserPromptSubmit", "PreCompact", "PostCompact",
-    }, (
+    assert set(tmpl.get("hooks", {})) == {"PreToolUse", "UserPromptSubmit"}, (
         f"template 등록 훅 집합 드리프트: {set(tmpl.get('hooks', {}))}"
-    )
-    # root: PreCompact breadcrumb 존재 + auto-compact 유지(비활성 아님).
-    root_block = root.get("hooks", {}).get("PreCompact")
-    assert root_block, "root settings.json 에 PreCompact breadcrumb 누락 (auto-compact ON tree)"
-    assert "precompact_capture_hook.sh" in json.dumps(root_block), (
-        f"root PreCompact 가 precompact 훅을 안 가리킴: {root_block}"
     )
     assert root.get("autoCompactEnabled") is not False, "root 는 auto-compact 유지여야 함"
     # root 는 Bash 만, template 은 파일 쓰기·편집·위임 도구 입력(허용 위조)까지 git-anchor 훅에 건다.
@@ -97,11 +86,6 @@ def test_hook_registration_sets_asymmetric_both_autocompact_on():
                      if entry.get("matcher") == matcher
                      and "--git-anchor-hook" in json.dumps(entry)]
         assert git_hooks, f"{label} PreToolUse({matcher}) git-anchor 훅 누락"
-    # template: PostCompact 완료 후 재무장 + auto-compact 정본 단일 토글 ON(T-0458).
-    postcompact = tmpl["hooks"]["PostCompact"]
-    assert "ctx_stop_hook.sh" in json.dumps(postcompact), (
-        f"template PostCompact 가 ctx 재무장 훅을 안 가리킴: {postcompact}"
-    )
     assert tmpl.get("autoCompactEnabled") is True, (
         "template autoCompactEnabled:true 누락 — 서브에이전트 compaction 허용(T-0458·발단 T-0431)"
     )
@@ -109,8 +93,41 @@ def test_hook_registration_sets_asymmetric_both_autocompact_on():
         "template 에 중복 auto-compact 토글 env.DISABLE_AUTO_COMPACT 잔존 — 정본은 top-level "
         "autoCompactEnabled 하나(T-0300 dedup·claude-code-guide 확인)"
     )
-    assert "precompact_capture_hook.sh" in json.dumps(tmpl["hooks"]["PreCompact"])
-    assert (TEMPLATE_CLAUDE / "precompact_capture_hook.sh").is_file()
+    for tree in (ROOT_CLAUDE, TEMPLATE_CLAUDE):
+        assert not (tree / "precompact_capture_hook.sh").exists(), tree
+    for name in ("ctx_stop_hook.py", "ctx_guard.py"):
+        assert not (ROOT_CLAUDE / name).exists(), f"루트 압축 체인 사본 잔존: {name}"
+    assert "PreCompact" not in tmpl["_comment"] and "PostCompact" not in tmpl["_comment"]
+
+
+def _load_pm_import():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "pm_import_t0953_parity", REPO / ".project_manager" / "tools" / "pm_import.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_t0953_stale_compaction_entries_show_retired_rows():
+    """기존 채택자 settings 에 남은 압축 이벤트 항목은 기능 표에 `retired` 로 보인다(AT-015)."""
+    pm_import = _load_pm_import()
+    latest = json.loads((TEMPLATE_CLAUDE / "settings.json").read_text(encoding="utf-8"))
+    project = json.loads(json.dumps(latest))
+    project["hooks"]["PreCompact"] = [{"hooks": [{
+        "type": "command",
+        "command": "${CLAUDE_PROJECT_DIR}/.claude/precompact_capture_hook.sh", "timeout": 30,
+    }]}]
+    project["hooks"]["PostCompact"] = [{"hooks": [{
+        "type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/ctx_stop_hook.sh",
+        "timeout": 15,
+    }]}]
+
+    rows = {row.name: row for row in pm_import._adapter_feature_rows(
+        ".claude/settings.json", project, latest)}
+
+    assert rows["hooks.PreCompact"].verdict == pm_import.ADAPTER_FEATURE_RETIRED == "retired"
+    assert rows["hooks.PostCompact"].verdict == "retired"
 
 
 # ── byte-identical 어댑터 산출물 (hook·skills·agents) ─────────────────────────

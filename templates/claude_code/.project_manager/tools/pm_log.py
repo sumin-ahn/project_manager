@@ -12,7 +12,7 @@
     python3 .project_manager/tools/pm_log.py migrate [--dry-run]
     python3 .project_manager/tools/pm_log.py ctx-guidance --band nudge|nudge2|final|precompact [--json]
     python3 .project_manager/tools/pm_log.py checkpoint --task NAME [--trigger compaction|manual]
-    python3 .project_manager/tools/pm_log.py snapshot [--cwd PATH] [--json]
+    python3 .project_manager/tools/pm_log.py snapshot [--session-id ID] [--json]
 
 명령:
   tail                  — current.md 의 마지막 `## [..]` entry 만 출력 (의미단위 읽기 헬퍼).
@@ -870,7 +870,10 @@ HANDOFF_TASK_MODE_IDENTITY_SOURCES = frozenset({
 
 
 def resolve_snapshot_identity(pm_home: Path, cwd: Path) -> tuple[str | None, str]:
-    """cwd lease → 단일 활성 task 순으로 snapshot 정체성을 해소한다.
+    """cwd lease → 단일 활성 task 순으로 pm_handoff·ticket_finish 무인자 진입의 정체성을 해소한다.
+
+    압축 경로(checkpoint·snapshot)는 이 함수를 부르지 않는다 — 그 경로는 `resolve_session_task`
+    하나로 판정한다.
 
     두 층이 전부다 — "장부가 아무 말도 없으면 이 홈은 단일 정체성"이라는 층은 없다(그 추론은
     실제로 슬롯을 여럿 쓰는 홈에서 오귀속이었다). 세션은 자기 작업 폴더에서 돌고 그 폴더가 곧
@@ -902,21 +905,69 @@ def resolve_snapshot_identity(pm_home: Path, cwd: Path) -> tuple[str | None, str
     return None, IDENTITY_SOURCE_UNRESOLVED
 
 
-def _pm_state_path(pm_home: Path, task: str, source: str) -> Path:
+# 압축 경로 세션 판정의 미해소 사유(고정 문구). 하네스 훅이 이 줄을 실패 신호로 사람에게 싣는다.
+SESSION_TASK_REASON_NO_SESSION = "세션 ID 없음"
+SESSION_TASK_REASON_NO_TASK = "이 세션이 연 task 없음 (세션 {session})"
+SESSION_TASK_REASON_MANY_TASKS = "이 세션이 연 task 여럿 (세션 {session}: {names})"
+
+
+def resolve_session_task(
+    pm_home: Path, session_id: str | None,
+) -> tuple[str | None, str | None]:
+    """압축 경로(checkpoint·snapshot)의 정체성 — 하네스 세션 ID 로 그 세션이 연 task 를 찾는다.
+
+    입력은 세션 ID 하나다. cwd·열린 task 수·위임 환경 변수는 보지 않는다. task 기록
+    (`worktree-leases.json` 최상위 `tasks[]`)의 `session` 은 부트스트랩이 남긴 하네스 세션 ID
+    원값이고, 그 값이 같은 항목이 정확히 1개일 때만 해소다. 반환은 해소면 ``(task, None)``,
+    미해소면 ``(None, 사유)``.
+
+    task 기록 파일이 없는 것만 "task 없음" 이다. 읽기 실패·JSON 파손·모양이 다른 파일은 판정할
+    근거가 아니라 고장이므로 예외로 끝난다.
+    """
+    wanted = session_id.strip() if isinstance(session_id, str) else ""
+    if not wanted:
+        return None, SESSION_TASK_REASON_NO_SESSION
+    ledger = Path(pm_home) / ".project_manager" / ".local" / "worktree-leases.json"
+    try:
+        text = _read_text_shared(ledger, encoding="utf-8")
+    except FileNotFoundError:
+        return None, SESSION_TASK_REASON_NO_TASK.format(session=wanted)
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError(f"{ledger}: task 기록 파일 최상위가 JSON 객체가 아님")
+    rows = data.get("tasks", [])
+    if not isinstance(rows, list):
+        raise ValueError(f"{ledger}: task 기록 `tasks` 가 목록이 아님")
+    names = sorted(
+        row["name"] for row in rows
+        if isinstance(row, dict)
+        and isinstance(row.get("name"), str) and row["name"].strip()
+        and isinstance(row.get("session"), str)
+        and row["session"].strip() == wanted
+    )
+    if not names:
+        return None, SESSION_TASK_REASON_NO_TASK.format(session=wanted)
+    if len(names) > 1:
+        return None, SESSION_TASK_REASON_MANY_TASKS.format(
+            session=wanted, names=", ".join(names),
+        )
+    return names[0], None
+
+
+def _pm_state_path(pm_home: Path, task: str) -> Path:
     """해소된 task 의 pm_state 경로를 반환한다."""
     return (
         Path(pm_home) / ".project_manager" / ".local" / "tasks" / task / "pm_state.md"
     )
 
 
-def _identity_section(pm_home: Path, cwd: Path, task: str, source: str) -> str:
-    state_path = _pm_state_path(pm_home, task, source)
+def _identity_section(pm_home: Path, session_id: str, task: str) -> str:
+    state_path = _pm_state_path(pm_home, task)
     return (
         f"{_SNAPSHOT_IDENTITY_HEADING}\n"
         f"- task: {task}\n"
-        f"- 해소: {source}\n"
+        f"- 세션: {session_id.strip()}\n"
         f"- PM 홈: {Path(pm_home).resolve(strict=False)}\n"
-        f"- 현재 cwd: {Path(cwd).resolve(strict=False)}\n"
         f"- pm_state: {state_path}\n"
     )
 
@@ -1037,7 +1088,7 @@ def _todo_section(pm_home: Path, task: str) -> str:
     return "## 열린 todo (파일 실측)\n" + "\n".join(lines) + "\n"
 
 
-def _recovery_section(task: str, source: str) -> str:
+def _recovery_section(task: str) -> str:
     bootstrap = f"python3 .project_manager/tools/pm_bootstrap.py --task {task}"
     return (
         "## 복구 포인터\n"
@@ -1437,25 +1488,24 @@ def cap_snapshot_sections(
 
 def build_snapshot(
     pm_home: Path,
-    cwd: Path,
+    session_id: str | None,
     *,
     monotonic=time.monotonic,
 ) -> tuple[str | None, str | None]:
     """주입 최종 텍스트를 조립한다. 반환은 ``(text, warning)``.
 
-    장부 조회는 subprocess·lock 0 (진행 중 작업 절의 WIP git 프로브만 상한 3회의 유일한 예외 —
-    `_wip_slot_line` 참고). 절 순서: 전언 경고(always-keep) → 장부 포인터 →
-    진행 중 작업 → 열린 todo → 복구 포인터.
+    정체성은 `resolve_session_task`(세션 판정) 하나다. 장부 조회는 subprocess·lock 0 (진행 중
+    작업 절의 WIP git 프로브만 상한 3회의 유일한 예외 — `_wip_slot_line` 참고). 절 순서: 전언
+    경고(always-keep) → 장부 포인터 → 진행 중 작업 → 열린 todo → 복구 포인터.
     """
     started = monotonic()
-    identity_name, source = resolve_snapshot_identity(pm_home, cwd)
+    identity_name, reason = resolve_session_task(pm_home, session_id)
     if identity_name is None:
-        # 처방은 부트스트랩·귀속 쓰기 거부와 **같은 한 문장**이다(문구 사본 0).
         return None, (
-            "[pm-snapshot] 정체성 미해소 — cwd lease 불일치·활성 task 비단일; 재주입 생략. "
-            + _load_identity_args().NO_WORK_FOLDER_REMEDY
+            f"[pm-snapshot] 세션 task 미해소: {reason}. 재주입 생략. "
+            "이 세션에서 pm_bootstrap.py --task 이름 으로 task 를 연다."
         )
-    identity = _identity_section(pm_home, cwd, identity_name, source)
+    identity = _identity_section(pm_home, session_id, identity_name)
     sections: list[str] = []
     # 전언 경고는 always-keep 접두 — 뒤 절부터 폐기하는 timeout 분기·총량 cap 경로 모두에서
     # ``required=always_keep`` 로 cap_snapshot_sections 에 보존 경계를 명시한다.
@@ -1485,18 +1535,17 @@ def build_snapshot(
         return cap_snapshot_sections(
             identity, sections[:always_keep], required=always_keep,
         ), None
-    sections.append(_recovery_section(identity_name, source))
+    sections.append(_recovery_section(identity_name))
     return cap_snapshot_sections(identity, sections, required=always_keep), None
 
 
 def cmd_snapshot(args: argparse.Namespace) -> int:
-    cwd = Path(args.cwd).resolve(strict=False) if args.cwd else Path.cwd().resolve(strict=False)
     pm_home = owning_pm_home(REPO)
-    text, warning = build_snapshot(pm_home, cwd)
+    text, warning = build_snapshot(pm_home, args.session_id)
     if warning:
         print(warning, file=sys.stderr)
     if not text:
-        # 주입할 것을 만들지 못한 실행(정체성 미해소)은 실패다. 실패에 반쪽 답(무응답 엔벨로프)을
+        # 주입할 것을 만들지 못한 실행(세션 task 미해소)은 실패다. 실패에 반쪽 답(무응답 엔벨로프)을
         # 내지 않는다: 소비자가 그 한 줄을 "답" 으로 세면 조용한 생략이 되고, 셸 폴백 배선
         # (`snapshot --json || printf …`)에서는 엔벨로프가 두 줄이 된다. stdout 0줄 + rc 1 이면 세 하네스가 같은 실패를 같은 자리에서 본다.
         return 1
@@ -1685,14 +1734,11 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
     task = getattr(args, "task", None)
     identity_name = task
     if not task:
-        cwd = Path(getattr(args, "cwd", None) or Path.cwd()).resolve(strict=False)
-        identity_name, source = resolve_snapshot_identity(REPO, cwd)
+        identity_name, reason = resolve_session_task(REPO, getattr(args, "session_id", None))
         if identity_name is None:
-            # 트리거 특례 없음 — 훅은 stdio 를 버리므로 rc 0 생략은 아무도 못 본다
-            # (기록 0건이 성공으로 위장한다). 미해소는 어느 트리거에서든 rc 1 이다.
             print(
-                "[중단] checkpoint 정체성 미해소 — cwd lease 불일치·활성 task 비단일; "
-                "--task NAME을 명시하세요.",
+                f"[중단] checkpoint 세션 task 미해소: {reason}. --task 이름 을 주거나 "
+                "이 세션에서 pm_bootstrap.py --task 이름 으로 task 를 연다.",
                 file=sys.stderr,
             )
             return 1
@@ -1828,15 +1874,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_ctx_guidance)
 
     p = sub.add_parser("checkpoint", help="compaction/manual 경계 보충 박제 골격 append")
-    p.add_argument("--task", metavar="이름", help="checkpoint 귀속 task 이름 (생략 시 cwd/task 장부 해소)")
+    p.add_argument("--task", metavar="이름", help="checkpoint 귀속 task 이름 (생략 시 --session-id 로 그 세션이 연 task)")
     p.add_argument(
         "--trigger",
         choices=("compaction", "manual"),
         default="manual",
         help="박제 계기 (기본값: manual)",
     )
-    p.add_argument("--cwd", metavar="PATH", help="훅이 발화한 cwd (정체성·PM 홈 앵커 해소)")
-    p.add_argument("--session-id", help="하네스 세션 식별자 (compaction dedup 1순위 키)")
+    p.add_argument("--session-id", help="하네스 세션 식별자 (task 판정 입력·compaction dedup 1순위 키)")
     p.add_argument("--boundary-id", help="하네스가 관측한 compaction 경계 식별자")
     p.add_argument("--phase", choices=("pre", "post"), help="compaction hook phase")
     p.add_argument(
@@ -1846,7 +1891,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_checkpoint)
 
     p = sub.add_parser("snapshot", help="compaction 뒤 재주입할 PM 정체성·장부 포인터 출력")
-    p.add_argument("--cwd", metavar="PATH", help="훅이 발화한 cwd (기본: 프로세스 cwd)")
+    p.add_argument("--session-id", help="하네스 세션 식별자 (그 세션이 연 task 를 찾는다)")
     p.add_argument(
         "--json", action="store_true",
         help="Codex hook envelope(systemMessage/suppressOutput) JSON 하나로 출력",
@@ -1868,39 +1913,28 @@ def main(argv: list[str] | None = None) -> int:
     # snapshot/checkpoint가 등록 worktree에서 발화하면 PM 홈의 동기화된 엔진으로 치환한다.
     # tail/archive 등 기존 명령은 자기 앵커 의미를 보존한다.
     if args.cmd in {"snapshot", "checkpoint"}:
-        cwd = Path(getattr(args, "cwd", None) or Path.cwd()).resolve(strict=False)
         pm_home = owning_pm_home(REPO)
         if pm_home != REPO.resolve(strict=False):
-            hook_fail_soft = (
-                args.cmd == "snapshot"
-                or getattr(args, "trigger", None) == "compaction"
-            )
             canonical = pm_home / ".project_manager" / "tools" / "pm_log.py"
             if not canonical.is_file():
                 print(
                     f"[pm-{args.cmd}] PM 홈 엔진 부재 — 경계 처리를 생략: {canonical}",
                     file=sys.stderr,
                 )
-                return 0 if hook_fail_soft else 2
-            forwarded = list(raw_argv)
-            if "--cwd" not in forwarded:
-                forwarded.extend(("--cwd", str(cwd)))
+                return 2
             timeout = SNAPSHOT_TIMEOUT_SECONDS if args.cmd == "snapshot" else 5.0
             try:
                 result = subprocess.run(
-                    [sys.executable, str(canonical), *forwarded],
+                    [sys.executable, str(canonical), *raw_argv],
                     cwd=str(pm_home),
                     timeout=timeout,
                     check=False,
                 )
-                # snapshot/compaction은 훅 계약상 fail-soft다. 사람이 실행한 manual checkpoint는
-                # 이름 검증·로그 부재·엔진 오류의 하위 rc를 그대로 돌려줘 성공으로 오보고하지 않는다.
-                return 0 if hook_fail_soft else result.returncode
             except (OSError, subprocess.TimeoutExpired) as exc:
-                if hook_fail_soft:
-                    return 0
                 print(f"[pm-{args.cmd}] PM 홈 엔진 실행 실패: {exc}", file=sys.stderr)
                 return 1
+            # 자식 rc 를 그대로 돌려준다 — 훅이 실패 사유를 사람에게 보이려면 실패가 실패로 와야 한다.
+            return result.returncode
     return args.fn(args)
 
 

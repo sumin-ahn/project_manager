@@ -788,9 +788,6 @@ print(sys.argv[3].join(str(part) for part in eval(sys.argv[4])))
 # 어댑터는 값을 해석하지 않는다 — 비율·적용 한도는 압축 한도 기록에서 온다(T-0943). 여기서는 구표기
 # 차단과, 신표기 conf 를 그대로 읽는지만 본다.
 _PY_ADAPTERS = (
-    pytest.param(".claude/ctx_guard.py",
-                 '(conf["ctx.precompact_at_pct"], conf["harness.claude.ctx_window_tokens"])',
-                 "10 54321", id="claude-canonical"),
     pytest.param("templates/claude_code/.claude/ctx_guard.py",
                  '(conf["ctx.precompact_at_pct"], conf["harness.claude.ctx_window_tokens"])',
                  "10 54321", id="claude-shipped"),
@@ -861,7 +858,6 @@ def test_opencode_js_core_stops_on_legacy_conf_before_resolving_values(
 
 
 @pytest.mark.parametrize("relpath", [
-    ".claude/ctx_guard.py",
     "templates/claude_code/.claude/ctx_guard.py",
     "templates/codex/.codex/pm_orch_codex.py",
     "templates/opencode/.opencode/pm_orch_opencode.py",
