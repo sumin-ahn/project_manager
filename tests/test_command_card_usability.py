@@ -208,6 +208,8 @@ _SCRIPT_OPS = {"pm_handoff.py": "handoff", "ticket_finish.py": "finish"}
 # 첫 하위 명령이 곧 조작인 도구 — 카드의 작업 폴더 전환은 `worktree_pool.py switch` 다([[T-0954]]).
 # board.py 에는 switch 하위 명령이 없어 조작 이름이 겹치지 않는다.
 _SUBCOMMAND_TOOLS = frozenset({"board.py", "worktree_pool.py"})
+# `board.py cluster` 는 다음 토큰이 이 이름일 때만 묶음 결속 조작이다 — `cluster show` 는 읽기라 반복 무해.
+_CLUSTER_BINDING_SUBCOMMAND = "new"
 
 
 def _op_command(inv: str, op: str, tid: str = "T-1") -> str:
@@ -366,7 +368,9 @@ def _executed_board_ops(command: str) -> list[str]:
             tok_base = tok.rsplit("/", 1)[-1]
             if tok_base in _SUBCOMMAND_TOOLS:
                 if pos + 1 < len(args) and _OP_NAME_RE.match(args[pos + 1]):
-                    ops.append(args[pos + 1])
+                    op = args[pos + 1]
+                    if op != "cluster" or args[pos + 2:pos + 3] == [_CLUSTER_BINDING_SUBCOMMAND]:
+                        ops.append(op)
                 break
             if tok_base in _SCRIPT_OPS:
                 ops.append(_SCRIPT_OPS[tok_base])
@@ -1065,6 +1069,28 @@ def test_judge_commands_passes_clean_first_try_sequence():
     commands = [f"{inv}/board.py list --mine", *_clean_sequence(inv)]
     ok, detail = _judge_commands(commands)
     assert ok, detail
+
+
+def test_judge_commands_ignores_read_only_cluster_show():
+    """리뷰 F-002 — 읽기 전용 `board.py cluster show` 는 묶음 결속 조작으로 세지 않는다.
+
+    모든 조작이 첫 시도에 1회씩 실행된 명령열에 묶음 확인 한 줄이 섞여도 통과하고, `cluster new`
+    를 두 번 실행한 명령열은 여전히 재시도로 실패한다.
+    """
+    inv = "python3 .project_manager/tools"
+    show = f"{inv}/board.py cluster show card"
+    assert _executed_board_ops(show) == []
+    commands = []
+    for command in _clean_sequence(inv):
+        commands.append(command)
+        if _executed_board_ops(command) == ["cluster"]:
+            commands.append(show)
+    ok, detail = _judge_commands(commands)
+    assert ok, detail
+
+    retried = [*_clean_sequence(inv), _op_command(inv, "cluster", "T-0001")]
+    ok, detail = _judge_commands(retried)
+    assert not ok and "cluster 재시도 ×2" in detail
 
 
 def test_judge_commands_flags_help_invocation():

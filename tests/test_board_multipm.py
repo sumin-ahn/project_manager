@@ -868,6 +868,27 @@ def test_t0954_init_other_repo_name_leaves_coordinates_empty(init_board):
     assert (row["git"], row["base"]) == ("", "")
 
 
+def test_t0954_self_row_base_ignores_same_named_tag(init_board):
+    """리뷰 F-001 — 현재 브랜치와 같은 이름의 태그가 있어도 base 는 순수 브랜치명이다.
+
+    `symbolic-ref --short` 는 이 형상에서 `heads/<이름>` 을 준다. 설치(init)와 갱신 이관 두 경로
+    모두 full ref 에서 `refs/heads/` 만 벗긴 이름을 기록해야 한다.
+    """
+    repo = init_board.REPO
+    branch = "trunk"
+    _git(repo, "init", "-q", "-b", branch)
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "base")
+    _git(repo, "tag", branch)
+    assert _git(repo, "symbolic-ref", "--short", "HEAD").stdout.strip() == f"heads/{branch}"
+
+    assert init_board.cmd_init(_init_args()) == 0
+    assert _areas_row(init_board, repo.name)["base"] == branch
+
+    _write_areas_rows(init_board, [(repo.name, "", "")])
+    assert init_board.fill_self_repo_row(write=True) == f"repo={repo.name} | git={repo} | base={branch}"
+    assert _areas_row(init_board, repo.name)["base"] == branch
+
+
 def _write_areas_rows(board, rows: list[tuple[str, str, str]]) -> bytes:
     """(repo, git, base) 행들로 areas.md 를 새로 쓰고 그 바이트를 돌려준다."""
     board.AREAS_FILE.unlink(missing_ok=True)

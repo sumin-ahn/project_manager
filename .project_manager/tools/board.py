@@ -13250,21 +13250,28 @@ _AREAS_CELL_BREAKERS = ("|", "\n", "\r")
 _INIT_REPO_NAME_CANONICAL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
+# `git symbolic-ref HEAD` 의 브랜치 full ref 접두 — 이 접두 **정확히**를 벗겨야 순수 브랜치명이다
+# (`worktree_pool.current_branch` 와 같은 규칙 · 같은 이름 태그가 있으면 `--short` 는 `heads/` 를 붙인다).
+_SYMREF_BRANCH_PREFIX = "refs/heads/"
+
+
 def self_repo_coordinates() -> tuple[str, str] | None:
     """이 clone 자기 행(폴더 이름 행)에 적을 (git, base) — 값은 이 clone 에서만 나온다.
 
-    git = `origin` 주소(없으면 이 clone 의 절대경로), base = 현재 브랜치(`symbolic-ref` 라 커밋
-    0개에서도 해소된다). 다음이면 None(호출부가 빈 칸 + `_SELF_COORDINATES_UNKNOWN` 한 줄):
+    git = `origin` 주소(없으면 이 clone 의 절대경로), base = 현재 브랜치(`symbolic-ref HEAD` 의 full
+    ref 에서 `refs/heads/` 접두만 벗긴 이름 · 커밋 0개에서도 해소되고 같은 이름 태그와 무관하다).
+    다음이면 None(호출부가 빈 칸 + `_SELF_COORDINATES_UNKNOWN` 한 줄):
     이 폴더가 자기 git 저장소의 최상위가 아니다(git 저장소가 아니거나 상위 저장소 안) · HEAD 가
     브랜치를 가리키지 않는다(detached) · 값에 areas 셀을 깨는 문자(`|`·개행)가 있다.
     """
     rc, top = _git_scope_run(REPO, ["rev-parse", "--show-toplevel"])
     if rc != 0 or Path(top.strip()).resolve() != REPO.resolve():
         return None
-    rc, branch = _git_scope_run(REPO, ["symbolic-ref", "--short", "-q", "HEAD"])
-    base = branch.strip() if rc == 0 else ""
-    if not base:
+    rc, ref = _git_scope_run(REPO, ["symbolic-ref", "-q", "HEAD"])
+    ref = ref.strip()
+    if rc != 0 or not ref.startswith(_SYMREF_BRANCH_PREFIX):
         return None
+    base = ref[len(_SYMREF_BRANCH_PREFIX):]
     rc, origin = _git_scope_run(REPO, ["remote", "get-url", "origin"])
     git = origin.strip() if rc == 0 and origin.strip() else str(REPO)
     if any(ch in value for value in (git, base) for ch in _AREAS_CELL_BREAKERS):

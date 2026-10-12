@@ -1126,6 +1126,12 @@ def test_t0943_opencode_target_minimum_and_output_cap(local_conf, tmp_path, monk
 T0955_EXCLUDED = "opencode 사용 한도 대상에서 뺀 모델(공급자 연결 설정 없음)"
 T0955_NOT_APPLIED = "opencode 사용 한도를 반영하지 않았습니다 (쓸 수 있는 모델 없음)"
 T0955_SHIPPED_LIMIT = {"context": 200000, "input": 200000, "output": 32768}
+T0955_CATALOG_HINT = "모델 목록 캐시가 없으니 opencode 를 한 번 실행해 모델 목록을 받은 뒤"
+
+
+def _t0955_excluded_without_catalog(cache_home: Path) -> str:
+    """모델 목록 캐시 파일이 없을 때의 제외 알림 앞부분 — 원인에 캐시 부재와 그 경로를 적는다."""
+    return f"opencode 사용 한도 대상에서 뺀 모델(모델 목록 캐시 없음: {cache_home / 'opencode' / 'models.json'})"
 
 
 def _t0955_record(root: Path, local_conf) -> dict:
@@ -1211,8 +1217,50 @@ def test_t0955_no_usable_opencode_model_is_not_applied(local_conf, tmp_path, mon
     assert T0955_NOT_APPLIED in err, err
     if case == "no-provider-block":
         assert T0955_EXCLUDED not in err, err
+    elif case == "cache-absent":
+        assert f"{_t0955_excluded_without_catalog(cache)}: ollama/glm-5.2:cloud" in err, err
     else:
         assert f"{T0955_EXCLUDED}: ollama/glm-5.2:cloud" in err, err
+
+
+def test_t0955_cache_absent_exclusion_names_missing_catalog(local_conf, tmp_path, monkeypatch, capsys):
+    """리뷰 F-001 — 모델 목록 캐시 파일이 없으면 제외 알림의 원인이 캐시 부재와 그 경로이고, 남은 행이 0개면
+    opencode 를 한 번 실행해 목록을 받으라는 처방이 붙는다. 판정 규칙은 그대로다(캐시가 없으면 목록 밖).
+
+    선택 model 키 anthropic/claude-x(설정 블록 없음 · `opencode auth login` 연결 형상)를 둔 프로젝트에서
+    전역 설정에 연결된 ollama 가 없으면 남은 행 0개, 있으면 그 모델로 반영한다."""
+    engine = _load("pm_import")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    shipped = TEMPLATE_FILES["opencode"][0].read_text(encoding="utf-8")
+    selected = shipped.replace('  "$schema": "https://opencode.ai/config.json",\n',
+                               '  "$schema": "https://opencode.ai/config.json",\n  "model": "anthropic/claude-x",\n', 1)
+    assert selected != shipped
+    root = _project(tmp_path, harnesses=("opencode",), conf=T0943_CONF,
+                    texts={".opencode/opencode.jsonc": selected})
+    excluded = _t0955_excluded_without_catalog(cache)
+    unconnected_global = tmp_path / "unconnected-global"
+    unconnected_global.mkdir()
+    capsys.readouterr()
+
+    assert _apply(engine, root, unconnected_global) == ()
+    err = capsys.readouterr().err
+    assert f"{excluded}: " in err and "anthropic/claude-x" in err and "ollama/glm-5.2:cloud" in err, err
+    assert T0955_NOT_APPLIED in err and T0955_CATALOG_HINT in err, err
+    assert "공급자 연결 설정 없음" not in err, err
+
+    ollama = _T0943OllamaShow({"glm-5.2:cloud": 1048576})
+    try:
+        global_dir = _global_dir(tmp_path, {"opencode.json": json.dumps({"provider": {"ollama": {
+            "npm": "@ai-sdk/openai-compatible", "options": {"baseURL": ollama.origin}}}})})
+        _apply(engine, root, global_dir)
+    finally:
+        ollama.close()
+    err = capsys.readouterr().err
+    assert f"{excluded}: anthropic/claude-x" in err, err
+    assert "공급자 연결 설정 없음" not in err and T0955_NOT_APPLIED not in err, err
+    assert "opencode" in _t0955_record(root, local_conf)["harnesses"]
 
 
 def _t0955_closed_port() -> int:
@@ -1281,7 +1329,8 @@ def test_t0955_opencode_install_without_provider_settings(local_conf, tmp_path):
     assert document["provider"]["ollama"]["models"]["glm-5.2:cloud"]["limit"] == T0955_SHIPPED_LIMIT
     assert document["compaction"]["reserved"] == 20000
     assert "opencode" not in _t0955_record(dest, local_conf)["harnesses"]
-    assert f"{T0955_EXCLUDED}: ollama/glm-5.2:cloud" in completed.stderr, output
+    excluded = _t0955_excluded_without_catalog(tmp_path / "xdg-cache")
+    assert f"{excluded}: ollama/glm-5.2:cloud" in completed.stderr, output
 
 
 def test_t0955_update_apply_without_provider_settings(tmp_path, monkeypatch, capsys):

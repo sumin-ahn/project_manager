@@ -8257,17 +8257,26 @@ def ctx_budget_status(dest_root, values) -> dict:
 
 
 def _opencode_rows_left(models: dict, rows: list) -> bool:
-    """opencode 조회 행이 남았는가 — 대상 중 행이 없는 모델(공급자 연결 설정 없음)을 표준오류 한 줄로
-    알리고, 남은 행이 없으면 반영하지 않는다는 줄을 더한다. 행의 형식은 `_harness_ctx_entry` 가 본다."""
+    """opencode 조회 행이 남았는가 — 대상 중 행이 없는 모델을 표준오류 한 줄로 알리고, 남은 행이 없으면
+    반영하지 않는다는 줄을 더한다. 행의 형식은 `_harness_ctx_entry` 가 본다.
+
+    모델 목록 캐시 파일이 없으면 공급자 연결 여부를 알 수 없어 models.dev 공급자 모델도 빠진다 — 그때는
+    원인을 공급자 연결 설정 없음 대신 캐시 부재와 그 경로로 적고, 미반영 줄에 opencode 를 한 번 실행해
+    목록을 받으라는 처방을 더한다."""
+    rerun = _load_local_conf()._CTX_RERUN
+    catalog_path = _opencode_model_catalog_path()
+    catalog_missing = not catalog_path.is_file()
     listed = {(row.get("provider"), row.get("id")) for row in rows if isinstance(row, dict)}
     excluded = [f"{provider}/{model}" for provider, model in models if (provider, model) not in listed]
     if excluded:
-        print(f"opencode 사용 한도 대상에서 뺀 모델(공급자 연결 설정 없음): {', '.join(excluded)}",
-              file=sys.stderr)
+        cause = f"모델 목록 캐시 없음: {catalog_path}" if catalog_missing else "공급자 연결 설정 없음"
+        print(f"opencode 사용 한도 대상에서 뺀 모델({cause}): {', '.join(excluded)}", file=sys.stderr)
     if rows:
         return True
-    print("opencode 사용 한도를 반영하지 않았습니다 (쓸 수 있는 모델 없음). 공급자 연결 설정을 넣은 뒤 "
-          f"{_load_local_conf()._CTX_RERUN}.", file=sys.stderr)
+    catalog_hint = (f" 모델 목록 캐시가 없으니 opencode 를 한 번 실행해 모델 목록을 받은 뒤 {rerun}."
+                    if catalog_missing else "")
+    print(f"opencode 사용 한도를 반영하지 않았습니다 (쓸 수 있는 모델 없음). 공급자 연결 설정을 넣은 뒤 "
+          f"{rerun}.{catalog_hint}", file=sys.stderr)
     return False
 
 
@@ -8446,6 +8455,11 @@ _CODEX_APP_SERVER_QUERY = ("codex", "app-server", "--stdio")
 _OPENCODE_MODEL_CATALOG = ("opencode", "models.json")
 
 
+def _opencode_model_catalog_path() -> Path:
+    """opencode 모델 목록 캐시 파일 — 조회(`_ctx_opencode_capacity`)와 제외 알림이 같은 경로를 본다."""
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache", *_OPENCODE_MODEL_CATALOG)
+
+
 def _ctx_codex_capacity(root, documents, models) -> list:
     """Codex C = floor(실효 창 × 유효 비율 ÷ 100) — 앱 서버의 실효 설정과 Codex 모델 캐시의 그 모델 행."""
     responses = _ctx_native_protocol(_CODEX_APP_SERVER_QUERY, root, [
@@ -8536,7 +8550,7 @@ def _ctx_opencode_capacity(root, documents, models) -> list:
     OpenAI 호환(Ollama) 주소의 모델 정보. 공급자 연결 설정이 없는 모델(`_ctx_opencode_unconnected`)은
     조회하지 않고 행을 내지 않는다."""
     output_max, positive = _ctx_opencode_output_max(), _load_local_conf()._ctx_positive
-    catalog_path = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache", *_OPENCODE_MODEL_CATALOG)
+    catalog_path = _opencode_model_catalog_path()
     catalog = json.loads(_read_bytes_shared(catalog_path).decode("utf-8")) if catalog_path.is_file() else {}
     if not isinstance(catalog, dict):
         raise ValueError(f"opencode 모델 목록({catalog_path}) 형식 오류")
