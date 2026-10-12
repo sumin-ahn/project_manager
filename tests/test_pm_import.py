@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
@@ -6227,3 +6228,89 @@ def test_sync_adapter_config_accept_reports_failure_rc_without_success_claim(
     assert rc == 1, "원장 기록 실패인데 성공 rc"
     assert "ledger-failed" in captured.err, captured.err
     assert "자동 갱신 궤도" not in captured.out, f"거짓 성공 안내: {captured.out!r}"
+
+
+# ── 새 채택자의 첫 작업 폴더 (T-0954) — 설치가 자기 행 git·base 를 기록해 안내 명령이 동작한다 ──
+
+
+def _t0954_run(dest: Path, *argv: str) -> subprocess.CompletedProcess:
+    """그 채택자 사본의 엔진을 서브프로세스로 부른다(cwd=dest · stdin 닫음 · rc 단언은 호출부)."""
+    return subprocess.run(
+        [sys.executable, *argv], cwd=dest, stdin=subprocess.DEVNULL, capture_output=True,
+        text=True, encoding="utf-8", errors="replace")
+
+
+def _t0954_git(dest: Path, *argv: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(dest), *argv], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
+
+
+def _t0954_self_row(dest: Path) -> dict[str, str]:
+    """채택자 areas.md 의 폴더 이름 행(헤더 칼럼명 → 값) — 정확히 1행이어야 한다."""
+    lines = [line.strip() for line in
+             (dest / ".project_manager" / "areas.md").read_text(encoding="utf-8").splitlines()
+             if line.strip().startswith("|") and not set(line.strip()) <= set("|- ")]
+    header = [cell.strip() for cell in lines[0].strip("|").split("|")]
+    rows = [dict(zip(header, (cell.strip() for cell in line.strip("|").split("|"))))
+            for line in lines[1:]]
+    own = [row for row in rows if row.get("repo") == dest.name]
+    assert len(own) == 1, own
+    return own[0]
+
+
+def _t0954_guided_command(dest: Path) -> subprocess.CompletedProcess:
+    """엔진이 안내하는 첫 작업 폴더 명령 `pm-config worktree add <repo> --user-ack <repo>`."""
+    tool = str(dest / ".project_manager" / "tools" / "pm_config.py")
+    return _t0954_run(dest, tool, "worktree", "add", dest.name, "--user-ack", dest.name)
+
+
+@requires_git
+def test_t0954_guided_first_work_folder_then_claim(tmp_path):
+    """AT-005 — 실 `pm_import --new` 설치가 자기 행에 git(홈 절대경로)·base(현재 브랜치)를 적고,
+    첫 커밋 뒤 안내 명령 그대로 rc 0 → task new·alloc → new·promote·claim rc 0."""
+    from _manager_home import make_pm_home
+    dest = make_pm_home(tmp_path / "adopter")
+    name = dest.name
+    branch = _t0954_git(dest, "symbolic-ref", "--short", "HEAD").stdout.strip()
+    row = _t0954_self_row(dest)
+    assert (row["git"], row["base"]) == (str(dest.resolve()), branch)
+
+    _t0954_git(dest, "config", "user.email", "t0954@example.invalid")
+    _t0954_git(dest, "config", "user.name", "t0954")
+    assert _t0954_git(dest, "add", "-A").returncode == 0
+    assert _t0954_git(dest, "commit", "-q", "-m", "first").returncode == 0
+
+    guided = _t0954_guided_command(dest)
+    assert guided.returncode == 0, guided.stdout + guided.stderr
+    assert (dest / "work" / f"{name}_1").is_dir()
+    bare_head = subprocess.run(
+        ["git", "--git-dir", str(dest / ".repos" / f"{name}.git"), "rev-parse", "--verify", "HEAD"],
+        capture_output=True, text=True, encoding="utf-8")
+    assert bare_head.returncode == 0, bare_head.stderr
+
+    tools = dest / ".project_manager" / "tools"
+    for argv in (
+        (str(tools / "pm_config.py"), "task", "new", "demo"),
+        (str(tools / "pm_config.py"), "alloc", name, "--task", "demo"),
+        (str(tools / "board.py"), "new", "first ticket", "--task", "demo"),
+        (str(tools / "board.py"), "promote", "T-0001"),
+        (str(tools / "board.py"), "claim", "T-0001", "--task", "demo"),
+    ):
+        completed = _t0954_run(dest, *argv)
+        assert completed.returncode == 0, f"{argv}\n{completed.stdout}\n{completed.stderr}"
+    assert list((dest / ".project_manager" / "wiki" / "tickets" / "claimed").glob("T-0001-*.md"))
+
+
+@requires_git
+def test_t0954_zero_commit_guided_command_refuses_without_bare(tmp_path):
+    """AT-006 — 커밋 없이 안내 명령을 실행하면 rc 1 과 '커밋이 없다', bare·작업 폴더 없음."""
+    from _manager_home import make_pm_home
+    dest = make_pm_home(tmp_path / "adopter")
+
+    guided = _t0954_guided_command(dest)
+
+    assert guided.returncode == 1, guided.stdout + guided.stderr
+    assert "커밋이 없다" in guided.stderr
+    assert not (dest / ".repos" / f"{dest.name}.git").exists()
+    work = dest / "work"
+    assert not work.exists() or not any(work.iterdir())
