@@ -109,12 +109,14 @@ def _known_ctx_installation(tmp_path,monkeypatch):
     return folder
 
 
-def known_ctx_module(module, *, capacity=200000, context=1000000):
-    """모듈(과 그 모듈이 싣는 pm_import·pm_update)의 모델 한도 조회를 고정 값으로 바꾼다."""
+def known_ctx_module(module, *, capacity=200000, context=1000000, model="fixture-model"):
+    """모듈(과 그 모듈이 싣는 pm_import·pm_update)의 모델 한도 조회를 고정 값으로 바꾼다.
+
+    `model` 은 설치가 기록할 모델 이름이다 — 실제 세션을 띄우는 테스트는 그 세션 모델을 준다."""
     namespace = {}
     exec(_KNOWN_CTX_READER_PY, namespace)
     if hasattr(module, '_read_harness_ctx_metadata'):
-        namespace['install_fixture_capacity'](module, capacity, context)
+        namespace['install_fixture_capacity'](module, capacity, context, model)
     if getattr(module, '_known_ctx_loader', False):
         return module
     for name in ('_load_pm_import', '_load_pm_update', '_load_module'):
@@ -124,7 +126,7 @@ def known_ctx_module(module, *, capacity=200000, context=1000000):
         def loaded(*args, _original=original, **kwargs):
             result = _original(*args, **kwargs)
             if any(hasattr(result, key) for key in ('_read_harness_ctx_metadata', '_load_pm_import', '_load_pm_update', '_load_module')):
-                known_ctx_module(result, capacity=capacity, context=context)
+                known_ctx_module(result, capacity=capacity, context=context, model=model)
             return result
         setattr(module, name, loaded)
     module._known_ctx_loader = True

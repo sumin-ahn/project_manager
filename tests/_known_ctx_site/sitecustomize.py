@@ -62,8 +62,8 @@ def fixture_threshold(root, window):
     return window
 
 
-def install_fixture_capacity(module, capacity=200000, context=1000000):
-    module._read_harness_ctx_metadata = fixture_reader(capacity, context)
+def install_fixture_capacity(module, capacity=200000, context=1000000, model='fixture-model'):
+    module._read_harness_ctx_metadata = fixture_reader(capacity, context, model)
     module._ctx_claude_threshold = fixture_threshold
     return module
 

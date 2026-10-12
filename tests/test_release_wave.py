@@ -1467,7 +1467,9 @@ def test_release_wave_claude_final_nudge_driver_marker_contract(tmp_path):
     계약을 결정적으로 검증한다. claude 는 subprocess cwd 를 존중한다(``--dir`` 불요).
     API 과금은 transcript 생성용 turn1 1콜만 발생한다.
     """
-    dest = _import_adopter(tmp_path, "claude")
+    # 설치가 기록하는 모델을 이 테스트의 실제 세션 모델로 둔다 — 고정 한도 픽스처 기본 이름이면
+    # UserPromptSubmit 에 모델 불일치 경고(T-0943)가 실려 중복 넛지 단언과 섞인다.
+    dest = _import_adopter(tmp_path, "claude", ctx_model=CLAUDE_MODEL)
     _append_tiny_ctx_window(dest)
     test_start = time.time()  # transcript 탐색 스코프(과거 run 잔재 배제·reviewer should-fix).
 

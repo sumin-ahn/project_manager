@@ -78,6 +78,8 @@ _GROWTH_PIPELINE = (
 _CROSS_TEST_FILE = "tests/test_live_cross_growth.py"
 _CROSS_TEST_COMMAND = f"python3 -m pytest {_CROSS_TEST_FILE} -q -n auto"
 _CROSS_FULL_COMMAND = "python3 -m pytest tests/ -q -n auto"
+# 성장 경로의 묶음 브랜치 — 리뷰 입력은 기준 브랜치와의 merge-base 이후 이 브랜치 변경이다.
+_GROWTH_CLUSTER_BRANCH = "task/live-cross-growth"
 
 # 이 파일 release 마커 수(file-local pin·마커 소실/개명 방어). 전역 커플드-pin 등재는 orchestrator 소유.
 _EXPECTED_RELEASE_TESTS = 4
@@ -124,15 +126,22 @@ def _seed_repo(tmp_path: Path) -> tuple[Path, Path]:
 
 
 # ── 위임 실행 (in-process main·실 subprocess 스폰) ────────────────────────────────
-def _delegate(pd, monkeypatch, capsys, repo: Path, prompt: Path, harness: str, model: str,
+def _delegate(pd, monkeypatch, capsys, repo: Path, prompt: Path | None, harness: str, model: str,
               reasoning: str | None, output_dir: Path, timeout: int, *,
               role: str = "researcher", ticket: str | None = None,
-              resume_from: str | None = None) -> tuple[int, str, str]:
+              resume_from: str | None = None, cluster: str | None = None,
+              focus: Path | None = None) -> tuple[int, str, str]:
     """pm_delegate.main() 을 in-process 로 호출(local_config=enabled monkeypatch·실 run_fn 스폰).
 
-    reply 는 stdout(print)로 나오므로 capsys 로 회수한다. rc·reply·stderr 반환."""
+    `cluster` 를 주면 묶음 리뷰 경로다 — 프롬프트는 엔진이 조립하고 `focus` 파일이 검토 중점으로
+    실린다(`--prompt-file` 없음). reply 는 stdout(print)로 나오므로 capsys 로 회수한다.
+    rc·reply·stderr 반환."""
     monkeypatch.setattr(pd, "local_config", lambda: {"delegate.enabled": "true"})
-    argv = ["--role", role, "--prompt-file", str(prompt), "--cwd", str(repo),
+    if cluster:
+        target = ["--cluster", cluster, "--focus", str(focus)]
+    else:
+        target = ["--prompt-file", str(prompt)]
+    argv = ["--role", role, *target, "--cwd", str(repo),
             "--harness", harness, "--model", model, "--output-dir", str(output_dir),
             "--timeout", str(timeout)]
     if reasoning:
@@ -186,26 +195,25 @@ def _seed_growth_repo(tmp_path: Path, ticket: str) -> tuple[Path, Path]:
         encoding="utf-8",
     )
     # 사본 루트(.local/)는 tracked `.project_manager/.gitignore` 로 무시돼야 prepare 가 받는다
-    # (채택자 출하 형상과 같게 — ignore 규칙 출처 검증).
+    # (채택자 출하 형상과 같게 — ignore 규칙 출처 검증). 실 운영의 코드 트리는 PM 홈과 다른 슬롯이다 —
+    # 이 픽스처는 PM 홈 = 코드 트리라 PM 홈 쓰기(엔진 사본·board 라운드)가 리뷰 준비·돌려받기의
+    # 작업 트리 변경으로 보이지 않게 함께 ignore 한다.
     ignore = repo / ".project_manager" / ".gitignore"
-    ignore.write_text(".local/\n", encoding="utf-8")
+    ignore.write_text(".local/\ntools/\nwiki/\n", encoding="utf-8")
     if _GIT is not None:
         subprocess.run([_GIT, "-C", str(repo), "add", ".project_manager/.gitignore"], check=True)
         subprocess.run([_GIT, "-C", str(repo), "commit", "-q", "-m", "seed ignore"], check=True)
+    base_branch = current_branch(repo)
+    # 묶음 브랜치에서 일한다 — developer 돌려받기 커밋이 이 브랜치에 쌓여 리뷰 입력이 된다.
+    subprocess.run(
+        [_GIT, "-C", str(repo), "checkout", "-q", "-b", _GROWTH_CLUSTER_BRANCH], check=True)
     source = tickets / f"{ticket}-live-cross-growth.md"
     source.write_text(_growth_ticket_text(ticket), encoding="utf-8")
-    # 라운드 준비는 묶음 장부의 예산·기준 브랜치 선언만 읽는다 — 크기 1 장부를 함께 깐다.
+    # 라운드 준비는 묶음 장부의 예산·브랜치 선언을 읽는다 — 크기 1 장부를 함께 깐다.
     write_cluster_ledger(
-        repo / ".project_manager" / "wiki", ticket, base_branch=current_branch(repo))
+        repo / ".project_manager" / "wiki", ticket, base_branch=base_branch,
+        branch=_GROWTH_CLUSTER_BRANCH)
     return repo, source
-
-
-
-def _stage_reviewable_change(repo: Path) -> None:
-    """리뷰 라운드의 실 입력 — 리뷰할 staged 변경 1건(읽기 역할 preflight 가 요구하는 그 값)."""
-    reviewed = repo / "reviewed.txt"
-    reviewed.write_text("live cross review target\n", encoding="utf-8")
-    subprocess.run([_GIT, "-C", str(repo), "add", "reviewed.txt"], check=True)
 
 
 def _record_growth_review_disposition(pd, source: Path, ticket: str) -> str:
@@ -286,9 +294,7 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
             )
             final_contract = "After the edit, reply exactly DONE.\n"
         elif role == "code-reviewer":
-            # 리뷰 입력은 리뷰할 diff 가 있는 트리다 — developer 회수가 작업물을 커밋한 뒤라
-            # 리뷰 직전에 staged 변경을 하나 둔다(codex read 역할 preflight 의 실 입력).
-            _stage_reviewable_change(repo)
+            # 리뷰 입력은 developer 돌려받기가 묶음 브랜치에 커밋한 변경이다(작업 트리 변경 0).
             zero_payload = json.dumps(
                 {"version": pd.PM_REVIEW_VERSION, "findings": [], "confirmations": []},
                 ensure_ascii=False, separators=(",", ":"),
@@ -346,19 +352,29 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
                 "ACCEPTED-ONLY DELTA:\n" + (fix_delta or "(empty: reviewer finding zero accepted)\n")
             )
             final_contract = "After the edit, reply with exactly DONE.\n"
-        prompt.write_text(
+        brief = (
             "The delegation preamble gives one absolute writable round file path. Open that file, keep its "
             "first header line. " + edit_contract
             + "The spec.md and rounds/ directory next to it are read-only. "
-            + final_contract,
-            encoding="utf-8",
+            + final_contract
         )
         spec_before_stage = source.read_bytes()
-        rc, reply, err = _delegate(
-            pd, monkeypatch, capsys, repo, prompt, target, model, reasoning,
-            output_dir, timeout, role=role, ticket=ticket,
-            resume_from=ticket if stage == 4 and role == "developer" else None,
-        )
+        if role == "code-reviewer":
+            # 리뷰는 묶음 단위다 — 본문 계약은 검토 중점(--focus)으로 싣는다. 파일은 슬롯 밖에 둬
+            # 리뷰 준비의 작업 트리 변경 0 조건을 깨지 않는다.
+            focus = tmp_path / f"growth-{target}-{stage:02d}-{role}-focus.md"
+            focus.write_text(brief, encoding="utf-8")
+            rc, reply, err = _delegate(
+                pd, monkeypatch, capsys, repo, None, target, model, reasoning,
+                output_dir, timeout, role=role, cluster=f"C-{ticket}", focus=focus,
+            )
+        else:
+            prompt.write_text(brief, encoding="utf-8")
+            rc, reply, err = _delegate(
+                pd, monkeypatch, capsys, repo, prompt, target, model, reasoning,
+                output_dir, timeout, role=role, ticket=ticket,
+                resume_from=ticket if stage == 4 and role == "developer" else None,
+            )
         tail = f"\n--- stderr ---\n{err[-1800:]}\n--- reply ---\n{reply[-1000:]}"
         assert rc == 0, (
             f"{_CROSS_MAIN_FOR_TARGET[target]}→{target} {role} rc={rc}" + tail

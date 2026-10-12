@@ -90,17 +90,20 @@ def _make_prompt(entry_doc: str) -> str:
     )
 
 
-def _load_pm_import():
+def _load_pm_import(*, ctx_model: str = "fixture-model"):
     spec = importlib.util.spec_from_file_location("pm_import", TOOLS / "pm_import.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     from _manager_home import known_ctx_module
-    return known_ctx_module(mod)
+    return known_ctx_module(mod, model=ctx_model)
 
 
-def _import_adopter(tmp_path: Path, harness: str) -> Path:
-    """harness adopter 를 tmp 에 import (hermetic·라이브 models 조회 차단)."""
-    pm_import = _load_pm_import()
+def _import_adopter(tmp_path: Path, harness: str, *, ctx_model: str = "fixture-model") -> Path:
+    """harness adopter 를 tmp 에 import (hermetic·라이브 models 조회 차단).
+
+    `ctx_model` 은 고정 한도 픽스처가 기록할 모델 이름이다 — 설치 뒤 실제 세션 모델과 대조하는
+    훅 출력을 단언하는 테스트는 그 세션 모델을 준다."""
+    pm_import = _load_pm_import(ctx_model=ctx_model)
     pm_import._real_models_runner = lambda source: (False, [])
     dest = tmp_path / f"adopter-{harness}"
     rc = pm_import.main(
