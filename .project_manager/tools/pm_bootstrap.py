@@ -373,10 +373,6 @@ _C_BOARD_PROMOTE = _CardCmd("board.py", "promote T-NNNN", ("promote",), ())
 _C_BOARD_SHOW = _CardCmd("board.py", "show T-NNNN", ("show",), ())
 _C_BOARD_LINT = _CardCmd("board.py", "lint", ("lint",), ())
 _C_BOARD_CLAIM = _CardCmd("board.py", "claim T-NNNN", ("claim",), ())
-_C_BOARD_CLUSTER_NEW = _CardCmd(
-    "board.py", "cluster new <이름> --tickets T-NNNN", ("cluster", "new"), ("--tickets",))
-_C_BOARD_TIER = _CardCmd("board.py", "tier T-NNNN pm-direct", ("tier",), ())
-_C_WP_SWITCH = _CardCmd("worktree_pool.py", "switch <slot> task/<이름>", ("switch",), ())
 _C_BOARD_REGRESSION = _CardCmd("board.py", "regression run", ("regression",), ())
 _C_TICKET_FINISH = _CardCmd("ticket_finish.py", "<T-NNNN>", (), ())
 _C_ADDITIONAL_REVIEWER = _CardCmd(
@@ -402,9 +398,8 @@ _CARD_TASK_CLI = (
     # 는 정체성 축이라 실값 보간(suffix)이고 base render 는 `list`(슬롯 카드의 slot-scoped 뷰와 동형).
     # `_C_BOARD_LIST_MINE` = user-wide(전 task·직교 렌즈).
     _C_BOARD_LIST, _C_BOARD_LIST_MINE, _C_PC_ALLOC, _C_PC_RELEASE, _C_PC_TASK_PREFIX,
-    _C_PC_TASK_END, _C_PC_TASK_REOPEN, _C_BOARD_NEW, _C_BOARD_PROMOTE, _C_BOARD_TIER,
-    _C_BOARD_CLUSTER_NEW, _C_BOARD_CLAIM, _C_BOARD_SHOW, _C_BOARD_LINT, _C_WP_SWITCH,
-    _C_BOARD_REGRESSION,
+    _C_PC_TASK_END, _C_PC_TASK_REOPEN, _C_BOARD_NEW, _C_BOARD_PROMOTE,
+    _C_BOARD_CLAIM, _C_BOARD_SHOW, _C_BOARD_LINT, _C_BOARD_REGRESSION,
     _C_ADDITIONAL_REVIEWER,
     _C_TICKET_FINISH, _C_PM_HANDOFF_TASK, _C_PM_LOG_TAIL,
 )
@@ -4064,11 +4059,6 @@ class PmBootstrap:
         lines.append(cmd(
             _C_PC_RELEASE, "작업완료 반납(소유검사 이 task 명의 슬롯만)", suffix=ti,
         ))
-        lines.append(
-            "  ⚠ 코드 변경을 머지하려면 작업 폴더 2개를 빌린다: 통합 폴더(base_branch 를 계속 든다)와 "
-            "작업 폴더(묶음 브랜치로 switch). 2개를 빌린 동안 new·cluster new·claim·regression 에는 "
-            "`--repo <repo> --slot <N>` 을 붙여 폴더를 지목한다."
-        )
         lines.append("")
 
         # task 정체성 — prefix 지정/해제 + task 종료(일괄 반납·아카이브). name 은 위치인자(보간).
@@ -4096,30 +4086,16 @@ class PmBootstrap:
         lines.append(cmd(
             _C_BOARD_PROMOTE, "draft → 정식 승격(본문 채운 뒤·claim 의 전제)",
         ))
-        lines.append(cmd(
-            _C_BOARD_TIER,
-            "리뷰 없이 종결할 티켓 표시(open/claimed · touches 2개 이하 · 코드 변경엔 테스트 동반)",
-        ))
         lines.append("")
 
         # wave 운영 (스킬 primary) — 강등 backbone 은 task 정체성(`--task`) 보간. 슬롯 카드와
         # 동형이나 정체성 축만 slot→task. 숨은전제 ⚠ 는 claim 강등 줄 바로 아래 인접(불변식 2).
         lines.append("# wave 운영 (스킬로 invoke — backbone CLI 엔진은 직접 금지)")
-        lines.append(skill(
-            "/pm-wave-claim T-NNNN", "묶음 선언 + ticket claim + 작업 폴더 전환 · DoD 자족 검증"))
-        lines.append(engine(_C_BOARD_CLUSTER_NEW, suffix=ti))
-        lines.append(
-            "  ⚠ cluster new 는 지목한 폴더의 현재 브랜치를 base_branch(머지 대상)로 적고 "
-            "묶음 브랜치 task/<이름> 을 만든다: 통합 폴더를 지목한다."
-        )
+        lines.append(skill("/pm-wave-claim T-NNNN", "ticket claim — DoD 자족 검증 + claim"))
         lines.append(engine(_C_BOARD_SHOW))
         lines.append(engine(_C_BOARD_LINT))
         lines.append(engine(_C_BOARD_CLAIM, suffix=ti))
         lines.append("  ⚠ claim 은 draft 티켓 거부 — 먼저 `promote T-NNNN`(본문 채운 뒤) 필요.")
-        lines.append(engine(
-            _C_WP_SWITCH,
-            "스킬이 부르는 내부 엔진·직접 금지 · 작업 폴더(<slot>=<repo>_<N>)를 묶음 브랜치로 전환",
-        ))
         lines.append(skill("/pm-regression", "비차단 백그라운드 회귀 pre-warm + 완료 알림"))
         lines.append(engine(_C_BOARD_REGRESSION, suffix=ti))
         lines.append(skill("/pm-wave-finish T-NNNN", "ticket 완료 기록 — 회귀+log+board+stage"))
@@ -4130,10 +4106,6 @@ class PmBootstrap:
             "스킬이 부르는 내부 엔진·직접 금지 — 내부서 board.py complete 수행",
             suffix=ti,
         ))
-        lines.append(
-            "  ⚠ 종결 선검사: 완료 조건(DoD) 체크박스 전부 `- [x]` · 바뀐 파일은 티켓 `touches` 에 선언 · "
-            "돌려받은 리뷰 라운드 또는 tier pm-direct."
-        )
         lines.append(skill(
             "/pm-handoff",
             f"task 세션 종료 7단계 자동화 — 무인자(스킬은 인자를 안 받음 · PM 이 --task {task_name} 을 채워 backbone 호출)",

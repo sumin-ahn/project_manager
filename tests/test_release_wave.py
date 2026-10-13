@@ -70,12 +70,6 @@ _GROWTH_PIPELINE = (
     (_DEV_SUBAGENT, "LIVE_TICKET_FINAL_FIX_PERSISTED"),
 )
 _WAVE_TEST_FILE = "tests/test_release_wave_probe.py"
-# full wave 의 작업 폴더 형상([[T-0954]]) — task `wave` 가 작업 폴더 2개를 보유한다. 1번은 base_branch 를
-# 계속 드는 통합 폴더, 2번은 묶음 브랜치 `task/wave` 로 전환한 작업 폴더다(커맨드 카드의 통합 폴더 형상).
-_WAVE_TASK = "wave"
-_WAVE_CLUSTER = "wave"
-_WAVE_INTEGRATION_SLOT = 1
-_WAVE_WORK_SLOT = 2
 _WAVE_TARGETED_COMMAND = f"python3 -m pytest {_WAVE_TEST_FILE} -q -n auto"
 _WAVE_FULL_COMMAND = "python3 -m pytest tests/ -q -n auto"
 
@@ -365,16 +359,7 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
     파일(`tickets/rounds/<T-NNNN>/NN-<역할>.md`)의 고유 sentinel과 developer의 probe.txt를 side-effect로
     관측한다. `section-add`는 여기서 쓰지 않는다 — 슬롯 없는 준비라 위임 경로와 겹치면 빈 라운드가
     하나 더 예약된다. 기존 Claude/OpenCode full-wave 호출을 재사용해 별도 native 중복 테스트를 만들지 않는다.
-
-    작업 폴더 형상은 `_guided_adopter(folders=2, task=wave)` 다([[T-0954]]·커맨드 카드의 통합 폴더 형상):
-    1번 폴더가 base_branch 를 계속 드는 통합 폴더, 2번 폴더가 묶음 브랜치 `task/wave` 로 전환한 작업
-    폴더다. 2개를 빌린 task 는 `--task` 만으로 폴더를 고를 수 없어 발행·claim 은 `--slot 2`, 묶음 선언은
-    `--slot 1` 로 지목한다. 생성 회귀 테스트는 작업 폴더에서 홈 보드를 보지 못하므로 자기 파일 기준
-    저장소 루트의 probe.txt 만 확인한다 — 정본 라운드 확인은 `_assert_wave_side_effects` 가 홈 보드에서 한다.
     """
-    repo = f"adopter-{harness}"
-    work_folder = f"work/{repo}_{_WAVE_WORK_SLOT}"
-    work_branch = f"task/{_WAVE_CLUSTER}"
     architect_payload = json.dumps({
         "version": _ARCHITECT_TEST_VERSION,
         "tests": [{
@@ -418,35 +403,26 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
         "prompt must include the nested BEGIN EXACT REVIEWER BODY through END EXACT REVIEWER BODY content "
         "below verbatim, without paraphrasing or changing its schema. Before completion, self-check spawned "
         "role counts exactly architect=1, developer=2, code-reviewer=1 and stop on any mismatch. "
-        f"The board task `{_WAVE_TASK}` already holds two work folders of repo `{repo}`: slot "
-        f"{_WAVE_INTEGRATION_SLOT} is the integration folder (it keeps the merge target branch) and slot "
-        f"{_WAVE_WORK_SLOT} is the work folder. Because the task holds two folders, pass "
-        f"`--repo {repo} --slot <N>` wherever a board command names the folder. "
         "Then run a full release wave: "
-        "(1) create exactly one ticket titled 'release wave probe' with the board tool, using "
-        f"`--task {_WAVE_TASK} --repo {repo} --slot {_WAVE_WORK_SLOT} "
-        f"--touches {PROBE_FILE},{_WAVE_TEST_FILE}`, "
-        f"(2) claim it with `--task {_WAVE_TASK} --repo {repo} --slot {_WAVE_WORK_SLOT}`, then before "
-        "ROUND 01 bind the merge target and move the work folder: run "
-        f"`python3 .project_manager/tools/board.py cluster new {_WAVE_CLUSTER} --tickets <ticket> "
-        f"--task {_WAVE_TASK} --repo {repo} --slot {_WAVE_INTEGRATION_SLOT}` and then "
-        f"`python3 .project_manager/tools/worktree_pool.py switch {repo}_{_WAVE_WORK_SLOT} {work_branch}`, "
+        "(1) create exactly one ticket titled 'release wave probe' (touches README.md) with the "
+        "board tool, "
+        "(2) claim it, "
         "(3) execute exactly these four human rounds in order. For every round use pm_delegate.py ticket "
         "prepare with the stated role, pass the returned absolute round file to the matching native "
-        "subagent, then always ticket harvest before advancing. Every ticket prepare and ticket harvest "
-        f"takes `--cwd` set to the absolute path of the work folder `{work_folder}` under this project "
-        "root, and the subagents write code only in that folder:\n"
+        "subagent, then always ticket harvest before advancing:\n"
         "ROUND 01 architect: use replacement/truncation, never append. Preserve the seeded first header "
         "line and make every byte from line 2 through EOF equal the body between BEGIN/END here:\n"
         f"BEGIN EXACT ARCHITECT BODY\n{architect_body}END EXACT ARCHITECT BODY\n"
         "Before replying, reopen the file and verify exact body equality, exactly one architect test "
         "contract block, exactly one architect sentinel, and zero `<...>` placeholder tokens. If the old "
         "skeleton follows the sentinel or any check fails, rewrite line 2 through EOF and reread it.\n"
-        "ROUND 02 developer: implement that contract in the work folder. Create probe.txt with exactly "
-        f"'{PROBE_TEXT}' and create {_WAVE_TEST_FILE}. The test checks only the content of probe.txt at "
-        "the repository root derived from its own file, `Path(__file__).resolve().parents[1]`; the work "
-        "folder does not see the project board, so the test must not read tickets or rounds. "
-        "It must never refer "
+        "ROUND 02 developer: implement that contract. Create probe.txt with exactly "
+        f"'{PROBE_TEXT}' and create {_WAVE_TEST_FILE}. The test must derive this ticket id at runtime from "
+        "the union of stable filesystem entries `.project_manager/wiki/tickets/claimed/T-*.md` and "
+        "`.project_manager/wiki/tickets/done/T-*.md` (exactly one release-wave ticket). Do not use the "
+        "default `board.py list` view for this lookup because it omits done tickets after completion. "
+        "Inspect the stable canonical "
+        ".project_manager/wiki/tickets/rounds/<ticket>/01-architect.md plus probe.txt. It must never refer "
         "to .local/delegate-ticket-copies, an absolute temp path, a random run id, UUID, or hash. "
         "After writing the test, reopen its source and verify the literal `.local/delegate-ticket-copies` "
         "occurs zero times in the entire file bytes, including comments and docstrings; describe this ban "
@@ -459,10 +435,10 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
         f"reread unless it has exactly those two rows, contains `{_WAVE_FULL_COMMAND}` once, contains "
         f"neither `{_WAVE_TARGETED_COMMAND}` nor a placeholder, and the whole body contains "
         f"{_GROWTH_PIPELINE[1][1]} exactly once. Never fabricate a count.\n"
-        f"ROUND 03 code-reviewer: the review unit is the cluster `{_WAVE_CLUSTER}`, so prepare it with "
-        f"`python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster C-{_WAVE_CLUSTER} --role "
-        "code-reviewer --cwd <work folder absolute path>` and pass the returned `prompt` file path together "
-        "with the absolute round file to the code-reviewer subagent. "
+        "ROUND 03 code-reviewer: the review unit is the ticket's size-1 cluster, so prepare it with "
+        "`python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster C-<ticket> --role "
+        "code-reviewer --cwd <slot>` and pass the returned `prompt` file path together with the absolute "
+        "round file to the code-reviewer subagent. "
         "Review probe.txt and its regression test. If the known stable fixture is "
         "correct, use replacement/truncation, preserve the first header, and make line 2 through EOF equal "
         "the body between BEGIN/END here:\n"
@@ -500,10 +476,7 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
         "(5) do not run a separate resolve command (the closer resolves the review gate). "
         "Do not search source or help for another gate command. Check all ticket DoD "
         "boxes, update the status row, append one ticket entry to log/current.md, then run exactly "
-        f"`python3 .project_manager/tools/ticket_finish.py <ticket> --task {_WAVE_TASK} --no-pytest` "
-        f"(the ticket belongs to cluster `{_WAVE_CLUSTER}`, so a direct `board.py complete` is rejected; the "
-        "closer merges the work folder branch into the integration folder; --no-pytest reuses the full "
-        "regression this wave already recorded). "
+        "`python3 .project_manager/tools/ticket_finish.py <ticket> --no-pytest` using the sole local lease (publishing put the ticket in a size-1 cluster, so a direct `board.py complete` is rejected without the closer binding; --no-pytest reuses the full regression this wave already recorded). "
         "Do not do further discovery after that command succeeds. "
         "Reply with the ticket id when the ticket is done."
     )
@@ -541,68 +514,37 @@ def _collect_subagent_types(stdout: str) -> list[str]:
     return types
 
 
-def _wave_base_branch(dest: Path) -> str:
-    """묶음 `wave` 의 base_branch(통합 브랜치) — `board.py cluster show` 의 `base_branch:` 줄."""
-    shown = subprocess.run(
-        [sys.executable, str(dest / ".project_manager" / "tools" / "board.py"),
-         "cluster", "show", _WAVE_CLUSTER],
-        cwd=dest, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
-    )
-    assert shown.returncode == 0, f"cluster show {_WAVE_CLUSTER} rc={shown.returncode}\n{shown.stderr}"
-    values = [line.split(":", 1)[1].strip() for line in shown.stdout.splitlines()
-              if line.strip().startswith("base_branch:")]
-    assert len(values) == 1, shown.stdout
-    return values[0]
-
-
-def _integration_file(dest: Path, base: str, relpath: str) -> str | None:
-    """통합 브랜치 `base` 에 머지된 파일 내용 — 공유 bare 에서 `git show` (없으면 None)."""
-    shown = subprocess.run(
-        ["git", "--git-dir", str(dest / ".repos" / f"{dest.name}.git"), "show", f"{base}:{relpath}"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
-    )
-    return shown.stdout if shown.returncode == 0 else None
-
-
 def _assert_wave_side_effects(dest: Path, proc: subprocess.CompletedProcess, harness: str) -> None:
-    """full wave side-effect 단언 — developer 산출이 통합 브랜치에 머지·ticket 이 done/ 도달.
+    """full wave side-effect 단언 — developer 가 probe.txt 작성·ticket 이 done/ 도달.
 
-    probe.txt(내용 'hello from dev') = developer 서브에이전트가 위임받아 구현했다는 증거이고, 그것이
-    묶음 `wave` 의 base_branch(통합 브랜치)에 있어야 종결의 머지까지 끝난 것이다([[T-0954]]·통합 폴더
-    형상). 지정 테스트 재실행은 그 브랜치를 든 통합 폴더에서 한다. done/ 도달·라운드 순서·sentinel 은
-    홈 보드를 본다. 모두 출력 phrasing 비결정에 강건한 side-effect.
+    probe.txt(내용 'hello from dev') = developer 서브에이전트가 위임받아 구현했다는 증거. done/ 도달 =
+    new→claim→complete 전이 완주(complete sync-gate 통과). 둘 다 출력 phrasing 비결정에 강건한 side-effect.
     """
     tail = (
         f"--- {harness} stdout(tail) ---\n{proc.stdout[-2000:]}\n"
         f"--- stderr(tail) ---\n{proc.stderr[-1000:]}"
     )
-    base = _wave_base_branch(dest)
-    assert base == f"{dest.name}_{_WAVE_INTEGRATION_SLOT}", (
-        f"묶음 {_WAVE_CLUSTER} 의 base_branch {base!r} 가 통합 폴더 브랜치가 아니다.\n" + tail
+    probe_path = dest / PROBE_FILE
+    assert probe_path.exists(), (
+        f"실 {harness} full wave 후 {PROBE_FILE} 부재 — developer 서브에이전트 위임/구현 실패.\n" + tail
     )
-    probe = _integration_file(dest, base, PROBE_FILE)
-    assert probe is not None, (
-        f"실 {harness} full wave 후 통합 브랜치 {base} 에 {PROBE_FILE} 부재 — developer 위임/구현 "
-        "또는 종결 머지 실패.\n" + tail
-    )
-    assert probe.strip() == PROBE_TEXT, (
+    assert probe_path.read_text(encoding="utf-8").strip() == PROBE_TEXT, (
         f"{PROBE_FILE} 내용이 '{PROBE_TEXT}' 아님 — developer 가 다르게 구현.\n" + tail
     )
-    wave_test_text = _integration_file(dest, base, _WAVE_TEST_FILE)
-    assert wave_test_text is not None, (
-        f"architect 지정 회귀 {_WAVE_TEST_FILE} 가 통합 브랜치 {base} 에 없다.\n" + tail
-    )
-    assert PROBE_FILE in wave_test_text, "release probe가 probe.txt 를 확인하지 않음.\n" + tail
+    wave_test = dest / _WAVE_TEST_FILE
+    assert wave_test.is_file(), f"architect 지정 회귀 {_WAVE_TEST_FILE} 부재.\n" + tail
+    wave_test_text = wave_test.read_text(encoding="utf-8")
+    assert all(
+        token in wave_test_text for token in (".project_manager", "wiki", "tickets", "rounds")
+    ), "release probe가 canonical round 경로 구성요소를 검증하지 않음.\n" + tail
     assert ".local/delegate-ticket-copies" not in wave_test_text, (
         "release probe가 일회성 delegate copy 경로에 결속됨.\n" + tail
     )
     assert re.search(r"\b[0-9a-f]{32}\b", wave_test_text, re.IGNORECASE) is None, (
         "release probe가 랜덤 run hash를 hardcode함.\n" + tail
     )
-    integration_folder = dest / "work" / base
-    assert integration_folder.is_dir(), f"통합 폴더 {integration_folder} 부재.\n" + tail
     targeted = subprocess.run(
-        _WAVE_TARGETED_COMMAND.split(), cwd=integration_folder, capture_output=True, text=True,
+        _WAVE_TARGETED_COMMAND.split(), cwd=dest, capture_output=True, text=True,
         encoding="utf-8", errors="replace", check=False,
     )
     assert targeted.returncode == 0, (
@@ -647,11 +589,11 @@ def _assert_wave_side_effects(dest: Path, proc: subprocess.CompletedProcess, har
             )
 
 
-def _baseline_adopter(dest: Path) -> None:
-    """설치한 채택자의 첫 커밋을 host 가 만든다 — 작업 폴더(bare clone)와 Codex 의 이후 커밋의 전제.
+def _baseline_codex_adopter(dest: Path) -> None:
+    """Codex native wave 전에 host가 imported adopter의 초기 HEAD/index를 확립한다.
 
-    커밋 0개 원본으로는 작업 폴더를 만들 수 없다(`repo add` 가 빈 bare 를 거부·[[T-0954]]). throwaway
-    adopter에는 remote가 없고, 테스트 전용 identity도 repo config에 남기지 않는다.
+    Codex main은 이후 ticket/round 변경을 직접 commit해야 하므로 initial import만 host 경계에서
+    추적한다. throwaway adopter에는 remote가 없고, 테스트 전용 identity도 repo config에 남기지 않는다.
     """
     commands = (
         ["git", "-C", str(dest), "add", "--all"],
@@ -668,7 +610,7 @@ def _baseline_adopter(dest: Path) -> None:
             check=False,
         )
         assert proc.returncode == 0, (
-            f"adopter baseline 실패: {' '.join(command)}\n"
+            f"Codex native adopter baseline 실패: {' '.join(command)}\n"
             f"stdout={proc.stdout[-1200:]}\nstderr={proc.stderr[-1200:]}"
         )
     assert (dest / ".git" / "index").is_file()
@@ -677,37 +619,6 @@ def _baseline_adopter(dest: Path) -> None:
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
     assert head.returncode == 0 and head.stdout.strip()
-
-
-def _guided_adopter(tmp_path: Path, harness: str, *, task: str, folders: int) -> Path:
-    """엔진 안내 경로 그대로 첫 작업 폴더를 만든 채택자([[T-0954]]).
-
-    설치 → 기준 커밋 → 안내 명령 `pm-config worktree add <repo> --user-ack <repo>` 를 `folders` 번 →
-    `pm-config task new <task>` → `pm-config alloc <repo> --task <task>` 를 `folders` 번. 그 task 가
-    작업 폴더 `folders` 개를 보유한다. 카드 시험(folders=1)과 full wave(folders=2)가 함께 쓴다.
-    """
-    dest = _import_adopter(tmp_path, harness)
-    _baseline_adopter(dest)
-    pm_config = str(dest / ".project_manager" / "tools" / "pm_config.py")
-    repo = dest.name
-    steps = [("worktree", "add", repo, "--user-ack", repo)] * folders
-    steps += [("task", "new", task)]
-    steps += [("alloc", repo, "--task", task)] * folders
-    # 작업 폴더 등록 owner 는 사람 신원(`git config user.email`)에서 온다 — 사용자 git 설정이 없는
-    # 환경에서도 같게 돌도록 그 값을 이 자식 프로세스 환경으로만 준다(repo config 에 남기지 않는다).
-    environment = {**os.environ, "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.email",
-                   "GIT_CONFIG_VALUE_0": "pm-release-fixture@example.invalid"}
-    for step in steps:
-        proc = subprocess.run(
-            [sys.executable, pm_config, *step], cwd=dest, stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
-            env=environment,
-        )
-        assert proc.returncode == 0, (
-            f"안내 경로 {' '.join(step)} rc={proc.returncode}\n"
-            f"stdout={proc.stdout[-1200:]}\nstderr={proc.stderr[-1200:]}"
-        )
-    return dest
 
 
 @pytest.mark.release
@@ -724,7 +635,7 @@ def test_release_wave_claude_full_wave(tmp_path):
     뒤 같은 세션을 낮은 native `--autocompact` 경계로 resume한다. 압축 뒤 첫 주 스레드 훅의
     checkpoint 1건 이상과 snapshot 전달, 모델 sentinel 응답을 함께 확인한다. API 과금.
     """
-    dest = _guided_adopter(tmp_path, "claude", task=_WAVE_TASK, folders=2)
+    dest = _import_adopter(tmp_path, "claude")
     session_id = str(uuid.uuid4())
     checkpoints_before = _compaction_checkpoint_count(dest)
     marker_dir = dest / ".project_manager" / ".local" / "ctx-stop"
@@ -798,7 +709,8 @@ def test_release_wave_claude_full_wave(tmp_path):
 )
 def test_release_wave_codex_native_ticket_growth(tmp_path):
     """실 Codex main이 spawn_agent 3역할로 같은 ticket copy를 성장·harvest하고 done까지 완주한다."""
-    dest = _guided_adopter(tmp_path, "codex", task=_WAVE_TASK, folders=2)
+    dest = _import_adopter(tmp_path, "codex")
+    _baseline_codex_adopter(dest)
     home = make_codex_home(tmp_path)
     try:
         proc = run_codex_exec(
@@ -829,7 +741,7 @@ def test_release_wave_opencode_full_wave(tmp_path):
     두 단계다(T-0953): 첫 실행(`--format json`)에서 루트 세션 ID 를 얻어 task 기록에 남기고, 같은
     세션(`--continue`)으로 압축을 일으킨다 — 압축 기록의 task 는 세션 ID 로 찾는다.
     """
-    dest = _guided_adopter(tmp_path, "opencode", task=_WAVE_TASK, folders=2)
+    dest = _import_adopter(tmp_path, "opencode")
     marker_dir = dest / ".project_manager" / ".local" / "ctx-stop"
     checkpoints_before = _compaction_checkpoint_count(dest)
     checkpoint_markers_before = _compaction_checkpoint_markers(marker_dir)
@@ -1656,26 +1568,17 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     assert "extract `## 회귀`" in prompt
     assert "exactly two" in prompt and "contains neither" in prompt
     assert "rounds resolve --gate" not in prompt
-    assert "ticket prepare --cluster C-wave --role code-reviewer" in re.sub(r"\s+", " ", prompt)
+    assert "ticket prepare --cluster C-<ticket> --role code-reviewer" in re.sub(r"\s+", " ", prompt)
     assert "pass the returned `prompt` file path" in prompt
     assert "Do not search source or help" in prompt
-    assert "ticket_finish.py <ticket> --task wave --no-pytest" in prompt
+    assert "ticket_finish.py <ticket> --no-pytest" in prompt
     # 프롬프트는 "직접 board.py complete 는 거부된다" 를 **설명으로** 담는다. 금지 대상은
     # 그 설명이 아니라 옛 처방 커맨드 자체다.
     assert "board.py complete <ticket> --tests-pass" not in prompt
-    # 통합 폴더 형상([[T-0954]]) — 발행·claim 은 작업 폴더(2번), 묶음 선언은 통합 폴더(1번)를 지목하고
-    # 작업 폴더를 묶음 브랜치로 옮긴 뒤 라운드를 연다.
-    flat = re.sub(r"\s+", " ", prompt)
-    assert "--task wave --repo adopter-claude --slot 2 --touches probe.txt," in flat
-    assert ("board.py cluster new wave --tickets <ticket> --task wave --repo adopter-claude "
-            "--slot 1") in flat
-    assert "worktree_pool.py switch adopter-claude_2 task/wave" in flat
-    assert flat.index("(2) claim it") < flat.index("cluster new wave") < flat.index(
-        "ROUND 01 architect:")
-    assert "absolute path of the work folder `work/adopter-claude_2`" in flat
-    # 생성 회귀 테스트는 작업 폴더에서 홈 보드를 보지 못하므로 probe.txt 만 확인한다(E11).
-    assert "`Path(__file__).resolve().parents[1]`" in prompt
-    assert "must not read tickets or rounds" in prompt
+    assert ".project_manager/wiki/tickets/rounds/<ticket>/01-architect.md" in prompt
+    assert ".project_manager/wiki/tickets/claimed/T-*.md" in prompt
+    assert ".project_manager/wiki/tickets/done/T-*.md" in prompt
+    assert "default `board.py list` view" in prompt and "omits done tickets" in prompt
     assert ".local/delegate-ticket-copies" in prompt and "random run id" in prompt
     assert "including comments and docstrings" in prompt
     assert "occurs zero times in the entire file bytes" in prompt
@@ -1694,7 +1597,7 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     # (4) 새 프로세스 canonical 재조회.
     assert "fresh board.py show process" in prompt
     # (5) complete + sync gate.
-    assert "ticket_finish.py <ticket> --task wave --no-pytest" in prompt
+    assert "ticket_finish.py <ticket> --no-pytest" in prompt
     # 프롬프트는 "직접 board.py complete 는 거부된다" 를 **설명으로** 담는다. 금지 대상은
     # 그 설명이 아니라 옛 처방 커맨드 자체다.
     assert "board.py complete <ticket> --tests-pass" not in prompt
@@ -1752,7 +1655,7 @@ def test_codex_native_fixture_baselines_git_before_isolated_writable_call(
     )
     assert init.returncode == 0
 
-    _baseline_adopter(dest)
+    _baseline_codex_adopter(dest)
 
     tracked = subprocess.run(
         ["git", "-C", str(dest), "ls-files"], capture_output=True, text=True, check=False,
@@ -1780,7 +1683,7 @@ def test_codex_native_fixture_baselines_git_before_isolated_writable_call(
     assert calls[1][calls[1].index("-s") + 1] == "danger-full-access"
 
     live_source = inspect.getsource(test_release_wave_codex_native_ticket_growth)
-    assert live_source.index('_guided_adopter(tmp_path, "codex"') < live_source.index(
+    assert live_source.index("_baseline_codex_adopter(dest)") < live_source.index(
         "run_codex_exec("
     )
     assert 'sandbox="danger-full-access"' in live_source
@@ -1904,8 +1807,8 @@ def test_opencode_full_wave_uses_compaction_evidence_from_initial_run(
 
     monkeypatch.setitem(
         test_release_wave_opencode_full_wave.__globals__,
-        "_guided_adopter",
-        lambda _tmp_path, _harness, *, task, folders: tmp_path,
+        "_import_adopter",
+        lambda _tmp_path, _harness: tmp_path,
     )
     monkeypatch.setitem(
         test_release_wave_opencode_full_wave.__globals__,
@@ -1991,23 +1894,15 @@ def test_record_wave_task_session_keeps_the_bootstrapped_task(tmp_path):
 
 
 def test_wave_side_effect_guard_rejects_ephemeral_run_hash(tmp_path, monkeypatch):
-    """canonical 4라운드는 통과하고 delegate-copy run hash 결속은 역방향으로 거부한다.
-
-    통합 브랜치 판독(`_wave_base_branch`·`_integration_file`)은 대역으로 바꾼다 — 이 시험이 보는
-    것은 판정 규칙이고, 실제 머지 판독은 라이브 full wave 가 친다.
-    """
-    dest = tmp_path / "adopter-hermetic"
-    base = f"{dest.name}_{_WAVE_INTEGRATION_SLOT}"
-    (dest / "work" / base).mkdir(parents=True)
-    merged = {
-        PROBE_FILE: PROBE_TEXT + "\n",
-        _WAVE_TEST_FILE: "# reads probe.txt from Path(__file__).resolve().parents[1]\n",
-    }
-    globals_ = _assert_wave_side_effects.__globals__
-    monkeypatch.setitem(globals_, "_wave_base_branch", lambda _dest: base)
-    monkeypatch.setitem(globals_, "_integration_file",
-                        lambda _dest, branch, relpath: merged.get(relpath) if branch == base else None)
-    done = dest / ".project_manager" / "wiki" / "tickets" / "done"
+    """canonical 4라운드는 통과하고 delegate-copy run hash 결속은 역방향으로 거부한다."""
+    (tmp_path / PROBE_FILE).write_text(PROBE_TEXT + "\n", encoding="utf-8")
+    wave_test = tmp_path / _WAVE_TEST_FILE
+    wave_test.parent.mkdir(parents=True)
+    wave_test.write_text(
+        "# stable Path components: .project_manager wiki tickets rounds\n",
+        encoding="utf-8",
+    )
+    done = tmp_path / ".project_manager" / "wiki" / "tickets" / "done"
     done.mkdir(parents=True)
     (done / "T-0001-release-wave-probe.md").write_text("done\n", encoding="utf-8")
     rounds = done.parent / "rounds" / "T-0001"
@@ -2023,43 +1918,15 @@ def test_wave_side_effect_guard_rejects_ephemeral_run_hash(tmp_path, monkeypatch
     )
     proc = subprocess.CompletedProcess([], 0, "", "")
 
-    _assert_wave_side_effects(dest, proc, "hermetic")
+    _assert_wave_side_effects(tmp_path, proc, "hermetic")
 
-    merged[_WAVE_TEST_FILE] += "# .local/delegate-ticket-copies/T-0001/0123456789abcdef0123456789abcdef\n"
-    with pytest.raises(AssertionError, match="delegate copy"):
-        _assert_wave_side_effects(dest, proc, "hermetic")
-    merged[PROBE_FILE] = None
-    with pytest.raises(AssertionError, match="통합 브랜치"):
-        _assert_wave_side_effects(dest, proc, "hermetic")
-
-
-def test_t0954_wave_adopter_fixture_creates_guided_work_folders(tmp_path):
-    """[[T-0954]] AT-009 — 공용 픽스처가 안내 경로로 작업 폴더 2개를 만들고 task 가 둘 다 보유한다.
-
-    기준 커밋 → 안내 명령 2회 → task new → alloc 2회. 자기 행 git·base 는 설치가 채웠고 공유 bare 의
-    HEAD 가 해소된다(빈 bare 아님).
-    """
-    dest = _guided_adopter(tmp_path, "claude", task=_WAVE_TASK, folders=2)
-    repo = dest.name
-    slots = {f"work/{repo}_{n}" for n in (_WAVE_INTEGRATION_SLOT, _WAVE_WORK_SLOT)}
-    for slot in slots:
-        assert (dest / slot).is_dir(), slot
-    bare_head = subprocess.run(
-        ["git", "--git-dir", str(dest / ".repos" / f"{repo}.git"), "rev-parse", "--verify", "HEAD"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    wave_test.write_text(
+        wave_test.read_text(encoding="utf-8")
+        + "# .local/delegate-ticket-copies/T-0001/0123456789abcdef0123456789abcdef\n",
+        encoding="utf-8",
     )
-    assert bare_head.returncode == 0, bare_head.stderr
-    ledger = json.loads((dest / ".project_manager" / ".local" / "worktree-leases.json")
-                        .read_text(encoding="utf-8"))
-    held = {row["slot"] for row in ledger["leases"]
-            if row.get("session") == _WAVE_TASK and row.get("state") == "leased"}
-    assert held == slots
-    areas = (dest / ".project_manager" / "areas.md").read_text(encoding="utf-8")
-    header = next(line for line in areas.splitlines() if line.startswith("| repo "))
-    columns = [cell.strip() for cell in header.strip().strip("|").split("|")]
-    (row,) = [dict(zip(columns, (cell.strip() for cell in line.strip().strip("|").split("|"))))
-              for line in areas.splitlines() if line.startswith(f"| {repo} ")]
-    assert row["git"] and row["base"], row
+    with pytest.raises(AssertionError, match="delegate copy"):
+        _assert_wave_side_effects(tmp_path, proc, "hermetic")
 
 
 def test_collect_subagent_types_extracts_fixed_pipeline_from_stream_json():

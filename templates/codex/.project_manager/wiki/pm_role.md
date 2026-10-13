@@ -82,7 +82,7 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 |---|---|---|
 | `/pm-bootstrap` | 세션 시작; board·git·차수·log 본문·남은작업 surface | `pm_bootstrap.py` |
 | `/pm-ticket` | 티켓 초안 발행 → architect 점검 라운드(묶음 1회) → 비준·승격 | `board.py new/lint/promote` |
-| `/pm-wave-claim T-NNNN` | 묶음 선언 + DoD self-containment 검증 + 멤버 claim + 작업 폴더 전환 | `board.py cluster/show/lint/claim` · `worktree_pool.py switch` |
+| `/pm-wave-claim T-NNNN` | 묶음 선언 + DoD self-containment 검증 + 멤버 claim | `board.py show/lint/claim` |
 | `/pm-dev-delegate T-NNNN --role developer\|code-reviewer` | 묶음 단계 위임 — 설계·리뷰·fix 는 묶음 1회, 개발은 티켓당 1회 | `Agent` 툴 |
 | `/pm-regression` | 비차단 백그라운드 회귀 pre-warm + 완료 알림 | `board.py regression` |
 | `/pm-qa` | 회귀+lint+git 통합 report | `board.py regression/lint` |

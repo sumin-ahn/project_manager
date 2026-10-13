@@ -1584,10 +1584,6 @@ def _resolve_clone_git_url(name, cli_git, already_registered, board_mod):
     return None
 
 
-# `git ls-remote --exit-code <원본> HEAD` 가 일치 ref 없음(HEAD 없음 = 커밋 0개 원본)에 내는 rc.
-_LS_REMOTE_NO_MATCHING_REF = 2
-
-
 def cmd_repo_add(
     args: argparse.Namespace,
     *,
@@ -1624,8 +1620,6 @@ def cmd_repo_add(
       - 이미 등록 + bare 부재     → clone *진행*(재시도) 후 등록 건너뜀(append-only).
                                     첫 실행이 등록만 남기고 clone 실패한 경우의 복구 경로다.
       - 미등록                    → clone → base 해소·검증 → areas_append.
-    clone 직전에 원본을 `git ls-remote --exit-code <url> HEAD` 로 조회한다 — 커밋 0개(rc 2)나
-    조회 실패면 rc 1 로 멈추고 빈/부분 bare 를 만들지 않는다.
     base 해소가 clone 에 의존하므로(bare HEAD 해소/존재 검증) **clone 을 먼저** 한다 —
     미등록 경로는 clone→base 해소→areas_append. 이미 등록 경로는 base 가 이미 박혀 있어
     재해소하지 않는다(append-only·중복 등록 금지).
@@ -1774,24 +1768,6 @@ def cmd_repo_add(
     if bare_exists:
         print(f"✓ .repos/{name}.git 이미 존재 — clone 건너뜀 (재사용).")
     else:
-        # 원본 조회 — 커밋 0개 원본을 clone 하면 HEAD 없는 빈 bare 가 생기고 엔진 명령으로는
-        # 되돌릴 수 없다. `ls-remote --exit-code` 는 HEAD 가 없으면 rc 2 다(커밋 0개). 그 밖의
-        # 실패(없는 경로·네트워크·권한)도 clone 전에 멈춘다 — 두 경우 모두 mkdir·clone·등록·훅 0.
-        rc, out = runner(["ls-remote", "--exit-code", git_url, "HEAD"])
-        if rc == _LS_REMOTE_NO_MATCHING_REF:
-            print(
-                f"[중단] 원본 {git_url} 에 커밋이 없다. 빈 bare 를 만들지 않는다. 원본 저장소에서 "
-                "먼저 커밋한 뒤 같은 명령을 다시 실행하라 (clone/등록/훅 전혀 하지 않았다).",
-                file=sys.stderr,
-            )
-            return 1
-        if rc != 0:
-            print(
-                f"[중단] 원본 {git_url} 을 조회하지 못했다 (git ls-remote rc={rc}): {out.strip()}. "
-                "주소·네트워크·권한을 확인한 뒤 다시 실행하라 (clone/등록/훅 전혀 하지 않았다).",
-                file=sys.stderr,
-            )
-            return 1
         repos_dir.mkdir(parents=True, exist_ok=True)
         rc, out = runner(["clone", "--bare", git_url, str(bare_path)])
         if rc != 0:
@@ -2210,7 +2186,6 @@ def cmd_worktree_add(
     board=None,
     input_fn: Callable[[str], str] = input,
     is_tty: Callable[[], bool] | None = None,
-    clone_runner: GitRunner | None = None,
 ) -> int:
     """`worktree add <repo> [--test "<cmd>"] [--task <이름>] [--readonly]` — 새 슬롯 생성 + submodule init.
 
@@ -2242,14 +2217,8 @@ def cmd_worktree_add(
     보유한 `lease.slot`(`work/<repo>_<N>`)에서 파싱(신규 조회 0). **자동바인딩 안 함** — 바인딩은
     여전히 사용자 명시 스텝(정체성=대화 맥락·lean multi-PM). 단일 슬롯은 무인자 부트스트랩 힌트.
 
-    **bare 준비**: 모든 검사 뒤 슬롯 생성 직전에 `.repos/<repo>.git` 이 없으면 등록 저장소
-    hydrate(`cmd_repo_add` 를 이름만으로)로 areas `git` 주소에서 bare 를 만든다. 원본에 커밋이
-    없거나 조회에 실패하면 그 rc 로 멈추고 bare 를 만들지 않는다. bare 경로가 있으나 무효면
-    `create_slot` 의 BareRepoMissing 안내가 그대로 나간다(자동 삭제 없음).
-
-    worktree_pool/board/input_fn/is_tty/clone_runner 주입으로 hermetic 테스트(실 worktree add·
-    라이브 input·실 clone 없이 배선·분기 검증). board 는 프롬프트 표시값 areas 해소 재사용용(콘솔이
-    로드한 board 전달). `clone_runner` 는 hydrate 의 `cmd_repo_add` 로 넘기는 파이썬 키워드다(CLI 아님).
+    worktree_pool/board/input_fn/is_tty 주입으로 hermetic 테스트(실 worktree add·라이브 input
+    없이 배선·분기 검증). board 는 프롬프트 표시값 areas 해소 재사용용(콘솔이 로드한 board 전달).
     """
     if not _require_worktree_add_user_ack(args):
         return 1
@@ -2314,14 +2283,6 @@ def cmd_worktree_add(
         if rc:
             return rc
 
-    # bare 부재 = 등록 저장소 hydrate(areas `git` 주소로 clone). 커밋 0개 원본은 그 안에서 거부된다.
-    if not wp.bare_repo_path(args.repo).exists():
-        hydrated = cmd_repo_add(
-            argparse.Namespace(name=args.repo, git=None, test=None, base=None, owner=None,
-                               user=None, protected=None),
-            board=board, clone_runner=clone_runner, worktree_pool=wp)
-        if hydrated:
-            return hydrated
     try:
         lease = wp.create_slot(args.repo, base=base, test_cmd=test_cmd, readonly=readonly,
                                owner_task=task, folders=folders)

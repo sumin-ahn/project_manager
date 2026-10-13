@@ -13250,72 +13250,6 @@ _AREAS_CELL_BREAKERS = ("|", "\n", "\r")
 _INIT_REPO_NAME_CANONICAL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
-# `git symbolic-ref HEAD` 의 브랜치 full ref 접두 — 이 접두 **정확히**를 벗겨야 순수 브랜치명이다
-# (`worktree_pool.current_branch` 와 같은 규칙 · 같은 이름 태그가 있으면 `--short` 는 `heads/` 를 붙인다).
-_SYMREF_BRANCH_PREFIX = "refs/heads/"
-
-
-def self_repo_coordinates() -> tuple[str, str] | None:
-    """이 clone 자기 행(폴더 이름 행)에 적을 (git, base) — 값은 이 clone 에서만 나온다.
-
-    git = `origin` 주소(없으면 이 clone 의 절대경로), base = 현재 브랜치(`symbolic-ref HEAD` 의 full
-    ref 에서 `refs/heads/` 접두만 벗긴 이름 · 커밋 0개에서도 해소되고 같은 이름 태그와 무관하다).
-    다음이면 None(호출부가 빈 칸 + `_SELF_COORDINATES_UNKNOWN` 한 줄):
-    이 폴더가 자기 git 저장소의 최상위가 아니다(git 저장소가 아니거나 상위 저장소 안) · HEAD 가
-    브랜치를 가리키지 않는다(detached) · 값에 areas 셀을 깨는 문자(`|`·개행)가 있다.
-    """
-    rc, top = _git_scope_run(REPO, ["rev-parse", "--show-toplevel"])
-    if rc != 0 or Path(top.strip()).resolve() != REPO.resolve():
-        return None
-    rc, ref = _git_scope_run(REPO, ["symbolic-ref", "-q", "HEAD"])
-    ref = ref.strip()
-    if rc != 0 or not ref.startswith(_SYMREF_BRANCH_PREFIX):
-        return None
-    base = ref[len(_SYMREF_BRANCH_PREFIX):]
-    rc, origin = _git_scope_run(REPO, ["remote", "get-url", "origin"])
-    git = origin.strip() if rc == 0 and origin.strip() else str(REPO)
-    if any(ch in value for value in (git, base) for ch in _AREAS_CELL_BREAKERS):
-        return None
-    return git, base
-
-
-_SELF_COORDINATES_UNKNOWN = (
-    "  ⚠ 자기 행의 git·base 를 기록하지 못했다 (이 폴더가 git 저장소 최상위가 아니거나 HEAD 가 "
-    "브랜치를 가리키지 않는다). areas.md 의 그 행 `git`·`base` 칸을 채운 뒤 `pm-config worktree add` 를 "
-    "실행하라.")
-
-
-def fill_self_repo_row(*, write: bool) -> str | None:
-    """갱신 이관 — 폴더 이름 행의 `git`·`base` 가 **둘 다 비어** 있으면 이 clone 의 값으로 채운다.
-
-    설치(`cmd_init`)가 자기 행에 두 칸을 기록하기 전에 만들어진 채택자의 데이터 이관이다(갱신 완료
-    단계 `pm_update.fill_self_repo_row` 가 부른다). 대상 행이 없거나 어느 한 칸이라도 차 있으면
-    아무것도 하지 않는다(덮어쓰지 않는다·다른 repo 행은 보지 않는다). 같은 이름 행이 둘 이상이면
-    `AreasDuplicateRepo` 를 그대로 올린다(`board.py lint` 의 areas-duplicate-repo 와 같은 처방).
-    값을 정하지 못하면 알림 한 줄 뒤 무동작. `write=False` 는 판정만 한다.
-    반환 = 채운(채울) 값 설명 또는 None.
-    """
-    with board_lock():
-        _header, rows = _parse_areas()
-        own = [row for row in rows if row.get("repo") == REPO.name]
-        if len(own) > 1:
-            raise AreasDuplicateRepo(REPO.name, len(own))
-        if not own or (own[0].get("git") or "").strip() or (own[0].get("base") or "").strip():
-            return None
-        coordinates = self_repo_coordinates()
-        if coordinates is None:
-            print(_SELF_COORDINATES_UNKNOWN, file=sys.stderr)
-            return None
-        git, base = coordinates
-        if write:
-            _areas_set_cell_locked(REPO.name, "git", git)
-            _areas_set_cell_locked(REPO.name, "base", base)
-    if write:
-        # board_lock 밖에서 부른다(락 순서: board_git_lock → board_lock). inline board 는 무동작.
-        _board_git_sync_best_effort("areas 자기 행 git·base", (areas_file(),))
-    return f"repo={REPO.name} | git={git} | base={base}"
-
-
 def _init_repo_name(args: argparse.Namespace) -> str | None:
     """init 이 areas.md 에 등록할 **repo 이름** — `--repo` 명시 > clone 루트 폴더명.
 
@@ -13438,23 +13372,14 @@ def cmd_init(args: argparse.Namespace) -> int:
             # 미해소를 거부한다 — 게이트 위치가 다르다.
             owner = args.owner or override or session_name() or ""
             area_owner = user_name(getattr(args, "user", None))
-            # 자기 행(폴더 이름 등록)이면 git·base 를 함께 싣는다 — 안내 명령(`pm-config worktree
-            # add <repo>`)이 base 와 clone 원 주소를 이 행에서 읽는다. `--repo` 로 폴더와 다른 이름을
-            # 등록하면 싣지 않는다(PM 홈 주소가 제품 행에 적히는 일 방지).
-            self_row = repo_name == REPO.name
-            coordinates = self_repo_coordinates() if self_row else None
-            git, base = coordinates or ("", "")
-            _areas_append_locked(prefix or "", owner, repo=repo_name, area_owner=area_owner,
-                                 git=git, base=base)
+            _areas_append_locked(prefix or "", owner, repo=repo_name, area_owner=area_owner)
             wrote_areas = True
             ao_surface = (area_owner if area_owner else
                           "(미상 — local.conf identity.user= / git user.email 미설정)")
             area_message = (f"✓ areas.md 등록: repo={repo_name} | "
                             f"prefix={prefix or '(빈 칼럼 · none 카테고리)'} | "
                             f"owner={owner or '(미상 — 세션 미바인딩)'} | "
-                            f"area_owner={ao_surface} | git={git or '(없음)'} | base={base or '(없음)'}")
-            if self_row and coordinates is None:
-                print(_SELF_COORDINATES_UNKNOWN, file=sys.stderr)
+                            f"area_owner={ao_surface}")
         elif not prefix:
             area_message = (f"repo {repo_name!r} 이미 등록됨 (areas.md) — 행 추가 없음 "
                             f"(카테고리 {registered_cell or '(빈 칼럼 · none)'}).")
