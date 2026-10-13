@@ -17,6 +17,7 @@ import importlib.util
 import io
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -806,6 +807,134 @@ def test_e2e_no_prefix_board_flow(init_board, monkeypatch):
         id="T-0001", tests_pass=True, allow_missing_log=True,
         allow_untested=False, cluster_close="C-T-0001")) == 0
     assert list((board.TICKETS_DIR / "done").glob("T-0001-*.md"))
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 자기 행 git·base 기록 (T-0954) — 설치(init)와 갱신 이관이 안내 명령의 전제를 채운다
+# ════════════════════════════════════════════════════════════════════════
+
+_T0954_ORIGIN = "https://example.invalid/demo.git"
+
+
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
+    """실제 git 을 cwd 에서 실행한다 — 커밋 신원은 인자로만 준다(사용자 git 설정 무관)."""
+    return subprocess.run(
+        ["git", "-c", "user.email=t0954@example.invalid", "-c", "user.name=t0954", *args],
+        cwd=cwd, capture_output=True, text=True, encoding="utf-8", check=True)
+
+
+def _current_branch(repo: Path) -> str:
+    return _git(repo, "symbolic-ref", "--short", "HEAD").stdout.strip()
+
+
+_UNKNOWN_COORDINATES = "자기 행의 git·base 를 기록하지 못했다"
+
+
+@pytest.mark.parametrize("shape", ["no-origin", "origin", "detached", "not-toplevel"])
+def test_t0954_init_records_self_row_coordinates(init_board, tmp_path, capsys, shape):
+    """AT-001 — init 은 자기 행에 git(origin 주소 · 없으면 절대경로)·base(현재 브랜치)를 싣는다.
+
+    이 폴더가 git 최상위가 아니거나 HEAD 가 브랜치를 가리키지 않으면 두 칸을 비우고 알림 한 줄을
+    표준오류에 낸다(값을 추측하지 않는다).
+    """
+    repo = init_board.REPO
+    git_root = tmp_path if shape == "not-toplevel" else repo
+    _git(git_root, "init", "-q")
+    if shape == "origin":
+        _git(repo, "remote", "add", "origin", _T0954_ORIGIN)
+    if shape == "detached":
+        _git(repo, "commit", "-q", "--allow-empty", "-m", "base")
+        _git(repo, "checkout", "-q", "--detach")
+
+    assert init_board.cmd_init(_init_args()) == 0
+
+    row = _areas_row(init_board, repo.name)
+    err = capsys.readouterr().err
+    if shape in ("no-origin", "origin"):
+        expected_git = _T0954_ORIGIN if shape == "origin" else str(repo)
+        assert (row["git"], row["base"]) == (expected_git, _current_branch(repo))
+        assert _UNKNOWN_COORDINATES not in err
+    else:
+        assert (row["git"], row["base"]) == ("", "")
+        assert _UNKNOWN_COORDINATES in err
+
+
+def test_t0954_init_other_repo_name_leaves_coordinates_empty(init_board):
+    """`--repo` 로 폴더와 다른 이름을 등록하면 git·base 를 싣지 않는다 — PM 홈 주소가 제품 행에
+    적히는 일 방지(설계안 2)."""
+    _git(init_board.REPO, "init", "-q")
+    assert init_board.cmd_init(_init_args(repo="product")) == 0
+    row = _areas_row(init_board, "product")
+    assert (row["git"], row["base"]) == ("", "")
+
+
+def test_t0954_self_row_base_ignores_same_named_tag(init_board):
+    """리뷰 F-001 — 현재 브랜치와 같은 이름의 태그가 있어도 base 는 순수 브랜치명이다.
+
+    `symbolic-ref --short` 는 이 형상에서 `heads/<이름>` 을 준다. 설치(init)와 갱신 이관 두 경로
+    모두 full ref 에서 `refs/heads/` 만 벗긴 이름을 기록해야 한다.
+    """
+    repo = init_board.REPO
+    branch = "trunk"
+    _git(repo, "init", "-q", "-b", branch)
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "base")
+    _git(repo, "tag", branch)
+    assert _git(repo, "symbolic-ref", "--short", "HEAD").stdout.strip() == f"heads/{branch}"
+
+    assert init_board.cmd_init(_init_args()) == 0
+    assert _areas_row(init_board, repo.name)["base"] == branch
+
+    _write_areas_rows(init_board, [(repo.name, "", "")])
+    assert init_board.fill_self_repo_row(write=True) == f"repo={repo.name} | git={repo} | base={branch}"
+    assert _areas_row(init_board, repo.name)["base"] == branch
+
+
+def _write_areas_rows(board, rows: list[tuple[str, str, str]]) -> bytes:
+    """(repo, git, base) 행들로 areas.md 를 새로 쓰고 그 바이트를 돌려준다."""
+    board.AREAS_FILE.unlink(missing_ok=True)
+    for repo, git, base in rows:
+        board.areas_append("", "", "me", repo=repo, git=git, base=base)
+    return board.AREAS_FILE.read_bytes()
+
+
+def test_t0954_fill_self_repo_row(board):
+    """AT-002 — 이관은 두 칸이 모두 빈 자기 행만 채우고 멱등이다.
+
+    한 칸이라도 찬 자기 행·다른 저장소 행은 바이트 그대로다. 자기 행이 둘이면
+    `AreasDuplicateRepo` 이고 아무것도 쓰지 않는다. `write=False` 는 판정만 한다.
+    """
+    repo = board.REPO
+    _git(repo, "init", "-q")
+    branch = _current_branch(repo)
+    other = ("other-product", "", "")
+
+    before = _write_areas_rows(board, [(repo.name, "", ""), other])
+    planned = board.fill_self_repo_row(write=False)
+    assert planned == f"repo={repo.name} | git={repo} | base={branch}"
+    assert board.AREAS_FILE.read_bytes() == before
+
+    assert board.fill_self_repo_row(write=True) == planned
+    row = _areas_row(board, repo.name)
+    assert (row["git"], row["base"]) == (str(repo), branch)
+    other_row = _areas_row(board, "other-product")
+    assert (other_row["git"], other_row["base"]) == ("", "")
+    filled = board.AREAS_FILE.read_bytes()
+    assert board.fill_self_repo_row(write=True) is None
+    assert board.AREAS_FILE.read_bytes() == filled
+
+    for partial in ((repo.name, "git@example.invalid:me/x.git", ""), (repo.name, "", "develop")):
+        before = _write_areas_rows(board, [partial, other])
+        assert board.fill_self_repo_row(write=True) is None
+        assert board.AREAS_FILE.read_bytes() == before
+
+    before = _write_areas_rows(board, [other])
+    assert board.fill_self_repo_row(write=True) is None
+    assert board.AREAS_FILE.read_bytes() == before
+
+    before = _write_areas_rows(board, [(repo.name, "", ""), (repo.name, "", "")])
+    with pytest.raises(board.AreasDuplicateRepo):
+        board.fill_self_repo_row(write=True)
+    assert board.AREAS_FILE.read_bytes() == before
 
 
 # ════════════════════════════════════════════════════════════════════════

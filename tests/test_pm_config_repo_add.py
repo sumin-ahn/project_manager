@@ -624,6 +624,49 @@ def test_real_clone_creates_origin_main_tracking_ref(pc, tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git 바이너리 부재 (실 clone 불가)")
+def test_t0954_repo_add_refuses_zero_commit_source(pc, tmp_path, capsys):
+    """[[T-0954]] AT-003 — 커밋 0개 원본·조회 불가 원본은 clone 전에 rc 1 로 멈춘다.
+
+    실제 git 으로 만든 원본을 실 runner(`_real_clone_runner`)로 조회한다. 두 경우 모두 repos
+    폴더 아래 bare 도 areas 등록도 없다. 같은 원본에 첫 커밋을 한 뒤에는 그대로 rc 0 이고 bare
+    HEAD 가 해소된다(정상 원본은 막지 않는다).
+    """
+    def git(*args):
+        return subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            cwd=src, capture_output=True, text=True, encoding="utf-8", check=True)
+
+    src = tmp_path / "src"
+    src.mkdir()
+    git("init", "-q")
+    repos = tmp_path / ".repos"
+
+    board = FakeBoard(registered=())
+    rc = pc.cmd_repo_add(_args(git=str(src), name="svc"), board=board, repos_dir=repos)
+    assert rc == 1
+    assert "커밋이 없다" in capsys.readouterr().err
+    assert not (repos / "svc.git").exists()
+    assert board.append_calls == []
+
+    rc = pc.cmd_repo_add(_args(git=str(tmp_path / "absent"), name="svc"), board=board,
+                         repos_dir=repos)
+    assert rc == 1
+    assert "조회하지 못했다" in capsys.readouterr().err
+    assert not (repos / "svc.git").exists()
+    assert board.append_calls == []
+
+    (src / "README").write_text("hello\n", encoding="utf-8")
+    git("add", "README")
+    git("commit", "-q", "-m", "first")
+    rc = pc.cmd_repo_add(_args(git=str(src), name="svc"), board=board, repos_dir=repos)
+    assert rc == 0
+    head = subprocess.run(["git", "-C", str(repos / "svc.git"), "rev-parse", "--verify", "HEAD"],
+                          capture_output=True, text=True, encoding="utf-8")
+    assert head.returncode == 0
+    assert [call["repo"] for call in board.append_calls] == ["svc"]
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git 바이너리 부재 (실 clone 불가)")
 def test_real_clone_sets_default_branch_upstream_tracking(pc, tmp_path):
     """실 `git clone --bare` 경로가 기본 브랜치 origin tracking 을 박고 슬롯 @{upstream} 을 해소한다 (T-0273·통합).
 
