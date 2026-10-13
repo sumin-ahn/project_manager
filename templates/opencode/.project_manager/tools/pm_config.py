@@ -2550,8 +2550,9 @@ def _status_json_slots(wp, leases, task_names: set,
     표시 축이 아니라 판정 축이라 빈 값을 남기지 않는다.
     """
     rows: list[dict] = []
+    repo_reads: dict = {}   # 저장소 공용 git 값(부모 기록·stash·부모 비교 ref)은 조회 1회에 한 번만 읽는다.
     for lease in leases:
-        git = wp.slot_git_status(lease.slot)
+        git = wp.slot_git_status(lease.slot, repo_reads=repo_reads)
         rows.append({
             "slot": lease.slot,
             "repo": lease.repo,
@@ -2916,10 +2917,12 @@ def cmd_status(
 
     # 슬롯 git 요약 헬퍼 — slot_git_status를 한 줄로.
     # 조회 실패는 fail-soft(요약 줄 생략) — 리스 장부 축은 그대로 surface.
+    # 저장소 공용 git 값(부모 기록·stash·부모 비교 ref)은 조회 1회에 한 번만 읽는다.
+    repo_reads: dict = {}
 
     def _slot_git_line(slot: str, *, readonly: bool) -> "str | None":
         try:
-            status = wp.slot_git_status(slot)
+            status = wp.slot_git_status(slot, repo_reads=repo_reads)
         except wp.SlotFoldersRefused:
             raise
         except Exception as exc:  # noqa: BLE001 — 일반 git 조회 실패만 요약 생략.

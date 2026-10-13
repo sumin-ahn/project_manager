@@ -310,9 +310,10 @@ class FakeWorktreePool:
         return [l for l in self.leases
                 if getattr(l, "state", None) == "leased" and l.session == name]
 
-    def slot_git_status(self, slot, *, git_runner=None):
+    def slot_git_status(self, slot, *, repo_reads, git_runner=None):
         # 슬롯 git 요약 대역(T-0361·§F8·T-0350) — 명시 dict 우선, 없으면 live_branches 기반
-        # 최소 dict(부모 기록 없음)로 합성한다. 실 slot_git_status 반환 shape 동형.
+        # 최소 dict(부모 기록 없음)로 합성한다. 실 slot_git_status 반환 shape 동형. `repo_reads`
+        # 는 필수 — status 가 조회 1회의 저장소 공용 값 dict 를 넘기는지 고정한다(T-0961).
         self.calls.append(("slot_git_status", slot))
         if slot in self._slot_git:
             return self._slot_git[slot]
@@ -2500,7 +2501,7 @@ def test_status_engine_missing_errors(pc, monkeypatch, capsys):
 def _git_status(*, parent=None, branch=None, head=None, folders=None):
     """slot_git_status 반환 shape 대역(T-0361·§F8) — 명시 필드로 조립."""
     return {"slot": "?", "branch": branch, "head": head, "parent": parent, "children": [],
-            "stashes": 0, "submodules": [], "dirty": False, "folders": folders}
+            "stashes": 0, "dirty": False, "folders": folders}
 
 
 def _parent_row(name, fork, *, ref, ahead=None, behind=None):
@@ -2640,7 +2641,7 @@ def test_status_slot_git_failure_keeps_task_axis(pc, monkeypatch, capsys):
     slot 풀 축 명세({state·보유 task·role})는 git 요약과 분리다 — git 실패로 장부 정보(task 귀속)까지
     사라지면 silent degrade. git 실패 시 `보유 task=…` 는 그대로 출력하고 git 부분만 `(조회 불가)`."""
     class _Boom(FakeWorktreePool):
-        def slot_git_status(self, slot, *, git_runner=None):
+        def slot_git_status(self, slot, *, repo_reads, git_runner=None):
             raise RuntimeError("git blew up")
 
     leases = [FakeLease(slot="work/svc_1", repo="svc", session="payjob", state="leased")]

@@ -30,6 +30,7 @@ import json
 import multiprocessing as mp
 import os
 import queue
+import re
 import shutil
 import shlex
 import subprocess
@@ -152,16 +153,15 @@ _DEFAULT_HEAD_SHA = "a1b2c3d4" * 5
 
 
 def _answer_config(config: dict, args: list) -> tuple[int, str]:
-    """git config 저장소 흉내 — `--get` 없으면 rc1·`--get-regexp` 는 부모 기록 키·없으면 rc1·
-    `--unset` 은 지우고 없으면 rc5·`<k> <v>` 는 저장."""
+    """git config 저장소 흉내 — `--get` 없으면 rc1·`--get-regexp <정규식>` 은 정규식에 맞는 키·없으면
+    rc1·`--unset` 은 지우고 없으면 rc5·`<k> <v>` 는 저장."""
     if args[:1] == ["--unset"]:
         return (0, "") if config.pop(args[1], None) is not None else (5, "")
     if args[:1] == ["--get"]:
         value = config.get(args[1])
         return (1, "") if value is None else (0, value + "\n")
     if args[:1] == ["--get-regexp"]:
-        lines = [f"{key} {value}" for key, value in config.items()
-                 if key.startswith("branch.") and key.endswith(".pm-parent")]
+        lines = [f"{key} {value}" for key, value in config.items() if re.search(args[1], key)]
         return (0, "\n".join(lines) + "\n") if lines else (1, "")
     if len(args) == 2:
         config[args[0]] = args[1]
@@ -184,8 +184,8 @@ class FakeGit:
     = `merge-base --is-ancestor` rc(True=조상 rc0 → descendant·False=비조상 rc1 → diverged).
 
     **부모 기록 모델**: `config` 는 git config 저장소(dict)를 흉내 낸다 — `config <k> <v>` 는 저장,
-    `config --get <k>` 는 없으면 rc1, `config --get-regexp` 는 `branch.*.pm-parent` 키를 돌려주고 없으면
-    rc1. `rev-parse --verify <ref>^{commit}` 은 `head_sha`, `rev-list --left-right --count` 는 `0\t0`.
+    `config --get <k>` 는 없으면 rc1, `config --get-regexp <정규식>` 은 정규식에 맞는 키를 돌려주고
+    없으면 rc1. `rev-parse --verify <ref>^{commit}` 은 `head_sha`, `rev-list --left-right --count` 는 `0\t0`.
     """
 
     def __init__(self, *, dirty: bool = False, head: "str | None" = None,
@@ -9424,23 +9424,29 @@ class _RebaseGit:
 # ── status — submodule pin/drift + dirty 합류(T-0359 조회 확장) ───────────────
 
 
-def test_slot_git_status_includes_dirty_and_submodules(wp):
-    """slot_git_status 가 dirty(bool) + submodules(list) 를 조회에 합류(T-0359 — wave-2d 확장)."""
+def test_slot_git_status_runs_no_submodule_query(wp):
+    """slot_git_status 는 `git submodule status` 를 부르지 않고 submodules 키를 내지 않는다 — submodule
+    판정은 그것을 그리는 status() 행만 싣는다(T-0961 · Git for Windows 1회 약 2초)."""
     _seed_git_lease(wp)
     git = _RebaseGit(dirty=True, subs="+deadbeef vendor/x\n", sub_detached=True)
     st = wp.slot_git_status("work/A_1", git_runner=git)
     assert st["dirty"] is True
-    assert len(st["submodules"]) == 1
-    sub = st["submodules"][0]
+    assert "submodules" not in st
+    assert not git.did("submodule")
+
+    row = wp.status(slot="work/A_1", git_runner=git)[0]
+    assert len(row["submodules"]) == 1
+    sub = row["submodules"][0]
     assert sub.path == "vendor/x" and sub.kind == "drift" and sub.warning is True
 
 
 def test_slot_git_status_clean_no_submodules(wp):
-    """dirty=False·submodule 없음 → dirty False·submodules []."""
+    """dirty=False·submodule 없음 → dirty False·status 행 submodules []."""
     _seed_git_lease(wp)
     git = _RebaseGit(dirty=False, subs="")
     st = wp.slot_git_status("work/A_1", git_runner=git)
-    assert st["dirty"] is False and st["submodules"] == []
+    assert st["dirty"] is False
+    assert wp.status(slot="work/A_1", git_runner=git)[0]["submodules"] == []
 
 
 # ── status(단일/일괄/무인자) ─────────────────────────────────────────────────
@@ -10299,15 +10305,79 @@ def test_parent_ref_rev_list_failure_raises(wp):
 
 
 def test_read_branch_parent_config_error_raises(wp):
-    """`git config --get` 가 없음(rc 1) 아닌 오류면 raise — 기록 없음으로 접지 않는다."""
-    def runner(argv):
-        return (128, "fatal: bad config file\n") if argv[:2] == ["config", "--get"] else (0, "")
-    with pytest.raises(wp.BranchParentError):
-        wp.read_branch_parent("feat", git_runner=runner)
+    """부모 기록 읽기(`git config --get-regexp`)가 없음(rc 1) 아닌 오류면 raise — 기록 없음으로 접지 않는다."""
     def regexp_runner(argv):
         return (128, "fatal: bad config file\n") if argv[:2] == ["config", "--get-regexp"] else (0, "")
     with pytest.raises(wp.BranchParentError):
+        wp.read_branch_parent("feat", git_runner=regexp_runner)
+    with pytest.raises(wp.BranchParentError):
         wp.branch_children("feat", git_runner=regexp_runner)
+
+
+def test_slot_git_status_failed_shared_read_is_retried_by_the_next_slot(wp):
+    """저장소 공용 값 읽기가 한 슬롯에서 실패하면 그 슬롯만 BranchParentError 이고, 실패한 읽기는
+    `repo_reads` 에 남지 않아 같은 조회의 다음 슬롯이 다시 읽는다(T-0961 · 빈 값 대체 없음)."""
+    _seed(wp,
+          _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"),
+          _lease(wp, slot="work/A_2", repo="A", session="job", state="leased"))
+    repo_reads: dict = {}
+    broken = _RebaseGit()
+    healthy_call = broken.__call__
+
+    def failing(argv):
+        if argv[:2] == ["config", "--get-regexp"]:
+            return (128, "fatal: bad config file\n")
+        return healthy_call(argv)
+    with pytest.raises(wp.BranchParentError):
+        wp.slot_git_status("work/A_1", git_runner=failing, repo_reads=repo_reads)
+    assert "parents" not in repo_reads["A"]
+
+    git = _RebaseGit()
+    st = wp.slot_git_status("work/A_2", git_runner=git, repo_reads=repo_reads)
+    assert st["parent"]["name"] == "main"
+    assert git.did("config", "--get-regexp")
+    assert git.did("stash", "list")
+
+
+def test_read_branch_parent_reads_records_once(wp):
+    """read_branch_parent 는 부모 기록 두 키를 `config --get-regexp` 1회로 읽는다 — 두 키면 dict·둘 다
+    없으면 None·한 키만이면 기록 손상 raise·같은 키 두 줄이면 마지막 값·점과 대문자 이름 그대로(T-0961)."""
+    def counting(out: str, rc: int = 0):
+        calls: list[list] = []
+
+        def runner(argv):
+            calls.append(list(argv))
+            return (rc, out)
+        return runner, calls
+
+    expected_call = ["config", "--get-regexp", r"^branch\..*\.pm-(parent|fork)$"]
+    both = ("branch.Feat.Dot.v1.pm-parent main\n"
+            "branch.Feat.Dot.v1.pm-fork abc123\n"
+            "branch.other.pm-parent Feat.Dot.v1\n"
+            "branch.other.pm-fork def456\n")
+    runner, calls = counting(both)
+    assert wp.read_branch_parent("Feat.Dot.v1", git_runner=runner) == {"name": "main", "fork": "abc123"}
+    assert calls == [expected_call]
+
+    runner, calls = counting("", rc=1)
+    assert wp.read_branch_parent("feat", git_runner=runner) is None
+    assert calls == [expected_call]
+
+    runner, calls = counting("branch.feat.pm-parent main\n")
+    with pytest.raises(wp.BranchParentError, match="부모 기록 손상"):
+        wp.read_branch_parent("feat", git_runner=runner)
+    assert calls == [expected_call]
+
+    runner, calls = counting("branch.feat.pm-parent old\n"
+                             "branch.feat.pm-fork 111\n"
+                             "branch.feat.pm-parent new\n"
+                             "branch.feat.pm-fork 222\n")
+    assert wp.read_branch_parent("feat", git_runner=runner) == {"name": "new", "fork": "222"}
+    assert calls == [expected_call]
+
+    runner, calls = counting(both)
+    assert wp.branch_children("Feat.Dot.v1", git_runner=runner) == ["other"]
+    assert calls == [expected_call]
 
 
 @_git_required
@@ -10455,7 +10525,7 @@ def test_real_git_slot_git_status_parent_children_stashes(proj, tmp_path):
 
     st = wp.slot_git_status(lease.slot)
 
-    assert set(st) == {"slot", "branch", "head", "parent", "children", "stashes", "submodules", "dirty", "folders"}
+    assert set(st) == {"slot", "branch", "head", "parent", "children", "stashes", "dirty", "folders"}
     assert st["folders"] is None
     assert st["branch"] == "A_1"
     assert st["parent"] == {"name": "release", "fork": fork, "ref": "origin/release",

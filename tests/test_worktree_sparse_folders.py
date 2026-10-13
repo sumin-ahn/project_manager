@@ -412,7 +412,7 @@ def test_submodules_outside_the_folders_are_neither_initialized_nor_reported(
     assert (slot_dir / "a" / "subm" / "lib.txt").is_file()
     assert (slot_dir / "rootsub" / "lib.txt").is_file()
     assert not (slot_dir / "c" / "subm").exists()
-    submodules = {entry.path: entry for entry in wp.slot_git_status(lease.slot)["submodules"]}
+    submodules = {entry.path: entry for entry in wp.status(slot=lease.slot)[0]["submodules"]}
     assert set(submodules) == {"a/subm", "rootsub"}
     assert not any(entry.warning for entry in submodules.values())
     capsys.readouterr()
@@ -502,7 +502,7 @@ def test_alloc_initializes_submodules_in_the_folders_it_checks_out(wp, tmp_path,
         wp.alloc("A", owner_task="t", folders=folders)
         path = wp.slot_path(lease.slot)
         assert _git(path / "a/subm", "symbolic-ref", "--short", "HEAD").strip() == "dev-a"
-        statuses = {s.path: s for s in wp.slot_git_status(lease.slot)["submodules"]}
+        statuses = {s.path: s for s in wp.status(slot=lease.slot)[0]["submodules"]}
         if folders == ["a", "b"]:
             assert not (path / "c/subm").exists()
             assert _tags(path)["c/subm"] == "S"
@@ -531,14 +531,14 @@ def test_empty_submodule_directory_is_uninitialized_not_dev(wp, tmp_path, monkey
     assert (path / "a/newsub").is_dir()
     assert _git(path / "a/newsub", "rev-parse", "--show-prefix").strip() == "a/newsub/"
     before = _git(path, "symbolic-ref", "HEAD")
-    statuses = {s.path: s for s in wp.slot_git_status(slots[1].slot)["submodules"]}
+    statuses = {s.path: s for s in wp.status(slot=slots[1].slot)[0]["submodules"]}
     assert (statuses["a/newsub"].kind, statuses["a/newsub"].warning, statuses["a/newsub"].dirty) == (
         "uninitialized", True, False)
     assert wp.dev(slots[1].slot, "a/newsub", "feat-x")[0] == 1
     assert _git(path, "symbolic-ref", "HEAD") == before
     wp.sync(slots[1].slot)
     assert (path / "a/newsub/lib.txt").is_file()
-    assert next(s for s in wp.slot_git_status(slots[1].slot)["submodules"] if s.path == "a/newsub").kind == "pinned"
+    assert next(s for s in wp.status(slot=slots[1].slot)[0]["submodules"] if s.path == "a/newsub").kind == "pinned"
 
 
 @_git_required
@@ -550,13 +550,13 @@ def test_hand_widening_is_judged_like_any_empty_submodule(wp, tmp_path, monkeypa
     before = _git(path, "symbolic-ref", "HEAD")
     assert wp.dev(lease.slot, "c/subm", "feat-x")[0] == 1
     _git(path, "sparse-checkout", "add", "c")
-    statuses = {s.path: s for s in wp.slot_git_status(lease.slot)["submodules"]}
+    statuses = {s.path: s for s in wp.status(slot=lease.slot)[0]["submodules"]}
     assert (statuses["c/subm"].kind, statuses["c/subm"].warning) == ("uninitialized", True)
     assert wp.dev(lease.slot, "c/subm", "feat-x")[0] == 1
     assert _git(path, "symbolic-ref", "HEAD") == before
     wp.sync(lease.slot)
     assert (path / "c/subm/lib.txt").is_file()
-    assert next(s for s in wp.slot_git_status(lease.slot)["submodules"] if s.path == "c/subm").kind == "pinned"
+    assert next(s for s in wp.status(slot=lease.slot)[0]["submodules"] if s.path == "c/subm").kind == "pinned"
 
 
 @_git_required
@@ -572,7 +572,7 @@ def test_populated_inactive_submodule_keeps_its_dev_work(wp, tmp_path, monkeypat
     _git(wp.slot_path(first.slot), "submodule", "deinit", "-f", "c/subm")
     assert any(line.startswith("-") and "c/subm" in line for line in _git(path, "submodule", "status").splitlines())
     assert _git(sub, "rev-parse", "--show-prefix").strip() == ""
-    entry = next(s for s in wp.slot_git_status(second.slot)["submodules"] if s.path == "c/subm")
+    entry = next(s for s in wp.status(slot=second.slot)[0]["submodules"] if s.path == "c/subm")
     assert (entry.kind, entry.dirty) == ("dev-ahead", True)
     wp.sync(second.slot)
     assert _git(sub, "symbolic-ref", "--short", "HEAD").strip() == "dev-c"
@@ -618,7 +618,8 @@ def test_populated_active_submodules_add_no_classification_probes(wp, monkeypatc
             git.calls.append(argv)
             return 0, " " + "a" * 40 + " a/subm\n"
         return base(argv)
-    wp.slot_git_status("work/A_1", git_runner=runner)
+    wp.status(slot="work/A_1", git_runner=runner)
+    assert ["submodule", "status"] in git.calls
     assert not any(call[:1] == ["ls-files"] or "--show-prefix" in call for call in git.calls)
     assert git.calls.count(["config", "--type=bool", "--get", "core.sparseCheckout"]) == 1
 
@@ -637,7 +638,7 @@ def test_populated_inactive_detached_submodule_is_preserved(wp, tmp_path, monkey
     if dirty:
         (sub / "lib.txt").write_text("uncommitted\n", encoding="utf-8")
     _git(wp.slot_path(first.slot), "submodule", "deinit", "-f", "c/subm")
-    entry = next(s for s in wp.slot_git_status(second.slot)["submodules"] if s.path == "c/subm")
+    entry = next(s for s in wp.status(slot=second.slot)[0]["submodules"] if s.path == "c/subm")
     assert (entry.kind, entry.warning, entry.dirty) == ("drift", True, dirty)
     wp.sync(second.slot)
     assert _git(sub, "rev-parse", "HEAD") == before
@@ -657,7 +658,7 @@ def test_deinitialized_empty_directory_is_initialized_by_sync(wp, tmp_path, monk
     path = wp.slot_path(lease.slot)
     _git(path, "submodule", "deinit", "-f", "c/subm")
     before = _git(path, "symbolic-ref", "HEAD")
-    assert next(s for s in wp.slot_git_status(lease.slot)["submodules"] if s.path == "c/subm").kind == "uninitialized"
+    assert next(s for s in wp.status(slot=lease.slot)[0]["submodules"] if s.path == "c/subm").kind == "uninitialized"
     assert wp.dev(lease.slot, "c/subm", "dev")[0] == 1
     assert _git(path, "symbolic-ref", "HEAD") == before
     wp.sync(lease.slot)

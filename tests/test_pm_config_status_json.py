@@ -1066,6 +1066,78 @@ def test_status_text_lists_preserved_branches_section(preserved_home):
     ]
 
 
+# ── T-0961 슬롯 수에 비례하는 git 호출 상한 ─────────────────────────────────────
+
+# `pm_config.py` 를 자식 프로세스에서 돌리며 띄운 git 프로세스의 argv 를 모은다 — `Popen` 생성을
+# 감싸 실행 파일 이름이 `git` 으로 시작하는 호출만 남기고 rc 와 목록을 JSON 파일에 쓴다.
+_GIT_COUNT_SOURCE = '''\
+import json, os, runpy, subprocess, sys
+
+out_path, script, *rest = sys.argv[1:]
+calls = []
+_original_init = subprocess.Popen.__init__
+
+
+def _recording_init(self, args, *positional, **keywords):
+    argv = [os.fspath(item) for item in args] if isinstance(args, (list, tuple)) else [str(args)]
+    if os.path.basename(argv[0]).lower().startswith("git"):
+        calls.append(argv[1:])
+    return _original_init(self, args, *positional, **keywords)
+
+
+subprocess.Popen.__init__ = _recording_init
+sys.argv = [script, *rest]
+rc = 0
+try:
+    runpy.run_path(script, run_name="__main__")
+except SystemExit as exc:
+    rc = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+with open(out_path, "w", encoding="utf-8") as handle:
+    json.dump({"rc": rc, "calls": calls}, handle)
+'''
+
+_PARENT_RECORDS_READ = r"^branch\..*\.pm-(parent|fork)$"
+_STASH_LIST_READ = ["stash", "list", "--format=%gs"]
+
+
+def _status_git_calls(home: Path, tmp_path: Path, mode: str, tag: str) -> list[list[str]]:
+    """`status`(text) 또는 `status --json`(json) 1회가 띄운 git 호출의 argv 목록(rc 0 강제)."""
+    driver = tmp_path / "git_count.py"
+    driver.write_text(_GIT_COUNT_SOURCE, encoding="utf-8")
+    out = tmp_path / f"git-calls-{mode}-{tag}.json"
+    argv = ["status", "--json"] if mode == "json" else ["status"]
+    done = subprocess.run(
+        [sys.executable, str(driver), str(out),
+         str(home / ".project_manager" / "tools" / "pm_config.py"), *argv],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(home),
+        timeout=300)
+    record = json.loads(out.read_text(encoding="utf-8"))
+    assert record["rc"] == 0, done.stderr
+    return record["calls"]
+
+
+@_git_required
+@pytest.mark.parametrize("mode, per_slot", [("json", 5), ("text", 6)])
+def test_status_git_calls_per_slot_are_bounded(home, tmp_path, mode, per_slot):
+    """슬롯 2개를 더하면 git 호출은 슬롯당 고정 수만큼만 는다 — `git submodule status` 0회, 부모 기록과
+    stash 목록은 저장소 공용 값이라 조회 1회에 한 번씩만 읽는다(T-0961 · 엔진 create_slot 슬롯)."""
+    _origin_bare(home, "app")
+    _ledger(home, [])
+    script = tmp_path / "slot_lifecycle.py"
+    script.write_text(_SLOT_LIFECYCLE_SOURCE, encoding="utf-8")
+    _slot_lifecycle(home, script, "create")
+    one_slot = _status_git_calls(home, tmp_path, mode, "1")
+    _slot_lifecycle(home, script, "create")
+    _slot_lifecycle(home, script, "create")
+    three_slots = _status_git_calls(home, tmp_path, mode, "3")
+
+    assert len(three_slots) - len(one_slot) <= 2 * per_slot, three_slots
+    for calls in (one_slot, three_slots):
+        assert not any("submodule" in argv for argv in calls)
+        assert sum(1 for argv in calls if _PARENT_RECORDS_READ in argv) == 1
+        assert sum(1 for argv in calls if argv[-3:] == _STASH_LIST_READ) == 1
+
+
 @_git_required
 def test_status_json_slot_rows_include_folders(home):
     _origin_bare(home, "app")
