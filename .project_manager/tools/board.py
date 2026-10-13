@@ -7329,7 +7329,7 @@ def _git_scope_is_directory(repo: Path, rel: str) -> bool:
 
 def _git_scope_ignored(repo: Path, pathspec: Sequence[str],
                        run: GitRunner) -> set[str]:
-    """`.gitignore` 에 걸리는 경로들 (fail-soft — 판정 불가면 빈 집합).
+    """`.gitignore` 에 걸리는 경로들 (rc 128 판정 불가면 빈 집합 · 러너 예외는 그대로 올린다).
 
     **`git add` 는 명시 pathspec 이 ignored 면 rc=1 에러다.** 광역 `add -A` 가 ignored 를 조용히
     건너뛰는 것과 다르고, `--ignore-errors` 로도 안 없어진다(reviewer 실측). 그래서 `touches` 에
@@ -7343,22 +7343,16 @@ def _git_scope_ignored(repo: Path, pathspec: Sequence[str],
       - 매치가 있을 때만 경로별 `-q` 로 어느 것인지 가른다(`-q` 는 경로 1개만 받고 `-z` 는
         `--stdin` 전용이라, 인용/이스케이프 없는 **rc 판정** 만 쓴다 — 출력 파싱 0).
     **추적 파일은 check-ignore 가 보고하지 않는다**(실측) — 이미 추적 중인 파일은 ignore 규칙과
-    무관하게 stage 되어야 하므로 이 동작이 정확히 맞다. rc=128(비-git·판정 불가)은 fail-soft.
+    무관하게 stage 되어야 하므로 이 동작이 정확히 맞다. rc=128(비-git·판정 불가)은 제외 0 이다.
     """
     if not pathspec:
         return set()
-    try:
-        rc, _out = run(["check-ignore", "--", *pathspec])
-    except Exception:  # noqa: BLE001 — fail-soft: 판정 실패면 제외 0(현행 동작).
-        return set()
+    rc, _out = run(["check-ignore", "--", *pathspec])
     if rc != 0:            # 1 = 매치 0(정상) · 128 = 비-git/판정 불가 → 제외 0.
         return set()
     ignored: set[str] = set()
     for path in pathspec:
-        try:
-            rc_one, _ = run(["check-ignore", "-q", "--", path])
-        except Exception:  # noqa: BLE001 — 개별 판정 실패는 그 경로만 통과(보수적).
-            continue
+        rc_one, _ = run(["check-ignore", "-q", "--", path])
         if rc_one == 0:
             ignored.add(path)
     return ignored
@@ -7412,10 +7406,7 @@ def _git_scope_expand_dir(repo: Path, rel: str, run: GitRunner) -> list[str]:
     `-z` + NUL 파싱은 `git_parse_porcelain_z` 한 곳이 담당한다(비-ASCII/공백 경로 인용 문제·
     rename 2토큰 처리를 두 벌로 만들지 않는다 — 잔여 보고도 같은 함수를 쓴다).
     """
-    try:
-        rc, out = run(["status", "--porcelain", "-z", "--untracked-files=all", "--", rel])
-    except Exception:  # noqa: BLE001 — fail-soft: 조회 실패면 확장 0(디렉토리는 소멸).
-        return []
+    rc, out = run(["status", "--porcelain", "-z", "--untracked-files=all", "--", rel])
     if rc != 0:
         return []
     return [path for _code, path in git_parse_porcelain_z(out)]
@@ -7465,12 +7456,9 @@ def git_scope_stageable(repo: Path, pathspec: Sequence[str], *,
     unknown = [p for p in expanded if p not in on_disk]
     tracked: set[str] = set()
     if unknown:
-        try:
-            rc, out = run(["ls-files", "-z", "--", *unknown])
-            if rc == 0:
-                tracked = {line for line in out.split("\0") if line}
-        except Exception:  # noqa: BLE001 — fail-soft: 조회 실패면 존재하는 경로만 남긴다.
-            tracked = set()
+        rc, out = run(["ls-files", "-z", "--", *unknown])
+        if rc == 0:
+            tracked = {line for line in out.split("\0") if line}
     stageable = [p for p in expanded if p in on_disk or p in tracked]
     ignored = _git_scope_ignored(repo, stageable, run)
     return tuple(p for p in stageable
@@ -12456,10 +12444,32 @@ def _claim_head_rev(args: argparse.Namespace) -> str | None:
     return rev
 
 
+def _reject_slot_identity_on_task_folder(args: argparse.Namespace, action: str) -> None:
+    """`--repo X --slot N`(task 없음) 귀속 쓰기가 task 보유 폴더를 가리키면 부작용 전에 거부한다.
+
+    귀속 정체성은 그 폴더의 보유자여야 한다. task 가 보유한 폴더에서 슬롯 세션 `X_N` 은 보유자가
+    아니라, 그 귀속은 task 정체성의 종결·조회에서 남의 것이 된다.
+    """
+    if getattr(args, "task", None):
+        return
+    identity = identity_args.parse_identity(args)
+    if identity.kind != "slot":
+        return
+    try:
+        task = identity_args.slot_holder_task(identity.repo, identity.slot, LEASES_FILE)
+    except identity_args.WorkspaceResolutionError as exc:
+        sys.exit(f"[중단] {action}: {exc}")
+    if task is not None:
+        sys.exit(f"[중단] {action}: 폴더 work/{identity.repo}_{identity.slot} 은 task '{task}' 가 "
+                 f"보유한다 — 슬롯 정체성(--repo {identity.repo} --slot {identity.slot})으로 귀속하지 "
+                 f"않는다. `--task {task} --repo {identity.repo} --slot {identity.slot}` 로 실행하라.")
+
+
 def cmd_claim(args: argparse.Namespace) -> int:
     # claim = 귀속 쓰기 — 세션 미해소면 fail-loud
     # 명시 --repo/--slot > env > 단일-lease 유도 > 미해소(fail-loud).
     override = _execution_actor_session_override(args)
+    _reject_slot_identity_on_task_folder(args, "claim")
     sess = session_name(override, required=True)
     # claimed_by 는 `<user>/<slot>` — user 미상이면 슬롯만
     # (graceful·기존 슬롯-only 값과 형태 동일). 진행메시지/board surface 는 슬롯(sess)을 쓴다.
@@ -12781,8 +12791,18 @@ def cmd_complete(args: argparse.Namespace) -> int:
 
         # 묶음 멤버 lifecycle mutation은 정상 종결 파이프라인에 결속한다. ownership, DoD,
         # move/dump와 board-git sync보다 앞이라 거부 시 ticket/ledger/git write가 0이다.
-        binding_problem = cluster_complete_binding_problem(
-            args.id, fm, getattr(args, "cluster_close", None))
+        binding = getattr(args, "cluster_close", None)
+        binding_problem = cluster_complete_binding_problem(args.id, fm, binding)
+        if binding_problem is None and binding is not None:
+            # 결속 완료는 종결 파이프라인이 연 장부(closing)에서만 받는다 — 파이프라인 밖의 직접
+            # 호출은 티켓만 done 으로 옮기고 장부·머지를 남긴다(복구 전용 반쪽 상태).
+            ledger = load_cluster(binding)
+            if ledger is not None and str(ledger.get("status") or "").strip() != "closing":
+                owner = cluster_id_for_name(binding)
+                binding_problem = (
+                    f"묶음 멤버의 완료는 종결 파이프라인 안에서만 한다 — {owner} 장부가 종결 중"
+                    f"(closing)이 아니다(현재 {ledger.get('status')}). "
+                    f"`ticket_finish.py --cluster {owner}` 로 닫아라")
         if binding_problem is not None:
             print(f"cannot complete {args.id}: {binding_problem}", file=sys.stderr)
             return 1
@@ -13869,6 +13889,7 @@ def cmd_new(args: argparse.Namespace) -> int:
     # `--task` → task 명(F5b) · `--repo/--slot`→ `<repo>_<N>` 슬롯 세션 · 무명시 → None.
     # 하나의 세션 override 문자열이지만 축이 둘(task vs slot)이라 아래 분기가 축을 명시 구분한다.
     actor_session = _execution_actor_session_override(args)
+    _reject_slot_identity_on_task_folder(args, "new")
     requested_override = getattr(args, "prefix", None)
     override = requested_override
     if override:
@@ -14052,7 +14073,7 @@ def cmd_new(args: argparse.Namespace) -> int:
     invalidate_known_prefixes_cache()
 
     print(f"created {tid} ({_rel_to_repo(path)})")
-    print("  → fill in 목표 / 완료 조건 / 참고, then `board.py lint` "
+    print("  → fill in 목표 / 완료 조건 / 참고, then `board.py lint --gate` "
           "(placeholders left in the body fail lint)")
     if cluster_ledger is not None:
         # 기존 stdout 줄은 그대로 두고 생성 사실만 stderr 1줄로 고지한다(크기 1 = 현행 동작).
@@ -14167,11 +14188,15 @@ def cmd_promote(args: argparse.Namespace) -> int:
     if moved:
         refresh_board()
     ready = _board_git_sync_best_effort(f"promote {args.id}", touched)
-    if ready:
+    if not _board_git_enabled():
+        # board 가 홈 git 안이면 board-git 커밋도 공유도 없다 — 실제로 한 일(이동 여부)만 말한다.
+        placement = "draft → open/" if moved else "open/ 그대로"
+        print(f"promoted {args.id} ({placement} · board 가 홈 git 안이라 커밋 없음)")
+    elif ready:
         print(f"promoted {args.id} (board-git 승격 완료)")
     else:
         print(f"promoted {args.id} (board-git 기록 보류: local-only/uncommitted)")
-    # 발행 시점 판단 재료 — 성공 경로 두 갈래(승격 완료/기록 보류) 공통 뒤,
+    # 발행 시점 판단 재료 — 성공 경로 세 갈래(홈 git board/승격 완료/기록 보류) 공통 뒤,
     # `_board_git_enabled()` 게이트 분기 밖(솔로/legacy 형상에서도 나온다). 겹침 0 이면 침묵.
     # `promote` 는 `--repo`/`--slot` 인자가 없다 — 슬롯 재료의 repo 는 이 티켓의 provenance
     # (`created_by`)에서 세션 토큰을 뽑아(`_created_by_session` — 기존 세션-뷰 seam) 장부

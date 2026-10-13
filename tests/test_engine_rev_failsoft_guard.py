@@ -1210,7 +1210,10 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   (`apply_harness_ctx_limits` 는 `HarnessCtxError`, `sync_adapter_configs` 의 accept 는
     #   `(OSError, ValueError)`). 새 재전파 경계 1곳은 `drift_changes` 다 — 엔진 코드 행 계획
     #   (`_engine_code_plan`)을 같은 `except RuntimeError: raise` 안으로 들였다.
-    assert len(report.boundaries) == 240, "propagation sweep boundary ratchet changed"
+    # 238 = 240 − T-0959 가 지운 두 경계. 완료 기록의 상태 조회(`TicketFinisher._dirty_split`)는 조회 실패를
+    #   잔여 없음으로 접던 흡수를 지우고 관측 실패로 멈춘다. 라운드 규약 형제 로더(`_load_ticket_rounds`)는
+    #   부재만 값 없음이고 적재 실패는 그대로 올린다 — 접으면 라운드 산출이 홈 커밋에서 조용히 빠진다.
+    assert len(report.boundaries) == 238, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1625,7 +1628,6 @@ def _remove_marker_statement(source: str, function: str, occurrence: int = 0) ->
     ("source_name", "function"),
     [
         ("ticket_finish.py", "TicketFinisher._notify_affected_domain"),
-        ("ticket_finish.py", "TicketFinisher._dirty_split"),
         # pm_bootstrap 행은 뺐다 — 슬롯 모드 삭제로 러너 cwd 해소가 형제 모듈을 읽지 않게
         # 되면서 이 경계까지 스큐가 도달하지 않는다(마커 분기는 방어로 남는다).
     ],

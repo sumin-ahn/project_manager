@@ -92,6 +92,13 @@
 - opencode 설정에 연결 설정이 없는 공급자의 모델(예: Ollama 가 없는 머신의 출하 기본 모델)이 있어도 설치·갱신이 사용 한도 조회 실패로 멈추지 않는다. 그런 모델은 사용 한도 대상에서 빼고 이름을 알린다. 쓸 수 있는 모델이 하나도 없으면 opencode 설정 파일을 바꾸지 않고 알린다. 모델 목록 캐시가 없어 연결 여부를 모를 때는 그 사실과 경로를 알리고 opencode 를 한 번 실행한 뒤 다시 반영하라고 안내한다. 연결된 모델의 조회 실패는 전처럼 멈춘다.
 - Windows 에서 `pm-config status` 가 슬롯 수에 비례해 느리던 문제를 고쳤다. 슬롯마다 부르던 `git submodule status`(Git for Windows 1회 약 2초)를 이 조회에서 빼고 `worktree_pool.py status` 만 부른다. 부모 기록·stash 목록·부모 비교 ref 같은 저장소 공용 값은 조회 1회에 저장소마다 한 번만 읽는다. 슬롯 6개 기준 git 호출 82회 → 39회, VM 소요 9.9~21.0초 → 2.4~2.7초. 출력은 그대로다.
 - 안내 문구를 현재 동작에 맞췄다. 기본 형상에서 `board.py new` 가 draft 없이 open 에 발행하는데 카드가 무조건 draft 라 하던 문구, 공유 board 에서 적힌 순서대로 따르면 promote 가 묶음 결속 전이라 멈추던 카드 줄 순서(이제 board 형상과 무관하게 new → cluster new → promote → tier → claim → switch 한 순서다), `pm-config worktree add`·`pm-config --help`·`pm_import --help`·import 완료 출력·README·ADOPT·스킬(pm-env·pm-worktree)이 지워진 `/pm-bootstrap <repo> --slot <N>`·인자 없는 부트스트랩·`pm-bootstrap <repo> --branch` 를 안내하던 문구, 이어가기 불일치 오류가 read 역할에도 "write 역할" 이라 하던 문구, codex·opencode README 의 역할 카드 서술, 부트스트랩 freshness 줄의 "공개 제품 worktree"·"offline" 표기, `repo add --owner` 기본값 서술을 고쳤다. 호출처가 없던 `worktree_pool.bind_slot` 을 지웠다.
+- 종결이 그 묶음의 장부를 홈 커밋에 싣는다. board 가 홈 git 인 채택자에서 종결 뒤 장부가 미추적으로 남아 첫 핸드오프가 "미커밋 잔여" 로 멈추던 문제를 수정했다. 묶음 선언이 흡수한 크기 1 장부의 삭제와 선언 경로의 삭제도 같은 커밋에 실린다(예전에는 index 에 staged 삭제로 남았다). 종결의 `git add` 는 작업 트리에 있는 파일만 받고 삭제는 커밋이 경로로 기록하므로, 미리 `git rm` 한 선언 삭제도 "스코프 밖 staged" 로 거부되지 않고 커밋된다.
+- 선언한 코드 경로의 변경이 머지할 변경에 하나도 없으면 종결이 첫 부작용 전에 멈춘다. switch 전 커밋, 통합 폴더 작성, 통합 브랜치 직접 커밋, 묶음 멤버 하나의 변경 유실이 done·closed 로 닫히던 문제를 수정했다. 작업 폴더에서 지운 추적 파일은 홈에 같은 파일이 있어도 작업 폴더 쪽에서 커밋·머지한다.
+- task 가 보유한 작업 폴더를 `--task` 없이 `--repo --slot` 으로 지목한 `board.py claim`·`new` 를 쓰기 전에 거부한다. claim 이 통과하고 종결에서 소유 불일치로 막히던 문제를 수정했다.
+- `board.py complete --cluster-close` 를 장부가 종결 중(closing)일 때만 받는다. 종결 파이프라인 밖 호출이 티켓만 done 으로 옮기고 머지와 장부를 남기던 문제를 수정했다.
+- `board.py new` 출력이 `board.py lint --gate` 를 안내한다. 새 채택자에서 참고 항목 하나로 rc 1 인 `board.py lint` 를 안내하던 문제를 수정했다.
+- board 가 홈 git 인 채택자에서 `board.py promote` 가 "board-git 승격 완료" 를 출력하던 문제를 수정했다. 이 형상에는 board-git 커밋이 없으므로 이동 여부와 커밋 없음만 출력한다.
+- pm-wave-claim 실행 블록이 `cluster new` 다음에 멤버마다 `board.py promote`(선택 줄 `board.py tier T-NNNN pm-direct`)를 싣는다. 공유 board 형상에서 단계대로 따르면 draft 인 티켓을 claim 하지 못하던("currently in draft/") 문제를 수정했다.
 
 ### 업그레이드 노트
 
@@ -106,6 +113,7 @@
 - **v1.7.13 에서 올 때는 같은 갱신 명령을 두 번 실행한다.** 첫 실행은 디스크에 있던 옛 갱신기가 돌고(그 실행의 출력 인코딩도 옛 코드가 정한다), 두 번째부터 새 갱신기가 전달·완료를 나눠 끝낸다. 세 번째 실행은 `최신 — 변경 없음` 이어야 한다. 관리자 앱의 [적용]은 두 번 실행을 자동으로 한다.
 - **기존 Claude 채택자는 `.claude/settings.json` 의 `PreCompact`·`PostCompact` 항목을 지운다.** 갱신이 `.claude/precompact_capture_hook.sh` 를 `.pm_import_backups/` 로 옮기므로 항목이 남아 있으면 압축 때 없는 파일을 부른다. 이 파일은 채택자 소유라 갱신이 고치지 않는다.
 - 다음 릴리즈(v1.8.1)는 v1.8.0 을 거쳐서만 받는다. v1.7.13 이하에서 v1.8.1 로 바로 올리지 않는다.
+- 코드 경로를 touches 에 선언했지만 고칠 코드가 없던 티켓은 종결이 멈춘다. touches 에서 그 경로를 빼고 다시 실행한다. 홈과 작업 폴더 양쪽에 있는 문서(설치가 기준 커밋에 넣은 문서)를 홈에서만 고친 티켓도 같은 이유로 멈춘다. 그 편집은 작업 폴더에서 한다.
 
 ## [1.7.13] - 2026-09-04
 

@@ -116,6 +116,14 @@ def _raw_unannotated_slash_entries(path: Path) -> list[tuple[int, str]]:
         issues.append((text.count("\n", 0, match.start()) + 1, match.group(0)))
     return issues
 
+def _mark_ledger_closing(dest: Path, tid: str) -> None:
+    """발행이 만든 크기 1 장부의 status 줄을 closing 으로 쓴다 — 종결 파이프라인의 진행 기록 재현([[T-0959]])."""
+    ledger = dest / ".project_manager" / "wiki" / "tickets" / "clusters" / f"C-{tid}.md"
+    text = ledger.read_text(encoding="utf-8")
+    assert re.search(r"^status: open$", text, flags=re.M), text
+    ledger.write_text(re.sub(r"^status: open$", "status: closing", text, count=1, flags=re.M), encoding="utf-8")
+
+
 def _check_off_dod(dest: Path, tid: str) -> Path:
     """채택자 트리의 claimed 티켓 DoD 를 전항 체크(`- [ ]` → `- [x]`)하고 그 경로를 돌려준다.
 
@@ -392,6 +400,17 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
 
     claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
     assert claim.returncode == 0, f"{harness} `board.py claim {tid}` 실패: {claim.stderr}"
+
+    # 결속 완료 게이트([[T-0959]]) — 장부가 종결 중(closing)이 아니면 종결 파이프라인 밖의 직접 호출이라
+    # 채택자 사본에서도 쓰기 전에 거부된다. 이후 단언은 종결이 장부를 closing 으로 기록한 상태에서 본다.
+    outside = _board(
+        dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested",
+        "--repo", "pilot", "--slot", "1", "--cluster-close", f"C-{tid}",
+    )
+    assert outside.returncode == 1 and "closing" in outside.stderr, (
+        f"{harness}: 종결 파이프라인 밖 결속 완료가 통과함 — 엔진 사본 동기 누락?\n{outside.stderr}")
+    assert list((tickets_root / "claimed").glob(f"{tid}-*.md")), f"{harness}: 거부된 완료가 티켓을 옮겼다"
+    _mark_ledger_closing(dest, tid)
 
     # 소유 게이트(T-0781) — claim 정체성이 아닌 세션의 complete 는 채택자 사본에서도 거부되고,
     # 거부 문구가 이동 경로(unclaim→claim · --takeover)를 지목해야 한다.
@@ -1143,6 +1162,7 @@ def test_missing_ticket_status_dirs_self_repair_through_full_lifecycle(pm_import
     claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
     assert claim.returncode == 0, claim.stderr
     _check_off_dod(dest, tid)   # DoD 기록 게이트(T-0596) — 미체크면 complete 가 막힌다.
+    _mark_ledger_closing(dest, tid)   # 결속 완료는 종결 중 장부에서만([[T-0959]])
     # complete 는 claim 과 같은 정체성으로 부른다 — 소유 대조(T-0781).
     done = _board(dest, "complete", tid, "--tests-pass", "--allow-missing-log",
                   "--allow-untested", "--repo", "pilot", "--slot", "1",

@@ -2482,6 +2482,8 @@ def test_residual_population_excludes_a_sibling_member_commit(
                           members=(_MEMBER_A, _MEMBER_B))
     (root / _TOUCH_B).write_text(_CHANGED_BODY, encoding="utf-8")
     _commit_paths(root, _TOUCH_B)
+    # 멤버 A 도 자기 선언을 고친 상태 — 선언 변경 판정(`_declared_change_problem`)과 겹치지 않게 한다.
+    (root / _TOUCH_A).write_text(_CHANGED_BODY, encoding="utf-8")
 
     passed, err = _residual_verdict(tf, root, _MEMBER_A)
 
@@ -2495,6 +2497,122 @@ def test_residual_population_excludes_a_sibling_member_commit(
     assert blocked is not None
     assert _UNDECLARED in blocked
     assert _TOUCH_B not in blocked
+
+
+@requires_git
+def test_declared_change_population_requires_a_member_change(tf, tmp_path, monkeypatch):
+    """[[T-0959]] AT-005 — 선언 경로의 변경이 머지 인구(통합 tip 이후 커밋 ∪ 미커밋)에 하나도 없으면 완료 기록 거부다.
+
+    크기 2 묶음에서 멤버 B 의 커밋만 있으면 멤버 A 는 잃은 경로를 이름에 담아 거부되고(B 의 경로는 없다), A 가
+    자기 선언을 미커밋으로 고치거나 묶음 브랜치에 커밋하면 통과다. touches 가 빈 멤버는 판정 대상이 아니고,
+    diff 조회가 실패하면 통과로 접지 않고 관측 실패로 멈춘다.
+    """
+    root = _residual_repo(tf, tmp_path, monkeypatch, members=(_MEMBER_A, _MEMBER_B))
+    (root / _TOUCH_B).write_text(_CHANGED_BODY, encoding="utf-8")
+    _commit_paths(root, _TOUCH_B)
+
+    refused, _err = _residual_verdict(tf, root, _MEMBER_A)
+    assert refused is not None and refused.startswith("완료 기록 거부"), refused
+    assert _TOUCH_A in refused and _TOUCH_B not in refused
+
+    (root / _TOUCH_A).write_text(_CHANGED_BODY, encoding="utf-8")
+    assert _residual_verdict(tf, root, _MEMBER_A)[0] is None          # 미커밋 변경
+    _commit_paths(root, _TOUCH_A)
+    assert _residual_verdict(tf, root, _MEMBER_A)[0] is None          # 묶음 브랜치 커밋
+
+    _write_ticket(root / ".project_manager" / "board", _MEMBER_A, claimed_rev=_rev(root), touches=())
+    _git(root, "reset", "-q", "--hard", _INTEGRATION_BRANCH)          # 변경 0 · 선언 0
+    assert _residual_verdict(tf, root, _MEMBER_A)[0] is None
+
+    _write_ticket(root / ".project_manager" / "board", _MEMBER_A, claimed_rev=_rev(root), touches=(_TOUCH_A,))
+    finisher = tf.TicketFinisher(
+        board_py=root / ".project_manager" / "tools" / "board.py",
+        log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
+        task_workspace=root,
+        run_git_stdout_at_fn=lambda cwd, args: ((1, "") if args[:2] == ["diff", "--name-only"]
+                                                else tf.TicketFinisher._default_run_git_stdout_at(cwd, args)),
+    )
+    with pytest.raises(tf._CloseObservationFailure):
+        finisher._declared_change_problem(_MEMBER_A, root)
+
+
+@requires_git
+def test_declared_new_home_file_without_code_tree_passes(tf, tmp_path, monkeypatch):
+    """[[T-0959]] F-005 역방향 — 코드 트리가 홈 자신인 형상에서는 홈에 새로 쓴 선언 파일이 그대로 통과한다.
+
+    홈 미추적 새 파일을 코드 몫으로 세는 규칙은 묶음에 별도 코드 트리가 있을 때만이다. 코드 트리가 없으면 그 파일이
+    곧 이 종결이 커밋할 변경이다.
+    """
+    root = _residual_repo(tf, tmp_path, monkeypatch, members=(_MEMBER_A,))
+    new_file = "notes/new-home-file.md"
+    _write_ticket(root / ".project_manager" / "board", _MEMBER_A, claimed_rev=_rev(root), touches=(new_file,))
+    (root / "notes").mkdir()
+    (root / new_file).write_text("note\n", encoding="utf-8")
+
+    assert _residual_verdict(tf, root, _MEMBER_A)[0] is None
+
+
+@requires_git
+def test_home_new_path_query_failure_stops(tf, tmp_path, monkeypatch):
+    """[[T-0959]] F-005 (I7) — 홈에만 있는 선언의 추적 조회가 실패하면 추적 중으로 접지 않고 관측 실패로 멈춘다."""
+    root = _residual_repo(tf, tmp_path, monkeypatch, members=(_MEMBER_A,))
+    (root / "notes").mkdir()
+    (root / "notes" / "new.md").write_text("note\n", encoding="utf-8")
+
+    def run(cwd, args):
+        if args[:1] == ["ls-files"]:
+            return 128, "fatal: 합성 관측 실패"
+        return tf.TicketFinisher._default_run_git_stdout_at(cwd, args)
+
+    finisher = tf.TicketFinisher(board_py=root / ".project_manager" / "tools" / "board.py",
+                                 log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
+                                 task_workspace=root, run_git_stdout_at_fn=run)
+    with pytest.raises(tf._CloseObservationFailure, match="git ls-files rc=128"):
+        finisher._home_new_paths(["notes/new.md"])
+    assert tf.TicketFinisher(board_py=root / ".project_manager" / "tools" / "board.py",
+                             log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
+                             task_workspace=root)._home_new_paths(
+        ["notes/new.md", _TOUCH_A, ".project_manager/wiki/log/new.md"]) == ["notes/new.md"]
+
+
+@requires_git
+def test_declared_change_new_git_queries_fail_loud(tf, tmp_path, monkeypatch):
+    """[[T-0959]] F-007 (I7) — 선언 변경 판정이 새로 쓰는 조회가 실패하면 통과로 접지 않고 관측 실패로 멈춘다.
+
+    세 갈래다: 지운 선언 경로의 추적 조회(`_tracked_in` 의 status), 미리 `git rm` 한 선언 삭제 조회(`stage_scope` 의
+    `diff --cached`), 티켓 판독(`_declared_change_problem`). 어느 하나라도 빈 값으로 접히면 선언 변경이 다른 계획으로
+    가거나 판정 대상에서 빠진다.
+    """
+    root = _residual_repo(tf, tmp_path, monkeypatch, members=(_MEMBER_A,))
+    board_py = root / ".project_manager" / "tools" / "board.py"
+    log_file = root / ".project_manager" / "wiki" / "log" / "current.md"
+
+    def failing_at(predicate):
+        def run(cwd, args):
+            if predicate(args):
+                return 128, "fatal: 합성 관측 실패"
+            return tf.TicketFinisher._default_run_git_stdout_at(cwd, args)
+        return run
+
+    status_fails = failing_at(lambda args: args[:1] == ["status"] and "--untracked-files=no" in args)
+    finisher = tf.TicketFinisher(board_py=board_py, log_file=log_file, task_workspace=root,
+                                 run_git_stdout_at_fn=status_fails)
+    (root / _TOUCH_A).unlink()
+    with pytest.raises(tf._CloseObservationFailure, match="추적 여부를 관측하지 못했다"):
+        finisher._tracked_in(root, _TOUCH_A)
+
+    staged_deletion_fails = failing_at(lambda args: args[:2] == ["diff", "--cached"])
+    scope = tf.stage_scope(_MEMBER_A, board_py, log_file, lambda args: staged_deletion_fails(root, args),
+                           repo=root, include_engine_outputs=False, touches=("src",))
+    assert scope.pathspec == ()
+    assert scope.error is not None and "staged 삭제를 관측하지 못했다" in scope.error, scope
+
+    (ticket,) = (root / ".project_manager" / "board" / "tickets" / "claimed").glob(f"{_MEMBER_A}-*.md")
+    ticket.write_text(ticket.read_text(encoding="utf-8").replace("touches:\n", "touches: [unclosed\n", 1),
+                      encoding="utf-8")
+    reader = tf.TicketFinisher(board_py=board_py, log_file=log_file, task_workspace=root)
+    with pytest.raises(tf._CloseObservationFailure, match="티켓을 읽지 못해"):
+        reader._declared_change_problem(_MEMBER_A, root)
 
 
 @requires_git
@@ -2660,12 +2778,12 @@ def test_fresh_single_clone_home_requires_explicit_binding(
     assert _lease_rows(root)[0]["session"] == "t"
 
 
-def test_status_seam_is_strict_and_the_non_blocking_report_absorbs_it(
-        tf, tmp_path, capsys):
-    """공유 seam 은 조회 실패를 그대로 올리고, 비차단 보고는 종전 출력 그대로다.
+def test_status_query_failure_stops_residual_gate_and_report(tf, tmp_path, capsys):
+    """[[T-0959]] F-002 — 상태 조회가 실패하면 잔여 판정과 stage 뒤 보고가 모두 관측 실패로 멈춘다.
 
-    접는 자리를 seam 에서 소비자로 옮긴 것이 요점이다 — 보고는 완료를 막지 않고, 종결의 선행
-    조건 관측은 그 실패를 clean 과 구별한다.
+    공유 seam 은 조회 실패를 그대로 올린다(`strict`). 소비자가 그 실패를 빈 목록으로 접으면 잔여 판정은 잔여
+    없음으로 통과하고 stage 뒤 보고는 "스코프 밖 잔여 변경 없음" 을 출력한다 — 관측하지 못한 것을 clean 으로
+    말하지 않는다.
     """
     def _failing(_args: list[str]) -> tuple[int, str]:
         return 128, "fatal: 합성 관측 실패"
@@ -2678,10 +2796,12 @@ def test_status_seam_is_strict_and_the_non_blocking_report_absorbs_it(
         log_file=tmp_path / "log.md",
         status_entries_at_fn=lambda _cwd: tf.status_entries(_failing, strict=True),
     )
-    finisher._report_dirty_after_stage((_TOUCH_A,), cwd=tmp_path)
+    with pytest.raises(tf._CloseObservationFailure, match="작업 트리 상태를 관측하지 못했다"):
+        finisher._residual_split(tmp_path, (_TOUCH_A,), (), ticket_id=_MEMBER_A)
+    with pytest.raises(tf._CloseObservationFailure, match="작업 트리 상태를 관측하지 못했다"):
+        finisher._report_dirty_after_stage((_TOUCH_A,), cwd=tmp_path)
 
-    assert capsys.readouterr().out == (
-        "  ✓ 스코프 밖 잔여 변경 없음 (staged·미스테이지 모두)\n")
+    assert "스코프 밖 잔여 변경 없음" not in capsys.readouterr().out
 
 
 @requires_git

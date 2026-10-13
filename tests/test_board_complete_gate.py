@@ -815,14 +815,17 @@ def _seed_cluster(board, cluster: str, tickets: tuple[str, ...], *, status: str 
 def test_cluster_member_complete_requires_exact_closer_binding(
     live_board, capsys, monkeypatch,
 ):
-    """AT-001: cluster 멤버 direct complete는 첫 write 전 막고 exact closer만 연다."""
+    """AT-001: cluster 멤버 direct complete는 첫 write 전 막고 exact closer만 연다.
+
+    exact closer 는 종결 파이프라인이 장부를 closing 으로 기록한 뒤에 부른다([[T-0959]]) — 장부를 그
+    상태로 심는다(open 장부의 거부는 `test_cluster_close_binding_requires_closing_ledger`)."""
     tid = "T-9882"
     claimed = _seed_ticket(live_board, tid, _dod_body("- [x] 코드"))
     claimed.write_text(
         claimed.read_text(encoding="utf-8").replace("tags: []", "cluster: C-gate\ntags: []"),
         encoding="utf-8",
     )
-    ledger = _seed_cluster(live_board, "C-gate", (tid,))
+    ledger = _seed_cluster(live_board, "C-gate", (tid,), status="closing")
     sync_calls: list[tuple] = []
     monkeypatch.setattr(
         live_board, "_board_git_sync_best_effort",
@@ -849,6 +852,55 @@ def test_cluster_member_complete_requires_exact_closer_binding(
     assert not claimed.exists()
     assert list((live_board.tickets_dir() / "done").glob(f"{tid}*"))
     assert len(sync_calls) == 1
+
+
+def test_cluster_close_binding_requires_closing_ledger(live_board, capsys, monkeypatch):
+    """[[T-0959]] AT-009 — 결속 완료(`--cluster-close`)는 장부가 종결 중(closing)일 때만 받는다.
+
+    종결 파이프라인 밖의 직접 호출은 티켓만 done 으로 옮기고 장부·머지를 남겨 복구 경로만 남겼다. 거부는 결속
+    거부와 같은 자리(소유·DoD·이동·board git 동기화 앞)라 쓰기가 0 이다. 장부 상태 open·review·fix·closed 를
+    차례로 심어 각각 거부를 본다 — closed 장부는 기존 결속 검사가 먼저 "closed 인데 claimed" 모순으로 거부한다.
+    장부를 closing 으로 두면 같은 호출이 통과하고(정상 종결의 record 단계), 장부가 없는 구세대 크기 1 결속은
+    종전대로 통과한다.
+    """
+    tid = "T-9886"
+    claimed = _seed_ticket(live_board, tid, _dod_body("- [x] 코드"))
+    claimed.write_text(
+        claimed.read_text(encoding="utf-8").replace("tags: []", "cluster: C-gate\ntags: []"),
+        encoding="utf-8",
+    )
+    sync_calls: list[tuple] = []
+    monkeypatch.setattr(
+        live_board, "_board_git_sync_best_effort",
+        lambda *args: sync_calls.append(args) or True,
+    )
+    exact = _complete_args(tid)
+    exact.cluster_close = "C-gate"
+
+    for status in ("open", "review", "fix", "closed"):
+        ledger = _seed_cluster(live_board, "C-gate", (tid,), status=status)
+        ticket_before, ledger_before = claimed.read_bytes(), ledger.read_bytes()
+        assert live_board.cmd_complete(exact) == 1, status
+        err = capsys.readouterr().err
+        if status == "closed":
+            assert "장부는 closed인데" in err, err
+        else:
+            assert ("closing" in err and f"(현재 {status})" in err
+                    and "ticket_finish.py --cluster C-gate" in err), err
+        assert claimed.read_bytes() == ticket_before and ledger.read_bytes() == ledger_before, status
+        assert sync_calls == [], status
+
+    _seed_cluster(live_board, "C-gate", (tid,), status="closing")
+    assert live_board.cmd_complete(exact) == 0
+    assert list((live_board.tickets_dir() / "done").glob(f"{tid}*"))
+    assert len(sync_calls) == 1
+
+    legacy = "T-9887"                                   # 장부 없는 구세대 크기 1 결속
+    legacy_path = _seed_ticket(live_board, legacy, _dod_body("- [x] 코드"))
+    size_one = _complete_args(legacy)
+    size_one.cluster_close = f"C-{legacy}"
+    assert live_board.cmd_complete(size_one) == 0
+    assert not legacy_path.exists()
 
 
 def test_legacy_ticket_completes_with_its_size_one_binding(live_board, capsys, monkeypatch):
@@ -891,7 +943,7 @@ def test_cluster_binding_rejects_unreadable_ledger_catalog(live_board, capsys, m
         claimed.read_text(encoding="utf-8").replace("tags: []", "cluster: C-gate\ntags: []"),
         encoding="utf-8",
     )
-    ledger = _seed_cluster(live_board, "C-gate", (tid,))
+    ledger = _seed_cluster(live_board, "C-gate", (tid,), status="closing")   # 종결 파이프라인 안
     sync_calls: list[tuple] = []
     monkeypatch.setattr(
         live_board, "_board_git_sync_best_effort",

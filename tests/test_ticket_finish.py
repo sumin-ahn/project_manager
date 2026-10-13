@@ -1506,6 +1506,16 @@ class _FakeRoundsBoard:
     def _board_git_enabled(self) -> bool:
         return self._board_git_enabled_value
 
+    def load_ticket(self, path):
+        return ({"cluster": "C-fake"}, "")
+
+    def ticket_cluster(self, ticket_id, frontmatter):
+        return frontmatter.get("cluster") or f"C-{ticket_id}"
+
+    def cluster_ledger_path(self, cluster):
+        name = cluster if cluster.startswith("C-") else f"C-{cluster}"
+        return self._tickets_dir / "clusters" / f"{name}.md"
+
 
 def test_engine_written_paths_includes_existing_round_files(tf, tmp_path):
     """rounds/<id>/ 아래 실존하는 라운드 파일이 stage 후보에 들어간다 (디렉터리 통째가 아니라
@@ -1570,6 +1580,35 @@ def test_engine_written_paths_excludes_non_round_and_temporary_files_by_grammar(
         assert round_dir / name not in paths
 
 
+def test_ticket_rounds_load_failure_is_not_folded_into_no_candidates(tf, tmp_path, monkeypatch):
+    """[[T-0959]] F-003 — `ticket_rounds.py` 가 있는데 적재가 실패하면 그 예외가 그대로 오른다.
+
+    값 없음으로 접으면 라운드 파일 후보가 빠져 홈 커밋에서 라운드 산출이 조용히 빠지고, 종결 뒤 홈에 미커밋
+    라운드가 남아 첫 핸드오프가 멈춘다. 파일 부재만 값 없음이다.
+    """
+    real_load = tf._load_module_from_path
+    failure = RuntimeError("합성 적재 실패")
+
+    def load(path, name, **kwargs):
+        if name == "ticket_rounds.py":
+            raise failure
+        return real_load(path, name, **kwargs)
+
+    monkeypatch.setattr(tf, "_load_module_from_path", load)
+    tickets_dir = tmp_path / "tickets"
+    round_dir = tickets_dir / "rounds" / "T-0753"
+    round_dir.mkdir(parents=True)
+    (round_dir / "01-developer.md").write_text("dev\n", encoding="utf-8")
+    board = _FakeRoundsBoard(tickets_dir, tickets_dir / "claimed" / "T-0753.md")
+
+    with pytest.raises(RuntimeError) as raised:
+        tf._load_ticket_rounds()
+    assert raised.value is failure
+    with pytest.raises(RuntimeError) as raised:
+        tf.engine_written_paths(board, "T-0753", tmp_path / "log.md")
+    assert raised.value is failure
+
+
 def test_round_stage_candidates_uses_round_filename_grammar_not_ad_hoc_suffix(
         tf, tmp_path):
     """`_round_stage_candidates` 는 자체 접미/접두 조합이 아니라 `parse_round_filename` 문법
@@ -1609,7 +1648,8 @@ def test_stage_scope_real_git_add_stages_untracked_new_round_file(tf, tmp_path):
     tickets_dir = repo / "tickets"
     ticket_path = tickets_dir / "claimed" / "T-0753.md"
     ticket_path.parent.mkdir(parents=True)
-    ticket_path.write_text("ticket\n", encoding="utf-8")
+    # 종결은 티켓 frontmatter 로 소속 장부를 찾는다 — 손상 티켓은 이제 그대로 실패한다([[T-0959]]).
+    ticket_path.write_text("---\nid: T-0753\nstatus: claimed\n---\n\nticket\n", encoding="utf-8")
     round_dir = tickets_dir / "rounds" / "T-0753"
     round_dir.mkdir(parents=True)
     round_file = round_dir / "01-developer.md"
@@ -1634,6 +1674,11 @@ def test_stage_scope_real_git_add_stages_untracked_new_round_file(tf, tmp_path):
         "_real_board = _ilu.module_from_spec(_spec)\n"
         "_spec.loader.exec_module(_real_board)\n"
         "git_scope_stage_pathspec = _real_board.git_scope_stage_pathspec\n"
+        "git_scope_pathspec = _real_board.git_scope_pathspec\n"
+        "load_ticket = _real_board.load_ticket\n"
+        "ticket_cluster = _real_board.ticket_cluster\n"
+        "def cluster_ledger_path(cluster):\n"
+        "    return _TICKETS_DIR / 'clusters' / (cluster if cluster.startswith('C-') else 'C-' + cluster)\n"
         f"STATUS_DIRS = {tf.load_board_module(tf.BOARD_PY).STATUS_DIRS!r}\n"
         f"_TICKET_PATH = _Path({str(ticket_path)!r})\n"
         f"_TICKETS_DIR = _Path({str(tickets_dir)!r})\n"
@@ -1670,6 +1715,9 @@ def test_task_stage_plan_separates_pm_outputs_and_worktree_touches(tf, tmp_path,
     worktree.mkdir(parents=True)
     _git_seed(worktree)
     (home / ".project_manager" / "wiki" / "log").mkdir(parents=True)
+    # add 는 작업 트리에 있는 파일만 받는다 — 선언 변경 파일을 실제로 둔다.
+    (worktree / "tests").mkdir(exist_ok=True)
+    (worktree / "tests" / "test_real_change.py").write_text("changed = 1\n", encoding="utf-8")
     monkeypatch.setattr(tf, "REPO", home)
     calls = []
 
@@ -1728,6 +1776,8 @@ def test_task_stage_plan_dry_run_matches_actual_repo_pathspec(tf, tmp_path, monk
     worktree = home / "work" / "project_manager_1"
     worktree.mkdir(parents=True)
     _git_seed(worktree)
+    (home / "home.md").write_text("home\n", encoding="utf-8")
+    (worktree / "code.py").write_text("code = 1\n", encoding="utf-8")
     monkeypatch.setattr(tf, "REPO", home)
 
     def fake_scope(ticket_id, board_py, log_file, run_git, *, repo=None,
@@ -3225,15 +3275,18 @@ def test_source_never_calls_merge_tree_for_self_axis_judgment(tf):
 # ── preflight 튜플 배선 (순서·`--no-pytest`·DI 기본값) ────────────────────────
 
 def test_self_axis_preflight_runs_last_after_private_ref_and_dod_pass(tf, tmp_path):
+    # 앞선 preflight(잔여 판정)는 git 을 읽는다 — 막혀야 하는 것은 git 쓰기(add·commit)다.
+    git_calls: list[list[str]] = []
     finisher = tf.TicketFinisher(
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("회귀 미호출이어야 한다")),
         run_board_fn=lambda args: (_ for _ in ()).throw(AssertionError("board 미호출")),
-        run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("git 미호출")),
+        run_git_fn=lambda args: (git_calls.append(list(args)) or (0, "")),
         dod_block_fn=lambda tid: None,
         self_axis_block_fn=lambda tid: f"자기 축 회귀 신규 실패 — {tid}",
         log_file=tmp_path / "log.md",
     )
     assert finisher.run("T-1234", section=None, dry_run=False) == 1
+    assert not [args for args in git_calls if args and args[0] in ("add", "commit")], git_calls
 
 
 def test_self_axis_preflight_is_never_called_when_dod_blocks(tf, tmp_path):

@@ -16,9 +16,13 @@ audience: pm-internal
 ## 실행
 
 ```bash
-# 1. 묶음 선언 (이번 wave 의 운영 단위 · 통합 브랜치·설계 문서 결속 · 코드 트리는 명시 필수)
+# 1. 묶음 선언 → 승격 (이번 wave 의 운영 단위 · 통합 브랜치·설계 문서 결속 · 코드 트리는 명시 필수)
 #    <ticket-group> 은 새로 짓는 묶음 이름(영숫자와 . _ -, 예: login-fix). 티켓 ID 모양(T-NNNN)은 발행이 만든 크기 1 장부(C-T-NNNN)의 자리라 거부된다.
 python3 .project_manager/tools/board.py cluster new <ticket-group> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로> --repo <repo> --slot <N>
+#    승격 (멤버마다 · draft 를 claim 할 수 있는 open/ 으로 옮긴다 · 공유 board(board-git)면 본문과 묶음 결속을 다시 검사해 어긋나면 rc 1 · 이미 open 이면 그 검사를 통과할 때 이동 없이 rc 0)
+python3 .project_manager/tools/board.py promote T-NNNN
+#    리뷰 없이 종결할 티켓만 (선택 · 멤버마다)
+python3 .project_manager/tools/board.py tier T-NNNN pm-direct
 python3 .project_manager/tools/board.py cluster show <ticket-group>   # 선언값 + 멤버 현재 status
 
 # 2. ticket 본문 dump (멤버마다)
@@ -32,7 +36,7 @@ python3 .project_manager/tools/board.py lint --gate
 # 5. 통과 시 claim (멤버마다)
 # task 세션(부트스트랩 --task)의 claim. 귀속은 task 이고, task 의 폴더가 1개면 --repo/--slot 을 생략한다
 python3 .project_manager/tools/board.py claim T-NNNN --task <task> --repo <repo> --slot <N>
-# task 없는 슬롯 세션 전용. task 세션에서 쓰면 종결이 소유 불일치로 거부한다
+# task 없는 슬롯 세션 전용. task 가 보유한 폴더를 지목하면 claim 이 거부한다
 python3 .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 활성 lease 1개면 생략 가능
 
 # 6. 작업 폴더를 묶음 브랜치로 전환: 코드 변경이 없어도 실행한다(종결이 이 브랜치를 든 폴더를 찾는다)

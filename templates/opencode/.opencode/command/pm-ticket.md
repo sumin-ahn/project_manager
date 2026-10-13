@@ -93,9 +93,9 @@ python3 .project_manager/tools/board.py promote <T-NNNN>
 - `design: required`는 설계 절을 다 채웠어도 promote가 거부한다. **설계 검토 완료(`design: done`)가 open 진입 조건**이기 때문이다.
 - 형식과 함께 **본문이 주장하는 사실**도 재검사한다(새 플래그 없음). repo-relative `파일:줄` 인용의 파일 부재·줄 범위 초과와 `design: required|done` 티켓의 architect 점검 라운드 미회수는 **거부**(rc=1)이고, 실재하지 않는 `touches`는 **경고 1줄**(신설 예정 파일이 정상이라 차단하지 않는다)이다. 인용은 repo 루트 기준으로 먼저 찾고, 없으면 하위 디렉터리 기준 표기(`wiki/decisions/x.md`)로 보고 그 경로로 끝나는 파일을 소유 트리에서 찾는다 — 유일하게 해소되면 그 파일로 판정하고, 사본이 여럿이거나 basename만 적은 인용(`board.py:120`)은 어느 사본인지 확정할 수 없어 **판정불능 개수**로 표시된다(판정받으려면 repo 루트 기준 경로로 적는다). 어느 표기로도 실재 파일이 없으면 판정불능이 아니라 거부다.
 - 인용으로 **인식되는 표기**는 백틱 코드 span 안의 `<경로>:<줄>` 하나뿐이다 — 펜스 코드블록 안은 예시라 세지 않고, 백틱 없는 맨 텍스트 좌표는 판정 대상이 아니다.
-- 통과하면 draft → `open/` 이동 + board-git 커밋(공유 board에 등장) 후 claim 가능해진다.
-- legacy(board 비-git)에서는 `promote`가 사실상 no-op(이미 open)이지만 검증은 `lint`로 실행한다.
-- 성공 시(승격 완료·board-git 기록 보류 두 경로 공통) `--touches` 겹침 재료가 §1과 같은 형식으로 stderr에 다시 나온다 — 발행 시점 이후 board가 바뀌었을 수 있어 승격 직전에 한 번 더 확인하는 자리다. 이 축도 **차단하지 않는다**.
+- board-git 공유 형상에서 통과하면 draft → `open/` 이동 + board-git 커밋(공유 board에 등장) 후 claim 가능해진다. 출력은 `promoted <T-NNNN> (board-git 승격 완료)`이고, 로컬 커밋을 내지 못하면 `promoted <T-NNNN> (board-git 기록 보류: local-only/uncommitted)`다.
+- legacy(board 비-git)에서는 `promote`가 사실상 no-op(이미 open)이고 board-git 커밋도 없다. 출력은 `promoted <T-NNNN> (open/ 그대로 · board 가 홈 git 안이라 커밋 없음)`이며 검증은 `lint`로 실행한다.
+- 성공 시(승격 완료·board-git 기록 보류·legacy 세 경로 공통) `--touches` 겹침 재료가 §1과 같은 형식으로 stderr에 다시 나온다 — 발행 시점 이후 board가 바뀌었을 수 있어 승격 직전에 한 번 더 확인하는 자리다. 이 축도 **차단하지 않는다**.
 
 ## 이번 호출 인자
 

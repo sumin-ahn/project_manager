@@ -1572,3 +1572,65 @@ def test_t0929_claim_anchor_failure_before_mutation(board, tmp_path, monkeypatch
     assert calls == []
     assert source.read_bytes() == before
     assert not _claimed_ticket(tmp_path, 'T-9029').exists()
+
+
+@requires_git
+def test_slot_identity_attribution_on_task_held_folder_is_refused(board, tmp_path, monkeypatch):
+    """[[T-0959]] AT-007 — `--task` 없이 `--repo --slot` 으로 task 가 보유한 폴더를 지목한 claim·new 는 쓰기 전에 거부한다.
+
+    예전에는 claim 이 슬롯 정체성(`<사용자>/proj_1`)으로 통과하고, 같은 폴더를 보유한 task 의 종결에서야 남의
+    티켓으로 막혔다. 대여 행이 슬롯 세션의 것이거나 장부가 없으면 종전대로 슬롯 정체성으로 귀속한다(역방향).
+    장부를 읽을 수 없으면 보유자를 확인할 수 없어 거부한다.
+    """
+    monkeypatch.setattr(board, "LEASES_FILE", _claim_anchor_leases_file(tmp_path))
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    _init_code_git(tmp_path, seed_text="home\n")
+    _init_code_git(tmp_path / "work" / "proj_1", seed_text="slot\n")
+
+    def write_ledger(session: str) -> None:
+        board.LEASES_FILE.write_text(json.dumps({
+            "tasks": [{"name": "mytask"}],
+            "leases": [{"slot": "work/proj_1", "repo": "proj", "session": session, "state": "leased"}],
+        }), encoding="utf-8")
+
+    write_ledger("mytask")
+    ticket = _seed_open_ticket(tmp_path, "T-9020")
+    before = ticket.read_bytes()
+    with pytest.raises(SystemExit) as refused:
+        board.cmd_claim(argparse.Namespace(id="T-9020", repo="proj", slot=1, user="me"))
+    assert "task 'mytask' 가 보유한다" in str(refused.value)
+    assert "--task mytask --repo proj --slot 1" in str(refused.value)
+    assert ticket.read_bytes() == before and not _claimed_ticket(tmp_path, "T-9020").exists()
+
+    tickets = tmp_path / ".project_manager" / "board" / "tickets"
+
+    def ticket_files() -> list[str]:
+        return sorted(path.name for status in ("open", "claimed", "blocked", "done", ".drafts", "clusters")
+                      for path in (tickets / status).glob("*.md"))
+
+    existing = ticket_files()
+    new_args = argparse.Namespace(title="slot new probe", touches=None, depends=None, tag=None,
+                                  estimate="small", prefix=None, user=None, session=None,
+                                  repo="proj", slot=1, task=None)
+    with pytest.raises(SystemExit) as refused_new:
+        board.cmd_new(new_args)
+    assert "task 'mytask' 가 보유한다" in str(refused_new.value)
+    assert ticket_files() == existing
+
+    for index, ledger in enumerate(("proj_1", None), start=1):     # 슬롯 세션 행 · 장부 없음
+        if ledger is None:
+            board.LEASES_FILE.unlink()
+        else:
+            write_ledger(ledger)
+        tid = f"T-902{index}"
+        _seed_open_ticket(tmp_path, tid)
+        assert board.cmd_claim(argparse.Namespace(id=tid, repo="proj", slot=1, user="me")) == 0
+        fm, _body = board.load_ticket(_claimed_ticket(tmp_path, tid))
+        assert str(fm["claimed_by"]).endswith("/proj_1"), fm["claimed_by"]
+
+    board.LEASES_FILE.write_text("{not json", encoding="utf-8")
+    _seed_open_ticket(tmp_path, "T-9029")
+    with pytest.raises(SystemExit) as unreadable:
+        board.cmd_claim(argparse.Namespace(id="T-9029", repo="proj", slot=1, user="me"))
+    assert "장부를 읽을 수 없어" in str(unreadable.value)
+    assert not _claimed_ticket(tmp_path, "T-9029").exists()

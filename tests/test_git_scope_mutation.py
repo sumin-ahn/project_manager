@@ -212,9 +212,29 @@ def test_scope_stageable_expands_deleted_directory(board, tmp_path):
     assert "others.py" not in got                     # 선언 밖 삭제는 안 실린다
 
 
+def _tracked(repo: Path) -> set[str]:
+    out = _git(["ls-files", "-z"], repo).stdout
+    return {token for token in out.split("\0") if token}
+
+
+def _head_paths(repo: Path) -> set[str]:
+    out = _git(["ls-tree", "-r", "--name-only", "-z", "HEAD"], repo).stdout
+    return {token for token in out.split("\0") if token}
+
+
+def _commit_pathspec(repo: Path, pathspec) -> subprocess.CompletedProcess:
+    """종결의 커밋 단계와 같은 명령 — `git commit -m … -- <다시 계산한 pathspec>`."""
+    return _git(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "finish", "--", *pathspec],
+                repo)
+
+
 @requires_git
 def test_finish_stages_deletion_of_declared_directory(tf, tmp_path, monkeypatch, capsys):
-    """`touches` 디렉토리를 통째로 지운 리팩터에서 그 삭제가 전부 stage 된다 (e2e·실 git)."""
+    """[[T-0959]] AT-013 — 선언 디렉토리를 통째로 지운 삭제는 커밋 단계가 다시 계산한 pathspec 에 남아 커밋된다.
+
+    [4/5] 의 add 는 작업 트리에 있는 파일만 받는다. 삭제를 add 로 index 에서 빼면 커밋 단계가 pathspec 을
+    다시 계산할 때(index 추적 필터) 그 경로가 사라져 삭제가 커밋에서 빠지고 staged 로 남았다.
+    """
     root = _make_home_repo(tmp_path / "home")
     (root / "src" / "pkg").mkdir(parents=True)
     (root / "src" / "pkg" / "old.py").write_text("old\n", encoding="utf-8")
@@ -225,11 +245,66 @@ def test_finish_stages_deletion_of_declared_directory(tf, tmp_path, monkeypatch,
     finisher = _make_finisher(tf, root, monkeypatch, touches=["src/pkg"])
 
     assert finisher.run("T-0001", section=None, dry_run=False) == 0
-    staged = _staged(root)
-    assert {"src/pkg/old.py", "src/pkg/old2.py"} <= staged, \
-        f"선언 디렉토리의 삭제가 stage 안 됨: {sorted(staged)}"
-    assert "src/pkg" not in staged
-    assert _OTHERS_WIP not in staged                  # 선언 밖 남의 변경은 그대로 미스테이지
+    deleted = {"src/pkg/old.py", "src/pkg/old2.py"}
+    assert deleted <= _tracked(root), "add 가 선언 삭제를 index 에서 뺐다"
+    (plan,) = finisher._stage_plans("T-0001")
+    assert deleted <= set(plan.scope.pathspec), plan.scope
+    assert _commit_pathspec(root, plan.scope.pathspec).returncode == 0
+    assert not deleted & _head_paths(root)
+    assert _staged(root) == set()
+    assert _OTHERS_WIP not in _staged(root)           # 선언 밖 남의 변경은 그대로 미스테이지
+    assert f" M {_OTHERS_WIP}" in _git(["status", "--porcelain"], root).stdout.splitlines()
+
+
+@requires_git
+def test_finish_commits_git_rm_staged_deletion_of_declared_paths(tf, tmp_path, monkeypatch, capsys):
+    """[[T-0959]] Q4 — `git rm` 으로 미리 stage 한 선언 삭제(파일·디렉토리)를 종결이 받아 커밋 pathspec 에 싣는다.
+
+    그 경로는 index 에도 작업 트리에도 없어 `git add` 가 rc 128 로 거부한다. 예전에는 stage 범위에서 빠져
+    잔여 판정이 "스코프 밖 staged" 로 거부했다. add 는 작업 트리에 있는 파일만, 커밋은 그 삭제까지 싣는다.
+    """
+    root = _make_home_repo(tmp_path / "home")
+    (root / "src" / "pkg").mkdir(parents=True)
+    (root / "src" / "pkg" / "old.py").write_text("old\n", encoding="utf-8")
+    (root / "src" / "gone.py").write_text("gone\n", encoding="utf-8")
+    _git_commit_all(root, "seed")
+    for target in (["-r", "src/pkg"], ["src/gone.py"]):
+        assert _git(["rm", "-q", *target], root).returncode == 0
+    (root / _TOUCHED_FILE).write_text("x = 2\n", encoding="utf-8")
+    finisher = _make_finisher(tf, root, monkeypatch, touches=["src/pkg", "src/gone.py", _TOUCHED_FILE])
+
+    assert finisher.run("T-0001", section=None, dry_run=False) == 0
+    out = capsys.readouterr().out
+    assert "스코프 밖 staged" not in out
+    assert "선언 삭제 2개" in out, out
+    (plan,) = finisher._stage_plans("T-0001")
+    assert {"src/pkg/old.py", "src/gone.py", _TOUCHED_FILE} <= set(plan.scope.pathspec), plan.scope
+    assert _commit_pathspec(root, plan.scope.pathspec).returncode == 0
+    assert not {"src/pkg/old.py", "src/gone.py"} & _head_paths(root)
+    assert _staged(root) == set()
+
+
+@requires_git
+def test_finish_commits_git_mv_rename_inside_declared_directory(tf, tmp_path, monkeypatch, capsys):
+    """[[T-0959]] F-001 — 선언 디렉토리 안에서 `git mv` 한 이름 바꿈의 원래 경로도 커밋 pathspec 에 실린다.
+
+    staged 삭제 조회가 이름 바꿈 감지를 타면 원래 경로가 `D` 가 아니라 `R` 로 짝지어져 조회에서 빠진다. 그러면
+    커밋은 새 경로만 기록해 HEAD 에 옛 파일과 새 파일이 함께 남고 원래 경로의 삭제가 staged 로 남는다.
+    """
+    root = _make_home_repo(tmp_path / "home")
+    (root / "src" / "pkg").mkdir(parents=True)
+    (root / "src" / "pkg" / "old.py").write_text("same = 1\nbody = 2\nmore = 3\n", encoding="utf-8")
+    _git_commit_all(root, "seed")
+    assert _git(["mv", "src/pkg/old.py", "src/pkg/new.py"], root).returncode == 0
+    finisher = _make_finisher(tf, root, monkeypatch, touches=["src/pkg"])
+
+    assert finisher.run("T-0001", section=None, dry_run=False) == 0
+    (plan,) = finisher._stage_plans("T-0001")
+    assert {"src/pkg/old.py", "src/pkg/new.py"} <= set(plan.scope.pathspec), plan.scope
+    assert _commit_pathspec(root, plan.scope.pathspec).returncode == 0
+    head = _head_paths(root)
+    assert "src/pkg/new.py" in head and "src/pkg/old.py" not in head
+    assert _staged(root) == set()
 
 
 @requires_git
@@ -848,10 +923,15 @@ def test_finish_stages_ticket_move_in_legacy_layout(tf, tmp_path, monkeypatch, c
 
     assert finisher.run("T-0001", section=None, dry_run=False) == 0
     staged = _staged(root)
+    old_path = ".project_manager/wiki/tickets/claimed/T-0001-x.md"
     assert ".project_manager/wiki/tickets/done/T-0001-x.md" in staged, \
         f"legacy 티켓 이동(새 경로)이 stage 안 됨: {sorted(staged)}"
-    assert ".project_manager/wiki/tickets/claimed/T-0001-x.md" in staged, \
-        f"legacy 티켓 이동(옛 경로 삭제)이 stage 안 됨: {sorted(staged)}"
+    # 옛 경로 삭제는 add 하지 않고 커밋 pathspec 에 남아 커밋된다([[T-0959]] add·커밋 pathspec 분리).
+    (plan,) = finisher._stage_plans("T-0001")
+    assert old_path in plan.scope.pathspec, plan.scope
+    assert _commit_pathspec(root, plan.scope.pathspec).returncode == 0
+    assert old_path not in _head_paths(root)
+    assert old_path not in _staged(root)
 
 
 @requires_git
