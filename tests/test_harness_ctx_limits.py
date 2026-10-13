@@ -1,4 +1,4 @@
-"""하네스 사용 한도·압축 비율 반영 (T-0923 AT-001~AT-011·AT-023 · 리뷰 F-001~F-003 · T-0943 AT-001~AT-005).
+"""하네스 사용 한도·압축 비율 반영 (T-0923 AT-001~AT-011·AT-023 · 리뷰 F-001~F-003 · T-0943 AT-001~AT-005 · T-0955 AT-001~AT-005).
 
 local.conf 의 하네스별 사용 한도 W(`harness.<이름>.ctx_window_tokens`)와 세 비율(쓴 %)로 하네스 설정
 파일 세 종류에 압축 지점을 쓰는 엔진 함수(`pm_import.apply_harness_ctx` 와 그 부품)를 잰다. 모델 한도 C 는
@@ -1118,20 +1118,232 @@ def test_t0943_opencode_target_minimum_and_output_cap(local_conf, tmp_path, monk
     assert text == f"ollama/qwen3.8:27b-unc · 창 262,144 − 출력 {output:,} ({ollama.origin})"
 
 
-def test_t0943_opencode_one_unread_model_refuses_all(local_conf, tmp_path, monkeypatch):
-    """AT-005 — 대상 모델 하나라도 C 를 읽지 못하면 적용 전체를 거부한다(어떤 파일도 바뀌지 않는다)."""
+# ── T-0955 공급자 연결 설정이 없는 opencode 모델 ──────────────────────────────
+# 모델 목록에 공급자가 없고 주소(`options.baseURL`·`api`·모델 `provider.api`)와 비기본 패키지가 없는 모델은
+# opencode 가 요청을 보낼 수 없어 사용 한도 대상에서 빼고 표준오류로 알린다. 쓸 수 있는 모델의 조회 실패는
+# T-0943 대로 전체를 거부한다. 조회는 실제 조회기(`_load("pm_import")`)와 임시 캐시·전역 설정 폴더로 돈다.
+
+T0955_EXCLUDED = "opencode 사용 한도 대상에서 뺀 모델(공급자 연결 설정 없음)"
+T0955_NOT_APPLIED = "opencode 사용 한도를 반영하지 않았습니다 (쓸 수 있는 모델 없음)"
+T0955_SHIPPED_LIMIT = {"context": 200000, "input": 200000, "output": 32768}
+T0955_CATALOG_HINT = "모델 목록 캐시가 없으니 opencode 를 한 번 실행해 모델 목록을 받은 뒤"
+
+
+def _t0955_excluded_without_catalog(cache_home: Path) -> str:
+    """모델 목록 캐시 파일이 없을 때의 제외 알림 앞부분 — 원인에 캐시 부재와 그 경로를 적는다."""
+    return f"opencode 사용 한도 대상에서 뺀 모델(모델 목록 캐시 없음: {cache_home / 'opencode' / 'models.json'})"
+
+
+def _t0955_record(root: Path, local_conf) -> dict:
+    return json.loads((root / local_conf.CTX_BUDGET_RELPATH).read_text(encoding="utf-8"))
+
+
+def test_t0955_unconfigured_provider_model_is_excluded_and_named(local_conf, tmp_path, monkeypatch, capsys):
+    """AT-001 — 연결 키 없는 전역 설정 공급자(lmstudio)의 모델은 조회하지 않고 빼며 이름을 알린다. 연결된
+    대상 5개(ollama 2 · openrouter 2 · opencode 1)로 반영하고 프로젝트 파일에 lmstudio 항목을 만들지 않는다."""
     engine = _load("pm_import")
     ollama = _T0943OllamaShow({"glm-5.2:cloud": 1048576, "qwen3.8:27b-unc": 262144})
     try:
         root, global_dir = _t0943_opencode_tree(tmp_path, monkeypatch, ollama.origin)
         (global_dir / "opencode.jsonc").write_text('{"provider": {"lmstudio": {"models": {"local-x": {}}}}}',
                                                    encoding="utf-8")
+        capsys.readouterr()
+        _apply(engine, root, global_dir)
+    finally:
+        ollama.close()
+    entry = _t0955_record(root, local_conf)["harnesses"]["opencode"]
+    assert sorted(f"{row['provider']}/{row['id']}" for row in entry["models"]) == [
+        "ollama/glm-5.2:cloud", "ollama/qwen3.8:27b-unc", "opencode/big-pickle",
+        "openrouter/anthropic/claude-x", "openrouter/z-ai/glm-x"]
+    assert entry["C"] == 262144 - 32000 and entry["E"] == 200000
+    document = _jsonc(pm_import=engine, path=root / ".opencode/opencode.jsonc")
+    assert "lmstudio" not in document["provider"]
+    assert f"{T0955_EXCLUDED}: lmstudio/local-x" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("documents, catalog, unconnected", [
+    ([{"provider": {"lm": {"models": {"x": {}}}}}], {}, True),
+    ([{"provider": {"lm": {"options": {"baseURL": ""}, "npm": "@ai-sdk/openai-compatible", "models": {"x": {}}}}}],
+     {}, True),
+    ([{"provider": {"lm": {"models": {"x": {}}}}}], {"lm": {"models": {}}}, False),
+    ([{"provider": {"lm": {"api": "http://127.0.0.1:1/v1", "models": {"x": {}}}}}], {}, False),
+    ([{"provider": {"lm": {"models": {"x": {"provider": {"api": "http://127.0.0.1:1/v1"}}}}}}], {}, False),
+    ([{"provider": {"lm": {"models": {"x": {"provider": {"npm": "@ai-sdk/anthropic"}}}}}}], {}, False),
+    ([{"provider": {"lm": {"npm": "@ai-sdk/anthropic", "models": {"x": {}}}}},
+      {"provider": {"lm": {"models": {"x": {"provider": {"npm": "@ai-sdk/openai-compatible"}}}}}}], {}, True),
+    ([{"provider": {"lm": {"options": {"baseURL": "http://127.0.0.1:1/v1"}}}},
+      {"provider": {"lm": {"models": {"x": {}}}}}], {}, False),
+], ids=["no-keys", "empty-baseurl", "catalog-provider", "provider-api", "model-api", "model-npm",
+        "model-npm-wins", "global-baseurl"])
+def test_t0955_connection_keys_decide_exclusion(documents, catalog, unconnected):
+    """연결 판정 입력표 — 목록의 공급자, 주소 키 세 개(빈 `options.baseURL` 은 없음), 패키지(모델 값이 공급자
+    값을 이긴다)를 병합 순서의 모든 설정 문서에서 본다."""
+    assert _load("pm_import")._ctx_opencode_unconnected(documents, catalog, "lm", "x") is unconnected
+
+
+def _t0955_without_provider_block(text: str) -> str:
+    """출하 opencode.jsonc 에서 최상위 `"provider"` 블록을 뺀 텍스트."""
+    start = text.index('  "provider": {\n')
+    end = text.index("\n  },\n", start) + len("\n  },\n")
+    return text[:start] + text[end:]
+
+
+@pytest.mark.parametrize("case", ["cache-absent", "catalog-without-provider", "no-provider-block"])
+def test_t0955_no_usable_opencode_model_is_not_applied(local_conf, tmp_path, monkeypatch, capsys, case):
+    """AT-002 — 쓸 수 있는 opencode 모델이 0개면 반영하지 않는다. 반환 빈 튜플, 설정 파일 바이트 그대로,
+    기록 `harnesses` 빈 객체, 미반영 알림. 출하 모델(ollama/glm-5.2:cloud)이 있으면 그 이름도 알린다."""
+    engine = _load("pm_import")
+    cache = tmp_path / "cache"
+    (cache / "opencode").mkdir(parents=True)
+    if case == "catalog-without-provider":
+        (cache / "opencode" / "models.json").write_text(json.dumps({"ollama-cloud": {
+            "api": "https://ollama.com/v1", "models": {"glm-5.2": {"limit": {"context": 200000, "output": 32000}}}}}),
+            encoding="utf-8")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    texts = None
+    if case == "no-provider-block":
+        shipped = TEMPLATE_FILES["opencode"][0].read_text(encoding="utf-8")
+        texts = {".opencode/opencode.jsonc": _t0955_without_provider_block(shipped)}
+    root = _project(tmp_path, harnesses=("opencode",), conf=T0943_CONF, texts=texts)
+    config = root / ".opencode" / "opencode.jsonc"
+    before = config.read_bytes()
+    capsys.readouterr()
+
+    assert _apply(engine, root, _global_dir(tmp_path)) == ()
+
+    assert config.read_bytes() == before
+    assert _t0955_record(root, local_conf)["harnesses"] == {}
+    err = capsys.readouterr().err
+    assert T0955_NOT_APPLIED in err, err
+    if case == "no-provider-block":
+        assert T0955_EXCLUDED not in err, err
+    elif case == "cache-absent":
+        assert f"{_t0955_excluded_without_catalog(cache)}: ollama/glm-5.2:cloud" in err, err
+    else:
+        assert f"{T0955_EXCLUDED}: ollama/glm-5.2:cloud" in err, err
+
+
+def test_t0955_cache_absent_exclusion_names_missing_catalog(local_conf, tmp_path, monkeypatch, capsys):
+    """리뷰 F-001 — 모델 목록 캐시 파일이 없으면 제외 알림의 원인이 캐시 부재와 그 경로이고, 남은 행이 0개면
+    opencode 를 한 번 실행해 목록을 받으라는 처방이 붙는다. 판정 규칙은 그대로다(캐시가 없으면 목록 밖).
+
+    선택 model 키 anthropic/claude-x(설정 블록 없음 · `opencode auth login` 연결 형상)를 둔 프로젝트에서
+    전역 설정에 연결된 ollama 가 없으면 남은 행 0개, 있으면 그 모델로 반영한다."""
+    engine = _load("pm_import")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    shipped = TEMPLATE_FILES["opencode"][0].read_text(encoding="utf-8")
+    selected = shipped.replace('  "$schema": "https://opencode.ai/config.json",\n',
+                               '  "$schema": "https://opencode.ai/config.json",\n  "model": "anthropic/claude-x",\n', 1)
+    assert selected != shipped
+    root = _project(tmp_path, harnesses=("opencode",), conf=T0943_CONF,
+                    texts={".opencode/opencode.jsonc": selected})
+    excluded = _t0955_excluded_without_catalog(cache)
+    unconnected_global = tmp_path / "unconnected-global"
+    unconnected_global.mkdir()
+    capsys.readouterr()
+
+    assert _apply(engine, root, unconnected_global) == ()
+    err = capsys.readouterr().err
+    assert f"{excluded}: " in err and "anthropic/claude-x" in err and "ollama/glm-5.2:cloud" in err, err
+    assert T0955_NOT_APPLIED in err and T0955_CATALOG_HINT in err, err
+    assert "공급자 연결 설정 없음" not in err, err
+
+    ollama = _T0943OllamaShow({"glm-5.2:cloud": 1048576})
+    try:
+        global_dir = _global_dir(tmp_path, {"opencode.json": json.dumps({"provider": {"ollama": {
+            "npm": "@ai-sdk/openai-compatible", "options": {"baseURL": ollama.origin}}}})})
+        _apply(engine, root, global_dir)
+    finally:
+        ollama.close()
+    err = capsys.readouterr().err
+    assert f"{excluded}: anthropic/claude-x" in err, err
+    assert "공급자 연결 설정 없음" not in err and T0955_NOT_APPLIED not in err, err
+    assert "opencode" in _t0955_record(root, local_conf)["harnesses"]
+
+
+def _t0955_closed_port() -> int:
+    """바인드한 뒤 닫은 루프백 포트 — 연결이 거부되는 Ollama 주소를 만든다."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+@pytest.mark.parametrize("case", ["npm-only", "server-down"])
+def test_t0955_routed_model_lookup_failure_still_refuses(local_conf, tmp_path, monkeypatch, case):
+    """AT-003 — 연결 설정이 있는 모델(비기본 패키지만 있거나 주소가 있음)의 한도를 읽지 못하면 T-0943 대로
+    반영 전체를 거부하고 어떤 파일도 바뀌지 않는다. 제외 규칙이 조회 실패 전반으로 넓어지면 실패한다."""
+    engine = _load("pm_import")
+    port = _t0955_closed_port()
+    lmstudio = ({"npm": "@ai-sdk/anthropic", "models": {"local-x": {}}} if case == "npm-only" else
+                {"npm": "@ai-sdk/openai-compatible", "options": {"baseURL": f"http://127.0.0.1:{port}/v1"},
+                 "models": {"local-x": {}}})
+    ollama = _T0943OllamaShow({"glm-5.2:cloud": 1048576, "qwen3.8:27b-unc": 262144})
+    try:
+        root, global_dir = _t0943_opencode_tree(tmp_path, monkeypatch, ollama.origin)
+        (global_dir / "opencode.jsonc").write_text(json.dumps({"provider": {"lmstudio": lmstudio}}),
+                                                   encoding="utf-8")
         before = _t0943_watched(root)
         with pytest.raises(engine.HarnessCtxError) as caught:
             _apply(engine, root, global_dir)
     finally:
         ollama.close()
-    assert "lmstudio/local-x" in str(caught.value) and _t0943_watched(root) == before
+    expected = "lmstudio/local-x" if case == "npm-only" else f"127.0.0.1:{port}/api/show"
+    assert expected in str(caught.value), caught.value
+    assert _t0943_watched(root) == before
+
+
+def _t0955_path_without_opencode() -> str:
+    """현재 PATH 에서 `opencode` 실행 파일이 있는 폴더를 뺀 값 — 설치의 모델 목록 조회가 PATH 부재로 끝난다."""
+    return os.pathsep.join(folder for folder in os.environ.get("PATH", "").split(os.pathsep)
+                           if folder and shutil.which("opencode", path=folder) is None)
+
+
+def _t0955_empty_opencode_env(tmp_path: Path) -> dict[str, str]:
+    """빈 opencode 전역 설정 폴더·빈 캐시 폴더."""
+    config_home, cache_home = tmp_path / "xdg-config", tmp_path / "xdg-cache"
+    config_home.mkdir()
+    cache_home.mkdir()
+    return {"XDG_CONFIG_HOME": str(config_home), "XDG_CACHE_HOME": str(cache_home)}
+
+
+def test_t0955_opencode_install_without_provider_settings(local_conf, tmp_path):
+    """AT-004 — 빈 전역 설정·빈 캐시에서 실제 `pm_import --new --harness opencode` 자식 프로세스가 rc 0 으로
+    끝난다. 출하 모델은 대상에서 빠져 템플릿 `limit`·`compaction.reserved` 가 그대로이고 기록에 opencode 가
+    없으며 표준오류가 그 모델을 알린다."""
+    import subprocess
+    import sys
+    dest = tmp_path / "adopter"
+    env = {**os.environ, **_t0955_empty_opencode_env(tmp_path), "PATH": _t0955_path_without_opencode(),
+           "PM_NONINTERACTIVE": "1"}
+    completed = subprocess.run(
+        [sys.executable, str(TOOLS / "pm_import.py"), "--new", str(dest), "--harness", "opencode",
+         "--name", "P", "--fill", "manual", "--from", str(REPO)],
+        cwd=str(tmp_path), env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=300)
+    output = f"--- stdout ---\n{completed.stdout[-3000:]}\n--- stderr ---\n{completed.stderr[-3000:]}"
+    assert completed.returncode == 0, output
+    document = _jsonc(pm_import=_load("pm_import"), path=dest / ".opencode/opencode.jsonc")
+    assert document["provider"]["ollama"]["models"]["glm-5.2:cloud"]["limit"] == T0955_SHIPPED_LIMIT
+    assert document["compaction"]["reserved"] == 20000
+    assert "opencode" not in _t0955_record(dest, local_conf)["harnesses"]
+    excluded = _t0955_excluded_without_catalog(tmp_path / "xdg-cache")
+    assert f"{excluded}: ollama/glm-5.2:cloud" in completed.stderr, output
+
+
+def test_t0955_update_apply_without_provider_settings(tmp_path, monkeypatch, capsys):
+    """AT-005 — 빈 전역 설정·빈 캐시에서 갱신의 반영 단계(`pm_update.apply_harness_ctx_limits`)가 True 를
+    돌려주고 멈춤 문구 없이 제외 모델을 알린다."""
+    pm_update = _load("pm_update")
+    for name, value in _t0955_empty_opencode_env(tmp_path).items():
+        monkeypatch.setenv(name, value)
+    root = _project(tmp_path, harnesses=("opencode",), conf=T0943_CONF)
+    capsys.readouterr()
+    assert pm_update.apply_harness_ctx_limits(root, write=True) is True
+    err = capsys.readouterr().err
+    assert "ollama/glm-5.2:cloud" in err and "[중단]" not in err, err
 
 
 # ── T-0949 설정 파일 값과 기록 settings 의 차이 ───────────────────────────────

@@ -7958,6 +7958,9 @@ OPENCODE_GLOBAL_CONFIG_NAMES = ("config.json", "opencode.json", "opencode.jsonc"
 # (OUTPUT_TOKEN_MAX·`OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX` 가 있으면 그 값). 설치본 규격이 파일마다
 # `limit` 안의 context·output 을 함께 요구해 비워 둘 수 없다(어기면 opencode 가 기동하지 못한다).
 OPENCODE_LIMIT_OUTPUT_DEFAULT = 32000
+# opencode 가 설정 공급자에 패키지가 없을 때 쓰는 패키지(opencode 1.18.34 실측) — OpenAI 호환 주소 조회의
+# 조건이자, 주소가 없으면 공급자 연결 설정이 없는 것으로 보는 패키지다(`_ctx_opencode_unconnected`).
+OPENCODE_DEFAULT_PROVIDER_NPM = "@ai-sdk/openai-compatible"
 # 모델마다 쓰는 `limit` 세 키 — context 는 원본 창, input 은 적용 한도, output 은 모델별 값이다.
 _MODEL_LIMIT_KEYS = ("context", "input", "output")
 _HARNESS_CTX_RATIO_KEYS = ("ctx.checkpoint_at_pct", "ctx.precompact_at_pct", "ctx.compact_at_pct")
@@ -8062,8 +8065,9 @@ def validate_harness_ctx(values, present: frozenset) -> None:
 def harness_ctx_targets(opencode_models, entries) -> dict[str, dict[tuple[str, ...], int | bool]]:
     """설정 파일 relpath → {관리 키 경로 조각 튜플: 값} — 도구 기록 항목(`entries`)에서 만든다.
 
-    `opencode_models` 는 대상 모델 `(provider, 모델 id) → limit.output` 이다. 모델 id 는 문서 키
-    그대로 쓴다(점·슬래시·콜론에서 가르지 않는다)."""
+    opencode 는 기록 항목의 모델 행마다 `limit` 을 쓰고, `limit.output` 은 `opencode_models`(대상 모델
+    `(provider, 모델 id) → limit.output`)에서 읽는다. 모델 id 는 문서 키 그대로 쓴다(점·슬래시·콜론에서
+    가르지 않는다)."""
     targets: dict[str, dict[tuple[str, ...], int | bool]] = {}
     for harness, relpath in HARNESS_CTX_FILES.items():
         if harness not in entries:
@@ -8071,9 +8075,10 @@ def harness_ctx_targets(opencode_models, entries) -> dict[str, dict[tuple[str, .
         rule, entry = HARNESS_CTX_RULES[relpath], entries[harness]
         values: dict[tuple[str, ...], int | bool] = {}
         if rule.model_limits:
-            contexts = {(row["provider"], row["id"]): row["basis"]["context"] for row in entry["models"]}
-            for (provider, model), output in opencode_models.items():
-                limit = {"context": contexts[(provider, model)], "input": entry["E"], "output": output}
+            for row in entry["models"]:
+                provider, model = row["provider"], row["id"]
+                limit = {"context": row["basis"]["context"], "input": entry["E"],
+                         "output": opencode_models[(provider, model)]}
                 for name in _MODEL_LIMIT_KEYS:
                     values[("provider", provider, "models", model, "limit", name)] = limit[name]
         for path, formula in rule.keys:
@@ -8093,7 +8098,9 @@ def apply_harness_ctx(dest_root: Path, *, write: bool, opencode_config_dir: Path
     원장 규칙: 반영 직전 파일을 원장이 증언하면(`_baseline_attests_dest`) 그 항목의 `sha256` 만 새
     내용 해시로 바꾸고 `recorded_at`·`template_rev` 는 둔다 — 무편집 판정이 반영 뒤에도 유지된다.
     편집됨·원장 없음은 원장을 건드리지 않는다. 원장이 상위 schema 면 파일을 쓰지 않고 멈춘다.
-    `harness.opencode.pro_model` 은 읽지 않는다 — 대상 모델은 설정 파일에 적힌 모델 전부다."""
+    `harness.opencode.pro_model` 은 읽지 않는다 — 대상 모델은 설정 파일에 적힌 모델 전부와 선택 모델이되,
+    공급자 연결 설정이 없는 모델(`_ctx_opencode_unconnected`)은 빼고 반영마다 표준오류로 알린다. 남은
+    모델이 없으면 opencode 는 반영하지 않는다(설정 파일 그대로·기록에 opencode 항목 없음)."""
     dest_root = Path(dest_root)
     conf_path = dest_root / ".project_manager" / "local.conf"
     if not write:
@@ -8165,12 +8172,20 @@ def _harness_ctx_plan(dest_root: Path, values, opencode_config_dir: Path):
             global_documents = _opencode_global_documents(opencode_config_dir, jsonc)
             models = _opencode_target_models(documents[relpath], relpath, global_documents)
             sources[harness] = [document for _label, document in global_documents] + [documents[relpath]]
-    entries = {harness: _harness_ctx_entry(dest_root, harness, values, sources[harness], models)
-               for harness in HARNESS_CTX_FILES if harness in present}
+    entries: dict[str, dict] = {}
+    for harness, relpath in HARNESS_CTX_FILES.items():
+        if harness not in present:
+            continue
+        rows = _read_harness_ctx_metadata(dest_root, harness, sources[harness], models)
+        if HARNESS_CTX_RULES[relpath].model_limits and not _opencode_rows_left(models, rows):
+            continue
+        entries[harness] = _harness_ctx_entry(dest_root, harness, values, rows, models)
     targets = harness_ctx_targets(models, entries)
     lines: list[str] = []
     changed: dict[str, tuple[str, str]] = {}
     for relpath, text in texts.items():
+        if relpath not in targets:  # 반영하지 않는 도구의 설정 파일은 그대로 둔다
+            continue
         new_text, file_lines = _harness_ctx_edit(relpath, text, targets[relpath], jsonc)
         lines.extend(file_lines)
         if new_text != text:
@@ -8241,21 +8256,43 @@ def ctx_budget_status(dest_root, values) -> dict:
     return result
 
 
-def _harness_ctx_entry(dest_root: Path, harness: str, values, documents: list, models: dict) -> dict:
-    """도구 기록 항목 — 모델 행·W·C·E·P·경고 지점. 조회 결과가 대상과 다르거나 설정 형식이 받지
-    않는 값이면 `HarnessCtxError`."""
+def _opencode_rows_left(models: dict, rows: list) -> bool:
+    """opencode 조회 행이 남았는가 — 대상 중 행이 없는 모델을 표준오류 한 줄로 알리고, 남은 행이 없으면
+    반영하지 않는다는 줄을 더한다. 행의 형식은 `_harness_ctx_entry` 가 본다.
+
+    모델 목록 캐시 파일이 없으면 공급자 연결 여부를 알 수 없어 models.dev 공급자 모델도 빠진다 — 그때는
+    원인을 공급자 연결 설정 없음 대신 캐시 부재와 그 경로로 적고, 미반영 줄에 opencode 를 한 번 실행해
+    목록을 받으라는 처방을 더한다."""
+    rerun = _load_local_conf()._CTX_RERUN
+    catalog_path = _opencode_model_catalog_path()
+    catalog_missing = not catalog_path.is_file()
+    listed = {(row.get("provider"), row.get("id")) for row in rows if isinstance(row, dict)}
+    excluded = [f"{provider}/{model}" for provider, model in models if (provider, model) not in listed]
+    if excluded:
+        cause = f"모델 목록 캐시 없음: {catalog_path}" if catalog_missing else "공급자 연결 설정 없음"
+        print(f"opencode 사용 한도 대상에서 뺀 모델({cause}): {', '.join(excluded)}", file=sys.stderr)
+    if rows:
+        return True
+    catalog_hint = (f" 모델 목록 캐시가 없으니 opencode 를 한 번 실행해 모델 목록을 받은 뒤 {rerun}."
+                    if catalog_missing else "")
+    print(f"opencode 사용 한도를 반영하지 않았습니다 (쓸 수 있는 모델 없음). 공급자 연결 설정을 넣은 뒤 "
+          f"{rerun}.{catalog_hint}", file=sys.stderr)
+    return False
+
+
+def _harness_ctx_entry(dest_root: Path, harness: str, values, found: list, models: dict) -> dict:
+    """도구 기록 항목 — 모델 행·W·C·E·P·경고 지점. `found` 는 조회 행(`_read_harness_ctx_metadata`)이다.
+    조회 행이 대상과 맞지 않거나(opencode 는 중복 없는 대상 모델의 부분집합, 그 밖은 정확히 1행) 설정
+    형식이 받지 않는 값이면 `HarnessCtxError`."""
     rule = HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]]
     positive = _load_local_conf()._ctx_positive
-    found = _read_harness_ctx_metadata(dest_root, harness, documents, models)
-    if not found:
-        raise HarnessCtxError([f"{rule.label} 모델 한도를 확인할 대상 모델이 없습니다."])
     if any(not isinstance(row, dict) or not isinstance(row.get("id"), str) or not isinstance(row.get("provider"), str)
            or not positive(row.get("C")) or not isinstance(row.get("basis"), dict)
            or (rule.model_limits and not positive(row["basis"].get("context"))) for row in found):
         raise HarnessCtxError([f"{rule.label} 모델 한도 조회 결과의 형식이 맞지 않습니다."])
     rows = [{key: row[key] for key in ("id", "provider", "C", "basis")} for row in found]
     identities = [(row["provider"], row["id"]) for row in rows]
-    mismatched = (len(set(identities)) != len(rows) or set(identities) != set(models)) if rule.model_limits \
+    mismatched = (len(set(identities)) != len(rows) or not set(identities) <= set(models)) if rule.model_limits \
         else len(rows) != 1
     if mismatched:
         raise HarnessCtxError([f"{rule.label} 모델 한도 조회 결과가 대상 모델과 맞지 않습니다."])
@@ -8418,6 +8455,11 @@ _CODEX_APP_SERVER_QUERY = ("codex", "app-server", "--stdio")
 _OPENCODE_MODEL_CATALOG = ("opencode", "models.json")
 
 
+def _opencode_model_catalog_path() -> Path:
+    """opencode 모델 목록 캐시 파일 — 조회(`_ctx_opencode_capacity`)와 제외 알림이 같은 경로를 본다."""
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache", *_OPENCODE_MODEL_CATALOG)
+
+
 def _ctx_codex_capacity(root, documents, models) -> list:
     """Codex C = floor(실효 창 × 유효 비율 ÷ 100) — 앱 서버의 실효 설정과 Codex 모델 캐시의 그 모델 행."""
     responses = _ctx_native_protocol(_CODEX_APP_SERVER_QUERY, root, [
@@ -8480,16 +8522,42 @@ def _ctx_opencode_route(documents: list, provider: str, model: str) -> tuple:
     return origin, npm, api_model
 
 
+def _ctx_opencode_unconnected(documents: list, catalog: dict, provider: str, model: str) -> bool:
+    """공급자 연결 설정이 없는 모델인가 — 셋 다 맞으면 참이다.
+
+      (1) 모델 목록에 그 공급자 항목이 없다.
+      (2) 설정 문서(병합 순서) 어디에도 공급자 `options.baseURL`(빈 문자열 제외)·공급자 `api`·모델
+          `provider.api` 가 없다.
+      (3) 패키지(모델 `provider.npm`, 없으면 공급자 `npm` · 뒤 문서가 이긴다)가 없거나
+          `OPENCODE_DEFAULT_PROVIDER_NPM` 이다.
+    opencode 1.18.34 는 이런 모델의 요청 주소를 빈 문자열로 두어 그 모델로 요청을 보내지 못한다."""
+    if provider in catalog:
+        return False
+    provider_npm = model_npm = None
+    for document in documents:
+        configured = (document.get("provider") or {}).get(provider) or {}
+        model_route = (((configured.get("models") or {}).get(model) or {}).get("provider") or {})
+        if ((configured.get("options") or {}).get("baseURL") not in (None, "")
+                or configured.get("api") is not None or model_route.get("api") is not None):
+            return False
+        provider_npm = configured.get("npm", provider_npm)
+        model_npm = model_route.get("npm", model_npm)
+    return (model_npm if model_npm is not None else provider_npm) in (None, OPENCODE_DEFAULT_PROVIDER_NPM)
+
+
 def _ctx_opencode_capacity(root, documents, models) -> list:
     """opencode 대상 모델마다 C = min(원본 input, context − 실효 출력) — models.dev 캐시 행이 없으면
-    OpenAI 호환(Ollama) 주소의 모델 정보."""
+    OpenAI 호환(Ollama) 주소의 모델 정보. 공급자 연결 설정이 없는 모델(`_ctx_opencode_unconnected`)은
+    조회하지 않고 행을 내지 않는다."""
     output_max, positive = _ctx_opencode_output_max(), _load_local_conf()._ctx_positive
-    catalog_path = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache", *_OPENCODE_MODEL_CATALOG)
+    catalog_path = _opencode_model_catalog_path()
     catalog = json.loads(_read_bytes_shared(catalog_path).decode("utf-8")) if catalog_path.is_file() else {}
     if not isinstance(catalog, dict):
         raise ValueError(f"opencode 모델 목록({catalog_path}) 형식 오류")
     rows = []
     for (provider, model), output in models.items():
+        if _ctx_opencode_unconnected(documents, catalog, provider, model):
+            continue
         origin, npm, api_model = _ctx_opencode_route(documents, provider, model)
         provider_row = catalog.get(provider) or {}
         listed = provider_row.get("models") if isinstance(provider_row, dict) else None
@@ -8504,7 +8572,7 @@ def _ctx_opencode_capacity(root, documents, models) -> list:
                 raise ValueError(f"opencode 모델 목록의 {provider}/{model} limit 형식 오류")
             effective, source = min(limit["output"], output, output_max), "models.dev 목록"
         else:
-            if npm != "@ai-sdk/openai-compatible" or not isinstance(origin, str) or not isinstance(api_model, str):
+            if npm != OPENCODE_DEFAULT_PROVIDER_NPM or not isinstance(origin, str) or not isinstance(api_model, str):
                 raise ValueError(f"{provider}/{model} 이 모델 목록에 없고 OpenAI 호환 주소도 아닙니다")
             info = _ctx_ollama_show(origin, api_model).get("model_info")
             architecture = info.get("general.architecture") if isinstance(info, dict) else None
