@@ -909,10 +909,10 @@ def _check_card_dod(dest: Path, tid: str) -> None:
 def _card_fills(tid: str, cluster: str, slot: str) -> dict[str, str]:
     # `<T-NNNN>` 를 `T-NNNN` 보다 먼저 바꾼다(꺾쇠 자리가 남지 않게).
     return {'"<제목>"': f'"{cluster} card probe"', "<T-NNNN>": tid, "T-NNNN": tid,
-            "<이름>": cluster, "<slot>": slot}
+            "<ticket-group>": cluster, "<slot>": slot}
 
 
-# 카드가 묶음 이름 자리(`cluster new <이름>`) 바로 다음 줄에 싣는 규칙 — 받아들여지는 예시와 거부되는
+# 카드가 묶음 이름 자리(`cluster new <ticket-group>`) 바로 다음 줄에 싣는 규칙 — 받아들여지는 예시와 거부되는
 # 티켓 ID 모양. 시험은 이 두 값과 `<slot>` 정의를 카드에서 읽는다(시험이 값을 고르지 않는다).
 _CARD_NAME_RULE_RE = re.compile(r"예: `(?P<example>[^`]+)`\).*티켓 ID 모양\(`(?P<reserved>[^`]+)`\)")
 _CARD_SLOT_FORM_RE = re.compile(r"<slot>=(?P<form>[^)\s]+)\)")
@@ -923,9 +923,9 @@ _WAVE_SKILLS = REPO / ".claude" / "skills"
 
 
 def _card_name_rule(card: str) -> tuple[str, str]:
-    """카드의 `cluster new <이름>` 바로 다음 줄에서 (예시 이름, 거부되는 티켓 ID 모양) 을 읽는다."""
+    """카드의 `cluster new <ticket-group>` 바로 다음 줄에서 (예시 이름, 거부되는 티켓 ID 모양) 을 읽는다."""
     lines = card.splitlines()
-    index = next(i for i, line in enumerate(lines) if "board.py cluster new <이름>" in line)
+    index = next(i for i, line in enumerate(lines) if "board.py cluster new <ticket-group>" in line)
     match = _CARD_NAME_RULE_RE.search(lines[index + 1])
     assert match, f"카드가 묶음 이름 자리의 규칙·예시를 주지 않는다: {lines[index + 1]!r}"
     return match["example"], match["reserved"]
@@ -986,6 +986,61 @@ def test_t0956_card_cluster_name_rule_matches_engine(monkeypatch):
         text = (_WAVE_SKILLS / name / "SKILL.md").read_text(encoding="utf-8")
         placeholders = _SKILL_REPO_PLACEHOLDER_RE.findall(text)
         assert placeholders and set(placeholders) == {"<repo>"}, (name, placeholders)
+
+
+# 뜻이 섞이던 옛 자리 표기와 그것이 남으면 안 되는 원본(엔진·스킬·방법론·관리자 앱).
+_RETIRED_PLACEHOLDERS = ("<이름>", "<C-이름>")
+_PLACEHOLDER_SOURCES = (
+    (".project_manager/tools", "*.py"),
+    (".claude/skills", "**/*.md"),
+    (".project_manager/wiki", "**/*.md"),
+    ("manager", "*.py"),
+    ("manager/ui/src", "**/*.ts*"),
+)
+
+
+def test_t0956_flow_card_rule_scopes_task_name(monkeypatch):
+    """[[T-0956]] 리뷰 F-005 — 자리 표기는 뜻별로 `<task>`·`<ticket-group>`·`<repo>` 다.
+
+    원본에 옛 표기 `<이름>`·`<C-이름>` 이 남지 않는다. pm-wave-claim 흐름 카드의 cluster new 줄은
+    묶음 이름 자리 `<ticket-group>`, claim 줄은 `--task <task>`·`--repo <repo>` 이고, 카드 두 렌더와
+    흐름 카드의 규칙 줄은 `<ticket-group>` 자리를 말하며 AT-012 정규식이 그 줄에서 예시 `login-fix`
+    와 거부 모양 `T-NNNN` 을 읽는다(규칙이 task 이름 자리로 번지지 않는다).
+    """
+    leftovers = []
+    for folder, pattern in _PLACEHOLDER_SOURCES:
+        files = sorted((REPO / folder).glob(pattern))
+        assert files, f"원본 목록이 비었다: {folder}/{pattern}"
+        for path in files:
+            text = path.read_text(encoding="utf-8")
+            leftovers += [(path.relative_to(REPO).as_posix(), token, text.count(token))
+                          for token in _RETIRED_PLACEHOLDERS if token in text]
+    assert leftovers == []
+
+    lines = (_WAVE_SKILLS / "pm-wave-claim" / "SKILL.md").read_text(encoding="utf-8").splitlines()
+    cluster_new = [line for line in lines if "board.py cluster new " in line]
+    assert cluster_new and all("board.py cluster new <ticket-group> " in line for line in cluster_new)
+    claim = [line for line in lines if "board.py claim " in line and "--task " in line]
+    assert claim, "흐름 카드에 task 모드 claim 줄이 없다"
+    for line in claim:
+        assert re.findall(r"--task (<[^>]+>)", line) == ["<task>"], line
+        assert re.findall(r"--repo (<[^>]+>)", line) == ["<repo>"], line
+    skill_rule = next(line for line in lines if _SKILL_NAME_RULE_RE.search(line))
+    assert "<ticket-group> 은 새로 짓는 묶음 이름" in skill_rule
+    match = _SKILL_NAME_RULE_RE.search(skill_rule)
+    assert (match["example"], match["reserved"]) == ("login-fix", "T-NNNN")
+
+    for codex in (False, True):
+        for key in ("CODEX_THREAD_ID", "CODEX_CI"):
+            monkeypatch.delenv(key, raising=False)
+        if codex:
+            monkeypatch.setenv("CODEX_CI", "1")
+        card_lines = _render_command_card(REPO).splitlines()
+        index = next(i for i, line in enumerate(card_lines)
+                     if "board.py cluster new <ticket-group>" in line)
+        assert "<ticket-group> 은 새로 짓는 묶음 이름" in card_lines[index + 1]
+        rule = _CARD_NAME_RULE_RE.search(card_lines[index + 1])
+        assert rule and (rule["example"], rule["reserved"]) == ("login-fix", "T-NNNN")
 
 
 def test_t0956_card_commands_close_first_ticket(tmp_path):

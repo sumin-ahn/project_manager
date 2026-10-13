@@ -73,7 +73,7 @@ HEAD(released base), role=readonly, session/pid·배타 대여가 없다. 무소
 작업 슬롯을 생성하거나 대여할 때 꺼낼 폴더를 정한다.
 
 ```bash
-./pm-config.sh alloc <repo> --task <이름> [--folders <폴더,…>]
+./pm-config.sh alloc <repo> --task <task> [--folders <폴더,…>]
 ```
 
 --folders는 Git cone sparse-checkout의 저장소 상대 폴더 목록이다. 생략하면 전체를 꺼내고, readonly와 함께 지정하면 부작용 전에 거부한다. Git 2.36 이상이 필요하며 잘못된 폴더·커밋 안 한 변경은 거부한다. 슬롯 반납은 폴더 규칙을 바꾸지 않는다. 좁힌 폴더 밖의 추적되지 않은 빌드 산출물은 Git이 지울 수 있으므로 alloc은 삭제 안내를 출력한다.
@@ -98,7 +98,7 @@ sync는 폴더 밖의 submodule을 제외하고 꺼냈으나 초기화되지 않
 ```
 
 - status의 **task 상황**은 task별 보유 작업공간(`work/<repo>_<N>`)·prefix(slot-모드 세션 제외), **slot
-  풀**은 슬롯별 state·보유 task·role(work/readonly)와 `<branch>@<head> (부모: <이름>@<sha> · 앞 N · 뒤 M)`
+  풀**은 슬롯별 state·보유 task·role(work/readonly)와 `<branch>@<head> (부모: <parent>@<sha> · 앞 N · 뒤 M)`
   요약이다. 부모 기록이 없으면 `(부모 기록 없음)`을 표시하고 추론하지 않는다. readonly는 branch
   `(detached)`와 따라갈 브랜치만 의미한다.
 - status의 **슬롯 없는 보존 브랜치** 절(있을 때만 · `status --json`은 `preserved_branches`)은 슬롯 제거가 보존한

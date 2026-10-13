@@ -184,7 +184,7 @@ _WORKTREE_PLACEHOLDER = "<worktree>"
 # prepare 로 우회하는데 그 우회가 cross 역할에서 거부된다(두 처방이 서로를 막는 교착). 리뷰는
 # 묶음 단위(`--cluster`)이고 엔진이 프롬프트를 조립하므로 프롬프트 파일을 받지 않는다.
 _TICKET_PLACEHOLDER = "<T-NNNN>"
-_CLUSTER_PLACEHOLDER = "<C-이름>"
+_CLUSTER_PLACEHOLDER = "C-<ticket-group>"
 _REVIEW_ROLE = "code-reviewer"
 _CODEX_OBSERVATION_RELATIVE_PATH = Path(
     ".project_manager/.local/delegate-channel/codex-observations.jsonl"

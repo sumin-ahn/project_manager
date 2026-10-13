@@ -1,7 +1,7 @@
 /**
  * 화면이 파이썬을 부르는 자리 — HTTP 하나다 (T-0921 AT-003).
  *
- * 창 주입 브리지를 흉내 내는 대역은 없다. 창도 브라우저도 같은 `POST /api/<이름>` 을 부르고,
+ * 창 주입 브리지를 흉내 내는 대역은 없다. 창도 브라우저도 같은 `POST /api/<method>` 을 부르고,
  * 다른 손님의 저장·적용은 `GET /events` 알림으로 온다.
  */
 import { act, render, waitFor } from "@testing-library/react";
@@ -32,7 +32,7 @@ afterEach(() => {
 });
 
 describe("HTTP 배선", () => {
-  it("이름 하나를 POST /api/<이름> 로 한 번 부르고 응답 JSON 을 그대로 돌려준다", async () => {
+  it("이름 하나를 POST /api/<method> 로 한 번 부르고 응답 JSON 을 그대로 돌려준다", async () => {
     const saved = { changed: true, conf: { missing_required: [] } };
     globalThis.fetch = jsonOnce(saved);
 

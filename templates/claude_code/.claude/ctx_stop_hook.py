@@ -143,13 +143,13 @@ def _build_ctx_guidance(
 
     # 구 엔진/실행 실패에서도 winding-down 함의를 되살리지 않는다. 중앙 명령을 쓸 수 없는
     # fail-soft 경계라 연속성 정책의 필수 두 사실만 최소 복제한다.
-    checkpoint = "python3 .project_manager/tools/pm_log.py checkpoint --task <이름>"
+    checkpoint = "python3 .project_manager/tools/pm_log.py checkpoint --task <task>"
     if band == "final":
         checkpoint += " --trigger compaction"
     return (
         f"[{labels[band]}] 컨텍스트 사용 {used_pct}%. "
         f"auto-compact 관측 구간이다. `{checkpoint}` 기록을 사용할 수 있다. "
-        "`<이름>`에는 현재 task 이름을 사용한다. "
+        "`<task>`에는 현재 task 이름을 사용한다. "
         "압축은 자동이고 세션은 그대로 이어진다. "
         "핸드오프는 사용자 명시 지시로만 한다. "
         "상세 ctx 연속성 정책은 pm_log.py ctx-guidance 엔진에서 복구한다."

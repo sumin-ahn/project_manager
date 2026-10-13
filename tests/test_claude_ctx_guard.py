@@ -341,8 +341,8 @@ def test_hook_stop_userpromptsubmit_injects_final_nudge(stop_hook, tmp_path):
     assert hso["hookEventName"] == "UserPromptSubmit"
     guidance = hso["additionalContext"]
     assert "ctx-nudge/최종" in guidance
-    assert "python3 .project_manager/tools/pm_log.py checkpoint --task <이름> --trigger compaction" in guidance
-    assert "<이름>`에는 현재 task 이름" in guidance
+    assert "python3 .project_manager/tools/pm_log.py checkpoint --task <task> --trigger compaction" in guidance
+    assert "<task>`에는 현재 task 이름" in guidance
     assert "auto-compact" in guidance
     assert "permissionDecision" not in hso
     assert "decision" not in output
@@ -542,7 +542,7 @@ def test_hook_nudge_userpromptsubmit_injects(guard, stop_hook, tmp_path):
     hso = output["hookSpecificOutput"]
     assert hso["hookEventName"] == "UserPromptSubmit"
     assert "additionalContext" in hso
-    assert "python3 .project_manager/tools/pm_log.py checkpoint --task <이름>" in hso["additionalContext"]
+    assert "python3 .project_manager/tools/pm_log.py checkpoint --task <task>" in hso["additionalContext"]
     assert "ctx-nudge" in hso["additionalContext"]
     # 비차단: deny/block 아님 (정지 스키마 부재).
     assert "permissionDecision" not in hso
@@ -787,7 +787,7 @@ def test_hook_nudge2_userpromptsubmit_injects(guard, stop_hook, tmp_path):
     assert hso["hookEventName"] == "UserPromptSubmit"
     assert "additionalContext" in hso
     assert "ctx-nudge/강화" in hso["additionalContext"]
-    assert "python3 .project_manager/tools/pm_log.py checkpoint --task <이름>" in hso["additionalContext"]
+    assert "python3 .project_manager/tools/pm_log.py checkpoint --task <task>" in hso["additionalContext"]
     # 비차단: deny/block 아님.
     assert "permissionDecision" not in hso
     assert output.get("decision") != "block"

@@ -18,7 +18,7 @@ audience: pm-internal
 
 ```bash
 # 묶음 종결 — 고정 6단계
-python3 .project_manager/tools/ticket_finish.py --cluster <C-이름>   # cluster new 로 선언한 묶음 (발행이 만든 C-T-NNNN 은 종결 대상이 아니다)
+python3 .project_manager/tools/ticket_finish.py --cluster C-<ticket-group>   # cluster new 로 선언한 묶음 (발행이 만든 C-T-NNNN 은 종결 대상이 아니다)
 # 티켓 표기도 같은 경로다 — 그 티켓이 속한 묶음 전체를 종결한다(크기 1이면 티켓 하나)
 python3 .project_manager/tools/ticket_finish.py T-NNNN
 ```
@@ -43,7 +43,7 @@ python3 .project_manager/tools/ticket_finish.py T-NNNN
   커밋할 변경이 남았나 · 통합 브랜치의 조상인가). 실패 지점을 고치고 같은
   커맨드를 다시 부르면 끝난 단계는 반복하지 않는다.
 - `--repo <repo> --slot <N>` (multi-PM): 소유 확인 정체성이다(멤버 `claimed_by` 와 대조). 작업 트리를 고르지 않는다. 복구 문(`--reconcile-integrated`)에서는 복구할 제품 트리다. `--repo` 단독은 활성 슬롯이 1개면 자동해소하고, 모호하면 **fail-loud**하며 `--slot`을 요구한다.
-- **`--task <이름>`** (task-mode · 일반 사용자 경로): 소유 확인 정체성이다(`<user>/<task>` 귀속). 작업 트리는 task 대여에서 고르지 않고 묶음 브랜치로 찾는다. `--repo/--slot` 과 혼합은 거부. task 세션(`$pm-bootstrap --task <이름>`)에서는 **이 형태가 정상 경로**다.
+- **`--task <task>`** (task-mode · 일반 사용자 경로): 소유 확인 정체성이다(`<user>/<task>` 귀속). 작업 트리는 task 대여에서 고르지 않고 묶음 브랜치로 찾는다. `--repo/--slot` 과 혼합은 거부. task 세션(`$pm-bootstrap --task <task>`)에서는 **이 형태가 정상 경로**다.
 - **`--no-pytest`**: 회귀를 별도(`$pm-qa` 등)로 이미 측정했을 때 회귀 실행만 skip 한다(board complete는 `--tests-pass` 유지). 코드 트리 해소·사설 참조 측정·stage 는 그대로 그 트리에서 한다. **wave 중 종결은 이 형태가 표준**이며 전량 검증은 릴리즈 절차 1회다.
 - **`--dry-run`**: 편집·board·git 없이 어느 단계가 무엇을 할지만 출력한다. 처음 도는 묶음은 이걸 먼저 본다.
 - **log entry는 티켓당 하나다.** 증거가 이미 확정됐으면 `| [[T-NNNN]] —` heading의 실제 entry를

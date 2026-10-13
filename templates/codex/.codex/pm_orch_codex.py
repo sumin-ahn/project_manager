@@ -6,7 +6,7 @@ respawn/marker 로직은 *엔진* Supervisor 에 있고(루트 `.project_manager
 이 파일은 **codex CLI 고유**한 부분만 — `codex exec --json` 을 subprocess 로 호출하고 JSONL
 이벤트 스트림을 파싱한다(opencode `pm_orch_opencode.py` 와 동형·claude 와는 세션 id 획득 방식만 다름).
 
-CLI 진입점: `python3 pm_orch_codex.py [--cwd <PM repo root>] [--task <이름>]`.
+CLI 진입점: `python3 pm_orch_codex.py [--cwd <PM repo root>] [--task <task>]`.
 사용자가 이 wrapper 를 띄우면 ctx 한계 도달 시 손 안 대고 새 PM 으로 자동 회전(연속 운영).
 
 codex thread_id 발급(claude 와 다른 핵심·opencode 동형): claude 는 `--session-id <uuid>` 로 child
@@ -1580,7 +1580,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--task", default=None, metavar="이름",
-        help="task 정체성 — 회전된 새 PM 세션의 재진입 프롬프트에 `--task <이름>` 실값을 "
+        help="task 정체성 — 회전된 새 PM 세션의 재진입 프롬프트에 `--task <task>` 실값을 "
              "박아 같은 task 를 resume 하게 한다((b) 명시 전달·cwd 추론 금지). 미지정이면 bare "
              "`$pm-bootstrap`(슬롯/솔로).",
     )

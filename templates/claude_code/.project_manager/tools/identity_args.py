@@ -206,10 +206,10 @@ def validate_task_name(name: str, registered_repos: "list[str] | set[str] | None
         raise InvalidTaskName(name, "빈 이름(공백 포함)")
     if any(ch.isspace() for ch in name):
         raise InvalidTaskName(
-            name, "공백·탭 등 whitespace 불가 (CLI/relay `--task <이름>` 인자 경계 파손 방지)")
+            name, "공백·탭 등 whitespace 불가 (CLI/relay `--task <task>` 인자 경계 파손 방지)")
     if "(" in name or ")" in name:
         raise InvalidTaskName(
-            name, "괄호 `(`·`)` 불가 (log 헤더 태그 `(task:<이름>)` delimiter 파손 방지)")
+            name, "괄호 `(`·`)` 불가 (log 헤더 태그 `(task:<task>)` delimiter 파손 방지)")
     if "/" in name or "\\" in name:
         raise InvalidTaskName(name, "path separator(`/`·`\\`) 불가 — 단일 이름이어야")
     if name.startswith("."):
@@ -413,7 +413,7 @@ def _read_text_shared(path: Path, *, encoding: str) -> str:
 def task_prefix(name: str, leases_file: Path) -> str | None:
     """장부 top-level `tasks` 컬렉션에서 task `name` 의 board prefix 를 읽는다 — 없으면 None.
 
-    `board.py new --task <이름>` 이 `--prefix` 명시가 없을 때 task 설정 prefix(`task prefix`
+    `board.py new --task <task>` 이 `--prefix` 명시가 없을 때 task 설정 prefix(`task prefix`
     로 설정·기본 None)를 참조한다. 순수 point-read(부작용 0·`worktree_pool` 미import·
     데이터 결합) — 부재/손상/미설정 → None(fail-soft·caller 가 유도 체인으로 폴백).
     """
@@ -1177,12 +1177,12 @@ def resolve_task_workspace(identity: Identity, leases_file: Path) -> Workspace:
     if not candidates:
         raise WorkspaceResolutionError(
             f"선택 작업공간은 task {task!r} 보유가 아니거나 보유 작업공간이 없다. "
-            f"기존 leased 슬롯의 --repo <이름> --slot <N>을 지정하거나 {_runtime_skill_entry('pm-env')} alloc으로 먼저 대여하라."
+            f"기존 leased 슬롯의 --repo <repo> --slot <N>을 지정하거나 {_runtime_skill_entry('pm-env')} alloc으로 먼저 대여하라."
         )
     if len(candidates) != 1:
         raise WorkspaceResolutionError(
             f"task {task!r} 작업공간 {len(candidates)}개가 해소돼 모호하다. "
-            "암묵 선택 없이 --repo <이름> --slot <N>으로 기존 슬롯을 명시하라."
+            "암묵 선택 없이 --repo <repo> --slot <N>으로 기존 슬롯을 명시하라."
         )
     row = candidates[0]
     slot = normalize_slot_value(row.get("slot"))

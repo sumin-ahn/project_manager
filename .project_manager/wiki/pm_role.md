@@ -23,7 +23,7 @@ PM 역할의 정적 운영 매뉴얼이다. PM 역할은 보드 운영·분할·
 1) 진입문서(CLAUDE.md 또는 AGENTS.md) ← 프로젝트 규칙·형상
 2) 현재 정체성의 pm_state           ← 내 동적 상태(세션 window·남은작업)
    · task: `.project_manager/.local/tasks/<task>/pm_state.md` (세션보다 오래 사는 연속성 앵커)
-     신규 task는 `/pm-bootstrap --task <이름>` 진입 즉시 생성되므로 호출 전에는 없어도 정상
+     신규 task는 `/pm-bootstrap --task <task>` 진입 즉시 생성되므로 호출 전에는 없어도 정상
 3) /pm-bootstrap dump (CLI 한 번) — 아래를 한꺼번에 surface:
    · 커맨드 카드 — 이 세션이 쓸 전 커맨드를 정체성 채워 dump(커맨드 표기 단일 진실)
    · 차수 · 직전 handoff entry 본문 · 남은작업(self-sufficient)
@@ -33,22 +33,22 @@ PM 역할의 정적 운영 매뉴얼이다. PM 역할은 보드 운영·분할·
 
 기계 측정은 `/pm-bootstrap` skill(backbone `.project_manager/tools/pm_bootstrap.py`) 한 번으로 끝낸다.
 
-**task 계약:** 시작/재개는 `/pm-bootstrap --task <이름>`, 종료는 `/pm-handoff`(무인자 · 스킬은 인자를 받지 않는다)만 쓴다. Python backbone의 task 진입은 `pm_bootstrap.py --task <이름>`·`pm_handoff.py --task <이름> --user-ack <값>`이며, 종료 시 `--task`·`--user-ack` 값은 PM 이 부트스트랩에서 사용자와 확인한 정체성으로 채운다(사용자의 `/pm-handoff` 호출이 그 정체성에 대한 명시 종료 지시). 신규 task는 작업공간 0개여도 task pm_state를 즉시 만들고, 기존 task는 보유 슬롯 집합과 task pm_state를 자동 수령한다. task와 repo/slot 혼합 진입은 거부한다. 작업공간 대여·편입은 task-aware pm-env/worktree 명령의 책임이다. 단, alloc/release와 rebase 소유검사처럼 repo/slot이 **대상 자원**, task가 **소유 명의**인 자원 연산은 유지한다.
+**task 계약:** 시작/재개는 `/pm-bootstrap --task <task>`, 종료는 `/pm-handoff`(무인자 · 스킬은 인자를 받지 않는다)만 쓴다. Python backbone의 task 진입은 `pm_bootstrap.py --task <task>`·`pm_handoff.py --task <task> --user-ack <값>`이며, 종료 시 `--task`·`--user-ack` 값은 PM 이 부트스트랩에서 사용자와 확인한 정체성으로 채운다(사용자의 `/pm-handoff` 호출이 그 정체성에 대한 명시 종료 지시). 신규 task는 작업공간 0개여도 task pm_state를 즉시 만들고, 기존 task는 보유 슬롯 집합과 task pm_state를 자동 수령한다. task와 repo/slot 혼합 진입은 거부한다. 작업공간 대여·편입은 task-aware pm-env/worktree 명령의 책임이다. 단, alloc/release와 rebase 소유검사처럼 repo/slot이 **대상 자원**, task가 **소유 명의**인 자원 연산은 유지한다.
 
 `architecture.md`·`status.md`·`decisions/`·`roadmap.md`·전체 보드·타 슬롯 log는 시작 시 통독하지
 않고, 실제 필요가 생길 때 §찾아가는 법에 따라 해당 절만 읽는다.
 
 **운영면:**
-- task 모드: 진행/남은작업은 per-task `pm_state.md`, 연속성은 `(task:<이름>)` handoff entry, 작업공간은 task 보유 슬롯 집합. task-only 부트스트랩은 전역 auto-slot을 쓰지 않는다.
-- 공유: 타 PM은 부트스트랩 대시보드에서 자기 task 1줄만 본다. `log/current.md`는 필요한 `(task:<이름>)` entry만 검색하고 평시 통독하지 않는다. 전체 보드 `board.py list --all`은 열람용이며 무인자 기본 뷰는 내 스트림이다. task가 하나뿐이면 대시보드에 그 task 1줄만 뜬다.
+- task 모드: 진행/남은작업은 per-task `pm_state.md`, 연속성은 `(task:<task>)` handoff entry, 작업공간은 task 보유 슬롯 집합. task-only 부트스트랩은 전역 auto-slot을 쓰지 않는다.
+- 공유: 타 PM은 부트스트랩 대시보드에서 자기 task 1줄만 본다. `log/current.md`는 필요한 `(task:<task>)` entry만 검색하고 평시 통독하지 않는다. 전체 보드 `board.py list --all`은 열람용이며 무인자 기본 뷰는 내 스트림이다. task가 하나뿐이면 대시보드에 그 task 1줄만 뜬다.
 
-`log/current.md`의 complete entry는 다음 세션이 그 entry만 읽고도 완료 구간의 무엇을·왜·어떻게 검증했는지 재구성할 수 있는 수준으로 서술한다. `ticket_finish.py`가 만든 `<PM 손>` 골격을 결과 나열로만 두지 말고 결정 이유·핵심 변경·회귀 evidence까지 채우며, compaction 경계에서 그 연속성이 부족하면 `pm_log.py checkpoint --task <이름> [--trigger compaction|manual]`로 보충 골격을 append한 뒤 서사를 PM 손으로 완성한다.
+`log/current.md`의 complete entry는 다음 세션이 그 entry만 읽고도 완료 구간의 무엇을·왜·어떻게 검증했는지 재구성할 수 있는 수준으로 서술한다. `ticket_finish.py`가 만든 `<PM 손>` 골격을 결과 나열로만 두지 말고 결정 이유·핵심 변경·회귀 evidence까지 채우며, compaction 경계에서 그 연속성이 부족하면 `pm_log.py checkpoint --task <task> [--trigger compaction|manual]`로 보충 골격을 append한 뒤 서사를 PM 손으로 완성한다.
 
 **현재 진실:** `architecture.md`가 현재 아키텍처 단일 진실이다. `decisions/` ADR은 *왜*의 히스토리이며 현재 구속력이 없다. 옛 ADR과 현재 의도/실측이 충돌하면 `architecture.md`를 따르고, architect가 architecture 갱신과 ADR amend/supersede를 한다. `architecture.md`·`status.md` content-truth(구조·구현상태 판정·비고)는 architect가 유지하고 PM은 점검한다.
 
-**세션 정체성:** 세션 정체성은 task 이름 하나다(`/pm-bootstrap --task <이름>`). board 조작에 실리는 정체성도 `--task <이름>`이고, 실값은 부트스트랩 커맨드 카드가 채우므로 외우지 않는다. `--repo/--slot`은 정체성이 아니라 작업 폴더 좌표이며, 그 좌표를 직접 지정할 일이 있는 도구에서만 쓴다.
+**세션 정체성:** 세션 정체성은 task 이름 하나다(`/pm-bootstrap --task <task>`). board 조작에 실리는 정체성도 `--task <task>`이고, 실값은 부트스트랩 커맨드 카드가 채우므로 외우지 않는다. `--repo/--slot`은 정체성이 아니라 작업 폴더 좌표이며, 그 좌표를 직접 지정할 일이 있는 도구에서만 쓴다.
 
-실행 위치 선택은 regression run·livegate record·claim 앵커·new/cluster new의 코드 트리·rounds resolve에 한정한다. task가 작업공간을 여럿 보유하면 `--task <이름> --repo <repo> --slot <N>`으로 자기 슬롯을 지정한다. 귀속은 task로 남고 선택한 제품 HEAD·브랜치·test_cmd를 실행과 증거에 결속한다. 미소유·타 task·idle·쓰기용 readonly 또는 선택 없는 다중 슬롯은 첫 부작용 전에 거부한다. 세션 진입·퇴장, init·reid 및 finish는 task 단독 입력과 혼합 거부를 유지한다. finish와 내부 확인은 묶음 branch/base_branch로 트리를 찾으며 슬롯을 반납하지 않는다.
+실행 위치 선택은 regression run·livegate record·claim 앵커·new/cluster new의 코드 트리·rounds resolve에 한정한다. task가 작업공간을 여럿 보유하면 `--task <task> --repo <repo> --slot <N>`으로 자기 슬롯을 지정한다. 귀속은 task로 남고 선택한 제품 HEAD·브랜치·test_cmd를 실행과 증거에 결속한다. 미소유·타 task·idle·쓰기용 readonly 또는 선택 없는 다중 슬롯은 첫 부작용 전에 거부한다. 세션 진입·퇴장, init·reid 및 finish는 task 단독 입력과 혼합 거부를 유지한다. finish와 내부 확인은 묶음 branch/base_branch로 트리를 찾으며 슬롯을 반납하지 않는다.
 
 ## 찾아가는 법
 
@@ -256,7 +256,7 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 
 ## 세션 식별 규칙
 
-- PM 세션 정체성은 task 이름 하나이며 board 조작에도 `--task <이름>`으로 실린다. 값은 부트스트랩 커맨드 카드가 채운다. `--repo/--slot`은 작업 폴더 좌표라 정체성 자리에 오지 않는다.
+- PM 세션 정체성은 task 이름 하나이며 board 조작에도 `--task <task>`으로 실린다. 값은 부트스트랩 커맨드 카드가 채운다. `--repo/--slot`은 작업 폴더 좌표라 정체성 자리에 오지 않는다.
 - 구현 세션은 짧은 식별자를 `$PM_SESSION_NAME=<name>`으로 바인딩한다.
 - orchestrator 서브에이전트 라벨은 `orch-dev-T<NNNN>` / `orch-review-T<NNNN>` 류 free-form이다. board 조작은 PM이 하므로 서브는 claim하지 않는다. board 귀속이 필요하면 `$PM_SESSION_NAME`만 바인딩한다(claim 플래그 없음).
 
@@ -347,7 +347,7 @@ CLI가 차수·인계 본문·남은작업을 이미 dump하므로 손 추출하
 
 ## 핸드오프 절차 (7단계)
 
-`/pm-handoff` skill(backbone `pm_handoff.py`)을 사용하고 dry-run을 권장한다(`--dry-run`). task 경로의 사용자 진입은 `/pm-handoff`(무인자)이며 PM 이 부트스트랩 확인 정체성으로 `pm_handoff.py --task <이름> --user-ack <이름>`을 채워 부른다 — backbone 이 차수·기본 요약·보유 작업공간을 해소한다. 다음 트리거는 `/pm-bootstrap --task <이름>`이다.
+`/pm-handoff` skill(backbone `pm_handoff.py`)을 사용하고 dry-run을 권장한다(`--dry-run`). task 경로의 사용자 진입은 `/pm-handoff`(무인자)이며 PM 이 부트스트랩 확인 정체성으로 `pm_handoff.py --task <task> --user-ack <task>`을 채워 부른다 — backbone 이 차수·기본 요약·보유 작업공간을 해소한다. 다음 트리거는 `/pm-bootstrap --task <task>`이다.
 
 자동 처리:
 0. dirty-tree 게이트 — PM 홈 + 활성 worktree 전수의 미커밋 잔여(gitignored 제외)를 어떤 파일 mutation 보다 앞에서 판정. 잔여가 있으면 rc 1 차단 + 목록 열거이며 정상 해소는 세션 산출 선-커밋이다. 핸드오프가 다룰 슬롯의 잔여는 PM 이 사용자에게 "커밋할까요? 강제 핸드오프할까요?" 를 묻는다 — 커밋 뒤 재실행, 또는 사용자가 고른 `--force-handoff`(커밋 없이 기록만·그 슬롯은 반납하지 않음·기록에 "커밋 안 한 변경 있음, 슬롯 유지"). PM 홈 잔여만 불가피 시 `--ack-dirty "<사유>"`(사유는 handoff entry 에 박제). `--auto-trigger`는 사용자 명시 핸드오프 호출부의 호환 신호로 차단 대신 loud 경고+사유 자동 박제를 쓰지만, 독자 트리거나 승인이 아니며 `--user-ack`를 우회하지 않는다. 커밋 0 트리는 untracked 만으로 판정, 비-git 트리는 비차단 경고.
@@ -369,7 +369,7 @@ PM 수동 작업:
 
 ## 동적 상태
 
-진행 중인 의사결정은 [`pm_state.md`](pm_state.md)에서 매 핸드오프 갱신한다. 남은 작업은 이 task 의 열린 todo(`.local/tasks/<이름>/todo.json`)가 단일 진실이다 — `pm-config task todo add|list|done`. 파일을 고치기 전에 열린 todo 를 등록한다 — 없는 채로 파일을 고치면 쓰기 판정이 경고를 띄운다(막지는 않는다). pm_role에는 정적 매뉴얼만 둔다.
+진행 중인 의사결정은 [`pm_state.md`](pm_state.md)에서 매 핸드오프 갱신한다. 남은 작업은 이 task 의 열린 todo(`.local/tasks/<task>/todo.json`)가 단일 진실이다 — `pm-config task todo add|list|done`. 파일을 고치기 전에 열린 todo 를 등록한다 — 없는 채로 파일을 고치면 쓰기 판정이 경고를 띄운다(막지는 않는다). pm_role에는 정적 매뉴얼만 둔다.
 
 ## 다음 PM 세션 부트스트랩 프롬프트
 

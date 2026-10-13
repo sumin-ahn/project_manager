@@ -157,7 +157,7 @@ def test_bootstrap_task_pytest_stop_uses_codex_notation(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         inst._collect_pytest_for_scope()
     error = capsys.readouterr().err
-    assert "`$pm-env alloc <repo> --task <이름>`" in error
+    assert "`$pm-env alloc <repo> --task <task>`" in error
     assert "`/pm-env" not in error
 
 

@@ -41,7 +41,7 @@
 ## 2. 위임 규약 (네이티브 `task` tool — 1차)
 
 PM 은 ticket 구현/검토/설계를 직접 하지 않는다. transport 규칙은 한 문장이다. 설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다. 위임 흐름은 claim → 설계·구현
-(native `task`) → 리뷰(같은 하네스면 `ticket prepare --cluster <C-이름> --role code-reviewer` 뒤 `task`) → finish 다.
+(native `task`) → 리뷰(같은 하네스면 `ticket prepare --cluster C-<ticket-group> --role code-reviewer` 뒤 `task`) → finish 다.
 리뷰 절차는 `/pm-dev-delegate` 카드의 code-reviewer 위임 절이 단일 진실이다.
 
 ### 2.1 위임 = `task` tool 호출
@@ -113,7 +113,7 @@ ticket 본문은 다음으로 확인:
 ### 2.5 리뷰 (code-reviewer)
 
 손 프롬프트가 없다 — 엔진이 프롬프트 파일·라운드 자리를 만든다. 같은 하네스면 `ticket prepare --cluster
-<C-이름> --role code-reviewer` 가 낸 `prompt` 파일 경로를 `task`(`subagent_type: code-reviewer`)에 넘기고
+C-<ticket-group> --role code-reviewer` 가 낸 `prompt` 파일 경로를 `task`(`subagent_type: code-reviewer`)에 넘기고
 종료 뒤 `ticket harvest` 로 돌려받는다. `/pm-dev-delegate` 카드의 code-reviewer 위임 절을 따른다.
 
 ### 2.6 reviewer 후 PM 처리
@@ -154,7 +154,7 @@ opencode run --agent researcher   --format json "<researcher 프롬프트>"
 opencode 는 사람 슬래시 팔레트와 모델 스킬 표면을 따로 만든다(1.18.16 실측).
 
 - `.opencode/command/*.md` — 팔레트 진입(`/pm-bootstrap` 등 15개). 입력한 인자를 그대로 전달한다.
-- `.claude/skills/<이름>/SKILL.md` — canonical 저작 소스이자 모델 `skill` tool 표면.
+- `.claude/skills/<skill>/SKILL.md` — canonical 저작 소스이자 모델 `skill` tool 표면.
 
 command 파일은 canonical 에서 기계 생성한 사본이라 손으로 편집하지 않는다. 두 표면은 서로를
 대체하지 않으므로 한쪽만 출하하면 나머지 진입이 사라진다.

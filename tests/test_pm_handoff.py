@@ -2913,7 +2913,7 @@ def test_task_regression_zero_held_slots_skips(hf, tmp_path, capsys):
     assert cwds == []
     out = capsys.readouterr().out
     assert "보유 슬롯 0개" in out
-    assert "/pm-env alloc <repo> --task <이름>" in out
+    assert "/pm-env alloc <repo> --task <task>" in out
     assert "`--repo/--slot` 명시" not in out
 
 

@@ -2,7 +2,7 @@
 """PM 핸드오프 7단계 자동화 헬퍼 — PM 세션 종료 시 기계 측정·편집 부분을 한 명령으로 묶는다.
 
 사용:
-    venv/bin/python .project_manager/tools/pm_handoff.py --task <이름> --user-ack <이름> \\
+    venv/bin/python .project_manager/tools/pm_handoff.py --task <task> --user-ack <task> \\
       [--dry-run] [--no-pytest] [--ack-dirty "<사유>"] [--force-handoff]
 
     `--task` 를 생략하면 cwd 작업 폴더 → 단일 활성 task 순으로 스스로 해소하고, 그래도 정할
@@ -1074,7 +1074,7 @@ def build_handoff_log_skeleton(
     """log/current.md 에 append 할 handoff entry skeleton 을 반환한다.
 
     log_text 와 task 로 직전 자기 handoff 이후 complete/checkpoint 헤더를 자동 채운다.
-    session 주입 시(정체성 태그 `task:<이름>`) 헤더 차수 뒤에 `({session})` 태그를 박는다 —
+    session 주입 시(정체성 태그 `task:<task>`) 헤더 차수 뒤에 `({session})` 태그를 박는다 —
     task 시퀀스의 감사 단서(이벤트 메타·상태 저장 아님). 미지정이면 태그를 생략한다.
     dirty_ack_note 주입 시(dirty-tree 게이트 override) ack 사유 줄을 추가한다 — 미지정이면
     줄 생략(clean 핸드오프는 현행 스키마 byte-호환).
@@ -2897,7 +2897,7 @@ class PmHandoff:
         if not slots:
             print(
                 f"  · task {task!r} 보유 슬롯 0개 — 대상 없음(skip). "
-                f"회귀가 필요하면 `{_runtime_skill_entry('pm-env')} alloc <repo> --task <이름>` "
+                f"회귀가 필요하면 `{_runtime_skill_entry('pm-env')} alloc <repo> --task <task>` "
                 "을 먼저 시도하라. 풀이 소진됐다면 사용자에게 task-aware 슬롯 생성 승인을 "
                 "요청하고, 승인한 사용자만 worktree add를 직접 실행한 뒤 task-only handoff를 "
                 "다시 실행한다(세션 자동 생성 금지)."
@@ -2940,7 +2940,7 @@ class PmHandoff:
                     f"그 슬롯을 red 로 차단한다. `{_runtime_skill_entry('pm-worktree')} "
                     "prune-stale`(장부 정리) 또는 "
                     "사용자에게 슬롯 재생성 승인을 요청하라. 승인한 사용자만 "
-                    "`worktree add <repo> --task <이름> --user-ack <repo>`를 직접 실행한 뒤 "
+                    "`worktree add <repo> --task <task> --user-ack <repo>`를 직접 실행한 뒤 "
                     "재시도한다(세션 자동 실행 금지). "
                     "log/current.md·pm_state.md 어떤 것도 건드리지 않는다.",
                     file=sys.stderr,
@@ -4090,7 +4090,7 @@ def _main(
             # 쓸 자리를 지어내지 않는다 — 어느 task 의 연속성을 이어야 하는지 모르면 중단이 답이다.
             print(
                 f"[중단] 핸드오프 대상 task 미해소 ({identity_source}) — 이 cwd 를 가진 작업 폴더가 "
-                "없고 활성 task 도 하나가 아니다. `--task <이름>` 으로 명시하라. "
+                "없고 활성 task 도 하나가 아니다. `--task <task>` 으로 명시하라. "
                 f"{identity_args.NO_WORK_FOLDER_REMEDY}",
                 file=sys.stderr,
             )

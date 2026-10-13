@@ -172,7 +172,7 @@ def test_claude_native_ticket_rounds_use_agent_contract_for_hand_spawned_roles()
         # 읽기 전용 입력 좌표(명세·이전 라운드)를 프롬프트가 실값으로 지시한다.
         assert "spec.md" in block and "rounds/" in block
     assert "<prepare JSON의 prompt>" in by_role["code-reviewer"]
-    assert "--cluster <C-이름> --role code-reviewer" in text, (
+    assert "--cluster C-<ticket-group> --role code-reviewer" in text, (
         "카드에 같은 하네스 리뷰 준비(ticket prepare --cluster --role code-reviewer)가 없음"
     )
     assert "--role code-reviewer \\\n    --cluster" in text, (

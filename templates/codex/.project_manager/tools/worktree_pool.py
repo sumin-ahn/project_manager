@@ -248,7 +248,7 @@ REPO = Path(__file__).resolve().parents[2]
 LOCAL_DIR = REPO / ".project_manager" / ".local"               # per-clone scratch (git-ignored)
 LEASES_FILE = LOCAL_DIR / "worktree-leases.json"               # 리스 장부 — leases[] + tasks[]
 LEASES_LOCK = LOCAL_DIR / "worktree-leases.lock"               # 장부 read-modify-write 직렬화 락
-TASKS_DIR = LOCAL_DIR / "tasks"                                # task 서술 공간(.local/tasks/<이름>/·pm_state·메타)
+TASKS_DIR = LOCAL_DIR / "tasks"                                # task 서술 공간(.local/tasks/<task>/·pm_state·메타)
 WORK_DIR = REPO / "work"                                        # worktree 풀 루트 (multi-PM 루트 gitignore)
 REPOS_DIR = REPO / ".repos"                                     # worktree 의 공유 .git 원 (bare)
 REPO_HOOKS_DIR = LOCAL_DIR / "repo-hooks"                       # per-repo pre-push 보호훅(프레임워크 소유·gitignore)
@@ -371,7 +371,7 @@ class TaskActiveElsewhere(Exception):
     task 열림 기록 검사(부트스트랩 진입 시): 장부 task 행의 `session` 이 다른 세션
     ID 면(열림 기록이 있고 종료 기록이 없음) 이 예외로 거부한다. 프로세스 조회는 하지 않는다 — 번호 재사용·세션 교체로
     생존을 알 수 없어서다. 해소는 사용자 행위 둘 중 하나다: 그 창을 쓰거나, 기록을 닫거나
-    (`pm-config task close <이름>`), 강제로 이어받는다(부트스트랩 `--force`).
+    (`pm-config task close <task>`), 강제로 이어받는다(부트스트랩 `--force`).
     `started` = 그 기록의 시작 시각(정체 표시용).
     """
 
@@ -440,7 +440,7 @@ class TaskEndRefused(Exception):
 
 
 class NotTaskOwner(Exception):
-    """release `--task <이름>` 이 그 task 명의가 아닌 슬롯을 반납하려 함 — 소유검사 거부.
+    """release `--task <task>` 이 그 task 명의가 아닌 슬롯을 반납하려 함 — 소유검사 거부.
 
     슬롯↔task 연결 = lease.session == task 이름 (alloc `--task` 가 session=task 로 리스).
     `--task` 를 준 release 는 이 소유검사를 통과해야 반납한다 — 다른 task/세션이 쓰는 슬롯을
@@ -2070,9 +2070,9 @@ def _validate_task_name(name: str, registered_repos: "list[str] | set[str] | Non
     회피). 거부 순서와 표면 근거:
       - 빈/공백-only → 빈 이름.
       - **모든 whitespace**(스페이스·탭 등·선행/후행/내부 전부) → task 명은 하류 *인자 경계*다: CLI
-        `--task <이름>`(shell word)·relay 재진입 프롬프트 `/pm-bootstrap --task <이름>`(slash 인자
+        `--task <task>`(shell word)·relay 재진입 프롬프트 `/pm-bootstrap --task <task>`(slash 인자
         경계)이 공백에서 쪼개져 정체성이 파손된다(codex 실증 `my task` → 인자 경계 깨짐).
-      - **괄호 `(`·`)`** → log 헤더 태그 `(task:<이름>)`(pm_handoff `_TASK_TAG_PREFIX`)의 delimiter 다:
+      - **괄호 `(`·`)`** → log 헤더 태그 `(task:<task>)`(pm_handoff `_TASK_TAG_PREFIX`)의 delimiter 다:
         `)` 포함 명은 태그를 조기 종료시켜 파서(`task:[^)]+`)의 bound_session 매칭이 어긋나 task 연속성
         추론/본문 추출이 파손된다(codex 실증 `foo)bar` → 태그 `(task:foo)bar)` 조기 매칭).
       - path separator(`/`·`\\`) → 선행 `.`(숨김/`.`/`..` 상대) → 단일 컴포넌트 아님(traversal).
@@ -2081,11 +2081,11 @@ def _validate_task_name(name: str, registered_repos: "list[str] | set[str] | Non
         raise InvalidTaskName(name, "빈 이름(공백 포함)")
     if any(ch.isspace() for ch in name):
         raise InvalidTaskName(
-            name, "공백·탭 등 whitespace 불가 (CLI/relay `--task <이름>` slash 인자 경계 파손 방지)"
+            name, "공백·탭 등 whitespace 불가 (CLI/relay `--task <task>` slash 인자 경계 파손 방지)"
         )
     if "(" in name or ")" in name:
         raise InvalidTaskName(
-            name, "괄호 `(`·`)` 불가 (log 헤더 태그 `(task:<이름>)` delimiter 파손 방지)"
+            name, "괄호 `(`·`)` 불가 (log 헤더 태그 `(task:<task>)` delimiter 파손 방지)"
         )
     if "/" in name or "\\" in name:
         raise InvalidTaskName(name, "path separator(`/`·`\\`) 불가 — 단일 이름이어야")
@@ -2440,10 +2440,10 @@ def create_task(
 ) -> "Task | None":
     """task 정체성만 만든다 — 세션에 묶지 않는다(`session` 빈 값). 이미 있으면 `None`.
 
-    `pm-config task new <이름>` 의 write 백엔드다. 장부 `tasks[]` 행(`prefix=None`·`session` 빈 값)과
-    `.local/tasks/<이름>/pm_state.md`(`ensure_task_pm_state` — `bind_task` 신규 생성분과 같은
+    `pm-config task new <task>` 의 write 백엔드다. 장부 `tasks[]` 행(`prefix=None`·`session` 빈 값)과
+    `.local/tasks/<task>/pm_state.md`(`ensure_task_pm_state` — `bind_task` 신규 생성분과 같은
     산출)까지만 만들고 끝낸다: 슬롯 대여(`alloc` 소관)도 세션 묶기(bootstrap 소관)도 하지
-    않는다. 이후 `pm-bootstrap --task <이름>` 이 그 행을 **resumed** 로 이어받는다 — 닫힘
+    않는다. 이후 `pm-bootstrap --task <task>` 이 그 행을 **resumed** 로 이어받는다 — 닫힘
     (`session` 빈 값)은 `bind_task` 가 그대로 재개하는 값이라 새 상태값이 없다.
 
     이미 있는 이름은 `None`(호출부가 rc1 안내)이다 — 재개는 bootstrap 몫이라 여기서 기존
@@ -2479,7 +2479,7 @@ def bind_task(name: str, *, session: str,
 
     **열림 기록 거부**: 장부 행이 **다른 세션**으로 열려 있으면 `TaskActiveElsewhere` 로 거부한다(부트스트랩이
     dump 이전에 거부·판정에 프로세스 조회 0회). 해소는 사용자 행위다 — 그 창을 쓰거나,
-    `pm-config task close <이름>` 으로 기록을 닫거나, 부트스트랩 `--force` 로 이어받는다
+    `pm-config task close <task>` 으로 기록을 닫거나, 부트스트랩 `--force` 로 이어받는다
     (강제 경로도 기록을 먼저 닫고 이 함수를 그대로 탄다 — 강제 전용 분기 0).
 
     prefix 는 여기서 안 만진다
@@ -2511,10 +2511,10 @@ def bind_task(name: str, *, session: str,
 def set_task_prefix(name: str, prefix: "str | None") -> "Task | None":
     """task 레코드의 board prefix 를 지정/변경/해제한다 — 갱신된 `Task`·task 부재 시 `None`.
 
-    `pm-config task prefix <이름> <p|none>` 의 write 백엔드다 — 장부 top-level `tasks` 레코드
+    `pm-config task prefix <task> <p|none>` 의 write 백엔드다 — 장부 top-level `tasks` 레코드
     의 `prefix` 필드를 `prefix`(문자열=지정/변경·None=해제) 로 덮는다. **중간 변경 자유**
     (task 종속 없음) — bind_task 는 prefix 를 안 만지고(생성=None·재개=유지) 변경은 여기 단일
-    지점이다. `board.py new --task <이름>` 이 `identity_args.task_prefix` 로 이 값을 read 해
+    지점이다. `board.py new --task <task>` 이 `identity_args.task_prefix` 로 이 값을 read 해
     해소(명시 `--prefix` > task 설정 > 기본 없음)에 쓴다.
 
     **장부 IO 는 이 모듈이 단일 소유**(직접 JSON read/write 금지·flock/스키마) — `_lease_lock`
@@ -2540,7 +2540,7 @@ def set_task_prefix(name: str, prefix: "str | None") -> "Task | None":
 def add_task_todo(name: str, text: str, *, now=_now_utc) -> "list[dict] | None":
     """task 에 열린 할 일을 하나 더한다 — 갱신된 목록·task 부재 시 `None`.
 
-    `pm-config task todo add <이름> <내용>` 의 write 백엔드다. 같은 내용을 두 번 넣는 것은 막지
+    `pm-config task todo add <task> <내용>` 의 write 백엔드다. 같은 내용을 두 번 넣는 것은 막지
     않는다 — 같은 문장이 서로 다른 일을 가리킬 수 있고, 중복 여부는 기계가 판정할 수 없다.
 
     ID 는 `next_id` 에서 받아 **재사용하지 않는다**. 지운 번호를 다시 쓰면 사람이 화면에서 읽은
@@ -2567,7 +2567,7 @@ def add_task_todo(name: str, text: str, *, now=_now_utc) -> "list[dict] | None":
 def close_task_todo(name: str, todo_id: int) -> "tuple[list[dict], dict] | None":
     """열린 할 일 하나를 ID 로 지운다 — `(남은 목록, 지운 항목)`·task 부재 시 `None`.
 
-    `pm-config task todo done <이름> <ID>` 의 write 백엔드다. `todo_id` 는 `task todo list` 가
+    `pm-config task todo done <task> <ID>` 의 write 백엔드다. `todo_id` 는 `task todo list` 가
     보여주는 `#N` 이다 — 목록이 줄어도 그 번호는 그 일을 계속 가리킨다. 없는 ID 면 `LookupError`
     로 멈춘다(호출부가 rc1 안내): 조용히 무시하면 지운 줄 알고 넘어간다.
 
@@ -2632,7 +2632,7 @@ def close_task_session(name: str) -> "Task | None":
     """task 종료 기록 — 장부 task 레코드 `session` 을 비운다.
 
     pm_handoff task 모드가 log 쓰기 전 load-bearing 종료 경계로 호출하고, `pm-config task close
-    <이름>` 이 같은 프리미티브로 **종료 기록 없이 남은 세션**을 사용자가 닫는다(복원 없음).
+    <task>` 이 같은 프리미티브로 **종료 기록 없이 남은 세션**을 사용자가 닫는다(복원 없음).
     이 기록이 없으면 다음 부트스트랩이 그 task 를 "열려 있음"으로 보고 거부한다 —
     닫아 두면 그대로 재개(`resumed`)한다. task end(`end_task`)와는 별개 — end 는 레코드 제거·
     아카이브, 이건 세션 인계라 레코드는 유지하고 열림 표시만 내린다.
@@ -2789,7 +2789,7 @@ def reopen_task(name: str, archive: "str | None" = None) -> ReopenTaskResult:
 def slots_for_task(name: str) -> list[Lease]:
     """이 task(session==name) 명의로 **leased** 인 슬롯 리스트 (조회 전용·부작용 0).
 
-    슬롯↔task 연결 = `lease.session == task 이름` — alloc `--task <이름>` 이 session=이름 으로
+    슬롯↔task 연결 = `lease.session == task 이름` — alloc `--task <task>` 이 session=이름 으로
     슬롯을 리스하므로(직교 정체성이 lease 의 session 축에 실린다). release `--task` 소유검사와
     `end_task` 의 dirty 검사·일괄 반납 대상이 이걸 본다. idle/미점유 슬롯은 session 이 비어 제외.
     """
@@ -3593,7 +3593,7 @@ def create_slot(
     점유는 `alloc`/`bind_slot` 이 한다).
 
     **task-명의 생성 (`owner_task` 주어짐)**: 풀 소진 시 `worktree add <repo> --task
-    <이름>` 이 새 슬롯을 만들고 **생성 직후 그 슬롯을** task 명의로 대여한다(min-idle 재탐색의
+    <task>` 이 새 슬롯을 만들고 **생성 직후 그 슬롯을** task 명의로 대여한다(min-idle 재탐색의
     오슬롯 리스크 없이 생성분 직결). lease.session=owner_task — 그 슬롯의 재부착 보호는
     `bound` 이 아니라 **tasks 장부 조인**이 담당한다
     lease 통합·마이그레이션 0). owner_task 는 기바인딩 task 요구(cmd 층 `find_task`)라 항상 tasks
@@ -4418,7 +4418,7 @@ def _apply_git_snapshot(lease: "Lease", *, base_branch: "str | None" = None,
     base 는 **readonly 슬롯 전용**이다(브랜치가 없어 따라갈 부모 브랜치를 장부에 둔다). readonly lease 에
     `base_branch` 주어짐(생성·refresh) = base 를 `{branch, commit=방금 스냅한 head}` 로 **새로** 기록 /
     미주어짐 = 기존 `lease.git.base` **보존**. 작업 슬롯은 `base_branch` 와 무관하게 base 가 없다(부모는
-    git 설정 `branch.<이름>.pm-parent` 가 진실 — 옛 장부 base 는 다음 스냅에서 빠진다).
+    git 설정 `branch.<branch>.pm-parent` 가 진실 — 옛 장부 base 는 다음 스냅에서 빠진다).
     스냅 불가(슬롯 부재 등 None)면 기존 git 을 clobber 하지 않고 그대로 둔다(silent 손실 방지).
     예외 흡수 — 스냅 실패가 리스 lifecycle op 을 막지 않는다.
     """
@@ -5603,7 +5603,7 @@ def rebase(slots: "list[str]", *, onto: "str | None" = None,
     슬롯별 `RebaseSlotResult` 리스트(호출부가 성공/스킵/충돌 요약).
 
     **소유 판별 축** = `owner_task`(명시 task 명의) > `_default_session()`(세션 명의):
-      - `owner_task` 주어짐(CLI `--task <이름>`·단일/일괄 공통) → **그 task 명의**가 '내 것'의
+      - `owner_task` 주어짐(CLI `--task <task>`·단일/일괄 공통) → **그 task 명의**가 '내 것'의
         정의다. `release(owner_task=)` 의 소유검사와 **동형**(같은 장부·같은 의미: 그 슬롯의
         leased `lease.session` 이 그 명의인가) — 같은 소유를 두 도구가 다르게 판정하던 게 결함의
         본질이었다(이 task 를 1급 축으로 올렸는데 rebase 의 소유 축만 슬롯 세션에 머묾).
@@ -6868,8 +6868,8 @@ def _resolve_actor_slot_for_repo(repo: str) -> str:
 def _print_status_row(row: dict) -> None:
     """슬롯 git 구성 dict 렌더(role·branch·head·부모·자식·stash·dirty·submodule pin/drift).
 
-    부모는 `<이름>@<갈라진 커밋 12자> · 앞 N · 뒤 M`, 기록 없음은 `(부모 기록 없음)`, 부모 브랜치가
-    지워졌으면 `<이름>@<커밋> (부모 브랜치 없음)`. submodule 은 역할별 경고 마크(⚠=drift/
+    부모는 `<parent>@<갈라진 커밋 12자> · 앞 N · 뒤 M`, 기록 없음은 `(부모 기록 없음)`, 부모 브랜치가
+    지워졌으면 `<parent>@<커밋> (부모 브랜치 없음)`. submodule 은 역할별 경고 마크(⚠=drift/
     uninitialized··=pinned/dev-ahead)로 표시(빈 목록=submodule 없는 슬롯 → 줄 생략)."""
     slot = row["slot"]
     parent = row.get("parent")
@@ -6898,15 +6898,15 @@ def _print_status_row(row: dict) -> None:
 
 
 def _cmd_status(args) -> int:
-    """`status [<slot>] [--task <이름>]` CLI 핸들러 — 슬롯 git 구성 조회 단일/일괄.
+    """`status [<slot>] [--task <task>]` CLI 핸들러 — 슬롯 git 구성 조회 단일/일괄.
 
-    대상: `--task <이름>`(그 task 보유 전 슬롯 일괄) > 위치인자 `<slot>`(단일) > 무인자(내 task 전
+    대상: `--task <task>`(그 task 보유 전 슬롯 일괄) > 위치인자 `<slot>`(단일) > 무인자(내 task 전
     슬롯·`_default_session` 유입). 슬롯별 branch·head·부모·자식·stash·submodule pin/drift·dirty·role 을
     조회한다(`status` 백본)."""
     task = getattr(args, "task", None)
     slot_arg = getattr(args, "slot", None)
     if task and slot_arg:
-        print("[중단] status 는 `<slot>`(단일) 또는 `--task <이름>`(일괄) 중 하나만 받는다.",
+        print("[중단] status 는 `<slot>`(단일) 또는 `--task <task>`(일괄) 중 하나만 받는다.",
               file=sys.stderr)
         return 1
     try:
@@ -6924,7 +6924,7 @@ def _cmd_status(args) -> int:
         return 1
     if not rows:
         print("# 조회 대상 슬롯 없음 — 내 세션 명의로 보유한 leased 슬롯이 없다 "
-              "(task 모드면 `--task <이름>`, 아니면 `<slot>` 으로 대상을 명시하라).")
+              "(task 모드면 `--task <task>`, 아니면 `<slot>` 으로 대상을 명시하라).")
         return 0
     for i, row in enumerate(rows):
         if i:
@@ -6939,7 +6939,7 @@ def _is_registered_task(name: str) -> bool:
     ⚠ **`_lease_lock` 밖에서만 호출**한다 — 내부의 `find_task` 가 락을 잡는데 `_lease_lock` 은
     비재진입이라 락 보유 중 호출하면 데드락이다(현 호출부 = CLI 요약 루프·락 밖·내부 리뷰 지적).
 
-    not-owner 스킵의 보유자가 **task 명의**면 해소는 `--task <이름>`(소유 축을 밝히는 것)이다 —
+    not-owner 스킵의 보유자가 **task 명의**면 해소는 `--task <task>`(소유 축을 밝히는 것)이다 —
     사용자가 그걸 추측하지 않게 CLI 안내에 실값을 싣기 위한 판정. 장부 IO/파싱 실패는 False
     (fail-soft — 안내 문구가 없을 뿐 스킵 자체는 그대로 loud). 안내용 조회가 CLI 를 죽이지
     않는다(`pm_config.cmd_status` 의 task 축 fail-soft 와 동형)."""
@@ -6974,7 +6974,7 @@ def _rebase_skip_reason(reason: "str | None") -> str:
 
 
 def _cmd_rebase(args) -> int:
-    """`rebase <slot> [--task <이름>] [--onto <b>]` (단일) · `rebase --task <이름> [--onto <b>]` (일괄)
+    """`rebase <slot> [--task <task>] [--onto <b>]` (단일) · `rebase --task <task> [--onto <b>]` (일괄)
     CLI 핸들러.
 
     슬롯 독립 처리 — 선-검사(소유/dirty/rebase 진행중) 스킵 + 충돌 그대로 fail-loud(엔진 abort 안
@@ -6983,7 +6983,7 @@ def _cmd_rebase(args) -> int:
 
     **`--task` 는 두 역할이고 위치인자와 배타가 아니다**: 대상 *선택*(위치인자 없으면
     그 task 보유 전 슬롯 일괄) 소유 *명의*(`rebase(owner_task=)` — release 동형). 그래서
-    `rebase <slot> --task <이름>` = 그 task 명의로 **단일** 슬롯 rebase 다 — 종전엔 둘이 배타라
+    `rebase <slot> --task <task>` = 그 task 명의로 **단일** 슬롯 rebase 다 — 종전엔 둘이 배타라
     task 명의 슬롯을 단일 지정으로 rebase 할 방법이 아예 없었다. 위치인자만이면 종전대로 세션
     명의로 판정한다(슬롯-세션 모드 불변).
 
@@ -6993,7 +6993,7 @@ def _cmd_rebase(args) -> int:
     task = args.task
     slot_arg = args.slot
     if not task and not slot_arg:
-        print("[중단] rebase 대상을 지정하라 — `<slot>`(단일) 또는 `--task <이름>`(일괄).",
+        print("[중단] rebase 대상을 지정하라 — `<slot>`(단일) 또는 `--task <task>`(일괄).",
               file=sys.stderr)
         return 1
     batch = bool(task) and not slot_arg   # `--task` 단독일 때만 일괄(위치인자 동반 = 단일 지정).
@@ -7180,7 +7180,7 @@ def _main(argv: "list[str] | None" = None) -> int:
     p_status.add_argument("--task", default=None,
                           help="그 task 보유 전 슬롯 일괄 조회(`<slot>` 과 배타).")
 
-    # rebase <slot> [--task <이름>] [--onto <b>] (단일) · rebase --task <이름> [--onto <b>] (일괄)
+    # rebase <slot> [--task <task>] [--onto <b>] (단일) · rebase --task <task> [--onto <b>] (일괄)
     # — 위치인자/pool 관리. `--task` 는 선택 축이자 **소유 명의** 축이라 위치인자와 배타가 아니다.
     p_rebase = subparsers.add_parser(
         "rebase",

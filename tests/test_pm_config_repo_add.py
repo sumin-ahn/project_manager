@@ -667,6 +667,45 @@ def test_t0956_repo_add_refuses_zero_commit_source(pc, tmp_path, capsys):
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git 바이너리 부재 (실 clone 불가)")
+def test_t0956_repo_add_refuses_dangling_head_source(pc, tmp_path, capsys):
+    """[[T-0956]] 리뷰 F-004 — 커밋은 있으나 원본 HEAD 가 없는 브랜치를 가리키면 그 원인을 말하고 멈춘다.
+
+    `git init --bare` 원본의 HEAD 를 `refs/heads/master` 로 두고 `main` 커밋 1개만 push 한다.
+    `ls-remote --exit-code 원본 HEAD` 가 rc 2 라 커밋 0개와 같은 분기에서 rc 1 로 멈추고, 안내가
+    원본 HEAD 원인과 그 처방을 함께 말한다. repos 폴더 아래 bare 도 areas 등록도 없다.
+    """
+    def git(cwd, *args):
+        return subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            cwd=cwd, capture_output=True, text=True, encoding="utf-8", check=True)
+
+    source = tmp_path / "source.git"
+    source.mkdir()
+    git(source, "init", "-q", "--bare")
+    git(source, "symbolic-ref", "HEAD", "refs/heads/master")
+    work = tmp_path / "work"
+    work.mkdir()
+    git(work, "init", "-q")
+    git(work, "checkout", "-q", "-b", "main")
+    (work / "README").write_text("hello\n", encoding="utf-8")
+    git(work, "add", "README")
+    git(work, "commit", "-q", "-m", "first")
+    git(work, "push", "-q", str(source), "main")
+    repos = tmp_path / ".repos"
+
+    board = FakeBoard(registered=())
+    rc = pc.cmd_repo_add(_args(git=str(source), name="svc", base="main"), board=board,
+                         repos_dir=repos)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "커밋이 없다" in err
+    assert "원본 HEAD 가 없는 브랜치" in err
+    assert "원본 HEAD 를 있는 브랜치로 바꾼 뒤" in err
+    assert not (repos / "svc.git").exists()
+    assert board.append_calls == []
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git 바이너리 부재 (실 clone 불가)")
 def test_real_clone_sets_default_branch_upstream_tracking(pc, tmp_path):
     """실 `git clone --bare` 경로가 기본 브랜치 origin tracking 을 박고 슬롯 @{upstream} 을 해소한다 (T-0273·통합).
 

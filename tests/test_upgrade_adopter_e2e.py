@@ -1051,7 +1051,9 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   줄어든 것은 그 실행이 부르지 않던 코드뿐이다. 현재화한 것은 기대 SHA 하나뿐이다.
 #   같은 티켓의 수정 라운드에서 한 번 더 이동했다 — `plan()` docstring 의 낱말 하나("모듈 밖
 #   호출부")뿐이고 실행 코드·배달 경계는 무편집이다.
-_T0585_PM_UPDATE_SHA256 = "dc5510e08b4daf64b287a6b7e4799cb2dbb36c212a2da93bced96d7e9d1f4771"
+#   T-0956 수정 라운드(리뷰 F-005)에서 한 번 더 이동했다 — 주석 한 줄의 자리 표기
+#   (`harness.<이름>` → `harness.<harness>`)뿐이고 실행 코드·배달 경계·anchor 는 무편집이다.
+_T0585_PM_UPDATE_SHA256 = "7ae3684a7478a9ffc7bab3b188bcca67b76cdc87530839ee8d8705b60f3e95d2"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -1524,7 +1526,9 @@ def _install_t0585_updater(dest: Path) -> None:
 # T-0887: 온보딩 opt-in 일습 삭제로 역적용 delta 의 exact-marker 목록이 두 항목으로 줄고
 # (되돌릴 원문이 사라졌다) 그만큼 historical 전문 SHA 도 이동했다. 퇴역 경로 delta 의 marker 는
 # 전부 그 절 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "11684f3bd4ca93d1a700fb39584c853cb61f4c782f1e6a053ec0c5eca602d056"
+# T-0956 수정 라운드(리뷰 F-005): 주석 한 줄의 자리 표기(`harness.<이름>` → `harness.<harness>`)로
+# 전문 SHA 만 이동했다. 실행 코드와 marker 는 무편집이다.
+_PRE_T0876_PM_UPDATE_SHA256 = "cef8ecff3d4d5f0214f18cdb55cd4c90abc79b4697fba4b28e57ad84f134eeb8"
 
 
 def _pre_t0876_pm_update_source() -> str:

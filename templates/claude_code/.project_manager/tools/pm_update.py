@@ -4636,7 +4636,7 @@ class _ConfApplyStep(NamedTuple):
 
 
 # 키 묶음 표 — 이 순서로 계획하고 기록한다. 한 키가 여러 묶음에 걸리면 그 묶음을 모두 돈다(위임 세트
-# 키는 추론 값 묶음과 렌더 입력 묶음 둘 다다). 사용 한도 키(`ctx.`·`harness.<이름>.ctx_window_tokens`)는
+# 키는 추론 값 묶음과 렌더 입력 묶음 둘 다다). 사용 한도 키(`ctx.`·`harness.<harness>.ctx_window_tokens`)는
 # 다른 두 묶음과 겹치지 않는다. 추론 값 묶음을 렌더 앞에 두어 무효 값은 렌더 계획 전에 저장 문구로 거부한다.
 CONF_APPLY_STEPS: tuple[_ConfApplyStep, ...] = (
     _ConfApplyStep(lambda pm_import: pm_import.is_harness_ctx_input_key,

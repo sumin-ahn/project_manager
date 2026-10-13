@@ -243,7 +243,7 @@ def ctx_budget(root, harness, session_model):
 # marker 디렉토리 — ctx_stop_hook.py 의 _MARKER_DIR 와 동일해야 한다(읽기 측·hook 이 쓰는 측).
 MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"
 
-# 이 marker 디렉토리는 여러 생산자가 공유한다 — `<세션>.<이름>` 자리를 남이 이미 쓰고 있으면
+# 이 marker 디렉토리는 여러 생산자가 공유한다 — `<세션>.<종류>` 자리를 남이 이미 쓰고 있으면
 # 멤버십 파일이 그 신호를 *위조* 한다(namespace "done" → `<sid>.done` = post-turn 회전 신호).
 #   done                                  · 이 파일 `_marker_path` (회전)
 #   nudge · nudge2 · final                · ctx_stop_hook.py:51,83,87 (사이클 넛지)
@@ -313,7 +313,7 @@ def validate_relay_budget(budget: int, precompact_at_pct: int) -> None:
             f"[relay] ctx 예산 {budget} tok·압축 임박 경고 {precompact_at_pct}%의 유효 회전 임계 "
             f"{effective_threshold:g} tok은 bootstrap 실측 상한 "
             f"{RELAY_BOOTSTRAP_COST_TOKENS} tok 이하여서 즉시 세션 회전 위험. "
-            "적용 한도는 사용 한도(`harness.<이름>.ctx_window_tokens`)와 모델 가용 한도 중 작은 값입니다. "
+            "적용 한도는 사용 한도(`harness.<harness>.ctx_window_tokens`)와 모델 가용 한도 중 작은 값입니다. "
             "더 큰 모델을 쓰거나 `ctx.precompact_at_pct` 를 높인 뒤 `pm_config.py apply` 를 다시 실행하십시오."
         )
 

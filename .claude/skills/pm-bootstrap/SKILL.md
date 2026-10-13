@@ -27,18 +27,18 @@ skill은 기계 측정만 자동화하며 컨텍스트 인지·결정은 PM이 �
 사용자 진입:
 
 ```text
-/pm-bootstrap --task <이름>
+/pm-bootstrap --task <task>
 ```
 
-`--task <이름>`은 **필수**다 — 세션 정체성이 task 하나다. 슬롯은 정체성이 아니라 그 task가 빌린 작업 폴더이고, 인자 없이 부르면 엔진이 거부한다. skill은 받은 인자를 그대로 backbone에 넘긴다:
+`--task <task>`은 **필수**다 — 세션 정체성이 task 하나다. 슬롯은 정체성이 아니라 그 task가 빌린 작업 폴더이고, 인자 없이 부르면 엔진이 거부한다. skill은 받은 인자를 그대로 backbone에 넘긴다:
 
 ```bash
-python3 .project_manager/tools/pm_bootstrap.py --task <이름>
+python3 .project_manager/tools/pm_bootstrap.py --task <task>
 ```
 
-- 미등록 이름은 신규 task와 `.project_manager/.local/tasks/<이름>/pm_state.md`를 즉시 만든다(작업공간 0개 가능).
+- 미등록 이름은 신규 task와 `.project_manager/.local/tasks/<task>/pm_state.md`를 즉시 만든다(작업공간 0개 가능).
 - 기존 이름은 resume하여 보유 슬롯 집합·prefix 상태·task pm_state를 복원한다. 구 엔진의 state 없는 task도 즉시 backfill한다.
-- 부트스트랩 인자는 `--task <이름>`뿐이다. 작업공간은 `/pm-env alloc <repo> --task <이름>` 또는 task-aware worktree add로 대여·편입한다.
+- 부트스트랩 인자는 `--task <task>`뿐이다. 작업공간은 `/pm-env alloc <repo> --task <task>` 또는 task-aware worktree add로 대여·편입한다.
 - 수집 범위는 이 task가 보유한 작업공간뿐이다(다른 task 슬롯을 고르지 않는다). 보유 0개면 PM 홈, 1개면 그 작업공간, 다중이면 모두를 freshness/opt-in 회귀 범위로 삼고 Git 대표 cwd는 정렬 첫 슬롯으로 surface한다.
 - task identity surface의 정체성 + **prefix 상태(기본=없음)**를 사용자와 확인한다. 변경은 후속 `task prefix` 명령이다.
 - 같은 task가 살아있는 다른 창에서 열려 있으면 `"다른 창에서 열려 있음"`으로 거부한다. 비정상 종료면 자동 회수 후 재개할 수 있고 회수 진입 시 `"다른 창 작업중일 수 있음"` 경고를 surface한다.

@@ -18,6 +18,7 @@ import io
 import json
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 
 import pytest
@@ -887,6 +888,48 @@ def test_t0956_self_row_base_ignores_same_named_tag(init_board):
     _write_areas_rows(init_board, [(repo.name, "", "")])
     assert init_board.fill_self_repo_row(write=True) == f"repo={repo.name} | git={repo} | base={branch}"
     assert _areas_row(init_board, repo.name)["base"] == branch
+
+
+def test_t0956_self_row_skips_origin_with_password(init_board, capsys):
+    """리뷰 F-003 — http·https origin 의 사용자 정보(`@` 앞)는 자기 행에도 출력에도 싣지 않는다.
+
+    `user:비밀번호@` 와 사용자 자리에 토큰만 둔 형상 모두 init 은 두 칸을 비우고 알림 한 줄을
+    표준오류에 낸다. 이어 갱신 이관(`fill_self_repo_row`)도 쓰지 않는다. ssh 형식의 사용자
+    이름(`git@`)은 비밀이 아니라 그대로 기록한다. 비밀 문자열은 실행 때 만든다(저장소에 실형식
+    비밀을 두지 않는다).
+    """
+    repo = init_board.REPO
+    _git(repo, "init", "-q")
+    secret = "pw-" + uuid.uuid4().hex
+    secret_origins = (f"https://alice:{secret}@example.invalid/demo.git",
+                      f"https://{secret}@example.invalid/demo.git")
+    _git(repo, "remote", "add", "origin", secret_origins[0])
+    for origin in secret_origins:
+        init_board.AREAS_FILE.unlink(missing_ok=True)
+        _git(repo, "remote", "set-url", "origin", origin)
+
+        assert init_board.cmd_init(_init_args()) == 0
+
+        row = _areas_row(init_board, repo.name)
+        assert (row["git"], row["base"]) == ("", "")
+        captured = capsys.readouterr()
+        assert _UNKNOWN_COORDINATES in captured.err
+        assert "origin 주소에 자격증명이 들어 있다" in captured.err
+        written = init_board.AREAS_FILE.read_bytes()
+        assert secret not in written.decode("utf-8")
+        assert secret not in captured.out and secret not in captured.err
+
+        assert init_board.fill_self_repo_row(write=True) is None
+        assert init_board.AREAS_FILE.read_bytes() == written
+        assert secret not in capsys.readouterr().out
+
+    ssh_origin = "ssh://git@example.invalid/demo.git"
+    init_board.AREAS_FILE.unlink(missing_ok=True)
+    _git(repo, "remote", "set-url", "origin", ssh_origin)
+    assert init_board.cmd_init(_init_args()) == 0
+    row = _areas_row(init_board, repo.name)
+    assert (row["git"], row["base"]) == (ssh_origin, _current_branch(repo))
+    assert _UNKNOWN_COORDINATES not in capsys.readouterr().err
 
 
 def _write_areas_rows(board, rows: list[tuple[str, str, str]]) -> bytes:
