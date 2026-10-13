@@ -1722,9 +1722,15 @@ def test_worktree_add_installs_the_ticket_copy_exclude(pc, tmp_path, capsys):
 
 
 def test_worktree_add_stays_green_when_the_exclude_install_fails(pc, tmp_path, capsys):
-    """규칙 설치 실패는 경고일 뿐 슬롯 생성을 막지 않는다 (fail-soft·훅 설치와 같은 계약)."""
-    wp = FakeWorktreePool(bare_present=False)
+    """규칙 설치 실패는 경고일 뿐 슬롯 생성을 막지 않는다 (fail-soft·훅 설치와 같은 계약).
+
+    bare 는 있되 그 안 `info` 를 파일로 만들어 `info/exclude` 쓰기를 실패시킨다. bare 부재는
+    규칙 실패가 아니라 hydrate 경로다([[T-0956]] `test_t0956_worktree_add_hydrates_missing_bare`).
+    """
+    wp = FakeWorktreePool()
     board = FakeBoard(repo_bases=_SVC_BASE, repo_protecteds={"svc": ["main"]})
+    bare = wp.bare_repo_path("svc")
+    (bare / "info").write_text("not a directory\n", encoding="utf-8")
 
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, user_ack="svc"),
@@ -1732,8 +1738,62 @@ def test_worktree_add_stays_green_when_the_exclude_install_fails(pc, tmp_path, c
     )
 
     assert rc == 0
-    assert not (tmp_path / ".repos" / "svc.git").exists()   # 없는 bare 를 만들지 않는다
     assert "사본 루트 ignore 규칙" in capsys.readouterr().err
+
+
+class _LsRemoteRecorder(FakeGitRecorder):
+    """`ls-remote` 에만 정한 rc 를 돌려주고 나머지는 `FakeGitRecorder` 그대로인 runner 대역."""
+
+    def __init__(self, *, ls_remote_rc, events):
+        super().__init__(rc=0)
+        self._ls_remote_rc = ls_remote_rc
+        self._events = events
+
+    def __call__(self, argv):
+        self._events.append(("git", argv[0]))
+        if argv[0] == "ls-remote":
+            self.calls.append(list(argv))
+            return self._ls_remote_rc, ""
+        return super().__call__(argv)
+
+
+def test_t0956_worktree_add_hydrates_missing_bare(pc, tmp_path, monkeypatch, capsys):
+    """[[T-0956]] AT-005 — bare 부재면 `create_slot` 전에 areas `git` 주소로 clone 한다.
+
+    원본 조회(ls-remote)가 rc 2(커밋 0개)면 rc 1 이고 `create_slot` 을 부르지 않는다.
+    """
+    url = "/srv/adopter"
+    monkeypatch.setattr(pc, "REPOS_DIR", tmp_path / ".repos")
+    monkeypatch.setattr(pc, "_default_user", lambda: "me")
+    args = argparse.Namespace(repo="svc", test=None, user_ack="svc")
+
+    def scenario(ls_remote_rc):
+        events: list = []
+        wp = FakeWorktreePool(bare_present=False)
+        original_create_slot = wp.create_slot
+
+        def create_slot(*a, **k):
+            events.append(("create_slot",))
+            return original_create_slot(*a, **k)
+
+        wp.create_slot = create_slot
+        board = FakeBoard(registered={"svc"}, repo_bases=_SVC_BASE, repo_gits={"svc": url})
+        runner = _LsRemoteRecorder(ls_remote_rc=ls_remote_rc, events=events)
+        rc = pc.cmd_worktree_add(args, worktree_pool=wp, board=board, clone_runner=runner)
+        return rc, runner, events, board
+
+    rc, runner, events, board = scenario(0)
+    assert rc == 0
+    clones = [argv for argv in runner.calls if argv[0] == "clone"]
+    assert clones == [["clone", "--bare", url, str(tmp_path / ".repos" / "svc.git")]]
+    assert events.index(("git", "clone")) < events.index(("create_slot",))
+    assert board.append_calls == []          # 이미 등록된 repo — hydrate 는 행을 더하지 않는다
+
+    rc, runner, events, board = scenario(2)
+    assert rc == 1
+    assert ("create_slot",) not in events
+    assert [argv for argv in runner.calls if argv[0] == "clone"] == []
+    assert "커밋이 없다" in capsys.readouterr().err
 
 
 def test_worktree_add_install_hook_uses_default_protected(pc, capsys):

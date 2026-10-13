@@ -4636,7 +4636,7 @@ class _ConfApplyStep(NamedTuple):
 
 
 # 키 묶음 표 — 이 순서로 계획하고 기록한다. 한 키가 여러 묶음에 걸리면 그 묶음을 모두 돈다(위임 세트
-# 키는 추론 값 묶음과 렌더 입력 묶음 둘 다다). 사용 한도 키(`ctx.`·`harness.<이름>.ctx_window_tokens`)는
+# 키는 추론 값 묶음과 렌더 입력 묶음 둘 다다). 사용 한도 키(`ctx.`·`harness.<harness>.ctx_window_tokens`)는
 # 다른 두 묶음과 겹치지 않는다. 추론 값 묶음을 렌더 앞에 두어 무효 값은 렌더 계획 전에 저장 문구로 거부한다.
 CONF_APPLY_STEPS: tuple[_ConfApplyStep, ...] = (
     _ConfApplyStep(lambda pm_import: pm_import.is_harness_ctx_input_key,
@@ -5505,6 +5505,31 @@ def _entry_doc_backup(dest_root: Path, rel: str, backup_root: Path) -> None:
     dst = Path(backup_root) / rel
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
+
+
+def fill_self_repo_row(effective_dest: Path, *, write: bool) -> None:
+    """흡수 말미 1회 — areas.md 자기 행(폴더 이름 행)의 `git`·`base` 가 둘 다 비었으면 채운다.
+
+    설치가 자기 행에 두 칸을 기록하기 전의 채택자 데이터 이관이다. 규칙(대상 행·값·덮어쓰지
+    않음)은 dest 의 board `fill_self_repo_row` 가 소유한다 — 이 함수는 방금 동기된 dest 엔진을
+    로드해 부르고 결과 한 줄만 낸다. dest 에 pm_config.py 가 없으면(엔진 미배치 dest) 무동작
+    (`reinstall_protected_hooks` 와 같은 판정). `write=False`(dry-run)는 판정만 한다.
+    """
+    pm_config = _load_dest_pm_config(effective_dest)
+    if pm_config is None:
+        return
+    board = pm_config._load_module("board", "board.py")
+    if board is None:
+        raise RuntimeError(
+            f"{effective_dest}/.project_manager/tools/board.py 를 로드하지 못했다 — areas.md 자기 행 "
+            "이관 불가. 엔진 사본을 다시 동기한 뒤 pm-update 를 재실행하라.")
+    filled = board.fill_self_repo_row(write=write)
+    if filled is None:
+        return
+    if write:
+        print(f"  ✓ areas.md 자기 행 git·base 기록: {filled}")
+    else:
+        print(f"[dry-run] areas.md 자기 행 git·base 기록 예정: {filled}")
 
 
 def drop_self_lease_rows(effective_dest: Path, *, write: bool) -> int:
@@ -7314,6 +7339,7 @@ def _main(argv: list[str] | None = None) -> int:
             drop_self_lease_rows(effective_dest, write=not args.dry_run)
             idle_legacy_slot_session_rows(effective_dest, write=not args.dry_run)
             migrate_renamed_conf_keys(effective_dest, write=not args.dry_run)
+            fill_self_repo_row(effective_dest, write=not args.dry_run)
         if do_reinstall:
             # **업그레이드 배달 다음 실행이 여기로 온다**(dest 는 신 엔진·changes 0) — 훅이
             # 실제로 깔리는 지점이므로 migrate 와 동형으로 write 한다(정합이면 무출력).
@@ -7384,6 +7410,7 @@ def _main(argv: list[str] | None = None) -> int:
             drop_self_lease_rows(effective_dest, write=False)
             idle_legacy_slot_session_rows(effective_dest, write=False)
             migrate_renamed_conf_keys(effective_dest, write=False)
+            fill_self_repo_row(effective_dest, write=False)
         if do_reinstall:  # 대상 해소만(write=False·무부작용).
             hooks = reinstall_protected_hooks(effective_dest, write=False)
             _print_protected_hook_reinstall_finding(hooks, dry_run=True)
@@ -7421,6 +7448,7 @@ def _main(argv: list[str] | None = None) -> int:
         drop_self_lease_rows(effective_dest, write=True)
         idle_legacy_slot_session_rows(effective_dest, write=True)
         migrate_renamed_conf_keys(effective_dest, write=True)
+        fill_self_repo_row(effective_dest, write=True)
 
     if do_reinstall:
         # apply 이후 — 방금 착지한 *새* 엔진 사본에서 훅 본문을 읽어 배포한다. 단

@@ -28,7 +28,7 @@ audience: pm-internal
    python3 .project_manager/tools/board.py regression run --final
    ```
 
-3. task가 작업공간을 여럿 보유하면 회귀 명령에 `--task <이름> --repo <repo> --slot <N>`을 붙여 자기 실행 대상을 지정한다. task 귀속과 선택한 HEAD·브랜치·test_cmd를 결속하며, 모호·미소유·idle·쓰기용 readonly 대상은 부작용 전에 거부한다. bootstrap·handoff와 finish는 task 단독 입력을 유지한다.
+3. task가 작업공간을 여럿 보유하면 회귀 명령에 `--task <task> --repo <repo> --slot <N>`을 붙여 자기 실행 대상을 지정한다. task 귀속과 선택한 HEAD·브랜치·test_cmd를 결속하며, 모호·미소유·idle·쓰기용 readonly 대상은 부작용 전에 거부한다. bootstrap·handoff와 finish는 task 단독 입력을 유지한다.
 4. `board.py lint`와 `git status -s`, `git log --oneline -5`를 확인한다. 회귀와 독립적인 검사는 병렬로 실행할 수 있다.
 5. 해당 후보의 완료·통합 시점에 회귀 결과를 확인한다. 회귀(core)가 red/미실행이면 해당 후보의 후속 완료·통합은 중단한다. pending 동안 다른 트리의 개발을 중단하지 않는다.
 

@@ -289,7 +289,10 @@ def test_catalog_parse_is_non_vacuous():
     assert cli, "CLI 엔진 skill 이 하나도 파싱되지 않음"
     assert non_cli, "비-CLI(Agent/facade) skill 이 하나도 파싱되지 않음"
     # 대표 매핑이 기대대로 파싱됐다(파서 sanity — sub-op 분해·facade 분류).
-    assert catalog["/pm-wave-claim"] == {"board.py show", "board.py lint", "board.py claim"}
+    assert catalog["/pm-wave-claim"] == {
+        "board.py cluster", "board.py show", "board.py lint", "board.py claim",
+        "worktree_pool.py switch",
+    }
     assert catalog["/pm-qa"] == {"board.py regression", "board.py lint"}
     assert catalog["/pm-handoff"] == {"pm_handoff.py"}
     assert catalog["/pm-dev-delegate"] == set()   # Agent 툴 → skill-only

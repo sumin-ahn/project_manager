@@ -467,7 +467,7 @@ def test_code_reviewer_deny_remediation_uses_the_cluster_form(guard, tmp_path):
     review = guard.evaluate_hook(review_payload, config_loader=lambda: conf)[
         "hookSpecificOutput"]["permissionDecisionReason"]
     assert (
-        f".project_manager/tools/pm_delegate.py --role code-reviewer --cluster <C-이름> --cwd {tmp_path}"
+        f".project_manager/tools/pm_delegate.py --role code-reviewer --cluster C-<ticket-group> --cwd {tmp_path}"
     ) in review
     assert "--prompt-file" not in review
     assert "--ticket" not in review

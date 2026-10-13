@@ -4402,7 +4402,7 @@ def parse_verdict(output: str) -> dict[str, bool]:
 
 # 이 엔진이 만드는 raw 산출물 파일명(`_reserve_output`·pm_delegate 동형). 타임스탬프/pid 자리가
 # 있어 diff 본문에서 우연히 나오지 않는다 — 인용됐다면 로컬 산출물 디렉터리를 읽었다는 증거다.
-# reviewer/harness 이름에는 `_` 가 들어갈 수 있다(`additional_reviewer_<이름>_<타임스탬프>_…`) —
+# reviewer/harness 이름에는 `_` 가 들어갈 수 있다(`additional_reviewer_<reviewer>_<타임스탬프>_…`) —
 # 이름 문자에서 `_` 를 빼면 그런 배포의 인용을 통째로 놓친다.
 _RAW_ARTIFACT_RE = re.compile(
     r"\b(?:additional_reviewer|external_review|pm_delegate)_"

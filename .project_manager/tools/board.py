@@ -34,6 +34,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -1609,11 +1610,11 @@ _GIT_GUARD_ACTION_LINES: dict[str, str] = {
         "`git 허용: <명령 원문>` 입력을 요청한다."
     ),
     _GIT_GUARD_CASE_SLOT_NO_TASK: (
-        "이 세션에 열린 task 가 없다. `pm_bootstrap.py --task <이름>` 으로 task 를 연 뒤 그 task 가 잡은 "
+        "이 세션에 열린 task 가 없다. `pm_bootstrap.py --task <task>` 으로 task 를 연 뒤 그 task 가 잡은 "
         "슬롯에서 한다."
     ),
     _GIT_GUARD_CASE_SLOT_NOT_OWNED: (
-        "이 세션 task 가 잡은 슬롯에서만 쓴다. 잡은 슬롯이 없으면 `pm-config alloc <repo> --task <이름>` "
+        "이 세션 task 가 잡은 슬롯에서만 쓴다. 잡은 슬롯이 없으면 `pm-config alloc <repo> --task <task>` "
         "으로 잡는다."
     ),
     _GIT_GUARD_CASE_NO_OPEN_TODO: (
@@ -1725,7 +1726,7 @@ def slot_containing(
 ) -> tuple[dict, list[dict]] | None:
     """`pm_home` 슬롯 중 `path` 를 담은 것 — (그 슬롯 장부 행, task 행들). 슬롯 밖이면 None.
 
-    슬롯은 PM 홈 장부에 등록된 `work/<이름>` 폴더다. 판정 범위는 이 PM 홈(훅이 설치된 홈)의 슬롯이다.
+    슬롯은 PM 홈 장부에 등록된 `work/<repo>_<N>` 폴더다. 판정 범위는 이 PM 홈(훅이 설치된 홈)의 슬롯이다.
     장부가 없는 홈에는 슬롯이 없다."""
     home = Path(pm_home)
     try:
@@ -3360,7 +3361,7 @@ def judge_git_anchor_command(
 
     멈춤 거부(손 git 파괴 형태·슬롯/공용 저장소 파일 삭제·허용 위조·남의 슬롯 git 쓰기)는 첫 줄 멈춤
     지시와 경우별 다음 행동을 붙인다. ``root`` 는 훅이 설치된 PM 홈, ``session`` 은 호출한 하네스 세션
-    ID 다 — ``root`` 슬롯 쓰기 주인 판정에 쓰고, 거부가 아니면 `pm_bootstrap.py --task <이름>` 호출의
+    ID 다 — ``root`` 슬롯 쓰기 주인 판정에 쓰고, 거부가 아니면 `pm_bootstrap.py --task <task>` 호출의
     세션 기록을 남긴다(`_record_bootstrap_session_claims`). ``grants`` 는 이 하네스가 사용자 1회 허용을
     쓸 수 있을 때 준다 — 그러면 1회 허용으로 풀 수 있는 거부에서 ``root`` 에 남은 이 세션·정확히 같은
     명령의 허용 기록을 소비하고 통과시킨다. 없으면 그 거부는 사용자가 터미널에서 직접 실행하도록 안내한다.
@@ -3439,7 +3440,7 @@ def _bootstrap_task_argument(args: Sequence[str]) -> str | None:
 
 
 def _record_bootstrap_session_claims(session: str, parsed: _ShellParseResult) -> None:
-    """`pm_bootstrap.py --task <이름>` 호출마다 이 세션 ID 기록을 그 부트스트랩 사본의 홈에 남긴다.
+    """`pm_bootstrap.py --task <task>` 호출마다 이 세션 ID 기록을 그 부트스트랩 사본의 홈에 남긴다.
 
     부트스트랩 프로세스는 자기 하네스 세션 ID 를 알 수 없어(codex·opencode 는 도구 프로세스 환경에
     없다) 이 기록을 가져가 task 에 쓴다(`worktree_pool.take_task_session_claim`). 실행 위치·인자를
@@ -5406,7 +5407,7 @@ def _ownership_rejection(action: str, tid: str,
             f"(현재 세션 `{verdict.session}`)")
     lines = [head + "."]
     if verdict.unresolved:
-        lines.append("  → 소유 세션에서 `--repo <repo> --slot <N>`(또는 `--task <이름>`)로 "
+        lines.append("  → 소유 세션에서 `--repo <repo> --slot <N>`(또는 `--task <task>`)로 "
                      "세션을 명시해 재실행하라.")
     else:
         lines.append(f"  → 이동: 소유 세션(`{remedy}`)에서 `board.py unclaim {tid}` 후 이 "
@@ -9625,7 +9626,7 @@ def _regression_rc5_note(rc: int, cwd: str, override: str | None) -> str:
     note = " · 수집 0 — 테스트 루트/cwd 확인"
     if not override and not (Path(cwd) / "tests").is_dir():
         note += (f" · 이 트리에 `tests/` 가 없다({cwd} · 분리 형상 PM 홈) — 코드 트리에서 "
-                 "실행하거나 `--cwd <코드 트리 절대경로>`/`--task <이름>` 으로 지목하라")
+                 "실행하거나 `--cwd <코드 트리 절대경로>`/`--task <task>` 으로 지목하라")
     return note
 
 
@@ -9636,7 +9637,7 @@ def _regression_rc5_note(rc: int, cwd: str, override: str | None) -> str:
 _SUITELESS_TREE_REFUSAL = (
     "regression: 이 트리엔 회귀 스위트가 없다 — {cwd} 에 `tests/` 가 없는데 test_cmd "
     "`{cmd}` 는 이 트리를 대상으로 삼는다({why}). 코드 트리에서 실행하거나 "
-    "`--cwd <코드 트리 절대경로>` / `--task <이름>` 으로 지목하라 (측정·기록 안 함)."
+    "`--cwd <코드 트리 절대경로>` / `--task <task>` 으로 지목하라 (측정·기록 안 함)."
 )
 _SUITELESS_WHY_TARGETS_TESTS = "`tests/` 지목"
 _SUITELESS_WHY_NO_PATH = "수집 경로 미지정 → cwd 재귀 수집"
@@ -12391,7 +12392,7 @@ def _warn_claim_code_tree_folded_to_repo_home(slot_path: str) -> None:
     않는다(판정은 장부 파일의 존재가 아니라 해소된 슬롯 경로 값이다)."""
     print(
         f"주의: claim 시점 코드 트리 해소가 PM 홈(REPO)으로 접혔다 — 이 세션의 활성 슬롯은 "
-        f"{slot_path} 다(오-앵커 위험). `--repo <name> [--slot <N>]` 또는 `--task <이름>` 으로 "
+        f"{slot_path} 다(오-앵커 위험). `--repo <name> [--slot <N>]` 또는 `--task <task>` 으로 "
         "코드 트리를 명시하라.",
         file=sys.stderr,
     )
@@ -13250,6 +13251,81 @@ _AREAS_CELL_BREAKERS = ("|", "\n", "\r")
 _INIT_REPO_NAME_CANONICAL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
+# 사용자 정보(`@` 앞)가 비밀일 수 있는 origin 주소 형식 — 이 형식의 사용자 자리에는 비밀번호나 토큰이
+# 들어간다(ssh·scp 형식의 사용자 이름은 비밀이 아니라 그대로 기록한다).
+_ORIGIN_SCHEMES_WITH_SECRET_USERINFO = ("http", "https")
+
+
+# `git symbolic-ref HEAD` 의 브랜치 full ref 접두 — 이 접두 **정확히**를 벗겨야 순수 브랜치명이다
+# (`worktree_pool.current_branch` 와 같은 규칙 · 같은 이름 태그가 있으면 `--short` 는 `heads/` 를 붙인다).
+_SYMREF_BRANCH_PREFIX = "refs/heads/"
+
+
+def self_repo_coordinates() -> tuple[str, str] | None:
+    """이 clone 자기 행(폴더 이름 행)에 적을 (git, base) — 값은 이 clone 에서만 나온다.
+
+    git = `origin` 주소(없으면 이 clone 의 절대경로), base = 현재 브랜치(`symbolic-ref HEAD` 의 full
+    ref 에서 `refs/heads/` 접두만 벗긴 이름 · 커밋 0개에서도 해소되고 같은 이름 태그와 무관하다).
+    다음이면 None(호출부가 빈 칸 + `_SELF_COORDINATES_UNKNOWN` 한 줄):
+    이 폴더가 자기 git 저장소의 최상위가 아니다(git 저장소가 아니거나 상위 저장소 안) · HEAD 가
+    브랜치를 가리키지 않는다(detached) · origin 이 http·https 주소인데 사용자 정보(`@` 앞)가 있다
+    (자격증명 · areas.md 는 커밋·push 되는 공유 등록부다) · 값에 areas 셀을 깨는 문자(`|`·개행)가 있다.
+    """
+    rc, top = _git_scope_run(REPO, ["rev-parse", "--show-toplevel"])
+    if rc != 0 or Path(top.strip()).resolve() != REPO.resolve():
+        return None
+    rc, ref = _git_scope_run(REPO, ["symbolic-ref", "-q", "HEAD"])
+    ref = ref.strip()
+    if rc != 0 or not ref.startswith(_SYMREF_BRANCH_PREFIX):
+        return None
+    base = ref[len(_SYMREF_BRANCH_PREFIX):]
+    rc, origin = _git_scope_run(REPO, ["remote", "get-url", "origin"])
+    git = origin.strip() if rc == 0 and origin.strip() else str(REPO)
+    origin_address = urllib.parse.urlsplit(git)
+    if origin_address.scheme in _ORIGIN_SCHEMES_WITH_SECRET_USERINFO and "@" in origin_address.netloc:
+        return None
+    if any(ch in value for value in (git, base) for ch in _AREAS_CELL_BREAKERS):
+        return None
+    return git, base
+
+
+_SELF_COORDINATES_UNKNOWN = (
+    "  ⚠ 자기 행의 git·base 를 기록하지 못했다 (이 폴더가 git 저장소 최상위가 아니거나 HEAD 가 "
+    "브랜치를 가리키지 않거나 origin 주소에 자격증명이 들어 있다). areas.md 의 그 행 `git`·`base` 칸을 채운 뒤 `pm-config worktree add` 를 "
+    "실행하라.")
+
+
+def fill_self_repo_row(*, write: bool) -> str | None:
+    """갱신 이관 — 폴더 이름 행의 `git`·`base` 가 **둘 다 비어** 있으면 이 clone 의 값으로 채운다.
+
+    설치(`cmd_init`)가 자기 행에 두 칸을 기록하기 전에 만들어진 채택자의 데이터 이관이다(갱신 완료
+    단계 `pm_update.fill_self_repo_row` 가 부른다). 대상 행이 없거나 어느 한 칸이라도 차 있으면
+    아무것도 하지 않는다(덮어쓰지 않는다·다른 repo 행은 보지 않는다). 같은 이름 행이 둘 이상이면
+    `AreasDuplicateRepo` 를 그대로 올린다(`board.py lint` 의 areas-duplicate-repo 와 같은 처방).
+    값을 정하지 못하면 알림 한 줄 뒤 무동작. `write=False` 는 판정만 한다.
+    반환 = 채운(채울) 값 설명 또는 None.
+    """
+    with board_lock():
+        _header, rows = _parse_areas()
+        own = [row for row in rows if row.get("repo") == REPO.name]
+        if len(own) > 1:
+            raise AreasDuplicateRepo(REPO.name, len(own))
+        if not own or (own[0].get("git") or "").strip() or (own[0].get("base") or "").strip():
+            return None
+        coordinates = self_repo_coordinates()
+        if coordinates is None:
+            print(_SELF_COORDINATES_UNKNOWN, file=sys.stderr)
+            return None
+        git, base = coordinates
+        if write:
+            _areas_set_cell_locked(REPO.name, "git", git)
+            _areas_set_cell_locked(REPO.name, "base", base)
+    if write:
+        # board_lock 밖에서 부른다(락 순서: board_git_lock → board_lock). inline board 는 무동작.
+        _board_git_sync_best_effort("areas 자기 행 git·base", (areas_file(),))
+    return f"repo={REPO.name} | git={git} | base={base}"
+
+
 def _init_repo_name(args: argparse.Namespace) -> str | None:
     """init 이 areas.md 에 등록할 **repo 이름** — `--repo` 명시 > clone 루트 폴더명.
 
@@ -13259,19 +13335,19 @@ def _init_repo_name(args: argparse.Namespace) -> str | None:
     repo 가 areas 2행이 되며 (c) 명시 `--repo` 가 조용히 무시된다.
 
     표를 깨는 문자(`|`·개행)나 빈 이름이면 **아무것도 쓰지 않고** None 을 돌려준다(호출부가 rc 1)
-    — 그 경우의 처방은 `--repo <이름>` 명시다. canonical 형식(영숫자 시작·이후 영숫자/`_`/`-`)을
+    — 그 경우의 처방은 `--repo <repo>` 명시다. canonical 형식(영숫자 시작·이후 영숫자/`_`/`-`)을
     벗어난 폴더명은 등록은 하되 1줄로 알린다(슬롯 세션명 `<repo>_<N>` 가독성·`repo add` 와의 정합).
     """
     name = (getattr(args, "repo", None) or REPO.name or "").strip()
     if not name or any(ch in name for ch in _AREAS_CELL_BREAKERS):
         print(f"[중단] areas.md 에 등록할 repo 이름을 유도할 수 없다 (후보 {name!r}) — "
-              "`--repo <이름>` 으로 명시하라 (등록·conf 어떤 것도 쓰지 않았다).",
+              "`--repo <repo>` 으로 명시하라 (등록·conf 어떤 것도 쓰지 않았다).",
               file=sys.stderr)
         return None
     if not _INIT_REPO_NAME_CANONICAL.match(name):
         print(f"  ⚠ 등록 repo 이름 {name!r} 이 canonical 형식(`[A-Za-z0-9][A-Za-z0-9_-]*`)을 "
               "벗어난다 — 그대로 등록하지만, 슬롯 세션명(`<repo>_<N>`)과 `pm-config repo` 조작이 "
-              "읽기 어려워진다. `board.py init --repo <이름>` 으로 등록명을 지정할 수 있다.")
+              "읽기 어려워진다. `board.py init --repo <repo>` 으로 등록명을 지정할 수 있다.")
     return name
 
 
@@ -13316,7 +13392,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         prefix = canonical
         prefix_precheck = canonical
     # 세션 override 해소는 **soft** 다 — init 에서 `--repo X` 는 1순위로 *등록명 지정*이고,
-    # fresh clone 은 정의상 활성 lease 가 0이라 hard 해소면 등록 처방(`--repo <이름>`)이 그
+    # fresh clone 은 정의상 활성 lease 가 0이라 hard 해소면 등록 처방(`--repo <repo>`)이 그
     # 자리에서 죽는다. 여기서 세션은 owner 기본값에만 쓰이므로 미해소는 빈 owner 로 강등한다.
     override = _actor_session_override(args, soft=True)
     repo_name = _init_repo_name(args)
@@ -13372,14 +13448,23 @@ def cmd_init(args: argparse.Namespace) -> int:
             # 미해소를 거부한다 — 게이트 위치가 다르다.
             owner = args.owner or override or session_name() or ""
             area_owner = user_name(getattr(args, "user", None))
-            _areas_append_locked(prefix or "", owner, repo=repo_name, area_owner=area_owner)
+            # 자기 행(폴더 이름 등록)이면 git·base 를 함께 싣는다 — 안내 명령(`pm-config worktree
+            # add <repo>`)이 base 와 clone 원 주소를 이 행에서 읽는다. `--repo` 로 폴더와 다른 이름을
+            # 등록하면 싣지 않는다(PM 홈 주소가 제품 행에 적히는 일 방지).
+            self_row = repo_name == REPO.name
+            coordinates = self_repo_coordinates() if self_row else None
+            git, base = coordinates or ("", "")
+            _areas_append_locked(prefix or "", owner, repo=repo_name, area_owner=area_owner,
+                                 git=git, base=base)
             wrote_areas = True
             ao_surface = (area_owner if area_owner else
                           "(미상 — local.conf identity.user= / git user.email 미설정)")
             area_message = (f"✓ areas.md 등록: repo={repo_name} | "
                             f"prefix={prefix or '(빈 칼럼 · none 카테고리)'} | "
                             f"owner={owner or '(미상 — 세션 미바인딩)'} | "
-                            f"area_owner={ao_surface}")
+                            f"area_owner={ao_surface} | git={git or '(없음)'} | base={base or '(없음)'}")
+            if self_row and coordinates is None:
+                print(_SELF_COORDINATES_UNKNOWN, file=sys.stderr)
         elif not prefix:
             area_message = (f"repo {repo_name!r} 이미 등록됨 (areas.md) — 행 추가 없음 "
                             f"(카테고리 {registered_cell or '(빈 칼럼 · none)'}).")
@@ -13868,7 +13953,7 @@ def cmd_new(args: argparse.Namespace) -> int:
                         or getattr(args, "repo", None) or getattr(args, "slot", None)
                         or (getattr(args, "task", None) and not is_draft))
     binding_message = ("[중단] 공유 발행의 코드 트리와 기준 브랜치를 명시하라 "
-                       "(`--repo <이름> --slot <N>` 또는 `--task <이름>`). "
+                       "(`--repo <repo> --slot <N>` 또는 `--task <task>`). "
                        "코드 없는 초안은 draft로 작성한 뒤 기존 cluster new로 결속하라.")
     if binding_required:
         tree, base = _cluster_publish_base_branch(args)
@@ -14306,7 +14391,7 @@ CLUSTER_LEDGER_KEYS: tuple[str, ...] = (
 _CLUSTER_NAME_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _CLUSTER_NAME_MAX = 40
 # 문자 집합으로는 걸리지 않는 refname 금칙 — 이름은 통합 브랜치의 마지막 마디로 그대로 들어가
-# 므로 `git check-ref-format --branch <브랜치 접두><이름>` 과 같은 판정을 순수 술어로 낸다.
+# 므로 `git check-ref-format --branch <브랜치 접두><ticket-group>` 과 같은 판정을 순수 술어로 낸다.
 # 제어문자·공백·`~^:?*[\`·`/`·`@{` 는 위 문자 집합이 이미 배제하고, 남는 셋이 아래다: 이중 점 ·
 # `.lock` 으로 끝나는 마디 · 점으로 끝나는 마디. 이걸 통과시키면 **만들 수 없는 브랜치**를
 # 장부에 선언한 채 명령이 성공하고(브랜치 부재 advisory 만 남는다) 그 묶음은 영구히 통합
@@ -14341,7 +14426,7 @@ def cluster_name_of(cluster: str) -> str:
 
 
 def cluster_branch_name(cluster: str) -> str:
-    """통합 브랜치 이름 — `task/<이름>`(장부 id 접두는 브랜치에 실리지 않는다)."""
+    """통합 브랜치 이름 — `task/<ticket-group>`(장부 id 접두는 브랜치에 실리지 않는다)."""
     return f"{CLUSTER_BRANCH_PREFIX}{cluster_name_of(cluster)}"
 
 
@@ -14362,7 +14447,7 @@ def is_auto_cluster_id(cluster: str) -> str | None:
 
 
 def _validate_cluster_name(name: str) -> str | None:
-    """`cluster new <이름>` 입력 sanity — 문제면 사유 문자열, 정상이면 None."""
+    """`cluster new <ticket-group>` 입력 sanity — 문제면 사유 문자열, 정상이면 None."""
     text = cluster_name_of(name)
     if not text:
         return "클러스터 이름이 비었다"
@@ -14587,8 +14672,8 @@ def cluster_binding_problem(cluster: str, *, tree: str | None = None) -> str | N
     base = str((ledger or {}).get("base_branch") or "").strip()
     if not branch or not base:
         return (f"{cluster}는 제품 브랜치 미결속 장부다. 기존 "
-                "`board.py cluster new <이름> --tickets <티켓들> --repo <이름> --slot <N>` "
-                "또는 `--task <이름>`으로 명시 재결속하라")
+                "`board.py cluster new <ticket-group> --tickets <티켓들> --repo <repo> --slot <N>` "
+                "또는 `--task <task>`으로 명시 재결속하라")
     if tree is not None:
         return None if (_cluster_branch_state(tree, branch) is True
                         and _cluster_branch_state(tree, base) is True) else (
@@ -14835,7 +14920,7 @@ def _cmd_cluster_new(args: argparse.Namespace) -> int:
         return 1
     if identity.kind == "none" and not (identity.task or "").strip():
         print("[중단] cluster new 는 통합 브랜치를 만들 코드 트리를 명시로 받는다 — "
-              "`--repo <이름> --slot <N>` 또는 `--task <이름>` 을 지정하라.", file=sys.stderr)
+              "`--repo <repo> --slot <N>` 또는 `--task <task>` 을 지정하라.", file=sys.stderr)
         return 1
     if identity.task:
         _claim_code_tree(args)
@@ -15190,7 +15275,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     #   - `--repo X`(kind=repo·슬롯 무) = 내 것 **∩ 그 repo 의 내 슬롯 전체**(slot_scoped=True·
     #     `_slot_matches` mode="repo"·prefix 매칭) — 신규 repo-scope 뷰. 옛 bare `--slot N`
     #     (repo 불문 cross-repo suffix 매칭)은 제거됐다 — `--slot` 단독은 이제 fail-loud.
-    #   - `--task <이름>` = 내 것 **∩ 그 task**(slot_scoped=True·
+    #   - `--task <task>` = 내 것 **∩ 그 task**(slot_scoped=True·
     #     완전 일치) — 멤버십 = claimed_by 바인딩이 그 task(`<user>/<task>`)인
     #     claim + 내 소유 open backlog. task 는 slot 축과 직교지만 조회 렌즈로선 slot 축을 task
     #     이름으로 재사용한다 — `_slot_matches` exact 가 claimed_by 의 `/` 뒤 토큰을 task 와 대조하고
@@ -15203,7 +15288,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     except ValueError as e:
         sys.exit(f"[중단] {e}")
     explicit_mine = bool(getattr(args, "mine", False))
-    # task 렌즈(`--task <이름>`) — slot 축과 직교지만 조회 뷰로선 별개 필터 스코프라 --mine/
+    # task 렌즈(`--task <task>`) — slot 축과 직교지만 조회 뷰로선 별개 필터 스코프라 --mine/
     # --repo/--slot 과 상호 배타(어느 축으로 좁힐지 모호 방지·뷰 스코프는 하나). None=미지정.
     task_lens = identity.task
     if task_lens is not None:
@@ -21059,8 +21144,8 @@ def build_parser() -> argparse.ArgumentParser:
     cp = cluster_sub.add_parser(
         "new", help="장부 + 통합 브랜치 생성 · 멤버 귀속 · 겹침/슬롯 재료 "
                     "(코드 트리는 `--repo/--slot` 또는 `--task` 로 명시 필수 — 없으면 거부)")
-    cp.add_argument("name", metavar="<이름>",
-                    help="클러스터 이름(장부 id 는 `C-<이름>` · 통합 브랜치는 `task/<이름>`)")
+    cp.add_argument("name", metavar="<ticket-group>",
+                    help="클러스터 이름(장부 id 는 `C-<ticket-group>` · 통합 브랜치는 `task/<ticket-group>`)")
     cp.add_argument("--tickets", metavar="T-...,T-...", required=True,
                     help="멤버 티켓 ID 쉼표 구분. 발행이 만든 크기 1 장부는 흡수하고 이미 여러 "
                          "티켓의 묶음에 속한 티켓은 거부한다.")
@@ -21070,7 +21155,7 @@ def build_parser() -> argparse.ArgumentParser:
     cp.set_defaults(fn=cmd_cluster)
 
     cp = cluster_sub.add_parser("show", help="장부 1건 조회(선언값 + 멤버 현재 status)")
-    cp.add_argument("name", metavar="<이름>")
+    cp.add_argument("name", metavar="<ticket-group>")
     cp.set_defaults(fn=cmd_cluster)
 
     p = sub.add_parser(

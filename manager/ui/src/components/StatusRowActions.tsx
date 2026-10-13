@@ -114,7 +114,7 @@ export function SlotTableAllocate() {
 /**
  * 그 task 명의로 슬롯을 하나 더 대여하는 자리 — task 는 슬롯을 여럿 쥘 수 있다.
  *
- * 공용 탭의 [대여]와 같은 엔진 명령(`alloc <repo> --task <이름>`)이고, task 축이 이미
+ * 공용 탭의 [대여]와 같은 엔진 명령(`alloc <repo> --task <task>`)이고, task 축이 이미
  * 정해져 있어 repo 만 고른다. 어느 유휴 슬롯이 나갈지는 고르지 않는다 — 엔진이 최소 번호로
  * 정한다. 유휴 슬롯이 없으면 엔진이 거부하며(`NeedsCreate`), 슬롯을 새로 만드는 것은
  * 구성 탭의 사용자 승인 행위다.

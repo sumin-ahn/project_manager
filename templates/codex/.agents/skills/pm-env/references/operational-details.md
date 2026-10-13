@@ -7,9 +7,9 @@
 task는 슬롯과 직교하는 작업스트림 정체성이다.
 
 ```bash
-./pm-config.sh alloc <repo> --task <이름> [--folders <폴더,…>]  # idle 슬롯 대여
-./pm-config.sh release <slot> --task <이름>        # task 소유검사 후 반납(내 task 슬롯만)
-./pm-config.sh task end <이름>                     # task 종료 — 소진 게이트 + 일괄 반납 + 아카이브
+./pm-config.sh alloc <repo> --task <task> [--folders <폴더,…>]  # idle 슬롯 대여
+./pm-config.sh release <slot> --task <task>        # task 소유검사 후 반납(내 task 슬롯만)
+./pm-config.sh task end <task>                     # task 종료 — 소진 게이트 + 일괄 반납 + 아카이브
 ```
 
 - `alloc`은 idle 최소 번호 슬롯을 task 명의(lease session)로 leased 전이한다. idle이 없으면 자동
@@ -22,16 +22,16 @@ task는 슬롯과 직교하는 작업스트림 정체성이다.
 - `task end`는 해당 task 명의의 claimed 티켓이 남으면 목록을 내고 거부한다. 사용자가 `board complete`
   또는 `board unclaim`(claimed→open)을 판단하며 자동 실행하지 않는다. 보유 작업공간 dirty도 목록과 함께
   거부한다. 모두 clean이면 슬롯을 삭제하지 않고 일괄 idle 반납, 장부 task 레코드 제거, 서술 폴더를
-  `.local/tasks/_ended/<이름>-<날짜>/`로 이동한다. task prefix의 open 티켓은 정보만 표시하고 차단하지 않는다.
+  `.local/tasks/_ended/<task>-<날짜>/`로 이동한다. task prefix의 open 티켓은 정보만 표시하고 차단하지 않는다.
 
 ## task prefix
 
 prefix는 task와 독립인 opt-in 분류 라벨이며 claim 경계가 아니다. 진행 중 지정·변경·해제할 수 있다.
 
 ```bash
-./pm-config.sh task prefix <이름> <p>                    # 기존 카테고리 <p> 를 이 task 에 지정/변경
-./pm-config.sh task prefix <이름> <p> --user-ack <p>     # 신규 카테고리 신설(사용자 승인값 결속)
-./pm-config.sh task prefix <이름> none                   # 해제(무prefix·T-NNNN 로 발행)
+./pm-config.sh task prefix <task> <p>                    # 기존 카테고리 <p> 를 이 task 에 지정/변경
+./pm-config.sh task prefix <task> <p> --user-ack <p>     # 신규 카테고리 신설(사용자 승인값 결속)
+./pm-config.sh task prefix <task> none                   # 해제(무prefix·T-NNNN 로 발행)
 ```
 
 - 포맷은 `[a-z0-9_]`; 그 외 rc1, 소문자 권장. `none`은 해제 리터럴. task 미존재면 rc1이며 생성은
@@ -43,7 +43,7 @@ prefix는 task와 독립인 opt-in 분류 라벨이며 claim 경계가 아니다
   사용(대소문자만 다른 표기 포함)은 무마찰이다. **세션이 스스로 `--user-ack` 을 붙여 카테고리를
   신설하지 않는다** — 승인 주체는 사용자다.
 - `board.py new` 해소 순서: 명시 `--prefix` > task 지정 prefix > 기본 없음. task 명의
-  (`--task <이름>`) 발행에 지정 prefix가 자동 적용되고 명시값이 1회 우선한다.
+  (`--task <task>`) 발행에 지정 prefix가 자동 적용되고 명시값이 1회 우선한다.
 - prefix 카테고리 list/rename/merge는 별도 `board.py prefix`.
 
 ## worktree add timeout 노브

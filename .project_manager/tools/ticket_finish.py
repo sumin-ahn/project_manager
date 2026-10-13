@@ -3,7 +3,7 @@
 
 사용:
     venv/bin/python .project_manager/tools/ticket_finish.py T-NNNN [--section "<섹션명>"] [--dry-run]
-    venv/bin/python .project_manager/tools/ticket_finish.py --cluster C-<이름> [--dry-run]
+    venv/bin/python .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> [--dry-run]
         묶음 종결(close) — 아래 다섯 단계를 티켓마다 돌리고 그 앞뒤로 기계 확인·게이트 처분·
         커밋·재배치·머지·board 기록까지 고정 순서로 닫는다(재실행은 재개). 슬롯은 반납하지 않는다.
 
@@ -3880,8 +3880,8 @@ class ClusterCloser:
         key, branch = "branch", self._declared_branch("branch")
         if branch is None:
             return None, (f"{self._cluster}는 제품 브랜치 미결속 장부다. 기존 "
-                          "`board.py cluster new <이름> --tickets <티켓들> --repo <이름> --slot <N>` "
-                          "또는 `--task <이름>`으로 명시 재결속하라")
+                          "`board.py cluster new <ticket-group> --tickets <티켓들> --repo <repo> --slot <N>` "
+                          "또는 `--task <task>`으로 명시 재결속하라")
         ledger_status, rows = identity_args._read_lease_rows_status(LEASES_FILE)
         if ledger_status == identity_args.LEDGER_UNREADABLE:
             raise _CloseObservationFailure(
@@ -4482,7 +4482,7 @@ class ClusterCloser:
         self._declared_tickets = tuple(members_fn(self._cluster))
         if not self._declared_tickets:
             return (f"묶음을 찾지 못했다: {self._cluster} — 멤버 조회는 "
-                    "`board.py cluster show <이름>` 이다.")
+                    "`board.py cluster show <ticket-group>` 이다.")
         self._tickets = tuple(
             tid for tid in self._declared_tickets
             if self._ticket_status(tid) != _TICKET_STATUS_DISCARDED
@@ -4982,7 +4982,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="완료 기록할 ticket ID (묶음 종결은 `--cluster`)")
     parser.add_argument(
         "--cluster",
-        metavar="C-<이름>",
+        metavar="C-<ticket-group>",
         default=None,
         help="묶음 종결(close) — 기계 확인·게이트 처분·티켓별 완료 기록·커밋·재배치·머지·"
              "board 기록을 고정 순서로 실행한다. 실패 지점에서 멈추고, 다시 "
@@ -5015,7 +5015,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="claimed_rev 없는 legacy 멤버의 명시 anchor commit.",
     )
     parser.add_argument(
-        "--user-ack", default=None, metavar="C-<이름>",
+        "--user-ack", default=None, metavar="C-<ticket-group>",
         help="reconcile 대상 cluster ID와 정확히 같은 사용자 승인값.",
     )
     # ── 실행 정체성 (`--repo`/`--slot`·`--task`) ──────────
@@ -5046,7 +5046,7 @@ def _main(argv: list[str] | None = None) -> int:
     # 단위로 도는지가 인자에 두 번 적힌 것이고, 둘 다 없으면 대상이 없다.
     if (args.ticket_id is None) == (args.cluster is None):
         parser.error(
-            "완료 기록 대상은 하나다 — ticket ID 를 주거나 `--cluster <이름>` 으로 묶음을 "
+            "완료 기록 대상은 하나다 — ticket ID 를 주거나 `--cluster <ticket-group>` 으로 묶음을 "
             "종결하라(둘 다 지정하거나 둘 다 생략할 수 없다)."
         )
 
@@ -5058,7 +5058,7 @@ def _main(argv: list[str] | None = None) -> int:
         parser.error("--integrated-rev/--legacy-base-rev/--user-ack은 --reconcile-integrated 전용이다.")
     if args.reconcile_integrated:
         if args.cluster is None:
-            parser.error("--reconcile-integrated는 --cluster <이름> 전용이다.")
+            parser.error("--reconcile-integrated는 --cluster <ticket-group> 전용이다.")
         if args.task is not None or args.repo is None or args.slot is None:
             parser.error(
                 "--reconcile-integrated는 --repo <repo> --slot <N> 둘 다 필수이고 --task를 받지 않는다."
@@ -5112,7 +5112,7 @@ def _main(argv: list[str] | None = None) -> int:
         if resolved_task is None:
             print(
                 f"\n[중단] 정체성 미해소 ({identity_source}) — 이 cwd 를 가진 작업 폴더가 없고 "
-                "활성 task 도 하나가 아니다. `--task <이름>` 으로 명시하라 "
+                "활성 task 도 하나가 아니다. `--task <task>` 으로 명시하라 "
                 "(정체성은 멤버 티켓의 소유 확인에 쓰므로 --no-pytest 로는 "
                 "풀리지 않는다).",
                 file=sys.stderr,
@@ -5142,7 +5142,7 @@ def _main(argv: list[str] | None = None) -> int:
             print(f"\n[중단] 슬롯 정체성 해소 모호 — {ambiguity}", file=sys.stderr)
             print(
                 "  → `--repo <name> [--slot <N>]`(예: --repo project_manager --slot 1) 으로 슬롯을 "
-                "명시하거나 `--task <이름>` 으로 실행하라.",
+                "명시하거나 `--task <task>` 으로 실행하라.",
                 file=sys.stderr,
             )
             return 1

@@ -84,7 +84,7 @@ PM 이 `Agent` 툴로 spawn 하고 `subagent_type` 으로 전용 정의를 쓴�
 - **설계(architect)** — `subagent_type: architect` (Opus). idea 검토·ADR 초안·spec 추출·가설 검증·인터페이스. **산출은 PM 이 비준** — 발행·board·idea promote 는 PM.
 - **구현(developer)** — `subagent_type: developer`
 - **검토(code-reviewer)** — `subagent_type: code-reviewer`. 프롬프트는 엔진이 만든다 — `ticket prepare
-  --cluster <C-이름> --role code-reviewer` 가 낸 프롬프트 파일 경로를 넘기고 종료 뒤 돌려받는다
+  --cluster C-<ticket-group> --role code-reviewer` 가 낸 프롬프트 파일 경로를 넘기고 종료 뒤 돌려받는다
   (`/pm-dev-delegate` 리뷰 절).
 
 두 정의가 역할·제약·부트스트랩·프로젝트 제약을 담으므로 프롬프트는 한 줄이면 된다(구현은 `/pm-dev-delegate` skill 이 표준 프롬프트를 dump):
@@ -101,7 +101,7 @@ T-NNNN 을 구현하라. (developer)
 ⚠️ 리뷰 검토 중점 문단(`--focus`)에 "`status.md`/`log/current.md` 갱신은 orchestrator 담당 — 그 누락은 developer must-fix 아님" 을 적는다.
 
 **검토 루프:** 단계 준비·회수는 `/pm-dev-delegate`, 확인 생성과 종결은 `ticket_finish.py --cluster`가
-수행한다(종결이 `pm_delegate.py rounds resolve --cluster <C-이름> --pm-verified` 를 부른다). 수렴 불변식은
+수행한다(종결이 `pm_delegate.py rounds resolve --cluster C-<ticket-group> --pm-verified` 를 부른다). 수렴 불변식은
 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"만 소유한다. 추가 리뷰어는 대상 튜플
 (`additional_reviewer.harness`/`.model`)을 선언한 채택자만 이 루프에 병행한다(§추가 리뷰어 교차검증). reviewer 산출은 구현 명령이 아니라
 증거·제안이며, `review disposition-template`과 `review delta`가 PM 판정 및 fix 입력을 연결한다.
@@ -116,7 +116,7 @@ code-reviewer는 슬롯에서 `git -C <슬롯> diff <merge-base>..HEAD`로 변�
 3. **클래스 전수 열거 의무.** dev 는 구현 전에 결함 클래스의 인스턴스를 진입점·플랫폼·실패 모드·호출 경로 축으로 전수 나열해 보고하고 전부 처리한다. 보고된 형상만 처리한 결과는 미완이다. 전수 열거가 불가능하면 그 사실과 열거 경계를 보고한다. 클래스는 해당 결함의 클래스에 한정하며 티켓 밖 기능으로 스코프를 확대하지 않는다. 완료 보고에는 열거한 인스턴스 목록과 각각의 처리를 포함하며, 목록이 없으면 PM 이 반려한다.
 4. **역방향 확인 의무.** dev 는 고침이 반대 방향 실패를 만들지 않았는지 단언한다. 느슨함을 조인 fix 는 과결속을, 조임을 푼 fix 는 누락을, 차단을 추가한 fix 는 정상 사용 차단을 각각 확인한다.
 5. **finding/disposition 장부.** 블록 스키마의 단일 진실은 엔진 파서 상수이며 엔진이 골격을 공급한다. reviewer는 안정 ID와 must-fix별 수정·테스트 계약을 실값으로 채우고, PM은 `review disposition-template --cluster`가 낸 골격에 전수 disposition을 남긴다. finding 0도 reviewer의 0건 선언 뒤 fix 자리로 진행한다.
-6. **accepted-only delta + 세션 재사용.** `pm_delegate.py review delta --cluster <C-이름>` 출력만 fix 프롬프트에 붙인다. 미판정·decision-required·계약 누락은 fix 준비를 차단하고 티켓을 정지해 사용자에게 보고한다. fix는 직전 dev 세션에 재사용하는 것이 기본이며 accepted가 0이어도 마지막 테스트·종결 자리로 실행한다.
+6. **accepted-only delta + 세션 재사용.** `pm_delegate.py review delta --cluster C-<ticket-group>` 출력만 fix 프롬프트에 붙인다. 미판정·decision-required·계약 누락은 fix 준비를 차단하고 티켓을 정지해 사용자에게 보고한다. fix는 직전 dev 세션에 재사용하는 것이 기본이며 accepted가 0이어도 마지막 테스트·종결 자리로 실행한다.
 7. **라운드 장부 처리.** `cluster_round_sequence`가 예약 전 현재 단계와 예산을 검증하고,
    `ticket prepare`가 예약 좌표를 라운드 사본에 기록한다. 수열과 실패 시 행동의 규범은
    [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다.
@@ -125,7 +125,7 @@ code-reviewer는 슬롯에서 `git -C <슬롯> diff <merge-base>..HEAD`로 변�
    처리 규범은 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다. harvest는
    architect/reviewer 계약 명령과 전체 회귀 기록만 검증하며 full은 다시 실행하지 않는다.
    `ticket_finish.py`의 선검사가 final-fix 확인 입력을 read-only 판정하고, 1단계의
-   `rounds resolve --cluster <C-이름> --pm-verified`가 기계/PM-owned terminal 확인을 명세에 기록해
+   `rounds resolve --cluster C-<ticket-group> --pm-verified`가 기계/PM-owned terminal 확인을 명세에 기록해
    게이트를 처분한다. 재현 커맨드의 문법 검사는 엔진의 비파괴 명령
    파서가 담당한다.
 9. **작업 중단 사유 판정.** 유효 집합 3항목만 작업 중단 사유로 인정한다. 무효 집합 5항목으로 중단하면 규약 위반이다. 각 항목은 조건과 결론을 함께 판정한다.
@@ -148,7 +148,7 @@ code-reviewer는 슬롯에서 `git -C <슬롯> diff <merge-base>..HEAD`로 변�
    - **상한 이후 보고**: 보고 내용은 엔진이 보존한 실패 근거와 현재 티켓 상태를 사용한다.
    - **종료·축소 권한**: 조건: 세션 종료 또는 작업 축소를 결정하는 경우. 결론: 세션 종료·작업 축소는 사용자 지시로만 한다.
 
-wave 중 묶음 종결은 `ticket_finish.py --cluster <C-이름> --no-pytest` + 지정 회귀 실측 근거가 표준이다(전량 검증은 릴리즈 절차 1단계가 담당).
+wave 중 묶음 종결은 `ticket_finish.py --cluster C-<ticket-group> --no-pytest` + 지정 회귀 실측 근거가 표준이다(전량 검증은 릴리즈 절차 1단계가 담당).
 
 10. **처방 밖 수정 금지·빈틈은 보고.** fix 라운드에서 고칠 수 있는 것은 `review delta` 가 낸 finding ID 와
     각 허용 수정 범위뿐이다. 그 제약과 빈틈 보고 형식은 delta 렌더러가 출력 끝에 함께 싣는다 — 카드·스킬·
@@ -231,8 +231,8 @@ wave 하나 = 묶음 하나다. 단계 표·커맨드의 단일 진실은 `/pm-d
    - **hard**: 도구 모듈 2+, 공용 코드, 파싱 규칙, 기존 동작 영향, 보안·시크릿·git 훅,
      board 상태 전이·lease·잠금·동시성 중 1개 이상. 상위 developer 프로필을 쓴다.
    - **normal**: 소거법. 애매하면 상향한다.
-2. **묶음 선언 + claim** — `board.py cluster new <이름> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로>
-   --repo <이름> --slot <N>`(또는 `--task <이름>`)로 이번 wave 의 운영 단위·통합 브랜치·설계 문서를
+2. **묶음 선언 + claim** — `board.py cluster new <ticket-group> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로>
+   --repo <repo> --slot <N>`(또는 `--task <task>`)로 이번 wave 의 운영 단위·통합 브랜치·설계 문서를
    결속한다. 통합 브랜치를 둘 **코드 트리는 명시가 필수**이고, 없으면 첫 쓰기 앞에서 거부된다.
    그 다음 멤버마다 `/pm-wave-claim`이
    DoD self-containment·depends_on·placeholder·wikilink dangling을 검증한다. **묶음 판단은 PM 몫**이다 —

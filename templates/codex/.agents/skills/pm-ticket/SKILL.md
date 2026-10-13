@@ -43,7 +43,7 @@ python3 .project_manager/tools/board.py new "<한 줄 제목>" \
 - `--prefix`: 작업 카테고리(자유 입력). multi-repo(등록 repo ≥2)에서는 필수다(네임스페이스).
 - `--design`: 설계 단계 상태. 값은 `required` / `done` / `n/a` 세 형식이며(references 설계 단계 표), 인식 불가한 값은 발행 전에 거부된다. **면제 경로는 없다** — 설계를 건너뛰는 값을 두면 그 티켓만 라운드 순번이 어긋나고 면제가 곧 우회 플래그가 된다. 생략 시 `--estimate large`면 `required`, 그 외는 `n/a`로 박힌다. 설계 검증이 필요하다고 판단하면 small/medium에도 `--design required`로 명시 지정한다.
 - 출력의 `created <T-NNNN>`로 ID를 확인한다.
-- 발행은 티켓을 **운영 단위(묶음)에 귀속**시키고 그 사실을 stderr 1줄(`클러스터 귀속: <C-이름>`)로 고지한다. 선언된 활성 묶음이 정확히 하나면 거기에 넣고, 없으면 그 티켓 이름의 **크기 1 장부**를 함께 만든다(`(크기 1 장부 생성)` 표기). 활성 묶음이 둘 이상이면 엔진이 고르지 않고 크기 1로 발행하며, 나중에 `board.py cluster new` 가 흡수한다.
+- 발행은 티켓을 **운영 단위(묶음)에 귀속**시키고 그 사실을 stderr 1줄(`클러스터 귀속: C-<ticket-group>`)로 고지한다. 선언된 활성 묶음이 정확히 하나면 거기에 넣고, 없으면 그 티켓 이름의 **크기 1 장부**를 함께 만든다(`(크기 1 장부 생성)` 표기). 활성 묶음이 둘 이상이면 엔진이 고르지 않고 크기 1로 발행하며, 나중에 `board.py cluster new` 가 흡수한다.
 - `--touches`가 다른 활성/draft 티켓과 겹치면 stderr에 겹치는 경로별 티켓 목록 + 가용(idle) 슬롯 수를 낸다(겹침 0이면 완전 침묵). **차단하지 않는다** — 겹친다는 사실만으로 병합·직렬을 강제하지 않는다. 슬롯이 남아 있으면 그 겹침은 병렬로 나눠도 되는 신호일 수 있다.
 
 ## 2. 본문 7절 자족성 채움
@@ -70,7 +70,7 @@ python3 .project_manager/tools/board.py new "<한 줄 제목>" \
 `BASH_DEFAULT_TIMEOUT_MS=1800000`은 일반 무-파라미터 명령용이라 cross 위임에 의존하지 않는다.
 
 ```bash
-python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster <C-이름> --role architect --cwd <worktree 절대경로>
+python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster C-<ticket-group> --role architect --cwd <worktree 절대경로>
 # 위임(스킬 $pm-dev-delegate §architect 위임) 후 — run-dir 을 주면 티켓 전부를 한 번에 회수한다:
 python3 .project_manager/tools/pm_delegate.py ticket harvest --copy <prepare JSON의 run-dir> --cwd <worktree 절대경로>
 ```
@@ -82,7 +82,7 @@ python3 .project_manager/tools/pm_delegate.py ticket harvest --copy <prepare JSO
 
 ## 4. 검증 → 승격
 
-공유 승격 전에 기존 `board.py cluster new`로 실제 제품 트리와 branch/base_branch 및 멤버를 결속한다. task가 작업공간을 여럿 보유하면 기존 `--task <이름> --repo <repo> --slot <N>`을 사용한다. promote는 이 장부를 읽기로 검증하고 보존하며 새 선택 인자를 받지 않는다. 미결속 장부는 공유 전에 거부하고 같은 명시 결속 명령을 안내한다.
+공유 승격 전에 기존 `board.py cluster new`로 실제 제품 트리와 branch/base_branch 및 멤버를 결속한다. task가 작업공간을 여럿 보유하면 기존 `--task <task> --repo <repo> --slot <N>`을 사용한다. promote는 이 장부를 읽기로 검증하고 보존하며 새 선택 인자를 받지 않는다. 미결속 장부는 공유 전에 거부하고 같은 명시 결속 명령을 안내한다.
 
 ```bash
 python3 .project_manager/tools/board.py lint            # placeholder/thin/design-pending 잔존 확인(선택·조기 피드백)

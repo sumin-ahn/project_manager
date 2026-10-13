@@ -30,19 +30,19 @@ audience: pm-internal
 | 종결 | `ticket_finish.py --cluster`(종결이 `rounds resolve --cluster` 를 부른다) | 묶음 1 | — |
 
 ```bash
-python3 .project_manager/tools/board.py cluster new <이름> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로> --repo <이름> --slot <N>
-python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster <C-이름> --role architect --cwd <worktree 절대경로>
-python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster <C-이름> --role developer --cwd <worktree 절대경로>
-python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster <C-이름> --role code-reviewer --cwd <worktree 절대경로> --focus <검토 중점 파일>
-python3 .project_manager/tools/pm_delegate.py --role code-reviewer --cluster <C-이름> --cwd <worktree 절대경로> --focus <검토 중점 파일>
-python3 .project_manager/tools/ticket_finish.py --cluster <C-이름>
+python3 .project_manager/tools/board.py cluster new <ticket-group> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로> --repo <repo> --slot <N>
+python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster C-<ticket-group> --role architect --cwd <worktree 절대경로>
+python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster C-<ticket-group> --role developer --cwd <worktree 절대경로>
+python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster C-<ticket-group> --role code-reviewer --cwd <worktree 절대경로> --focus <검토 중점 파일>
+python3 .project_manager/tools/pm_delegate.py --role code-reviewer --cluster C-<ticket-group> --cwd <worktree 절대경로> --focus <검토 중점 파일>
+python3 .project_manager/tools/ticket_finish.py --cluster C-<ticket-group>
 ```
 
 - 수열·테스트·종결의 규범은 [`pm_principles.md`](../../../.project_manager/wiki/pm_principles.md)
   §"티켓과 위임"만 소유한다. 이 카드는 위 표의 prepare/harvest 호출 절차만 제공한다.
 - 리뷰 행의 두 명령은 하네스로 고른다 — 같은 하네스면 준비(`ticket prepare`), 다르면 교차 실행이다(§code-reviewer 위임).
-- 현재 장부 단계는 `python3 .project_manager/tools/board.py cluster show <C-이름>`으로 확인한다.
-- **게이트 처분은 종결이 실행한다** — 종결 2단계가 `pm_delegate.py rounds resolve --cluster <C-이름> --pm-verified` 를 부르고 확인 커맨드도 엔진이 돌린다. PM 이 따로 부를 일은 처분만 먼저 확인할 때뿐이다.
+- 현재 장부 단계는 `python3 .project_manager/tools/board.py cluster show C-<ticket-group>`으로 확인한다.
+- **게이트 처분은 종결이 실행한다** — 종결 2단계가 `pm_delegate.py rounds resolve --cluster C-<ticket-group> --pm-verified` 를 부르고 확인 커맨드도 엔진이 돌린다. PM 이 따로 부를 일은 처분만 먼저 확인할 때뿐이다.
 - 자동 크기 1 장부를 실행 묶음으로 사용하기 전에 기존 `board.py cluster new`로 실제 제품 트리의 branch/base_branch와 멤버를 명시 결속한다. 미결속인 branch 없는 옛 장부는 기준 브랜치 이름만으로 제품 출처를 입증할 수 없어 실행·종결 전에 거부한다. 동명 main·PM 홈·created_by·현재 cwd·단일 슬롯을 결속 근거로 사용하지 않으며 장부를 자동 덮어쓰지 않는다. 코드 트리 없는 draft 작성은 유지하고 공유 승격 전에 같은 명령으로 결속한다.
 
 ## 사전 조건
@@ -71,13 +71,13 @@ python3 .project_manager/tools/domain.py affected --ticket T-NNNN
 task-mode(v1.3.0 — 한 task 가 worktree 를 0개 이상 빌려 도는 모델) 위임에선 dev 가 **어느 worktree 에서** 구현할지를 PM 이 **F6 로 해소한 절대경로**로 위임 프롬프트에 명시 주입한다 (dev/git 이 짐작하지 않게 — cwd 는 해소에 비참여·T-0345). 해소값은 실행-위치 필요 도구가 그대로 surface 한다:
 
 ```bash
-python3 .project_manager/tools/board.py regression run --task <이름>
-# 출력: "regression: 작업공간(task <이름>) → <worktree 절대경로>"
+python3 .project_manager/tools/board.py regression run --task <task>
+# 출력: "regression: 작업공간(task <task>) → <worktree 절대경로>"
 ```
 
 - 그 `<worktree 절대경로>`를 developer 위임 프롬프트의 **작업 위치**로 박아 넣는다(짐작 제거).
 - task 가 슬롯을 2개↑ 보유해 모호하면 F6 이 **에러**(⑦·암묵 선택 금지) — 쓰지 않는 잉여 슬롯을
-  `python3 .project_manager/tools/pm_config.py release <slot> --task <이름>`으로 반납한 뒤 다시 해소한다.
+  `python3 .project_manager/tools/pm_config.py release <slot> --task <task>`으로 반납한 뒤 다시 해소한다.
 - 슬롯 세션(비-task)은 종전대로 — 이 주입은 task-mode 에서만.
 
 ## 라운드 파일 — Codex native prepare → spawn_agent → harvest
@@ -89,7 +89,7 @@ architect·developer·code-reviewer·researcher는 PM 홈 티켓을 직접 편�
 
 ```bash
 python3 .project_manager/tools/pm_delegate.py ticket prepare \
-    --cluster <C-이름> --role <architect|developer> \
+    --cluster C-<ticket-group> --role <architect|developer> \
     --cwd <작업 worktree 절대경로>
 # 티켓마다 stdout JSON 한 줄 — `copy`(라운드 파일 절대경로)만 agent message에 넣는다.
 
@@ -107,7 +107,7 @@ prepare 실패 시 spawn하지 않는다. harvest 실패 시 같은 copy로 재�
 거부된 준비가 board 에 고아 라운드를 남기지 않는다. 에이전트는 자기 라운드 파일만 쓰고 명세·이전
 라운드는 읽기 전용으로 읽는다. **`ticket prepare`는 역할이 native(하네스가 PM 하네스와 일치)일 때만 통과한다** —
 cross 역할은 고아 시드를 막기 위해 rc≠0 으로 거부되며, 실 실행(아래 cross-harness 위임 · 리뷰
-`--cluster <C-이름>`, 그 밖 `--ticket <T-NNNN>`)이 자동 준비하라는 처방을 낸다. 리뷰 준비는
+`--cluster C-<ticket-group>`, 그 밖 `--ticket <T-NNNN>`)이 자동 준비하라는 처방을 낸다. 리뷰 준비는
 `--cluster` 로만 받는다(`--ticket` 리뷰 준비는 rc 2).
 
 ## cross-harness 위임 판정 (native 단락 · pm_delegate 채널 · ADR-0075)
@@ -129,7 +129,7 @@ python3 .project_manager/tools/pm_delegate.py --dry-run \
     --prompt-file <task 프롬프트 파일 절대경로> --cwd <작업 worktree 절대경로> [--tier normal|hard]
 # 리뷰 미리보기는 프롬프트 파일 없이 묶음으로 준다:
 python3 .project_manager/tools/pm_delegate.py --dry-run \
-    --role code-reviewer --cluster <C-이름> --cwd <작업 worktree 절대경로>
+    --role code-reviewer --cluster C-<ticket-group> --cwd <작업 worktree 절대경로>
 ```
 
 - 출력 = 해소된 `(harness, model, reasoning)` + 합성 프롬프트 + argv 미리보기. **하네스를 부르지 않는다**.
@@ -319,7 +319,7 @@ native `spawn_agent`, 다르면 `pm_delegate.py` 교차 실행이다.
 
 ```bash
 python3 .project_manager/tools/pm_delegate.py ticket prepare \
-    --cluster <C-이름> --role code-reviewer \
+    --cluster C-<ticket-group> --role code-reviewer \
     --cwd <작업 worktree 절대경로> --focus <검토 중점 문단 파일 절대경로>
 # 멤버마다 stdout JSON 한 줄 — `copy`(그 티켓 라운드 파일)·`prompt`(엔진이 조립한 리뷰 프롬프트 파일·멤버 공통).
 # spawn_agent 종료 뒤(판정과 무관) run-dir 하나로 멤버 전부를 돌려받는다:
@@ -341,7 +341,7 @@ spawn_agent(
 
 ```bash
 python3 .project_manager/tools/pm_delegate.py --role code-reviewer \
-    --cluster <C-이름> --cwd <작업 worktree 절대경로> \
+    --cluster C-<ticket-group> --cwd <작업 worktree 절대경로> \
     --focus <검토 중점 문단 파일 절대경로>
 ```
 
@@ -374,7 +374,7 @@ spawn_agent(
   agent_type="architect",
   fork_turns="none",
   task_name="orch_arch_cluster",
-  message="""<C-이름> 묶음의 설계를 수행하라.
+  message="""C-<ticket-group> 묶음의 설계를 수행하라.
 
      라운드 파일(절대경로): <prepare JSON의 copy> — 티켓마다 하나이고 이름은 `NN-architect.md` 다.
      경계 실측·불변식·표면 상한과 developer가 실행할 필수 테스트의 대상·명령·기대값·음성 사례를
@@ -398,10 +398,10 @@ touches 경로의 실재(소유 repo 좌표 기준) · 묶음 안팎 다른 열�
 설계 면제 값은 없다 — 설계가 몇 줄이면 몇 줄로 쓰고 `design: done` 으로 올린다.
 
 > **fix 라운드는 묶음 1회이고 PM 승인 delta만 쓴다.** PM은 판정 블록을 손으로 적지 않는다 —
-> `python3 .project_manager/tools/pm_delegate.py review disposition-template --cluster <C-이름>` 이
+> `python3 .project_manager/tools/pm_delegate.py review disposition-template --cluster C-<ticket-group>` 이
 > 멤버 전부의 미판정 finding ID 를 프리필한 판정 골격을 내므로, 그 골격의 판정·사유 자리만 채워
 > 각 티켓 명세의 PM 영역에 붙인 뒤
-> `python3 .project_manager/tools/pm_delegate.py review delta --cluster <C-이름>`을 실행한다. 출력된
+> `python3 .project_manager/tools/pm_delegate.py review delta --cluster C-<ticket-group>`을 실행한다. 출력된
 > delta 를 발췌하지 말고 그대로 developer에게 전달한다(끝의 제약 블록 포함).
 > rejected/decision-required·보고서 전문은 출력에 없고 따로 전달하지도 않는다.
 > fix 는 묶음 브랜치를 체크아웃한 슬롯에서 **developer 1명**이 accepted 전부를 해소한다

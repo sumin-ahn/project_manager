@@ -2,7 +2,7 @@
 """PM 세션 시작 부트스트랩 헬퍼 — 기계 측정 부분을 한 명령으로 dump 한다.
 
 사용:
-    venv/bin/python .project_manager/tools/pm_bootstrap.py --task <이름>
+    venv/bin/python .project_manager/tools/pm_bootstrap.py --task <task>
 
 slot 경로:
     venv/bin/python .project_manager/tools/pm_bootstrap.py [--json] [--with-pytest]
@@ -373,6 +373,10 @@ _C_BOARD_PROMOTE = _CardCmd("board.py", "promote T-NNNN", ("promote",), ())
 _C_BOARD_SHOW = _CardCmd("board.py", "show T-NNNN", ("show",), ())
 _C_BOARD_LINT = _CardCmd("board.py", "lint", ("lint",), ())
 _C_BOARD_CLAIM = _CardCmd("board.py", "claim T-NNNN", ("claim",), ())
+_C_BOARD_CLUSTER_NEW = _CardCmd(
+    "board.py", "cluster new <ticket-group> --tickets T-NNNN", ("cluster", "new"), ("--tickets",))
+_C_BOARD_TIER = _CardCmd("board.py", "tier T-NNNN pm-direct", ("tier",), ())
+_C_WP_SWITCH = _CardCmd("worktree_pool.py", "switch <slot> task/<ticket-group>", ("switch",), ())
 _C_BOARD_REGRESSION = _CardCmd("board.py", "regression run", ("regression",), ())
 _C_TICKET_FINISH = _CardCmd("ticket_finish.py", "<T-NNNN>", (), ())
 _C_ADDITIONAL_REVIEWER = _CardCmd(
@@ -381,25 +385,26 @@ _C_PM_HANDOFF_TASK = _CardCmd("pm_handoff.py", "", (), ())
 _C_PM_LOG_TAIL = _CardCmd("pm_log.py", "tail", ("tail",), ())
 # task 모드 CLI 커맨드 — task 명은 정체성 축이라 alloc/release/wave 는
 # `--task <실명>` 실값 보간(caller). task end/prefix 의 name 위치인자는 정체성 중간삽입이라
-# 정합 대조를 깨므로(render+suffix 비연속) `<이름>` placeholder 로 유지(사용자 입력·헤더가 실명 표기).
+# 정합 대조를 깨므로(render+suffix 비연속) `<task>` placeholder 로 유지(사용자 입력·헤더가 실명 표기).
 _C_PC_ALLOC = _CardCmd("pm_config.py", "alloc <repo>", ("alloc",), ())
 _C_PC_RELEASE = _CardCmd("pm_config.py", "release <slot>", ("release",), ())
-_C_PC_TASK_END = _CardCmd("pm_config.py", "task end <이름>", ("task", "end"), ())
+_C_PC_TASK_END = _CardCmd("pm_config.py", "task end <task>", ("task", "end"), ())
 _C_PC_TASK_REOPEN = _CardCmd(
-    "pm_config.py", "task reopen <이름> [--archive <basename>]", ("task", "reopen"), ()
+    "pm_config.py", "task reopen <task> [--archive <basename>]", ("task", "reopen"), ()
 )
-_C_PC_TASK_PREFIX = _CardCmd("pm_config.py", "task prefix <이름> <p|none>", ("task", "prefix"), ())
+_C_PC_TASK_PREFIX = _CardCmd("pm_config.py", "task prefix <task> <p|none>", ("task", "prefix"), ())
 
 # 카드 정의서 (정합 test 의 authoritative 스코프 — 카드 렌더가 소비하는 CLI 커맨드 전량).
 # 정합 test 는 각 모드 카드에서 CLI 줄을 추출해 이 목록과 leaf 단위 양방향 대조한다(카드↔정의서)
 # + 각 record 를 실 파서로 검증(정의서↔파서). skill(`/pm-…`) 줄은 CLI 가 아니라 대상 밖.
 _CARD_TASK_CLI = (
-    # `_C_BOARD_LIST` = task-스코프 뷰 `list --task <이름>` — `--task`
+    # `_C_BOARD_LIST` = task-스코프 뷰 `list --task <task>` — `--task`
     # 는 정체성 축이라 실값 보간(suffix)이고 base render 는 `list`(슬롯 카드의 slot-scoped 뷰와 동형).
     # `_C_BOARD_LIST_MINE` = user-wide(전 task·직교 렌즈).
     _C_BOARD_LIST, _C_BOARD_LIST_MINE, _C_PC_ALLOC, _C_PC_RELEASE, _C_PC_TASK_PREFIX,
-    _C_PC_TASK_END, _C_PC_TASK_REOPEN, _C_BOARD_NEW, _C_BOARD_PROMOTE,
-    _C_BOARD_CLAIM, _C_BOARD_SHOW, _C_BOARD_LINT, _C_BOARD_REGRESSION,
+    _C_PC_TASK_END, _C_PC_TASK_REOPEN, _C_BOARD_NEW, _C_BOARD_PROMOTE, _C_BOARD_TIER,
+    _C_BOARD_CLUSTER_NEW, _C_BOARD_CLAIM, _C_BOARD_SHOW, _C_BOARD_LINT, _C_WP_SWITCH,
+    _C_BOARD_REGRESSION,
     _C_ADDITIONAL_REVIEWER,
     _C_TICKET_FINISH, _C_PM_HANDOFF_TASK, _C_PM_LOG_TAIL,
 )
@@ -1585,7 +1590,7 @@ def _format_board_counts_line(counts: dict[str, int], scope_label: str = "mine")
     `counts` 는 `_collect_board` 가 뽑은 스코프 값이다 — status 별로 "내 세션 생성 open" 또는 "내
     세션 claim" 만 센 값이라 실측(예 done 25)이 전체 done(184) 과 크게 다를 수 있다(done/open/
     claimed/blocked 모두 전체보다 훨씬 작을 소지가 큼). `scope_label` 로 그 스코프를 명시해 "전체
-    done" 처럼 오독하지 않게 한다 — 라벨은 이 세션의 task(`"task <이름>"`)다.
+    done" 처럼 오독하지 않게 한다 — 라벨은 이 세션의 task(`"task <task>"`)다.
 
     **open 도 세션 스코프**: 세션 기본 뷰가 open 을 내 세션 생성분만 보이므로
     슬롯무관 공유 backlog 전량·접힘 카운트 폐기) 모든 status 에 같은 `scope_label` 을 붙인다 —
@@ -1752,9 +1757,9 @@ class PmBootstrap:
         self._run_pytest_fn = run_pytest_fn or self._default_run_pytest
         self._run_git_fn = run_git_fn or self._default_run_git
 
-        # task 세션 식별자 — `--task <이름>` 바인딩 성공 시 run() 진입부에서 세팅.
-        # task가 유일한 진입 정체성이며, log/pm_state 귀속을 task 태그(`task:<이름>`)·task 서술 pm_state
-        # (`.local/tasks/<이름>/pm_state.md`)로 좁혀 resume-read(차수·남은작업)를 완결한다.
+        # task 세션 식별자 — `--task <task>` 바인딩 성공 시 run() 진입부에서 세팅.
+        # task가 유일한 진입 정체성이며, log/pm_state 귀속을 task 태그(`task:<task>`)·task 서술 pm_state
+        # (`.local/tasks/<task>/pm_state.md`)로 좁혀 resume-read(차수·남은작업)를 완결한다.
         # 바인딩 전(수집 앞단)에는 None 이다.
         self._task_name: str | None = None
         self._task_pm_state_file: Path | None = None
@@ -1793,7 +1798,7 @@ class PmBootstrap:
         """첫-turn 안내에 쓸 pm_state 경로 — 이 task 의 서술 pm_state.
 
         task 가 유일한 연속성 앵커이므로 task 바인딩이 해소한
-        `.local/tasks/<이름>/pm_state.md` 를 그대로 표시한다.
+        `.local/tasks/<task>/pm_state.md` 를 그대로 표시한다.
         """
         if self._task_pm_state_file is not None:
             return _display_path_text(self._task_pm_state_file)
@@ -1976,7 +1981,7 @@ class PmBootstrap:
             print(
                 f"[중단] task {self._task_name!r} 보유 작업공간이 0개라 --with-pytest 대상을 "
                 f"해소할 수 없습니다 — `{_runtime_skill_entry('pm-env')} alloc <repo> "
-                "--task <이름>`으로 작업공간을 "
+                "--task <task>`으로 작업공간을 "
                 "대여한 뒤 다시 실행하세요. 전역 auto-slot으로 대체하지 않습니다.",
                 file=sys.stderr,
             )
@@ -2235,8 +2240,8 @@ class PmBootstrap:
     def _bound_session_name(self) -> str | None:
         """차수 유도/본문 dump 귀속용 bound 세션 키 — **log/pm_state 귀속 필터** 전용.
 
-        **task 모드(`--task <이름>`)면 `task:<이름>` 태그**를 반환한다 — handoff write 측이
-        task 세션 종료를 `(task:<이름>)` sentinel 태그로 박고 task 서술 pm_state 를 쓰므로
+        **task 모드(`--task <task>`)면 `task:<task>` 태그**를 반환한다 — handoff write 측이
+        task 세션 종료를 `(task:<task>)` sentinel 태그로 박고 task 서술 pm_state 를 쓰므로
         이 read 측이 같은 키로 자기 태그 entry(차수·본문)를 되읽어 resume 루프를
         닫는다(write↔read 대칭). task 진입은 task 앵커만 사용한다.
 
@@ -2283,7 +2288,7 @@ class PmBootstrap:
         """이 task 의 서술 pm_state 경로 (read-only).
 
         명시 주입(`self._pm_state_file`·hermetic 테스트)이 있으면 그대로. 없으면 task 바인딩이
-        해소한 `.local/tasks/<이름>/pm_state.md`(handoff write 측 `_task_pm_state_file` 미러)다 —
+        해소한 `.local/tasks/<task>/pm_state.md`(handoff write 측 `_task_pm_state_file` 미러)다 —
         `bind_task` 가 파일 존재를 보장한다. 부트스트랩은 pm_state 를 *읽기만* 한다.
         """
         if self._pm_state_file is not None:
@@ -2314,7 +2319,7 @@ class PmBootstrap:
           가 해소돼도 log-derived 가 더 크면 **log 우선(max)** + stale 표시(머신 간 미동기).
         - `session_stale`: pm_state 가 log 보다 뒤처져 log 를 택했으면 True(경고 1줄).
         - `state_session_num`: pm_state-derived 원값(stale 경고 메시지의 진단용).
-        - `todos`: 이 task 의 열린 todo 목록(`.local/tasks/<이름>/todo.json` · 없으면 빈
+        - `todos`: 이 task 의 열린 todo 목록(`.local/tasks/<task>/todo.json` · 없으면 빈
           리스트 — 호출부가 등록 경로를 안내).
         pm_state·log·todo 전부 미해소면 None — 호출부가 현행(placeholder)로 폴백한다.
         """
@@ -2862,7 +2867,7 @@ class PmBootstrap:
         if preflight_rc != 0:
             return preflight_rc
 
-        # ── task 바인딩 — 0단계 통과 *후* 진입. `--task <이름>`
+        # ── task 바인딩 — 0단계 통과 *후* 진입. `--task <task>`
         # 이면 신규/resume 바인딩하고 열린 기록(종료 기록 없음)은 거부한다. 거부는 dump 이전에
         # 중단(부분 dump 금지 = 0단계와 동형 — dump 가 뜨면 PM 이 그것을 세션 진실로 믿는다).
         # task는 진입 정체성의 단일 축이다. 위 혼합 가드 때문에 task 모드에서는 alloc/lean
@@ -2874,7 +2879,7 @@ class PmBootstrap:
         if task_info is None:
             return 1  # 살아있는 다른 세션 점유 — 거부(부분 dump 금지).
         # task 정체성을 인스턴스에 확정한다 — 이후 모든 수집(log_entry/handoff_ctx/
-        # user_continuity)이 `_bound_session_name`=`task:<이름>`·task 서술 pm_state 를 귀속으로
+        # user_continuity)이 `_bound_session_name`=`task:<task>`·task 서술 pm_state 를 귀속으로
         # 본다(resume-read 소비 배선). 수집(freshness 이하) *앞단*에 둬 확정된 정체성을 전 수집이 본다.
         self._task_name = task_info["name"]
         self._task_pm_state_file = Path(task_info["pm_state_path"])
@@ -2943,7 +2948,7 @@ class PmBootstrap:
                 dashboard_others, self._command_environment
             )
             print(markdown)
-            # 커맨드 카드 — 이 세션이 쓸 전 커맨드를 정체성(`--task <이름>`) 채운 완성형으로
+            # 커맨드 카드 — 이 세션이 쓸 전 커맨드를 정체성(`--task <task>`) 채운 완성형으로
             # dump("--help 자체를 안 가게"). 렌더 실패는 fail-soft(카드 절 생략·위 dump 는 유지).
             card = self._safe_command_card()
             if card:
@@ -3921,7 +3926,7 @@ class PmBootstrap:
         """이 세션이 쓸 전 커맨드를 정체성 채운 완성형으로 dump 하는 커맨드 카드.
 
         identity surface 뒤에 코드 생성해, PM 이 --help 왕복 없이 세션 전체를 운영하게 한다
-        ("--help 자체를 안 가게"·사용자 지시). 정체성(`--task <이름>`)은 **실값으로 보간**하고,
+        ("--help 자체를 안 가게"·사용자 지시). 정체성(`--task <task>`)은 **실값으로 보간**하고,
         사용자 입력(`T-NNNN`·`<PFX>`·`<요약>` 등)만 placeholder 로 남긴다.
 
         숨은 전제 4대장(claim=promote 선행·prefix rename/merge=홈 git clean·livegate record=
@@ -4037,7 +4042,7 @@ class PmBootstrap:
         lines.append("")
 
         lines.append("# 내 작업 보기 (read-only 조회·직접 — 자기 공간 우선)")
-        # task 스코프 렌즈(`list --task <이름>`) — 이 task 명의
+        # task 스코프 렌즈(`list --task <task>`) — 이 task 명의
         # claim(claimed_by==<user>/<task>) + 내 소유 open backlog. `--task` 는 정체성 축이라 실값
         # 보간(suffix·ti)이고 base render 는 `list`(_C_BOARD_LIST) — 슬롯 카드의 slot-scoped 뷰와 동형.
         lines.append(cmd(
@@ -4059,6 +4064,11 @@ class PmBootstrap:
         lines.append(cmd(
             _C_PC_RELEASE, "작업완료 반납(소유검사 이 task 명의 슬롯만)", suffix=ti,
         ))
+        lines.append(
+            "  ⚠ 코드 변경을 머지하려면 작업 폴더 2개를 빌린다: 통합 폴더(base_branch 를 계속 든다)와 "
+            "작업 폴더(묶음 브랜치로 switch). 2개를 빌린 동안 new·cluster new·claim·regression 에는 "
+            "`--repo <repo> --slot <N>` 을 붙여 폴더를 지목한다."
+        )
         lines.append("")
 
         # task 정체성 — prefix 지정/해제 + task 종료(일괄 반납·아카이브). name 은 위치인자(보간).
@@ -4086,16 +4096,35 @@ class PmBootstrap:
         lines.append(cmd(
             _C_BOARD_PROMOTE, "draft → 정식 승격(본문 채운 뒤·claim 의 전제)",
         ))
+        lines.append(cmd(
+            _C_BOARD_TIER,
+            "리뷰 없이 종결할 티켓 표시(open/claimed · touches 2개 이하 · 코드 변경엔 테스트 동반)",
+        ))
         lines.append("")
 
         # wave 운영 (스킬 primary) — 강등 backbone 은 task 정체성(`--task`) 보간. 슬롯 카드와
         # 동형이나 정체성 축만 slot→task. 숨은전제 ⚠ 는 claim 강등 줄 바로 아래 인접(불변식 2).
         lines.append("# wave 운영 (스킬로 invoke — backbone CLI 엔진은 직접 금지)")
-        lines.append(skill("/pm-wave-claim T-NNNN", "ticket claim — DoD 자족 검증 + claim"))
+        lines.append(skill(
+            "/pm-wave-claim T-NNNN", "묶음 선언 + ticket claim + 작업 폴더 전환 · DoD 자족 검증"))
+        lines.append(engine(_C_BOARD_CLUSTER_NEW, suffix=ti))
+        lines.append(
+            "  ⚠ <ticket-group> 은 새로 짓는 묶음 이름이다(영숫자·`.`·`_`·`-`, 예: `login-fix`). "
+            "티켓 ID 모양(`T-NNNN`)은 발행이 만든 크기 1 장부(`C-T-NNNN`)의 자리라 거부되고, "
+            "그 장부는 새 묶음이 흡수한다."
+        )
+        lines.append(
+            "  ⚠ cluster new 는 지목한 폴더의 현재 브랜치를 base_branch(머지 대상)로 적고 "
+            "묶음 브랜치 task/<ticket-group> 을 만든다: 통합 폴더를 지목한다."
+        )
         lines.append(engine(_C_BOARD_SHOW))
         lines.append(engine(_C_BOARD_LINT))
         lines.append(engine(_C_BOARD_CLAIM, suffix=ti))
         lines.append("  ⚠ claim 은 draft 티켓 거부 — 먼저 `promote T-NNNN`(본문 채운 뒤) 필요.")
+        lines.append(engine(
+            _C_WP_SWITCH,
+            "스킬이 부르는 내부 엔진·직접 금지 · 작업 폴더(<slot>=work/<repo>_<N>)를 묶음 브랜치로 전환",
+        ))
         lines.append(skill("/pm-regression", "비차단 백그라운드 회귀 pre-warm + 완료 알림"))
         lines.append(engine(_C_BOARD_REGRESSION, suffix=ti))
         lines.append(skill("/pm-wave-finish T-NNNN", "ticket 완료 기록 — 회귀+log+board+stage"))
@@ -4106,6 +4135,10 @@ class PmBootstrap:
             "스킬이 부르는 내부 엔진·직접 금지 — 내부서 board.py complete 수행",
             suffix=ti,
         ))
+        lines.append(
+            "  ⚠ 종결 선검사: 완료 조건(DoD) 체크박스 전부 `- [x]` · 바뀐 파일은 티켓 `touches` 에 선언 · "
+            "돌려받은 리뷰 라운드 또는 tier pm-direct."
+        )
         lines.append(skill(
             "/pm-handoff",
             f"task 세션 종료 7단계 자동화 — 무인자(스킬은 인자를 안 받음 · PM 이 --task {task_name} 을 채워 backbone 호출)",

@@ -1385,7 +1385,7 @@ def build_ctx_guard_guidance(
         status = "compaction 경계가 감지됐다. "
         command = (
             "checkpoint 골격이 생성됐다면 현재 구간·서사 불릿을 보충한다. 골격이 없으면 "
-            "`python3 .project_manager/tools/pm_log.py checkpoint --task <이름> "
+            "`python3 .project_manager/tools/pm_log.py checkpoint --task <task> "
             "--trigger compaction`(Windows는 `py -3`)으로 기록한다. "
         )
     else:
@@ -1395,14 +1395,14 @@ def build_ctx_guard_guidance(
             if band == "final" and precompact_at_pct is not None:
                 status += f" (압축 임박 경고 {precompact_at_pct}% 이상)"
             status += ". "
-        checkpoint = "`python3 .project_manager/tools/pm_log.py checkpoint --task <이름>"
+        checkpoint = "`python3 .project_manager/tools/pm_log.py checkpoint --task <task>"
         if band == "final":
             checkpoint += " --trigger compaction"
         checkpoint += "`"
         command = (
             "checkpoint 기록 권고 구간이다. "
             f"{checkpoint}(Windows는 `py -3`)으로 현재 구간·서사를 기록한다. "
-            "`<이름>`에는 현재 task 이름을 사용한다. "
+            "`<task>`에는 현재 task 이름을 사용한다. "
         )
     return f"[{labels[band]}] {status}{command}{CTX_GUARD_CONTINUITY_GUIDANCE}"
 

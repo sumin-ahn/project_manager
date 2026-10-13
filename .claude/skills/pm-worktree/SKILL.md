@@ -26,10 +26,10 @@ audience: pm-internal
 - detached(consume) submodule 이 superproject pin과 어긋나면 브랜치 전환 없이 `sync`로 수동
   재동기한다. 상태 확인은 부트스트랩 `### 슬롯 상태`가 surface한다.
 - `status`로 role·branch·head·부모 브랜치(이름·갈라진 커밋·앞/뒤)·자식 브랜치·stash 수·submodule
-  pin/drift·dirty를 조회한다. 단일(`<slot>`), 일괄(`--task <이름>`), 무인자(내 task 전 슬롯)를
+  pin/drift·dirty를 조회한다. 단일(`<slot>`), 일괄(`--task <task>`), 무인자(내 task 전 슬롯)를
   지원하며, 부모 기록이 없으면 `(부모 기록 없음)`이다.
 - 원할 때만 `rebase`로 부모 브랜치 또는 `--onto <branch>` 최신에 rebase한다. 단일(`<slot>`),
-  일괄(`--task <이름>`), task 명의 단일(`<slot> --task <이름>`)을 지원하며 자동 rebase는 없다.
+  일괄(`--task <task>`), task 명의 단일(`<slot> --task <task>`)을 지원하며 자동 rebase는 없다.
 - research 전용 readonly 공유 슬롯은 `refresh`로 released 최신 tip에 갱신한다. fetch 후 detached
   HEAD를 옮기며, dirty면 조용히 reset하지 않고 거부한다.
 - 부트스트랩 0단계가 보호 브랜치 직접 checkout 또는 보호 브랜치 원격 origin-추적으로 진입을
@@ -44,8 +44,8 @@ audience: pm-internal
 모호(≥2)면 침묵 no-op 없이 rc 1로 실패한다.
 
 `status`/`rebase`/`refresh`/`record`/`switch`는 위치인자 `<slot>`으로 임의 pool 슬롯을
-직접 지정한다. `status`/`rebase`의 `--task <이름>`은 그 task의 전 슬롯을 지칭한다. `rebase <slot>
---task <이름>`은 대상 자원(`<slot>`)과 소유 명의(`--task`)를 함께 주는 단일 연산이므로 두 인자는
+직접 지정한다. `status`/`rebase`의 `--task <task>`은 그 task의 전 슬롯을 지칭한다. `rebase <slot>
+--task <task>`은 대상 자원(`<slot>`)과 소유 명의(`--task`)를 함께 주는 단일 연산이므로 두 인자는
 배타가 아니다. submodule 경로·슬롯은 형식/목록 검증하며 절대경로·`..` 등 슬롯 경계 밖은 거부한다.
 
 ## 실행
@@ -61,11 +61,11 @@ python3 .project_manager/tools/worktree_pool.py sync --repo <repo> --slot <N>
 
 # 슬롯 git 구성 조회 (role·branch·head·부모·자식·stash·submodule pin/drift·dirty·단일/일괄)
 python3 .project_manager/tools/worktree_pool.py status [<slot>]              # 단일(무인자=내 task 전 슬롯)
-python3 .project_manager/tools/worktree_pool.py status --task <이름>          # 그 task 보유 전 슬롯 일괄
+python3 .project_manager/tools/worktree_pool.py status --task <task>          # 그 task 보유 전 슬롯 일괄
 
 # 슬롯 부모 브랜치 rebase (선-검사·충돌 그대로+loud·성공 시 장부 원자 갱신·자동 rebase 없음)
 python3 .project_manager/tools/worktree_pool.py rebase <slot> [--onto <branch>]        # 단일
-python3 .project_manager/tools/worktree_pool.py rebase --task <이름> [--onto <branch>]  # 일괄(그 task 전 슬롯)
+python3 .project_manager/tools/worktree_pool.py rebase --task <task> [--onto <branch>]  # 일괄(그 task 전 슬롯)
 
 # readonly 공유 슬롯 갱신 (fetch → detached HEAD 이동 + submodule 재동기·dirty=거부+loud)
 python3 .project_manager/tools/worktree_pool.py refresh <slot> [--onto <branch>]
@@ -84,18 +84,18 @@ python3 .project_manager/tools/worktree_pool.py switch <slot> <branch>
   채워진 inactive·dev(on-branch)·dirty 작업은 보존하고, 활성 detached·clean만 기존 pin으로 재동기한다.
   빈 submodule 폴더에서 상위 슬롯 저장소를 발견한 경우는 초기화 안 됨으로 분류하며 dev 전환을 거부한다.
   이 판정은 폴더 제한이 없는 슬롯에도 적용한다.
-- `status`: `<slot>` 단일, `--task <이름>` 일괄, 둘 다 생략 시 내 task(세션) 전 슬롯. 슬롯별
+- `status`: `<slot>` 단일, `--task <task>` 일괄, 둘 다 생략 시 내 task(세션) 전 슬롯. 슬롯별
   role(work/readonly)·branch·head·부모(이름@갈라진 커밋·앞 N·뒤 M)·자식 브랜치·stash 수·submodule
   pin/drift(⚠=drift/uninitialized)·dirty와 folders 목록/null을 표시한다. 부모 기록은 git 저장소 설정
-  (`branch.<이름>.pm-parent`·`pm-fork`)에 브랜치 단위로 있어 반납해도 지워지지 않는다. readonly 슬롯의
+  (`branch.<branch>.pm-parent`·`pm-fork`)에 브랜치 단위로 있어 반납해도 지워지지 않는다. readonly 슬롯의
   부모는 장부의 따라갈 브랜치다.
-- `rebase`: `<slot>`(단일), `--task <이름>`(그 task 전 슬롯 일괄), `rebase <slot> --task <이름>`(그 task
+- `rebase`: `<slot>`(단일), `--task <task>`(그 task 전 슬롯 일괄), `rebase <slot> --task <task>`(그 task
   명의 단일). `<slot>` 단독은 세션 명의다. `--onto <branch>` 생략 시 부모 브랜치 최신을
   사용하며, 부모 기록이 없으면 거부하므로 `--onto`로 명시한다(성공하면 그 값이 부모로 기록된다). 슬롯마다 독립 처리해 일괄의
   한 충돌이 나머지를 막지 않으며 끝에 성공/스킵/충돌을 요약한다.
   - **선-검사 3종(스킵+loud)**: 호출 명의(세션 또는 `--task`)로 leased한 슬롯이 아님, dirty,
     rebase 진행 중. readonly도 mutation 불가라 스킵한다. 타 명의 슬롯은 계속 스킵하고, 보유자가
-    등록 task면 메시지가 실제 `--task <이름>` 해소를 안내한다.
+    등록 task면 메시지가 실제 `--task <task>` 해소를 안내한다.
   - ⚠ 명의는 호출자의 자칭이다. `--task <남의 task>`도 통과하며 `release --task`의 소유검사·세션
     축(`PM_SESSION_NAME`)과 같은 모델이다. 오조작 방지 가드이지 보안 경계가 아니다.
   - **충돌**: 임의 abort 없이 상태를 그대로 두고 fail-loud한다. 사용자가 슬롯에서 충돌 해결 후

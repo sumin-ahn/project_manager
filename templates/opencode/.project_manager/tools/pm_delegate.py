@@ -1831,8 +1831,8 @@ _CLUSTER_LEDGER_ABSENT = (
     "묶음 장부가 없습니다: {cluster} — 고정 라운드 수열은 장부가 소유하고, 준비는 "
     "그 선언만 읽습니다(선언 없는 묶음은 판정 입력이 아니라 정지 사유입니다).\n"
     "  · `python3 .project_manager/tools/board.py cluster show {cluster}` 로 장부를 확인하고, "
-    "없으면 `board.py cluster new <이름> --tickets <T-...> --repo <이름> --slot <N>`"
-    "(또는 `--task <이름>`) 으로 선언하세요 — 통합 브랜치를 둘 코드 트리는 명시가 필수입니다."
+    "없으면 `board.py cluster new <ticket-group> --tickets <T-...> --repo <repo> --slot <N>`"
+    "(또는 `--task <task>`) 으로 선언하세요 — 통합 브랜치를 둘 코드 트리는 명시가 필수입니다."
 )
 _CLUSTER_BUDGET_UNDECLARED = (
     "묶음 라운드 예산이 선언되지 않았습니다: {cluster} · 장부 `budget` 의 {key} 가 없거나 "
@@ -2454,7 +2454,7 @@ def _assert_review_tree_unchanged(cwd: Path, row: Mapping[str, object], *, copy:
             f"`pm_delegate.py ticket abandon --copy {copy} --cwd {cwd} "
             f"{ABANDON_ASSUME_DEAD_FLAG}`(사본에 산출이 있으면 "
             f"`{ABANDON_DISCARD_REASON_FLAG} <사유>` 추가)로 닫은 뒤, board 에 그 순번 라운드가 "
-            f"남아 있으면 `pm_delegate.py ticket prepare --cluster <C-이름> --role "
+            f"남아 있으면 `pm_delegate.py ticket prepare --cluster C-<ticket-group> --role "
             f"{INTERNAL_REVIEW_ROLE} {PREPARE_REOPEN_ORDINAL_FLAG} {ordinal} --cwd {cwd}` "
             f"(슬롯 사본의 `{PM_REVIEW_REFUSED_MARKER}` 표식 줄은 지운다), 없으면 "
             f"{PREPARE_REOPEN_ORDINAL_FLAG} 없이 다시 준비하세요"
@@ -2470,7 +2470,7 @@ def _assert_review_tree_unchanged(cwd: Path, row: Mapping[str, object], *, copy:
         f"{changes}. board 라운드·장부·run-dir 은 그대로입니다. 리뷰어 산출이 아닌 잔여면 "
         f"되돌린 뒤 같은 `--copy` 로 다시 돌려받고, 리뷰가 바뀐 트리를 봤으면 "
         f"`pm_delegate.py ticket abandon --copy {copy} --cwd {cwd} {ABANDON_ASSUME_DEAD_FLAG} "
-        f"{ABANDON_DISCARD_REASON_FLAG} <사유>` 로 폐기한 뒤 `ticket prepare --cluster <C-이름> "
+        f"{ABANDON_DISCARD_REASON_FLAG} <사유>` 로 폐기한 뒤 `ticket prepare --cluster C-<ticket-group> "
         f"--role {INTERNAL_REVIEW_ROLE} {PREPARE_REOPEN_ORDINAL_FLAG} {ordinal} --cwd {cwd}` 로 "
         "같은 순번을 다시 여세요"
     )
@@ -7739,9 +7739,9 @@ def review_resolution_input_problem(ticket_text: str, rounds: Sequence) -> str |
             return None
         return (
             "code-reviewer 리뷰 라운드가 없습니다 — 묶음 종결은 돌려받은 리뷰가 있어야 "
-            "진행합니다. 같은 하네스면 `pm_delegate.py ticket prepare --cluster <C-이름> "
+            "진행합니다. 같은 하네스면 `pm_delegate.py ticket prepare --cluster C-<ticket-group> "
             "--role code-reviewer --cwd <슬롯>` 로 준비해 서브에이전트로, 다르면 "
-            "`pm_delegate.py --role code-reviewer --cluster <C-이름> --cwd <슬롯>` 로 리뷰하세요"
+            "`pm_delegate.py --role code-reviewer --cluster C-<ticket-group> --cwd <슬롯>` 로 리뷰하세요"
         )
     last = reviews[-1]
     if last.pending:
@@ -7755,7 +7755,7 @@ def review_resolution_input_problem(ticket_text: str, rounds: Sequence) -> str |
         if residual is None:
             return (
                 "판정 표면에 오른 code-reviewer 리뷰 라운드가 없습니다(전부 폐기) — "
-                f"`pm_delegate.py ticket prepare --cluster <C-이름> --role code-reviewer "
+                f"`pm_delegate.py ticket prepare --cluster C-<ticket-group> --role code-reviewer "
                 f"{PREPARE_REOPEN_ORDINAL_FLAG} {last.ordinal} --cwd <슬롯>` 로 재개방해 "
                 "리뷰를 다시 돌려받으세요"
             )
@@ -12095,7 +12095,7 @@ def _add_review_target_args(parser: argparse.ArgumentParser) -> None:
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--ticket", metavar="T-NNNN")
     target.add_argument(
-        "--cluster", metavar="C-<이름>",
+        "--cluster", metavar="C-<ticket-group>",
         help="묶음 멤버 전부의 출력을 티켓별로 이어 낸다(내부는 티켓 반복)",
     )
 
@@ -12172,7 +12172,7 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
     target = prepare.add_mutually_exclusive_group(required=True)
     target.add_argument("--ticket", metavar="T-NNNN")
     target.add_argument(
-        "--cluster", metavar="C-<이름>",
+        "--cluster", metavar="C-<ticket-group>",
         help="클러스터 장부의 멤버 전부에 라운드를 예약한다(run-dir 1 · 라운드 파일 N)",
     )
     prepare.add_argument(
@@ -12297,7 +12297,7 @@ def _reject_cross_role_prepare(role: str, tier: str, conf: dict[str, str]) -> No
     )
     if is_cross_harness_deny:
         target = (
-            "--cluster <C-이름>" if role == INTERNAL_REVIEW_ROLE else "--ticket <T-NNNN>"
+            "--cluster C-<ticket-group>" if role == INTERNAL_REVIEW_ROLE else "--ticket <T-NNNN>"
         )
         raise DelegateError(
             f"cross 역할은 수동 prepare 가 거부됩니다({reason}) — 고아 시드를 만들지 않는다. "
@@ -12965,7 +12965,7 @@ def _cluster_confirmation_tree(
     if not resolved:
         raise DelegateError(
             f"확인 커맨드를 돌릴 코드 트리를 해소하지 못했습니다: {cluster} — "
-            "`--repo <이름> --slot <N>` 또는 `--task <이름>` 으로 트리를 명시하세요"
+            "`--repo <repo> --slot <N>` 또는 `--task <task>` 으로 트리를 명시하세요"
         )
     tree = Path(resolved)
     problem = board.cluster_binding_problem(cluster, tree=str(tree))
@@ -13112,7 +13112,7 @@ def _cmd_rounds(argv: list[str], run_fn: Callable | None = None) -> int:
         help="묶음 멤버마다 리뷰 잔여를 현재 fix 의 기계 확인으로 기입하고 완료 판정을 연다",
     )
     resolve.add_argument(
-        "--cluster", required=True, metavar="C-<이름>",
+        "--cluster", required=True, metavar="C-<ticket-group>",
         help="묶음 멤버 전부를 대상으로 한다(확인 커맨드는 엔진이 실행)",
     )
     resolve.add_argument(
@@ -13228,8 +13228,8 @@ def cluster_review_input(
     if fm is None:
         raise DelegateError(
             f"클러스터 장부가 없습니다: {cluster} — 리뷰 단위는 선언된 묶음입니다"
-            f"(`board.py cluster new <이름> --tickets <T-...> --repo <이름> --slot <N>` "
-            f"또는 `--task <이름>` 으로 먼저 선언하세요 — 코드 트리는 명시가 필수입니다)"
+            f"(`board.py cluster new <ticket-group> --tickets <T-...> --repo <repo> --slot <N>` "
+            f"또는 `--task <task>` 으로 먼저 선언하세요 — 코드 트리는 명시가 필수입니다)"
         )
     branch = str(fm.get("branch") or "").strip()
     base_branch = str(fm.get("base_branch") or "").strip()
@@ -13496,7 +13496,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ticket", default=None, metavar="T-NNNN",
                         help="위임 대상 ticket — touches 로 범위 밖 변경을 경고 판정"
                              "(생략 시 허용 경로 0·차단 아님 · code-reviewer 는 --cluster 를 쓴다)")
-    parser.add_argument("--cluster", default=None, metavar="C-<이름>",
+    parser.add_argument("--cluster", default=None, metavar="C-<ticket-group>",
                         help="리뷰 단위 = 묶음(code-reviewer 필수·전용). 리뷰 트리 검사·프롬프트 "
                              "조립·run-dir 1/라운드 파일 N 예약을 엔진이 하고 실행 뒤 돌려받는다")
     parser.add_argument("--focus", default=None, metavar="PATH",

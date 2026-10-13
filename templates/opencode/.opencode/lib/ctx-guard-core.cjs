@@ -223,7 +223,7 @@ function buildNudgeGuidance(state) {
   return (
     `[ctx-nudge] 컨텍스트 사용 ${used}%. ` +
     `현재 ticket 경계의 결과와 진행 상태를 complete entry와 ` +
-    `\`python3 .project_manager/tools/pm_log.py checkpoint --task <이름>\`으로 기록할 수 있다. ` +
+    `\`python3 .project_manager/tools/pm_log.py checkpoint --task <task>\`으로 기록할 수 있다. ` +
     `${FALLBACK_CONTINUITY_GUIDANCE} ` +
     `상세 ctx 연속성 정책은 pm_log.py ctx-guidance 엔진에서 복구한다.`
   );
@@ -234,7 +234,7 @@ function buildNudgeGuidance(state) {
 function buildNudge2Guidance(state) {
   return (
     `[ctx-nudge/강화] 컨텍스트 사용 ${Math.round((state && state.usedPct) || 0)}%. ` +
-    `\`python3 .project_manager/tools/pm_log.py checkpoint --task <이름>\`으로 ` +
+    `\`python3 .project_manager/tools/pm_log.py checkpoint --task <task>\`으로 ` +
     `checkpoint entry의 구간·서사를 기록할 수 있다. ` +
     `${FALLBACK_CONTINUITY_GUIDANCE} ` +
     `상세 ctx 연속성 정책은 pm_log.py ctx-guidance 엔진에서 복구한다.`
@@ -283,7 +283,7 @@ function buildEngineCtxGuidance(
     const precompact = Math.round(thresholds.precompact_at_pct);
     return (
       `[ctx-nudge/최종] 컨텍스트 사용 ${used}% (압축 임박 경고 ${precompact}% 이상). ` +
-      `\`python3 .project_manager/tools/pm_log.py checkpoint --task <이름> --trigger compaction\` ` +
+      `\`python3 .project_manager/tools/pm_log.py checkpoint --task <task> --trigger compaction\` ` +
       `기록을 사용할 수 있다. ${FALLBACK_CONTINUITY_GUIDANCE} ` +
       `상세 ctx 연속성 정책은 pm_log.py ctx-guidance 엔진에서 복구한다.`
     );

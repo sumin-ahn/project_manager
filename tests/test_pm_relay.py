@@ -383,7 +383,7 @@ def test_relay_rotation_uses_precompact_at(orch, tmp_path):
     with pytest.raises(ValueError) as caught:
         orch.validate_relay_budget(50_500, 80)
     assert "ctx.precompact_at_pct" in str(caught.value)
-    assert "harness.<이름>.ctx_window_tokens" in str(caught.value)
+    assert "harness.<harness>.ctx_window_tokens" in str(caught.value)
     orch.validate_relay_budget(50_501, 80)
 
     marked = []

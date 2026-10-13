@@ -101,7 +101,7 @@ def test_reviewer_card_states_both_execution_paths():
 def test_prepare_role_list_matches_the_engine_choices(card):
     """카드의 준비 명령 역할(자리표시 목록과 리터럴 역할)의 합집합이 엔진 선택지와 같다."""
     lists = re.findall(
-        r"ticket prepare (?:\\ )?--cluster <C-이름> --role (<[^>]+>|[a-z-]+)", _flat(card),
+        r"ticket prepare (?:\\ )?--cluster C-<ticket-group> --role (<[^>]+>|[a-z-]+)", _flat(card),
     )
     assert lists, "카드에 `ticket prepare` 역할 목록이 없다"
     roles = {role for item in lists for role in item.strip("<>").split("|")}

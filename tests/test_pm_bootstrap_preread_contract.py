@@ -93,7 +93,7 @@ ALLOWED_FORBIDDEN_PASSAGES = (
         "유지하고 PM은 점검한다."
     ),
     (
-        "- 공유: 타 PM은 부트스트랩 대시보드에서 자기 task 1줄만 본다. log/current.md는 필요한 (task:<이름>) entry만 검색하고 평시 통독하지 않는다. 전체 보드 board.py list --all은 열람용이며 무인자 기본 뷰는 내 스트림이다. task가 하나뿐이면 대시보드에 그 task 1줄만 뜬다."
+        "- 공유: 타 PM은 부트스트랩 대시보드에서 자기 task 1줄만 본다. log/current.md는 필요한 (task:<task>) entry만 검색하고 평시 통독하지 않는다. 전체 보드 board.py list --all은 열람용이며 무인자 기본 뷰는 내 스트림이다. task가 하나뿐이면 대시보드에 그 task 1줄만 뜬다."
     ),
     "decisions/ ADR은 *왜*의 히스토리이며 현재 구속력이 없다.",
 )

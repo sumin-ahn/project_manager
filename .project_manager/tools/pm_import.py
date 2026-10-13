@@ -8001,7 +8001,7 @@ def opencode_global_config_dir(env, home: Path) -> Path:
 
 
 def is_harness_ctx_input_key(key: str) -> bool:
-    """반영의 입력 키인가 — 비율 3개와 등록 하네스의 사용 한도(`harness.<이름>.ctx_window_tokens`)."""
+    """반영의 입력 키인가 — 비율 3개와 등록 하네스의 사용 한도(`harness.<harness>.ctx_window_tokens`)."""
     if key in _HARNESS_CTX_RATIO_KEYS:
         return True
     parts = key.split(".")

@@ -396,7 +396,7 @@ def test_pm_dev_delegate_documents_only_native_codex_spawn_fields():
     assert all(_native_spawn_is_accepted(call) for call in calls)
     flat = re.sub(r"\s+", " ", text)
     assert TRANSPORT_RULE in flat, "codex 카드에 transport 규칙(R1) 문장이 없음"
-    assert "ticket prepare --cluster <C-이름> --role code-reviewer" in flat, (
+    assert "ticket prepare --cluster C-<ticket-group> --role code-reviewer" in flat, (
         "codex 카드에 같은 하네스 리뷰 준비 명령이 없음"
     )
     assert "--role code-reviewer --cluster" in flat, "codex 카드에 교차 리뷰 실행이 없음"

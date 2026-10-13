@@ -18,17 +18,17 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config worktree prune-stale                         # worktree 사라진 dangling 장부 엔트리 정리
     pm-config worktree remove <slot> --user-ack <slot> [--user-ack <브랜치>]... [--force] # 사용자 승인값 결속 + 슬롯 통째 제거 — worktree+브랜치 판정+장부 (--force=점유만 무시)
     pm-config status | whoami                              # 풀/리스 + 이 세션 repo/슬롯/branch
-    pm-config alloc <repo> --task <이름> [--folders <폴더,…>]                    # task 명의로 idle 최소 번호 슬롯 대여 (자동 생성 안 함)
-    pm-config release <slot> [--task <이름>] [--force]      # 작업완료 반납 (--task 소유검사) / 수동 강제(백스톱)
-    pm-config task new <이름>                               # task 정체성 생성 — 장부 행(닫힘)+pm_state (세션 묶기 없음·진입은 부트스트랩)
-    pm-config task close <이름>                             # 열린 채 남은 task 세션 기록 닫기 (기록만·복원 없음)
-    pm-config task branch <이름> <슬롯> <브랜치> --from <부모>     # 슬롯에 새 브랜치 — 부모 최신 커밋에서 만들고 부모·갈라진 커밋 기록
-    pm-config task prefix <이름> <p|none> [--user-ack <p>] # 신규 prefix 사용자 승인값 결속·변경/해제 (`none`=해제)
-    pm-config task end <이름>                               # task 종료 — claimed 소진 게이트·dirty 게이트·일괄 반납 + _ended 아카이브
-    pm-config task reopen <이름> [--archive <basename>]     # 종료 archive를 동일 task 정체성으로 복원
-    pm-config task todo add <이름> <할 일 한 줄>            # 열린 todo 등록 — 파일 수정 전에 지금 하는 일을 적는다(없으면 쓰기 판정이 경고)
-    pm-config task todo list <이름>                         # 열린 todo — ID·등록일·묵은 일수
-    pm-config task todo done <이름> <ID>                    # 완료 = 목록에서 제거 (완료 표시를 남기지 않는다·기록은 log)
+    pm-config alloc <repo> --task <task> [--folders <폴더,…>]                    # task 명의로 idle 최소 번호 슬롯 대여 (자동 생성 안 함)
+    pm-config release <slot> [--task <task>] [--force]      # 작업완료 반납 (--task 소유검사) / 수동 강제(백스톱)
+    pm-config task new <task>                               # task 정체성 생성 — 장부 행(닫힘)+pm_state (세션 묶기 없음·진입은 부트스트랩)
+    pm-config task close <task>                             # 열린 채 남은 task 세션 기록 닫기 (기록만·복원 없음)
+    pm-config task branch <task> <슬롯> <브랜치> --from <부모>     # 슬롯에 새 브랜치 — 부모 최신 커밋에서 만들고 부모·갈라진 커밋 기록
+    pm-config task prefix <task> <p|none> [--user-ack <p>] # 신규 prefix 사용자 승인값 결속·변경/해제 (`none`=해제)
+    pm-config task end <task>                               # task 종료 — claimed 소진 게이트·dirty 게이트·일괄 반납 + _ended 아카이브
+    pm-config task reopen <task> [--archive <basename>]     # 종료 archive를 동일 task 정체성으로 복원
+    pm-config task todo add <task> <할 일 한 줄>            # 열린 todo 등록 — 파일 수정 전에 지금 하는 일을 적는다(없으면 쓰기 판정이 경고)
+    pm-config task todo list <task>                         # 열린 todo — ID·등록일·묵은 일수
+    pm-config task todo done <task> <ID>                    # 완료 = 목록에서 제거 (완료 표시를 남기지 않는다·기록은 log)
     pm-config update [--from <upstream>]                   # 엔진 갱신 (pm-update 흡수)
     pm-config upstream show | set <url|path>               # upstream 조회/전환 (검증·fail-closed)
     pm-config add-harness <harness> [--from <src>] [--dry-run]  # 라이브 인스턴스에 두 번째 harness 어댑터 추가
@@ -46,7 +46,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
   - repo list → board._parse_areas() 표 렌더(빈 셀은 폴백을 괄호로 명시).
   - worktree add → repo 값과 같은 `--user-ack` 사용자 승인 게이트 뒤
                 worktree_pool.create_slot(새 슬롯 + `git submodule update --init`).
-                `--task <이름>` 면 owner_task 로 넘겨 생성 직후 그 슬롯 task 명의 대여(ⓓB).
+                `--task <task>` 면 owner_task 로 넘겨 생성 직후 그 슬롯 task 명의 대여(ⓓB).
   - status|whoami → worktree_pool.list_leases() + 이 세션 식별(repo/슬롯/branch surface).
   - alloc    → worktree_pool.alloc(repo, owner_task=<task>) — 항상 신규 idle 최소 번호 대여(멱등
                같은 repo 복수 보유). 풀 소진(NeedsCreate)이면 자동 생성 안 하고
@@ -55,7 +55,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
   - task prefix → board._validate_prefix(입력 sanity·소비 grammar 단일 진실) → worktree_pool.set_task_prefix
                 (장부 flock/스키마 단일 소유·`none`=해제·직접 JSON write 금지).
   - task end → board.scan_task_tickets(claimed 소진 게이트) → worktree_pool.end_task(dirty 게이트·
-               일괄 idle 반납·서술 폴더 `_ended/<이름>-<날짜>/` 아카이브 이동·삭제 아님).
+               일괄 idle 반납·서술 폴더 `_ended/<task>-<날짜>/` 아카이브 이동·삭제 아님).
   - update → pm_update.main(argv) verbatim forward (rename 비용 0·중복 구현 금지).
   - add-harness → pm_import.add_harness_cli(dest, harness, dry_run=, source_root=) verbatim forward
                   (복사 스코프+인터페이스 예외 번역+소스 해소는 pm_import 단일 진실·
@@ -1584,6 +1584,10 @@ def _resolve_clone_git_url(name, cli_git, already_registered, board_mod):
     return None
 
 
+# `git ls-remote --exit-code <원본> HEAD` 가 일치 ref 없음(HEAD 없음 = 커밋 0개 원본)에 내는 rc.
+_LS_REMOTE_NO_MATCHING_REF = 2
+
+
 def cmd_repo_add(
     args: argparse.Namespace,
     *,
@@ -1620,6 +1624,8 @@ def cmd_repo_add(
       - 이미 등록 + bare 부재     → clone *진행*(재시도) 후 등록 건너뜀(append-only).
                                     첫 실행이 등록만 남기고 clone 실패한 경우의 복구 경로다.
       - 미등록                    → clone → base 해소·검증 → areas_append.
+    clone 직전에 원본을 `git ls-remote --exit-code <url> HEAD` 로 조회한다 — 커밋 0개(rc 2)나
+    조회 실패면 rc 1 로 멈추고 빈/부분 bare 를 만들지 않는다.
     base 해소가 clone 에 의존하므로(bare HEAD 해소/존재 검증) **clone 을 먼저** 한다 —
     미등록 경로는 clone→base 해소→areas_append. 이미 등록 경로는 base 가 이미 박혀 있어
     재해소하지 않는다(append-only·중복 등록 금지).
@@ -1768,6 +1774,26 @@ def cmd_repo_add(
     if bare_exists:
         print(f"✓ .repos/{name}.git 이미 존재 — clone 건너뜀 (재사용).")
     else:
+        # 원본 조회 — 원본 HEAD 가 해소되지 않으면 clone 이 HEAD 없는 bare 를 만들고 엔진 명령으로는
+        # 되돌릴 수 없다. `ls-remote --exit-code` 는 HEAD 가 없으면 rc 2 다(커밋 0개, 또는 원본 HEAD
+        # 가 없는 브랜치를 가리킴). 그 밖의 실패(없는 경로·네트워크·권한)도 clone 전에 멈춘다 — 두
+        # 경우 모두 mkdir·clone·등록·훅 0.
+        rc, out = runner(["ls-remote", "--exit-code", git_url, "HEAD"])
+        if rc == _LS_REMOTE_NO_MATCHING_REF:
+            print(
+                f"[중단] 원본 {git_url} 에 커밋이 없다(또는 원본 HEAD 가 없는 브랜치를 가리킨다). 빈 "
+                "bare 를 만들지 않는다. 원본 저장소에서 먼저 커밋하거나 원본 HEAD 를 있는 브랜치로 "
+                "바꾼 뒤 같은 명령을 다시 실행하라 (clone/등록/훅 전혀 하지 않았다).",
+                file=sys.stderr,
+            )
+            return 1
+        if rc != 0:
+            print(
+                f"[중단] 원본 {git_url} 을 조회하지 못했다 (git ls-remote rc={rc}): {out.strip()}. "
+                "주소·네트워크·권한을 확인한 뒤 다시 실행하라 (clone/등록/훅 전혀 하지 않았다).",
+                file=sys.stderr,
+            )
+            return 1
         repos_dir.mkdir(parents=True, exist_ok=True)
         rc, out = runner(["clone", "--bare", git_url, str(bare_path)])
         if rc != 0:
@@ -2186,10 +2212,11 @@ def cmd_worktree_add(
     board=None,
     input_fn: Callable[[str], str] = input,
     is_tty: Callable[[], bool] | None = None,
+    clone_runner: GitRunner | None = None,
 ) -> int:
-    """`worktree add <repo> [--test "<cmd>"] [--task <이름>] [--readonly]` — 새 슬롯 생성 + submodule init.
+    """`worktree add <repo> [--test "<cmd>"] [--task <task>] [--readonly]` — 새 슬롯 생성 + submodule init.
 
-    **`--task <이름>`**: 생성 직후 그 슬롯을 task 명의로 대여한다(session=task·alloc
+    **`--task <task>`**: 생성 직후 그 슬롯을 task 명의로 대여한다(session=task·alloc
     동형·reclaim/재부착 보호는 tasks 장부 조인). 풀 소진 시 alloc 이 안내하는 "생성+대여 한 흐름" — min-idle 재탐색의
     오슬롯 리스크가 없다. task 명 검증 + 기바인딩은 alloc 과 같은 헬퍼로. `--readonly` 와 상호배타.
 
@@ -2217,8 +2244,14 @@ def cmd_worktree_add(
     보유한 `lease.slot`(`work/<repo>_<N>`)에서 파싱(신규 조회 0). **자동바인딩 안 함** — 바인딩은
     여전히 사용자 명시 스텝(정체성=대화 맥락·lean multi-PM). 단일 슬롯은 무인자 부트스트랩 힌트.
 
-    worktree_pool/board/input_fn/is_tty 주입으로 hermetic 테스트(실 worktree add·라이브 input
-    없이 배선·분기 검증). board 는 프롬프트 표시값 areas 해소 재사용용(콘솔이 로드한 board 전달).
+    **bare 준비**: 모든 검사 뒤 슬롯 생성 직전에 `.repos/<repo>.git` 이 없으면 등록 저장소
+    hydrate(`cmd_repo_add` 를 이름만으로)로 areas `git` 주소에서 bare 를 만든다. 원본에 커밋이
+    없거나 조회에 실패하면 그 rc 로 멈추고 bare 를 만들지 않는다. bare 경로가 있으나 무효면
+    `create_slot` 의 BareRepoMissing 안내가 그대로 나간다(자동 삭제 없음).
+
+    worktree_pool/board/input_fn/is_tty/clone_runner 주입으로 hermetic 테스트(실 worktree add·
+    라이브 input·실 clone 없이 배선·분기 검증). board 는 프롬프트 표시값 areas 해소 재사용용(콘솔이
+    로드한 board 전달). `clone_runner` 는 hydrate 의 `cmd_repo_add` 로 넘기는 파이썬 키워드다(CLI 아님).
     """
     if not _require_worktree_add_user_ack(args):
         return 1
@@ -2258,7 +2291,7 @@ def cmd_worktree_add(
     # session 없음. 생성 자체는 사용자 승인 flow(디스크=코드 전체 사본).
     readonly = getattr(args, "readonly", False)
 
-    # --task <이름> (ⓓB) — 새 슬롯을 만들고 **생성 직후 그 슬롯을** task 명의로 대여한다
+    # --task <task> (ⓓB) — 새 슬롯을 만들고 **생성 직후 그 슬롯을** task 명의로 대여한다
     # (풀 소진 시 alloc 이 안내하는 생성+대여 한 흐름·min-idle 재탐색 오슬롯 리스크 제거). readonly 와
     # 상호배타(readonly=무소유 공유 자산). task 명 검증 + 기바인딩은 alloc 과 동일 헬퍼로.
     folders_arg = getattr(args, "folders", None)
@@ -2283,6 +2316,14 @@ def cmd_worktree_add(
         if rc:
             return rc
 
+    # bare 부재 = 등록 저장소 hydrate(areas `git` 주소로 clone). 커밋 0개 원본은 그 안에서 거부된다.
+    if not wp.bare_repo_path(args.repo).exists():
+        hydrated = cmd_repo_add(
+            argparse.Namespace(name=args.repo, git=None, test=None, base=None, owner=None,
+                               user=None, protected=None),
+            board=board, clone_runner=clone_runner, worktree_pool=wp)
+        if hydrated:
+            return hydrated
     try:
         lease = wp.create_slot(args.repo, base=base, test_cmd=test_cmd, readonly=readonly,
                                owner_task=task, folders=folders)
@@ -2371,7 +2412,7 @@ def _short_sha(sha: "str | None") -> str:
 def _slot_git_summary(status: dict, *, readonly: bool = False) -> str:
     """슬롯 git 상태 dict(`worktree_pool.slot_git_status`)를 한 줄 요약으로 렌더한다.
 
-    포맷 = `<branch>@<head 단축> (부모: <이름>@<갈라진 커밋 단축> · 앞 N · 뒤 M)`.
+    포맷 = `<branch>@<head 단축> (부모: <parent>@<갈라진 커밋 단축> · 앞 N · 뒤 M)`.
       - 부모 기록이 없으면 `(부모 기록 없음)`, 부모 브랜치가 지워졌으면 앞/뒤 대신 `부모 브랜치 없음`.
       - readonly 슬롯 = branch 축은 `(detached)`·부모는 따라갈 브랜치.
     """
@@ -2543,7 +2584,7 @@ def _status_json_tasks(wp, tasks) -> list[dict]:
         "started": getattr(task, "started", "") or None,
         "slots": [lease.slot for lease in (wp.slots_for_task(task.name) or [])],
         # 열린 todo — 관리자 화면이 task 줄에 그대로 그린다(가벼운 절이라 5초 주기로 갱신된다).
-        # task 별 파일(`.local/tasks/<이름>/todo.json`)이 출처다.
+        # task 별 파일(`.local/tasks/<task>/todo.json`)이 출처다.
         "todos": [dict(todo) for todo in wp.read_task_todos(task.name)],
     } for task in tasks]
 
@@ -2560,10 +2601,10 @@ def _status_json_git(git_runner: GitRunner) -> dict:
     브랜치명, rc≠0 이면 detached 라 None 이다. 두 축이 같은 상태를 같은 값(null)으로 말해야
     읽는 쪽이 판정을 다시 구현하지 않는다. `rev-parse --abbrev-ref HEAD` 를 쓰지 않는 이유는
     `current_branch` docstring 에 기록된 실측 사고 그대로다 — detached 를 문자열 `"HEAD"` 로,
-    브랜치명과 동명의 태그가 있으면 `heads/<이름>` 으로, 커밋 0 인 브랜치는 rc≠0 으로 준다.
+    브랜치명과 동명의 태그가 있으면 `heads/<branch>` 으로, 커밋 0 인 브랜치는 rc≠0 으로 준다.
 
     커밋 0 인 저장소(`pm_import --new` 직후 fresh clone)는 정상 형상이다 — `symbolic-ref` 가
-    `refs/heads/<이름>` 을 rc 0 으로 주므로 브랜치명은 있고 `head` 만 None 이다
+    `refs/heads/<branch>` 을 rc 0 으로 주므로 브랜치명은 있고 `head` 만 None 이다
     (`rev-parse HEAD` 가 rc≠0 · `pm_bootstrap._collect_git` 과 같은 규약).
     """
     rc, ref = git_runner(["-C", str(REPO), "symbolic-ref", "HEAD"])
@@ -3194,10 +3235,10 @@ def cmd_release(
     *,
     worktree_pool=None,
 ) -> int:
-    """`release <slot> [--task <이름>] [--force]` — 작업완료 반납 / 수동 강제 백스톱.
+    """`release <slot> [--task <task>] [--force]` — 작업완료 반납 / 수동 강제 백스톱.
 
     - 기본: worktree_pool.release(slot) — 커밋 안 한 변경이 있으면 ReleaseRefused(엔진은 stash 하지 않는다).
-    - `--task <이름>`: 소유검사 — 이 슬롯이 그 task 명의(lease.session)가 아니면 `NotTaskOwner`
+    - `--task <task>`: 소유검사 — 이 슬롯이 그 task 명의(lease.session)가 아니면 `NotTaskOwner`
       로 거부(다른 task/세션 슬롯을 실수로 idle 화 방지). dirty 판정보다 먼저. `--task` 미지정은
       현행 slot-only 반납(백스톱).
     - `--force`: worktree_pool.force_release(slot) — 점유(leased)·소유 **무시 강제** idle 화.
@@ -3362,7 +3403,7 @@ def cmd_alloc(
     worktree_pool=None,
     board=None,
 ) -> int:
-    """`alloc <repo> --task <이름>` — 기바인딩 task 명의로 idle 최소 번호 슬롯 대여.
+    """`alloc <repo> --task <task>` — 기바인딩 task 명의로 idle 최소 번호 슬롯 대여.
 
     worktree_pool.alloc(repo, owner_task=<task>) 로 idle **최소 번호** 슬롯을 leased 로 전이한다 —
     session 축에 task 정체성을 실어 이후 `release --task`/`task end` 소유검사가 매칭한다.
@@ -3378,7 +3419,7 @@ def cmd_alloc(
     -capable 진입점이다 — 공유 헬퍼 `_validate_prebound_task`(`worktree add --task` 와 동일 계약·엔진
     validator `_validate_task_name` + `find_task` 를 묶음)로 선검증해 traversal/절대경로/빈 이름/
     `<repo>_<N>` 예약(기계판별 구멍)을 fail-loud rc1 하고, **task 는 기바인딩이어야 한다**를
-    강제한다 — 미바인딩이면 "먼저 `pm-config task new <이름>` 또는 `/pm-bootstrap --task <이름>` 으로
+    강제한다 — 미바인딩이면 "먼저 `pm-config task new <task>` 또는 `/pm-bootstrap --task <task>` 으로
     task 를 만들라" 안내(정체성 *생성*은 그 둘 소관·alloc은 이미 존재하는 task 에 슬롯을 붙일 뿐).
     board 를 해소해 넘겨야 (registered_repos) 예약패턴 검증이 활성(부재면 traversal 만·예약패턴 완화).
 
@@ -3455,16 +3496,16 @@ def cmd_task_new(
     worktree_pool=None,
     board=None,
 ) -> int:
-    """`task new <이름>` — task 정체성만 생성(세션 묶기 없음·닫힘·슬롯 0).
+    """`task new <task>` — task 정체성만 생성(세션 묶기 없음·닫힘·슬롯 0).
 
     `worktree_pool.create_task` 로 장부 `tasks[]` 행(`prefix=None`·닫힘)과 서술 pm_state 를
     만든다 — 관리자/사용자가 아이들 상태에서 task 목록을 조정하는 진입이다. 세션에 묶는 것은
-    부트스트랩 몫이고, 닫힘은 종료 기록과 같은 값이라 이어지는 `/pm-bootstrap --task <이름>` 이
+    부트스트랩 몫이고, 닫힘은 종료 기록과 같은 값이라 이어지는 `/pm-bootstrap --task <task>` 이
     **resume** 으로 이어받는다(신규 생성 아님).
 
     `--prefix` 는 두지 않는다 — 새 prefix 신설은 `task prefix` 의 `--user-ack` 승인 게이트
     단일 지점이고, 여기에 같은 인자를 두면 그 게이트를 우회한다. 생성 후
-    `pm-config task prefix <이름> <p>` 로 지정한다(출력이 그 다음 단계를 안내한다).
+    `pm-config task prefix <task> <p>` 로 지정한다(출력이 그 다음 단계를 안내한다).
 
     거부(각각 rc1·장부 무변경): 부적합 이름(`InvalidTaskName` — traversal·`<repo>_<N>` 예약) ·
     동명 종료 archive(`TaskArchived` — `task reopen` 안내) · **이미 있는 이름**(재개는 bootstrap
@@ -3530,11 +3571,11 @@ def cmd_task_branch(
     *,
     worktree_pool=None,
 ) -> int:
-    """`task branch <이름> <슬롯> <브랜치> --from <부모>` — 슬롯에 새 브랜치를 만들고 부모를 기록한다.
+    """`task branch <task> <슬롯> <브랜치> --from <부모>` — 슬롯에 새 브랜치를 만들고 부모를 기록한다.
 
     슬롯 안에서 새 브랜치를 만드는 유일한 명령이다(`switch` 는 기존 브랜치 전환만 한다). 브랜치는
     부모 브랜치의 최신 커밋에서 만들고, 부모 이름과 갈라진 커밋을 git 저장소 설정에 적는다
-    (`worktree_pool.create_task_branch`). `<이름>` 은 그 슬롯을 쥔 명의다(task 또는 슬롯 세션).
+    (`worktree_pool.create_task_branch`). `<task>` 은 그 슬롯을 쥔 명의다(task 또는 슬롯 세션).
     슬롯은 늘 적는다(`release <slot>` 과 같은 위치 인자·암묵 선택 없음). 엔진 거부는 사유 문구 그대로 rc 1 이다.
     """
     wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
@@ -3569,7 +3610,7 @@ def cmd_task_close(
     *,
     worktree_pool=None,
 ) -> int:
-    """`task close <이름>` — 종료 기록 없이 열린 채 남은 task 세션 기록을 닫는다.
+    """`task close <task>` — 종료 기록 없이 열린 채 남은 task 세션 기록을 닫는다.
 
     **기록만 닫는다** — 복원(claim 티켓·라운드 단계 등)은 이 경로의 관심사가 아니다(그건
     부트스트랩 `--force` 인계 몫). 세션이 핸드오프 없이 끝나면 장부 task 행이 열린 채 남아
@@ -3613,7 +3654,7 @@ def cmd_task_end(
     worktree_pool=None,
     board=None,
 ) -> int:
-    """`task end <이름>` — task 종료: claimed 소진 게이트 → dirty 게이트 → clean 시 일괄 반납 + 아카이브 이동.
+    """`task end <task>` — task 종료: claimed 소진 게이트 → dirty 게이트 → clean 시 일괄 반납 + 아카이브 이동.
 
     순서(각 단계 통과해야 다음):
       1. **claimed 티켓 소진 게이트** — board 스캔(`scan_task_tickets`·자체 스캔·`list --task`
@@ -3624,7 +3665,7 @@ def cmd_task_end(
       2. **dirty 게이트** — 보유 작업공간(session==task)에 미커밋 변경이 있으면 목록 + 거부(사용자
          정리 후 재시도). worktree_pool.end_task 가 판정(아무 부작용 0).
       3. **전부 clean** → 보유 슬롯 일괄 idle 반납(worktree **삭제 안 함**·반납=idle) → 장부 task
-         레코드 제거 → 서술 폴더 `.local/tasks/<이름>/` 를 `_ended/<이름>-<날짜>/` 로 **이동**
+         레코드 제거 → 서술 폴더 `.local/tasks/<task>/` 를 `_ended/<task>-<날짜>/` 로 **이동**
          (삭제 아님·이름 재사용 시 옛 pm_state resume 오염 방지).
 
     worktree_pool/board 주입으로 hermetic 테스트. board 부재/스캔 실패는 claimed 게이트를
@@ -3738,7 +3779,7 @@ def cmd_task_reopen(
     *,
     worktree_pool=None,
 ) -> int:
-    """`task reopen <이름> [--archive <basename>]` — 종료 task identity 복원."""
+    """`task reopen <task> [--archive <basename>]` — 종료 task identity 복원."""
     wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
     if wp is None:
         print(
@@ -3811,7 +3852,7 @@ def cmd_task_todo_add(
     *,
     worktree_pool=None,
 ) -> int:
-    """`task todo add <이름> <내용>` — 열린 todo 를 하나 더한다.
+    """`task todo add <task> <내용>` — 열린 todo 를 하나 더한다.
 
     쓰기 판정이 "열린 todo 가 없으면 경고" 를 이 목록으로 내므로, 이 명령이 작업을 시작하는
     진입이다. 등록 시각(UTC ISO)과 ID 는 엔진이 박고 사용자가 주지 않는다 — 묵은 정도의 근거를
@@ -3839,7 +3880,7 @@ def cmd_task_todo_list(
     *,
     worktree_pool=None,
 ) -> int:
-    """`task todo list <이름>` — 열린 todo 를 ID·등록일·묵은 일수와 함께 본다."""
+    """`task todo list <task>` — 열린 todo 를 ID·등록일·묵은 일수와 함께 본다."""
     wp = _todo_worktree_pool(worktree_pool, "조회")
     if wp is None:
         return 1
@@ -3863,7 +3904,7 @@ def cmd_task_todo_done(
     *,
     worktree_pool=None,
 ) -> int:
-    """`task todo done <이름> <ID>` — 열린 todo 하나를 완료 처리한다(목록에서 제거).
+    """`task todo done <task> <ID>` — 열린 todo 하나를 완료 처리한다(목록에서 제거).
 
     완료 표시를 남기지 않는다 — 무엇을 했는지의 단일 진실은 log handoff entry 다. ID 는 재사용
     하지 않으므로 목록이 줄어도 남은 줄의 번호가 밀리지 않는다. 없는 ID 면 rc1 로 멈춘다
@@ -3897,11 +3938,11 @@ def cmd_task_prefix(
     worktree_pool=None,
     board=None,
 ) -> int:
-    """`task prefix <이름> <p|none>` — task 의 ticket prefix 지정/변경/해제 (중간 변경 자유).
+    """`task prefix <task> <p|none>` — task 의 ticket prefix 지정/변경/해제 (중간 변경 자유).
 
     task 레코드(장부 top-level `tasks`)의 board prefix 를 opt-in 으로 지정/변경(`<p>`)하거나
     해제(`none`)한다 — prefix 는 task 와 **완전 독립·분류 라벨이지 경계 아님**(claim 강제 없음). 지정
-    시 `board.py new --task <이름>` 이 3단 해소(명시 `--prefix` > task 설정 > 기본 없음)로 그 prefix 를
+    시 `board.py new --task <task>` 이 3단 해소(명시 `--prefix` > task 설정 > 기본 없음)로 그 prefix 를
     자동으로 단다. **중간 변경 자유**(task 종속으로 못 바꾸는 설계 금지) — 진행 중 언제든 바꾼다.
 
     검증 순서(각 통과해야 다음·부작용 이전 fail-loud rc1):
@@ -5305,7 +5346,7 @@ def build_parser() -> argparse.ArgumentParser:
              "rebase/dev/sync 는 거부.",
     )
     p_wt_add.add_argument(
-        "--task", metavar="<이름>", default=None,
+        "--task", metavar="<task>", default=None,
         help="생성 직후 그 슬롯을 이 task 명의로 대여 (풀 소진 시 생성+대여 한 흐름·"
              "기바인딩 task 요구·`--readonly` 와 상호배타). 미지정=현행(생성만·세션 바인딩은 별도).",
     )
@@ -5337,7 +5378,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_wt_remove.add_argument("slot", help="제거할 슬롯 (work/<repo>_<N>·release 와 동일 식별 방식)")
     p_wt_remove.add_argument(
-        "--user-ack", metavar="<이름>", action="append", default=[],
+        "--user-ack", metavar="<값>", action="append", default=[],
         help="사용자 승인 토큰 — 반복 가능. 입력한 슬롯 값이 있어야 제거하고, 합쳐지지 않은 "
              "브랜치는 그 브랜치 이름이 값에 있을 때만 지운다.",
     )
@@ -5391,39 +5432,39 @@ def build_parser() -> argparse.ArgumentParser:
     p_up_set.add_argument("value", help="upstream 값 (git URL 또는 로컬 경로·self-describing)")
     p_upstream.set_defaults(func=cmd_upstream)
 
-    # alloc <repo> --task <이름> — task 명의로 idle 최소 번호 슬롯 대여 (논리층·자동 생성 안 함)
+    # alloc <repo> --task <task> — task 명의로 idle 최소 번호 슬롯 대여 (논리층·자동 생성 안 함)
     p_alloc = sub.add_parser(
         "alloc",
         help="task 명의로 idle 최소 번호 슬롯 대여 (논리층·풀 소진 시 생성 요청·자동 생성 안 함)",
     )
     p_alloc.add_argument("repo", help="슬롯을 대여할 repo 이름 (areas.md 등록된 것)")
     p_alloc.add_argument(
-        "--task", required=True, metavar="<이름>",
+        "--task", required=True, metavar="<task>",
         help="이 슬롯을 대여할 task 이름 (lease session 명의 — release/task end 소유검사 근거)",
     )
     p_alloc.add_argument("--folders", metavar="<폴더,…>", default=None,
                          help="대여할 슬롯에 꺼낼 폴더 목록 (미지정이면 전체)")
     p_alloc.set_defaults(func=cmd_alloc)
 
-    # release <slot> [--task <이름>] [--force]
+    # release <slot> [--task <task>] [--force]
     p_release = sub.add_parser("release", help="작업완료 반납 / 수동 강제(백스톱)")
     p_release.add_argument("slot", help="반납할 슬롯 (work/<repo>_<N>)")
     p_release.add_argument(
-        "--task", metavar="<이름>", default=None,
+        "--task", metavar="<task>", default=None,
         help="task 소유검사 — 이 슬롯이 그 task 명의(session)가 아니면 반납 거부(다른 task 슬롯 보호)",
     )
     p_release.add_argument("--force", action="store_true",
                            help="점유(leased)·--task 소유검사 무시 강제 idle 화 (커밋 안 한 변경은 그래도 거부)")
     p_release.set_defaults(func=cmd_release)
 
-    # task new <이름> — 정체성만 생성(닫힘·세션 묶기 없음) / task end <이름> — task 종료:
+    # task new <task> — 정체성만 생성(닫힘·세션 묶기 없음) / task end <task> — task 종료:
     # claimed 소진 게이트·dirty 게이트·clean 시 일괄 반납 + 아카이브 이동
     p_task = sub.add_parser("task", help="task 정체성 관리 (new·prefix·branch·close·end·reopen)")
     task_sub = p_task.add_subparsers(dest="task_command", metavar="<task-command>")
     p_task_new = task_sub.add_parser(
         "new",
         help="task 정체성 생성 — 장부 행(닫힘)+pm_state 만 만들고 세션에 안 묶는다"
-             f"(진입은 `{_runtime_skill_entry('pm-bootstrap')} --task <이름>` 이 resume 으로 이어받음)",
+             f"(진입은 `{_runtime_skill_entry('pm-bootstrap')} --task <task>` 이 resume 으로 이어받음)",
     )
     p_task_new.add_argument("name", help="생성할 task 이름")
     p_task_new.set_defaults(func=cmd_task_new)
@@ -5436,7 +5477,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_task_end.add_argument("name", help="종료할 task 이름")
     p_task_end.set_defaults(func=cmd_task_end)
 
-    # task close <이름> — 종료 기록 없이 남은 세션을 사용자가 닫는다(기록만·복원 없음).
+    # task close <task> — 종료 기록 없이 남은 세션을 사용자가 닫는다(기록만·복원 없음).
     p_task_close = task_sub.add_parser(
         "close",
         help="열린 채 남은 task 세션 기록을 닫는다 — 기록만 닫고 복원하지 않는다"
@@ -5456,7 +5497,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_task_reopen.set_defaults(func=cmd_task_reopen)
 
-    # task prefix <이름> <p|none> — task 의 ticket prefix 지정/변경/해제(중간 변경 자유).
+    # task prefix <task> <p|none> — task 의 ticket prefix 지정/변경/해제(중간 변경 자유).
     # `board.py new --task` 가 3단 해소(명시 --prefix > task 설정 > 기본 없음)로 이 값을 소비한다.
     p_task_prefix = task_sub.add_parser(
         "prefix",
@@ -5473,7 +5514,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_task_prefix.set_defaults(func=cmd_task_prefix)
 
-    # task todo <add|list|done> <이름> — 이 task 의 **열린** 할 일. 상태 필드가 없다(존재=열림·
+    # task todo <add|list|done> <task> — 이 task 의 **열린** 할 일. 상태 필드가 없다(존재=열림·
     # 완료=제거). 쓰기 판정이 "열린 todo 없으면 경고" 를 이 목록으로 낸다.
     p_task_todo = task_sub.add_parser(
         "todo",
@@ -5497,7 +5538,7 @@ def build_parser() -> argparse.ArgumentParser:
         "todo_id", type=int, help="`task todo list` 가 보여준 ID(`#3` 이면 3·재사용되지 않는다)")
     p_todo_done.set_defaults(func=cmd_task_todo_done)
 
-    # task branch <이름> <슬롯> <브랜치> --from <부모> — 슬롯 안 새 브랜치의 유일한 생성 경로(부모 기록 동반).
+    # task branch <task> <슬롯> <브랜치> --from <부모> — 슬롯 안 새 브랜치의 유일한 생성 경로(부모 기록 동반).
     p_task_branch = task_sub.add_parser(
         "branch",
         help="슬롯에 새 브랜치를 부모 브랜치 최신 커밋에서 만들고 부모를 기록한다 "

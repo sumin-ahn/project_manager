@@ -2422,7 +2422,7 @@ assert.ok(g.includes("컨텍스트 사용 82%"), "쓴 % 누락: " + g);
 assert.ok(!g.includes("잔여"), "남은 % 가 남았다: " + g);
 assert.ok(g.includes("ticket 경계"), "ticket 경계 마무리 안내 누락");
 assert.ok(g.includes("complete entry"), "complete 박제 안내 누락");
-assert.ok(g.includes("python3 .project_manager/tools/pm_log.py checkpoint --task <이름>"), "실 checkpoint 명령 누락");
+assert.ok(g.includes("python3 .project_manager/tools/pm_log.py checkpoint --task <task>"), "실 checkpoint 명령 누락");
 console.log("JS_NUDGE_GUIDANCE_OK");
 """
     out = _run_node_check(script)
@@ -2520,7 +2520,7 @@ assert.strictEqual(m.computeCtxState(800, 1000, t).level, "stop");   // 쓴 80% 
 const g = m.buildNudge2Guidance({usedPct:82});
 assert.ok(g.includes("ctx-nudge/강화"), "ctx-nudge/강화 누락: " + g);
 assert.ok(g.includes("컨텍스트 사용 82%"), "쓴 % 누락: " + g);
-assert.ok(g.includes("python3 .project_manager/tools/pm_log.py checkpoint --task <이름>"), "실 checkpoint 명령 누락");
+assert.ok(g.includes("python3 .project_manager/tools/pm_log.py checkpoint --task <task>"), "실 checkpoint 명령 누락");
 assert.ok(g.includes("구간·서사"), "checkpoint 서사 박제 지시 누락");
 // 1단 문구와 구별된다 (별개 강도 표지).
 const g1 = m.buildNudgeGuidance({usedPct:82});
