@@ -365,7 +365,7 @@ PM 수동 작업:
 - `pm_state.md` "진행 중인 의사결정" 표 갱신. 남은 작업은 손으로 적지 않는다 — 끝낸 todo 를 `pm-config task todo done <task> <ID>` 로 닫고 남은 것은 그대로 승계한다.
 - lint 경고 시 `status.md` 정비. 안정화된 ✅ 행은 `status_done.md`로 이동. `status.md`는 judgment-only라 테스트 수를 적지 않으며 상태/비고는 architect 유지·PM 점검.
 - **pathspec을 명시해 이번 세션 산출 전부와 그것만 commit.** bare `git commit` 금지. `log/current.md` + 갱신/신설 `wiki/domain/*.md` + 이번에 정비한 `status.md`·`status_done.md`를 [6/7] `git status -s`에서 직접 고른다. CLI가 직접 쓰는 파일은 `log/current.md`뿐이고 나머지는 PM 손 산출이며 핸드오프에는 finish식 스코프 잔여 보고가 없다. 예: `git commit -m "PM 세션(N차) 핸드오프 — …" -- .project_manager/wiki/log/current.md .project_manager/wiki/domain/<페이지>.md .project_manager/wiki/status.md`. 신설 파일은 `git add` 선행 필수이며 아니면 `pathspec … did not match`로 전체 commit이 rc=1 실패한다. `pm_state.md`는 gitignored. `(Co-Authored-By: Claude 트레일러)`.
-- 마지막 응답에 인계 트리거를 코드블록으로 출력한다. 다음 세션은 `/pm-bootstrap` 실행; 인계 본문은 bootstrap이 log entry에서 dump한다.
+- 마지막 응답에 인계 트리거를 코드블록으로 출력한다. 다음 세션은 그 트리거(`/pm-bootstrap --task <task>` 형태)를 그대로 실행한다; 인계 본문은 bootstrap이 log entry에서 dump한다.
 
 ## 동적 상태
 

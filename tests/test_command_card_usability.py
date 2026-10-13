@@ -2120,3 +2120,21 @@ def test_command_card_release_marker_count_is_pinned():
         f"전역 커플드-pin 5곳(위 주석: test_release_wave._EXPECTED_RELEASE_TESTS·_RELEASE_TEST_FILES·"
         f"board.LIVEGATE_RELEASE_PIN·tests/test_board_livegate.py·templates/*/board.py)을 함께 갱신하라."
     )
+
+
+def test_handoff_guides_name_task_trigger():
+    """핸드오프 안내가 다음 세션 진입을 출력된 트리거(`--task` 포함)로 적는다([[T-0960]] 리뷰 F-004 · 자명한 수정).
+
+    부트스트랩은 `--task` 없이 부르면 rc 2 로 거부하므로, 인자 없는 `/pm-bootstrap` 을 "직접" 실행하라는
+    안내는 사실과 다르다. 핸드오프 스킬 운영 상세와 pm_role 의 같은 줄을 원본과 채택자 사본 전부에서 본다.
+    """
+    guides = [REPO / ".claude/skills/pm-handoff/references/operational-details.md",
+              *sorted((REPO / "templates").glob("*/*/skills/pm-handoff/references/operational-details.md")),
+              REPO / ".project_manager/wiki/pm_role.md",
+              *sorted((REPO / "templates").glob("*/.project_manager/wiki/pm_role.md"))]
+    assert len(guides) == 8, guides
+    for path in guides:
+        lines = [line for line in path.read_text(encoding="utf-8").splitlines() if "다음 세션은" in line]
+        assert lines, path
+        for line in lines:
+            assert "--task" in line and "or 직접" not in line, (path, line)
