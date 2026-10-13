@@ -30,6 +30,7 @@ import json
 import multiprocessing as mp
 import os
 import queue
+import re
 import shutil
 import shlex
 import subprocess
@@ -152,16 +153,15 @@ _DEFAULT_HEAD_SHA = "a1b2c3d4" * 5
 
 
 def _answer_config(config: dict, args: list) -> tuple[int, str]:
-    """git config 저장소 흉내 — `--get` 없으면 rc1·`--get-regexp` 는 부모 기록 키·없으면 rc1·
-    `--unset` 은 지우고 없으면 rc5·`<k> <v>` 는 저장."""
+    """git config 저장소 흉내 — `--get` 없으면 rc1·`--get-regexp <정규식>` 은 정규식에 맞는 키·없으면
+    rc1·`--unset` 은 지우고 없으면 rc5·`<k> <v>` 는 저장."""
     if args[:1] == ["--unset"]:
         return (0, "") if config.pop(args[1], None) is not None else (5, "")
     if args[:1] == ["--get"]:
         value = config.get(args[1])
         return (1, "") if value is None else (0, value + "\n")
     if args[:1] == ["--get-regexp"]:
-        lines = [f"{key} {value}" for key, value in config.items()
-                 if key.startswith("branch.") and key.endswith(".pm-parent")]
+        lines = [f"{key} {value}" for key, value in config.items() if re.search(args[1], key)]
         return (0, "\n".join(lines) + "\n") if lines else (1, "")
     if len(args) == 2:
         config[args[0]] = args[1]
@@ -184,8 +184,8 @@ class FakeGit:
     = `merge-base --is-ancestor` rc(True=조상 rc0 → descendant·False=비조상 rc1 → diverged).
 
     **부모 기록 모델**: `config` 는 git config 저장소(dict)를 흉내 낸다 — `config <k> <v>` 는 저장,
-    `config --get <k>` 는 없으면 rc1, `config --get-regexp` 는 `branch.*.pm-parent` 키를 돌려주고 없으면
-    rc1. `rev-parse --verify <ref>^{commit}` 은 `head_sha`, `rev-list --left-right --count` 는 `0\t0`.
+    `config --get <k>` 는 없으면 rc1, `config --get-regexp <정규식>` 은 정규식에 맞는 키를 돌려주고
+    없으면 rc1. `rev-parse --verify <ref>^{commit}` 은 `head_sha`, `rev-list --left-right --count` 는 `0\t0`.
     """
 
     def __init__(self, *, dirty: bool = False, head: "str | None" = None,
@@ -1838,91 +1838,6 @@ def test_set_test_cmd_empty_ledger_raises_keyerror(wp):
     """빈 장부(슬롯 0)에서도 KeyError(슬롯 부재)."""
     with pytest.raises(KeyError):
         wp.set_test_cmd("work/A_1", "cmd")
-
-
-# ════════════════════════════════════════════════════════════════════════
-# bind_slot — 사람 발의 멀티-PM 정체성 직접 바인딩 (T-0074 · lean)
-# find-or-create · pool alloc 아님 · reclaim_stale 절대 미호출(R4 근원 제거) ·
-# flock(_lease_lock) + atomic write(_write_ledger) · branch 미변경(git=진실).
-# ════════════════════════════════════════════════════════════════════════
-
-
-def test_bind_slot_new_slot_appends_leased(wp):
-    """장부에 없는 슬롯 → 새 leased Lease 를 append 한다(직접 바인딩·풀 탐색 없음)."""
-    lease = wp.bind_slot("work/A_2", "A", "A_2")
-    assert lease.slot == "work/A_2"
-    assert lease.repo == "A"
-    assert lease.session == "A_2"
-    assert lease.state == "leased"
-    assert wp.lease_is_open(lease) is True      # 열림 기록
-    # 장부에 정확히 한 엔트리 등록.
-    leases = wp.list_leases()
-    assert len(leases) == 1
-    assert leases[0].slot == "work/A_2"
-    assert leases[0].state == "leased"
-
-
-def test_bind_slot_existing_slot_updates_session_state(wp):
-    """기존 슬롯(idle·다른 세션) → session/state/started 갱신(새 엔트리 안 만듦)."""
-    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", state="idle"))
-    lease = wp.bind_slot("work/A_1", "A", "A_1")
-    assert lease.slot == "work/A_1"
-    assert lease.session == "A_1"     # 갱신됨
-    assert lease.state == "leased"    # idle → leased 전이
-    assert wp.lease_is_open(lease) is True      # 열림 기록
-    # 슬롯이 두 개로 늘지 않음(update-in-place).
-    leases = wp.list_leases()
-    assert len(leases) == 1
-    assert leases[0].session == "A_1"
-    assert leases[0].state == "leased"
-
-
-def test_bind_slot_existing_leased_other_session_reclaims_for_human(wp):
-    """다른 세션이 leased 중이어도 사람이 그 슬롯을 선언하면 직접 바인딩한다(pid-회수 아님).
-
-    bind 는 풀 골라잡기/회수가 아니라 '내가 이 슬롯'이라는 사람의 선언이라, 기존 점유
-    세션을 그대로 자기 세션으로 덮는다(명시 release 만이 반납). 새 엔트리는 안 생긴다.
-    """
-    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="old",
-                     state="leased"))
-    lease = wp.bind_slot("work/A_1", "A", "A_1")
-    assert lease.session == "A_1"
-    assert len(wp.list_leases()) == 1
-
-
-def test_bind_slot_preserves_test_cmd_and_does_not_touch_branch(wp):
-    """기존 슬롯 갱신 시 test_cmd 보존·branch 는 git=진실이라 장부에 안 씀(ADR-0013 amend T-0072)."""
-    _seed(wp, _lease_tc(wp, slot="work/A_1", repo="A", test_cmd="ctest -R hil1",
-                        session="", state="idle"))
-    lease = wp.bind_slot("work/A_1", "A", "A_1")
-    assert lease.test_cmd == "ctest -R hil1"  # 점유 메타만 갱신·test_cmd 보존
-    # 장부에 branch 키를 쓰지 않는다(slot live HEAD 가 권위·current_branch 조회).
-    assert "branch" not in lease.to_dict()
-
-
-def test_bind_slot_persists_atomically_through_ledger(wp):
-    """bind 가 장부에 atomic 영속화 — 새 _read_ledger 가 바뀐 session/state 를 본다(flock+atomic)."""
-    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", state="idle"))
-    wp.bind_slot("work/A_1", "A", "A_1")
-    with wp._lease_lock():
-        reloaded = wp._read_ledger()
-    target = next(l for l in reloaded if l.slot == "work/A_1")
-    assert target.session == "A_1"
-    assert target.state == "leased"
-
-
-def test_bind_slot_leaves_other_slots_untouched(wp):
-    """타깃 슬롯만 갱신 — 다른 슬롯의 점유 메타는 안 건드린다(read-modify-write 격리)."""
-    _seed(
-        wp,
-        _lease(wp, slot="work/A_1", repo="A", session="other", state="leased"),
-        _lease(wp, slot="work/A_2", repo="A", session="", state="idle"),
-    )
-    wp.bind_slot("work/A_2", "A", "A_2")
-    by_slot = {l.slot: l for l in wp.list_leases()}
-    assert by_slot["work/A_2"].session == "A_2"     # 갱신됨
-    assert by_slot["work/A_1"].session == "other"   # 미변경
-    assert by_slot["work/A_1"].state == "leased"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -7270,19 +7185,6 @@ def test_alloc_records_arrival_git_snapshot(wp):
     assert wp.list_leases()[0].git["head"] == _NEW_SHA
 
 
-def test_bind_slot_records_arrival_git_snapshot(wp):
-    """bind_slot 이 arrival git 스냅을 additive 로 기록한다(git_runner 주입 경로)."""
-    git = FakeGit(head="A_1", head_sha=_NEW_SHA)
-    lease = wp.bind_slot("work/A_1", "A", "A_1", git_runner=git)
-    assert lease.git["branch"] == "A_1" and lease.git["head"] == _NEW_SHA
-
-
-def test_bind_slot_without_runner_absent_slot_is_noop_snapshot(wp):
-    """git_runner 미주입 + 슬롯 worktree 부재(hermetic) → 스냅 fail-soft no-op(git=None·bind 는 성공)."""
-    lease = wp.bind_slot("work/A_1", "A", "A_1")
-    assert lease.session == "A_1" and lease.git is None   # bind 성공·git 미기록(부재 슬롯)
-
-
 def test_create_slot_work_slot_records_parent_not_ledger_base(wp):
     """작업 슬롯 create_slot(base=) → 부모는 git config 에 기록하고 장부 git.base 는 비운다.
 
@@ -8381,20 +8283,6 @@ def test_slots_for_task_strict_rejects_noncanonical_slot(wp, slot, repo):
         wp.slots_for_task_strict("job")
 
 
-def test_bind_slot_task_name_immediately_resolves_via_slots_for_task(wp):
-    """T-0390 — `bind_slot(session=<task명>)` 하면 `slots_for_task(<task명>)`(F6 축)가 즉시 그 슬롯을 본다.
-
-    부트스트랩 task+slot 경로가 슬롯을 task 명의로 bind 하면(session=task명), F6 해소 프리미티브
-    (`slots_for_task`·session==name 축)가 별도 alloc 없이 그 슬롯을 소유로 잡는다 — PM 78 의
-    `pm_config alloc` 추가 스텝 마찰이 부트스트랩 한 줄로 닫힌다."""
-    lease = wp.bind_slot("work/A_2", "A", "payments")
-    assert lease.session == "payments" and lease.bound is True
-    resolved = wp.slots_for_task("payments")
-    assert [l.slot for l in resolved] == ["work/A_2"]
-    # sensitivity — 슬롯-세션 명의(A_2)로는 그 task 로 해소되지 않는다(축 분리 확인).
-    assert wp.slots_for_task("A_2") == []
-
-
 # ════════════════════════════════════════════════════════════════════════
 # task reopen + end_task — 동일 정체성 복원·종료 게이트
 # ════════════════════════════════════════════════════════════════════════
@@ -8805,11 +8693,10 @@ def test_readonly_slot_excluded_from_alloc(wp):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# bound 마커 — 사람 bind 슬롯 reclaim 제외 (T-0389 · ADR-0013 Amendment(T-0074))
-# bind_slot 이 적는 pid 는 ephemeral bootstrap subprocess pid 라 즉사한다. 방치하면 타 세션
-# alloc 의 reclaim_stale 이 `leased && pid 죽음` = stale 로 오판·회수(PM 78 실측). bound
-# 마커로 reclaim 대상에서 제외한다. pool 경로(alloc idle-리스·release)는 마커를 해제해
-# 현행 pid-회수 거동을 유지. 마커는 additive(구 장부 부재=False·마이그레이션 0).
+# bound 마커 — 옛 사람 bind 기록 행 reclaim 제외 (T-0389 · ADR-0013 Amendment(T-0074))
+# 마커를 쓰던 `bind_slot` 은 지웠다([[T-0960]]) — 지금 True 는 옛 대여 기록을 읽을 때만 나온다.
+# 재부착 경로가 그 행을 제외하고 pool 경로(alloc idle-리스·release)는 마커를 해제한다.
+# 마커는 additive(구 장부 부재=False·마이그레이션 0).
 # ════════════════════════════════════════════════════════════════════════
 
 
@@ -8839,19 +8726,6 @@ def test_from_dict_missing_bound_defaults_false_backcompat(wp):
     d = lease.to_dict()
     assert "bound" not in d                     # bound: false 를 덧붙이지 않는다(왕복 무손실)
     assert d == old
-
-
-def test_bind_slot_sets_bound_marker(wp):
-    """bind_slot 은 사람 bind 마커(bound=True)를 박고 장부에 영속화한다(신규·기존 슬롯 공통·T-0389)."""
-    # 신규 슬롯 append 경로.
-    lease = wp.bind_slot("work/A_1", "A", "A_1")
-    assert lease.bound is True
-    assert next(l for l in wp.list_leases() if l.slot == "work/A_1").bound is True
-    # 기존 슬롯 update-in-place 경로(pool idle 슬롯을 사람이 직접 점유로 승격).
-    _seed(wp, wp.Lease(slot="work/A_2", repo="A", session="", started="t", state="idle"))
-    lease2 = wp.bind_slot("work/A_2", "A", "A_2")
-    assert lease2.bound is True
-    assert next(l for l in wp.list_leases() if l.slot == "work/A_2").bound is True
 
 
 def test_bound_lease_survives_other_session_alloc_pm78(wp):
@@ -8915,7 +8789,8 @@ def test_alloc_idle_relance_clears_bound_marker(wp, proj):
 
 def test_release_clears_bound_marker(wp):
     """명시 release 는 bind 점유를 종료 — bound 마커를 해제한다(git=None 동형 teardown·T-0389)."""
-    wp.bind_slot("work/A_1", "A", "A_1")        # bound=True
+    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="A_1", started="t",
+                       state="leased", bound=True))   # 옛 bind 기록 행
     released = wp.release("work/A_1")
     assert released.state == "idle" and released.bound is False
     assert next(l for l in wp.list_leases() if l.slot == "work/A_1").bound is False
@@ -8923,7 +8798,8 @@ def test_release_clears_bound_marker(wp):
 
 def test_force_release_clears_bound_marker(wp):
     """force_release 도 bind 점유를 종료 — bound 마커 해제(release 동형·백스톱·T-0389)."""
-    wp.bind_slot("work/A_1", "A", "A_1")        # bound=True
+    _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="A_1", started="t",
+                       state="leased", bound=True))   # 옛 bind 기록 행
     released = wp.force_release("work/A_1")
     assert released.state == "idle" and released.bound is False
     assert next(l for l in wp.list_leases() if l.slot == "work/A_1").bound is False
@@ -9220,7 +9096,7 @@ def test_slot_role_helper_defaults_work_for_absent(wp):
     assert wp._slot_role("work/A_1") == "readonly"
 
 
-# ── lease-lifecycle 거부: release / force_release / bind_slot × readonly (should-fix·⑬) ──
+# ── lease-lifecycle 거부: release / force_release × readonly (should-fix·⑬) ──
 
 
 def test_release_rejected_on_readonly(wp):
@@ -9244,29 +9120,13 @@ def test_force_release_rejected_on_readonly(wp):
     assert ei.value.op == "force-release"
 
 
-def test_bind_slot_rejected_on_readonly(wp):
-    """bind_slot 이 기존 readonly 슬롯을 가리키면 거부(점유≠조회 지칭·/pm-bootstrap 오지정 방어·⑬)."""
-    _seed_readonly(wp)
-    git = FakeGit()
-    with pytest.raises(wp.ReadonlySlotNotLeasable) as ei:
-        wp.bind_slot("work/A_1", "A", "A_1", git_runner=git)
-    assert ei.value.op == "bind"
-    # role 유실 없음 — 여전히 readonly·무소유(leased 로 덮이지 않음).
-    after = wp.list_leases()[0]
-    assert after.role == "readonly" and after.session == ""
-
-
 def test_lease_ops_allowed_on_work_slot_sensitivity(wp):
-    """sensitivity 대조 — work 슬롯엔 release/force_release/bind_slot 거부가 안 걸린다(readonly 만 예외)."""
+    """sensitivity 대조 — work 슬롯엔 release 거부가 안 걸린다(readonly 만 예외)."""
     # release: work 슬롯 정상 idle 화.
     _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="me", started="t", state="leased"))
     git = FakeGit()
     released = wp.release("work/A_1", git_runner=git)
     assert released.state == "idle"
-    # bind_slot: work 슬롯 정상 바인딩.
-    _seed(wp, wp.Lease(slot="work/A_2", repo="A", session="", started="t", state="idle"))
-    bound = wp.bind_slot("work/A_2", "A", "A_2", git_runner=git)
-    assert bound.state == "leased" and bound.session == "A_2"
 
 
 # ── CLI: refresh / readonly mutation surface (⑬·T-0358·§F11) ─────────────────
@@ -9424,23 +9284,29 @@ class _RebaseGit:
 # ── status — submodule pin/drift + dirty 합류(T-0359 조회 확장) ───────────────
 
 
-def test_slot_git_status_includes_dirty_and_submodules(wp):
-    """slot_git_status 가 dirty(bool) + submodules(list) 를 조회에 합류(T-0359 — wave-2d 확장)."""
+def test_slot_git_status_runs_no_submodule_query(wp):
+    """slot_git_status 는 `git submodule status` 를 부르지 않고 submodules 키를 내지 않는다 — submodule
+    판정은 그것을 그리는 status() 행만 싣는다(T-0961 · Git for Windows 1회 약 2초)."""
     _seed_git_lease(wp)
     git = _RebaseGit(dirty=True, subs="+deadbeef vendor/x\n", sub_detached=True)
     st = wp.slot_git_status("work/A_1", git_runner=git)
     assert st["dirty"] is True
-    assert len(st["submodules"]) == 1
-    sub = st["submodules"][0]
+    assert "submodules" not in st
+    assert not git.did("submodule")
+
+    row = wp.status(slot="work/A_1", git_runner=git)[0]
+    assert len(row["submodules"]) == 1
+    sub = row["submodules"][0]
     assert sub.path == "vendor/x" and sub.kind == "drift" and sub.warning is True
 
 
 def test_slot_git_status_clean_no_submodules(wp):
-    """dirty=False·submodule 없음 → dirty False·submodules []."""
+    """dirty=False·submodule 없음 → dirty False·status 행 submodules []."""
     _seed_git_lease(wp)
     git = _RebaseGit(dirty=False, subs="")
     st = wp.slot_git_status("work/A_1", git_runner=git)
-    assert st["dirty"] is False and st["submodules"] == []
+    assert st["dirty"] is False
+    assert wp.status(slot="work/A_1", git_runner=git)[0]["submodules"] == []
 
 
 # ── status(단일/일괄/무인자) ─────────────────────────────────────────────────
@@ -10299,15 +10165,79 @@ def test_parent_ref_rev_list_failure_raises(wp):
 
 
 def test_read_branch_parent_config_error_raises(wp):
-    """`git config --get` 가 없음(rc 1) 아닌 오류면 raise — 기록 없음으로 접지 않는다."""
-    def runner(argv):
-        return (128, "fatal: bad config file\n") if argv[:2] == ["config", "--get"] else (0, "")
-    with pytest.raises(wp.BranchParentError):
-        wp.read_branch_parent("feat", git_runner=runner)
+    """부모 기록 읽기(`git config --get-regexp`)가 없음(rc 1) 아닌 오류면 raise — 기록 없음으로 접지 않는다."""
     def regexp_runner(argv):
         return (128, "fatal: bad config file\n") if argv[:2] == ["config", "--get-regexp"] else (0, "")
     with pytest.raises(wp.BranchParentError):
+        wp.read_branch_parent("feat", git_runner=regexp_runner)
+    with pytest.raises(wp.BranchParentError):
         wp.branch_children("feat", git_runner=regexp_runner)
+
+
+def test_slot_git_status_failed_shared_read_is_retried_by_the_next_slot(wp):
+    """저장소 공용 값 읽기가 한 슬롯에서 실패하면 그 슬롯만 BranchParentError 이고, 실패한 읽기는
+    `repo_reads` 에 남지 않아 같은 조회의 다음 슬롯이 다시 읽는다(T-0961 · 빈 값 대체 없음)."""
+    _seed(wp,
+          _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"),
+          _lease(wp, slot="work/A_2", repo="A", session="job", state="leased"))
+    repo_reads: dict = {}
+    broken = _RebaseGit()
+    healthy_call = broken.__call__
+
+    def failing(argv):
+        if argv[:2] == ["config", "--get-regexp"]:
+            return (128, "fatal: bad config file\n")
+        return healthy_call(argv)
+    with pytest.raises(wp.BranchParentError):
+        wp.slot_git_status("work/A_1", git_runner=failing, repo_reads=repo_reads)
+    assert "parents" not in repo_reads["A"]
+
+    git = _RebaseGit()
+    st = wp.slot_git_status("work/A_2", git_runner=git, repo_reads=repo_reads)
+    assert st["parent"]["name"] == "main"
+    assert git.did("config", "--get-regexp")
+    assert git.did("stash", "list")
+
+
+def test_read_branch_parent_reads_records_once(wp):
+    """read_branch_parent 는 부모 기록 두 키를 `config --get-regexp` 1회로 읽는다 — 두 키면 dict·둘 다
+    없으면 None·한 키만이면 기록 손상 raise·같은 키 두 줄이면 마지막 값·점과 대문자 이름 그대로(T-0961)."""
+    def counting(out: str, rc: int = 0):
+        calls: list[list] = []
+
+        def runner(argv):
+            calls.append(list(argv))
+            return (rc, out)
+        return runner, calls
+
+    expected_call = ["config", "--get-regexp", r"^branch\..*\.pm-(parent|fork)$"]
+    both = ("branch.Feat.Dot.v1.pm-parent main\n"
+            "branch.Feat.Dot.v1.pm-fork abc123\n"
+            "branch.other.pm-parent Feat.Dot.v1\n"
+            "branch.other.pm-fork def456\n")
+    runner, calls = counting(both)
+    assert wp.read_branch_parent("Feat.Dot.v1", git_runner=runner) == {"name": "main", "fork": "abc123"}
+    assert calls == [expected_call]
+
+    runner, calls = counting("", rc=1)
+    assert wp.read_branch_parent("feat", git_runner=runner) is None
+    assert calls == [expected_call]
+
+    runner, calls = counting("branch.feat.pm-parent main\n")
+    with pytest.raises(wp.BranchParentError, match="부모 기록 손상"):
+        wp.read_branch_parent("feat", git_runner=runner)
+    assert calls == [expected_call]
+
+    runner, calls = counting("branch.feat.pm-parent old\n"
+                             "branch.feat.pm-fork 111\n"
+                             "branch.feat.pm-parent new\n"
+                             "branch.feat.pm-fork 222\n")
+    assert wp.read_branch_parent("feat", git_runner=runner) == {"name": "new", "fork": "222"}
+    assert calls == [expected_call]
+
+    runner, calls = counting(both)
+    assert wp.branch_children("Feat.Dot.v1", git_runner=runner) == ["other"]
+    assert calls == [expected_call]
 
 
 @_git_required
@@ -10455,7 +10385,7 @@ def test_real_git_slot_git_status_parent_children_stashes(proj, tmp_path):
 
     st = wp.slot_git_status(lease.slot)
 
-    assert set(st) == {"slot", "branch", "head", "parent", "children", "stashes", "submodules", "dirty", "folders"}
+    assert set(st) == {"slot", "branch", "head", "parent", "children", "stashes", "dirty", "folders"}
     assert st["folders"] is None
     assert st["branch"] == "A_1"
     assert st["parent"] == {"name": "release", "fork": fork, "ref": "origin/release",

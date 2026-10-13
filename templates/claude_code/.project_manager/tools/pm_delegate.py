@@ -14320,8 +14320,9 @@ def _execute_and_collect(
 
     `resume` 가 있으면 **delta payload 를 그 세션으로** 먼저 보낸다. 성공 판정은 회신 세션 id 가
     요청한 id 와 같은가 하나뿐이다(rc 로 판정하지 않는다). 확정된 "세션 없음"은 delta 미소비라
-    write/read 모두 fresh + full payload 재실행이 안전하다. 반면 rc=0 명시적 id 불일치는 turn이
-    이미 실행됐을 수 있어 write 역할은 부작용 방지를 위해 막고 read 역할만 재실행한다. 미분류
+    write/read 모두 fresh + full payload 재실행이 안전하다. 반면 rc=0 명시적 id 불일치는 turn 이
+    이미 실행됐을 수 있어 `RESUME_MUTATING_ROLES`(위임 4역할 전부. write 역할은 작업 트리, read
+    역할은 라운드 파일을 쓴다)는 재실행하지 않는다. 그 밖의 역할만 fresh 로 다시 돈다. 미분류
     `rc≠0` 은 **호출 후** 실패일 수 있어 재실행하지 않는다(중복 과금·중복 호출 차단·기존
     fail-loud)."""
     try:
@@ -14365,21 +14366,22 @@ def _execute_and_collect(
             rerun_reason is not None
             and classify_infrastructure_failure(primary.result) is None
         ):
-            # 확정된 세션 부재(rc≠0 양성 오류)는 delta가 소비되지 않아 부작용이 0이므로 write도
-            # fresh가 안전하다. 별개 정책인 rc=0 세션-id 불일치는 turn이 이미 쓰기 권한으로
-            # 돌았을 수 있으므로 write만 재실행을 막는다. read는 두 경우 모두 트리를 안 만진다.
+            # 확정된 세션 부재(rc≠0 양성 오류)는 delta 가 소비되지 않아 모든 역할이 fresh 로
+            # 안전하다. rc=0 세션-id 불일치는 turn 이 이미 돌았을 수 있으므로 쓰기 자리가 있는
+            # 역할(`RESUME_MUTATING_ROLES`: write 역할은 작업 트리, read 역할은 라운드 파일)은
+            # 재실행을 막는다.
             if (
                 args.role in RESUME_MUTATING_ROLES
                 and rerun_reason == RESUME_RERUN_ID_MISMATCH
             ):
                 return fail_loud(
-                    f"오류: 세션 재사용 실패(write 역할 {args.role}·{rerun_reason}) — 요청 "
+                    f"오류: 세션 재사용 실패({args.role}·{rerun_reason}) — 요청 "
                     f"{resume.session_id} · 회신 {primary.session_id or '없음'}.\n"
-                    "  · 이 실행은 쓰기 권한으로 돌았습니다 — **트리를 이미 고쳤을 수 있어** "
-                    "fresh 재실행을 자동으로 태우지 않습니다(중복·충돌 편집 차단).\n"
-                    "  · 먼저 작업 트리를 확인하세요(`git status` · `git diff`). 남은 변경이 "
-                    "없으면 `--resume-from` 없이 같은 위임을 다시 부르고, 부분 적용이 있으면 "
-                    "그 상태를 반영해 프롬프트를 고쳐 부르세요.\n"
+                    "  · 회신이 다른 세션에서 왔다. 이 실행이 이미 작업 트리나 라운드 파일을 "
+                    "고쳤을 수 있어 fresh 재실행을 자동으로 하지 않는다(중복·충돌 기록 차단).\n"
+                    "  · 먼저 작업 트리(`git status` · `git diff`)와 이 역할의 라운드 파일을 "
+                    "확인한다. 남은 변경이 없으면 `--resume-from` 없이 같은 위임을 다시 부르고, "
+                    "부분 적용이 있으면 그 상태를 반영해 프롬프트를 고쳐 부른다.\n"
                     f"  · resume raw: {primary.raw_path}"
                 )
             print(

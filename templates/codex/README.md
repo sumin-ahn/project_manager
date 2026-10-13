@@ -24,7 +24,7 @@ self-driven 으로 구동한다. claude_code 의 `CLAUDE.md`+`.claude/`·opencod
   설치기가 선택된 하네스 표기만 병기해 어느 한쪽도 침묵 오표기하지 않는다.
 - **codex 전용 정적 진입 doc 없음** (ADR-0070 D3 C-v2) — `AGENTS.override.md`·`.codex/AGENTS.md`
   같은 codex 전용 진입 문서를 두지 않는다. codex 방법론 전달 채널 3개:
-  - **위임 4축** = `.codex/agents/{architect,code-reviewer,developer,researcher}.toml` (아래 §위임).
+  - **위임 역할** = `.codex/agents/{architect,code-reviewer,developer,developer-hard,researcher}.toml` (아래 §위임).
   - **운영 규율** = canonical 스킬(`.agents/skills`·아래 §스킬).
   - **실행 모델·위임 규약** = `$pm-bootstrap` 커맨드 카드가 하네스 감지(`CODEX_THREAD_ID`/`CODEX_CI`
     env)로 codex 절을 발화(아래 §PM 시작).
@@ -148,9 +148,12 @@ instance-owned 어댑터 config는 manifest 밖이라 byte-copy 전파를 타지
 <manager>/pm-import.sh --new <PATH> --harness codex --dry-run
 ```
 
-> Windows 는 `pm-import.cmd`. codex 는 opencode 와 달리 모델 placeholder 해소가 **불요**하다 —
-> `.codex/agents/*.toml` 에 `model` 키가 없어 사용자 config 기본(gpt-5.5)을 상속한다(D5). 기존
-> 인스턴스에 codex 를 얹으려면 `add-harness codex`(opencode 공존 시 공통 코어 `AGENTS.md` 가
+> Windows 는 `pm-import.cmd`. `.codex/agents/*.toml` 의 `model`·`model_reasoning_effort` 는 렌더 토큰
+> (`{{DELEGATE_MODEL_<ROLE>}}`·`{{DELEGATE_REASONING_<ROLE>}}`)이고 import·update 가 local.conf
+> `delegate.<role>.model`·`delegate.<role>.reasoning` 값으로 채운다(developer-hard 는
+> `delegate.developer.hard.model`·`delegate.developer.hard.reasoning`). 값이 없으면 그 줄이 주석(TODO)으로
+> 바뀌어 사용자 config 기본 모델을 상속한다. opencode 의 `{{OPENCODE_PRO_MODEL}}` 조회 단계는 codex 에
+> 없다. 기존 인스턴스에 codex 를 얹으려면 `add-harness codex`(opencode 공존 시 공통 코어 `AGENTS.md` 가
 > byte-identical → git-safe skip·무충돌).
 
 ## trust 선행 (codex 고유·2단계·import 직후 1회)
@@ -168,7 +171,7 @@ import/add-harness 직후 1회 수동으로 밟는다:
    (`.codex/agents/*.toml`·`config.toml` 은 trusted project 한정 로드).
 2. codex 안에서 `/hooks` 로 현재 hook 정의와 상태를 확인하고 **hook trust 를 승인**한다
    (위임 spawn 가드·PreCompact ctx checkpoint 발화 전제).
-3. 검증 — 위임 스폰 대상 목록에 `architect`/`code-reviewer`/`developer`/`researcher` 가 보이면 로드 성공.
+3. 검증 — 위임 스폰 대상 목록에 `architect`/`code-reviewer`/`developer`/`developer-hard`/`researcher` 가 보이면 로드 성공.
 
 격리 `CODEX_HOME`에서 hook 발화만 재현할 때는 `--dangerously-bypass-hook-trust`로 승인 축을 우회할 수
 있다. 이는 개인 설정을 건드리지 않는 실측용 절차이며, 실제 채택 환경의 `/hooks` 승인을 대신하지 않는다.
@@ -195,13 +198,14 @@ codex          # 대화형 — AGENTS.md(공통 코어)를 자동 로드해 그 
 
 설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다. codex 의 native
 위임은 **multi_agent in-session spawn** 이다 — PM(메인세션)이 세션 *안에서* 명명 custom agent
-(`architect`·`developer`·`code-reviewer`·`researcher`)를 스폰한다(부모 sandbox 상속·`codex exec --agent` 플래그 부재).
+(`architect`·`developer`·`developer-hard`·`code-reviewer`·`researcher`)를 스폰한다(부모 sandbox 상속·`codex exec --agent` 플래그 부재).
 
-- 역할 카드 = `.codex/agents/{architect,code-reviewer,developer,researcher}.toml`. 각 TOML 은 필수 필드
-  `name`/`description`/`developer_instructions`(≈system prompt) + `sandbox_mode`(developer/architect=
-  `workspace-write`·code-reviewer=`workspace-write`(지정된 라운드 파일만 write·코드/board/git 금지)·
-  researcher=`read-only`)를 담는다. `model` 키는 없다 — 사용자
-  config 기본 상속(D5).
+- 역할 카드 = `.codex/agents/{architect,code-reviewer,developer,developer-hard,researcher}.toml`. 각 TOML 은
+  필수 필드 `name`/`description`/`developer_instructions`(≈system prompt), `sandbox_mode`,
+  `model`·`model_reasoning_effort` 를 담는다. `sandbox_mode` 는 다섯 역할 모두 `workspace-write` 다
+  (developer·developer-hard·architect 는 작업 쓰기, code-reviewer·researcher 는 지정된 라운드 파일만 쓰고
+  코드·board·git 수정은 역할 규약과 감사로 금지한다). `model`·`model_reasoning_effort` 는 local.conf 값으로
+  채워지는 렌더 토큰이다(값이 없으면 사용자 config 기본 상속).
 - 표준 위임 프롬프트는 `$pm-dev-delegate` 스킬. (위임 *개념*·generate≠evaluate 는 루트 README.)
 - **native spawn 채널 가드 실측**(codex-cli 0.147.0): 라이브 `PreToolUse` payload의 native spawn
   tool 이름은 `collaborationspawn_agent`이고 선택 역할은 `tool_input.task_name`에 실린다.

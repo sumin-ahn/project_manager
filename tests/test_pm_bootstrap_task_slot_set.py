@@ -134,10 +134,7 @@ class _TaskPool:
             if s not in self._missing:
                 (self._root / s).mkdir(parents=True, exist_ok=True)
         self.bind_task_calls: list[dict] = []
-        self.bind_calls: list[dict] = []
         self.slots_for_task_calls: list[str] = []
-        # T-0390 편입용 — bind_slot 이 잡은 슬롯을 이후 slots_for_task/list_leases 에 합류.
-        self._bound_extra: list[str] = []
 
     # task 축
     NoTaskSessionClaim = type("NoTaskSessionClaim", (Exception,), {})
@@ -167,9 +164,8 @@ class _TaskPool:
 
     def slots_for_task(self, name):
         self.slots_for_task_calls.append(name)
-        slots = list(self._task_slots) + [s for s in self._bound_extra if s not in self._task_slots]
         out = []
-        for s in slots:
+        for s in self._task_slots:
             repo = s.rpartition("/")[2].rsplit("_", 1)[0]
             out.append(_Lease(s, repo, name, state=self._states.get(s, "leased")))
         return out
@@ -219,17 +215,7 @@ class _TaskPool:
         for s in self._task_slots:
             repo = s.rpartition("/")[2].rsplit("_", 1)[0]
             leased.append(_Lease(s, repo, self._task_name, state=self._states.get(s, "leased")))
-        for c in self.bind_calls:
-            repo = c["slot"].rpartition("/")[2].rsplit("_", 1)[0]
-            leased.append(_Lease(c["slot"], repo, c["session"], state="leased"))
         return leased
-
-    def bind_slot(self, slot, repo, session, *, git_runner=None):
-        self.bind_calls.append({"slot": slot, "repo": repo, "session": session})
-        if slot not in self._bound_extra:
-            self._bound_extra.append(slot)
-        (self._root / slot).mkdir(parents=True, exist_ok=True)
-        return _Lease(slot, repo, session, state="leased")
 
     def alloc(self, repo, *, branch=None, resume=None, **_kw):
         return _Lease(f"work/{repo}_1", repo, self._task_name)

@@ -4,8 +4,8 @@
 보고 **첫 시도**에 맞는 커맨드를 치는가"(사용성)는 못 본다. 카드의 소비자가 LLM 이므로 그 판정은
 LLM 이 load-bearing 이다(사용자 지시: "진짜로 얘네들이 커맨드를 잘 쓰는지"). 이 파일은 그 갭을
 릴리즈 라이브 tier 에서 메운다 — fresh import 홈에 **부트스트랩 커맨드 카드만** 컨텍스트로 주고
-실 LLM 2하네스(claude + opencode/glm-5.2:cloud)에 표준 티켓 라이프사이클(new→promote→claim→
-complete)을 시켜 **각 조작의 첫 시도 커맨드가 그대로 rc0** & 출력에 `--help`/`-h` 호출·재시도
+실 LLM 2하네스(claude + opencode/glm-5.2:cloud)에 표준 티켓 라이프사이클(new→cluster new→promote→
+claim→종결)을 시켜 **각 조작의 첫 시도 커맨드가 그대로 rc0** & 출력에 `--help`/`-h` 호출·재시도
 흔적 0 임을 단언한다.
 
 판정 철학(release_wave·runtime_smoke 상속):
@@ -54,12 +54,13 @@ import pytest
 
 # release_wave/runtime_smoke 헬퍼 재사용(중복 인프라 금지·같은 tests/ 디렉토리 import) —
 # adopter import(hermetic·models 조회 차단)·LLM env 격리(화이트리스트)·ticket 상태 조회.
-from test_fresh_adopter_runtime_smoke import _live_env, _tickets_in
+from test_fresh_adopter_runtime_smoke import _live_env, _load_pm_import, _tickets_in
 # release 마커 AST 카운트(자기 파일 pin 가드용) — 마커 소실/개명 방어 도구 재사용. 안내 경로로 첫
 # 작업 폴더를 만든 채택자 픽스처는 full wave 와 공용이다([[T-0956]]).
 from test_release_wave import (
     _MULTIREPO_REPOS, _MULTIREPO_TICKET, _RELEASE_WAVE_TASK, _WAVE_FILE, _WAVE_INTEGRATION_SLOT,
-    _WAVE_WORK_SLOT, _assert_multirepo_wave_side_effects, _count_marked_tests, _guided_adopter,
+    _WAVE_WORK_SLOT, _assert_multirepo_wave_side_effects, _baseline_adopter, _count_marked_tests,
+    _guided_adopter,
     _import_multipm_home, _multirepo_wave_commands, _multirepo_wave_home, _pm_config,
 )
 
@@ -89,7 +90,7 @@ PROBE_TITLE = "card usability probe"
 # (평시 skip 이라 회귀는 green — 이 파일이 막으려는 false-green 클래스 그대로다).
 # 종결까지의 조작은 카드가 처방한다([[T-0956]]) — 리뷰 없이 닫는 표시(`tier`)·묶음 결속(`cluster
 # new`)·작업 폴더 전환(`worktree_pool.py switch`)이 claim 과 종결 사이의 필수 조작이다.
-_EXPECTED_LIFECYCLE_OPS = ("new", "promote", "tier", "cluster", "claim", "switch", "finish")
+_EXPECTED_LIFECYCLE_OPS = ("new", "cluster", "promote", "tier", "claim", "switch", "finish")
 
 # mutating 조작 분류 집합(핸드오프 포함) — `_board_operation` 이 read/write 구분에 참조(classifier).
 # 카드 시퀀스가 낼 수 있는 어휘만 담는다 — `complete` 는 카드가 처방하지 않으므로 여기 없다.
@@ -133,8 +134,9 @@ def _usability_prompt(card: str) -> str:
     닫음)만 말하고 그 명령과 이름을 쓰지 않는다. 카드만 보는 새 채택자가 닫을 수 있어야 하기
     때문이다. 회귀 게이트 만족(`--no-pytest`)만 카드 밖 사실로 명시한다 — 채택자 fresh 트리에는 test
     스위트가 없다. 로그 한 줄은 지시하지 않는다(종결이 log 골격을 만든다·경계 실측 E17).
-    promote 전에 **티켓 본문 채우기** 단계를 명시해 claim=promote 선행 트랩(본문 채운 뒤 promote)을
-    시퀀스에서 실제로 밟게 한다.
+    카드 줄 순서대로 실행하기 전에 **티켓 본문 채우기** 단계를 명시해 claim=promote 선행 트랩(본문 채운 뒤
+    promote)을 시퀀스에서 실제로 밟게 한다. 승격은 카드 줄 순서(묶음 결속 뒤 · [[T-0960]])를 따르므로
+    별도 단계로 떼지 않는다 — 떼면 카드 순서와 어긋나 같은 줄을 두 번 실행하게 된다.
     핸드오프는 이 시퀀스에서 제외한다: 세션 종료 op 는 무거운 side-effect(pm_state write·log
     skeleton)라 첫 시도 판정을 흐리고, 핸드오프 라이브 커버리지는 기존 release full-wave/hard-stop
     계보가 보유한다.
@@ -152,10 +154,9 @@ def _usability_prompt(card: str) -> str:
         "with placeholder sections — replace them with a brief real description so the ticket is "
         "ready to promote (per the card's warning, claim rejects unfilled/draft tickets, so the "
         "body must be filled and the ticket promoted before you can claim it).\n"
-        "  4. Promote it.\n"
-        "  5. Claim it and then finish it: run, in order, the engine command lines the card lists "
-        "under its wave-claim entry and then under its wave-finish entry for this ticket, following "
-        "the card's warnings. This ticket changes no code and is closed without a review round. "
+        "  4. Promote it, claim it and then finish it: run, in order, the command lines the card lists "
+        "under its wave-claim entry (the promote line is among them, in card order) and then under its "
+        "wave-finish entry for this ticket, following the card's warnings. This ticket changes no code and is closed without a review round. "
         "One fact the card does not state: this project ships no test suite, so pass --no-pytest "
         "to the finish command.\n\n"
         "Command card:\n"
@@ -697,7 +698,7 @@ def _run_live_or_timeout(argv: list[str], *, cwd: str, env: dict, timeout: int, 
 def test_command_card_usability_claude(tmp_path):
     """실 claude 가 부트스트랩 카드만 보고 표준 lifecycle 을 첫 시도에 rc0 로 운영한다 (--help/재시도 0).
 
-    카드(ADR-0045)만 컨텍스트로 주고 new→promote→claim→complete 를 시킨다 — 진입문서 경로 미제공.
+    카드(ADR-0045)만 컨텍스트로 주고 카드 순서의 new→cluster new→promote→claim→종결을 시킨다 — 진입문서 경로 미제공.
     stream-json 으로 실행 커맨드·결과를 파싱해 --help/-h 호출·조작 재시도 0·**각 op 첫 실행 rc0**
     (tool_result is_error)를 hard 단언하고, side-effect(ticket done)로 완주를 확증한다. flake·timeout 은
     단건 1회 재실행 흡수. claude 는 subprocess cwd 를 존중(`--dir` 불요). API 과금.
@@ -785,7 +786,7 @@ def test_render_command_card_has_lifecycle_commands():
 
 
 def test_usability_prompt_embeds_card_and_sequence():
-    """프롬프트가 카드 전문 + 표준 lifecycle 시퀀스(create/fill/promote/claim/finish)를 담고 --help 를 금한다."""
+    """프롬프트가 카드 전문 + 표준 lifecycle 시퀀스(create/fill/카드 순서의 promote·claim/finish)를 담고 --help 를 금한다."""
     card = _render_command_card(REPO)
     prompt = _usability_prompt(card)
     # 카드가 유일 컨텍스트로 임베드된다(진입문서 경로 미제공).
@@ -793,8 +794,8 @@ def test_usability_prompt_embeds_card_and_sequence():
     assert "CLAUDE.md" not in prompt and "AGENTS.md" not in prompt
     # 표준 조작 시퀀스 + probe 식별자.
     assert PROBE_TITLE in prompt
-    for step in ("Create a new ticket", "Fill in the new ticket", "Promote it",
-                 "Claim it and then finish it", "wave-claim entry", "wave-finish entry",
+    for step in ("Create a new ticket", "Fill in the new ticket", "Promote it, claim it and then finish it",
+                 "the promote line is among them, in card order", "wave-claim entry", "wave-finish entry",
                  "changes no code and is closed without a review round"):
         assert step in prompt, f"프롬프트에 '{step}' 단계 부재"
     # 지시부(카드 임베드 앞)는 카드가 처방하지 않는 direct complete 를 시키지 않는다.
@@ -829,12 +830,12 @@ def test_expected_lifecycle_ops_are_all_prescribed_by_the_card():
 def test_t0956_card_prescribes_closing_steps():
     """[[T-0956]] AT-010 — 첫 티켓을 닫는 조작은 카드가 처방하고 프롬프트는 그 명령을 쓰지 않는다.
 
-    기대 조작은 발행·승격·리뷰 없는 종결 표시·묶음 결속·claim·작업 폴더 전환·종결 7개이고 전부 카드
+    기대 조작은 발행·묶음 결속·승격·리뷰 없는 종결 표시·claim·작업 폴더 전환·종결 7개이고(카드 순서·[[T-0960]]) 전부 카드
     실행 줄에서 뽑힌다. 프롬프트 지시부(카드 임베드 앞)에는 그 명령·이름과 옛 prefix·로그 지시가
     없고, 카드 밖 사실인 `--no-pytest` 만 있다.
     """
     assert _EXPECTED_LIFECYCLE_OPS == (
-        "new", "promote", "tier", "cluster", "claim", "switch", "finish")
+        "new", "cluster", "promote", "tier", "claim", "switch", "finish")
     card = _render_command_card(REPO)
     prescribed: set[str] = set()
     for line in card.splitlines():
@@ -912,8 +913,12 @@ def _run_card_line(dest: Path, line: str, fills: dict[str, str], extra: Sequence
     return proc
 
 
+# 티켓 폴더 — 기본 형상은 PM 홈 git 안(`wiki/tickets`), 공유 board 형상은 별도 git(`board/tickets`)이다.
+_CARD_TICKET_ROOTS = (Path(".project_manager") / "wiki" / "tickets", Path(".project_manager") / "board" / "tickets")
+
+
 def _card_ticket(dest: Path, tid: str) -> Path:
-    (path,) = list((dest / ".project_manager" / "wiki" / "tickets").glob(f"*/{tid}-*.md"))
+    (path,) = [found for root in _CARD_TICKET_ROOTS for found in (dest / root).glob(f"*/{tid}-*.md")]
     return path
 
 
@@ -1078,7 +1083,7 @@ def test_t0956_flow_card_rule_scopes_task_name(monkeypatch):
 def test_t0956_card_commands_close_first_ticket(tmp_path):
     """[[T-0956]] AT-013 — 작업 폴더 1개 채택자에서 카드 줄만으로 코드 변경 없는 첫 티켓이 닫힌다.
 
-    new·promote·tier·cluster new·claim·switch·ticket_finish·release 줄의 입력 자리를 카드 문구(묶음 이름
+    new·cluster new·promote·tier·claim·switch·ticket_finish·release 줄의 입력 자리를 카드 문구(묶음 이름
     예시·`<slot>` 정의)와 발행 출력(티켓 ID)의 값으로만 채워 실행한다. 묶음 이름 자리에 티켓 ID 를 넣은
     줄(라이브에서 모델이 넣은 값)은 카드가 말한 대로 예약으로 거부되고 아무것도 쓰지 않는다. 본문
     채우기와 완료 조건 체크는 사람(모델) 몫이고, 종결 줄의 `--no-pytest` 는 테스트 스위트가 없는
@@ -1093,14 +1098,13 @@ def test_t0956_card_commands_close_first_ticket(tmp_path):
         _run_card_line(dest, lines[("board.py", "new")], {'"<제목>"': '"card probe"'}))
     fills = _card_fills(tid, example, slot)
     _fill_card_ticket(dest, tid)
-    for key in (("board.py", "promote"), ("board.py", "tier")):
-        _run_card_line(dest, lines[key], fills)
     clusters = dest / ".project_manager" / "wiki" / "tickets" / "clusters"
     before = sorted(path.name for path in clusters.iterdir())
     refused = _card_line_process(dest, lines[("board.py", "cluster")], _card_fills(tid, tid, slot))
     assert refused.returncode == 1 and "예약" in refused.stderr, refused.stdout + refused.stderr
     assert sorted(path.name for path in clusters.iterdir()) == before
-    for key in (("board.py", "cluster"), ("board.py", "show"), ("board.py", "lint"), ("board.py", "claim")):
+    for key in (("board.py", "cluster"), ("board.py", "promote"), ("board.py", "tier"), ("board.py", "show"),
+                ("board.py", "lint"), ("board.py", "claim")):
         _run_card_line(dest, lines[key], fills)
     _check_card_dod(dest, tid)
     # [[T-0958]] 종결 줄은 switch 뒤다 — 카드가 두 줄 옆에 적고, switch 전 종결·dry-run 은 작업 트리 해소에서
@@ -1119,6 +1123,143 @@ def test_t0956_card_commands_close_first_ticket(tmp_path):
 
     assert _tickets_in(dest, "done") == {_card_ticket(dest, tid).name}
     assert "status: closed" in (clusters / f"C-{example}.md").read_text(encoding="utf-8")
+
+
+# 카드 줄 순서 = 실행 순서다([[T-0960]]). board 형상(PM 홈 git 안·공유 board)과 무관한 한 순서이고, 공유
+# board 의 promote 가 묶음 결속을 요구하고 tier 가 draft 를 거부하므로 cluster new 가 promote 앞이다.
+_CARD_FLOW = (("board.py", "new"), ("board.py", "cluster"), ("board.py", "promote"), ("board.py", "tier"),
+              ("board.py", "show"), ("board.py", "lint"), ("board.py", "claim"), ("worktree_pool.py", "switch"))
+
+
+def _card_line_positions(card: str) -> dict[tuple[str, str | None], int]:
+    """카드 실행 줄 키 → 그 줄이 카드에 처음 나오는 줄 번호(`_card_command_lines` 와 같은 키)."""
+    positions: dict[tuple[str, str | None], int] = {}
+    for index, raw in enumerate(card.splitlines()):
+        body = raw.split("  #", 1)[0].strip()
+        if _CARD_TOOLS_MARK not in body or body.startswith(("/", "$")):
+            continue
+        rest = body.split(_CARD_TOOLS_MARK, 1)[1].split()
+        positions.setdefault((rest[0], rest[1] if len(rest) > 1 and rest[1].isalpha() else None), index)
+    return positions
+
+
+def test_t0960_card_draft_notes_follow_board_shape(tmp_path):
+    """[[T-0960]] AT-001 — 카드의 new·promote·claim 설명과 줄 순서가 두 board 형상에서 같은 한 가지로 참이다.
+
+    기본 형상(board 가 PM 홈 git 안)의 `board.py new` 는 draft 없이 `open/` 에 바로 발행하고, 공유 board
+    (별도 git) 형상은 draft 를 만든다. 카드는 형상 조건 문구 없이 두 형상에서 참인 평서문을 쓰고, 줄은
+    new → cluster new → promote → tier → show → lint → claim → switch 순서로 출력한다. 기본 형상에서
+    그 순서로 new·cluster new·promote 를 실행하면 티켓은 `open/` 에 있고 promote 는 rc 0 으로 그대로 둔다.
+    """
+    dest = _guided_adopter(tmp_path, "claude", task=CARD_TASK, folders=1)
+    card = _render_command_card(dest)
+    notes = _card_line_notes(card)
+    for key in (("board.py", "new"), ("board.py", "promote"), ("board.py", "claim")):
+        assert "공유 board" not in notes[key] and "draft 로 생성" not in notes[key], (key, notes[key])
+    assert "이미 open 이면 그대로 둔다" in notes[("board.py", "promote")], notes[("board.py", "promote")]
+    assert "cluster new 뒤" in notes[("board.py", "promote")], notes[("board.py", "promote")]
+    positions = _card_line_positions(card)
+    assert [positions[key] for key in _CARD_FLOW] == sorted(positions[key] for key in _CARD_FLOW), positions
+
+    lines = _card_command_lines(card)
+    tid = _created_ticket_id(
+        _run_card_line(dest, lines[("board.py", "new")], {'"<제목>"': '"draft shape probe"'}))
+    opened = {_card_ticket(dest, tid).name}
+    assert _tickets_in(dest, "open") == opened
+    _fill_card_ticket(dest, tid)
+    fills = _card_fills(tid, _card_name_rule(card)[0], _card_slot_value(card, dest.name, 1))
+    for key in (("board.py", "cluster"), ("board.py", "promote")):
+        _run_card_line(dest, lines[key], fills)
+    assert _tickets_in(dest, "open") == opened
+
+
+def _shared_board_adopter(tmp_path: Path, monkeypatch, *, folders: int) -> Path:
+    """공유 board(별도 git) 형상 채택자 — `_guided_adopter` 와 같은 안내 경로에 `--board-submodule` 만 더한다.
+
+    board 원격은 로컬 bare 저장소다. git 기본값은 submodule 의 로컬 경로 복제를 막으므로
+    (`transport 'file' not allowed`) 이 시험의 자식 프로세스에만 `protocol.file.allow=always` 를 준다.
+    """
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'protocol.file.allow'='always'")
+    bare = tmp_path / "board.git"
+    assert subprocess.run(["git", "init", "--bare", "-q", str(bare)], capture_output=True).returncode == 0
+    pm_import = _load_pm_import()
+    pm_import._real_models_runner = lambda source: (False, [])
+    dest = tmp_path / "shared-board"
+    assert pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual",
+                           "--board-submodule", "--board-remote", str(bare)]) == 0
+    _baseline_adopter(dest)
+    repo = dest.name
+    steps = [("worktree", "add", repo, "--user-ack", repo)] * folders
+    steps += [("task", "new", CARD_TASK)] + [("alloc", repo, "--task", CARD_TASK)] * folders
+    for step in steps:
+        proc = subprocess.run([sys.executable, str(dest / ".project_manager" / "tools" / "pm_config.py"), *step],
+                              cwd=dest, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", env={**os.environ, **_CARD_IDENTITY_ENV})
+        assert proc.returncode == 0, (step, proc.stdout[-1200:], proc.stderr[-1200:])
+    return dest
+
+
+@pytest.mark.parametrize("folders", (1, 2))
+@pytest.mark.parametrize("shape", ("default", "shared-board"))
+def test_t0960_card_flow_runs_first_try_in_both_board_shapes(tmp_path, monkeypatch, shape, folders):
+    """[[T-0960]] — 카드 줄을 적힌 순서대로 실행하면 두 board 형상·작업 폴더 1개와 2개에서 new 부터 switch 까지
+    전부 첫 시도에 rc 0 이다.
+
+    폴더 2개면 카드 경고대로 발행·claim 은 작업 폴더(2번), cluster new 는 통합 폴더(1번)를 지목한다. 공유
+    board 형상의 new 는 draft 를 만들고, cluster new 로 묶은 뒤의 promote 가 open 으로 옮긴다.
+    """
+    if shape == "default":
+        dest = _guided_adopter(tmp_path, "claude", task=CARD_TASK, folders=folders)
+    else:
+        dest = _shared_board_adopter(tmp_path, monkeypatch, folders=folders)
+    repo = dest.name
+    card = _render_command_card(dest)
+    positions = _card_line_positions(card)
+    assert [positions[key] for key in _CARD_FLOW] == sorted(positions[key] for key in _CARD_FLOW), positions
+    lines = _card_command_lines(card)
+    work = ("--repo", repo, "--slot", str(folders)) if folders == 2 else ()
+    integration = ("--repo", repo, "--slot", "1") if folders == 2 else ()
+    tid = _created_ticket_id(_run_card_line(dest, lines[("board.py", "new")], {'"<제목>"': '"flow probe"'}, work))
+    if shape == "shared-board":
+        assert _card_ticket(dest, tid).parent.name == ".drafts", _card_ticket(dest, tid)
+    _fill_card_ticket(dest, tid)
+    fills = _card_fills(tid, _card_name_rule(card)[0], _card_slot_value(card, repo, folders))
+    extras = {("board.py", "new"): work, ("board.py", "cluster"): integration, ("board.py", "claim"): work}
+    for key in _CARD_FLOW[1:]:
+        _run_card_line(dest, lines[key], fills, extras.get(key, ()))
+    assert _card_ticket(dest, tid).parent.name == "claimed", _card_ticket(dest, tid)
+
+
+def test_t0960_pm_env_skill_matches_card_alloc_flow():
+    """[[T-0960]] 리뷰 F-001 — pm-env 의 worktree add 절은 카드·ADOPT 와 같은 alloc 대여 흐름을 안내한다.
+
+    카드와 ADOPT 는 PM 이 alloc 으로 작업 폴더를 빌리라고 하므로, 그 안내 뒤에 생성 직후 대여를 금지로 읽히는
+    문장(지워진 바인딩 안내에 붙어 있던 것)이 없다. 세션 시작은 사용자가 정하고 `--user-ack` 를 세션이 스스로
+    붙이지 않는다는 문장은 남는다. 원본과 채택자에게 깔리는 사본 전부를 본다.
+    """
+    skills = [_WAVE_SKILLS / "pm-env" / "SKILL.md",
+              *sorted((REPO / "templates").glob("*/*/skills/pm-env/SKILL.md")),
+              *sorted((REPO / "templates").glob("*/*/command/pm-env.md"))]
+    assert len(skills) == 5, skills
+    for path in skills:
+        section = _markdown_section(path.read_text(encoding="utf-8"), "## worktree add")
+        assert "alloc <repo> --task <task>" in section, (path, section)
+        assert "worktree add <repo> --task <task> --user-ack <repo>" in section, (path, section)
+        assert "은 사용자가 정한다" in section and "스스로 부착하지 않는다" in section, (path, section)
+        assert "자기-할당" not in section and "자기 지시로 읽고" not in section, (path, section)
+
+
+def test_t0960_template_readmes_name_delegate_hard_keys():
+    """[[T-0960]] 리뷰 F-003 — codex·opencode README 의 local.conf 키 서술이 developer-hard 의 hard 티어 키를 밝힌다.
+
+    렌더는 developer-hard 카드 값을 `delegate.developer.hard.*` 에서 읽는다(pm_render.DELEGATE_MODEL_CONF_KEYS).
+    역할 이름을 그대로 넣은 `delegate.developer-hard.*` 는 읽지 않아 카드의 model 줄이 주석으로 남는다.
+    """
+    for name in ("codex", "opencode"):
+        text = (REPO / "templates" / name / "README.md").read_text(encoding="utf-8")
+        for key in ("delegate.developer.hard.model", "delegate.developer.hard.reasoning"):
+            assert key in text, (name, key)
+        assert "delegate.developer-hard." not in text, name
 
 
 def test_t0956_card_integration_folder_merges_code_change(tmp_path):
@@ -1145,9 +1286,9 @@ def test_t0956_card_integration_folder_merges_code_change(tmp_path):
         _run_card_line(dest, lines[("board.py", "new")], {'"<제목>"': '"card probe"'}, extra=work))
     fills = _card_fills(tid, _card_name_rule(card)[0], _card_slot_value(card, repo, 2))
     _fill_card_ticket(dest, tid, touches=("probe.txt",))
+    _run_card_line(dest, lines[("board.py", "cluster")], fills, extra=integration)
     _run_card_line(dest, lines[("board.py", "promote")], fills)
     _run_card_line(dest, lines[("board.py", "tier")], fills)
-    _run_card_line(dest, lines[("board.py", "cluster")], fills, extra=integration)
     _run_card_line(dest, lines[("board.py", "claim")], fills, extra=work)
     _run_card_line(dest, lines[("worktree_pool.py", "switch")], fills)
     folder = dest / "work" / f"{repo}_2"
@@ -1182,7 +1323,7 @@ def test_t0958_card_one_folder_code_change_borrows_second_folder(tmp_path):
     tid = _created_ticket_id(_run_card_line(one, lines[("board.py", "new")], {'"<제목>"': '"code probe"'}))
     fills = _card_fills(tid, _card_name_rule(card)[0], _card_slot_value(card, one.name, 1))
     _fill_card_ticket(one, tid, touches=("probe.txt",))
-    for key in (("board.py", "promote"), ("board.py", "tier"), ("board.py", "cluster"), ("board.py", "claim"),
+    for key in (("board.py", "cluster"), ("board.py", "promote"), ("board.py", "tier"), ("board.py", "claim"),
                 ("worktree_pool.py", "switch")):
         _run_card_line(one, lines[key], fills)
     (one / "work" / f"{one.name}_1" / "probe.txt").write_text("hello\n", encoding="utf-8")
@@ -1208,9 +1349,9 @@ def test_t0958_card_one_folder_code_change_borrows_second_folder(tmp_path):
         _run_card_line(two, lines[("board.py", "new")], {'"<제목>"': '"code probe"'}, extra=work))
     fills = _card_fills(tid, _card_name_rule(card)[0], _card_slot_value(card, repo, 2))
     _fill_card_ticket(two, tid, touches=("probe.txt",))
+    _run_card_line(two, lines[("board.py", "cluster")], fills, extra=integration)
     _run_card_line(two, lines[("board.py", "promote")], fills)
     _run_card_line(two, lines[("board.py", "tier")], fills)
-    _run_card_line(two, lines[("board.py", "cluster")], fills, extra=integration)
     _run_card_line(two, lines[("board.py", "claim")], fills, extra=work)
     _run_card_line(two, lines[("worktree_pool.py", "switch")], fills)
     (two / "work" / f"{repo}_2" / "probe.txt").write_text("hello\n", encoding="utf-8")
@@ -1252,11 +1393,11 @@ def test_t0958_card_multirepo_one_folder_each_closes_first_ticket(tmp_path):
         _run_card_line(home, lines[("board.py", "new")], {'"<제목>"': '"card probe"'}, extra=pick))
     fills = _card_fills(tid, _card_name_rule(card)[0], _card_slot_value(card, repo, 1))
     _fill_card_ticket(home, tid)
-    _run_card_line(home, lines[("board.py", "promote")], fills)
-    _run_card_line(home, lines[("board.py", "tier")], fills)
     ambiguous = _card_line_process(home, lines[("board.py", "cluster")], fills)
     assert ambiguous.returncode == 1 and "모호" in ambiguous.stderr, ambiguous.stdout + ambiguous.stderr
     _run_card_line(home, lines[("board.py", "cluster")], fills, extra=pick)
+    _run_card_line(home, lines[("board.py", "promote")], fills)
+    _run_card_line(home, lines[("board.py", "tier")], fills)
     _run_card_line(home, lines[("board.py", "show")], fills)
     _run_card_line(home, lines[("board.py", "lint")], fills)
     _run_card_line(home, lines[("board.py", "claim")], fills, extra=pick)
@@ -1300,7 +1441,7 @@ def test_t0958_flow_cards_state_switch_order(tmp_path):
     tid = _created_ticket_id(_run_card_line(dest, lines[("board.py", "new")], {'"<제목>"': '"card probe"'}))
     fills = _card_fills(tid, _card_name_rule(card)[0], _card_slot_value(card, dest.name, 1))
     _fill_card_ticket(dest, tid)
-    for key in (("board.py", "promote"), ("board.py", "tier"), ("board.py", "cluster")):
+    for key in (("board.py", "cluster"), ("board.py", "promote"), ("board.py", "tier")):
         _run_card_line(dest, lines[key], fills)
     slot_claim = shlex.split(block[claims[1]].split("#", 1)[0].replace("T-NNNN", tid)
                              .replace("<repo>", dest.name).replace("<N>", "1"))

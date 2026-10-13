@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -99,7 +100,8 @@ class RemoveFakeGit:
     - `dirty` → `status --porcelain` 이 변경 1줄(=커밋 안 한 변경)·아니면 빈 출력.
     - `head` → 슬롯 worktree 의 현재 브랜치(`symbolic-ref HEAD` full ref). None=detached(rc≠0).
     - `default_branch` → 공용 저장소 HEAD(`--git-dir . rev-parse --symbolic-full-name HEAD`). None=조회 실패.
-    - `parents` → 부모 기록 `{브랜치: 부모}` — `config --get`·`config --get-regexp` 가 낸다(없으면 rc1).
+    - `parents` → 부모 기록 `{브랜치: 부모}` — 브랜치마다 `pm-parent`·`pm-fork` 두 키로 펼쳐
+      `config --get <키>`·`config --get-regexp <정규식>`(정규식에 맞는 키) 가 낸다(없으면 rc1).
       기록된 브랜치와 그 부모, 슬롯 HEAD, 기본 브랜치는 로컬 브랜치로 존재한다(`show-ref`·`rev-parse --verify`).
     - `merged` → `merge-base --is-ancestor` rc(True=0 조상·False=1 조상 아님).
     - `delete_rc` → `branch -D` rc.
@@ -122,6 +124,14 @@ class RemoveFakeGit:
         self.remove_rc = remove_rc
         self.deregisters_on_failure = deregisters_on_failure
         self.calls: list[list] = []
+
+    def _config(self) -> dict:
+        """부모 기록을 git 설정 키로 펼친다 — `branch.<b>.pm-parent`=부모·`branch.<b>.pm-fork`=고정 커밋."""
+        config: dict = {}
+        for child, parent in self.parents.items():
+            config[f"branch.{child}{_PARENT_SUFFIX}"] = parent
+            config[f"branch.{child}{_FORK_SUFFIX}"] = "f0f0f0"
+        return config
 
     def _branches(self) -> set:
         names = {self.head, self.default_branch, *self.parents, *self.parents.values()}
@@ -160,18 +170,12 @@ class RemoveFakeGit:
         if argv[:2] == ["worktree", "prune"]:
             return (0, "")
         if argv[:2] == ["config", "--get-regexp"]:
-            if not self.parents:
-                return (1, "")                # git: 맞는 키가 없으면 rc1
-            return (0, "".join(f"branch.{child}{_PARENT_SUFFIX} {parent}\n"
-                               for child, parent in self.parents.items()))
+            lines = [f"{key} {value}\n" for key, value in self._config().items()
+                     if re.search(argv[2], key)]
+            return (0, "".join(lines)) if lines else (1, "")   # git: 맞는 키가 없으면 rc1
         if argv[:2] == ["config", "--get"]:
-            key = argv[2][len("branch."):]
-            for suffix, value in ((_PARENT_SUFFIX, None), (_FORK_SUFFIX, "f0f0f0")):
-                if key.endswith(suffix):
-                    branch = key[:-len(suffix)]
-                    if branch not in self.parents:
-                        return (1, "")
-                    return (0, (value or self.parents[branch]) + "\n")
+            value = self._config().get(argv[2])
+            return (1, "") if value is None else (0, value + "\n")
         if argv[:3] == ["show-ref", "--verify", "--quiet"]:
             ref = argv[3]
             exists = ref.startswith(_HEADS) and ref[len(_HEADS):] in self._branches()

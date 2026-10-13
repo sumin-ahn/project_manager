@@ -1,5 +1,5 @@
 {
-  "count": 391,
+  "count": 389,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -1222,16 +1222,6 @@
       {
         "count": 1,
         "hash": "07808432bf8238ea04055a49e4eec3c4ddd0ee77fa9bf33fab8a07708783c836",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "43f5316f18ab2bfdfec669713a3237209b860cc2871a62df46e2c6668c2d68f9",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "ca656c0f1bc5f666d685b2294aff4080b6d1cd39d505fc0c61cc59042f2ddea5",
         "kind": "decision_label"
       },
       {

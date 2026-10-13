@@ -241,9 +241,6 @@ class FakePool:
         self._slot_status_ret = slot_status_ret
         self.slot_status_calls: list[str] = []
 
-    def bind_slot(self, slot, repo, session, *, git_runner=None):
-        return _FakeLease(slot, repo)
-
     def alloc(self, repo, *, branch=None, resume=None, **_kw):
         return _FakeLease(self._slot, repo)
 
@@ -274,9 +271,6 @@ class FakePool:
 
 class FakePoolNoStatus:
     """slot_status 미구현 풀(구버전) — `getattr(wp, "slot_status", None)` None 폴백 검증용."""
-
-    def bind_slot(self, slot, repo, session, *, git_runner=None):
-        return _FakeLease(slot, repo)
 
     def lease_is_open(self, lease):
         """열림 판정은 엔진 규칙 그대로 — 열림 기록(leased + session)이면 열림."""
@@ -471,24 +465,6 @@ def test_resolve_log_file_standalone_uses_repo_anchor(bootstrap, tmp_path):
         bootstrap._resolve_log_file(repo)
         == repo / ".project_manager" / "wiki" / "log" / "current.md"
     )
-
-
-# ── main() 인자 가드: --branch/--resume repo-필수 검사가 auto-resolve **앞**이다 (T-0327) ──
-
-
-def _spy_never_called(msg: str):
-    """호출되면 AssertionError 로 즉시 실패하는 `_resolve_session_slot` 대역 + 호출 플래그."""
-    flag = {"called": False}
-
-    def _spy():
-        flag["called"] = True
-        raise AssertionError(msg)
-
-    return _spy, flag
-
-
-
-
 
 
 # ── F1 --task 배선 (main·⑥ 예약 거부·auto-slot 제외·T-0353) ─────────────────

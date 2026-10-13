@@ -1067,8 +1067,9 @@ _MULTIREPO_TICKET = "<TICKET_ID>"
 def _multirepo_wave_commands(repo: str) -> tuple[str, ...]:
     """저장소 하나의 웨이브 실행 줄 7개 — 카드 줄에 그 저장소 값과 폴더 지목을 채운 것, 카드 순서([[T-0958]]).
 
-    발행·claim 은 작업 폴더(2번), 묶음 선언은 통합 폴더(1번)를 지목하고 switch 는 작업 폴더를 묶음 브랜치로
-    옮긴다. 발행에는 새 prefix 의 값-결속 승인과 바꿀 파일 선언을 붙인다. 파일 쓰기와 완료 조건 체크는
+    카드 순서는 new → cluster new → promote → tier → claim → switch → 종결이다([[T-0960]] · board 형상과
+    무관한 한 순서). 발행·claim 은 작업 폴더(2번), 묶음 선언은 통합 폴더(1번)를 지목하고 switch 는 작업
+    폴더를 묶음 브랜치로 옮긴다. 발행에는 새 prefix 의 값-결속 승인과 바꿀 파일 선언을 붙인다. 파일 쓰기와 완료 조건 체크는
     switch(6번째)와 종결(7번째) 사이의 사람 몫이다(프롬프트가 지시한다).
     """
     task, tid, cluster = _RELEASE_WAVE_TASK, _MULTIREPO_TICKET, f"wave-{repo}"
@@ -1078,9 +1079,9 @@ def _multirepo_wave_commands(repo: str) -> tuple[str, ...]:
     return (
         f'{tools}/board.py new "wave probe {repo}" --task {task} {work} '
         f"--prefix {repo} --user-ack {repo} --touches {_WAVE_FILE}",
+        f"{tools}/board.py cluster new {cluster} --tickets {tid} --task {task} {integration}",
         f"{tools}/board.py promote {tid}",
         f"{tools}/board.py tier {tid} pm-direct",
-        f"{tools}/board.py cluster new {cluster} --tickets {tid} --task {task} {integration}",
         f"{tools}/board.py claim {tid} --task {task} {work}",
         f"{tools}/worktree_pool.py switch work/{repo}_{_WAVE_WORK_SLOT} task/{cluster}",
         f"{tools}/ticket_finish.py {tid} --task {task} --no-pytest",
@@ -1188,7 +1189,7 @@ def test_release_wave_multirepo_opencode_full_wave(tmp_path):
     """실 opencode(agentic·ollama)가 다중 저장소 홈(2 repo·공유 보드)에서 저장소마다 카드 흐름 웨이브를 닫는다.
 
     홈은 `_multirepo_wave_home`(저장소마다 통합 폴더 1번·작업 폴더 2번을 task 가 보유)이고, 프롬프트
-    (`_multirepo_wave_prompt`)는 부트스트랩 줄 다음에 저장소마다 카드 줄 7개(new·promote·tier·cluster new·
+    (`_multirepo_wave_prompt`)는 부트스트랩 줄 다음에 저장소마다 카드 줄 7개(new·cluster new·promote·tier·
     claim·switch·종결)에 값을 채운 실행 줄과 그 사이 파일 쓰기·완료 조건 체크를 싣는다. direct complete 는
     프롬프트에 없다([[T-0958]]). 단일 full wave 와 다른 검증축이다: 한 세션이 공유 보드 위 저장소별
     prefix(`--prefix <repo>`)와 폴더 지목(`--repo <repo> --slot <N>`)을 바르게 다루는가.
@@ -1222,7 +1223,7 @@ def test_release_wave_multirepo_claude_full_wave(tmp_path):
 
     opencode 짝(`test_release_wave_multirepo_opencode_full_wave`)과 같은 홈·프롬프트·단언에 단일 claude
     실행 방식(`--allowedTools Bash`·subprocess cwd 존중이라 `--dir` 불요)을 얹은 것이다. 프롬프트는
-    부트스트랩 줄과 저장소마다 카드 줄 7개(new·promote·tier·cluster new·claim·switch·종결)이고 direct
+    부트스트랩 줄과 저장소마다 카드 줄 7개(new·cluster new·promote·tier·claim·switch·종결)이고 direct
     complete 는 없다([[T-0958]]). 단언은 저장소마다 done 티켓 1개, 그 묶음 closed 와 base_branch `<repo>_1`,
     묶음 브랜치와 통합 브랜치의 wave-done.txt 내용이다(`_assert_multirepo_wave_side_effects`). 웨이브에
     developer·reviewer 위임이 없어 stream-json `subagent_type` 단언은 하지 않는다. API 과금.
@@ -2172,7 +2173,7 @@ def test_collect_subagent_types_handles_no_delegation():
 # multi-repo 라이브 테스트는 PM_ORCH_LIVE_RELEASE 미설정 시 skip 이라 CI 에선 안 돈다. 아래 단위는
 # 라이브 없이도 돌아 (1) 셋업 헬퍼(`_import_multipm_home`)가 LLM 없이 home + 2 repo areas + 2 슬롯을
 # 만드는지 (= 셋업 자체 검증·라이브 테스트의 전제) (2) multi-repo wave 프롬프트가 부트스트랩 줄 다음에
-# 저장소마다 카드 줄 7개(new·promote·tier·cluster new·claim·switch·종결)를 순서대로 싣고 direct complete·
+# 저장소마다 카드 줄 7개(new·cluster new·promote·tier·claim·switch·종결)를 순서대로 싣고 direct complete·
 # 구 actor 플래그가 없으며 저장소별 prefix 승인이 발행 줄 한 곳에만 있는지 — 라이브 미실행 시에도 구조를
 # 가드한다([[T-0958]] · 줄의 실행 가능성은 카드 사용성 파일의 비라이브 재현이 본다).
 

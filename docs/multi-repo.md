@@ -10,9 +10,10 @@
 
 ```bash
 <manager>/pm-config.sh repo add <name> [--git <url>] [--test "<cmd>"]  # repo 등록 + .repos clone (신규=--git 필수 / 기등록 repo 는 --git 없이 areas URL 로 mirror hydrate)
-# fresh 홈의 첫 repo add 처럼 슬롯 lease 가 아직 없으면 조작 주체를 명시해야 한다(fail-loud):
-#   --owner <id> 또는 env PM_SESSION_NAME — local.conf 폴백은 폐지되어 조용한 귀속이 없다.
+# 등록 owner 는 --owner, 없으면 local.conf identity.user=, 그것도 없으면 git user.email 이다.
+#   셋 다 없으면 아무것도 하지 않고 멈춘다.
 <manager>/pm-config.sh worktree add <repo> --user-ack <repo>       # 사용자 승인값에 결속된 새 worktree 슬롯 + submodule init
+<manager>/pm-config.sh alloc <repo> --task <task>                  # idle 최소 번호 슬롯을 task 명의로 대여
 <manager>/pm-config.sh status | whoami                             # 풀/리스 + 이 세션 repo/슬롯/branch
 <manager>/pm-config.sh release <slot> [--force]                    # 작업완료 반납 / 수동 강제(백스톱)
 <manager>/pm-config.sh update [--from <upstream>]                  # 엔진 갱신 (pm-update 흡수)
@@ -22,6 +23,7 @@
 승인하고, `--user-ack` 값은 대상 repo와 정확히 같아야 한다. 세션은 풀 소진 시 이 플래그를
 자가 부착하지 말고 먼저 사용자에게 슬롯 생성 승인을 요청한다.
 
-셋업·조회·진단 전용이다 — 런타임 worktree alloc/release 자동화는 `pm-bootstrap`/handoff 가 하고,
-`pm-config release` 는 수동 반납/강제(백스톱)만. 브랜치 할당은 `pm-bootstrap <repo> --branch <B>`
-소관. repo 가 1개면 이 파사드를 안 써도 된다 — board/tools 현행 그대로(additive).
+슬롯 대여는 `pm-config alloc <repo> --task <task>`, 반납은 `pm-config release <slot>`(`--force` 는 강제
+반납)이다. 부트스트랩·핸드오프는 슬롯을 빌리거나 반납하지 않는다. 슬롯에 새 브랜치는
+`pm-config task branch`, 있는 브랜치로 전환은 `worktree_pool.py switch` 다. 저장소가 1개여도 작업
+폴더는 이 파사드(`worktree add`·`alloc`)로 만든다.

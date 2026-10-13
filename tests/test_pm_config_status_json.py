@@ -51,16 +51,18 @@ _GIT = shutil.which("git")
 _git_required = pytest.mark.skipif(_GIT is None, reason="git 바이너리 없음")
 
 
-# 홈 사본 엔진으로 task·슬롯을 바인딩한다 — 열림 기록을 테스트가 조립하지 않고 엔진이 남긴다.
-_BIND_SOURCE = '''\
+# 홈 사본 엔진으로 task 를 만들고 그 명의로 슬롯을 빌린다(`pm-config alloc` 과 같은 엔진 호출) —
+# 열림 기록을 테스트가 조립하지 않고 엔진이 남긴다.
+_ALLOC_SOURCE = '''\
 import importlib.util, json, sys
 
-spec = importlib.util.spec_from_file_location("worktree_pool_session_bind", sys.argv[1])
+spec = importlib.util.spec_from_file_location("worktree_pool_session_alloc", sys.argv[1])
 worktree_pool = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(worktree_pool)
 task, _action = worktree_pool.bind_task("main", session="s-test")
-lease = worktree_pool.bind_slot(sys.argv[2], "app", "main")
-print(json.dumps({"task_open": task.open, "lease_open": worktree_pool.lease_is_open(lease)}))
+lease = worktree_pool.alloc("app", owner_task="main")
+print(json.dumps({"task_open": task.open, "lease_open": worktree_pool.lease_is_open(lease),
+                  "slot": lease.slot}))
 '''
 
 
@@ -345,24 +347,27 @@ def test_status_json_alive_is_the_open_record(home, wp):
 
 @_git_required
 def test_status_json_alive_follows_the_records_a_real_session_left(home, wp, tmp_path):
-    """실 서브프로세스가 남긴 기록을 그대로 읽는다 — bind 뒤 열림, 닫은 뒤 닫힘.
+    """실 서브프로세스가 남긴 기록을 그대로 읽는다 — 대여 뒤 열림, 닫은 뒤 닫힘.
 
-    엔진 프로세스 pid 를 적던 시절엔 bind 가 끝나는 순간 죽어 slots/tasks 가 늘 회수 대기로
+    엔진 프로세스 pid 를 적던 시절엔 대여 명령이 끝나는 순간 죽어 slots/tasks 가 늘 회수 대기로
     보였다(관리자 현황 탭). 이제 판정 재료는 프로세스가 아니라 기록이라, 명령이 끝난 뒤에도
-    열림으로 남고 **닫는 명령**을 받아야 닫힌다.
+    열림으로 남고 **닫는 명령**을 받아야 닫힌다. [[T-0960]] AT-006 — 지운 `bind_slot` 대신
+    `pm-config alloc` 의 엔진 호출(`alloc(repo, owner_task=task)`)로 기록을 남긴다.
     """
     slot = _make_slot(home, "app", 1, "feat/x")
+    # `worktree add` 가 남기는 idle 행 — alloc 은 장부의 idle 행에서만 빌린다.
+    _ledger(home, [{"slot": slot, "repo": "app", "session": "", "started": "t", "state": "idle"}])
     template = home / ".project_manager" / "wiki" / "pm_state.template.md"
     template.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(REPO / ".project_manager" / "wiki" / "pm_state.template.md", template)
-    binder = tmp_path / "bind.py"
-    binder.write_text(_BIND_SOURCE, encoding="utf-8")
+    allocator = tmp_path / "alloc.py"
+    allocator.write_text(_ALLOC_SOURCE, encoding="utf-8")
     tools = home / ".project_manager" / "tools" / "worktree_pool.py"
 
-    done = subprocess.run([sys.executable, str(binder), str(tools), slot],
-                          capture_output=True, text=True, encoding="utf-8")
+    done = subprocess.run([sys.executable, str(allocator), str(tools)],
+                          capture_output=True, text=True, encoding="utf-8", cwd=str(home))
     assert done.returncode == 0, done.stderr
-    assert json.loads(done.stdout) == {"task_open": True, "lease_open": True}
+    assert json.loads(done.stdout) == {"task_open": True, "lease_open": True, "slot": slot}
 
     live = _status_json(home)
     assert live["slots"][0]["alive"] is True          # 명령 프로세스는 이미 죽었다
@@ -1064,6 +1069,124 @@ def test_status_text_lists_preserved_branches_section(preserved_home):
         f"  - app · app_2 · 쓰던 슬롯 work/app_2 · 보존 {stamps['app_2']} · 사유 no-parent · "
         "부모 기록 없음 · 합쳐짐 판정 불가",
     ]
+
+
+# ── T-0961 슬롯 수에 비례하는 git 호출 상한 ─────────────────────────────────────
+
+# `pm_config.py` 를 자식 프로세스에서 돌리며 띄운 git 프로세스의 argv 를 모은다 — `Popen` 생성을
+# 감싸 실행 파일 이름이 `git` 으로 시작하는 호출만 남기고 rc 와 목록을 JSON 파일에 쓴다.
+_GIT_COUNT_SOURCE = '''\
+import json, os, runpy, subprocess, sys
+
+out_path, script, *rest = sys.argv[1:]
+calls = []
+_original_init = subprocess.Popen.__init__
+
+
+def _recording_init(self, args, *positional, **keywords):
+    argv = [os.fspath(item) for item in args] if isinstance(args, (list, tuple)) else [str(args)]
+    if os.path.basename(argv[0]).lower().startswith("git"):
+        calls.append(argv[1:])
+    return _original_init(self, args, *positional, **keywords)
+
+
+subprocess.Popen.__init__ = _recording_init
+sys.argv = [script, *rest]
+rc = 0
+try:
+    runpy.run_path(script, run_name="__main__")
+except SystemExit as exc:
+    rc = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+with open(out_path, "w", encoding="utf-8") as handle:
+    json.dump({"rc": rc, "calls": calls}, handle)
+'''
+
+_PARENT_RECORDS_READ = r"^branch\..*\.pm-(parent|fork)$"
+_STASH_LIST_READ = ["stash", "list", "--format=%gs"]
+
+
+def _status_git_calls(home: Path, tmp_path: Path, mode: str, tag: str) -> list[list[str]]:
+    """`status`(text) 또는 `status --json`(json) 1회가 띄운 git 호출의 argv 목록(rc 0 강제)."""
+    driver = tmp_path / "git_count.py"
+    driver.write_text(_GIT_COUNT_SOURCE, encoding="utf-8")
+    out = tmp_path / f"git-calls-{mode}-{tag}.json"
+    argv = ["status", "--json"] if mode == "json" else ["status"]
+    done = subprocess.run(
+        [sys.executable, str(driver), str(out),
+         str(home / ".project_manager" / "tools" / "pm_config.py"), *argv],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(home),
+        timeout=300)
+    record = json.loads(out.read_text(encoding="utf-8"))
+    assert record["rc"] == 0, done.stderr
+    return record["calls"]
+
+
+@_git_required
+@pytest.mark.parametrize("mode, per_slot", [("json", 5), ("text", 6)])
+def test_status_git_calls_per_slot_are_bounded(home, tmp_path, mode, per_slot):
+    """슬롯 2개를 더하면 git 호출은 슬롯당 고정 수만큼만 는다 — `git submodule status` 0회, 부모 기록과
+    stash 목록은 저장소 공용 값이라 조회 1회에 한 번씩만 읽는다(T-0961 · 엔진 create_slot 슬롯)."""
+    _origin_bare(home, "app")
+    _ledger(home, [])
+    script = tmp_path / "slot_lifecycle.py"
+    script.write_text(_SLOT_LIFECYCLE_SOURCE, encoding="utf-8")
+    _slot_lifecycle(home, script, "create")
+    one_slot = _status_git_calls(home, tmp_path, mode, "1")
+    _slot_lifecycle(home, script, "create")
+    _slot_lifecycle(home, script, "create")
+    three_slots = _status_git_calls(home, tmp_path, mode, "3")
+
+    assert len(three_slots) - len(one_slot) <= 2 * per_slot, three_slots
+    for calls in (one_slot, three_slots):
+        assert not any("submodule" in argv for argv in calls)
+        assert sum(1 for argv in calls if _PARENT_RECORDS_READ in argv) == 1
+        assert sum(1 for argv in calls if argv[-3:] == _STASH_LIST_READ) == 1
+
+
+# 홈 사본 엔진으로 인자로 받은 저장소의 슬롯을 만든다(`_SLOT_LIFECYCLE_SOURCE` 의 create 와 같은 호출).
+_CREATE_REPO_SLOT_SOURCE = '''\
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("worktree_pool_repo_slot", sys.argv[1])
+worktree_pool = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(worktree_pool)
+print(worktree_pool.create_slot(sys.argv[2], base="trunk", init_submodules=False).slot)
+'''
+
+
+@_git_required
+def test_status_repo_reads_stay_per_repo(home, tmp_path):
+    """저장소 공용 값(부모 기록·stash 목록)은 저장소마다 따로 읽힌다 — 두 저장소 홈의 조회 1회에서 app 슬롯과
+    lib 슬롯이 각자 저장소의 stash 수·자식 기록을 받고, 두 값은 저장소마다 한 번씩만 읽힌다(T-0961)."""
+    for repo in ("app", "lib"):
+        _origin_bare(home, repo)
+    _ledger(home, [])
+    script = tmp_path / "create_repo_slot.py"
+    script.write_text(_CREATE_REPO_SLOT_SOURCE, encoding="utf-8")
+    app_slot, lib_slot = (_slot_lifecycle(home, script, repo) for repo in ("app", "lib"))
+    for slot, count in ((app_slot, 1), (lib_slot, 2)):
+        for index in range(count):
+            _write(home / slot / "README.md", f"stash {index}\n")
+            _git(home / slot, "stash", "push", "-q", "-m", f"stash {index}")
+    lib_bare = home / ".repos" / "lib.git"
+    _git(lib_bare, "branch", "lib-child", "lib_1")
+    _git(lib_bare, "config", "branch.lib-child.pm-parent", "lib_1")
+    _git(lib_bare, "config", "branch.lib-child.pm-fork", _git(lib_bare, "rev-parse", "lib_1").stdout.strip())
+
+    driver = tmp_path / "git_count.py"
+    driver.write_text(_GIT_COUNT_SOURCE, encoding="utf-8")
+    out = tmp_path / "git-calls-two-repos.json"
+    done = subprocess.run(
+        [sys.executable, str(driver), str(out),
+         str(home / ".project_manager" / "tools" / "pm_config.py"), "status", "--json"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(home), timeout=300)
+    record = json.loads(out.read_text(encoding="utf-8"))
+    assert record["rc"] == 0, done.stderr
+    rows = {row["slot"]: row for row in json.loads(done.stdout)["slots"]}
+    assert (rows[app_slot]["stashes"], rows[app_slot]["children"]) == (1, [])
+    assert (rows[lib_slot]["stashes"], rows[lib_slot]["children"]) == (2, ["lib-child"])
+    assert sum(1 for argv in record["calls"] if _PARENT_RECORDS_READ in argv) == 2
+    assert sum(1 for argv in record["calls"] if argv[-3:] == _STASH_LIST_READ) == 2
 
 
 @_git_required
