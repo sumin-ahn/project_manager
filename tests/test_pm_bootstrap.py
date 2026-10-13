@@ -467,24 +467,6 @@ def test_resolve_log_file_standalone_uses_repo_anchor(bootstrap, tmp_path):
     )
 
 
-# ── main() 인자 가드: --branch/--resume repo-필수 검사가 auto-resolve **앞**이다 (T-0327) ──
-
-
-def _spy_never_called(msg: str):
-    """호출되면 AssertionError 로 즉시 실패하는 `_resolve_session_slot` 대역 + 호출 플래그."""
-    flag = {"called": False}
-
-    def _spy():
-        flag["called"] = True
-        raise AssertionError(msg)
-
-    return _spy, flag
-
-
-
-
-
-
 # ── F1 --task 배선 (main·⑥ 예약 거부·auto-slot 제외·T-0353) ─────────────────
 
 

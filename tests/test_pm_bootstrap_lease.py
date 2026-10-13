@@ -673,67 +673,9 @@ def test_auto_slot_parses_nonone_slot_number(bootstrap, tmp_path):
     assert (resolved.key, resolved.slot) == ("project_manager_3", "work/project_manager_3")
 
 
-# ── 11b. _resolve_session_slot — guarded 슬롯해소 (default-1 + fail-loud·T-0178) ──
-# `_auto_slot`(순수 resolver·"정확히 1 슬롯") 과 달리 session-entry 용 — repo-안 default-1
-# (slot1>단독>fail-loud). solo(멀티-PM 미셋업)는 None(fail-soft), ambiguous(under-specified)
-# 는 SlotResolutionError 로 fail-loud. _write_areas/_write_leases hermetic seam 재사용.
-
-
 def _lease(repo: str, n: int, state: str = "leased") -> dict:
     """worktree-leases.json 엔트리 1개 (`work/<repo>_<N>`·기본 leased·idle 회귀용 state 인자)."""
     return {"slot": f"work/{repo}_{n}", "repo": repo, "session": f"{repo}_{n}", "state": state}
-
-
-def _resolve(bootstrap, tmp_path, repos: list[str], lease_entries: list[dict] | None):
-    """areas/leases 파일 seam 을 깔고 _resolve_session_slot 을 hermetic 하게 호출한다.
-
-    `lease_entries=None` 이면 장부 파일을 *만들지 않는다*(부재). 빈 리스트면 빈 장부.
-    """
-    areas = tmp_path / "areas.md"
-    leases = tmp_path / "worktree-leases.json"
-    _write_areas(areas, repos)
-    if lease_entries is not None:
-        _write_leases(leases, lease_entries)
-    return bootstrap._resolve_session_slot(areas_file=areas, leases_file=leases)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# ── 11c. idle(반납) 슬롯 필터 — leased 만 라우팅 (codex must-fix·ADR-0035 활성 연속성) ──
-# default-1 이 permissive 해지며 idle 슬롯으로 라우팅하던 결함을 닫는다 — `_repo_slot_numbers`
-# 가 state=="leased" 만 센다. idle 은 죽은 세션이라 슬롯 판정/연속성 대상이 아니다.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # ── _auto_slot idle 필터 영향 (공유 헬퍼·의도된 변화·codex 영향 분석) ──────────
@@ -767,28 +709,6 @@ def test_auto_slot_all_idle_returns_none(bootstrap, tmp_path):
     _write_areas(areas, ["project_manager"])
     _write_leases(leases, [_lease("project_manager", 1, "idle")])
     assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) is None
-
-
-# ── 12. main() 자동 세팅 분기 — 둘 다 None 일 때만 guarded 해소 적용 (T-0178) ──
-# PmBootstrap.run 을 stub 으로 갈아끼워 받은 repo/slot 인자만 캡처한다(실 worktree_pool
-# 동적로드·git/장부 미접촉). main() 은 `_resolve_session_slot`(guarded·default-1+fail-loud)
-# 을 부르므로 그걸 monkeypatch 로 결정값/예외 주입한다(분기만 검증).
-
-
-class _CaptureBootstrap:
-    """run() 이 받은 repo/slot 을 클래스 변수에 캡처하는 stub (실행 부작용 없음)."""
-    last: dict | None = None
-
-    def run(self, **kwargs):
-        type(self).last = kwargs
-        return 0
-
-
-def _patch_main_stub(bootstrap, monkeypatch, auto_result):
-    """main() 의 _resolve_session_slot 을 결정값으로, PmBootstrap 을 캡처 stub 으로 교체."""
-    _CaptureBootstrap.last = None
-    monkeypatch.setattr(bootstrap, "_resolve_session_slot", lambda: auto_result)
-    monkeypatch.setattr(bootstrap, "PmBootstrap", _CaptureBootstrap)
 
 
 # ── 13. _worktree_cwd — git/pytest 러너 worktree cwd 자동해소 (T-0125·T-0124 동형) ─

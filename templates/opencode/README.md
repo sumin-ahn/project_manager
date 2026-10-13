@@ -96,7 +96,8 @@ pm_import 가 이를 **추측 없이 `opencode models` 결정적 조회**로 해
 
 subagent 카드(architect·developer·developer-hard·code-reviewer·researcher)의 `model:`·`variant:` 는
 `{{DELEGATE_MODEL_<ROLE>}}`·`{{DELEGATE_REASONING_<ROLE>}}` 이고 local.conf `delegate.<role>.model`·
-`.reasoning` 값으로 채워진다. 값이 없으면 줄이 주석으로 바뀌어 opencode 기본 모델로 뜬다.
+`.reasoning` 값으로 채워진다(developer-hard 는 `delegate.developer.hard.model`·
+`delegate.developer.hard.reasoning`). 값이 없으면 줄이 주석으로 바뀌어 opencode 기본 모델로 뜬다.
 
 ## 갱신 채널 (채택자 관점 · ADR-0058)
 

@@ -61,8 +61,7 @@ sidecar는 파생 캐시다.
 
 추가된 슬롯은 idle 이다. task 가 쓰려면 `./pm-config.sh alloc <repo> --task <task>` 로 빌린다(task 가
 없으면 먼저 `./pm-config.sh task new <task>`). 처음부터 그 task 에 붙일 슬롯이면
-`./pm-config.sh worktree add <repo> --task <task> --user-ack <repo>` 로 만든다. 세션 시작(`/pm-bootstrap --task <task>`)은 사용자가 정한다. 슬롯을 만든 세션이 이 안내를
-자기 지시로 읽고 자동 실행하지 않는다(생성 직후 자기-할당은 차단 대상 사고 클래스다).
+`./pm-config.sh worktree add <repo> --task <task> --user-ack <repo>` 로 만든다. 세션 시작(`/pm-bootstrap --task <task>`)은 사용자가 정한다.
 
 `--readonly`는 코드 읽기와 PM 홈 wiki(domain·architecture·status) 작성용 공유 기준면이다. detached
 HEAD(released base), role=readonly, session/pid·배타 대여가 없다. 무소유 공유 자산이므로

@@ -1230,6 +1230,38 @@ def test_t0960_card_flow_runs_first_try_in_both_board_shapes(tmp_path, monkeypat
     assert _card_ticket(dest, tid).parent.name == "claimed", _card_ticket(dest, tid)
 
 
+def test_t0960_pm_env_skill_matches_card_alloc_flow():
+    """[[T-0960]] 리뷰 F-001 — pm-env 의 worktree add 절은 카드·ADOPT 와 같은 alloc 대여 흐름을 안내한다.
+
+    카드와 ADOPT 는 PM 이 alloc 으로 작업 폴더를 빌리라고 하므로, 그 안내 뒤에 생성 직후 대여를 금지로 읽히는
+    문장(지워진 바인딩 안내에 붙어 있던 것)이 없다. 세션 시작은 사용자가 정하고 `--user-ack` 를 세션이 스스로
+    붙이지 않는다는 문장은 남는다. 원본과 채택자에게 깔리는 사본 전부를 본다.
+    """
+    skills = [_WAVE_SKILLS / "pm-env" / "SKILL.md",
+              *sorted((REPO / "templates").glob("*/*/skills/pm-env/SKILL.md")),
+              *sorted((REPO / "templates").glob("*/*/command/pm-env.md"))]
+    assert len(skills) == 5, skills
+    for path in skills:
+        section = _markdown_section(path.read_text(encoding="utf-8"), "## worktree add")
+        assert "alloc <repo> --task <task>" in section, (path, section)
+        assert "worktree add <repo> --task <task> --user-ack <repo>" in section, (path, section)
+        assert "은 사용자가 정한다" in section and "스스로 부착하지 않는다" in section, (path, section)
+        assert "자기-할당" not in section and "자기 지시로 읽고" not in section, (path, section)
+
+
+def test_t0960_template_readmes_name_delegate_hard_keys():
+    """[[T-0960]] 리뷰 F-003 — codex·opencode README 의 local.conf 키 서술이 developer-hard 의 hard 티어 키를 밝힌다.
+
+    렌더는 developer-hard 카드 값을 `delegate.developer.hard.*` 에서 읽는다(pm_render.DELEGATE_MODEL_CONF_KEYS).
+    역할 이름을 그대로 넣은 `delegate.developer-hard.*` 는 읽지 않아 카드의 model 줄이 주석으로 남는다.
+    """
+    for name in ("codex", "opencode"):
+        text = (REPO / "templates" / name / "README.md").read_text(encoding="utf-8")
+        for key in ("delegate.developer.hard.model", "delegate.developer.hard.reasoning"):
+            assert key in text, (name, key)
+        assert "delegate.developer-hard." not in text, name
+
+
 def test_t0956_card_integration_folder_merges_code_change(tmp_path):
     """[[T-0956]] AT-014 — 작업 폴더 2개면 카드 경고대로 `--repo --slot` 을 붙여 코드 변경이 머지된다.
 

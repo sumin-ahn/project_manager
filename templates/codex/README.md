@@ -150,7 +150,8 @@ instance-owned 어댑터 config는 manifest 밖이라 byte-copy 전파를 타지
 
 > Windows 는 `pm-import.cmd`. `.codex/agents/*.toml` 의 `model`·`model_reasoning_effort` 는 렌더 토큰
 > (`{{DELEGATE_MODEL_<ROLE>}}`·`{{DELEGATE_REASONING_<ROLE>}}`)이고 import·update 가 local.conf
-> `delegate.<role>.model`·`delegate.<role>.reasoning` 값으로 채운다. 값이 없으면 그 줄이 주석(TODO)으로
+> `delegate.<role>.model`·`delegate.<role>.reasoning` 값으로 채운다(developer-hard 는
+> `delegate.developer.hard.model`·`delegate.developer.hard.reasoning`). 값이 없으면 그 줄이 주석(TODO)으로
 > 바뀌어 사용자 config 기본 모델을 상속한다. opencode 의 `{{OPENCODE_PRO_MODEL}}` 조회 단계는 codex 에
 > 없다. 기존 인스턴스에 codex 를 얹으려면 `add-harness codex`(opencode 공존 시 공통 코어 `AGENTS.md` 가
 > byte-identical → git-safe skip·무충돌).

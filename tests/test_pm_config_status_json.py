@@ -1143,6 +1143,52 @@ def test_status_git_calls_per_slot_are_bounded(home, tmp_path, mode, per_slot):
         assert sum(1 for argv in calls if argv[-3:] == _STASH_LIST_READ) == 1
 
 
+# 홈 사본 엔진으로 인자로 받은 저장소의 슬롯을 만든다(`_SLOT_LIFECYCLE_SOURCE` 의 create 와 같은 호출).
+_CREATE_REPO_SLOT_SOURCE = '''\
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("worktree_pool_repo_slot", sys.argv[1])
+worktree_pool = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(worktree_pool)
+print(worktree_pool.create_slot(sys.argv[2], base="trunk", init_submodules=False).slot)
+'''
+
+
+@_git_required
+def test_status_repo_reads_stay_per_repo(home, tmp_path):
+    """저장소 공용 값(부모 기록·stash 목록)은 저장소마다 따로 읽힌다 — 두 저장소 홈의 조회 1회에서 app 슬롯과
+    lib 슬롯이 각자 저장소의 stash 수·자식 기록을 받고, 두 값은 저장소마다 한 번씩만 읽힌다(T-0961)."""
+    for repo in ("app", "lib"):
+        _origin_bare(home, repo)
+    _ledger(home, [])
+    script = tmp_path / "create_repo_slot.py"
+    script.write_text(_CREATE_REPO_SLOT_SOURCE, encoding="utf-8")
+    app_slot, lib_slot = (_slot_lifecycle(home, script, repo) for repo in ("app", "lib"))
+    for slot, count in ((app_slot, 1), (lib_slot, 2)):
+        for index in range(count):
+            _write(home / slot / "README.md", f"stash {index}\n")
+            _git(home / slot, "stash", "push", "-q", "-m", f"stash {index}")
+    lib_bare = home / ".repos" / "lib.git"
+    _git(lib_bare, "branch", "lib-child", "lib_1")
+    _git(lib_bare, "config", "branch.lib-child.pm-parent", "lib_1")
+    _git(lib_bare, "config", "branch.lib-child.pm-fork", _git(lib_bare, "rev-parse", "lib_1").stdout.strip())
+
+    driver = tmp_path / "git_count.py"
+    driver.write_text(_GIT_COUNT_SOURCE, encoding="utf-8")
+    out = tmp_path / "git-calls-two-repos.json"
+    done = subprocess.run(
+        [sys.executable, str(driver), str(out),
+         str(home / ".project_manager" / "tools" / "pm_config.py"), "status", "--json"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(home), timeout=300)
+    record = json.loads(out.read_text(encoding="utf-8"))
+    assert record["rc"] == 0, done.stderr
+    rows = {row["slot"]: row for row in json.loads(done.stdout)["slots"]}
+    assert (rows[app_slot]["stashes"], rows[app_slot]["children"]) == (1, [])
+    assert (rows[lib_slot]["stashes"], rows[lib_slot]["children"]) == (2, ["lib-child"])
+    assert sum(1 for argv in record["calls"] if _PARENT_RECORDS_READ in argv) == 2
+    assert sum(1 for argv in record["calls"] if argv[-3:] == _STASH_LIST_READ) == 2
+
+
 @_git_required
 def test_status_json_slot_rows_include_folders(home):
     _origin_bare(home, "app")
