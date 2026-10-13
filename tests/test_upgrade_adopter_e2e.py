@@ -136,7 +136,7 @@ def test_t0927_old_process_boundary_requires_fresh_run2(t0927_old_adopter, t0927
     assert "ctx.precompact_at_pct=90" in text
 
 
-def _t0954_self_row(dest: Path) -> tuple[str, str]:
+def _t0956_self_row(dest: Path) -> tuple[str, str]:
     """채택자 areas.md 폴더 이름 행의 (git, base) — 정확히 1행이어야 한다."""
     lines = [line.strip() for line in
              (dest / ".project_manager/areas.md").read_text(encoding="utf-8").splitlines()
@@ -149,8 +149,8 @@ def _t0954_self_row(dest: Path) -> tuple[str, str]:
     return own[0].get("git", ""), own[0].get("base", "")
 
 
-def test_t0954_v1713_self_row_filled_by_update(t0927_installed_adopter):
-    """[[T-0954]] AT-007 — v1.7.13 사본의 빈 자기 행을 갱신 이관이 채운다.
+def test_t0956_v1713_self_row_filled_by_update(t0927_installed_adopter):
+    """[[T-0956]] AT-008 — v1.7.13 사본의 빈 자기 행을 갱신 이관이 채운다.
 
     1차 갱신은 옛 갱신기 프로세스라 이관을 모른다(빈 칸 그대로). 그 뒤 dry-run 은 기록 예정만
     알리고 쓰지 않는다. 2차 갱신이 git=홈 절대경로·base=현재 브랜치를 채우고, 3차는 아무것도
@@ -158,11 +158,11 @@ def test_t0954_v1713_self_row_filled_by_update(t0927_installed_adopter):
     """
     dest = t0927_installed_adopter
     areas = dest / ".project_manager/areas.md"
-    assert _t0954_self_row(dest) == ("", "")
+    assert _t0956_self_row(dest) == ("", "")
 
     run1 = _t0927_direct_update(dest)
     assert run1.returncode == 0, f"{run1.stdout}\n{run1.stderr}"
-    assert _t0954_self_row(dest) == ("", "")
+    assert _t0956_self_row(dest) == ("", "")
 
     before = areas.read_bytes()
     dry = _t0927_direct_update(dest, "--dry-run")
@@ -174,7 +174,7 @@ def test_t0954_v1713_self_row_filled_by_update(t0927_installed_adopter):
     assert run2.returncode == 0, f"{run2.stdout}\n{run2.stderr}"
     branch = subprocess.run(["git", "-C", str(dest), "symbolic-ref", "--short", "HEAD"],
                             capture_output=True, text=True, encoding="utf-8").stdout.strip()
-    assert _t0954_self_row(dest) == (str(dest.resolve()), branch)
+    assert _t0956_self_row(dest) == (str(dest.resolve()), branch)
     assert "자기 행 git·base 기록:" in run2.stdout, run2.stdout
 
     filled = areas.read_bytes()
@@ -1397,7 +1397,7 @@ def _t0585_pm_update_source() -> str:
     rev 기록의 구 키 writer 대체 경로도 지웠다. 이 fixture 의 형제 사본은 현행이라 그 분기들은 두
     실행 모두에서 발화하지 않았다(역적용 없이 지문만 갱신).
 
-    T-0954 — 흡수 말미 이관 `fill_self_repo_row`(areas.md 자기 행의 빈 git·base 채움)를 더하고
+    T-0956 — 흡수 말미 이관 `fill_self_repo_row`(areas.md 자기 행의 빈 git·base 채움)를 더하고
     `_main` 의 `do_migrate` 세 분기에서 기존 `migrate_renamed_conf_keys(...)` 바로 다음에 부르게 했다.
     역적용 delta 의 marker 는 전부 `sync_adapter_configs`/훅 세트 게이트·전달 분기 쪽이라 이 추가와
     겹치지 않고 그대로 유일 해소됐다(marker assert·anachronism 부재 단언 선통과). 배달 경계
@@ -1598,7 +1598,7 @@ def _pre_t0876_pm_update_source() -> str:
     그 세대는 그 실패를 '다름'으로 흡수해 source 부재 rc2 까지 갔다. conf 락의 구세대 사본 호환과
     rev 기록의 구 키 writer 대체 경로 삭제는 형제 사본이 현행인 이 fixture 에서 발화하지 않는다.
     합성본 지문만 갱신했다.
-    T-0954 — 흡수 말미 이관 `fill_self_repo_row`(areas.md 자기 행의 빈 git·base 채움)를 더하고
+    T-0956 — 흡수 말미 이관 `fill_self_repo_row`(areas.md 자기 행의 빈 git·base 채움)를 더하고
     `do_migrate` 세 분기의 `migrate_renamed_conf_keys(...)` 다음에서 부르게 했다. 퇴역 경로
     delta(T-0878·T-0876)의 exact-marker 는 그 절 밖이라 그대로 유일 해소되고(marker assert 선통과),
     RUN1 이 검증하는 배달 경계(신 reviewer 설치 → 두 번째 실행의 구 파일 퇴역)도 무편집이다. 이관이

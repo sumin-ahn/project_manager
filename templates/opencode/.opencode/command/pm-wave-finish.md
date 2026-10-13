@@ -18,7 +18,7 @@ audience: pm-internal
 
 ```bash
 # 묶음 종결 — 고정 6단계
-python3 .project_manager/tools/ticket_finish.py --cluster <C-이름>
+python3 .project_manager/tools/ticket_finish.py --cluster <C-이름>   # cluster new 로 선언한 묶음 (발행이 만든 C-T-NNNN 은 종결 대상이 아니다)
 # 티켓 표기도 같은 경로다 — 그 티켓이 속한 묶음 전체를 종결한다(크기 1이면 티켓 하나)
 python3 .project_manager/tools/ticket_finish.py T-NNNN
 ```

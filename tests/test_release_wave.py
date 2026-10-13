@@ -70,7 +70,7 @@ _GROWTH_PIPELINE = (
     (_DEV_SUBAGENT, "LIVE_TICKET_FINAL_FIX_PERSISTED"),
 )
 _WAVE_TEST_FILE = "tests/test_release_wave_probe.py"
-# full wave 의 작업 폴더 형상([[T-0954]]) — task `wave` 가 작업 폴더 2개를 보유한다. 1번은 base_branch 를
+# full wave 의 작업 폴더 형상([[T-0956]]) — task `wave` 가 작업 폴더 2개를 보유한다. 1번은 base_branch 를
 # 계속 드는 통합 폴더, 2번은 묶음 브랜치 `task/wave` 로 전환한 작업 폴더다(커맨드 카드의 통합 폴더 형상).
 _WAVE_TASK = "wave"
 _WAVE_CLUSTER = "wave"
@@ -366,7 +366,7 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
     관측한다. `section-add`는 여기서 쓰지 않는다 — 슬롯 없는 준비라 위임 경로와 겹치면 빈 라운드가
     하나 더 예약된다. 기존 Claude/OpenCode full-wave 호출을 재사용해 별도 native 중복 테스트를 만들지 않는다.
 
-    작업 폴더 형상은 `_guided_adopter(folders=2, task=wave)` 다([[T-0954]]·커맨드 카드의 통합 폴더 형상):
+    작업 폴더 형상은 `_guided_adopter(folders=2, task=wave)` 다([[T-0956]]·커맨드 카드의 통합 폴더 형상):
     1번 폴더가 base_branch 를 계속 드는 통합 폴더, 2번 폴더가 묶음 브랜치 `task/wave` 로 전환한 작업
     폴더다. 2개를 빌린 task 는 `--task` 만으로 폴더를 고를 수 없어 발행·claim 은 `--slot 2`, 묶음 선언은
     `--slot 1` 로 지목한다. 생성 회귀 테스트는 작업 폴더에서 홈 보드를 보지 못하므로 자기 파일 기준
@@ -568,7 +568,7 @@ def _assert_wave_side_effects(dest: Path, proc: subprocess.CompletedProcess, har
     """full wave side-effect 단언 — developer 산출이 통합 브랜치에 머지·ticket 이 done/ 도달.
 
     probe.txt(내용 'hello from dev') = developer 서브에이전트가 위임받아 구현했다는 증거이고, 그것이
-    묶음 `wave` 의 base_branch(통합 브랜치)에 있어야 종결의 머지까지 끝난 것이다([[T-0954]]·통합 폴더
+    묶음 `wave` 의 base_branch(통합 브랜치)에 있어야 종결의 머지까지 끝난 것이다([[T-0956]]·통합 폴더
     형상). 지정 테스트 재실행은 그 브랜치를 든 통합 폴더에서 한다. done/ 도달·라운드 순서·sentinel 은
     홈 보드를 본다. 모두 출력 phrasing 비결정에 강건한 side-effect.
     """
@@ -650,7 +650,7 @@ def _assert_wave_side_effects(dest: Path, proc: subprocess.CompletedProcess, har
 def _baseline_adopter(dest: Path) -> None:
     """설치한 채택자의 첫 커밋을 host 가 만든다 — 작업 폴더(bare clone)와 Codex 의 이후 커밋의 전제.
 
-    커밋 0개 원본으로는 작업 폴더를 만들 수 없다(`repo add` 가 빈 bare 를 거부·[[T-0954]]). throwaway
+    커밋 0개 원본으로는 작업 폴더를 만들 수 없다(`repo add` 가 빈 bare 를 거부·[[T-0956]]). throwaway
     adopter에는 remote가 없고, 테스트 전용 identity도 repo config에 남기지 않는다.
     """
     commands = (
@@ -680,7 +680,7 @@ def _baseline_adopter(dest: Path) -> None:
 
 
 def _guided_adopter(tmp_path: Path, harness: str, *, task: str, folders: int) -> Path:
-    """엔진 안내 경로 그대로 첫 작업 폴더를 만든 채택자([[T-0954]]).
+    """엔진 안내 경로 그대로 첫 작업 폴더를 만든 채택자([[T-0956]]).
 
     설치 → 기준 커밋 → 안내 명령 `pm-config worktree add <repo> --user-ack <repo>` 를 `folders` 번 →
     `pm-config task new <task>` → `pm-config alloc <repo> --task <task>` 를 `folders` 번. 그 task 가
@@ -1663,7 +1663,7 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     # 프롬프트는 "직접 board.py complete 는 거부된다" 를 **설명으로** 담는다. 금지 대상은
     # 그 설명이 아니라 옛 처방 커맨드 자체다.
     assert "board.py complete <ticket> --tests-pass" not in prompt
-    # 통합 폴더 형상([[T-0954]]) — 발행·claim 은 작업 폴더(2번), 묶음 선언은 통합 폴더(1번)를 지목하고
+    # 통합 폴더 형상([[T-0956]]) — 발행·claim 은 작업 폴더(2번), 묶음 선언은 통합 폴더(1번)를 지목하고
     # 작업 폴더를 묶음 브랜치로 옮긴 뒤 라운드를 연다.
     flat = re.sub(r"\s+", " ", prompt)
     assert "--task wave --repo adopter-claude --slot 2 --touches probe.txt," in flat
@@ -2033,8 +2033,8 @@ def test_wave_side_effect_guard_rejects_ephemeral_run_hash(tmp_path, monkeypatch
         _assert_wave_side_effects(dest, proc, "hermetic")
 
 
-def test_t0954_wave_adopter_fixture_creates_guided_work_folders(tmp_path):
-    """[[T-0954]] AT-009 — 공용 픽스처가 안내 경로로 작업 폴더 2개를 만들고 task 가 둘 다 보유한다.
+def test_t0956_wave_adopter_fixture_creates_guided_work_folders(tmp_path):
+    """[[T-0956]] AT-009 — 공용 픽스처가 안내 경로로 작업 폴더 2개를 만들고 task 가 둘 다 보유한다.
 
     기준 커밋 → 안내 명령 2회 → task new → alloc 2회. 자기 행 git·base 는 설치가 채웠고 공유 bare 의
     HEAD 가 해소된다(빈 bare 아님).

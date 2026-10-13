@@ -624,8 +624,8 @@ def test_real_clone_creates_origin_main_tracking_ref(pc, tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git 바이너리 부재 (실 clone 불가)")
-def test_t0954_repo_add_refuses_zero_commit_source(pc, tmp_path, capsys):
-    """[[T-0954]] AT-003 — 커밋 0개 원본·조회 불가 원본은 clone 전에 rc 1 로 멈춘다.
+def test_t0956_repo_add_refuses_zero_commit_source(pc, tmp_path, capsys):
+    """[[T-0956]] AT-004 — 커밋 0개 원본·조회 불가 원본은 clone 전에 rc 1 로 멈춘다.
 
     실제 git 으로 만든 원본을 실 runner(`_real_clone_runner`)로 조회한다. 두 경우 모두 repos
     폴더 아래 bare 도 areas 등록도 없다. 같은 원본에 첫 커밋을 한 뒤에는 그대로 rc 0 이고 bare

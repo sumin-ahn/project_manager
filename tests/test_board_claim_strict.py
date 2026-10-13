@@ -1201,7 +1201,7 @@ def test_ticket_mutations_pass_scoped_paths():
     # 12 = ticket mutation 9(new·promote·complete·discard·reopen·block·unclaim·unblock +
     # section-add/tier 공용 helper) + `init` 의 areas repo 행 등록(T-0779 — 등록 행도 board git
     # 의 공유 파일이라 같은 스코프 채널로 기록한다) + `cluster new`(묶음 장부·멤버 명세)
-    # + 갱신 이관 `fill_self_repo_row`(T-0954 — 자기 행 git·base 채움·areas.md 만).
+    # + 갱신 이관 `fill_self_repo_row`(T-0956 — 자기 행 git·base 채움·areas.md 만).
     # `cluster replan`은 고정 5단계 계약에서 폐지됐다.
     assert len(calls) == 12, \
         f"best-effort sync 호출이 12곳이 아님(신규/삭제 시 이 가드를 함께 갱신): {len(calls)}"

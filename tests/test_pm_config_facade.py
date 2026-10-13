@@ -1725,7 +1725,7 @@ def test_worktree_add_stays_green_when_the_exclude_install_fails(pc, tmp_path, c
     """규칙 설치 실패는 경고일 뿐 슬롯 생성을 막지 않는다 (fail-soft·훅 설치와 같은 계약).
 
     bare 는 있되 그 안 `info` 를 파일로 만들어 `info/exclude` 쓰기를 실패시킨다. bare 부재는
-    규칙 실패가 아니라 hydrate 경로다([[T-0954]] `test_t0954_worktree_add_hydrates_missing_bare`).
+    규칙 실패가 아니라 hydrate 경로다([[T-0956]] `test_t0956_worktree_add_hydrates_missing_bare`).
     """
     wp = FakeWorktreePool()
     board = FakeBoard(repo_bases=_SVC_BASE, repo_protecteds={"svc": ["main"]})
@@ -1757,8 +1757,8 @@ class _LsRemoteRecorder(FakeGitRecorder):
         return super().__call__(argv)
 
 
-def test_t0954_worktree_add_hydrates_missing_bare(pc, tmp_path, monkeypatch, capsys):
-    """[[T-0954]] AT-004 — bare 부재면 `create_slot` 전에 areas `git` 주소로 clone 한다.
+def test_t0956_worktree_add_hydrates_missing_bare(pc, tmp_path, monkeypatch, capsys):
+    """[[T-0956]] AT-005 — bare 부재면 `create_slot` 전에 areas `git` 주소로 clone 한다.
 
     원본 조회(ls-remote)가 rc 2(커밋 0개)면 rc 1 이고 `create_slot` 을 부르지 않는다.
     """

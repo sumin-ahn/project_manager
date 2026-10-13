@@ -55,7 +55,7 @@ import pytest
 # adopter import(hermetic·models 조회 차단)·LLM env 격리(화이트리스트)·ticket 상태 조회.
 from test_fresh_adopter_runtime_smoke import _live_env, _tickets_in
 # release 마커 AST 카운트(자기 파일 pin 가드용) — 마커 소실/개명 방어 도구 재사용. 안내 경로로 첫
-# 작업 폴더를 만든 채택자 픽스처는 full wave 와 공용이다([[T-0954]]).
+# 작업 폴더를 만든 채택자 픽스처는 full wave 와 공용이다([[T-0956]]).
 from test_release_wave import _count_marked_tests, _guided_adopter
 
 REPO = Path(__file__).resolve().parents[1]
@@ -71,7 +71,7 @@ _OPENCODE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_TIMEOUT", "1800"))
 _CLAUDE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_CLAUDE_TIMEOUT", "600"))
 
 # 표준 조작 시퀀스가 발행하는 probe ticket 의 제목. 카드의 발행 줄은 task 의 prefix 를 쓰므로
-# (`--prefix` 를 따로 받지 않는다) 프롬프트도 prefix 를 지시하지 않는다([[T-0954]]).
+# (`--prefix` 를 따로 받지 않는다) 프롬프트도 prefix 를 지시하지 않는다([[T-0956]]).
 PROBE_TITLE = "card usability probe"
 
 # 기대 lifecycle 시퀀스(카드 "티켓 조작") — 라이브 프롬프트가 시키는 조작. 판정은 이 조작들이 실행
@@ -82,7 +82,7 @@ PROBE_TITLE = "card usability probe"
 # direct `board.py complete` 는 결속 없이 거부되고 카드도 그 줄을 싣지 않는다. 카드가 처방하지
 # 않는 명령을 기대 op 로 남기면 이 게이트는 LLM 에게 없는 커맨드를 요구해 라이브에서만 터진다
 # (평시 skip 이라 회귀는 green — 이 파일이 막으려는 false-green 클래스 그대로다).
-# 종결까지의 조작은 카드가 처방한다([[T-0954]]) — 리뷰 없이 닫는 표시(`tier`)·묶음 결속(`cluster
+# 종결까지의 조작은 카드가 처방한다([[T-0956]]) — 리뷰 없이 닫는 표시(`tier`)·묶음 결속(`cluster
 # new`)·작업 폴더 전환(`worktree_pool.py switch`)이 claim 과 종결 사이의 필수 조작이다.
 _EXPECTED_LIFECYCLE_OPS = ("new", "promote", "tier", "cluster", "claim", "switch", "finish")
 
@@ -124,7 +124,7 @@ def _usability_prompt(card: str) -> str:
 
     진입문서(CLAUDE.md/AGENTS.md) 경로를 *주지 않는다* — 카드만으로 커맨드/플래그를 골라야
     통과(= 카드 사용성). 종결까지의 조작(리뷰 없이 닫는 표시·묶음 결속·작업 폴더 전환·완료 조건
-    체크)은 **카드가 처방한다**([[T-0954]]) — 프롬프트는 티켓의 성격(코드 변경 없음·리뷰 라운드 없이
+    체크)은 **카드가 처방한다**([[T-0956]]) — 프롬프트는 티켓의 성격(코드 변경 없음·리뷰 라운드 없이
     닫음)만 말하고 그 명령과 이름을 쓰지 않는다. 카드만 보는 새 채택자가 닫을 수 있어야 하기
     때문이다. 회귀 게이트 만족(`--no-pytest`)만 카드 밖 사실로 명시한다 — 채택자 fresh 트리에는 test
     스위트가 없다. 로그 한 줄은 지시하지 않는다(종결이 log 골격을 만든다·경계 실측 E17).
@@ -205,7 +205,7 @@ _OP_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 # 스크립트 자신이 곧 조작인 도구 — `board.py <op>` 와 달리 서브커맨드가 없다(카드의 강등 엔진 줄).
 # `ticket_finish.py` = /pm-wave-finish 의 엔진이고 그것이 카드의 유일한 완료 진입이다.
 _SCRIPT_OPS = {"pm_handoff.py": "handoff", "ticket_finish.py": "finish"}
-# 첫 하위 명령이 곧 조작인 도구 — 카드의 작업 폴더 전환은 `worktree_pool.py switch` 다([[T-0954]]).
+# 첫 하위 명령이 곧 조작인 도구 — 카드의 작업 폴더 전환은 `worktree_pool.py switch` 다([[T-0956]]).
 # board.py 에는 switch 하위 명령이 없어 조작 이름이 겹치지 않는다.
 _SUBCOMMAND_TOOLS = frozenset({"board.py", "worktree_pool.py"})
 # `board.py cluster` 는 다음 토큰이 이 이름일 때만 묶음 결속 조작이다 — `cluster show` 는 읽기라 반복 무해.
@@ -653,7 +653,7 @@ def _attempt_with_single_rerun(run_attempt) -> tuple[bool, str]:
 def _import_attempt(tmp_path: Path, harness: str, attempt: int) -> Path:
     """시도별 fresh adopter — 재실행이 이전 시도 state 를 재사용하지 않게 유니크 디렉토리.
 
-    엔진 안내 경로로 첫 작업 폴더 1개를 만들고 카드 task 가 보유한 채로 시작한다([[T-0954]]).
+    엔진 안내 경로로 첫 작업 폴더 1개를 만들고 카드 task 가 보유한 채로 시작한다([[T-0956]]).
     """
     attempt_dir = tmp_path / f"{harness}-attempt{attempt}"
     attempt_dir.mkdir(parents=True, exist_ok=True)
@@ -817,8 +817,8 @@ def test_expected_lifecycle_ops_are_all_prescribed_by_the_card():
         "카드가 direct complete 를 되살렸다 — 크기 1 묶음 귀속으로 항상 rc=1 이다"
 
 
-def test_t0954_card_prescribes_closing_steps():
-    """[[T-0954]] AT-008 — 첫 티켓을 닫는 조작은 카드가 처방하고 프롬프트는 그 명령을 쓰지 않는다.
+def test_t0956_card_prescribes_closing_steps():
+    """[[T-0956]] AT-010 — 첫 티켓을 닫는 조작은 카드가 처방하고 프롬프트는 그 명령을 쓰지 않는다.
 
     기대 조작은 발행·승격·리뷰 없는 종결 표시·묶음 결속·claim·작업 폴더 전환·종결 7개이고 전부 카드
     실행 줄에서 뽑힌다. 프롬프트 지시부(카드 임베드 앞)에는 그 명령·이름과 옛 prefix·로그 지시가
@@ -837,7 +837,7 @@ def test_t0954_card_prescribes_closing_steps():
     assert "--no-pytest" in instructions
 
 
-# ── 카드 줄 그대로 첫 티켓 닫기 (T-0954 · 비라이브 · 실 채택자 · 실 git) ─────────────────────
+# ── 카드 줄 그대로 첫 티켓 닫기 (T-0956 · 비라이브 · 실 채택자 · 실 git) ─────────────────────
 # 카드 사용성 라이브 시험이 모델에게 기대하는 것을 결정적으로 먼저 증명한다: 렌더된 카드의 실행 줄을
 # 사용자 입력 자리(제목·티켓 번호·묶음 이름·슬롯)만 바꿔 그대로 실행하면 첫 티켓이 done 이 된다.
 _CARD_IDENTITY_ENV = {"GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "user.email",
@@ -863,14 +863,20 @@ def _card_command_lines(card: str) -> dict[tuple[str, str | None], str]:
     return found
 
 
-def _run_card_line(dest: Path, line: str, fills: dict[str, str], extra: Sequence[str] = ()):
-    """카드 줄의 사용자 입력 자리만 채워 그대로 실행한다(cwd=홈) — rc 0 단언."""
+def _card_line_process(dest: Path, line: str, fills: dict[str, str],
+                       extra: Sequence[str] = ()) -> subprocess.CompletedProcess:
+    """카드 줄의 사용자 입력 자리만 채워 그대로 실행한다(cwd=홈 · rc 단언은 호출부)."""
     for placeholder, value in fills.items():
         line = line.replace(placeholder, value)
     argv = shlex.split(line) + list(extra)
-    proc = subprocess.run(argv, cwd=dest, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+    return subprocess.run(argv, cwd=dest, stdin=subprocess.DEVNULL, capture_output=True, text=True,
                           encoding="utf-8", errors="replace", env={**os.environ, **_CARD_IDENTITY_ENV})
-    assert proc.returncode == 0, f"{argv}\n{proc.stdout[-1500:]}\n{proc.stderr[-1500:]}"
+
+
+def _run_card_line(dest: Path, line: str, fills: dict[str, str], extra: Sequence[str] = ()):
+    """카드 줄을 채워 실행하고 rc 0 을 단언한다."""
+    proc = _card_line_process(dest, line, fills, extra)
+    assert proc.returncode == 0, f"{proc.args}\n{proc.stdout[-1500:]}\n{proc.stderr[-1500:]}"
     return proc
 
 
@@ -906,43 +912,132 @@ def _card_fills(tid: str, cluster: str, slot: str) -> dict[str, str]:
             "<이름>": cluster, "<slot>": slot}
 
 
-def test_t0954_card_commands_close_first_ticket(tmp_path):
-    """[[T-0954]] AT-012 — 작업 폴더 1개 채택자에서 카드 줄만으로 코드 변경 없는 첫 티켓이 닫힌다.
+# 카드가 묶음 이름 자리(`cluster new <이름>`) 바로 다음 줄에 싣는 규칙 — 받아들여지는 예시와 거부되는
+# 티켓 ID 모양. 시험은 이 두 값과 `<slot>` 정의를 카드에서 읽는다(시험이 값을 고르지 않는다).
+_CARD_NAME_RULE_RE = re.compile(r"예: `(?P<example>[^`]+)`\).*티켓 ID 모양\(`(?P<reserved>[^`]+)`\)")
+_CARD_SLOT_FORM_RE = re.compile(r"<slot>=(?P<form>[^)\s]+)\)")
+# pm-wave-claim 흐름 카드의 같은 규칙(bash 주석이라 백틱이 없다).
+_SKILL_NAME_RULE_RE = re.compile(r"예: (?P<example>[\w.-]+)\)\. 티켓 ID 모양\((?P<reserved>[^)]+)\)")
+_SKILL_REPO_PLACEHOLDER_RE = re.compile(r"--repo (<[^>]+>)")
+_WAVE_SKILLS = REPO / ".claude" / "skills"
 
-    new·promote·tier·cluster new·claim·switch·ticket_finish 줄을 입력 자리만 바꿔 실행한다. 본문
+
+def _card_name_rule(card: str) -> tuple[str, str]:
+    """카드의 `cluster new <이름>` 바로 다음 줄에서 (예시 이름, 거부되는 티켓 ID 모양) 을 읽는다."""
+    lines = card.splitlines()
+    index = next(i for i, line in enumerate(lines) if "board.py cluster new <이름>" in line)
+    match = _CARD_NAME_RULE_RE.search(lines[index + 1])
+    assert match, f"카드가 묶음 이름 자리의 규칙·예시를 주지 않는다: {lines[index + 1]!r}"
+    return match["example"], match["reserved"]
+
+
+def _card_slot_value(card: str, repo: str, number: int) -> str:
+    """카드의 `<slot>` 정의를 실제 저장소 이름·슬롯 번호로 채운다."""
+    match = _CARD_SLOT_FORM_RE.search(card)
+    assert match, "카드가 <slot> 형식을 정의하지 않는다"
+    return match["form"].replace("<repo>", repo).replace("<N>", str(number))
+
+
+def _created_ticket_id(proc: subprocess.CompletedProcess) -> str:
+    """발행 출력 `created T-NNNN …` 의 티켓 ID."""
+    match = re.search(r"^created (T-\S+) ", proc.stdout, flags=re.M)
+    assert match, proc.stdout
+    return match.group(1)
+
+
+def _load_board_module(home: Path):
+    path = home / ".project_manager" / "tools" / "board.py"
+    spec = importlib.util.spec_from_file_location(f"_card_board_{abs(hash(str(path)))}", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_t0956_card_cluster_name_rule_matches_engine(monkeypatch):
+    """[[T-0956]] AT-012 — 카드·흐름 카드의 묶음 이름 예시는 엔진이 받고 티켓 ID 모양은 거부한다.
+
+    카드 두 렌더(codex 표지 없음·있음 — codex 는 스킬 표기 `$`·codex 절이 붙는다)와 pm-wave-claim
+    흐름 카드가 같은 규칙을 싣는다. 두 흐름 카드의 `--repo` 자리는 저장소 이름 표기(`<repo>`) 하나뿐이고,
+    카드의 `<slot>` 정의는 `release`·`switch` 가 함께 받는 `work/<repo>_<N>` 이다.
+    """
+    board = _load_board_module(REPO)
+    rules = []
+    for codex in (False, True):
+        for key in ("CODEX_THREAD_ID", "CODEX_CI"):
+            monkeypatch.delenv(key, raising=False)
+        if codex:
+            monkeypatch.setenv("CODEX_CI", "1")
+        card = _render_command_card(REPO)
+        rules.append(_card_name_rule(card))
+        assert _CARD_SLOT_FORM_RE.search(card)["form"] == "work/<repo>_<N>"
+    claim_skill = (_WAVE_SKILLS / "pm-wave-claim" / "SKILL.md").read_text(encoding="utf-8")
+    skill_rule = _SKILL_NAME_RULE_RE.search(claim_skill)
+    assert skill_rule, "pm-wave-claim 흐름 카드가 묶음 이름 규칙을 싣지 않는다"
+    rules.append((skill_rule["example"], skill_rule["reserved"]))
+    assert len(set(rules)) == 1, rules
+    example, reserved = rules[0]
+    assert board._validate_cluster_name(example) is None
+    # 카드 표기 `T-NNNN` 의 N 은 숫자 자리다 — 숫자로 채운 티켓 ID 모양을 엔진이 예약으로 거부한다.
+    assert reserved == "T-NNNN"
+    instance = reserved.replace("N", "1")
+    assert board._validate_cluster_name(instance) is not None
+    assert board.is_auto_cluster_id(instance) == instance
+    for name in ("pm-wave-claim", "pm-wave-finish"):
+        text = (_WAVE_SKILLS / name / "SKILL.md").read_text(encoding="utf-8")
+        placeholders = _SKILL_REPO_PLACEHOLDER_RE.findall(text)
+        assert placeholders and set(placeholders) == {"<repo>"}, (name, placeholders)
+
+
+def test_t0956_card_commands_close_first_ticket(tmp_path):
+    """[[T-0956]] AT-013 — 작업 폴더 1개 채택자에서 카드 줄만으로 코드 변경 없는 첫 티켓이 닫힌다.
+
+    new·promote·tier·cluster new·claim·switch·ticket_finish·release 줄의 입력 자리를 카드 문구(묶음 이름
+    예시·`<slot>` 정의)와 발행 출력(티켓 ID)의 값으로만 채워 실행한다. 묶음 이름 자리에 티켓 ID 를 넣은
+    줄(라이브에서 모델이 넣은 값)은 카드가 말한 대로 예약으로 거부되고 아무것도 쓰지 않는다. 본문
     채우기와 완료 조건 체크는 사람(모델) 몫이고, 종결 줄의 `--no-pytest` 는 테스트 스위트가 없는
     채택자라 붙인다(프롬프트가 알리는 카드 밖 사실).
     """
     dest = _guided_adopter(tmp_path, "claude", task=CARD_TASK, folders=1)
-    lines = _card_command_lines(_render_command_card(dest))
-    tid = "T-0001"
-    fills = _card_fills(tid, "card", f"{dest.name}_1")
-    _run_card_line(dest, lines[("board.py", "new")], fills)
+    card = _render_command_card(dest)
+    lines = _card_command_lines(card)
+    example, _reserved = _card_name_rule(card)
+    slot = _card_slot_value(card, dest.name, 1)
+    tid = _created_ticket_id(
+        _run_card_line(dest, lines[("board.py", "new")], {'"<제목>"': '"card probe"'}))
+    fills = _card_fills(tid, example, slot)
     _fill_card_ticket(dest, tid)
-    for key in (("board.py", "promote"), ("board.py", "tier"), ("board.py", "cluster"),
-                ("board.py", "claim"), ("worktree_pool.py", "switch")):
+    for key in (("board.py", "promote"), ("board.py", "tier")):
+        _run_card_line(dest, lines[key], fills)
+    clusters = dest / ".project_manager" / "wiki" / "tickets" / "clusters"
+    before = sorted(path.name for path in clusters.iterdir())
+    refused = _card_line_process(dest, lines[("board.py", "cluster")], _card_fills(tid, tid, slot))
+    assert refused.returncode == 1 and "예약" in refused.stderr, refused.stdout + refused.stderr
+    assert sorted(path.name for path in clusters.iterdir()) == before
+    for key in (("board.py", "cluster"), ("board.py", "claim"), ("worktree_pool.py", "switch")):
         _run_card_line(dest, lines[key], fills)
     _check_card_dod(dest, tid)
     _run_card_line(dest, lines[("ticket_finish.py", None)], fills, extra=("--no-pytest",))
+    _run_card_line(dest, lines[("pm_config.py", "release")], fills)
 
     assert _tickets_in(dest, "done") == {_card_ticket(dest, tid).name}
-    ledger = dest / ".project_manager" / "wiki" / "tickets" / "clusters" / "C-card.md"
-    assert "status: closed" in ledger.read_text(encoding="utf-8")
+    assert "status: closed" in (clusters / f"C-{example}.md").read_text(encoding="utf-8")
 
 
-def test_t0954_card_integration_folder_merges_code_change(tmp_path):
-    """[[T-0954]] AT-013 — 작업 폴더 2개면 카드 경고대로 `--repo --slot` 을 붙여 코드 변경이 머지된다.
+def test_t0956_card_integration_folder_merges_code_change(tmp_path):
+    """[[T-0956]] AT-014 — 작업 폴더 2개면 카드 경고대로 `--repo --slot` 을 붙여 코드 변경이 머지된다.
 
     발행·claim 은 작업 폴더(2번), 묶음 선언은 통합 폴더(1번)를 지목하고 switch 는 2번을 묶음 브랜치로
-    옮긴다. touches 에 선언한 probe.txt 를 2번에서 커밋하면 종결이 통합 브랜치 `<repo>_1` 에 머지한다.
+    옮긴다. 묶음 이름·슬롯은 카드에서, 티켓 ID 는 발행 출력에서 읽는다. touches 에 선언한 probe.txt 를
+    2번에서 커밋하면 종결이 통합 브랜치 `<repo>_1` 에 머지한다.
     """
     dest = _guided_adopter(tmp_path, "claude", task=CARD_TASK, folders=2)
     repo = dest.name
-    lines = _card_command_lines(_render_command_card(dest))
-    tid = "T-0001"
-    fills = _card_fills(tid, "merge", f"{repo}_2")
+    card = _render_command_card(dest)
+    lines = _card_command_lines(card)
     work, integration = ("--repo", repo, "--slot", "2"), ("--repo", repo, "--slot", "1")
-    _run_card_line(dest, lines[("board.py", "new")], fills, extra=work)
+    tid = _created_ticket_id(
+        _run_card_line(dest, lines[("board.py", "new")], {'"<제목>"': '"card probe"'}, extra=work))
+    fills = _card_fills(tid, _card_name_rule(card)[0], _card_slot_value(card, repo, 2))
     _fill_card_ticket(dest, tid, touches=("probe.txt",))
     _run_card_line(dest, lines[("board.py", "promote")], fills)
     _run_card_line(dest, lines[("board.py", "tier")], fills)
@@ -1072,7 +1167,7 @@ def test_judge_commands_passes_clean_first_try_sequence():
 
 
 def test_judge_commands_ignores_read_only_cluster_show():
-    """리뷰 F-002 — 읽기 전용 `board.py cluster show` 는 묶음 결속 조작으로 세지 않는다.
+    """[[T-0956]] AT-011 — 읽기 전용 `board.py cluster show` 는 묶음 결속 조작으로 세지 않는다.
 
     모든 조작이 첫 시도에 1회씩 실행된 명령열에 묶음 확인 한 줄이 섞여도 통과하고, `cluster new`
     를 두 번 실행한 명령열은 여전히 재시도로 실패한다.

@@ -4109,6 +4109,11 @@ class PmBootstrap:
             "/pm-wave-claim T-NNNN", "묶음 선언 + ticket claim + 작업 폴더 전환 · DoD 자족 검증"))
         lines.append(engine(_C_BOARD_CLUSTER_NEW, suffix=ti))
         lines.append(
+            "  ⚠ <이름> 은 새로 짓는 묶음 이름이다(영숫자·`.`·`_`·`-`, 예: `login-fix`). "
+            "티켓 ID 모양(`T-NNNN`)은 발행이 만든 크기 1 장부(`C-T-NNNN`)의 자리라 거부되고, "
+            "그 장부는 새 묶음이 흡수한다."
+        )
+        lines.append(
             "  ⚠ cluster new 는 지목한 폴더의 현재 브랜치를 base_branch(머지 대상)로 적고 "
             "묶음 브랜치 task/<이름> 을 만든다: 통합 폴더를 지목한다."
         )
@@ -4118,7 +4123,7 @@ class PmBootstrap:
         lines.append("  ⚠ claim 은 draft 티켓 거부 — 먼저 `promote T-NNNN`(본문 채운 뒤) 필요.")
         lines.append(engine(
             _C_WP_SWITCH,
-            "스킬이 부르는 내부 엔진·직접 금지 · 작업 폴더(<slot>=<repo>_<N>)를 묶음 브랜치로 전환",
+            "스킬이 부르는 내부 엔진·직접 금지 · 작업 폴더(<slot>=work/<repo>_<N>)를 묶음 브랜치로 전환",
         ))
         lines.append(skill("/pm-regression", "비차단 백그라운드 회귀 pre-warm + 완료 알림"))
         lines.append(engine(_C_BOARD_REGRESSION, suffix=ti))

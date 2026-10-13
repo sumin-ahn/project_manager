@@ -810,16 +810,16 @@ def test_e2e_no_prefix_board_flow(init_board, monkeypatch):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 자기 행 git·base 기록 (T-0954) — 설치(init)와 갱신 이관이 안내 명령의 전제를 채운다
+# 자기 행 git·base 기록 (T-0956) — 설치(init)와 갱신 이관이 안내 명령의 전제를 채운다
 # ════════════════════════════════════════════════════════════════════════
 
-_T0954_ORIGIN = "https://example.invalid/demo.git"
+_T0956_ORIGIN = "https://example.invalid/demo.git"
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
     """실제 git 을 cwd 에서 실행한다 — 커밋 신원은 인자로만 준다(사용자 git 설정 무관)."""
     return subprocess.run(
-        ["git", "-c", "user.email=t0954@example.invalid", "-c", "user.name=t0954", *args],
+        ["git", "-c", "user.email=t0956@example.invalid", "-c", "user.name=t0956", *args],
         cwd=cwd, capture_output=True, text=True, encoding="utf-8", check=True)
 
 
@@ -831,7 +831,7 @@ _UNKNOWN_COORDINATES = "자기 행의 git·base 를 기록하지 못했다"
 
 
 @pytest.mark.parametrize("shape", ["no-origin", "origin", "detached", "not-toplevel"])
-def test_t0954_init_records_self_row_coordinates(init_board, tmp_path, capsys, shape):
+def test_t0956_init_records_self_row_coordinates(init_board, tmp_path, capsys, shape):
     """AT-001 — init 은 자기 행에 git(origin 주소 · 없으면 절대경로)·base(현재 브랜치)를 싣는다.
 
     이 폴더가 git 최상위가 아니거나 HEAD 가 브랜치를 가리키지 않으면 두 칸을 비우고 알림 한 줄을
@@ -841,7 +841,7 @@ def test_t0954_init_records_self_row_coordinates(init_board, tmp_path, capsys, s
     git_root = tmp_path if shape == "not-toplevel" else repo
     _git(git_root, "init", "-q")
     if shape == "origin":
-        _git(repo, "remote", "add", "origin", _T0954_ORIGIN)
+        _git(repo, "remote", "add", "origin", _T0956_ORIGIN)
     if shape == "detached":
         _git(repo, "commit", "-q", "--allow-empty", "-m", "base")
         _git(repo, "checkout", "-q", "--detach")
@@ -851,7 +851,7 @@ def test_t0954_init_records_self_row_coordinates(init_board, tmp_path, capsys, s
     row = _areas_row(init_board, repo.name)
     err = capsys.readouterr().err
     if shape in ("no-origin", "origin"):
-        expected_git = _T0954_ORIGIN if shape == "origin" else str(repo)
+        expected_git = _T0956_ORIGIN if shape == "origin" else str(repo)
         assert (row["git"], row["base"]) == (expected_git, _current_branch(repo))
         assert _UNKNOWN_COORDINATES not in err
     else:
@@ -859,7 +859,7 @@ def test_t0954_init_records_self_row_coordinates(init_board, tmp_path, capsys, s
         assert _UNKNOWN_COORDINATES in err
 
 
-def test_t0954_init_other_repo_name_leaves_coordinates_empty(init_board):
+def test_t0956_init_other_repo_name_leaves_coordinates_empty(init_board):
     """`--repo` 로 폴더와 다른 이름을 등록하면 git·base 를 싣지 않는다 — PM 홈 주소가 제품 행에
     적히는 일 방지(설계안 2)."""
     _git(init_board.REPO, "init", "-q")
@@ -868,8 +868,8 @@ def test_t0954_init_other_repo_name_leaves_coordinates_empty(init_board):
     assert (row["git"], row["base"]) == ("", "")
 
 
-def test_t0954_self_row_base_ignores_same_named_tag(init_board):
-    """리뷰 F-001 — 현재 브랜치와 같은 이름의 태그가 있어도 base 는 순수 브랜치명이다.
+def test_t0956_self_row_base_ignores_same_named_tag(init_board):
+    """AT-002 — 현재 브랜치와 같은 이름의 태그가 있어도 base 는 순수 브랜치명이다.
 
     `symbolic-ref --short` 는 이 형상에서 `heads/<이름>` 을 준다. 설치(init)와 갱신 이관 두 경로
     모두 full ref 에서 `refs/heads/` 만 벗긴 이름을 기록해야 한다.
@@ -897,8 +897,8 @@ def _write_areas_rows(board, rows: list[tuple[str, str, str]]) -> bytes:
     return board.AREAS_FILE.read_bytes()
 
 
-def test_t0954_fill_self_repo_row(board):
-    """AT-002 — 이관은 두 칸이 모두 빈 자기 행만 채우고 멱등이다.
+def test_t0956_fill_self_repo_row(board):
+    """AT-003 — 이관은 두 칸이 모두 빈 자기 행만 채우고 멱등이다.
 
     한 칸이라도 찬 자기 행·다른 저장소 행은 바이트 그대로다. 자기 행이 둘이면
     `AreasDuplicateRepo` 이고 아무것도 쓰지 않는다. `write=False` 는 판정만 한다.
