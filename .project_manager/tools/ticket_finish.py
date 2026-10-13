@@ -1279,23 +1279,13 @@ def _has_worktree_touch_prefix(path: str) -> bool:
 def _load_ticket_rounds():
     """라운드 사이드카 경로·임시 파일 규약의 단일 진실(`ticket_rounds.py`)을 경로 로드한다.
 
-    부재는 None(fail-soft) — round stage 후보만 생략하고 티켓 파일 stage 는 그대로 진행한다
-    (`_load_repo_coordinates` 동형). 엔진 사본 skew 는 흡수하지 않는다(fail-loud) — 호출부인
-    `engine_written_paths` 는 이 함수를 자신의 넓은 try 밖에서 불러, skew 가 조용히 삼켜지지
-    않고 그대로 표면화되게 한다.
+    부재만 None 이다 — round stage 후보만 생략하고 티켓 파일 stage 는 그대로 진행한다. 파일이 있는데
+    적재가 실패하면 그대로 올린다: 값 없음으로 접으면 라운드 산출이 홈 커밋에서 조용히 빠진다.
     """
     path = TOOLS_DIR / "ticket_rounds.py"
     if not path.exists():
         return None
-    try:
-        mod = _load_module_from_path(
-            path, "ticket_rounds.py", verifier=_verify_engine_rev,
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 round 후보만 생략한다.
-        if _is_engine_rev_skew(exc):
-            raise
-        return None
-    return mod
+    return _load_module_from_path(path, "ticket_rounds.py", verifier=_verify_engine_rev)
 
 
 def _round_stage_candidates(
@@ -1505,11 +1495,13 @@ def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
     # 미리 `git rm` 한 선언 삭제 — index 에도 작업 트리에도 없어 위 필터(add 가 받는 경로)가 뺀다.
     # add 는 그 경로를 받지 못해도(rc 128) 커밋은 기록하므로 이 스코프(커밋 pathspec)에 싣는다.
     # [4/5] 의 add 는 이 스코프 중 작업 트리에 있는 파일만 받는다. 작업 트리에 파일로 있는 선언은
-    # 그런 삭제를 품을 수 없어 조회하지 않는다(디렉터리 선언은 그 아래를 본다).
+    # 그런 삭제를 품을 수 없어 조회하지 않는다(디렉터리 선언은 그 아래를 본다). `--no-renames` —
+    # 이름 바꿈 감지가 켜지면 `git mv` 의 원래 경로가 `R` 로 짝지어져 삭제 조회에서 빠진다.
     unfiled = [path for path in declared if not path.is_file()]
     relative = board.git_scope_pathspec(repo, unfiled) if unfiled else ()
     if relative:
-        rc, out = run_git(["diff", "--cached", "--name-only", "-z", "--diff-filter=D", "--", *relative])
+        rc, out = run_git(["diff", "--cached", "--no-renames", "--name-only", "-z", "--diff-filter=D", "--",
+                           *relative])
         if rc != 0:
             return StageScope((), f"선언 경로의 staged 삭제를 관측하지 못했다 (git diff --cached rc={rc})")
         pathspec.extend(path for path in dict.fromkeys(out.split("\0")) if path and path not in pathspec)
@@ -1750,9 +1742,8 @@ def _git_blame_short_sha(
 class StatusObservationError(Exception):
     """워킹트리 상태 **관측 자체가 실패**했다 — `strict` 소비자만 받는다.
 
-    비차단 소비자(stage 후 보고)는 종전대로 빈 목록으로 접는다 — 보고 한 줄이 완료를 막지
-    않는다. 그 관측을 **선행 조건**으로 쓰는 소비자(종결의 재배치·머지)는 실패를 clean 과
-    구별해야 한다: 빈 목록으로 접으면 dirty 트리가 clean 으로 위장돼 그 위에서 mutation 이 돈다.
+    완료 기록의 잔여 판정·stage 뒤 보고와 종결의 재배치·머지는 그 실패를 clean 과 구별해 멈춘다:
+    빈 목록으로 접으면 dirty 트리가 clean 으로 위장돼 그 위에서 판정·mutation 이 돈다.
     """
 
 
@@ -2613,17 +2604,22 @@ class TicketFinisher:
         묻는다(switch 전 커밋·다른 폴더 작성·통합 브랜치 직접 커밋은 인구 밖이라 머지 없이 닫혔다).
 
         선언 경로는 분리 코드 트리면 코드 몫, 임베디드면 touches 전부다. 비면(코드 없는 pm-direct·홈에만
-        있는 경로) 대상이 아니다. 판정 단위는 멤버이고 선언 경로 하나라도 인구에 있으면 통과다. 어느 트리에도
+        있는 경로) 대상이 아니다. 단 분리 코드 트리에서 홈에만 있는 경로가 홈 git 미추적 새 경로이고 홈 상태
+        루트(board·wiki) 밖이면 코드 몫으로 센다(`_home_new_paths` — 작업 폴더 대신 홈에 쓴 새 파일은 홈
+        커밋에만 실려 머지되지 않는다). 판정 단위는 멤버이고 선언 경로 하나라도 인구에 있으면 통과다. 어느 트리에도
         없는 선언(미정 경로)은 홈 변경으로도 충족된다(홈 문서 삭제). 조회 실패는 관측 실패로 멈춘다 —
         티켓 판독 실패를 빈 touches 로 접으면 "판정 대상 아님" 으로 통과한다."""
         snapshot = _ticket_frontmatter_snapshot(self._board_py, ticket_id)
         if snapshot.error is not None:
             raise _CloseObservationFailure(
                 f"{ticket_id} 티켓을 읽지 못해 선언 변경을 판정할 수 없다 ({snapshot.error})")
-        touches = list(get_ticket_touches(self._board_py, ticket_id))
+        touches = _clean_touches(snapshot.frontmatter.get("touches"))
         home_share: list[str] = []
         if touches and self._is_separated_code_tree(cwd):
             touches, home_share = self._split_touches_by_tree(ticket_id, cwd)
+            home_new = self._home_new_paths([touch for touch in home_share if touch not in touches])
+            touches += home_new
+            home_share = [touch for touch in home_share if touch not in home_new]
         if not touches:
             return None
         declared = self._normalize_measured_touches(touches)
@@ -2653,13 +2649,32 @@ class TicketFinisher:
                 "없다. 다른 폴더·브랜치에서 고쳤다면 그 변경을 이 작업 트리로 가져오고(커밋했다면 "
                 "`git cherry-pick`), 고칠 코드가 없는 티켓이면 touches 에서 그 경로를 뺀다.")
 
-    def _observed_status_paths(self, cwd: Path) -> set[str]:
-        """선언 변경 판정이 보는 그 트리의 미커밋 경로 — 조회 실패는 관측 실패로 멈춘다(clean 으로 접지 않는다)."""
+    def _home_new_paths(self, home_only: Sequence[str]) -> list[str]:
+        """홈에만 있는 선언 중 홈 git 이 하나도 추적하지 않는 새 경로이고 홈 상태 루트(board·wiki) 밖인 것.
+
+        조회 실패는 관측 실패로 멈춘다(추적 중으로 접으면 그 새 파일이 다시 홈 몫으로 빠진다)."""
+        state_roots = self._home_state_prefixes(REPO)
+        candidates = [touch for touch in home_only if not scope_covers(state_roots, touch)]
+        if not candidates:
+            return []
+        rc, out = self._run_git_stdout_at_fn(REPO, ["ls-files", "-z", "--", *candidates])
+        if rc != 0:
+            raise _CloseObservationFailure(
+                f"{REPO} 에서 선언 경로의 추적 여부를 관측하지 못했다 (git ls-files rc={rc})")
+        tracked = [path for path in out.split("\0") if path]
+        return [touch for touch in candidates
+                if not any(self._touch_claims_path(touch, path) for path in tracked)]
+
+    def _observed_status_entries(self, cwd: Path) -> tuple[tuple[str, str], ...]:
+        """그 트리의 워킹트리 상태 — 조회 실패는 관측 실패로 멈춘다(clean 으로 접지 않는다)."""
         try:
-            entries = self._status_entries_fn() if cwd == REPO else self._status_entries_at_fn(cwd)
+            return self._status_entries_fn() if cwd == REPO else self._status_entries_at_fn(cwd)
         except StatusObservationError as exc:
             raise _CloseObservationFailure(f"작업 트리 상태를 관측하지 못했다 ({cwd}) — {exc}") from exc
-        return {path for _code, path in entries}
+
+    def _observed_status_paths(self, cwd: Path) -> set[str]:
+        """선언 변경 판정이 보는 그 트리의 미커밋 경로."""
+        return {path for _code, path in self._observed_status_entries(cwd)}
 
     def _residual_split(
         self, cwd: Path, scope: Sequence[str], home_prefixes: Sequence[str], *,
@@ -3165,9 +3180,8 @@ class TicketFinisher:
         board 를 넘기는 이유는 **NUL 파서 공유** 뿐이다(비-ASCII 경로 실경로화). 로드 실패는
         보고를 멈추지 않는다 — `status_entries` 가 degraded 판독으로 이어간다.
 
-        조회 실패는 `strict` 로 올린다 — 접는 자리는 이 seam 이 아니라 소비자다. 보고
-        (`_dirty_split`)는 종전대로 빈 목록으로 접고, 종결의 선행 조건 관측(`_dirty_paths`)은
-        그 실패를 clean 과 구별해 정지한다. 여기서 접으면 두 소비자가 같은 위장을 물려받는다.
+        조회 실패는 `strict` 로 올린다 — 잔여 판정·보고(`_dirty_split`)와 종결의 선행 조건
+        관측(`_dirty_paths`)은 그 실패를 clean 과 구별해 정지한다.
         """
         return status_entries(self._run_git_stdout_fn, load_board_module(self._board_py),
                               strict=True)
@@ -3538,15 +3552,10 @@ class TicketFinisher:
             print(f"      … 외 {hidden}건")
 
     def _dirty_split(self, scope: Sequence[str], *, cwd: Path = REPO) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """현재 상태를 (스코프 밖 staged, 미스테이지 잔여)로 가른다 — 조회 실패는 빈 목록."""
-        try:
-            entries = (self._status_entries_fn() if cwd == REPO
-                       else self._status_entries_at_fn(cwd))
-        except Exception as exc:  # noqa: BLE001 — 보고는 완료를 막지 않는다.
-            if _is_engine_rev_skew(exc):
-                raise  # 엔진 사본 불일치는 빈 보고로 강등하지 않는다(fail-loud).
-            return (), ()
-        return split_dirty(entries, scope)
+        """현재 상태를 (스코프 밖 staged, 미스테이지 잔여)로 가른다 — 조회 실패는 관측 실패로 멈춘다.
+
+        빈 목록으로 접으면 잔여 판정은 잔여 없음으로 통과하고 stage 뒤 보고는 "잔여 변경 없음" 을 낸다."""
+        return split_dirty(self._observed_status_entries(cwd), scope)
 
     # stage **전** 보고는 두지 않는다 — 이 도구의 `add` 는 스코프 경로만 올리므로 사전에 staged
     # 돼 있던 스코프 밖 변경은 stage 후에도 그대로 남고, 아래 사후 보고가 같은 목록을 낸다.
@@ -3554,7 +3563,7 @@ class TicketFinisher:
 
     def _report_dirty_after_stage(self, scope: Sequence[str], *, cwd: Path = REPO,
                                   label: str = "") -> None:
-        """stage 후 상태를 양방향으로 **눈에 띄게** 보고한다 (loud·비차단).
+        """stage 후 상태를 양방향으로 **눈에 띄게** 보고한다 (loud·잔여는 비차단·관측 실패는 정지).
 
         두 실패 방향을 함께 본다 — 1) **미스테이지 잔여**(under-stage: 스코프가 못 덮은 변경 —
         내 작업 누락이면 `touches` 를 보강해 다시 stage, 남의 WIP 면 그대로 둔다) 2)

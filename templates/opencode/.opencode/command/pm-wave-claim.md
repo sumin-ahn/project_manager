@@ -19,7 +19,7 @@ audience: pm-internal
 # 1. 묶음 선언 → 승격 (이번 wave 의 운영 단위 · 통합 브랜치·설계 문서 결속 · 코드 트리는 명시 필수)
 #    <ticket-group> 은 새로 짓는 묶음 이름(영숫자와 . _ -, 예: login-fix). 티켓 ID 모양(T-NNNN)은 발행이 만든 크기 1 장부(C-T-NNNN)의 자리라 거부된다.
 python3 .project_manager/tools/board.py cluster new <ticket-group> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로> --repo <repo> --slot <N>
-#    승격 (멤버마다 · 본문을 다시 검사해 claim 할 수 있는 open 상태로 둔다 · 이미 open 이면 그대로 rc 0)
+#    승격 (멤버마다 · draft 를 claim 할 수 있는 open/ 으로 옮긴다 · 공유 board(board-git)면 본문과 묶음 결속을 다시 검사해 어긋나면 rc 1 · 이미 open 이면 그 검사를 통과할 때 이동 없이 rc 0)
 python3 .project_manager/tools/board.py promote T-NNNN
 #    리뷰 없이 종결할 티켓만 (선택 · 멤버마다)
 python3 .project_manager/tools/board.py tier T-NNNN pm-direct

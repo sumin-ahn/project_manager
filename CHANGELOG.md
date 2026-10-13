@@ -98,6 +98,7 @@
 - `board.py complete --cluster-close` 를 장부가 종결 중(closing)일 때만 받는다. 종결 파이프라인 밖 호출이 티켓만 done 으로 옮기고 머지와 장부를 남기던 문제를 수정했다.
 - `board.py new` 출력이 `board.py lint --gate` 를 안내한다. 새 채택자에서 참고 항목 하나로 rc 1 인 `board.py lint` 를 안내하던 문제를 수정했다.
 - board 가 홈 git 인 채택자에서 `board.py promote` 가 "board-git 승격 완료" 를 출력하던 문제를 수정했다. 이 형상에는 board-git 커밋이 없으므로 이동 여부와 커밋 없음만 출력한다.
+- pm-wave-claim 실행 블록이 `cluster new` 다음에 멤버마다 `board.py promote`(선택 줄 `board.py tier T-NNNN pm-direct`)를 싣는다. 공유 board 형상에서 단계대로 따르면 draft 인 티켓을 claim 하지 못하던("currently in draft/") 문제를 수정했다.
 
 ### 업그레이드 노트
 

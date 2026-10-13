@@ -1973,6 +1973,41 @@ def test_t0959_finish_refuses_clone_doc_edited_in_home(tmp_path):
     assert "- probe edit" in (flow.dest / doc).read_text(encoding="utf-8")
 
 
+def test_t0959_finish_refuses_declared_new_file_written_in_home(tmp_path):
+    """[[T-0959]] F-005 — 선언한 새 파일을 작업 폴더 대신 홈에 쓰면 종결은 첫 부작용 전에 멈춘다.
+
+    홈에만 있는 선언 경로가 홈 git 미추적 새 파일이고 홈 상태 루트(board·wiki) 밖이면 선언 변경 판정에서 코드 몫이다.
+    예전 종결은 그 파일을 홈 몫으로 보내 rc 0 으로 닫았고, 파일은 홈 커밋에만 실려 통합 브랜치에 들어가지 않았다.
+    """
+    flow = _CardFlow(tmp_path, folders=2)
+    flow.publish((_PROBE_FILE,))
+    flow.switch()
+    (flow.dest / _PROBE_FILE).write_text("hello\n", encoding="utf-8")
+    base_before, home_before = _branch_rev(flow.dest, f"{flow.repo}_1"), _home_head(flow.dest)
+    refused = flow.finish()
+    assert refused.returncode == 1, refused.stdout[-1500:] + refused.stderr[-1500:]
+    assert "완료 기록 거부" in refused.stderr and _PROBE_FILE in refused.stderr, refused.stderr
+    assert _card_ticket(flow.dest, flow.tid).parent.name == "claimed"
+    assert _ledger_status(flow.dest, flow.cluster) == "open"
+    assert _branch_rev(flow.dest, f"{flow.repo}_1") == base_before
+    assert _home_head(flow.dest) == home_before
+
+
+def test_t0959_finish_commits_new_doc_inside_home_state_root(tmp_path):
+    """[[T-0959]] F-005 역방향 — 홈 상태 루트(wiki) 안에 새로 쓴 선언 문서는 홈 커밋으로 종결된다(판정 대상 아님)."""
+    doc = ".project_manager/wiki/raw/new-home-note.md"
+    flow = _CardFlow(tmp_path, folders=2)
+    flow.publish((doc,))
+    flow.switch()
+    (flow.dest / doc).write_text("note\n", encoding="utf-8")
+    finished = flow.finish()
+    assert finished.returncode == 0, finished.stdout[-1500:] + finished.stderr[-1500:]
+    assert _card_ticket(flow.dest, flow.tid).parent.name == "done"
+    assert _ledger_status(flow.dest, flow.cluster) == "closed"
+    shown = _git_out("-C", str(flow.dest), "show", f"HEAD:{doc}")
+    assert shown.returncode == 0 and shown.stdout == "note\n", shown.stderr
+
+
 # board 가 별도 git(서브모듈)인 형상의 git 설정 — 서브모듈 복제(file 프로토콜)를 이 자식 프로세스에서만 연다.
 _SUBMODULE_ENV = {**_CARD_IDENTITY_ENV, "GIT_CONFIG_COUNT": "3",
                   "GIT_CONFIG_KEY_2": "protocol.file.allow", "GIT_CONFIG_VALUE_2": "always"}

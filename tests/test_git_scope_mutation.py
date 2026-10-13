@@ -285,6 +285,29 @@ def test_finish_commits_git_rm_staged_deletion_of_declared_paths(tf, tmp_path, m
 
 
 @requires_git
+def test_finish_commits_git_mv_rename_inside_declared_directory(tf, tmp_path, monkeypatch, capsys):
+    """[[T-0959]] F-001 — 선언 디렉토리 안에서 `git mv` 한 이름 바꿈의 원래 경로도 커밋 pathspec 에 실린다.
+
+    staged 삭제 조회가 이름 바꿈 감지를 타면 원래 경로가 `D` 가 아니라 `R` 로 짝지어져 조회에서 빠진다. 그러면
+    커밋은 새 경로만 기록해 HEAD 에 옛 파일과 새 파일이 함께 남고 원래 경로의 삭제가 staged 로 남는다.
+    """
+    root = _make_home_repo(tmp_path / "home")
+    (root / "src" / "pkg").mkdir(parents=True)
+    (root / "src" / "pkg" / "old.py").write_text("same = 1\nbody = 2\nmore = 3\n", encoding="utf-8")
+    _git_commit_all(root, "seed")
+    assert _git(["mv", "src/pkg/old.py", "src/pkg/new.py"], root).returncode == 0
+    finisher = _make_finisher(tf, root, monkeypatch, touches=["src/pkg"])
+
+    assert finisher.run("T-0001", section=None, dry_run=False) == 0
+    (plan,) = finisher._stage_plans("T-0001")
+    assert {"src/pkg/old.py", "src/pkg/new.py"} <= set(plan.scope.pathspec), plan.scope
+    assert _commit_pathspec(root, plan.scope.pathspec).returncode == 0
+    head = _head_paths(root)
+    assert "src/pkg/new.py" in head and "src/pkg/old.py" not in head
+    assert _staged(root) == set()
+
+
+@requires_git
 def test_scope_stageable_final_gate_drops_directory_even_if_expansion_fails(board, tmp_path):
     """전개가 **실패해도** 디렉토리는 최종 반환에 못 남는다 — 불변식이 전개에 의존하지 않는다.
 
