@@ -238,6 +238,7 @@ wave 하나 = 묶음 하나다. 단계 표·커맨드의 단일 진실은 `/pm-d
    DoD self-containment·depends_on·placeholder·wikilink dangling을 검증한다. **묶음 판단은 PM 몫**이다 —
    엔진은 touches 겹침·가용 슬롯을 경고만 하고 자동으로 묶지 않는다. 겹침이 있어도 슬롯이 남아 있으면
    병렬로 나눌 수 있다.
+   claim 뒤 작업 폴더를 `worktree_pool.py switch <slot> task/<ticket-group>`(`<slot>=work/<repo>_<N>`)로 묶음 브랜치에 옮긴다(코드 변경이 없어도 · 작업·종결 전).
 3. **설계(묶음 1회)** — `ticket prepare --cluster --role architect` 로 `01-architect` 를 예약한다.
    설계 단일 진실은 묶음 설계 문서 하나이고 티켓별 라운드 파일에는 그 티켓의 경계 실측·보정이 들어간다.
    `design: required`는 이 라운드 회수 전 claim/promote 가 rc=1이다. 면제 값은 없다.

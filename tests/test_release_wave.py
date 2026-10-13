@@ -555,10 +555,10 @@ def _wave_base_branch(dest: Path) -> str:
     return values[0]
 
 
-def _integration_file(dest: Path, base: str, relpath: str) -> str | None:
-    """통합 브랜치 `base` 에 머지된 파일 내용 — 공유 bare 에서 `git show` (없으면 None)."""
+def _integration_file(dest: Path, base: str, relpath: str, repo: str | None = None) -> str | None:
+    """브랜치 `base` 의 파일 내용 — 저장소(`repo`·기본은 홈 이름) bare 에서 `git show` (없으면 None)."""
     shown = subprocess.run(
-        ["git", "--git-dir", str(dest / ".repos" / f"{dest.name}.git"), "show", f"{base}:{relpath}"],
+        ["git", "--git-dir", str(dest / ".repos" / f"{repo or dest.name}.git"), "show", f"{base}:{relpath}"],
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
     return shown.stdout if shown.returncode == 0 else None
@@ -1039,83 +1039,143 @@ def _import_multipm_home(tmp_path: Path, harness: str,
     return home
 
 
-def _multirepo_wave_prompt(repos: tuple[str, ...] = _MULTIREPO_REPOS) -> str:
-    """한 세션이 공유 보드 위 *각 repo* 의 미니 wave 를 운영하라는 프롬프트(PM probe 본보기).
+def _multirepo_wave_home(tmp_path: Path, harness: str) -> Path:
+    """다중 저장소 웨이브 홈 — 저장소마다 작업 폴더 2개(통합 1번·작업 2번)를 웨이브 task 가 보유한다([[T-0958]]).
 
-    범위 축소(scoping) — multi-repo wave 는 dev→reviewer *위임*까지 가지 않고 미니 wave
-    (new→claim→슬롯 파일→complete)다. 위임은 단일 full wave(`test_release_wave_*_full_wave`)에서
-    이미 검증됐고, multi-repo 의 *새* 위험축은 한 세션이 공유 보드/슬롯/identity 를 repo별로 바르게
-    핸들링하는가 — per-repo prefix(`--prefix <repo>` → `T-<repo>-NNN` ID 네임스페이스)·per-slot 식별
-    (`--repo <repo> --slot 1`·`work/<repo>_1` 슬롯 파일)이다. 그래서 prompt 는 그 축만 친다(ticket 본문
-    "viable 불확실/과복잡 시 형태 재검토" 허용). board.py 경로는 *준다* — 단일 wave 가 문서 운영성
-    (경로 미제공)을 이미 검증하므로 여기선 multi-repo 핸들링에 집중한다.
-
-    신규 prefix 는 사용자-승인 게이트(`require_prefix_user_ack`·값-결속 `--user-ack <prefix>`)를 지난다.
-    이 release-test 프롬프트 자체가 신규 테스트 prefix 승인 주체이므로 각 repo 의 (유일한) `new` 원 명령에
-    `--user-ack REPO` 를 명시한다 — 에이전트가 ack 를 자동 부착하는 형상은 테스트하지 않으며(엔진 메시지가
-    "세션 자동 부착 금지"를 명시), ack 없는 프롬프트는 라이브 판정이 모델 행동에 좌우된다(T-0744·
-    multiuser 프롬프트의 dd1b9ce 와 동일 클래스).
+    `_import_multipm_home` 이 저장소마다 만든 첫 폴더에 `worktree add` 로 둘째 폴더를 더하고, task 를 만든 뒤
+    `alloc` 으로 네 폴더를 모두 빌린다(`_guided_adopter` 와 같은 안내 경로). 코드 변경의 머지는 base_branch 를
+    든 폴더에서만 되므로 저장소마다 폴더 2개가 카드 흐름의 전제다.
     """
-    repo_list = " and ".join(repos)
-    steps = "\n".join(
-        f"  Wave {i + 1} (repo = {repo}): create a ticket, claim it, write a slot file, complete it."
-        for i, repo in enumerate(repos)
+    home = _import_multipm_home(tmp_path, harness)
+    steps = [("worktree", "add", repo, "--user-ack", repo) for repo in _MULTIREPO_REPOS]
+    steps.append(("task", "new", _RELEASE_WAVE_TASK))
+    steps += [("alloc", repo, "--task", _RELEASE_WAVE_TASK)
+              for repo in _MULTIREPO_REPOS for _slot in (_WAVE_INTEGRATION_SLOT, _WAVE_WORK_SLOT)]
+    for step in steps:
+        proc = _pm_config(home, *step)
+        assert proc.returncode == 0, (
+            f"다중 저장소 웨이브 홈 {' '.join(step)} rc={proc.returncode}\n"
+            f"stdout={proc.stdout[-600:]}\nstderr={proc.stderr[-600:]}"
+        )
+    return home
+
+
+# 프롬프트의 티켓 ID 자리 — 모델(과 비라이브 재현)이 그 저장소 발행 출력의 ID 로 바꾼다.
+_MULTIREPO_TICKET = "<TICKET_ID>"
+
+
+def _multirepo_wave_commands(repo: str) -> tuple[str, ...]:
+    """저장소 하나의 웨이브 실행 줄 7개 — 카드 줄에 그 저장소 값과 폴더 지목을 채운 것, 카드 순서([[T-0958]]).
+
+    발행·claim 은 작업 폴더(2번), 묶음 선언은 통합 폴더(1번)를 지목하고 switch 는 작업 폴더를 묶음 브랜치로
+    옮긴다. 발행에는 새 prefix 의 값-결속 승인과 바꿀 파일 선언을 붙인다. 파일 쓰기와 완료 조건 체크는
+    switch(6번째)와 종결(7번째) 사이의 사람 몫이다(프롬프트가 지시한다).
+    """
+    task, tid, cluster = _RELEASE_WAVE_TASK, _MULTIREPO_TICKET, f"wave-{repo}"
+    work = f"--repo {repo} --slot {_WAVE_WORK_SLOT}"
+    integration = f"--repo {repo} --slot {_WAVE_INTEGRATION_SLOT}"
+    tools = "python3 .project_manager/tools"
+    return (
+        f'{tools}/board.py new "wave probe {repo}" --task {task} {work} '
+        f"--prefix {repo} --user-ack {repo} --touches {_WAVE_FILE}",
+        f"{tools}/board.py promote {tid}",
+        f"{tools}/board.py tier {tid} pm-direct",
+        f"{tools}/board.py cluster new {cluster} --tickets {tid} --task {task} {integration}",
+        f"{tools}/board.py claim {tid} --task {task} {work}",
+        f"{tools}/worktree_pool.py switch work/{repo}_{_WAVE_WORK_SLOT} task/{cluster}",
+        f"{tools}/ticket_finish.py {tid} --task {task} --no-pytest",
+    )
+
+
+def _multirepo_wave_prompt(repos: tuple[str, ...] = _MULTIREPO_REPOS) -> str:
+    """한 세션이 공유 보드 위 저장소마다 코드 변경 하나를 카드 흐름대로 종결하라는 프롬프트([[T-0958]]).
+
+    새 위험축은 그대로다 — 한 세션이 저장소별 prefix(`--prefix <repo>` → `T-<repo>-NNN`)와 저장소별 폴더
+    지목(`--repo <repo> --slot <N>`)을 바르게 다루는가. 실행 줄은 `_multirepo_wave_commands` 가 카드 줄에
+    값을 채운 것이고 순서도 카드 순서다(비라이브 재현이 같은 줄을 실행한다). 맨 앞의 부트스트랩은 가드 훅이
+    이 세션을 task 에 묶게 해 작업 폴더 쓰기를 연다. 신규 prefix 승인은 이 프롬프트가 주체이므로 저장소마다
+    발행 줄 한 곳에만 값-결속 `--user-ack` 를 둔다(T-0744).
+    """
+    blocks = []
+    for index, repo in enumerate(repos, start=1):
+        commands = _multirepo_wave_commands(repo)
+        lines = [f"Wave {index} (repo {repo}):"]
+        lines += [f"  {n}. {command}" for n, command in enumerate(commands[:6], start=1)]
+        lines.append(
+            f"  7. Write the file work/{repo}_{_WAVE_WORK_SLOT}/{_WAVE_FILE} containing exactly "
+            f"\"done by {repo}\" — only after step 6 and only in that folder. The finish step commits it."
+        )
+        lines.append(
+            "  8. In the claimed ticket file (.project_manager/wiki/tickets/claimed/<TICKET_ID>-*.md) change "
+            "every completion-condition checkbox `- [ ]` to `- [x]`."
+        )
+        lines.append(f"  9. {commands[6]}")
+        blocks.append("\n".join(lines))
+    folders = ", ".join(
+        f"work/{repo}_{_WAVE_INTEGRATION_SLOT} (integration) and work/{repo}_{_WAVE_WORK_SLOT} (work)"
+        for repo in repos
     )
     return (
         "You operate a multi-PM project-manager home that shares ONE board across "
-        f"{len(repos)} code repos: {repo_list}. Each repo has its own worktree slot directory: "
-        + ", ".join(f"work/{r}_1" for r in repos) + ". The board engine is "
-        ".project_manager/tools/board.py.\n\n"
+        f"{len(repos)} code repos: {' and '.join(repos)}. The board task `{_RELEASE_WAVE_TASK}` already "
+        f"holds two folders of each repo: {folders}. The integration folder keeps the merge target "
+        "branch; you change files only in the work folder.\n\n"
         "This release-test instruction explicitly approves each repo's value-bound --user-ack for its "
         "new test prefix; do not invent or alter acknowledgements.\n\n"
-        "Do a minimal wave for EACH repo, one repo fully before the next:\n"
-        f"{steps}\n\n"
-        "For a repo named REPO, the 4 steps are exactly:\n"
-        '  1. Create a ticket:   python3 .project_manager/tools/board.py new "wave probe REPO" '
-        "--prefix REPO --user-ack REPO\n"
-        "     (this prints the new ticket id, e.g. T-REPO-001 — note it)\n"
-        "  2. Claim it:          python3 .project_manager/tools/board.py claim <TICKET_ID> "
-        "--repo REPO --slot 1\n"
-        f"  3. Write a file named {_WAVE_FILE} containing the text \"done by REPO\" INSIDE that "
-        f"repo slot: work/REPO_1/{_WAVE_FILE}\n"
-        "  4. Complete it:       python3 .project_manager/tools/board.py complete <TICKET_ID> "
-        "--tests-pass --allow-missing-log\n\n"
-        "Replace REPO with the actual repo name for each wave. Use the EXACT ticket id from "
-        "step 1 output in steps 2 and 4."
+        "First open the task session (the write guard allows edits inside the work folders only after "
+        f"this):\n  python3 .project_manager/tools/pm_bootstrap.py --task {_RELEASE_WAVE_TASK}\n\n"
+        "Then run one wave per repo, finishing one repo completely before starting the next. Run every "
+        "command exactly as written and in this order; replace <TICKET_ID> with the ticket id printed by "
+        "that repo's step 1. This project ships no test suite, so the finish command carries --no-pytest.\n\n"
+        + "\n\n".join(blocks)
+        + "\n\nReply 'done' when both tickets are done."
     )
+
+
+def _ticket_field(path: Path, key: str) -> str | None:
+    """티켓·묶음 장부 frontmatter 의 `key: 값` 한 줄 값."""
+    match = re.search(rf"^{key}:\s*(\S+)\s*$", path.read_text(encoding="utf-8"), flags=re.M)
+    return match.group(1) if match else None
 
 
 def _assert_multirepo_wave_side_effects(home: Path, proc: subprocess.CompletedProcess,
                                         harness: str,
                                         repos: tuple[str, ...] = _MULTIREPO_REPOS) -> None:
-    """per-repo side-effect 단언 — 각 repo 가 done ticket(`T-<repo>-*`) + 슬롯 파일을 남겼는가.
+    """저장소마다 결과의 실체를 본다 — 티켓 done·묶음 closed·바꾼 파일이 묶음 브랜치와 통합 브랜치에 있다.
 
-    repo별로 (1) `tickets/done/T-<repo>-*.md` 존재 = per-repo prefix 로 발행·claim·complete 완주
-    (per-repo ID 네임스페이스·sync-gate 통과) (2) `work/<repo>_1/wave-done.txt` 존재+내용 = 그 repo
-    슬롯에 정확히 썼음(슬롯 격리). 둘 다 출력 phrasing 비결정에 강건한 side-effect 다(T-0157 동형).
+    (1) `tickets/done/T-<repo>-*.md` 가 정확히 하나다(그 저장소 prefix 로 발행·종결 완주).
+    (2) 그 티켓 `cluster` 장부가 `status: closed` 이고 `base_branch` 가 통합 폴더 브랜치(`<repo>_1`)다.
+    (3) 그 저장소 bare 에서 묶음 `branch` 와 `base_branch` 의 `wave-done.txt` 내용이 `done by <repo>` 다.
+        묶음 브랜치에 있어야 작업 폴더에서 고친 변경이 종결의 머지로 들어간 것이다. 폴더 안 파일 존재만 보면
+        커밋되지 않은 파일과 통합 브랜치 직접 커밋을 가리지 못한다([[T-0958]] · 6d1c39c9 라이브 두 하네스).
     """
-    done_root = home / ".project_manager" / "wiki" / "tickets" / "done"
+    root = home / ".project_manager" / "wiki" / "tickets"
     tail = (
         f"--- {harness} stdout(tail) ---\n{proc.stdout[-2500:]}\n"
         f"--- stderr(tail) ---\n{proc.stderr[-1000:]}"
     )
     for repo in repos:
-        # (1) per-repo done ticket — prefix 가 ID 네임스페이스(T-<repo>-NNN)를 가른다.
-        done = sorted(done_root.glob(f"T-{repo}-*.md"))
-        assert done, (
-            f"실 {harness} multi-repo wave: repo '{repo}' 의 done ticket(T-{repo}-*) 부재 — "
-            f"per-repo wave 미완주.\nall done={_tickets_in(home, 'done')}\n"
+        done = sorted((root / "done").glob(f"T-{repo}-*.md"))
+        assert len(done) == 1, (
+            f"실 {harness} multi-repo wave: repo '{repo}' 의 done ticket(T-{repo}-*) 이 {len(done)}개.\n"
+            f"all done={_tickets_in(home, 'done')}\n"
             f"open={_tickets_in(home, 'open')} claimed={_tickets_in(home, 'claimed')}\n" + tail
         )
-        # (2) per-slot 파일 — 그 repo 슬롯(work/<repo>_1)에 정확히 썼는가(슬롯 격리).
-        wave_file = home / "work" / f"{repo}_1" / _WAVE_FILE
-        assert wave_file.exists(), (
-            f"실 {harness} multi-repo wave: repo '{repo}' 슬롯 파일 work/{repo}_1/{_WAVE_FILE} "
-            f"부재 — 슬롯에 안 썼거나 다른 슬롯에 씀.\n" + tail
+        cluster = _ticket_field(done[0], "cluster")
+        ledger = root / "clusters" / f"{cluster}.md"
+        assert cluster and ledger.is_file(), f"repo '{repo}' done ticket 의 묶음 장부 부재: {cluster}\n" + tail
+        status, base, branch = (_ticket_field(ledger, key) for key in ("status", "base_branch", "branch"))
+        assert status == "closed", f"repo '{repo}' 묶음 {cluster} status={status} (closed 아님)\n" + tail
+        assert base == f"{repo}_{_WAVE_INTEGRATION_SLOT}", (
+            f"repo '{repo}' 묶음 {cluster} 의 base_branch {base!r} 가 통합 폴더 브랜치가 아니다.\n" + tail
         )
-        assert wave_file.read_text(encoding="utf-8").strip(), (
-            f"repo '{repo}' 슬롯 파일 {_WAVE_FILE} 가 비어 있음.\n" + tail
-        )
+        expected = f"done by {repo}"
+        for label, ref in (("묶음 브랜치", branch), ("통합 브랜치", base)):
+            content = _integration_file(home, ref, _WAVE_FILE, repo=repo) if ref else None
+            assert content is not None and content.strip() == expected, (
+                f"실 {harness} multi-repo wave: repo '{repo}' {label} {ref} 의 {_WAVE_FILE} = {content!r} "
+                f"(기대 {expected!r}) — 작업 폴더에서 고쳐 종결로 머지하지 않았다.\n" + tail
+            )
 
 
 @pytest.mark.release
@@ -1138,7 +1198,7 @@ def test_release_wave_multirepo_opencode_full_wave(tmp_path):
     opencode 가 probe-검증된 기본이다. claude multi-repo 가 필요해지면 단일 claude mechanics
     (`--allowedTools Bash`·stream-json)를 이 multi-repo 셋업 위에 미러한다.
     """
-    home = _import_multipm_home(tmp_path, "opencode")
+    home = _multirepo_wave_home(tmp_path, "opencode")
 
     proc = _run_opencode_live(
         # `--dangerously-skip-permissions`: 비대화 헤드리스 격리(throwaway tmp home)라 안전 —
@@ -1174,7 +1234,7 @@ def test_release_wave_multirepo_claude_full_wave(tmp_path):
     미관측(`_multirepo_wave_prompt` docstring·범위 축소). 그래서 `--allowedTools Bash` 만(Task 불요).
     API 과금.
     """
-    home = _import_multipm_home(tmp_path, "claude")
+    home = _multirepo_wave_home(tmp_path, "claude")
 
     proc = subprocess.run(
         # `--allowedTools Bash`: 미니 wave 는 board.py 호출(new/claim/슬롯 파일/complete)뿐 — dev→reviewer
@@ -2177,25 +2237,18 @@ def test_import_multipm_home_claude_sets_up_two_repos_and_slots(tmp_path):
 
 
 def test_multirepo_wave_prompt_has_per_repo_mechanics():
-    """multi-repo wave 프롬프트가 각 repo 의 wave mechanics(prefix·slot·슬롯 파일·4단계)를 담는다.
+    """multi-repo wave 프롬프트가 부트스트랩 다음에 저장소마다 카드 흐름 실행 줄을 순서대로 싣는다([[T-0958]]).
 
-    라이브 미실행 시에도 프롬프트 구조를 가드 — repo별 prefix(`--prefix REPO`)·per-slot 정체성
-    (`--repo REPO --slot 1`)·슬롯 파일(`work/REPO_1/<file>`)·new/claim/complete 4단계가 빠지면 잡힌다.
+    실행 줄은 `_multirepo_wave_commands` 그대로이고 저장소 순서·줄 순서도 같다. 카드가 처방하지 않는 direct
+    complete 와 구 actor 플래그는 없다(줄의 실행 가능성은 카드 사용성 파일의 비라이브 재현이 본다).
     """
     prompt = _multirepo_wave_prompt()
-
-    # 두 repo 가 모두 prompt 에 등장(공유 보드 위 각 repo wave).
+    cursor = prompt.index(f"python3 .project_manager/tools/pm_bootstrap.py --task {_RELEASE_WAVE_TASK}")
     for repo in _MULTIREPO_REPOS:
-        assert repo in prompt, f"프롬프트에 repo '{repo}' 미언급"
-    # 4단계 mechanics — new(+prefix)·claim(+repo/slot)·슬롯 파일·complete(sync-gate flag).
-    assert "board.py new" in prompt and "--prefix REPO" in prompt
-    assert "board.py claim" in prompt and "--repo REPO --slot 1" in prompt
-    # negative backstop — 구 actor 플래그가 프롬프트에 재유입되면 라이브 없이 여기서 red
-    # (ADR-0057 BREAKING·T-0324 릴리즈 blocker 재발 방지·[[cross-cutting-breaking-blast-radius]]).
+        for command in _multirepo_wave_commands(repo):
+            cursor = prompt.index(command, cursor)
+    assert "board.py complete" not in prompt
     assert "--session" not in prompt and "--worktree-slot" not in prompt
-    assert f"work/REPO_1/{_WAVE_FILE}" in prompt
-    assert "board.py complete" in prompt
-    assert "--tests-pass" in prompt and "--allow-missing-log" in prompt
 
 
 # ── multi-USER hermetic 가드 (라이브 실행 없이·@release/skipif 무관 — 매 회귀 통과 · T-0309) ─────
@@ -2257,28 +2310,19 @@ def test_multiuser_wave_prompt_has_per_identity_mechanics():
 
 
 def test_multirepo_wave_prompt_has_user_ack_per_prefix():
-    """multirepo wave 프롬프트가 신규 prefix 의 값-결속 사용자 ack 를 `new` 원 명령에 담는다 (T-0744).
+    """multirepo wave 프롬프트가 신규 prefix 의 값-결속 사용자 ack 를 저장소마다 `new` 줄 한 곳에만 담는다 (T-0744).
 
-    라이브 미실행 시에도 프롬프트 구조를 가드 — `--prefix REPO` 는 v1.7.4 이후 신규 prefix 사용자-승인
-    게이트(`require_prefix_user_ack`)를 지나므로 프롬프트가 `--user-ack REPO` 를 주지 않으면 라이브 판정이
-    모델 행동(ack 자기부착 vs 사용자에게 질의 후 정지)에 좌우된다(livegate d0b5890 실측). multiuser
-    프롬프트 가드(`test_multiuser_wave_prompt_has_per_identity_mechanics`)와 동일 클래스.
+    `--prefix <repo>` 는 신규 prefix 사용자-승인 게이트(`require_prefix_user_ack`)를 지나므로 프롬프트가
+    `--user-ack <repo>` 를 주지 않으면 라이브 판정이 모델 행동에 좌우된다(livegate d0b5890 실측). 승인
+    주체 문장이 있고, ack 는 발행 줄 밖에 다시 붙지 않는다.
     """
     prompt = _multirepo_wave_prompt()
     for repo in _MULTIREPO_REPOS:
-        assert repo in prompt, f"프롬프트에 repo '{repo}' 미언급"
-        assert f"work/{repo}_1" in prompt, f"프롬프트에 repo '{repo}' 슬롯 디렉토리 누락"
-    # 템플릿은 REPO 치환형 — new 원 명령 1곳에만 값-결속 ack 가 있어야 한다(자동 부착 형상 미테스트).
-    assert prompt.count("--prefix REPO --user-ack REPO") == 1, (
-        "multirepo 프롬프트의 `new` 원 명령은 `--prefix REPO --user-ack REPO` 값-결속 승인을 정확히 1회 담아야 함"
-    )
-    for line in prompt.splitlines():
-        if "board.py claim" in line or "board.py complete" in line:
-            assert "--user-ack" not in line, f"ack 는 new 원 명령에만 — 재부착 금지: {line!r}"
-    # 승인 주체 문장 — 에이전트가 ack 를 지어내거나 바꾸지 않도록 프롬프트가 명시한다.
-    assert "explicitly approves" in prompt and "--user-ack" in prompt
-    assert "board.py new" in prompt and "board.py claim" in prompt and "board.py complete" in prompt
-    # negative backstop — 구 actor 플래그 재유입 시 라이브 없이 red.
+        assert prompt.count(f"--prefix {repo} --user-ack {repo}") == 1, repo
+        for line in prompt.splitlines():
+            if f"--user-ack {repo}" in line:
+                assert "board.py new" in line, f"ack 는 new 줄에만 — 재부착 금지: {line!r}"
+    assert "explicitly approves" in prompt
     assert "--session" not in prompt and "--worktree-slot" not in prompt
 
 

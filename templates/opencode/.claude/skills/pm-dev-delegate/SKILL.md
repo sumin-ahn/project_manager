@@ -21,6 +21,7 @@ audience: pm-internal
 | 단계 | 실행 | 단위 | 라운드 순번 |
 |---|---|---|---|
 | 묶음 선언 | `board.py cluster new` | 묶음 1 | — |
+| 작업 폴더 전환 | `worktree_pool.py switch <slot> task/<ticket-group>`(`<slot>=work/<repo>_<N>` · claim 뒤, 코드 변경이 없어도 · 작업·종결 전) | 묶음 1 | — |
 | 설계 | `ticket prepare --cluster --role architect` | 세션 1 · 라운드 파일 N | `01-architect` |
 | 구현 | `ticket prepare --cluster --role developer` | 티켓당 1 | `02-developer` |
 | 리뷰 | `ticket prepare --cluster --role code-reviewer`(같은 하네스) 또는 `--role code-reviewer --cluster`(다른 하네스) | 세션 1 · 라운드 파일 N | `03-code-reviewer` |
@@ -46,6 +47,7 @@ python3 .project_manager/tools/ticket_finish.py --cluster C-<ticket-group>
 ## 사전 조건
 
 - 묶음이 선언돼 있고 멤버 티켓이 claim 됐다 (`/pm-wave-claim` 통과 · 세션 정체성 canonical `<repo>_<N>`).
+- claim 뒤 작업 폴더를 `worktree_pool.py switch <slot> task/<ticket-group>`(`<slot>=work/<repo>_<N>`)로 묶음 브랜치에 옮겼다(코드 변경이 없어도 · 작업·종결 전).
 - 예외 — **draft의 architect 본문 점검 라운드는 claim 이전**이다. 엔진이 draft × architect만 허용하고(developer·code-reviewer의 draft 라운드는 거부) 이 경로는 board-git sync 0회다.
 - depends_on 모두 done.
 - touches 명시.

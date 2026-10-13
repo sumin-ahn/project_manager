@@ -45,6 +45,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
@@ -56,7 +57,11 @@ import pytest
 from test_fresh_adopter_runtime_smoke import _live_env, _tickets_in
 # release 마커 AST 카운트(자기 파일 pin 가드용) — 마커 소실/개명 방어 도구 재사용. 안내 경로로 첫
 # 작업 폴더를 만든 채택자 픽스처는 full wave 와 공용이다([[T-0956]]).
-from test_release_wave import _count_marked_tests, _guided_adopter
+from test_release_wave import (
+    _MULTIREPO_REPOS, _MULTIREPO_TICKET, _RELEASE_WAVE_TASK, _WAVE_FILE, _WAVE_INTEGRATION_SLOT,
+    _WAVE_WORK_SLOT, _assert_multirepo_wave_side_effects, _count_marked_tests, _guided_adopter,
+    _multirepo_wave_commands, _multirepo_wave_home,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -102,7 +107,7 @@ _HELP_FLAG_RE = re.compile(r"(?<![\w-])(?:--help|-h)(?![\w-])")
 CARD_TASK = "demo-task"
 
 
-def _render_command_card(home: Path) -> str:
+def _render_command_card(home: Path, task: str = CARD_TASK) -> str:
     """home 의 pm_bootstrap 엔진으로 이 홈의 커맨드 카드를 렌더한다 (LLM 아님·순수 엔진).
 
     부트스트랩이 정체성 채워 dump 하는 커맨드 카드(ADR-0045)를 라이브 LLM 에 *유일한 컨텍스트*로
@@ -115,7 +120,7 @@ def _render_command_card(home: Path) -> str:
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     inst = mod.PmBootstrap()
-    inst._task_name = CARD_TASK
+    inst._task_name = task
     return inst._build_command_card_markdown()
 
 
@@ -210,6 +215,9 @@ _SCRIPT_OPS = {"pm_handoff.py": "handoff", "ticket_finish.py": "finish"}
 _SUBCOMMAND_TOOLS = frozenset({"board.py", "worktree_pool.py"})
 # `board.py cluster` 는 다음 토큰이 이 이름일 때만 묶음 결속 조작이다 — `cluster show` 는 읽기라 반복 무해.
 _CLUSTER_BINDING_SUBCOMMAND = "new"
+# 스크립트 조작에 이 플래그가 붙으면 읽기다 — `ticket_finish.py --dry-run` 은 편집·board·git 없이 계획만
+# 출력한다(흐름 카드가 처음 도는 묶음에 먼저 보라고 한다·[[T-0958]]). `cluster show` 와 같은 원칙.
+_SCRIPT_READ_FLAG = "--dry-run"
 
 
 def _op_command(inv: str, op: str, tid: str = "T-1") -> str:
@@ -373,7 +381,8 @@ def _executed_board_ops(command: str) -> list[str]:
                         ops.append(op)
                 break
             if tok_base in _SCRIPT_OPS:
-                ops.append(_SCRIPT_OPS[tok_base])
+                if _SCRIPT_READ_FLAG not in args[pos + 1:]:
+                    ops.append(_SCRIPT_OPS[tok_base])
                 break
     return ops
 
@@ -863,6 +872,29 @@ def _card_command_lines(card: str) -> dict[tuple[str, str | None], str]:
     return found
 
 
+def _card_line_notes(card: str) -> dict[tuple[str, str | None], str]:
+    """카드 실행 줄 → 그 줄의 주석과 바로 아래 ⚠ 줄(그 줄의 순서·전제 설명 · `_card_command_lines` 와 같은 키).
+
+    같은 키가 다시 나오면(찾아가기 포인터 등) 첫 줄의 설명만 쓴다.
+    """
+    notes: dict[tuple[str, str | None], str] = {}
+    current: tuple[str, str | None] | None = None
+    for raw in card.splitlines():
+        body = raw.strip()
+        if _CARD_TOOLS_MARK in body and not body.startswith(("/", "$")):
+            command, _sep, comment = body.partition("  #")
+            rest = command.split(_CARD_TOOLS_MARK, 1)[1].split()
+            key = (rest[0], rest[1] if len(rest) > 1 and rest[1].isalpha() else None)
+            current = key if key not in notes else None
+            if current is not None:
+                notes[key] = comment.strip()
+        elif current is not None and body.startswith("⚠"):
+            notes[current] += " " + body
+        else:
+            current = None
+    return notes
+
+
 def _card_line_process(dest: Path, line: str, fills: dict[str, str],
                        extra: Sequence[str] = ()) -> subprocess.CompletedProcess:
     """카드 줄의 사용자 입력 자리만 채워 그대로 실행한다(cwd=홈 · rc 단언은 호출부)."""
@@ -1068,10 +1100,21 @@ def test_t0956_card_commands_close_first_ticket(tmp_path):
     refused = _card_line_process(dest, lines[("board.py", "cluster")], _card_fills(tid, tid, slot))
     assert refused.returncode == 1 and "예약" in refused.stderr, refused.stdout + refused.stderr
     assert sorted(path.name for path in clusters.iterdir()) == before
-    for key in (("board.py", "cluster"), ("board.py", "claim"), ("worktree_pool.py", "switch")):
+    for key in (("board.py", "cluster"), ("board.py", "show"), ("board.py", "lint"), ("board.py", "claim")):
         _run_card_line(dest, lines[key], fills)
     _check_card_dod(dest, tid)
-    _run_card_line(dest, lines[("ticket_finish.py", None)], fills, extra=("--no-pytest",))
+    # [[T-0958]] 종결 줄은 switch 뒤다 — 카드가 두 줄 옆에 적고, switch 전 종결·dry-run 은 작업 트리 해소에서
+    # rc 1 이며 아무것도 쓰지 않는다(라이브 두 시도의 실패 순서).
+    notes = _card_line_notes(card)
+    assert "switch 뒤" in notes[("ticket_finish.py", None)], notes[("ticket_finish.py", None)]
+    assert "코드 변경이 없어도" in notes[("worktree_pool.py", "switch")], notes[("worktree_pool.py", "switch")]
+    finish = lines[("ticket_finish.py", None)]
+    for extra in (("--no-pytest", "--dry-run"), ("--no-pytest",)):
+        early = _card_line_process(dest, finish, fills, extra)
+        assert early.returncode == 1 and "작업 트리 해소" in early.stderr, early.stdout + early.stderr
+    assert _tickets_in(dest, "claimed") == {_card_ticket(dest, tid).name}
+    _run_card_line(dest, lines[("worktree_pool.py", "switch")], fills)
+    _run_card_line(dest, finish, fills, extra=("--no-pytest",))
     _run_card_line(dest, lines[("pm_config.py", "release")], fills)
 
     assert _tickets_in(dest, "done") == {_card_ticket(dest, tid).name}
@@ -1090,6 +1133,14 @@ def test_t0956_card_integration_folder_merges_code_change(tmp_path):
     card = _render_command_card(dest)
     lines = _card_command_lines(card)
     work, integration = ("--repo", repo, "--slot", "2"), ("--repo", repo, "--slot", "1")
+    # [[T-0958]] 폴더 2개의 지목 규칙은 발행·묶음 선언·claim·회귀 줄 옆에 있고, 지목 없는 발행 줄은 rc 1 이다.
+    notes = _card_line_notes(card)
+    for key in (("board.py", "new"), ("board.py", "cluster"), ("board.py", "claim"), ("board.py", "regression")):
+        assert "`--repo <repo> --slot <N>`" in notes[key], (key, notes[key])
+    for phrase in ("cluster new 에 지목하지 않은 폴더", "switch 뒤 그 폴더에서 고친다"):
+        assert phrase in notes[("worktree_pool.py", "switch")], notes[("worktree_pool.py", "switch")]
+    ambiguous = _card_line_process(dest, lines[("board.py", "new")], {'"<제목>"': '"card probe"'})
+    assert ambiguous.returncode == 1 and "모호" in ambiguous.stderr, ambiguous.stdout + ambiguous.stderr
     tid = _created_ticket_id(
         _run_card_line(dest, lines[("board.py", "new")], {'"<제목>"': '"card probe"'}, extra=work))
     fills = _card_fills(tid, _card_name_rule(card)[0], _card_slot_value(card, repo, 2))
@@ -1114,6 +1165,236 @@ def test_t0956_card_integration_folder_merges_code_change(tmp_path):
     assert merged.returncode == 0, merged.stderr
     assert merged.stdout == "hello from card\n"
     assert _tickets_in(dest, "done") == {_card_ticket(dest, tid).name}
+
+
+def test_t0958_card_one_folder_code_change_borrows_second_folder(tmp_path):
+    """[[T-0958]] — 폴더 1개 채택자의 코드 변경은 카드대로 cluster new 전에 폴더를 하나 더 빌려야 머지된다.
+
+    폴더 1개 그대로 카드 줄을 따르면 종결이 통합 브랜치를 든 폴더를 찾지 못해 선검사 rc 1 이고 아무것도
+    쓰지 않는다. 카드 alloc 경고대로 alloc 을 한 번 더 하면 풀 소진 rc 1 과 사용자 승인 명령이 나오고, 그
+    명령(사용자 몫)을 실행한 뒤 폴더 2개 흐름으로 touches 의 probe.txt 가 통합 브랜치 `<repo>_1` 에 머지된다.
+    """
+    one = _guided_adopter(tmp_path / "one", "claude", task=CARD_TASK, folders=1)
+    card = _render_command_card(one)
+    assert any("cluster new 전에" in line and "alloc" in line
+               for line in card.splitlines() if line.strip().startswith("⚠")), "카드가 폴더 2개 전제를 말하지 않는다"
+    lines = _card_command_lines(card)
+    tid = _created_ticket_id(_run_card_line(one, lines[("board.py", "new")], {'"<제목>"': '"code probe"'}))
+    fills = _card_fills(tid, _card_name_rule(card)[0], _card_slot_value(card, one.name, 1))
+    _fill_card_ticket(one, tid, touches=("probe.txt",))
+    for key in (("board.py", "promote"), ("board.py", "tier"), ("board.py", "cluster"), ("board.py", "claim"),
+                ("worktree_pool.py", "switch")):
+        _run_card_line(one, lines[key], fills)
+    (one / "work" / f"{one.name}_1" / "probe.txt").write_text("hello\n", encoding="utf-8")
+    _check_card_dod(one, tid)
+    blocked = _card_line_process(one, lines[("ticket_finish.py", None)], fills, ("--no-pytest",))
+    assert blocked.returncode == 1 and "체크아웃한 작업 트리를 찾지 못했다" in blocked.stderr, blocked.stderr
+    assert _tickets_in(one, "claimed") == {_card_ticket(one, tid).name}
+
+    two = _guided_adopter(tmp_path / "two", "claude", task=CARD_TASK, folders=1)
+    repo = two.name
+    card = _render_command_card(two)
+    lines = _card_command_lines(card)
+    exhausted = _card_line_process(two, lines[("pm_config.py", "alloc")], {"<repo>": repo})
+    approved = re.search(r"`pm-config (worktree add [^`]+)`", exhausted.stdout + exhausted.stderr)
+    assert exhausted.returncode == 1 and approved, exhausted.stdout + exhausted.stderr
+    added = subprocess.run([sys.executable, str(two / ".project_manager" / "tools" / "pm_config.py"),
+                            *shlex.split(approved[1])], cwd=two, stdin=subprocess.DEVNULL, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace",
+                           env={**os.environ, **_CARD_IDENTITY_ENV})
+    assert added.returncode == 0, added.stdout + added.stderr
+    work, integration = ("--repo", repo, "--slot", "2"), ("--repo", repo, "--slot", "1")
+    tid = _created_ticket_id(
+        _run_card_line(two, lines[("board.py", "new")], {'"<제목>"': '"code probe"'}, extra=work))
+    fills = _card_fills(tid, _card_name_rule(card)[0], _card_slot_value(card, repo, 2))
+    _fill_card_ticket(two, tid, touches=("probe.txt",))
+    _run_card_line(two, lines[("board.py", "promote")], fills)
+    _run_card_line(two, lines[("board.py", "tier")], fills)
+    _run_card_line(two, lines[("board.py", "cluster")], fills, extra=integration)
+    _run_card_line(two, lines[("board.py", "claim")], fills, extra=work)
+    _run_card_line(two, lines[("worktree_pool.py", "switch")], fills)
+    (two / "work" / f"{repo}_2" / "probe.txt").write_text("hello\n", encoding="utf-8")
+    _check_card_dod(two, tid)
+    _run_card_line(two, lines[("ticket_finish.py", None)], fills, extra=("--no-pytest",))
+    merged = subprocess.run(
+        ["git", "--git-dir", str(two / ".repos" / f"{repo}.git"), "show", f"{repo}_1:probe.txt"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    assert merged.returncode == 0 and merged.stdout == "hello\n", merged.stderr
+    assert _tickets_in(two, "done") == {_card_ticket(two, tid).name}
+
+
+def test_t0958_flow_cards_state_switch_order(tmp_path):
+    """[[T-0958]] — 흐름 카드가 switch 필수·순서·폴더 선택과 task 세션의 claim 줄을 실행 줄 옆에 싣는다.
+
+    pm-wave-claim: lint 줄은 `lint --gate`, 5단계 첫 claim 줄은 `--task <task>` 형이고 슬롯 모드 줄은 task
+    세션 거부를 경고한다, 6단계는 코드 변경이 없어도 실행하고 폴더 1개·2개의 대상과 파일 수정 시점을
+    말한다. pm-wave-finish: 실행 블록의 전제와 dry-run 항목이 switch 뒤를 말한다. 슬롯 모드 claim 줄을
+    task 세션 채택자에서 쓰면 종결이 소유 불일치로 rc 1 이다(경고의 근거).
+    """
+    claim_text = (_WAVE_SKILLS / "pm-wave-claim" / "SKILL.md").read_text(encoding="utf-8")
+    finish_text = (_WAVE_SKILLS / "pm-wave-finish" / "SKILL.md").read_text(encoding="utf-8")
+    block = claim_text.split("```bash", 1)[1].split("```", 1)[0].splitlines()
+    assert any(line.strip() == "python3 .project_manager/tools/board.py lint --gate" for line in block)
+    claims = [index for index, line in enumerate(block) if "board.py claim " in line]
+    assert "--task <task>" in block[claims[0]] and "--task" not in block[claims[1]], block
+    assert "task 세션에서 쓰면 종결이 소유 불일치로 거부" in block[claims[1] - 1], block[claims[1] - 1]
+    step6 = "\n".join(block[next(i for i, line in enumerate(block) if line.startswith("# 6.")):])
+    for phrase in ("코드 변경이 없어도", "폴더 1개면 그 폴더", "cluster new 에 지목하지 않은 폴더",
+                   "전환 뒤 그 폴더에서 고친다"):
+        assert phrase in step6, phrase
+    assert "switch 를 마쳤다" in finish_text.split("```bash", 1)[1].split("```", 1)[0]
+    assert "switch 를 마친 뒤" in finish_text
+
+    dest = _guided_adopter(tmp_path, "claude", task=CARD_TASK, folders=1)
+    card = _render_command_card(dest)
+    lines = _card_command_lines(card)
+    tid = _created_ticket_id(_run_card_line(dest, lines[("board.py", "new")], {'"<제목>"': '"card probe"'}))
+    fills = _card_fills(tid, _card_name_rule(card)[0], _card_slot_value(card, dest.name, 1))
+    _fill_card_ticket(dest, tid)
+    for key in (("board.py", "promote"), ("board.py", "tier"), ("board.py", "cluster")):
+        _run_card_line(dest, lines[key], fills)
+    slot_claim = shlex.split(block[claims[1]].split("#", 1)[0].replace("T-NNNN", tid)
+                             .replace("<repo>", dest.name).replace("<N>", "1"))
+    claimed = subprocess.run([sys.executable, *slot_claim[1:]], cwd=dest, stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True, encoding="utf-8", errors="replace",
+                             env={**os.environ, **_CARD_IDENTITY_ENV})
+    assert claimed.returncode == 0, claimed.stdout + claimed.stderr
+    _run_card_line(dest, lines[("worktree_pool.py", "switch")], fills)
+    _check_card_dod(dest, tid)
+    refused = _card_line_process(dest, lines[("ticket_finish.py", None)], fills, ("--no-pytest",))
+    assert refused.returncode == 1 and "소유다" in refused.stderr, refused.stdout + refused.stderr
+
+
+# 위임 경로 문서가 claim 다음 단계로 싣는 switch 진술의 조각 — 흐름 카드 6단계 줄과 같은 표기 규칙이다.
+_DELEGATE_SWITCH_PHRASES = (
+    "worktree_pool.py switch <slot> task/<ticket-group>", "<slot>=work/<repo>_<N>", "claim 뒤",
+    "코드 변경이 없어도", "종결 전",
+)
+
+
+def _markdown_section(text: str, heading: str) -> str:
+    """`heading` 줄부터 같은 수준 이상의 다음 헤딩 전까지."""
+    level = heading.split(" ", 1)[0]
+    body = text.split(heading + "\n", 1)[1]
+    return re.split(rf"^#{{1,{len(level)}}} ", body, maxsplit=1, flags=re.M)[0]
+
+
+def test_t0958_delegate_docs_state_switch_after_claim():
+    """[[T-0958]] — 위임 경로 문서도 claim 뒤 switch(코드 변경이 없어도, 작업·종결 전)를 claim 바로 옆에 싣는다.
+
+    pm_playbook §Wave 구성 2항(묶음 선언 + claim)과 pm-dev-delegate 의 클러스터 단계 표(묶음 선언 바로 다음
+    행)·사전 조건(claim 항목 바로 다음 항목)이 대상이다. 원본과 채택자에게 깔리는 사본 전부를 본다.
+    """
+    playbooks = [REPO / ".project_manager" / "wiki" / "pm_playbook.md",
+                 *sorted((REPO / "templates").glob("*/.project_manager/wiki/pm_playbook.md"))]
+    cards = [_WAVE_SKILLS / "pm-dev-delegate" / "SKILL.md",
+             *sorted((REPO / "templates").glob("*/*/skills/pm-dev-delegate/SKILL.md")),
+             *sorted((REPO / "templates").glob("*/*/command/pm-dev-delegate.md"))]
+    assert len(playbooks) > 1 and len(cards) > 1, (playbooks, cards)
+    for path in playbooks:
+        section = _markdown_section(path.read_text(encoding="utf-8"), "### Wave 구성 (묶음 단계)")
+        item = section.split("2. **묶음 선언 + claim**", 1)[1].split("\n3. ", 1)[0]
+        line = next((row for row in item.splitlines() if _DELEGATE_SWITCH_PHRASES[0] in row), "")
+        assert all(phrase in line for phrase in _DELEGATE_SWITCH_PHRASES), (path, item)
+    for path in cards:
+        text = path.read_text(encoding="utf-8")
+        rows = [row for row in _markdown_section(text, "## 클러스터 단계 표 (운영 단위 = 티켓 묶음)").splitlines()
+                if row.startswith("| ")]
+        declare = next(index for index, row in enumerate(rows) if row.startswith("| 묶음 선언 |"))
+        assert all(phrase in rows[declare + 1] for phrase in _DELEGATE_SWITCH_PHRASES), (path, rows)
+        items = [row for row in _markdown_section(text, "## 사전 조건").splitlines() if row.startswith("- ")]
+        claimed = next(index for index, row in enumerate(items) if "멤버 티켓이 claim 됐다" in row)
+        assert all(phrase in items[claimed + 1] for phrase in _DELEGATE_SWITCH_PHRASES), (path, items)
+
+
+def _run_multirepo_wave(home: Path, repo: str, edit=None) -> str:
+    """다중 저장소 프롬프트의 그 저장소 실행 줄을 순서대로 실행한다 — 인터프리터만 이 프로세스로 바꾼다.
+
+    맨 앞 부트스트랩 줄은 하네스 가드 훅이 세션을 기록해야 도는 줄이라 뺀다(작업 폴더 쓰기 가드를 여는
+    용도 · 비라이브엔 가드 훅이 없다). 종결 줄 앞에서 파일을 쓰고(`edit` · 기본은 작업 폴더에 프롬프트 내용)
+    완료 조건을 체크한다. 줄마다 rc 0 을 단언하고 발행 출력의 티켓 ID 를 돌려준다.
+    """
+    commands = _multirepo_wave_commands(repo)
+    work = home / "work" / f"{repo}_{_WAVE_WORK_SLOT}"
+    tid = _MULTIREPO_TICKET
+    for index, command in enumerate(commands):
+        if index == len(commands) - 1:
+            if edit is None:
+                (work / _WAVE_FILE).write_text(f"done by {repo}\n", encoding="utf-8")
+            else:
+                edit()
+            _check_card_dod(home, tid)
+        argv = shlex.split(command.replace(_MULTIREPO_TICKET, tid))
+        proc = subprocess.run([sys.executable, *argv[1:]], cwd=home, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              env={**os.environ, **_CARD_IDENTITY_ENV})
+        assert proc.returncode == 0, f"{argv}\n{proc.stdout[-1500:]}\n{proc.stderr[-1500:]}"
+        if index == 0:
+            tid = _created_ticket_id(proc)
+    return tid
+
+
+def test_t0958_multirepo_prompt_follows_card_and_closes_each_repo(tmp_path):
+    """[[T-0958]] — 다중 저장소 프롬프트의 실행 줄은 카드 줄에 값을 채운 것이고 카드 순서다. 그대로 실행하면
+    저장소마다 티켓 done·묶음 closed·바꾼 파일이 묶음 브랜치와 통합 브랜치 `<repo>_1` 에 있다.
+
+    라이브 단언(`_assert_multirepo_wave_side_effects`)이 이 결과를 통과시킨다. 카드 줄과의 대조는 도구
+    경로 표식 뒤만 본다(인터프리터 접두는 플랫폼마다 다르다).
+    """
+    home = _multirepo_wave_home(tmp_path, "claude")
+    card = _render_command_card(home, task=_RELEASE_WAVE_TASK)
+    lines = _card_command_lines(card)
+    order = list(lines)
+    for repo in _MULTIREPO_REPOS:
+        fills = {'"<제목>"': f'"wave probe {repo}"', "<T-NNNN>": _MULTIREPO_TICKET,
+                 "T-NNNN": _MULTIREPO_TICKET, "<ticket-group>": f"wave-{repo}",
+                 "<slot>": _card_slot_value(card, repo, _WAVE_WORK_SLOT)}
+        positions = []
+        for command in _multirepo_wave_commands(repo):
+            rest = command.split(_CARD_TOOLS_MARK, 1)[1]
+            words = rest.split()
+            key = (words[0], words[1] if len(words) > 1 and words[1].isalpha() else None)
+            expected = lines[key].split(_CARD_TOOLS_MARK, 1)[1]
+            for placeholder, value in fills.items():
+                expected = expected.replace(placeholder, value)
+            assert rest == expected or rest.startswith(expected + " "), (rest, expected)
+            positions.append(order.index(key))
+        assert positions == sorted(positions), positions
+        _run_multirepo_wave(home, repo)
+    _assert_multirepo_wave_side_effects(home, subprocess.CompletedProcess([], 0, "", ""), "비라이브 재현")
+
+
+@pytest.mark.parametrize(
+    "shape", ["uncommitted-in-integration-folder", "committed-on-integration-branch", "closed-without-merge"])
+def test_t0958_multirepo_side_effects_reject_unmerged_change(tmp_path, shape):
+    """[[T-0958]] — 바꾼 파일이 종결의 머지로 들어가지 않은 웨이브는 티켓 done·묶음 closed 여도 단언이 거부한다.
+
+    6d1c39c9 라이브의 두 형상: 통합 폴더에 커밋하지 않은 파일(폴더 결과는 opencode 와 같다)과 통합 브랜치
+    직접 커밋(claude). 두 형상 모두 종결은 rc 0 이고 통합 폴더에 파일이 있어 옛 단언은 통과시켰다. 셋째 형상은
+    작업 폴더에서 고쳐 묶음 브랜치에는 있으나 통합 브랜치에 머지되지 않은 결과다(장부만 닫힌 경우 · 종결 뒤
+    통합 브랜치를 종결 전 커밋으로 되돌려 만든다). 묶음 브랜치 확인은 커밋하지 않은 파일과 통합 브랜치 직접
+    커밋을, 통합 브랜치 확인은 머지 없는 종결을 거부한다.
+    """
+    home = _multirepo_wave_home(tmp_path, "claude")
+    integration = home / "work" / f"repoa_{_WAVE_INTEGRATION_SLOT}"
+    bare = ["git", "--git-dir", str(home / ".repos" / "repoa.git")]
+    base = f"repoa_{_WAVE_INTEGRATION_SLOT}"
+    before = subprocess.run([*bare, "rev-parse", base], capture_output=True, text=True, check=True).stdout.strip()
+
+    def edit() -> None:
+        (integration / _WAVE_FILE).write_text("done by repoa\n", encoding="utf-8")
+        if shape == "committed-on-integration-branch":
+            for argv in (["add", _WAVE_FILE], ["commit", "-q", "-m", "direct"]):
+                assert subprocess.run(["git", "-C", str(integration), *argv], capture_output=True,
+                                      env={**os.environ, **_CARD_IDENTITY_ENV}).returncode == 0
+
+    _run_multirepo_wave(home, "repoa", edit=None if shape == "closed-without-merge" else edit)
+    if shape == "closed-without-merge":
+        subprocess.run([*bare, "update-ref", f"refs/heads/{base}", before], check=True)
+    _run_multirepo_wave(home, "repob")
+    assert (integration / _WAVE_FILE).exists()
+    with pytest.raises(AssertionError, match="repo 'repoa'"):
+        _assert_multirepo_wave_side_effects(home, subprocess.CompletedProcess([], 0, "", ""), "비라이브 음성")
 
 
 def test_collect_bash_commands_extracts_from_stream_json():
@@ -1241,6 +1522,29 @@ def test_judge_commands_ignores_read_only_cluster_show():
     retried = [*_clean_sequence(inv), _op_command(inv, "cluster", "T-0001")]
     ok, detail = _judge_commands(retried)
     assert not ok and "cluster 재시도 ×2" in detail
+
+
+def test_t0958_judge_ignores_finish_dry_run():
+    """[[T-0958]] — 종결 `--dry-run` 은 읽기라 종결 조작으로 세지 않는다(`cluster show` 와 같은 원칙).
+
+    흐름 카드가 처음 도는 묶음에 먼저 보라는 dry-run 이 switch 전에 rc≠0 이어도 switch·종결이 각각 첫 시도
+    rc 0 이면 통과한다. 실제 종결을 두 번 실행한 명령열은 여전히 재시도로 실패한다.
+    """
+    inv = "python3 .project_manager/tools"
+    dry = f"{_op_command(inv, 'finish', 'T-0001')} --dry-run"
+    assert _executed_board_ops(dry) == []
+    clean = _clean_sequence(inv)
+    switch_at = clean.index(_op_command(inv, "switch", "T-0001"))
+    commands = [*clean[:switch_at], dry, *clean[switch_at:-1], dry, clean[-1]]
+    ok, detail = _judge_commands(commands)
+    assert ok, detail
+    calls = [{"id": f"call-{index}", "command": command} for index, command in enumerate(commands)]
+    ok, detail = _judge_first_try_rc0(calls, {call["id"]: index == switch_at
+                                              for index, call in enumerate(calls)})
+    assert ok, detail
+
+    ok, detail = _judge_commands([*clean, _op_command(inv, "finish", "T-0001")])
+    assert not ok and "finish 재시도 ×2" in detail
 
 
 def test_judge_commands_flags_help_invocation():

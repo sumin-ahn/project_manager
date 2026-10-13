@@ -371,7 +371,7 @@ _C_BOARD_LIST = _CardCmd("board.py", "list", ("list",), ())
 _C_BOARD_NEW = _CardCmd("board.py", 'new "<제목>"', ("new",), ())
 _C_BOARD_PROMOTE = _CardCmd("board.py", "promote T-NNNN", ("promote",), ())
 _C_BOARD_SHOW = _CardCmd("board.py", "show T-NNNN", ("show",), ())
-_C_BOARD_LINT = _CardCmd("board.py", "lint", ("lint",), ())
+_C_BOARD_LINT = _CardCmd("board.py", "lint --gate", ("lint",), ("--gate",))
 _C_BOARD_CLAIM = _CardCmd("board.py", "claim T-NNNN", ("claim",), ())
 _C_BOARD_CLUSTER_NEW = _CardCmd(
     "board.py", "cluster new <ticket-group> --tickets T-NNNN", ("cluster", "new"), ("--tickets",))
@@ -4065,9 +4065,9 @@ class PmBootstrap:
             _C_PC_RELEASE, "작업완료 반납(소유검사 이 task 명의 슬롯만)", suffix=ti,
         ))
         lines.append(
-            "  ⚠ 코드 변경을 머지하려면 작업 폴더 2개를 빌린다: 통합 폴더(base_branch 를 계속 든다)와 "
-            "작업 폴더(묶음 브랜치로 switch). 2개를 빌린 동안 new·cluster new·claim·regression 에는 "
-            "`--repo <repo> --slot <N>` 을 붙여 폴더를 지목한다."
+            "  ⚠ 코드를 고치는 티켓은 cluster new 전에 작업 폴더 2개를 빌려 둔다: 통합 폴더(base_branch 를 "
+            "계속 든다)와 작업 폴더(묶음 브랜치로 switch 해 고친다). 1개뿐이면 alloc 을 한 번 더 한다(풀이 "
+            "비면 alloc 이 사용자 승인 명령을 알려 준다)."
         )
         lines.append("")
 
@@ -4091,7 +4091,9 @@ class PmBootstrap:
         # prefix 는 task 것이므로 `--prefix` 를 따로 받지 않는다(`--task` 가 결정).
         lines.append("# 티켓 발행 (직접 CLI — 래핑 스킬 없음)")
         lines.append(cmd(
-            _C_BOARD_NEW, "새 티켓 발행(prefix 는 이 task 것·draft 로 생성)", suffix=ti,
+            _C_BOARD_NEW,
+            "새 티켓 발행(prefix 는 이 task 것·draft 로 생성) · 폴더 2개면 `--repo <repo> --slot <N>` 추가",
+            suffix=ti,
         ))
         lines.append(cmd(
             _C_BOARD_PROMOTE, "draft → 정식 승격(본문 채운 뒤·claim 의 전제)",
@@ -4115,24 +4117,40 @@ class PmBootstrap:
         )
         lines.append(
             "  ⚠ cluster new 는 지목한 폴더의 현재 브랜치를 base_branch(머지 대상)로 적고 "
-            "묶음 브랜치 task/<ticket-group> 을 만든다: 통합 폴더를 지목한다."
+            "묶음 브랜치 task/<ticket-group> 을 만든다: 폴더 1개면 그 폴더(`--task` 만), 2개면 "
+            "`--repo <repo> --slot <N>` 으로 통합 폴더를 지목한다."
         )
         lines.append(engine(_C_BOARD_SHOW))
-        lines.append(engine(_C_BOARD_LINT))
-        lines.append(engine(_C_BOARD_CLAIM, suffix=ti))
+        lines.append(engine(_C_BOARD_LINT, "스킬이 부르는 내부 엔진·직접 금지 · 차단 항목만 rc 1"))
+        lines.append(engine(
+            _C_BOARD_CLAIM,
+            "스킬이 부르는 내부 엔진·직접 금지 · 폴더 2개면 `--repo <repo> --slot <N>` 추가",
+            suffix=ti,
+        ))
         lines.append("  ⚠ claim 은 draft 티켓 거부 — 먼저 `promote T-NNNN`(본문 채운 뒤) 필요.")
         lines.append(engine(
             _C_WP_SWITCH,
-            "스킬이 부르는 내부 엔진·직접 금지 · 작업 폴더(<slot>=work/<repo>_<N>)를 묶음 브랜치로 전환",
+            f"{_runtime_skill_entry('pm-wave-claim')} 6단계 · 코드 변경이 없어도 실행한다 · claim 뒤, "
+            "파일 수정·종결 전 · 작업 폴더(<slot>=work/<repo>_<N>)를 묶음 브랜치로 전환(폴더 1개면 그 폴더, "
+            "2개면 cluster new 에 지목하지 않은 폴더)",
         ))
+        lines.append(
+            "  ⚠ 파일은 switch 뒤 그 폴더에서 고친다. switch 전에 고치면 switch 가 거부하고, switch 전에 커밋한 "
+            "변경은 묶음 브랜치에 없어 종결이 rc 0 이어도 머지되지 않는다."
+        )
         lines.append(skill("/pm-regression", "비차단 백그라운드 회귀 pre-warm + 완료 알림"))
-        lines.append(engine(_C_BOARD_REGRESSION, suffix=ti))
+        lines.append(engine(
+            _C_BOARD_REGRESSION,
+            "스킬이 부르는 내부 엔진·직접 금지 · 폴더 2개면 `--repo <repo> --slot <N>` 추가",
+            suffix=ti,
+        ))
         lines.append(skill("/pm-wave-finish T-NNNN", "ticket 완료 기록 — 회귀+log+board+stage"))
         # ticket_finish 는 identity.task 있을 때만 회귀 cwd 를 해소한다 —
         # task 세션은 `--task` 를 실어야 slot 축으로 오해소하지 않는다(다른 task backbone 과 동형).
         lines.append(engine(
             _C_TICKET_FINISH,
-            "스킬이 부르는 내부 엔진·직접 금지 — 내부서 board.py complete 수행",
+            "스킬이 부르는 내부 엔진·직접 금지 · switch 뒤에 실행(switch 전이면 작업 트리 해소에서 rc 1) · "
+            "내부서 board.py complete 수행",
             suffix=ti,
         ))
         lines.append(
