@@ -400,7 +400,7 @@ def test_relay_rotation_uses_precompact_at(orch, tmp_path):
 def test_no_marker_relays_persist_same_session(orch, tmp_path):
     """marker 없으면 같은 세션으로 relay 가 지속된다 — respawn 안 함(1 spawn)."""
     driver = _make_driver(orch, tmp_path)  # marker 안 박음.
-    sup = orch.Supervisor(driver, root=tmp_path)
+    sup = orch.Supervisor(driver, root=tmp_path, task="demo-task")
     in_stream = io.StringIO("hi\nthere\n")  # 2 turn 후 EOF.
     out_stream = io.StringIO()
     rc = sup.run_loop("/cwd", in_stream, out_stream)
@@ -416,7 +416,7 @@ def test_no_marker_relays_persist_same_session(orch, tmp_path):
 def test_marker_triggers_respawn_with_new_session(orch, tmp_path):
     """첫 relay 직후 marker → respawn(새 session). 이후 relay 는 새 세션에서."""
     driver = _make_driver(orch, tmp_path, stop_after_relays=1)
-    sup = orch.Supervisor(driver, root=tmp_path)
+    sup = orch.Supervisor(driver, root=tmp_path, task="demo-task")
     in_stream = io.StringIO("first\nsecond\n")
     out_stream = io.StringIO()
     rc = sup.run_loop("/cwd", in_stream, out_stream)
@@ -431,7 +431,7 @@ def test_marker_triggers_respawn_with_new_session(orch, tmp_path):
 def test_respawn_clears_old_marker(orch, tmp_path):
     """respawn 시 떠나는 세션의 marker 를 정리한다(회전 후 stale marker 누적 방지)."""
     driver = _make_driver(orch, tmp_path, stop_after_relays=1)
-    sup = orch.Supervisor(driver, root=tmp_path)
+    sup = orch.Supervisor(driver, root=tmp_path, task="demo-task")
     sup.run_loop("/cwd", io.StringIO("a\nb\n"), io.StringIO())
     old_sid = driver.spawns[0]
     assert orch.stop_marker_present(tmp_path, old_sid) is False  # 정리됨.
@@ -442,7 +442,7 @@ def test_spawn_reply_is_written_to_out_stream(orch, tmp_path):
         orch, tmp_path, spawn_reply="READY", spawn_result_factory=orch.SpawnResult,
     )
     out_stream = io.StringIO()
-    rc = orch.Supervisor(driver, root=tmp_path).run_loop(
+    rc = orch.Supervisor(driver, root=tmp_path, task="demo-task").run_loop(
         "/cwd", io.StringIO(""), out_stream,
     )
     assert rc == 0
@@ -456,7 +456,7 @@ def test_respawn_announces_rotation_and_forwards_spawn_reply(orch, tmp_path):
         orch, tmp_path, stop_after_relays=1, spawn_reply="READY",
     )
     out_stream = io.StringIO()
-    orch.Supervisor(driver, root=tmp_path).run_loop(
+    orch.Supervisor(driver, root=tmp_path, task="demo-task").run_loop(
         "/cwd", io.StringIO("first\n"), out_stream,
     )
     assert out_stream.getvalue().splitlines() == [
@@ -472,7 +472,7 @@ def test_respawn_announces_rotation_and_forwards_spawn_reply(orch, tmp_path):
 def test_consecutive_respawn_guard_halts_pathological_loop(orch, tmp_path):
     """bootstrap 만으로 매 fresh 세션이 marker 를 남겨도 max 후 종료."""
     driver = _make_driver(orch, tmp_path, stop_on_spawn=True)
-    sup = orch.Supervisor(driver, root=tmp_path, max_consecutive_respawns=5)
+    sup = orch.Supervisor(driver, root=tmp_path, task="demo-task", max_consecutive_respawns=5)
     in_stream = io.StringIO("poison\n")
     out_stream = io.StringIO()
     rc = sup.run_loop("/cwd", in_stream, out_stream)
@@ -486,7 +486,7 @@ def test_consecutive_respawn_guard_halts_pathological_loop(orch, tmp_path):
 def test_consecutive_respawn_guard_respects_custom_max(orch, tmp_path):
     """max_consecutive_respawns 가 작으면 더 일찍 종료(상수 존중)."""
     driver = _make_driver(orch, tmp_path, stop_on_spawn=True)
-    sup = orch.Supervisor(driver, root=tmp_path, max_consecutive_respawns=2)
+    sup = orch.Supervisor(driver, root=tmp_path, task="demo-task", max_consecutive_respawns=2)
     rc = sup.run_loop("/cwd", io.StringIO("poison\n"), io.StringIO())
     assert rc == orch.GUARD_TRIPPED_RC
     assert len(driver.spawns) == 3
@@ -495,7 +495,7 @@ def test_consecutive_respawn_guard_respects_custom_max(orch, tmp_path):
 def test_default_max_consecutive_respawns_constant(orch, tmp_path):
     """기본값 = 모듈 상수(생성자 미지정 시)."""
     driver = _make_driver(orch, tmp_path)
-    sup = orch.Supervisor(driver, root=tmp_path)
+    sup = orch.Supervisor(driver, root=tmp_path, task="demo-task")
     assert sup.max_consecutive_respawns == orch.MAX_CONSECUTIVE_RESPAWNS
     assert orch.MAX_CONSECUTIVE_RESPAWNS == 5
 
@@ -503,7 +503,7 @@ def test_default_max_consecutive_respawns_constant(orch, tmp_path):
 def test_normal_rotation_does_not_trip_guard(orch, tmp_path):
     """매 완료 turn 후 정상 회전해도 입력을 한 번씩 처리하며 가드는 비발동."""
     driver = _make_driver(orch, tmp_path, always_stop=True)
-    sup = orch.Supervisor(driver, root=tmp_path, max_consecutive_respawns=5)
+    sup = orch.Supervisor(driver, root=tmp_path, task="demo-task", max_consecutive_respawns=5)
     lines = "".join(f"input{i}\n" for i in range(10))
     rc = sup.run_loop("/cwd", io.StringIO(lines), io.StringIO())
     # 모든 입력을 소비하고 EOF 로 정상 종료 — 가드 비발동(rc=0).
@@ -518,7 +518,7 @@ def test_non_respawn_turn_resets_counter_between_intermittent_spawn_markers(
     driver = _make_driver(
         orch, tmp_path, always_stop=True, stop_on_even_spawn=True,
     )
-    sup = orch.Supervisor(driver, root=tmp_path, max_consecutive_respawns=2)
+    sup = orch.Supervisor(driver, root=tmp_path, task="demo-task", max_consecutive_respawns=2)
     inputs = [f"input{i}" for i in range(sup.max_consecutive_respawns + 3)]
     rc = sup.run_loop("/cwd", io.StringIO("\n".join(inputs) + "\n"), io.StringIO())
     assert rc == 0
@@ -528,7 +528,7 @@ def test_non_respawn_turn_resets_counter_between_intermittent_spawn_markers(
 def test_consecutive_respawn_guard_no_reset_would_trip(orch, tmp_path):
     """대조군 — bootstrap marker 가 연속되면 리셋 없이 trip."""
     driver = _make_driver(orch, tmp_path, stop_on_spawn=True)
-    sup = orch.Supervisor(driver, root=tmp_path, max_consecutive_respawns=2)
+    sup = orch.Supervisor(driver, root=tmp_path, task="demo-task", max_consecutive_respawns=2)
     rc = sup.run_loop("/cwd", io.StringIO("p\n"), io.StringIO())
     assert rc == orch.GUARD_TRIPPED_RC
 
@@ -642,7 +642,7 @@ def test_parse_stream_json_uses_last_assistant_partial_usage(orch):
 def test_marker_turn_is_not_resent_to_new_session(orch, tmp_path):
     """marker 를 남긴 완료 turn 은 회전 후 재호출하지 않는다."""
     driver = _make_driver(orch, tmp_path, stop_after_relays=1)
-    sup = orch.Supervisor(driver, root=tmp_path)
+    sup = orch.Supervisor(driver, root=tmp_path, task="demo-task")
     in_stream = io.StringIO("trigger\nfollowup\n")
     out_stream = io.StringIO()
     sup.run_loop("/cwd", in_stream, out_stream)
@@ -656,7 +656,7 @@ def test_marker_turn_is_not_resent_to_new_session(orch, tmp_path):
 def test_marker_payload_is_ignored_and_input_is_not_resent(orch, tmp_path):
     """구 pre-turn payload도 존재만으로 회전하며 처리된 입력은 재호출하지 않는다."""
     driver = _make_driver(orch, tmp_path, stop_after_relays=1)
-    sup = orch.Supervisor(driver, root=tmp_path)
+    sup = orch.Supervisor(driver, root=tmp_path, task="demo-task")
     sup.run_loop("/cwd", io.StringIO("trigger\nsecond\n"), io.StringIO())
     assert [text for _, text in driver.relays] == ["trigger", "second"]
 
@@ -677,7 +677,7 @@ def test_supervisor_holds_no_conversation_state(orch, tmp_path):
     """stateless 불변식 — supervisor 인스턴스는 협력자(driver)·고정 config 만 보유,
     대화/작업 상태 필드는 0(메시지/히스토리/세션 누적 없음)."""
     driver = _make_driver(orch, tmp_path)
-    sup = orch.Supervisor(driver, root=tmp_path)
+    sup = orch.Supervisor(driver, root=tmp_path, task="demo-task")
     # 협력자 + 고정 config 뿐 — max_consecutive_respawns 는 불변 임계(config)지 대화/작업 상태가
     # 아니다(연속 respawn 카운터 자체는 run_loop 지역 변수로 인스턴스에 없다).
     allowed = {"driver", "root", "bootstrap", "max_consecutive_respawns"}
@@ -688,7 +688,7 @@ def test_supervisor_holds_no_conversation_state(orch, tmp_path):
 def test_supervisor_state_unchanged_across_turns(orch, tmp_path):
     """relay 를 여러 turn 돌려도 supervisor __dict__ 가 불변(메시지 누적 없음)."""
     driver = _make_driver(orch, tmp_path)
-    sup = orch.Supervisor(driver, root=tmp_path)
+    sup = orch.Supervisor(driver, root=tmp_path, task="demo-task")
     before = dict(vars(sup))
     sup.run_loop("/cwd", io.StringIO("a\nb\nc\n"), io.StringIO())
     after = dict(vars(sup))
@@ -704,18 +704,19 @@ def test_supervisor_state_unchanged_across_turns(orch, tmp_path):
 def test_build_bootstrap_prompt_task_injects_flag(orch):
     """build_bootstrap_prompt(task) 가 재진입 프롬프트에 `/pm-bootstrap --task <name>` 실값을 박는다.
 
-    task 없으면 bare `/pm-bootstrap`(현행 BOOTSTRAP_PROMPT 와 byte-동일·하위호환)."""
-    assert orch.build_bootstrap_prompt() == orch.BOOTSTRAP_PROMPT
-    assert "/pm-bootstrap" in orch.BOOTSTRAP_PROMPT and "--task" not in orch.BOOTSTRAP_PROMPT
+    [[T-0960]] 부트스트랩은 `--task` 필수라 task 없는 프롬프트는 만들지 않는다(빈 task 는 ValueError)."""
     assert "/pm-bootstrap --task mytask" in orch.build_bootstrap_prompt("mytask")
+    assert not hasattr(orch, "BOOTSTRAP_PROMPT")
+    for empty in (None, ""):
+        with pytest.raises(ValueError, match="task"):
+            orch.build_bootstrap_prompt(empty)
 
 
-def test_supervisor_no_task_bare_bootstrap_byte_compat(orch, tmp_path):
-    """task 미지정 Supervisor 는 bare `/pm-bootstrap`(현행 byte-호환·슬롯/솔로)."""
+def test_supervisor_without_task_or_bootstrap_is_refused(orch, tmp_path):
+    """[[T-0960]] task 도 bootstrap override 도 없는 Supervisor 는 거부된다(인자 없는 `/pm-bootstrap` 없음)."""
     driver = _make_driver(orch, tmp_path)
-    sup = orch.Supervisor(driver, root=tmp_path)
-    assert sup.bootstrap == orch.BOOTSTRAP_PROMPT
-    assert "--task" not in sup.bootstrap
+    with pytest.raises(ValueError, match="task"):
+        orch.Supervisor(driver, root=tmp_path)
 
 
 def test_supervisor_explicit_bootstrap_override_wins(orch, tmp_path):
@@ -754,11 +755,35 @@ def test_supervisor_task_bakes_and_forwards_on_respawn(orch, tmp_path):
 
 # ── claude driver CLI --task 수용/forward (F7·T-0356·4곳 중 claude) ─────────────
 
-def test_claude_driver_parser_accepts_task(driver_mod):
-    """claude driver build_parser 가 `--task <이름>` 을 수용(기본 None)."""
+def test_claude_driver_parser_accepts_task(driver_mod, monkeypatch, capsys):
+    """claude driver 가 `--task <이름>` 을 받고, relay 진입에서 빠뜨리면 엔진 적재 전에 rc 2 로 거부한다.
+
+    [[T-0960]] 훅 진입(`--git-anchor-hook`)은 같은 파서를 task 없이 쓰므로 파서 기본값은 None 이고
+    필수 여부는 relay 진입(main)이 본다."""
     parser = driver_mod.build_parser()
     assert parser.parse_args(["--task", "mytask"]).task == "mytask"
-    assert parser.parse_args([]).task is None
+    monkeypatch.setattr(driver_mod, "_load_engine", lambda: pytest.fail("task 없이 엔진 적재"))
+    with pytest.raises(SystemExit) as exc:
+        driver_mod.main([])
+    assert exc.value.code == 2
+    assert "relay 에는 --task <task> 가 필요하다" in capsys.readouterr().err
+
+
+def test_t0960_relay_task_help_has_no_bare_bootstrap(driver_mod):
+    """[[T-0960]] AT-005 — 세 런처의 `--task` 도움말이 지워진 형태(인자 없는 부트스트랩·솔로)를 말하지 않는다."""
+    launchers = {
+        "claude": driver_mod,
+        "codex": _load("t0960_relay_help_codex",
+                       REPO / "templates" / "codex" / ".codex" / "pm_orch_codex.py"),
+        "opencode": _load("t0960_relay_help_opencode",
+                          REPO / "templates" / "opencode" / ".opencode" / "pm_orch_opencode.py"),
+    }
+    for harness, module in launchers.items():
+        task_action = next(action for action in module.build_parser()._actions
+                           if "--task" in action.option_strings)
+        for retired in ("솔로", "bare", "미지정이면"):
+            assert retired not in task_action.help, (harness, task_action.help)
+        assert "필수" in task_action.help, (harness, task_action.help)
 
 
 def test_claude_main_resolves_and_injects_ctx_config(driver_mod, monkeypatch, tmp_path):
@@ -851,7 +876,7 @@ def test_run_loop_does_not_spawn_real_subprocess(orch, tmp_path, monkeypatch):
     monkeypatch.setattr(_sp, "run", _boom)
     monkeypatch.setattr(_sp, "Popen", _boom)
     driver = _make_driver(orch, tmp_path, stop_after_relays=1)
-    sup = orch.Supervisor(driver, root=tmp_path)
+    sup = orch.Supervisor(driver, root=tmp_path, task="demo-task")
     # respawn 까지 도는 시나리오도 subprocess 0 — marker 는 FakeDriver 가 인메모리로 박음.
     rc = sup.run_loop("/cwd", io.StringIO("x\ny\n"), io.StringIO())
     assert rc == 0
@@ -859,7 +884,7 @@ def test_run_loop_does_not_spawn_real_subprocess(orch, tmp_path, monkeypatch):
 
 def test_quit_command_ends_loop(orch, tmp_path):
     driver = _make_driver(orch, tmp_path)
-    sup = orch.Supervisor(driver, root=tmp_path)
+    sup = orch.Supervisor(driver, root=tmp_path, task="demo-task")
     rc = sup.run_loop("/cwd", io.StringIO("hi\n/quit\nshould-not-relay\n"), io.StringIO())
     assert rc == 0
     # /quit 전 1 turn 만 relay(이후 입력은 안 읽음).
@@ -869,7 +894,7 @@ def test_quit_command_ends_loop(orch, tmp_path):
 
 def test_blank_lines_skipped(orch, tmp_path):
     driver = _make_driver(orch, tmp_path)
-    sup = orch.Supervisor(driver, root=tmp_path)
+    sup = orch.Supervisor(driver, root=tmp_path, task="demo-task")
     sup.run_loop("/cwd", io.StringIO("\n  \nreal\n"), io.StringIO())
     assert len(driver.relays) == 1
     assert driver.relays[0][1] == "real"

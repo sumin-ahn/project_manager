@@ -2,10 +2,7 @@
 """PM 세션 시작 부트스트랩 헬퍼 — 기계 측정 부분을 한 명령으로 dump 한다.
 
 사용:
-    venv/bin/python .project_manager/tools/pm_bootstrap.py --task <task>
-
-slot 경로:
-    venv/bin/python .project_manager/tools/pm_bootstrap.py [--json] [--with-pytest]
+    python3 .project_manager/tools/pm_bootstrap.py --task <task> [--json] [--force] [--with-pytest]
 
 동작:
   board list → 상태별 카운트 + open ticket 목록 (claim 가능).
@@ -205,7 +202,7 @@ BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 TOOLS_DIR = REPO / ".project_manager" / "tools"
 AREAS_FILE = REPO / ".project_manager" / "areas.md"   # legacy 별칭 (아래 _areas_file 가 board_root 추종)
 # worktree 리스 장부 — worktree_pool.LEASES_FILE 와 *같은 위치*. _auto_slot 이
-# 단일 슬롯 자동바인딩 판정에 stdlib json 으로 직접 read 한다(worktree_pool 미import·touches
+# 단일 슬롯 판정에 stdlib json 으로 직접 read 한다(worktree_pool 미import·touches
 # 격리·_registered_repos 가 areas.md 를 stdlib 로 읽는 것과 동형·데이터 결합만).
 LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
 
@@ -455,8 +452,8 @@ _CODEX_CARD_SECTION = "\n".join((
 
 # ── board root 추종 ───────────────────────
 # board(tickets+areas)는 `.project_manager/board/`(submodule)로 분리될 수 있다.
-# 그러면 등록영역 surface(`_registered_repos`)·단일 self-host 자동바인딩(`_auto_slot`)이
-# areas.md 의 wiki-밖 legacy 위치를 보면 *stale*(등록 repo 0개·자동바인딩 미해소)이다.
+# 그러면 등록영역 surface(`_registered_repos`)·단일 self-host 슬롯 판정(`_auto_slot`)이
+# areas.md 의 wiki-밖 legacy 위치를 보면 *stale*(등록 repo 0개·슬롯 미해소)이다.
 # pm_bootstrap 은 board.py 를 직접 import 하지 않으므로(touches 격리·areas 를 stdlib read),
 # board.py 의 graceful 탐지를 *동형*으로 최소 복제한다 — board/tickets 가 실 디렉토리면 areas 가
 # board/ 안(board/areas.md), 아니면 legacy `.project_manager/areas.md`. 미분리면 현 위치
@@ -647,7 +644,7 @@ def _load_identity_args():
     (스크립트-위치 앵커·sys.path 무오염) — 스크립트 직접실행(`__main__`)·테스트
     `spec_from_file_location` 로드 양쪽에서 똑같이 동작한다(sibling import 관성 회피). 부재/
     로드 실패 시 None(fail-soft) — `_auto_slot` 는 이를 "장부를 읽을 수
-    없음"과 동일하게 흡수해 bare-bootstrap 경로를 깨지 않는다(B-1).
+    없음"과 동일하게 미해소(None)로 돌려준다(B-1).
     """
     ia_path = TOOLS_DIR / "identity_args.py"
     if not ia_path.exists():
@@ -699,17 +696,15 @@ def _auto_slot(
     areas_file: Path | None = None,
     leases_file: Path = LEASES_FILE,
 ) -> tuple[str, int] | None:
-    """단일 self-host 자동바인딩 판정 — 정확히 1 repo + 그 repo **활성(leased)** 슬롯 정확히 1개면 `(repo, N)`.
+    """단일 self-host 슬롯 판정 — 정확히 1 repo + 그 repo **활성(leased)** 슬롯 정확히 1개면 그 슬롯.
 
-    무인자 bootstrap(`--repo`/`--slot` 둘 다 없음)에서, 등록 repo 가 정확히 1개이고
-    그 repo 의 활성 worktree 슬롯(leased lease 엔트리)이 정확히 1개면 모호함이 없으므로 그 슬롯에
-    자동으로 bind 한다. 그 외는 None
-    (미해소) — repo 0개/≥2개 또는 활성 슬롯 0개/≥2개면 사용자가 `--repo --slot` 명시.
+    핸드오프의 회귀 cwd 해소(`pm_handoff._regression_cwd`)가 쓰는 순수 판정이다. 등록 repo 가
+    정확히 1개이고 그 repo 의 leased 슬롯이 정확히 1개면 그 슬롯, 아니면 None(미해소) —
+    repo 0개/≥2개 또는 활성 슬롯 0개/≥2개.
 
     반환은 `identity_args.SlotIdentity` — 정체성 키(`.key`)와 **장부 행의 경로 값**(`.slot`)을
-    함께 나른다. 호출부(`_worktree_cwd`·`_pm_state_display_path`·handoff `_regression_cwd`)는
-    번호로 `work/<repo>_<N>` 을 재조립하지 않고 `.slot`/`.key` 를 그대로 쓴다 — 장부가 다른 경로를
-    들고 있는 슬롯에서 존재하지 않는 cwd·상태 경로가 나오던 자리다.
+    함께 나른다. 호출부는 번호로 `work/<repo>_<N>` 을 재조립하지 않고 `.slot`/`.key` 를 그대로
+    쓴다 — 장부가 다른 경로를 들고 있는 슬롯에서 존재하지 않는 cwd 가 나오던 자리다.
 
     판정:
       1. `_registered_repos` 재사용 — areas.md 등록 repo 가 정확히 1개인가(아니면 None).
@@ -717,19 +712,14 @@ def _auto_slot(
          그 repo 의 **leased** 슬롯이 정확히 1개면 그 세션을, 0개면 None 을 돌려준다. ≥2개(모호)
          는 그 프리미티브가 `identity_args.SlotResolutionError` 로 raise 하지만, 이 함수는
          **순수 resolver 계약**(정확히 1 아니면 항상 None·fail-soft)이라 그 예외를 여기서 흡수해
-         orchestration 을 보존한다 — guarded fail-loud 는 별도 `_resolve_session_slot` 전용.
+         호출부가 미해소로 처리하게 한다.
 
     **idle 필터 영향(codex must-fix)**: 공용 프리미티브가 leased 만 세므로, `{1:idle, 2:leased}`
     는 이전 None(2개→폴백) 대신 leased={2}→exactly-1→슬롯2 로 해소된다 — incidental(`_regression_cwd`·
     display)이 *활성* 슬롯을 찾는 것이라 오히려 정합·개선(의도된 변화). `{1:leased}`→1 은 불변.
 
-    파일 부재/스키마 불일치/JSON 깨짐/`identity_args` 로드 실패 → None(fail-soft — 자동바인딩은
-    *추가 편의*이지 강제 아님·실패는 미해소로 폴백). `areas_file` 미지정(None)이면
-    `_registered_repos` 가 `_areas_file()`(board_root 추종)로 해소한다.
-
-    **순수 resolver·반환 규격(`SlotIdentity` | None)** — 모든 incidental 호출부(`_worktree_cwd`·
-    `_pm_state_display_path`·handoff `_regression_cwd`)가 이 fail-soft None 폴백에 기댄다.
-    session-entry 의 guarded default-1 + fail-loud 규칙은 별도 `_resolve_session_slot` 가 처리한다.
+    파일 부재/스키마 불일치/JSON 깨짐/`identity_args` 로드 실패 → None(미해소). `areas_file`
+    미지정(None)이면 `_registered_repos` 가 `_areas_file()`(board_root 추종)로 해소한다.
     """
     repos = _registered_repos(areas_file)
     if len(repos) != 1:
@@ -746,13 +736,6 @@ def _auto_slot(
         return None
     # 경로는 행의 `slot` 값, 정체성은 행이 준 키 — 세션에서 번호를 뜯어 경로를 재조립하지 않는다.
     return ia.resolve_slot_identity(workspace.slot, leases_file)
-
-
-# ── guarded session-entry 슬롯해소 (default-1 + fail-loud) ─────
-# session-entry 경로(bare `/pm-bootstrap` 무인자·bare handoff)는 *어느 슬롯의* 연속성을
-# 이어야 하는지 명확해야 한다. 슬롯을 하나만 쓰는 홈도 그 홈 자신이 등록된 슬롯 행이므로,
-# 해소 실패는 "등록 안 된 홈" 아니면 "under-specified" 둘 중 하나다 — 둘 다 명시 에러다.
-# 조용한 폴백은 1→2 슬롯 경계에서 침묵 동작변경(없는 legacy 경로·연속성 단절)을 만들었다.
 
 
 # ── 경로 표기 직렬화 (POSIX 단일) ─────────
@@ -1267,7 +1250,7 @@ def _format_freshness(scope: dict) -> str:
     parts: list[str] = []
     fetched = scope.get("fetched")
     if not fetched:
-        parts.append("⚠ fetch 실패 (offline·현행 유지)")
+        parts.append("⚠ fetch 실패 (`git fetch origin` · 현행 유지)")
     if scope.get("detached"):
         parts.append("detached HEAD")
     else:
@@ -2215,7 +2198,7 @@ class PmBootstrap:
             wt_dir = Path(self._worktree_cwd(task_slot))
             if wt_dir.resolve() != REPO.resolve():
                 freshness.append(self._sync_scope(
-                    f"공개 제품 worktree ({task_slot})", wt_dir, is_home=False,
+                    f"작업 폴더 {task_slot}", wt_dir, is_home=False,
                     task_slot=task_slot,
                 ))
         return freshness
@@ -3035,9 +3018,7 @@ class PmBootstrap:
         """그 슬롯이 불완전 생성(`state="creating"`·provisional/중단 마커)인가 — 0단계 차단 대상.
 
         creating 은 create_slot 의 provisional 마커(worktree add *전* 선기록·확정 시 leased·중단 시
-        흔적). 이 상태 슬롯은 아무도 안전히 진입 불가하다: bind_slot 은 기존 엔트리를 무조건 leased 로
-        덮고(in-flight/중단 create 훼손)·alloc 은 creating
-        재부착 제외. 그래서 **세션 동일 여부·readonly 무관** 차단한다(내 중단 흔적이든 타 세션 in-flight
+        흔적). 이 상태 슬롯은 아무도 안전히 진입할 수 없다(alloc 은 creating 을 재부착하지 않는다). 그래서 **세션 동일 여부·readonly 무관** 차단한다(내 중단 흔적이든 타 세션 in-flight
         든 슬롯이 불완전한 건 동일). lease None/미상 state 는 False(fail-soft·열림 기록 검사
         와 분리 — 열린 기록 판정은 task 장부 축이 따로 본다)."""
         if lease is None:
@@ -4092,21 +4073,16 @@ class PmBootstrap:
         lines.append("# 티켓 발행 (직접 CLI — 래핑 스킬 없음)")
         lines.append(cmd(
             _C_BOARD_NEW,
-            "새 티켓 발행(prefix 는 이 task 것·draft 로 생성) · task 의 폴더가 2개 이상이면 "
-            "`--repo <repo> --slot <N>` 추가",
+            "새 티켓 발행(prefix 는 이 task 것) · task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가",
             suffix=ti,
-        ))
-        lines.append(cmd(
-            _C_BOARD_PROMOTE, "draft → 정식 승격(본문 채운 뒤·claim 의 전제)",
-        ))
-        lines.append(cmd(
-            _C_BOARD_TIER,
-            "리뷰 없이 종결할 티켓 표시(open/claimed · touches 2개 이하 · 코드 변경엔 테스트 동반)",
         ))
         lines.append("")
 
-        # wave 운영 (스킬 primary) — 강등 backbone 은 task 정체성(`--task`) 보간. 슬롯 카드와
-        # 동형이나 정체성 축만 slot→task. 숨은전제 ⚠ 는 claim 강등 줄 바로 아래 인접(불변식 2).
+        # wave 운영 (스킬 primary) — 강등 backbone 은 task 정체성(`--task`) 보간. 숨은전제 ⚠ 는 그 줄 바로
+        # 아래 인접(불변식 2). 줄 순서가 곧 실행 순서다 — board 형상(PM 홈 git 안·공유 board)과 무관하게
+        # 하나다: 묶음 결속(cluster new) → 승격(promote) → 리뷰 없는 종결 표시(tier) → claim → switch.
+        # 공유 board 의 promote 는 결속된 묶음을 요구하고 tier 는 draft 를 거부하므로 이 순서만 두 형상에서
+        # 첫 시도에 통한다. promote·tier 는 래핑 스킬이 없는 직접 줄이라 들여쓰지 않는다(스킬 강등 아님).
         lines.append("# wave 운영 (스킬로 invoke — backbone CLI 엔진은 직접 금지)")
         lines.append(skill(
             "/pm-wave-claim T-NNNN", "묶음 선언 + ticket claim + 작업 폴더 전환 · DoD 자족 검증"))
@@ -4121,6 +4097,14 @@ class PmBootstrap:
             "묶음 브랜치 task/<ticket-group> 을 만든다: task 의 폴더가 1개면 그 폴더(`--task` 만), 2개 이상이면 "
             "`--repo <repo> --slot <N>` 으로 그 저장소의 통합 폴더를 지목한다."
         )
+        lines.append(cmd(
+            _C_BOARD_PROMOTE,
+            "본문 채운 뒤·cluster new 뒤 승격 · draft 는 open 으로 옮기고 이미 open 이면 그대로 둔다",
+        ))
+        lines.append(cmd(
+            _C_BOARD_TIER,
+            "promote 뒤 · 리뷰 없이 종결할 티켓 표시(open/claimed · touches 2개 이하 · 코드 변경엔 테스트 동반)",
+        ))
         lines.append(engine(_C_BOARD_SHOW))
         lines.append(engine(_C_BOARD_LINT, "스킬이 부르는 내부 엔진·직접 금지 · 차단 항목만 rc 1"))
         lines.append(engine(
@@ -4128,7 +4112,7 @@ class PmBootstrap:
             "스킬이 부르는 내부 엔진·직접 금지 · task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가",
             suffix=ti,
         ))
-        lines.append("  ⚠ claim 은 draft 티켓 거부 — 먼저 `promote T-NNNN`(본문 채운 뒤) 필요.")
+        lines.append("  ⚠ claim 은 draft 티켓을 거부한다 — 위 promote 를 먼저 실행한다.")
         lines.append(engine(
             _C_WP_SWITCH,
             f"{_runtime_skill_entry('pm-wave-claim')} 6단계 · 코드 변경이 없어도 실행한다 · claim 뒤, "

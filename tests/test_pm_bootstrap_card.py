@@ -278,17 +278,12 @@ class _FakeLease:
 
 
 class _FakeWorktreePool:
-    """카드 통합용 최소 worktree_pool mock — bind/list/current_branch/slot_path 만."""
+    """카드 통합용 최소 worktree_pool mock — list/current_branch/slot_path 만."""
 
     def __init__(self, *, branch: str | None = "feature-x", present_slot: str = "work/X_2"):
         self.NeedsCreate = RuntimeError
         self._branch = branch
-        self._bound: list[str] = []
         self._present_slot = present_slot  # 0단계 실재 검사(T-0351)용 idle 시드 슬롯.
-
-    def bind_slot(self, slot, repo, session, *, git_runner=None):
-        self._bound.append(slot)
-        return _FakeLease(slot, repo, self._branch)
 
     def lease_is_open(self, lease):
         """열림 판정은 엔진 규칙 그대로 — 열림 기록(leased + session)이면 열림."""

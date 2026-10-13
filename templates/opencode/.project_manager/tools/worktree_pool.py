@@ -12,8 +12,8 @@ repo별 git worktree 풀로 *코드*를 격리한다(병렬 브랜치·나중 gi
     안 박는다(박으면 stale).
   - 브랜치 = 슬롯 worktree 의 git HEAD 에서 live 조회(`current_branch(slot)`
     장부 저장 폐지·git=진실). 브랜치 변경 = 같은 슬롯 재체크아웃(리스 유지).
-  - 리스 = 작업스트림(브랜치) 단위. alloc@bootstrap · release@작업완료(세션종료/회전 ≠
-    release). 회전은 리스 유지 + 같은 슬롯 재부착.
+  - 리스 = 작업스트림(브랜치) 단위. 대여는 `pm-config alloc` · 반납은 `pm-config release`
+    (작업완료·세션종료/회전 ≠ release). 회전은 리스 유지 + 같은 슬롯 재부착.
   - 열림/닫힘은 기록 축이다 — 자동 회수·만료 시각·하트비트는 없다(닫는 것은 사용자 행위).
   - git 연동 = DI seam(주입 가능 runner) — `git worktree add/remove`·dirty 검사·
     submodule init 을 seam 통해 호출 → hermetic 테스트(mock 또는 실 임시 repo).
@@ -323,10 +323,10 @@ GitRunner = Callable[[list], "tuple[int, str]"]
 
 
 class NeedsCreate(Exception):
-    """풀 소진 — idle 슬롯이 없어 새 슬롯 생성이 필요하다(호출부 = bootstrap 사용자 게이트).
+    """풀 소진 — idle 슬롯이 없어 새 슬롯 생성이 필요하다.
 
-    `git worktree add` 는 fs 행위라 자동으로 안 한다(사용자 게이트 유지) —
-    alloc 호출부(pm-bootstrap)가 이 신호를 받아 사용자에게 슬롯 생성을 묻는다.
+    `git worktree add` 는 fs 행위라 자동으로 하지 않는다. 호출부 `pm-config alloc` 이 이 신호를
+    받아 사용자 승인 명령(`worktree add <repo> --task <task> --user-ack <repo>`)을 안내한다.
     """
 
     def __init__(self, repo: str):
@@ -608,7 +608,7 @@ class Lease:
     (drift 감지 기준) 축으로 기계 기록한다 — `{base:{branch,commit}, branch, head, submodules:
     [{path,pin}], recorded_at}`. 뒤집지 않는다: 표시는 여전히 live
     조회(`current_branch`)·기록은 별개의 *기대* 축(submodule pin/drift 모델을 본체로 대칭 확장).
-    write 시점 = 부트스트랩 bind/alloc·핸드오프·create(release 시 정리)·compare 시점 = 0단계
+    write 시점 = alloc·핸드오프·create(release 시 정리)·compare 시점 = 0단계
     (`compare_slot_git`). 미기록(구 슬롯) = drift 감지 비활성. raw dict 로
     들고 있어 미지 서브키까지 왕복 보존한다(None=미기록·to_dict 는 None 이면 키 자체를 뺀다).
 
@@ -640,11 +640,9 @@ class Lease:
         # 0단계 carve-out(readonly 공유 슬롯) 소유검사 예외(identity_args)·엔진
         # mutation 거부(rebase/switch/dev/sync)의 canonical 판별 축이다.
         self.role = role
-        # bind-origin 마커 (additive 동형 조건방출): True = 사람 발의 `bind_slot`(직접 슬롯
-        # 바인딩)이 점유한 슬롯. 사람 경로는 세션이 끝나도 명시 `release` 로만 반납한다 — 그런데
-        # 타 세션 `alloc` 의 branch/resume 재부착이 이 bind lease 를 집어 session 을 덮으면 사람
-        # 정체성이 유실된다 — 재부착 경로가 `bound` lease 를 제외해 닫는다. pool 경로(alloc idle-리스·
-        # create_slot·release/force_release teardown)는 이 마커를 기록하지 않거나 해제한다.
+        # bind-origin 마커 (additive 동형 조건방출): True 는 지운 옛 사람 바인딩 경로(슬롯 직접 지정
+        # 부트스트랩)가 남긴 대여 기록 행이다. 지금 엔진은 True 를 쓰지 않고 옛 기록을 읽을 때만 True 가 된다.
+        # 재부착 경로가 이 행을 제외하고 alloc·release·force_release·end_task 가 해제한다.
         # 구 장부(키 부재)=False 동치·마이그레이션 0.
         #   **task-명의 lease 의 재부착 보호는 이 마커가 아니라 tasks 장부 조인이 담당한다**:
         #   재부착이 `session ∈ tasks 장부` 인 lease 를 제외한다 — task 소유의 단일
@@ -685,7 +683,7 @@ class Lease:
             d["role"] = self.role
         # bound 는 *True 일 때만* 방출한다 (git/role 조건방출과 동형·하위호환). 구 장부(bound
         # 부재=False·pool 슬롯)를 로드·재기록해도 `bound: false` 를 덧붙이지 않아 왕복이 byte-무손실
-        # 이다(from_dict 가 부재 시 False 로 read). 사람 bind 슬롯만 bound 를 장부에 남긴다.
+        # 이다(from_dict 가 부재 시 False 로 read). 옛 사람 bind 기록 행만 bound 를 장부에 남긴다.
         if self.bound:
             d["bound"] = True
         # 미지 키 재방출(구·신 엔진 왕복 무손실). extra 엔 canonical/legacy-branch 가 없다
@@ -2963,7 +2961,7 @@ def alloc(
     git_runner: GitRunner | None = None,
     folders: list[str] | None = None,
 ) -> Lease:
-    """repo 슬롯을 리스하고 slot-mode 정체성의 pm_state를 보장한다.
+    """repo 슬롯을 리스한다.
 
     - **idempotent** — 이 세션(session)이 이 repo 에 이미 leased 슬롯을 갖고 있으면 그걸
       반환한다(get-or-create-my-lease). branch 가 주어지고 슬롯의 live HEAD 와 다르면 같은
@@ -2971,7 +2969,8 @@ def alloc(
     - **branch/resume 우선 re-alloc** — resume(또는 branch)으로 *이전 작업스트림*의 슬롯을
       찾으면(슬롯 live HEAD 가 그 브랜치) 같은 슬롯을 re-alloc 한다(회전 연속성·dirty 파일 보존 재부착).
     - **idle 슬롯 리스** — 위에 안 걸리면 idle 슬롯을 leased 로 전이(필요 시 branch checkout).
-    - **풀 소진 → `NeedsCreate`** — idle 슬롯이 없으면 raise(호출부 bootstrap 사용자 게이트).
+    - **풀 소진 → `NeedsCreate`** — idle 슬롯이 없으면 raise 한다(호출부 `pm-config alloc` 이
+      사용자 승인 명령을 안내한다).
 
     **task-명의 alloc (`owner_task` 주어짐)**: 항상 **신규 idle 슬롯을 대여**한다 —
     idempotent 1경로를 건너뛴다. 같은 task 가 같은 repo 슬롯을 이미 보유해도 조용히
@@ -2979,7 +2978,8 @@ def alloc(
     복수 보유**(병렬 dev 격리 등)를 자연 지원한다. lease.session 은 owner_task 로 기록된다(직교
     정체성) — 그 task-명의 lease 의 재부착 보호는 `bound` 마커가 아니라 **tasks 장부 조인**이
     담당한다(session ∈ tasks 장부 → 재부착 제외
-    레이션 0). 슬롯-세션 도착 alloc(부트스트랩·`owner_task=None`)은 현행 idempotent 유지.
+    레이션 0). `owner_task` 없는 대여(같은 세션 재대여·브랜치 재부착)는 엔진 안 호출처가 없다
+    (`pm-config alloc` 은 `--task` 를 요구한다).
 
     자동 회수는 없다 — 종료 기록 없이 남은 슬롯은 사용자가 `release --force` 로 닫는다.
     `branch` 와 `resume` 은 동의어 역할(둘 다 작업스트림 식별) — 명시된 쪽을 쓴다.
@@ -3043,7 +3043,7 @@ def alloc(
                 # branch=X)`/`resume=X` 가 그 브랜치를 체크아웃 중인 *타 세션 bound lease* 를 만나면
                 # session/bound 를 덮어 사람 bind 정체성을 탈취한다(핵심 목표가 이 경로에서 깨짐).
                 # 같은 세션 재진입은 1경로 idempotent 가 이미 처리하므로 여기서 bound=skip 이 안전
-                # (bound 슬롯은 명시 release/재bind 로만 소유가 바뀐다·codex must-fix). **task 소유 슬롯
+                # (bound 슬롯은 명시 release 로만 소유가 바뀐다·codex must-fix). **task 소유 슬롯
                 # (session ∈ tasks 장부)도 동일 근거로 제외**한다 — 슬롯-세션 alloc(branch=X)이 그 브랜치를
                 # 체크아웃 중인 task-명의 lease 를 탈취하는 것을 막는다
                 # task lease 통합·bound 부재 구장부도 자동 보호).
@@ -3590,7 +3590,7 @@ def create_slot(
 
     확정 상태는 세 갈래다: task 명의 생성은 그 task 명의 `leased`, `readonly` 는 무소유
     공유 슬롯(leased·session 없음), 그 밖은 **무소유 `idle`**(풀에 들어가는 슬롯 —
-    점유는 `alloc`/`bind_slot` 이 한다).
+    점유는 `alloc` 이 한다).
 
     **task-명의 생성 (`owner_task` 주어짐)**: 풀 소진 시 `worktree add <repo> --task
     <task>` 이 새 슬롯을 만들고 **생성 직후 그 슬롯을** task 명의로 대여한다(min-idle 재탐색의
@@ -3605,7 +3605,7 @@ def create_slot(
     board._test_cmd 가 활성 슬롯의 이 필드를 areas 위 레이어로 읽는다(미지정=None·현행).
 
     `git worktree add` 는 fs 행위라 사용자 게이트(NeedsCreate) 통과 후에만 불린다 —
-    pm-config worktree add / bootstrap 사용자 승인이 호출부. 다음을 한다:
+    pm-config worktree add 사용자 승인이 호출부. 다음을 한다:
       0. **base 필수** — repo 등록 base 가 없으면(None·빈 값) 부작용 전에 `ValueError`.
       1. **bare 부재 가드** — `.repos/<repo>.git` 가 없으면 `BareRepoMissing` raise(multi-PM
          worktree 침묵 폴백 금지).
@@ -3908,8 +3908,8 @@ def create_slot(
             # 세션 명의 leased 로 남기면 그 기록이 열린 채라, 같은 세션의 다음 `alloc` 이
             # "idle 슬롯 없음"(풀 소진)으로 막히고
             # 관리자에서는 그 행의 반납·제거·대여가 전부 닫힌다(회복 경로 없음). 생성은 풀
-            # 확장이고 점유는 alloc/bind 가 한다 — CLI 안내("다음 스텝: 이 슬롯을 세션에
-            # 바인딩")와도 같은 뜻이다.
+            # 확장이고 점유는 alloc 이 한다 — CLI 안내("이 슬롯은 idle 이다. task 가 빌려
+            # 쓴다")와도 같은 뜻이다.
             provisional.state = "leased"
             if readonly:
                 # readonly 공유 슬롯 — 무소유 확정: session 을 비우고 role 을 박는다.
@@ -3941,70 +3941,6 @@ def create_slot(
                 leases[:] = [l for l in leases if l.slot != slot]
                 _write_ledger(leases)
             raise
-
-
-def bind_slot(slot: str, repo: str, session: str, *, git_runner: GitRunner | None = None) -> Lease:
-    """슬롯을 세션에 **직접 바인딩**한다 — 사람 발의 멀티-PM 정체성 선언(lean).
-
-    `/pm-bootstrap <repo> --slot <N>` 의 엔진 진입점. 사람이 "내가 슬롯 <N>"을 선언하면
-    그 슬롯 리스를 이 세션으로 갱신(있으면) 또는 생성(없으면)한다 — **pool alloc 이 아니다**
-    (풀에서 골라잡지 않는다·slot-pinned/supervise 불필요). `alloc` 의 idle-탐색/풀-소진
-    `NeedsCreate`/checkout 분기 어느 것도 안 탄다(직접 바인딩).
-
-    **자동 회수는 어디에도 없다** — 종료 기록 없이 남은 슬롯은 사용자가 `release --force` 로
-    닫거나 부트스트랩 `--force` 로 이어받는다(엔진이 남의 기록을 스스로 닫지 않는다).
-
-    ⚠️ **cross-path 보호(bound 마커)**: 타 세션 `alloc` 의 branch/resume 재부착이 이 bind
-    엔트리를 집어 session 을 덮으면 사람 bind 정체성이 유실된다. bind 는 lease 에
-    **`bound=True` 마커**(additive·조건방출·구 장부 부재=False)를 박고 재부착 경로가 그것을
-    제외한다. 반납은 명시 경로(`release`/`force_release`/`pm_handoff --done`)로만 이뤄지고
-    그때 마커가 해제된다(pool 재대여 slot 은 alloc 이 마커 clear).
-
-    **branch *표시* 는 건드리지 않는다** — 브랜치는 git=단일 진실이라 슬롯 worktree HEAD 에서
-    live 조회(`current_branch(slot)`). bind 는 리스 장부의 점유 메타
-    (session/state/started)를 갱신하고, **arrival git 스냅**(`lease.git` 기대 baseline·
-    branch/head/submodules·기존 `base` 보존)을 additive 로 기록한다. `git_runner`
-    는 그 스냅의 DI seam — 미주입 실경로에서 슬롯 worktree 가 없으면 스냅은 fail-soft no-op(기존
-    git 유지). 표시(live)와 기대(기록)는 2축이라 branch 표시 단일 진실은 그대로다.
-
-    `_lease_lock` + `_write_ledger`(atomic) — 기존 alloc/release/set_test_cmd 와 동일한
-    read-modify-write 직렬화. board.py 를 import 하지 않는다(isolation·touches 격리).
-    갱신/생성된 Lease 를 반환한다.
-    """
-    with _lease_lock():
-        leases = _read_ledger_strict()
-        task_names = {task.name for task in _read_tasks_strict()}
-        target = next((l for l in leases if l.slot == slot), None)
-        # readonly 공유 슬롯은 바인딩(점유) 대상이 아니다 — bind 는 *점유*고
-        # 0단계 carve-out은 *조회 지칭*만 허용한다(의미 불일치). readonly 를 무조건 leased 로 덮으면
-        # role 이 유실되고 무소유 공유 자산이 배타 점유된다. `/pm-bootstrap --slot N` 오지정 방어(엔진
-        # 불변식). 보유 lease.role 직접 검사(lock 재취득 데드락 회피). target None(신규)은 work 로 생성.
-        if target is not None and target.role == _LEASE_ROLE_READONLY:
-            raise ReadonlySlotNotLeasable(slot, "bind")
-        if target is None:
-            # 없으면 새 Lease append (직접 바인딩 — 풀 탐색/생성 게이트 없음). bound=True 로 사람
-            # bind 마커를 박아 이후 alloc 의 재부착이 이 정체성을 덮지 못하게 한다.
-            target = Lease(
-                slot=slot,
-                repo=repo,
-                session=session,
-                started=_now_utc(),
-                state="leased",
-                bound=True,
-            )
-            leases.append(target)
-        else:
-            # 있으면 점유 메타만 갱신 (branch·test_cmd 는 보존). bound 마커도 박는다
-            # (기존 슬롯 재bind — pool 대여였던 슬롯을 사람이 직접 점유로 승격).
-            target.repo = repo
-            target.session = session
-            target.state = "leased"
-            target.started = _now_utc()
-            target.bound = True
-        # arrival git 스냅(기대 baseline·기존 base 보존·fail-soft — 슬롯 부재면 no-op).
-        _apply_git_snapshot(target, git_runner=git_runner)
-        _write_ledger(leases)
-        return target
 
 
 def list_leases() -> list[Lease]:
@@ -4343,7 +4279,7 @@ def set_test_cmd(slot: str, cmd: str | None) -> Lease:
 # ── 슬롯 git 진실: 스냅 기록(write) + 비교(compare) + is-ancestor 판정 ───────
 # 슬롯 git 상태를 *기대*(drift 감지 기준) 축으로 lease 장부에 기계 기록한다(live 표시는 
 # 그대로·2축). submodule 의 pin/drift 모델을 본체(superproject)로 대칭 확장 — 개념
-# write=부트스트랩 bind/alloc·핸드오프·create(release 시 정리)·compare=0단계.
+# write=alloc·핸드오프·create(release 시 정리)·compare=0단계.
 
 # head 비교 결과(`merge-base --is-ancestor` 완화) — GitCompareResult.head_relation 값.
 HEAD_MATCH = "match"            # 기록 head == live head (같은 branch) → 통과.
@@ -4444,7 +4380,7 @@ def record_git_snapshot(slot: str, *, base_branch: "str | None" = None,
                         git_runner: GitRunner | None = None) -> "Lease | None":
     """슬롯 현재 git 상태를 `lease.git` 에 기록하는 독립 write 프리미티브 (핸드오프·rebase·switch).
 
-    부트스트랩 bind/alloc·create 는 자기 lock 안에서 `_apply_git_snapshot` 을 인라인 호출하지만,
+    alloc·create 는 자기 lock 안에서 `_apply_git_snapshot` 을 인라인 호출하지만,
     핸드오프("여기 두고 간다")·rebase·switch·refresh 처럼 lifecycle op 밖에서 스냅을 찍는 호출부를
     위한 standalone 진입점이다. `base_branch` 는 readonly 전용(refresh — 따라갈 부모 브랜치 재기록).
     `_lease_lock`+`_write_ledger`(atomic) — alloc/release 와 동일한 read-modify-write
@@ -5128,7 +5064,7 @@ def _reject_readonly_mutation(slot: str, op: str, *, git_runner: GitRunner | Non
     엔진 경로 한정 거부. 판별 축은 canonical `lease.role`(0단계 carve-out 예외와 동일 축).
     git_runner 는 시그니처 정합용(현 판별은 장부만 읽어 미사용). mutation 선행 판정이므로
     `read_lease_strict`를 써 손상 장부를 기본 work role로 축약한 뒤 Git 변경을 시작하지 않는다.
-    이미 락을 쥔 호출부(release/bind_slot)는 이 헬퍼 대신 보유 중인 `lease.role` 을 직접 검사한다
+    이미 락을 쥔 호출부(release)는 이 헬퍼 대신 보유 중인 `lease.role` 을 직접 검사한다
     (non-reentrant flock 재취득 = 데드락)."""
     lease = read_lease_strict(slot)
     if lease is not None and lease.role == _LEASE_ROLE_READONLY:
@@ -5136,20 +5072,18 @@ def _reject_readonly_mutation(slot: str, op: str, *, git_runner: GitRunner | Non
 
 
 class ReadonlySlotNotLeasable(RuntimeError):
-    """readonly 공유 슬롯에 lease-lifecycle op(release·force_release·bind)을 시도함 — 거부.
+    """readonly 공유 슬롯에 lease-lifecycle op(release·force_release)을 시도함 — 거부.
 
-    readonly 슬롯은 **무소유 공유 자산**(배타 대여 없음·session 없음)이라 대여/반납/바인딩(점유)의
-    대상이 아니다. 자동 경로(alloc idle-탐색)는 이미 자연/가드로 닫혔으나, **명시 지정**
-    (`release <slot>`·`force_release`·`/pm-bootstrap --slot`)이 뚫려 있었다 — idle 화되면 alloc 이 그
-    슬롯을 work 슬롯으로 점유해 role 이 유실되는 깨진 상태를 부른다. 0단계 carve-out()이 readonly 를
-    *조회 지칭*엔 허용하지만 bind 는 *점유*라 의미가 다르다(이 거부가 그 틈을 닫는다). `op` = 거부된
-    연산명(진단용). 제거는 `worktree remove --force`, 갱신은 `refresh`. (`RuntimeError` — 파사드 rc 1.)"""
+    readonly 슬롯은 무소유 공유 자산이라 대여·반납 대상이 아니다. 명시 지정(`release <slot>`·
+    `force_release`)을 거부한다 — idle 화되면 alloc 이 그 슬롯을 work 슬롯으로 점유해 role 이
+    유실되는 깨진 상태를 부른다. `op` = 거부된 연산명(진단용). 제거는 `worktree remove --force`,
+    갱신은 `refresh`. (`RuntimeError` — 파사드 rc 1.)"""
 
     def __init__(self, slot: str, op: str):
         self.slot = slot
         self.op = op
         super().__init__(
-            f"슬롯 {slot!r} 은 readonly 공유 슬롯(role=readonly)이라 `{op}`(대여/반납/바인딩) 대상이 "
+            f"슬롯 {slot!r} 은 readonly 공유 슬롯(role=readonly)이라 `{op}`(대여/반납) 대상이 "
             f"아니다 — 무소유 공유 자산(배타 대여 없음·session 없음). 제거하려면 "
             f"`worktree remove {slot} --force`, 최신 갱신은 "
             f"`{_runtime_skill_entry('pm-worktree')} refresh {slot}`."

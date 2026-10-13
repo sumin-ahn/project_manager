@@ -1620,10 +1620,10 @@ def test_marker_label_axis_sensitivity_reverting_one_marker_trips_and_clears():
     판정면에서 빼면 그 red 가 사라진다(시야 축의 반사실).
 
     복원 대상은 이 티켓에서 지운 실제 f-string 자리(``pm_bootstrap.py`` 의
-    ``f"공개 제품 worktree (...)"`` ← 원문 ``f"① task worktree (...)"``)."""
+    ``f"작업 폴더 ..."`` ← 원문 ``f"① task worktree (...)"``)."""
     path = _MARKER_LABEL_TOOLS_DIR / "pm_bootstrap.py"
     current = path.read_text(encoding="utf-8")
-    fixed_snippet = 'f"공개 제품 worktree ({task_slot})"'
+    fixed_snippet = 'f"작업 폴더 {task_slot}"'
     assert fixed_snippet in current, "고정 스니펫이 소스에 없다 — 라인이 바뀌면 갱신하라"
     reverted = current.replace(
         fixed_snippet,

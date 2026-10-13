@@ -10273,8 +10273,9 @@ def main(argv: list[str] | None = None) -> int:
             "온보딩(fresh 채택자): manager(project_manager) 경로/URL 만 있으면 자율 import — "
             "harness=기본 all(등록 어댑터 전체: " + "|".join(HARNESS_TEMPLATE_DIRS)
             + "; 단일/콤마 조합 명시 가능), --new(빈 PM 홈)/--into(기존 프로젝트 임베드) "
-            "맥락 판단. 상세 가이드 = manager 루트 ADOPT.md. import 후 다음 단계: "
-            + _runtime_skill_entry("pm-bootstrap") + " → "
+            "맥락 판단. 상세 가이드 = manager 루트 ADOPT.md. import 후 다음 단계: 기준 커밋 → "
+            "`pm-config worktree add <repo> --user-ack <repo>`(작업 폴더, 사용자 승인) → "
+            + _runtime_skill_entry("pm-bootstrap") + " --task <task> → 필요하면 "
             + _runtime_skill_entry("pm-env") + ".\n\n"
             "upstream 기록: --from 은 *파일 소스*, --upstream 은 *future update 기록*으로 "
             "디커플된다. local.conf 에 `upstream.path=`(pm_update 가 --from 생략 시 사용) + "
@@ -10943,7 +10944,9 @@ def main(argv: list[str] | None = None) -> int:
 
     print_conf_migration_notice(dest_root)
     print(f"✓ import 완료: {dest_root}")
-    print("  다음: 자유서술 placeholder 제안 검토·반영(--fill auto 했으면) + 첫 ticket 발행.")
+    print("  다음: (--fill auto 했으면) 자유서술 placeholder 제안 검토·반영 → 기준 커밋 → "
+          "`pm-config worktree add <repo> --user-ack <repo>` → "
+          f"`{_runtime_skill_entry('pm-bootstrap')} --task <task>`.")
     # claude 는 프로젝트 trust 수락 전 settings.json permissions.allow 를 조용히 무시한다.
     if "claude" in args.harness:
         _print_claude_trust_guidance()

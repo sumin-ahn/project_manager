@@ -201,13 +201,11 @@ class FakeWorktreePool:
         self._alloc_branch = alloc_branch
         self._force_detached = force_detached  # True → current_branch 항상 None(detached/조회불가)
         self.alloc_calls: list[dict] = []
-        self.bind_calls: list[dict] = []
         self.release_calls: list[dict] = []
         self.current_branch_calls: list[str] = []
         self.release_raises_keyerror = False
-        # 0단계(T-0351) 실재 검사가 통과하도록 사전 시드하는 **idle** 슬롯 — lean 테스트는 실재하는
-        # 슬롯(idle 리스)에 bind 하므로(§F1b "장부·폴더에 실재"), 그 idle 리스를 list_leases 에 실어
-        # phantom-거부를 피한다. idle 이라 점유(leased)·"다른 활성 PM" surface 엔 안 잡힌다(회귀 0).
+        # 0단계(T-0351) 실재 검사가 통과하도록 사전 시드하는 **idle** 슬롯 — 그 idle 리스를
+        # list_leases 에 실어 phantom-거부를 피한다(§F1b "장부·폴더에 실재"). idle 이라 점유(leased)·"다른 활성 PM" surface 엔 안 잡힌다(회귀 0).
         self._present_slots: tuple[str, ...] = present_slots or ()
         # readonly 공유 슬롯(⑬·T-0358) 시드 — role="readonly"·무소유(session 없음)·leased state
         # (create_slot 확정 형태). 0단계 carve-out(타-점유/보호브랜치 비적용)이 이걸 읽는다.
@@ -223,26 +221,13 @@ class FakeWorktreePool:
         # 상태점검(다른 활성 PM) surface 용 — list_leases 가 돌려줄 추가 리스(이 세션 외).
         self._extra_leases: list = []
 
-    def bind_slot(self, slot, repo, session, *, git_runner=None):
-        # 사람 발의 직접 바인딩(T-0074) — 호출을 기록만 한다(실 장부 미접촉). branch 는
-        # 안 만지고, identity 가 표시할 live 브랜치는 override 가 있으면 그걸 따른다.
-        self.bind_calls.append({"slot": slot, "repo": repo, "session": session})
-        if slot not in self._live_branch and slot not in self.live_branch_override:
-            self._live_branch[slot] = self._alloc_branch
-        return _FakeLease(slot, repo, self._live_branch.get(slot))
-
     def lease_is_open(self, lease):
         """열림 판정은 엔진 규칙 그대로 — 열림 기록(leased + session)이면 열림."""
         return getattr(lease, "state", None) == "leased" and bool(getattr(lease, "session", ""))
 
     def list_leases(self):
-        # 상태점검 surface — bind 된 슬롯(이 세션) + 미리 심은 다른 활성 리스 + 0단계 실재 검사용
-        # idle 시드(§F1b·bind 전에도 슬롯이 실재하도록).
+        # 상태점검 surface — 미리 심은 다른 활성 리스 + 0단계 실재 검사용 idle 시드(§F1b).
         leased: list = []
-        for slot, repo, session in [
-            (c["slot"], c["repo"], c["session"]) for c in self.bind_calls
-        ]:
-            leased.append(_FakeLeaseEntry(slot, repo, session, state="leased"))
         for slot in self._present_slots:
             _, _, tail = slot.rpartition("/")
             repo = tail.rsplit("_", 1)[0]
@@ -419,15 +404,6 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None, areas_text: str 
     return inst
 
 
-# ── 1. bootstrap --repo --branch → alloc + identity surface + cwd ─────────────
-
-
-# ── 2. 솔로 무인자 — 현행 동작 보존 (alloc 경로 미진입) ───────────────────────
-
-
-# ── 2b. lean 정체성 선언 — --repo --slot → bind_slot + identity + 상태점검 (T-0074) ──
-
-
 # ── readonly 공유 슬롯 0단계 carve-out (⑬·T-0358·seam #1 파급) ─────────────────
 # `Lease.role` 을 canonical 필드로 승격(T-0358)하면 extra 에서 빠지므로, T-0351 의 extra["role"]
 # 훅은 조용히 무력화된다 → `_phase0_is_readonly` 를 canonical `lease.role` read 로 갱신했다.
@@ -562,7 +538,7 @@ def test_bootstrap_slot_below_one_rejected(bootstrap):
 
 
 
-# ── 11. _auto_slot — 단일 self-host 자동바인딩 판정 (Part B) ──────────────────
+# ── 11. _auto_slot — 단일 self-host 슬롯 판정 (Part B) ────────────────────────
 # `_auto_slot(areas_file=, leases_file=)` 는 인자로 파일 seam 을 노출하므로 실 장부/areas
 # 를 안 건드린다(hermetic·_registered_repos 가 areas.md 를 stdlib 로 읽는 것과 동형 패턴).
 
@@ -743,7 +719,7 @@ def _resolve(bootstrap, tmp_path, repos: list[str], lease_entries: list[dict] | 
 
 # ── 11c. idle(반납) 슬롯 필터 — leased 만 라우팅 (codex must-fix·ADR-0035 활성 연속성) ──
 # default-1 이 permissive 해지며 idle 슬롯으로 라우팅하던 결함을 닫는다 — `_repo_slot_numbers`
-# 가 state=="leased" 만 센다. idle 은 죽은 세션이라 자동바인딩/연속성 대상이 아니다.
+# 가 state=="leased" 만 센다. idle 은 죽은 세션이라 슬롯 판정/연속성 대상이 아니다.
 
 
 

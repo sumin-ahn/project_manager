@@ -109,8 +109,8 @@ python3 .project_manager/tools/worktree_pool.py switch <slot> <branch>
   없음·미해소는 loud 거부), 무인자 = 따라갈 브랜치의 `origin/<branch>` 우선(부재 시 로컬 폴백).
   성공 메시지가 실제 해소된 ref 와 sha 를 찍는다. 이동 tip을 따라갈 커밋으로 재기록한다. dirty면 "누군가 여기 썼다"는
   신호이므로 reset하지 않고 loud 거부한다. 기준 미해소 또는 non-readonly 대상은 rc 1이다.
-  readonly 슬롯의 `rebase`/`dev`/`sync`·`release`/바인딩(`$pm-bootstrap --slot`)은
-  엔진이 거부하며 갱신은 `refresh`만 허용한다.
+  readonly 슬롯의 `rebase`/`dev`/`sync`·`release` 는 엔진이 거부하고(대여 대상도 아니다)
+  갱신은 `refresh`만 허용한다.
 - `record`: `<slot>` 위치인자. 현재 live branch·head·recorded_at으로 `lease.git` 도착 스냅만 명시
   재기록한다(부모 기록은 건드리지 않는다). 부트스트랩 0단계의
   "기록↔live diverged"가 **정당한 의도적 전환·릴리즈 진행 등이라고 사용자가 판단했을 때만** 쓴다.

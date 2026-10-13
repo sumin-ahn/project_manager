@@ -77,7 +77,8 @@ native task가 만든 자식 세션은 checkpoint 안내 대상에서 제외되�
 
 ### 모델 선택 (`{{OPENCODE_PRO_MODEL}}` 해소 · T-0033)
 
-opencode 어댑터의 subagent `model:` 필드는 placeholder `{{OPENCODE_PRO_MODEL}}` 로 출하된다.
+opencode 어댑터의 PM primary 카드(`.opencode/agents/pm.md`) `model:` 필드는 placeholder
+`{{OPENCODE_PRO_MODEL}}` 로 출하된다.
 pm_import 가 이를 **추측 없이 `opencode models` 결정적 조회**로 해소한다 (해소 순서):
 
 1. **`--opencode-model PROVIDER/MODEL`** (비대화/CI) — 먼저 치환, 가용목록 대조는 best-effort 경고.
@@ -92,6 +93,10 @@ pm_import 가 이를 **추측 없이 `opencode models` 결정적 조회**로 해
    frontmatter 에 `model` 키가 *부재*하므로 **opencode 가 기본 모델로 agent 를 그대로 띄운다**
    (graceful — 깨진 미해소 placeholder 로 agent 가 거부되지 않음). 원하는 모델을 쓰려면 그 줄의
    주석(`#`)을 해제하고 `provider/model` 로 치환하거나 `--opencode-model` 로 재import 한다.
+
+subagent 카드(architect·developer·developer-hard·code-reviewer·researcher)의 `model:`·`variant:` 는
+`{{DELEGATE_MODEL_<ROLE>}}`·`{{DELEGATE_REASONING_<ROLE>}}` 이고 local.conf `delegate.<role>.model`·
+`.reasoning` 값으로 채워진다. 값이 없으면 줄이 주석으로 바뀌어 opencode 기본 모델로 뜬다.
 
 ## 갱신 채널 (채택자 관점 · ADR-0058)
 

@@ -912,10 +912,10 @@ def test_record_id_selector_resume_also_inherits_the_ticket(pd, monkeypatch, tmp
     assert latest["ticket"] == TICKET_ID
 
 
-# ── write 역할 재개 불일치 fail-loud (T-0601 ⑪) ──────────────────────────────
-# 불일치 실행도 **쓰기 권한**으로 돌았으므로 이미 트리를 고쳤을 수 있다. 그 위에 같은 지시를
-# fresh 로 한 번 더 태우면 같은 편집이 두 번 적용되거나(중복) 반쯤 고친 트리에 다른 판단이
-# 얹힌다(충돌). read 계열은 트리를 안 만지므로 현행 재실행을 유지한다.
+# ── 재실행 금지 역할 재개 불일치 fail-loud (T-0601 ⑪) ────────────────────────
+# 불일치 실행도 이미 돌았으므로 작업 트리(write 역할)나 라운드 파일(read 역할)을 고쳤을 수 있다.
+# 그 위에 같은 지시를 fresh 로 한 번 더 태우면 같은 기록이 두 번 적용되거나(중복) 반쯤 고친
+# 상태에 다른 판단이 얹힌다(충돌). 재실행 금지 클래스는 `RESUME_MUTATING_ROLES` 다.
 
 
 def _write_role_fixture(pd, tmp_path, role: str):
@@ -970,9 +970,11 @@ def test_mutating_role_resume_mismatch_fails_loud(pd, monkeypatch, tmp_path, cap
 
     err = capsys.readouterr().err
     assert rc == 1
-    assert len(fake.calls) == 1, f"write 역할인데 fresh 재실행이 일어남: {fake.calls}"
+    assert len(fake.calls) == 1, f"재실행 금지 역할인데 fresh 재실행이 일어남: {fake.calls}"
     assert "세션 재사용 실패" in err and role in err
-    assert "트리를 이미 고쳤을 수 있어" in err and "git status" in err
+    # [[T-0960]] AT-004 — 문구가 네 역할 모두에 참이다(read 역할 researcher 에 "write 역할" 없음).
+    assert "write 역할" not in err and "쓰기 권한으로 돌았" not in err
+    assert "작업 트리나 라운드 파일을 고쳤을 수 있어" in err and "git status" in err
     assert "재위임은 명시 재호출만" in err              # 무음 대체 금지 안내(단일 깔때기)
 
 
@@ -1019,7 +1021,7 @@ def test_write_role_infrastructure_failure_is_not_the_resume_axis(
 
     err = capsys.readouterr().err
     assert rc == 1 and len(fake.calls) == 1
-    assert "트리를 이미 고쳤을 수 있어" not in err        # 재사용 축 안내가 아니다
+    assert "작업 트리나 라운드 파일을 고쳤을 수 있어" not in err        # 재사용 축 안내가 아니다
     assert "재위임은 명시 재호출만" in err
 
 
@@ -1378,7 +1380,7 @@ def test_write_role_unclassified_failure_keeps_the_generic_fail_loud(
     err = capsys.readouterr().err
 
     assert rc == 1 and len(fake.calls) == 1
-    assert "트리를 이미 고쳤을 수 있어" not in err
+    assert "작업 트리나 라운드 파일을 고쳤을 수 있어" not in err
     assert "위임 하네스 실패(rc=1)" in err
 
 

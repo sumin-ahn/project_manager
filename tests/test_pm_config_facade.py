@@ -1575,8 +1575,8 @@ def test_worktree_add_calls_create_slot(pc, capsys):
 def test_worktree_add_readonly_flag_forwards_readonly(pc, capsys):
     """worktree add <repo> --readonly → create_slot(repo, readonly=True) (⑬·T-0358).
 
-    readonly 공유 슬롯 — 세션 바인딩 없음(무소유)·갱신은 refresh 로만. 출력이 role=readonly 와
-    refresh 안내를 surface 하고, pm-bootstrap 바인딩 다음스텝은 뜨지 않는다(무소유)."""
+    readonly 공유 슬롯 — 대여 대상 아님(무소유)·갱신은 refresh 로만. 출력이 role=readonly 와
+    refresh 안내를 surface 하고, task 대여 다음 단계는 뜨지 않는다(무소유)."""
     wp = FakeWorktreePool()
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, readonly=True, user_ack="svc"), worktree_pool=wp,
@@ -1587,11 +1587,11 @@ def test_worktree_add_readonly_flag_forwards_readonly(pc, capsys):
     out = capsys.readouterr().out
     assert "readonly 공유 슬롯" in out and "role=readonly" in out
     assert "refresh" in out                               # 갱신은 refresh 로만
-    assert "/pm-bootstrap svc --slot" not in out          # 무소유 — 바인딩 다음스텝 없음
+    assert "pm-config alloc svc" not in out               # 무소유 — 대여 다음 단계 없음
 
 
 def test_worktree_add_default_not_readonly(pc, capsys):
-    """worktree add <repo>(플래그 없음) → create_slot(readonly=False)·기존 바인딩 다음스텝(sensitivity 대조)."""
+    """worktree add <repo>(플래그 없음) → create_slot(readonly=False)·task 대여 다음 단계(sensitivity 대조)."""
     wp = FakeWorktreePool()
     rc = pc.cmd_worktree_add(
         argparse.Namespace(repo="svc", test=None, user_ack="svc"), worktree_pool=wp,
@@ -1599,7 +1599,7 @@ def test_worktree_add_default_not_readonly(pc, capsys):
     )
     assert rc == 0
     assert wp.last_readonly is False
-    assert "/pm-bootstrap svc --slot 1" in capsys.readouterr().out
+    assert "pm-config alloc svc --task <task>" in capsys.readouterr().out
 
 
 def test_worktree_add_test_flag_forwards_test_cmd(pc, capsys):
@@ -1615,12 +1615,12 @@ def test_worktree_add_test_flag_forwards_test_cmd(pc, capsys):
     assert "test_cmd 바인딩" in out and "ctest -R hil2" in out  # 사용자 surface
 
 
-def test_worktree_add_success_output_shows_bootstrap_binding_next_step(pc, capsys):
-    """성공 출력이 슬롯 N + `/pm-bootstrap <repo> --slot <N>` 바인딩 다음스텝을 안내 (T-0296·audit #6).
+def test_worktree_add_success_output_shows_task_entry_next_step(pc, capsys):
+    """[[T-0960]] AT-002 — task 없이 만든 슬롯의 성공 출력이 지금 있는 명령만 다음 단계로 안내한다.
 
-    슬롯 fs 생성만으로 끝내지 않고, 슬롯을 세션에 바인딩하는 필수 다음스텝으로 이어준다. N 은
-    lease.slot(`work/<repo>_<N>`)에서 파싱한다(FakeWorktreePool → work/svc_1 → N=1). 솔로/단일
-    슬롯 무인자 부트스트랩 힌트도 곁들인다.
+    슬롯은 idle 이고 task 가 `alloc <repo> --task <task>` 로 빌려 쓴다(task 가 없으면 `task new`).
+    세션 시작은 `/pm-bootstrap --task <task>` 다. 지워진 `/pm-bootstrap <repo> --slot <N>`·인자 없는
+    부트스트랩(둘 다 부트스트랩이 rc 2 로 거부)은 안내하지 않는다.
     """
     wp = FakeWorktreePool()   # create_slot → FakeLease(slot="work/svc_1", repo="svc")
     rc = pc.cmd_worktree_add(
@@ -1629,12 +1629,32 @@ def test_worktree_add_success_output_shows_bootstrap_binding_next_step(pc, capsy
     )
     assert rc == 0
     out = capsys.readouterr().out
-    # 바인딩 다음스텝: 정확한 슬롯 번호(N=1)와 함께 pm-bootstrap 커맨드를 명시.
-    assert "/pm-bootstrap svc --slot 1" in out
-    assert "바인딩" in out
-    # 자동바인딩 아님(정체성=대화 맥락) + 솔로 힌트.
-    assert "자동 아님" in out
-    assert "무인자 `/pm-bootstrap`" in out
+    assert "pm-config alloc svc --task <task>" in out
+    assert "pm-config task new <task>" in out
+    assert "/pm-bootstrap --task <task>" in out
+    for retired in ("--slot", "무인자", "자동바인딩", "바인딩"):
+        assert retired not in out, retired
+
+
+def test_t0960_help_names_existing_commands(pc, capsys):
+    """[[T-0960]] AT-003 — pm-config 도움말이 지금 있는 명령만 말하고 `--owner` 기본값을 사실대로 적는다.
+
+    부트스트랩은 `<repo>` 위치 인자를 받지 않는다(`--task` 필수). 브랜치는 `task branch`·
+    `worktree_pool.py switch`, 대여는 `alloc` 이 한다. `repo add` 의 owner 는 `--owner` →
+    local.conf identity.user → git user.email 순이다(세션에서 유도하지 않는다).
+    """
+    top = pc.build_parser().format_help()
+    for retired in ("pm-bootstrap <repo>", "비관여"):
+        assert retired not in top, retired
+    for present in ("task branch", "alloc", "worktree_pool.py switch"):
+        assert present in top, present
+    with pytest.raises(SystemExit) as exc:
+        pc.main(["repo", "add", "--help"])
+    assert exc.value.code == 0
+    repo_add_help = " ".join(capsys.readouterr().out.split())
+    owner_help = repo_add_help.rsplit("--owner", 1)[1].split("--user", 1)[0]  # 옵션 절(사용법 줄 뒤)
+    assert "identity.user" in owner_help and "git user.email" in owner_help, owner_help
+    assert "현 세션" not in owner_help
 
 
 def test_worktree_add_passes_areas_base_to_create_slot(pc, capsys):

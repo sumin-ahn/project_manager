@@ -1,6 +1,6 @@
 ---
 name: pm-env
-description: "PM 환경 관리 단일 스킬 — pm-config.sh facade wrap. repo add/list · repo protected(보호 브랜치 목록 조회/설정) · worktree add(→pm-bootstrap 바인딩 안내·--readonly 공유 슬롯) · slot status/release/remove · upstream show/switch(path↔URL). multi-PM 셋업·upstream 전환의 단일 진입. Triggers: 'pm-env', 'repo 추가', 'repo 목록', '보호 브랜치', 'protected 목록', 'worktree 추가', 'readonly 슬롯', 'slot 상태', '슬롯 제거', 'upstream 전환', '환경 관리'."
+description: "PM 환경 관리 단일 스킬 — pm-config.sh facade wrap. repo add/list · repo protected(보호 브랜치 목록 조회/설정) · worktree add(→task 대여 안내·--readonly 공유 슬롯) · slot status/release/remove · upstream show/switch(path↔URL). multi-PM 셋업·upstream 전환의 단일 진입. Triggers: 'pm-env', 'repo 추가', 'repo 목록', '보호 브랜치', 'protected 목록', 'worktree 추가', 'readonly 슬롯', 'slot 상태', '슬롯 제거', 'upstream 전환', '환경 관리'."
 audience: user-entrypoint
 ---
 
@@ -16,7 +16,7 @@ audience: user-entrypoint
 
 - **pm-env**: repo·worktree·slot·upstream 값 셋업/조회.
 - [[pm-update]]: 현재 upstream으로 엔진 갱신. 여기서 값을 바꾸면 pm-update가 적용한다.
-- [[pm-bootstrap]]: 세션 시작 시 슬롯 바인딩·상태점검.
+- [[pm-bootstrap]]: 세션 시작 시 task 진입·상태점검.
 
 ## repo add
 
@@ -59,13 +59,14 @@ sidecar는 파생 캐시다.
 없거나 다른 값이면 rc=1 로 거부된다(`--readonly`·`--task` 변형 포함). **세션(LLM)은 이 플래그를
 스스로 부착하지 않는다** — 사용자에게 슬롯 생성 승인을 요청하는 것이 1순위다.
 
-추가 후 **"이제 `$pm-bootstrap <repo> --slot N` 으로 이 슬롯에 바인딩하세요"**라고 안내한다.
-이 바인딩 안내는 **사람(사용자) 대상**이며, 슬롯을 만든 세션이 자기 지시로 읽고 자동 실행하는
-용도가 아니다(생성 직후 자기-할당은 차단 대상 사고 클래스다).
+추가된 슬롯은 idle 이다. task 가 쓰려면 `./pm-config.sh alloc <repo> --task <task>` 로 빌린다(task 가
+없으면 먼저 `./pm-config.sh task new <task>`). 처음부터 그 task 에 붙일 슬롯이면
+`./pm-config.sh worktree add <repo> --task <task> --user-ack <repo>` 로 만든다. 세션 시작(`$pm-bootstrap --task <task>`)은 사용자가 정한다. 슬롯을 만든 세션이 이 안내를
+자기 지시로 읽고 자동 실행하지 않는다(생성 직후 자기-할당은 차단 대상 사고 클래스다).
 
 `--readonly`는 코드 읽기와 PM 홈 wiki(domain·architecture·status) 작성용 공유 기준면이다. detached
 HEAD(released base), role=readonly, session/pid·배타 대여가 없다. 무소유 공유 자산이므로
-**바인딩(`$pm-bootstrap --slot`)·release를 거부**하고, 갱신은 [[pm-worktree]] `refresh`만 허용한다
+**대여 대상이 아니고 release 는 거부**하며, 갱신은 [[pm-worktree]] `refresh`만 허용한다
 (rebase/dev/sync 거부). 제거는 `worktree remove <slot> --user-ack <slot> --force`.
 
 ## 슬롯 폴더 선택

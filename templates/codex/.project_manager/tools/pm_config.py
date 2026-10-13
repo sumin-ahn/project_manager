@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """single-user multi-repo (N×M) 셋업/관리 파사드 — 가벼운 디스패처.
 
-multi-PM = N 세션 × M repo 한 개념— *수가 1이냐 더냐*. 이 파사드는 single
-user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회·진단* 전용이다(다중-사람
-협업 아님). 런타임 worktree alloc/release 자동화(bootstrap/handoff)는 여기 비관여 —
-이 도구는 사람이 손으로 하는 셋업·관리·진단만 한다.
+multi-PM = N 세션 × M repo 한 개념— *수가 1이냐 더냐*. 이 파사드는 single user 가 여러
+repo(multi-PM 셋업)를 도는 토폴로지의 셋업·조회·진단과 슬롯 대여·반납(`alloc`·`release`)을
+맡는다(다중-사람 협업 아님). 부트스트랩·핸드오프는 슬롯을 빌리거나 반납하지 않는다.
 
 각 서브커맨드는 엔진(board.py / worktree_pool.py / pm_update.py)을 호출하는 *얇은
 배선*이다 — 자체 로직 0. 디스패처가 엔진 호출의 단일 지점이다.
@@ -74,7 +73,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
 
 
   - thin forwarder(`pm-config.sh/.cmd`)는 로직 0 — 이 디스패처가 엔진 배선의 단일 지점.
-  - 브랜치 할당은 파사드 아님 — `pm-bootstrap <repo> --branch`소관(명령표 외).
+  - 브랜치 할당은 `task branch`(새 브랜치)·`worktree_pool.py switch`(있는 브랜치) 소관이다.
   - update 는 pm_update 로직을 *위임*(import 호출) — pm_update.py 는 그대로 두고 흡수만.
   - 엔진 호출은 DI seam(주입 가능 callable) — 테스트는 mock 주입으로 hermetic(실 clone/
     worktree 부작용 없이 배선만 검증·pm_bootstrap 의 DI 패턴 동류).
@@ -1714,7 +1713,7 @@ def cmd_repo_add(
         )
         return 1
     # area_owner = 그 area 의 *user* 소유(`--mine` 풀 입력) — registrant
-    # `owner`(슬롯/세션)와 별개 칼럼(overload 금지·codex sug). `--user` 명시 > local.conf identity.user=
+    # `owner`(등록한 사람)와 별개 칼럼(overload 금지·codex sug). `--user` 명시 > local.conf identity.user=
     # > git config user.email > None(빈 칼럼·소비자가 None 으로 읽음·현행 동작).
     area_owner = getattr(args, "user", None) or _default_user()
     base_arg = getattr(args, "base", None)
@@ -2222,7 +2221,7 @@ def cmd_worktree_add(
 
     worktree_pool.create_slot(repo, base=) 를 호출한다 — `<repo>_<N>`(브랜치 무관 재사용
     컨테이너) 슬롯을 `git worktree add` 로 만들고 `git submodule update --init` 한다.
-    브랜치 무관(명령표 외 — 브랜치 할당은 pm-bootstrap 소관).
+    브랜치 무관(슬롯 브랜치는 `task branch`·`worktree_pool.py switch` 가 바꾼다).
 
     **base 브랜치**: areas.md 의 그 repo base(`pm-config repo add --base`/clone-time
     bare HEAD 가 기록)를 `_resolve_repo_base` 로 읽어 `create_slot(base=)` 로 전달한다 — 슬롯
@@ -2239,10 +2238,9 @@ def cmd_worktree_add(
     board._test_cmd 가 활성 슬롯의 이 값을 areas 위 레이어로 읽으므로, 빈입력에 기본값을 박으면
     areas per-repo test_cmd 를 잘못 덮는다 → 빈입력은 반드시 None(슬롯 미바인딩)이어야 한다.
 
-    **성공 출력 다음스텝 (audit #6)**: 슬롯 fs 생성만으로 끝나지 않고, 다음 필수 스텝인
-    슬롯을 세션에 바인딩(`/pm-bootstrap <repo> --slot <N>`·정체성 선언)으로 이어준다. N 은 이미
-    보유한 `lease.slot`(`work/<repo>_<N>`)에서 파싱(신규 조회 0). **자동바인딩 안 함** — 바인딩은
-    여전히 사용자 명시 스텝(정체성=대화 맥락·lean multi-PM). 단일 슬롯은 무인자 부트스트랩 힌트.
+    **성공 출력 다음 단계**: task 없이 만든 슬롯은 idle 이다. 출력은 그 슬롯을 쓰는 순서
+    (`task new` → `alloc <repo> --task <task>`)와 세션 시작(`/pm-bootstrap --task <task>`, 사용자
+    몫)을 안내한다. `--task` 로 만든 슬롯은 생성 직후 그 task 명의로 대여되고 반납 명령을 안내한다.
 
     **bare 준비**: 모든 검사 뒤 슬롯 생성 직전에 `.repos/<repo>.git` 이 없으면 등록 저장소
     hydrate(`cmd_repo_add` 를 이름만으로)로 areas `git` 주소에서 bare 를 만든다. 원본에 커밋이
@@ -2341,14 +2339,13 @@ def cmd_worktree_add(
         return 1
     slot_path = wp.slot_path(lease.slot)
     test_line = f"\n  test_cmd 바인딩: {lease.test_cmd!r} (이 슬롯 회귀명령)" if lease.test_cmd else ""
-    # 슬롯 번호 N (lease.slot = `work/<repo>_<N>`) 파싱 — /pm-bootstrap --slot <N> 바인딩 안내용
-    # (audit #6). 이미 보유한 lease 에서만 뽑는다(신규 조회 0). 형식 이탈이면(prefix 불일치/
-    # 비숫자) 슬롯 식별자 그대로 fallback surface — 안내가 침묵하지 않게.
+    # 슬롯 번호 N(`lease.slot` = `work/<repo>_<N>`) 파싱. readonly 슬롯 refresh 안내에 쓴다.
+    # 이미 보유한 lease 에서만 뽑고, 형식이 다르면 슬롯 식별자를 그대로 쓴다.
     slot_prefix = f"work/{lease.repo}_"
     slot_tail = lease.slot[len(slot_prefix):] if lease.slot.startswith(slot_prefix) else ""
     slot_num = slot_tail if slot_tail.isdigit() else lease.slot
     if readonly:
-        # readonly 공유 슬롯 — 세션 바인딩 없음(무소유·공유 자산). 갱신은 refresh 로만.
+        # readonly 공유 슬롯 — 대여 대상 아님(무소유·공유 자산). 갱신은 refresh 로만.
         print(
             f"✓ readonly 공유 슬롯 생성: {lease.slot} (repo={lease.repo}·role=readonly) → {slot_path}\n"
             "  research 전용 read-only 기준면(detached HEAD·배타 대여 없음·session 없음). 코드를\n"
@@ -2370,12 +2367,13 @@ def cmd_worktree_add(
         print(
             f"✓ worktree 슬롯 생성: {lease.slot} (repo={lease.repo}) → {slot_path}{test_line}\n"
             "  코드 작업은 이 슬롯 cwd 에서 — 보드/wiki 는 multi-PM 공유 `.project_manager`.\n"
-            f"  다음 스텝 — 이 슬롯을 세션에 바인딩: "
-            f"`{_runtime_skill_entry('pm-bootstrap')} {lease.repo} --slot {slot_num}` "
-            f"(정체성 선언·자동 아님). 단일 슬롯이면 무인자 "
-            f"`{_runtime_skill_entry('pm-bootstrap')}` 가 자동바인딩."
+            f"  이 슬롯은 idle 이다. task 가 빌려 쓴다: `pm-config alloc {lease.repo} --task <task>` "
+            "(task 가 없으면 먼저 `pm-config task new <task>`)."
         )
-        print("  이 바인딩 안내는 사용자(사람) 대상 — 세션이 읽고 자동 실행하면 안 된다.")
+        print(
+            f"  세션 시작은 사용자가 `{_runtime_skill_entry('pm-bootstrap')} --task <task>` 로 한다. "
+            "세션이 이 안내를 읽고 스스로 실행하지 않는다."
+        )
     try:
         actual_folders = wp.slot_folders(lease.slot)
     except wp.SlotFoldersRefused as exc:
@@ -3248,8 +3246,8 @@ def cmd_release(
       커밋 안 한 변경은 force 여도 ReleaseRefused. 장부에 슬롯 없으면 무해 종료. force 는 순수
       백스톱이라 `--task` 소유검사도 건너뛴다(override 의도).
 
-    런타임 alloc/release 자동화는 파사드 비관여(bootstrap/handoff) — 여기는 수동
-    반납/강제만. worktree_pool 주입으로 hermetic 테스트.
+    부트스트랩·핸드오프는 슬롯을 반납하지 않는다 — 반납은 이 명령이 한다. worktree_pool 주입으로
+    hermetic 테스트.
     """
     wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
     if wp is None:
@@ -5268,9 +5266,9 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "각 서브커맨드는 엔진(board.py / worktree_pool.py / pm_update.py)으로 위임하는 "
-            "얇은 배선이다. 브랜치 할당은 이 파사드가 아니라 `pm-bootstrap <repo> --branch <B>` "
-            "소관(idle 슬롯 리스 + checkout). 런타임 worktree alloc/release 자동화는 "
-            "bootstrap/handoff 가 하고, 여기 `release` 는 수동 반납/강제(백스톱)만이다."
+            "얇은 배선이다. 슬롯 대여는 `alloc`, 반납은 `release`(`--force` 는 강제 반납)이고 "
+            "부트스트랩·핸드오프는 슬롯을 빌리거나 반납하지 않는다. 슬롯에 새 브랜치는 "
+            "`task branch`, 있는 브랜치로 전환은 `worktree_pool.py switch` 다."
         ),
     )
     sub = parser.add_subparsers(dest="command", metavar="<command>")
@@ -5292,7 +5290,8 @@ def build_parser() -> argparse.ArgumentParser:
                                  "미지정 시 areas test_cmd 빈 값 — 해소 체인이 슬롯/local.conf 로 폴백. "
                                  "빌드명령은 worktree add 프롬프트·콘솔 [b] 에서도 설정 가능.")
     p_repo_add.add_argument("--owner", metavar="이름", default=None,
-                            help="등록 owner = registrant (기본: 현 세션)")
+                            help="등록 owner = registrant (기본: local.conf identity.user, "
+                                 "없으면 git user.email · 둘 다 없으면 중단)")
     p_repo_add.add_argument("--user", metavar="이름", default=None,
                             help="area_owner = 그 area 의 user 소유 (`--mine` 풀 입력). "
                                  "미지정 시 local.conf identity.user= / git config user.email 로 해소(없으면 빈 값).")
@@ -5351,7 +5350,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_wt_add.add_argument(
         "--task", metavar="<task>", default=None,
         help="생성 직후 그 슬롯을 이 task 명의로 대여 (풀 소진 시 생성+대여 한 흐름·"
-             "기바인딩 task 요구·`--readonly` 와 상호배타). 미지정=현행(생성만·세션 바인딩은 별도).",
+             "기바인딩 task 요구·`--readonly` 와 상호배타). 미지정이면 idle 슬롯만 만든다"
+             "(대여는 `alloc <repo> --task <task>`).",
     )
     p_wt_add.add_argument(
         "--user-ack", metavar="<repo>", default=None,

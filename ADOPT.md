@@ -37,9 +37,10 @@
 채택자 트리에 PM 스킬/command 이 함께 도착한다. 순서대로:
 
 0. **scaffold 첫 커밋** — `--new` 직후 트리는 커밋 0 이고 도착 파일 전부가 untracked 다. 먼저 전체를 커밋해 둔다(`git add -A && git commit`). 핸드오프의 dirty-tree 게이트가 "커밋 0 + 미커밋 잔여"를 정당하게 차단하므로, 이 커밋 없이는 첫 `/pm-handoff` 가 `--ack-dirty` 없이 통과하지 않는다.
-1. **`/pm-bootstrap`** — 보드·git·회귀·log 마지막 entry 를 한 번에 측정(세션 시작 상태점검).
-2. **`/pm-env`** — 환경 관리(multi-PM repo/worktree 슬롯·upstream show/switch). 솔로면 보통 불필요.
-3. 이후 엔진 갱신이 필요할 때 **`/pm-update`** — upstream(위 값)에서 엔진 변경을 흡수(URL→cache clone·경로→pull).
+1. **작업 폴더 만들기** — `./pm-config.sh worktree add <repo> --user-ack <repo>`(Windows `.\pm-config.cmd`). 코드 checkout 을 늘리는 일이라 사용자가 승인값을 직접 준다. `<repo>` 는 import 가 areas.md 에 등록한 이름(새 홈이면 그 폴더 이름)이고 import 출력도 같은 명령을 안내한다.
+2. **`/pm-bootstrap --task <task>`** — 이 세션이 맡을 작업 흐름(task)을 열고 보드·git·회귀·log 마지막 entry 를 한 번에 측정한다. 처음 쓰는 이름이면 새로 만든다. 작업 폴더는 PM 이 `alloc` 으로 빌린다.
+3. **`/pm-env`** — 환경 관리(repo·작업 폴더·upstream show/switch).
+4. 이후 엔진 갱신이 필요할 때 **`/pm-update`** — upstream(위 값)에서 엔진 변경을 흡수(URL→cache clone·경로→pull).
 
 설치된 하네스 목록은 `.project_manager/install.json`(git 추적)이 기록한다 — 하네스를 제거했거나
 목록을 고치려면 그 파일의 `harnesses` 배열을 편집한다(엔진 경고문에도 같은 경로가 병기된다).

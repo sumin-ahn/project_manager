@@ -6346,7 +6346,7 @@ def test_t0650_codex_rc0_session_id_mismatch_still_blocks_write_fresh(
 
     assert rc == 1 and len(fake.calls) == 1
     assert "회신 세션 id 불일치" in err
-    assert "트리를 이미 고쳤을 수 있어" in err
+    assert "작업 트리나 라운드 파일을 고쳤을 수 있어" in err
 
 
 @pytest.mark.skipif(

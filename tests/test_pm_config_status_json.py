@@ -51,16 +51,18 @@ _GIT = shutil.which("git")
 _git_required = pytest.mark.skipif(_GIT is None, reason="git 바이너리 없음")
 
 
-# 홈 사본 엔진으로 task·슬롯을 바인딩한다 — 열림 기록을 테스트가 조립하지 않고 엔진이 남긴다.
-_BIND_SOURCE = '''\
+# 홈 사본 엔진으로 task 를 만들고 그 명의로 슬롯을 빌린다(`pm-config alloc` 과 같은 엔진 호출) —
+# 열림 기록을 테스트가 조립하지 않고 엔진이 남긴다.
+_ALLOC_SOURCE = '''\
 import importlib.util, json, sys
 
-spec = importlib.util.spec_from_file_location("worktree_pool_session_bind", sys.argv[1])
+spec = importlib.util.spec_from_file_location("worktree_pool_session_alloc", sys.argv[1])
 worktree_pool = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(worktree_pool)
 task, _action = worktree_pool.bind_task("main", session="s-test")
-lease = worktree_pool.bind_slot(sys.argv[2], "app", "main")
-print(json.dumps({"task_open": task.open, "lease_open": worktree_pool.lease_is_open(lease)}))
+lease = worktree_pool.alloc("app", owner_task="main")
+print(json.dumps({"task_open": task.open, "lease_open": worktree_pool.lease_is_open(lease),
+                  "slot": lease.slot}))
 '''
 
 
@@ -345,24 +347,27 @@ def test_status_json_alive_is_the_open_record(home, wp):
 
 @_git_required
 def test_status_json_alive_follows_the_records_a_real_session_left(home, wp, tmp_path):
-    """실 서브프로세스가 남긴 기록을 그대로 읽는다 — bind 뒤 열림, 닫은 뒤 닫힘.
+    """실 서브프로세스가 남긴 기록을 그대로 읽는다 — 대여 뒤 열림, 닫은 뒤 닫힘.
 
-    엔진 프로세스 pid 를 적던 시절엔 bind 가 끝나는 순간 죽어 slots/tasks 가 늘 회수 대기로
+    엔진 프로세스 pid 를 적던 시절엔 대여 명령이 끝나는 순간 죽어 slots/tasks 가 늘 회수 대기로
     보였다(관리자 현황 탭). 이제 판정 재료는 프로세스가 아니라 기록이라, 명령이 끝난 뒤에도
-    열림으로 남고 **닫는 명령**을 받아야 닫힌다.
+    열림으로 남고 **닫는 명령**을 받아야 닫힌다. [[T-0960]] AT-006 — 지운 `bind_slot` 대신
+    `pm-config alloc` 의 엔진 호출(`alloc(repo, owner_task=task)`)로 기록을 남긴다.
     """
     slot = _make_slot(home, "app", 1, "feat/x")
+    # `worktree add` 가 남기는 idle 행 — alloc 은 장부의 idle 행에서만 빌린다.
+    _ledger(home, [{"slot": slot, "repo": "app", "session": "", "started": "t", "state": "idle"}])
     template = home / ".project_manager" / "wiki" / "pm_state.template.md"
     template.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(REPO / ".project_manager" / "wiki" / "pm_state.template.md", template)
-    binder = tmp_path / "bind.py"
-    binder.write_text(_BIND_SOURCE, encoding="utf-8")
+    allocator = tmp_path / "alloc.py"
+    allocator.write_text(_ALLOC_SOURCE, encoding="utf-8")
     tools = home / ".project_manager" / "tools" / "worktree_pool.py"
 
-    done = subprocess.run([sys.executable, str(binder), str(tools), slot],
-                          capture_output=True, text=True, encoding="utf-8")
+    done = subprocess.run([sys.executable, str(allocator), str(tools)],
+                          capture_output=True, text=True, encoding="utf-8", cwd=str(home))
     assert done.returncode == 0, done.stderr
-    assert json.loads(done.stdout) == {"task_open": True, "lease_open": True}
+    assert json.loads(done.stdout) == {"task_open": True, "lease_open": True, "slot": slot}
 
     live = _status_json(home)
     assert live["slots"][0]["alive"] is True          # 명령 프로세스는 이미 죽었다

@@ -241,9 +241,6 @@ class FakePool:
         self._slot_status_ret = slot_status_ret
         self.slot_status_calls: list[str] = []
 
-    def bind_slot(self, slot, repo, session, *, git_runner=None):
-        return _FakeLease(slot, repo)
-
     def alloc(self, repo, *, branch=None, resume=None, **_kw):
         return _FakeLease(self._slot, repo)
 
@@ -274,9 +271,6 @@ class FakePool:
 
 class FakePoolNoStatus:
     """slot_status 미구현 풀(구버전) — `getattr(wp, "slot_status", None)` None 폴백 검증용."""
-
-    def bind_slot(self, slot, repo, session, *, git_runner=None):
-        return _FakeLease(slot, repo)
 
     def lease_is_open(self, lease):
         """열림 판정은 엔진 규칙 그대로 — 열림 기록(leased + session)이면 열림."""

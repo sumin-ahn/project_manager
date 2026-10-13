@@ -735,7 +735,7 @@ def test_supervisor_with_codex_driver_post_turn_no_resend(orch, driver_mod, tmp_
         orch.parse_codex_json, ctx_budget=1000, precompact_at_pct=80,
         mark_stop=orch.write_post_turn_marker, root=tmp_path, runner=fake_run,
     )
-    sup = orch.Supervisor(driver, root=tmp_path)
+    sup = orch.Supervisor(driver, root=tmp_path, task="demo-task")
     rc = sup.run_loop("/repo/root", io.StringIO("first\nsecond\n"), io.StringIO())
     assert rc == 0
     assert spawn_count["n"] == 2               # 회전 발생(초기 spawn + post-turn respawn).
@@ -768,7 +768,7 @@ def test_supervisor_codex_spawn_marker_rotates_before_first_input(orch, driver_m
         orch.parse_codex_json, ctx_budget=1000, precompact_at_pct=80,
         mark_stop=orch.write_post_turn_marker, root=tmp_path, runner=fake_run,
     )
-    sup = orch.Supervisor(driver, root=tmp_path)
+    sup = orch.Supervisor(driver, root=tmp_path, task="demo-task")
     rc = sup.run_loop("/repo/root", io.StringIO("input1\n"), io.StringIO())
     assert rc == 0
     assert spawn_count["n"] == 2                  # 초기 spawn(marker) + 회전 spawn.
@@ -784,9 +784,18 @@ def test_codex_driver_parser_flags(driver_mod):
     assert ns.cwd == "/some/repo"
     ns2 = parser.parse_args([])
     assert ns2.cwd is None  # 기본 = 실행 dir(main 에서 os.getcwd()).
-    # --task 수용(claude/opencode 대칭·기본 None·F7·T-0356).
+    # --task 수용(claude/opencode 대칭·F7·T-0356). 필수 여부는 relay 진입(main)이 본다 — 훅 진입은
+    # 같은 파서를 task 없이 쓴다([[T-0960]]).
     assert parser.parse_args(["--task", "mytask"]).task == "mytask"
-    assert parser.parse_args([]).task is None
+
+
+def test_codex_main_without_task_is_refused_before_engine(driver_mod, monkeypatch, capsys):
+    """[[T-0960]] — relay 는 task 없이 시작하지 않는다(rc 2 · 엔진 적재 전 · 훅 진입은 그대로)."""
+    monkeypatch.setattr(driver_mod, "_load_engine", lambda: pytest.fail("task 없이 엔진 적재"))
+    with pytest.raises(SystemExit) as exc:
+        driver_mod.main(["--cwd", "/some/repo"])
+    assert exc.value.code == 2
+    assert "relay 에는 --task <task> 가 필요하다" in capsys.readouterr().err
 
 
 def test_codex_main_forwards_task_budget_and_engine_seams(driver_mod, monkeypatch, tmp_path):

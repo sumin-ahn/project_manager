@@ -1580,9 +1580,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--task", default=None, metavar="이름",
-        help="task 정체성 — 회전된 새 PM 세션의 재진입 프롬프트에 `--task <task>` 실값을 "
-             "박아 같은 task 를 resume 하게 한다((b) 명시 전달·cwd 추론 금지). 미지정이면 bare "
-             "`$pm-bootstrap`(슬롯/솔로).",
+        help="task 정체성(필수). 회전된 새 PM 세션의 재진입 프롬프트에 `--task <task>` 실값을 "
+             "박아 같은 task 를 이어가게 한다(명시 전달·cwd 추론 금지).",
     )
     # 훅 축(relay 와 같은 파일·claude `pm_orch_claude.py --git-anchor-hook` 대칭) — 하네스가
     #   부르는 기계 진입점이라 사람 대상 help 에서는 감춘다.
@@ -1621,7 +1620,12 @@ def main(argv: list[str] | None = None) -> int:
     if GIT_ANCHOR_HOOK_FLAG in actual_argv:
         return run_git_anchor_hook(repo_root(Path(__file__).resolve().parent))
 
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not args.task:
+        # relay 는 회전된 세션을 `$pm-bootstrap --task <task>` 로 다시 연다 — 부트스트랩이 `--task`
+        # 필수라 task 없는 relay 는 시작하지 않는다. 훅 진입(같은 파서)은 task 를 받지 않아 여기서 본다.
+        parser.error("relay 에는 --task <task> 가 필요하다")
     engine, root = _load_engine()
 
     cwd = args.cwd or os.getcwd()

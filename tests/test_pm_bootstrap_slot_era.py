@@ -81,7 +81,7 @@ def _parent(*, behind, ref="origin/main"):
 
 
 class _EraPool:
-    """worktree_pool mock — lean(bind_slot)/alloc 양 경로 지원(실 git/장부 미접촉).
+    """worktree_pool mock — alloc 경로 지원(실 git/장부 미접촉).
 
     `parent` = `slot_git_status` 가 돌려줄 부모 행(None = 부모 기록 없음)."""
 
@@ -89,9 +89,6 @@ class _EraPool:
         self._slot = slot
         self._branch = branch
         self._parent = parent
-
-    def bind_slot(self, slot, repo, session, *, git_runner=None):
-        return _FakeLease(slot, repo)
 
     def alloc(self, repo, *, branch=None, resume=None, **_kw):
         return _FakeLease(self._slot, repo)
@@ -185,7 +182,10 @@ def test_format_freshness_offline_behind0_is_undetermined_not_latest(bootstrap):
     line = bootstrap._format_freshness(scope)
     assert "판정불가 — 스냅샷일 수 있음" in line
     assert "최신" not in line          # stale 스냅샷을 최신으로 오신뢰 금지
+    # [[T-0960]] AT-009 — 실패 원인을 offline 으로 단정하지 않고 사용자가 다시 돌려 볼 명령을 말한다
+    # (origin 이 없는 새 홈에서도 같은 줄이 나간다).
     assert line.startswith("⚠ fetch 실패")
+    assert "`git fetch origin`" in line and "offline" not in line
 
 
 def test_format_freshness_offline_upstream_none_is_undetermined(bootstrap):

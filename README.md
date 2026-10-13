@@ -86,22 +86,23 @@ flowchart TB
 
 ## 빠른 시작
 
-도입이 끝난 프로젝트에서 사용자가 기억할 명령은 두 개다. 세션을 열 때 `/pm-bootstrap`,
+도입이 끝난 프로젝트에서 사용자가 기억할 명령은 두 개다. 세션을 열 때 `/pm-bootstrap --task <task>`,
 넘길 때 `/pm-handoff`. 그 사이의 ticket 발행, claim, slot 대여, 위임, 검토, finish 는 PM 에게
 자연어로 말하면 된다.
 
 | 순간 | 사용자가 하는 일 |
 |---|---|
-| 세션 시작 | `/pm-bootstrap` 으로 현재 상태와 다음 선택지를 받는다. |
+| 세션 시작 | `/pm-bootstrap --task <task>` 로 그 작업 흐름을 열고 현재 상태와 다음 선택지를 받는다. |
 | 작업 중 | "티켓 만들어줘", "4번 slot 받아줘", "developer 에게 맡기고 검토해줘"처럼 말한다. |
 | 세션 교대 | `/pm-handoff` 로 다음 세션이 이어받을 기록을 남긴다. |
 
 ### 1. 세션 열고 부트스트랩하기
 
-새 프로젝트 폴더에서 `claude`, `opencode`, `codex` 중 원하는 하네스를 실행한 뒤:
+새 프로젝트 폴더에서 `claude`, `opencode`, `codex` 중 원하는 하네스를 실행한 뒤 이 세션이 맡을
+작업 이름(task)을 준다. 처음 쓰는 이름이면 새로 만든다:
 
 ```text
-/pm-bootstrap
+/pm-bootstrap --task <task>
 ```
 
 그러면 PM 세션이 board, git, 최근 log, 남은 작업을 읽고 다음 선택지를 제안한다.
@@ -402,8 +403,8 @@ flowchart TB
 - **공유하는 것**: board 의 ticket 상태와 wiki 의 domain·ADR·log. 코드는 배타 work slot 에서
   수정하고, 여러 세션이 함께 읽을 기준면에는 readonly slot 을 쓴다.
 - **범위를 넓힐 때**: "내 것 전체를 보여줘", "doc task 만 보여줘", "다른 사용자까지 보여줘"라고
-  PM 에게 요청한다. 세션 정체성이 필요하면 `/pm-bootstrap --task doc` 처럼 시작한다.
-- **신뢰할 수 있는 시점**: 부트스트랩이 offline freshness 경고를 내면 보드 숫자를 최신 원격
+  PM 에게 요청한다. 세션 정체성은 `/pm-bootstrap --task doc` 처럼 task 이름으로 준다.
+- **신뢰할 수 있는 시점**: 부트스트랩이 fetch 실패 경고를 내면 보드 숫자를 최신 원격
   상태로 단정하지 않는다.
 
 ---
@@ -443,7 +444,7 @@ flowchart LR
 ## 운영 레퍼런스
 
 일상 사용자는 이 절의 명령을 외울 필요가 없다. 초기 도입과 엔진 갱신은 관리자 또는 PM 에게
-맡기고, 평소에는 `/pm-bootstrap`, 자연어 요청, `/pm-handoff` 흐름만 사용하면 된다.
+맡기고, 평소에는 `/pm-bootstrap --task <task>`, 자연어 요청, `/pm-handoff` 흐름만 사용하면 된다.
 
 ### 도입과 엔진 관리
 

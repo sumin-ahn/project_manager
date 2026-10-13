@@ -519,11 +519,15 @@ def test_opencode_driver_parser_flags(driver_mod):
     assert ns2.agent == "pm"  # PM primary 기본.
 
 
-def test_opencode_driver_parser_accepts_task(driver_mod):
-    """opencode driver build_parser 가 `--task <이름>` 을 수용(claude 와 대칭·기본 None·F7·T-0356)."""
+def test_opencode_driver_parser_accepts_task(driver_mod, monkeypatch, capsys):
+    """opencode driver 가 `--task <이름>` 을 받고, 빠뜨리면 엔진을 적재하기 전에 rc 2 로 거부한다([[T-0960]])."""
     parser = driver_mod.build_parser()
     assert parser.parse_args(["--task", "mytask"]).task == "mytask"
-    assert parser.parse_args([]).task is None
+    monkeypatch.setattr(driver_mod, "_load_engine", lambda: pytest.fail("task 없이 엔진 적재"))
+    with pytest.raises(SystemExit) as exc:
+        driver_mod.main([])
+    assert exc.value.code == 2
+    assert "relay 에는 --task <task> 가 필요하다" in capsys.readouterr().err
 
 
 def test_opencode_main_forwards_task_and_budget(driver_mod, monkeypatch, tmp_path):
@@ -602,7 +606,7 @@ def test_opencode_main_rejects_unsafe_budget_before_supervisor(
     _FakeEngine.ctx_budget = staticmethod(load_ctx_engine("pm_relay").ctx_budget)
     monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
     with pytest.raises(ValueError, match="즉시 세션 회전 위험"):
-        driver_mod.main(["--cwd", str(tmp_path)])
+        driver_mod.main(["--task", "demo-task", "--cwd", str(tmp_path)])
 
 
 def test_opencode_driver_repo_root_is_the_adapter_parent(driver_mod, tmp_path):
@@ -677,7 +681,7 @@ def test_supervisor_with_opencode_driver_rotation(orch, driver_mod, tmp_path):
         spawn_result=orch.SpawnResult,
         runner=fake_run,
     )
-    sup = orch.Supervisor(driver, root=tmp_path)
+    sup = orch.Supervisor(driver, root=tmp_path, task="demo-task")
     rc = sup.run_loop(str(tmp_path), io.StringIO("first\nsecond\n"), io.StringIO())
     assert rc == 0
     assert counts == {"spawn": 2, "relay": 2}
