@@ -205,6 +205,13 @@ def _head_paths(root: Path) -> list[str]:
     return sorted(line for line in result.stdout.splitlines() if line)
 
 
+def _ledger(ticket_id: str) -> str:
+    """종결이 `closed` 를 쓰는 소속 장부 — board 가 홈 git 인 형상이라 홈 커밋에 실린다([[T-0959]]).
+
+    장부 이름은 conftest 의 결속 픽스처가 짓는다(`bound-<티켓>`)."""
+    return f".project_manager/wiki/tickets/clusters/C-bound-{ticket_id.lower()}.md"
+
+
 def _commit_subjects(root: Path) -> list[str]:
     """root 의 커밋 제목들 (최신 순) — 새 커밋이 생겼는지를 값으로 본다."""
     result = subprocess.run(
@@ -233,7 +240,7 @@ def test_no_pytest_stages_touches_in_slot_worktree_not_pm_home(tmp_path, monkeyp
     assert trees and set(trees) == {worktree}
     assert _head_paths(worktree) == ["src/engine.py"]            # 코드는 worktree 에만
     assert _staged_paths(worktree) == []                         # 종결이 그 자리에서 커밋
-    assert _head_paths(home) == [".project_manager/wiki/log/current.md"]  # 홈은 산출물만
+    assert _head_paths(home) == [".project_manager/wiki/log/current.md", _ledger("T-6703")]  # 홈은 산출물만
     assert f"[PM 홈 산출물] cwd={home}" in out
     assert f"[slot worktree touches] cwd={worktree}" in out
     # 커밋은 손 안내가 아니라 종결 파이프라인이 실행한다(계획은 repo 별 그대로).
@@ -260,7 +267,7 @@ def test_symlinked_slot_keeps_measurement_and_stage_on_one_tree(
     assert rc == 0                                   # 코드 트리를 본다(PM 홈 2000줄 사본 아님)
     assert trees and set(trees) == {worktree}
     assert _head_paths(worktree) == ["src/engine.py"]
-    assert _head_paths(home) == [".project_manager/wiki/log/current.md"]
+    assert _head_paths(home) == [".project_manager/wiki/log/current.md", _ledger("T-6704")]
     assert f"[slot worktree touches] cwd={worktree}" in out
 
 
@@ -283,20 +290,21 @@ def test_home_resident_touch_is_staged_in_pm_home(tmp_path, monkeypatch, capsys)
     assert rc == 0
     assert _head_paths(worktree) == ["src/engine.py"]
     assert _head_paths(home) == [
-        ".project_manager/wiki/log/current.md", home_touch,
+        ".project_manager/wiki/log/current.md", home_touch, _ledger("T-6705"),
     ]
     assert f"[PM 홈 산출물] cwd={home}" in out
     assert home_touch in out
 
 
-def test_home_resident_touch_deletion_is_staged_in_pm_home(tmp_path, monkeypatch, capsys):
-    """홈-상주 touch 를 지운 상태로 완료하면 그 삭제가 PM 홈 index 에 실린다.
+def test_home_resident_touch_deletion_is_committed_in_pm_home(tmp_path, monkeypatch, capsys):
+    """[[T-0959]] AT-006 — 홈-상주 touch 를 지운 상태로 완료하면 그 삭제가 PM 홈 커밋에 실린다.
 
     삭제된 경로는 어느 트리에도 실재하지 않는다 — 코드 몫으로만 접으면 코드 트리에서 추적되지
-    않아 stage 필터가 떨구고 삭제가 어느 계획에도 안 실린다.
+    않아 stage 필터가 떨구고 삭제가 어느 계획에도 안 실린다. 그 삭제는 이 종결이 커밋하는 홈
+    변경이라 코드 경로(`src/engine.py`)의 변경이 없어도 선언 변경 판정을 통과한다.
 
-    종결의 홈 커밋 pathspec 은 그 시점의 stage 스코프라, 이미 index 에 반영된 삭제는 index 에
-    남고 홈 커밋에는 이 실행의 산출물만 실린다 — 귀속(PM 홈 몫)은 index 자리에서 읽는다.
+    예전에는 [4/5] add 가 삭제를 index 에 반영해 커밋 단계가 다시 계산한 pathspec 에서 그 경로가
+    빠졌고, 삭제는 홈 커밋 밖에 staged 로 남았다.
     """
     home_touch = ".project_manager/wiki/roadmap.md"
     home, worktree, tf = _split_home_shape(
@@ -310,8 +318,11 @@ def test_home_resident_touch_deletion_is_staged_in_pm_home(tmp_path, monkeypatch
 
     assert rc == 0
     assert capsys.readouterr() is not None
-    assert _staged_paths(home) == [home_touch]                   # 삭제는 홈 몫으로 실린다
-    assert _head_paths(home) == [".project_manager/wiki/log/current.md"]
+    assert _staged_paths(home) == []                             # staged 삭제로 남지 않는다
+    assert home_touch in _head_paths(home)                       # 삭제는 홈 커밋에 실린다
+    tracked = subprocess.run(["git", "-C", str(home), "ls-files"], check=True, capture_output=True,
+                             text=True, encoding="utf-8").stdout.splitlines()
+    assert home_touch not in tracked
     assert _staged_paths(worktree) == []
     assert _commit_subjects(worktree) == ["seed"]                # 코드 트리엔 변경 자체가 없다
 
@@ -338,4 +349,4 @@ def test_symlinked_slot_with_prefixed_touch_uses_code_tree(tmp_path, monkeypatch
     assert trees and set(trees) == {worktree}
     assert "좌표 정규화 실패" not in err
     assert _head_paths(worktree) == ["src/engine.py"]
-    assert _head_paths(home) == [".project_manager/wiki/log/current.md"]
+    assert _head_paths(home) == [".project_manager/wiki/log/current.md", _ledger("T-6707")]

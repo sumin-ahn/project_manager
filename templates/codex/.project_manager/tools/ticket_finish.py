@@ -1335,6 +1335,9 @@ def engine_written_paths(board, ticket_id: str, log_file: Path) -> list[Path]:
         legacy(board 미분리·**출하 템플릿 기본 형상**)에선 그 이동이 홈 git 에 떨어지므로
         반드시 실어야 한다 — 안 그러면 채택자가 매 finish 마다 손으로 `git add` 해야 한다
         (reviewer 실측).
+      - 묶음 장부(`tickets/clusters/C-*.md`) — 종결이 소속 장부에 `closing`·`closed` 를 쓰고, 묶음
+        선언이 흡수한 크기 1 장부는 지워진 채 남는다. 빠지면 종결 뒤 홈에 미커밋 장부가 남아 첫
+        핸드오프가 멈춘다(legacy 만 · 분리 형상은 board-git 이 커밋한다).
 
     옛 경로는 상태 디렉토리를 몰라도 된다 — 후보(모든 STATUS_DIRS/같은 파일명)를 넣어두면
     실존/추적되지 않는 후보는 `git_scope_stageable` 이 거른다(추적 중인 *삭제* 경로만 남아
@@ -1344,24 +1347,25 @@ def engine_written_paths(board, ticket_id: str, log_file: Path) -> list[Path]:
     paths: list[Path] = [Path(log_file)]
     if board is None:
         return paths
-    try:
-        board_git_separated = board._board_git_enabled()
-    except Exception:  # noqa: BLE001 — 판정 실패도 board 미로드와 같은 취급(log 만).
-        return paths
-    if board_git_separated:
+    if board._board_git_enabled():
         return paths
     # 분리 형상이면 여기 도달하지 않는다 — round 형제 로드도 그때만 한다(불필요한 로드 skip).
     rounds = _load_ticket_rounds()
     try:
         _status, ticket_path = board.find_ticket(ticket_id)
-        paths.append(ticket_path)
-        paths.extend(board.tickets_dir() / status / ticket_path.name
-                     for status in board.STATUS_DIRS)
-        if rounds is not None:
-            paths.extend(
-                _round_stage_candidates(rounds, board.tickets_dir(), ticket_id))
-    except Exception:  # noqa: BLE001 — 티켓 조회 실패(부재·손상)는 log 만으로 진행(잔여 보고가 알린다).
-        pass
+    except FileNotFoundError:
+        return paths        # 티켓 부재 — 이 실행이 옮긴 티켓이 없다(log 만).
+    paths.append(ticket_path)
+    paths.extend(board.tickets_dir() / status / ticket_path.name
+                 for status in board.STATUS_DIRS)
+    if rounds is not None:
+        paths.extend(
+            _round_stage_candidates(rounds, board.tickets_dir(), ticket_id))
+    # 묶음 장부 — 종결이 status 를 쓰는 소속 장부와, 발행이 만들고 묶음 선언이 흡수(삭제)한 크기 1
+    # 장부. 실존·추적 판정은 `git_scope_stageable` 이 한다(흡수 장부는 추적 중일 때만 삭제로 남는다).
+    frontmatter, _body = board.load_ticket(ticket_path)
+    paths.append(board.cluster_ledger_path(board.ticket_cluster(ticket_id, frontmatter)))
+    paths.append(board.cluster_ledger_path(ticket_id))
     return paths
 
 
@@ -1456,6 +1460,9 @@ def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
 
     board 모듈을 못 띄우면 **fail-loud** — 빈 pathspec + error 사유를 돌려준다(호출부가 경고 +
     잔여 전체 보고). 여기서 조용한 fail-soft 는 stage 0 을 정상처럼 보이게 해 위험하다.
+
+    반환 pathspec 은 **커밋 pathspec** 이다 — add 가 받는 경로에 더해 미리 `git rm` 한 선언 삭제를
+    싣는다. [4/5] 의 add 는 그중 작업 트리에 있는 파일만 받는다(add 와 커밋의 pathspec 분리).
     """
     board = load_board_module(board_py)
     scope_fn = getattr(board, "git_scope_stage_pathspec", None) if board else None
@@ -1492,9 +1499,21 @@ def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
         # PM-home 산출물은 ticket code worktree 가 아니라 이 도구의 설계 repo 에만 있다.
         declared.extend(engine_written_paths(board, ticket_id, log_file))
     try:
-        return StageScope(tuple(scope_fn(repo, declared, run_git=run_git)), None)
+        pathspec = list(scope_fn(repo, declared, run_git=run_git))
     except Exception as exc:  # noqa: BLE001 — 산출 실패도 조용히 넘기지 않는다(fail-loud).
         return StageScope((), f"스코프 산출 실패 ({exc.__class__.__name__}: {exc})")
+    # 미리 `git rm` 한 선언 삭제 — index 에도 작업 트리에도 없어 위 필터(add 가 받는 경로)가 뺀다.
+    # add 는 그 경로를 받지 못해도(rc 128) 커밋은 기록하므로 이 스코프(커밋 pathspec)에 싣는다.
+    # [4/5] 의 add 는 이 스코프 중 작업 트리에 있는 파일만 받는다. 작업 트리에 파일로 있는 선언은
+    # 그런 삭제를 품을 수 없어 조회하지 않는다(디렉터리 선언은 그 아래를 본다).
+    unfiled = [path for path in declared if not path.is_file()]
+    relative = board.git_scope_pathspec(repo, unfiled) if unfiled else ()
+    if relative:
+        rc, out = run_git(["diff", "--cached", "--name-only", "-z", "--diff-filter=D", "--", *relative])
+        if rc != 0:
+            return StageScope((), f"선언 경로의 staged 삭제를 관측하지 못했다 (git diff --cached rc={rc})")
+        pathspec.extend(path for path in dict.fromkeys(out.split("\0")) if path and path not in pathspec)
+    return StageScope(tuple(pathspec), None)
 
 
 # ── 잔여 보고 (under-stage / 스코프 밖 staged) ──────────────────────────────
@@ -1516,10 +1535,7 @@ def _path_exists_in(root: Path, relative: str) -> bool:
     candidate = relative.strip()
     if not candidate or candidate.startswith(":(") or any(ch in candidate for ch in "*?["):
         return False
-    try:
-        return (root / candidate).exists()
-    except OSError:
-        return False
+    return (root / candidate).exists()
 
 
 def scope_covers(pathspec: Sequence[str], path: str) -> bool:
@@ -2558,7 +2574,9 @@ class TicketFinisher:
         차단이다 — 이 실행이 코드 트리에서 아무것도 stage 하지 못한다는 확정 사실이라, 여기서
         '판정 불가'로 접으면 전량 미머지가 조용히 통과한다. 이때 스코프는 **빈 스코프로
         읽는다**(아무 경로도 못 덮으므로) — 코드 트리 dirty 전량이 잔여가 되고, PM 홈
-        제외 규칙은 정상 갈래와 동일하게 적용해 잔여 목록·표준 처방을 원인 문장에 동봉한다."""
+        제외 규칙은 정상 갈래와 동일하게 적용해 잔여 목록·표준 처방을 원인 문장에 동봉한다.
+
+        잔여가 없으면 이어서 선언 경로의 변경이 같은 인구에 있는지 본다(`_declared_change_problem`)."""
         code_tree = self._code_tree()
         home_prefixes = self._home_state_prefixes(code_tree)
         for plan in self._stage_plans(ticket_id):
@@ -2579,11 +2597,69 @@ class TicketFinisher:
                     staged_out, unstaged, committed)
             staged_out, unstaged, committed = self._residual_split(
                 plan.cwd, scope, home_prefixes, ticket_id=ticket_id)
-            if not staged_out and not unstaged and not committed:
-                continue
-            return self._residual_block_message(
-                ticket_id, staged_out, unstaged, committed)
+            if staged_out or unstaged or committed:
+                return self._residual_block_message(
+                    ticket_id, staged_out, unstaged, committed)
+            problem = self._declared_change_problem(ticket_id, plan.cwd)
+            if problem is not None:
+                return problem
         return None
+
+    def _declared_change_problem(self, ticket_id: str, cwd: Path) -> str | None:
+        """선언한 코드 경로의 변경이 이번 종결이 머지할 변경에 하나도 없으면 차단 사유.
+
+        머지할 변경 = `merge-base(<통합 tip>, HEAD)..작업 트리`(커밋분 ∪ 미커밋) — 잔여 판정과 같은
+        인구다. 잔여 판정은 선언 **밖** 변경을 막고, 이 판정은 선언 **안** 변경이 그 인구에 있는지
+        묻는다(switch 전 커밋·다른 폴더 작성·통합 브랜치 직접 커밋은 인구 밖이라 머지 없이 닫혔다).
+
+        선언 경로는 분리 코드 트리면 코드 몫, 임베디드면 touches 전부다. 비면(코드 없는 pm-direct·홈에만
+        있는 경로) 대상이 아니다. 판정 단위는 멤버이고 선언 경로 하나라도 인구에 있으면 통과다. 어느 트리에도
+        없는 선언(미정 경로)은 홈 변경으로도 충족된다(홈 문서 삭제). 조회 실패는 관측 실패로 멈춘다 —
+        티켓 판독 실패를 빈 touches 로 접으면 "판정 대상 아님" 으로 통과한다."""
+        snapshot = _ticket_frontmatter_snapshot(self._board_py, ticket_id)
+        if snapshot.error is not None:
+            raise _CloseObservationFailure(
+                f"{ticket_id} 티켓을 읽지 못해 선언 변경을 판정할 수 없다 ({snapshot.error})")
+        touches = list(get_ticket_touches(self._board_py, ticket_id))
+        home_share: list[str] = []
+        if touches and self._is_separated_code_tree(cwd):
+            touches, home_share = self._split_touches_by_tree(ticket_id, cwd)
+        if not touches:
+            return None
+        declared = self._normalize_measured_touches(touches)
+        if declared is None:
+            raise _CloseObservationFailure(
+                f"{ticket_id} 선언 경로를 코드 트리 좌표로 옮기지 못했다 — 선언 변경의 머지 여부를 판정할 수 없다")
+        # 어느 트리에도 실재하지 않는 선언(신규 파일 또는 삭제)은 두 계획에 모두 실린다 — PM 홈 쪽
+        #   변경(홈 문서 삭제)도 이 종결이 커밋하는 변경이다.
+        unresolved_home = [touch for touch in touches if touch in home_share]
+        if unresolved_home:
+            home_paths = self._observed_status_paths(REPO)
+            if any(self._touch_claims_path(touch, path)
+                   for touch in unresolved_home for path in home_paths):
+                return None
+        population = self._observed_status_paths(cwd)
+        tip = self._integration_tip(ticket_id, cwd)
+        if tip is not None:
+            rc, out = self._run_git_stdout_at_fn(cwd, ["diff", "--name-only", "-z", f"{tip}...HEAD"])
+            if rc != 0:
+                raise _CloseObservationFailure(_RESIDUAL_POPULATION_UNRESOLVED.format(
+                    ticket=ticket_id, tip=tip))
+            population.update(path for path in out.split("\0") if path)
+        if any(self._touch_claims_path(touch, path) for touch in declared for path in population):
+            return None
+        return (f"완료 기록 거부 — {ticket_id} 가 선언한 코드 경로({', '.join(touches)})의 변경이 이번 "
+                f"종결이 머지할 변경(통합 브랜치 {tip or '(첫 커밋 전)'} 이후 {cwd} 의 커밋·미커밋)에 하나도 "
+                "없다. 다른 폴더·브랜치에서 고쳤다면 그 변경을 이 작업 트리로 가져오고(커밋했다면 "
+                "`git cherry-pick`), 고칠 코드가 없는 티켓이면 touches 에서 그 경로를 뺀다.")
+
+    def _observed_status_paths(self, cwd: Path) -> set[str]:
+        """선언 변경 판정이 보는 그 트리의 미커밋 경로 — 조회 실패는 관측 실패로 멈춘다(clean 으로 접지 않는다)."""
+        try:
+            entries = self._status_entries_fn() if cwd == REPO else self._status_entries_at_fn(cwd)
+        except StatusObservationError as exc:
+            raise _CloseObservationFailure(f"작업 트리 상태를 관측하지 못했다 ({cwd}) — {exc}") from exc
+        return {path for _code, path in entries}
 
     def _residual_split(
         self, cwd: Path, scope: Sequence[str], home_prefixes: Sequence[str], *,
@@ -3037,7 +3113,8 @@ class TicketFinisher:
         code_touches: list[str] = []
         home_touches: list[str] = []
         for declared, normalized in zip(touches, in_code_tree):
-            in_code = _path_exists_in(code_tree, normalized)
+            in_code = (_path_exists_in(code_tree, normalized)
+                       or self._tracked_in(code_tree, normalized))
             in_home = _path_exists_in(REPO, declared)
             if in_code:
                 code_touches.append(declared)
@@ -3051,6 +3128,22 @@ class TicketFinisher:
                 code_touches.append(declared)
                 home_touches.append(declared)
         return code_touches, home_touches
+
+    def _tracked_in(self, tree: Path, relative: str) -> bool:
+        """`tree` 가 작업 트리에 없는 이 선언 경로(파일·디렉터리)를 추적하는가 — 지운 추적 경로의 몫 판정.
+
+        작업 트리에 없는 경로를 index 나 HEAD 가 가지면 status 가 그 삭제(` D`·`D `)를 낸다. 미리
+        `git rm` 한 경로(index 에도 없다)까지 한 조회로 본다. 조회 실패는 관측 실패로 멈춘다(미추적으로
+        접으면 삭제가 다른 계획으로 간다)."""
+        candidate = relative.strip()
+        if not candidate or candidate.startswith(":(") or any(ch in candidate for ch in "*?["):
+            return False
+        rc, out = self._run_git_stdout_at_fn(
+            tree, ["status", "--porcelain", "-z", "--untracked-files=no", "--", candidate])
+        if rc != 0:
+            raise _CloseObservationFailure(
+                f"{tree} 에서 선언 경로 {candidate} 의 추적 여부를 관측하지 못했다 (git status rc={rc})")
+        return bool(out.strip("\0").strip())
 
     @staticmethod
     def _is_separated_code_tree(code_tree: Path) -> bool:
@@ -3353,28 +3446,37 @@ class TicketFinisher:
                 print(f"\n  ⚠ {label}stage 스코프를 산출하지 못했다 — {scope_error}. "
                       "이번 repo에서는 아무것도 stage 하지 않는다. 아래 잔여 목록을 보고 "
                       "PM 이 직접 `git add <경로>` 하라.", file=sys.stderr)
+            # add 는 스코프 중 작업 트리에 있는 파일만 받는다(신규·수정). 선언한 삭제는 add 하지 않고
+            # 커밋이 경로로 기록한다 — 미리 `git rm` 한 경로는 add 가 rc 128 로 거부하고, add 로 지운
+            # 삭제는 index 에서 빠져 커밋 단계가 다시 계산한 pathspec 에서 사라진다.
+            additions = [rel for rel in scope if os.path.lexists(plan.cwd / rel)]
+            deletions = [rel for rel in scope if rel not in additions]
+            label = f"[{plan.label}] " if multi_repo else ""
             if dry_run:
-                preview = " ".join(scope) if scope else "(선언 경로 없음)"
-                cwd = f"cwd={plan.cwd} " if multi_repo else ""
-                print(f"  [dry-run] {cwd}git add -A -- {preview} (실제 실행 생략)")
-            elif scope:
+                if additions or not deletions:
+                    preview = " ".join(additions) if additions else "(선언 경로 없음)"
+                    cwd = f"cwd={plan.cwd} " if multi_repo else ""
+                    print(f"  [dry-run] {cwd}git add -A -- {preview} (실제 실행 생략)")
+            elif additions:
                 if plan.cwd == REPO:
-                    git_rc, git_out = self._run_git_fn(["add", "-A", "--", *scope])
+                    git_rc, git_out = self._run_git_fn(["add", "-A", "--", *additions])
                 else:
-                    git_rc, git_out = self._run_git_at_fn(plan.cwd, ["add", "-A", "--", *scope])
+                    git_rc, git_out = self._run_git_at_fn(plan.cwd, ["add", "-A", "--", *additions])
                 if git_rc != 0:
                     print(
-                        f"\n[중단] {'[' + plan.label + '] ' if multi_repo else ''}git add 실패 (rc={git_rc}): {git_out.rstrip()}",
+                        f"\n[중단] {label}git add 실패 (rc={git_rc}): {git_out.rstrip()}",
                         file=sys.stderr,
                     )
                     return 1
-                label = f"[{plan.label}] " if multi_repo else ""
-                print(f"  ✓ {label}git add — 선언 경로 {len(scope)}개만 stage (commit 은 아직 안 했다):")
-                for rel in scope:
+                print(f"  ✓ {label}git add — 선언 경로 {len(additions)}개만 stage (commit 은 아직 안 했다):")
+                for rel in additions:
                     print(f"      {rel}")
-            elif not scope_error:
-                label = f"[{plan.label}] " if multi_repo else ""
+            elif not scope_error and not deletions:
                 print(f"  {label}stage 할 선언 경로 없음")
+            if deletions:
+                print(f"  {label}선언 삭제 {len(deletions)}개 — stage 하지 않고 커밋이 경로로 기록한다:")
+                for rel in deletions:
+                    print(f"      {rel}")
             if not dry_run:
                 self._report_dirty_after_stage(scope, cwd=plan.cwd,
                                                label=plan.label if multi_repo else "")

@@ -1416,10 +1416,11 @@ def test_t0958_card_multirepo_one_folder_each_closes_first_ticket(tmp_path):
 def test_t0958_flow_cards_state_switch_order(tmp_path):
     """[[T-0958]] — 흐름 카드가 switch 필수·순서·폴더 선택과 task 세션의 claim 줄을 실행 줄 옆에 싣는다.
 
-    pm-wave-claim: lint 줄은 `lint --gate`, 5단계 첫 claim 줄은 `--task <task>` 형이고 슬롯 모드 줄은 task
-    세션 거부를 경고한다, 6단계는 코드 변경이 없어도 실행하고 폴더 1개·2개의 대상과 파일 수정 시점을
-    말한다. pm-wave-finish: 실행 블록의 전제와 dry-run 항목이 switch 뒤를 말한다. 슬롯 모드 claim 줄을
-    task 세션 채택자에서 쓰면 종결이 소유 불일치로 rc 1 이다(경고의 근거).
+    pm-wave-claim: lint 줄은 `lint --gate`, 5단계 첫 claim 줄은 `--task <task>` 형이고 슬롯 모드 줄은 task 가
+    보유한 폴더에서의 거부를 경고한다, 6단계는 코드 변경이 없어도 실행하고 폴더 1개·2개의 대상과 파일 수정
+    시점을 말한다. pm-wave-finish: 실행 블록의 전제와 dry-run 항목이 switch 뒤를 말한다. 슬롯 모드 claim 줄을
+    task 가 보유한 폴더에 쓰면 claim 자체가 rc 1 이고 티켓은 open 에 남는다([[T-0959]] AT-008 · 예전에는 claim
+    이 통과하고 종결이 소유 불일치로 막혔다).
     """
     claim_text = (_WAVE_SKILLS / "pm-wave-claim" / "SKILL.md").read_text(encoding="utf-8")
     finish_text = (_WAVE_SKILLS / "pm-wave-finish" / "SKILL.md").read_text(encoding="utf-8")
@@ -1427,7 +1428,8 @@ def test_t0958_flow_cards_state_switch_order(tmp_path):
     assert any(line.strip() == "python3 .project_manager/tools/board.py lint --gate" for line in block)
     claims = [index for index, line in enumerate(block) if "board.py claim " in line]
     assert "--task <task>" in block[claims[0]] and "--task" not in block[claims[1]], block
-    assert "task 세션에서 쓰면 종결이 소유 불일치로 거부" in block[claims[1] - 1], block[claims[1] - 1]
+    assert "task 가 보유한 폴더를 지목하면 claim 이 거부한다" in block[claims[1] - 1], block[claims[1] - 1]
+    assert "소유 불일치" not in block[claims[1] - 1], block[claims[1] - 1]
     step6 = "\n".join(block[next(i for i, line in enumerate(block) if line.startswith("# 6.")):])
     for phrase in ("코드 변경이 없어도", "폴더 1개면 그 폴더", "cluster new 에 지목하지 않은 폴더",
                    "전환 뒤 그 폴더에서 고친다"):
@@ -1445,14 +1447,11 @@ def test_t0958_flow_cards_state_switch_order(tmp_path):
         _run_card_line(dest, lines[key], fills)
     slot_claim = shlex.split(block[claims[1]].split("#", 1)[0].replace("T-NNNN", tid)
                              .replace("<repo>", dest.name).replace("<N>", "1"))
-    claimed = subprocess.run([sys.executable, *slot_claim[1:]], cwd=dest, stdin=subprocess.DEVNULL,
+    refused = subprocess.run([sys.executable, *slot_claim[1:]], cwd=dest, stdin=subprocess.DEVNULL,
                              capture_output=True, text=True, encoding="utf-8", errors="replace",
                              env={**os.environ, **_CARD_IDENTITY_ENV})
-    assert claimed.returncode == 0, claimed.stdout + claimed.stderr
-    _run_card_line(dest, lines[("worktree_pool.py", "switch")], fills)
-    _check_card_dod(dest, tid)
-    refused = _card_line_process(dest, lines[("ticket_finish.py", None)], fills, ("--no-pytest",))
-    assert refused.returncode == 1 and "소유다" in refused.stderr, refused.stdout + refused.stderr
+    assert refused.returncode == 1 and "가 보유한다" in refused.stderr, refused.stdout + refused.stderr
+    assert _card_ticket(dest, tid).parent.name == "open"
 
 
 # 위임 경로 문서가 claim 다음 단계로 싣는 switch 진술의 조각 — 흐름 카드 6단계 줄과 같은 표기 규칙이다.
@@ -1523,18 +1522,19 @@ def test_t0958_delegate_work_location_names_work_folder():
         assert re.findall(r"--slot (\d+)`", section) == ["2"], path
 
 
-def _run_multirepo_wave(home: Path, repo: str, edit=None) -> str:
+def _run_multirepo_wave(home: Path, repo: str, edit=None, *, finish_rc: int = 0) -> subprocess.CompletedProcess:
     """다중 저장소 프롬프트의 그 저장소 실행 줄을 순서대로 실행한다 — 인터프리터만 이 프로세스로 바꾼다.
 
     맨 앞 부트스트랩 줄은 하네스 가드 훅이 세션을 기록해야 도는 줄이라 뺀다(작업 폴더 쓰기 가드를 여는
     용도 · 비라이브엔 가드 훅이 없다). 종결 줄 앞에서 파일을 쓰고(`edit` · 기본은 작업 폴더에 프롬프트 내용)
-    완료 조건을 체크한다. 줄마다 rc 0 을 단언하고 발행 출력의 티켓 ID 를 돌려준다.
+    완료 조건을 체크한다. 종결 앞 줄마다 rc 0, 종결 줄은 `finish_rc` 를 단언하고 종결 줄의 실행 결과를 돌려준다.
     """
     commands = _multirepo_wave_commands(repo)
     work = home / "work" / f"{repo}_{_WAVE_WORK_SLOT}"
     tid = _MULTIREPO_TICKET
     for index, command in enumerate(commands):
-        if index == len(commands) - 1:
+        last = index == len(commands) - 1
+        if last:
             if edit is None:
                 (work / _WAVE_FILE).write_text(f"done by {repo}\n", encoding="utf-8")
             else:
@@ -1544,10 +1544,11 @@ def _run_multirepo_wave(home: Path, repo: str, edit=None) -> str:
         proc = subprocess.run([sys.executable, *argv[1:]], cwd=home, stdin=subprocess.DEVNULL,
                               capture_output=True, text=True, encoding="utf-8", errors="replace",
                               env={**os.environ, **_CARD_IDENTITY_ENV})
-        assert proc.returncode == 0, f"{argv}\n{proc.stdout[-1500:]}\n{proc.stderr[-1500:]}"
+        expected = finish_rc if last else 0
+        assert proc.returncode == expected, f"{argv}\n{proc.stdout[-1500:]}\n{proc.stderr[-1500:]}"
         if index == 0:
             tid = _created_ticket_id(proc)
-    return tid
+    return proc
 
 
 def test_t0958_multirepo_prompt_follows_card_and_closes_each_repo(tmp_path):
@@ -1586,10 +1587,11 @@ def test_t0958_multirepo_side_effects_reject_unmerged_change(tmp_path, shape):
     """[[T-0958]] — 바꾼 파일이 종결의 머지로 들어가지 않은 웨이브는 티켓 done·묶음 closed 여도 단언이 거부한다.
 
     6d1c39c9 라이브의 두 형상: 통합 폴더에 커밋하지 않은 파일(폴더 결과는 opencode 와 같다)과 통합 브랜치
-    직접 커밋(claude). 두 형상 모두 종결은 rc 0 이고 통합 폴더에 파일이 있어 옛 단언은 통과시켰다. 셋째 형상은
-    작업 폴더에서 고쳐 묶음 브랜치에는 있으나 통합 브랜치에 머지되지 않은 결과다(장부만 닫힌 경우 · 종결 뒤
-    통합 브랜치를 종결 전 커밋으로 되돌려 만든다). 묶음 브랜치 확인은 커밋하지 않은 파일과 통합 브랜치 직접
-    커밋을, 통합 브랜치 확인은 머지 없는 종결을 거부한다.
+    직접 커밋(claude). 두 형상은 예전에 종결이 rc 0 이었고 통합 폴더에 파일이 있어 옛 단언은 통과시켰다.
+    [[T-0959]] 부터 두 형상은 종결 줄이 첫 부작용 전에 "완료 기록 거부" 로 멈추고 티켓 claimed·장부 open 이다 —
+    단언은 그 상태도 거부한다. 셋째 형상은 작업 폴더에서 고쳐 묶음 브랜치에는 있으나 통합 브랜치에 머지되지
+    않은 결과다(장부만 닫힌 경우 · 종결 뒤 통합 브랜치를 종결 전 커밋으로 되돌려 만든다). 통합 브랜치 확인이
+    머지 없는 종결을 거부한다.
     """
     home = _multirepo_wave_home(tmp_path, "claude")
     integration = home / "work" / f"repoa_{_WAVE_INTEGRATION_SLOT}"
@@ -1604,13 +1606,564 @@ def test_t0958_multirepo_side_effects_reject_unmerged_change(tmp_path, shape):
                 assert subprocess.run(["git", "-C", str(integration), *argv], capture_output=True,
                                       env={**os.environ, **_CARD_IDENTITY_ENV}).returncode == 0
 
-    _run_multirepo_wave(home, "repoa", edit=None if shape == "closed-without-merge" else edit)
     if shape == "closed-without-merge":
+        _run_multirepo_wave(home, "repoa")
         subprocess.run([*bare, "update-ref", f"refs/heads/{base}", before], check=True)
+    else:
+        refused = _run_multirepo_wave(home, "repoa", edit=edit, finish_rc=1)
+        assert "완료 기록 거부" in refused.stderr and _WAVE_FILE in refused.stderr, refused.stderr
+        clusters = home / ".project_manager" / "wiki" / "tickets" / "clusters"
+        assert re.search(r"^status: open$", (clusters / "C-wave-repoa.md").read_text(encoding="utf-8"), flags=re.M)
     _run_multirepo_wave(home, "repob")
     assert (integration / _WAVE_FILE).exists()
     with pytest.raises(AssertionError, match="repo 'repoa'"):
         _assert_multirepo_wave_side_effects(home, subprocess.CompletedProcess([], 0, "", ""), "비라이브 음성")
+
+
+# ── [[T-0959]] 종결·claim·발행 경로 결함 — 안내 경로 채택자에서 카드 줄 그대로 실행 ────────────────────
+_HOME_ONLY_DOC = ".project_manager/wiki/raw/home-only-note.md"   # 홈 git 에만 있는 문서(작업 폴더 저장소엔 없다)
+_HOME_ALSO_FILE = "pm-config.sh"            # 기준 커밋에 있어 홈과 작업 폴더 양쪽에 있는 파일
+_CODE_ONLY_FILE = "only-code.txt"           # 1차 묶음이 통합 브랜치에 넣는 파일(홈에는 없다)
+_PROBE_FILE = "probe.txt"
+
+
+def _git_out(*argv: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *argv], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          env={**os.environ, **_CARD_IDENTITY_ENV})
+
+
+def _home_status(dest: Path, where: Path | None = None) -> list[str]:
+    """그 트리의 `git status --porcelain --untracked-files=all` 줄(종결 뒤 남은 미커밋)."""
+    proc = _git_out("-C", str(where or dest), "status", "--porcelain", "--untracked-files=all")
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.splitlines()
+
+
+def _commit_in(folder: Path, *paths: str, message: str = "probe") -> None:
+    for argv in (["add", "--", *paths], ["commit", "-q", "-m", message]):
+        proc = _git_out("-C", str(folder), *argv)
+        assert proc.returncode == 0, (argv, proc.stdout, proc.stderr)
+
+
+def _seed_home_only_doc(dest: Path) -> None:
+    """홈 git 에만 있는 문서를 기준 커밋 위에 하나 더 커밋한다(작업 폴더 저장소는 모른다)."""
+    doc = dest / _HOME_ONLY_DOC
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("note\n", encoding="utf-8")
+    _commit_in(dest, _HOME_ONLY_DOC, message="home-only note")
+
+
+def _ledger_status(dest: Path, cluster: str) -> str | None:
+    path = dest / ".project_manager" / "wiki" / "tickets" / "clusters" / f"C-{cluster}.md"
+    match = re.search(r"^status:\s*(\S+)", path.read_text(encoding="utf-8"), flags=re.M)
+    return match.group(1) if match else None
+
+
+def _branch_rev(dest: Path, branch: str) -> str:
+    proc = _git_out("--git-dir", str(dest / ".repos" / f"{dest.name}.git"), "rev-parse", branch)
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip()
+
+
+def _branch_has(dest: Path, branch: str, path: str) -> bool:
+    return _git_out("--git-dir", str(dest / ".repos" / f"{dest.name}.git"), "cat-file", "-e",
+                    f"{branch}:{path}").returncode == 0
+
+
+def _home_head(dest: Path) -> str:
+    return _git_out("-C", str(dest), "rev-parse", "HEAD").stdout.strip()
+
+
+class _CardFlow:
+    """안내 경로 채택자 하나에서 카드 줄을 이름으로 실행한다 — 폴더 2개면 작업 2번·통합 1번을 지목한다."""
+
+    def __init__(self, tmp_path: Path, *, folders: int, cluster: str | None = None):
+        self.dest = _guided_adopter(tmp_path, "claude", task=CARD_TASK, folders=folders)
+        self.repo = self.dest.name
+        self.card = _render_command_card(self.dest)
+        self.lines = _card_command_lines(self.card)
+        self.folders = folders
+        self.cluster = cluster or _card_name_rule(self.card)[0]
+        self.work = self.dest / "work" / f"{self.repo}_{folders}"
+        self.integration = self.dest / "work" / f"{self.repo}_1"
+        self.pick = ("--repo", self.repo, "--slot", str(folders)) if folders == 2 else ()
+        self.pick_integration = ("--repo", self.repo, "--slot", "1") if folders == 2 else ()
+        self.tid = ""
+        self.fills: dict[str, str] = {}
+
+    def publish(self, touches: Sequence[str] = (), title: str = "card probe", cluster: str | None = None) -> str:
+        """발행 → 본문 채우기 → promote → tier → cluster new → claim (switch 전까지)."""
+        self.publish_only(title)
+        self.declare(touches, cluster)
+        return self.tid
+
+    def publish_only(self, title: str = "card probe") -> str:
+        self.tid = _created_ticket_id(
+            _run_card_line(self.dest, self.lines[("board.py", "new")], {'"<제목>"': f'"{title}"'}, extra=self.pick))
+        return self.tid
+
+    def declare(self, touches: Sequence[str] = (), cluster: str | None = None) -> None:
+        if cluster is not None:
+            self.cluster = cluster
+        self.fills = _card_fills(self.tid, self.cluster, _card_slot_value(self.card, self.repo, self.folders))
+        _fill_card_ticket(self.dest, self.tid, touches=touches)
+        for key in (("board.py", "promote"), ("board.py", "tier")):
+            _run_card_line(self.dest, self.lines[key], self.fills)
+        _run_card_line(self.dest, self.lines[("board.py", "cluster")], self.fills, extra=self.pick_integration)
+        _run_card_line(self.dest, self.lines[("board.py", "claim")], self.fills, extra=self.pick)
+
+    def switch(self, *, check: bool = True) -> subprocess.CompletedProcess:
+        line = self.lines[("worktree_pool.py", "switch")]
+        if check:
+            return _run_card_line(self.dest, line, self.fills)
+        return _card_line_process(self.dest, line, self.fills)
+
+    def finish(self) -> subprocess.CompletedProcess:
+        _check_card_dod(self.dest, self.tid)
+        return _card_line_process(self.dest, self.lines[("ticket_finish.py", None)], self.fills, ("--no-pytest",))
+
+    def handoff(self) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(self.dest / ".project_manager" / "tools" / "pm_handoff.py"), "--task", CARD_TASK,
+             "--user-ack", CARD_TASK, "--no-pytest"],
+            cwd=self.dest, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", env={**os.environ, **_CARD_IDENTITY_ENV})
+
+
+def _assert_home_clean_and_handoff(flow: _CardFlow) -> None:
+    """[[T-0959]] I1 — 종결 rc 0 뒤 홈에 미커밋이 없고 장부 `closed` 가 홈 HEAD 에 있으며 첫 핸드오프가 통과한다."""
+    assert _home_status(flow.dest) == []
+    ledger = f".project_manager/wiki/tickets/clusters/C-{flow.cluster}.md"
+    shown = _git_out("-C", str(flow.dest), "show", f"HEAD:{ledger}")
+    assert shown.returncode == 0 and "status: closed" in shown.stdout, shown.stdout + shown.stderr
+    handoff = flow.handoff()
+    assert handoff.returncode == 0, handoff.stdout[-1500:] + handoff.stderr[-1500:]
+
+
+@pytest.mark.parametrize(
+    "shape", ["one-folder-no-code", "two-folders-code", "absorbed-size-one-ledger", "home-only-doc-deletion"])
+def test_t0959_home_git_finish_leaves_home_clean(tmp_path, shape):
+    """[[T-0959]] AT-001 — board 가 홈 git 인 채택자에서 카드 줄로 종결하면 그 묶음의 board 산출이 홈 커밋에 실린다.
+
+    종결은 장부에 `closed` 를 쓰고, 묶음 선언이 흡수한 크기 1 장부·이동한 티켓의 옛 경로·선언한 홈 문서의 삭제를
+    남긴다. 이 넷이 홈 커밋에 실리지 않으면 종결은 rc 0 인데 첫 핸드오프가 미커밋 잔여로 멈춘다.
+    """
+    flow = _CardFlow(tmp_path, folders=2 if shape == "two-folders-code" else 1)
+    if shape == "home-only-doc-deletion":
+        _seed_home_only_doc(flow.dest)
+    if shape == "absorbed-size-one-ledger":
+        flow.publish_only()
+        _commit_in(flow.dest, ".", message="session outputs")       # 발행이 만든 크기 1 장부를 추적한다
+        flow.declare()
+    else:
+        touches = {"two-folders-code": (_PROBE_FILE,), "home-only-doc-deletion": (_HOME_ONLY_DOC,)}.get(shape, ())
+        flow.publish(touches)
+    flow.switch()
+    if shape == "two-folders-code":
+        (flow.work / _PROBE_FILE).write_text("hello\n", encoding="utf-8")
+    if shape == "home-only-doc-deletion":
+        (flow.dest / _HOME_ONLY_DOC).unlink()
+    finished = flow.finish()
+    assert finished.returncode == 0, finished.stdout[-1500:] + finished.stderr[-1500:]
+
+    assert _tickets_in(flow.dest, "done") == {_card_ticket(flow.dest, flow.tid).name}
+    tracked = _git_out("-C", str(flow.dest), "ls-files").stdout.splitlines()
+    tickets = ".project_manager/wiki/tickets"
+    assert f"{tickets}/clusters/C-{flow.tid}.md" not in tracked
+    assert not any(path.startswith(f"{tickets}/open/{flow.tid}-") for path in tracked), tracked
+    assert _HOME_ONLY_DOC not in tracked
+    _assert_home_clean_and_handoff(flow)
+
+
+def test_t0959_multirepo_wave_leaves_home_clean(tmp_path):
+    """[[T-0959]] AT-002 — 다중 저장소 홈을 기준 커밋한 뒤 저장소마다 프롬프트 줄을 실행하면 홈이 깨끗하고 핸드오프가 통과한다."""
+    home = _multirepo_wave_home(tmp_path, "claude")
+    _commit_in(home, ".", message="baseline")
+    assert _home_status(home) == []
+    for repo in _MULTIREPO_REPOS:
+        _run_multirepo_wave(home, repo)
+    assert _home_status(home) == []
+    handoff = subprocess.run(
+        [sys.executable, str(home / ".project_manager" / "tools" / "pm_handoff.py"), "--task", _RELEASE_WAVE_TASK,
+         "--user-ack", _RELEASE_WAVE_TASK, "--no-pytest"],
+        cwd=home, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env={**os.environ, **_CARD_IDENTITY_ENV})
+    assert handoff.returncode == 0, handoff.stdout[-1500:] + handoff.stderr[-1500:]
+
+
+def _lost_change_flow(tmp_path: Path, shape: str) -> tuple[_CardFlow, str, list[str]]:
+    """선언한 변경이 종결의 머지 대상 밖에 놓이는 형상을 만든다 — (흐름, 잃은 경로, 종결할 티켓들)."""
+    if shape == "cluster-member-lost":
+        flow = _CardFlow(tmp_path, folders=2, cluster="grp")
+        members = []
+        for title, touch in (("member a", "a.txt"), ("member b", "b.txt")):
+            flow.publish_only(title)
+            flow.fills = _card_fills(flow.tid, flow.cluster, _card_slot_value(flow.card, flow.repo, 2))
+            _fill_card_ticket(flow.dest, flow.tid, touches=(touch,))
+            for key in (("board.py", "promote"), ("board.py", "tier")):
+                _run_card_line(flow.dest, flow.lines[key], flow.fills)
+            members.append(flow.tid)
+        board = [sys.executable, str(flow.dest / ".project_manager" / "tools" / "board.py")]
+        for argv in (["cluster", "new", flow.cluster, "--tickets", ",".join(members), "--task", CARD_TASK,
+                      *flow.pick_integration],
+                     *(["claim", member, "--task", CARD_TASK, *flow.pick] for member in members)):
+            proc = subprocess.run([*board, *argv], cwd=flow.dest, stdin=subprocess.DEVNULL, capture_output=True,
+                                  text=True, encoding="utf-8", errors="replace",
+                                  env={**os.environ, **_CARD_IDENTITY_ENV})
+            assert proc.returncode == 0, (argv, proc.stdout, proc.stderr)
+        (flow.work / "b.txt").write_text("b\n", encoding="utf-8")
+        _commit_in(flow.work, "b.txt")                              # switch 전 원래 브랜치에 커밋 — 유실
+        flow.switch()
+        (flow.work / "a.txt").write_text("a\n", encoding="utf-8")
+        return flow, "b.txt", members
+    flow = _CardFlow(tmp_path, folders=1 if shape == "one-folder-commit-on-base" else 2)
+    flow.publish((_PROBE_FILE,))
+    if shape == "commit-before-switch":
+        (flow.work / _PROBE_FILE).write_text("hello\n", encoding="utf-8")
+        _commit_in(flow.work, _PROBE_FILE)
+        flow.switch()
+    elif shape in ("write-before-switch", "one-folder-commit-on-base"):
+        (flow.work / _PROBE_FILE).write_text("hello\n", encoding="utf-8")
+        refused = flow.switch(check=False)
+        assert refused.returncode != 0, refused.stdout + refused.stderr
+        _commit_in(flow.work, _PROBE_FILE)
+        flow.switch()
+    else:                                                           # write-in-integration-folder
+        flow.switch()
+        (flow.integration / _PROBE_FILE).write_text("hello\n", encoding="utf-8")
+    return flow, _PROBE_FILE, [flow.tid]
+
+
+@pytest.mark.parametrize("shape", ["commit-before-switch", "write-before-switch", "write-in-integration-folder",
+                                   "one-folder-commit-on-base", "cluster-member-lost"])
+def test_t0959_finish_refuses_declared_change_outside_merge(tmp_path, shape):
+    """[[T-0959]] AT-003 — 선언한 코드 경로의 변경이 이번 종결이 머지할 변경에 하나도 없으면 첫 부작용 전에 멈춘다.
+
+    switch 전 커밋·통합 폴더 작성·통합 브랜치 직접 커밋·묶음 멤버 하나의 유실은 예전에 done·closed 로 닫혔다.
+    """
+    flow, lost, members = _lost_change_flow(tmp_path, shape)
+    for member in members:
+        _check_card_dod(flow.dest, member)
+    base_before, home_before = _branch_rev(flow.dest, f"{flow.repo}_1"), _home_head(flow.dest)
+    if shape == "cluster-member-lost":
+        refused = subprocess.run(
+            [sys.executable, str(flow.dest / ".project_manager" / "tools" / "ticket_finish.py"), "--cluster",
+             f"C-{flow.cluster}", "--task", CARD_TASK, "--no-pytest"],
+            cwd=flow.dest, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", env={**os.environ, **_CARD_IDENTITY_ENV})
+    else:
+        refused = flow.finish()
+
+    assert refused.returncode == 1, refused.stdout[-1500:] + refused.stderr[-1500:]
+    assert "완료 기록 거부" in refused.stderr and "아직 아무 부작용도 내지 않았다" in refused.stderr, refused.stderr
+    assert lost in refused.stderr, refused.stderr
+    assert _tickets_in(flow.dest, "claimed") == {_card_ticket(flow.dest, member).name for member in members}
+    assert _ledger_status(flow.dest, flow.cluster) == "open"
+    assert _branch_rev(flow.dest, f"{flow.repo}_1") == base_before
+    assert _home_head(flow.dest) == home_before
+
+
+def _declared_change_flow(tmp_path: Path, shape: str, *, removal: str = "rm") -> _CardFlow:
+    """선언한 변경이 머지 대상에 들어가는 정상 형상을 만들고 종결까지 실행한다(rc 단언은 호출부)."""
+    def remove(folder: Path, path: str) -> None:
+        if removal == "rm":
+            (folder / path).unlink()
+        else:
+            proc = _git_out("-C", str(folder), "rm", "-q", "--", path)
+            assert proc.returncode == 0, proc.stderr
+
+    if shape == "code-only-deletion":
+        flow = _CardFlow(tmp_path, folders=2)
+        flow.publish((_CODE_ONLY_FILE,), title="add wave", cluster="add-wave")
+        flow.switch()
+        (flow.work / _CODE_ONLY_FILE).write_text("x\n", encoding="utf-8")
+        added = flow.finish()
+        assert added.returncode == 0, added.stdout[-1500:] + added.stderr[-1500:]
+        assert _branch_has(flow.dest, f"{flow.repo}_1", _CODE_ONLY_FILE)
+        flow.publish((_CODE_ONLY_FILE,), title="delete wave", cluster="delete-wave")
+        flow.switch()
+        remove(flow.work, _CODE_ONLY_FILE)
+        flow.removed = _CODE_ONLY_FILE
+    else:
+        flow = _CardFlow(tmp_path, folders=2 if shape in ("code-in-work-folder", "deletion-of-file-also-in-home")
+                         else 1)
+        if shape == "home-only-doc-edit":
+            _seed_home_only_doc(flow.dest)
+        touches = {"code-in-work-folder": (_PROBE_FILE,), "deletion-of-file-also-in-home": (_HOME_ALSO_FILE,),
+                   "home-only-doc-edit": (_HOME_ONLY_DOC,)}.get(shape, ())
+        flow.publish(touches)
+        flow.switch()
+        if shape == "code-in-work-folder":
+            (flow.work / _PROBE_FILE).write_text("hello\n", encoding="utf-8")
+        elif shape == "deletion-of-file-also-in-home":
+            assert (flow.dest / _HOME_ALSO_FILE).is_file() and (flow.work / _HOME_ALSO_FILE).is_file()
+            remove(flow.work, _HOME_ALSO_FILE)
+            flow.removed = _HOME_ALSO_FILE
+        elif shape == "home-only-doc-edit":
+            doc = flow.dest / _HOME_ONLY_DOC
+            doc.write_text(doc.read_text(encoding="utf-8") + "- probe edit\n", encoding="utf-8")
+    flow.finished = flow.finish()
+    return flow
+
+
+def _assert_deletion_merged(flow: _CardFlow) -> None:
+    """선언한 삭제가 묶음 브랜치와 통합 브랜치에 실리고 작업 폴더에 staged 삭제로 남지 않는다."""
+    assert not _branch_has(flow.dest, f"{flow.repo}_1", flow.removed)
+    assert not _branch_has(flow.dest, f"task/{flow.cluster}", flow.removed)
+    assert _home_status(flow.dest, flow.work) == []
+
+
+@pytest.mark.parametrize("shape", ["no-touches", "code-in-work-folder", "code-only-deletion",
+                                   "deletion-of-file-also-in-home", "home-only-doc-edit"])
+def test_t0959_finish_merges_declared_change(tmp_path, shape):
+    """[[T-0959]] AT-004 — 선언 변경이 머지 대상에 있는 정상 종결은 rc 0 이고 그 변경이 실체로 남는다(역방향).
+
+    코드 없는 pm-direct(touches 비움)와 홈 전용 문서 편집은 선언 변경 판정의 대상이 아니거나 홈 변경으로 통과한다.
+    작업 폴더에서 지운 파일은 홈에 같은 파일이 있어도 작업 폴더 쪽에서 커밋·머지된다.
+    """
+    flow = _declared_change_flow(tmp_path, shape)
+    assert flow.finished.returncode == 0, flow.finished.stdout[-1500:] + flow.finished.stderr[-1500:]
+    assert _card_ticket(flow.dest, flow.tid).parent.name == "done"
+    assert _ledger_status(flow.dest, flow.cluster) == "closed"
+    if shape == "code-in-work-folder":
+        shown = _git_out("--git-dir", str(flow.dest / ".repos" / f"{flow.repo}.git"), "show",
+                         f"{flow.repo}_1:{_PROBE_FILE}")
+        assert shown.returncode == 0 and shown.stdout == "hello\n", shown.stderr
+    if shape in ("code-only-deletion", "deletion-of-file-also-in-home"):
+        _assert_deletion_merged(flow)
+    if shape == "home-only-doc-edit":
+        shown = _git_out("-C", str(flow.dest), "show", f"HEAD:{_HOME_ONLY_DOC}")
+        assert "- probe edit" in shown.stdout, shown.stdout + shown.stderr
+
+
+@pytest.mark.parametrize("shape", ["code-only-deletion", "deletion-of-file-also-in-home"])
+def test_t0959_finish_commits_git_rm_staged_deletion(tmp_path, shape):
+    """[[T-0959]] Q4 — `git rm` 으로 미리 stage 한 선언 삭제도 종결이 커밋·머지한다.
+
+    index 에도 작업 트리에도 없는 그 경로는 `git add` 가 받지 못한다(rc 128). 예전 종결은 그 경로를 stage 범위에서
+    빼 "스코프 밖 staged" 로 거부했다. add 는 작업 트리에 있는 파일만, 커밋은 선언 삭제까지 싣는다.
+    """
+    flow = _declared_change_flow(tmp_path, shape, removal="git-rm")
+    assert flow.finished.returncode == 0, flow.finished.stdout[-1500:] + flow.finished.stderr[-1500:]
+    assert "스코프 밖 staged" not in flow.finished.stderr
+    assert _ledger_status(flow.dest, flow.cluster) == "closed"
+    _assert_deletion_merged(flow)
+
+
+def test_t0959_finish_refuses_clone_doc_edited_in_home(tmp_path):
+    """[[T-0959]] Q1 — 홈과 작업 폴더 양쪽에 있는 문서(clone 형상)를 홈에서만 고친 티켓은 종결 전에 멈춘다.
+
+    선언 경로가 작업 폴더에 있어 코드 몫이고, 홈의 편집은 머지 대상이 아니다. 예전 종결은 rc 0 이었지만 그 편집은
+    어느 커밋에도 없어 첫 핸드오프가 미커밋 잔여로 멈췄다. 이제 첫 부작용 전에 멈추고 홈 편집은 그대로 남는다.
+    """
+    doc = ".project_manager/wiki/architecture.md"
+    flow = _CardFlow(tmp_path, folders=1)
+    assert (flow.dest / doc).is_file() and (flow.work / doc).is_file()
+    flow.publish((doc,))
+    flow.switch()
+    (flow.dest / doc).write_text((flow.dest / doc).read_text(encoding="utf-8") + "- probe edit\n",
+                                 encoding="utf-8")
+    home_before = _home_head(flow.dest)
+    refused = flow.finish()
+    assert refused.returncode == 1, refused.stdout[-1500:] + refused.stderr[-1500:]
+    assert "완료 기록 거부" in refused.stderr and doc in refused.stderr, refused.stderr
+    assert _card_ticket(flow.dest, flow.tid).parent.name == "claimed"
+    assert _ledger_status(flow.dest, flow.cluster) == "open"
+    assert _home_head(flow.dest) == home_before
+    assert "- probe edit" in (flow.dest / doc).read_text(encoding="utf-8")
+
+
+# board 가 별도 git(서브모듈)인 형상의 git 설정 — 서브모듈 복제(file 프로토콜)를 이 자식 프로세스에서만 연다.
+_SUBMODULE_ENV = {**_CARD_IDENTITY_ENV, "GIT_CONFIG_COUNT": "3",
+                  "GIT_CONFIG_KEY_2": "protocol.file.allow", "GIT_CONFIG_VALUE_2": "always"}
+
+
+def _run_in(dest: Path, *argv: str, tool: str | None = None) -> subprocess.CompletedProcess:
+    """홈에서 엔진 도구(`tool`) 또는 git 을 실행하고 rc 0 을 단언한다."""
+    command = ([sys.executable, str(dest / ".project_manager" / "tools" / tool), *argv] if tool
+               else ["git", "-C", str(dest), *argv])
+    proc = subprocess.run(command, cwd=dest, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", env={**os.environ, **_SUBMODULE_ENV})
+    assert proc.returncode == 0, (command, proc.stdout[-1500:], proc.stderr[-1500:])
+    return proc
+
+
+def _board_submodule_adopter(tmp_path: Path) -> Path:
+    """board 가 별도 git(서브모듈)인 채택자 — 설치 → 기준 커밋 → 안내 경로(폴더 1개를 task 가 보유)."""
+    from test_fresh_adopter_runtime_smoke import _load_pm_import
+
+    pm_import = _load_pm_import()
+    pm_import._real_models_runner = lambda source: (False, [])
+    bare = tmp_path / "board.git"
+    assert _git_out("init", "--bare", "-q", str(bare)).returncode == 0
+    dest = tmp_path / "adopter-sub"
+    assert pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "Sub",
+                           "--board-submodule", "--board-remote", str(bare), "--fill", "manual"]) == 0
+    _run_in(dest, "-c", "advice.addEmbeddedRepo=false", "add", "-A")
+    _run_in(dest, "commit", "-q", "--no-gpg-sign", "-m", "seed")
+    repo = dest.name
+    for step in (("worktree", "add", repo, "--user-ack", repo), ("task", "new", CARD_TASK),
+                 ("alloc", repo, "--task", CARD_TASK)):
+        _run_in(dest, *step, tool="pm_config.py")
+    return dest
+
+
+def _fill_any_ticket(dest: Path, tid: str) -> None:
+    """board 위치(홈 git·서브모듈)와 상태(draft·open)에 상관없이 그 티켓 본문을 채운다."""
+    roots = [dest / ".project_manager" / "wiki" / "tickets", dest / ".project_manager" / "board" / "tickets"]
+    (path,) = [found for root in roots for pattern in (f"open/{tid}-*.md", f".drafts/{tid}-*.md")
+               for found in root.glob(pattern)]
+    text = path.read_text(encoding="utf-8")
+    for heading, body in (("목표", "카드 흐름 확인."), ("인터페이스", "없음."), ("결정", "없음."), ("참고", "- 없음")):
+        text = re.sub(rf"## {heading}\n.*?\n\n", f"## {heading}\n{body}\n\n", text, flags=re.S)
+    text = re.sub(r"## 완료 조건 \(Definition of Done\)\n.*?\n\n",
+                  "## 완료 조건 (Definition of Done)\n- [ ] 카드 흐름 확인\n\n", text, flags=re.S)
+    path.write_text(text, encoding="utf-8")
+
+
+def test_t0959_board_submodule_finish_is_unchanged(tmp_path):
+    """[[T-0959]] 역방향(I12) — board 가 별도 git(서브모듈)인 채택자의 종결은 바뀌지 않는다.
+
+    장부·티켓 이동은 board git 이 커밋하고, 홈 커밋은 log 와 board 포인터다. 종결 뒤 홈과 board 가 모두 깨끗하고
+    첫 핸드오프가 통과한다. 홈 git 형상에서 장부를 홈 커밋에 싣는 변경이 이 형상에 새지 않는다.
+    """
+    dest = _board_submodule_adopter(tmp_path)
+    environment = {**os.environ, **_SUBMODULE_ENV}
+    repo = dest.name
+
+    def run(*argv: str, tool: str | None = None) -> subprocess.CompletedProcess:
+        return _run_in(dest, *argv, tool=tool)
+
+    card = _render_command_card(dest)
+    lines = _card_command_lines(card)
+    tid = _created_ticket_id(run("new", "submodule probe", "--task", CARD_TASK, tool="board.py"))
+    cluster = _card_name_rule(card)[0]
+    fills = _card_fills(tid, cluster, _card_slot_value(card, repo, 1))
+    tickets = dest / ".project_manager" / "board" / "tickets"
+    _fill_any_ticket(dest, tid)
+    for key in (("board.py", "cluster"), ("board.py", "promote"), ("board.py", "tier"), ("board.py", "claim"),
+                ("worktree_pool.py", "switch")):
+        _run_card_line(dest, lines[key], fills)
+    (claimed,) = list(tickets.glob(f"claimed/{tid}-*.md"))
+    claimed.write_text(claimed.read_text(encoding="utf-8").replace("- [ ] ", "- [x] "), encoding="utf-8")
+    _run_card_line(dest, lines[("ticket_finish.py", None)], fills, extra=("--no-pytest",))
+
+    assert list(tickets.glob(f"done/{tid}-*.md"))
+    assert _home_status(dest) == []
+    assert _home_status(dest, dest / ".project_manager" / "board") == []
+    committed = _git_out("-C", str(dest / ".project_manager" / "board"), "show", f"HEAD:tickets/clusters/C-{cluster}.md")
+    assert "status: closed" in committed.stdout, committed.stdout + committed.stderr
+    handoff = subprocess.run(
+        [sys.executable, str(dest / ".project_manager" / "tools" / "pm_handoff.py"), "--task", CARD_TASK,
+         "--user-ack", CARD_TASK, "--no-pytest"],
+        cwd=dest, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env=environment)
+    assert handoff.returncode == 0, handoff.stdout[-1500:] + handoff.stderr[-1500:]
+
+
+@pytest.mark.parametrize("shape", ["home-git", "board-submodule"])
+def test_t0959_wave_claim_skill_steps_reach_switch(tmp_path, shape):
+    """[[T-0959]] — pm-wave-claim 실행 블록을 단계 순서대로 실행하면 두 board 형상 모두 claim·switch 까지 rc 0 이다.
+
+    블록이 cluster new 다음에 promote 를 싣는다. 공유 board(서브모듈)의 발행은 draft 라 promote 없이는 claim 이
+    "currently in draft/" 로 막혔다. 홈 git board 의 발행은 이미 open 이라 promote 는 그대로 두고 rc 0 이다.
+    블록의 실행 줄을 순서대로 읽고 자리표시자만 값으로 채운다(task 의 claim 줄 · switch 는 6단계).
+    """
+    dest = (_guided_adopter(tmp_path, "claude", task=CARD_TASK, folders=1) if shape == "home-git"
+            else _board_submodule_adopter(tmp_path))
+    repo = dest.name
+    tid = _created_ticket_id(_run_in(dest, "new", "skill probe", "--task", CARD_TASK, tool="board.py"))
+    _fill_any_ticket(dest, tid)
+    claim_text = (_WAVE_SKILLS / "pm-wave-claim" / "SKILL.md").read_text(encoding="utf-8")
+    block = claim_text.split("```bash", 1)[1].split("```", 1)[0].splitlines()
+    step6 = next(index for index, line in enumerate(block) if line.startswith("# 6."))
+    fills = {"<ticket-group>": "wave-probe", "<T-NNNN,T-NNNN>": tid, "T-NNNN": tid,
+             "<설계 문서 경로>": ".project_manager/wiki/architecture.md", "<repo>": repo, "<N>": "1",
+             "<task>": CARD_TASK, "<slot>": f"work/{repo}_1"}
+    executed: list[str] = []
+    for index, line in enumerate(block):
+        command = line.split("  #", 1)[0].strip()
+        if not command.startswith("python3 .project_manager/tools/"):
+            continue
+        if "board.py claim" in command and "--task" not in command:
+            continue                                    # task 없는 슬롯 세션 전용 줄
+        for placeholder, value in fills.items():
+            command = command.replace(placeholder, value)
+        argv = shlex.split(command)
+        _run_in(dest, *argv[2:], tool=Path(argv[1]).name)
+        executed.append(f"{index >= step6}:{Path(argv[1]).name} {argv[2]}")
+    assert [entry.split(":", 1)[1] for entry in executed] == [
+        "board.py cluster", "board.py promote", "board.py tier", "board.py cluster", "board.py show",
+        "board.py lint", "board.py claim", "worktree_pool.py switch"], executed
+    assert executed[-1].startswith("True:")             # switch 는 6단계 그대로
+    roots = [dest / ".project_manager" / "wiki" / "tickets", dest / ".project_manager" / "board" / "tickets"]
+    assert [found for root in roots for found in root.glob(f"claimed/{tid}-*.md")]
+
+
+def test_t0959_direct_cluster_close_is_refused_then_finish_closes(tmp_path):
+    """[[T-0959]] AT-011 — 내부 결속 플래그로 `board.py complete` 를 직접 부르면 종결 파이프라인 밖이라 거부된다.
+
+    예전에는 티켓만 done 으로 옮기고 장부·머지를 남겨 이어지는 종결이 복구 경로 처방만 냈다. 거부 뒤 카드의 종결 줄이
+    그대로 닫는다.
+    """
+    flow = _CardFlow(tmp_path, folders=2)
+    flow.publish((_PROBE_FILE,))
+    flow.switch()
+    (flow.work / _PROBE_FILE).write_text("hello\n", encoding="utf-8")
+    _check_card_dod(flow.dest, flow.tid)
+    direct = subprocess.run(
+        [sys.executable, str(flow.dest / ".project_manager" / "tools" / "board.py"), "complete", flow.tid,
+         "--tests-pass", "--allow-missing-log", "--cluster-close", f"C-{flow.cluster}", "--task", CARD_TASK],
+        cwd=flow.dest, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", env={**os.environ, **_CARD_IDENTITY_ENV})
+    assert direct.returncode == 1, direct.stdout + direct.stderr
+    assert "closing" in direct.stderr and f"ticket_finish.py --cluster C-{flow.cluster}" in direct.stderr
+    assert _card_ticket(flow.dest, flow.tid).parent.name == "claimed"
+    assert _ledger_status(flow.dest, flow.cluster) == "open"
+
+    finished = flow.finish()
+    assert finished.returncode == 0, finished.stdout[-1500:] + finished.stderr[-1500:]
+    shown = _git_out("--git-dir", str(flow.dest / ".repos" / f"{flow.repo}.git"), "show",
+                     f"{flow.repo}_1:{_PROBE_FILE}")
+    assert shown.stdout == "hello\n", shown.stderr
+    assert _home_status(flow.dest) == []
+
+
+def test_t0959_new_output_lint_command_passes_after_fill(tmp_path):
+    """[[T-0959]] AT-012 — 발행 출력이 안내하는 lint 명령은 본문을 채우면 rc 0, 자리표시자가 남으면 rc 1 이다."""
+    dest = _guided_adopter(tmp_path, "claude", task=CARD_TASK, folders=1)
+    lines = _card_command_lines(_render_command_card(dest))
+    created = _run_card_line(dest, lines[("board.py", "new")], {'"<제목>"': '"lint probe"'})
+    tid = _created_ticket_id(created)
+    match = re.search(r"then `(board\.py lint[^`]*)`", created.stdout)
+    assert match and match.group(1) == "board.py lint --gate", created.stdout
+    lint = [sys.executable, str(dest / ".project_manager" / "tools" / "board.py"), *match.group(1).split()[1:]]
+
+    def run_lint() -> subprocess.CompletedProcess:
+        return subprocess.run(lint, cwd=dest, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", env={**os.environ, **_CARD_IDENTITY_ENV})
+
+    unfilled = run_lint()
+    assert unfilled.returncode == 1 and "placeholder" in unfilled.stdout + unfilled.stderr, unfilled.stdout
+    _fill_card_ticket(dest, tid)
+    filled = run_lint()
+    assert filled.returncode == 0, filled.stdout + filled.stderr
+
+
+def test_t0959_promote_output_names_what_happened(tmp_path):
+    """[[T-0959]] N2 — board 가 홈 git 인 채택자에서 promote 출력은 board-git 승격을 말하지 않는다.
+
+    이 형상의 발행은 draft 를 만들지 않고 board-git 도 없다 — 이동도 board-git 커밋도 없는데 "board-git 승격
+    완료" 라고 말하던 것을 실제로 일어난 일(open/ 그대로, 커밋 없음)로 바꾼다.
+    """
+    dest = _guided_adopter(tmp_path, "claude", task=CARD_TASK, folders=1)
+    lines = _card_command_lines(_render_command_card(dest))
+    tid = _created_ticket_id(_run_card_line(dest, lines[("board.py", "new")], {'"<제목>"': '"promote probe"'}))
+    _fill_card_ticket(dest, tid)
+    promoted = _run_card_line(dest, lines[("board.py", "promote")], _card_fills(tid, "x", "x"))
+    assert "board-git" not in promoted.stdout, promoted.stdout
+    assert f"promoted {tid} (open/ 그대로 · board 가 홈 git 안이라 커밋 없음)" in promoted.stdout, promoted.stdout
+    assert _card_ticket(dest, tid).parent.name == "open"
 
 
 def test_collect_bash_commands_extracts_from_stream_json():

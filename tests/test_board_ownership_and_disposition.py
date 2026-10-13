@@ -499,6 +499,7 @@ def test_reopened_ticket_runs_the_normal_cycle_again(board):
     fm, _body = board.load_ticket(_ticket_path(board, "T-0001", "claimed"))
     assert fm["claimed_by"] == "alice/pm_1"
 
+    _mark_ledger_closing(board, "C-T-0001")
     assert _call(board, "complete", cluster_close="C-T-0001") == 0
     assert list((board.tickets_dir() / "done").glob("T-0001-*.md"))
 
@@ -517,6 +518,7 @@ def test_all_deferred_completion_is_refused_but_the_discard_path_works(board, ca
     # 되돌린 뒤 다시 claim→complete 를 시도하면 전량 이월이라 막힌다(그 형상이 done 이 아님).
     assert board.cmd_claim(argparse.Namespace(
         id="T-0001", repo="pm", slot=1, user="alice")) == 0
+    _mark_ledger_closing(board, "C-T-0001")
     assert _call(board, "complete", cluster_close="C-T-0001") == 1
     assert "discard" in capsys.readouterr().err
 
@@ -594,3 +596,12 @@ def test_remote_discarded_ticket_makes_a_claim_race_lost(board, tmp_path, capsys
     assert rc == 1
     err = capsys.readouterr().err
     assert "discarded" in err, err
+
+
+def _mark_ledger_closing(board, cluster: str) -> None:
+    """[[T-0959]] 결속 완료는 종결 파이프라인이 장부를 closing 으로 기록한 뒤에만 받는다 — 그 기록을 재현한다.
+
+    종결의 진행 기록(`ClusterCloser._write_progress`)과 같은 쓰기다(`load_cluster` → `dump_cluster`)."""
+    ledger = board.load_cluster(cluster)
+    ledger["status"] = "closing"
+    board.dump_cluster(ledger)

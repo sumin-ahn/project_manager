@@ -2482,6 +2482,8 @@ def test_residual_population_excludes_a_sibling_member_commit(
                           members=(_MEMBER_A, _MEMBER_B))
     (root / _TOUCH_B).write_text(_CHANGED_BODY, encoding="utf-8")
     _commit_paths(root, _TOUCH_B)
+    # 멤버 A 도 자기 선언을 고친 상태 — 선언 변경 판정(`_declared_change_problem`)과 겹치지 않게 한다.
+    (root / _TOUCH_A).write_text(_CHANGED_BODY, encoding="utf-8")
 
     passed, err = _residual_verdict(tf, root, _MEMBER_A)
 
@@ -2495,6 +2497,43 @@ def test_residual_population_excludes_a_sibling_member_commit(
     assert blocked is not None
     assert _UNDECLARED in blocked
     assert _TOUCH_B not in blocked
+
+
+@requires_git
+def test_declared_change_population_requires_a_member_change(tf, tmp_path, monkeypatch):
+    """[[T-0959]] AT-005 — 선언 경로의 변경이 머지 인구(통합 tip 이후 커밋 ∪ 미커밋)에 하나도 없으면 완료 기록 거부다.
+
+    크기 2 묶음에서 멤버 B 의 커밋만 있으면 멤버 A 는 잃은 경로를 이름에 담아 거부되고(B 의 경로는 없다), A 가
+    자기 선언을 미커밋으로 고치거나 묶음 브랜치에 커밋하면 통과다. touches 가 빈 멤버는 판정 대상이 아니고,
+    diff 조회가 실패하면 통과로 접지 않고 관측 실패로 멈춘다.
+    """
+    root = _residual_repo(tf, tmp_path, monkeypatch, members=(_MEMBER_A, _MEMBER_B))
+    (root / _TOUCH_B).write_text(_CHANGED_BODY, encoding="utf-8")
+    _commit_paths(root, _TOUCH_B)
+
+    refused, _err = _residual_verdict(tf, root, _MEMBER_A)
+    assert refused is not None and refused.startswith("완료 기록 거부"), refused
+    assert _TOUCH_A in refused and _TOUCH_B not in refused
+
+    (root / _TOUCH_A).write_text(_CHANGED_BODY, encoding="utf-8")
+    assert _residual_verdict(tf, root, _MEMBER_A)[0] is None          # 미커밋 변경
+    _commit_paths(root, _TOUCH_A)
+    assert _residual_verdict(tf, root, _MEMBER_A)[0] is None          # 묶음 브랜치 커밋
+
+    _write_ticket(root / ".project_manager" / "board", _MEMBER_A, claimed_rev=_rev(root), touches=())
+    _git(root, "reset", "-q", "--hard", _INTEGRATION_BRANCH)          # 변경 0 · 선언 0
+    assert _residual_verdict(tf, root, _MEMBER_A)[0] is None
+
+    _write_ticket(root / ".project_manager" / "board", _MEMBER_A, claimed_rev=_rev(root), touches=(_TOUCH_A,))
+    finisher = tf.TicketFinisher(
+        board_py=root / ".project_manager" / "tools" / "board.py",
+        log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
+        task_workspace=root,
+        run_git_stdout_at_fn=lambda cwd, args: ((1, "") if args[:2] == ["diff", "--name-only"]
+                                                else tf.TicketFinisher._default_run_git_stdout_at(cwd, args)),
+    )
+    with pytest.raises(tf._CloseObservationFailure):
+        finisher._declared_change_problem(_MEMBER_A, root)
 
 
 @requires_git

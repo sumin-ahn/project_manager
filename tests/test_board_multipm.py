@@ -779,6 +779,7 @@ def test_e2e_team_init_then_multi_and_solo_coexist(init_board, monkeypatch):
     assert list((board.TICKETS_DIR / "claimed").glob(f"{pay_id}-*.md"))
 
     _check_off_dod(board, pay_id)
+    _mark_ledger_closing(board, f"C-{pay_id}")
     complete_args = argparse.Namespace(
         id=pay_id, tests_pass=True, allow_missing_log=True, allow_untested=False,
         # lifecycle unit seam: public 사용자는 ticket_finish 묶음 종결만 쓴다.
@@ -804,6 +805,7 @@ def test_e2e_no_prefix_board_flow(init_board, monkeypatch):
     monkeypatch.setenv("PM_SESSION_NAME", "pm_1")
     assert board.cmd_claim(argparse.Namespace(id="T-0001", session="pm")) == 0
     _check_off_dod(board, "T-0001")
+    _mark_ledger_closing(board, "C-T-0001")
     assert board.cmd_complete(argparse.Namespace(
         id="T-0001", tests_pass=True, allow_missing_log=True,
         allow_untested=False, cluster_close="C-T-0001")) == 0
@@ -2785,3 +2787,12 @@ def test_cmd_list_genuine_multiuser_strict_exclude_unchanged(board, capsys):
     cap = capsys.readouterr()
     assert _ids_from(cap.out) == ["T-0001"]      # 내 소유만(bob·미상 제외)
     assert _WARN_MARK in cap.err                 # 미해소 드롭 → 경보 발화
+
+
+def _mark_ledger_closing(board, cluster: str) -> None:
+    """[[T-0959]] 결속 완료는 종결 파이프라인이 장부를 closing 으로 기록한 뒤에만 받는다 — 그 기록을 재현한다.
+
+    종결의 진행 기록(`ClusterCloser._write_progress`)과 같은 쓰기다(`load_cluster` → `dump_cluster`)."""
+    ledger = board.load_cluster(cluster)
+    ledger["status"] = "closing"
+    board.dump_cluster(ledger)

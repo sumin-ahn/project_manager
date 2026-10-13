@@ -420,6 +420,7 @@ def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path, monke
         argparse.Namespace(id=seed_id, repo="me", slot=1, user="me")) == 0, \
         "seed 티켓 claim 실패(테스트 전제 붕괴)."
     # complete 는 claim 과 같은 정체성으로 부른다 — 소유 대조(T-0781).
+    _mark_ledger_closing(board, "C-declared")
     rc = board.cmd_complete(argparse.Namespace(
         id=seed_id, tests_pass=True, allow_missing_log=True, allow_untested=False,
         repo="me", slot=1, user="me", cluster_close="C-declared"))
@@ -752,3 +753,12 @@ def test_t0930_promote_binding_legacy_local_operations(board, tmp_path, monkeypa
     args.repo, args.slot = "missing", 1
     assert board.cmd_new(args) == 1
     assert len(list((wiki / "tickets/open").glob("T-*.md"))) == 1
+
+
+def _mark_ledger_closing(board, cluster: str) -> None:
+    """[[T-0959]] 결속 완료는 종결 파이프라인이 장부를 closing 으로 기록한 뒤에만 받는다 — 그 기록을 재현한다.
+
+    종결의 진행 기록(`ClusterCloser._write_progress`)과 같은 쓰기다(`load_cluster` → `dump_cluster`)."""
+    ledger = board.load_cluster(cluster)
+    ledger["status"] = "closing"
+    board.dump_cluster(ledger)

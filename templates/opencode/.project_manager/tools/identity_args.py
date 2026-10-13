@@ -1155,6 +1155,33 @@ def _lease_dict_rows(leases_file: Path) -> list[dict]:
     return [r for r in rows if isinstance(r, dict)]
 
 
+def slot_holder_task(repo: str, number: int, leases_file: Path) -> str | None:
+    """`repo` 슬롯 번호 `number` 를 지금 보유한 task 이름 — 슬롯 세션 보유·행 없음·장부 부재는 None.
+
+    보유자는 활성(leased) 행의 session 이고, 그 값이 장부 top-level `tasks` 에 등록된 이름일 때만
+    task 다(이름 모양 추측 없음). 장부 손상·보유 task 둘 이상은 판정 불능이라 거부한다. `tasks` 는
+    빈 집합으로 접는 `task_names` 대신 직접 읽는다 — 읽기 실패를 "등록 task 없음" 으로 접으면 task 보유
+    폴더가 슬롯 정체성으로 귀속된다.
+    """
+    status, rows = _read_lease_rows_status(leases_file)
+    if status == LEDGER_MISSING:
+        return None
+    if status != LEDGER_OK:
+        raise WorkspaceResolutionError(
+            f"작업 폴더 장부를 읽을 수 없어 work/{repo}_{number} 의 보유자를 확인할 수 없다: "
+            f"{leases_file} ({status})")
+    registered = json.loads(_read_text_shared(leases_file, encoding="utf-8")).get("tasks", [])
+    tasks = {entry["name"] for entry in registered if isinstance(entry, dict) and entry.get("name")}
+    held = sorted({row.get("session") for row in rows
+                   if row.get("repo") == repo and row.get("state", "leased") == "leased"
+                   and number in _row_slot_numbers(repo, row.get("slot"), row.get("session"))
+                   and row.get("session") in tasks})
+    if len(held) > 1:
+        raise WorkspaceResolutionError(
+            f"work/{repo}_{number} 을 task {', '.join(held)} 가 함께 보유한다고 장부에 적혀 있어 보유자를 확정할 수 없다")
+    return held[0] if held else None
+
+
 def resolve_task_workspace(identity: Identity, leases_file: Path) -> Workspace:
     """task 보유 집합과 명시 repo/slot 좌표를 조인한다. readonly 참조는 역할을 보존한다.
 
