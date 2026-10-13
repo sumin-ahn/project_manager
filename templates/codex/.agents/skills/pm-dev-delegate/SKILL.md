@@ -78,8 +78,7 @@ python3 .project_manager/tools/board.py regression run --task <task>
 ```
 
 - 그 `<worktree 절대경로>`를 developer 위임 프롬프트의 **작업 위치**로 박아 넣는다(짐작 제거).
-- task 가 슬롯을 2개↑ 보유해 모호하면 F6 이 **에러**(⑦·암묵 선택 금지) — 쓰지 않는 잉여 슬롯을
-  `python3 .project_manager/tools/pm_config.py release <slot> --task <task>`으로 반납한 뒤 다시 해소한다.
+- task가 슬롯을 여럿 보유하면 실행 대상을 `--task <task> --repo <repo> --slot <N>`으로 지정한다. 지목하는 폴더는 switch 로 묶음 브랜치에 옮긴 작업 폴더다(통합 폴더 아님). 예: `python3 .project_manager/tools/board.py regression run --task main --repo project_manager --slot 2`. 귀속은 main이며 실행 대상만 슬롯2(묶음 브랜치로 switch 한 작업 폴더)이다. 선택 없는 다중 슬롯, 같은 repo의 슬롯이 여럿인데 repo만 지정한 경우, 타 task·idle·쓰기용 readonly 슬롯은 부작용 전에 거부한다. 암묵 선택과 반납을 통한 위치 선택은 사용하지 않는다.
 - 슬롯 세션(비-task)은 종전대로 — 이 주입은 task-mode 에서만.
 
 ## 라운드 파일 — Codex native prepare → spawn_agent → harvest

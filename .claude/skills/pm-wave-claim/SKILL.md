@@ -30,13 +30,13 @@ python3 .project_manager/tools/board.py lint --gate
 # 4. PM 검증 (아래 체크리스트 · 멤버마다)
 
 # 5. 통과 시 claim (멤버마다)
-# task 세션(부트스트랩 --task)의 claim. 귀속은 task 이고, 폴더가 1개면 --repo/--slot 을 생략한다
+# task 세션(부트스트랩 --task)의 claim. 귀속은 task 이고, task 의 폴더가 1개면 --repo/--slot 을 생략한다
 python3 .project_manager/tools/board.py claim T-NNNN --task <task> --repo <repo> --slot <N>
 # task 없는 슬롯 세션 전용. task 세션에서 쓰면 종결이 소유 불일치로 거부한다
 python3 .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 활성 lease 1개면 생략 가능
 
 # 6. 작업 폴더를 묶음 브랜치로 전환: 코드 변경이 없어도 실행한다(종결이 이 브랜치를 든 폴더를 찾는다)
-#    폴더 1개면 그 폴더, 2개면 cluster new 에 지목하지 않은 폴더 · <slot> 은 work/<repo>_<N>
+#    같은 저장소의 폴더 1개면 그 폴더, 2개면 cluster new 에 지목하지 않은 폴더 · <slot> 은 work/<repo>_<N>
 python3 .project_manager/tools/worktree_pool.py switch <slot> task/<ticket-group>
 #    파일은 이 전환 뒤 그 폴더에서 고친다(전환 전에 고치면 switch 가 거부하고, 전환 전에 커밋한 변경은 묶음 브랜치에 없어 종결이 머지하지 않는다)
 ```
@@ -47,11 +47,12 @@ python3 .project_manager/tools/worktree_pool.py switch <slot> task/<ticket-group
   없으면 첫 쓰기 앞에서 rc=1 이다. 그 트리의 **현재 브랜치를 통합 브랜치로 기록**하고 묶음 브랜치를
   만드므로, 통합 브랜치를 체크아웃한 트리를 그 인자로 지목한다(cwd 는 판정에 쓰이지 않는다).
 - 6단계 `switch` 는 코드 변경이 없는 묶음에도 필요하다. 종결은 묶음 브랜치를 든 폴더를 찾아 돌고, 없으면
-  첫 부작용 전에 rc 1 로 멈춘다. 폴더가 1개면 cluster new 에 지목한 그 폴더를 전환한다.
-- 코드를 고치는 묶음은 작업 폴더 2개가 필요하다. 종결의 머지는 base_branch 를 든 폴더(통합 폴더)에서만
-  되기 때문이다. cluster new 에 통합 폴더를 지목하고 다른 폴더를 6단계로 전환해 그 폴더에서 고친다. 폴더가
-  1개뿐이면 cluster new 전에 `pm-config alloc <repo> --task <task>` 로 하나 더 빌린다(풀이 비면 alloc 이
-  사용자 승인 명령을 알려 준다). 2개를 빌린 task 는 `--task` 만으로 폴더를 고를 수 없으므로
-  new·cluster new·claim 에 `--repo <repo> --slot <N>` 을 붙인다.
+  첫 부작용 전에 rc 1 로 멈춘다. 같은 저장소의 폴더가 1개면 cluster new 에 지목한 그 폴더를 전환한다.
+- 코드를 고치는 묶음은 같은 저장소의 작업 폴더 2개가 필요하다. 종결의 머지는 base_branch 를 든 폴더(통합
+  폴더)에서만 되기 때문이다. cluster new 에 통합 폴더를 지목하고 같은 저장소의 다른 폴더를 6단계로 전환해 그
+  폴더에서 고친다. 그 저장소의 폴더가 1개뿐이면 cluster new 전에 `pm-config alloc <repo> --task <task>` 로 그
+  저장소 폴더를 하나 더 빌린다(풀이 비면 alloc 이 사용자 승인 명령을 알려 준다). task 의 폴더가 2개 이상이면
+  (저장소마다 1개씩이어도) `--task` 만으로 폴더를 고를 수 없으므로 new·cluster new·claim 에
+  `--repo <repo> --slot <N>` 을 붙인다.
 - 묶음 단계 표(설계 1 · 개발 N · 리뷰 1 · fix 1)와 예산은 `/pm-dev-delegate` §클러스터 단계 표가
   단일 진실이다.

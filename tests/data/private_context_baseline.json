@@ -1,5 +1,5 @@
 {
-  "count": 393,
+  "count": 391,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -805,17 +805,7 @@
     "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md": [
       {
         "count": 1,
-        "hash": "d4fe6b3e64a561d8d3f9c5d866729155c36c59c0e2a17d49a4e9bfe32e2c120f",
-        "kind": "circled_marker"
-      },
-      {
-        "count": 1,
         "hash": "12ce6bc47a5d9be25de6105c1f0a6d2fb807a1d0ab9244b3f46b9ff538c89de2",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "2f33f2c0a4ed94da06764faa3166cf5db7859223f9280607df5fba6f85fa4b54",
         "kind": "decision_label"
       },
       {

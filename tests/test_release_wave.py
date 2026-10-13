@@ -953,11 +953,11 @@ def test_release_wave_opencode_full_wave(tmp_path):
 # multi-repo 셋업의 repo 이름 = prefix = worktree 슬롯 네임스페이스(단일 진실). 2 repo 로 충분 —
 # 새 위험축(per-repo prefix·per-slot 식별)은 1→2 에서 이미 드러난다(대N 은 spike §6 후속).
 # 이름은 **소문자**여야 한다 — prefix sanity(`_validate_prefix`·[a-z0-9_]+·ADR-0042/T-0237)가
-# `--prefix <repo>` 를 검증하므로(대문자면 rc1). 라이브 LLM 은 아래 프롬프트의 "REPO" 를 실 repo
-# 이름(소문자)으로 치환해 `--prefix repoa` 를 발행한다 → sanity 통과.
+# `--prefix <repo>` 를 검증하므로(대문자면 rc1). 프롬프트의 발행 줄은 실 repo 이름(소문자)을 채운
+# `--prefix repoa` 다 → sanity 통과.
 _MULTIREPO_REPOS = ("repoa", "repob")
-# multi-repo wave 가 각 repo 슬롯에 쓰도록 지시하는 산출 파일·내용 — side-effect 단언의 기준.
-# (단일 wave 의 PROBE_FILE='probe.txt' 와 별개 — 슬롯별 파일이라 슬롯 격리도 함께 단언한다.)
+# multi-repo wave 가 각 repo 작업 폴더에 쓰도록 지시하는 산출 파일·내용 — 단언은 이 파일이 그 저장소의
+# 묶음 브랜치와 통합 브랜치에 있는지 본다(단일 wave 의 PROBE_FILE='probe.txt' 와 별개).
 _WAVE_FILE = "wave-done.txt"
 
 
@@ -1185,18 +1185,16 @@ def _assert_multirepo_wave_side_effects(home: Path, proc: subprocess.CompletedPr
            "기본 skip·사용자 트리거.",
 )
 def test_release_wave_multirepo_opencode_full_wave(tmp_path):
-    """실 opencode(agentic·ollama)가 multi-PM 셋업(2 repo·공유 보드)에서 repo별 wave 를 운영한다.
+    """실 opencode(agentic·ollama)가 다중 저장소 홈(2 repo·공유 보드)에서 저장소마다 카드 흐름 웨이브를 닫는다.
 
-    PM 라이브 probe(`scratchpad/mpm_live_probe.sh`·opencode·ollama cloud 모델·실측 PASS —
-    T-repoA-001·T-repoB-001 둘 다 done·각 슬롯 wave-done.txt 존재)의 mechanics 를 옮긴 것이다.
-    단일 full wave 와 *다른* 검증축 — 한 세션이 공유 보드 위 여러 repo 의 보드/슬롯/identity 를
-    per-repo prefix·per-slot 식별로 바르게 핸들링하는가(범위 축소 근거는 `_multirepo_wave_prompt`
-    docstring). side-effect(repo별 done ticket·슬롯 파일)만 hard 단언 → 출력 phrasing 비결정에
-    강건(T-0157 동형). `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판). API 과금 0(로컬/cloud ollama).
-
-    TODO(T-0158 후속): claude 경로(stream-json subagent 관측)는 multi-repo 미probe 라 미추가 —
-    opencode 가 probe-검증된 기본이다. claude multi-repo 가 필요해지면 단일 claude mechanics
-    (`--allowedTools Bash`·stream-json)를 이 multi-repo 셋업 위에 미러한다.
+    홈은 `_multirepo_wave_home`(저장소마다 통합 폴더 1번·작업 폴더 2번을 task 가 보유)이고, 프롬프트
+    (`_multirepo_wave_prompt`)는 부트스트랩 줄 다음에 저장소마다 카드 줄 7개(new·promote·tier·cluster new·
+    claim·switch·종결)에 값을 채운 실행 줄과 그 사이 파일 쓰기·완료 조건 체크를 싣는다. direct complete 는
+    프롬프트에 없다([[T-0958]]). 단일 full wave 와 다른 검증축이다: 한 세션이 공유 보드 위 저장소별
+    prefix(`--prefix <repo>`)와 폴더 지목(`--repo <repo> --slot <N>`)을 바르게 다루는가.
+    단언은 결과의 실체만 본다(`_assert_multirepo_wave_side_effects`): 저장소마다 done 티켓 1개, 그 묶음
+    closed 와 base_branch `<repo>_1`, 묶음 브랜치와 통합 브랜치의 wave-done.txt 내용. 출력 문구 비결정에
+    강건하다(T-0157 동형). `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판). API 과금 0(로컬/cloud ollama).
     """
     home = _multirepo_wave_home(tmp_path, "opencode")
 
@@ -1209,7 +1207,7 @@ def test_release_wave_multirepo_opencode_full_wave(tmp_path):
         cwd=str(home), env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
     )
 
-    # side-effect(hard) — repo별 done ticket(per-repo prefix) + 슬롯 파일(슬롯 격리).
+    # 결과 실체(hard) — 저장소마다 done 티켓 1개·묶음 closed·base_branch·묶음 브랜치와 통합 브랜치의 파일 내용.
     _assert_multirepo_wave_side_effects(home, proc, "opencode")
 
 
@@ -1220,26 +1218,21 @@ def test_release_wave_multirepo_opencode_full_wave(tmp_path):
            "기본 skip·사용자 트리거.",
 )
 def test_release_wave_multirepo_claude_full_wave(tmp_path):
-    """실 claude(`claude-sonnet-4-6`)가 multi-PM 셋업(2 repo·공유 보드)에서 repo별 wave 를 운영한다.
+    """실 claude(`claude-sonnet-4-6`)가 다중 저장소 홈(2 repo·공유 보드)에서 저장소마다 카드 흐름 웨이브를 닫는다.
 
-    multi-repo opencode(`test_release_wave_multirepo_opencode_full_wave`)의 검증된 셋업/단언 위에 단일
-    claude mechanics(`--allowedTools Bash`·subprocess cwd 존중→`--dir` 불요)를 미러한 것이다 — claude
-    경로를 박제·라이브 검증한다(T-0158 TODO). 새 위험축 0: [검증된 multi-repo 셋업] × [검증된 단일
-    claude CLI mechanics] 의 합성.
-
-    단일 full wave(`test_release_wave_claude_full_wave`)와 *다른* 검증축 — 한 세션이 공유 보드 위 여러
-    repo 의 보드/슬롯/identity 를 per-repo prefix·per-slot 식별로 바르게 핸들링하는가. side-effect
-    (repo별 done ticket·슬롯 파일)만 hard 단언 → 출력 phrasing 비결정에 강건(multi-repo opencode 동형).
-    stream-json `subagent_type` 위임 단언은 *생략* — 미니 wave 는 dev→reviewer 위임이 없어 subagent_type
-    미관측(`_multirepo_wave_prompt` docstring·범위 축소). 그래서 `--allowedTools Bash` 만(Task 불요).
-    API 과금.
+    opencode 짝(`test_release_wave_multirepo_opencode_full_wave`)과 같은 홈·프롬프트·단언에 단일 claude
+    실행 방식(`--allowedTools Bash`·subprocess cwd 존중이라 `--dir` 불요)을 얹은 것이다. 프롬프트는
+    부트스트랩 줄과 저장소마다 카드 줄 7개(new·promote·tier·cluster new·claim·switch·종결)이고 direct
+    complete 는 없다([[T-0958]]). 단언은 저장소마다 done 티켓 1개, 그 묶음 closed 와 base_branch `<repo>_1`,
+    묶음 브랜치와 통합 브랜치의 wave-done.txt 내용이다(`_assert_multirepo_wave_side_effects`). 웨이브에
+    developer·reviewer 위임이 없어 stream-json `subagent_type` 단언은 하지 않는다. API 과금.
     """
     home = _multirepo_wave_home(tmp_path, "claude")
 
     proc = subprocess.run(
-        # `--allowedTools Bash`: 미니 wave 는 board.py 호출(new/claim/슬롯 파일/complete)뿐 — dev→reviewer
-        # 위임이 없어 Task 불요(단일 full wave 와 다른 점). claude 는 subprocess cwd 를 존중하므로 `--dir`
-        # 불요(opencode 와 다른 점). side-effect 만 단언하므로 stream-json 도 불요.
+        # `--allowedTools Bash`: 웨이브는 부트스트랩·카드 줄 실행(board.py·worktree_pool.py·ticket_finish.py)과
+        # 파일 쓰기뿐이고 developer·reviewer 위임이 없어 Task 불요(단일 full wave 와 다른 점). claude 는
+        # subprocess cwd 를 존중하므로 `--dir` 불요(opencode 와 다른 점). 결과 실체만 단언하므로 stream-json 도 불요.
         ["claude", "-p", "--model", CLAUDE_MODEL,
          "--allowedTools", "Bash",
          "--dangerously-skip-permissions",
@@ -1248,7 +1241,7 @@ def test_release_wave_multirepo_claude_full_wave(tmp_path):
         env=_live_env(CLAUDE_MODEL), timeout=_CLAUDE_TIMEOUT,
     )
 
-    # side-effect(hard) — repo별 done ticket(per-repo prefix) + 슬롯 파일(슬롯 격리).
+    # 결과 실체(hard) — 저장소마다 done 티켓 1개·묶음 closed·base_branch·묶음 브랜치와 통합 브랜치의 파일 내용.
     _assert_multirepo_wave_side_effects(home, proc, "claude")
 
 
@@ -2178,8 +2171,10 @@ def test_collect_subagent_types_handles_no_delegation():
 # ── multi-repo hermetic 가드 (라이브 실행 없이·@release/skipif 무관 — 매 회귀 통과 · T-0158) ──────
 # multi-repo 라이브 테스트는 PM_ORCH_LIVE_RELEASE 미설정 시 skip 이라 CI 에선 안 돈다. 아래 단위는
 # 라이브 없이도 돌아 (1) 셋업 헬퍼(`_import_multipm_home`)가 LLM 없이 home + 2 repo areas + 2 슬롯을
-# 만드는지 (= 셋업 자체 검증·라이브 테스트의 전제) (2) multi-repo wave 프롬프트가 repo별 mechanics
-# (prefix·session·슬롯 파일·new/claim/complete)를 담는지 — 라이브 미실행 시에도 구조를 가드한다.
+# 만드는지 (= 셋업 자체 검증·라이브 테스트의 전제) (2) multi-repo wave 프롬프트가 부트스트랩 줄 다음에
+# 저장소마다 카드 줄 7개(new·promote·tier·cluster new·claim·switch·종결)를 순서대로 싣고 direct complete·
+# 구 actor 플래그가 없으며 저장소별 prefix 승인이 발행 줄 한 곳에만 있는지 — 라이브 미실행 시에도 구조를
+# 가드한다([[T-0958]] · 줄의 실행 가능성은 카드 사용성 파일의 비라이브 재현이 본다).
 
 
 def test_import_multipm_home_sets_up_two_repos_and_slots(tmp_path):

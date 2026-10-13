@@ -60,7 +60,7 @@ from test_fresh_adopter_runtime_smoke import _live_env, _tickets_in
 from test_release_wave import (
     _MULTIREPO_REPOS, _MULTIREPO_TICKET, _RELEASE_WAVE_TASK, _WAVE_FILE, _WAVE_INTEGRATION_SLOT,
     _WAVE_WORK_SLOT, _assert_multirepo_wave_side_effects, _count_marked_tests, _guided_adopter,
-    _multirepo_wave_commands, _multirepo_wave_home,
+    _import_multipm_home, _multirepo_wave_commands, _multirepo_wave_home, _pm_config,
 )
 
 REPO = Path(__file__).resolve().parents[1]
@@ -1223,6 +1223,55 @@ def test_t0958_card_one_folder_code_change_borrows_second_folder(tmp_path):
     assert _tickets_in(two, "done") == {_card_ticket(two, tid).name}
 
 
+def test_t0958_card_multirepo_one_folder_each_closes_first_ticket(tmp_path):
+    """[[T-0958]] 리뷰 F-003 — 저장소마다 폴더 1개를 빌린 다중 저장소 task 가 카드대로 첫 티켓을 닫는다.
+
+    카드의 폴더 수는 두 범위다. 지목 여부(new·cluster new·claim·regression)는 task 의 폴더 수이고, 통합·작업
+    폴더 구분과 코드 변경의 폴더 2개 확보는 같은 저장소의 폴더 수다. task 가 work/repoa_1·work/repob_1 을
+    보유하면 `--task` 만의 new·cluster new 는 rc 1 모호이고, repoa 1번을 지목해 발행·선언·claim 한 뒤 switch 는
+    같은 저장소의 폴더 1개인 work/repoa_1 이다. 지목하지 않은 다른 저장소 폴더 work/repob_1 은 rc 1 이다.
+    """
+    home = _import_multipm_home(tmp_path, "claude")
+    repo, other = _MULTIREPO_REPOS
+    for step in (("task", "new", CARD_TASK), *(("alloc", name, "--task", CARD_TASK) for name in _MULTIREPO_REPOS)):
+        proc = _pm_config(home, *step)
+        assert proc.returncode == 0, (step, proc.stdout, proc.stderr)
+    card = _render_command_card(home)
+    alloc_warning = next(line for line in card.splitlines()
+                         if line.strip().startswith("⚠") and "cluster new 전에" in line and "alloc" in line)
+    assert "같은 저장소의 작업 폴더 2개" in alloc_warning, alloc_warning
+    notes = _card_line_notes(card)
+    assert "같은 저장소의 폴더 1개면 그 폴더" in notes[("worktree_pool.py", "switch")], notes
+    for key in (("board.py", "new"), ("board.py", "cluster"), ("board.py", "claim"), ("board.py", "regression")):
+        assert "task 의 폴더가" in notes[key], (key, notes[key])
+    lines = _card_command_lines(card)
+    pick = ("--repo", repo, "--slot", "1")
+    ambiguous = _card_line_process(home, lines[("board.py", "new")], {'"<제목>"': '"card probe"'})
+    assert ambiguous.returncode == 1 and "모호" in ambiguous.stderr, ambiguous.stdout + ambiguous.stderr
+    tid = _created_ticket_id(
+        _run_card_line(home, lines[("board.py", "new")], {'"<제목>"': '"card probe"'}, extra=pick))
+    fills = _card_fills(tid, _card_name_rule(card)[0], _card_slot_value(card, repo, 1))
+    _fill_card_ticket(home, tid)
+    _run_card_line(home, lines[("board.py", "promote")], fills)
+    _run_card_line(home, lines[("board.py", "tier")], fills)
+    ambiguous = _card_line_process(home, lines[("board.py", "cluster")], fills)
+    assert ambiguous.returncode == 1 and "모호" in ambiguous.stderr, ambiguous.stdout + ambiguous.stderr
+    _run_card_line(home, lines[("board.py", "cluster")], fills, extra=pick)
+    _run_card_line(home, lines[("board.py", "show")], fills)
+    _run_card_line(home, lines[("board.py", "lint")], fills)
+    _run_card_line(home, lines[("board.py", "claim")], fills, extra=pick)
+    wrong = _card_line_process(home, lines[("worktree_pool.py", "switch")],
+                               {**fills, "<slot>": _card_slot_value(card, other, 1)})
+    assert wrong.returncode == 1 and "지정한 브랜치가 없다" in wrong.stderr, wrong.stdout + wrong.stderr
+    _run_card_line(home, lines[("worktree_pool.py", "switch")], fills)
+    _check_card_dod(home, tid)
+    _run_card_line(home, lines[("ticket_finish.py", None)], fills, extra=("--no-pytest",))
+
+    assert _tickets_in(home, "done") == {_card_ticket(home, tid).name}
+    clusters = home / ".project_manager" / "wiki" / "tickets" / "clusters"
+    assert "status: closed" in (clusters / f"C-{_card_name_rule(card)[0]}.md").read_text(encoding="utf-8")
+
+
 def test_t0958_flow_cards_state_switch_order(tmp_path):
     """[[T-0958]] — 흐름 카드가 switch 필수·순서·폴더 선택과 task 세션의 claim 줄을 실행 줄 옆에 싣는다.
 
@@ -1305,6 +1354,32 @@ def test_t0958_delegate_docs_state_switch_after_claim():
         items = [row for row in _markdown_section(text, "## 사전 조건").splitlines() if row.startswith("- ")]
         claimed = next(index for index, row in enumerate(items) if "멤버 티켓이 claim 됐다" in row)
         assert all(phrase in items[claimed + 1] for phrase in _DELEGATE_SWITCH_PHRASES), (path, items)
+
+
+_DELEGATE_LOCATION_HEADING = "## task-mode 작업 위치 주입"
+
+
+def test_t0958_delegate_work_location_names_work_folder():
+    """[[T-0958]] 리뷰 F-004 — pm-dev-delegate 의 작업 위치 항목은 모든 사본에서 같은 지목 규칙이다.
+
+    task 가 폴더를 여럿 보유하면 `--repo <repo> --slot <N>` 으로 지정하고, 지목하는 폴더는 switch 로 묶음
+    브랜치에 옮긴 작업 폴더다. 잉여 슬롯 반납(`pm_config.py release`)으로 위치를 고르지 않는다. codex 어댑터
+    원본(`.agents`)을 포함해 원본과 출하 사본 전부를 본다(codex 절 제목은 꼬리표가 붙는다).
+    """
+    cards = [_WAVE_SKILLS / "pm-dev-delegate" / "SKILL.md",
+             *sorted((REPO / "templates").glob("*/*/skills/pm-dev-delegate/SKILL.md")),
+             *sorted((REPO / "templates").glob("*/*/command/pm-dev-delegate.md"))]
+    assert any(".agents" in path.parts for path in cards) and len(cards) == 5, cards
+    for path in cards:
+        text = path.read_text(encoding="utf-8")
+        heading = next(line for line in text.splitlines() if line.startswith(_DELEGATE_LOCATION_HEADING))
+        # 절 안 bash 블록의 `# 출력:` 주석이 헤딩처럼 보이므로 다음 `## ` 절 전까지를 자른다.
+        section = re.split(r"^## ", text.split(heading + "\n", 1)[1], maxsplit=1, flags=re.M)[0]
+        assert "pm_config.py release" not in section, path
+        assert "--task <task> --repo <repo> --slot <N>" in section, path
+        assert "switch 로 묶음 브랜치에 옮긴 작업 폴더" in section, path
+        # 예시의 지목 슬롯도 작업 폴더 번호다(카드 흐름의 관례: 통합 1번 · 작업 2번).
+        assert re.findall(r"--slot (\d+)`", section) == ["2"], path
 
 
 def _run_multirepo_wave(home: Path, repo: str, edit=None) -> str:

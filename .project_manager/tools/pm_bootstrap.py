@@ -4065,9 +4065,9 @@ class PmBootstrap:
             _C_PC_RELEASE, "작업완료 반납(소유검사 이 task 명의 슬롯만)", suffix=ti,
         ))
         lines.append(
-            "  ⚠ 코드를 고치는 티켓은 cluster new 전에 작업 폴더 2개를 빌려 둔다: 통합 폴더(base_branch 를 "
-            "계속 든다)와 작업 폴더(묶음 브랜치로 switch 해 고친다). 1개뿐이면 alloc 을 한 번 더 한다(풀이 "
-            "비면 alloc 이 사용자 승인 명령을 알려 준다)."
+            "  ⚠ 코드를 고치는 티켓은 cluster new 전에 같은 저장소의 작업 폴더 2개를 빌려 둔다: 통합 폴더"
+            "(base_branch 를 계속 든다)와 작업 폴더(묶음 브랜치로 switch 해 고친다). 그 저장소 폴더가 1개뿐이면 "
+            "그 저장소로 alloc 을 한 번 더 한다(풀이 비면 alloc 이 사용자 승인 명령을 알려 준다)."
         )
         lines.append("")
 
@@ -4092,7 +4092,8 @@ class PmBootstrap:
         lines.append("# 티켓 발행 (직접 CLI — 래핑 스킬 없음)")
         lines.append(cmd(
             _C_BOARD_NEW,
-            "새 티켓 발행(prefix 는 이 task 것·draft 로 생성) · 폴더 2개면 `--repo <repo> --slot <N>` 추가",
+            "새 티켓 발행(prefix 는 이 task 것·draft 로 생성) · task 의 폴더가 2개 이상이면 "
+            "`--repo <repo> --slot <N>` 추가",
             suffix=ti,
         ))
         lines.append(cmd(
@@ -4117,22 +4118,22 @@ class PmBootstrap:
         )
         lines.append(
             "  ⚠ cluster new 는 지목한 폴더의 현재 브랜치를 base_branch(머지 대상)로 적고 "
-            "묶음 브랜치 task/<ticket-group> 을 만든다: 폴더 1개면 그 폴더(`--task` 만), 2개면 "
-            "`--repo <repo> --slot <N>` 으로 통합 폴더를 지목한다."
+            "묶음 브랜치 task/<ticket-group> 을 만든다: task 의 폴더가 1개면 그 폴더(`--task` 만), 2개 이상이면 "
+            "`--repo <repo> --slot <N>` 으로 그 저장소의 통합 폴더를 지목한다."
         )
         lines.append(engine(_C_BOARD_SHOW))
         lines.append(engine(_C_BOARD_LINT, "스킬이 부르는 내부 엔진·직접 금지 · 차단 항목만 rc 1"))
         lines.append(engine(
             _C_BOARD_CLAIM,
-            "스킬이 부르는 내부 엔진·직접 금지 · 폴더 2개면 `--repo <repo> --slot <N>` 추가",
+            "스킬이 부르는 내부 엔진·직접 금지 · task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가",
             suffix=ti,
         ))
         lines.append("  ⚠ claim 은 draft 티켓 거부 — 먼저 `promote T-NNNN`(본문 채운 뒤) 필요.")
         lines.append(engine(
             _C_WP_SWITCH,
             f"{_runtime_skill_entry('pm-wave-claim')} 6단계 · 코드 변경이 없어도 실행한다 · claim 뒤, "
-            "파일 수정·종결 전 · 작업 폴더(<slot>=work/<repo>_<N>)를 묶음 브랜치로 전환(폴더 1개면 그 폴더, "
-            "2개면 cluster new 에 지목하지 않은 폴더)",
+            "파일 수정·종결 전 · 작업 폴더(<slot>=work/<repo>_<N>)를 묶음 브랜치로 전환(같은 저장소의 폴더 "
+            "1개면 그 폴더, 2개면 cluster new 에 지목하지 않은 폴더)",
         ))
         lines.append(
             "  ⚠ 파일은 switch 뒤 그 폴더에서 고친다. switch 전에 고치면 switch 가 거부하고, switch 전에 커밋한 "
@@ -4141,7 +4142,7 @@ class PmBootstrap:
         lines.append(skill("/pm-regression", "비차단 백그라운드 회귀 pre-warm + 완료 알림"))
         lines.append(engine(
             _C_BOARD_REGRESSION,
-            "스킬이 부르는 내부 엔진·직접 금지 · 폴더 2개면 `--repo <repo> --slot <N>` 추가",
+            "스킬이 부르는 내부 엔진·직접 금지 · task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가",
             suffix=ti,
         ))
         lines.append(skill("/pm-wave-finish T-NNNN", "ticket 완료 기록 — 회귀+log+board+stage"))
