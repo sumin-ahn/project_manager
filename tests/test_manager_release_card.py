@@ -37,7 +37,7 @@ RELEASE_RUNNERS = ("ubuntu-latest", "windows-latest", "macos-latest")
 ASSET_NAMES = ("pm-manager-linux-x86_64", "pm-manager-windows-x86_64.exe",
                "pm-manager-macos-arm64")
 STEP_HEAD = re.compile(r"^(\d+)\. \*\*(.+?)\*\*")
-NEWEST_RELEASE = re.compile(r"^## \[\d+\.\d+\.\d+\]", re.MULTILINE)
+RELEASE_HEADING = re.compile(r"^## \[\d+\.\d+\.\d+\]", re.MULTILINE)
 
 
 def _release_section(card: Path) -> str:
@@ -75,17 +75,21 @@ def _fenced_commands(block: str) -> list[str]:
 
 
 def _manager_changelog_entry() -> str:
-    """맨 위 릴리즈 판의 관리자 항목 한 줄 — 실행 파일만 받은 사용자가 읽는 자리다.
+    """관리자 항목이 든 가장 최근 릴리즈 판의 그 한 줄 — 실행 파일만 받은 사용자가 읽는 자리다.
 
     릴리즈 절차가 `[Unreleased]` 를 `## [X.Y.Z] - <날짜>` 로 확정하고 그 위에 새 빈
     `[Unreleased]` 를 얹는다(`pm_role.md` §릴리즈 절차 2). 그래서 제목 문자열을 박지 않고
-    맨 위 릴리즈 판을 집는다 — `[Unreleased]` 는 건너뛰며, `test_engine_rev_release.py` 의
-    최신 릴리즈 절 판독과 같은 규약이다. 박아 두면 릴리즈마다 이 단언이 깨진다.
+    릴리즈 판을 위에서부터 읽어 관리자 항목이 든 첫 판을 집는다 — `[Unreleased]` 는 건너뛴다.
+    맨 위 판만 보면 관리자 항목이 없는 패치 릴리즈마다 이 단언이 깨진다.
     """
     text = CHANGELOG.read_text(encoding="utf-8")
-    start = NEWEST_RELEASE.search(text).start()
-    section = text[start:text.index("\n## ", start + 1)]
-    return next(line for line in section.splitlines() if MANAGER_ENTRY_MARK in line)
+    for match in RELEASE_HEADING.finditer(text):
+        end = text.find("\n## ", match.start() + 1)
+        section = text[match.start():end if end != -1 else len(text)]
+        for line in section.splitlines():
+            if MANAGER_ENTRY_MARK in line:
+                return line
+    raise AssertionError(f"릴리즈 판 어디에도 관리자 항목({MANAGER_ENTRY_MARK})이 없다")
 
 
 def _workflow() -> dict:

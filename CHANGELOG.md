@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-10-16
+
+### Fixed
+
+- Windows 에서 관리자 창이 열리지 않던 문제를 고쳤다. 창 아이콘으로 PNG 를 넘겼는데 Windows 창 백엔드는 .ico 만 읽어 창을 띄우다 종료했다. 이제 Windows 는 `icon.ico`, 그 밖은 PNG 를 쓴다.
+- 관리자 실행 파일 빌드(`manager/build.py`)가 UTF-8 이 아닌 표준 출력(GitHub Windows 빌드 서버의 cp1252)에서 첫 로그 줄에 멈추던 문제를 고쳤다. 그래서 v1.8.0 릴리즈에는 Windows 관리자 실행 파일이 없다.
+
 ## [1.8.0] - 2026-10-15
 
 ### Added

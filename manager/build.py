@@ -86,7 +86,7 @@ def executable_filename(*, system: str | None = None, machine: str | None = None
     return stem + WINDOWS_SUFFIX if system == "Windows" else stem
 
 
-# 앱 아이콘 원본 — 창(png)·Windows 실행 파일(ico)·화면 탭(svg)이 같은 자리에서 가져간다.
+# 앱 아이콘 원본 — 창(Windows 는 ico, 그 밖은 png)·Windows 실행 파일(ico)·화면 탭(svg)이 같은 자리에서 가져간다.
 ICON_DIR = "manager/assets"
 WINDOW_ICON = "icon-256.png"
 EXECUTABLE_ICON = "icon.ico"
@@ -228,6 +228,9 @@ def run_pyinstaller() -> None:
 
 
 def main() -> int:
+    # 빌드 로그는 한글이다 — 표준 출력이 UTF-8 이 아닌 빌드 서버(GitHub Windows 는 cp1252)에서
+    # 첫 줄에 멈추지 않게 관리자 본체(`manager/__main__.py`)와 같은 엔진 콘솔 설정을 먼저 부른다.
+    _engine_module("console_encoding.py").configure_console_utf8()
     imprint_build_info()
     try:
         run(npm("ci"), cwd=UI_ROOT)

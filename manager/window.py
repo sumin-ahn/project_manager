@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import platform
 from pathlib import Path
 
 import webview
@@ -20,9 +21,15 @@ WINDOW_WIDTH = 1180
 WINDOW_HEIGHT = 760
 
 
-def window_icon() -> Path:
-    """창 아이콘 — 실행 파일·화면 탭과 같은 자리에서 온다(`manager/assets`)."""
-    return PACKAGE_ROOT / "assets" / "icon-256.png"
+def window_icon(system: str | None = None) -> Path:
+    """창 아이콘 — 실행 파일·화면 탭과 같은 자리에서 온다(`manager/assets`).
+
+    Windows 창 백엔드(WinForms)는 창 아이콘을 .ico 로만 읽는다. PNG 를 주면 창을 띄우다 .NET
+    예외로 죽는다. 다른 백엔드(GTK·Cocoa)는 PNG 를 쓴다.
+    """
+    system = platform.system() if system is None else system
+    name = "icon.ico" if system == "Windows" else "icon-256.png"
+    return PACKAGE_ROOT / "assets" / name
 
 
 def dist_index() -> Path:
