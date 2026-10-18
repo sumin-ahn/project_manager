@@ -76,12 +76,11 @@ class _StubBoard:
     """board 모듈 대역 — 해소 체인이 실제로 읽는 표면만 흉내낸다."""
 
     def __init__(self, *, areas_exists=True, rows=(), prefix=None, repos=(),
-                 session=None, conf=None):
+                 conf=None):
         self._areas_exists = areas_exists
         self._rows = list(rows)
         self._prefix = prefix
         self._repos = set(repos)
-        self._session = session
         self._conf = dict(conf or {})
 
     def areas_file(self):
@@ -104,16 +103,6 @@ class _StubBoard:
 
     def _parse_areas(self):
         return ([], list(self._rows))
-
-    def session_name(self):
-        return self._session
-
-    def _repo_from_session(self, session):
-        """board `_repo_from_session` 과 동형 — `<repo>_<N>` 에서 repo 를 뗀다."""
-        head, sep, tail = session.rpartition("_")
-        if not sep or not head or not tail.isdigit():
-            return None
-        return head
 
     def registered_repos(self):
         return set(self._repos)
@@ -161,21 +150,6 @@ def test_layer2_repo_row_when_prefix_blank(tool, monkeypatch):
     assert _resolve(mod, seam, stub, monkeypatch) == NON_PYTEST_CMD
 
 
-def test_layer2_repo_resolved_from_session(tool, monkeypatch):
-    """2층 — 활성 repo 는 세션명 `<repo>_<N>` 유도가 1순위다(등록 repo 2개여도 확정)."""
-    mod, seam = tool
-    stub = _StubBoard(
-        rows=[
-            {"repo": "other", "prefix": "", "test_cmd": "npm test"},
-            {"repo": "heru", "prefix": "", "test_cmd": NON_PYTEST_CMD},
-        ],
-        prefix=None,
-        repos={"heru", "other"},
-        session="heru_1",
-    )
-    assert _resolve(mod, seam, stub, monkeypatch) == NON_PYTEST_CMD
-
-
 def test_layer2_ambiguous_repo_falls_through(tool, monkeypatch):
     """2층 — 세션 유도 불가 + 등록 repo 2개 = 모호 → 그 층을 건너뛴다(추측 금지)."""
     mod, seam = tool
@@ -186,20 +160,6 @@ def test_layer2_ambiguous_repo_falls_through(tool, monkeypatch):
         ],
         prefix=None,
         repos={"a", "b"},
-        session=None,
-        conf={"test.cmd": LOCAL_CONF_CMD},
-    )
-    assert _resolve(mod, seam, stub, monkeypatch) == LOCAL_CONF_CMD
-
-
-def test_layer2_unknown_session_repo_falls_through(tool, monkeypatch):
-    """2층 — 세션이 가리키는 repo 행이 없으면(미등록) 다음 층으로."""
-    mod, seam = tool
-    stub = _StubBoard(
-        rows=[{"repo": "other", "prefix": "", "test_cmd": "npm test"}],
-        prefix=None,
-        repos={"other"},
-        session="heru_1",
         conf={"test.cmd": LOCAL_CONF_CMD},
     )
     assert _resolve(mod, seam, stub, monkeypatch) == LOCAL_CONF_CMD
@@ -257,7 +217,8 @@ def test_resolution_exception_is_solo_fallback(tool, monkeypatch):
 
 
 def test_session_resolution_failure_falls_back_to_count(tool, monkeypatch):
-    """세션 해소가 터져도 등록 repo 1개면 count-based 로 2층이 성립한다(fail-soft)."""
+    """등록 repo 1개면 count-based 로 2층이 성립한다. `_active_repo_name` 은 session_name 을
+    부르지 않는다 — 부르면 대역의 RuntimeError 가 그대로 터진다."""
     mod, seam = tool
 
     class _SessionBoom(_StubBoard):

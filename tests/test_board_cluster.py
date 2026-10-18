@@ -28,6 +28,9 @@ from _git_fixture import remove_git_tree
 from _slot_seed import SLOT, SLOT_REPO, lease_row, seed_slot
 from conftest import anchor_board_module
 
+# 코드 트리를 보유한 task — claim·new·cluster new 는 `--task` 정체성이 필요하다(T-0962).
+_TASK = "main"
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -121,7 +124,7 @@ def board(tmp_path, monkeypatch):
     monkeypatch.setattr(
         mod, "LEASES_FILE",
         tmp_path / ".project_manager" / ".local" / "worktree-leases.json")
-    seed_slot(tmp_path)
+    seed_slot(tmp_path, session=_TASK)
     mod.BOARD_FILE.parent.mkdir(parents=True, exist_ok=True)
     mod.BOARD_FILE.touch()
     for key, val in _GIT_IDENTITY.items():
@@ -148,7 +151,7 @@ def env(board, tmp_path):
 # 재발한 형상(세션 미해소 → 코드 없는 PM 홈으로 접힘)이 재현되지 않는다.
 _SPLIT_SLOT_COUNT = 2
 # 그 슬롯들이 공유하는 세션 값 — 실 장부와 같이 행마다 같은 값이라 유도가 성립하지 않는다.
-_SPLIT_SESSION = "main"
+_SPLIT_SESSION = _TASK
 
 
 @pytest.fixture
@@ -182,8 +185,8 @@ def split_env(board, tmp_path):
 
 def _new_args(title: str, **kwargs) -> argparse.Namespace:
     values = dict(title=title, touches=None, depends=None, tag=None,
-                  estimate="small", prefix=None, user=None, session=None,
-                  repo=None, slot=None, task=None)
+                  estimate="small", prefix=None, user=None,
+                  repo=None, slot=None, task=_TASK)
     values.update(kwargs)
     return argparse.Namespace(**values)
 
@@ -202,13 +205,13 @@ def _subparser_help(parser: argparse.ArgumentParser, *path: str) -> str:
 
 
 def _cluster_args(action: str, name: str, **kwargs) -> argparse.Namespace:
-    """`cluster new|show` 인자 — 코드 트리는 명시가 기본이다(`--repo <등록 repo>`).
+    """`cluster new|show` 인자 — 코드 트리는 task 의 폴더가 기본이다(`--task <task> --repo <등록 repo>`).
 
     `cluster new` 는 트리를 추측하지 않으므로 정체성 없는 호출은 거부 케이스에서만 쓴다
-    (`repo=None` 을 명시적으로 넘긴다).
+    (`task=None` 을 명시적으로 넘긴다).
     """
     values = dict(cluster_cmd=action, name=name, tickets=None, spike=None,
-                  repo=SLOT_REPO, slot=None, task=None)
+                  repo=SLOT_REPO, slot=None, task=_TASK)
     values.update(kwargs)
     return argparse.Namespace(**values)
 
@@ -955,12 +958,15 @@ def test_t0930_publish_binding(split_env, tmp_path, capsys):
     board, board_dir, slot = split_env
     assert _git(["branch", "-m", "main"], slot).returncode == 0
     before = _git(["rev-parse", "HEAD"], board_dir).stdout
-    assert board._cluster_publish_base_branch(_new_args("무선택")) == (None, None)
-    assert board.cmd_new(_new_args("무선택")) == 1
+    # task 가 폴더 2개를 보유하면 위치 인자 없는 발행은 폴더를 고르지 않고 멈춘다(T-0962).
+    with pytest.raises(SystemExit) as exc:
+        board._cluster_publish_base_branch(_new_args("무선택"))
+    assert "--slot" in str(exc.value.code)
+    with pytest.raises(SystemExit):
+        board.cmd_new(_new_args("무선택"))
     assert _all_ticket_files(board) == []
     assert board.all_clusters() == []
     assert _git(["rev-parse", "HEAD"], board_dir).stdout == before
-    assert "코드 트리" in capsys.readouterr().err
     assert board.cmd_new(_new_args("명시 제품", repo=SLOT_REPO, slot=1)) == 0
     path = _all_ticket_files(board)[0]
     fm, _ = board.load_ticket(path)
@@ -982,7 +988,12 @@ def test_t0930_publish_binding_rejects_parent_git(split_env, tmp_path, marker):
         (slot / ".git").write_text("gitdir: missing-git-dir\n", encoding="utf-8")
     before = (board.LEASES_FILE.read_bytes(), _git(["rev-parse", "HEAD"], board_dir).stdout,
               _git(["rev-parse", "HEAD"], tmp_path).stdout)
-    assert board.cmd_new(_new_args("잘못된 제품 marker", repo=SLOT_REPO, slot=1)) == 1
+    # task 폴더 판독 실패는 중단(SystemExit), 판독 뒤 결속 근거 실패는 rc 1 — 둘 다 거부다.
+    try:
+        rc = board.cmd_new(_new_args("잘못된 제품 marker", repo=SLOT_REPO, slot=1))
+    except SystemExit as exc:
+        rc = exc.code
+    assert rc not in (0, None)
     assert board.all_clusters() == [] and _all_ticket_files(board) == []
     assert (board.LEASES_FILE.read_bytes(), _git(["rev-parse", "HEAD"], board_dir).stdout,
             _git(["rev-parse", "HEAD"], tmp_path).stdout) == before
@@ -1045,9 +1056,10 @@ def test_t0930_publish_revalidation_rejects_final_basis_loss(
         return result
 
     monkeypatch.setattr(board, "_cluster_publish_base_branch", read_basis)
-    assert board.cmd_new(_new_args("최종 제품 기준 거부", repo=SLOT_REPO, slot=1)) == 1
-    assert observed[0] == (str(slot), _BASE_BRANCH)
-    assert len(observed) == 2 and not observed[-1][1]
+    # 최종 재판정이 손상된 task 폴더를 읽지 못하면 쓰기 전에 중단한다(T-0962: task 폴더 판독 실패는 중단).
+    with pytest.raises(SystemExit):
+        board.cmd_new(_new_args("최종 제품 기준 거부", repo=SLOT_REPO, slot=1))
+    assert observed == [(str(slot), _BASE_BRANCH)]
     assert writes == []
     assert _all_ticket_files(board) == [] and board.all_clusters() == []
     assert _git(["rev-parse", "HEAD"], board_dir).stdout == head
@@ -1095,15 +1107,18 @@ def test_t0930_publish_revalidation_preserves_legacy_local_new(board, tmp_path):
         (tickets / status).mkdir(parents=True, exist_ok=True)
     (tickets / "_template.md").write_text(_TEMPLATE_TEXT, encoding="utf-8")
     _make_code_git(tmp_path)
+    # 홈 git 보드에서도 발행은 task 가 보유한 제품 폴더에서 기준 브랜치를 읽는다(T-0962 Q1).
+    (tmp_path / SLOT).mkdir(parents=True, exist_ok=True)
+    _make_code_git(tmp_path / SLOT)
     leases = board.LEASES_FILE.read_bytes()
     head = _git(["rev-parse", "HEAD"], tmp_path).stdout
     assert not board._board_git_enabled()
-    assert board.cmd_new(_new_args("로컬 무선택 발행")) == 0
+    assert board.cmd_new(_new_args("로컬 발행")) == 0
     path = _all_ticket_files(board)[0]
     fm, _ = board.load_ticket(path)
     ledger = board.load_cluster(fm["cluster"])
     before = (path.read_bytes(), board.cluster_ledger_path(fm["cluster"]).read_bytes())
-    assert ledger["base_branch"] is None and ledger["branch"] is None
+    assert ledger["base_branch"] == _BASE_BRANCH and ledger["branch"] is None
     assert board.cmd_promote(argparse.Namespace(id=fm["id"])) == 0
     assert (path.read_bytes(), board.cluster_ledger_path(fm["cluster"]).read_bytes()) == before
     assert _git(["rev-parse", "HEAD"], tmp_path).stdout == head

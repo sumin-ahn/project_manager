@@ -1213,7 +1213,10 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 238 = 240 − T-0959 가 지운 두 경계. 완료 기록의 상태 조회(`TicketFinisher._dirty_split`)는 조회 실패를
     #   잔여 없음으로 접던 흡수를 지우고 관측 실패로 멈춘다. 라운드 규약 형제 로더(`_load_ticket_rounds`)는
     #   부재만 값 없음이고 적재 실패는 그대로 올린다 — 접으면 라운드 산출이 홈 커밋에서 조용히 빠진다.
-    assert len(report.boundaries) == 238, "propagation sweep boundary ratchet changed"
+    # 236 = 238 − T-0962 가 지운 두 경계. claim 앵커 해소(`board._claim_code_tree`)는 task 폴더 해소
+    #   실패를 PM 홈 접기로 흡수하던 갈래를 지우고 멈춘다. 대여 기록 repo 해소
+    #   (`pm_handoff._active_repo_name`)는 세션 토큰 분해 층과 그 흡수를 함께 지웠다.
+    assert len(report.boundaries) == 236, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

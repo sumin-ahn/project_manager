@@ -708,7 +708,7 @@ def _auto_slot(
 
     판정:
       1. `_registered_repos` 재사용 — areas.md 등록 repo 가 정확히 1개인가(아니면 None).
-      2. **공용 `identity_args.resolve_actor_slot` 위임** —
+      2. **공용 `identity_args.resolve_actor_workspace` 위임** —
          그 repo 의 **leased** 슬롯이 정확히 1개면 그 세션을, 0개면 None 을 돌려준다. ≥2개(모호)
          는 그 프리미티브가 `identity_args.SlotResolutionError` 로 raise 하지만, 이 함수는
          **순수 resolver 계약**(정확히 1 아니면 항상 None·fail-soft)이라 그 예외를 여기서 흡수해
@@ -870,7 +870,7 @@ def parse_open_tickets(board_output: str) -> list[str]:
 # 세션 기본 뷰가 타 세션분을 board.py 층에서 완전 비노출하도록 바뀌어, 부트스트랩
 # 층의 "그 외 open 접힘 카운트"(task-prefix 스트림 판정용 `_open_ticket_prefix`)와 "타 세션 claim
 # 현황"(claimed 행 위치기반 파서 `parse_other_session_claims`·`_format_other_session_claims_line`)은
-# 기본 dump 는 세션 렌즈 조회(`list --repo X --slot N`/`--mine`)의 open_tickets 를 그대로
+# 기본 dump 는 세션 렌즈 조회(`list --task <task>`)의 open_tickets 를 그대로
 # 쓰고, 전-세션/전체는 명시 `board.py list --all` 이 담당한다. "다른 활성 PM" 슬롯 레지스트리는
 # 별도 메커니즘(`_collect_dashboard_others`·leases 유래)이라 유지된다.
 
@@ -1873,7 +1873,7 @@ class PmBootstrap:
             print(f"[중단] board.py list 실패 (rc={rc}):\n{output}", file=sys.stderr)
             sys.exit(1)
 
-        # 세션 기본 뷰: 이 렌즈 조회(`list --repo X --slot N` 또는 `--mine`)가 곧 **내 세션
+        # 세션 기본 뷰: 이 렌즈 조회(`list --task <task>`)가 곧 **내 세션
         # 스트림**(내 세션 생성 open + 내 세션 claim)이다 — board.py 가 타 세션분을 완전 비노출한다.
         # `open_tickets`·`counts` 는 그 스트림 모수 그대로다(`--all` 전량 정렬·접힘 카운트·
         # 타 세션 티켓 정보는 기본 dump 에서 완전 제거·명시 `--all` 몫).
@@ -3406,7 +3406,7 @@ class PmBootstrap:
             print(
                 f"[중단] task 명 {task!r} 이(가) 부적합합니다 — {exc.reason}.\n"
                 f"  → task 명은 경로 문자(`/`·`\\`·`..`·선행 `.`) 없는 단일 이름이어야 하고, "
-                f"슬롯 세션 예약 패턴(<등록 repo>_<N>)은 쓸 수 없습니다.",
+                f"슬롯 폴더 이름 패턴(<등록 repo>_<N>)은 쓸 수 없습니다.",
                 file=sys.stderr,
             )
             return None

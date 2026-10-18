@@ -584,8 +584,8 @@ def pytest_configure(config):
     install_tolerant_warning_unserializer()
 
 
-def ensure_product_slot(board, *, repo="binding", number=1):
-    """호출한 테스트에만 leased 제품 Git을 준비한다. 기존 lease/task 기록은 보존한다."""
+def ensure_product_slot(board, *, repo="binding", number=1, task="binding-task"):
+    """호출한 테스트에만 task 가 보유한 leased 제품 Git을 준비한다. 기존 lease/task 기록은 보존한다."""
     import json
     from _git_fixture import init_git_repo
     path = board.REPO / f"work/{repo}_{number}"
@@ -596,22 +596,25 @@ def ensure_product_slot(board, *, repo="binding", number=1):
     data = json.loads(ledger.read_text(encoding="utf-8")) if ledger.exists() else {"leases": []}
     rows = data.setdefault("leases", [])
     slot = path.relative_to(board.REPO).as_posix()
+    tasks = data.setdefault("tasks", [])
+    if not any(isinstance(entry, dict) and entry.get("name") == task for entry in tasks):
+        tasks.append({"name": task})
     if not any(row.get("slot") == slot for row in rows):
-        rows.append({"slot": slot, "repo": repo, "session": f"{repo}_{number}",
+        rows.append({"slot": slot, "repo": repo, "session": task,
                      "state": "leased", "role": "work"})
-        ledger.write_text(json.dumps(data), encoding="utf-8")
+    ledger.write_text(json.dumps(data), encoding="utf-8")
     board.LEASES_FILE = ledger
     return path
 
 
-def bind_product_cluster(board, ticket, *, repo="binding", number=1):
+def bind_product_cluster(board, ticket, *, repo="binding", number=1, task="binding-task"):
     """기존 cluster new로 정상 제품·멤버 결속을 준비한다. 검증 대역은 사용하지 않는다."""
     import argparse
     import contextlib
     import io
-    ensure_product_slot(board, repo=repo, number=number)
+    ensure_product_slot(board, repo=repo, number=number, task=task)
     name = f"bound-{ticket.lower()}"
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         assert board.cmd_cluster(argparse.Namespace(cluster_cmd="new", name=name,
-            tickets=ticket, spike=None, repo=repo, slot=number, task=None)) == 0
+            tickets=ticket, spike=None, repo=repo, slot=number, task=task)) == 0
     return board.cluster_id_for_name(name)

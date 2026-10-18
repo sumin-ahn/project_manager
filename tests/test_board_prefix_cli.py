@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import ensure_product_slot
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -1001,6 +1003,8 @@ def test_state_changing_commands_never_move_a_prefix_only_match(
     이미 갖고 있어 중복이다. `new` 는 ID 인자를 안 받아 near-miss 조회 자체가 없다(board.py cmd_new).
     """
     path = _seed_prefixed_only(board, status=seeded_status)
+    if mutation == "claim":
+        ensure_product_slot(board, task="me")  # claim 은 task 폴더(앵커)를 먼저 해소한다(T-0962)
     args = {
         "block": _ns(id=_MISSING_LEGACY_ID, reason="r"),
         "unclaim": _ns(id=_MISSING_LEGACY_ID),
@@ -1008,7 +1012,7 @@ def test_state_changing_commands_never_move_a_prefix_only_match(
         "complete": _ns(id=_MISSING_LEGACY_ID, tests_pass=True,
                         allow_missing_log=True, allow_untested=False),
         "promote": _ns(id=_MISSING_LEGACY_ID),
-        "claim": _ns(id=_MISSING_LEGACY_ID, repo="me", slot=1, user="me"),
+        "claim": _ns(id=_MISSING_LEGACY_ID, task="me", user="me"),
     }[mutation]
     command = getattr(board, f"cmd_{mutation}")
 

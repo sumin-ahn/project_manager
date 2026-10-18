@@ -1831,8 +1831,9 @@ _CLUSTER_LEDGER_ABSENT = (
     "묶음 장부가 없습니다: {cluster} — 고정 라운드 수열은 장부가 소유하고, 준비는 "
     "그 선언만 읽습니다(선언 없는 묶음은 판정 입력이 아니라 정지 사유입니다).\n"
     "  · `python3 .project_manager/tools/board.py cluster show {cluster}` 로 장부를 확인하고, "
-    "없으면 `board.py cluster new <ticket-group> --tickets <T-...> --repo <repo> --slot <N>`"
-    "(또는 `--task <task>`) 으로 선언하세요 — 통합 브랜치를 둘 코드 트리는 명시가 필수입니다."
+    "없으면 `board.py cluster new <ticket-group> --tickets <T-...> --task <task>`"
+    "(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가) 으로 선언하세요 — 통합 "
+    "브랜치를 둘 코드 트리는 명시가 필수입니다."
 )
 _CLUSTER_BUDGET_UNDECLARED = (
     "묶음 라운드 예산이 선언되지 않았습니다: {cluster} · 장부 `budget` 의 {key} 가 없거나 "
@@ -12965,7 +12966,8 @@ def _cluster_confirmation_tree(
     if not resolved:
         raise DelegateError(
             f"확인 커맨드를 돌릴 코드 트리를 해소하지 못했습니다: {cluster} — "
-            "`--repo <repo> --slot <N>` 또는 `--task <task>` 으로 트리를 명시하세요"
+            "`--task <task>`(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가) 으로 "
+            "트리를 명시하세요"
         )
     tree = Path(resolved)
     problem = board.cluster_binding_problem(cluster, tree=str(tree))
@@ -13228,8 +13230,9 @@ def cluster_review_input(
     if fm is None:
         raise DelegateError(
             f"클러스터 장부가 없습니다: {cluster} — 리뷰 단위는 선언된 묶음입니다"
-            f"(`board.py cluster new <ticket-group> --tickets <T-...> --repo <repo> --slot <N>` "
-            f"또는 `--task <task>` 으로 먼저 선언하세요 — 코드 트리는 명시가 필수입니다)"
+            f"(`board.py cluster new <ticket-group> --tickets <T-...> --task <task>`"
+            f"(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가) 으로 먼저 "
+            f"선언하세요 — 코드 트리는 명시가 필수입니다)"
         )
     branch = str(fm.get("branch") or "").strip()
     base_branch = str(fm.get("base_branch") or "").strip()

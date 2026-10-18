@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 from _textio import utf8_child_env
+from conftest import ensure_product_slot
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -110,11 +111,18 @@ def _make_project(root: Path) -> None:
     )
 
 
+# 발행·claim 은 `--task` 와 그 task 가 보유한 폴더(실 git)가 필요하다(T-0962). 동시 new 는 한 task
+# 명의로 발행하고, 동시 claim 은 워커마다 다른 task(폴더 하나씩)로 경합한다.
+_TASK = "conc-task"
+_RACER_TASKS = tuple(f"racer-{i}" for i in range(WORKERS))
+
+
 @pytest.fixture
 def proj(tmp_path):
-    """tmp 프로젝트 루트 (골격 생성)."""
+    """tmp 프로젝트 루트 (골격 생성 + 발행 task 폴더)."""
     p = tmp_path / "proj"
     _make_project(p)
+    ensure_product_slot(_load_board_bound(p), task=_TASK)
     return p
 
 
@@ -133,7 +141,7 @@ class _Args:
 
 def _new_args(title="t", prefix=None):
     return _Args(title=title, prefix=prefix, touches=None, depends=None,
-                 tag=None, estimate="small")
+                 tag=None, estimate="small", task=_TASK)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -245,7 +253,7 @@ def _worker_write_concurrent_area_case(
     writer_done.set()
 
 
-def _worker_claim(proj_str: str, tid: str, ready, go, out_q) -> None:
+def _worker_claim(proj_str: str, tid: str, task: str, ready, go, out_q) -> None:
     """동시 claim 워커 — 같은 ticket 을 일제히 claim 시도하고 *claim 성공 여부 + stderr* 를 보고.
 
     board 의 atomic rename(`os.rename`)이 락이고, **진 쪽은 FileNotFoundError 로 표면화**된다
@@ -274,7 +282,7 @@ def _worker_claim(proj_str: str, tid: str, ready, go, out_q) -> None:
     err = io.StringIO()
     try:
         with contextlib.redirect_stderr(err):
-            rc = board.cmd_claim(_Args(id=tid, repo=f"sess-{os.getpid()}", slot=1))
+            rc = board.cmd_claim(_Args(id=tid, task=task))
         out_q.put(("WIN" if rc == 0 else "LOSE", err.getvalue()))
     except BaseException as e:  # noqa: BLE001 — 예측 못 한 死 = 부모 행, 무조건 보고
         # FileNotFoundError 도 여기로 — fix 후엔 cmd_claim 이 안 던지므로 *절대* 안 와야 한다.
@@ -296,7 +304,7 @@ def _worker_claim_two_clone(home_str: str, repo_label: str, ready, go, out_q) ->
     board = _load_board_bound(home)
     ready.put(os.getpid())
     go.wait()
-    rc = board.cmd_claim(_Args(id="T-0001", repo=repo_label, slot=1, user=repo_label))
+    rc = board.cmd_claim(_Args(id="T-0001", task=repo_label, user=repo_label))
     board_dir = home / ".project_manager" / "board"
     board_tickets = board_dir / "tickets"
     open_exists = bool(list((board_tickets / "open").glob("T-0001-*.md")))
@@ -589,9 +597,9 @@ def test_unlocked_id_issuance_collides_deterministically(board, monkeypatch):
 
     # board_lock 안에서 ID 발행+파일생성을 원자로 하면 두 번째는 T-0002 를 본다(직렬화 효과).
     a = _Args(title="first", prefix=None, touches=None, depends=None,
-              tag=None, estimate="small")
+              tag=None, estimate="small", task=_TASK)
     b = _Args(title="second", prefix=None, touches=None, depends=None,
-              tag=None, estimate="small")
+              tag=None, estimate="small", task=_TASK)
     assert board.cmd_new(a) == 0
     assert board.cmd_new(b) == 0
     ids = sorted(f.name[: f.name.index("-", 2)]
@@ -630,9 +638,12 @@ def test_concurrent_claim_only_one_wins(proj):
                              "depends_on": []}, "# seed\n")
 
     n = WORKERS
+    for number, task in enumerate(_RACER_TASKS, start=1):
+        ensure_product_slot(board, repo="racer", number=number, task=task)
+    racers = iter(_RACER_TASKS)
     procs, out_q = _spawn_and_sync(
         n, _worker_claim,
-        lambda ready, go, out_q: (str(proj), tid, ready, go, out_q))
+        lambda ready, go, out_q: (str(proj), tid, next(racers), ready, go, out_q))
     results = _drain(out_q, n, procs)  # 각 원소 = (tag, stderr_or_traceback)
 
     # 패배자가 미처리 예외로 죽었으면(EXC) = 계약 위반. 진짜 traceback 을 단언에 드러낸다
@@ -753,6 +764,8 @@ def test_two_clones_claim_race_arbitrated_by_remote_push(tmp_path, monkeypatch):
     bare = _tc_seed_bare(tmp_path, "bare-two-clone")
     home_a = _tc_home_from_bare(tmp_path, bare, "home-a")
     home_b = _tc_home_from_bare(tmp_path, bare, "home-b")
+    ensure_product_slot(_load_board_bound(home_a), task="clone-a")
+    ensure_product_slot(_load_board_bound(home_b), task="clone-b")
 
     homes = [str(home_a), str(home_b)]
     labels = ["clone-a", "clone-b"]
@@ -837,7 +850,7 @@ def test_claim_load_window_race_lost_cleanly(board, capsys):
 
     board.find_ticket_for_mutation = racing_find
     try:
-        rc = board.cmd_claim(_Args(id=tid, repo="loser", slot=1))  # 미처리 예외면 여기서 죽음(fail)
+        rc = board.cmd_claim(_Args(id=tid, task=_TASK))  # 미처리 예외면 여기서 죽음(fail)
     finally:
         board.find_ticket_for_mutation = orig_find
 
@@ -857,7 +870,7 @@ def test_claim_normal_rejections_unaffected(board, capsys):
     cp = board.TICKETS_DIR / "claimed" / "T-0009-x.md"
     board.dump_ticket(cp, {"id": "T-0009", "title": "x", "status": "claimed",
                            "depends_on": []}, "# x\n")
-    assert board.cmd_claim(_Args(id="T-0009", repo="s", slot=1)) == 1
+    assert board.cmd_claim(_Args(id="T-0009", task=_TASK)) == 1
     err = capsys.readouterr().err
     assert "currently in claimed/" in err and "claim race lost" not in err, err
 
@@ -868,7 +881,7 @@ def test_claim_normal_rejections_unaffected(board, capsys):
     tgt = board.TICKETS_DIR / "open" / "T-0011-tgt.md"
     board.dump_ticket(tgt, {"id": "T-0011", "title": "tgt", "status": "open",
                             "depends_on": ["T-0010"]}, "# tgt\n")
-    assert board.cmd_claim(_Args(id="T-0011", repo="s", slot=1)) == 1
+    assert board.cmd_claim(_Args(id="T-0011", task=_TASK)) == 1
     err = capsys.readouterr().err
     assert "is open/, not done" in err and "claim race lost" not in err, err
 
@@ -876,7 +889,7 @@ def test_claim_normal_rejections_unaffected(board, capsys):
     tgt2 = board.TICKETS_DIR / "open" / "T-0012-tgt.md"
     board.dump_ticket(tgt2, {"id": "T-0012", "title": "tgt2", "status": "open",
                              "depends_on": ["T-9999"]}, "# tgt2\n")
-    assert board.cmd_claim(_Args(id="T-0012", repo="s", slot=1)) == 1
+    assert board.cmd_claim(_Args(id="T-0012", task=_TASK)) == 1
     err = capsys.readouterr().err
     assert "dependency T-9999 not found" in err and "claim race lost" not in err, err
 
@@ -884,7 +897,7 @@ def test_claim_normal_rejections_unaffected(board, capsys):
     ok = board.TICKETS_DIR / "open" / "T-0013-ok.md"
     board.dump_ticket(ok, {"id": "T-0013", "title": "ok", "status": "open",
                            "depends_on": []}, "# ok\n")
-    assert board.cmd_claim(_Args(id="T-0013", repo="s", slot=1)) == 0
+    assert board.cmd_claim(_Args(id="T-0013", task=_TASK)) == 0
     assert list((board.TICKETS_DIR / "claimed").glob("T-0013-*.md"))
 
 
@@ -933,7 +946,7 @@ def test_claim_critical_section_holds_board_lock(board):
     board.load_ticket = probing_load
     board.find_ticket_for_mutation = arming_find
     try:
-        rc = board.cmd_claim(_Args(id=tid, repo="s", slot=1))
+        rc = board.cmd_claim(_Args(id=tid, task=_TASK))
     finally:
         board.load_ticket = orig_load
         board.find_ticket_for_mutation = orig_find

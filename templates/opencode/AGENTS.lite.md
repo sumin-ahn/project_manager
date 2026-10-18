@@ -21,8 +21,7 @@
 세션 시작 필독 셋은 이미 로드된 진입문서, 현재 정체성의 `pm_state`, `/pm-bootstrap` dump 한 번뿐이다.
 
 1. **이 문서(AGENTS.md·lite 코어)** — 이미 로드된 프로젝트 규칙·형상.
-2. **현재 정체성의 `pm_state`** — task는 `.project_manager/.local/tasks/<task>/pm_state.md`,
-   slot은 `.project_manager/.local/slots/<repo>_<N>/pm_state.md`다(둘 다 git-ignored).
+2. **현재 정체성의 `pm_state`** — `.project_manager/.local/tasks/<task>/pm_state.md`다(git-ignored).
    신규 task는 bootstrap 진입 전 파일이 없어도 정상이다.
 3. **`/pm-bootstrap` dump 한 번** — board·git·차수·직전 handoff 본문·남은 작업을 한꺼번에
    surface한다. Python backbone은 `{{PY}} .project_manager/tools/pm_bootstrap.py`다.
@@ -35,7 +34,7 @@
 **현재 진실:** [`architecture.md`](.project_manager/wiki/architecture.md)는 현재 아키텍처 단일
 진실이며, 옛 ADR 또는 현재 의도·실측과 충돌하면 기준으로 따른다. 바뀐 것은 읽는 시점뿐이다.
 
-세션명 canonical은 **`<repo>_<N>`**이다. `board.py ... --repo <repo> --slot <N>`을 쓰며 활성 lease 1개면 생략 가능하다. 위임 라벨은 `orch-dev-TNNNN`/`orch-review-TNNNN`. 첫 turn에는 board 1줄 + 직전 요약 3~5줄 + 다음 옵션 + *무엇부터?* 결정 요청을 보고한다. 기계 dump는 `pm_bootstrap.py`.
+세션 정체성은 **task 이름** 하나다. 귀속 쓰기(new·claim 등)는 `board.py ... --task <task>`로 하며, task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 위치 인자를 붙인다. 위임 라벨은 `orch-dev-TNNNN`/`orch-review-TNNNN`. 첫 turn에는 board 1줄 + 직전 요약 3~5줄 + 다음 옵션 + *무엇부터?* 결정 요청을 보고한다. 기계 dump는 `pm_bootstrap.py`.
 
 ## 2. 작업 원칙 (반드시)
 
@@ -53,7 +52,7 @@
 
 - **1차=`task` tool** — `subagent_type`(=`developer`|`architect`|`code-reviewer`)·`description`(한 줄)·`prompt`(role 프롬프트)를 전달한다. opencode가 `.opencode/agents/*.md` subagent를 별도 자식 세션(fresh ctx·200K)에서 실행한다. 권한·모델은 subagent `permission:`/`model:`이 정하므로 `--agent`/`-m` 분기 불필요.
 - role: developer=쓰기(코드+테스트), code-reviewer=독립 검토+라운드 파일 쓰기(제품 코드 수정 금지), architect=설계+라운드 파일 쓰기. 각 역할은 위임 프롬프트가 지정한 `NN-<역할>.md` 하나에만 쓴다.
-- **사전조건:** ticket claim(canonical `<repo>_<N>`), depends_on done, touches 명시, 검증 가능한 DoD. **병렬은 touches가 disjoint일 때만** 한다.
+- **사전조건:** ticket claim(`--task <task>`), depends_on done, touches 명시, 검증 가능한 DoD. **병렬은 touches가 disjoint일 때만** 한다.
 - dev prompt: "T-NNNN 구현. 본문 단일진실(`board.py show T-NNNN`). board/status/log 는 PM — 너는 코드+테스트. 보고: 변경파일·테스트수·회귀결과·DoD evidence."
 - reviewer 후 PM 직접 fix(1줄·1패턴)/dev 재작업(여러 줄)/별도 ticket(범위 외). reviewer의 should-fix도 흐름 cross-check한다.
 - **폴백**(headless·CI·task tool 미노출): `opencode run --agent <developer|architect> --format json "<프롬프트>"`. 역할 카드는 `mode: all`이라 primary 실행에서도 같은 `model:`/`permission:`을 쓰며 build/plan으로 축약하지 않는다. `pm_delegate.py` cross 실행은 카드가 없는 타 하네스 adopter에서도 같은 역할을 런타임 config로 주입한다. 병렬 폴백은 세션 DB 락 가능성이 있어 순차가 안전하다.
@@ -61,7 +60,7 @@
 ## 4. ticket 발행 계약 (PM 자족 — board.py new)
 
 ```bash
-{{PY}} .project_manager/tools/board.py new "title" --touches a.py,b.py --depends T-0001 --tag phase-1
+{{PY}} .project_manager/tools/board.py new "title" --task <task> --touches a.py,b.py --depends T-0001 --tag phase-1
 ```
 
 본문 표준 절: **목표**(무엇·왜), **인터페이스**(시그니처·경로), **결정**(분기 근거), **완료 조건(DoD)**(테스트 green·산출·판정/비고를 검증 가능하게), **참고**(실재 `[[wikilink]]`, frontmatter `depends_on`/`blocks`). `board.py lint`는 목표·완료 조건·참고만 thin 차단(`_REQUIRED_SECTIONS`)하고 dangling을 검사한다. **본문만으로 구현 가능한 단일 진실이어야 한다.** 채번·area prefix·thin 세부는 필요 시 `pm_playbook.md`를 Read한다.
@@ -69,7 +68,7 @@
 ## 5. 완료 기록 (PM 손)
 
 ```bash
-{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> [--repo <repo> --slot <N>]
+{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> --task <task>
 ```
 
 `status.md` 모듈 행·`log/current.md` entry를 갱신하고 회귀 `{{TEST_CMD}}` green을 확인한 뒤 경로를 명시해 커밋한다:

@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import anchor_board_module
+from conftest import anchor_board_module, ensure_product_slot
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -103,12 +103,17 @@ def board(tmp_path, monkeypatch):
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     mod._tmp = tmp_path
+    # 발행·claim 은 `--task` 와 그 task 가 보유한 제품 폴더가 필요하다(T-0962).
+    ensure_product_slot(mod, task=_TASK)
     return mod
+
+
+_TASK = "draft-gate-task"
 
 
 def _new_args(title: str) -> argparse.Namespace:
     return argparse.Namespace(title=title, touches=None, depends=None, tag=None,
-                              estimate="small", prefix=None, user=None, session=None)
+                              estimate="small", prefix=None, user=None, task=_TASK)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -417,13 +422,13 @@ def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path, monke
         seed_id = "-".join(seed_path[0].stem.split("-")[:2])
 
     assert board.cmd_claim(
-        argparse.Namespace(id=seed_id, repo="me", slot=1, user="me")) == 0, \
+        argparse.Namespace(id=seed_id, task=_TASK, user="me")) == 0, \
         "seed 티켓 claim 실패(테스트 전제 붕괴)."
     # complete 는 claim 과 같은 정체성으로 부른다 — 소유 대조(T-0781).
     _mark_ledger_closing(board, "C-declared")
     rc = board.cmd_complete(argparse.Namespace(
         id=seed_id, tests_pass=True, allow_missing_log=True, allow_untested=False,
-        repo="me", slot=1, user="me", cluster_close="C-declared"))
+        task=_TASK, user="me", cluster_close="C-declared"))
     assert rc == 0, "seed 티켓 complete 실패(테스트 전제 붕괴)."
 
     # draft 는 여전히 drafts_dir() 에 있고 board-git 에 커밋/push 되지 않아야 한다.
@@ -458,7 +463,8 @@ def test_new_legacy_no_git_gate_no_op(board, tmp_path, monkeypatch):
     assert called["n"] == 0
     assert list((wiki / "tickets" / "open").glob("T-*-*.md")), \
         "비공유 legacy 발행의 로컬 open 작성은 유지한다."
-    assert board.all_clusters()[0]["base_branch"] is None
+    # 홈 git 보드에서도 발행은 task 폴더의 브랜치를 기준으로 기록한다(T-0962 Q1).
+    assert board.all_clusters()[0]["base_branch"] == "main"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -644,10 +650,10 @@ def _t0930_bind(board, tmp_path, ticket_id, monkeypatch):
     slot.mkdir(parents=True, exist_ok=True)
     _git(["init", "-q", "-b", "main"], slot)
     _git(["commit", "--allow-empty", "-qm", "product seed"], slot)
-    seed_slot(tmp_path)
+    seed_slot(tmp_path, session=_TASK)
     monkeypatch.setattr(board, "LEASES_FILE", tmp_path / ".project_manager/.local/worktree-leases.json")
     assert board.cmd_cluster(argparse.Namespace(cluster_cmd="new", name="declared",
-        tickets=ticket_id, spike=None, repo=SLOT_REPO, slot=1, task=None)) == 0
+        tickets=ticket_id, spike=None, repo=SLOT_REPO, slot=1, task=_TASK)) == 0
     return slot
 
 
@@ -747,11 +753,12 @@ def test_t0930_promote_binding_legacy_local_operations(board, tmp_path, monkeypa
     before = (path.read_bytes(), board.cluster_ledger_path(fm["cluster"]).read_bytes())
     assert board.cmd_promote(argparse.Namespace(id=tid)) == 0
     assert (path.read_bytes(), board.cluster_ledger_path(fm["cluster"]).read_bytes()) == before
-    assert board.load_cluster(fm["cluster"])["base_branch"] is None
+    assert board.load_cluster(fm["cluster"])["base_branch"] == "main"
     assert "cluster new" in board.cluster_binding_problem(fm["cluster"])
     args = _new_args("잘못된 선택")
     args.repo, args.slot = "missing", 1
-    assert board.cmd_new(args) == 1
+    with pytest.raises(SystemExit):
+        board.cmd_new(args)
     assert len(list((wiki / "tickets/open").glob("T-*.md"))) == 1
 
 

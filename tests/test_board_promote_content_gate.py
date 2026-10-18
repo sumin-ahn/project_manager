@@ -482,9 +482,12 @@ def board_git(tmp_path, monkeypatch):
     return mod
 
 
+_TASK = "binding-task"  # conftest `bind_product_cluster` 의 기본 task
+
+
 def _new_args(**overrides) -> argparse.Namespace:
     args = dict(title="내용 게이트", touches=None, depends=None, tag=None,
-                estimate="small", prefix=None, user=None, session=None, design=None)
+                estimate="small", prefix=None, user=None, task=_TASK, design=None)
     args.update(overrides)
     return argparse.Namespace(**args)
 

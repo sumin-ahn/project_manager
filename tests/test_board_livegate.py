@@ -801,24 +801,6 @@ def _seed_two_leases(live_board):
     ]}), encoding="utf-8")
 
 
-def test_record_multilease_with_session_resolves_slot(live_board, monkeypatch):
-    """(a) multi-lease + `--repo B --slot 1`(ADR-0057) → 그 슬롯 worktree cwd 해소·rc0
-    (fail-loud 아님·--cwd 불요)."""
-    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
-    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    _seed_two_leases(live_board)
-    fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
-    monkeypatch.setattr(live_board.subprocess, "run", fake)
-    rc = live_board.cmd_livegate(_rec_args(repo="B", slot=1))
-    assert rc == 0, "명시 --repo/--slot 은 슬롯 해소 → fail-loud 아님"
-    pytest_call = next((c for c in fake.calls if c["kwargs"].get("shell")), None)
-    assert pytest_call is not None, "pytest -m release subprocess 가 호출되지 않았다"
-    assert pytest_call["kwargs"]["cwd"] == str(live_board.REPO / "work/B_1"), \
-        "record 가 --session 이 가리키는 슬롯 worktree 에서 돌지 않았다"
-    data = _read_flag(live_board)
-    assert data["status"] == "pass"
-
-
 def test_record_multilease_no_session_fails_loud(live_board, monkeypatch):
     """(b) multi-lease + 무명시(--repo/--slot 없음) → 여전히 fail-loud(SystemExit·--repo/--cwd 안내)."""
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)

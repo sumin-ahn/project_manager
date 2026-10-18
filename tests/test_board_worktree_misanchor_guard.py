@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import ensure_product_slot
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 BOARD_PY = TOOLS / "board.py"
@@ -992,7 +994,9 @@ def test_pm_home_cwd_new_proceeds_past_guard(tmp_path, monkeypatch, capsys):
     tmpl = pm_home / ".project_manager" / "board" / "tickets" / "_template.md"
     tmpl.write_text("---\nid: T-NNNN\ntitle: <제목>\ntouches: []\n---\n# T-NNNN — <제목>\n\n## 목표\n채움.\n",
                     encoding="utf-8")
-    rc = b.main(["new", "정상 발행"])   # 실 CLI 경로(dispatch 게이트 포함)
+    # 발행은 `--task` 와 그 task 폴더(코드 트리·기준 브랜치)가 필요하다(T-0962).
+    ensure_product_slot(b, task="pm-home-task")
+    rc = b.main(["new", "정상 발행", "--task", "pm-home-task"])   # 실 CLI 경로(dispatch 게이트 포함)
     out = capsys.readouterr()
     assert rc == 0   # 게이트 통과 → 정상 발행
     assert "worktree(코드 전용) 트리에서 실행" not in (out.err + out.out)

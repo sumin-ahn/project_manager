@@ -48,7 +48,7 @@ PM 역할의 정적 운영 매뉴얼이다. PM 역할은 보드 운영·분할·
 
 **세션 정체성:** 세션 정체성은 task 이름 하나다(`/pm-bootstrap --task <task>`). board 조작에 실리는 정체성도 `--task <task>`이고, 실값은 부트스트랩 커맨드 카드가 채우므로 외우지 않는다. `--repo/--slot`은 정체성이 아니라 작업 폴더 좌표이며, 그 좌표를 직접 지정할 일이 있는 도구에서만 쓴다.
 
-실행 위치 선택은 regression run·livegate record·claim 앵커·new/cluster new의 코드 트리·rounds resolve에 한정한다. task가 작업공간을 여럿 보유하면 `--task <task> --repo <repo> --slot <N>`으로 자기 슬롯을 지정한다. 귀속은 task로 남고 선택한 제품 HEAD·브랜치·test_cmd를 실행과 증거에 결속한다. 미소유·타 task·idle·쓰기용 readonly 또는 선택 없는 다중 슬롯은 첫 부작용 전에 거부한다. 세션 진입·퇴장, init·reid 및 finish는 task 단독 입력과 혼합 거부를 유지한다. finish와 내부 확인은 묶음 branch/base_branch로 트리를 찾으며 슬롯을 반납하지 않는다.
+실행 위치 선택은 regression run·livegate record·claim 앵커·new/cluster new의 코드 트리·rounds resolve에 한정한다. task가 작업공간을 여럿 보유하면 `--task <task> --repo <repo> --slot <N>`으로 자기 슬롯을 지정한다. 귀속은 task로 남고 선택한 제품 HEAD·브랜치·test_cmd를 실행과 증거에 결속한다. 미소유·타 task·idle·쓰기용 readonly 또는 선택 없는 다중 슬롯은 첫 부작용 전에 거부한다. 세션 진입·퇴장은 task 단독 입력과 혼합 거부를 유지하고, init·reid는 `--task`만 받으며, finish의 `--repo/--slot`은 복구 문(`--reconcile-integrated`) 전용이다. finish와 내부 확인은 묶음 branch/base_branch로 트리를 찾으며 슬롯을 반납하지 않는다.
 
 ## 찾아가는 법
 
@@ -58,9 +58,9 @@ PM 역할의 정적 운영 매뉴얼이다. PM 역할은 보드 운영·분할·
 |---|---|
 | 내 티켓 목록 | `board.py list --mine` (open+claim) |
 | 내 티켓 상세 | `board.py show T-NNNN` |
-| 내 진행·남은작업 | per-slot `pm_state.md` |
-| 내 직전 세션 | `wiki/log/current.md`에서 자기 슬롯 태그 검색 |
-| 타 PM 현황 | 부트스트랩 대시보드 slot 1줄; 필요 시 그 슬롯 태그 log entry |
+| 내 진행·남은작업 | task 별 `pm_state.md`(`.project_manager/.local/tasks/` 아래) |
+| 내 직전 세션 | `wiki/log/current.md`에서 자기 task 태그(`task:이름`) 검색 |
+| 타 PM 현황 | 부트스트랩 대시보드 task 1줄; 필요 시 그 task 태그 log entry |
 | 현재 아키텍처 | `wiki/architecture.md` |
 | 결정 히스토리 | `wiki/decisions/README.md` 색인 |
 | 우선순위·방향 | `wiki/roadmap.md` |
@@ -258,18 +258,18 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 
 - PM 세션 정체성은 task 이름 하나이며 board 조작에도 `--task <task>`으로 실린다. 값은 부트스트랩 커맨드 카드가 채운다. `--repo/--slot`은 작업 폴더 좌표라 정체성 자리에 오지 않는다.
 - 구현 세션은 짧은 식별자를 `$PM_SESSION_NAME=<name>`으로 바인딩한다.
-- orchestrator 서브에이전트 라벨은 `orch-dev-T<NNNN>` / `orch-review-T<NNNN>` 류 free-form이다. board 조작은 PM이 하므로 서브는 claim하지 않는다. board 귀속이 필요하면 `$PM_SESSION_NAME`만 바인딩한다(claim 플래그 없음).
+- orchestrator 서브에이전트 라벨은 `orch-dev-T<NNNN>` / `orch-review-T<NNNN>` 류 free-form이다. board 조작(claim·new)은 PM이 `--task`로 하므로 서브는 claim하지 않는다.
 
-슬롯 모드의 세션명·ticket prefix는 저장하지 않고 다음 순서로 유도한다:
-`명시(--repo/--slot·--prefix) > $PM_SESSION_NAME(env·CLAUDE_SESSION_NAME alias) > lease 장부에 leased 슬롯이 정확히 1개면 그 세션(count-based 유도)`. prefix 는 세션 repo → areas 레지스트리로 해소한다.
+조회·소유 대조용 세션명은 저장하지 않고 다음 순서로 유도한다:
+`--task > $PM_SESSION_NAME(env·CLAUDE_SESSION_NAME alias) > lease 장부에 leased 슬롯이 정확히 1개면 그 세션(단일-lease 유도)`. ticket prefix 는 `--prefix > task prefix > 등록 prefix 가 정확히 1개면 그것` 순서로 해소한다(세션 이름을 분해하지 않는다).
 
 lease 장부에 행이 하나도 없는 홈은 **아직 작업 폴더가 없는 것**이라 귀속 조작이 fail-loud 한다. `pm-config worktree add <repo> --user-ack <repo>` 로 작업 폴더를 먼저 만든다(순서: 작업 폴더 생성 → 부트스트랩).
 
-`local.conf session=`/`prefix=` 폴백은 폐지되었다 — 진실은 lease 장부와 areas 레지스트리다. 기존 채택자는 conf 에서 두 키를 제거하고 `board init` 재실행으로 이 clone 의 repo 행 등록을 갱신한다. 모호(leased ≥2·무명시)한 귀속 조작(claim/complete/unclaim/release/new owner)은 **fail-loud**하며 `--repo <repo> --slot <N>` 명시를 요구한다. 조회 whoami/status는 `(비바인딩)`을 표시한다. 동적 세션 목록은 [`pm_state.md`](pm_state.md) §"세션 식별 (현재까지 사용된 이름)"에 있고 `/pm-handoff`가 갱신한다.
+`local.conf session=`/`prefix=` 폴백은 폐지되었다 — 진실은 lease 장부와 areas 레지스트리다. 기존 채택자는 conf 에서 두 키를 제거하고 `board init` 재실행으로 이 clone 의 repo 행 등록을 갱신한다. 귀속 쓰기(new·claim·migrate-identity·unclaim --takeover·정상 종결 `ticket_finish.py`)는 `--task <task>`를 요구하고 없으면 첫 쓰기 전에 **fail-loud**한다. init 의 owner 칸은 `--owner`, 다음 `--task`, 둘 다 없으면 빈 칸이다(환경변수·단일 대여에서 유도하지 않는다). 소유 대조(complete·block·unblock·unclaim·discard·reid)는 `--task` 또는 단일-lease 유도 세션으로 한다. 조회 whoami/status는 `(비바인딩)`을 표시한다. 동적 세션 목록은 [`pm_state.md`](pm_state.md) §"세션 식별 (현재까지 사용된 이름)"에 있고 `/pm-handoff`가 갱신한다.
 
-**`list` 스코핑:** `board.py list`의 `--repo`/`--slot`/`--mine`은 조회 필터다. 슬롯 모드의 claim·complete·migrate-identity에서 repo/slot은 기존 행위자 지정이며, task claim의 명시 repo/slot은 제품 앵커의 대상 좌표다. 이때 행위자는 task로 유지한다. 이 허용을 complete·migrate-identity 및 세션 소비의 혼합 허용으로 확대하지 않는다. 미해소 귀속 조작은 fail-loud하고 조회는 `(비바인딩)`으로 계속된다.
+**`list` 스코핑:** `board.py list`의 `--task`/`--mine`/`--all`은 조회 필터다(`--repo`/`--slot`은 받지 않는다). 실행 명령(claim·new·cluster new·regression·livegate)의 `--repo`/`--slot`은 task가 보유한 폴더를 고르는 위치 인자이고 `--task`와 함께일 때만 받는다. 미해소 귀속 조작은 fail-loud하고 조회는 `(비바인딩)`으로 계속된다.
 
-areas.md에 repo를 정확히 1개 등록한 홈은 `--prefix` 없이도 그 repo의 `T-<prefix>-NNN`로 새 ticket을 발행한다. 기존 `T-NNNN`과 혼합되어도 disjoint라 충돌하지 않는다. repo ≥2 multi 홈은 슬롯별 prefix를 해소하며 모호하면 `new`가 fail-loud한다.
+areas.md에 repo를 정확히 1개 등록한 홈은 `--prefix` 없이도 그 repo의 `T-<prefix>-NNN`로 새 ticket을 발행한다. 기존 `T-NNNN`과 혼합되어도 disjoint라 충돌하지 않는다. repo 2개 이상 홈은 `--prefix` 또는 task prefix(`pm-config task prefix`)가 없으면 `new`가 fail-loud한다.
 
 ## 티켓 prefix 사용 가이드
 

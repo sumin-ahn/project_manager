@@ -18,14 +18,14 @@
 # 1) 현재 상황 확인 (라이브 — board.md 파일 없어도 동작)
 python3 .project_manager/tools/board.py list
 
-# 2) 세션 이름 정하기 (claim 에 --repo <repo> --slot <N> 로 슬롯 정체성 전달 · 활성 lease 1개면 생략 가능
-#    — 생략 시 $PM_SESSION_NAME > 활성 슬롯 lease 1개면 그 세션 순 해소·미해소면 claim 이 --repo/--slot 요구)
+# 2) 세션 정체성 = task 이름 (new·claim 에 --task <task> 로 전달 · 없으면 귀속 쓰기가 멈춘다
+#    — task 의 폴더가 2개 이상이면 --repo <repo> --slot <N> 위치 인자를 함께 준다)
 ```
 
 ### Ticket 잡고 작업
 ```bash
 # 3) open/ 에서 하나 골라 claim — atomic
-python3 .project_manager/tools/board.py claim T-0003 --repo <repo> --slot 1
+python3 .project_manager/tools/board.py claim T-0003 --task <task>
 
 # 4) 코드 작업
 
@@ -42,7 +42,7 @@ python3 .project_manager/tools/board.py unblock T-0003
 python3 .project_manager/tools/board.py unclaim T-0003
 
 # 소유 세션이 없어 손댈 수 없으면 — 소유자 이전의 유일한 문 (사유는 본문·board-git 에 남는다)
-python3 .project_manager/tools/board.py unclaim T-NNNN --takeover --reason "소유 세션 종료"
+python3 .project_manager/tools/board.py unclaim T-NNNN --takeover --reason "소유 세션 종료" --task <task>
 ```
 
 ### 처분으로 종결 · 오처리 복구
@@ -57,7 +57,7 @@ python3 .project_manager/tools/board.py reopen T-NNNN --reason "오처리 복구
 
 ### 새 ticket 발행
 ```bash
-python3 .project_manager/tools/board.py new "모듈 X 구현 + 통합" \
+python3 .project_manager/tools/board.py new "모듈 X 구현 + 통합" --task <task> \
     --touches src/x.py,tests/test_x.py \
     --depends T-0001 \
     --tag phase-1
@@ -89,7 +89,7 @@ tickets/
 
 - **세션 시작 전 `board.py list` 확인** — 같은 파일을 건드리는 ticket 이 다른 세션에 claim 되어 있으면 다른 걸 골라라.
 - **`touches:` 정확히 적기** — `git status` 가 회피의 마지막 보루.
-- **claim 후 진행 없으면** — 소유 세션에서 `unclaim`, 소유 세션이 없으면 `unclaim --takeover --reason <사유>` 로 소유를 해제한 뒤 새로 claim (운영 가이드, 자동화 X).
+- **claim 후 진행 없으면** — 소유 세션에서 `unclaim`, 소유 세션이 없으면 `unclaim --takeover --reason <사유> --task <task>` 로 소유를 해제한 뒤 새로 claim (운영 가이드, 자동화 X).
 
 ## ID 규칙
 
@@ -99,13 +99,13 @@ tickets/
 
 ## 세션 식별
 
-`claim` 시 `--repo <repo> --slot <N>` 로 명시 (harness-무관·1순위 권장·ADR-0057). 없으면 board.py 식별 우선순위(ADR-0040):
-1. `--repo`/`--slot` 인자 (슬롯 정체성 `<repo>_<N>`)
+귀속 쓰기(new·claim 등)는 `--task <task>` 로 명시한다 (harness-무관·없으면 fail-loud). 조회·소유 대조의 board.py 식별 우선순위(ADR-0040):
+1. `--task` 인자
 2. `$PM_SESSION_NAME` 환경변수 (구 `$CLAUDE_SESSION_NAME` = deprecated alias·여전히 인식)
 3. 활성 슬롯 lease 가 정확히 1개면 그 세션 (단일-lease 유도)
-4. 미해소 — 귀속 쓰기(claim 등)는 `--repo <repo> --slot <N>` 명시 요구 (fail-loud)
+4. 미해소
 
-lease 장부에 행이 0개면 이 홈엔 아직 작업 폴더가 없는 것이라 같은 fail-loud 로 떨어진다 — `pm-config worktree add <repo> --user-ack <repo>` 로 작업 폴더를 먼저 만든다.
+lease 장부에 행이 0개면 이 홈엔 아직 작업 폴더가 없는 것이다 — `pm-config worktree add <repo> --user-ack <repo>` 로 작업 폴더를 만든 뒤 `pm-config alloc <repo> --task <task>` 로 task 에 빌린다.
 
 ## 보드 새로고침
 

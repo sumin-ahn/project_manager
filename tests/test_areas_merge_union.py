@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import anchor_board_module
+from conftest import anchor_board_module, ensure_product_slot
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -582,15 +582,16 @@ def test_init_leaves_board_clean_and_claim_not_blocked(board, tmp_path, monkeypa
     monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
 
     assert board.cmd_init(argparse.Namespace(
-        prefix=None, area=None, owner=None, session="pm")) == 0
+        prefix=None, area=None, owner=None, repo=None, task="pm")) == 0
 
     porcelain = _git(["status", "--porcelain"], board_dir).stdout.strip()
     assert porcelain == "", f"init 이 board 를 dirty 로 남김: {porcelain!r}"
     # prefetch 가 차단 없이 anchor 를 낸다(ADR-0073 — 옛 dirty sentinel 비교의 후신).
     assert board._board_git_claim_prefetch("T-0001").block is None
 
+    ensure_product_slot(board, task="pm")  # claim 앵커 = task 폴더(T-0962)
     assert board.cmd_claim(argparse.Namespace(
-        id="T-0001", repo="me", slot=1, user="me")) == 0
+        id="T-0001", task="pm", user="me")) == 0
     assert (board_dir / "tickets" / "claimed" / "T-0001-t.md").exists()
     assert _check_attr_merge(board_dir) == "union", "claim commit 이 backfill 을 싣지 않았다"
 
@@ -625,8 +626,9 @@ def test_dirty_claim_guidance_names_the_blocking_files(board, tmp_path, monkeypa
         dirty=((" M", "tickets/open/T-0002-other.md"), ("??", "areas.md")))
     monkeypatch.setattr(board, "_board_git_claim_prefetch", lambda tid: blocked)
 
+    ensure_product_slot(board, task="pm")  # claim 앵커 = task 폴더(T-0962)
     assert board.cmd_claim(argparse.Namespace(
-        id="T-0001", repo="me", slot=1, user="me")) == 1
+        id="T-0001", task="pm", user="me")) == 1
 
     err = capsys.readouterr().err
     assert "offline 아님" in err        # 원인 정확(네트워크 문제로 오판 금지) — 기존 의미 보존.

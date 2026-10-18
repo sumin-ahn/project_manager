@@ -156,12 +156,6 @@ def _adopter0_shape(home: Home) -> None:
 # ════════════════════════════════════════════════════════════════════════
 
 
-
-
-
-
-
-
 def test_single_slot_shape_resolves_to_ledger_row(home):
     """단일 self-host — 자동해소가 행의 정체성 키와 **행의 경로 값**을 함께 낸다."""
     home.write_ledger([_pool_row("A", 1, "A_1", test_cmd="pytest -q")])
@@ -186,14 +180,12 @@ def _mismatch_shape(home: Home) -> None:
     home.mkslot("work/A_1")
 
 
-
-
 def test_actor_resolution_returns_ledger_session_verbatim(home):
     """`--repo` 단독 actor 해소는 행의 session 값 그대로 — 번호로 세션을 재조립하지 않는다."""
     _mismatch_shape(home)
-    assert home.ia.resolve_actor_slot("A", home.ledger) == "B_7"
+    assert home.ia.resolve_actor_workspace("A", home.ledger).session == "B_7"
     # 경로 축은 행의 slot 값 — 세션에서 `work/B_7` 을 만들지 않는다.
-    assert home.hf._resolve_explicit_identity_slot("A", None, home.ledger) == \
+    assert home.hf._resolve_explicit_identity_slot("A", 1, home.ledger) == \
         ("work/A_1", None)
     assert home.wp._resolve_actor_slot_for_repo("A") == "work/A_1"
 
@@ -208,7 +200,7 @@ def test_actor_resolution_returns_task_name_session(home):
                       tasks=[{"name": _TASK_SESSION, "prefix": None, "started": "t"}])
     home.write_areas([_ADOPTER_REPO])
     home.mkslot(f"work/{_ADOPTER_REPO}_1")
-    assert home.ia.resolve_actor_slot(_ADOPTER_REPO, home.ledger) == _TASK_SESSION
+    assert home.ia.resolve_actor_workspace(_ADOPTER_REPO, home.ledger).session == _TASK_SESSION
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -224,8 +216,6 @@ def _home_row_shape(home: Home, repo: str = "adopter") -> str:
     return f"{repo}_1"
 
 
-
-
 def test_home_row_number_axis_and_paths_are_ledger_derived(home):
     """홈 행도 번호를 점유하고, 경로 소비자는 행의 `slot` 값(=PM 홈)을 얻는다."""
     key = _home_row_shape(home)
@@ -233,15 +223,12 @@ def test_home_row_number_axis_and_paths_are_ledger_derived(home):
 
     assert ia.repo_slot_numbers("adopter", home.ledger) == [1]
     assert sorted(wp._existing_slot_numbers("adopter", wp.list_leases())) == [1]
-    assert ia.slot_path_for_number("adopter", 1, home.ledger) == "."
-    assert ia.resolve_actor_slot("adopter", home.ledger) == key
+    assert ia.slot_path_resolution("adopter", 1, home.ledger).path == "."
+    assert ia.resolve_actor_workspace("adopter", home.ledger).session == key
     assert hf._resolve_explicit_identity_slot("adopter", 1, home.ledger) == (".", None)
-    assert hf._resolve_explicit_identity_slot("adopter", None, home.ledger) == (".", None)
     resolved = home.bp._auto_slot(home.areas, home.ledger)
     assert (resolved.key, resolved.slot) == (key, ".")
     assert hf._regression_cwd(None, home.areas, home.ledger) == str(home.root)
-
-
 
 
 def test_pool_slot_without_worktree_is_still_stale(home):
@@ -258,14 +245,12 @@ def test_pool_slot_without_worktree_is_still_stale(home):
 # ════════════════════════════════════════════════════════════════════════
 
 
-
-
 def test_corrupt_ledger_does_not_downgrade_actor_resolution_to_a_guess(home):
     """손상 장부에서 actor 해소는 미해소(None)다 — 번호/이름으로 세션을 짓지 않는다."""
     home.ledger.write_text("{not valid json", encoding="utf-8")
-    assert home.ia.resolve_actor_slot("A", home.ledger) is None
+    assert home.ia.resolve_actor_workspace("A", home.ledger) is None
     assert home.ia.repo_slot_numbers("A", home.ledger) is None
-    assert home.ia.slot_path_for_number("A", 1, home.ledger) is None
+    assert home.ia.slot_path_resolution("A", 1, home.ledger).path is None
 
 
 def _divergent_shape(home: Home) -> None:
@@ -287,7 +272,7 @@ def test_divergent_duplicate_rows_fail_loud_instead_of_picking_one(home):
     """
     _divergent_shape(home)
     with pytest.raises(home.ia.SlotResolutionError):
-        home.ia.resolve_actor_slot("A", home.ledger)
+        home.ia.resolve_actor_workspace("A", home.ledger)
 
     resolution = home.ia.slot_identity_resolution("work/A_1", home.ledger)
     assert resolution.status == home.ia.SLOT_IDENTITY_CONFLICT
@@ -425,7 +410,7 @@ def test_entry_task_workspace_resolves_the_ledger_row(home):
     """task 명시 해소(`--repo A --slot 1`)가 행의 경로에 도달한다 — `work/A_1` 미보유 거부 없음."""
     _home_row_A(home)
     ia = home.ia
-    identity = ia.Identity(kind="slot", repo="A", slot=1, session="A_1", task="A_1")
+    identity = ia.Identity(kind="slot", repo="A", slot=1, task="A_1")
     workspace = ia.resolve_task_workspace(identity, home.ledger)
     assert (workspace.slot, workspace.repo, workspace.session) == (".", "A", "A_1")
 
@@ -439,87 +424,6 @@ def test_entry_worktree_cli_targets_the_ledger_row(home, monkeypatch):
     rc = home.wp.main(["dev", "vendor/sub", "dev-branch", "--repo", "A", "--slot", "1"])
     assert rc == 0
     assert seen == ["."]
-
-
-def test_entry_finish_attributes_the_ledger_identity(home, monkeypatch):
-    """`ticket_finish --repo A --slot 1` 의 귀속 세션이 행의 정체성이다(경로 basename 아님).
-
-    경로 basename 을 정체성으로 읽으면 홈 행(`slot="."`)의 귀속 세션이 **빈 문자열**이 된다.
-    """
-    _home_row_A(home)
-    tf = _load("ticket_finish")
-    _rebind(tf, home.root)
-    # 슬롯 해소를 위임받는 형제 pm_handoff 도 **같은 홈**에 배선한다 — 동적 로드본은 실 repo
-    # 경로를 들고 태어나므로, 배선하지 않으면 이 진입이 tmp 장부를 못 보고 canonical 폴백으로
-    # 새어 나가 테스트가 엉뚱한 이유로 green 이 된다(대역이 아니라 배선).
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: home.hf)
-    captured: dict = {}
-
-    class _Finisher:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-    class _Closer:
-        """완료 기록 단위는 묶음 하나다 — 실행 좌표(귀속 세션)는 이 생성 인자로 온다."""
-
-        def __init__(self, cluster, **kwargs):
-            captured["cluster"] = cluster
-            captured.update(kwargs)
-
-        def run(self) -> int:
-            return 0
-
-    monkeypatch.setattr(tf, "TicketFinisher", _Finisher)
-    monkeypatch.setattr(tf, "ClusterCloser", _Closer)
-    rc = tf._main(["T-0001", "--no-pytest", "--repo", "A", "--slot", "1"])
-    assert rc == 0
-    assert captured["session"] == "A_1"
-    # 슬롯 좌표는 행의 경로 값 그대로 종결에 간다(복구 문의 제품 트리). 작업 트리는 종결이 묶음
-    # 기록의 브랜치로 찾으므로 `TicketFinisher` 에는 트리 인자가 없다.
-    assert captured["slot"] == "."
-    assert "regression_cwd" not in captured and "task_workspace" not in captured
-
-
-
-
-
-
-
-
-
-
-def test_session_axis_helpers_read_coordinates_from_the_ledger(home, monkeypatch):
-    """`board._repo_from_session`·`pm_bootstrap._session_owns_untagged` 도 같은 축이다.
-
-    세션 이름 말단을 뜯으면 `B_7` 은 repo `B`·slot 7 이지만, 장부는 그 세션이 **A 의 1번 슬롯**
-    을 들고 있다고 말한다. 이름 분해가 남아 있으면 prefix 유도·무태그 소유 판정이 갈린다.
-    """
-    _mismatch_shape(home)
-    board = _load("board")
-    _rebind(board, home.root)
-    assert board._repo_from_session("B_7") == "A"
-    assert board._session_slot_coordinates("B_7") == ("A", 1)
-    monkeypatch.setattr(home.bp, "REPO", home.root)
-    assert home.bp._session_owns_untagged("B_7") is True       # 장부: A 의 1번 슬롯 명의
-    # 같은 이름이 2번 슬롯을 들고 있으면 판정이 뒤집힌다 — 값이 이름이 아니라 장부에서 온다는 증거
-    # (이름만 보면 두 형상 모두 `_7` 이라 판정이 같아야 한다).
-    home.write_ledger([{"slot": "work/A_2", "repo": "A", "session": "B_7", "state": "leased"}])
-    assert home.bp._session_owns_untagged("B_7") is False
-
-
-def test_session_axis_helpers_keep_name_rule_without_ledger_rows(home):
-    """역방향 — 장부에 그 세션 행이 없으면 이름 규약이 유일한 진실이라 종전 값 그대로다."""
-    home.write_ledger([])
-    board = _load("board")
-    _rebind(board, home.root)
-    assert board._repo_from_session("project_manager_1") == "project_manager"
-    assert board._repo_from_session("my-session") is None
-    assert board._session_slot_coordinates("a_2_3") == ("a_2", 3)
-    assert home.bp._session_owns_untagged("x_1", home.ledger) is True
-    assert home.bp._session_owns_untagged("x_2", home.ledger) is False
-    assert home.bp._session_owns_untagged("task:foo_1", home.ledger) is False
-    # 정체성 미해소는 무태그 소유권도 없다 — "이름이 없으면 다 내 것"이라는 특례가 없다.
-    assert home.bp._session_owns_untagged(None, home.ledger) is False
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -625,12 +529,6 @@ def test_slot_path_resolution_distinguishes_four_judgments(home):
                        {"slot": "nested/A_1", "repo": "A", "session": "A_1", "state": "leased"}])
     ambiguous = ia.slot_path_resolution("A", 1, home.ledger)
     assert ambiguous.status == ia.SLOT_PATH_CONFLICT and ambiguous.path is None
-
-
-
-
-
-
 
 
 def test_normal_shapes_are_not_judged_conflicting(home):

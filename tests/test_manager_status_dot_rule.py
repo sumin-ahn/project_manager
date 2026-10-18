@@ -61,10 +61,10 @@ def slots(tmp_path_factory) -> dict[str, dict]:
     pool = importlib.util.module_from_spec(specification)
     sys.modules[specification.name] = pool
     specification.loader.exec_module(pool)
-    pool.alloc("app", session="demo_2")                                           # 주황
+    pool.alloc("app", owner_task="demo_2")                                           # 주황
     pool.bind_task("live-task", session="s-test")
     # 닫힘 — 종료 기록(반납)이 남은 대여는 idle 로 돌아간다(회색).
-    pool.alloc("app", session="demo_3")
+    pool.alloc("app", owner_task="demo_3")
     close_session(pool, "demo_3")
 
     completed = subprocess.run(

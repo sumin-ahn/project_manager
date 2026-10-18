@@ -451,7 +451,7 @@ def family(proj, tmp_path, monkeypatch):
     wp = _load_wp_bound(proj)
     monkeypatch.setattr(wp, "_resolve_protected", lambda repo: ["release"])
     bare = _mk_real_bare(wp, "A", tmp_path)
-    wp.create_slot("A", base="main", session="me", init_submodules=False)
+    wp.create_slot("A", base="main", init_submodules=False)
     return wp, bare, wp.slot_path("work/A_1"), wp._real_git_runner(bare)
 
 
@@ -607,8 +607,8 @@ def test_real_git_remove_slot_then_add_reuses_number(proj, tmp_path):
     wp = _load_wp_bound(proj)
     _mk_real_bare(wp, "A", tmp_path)
 
-    a1 = wp.create_slot("A", base="main", session="me", init_submodules=False)
-    a2 = wp.create_slot("A", base="main", session="me", init_submodules=False)
+    a1 = wp.create_slot("A", base="main", init_submodules=False)
+    a2 = wp.create_slot("A", base="main", init_submodules=False)
     assert a1.slot == "work/A_1" and a2.slot == "work/A_2"
 
     assert a1.state == "idle"
@@ -617,7 +617,7 @@ def test_real_git_remove_slot_then_add_reuses_number(proj, tmp_path):
     assert all(l.slot != "work/A_1" for l in wp.list_leases()), "장부 엔트리 미삭제(dangling)"
     assert result.branch_deletion.action == wp.BRANCH_DELETED, "합쳐진 전용 브랜치 A_1 이 삭제 안 됨"
 
-    a1b = wp.create_slot("A", base="main", session="me", init_submodules=False)
+    a1b = wp.create_slot("A", base="main", init_submodules=False)
     assert a1b.slot == "work/A_1", f"번호 재사용 실패: {a1b.slot!r} (A_3 skip footgun 재발)"
 
 
@@ -627,12 +627,12 @@ def test_real_git_manual_worktree_remove_leaves_dangling_ledger_skips_number(pro
     _init_repo(proj)
     wp = _load_wp_bound(proj)
     _mk_real_bare(wp, "A", tmp_path)
-    wp.create_slot("A", base="main", session="me", init_submodules=False)   # A_1
-    wp.create_slot("A", base="main", session="me", init_submodules=False)   # A_2
+    wp.create_slot("A", base="main", init_submodules=False)   # A_1
+    wp.create_slot("A", base="main", init_submodules=False)   # A_2
 
     _git(wp.bare_repo_path("A"), "worktree", "remove", str(wp.slot_path("work/A_1")), "--force")
 
-    a3 = wp.create_slot("A", base="main", session="me", init_submodules=False)
+    a3 = wp.create_slot("A", base="main", init_submodules=False)
     assert a3.slot == "work/A_3", \
         "수동 remove 후에도 번호가 재사용되면 remove_slot 대조가 무의미(footgun 전제 붕괴)"
 
@@ -656,7 +656,7 @@ def submodule_slot(proj, tmp_path, monkeypatch):
     wp = _load_wp_bound(proj)
     monkeypatch.setattr(wp, "_resolve_protected", lambda repo: ["main"])
     bare = _mk_real_bare_with_submodule(wp, "A", tmp_path)
-    wp.create_slot("A", base="main", session="me", init_submodules=False)
+    wp.create_slot("A", base="main", init_submodules=False)
     slot_dir = wp.slot_path("work/A_1")
     _git(slot_dir, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q")
     assert (slot_dir / "sub" / "README.md").is_file()
@@ -697,8 +697,8 @@ def test_real_git_remove_slot_preserves_unmerged_branch_and_deletes_it_with_bran
     _init_repo(proj)
     wp = _load_wp_bound(proj)
     bare = _mk_real_bare(wp, "A", tmp_path)
-    wp.create_slot("A", base="main", session="me", init_submodules=False)   # A_1
-    wp.create_slot("A", base="main", session="me", init_submodules=False)   # A_2
+    wp.create_slot("A", base="main", init_submodules=False)   # A_1
+    wp.create_slot("A", base="main", init_submodules=False)   # A_2
     for slot_name in ("work/A_1", "work/A_2"):
         slot_dir = wp.slot_path(slot_name)
         (slot_dir / "wip.txt").write_text("wip\n", encoding="utf-8")
@@ -726,7 +726,7 @@ def test_real_git_remove_slot_with_readonly_leftovers_succeeds(proj, tmp_path):
     bare.parent.mkdir(parents=True, exist_ok=True)
     _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
 
-    wp.create_slot("A", base="main", session="me", init_submodules=False)   # A_1
+    wp.create_slot("A", base="main", init_submodules=False)   # A_1
     slot_dir = wp.slot_path("work/A_1")
     locked = slot_dir / "sub"
     locked.mkdir()
@@ -754,7 +754,7 @@ def test_real_git_base_recreate_after_preserved_branch_fails_loud(proj, tmp_path
     wp = _load_wp_bound(proj)
     bare = _mk_real_bare(wp, "A", tmp_path)
 
-    wp.create_slot("A", base="main", session="me", init_submodules=False)
+    wp.create_slot("A", base="main", init_submodules=False)
     slot_dir = wp.slot_path("work/A_1")
     (slot_dir / "wip.txt").write_text("wip\n", encoding="utf-8")
     _git(slot_dir, "add", "wip.txt")
@@ -766,7 +766,7 @@ def test_real_git_base_recreate_after_preserved_branch_fails_loud(proj, tmp_path
     assert _branch_exists(bare, "A_1"), "보존 브랜치 A_1 이 bare 에 없음"
 
     with pytest.raises(wp.SlotBranchExists) as exc:
-        wp.create_slot("A", base="main", session="me", init_submodules=False)
+        wp.create_slot("A", base="main", init_submodules=False)
     msg = str(exc.value)
     assert (exc.value.branch, exc.value.slot, exc.value.base) == ("A_1", "work/A_1", "main")
     assert "orphan" not in msg.lower(), f"orphan-worktree 오귀인 잔존: {msg!r}"
@@ -782,8 +782,8 @@ def test_real_git_branch_resume_preserved_unmerged_no_reset(proj, tmp_path):
     wp = _load_wp_bound(proj)
     bare = _mk_real_bare(wp, "A", tmp_path)
 
-    wp.create_slot("A", base="main", session="me", init_submodules=False)   # A_1 @ main
-    wp.create_slot("A", base="main", session="me", init_submodules=False)   # A_2 @ main (재개할 슬롯)
+    wp.create_slot("A", base="main", init_submodules=False)   # A_1 @ main
+    wp.create_slot("A", base="main", init_submodules=False)   # A_2 @ main (재개할 슬롯)
     slot_dir = wp.slot_path("work/A_1")
     (slot_dir / "wip.txt").write_text("wip\n", encoding="utf-8")
     _git(slot_dir, "add", "wip.txt")
@@ -812,8 +812,8 @@ def test_real_git_branch_exists_detection_color_safe(proj, tmp_path):
     _git(bare, "config", "color.branch", "always")
     _git(bare, "config", "color.ui", "always")
 
-    wp.create_slot("A", base="main", session="me", init_submodules=False)
-    wp.create_slot("A", base="main", session="me", init_submodules=False)
+    wp.create_slot("A", base="main", init_submodules=False)
+    wp.create_slot("A", base="main", init_submodules=False)
     slot_dir = wp.slot_path("work/A_1")
     (slot_dir / "wip.txt").write_text("wip\n", encoding="utf-8")
     _git(slot_dir, "add", "wip.txt")
@@ -822,7 +822,7 @@ def test_real_git_branch_exists_detection_color_safe(proj, tmp_path):
     assert wp.remove_slot("work/A_1").branch_deletion.reason == wp.BRANCH_REASON_UNMERGED
 
     with pytest.raises(wp.SlotBranchExists):
-        wp.create_slot("A", base="main", session="me", init_submodules=False)
+        wp.create_slot("A", base="main", init_submodules=False)
     assert all(l.slot != "work/A_1" for l in wp.list_leases()), "선-검출 실패 시 provisional 잔존"
 
     assert wp.switch("work/A_2", "A_1", protected=["main"]).branch == "A_1"
@@ -872,8 +872,8 @@ def pool(proj, tmp_path, monkeypatch):
     wp = _load_wp_bound(proj)
     monkeypatch.setattr(wp, "_resolve_protected", lambda repo: ["main"])
     bare = _mk_real_bare(wp, "A", tmp_path)
-    wp.create_slot("A", base="main", session="me", init_submodules=False)   # A_1
-    wp.create_slot("A", base="main", session="me", init_submodules=False)   # A_2
+    wp.create_slot("A", base="main", init_submodules=False)   # A_1
+    wp.create_slot("A", base="main", init_submodules=False)   # A_2
     _commit_in(wp.slot_path("work/A_1"), "wip.txt")
     return wp, bare
 
@@ -1111,7 +1111,7 @@ def test_create_slot_base_preexisting_branch_raises_slot_branch_exists(wp):
     _mk_bare_dir(wp, "A")
     git = _CreateBaseFakeGit(slot_branch_exists=True)
     with pytest.raises(wp.SlotBranchExists) as exc:
-        wp.create_slot("A", base="develop", session="me", init_submodules=False, git_runner=git)
+        wp.create_slot("A", base="develop", init_submodules=False, git_runner=git)
     assert (exc.value.branch, exc.value.base, exc.value.slot) == ("A_1", "develop", "work/A_1")
     assert git.did("branch", "--list", "--format=%(refname:short)", "A_1")
     assert not git.did("worktree", "add")
@@ -1123,7 +1123,7 @@ def test_create_slot_base_no_preexisting_branch_proceeds(wp):
     """대조 — 전용 브랜치 미존재면 선-검출 통과 → 정상 worktree add + 부모(base) 기록."""
     _mk_bare_dir(wp, "A")
     git = _CreateBaseFakeGit(slot_branch_exists=False)
-    lease = wp.create_slot("A", base="develop", session="me", init_submodules=False, git_runner=git)
+    lease = wp.create_slot("A", base="develop", init_submodules=False, git_runner=git)
     assert lease.slot == "work/A_1"
     assert git.did("branch", "--list", "--format=%(refname:short)", "A_1")
     assert git.did("worktree", "add", "--no-track", "-b", "A_1")
@@ -1143,7 +1143,7 @@ def test_create_slot_post_hoc_branch_exists_not_misattributed_orphan(wp):
 
     git = _G(slot_branch_exists=False)
     with pytest.raises(RuntimeError) as exc:
-        wp.create_slot("A", base="develop", session="me", init_submodules=False, git_runner=git)
+        wp.create_slot("A", base="develop", init_submodules=False, git_runner=git)
     msg = str(exc.value)
     assert "A_1" in msg and "브랜치" in msg
     assert "orphan" not in msg.lower()

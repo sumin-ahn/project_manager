@@ -206,13 +206,13 @@ Claude Bash 도구로 아래 장시간 커맨드를 실행할 때는 호출층 `
 ```
 당신은 이 프로젝트의 구현 세션 <X> 입니다. 역할: <T-NNNN> 단일 ticket 구현.
 부트스트랩: 1) CLAUDE.md  2) .project_manager/wiki/status.md  3) python3 .project_manager/tools/board.py show <T-NNNN>
-작업 시작: python3 .project_manager/tools/board.py claim <T-NNNN> --repo <repo> --slot <N>
+작업 시작: python3 .project_manager/tools/board.py claim <T-NNNN> --task <task>
 ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
 완료 시: 전체 회귀 → `/pm-wave-finish` 묶음 종결 → status.md·log/current.md 서술 점검.
 막히면 block --reason 으로 PM 세션에.
 ```
 
-세션 정체성은 슬롯이면 `claim` 의 **`--repo <repo> --slot <N>` 인자**로, 커스텀 세션명이면 `$PM_SESSION_NAME` 환경변수로 준다.
+세션 정체성은 `claim` 의 **`--task <task>`** 로 준다.
 
 ## Wave 패턴
 
@@ -232,7 +232,7 @@ wave 하나 = 묶음 하나다. 단계 표·커맨드의 단일 진실은 `/pm-d
      board 상태 전이·lease·잠금·동시성 중 1개 이상. 상위 developer 프로필을 쓴다.
    - **normal**: 소거법. 애매하면 상향한다.
 2. **묶음 선언 + claim** — `board.py cluster new <ticket-group> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로>
-   --repo <repo> --slot <N>`(또는 `--task <task>`)로 이번 wave 의 운영 단위·통합 브랜치·설계 문서를
+   --task <task>`(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 위치 인자 추가)로 이번 wave 의 운영 단위·통합 브랜치·설계 문서를
    결속한다. 통합 브랜치를 둘 **코드 트리는 명시가 필수**이고, 없으면 첫 쓰기 앞에서 거부된다.
    그 다음 멤버마다 `/pm-wave-claim`이
    DoD self-containment·depends_on·placeholder·wikilink dangling을 검증한다. **묶음 판단은 PM 몫**이다 —

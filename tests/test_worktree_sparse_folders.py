@@ -215,7 +215,7 @@ def test_create_slot_with_folders_checks_out_only_the_cone(wp, tmp_path):
     """`folders=[a]` 생성 — 최상위 파일과 `a/**` 만 디스크에 있고 나머지는 추적(S)으로 남는다."""
     _make_bare(wp, _make_origin(tmp_path))
 
-    lease = wp.create_slot("A", base="main", session="me", init_submodules=False,
+    lease = wp.create_slot("A", base="main", init_submodules=False,
                            folders=["a"])
 
     slot_dir = wp.slot_path(lease.slot)
@@ -241,7 +241,7 @@ def test_create_slot_with_folders_never_writes_the_full_tree(wp):
     폴더 없는 생성은 현행 argv 그대로이고 폴더 제한 호출이 하나도 없다."""
     wp.bare_repo_path("A").mkdir(parents=True)
     git = _RecordingGit()
-    wp.create_slot("A", base="main", session="me", git_runner=git, folders=["a"])
+    wp.create_slot("A", base="main", git_runner=git, folders=["a"])
 
     order = [
         git.first("version"),
@@ -256,7 +256,7 @@ def test_create_slot_with_folders_never_writes_the_full_tree(wp):
                    str(wp.slot_path("work/A_1")), "origin/main"]
 
     plain = _RecordingGit()
-    wp.create_slot("A", base="main", session="me", git_runner=plain)
+    wp.create_slot("A", base="main", git_runner=plain)
     add = next(call for call in plain.calls if call[:2] == ["worktree", "add"])
     assert add == ["worktree", "add", "--no-track", "-b", "A_2",
                    str(wp.slot_path("work/A_2")), "origin/main"]
@@ -270,7 +270,7 @@ def test_create_slot_with_folders_never_writes_the_full_tree(wp):
 def test_slots_without_folders_never_touch_the_shared_config(wp, tmp_path):
     """폴더 없는 생성·대여·반납·재대여는 공용 config 바이트를 바꾸지 않는다(제한 없던 슬롯에 disable 없음)."""
     bare = _make_bare(wp, _make_origin(tmp_path))
-    lease = wp.create_slot("A", base="main", session="me", init_submodules=False)
+    lease = wp.create_slot("A", base="main", init_submodules=False)
     baseline = (bare / "config").read_bytes()
     _assert_shared_config_untouched(bare, baseline)
 
@@ -288,9 +288,9 @@ def test_folder_limit_stays_in_its_slot(wp, tmp_path):
     """폴더 규칙은 그 슬롯에만 걸린다 — 공용 저장소는 bare 그대로, 옆 슬롯은 전체·깨끗하고 제한을 풀어도
     옆 슬롯은 바뀌지 않는다."""
     bare = _make_bare(wp, _make_origin(tmp_path))
-    limited = wp.create_slot("A", base="main", session="me", init_submodules=False,
+    limited = wp.create_slot("A", base="main", init_submodules=False,
                              folders=["a"])
-    full = wp.create_slot("A", base="main", session="me", init_submodules=False)
+    full = wp.create_slot("A", base="main", init_submodules=False)
     full_dir = wp.slot_path(full.slot)
     # 처음 폴더 제한을 걸면 git 이 bare 의 `core.bare` 를 `config.worktree` 로 옮긴다(공용 설정 변화).
     assert bare / "config.worktree" in _worktree_config_files(bare)
@@ -319,7 +319,7 @@ def test_folder_limit_stays_in_its_slot(wp, tmp_path):
 def test_alloc_with_folders_restricts_an_idle_full_slot(wp, tmp_path):
     """전체로 만든 idle 슬롯을 `folders=[a]` 로 빌리면 그 cone 만 남는다."""
     _make_bare(wp, _make_origin(tmp_path))
-    lease = wp.create_slot("A", base="main", session="me", init_submodules=False)
+    lease = wp.create_slot("A", base="main", init_submodules=False)
     slot_dir = wp.slot_path(lease.slot)
     assert (slot_dir / "b" / "y").is_file()
 
@@ -335,7 +335,7 @@ def test_alloc_with_folders_restricts_an_idle_full_slot(wp, tmp_path):
 def test_alloc_without_folders_restores_the_full_checkout(wp, tmp_path):
     """폴더 제한으로 만든 idle 슬롯을 폴더 없이 빌리면 전체가 돌아온다 — 앞 제한을 물려받지 않는다."""
     _make_bare(wp, _make_origin(tmp_path))
-    lease = wp.create_slot("A", base="main", session="me", init_submodules=False,
+    lease = wp.create_slot("A", base="main", init_submodules=False,
                            folders=["a"])
     slot_dir = wp.slot_path(lease.slot)
     assert not (slot_dir / "b" / "y").exists()
@@ -359,14 +359,14 @@ def test_invalid_folders_are_refused_before_any_side_effect(wp, tmp_path):
 
     for bad in [*([value] for value in _INVALID_FOLDERS), []]:
         with pytest.raises(wp.SlotFoldersRefused):
-            wp.create_slot("A", base="main", session="me", init_submodules=False,
+            wp.create_slot("A", base="main", init_submodules=False,
                            folders=bad)
         assert not (wp.WORK_DIR / "A_1").exists(), bad
         assert wp.list_leases() == [], bad
         assert not wp.LEASES_FILE.exists(), bad
         _assert_shared_config_untouched(bare, baseline)
 
-    lease = wp.create_slot("A", base="main", session="me", init_submodules=False)
+    lease = wp.create_slot("A", base="main", init_submodules=False)
     slot_dir = wp.slot_path(lease.slot)
     baseline = (bare / "config").read_bytes()
     for bad in [*([value] for value in _INVALID_FOLDERS), []]:
@@ -382,7 +382,7 @@ def test_invalid_folders_are_refused_before_any_side_effect(wp, tmp_path):
 def test_alloc_refuses_to_change_folders_of_a_dirty_slot(wp, tmp_path):
     """커밋 안 한 변경이 있는 idle 슬롯의 폴더는 바꾸지 않는다 — git 은 반쪽 적용하고 rc 0 이다."""
     _make_bare(wp, _make_origin(tmp_path))
-    lease = wp.create_slot("A", base="main", session="me", init_submodules=False)
+    lease = wp.create_slot("A", base="main", init_submodules=False)
     slot_dir = wp.slot_path(lease.slot)
     (slot_dir / "b" / "y").write_text("edited\n", encoding="utf-8")
 
@@ -406,7 +406,7 @@ def test_submodules_outside_the_folders_are_neither_initialized_nor_reported(
     _allow_file_submodules(monkeypatch)
     _make_bare(wp, _make_origin_with_submodules(tmp_path))
 
-    lease = wp.create_slot("A", base="main", session="me", folders=["a"])
+    lease = wp.create_slot("A", base="main", folders=["a"])
 
     slot_dir = wp.slot_path(lease.slot)
     assert (slot_dir / "a" / "subm" / "lib.txt").is_file()
@@ -431,7 +431,7 @@ def test_folders_require_git_2_36_or_newer(wp):
     wp.bare_repo_path("A").mkdir(parents=True)
     old = _RecordingGit(version="git version 2.35.8")
     with pytest.raises(wp.SlotFoldersRefused, match="2.36"):
-        wp.create_slot("A", base="main", session="me", git_runner=old, folders=["a"])
+        wp.create_slot("A", base="main", git_runner=old, folders=["a"])
     assert not any(call[:2] == ["worktree", "add"] for call in old.calls)
     assert wp.list_leases() == []
 
@@ -450,10 +450,10 @@ def test_folders_require_git_2_36_or_newer(wp):
 def test_slot_git_status_reports_the_folders_git_holds(wp, tmp_path):
     """현황의 폴더 = git 정규화 목록(`a a/sub b` → `a b`) · 전체 슬롯 None · 한글 원문 · cone 아님은 거부."""
     _make_bare(wp, _make_origin(tmp_path))
-    limited = wp.create_slot("A", base="main", session="me", init_submodules=False,
+    limited = wp.create_slot("A", base="main", init_submodules=False,
                              folders=["a", "a/sub", "b"])
-    full = wp.create_slot("A", base="main", session="me", init_submodules=False)
-    korean = wp.create_slot("A", base="main", session="me", init_submodules=False,
+    full = wp.create_slot("A", base="main", init_submodules=False)
+    korean = wp.create_slot("A", base="main", init_submodules=False,
                             folders=["한글"])
 
     assert wp.slot_git_status(limited.slot)["folders"] == ["a", "b"]

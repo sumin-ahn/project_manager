@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import ensure_product_slot
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -133,9 +135,11 @@ def _expected_rejection_text(board, command: str, tid: str, status: str) -> str:
 # 무효 상태 = STATUS_DIRS - 유효 상태. 손으로 나열하지 않고 board 모듈 상수에서 뺀다
 # (새 상태가 STATUS_DIRS 에 늘면 이 매트릭스가 자동으로 그 상태를 포함한다).
 
-def _args(command: str, tid: str) -> argparse.Namespace:
+def _args(board, command: str, tid: str) -> argparse.Namespace:
+    if command == "claim":
+        ensure_product_slot(board, task="me")  # claim 은 task 폴더(앵커)를 먼저 해소한다(T-0962)
     extra = {
-        "claim": dict(repo="me", slot=1, user="me"),
+        "claim": dict(task="me", user="me"),
         "complete": dict(tests_pass=True, allow_missing_log=True, allow_untested=False),
         "block": dict(reason="사유"),
         "unclaim": dict(takeover=False, reason=None),
@@ -204,7 +208,7 @@ def test_wrong_state_rejects_without_moving_the_ticket(board, capsys, command, s
     before_tickets = _tickets_tree_snapshot(board)
     before_derived = _derived_files_snapshot(board)
 
-    rc = getattr(board, f"cmd_{command}")(_args(command, tid))
+    rc = getattr(board, f"cmd_{command}")(_args(board, command, tid))
 
     assert rc != 0, f"{command} on {status}/ 가 통과함 — wrong-state 거부 회귀."
     assert _tickets_tree_snapshot(board) == before_tickets, (
@@ -249,6 +253,6 @@ def test_valid_state_still_passes(board, command, status):
     tid = "T-0001"
     _seed(board, tid, status)
 
-    rc = getattr(board, f"cmd_{command}")(_args(command, tid))
+    rc = getattr(board, f"cmd_{command}")(_args(board, command, tid))
 
     assert rc == 0, f"{command} on {status}/(유효 상태)가 거부됨 — 회귀."

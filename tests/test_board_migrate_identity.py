@@ -61,9 +61,9 @@ def board(tmp_path, monkeypatch):
         monkeypatch.setattr(mod, name, val)
     (pm / ".local").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(mod, "_git_config_email", lambda: None)
-    # 세션 바인딩은 env 명시로 준다 — per-clone conf `session=` 폴백은 폐지됐고(T-0779),
-    # migrate 는 귀속 쓰기라 미해소면 fail-loud 다.
-    monkeypatch.setenv("PM_SESSION_NAME", "pm-1")
+    # migrate 는 귀속 쓰기라 `--task` 가 필수다(T-0962) — `_run` 이 기본 task 를 준다. 환경변수
+    # 세션은 쓰지 않으므로 실 PM 세션 env 가 새지 않게 비운다.
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     return mod
 
@@ -95,9 +95,12 @@ def _seed(board, tid, status, *, fm_extra=None, body="# seed\n"):
     return path
 
 
+_TASK = "pm-1"
+
+
 def _run(board, capsys, **flags):
     args = argparse.Namespace(
-        user=flags.get("user"), session=flags.get("session"),
+        user=flags.get("user"), task=flags.get("task", _TASK),
         dry_run=flags.get("dry_run", False), scope=flags.get("scope", "all"))
     rc = board.cmd_migrate_identity(args)
     out = capsys.readouterr()
@@ -870,3 +873,67 @@ def test_surviving_ticket_still_backfilled(board, capsys):
     assert rc == 0
     fm, _b = board.load_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md")
     assert fm["created_by"] == "alice"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# T-0962 — 옛 슬롯 세션 토큰 이전 (결정안 6항)
+# ════════════════════════════════════════════════════════════════════════
+
+_AREAS_PROJ = (
+    "# Area Registry\n\n"
+    "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
+    "|---|---|---|---|---|---|---|---|\n"
+    "| proj |  | g:p | pytest -q | reg | main | main | alice |\n"
+)
+
+
+def test_t0962_slot_session_tokens_move_to_task(board, capsys):
+    """AT-006 — 비종결·draft 의 실행 사용자 슬롯 토큰은 `<user>/<task>` 로, 타 사용자·종결은 그대로."""
+    _write_conf(board, user="alice")
+    board.AREAS_FILE.write_text(_AREAS_PROJ, encoding="utf-8")
+    t1 = _seed(board, "T-0001", "open", fm_extra={"created_by": "alice/proj_1"})
+    t2 = _seed(board, "T-0002", "claimed",
+               fm_extra={"created_by": "alice/proj_2", "claimed_by": "alice/proj_2"})
+    (board.TICKETS_DIR / "blocked").mkdir(parents=True, exist_ok=True)
+    t3 = _seed(board, "T-0003", "blocked",
+               fm_extra={"created_by": "alice", "claimed_by": "proj_1"})
+    board.drafts_dir().mkdir(parents=True, exist_ok=True)
+    t4 = board.drafts_dir() / "T-0004-seed.md"
+    board.dump_ticket(t4, {"id": "T-0004", "title": "t", "status": "draft",
+                           "created_by": "alice/proj_1"}, "# seed\n")
+    t5 = _seed(board, "T-0005", "done",
+               fm_extra={"created_by": "alice/proj_1", "claimed_by": "alice/proj_1"})
+    t6 = _seed(board, "T-0006", "open", fm_extra={"created_by": "bob/proj_1"})
+    untouched = {t5: t5.read_bytes(), t6: t6.read_bytes()}
+
+    def snapshot() -> dict:
+        return {path: path.read_bytes() for path in (t1, t2, t3, t4, t5, t6)}
+
+    # `--task` 없는 실행은 어떤 쓰기보다 먼저 멈춘다.
+    before = snapshot()
+    with pytest.raises(SystemExit) as exc:
+        board.cmd_migrate_identity(argparse.Namespace(
+            user=None, task=None, dry_run=False, scope="all"))
+    assert "--task" in str(exc.value.code)
+    assert snapshot() == before
+    # dry-run 은 쓰기 0.
+    rc, _out, _err = _run(board, capsys, task="mytask", dry_run=True)
+    assert rc == 0
+    assert snapshot() == before
+
+    rc, _out, err = _run(board, capsys, task="mytask")
+    assert rc == 0
+    assert board.load_ticket(t1)[0]["created_by"] == "alice/mytask"
+    fm2 = board.load_ticket(t2)[0]
+    assert (fm2["created_by"], fm2["claimed_by"]) == ("alice/mytask", "alice/mytask")
+    assert board.load_ticket(t3)[0]["claimed_by"] == "alice/mytask"
+    assert board.load_ticket(t4)[0]["created_by"] == "alice/mytask"
+    for path, data in untouched.items():
+        assert path.read_bytes() == data
+    assert "T-0006" in err and "bob/proj_1" in err
+
+    after = snapshot()
+    rc, out, _err = _run(board, capsys, task="mytask")
+    assert rc == 0
+    assert snapshot() == after
+    assert "변경 없음" in out

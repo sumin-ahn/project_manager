@@ -14,6 +14,7 @@ import argparse
 import hashlib
 import importlib.util
 import inspect
+import json
 import os
 import shutil
 import subprocess
@@ -161,15 +162,6 @@ class _FakeBoard:
 
     def _parse_areas(self):
         return ([], list(self._rows))
-
-    def session_name(self):
-        return None
-
-    def _repo_from_session(self, session):
-        head, sep, tail = session.rpartition("_")
-        if not sep or not head or not tail.isdigit():
-            return None
-        return head
 
     def registered_repos(self):
         return set(self._repos)
@@ -489,17 +481,6 @@ def test_log_skeleton_adds_task_tag_when_task_is_resolved(tf):
     )
     assert skeleton.splitlines()[0] == (
         "## [2026-08-06] feat | [[T-0547]] — 박제 (task:orch-dev-T0547)"
-    )
-
-
-def test_log_skeleton_adds_canonical_slot_tag_when_session_is_resolved(tf):
-    """slot 완료 entry는 handoff와 같은 canonical 세션 태그를 헤더 말미에 생산한다."""
-    skeleton = tf.build_log_skeleton(
-        ticket_id="T-0547", title="박제", new_total=42, board_before=1, board_after=2,
-        entry_type="feat", date="2026-08-06", session="project_manager_2",
-    )
-    assert skeleton.splitlines()[0] == (
-        "## [2026-08-06] feat | [[T-0547]] — 박제 (project_manager_2)"
     )
 
 
@@ -1157,22 +1138,12 @@ def _bind_pm_handoff_repo(tf, monkeypatch, repo_root: Path):
     return hp
 
 
-class _FakeIdentityChain:
-    """pm_log 대역 — 무인자 진입의 정체성 해소 체인만 흉내낸다(`(task, 출처)`)."""
-
-    def __init__(self, result):
-        self._result = result
-
-    def resolve_snapshot_identity(self, repo_root, cwd):
-        return self._result
-
-
 class _FakeHandoff:
     """pm_handoff 대역 — ticket_finish glue(_resolve_finish_slot·main forward)를 hermetic 격리.
 
     `_resolve_explicit_identity_slot`/`_regression_cwd` 만 흉내낸다(실 pm_bootstrap·areas/leases
     장부 미접촉). `explicit_result` 미지정이면 `_resolve_explicit_identity_slot`(repo,slot)이 리스
-    검증 없이 단순 조립(`work/<repo>_<slot 또는 1>`)한다. 무인자 진입은 이 대역을 타지 않는다 —
+    검증 없이 단순 조립(`work/<repo>_<slot>`)한다. 무인자 진입은 이 대역을 타지 않는다 —
     정체성은 pm_log 체인이 task 로 해소한다.
     """
 
@@ -1182,9 +1153,7 @@ class _FakeHandoff:
     def _resolve_explicit_identity_slot(self, repo, slot):
         if self._explicit_result is not None:
             return self._explicit_result
-        if repo is None:
-            return None, None
-        return f"work/{repo}_{slot if slot is not None else 1}", None
+        return f"work/{repo}_{slot}", None
 
     @staticmethod
     def _regression_cwd(worktree_slot=None, *, repo_root=None):
@@ -1240,19 +1209,6 @@ def test_resolve_finish_slot_m3_rejects_repo_join_mismatch(tf, tmp_path, monkeyp
     assert err is not None and "M3" in err and "조인" in err
 
 
-def test_resolve_finish_slot_repo_alone_resolves_single_active(tf, tmp_path, monkeypatch):
-    """--repo 단독 + 그 repo 활성 슬롯 정확히 1개 → actor 자동해소(ADR-0057 결정 3)."""
-    _bind_pm_handoff_repo(tf, monkeypatch, tmp_path)
-    leases = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    leases.parent.mkdir(parents=True)
-    leases.write_text(
-        '{"leases": [{"slot": "work/myrepo_3", "repo": "myrepo", "session": "myrepo_3", '
-        '"state": "leased"}]}',
-        encoding="utf-8",
-    )
-    assert tf._resolve_finish_slot("myrepo", None) == ("work/myrepo_3", None)
-
-
 def test_run_skip_pytest_bypasses_regression_keeps_tests_pass(tf, tmp_path, capsys):
     """(b) --no-pytest → [1/5] 회귀 skip(pytest 미호출)·board complete 는 --tests-pass 유지·rc 0.
 
@@ -1287,23 +1243,16 @@ def test_run_skip_pytest_bypasses_regression_keeps_tests_pass(tf, tmp_path, caps
 
 
 def test_main_unresolved_identity_fails_loud_before_regression(tf, monkeypatch, capsys):
-    """(c) 무인자 진입에서 정체성 미해소 → 친화 에러·rc 1·회귀 미시작(조용한 ② false-red 제거).
+    """(c) 무인자 진입(`--task` 없음) → usage error(rc 2)·`--task` 처방·회귀 미시작.
 
-    fail-loud 는 run() 진입 *전*이라 회귀가 시작조차 안 된다([1/5] 미출력). 처방은 `--repo
-    <name> [--slot <N>]` 또는 `--task <이름>` 이다 — 회귀 skip 은 처방이 아니다(같은 코드 트리를
-    사설 참조 측정·stage 가 함께 쓴다).
+    fail-loud 는 run() 진입 *전*이라 회귀가 시작조차 안 된다([1/5] 미출력). 정상 종결의 정체성은
+    `--task` 하나이고 cwd·단일 활성 task 에서 유도하지 않는다(T-0962 F-008).
     """
-    monkeypatch.setattr(
-        tf, "_load_pm_log",
-        lambda: _FakeIdentityChain((None, "단일 활성 task")),
-    )
-    rc = tf.main(["T-1234"])
+    with pytest.raises(SystemExit) as exc:
+        tf.main(["T-1234"])
     captured = capsys.readouterr()
-    assert rc == 1
-    assert "정체성 미해소" in captured.err
+    assert exc.value.code == 2
     assert "--task" in captured.err
-    # 회귀 skip 은 우회 수단이 아니다 — 메시지가 그 점을 명시적으로 부정한다.
-    assert "--no-pytest 로는 풀리지 않는다" in captured.err
     assert "[1/5]" not in captured.out  # run()/회귀 진입 전 중단
 
 
@@ -1336,75 +1285,15 @@ def _capture_main_forward(tf, monkeypatch) -> dict:
     return captured
 
 
-def test_main_repo_slot_forwards_session_and_slot_but_no_code_tree(tf, monkeypatch):
-    """--repo/--slot → main 은 트리 인자 없이 해소된 세션·슬롯만 넘긴다(작업 트리는 종결이 찾는다)."""
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff())
-    captured = _capture_main_forward(tf, monkeypatch)
-
-    rc = tf.main(["T-1234", "--repo", "project_manager", "--slot", "1"])
-    assert rc == 0
-    assert captured["finisher_kwargs"] == {}
-    assert captured["skip_pytest"] is False
-    assert captured["session"] == "project_manager_1"
-    assert captured["slot"] == "work/project_manager_1"
-
-
 # ── board 정체성 forward (T-0781) ───────────────────────────────────────────
 #
 # board 의 complete 는 `claimed_by` 와 실행 세션을 대조한다. ticket_finish 는 자기 정체성을
 # 이미 해소해 두고도 board 에 넘기지 않았다 — 그 상태로 소유 게이트가 켜지면 다중 슬롯
 # 채택자의 `/pm-wave-finish` 주 경로가 "남의 티켓" 으로 전부 거부된다.
 
-def test_run_forwards_board_identity_args_to_complete(tf, tmp_path):
-    """run(board_identity_args=…) → 내부 board complete argv 끝에 그 인자가 실린다(argv 캡처)."""
-    board_calls: list[list[str]] = []
-    finisher = tf.TicketFinisher(
-        run_pytest_fn=lambda: (0, "1 passed"),
-        run_board_fn=lambda args: (board_calls.append(args), (0, "board ok"))[1],
-        run_git_fn=lambda args: (0, ""),
-        board_count_fn=lambda: 10,
-        ticket_title_fn=lambda tid: "테스트 티켓",
-        affected_domain_fn=lambda tid: None,
-        stage_scope_fn=lambda tid: tf.StageScope((), None),
-        status_entries_fn=lambda: (),
-        dod_block_fn=lambda tid: None,
-        log_file=tmp_path / "log.md",
-    )
-
-    rc = finisher.run("T-1234", section=None, dry_run=False, skip_pytest=True,
-                      session="pay_2", board_identity_args=["--repo", "pay", "--slot", "2"])
-
-    assert rc == 0
-    assert board_calls == [
-        ["complete", "T-1234", "--tests-pass", "--repo", "pay", "--slot", "2"]]
-
-
-def test_main_repo_slot_forwards_identity_to_board_complete(tf, monkeypatch):
-    """`--repo/--slot` 으로 부른 ticket_finish 는 그 좌표를 board complete 로 forward 한다."""
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff())
-    captured = _capture_main_forward(tf, monkeypatch)
-
-    assert tf.main(["T-1234", "--repo", "project_manager", "--slot", "1"]) == 0
-    assert captured["board_identity_args"] == [
-        "--repo", "project_manager", "--slot", "1"]
-
-
-@pytest.mark.parametrize("identity, slot_identity, expected", [
-    (SimpleNamespace(repo="pay", slot=2, task=None), None,
-     ["--repo", "pay", "--slot", "2"]),
-    (SimpleNamespace(repo="pay", slot=None, task=None),
-     SimpleNamespace(repo="pay", number=3), ["--repo", "pay", "--slot", "3"]),
-    (SimpleNamespace(repo="pay", slot=None, task=None), None, ["--repo", "pay"]),
-    (SimpleNamespace(repo=None, slot=None, task=None), None, []),
-])
-def test_board_identity_argv_prefers_explicit_then_ledger_coordinates(
-        tf, identity, slot_identity, expected):
-    """명시 좌표 > 장부 좌표 > repo 단독 > 없음 — 좌표는 장부 행에서 온다(키 문자열을 안 뜯는다)."""
-    assert tf._board_identity_argv(identity, slot_identity) == expected
-
 
 def test_main_no_pytest_still_gates_unresolved_identity(tf, monkeypatch, capsys):
-    """--no-pytest + 정체성 미해소 → rc 1 + `--task` 처방(회귀 skip 으로 풀리지 않는다).
+    """--no-pytest + `--task` 없음 → usage error(rc 2) + `--task` 처방(회귀 skip 으로 풀리지 않는다).
 
     옛 규칙은 `--no-pytest` 면 슬롯 해소 자체를 건너뛰었다 — 회귀 cwd 가 pytest 전용 값이던
     시점의 결정이다. 그 뒤 같은 해소 결과(코드 트리)를 사설 참조 측정·[4/5] stage·PM-direct
@@ -1419,9 +1308,6 @@ def test_main_no_pytest_still_gates_unresolved_identity(tf, monkeypatch, capsys)
         return None, None
 
     monkeypatch.setattr(tf, "_resolve_finish_slot", _spy_resolve)
-    monkeypatch.setattr(
-        tf, "_load_pm_log", lambda: _FakeIdentityChain((None, "단일 활성 task")),
-    )
     captured: dict = {}
 
     class _SpyFinisher(tf.TicketFinisher):
@@ -1434,29 +1320,31 @@ def test_main_no_pytest_still_gates_unresolved_identity(tf, monkeypatch, capsys)
             return 0
 
     monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
-    rc = tf.main(["T-1234", "--no-pytest"])
+    with pytest.raises(SystemExit) as exc:
+        tf.main(["T-1234", "--no-pytest"])
     err = capsys.readouterr().err
-    assert rc == 1                          # 미해소는 회귀 skip 으로 풀리지 않는다
+    assert exc.value.code == 2              # `--task` 없음은 회귀 skip 으로 풀리지 않는다
     assert resolve_calls == []              # 슬롯 자동해소 갈래 자체가 없다
     assert captured == {}                   # TicketFinisher 생성 전에 중단(부작용 0)
     assert "--task" in err
-    assert "--no-pytest 로는 풀리지 않는다" in err   # 우회 처방이 아니라 부정
 
 
 def test_main_no_pytest_forwards_the_skip_but_no_code_tree(tf, monkeypatch):
-    """--no-pytest + 슬롯 해소 성공 → 회귀 skip 만 넘기고 트리 인자는 없다(세션·슬롯은 그대로).
+    """--no-pytest + task 정체성 → 회귀 skip 만 넘기고 트리 인자는 없다(정체성은 task 그대로).
 
     코드 트리는 종결이 묶음 기록의 브랜치로 찾아 넘기므로 회귀 skip 여부와 무관하게 같은 트리다.
+    정상 종결의 정체성은 `--task` 다 — 슬롯 세션·슬롯 키를 넘기지 않는다(T-0962).
     """
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff())
     captured = _capture_main_forward(tf, monkeypatch)
 
-    rc = tf.main(["T-1234", "--no-pytest", "--repo", "project_manager", "--slot", "1"])
+    rc = tf.main(["T-1234", "--no-pytest", "--task", "alpha"])
     assert rc == 0
     assert captured["finisher_kwargs"] == {}
     assert captured["skip_pytest"] is True   # [1/5] 회귀만 skip
-    assert captured["session"] == "project_manager_1"
-    assert captured["slot"] == "work/project_manager_1"
+    assert captured["task"] == "alpha"
+    assert captured["board_identity_args"] == ["--task", "alpha"]
+    assert captured["slot"] is None
+    assert "session" not in captured
 
 
 def test_main_slot_without_repo_rejected(tf, capsys):
@@ -1469,20 +1357,15 @@ def test_main_slot_without_repo_rejected(tf, capsys):
     assert "--repo" in capsys.readouterr().err
 
 
-def test_resolve_finish_slot_solo_returns_none(tf, monkeypatch):
-    """(d) 솔로(pm_handoff 자동해소 None) → (None, None)·모호 아님(fail-loud 미발동)."""
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff())
-    assert tf._resolve_finish_slot(None, None) == (None, None)
+def test_resolve_finish_slot_pm_handoff_absent_is_an_error(tf, monkeypatch):
+    """pm_handoff 부재(None) → 복구 문의 제품 트리를 대여 기록과 대조할 수 없어 오류다(T-0962).
 
-
-def test_resolve_finish_slot_pm_handoff_absent_fail_soft(tf, monkeypatch):
-    """pm_handoff 부재(None) → 부재+무인자는 (None,None)·명시(repo+slot)는 단순 `work/` 조립
-    (M3 리스 조인검증 불가하니 신뢰·현행 폴백 패턴·솔로 무변경). repo 단독은 M3 검증(actor 활성슬롯
-    해소)이 pm_handoff 없인 불가하니 미해소(None,None)."""
+    검증 없이 `work/<repo>_<N>` 을 조립해 신뢰하던 대체 동작은 없다 — `(None, 오류문)` 이고
+    호출부가 rc 1 로 멈춘다."""
     monkeypatch.setattr(tf, "_load_pm_handoff", lambda: None)
-    assert tf._resolve_finish_slot(None, None) == (None, None)
-    assert tf._resolve_finish_slot("myrepo", 2) == ("work/myrepo_2", None)
-    assert tf._resolve_finish_slot("myrepo", None) == (None, None)
+    path, problem = tf._resolve_finish_slot("myrepo", 2)
+    assert path is None
+    assert problem is not None and "pm_handoff" in problem and "work/myrepo_2" in problem
 
 
 # ── engine_written_paths — rounds/T-NNNN/ stage 후보 (T-0753·ADR-0090 R5) ───────
@@ -2651,19 +2534,15 @@ def _wave_repo(tmp_path: Path, *, git: bool = True,
 
 
 def _wave_claim(board, ticket_id: str = _WAVE_TICKET) -> int:
-    # 인자 전무(kind="none") — 세션은 env 명시로 결정론적으로 바인딩한다(per-clone conf
-    # `session=` 폴백은 폐지·T-0779). 다른 축엔 무관심하다.
-    saved = os.environ.get("PM_SESSION_NAME")
-    os.environ["PM_SESSION_NAME"] = "me"
-    os.environ.pop("CLAUDE_SESSION_NAME", None)
-    try:
-        return board.cmd_claim(argparse.Namespace(id=ticket_id, user="me"))
-    finally:
-        # 같은 워커의 다음 테스트로 새지 않게 원복한다(ambient env 오염 0).
-        if saved is None:
-            os.environ.pop("PM_SESSION_NAME", None)
-        else:
-            os.environ["PM_SESSION_NAME"] = saved
+    # claim 은 `--task` 와 그 task 가 보유한 폴더가 필요하다(T-0962) — 솔로 형상이라 홈 자신이 그
+    # task 의 폴더(장부 행 `slot="."`)다. 다른 축엔 무관심하다.
+    ledger = board.LEASES_FILE
+    if not ledger.exists():
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text(json.dumps({"leases": [
+            {"slot": ".", "repo": board.REPO.name, "session": "me",
+             "state": "leased", "role": "work"}]}), encoding="utf-8")
+    return board.cmd_claim(argparse.Namespace(id=ticket_id, user="me", task="me"))
 
 
 def test_completion_has_no_change_size_cap(tmp_path, capsys):
@@ -3334,7 +3213,7 @@ def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
     _git(env.slot, "checkout", _INTEGRATION_BRANCH)
     _git(env.code, "branch", "-D", _CLUSTER_BRANCH)
     assert board.cmd_cluster(argparse.Namespace(cluster_cmd="new", name="rebound",
-        tickets=env.ticket, spike=None, repo="code", slot=1, task=None)) == 0
+        tickets=env.ticket, spike=None, repo="code", slot=1, task="t")) == 0
     ledger = board.cluster_ledger_path("rebound")
     declaration = board.load_cluster("rebound")
     assert declaration["base_branch"] == _INTEGRATION_BRANCH
@@ -3367,3 +3246,57 @@ def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
     assert env.home_log()[1:] == home
     assert list((env.board_dir / "tickets/done").glob("T-*.md"))
     assert _git(env.code, "merge-base", "--is-ancestor", _rev(env.slot), _INTEGRATION_BRANCH).returncode == 0
+
+
+# ── T-0962 — `--repo`/`--slot` 은 복구 문 전용 · log 머리말은 task 태그만 ──────────
+
+def test_t0962_finish_takes_repo_slot_only_for_reconcile(tf, capsys):
+    """AT-005 — 정상 종결(티켓·묶음)의 `--repo --slot` 은 rc 2, 세션 인자는 어디에도 없다."""
+    for argv in (["T-0001", "--repo", "proj", "--slot", "1", "--dry-run", "--no-pytest"],
+                 ["--cluster", "C-x", "--repo", "proj", "--slot", "1", "--dry-run"]):
+        with pytest.raises(SystemExit) as exc:
+            tf.main(argv)
+        assert exc.value.code == 2
+        assert "--reconcile-integrated" in capsys.readouterr().err
+    skeleton = tf.build_log_skeleton("T-0001", "제목", 1, 1, 1, date="2026-10-18", task="alpha")
+    assert "(task:alpha)" in skeleton.splitlines()[0]
+    with pytest.raises(TypeError):
+        tf.build_log_skeleton("T-0001", "제목", 1, 1, 1, session="proj_1")
+    assert "session" not in inspect.signature(tf.TicketFinisher.run).parameters
+    assert "session" not in inspect.signature(tf.ClusterCloser).parameters
+
+
+def test_t0962_finish_without_task_stops_before_writes(tf, tmp_path, monkeypatch, capsys):
+    """[[T-0962]] 리뷰 F-008 — `--task` 없는 정상 종결은 rc 2 로 멈추고 board·log 쓰기가 0 이다.
+
+    종결 log 머리말 `(task:이름)`·board complete 소유 대조는 귀속 쓰기라 `--task` 가 필요하다.
+    cwd 작업 폴더·단일 활성 task 에서 정체성을 유도하지 않는다 — 대여 기록에 활성 task 가 정확히
+    1개여도(옛 자동 해소가 고르던 형상) 멈춘다. 복구 문(`--reconcile-integrated`)은 이 규칙 밖이다.
+    """
+    log_file = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
+    log_file.parent.mkdir(parents=True)
+    log_file.write_text("# log\n", encoding="utf-8")
+    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(json.dumps({
+        "leases": [{"slot": "work/proj_1", "repo": "proj", "session": "solo-task",
+                    "state": "leased", "role": "work"}],
+        "tasks": [{"name": "solo-task"}]}), encoding="utf-8")
+    monkeypatch.setattr(tf, "REPO", tmp_path)
+    monkeypatch.setattr(tf, "LOG_FILE", log_file)
+    calls: list = []
+    monkeypatch.setattr(tf.subprocess, "run", lambda *a, **k: calls.append(a) or pytest.fail(
+        "--task 없는 종결이 하위 프로세스(board·git)를 불렀다"))
+
+    def _no_pipeline(**_kwargs):
+        pytest.fail("--task 없는 종결이 종결 파이프라인을 만들었다")
+
+    monkeypatch.setattr(tf, "TicketFinisher", _no_pipeline)
+    monkeypatch.setattr(tf, "ClusterCloser", _no_pipeline)
+    for argv in (["--cluster", "C-grp"], ["--cluster", "C-grp", "--no-pytest"], ["T-0001"]):
+        with pytest.raises(SystemExit) as exc:
+            tf.main(argv)
+        assert exc.value.code == 2, argv
+        assert "--task <task>" in capsys.readouterr().err
+    assert calls == []
+    assert log_file.read_text(encoding="utf-8") == "# log\n"

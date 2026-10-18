@@ -13,8 +13,7 @@
 세션 시작 필독 셋은 이미 로드된 진입문서, 현재 정체성의 `pm_state`, `/pm-bootstrap` dump 한 번뿐이다.
 
 1. **이 문서** — 자동 로드된 프로젝트 규칙·형상.
-2. **현재 정체성의 `pm_state`** — task는 `.project_manager/.local/tasks/<task>/pm_state.md`,
-   slot은 `.project_manager/.local/slots/<repo>_<N>/pm_state.md`다(둘 다 git-ignored).
+2. **현재 정체성의 `pm_state`** — `.project_manager/.local/tasks/<task>/pm_state.md`다(git-ignored).
    신규 task는 bootstrap 진입 전 파일이 없어도 정상이다.
 3. **`/pm-bootstrap` dump 한 번** — board·git·차수·직전 handoff 본문·남은 작업을 한꺼번에
    surface한다. Python backbone은 `{{PY}} .project_manager/tools/pm_bootstrap.py`다.
@@ -30,19 +29,20 @@
 
 ### 부트스트랩 후 ticket 잡기
 
-세션명 canonical은 `<repo>_<N>`이다. 식별 우선순위는 `--repo`/`--slot` >
-`$PM_SESSION_NAME` > 활성 슬롯 lease가 정확히 1개면 그 세션(단일-lease 유도) > 미해소다.
-미해소 귀속 쓰기는 fail-loud한다. lease 행이 0개인 홈은 아직 작업 폴더가 없는 것이며
-`pm-config worktree add <repo> --user-ack <repo>` 로 먼저 만든다.
+세션 정체성은 task 이름 하나다. 귀속 쓰기(new·claim 등)는 `--task <task>` 로 하고, 없으면
+fail-loud한다. 조회·소유 대조의 세션 식별 우선순위는 `--task` > `$PM_SESSION_NAME` > 활성 슬롯
+lease가 정확히 1개면 그 세션(단일-lease 유도) > 미해소다. lease 행이 0개인 홈은 아직 작업 폴더가
+없는 것이며 `pm-config worktree add <repo> --user-ack <repo>` 로 만든 뒤
+`pm-config alloc <repo> --task <task>` 로 task 에 빌린다.
 
-task 모드의 귀속은 task 이름 하나다. 다중 작업공간에서는 claim 앵커·regression run·livegate record·new/cluster new 코드 트리·rounds resolve에만 `--task <task> --repo <repo> --slot <N>`을 함께 준다. 자기 task의 소유 슬롯을 명시하고 HEAD·브랜치·test_cmd를 결속한다. bootstrap·handoff·init·reid·finish는 task 단독 입력이며, finish 내부 확인은 묶음 브랜치로 트리를 찾는다.
+다중 작업공간에서는 claim 앵커·regression run·livegate record·new/cluster new 코드 트리·rounds resolve에만 `--task <task> --repo <repo> --slot <N>`을 함께 준다(`--repo`/`--slot` 은 `--task` 와 함께일 때만 받는 위치 인자다). 자기 task의 소유 슬롯을 명시하고 HEAD·브랜치·test_cmd를 결속한다. bootstrap·handoff·init·reid는 task 단독 입력이고, finish 의 `--repo`/`--slot` 은 복구 문(`--reconcile-integrated`) 전용이며, finish 내부 확인은 묶음 브랜치로 트리를 찾는다.
 
 외부 의존이 없고 다른 세션이 claim하지 않은 ticket을 고른다:
 
 ```bash
 {{PY}} .project_manager/tools/board.py list --status open
 {{PY}} .project_manager/tools/board.py show T-NNNN
-{{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 예: --repo myproj --slot 1 · 활성 lease 1개면 생략 가능
+{{PY}} .project_manager/tools/board.py claim T-NNNN --task <task>   # task 의 폴더가 2개 이상이면 --repo <repo> --slot <N> 추가
 ```
 
 ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크**만으로 작업 가능해야 한다. 부족하면
@@ -59,12 +59,12 @@ ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크**만
 - `areas.md`(공유 레지스트리) prefix 등록 + `local.conf`(per-clone·git-ignored) 생성 + `pm_state.md` 로컬 생성.
 - 이후 `board.py new` 는 영역별 네임스페이스 `T-pay-NNN` 으로 발행한다.
 - **3계층:** 엔진(upstream) / 공유상태(main: board·status·log·ADR) / per-clone 로컬(pm_state·local.conf).
-- **repo 1개:** `pm-config init`(prefix 없이) → areas 행·pre-push 회귀 훅·`T-NNNN` setup. 그 다음 `pm-config worktree add <repo> --user-ack <repo>` 로 작업 폴더를 만든다 — 등록 전에도 `board.py new` 는 동작하지만 귀속 조작(claim 등)은 작업 폴더 행이 있어야 한다.
+- **repo 1개:** `pm-config init`(prefix 없이) → areas 행·pre-push 회귀 훅·`T-NNNN` setup. 그 다음 `pm-config worktree add <repo> --user-ack <repo>` 로 작업 폴더를 만들고 `pm-config alloc <repo> --task <task>` 로 task 에 빌린다 — `board.py new`·`claim` 은 `--task` 와 그 task 폴더가 있어야 한다.
 
 ## 작업이 끝나면
 
 ```bash
-{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> [--repo <repo> --slot <N>]     # 또는
+{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> --task <task>     # 또는
 {{PY}} .project_manager/tools/board.py block T-NNNN --reason "..."
 ```
 
@@ -118,9 +118,9 @@ ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크**만
 # 보드 조작
 {{PY}} .project_manager/tools/board.py list
 {{PY}} .project_manager/tools/board.py show T-NNNN
-{{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 활성 lease 1개면 생략 가능 (§세션 이름)
-{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> [--repo <repo> --slot <N>]
-{{PY}} .project_manager/tools/board.py new "title" --touches a.py,b.py --tag phase-1
+{{PY}} .project_manager/tools/board.py claim T-NNNN --task <task>
+{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> --task <task>
+{{PY}} .project_manager/tools/board.py new "title" --task <task> --touches a.py,b.py --tag phase-1
 {{PY}} .project_manager/tools/board.py lint     # 의존성·thin-ticket 일관성 검사
 
 # 프레임워크 갱신 (메인테이너·업그레이드당 1회 — 절차는 pm_playbook §"프레임워크 갱신"):

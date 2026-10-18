@@ -18,7 +18,7 @@ audience: pm-internal
 ```bash
 # 1. 묶음 선언 → 승격 (이번 wave 의 운영 단위 · 통합 브랜치·설계 문서 결속 · 코드 트리는 명시 필수)
 #    <ticket-group> 은 새로 짓는 묶음 이름(영숫자와 . _ -, 예: login-fix). 티켓 ID 모양(T-NNNN)은 발행이 만든 크기 1 장부(C-T-NNNN)의 자리라 거부된다.
-python3 .project_manager/tools/board.py cluster new <ticket-group> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로> --repo <repo> --slot <N>
+python3 .project_manager/tools/board.py cluster new <ticket-group> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로> --task <task>
 #    승격 (멤버마다 · draft 를 claim 할 수 있는 open/ 으로 옮긴다 · 공유 board(board-git)면 본문과 묶음 결속을 다시 검사해 어긋나면 rc 1 · 이미 open 이면 그 검사를 통과할 때 이동 없이 rc 0)
 python3 .project_manager/tools/board.py promote T-NNNN
 #    리뷰 없이 종결할 티켓만 (선택 · 멤버마다)
@@ -36,8 +36,6 @@ python3 .project_manager/tools/board.py lint --gate
 # 5. 통과 시 claim (멤버마다)
 # task 세션(부트스트랩 --task)의 claim. 귀속은 task 이고, task 의 폴더가 1개면 --repo/--slot 을 생략한다
 python3 .project_manager/tools/board.py claim T-NNNN --task <task> --repo <repo> --slot <N>
-# task 없는 슬롯 세션 전용. task 가 보유한 폴더를 지목하면 claim 이 거부한다
-python3 .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 활성 lease 1개면 생략 가능
 
 # 6. 작업 폴더를 묶음 브랜치로 전환: 코드 변경이 없어도 실행한다(종결이 이 브랜치를 든 폴더를 찾는다)
 #    같은 저장소의 폴더 1개면 그 폴더, 2개면 cluster new 에 지목하지 않은 폴더 · <slot> 은 work/<repo>_<N>
@@ -47,7 +45,7 @@ python3 .project_manager/tools/worktree_pool.py switch <slot> task/<ticket-group
 
 - 발행이 만든 크기 1 장부(`C-T-NNNN`)는 새 이름으로 선언한 `cluster new` 가 흡수한다(그 장부 id 는 없어진다).
   이미 여러 티켓의 묶음에 속한 티켓은 거부되므로 옛 묶음을 먼저 정리한다.
-- `cluster new`는 코드 트리를 명시로 받는다. 슬롯 모드는 `--repo <repo> --slot <N>`, task 단일 작업공간은 `--task <task>`, task의 다중 작업공간은 `--task <task> --repo <repo> --slot <N>`으로 지목한다. 귀속 task와 선택한 소유 작업공간의 HEAD·브랜치를 결속하며,
+- `cluster new`는 코드 트리를 명시로 받는다. task 단일 작업공간은 `--task <task>`, task의 다중 작업공간은 `--task <task> --repo <repo> --slot <N>`으로 지목한다. 귀속 task와 선택한 소유 작업공간의 HEAD·브랜치를 결속하며,
   없으면 첫 쓰기 앞에서 rc=1 이다. 그 트리의 **현재 브랜치를 통합 브랜치로 기록**하고 묶음 브랜치를
   만드므로, 통합 브랜치를 체크아웃한 트리를 그 인자로 지목한다(cwd 는 판정에 쓰이지 않는다).
 - 6단계 `switch` 는 코드 변경이 없는 묶음에도 필요하다. 종결은 묶음 브랜치를 든 폴더를 찾아 돌고, 없으면

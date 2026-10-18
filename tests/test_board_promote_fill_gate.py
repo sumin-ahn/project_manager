@@ -205,9 +205,12 @@ def board_git(tmp_path, monkeypatch):
     return mod
 
 
+_TASK = "binding-task"  # conftest `bind_product_cluster` 의 기본 task
+
+
 def _new_args(title: str) -> argparse.Namespace:
     return argparse.Namespace(title=title, touches=None, depends=None, tag=None,
-                              estimate="small", prefix=None, user=None, session=None)
+                              estimate="small", prefix=None, user=None, task=_TASK)
 
 
 def _draft_id(board_dir: Path) -> str:

@@ -54,6 +54,6 @@ thin 진입점일 뿐이다.
 
 ## 세션 식별
 
-- 이 PM 세션명 canonical = **`<repo>_<N>`** (multi-PM 정체성 · ADR-0043). board.py 조작 시
-  `--repo <repo> --slot <N>` 으로 전달한다(ADR-0057) — 활성 lease 1개면 생략 가능
-  (AGENTS.md §"세션 식별" 단일 진실 — canonical 표기·식별 우선순위·위임 라벨 포함).
+- 이 PM 세션 정체성은 **task 이름** 하나다. board.py 귀속 쓰기(new·claim 등) 시 `--task <task>` 로
+  전달한다 — task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 위치 인자를 붙인다
+  (AGENTS.md §"세션 식별" 단일 진실 — 식별 우선순위·위임 라벨 포함).

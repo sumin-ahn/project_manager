@@ -29,8 +29,7 @@ env prefix 없이 호출한다:
 세션 시작 필독 셋은 이미 로드된 진입문서, 현재 정체성의 `pm_state`, `/pm-bootstrap` dump 한 번뿐이다.
 
 1. **이 문서(AGENTS.md·공통 코어)** — 이미 로드된 프로젝트 규칙·형상.
-2. **현재 정체성의 `pm_state`** — task는 `.project_manager/.local/tasks/<task>/pm_state.md`,
-   slot은 `.project_manager/.local/slots/<repo>_<N>/pm_state.md`다(둘 다 git-ignored).
+2. **현재 정체성의 `pm_state`** — `.project_manager/.local/tasks/<task>/pm_state.md`다(git-ignored).
    신규 task는 bootstrap 진입 전 파일이 없어도 정상이다.
 3. **`/pm-bootstrap` dump 한 번** — board·git·차수·직전 handoff 본문·남은 작업을 한꺼번에
    surface한다. Python backbone은 `{{PY}} .project_manager/tools/pm_bootstrap.py`다.
@@ -46,12 +45,12 @@ env prefix 없이 호출한다:
 ### 세션 식별
 
 - **task 사용자 경로** — 시작/재개는 `/pm-bootstrap --task <task>`, 종료는 `/pm-handoff`(무인자 · 스킬은 인자를 받지 않는다)만 쓴다. 이 `/…` 표기는 하네스 슬래시 팔레트 진입이며 인자를 그대로 전달한다(팔레트 파일 위치는 어댑터 문서 소관). 신규 task는 작업공간 0개로 시작하고 task 진입 시 pm_state를 즉시 만든 뒤 PM이 슬롯을 별도로 대여한다. 기존 task는 보유 슬롯 집합과 task pm_state를 수령한다. Python backbone은 `pm_bootstrap.py --task <task>`·`pm_handoff.py --task <task> --user-ack <값>`을 사용하며, 종료 시 그 값은 PM 이 부트스트랩에서 사용자와 확인한 정체성으로 채운다. task와 repo/slot 혼합 진입은 엔진이 거부한다.
-- 실행 위치 선택은 regression run·livegate record·claim 앵커·new/cluster new 코드 트리·rounds resolve에 한정한다. 다중 작업공간 task는 `--task <task> --repo <repo> --slot <N>`으로 자기 실행 대상을 지정하며 귀속 task는 유지한다. 미소유·타 task·idle·쓰기용 readonly 및 선택 없는 다중 슬롯은 부작용 전에 거부한다. bootstrap·handoff·init·reid·finish의 task 단독 입력과 혼합 거부는 유지하고, finish 내부 확인은 묶음 브랜치로 작업 트리를 찾는다.
-- **PM 세션명 canonical=`<repo>_<N>`**(`<repo>`=프로젝트 repo, `<N>`=PM 슬롯). board 쓰기는 `--repo <repo> --slot <N>`을 전달한다:
+- 실행 위치 선택은 regression run·livegate record·claim 앵커·new/cluster new 코드 트리·rounds resolve에 한정한다. 다중 작업공간 task는 `--task <task> --repo <repo> --slot <N>`으로 자기 실행 대상을 지정하며 귀속 task는 유지한다. 미소유·타 task·idle·쓰기용 readonly 및 선택 없는 다중 슬롯은 부작용 전에 거부한다. `--repo`/`--slot` 은 `--task` 와 함께일 때만 받는 위치 인자다. bootstrap·handoff·init·reid는 task 단독 입력이고, finish의 `--repo`/`--slot` 은 복구 문(`--reconcile-integrated`) 전용이며, finish 내부 확인은 묶음 브랜치로 작업 트리를 찾는다.
+- **PM 세션 정체성은 task 이름 하나다.** board 귀속 쓰기(new·claim 등)는 `--task <task>`를 전달한다:
   ```bash
-  {{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 예: --repo myproj --slot 1
+  {{PY}} .project_manager/tools/board.py claim T-NNNN --task <task>   # task 의 폴더가 2개 이상이면 --repo <repo> --slot <N> 추가
   ```
-  `--repo`가 repo prefix를 유도한다. 활성 슬롯 lease가 1개면 `--repo/--slot` 생략 가능하다. 식별 우선순위는 `--repo`/`--slot` > `$PM_SESSION_NAME`(구 `$CLAUDE_SESSION_NAME` deprecated alias) > 활성 슬롯 lease가 정확히 1개면 그 세션(단일-lease 유도) > 미해소면 귀속 쓰기 fail-loud 및 `--repo <repo> --slot <N>` 요구. lease 장부에 행이 하나도 없는 홈은 아직 작업 폴더가 없는 것이라 같은 fail-loud 로 떨어지며, `pm-config worktree add <repo> --user-ack <repo>` 로 작업 폴더를 먼저 만든다.
+  `--task`가 없으면 귀속 쓰기는 fail-loud 한다. 조회·소유 대조의 식별 우선순위는 `--task` > `$PM_SESSION_NAME`(구 `$CLAUDE_SESSION_NAME` deprecated alias) > 활성 슬롯 lease가 정확히 1개면 그 세션(단일-lease 유도) > 미해소다. lease 장부에 행이 하나도 없는 홈은 아직 작업 폴더가 없는 것이며, `pm-config worktree add <repo> --user-ack <repo>` 로 작업 폴더를 만든 뒤 `pm-config alloc <repo> --task <task>` 로 task 에 빌린다.
 - 위임 식별 라벨: `orch-dev-TNNNN` / `orch-review-TNNNN`.
 
 ### 첫 turn 권장 보고 (부트스트랩 직후)
@@ -66,7 +65,7 @@ env prefix 없이 호출한다:
 ticket을 닫을 때:
 
 ```bash
-{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> [--repo <repo> --slot <N>]
+{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> --task <task>
 ```
 
 추가로 PM이:
@@ -116,9 +115,9 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 # 보드
 {{PY}} .project_manager/tools/board.py list
 {{PY}} .project_manager/tools/board.py show T-NNNN
-{{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 활성 lease 1개면 생략 가능 (§세션 식별)
-{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> [--repo <repo> --slot <N>]
-{{PY}} .project_manager/tools/board.py new "title" --touches a.py,b.py --tag phase-1
+{{PY}} .project_manager/tools/board.py claim T-NNNN --task <task>
+{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> --task <task>
+{{PY}} .project_manager/tools/board.py new "title" --task <task> --touches a.py,b.py --tag phase-1
 {{PY}} .project_manager/tools/board.py lint           # depends_on·thin-ticket 검사
 
 # log

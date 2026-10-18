@@ -379,7 +379,10 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     tickets_root = dest / ".project_manager" / "wiki" / "tickets"
     lifecycle_dirs = [tickets_root / s for s in _TICKET_STATUS_DIRS]
 
-    new = _board(dest, "new", "adopter smoke", "--touches", "README.md")
+    # 귀속 쓰기(new·claim)는 `--task` 와 그 task 가 보유한 작업 폴더가 필요하다(T-0962) —
+    # `alloc <repo> --task <이름>` 이 남기는 형상(행의 session=task 이름)을 둔다.
+    _seed_work_slot(dest, tree="standalone", session=_SMOKE_TASK)
+    new = _board(dest, "new", "adopter smoke", "--touches", "README.md", "--task", _SMOKE_TASK)
     assert new.returncode == 0, (
         f"{harness} `board.py new` 실패(rc={new.returncode}) — ticket 상태 스캐폴드 또는 "
         f"mkdir-before-write 계약 회귀.\n--- stderr ---\n{new.stderr}")
@@ -398,14 +401,14 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     assert m, f"{harness} 발행된 ticket 을 list --all 에서 못 찾음:\n{listing.stdout}"
     tid = m.group(0)
 
-    claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
+    claim = _board(dest, "claim", tid, "--task", _SMOKE_TASK)
     assert claim.returncode == 0, f"{harness} `board.py claim {tid}` 실패: {claim.stderr}"
 
     # 결속 완료 게이트([[T-0959]]) — 장부가 종결 중(closing)이 아니면 종결 파이프라인 밖의 직접 호출이라
     # 채택자 사본에서도 쓰기 전에 거부된다. 이후 단언은 종결이 장부를 closing 으로 기록한 상태에서 본다.
     outside = _board(
         dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested",
-        "--repo", "pilot", "--slot", "1", "--cluster-close", f"C-{tid}",
+        "--task", _SMOKE_TASK, "--cluster-close", f"C-{tid}",
     )
     assert outside.returncode == 1 and "closing" in outside.stderr, (
         f"{harness}: 종결 파이프라인 밖 결속 완료가 통과함 — 엔진 사본 동기 누락?\n{outside.stderr}")
@@ -416,7 +419,7 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     # 거부 문구가 이동 경로(unclaim→claim · --takeover)를 지목해야 한다.
     foreign = _board(
         dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested",
-        "--repo", "pilot", "--slot", "9", "--cluster-close", f"C-{tid}",
+        "--task", "intruder", "--cluster-close", f"C-{tid}",
     )
     assert foreign.returncode != 0, (
         f"{harness}: 타 세션이 남의 claim 을 complete 했다 — 소유 게이트가 채택자 사본에 없다.\n"
@@ -429,7 +432,7 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     # 빠뜨리면 이 단언이 red — 반쪽 출하 방지). complete 는 claim 과 **같은 정체성**으로 부른다.
     blocked = _board(
         dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested",
-        "--repo", "pilot", "--slot", "1", "--cluster-close", f"C-{tid}",
+        "--task", _SMOKE_TASK, "--cluster-close", f"C-{tid}",
     )
     assert blocked.returncode != 0, (
         f"{harness}: 미체크 DoD 인데 complete 가 통과함 — DoD 게이트가 채택자 사본에 없다.\n"
@@ -440,7 +443,7 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     _check_off_dod(dest, tid)
     done = _board(
         dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested",
-        "--repo", "pilot", "--slot", "1", "--cluster-close", f"C-{tid}",
+        "--task", _SMOKE_TASK, "--cluster-close", f"C-{tid}",
     )
     assert done.returncode == 0, f"{harness} `board.py complete {tid}` 실패: {done.stderr}"
 
@@ -481,6 +484,8 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
 
 
 _FOUR_STEP_TASK = "fourstep"
+# 라이프사이클 스모크의 task — 작업 폴더 행을 보유한다(`_seed_work_slot`).
+_SMOKE_TASK = "smoke"
 
 
 def _seed_task_dir(dest: Path, name: str) -> Path:
@@ -534,7 +539,7 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
     board_tickets = dest / ".project_manager" / "board" / "tickets"
 
     # 1단계 — new: 제목만 있는 미충전 본문은 board-git 활성 하에서 draft 로 격리된다(open/ 창 0).
-    new = _board(dest, "new", "4단계 완주 스모크")
+    new = _board(dest, "new", "4단계 완주 스모크", "--task", _FOUR_STEP_TASK)
     assert new.returncode == 0, f"new 실패: {new.stderr}"
     drafts = list((board_tickets / ".drafts").glob("T-*.md"))
     assert len(drafts) == 1, f"draft 격리 실패(1건 기대): {drafts}"
@@ -555,7 +560,7 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
 
     # 공유 승격 전에 기존 명령으로 실제 제품 브랜치와 멤버를 명시 결속한다.
     declared = _board(dest, "cluster", "new", "four-step", "--tickets", tid,
-                      "--repo", dest.name, "--slot", "1")
+                      "--task", _FOUR_STEP_TASK)
     assert declared.returncode == 0, declared.stderr
     slot_tree = dest / f"work/{dest.name}_1"
     assert _git(["checkout", "-q", "task/four-step"], slot_tree).returncode == 0
@@ -568,9 +573,9 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
 
     # 3단계 — claim: open/ → claimed/. 대상 정확히 1개·출발(open/) 0개까지 단언한다(F-003 —
     # 존재만 보면 copy-without-delete 회귀도 green 이 된다). 정체성은 그 홈의 작업 폴더
-    # 행이다 — 4단계 묶음 종결이 같은 행으로 코드 트리와 소유를 해소하므로 두 단계의
-    # 정체성 축이 하나여야 한다(명시 `--repo/--slot` claim 은 bare-claim 케이스가 따로 덮는다).
-    claim = _board(dest, "claim", tid)
+    # 행을 보유한 task 다 — 4단계 묶음 종결이 같은 행으로 코드 트리와 소유를 해소하므로 두
+    # 단계의 정체성 축이 하나여야 한다(T-0962: claim 은 `--task` 필수).
+    claim = _board(dest, "claim", tid, "--task", _FOUR_STEP_TASK)
     assert claim.returncode == 0, f"claim 실패: {claim.stderr}"
     claimed_matches = list(board_tickets.glob(f"claimed/{tid}-*.md"))
     assert len(claimed_matches) == 1, (
@@ -607,7 +612,8 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
         '```pm-review-v1\n{"version":2,"findings":[],"confirmations":[]}\n```\n',
         encoding="utf-8", newline="\n")
 
-    complete = _ticket_finish(dest, "--cluster", "C-four-step", "--no-pytest")
+    complete = _ticket_finish(dest, "--cluster", "C-four-step", "--no-pytest",
+                              "--task", _FOUR_STEP_TASK)
     assert complete.returncode == 0, (
         f"묶음 종결 실패:\n--- stdout ---\n{complete.stdout}\n--- stderr ---\n{complete.stderr}")
     done_matches = list(board_tickets.glob(f"done/{tid}-*.md"))
@@ -620,10 +626,10 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
         f"종결 뒤에도 장부가 닫히지 않았다:\n{ledger.read_text(encoding='utf-8')}")
 
 
-# ── 작업 폴더 없는 fresh 홈 · bare 귀속 조작 ──────────────────────────────
+# ── 작업 폴더 없는 fresh 홈 ──────────────────────────────────────────────
 # fresh import 는 슬롯 행을 만들지 않는다(T-0919 — 홈 자신을 작업 폴더로 등재하던 경로 삭제).
-# 그 상태의 무인자 부트스트랩은 "작업 폴더를 먼저 만들라"고 그 명령과 함께 멈추고, 작업 폴더
-# 행이 하나 생기면 카드가 지시하는 bare 형태(`board.py claim T-NNNN`)가 그 행으로 해소된다.
+# 그 상태의 무인자 부트스트랩은 "작업 폴더를 먼저 만들라"고 그 명령과 함께 멈춘다. 귀속 조작은
+# `--task` 로 한다(T-0962 — 무인자 claim 이 단일 대여 행으로 해소되던 경로 삭제).
 
 
 def _seed_task_session_claim(dest: Path, task: str, session: str = "S-1") -> None:
@@ -704,80 +710,6 @@ def test_fresh_adopter_task_entry_dumps_its_work_folder(
     assert len(got.stdout.splitlines()) >= 60, (
         f"rc 0 인데 dump 가 비었다({len(got.stdout.splitlines())}행):\n{got.stdout}")
     assert slot in got.stdout, got.stdout
-
-
-def test_fresh_adopter_bare_claim_resolves_via_the_work_slot_row(pm_import, tmp_path, monkeypatch):
-    """작업 폴더 행이 하나인 채택자에서 명시 플래그 없는 bare `claim` 이 그 행으로 rc0.
-
-    정체성은 장부 행에서 온다 — "행이 없다"에서 유도하지 않는다.
-
-    env `PM_SESSION_NAME`/`CLAUDE_SESSION_NAME` 누출을 monkeypatch 로 제거하고 실행한다(부모
-    pytest 프로세스가 우연히 값을 들고 있어도 이 서브프로세스가 그걸 상속해 오검출하지 않게 —
-    `_board` 헬퍼는 `os.environ` 을 그대로 전달하므로 이 delenv 가 그 상속 경로를 닫는다).
-    """
-    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
-    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    dest = tmp_path / "adopter-bare-claim"
-    rc = pm_import.main(
-        ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"]
-    )
-    assert rc == 0, f"import 실패 (rc={rc})"
-    _seed_work_slot(dest)
-    ledger = dest / ".project_manager" / ".local" / "worktree-leases.json"
-    rows = json.loads(ledger.read_text(encoding="utf-8"))["leases"]
-    assert [(row["slot"], row["session"], row["state"]) for row in rows] == [
-        (f"work/{dest.name}_1", f"{dest.name}_1", "leased")
-    ], f"슬롯 행이 canonical 값이 아니다: {rows}"
-
-    new = _board(dest, "new", "bare claim probe", "--touches", "README.md")
-    assert new.returncode == 0, f"`board.py new` 실패: {new.stderr}"
-    listing = _board(dest, "list", "--all", "--status", "open")
-    assert listing.returncode == 0, f"`board.py list --all` 실패: {listing.stderr}"
-    m = re.search(r"T-\d+", listing.stdout)
-    assert m, f"발행된 ticket 을 list --all 에서 못 찾음:\n{listing.stdout}"
-    tid = m.group(0)
-
-    # 카드 형태 그대로 — 명시 --repo/--slot 없이 bare claim.
-    claim = _board(dest, "claim", tid)
-    assert claim.returncode == 0, (
-        f"카드 형태 bare `board.py claim {tid}` 실패(rc={claim.returncode}) — 슬롯 행 "
-        f"해소 회귀.\n--- stdout ---\n{claim.stdout}\n--- stderr ---\n{claim.stderr}"
-    )
-    assert f"{dest.name}_1" in claim.stdout, (
-        f"claim 귀속이 슬롯 행의 session 값이 아니다:\n{claim.stdout}")
-
-
-def test_fresh_adopter_bare_claim_stays_unresolved_when_a_second_slot_is_leased(
-        pm_import, tmp_path, monkeypatch):
-    """역가드: 활성 슬롯이 2개면 bare claim 은 fail-loud — 해소가 "활성 lease
-    정확히 1개" 를 넘어 느슨해지지 않았음을 fresh 채택자 실 import 산출물에서 못박는다
-    (adopter#0/multi-PM 형상 축소판)."""
-    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
-    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    dest = tmp_path / "adopter-bare-claim-pool"
-    rc = pm_import.main(
-        ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"]
-    )
-    assert rc == 0, f"import 실패 (rc={rc})"
-
-    new = _board(dest, "new", "bare claim pool probe", "--touches", "README.md")
-    assert new.returncode == 0, f"`board.py new` 실패: {new.stderr}"
-    listing = _board(dest, "list", "--all", "--status", "open")
-    m = re.search(r"T-\d+", listing.stdout)
-    assert m, f"발행된 ticket 을 list --all 에서 못 찾음:\n{listing.stdout}"
-    tid = m.group(0)
-
-    # 풀 형상 시뮬 — 작업 슬롯 행 2개를 장부에 직접 심는다(장부 writer 규약과 무관하게
-    # "활성 슬롯 2개" 만 검증하면 되므로 최소 스키마 직접 write).
-    _seed_work_slot(dest, number=1)
-    _seed_work_slot(dest, number=2)
-
-    claim = _board(dest, "claim", tid)
-    assert claim.returncode != 0, (
-        f"활성 슬롯 2개인데 bare claim 이 rc0 — 해소가 '정확히 1개' 조건을 넘어 느슨해졌다"
-        f"(과결속).\n--- stdout ---\n{claim.stdout}")
-    assert "세션 미해소" in claim.stderr, (
-        f"차단 사유가 세션 미해소 fail-loud 안내가 아님:\n{claim.stderr}")
 
 
 # ── 라운드 파일 모델 (ADR-0090) — 어댑터 문구 · 준비→회수 1사이클 ─────────────
@@ -939,14 +871,16 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
         ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
     ) == 0
     _git_init_adopter(dest)
+    _seed_work_slot(dest, tree="standalone", session=_SMOKE_TASK)
 
-    new = _board(dest, "new", "round cycle probe", "--touches", "README.md")
+    new = _board(dest, "new", "round cycle probe", "--touches", "README.md",
+                 "--task", _SMOKE_TASK)
     assert new.returncode == 0, f"{harness} `board.py new` 실패: {new.stderr}"
     listing = _board(dest, "list", "--all", "--status", "open")
     match = re.search(r"T-\d+", listing.stdout)
     assert match, f"{harness} 발행 ticket 미발견:\n{listing.stdout}"
     tid = match.group(0)
-    claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
+    claim = _board(dest, "claim", tid, "--task", _SMOKE_TASK)
     assert claim.returncode == 0, f"{harness} `board.py claim` 실패: {claim.stderr}"
 
     # T-0815 설계 근거 게이트 — architect 라운드도 `design: done` 도 없는 신규 티켓은
@@ -1152,20 +1086,21 @@ def test_missing_ticket_status_dirs_self_repair_through_full_lifecycle(pm_import
     for status in _TICKET_STATUS_DIRS:
         (tickets / status).rename(tickets / f"removed-{status}")
 
-    new = _board(dest, "new", "repair smoke", "--touches", "README.md")
+    _seed_work_slot(dest, tree="standalone", session=_SMOKE_TASK)
+    new = _board(dest, "new", "repair smoke", "--touches", "README.md", "--task", _SMOKE_TASK)
     assert new.returncode == 0, new.stderr
     tid = re.search(r"T-\d+", new.stdout).group(0)
     block = _board(dest, "block", tid, "--reason", "repair fixture")
     assert block.returncode == 0, block.stderr
     unblock = _board(dest, "unblock", tid)
     assert unblock.returncode == 0, unblock.stderr
-    claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
+    claim = _board(dest, "claim", tid, "--task", _SMOKE_TASK)
     assert claim.returncode == 0, claim.stderr
     _check_off_dod(dest, tid)   # DoD 기록 게이트(T-0596) — 미체크면 complete 가 막힌다.
     _mark_ledger_closing(dest, tid)   # 결속 완료는 종결 중 장부에서만([[T-0959]])
     # complete 는 claim 과 같은 정체성으로 부른다 — 소유 대조(T-0781).
     done = _board(dest, "complete", tid, "--tests-pass", "--allow-missing-log",
-                  "--allow-untested", "--repo", "pilot", "--slot", "1",
+                  "--allow-untested", "--task", _SMOKE_TASK,
                   "--cluster-close", f"C-{tid}")
     assert done.returncode == 0, done.stderr
     reopened = _board(dest, "reopen", tid, "--reason", "오처리 복구 스모크")

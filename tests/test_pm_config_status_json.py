@@ -948,7 +948,7 @@ def test_text_path_output_is_byte_identical(home):
         "귀속(created_by/claimed_by)이 다중이면 세션 뷰가 strict-exclude 될 수 있다. 실 격리는 "
         "`board list --mine`(strict-exclude loud-warn)이 authoritative.\n"
         "## 이 세션의 리스: (없음)\n"
-        "## task 상황 (사람이 명명한 작업스트림·slot-모드 세션 제외):\n"
+        "## task 상황 (사람이 명명한 작업스트림):\n"
         "  (task 없음 — 명명한 task 미등록·세션은 아래 풀 축에만 나타남)\n"
         "## slot 풀 (풀 전체 리스 장부 · 슬롯별 state·보유 task·role + git 요약):\n"
         "  (리스 없음 — 아직 worktree 슬롯이 생성되지 않음)\n"

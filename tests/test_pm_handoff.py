@@ -507,11 +507,6 @@ def test_build_handoff_prompt_output_template_absent_warns(hf):
 # ── 멀티-PM 슬롯 주입 (T-0185) — 복사 블록의 bare /pm-bootstrap 에 slot 주입 ─────
 
 
-
-
-
-
-
 # ── task 모드 트리거 (T-0394) — 4경로 트리거 문면 (task-only / task+slot / slot / solo) ──
 # task 세션 연속성 앵커는 task(로그 태그 `task:<이름>`·per-task pm_state)라 인계 트리거가
 # `--task <이름>` 을 실어야 다음 세션이 task resume 으로 재개한다. 슬롯 재부착만 안내하면(구버전)
@@ -538,12 +533,6 @@ def test_build_handoff_prompt_output_task_only_emits_task_trigger(hf):
     injected = hf._inject_task_into_template(template, "mytask")
     assert "/pm-bootstrap\n" not in injected
     assert "/pm-bootstrap " not in injected.replace("/pm-bootstrap --task", "")
-
-
-
-
-
-
 
 
 def test_run_task_mode_emits_task_trigger(hf, tmp_path, capsys, monkeypatch):
@@ -674,8 +663,6 @@ def test_run_task_mode_explicit_pm_state_emits_task_trigger(hf, tmp_path, capsys
     out = capsys.readouterr().out
     # 명시 pm_state 여도 트리거는 task-only (task is not None 축으로 통일).
     assert "/pm-bootstrap --task mytask" in out
-
-
 
 
 # ── 출하 pm_playbook 정합: 프롬프트가 트리거로 축소됐다 (T-0180·feature-ship 가드) ──
@@ -938,21 +925,17 @@ def test_collect_session_entries_round_trip_prefixed_id_from_real_producers(hf):
 
 
 @pytest.mark.parametrize("legacy_raw", (False, True), ids=("canonical", "legacy"))
-@pytest.mark.parametrize("mode", ("task", "slot", "solo"))
+@pytest.mark.parametrize("mode", ("task", "solo"))
 def test_session_entries_collect_canonical_wikilink_ticket_headings(
     hf, mode, legacy_raw,
 ):
-    """ticket_finish heading을 task·slot·solo 모두 수집하며 raw legacy도 계속 읽는다."""
+    """ticket_finish heading을 task·solo 모두 수집하며 raw legacy도 계속 읽는다."""
     ticket_finish = _load_tool("ticket_finish")
     ticket = "T-service-a-001"
     if mode == "task":
         finish_kwargs = {"task": "alpha"}
         handoff_kwargs = {"task": "alpha", "session": "task:alpha"}
         boundary = "## [2026-08-05] handoff | PM 2차 (task:alpha) → 다음 PM 세션"
-    elif mode == "slot":
-        finish_kwargs = {"session": "slot_1"}
-        handoff_kwargs = {"session": "slot_1"}
-        boundary = "## [2026-08-05] handoff | PM 2차 (slot_1) → 다음 PM 세션"
     else:
         finish_kwargs = {}
         handoff_kwargs = {}
@@ -1038,8 +1021,6 @@ def test_collect_session_entries_solo_uses_last_untagged_handoff(hf):
     ]
 
 
-
-
 def test_identity_source_contract_is_complete_and_fails_on_producer_drift(
     hf, monkeypatch,
 ):
@@ -1068,14 +1049,6 @@ def test_explicit_task_checkpoint_producer_round_trips_handoff_collection(hf):
     assert hf.collect_session_entries(checkpoint, "main") == [
         checkpoint.splitlines()[0],
     ]
-
-
-
-
-
-
-
-
 
 
 def test_solo_collection_excludes_slot_checkpoints_from_mixed_log(hf):
@@ -1284,12 +1257,6 @@ def test_regression_cwd_two_slots_ambiguous_falls_back(hf, tmp_path):
     assert hf._regression_cwd(areas_file=areas, leases_file=leases) == str(hf.REPO)
 
 
-
-
-
-
-
-
 # ── lease 상대경로 직렬화 = POSIX 표기 단일 (T-0712 축 A) ─────────────────────
 # Windows 에서 `str(WindowsPath("nested/project_manager_1"))` 는 `nested\project_manager_1` 이라
 # 장부·pm_state·다음 세션 인자가 OS 마다 다른 문자열이 됐다(5차 Windows 측정
@@ -1333,12 +1300,6 @@ def _fake_pm_log_for_slot(slot_path, session: str = "project_manager_1"):
         _checkpoint_identity_axes=lambda _repo, _cwd, _identity, _source: (None, session),
         resolved_lease_slot_path=lambda _repo, _session: slot_path,
     )
-
-
-
-
-
-
 
 
 def test_regression_cwd_missing_leases_falls_back(hf, tmp_path):
@@ -1394,29 +1355,11 @@ def captured_run(hf, monkeypatch):
     return calls
 
 
-
-
-
-
-
 # --- 정체성 인자: --repo/--slot(decomposed canonical·ADR-0057) — hermetic (REPO monkeypatch) ---
 #
 # `_resolve_explicit_identity_slot` 의 leases_file 기본값은 *호출 시점* 모듈 `REPO` 에서 재구성
 # 되므로(monkeypatch 추종), `hf.REPO` 를 tmp_path 로 돌려 실 장부(이 워크트리의 진짜
 # worktree-leases.json)를 절대 건드리지 않는 결정론적 CLI 테스트를 만든다.
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 @pytest.mark.parametrize("source", ["cwd→lease", "단일 활성 task"])
@@ -1430,8 +1373,6 @@ def test_registered_identity_sources_enter_task_mode(
         identity_resolver=lambda: ("main", source),
     ) == 0
     assert captured_run["task"] == "main"
-
-
 
 
 def test_archived_task_refuses_handoff_before_side_effects(hf, tmp_path, capsys):
@@ -1468,12 +1409,7 @@ def test_archived_task_refuses_handoff_before_side_effects(hf, tmp_path, capsys)
     assert not (tmp_path / "pm_state.md").exists()   # 부작용 전 중단
 
 
-
-
 # --- `_resolve_explicit_identity_slot` 직접 단위 (M3 라이더 핵심 로직) ---
-
-def test_resolve_explicit_identity_slot_none_when_no_repo(hf, tmp_path):
-    assert hf._resolve_explicit_identity_slot(None, None, tmp_path / "absent.json") == (None, None)
 
 
 def test_resolve_explicit_identity_slot_missing_ledger_trusts_explicit(hf, tmp_path):
@@ -1498,14 +1434,6 @@ def test_resolve_explicit_identity_slot_m3_rejects_mismatch(hf, tmp_path):
     slot, err = hf._resolve_explicit_identity_slot("myrepo", 99, leases)
     assert slot is None
     assert err is not None and "조인" in err and "M3" in err
-
-
-def test_resolve_explicit_identity_slot_repo_alone_resolves(hf, tmp_path):
-    leases = tmp_path / "leases.json"
-    _write_leases(leases, [
-        {"slot": "work/myrepo_2", "repo": "myrepo", "session": "myrepo_2", "state": "leased"},
-    ])
-    assert hf._resolve_explicit_identity_slot("myrepo", None, leases) == ("work/myrepo_2", None)
 
 
 def test_resolve_explicit_identity_slot_repo_alone_zero_active(hf, tmp_path):
@@ -1598,24 +1526,12 @@ def test_handoff_skeleton_multi_inserts_session_tag(hf):
     assert "work/" not in head
 
 
-
-
-
-
-
-
 # ── task 모드 귀속 (F7·T-0356) — pm_state task 경로·dashboard 키·log 태그·lease 유지 ──────
 #
 # 세션 종료(핸드오프)의 연속성 앵커를 slot→task 로 이동한다. task 생성 시 이미 만들어진
 # `.local/tasks/<name>/pm_state.md`에 기록·dashboard 자기 섹션 `## <name>`·
 # log 헤더 태그 `(task:<name>)`. lease 는 유지(세션 종료 ≠ task 종료·F4). log 태그는 서술형 괄호·
 # 슬롯 태그와 구분되게 sentinel `task:` 로 박는다.
-
-
-
-
-
-
 
 
 @pytest.mark.parametrize(
@@ -1634,8 +1550,6 @@ def test_main_task_rejects_slot_identity_mixing(hf, captured_run, argv):
         hf.main(argv)
     assert exc.value.code == 2
     assert captured_run == {}
-
-
 
 
 @pytest.mark.parametrize("bad", [
@@ -2009,10 +1923,6 @@ def _hermetic_handoff(hf, tmp_path, pool, *, run_git_fn=None, raw_ledger_file=No
         raw_ledger_file=raw_ledger_file or (tmp_path / "absent_raw_outputs.json"),
         peer_raw_ledger_files=peer_raw_ledger_files,
     )
-
-
-
-
 
 
 # ── 같은-차수 handoff 재실행 멱등성 (T-0588) ───────────────────────────────
@@ -2416,20 +2326,6 @@ def test_run_prints_pathspec_commit_guidance(hf, tmp_path, capsys):
         f"이 도구가 실제로 쓰는 산출물 경로가 안내에 없다: {guidance!r}"
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ── task handoff intent pid=0 선행 기록 ("여기 두고 간다"의 task 판·T-0392) ────────────
 #
 # task 장부 pid = dump 후 즉사하는 bootstrap subprocess pid(㉑·T-0353)라, pm_handoff 가 종료를 안
@@ -2568,10 +2464,6 @@ def test_run_task_mode_blocks_before_log_when_intent_write_raises(
     assert rc == 1
     assert "ledger unavailable" in capsys.readouterr().err
     assert not handoff._log_file.exists()
-
-
-
-
 
 
 # ── task 퇴장: 변경 슬롯 회귀(F6) + 보유 전 슬롯 재스냅 (ADR-0068 W2·T-0393) ─────────────
@@ -3013,8 +2905,6 @@ def test_task_regression_stale_slot_fails_loud_not_repo_green(hf, tmp_path, caps
     assert "vacuous-pass" in err
 
 
-
-
 def test_task_shipping_surface_per_changed_slot(hf, tmp_path, capsys, monkeypatch):
     """[1b] 출하 변경 surface 를 회귀가 돈 변경-슬롯 각각에서 돌린다 — 두 번째 슬롯만 출하 경로 변경
     stub → 그 슬롯이 surface 되는지(codex must-fix·집합 1급화 일관·T-0393).
@@ -3183,8 +3073,6 @@ def test_task_resnap_dry_run_previews_all_slots(hf, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "[dry-run] git 재스냅 예고: work/a_1" in out
     assert "[dry-run] git 재스냅 예고: work/b_1" in out
-
-
 
 
 def test_task_handoff_real_git_changed_slot_regressed_all_resnapped(hf, tmp_path, monkeypatch):

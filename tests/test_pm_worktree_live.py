@@ -194,7 +194,7 @@ def _setup_home_with_submodule_slot(tmp_path: Path, harness: str, monkeypatch) -
 
     # create_slot(base=develop) — 슬롯 브랜치 <repo>_1 을 origin/develop 에서 --no-track 로 파고
     # submodule init(둘 다 detached pin). submodule init 은 file:// origin 을 clone(proto env 필요).
-    lease = wp.create_slot(_REPO_NAME, base=_BASE_BRANCH, session="setup", init_submodules=True)
+    lease = wp.create_slot(_REPO_NAME, base=_BASE_BRANCH, init_submodules=True)
     assert lease.slot == _SLOT, f"슬롯 식별자={lease.slot!r}(기대 {_SLOT!r})"
     slot_dir = wp.slot_path(_SLOT)
     assert slot_dir.is_dir(), "슬롯 worktree 폴더 미생성"

@@ -23,6 +23,9 @@ from pathlib import Path
 
 import pytest
 
+from _git_fixture import init_git_repo
+from conftest import ensure_product_slot
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 REAL_AREAS = REPO / ".project_manager" / "areas.md"
@@ -316,17 +319,6 @@ def test_id_prefix_multi_repo_ignores_local_conf_prefix(board):
 
 # ── layer 2: 세션 유도 (`<repo>_<N>` → repo → areas.md 행 prefix) ───────────
 
-def test_id_prefix_session_derives_prefix_from_areas(board):
-    """세션 유도(layer 2): 바인딩 세션 `<repo>_<N>` → repo → areas.md 행 prefix.
-
-    등록 repo 2개(count-based 는 모호)여도 세션이 `ship_1` 이면 repo `ship` → prefix SHIP.
-    세션 유도가 count-based(모호 None)보다 우선함을 격리 검증한다.
-    """
-    board.areas_append("PAY", "결제", "alice", repo="pay")
-    board.areas_append("SHIP", "배송", "bob", repo="ship")
-    _seed_lease(board, "ship_1", repo="ship")   # 단일 lease → session_name = ship_1
-    assert board.id_prefix(None) == "SHIP"
-
 
 def test_id_prefix_session_derivation_non_slot_form_skips(board):
     """세션명이 `<repo>_<N>` 형태 아님(솔로 커스텀 `pm`) → 세션 유도 skip → 다음 층(count-based).
@@ -348,24 +340,6 @@ def test_id_prefix_session_repo_unregistered_falls_through(board):
     board.areas_append("PAY", "결제", "alice", repo="pay")
     _seed_lease(board, "other_1", repo="other")
     assert board.id_prefix(None) == "PAY"
-
-
-# ── 단위: _repo_from_session (세션명 `<repo>_<N>` 역파싱) ───────────────────
-
-@pytest.mark.parametrize("session,expected", [
-    ("project_manager_1", "project_manager"),  # repo 명에 `_` 포함 — 마지막 `_숫자` 만 슬롯
-    ("pay_1", "pay"),
-    ("ship_12", "ship"),                        # 다자리 슬롯 번호
-    ("a_2_3", "a_2"),                           # 마지막 `_숫자` 마디만 분리
-    ("pm", None),                               # 커스텀 솔로 세션명(무 `_`)
-    ("my-session", None),                       # 하이픈·무 `_숫자`
-    ("foo_bar", None),                          # 끝 마디 비숫자
-    ("_1", None),                               # repo 부분 빈
-    ("", None),                                 # 빈 문자열
-])
-def test_repo_from_session_parses_slot_form(board, session, expected):
-    """`<repo>_<N>` 만 repo 로 역파싱하고, 형태 밖은 None(세션 유도 skip)."""
-    assert board._repo_from_session(session) == expected
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -443,10 +417,19 @@ def test_areas_append_is_append_only(board):
 # cmd_new 명시 prefix 정책 (ADR-0042 자유 입력 — 등록 제약 없음)
 # ════════════════════════════════════════════════════════════════════════
 
+_NEW_TASK = "multipm-task"
+
+
 def _new_args(title="t", prefix=None, user_ack=None):
     return argparse.Namespace(title=title, prefix=prefix, touches=None,
                               depends=None, tag=None, estimate="small",
-                              user_ack=user_ack)
+                              user_ack=user_ack, task=_NEW_TASK)
+
+
+def _publish(board, args):
+    """발행은 task 와 그 task 가 보유한 제품 폴더가 필요하다(T-0962) — 폴더를 준비하고 cmd_new."""
+    ensure_product_slot(board, task=args.task)
+    return board.cmd_new(args)
 
 
 def test_cmd_new_allows_user_approved_unregistered_prefix(board):
@@ -457,7 +440,7 @@ def test_cmd_new_allows_user_approved_unregistered_prefix(board):
     입력측 sanity와 사용자 승인을 통과하면 등록 여부와 무관하게 `T-<p>-NNN` 발행.
     """
     board.areas_append("pay", "결제", "alice")  # pay 만 등록 — 그래도 미등록 acc 허용
-    rc = board.cmd_new(_new_args(prefix="acc", user_ack="acc"))
+    rc = _publish(board, _new_args(prefix="acc", user_ack="acc"))
     assert rc == 0
     created = list((board.TICKETS_DIR / "open").glob("T-acc-001-*.md"))
     assert len(created) == 1
@@ -474,7 +457,7 @@ def test_cmd_new_guard_rejects_missing_prefix_in_multi_mode(board, capsys):
     board.areas_append("PAY", "결제", "alice")
     board.areas_append("ACC", "정산", "bob")  # 등록 repo 2개 → multi 모드
     # override 없음·local.conf prefix 없음 → id_prefix None.
-    rc = board.cmd_new(_new_args(prefix=None))
+    rc = _publish(board, _new_args(prefix=None))
     assert rc != 0
     err = capsys.readouterr().err
     assert "prefix 필요" in err
@@ -486,7 +469,7 @@ def test_cmd_new_guard_rejects_missing_prefix_in_multi_mode(board, capsys):
 def test_cmd_new_guard_allows_registered_prefix(board):
     """등록된 prefix → 정상 발행 (T-pay-001)."""
     board.areas_append("pay", "결제", "alice")
-    rc = board.cmd_new(_new_args(prefix="pay"))
+    rc = _publish(board, _new_args(prefix="pay"))
     assert rc == 0
     created = list((board.TICKETS_DIR / "open").glob("T-pay-001-*.md"))
     assert len(created) == 1
@@ -496,7 +479,7 @@ def test_cmd_new_guard_allows_registered_prefix(board):
 
 def test_cmd_new_solo_no_registry_emits_legacy_id(board):
     """areas.md 부재(solo) → 가드 off, legacy T-NNNN 발행."""
-    rc = board.cmd_new(_new_args(prefix=None))
+    rc = _publish(board, _new_args(prefix=None))
     assert rc == 0
     created = list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))
     assert len(created) == 1
@@ -511,29 +494,12 @@ def test_cmd_new_single_registered_repo_derives_prefix(board):
     solo(areas.md 자체가 없음)는 여전히 legacy T-NNNN — `test_cmd_new_solo_no_registry_emits_legacy_id`.
     """
     board.areas_append("PAY", "결제", "alice")  # 등록 repo 1개(repo=prefix=PAY)
-    rc = board.cmd_new(_new_args(prefix=None))
+    rc = _publish(board, _new_args(prefix=None))
     assert rc == 0
     created = list((board.TICKETS_DIR / "open").glob("T-PAY-001-*.md"))
     assert len(created) == 1
     fm, _ = board.load_ticket(created[0])
     assert fm["id"] == "T-PAY-001"
-
-
-def test_cmd_new_multi_repo_session_bound_derives_prefix(board):
-    """등록 repo ≥2 이어도 세션 바인딩(단일 lease)이면 repo→prefix 유도로 발행 성공(ADR-0040 D3).
-
-    모호(≥2)여도 세션이 `service-b_1` 이면 repo `service-b`(prefix ACC)로 좁혀져 fail-loud 을
-    피하고 T-ACC-001 을 발행한다 — silent 오귀속 없이 정확한 네임스페이스.
-    """
-    board.areas_append("PAY", "결제", "alice", repo="service-a")
-    board.areas_append("ACC", "정산", "bob", repo="service-b")
-    _seed_lease(board, "service-b_1", repo="service-b")
-    rc = board.cmd_new(_new_args(prefix=None))
-    assert rc == 0
-    created = list((board.TICKETS_DIR / "open").glob("T-ACC-001-*.md"))
-    assert len(created) == 1
-    fm, _ = board.load_ticket(created[0])
-    assert fm["id"] == "T-ACC-001"
 
 
 def test_cmd_new_single_registered_repo_honors_explicit_prefix(board):
@@ -543,7 +509,7 @@ def test_cmd_new_single_registered_repo_honors_explicit_prefix(board):
     발행한다(prefix optional·명시 우선).
     """
     board.areas_append("pay", "결제", "alice")  # 등록 repo 1개
-    rc = board.cmd_new(_new_args(prefix="pay"))
+    rc = _publish(board, _new_args(prefix="pay"))
     assert rc == 0
     created = list((board.TICKETS_DIR / "open").glob("T-pay-001-*.md"))
     assert len(created) == 1
@@ -555,10 +521,10 @@ def test_cmd_new_single_registered_repo_honors_explicit_prefix(board):
 # cmd_init team 경로
 # ════════════════════════════════════════════════════════════════════════
 
-def _init_args(prefix=None, area=None, owner=None, repo=None, slot=None, user=None,
-               user_ack=None):
+def _init_args(prefix=None, area=None, owner=None, repo=None, user=None,
+               user_ack=None, task=None):
     return argparse.Namespace(prefix=prefix, area=area, owner=owner,
-                              repo=repo, slot=slot, user=user, user_ack=user_ack)
+                              repo=repo, user=user, user_ack=user_ack, task=task)
 
 
 @pytest.fixture
@@ -639,7 +605,7 @@ def test_cmd_init_without_prefix_is_idempotent(init_board):
 
 def test_cmd_init_repo_name_override_registers_that_name(init_board):
     """`--repo` 명시가 등록 repo 이름이 된다(폴더명 유도보다 우선)."""
-    assert init_board.cmd_init(_init_args(repo="svc", slot=1)) == 0
+    assert init_board.cmd_init(_init_args(repo="svc")) == 0
     assert init_board.registered_repos() == {"svc"}
 
 
@@ -652,21 +618,6 @@ def test_cmd_init_new_prefix_without_area_rejected(init_board):
     rc = init_board.cmd_init(_init_args(prefix="new", user_ack="new"))
     assert rc != 0
     assert not init_board.AREAS_FILE.exists()
-
-
-def test_cmd_init_owner_defaults_to_session_name(init_board, monkeypatch):
-    """--owner 누락 시 owner 가 session_name() 해소값으로 채워진다 (등록행에 반영).
-
-    cmd_init 의 owner 기본값은 `session_name()`(override 없이) — env(PM_SESSION_NAME /
-    CLAUDE_SESSION_NAME alias) > 단일-lease 유도 순으로 해소된다. 결정성을 위해 env 를
-    고정해 그 값이 등록행 owner 로 들어가는지만 검증한다.
-    """
-    monkeypatch.setenv("CLAUDE_SESSION_NAME", "ambient-sess")
-    rc = init_board.cmd_init(_init_args(prefix="acc", area="정산", user_ack="acc"))
-    assert rc == 0
-    areas = init_board.AREAS_FILE.read_text(encoding="utf-8")
-    # 신 스키마: repo=clone 폴더명·prefix=카테고리·git/test_cmd 빈 값·owner=session_name() 해소값.
-    assert f"| {init_board.REPO.name} | acc |  |  | ambient-sess |" in areas
 
 
 # ── cmd_init area_owner 해소 (T-0161 델타·ADR-0033 ③·codex must-fix) ──────────
@@ -707,7 +658,7 @@ def test_cmd_init_area_owner_falls_back_to_git_email(init_board, monkeypatch):
     assert _area_owner(init_board, init_board.REPO.name) == "dev@example.com"
 
 
-def test_cmd_init_owner_empty_when_session_unbound(init_board, monkeypatch):
+def test_cmd_init_owner_empty_when_session_unbound(init_board, monkeypatch, capsys):
     """세션 미바인딩(env·lease 없음)이면 owner 칼럼이 빈 채 등록된다 — init 은 fail-loud 안 한다.
 
     init 은 lease 장부·세션 바인딩이 아직 없는 부트스트랩 지점이라, 미해소를 거부하면
@@ -717,6 +668,7 @@ def test_cmd_init_owner_empty_when_session_unbound(init_board, monkeypatch):
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     assert init_board.cmd_init(_init_args()) == 0
     assert _areas_row(init_board, init_board.REPO.name)["owner"] == ""
+    assert "세션 미바인딩" not in capsys.readouterr().out   # owner 는 --owner·--task 로만 채운다
 
 
 def test_cmd_init_area_owner_graceful_when_user_unknown(init_board, monkeypatch):
@@ -754,7 +706,7 @@ def test_e2e_team_init_then_multi_and_solo_coexist(init_board, monkeypatch):
     assert board.registered_prefixes() == {"pay"}
 
     # 2. multi new — local.conf prefix=pay 로 해소되어 T-pay-001.
-    assert board.cmd_new(_new_args(title="multi ticket")) == 0
+    assert _publish(board, _new_args(title="multi ticket")) == 0
     pay = list((board.TICKETS_DIR / "open").glob("T-pay-001-*.md"))
     assert len(pay) == 1
 
@@ -772,9 +724,8 @@ def test_e2e_team_init_then_multi_and_solo_coexist(init_board, monkeypatch):
     assert board.cmd_list(argparse.Namespace(status=None, tag=None)) == 0
 
     pay_id = "T-pay-001"
-    # 귀속 쓰기는 세션 명시가 전제다(폴백 폐지) — env 로 바인딩한다.
-    monkeypatch.setenv("PM_SESSION_NAME", "pay_1")
-    claim_args = argparse.Namespace(id=pay_id, session="pay-pm")
+    # 귀속 쓰기는 `--task` 가 전제다(환경변수·단일 대여 유도 없음).
+    claim_args = argparse.Namespace(id=pay_id, task=_NEW_TASK)
     assert board.cmd_claim(claim_args) == 0
     assert list((board.TICKETS_DIR / "claimed").glob(f"{pay_id}-*.md"))
 
@@ -783,7 +734,7 @@ def test_e2e_team_init_then_multi_and_solo_coexist(init_board, monkeypatch):
     complete_args = argparse.Namespace(
         id=pay_id, tests_pass=True, allow_missing_log=True, allow_untested=False,
         # lifecycle unit seam: public 사용자는 ticket_finish 묶음 종결만 쓴다.
-        cluster_close=f"C-{pay_id}")
+        cluster_close=f"C-{pay_id}", task=_NEW_TASK)
     assert board.cmd_complete(complete_args) == 0
     assert list((board.TICKETS_DIR / "done").glob(f"{pay_id}-*.md"))
 
@@ -798,17 +749,16 @@ def test_e2e_no_prefix_board_flow(init_board, monkeypatch):
     assert board.registered_repos() == {board.REPO.name}   # 등록 0 형상 없음
     assert board.registered_prefixes() == set()            # 가드 신호 off
 
-    assert board.cmd_new(_new_args(title="solo ticket")) == 0
+    assert _publish(board, _new_args(title="solo ticket")) == 0
     created = list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))
     assert len(created) == 1
 
-    monkeypatch.setenv("PM_SESSION_NAME", "pm_1")
-    assert board.cmd_claim(argparse.Namespace(id="T-0001", session="pm")) == 0
+    assert board.cmd_claim(argparse.Namespace(id="T-0001", task=_NEW_TASK)) == 0
     _check_off_dod(board, "T-0001")
     _mark_ledger_closing(board, "C-T-0001")
     assert board.cmd_complete(argparse.Namespace(
         id="T-0001", tests_pass=True, allow_missing_log=True,
-        allow_untested=False, cluster_close="C-T-0001")) == 0
+        allow_untested=False, cluster_close="C-T-0001", task=_NEW_TASK)) == 0
     assert list((board.TICKETS_DIR / "done").glob("T-0001-*.md"))
 
 
@@ -1015,7 +965,7 @@ def test_init_no_prefix_label_is_none_category_not_solo(init_board, capsys):
     assert f"repo {init_board.REPO.name} · 카테고리 none(무prefix)" in out
     assert "T-NNNN (none 카테고리)" in out
     assert "solo" not in out and "팀" not in out
-    assert init_board.cmd_new(_new_args(title="solo")) == 0
+    assert _publish(init_board, _new_args(title="solo")) == 0
     assert list((init_board.TICKETS_DIR / "open").glob("T-0001-*.md"))
 
 
@@ -1030,10 +980,10 @@ def test_init_namespaced_registers_and_emits_namespaced_id(init_board):
         prefix="acc", area="정산", owner="bob", user_ack="acc")) == 0
     assert init_board.registered_prefixes() == {"acc"}     # 레지스트리 등록
     # 등록 prefix → 세션/count 유도로 네임스페이스 발행.
-    assert init_board.cmd_new(_new_args(title="acc ticket")) == 0
+    assert _publish(init_board, _new_args(title="acc ticket")) == 0
     assert list((init_board.TICKETS_DIR / "open").glob("T-acc-001-*.md"))
     # 미등록 명시 prefix(형식 정상) → ADR-0042 자유 입력으로 발행(등록 제약 없음).
-    assert init_board.cmd_new(_new_args(
+    assert _publish(init_board, _new_args(
         title="new cat", prefix="zzz", user_ack="zzz")) == 0
     assert list((init_board.TICKETS_DIR / "open").glob("T-zzz-001-*.md"))
 
@@ -1059,7 +1009,7 @@ def test_validate_prefix_helper(board):
 
 def test_cmd_new_rejects_reserved_prefix_none(board, capsys):
     """`new --prefix none` → rc 1·부작용 0 (예약어 — 무prefix 1급 인자)."""
-    rc = board.cmd_new(_new_args(prefix="none"))
+    rc = _publish(board, _new_args(prefix="none"))
     assert rc == 1
     assert "예약어" in capsys.readouterr().err
     # 어떤 status 디렉토리에도 티켓/draft 미발행(부작용 0).
@@ -1069,7 +1019,7 @@ def test_cmd_new_rejects_reserved_prefix_none(board, capsys):
 
 def test_cmd_new_accepts_uppercase_prefix(board):
     """`new --prefix AAA`(대문자) → rc 0·`T-AAA-001` 발행 (ADR-0055·case 허용·DoD 1)."""
-    rc = board.cmd_new(_new_args(prefix="AAA", user_ack="AAA"))
+    rc = _publish(board, _new_args(prefix="AAA", user_ack="AAA"))
     assert rc == 0
     created = list((board.TICKETS_DIR / "open").glob("T-AAA-001-*.md"))
     assert len(created) == 1
@@ -1079,7 +1029,7 @@ def test_cmd_new_accepts_uppercase_prefix(board):
 
 def test_cmd_new_accepts_valid_lowercase_prefix(board):
     """정상 소문자 prefix 는 통과 → prefixed ID 발행 (solo·레지스트리 부재)."""
-    rc = board.cmd_new(_new_args(prefix="pay", user_ack="pay"))
+    rc = _publish(board, _new_args(prefix="pay", user_ack="pay"))
     assert rc == 0
     assert list((board.TICKETS_DIR / "open").glob("T-pay-001-*.md"))
 
@@ -1127,7 +1077,7 @@ def test_cmd_new_lowercase_input_continues_uppercase_series(board):
     (Windows·macOS)에서 `T-aaa-*` 가 `T-AAA-*` 파일까지 매치해 "case-분할 없음"을 증명하지
     못한다(Windows 실측 실패 지점)."""
     _seed_ticket(board, "T-AAA-001")
-    rc = board.cmd_new(_new_args(prefix="aaa", title="lower input"))
+    rc = _publish(board, _new_args(prefix="aaa", title="lower input"))
     assert rc == 0
     assert _issued_ids(board) == {"T-AAA-001", "T-AAA-002"}   # 등록 case 로 이어감·case-분할 없음
 
@@ -1245,7 +1195,7 @@ def test_empty_prefix_areas_next_id_stays_legacy(board):
     assert board.id_prefix() is None                         # count-based 유도 없음(빈 prefix)
     assert board._next_id(None) == "T-0001"
     # 실 명령 경로로도 확증 — prefix 미명시 new 는 legacy ID 발행.
-    assert board.cmd_new(_new_args(title="t")) == 0
+    assert _publish(board, _new_args(title="t")) == 0
     assert list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))
 
 
@@ -1412,22 +1362,6 @@ def test_session_name_ignores_local_conf_session(board, monkeypatch):
     assert board.session_name() is None
 
 
-def test_session_name_required_fail_loud_carries_explicit_identity_remedy(board, monkeypatch):
-    """`session=` 만 있는 conf 에서 귀속 쓰기 → fail-loud 문구(실값 단언·조용한 폴백 0).
-
-    픽스처는 구 init 이 실제로 쓰던 2줄(주석 + `session=pm`)이다.
-    """
-    _clear_env(monkeypatch)
-    _write_conf(board, "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
-                       "session=pm\n")
-    with pytest.raises(SystemExit) as exc:
-        board.session_name(required=True)
-    assert str(exc.value) == board.UNREGISTERED_SESSION_ABORT
-    assert "--repo <repo> --slot <N>" in str(exc.value)
-    # 작업 폴더가 없는 홈에는 만드는 명령이 함께 나온다 — 조용한 폴백이 없으므로 처방이 필수다.
-    assert "pm-config worktree add" in str(exc.value)
-
-
 def test_session_name_solo_unbound_returns_none(board, monkeypatch):
     """env·lease 모두 없음 → None (구 host-pid 폴백 제거·ADR-0040).
 
@@ -1445,31 +1379,6 @@ def test_session_name_override_beats_everything(board, monkeypatch):
     _write_conf(board, "session=from-conf\n")
     _write_ledger(board, {"session": "leased-1"})
     assert board.session_name("explicit") == "explicit"
-
-
-def test_session_name_required_fail_loud_when_unresolved(board, monkeypatch):
-    """required=True + 미해소(solo 무바인딩) → fail-loud(SystemExit·`--repo/--slot` 안내)."""
-    _clear_env(monkeypatch)
-    with pytest.raises(SystemExit) as exc:
-        board.session_name(required=True)
-    # 안내 문구에 `--repo <repo> --slot <N>` 형식이 들어간다(ADR-0057).
-    assert "--repo" in str(exc.value)
-
-
-def test_session_name_required_fail_loud_when_ambiguous(board, monkeypatch):
-    """required=True + leased ≥2 (모호) → fail-loud (local.conf 있어도 오귀속 안 함)."""
-    _clear_env(monkeypatch)
-    _write_conf(board, "session=some-conf\n")
-    _write_ledger(board, {"session": "a_1"}, {"session": "b_1"})
-    with pytest.raises(SystemExit):
-        board.session_name(required=True)
-
-
-def test_session_name_required_resolves_does_not_exit(board, monkeypatch):
-    """required=True 라도 해소되면(단일-lease) fail-loud 없이 그 값 반환."""
-    _clear_env(monkeypatch)
-    _write_ledger(board, {"session": "only_1"})
-    assert board.session_name(required=True) == "only_1"
 
 
 # ── 등록은 장부 행이 한다 (유도 층 폐지) ─────────
@@ -1491,15 +1400,6 @@ def test_session_name_zero_rows_empty_list_stays_unresolved(board, monkeypatch):
     board.areas_append("SOLO", "단일", "alice", repo="solo")
     _write_ledger(board)
     assert board.session_name() is None
-
-
-def test_session_name_home_row_resolves_registered_home(board, monkeypatch):
-    """홈 자신을 가리키는 N=1 행(`slot="."`) → 그 행의 session 으로 해소(단일-lease 층)."""
-    _clear_env(monkeypatch)
-    board.areas_append("SOLO", "단일", "alice", repo="solo")
-    _write_ledger(board, {"slot": ".", "repo": "solo", "session": "solo_1"})
-    assert board.session_name() == "solo_1"
-    assert board.session_name(required=True) == "solo_1"
 
 
 def test_session_name_single_lease_layer_resolves(board, monkeypatch):
@@ -1534,15 +1434,6 @@ def test_session_name_override_beats_ledger_row(board, monkeypatch):
     assert board.session_name("explicit") == "explicit"
 
 
-def test_session_name_required_fail_loud_when_rows_are_ambiguous(board, monkeypatch):
-    """등록 repo 1개라도 leased 행이 그 세션을 특정하지 못하면 required=True 는 fail-loud."""
-    _clear_env(monkeypatch)
-    board.areas_append("SOLO", "단일", "alice", repo="solo")
-    _write_ledger(board, {"session": "stale_9", "state": "idle"})
-    with pytest.raises(SystemExit):
-        board.session_name(required=True)
-
-
 # ── 손상 장부 board-level 역가드 ─────────────────
 # 장부가 **손상**(읽기실패·JSON파손·스키마불일치)이면 행을 못 읽으므로 미해소로 떨어진다 —
 # 손상을 "행 0" 으로 접어 이름을 지어내면 실제로 풀 행을 보유했던 홈이 오귀속된다.
@@ -1555,36 +1446,6 @@ def test_session_name_corrupt_json_ledger_stays_unresolved(board, monkeypatch):
     board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     board.LEASES_FILE.write_text("{not valid json", encoding="utf-8")
     assert board.session_name() is None
-
-
-def test_session_name_corrupt_json_ledger_fail_loud_when_required(board, monkeypatch):
-    """손상 3형 ① JSON 파손 — required=True 는 fail-loud(SystemExit) — 오귀속 rc0 금지."""
-    _clear_env(monkeypatch)
-    board.areas_append("SOLO", "단일", "alice", repo="solo")
-    board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    board.LEASES_FILE.write_text("{not valid json", encoding="utf-8")
-    with pytest.raises(SystemExit):
-        board.session_name(required=True)
-
-
-def test_session_name_schema_mismatch_ledger_fail_loud_when_required(board, monkeypatch):
-    """손상 3형 ② 최상위 스키마 불일치(dict 아님) — required=True fail-loud."""
-    _clear_env(monkeypatch)
-    board.areas_append("SOLO", "단일", "alice", repo="solo")
-    board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    board.LEASES_FILE.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
-    with pytest.raises(SystemExit):
-        board.session_name(required=True)
-
-
-def test_session_name_read_failure_ledger_fail_loud_when_required(board, monkeypatch):
-    """손상 3형 ③ 읽기 실패(경로가 디렉터리) — required=True fail-loud."""
-    _clear_env(monkeypatch)
-    board.areas_append("SOLO", "단일", "alice", repo="solo")
-    board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    board.LEASES_FILE.mkdir()
-    with pytest.raises(SystemExit):
-        board.session_name(required=True)
 
 
 # ── 귀속 쓰기(claim) fail-loud 배선 + surface(list --mine) 비바인딩 (ADR-0040 D1) ──
@@ -1600,17 +1461,6 @@ def test_cmd_claim_fail_loud_when_session_ambiguous(board, monkeypatch):
     _write_ledger(board, {"session": "a_1"}, {"session": "b_1"})
     with pytest.raises(SystemExit):
         board.cmd_claim(argparse.Namespace(id="T-0001", session=None, user=None))
-
-
-def test_cmd_claim_explicit_session_bypasses_fail_loud(board, monkeypatch):
-    """명시 --repo/--slot 이면 모호해도 fail-loud 하지 않는다(세션 해소 override 0층)."""
-    _clear_env(monkeypatch)
-    _write_ledger(board, {"session": "a_1"}, {"session": "b_1"})
-    _seed_ticket(board, "T-0001", status="open")
-    # 명시 --repo/--slot(kind=slot) → session_name 이 즉시 반환(SystemExit 없음). claim 이 정상
-    # 진행돼 rc=0.
-    rc = board.cmd_claim(argparse.Namespace(id="T-0001", repo="a", slot=1, user="me"))
-    assert rc == 0
 
 
 def test_cmd_list_mine_unbound_surfaces_unbind_note(board, monkeypatch, capsys):
@@ -2080,22 +1930,33 @@ def test_regression_multi_run_ignores_env_session(
 
 def test_regression_run_explicit_session_narrows_in_multi(
         multi_reg_board, monkeypatch):
-    """M2+ 라도 CLI --repo/--slot 명시는 그 슬롯 단일 경로로 좁힌다 (문서화된 의도적 조작만 허용).
+    """M2+ 라도 CLI `--task` 명시는 그 task 폴더 단일 경로로 좁힌다 (문서화된 의도적 조작만 허용).
 
-    좁히는 대상은 **디스패치**(전-슬롯 순회 → 실행 1회)와 그 슬롯 test_cmd 다. 회귀 cwd 는
-    슬롯이 아니라 이 트리(REPO)다 — 슬롯 우회는 삭제됐고 다른 트리는 `--cwd`/`--task` 로 지목한다
-    (T-0733).
+    좁히는 대상은 **디스패치**(전-슬롯 순회 → 실행 1회)다. 실행 위치는 그 task 가 보유한 폴더다
+    (T-0962: `--repo`/`--slot` 은 `--task` 와 함께인 위치 인자일 뿐 정체성이 아니다).
     """
     b = multi_reg_board
+    _write_ledger(b, {"session": "narrow"}, {"session": "B_1"})
+    folder = b.REPO / "work" / "narrow"
+    init_git_repo(folder, commit="narrow fixture")
+    (folder / "tests").mkdir(exist_ok=True)
+    # task 폴더 판독(git)은 실제 저장소로 보내고 회귀 실행만 대역이 받는다.
+    real_popen = b.subprocess.Popen
     fake = _FakeRun(0)
-    monkeypatch.setattr(b.subprocess, "Popen", fake)
-    rc = b.cmd_regression(_run_args(repo="A", slot=1))
+
+    def popen(*args, **kwargs):
+        argv = args[0] if args else kwargs.get("args")
+        if isinstance(argv, (list, tuple)) and argv and Path(str(argv[0])).name == "git":
+            return real_popen(*args, **kwargs)
+        return fake(*args, **kwargs)
+
+    monkeypatch.setattr(b.subprocess, "Popen", popen)
+    rc = b.cmd_regression(_run_args(task="narrow"))
     assert rc == 0
-    # 단일-슬롯 경로 — 공유 REGRESSION_FLAG·실행 1회(슬롯 순회 아님)·cwd 는 이 트리.
+    # 단일 경로 — 실행 1회(슬롯 순회 아님)·cwd 는 task 폴더·타 슬롯 플래그 없음.
     assert len(fake.calls) == 1
-    assert fake.calls[0]["kwargs"]["cwd"] == str(b.REPO)
-    assert b.REGRESSION_FLAG.exists()
-    assert not (b.LOCAL_DIR / "regression-A_1.json").exists()
+    assert fake.calls[0]["kwargs"]["cwd"] == str(folder)
+    assert not (b.LOCAL_DIR / "regression-B_1.json").exists()
 
 
 def test_regression_multi_check_message_carries_rc5_hint(
@@ -2108,59 +1969,6 @@ def test_regression_multi_check_message_carries_rc5_hint(
     assert rc == 1
     err = capsys.readouterr().err
     assert "B_1=red(rc=5·수집0)" in err
-
-
-# ════════════════════════════════════════════════════════════════════════
-# T-0378 — 명시 `--cwd`(run) 대칭: eager actor 해소가 `--repo` 단독 + 활성 ≥2 에서
-# SlotResolutionError 를 오발화하던 것을 soft 해소로 닫는다(livegate cf14d9b 동형·
-# pm-release §2 readonly-핀 처방 `regression run --repo <r> --cwd <readonly>` 소진).
-# --cwd 핀은 단일 위치라 M>1 순회도 건너뛰고, session 은 슬롯 test_cmd 유도에만 남는다
-# (cwd override 최우선) — 명시 슬롯은 그 test_cmd 유지, 모호는 repo/local 폴백.
-# ════════════════════════════════════════════════════════════════════════
-
-def _seed_repo_two_slots(board, repo="proj"):
-    """repo 하나에 활성 leased 슬롯 2개(<repo>_1·<repo>_2) — resolve_actor_slot 모호 전제.
-
-    작업 슬롯 + readonly(leased) 슬롯이 같은 repo 활성 ≥2 가 되는 릴리즈 형상 재현.
-    """
-    _seed_lease(board, f"{repo}_1", repo, slot=f"work/{repo}_1")
-    _seed_lease(board, f"{repo}_2", repo, slot=f"work/{repo}_2")
-
-
-def test_actor_override_repo_ambiguous_hard_exits_reproduces_misfire(
-        reg_board, monkeypatch):
-    """재현 판정: `--repo` 단독 + 활성 ≥2 → `_actor_session_override`(soft=False) 가 SystemExit.
-
-    v1.3.0 릴리즈가 잡은 결함 클래스(livegate cf14d9b)의 regression 판 — eager 해소가 `--cwd`
-    핀을 무시하고 `--repo` 단독 actor 특정을 타 SlotResolutionError 로 오발화한다. soft=False
-    는 현행 하드 실패라 **결함이 실재함을 박제**하고, soft=True 는 raise 대신 None(핀 존중)임을
-    같은 자리에서 못박는다(수정의 핵심 seam).
-    """
-    _clear_env(monkeypatch)
-    _seed_repo_two_slots(reg_board)
-    args = argparse.Namespace(repo="proj", slot=None, task=None)
-    with pytest.raises(SystemExit):
-        reg_board._actor_session_override(args)            # soft=False (현행·오발화 재현)
-    assert reg_board._actor_session_override(args, soft=True) is None
-
-
-def test_regression_run_explicit_cwd_repo_ambiguous_no_misfire(
-        reg_board, monkeypatch):
-    """수정: 활성 ≥2 + `regression run --repo <r> --cwd <path>` → 오발화 없이 그 cwd 실행.
-
-    eager 해소가 SlotResolutionError 로 죽던 것을 --cwd 핀이 soft 해소로 존중한다 —
-    pm-release §2 처방(`--repo <r> --cwd <readonly>`)이 실제로 통과(dead-end 아님).
-    """
-    _clear_env(monkeypatch)
-    _seed_repo_two_slots(reg_board)
-    override = str(reg_board._proj / "readonly_slot")
-    fake = _FakeRun(0)
-    monkeypatch.setattr(reg_board.subprocess, "Popen", fake)
-    rc = reg_board.cmd_regression(_run_args(repo="proj", cwd=override))  # 오발화면 SystemExit
-    assert rc == 0
-    # 단일 subprocess 가 그 cwd(override)에서 — M>1 순회 아님.
-    assert len(fake.calls) == 1
-    assert fake.calls[0]["kwargs"]["cwd"] == override
 
 
 def test_regression_run_explicit_cwd_skips_multi_dispatch(
@@ -2180,31 +1988,6 @@ def test_regression_run_explicit_cwd_skips_multi_dispatch(
     assert fake.calls[0]["kwargs"]["cwd"] == override
     assert b.REGRESSION_FLAG.exists()
     assert not (b.LOCAL_DIR / "regression-A_1.json").exists()
-
-
-def test_regression_run_explicit_slot_cwd_keeps_slot_test_cmd(
-        reg_board, monkeypatch):
-    """--repo/--slot 명시 + --cwd → 그 슬롯 test_cmd 유지(soft 는 kind=slot 무영향).
-
-    모호(--repo 단독)만 repo/local 폴백을 타고, 명시 슬롯은 슬롯 test_cmd 를 그대로 유도한다
-    — 부분 대칭(결정 절 (a)): slot test_cmd 는 pickable 할 때만 유지.
-    """
-    _clear_env(monkeypatch)
-    _seed_repo_two_slots(reg_board)
-    # proj_1 슬롯에 test_cmd 바인딩(슬롯별 빌드변형).
-    data = json.loads(reg_board.LEASES_FILE.read_text(encoding="utf-8"))
-    for r in data["leases"]:
-        if r["session"] == "proj_1":
-            r["test_cmd"] = "SLOT1_CMD"
-    reg_board.LEASES_FILE.write_text(json.dumps(data), encoding="utf-8")
-    override = str(reg_board._proj / "pinned")
-    fake = _FakeRun(0)
-    monkeypatch.setattr(reg_board.subprocess, "Popen", fake)
-    rc = reg_board.cmd_regression(_run_args(repo="proj", slot=1, cwd=override))
-    assert rc == 0
-    # 명시 슬롯(proj_1)의 test_cmd 가 실렸다(모호 폴백과 달리 pickable).
-    assert fake.calls[0]["args"][0].startswith("SLOT1_CMD")
-    assert fake.calls[0]["kwargs"]["cwd"] == override
 
 
 def test_validate_prefix_rejects_leading_underscore(board):
@@ -2265,22 +2048,6 @@ def _mine_ids(board, capsys, **flags):
 
 # ── DoD (a): 타 사용자 미claim open 미포함 (--session·--mine) ──────────────────
 
-def test_session_excludes_other_users_unclaimed_open(board, capsys):
-    """**증상 직접 해소**: created_by=타인·claimed_by=null·open 이 `--repo/--slot` 결과서 제외.
-
-    user-first (ADR-0056): `--repo/--slot`(ADR-0057) 의 querying identity = **현재 사용자**
-    (local.conf user=alice). open 소유는 area_owner(alpha→alice·beta→bob)로 해소 → alice 세션은
-    bob 소유 open(T-BE-001) 제외. (옛 T-0198 은 my_user 를 항상 None 으로 둬 area-open 이 전체
-    open 으로 새던 것을 근절.)
-    """
-    board.AREAS_FILE.write_text(_TWO_USER_AREAS, encoding="utf-8")
-    _write_conf(board, "identity.user=alice\nsession=alpha_1\n")
-    _seed_full(board, "T-AL-001", "open", created_by="alice/alpha_1")   # alice 소유 open
-    _seed_full(board, "T-BE-001", "open", created_by="bob/beta_1")      # bob 미claim open
-    ids = _mine_ids(board, capsys, repo="alpha", slot=1)
-    assert "T-BE-001" not in ids     # 타 사용자 미claim open 유출 차단(ADR-0056)
-    assert ids == ["T-AL-001"]
-
 
 def test_mine_excludes_other_users_unclaimed_open(board, capsys):
     """--mine 도 동일 — alice 의 --mine 은 bob 소유 open 을 제외한다(area_owner strict)."""
@@ -2303,27 +2070,6 @@ def test_mine_includes_my_claim_and_my_area_open(board, capsys):
     _seed_full(board, "T-BE-001", "open", created_by="bob/beta_1")          # 타 사용자 open→제외
     ids = _mine_ids(board, capsys, mine=True)
     assert set(ids) == {"T-AL-001", "T-BE-005"}
-
-
-def test_slot_view_open_is_created_session_not_area_owner(board, capsys):
-    """`--repo X --slot N` open = 그 세션 **생성분만**(ADR-0067 생성-세션 스트림) — area_owner 소유
-    해소가 아니다.
-
-    옛 동작(T-0302): slot 뷰 open 은 area_owner 로 소유 해소(같은 area 의 bob-생성 open 도 alice
-    소유로 포함). ADR-0067: open 은 `created_by` 세션이 alpha_1 인 것만 — 같은 area·같은 소유
-    (area_owner=alice)여도 타 슬롯(alpha_2) 생성 open(T-AL-009)은 제외된다(PM 77 누출 fix)."""
-    single = (
-        "# Area Registry\n\n"
-        "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
-        "|---|---|---|---|---|---|---|---|\n"
-        "| alpha | AL | g:a | pytest -q | reg | develop | main | alice |\n"
-    )
-    board.AREAS_FILE.write_text(single, encoding="utf-8")
-    _write_conf(board, "identity.user=alice\nsession=alpha_1\n")
-    _seed_full(board, "T-AL-001", "open", created_by="alice/alpha_1")   # 그 세션 생성 → 상세
-    _seed_full(board, "T-AL-009", "open", created_by="bob/alpha_2")     # 타 슬롯 생성 → 비노출(소유 무관)
-    ids = _mine_ids(board, capsys, repo="alpha", slot=1)
-    assert set(ids) == {"T-AL-001"}
 
 
 # ── DoD (c): created_by 2차 폴백 (area_owner 미설정 채택자) ────────────────────
@@ -2388,16 +2134,6 @@ def test_multi_user_unresolved_owner_strict_excludes(board, capsys):
     ids = _mine_ids(board, capsys, mine=True)
     assert "T-0003" not in ids     # 다중사용자 + 미해소 → strict-exclude
     assert ids == ["T-0001"]
-
-
-def test_session_multi_user_no_area_owner_excludes_unowned_open(board, capsys):
-    """`--repo/--slot`(ADR-0057) + area_owner 미운영 + 다중사용자 → 소유 미해소 open strict-exclude.
-
-    my_user 를 유도할 areas 가 없어도(→None) multi_user 게이트가 미해소 open 유출을 막는다."""
-    _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")
-    _seed_full(board, "T-0002", "open", created_by="bob/beta_1")
-    ids = _mine_ids(board, capsys, repo="alpha", slot=1)
-    assert "T-0002" not in ids     # 타 사용자 미claim open 유출 차단(솔로 degrade 미확장)
 
 
 # ── 헬퍼 단위테스트 — _distinct_ticket_users·_ticket_owner·_created_by_user ──
@@ -2500,59 +2236,6 @@ def test_userfirst_mine_is_all_my_slots(board, capsys):
     assert ids == {"T-AL-001", "T-AL-002", "T-AL-003"}
 
 
-def test_userfirst_session_intersects_slot_excludes_my_other_slot_claim(board, capsys):
-    """**S2**: `--repo alpha --slot 1`(ADR-0057) = 내 것 ∩ 그 슬롯 — 내 open(슬롯무관) +
-    alpha_1 claim만.
-
-    타 슬롯의 내 claim(T-AL-003·alpha_2)은 `--repo alpha --slot 1` 엔 안 보이고(정상) --mine 엔
-    보인다.
-    """
-    _seed_userfirst_board(board, areas=True)
-    ids = set(_mine_ids(board, capsys, repo="alpha", slot=1))
-    # 내 open(T-AL-001·슬롯무관 backlog) + 내 alpha_1 claim(T-AL-002). alpha_2 claim 제외.
-    assert ids == {"T-AL-001", "T-AL-002"}
-    assert "T-AL-003" not in ids                      # 타 슬롯의 내 claim → slot 뷰서 제외
-    assert "T-AL-003" in set(_mine_ids(board, capsys, mine=True))  # --mine 엔 나옴(전 슬롯)
-
-
-def test_userfirst_slot_number_intersects(board, capsys):
-    """`--repo alpha --slot 2`(ADR-0057) = 내 것 ∩ 슬롯 _2 — 내 alpha_2 claim(T-AL-003)만·
-    alpha_1 claim 제외·bob 무포함."""
-    _seed_userfirst_board(board, areas=True)
-    ids = set(_mine_ids(board, capsys, repo="alpha", slot=2))
-    assert "T-AL-003" in ids                          # 내 claim·slot _2
-    assert "T-AL-002" not in ids                      # 내 claim·slot _1 → --slot 2 제외
-    assert not (_BOB_TICKETS & ids)
-
-
-def test_userfirst_slot_view_session_stream_and_legacy_claim(board, capsys):
-    """`--repo alpha --slot 1` 세션 뷰(ADR-0067): 그 세션 생성 open + 그 세션 claim 만.
-
-    open 은 생성-세션 스트림이라 세션 부재 created_by(T-0001)는 비노출(옛 solo all-open degrade 는
-    세션 뷰에 적용 안 됨). claim 은 legacy 슬롯-only(alpha_1·solo=not multi_user)도 exact 매칭이면
-    포함·타 슬롯(alpha_2)은 제외."""
-    _seed_full(board, "T-0001", "open")                              # created_by 부재 → 비노출(backfill 대상)
-    _seed_full(board, "T-0002", "claimed", claimed_by="alpha_1")     # 슬롯-only·내 슬롯 → 상세
-    _seed_full(board, "T-0003", "claimed", claimed_by="alpha_2")     # 슬롯-only·타 슬롯 → 제외
-    ids = set(_mine_ids(board, capsys, repo="alpha", slot=1))
-    assert ids == {"T-0002"}                          # 세션 생성 open 0 + 내 슬롯 legacy claim
-
-
-def test_userfirst_slot_view_requires_user_and_session(board, capsys):
-    """`--repo repo --slot 1` 세션 뷰는 user ∧ session 복합축이다.
-
-    alice의 같은 세션 claim만 보이고 bob의 동명 세션 claim과 multi-user에서 모호한 legacy
-    슬롯-only claim은 strict-exclude한다.
-    """
-    _write_conf(board, "identity.user=alice\n")
-    _seed_full(board, "T-0001", "claimed", claimed_by="alice/repo_1")   # user-qualified·세션 repo_1
-    _seed_full(board, "T-0002", "claimed", claimed_by="bob/repo_1")     # 타 user·같은 세션 → 제외
-    _seed_full(board, "T-0003", "claimed", claimed_by="repo_1")         # legacy·multi-user → strict 제외
-    _seed_full(board, "T-0004", "claimed", claimed_by="alice/repo_2")   # 타 세션(repo_2) → 제외
-    ids = set(_mine_ids(board, capsys, repo="repo", slot=1))
-    assert ids == {"T-0001"}
-
-
 # ════════════════════════════════════════════════════════════════════════
 # ADR-0053 #4 — anti-degrade loud-warn (cmd_list · T-0307).
 #
@@ -2567,7 +2250,7 @@ _REMEDY_INIT = "board init --owner"
 _REMEDY_MIGRATE = "migrate-identity"
 # T-0382: loud-warn 은 remedy 를 *실행 가능한 실값*으로 명시해야 한다(사용자가 커맨드를 기억할
 # 필요 0·[[mechanize-dont-instruct-llm]]) — 정확한 backfill 커맨드 + 단일-세션 op 전제.
-_REMEDY_MIGRATE_EXACT = "python3 .project_manager/tools/board.py migrate-identity --dry-run"
+_REMEDY_MIGRATE_EXACT = "python3 .project_manager/tools/board.py migrate-identity --task <task> --dry-run"
 _REMEDY_SINGLE_SESSION = "단일-세션 op"
 
 
@@ -2796,3 +2479,39 @@ def _mark_ledger_closing(board, cluster: str) -> None:
     ledger = board.load_cluster(cluster)
     ledger["status"] = "closing"
     board.dump_cluster(ledger)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# T-0962 — 슬롯 정체성 삭제: init owner 는 세션에서 유도하지 않고, 세션 토큰을 분해하지 않는다
+# ════════════════════════════════════════════════════════════════════════
+
+def test_t0962_init_owner_has_no_session_derivation(init_board, monkeypatch, capsys):
+    """AT-008 — init owner = `--owner` > `--task` > 빈 칸. 환경변수 세션은 쓰지 않고 `--slot` 은 없다."""
+    monkeypatch.setenv("PM_SESSION_NAME", "proj_1")
+    assert init_board.cmd_init(_init_args()) == 0
+    assert _areas_row(init_board, init_board.REPO.name)["owner"] == ""
+    init_board.AREAS_FILE.unlink()
+    assert init_board.cmd_init(_init_args(task="mytask")) == 0
+    assert _areas_row(init_board, init_board.REPO.name)["owner"] == "mytask"
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as exc:
+        init_board.main(["init", "--slot", "1"])
+    assert exc.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
+
+
+def test_t0962_session_token_is_not_parsed_as_slot(board, monkeypatch):
+    """AT-009 — 세션 `alpha_1` 에서 repo 를 떼어 prefix·test_cmd 를 유도하지 않는다."""
+    board.AREAS_FILE.write_text(
+        "# Area Registry\n\n"
+        "| repo | prefix | git | test_cmd | owner |\n"
+        "|---|---|---|---|---|\n"
+        "| alpha | al | g:a | go test | reg |\n"
+        "| beta | be | g:b |  | reg |\n",
+        encoding="utf-8")
+    _write_conf(board, "test.cmd=pytest -q\n")
+    monkeypatch.setenv("PM_SESSION_NAME", "alpha_1")
+    assert board.registered_prefixes() == {"al", "be"}
+    assert board.id_prefix(None) is None
+    assert board._test_cmd(None) == "pytest -q"
+    assert board._created_by_session("alpha_1") is None

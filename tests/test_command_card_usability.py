@@ -1416,10 +1416,10 @@ def test_t0958_card_multirepo_one_folder_each_closes_first_ticket(tmp_path):
 def test_t0958_flow_cards_state_switch_order(tmp_path):
     """[[T-0958]] — 흐름 카드가 switch 필수·순서·폴더 선택과 task 세션의 claim 줄을 실행 줄 옆에 싣는다.
 
-    pm-wave-claim: lint 줄은 `lint --gate`, 5단계 첫 claim 줄은 `--task <task>` 형이고 슬롯 모드 줄은 task 가
-    보유한 폴더에서의 거부를 경고한다, 6단계는 코드 변경이 없어도 실행하고 폴더 1개·2개의 대상과 파일 수정
-    시점을 말한다. pm-wave-finish: 실행 블록의 전제와 dry-run 항목이 switch 뒤를 말한다. 슬롯 모드 claim 줄을
-    task 가 보유한 폴더에 쓰면 claim 자체가 rc 1 이고 티켓은 open 에 남는다([[T-0959]] AT-008 · 예전에는 claim
+    pm-wave-claim: lint 줄은 `lint --gate`, 5단계 claim 줄은 하나이고 `--task <task>` 를 갖는다(T-0962 — 슬롯
+    세션 claim 줄은 없다), 6단계는 코드 변경이 없어도 실행하고 폴더 1개·2개의 대상과 파일 수정 시점을 말한다.
+    pm-wave-finish: 실행 블록의 전제와 dry-run 항목이 switch 뒤를 말한다. 옛 슬롯 형식 claim
+    (`--repo --slot` 만)은 claim 자체가 rc 1 이고 티켓은 open 에 남는다([[T-0959]] AT-008 · 예전에는 claim
     이 통과하고 종결이 소유 불일치로 막혔다).
     """
     claim_text = (_WAVE_SKILLS / "pm-wave-claim" / "SKILL.md").read_text(encoding="utf-8")
@@ -1427,9 +1427,7 @@ def test_t0958_flow_cards_state_switch_order(tmp_path):
     block = claim_text.split("```bash", 1)[1].split("```", 1)[0].splitlines()
     assert any(line.strip() == "python3 .project_manager/tools/board.py lint --gate" for line in block)
     claims = [index for index, line in enumerate(block) if "board.py claim " in line]
-    assert "--task <task>" in block[claims[0]] and "--task" not in block[claims[1]], block
-    assert "task 가 보유한 폴더를 지목하면 claim 이 거부한다" in block[claims[1] - 1], block[claims[1] - 1]
-    assert "소유 불일치" not in block[claims[1] - 1], block[claims[1] - 1]
+    assert len(claims) == 1 and "--task <task>" in block[claims[0]], block
     step6 = "\n".join(block[next(i for i, line in enumerate(block) if line.startswith("# 6.")):])
     for phrase in ("코드 변경이 없어도", "폴더 1개면 그 폴더", "cluster new 에 지목하지 않은 폴더",
                    "전환 뒤 그 폴더에서 고친다"):
@@ -1445,12 +1443,11 @@ def test_t0958_flow_cards_state_switch_order(tmp_path):
     _fill_card_ticket(dest, tid)
     for key in (("board.py", "cluster"), ("board.py", "promote"), ("board.py", "tier")):
         _run_card_line(dest, lines[key], fills)
-    slot_claim = shlex.split(block[claims[1]].split("#", 1)[0].replace("T-NNNN", tid)
-                             .replace("<repo>", dest.name).replace("<N>", "1"))
-    refused = subprocess.run([sys.executable, *slot_claim[1:]], cwd=dest, stdin=subprocess.DEVNULL,
+    slot_claim = [".project_manager/tools/board.py", "claim", tid, "--repo", dest.name, "--slot", "1"]
+    refused = subprocess.run([sys.executable, *slot_claim], cwd=dest, stdin=subprocess.DEVNULL,
                              capture_output=True, text=True, encoding="utf-8", errors="replace",
                              env={**os.environ, **_CARD_IDENTITY_ENV})
-    assert refused.returncode == 1 and "가 보유한다" in refused.stderr, refused.stdout + refused.stderr
+    assert refused.returncode == 1 and "위치 인자" in refused.stderr, refused.stdout + refused.stderr
     assert _card_ticket(dest, tid).parent.name == "open"
 
 
@@ -1496,7 +1493,7 @@ def test_t0958_delegate_docs_state_switch_after_claim():
         assert all(phrase in items[claimed + 1] for phrase in _DELEGATE_SWITCH_PHRASES), (path, items)
 
 
-_DELEGATE_LOCATION_HEADING = "## task-mode 작업 위치 주입"
+_DELEGATE_LOCATION_HEADING = "## 작업 위치 주입"
 
 
 def test_t0958_delegate_work_location_names_work_folder():
@@ -2102,7 +2099,8 @@ def test_t0959_wave_claim_skill_steps_reach_switch(tmp_path, shape):
 
     블록이 cluster new 다음에 promote 를 싣는다. 공유 board(서브모듈)의 발행은 draft 라 promote 없이는 claim 이
     "currently in draft/" 로 막혔다. 홈 git board 의 발행은 이미 open 이라 promote 는 그대로 두고 rc 0 이다.
-    블록의 실행 줄을 순서대로 읽고 자리표시자만 값으로 채운다(task 의 claim 줄 · switch 는 6단계).
+    블록의 실행 줄을 전부 순서대로 읽고 자리표시자만 값으로 채운다(claim 줄은 하나이고 `--task` 를 갖는다 ·
+    switch 는 6단계 · T-0962 AT-010).
     """
     dest = (_guided_adopter(tmp_path, "claude", task=CARD_TASK, folders=1) if shape == "home-git"
             else _board_submodule_adopter(tmp_path))
@@ -2116,12 +2114,13 @@ def test_t0959_wave_claim_skill_steps_reach_switch(tmp_path, shape):
              "<설계 문서 경로>": ".project_manager/wiki/architecture.md", "<repo>": repo, "<N>": "1",
              "<task>": CARD_TASK, "<slot>": f"work/{repo}_1"}
     executed: list[str] = []
+    claim_lines: list[str] = []
     for index, line in enumerate(block):
         command = line.split("  #", 1)[0].strip()
         if not command.startswith("python3 .project_manager/tools/"):
             continue
-        if "board.py claim" in command and "--task" not in command:
-            continue                                    # task 없는 슬롯 세션 전용 줄
+        if "board.py claim" in command:
+            claim_lines.append(command)
         for placeholder, value in fills.items():
             command = command.replace(placeholder, value)
         argv = shlex.split(command)
@@ -2131,6 +2130,7 @@ def test_t0959_wave_claim_skill_steps_reach_switch(tmp_path, shape):
         "board.py cluster", "board.py promote", "board.py tier", "board.py cluster", "board.py show",
         "board.py lint", "board.py claim", "worktree_pool.py switch"], executed
     assert executed[-1].startswith("True:")             # switch 는 6단계 그대로
+    assert len(claim_lines) == 1 and "--task <task>" in claim_lines[0], claim_lines
     roots = [dest / ".project_manager" / "wiki" / "tickets", dest / ".project_manager" / "board" / "tickets"]
     assert [found for root in roots for found in root.glob(f"claimed/{tid}-*.md")]
 

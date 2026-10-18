@@ -102,6 +102,27 @@ def _seed_remote_non_board(bare: Path, tmp: Path) -> None:
     shutil.rmtree(clone, ignore_errors=True)
 
 
+_E2E_TASK = "e2e-task"
+
+
+def _seed_task_folder(dest: Path, task: str) -> Path:
+    """dest 에 task 가 보유한 leased 작업 폴더(실 git 저장소)와 대여 기록을 만든다."""
+    import json
+    folder = dest / "work" / "app_1"
+    folder.mkdir(parents=True)
+    _git(["init", "-q", "-b", "main"], folder)
+    _git(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty",
+          "-m", "task folder"], folder)
+    ledger = dest / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(json.dumps({
+        "leases": [{"slot": "work/app_1", "repo": "app", "session": task,
+                    "state": "leased", "role": "work"}],
+        "tasks": [{"name": task}],
+    }), encoding="utf-8")
+    return folder
+
+
 def _board(dest: Path, *args: str) -> subprocess.CompletedProcess:
     """dest 의 board.py 를 subprocess 로 실행 (submodule board 타깃 확인용)."""
     return subprocess.run(
@@ -351,7 +372,7 @@ def test_board_ops_target_submodule(pm_import, tmp_path):
     assert r.returncode == 0, r.stderr
 
     # new — board-git 활성이라 미충전 본문은 draft 로 격리(submodule board/tickets/.drafts 타깃).
-    r = _board(dest, "new", "Fresh adopter e2e ticket")
+    r = _board(dest, "new", "Fresh adopter e2e ticket", "--task", _E2E_TASK)
     assert r.returncode == 0, r.stderr
     drafts = list((board / "tickets" / ".drafts").glob("*.md"))
     assert drafts, "board submodule 의 .drafts 에 티켓이 생성돼야 함(new 가 submodule 타깃)"
@@ -365,9 +386,9 @@ def test_board_ops_target_submodule(pm_import, tmp_path):
     _git(["add", "-A"], board)
     _git(["commit", "-qm", f"seed {tid}"], board)
     _git(["push", "-q", "origin", "HEAD"], board)
-    # 세션 해소 체인(명시 > $PM_SESSION_NAME > leased 1개 > None)에 leased 슬롯이 없으므로
-    # (T-0779: local.conf session= 폴백 폐지) `--repo <repo> --slot <N>` 로 명시한다.
-    r = _board(dest, "claim", tid, "--repo", "home", "--slot", "1")
+    # claim 은 귀속 쓰기라 `--task` 와 그 task 폴더(claim 앵커)가 필요하다(T-0962).
+    _seed_task_folder(dest, _E2E_TASK)
+    r = _board(dest, "claim", tid, "--task", _E2E_TASK)
     assert r.returncode == 0, r.stderr
     assert (board / "tickets" / "claimed" / f"{tid}-seed.md").exists()
     assert not (board / "tickets" / "open" / f"{tid}-seed.md").exists()

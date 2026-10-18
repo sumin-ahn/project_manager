@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""공용 정체성 인자 모듈 — `--repo`/`--slot` 파싱 + 리스(활성슬롯) 읽기·해소.
+"""공용 정체성 인자 모듈 — `--task`·`--repo`/`--slot` 파싱 + 리스(활성슬롯) 읽기·해소.
 
-슬롯 정체성 인자를 받는 전 CLI(board·pm_config·pm_bootstrap·pm_handoff·ticket_finish·pm_relay·
+정체성·위치 인자를 받는 전 CLI(board·pm_config·pm_bootstrap·pm_handoff·ticket_finish·pm_relay·
 worktree_pool)가 이 한 모듈로 수렴한다(단일 진실·DRY). 지금까지 도구마다 복붙됐던 리스 원장
 읽기(`board._leased_sessions`·`pm_config._leased_sessions`·`pm_bootstrap._repo_slot_numbers`)와
 슬롯 해소(`pm_bootstrap.SlotResolutionError` 규칙)를 여기 하나로 흡수한다
 모듈 신설만 — 기존 도구의 로컬 리더 제거·교체는 채택 몫).
 
 두 층으로 응집한다(같은 파일·별 함수):
-  - **순수 인자 층**: `add_identity_args`·`parse_identity` — 파일 IO 0·부작용 0.
-  - **리스 IO 층**: `leased_sessions`·`repo_slot_numbers`·`resolve_actor_slot`/
-    `resolve_actor_workspace`·`resolve_slot_identity`·`slot_path_for_number`·`task_names` — 리스 장부
+  - **순수 인자 층**: `add_task_arg`·`add_identity_args`·`parse_identity` — 파일 IO 0·부작용 0.
+  - **리스 IO 층**: `leased_sessions`·`repo_slot_numbers`·`resolve_actor_workspace`·
+    `resolve_slot_identity`·`resolve_task_workspace`·`task_names` — 리스 장부
     (`worktree-leases.json`) 를 stdlib json 으로 직접 point-read 한다. `worktree_pool` 을
     import 하지 않는다(데이터 결합만, 모듈 결합 아님). **콜백 없음**
     이 모듈이 리스 읽기를 직접 소유한다.
@@ -20,16 +20,16 @@ worktree_pool)가 이 한 모듈로 수렴한다(단일 진실·DRY). 지금까�
 경로 basename 을 정체성으로 파싱하지 않는다). 장부가 답을 주지 못하면 pool 명명 규약(경로 마디)까지만
 내려가고, 그것도 없으면 **미해소(None)** 다 — 대체값을 지어내지 않는다.
 
-해소 규칙:
+정체성은 `--task` 하나다. `--repo`/`--slot` 은 그 task 가 보유한 폴더를 고르는 **위치 인자**이고
+세션 이름을 만들지 않는다. 해소 규칙:
   ```
-  --repo X --slot N  → kind="slot"  · session="X_N"
-  --repo X (슬롯 무) → kind="repo"  · session=None(repo-scope — view 전체 vs actor 활성슬롯
-                        해소는 caller 몫. actor 는 resolve_actor_slot 을 별도 호출한다)
+  --repo X --slot N  → kind="slot"  · repo=X·slot=N (폴더 지목)
+  --repo X (슬롯 무) → kind="repo"  · repo=X (그 repo 의 폴더 지목)
   --slot N (repo 무) → fail-loud(ValueError): "--slot 은 --repo 필수 — --repo <name> --slot <N>"
   (인자 전무)        → kind="none"
   ```
-`parse_identity` 는 **discriminated** `Identity(kind, repo, slot, session)` 를 반환한다(PM 67
-리뷰 A 수정) — 모호한 단일 문자열을 반환하지 않는다. caller 는 `kind` 로 명시 분기한다.
+`parse_identity` 는 **discriminated** `Identity(kind, repo, slot, task)` 를 반환한다 — caller 는
+`kind` 로 위치를 가르고 `task` 로 정체성을 읽는다.
 """
 from __future__ import annotations
 
@@ -70,14 +70,12 @@ def _runtime_skill_entry(skill: str) -> str:
 
 
 class Identity:
-    """`parse_identity` 의 discriminated 결과 — caller 는 `kind` 로 분기한다.
+    """`parse_identity` 의 discriminated 결과 — caller 는 `kind` 로 위치를 가른다.
 
-    - `kind="slot"`: `--repo X --slot N` 둘 다 지정 — repo=X·slot=N·session="X_N"(정체성 완전 해소).
-    - `kind="repo"`: `--repo X` 만 지정(슬롯 무) — repo=X·slot=None·session=None(repo-scope).
-      caller 가 view(그 repo 의 내 슬롯 전체) 인지 actor(활성슬롯 1개 해소) 인지 판단 —
-      actor 라면 `resolve_actor_slot(repo, leases_file)` 를 별도 호출한다.
-    - `kind="none"`: 정체성 인자 전무 — repo/slot/session 전부 None. no-flag 기본 해소
-      의 env/lease/local.conf 유도 체인)는 이 모듈 범위 밖 — caller 가 그대로 이어간다.
+    - `kind="slot"`: `--repo X --slot N` 둘 다 지정 — repo=X·slot=N(폴더 지목).
+    - `kind="repo"`: `--repo X` 만 지정(슬롯 무) — repo=X·slot=None(그 repo 의 폴더 지목).
+    - `kind="none"`: 위치 인자 전무 — repo/slot 둘 다 None.
+    정체성은 `task`(`--task`) 하나다. 위치 인자는 정체성을 만들지 않는다.
 
     (평범한 클래스 — `@dataclass` 미사용: 엔진 도구는 `spec_from_file_location` 으로 로드되는데
     `from __future__ import annotations`(문자열 지연평가) 와 결합 시 모듈이 `sys.modules` 에
@@ -85,31 +83,36 @@ class Identity:
     `pm_relay` 의 동일 회피 관용구를 따른다.)
     """
 
-    def __init__(self, kind: str, repo: str | None, slot: int | None, session: str | None,
+    def __init__(self, kind: str, repo: str | None, slot: int | None,
                  task: str | None = None):
         self.kind = kind
         self.repo = repo
         self.slot = slot
-        self.session = session
-        # task 축 — `--task` 명시 시 그 task 이름(없으면 None). slot 축과
-        # **직교**한다: task 는 `--repo --slot` 과 공존 가능(task 바인딩 + 슬롯 바인딩)하고, 단독
-        # (`--task` 만)으로도 존재한다. 그래서 `kind`(slot/repo/none·repo/slot 축) 는 task 유무로
-        # 바뀌지 않는다 — task 를 안 쓰는 caller 는 이 필드를 무시하면 현행과 동일.
+        # 정체성 축 — `--task` 명시 시 그 task 이름(없으면 None). 위치 축(kind)과 직교한다:
+        # task 는 `--repo --slot` 과 함께(보유 폴더 지목) 또는 단독으로 온다.
         self.task = task
 
     def __repr__(self) -> str:
         return (f"Identity(kind={self.kind!r}, repo={self.repo!r}, "
-                f"slot={self.slot!r}, session={self.session!r}, task={self.task!r})")
+                f"slot={self.slot!r}, task={self.task!r})")
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Identity):
             return NotImplemented
-        return (self.kind, self.repo, self.slot, self.session, self.task) == (
-            other.kind, other.repo, other.slot, other.session, other.task)
+        return (self.kind, self.repo, self.slot, self.task) == (
+            other.kind, other.repo, other.slot, other.task)
+
+
+def add_task_arg(parser: argparse.ArgumentParser) -> None:
+    """정체성 인자 `--task` 만 parser 에 추가한다(폴더를 고르지 않는 명령용)."""
+    parser.add_argument(
+        "--task", metavar="이름", default=None,
+        help="task 이름 — 정체성. `<등록 repo>_<N>` 폴더 이름 패턴은 거부.",
+    )
 
 
 def add_identity_args(parser: argparse.ArgumentParser) -> None:
-    """`--repo`·`--slot` 을 parser 에 추가 — 순수(파일 IO 0·부작용 0·canonical 인자).
+    """`--task`·`--repo`·`--slot` 을 parser 에 추가 — 폴더를 고르는 명령(실행 소비자) 전용.
 
     `--slot` 단독(``--repo`` 없이) 금지 규칙은 여기(add 시점)가 아니라 parse 후 `parse_identity`
     가 검사한다 — argparse 만으로는 "A 있으면 B 도 필수"를 표현할 수단이 마땅치 않고(양방향
@@ -118,12 +121,12 @@ def add_identity_args(parser: argparse.ArgumentParser) -> None:
     """
     parser.add_argument(
         "--repo", metavar="이름", default=None,
-        help="repo 이름 — 슬롯 정체성 지정 (canonical). 단독이면 repo-scope, "
-             "--slot 과 함께면 슬롯 정체성 <repo>_<N> 로 해소.",
+        help="repo 이름 — --task 가 보유한 폴더를 고르는 위치 인자(정체성 아님). "
+             "--task 와 함께만 쓴다.",
     )
     parser.add_argument(
         "--slot", metavar="N", type=int, default=None,
-        help="슬롯 번호 — --repo 필수(단독 사용 불가). 함께 주면 세션 <repo>_<N> 로 해소.",
+        help="폴더 번호 — --repo 필수(단독 사용 불가). --task 가 보유한 work/<repo>_<N> 을 고른다.",
     )
     parser.add_argument(
         "--task", metavar="이름", default=None,
@@ -154,19 +157,19 @@ def parse_identity(args: argparse.Namespace) -> Identity:
     if slot is not None and slot < 1:
         raise ValueError("--slot 은 1 이상의 슬롯 번호여야 한다 (work/<repo>_<N>).")
     if repo is not None and slot is not None:
-        return Identity(kind="slot", repo=repo, slot=slot, session=f"{repo}_{slot}", task=task)
+        return Identity(kind="slot", repo=repo, slot=slot, task=task)
     if repo is not None:
-        return Identity(kind="repo", repo=repo, slot=None, session=None, task=task)
-    return Identity(kind="none", repo=None, slot=None, session=None, task=task)
+        return Identity(kind="repo", repo=repo, slot=None, task=task)
+    return Identity(kind="none", repo=None, slot=None, task=task)
 
 
 def is_reserved_task_name(name: str, registered_repos: "list[str] | set[str]") -> bool:
-    """task 명이 `<등록 repo>_<N>` 슬롯 세션 패턴과 충돌하면 True — 예약(task 명 검증).
+    """task 명이 `<등록 repo>_<N>` 슬롯 폴더 이름 패턴과 충돌하면 True — 예약(task 명 검증).
 
     순수 함수(파일 IO 0) — 등록 repo 집합을 caller 가 넘긴다(`parse_identity` 의 순수 층 규율
     보존·등록 repo 는 areas/leases 유래라 IO 층 밖). 등록된 각 repo `R` 에 대해 `^R_<정수>$` 를
-    검사한다: task 이름이 그 형태면(예 `myproj_2`) 슬롯 세션 정체성(`<repo>_<N>`)과 시각적·기계적
-    으로 충돌하므로 거부한다(task 는 자유 포맷이되 슬롯 세션 이름공간은 예약). **등록 repo
+    검사한다: task 이름이 그 형태면(예 `myproj_2`) 슬롯 폴더 이름(`work/<repo>_<N>`)과 섞여 폴더
+    이름과 task 이름의 분리가 깨지므로 거부한다(task 는 자유 포맷이되 폴더 이름 형태는 예약). **등록 repo
     집합에 없는** repo 로 시작하는 `_N` 형태는 무관(자유 포맷 허용) — 실재 슬롯과만 충돌 방지한다.
     """
     for repo in registered_repos:
@@ -200,7 +203,7 @@ def validate_task_name(name: str, registered_repos: "list[str] | set[str] | None
     경계·relay slash·log 태그 delimiter·path)에 맞춘 협소화로 worktree_pool 엔진 validator 와 규칙이
     동형이다(모듈 격리라 독립 구현·`is_reserved_task_name` 재사용). 거부: 빈/공백-only·whitespace·괄호
     `(`/`)`·path separator(`/`·`\\`)·선행 `.`(traversal)·단일 컴포넌트 아님·(registered_repos 주면)
-    `<repo>_<N>` 슬롯 세션 예약. 한글·하이픈·언더스코어·숫자는 통과(어느 표면과도 무충돌).
+    `<repo>_<N>` 슬롯 폴더 이름 패턴 예약. 한글·하이픈·언더스코어·숫자는 통과(어느 표면과도 무충돌).
     """
     if not name or not name.strip():
         raise InvalidTaskName(name, "빈 이름(공백 포함)")
@@ -217,7 +220,7 @@ def validate_task_name(name: str, registered_repos: "list[str] | set[str] | None
     if Path(name).name != name:
         raise InvalidTaskName(name, "단일 path 컴포넌트가 아님")
     if registered_repos and is_reserved_task_name(name, registered_repos):
-        raise InvalidTaskName(name, "슬롯 세션 예약 패턴(<repo>_<N>)")
+        raise InvalidTaskName(name, "슬롯 폴더 이름 패턴(<repo>_<N>)")
 
 
 # ── 엔진 중앙 로더 부트스트랩 (형제 로드는 이 한 경로만·`repo_owned_files.load_module`) ──
@@ -671,7 +674,7 @@ def repo_slot_numbers(repo: str, leases_file: Path) -> list[int] | None:
     파일 부재/JSON 깨짐/스키마 불일치 → `None`(fail-soft·"읽을 수 없음"); 정상 read 인데 그 repo
     의 leased 슬롯이 0개면 빈 리스트 `[]`("읽었으나 활성 슬롯 없음"). 호출부는 두 경우를 구분한다.
 
-    **actor 해소는 이 번호 축을 타지 않는다** — `resolve_actor_slot` 은 장부 행 값(session/slot)
+    **폴더 해소는 이 번호 축을 타지 않는다** — `resolve_actor_workspace` 는 장부 행 값(session/slot)
     으로 해소한다(번호에서 세션을 재구성하지 않는다·아래).
     """
     rows = _load_lease_rows(leases_file)
@@ -735,9 +738,9 @@ def _row_slot_numbers(repo: str, slot: object, session: object) -> set[int]:
 
 
 class SlotResolutionError(Exception):
-    """`resolve_actor_slot` 이 활성 슬롯을 자동 해소할 수 없을 때(≥2 개·모호) — fail-loud.
+    """`resolve_actor_workspace` 가 활성 슬롯을 자동 해소할 수 없을 때(≥2 개·모호) — fail-loud.
 
-    `--repo`-단독 actor 해소(claim/finish/handoff/regression/livegate) 전용 규칙(결정
+    `--repo`-단독 폴더 해소(bootstrap 회귀 cwd·worktree_pool dev/sync) 전용 규칙(결정
     3) — 원 `pm_bootstrap.SlotResolutionError`(session-entry 용·default-1 규칙 포함)와 이름은
     같으나(의미 보존·단일 진실로 수렴 예정) 이 모듈의 판정은 더 단순하다: **1개면 해소·0개/≥2개는
     각각 None/raise** — default-1 규칙(slot 1 우선)은 여기 적용하지 않는다(그건 session-entry
@@ -818,15 +821,6 @@ def slot_path_resolution(repo: str, number: int, leases_file: Path) -> SlotPathR
         f"주장한다 — 장부 모순이라 임의 선택하지 않는다")
 
 
-def slot_path_for_number(repo: str, number: int, leases_file: Path) -> str | None:
-    """`slot_path_resolution` 의 관용 wrapper — 해소된 경로 값 또는 `None`.
-
-    **읽기/표시 호출부 전용**이다: 부재·손상·행 부재·모순을 한 `None` 으로 접으므로, 그 넷을
-    갈라야 하는 **쓰기 진입은 `slot_path_resolution` 을 직접 소비**해야 한다(모순은 폴백 금지).
-    """
-    return slot_path_resolution(repo, number, leases_file).path
-
-
 def resolve_actor_workspace(repo: str, leases_file: Path) -> "Workspace | None":
     """actor(`--repo`-단독) 작업공간 해소 — `repo` 의 활성(leased) 슬롯이 정확히 1개면 **그 행**.
 
@@ -878,25 +872,6 @@ def resolve_actor_workspace(repo: str, leases_file: Path) -> "Workspace | None":
         test_cmd=row.get("test_cmd"),
         readonly=row.get("role") == _LEASE_ROLE_READONLY,
     )
-
-
-def resolve_actor_slot(repo: str, leases_file: Path) -> str | None:
-    """actor(`--repo`-단독) 세션 해소 — 활성 슬롯이 정확히 1개면 **그 행의 session 값 그대로**.
-
-    `--repo` 단독 인자에서 actor 연산(claim/finish/handoff/regression/livegate)은 활성 슬롯이
-    1개면 자동 해소하고, ≥2 개면 모호해 `SlotResolutionError`(fail-loud) — 기존 SlotResolutionError
-    의미를 보존한다. 활성 슬롯이 0개(장부 부재/파싱실패/그 repo 활성 슬롯 없음)는 `None`
-    (fail-soft) — actor 정체성이 미해소라는 신호일 뿐이며, `--session` 필요 여부(required) 판단은
-    caller 몫이다(`board.session_name` 의 `required` 패턴과 동형).
-
-    해소된 슬롯의 session 이 **비어 있으면**(무소유 readonly 공유 슬롯 등) `None` — 그 슬롯엔
-    actor 정체성이 없다. 이전처럼 슬롯 번호로 `<repo>_<N>` 을 지어내면 아무도 대여하지 않은
-    슬롯 이름으로 귀속 쓰기가 나간다(정체성 위조).
-    """
-    workspace = resolve_actor_workspace(repo, leases_file)
-    if workspace is None:
-        return None
-    return workspace.session or None
 
 
 # ── 슬롯 정체성 해소 (장부 값 1순위 · 경로 재구성 금지) ──────────
@@ -1097,8 +1072,8 @@ def resolve_slot_identity(slot: object, leases_file: Path) -> "SlotIdentity | No
 
 # ── 작업공간(slot) 2단 해소 — task-aware ──────────
 # 실행 위치가 필요한 도구(regression run·livegate record·ticket_finish·dev-delegate)가
-# **어느 worktree 에서 도는지**를 task 보유 슬롯 중에서 특정한다. 위 `resolve_actor_slot`
-# (slot-mode `--repo` 단독·활성 lease 유일해소)와 판정 축이 다르다 — 이건 **task 축**(lease.session
+# **어느 worktree 에서 도는지**를 task 보유 슬롯 중에서 특정한다. 위 `resolve_actor_workspace`
+# (`--repo` 단독·활성 lease 유일해소)와 판정 축이 다르다 — 이건 **task 축**(lease.session
 # == task 이름)이라 "내 task 가 보유한 슬롯"을 본다. cwd 는 해소에 **비참여** —
 # 순전히 리스 장부 + 명시 인자(`--repo`/`--slot`/`--task`)로만 판정한다.
 
@@ -1153,33 +1128,6 @@ def _lease_dict_rows(leases_file: Path) -> list[dict]:
     if rows is None:
         return []
     return [r for r in rows if isinstance(r, dict)]
-
-
-def slot_holder_task(repo: str, number: int, leases_file: Path) -> str | None:
-    """`repo` 슬롯 번호 `number` 를 지금 보유한 task 이름 — 슬롯 세션 보유·행 없음·장부 부재는 None.
-
-    보유자는 활성(leased) 행의 session 이고, 그 값이 장부 top-level `tasks` 에 등록된 이름일 때만
-    task 다(이름 모양 추측 없음). 장부 손상·보유 task 둘 이상은 판정 불능이라 거부한다. `tasks` 는
-    빈 집합으로 접는 `task_names` 대신 직접 읽는다 — 읽기 실패를 "등록 task 없음" 으로 접으면 task 보유
-    폴더가 슬롯 정체성으로 귀속된다.
-    """
-    status, rows = _read_lease_rows_status(leases_file)
-    if status == LEDGER_MISSING:
-        return None
-    if status != LEDGER_OK:
-        raise WorkspaceResolutionError(
-            f"작업 폴더 장부를 읽을 수 없어 work/{repo}_{number} 의 보유자를 확인할 수 없다: "
-            f"{leases_file} ({status})")
-    registered = json.loads(_read_text_shared(leases_file, encoding="utf-8")).get("tasks", [])
-    tasks = {entry["name"] for entry in registered if isinstance(entry, dict) and entry.get("name")}
-    held = sorted({row.get("session") for row in rows
-                   if row.get("repo") == repo and row.get("state", "leased") == "leased"
-                   and number in _row_slot_numbers(repo, row.get("slot"), row.get("session"))
-                   and row.get("session") in tasks})
-    if len(held) > 1:
-        raise WorkspaceResolutionError(
-            f"work/{repo}_{number} 을 task {', '.join(held)} 가 함께 보유한다고 장부에 적혀 있어 보유자를 확정할 수 없다")
-    return held[0] if held else None
 
 
 def resolve_task_workspace(identity: Identity, leases_file: Path) -> Workspace:

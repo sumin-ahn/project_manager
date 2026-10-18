@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "count": 549,
+  "count": 544,
   "surface_counts": {
-    "markdown": 141,
+    "markdown": 136,
     "python-non-prose": 24,
     "python-prose": 384
   },
@@ -812,6 +812,14 @@
       "kind": "work_item",
       "match": "T-0003",
       "surface": "markdown",
+      "hash": "36f377bf1618c8dde2bda4925bf0ce4539603826dbd1afb56da59a29836383de",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/wiki/tickets/README.md",
+      "kind": "work_item",
+      "match": "T-0003",
+      "surface": "markdown",
       "hash": "815f0f8f3ba77d1a648c949128edb0688fdffc26c340dfbf34e453b425d7e7fc",
       "count": 1
     },
@@ -821,14 +829,6 @@
       "match": "T-0003",
       "surface": "markdown",
       "hash": "abe907211e013fdc76f69167b451b4fb304a1506e712c4b8bb95f52508a9bfaf",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/wiki/tickets/README.md",
-      "kind": "work_item",
-      "match": "T-0003",
-      "surface": "markdown",
-      "hash": "e1eed508fe192742a02e9119c784136ef5cefad3a1e8e6516dac5af38dfb680a",
       "count": 1
     },
     {
@@ -1676,15 +1676,7 @@
       "kind": "work_item",
       "match": "ADR-0040",
       "surface": "markdown",
-      "hash": "d91d21427ee29bed0df2c2135460828f178c125d88ac53f9086b1b4df8051652",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/wiki/tickets/README.md",
-      "kind": "work_item",
-      "match": "ADR-0057",
-      "surface": "markdown",
-      "hash": "d91d21427ee29bed0df2c2135460828f178c125d88ac53f9086b1b4df8051652",
+      "hash": "41e4c886a21c1a63f2d0dc320ea1f1200d91cf6fed9249673164850bb32767b1",
       "count": 1
     },
     {
@@ -1701,6 +1693,14 @@
       "match": "T-0003",
       "surface": "markdown",
       "hash": "0fc579e50540842209b993d14c0f6ff9799e12864ab8552dbd68622652292f16",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/wiki/tickets/README.md",
+      "kind": "work_item",
+      "match": "T-0003",
+      "surface": "markdown",
+      "hash": "36f377bf1618c8dde2bda4925bf0ce4539603826dbd1afb56da59a29836383de",
       "count": 1
     },
     {
@@ -1732,14 +1732,6 @@
       "kind": "work_item",
       "match": "T-0003",
       "surface": "markdown",
-      "hash": "e1eed508fe192742a02e9119c784136ef5cefad3a1e8e6516dac5af38dfb680a",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/wiki/tickets/README.md",
-      "kind": "work_item",
-      "match": "T-0003",
-      "surface": "markdown",
       "hash": "ea552676085b9ddc1f940f3d05d464941edf64a3a648d14738829d839ad367d2",
       "count": 1
     },
@@ -1748,7 +1740,7 @@
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
-      "hash": "e4fc5797e01410543b9d214a2af20db4be8bff28d66134557ab1b028da571e03",
+      "hash": "f614822662213359d38e6908c0807b15e80c1afcde207def14cfff69ed206b33",
       "count": 1
     },
     {
@@ -1828,7 +1820,7 @@
       "kind": "work_item",
       "match": "T-0345",
       "surface": "markdown",
-      "hash": "88690a194c925fd3264e4f1183510786c9129c0d309b236035394b83df0edecf",
+      "hash": "c0e45fa8dea2d7e1a8991f5b52114a407b703d0cd718ccfc11c19066c4d9b681",
       "count": 1
     },
     {
@@ -1836,7 +1828,7 @@
       "kind": "work_item",
       "match": "T-0355",
       "surface": "markdown",
-      "hash": "db0cc907f0c47a647350014be2bd2335ddfc36fffc08fd3955deacbc93b3bce6",
+      "hash": "053d940a0e860e971396b8143211ce8a802c0f9e9bc81f60671d214ef852ac58",
       "count": 1
     },
     {
@@ -2644,15 +2636,7 @@
       "kind": "work_item",
       "match": "ADR-0040",
       "surface": "markdown",
-      "hash": "d91d21427ee29bed0df2c2135460828f178c125d88ac53f9086b1b4df8051652",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/wiki/tickets/README.md",
-      "kind": "work_item",
-      "match": "ADR-0057",
-      "surface": "markdown",
-      "hash": "d91d21427ee29bed0df2c2135460828f178c125d88ac53f9086b1b4df8051652",
+      "hash": "41e4c886a21c1a63f2d0dc320ea1f1200d91cf6fed9249673164850bb32767b1",
       "count": 1
     },
     {
@@ -2669,6 +2653,14 @@
       "match": "T-0003",
       "surface": "markdown",
       "hash": "0fc579e50540842209b993d14c0f6ff9799e12864ab8552dbd68622652292f16",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/wiki/tickets/README.md",
+      "kind": "work_item",
+      "match": "T-0003",
+      "surface": "markdown",
+      "hash": "36f377bf1618c8dde2bda4925bf0ce4539603826dbd1afb56da59a29836383de",
       "count": 1
     },
     {
@@ -2693,14 +2685,6 @@
       "match": "T-0003",
       "surface": "markdown",
       "hash": "abe907211e013fdc76f69167b451b4fb304a1506e712c4b8bb95f52508a9bfaf",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/wiki/tickets/README.md",
-      "kind": "work_item",
-      "match": "T-0003",
-      "surface": "markdown",
-      "hash": "e1eed508fe192742a02e9119c784136ef5cefad3a1e8e6516dac5af38dfb680a",
       "count": 1
     },
     {
@@ -2965,22 +2949,6 @@
       "match": "ADR-0009",
       "surface": "markdown",
       "hash": "955f79ed5b35fef1580497e535de91a4d00616d946be81a14b1c588313ad2252",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.opencode/agents/pm.md",
-      "kind": "work_item",
-      "match": "ADR-0043",
-      "surface": "markdown",
-      "hash": "710ed4a735b1cddd509affb442c99eb2f718551cdf748ad8aec33cda98a0583a",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.opencode/agents/pm.md",
-      "kind": "work_item",
-      "match": "ADR-0057",
-      "surface": "markdown",
-      "hash": "28a614deec83ef204dd3ec5dd48cbf15288be1a6d4f4ecb634b05a7789ab2c16",
       "count": 1
     },
     {
@@ -3852,15 +3820,7 @@
       "kind": "work_item",
       "match": "ADR-0040",
       "surface": "markdown",
-      "hash": "d91d21427ee29bed0df2c2135460828f178c125d88ac53f9086b1b4df8051652",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/wiki/tickets/README.md",
-      "kind": "work_item",
-      "match": "ADR-0057",
-      "surface": "markdown",
-      "hash": "d91d21427ee29bed0df2c2135460828f178c125d88ac53f9086b1b4df8051652",
+      "hash": "41e4c886a21c1a63f2d0dc320ea1f1200d91cf6fed9249673164850bb32767b1",
       "count": 1
     },
     {
@@ -3877,6 +3837,14 @@
       "match": "T-0003",
       "surface": "markdown",
       "hash": "0fc579e50540842209b993d14c0f6ff9799e12864ab8552dbd68622652292f16",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/wiki/tickets/README.md",
+      "kind": "work_item",
+      "match": "T-0003",
+      "surface": "markdown",
+      "hash": "36f377bf1618c8dde2bda4925bf0ce4539603826dbd1afb56da59a29836383de",
       "count": 1
     },
     {
@@ -3908,14 +3876,6 @@
       "kind": "work_item",
       "match": "T-0003",
       "surface": "markdown",
-      "hash": "e1eed508fe192742a02e9119c784136ef5cefad3a1e8e6516dac5af38dfb680a",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/wiki/tickets/README.md",
-      "kind": "work_item",
-      "match": "T-0003",
-      "surface": "markdown",
       "hash": "ea552676085b9ddc1f940f3d05d464941edf64a3a648d14738829d839ad367d2",
       "count": 1
     },
@@ -3932,7 +3892,7 @@
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
-      "hash": "e4fc5797e01410543b9d214a2af20db4be8bff28d66134557ab1b028da571e03",
+      "hash": "f614822662213359d38e6908c0807b15e80c1afcde207def14cfff69ed206b33",
       "count": 1
     },
     {

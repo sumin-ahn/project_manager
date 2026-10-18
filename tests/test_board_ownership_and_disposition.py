@@ -32,6 +32,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import ensure_product_slot
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -121,6 +123,16 @@ def _seed(board, tid: str = "T-0001", *, status: str = "claimed",
     path = board.tickets_dir() / status / f"{tid}-t.md"
     board.dump_ticket(path, fm, f"# {tid} — t\n\n## 목표\nx\n\n{body}")
     return path
+
+
+# 귀속 쓰기(claim·unclaim --takeover)의 정체성 — 조회 세션(`PM_SESSION_NAME`)과 같은 이름(T-0962).
+_TASK = "pm_1"
+
+
+def _claim_ns(board, tid: str = "T-0001") -> argparse.Namespace:
+    """claim 인자 — `--task` 와 그 task 가 보유한 제품 폴더를 준비한다(T-0962)."""
+    ensure_product_slot(board, task=_TASK)
+    return argparse.Namespace(id=tid, task=_TASK, user="alice")
 
 
 def _ticket_path(board, tid: str, status: str) -> Path:
@@ -225,7 +237,7 @@ def test_legacy_slot_only_claim_is_rejected_on_a_multi_user_board(board, command
 @pytest.mark.parametrize("command", sorted(_COMMANDS))
 def test_unresolved_session_is_rejected_and_names_the_explicit_flags(
         board, command, monkeypatch, capsys):
-    """형상 6 — 세션 미해소(활성 리스 2개·인자 없음)는 거부하고 `--repo/--slot` 을 안내한다.
+    """형상 6 — 세션 미해소(활성 리스 2개·인자 없음)는 거부하고 `--task` 를 안내한다(T-0962).
 
     "검사 skip" 폴백은 두지 않는다 — 소유를 증명할 수 없는 상태에서 남의 티켓을 옮기는 쪽이
     더 나쁘다(claim 의 `required=True` fail-loud 와 대칭).
@@ -241,7 +253,7 @@ def test_unresolved_session_is_rejected_and_names_the_explicit_flags(
     err = capsys.readouterr().err
     assert rc == 1
     assert path.read_bytes() == before
-    assert "세션 미해소" in err and "--repo" in err and "--slot" in err, err
+    assert "세션 미해소" in err and "--task" in err, err
 
 
 @pytest.mark.parametrize("command", sorted(_COMMANDS))
@@ -259,17 +271,6 @@ def test_open_ticket_block_and_claim_are_unaffected(board):
 
     assert board.cmd_block(argparse.Namespace(id="T-0001", reason="r")) == 0
     assert list((board.tickets_dir() / "blocked").glob("T-0001-*.md"))
-
-
-def test_explicit_repo_slot_args_resolve_the_acting_session(board, monkeypatch):
-    """정체성은 env 뿐 아니라 `--repo/--slot` 명시로도 해소된다(claim 과 같은 seam)."""
-    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
-    _write_leases(board, "pm_1", "pm_2")
-    _seed(board, claimed_by="alice/pm_2")
-
-    assert _call(board, "complete", repo="pm", slot=1) == 1     # 타 슬롯 명시 → 거부
-    assert _call(board, "complete", repo="pm", slot=2) == 0     # 소유 슬롯 명시 → 통과
-    assert list((board.tickets_dir() / "done").glob("T-0001-*.md"))
 
 
 def test_reid_consumes_the_same_ownership_judgement(board, capsys):
@@ -294,7 +295,7 @@ def test_takeover_releases_a_foreign_claim_and_records_the_reason(board):
     _seed(board, claimed_by="bob/other_1", created_by="bob/other_1")
 
     rc = board.cmd_unclaim(argparse.Namespace(
-        id="T-0001", takeover=True, reason="소유 세션 종료 — PM 43 인계"))
+        id="T-0001", takeover=True, reason="소유 세션 종료 — PM 43 인계", task=_TASK))
 
     assert rc == 0
     fm, body = board.load_ticket(_ticket_path(board, "T-0001", "open"))
@@ -310,7 +311,7 @@ def test_takeover_without_a_reason_is_rejected(board):
     before = path.read_bytes()
 
     assert board.cmd_unclaim(argparse.Namespace(
-        id="T-0001", takeover=True, reason=None)) == 1
+        id="T-0001", takeover=True, reason=None, task=_TASK)) == 1
     assert path.read_bytes() == before
 
 
@@ -323,7 +324,7 @@ def test_takeover_accepts_a_blocked_ticket_and_keeps_it_blocked(board):
     _seed(board, status="blocked", claimed_by="bob/other_1", created_by="bob/other_1")
 
     rc = board.cmd_unclaim(argparse.Namespace(
-        id="T-0001", takeover=True, reason="소유 슬롯 반납됨"))
+        id="T-0001", takeover=True, reason="소유 슬롯 반납됨", task=_TASK))
 
     assert rc == 0
     fm, _body = board.load_ticket(_ticket_path(board, "T-0001", "blocked"))
@@ -494,8 +495,7 @@ def test_reopened_ticket_runs_the_normal_cycle_again(board):
 
     assert board.cmd_reopen(argparse.Namespace(id="T-0001", reason="오처리 복구")) == 0
     assert board.load_cluster("C-T-0001")["tickets"] == ["T-0001"]
-    assert board.cmd_claim(argparse.Namespace(
-        id="T-0001", repo="pm", slot=1, user="alice")) == 0
+    assert board.cmd_claim(_claim_ns(board)) == 0
     fm, _body = board.load_ticket(_ticket_path(board, "T-0001", "claimed"))
     assert fm["claimed_by"] == "alice/pm_1"
 
@@ -516,8 +516,7 @@ def test_all_deferred_completion_is_refused_but_the_discard_path_works(board, ca
     assert board.cmd_reopen(argparse.Namespace(
         id="T-0001", reason="처분 종결로 재분류(T-0781 backfill)")) == 0
     # 되돌린 뒤 다시 claim→complete 를 시도하면 전량 이월이라 막힌다(그 형상이 done 이 아님).
-    assert board.cmd_claim(argparse.Namespace(
-        id="T-0001", repo="pm", slot=1, user="alice")) == 0
+    assert board.cmd_claim(_claim_ns(board)) == 0
     _mark_ledger_closing(board, "C-T-0001")
     assert _call(board, "complete", cluster_close="C-T-0001") == 1
     assert "discard" in capsys.readouterr().err
@@ -568,7 +567,7 @@ def test_takeover_reason_lands_in_the_board_git_commit(board, tmp_path):
     board_dir = _make_board_git(board, board._proj, remote=bare)
 
     rc = board.cmd_unclaim(argparse.Namespace(
-        id="T-0001", takeover=True, reason="소유 슬롯 반납 — PM 인계"))
+        id="T-0001", takeover=True, reason="소유 슬롯 반납 — PM 인계", task=_TASK))
 
     assert rc == 0
     subject = _git(["log", "-1", "--format=%s"], board_dir).stdout.strip()
@@ -590,8 +589,7 @@ def test_remote_discarded_ticket_makes_a_claim_race_lost(board, tmp_path, capsys
     local = board_dir / "tickets" / "discarded" / "T-0001-t.md"
     local.rename(board_dir / "tickets" / "open" / "T-0001-t.md")
 
-    rc = board.cmd_claim(argparse.Namespace(
-        id="T-0001", repo="pm", slot=1, user="alice"))
+    rc = board.cmd_claim(_claim_ns(board))
 
     assert rc == 1
     err = capsys.readouterr().err
@@ -605,3 +603,22 @@ def _mark_ledger_closing(board, cluster: str) -> None:
     ledger = board.load_cluster(cluster)
     ledger["status"] = "closing"
     board.dump_cluster(ledger)
+
+
+def test_t0962_takeover_requires_task_and_records_it(board, monkeypatch, capsys):
+    """AT-007 — `unclaim --takeover` 는 귀속 쓰기라 `--task` 필수이고 본문에 그 task 를 남긴다."""
+    monkeypatch.setenv("PM_SESSION_NAME", "proj_1")
+    path = _seed(board, claimed_by="bob/other", created_by="bob/other")
+    before = path.read_bytes()
+
+    assert board.cmd_unclaim(argparse.Namespace(
+        id="T-0001", takeover=True, reason="gone")) == 1
+    assert "--task" in capsys.readouterr().err
+    assert path.read_bytes() == before
+
+    assert board.cmd_unclaim(argparse.Namespace(
+        id="T-0001", takeover=True, reason="gone", task="mytask")) == 0
+    _fm, body = board.load_ticket(_ticket_path(board, "T-0001", "open"))
+    takeover = body.split("## Takeover", 1)[1]
+    assert "mytask" in takeover
+    assert "proj_1" not in takeover

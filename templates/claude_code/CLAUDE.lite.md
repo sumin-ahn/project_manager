@@ -13,8 +13,7 @@
 세션 시작 필독 셋은 이미 로드된 진입문서, 현재 정체성의 `pm_state`, `/pm-bootstrap` dump 한 번뿐이다.
 
 1. **이 문서(CLAUDE.md·lite 코어)** — 이미 로드된 프로젝트 규칙·형상.
-2. **현재 정체성의 `pm_state`** — task는 `.project_manager/.local/tasks/<task>/pm_state.md`,
-   slot은 `.project_manager/.local/slots/<repo>_<N>/pm_state.md`다(둘 다 git-ignored).
+2. **현재 정체성의 `pm_state`** — `.project_manager/.local/tasks/<task>/pm_state.md`다(git-ignored).
    신규 task는 bootstrap 진입 전 파일이 없어도 정상이다.
 3. **`/pm-bootstrap` dump 한 번** — board·git·차수·직전 handoff 본문·남은 작업을 한꺼번에
    surface한다. Python backbone은 `{{PY}} .project_manager/tools/pm_bootstrap.py`다.
@@ -27,7 +26,7 @@
 **현재 진실:** [`architecture.md`](.project_manager/wiki/architecture.md)는 현재 아키텍처 단일
 진실이며, 옛 ADR 또는 현재 의도·실측과 충돌하면 기준으로 따른다. 바뀐 것은 읽는 시점뿐이다.
 
-> 세션명 canonical = `<repo>_<N>`. `claim` 에 `--repo <repo> --slot <N>` 으로 전달하며 활성 lease 1개면 생략 가능. 우선순위: `--repo`/`--slot` > `$PM_SESSION_NAME`(구 `$CLAUDE_SESSION_NAME` alias) > 활성 슬롯 lease 1개면 그 세션(단일-lease 유도) > 미해소(귀속 쓰기 fail-loud). lease 행 0개면 아직 작업 폴더가 없는 것이라 `pm-config worktree add <repo> --user-ack <repo>` 로 먼저 만든다.
+> 세션 정체성은 task 이름 하나다. 귀속 쓰기(new·claim 등)는 `--task <task>` 로 하고 없으면 fail-loud(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 위치 인자 추가). 조회·소유 대조 우선순위: `--task` > `$PM_SESSION_NAME`(구 `$CLAUDE_SESSION_NAME` alias) > 활성 슬롯 lease 1개면 그 세션(단일-lease 유도) > 미해소. lease 행 0개면 아직 작업 폴더가 없는 것이라 `pm-config worktree add <repo> --user-ack <repo>` 로 만든 뒤 `pm-config alloc <repo> --task <task>` 로 task 에 빌린다.
 > 첫 turn 권장 보고: board 1줄 + 직전 세션 요약 3~5줄 + 다음 옵션 + 결정 요청(*무엇부터?*).
 
 ## 2. 작업 원칙 (반드시)
@@ -47,7 +46,7 @@
 새 작업은 ticket 으로 발행한다. **본문이 단일 진실이며 그것만 보고 구현 가능해야 한다.**
 
 ```bash
-{{PY}} .project_manager/tools/board.py new "title" --touches a.py,b.py --depends T-0001 --tag phase-1
+{{PY}} .project_manager/tools/board.py new "title" --task <task> --touches a.py,b.py --depends T-0001 --tag phase-1
 # → open/ 에 T-NNNN(또는 영역 prefix 시 T-pay-NNN) 스켈레톤 생성. 본문을 아래 형식으로 채운다.
 ```
 
@@ -73,7 +72,7 @@ PM 은 코드를 직접 짜지 않는다: `claim → 설계·구현 위임 → �
 ## 5. 완료 기록 (PM 손)
 
 ```bash
-{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> [--repo <repo> --slot <N>]
+{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> --task <task>
 ```
 
 `status.md` 모듈 행 갱신 · `log/current.md` entry append · 회귀 `{{TEST_CMD}}` green 확인 · **git commit**은 논리적 체크포인트에서 **경로 명시**:

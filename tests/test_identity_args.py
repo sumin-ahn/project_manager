@@ -6,10 +6,9 @@
 
   - **순수 인자 층**: `add_identity_args`·`parse_identity` — 파일 IO 0. 실 argparse 로 파싱한
     `Namespace` 를 넣어 discriminated `Identity` 해소 규칙 전수(slot/repo/none/fail-loud)를 본다.
-  - **리스 IO 층**: `leased_sessions`·`repo_slot_numbers`·`resolve_actor_slot` — `tmp_path` 에
+  - **리스 IO 층**: `leased_sessions`·`repo_slot_numbers` — `tmp_path` 에
     `worktree-leases.json` 을 직접 써서(실 장부 미접촉) 흡수된 두 원 구현(board/pm_config
-    `_leased_sessions` · pm_bootstrap `_repo_slot_numbers`)의 동작이 정확히 보존됐는지 + 그 위의
-    `resolve_actor_slot`(1개/0개/≥2개) 를 검증한다.
+    `_leased_sessions` · pm_bootstrap `_repo_slot_numbers`)의 동작이 정확히 보존됐는지 검증한다.
 """
 from __future__ import annotations
 
@@ -81,7 +80,7 @@ def test_parse_identity_repo_and_slot_yields_slot_kind(ia):
     assert identity.kind == "slot"
     assert identity.repo == "myproj"
     assert identity.slot == 3
-    assert identity.session == "myproj_3"
+    assert identity.task is None
 
 
 def test_parse_identity_repo_alone_yields_repo_kind(ia):
@@ -90,7 +89,7 @@ def test_parse_identity_repo_alone_yields_repo_kind(ia):
     assert identity.kind == "repo"
     assert identity.repo == "myproj"
     assert identity.slot is None
-    assert identity.session is None
+    assert identity.task is None
 
 
 def test_parse_identity_no_args_yields_none_kind(ia):
@@ -99,7 +98,7 @@ def test_parse_identity_no_args_yields_none_kind(ia):
     assert identity.kind == "none"
     assert identity.repo is None
     assert identity.slot is None
-    assert identity.session is None
+    assert identity.task is None
 
 
 def test_parse_identity_slot_without_repo_fails_loud(ia):
@@ -115,14 +114,6 @@ def test_parse_identity_slot_below_one_fails_loud(ia):
         ns = _parse(ia, ["--repo", "A", "--slot", bad])
         with pytest.raises(ValueError, match=r"1 이상"):
             ia.parse_identity(ns)
-
-
-def test_parse_identity_repo_name_with_underscore_composes_cleanly(ia):
-    # repo 이름에 "_" 가 있어도 session 조립은 단순 f-string(파싱 아님) — 무해(ADR-0057 caller 노트).
-    ns = _parse(ia, ["--repo", "my_repo", "--slot", "7"])
-    identity = ia.parse_identity(ns)
-    assert identity.kind == "slot"
-    assert identity.session == "my_repo_7"
 
 
 def test_parse_identity_returns_discriminated_dataclass_not_bare_string(ia):
@@ -144,7 +135,7 @@ def test_parse_identity_task_is_orthogonal_to_slot_axis(ia):
     assert idn.repo is None and idn.slot is None
     # task + repo/slot → kind=slot(현행 규칙 불변)·task 공존.
     ids = ia.parse_identity(_parse(ia, ["--task", "myjob", "--repo", "A", "--slot", "2"]))
-    assert ids.kind == "slot" and ids.session == "A_2" and ids.task == "myjob"
+    assert ids.kind == "slot" and (ids.repo, ids.slot) == ("A", 2) and ids.task == "myjob"
 
 
 def test_parse_identity_task_absent_is_none(ia):
@@ -285,53 +276,6 @@ def test_repo_slot_numbers_schema_mismatch_returns_none(ia, tmp_path):
     leases = tmp_path / "worktree-leases.json"
     leases.write_text(json.dumps({"leases": "not-a-list"}), encoding="utf-8")
     assert ia.repo_slot_numbers("A", leases) is None
-
-
-# ── resolve_actor_slot — actor `--repo`-단독 해소 (1개/0개/≥2개 · SlotResolutionError) ──
-
-
-def test_resolve_actor_slot_single_active_slot_returns_session(ia, tmp_path):
-    leases = tmp_path / "worktree-leases.json"
-    _write_leases(leases, [
-        {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},
-    ])
-    assert ia.resolve_actor_slot("A", leases) == "A_1"
-
-
-def test_resolve_actor_slot_zero_active_slots_returns_none(ia, tmp_path):
-    leases = tmp_path / "worktree-leases.json"
-    _write_leases(leases, [
-        {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "idle"},
-    ])
-    assert ia.resolve_actor_slot("A", leases) is None
-
-
-def test_resolve_actor_slot_missing_leases_file_returns_none(ia, tmp_path):
-    assert ia.resolve_actor_slot("A", tmp_path / "absent.json") is None
-
-
-def test_resolve_actor_slot_multiple_active_slots_fails_loud(ia, tmp_path):
-    leases = tmp_path / "worktree-leases.json"
-    _write_leases(leases, [
-        {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},
-        {"slot": "work/A_2", "repo": "A", "session": "A_2", "state": "leased"},
-    ])
-    with pytest.raises(ia.SlotResolutionError, match=r"--slot"):
-        ia.resolve_actor_slot("A", leases)
-
-
-def test_resolve_actor_slot_error_is_dedicated_exception_type(ia, tmp_path):
-    leases = tmp_path / "worktree-leases.json"
-    _write_leases(leases, [
-        {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},
-        {"slot": "work/A_2", "repo": "A", "session": "A_2", "state": "leased"},
-        {"slot": "work/A_3", "repo": "A", "session": "A_3", "state": "leased"},
-    ])
-    with pytest.raises(Exception) as excinfo:
-        ia.resolve_actor_slot("A", leases)
-    assert isinstance(excinfo.value, ia.SlotResolutionError)
-    assert isinstance(excinfo.value, Exception)
-    assert "A" in str(excinfo.value)
 
 
 # ── F6 작업공간 2단 해소 — resolve_task_workspace (T-0355·spike §3b F6·결정 ⑦) ──────
@@ -533,9 +477,10 @@ def test_validate_task_name_accepts_safe(ia, ok):
 
 
 def test_validate_task_name_rejects_reserved_slot_pattern(ia):
-    """registered_repos 주면 `<repo>_<N>` 슬롯 세션 예약 패턴 거부(⑥·is_reserved_task_name 재사용)."""
-    with pytest.raises(ia.InvalidTaskName, match=r"예약"):
+    """registered_repos 주면 `<repo>_<N>` 슬롯 폴더 이름 패턴 거부(⑥·is_reserved_task_name 재사용)."""
+    with pytest.raises(ia.InvalidTaskName, match=r"폴더 이름 패턴") as raised:
         ia.validate_task_name("project_manager_1", ["project_manager"])
+    assert "슬롯 세션" not in str(raised.value)
     # 미등록 repo 로 시작하는 _N 은 무관(자유 포맷 허용).
     ia.validate_task_name("project_manager_1", ["finance"])
 
@@ -609,3 +554,21 @@ def test_t0929_workspace_inactive_readonly_is_not_a_reference(ia, tmp_path, stat
     _write_leases(leases, [{'slot': 'work/A_5', 'repo': 'A', 'session': '', 'role': 'readonly', 'state': state}])
     with pytest.raises(ia.WorkspaceResolutionError):
         ia.resolve_task_workspace(ia.parse_identity(_parse(ia, ['--task', 'main', '--repo', 'A', '--slot', '5'])), leases)
+
+
+def test_t0962_identity_has_no_session_and_slot_helpers_are_gone(ia):
+    """AT-003 — 위치 인자는 세션을 만들지 않고, 슬롯 정체성 해소·분해 함수는 엔진에 없다."""
+    identity = ia.parse_identity(_parse(ia, ["--repo", "proj", "--slot", "3"]))
+    assert (identity.kind, identity.repo, identity.slot, identity.task) == ("slot", "proj", 3, None)
+    assert not hasattr(identity, "session")
+    with pytest.raises(TypeError):
+        ia.Identity("slot", "proj", 3, "proj_3", None)
+    for name in ("resolve_actor_slot", "slot_holder_task", "slot_path_for_number"):
+        assert not hasattr(ia, name), name
+    board = _load("board")
+    for name in ("_repo_from_session", "_session_slot_coordinates", "_prefix_from_session",
+                 "_reject_slot_identity_on_task_folder", "_reject_task_slot_identity_mix",
+                 "UNREGISTERED_SESSION_ABORT"):
+        assert not hasattr(board, name), name
+    finish = _load("ticket_finish")
+    assert not hasattr(finish, "_board_identity_argv")
