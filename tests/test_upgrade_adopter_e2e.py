@@ -887,7 +887,12 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   호출부")뿐이고 실행 코드·배달 경계는 무편집이다.
 #   T-0956 수정 라운드(리뷰 F-005)에서 한 번 더 이동했다 — 주석 한 줄의 자리 표기
 #   (`harness.<이름>` → `harness.<harness>`)뿐이고 실행 코드·배달 경계·anchor 는 무편집이다.
-_T0585_PM_UPDATE_SHA256 = "2f42188cfaebdf08fd307ca1af1e26cdb21b8d418eab3232f9c89616d2741fe4"
+#   T-0964 에서 또 이동했다 — 설정 레지스트리가 패키지(`pm_engine.domain.conf_schema`·
+#   `pm_engine.infra.conf_store`)로 옮겨 가며 `_load_local_conf` 경로 적재가 사라지고 호출이 모듈
+#   속성 호출로 바뀌었다. 역적용 delta 의 네 anchor 는 전부 그 구간 밖이라 그대로 유일 해소되고,
+#   배달 경계(planning → apply → self-update 순서)와 배달 파일 집합도 불변이다 — 현재화한 것은
+#   기대 SHA 하나뿐이다.
+_T0585_PM_UPDATE_SHA256 = "2a04fde39b951fb8a36a96e2c632f0f99c86e3e43ba4575b1ca74b91382146de"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -1372,7 +1377,10 @@ def _install_t0585_updater(dest: Path) -> None:
 # 전문 SHA 만 이동했다. 실행 코드와 marker 는 무편집이다.
 # T-0963: 형제 적재 블록의 패키지 import 전환과 형제 로더·강등·중앙 로더 선복구 삭제로 전문 SHA 가
 # 이동했다. 퇴역 경로 delta 의 marker 는 전부 그 구간 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "be6ea48b383c12998bdf423064797b723421f0ae158c567a38b000e5654cc090"
+# T-0964: 설정 레지스트리의 패키지 이동으로 `_load_local_conf` 경로 적재가 모듈 속성 호출
+# (`conf_store`·`conf_schema`)로 바뀌어 전문 SHA 가 이동했다. 퇴역 경로 delta 의 marker 는 전부 그
+# 구간 밖이라 그대로 유일 해소된다.
+_PRE_T0876_PM_UPDATE_SHA256 = "b8a7fbc904f9c8b5f0aa421bcb9bf5d3ba523fccc50fcca04940b356fc6c357e"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -2404,6 +2412,14 @@ def test_pinned_v18_adopter_updates_to_package_tree_in_one_run(
         [sys.executable, str(tools / "pm_config.py"), "status", "--json"],
         cwd=dest, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     assert status.returncode == 0, status.stderr
+    # 설정 레지스트리는 패키지(`pm_engine/domain/conf_schema.py`)로 옮겨 갔고 `local_conf.py` 는
+    # CLI 진입 파일로 남는다 — 관리자가 프로젝트 사본마다 부르는 `--keys --json` 이 갱신 뒤에도 돈다(T-0964).
+    assert (tools / "pm_engine/domain/conf_schema.py").is_file()
+    keys = subprocess.run(
+        [sys.executable, str(tools / "local_conf.py"), "--keys", "--json"],
+        cwd=dest, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+    assert keys.returncode == 0, keys.stderr
+    assert keys.stdout.startswith('{"schema"'), keys.stdout[:200]
 
 
 def _t0951_engine_code_rows(source: Path) -> list[str]:
@@ -2546,7 +2562,9 @@ def test_mixed_source_tree_fails_loud(tmp_path):
     from _manager_home import _git, make_committed_source, make_pm_home
     source = make_committed_source(tmp_path / "source")
     home = make_pm_home(tmp_path / "home", upstream=source, source=source)
-    _t0951_set_engine_rev(source / ".project_manager/tools/pm_import.py", "v1.7.13")
+    # 혼합 대상은 갱신 경로가 rev 대조로 적재하는 형제다. pm_import 의 대조 짝이던 local_conf 는 패키지
+    # (`pm_engine`)로 옮겨 각인이 없다(T-0964).
+    _t0951_set_engine_rev(source / ".project_manager/tools/board.py", "v1.7.13")
     _git("-C", str(source), "commit", "-qam", "mixed engine rev")
     conf = home / ".project_manager/local.conf"
     revs_before = [line for line in conf.read_text(encoding="utf-8").splitlines()

@@ -38,6 +38,7 @@ from _fake_opencode import OLLAMA_LISTING, calls, install_fake_opencode, path_wi
 from _git_fixture import init_git_repo
 from _textio import normalize_newline_bytes
 from _win_skip import _can_symlink, posix_bash_supported, posix_mode_supported
+from pm_engine.domain import conf_schema
 from conftest import write_cluster_ledger
 
 REPO = Path(__file__).resolve().parents[1]
@@ -4874,7 +4875,7 @@ def test_fallback_is_documented_in_the_registry_not_seeded_into_conf(pd):
     설명을 conf 에 심으면 값과 어긋난 채 굳는다(그 파일은 아무도 다시 읽지 않는다). 엔진은
     폴백을 설정 없이 지어내지 않는다.
     """
-    conf_module = pd._load_local_conf()
+    conf_module = conf_schema
     spec = conf_module.key_spec("delegate.developer.hard.fallback.model")
     assert spec is not None and "실패 시 대신 쓸" in spec.description, "대체 축 설명이 없다"
     assert spec.default is None, "폴백은 엔진 기본값을 갖지 않는다"
@@ -5719,7 +5720,7 @@ def test_write_roles_single_source_matches_detector_default(pd):
     scope = _load("delegate_scope_roles", TOOLS / "delegate_scope.py")
     assert scope.WRITE_ROLES == pd.WRITE_ROLES
     # 역할 축은 write/read 2분할이 전부 — 새 역할이 생기면 read(허용 0) 쪽 기본값이 된다.
-    assert pd.WRITE_ROLES | pd.READ_ROLES == frozenset(pd.ROLE_CHOICES)
+    assert pd.WRITE_ROLES | pd.READ_ROLES == frozenset(conf_schema.ROLE_CHOICES)
 
 
 def test_midrun_io_error_does_not_fallback(pd, monkeypatch, tmp_path, capsys):

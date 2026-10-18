@@ -10,6 +10,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from pm_engine.infra import conf_store
+
 from . import CallError, ENGINE_LOCK, load_engine_module
 
 # 조회 상한 — 가벼운 절의 git 호출은 슬롯마다 5회와 저장소마다 고정 몇 회다. Windows VM 실측
@@ -25,7 +27,7 @@ def _conf_path(pm_home: Path | str) -> Path:
 
 
 def conf_values(pm_home: Path | str) -> dict[str, str]:
-    """local.conf 값 — 번들 엔진의 `local_conf.load` 로 읽는다.
+    """local.conf 값 — 번들 엔진의 `conf_store.load` 로 읽는다.
 
     `load_checked` 가 아니다: 구표기 키가 남은 사본에 예외를 던져, "먼저 갱신" 을 보여 줘야 할
     바로 그 사본을 아예 못 부르게 만든다. `load` 는 raise 하지 않는다(부재=빈 값).
@@ -34,7 +36,7 @@ def conf_values(pm_home: Path | str) -> dict[str, str]:
     겹치면 반쯤 로드된 형제를 집어 간다(창은 화면의 호출을 스레드마다 따로 처리한다).
     """
     with ENGINE_LOCK:
-        return load_engine_module("local_conf.py").load(_conf_path(pm_home)).values
+        return conf_store.load(_conf_path(pm_home)).values
 
 
 def interpreter(pm_home: Path | str, *, os_name: str = os.name) -> tuple[str, ...]:

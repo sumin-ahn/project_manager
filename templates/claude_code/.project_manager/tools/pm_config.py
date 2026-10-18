@@ -101,7 +101,8 @@ from typing import Callable
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import console, fs, repo_files  # noqa: E402
+from pm_engine.domain import conf_schema  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 from urllib.parse import urlsplit
@@ -130,10 +131,6 @@ ENGINE_REV = "v1.8.1"
 # deep-import AST 가드가 실제 호출 target에서 목록/검증 누락을 자동 적발한다.
 _STAMPED_SIBLINGS = frozenset({
     "identity_args.py", "board.py", "worktree_pool.py", "pm_import.py",
-    # local_conf.py 는 `_load_local_conf` 가 이미 rev 대조로 로드하는 형제다. 여기 명시해야
-    # **다른 세대**를 의도적으로 여는 자리(`_source_missing_required` — 소스 checkout 의 사본)가
-    # 그 gate 아래의 명시적 우회로 읽힌다(선언 없는 무검증 로드와 구분).
-    "local_conf.py",
     # pm_relay.py 는 모델 원천 표(`MODEL_SOURCE`)와 하네스 CLI 계약의 소유자다 — 구형 사본을
     # 조용히 읽으면 안내·조회가 이 세대에 없는 값을 말한다.
     "pm_relay.py",
@@ -274,19 +271,10 @@ def _default_session(*, identity=None) -> str | None:
     return None
 
 
-def _load_local_conf():
-    """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다 (board 사본 동형)."""
-    return _load_module_from_path(
-        Path(__file__).resolve().parent / "local_conf.py", "local_conf.py",
-        verifier=_verify_engine_rev, cache=True,
-        cache_key=f"_project_manager_local_conf:{Path(__file__).resolve().parent}",
-    )
-
-
 def _local_conf_user() -> str | None:
     """`.project_manager/local.conf` 의 `identity.user=` (없거나 OSError → None).
 
-    `_local_conf_test_cmd` 와 동형 — 해소는 공용 로더(`local_conf.py`)가 하고 이 함수는
+    `_local_conf_test_cmd` 와 동형 — 해소는 공용 로더(`conf_store`)가 하고 이 함수는
     키 이름과 빈값→None 관례만 소유한다(`board.local_config().get("identity.user")` 와 동일 의미).
     부재/읽기실패는 None(폴백)이고, 구표기 키 잔존은 소비 지점 계약대로 fail-loud 다.
     """
@@ -419,7 +407,7 @@ def _local_conf_value(key: str) -> str | None:
     `upstream show`와 보호 push gate가 다르게 해석하지 않게 하는 계약이다.
     """
     conf_file = REPO / ".project_manager" / "local.conf"
-    return _load_local_conf().load_checked(conf_file).get(key)
+    return conf_store.load_checked(conf_file).get(key)
 
 
 def _git_remote_identity(value: str) -> tuple[str, str, int | None, str]:
@@ -2485,39 +2473,48 @@ def _status_json_repos() -> list[dict]:
 def _source_missing_required(source_root: Path, values: dict) -> list[str]:
     """**소스** 레지스트리 기준 필수 누락 — "갱신하면 필요" 축.
 
-    비교 기준은 소스 checkout 의 `local_conf.py` 다(이 사본의 선언이 아니라 갱신하면 오게 될
-    선언). rev 대조는 하지 않는다 — 새 세대를 읽는 것이 목적이라 `allow_unverified` 로 연다.
-    소스에 그 파일이 없으면 예외가 그대로 올라간다(비교 못 하는 상태를 빈 목록으로 접지 않는다).
+    비교 기준은 소스 checkout 의 레지스트리다(이 사본의 선언이 아니라 갱신하면 오게 될 선언).
+    이 프로세스에는 이 사본의 `pm_engine` 이 이미 적재돼 있어 소스 패키지를 import 하면 이 사본
+    선언을 읽게 된다. 그래서 소스의 진입 파일 `local_conf.py --keys --json` 을 하위 프로세스로
+    돌려 그 키 표에서 `kind == "key"` 이고 `required` 가 참인 키를 선언 순서로 모으고 `values` 에
+    없는 것을 돌려준다(`conf_schema.missing_required` 와 같은 판정). 하위 프로세스 실패·JSON 파싱
+    실패·필드 부재는 그대로 올라간다(비교 못 하는 상태를 빈 목록으로 접지 않는다).
 
-    **신뢰 경계**: 이 호출은 소스 트리의 Python 을 import 해 **실행**한다 — 채택자가
+    **신뢰 경계**: 이 호출은 소스 트리의 Python 을 **실행**한다 — 채택자가
     `upstream.path` 로 등록한 checkout(URL 이면 이 실행이 clone/fetch 한 캐시) 한정이고,
     그 트리의 엔진은 `pm-config update` 가 이미 복사·실행하는 것과 같은 경계다.
     """
-    module = _load_module_from_path(
-        Path(source_root) / ".project_manager" / "tools" / "local_conf.py",
-        "local_conf.py", allow_unverified=True,
+    entry = Path(source_root) / ".project_manager" / "tools" / "local_conf.py"
+    result = subprocess.run(
+        [sys.executable, str(entry), "--keys", "--json"],
+        capture_output=True, text=True, encoding="utf-8",
     )
-    return list(module.missing_required(values))
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"소스 키 표를 읽지 못했다 ({entry} --keys --json · rc={result.returncode}): "
+            f"{result.stderr.strip()}")
+    document = json.loads(result.stdout)
+    return [row["key"] for row in document["keys"]
+            if row["kind"] == "key" and row["required"] and row["key"] not in values]
 
 
 def _status_json_conf(pm_import_mod, source_root: Path | None) -> dict:
     """설정 완전성 — 필수 누락·폐지 키·미지 키·표준과 다른 값·최신 기준 누락 다섯 목록.
 
-    판정은 `local_conf` 레지스트리 하나가 낸다(값 해석 사본 0). 압축 한도(`ctx_budget`)는 기록과
+    판정은 `conf_schema` 레지스트리 하나가 낸다(값 해석 사본 0). 압축 한도(`ctx_budget`)는 기록과
     도구 설정 파일을 함께 읽는 `pm_import.ctx_budget_status` 가 낸다. `missing_for_latest` 는 소스
     checkout 이 해소된 호출(`--from` 또는 `--with-adapters`)에서만 채워지고 그 밖에는 null 이다.
     """
-    local_conf = _load_local_conf()
-    result = local_conf.load(REPO / ".project_manager" / "local.conf")
+    result = conf_store.load(REPO / ".project_manager" / "local.conf")
     values = result.values
     return {
         "ctx_budget": pm_import_mod.ctx_budget_status(REPO, values),
-        "missing_required": list(local_conf.missing_required(values)),
+        "missing_required": list(conf_schema.missing_required(values)),
         "legacy": [{"key": key, "replacement": replacement}
                    for key, replacement in sorted(result.legacy.items())],
         "unknown": list(result.unknown),
         "nonstandard": [{"key": key, "value": value, "default": default}
-                        for key, (value, default) in sorted(local_conf.nonstandard(values).items())],
+                        for key, (value, default) in sorted(conf_schema.nonstandard(values).items())],
         "missing_for_latest": (None if source_root is None
                                else _source_missing_required(source_root, values)),
     }
@@ -4881,7 +4878,8 @@ def _print_delegate_model_guidance(
         if len(models) > len(shown):
             print(f"      (앞 {len(shown)}개만 표시 — 전량은 {how_to_check})")
 
-    values = conf if conf is not None else _load_local_conf()
+    values = (conf if conf is not None
+              else conf_store.load_checked(REPO / ".project_manager" / "local.conf"))
     aliases = _model_alias_members(values or {})
     if aliases:
         print("  이 환경에서 쓰는 모델 (`delegate.model_alias` 선언 멤버):")

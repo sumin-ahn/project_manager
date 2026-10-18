@@ -44,7 +44,8 @@ import yaml
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import console, fs, repo_files  # noqa: E402
+from pm_engine.domain import conf_schema  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
@@ -3731,14 +3732,14 @@ def local_config(repo: Path | None = None) -> dict[str, str]:
     스위트는 실행 cwd 트리의 것이다)를 위한 seam. 미지정은 현행 `LOCAL_CONF`(무변경).
     `additional_reviewer.local_config(repo)` 와 동형 시그니처.
 
-    파싱·판정은 공용 로더(`local_conf.py`)가 소유한다 — 이 함수는 경로만 정하고 값 소비
+    파싱·판정은 공용 로더(`conf_store`·`conf_schema`)가 소유한다 — 이 함수는 경로만 정하고 값 소비
     지점의 계약(구표기 키가 남아 있으면 `LegacyConfKeyError` fail-loud)을 그대로 물려받는다.
     Missing → {}. per-clone 설정(`runtime.py`·`test.cmd`·`ctx.*`·`upstream.*`)은 git 으로
     공유하지 않는다. `session=`/`prefix=` 는 폐지된 키다 — 세션의 진실은 lease 장부,
     prefix 는 areas.md 칼럼이다(구표기 판정이 그 잔존을 지목한다).
     """
     path = (repo / ".project_manager" / "local.conf") if repo is not None else LOCAL_CONF
-    return _load_local_conf().load_checked_readable(path)
+    return conf_store.load_checked_readable(path)
 
 
 def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
@@ -3854,26 +3855,13 @@ def _load_identity_args():
     )
 
 
-def _load_local_conf():
-    """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다.
-
-    파싱 의미(중복 키 last-wins·값 안 `#` 보존)와 신키 레지스트리·구표기 판정의 단일 진실이다 —
-    이 모듈은 자기 파서를 두지 않는다. 로드 실패는 엔진 사본 손상이므로 그대로 올린다(fail-loud).
-    """
-    return _load_module_from_path(
-        Path(__file__).resolve().parent / "local_conf.py", "local_conf.py",
-        verifier=_verify_engine_rev, cache=True,
-        cache_key=f"_project_manager_local_conf:{Path(__file__).resolve().parent}",
-    )
-
-
 def _conf_default_int(key: str) -> int:
-    """이 conf 키의 엔진 기본값(정수) — 정본은 `local_conf.KEY_REGISTRY` 다.
+    """이 conf 키의 엔진 기본값(정수) — 정본은 `conf_schema.KEY_REGISTRY` 다.
 
     기본값이 선언되지 않은 키를 여기로 부르면 `TypeError` 로 멈춘다 — 엔진이 없는 값을 지어내지
     않는다(하네스별 표가 정본인 키는 그 표를 읽는 자리가 따로 있다).
     """
-    return int(_load_local_conf().default_for(key))
+    return int(conf_schema.default_for(key))
 
 
 def _load_review_rounds():
@@ -9008,9 +8996,8 @@ class PlatformConfigError(RuntimeError):
 def _platform_test_commands(cwd: str) -> tuple[tuple[str, str], ...]:
     """그 실행 트리의 선언 platform command를 공용 local.conf seam으로 해소한다."""
     try:
-        conf = _load_local_conf()
         values = local_config(Path(cwd))
-        return conf.platform_test_commands(values)
+        return conf_schema.platform_test_commands(values)
     except (OSError, UnicodeError, ValueError) as exc:
         raise PlatformConfigError(str(exc)) from exc
     except RuntimeError as exc:
@@ -19795,8 +19782,7 @@ def lint_adapter_drift() -> list[tuple[str, str, str]]:
         return findings
     if read is None:
         return findings
-    _module, result = read
-    conf = result.values
+    conf = read.values
 
     # non-adopter — upstream 자체가 없으면 비교할 대상이 없다 (graceful).
     if not (conf.get("upstream.path") or "").strip():
@@ -19937,8 +19923,7 @@ def lint_local_conf() -> list[tuple[str, str, str]]:
     if not LOCAL_CONF.is_file():
         return []
     try:
-        module = _load_local_conf()
-        result = module.load(LOCAL_CONF)
+        result = conf_store.load(LOCAL_CONF)
         text = fs.read_text_shared(LOCAL_CONF, encoding="utf-8")
     except Exception as exc:  # noqa: BLE001 — 조회면은 판독 실패로 멈추지 않는다.
         if _is_engine_rev_skew(exc):
@@ -19947,7 +19932,7 @@ def lint_local_conf() -> list[tuple[str, str, str]]:
     where = _rel_to_repo(LOCAL_CONF)
     findings = [
         (where, _LOCAL_CONF_LINT_KIND, line.strip())
-        for line in module.migration_lines(result.legacy)
+        for line in conf_schema.migration_lines(result.legacy)
     ]
     findings.extend(
         (where, _LOCAL_CONF_LINT_KIND,
@@ -19983,9 +19968,9 @@ def _lint_local_conf_read():
 
     · 파일 없음 → `None`(관측 없음 · conf 없는 트리는 정상 형상).
     · 판독 실패(`OSError`·`UnicodeError`) → `LocalConfUnreadable` 로 **올린다**. 판독은
-      `local_conf.load_strict` 로 한다 — 삼키는 `load` 를 쓰면 잘못된 UTF-8 이 "키 0개" 가 돼
+      `conf_store.load_strict` 로 한다 — 삼키는 `load` 를 쓰면 잘못된 UTF-8 이 "키 0개" 가 돼
       관측 kind 전부가 조용히 0건이 된다(못 읽은 것이 값이 없는 것으로 위장).
-    · 성공 → `(로더 모듈, 판독 결과)`.
+    · 성공 → 판독 결과(`ConfResult`).
 
     아래 관측 kind 들이 이 **한 경계**를 공유한다 — 같은 규칙을 함수마다 복제하면 규칙이 갈린다.
     발견을 내는 자리는 `lint_local_conf_readable()` 하나이고 나머지 소비자는 빈 목록이다(같은
@@ -19995,8 +19980,7 @@ def _lint_local_conf_read():
     if not LOCAL_CONF.is_file():
         return None
     try:
-        module = _load_local_conf()
-        return module, module.load_strict(LOCAL_CONF)
+        return conf_store.load_strict(LOCAL_CONF)
     except (OSError, UnicodeError) as exc:
         raise LocalConfUnreadable(f"{LOCAL_CONF}: {exc}") from exc
 
@@ -20023,7 +20007,7 @@ def lint_local_conf_readable() -> list[tuple[str, str, str]]:
 
 # 실 local.conf 의 **레지스트리 밖 키** 관측 kind — `local-conf`(구표기 잔존)와 배타적 축이다.
 _LOCAL_CONF_UNKNOWN_LINT_KIND = "local-conf-unknown-key"
-# 키 목록·설명·기본값의 정본은 레지스트리(`local_conf.KEY_REGISTRY`)이고, 사람은 이 명령으로
+# 키 목록·설명·기본값의 정본은 레지스트리(`conf_schema.KEY_REGISTRY`)이고, 사람은 이 명령으로
 # 본다 — 안내 두 줄이 같은 문자열을 쓴다(문서 절 이름을 가리키던 옛 안내는 사라졌다).
 _LOCAL_CONF_KEYS_CMD = "python3 .project_manager/tools/local_conf.py --keys"
 
@@ -20046,8 +20030,7 @@ def lint_local_conf_keys() -> list[tuple[str, str, str]]:
         return []          # 못 읽은 사실은 `lint_local_conf_readable` 이 한 번 말한다.
     if read is None:
         return []
-    _module, result = read
-    unknown = result.unknown
+    unknown = read.unknown
     if not unknown:
         return []
     where = _rel_to_repo(LOCAL_CONF)
@@ -20075,8 +20058,7 @@ def lint_local_conf_required() -> list[tuple[str, str, str]]:
         return []          # 못 읽은 사실은 `lint_local_conf_readable` 이 한 번 말한다.
     if read is None:
         return []
-    module, result = read
-    missing = module.missing_required(result.values)
+    missing = conf_schema.missing_required(read.values)
     if not missing:
         return []
     keys = ", ".join(f"`{key}`" for key in missing)

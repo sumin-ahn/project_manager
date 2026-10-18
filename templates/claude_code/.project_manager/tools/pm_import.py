@@ -88,7 +88,8 @@ from typing import Callable, NamedTuple, NoReturn
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import console, fs, repo_files  # noqa: E402
+from pm_engine.domain import conf_schema  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -3097,27 +3098,25 @@ def _set_conf_keys(text: str, updates: dict[str, str | None]) -> str:
 def _local_conf_has_blocking_legacy(dest_root: Path) -> bool:
     """dest 의 local.conf 에 **값 공급을 잃는** 구표기 키가 있는가 (안내 전용 키는 제외).
 
-    판정 기준은 공용 로더 하나다(`local_conf.blocking_legacy`) — import 가 자기 목록을 들면
+    판정 기준은 공용 로더 하나다(`conf_schema.blocking_legacy`) — import 가 자기 목록을 들면
     소비 지점과 갈린다.
     """
     local_conf = dest_root / ".project_manager" / "local.conf"
     if not local_conf.is_file():
         return False
-    module = _load_local_conf()
-    return bool(module.blocking_legacy(module.load(local_conf).legacy))
+    return bool(conf_schema.blocking_legacy(conf_store.load(local_conf).legacy))
 
 
 def print_conf_migration_notice(dest_root: Path) -> None:
     """local.conf 표기 통일 교체 안내 — import 도 채택자가 이 사실을 만나는 진입이다.
 
     안내만 낸다(자동 이관 없음·엔진은 채택자 conf 를 대신 고쳐 쓰지 않는다). 문구의 단일 진실은
-    공용 로더(`local_conf.migration_notice`)이고 pm_update 사본과 같은 문장을 쓴다.
+    공용 로더(`conf_schema.migration_notice`)이고 pm_update 사본과 같은 문장을 쓴다.
     """
     local_conf = dest_root / ".project_manager" / "local.conf"
     if not local_conf.is_file():
         return
-    module = _load_local_conf()
-    for line in module.migration_notice(module.load(local_conf)):
+    for line in conf_schema.migration_notice(conf_store.load(local_conf)):
         print(f"  {line}")
 
 
@@ -3142,22 +3141,13 @@ def sync_local_conf(dest_root: Path, project_name: str) -> bool:
     return _write_conf_keys(local_conf, updates)
 
 
-def _load_local_conf():
-    """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다 (board 사본 동형)."""
-    return _load_module_from_path(
-        Path(__file__).resolve().parent / "local_conf.py", "local_conf.py",
-        verifier=_verify_engine_rev, cache=True,
-        cache_key=f"_project_manager_local_conf:{Path(__file__).resolve().parent}",
-    )
-
-
 def _parse_conf_keys(text: str) -> dict[str, str]:
-    """local.conf 텍스트 → key=value dict (공용 로더 `local_conf.parse` · **판정 없음**).
+    """local.conf 텍스트 → key=value dict (공용 로더 `conf_schema.parse` · **판정 없음**).
 
     pm_import 는 도입/복구 채널이라 **구표기 conf 도 읽어야** 이주 안내를 낼 수 있다 — 판정은
-    값을 소비하는 지점(`local_conf.assert_values_no_legacy`)이 명시한다.
+    값을 소비하는 지점(`conf_schema.assert_values_no_legacy`)이 명시한다.
     """
-    return _load_local_conf().parse(text)
+    return conf_schema.parse(text)
 
 
 def _force_rmtree(path: Path) -> None:
@@ -3301,13 +3291,13 @@ def reapply_preserved_conf_keys(dest_root: Path, original_text: str) -> bool:
         # 락 안에서 다시 한다.
         return False
     original_keys = _parse_conf_keys(original_text)  # 대상 conf 와 무경쟁 — 락 밖.
-    legacy = _load_local_conf().is_legacy_key
+    legacy = conf_schema.is_legacy_key
     with _local_conf_write_lock(local_conf):
         if not local_conf.is_file():
             return False
         current_keys = _parse_conf_keys(fs.read_text_shared(local_conf, encoding="utf-8"))
         # board init 이 새로 쓴 local.conf 에 *없는* 기존 사용자 키만 복원(init 값 우선).
-        # 사라진 이름(`local_conf.LEGACY_KEY_MAP`)은 되얹지 않는다 — 재병합이 그것을 되살리면
+        # 사라진 이름(`conf_schema.LEGACY_KEY_MAP`)은 되얹지 않는다 — 재병합이 그것을 되살리면
         # 그 clone 은 다음 실행부터 구표기 정지로 멈춘다. 판정 원장은 로더 하나다.
         missing = {key: value for key, value in original_keys.items()
                    if key not in current_keys}
@@ -3978,7 +3968,7 @@ def _real_harness_runner(
         input_text = prompt if prompt_transport == FILL_PROMPT_STDIN else None
         profile = engine.resolve_harness_profile(harness, _fill_local_config(cwd))
         progress_signal = (
-            profile.progress_signal if emits_progress else engine.PROGRESS_SIGNAL_NONE
+            profile.progress_signal if emits_progress else conf_schema.PROGRESS_SIGNAL_NONE
         )
         idle_timeout = engine.idle_timeout_for_signal(
             progress_signal, profile.idle_timeout)
@@ -7557,7 +7547,7 @@ def adapter_config_drift_summary(judgment: AdapterConfigJudgment,
 # ── 하네스 사용 한도·압축 비율 반영 (local.conf → 하네스 설정 파일·압축 한도 기록) ─────────
 # 적용 경로(pm-config apply·설치·add-harness·pm_update·어댑터 수용)가 local.conf 쓰기 락 안에서 도구마다
 # 모델 한도 C 를 한 번 조회하고 적용 한도 E = min(W, C)·압축 지점 P = floor(E × compact_at / 100) 를
-# 하네스 설정 파일과 압축 한도 기록(`local_conf.CTX_BUDGET_RELPATH`)에 쓴다. 런타임은 기록만 읽는다.
+# 하네스 설정 파일과 압축 한도 기록(`conf_store.CTX_BUDGET_RELPATH`)에 쓴다. 런타임은 기록만 읽는다.
 #   claude   `.claude/settings.json`     autoCompactWindow = P + d (d = 모델 창 − 기본 압축 기준) ·
 #            idleCompaction = false (유휴 압축 끔 — 압축이 압축 지점에서만 나야 압축 전 안내가 성립한다)
 #   codex    `.codex/config.toml`        model_auto_compact_token_limit = P
@@ -7668,7 +7658,7 @@ def _harness_ctx_value(values, key: str) -> str:
     """conf 값 — 비었거나 없으면 레지스트리 기본값(conf 표기 그대로)."""
     raw = values.get(key)
     if raw is None or not str(raw).strip():
-        return _load_local_conf().default_for(key)
+        return conf_schema.default_for(key)
     return str(raw).strip()
 
 
@@ -7769,13 +7759,12 @@ def _conf_values(conf_path: Path, updates) -> dict[str, str]:
     """local.conf 값에 `updates`(None·빈 값은 줄 삭제)를 덮은 제안 값 — 옛 키가 남았거나 들어오면 멈춘다.
 
     저장(`pm_update.apply_conf`)의 모든 반영 단계와 이 모듈의 반영이 같은 값 하나를 쓴다."""
-    module = _load_local_conf()
-    loaded = module.load(conf_path)
-    module.assert_no_legacy(loaded)
+    loaded = conf_store.load(conf_path)
+    conf_schema.assert_no_legacy(loaded)
     values = {key: value for key, value in loaded.values.items() if key not in (updates or {})}
     if updates:
         values.update({key: value for key, value in updates.items() if value})
-        module.assert_values_no_legacy(values, conf_path)
+        conf_schema.assert_values_no_legacy(values, conf_path)
     return values
 
 
@@ -7784,18 +7773,17 @@ def _harness_ctx_commit(dest_root: Path, values, changed: dict[str, tuple[str, s
 
     local.conf 쓰기 락 안에서 부른다(락을 다시 잡지 않는다). 쓰기 단계에서 멈추면 `HarnessCtxError.written`
     이 바꾼 파일을 적고 `write_stage` 가 참이다(바꾼 파일이 없어도 검사 거부가 아니다)."""
-    module = _load_local_conf()
-    record = {"schema": module.CTX_BUDGET_SCHEMA, "inputs": module.ctx_input_values(values),
+    record = {"schema": conf_schema.CTX_BUDGET_SCHEMA, "inputs": conf_schema.ctx_input_values(values),
               "applied_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
               "harnesses": entries}
     payload = (json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    record_relpath = module.CTX_BUDGET_RELPATH.as_posix()
+    record_relpath = conf_store.CTX_BUDGET_RELPATH.as_posix()
     try:
         if changed:
             _harness_ctx_write(dest_root, changed)
-        if _ctx_record_unchanged(dest_root / module.CTX_BUDGET_RELPATH, record):
+        if _ctx_record_unchanged(dest_root / conf_store.CTX_BUDGET_RELPATH, record):
             return tuple(changed)
-        if not _atomic_write_dest_bytes(dest_root, module.CTX_BUDGET_RELPATH, payload):
+        if not _atomic_write_dest_bytes(dest_root, conf_store.CTX_BUDGET_RELPATH, payload):
             raise HarnessCtxError([f"압축 한도 기록({record_relpath})을 쓰지 못했습니다."], written=tuple(changed))
     except HarnessCtxError as exc:
         failure = HarnessCtxError(exc.violations, written=exc.written)
@@ -7857,7 +7845,7 @@ def _ctx_record_unchanged(path: Path, record: dict) -> bool:
 
 
 def _ctx_basis_text(model: dict) -> str:
-    """모델 가용 한도의 출처 한 줄 (관리자 표시용) — 읽기가 확인한 출처 형식(`local_conf._CTX_BASIS_FORMS`)으로 고른다."""
+    """모델 가용 한도의 출처 한 줄 (관리자 표시용) — 읽기가 확인한 출처 형식(`conf_schema._CTX_BASIS_FORMS`)으로 고른다."""
     basis = model["basis"]
     if "auto_compact_threshold" in basis:
         return (f"Claude Code 조회 · 모델 창 {basis['model_window']:,} − 압축 예약 "
@@ -7867,7 +7855,7 @@ def _ctx_basis_text(model: dict) -> str:
         maximum = f" · 최대 {basis['max_context_window']:,}" if basis["max_context_window"] else ""
         return f"Codex 모델 목록 · 창 {window:,}{maximum} × {basis['percent']}%"
     limit = f"입력 한도 {basis['input']:,} · " if basis.get("input") else ""
-    return (f"{_load_local_conf()._ctx_model_name(model)} · {limit}창 {basis['context']:,} − 출력 "
+    return (f"{conf_schema._ctx_model_name(model)} · {limit}창 {basis['context']:,} − 출력 "
             f"{basis['output']:,} ({basis['source']})")
 
 
@@ -7879,14 +7867,13 @@ def ctx_budget_status(dest_root, values) -> dict:
     반영과 같은 판독으로 읽고 같음 규칙도 반영 재판독과 같다(`_harness_ctx_same`). 모델 한도를 조회하지
     않고 파일을 쓰지 않는다. 기록 오류는 설정 파일을 읽지 않은 error, 설정 파일을 읽거나 풀지 못하면
     그 도구만 error(사유는 그 파일과 원인)다."""
-    module = _load_local_conf()
     jsonc = _harness_ctx_jsonc_seam()
     result = {}
-    for harness in module.CTX_HARNESSES:
+    for harness in conf_schema.CTX_HARNESSES:
         relpath = HARNESS_CTX_FILES[harness]
         try:
-            record, entry = module._ctx_record_entry(dest_root, values, harness)
-        except module.CtxBudgetError as exc:
+            record, entry = conf_store._ctx_record_entry(dest_root, values, harness)
+        except conf_schema.CtxBudgetError as exc:
             result[harness] = {"status": "error", "reason": str(exc)}
             continue
         try:
@@ -7901,7 +7888,7 @@ def ctx_budget_status(dest_root, values) -> dict:
             if not _harness_ctx_same(present, actual, value):
                 mismatch.append({"path": dotted, "file": actual if present else None, "record": value})
         smallest = min(entry["models"], key=lambda model: model["C"])
-        result[harness] = {"status": "ok", **module._ctx_budget_view(record, entry, harness, None),
+        result[harness] = {"status": "ok", **conf_schema._ctx_budget_view(record, entry, harness, None),
                            "C": entry["C"], "basis_text": _ctx_basis_text(smallest),
                            "settings_mismatch": mismatch}
     return result
@@ -7914,7 +7901,7 @@ def _opencode_rows_left(models: dict, rows: list) -> bool:
     모델 목록 캐시 파일이 없으면 공급자 연결 여부를 알 수 없어 models.dev 공급자 모델도 빠진다 — 그때는
     원인을 공급자 연결 설정 없음 대신 캐시 부재와 그 경로로 적고, 미반영 줄에 opencode 를 한 번 실행해
     목록을 받으라는 처방을 더한다."""
-    rerun = _load_local_conf()._CTX_RERUN
+    rerun = conf_schema._CTX_RERUN
     catalog_path = _opencode_model_catalog_path()
     catalog_missing = not catalog_path.is_file()
     listed = {(row.get("provider"), row.get("id")) for row in rows if isinstance(row, dict)}
@@ -7936,7 +7923,7 @@ def _harness_ctx_entry(dest_root: Path, harness: str, values, found: list, model
     조회 행이 대상과 맞지 않거나(opencode 는 중복 없는 대상 모델의 부분집합, 그 밖은 정확히 1행) 설정
     형식이 받지 않는 값이면 `HarnessCtxError`."""
     rule = HARNESS_CTX_RULES[HARNESS_CTX_FILES[harness]]
-    positive = _load_local_conf()._ctx_positive
+    positive = conf_schema._ctx_positive
     if any(not isinstance(row, dict) or not isinstance(row.get("id"), str) or not isinstance(row.get("provider"), str)
            or not positive(row.get("C")) or not isinstance(row.get("basis"), dict)
            or (rule.model_limits and not positive(row["basis"].get("context"))) for row in found):
@@ -8046,7 +8033,7 @@ def _ctx_claude_query(root, autocompact) -> dict:
                         "request": {"subtype": "initialize", "hooks": {}, "skills": []}}, None),
         ("context", {"type": "control_request", "request_id": "ctx-context",
                      "request": {"subtype": "get_context_usage", "detail": "summary"}}, None)])
-    context, positive = responses["context"], _load_local_conf()._ctx_positive
+    context, positive = responses["context"], conf_schema._ctx_positive
     if (not positive(context.get("rawMaxTokens")) or not positive(context.get("autoCompactThreshold"))
             or not context["autoCompactThreshold"] < context["rawMaxTokens"]):
         raise ValueError("Claude Code 조회 응답에 모델 창·압축 기준이 없습니다")
@@ -8133,7 +8120,7 @@ def _ctx_codex_capacity(root, documents, models) -> list:
     basis = {"context_window": rows[0].get("context_window"), "max_context_window": rows[0].get("max_context_window"),
              "model_context_window": config.get("model_context_window"),
              "percent": rows[0].get("effective_context_window_percent")}
-    positive = _load_local_conf()._ctx_positive
+    positive = conf_schema._ctx_positive
     if (not positive(basis["context_window"]) or not positive(basis["percent"]) or basis["percent"] > 100
             or any(basis[key] is not None and not positive(basis[key])
                    for key in ("max_context_window", "model_context_window"))):
@@ -8200,7 +8187,7 @@ def _ctx_opencode_capacity(root, documents, models) -> list:
     """opencode 대상 모델마다 C = min(원본 input, context − 실효 출력) — models.dev 캐시 행이 없으면
     OpenAI 호환(Ollama) 주소의 모델 정보. 공급자 연결 설정이 없는 모델(`_ctx_opencode_unconnected`)은
     조회하지 않고 행을 내지 않는다."""
-    output_max, positive = _ctx_opencode_output_max(), _load_local_conf()._ctx_positive
+    output_max, positive = _ctx_opencode_output_max(), conf_schema._ctx_positive
     catalog_path = _opencode_model_catalog_path()
     catalog = json.loads(fs.read_bytes_shared(catalog_path).decode("utf-8")) if catalog_path.is_file() else {}
     if not isinstance(catalog, dict):
@@ -8561,9 +8548,8 @@ def _print_harness_ctx_apply(dest_root: Path) -> None:
     local.conf 에 값 공급을 잃는 옛 키가 남아 있으면 반영하지 않고 한 줄로 알린다 — 이 단계는
     파일을 다 깐 뒤의 후속이고, 이름 이동은 pm-update(`migrate_renamed_conf_keys`)가 하며 그 실행이
     이어서 반영한다(pm_update 의 반영 단계와 같은 처분)."""
-    module = _load_local_conf()
-    remaining = module.blocking_legacy(
-        module.load(Path(dest_root) / ".project_manager" / "local.conf").legacy)
+    remaining = conf_schema.blocking_legacy(
+        conf_store.load(Path(dest_root) / ".project_manager" / "local.conf").legacy)
     if remaining:
         print(f"  ⚠️ 하네스 설정 반영을 건너뜁니다 — local.conf 에 옛 키({', '.join(remaining)})가 "
               "남아 있습니다. pm-update 가 키 이름을 옮긴 뒤 반영합니다.")

@@ -31,6 +31,7 @@ from _harness_matrix import HARNESSES, HARNESS_ADAPTER_DIRS, HARNESS_ROOT_DOC
 from _textio import (
     dominant_newline_bytes, write_crlf, write_lf, write_matching_newlines,
 )
+from pm_engine.infra import conf_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -3151,7 +3152,7 @@ def test_reimport_drops_retired_conf_keys_and_keeps_custom_ones(
     assert "additional_reviewer.enabled" in out
 
     # 재병합 산출을 그대로 소비할 수 있다 — 되살아난 제거키가 없으니 로더가 멈추지 않는다.
-    local_conf = pm_import._load_local_conf()
+    local_conf = conf_store
     assert local_conf.load_checked_readable(pm_dir / "local.conf")["project.name"] == "New"
 
 

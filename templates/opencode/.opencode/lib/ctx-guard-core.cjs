@@ -14,7 +14,7 @@
 //
 // 모델: 사전 checkpoint 넛지 → native compaction → 사후 checkpoint 넛지.
 //
-// 임계값: 엔진 압축 한도 기록(local_conf.read_ctx_budget)의 적용 한도 E 와 `ctx.checkpoint_at_pct`/
+// 임계값: 엔진 압축 한도 기록(conf_store.read_ctx_budget)의 적용 한도 E 와 `ctx.checkpoint_at_pct`/
 //   `ctx.precompact_at_pct` = 적용 한도 대비 "쓴 %". 쓴% = used/limit * 100. computeCtxState 의 stop
 //   반환은 파리티를 위해 유지하고, plugin 은 stop 밴드를 최종 checkpoint 안내로만 흡수한다(차단·marker
 //   없음). 기록 부재·손상·입력 불일치와 세션 모델(`provider/model`) 불일치는 toast 로 알린다.
@@ -142,7 +142,7 @@ function loadLocalConf(root) {
   return conf;
 }
 
-// ── 압축 한도 기록 읽기 (엔진 local_conf.read_ctx_budget) ─────────────────────
+// ── 압축 한도 기록 읽기 (엔진 conf_store.read_ctx_budget) ─────────────────────
 // 기록 형식·local.conf 입력 비교는 엔진 한 벌이다 — JS 에서 다시 구현하지 않고 Python 으로 읽는다.
 // 반환은 {budget: {E, checkpoint_at_pct, precompact_at_pct, warning, …}} 또는 {error: 문구}.
 function readBudget(conf, root, sessionModel) {
@@ -152,11 +152,11 @@ function readBudget(conf, root, sessionModel) {
 from pathlib import Path
 root=Path(sys.argv[1]).resolve()
 sys.path.insert(0,str(root/".project_manager/tools"))
-from pm_engine.infra import repo_files
-leaf=repo_files.load_module(root/".project_manager/tools/local_conf.py","local_conf.py",allow_unverified=True,cache=True)
+from pm_engine.domain import conf_schema
+from pm_engine.infra import conf_store
 conf,model=json.loads(sys.argv[2])
-try: print(json.dumps({"budget":leaf.read_ctx_budget(root,conf,"opencode",model)}))
-except leaf.CtxBudgetError as exc: print(json.dumps({"error":str(exc)}))
+try: print(json.dumps({"budget":conf_store.read_ctx_budget(root,conf,"opencode",model)}))
+except conf_schema.CtxBudgetError as exc: print(json.dumps({"error":str(exc)}))
 `;
   const result = childProcess.spawnSync(candidate.command, [...candidate.prefixArgs, "-I", "-B", "-c", script,
     root, JSON.stringify([conf, sessionModel])], {

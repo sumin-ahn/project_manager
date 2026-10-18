@@ -28,6 +28,8 @@ from pathlib import Path
 
 import pytest
 
+from pm_engine.domain import conf_schema
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 OPENCODE_DRIVER = REPO / "templates" / "opencode" / ".opencode" / "pm_orch_opencode.py"
@@ -845,11 +847,11 @@ def test_model_listing_stops_on_lookup_failure(orch, tmp_path, monkeypatch):
 
 def test_reasoning_allowed_sources_partition_the_harnesses(orch, tmp_path):
     """정적 허용값 하네스와 모델별 허용값 하네스가 지원 하네스를 겹침 없이 나눈다."""
-    static = set(orch.REASONING_ALLOWED)
+    static = set(conf_schema.REASONING_ALLOWED)
     per_model = set(orch.PER_MODEL_REASONING_HARNESSES)
     assert not static & per_model
-    assert static | per_model == set(orch.HARNESS_CHOICES)
-    assert "opencode" not in orch.REASONING_ALLOWED, "opencode 정적 허용값 행이 남았다"
+    assert static | per_model == set(conf_schema.HARNESS_CHOICES)
+    assert "opencode" not in conf_schema.REASONING_ALLOWED, "opencode 정적 허용값 행이 남았다"
     for harness in orch.PER_MODEL_REASONING_HARNESSES:
         assert orch.MODEL_SOURCE[harness].parse == "opencode-verbose", harness
     assert orch.MODEL_SOURCE["opencode"].command == ("opencode", "models", "--verbose")

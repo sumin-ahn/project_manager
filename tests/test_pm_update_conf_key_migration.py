@@ -9,7 +9,7 @@
   - `write=False` 는 판정만이고, 재실행은 byte 를 바꾸지 않는다(멱등).
 
 키 이름을 테스트가 적지 않는다 — 무엇이 무엇으로 바뀌었는지의 정본은 엔진
-`local_conf.LEGACY_KEY_MAP` 이고 여기서는 그 표에서 꺼내 쓴다(적으면 rename 마다 이 파일이
+`conf_schema.LEGACY_KEY_MAP` 이고 여기서는 그 표에서 꺼내 쓴다(적으면 rename 마다 이 파일이
 같이 틀린다).
 """
 from __future__ import annotations
@@ -18,6 +18,9 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+
+from pm_engine.domain import conf_schema
+from pm_engine.infra import conf_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -30,13 +33,12 @@ def _load(name: str):
     return mod
 
 
-LOCAL_CONF = _load("local_conf")
 # 표에서 꺼낸 실 사례 — 이름이 바뀐 키 하나와 대체 없이 폐지된 키 하나.
 RENAMED, RENAMED_TO = next(
-    (old, new) for old, new in LOCAL_CONF.LEGACY_KEY_MAP.items() if new is not None)
+    (old, new) for old, new in conf_schema.LEGACY_KEY_MAP.items() if new is not None)
 RETIRED = next(
-    old for old, new in LOCAL_CONF.LEGACY_KEY_MAP.items()
-    if new is None and old not in LOCAL_CONF.NON_BLOCKING_LEGACY_KEYS)
+    old for old, new in conf_schema.LEGACY_KEY_MAP.items()
+    if new is None and old not in conf_schema.NON_BLOCKING_LEGACY_KEYS)
 
 
 def _conf(dest: Path, body: str) -> Path:
@@ -47,7 +49,7 @@ def _conf(dest: Path, body: str) -> Path:
 
 
 def _values(path: Path) -> dict[str, str]:
-    return LOCAL_CONF.load(path).values
+    return conf_store.load(path).values
 
 
 def test_a_renamed_key_moves_with_its_value_and_the_old_line_is_gone(tmp_path):

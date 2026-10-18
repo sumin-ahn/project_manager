@@ -47,7 +47,7 @@ from typing import Callable, NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import console, fs, repo_files  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -334,18 +334,9 @@ def _default_python() -> str:
     return str(cand) if cand.exists() else sys.executable
 
 
-def _load_local_conf():
-    """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다 (board 사본 동형)."""
-    return _load_module_from_path(
-        Path(__file__).resolve().parent / "local_conf.py", "local_conf.py",
-        verifier=_verify_engine_rev, cache=True,
-        cache_key=f"_project_manager_local_conf:{Path(__file__).resolve().parent}",
-    )
-
-
 def local_config() -> dict[str, str]:
     """per-clone local.conf 를 KEY=value 로 읽는다 (없으면 빈 dict). board.py 와 동일 포맷."""
-    return _load_local_conf().load_checked_readable(LOCAL_CONF)
+    return conf_store.load_checked_readable(LOCAL_CONF)
 
 
 # ── 회귀 명령 해소 (per-repo) ──────────────────────────────────

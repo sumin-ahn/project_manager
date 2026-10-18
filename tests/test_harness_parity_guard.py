@@ -149,7 +149,7 @@ HARNESS_TABLES: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
         "CLI 형식 — 세션 감지 마커 env 이름이 하네스마다 다르다", HARNESS_NAMES),
     ("pm_relay.py", "MODEL_SOURCE"): (
         "CLI 형식 — 모델 값의 원천(별칭·사용자 config·실조회)이 CLI 마다 다르다", HARNESS_NAMES),
-    ("pm_relay.py", "REASONING_ALLOWED"): (
+    ("conf_schema.py", "REASONING_ALLOWED"): (
         "CLI 형식 — reasoning 정적 허용집합이 CLI 마다 다르다(미지원값 fail-loud 용 · opencode 는 "
         "모델별 variants 를 조회하므로 행이 없다)", ("claude", "codex")),
     ("pm_relay.py", "_RUNTIME_ROLE_CONFIG_BUILDERS"): (

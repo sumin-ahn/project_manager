@@ -47,6 +47,7 @@ from pathlib import Path
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.domain import conf_schema  # noqa: E402
 from pm_engine.infra import repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
@@ -261,30 +262,15 @@ def unused_delegate_profiles(
     }
 
 
-# operational token-key → local.conf 키. 규칙(uppercase→lowercase)으로 유도할 수 없다 —
-# conf 표기가 dot notation 이라 세그먼트 경계가 토큰 이름에 남아 있지 않다(`PROJECT_NAME` 은
-# `project.name` 이고 `OPENCODE_PRO_MODEL` 은 `harness.opencode.pro_model`). 힌트가 실재하지 않는
-# 키를 제시하면 채택자가 그 키를 conf 에 적고도 해소되지 않으므로 표로 고정한다.
-_OPERATIONAL_CONF_KEYS: dict[str, str] = {
-    "PROJECT_NAME": "project.name",
-    "PROJECT_TAGLINE": "project.tagline",
-    "PROJECT_ROOT": "project.root",
-    "PY": "runtime.py",
-    "TEST_CMD": "test.cmd",
-    "DATE": "project.date",
-    "OPENCODE_PRO_MODEL": "harness.opencode.pro_model",
-}
-
-
 def _local_conf_key(token_key: str) -> str:
     """operational token-key → local.conf 키 — 진단 힌트가 실재하지 않는 키를 제시하지 않게.
 
-    고정 표 두 개를 본다 — operational(`_OPERATIONAL_CONF_KEYS`)과 역할별 모델 토큰
+    고정 표 두 개를 본다 — operational(`conf_schema.OPERATIONAL_CONF_KEYS`)과 역할별 모델 토큰
     (`DELEGATE_MODEL_CONF_KEYS`·`DELEGATE_MODEL_DEVELOPER`→`delegate.developer.model`). 둘 다
     없는 토큰은 lowercase 로 떨어뜨린다(신설 토큰이 표에 안 실린 경우의 최소 힌트).
     """
-    if token_key in _OPERATIONAL_CONF_KEYS:
-        return _OPERATIONAL_CONF_KEYS[token_key]
+    if token_key in conf_schema.OPERATIONAL_CONF_KEYS:
+        return conf_schema.OPERATIONAL_CONF_KEYS[token_key]
     return DELEGATE_MODEL_CONF_KEYS.get(token_key, token_key.lower())
 
 

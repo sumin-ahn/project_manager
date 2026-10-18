@@ -99,7 +99,8 @@ from typing import Callable, Iterator, NamedTuple, Sequence
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import console, fs, repo_files  # noqa: E402
+from pm_engine.domain import conf_schema  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
@@ -561,7 +562,7 @@ ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY = "additional_reviewer.idle_timeout"
 ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY = "additional_reviewer.progress_signal"
 
 # 알려진 reviewer CLI의 **실행 파일 + 옵션 계약**. 함수 밖 선언이라 새 CLI/형식 추가가 판정 코드
-# 분기로 번지지 않는다. attr 값은 동적 로드한 pm_relay의 공개 상수명이다.
+# 분기로 번지지 않는다. attr 값은 `conf_schema` 의 진행 신호 상수명이다.
 _REVIEWER_PROGRESS_CONTRACTS = {
     "codex": {
         "default": "PROGRESS_SIGNAL_PLAINTEXT",
@@ -1007,18 +1008,9 @@ _RESOLVE_GATE_NO_RESIDUAL_GUIDANCE = (
 # ── 설정 ──────────────────────────────────────────────────────────────────
 
 
-def _load_local_conf():
-    """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다 (board 사본 동형)."""
-    return _load_module_from_path(
-        Path(__file__).resolve().parent / "local_conf.py", "local_conf.py",
-        verifier=_verify_engine_rev, cache=True,
-        cache_key=f"_project_manager_local_conf:{Path(__file__).resolve().parent}",
-    )
-
-
 def _conf_default(key: str) -> str | None:
-    """이 conf 키의 엔진 기본값 — 정본은 `local_conf.KEY_REGISTRY` 다(선언이 없으면 None)."""
-    return _load_local_conf().default_for(key)
+    """이 conf 키의 엔진 기본값 — 정본은 `conf_schema.KEY_REGISTRY` 다(선언이 없으면 None)."""
+    return conf_schema.default_for(key)
 
 
 def _conf_default_int(key: str) -> int:
@@ -1029,7 +1021,7 @@ def _conf_default_int(key: str) -> int:
 def local_config(repo: Path | None = None) -> dict[str, str]:
     """per-clone local.conf 를 KEY=value 로 읽는다 (없으면 빈 dict). board.py 와 동일 포맷."""
     path = (repo / ".project_manager" / "local.conf") if repo is not None else LOCAL_CONF
-    return _load_local_conf().load_checked_readable(path)
+    return conf_store.load_checked_readable(path)
 
 
 def _local_config_for_repo(repo: Path) -> dict[str, str]:
@@ -1292,9 +1284,7 @@ def _normalized_reviewer_key(argv: list[str]) -> str:
     return re.sub(r"[^a-z0-9_.-]", "_", executable) or "reviewer"
 
 
-def _reviewer_progress_signal(
-    reviewer_cmd: str, conf: dict[str, str], relay
-) -> str:
+def _reviewer_progress_signal(reviewer_cmd: str, conf: dict[str, str]) -> str:
     """실행 파일 basename과 그 CLI의 **옵션 계약** 또는 명시 설정으로 진행 신호를 판정한다.
 
     이름만 같거나 스트리밍처럼 보이는 플래그만 있다는 이유로 추론하지 않는다. 알려진 실행 파일의
@@ -1303,24 +1293,24 @@ def _reviewer_progress_signal(
     """
     explicit = (conf.get(ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY) or "").strip()
     if explicit:
-        if explicit in relay.PROGRESS_SIGNAL_KINDS:
+        if explicit in conf_schema.PROGRESS_SIGNAL_KINDS:
             return explicit
         print(
             f"경고: local.conf {ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY}={explicit!r} 은 "
-            f"{sorted(relay.PROGRESS_SIGNAL_KINDS)} 중 하나가 아님 — argv 형식 판정 사용.",
+            f"{sorted(conf_schema.PROGRESS_SIGNAL_KINDS)} 중 하나가 아님 — argv 형식 판정 사용.",
             file=sys.stderr,
         )
     try:
         argv = _split_reviewer_argv(reviewer_cmd)
     except ValueError:
-        return relay.PROGRESS_SIGNAL_NONE
+        return conf_schema.PROGRESS_SIGNAL_NONE
     if not argv:
-        return relay.PROGRESS_SIGNAL_NONE
+        return conf_schema.PROGRESS_SIGNAL_NONE
 
     executable = _normalized_reviewer_key(argv)
     contract = _REVIEWER_PROGRESS_CONTRACTS.get(executable)
     if contract is None:
-        return relay.PROGRESS_SIGNAL_NONE
+        return conf_schema.PROGRESS_SIGNAL_NONE
 
     def option_value(name: str) -> str | None:
         for index, token in enumerate(argv[1:], start=1):
@@ -1333,11 +1323,11 @@ def _reviewer_progress_signal(
 
     for flag, signal_attr in contract["flags"].items():
         if flag in argv[1:]:
-            return getattr(relay, signal_attr)
+            return getattr(conf_schema, signal_attr)
     for (option, expected), signal_attr in contract["options"].items():
         if option_value(option) == expected:
-            return getattr(relay, signal_attr)
-    return getattr(relay, contract["default"])
+            return getattr(conf_schema, signal_attr)
+    return getattr(conf_schema, contract["default"])
 
 
 def reviewer_profile(reviewer_cmd: str, conf: dict[str, str] | None = None):
@@ -1359,7 +1349,7 @@ def reviewer_profile(reviewer_cmd: str, conf: dict[str, str] | None = None):
         legacy_wall_key=ADDITIONAL_REVIEWER_TIMEOUT_KEY,
     )
     return profile._replace(
-        progress_signal=_reviewer_progress_signal(reviewer_cmd, conf, relay)
+        progress_signal=_reviewer_progress_signal(reviewer_cmd, conf)
     )
 
 
@@ -4854,9 +4844,8 @@ def _read_local_config(path: Path) -> dict[str, str]:
 
     판독 실패는 **삼키지 않는다**(`load_strict`) — 호출부가 그 예외로 fail-closed 하므로, 빈 conf
     로 강등하면 보호 선언을 확인하지 못한 채 나간다."""
-    module = _load_local_conf()
-    result = module.load_strict(path)
-    module.assert_no_legacy(result)
+    result = conf_store.load_strict(path)
+    conf_schema.assert_no_legacy(result)
     return result.values
 
 

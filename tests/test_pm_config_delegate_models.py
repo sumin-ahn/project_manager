@@ -31,6 +31,7 @@ from _fake_opencode import OLLAMA_LISTING, install_fake_opencode, path_with
 from _manager_home import tree_snapshot
 from _textio import utf8_child_env
 from _win_skip import posix_bash_supported
+from pm_engine.domain import conf_schema
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -87,7 +88,7 @@ def _empty_path(tmp_path: Path) -> dict:
 
 def test_every_supported_harness_is_declared_in_the_model_source_table(relay):
     """지원 하네스와 모델 원천 표가 같은 집합이다 — 원천 없는 하네스를 남기지 않는다."""
-    assert tuple(relay.MODEL_SOURCE) == relay.HARNESS_CHOICES
+    assert tuple(relay.MODEL_SOURCE) == conf_schema.HARNESS_CHOICES
 
 
 def test_an_alias_harness_answers_from_the_declared_table(relay):

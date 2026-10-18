@@ -945,8 +945,8 @@ _CODEX_HARD_SOURCE = "templates/codex/.codex/agents/developer-hard.toml"
 # 하네스 판정 입력은 **인스턴스 상대 좌표**다(상류 경로 아님) — 계획의 dest 좌표.
 _CODEX_HARD_CARD = ".codex/agents/developer-hard.toml"
 # 추론 필드가 있는 두 형식(claude·codex)의 허용값 — 렌더가 그대로 싣는지 재는 기대값이다. 렌더는
-# 이 값을 넘겨받지 않고 같은 tools/ 의 `pm_relay.REASONING_ALLOWED` 를 직접 읽는다(두 값이 같은지는
-# `test_reasoning_allowed_is_read_from_sibling_pm_relay` 가 확인한다).
+# 이 값을 넘겨받지 않고 같은 tools/ 의 `pm_relay.reasoning_allowed`(설정 어휘 `conf_schema.REASONING_ALLOWED`)를
+# 직접 읽는다(`test_reasoning_allowed_is_read_from_sibling_pm_relay` 가 확인한다).
 _REASONING_LADDER = ("low", "medium", "high", "xhigh", "max")
 
 
@@ -1291,7 +1291,6 @@ def test_reasoning_allowed_is_read_from_sibling_pm_relay():
     relay = module._load_relay()
     assert module._load_relay() is relay, "pm_relay 를 렌더마다 새로 읽는다"
     assert relay.reasoning_allowed("claude", "opus", cwd=REPO, env={}) == _REASONING_LADDER
-    assert relay.REASONING_ALLOWED == _load("pm_relay").REASONING_ALLOWED
     tree = ast.parse((TOOLS / "pm_render.py").read_text(encoding="utf-8"))
     literals = {
         node.value for node in ast.walk(tree)
@@ -1382,8 +1381,7 @@ def test_reasoning_allowed_read_fails_loud_on_sibling_rev_mix(isolated_tools):
 @pytest.mark.parametrize(("relay_edit", "error"), [
     (lambda text: re.sub(r"^def reasoning_allowed\b", "def _retired_reasoning_allowed", text,
                          count=1, flags=re.MULTILINE), AttributeError),
-    (lambda text: text + "\nREASONING_ALLOWED = None\n", AttributeError),
-], ids=["attribute-missing", "malformed"])
+], ids=["attribute-missing"])
 def test_reasoning_allowed_missing_or_malformed_fails_loud(isolated_tools, relay_edit, error):
     """허용값 함수가 없거나 표 형식이 틀린 pm_relay 사본이면 예외로 멈춘다(빈 값으로 바꿔 통과시키지 않는다).
 

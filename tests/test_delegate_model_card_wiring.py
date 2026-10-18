@@ -341,7 +341,7 @@ def _write_local_conf(dest_root: Path, text: str) -> Path:
     return path
 
 
-# claude·codex 카드가 받는 추론 허용값(`pm_relay.REASONING_ALLOWED` 의 두 하네스 공통 값). 실 경로
+# claude·codex 카드가 받는 추론 허용값(`conf_schema.REASONING_ALLOWED` 의 두 하네스 공통 값). 실 경로
 # 테스트가 이 값을 `_render_text` 의 허용집합 확인에 통과시키므로, 엔진 허용집합이 바뀌면 여기서
 # red 가 난다. opencode 카드는 가짜 모델 목록이 각 모델에 같은 값을 variants 로 준다.
 _REASONING_LADDER = ("low", "medium", "high", "xhigh", "max")

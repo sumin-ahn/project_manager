@@ -2023,11 +2023,6 @@ SHARED_READ_EXCEPTIONS: dict[tuple[str, str], str] = {
         "합집합)일 수 있는 자리다 — 같은 문에서 `isinstance(sp, Path)` 로 갈라 경로일 때만 seam 을 "
         "지난다"
     ),
-    ("local_conf.py", "_sibling_literal"): (
-        "레지스트리 패턴 전개·선택지 파생이 형제 **소스 선언**을 AST 로 읽는 자리다 — 상태 파일이 "
-        "아니라 코드 텍스트라 원자 교체 경합의 대상이 아니고, 판정의 소비자는 never-block advisory "
-        "와 표시용 선택지다"
-    ),
 }
 
 

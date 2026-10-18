@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from pm_engine.domain import conf_schema
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -244,7 +246,7 @@ def test_init_ctx_budget_is_a_value_not_an_explanation(board, monkeypatch, tmp_p
 
 def test_harness_ctx_override_is_documented_in_the_registry(board):
     """하네스별 사용 한도 키의 설명 자리는 레지스트리다 — 키가 사라지지 않았음을 값으로 못박는다."""
-    conf_module = board._load_local_conf()
+    conf_module = conf_schema
     override = conf_module.key_spec("harness.claude.ctx_window_tokens")
     assert override is not None and override.description
     assert "사용 한도" in override.description

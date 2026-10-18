@@ -32,6 +32,9 @@ from pathlib import Path
 
 import pytest
 
+from pm_engine.domain import conf_schema
+from pm_engine.infra import conf_store
+
 from conftest import codex_auth_available, drop_codex_auth, make_codex_home, run_codex_exec
 
 # 런타임 smoke 와 헬퍼 공유(같은 tests/ 디렉토리·import) — adopter import·LLM env 격리·ticket 조회.
@@ -1932,9 +1935,9 @@ def test_ctx_record_override_matches_local_conf(tmp_path, harness):
 
     설치가 쓴 기록(사용 한도 200,000)에 극소 사용 한도를 덧붙인 뒤 `read_ctx_budget` 은 그 값을 E 로 내고
     세션 모델 경고가 없다. 기록의 모델 행·C·settings 는 그대로이고 Claude 설정 파일은 바이트가 같다."""
-    from test_harness_ctx_limits import _load, install_ctx_record
+    from test_harness_ctx_limits import install_ctx_record
 
-    local_conf = _load("local_conf")
+    local_conf = conf_store
     session_model = install_ctx_record(tmp_path, {f"harness.{harness}.ctx_window_tokens": "200000"}, harness)
     record_path = tmp_path / local_conf.CTX_BUDGET_RELPATH
     before = json.loads(record_path.read_text(encoding="utf-8"))["harnesses"][harness]
@@ -1949,7 +1952,7 @@ def test_ctx_record_override_matches_local_conf(tmp_path, harness):
 
     values = local_conf.load(tmp_path / ".project_manager" / "local.conf").values
     budget = local_conf.read_ctx_budget(tmp_path, values, harness, session_model)
-    compact_at = int(local_conf.ctx_input_values(values)["ctx.compact_at_pct"])
+    compact_at = int(conf_schema.ctx_input_values(values)["ctx.compact_at_pct"])
     assert (budget["E"], budget["P"], budget["warning"]) == (window, window * compact_at // 100, None)
     after = json.loads(record_path.read_text(encoding="utf-8"))["harnesses"][harness]
     assert {key: after[key] for key in ("models", "C", "settings")} == {

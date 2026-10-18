@@ -64,6 +64,7 @@ from typing import Callable, Iterator, NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.domain import conf_schema  # noqa: E402
 from pm_engine.infra import console, fs, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
@@ -173,18 +174,13 @@ BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 
 # ── 도메인 상수 ────────────────────────────────────────────────────────────
 
-HARNESS_CHOICES: tuple[str, ...] = ("claude", "codex", "opencode")
-ROLE_CHOICES: tuple[str, ...] = ("developer", "researcher", "architect", "code-reviewer")
 TIER_CHOICES: tuple[str, ...] = ("normal", "hard")
-# 티어(`--tier`·`delegate.<role>.hard.*`)를 갖는 역할 — 나머지 역할은 늘 normal 이다. 설정 키
-# 레지스트리(`local_conf`)도 이 표에서 hard 칸을 전개하므로 여기 말고 적는 자리가 없다.
-TIERED_ROLES: tuple[str, ...] = ("developer",)
 
 INTERNAL_REVIEW_ROLE = "code-reviewer"
 # 위임 라운드 없이 PM 이 직접 편집하는 티켓 등급 — 리뷰 라운드가 없으면 종결이 리뷰를 요구하지 않는다.
 PM_DIRECT_TIER = "pm-direct"
 # 추가 리뷰어(additional_reviewer) 산출이 회수되는 역할. 하네스로 위임되는 역할이 아니라 엔진이
-# 직접 쓰는 채널이라 `ROLE_CHOICES` 에는 없고 라운드 역할 집합에만 있다.
+# 직접 쓰는 채널이라 `conf_schema.ROLE_CHOICES` 에는 없고 라운드 역할 집합에만 있다.
 ADDITIONAL_REVIEWER_ROLE = "additional-reviewer"
 # 티켓 게이트 리뷰 채널 — 두 채널의 finding 은 같은 delta/disposition 표면에서 판정된다.
 REVIEW_ROLES: tuple[str, ...] = (INTERNAL_REVIEW_ROLE, ADDITIONAL_REVIEWER_ROLE)
@@ -557,8 +553,6 @@ OPENCODE_STALL_MARKER = "[opencode 첫-이벤트 stall:"
 # 위임 마스터 스위치 키(per-clone·**기본 ON**). "PM 이 위임을 해도 되는가" 하나만 판정하며 채널
 # (native/cross)로 갈리지 않는다 — 호출을 별도 동의 축으로 게이트하지 않는다.
 DELEGATE_ENABLED_KEY = "delegate.enabled"
-# 켜진 것으로 치는 값(소문자·앞뒤 공백 제거 뒤) — 빈 값은 미설정이라 기본 ON 이다(`_is_enabled`).
-DELEGATE_ENABLED_VALUES: tuple[str, ...] = ("true", "1", "yes", "on")
 
 # 표면-flat legacy 시간 노브(하네스 무관·기존 채택자 설정 보존). 하네스별 키
 # `harness.<name>.wall_timeout`/`.idle_timeout` 이 설정돼 있으면 그쪽이 이긴다(더 구체적인 선언).
@@ -844,7 +838,7 @@ class TerminalFixHarvestError(DelegateError):
 
 
 # PM 개발 프로세스에 참여하는 모든 역할은 자기 산출을 라운드 파일로 남긴다 — 라운드 파일명이
-# 허용하는 역할 집합이다(`ROLE_CHOICES` ⊆ 이 집합 · 불변식은 테스트가 고정).
+# 허용하는 역할 집합이다(`conf_schema.ROLE_CHOICES` ⊆ 이 집합 · 불변식은 테스트가 고정).
 TICKET_COPY_ROLES: frozenset[str] = frozenset(
     {"developer", "code-reviewer", "architect", "researcher", ADDITIONAL_REVIEWER_ROLE}
 )
@@ -3831,21 +3825,12 @@ def _load_additional_reviewer():
     )
 
 
-def _load_local_conf():
-    """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다 (board 사본 동형).
+def _conf_default_int(key: str) -> int:
+    """이 conf 키의 엔진 기본값(정수) — 선언이 없으면 `TypeError` 로 멈춘다.
 
     이 모듈은 conf **값**은 additional_reviewer 의 해소를 재사용하고, 키 **선언**(기본값)은
     레지스트리에서 직접 읽는다 — 기본값이 두 군데면 규칙이 둘이 된다."""
-    return _load_module_from_path(
-        Path(__file__).resolve().parent / "local_conf.py", "local_conf.py",
-        verifier=_verify_engine_rev, cache=True,
-        cache_key=f"_project_manager_local_conf:{Path(__file__).resolve().parent}",
-    )
-
-
-def _conf_default_int(key: str) -> int:
-    """이 conf 키의 엔진 기본값(정수) — 선언이 없으면 `TypeError` 로 멈춘다."""
-    return int(_load_local_conf().default_for(key))
+    return int(conf_schema.default_for(key))
 
 
 def _load_board():
@@ -7664,7 +7649,7 @@ def _is_enabled(conf: dict[str, str]) -> bool:
     raw = conf.get(DELEGATE_ENABLED_KEY, "").strip().lower()
     if not raw:
         return True
-    return raw in DELEGATE_ENABLED_VALUES
+    return raw in conf_schema.DELEGATE_ENABLED_VALUES
 
 
 # ── config 해소 (원자 tuple) ────────────────────────────────────────────
@@ -8797,7 +8782,7 @@ def _attached_record_reply(record: Mapping[str, object], raw_path: Path) -> str:
         reply = extract_reply(harness, _delegate_raw_stdout(content, raw_path))
     else:
         answer = _additional_reviewer_raw_answer(content)
-        if isinstance(harness, str) and harness in HARNESS_CHOICES:
+        if isinstance(harness, str) and harness in conf_schema.HARNESS_CHOICES:
             reply = extract_reply(harness, answer)
         else:
             # legacy/custom reviewer의 raw 회신 채널은 이미 최종 reply 텍스트다.
@@ -11795,7 +11780,7 @@ def native_advisory(harness: str | None, role: str) -> str | None:
     opencode OPENCODE)를 감지해 안내가 필요하면
     경고 문자열을 반환한다(호출부가 stderr 로 냄). 1차 판정은 어댑터 스킬 카드·이건 백스톱."""
     # 직접 호출 seam 에도 공개 하네스 도메인을 적용한다. 이 진단은 하네스 이름별 표현을 소유한다.
-    if harness not in HARNESS_CHOICES:
+    if harness not in conf_schema.HARNESS_CHOICES:
         return None
     pm_harness = _session_harness(os.environ)
     if pm_harness == harness:
@@ -12292,7 +12277,7 @@ def _cmd_ticket(argv: list[str]) -> int:
                 parser.error("code-reviewer 는 --cluster 로만 준비합니다(리뷰 단위 = 묶음)")
             if args.focus is not None and args.role != INTERNAL_REVIEW_ROLE:
                 parser.error("--focus 는 code-reviewer 준비 전용입니다")
-            tier = args.tier if (args.role in TIERED_ROLES and args.tier) else "normal"
+            tier = args.tier if (args.role in conf_schema.TIERED_ROLES and args.tier) else "normal"
             _reject_cross_role_prepare(args.role, tier, owner_conf)
             if args.reopen_ordinal is not None and args.reopen_ordinal < 1:
                 parser.error(
@@ -13333,7 +13318,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--role", required=True, choices=ROLE_CHOICES,
+    parser.add_argument("--role", required=True, choices=conf_schema.ROLE_CHOICES,
                         help="위임 역할(권한축 자동 매핑)")
     parser.add_argument("--prompt-file", default=None, metavar="PATH",
                         help="PM 이 만든 task 프롬프트 파일(자족·repo 경계 안). "
@@ -13342,7 +13327,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="위임 대상 작업공간(절대경로·모든 역할 필수)")
     parser.add_argument("--tier", default=None, choices=TIER_CHOICES,
                         help="developer 2티어(normal/hard·비-개발 역할 지정 시 usage error)")
-    parser.add_argument("--harness", default=None, choices=HARNESS_CHOICES,
+    parser.add_argument("--harness", default=None, choices=conf_schema.HARNESS_CHOICES,
                         help="CLI override(--model 동반 필수·원자 tuple)")
     parser.add_argument("--model", default=None, metavar="PROFILE",
                         help="CLI override(--harness 동반 필수)")
@@ -13394,7 +13379,7 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         ) from exc
     if resolved_cwd == resolved_cwd.parent:  # 파일시스템 루트(`/`·`C:\`)
         parser.error("--cwd 는 파일시스템 루트일 수 없다(작업공간 절대경로 요구·containment 우회 차단).")
-    if args.tier is not None and args.role not in TIERED_ROLES:
+    if args.tier is not None and args.role not in conf_schema.TIERED_ROLES:
         parser.error("--tier 는 developer 전용이다(비-개발 역할 지정 = usage error·무시 아님).")
     if args.cluster is not None:
         if args.role != INTERNAL_REVIEW_ROLE:
@@ -13576,7 +13561,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
 
     effective_ticket = args.ticket
 
-    tier = args.tier if (args.role in TIERED_ROLES and args.tier) else "normal"
+    tier = args.tier if (args.role in conf_schema.TIERED_ROLES and args.tier) else "normal"
     profile_source = "cli-override" if (args.harness and args.model) else "local-conf"
 
     # --cwd는 실행 타깃뿐 아니라 config/board 소유자를 정하는 명시 입력이다. 먼저 git 루트를

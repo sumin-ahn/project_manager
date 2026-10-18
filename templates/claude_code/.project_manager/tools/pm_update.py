@@ -74,7 +74,8 @@ from typing import NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import console, fs, repo_files  # noqa: E402
+from pm_engine.domain import conf_schema  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
@@ -257,8 +258,7 @@ def print_conf_migration_notice(dest_root: Path) -> None:
     local_conf = dest_root / ".project_manager" / "local.conf"
     if not local_conf.exists():
         return  # init 전 — 채택자 conf 가 아직 없다
-    module = _load_local_conf()
-    for line in module.migration_notice(module.load(local_conf)):
+    for line in conf_schema.migration_notice(conf_store.load(local_conf)):
         print(f"[pm_update] {line}")
 
 
@@ -750,23 +750,8 @@ def _entry_target_owned_flag(entry) -> bool:
     return bool(getattr(entry, "target_owned", False))
 
 
-def _load_local_conf():
-    """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다.
-
-    이 모듈의 다른 형제 로드와 같이 `allow_unverified=True` 다 — pm_update 는 **엔진 사본을 고치는
-    쪽**이라 형제 rev 불일치를 이유로 자기 실행을 막으면 그 사본을 고칠 수단이 사라진다. 갱신 중의
-    세대 혼합은 없다 — 전달 프로세스가 엔진 코드를 옮긴 뒤 완료 단계는 받은 갱신기의 새 프로세스가
-    같은 세대 형제만 적재해 실행한다(`_launch_completion`).
-    """
-    return _load_module_from_path(
-        Path(__file__).resolve().parent / "local_conf.py", "local_conf.py",
-        allow_unverified=True, cache=True,
-        cache_key=f"_project_manager_local_conf:{Path(__file__).resolve().parent}",
-    )
-
-
 def _read_local_conf(path: Path) -> dict[str, str]:
-    """local.conf → key=value dict (공용 로더 `local_conf.load` · **판정 없음**).
+    """local.conf → key=value dict (공용 로더 `conf_store.load` · **판정 없음**).
 
     apply 경로가 이 함수를 지난다 — 구표기 conf 를 가진 채택자도 **엔진 파일은 받아야** 안내대로
     고칠 수 있다. 그래서 여기서는 `assert_no_legacy` 를 부르지 않는다(값을 실제로 소비하는
@@ -778,7 +763,7 @@ def _read_local_conf(path: Path) -> dict[str, str]:
     """
     if not Path(path).is_file():
         return {}
-    return _load_local_conf().load(path).values
+    return conf_store.load(path).values
 
 
 def _atomic_copy2(source: Path, dest: Path) -> None:
@@ -4203,14 +4188,13 @@ def _commit_render_outputs(_dest_root: Path, outputs, _pm_import) -> tuple[tuple
 def _is_reasoning_profile_key(key: str) -> bool:
     """추론 값이 있는 프로필(위임 세트·대체 세트·추가 리뷰어)의 선택 축 키(`.harness`·`.model`·`.reasoning`)인가.
 
-    새 표를 두지 않는다: 레지스트리에서 그 키의 축이 프로필 축(`local_conf._ROLE_SUFFIXES`)이고 같은 세트의
+    새 표를 두지 않는다: 레지스트리에서 그 키의 축이 프로필 축(`conf_schema._ROLE_SUFFIXES`)이고 같은 세트의
     `.reasoning` 키 축이 `reasoning` 인지로 판정한다. 하네스·모델만 바꿔도 남은 추론 값이 그 모델 밖이 될 수
     있어 셋 다 건다."""
-    local_conf = _load_local_conf()
-    spec = local_conf.key_spec(key)
-    if spec is None or spec.choices not in local_conf._ROLE_SUFFIXES:
+    spec = conf_schema.key_spec(key)
+    if spec is None or spec.choices not in conf_schema._ROLE_SUFFIXES:
         return False
-    reasoning = local_conf.key_spec(f"{key.rsplit('.', 1)[0]}.reasoning")
+    reasoning = conf_schema.key_spec(f"{key.rsplit('.', 1)[0]}.reasoning")
     return reasoning is not None and reasoning.choices == "reasoning"
 
 
@@ -4222,10 +4206,9 @@ def _reasoning_values(conf: Mapping[str, str]) -> list[tuple[str, str, str, str 
     filled = [(key, value) for key, value in conf.items() if (value or "").strip()]
     if not filled:
         return []
-    local_conf = _load_local_conf()
     found: list[tuple[str, str, str, str | None]] = []
     for key, value in filled:
-        spec = local_conf.key_spec(key)
+        spec = conf_schema.key_spec(key)
         if spec is None or spec.choices != "reasoning":
             continue
         profile = key.rsplit(".", 1)[0]
@@ -5338,24 +5321,23 @@ def migrate_renamed_conf_keys(effective_dest: Path, *, write: bool) -> dict[str,
     conf_path = Path(effective_dest) / ".project_manager" / "local.conf"
     if not conf_path.is_file():
         return {}
-    module = _load_local_conf()
     if not write:
-        result = module.load(conf_path)
-        updates = module.rename_updates(result)
+        result = conf_store.load(conf_path)
+        updates = conf_schema.rename_updates(result)
         if not updates:
             return {}
         moved = {old: new for old, new in result.legacy.items()
                  if new is not None and old in updates}
     else:
         with _local_conf_write_lock(conf_path):
-            result = module.load(conf_path)
-            updates = module.rename_updates(result)
+            result = conf_store.load(conf_path)
+            updates = conf_schema.rename_updates(result)
             if not updates:
                 return {}
             moved = {old: new for old, new in result.legacy.items()
                      if new is not None and old in updates}
             _load_pm_import()._write_conf_keys_locked(conf_path, updates)
-            remaining = module.rename_updates(module.load(conf_path))
+            remaining = conf_schema.rename_updates(conf_store.load(conf_path))
             if remaining:
                 raise RuntimeError(
                     f"local.conf 키 이동 실패: 잔존 키={', '.join(remaining)}; 파일={conf_path}")
@@ -5363,7 +5345,7 @@ def migrate_renamed_conf_keys(effective_dest: Path, *, write: bool) -> dict[str,
     print(f"{prefix}local.conf 키 이름 {len(moved)}개 이동{' 예정' if not write else ''} — "
           "갱신이 바꾼 이름이라 갱신이 옮긴다(남은 % 는 쓴 % 로, 공통 사용 한도는 "
           "하네스마다 같은 값으로).")
-    for line in module.migration_lines(moved):
+    for line in conf_schema.migration_lines(moved):
         print(f"  {line}")
     return moved
 
@@ -5754,8 +5736,7 @@ def apply_harness_ctx_limits(effective_dest: Path, *, write: bool) -> bool:
     (`HarnessCtxError`)은 설정 파일을 쓰지 않고 멈춘다 — 호출부가 rc 1 로 끝내 upstream.rev 기록에
     닿지 않는다. 그 밖의 실패는 그대로 올라간다."""
     prefix = "[dry-run] 하네스 설정 반영 예정" if not write else "  ✓ 하네스 설정 반영"
-    local_conf = _load_local_conf()
-    remaining = local_conf.blocking_legacy(local_conf.load(
+    remaining = conf_schema.blocking_legacy(conf_store.load(
         Path(effective_dest) / ".project_manager" / "local.conf").legacy)
     if remaining:
         print(f"{'[dry-run] ' if not write else ''}하네스 설정 반영을 건너뛴다 — local.conf 에 "

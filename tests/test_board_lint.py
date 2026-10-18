@@ -27,6 +27,8 @@ import pytest
 
 from _git_fixture import init_git_repo
 from _win_skip import _can_symlink
+from pm_engine.domain import conf_schema
+from pm_engine.infra import conf_store
 from conftest import ensure_product_slot
 
 REPO = Path(__file__).resolve().parents[1]
@@ -4211,8 +4213,8 @@ def test_fresh_init_conf_has_no_missing_required(board, monkeypatch, tmp_path):
     board._write_init_local_conf()
 
     assert board.lint_local_conf_required() == []
-    conf_module = board._load_local_conf()
-    assert conf_module.missing_required(conf_module.load(pm / "local.conf").values) == ()
+    conf_module = conf_schema
+    assert conf_module.missing_required(conf_store.load(pm / "local.conf").values) == ()
 
 
 # ── local.conf 판독 실패 lint (`local-conf-unreadable` · T-0918·X-5) ────────

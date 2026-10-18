@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+from pm_engine.domain import conf_schema
+
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -619,7 +621,7 @@ def test_done_ticket_write_is_refused_loudly(external, monkeypatch, tmp_path, ca
 
 def test_every_process_role_is_a_round_role(pd, rounds_seam):
     """(f) PM 프로세스 참여 역할 ⊆ 라운드 역할 — 채널이 늘면 여기서 걸린다."""
-    assert set(pd.ROLE_CHOICES) <= set(rounds_seam.ROLES)
+    assert set(conf_schema.ROLE_CHOICES) <= set(rounds_seam.ROLES)
     assert ROLE in rounds_seam.ROLES
     assert "researcher" in rounds_seam.ROLES
     assert set(pd.REVIEW_ROLES) <= set(rounds_seam.ROLES)

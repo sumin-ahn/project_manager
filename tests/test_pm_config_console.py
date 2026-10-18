@@ -983,6 +983,21 @@ def test_model_guidance_shows_declared_alias_members(pc, capsys):
     assert "high" in out and "claude-opus-5" in out
 
 
+def test_model_guidance_without_injected_conf_reads_the_real_local_conf(
+        pc, capsys, monkeypatch, tmp_path):
+    """콘솔 `[m]` 경로(conf 주입 없음)는 실 local.conf 의 alias 선언을 읽는다(T-0964)."""
+    conf = tmp_path / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True)
+    conf.write_text("delegate.model_alias.high=opus, claude-opus-5\n", encoding="utf-8")
+    monkeypatch.setattr(pc, "REPO", tmp_path)
+    fake = _FakePmImport(installed=("claude",))
+
+    assert pc._print_delegate_model_guidance(pm_import=fake) == 0
+    out = capsys.readouterr().out
+
+    assert "high" in out and "claude-opus-5" in out
+
+
 def test_model_guidance_does_not_require_alias_declaration(pc, capsys):
     """alias 미선언은 정상 형상 — 목록을 위해 alias 를 만들라고 하지 않는다."""
     fake = _FakePmImport(installed=("claude",))

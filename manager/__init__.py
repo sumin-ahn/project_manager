@@ -17,7 +17,7 @@ from pathlib import Path
 PACKAGE_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_ROOT.parent
 # 관리자와 함께 배포되는 엔진 사본(제품 repo 의 canonical 트리). 프로젝트 사본의 엔진이 아니다 —
-# 옛 세대 사본의 `local_conf.py` 로 값을 읽으면 그 세대의 파싱 규칙에 끌려간다.
+# 옛 세대 사본의 설정 로더(`pm_engine.infra.conf_store`)로 값을 읽으면 그 세대의 파싱 규칙에 끌려간다.
 BUNDLED_TOOLS = REPO_ROOT / ".project_manager" / "tools"
 # 번들 엔진 패키지(`pm_engine`)는 일반 import 로 읽는다 — 경로 적재는 평면 모듈만 `repo_files.load_module`.
 if str(BUNDLED_TOOLS) not in sys.path:
@@ -57,7 +57,7 @@ class CallError(RuntimeError):
 
 
 def load_engine_module(filename: str):
-    """번들 엔진 모듈 하나를 로드한다 (`local_conf.py`·`pm_import.py`·`engine_rev.py`).
+    """번들 엔진 평면 모듈 하나를 로드한다 (`pm_import.py`·`engine_rev.py`).
 
     `allow_unverified=True` 는 형제 rev 대조를 포기한다는 뜻이 아니라, 관리자에는 대조 기준이
     될 baked rev 가 없다는 사실의 명시다 — 읽는 트리가 관리자와 함께 배포된 사본 하나뿐이라

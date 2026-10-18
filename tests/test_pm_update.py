@@ -25,6 +25,7 @@ import pytest
 
 from _manager_home import _known_ctx_installation
 from _win_skip import posix_mode_supported
+from pm_engine.domain import conf_schema
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -7920,7 +7921,7 @@ def _card_effort_line(text: str) -> str:
 def test_render_text_claude_cards_render_conf_reasoning(pm_update, tmp_path):
     """claude 카드 5장이 `_render_text` 실 경로로 conf 의 reasoning 을 `effort` 로 싣는다.
 
-    허용집합은 `pm_relay.REASONING_ALLOWED` 배선 그대로다(리터럴 주입 없음). 카드에 effort 가
+    허용집합은 `conf_schema.REASONING_ALLOWED` 배선 그대로다(리터럴 주입 없음). 카드에 effort 가
     없으면 서브에이전트는 PM 세션 effort 를 물려받아 conf 선언이 실행면에 닿지 않는다."""
     dest = tmp_path / "dest"
     _write_local_conf(dest, "project.name=Acme\n" + _ADOPTER0_DELEGATE_CONF)
@@ -8420,7 +8421,7 @@ def test_conf_apply_key_groups_select_steps(pm_update):
     세트·대체 세트·추가 리뷰어)의 하네스·모델·추론 키 전부다. 위임 세트 키는 렌더 입력 묶음에도 걸린다."""
     pm_import = pm_update._load_pm_import()
     render_keys = pm_update.render_input_conf_keys()
-    local_conf = pm_update._load_local_conf()
+    local_conf = conf_schema
     ctx_keys = set(local_conf.CTX_INPUT_KEYS)
     assert len(render_keys) == 22, sorted(render_keys)
     assert all(pm_import.is_harness_ctx_input_key(key) for key in ctx_keys)

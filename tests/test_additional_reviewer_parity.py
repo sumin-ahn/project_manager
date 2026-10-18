@@ -25,6 +25,9 @@ from pathlib import Path
 
 import pytest
 
+from pm_engine.domain import conf_schema
+from pm_engine.infra import conf_store
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -221,7 +224,7 @@ def test_retired_relay_symbols_are_gone(symbol):
 
 def test_no_reviewer_only_conf_keys():
     """리뷰어 전용 env·홈·필터·스위치 노브가 설정 표면에서 사라졌다 (대체 키 없음)."""
-    local_conf = _load("local_conf")
+    local_conf = conf_schema
 
     for key in ("additional_reviewer.enabled",
                 "additional_reviewer.denylist_extra",
@@ -257,7 +260,7 @@ def test_a_leftover_switch_value_changes_nothing(external, monkeypatch, tmp_path
     assert "additional_reviewer.enabled" not in source
 
     # 옛 값이 실제로 남은 conf 를 만든다 — true/false 어느 값이든 같은 정지 처방이다.
-    local_conf = _load("local_conf")
+    local_conf = conf_schema
     leftover_conf = tmp_path / f"local-{leftover}.conf"
     leftover_conf.write_text(
         f"additional_reviewer.enabled={leftover}\n"
@@ -266,7 +269,7 @@ def test_a_leftover_switch_value_changes_nothing(external, monkeypatch, tmp_path
         encoding="utf-8")
 
     with pytest.raises(local_conf.LegacyConfKeyError) as caught:
-        local_conf.load_checked_readable(leftover_conf)
+        conf_store.load_checked_readable(leftover_conf)
 
     assert caught.value.legacy == {"additional_reviewer.enabled": None}
     assert "`additional_reviewer.enabled` → 제거(대체 키 없음)" in str(caught.value)

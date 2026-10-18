@@ -22,7 +22,10 @@ import json
 import subprocess
 from pathlib import Path
 
-from . import CallError, ENGINE_LOCK, load_engine_module
+from pm_engine.cli import local_conf as local_conf_cli
+from pm_engine.domain import conf_schema
+
+from . import CallError, ENGINE_LOCK
 from . import registry, runner
 
 
@@ -129,7 +132,7 @@ class SettingsApi:
             # 세대의 산출로 절반만 그리지 않고, 무엇이 모자란지 말한다. 기준 세대는 번들 엔진이
             # 선언한 값이다(관리자가 숫자를 따로 들지 않는다).
             with ENGINE_LOCK:
-                expected = load_engine_module("local_conf.py").KEY_JSON_SCHEMA
+                expected = local_conf_cli.KEY_JSON_SCHEMA
             schema = document.get("schema")
             if not isinstance(schema, int) or schema < expected:
                 raise CallError(
@@ -205,7 +208,7 @@ class SettingsApi:
     def conf_reset(self, path: str, key: str) -> dict:
         """[기본값으로] — 레지스트리 기본값을 쓴다. 기본값이 없는 키는 되돌릴 자리가 없다."""
         with ENGINE_LOCK:
-            default = load_engine_module("local_conf.py").default_for(key)
+            default = conf_schema.default_for(key)
         if default is None:
             raise ValueError(
                 f"기본값이 선언되지 않은 키는 되돌릴 수 없다: {key} "
