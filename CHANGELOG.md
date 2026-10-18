@@ -22,6 +22,14 @@
 - 옛 슬롯 토큰(`<user>/<repo>_<N>`)으로 귀속된 진행 중 티켓은 `board.py migrate-identity --task <task>` 가 `<user>/<task>` 로 옮긴다. 다른 user 의 토큰은 그대로 두고 표준 오류로 목록만 낸다.
 - `worktree_pool.alloc` 은 `owner_task` 가 필수다(세션 명의 대여·같은 세션 재대여·브랜치 재부착 갈래 삭제). `create_slot` 의 `session` 인자를 지웠다.
 
+### Removed
+
+- **일회성 이관 명령 삭제** (v1.8.2 는 v1.8.0 을 거쳐야 갱신되고, 지운 명령은 v1.8.1 까지 있다).
+  - `board.py rounds migrate`(구 역할 절 → 라운드 파일 변환)를 지웠다. 명세에 구 역할 절(`<!-- pm-ticket-section:… -->`·봉인 주석)이 남은 board 는 v1.8.1 에서 이 명령을 먼저 실행한 뒤 올린다. 변환하지 않고 올리면 `board.py lint` 가 남은 절을 `legacy-growth-section`(차단)으로 보이고, 절 내용을 라운드 파일로 옮기거나 marker·봉인 주석 줄을 지워야 통과한다. 변환하지 않은 board 의 `tickets/.growth/`·구 위임 사본 장부는 엔진이 읽지 않는다.
+  - `board.py verified-at-backfill` 을 지웠다. 핀이 없는 현재-진실 문서는 `board.py verified-at-repin --repo self --page <문서>` 로 처음 핀을 쓴다.
+  - `un-migrated-overlay` lint 를 지웠다. `@render` 어댑터 본문은 갱신 때마다 다시 렌더되고, 남은 리터럴 토큰은 `render-leak`(차단)이 잡는다.
+  - `pm-update` 끝의 구 역할 절 안내를 지웠다. 같은 상태를 `legacy-growth-section` 이 보인다.
+
 ## [1.8.1] - 2026-10-16
 
 ### Fixed

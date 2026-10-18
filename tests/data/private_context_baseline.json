@@ -1,5 +1,5 @@
 {
-  "count": 385,
+  "count": 381,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -26,11 +26,6 @@
       {
         "count": 1,
         "hash": "4ad666b1e49e15cf661f54b6b4e5b54f42e63eddd317603f6229ecd2413bc99e",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "4e92ba1f7f2c9eb760fc262bb73a378a6c606a3bd4fde5867c1c311b7bdb9ae0",
         "kind": "decision_label"
       },
       {
@@ -431,11 +426,6 @@
       },
       {
         "count": 1,
-        "hash": "4e92ba1f7f2c9eb760fc262bb73a378a6c606a3bd4fde5867c1c311b7bdb9ae0",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
         "hash": "5b2f908738042754c98cf1d115457a1b3a2d6dd4e553db5faf2bc4406b35ec81",
         "kind": "decision_label"
       },
@@ -831,11 +821,6 @@
       {
         "count": 1,
         "hash": "4ad666b1e49e15cf661f54b6b4e5b54f42e63eddd317603f6229ecd2413bc99e",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "4e92ba1f7f2c9eb760fc262bb73a378a6c606a3bd4fde5867c1c311b7bdb9ae0",
         "kind": "decision_label"
       },
       {
@@ -1426,11 +1411,6 @@
       {
         "count": 1,
         "hash": "4ad666b1e49e15cf661f54b6b4e5b54f42e63eddd317603f6229ecd2413bc99e",
-        "kind": "decision_label"
-      },
-      {
-        "count": 1,
-        "hash": "4e92ba1f7f2c9eb760fc262bb73a378a6c606a3bd4fde5867c1c311b7bdb9ae0",
         "kind": "decision_label"
       },
       {

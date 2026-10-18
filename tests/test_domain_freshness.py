@@ -1110,9 +1110,6 @@ def test_page_selector_rejects_domain_symlink_to_repo_internal_non_domain_docume
     monkeypatch.setattr(board, "_load_domain_module", lambda: domain)
     selected = ".project_manager/wiki/domain/link.md"
 
-    with pytest.raises(board._VerifiedAtPageSelectionError, match="domain 문서가 아님"):
-        board.backfill_verified_at("cafe0001", pages=[selected])
-
     results = board.repin_verified_at(
         "cafe0001" + "0" * 32, "self", pages=[selected])
     assert len(results) == 1
@@ -1146,8 +1143,6 @@ def test_page_selector_rejects_symlink_loop_as_controlled_selection_error(
 
     with pytest.raises(board._VerifiedAtPageSelectionError, match="symlink loop"):
         board._verified_at_targets([selected])
-    with pytest.raises(board._VerifiedAtPageSelectionError, match="symlink loop"):
-        board.backfill_verified_at("cafe0001", pages=[selected])
 
     results = board.repin_verified_at(
         "cafe0001" + "0" * 32, "self", pages=[selected])
@@ -1193,7 +1188,7 @@ def test_page_selector_resolves_normal_domain_path_and_deduplicates_symlink_alia
     ids=["top-level-list", "top-level-scalar"],
 )
 def test_page_selector_converts_non_mapping_frontmatter_to_controlled_selection_error(
-        board, domain, monkeypatch, tmp_path, capsys, frontmatter, parsed_type):
+        board, domain, monkeypatch, tmp_path, frontmatter, parsed_type):
     """공용 파서 반환 계약은 유지하되 선택 경계가 non-mapping을 파일 지목 오류로 바꾼다."""
     wiki = tmp_path / ".project_manager" / "wiki"
     domain_dir = wiki / "domain"
@@ -1212,13 +1207,6 @@ def test_page_selector_converts_non_mapping_frontmatter_to_controlled_selection_
 
     parsed, _body = board.load_ticket(page)
     assert isinstance(parsed, parsed_type)
-    rc = board.cmd_verified_at_backfill(
-        SimpleNamespace(sha="cafe0001", dry_run=False, pages=[selected]))
-
-    assert rc != 0
-    err = capsys.readouterr().err
-    assert selected in err
-    assert "domain 문서 실소비 파싱 실패" in err
     results = board.repin_verified_at(full, "self", pages=[selected])
     assert len(results) == 1
     assert "error:enumeration:" in results[0][1]
@@ -1267,7 +1255,7 @@ def test_repin_indented_fence_in_block_scalar_preserves_content(
     )
     path.write_text(original, encoding="utf-8")
     monkeypatch.setattr(
-        board, "_verified_at_backfill_targets", lambda **_kwargs: [path])
+        board, "_verified_at_backfill_targets", lambda: [path])
 
     full = "cafe0001" + "0" * 32
     assert board.repin_verified_at(full, "upstream") == [(path, "updated")]
@@ -1311,7 +1299,7 @@ def test_repin_multiline_yaml_value_aborts_all_without_damage(
     multiline.write_text(multiline_original, encoding="utf-8")
     monkeypatch.setattr(
         board, "_verified_at_backfill_targets",
-        lambda **_kwargs: [good, multiline],
+        lambda: [good, multiline],
     )
 
     full = "cafe0001" + "0" * 32
@@ -1347,7 +1335,7 @@ def test_repin_aborts_all_when_result_is_unreadable_by_consumer_parser(
     invalid.write_text(invalid_original, encoding="utf-8")
     monkeypatch.setattr(
         board, "_verified_at_backfill_targets",
-        lambda **_kwargs: [good, invalid],
+        lambda: [good, invalid],
     )
 
     with pytest.raises(ValueError):
@@ -1425,7 +1413,7 @@ def test_repin_validation_failure_is_nonzero_and_changes_nothing(
     broken.write_text(broken_original, encoding="utf-8")
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(board, "_verified_at_backfill_targets",
-                        lambda **_kwargs: [good, broken])
+                        lambda: [good, broken])
     monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
 
     rc = board.main(["verified-at-repin", "--repo", "self", "--sha", pin])
@@ -1462,7 +1450,7 @@ def test_repin_write_failure_reports_changed_prefix_and_stops(
     for path in paths:
         write_lf(path, original)
     monkeypatch.setattr(board, "_verified_at_backfill_targets",
-                        lambda **_kwargs: paths)
+                        lambda: paths)
     real_fsync = board.os.fsync
     fsync_calls = 0
 
@@ -1495,7 +1483,7 @@ def test_repin_cli_write_failure_is_nonzero_and_names_changed_files(
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(board, "_repo_head_sha", lambda _repo=None: full)
     monkeypatch.setattr(board, "_verified_at_backfill_targets",
-                        lambda **_kwargs: paths)
+                        lambda: paths)
     real_fsync = board.os.fsync
     fsync_calls = 0
 

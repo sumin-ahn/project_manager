@@ -222,19 +222,17 @@ IDEA_STATUS_DIRS: tuple[str, ...] = ("open", "promoted", "killed")
 # mutation subcommand — dispatch 게이트가 이 집합에만 worktree 오실행 가드를 적용한다.
 # (idea/prefix 서브그룹은 `<group> <sub>` 점표기.) reid=ID 재부여·promote-scope=wiki family_scope
 # retag·refresh=파생 board.md 재생성(worktree refresh 는 정당 사용 없음·stray dashboard 방지)·
-# verified-at-backfill/repin=PM 홈 현재-진실 문서(architecture/status/domain) frontmatter 쓰기(
+# verified-at-repin=PM 홈 현재-진실 문서(architecture/status/domain) frontmatter 쓰기(
 # worktree 엔 그 문서가 없어 no-op 이나 PM 홈 실행이 설계 의도라 오실행 가드)·
-# rounds migrate=구 역할 절을 라운드 파일로 옮기고 구 장부/사본을 지우는 일회성 board 쓰기·
 # design=frontmatter `design:` 값 기록/갱신(tier와 같은 in-place writer).
 _MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
     "new", "promote", "claim", "complete", "discard", "reopen",
     "block", "unclaim", "unblock",
     "section-add", "tier", "design",
     "init", "migrate-identity", "promote-scope", "reid", "refresh",
-    "verified-at-backfill", "verified-at-repin",
+    "verified-at-repin",
     "idea new", "idea promote", "idea kill",
     "prefix rename", "prefix strip", "prefix merge", "prefix delete",
-    "rounds migrate",
     # cluster new=묶음 장부 생성 + 멤버 명세의 귀속 필드 쓰기(board 상태) ·
     # cluster new=고정 5단계 장부 쓰기.
     "cluster new",
@@ -265,7 +263,7 @@ _SIDECAR_SUBCOMMANDS: frozenset[str] = frozenset({
 # 서브그룹 이름 → 그 그룹 leaf 를 담은 argparse dest. 분류 키(`<group> <leaf>` 점표기)를 만드는
 # `_resolved_subcommand` 의 단일 표다 — 파서에 그룹을 더하면 여기에도 등재한다.
 _SUBCOMMAND_GROUP_DESTS: dict[str, str] = {
-    "idea": "idea_cmd", "prefix": "prefix_cmd", "rounds": "rounds_cmd",
+    "idea": "idea_cmd", "prefix": "prefix_cmd",
     "cluster": "cluster_cmd",
 }
 
@@ -8671,82 +8669,22 @@ def cmd_section_add(args: argparse.Namespace) -> int:
     return 0
 
 
-# ── 구 컨테이너(역할 절) → 라운드 파일 일회성 변환 ────────────────────────
+# ── 구 역할 절(명세 본문 marker) 탐지 ─────────────────────────────────────
 #
-# 라운드 사이드카 이전의 board 는 역할 산출을 명세 본문 안에 marker 로 감싸 누적했고
-# (`<!-- pm-ticket-section:start role=… -->` … `:end` + 봉인 줄), 그 옆에 성장 장부
-# `tickets/.growth/` 와 구 위임 사본 산출물(PM 홈 사본 장부·신뢰 사본·슬롯의 역할 세그먼트
-# 레이아웃)을 뒀다. `rounds migrate` 는 그 형상을 한 번에 라운드 파일로 옮기고 나머지를
-# **지운다** — 두 형식을 영구히 읽는 리더를 두지 않는 것이 이 명령의 존재 이유다. 변환 뒤
-# 명세엔 marker 가 남지 않으므로 `legacy-growth-section` lint 도 함께 꺼진다.
-#
-# 판정 문법은 구 엔진이 **실제로 쓴 줄**이다(아래 정규식). 산문이 backtick 으로 인용한 같은
-# 표기는 HTML 주석 줄이 아니라 걸리지 않는다.
+# 라운드 사이드카 이전의 board 는 역할 산출을 명세 본문 안에 marker 로 감싸 누적했다
+# (`<!-- pm-ticket-section:start role=… -->` … `:end` + 봉인 줄). 변환 명령은 v1.8.1 까지 있었고
+# 이 엔진에는 없다. 남은 marker 는 `legacy-growth-section` lint 가 차단으로 보인다.
 _LEGACY_SECTION_MARKER = "pm-ticket-section"
 _LEGACY_SEAL_MARKER = "pm-ticket-seal"
-_LEGACY_SECTION_LINE_RE = re.compile(
-    rf"\A<!-- {re.escape(_LEGACY_SECTION_MARKER)}:(start|end) "
-    r"role=([a-z][a-z0-9-]*) -->\r?\n?\Z"
-)
-_LEGACY_SEAL_LINE_RE = re.compile(
-    rf"\A<!-- {re.escape(_LEGACY_SEAL_MARKER)} role=([a-z][a-z0-9-]*) "
-    r"ordinal=(\d+) sha256=([0-9a-f]{64}) by=([a-z][a-z-]*) -->\r?\n?\Z"
-)
-# 구 성장 장부 디렉터리(jsonl + stamp) — 변환이 통째로 지운다.
-_LEGACY_GROWTH_LEDGER_DIRNAME = ".growth"
-# 그 장부의 union merge 선언에 딸린 배포 주석. 선언 바로 앞에 있을 때만 함께 걷는다.
-_LEGACY_GROWTH_ATTR_COMMENTS: tuple[str, ...] = (
-    "# 티켓 성장 장부 = append-only 권위 기록 — 서로 다른 PM 의 append 가 merge 에서 서로를",
-    "# 지우지 않도록 같은 union 드라이버로 양쪽 줄을 모두 보존한다.",
-)
-# 구 위임 사본 산출물 — PM 홈 장부·신뢰 사본 디렉터리, 그리고 슬롯 안 사본 루트.
-_LEGACY_TICKET_COPY_LEDGER_NAME = "ticket_copies.jsonl"
-_LEGACY_TICKET_COPY_TRUST_DIRNAME = "delegate-ticket-copy-trust"
-_LEGACY_TICKET_COPY_ROOT_RELS: tuple[str, ...] = (
-    ".project_manager", ".local", "delegate-ticket-copies")
-
-
-class _RoundsMigrationError(RuntimeError):
-    """변환을 계속하면 무엇을 지우는지 모르게 되는 상태 — 판독 불능 구 사본 장부."""
-
-
-class _LegacySection(NamedTuple):
-    """구 형식 역할 절 하나 — 라운드가 될 본문과 명세에서 지울 줄 범위(양끝 포함)."""
-
-    role: str
-    content: str
-    first_line: int
-    last_line: int
-
-
-class _LegacyCopyLedger(NamedTuple):
-    """구 사본 장부 판독 결과 — 삭제 전 확인이 필요한 행만 따로 센다."""
-
-    path: Path
-    rows: int
-    unharvested: tuple[str, ...]
-    unreadable: int
-
-
-class _RoundsMigrationTicket(NamedTuple):
-    """변환 계획 1건 — 명세 스냅샷·잘라낼 절·변환 후 본문."""
-
-    ticket: str
-    status: str
-    path: Path
-    body_before: str
-    body_after: str
-    sections: tuple[_LegacySection, ...]
 
 
 def _fenced_code_line_mask(lines: Sequence[str]) -> list[bool]:
     """줄마다 ``` 코드 펜스 안인지 (토글 줄 자체도 안쪽으로 센다).
 
-    문법을 문서화한 티켓은 예시 marker 를 펜스로 감싼다 — 그 예시를 데이터로 읽으면 문서
-    티켓이 변환 대상으로 오판되거나(없는 절을 찾다 실패) lint 가 예시 하나로 영영 red 가
-    된다. 짝이 맞지 않는 마지막 펜스(파일이 열린 채 끝남)는 안쪽으로 접는다 — 더 넓게
-    안전한 쪽이다. `_has_legacy_growth_markers`/`_legacy_growth_sections`(및 그걸 위임하는
-    lint)가 공유하는 시야다.
+    문법을 문서화한 티켓은 예시 marker 를 펜스로 감싼다 — 그 예시를 데이터로 읽으면 lint 가
+    예시 하나로 영영 red 가 된다. 짝이 맞지 않는 마지막 펜스(파일이 열린 채 끝남)는 안쪽으로
+    접는다 — 더 넓게 안전한 쪽이다. `_has_legacy_growth_markers`(및 그걸 위임하는 lint)의
+    시야다.
     """
     mask: list[bool] = []
     inside = False
@@ -8760,13 +8698,12 @@ def _fenced_code_line_mask(lines: Sequence[str]) -> list[bool]:
 
 
 def _has_legacy_growth_markers(body: str) -> bool:
-    """본문에 구 컨테이너 주석 **줄**이 있는가 (변환 대상·lint 판정의 공용 시야).
+    """본문에 구 컨테이너 주석 **줄**이 있는가 (lint 판정의 시야).
 
     후보는 **column 0** 의 주석 줄뿐이다 — 산문이 backtick 이나 인용부호 안에서 같은 표기를
-    설명하는 티켓이 실재한다(구 봉인 문법을 설명한 티켓). 그것을 데이터로 읽으면 변환은 없는
-    절을 찾다 실패하고, lint 는 변환 뒤에도 영영 red 로 남는다. 좁힌 시야는 구 엔진의 봉인
-    후보 판정과 같은 규칙이고, ``` 펜스로 감싼 문법 예시도 산문과 같이 데이터에서 뺀다
-    (`_fenced_code_line_mask`).
+    설명하는 티켓이 실재한다(구 봉인 문법을 설명한 티켓). 그것을 데이터로 읽으면 lint 가
+    정리 뒤에도 영영 red 로 남는다. 좁힌 시야는 구 엔진의 봉인 후보 판정과 같은 규칙이고,
+    ``` 펜스로 감싼 문법 예시도 산문과 같이 데이터에서 뺀다(`_fenced_code_line_mask`).
     """
     lines = body.splitlines()
     fenced = _fenced_code_line_mask(lines)
@@ -8775,511 +8712,6 @@ def _has_legacy_growth_markers(body: str) -> bool:
         for index, line in enumerate(lines)
         for marker in _LEGACY_GROWTH_MARKERS
     )
-
-
-def _legacy_growth_sections(body: str) -> list[_LegacySection]:
-    """구 역할 절을 **등장 순서대로** 뗀다 (문법 위반은 loud).
-
-    지울 범위에는 end marker 바로 다음 줄의 봉인이 포함된다 — 봉인은 절의 꼬리이지 명세
-    텍스트가 아니다. 문법을 벗어난 marker 줄은 변환에서 조용히 빠지면 안 되므로 그 티켓을
-    통째로 실패로 올린다(사람이 고친 뒤 재실행). ``` 펜스 안의 marker 는
-    `_has_legacy_growth_markers` 와 같은 시야로 건너뛴다(문법 예시를 절로 오인하지 않는다).
-    """
-    lines = body.splitlines(keepends=True)
-    fenced = _fenced_code_line_mask(lines)
-    sections: list[_LegacySection] = []
-    open_marker: tuple[str, int] | None = None
-    for index, line in enumerate(lines):
-        if fenced[index] or not line.startswith(f"<!-- {_LEGACY_SECTION_MARKER}:"):
-            continue
-        matched = _LEGACY_SECTION_LINE_RE.fullmatch(line)
-        if matched is None:
-            raise ValueError(
-                "구 역할 절 marker 문법 위반 — marker 줄은 "
-                "`<!-- pm-ticket-section:start|end role=<역할> -->` 하나여야 한다: "
-                f"{line.strip()}"
-            )
-        kind, role = matched.groups()
-        if kind == "start":
-            if open_marker is not None:
-                raise ValueError(
-                    f"구 역할 절 marker 중첩: role={open_marker[0]} 안에 role={role} start")
-            open_marker = (role, index)
-            continue
-        if open_marker is None:
-            raise ValueError(f"구 역할 절 end marker 짝 없음: role={role}")
-        start_role, start_index = open_marker
-        if role != start_role:
-            raise ValueError(
-                f"구 역할 절 marker 역할 불일치: start={start_role} · end={role}")
-        last_index = index
-        following = lines[index + 1] if index + 1 < len(lines) else ""
-        sealed = _LEGACY_SEAL_LINE_RE.fullmatch(following)
-        if sealed is not None and sealed.group(1) == role:
-            last_index = index + 1
-        sections.append(_LegacySection(
-            role=role,
-            content="".join(lines[start_index + 1:index]),
-            first_line=start_index,
-            last_line=last_index,
-        ))
-        open_marker = None
-    if open_marker is not None:
-        raise ValueError(f"구 역할 절 start marker 의 end 누락: role={open_marker[0]}")
-    return sections
-
-
-def _damaged_legacy_seal_line(body: str) -> str | None:
-    """문법을 벗어난 봉인 줄 하나 (없으면 None).
-
-    변환이 지우는 것은 **정확 문법**의 봉인뿐이다. 손상된 봉인이 남으면 그 티켓은 변환 뒤에도
-    lint red 라, 조용히 통과시키지 않고 실패로 올려 사람이 고치게 한다.
-    """
-    for line in body.splitlines(keepends=True):
-        if not line.startswith(f"<!-- {_LEGACY_SEAL_MARKER}"):
-            continue
-        if _LEGACY_SEAL_LINE_RE.fullmatch(line) is None:
-            return line.strip()
-    return None
-
-
-def _strip_legacy_sections(body: str, sections: Sequence[_LegacySection]) -> str:
-    """명세에서 절 블록과 남은 고아 봉인을 지운 본문 (절 밖 텍스트는 그 자리 그대로).
-
-    제거 자리에서 빈 줄이 겹치면 하나만 남긴다 — 앞뒤 텍스트가 각각 자기 빈 줄을 갖고 있어
-    블록만 걷으면 빈 줄이 둘로 남는다. 잘라낸 자리 밖의 바이트는 건드리지 않는다.
-    """
-    lines = body.splitlines(keepends=True)
-    drop: set[int] = set()
-    for section in sections:
-        drop.update(range(section.first_line, section.last_line + 1))
-    for index, line in enumerate(lines):
-        if index not in drop and _LEGACY_SEAL_LINE_RE.fullmatch(line) is not None:
-            drop.add(index)            # 절이 사라진 고아 봉인 — 명세에 남기지 않는다.
-    kept: list[str] = []
-    dropped_before = False
-    for index, line in enumerate(lines):
-        if index in drop:
-            dropped_before = True
-            continue
-        if dropped_before and not line.strip() and kept and not kept[-1].strip():
-            continue
-        dropped_before = False
-        kept.append(line)
-    return "".join(kept)
-
-
-def _rounds_migration_plan() -> tuple[list[_RoundsMigrationTicket], list[str]]:
-    """변환 대상 티켓과 실패 사유 목록 (읽기 전용).
-
-    대상 = 명세 본문에 구 marker 가 남은 티켓 전부다. done 을 포함한 전 상태와 draft 를 본다 —
-    변환 대상이 완료 티켓에 몰려 있고, 두 형식이 공존하는 상태를 남기지 않는 것이 목적이다.
-    """
-    plan: list[_RoundsMigrationTicket] = []
-    failures: list[str] = []
-    for status in (*STATUS_DIRS, ".drafts"):
-        for path in sorted((tickets_dir() / status).glob("T-*.md")):
-            loaded = load_ticket_soft(path)
-            if loaded is None:
-                failures.append(f"{path.name}: 명세 판독 실패(위 경고 참조)")
-                continue
-            fm, body = loaded
-            if not _has_legacy_growth_markers(body):
-                continue
-            ticket = str(fm.get("id") or path.stem)
-            try:
-                sections = _legacy_growth_sections(body)
-            except ValueError as exc:
-                failures.append(f"{ticket}: {exc}")
-                continue
-            damaged = _damaged_legacy_seal_line(body)
-            if damaged is not None:
-                failures.append(f"{ticket}: 구 봉인 줄 문법 위반 — {damaged}")
-                continue
-            if not sections:
-                failures.append(f"{ticket}: 절 없이 marker 표기만 남아 있다(손으로 확인 필요)")
-                continue
-            plan.append(_RoundsMigrationTicket(
-                ticket=ticket, status=status, path=path, body_before=body,
-                body_after=_strip_legacy_sections(body, sections),
-                sections=tuple(sections),
-            ))
-    return plan, failures
-
-
-def _legacy_growth_ledger_dir() -> Path:
-    """`tickets/.growth/` — 구 성장 장부(jsonl + stamp)의 고정 위치."""
-    return tickets_dir() / _LEGACY_GROWTH_LEDGER_DIRNAME
-
-
-def _is_legacy_growth_attr_line(line: str) -> bool:
-    """성장 장부 **전용** union 선언인가 — 장부 디렉터리를 패턴에 담은 줄만 본다.
-
-    `*.jsonl text eol=lf` 처럼 장부를 부수적으로 덮는 일반 선언은 대상이 아니다(그 선언이
-    지키는 것은 board 의 다른 엔진 텍스트다).
-    """
-    stripped = line.strip()
-    if not stripped or stripped.startswith("#"):
-        return False
-    return f"{_LEGACY_GROWTH_LEDGER_DIRNAME}/" in stripped.split()[0]
-
-
-def _legacy_growth_attr_cleanup(text: str) -> str | None:
-    """board `.gitattributes` 에서 성장 장부 선언을 걷어낸 본문 (변화 없으면 None).
-
-    엔진이 배포했던 주석 두 줄은 그 선언 **바로 앞에 있을 때만** 함께 걷는다 — 사용자가 쓴
-    주석을 선언과 묶어 지우지 않는다.
-    """
-    kept: list[str] = []
-    for line in text.splitlines(keepends=True):
-        if not _is_legacy_growth_attr_line(line):
-            kept.append(line)
-            continue
-        while kept and kept[-1].strip() in _LEGACY_GROWTH_ATTR_COMMENTS:
-            kept.pop()
-    updated = "".join(kept)
-    return updated if updated != text else None
-
-
-def _legacy_ticket_copy_ledger() -> _LegacyCopyLedger | None:
-    """PM 홈의 구 사본 장부 판독 (파일이 없으면 None).
-
-    판독 불능 행은 미회수와 같은 축으로 센다 — 무엇을 지우는지 못 읽는 장부를 조용히 지우는
-    것이 이 명령에서 가장 나쁜 방향이다.
-    """
-    path = LOCAL_DIR / _LEGACY_TICKET_COPY_LEDGER_NAME
-    if not path.is_file():
-        return None
-    try:
-        text = fs.read_text_shared(path, encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise _RoundsMigrationError(
-            f"구 사본 장부를 읽지 못했다: {path} ({exc}) — 삭제 대상을 확인할 수 없어 멈춘다"
-        ) from exc
-    rows = 0
-    unharvested: list[str] = []
-    unreadable = 0
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        rows += 1
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            unreadable += 1
-            continue
-        if not isinstance(row, dict):
-            unreadable += 1
-            continue
-        if row.get("harvested_at") is None:
-            unharvested.append(str(row.get("copy") or "(경로 미기록)"))
-    return _LegacyCopyLedger(
-        path=path, rows=rows, unharvested=tuple(unharvested), unreadable=unreadable)
-
-
-def _leased_slot_paths() -> tuple[Path, ...]:
-    """lease 장부의 leased 행이 가리키는 절대 슬롯 경로 (부재/손상/빈 slot → 제외).
-
-    `_active_slot_path` 와 *동형* 데이터-결합(worktree_pool 미import·stdlib json point-read).
-    거긴 이 세션의 행 하나를 고르고, 여기는 전수를 낸다 — 장부가 아는 슬롯 집합과 다른
-    해소(등록 슬롯·git 앵커)를 **값으로 대조**하는 쪽이 소비자다.
-    """
-    if not LEASES_FILE.exists():
-        return ()
-    try:
-        data = json.loads(fs.read_text_shared(LEASES_FILE, encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return ()
-    if not isinstance(data, dict):
-        return ()
-    rows = data.get("leases", [])
-    if not isinstance(rows, list):
-        return ()
-    paths: list[Path] = []
-    for row in rows:
-        if not isinstance(row, dict) or row.get("state") != "leased":
-            continue
-        slot = row.get("slot")
-        if slot:
-            paths.append(REPO / slot)
-    return tuple(paths)
-
-
-def _legacy_copy_slot_roots() -> tuple[Path, ...]:
-    """구 사본을 찾을 루트 — git 앵커 가드와 **같은 등록 판정**에 REPO 자신을 더한다.
-
-    등록 판정(lease 장부 + linked worktree + 이 PM 홈 소유)은 pool worktree 슬롯만 본다.
-    홈 자신을 가리키는 슬롯 행은 거기서 자연 탈락하므로 구 사본이 REPO 의
-    `.project_manager/.local/delegate-ticket-copies/` 에 남아도 순회·삭제 양쪽에서 조용히
-    빠진다 — REPO 아래 그 구 레이아웃이 실재하면 더한다(등록 슬롯에 이미 있으면 dedupe).
-
-    경고는 **값 대조**다: 장부가 아는 leased 슬롯 경로 중 등록 슬롯 집합에도 REPO 에도 없는
-    것이 있을 때만 낸다. "장부 파일이 있는데 등록 슬롯이 0" 이라는 존재-키 판정은 홈 자신이
-    슬롯 행인 형상에서 상시 오발화한다(그 행은 원래 등록 슬롯 집합에 안 들어간다).
-    """
-    slots = _registered_slot_paths(REPO)
-    covered = {path.resolve(strict=False) for path in slots}
-    covered.add(REPO.resolve(strict=False))
-    unresolved = [path for path in _leased_slot_paths()
-                  if path.resolve(strict=False) not in covered]
-    if unresolved:
-        print(f"  ⚠ 등록 슬롯 해소 누락 {len(unresolved)}건 — 리스 장부의 슬롯 "
-              f"({', '.join(sorted(str(p) for p in unresolved))})을 확인하지 못했다. "
-              "그 슬롯에 구 사본이 남아 있을 수 있다(직접 확인).", file=sys.stderr)
-    if REPO not in slots and REPO.joinpath(*_LEGACY_TICKET_COPY_ROOT_RELS).is_dir():
-        slots = (*slots, REPO)
-    return slots
-
-
-def _legacy_slot_copy_dirs() -> list[Path]:
-    """등록 슬롯에 남은 **구 레이아웃** 사본 디렉터리 전부.
-
-    구 레이아웃은 `<티켓>/<역할>/<run>/` 이고 현행은 `<티켓>/<run>/` 이다 — 역할 이름 한 마디가
-    구분자라, 역할 디렉터리만 지우면 현행 run 디렉터리는 그대로 남는다.
-    """
-    roles = set(_load_ticket_rounds().ROLES)
-    found: list[Path] = []
-    for slot in _legacy_copy_slot_roots():
-        root = slot.joinpath(*_LEGACY_TICKET_COPY_ROOT_RELS)
-        if not root.is_dir():
-            continue
-        for ticket_dir in sorted(root.iterdir()):
-            if not ticket_dir.is_dir() or ticket_dir.is_symlink():
-                continue
-            for child in sorted(ticket_dir.iterdir()):
-                if child.is_dir() and not child.is_symlink() and child.name in roles:
-                    found.append(child)
-    return found
-
-
-def _remove_legacy_copy_dir(directory: Path) -> None:
-    """구 사본 디렉터리 하나를 지우고 빈 껍데기 부모까지 걷는다."""
-    fs.force_rmtree(directory)
-    parent = directory.parent
-    try:
-        if parent.is_dir() and not any(parent.iterdir()):
-            parent.rmdir()
-    except OSError:
-        pass                        # 남은 빈 껍데기는 해가 없다(정리의 목적은 사본 부재).
-
-
-def _rounds_migration_reserve(item: _RoundsMigrationTicket) -> list[Path]:
-    """한 티켓의 절을 등장 순서대로 라운드 파일로 예약한다 (채번은 사이드카 seam 소유).
-
-    board_lock 은 seam 이 채번+생성 구간만 잡는다 — 그래서 이 함수는 락을 쥐지 않은 채
-    호출돼야 한다(board_lock 은 재진입이 없다).
-    """
-    rounds = _load_ticket_rounds()
-    created: list[Path] = []
-    for section in item.sections:
-        created.append(rounds.reserve_round(
-            tickets_dir(), item.ticket, section.role,
-            content=section.content, lock=board_lock(),
-        ))
-    return created
-
-
-def _rounds_migration_rewrite_spec(item: _RoundsMigrationTicket) -> str | None:
-    """명세에서 절 블록을 걷어낸다 — 쓰기 직전 재조회로 stale 덮어쓰기를 막는다.
-
-    반환은 skip 사유(없으면 None). frontmatter 는 **락 안에서 다시 읽은 값**을 쓴다(tier 같은
-    in-place writer 의 기록을 옛 스냅샷으로 덮지 않는다). 라운드 파일은 이미 예약된 뒤라
-    skip 은 loud 다 — 그 티켓만 사람이 다시 보게 하려는 것이지 조용히 지나가려는 게 아니다.
-    """
-    with board_lock():
-        try:
-            _status, current_path = find_ticket_for_mutation(item.ticket)
-        except FileNotFoundError:
-            return "재조회 시 없음(다른 writer 가 완료/삭제)"
-        if current_path != item.path:
-            return f"쓰기 직전 이동됨({_rel_to_repo(current_path)})"
-        fm, body = load_ticket(current_path)
-        if body != item.body_before:
-            return "쓰기 직전 본문 변경됨(동시 편집)"
-        dump_ticket_atomic(current_path, fm, item.body_after)
-    return None
-
-
-def _rounds_migration_deletions(
-        growth_dir: Path, attr_path: Path, attr_cleaned: str | None,
-        ledger: _LegacyCopyLedger | None, trust_dir: Path,
-        slot_dirs: Sequence[Path]) -> list[str]:
-    """삭제 대상 요약 줄 — 계획 출력과 적용 실행이 같은 목록을 본다."""
-    lines: list[str] = []
-    if growth_dir.is_dir():
-        # 구 장부는 평평하다(`<티켓>.jsonl` + stamp) — 직계만 센다(재귀 순회 seam 불요).
-        lines.append(f"{_rel_to_repo(growth_dir)} "
-                     f"(항목 {sum(1 for _ in growth_dir.iterdir())}개)")
-    if attr_cleaned is not None:
-        lines.append(f"{_rel_to_repo(attr_path)} 의 성장 장부 union 선언")
-    if ledger is not None:
-        lines.append(f"{_rel_to_repo(ledger.path)} ({ledger.rows}행 · 미회수 "
-                     f"{len(ledger.unharvested)}행 · 판독 불가 {ledger.unreadable}행)")
-    if trust_dir.is_dir():
-        lines.append(f"{_rel_to_repo(trust_dir)} "
-                     f"({sum(1 for _ in trust_dir.iterdir())}개)")
-    if slot_dirs:
-        lines.append(f"슬롯 구 레이아웃 사본 {len(slot_dirs)}개(역할 디렉터리)")
-    return lines
-
-
-def _board_gitattributes_text(path: Path) -> str:
-    """board `.gitattributes` 본문 (없거나 못 읽으면 빈 문자열·표기 보존 판독)."""
-    try:
-        if not path.is_file():
-            return ""
-        return fs.read_text_shared(path, encoding="utf-8", newline="")
-    except (OSError, UnicodeError):
-        return ""
-
-
-def _print_rounds_migration_plan(
-        plan: Sequence[_RoundsMigrationTicket], deletions: Sequence[str]) -> None:
-    """계획 출력 — 티켓별 라운드 파일명과 삭제 목록(쓰기 0 경로 전용).
-
-    파일명은 예약이 실제로 붙일 이름이다. 라운드가 이미 있는 티켓이면 그 뒤 번호가 되므로
-    현재 라운드 수를 시작점으로 센다.
-    """
-    rounds = _load_ticket_rounds()
-    for item in plan:
-        try:
-            start = len(rounds.load_rounds(
-                tickets_dir(), item.ticket, ticket_text=item.body_before))
-        except rounds.RoundsError:
-            start = 0                   # 판정은 적용 실행이 loud 하게 한다(계획은 표시만).
-        names = ", ".join(
-            rounds.round_filename(start + ordinal, section.role)
-            for ordinal, section in enumerate(item.sections, start=1)
-        )
-        print(f"  {item.ticket} ({item.status}/): {names}")
-    if deletions:
-        print("  삭제 대상:")
-        for line in deletions:
-            print(f"    - {line}")
-
-
-def cmd_rounds_migrate(args: argparse.Namespace) -> int:
-    """구 역할 절·성장 장부·구 위임 사본 산출물을 라운드 파일 형상으로 1회 변환한다.
-
-    절차: 계획 수집 → 미회수 게이트 → 티켓별 (라운드 예약 → 명세 재기록) → 장부·배포 선언
-    삭제 → board 커밋 1개 → PM 홈·슬롯의 구 사본 산출물 삭제. **멱등** 이다 — marker 도 잔여도
-    없는 board 에서 재실행하면 변경 0·rc 0 이다.
-
-    되돌림은 board 커밋 revert 다(라운드 파일 삭제 + 명세 복원). 구 사본 산출물 삭제는
-    비가역이라 **미회수 사본이 남아 있으면 멈춘다**(rc 1) — `--discard-unharvested` 만 그것을
-    함께 지운다. 변환하지 못한 티켓이 하나라도 있으면 rc 1 이다(남은 두 형식이 조용히
-    "완료" 로 보이지 않게).
-    """
-    dry_run = bool(getattr(args, "dry_run", False))
-    discard = bool(getattr(args, "discard_unharvested", False))
-    tag = "[dry-run] " if dry_run else ""
-    try:
-        plan, failures = _rounds_migration_plan()
-        ledger = _legacy_ticket_copy_ledger()
-        slot_dirs = _legacy_slot_copy_dirs()
-    except _RoundsMigrationError as exc:
-        print(f"[중단] {exc}", file=sys.stderr)
-        return 1
-
-    trust_dir = LOCAL_DIR / _LEGACY_TICKET_COPY_TRUST_DIRNAME
-    growth_dir = _legacy_growth_ledger_dir()
-    attr_path = board_root() / ".gitattributes"
-    attr_text = _board_gitattributes_text(attr_path)
-    attr_cleaned = _legacy_growth_attr_cleanup(attr_text) if attr_text else None
-    deletions = _rounds_migration_deletions(
-        growth_dir, attr_path, attr_cleaned, ledger, trust_dir, slot_dirs)
-
-    print(f"{tag}rounds migrate — 변환 대상 티켓 {len(plan)}건 · 라운드 파일 "
-          f"{sum(len(item.sections) for item in plan)}개")
-    for failure in failures:
-        print(f"  ⚠ 변환 불가 — {failure}", file=sys.stderr)
-
-    unresolved = list(ledger.unharvested) if ledger is not None else []
-    if ledger is not None and ledger.unreadable:
-        unresolved.append(f"(판독 불가 행 {ledger.unreadable}개)")
-    if unresolved:
-        if discard:
-            # 폐기해도 지우는 것은 **엔진이 소유한 자리**뿐이다 — 등록 슬롯 밖(옛 임시 트리 등)의
-            # 사본은 이 명령의 소유가 아니라 손대지 않는다. 목록을 내 그 사실이 숨지 않게 한다.
-            print(f"  ⚠ 구 사본 장부의 미회수 {len(unresolved)}건을 장부와 함께 폐기한다 "
-                  "(등록 슬롯 밖 경로의 파일은 지우지 않는다 — 아래 목록을 직접 확인하라).",
-                  file=sys.stderr)
-        else:
-            reason = (f"구 사본 장부에 미회수 {len(unresolved)}건이 남아 있다 — 삭제는 비가역이라 "
-                      "`--discard-unharvested` 없이는 진행하지 않는다")
-            print(f"{'  ⚠ ' if dry_run else '[중단] '}{reason}"
-                  f"{'(적용 실행은 여기서 rc 1 로 멈춘다)' if dry_run else ''}.",
-                  file=sys.stderr)
-        for copy_path in unresolved:
-            print(f"    {copy_path}", file=sys.stderr)
-        if not discard and not dry_run:
-            return 1
-
-    if not plan and not deletions:
-        print("  (변경 없음 — 이미 변환됨이거나 구 형상 잔여 없음)")
-        return 1 if failures else 0
-    if dry_run:
-        _print_rounds_migration_plan(plan, deletions)
-        print("[dry-run] 쓰기 0 — 적용하려면 --dry-run 없이 재실행.")
-        return 1 if failures else 0
-
-    rounds_module = _load_ticket_rounds()
-    commit_paths: list[Path] = []
-    migrated = 0
-    for item in plan:
-        try:
-            created = _rounds_migration_reserve(item)
-        except rounds_module.RoundsError as exc:
-            failures.append(f"{item.ticket}: 라운드 예약 실패")
-            print(f"  ⚠ {item.ticket}: 라운드 예약 실패 — {exc}", file=sys.stderr)
-            continue
-        skip = _rounds_migration_rewrite_spec(item)
-        if skip is not None:
-            failures.append(f"{item.ticket}: 명세 재기록 skip")
-            print(f"  ⚠ {item.ticket}: 명세 재기록 skip — {skip} "
-                  f"(예약된 라운드 {len(created)}개는 그대로 남는다)", file=sys.stderr)
-            continue
-        migrated += 1
-        print(f"  {item.ticket} ({item.status}/): 라운드 {len(created)}개 · 절 제거")
-        # draft 는 board-git 미커밋 authoring 영역이다 — 그 명세도 라운드도 promote 가 낸다.
-        if item.status != ".drafts":
-            commit_paths.extend(created)
-            commit_paths.append(item.path)
-
-    if growth_dir.is_dir():
-        fs.force_rmtree(growth_dir)
-        commit_paths.append(growth_dir)
-        print(f"  삭제: {_rel_to_repo(growth_dir)}")
-    if attr_cleaned is not None:
-        _write_text_keeping_newlines(attr_path, attr_cleaned)
-        commit_paths.append(attr_path)
-        print(f"  정리: {_rel_to_repo(attr_path)} (성장 장부 union 선언 제거)")
-
-    ready = True
-    if commit_paths:
-        ready = _rounds_mutation_sync_paths(
-            f"rounds migrate: {migrated} tickets · .growth removed", commit_paths)
-
-    # 구 사본 삭제는 비가역이라 board 커밋이 실제로 서지 못했으면(ready=False) 보류한다 —
-    # 커밋 실패 사유(board-git 이상)를 사람이 보기 전에 되돌릴 수 없는 삭제까지 끝내지
-    # 않는다. 라운드 파일·명세는 이미 디스크에 있으므로 재실행(멱등)이 마저 지운다.
-    if ready:
-        if ledger is not None:
-            ledger.path.unlink(missing_ok=True)
-            print(f"  삭제: {_rel_to_repo(ledger.path)}")
-        if trust_dir.is_dir():
-            fs.force_rmtree(trust_dir)
-            print(f"  삭제: {_rel_to_repo(trust_dir)}")
-        for directory in slot_dirs:
-            _remove_legacy_copy_dir(directory)
-        if slot_dirs:
-            print(f"  삭제: 슬롯 구 레이아웃 사본 {len(slot_dirs)}개")
-    elif ledger is not None or trust_dir.is_dir() or slot_dirs:
-        print("  ⚠ board 커밋 실패 — 구 사본 삭제 보류(재실행 시 계속 진행한다).",
-              file=sys.stderr)
-
-    print(f"변환 완료 {migrated}건{_board_git_mutation_state_suffix(ready)}")
-    return 1 if failures else 0
 
 
 def cmd_tier(args: argparse.Namespace) -> int:
@@ -15423,11 +14855,10 @@ def _render_managed_relpaths() -> set[str]:
 def _manifest_render_relpaths() -> set[str]:
     """engine.manifest 의 `@render` dest 경로 집합 (repo 기준 relpath·POSIX·local.conf 게이트 무관).
 
-    순수 manifest 파생 — render-leak(`_render_managed_relpaths` 가 트리성격 게이트 후 호출)과
-    un-migrated-overlay(`_collect_overlay_adapter_files` 가 게이트 없이 어댑터 본문 스코프로 호출)의
-    **공유 소스**다. 두 소비처가 같은 출하 인벤토리(engine.manifest `@render` = 프레임워크가 렌더-
-    관리하는 어댑터 본문 트리)에서 스코프를 파생하므로, 새 하네스·새 어댑터 항목이 manifest 에
-    등재되면 양쪽에 자동 편입된다(손-열거 0). config·hooks·엔진 코드·`node_modules` 등 런타임/설정
+    순수 manifest 파생 — render-leak(`_render_managed_relpaths` 가 트리성격 게이트 후 호출)의
+    스코프 소스다. 출하 인벤토리(engine.manifest `@render` = 프레임워크가 렌더-관리하는 어댑터
+    본문 트리)에서 스코프를 파생하므로, 새 하네스·새 어댑터 항목이 manifest 에 등재되면 자동
+    편입된다(손-열거 0). config·hooks·엔진 코드·`node_modules` 등 런타임/설정
     파일은 `@render` 가 아니라 `@source`(byte-copy)/미등재라 이 집합에 애초에 안 든다 — 스코프가
     구조적으로 어댑터 본문으로 좁혀진다. pm_update.read_manifest 재사용(`_load_pm_update_module`
     seam). manifest 부재·로드 실패는 빈 set(검사 대상 0·무발화)."""
@@ -15719,164 +15150,6 @@ def lint_render_leak() -> list[tuple[str, str, str]]:
     return issues
 
 
-# ── un-migrated overlay 검출 (advisory) ─────────────
-# free-form(채택자 손편집 산문)의 canonical home 은 root doc(§프로젝트 고유 제약)·
-# `pm_role.local.md`(§보호 영역)이고, pm_import 의 FILL 채널이 거기서 전담한다. 따라서
-# 어댑터 .md 는 free-form-free 여야 한다(토큰 0). 채택자가 *아직* 마이그레이션을 안 했으면 어댑터
-# .md 에 리터럴 `{{PROTECTED_PATHS}}` 류가 잔존한다 — 이 lint 가 그 신호를 표면화한다(
-# "un-migrated 검출"). render-leak(blocking·@render 산출물 한정)과 별개·상보: render-leak 은
-# *활성화된* render path 의 미해소 토큰을, 이 lint 는 어댑터 본문의 미마이그레이션 토큰 잔존을 본다.
-#
-# **advisory only** — 마이그레이션 누락은 push 결함이 아니라 채택자 운영 ritual 신호(
-# "push-block 아님·advisory")라 `_ADVISORY_LINT_KINDS` 에 등재(`--gate` 미차단). free-form 3종
-# (로컬 `_UNMIGRATED_FREEFORM_KEYS` 디커플)만 본다 — operational 토큰(`{{PROJECT_NAME}}`
-# 등)은 import sed/local.conf 채널이라 별개. graceful: 어댑터 파일/디렉토리 부재 시 finding 0.
-
-# 어댑터 스캔 축은 **손-열거하지 않고 출하 인벤토리에서 파생**한다.
-#   스코프 축 = engine.manifest 의 `@render` dest 경로 (`_manifest_render_relpaths` — render-leak
-#      과 공유하는 출하 인벤토리): `.claude/agents`·`.claude/skills`·`.opencode/agents`·`.codex/
-#      agents`·`.agents/skills`(codex dual) 등 *프레임워크가 렌더-관리하는 어댑터 본문*
-#      트리. 옛 하드코딩(`.claude`/`.opencode` 두 하네스 × `*.md`)은 세 번째 하네스(codex)의 `.codex/
-#      agents/*.toml` 을 구조적으로 못 봤다 — manifest 파생이라 새 `@render` 항목이 자동 편입된다.
-#      **런타임/설정 파일 제외가 구조적**: `.opencode/node_modules`(플러그인 deps)·adopter-owned
-#      `.codex/config.toml`·`.codex/hooks.json`·`.claude/settings.json`·엔진 코드는 `@render` 가 아닌
-#      `@source`(byte-copy)/미등재라 스코프에 애초에 안 든다 — 무관 파일 이중 read·토큰 오탐 봉쇄.
-#      스코프 = 인스턴스 `@render`(engine.manifest) **∪ 은퇴 채널**(`_RETIRED_OVERLAY_GLOBS` — 현행
-#      manifest 엔 없지만 구 채택자 잔존분). **add-harness guest 어댑터도 인스턴스 manifest 에
-#      `@render` 로 등재**(add_harness)되므로 이 인스턴스-manifest 파생이 guest 를 자연 커버
-#      한다(templates/ 불요) — flavor-manifest 보강(`_all_harness_body_relpaths`)은 출하
-#      인스턴스에 templates/ 가 없어 항상 ∅였다(false-green). manifest 등재로 대체·판정원 단일화(제거).
-#   파일 필터 축 = 텍스트 판정 (`pm_update._is_text_source` seam
-#      `_load_pm_update_module` 재사용): 옛 확장자 열거(`*.md`·`SKILL.md`)는 codex `.toml` 같은
-#      새 형식을 놓쳤다. 확장자 대신 "텍스트로 읽히는가"만 본다 — render-leak(blocking)이 이미 쓰는
-#      그 판정을 공유(네 번째 판정 지점 방지).
-# root 문서(CLAUDE.md·AGENTS.md 등)는 *제외*: 채택자가 통째로 손편집하는 instance-owned
-# scaffold 라 `@render` 가 아니다(free-form 의 canonical home) — manifest 미등재라 스코프 밖. 거기의
-# raw 토큰은 "미마이그레이션"이 아니라 "채택자가 아직 안 채움"이라 이 lint 의 오분류 대상이 아니다.
-
-# free-form 3종 토큰 — un-migrated-overlay lint 가 어댑터 본문에서 스캔하는 리터럴 토큰 집합.
-# pm_render 의 free-form value-fill 기계(FREEFORM_KEYS·overlay)는  로 제거됐으므로,
-# 이 lint 는 그 심볼에 의존하지 않고 자체 로컬 튜플로 검출 대상을 정의한다(디커플·단일 책임).
-# pm_import.FREE_FORM_TOKENS(FILL 채널·canonical home 전담)와 동일 집합을 bare key 로 본다.
-_UNMIGRATED_FREEFORM_KEYS: tuple[str, ...] = (
-    "PROJECT_CONSTRAINTS",
-    "PROTECTED_PATHS",
-    "USER_GATE_ITEMS",
-)
-
-# 은퇴 어댑터 채널 (닫힌 역사적 집합) — manifest `@render` 파생 스코프의 **보완**.
-# @render 파생은 *현행* manifest 만 본다.
-# manifest 에 미등재지만, pm_update 는 채택자의 기존 파일을 **삭제하지 않는다**(이 프로젝트는 채택자
-# 파일 삭제를 자동화하지 않는다 — 삭제는 사용자 위임·[[deletion-delegate-to-user]]). 그래서 구 채택자
-# 트리엔 `.opencode/command/*.md` 가 잔존할 수 있고, 그 안의 un-migrated free-form 토큰이 @render-only
-# 스코프에선 조용히 누락된다.
-#
-# ⚠️ 이 목록의 손-열거는 **decay 클래스가 아니다**: 그 클래스는
-# "새 값(새 하네스·새 확장자)을 열거가 못 따라온다" 였는데, 은퇴 채널은 정의상 **닫힌 과거 집합**이라
-# 새 하네스 축과 무관하게 **늘어나지 않는다**. 새 채널은 manifest(파생)로, 은퇴 채널만 여기로 — 둘은
-# 직교한다. glob 형태는 은퇴 당시 형상 그대로 박제(`.opencode/command/*.md`·비재귀·직속 `.md`).
-_RETIRED_OVERLAY_GLOBS: tuple[tuple[str, str], ...] = (
-    (".opencode/command", "*.md"),
-)
-
-
-def _collect_overlay_adapter_files() -> list[Path]:
-    """un-migrated 검사 대상 어댑터 본문 — engine.manifest `@render` 경로 ∪ 은퇴 채널 하위 텍스트 파일.
-
-    **스코프·파일필터 두 축을 출하 인벤토리에서 파생**한다(손-열거 아님):
-      - 스코프 축 = `_manifest_render_relpaths`(**인스턴스 engine.manifest** `@render` dest 경로·
-        render-leak 공유) **∪ `_RETIRED_OVERLAY_GLOBS`**(은퇴 채널·닫힌 과거 집합·구 채택자 잔존분·
-        codex R3). manifest 항목이 디렉토리면 rglob, 파일이면 그 파일(render-leak 의 dir/file 처리
-        동형); 은퇴 채널은 은퇴 당시 glob(`.opencode/command/*.md`·직속). **add-harness guest 어댑터도
-        인스턴스 manifest 에 `@render` 로 등재**(add_harness)되므로 이 host-manifest 파생이
-        guest 를 자연 커버한다 — templates/ 불요(옛 flavor-manifest 보강 `_all_harness_body_relpaths`
-        는 인스턴스에 templates/ 가 없어 무력이라 제거·판정원 단일화). 런타임/설정(`node_modules`·
-        `config.toml`·`settings.json`·lib·plugins·엔진 코드)은 `@render` 도 은퇴 채널도 아니라 스코프에
-        애초에 안 든다 — 네임스페이스-전체 rglob 의 무관 파일 read·오탐 봉쇄.
-      - 파일 필터 축 = `pm_update._is_text_source`(확장자 열거 대신 텍스트 판정) — codex `.codex/
-        agents/*.toml` 같은 새 형식도 편입. 로드 실패 시 필터 생략 → 호출부 read 의 넓힌 except 가
-        바이너리를 흡수(graceful degrade·render-leak 동형).
-    root 문서(CLAUDE.md·AGENTS.md)는 `@render`·은퇴 채널 모두 미등재(instance-owned scaffold)라 스코프
-    밖. manifest 부재·스코프 0(신규)이면 finding 0."""
-    pm_update = _load_pm_update_module()
-    candidates: list[Path] = []
-    # 인스턴스 engine.manifest @render (host 어댑터 + add-harness 가 등재한 guest·
-    #    render-leak 공유·손-열거 0) — @render 파생이라 런타임/설정 제외 불변식 유지.
-    for managed_rel in sorted(_manifest_render_relpaths()):
-        target = REPO / managed_rel
-        if target.is_dir():
-            candidates.extend(sorted(p for p in target.rglob("*") if p.is_file()))
-        elif target.is_file():
-            candidates.append(target)
-    # 은퇴 채널 = 닫힌 과거 집합 (manifest 미등재·구 채택자 잔존 가능·직교·안 늘어남)
-    for rel, pattern in _RETIRED_OVERLAY_GLOBS:
-        d = REPO / rel
-        if d.is_dir():
-            candidates.extend(sorted(p for p in d.glob(pattern) if p.is_file()))
-    # 텍스트 필터 + dedupe (두 스코프 잠재 중복·재열거 방지·바이너리는 텍스트 판정 공유로 제외)
-    files: list[Path] = []
-    seen: set[Path] = set()
-    for p in candidates:
-        if p in seen:
-            continue
-        seen.add(p)
-        if pm_update is not None and not pm_update._is_text_source(p):
-            continue
-        files.append(p)
-    return files
-
-
-def lint_unmigrated_overlay() -> list[tuple[str, str, str]]:
-    """어댑터 본문에 리터럴 free-form 토큰이 잔존하면 un-migrated 신호 (kind=`un-migrated-overlay`).
-
-    `_ADVISORY_LINT_KINDS` 등재 → `lint --gate` 미차단(advisory "push-block 아님"). 마이그레이션
-    누락은 채택자 운영 ritual 신호이지 출하 결함이 아니므로 visibility 만 제공한다.
-
-    검사 (정적·shipped tree 스캔):
-      - 어댑터 본문(`_collect_overlay_adapter_files` — engine.manifest `@render` 경로 하위 텍스트
-        파일·확장자 무관·codex `.toml` 포함)에 리터럴 free-form 토큰
-        (`{{PROJECT_CONSTRAINTS}}`/`{{PROTECTED_PATHS}}`/`{{USER_GATE_ITEMS}}`)이 잔존 → 파일·토큰별
-        finding 1건. 마이그레이션 후엔 어댑터 본문이 free-form-free(토큰 0)다.
-
-    디커플: render-overlay free-form value-fill 기계(`FREEFORM_KEYS`·overlay.local.yaml)
-    는 제거됐으므로 이 lint 는 그 심볼에 의존하지 않고 자체 로컬 튜플(`_UNMIGRATED_FREEFORM_KEYS`)
-    로 검출 대상을 정의한다. free-form 은 pm_import FILL 채널이 canonical home 에서 전담하므로
-    overlay 파일 부재 조건은 더 이상 의미가 없다 — 리터럴 토큰 잔존만으로 advisory 를 낸다.
-
-    오탐 0 경계:
-      - operational 토큰(`{{PROJECT_NAME}}` 등)은 *검사 대상 아님* — import sed/local.conf 채널이라
-        별개. free-form 3종만 매칭(채택자 손편집 산문).
-      - 코드 span/fence 안의 *예시* 토큰은 `_strip_code` 로 제거 후 스캔(문서가 토큰을 예시로
-        보여줘도 오탐 안 됨).
-      - graceful: 어댑터 파일/디렉토리 부재(non-adopter) → finding 0. 파일 read 오류는 skip.
-    """
-    token_re = re.compile(
-        r"\{\{(" + "|".join(re.escape(k) for k in _UNMIGRATED_FREEFORM_KEYS) + r")\}\}")
-
-    issues: list[tuple[str, str, str]] = []
-    seen: set[str] = set()
-    for p in _collect_overlay_adapter_files():
-        rel_posix = _rel_to_repo(p).replace("\\", "/")
-        if rel_posix in seen:
-            continue
-        seen.add(rel_posix)
-        try:
-            # 텍스트 판정(_is_text_source) 통과 후에도 pm_update None 폴백 시 바이너리가 새거나
-            # TOCTOU 로 디코드가 깨질 수 있어 UnicodeDecodeError 를 함께 흡수(render-leak 동형).
-            text = fs.read_text_shared(p, encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            continue
-        # 코드 span/fence 예시 토큰은 실 placeholder 가 아니므로 제거 후 스캔(오탐 0).
-        leaked = sorted(set(token_re.findall(_strip_code(text))))
-        if leaked:
-            toks = ", ".join("{{" + k + "}}" for k in leaked)
-            issues.append((
-                rel_posix, "un-migrated-overlay",
-                f"리터럴 free-form 토큰 잔존: {toks} — 어댑터가 아직 canonical home(root doc·"
-                f"pm_role.local.md)으로 마이그레이션되지 않았다(§3.6·free-form-free)."))
-    return issues
-
-
 # ── 파일명-무관 참조 강제  ──────────
 # 엔진은 [[ADR-NNNN]] 를 *번호*로 resolve 하므로 슬러그는 무관하다. 그러나 LLM 이
 # 구조화 디렉토리(decisions/·tickets/·ideas/)를 **생파일명·슬러그**로 가리키면 — markdown 경로
@@ -16093,9 +15366,6 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 #     ADR/idea dangling. 채택자(framework ADR 부재 다운스트림)의 scaffold bracket-ref 는
 #     영구 dangling 이 정상 — visibility 만, push 미차단. ticket dangling·wiki/root-doc dangling 은
 #     여전히 `dangling-wikilink`(blocking).
-#   - un-migrated-overlay : 어댑터 .md 에 리터럴 free-form 토큰 잔존.
-#     canonical home(root doc·pm_role.local.md) 마이그레이션 누락 신호 — 채택자 운영 ritual 이지
-#     출하 결함 아니므로 visibility 만, push 미차단. render-leak(@render 산출물 한정·blocking)과 별개.
 #   - adapter-drift : 채택자의 adapter-layer(facade·진입문서·settings) 가 baseline(마지막 동기) 이후
 #     전파 채널 없는 manifest-제외 잔여라 *전파 대신*
 #     PM 에게 경고만 — `pm-update` 안내(visibility>enforcement). B 전파는 채택자 customization clobber(비파괴
@@ -16132,7 +15402,7 @@ _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
      "stale", "orphan", "oversized", "history", "adr-lifecycle", "architecture-stale",
      "status-stale", "domain-stale", "domain-unverifiable",
      "architecture-unverifiable", "status-unverifiable",
-     "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift",
+     "dangling-wikilink-scaffold", "adapter-drift",
      "adr-author", "areas-repo-unregistered", "areas-duplicate-repo", "areas-merge-union",
      "delegate-same-model", "design-pending", "design-estimate",
      "codex-delegate-matcher-miss", "open-claimed-contradiction", "local-conf",
@@ -16424,7 +15694,7 @@ def _sha_anchor_status(sha: str, *, runner=None,
         ). 모호는 환경이 아니라 pin 속성 → unverifiable(full OID 로 재핀 안내).
     환경적 판정불가 → `_ANCHOR_UNKNOWN`(silent skip): 빈 sha·git 부재·rev-parse/merge-base **rc≥2**
     (rc128 non-repo·safe.directory·권한 등 fatal). 환경 오류를 unverifiable 로 오인하지 않는다(MF1).
-    `_canonical_commit_oid`(backfill 쓰기 검증)는 verdict==OK 면 full_oid 반환(read/write 대칭).
+    `_canonical_commit_oid`(repin 쓰기 검증)는 verdict==OK 면 full_oid 반환(read/write 대칭).
     `runner` = 테스트 hermetic seam(argv→(rc, stdout[, stderr]))·미주입 시 실 subprocess
     (`git -C repo`; 부재=REPO)."""
     sha = (sha or "").strip()
@@ -16703,10 +15973,9 @@ def lint_domain_freshness(*, runner=None) -> list[tuple[str, str, str]]:
     return findings
 
 
-# ── verified_at 초기 backfill  ────────────
-# 기존 현재-진실 문서(architecture.md·status.md·covers 보유 domain 페이지)에 초기 `verified_at`
-# sha 를 채운다. 런타임 fallback 누적([[prefer-data-migration-over-fallback]]) 대신 한 번의
-# 마이그레이션 — 이후 lint 는 verified_at 이 항상 있다고 전제(부재는 fail-soft skip 유지).
+# ── verified_at 핀 쓰기 (repin) ────────────
+# 현재-진실 문서(architecture.md·status.md·covers 보유 domain 페이지)의 `verified_at`·`repo` 를 쓰는
+# 채널은 `verified-at-repin` 하나다. 핀이 없는 문서도 `--page` 로 골라 같은 명령으로 처음 쓴다.
 
 def _repo_head_sha(repo: Path | None = None) -> str | None:
     """`repo`(부재=REPO)의 현재 HEAD sha (조회 불가 → None·fail-soft)."""
@@ -16728,38 +15997,11 @@ def _repo_head_sha(repo: Path | None = None) -> str | None:
 _FRONTMATTER_FENCE_RE = re.compile(r"^---\s*$")
 
 
-def _insert_verified_at(text: str, sha: str) -> str | None:
-    """frontmatter 닫는 `---` 바로 앞에 `verified_at: "<sha>"` 한 줄 삽입 (최소 변경).
+def _verified_at_backfill_targets() -> list[Path]:
+    """repin 전체 대상 — architecture.md·status.md + covers 보유 domain 페이지.
 
-    hand-authored 현재-진실 문서 frontmatter 를 **전체 재-dump 없이**(키 순서·date 정규화
-    clobber 회피) 한 줄만 넣는다. **값은 따옴표 친 문자열**로 쓴다 — `0123456` 같은
-    전부-숫자(특히 leading-zero=octal) OID 를 unquoted 로 쓰면 YAML 이 정수 파싱해 재-lint 서
-    깨지기 때문(YAML string 강제). 반환 = 삽입된 새 텍스트, None = 대상 아님:
-      - frontmatter 블록(`---` 시작 + 닫는 `---`)이 없음.
-      - `verified_at:` 이 이미 있음(멱등·재실행 안전).
-    """
-    lines = text.splitlines(keepends=True)
-    if not lines or lines[0].strip() != "---":
-        return None
-    close = next((i for i in range(1, len(lines))
-                  if _FRONTMATTER_FENCE_RE.match(lines[i])), None)
-    if close is None:
-        return None
-    if any(re.match(r"\s*verified_at\s*:", ln) for ln in lines[1:close]):
-        return None
-    # 닫는 --- 앞 라인이 개행으로 끝나지 않으면 보정(파일 끝 무개행 방어).
-    if lines[close - 1] and not lines[close - 1].endswith("\n"):
-        lines[close - 1] += "\n"
-    lines.insert(close, f'verified_at: "{sha}"\n')
-    return "".join(lines)
-
-
-def _verified_at_backfill_targets(*, strict_domain: bool = False) -> list[Path]:
-    """backfill/repin 대상 — architecture.md·status.md + covers 보유 domain 페이지.
-
-    `strict_domain=True`는 repin의 validate-all-first 열거 모드다. frontmatter로 시작한 domain
-    문서 하나라도 읽기/파싱 실패하면 예외를 전파해, 깨진 문서를 대상에서 조용히 제외한 채
-    나머지만 쓰는 부분 성공을 금지한다. 일반 backfill은 기존 graceful skip을 유지한다.
+    validate-all-first 열거다. frontmatter로 시작한 domain 문서 하나라도 읽기/파싱 실패하면
+    예외를 전파해, 깨진 문서를 대상에서 조용히 제외한 채 나머지만 쓰는 부분 성공을 금지한다.
     """
     targets: list[Path] = []
     if ARCHITECTURE_FILE.exists():
@@ -16767,20 +16009,12 @@ def _verified_at_backfill_targets(*, strict_domain: bool = False) -> list[Path]:
     if STATUS_FILE.exists():
         targets.append(STATUS_FILE)
     domain = _load_domain_module()
-    if strict_domain and domain is None and DOMAIN_PY.exists():
+    if domain is None and DOMAIN_PY.exists():
         raise RuntimeError(f"{DOMAIN_PY}: domain.py 로드 실패")
     if domain is not None:
-        try:
-            pages = (domain.load_pages(domain.DOMAIN_DIR, strict=True)
-                     if strict_domain else domain.load_pages(domain.DOMAIN_DIR))
-            for page in pages:
-                if page.get("covers"):
-                    targets.append(Path(page["path"]))
-        except Exception as exc:  # noqa: BLE001 — strict repin은 열거 오류를 전체 중단으로 전파.
-            if _is_engine_rev_skew(exc):
-                raise
-            if strict_domain:
-                raise
+        for page in domain.load_pages(domain.DOMAIN_DIR, strict=True):
+            if page.get("covers"):
+                targets.append(Path(page["path"]))
     return targets
 
 
@@ -16792,8 +16026,7 @@ class _VerifiedAtPageSelectionError(ValueError):
         super().__init__(f"--page {page!r}: {reason}")
 
 
-def _verified_at_targets(
-        pages: Sequence[str] | None, *, strict_domain: bool = False) -> list[Path]:
+def _verified_at_targets(pages: Sequence[str] | None) -> list[Path]:
     """전체 또는 `--page`로 고른 현재-진실 문서 대상을 반환한다.
 
     선택자 미지정(`None`)은 기존 전체 열거를 그대로 호출한다. 선택자를 지정하면
@@ -16804,7 +16037,7 @@ def _verified_at_targets(
     covers 보유·비-draft인 canonical 대상인지 확인한다.
     """
     if pages is None:
-        return _verified_at_backfill_targets(strict_domain=strict_domain)
+        return _verified_at_backfill_targets()
     if not pages:
         raise _VerifiedAtPageSelectionError("", "선택 문서가 비어 있음")
 
@@ -16867,87 +16100,15 @@ def _verified_at_targets(
 
 
 def _canonical_commit_oid(sha: str, *, repo: Path | None = None) -> str | None:
-    """`sha` 가 유효한 backward anchor 면 그 **canonical full OID** 를, 아니면 None (backfill 쓰기).
+    """`sha` 가 유효한 backward anchor 면 그 **canonical full OID** 를, 아니면 None (repin 쓰기).
 
-    backfill 이 **검증에서 얻은 full OID 를 그대로 기록**하게 하는 helper — 입력 축약/
+    repin 이 **검증에서 얻은 full OID 를 그대로 기록**하게 하는 helper — 입력 축약/
     ref 문자열을 기록하면 (a) 하류 소비자가 다시 해석(canonical 위반) (b) `0123456` 같은 전부-숫자
     축약은 YAML unquoted 정수 파싱돼 재-lint 서 깨진다. `_sha_anchor_status` 재사용(read/write 대칭·
     사본 0): 고정 hex + 고정 SHA 해소(hex-이름 ref 아님) + HEAD 선조면 `(OK, full_oid)` →
     full_oid 반환·아니면 None. 검증 불가(git 부재·rc≥2 → UNKNOWN)도 None — 기록은 확실할 때만 한다."""
     verdict, full_oid = _sha_anchor_status(sha, repo=repo)
     return full_oid if verdict == _ANCHOR_OK else None
-
-
-def backfill_verified_at(
-        sha: str, *, dry_run: bool = False,
-        pages: Sequence[str] | None = None) -> list[tuple[Path, str]]:
-    """현재-진실 문서에 초기 `verified_at: <sha>` 를 1회 backfill.
-
-    대상 = architecture.md·status.md + covers 보유 domain 페이지(`_verified_at_backfill_targets`).
-    이미 verified_at 이 있으면/frontmatter 가 없으면 skip(멱등). 반환 = `[(경로, 상태), …]`
-    (상태 ∈ `added`/`skip:already`/`skip:no-frontmatter`/`skip:read-error`). dry_run 이면 파일을
-    쓰지 않고 무엇이 바뀔지만 계산한다."""
-    results: list[tuple[Path, str]] = []
-    for path in _verified_at_targets(pages):
-        try:
-            text = fs.read_text_shared(path, encoding="utf-8")
-        except OSError:
-            results.append((path, "skip:read-error"))
-            continue
-        new_text = _insert_verified_at(text, sha)
-        if new_text is None:
-            has_fm = text.lstrip().startswith("---")
-            results.append((path, "skip:already" if has_fm else "skip:no-frontmatter"))
-            continue
-        if not dry_run:
-            path.write_text(new_text, encoding="utf-8", newline="\n")
-        results.append((path, "added"))
-    return results
-
-
-def cmd_verified_at_backfill(args: argparse.Namespace) -> int:
-    """`verified-at-backfill` — 현재-진실 문서에 초기 verified_at sha 를 채운다 (1회)."""
-    sha = (args.sha or "").strip()
-    if sha:
-        # 명시 --sha 는 기록 전 commit 실존 검증(codex must-fix) — 오타 sha 가 영속되면
-        # freshness 판정이 영구 조용 skip(false-green) 되므로 abort 가 정답. 검증에서 얻은
-        # **canonical full OID 를 기록**한다(입력 축약/재해석 제거).
-        canonical = _canonical_commit_oid(sha)
-        if canonical is None:
-            print(f"verified-at-backfill: --sha {sha} 가 이 repo 의 commit 으로 검증되지 않는다 "
-                  "— 기록 중단(비존재 sha 는 freshness 판정 영구 skip·false-green).",
-                  file=sys.stderr)
-            return 1
-        sha = canonical
-    else:
-        sha = _repo_head_sha() or ""   # HEAD 는 이미 full OID(canonical).
-        if not sha:
-            print("verified-at-backfill: --sha 미지정·HEAD 조회 실패 — 기준 sha 미정.",
-                  file=sys.stderr)
-            return 1
-    try:
-        results = backfill_verified_at(
-            sha, dry_run=args.dry_run, pages=getattr(args, "pages", None))
-    except _VerifiedAtPageSelectionError as exc:
-        print(f"verified-at-backfill: 문서 선택 실패 — {exc}", file=sys.stderr)
-        return 1
-    if not results:
-        print("verified-at-backfill: 대상 문서 없음 (architecture.md·status.md·domain 부재).")
-        return 0
-    prefix = "[dry-run] " if args.dry_run else ""
-    added = 0
-    for path, state in results:
-        try:
-            shown = path.relative_to(REPO).as_posix()
-        except ValueError:
-            shown = str(path)
-        if state == "added":
-            added += 1
-            print(f"{prefix}verified_at: {sha[:12]} 삽입 → {shown}")
-        else:
-            print(f"{prefix}skip({state}) → {shown}")
-    print(f"{prefix}{added}개 문서에 verified_at 삽입 (기준 sha {sha[:12]}).")
-    return 0
 
 
 def _replace_freshness_pin(text: str, sha: str, owner: str) -> str | None:
@@ -17086,7 +16247,7 @@ def repin_verified_at(
     """
     prepared: list[tuple[Path, str, str | None]] = []
     try:
-        targets = _verified_at_targets(pages, strict_domain=True)
+        targets = _verified_at_targets(pages)
     except Exception as exc:  # noqa: BLE001 — 대상 열거 실패도 validate-all-first 중단.
         if _is_engine_rev_skew(exc):
             raise
@@ -17572,13 +16733,13 @@ _ROUND_STRAY_LINT_KIND = "round-stray"
 # 한 티켓의 라운드 판정이 실패한 자리 — 나머지 티켓 판정은 그대로 내고 이 티켓만 사유로 남긴다.
 _ROUND_UNREADABLE_LINT_KIND = "round-unreadable"
 # 구 단일-파일 컨테이너의 흔적. 본문에 이 주석이 남아 있으면 그 티켓의 역할 산출은 아직
-# 라운드 파일로 옮겨지지 않은 것이다(마이그레이션 대상).
+# 라운드 파일로 옮겨지지 않은 것이다(사람이 정리할 대상 · `legacy-growth-section` 차단).
 _LEGACY_GROWTH_MARKERS: tuple[str, ...] = (
     f"<!-- {_LEGACY_SECTION_MARKER}:", f"<!-- {_LEGACY_SEAL_MARKER}")
 _LEGACY_GROWTH_LINT_KIND = "legacy-growth-section"
 _LEGACY_GROWTH_MIGRATION_HINT = (
-    "`python3 .project_manager/tools/board.py rounds migrate` 를 1회 실행해 "
-    "역할 절을 라운드 파일로 옮겨라"
+    "변환 명령은 v1.8.1 까지 있었다(`board.py rounds migrate`). 절 내용을 라운드 파일로 "
+    "옮기거나 marker·봉인 주석 줄을 지워 본문 텍스트로 남겨라"
 )
 
 
@@ -17678,11 +16839,10 @@ def lint_legacy_growth_sections() -> list[tuple[str, str, str]]:
     """명세 본문에 남은 구 역할 절(marker/봉인 주석)을 blocking 으로 잡는다.
 
     라운드 사이드카 전환 뒤에도 절이 본문에 남아 있으면 그 산출은 어떤 라운드 판정에도 잡히지
-    않는다(두 형식이 공존하는 상태). 마이그레이션 명령 1회로 해소되므로 red 로 강제한다.
-    done 을 포함한 전 상태와 draft 를 본다 — 변환 대상이 완료 티켓에 몰려 있다.
+    않는다(두 형식이 공존하는 상태). 이 엔진은 변환하지 않으므로 사람이 정리할 때까지 red 다.
+    done 을 포함한 전 상태와 draft 를 본다 — 남은 절이 완료 티켓에 몰려 있다.
 
-    시야는 변환 명령과 **같은 판정**을 쓴다(`_has_legacy_growth_markers`) — 한쪽만 넓으면 변환이
-    끝난 board 가 영영 red 로 남는다.
+    시야는 `_has_legacy_growth_markers`(column 0 주석 줄 · ``` 펜스 밖)다.
     """
     findings: list[tuple[str, str, str]] = []
     for status in (*STATUS_DIRS, ".drafts"):
@@ -17871,7 +17031,6 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     architecture.md freshness advisory(architecture-stale·never-block) +
     adapter-layer drift advisory(adapter-drift·never-block·baseline rev 비교) +
     render-leak(리터럴 `{{...}}` 누출·blocking·@render 산출물 한정·활성화 전 무발화) +
-    un-migrated-overlay(어댑터 .md 리터럴 free-form 토큰 잔존·advisory·never-block) +
     adr-author(ADR `author: <user>/<pm-slot>` provenance 권고·advisory·never-block) +
     현재-진실 문서 freshness(architecture-stale·status-stale·domain-stale·verified_at sha 판정·
     advisory·never-block) +
@@ -17884,8 +17043,8 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     advisory·never-block) +
     codex-delegate-matcher-miss(unmatched SubagentStart → PM 표면 1줄·advisory·never-block) +
     round-*(라운드 순번 유일성·연속성·산출 없음·임시 파일 잔여 가시화·advisory·never-block·
-    차단은 완료 게이트) + legacy-growth-section(명세 본문에 남은 구 역할 절 → 마이그레이션
-    명령 1회로 해소·blocking) +
+    차단은 완료 게이트) + legacy-growth-section(명세 본문에 남은 구 역할 절 → 사람이
+    라운드 파일로 옮기거나 marker 를 지워 해소·blocking) +
     design-pending(티켓 설계 단계 `design: required` 미완 — 설계 절 미충전/필드 미승격 가시화·
     advisory·never-block·차단은 claim 게이트) +
     open-claimed-contradiction(status=open 인데 claimed_by 잔존 — 상태-소유 모순 가시화·
@@ -17904,7 +17063,7 @@ def lint_tickets() -> list[tuple[str, str, str]]:
             + lint_domain() + lint_adr_lifecycle() + lint_adr_author()
             + lint_architecture_freshness() + lint_status_freshness()
             + lint_domain_freshness() + lint_adapter_drift()
-            + lint_render_leak() + lint_unmigrated_overlay()
+            + lint_render_leak()
             + lint_areas_repo_unregistered()
             + lint_areas_duplicate_repo() + lint_areas_merge_union()
             + lint_delegate() + lint_local_conf() + lint_local_conf_keys()
@@ -18318,16 +17477,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_lint)
 
     p = sub.add_parser(
-        "verified-at-backfill",
-        help="현재-진실 문서(architecture.md·status.md·domain)에 초기 verified_at sha 채움 (1회)")
-    p.add_argument("--sha", help="기준 커밋 sha (미지정 시 REPO HEAD — released 지점 권장)")
-    p.add_argument(
-        "--page", dest="pages", action="append", metavar="REPO_RELATIVE_PATH",
-        help="이 현재-진실 문서만 backfill (REPO 상대경로·복수 지정 가능)")
-    p.add_argument("--dry-run", action="store_true", help="쓰기 0·무엇이 바뀔지만 표시")
-    p.set_defaults(fn=cmd_verified_at_backfill)
-
-    p = sub.add_parser(
         "verified-at-repin",
         help="현재-진실 문서의 repo+verified_at을 소유 저장소 full OID로 일괄 전환")
     p.add_argument("--repo", choices=[_FRESHNESS_REPO_SELF, _FRESHNESS_REPO_UPSTREAM],
@@ -18369,20 +17518,6 @@ def build_parser() -> argparse.ArgumentParser:
     ip = idea_sub.add_parser("kill", help="mv idea open → killed")
     ip.add_argument("id")
     ip.set_defaults(fn=cmd_idea_kill)
-
-    # rounds subcommand group — 라운드 사이드카 유지보수. 지금은 구 컨테이너(역할 절) 일회성
-    # 변환 하나뿐이다(조회는 `show`·판정은 `lint`/완료 게이트가 이미 소유).
-    rounds_p = sub.add_parser("rounds", help="라운드 사이드카 유지보수")
-    rounds_sub = rounds_p.add_subparsers(dest="rounds_cmd", required=True)
-
-    rp = rounds_sub.add_parser(
-        "migrate",
-        help="구 역할 절(marker/봉인)·성장 장부·구 위임 사본을 라운드 파일 형상으로 1회 변환 (멱등)")
-    rp.add_argument("--dry-run", action="store_true",
-                    help="계획(티켓·라운드 파일명·삭제 목록)만 출력·쓰기 0")
-    rp.add_argument("--discard-unharvested", action="store_true",
-                    help="구 사본 장부의 미회수 행이 가리키는 사본까지 함께 삭제(비가역)")
-    rp.set_defaults(fn=cmd_rounds_migrate)
 
     # reid — 단일 티켓 ID 재부여. 번호·prefix 변경 무손실
     # relabel + 전 참조 rewrite. prefix rename/merge 와 같은 파이프라인(`_prefix_relabel`) 재사용.

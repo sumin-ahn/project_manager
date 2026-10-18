@@ -701,7 +701,6 @@ _MUTATION_ARGVS = [
     ["promote-scope", "somedoc.md", "--to", "shared"],
     ["reid", "T-0100", "T-0101"],
     ["refresh"],
-    ["verified-at-backfill"],
     ["verified-at-repin", "--repo", "self"],
     ["idea", "new", "아이디어"],
     ["idea", "promote", "0001"],
@@ -710,7 +709,6 @@ _MUTATION_ARGVS = [
     ["prefix", "strip", "AAA"],
     ["prefix", "merge", "AAA", "--into", "BBB"],
     ["prefix", "delete", "AAA"],
-    ["rounds", "migrate", "--dry-run"],
     ["cluster", "new", "wave", "--tickets", "T-0100"],
 ]
 

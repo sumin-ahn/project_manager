@@ -24,7 +24,7 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 # 이 티켓이 소유한 소비처 — board 밖에서 상태 집합을 읽는 자리. 나머지 하드코딩(`pm_import`·
-# `pm_update`·`ticket_finish`)은 각자 무변경 근거가 따로 있어 이 티켓 범위 밖이다.
+# `ticket_finish`)은 각자 무변경 근거가 따로 있어 이 티켓 범위 밖이다.
 STATUS_DIRS_CONSUMERS: tuple[str, ...] = ("additional_reviewer", "pm_log", "pm_bootstrap")
 
 # 주입용 가짜 상태 — board 가 아직 모르는 이름이어야 "정의를 바꾸면 따라온다"를 증명한다.
@@ -389,12 +389,6 @@ def test_hardcoded_status_guard_detects_a_reintroduced_copy(board, shape):
     source = _REINTRODUCED_COPY_SHAPES[shape]
     copies = _find_status_set_copies(source, set(board.STATUS_DIRS))
     assert len(copies) == 1, f"{shape} shape 를 놓쳤다: {copies}"
-
-
-def test_pm_update_ticket_scan_dirs_equal_board_status_dirs_plus_drafts(board):
-    """pm_update 의 티켓 스캔 디렉토리 리터럴은 board STATUS_DIRS 전체 + `.drafts` 와 값이 같다."""
-    mod = _load("pm_update")
-    assert mod._BOARD_TICKET_SCAN_DIRS == (*board.STATUS_DIRS, ".drafts")
 
 
 def test_pm_import_seeded_status_dirs_equal_board_status_dirs(board):

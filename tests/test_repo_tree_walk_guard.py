@@ -158,12 +158,6 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "'*'",
     ): WalkException("engine.manifest @render가 선언한 닫힌 경로만 검사"),
     (
-        ".project_manager/tools/board.py",
-        "_collect_overlay_adapter_files",
-        "rglob",
-        "'*'",
-    ): WalkException("engine.manifest @render가 선언한 adapter overlay 경로만 검사"),
-    (
         "tests/_engine_tree.py",
         "engine_python_files",
         "rglob",
@@ -216,12 +210,6 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "자체가 판정 대상이라 seam이 답할 수 있는 질문이 아니다",
         expected_count=2,
     ),
-    (
-        "tests/test_board_lint.py",
-        "_old_collect",
-        "rglob",
-        "pat",
-    ): WalkException("tmp_path 합성 adapter fixture에서 의도적으로 복원한 옛 수집기의 sensitivity 대조"),
     (
         "tests/test_pm_import.py",
         "_grep_token_files",
