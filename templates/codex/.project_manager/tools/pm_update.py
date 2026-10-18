@@ -75,6 +75,7 @@ if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import conf_schema  # noqa: E402
 from pm_engine.infra import conf_store, console, fs, repo_files  # noqa: E402
+from pm_engine.infra.harness import contract  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
@@ -1155,17 +1156,6 @@ def _load_pm_import():
     )
 
 
-def _load_relay():
-    """pm_relay(하네스 계약 — 추론 허용값·모델 목록 조회)를 같은 tools/ 에서 직접 로드한다
-    (`_load_pm_import` 와 같은 무검증 로드 — 이 모듈은 복구 채널이라 `EXEMPT_FROM_STAMP` 가 덮는다).
-
-    한 번 읽은 인스턴스를 호출부가 쥐고 쓴다 — 모델 목록 조회 기억이 그 인스턴스의 수명이다."""
-    relay_py = Path(__file__).resolve().parent / "pm_relay.py"
-    return _load_module_from_path(
-        relay_py, "pm_relay.py", allow_unverified=True,
-    )
-
-
 # ── upstream baseline↔HEAD 변경점 요약 (read-only) ─────────
 # git `name-status` 코드(첫 글자) → 표시용. R(rename)·C(copy)는 첫 글자만 본다(접두).
 _NAME_STATUS_LABELS = {"M": "M", "A": "A", "D": "D", "R": "R", "C": "C", "T": "T"}
@@ -1318,7 +1308,7 @@ def _dest_guest_manifest_entries(effective_dest: Path) -> list[ManifestEntry]:
 # ── guest 절 엔진 행 파생 백필 ────────────────────────────────────────────────
 # add-harness 가 등재하는 guest 엔진 행은 `@source=templates/<flavor>/…` 로 자기 출처를 들고 있다.
 # 그 채널이 없던 세대에 설치된 채택자의 절엔 렌더물 행뿐이라 provenance 가 없고, 그 코호트의
-# 엔진 파일(`pm_relay` 코어와 짝인 드라이버·ctx 가드 등)은 add-harness 를 다시 돌리지 않는 한 설치
+# 엔진 파일(엔진 패키지 `pm_engine` 과 짝인 드라이버·ctx 가드 등)은 add-harness 를 다시 돌리지 않는 한 설치
 # 시점 사본으로 영구 동결된다. 계획 직전에 flavor 를 해소해 upstream flavor manifest 에서 엔진 행을
 # **매 실행 재파생**하면 옛 채택자도 다음 sync 한 번으로 채널을 얻고, upstream 이 flavor 에 엔진
 # 파일을 새로 추가해도 재동결되지 않는다. 파생은 읽기 전용이고 기록은 apply 의 절 재부착 한 곳뿐이다.
@@ -3983,7 +3973,7 @@ def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
     dst 가 `_RenderDst`(render 플래그 운반·plan 산출)면 그 플래그로 분기한다. 평문 Path dst
     (레거시 직접 호출)는 render 비대상 → copy2(후방호환·현 pm_update 동작 불변).
 
-    두 단계다. (1) render 아닌 change(tools 포함)를 순서대로 쓴다 — 렌더러(pm_render·pm_relay)도 여기서
+    두 단계다. (1) render 아닌 change(tools 포함)를 순서대로 쓴다 — 렌더러(pm_render·pm_engine)도 여기서
     바뀐다. (2) 렌더러를 한 번 읽어 render change 전부를 메모리에서 그리고(`_render_outputs`), 전부
     그린 뒤에만 쓴다(`_write_render_outputs`). 렌더가 하나라도 거부되면 render 파일은 하나도 바뀌지
     않는다(앞 단계의 파일은 이미 쓰였을 수 있다). 렌더 값은 dest local.conf 를 한 번 읽은 것이다.
@@ -4066,7 +4056,7 @@ def _dest_root_for(dst: Path, rel: str) -> Path:
 # 계획을 전부 끝낸 뒤에만 local.conf → 단계 순서대로 산출물을 쓴다. 계획 단계의 거부는 아무것도 쓰지
 # 않았다는 뜻이고 되돌리기 쓰기는 없다. 단계는 키 묶음 표(`CONF_APPLY_STEPS`) 하나로 고르며, 어느
 # 묶음에도 없는 키는 local.conf 기록만 한다. 저장 한 번은 렌더러를 한 번 읽어 모든 단계에 넘긴다 —
-# 추론 값 확인·계획 판정·산출물 그리기가 같은 pm_relay 인스턴스(모델 목록 조회 기억)를 쓴다.
+# 추론 값 확인·계획 판정·산출물 그리기가 같은 `contract` 모듈(모델 목록 조회 기억)을 쓴다.
 _LOCAL_CONF_RELPATH = ".project_manager/local.conf"
 
 
@@ -4214,23 +4204,22 @@ def _reasoning_values(conf: Mapping[str, str]) -> list[tuple[str, str, str, str 
 
 
 def _plan_per_model_reasoning(dest_root: Path, values: dict, _pm_import, _opencode_config_dir: Path,
-                              render_mod) -> None:
+                              _render_mod) -> None:
     """추론 값 묶음 계획 — 모델별 허용값 하네스 프로필(주·대체·추가 리뷰어)의 제안 추론 값이 그 모델이 받는
     값인지 카드 유무와 무관하게 확인한다. 밖이거나 판정할 수 없으면(조회 실패·모델 값 없음·목록에 모델
-    없음) `ConfApplyError` 다. 저장은 값을 지우지 않는다. 조회는 렌더러의 pm_relay(`render_mod._load_relay`)로
-    해 같은 저장의 카드 렌더 확인과 조회 기억을 나눈다."""
-    relay = render_mod._load_relay()
+    없음) `ConfApplyError` 다. 저장은 값을 지우지 않는다. 조회는 카드 렌더 확인과 같은 하네스 계약
+    모듈(`pm_engine.infra.harness.contract`)을 써서 한 프로세스의 조회 기억을 나눈다."""
     violations: list[str] = []
     for key, value, harness, model in _reasoning_values(values):
-        if harness not in relay.PER_MODEL_REASONING_HARNESSES:
+        if harness not in contract.PER_MODEL_REASONING_HARNESSES:
             continue
         try:
-            allowed = relay.reasoning_allowed(harness, model, cwd=Path(dest_root), env=dict(os.environ))
-        except relay.HarnessContractError as exc:
+            allowed = contract.reasoning_allowed(harness, model, cwd=Path(dest_root), env=dict(os.environ))
+        except contract.HarnessContractError as exc:
             raise ConfApplyError([
                 f"{key}={value} 를 확인할 수 없습니다 — {exc}. {harness} 를 이 프로세스의 PATH 에서 실행할 수 "
                 "있게 하거나 그 값을 비운 뒤 다시 실행하십시오."]) from exc
-        if relay.normalize_reasoning(value) not in allowed:
+        if contract.normalize_reasoning(value) not in allowed:
             violations.append(
                 f"{key}={value} 는 {harness} {model} 이 받는 값({', '.join(allowed) or '없음'}) 밖입니다 — "
                 "하네스는 이 값을 오류 없이 버리므로 저장하지 않습니다. 받는 값을 고르거나 비우십시오.")
@@ -4390,7 +4379,7 @@ def _join_guest_channels(
         local.conf(`delegate.*`)의 렌더 파생물이라, guest 를 계획에서 빼면 conf 를 바꿔도 그 카드가
         영영 옛 값으로 남는다(채택자 실측: 카드 opus ↔ conf sonnet). 손편집은 다음 update 가
         되돌린다 — 그게 렌더물의 의도된 동작이다(add-harness 재실행을 요구하지 않는다).
-      - 비-`@render` 행(엔진 파일) = byte-copy 전파. 이 행이 빠지면 `pm_relay` 코어와 짝인
+      - 비-`@render` 행(엔진 파일) = byte-copy 전파. 이 행이 빠지면 엔진 패키지(`pm_engine`)와 짝인
         드라이버·ctx 가드가 어떤 채널로도 갱신되지 않아 영구 동결된다.
 
     core 가 이미 소유한 경로(승격분 포함)는 core 선언이 이긴다 — 경로-포함(`_path_owned_by`)으로
@@ -5259,9 +5248,9 @@ def prune_unavailable_reasoning(dest_root: Path, conf: Mapping[str, str], *,
     """모델별 허용값 하네스 프로필의 추론 값 중 그 모델이 받지 않는 값을 local.conf 에서 지우고 알린다.
 
     대상은 레지스트리 축이 `reasoning` 인 키(위임 세트·대체 세트·추가 리뷰어) 중 값이 있고 같은 세트의
-    하네스가 `pm_relay.PER_MODEL_REASONING_HARNESSES`(opencode)인 것이다. 정적 허용값(claude·codex)은
+    하네스가 `contract.PER_MODEL_REASONING_HARNESSES`(opencode)인 것이다. 정적 허용값(claude·codex)은
     대상이 아니다 — 엔진이 정한 값이라 바뀌지 않고, 틀리면 렌더가 멈춘다. 판정은 설치 폴더·이 프로세스
-    env 의 모델 목록 조회다(`pm_relay.reasoning_allowed`). 하나라도 판정하지 못하면(조회 실패·모델 값
+    env 의 모델 목록 조회다(`contract.reasoning_allowed`). 하나라도 판정하지 못하면(조회 실패·모델 값
     없음·목록에 모델 없음) 아무것도 지우지 않고 `ReasoningPruneError` 다.
 
     쓰기는 판정 뒤 local.conf 쓰기 락 안에서 다시 읽어 값이 판정 때와 같을 때만 한 번에 지운다(다르면
@@ -5271,20 +5260,19 @@ def prune_unavailable_reasoning(dest_root: Path, conf: Mapping[str, str], *,
     reasoning_values = _reasoning_values(conf)
     if not reasoning_values:
         return dict(conf)
-    relay = _load_relay()
     misses: list[tuple[str, str, str, str | None, tuple[str, ...]]] = []
     for key, value, harness, model in reasoning_values:
-        if harness not in relay.PER_MODEL_REASONING_HARNESSES:
+        if harness not in contract.PER_MODEL_REASONING_HARNESSES:
             continue
         try:
-            allowed = relay.reasoning_allowed(
+            allowed = contract.reasoning_allowed(
                 harness, model, cwd=Path(dest_root), env=dict(os.environ))
-        except relay.HarnessContractError as exc:
+        except contract.HarnessContractError as exc:
             raise ReasoningPruneError(
                 f"conf 이관: {key}={value} 를 판정할 수 없어 지우지 않았다 — {exc}. opencode 를 이 "
                 "프로세스의 PATH 에서 실행할 수 있게 한 뒤 다시 실행하거나 local.conf 의 그 줄을 직접 "
                 "고친다.") from exc
-        if relay.normalize_reasoning(value) not in allowed:
+        if contract.normalize_reasoning(value) not in allowed:
             misses.append((key, value, harness, model, allowed))
     if not misses:
         return dict(conf)

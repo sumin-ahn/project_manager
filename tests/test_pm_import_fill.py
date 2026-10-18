@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 from _win_skip import _can_symlink, posix_mode_supported
+from pm_engine.infra.harness import contract, watchdog
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -155,50 +156,40 @@ def test_fill_failure_routes_through_shared_partial_formatter(pm_import, monkeyp
         def format_partial_output(head, exc):
             return f"shared:{head}:{exc.output}"
 
-    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: Relay())
+    monkeypatch.setattr(watchdog, "format_partial_output", Relay.format_partial_output)
     exc = subprocess.TimeoutExpired(["runner"], 1, output="partial")
     assert pm_import._fill_failure_with_partial("head", exc) == "shared:head:partial"
 
 
-@pytest.mark.parametrize("failure_site", ("loader", "formatter"))
+@pytest.mark.parametrize("failure_site", ("formatter",))
 def test_fill_failure_partial_formatter_keeps_head_for_general_failure(
         pm_import, monkeypatch, failure_site):
-    """일반 로더·포맷터 실패는 원 진단을 가리지 않고 fill fail-soft를 유지한다."""
+    """일반 포맷터 실패는 원 진단을 가리지 않고 fill fail-soft를 유지한다."""
     failure = RuntimeError("general")
-    if failure_site == "loader":
-        monkeypatch.setattr(
-            pm_import, "_load_watchdog",
-            lambda: (_ for _ in ()).throw(failure),
-        )
-    else:
-        class BrokenRelay:
-            @staticmethod
-            def format_partial_output(head, exc):
-                raise failure
 
-        monkeypatch.setattr(pm_import, "_load_watchdog", lambda: BrokenRelay())
+    class BrokenRelay:
+        @staticmethod
+        def format_partial_output(head, exc):
+            raise failure
+
+    monkeypatch.setattr(watchdog, "format_partial_output", BrokenRelay.format_partial_output)
 
     assert pm_import._fill_failure_with_partial("head", RuntimeError("original")) == "head"
 
 
-@pytest.mark.parametrize("failure_site", ("loader", "formatter"))
+@pytest.mark.parametrize("failure_site", ("formatter",))
 def test_fill_failure_partial_formatter_reraises_engine_rev_skew(
         pm_import, monkeypatch, failure_site):
     """rev skew는 일반 포맷 실패와 달리 fill 경로에서도 숨기지 않는다."""
     skew = RuntimeError("skew")
     skew._engine_rev_skew = True
-    if failure_site == "loader":
-        monkeypatch.setattr(
-            pm_import, "_load_watchdog",
-            lambda: (_ for _ in ()).throw(skew),
-        )
-    else:
-        class BrokenRelay:
-            @staticmethod
-            def format_partial_output(head, exc):
-                raise skew
 
-        monkeypatch.setattr(pm_import, "_load_watchdog", lambda: BrokenRelay())
+    class BrokenRelay:
+        @staticmethod
+        def format_partial_output(head, exc):
+            raise skew
+
+    monkeypatch.setattr(watchdog, "format_partial_output", BrokenRelay.format_partial_output)
 
     with pytest.raises(RuntimeError, match="skew"):
         pm_import._fill_failure_with_partial("head", RuntimeError("original"))
@@ -441,9 +432,8 @@ def test_runner_argv_opencode_branch(pm_import, tmp_path):
     pm_import.run_fill(dest, "opencode", live=False, runner=stub)
     assert len(stub.calls) == 1
     argv, prompt = stub.calls[0]
-    relay = pm_import._load_watchdog()
     prompt_file = Path(argv[argv.index("--file") + 1])
-    assert argv == ["opencode", "run", relay.OPENCODE_ATTACHED_MSG, "--file", str(prompt_file),
+    assert argv == ["opencode", "run", contract.OPENCODE_ATTACHED_MSG, "--file", str(prompt_file),
                     "--format", "json", "--dir", str(dest)]
     assert prompt_file.parent == dest / ".project_manager" / ".local" / "fill"
     assert stub.read == prompt and prompt not in argv
@@ -455,7 +445,7 @@ def test_build_runner_argv_units(pm_import, tmp_path):
     prompt_file = tmp_path / "prompt.md"
     assert pm_import._build_runner_argv("claude", tmp_path, None) == ["claude", "-p"]
     open_argv = pm_import._build_runner_argv("opencode", tmp_path, prompt_file)
-    assert open_argv == ["opencode", "run", pm_import._load_watchdog().OPENCODE_ATTACHED_MSG,
+    assert open_argv == ["opencode", "run", contract.OPENCODE_ATTACHED_MSG,
                          "--file", str(prompt_file), "--format", "json", "--dir", str(tmp_path)]
 
 
@@ -553,17 +543,12 @@ def test_real_harness_runner_delivers_prompt_by_declared_transport(pm_import, mo
     """표준 입력 전달 하네스(claude·codex)는 프롬프트 전문을 stdin 으로 쓰고 닫는다(EOF), `--file` 전달
     하네스(opencode)는 stdin 을 쓰지 않는다."""
     captured: dict = {}
-    relay = pm_import._load_watchdog()
 
-    class _FakeRelay:
-        def __getattr__(self, name):
-            return getattr(relay, name)
+    def run_with_first_event_watchdog(argv, **kw):
+        captured["input_text"] = kw.get("input_text")
+        return subprocess.CompletedProcess(argv, 0, "{}", "")
 
-        def run_with_first_event_watchdog(self, argv, **kw):
-            captured["input_text"] = kw.get("input_text")
-            return subprocess.CompletedProcess(argv, 0, "{}", "")
-
-    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: _FakeRelay())
+    monkeypatch.setattr(watchdog, "run_with_first_event_watchdog", run_with_first_event_watchdog)
     monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
     prompt = "첫 줄\n둘째 줄"
     for harness, expected in (("codex", prompt), ("claude", prompt), ("opencode", None)):
@@ -1035,17 +1020,12 @@ def test_plan_fill_targets_reads_source_files(pm_import, tmp_path):
 def test_real_harness_runner_runs_in_dest_cwd(pm_import, tmp_path, monkeypatch):
     """_real_harness_runner(cwd=dest_root): 공용 워치독에 대상 repo cwd가 전달된다."""
     captured = {}
-    relay = pm_import._load_watchdog()
 
-    class _FakeRelay:
-        def __getattr__(self, name):
-            return getattr(relay, name)
+    def run_with_first_event_watchdog(argv, **kwargs):
+        captured["cwd"] = kwargs.get("cwd")
+        return subprocess.CompletedProcess(argv, 0, "ok", "")
 
-        def run_with_first_event_watchdog(self, argv, **kwargs):
-            captured["cwd"] = kwargs.get("cwd")
-            return subprocess.CompletedProcess(argv, 0, "ok", "")
-
-    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: _FakeRelay())
+    monkeypatch.setattr(watchdog, "run_with_first_event_watchdog", run_with_first_event_watchdog)
     monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
     dest = tmp_path / "targetrepo"
     dest.mkdir()

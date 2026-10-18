@@ -35,6 +35,7 @@ from _textio import utf8_child_env
 from pm_engine.cli import local_conf as local_conf_cli
 from pm_engine.domain import conf_schema
 from pm_engine.infra import conf_store
+from pm_engine.infra.harness import contract
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -862,17 +863,9 @@ def test_readme_catalog_retired(board, monkeypatch, tmp_path):
     assert "local_conf.py --keys" in detail and "README" not in detail
 # ── ⑨ 선택지·권장값 (schema 2 · T-0916) ─────────────────────────────────────
 # 설정 화면이 "고를 수 있는 값" 과 "권장값" 을 엔진에서 받는다. 목록의 정본은 형제 선언
-# (`pm_relay.HARNESS_CHOICES`·`REASONING_ALLOWED`·`MODEL_SOURCE`)이고 레지스트리는 그것을
+# (`conf_schema.HARNESS_CHOICES`·`REASONING_ALLOWED`, `contract.MODEL_SOURCE`)이고 레지스트리는 그것을
 # **파생**한다 — 복제본이 생기면 두 자리가 갈리므로 아래 단언이 그 파생을 유일한 관측점으로 삼는다.
 # 선택지는 **검증이 아니다**: harness·reasoning 은 닫힌 집합, model 은 자유 문자열 그대로다.
-
-RELAY_PY = TOOLS / "pm_relay.py"
-
-
-@pytest.fixture(scope="module")
-def relay_module():
-    return _load_module("relay_for_local_conf_keys", RELAY_PY)
-
 
 def _rows(document: dict) -> list[dict]:
     """`keys[]` + 전개된 `members[]` — 화면이 실제로 그리는 행 전부."""
@@ -897,8 +890,8 @@ def test_every_row_carries_the_choices_and_recommended_keys(keys_document):
 
 
 def test_harness_choices_are_the_relay_declaration_in_declaration_order(
-        keys_document, relay_module):
-    """하네스 선택지는 `pm_relay.HARNESS_CHOICES` 그대로다 — 순서까지 같다(복제 0)."""
+        keys_document):
+    """하네스 선택지는 `conf_schema.HARNESS_CHOICES` 그대로다 — 순서까지 같다(복제 0)."""
     rows = _choice_rows(keys_document, "harness")
 
     assert len(rows) == 1 + 10, [row["key"] for row in rows]   # 추가 리뷰어 1 · 역할×티어 10
@@ -910,8 +903,8 @@ def test_harness_choices_are_the_relay_declaration_in_declaration_order(
 
 
 def test_reasoning_choices_are_the_relay_allowed_sets_bucketed_by_harness(
-        keys_document, relay_module):
-    """추론 강도 선택지는 `pm_relay.REASONING_ALLOWED` 와 하네스마다 **집합으로 같다**."""
+        keys_document):
+    """추론 강도 선택지는 `conf_schema.REASONING_ALLOWED` 와 하네스마다 **집합으로 같다**."""
     rows = _choice_rows(keys_document, "reasoning")
     expected = {harness: set(values)
                 for harness, values in conf_schema.REASONING_ALLOWED.items()}
@@ -945,7 +938,7 @@ def test_reasoning_rows_fetch_the_sibling_model_variants(conf_module, keys_docum
 
 
 def test_reasoning_descriptions_point_at_the_owner_instead_of_copying_the_ladder(
-        conf_module, keys_document, relay_module):
+        conf_module, keys_document):
     """추론 강도 키의 **설명**은 허용집합을 복제하지 않고 소유자를 가리킨다(T-0918·X-4).
 
     복제한 목록은 반드시 갈린다 — 설명이 `codex 는 low/medium/high/xhigh` 라고 적어 둔 동안
@@ -994,19 +987,19 @@ def test_every_dependent_choice_names_a_declared_sibling_key(conf_module, keys_d
         assert conf_module.key_spec(depends_on) is not None, depends_on
 
 
-def test_the_listed_choices_all_pass_the_unchanged_validators(keys_document, relay_module):
+def test_the_listed_choices_all_pass_the_unchanged_validators(keys_document):
     """선택지는 고르기 쉽게 하는 값이지 통과를 막는 값이 아니다 — 검증 규칙은 그대로다."""
     harness_row = _choice_rows(keys_document, "harness")[0]
     for harness in harness_row["choices"]["values"][""]:
-        assert relay_module.validate_harness(harness) == harness
+        assert contract.validate_harness(harness) == harness
 
     reasoning_row = _choice_rows(keys_document, "reasoning")[0]
     for harness, values in reasoning_row["choices"]["values"].items():
         for value in values:
-            assert relay_module.validate_reasoning(
+            assert contract.validate_reasoning(
                 harness, value, model="m", cwd=REPO, env={}) == value
-    with pytest.raises(relay_module.HarnessContractError):
-        relay_module.validate_reasoning(                      # 닫힌 집합은 여전히 닫혀 있다
+    with pytest.raises(contract.HarnessContractError):
+        contract.validate_reasoning(                      # 닫힌 집합은 여전히 닫혀 있다
             "codex", "nope", model="m", cwd=REPO, env={})
 
 

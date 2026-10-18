@@ -13,6 +13,9 @@ from pathlib import Path
 
 import pytest
 from _engine_tree import engine_python_files
+from pm_engine.app.session import relay
+from pm_engine.infra import raw_output
+from pm_engine.infra.harness import contract, watchdog
 
 # 원문 삭제 코드가 새로 생기지 않았는지 확인하는 grep 대상 — `raw_<이름>.unlink(...)` /
 # `raw_<이름>.rmtree(...)` 형(스폰 전 0바이트 정리 하나만 정당). T-0774 DoD 4.
@@ -29,11 +32,6 @@ def _load(name: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-@pytest.fixture
-def relay():
-    return _load("pm_relay")
 
 
 @pytest.fixture
@@ -56,9 +54,9 @@ def _ledger(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _unfinished_record(relay, ledger_path: Path, tmp_path: Path) -> str:
+def _unfinished_record(ledger_path: Path, tmp_path: Path) -> str:
     """raw close 검증용 미마감 레코드를 현재 프로세스 PID로 등록한다."""
-    return relay.start_raw_record(
+    return raw_output.start_raw_record(
         ledger_path,
         surface="delegate",
         harness="codex",
@@ -118,20 +116,20 @@ def _engine_family(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def test_default_storage_is_pm_local_and_explicit_destination_is_unchanged(
-        relay, tmp_path):
+        tmp_path):
     repo = _repo(tmp_path)
-    raw, ledger = relay.raw_storage_paths(repo, "delegate")
+    raw, ledger = raw_output.raw_storage_paths(repo, "delegate")
     assert raw == repo / ".project_manager" / ".local" / "delegate"
     assert ledger == repo / ".project_manager" / ".local" / "raw_outputs.json"
 
     explicit = tmp_path / "injected-output"
-    raw, ledger = relay.raw_storage_paths(repo, "review", explicit)
+    raw, ledger = raw_output.raw_storage_paths(repo, "review", explicit)
     assert raw == explicit
     assert ledger == explicit / "raw_outputs.json"
 
 
 def test_unresolved_anchor_refuses_instead_of_writing_to_the_os_tempdir(
-        relay, tmp_path):
+        tmp_path):
     """앵커를 해소 못 하면 값을 돌려주지 않는다 — 기록의 목적지는 두 곳뿐이다.
 
     옛 동작은 OS tempdir 의 `pm_raw_outputs.json` 으로 조용히 갈아탔다. 위임 raw 출력과 라운드
@@ -140,14 +138,14 @@ def test_unresolved_anchor_refuses_instead_of_writing_to_the_os_tempdir(
     """
     unresolved = tmp_path / "adopter-without-pm-home"
     with pytest.raises(ValueError) as excinfo:
-        relay.raw_storage_paths(unresolved, "delegate")
+        raw_output.raw_storage_paths(unresolved, "delegate")
     message = str(excinfo.value)
     assert ".project_manager 가 없습니다" in message
     assert str(unresolved) in message
     assert "--output-dir" in message
 
     explicit = tmp_path / "explicit-output"
-    assert relay.raw_storage_paths(unresolved, "delegate", explicit) == (
+    assert raw_output.raw_storage_paths(unresolved, "delegate", explicit) == (
         explicit, explicit / "raw_outputs.json",
     )
 
@@ -159,9 +157,8 @@ def test_no_engine_copy_can_store_raw_records_in_the_os_tempdir():
     import 과 호출부 없이 남아 있던 박제 wrapper 2개. parity 누락(canonical 만 고치고
     `pm_update --all-targets` 미실행)도 이 한 테스트가 잡는다.
     """
-    relay_module = _load("pm_relay")
     assert "temp_dir" not in inspect.signature(
-        relay_module.raw_storage_paths
+        raw_output.raw_storage_paths
     ).parameters
 
     tool_dirs = [TOOLS] + [
@@ -188,11 +185,11 @@ def test_no_engine_copy_can_store_raw_records_in_the_os_tempdir():
     assert offenders == []
 
 
-def test_start_and_finish_record_preserve_audit_fields(relay, tmp_path):
+def test_start_and_finish_record_preserve_audit_fields(tmp_path):
     ledger_path = tmp_path / "raw_outputs.json"
     raw_path = tmp_path / "raw.txt"
     started = datetime.datetime(2026, 7, 30, 1, 2, tzinfo=datetime.timezone.utc)
-    record_id = relay.start_raw_record(
+    record_id = raw_output.start_raw_record(
         ledger_path,
         surface="delegate",
         harness="codex",
@@ -208,7 +205,7 @@ def test_start_and_finish_record_preserve_audit_fields(relay, tmp_path):
     assert rows[0]["raw_path"] == str(raw_path.resolve())
     assert "finished_at" not in rows[0]
 
-    relay.finish_raw_record(
+    raw_output.finish_raw_record(
         ledger_path,
         record_id,
         rc=0,
@@ -225,7 +222,7 @@ def test_start_and_finish_record_preserve_audit_fields(relay, tmp_path):
 
 
 def test_claude_and_codex_usage_shapes_coexist_and_survive_prune_round_trip(
-        relay, tmp_path):
+        tmp_path):
     """4필드(claude)·5필드(codex) 행이 한 장부에 공존하고 `_prune_raw_records` 왕복 후에도
     각 행의 usage 가 원형 보존된다(T-0780)."""
     ledger_path = tmp_path / "raw_outputs.json"
@@ -235,64 +232,64 @@ def test_claude_and_codex_usage_shapes_coexist_and_survive_prune_round_trip(
         "input": 12_481, "cached_input": 9_600, "cache_write_input": 0,
         "output": 105, "reasoning_output": 92,
     }
-    claude_id = relay.start_raw_record(
+    claude_id = raw_output.start_raw_record(
         ledger_path, surface="delegate", harness="claude", model="opus",
         role="developer", raw_path=tmp_path / "claude.txt", attempt="primary",
     )
-    relay.finish_raw_record(
+    raw_output.finish_raw_record(
         ledger_path, claude_id, rc=0, elapsed_sec=1.0, silence_sec=None,
         extra={"usage": claude_usage},
     )
-    codex_id = relay.start_raw_record(
+    codex_id = raw_output.start_raw_record(
         ledger_path, surface="delegate", harness="codex", model="gpt-x",
         role="developer", raw_path=tmp_path / "codex.txt", attempt="primary",
     )
-    relay.finish_raw_record(
+    raw_output.finish_raw_record(
         ledger_path, codex_id, rc=0, elapsed_sec=1.0, silence_sec=None,
         extra={"usage": codex_usage},
     )
     # 정리 규칙이 다시 도는 레코드 하나 더 시드 — prune 왕복.
-    relay.start_raw_record(
+    raw_output.start_raw_record(
         ledger_path, surface="delegate", harness="claude", model="opus",
         role="developer", raw_path=tmp_path / "third.txt", attempt="primary",
     )
-    rows = {row["id"]: row for row in relay.raw_records(ledger_path)}
+    rows = {row["id"]: row for row in raw_output.raw_records(ledger_path)}
     assert rows[claude_id]["usage"] == claude_usage
     assert rows[claude_id]["harness"] == "claude"
     assert rows[codex_id]["usage"] == codex_usage
     assert rows[codex_id]["harness"] == "codex"
 
 
-def test_reserved_key_table_covers_every_common_schema_field(relay, tmp_path):
+def test_reserved_key_table_covers_every_common_schema_field(tmp_path):
     """예약표가 시작·마감이 쓰는 공통 필드를 전부 담는다 — 표가 뒤처지면 예약이 헐거워진다."""
     ledger_path = tmp_path / "raw_outputs.json"
-    record_id = relay.start_raw_record(
+    record_id = raw_output.start_raw_record(
         ledger_path, surface="delegate", harness="codex", model="gpt-x",
         role="developer", raw_path=tmp_path / "raw.txt", attempt="primary",
     )
-    relay.finish_raw_record(
+    raw_output.finish_raw_record(
         ledger_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None,
     )
     common = set(_ledger(ledger_path)["records"][0])
-    assert common <= relay.RAW_LEDGER_RESERVED_KEYS, (
-        f"공통 스키마 키가 예약표 밖: {sorted(common - relay.RAW_LEDGER_RESERVED_KEYS)}"
+    assert common <= raw_output.RAW_LEDGER_RESERVED_KEYS, (
+        f"공통 스키마 키가 예약표 밖: {sorted(common - raw_output.RAW_LEDGER_RESERVED_KEYS)}"
     )
 
 
-def test_finish_record_rejects_second_completion_without_overwrite(relay, tmp_path):
+def test_finish_record_rejects_second_completion_without_overwrite(tmp_path):
     """마감 락 안에서 재마감을 거부해 raw close 조회 후 경합도 덮어쓰지 않는다.
 
     재마감 신호는 전용 타입(`RawRecordAlreadyFinished`)이다 — 원 실행 마감 호출부가
     "이미 수동 마감됨" 충돌만 경고로 강등하고 시작 레코드 유실(fail-loud)과 구분한다."""
     ledger_path = tmp_path / "raw_outputs.json"
-    record_id = _unfinished_record(relay, ledger_path, tmp_path)
-    relay.finish_raw_record(
+    record_id = _unfinished_record(ledger_path, tmp_path)
+    raw_output.finish_raw_record(
         ledger_path, record_id, rc=0, elapsed_sec=2, silence_sec=0,
         finish_note="첫 마감",
     )
 
-    with pytest.raises(relay.RawRecordAlreadyFinished, match="이미 마감"):
-        relay.finish_raw_record(
+    with pytest.raises(raw_output.RawRecordAlreadyFinished, match="이미 마감"):
+        raw_output.finish_raw_record(
             ledger_path, record_id, rc=-1, elapsed_sec=3, silence_sec=None,
             finish_note="덮어쓰기",
         )
@@ -302,23 +299,23 @@ def test_finish_record_rejects_second_completion_without_overwrite(relay, tmp_pa
     assert row["finish_note"] == "첫 마감"
 
 
-def test_finish_note_is_explicit_field_not_extra_injectable(relay, tmp_path):
+def test_finish_note_is_explicit_field_not_extra_injectable(tmp_path):
     """`finish_note` 는 명시 완료 필드다 — 시작/마감 `extra` 로는 예약 키라 주입 불가."""
     ledger_path = tmp_path / "raw_outputs.json"
-    record_id = relay.start_raw_record(
+    record_id = raw_output.start_raw_record(
         ledger_path, surface="delegate", harness="codex", model="gpt-x",
         role="developer", raw_path=tmp_path / "raw.txt", attempt="primary",
         extra={"finish_note": "시작 주입 시도"},
     )
     assert "finish_note" not in _ledger(ledger_path)["records"][0]
-    relay.finish_raw_record(
+    raw_output.finish_raw_record(
         ledger_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None,
         finish_note="정식 마감 사유", extra={"finish_note": "extra 주입 시도"},
     )
     assert _ledger(ledger_path)["records"][0]["finish_note"] == "정식 마감 사유"
 
 
-def test_start_extra_cannot_seed_finish_only_schema_keys(relay, tmp_path):
+def test_start_extra_cannot_seed_finish_only_schema_keys(tmp_path):
     """시작 `extra` 도 **마감 전용** 공통 키를 심지 못한다 (T-0600 — 두 표면 한 규칙).
 
     시작을 "지금 이 행에 있는 키"로만 막으면 `finished_at`/`rc` 는 시작 시점에 아직 없어
@@ -326,7 +323,7 @@ def test_start_extra_cannot_seed_finish_only_schema_keys(relay, tmp_path):
     미마감 sweep 이 못 본다(fail-open).
     """
     ledger_path = tmp_path / "raw_outputs.json"
-    record_id = relay.start_raw_record(
+    record_id = raw_output.start_raw_record(
         ledger_path, surface="delegate", harness="codex", model="gpt-x",
         role="developer", raw_path=tmp_path / "raw.txt", attempt="primary",
         extra={"finished_at": "2026-01-01T00:00:00+00:00", "rc": 0,
@@ -339,10 +336,10 @@ def test_start_extra_cannot_seed_finish_only_schema_keys(relay, tmp_path):
     for finish_only in ("finished_at", "rc", "elapsed_sec", "silence_sec"):
         assert finish_only not in row, f"시작 extra 가 마감 키를 심었다: {finish_only}"
     assert row["ticket"] == "T-" + "0600"          # 예약 밖 필드는 그대로 실린다
-    assert relay.unfinished_raw_records(ledger_path) == [row]   # sweep 이 본다
+    assert raw_output.unfinished_raw_records(ledger_path) == [row]   # sweep 이 본다
 
 
-def test_retention_is_bounded_and_keeps_unfinished_separate(relay):
+def test_retention_is_bounded_and_keeps_unfinished_separate():
     now = datetime.datetime(2026, 7, 30, tzinfo=datetime.timezone.utc)
 
     def row(index: int, *, finished: bool, age_days: int = 0) -> dict:
@@ -360,31 +357,28 @@ def test_retention_is_bounded_and_keeps_unfinished_separate(relay):
     # 여지가 없다(상한 상수가 커지면 900/901 같은 고정 index 는 벌크 루프 범위 안으로 들어와
     # id 를 재사용하고 만다 · T-0774 에서 MAX_COMPLETED 상향으로 실제로 충돌했다).
     records = [
-        *(row(i, finished=False) for i in range(relay.RAW_LEDGER_MAX_UNFINISHED + 9)),
-        *(row(i, finished=True) for i in range(relay.RAW_LEDGER_MAX_COMPLETED + 11)),
-        row(-1, finished=False, age_days=relay.RAW_LEDGER_UNFINISHED_DAYS + 1),
-        row(-2, finished=True, age_days=relay.RAW_LEDGER_COMPLETED_DAYS + 1),
+        *(row(i, finished=False) for i in range(raw_output.RAW_LEDGER_MAX_UNFINISHED + 9)),
+        *(row(i, finished=True) for i in range(raw_output.RAW_LEDGER_MAX_COMPLETED + 11)),
+        row(-1, finished=False, age_days=raw_output.RAW_LEDGER_UNFINISHED_DAYS + 1),
+        row(-2, finished=True, age_days=raw_output.RAW_LEDGER_COMPLETED_DAYS + 1),
     ]
-    kept = relay._prune_raw_records(records, now=now)
+    kept = raw_output._prune_raw_records(records, now=now)
     unfinished = [item for item in kept if "finished_at" not in item]
     completed = [item for item in kept if "finished_at" in item]
-    assert len(unfinished) == relay.RAW_LEDGER_MAX_UNFINISHED
-    assert len(completed) == relay.RAW_LEDGER_MAX_COMPLETED
+    assert len(unfinished) == raw_output.RAW_LEDGER_MAX_UNFINISHED
+    assert len(completed) == raw_output.RAW_LEDGER_MAX_COMPLETED
     assert all(item["id"] not in {"row-False--1", "row-True--2"} for item in kept)
 
 
 def test_parallel_processes_append_without_record_loss(tmp_path):
     ledger_path = tmp_path / "raw_outputs.json"
-    module_path = TOOLS / "pm_relay.py"
     script = """
-import importlib.util
 import pathlib
 import sys
-spec = importlib.util.spec_from_file_location("parallel_raw_ledger", sys.argv[1])
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+sys.path.insert(0, sys.argv[1])
+from pm_engine.infra import raw_output
 index = sys.argv[3]
-module.start_raw_record(
+raw_output.start_raw_record(
     pathlib.Path(sys.argv[2]),
     surface="delegate",
     harness="codex",
@@ -400,7 +394,7 @@ module.start_raw_record(
                 sys.executable,
                 "-c",
                 script,
-                str(module_path),
+                str(TOOLS),
                 str(ledger_path),
                 str(index),
             ],
@@ -451,7 +445,7 @@ def test_delegate_kill_leaves_discoverable_unfinished_record_before_runner(
             attempt="primary",
         )
 
-    unfinished = delegate._load_relay().unfinished_raw_records(ledger_path)
+    unfinished = raw_output.unfinished_raw_records(ledger_path)
     assert len(unfinished) == 1
     raw_path = Path(unfinished[0]["raw_path"])
     assert raw_path.is_file()
@@ -479,7 +473,7 @@ def test_raw_empty_still_prints_resolved_ledger_on_first_line(
 
 
 def test_raw_output_dir_reads_that_ledger(
-        delegate, relay, monkeypatch, tmp_path, capsys):
+        delegate, monkeypatch, tmp_path, capsys):
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
     output_dir = tmp_path / "explicit-output"
@@ -487,7 +481,7 @@ def test_raw_output_dir_reads_that_ledger(
     raw_path = output_dir / "explicit.txt"
     raw_path.parent.mkdir(parents=True)
     raw_path.write_text("raw\n", encoding="utf-8")
-    relay.start_raw_record(
+    raw_output.start_raw_record(
         ledger_path,
         surface="delegate",
         harness="codex",
@@ -507,12 +501,12 @@ def test_raw_output_dir_reads_that_ledger(
 
 
 def test_raw_close_finishes_unfinished_record_with_fixed_abnormal_schema(
-        delegate, relay, monkeypatch, tmp_path, capsys):
+        delegate, monkeypatch, tmp_path, capsys):
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
     output_dir = tmp_path / "explicit-output"
     ledger_path = output_dir / "raw_outputs.json"
-    record_id = _unfinished_record(relay, ledger_path, tmp_path)
+    record_id = _unfinished_record(ledger_path, tmp_path)
     # pid 부재는 안전 게이트를 통과한다.
     ledger = _ledger(ledger_path)
     ledger["records"][0].pop("pid")
@@ -537,13 +531,13 @@ def test_raw_close_finishes_unfinished_record_with_fixed_abnormal_schema(
 
 
 def test_raw_close_rejects_already_finished_record(
-        delegate, relay, monkeypatch, tmp_path, capsys):
+        delegate, monkeypatch, tmp_path, capsys):
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
     output_dir = tmp_path / "explicit-output"
     ledger_path = output_dir / "raw_outputs.json"
-    record_id = _unfinished_record(relay, ledger_path, tmp_path)
-    relay.finish_raw_record(
+    record_id = _unfinished_record(ledger_path, tmp_path)
+    raw_output.finish_raw_record(
         ledger_path, record_id, rc=0, elapsed_sec=2, silence_sec=0,
     )
 
@@ -568,12 +562,12 @@ def test_raw_close_rejects_unknown_record_id(
 
 
 def test_raw_close_rejects_live_pid(
-        delegate, relay, monkeypatch, tmp_path, capsys):
+        delegate, monkeypatch, tmp_path, capsys):
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
     output_dir = tmp_path / "explicit-output"
     ledger_path = output_dir / "raw_outputs.json"
-    record_id = _unfinished_record(relay, ledger_path, tmp_path)
+    record_id = _unfinished_record(ledger_path, tmp_path)
     assert _ledger(ledger_path)["records"][0]["pid"] == os.getpid()
 
     assert delegate._cmd_raw([
@@ -584,12 +578,12 @@ def test_raw_close_rejects_live_pid(
 
 
 def test_raw_close_force_bypasses_live_pid_and_preserves_note(
-        delegate, relay, monkeypatch, tmp_path):
+        delegate, monkeypatch, tmp_path):
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
     output_dir = tmp_path / "explicit-output"
     ledger_path = output_dir / "raw_outputs.json"
-    record_id = _unfinished_record(relay, ledger_path, tmp_path)
+    record_id = _unfinished_record(ledger_path, tmp_path)
 
     assert delegate._cmd_raw([
         "close", record_id,
@@ -603,16 +597,16 @@ def test_raw_close_force_bypasses_live_pid_and_preserves_note(
 
 
 def test_raw_close_warns_when_old_completion_is_pruned(
-        delegate, relay, monkeypatch, tmp_path, capsys):
+        delegate, monkeypatch, tmp_path, capsys):
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
     output_dir = tmp_path / "explicit-output"
     ledger_path = output_dir / "raw_outputs.json"
     started = (
         datetime.datetime.now(datetime.timezone.utc)
-        - datetime.timedelta(days=relay.RAW_LEDGER_COMPLETED_DAYS + 1)
+        - datetime.timedelta(days=raw_output.RAW_LEDGER_COMPLETED_DAYS + 1)
     )
-    record_id = relay.start_raw_record(
+    record_id = raw_output.start_raw_record(
         ledger_path,
         surface="delegate",
         harness="codex",
@@ -631,9 +625,9 @@ def test_raw_close_warns_when_old_completion_is_pruned(
     warning = [line for line in lines if line.startswith("경고:")]
     assert warning == [
         f"경고: raw 레코드 {record_id}는 완료 보존창"
-        f"({relay.RAW_LEDGER_COMPLETED_DAYS}일) 밖이어서 마감과 동시에 장부에서 제거됨"
+        f"({raw_output.RAW_LEDGER_COMPLETED_DAYS}일) 밖이어서 마감과 동시에 장부에서 제거됨"
     ]
-    assert relay.raw_records(ledger_path) == []
+    assert raw_output.raw_records(ledger_path) == []
 
 
 def test_raw_help_exposes_close_surface(delegate, capsys):
@@ -660,7 +654,7 @@ def test_raw_warns_about_peer_engine_ledger_without_reading_it(
         peer_repo / ".project_manager" / ".local" / "raw_outputs.json"
     )
     peer_raw = peer_repo / "peer-only.txt"
-    delegate._load_relay().start_raw_record(
+    raw_output.start_raw_record(
         peer_ledger,
         surface="delegate",
         harness="codex",
@@ -687,11 +681,11 @@ def test_raw_warns_about_peer_engine_ledger_without_reading_it(
 def test_delegate_registration_is_structurally_before_runner(delegate):
     """등재 제거와 종료시점 이동을 모두 잡는 비공허 순서 sensitivity."""
     source = inspect.getsource(delegate._execute_attempt)
-    registration = source.index("record_id = relay.start_raw_record(")
+    registration = source.index("record_id = raw_output.start_raw_record(")
     execution = source.index("result = run_fn(")
     # 마감은 실행 *뒤* 경로를 앵커로 잡는다 — pre-spawn 거부(스폰 없이 rc=1 마감)가 실행보다
     # 앞에 있는 것은 설계 동작이라 첫 출현으로 재면 정상 구조를 역전으로 오판한다.
-    completion = source.index("relay.finish_raw_record(", execution)
+    completion = source.index("raw_output.finish_raw_record(", execution)
     assert registration < execution < completion
 
 
@@ -718,7 +712,7 @@ def test_additional_reviewer_kill_leaves_discoverable_unfinished_record_before_r
             run_fn=killed_runner,
         )
 
-    unfinished = external._load_relay().unfinished_raw_records(ledger_path)
+    unfinished = raw_output.unfinished_raw_records(ledger_path)
     assert len(unfinished) == 1
     # 대상은 언제나 해소된 구조화 tuple 이라 미마감 레코드도 **고정된 모델**을 싣는다 — 어느
     # 모델이 이 실행을 냈는지는 죽은 실행에서도 확정된다.
@@ -975,10 +969,8 @@ def test_legacy_diff_root_raw_anchor_writes_to_the_slot_ledger(
     pm_home, worktree = _review_slot_family(tmp_path)
     monkeypatch.setattr(external, "REPO", worktree)
     _stub_reviewer(external, monkeypatch)
-    relay = external._load_relay()
-
     def legacy_raw_storage(output_dir=None):
-        return relay.raw_storage_paths(external.REPO, "review", output_dir)
+        return raw_output.raw_storage_paths(external.REPO, "review", output_dir)
 
     monkeypatch.setattr(external, "_raw_storage", legacy_raw_storage)
     assert external.main(["--paths", "seed.txt", "--no-gate"]) == 0
@@ -1261,38 +1253,37 @@ def test_main_clears_raw_anchor_between_calls(
 
 # ══ T-0774 — 요약 레코드 보존을 원문보다 짧게 두지 않는다(귀속이 먼저 사라지는 역전 정정) ══
 
-def test_completed_retention_raised_and_pm_relay_stays_conf_independent(relay):
+def test_completed_retention_raised_and_pm_relay_stays_conf_independent():
     """완료 보존 상수가 T-0774 이전 실측 기준선(완료 7일·256건 · 2026-08-19 adopter#0)보다
     상향되고, 새 conf 키는 0이다 — 값 자체가 아니라 상향 방향과 conf 무의존을 단언한다."""
     PRE_T0774_COMPLETED_DAYS = 7
     PRE_T0774_MAX_COMPLETED = 256
-    assert relay.RAW_LEDGER_COMPLETED_DAYS > PRE_T0774_COMPLETED_DAYS
-    assert relay.RAW_LEDGER_MAX_COMPLETED > PRE_T0774_MAX_COMPLETED
+    assert raw_output.RAW_LEDGER_COMPLETED_DAYS > PRE_T0774_COMPLETED_DAYS
+    assert raw_output.RAW_LEDGER_MAX_COMPLETED > PRE_T0774_MAX_COMPLETED
 
-    from test_additional_reviewer_target import _assert_relay_conf_isolation, _assert_relay_dag
-    _assert_relay_dag()
-    _assert_relay_conf_isolation(Path(relay.__file__).read_text(encoding="utf-8"))
+    from test_additional_reviewer_target import _assert_relay_conf_isolation
+    _assert_relay_conf_isolation(Path(raw_output.__file__).read_text(encoding="utf-8"))
 
 
-def test_completed_retention_pinned_to_measured_capacity_bound(relay):
+def test_completed_retention_pinned_to_measured_capacity_bound():
     """F-001(라운드4 리뷰) — 위 테스트의 부등식(구값보다 크다)만으로는 8일/257건 같은 명목상
     상향도 통과한다(실측: 이 변이는 두 신규 보존 단언을 모두 만족시켰다). 실측 근거
     (846B/건·34건/일 · 2026-08-19 adopter#0)로 유도한 목표값 자체와, 그 근거가 실제로 요구하는
     용량 관계(유입률 × 목표 보존일수를 덮는지)를 값으로 고정해 그런 축소를 실패시킨다."""
-    RECORDS_PER_DAY_MEASURED = 34   # 2026-08-19 adopter#0 실측(최근 7일 평균) — pm_relay.py:311
-    TARGET_RETENTION_DAYS = 90      # pm_relay.py:311 주석의 목표 보존창(90일)
+    RECORDS_PER_DAY_MEASURED = 34   # 2026-08-19 adopter#0 실측(최근 7일 평균) — raw_output.py 보존 상한 주석
+    TARGET_RETENTION_DAYS = 90      # raw_output.py 보존 상한 주석의 목표 보존창(90일)
 
     # 상한 상수 자체가 근거로 유도한 목표값에 정확히 고정돼 있는지 — 8/257 은 여기서 이미 실패한다.
-    assert relay.RAW_LEDGER_COMPLETED_DAYS == TARGET_RETENTION_DAYS
-    assert relay.RAW_LEDGER_MAX_COMPLETED == 4096
+    assert raw_output.RAW_LEDGER_COMPLETED_DAYS == TARGET_RETENTION_DAYS
+    assert raw_output.RAW_LEDGER_MAX_COMPLETED == 4096
 
     # 건수 상한이 실측 유입률로 목표 보존기간 전체를 실제로 덮는지 — 용량 관계.
     # 257 < 34*90(=3060) 이므로 8/257 변이는 이 부등식에서도 실패한다.
-    assert relay.RAW_LEDGER_MAX_COMPLETED >= RECORDS_PER_DAY_MEASURED * TARGET_RETENTION_DAYS
+    assert raw_output.RAW_LEDGER_MAX_COMPLETED >= RECORDS_PER_DAY_MEASURED * TARGET_RETENTION_DAYS
 
 
 def test_record_aged_past_old_seven_day_policy_survives_under_raised_retention(
-        relay, tmp_path):
+        tmp_path):
     """구 정책(완료 7일)이면 정리됐을 완료 레코드가 신 정책 아래서는 남는다.
 
     상수 비교가 아니라 실제 prune 통과 여부를 레코드 존재로 단언한다(시간 경과 주입).
@@ -1305,32 +1296,32 @@ def test_record_aged_past_old_seven_day_policy_survives_under_raised_retention(
     raw_path = tmp_path / "old-raw.txt"
     raw_path.write_text("raw\n", encoding="utf-8")
 
-    record_id = relay.start_raw_record(
+    record_id = raw_output.start_raw_record(
         ledger_path, surface="delegate", harness="codex", model="gpt-x",
         role="developer", raw_path=raw_path, attempt="primary", now=aged,
     )
-    relay.finish_raw_record(
+    raw_output.finish_raw_record(
         ledger_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None, now=aged,
     )
     # 다음 기록이 prune 을 태운다 — 장부는 쓰기 시점에 정리된다(조회는 정리를 유발하지 않는다).
-    other_id = relay.start_raw_record(
+    other_id = raw_output.start_raw_record(
         ledger_path, surface="delegate", harness="codex", model="gpt-x",
         role="developer", raw_path=tmp_path / "new-raw.txt", attempt="primary", now=now,
     )
-    relay.finish_raw_record(
+    raw_output.finish_raw_record(
         ledger_path, other_id, rc=0, elapsed_sec=1.0, silence_sec=None, now=now,
     )
 
-    ids = {row["id"] for row in relay.raw_records(ledger_path)}
+    ids = {row["id"] for row in raw_output.raw_records(ledger_path)}
     assert record_id in ids, "구 정책이면 버려졌을 레코드가 신 정책 아래서는 살아 있어야 한다"
     assert raw_path.is_file()
 
 
-def test_only_pre_spawn_abort_deletes_raw_txt_files(relay, delegate, external):
+def test_only_pre_spawn_abort_deletes_raw_txt_files(delegate, external):
     """raw .txt 삭제 코드는 스폰 전 0바이트 정리(`additional_reviewer._abort_pre_spawn_raw`)
     하나뿐이어야 한다(T-0774 DoD: grep 0). 고아 목록화는 조회만 하고 지우지 않는다."""
     hits = []
-    for module in (relay, delegate, external):
+    for module in (relay, contract, watchdog, raw_output, delegate, external):
         source = Path(module.__file__).read_text(encoding="utf-8")
         for lineno, line in enumerate(source.splitlines(), start=1):
             if _RAW_TXT_DELETE_RE.search(line):
@@ -1346,19 +1337,19 @@ def _engine_named_raw(base_dir: Path, name: str, size: int = 8) -> Path:
     return path
 
 
-def test_orphan_scan_lists_only_unreferenced_engine_named_files(relay, tmp_path):
+def test_orphan_scan_lists_only_unreferenced_engine_named_files(tmp_path):
     """`scan_orphan_raw_files` — 참조 중인 원문·미마감 원문·PM 수작업 산출은 제외하고,
     장부 미참조 엔진 명명 원문만 나열한다(건수·바이트 정확)."""
     ledger_path = tmp_path / "raw_outputs.json"
     base_dir = tmp_path / "delegate"
 
     referenced = _engine_named_raw(base_dir, "pm_delegate_codex_1_aaa.txt", size=5)
-    relay.start_raw_record(
+    raw_output.start_raw_record(
         ledger_path, surface="delegate", harness="codex", model="gpt-x",
         role="developer", raw_path=referenced, attempt="primary",
     )
     unfinished_ref = _engine_named_raw(base_dir, "pm_delegate_codex_2_bbb.txt", size=3)
-    relay.start_raw_record(
+    raw_output.start_raw_record(
         ledger_path, surface="delegate", harness="codex", model="gpt-x",
         role="developer", raw_path=unfinished_ref, attempt="primary",
     )
@@ -1369,7 +1360,7 @@ def test_orphan_scan_lists_only_unreferenced_engine_named_files(relay, tmp_path)
         tmp_path / "review", "additional_reviewer_codex_20260101_1_ddd.txt", size=13,
     )
 
-    summary = relay.scan_orphan_raw_files(
+    summary = raw_output.scan_orphan_raw_files(
         (base_dir, tmp_path / "review"), ledger_path,
     )
 
@@ -1423,7 +1414,7 @@ def test_raw_cmd_orphan_list_respects_limit_and_notes_omission(
     assert "이하 1건 생략" in output
 
 
-def test_raw_queries_never_delete_files(relay, delegate, monkeypatch, tmp_path):
+def test_raw_queries_never_delete_files(delegate, monkeypatch, tmp_path):
     """`raw_records`·`unfinished_raw_records`·`pm_delegate raw` 조회는 디스크 파일을 지우지
     않는다(참조 원문·고아 원문 모두)."""
     repo = _repo(tmp_path)
@@ -1432,17 +1423,17 @@ def test_raw_queries_never_delete_files(relay, delegate, monkeypatch, tmp_path):
 
     referenced = _engine_named_raw(delegate_dir, "pm_delegate_codex_1_ref.txt")
     orphan = _engine_named_raw(delegate_dir, "pm_delegate_codex_2_orphan.txt")
-    record_id = relay.start_raw_record(
+    record_id = raw_output.start_raw_record(
         ledger_path, surface="delegate", harness="codex", model="gpt-x",
         role="developer", raw_path=referenced, attempt="primary",
     )
-    relay.finish_raw_record(
+    raw_output.finish_raw_record(
         ledger_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None,
     )
 
     before = sorted(p.name for p in delegate_dir.iterdir())
-    relay.raw_records(ledger_path)
-    relay.unfinished_raw_records(ledger_path)
+    raw_output.raw_records(ledger_path)
+    raw_output.unfinished_raw_records(ledger_path)
     assert delegate._cmd_raw([]) == 0
     after = sorted(p.name for p in delegate_dir.iterdir())
 

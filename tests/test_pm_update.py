@@ -26,6 +26,7 @@ import pytest
 from _manager_home import _known_ctx_installation
 from _win_skip import posix_mode_supported
 from pm_engine.domain import conf_schema
+from pm_engine.infra.harness import contract
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1487,7 +1488,7 @@ def test_guest_rows_join_plan_engine_copy_and_render_rerender(
         pm_update, tmp_path, monkeypatch, capsys):
     """guest 절의 두 행이 **같은 update 채널**로 전파된다 — 엔진 행은 byte-copy, 렌더물은 재렌더.
 
-    엔진 행이 빠지면 `pm_relay` 코어와 짝인 드라이버가 설치 시점 사본으로 영구 동결되고, 렌더물이
+    엔진 행이 빠지면 하네스 계약 코어와 짝인 드라이버가 설치 시점 사본으로 영구 동결되고, 렌더물이
     빠지면 conf 를 바꿔도 그 어댑터가 설치 시점 값으로 남는다(채택자 실측: 카드 model 이 conf 와
     영구 불일치). dry-run 은 그 재렌더를 `[render]` 로 예고한다."""
     framework = _make_guest_framework(tmp_path / "fw")
@@ -3652,10 +3653,9 @@ _MANIFESTS = [
 
 @pytest.mark.parametrize("manifest_path", _MANIFESTS, ids=lambda p: p.parent.parent.name or "root")
 def test_v2_engine_in_manifest(pm_update, manifest_path):
-    """domain.py·pm_relay.py 가 등재되고, 개명 전 pm_orchestrator.py 잔재는 없다."""
+    """domain.py 가 등재되고, 개명 전 pm_orchestrator.py 잔재는 없다."""
     entries = pm_update.read_manifest(manifest_path)
     assert ".project_manager/tools/domain.py" in entries, "domain.py manifest 미등재 (전파 누락)"
-    assert ".project_manager/tools/pm_relay.py" in entries, "pm_relay.py manifest 미등재"
     assert ".project_manager/tools/pm_orchestrator.py" not in entries, "옛 pm_orchestrator.py 잔재 (relay 개명 누락)"
 
 
@@ -8525,7 +8525,7 @@ _ORNITH = "ollama/ornith1.5:35b-a3b"    # low·medium·high
 
 
 def _home_pm_update(home: Path):
-    """그 홈에 설치된 pm_update — 렌더러·pm_relay 도 그 홈의 tools 에서 읽는다(설치 폴더 = 조회 cwd)."""
+    """그 홈에 설치된 pm_update — 렌더러·하네스 계약도 그 홈의 tools 에서 읽는다(설치 폴더 = 조회 cwd)."""
     spec = importlib.util.spec_from_file_location(
         "home_pm_update", home / ".project_manager" / "tools" / "pm_update.py")
     module = importlib.util.module_from_spec(spec)
@@ -8587,7 +8587,8 @@ def test_apply_conf_refuses_per_model_reasoning_outside_variants(pm_update, tmp_
 def test_apply_conf_lists_models_once_per_save(tmp_path, monkeypatch):
     """opencode 카드에 추론 값을 싣는 저장 한 번은 모델 목록 조회 한 번이다(반영·거부 모두).
 
-    추론 값 확인·계획 판정·산출물 그리기가 렌더러 하나(pm_relay 조회 기억 하나)를 쓴다."""
+    추론 값 확인·계획 판정·산출물 그리기가 렌더러 하나(`contract` 조회 기억 하나)를 쓴다. 조회 기억은
+    프로세스 전역이라 저장마다 비우고 잰다."""
     from _manager_home import _run, known_ctx_env, make_committed_source
     from _fake_opencode import calls
     fakebin = install_fake_opencode(tmp_path / "fakebin", OLLAMA_LISTING)
@@ -8600,6 +8601,7 @@ def test_apply_conf_lists_models_once_per_save(tmp_path, monkeypatch):
     module = _home_pm_update(home)
     card = home / ".opencode" / "agents" / "developer.md"
 
+    monkeypatch.setattr(contract, "_MODEL_LISTING_MEMO", {})
     installed = len(calls(fakebin))
     result = module.apply_conf(home, updates={
         "delegate.developer.harness": "opencode", "delegate.developer.model": _ORNITH,
@@ -8609,6 +8611,7 @@ def test_apply_conf_lists_models_once_per_save(tmp_path, monkeypatch):
     assert len(calls(fakebin)) - installed == 1, "\n".join(map(str, calls(fakebin)))
 
     module = _home_pm_update(home)
+    monkeypatch.setattr(contract, "_MODEL_LISTING_MEMO", {})
     saved = len(calls(fakebin))
     with pytest.raises(module.ConfApplyError):
         module.apply_conf(home, updates={"delegate.developer.model": _GLM},

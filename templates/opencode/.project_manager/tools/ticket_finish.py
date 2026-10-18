@@ -48,7 +48,7 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import identity_args  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, lease_store, repo_coordinates, repo_files  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, lease_store, raw_output, repo_coordinates, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -127,18 +127,6 @@ def _load_pm_log():
     return _load_module_from_path(
         TOOLS_DIR / "pm_log.py", "pm_log.py", verifier=_verify_engine_rev,
     )
-
-
-def _engine_temp_root(repo: Path) -> Path:
-    """그 clone 이 소유한 작업용 임시 루트 — 단일 소유자는 `pm_relay.temp_root` 다.
-
-    자리 규약(`.project_manager/.local/tmp`)을 이 도구가 다시 적지 않는다. 로더는 형제 모듈
-    경로 로드 관례 그대로다(`_load_pm_log` 동형·sys.path 무오염).
-    """
-    relay = _load_module_from_path(
-        TOOLS_DIR / "pm_relay.py", "pm_relay.py", verifier=_verify_engine_rev, cache=True,
-    )
-    return relay.temp_root(repo)
 
 
 # ── 회귀 cwd 자동해소 (pm_handoff `_regression_cwd` 재사용·DRY) ────
@@ -2608,7 +2596,7 @@ class TicketFinisher:
         읽기만 당한다(alternates 는 OID 로 객체를 해소할 뿐 이름으로 ref 를 해소하지 않는다).
         """
         scratch = Path(tempfile.mkdtemp(
-            prefix="ticket-finish-baseline-", dir=_engine_temp_root(REPO)))
+            prefix="ticket-finish-baseline-", dir=raw_output.temp_root(REPO)))
         try:
             archive = subprocess.run(
                 ["git", "archive", ref], cwd=str(code_tree), capture_output=True)

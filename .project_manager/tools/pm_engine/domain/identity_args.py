@@ -27,7 +27,7 @@ class Identity:
     (평범한 클래스 — `@dataclass` 미사용: 엔진 도구는 `spec_from_file_location` 으로 로드되는데
     `from __future__ import annotations`(문자열 지연평가) 와 결합 시 모듈이 `sys.modules` 에
     등록 안 돼 있으면 dataclass 처리가 `AttributeError` 로 깨진다 — `worktree_pool.Lease`·
-    `pm_relay` 의 동일 회피 관용구를 따른다.)
+    `pm_engine.infra.harness.watchdog` 의 동일 회피 관용구를 따른다.)
     """
 
     def __init__(self, kind: str, repo: str | None, slot: int | None,

@@ -90,24 +90,6 @@ def _is_engine_rev_skew(exc):
     return getattr(exc, "_engine_rev_skew", False)
 
 
-def _require_engine_sibling(path: Path, filename: str) -> None:
-    """load-bearing 형제 모듈의 **부재**를 stale 사본과 같은 진단으로 번역한다 (fail-loud).
-
-    부재는 raw `FileNotFoundError` 로 터져 복구 방법(pm-update 재동기)을 알려주지 않는다 —
-    원인이 부분/수동 복사라는 점은 stale 사본과 같으므로 같은 marked skew 로 표출한다
-    (board.py `_require_engine_sibling` 동형·self-contained 복제). *옵션* 형제(`_load_board`
-    처럼 부재가 정상 폴백인 곳)에는 쓰지 않는다."""
-    if path.exists():
-        return
-    err = RuntimeError(
-        f"엔진 사본 불완전 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 형제 "
-        f"{filename} 을(를) 찾지 못했다: {path} (부분/수동 복사). `pm-update`(또는 "
-        "pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
-    )
-    err._engine_rev_skew = True
-    raise err
-
-
 def _report_engine_rev_skew_at_terminal(exc) -> int:
     """명시된 CLI 종료 경계에서 marked skew를 진단하고 실패 rc로 바꾼다."""
     print(
@@ -835,15 +817,6 @@ def _now_local() -> str:
 # 이 도구는 *어느 파일에 거는지*(`.local/worktree-leases.lock`)만 정한다.
 # board 를 top-level import 하지 않는다는 원칙은 그대로다 — seam 은 형제를 로드하지 않는
 # leaf 라 그 원칙과 무관하게 공유할 수 있다.
-
-
-def _load_relay():
-    """공용 PID 생존 조회 seam을 소유한 ``pm_relay.py``를 형제 경로에서 로드한다."""
-    relay_path = Path(__file__).resolve().with_name("pm_relay.py")
-    _require_engine_sibling(relay_path, "pm_relay.py")
-    return _load_module_from_path(
-        relay_path, "pm_relay.py", verifier=_verify_engine_rev, cache=True,
-    )
 
 
 @contextlib.contextmanager

@@ -1684,7 +1684,7 @@ def test_add_harness_guest_engine_files_sync_on_pm_update(
 
     결함 형상: add-harness 는 복사만 하고 manifest 에 안 올렸고, 등재 유일분(`@render` 행)마저
     update 계획에서 전량 차감돼 `.codex/pm_orch_codex.py`·`.opencode/lib`·claude ctx 가드가 설치
-    시점 사본으로 영구 동결됐다(`pm_relay` 코어와 짝인 engine-mirror → 코어↔드라이버 skew).
+    시점 사본으로 영구 동결됐다(하네스 계약 코어와 짝인 engine-mirror → 코어↔드라이버 skew).
 
     전 순서쌍에서: 채택자 사본을 stale 로 만들고 self-update → (a) 엔진 파일이 upstream 과 **byte
     일치** · (b) 어댑터 렌더물도 같은 채널로 **재렌더**(stale 사본 소멸) · (c) 어느 manifest 에도

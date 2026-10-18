@@ -460,7 +460,7 @@ _V160_RETIRED_CTX_TERMS: tuple[_RetiredCtxTerm, ...] = (
         "stop" + " marker", (("stop", "스톱"), ("marker", "마커")),
         separator_chars=_SEPARATORS_PROSE_ONLY,
         underscore_exemption_reason=(
-            "pm_relay 의 live 런타임 이름 stop_marker_present 와 겹친다"
+            "relay 의 live 런타임 이름 stop_marker_present 와 겹친다"
         ),
     ),
     _retired_ctx_term("pre" + "-turn", (("pre", "프리"), ("turn", "턴"))),
@@ -575,7 +575,7 @@ def test_no_retired_ctx_safety_terminology_in_v160_shipping_surface():
 def test_v160_terminology_scope_covers_readmes_and_canonical_engine():
     relpaths = {path.relative_to(REPO).as_posix() for path in _v160_shipping_surface()}
     assert {
-        ".project_manager/tools/pm_relay.py",
+        ".project_manager/tools/pm_engine/app/session/relay.py",
         "templates/claude_code/README.md",
         "templates/codex/README.md",
         "templates/opencode/README.md",

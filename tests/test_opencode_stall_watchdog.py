@@ -39,6 +39,9 @@ from pathlib import Path
 from _textio import normalize_newlines
 
 import pytest
+from pm_engine.app.session import relay
+from pm_engine.infra import raw_output
+from pm_engine.infra.harness import contract, watchdog
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -50,10 +53,6 @@ def _load(name: str, path: Path):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
-
-def _load_engine():
-    return _load("pm_relay", TOOLS / "pm_relay.py")
 
 
 def _load_driver():
@@ -126,12 +125,11 @@ def _scripted_popen(procs):
 
 def test_watchdog_stall_exhausts_to_error():
     """모든 시도가 첫 이벤트 없이 stall → StallWatchdogError(fail-loud) + 시도당 kill·loud 1줄."""
-    engine = _load_engine()
     clock = _FakeClock()
     logs: list[str] = []
     procs = [_FakeProc(clock, first_at=None), _FakeProc(clock, first_at=None)]
-    with pytest.raises(engine.StallWatchdogError) as excinfo:
-        engine.run_with_first_event_watchdog(
+    with pytest.raises(watchdog.StallWatchdogError) as excinfo:
+        watchdog.run_with_first_event_watchdog(
             ["opencode", "run"],
             first_event_timeout=5.0, overall_timeout=600.0, retries=1,
             popen=_scripted_popen(procs), clock=clock,
@@ -146,13 +144,12 @@ def test_watchdog_stall_exhausts_to_error():
 
 def test_watchdog_retry_success_after_one_stall():
     """1회 stall 후 성공 stub → 결과 정상 반환(재시도 성공 경로·kill 은 stall 것만)."""
-    engine = _load_engine()
     clock = _FakeClock()
     logs: list[str] = []
     stall = _FakeProc(clock, first_at=None)
     ok = _FakeProc(clock, first_at=0.0, rc=0,
                    stdout='{"type":"text","part":{"text":"PONG"}}\n', stderr="")
-    result = engine.run_with_first_event_watchdog(
+    result = watchdog.run_with_first_event_watchdog(
         ["opencode", "run"],
         first_event_timeout=5.0, overall_timeout=600.0, retries=2,
         popen=_scripted_popen([stall, ok]), clock=clock,
@@ -167,11 +164,10 @@ def test_watchdog_retry_success_after_one_stall():
 
 def test_watchdog_first_event_within_window_returns():
     """첫 이벤트가 창 안(지연 도착)이면 정상 완료 — 폴 루프가 clock 전진으로 도달을 관측."""
-    engine = _load_engine()
     clock = _FakeClock()
     # first_at=3s < first_event_timeout=5s → 창 안에서 관측(stall 아님).
     proc = _FakeProc(clock, first_at=3.0, rc=0, stdout="event\n")
-    result = engine.run_with_first_event_watchdog(
+    result = watchdog.run_with_first_event_watchdog(
         ["opencode", "run"],
         first_event_timeout=5.0, overall_timeout=600.0, retries=0,
         popen=_scripted_popen([proc]), clock=clock,
@@ -183,14 +179,13 @@ def test_watchdog_first_event_within_window_returns():
 
 def test_watchdog_overall_timeout_during_drain_raises():
     """첫 이벤트는 왔으나 완료 drain 이 overall 초과 → TimeoutExpired 전파 + kill(mid-turn 백스톱)."""
-    engine = _load_engine()
     clock = _FakeClock()
     proc = _FakeProc(
         clock, first_at=0.0,
         communicate_raises=subprocess.TimeoutExpired(["opencode"], 600),
     )
     with pytest.raises(subprocess.TimeoutExpired):
-        engine.run_with_first_event_watchdog(
+        watchdog.run_with_first_event_watchdog(
             ["opencode", "run"],
             first_event_timeout=5.0, overall_timeout=600.0, retries=0,
             popen=_scripted_popen([proc]), clock=clock,
@@ -201,11 +196,10 @@ def test_watchdog_overall_timeout_during_drain_raises():
 
 def test_watchdog_fast_exit_without_event_drains():
     """첫 이벤트 없이 빠른 종료(rc≠0·에러)는 stall 아님 — drain 이 결과를 수습해 반환."""
-    engine = _load_engine()
     clock = _FakeClock()
     # first_at=0 이면 즉시 poll()이 rc 반환(빠른 exit) — 워치독은 이를 stall 로 안 보고 drain.
     proc = _FakeProc(clock, first_at=0.0, rc=7, stdout="", stderr="boom")
-    result = engine.run_with_first_event_watchdog(
+    result = watchdog.run_with_first_event_watchdog(
         ["opencode", "run"],
         first_event_timeout=5.0, overall_timeout=600.0, retries=1,
         popen=_scripted_popen([proc]), clock=clock,
@@ -222,9 +216,8 @@ def test_watchdog_fast_exit_without_event_drains():
 
 def test_real_popen_first_event_passthrough():
     """즉시 출력하는 실 자식 → 첫-이벤트 관측 → 완료 드레인 → 결과 정상 반환(실 _WatchedPopen)."""
-    engine = _load_engine()
     argv = [sys.executable, "-c", "print('EVENT', flush=True)"]
-    result = engine.run_with_first_event_watchdog(
+    result = watchdog.run_with_first_event_watchdog(
         argv, first_event_timeout=2.0, overall_timeout=10.0, retries=1,
     )  # 주입 없음 — 기본 popen(_WatchedPopen)·기본 clock(time.monotonic).
     assert result.returncode == 0
@@ -235,18 +228,17 @@ def test_real_popen_stall_kills_and_fails_loud():
     """무출력 장수명 실 자식(stall) → 실 _kill_process_group 로 kill + 재시도 + fail-loud.
 
     잔존 프로세스 없음까지 단언(실 kill 검증) — 워치독이 죽인 자식이 모두 reap 된다."""
-    engine = _load_engine()
     argv = [sys.executable, "-c", "import time; time.sleep(999)"]  # 첫 이벤트 0·영원히 alive.
     captured: list = []
     logs: list[str] = []
 
     def watched(a):  # 실 _WatchedPopen 을 쓰되 proc 참조를 잡아 잔존검사.
-        proc = engine._WatchedPopen(a, cwd=None, env=None, text=True)
+        proc = watchdog._WatchedPopen(a, cwd=None, env=None, text=True)
         captured.append(proc)
         return proc
 
-    with pytest.raises(engine.StallWatchdogError):
-        engine.run_with_first_event_watchdog(
+    with pytest.raises(watchdog.StallWatchdogError):
+        watchdog.run_with_first_event_watchdog(
             argv, first_event_timeout=1.0, overall_timeout=10.0, retries=1,
             popen=watched, log=logs.append,
         )
@@ -261,7 +253,6 @@ def test_real_popen_stall_kills_and_fails_loud():
 
 def test_real_popen_stderr_only_drains_nonblocking():
     """stderr 로만 뿜는 실 자식 → 별도 stderr 펌프 스레드가 비블로킹으로 드레인(파이프 데드락 없음)."""
-    engine = _load_engine()
     # stdout 무출력·stderr 로 다수 라인 뿜고 종료 → 첫-stdout-이벤트 없이 빠른 종료 경로 +
     # stderr 펌프가 파이프 버퍼를 막지 않고 전부 수집하는지.
     argv = [
@@ -270,7 +261,7 @@ def test_real_popen_stderr_only_drains_nonblocking():
         "for i in range(4000): sys.stderr.write('ERR%d\\n' % i)\n"
         "sys.stderr.flush()",
     ]
-    result = engine.run_with_first_event_watchdog(
+    result = watchdog.run_with_first_event_watchdog(
         argv, first_event_timeout=2.0, overall_timeout=10.0, retries=1,
     )
     assert result.returncode == 0
@@ -283,43 +274,40 @@ def test_real_popen_stderr_only_drains_nonblocking():
 # ── ② env 노브 해소기 ──────────────────────────────────────────────────────────
 
 def test_env_knob_first_event_timeout(monkeypatch):
-    engine = _load_engine()
     monkeypatch.delenv("PM_OC_FIRST_EVENT_TIMEOUT", raising=False)
-    assert engine.first_event_timeout_default() == 90.0            # 기본.
+    assert watchdog.first_event_timeout_default() == 90.0            # 기본.
     monkeypatch.setenv("PM_OC_FIRST_EVENT_TIMEOUT", "5")
-    assert engine.first_event_timeout_default() == 5.0
+    assert watchdog.first_event_timeout_default() == 5.0
     monkeypatch.setenv("PM_OC_FIRST_EVENT_TIMEOUT", "  10.5  ")
-    assert engine.first_event_timeout_default() == 10.5           # 공백 trim.
+    assert watchdog.first_event_timeout_default() == 10.5           # 공백 trim.
     monkeypatch.setenv("PM_OC_FIRST_EVENT_TIMEOUT", "bogus")
-    assert engine.first_event_timeout_default() == 90.0           # 불량 → 기본.
+    assert watchdog.first_event_timeout_default() == 90.0           # 불량 → 기본.
     monkeypatch.setenv("PM_OC_FIRST_EVENT_TIMEOUT", "0")
-    assert engine.first_event_timeout_default() == 90.0           # 비양수 → 기본.
+    assert watchdog.first_event_timeout_default() == 90.0           # 비양수 → 기본.
 
 
 def test_env_knob_stall_retries(monkeypatch):
-    engine = _load_engine()
     monkeypatch.delenv("PM_OC_STALL_RETRIES", raising=False)
-    assert engine.stall_retries_default() == 2                    # 기본.
+    assert watchdog.stall_retries_default() == 2                    # 기본.
     monkeypatch.setenv("PM_OC_STALL_RETRIES", "1")
-    assert engine.stall_retries_default() == 1
+    assert watchdog.stall_retries_default() == 1
     monkeypatch.setenv("PM_OC_STALL_RETRIES", "0")
-    assert engine.stall_retries_default() == 0                    # 0 재시도 허용(음이 아님).
+    assert watchdog.stall_retries_default() == 0                    # 0 재시도 허용(음이 아님).
     monkeypatch.setenv("PM_OC_STALL_RETRIES", "-3")
-    assert engine.stall_retries_default() == 2                    # 음수 → 기본.
+    assert watchdog.stall_retries_default() == 2                    # 음수 → 기본.
     monkeypatch.setenv("PM_OC_STALL_RETRIES", "x")
-    assert engine.stall_retries_default() == 2                    # 불량 → 기본.
+    assert watchdog.stall_retries_default() == 2                    # 불량 → 기본.
 
 
 # ── ③ opencode driver 배선 ─────────────────────────────────────────────────────
 
 def test_driver_watchdog_runner_calls_engine():
     """`_make_watchdog_runner` 가 엔진 워치독을 env 노브·overall_timeout 로 호출한다."""
-    engine = _load_engine()
     driver_mod = _load_driver()
     calls: dict = {}
 
     class FakeEngine:
-        StallWatchdogError = engine.StallWatchdogError
+        StallWatchdogError = watchdog.StallWatchdogError
 
         @staticmethod
         def first_event_timeout_default():
@@ -346,29 +334,27 @@ def test_driver_watchdog_runner_calls_engine():
 
 def test_driver_turn_failsoft_on_stall():
     """runner 가 StallWatchdogError 를 던지면 driver `_turn` 은 loud + fail-soft(빈 reply)."""
-    engine = _load_engine()
     driver_mod = _load_driver()
 
     def stall_runner(cmd, **kw):
-        raise engine.StallWatchdogError("stall 소진 테스트")
+        raise watchdog.StallWatchdogError("stall 소진 테스트")
 
     driver = driver_mod.OpencodeCliDriver(
-        engine.parse_opencode_json, runner=stall_runner,
-        stall_error=engine.StallWatchdogError,
+        contract.parse_opencode_json, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=stall_runner,
+        stall_error=watchdog.StallWatchdogError,
     )
     assert driver.relay_turn("ses", "hi") == ""   # 루프 안 죽고 빈 reply.
 
 
 def test_driver_turn_without_stall_error_propagates():
     """stall_error 미주입이면 `except ()` 가 아무것도 안 잡아 StallWatchdogError 전파(sensitivity)."""
-    engine = _load_engine()
     driver_mod = _load_driver()
 
     def stall_runner(cmd, **kw):
-        raise engine.StallWatchdogError("stall")
+        raise watchdog.StallWatchdogError("stall")
 
-    driver = driver_mod.OpencodeCliDriver(engine.parse_opencode_json, runner=stall_runner)
-    with pytest.raises(engine.StallWatchdogError):
+    driver = driver_mod.OpencodeCliDriver(contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=stall_runner)
+    with pytest.raises(watchdog.StallWatchdogError):
         driver.relay_turn("ses", "hi")
 
 
@@ -377,39 +363,16 @@ def test_driver_turn_without_stall_error_propagates():
 def test_pm_import_opencode_fill_routes_watchdog(monkeypatch):
     """opencode fill argv 는 워치독 경유 — stall 소진은 (False, 안내)로 fail-soft."""
     pm_import = _load_pm_import()
-    relay = _load_engine()
     called: dict = {}
 
-    class FakeEngine:
-        class StallWatchdogError(RuntimeError):
-            pass
+    def run_with_first_event_watchdog(argv, **kw):
+        called["argv"] = argv
+        called["kw"] = kw
+        raise watchdog.StallWatchdogError("stall!")
 
-        @staticmethod
-        def first_event_timeout_default():
-            return 5.0
-
-        @staticmethod
-        def stall_retries_default():
-            return 1
-
-        @staticmethod
-        def resolve_harness_profile(harness, conf):
-            return relay.resolve_harness_profile(harness, conf)
-
-        @staticmethod
-        def idle_timeout_for_signal(signal, configured):
-            return relay.idle_timeout_for_signal(signal, configured)
-
-        TIMEOUT_AXIS_WALL = relay.TIMEOUT_AXIS_WALL
-        TIMEOUT_AXIS_IDLE = relay.TIMEOUT_AXIS_IDLE
-
-        @staticmethod
-        def run_with_first_event_watchdog(argv, **kw):
-            called["argv"] = argv
-            called["kw"] = kw
-            raise FakeEngine.StallWatchdogError("stall!")
-
-    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: FakeEngine)
+    monkeypatch.setattr(watchdog, "first_event_timeout_default", lambda: 5.0)
+    monkeypatch.setattr(watchdog, "stall_retries_default", lambda: 1)
+    monkeypatch.setattr(watchdog, "run_with_first_event_watchdog", run_with_first_event_watchdog)
     monkeypatch.setattr(
         pm_import.subprocess, "Popen",
         lambda *args, **kwargs: pytest.fail("테스트가 실 opencode를 spawn하려 함"),
@@ -419,7 +382,7 @@ def test_pm_import_opencode_fill_routes_watchdog(monkeypatch):
     assert ok is False
     assert "stall" in out and "재시도 소진" in out
     assert called["argv"] == ["opencode", "run", "hi", "--format", "json"]
-    profile = relay.HARNESS_PROFILES["opencode"]
+    profile = watchdog.HARNESS_PROFILES["opencode"]
     assert called["kw"]["overall_timeout"] == profile.wall_timeout
     assert called["kw"]["idle_timeout"] == profile.idle_timeout
 
@@ -427,25 +390,20 @@ def test_pm_import_opencode_fill_routes_watchdog(monkeypatch):
 def test_pm_import_claude_fill_routes_shared_watchdog(monkeypatch):
     """claude fill도 공용 워치독 경유 — startup 재시도만 선언대로 꺼진다."""
     pm_import = _load_pm_import()
-    relay = _load_engine()
     called = {}
 
-    class _FakeRelay:
-        def __getattr__(self, name):
-            return getattr(relay, name)
+    def run_with_first_event_watchdog(argv, **kwargs):
+        called.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, "draft text", "")
 
-        def run_with_first_event_watchdog(self, argv, **kwargs):
-            called.update(kwargs)
-            return subprocess.CompletedProcess(argv, 0, "draft text", "")
-
-    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: _FakeRelay())
+    monkeypatch.setattr(watchdog, "run_with_first_event_watchdog", run_with_first_event_watchdog)
     monkeypatch.setattr(
         pm_import.subprocess, "Popen",
         lambda *args, **kwargs: pytest.fail("테스트가 실 claude를 spawn하려 함"),
     )
     ok, out = pm_import._real_harness_runner(["claude", "-p", "hi"], "prompt")
     assert ok is True and "draft text" in out
-    profile = relay.HARNESS_PROFILES["claude"]
+    profile = watchdog.HARNESS_PROFILES["claude"]
     assert called["first_event_timeout"] is None
     assert called["retries"] == 0
     assert called["overall_timeout"] == profile.wall_timeout
@@ -570,7 +528,6 @@ def test_opencode_stall_watchdog_e2e_kill_retry_failloud(tmp_path, monkeypatch):
 
     first-event timeout 을 env 로 5초로 낮춰(총 소요 짧게) 무한 hang 이 아니라 유한 재시도 후
     StallWatchdogError 로 끝나는지 실측. 실 subprocess·실 소켓·주입 없는 기본 popen/clock 경로."""
-    engine = _load_engine()
     _require_loopback_socket_capability()
     port, close = _dead_server()
     try:
@@ -598,12 +555,12 @@ def test_opencode_stall_watchdog_e2e_kill_retry_failloud(tmp_path, monkeypatch):
         monkeypatch.setenv("PM_OC_STALL_RETRIES", "1")
         logs: list[str] = []
         started = time.monotonic()
-        with pytest.raises(engine.StallWatchdogError):
-            engine.run_with_first_event_watchdog(
+        with pytest.raises(watchdog.StallWatchdogError):
+            watchdog.run_with_first_event_watchdog(
                 argv,
-                first_event_timeout=engine.first_event_timeout_default(),
+                first_event_timeout=watchdog.first_event_timeout_default(),
                 overall_timeout=1800.0,   # turn 상한(백스톱) — 여기 도달 전에 stall 이 잡혀야.
-                retries=engine.stall_retries_default(),
+                retries=watchdog.stall_retries_default(),
                 cwd=str(tmp_path),
                 log=logs.append,
             )

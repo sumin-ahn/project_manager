@@ -47,6 +47,7 @@ from conftest import (
     codex_auth_available, current_branch, drop_codex_auth, make_codex_home,
     write_cluster_ledger,
 )
+from pm_engine.infra import raw_output
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -517,7 +518,7 @@ def test_delegate_live_claude_resume_round(tmp_path, monkeypatch, capsys):
     _assert_delegate_ok(rc, reply, err, out_dir, "claude")
 
     ledger = out_dir / "raw_outputs.json"
-    rows = pd._load_relay().raw_records(ledger)
+    rows = raw_output.raw_records(ledger)
     first = rows[0]
     assert first.get("session_id"), f"R1 장부에 세션 id 부재 — 재개 불가.\n{first}"
     assert first.get("usage"), f"R1 장부에 usage 분해 부재.\n{first}"
@@ -547,7 +548,7 @@ def test_delegate_live_claude_resume_round(tmp_path, monkeypatch, capsys):
     assert _MARKER in captured.out, (
         "resume 회신에 marker 부재 — 이어받은 컨텍스트로 답하지 못했다(파일 재읽기 금지 지시)" + tail)
 
-    resumed = [row for row in pd._load_relay().raw_records(ledger)
+    resumed = [row for row in raw_output.raw_records(ledger)
                if row.get("attempt") == pd.RESUME_ATTEMPT]
     assert len(resumed) == 1, f"재개 attempt 레코드 수 이상: {len(resumed)}" + tail
     assert resumed[0]["resume_matched"] is True, "장부가 세션 불일치를 기록" + tail
@@ -642,7 +643,7 @@ def test_reasoning_allowed_measured_sets_pinned():
     low/medium/high/xhigh/max(0.145.0 xhigh 실측 + T-0590 max 편입). 실측 전 '미확정 빈 집합'으로
     되돌아가면(silent-무시 재발) 여기서 red. opencode 는 정적 표가 없다(모델별 variants 조회).
 
-    테이블 소유자는 설정 어휘 모듈 `conf_schema` 이고 검증은 공용 계약 모듈 `pm_relay` 다 — 위임은 그 검증을 부르는
+    테이블 소유자는 설정 어휘 모듈 `conf_schema` 이고 검증은 공용 계약 모듈 `contract` 다 — 위임은 그 검증을 부르는
     wrapper 이므로 실효 판정을 `_validate_reasoning` 으로도 함께 못박는다."""
     pd = _load_pd()
     allowed = conf_schema.REASONING_ALLOWED

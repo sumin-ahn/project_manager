@@ -1,6 +1,6 @@
 """PM relay (ADR-0009 · T-0046) 단위 테스트.
 
-엔진 core(루트 `.project_manager/tools/pm_relay.py`)를 importlib 로 직접 검증한다.
+엔진 core(`pm_engine.app.session.relay` 와 `pm_engine.infra.harness`·`pm_engine.infra.raw_output`)를 import 해 검증한다.
 실 claude 불요 — FakeDriver DI·tmp_path·StringIO 스트림만 본다(test_handoff_trigger·
 test_claude_ctx_guard 패턴: importlib 로드·DI runner·subprocess 폭발 가드).
 
@@ -30,6 +30,8 @@ from pathlib import Path
 import pytest
 
 from test_opencode_permission_guard import _load_agent_frontmatter
+from pm_engine.app.session import relay
+from pm_engine.infra.harness import contract, watchdog
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -45,7 +47,7 @@ def _load(name: str, path: Path):
 
 @pytest.fixture(scope="module")
 def orch():
-    return _load("pm_relay", TOOLS / "pm_relay.py")
+    return relay
 
 
 def test_opencode_prompt_guard_converts_cwd_symlink_loop(orch, tmp_path):
@@ -53,8 +55,8 @@ def test_opencode_prompt_guard_converts_cwd_symlink_loop(orch, tmp_path):
     cwd_loop = tmp_path / "cwd-loop"
     cwd_loop.symlink_to(cwd_loop, target_is_directory=True)
 
-    with pytest.raises(orch.HarnessContractError, match="실경로 해소 실패"):
-        orch.assert_opencode_prompt_in_cwd(cwd_loop, cwd_loop / "prompt.md")
+    with pytest.raises(contract.HarnessContractError, match="실경로 해소 실패"):
+        contract.assert_opencode_prompt_in_cwd(cwd_loop, cwd_loop / "prompt.md")
 
 
 @pytest.mark.parametrize("role", ("developer", "architect", "code-reviewer", "researcher"))
@@ -66,8 +68,8 @@ def test_opencode_runtime_role_config_is_self_contained_and_stable(orch, role):
     frontmatter 와의 파리티는 아래 test_opencode_runtime_role_fragment_matches_shipped_card_permission
     단일 진실이 대조한다(T-0747·카드만 바뀌고 fragment 가 stale 로 남는 half-fix 방지).
     """
-    first = orch.opencode_runtime_role_config(role)
-    assert first == orch.opencode_runtime_role_config(role)  # stable wire/audit bytes
+    first = contract.opencode_runtime_role_config(role)
+    assert first == contract.opencode_runtime_role_config(role)  # stable wire/audit bytes
     config = json.loads(first)
     assert set(config) == {"agent"}
     assert set(config["agent"]) == {role}
@@ -77,7 +79,7 @@ def test_opencode_runtime_role_config_is_self_contained_and_stable(orch, role):
 
 @pytest.mark.parametrize("role", ("developer", "architect", "code-reviewer", "researcher"))
 def test_opencode_runtime_role_fragment_matches_shipped_card_permission(orch, role):
-    """fragment(pm_relay.opencode_runtime_role_config) permission == 출하 카드 frontmatter
+    """fragment(contract.opencode_runtime_role_config) permission == 출하 카드 frontmatter
     permission — 두 표면이 어긋나도 잡는 가드가 없어 [[T-0696]] 이 카드만 바꾸고 fragment 를
     남긴 half-fix([[T-0745]])가 나왔다. 카드 없는 cross cwd 위임이 fragment 의 존재 이유라
     파생 방향은 fragment→카드가 아니므로, 이 대조가 두 표면의 단일 진실 보증이다. 카드 파서는
@@ -87,8 +89,8 @@ def test_opencode_runtime_role_fragment_matches_shipped_card_permission(orch, ro
     deny→allow 를 fragment 4사본 + 카드 5장에 함께 적용) 잡지 못한다(리뷰어 실측: 관련 39개
     테스트 파일 1943 passed/0 failed). webfetch deny 는 절대 앵커로 별도 고정한다(F-001).
     """
-    fragment = json.loads(orch.opencode_runtime_role_config(role))
-    fragment_permission = fragment["agent"][orch.OPENCODE_AGENT[role]]["permission"]
+    fragment = json.loads(contract.opencode_runtime_role_config(role))
+    fragment_permission = fragment["agent"][contract.OPENCODE_AGENT[role]]["permission"]
     card_permission = _load_agent_frontmatter(OPENCODE_AGENTS / f"{role}.md")["permission"]
 
     # 절대 앵커 — 파리티(상대 단언)만으로는 두 표면의 동시 완화를 못 잡는다(F-001).
@@ -110,7 +112,7 @@ def test_opencode_runtime_role_fragment_matches_shipped_card_permission(orch, ro
 def test_opencode_runtime_role_overrides_untrusted_incoming_content_without_mutation(orch):
     """사용자 runtime JSON은 plugin/secret 표면이라 병합하지 않고 입력 dict도 변경하지 않는다."""
     original = {"PATH": "/bin", "OPENCODE_CONFIG_CONTENT": "SECRET_PLUGIN_CONFIG"}
-    resolved = orch.with_opencode_runtime_role(original, "code-reviewer")
+    resolved = contract.with_opencode_runtime_role(original, "code-reviewer")
     assert original["OPENCODE_CONFIG_CONTENT"] == "SECRET_PLUGIN_CONFIG"
     assert resolved["PATH"] == "/bin"
     assert "SECRET_PLUGIN_CONFIG" not in resolved["OPENCODE_CONFIG_CONTENT"]
@@ -541,7 +543,7 @@ def test_parse_stream_json_extracts_sid_and_result(orch):
         json.dumps({"type": "assistant", "session_id": "sid-init"}),
         json.dumps({"type": "result", "result": "the answer", "session_id": "sid-init"}),
     ]
-    sid, result, used_tokens = orch.parse_stream_json(lines)
+    sid, result, used_tokens = contract.parse_stream_json(lines)
     assert sid == "sid-init"
     assert result == "the answer"
     assert used_tokens is None
@@ -561,7 +563,7 @@ def test_parse_stream_json_usage_includes_output_tokens(orch):
             "cache_read_input_tokens": 300, "output_tokens": 50,
         }},
     })
-    sid, _reply, used = orch.parse_stream_json([line])
+    sid, _reply, used = contract.parse_stream_json([line])
     assert used == 650
 
 
@@ -574,7 +576,7 @@ def test_parse_stream_json_skips_malformed_lines(orch):
         "another bad line {",
         json.dumps({"type": "result", "result": "ok"}),
     ]
-    sid, result, used_tokens = orch.parse_stream_json(lines)
+    sid, result, used_tokens = contract.parse_stream_json(lines)
     assert sid == "sid-2"
     assert result == "ok"
     assert used_tokens is None
@@ -583,23 +585,23 @@ def test_parse_stream_json_skips_malformed_lines(orch):
 def test_parse_stream_json_falls_back_to_result_sid(orch):
     """system/init 없으면 result 이벤트의 session_id 로 폴백."""
     lines = [json.dumps({"type": "result", "result": "r", "session_id": "sid-from-result"})]
-    sid, result, used_tokens = orch.parse_stream_json(lines)
+    sid, result, used_tokens = contract.parse_stream_json(lines)
     assert sid == "sid-from-result"
     assert result == "r"
     assert used_tokens is None
 
 
 def test_parse_stream_json_empty_and_no_result(orch):
-    assert orch.parse_stream_json([]) == (None, None, None)
+    assert contract.parse_stream_json([]) == (None, None, None)
     # init 만 있고 result 없음 → sid 만.
     lines = [json.dumps({"type": "system", "subtype": "init", "session_id": "s"})]
-    assert orch.parse_stream_json(lines) == ("s", None, None)
+    assert contract.parse_stream_json(lines) == ("s", None, None)
 
 
 def test_parse_stream_json_ignores_non_dict_events(orch):
     """JSON 배열/스칼라 라인은 dict 가 아니라 skip(robust)."""
     lines = ["[1, 2, 3]", "42", json.dumps({"type": "result", "result": "x"})]
-    sid, result, used_tokens = orch.parse_stream_json(lines)
+    sid, result, used_tokens = contract.parse_stream_json(lines)
     assert sid is None and result == "x" and used_tokens is None
 
 
@@ -613,7 +615,7 @@ def test_parse_stream_json_extracts_measured_assistant_usage(orch):
             "cache_read_input_tokens": 0,
         }},
     })]
-    assert orch.parse_stream_json(lines) == (None, None, 31_643)
+    assert contract.parse_stream_json(lines) == (None, None, 31_643)
 
 
 def test_parse_stream_json_usage_absent_is_none(orch):
@@ -621,7 +623,7 @@ def test_parse_stream_json_usage_absent_is_none(orch):
         json.dumps({"type": "assistant", "message": {}}),
         json.dumps({"type": "result", "result": "ok"}),
     ]
-    assert orch.parse_stream_json(lines) == (None, "ok", None)
+    assert contract.parse_stream_json(lines) == (None, "ok", None)
 
 
 def test_parse_stream_json_uses_last_assistant_partial_usage(orch):
@@ -634,7 +636,7 @@ def test_parse_stream_json_uses_last_assistant_partial_usage(orch):
             "input_tokens": 7,
         }}}),
     ]
-    assert orch.parse_stream_json(lines) == (None, None, 7)
+    assert contract.parse_stream_json(lines) == (None, None, 7)
 
 
 # ── ④ post-turn marker 단일 의미론(재호출 없음) ────────────────
@@ -804,10 +806,6 @@ def test_claude_main_resolves_and_injects_ctx_config(driver_mod, monkeypatch, tm
         SpawnResult = staticmethod(lambda sid, reply: (sid, reply))
 
         @staticmethod
-        def parse_stream_json(lines):
-            return None, None, None
-
-        @staticmethod
         def mark_ctx_post_turn_if_over(*args):
             captured["marked"] = args
 
@@ -859,7 +857,7 @@ def test_watched_popen_defaults_stdin_to_devnull(orch, monkeypatch):
         return _FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    proc = orch._WatchedPopen([sys.executable], input_text=None)
+    proc = watchdog._WatchedPopen([sys.executable], input_text=None)
     proc.communicate(timeout=1)
     assert captured["kwargs"]["stdin"] == subprocess.DEVNULL
 
@@ -904,7 +902,7 @@ def test_blank_lines_skipped(orch, tmp_path):
 
 
 def test_engine_core_exposes_no_identity_cli_surface():
-    """pm_relay.py(엔진 core)는 정체성(`--repo`/`--slot`/구 `--session`/`--worktree-slot`) CLI 플래그를
+    """relay 계열 모듈(엔진 core)은 정체성(`--repo`/`--slot`/구 `--session`/`--worktree-slot`) CLI 플래그를
     전혀 노출하지 않는다(T-0318 감사 결론) — `argparse` 자체를 import 하지 않는 순수 라이브러리다
     (하니스별 CLI 는 어댑터 `pm_orch_claude.py`/`pm_orch_opencode.py`(templates/) 몫 — 엔진은
     `Supervisor.run_loop(cwd, ...)` 로 호출자가 이미 해소한 cwd 를 받는다). ADR-0057 의 "구 alias
@@ -916,7 +914,9 @@ def test_engine_core_exposes_no_identity_cli_surface():
     lookahead 로 `--session-id` 는 건드리지 않고 `--session`(단독)·`--worktree-slot`·
     `--session-num` 만 스캔).
     """
-    text = (TOOLS / "pm_relay.py").read_text(encoding="utf-8")
+    text = "".join((TOOLS / name).read_text(encoding="utf-8") for name in (
+        "pm_engine/app/session/relay.py", "pm_engine/infra/harness/contract.py",
+        "pm_engine/infra/harness/watchdog.py", "pm_engine/infra/raw_output.py"))
     assert "import argparse" not in text, "엔진 core 에 argparse CLI 가 생기면 어댑터/엔진 경계가 흐려진다."
     assert re.search(r"--session(?!-id)\b", text) is None, \
         "정체성 --session 플래그가 있으면 안 된다(구 alias·어댑터 몫)."
@@ -954,7 +954,7 @@ def test_claude_driver_spawn_passes_session_id(orch, driver_mod):
             + json.dumps({"type": "result", "result": "READY"})
         )
 
-    driver = driver_mod.ClaudeCliDriver(orch.parse_stream_json, runner=fake_run)
+    driver = driver_mod.ClaudeCliDriver(contract.parse_stream_json, spawn_result=relay.SpawnResult, runner=fake_run)
     spawned = driver.spawn("/repo/root", "uuid-123", "bootstrap text")
     assert isinstance(spawned, orch.SpawnResult)
     assert spawned == orch.SpawnResult("uuid-123", "READY")
@@ -972,7 +972,7 @@ def test_claude_driver_turn_closes_supervisor_stdin(orch, driver_mod):
         captured["kwargs"] = kwargs
         return _FakeCompleted(json.dumps({"type": "result", "result": "ok"}))
 
-    driver = driver_mod.ClaudeCliDriver(orch.parse_stream_json, runner=fake_run)
+    driver = driver_mod.ClaudeCliDriver(contract.parse_stream_json, spawn_result=relay.SpawnResult, runner=fake_run)
     assert driver.relay_turn("uuid", "prompt") == "ok"
     # 프롬프트 전문을 stdin 으로 쓰고 닫는다(`input=`) — supervisor 의 stdin 은 child 에 가지 않는다.
     assert captured["kwargs"]["input"] == "prompt" and "stdin" not in captured["kwargs"]
@@ -980,7 +980,7 @@ def test_claude_driver_turn_closes_supervisor_stdin(orch, driver_mod):
 
 def test_claude_driver_rc0_empty_stdout_warns(orch, driver_mod, capsys):
     driver = driver_mod.ClaudeCliDriver(
-        orch.parse_stream_json, runner=lambda *args, **kwargs: _FakeCompleted("")
+        contract.parse_stream_json, spawn_result=relay.SpawnResult, runner=lambda *args, **kwargs: _FakeCompleted("")
     )
     assert driver.relay_turn("uuid", "prompt") == ""
     assert capsys.readouterr().err == (
@@ -996,7 +996,7 @@ def test_claude_driver_relay_uses_resume(orch, driver_mod):
         captured["cmd"] = cmd
         return _FakeCompleted(json.dumps({"type": "result", "result": "hello back"}))
 
-    driver = driver_mod.ClaudeCliDriver(orch.parse_stream_json, runner=fake_run)
+    driver = driver_mod.ClaudeCliDriver(contract.parse_stream_json, spawn_result=relay.SpawnResult, runner=fake_run)
     reply = driver.relay_turn("uuid-abc", "ping")
     assert reply == "hello back"
     cmd = captured["cmd"]
@@ -1020,7 +1020,7 @@ def test_claude_driver_relay_reuses_spawn_cwd(orch, driver_mod):
             )
         return _FakeCompleted(json.dumps({"type": "result", "result": "ok"}))
 
-    driver = driver_mod.ClaudeCliDriver(orch.parse_stream_json, runner=fake_run)
+    driver = driver_mod.ClaudeCliDriver(contract.parse_stream_json, spawn_result=relay.SpawnResult, runner=fake_run)
     driver.spawn("/repo/root", "uuid-cwd", "boot")
     driver.relay_turn("uuid-cwd", "msg")
     # spawn cwd 와 relay cwd 가 동일(세션 scope 일치).
@@ -1056,7 +1056,7 @@ def test_claude_driver_marks_ctx_after_spawn_and_relay(orch, driver_mod, tmp_pat
         return _FakeCompleted("\n".join(events))
 
     driver = driver_mod.ClaudeCliDriver(
-        orch.parse_stream_json,
+        contract.parse_stream_json,
         ctx_budget=100_000,
         precompact_at_pct=80,
         root=tmp_path,
@@ -1102,7 +1102,7 @@ def test_claude_driver_real_marker_integration_over_threshold(
         return _FakeCompleted("\n".join(events))
 
     driver = driver_mod.ClaudeCliDriver(
-        orch.parse_stream_json,
+        contract.parse_stream_json,
         ctx_budget=10_000,
         precompact_at_pct=80,
         root=tmp_path,
@@ -1136,7 +1136,7 @@ def test_claude_driver_real_marker_integration_old_red_controls(
         json.dumps({"type": "result", "result": "ok"}),
     ]))
     driver = driver_mod.ClaudeCliDriver(
-        orch.parse_stream_json,
+        contract.parse_stream_json, spawn_result=relay.SpawnResult,
         ctx_budget=10_000,
         precompact_at_pct=80,
         root=tmp_path,
@@ -1152,7 +1152,7 @@ def test_claude_driver_warns_once_when_usage_missing_with_complete_ctx_di(
 ):
     """ctx DI는 완비됐는데 usage만 소실되면 never-block advisory를 1회 표면화한다."""
     driver = driver_mod.ClaudeCliDriver(
-        orch.parse_stream_json,
+        contract.parse_stream_json, spawn_result=relay.SpawnResult,
         ctx_budget=100_000,
         precompact_at_pct=80,
         root=tmp_path,
@@ -1180,9 +1180,9 @@ def test_claude_driver_ctx_guard_noop_when_any_signal_missing(
     }
     for missing in complete:
         kwargs = {**complete, missing: None}
-        driver = driver_mod.ClaudeCliDriver(orch.parse_stream_json, **kwargs)
+        driver = driver_mod.ClaudeCliDriver(contract.parse_stream_json, spawn_result=relay.SpawnResult, **kwargs)
         driver._maybe_mark_ctx("sid", 90_000)
-    driver = driver_mod.ClaudeCliDriver(orch.parse_stream_json, **complete)
+    driver = driver_mod.ClaudeCliDriver(contract.parse_stream_json, spawn_result=relay.SpawnResult, **complete)
     driver._maybe_mark_ctx("sid", None)
 
 
@@ -1193,12 +1193,12 @@ def test_claude_driver_timeout_returns_empty(orch, driver_mod):
     def fake_run(cmd, **kwargs):
         raise _sp.TimeoutExpired(cmd, 1)
 
-    driver = driver_mod.ClaudeCliDriver(orch.parse_stream_json, runner=fake_run)
+    driver = driver_mod.ClaudeCliDriver(contract.parse_stream_json, spawn_result=relay.SpawnResult, runner=fake_run)
     assert driver.relay_turn("uuid", "x") == ""
 
 
 def test_claude_driver_close_is_noop(orch, driver_mod):
-    driver = driver_mod.ClaudeCliDriver(orch.parse_stream_json, runner=lambda *a, **k: None)
+    driver = driver_mod.ClaudeCliDriver(contract.parse_stream_json, spawn_result=relay.SpawnResult, runner=lambda *a, **k: None)
     assert driver.close("uuid") is None
 
 
@@ -1228,7 +1228,7 @@ def test_live_spawn_relay_swap_smoke(orch, driver_mod, tmp_path):
     없어 실 ctx-STOP 은 못 트리거하므로 marker 는 강제 생성으로 swap 만 검증(deferred 부분).
     """
     driver = driver_mod.ClaudeCliDriver(
-        orch.parse_stream_json,
+        contract.parse_stream_json,
         spawn_result=orch.SpawnResult,
         model="claude-haiku-4-5",
     )

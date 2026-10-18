@@ -1,1 +1,1 @@
-"""인프라 층: 콘솔 인코딩(console)·파일 프리미티브(fs)·repo 소유 파일 열거와 경로 적재기(repo_files)·local.conf 읽기(conf_store)·git 저장소 조회(git)·실행 플랫폼 argv 분해(process)·리스 장부 읽기(lease_store)·티켓 경로 repo 좌표 정규화(repo_coordinates)."""
+"""인프라 층: 콘솔 인코딩(console)·파일 프리미티브(fs)·repo 소유 파일 열거와 경로 적재기(repo_files)·local.conf 읽기(conf_store)·git 저장소 조회(git)·실행 플랫폼 argv 분해(process)·리스 장부 읽기(lease_store)·티켓 경로 repo 좌표 정규화(repo_coordinates)·하네스 원출력 장부와 임시 루트(raw_output)·리뷰 라운드 장부(review_rounds)·하네스 CLI 계약과 자식 프로세스 감시(harness)."""

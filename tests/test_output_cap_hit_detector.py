@@ -2,7 +2,7 @@
 
 opencode 는 outbound 응답이 출력 cap(32000 토큰·실효 min(limit.output,32000))을 넘으면 응답을
 **조용히 절단** 하고 finish 를 "stop" 으로 위장한다(T-0334 라이브 확증) — 수신자(PM)는 절단을
-감지하지 못한다. 호출층(pm_relay·출력 소비 지점 Supervisor.run_loop)의 cap-hit detector 가 응답이
+감지하지 못한다. 호출층(relay·출력 소비 지점 Supervisor.run_loop)의 cap-hit detector 가 응답이
 cap 근방이면 loud advisory 를 낸다. **advisory·never-block** — 경고+로그만·파이프라인 무중단.
 
 검증 축 (ticket DoD):
@@ -22,6 +22,8 @@ import io
 from pathlib import Path
 
 import pytest
+from pm_engine.app.session import relay
+from pm_engine.infra.harness import watchdog
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -36,7 +38,7 @@ def _load(name: str, path: Path):
 
 @pytest.fixture(scope="module")
 def engine():
-    return _load("pm_relay", TOOLS / "pm_relay.py")
+    return watchdog
 
 
 # ── ① 순수 detector: cap 근방 발화 / 정상 크기 무발화 (오탐 0) ─────────────────────
@@ -180,7 +182,7 @@ def test_run_loop_warns_on_near_cap_reply(engine, tmp_path):
     """cap 근방 응답을 driver 가 돌려주면 run_loop 이 cap_hit_log 로 loud advisory 발화."""
     big = "가" * (engine.CAP_HIT_CHAR_THRESHOLD + 200)  # 결정적 대형 출력 주입.
     driver = _ReplyDriver([big])
-    sup = engine.Supervisor(driver, root=tmp_path, task="demo-task")
+    sup = relay.Supervisor(driver, root=tmp_path, task="demo-task")
     logs: list[str] = []
     out = io.StringIO()
     rc = sup.run_loop("/cwd", io.StringIO("hi\n"), out, cap_hit_log=logs.append)
@@ -198,7 +200,7 @@ def test_run_loop_warns_on_near_cap_reply(engine, tmp_path):
 def test_run_loop_no_warn_on_normal_reply(engine, tmp_path):
     """정상 크기 응답은 무발화 — 오탐 0(사용자-체감 배선 검증)."""
     driver = _ReplyDriver(["짧은 정상 응답입니다."])
-    sup = engine.Supervisor(driver, root=tmp_path, task="demo-task")
+    sup = relay.Supervisor(driver, root=tmp_path, task="demo-task")
     logs: list[str] = []
     out = io.StringIO()
     rc = sup.run_loop("/cwd", io.StringIO("hi\n"), out, cap_hit_log=logs.append)
@@ -211,7 +213,7 @@ def test_run_loop_default_cap_hit_log_is_stderr(engine, tmp_path, capsys):
     """cap_hit_log 미주입 시 기본 sink = stderr(stdout=PM 채널 보존)."""
     big = "가" * (engine.CAP_HIT_CHAR_THRESHOLD + 50)
     driver = _ReplyDriver([big])
-    sup = engine.Supervisor(driver, root=tmp_path, task="demo-task")
+    sup = relay.Supervisor(driver, root=tmp_path, task="demo-task")
     out = io.StringIO()
     sup.run_loop("/cwd", io.StringIO("hi\n"), out)  # cap_hit_log 미주입 → 기본 stderr.
     captured = capsys.readouterr()
@@ -223,7 +225,7 @@ def test_run_loop_cap_hit_never_blocks_rotation(engine, tmp_path):
     """cap-hit 발화가 이후 turn 진행을 막지 않는다 — 다음 입력도 정상 relay(never-block)."""
     big = "가" * (engine.CAP_HIT_CHAR_THRESHOLD + 100)
     driver = _ReplyDriver([big, "다음 turn 정상 응답"])
-    sup = engine.Supervisor(driver, root=tmp_path, task="demo-task")
+    sup = relay.Supervisor(driver, root=tmp_path, task="demo-task")
     logs: list[str] = []
     out = io.StringIO()
     rc = sup.run_loop("/cwd", io.StringIO("first\nsecond\n"), out, cap_hit_log=logs.append)
@@ -239,7 +241,7 @@ def test_run_loop_advisory_never_blocks_on_pathological_sink(engine, tmp_path):
     폭발해도 응답 전달·이후 turn 진행이 끊기면 안 된다(파이프라인 무중단 단언)."""
     big = "가" * (engine.CAP_HIT_CHAR_THRESHOLD + 100)
     driver = _ReplyDriver([big, "다음 turn 정상 응답"])
-    sup = engine.Supervisor(driver, root=tmp_path, task="demo-task")
+    sup = relay.Supervisor(driver, root=tmp_path, task="demo-task")
 
     def boom_sink(_msg):
         raise RuntimeError("병적 sink — advisory write 폭발")

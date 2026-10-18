@@ -40,6 +40,7 @@ import pytest
 from conftest import bind_product_cluster
 
 from conftest import write_cluster_ledger
+from pm_engine.infra import raw_output
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -236,18 +237,8 @@ def _problem_codes(pd, pm_home: Path, ticket: str) -> list[str]:
 
 
 def _use_relay_pid(pd, monkeypatch, *, alive: bool):
-    """생존 조회 seam 만 주입한다 — 나머지 relay 표면은 실 모듈 그대로 쓴다."""
-    real = pd._load_relay()
-
-    class _Relay:
-        raw_storage_paths = staticmethod(real.raw_storage_paths)
-        raw_records = staticmethod(real.raw_records)
-
-        @staticmethod
-        def pid_is_alive(_pid):
-            return alive
-
-    monkeypatch.setattr(pd, "_load_relay", lambda: _Relay)
+    """생존 조회 seam(`raw_output.pid_is_alive`)만 주입한다 — 나머지 raw 표면은 실 모듈 그대로 쓴다."""
+    monkeypatch.setattr(raw_output, "pid_is_alive", lambda _pid: alive)
 
 
 # ── R1 명시 축 필요(회귀 — 기본 거부 유지) ──────────────────────────────────

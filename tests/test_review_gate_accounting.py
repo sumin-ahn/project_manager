@@ -562,19 +562,6 @@ def test_report_gate_and_no_gate_reaches_report_with_ignore_warning_in_subproces
     assert f"게이트 {TICKET}: count=1" in proc.stdout
 
 
-def test_rounds_report_missing_companion_fails_loud_in_subprocess(tmp_path):
-    """동반 seam이 빠진 불완전 엔진 사본은 파일명과 복구법을 명시해 진단한다."""
-    project, script = _subprocess_project(tmp_path)
-    (script.parent / "review_rounds.py").unlink()
-
-    proc = _run_additional_reviewer(project, script, "--rounds-report")
-
-    assert proc.returncode == 1
-    assert "엔진 사본 불완전" in proc.stderr
-    assert "review_rounds.py" in proc.stderr
-    assert "pm-update" in proc.stderr
-
-
 def test_removed_into_is_rejected_before_gate_no_gate_precedence_in_subprocess(
         tmp_path):
     """폐지된 into는 argparse에서 거부되고 기존 장부 bytes를 보존한다."""

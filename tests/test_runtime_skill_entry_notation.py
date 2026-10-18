@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from _engine_tree import engine_python_files
+from pm_engine.app.session import relay
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -164,7 +165,6 @@ def test_bootstrap_task_pytest_stop_uses_codex_notation(monkeypatch, capsys):
 
 def test_relay_child_bootstrap_prompt_uses_runtime_notation(monkeypatch):
     monkeypatch.setenv("CODEX_CI", "1")
-    relay = _load("pm_relay")
     prompt = relay.build_bootstrap_prompt("alpha")
     assert "`$pm-bootstrap --task alpha`" in prompt
     assert "`/pm-bootstrap" not in prompt

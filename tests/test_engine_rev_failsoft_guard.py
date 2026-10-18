@@ -1231,7 +1231,12 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   (`board`·`pm_handoff`·`ticket_finish`·`worktree_pool` 의 `<module>`), 좌표 로더(`board`·`delegate_scope`·
     #   `ticket_finish` 의 `_load_repo_coordinates`), `pm_bootstrap._load_identity_args`, 좌표 소비 두 자리
     #   (`ticket_finish.affected_domain_titles` 한 곳·`stage_scope`).
-    assert len(report.boundaries) == 208, "propagation sweep boundary ratchet changed"
+    # 203 = 208 − T-0967 이 지운 5 경계. 하네스 계약·세션 연속성 형제 로더가 패키지 import
+    #   (`pm_engine.app.session.relay`·`pm_engine.infra.harness.contract`·`watchdog`·`pm_engine.infra.raw_output`)
+    #   로 바뀌었다: 로더 정의(`pm_handoff._load_pm_relay`), 적재만 감싼 try(`pm_import._real_harness_runner`
+    #   한 곳), try 본문이 적재한 모듈 변수 호출에서 모듈 속성 호출로 바뀐 두 자리(`pm_delegate._execute_attempt`·
+    #   `_prepare_attempt_transport`), 호출 그래프상 적재 호출이 사라진 `pm_update.drift_changes`.
+    assert len(report.boundaries) == 203, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

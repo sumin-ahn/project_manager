@@ -27,6 +27,7 @@ import pytest
 
 from pm_engine.domain import conf_schema
 from pm_engine.infra import conf_store
+from pm_engine.infra.harness import contract
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -92,7 +93,7 @@ RETIRED_DELEGATE_SYMBOLS = (
     "codex_egress_provenance",
 )
 
-# pm_relay 가 두 표면에 공급하던 네트워크 attestation seam.
+# 공용 하네스 계약이 두 표면에 공급하던 네트워크 attestation seam.
 RETIRED_RELAY_SYMBOLS = (
     "CODEX_EGRESS_MARKER_ENV",
     "CODEX_EGRESS_FLAG",
@@ -218,8 +219,8 @@ def test_retired_delegate_symbols_are_gone(symbol):
 
 @pytest.mark.parametrize("symbol", RETIRED_RELAY_SYMBOLS)
 def test_retired_relay_symbols_are_gone(symbol):
-    """공용 드라이버에도 네트워크 attestation seam 이 남아 있지 않다."""
-    assert not hasattr(_load("pm_relay"), symbol), symbol
+    """공용 드라이버 계약에도 네트워크 attestation seam 이 남아 있지 않다."""
+    assert not hasattr(contract, symbol), symbol
 
 
 def test_no_reviewer_only_conf_keys():

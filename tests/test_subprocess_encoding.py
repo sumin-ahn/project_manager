@@ -31,6 +31,7 @@ import pytest
 
 from _textio import write_lf
 from _engine_tree import engine_python_files
+from pm_engine.infra.harness import contract
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -154,15 +155,8 @@ def test_pm_import_harness_runner_uses_utf8_watchdog(pm_import, monkeypatch):
         calls.append((argv, kwargs))
         raise FileNotFoundError("spawn 차단 sentinel")
 
-    load_engine = pm_import._load_watchdog
-
-    def load_engine_resolving_by_name():
-        # 실행 파일 찾기가 이 머신 PATH(claude 설치 여부)에 매이지 않게 이름 그대로 돌려준다.
-        engine = load_engine()
-        monkeypatch.setattr(engine, "resolve_executable", lambda name, env: name)
-        return engine
-
-    monkeypatch.setattr(pm_import, "_load_watchdog", load_engine_resolving_by_name)
+    # 실행 파일 찾기가 이 머신 PATH(claude 설치 여부)에 매이지 않게 이름 그대로 돌려준다.
+    monkeypatch.setattr(contract, "resolve_executable", lambda name, env: name)
     monkeypatch.setattr(pm_import.subprocess, "Popen", recording_forbidden_popen)
     ok, _ = pm_import._real_harness_runner(
         ["claude", "-p", "분석 프롬프트"], "프롬프트")

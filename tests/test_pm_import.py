@@ -32,6 +32,7 @@ from _textio import (
     dominant_newline_bytes, write_crlf, write_lf, write_matching_newlines,
 )
 from pm_engine.infra import conf_store
+from pm_engine.infra.harness import contract
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -3894,16 +3895,13 @@ def test_substitute_model_token_scoped_to_copied(pm_import, tmp_path):
         "_substitute_model_token 이 copied_relpaths 밖 파일을 치환함(비파괴 위반)."
 
 
-# ── 설치 대조·콘솔 `[m]` 의 모델 목록 — `pm_relay.model_listing` 래퍼 ───────────────────────
-# 조회 실행·판독·시간 상한의 시험은 주인(pm_relay)으로 옮겼다(`tests/test_pm_relay_opencode.py`).
+# ── 설치 대조·콘솔 `[m]` 의 모델 목록 — `contract.model_listing` 래퍼 ───────────────────────
+# 조회 실행·판독·시간 상한의 시험은 주인(contract)으로 옮겼다(`tests/test_pm_relay_opencode.py`).
 # 여기서는 래퍼 계약만 본다: 조회 실패 → (False, []) + stderr 한 줄, 성공 → (True, 목록).
 
 
 class _ListingRelay:
-    """`_load_watchdog()` 대역 — 받은 인자를 적고 정해 둔 결과(또는 조회 실패)를 낸다."""
-
-    class HarnessContractError(RuntimeError):
-        pass
+    """`contract.model_listing` 대역 — 받은 인자를 적고 정해 둔 결과(또는 조회 실패)를 낸다."""
 
     def __init__(self, result=None, failure=None):
         self.result = result
@@ -3913,14 +3911,14 @@ class _ListingRelay:
     def model_listing(self, source, *, cwd, env):
         self.seen.append((source, cwd, env))
         if self.failure is not None:
-            raise self.HarnessContractError(self.failure)
+            raise contract.HarnessContractError(self.failure)
         return self.result
 
 
 def test_real_models_runner_turns_a_lookup_failure_into_a_skip_line(pm_import, monkeypatch, capsys):
     """조회 실패는 설치를 깨지 않는다 — (False, []) 와 사유 한 줄(`… — 모델 자동해소 skip`)."""
     relay = _ListingRelay(failure="opencode 실행 파일 PATH 부재 — 확인할 수 없다")
-    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: relay)
+    monkeypatch.setattr(contract, "model_listing", relay.model_listing)
 
     assert pm_import._real_models_runner("source-row") == (False, [])
     err = capsys.readouterr().err
@@ -3933,7 +3931,7 @@ def test_real_models_runner_returns_the_listed_models(pm_import, monkeypatch, ca
     """조회 성공은 (True, 모델 목록) 이고 stderr 는 조용하다."""
     relay = _ListingRelay(result=SimpleNamespace(
         models=("ollama/gemma4:26b", "opencode/big-pickle"), variants=None))
-    monkeypatch.setattr(pm_import, "_load_watchdog", lambda: relay)
+    monkeypatch.setattr(contract, "model_listing", relay.model_listing)
 
     assert pm_import._real_models_runner("source-row") == (
         True, ["ollama/gemma4:26b", "opencode/big-pickle"])
@@ -4720,7 +4718,7 @@ def test_add_harness_registers_flavor_engine_rows(
         pm_import, pm_update, tmp_path, base, added):
     """add-harness 가 guest **엔진 행**(비-`@render`)을 dest manifest 에 정확히 등재한다 (T-0574 ②).
 
-    엔진 행이 없으면 `.codex/pm_orch_codex.py`·`.opencode/lib`·claude ctx 가드처럼 `pm_relay` 코어와
+    엔진 행이 없으면 `.codex/pm_orch_codex.py`·`.opencode/lib`·claude ctx 가드처럼 하네스 계약 코어와
     짝인 engine-mirror 가 설치 시점 사본으로 **영구 동결**된다(코어↔드라이버 skew) — add-harness 는
     복사만 하고 등재하지 않았고, 등재 유일분이던 `@render` 행은 update plan 에서 전량 차감됐다.
 

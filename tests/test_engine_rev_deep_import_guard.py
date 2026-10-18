@@ -37,7 +37,7 @@ _CENTRAL_LOADER = ("pm_engine/infra/repo_files.py", "load_module")
 # 이동한 인프라 모듈 — 평면 형제가 아니라 패키지 안에 있다(`_copy_tools` 가 패키지째 복사).
 _ENGINE_PACKAGE = "pm_engine"
 _MOVED_MODULES = frozenset({"file_lock", "console_encoding", "repo_owned_files",
-                            "identity_args", "repo_coordinates"})
+                            "identity_args", "repo_coordinates", "pm_relay", "review_rounds"})
 
 
 def _central_guard_sources(tools: Path) -> list[tuple[str, Path]]:
@@ -1259,8 +1259,7 @@ def test_bump_round_trip_rewrites_every_newly_measured_target(tmp_path):
     isolated = _load_module(tools, "engine_rev")
     next_rev = "v99.0.1"
     newly_measured = {
-        "pm_relay.py", "additional_reviewer.py", "pm_render.py", "pm_import.py",
-        "pm_log.py",
+        "additional_reviewer.py", "pm_render.py", "pm_import.py", "pm_log.py",
     }
 
     assert isolated.main(["--bump", next_rev]) == 0
@@ -1552,9 +1551,9 @@ def test_mutation_nonliteral_conditional_verifier_is_red(tmp_path, condition):
     tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
     loader = tools / "pm_delegate.py"
     source = loader.read_text(encoding="utf-8")
-    needle = "path, \"pm_relay.py\", verifier=_verify_engine_rev,"
+    needle = "path, \"delegate_scope.py\", verifier=_verify_engine_rev,"
     assert needle in source
-    loader.write_text(source.replace(needle, "path, \"pm_relay.py\",", 1), encoding="utf-8")
+    loader.write_text(source.replace(needle, "path, \"delegate_scope.py\",", 1), encoding="utf-8")
     report = collect_central_guard_report(tools)
     assert any("exactly one explicit policy" in item for item in report.violations)
 
@@ -1808,11 +1807,6 @@ def test_parameter_loaders_are_measured_and_hook_exemption_is_code_owned():
     assert engine_rev.EXEMPT_UNVERIFIED_DEEP_IMPORTS[
         ("board.py", "_run_lint_hooks")
     ].strip()
-    # 작업용 임시 루트의 자리 하나를 형제에게 묻는 로드도 같은 규약이다 — rev 결속을 걸면
-    # 자기 갱신 mid-sync 에서 훅 세트 상류 세대 선언을 통째로 잃는다.
-    assert engine_rev.EXEMPT_UNVERIFIED_DEEP_IMPORTS[
-        ("pm_import.py", "_temp_root")
-    ].strip()
 
 
 def test_ast_ignores_comments_strings_and_vendor_template_copies(tmp_path):
@@ -1849,24 +1843,12 @@ _LOADER_CASES = (
         "_load_additional_reviewer",
     ),
     (
-        "pm_delegate", "pm_relay", lambda mod, _tools: mod._load_relay(),
-        "_load_relay",
-    ),
-    (
-        "additional_reviewer", "pm_relay", lambda mod, _tools: mod._load_relay(),
-        "_load_relay",
-    ),
-    (
         "pm_import", "board", lambda mod, _tools: mod._detected_py(),
         "_detected_py",
     ),
     (
         "pm_import", "pm_render", lambda mod, _tools: mod._load_pm_render_module(),
         "_load_pm_render_module",
-    ),
-    (
-        "pm_import", "pm_relay", lambda mod, _tools: mod._load_watchdog(),
-        "_load_watchdog",
     ),
     (
         "pm_bootstrap", "pm_log", lambda mod, _tools: mod._load_tool("pm_log"),

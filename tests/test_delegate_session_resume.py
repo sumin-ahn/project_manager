@@ -26,6 +26,8 @@ from pathlib import Path
 import pytest
 
 from _git_fixture import init_git_repo
+from pm_engine.infra import raw_output
+from pm_engine.infra.harness import contract
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -54,11 +56,6 @@ def pd_module():
 @pytest.fixture(scope="module")
 def pd():
     return _load("pm_delegate")
-
-
-@pytest.fixture(scope="module")
-def relay():
-    return _load("pm_relay")
 
 
 # ── canned wire (claude stream-json 실측 형식) ────────────────────────────────
@@ -162,27 +159,27 @@ def _argv(prompt: Path, cwd: Path, out_dir: Path, *extra: str,
 # ── 장부 시드 (실 엔진 경로로 기록 — 대역 장부를 만들지 않는다) ────────────────────
 
 def _recent_seed_time() -> datetime.datetime:
-    """prune 완료/미마감 창(pm_relay.RAW_LEDGER_COMPLETED_DAYS·UNFINISHED_DAYS) 안에 항상
+    """prune 완료/미마감 창(raw_output.RAW_LEDGER_COMPLETED_DAYS·UNFINISHED_DAYS) 안에 항상
     머무는 시드 기준 시각(고정 달력 날짜 금지)."""
     return datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
 
 
-def _seed_record(relay, ledger_path: Path, *, role: str = _RESUME_ROLE,
+def _seed_record(ledger_path: Path, *, role: str = _RESUME_ROLE,
                  rc: int = 0, started: datetime.datetime | None = None,
                  surface: str = "delegate", harness: str = "claude",
                  finish: bool = True, extra: dict | None = None,
                  start_extra: dict | None = None) -> str:
-    # 장부 prune(pm_relay.RAW_LEDGER_COMPLETED_DAYS·UNFINISHED_DAYS) 창 안에 항상 머무는 상대
+    # 장부 prune(raw_output.RAW_LEDGER_COMPLETED_DAYS·UNFINISHED_DAYS) 창 안에 항상 머무는 상대
     # 시각. 고정 달력 날짜를 쓰면 그 날짜 + 보존일수가 지나는 순간 시드가 prune 되는 시간폭탄이 된다.
     started = started or _recent_seed_time()
-    record_id = relay.start_raw_record(
+    record_id = raw_output.start_raw_record(
         ledger_path,
         surface=surface, harness=harness, model="opus", role=role,
         raw_path=ledger_path.parent / f"seed_{started.isoformat()}.txt",
         attempt="primary", now=started, extra=start_extra or {},
     )
     if finish:
-        relay.finish_raw_record(
+        raw_output.finish_raw_record(
             ledger_path, record_id, rc=rc, elapsed_sec=1.0, silence_sec=None,
             now=started + datetime.timedelta(seconds=5), extra=extra or {},
         )
@@ -199,9 +196,9 @@ def _row(ledger_path: Path, record_id: str) -> dict:
 
 # ══ ⑦ usage 4필드 분해 (수집 불가 = 필드 부재) ═══════════════════════════════
 
-def test_claude_usage_is_decomposed_into_four_fields(relay):
+def test_claude_usage_is_decomposed_into_four_fields():
     """스칼라 합 뒤에 가려져 있던 캐시 **재적재**(cache_read)와 **새 적재**(cache_creation)를 분리한다."""
-    _sid, _reply, used, usage = relay._parse_stream_json_events(
+    _sid, _reply, used, usage = contract._parse_stream_json_events(
         _claude_wire(usage=_MEASURED_USAGE).splitlines())
     assert usage == {
         "input": 4, "cache_creation": 1_204, "cache_read": 26_079, "output": 311,
@@ -209,25 +206,25 @@ def test_claude_usage_is_decomposed_into_four_fields(relay):
     assert used == sum(usage.values())            # 회전 판정 스칼라는 불변
 
 
-def test_absent_usage_fields_are_omitted_not_zero_filled(relay):
+def test_absent_usage_fields_are_omitted_not_zero_filled():
     """wire 에 없는 필드는 **적지 않는다** — 0 은 '0 토큰'이라는 다른 사실이다."""
-    partial = relay._claude_usage_fields({"input_tokens": 7})
+    partial = contract._claude_usage_fields({"input_tokens": 7})
     assert partial == {"input": 7}
     assert "cache_read" not in partial and "output" not in partial
-    assert relay._claude_usage_fields({}) is None
-    assert relay._claude_usage_fields(None) is None
+    assert contract._claude_usage_fields({}) is None
+    assert contract._claude_usage_fields(None) is None
     # 형식이 깨진 값이 하나라도 있으면 그 관측 전체를 버린다(부분 신뢰 값 금지).
-    assert relay._claude_usage_fields({"input_tokens": -1}) is None
-    assert relay._claude_usage_fields({"output_tokens": True}) is None
+    assert contract._claude_usage_fields({"input_tokens": -1}) is None
+    assert contract._claude_usage_fields({"output_tokens": True}) is None
 
 
-def test_scalar_usage_contract_of_public_parser_is_unchanged(relay):
+def test_scalar_usage_contract_of_public_parser_is_unchanged():
     """공개 3-tuple 계약(회전 판정 소비면)은 그대로 — 파서는 하나고 소비면만 둘이다."""
     lines = _claude_wire(usage=_MEASURED_USAGE).splitlines()
-    assert relay.parse_stream_json(lines) == relay._parse_stream_json_events(lines)[:3]
+    assert contract.parse_stream_json(lines) == contract._parse_stream_json_events(lines)[:3]
 
 
-def test_codex_usage_is_loaded_flat_not_folded_into_claude_fields(relay):
+def test_codex_usage_is_loaded_flat_not_folded_into_claude_fields():
     """codex 5필드 contract 를 접지 않고 그대로 싣는다 — 미관측 키는 0(claude 축의
     '부재=미관측'과 다른 규칙, `_codex_usage_contract` 의 `_n` 이 소유)."""
     codex_wire = "\n".join([
@@ -236,7 +233,7 @@ def test_codex_usage_is_loaded_flat_not_folded_into_claude_fields(relay):
                     "item": {"type": "agent_message", "text": "OK"}}),
         json.dumps({"type": "turn.completed", "usage": {"input_tokens": 10}}),
     ])
-    observed = relay.extract_harness_result("codex", codex_wire)
+    observed = contract.extract_harness_result("codex", codex_wire)
     assert (observed.reply, observed.session_id) == ("OK", "th-1")
     assert observed.usage == {
         "input": 10, "cached_input": 0, "cache_write_input": 0,
@@ -244,31 +241,31 @@ def test_codex_usage_is_loaded_flat_not_folded_into_claude_fields(relay):
     }
 
 
-def test_codex_usage_event_absent_leaves_field_absent(relay):
+def test_codex_usage_event_absent_leaves_field_absent():
     """`turn.completed` 자체가 wire 에 없으면(실패 실행 등) 필드 부재다 — 0 채우기 아님."""
     codex_wire = "\n".join([
         json.dumps({"type": "thread.started", "thread_id": "th-1"}),
         json.dumps({"type": "item.completed",
                     "item": {"type": "agent_message", "text": "OK"}}),
     ])
-    observed = relay.extract_harness_result("codex", codex_wire)
+    observed = contract.extract_harness_result("codex", codex_wire)
     assert observed.usage is None
 
 
-def test_opencode_usage_stays_absent_out_of_this_tickets_scope(relay):
+def test_opencode_usage_stays_absent_out_of_this_tickets_scope():
     """opencode 는 범위 밖 — 총합 스칼라의 의미가 두 갈래라 필드 부재를 유지한다."""
     opencode_wire = json.dumps({
         "type": "text", "sessionID": "ses_1", "part": {"type": "text", "text": "OK"}})
-    observed = relay.extract_harness_result("opencode", opencode_wire)
+    observed = contract.extract_harness_result("opencode", opencode_wire)
     assert (observed.reply, observed.session_id, observed.usage) == ("OK", "ses_1", None)
 
 
-def test_codex_and_claude_usage_keysets_do_not_fold(relay):
+def test_codex_and_claude_usage_keysets_do_not_fold():
     """codex·claude 키집합 교집합은 `{input, output}` 뿐 — 어느 쪽도 상대의 캐시 분해 키를
     갖지 않는다(grep 부재 단언 대신 값으로 접힘 부재를 고정)."""
-    claude_usage = relay.extract_harness_result(
+    claude_usage = contract.extract_harness_result(
         "claude", _claude_wire(usage=_MEASURED_USAGE)).usage
-    codex_usage = relay.extract_harness_result(
+    codex_usage = contract.extract_harness_result(
         "codex", _codex_wire(usage=_MEASURED_CODEX_USAGE_WIRE)).usage
     claude_keys, codex_keys = set(claude_usage), set(codex_usage)
     assert claude_keys & codex_keys == {"input", "output"}
@@ -277,52 +274,52 @@ def test_codex_and_claude_usage_keysets_do_not_fold(relay):
     assert claude_keys - codex_keys == {"cache_creation", "cache_read"}
 
 
-def test_reply_only_facade_keeps_both_call_sites_intact(relay, pd):
+def test_reply_only_facade_keeps_both_call_sites_intact(pd):
     """회신 전용 seam 의 반환 계약(str|None)은 불변 — 위임 호출부는 그대로 산다.
 
     리뷰 표면은 usage 관측을 위해 `extract_harness_result` 로 옮겨갔다(회신은 `.reply`) — 그
     이관 자체를 값으로 고정한다(T-0780)."""
-    assert relay.extract_harness_reply("claude", _claude_wire("답")) == "답"
-    assert relay.extract_harness_reply("claude", _claude_wire("   ")) is None
+    assert contract.extract_harness_reply("claude", _claude_wire("답")) == "답"
+    assert contract.extract_harness_reply("claude", _claude_wire("   ")) is None
     assert pd.extract_reply("claude", _claude_wire("답")) == "답"      # 위임 호출부
     external = _load("additional_reviewer")
     source = Path(external.__file__).read_text(encoding="utf-8")
-    assert source.count("relay.extract_harness_reply(") == 0    # 리뷰어 호출부는 usage 관측으로 이관
-    assert source.count("relay.extract_harness_result(") == 1
-    with pytest.raises(relay.HarnessContractError, match="미지원 harness"):
-        relay.extract_harness_reply("gemini", "{}")
+    assert source.count("contract.extract_harness_reply(") == 0    # 리뷰어 호출부는 usage 관측으로 이관
+    assert source.count("contract.extract_harness_result(") == 1
+    with pytest.raises(contract.HarnessContractError, match="미지원 harness"):
+        contract.extract_harness_reply("gemini", "{}")
 
 
 # ══ ③ 세션 id 형식 가드 ═══════════════════════════════════════════════════════
 
-def test_session_id_guard_rejects_flag_shaped_values(relay):
+def test_session_id_guard_rejects_flag_shaped_values():
     """장부가 손상돼도 `--` 로 시작하는 문자열은 재개 argv 에 실리지 않는다."""
-    assert relay.is_resumable_session_id(SESSION_ID) is True
+    assert contract.is_resumable_session_id(SESSION_ID) is True
     for corrupted in ("--dangerously-skip-permissions", "", "not-a-uuid", None,
                       f"{SESSION_ID} --print", 12345):
-        assert relay.is_resumable_session_id(corrupted) is False
-    with pytest.raises(relay.HarnessContractError, match="세션 id 형식"):
-        relay.build_claude_argv("opus", None, "code-reviewer",
+        assert contract.is_resumable_session_id(corrupted) is False
+    with pytest.raises(contract.HarnessContractError, match="세션 id 형식"):
+        contract.build_claude_argv("opus", None, "code-reviewer",
                                 "--dangerously-skip-permissions")
 
 
-def test_claude_argv_carries_resume_only_when_requested(relay):
+def test_claude_argv_carries_resume_only_when_requested():
     """재개 요청이 없으면 argv 는 종전과 byte-동일하다."""
-    fresh = relay.build_claude_argv("opus", None, "code-reviewer")
+    fresh = contract.build_claude_argv("opus", None, "code-reviewer")
     assert "--resume" not in fresh
-    resumed = relay.build_claude_argv("opus", None, "code-reviewer", SESSION_ID)
+    resumed = contract.build_claude_argv("opus", None, "code-reviewer", SESSION_ID)
     assert resumed[:len(fresh)] == fresh
     assert resumed[resumed.index("--resume") + 1] == SESSION_ID
 
 
-def test_resume_support_is_a_declaration_table(relay):
+def test_resume_support_is_a_declaration_table():
     """지원 축은 분기가 아니라 선언표 — codex는 실측 승격, opencode는 무배선이다."""
-    assert relay.HARNESS_RESUME_SUPPORT == {
+    assert contract.HARNESS_RESUME_SUPPORT == {
         "claude": True, "codex": True, "opencode": False}
-    assert relay.harness_supports_resume("claude") is True
-    assert relay.harness_supports_resume("codex") is True
-    assert relay.harness_supports_resume("opencode") is False
-    assert relay.harness_supports_resume("gemini") is False
+    assert contract.harness_supports_resume("claude") is True
+    assert contract.harness_supports_resume("codex") is True
+    assert contract.harness_supports_resume("opencode") is False
+    assert contract.harness_supports_resume("gemini") is False
 
 
 # ══ ② 후보 선택 결정성 ═══════════════════════════════════════════════════════
@@ -473,11 +470,11 @@ def test_truly_absent_record_keeps_the_retention_reason(pd):
         harness="claude") is None
 
 
-def test_resume_resolution_surfaces_the_unusable_reason(pd, relay, tmp_path, capsys):
+def test_resume_resolution_surfaces_the_unusable_reason(pd, tmp_path, capsys):
     """실 해소 경로가 그 사유를 stderr 로 낸다 (판정 헬퍼가 배선돼 있다)."""
     out_dir = tmp_path / "raw"
     ledger_path = out_dir / "raw_outputs.json"
-    record_id = _seed_record(relay, ledger_path, start_extra={"ticket": TICKET_ID})
+    record_id = _seed_record(ledger_path, start_extra={"ticket": TICKET_ID})
 
     plan = pd.resolve_resume_plan(
         record_id, harness="claude", role=_RESUME_ROLE,
@@ -496,23 +493,23 @@ def test_matched_resume_records_stay_candidates(pd):
         [row], selector=TICKET_ID, role="code-reviewer", harness="claude")["id"] == "chained"
 
 
-def test_retention_window_bounds_resume_availability(pd, relay, tmp_path):
+def test_retention_window_bounds_resume_availability(pd, tmp_path):
     """장부 완료 보존 창 밖 레코드는 정리돼 후보에서 사라진다 — 창 밖 재위임은 자연 fresh."""
     ledger_path = tmp_path / "raw_outputs.json"
     now = datetime.datetime.now(datetime.timezone.utc)
-    stale = now - datetime.timedelta(days=relay.RAW_LEDGER_COMPLETED_DAYS + 1)
-    _seed_record(relay, ledger_path, started=stale,
+    stale = now - datetime.timedelta(days=raw_output.RAW_LEDGER_COMPLETED_DAYS + 1)
+    _seed_record(ledger_path, started=stale,
                  start_extra={"ticket": TICKET_ID}, extra={"session_id": SESSION_ID})
     # 다음 기록이 정리 규칙을 태운다(장부는 쓰기 시점에 정리된다).
-    _seed_record(relay, ledger_path, started=now, start_extra={"ticket": "T-" + "0002"})
-    rows = relay.raw_records(ledger_path)
+    _seed_record(ledger_path, started=now, start_extra={"ticket": "T-" + "0002"})
+    rows = raw_output.raw_records(ledger_path)
     assert pd.select_resume_record(
         rows, selector=TICKET_ID, role="code-reviewer", harness="claude") is None
 
 
 # ══ ① 저장 축 단일 (raw 장부 레코드 행) ══════════════════════════════════════
 
-def test_structured_fields_live_on_the_single_delegate_ledger_row(pd, relay, tmp_path):
+def test_structured_fields_live_on_the_single_delegate_ledger_row(pd, tmp_path):
     """세션 id·usage·must_fix·기준 rev·티켓이 **한 행**에 실리고 정리 왕복 후에도 살아남는다."""
     out_dir = tmp_path / "raw"
     ledger_path = out_dir / "raw_outputs.json"
@@ -537,7 +534,7 @@ def test_structured_fields_live_on_the_single_delegate_ledger_row(pd, relay, tmp
     assert row["reply_extracted"] is True          # 회신 검증까지 통과한 유효 성공
 
     # 같은 장부에 한 건 더 쓰면 정리 규칙이 다시 돈다 — 행 id 와 구조화 필드가 생존해야 한다.
-    _seed_record(relay, ledger_path, started=datetime.datetime.now(datetime.timezone.utc))
+    _seed_record(ledger_path, started=datetime.datetime.now(datetime.timezone.utc))
     survived = _row(ledger_path, row["id"])
     assert survived["session_id"] == SESSION_ID
     assert survived["must_fix_items"] == row["must_fix_items"]
@@ -713,11 +710,10 @@ def test_rc_zero_without_a_reply_is_recorded_as_an_invalid_success(pd, tmp_path)
         [row], selector=TICKET_ID, role="code-reviewer", harness="claude") is None
 
 
-def test_ledger_extra_cannot_overwrite_common_schema(relay, tmp_path):
+def test_ledger_extra_cannot_overwrite_common_schema(tmp_path):
     """표면별 extra 가 공통 스키마 키를 덮어쓰지 못한다(조회면의 뜻이 표면마다 갈리지 않게)."""
     ledger_path = tmp_path / "raw_outputs.json"
-    record_id = _seed_record(
-        relay, ledger_path, rc=0,
+    record_id = _seed_record(ledger_path, rc=0,
         extra={"rc": 99, "surface": "spoofed", "session_id": SESSION_ID},
     )
     row = _row(ledger_path, record_id)
@@ -738,7 +734,7 @@ def test_review_round_ledger_is_never_touched(pd, monkeypatch, tmp_path, capsys)
     prompt = _write_prompt(tmp_path)
     ledger_path = out_dir / "raw_outputs.json"
     out_dir.mkdir()
-    _seed_record(pd._load_relay(), ledger_path, start_extra={"ticket": TICKET_ID},
+    _seed_record(ledger_path, start_extra={"ticket": TICKET_ID},
                  extra={"session_id": SESSION_ID})
     fake = _FakeRun(_ok(_claude_wire("판정: 통과")))
     rc = _run_main(pd, monkeypatch,
@@ -761,14 +757,13 @@ def _resume_fixture(pd, tmp_path, *, must_fix=("직전 지적 A", "직전 지적
     # raw 박제 파일에는 장부에 없는 **독약 문자열**을 심는다 — delta 가 이 파일을 다시 읽으면 잡힌다.
     raw_path.write_text(
         "# pm_delegate raw 출력 (감사)\nPOISON-ONLY-IN-RAW-TXT\n", encoding="utf-8")
-    relay = pd._load_relay()
-    record_id = relay.start_raw_record(
+    record_id = raw_output.start_raw_record(
         ledger_path, surface="delegate", harness="claude", model="opus",
         role=role, raw_path=raw_path, attempt="primary",
         now=_recent_seed_time(),
         extra={"ticket": TICKET_ID, "base_rev": base_rev},
     )
-    relay.finish_raw_record(
+    raw_output.finish_raw_record(
         ledger_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None,
         now=_recent_seed_time() + datetime.timedelta(minutes=1),
         extra={"session_id": session_id, "must_fix_items": list(must_fix)},
@@ -923,14 +918,13 @@ def _write_role_fixture(pd, tmp_path, role: str):
     out_dir = tmp_path / "raw"
     out_dir.mkdir()
     ledger_path = out_dir / "raw_outputs.json"
-    relay = pd._load_relay()
-    record_id = relay.start_raw_record(
+    record_id = raw_output.start_raw_record(
         ledger_path, surface="delegate", harness="claude", model="opus",
         role=role, raw_path=out_dir / "seed_raw.txt", attempt="primary",
         now=_recent_seed_time(),
         extra={"ticket": TICKET_ID, "base_rev": "cafebabe"},
     )
-    relay.finish_raw_record(
+    raw_output.finish_raw_record(
         ledger_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None,
         now=_recent_seed_time() + datetime.timedelta(minutes=1),
         extra={"session_id": SESSION_ID, "must_fix_items": ["직전 지적 A"]},
@@ -1154,7 +1148,7 @@ def test_missing_candidate_falls_back_to_fresh_with_notice(pd, monkeypatch, tmp_
     """
     out_dir = tmp_path / "raw"
     out_dir.mkdir()
-    _seed_record(pd._load_relay(), out_dir / "raw_outputs.json",
+    _seed_record(out_dir / "raw_outputs.json",
                  start_extra={"ticket": "T-" + "0001"})   # 다른 티켓 = 후보 아님
     prompt = _write_prompt(tmp_path)
     fake = _FakeRun(_ok(_claude_wire("판정: 통과")))

@@ -568,6 +568,22 @@
       "count": 1
     },
     {
+      "path": ".project_manager/tools/pm_engine/infra/harness/contract.py",
+      "kind": "work_item",
+      "match": "ADR-0018",
+      "surface": "python-prose",
+      "hash": "097ee05f50cd284ac974308efa44421493389cf14bc64034c7eb46fe2e6a9b08",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/pm_engine/infra/harness/contract.py",
+      "kind": "work_item",
+      "match": "T-0086",
+      "surface": "python-prose",
+      "hash": "ca9f4bf17cd46a97c3a9dac3ffe4991bc4f38ca2bb0c21d91a9b8873927fdb9d",
+      "count": 1
+    },
+    {
       "path": ".project_manager/tools/pm_engine/infra/lease_store.py",
       "kind": "work_item",
       "match": "T-0729",
@@ -629,22 +645,6 @@
       "match": "T-0606",
       "surface": "python-prose",
       "hash": "9d4091bfdcd666d3be192f1055083526d3b83641745927f45df043dfbd61ad4f",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "ADR-0018",
-      "surface": "python-prose",
-      "hash": "097ee05f50cd284ac974308efa44421493389cf14bc64034c7eb46fe2e6a9b08",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "T-0086",
-      "surface": "python-prose",
-      "hash": "ca9f4bf17cd46a97c3a9dac3ffe4991bc4f38ca2bb0c21d91a9b8873927fdb9d",
       "count": 1
     },
     {
@@ -1296,6 +1296,22 @@
       "count": 1
     },
     {
+      "path": "templates/claude_code/.project_manager/tools/pm_engine/infra/harness/contract.py",
+      "kind": "work_item",
+      "match": "ADR-0018",
+      "surface": "python-prose",
+      "hash": "097ee05f50cd284ac974308efa44421493389cf14bc64034c7eb46fe2e6a9b08",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/pm_engine/infra/harness/contract.py",
+      "kind": "work_item",
+      "match": "T-0086",
+      "surface": "python-prose",
+      "hash": "ca9f4bf17cd46a97c3a9dac3ffe4991bc4f38ca2bb0c21d91a9b8873927fdb9d",
+      "count": 1
+    },
+    {
       "path": "templates/claude_code/.project_manager/tools/pm_engine/infra/lease_store.py",
       "kind": "work_item",
       "match": "T-0729",
@@ -1357,22 +1373,6 @@
       "match": "T-0606",
       "surface": "python-prose",
       "hash": "9d4091bfdcd666d3be192f1055083526d3b83641745927f45df043dfbd61ad4f",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "ADR-0018",
-      "surface": "python-prose",
-      "hash": "097ee05f50cd284ac974308efa44421493389cf14bc64034c7eb46fe2e6a9b08",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "T-0086",
-      "surface": "python-prose",
-      "hash": "ca9f4bf17cd46a97c3a9dac3ffe4991bc4f38ca2bb0c21d91a9b8873927fdb9d",
       "count": 1
     },
     {
@@ -2136,6 +2136,22 @@
       "count": 1
     },
     {
+      "path": "templates/codex/.project_manager/tools/pm_engine/infra/harness/contract.py",
+      "kind": "work_item",
+      "match": "ADR-0018",
+      "surface": "python-prose",
+      "hash": "097ee05f50cd284ac974308efa44421493389cf14bc64034c7eb46fe2e6a9b08",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/pm_engine/infra/harness/contract.py",
+      "kind": "work_item",
+      "match": "T-0086",
+      "surface": "python-prose",
+      "hash": "ca9f4bf17cd46a97c3a9dac3ffe4991bc4f38ca2bb0c21d91a9b8873927fdb9d",
+      "count": 1
+    },
+    {
       "path": "templates/codex/.project_manager/tools/pm_engine/infra/lease_store.py",
       "kind": "work_item",
       "match": "T-0729",
@@ -2197,22 +2213,6 @@
       "match": "T-0606",
       "surface": "python-prose",
       "hash": "9d4091bfdcd666d3be192f1055083526d3b83641745927f45df043dfbd61ad4f",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "ADR-0018",
-      "surface": "python-prose",
-      "hash": "097ee05f50cd284ac974308efa44421493389cf14bc64034c7eb46fe2e6a9b08",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "T-0086",
-      "surface": "python-prose",
-      "hash": "ca9f4bf17cd46a97c3a9dac3ffe4991bc4f38ca2bb0c21d91a9b8873927fdb9d",
       "count": 1
     },
     {
@@ -3200,6 +3200,22 @@
       "count": 1
     },
     {
+      "path": "templates/opencode/.project_manager/tools/pm_engine/infra/harness/contract.py",
+      "kind": "work_item",
+      "match": "ADR-0018",
+      "surface": "python-prose",
+      "hash": "097ee05f50cd284ac974308efa44421493389cf14bc64034c7eb46fe2e6a9b08",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/pm_engine/infra/harness/contract.py",
+      "kind": "work_item",
+      "match": "T-0086",
+      "surface": "python-prose",
+      "hash": "ca9f4bf17cd46a97c3a9dac3ffe4991bc4f38ca2bb0c21d91a9b8873927fdb9d",
+      "count": 1
+    },
+    {
       "path": "templates/opencode/.project_manager/tools/pm_engine/infra/lease_store.py",
       "kind": "work_item",
       "match": "T-0729",
@@ -3261,22 +3277,6 @@
       "match": "T-0606",
       "surface": "python-prose",
       "hash": "9d4091bfdcd666d3be192f1055083526d3b83641745927f45df043dfbd61ad4f",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "ADR-0018",
-      "surface": "python-prose",
-      "hash": "097ee05f50cd284ac974308efa44421493389cf14bc64034c7eb46fe2e6a9b08",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "T-0086",
-      "surface": "python-prose",
-      "hash": "ca9f4bf17cd46a97c3a9dac3ffe4991bc4f38ca2bb0c21d91a9b8873927fdb9d",
       "count": 1
     },
     {

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
 from _engine_tree import engine_python_files
+from pm_engine.infra import raw_output
 
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_CONFTEST = ROOT / "conftest.py"
@@ -156,7 +157,7 @@ def test_engine_copies_create_temp_only_under_an_explicit_dir():
     """엔진 사본 전수에서 임시물 생성 호출은 전부 부모를 명시한다(자리 규약·예외 목록 0).
 
     `dir=` 를 빼면 그 자리는 OS 임시 폴더로 가고, 재는 대상 트리 밖이라 무엇이 언제 쌓였는지
-    보이지 않는다. 자리 하나를 돌려주는 소유자는 `pm_relay.temp_root` 이고, 원자적 쓰기는
+    보이지 않는다. 자리 하나를 돌려주는 소유자는 `raw_output.temp_root` 이고, 원자적 쓰기는
     대상 파일의 부모를 준다 — 어느 쪽이든 **호출 형태가 선언**이라 예외 목록이 필요 없다.
     """
     offenders: list[str] = []
@@ -259,7 +260,7 @@ def test_read_role_temp_place_passes_the_project_anchor(monkeypatch, tmp_path):
     """`mkdir` 로 여는 유일한 임시 자리(read 역할 격리)도 앵커 seam 을 지나야 통과한다.
 
     이 자리는 `tempfile.*` 을 타지 않아 `dir=` 축이 원리적으로 볼 수 없다 — 그래서 부모가
-    `pm_relay.temp_root` 를 지나는지를 값으로 잰다(세 하네스 전부). 앵커는 **주입한 PM 홈**
+    `raw_output.temp_root` 를 지나는지를 값으로 잰다(세 하네스 전부). 앵커는 **주입한 PM 홈**
     이고 OS 임시 폴더는 그 홈 밖으로 돌린다. 기본 실행의 `tempfile.gettempdir()` 는 회귀 자신이
     저장소 안으로 돌려놓은 값이라(`conftest._forbid_real_tempdir_project_outputs`), 실제 저장소를
     앵커로 쓰면 옛 형태(`Path(_gettempdir())`)로 되돌려도 단언이 참으로 남아 아무것도 지키지
@@ -270,11 +271,6 @@ def test_read_role_temp_place_passes_the_project_anchor(monkeypatch, tmp_path):
             "pm_delegate_temp_place_contract", TOOLS / "pm_delegate.py")
     )
     delegate.__spec__.loader.exec_module(delegate)
-    relay = importlib.util.module_from_spec(
-        importlib.util.spec_from_file_location(
-            "pm_relay_temp_place_contract", TOOLS / "pm_relay.py")
-    )
-    relay.__spec__.loader.exec_module(relay)
 
     pm_home = tmp_path / "pmhome"
     (pm_home / ".project_manager" / "tools").mkdir(parents=True)
@@ -283,7 +279,7 @@ def test_read_role_temp_place_passes_the_project_anchor(monkeypatch, tmp_path):
     monkeypatch.setattr(delegate, "REPO", pm_home)
     monkeypatch.setattr(delegate, "_CONFIG_REPO_OVERRIDE", None)
     monkeypatch.setattr(delegate, "_gettempdir", lambda: str(outside_the_pm_home))
-    anchor = relay.temp_root(pm_home).resolve()
+    anchor = raw_output.temp_root(pm_home).resolve()
 
     for harness in ("codex", "claude", "opencode"):
         temp_parent, _component = delegate._read_tmp_parent(harness)
@@ -297,16 +293,11 @@ def test_read_role_temp_place_passes_the_project_anchor(monkeypatch, tmp_path):
 
 
 def test_engine_temp_root_is_the_project_local_tmp(tmp_path):
-    """`pm_relay.temp_root` 이 그 clone 의 `.project_manager/.local/tmp` 를 만들어 돌려준다."""
-    spec = importlib.util.spec_from_file_location(
-        "pm_relay_temp_root_contract", TOOLS / "pm_relay.py"
-    )
-    relay = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(relay)
+    """`raw_output.temp_root` 이 그 clone 의 `.project_manager/.local/tmp` 를 만들어 돌려준다."""
 
-    root = relay.temp_root(tmp_path)
+    root = raw_output.temp_root(tmp_path)
 
     assert root == tmp_path / ".project_manager" / ".local" / "tmp"
     assert root.is_dir()
     # 두 번 불러도 같은 자리다 — 자리 규약이지 매번 새로 잡는 예약이 아니다.
-    assert relay.temp_root(tmp_path) == root
+    assert raw_output.temp_root(tmp_path) == root

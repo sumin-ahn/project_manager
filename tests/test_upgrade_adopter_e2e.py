@@ -895,7 +895,11 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   같은 묶음의 수정 라운드(T-0963 리뷰 F-002)에서 한 번 더 이동했다 — conf 쓰기 락 래퍼가 쓰는 곳 없는
 #   `yield` 를 버리고 공용 seam 을 그대로 돌려주게 됐고 `contextlib` import 가 빠졌다. 잠금 구간·배달
 #   경계·anchor 는 무편집이다.
-_T0585_PM_UPDATE_SHA256 = "bfee404cf09435398fe8c501c8fe9c3b8aae6ef607c6cb2b83c53aa1b3231ab2"
+#   T-0967 에서 또 이동했다 — 하네스 계약이 패키지(`pm_engine.infra.harness.contract`)로 옮겨 가며
+#   `_load_relay` 경로 적재가 사라지고 호출이 모듈 속성 호출로 바뀌었다. 역적용 delta 의 네 anchor 는
+#   전부 그 구간 밖이라 그대로 유일 해소되고, 배달 경계와 배달 파일 집합도 불변이다 — 현재화한 것은
+#   기대 SHA 하나뿐이다.
+_T0585_PM_UPDATE_SHA256 = "571c7b6c53240bb0cba3f2493c26f50194ab8ddafffb7648ee100bbfc18e02fc"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -1387,7 +1391,9 @@ def _install_t0585_updater(dest: Path) -> None:
 # marker 는 무편집이다.
 # T-0969: 구 역할 절 안내(판독 함수·호출) 삭제로 전문 SHA 가 이동했다. 퇴역 경로 delta 의 marker 는
 # 전부 그 구간 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "c2cf7d67383fc65fbba5660b574002d37784d11841f6bea540858a90cc3c0c85"
+# T-0967: 하네스 계약의 패키지 이동으로 `_load_relay` 경로 적재가 모듈 속성 호출(`contract`)로 바뀌어
+# 전문 SHA 가 이동했다. 퇴역 경로 delta 의 marker 는 전부 그 구간 밖이라 그대로 유일 해소된다.
+_PRE_T0876_PM_UPDATE_SHA256 = "b64e2de5f6fcf9020c13dad7c2ee5047de21f4bb6855308c784412c0143f62f0"
 
 
 def _pre_t0876_pm_update_source() -> str:

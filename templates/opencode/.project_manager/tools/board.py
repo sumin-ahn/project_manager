@@ -1321,15 +1321,6 @@ def _conf_default_int(key: str) -> int:
     return int(conf_schema.default_for(key))
 
 
-def _load_review_rounds():
-    """PM 직접 해소 근거/쿼터를 소유하는 공용 라운드 모듈을 지연 로드한다."""
-    path = Path(__file__).resolve().parent / "review_rounds.py"
-    _require_engine_sibling(path, "review_rounds.py")
-    return _load_module_from_path(
-        path, "review_rounds.py", verifier=_verify_engine_rev, cache=True,
-    )
-
-
 # 라운드 seam 의 실제 사본 경로 — 로더와 argparse 선택지 해소가 같은 파일을 본다(스크립트
 # 위치 앵커라 REPO monkeypatch 와 무관하게 자기 tools/ 를 가리킨다).
 TICKET_ROUNDS_PY = Path(__file__).resolve().parent / "ticket_rounds.py"

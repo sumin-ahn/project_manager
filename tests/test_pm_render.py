@@ -22,6 +22,7 @@ import pytest
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
 from _textio import write_lf
+from pm_engine.infra.harness import contract
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -945,7 +946,7 @@ _CODEX_HARD_SOURCE = "templates/codex/.codex/agents/developer-hard.toml"
 # 하네스 판정 입력은 **인스턴스 상대 좌표**다(상류 경로 아님) — 계획의 dest 좌표.
 _CODEX_HARD_CARD = ".codex/agents/developer-hard.toml"
 # 추론 필드가 있는 두 형식(claude·codex)의 허용값 — 렌더가 그대로 싣는지 재는 기대값이다. 렌더는
-# 이 값을 넘겨받지 않고 같은 tools/ 의 `pm_relay.reasoning_allowed`(설정 어휘 `conf_schema.REASONING_ALLOWED`)를
+# 이 값을 넘겨받지 않고 하네스 계약 `contract.reasoning_allowed`(설정 어휘 `conf_schema.REASONING_ALLOWED`)를
 # 직접 읽는다(`test_reasoning_allowed_is_read_from_sibling_pm_relay` 가 확인한다).
 _REASONING_LADDER = ("low", "medium", "high", "xhigh", "max")
 
@@ -1279,122 +1280,17 @@ def test_reasoning_fill_without_card_harness_fails(pm_render):
     assert "delegate.architect.reasoning=max" in str(excinfo.value)
 
 
-# ── 허용값 판독 위치 — pm_render 가 같은 tools/ 의 pm_relay(하네스 계약)를 직접 부른다 ─────────────
+# ── 허용값 판독 위치 — pm_render 가 하네스 계약(contract)을 직접 부른다 ─────────────
 
 def test_reasoning_allowed_is_read_from_sibling_pm_relay():
-    """허용값은 같은 tools/ 의 `pm_relay.reasoning_allowed` 하나에서 오고 pm_render 에 사본이 없다.
-
-    pm_relay 는 첫 호출에 한 번 읽어 모듈에 둔다 — 조회 기억이 인스턴스마다라 렌더마다 새로 읽으면
-    카드마다 모델 목록 조회가 다시 돈다.
-    """
-    module = _load("pm_render")
-    relay = module._load_relay()
-    assert module._load_relay() is relay, "pm_relay 를 렌더마다 새로 읽는다"
-    assert relay.reasoning_allowed("claude", "opus", cwd=REPO, env={}) == _REASONING_LADDER
+    """허용값은 `contract.reasoning_allowed` 하나에서 오고 pm_render 에 사본이 없다."""
+    assert contract.reasoning_allowed("claude", "opus", cwd=REPO, env={}) == _REASONING_LADDER
     tree = ast.parse((TOOLS / "pm_render.py").read_text(encoding="utf-8"))
     literals = {
         node.value for node in ast.walk(tree)
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     }
     assert not set(_REASONING_LADDER) & literals, "pm_render 에 허용값 사본이 생겼다"
-
-
-def test_reasoning_allowed_is_read_only_when_a_value_is_filled(monkeypatch):
-    """pm_relay 판독은 카드에 채울 추론 값이 있을 때만 일어난다(새 pm_render 인스턴스로 잰다).
-
-    추론 값이 없는 렌더(pm_import 최초 설치·위임 키 없는 채택자), 미사용 프로필 카드, 위임 토큰이
-    없는 문서는 pm_relay 를 읽지 않는다 — 형제 로드가 렌더 전반의 의존이 되지 않는다.
-    """
-    module = _load("pm_render")
-    loads = []
-    real_loader = module._load_module_from_path
-
-    def recording_loader(path, expected_filename, **kwargs):
-        loads.append(expected_filename)
-        return real_loader(path, expected_filename, **kwargs)
-
-    monkeypatch.setattr(module, "_load_module_from_path", recording_loader)
-    module.render_adapter(
-        _CLAUDE_ARCHITECT_TEMPLATE, operational={"DELEGATE_MODEL_ARCHITECT": "opus"},
-        card_path=_CLAUDE_ARCHITECT_CARD)
-    module.render_adapter(
-        _CLAUDE_ARCHITECT_TEMPLATE,
-        operational={"DELEGATE_MODEL_ARCHITECT": "m", "DELEGATE_REASONING_ARCHITECT": "minimal"},
-        card_path=_CLAUDE_ARCHITECT_CARD,
-        delegate_harness={
-            "DELEGATE_MODEL_ARCHITECT": "opencode",
-            "DELEGATE_REASONING_ARCHITECT": "opencode",
-        })
-    module.render_adapter(
-        "session for {{PROJECT_NAME}}\n", operational={"PROJECT_NAME": "Acme"})
-    assert loads == [], f"채울 추론 값이 없는 렌더가 형제 모듈을 읽었다: {loads}"
-    for _ in range(2):
-        module.render_adapter(
-            _CLAUDE_ARCHITECT_TEMPLATE,
-            operational={"DELEGATE_MODEL_ARCHITECT": "opus", "DELEGATE_REASONING_ARCHITECT": "max"},
-            card_path=_CLAUDE_ARCHITECT_CARD)
-    assert loads == ["pm_relay.py"]
-
-
-@pytest.fixture
-def isolated_tools(tmp_path):
-    """pm_render·pm_relay 만 담은 별도 tools/ (형제 사본 상태를 바꿔 보는 자리).
-
-    엔진 패키지(`pm_engine`)는 이 프로세스가 이미 적재한 것을 쓴다(한 프로세스 한 패키지)."""
-    tools = tmp_path / ".project_manager" / "tools"
-    tools.mkdir(parents=True)
-    for name in ("pm_render.py", "pm_relay.py"):
-        shutil.copy2(TOOLS / name, tools / name)
-    return tools
-
-
-def _isolated_pm_render(tools: Path, relay_edit):
-    """`relay_edit` 로 고친 pm_relay 옆의 pm_render 를 적재한다."""
-    relay = tools / "pm_relay.py"
-    relay.write_text(relay_edit(relay.read_text(encoding="utf-8")), encoding="utf-8")
-    spec = importlib.util.spec_from_file_location("pm_render_isolated", tools / "pm_render.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-_ARCHITECT_MAX = {"DELEGATE_MODEL_ARCHITECT": "opus", "DELEGATE_REASONING_ARCHITECT": "max"}
-
-
-def test_reasoning_allowed_read_fails_loud_on_sibling_rev_mix(isolated_tools):
-    """pm_relay 사본의 rev 가 pm_render 와 다르면 `_load_relay` 가 표준 대조로 멈춘다 (T-0951 Q2).
-
-    옛 면제(engine_rev.EXEMPT_UNVERIFIED_DEEP_IMPORTS)는 없다 — 갱신의 완료 단계는 엔진 코드를 받은
-    뒤 새 프로세스로 돌아 형제 rev 가 섞이지 않으므로, 섞인 트리는 실결함 신호다(재동기 안내).
-    """
-    module = _isolated_pm_render(isolated_tools, lambda text: re.sub(
-        r'^ENGINE_REV = "[^"]*"', 'ENGINE_REV = "v0.0.0-older"', text, count=1,
-        flags=re.MULTILINE))
-    with pytest.raises(RuntimeError, match="엔진 사본 버전 불일치") as raised:
-        module.render_adapter(
-            _CLAUDE_ARCHITECT_TEMPLATE, operational=_ARCHITECT_MAX,
-            card_path=_CLAUDE_ARCHITECT_CARD)
-    assert getattr(raised.value, "_engine_rev_skew", False) is True
-    assert "pm_relay.py" in str(raised.value)
-
-
-@pytest.mark.parametrize(("relay_edit", "error"), [
-    (lambda text: re.sub(r"^def reasoning_allowed\b", "def _retired_reasoning_allowed", text,
-                         count=1, flags=re.MULTILINE), AttributeError),
-], ids=["attribute-missing"])
-def test_reasoning_allowed_missing_or_malformed_fails_loud(isolated_tools, relay_edit, error):
-    """허용값 함수가 없거나 표 형식이 틀린 pm_relay 사본이면 예외로 멈춘다(빈 값으로 바꿔 통과시키지 않는다).
-
-    채울 값이 없는 렌더는 pm_relay 를 읽지 않으므로 같은 트리에서도 통과한다.
-    """
-    module = _isolated_pm_render(isolated_tools, relay_edit)
-    module.render_adapter(
-        _CLAUDE_ARCHITECT_TEMPLATE, operational={"DELEGATE_MODEL_ARCHITECT": "opus"},
-        card_path=_CLAUDE_ARCHITECT_CARD)
-    with pytest.raises(error):
-        module.render_adapter(
-            _CLAUDE_ARCHITECT_TEMPLATE, operational=_ARCHITECT_MAX,
-            card_path=_CLAUDE_ARCHITECT_CARD)
 
 
 # ── opencode 카드 `variant` — 그 모델의 variants 안 값만 싣는다 (T-0946) ─────────────────────────

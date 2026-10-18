@@ -88,7 +88,8 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import conf_schema  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, repo_files  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, raw_output, repo_files  # noqa: E402
+from pm_engine.infra.harness import contract, watchdog  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -289,7 +290,7 @@ FREE_FORM_TOKENS = (
 # *아니라* `opencode models` 결정적 조회로 해소한다(resolve_opencode_model) — 따라서 fill
 # 후보에서 분리됐다(중복·환각 제거). opencode 트리가 복사됐을 때만 해소 단계를 탄다.
 OPENCODE_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
-# 이 토큰을 해소할 때 가용 모델을 조회하는 원천의 하네스 키(`pm_relay.MODEL_SOURCE`).
+# 이 토큰을 해소할 때 가용 모델을 조회하는 원천의 하네스 키(`contract.MODEL_SOURCE`).
 OPENCODE_MODEL_SOURCE_HARNESS = "opencode"
 
 # fill 실 하니스 구동 게이트 환경변수(호출 횟수 축 — 무엇을 보여줄지가 아니라 몇 번 부를지다).
@@ -3422,17 +3423,16 @@ class ModelResolveResult:
 
 
 def _real_models_runner(source) -> tuple[bool, list[str]]:
-    """설치 대조·콘솔 `[m]` 용 모델 목록 — `pm_relay.model_listing` 을 감싼다. 반환: (성공 여부, 모델 목록).
+    """설치 대조·콘솔 `[m]` 용 모델 목록 — `contract.model_listing` 을 감싼다. 반환: (성공 여부, 모델 목록).
 
-    조회 실행·판독·시간 상한의 주인은 pm_relay 하나다(이 함수에 조회 코드 0). 조회 실패
+    조회 실행·판독·시간 상한의 주인은 `contract` 하나다(이 함수에 조회 코드 0). 조회 실패
     (`HarnessContractError` — PATH 부재·rc·timeout·판독 실패·모델 0개)는 그 사유를 stderr 한 줄로 남기고
     (False, []) 로 돌린다 — 설치를 깨지 않고 형식 안내로 강등하는 이 두 소비자의 계약이다. 그 밖의
     예외는 잡지 않는다.
     """
-    relay = _load_watchdog()
     try:
-        listing = relay.model_listing(source, cwd=Path.cwd(), env=dict(os.environ))
-    except relay.HarnessContractError as exc:
+        listing = contract.model_listing(source, cwd=Path.cwd(), env=dict(os.environ))
+    except contract.HarnessContractError as exc:
         print(f"{exc} — 모델 자동해소 skip", file=sys.stderr)
         return False, []
     return True, list(listing.models)
@@ -3635,7 +3635,7 @@ def resolve_opencode_model(
                                   note="opencode 모델 토큰 미잔존 — 해소 단계 비활성(claude-only).")
 
     runner = models_runner if models_runner is not None else (
-        lambda: _real_models_runner(_load_watchdog().MODEL_SOURCE[OPENCODE_MODEL_SOURCE_HARNESS]))
+        lambda: _real_models_runner(contract.MODEL_SOURCE[OPENCODE_MODEL_SOURCE_HARNESS]))
     stream = stdin if stdin is not None else sys.stdin
     is_tty = bool(getattr(stream, "isatty", lambda: False)())
 
@@ -3756,34 +3756,6 @@ class FillResult:
                 f"values={list(self.values)!r}, todos={self.todos!r})")
 
 
-def _load_watchdog():
-    """엔진 pm_relay 의 공용 워치독을 지연 로드한다 (deep-import seam·순환 회피).
-
-    pm_import 와 pm_relay 는 형제(`.project_manager/tools/`) — importlib 로 직접 로드해
-    PYTHONPATH 의존 없이(테스트 spec_from_file_location 경로 포함) run_with_first_event_watchdog·
-    하네스 프로필·timeout sentinel 을 빌려 쓴다(board._load_domain_module 선례 동형)."""
-    engine_path = Path(__file__).resolve().parent / "pm_relay.py"
-    return _load_module_from_path(
-        engine_path, "pm_relay.py", verifier=_verify_engine_rev,
-    )
-
-
-def _temp_root(root) -> Path:
-    """그 트리가 소유한 작업용 임시 루트 — 단일 소유자는 `pm_relay.temp_root` 다.
-
-    **rev 결속 없이 로드한다(`allow_unverified=True`).** 이 호출이 받아 오는 것은 *경로 하나*이고
-    어떤 판정의 입력도 아니다 — rev 결속이 지키는 것은 "신 해시 + 구 선언 코드" 조합이지 스크래치
-    자리가 아니다. 결속을 걸면 자기 갱신 mid-sync(형제 rev 혼재)에서 이 로드가 skew 로 터지고,
-    훅 세트 상류 세대 선언이 통째로 설치본 선언으로 강등된다 — 자리를 묻다가 판정을 잃는다.
-    자리 규약은 이 파일에 복제하지 않는다.
-    """
-    engine_path = Path(__file__).resolve().parent / "pm_relay.py"
-    relay = _load_module_from_path(
-        engine_path, "pm_relay.py", allow_unverified=True,
-    )
-    return relay.temp_root(Path(root))
-
-
 def _fill_driver(argv: list[str]) -> tuple[str, bool, str | None]:
     """실제 fill argv를 (하네스·증분 신호·프롬프트 전달 방식) 선언으로 해소한다."""
     for command, driver in FILL_DRIVER_BY_CMD.items():
@@ -3826,21 +3798,20 @@ def _fill_local_config(cwd: Path | str | None) -> dict[str, str]:
 
 def fill_harness_cap_advisory(harness: str, cwd: Path | str | None) -> str | None:
     """fill도 위임·리뷰와 같은 호출층 상한 판정을 소비한다(never-block advisory)."""
-    relay = _load_watchdog()
-    profile = relay.resolve_harness_profile(harness, _fill_local_config(cwd))
+    profile = watchdog.resolve_harness_profile(harness, _fill_local_config(cwd))
     first_event_timeout = (
-        relay.first_event_timeout_default() if profile.startup_watchdog else None
+        watchdog.first_event_timeout_default() if profile.startup_watchdog else None
     )
-    retries = relay.stall_retries_default() if profile.startup_watchdog else 0
-    execution_budget = relay.watchdog_execution_budget(
+    retries = watchdog.stall_retries_default() if profile.startup_watchdog else 0
+    execution_budget = watchdog.watchdog_execution_budget(
         profile.wall_timeout,
         first_event_timeout=first_event_timeout,
         retries=retries,
     )
-    return relay.harness_cap_advisory(
+    return watchdog.harness_cap_advisory(
         os.environ, execution_budget=execution_budget,
-        session_markers=relay.HARNESS_SESSION_MARKERS,
-        cap_env=relay.HARNESS_CAP_ENV,
+        session_markers=watchdog.HARNESS_SESSION_MARKERS,
+        cap_env=watchdog.HARNESS_CAP_ENV,
         render_missing=lambda _harness, cap_key, required: (
             f"[fill auto] 경고: 호출층 상한 {cap_key} 미해소 — "
             f"실행+정리+부분 산출물 보존 여유 {required}s 이상을 설정하세요."
@@ -3860,8 +3831,8 @@ def fill_harness_cap_advisory(harness: str, cwd: Path | str | None) -> str | Non
 def _fill_failure_with_partial(head: str, exc: BaseException) -> str:
     """워치독 kill/정리 실패의 stdout·stderr를 fill 실패 진단에 보존한다."""
     try:
-        return _load_watchdog().format_partial_output(head, exc)
-    except Exception as formatter_exc:  # noqa: BLE001 — 일반 formatter/load 실패는 fail-soft.
+        return watchdog.format_partial_output(head, exc)
+    except Exception as formatter_exc:  # noqa: BLE001 — 일반 formatter 실패는 fail-soft.
         if _is_engine_rev_skew(formatter_exc):
             raise
         return head
@@ -3944,7 +3915,7 @@ def _real_harness_runner(
     SF: cwd 가 주어지면 *대상 repo* 에서 구동한다(run_fill 이 dest_root 를 바인딩). 호출자
     cwd 가 아니라 import 대상에서 돌아야 하니스의 작업 디렉토리·파일 접근이 분석 대상과 맞는다.
 
-    세 하네스 모두 pm_relay 공용 워치독을 경유한다. 하네스별 차이는 코드 분기가 아니라
+    세 하네스 모두 `watchdog` 공용 워치독을 경유한다. 하네스별 차이는 코드 분기가 아니라
     HARNESS_PROFILES 선언(startup 감시 여부·진행 신호·idle/wall 상한)이며 대상 repo local.conf
     override도 같은 해소기를 탄다. startup stall만 선언된 유한 재시도를 하고, idle/wall kill은
     중복 과금·중복 호출을 피하려 자동 재시도하지 않은 채 부분 산출물과 함께 fail-soft 한다.
@@ -3953,25 +3924,18 @@ def _real_harness_runner(
     "Reading additional input from stdin..." 로 무기한 대기. 전달 방식·진행 신호 정책은 실제 argv와
     함께 FILL_DRIVER_BY_CMD에 선언돼 하네스 판정 코드와 분리된다."""
     try:
-        engine = _load_watchdog()
-    except Exception as exc:  # noqa: BLE001 — 일반 로드 실패만 fill fail-soft.
-        if _is_engine_rev_skew(exc):
-            raise
-        return False, _fill_failure_with_partial(f"[하니스 워치독 로드 오류: {exc}]", exc)
-
-    try:
         harness, emits_progress, prompt_transport = _fill_driver(argv)
         input_text = prompt if prompt_transport == FILL_PROMPT_STDIN else None
-        profile = engine.resolve_harness_profile(harness, _fill_local_config(cwd))
+        profile = watchdog.resolve_harness_profile(harness, _fill_local_config(cwd))
         progress_signal = (
             profile.progress_signal if emits_progress else conf_schema.PROGRESS_SIGNAL_NONE
         )
-        idle_timeout = engine.idle_timeout_for_signal(
+        idle_timeout = watchdog.idle_timeout_for_signal(
             progress_signal, profile.idle_timeout)
         first_event_timeout = (
-            engine.first_event_timeout_default() if profile.startup_watchdog else None
+            watchdog.first_event_timeout_default() if profile.startup_watchdog else None
         )
-        retries = engine.stall_retries_default() if profile.startup_watchdog else 0
+        retries = watchdog.stall_retries_default() if profile.startup_watchdog else 0
         idle_label = f"{idle_timeout:.0f}초" if idle_timeout is not None else "비활성(증분 신호 없음)"
         print(
             f"[fill auto] 실행 상한: idle={idle_label} · wall={profile.wall_timeout:.0f}초 "
@@ -3984,7 +3948,7 @@ def _real_harness_runner(
         return False, _fill_failure_with_partial(f"[하니스 프로필 준비 오류: {exc}]", exc)
 
     try:
-        result = engine.run_with_first_event_watchdog(
+        result = watchdog.run_with_first_event_watchdog(
             argv,
             first_event_timeout=first_event_timeout,
             overall_timeout=profile.wall_timeout,
@@ -3994,8 +3958,8 @@ def _real_harness_runner(
             input_text=input_text,
         )
     except subprocess.TimeoutExpired as exc:
-        wall_axis = getattr(engine, "TIMEOUT_AXIS_WALL", "wall")
-        idle_axis = getattr(engine, "TIMEOUT_AXIS_IDLE", "idle")
+        wall_axis = watchdog.TIMEOUT_AXIS_WALL
+        idle_axis = watchdog.TIMEOUT_AXIS_IDLE
         axis = getattr(exc, "timeout_axis", wall_axis)
         threshold = float(getattr(exc, "threshold_seconds", exc.timeout))
         silence = getattr(exc, "silence_seconds", None)
@@ -4011,12 +3975,12 @@ def _real_harness_runner(
     except Exception as exc:  # noqa: BLE001 — fail-soft: 어떤 예외도 import 를 깨지 않는다.
         if _is_engine_rev_skew(exc):
             raise
-        if isinstance(exc, engine.StallWatchdogError):
+        if isinstance(exc, watchdog.StallWatchdogError):
             axis = getattr(exc, "timeout_axis", None)
             threshold = getattr(exc, "threshold_seconds", None)
             threshold_label = f" {float(threshold):.0f}초" if threshold is not None else ""
-            first_event_axis = getattr(engine, "TIMEOUT_AXIS_FIRST_EVENT", "first-event")
-            idle_axis = getattr(engine, "TIMEOUT_AXIS_IDLE", "idle")
+            first_event_axis = watchdog.TIMEOUT_AXIS_FIRST_EVENT
+            idle_axis = watchdog.TIMEOUT_AXIS_IDLE
             if axis == first_event_axis:
                 kind = f"첫-이벤트 stall{threshold_label}"
             elif axis == idle_axis:
@@ -4060,7 +4024,7 @@ def _build_runner_argv(harness: str, dest_root: Path, prompt_file: Path | None) 
 
       claude   → `claude -p` (프롬프트 = 표준 입력)
       opencode → `opencode run "<첨부 안내>" --file <prompt_file> --format json --dir <dest>`
-                 (cross 위임과 같은 `--file` 전달·안내 문구는 pm_relay 의 한 줄 상수)
+                 (cross 위임과 같은 `--file` 전달·안내 문구는 `contract` 의 한 줄 상수)
       codex    → `codex exec --json -s workspace-write --skip-git-repo-check -C <dest>` (표준 입력)
 
     `prompt_file` 은 `--file` 전달 하네스에 run_fill 이 `dest_root` 안에 쓴 프롬프트 파일이다(opencode
@@ -4072,7 +4036,7 @@ def _build_runner_argv(harness: str, dest_root: Path, prompt_file: Path | None) 
     if harness == "claude":
         return [*CLAUDE_FILL_CMD]
     if harness == "opencode":
-        return [*OPENCODE_FILL_CMD, _load_watchdog().OPENCODE_ATTACHED_MSG, "--file", str(prompt_file),
+        return [*OPENCODE_FILL_CMD, contract.OPENCODE_ATTACHED_MSG, "--file", str(prompt_file),
                 "--format", "json", "--dir", str(dest_root)]
     if harness == "codex":
         # workdir 핀(codex 는 -C 로 작업 디렉토리 고정).
@@ -4115,9 +4079,9 @@ def _parse_codex_json(output: str) -> str:
 
     codex 는 줄당 JSON 이벤트(thread.started·turn.started·item.*·turn.completed·error)를 낸다.
     응답 = `item.type == "agent_message"` 인 item 의 `.text`(마지막 것 = 최종 응답·엔진
-    pm_relay.parse_codex_json 규칙과 정합). JSON 파싱 불가·구조 상이·미발견이면 원문 그대로
+    contract.parse_codex_json 규칙과 정합). JSON 파싱 불가·구조 상이·미발견이면 원문 그대로
     반환(사람이 읽게 — _parse_opencode_json 과 같은 fail-soft). pm_import 자족(형제 파서 미러·
-    _parse_opencode_json 선례 + 시그니처/목적 상이 — pm_relay 쪽은 orchestration 용 3-튜플
+    _parse_opencode_json 선례 + 시그니처/목적 상이 — `contract` 쪽은 orchestration 용 3-튜플
     (thread_id·reply·usage)·여긴 fill 초안용 str·fail-soft. 순환 import 는 어느 쪽이든 없음)."""
     reply = ""
     for line in output.splitlines():
@@ -4901,8 +4865,8 @@ def _guest_manifest_lines(
         후보 = flavor manifest 의 **비-`@render`** 엔트리 중 **복사 술어**(`_in_adapter_namespace`)를
         통과하는 것. 복사와 같은 술어를 쓰므로 "등재 ⊆ 복사" 가 구조적으로 보장된다 — 별도 판정을
         두면 claude-as-guest 처럼 복사하지 않은 경로를 등재해 pm_update 가 없던 파일을 만든다.
-        이 행이 없으면 `.codex/pm_orch_codex.py`·`.opencode/lib`·claude ctx 가드처럼 `pm_relay`
-        코어와 짝인 engine-mirror 가 설치 시점 사본으로 영구 동결된다(코어↔드라이버 skew).
+        이 행이 없으면 `.codex/pm_orch_codex.py`·`.opencode/lib`·claude ctx 가드처럼 엔진 패키지(`pm_engine`)
+        와 짝인 engine-mirror 가 설치 시점 사본으로 영구 동결된다(코어↔드라이버 skew).
 
     host 가 이미 소유한 것은 downstream 차감(`_guest_render_sync_plan` 의 `_path_owned_by`·기준
     `_core_manifest_paths`)이 dest 기준으로 정확히 뺀다(엔진 행은 `_in_adapter_namespace` 가 같은
@@ -6563,7 +6527,7 @@ def _upstream_hook_set_declarations(
         #   여기다. 상류 트리에 만들면 읽기만 해야 할 트리를 쓰고, 그 트리가 쓰기 불가면
         #   (읽기 전용 마운트·권한·볼륨 고갈) 사유로 강등돼야 할 조회가 크래시가 된다.
         staging = tempfile.mkdtemp(prefix=".pm_hook_set_gen.",
-                                   dir=_temp_root(REPO))
+                                   dir=raw_output.temp_root(REPO))
         try:
             staged = Path(staging) / "pm_import.py"
             staged.write_bytes(payload)
@@ -7956,7 +7920,7 @@ def _ctx_native_protocol(command, root, requests):
     import queue
     import threading
     import time
-    executable = _load_watchdog().resolve_executable(command[0], None)  # 없으면 FileNotFoundError(PATH 부재)
+    executable = contract.resolve_executable(command[0], None)  # 없으면 FileNotFoundError(PATH 부재)
     incoming: queue.Queue = queue.Queue()
     proc = subprocess.Popen([executable, *command[1:]], cwd=root, stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
@@ -9701,7 +9665,7 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
         print(f"오류: {_BOARD_SUBMODULE_PATH} 가 이미 존재 — board submodule 셋업 중단.",
               file=sys.stderr)
         return 1
-    tmp_clone = Path(tempfile.mkdtemp(prefix="pm_board_seed_", dir=_temp_root(dest_root)))
+    tmp_clone = Path(tempfile.mkdtemp(prefix="pm_board_seed_", dir=raw_output.temp_root(dest_root)))
     try:
         # ── 1. clone remote → temp; 비었으면 스캐폴드 seed ──
         rc, out = _board_setup_git(["clone", remote_url, str(tmp_clone)], cwd=None)

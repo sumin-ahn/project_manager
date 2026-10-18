@@ -25,26 +25,13 @@ import re
 from pathlib import Path
 
 import yaml
+from pm_engine.infra.harness import contract
 
 REPO = Path(__file__).resolve().parents[1]
 OPENCODE = REPO / "templates" / "opencode" / ".opencode"
 CLAUDE = REPO / "templates" / "claude_code" / ".claude"
 TOOLS = REPO / ".project_manager" / "tools"
 
-
-def _load_pm_relay():
-    """엔진 core(pm_relay.opencode_runtime_role_config)를 importlib 로 직접 로드한다
-
-    (test_pm_relay.py 의 orch fixture 와 동형). researcher 카드의 edit/bash/task 기대값을
-    손기입하지 않고 fragment 에서 파생하기 위한 단일 진실 접근이다(T-0747).
-    """
-    spec = importlib.util.spec_from_file_location("pm_relay", TOOLS / "pm_relay.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-_PM_RELAY = _load_pm_relay()
 
 PROJECT_CONFIG = OPENCODE / "opencode.jsonc"
 EXEC_AGENT_FILES = [
@@ -213,7 +200,7 @@ def test_researcher_writes_only_its_ticket_copy_section_without_bash_bypass():
     역할 계약 + harvest 의 자기 절 밖 bytes 일치 강제로 지키고, task 는 deny 로 중첩 위임을 막으며
     bash 는 위험명령 제외 패턴맵(T-opencode-002)으로 한정한다.
 
-    edit/bash/task 기대값은 손기입하지 않고 pm_relay fragment 에서 파생한다 — 카드만 바뀌고
+    edit/bash/task 기대값은 손기입하지 않고 contract fragment 에서 파생한다 — 카드만 바뀌고
     fragment 가 stale 로 남는 half-fix 를 이 테스트가 놓치지 않게 한다(T-0696 F-014 → T-0745 →
     T-0747 · test_pm_relay.py::test_opencode_runtime_role_fragment_matches_shipped_card_permission
     과 동일 대조를 이 표면에서도 지킨다)."""
@@ -221,7 +208,7 @@ def test_researcher_writes_only_its_ticket_copy_section_without_bash_bypass():
     assert "tools" not in fm
     permission = fm["permission"]
     fragment_permission = json.loads(
-        _PM_RELAY.opencode_runtime_role_config("researcher")
+        contract.opencode_runtime_role_config("researcher")
     )["agent"]["researcher"]["permission"]
     for key in ("edit", "bash", "task"):
         assert permission[key] == fragment_permission[key], (

@@ -54,7 +54,7 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import identity_args  # noqa: E402
-from pm_engine.infra import console, fs, repo_files  # noqa: E402
+from pm_engine.infra import console, fs, raw_output, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -94,7 +94,7 @@ def _write_machine_line(text: str) -> None:
 # 흡수 자격이 없다 — 기본 규율은 여전히 "marked skew 는 재-raise" 다.
 _ENGINE_REV_SKEW_RECOVERY_REASONS = {
     "inflight_ledger_query": (
-        "compaction snapshot 은 hook 경계다 — 진행 중 작업 절의 장부 조회(pm_delegate·pm_relay "
+        "compaction snapshot 은 hook 경계다 — 진행 중 작업 절의 장부 조회(pm_delegate·raw_output "
         "in-process 호출)가 재-raise 하면 payload 전체가 죽는다. 손상/로드 실패/사본 skew 를 "
         "흡수하되 조용하지 않게 사유를 stderr 로 남기고 그 절만 1줄로 접는다(다른 절은 온전)"
     ),
@@ -861,12 +861,6 @@ def _load_pm_delegate():
     return _load_module_from_path(path, "pm_delegate.py", verifier=_verify_engine_rev)
 
 
-def _load_pm_relay():
-    """pm_relay 모듈을 in-process 로드 — 미마감 raw 무락 조회(``raw_records(lock=False)``) 전용."""
-    path = Path(__file__).resolve().parent / "pm_relay.py"
-    return _load_module_from_path(path, "pm_relay.py", verifier=_verify_engine_rev)
-
-
 def _load_worktree_pool(pm_home: Path):
     """그 PM 홈의 worktree_pool 을 in-process 로드 — 열린 todo 조회·표시 전용.
 
@@ -874,7 +868,7 @@ def _load_worktree_pool(pm_home: Path):
     푸는 값이라, 이 파일 옆의 사본을 쓰면 다른 홈의 할 일을 읽는다.
 
     todo 한 줄의 생김새도 저장소 주인 모듈이 소유한다 — CLI(`task todo list`)·부트스트랩 dump·
-    이 재주입이 같은 함수를 부르므로 문구 사본이 없다(``_load_pm_relay`` 동형 seam).
+    이 재주입이 같은 함수를 부르므로 문구 사본이 없다.
     """
     path = Path(pm_home) / ".project_manager" / "tools" / "worktree_pool.py"
     return _load_module_from_path(path, "worktree_pool.py", verifier=_verify_engine_rev)
@@ -924,7 +918,7 @@ def _unharvested_copies_line(rows: list[dict]) -> str:
 
 
 def _unfinished_raw_line(rows: list[dict], ledger_path: Path) -> str:
-    """``pm_relay.unfinished_raw_records(lock=False)`` 실값 → 미마감 위임 raw 불릿(kill 증거)."""
+    """``raw_output.unfinished_raw_records(lock=False)`` 실값 → 미마감 위임 raw 불릿(kill 증거)."""
     prefix = "- 미마감 위임 raw "
     suffix = " → `python3 .project_manager/tools/pm_delegate.py raw --unfinished`"
     if not rows:
@@ -1070,7 +1064,7 @@ def _inflight_section(
 ) -> str:
     """미회수 라운드 준비·미마감 raw·claimed 티켓·슬롯 WIP 을 in-process 조회로 편입한다.
 
-    장부 조회는 subprocess 0(``pm_delegate.ticket_copy_records``·``pm_relay.raw_records``
+    장부 조회는 subprocess 0(``pm_delegate.ticket_copy_records``·``raw_output.raw_records``
     in-process 호출) — WIP git 프로브(``_wip_slot_line``)만 유일한 예외(자체 상한·전 예외 흡수).
     네 조회 중 하나라도 예외를 올리면 절 전체를 1줄로 접는다(다른 절은 온전 — 절 단위 fail-soft).
     각 불릿은 ``_inflight_safe_text``/``_inflight_capped_line`` 으로 이미 단일 줄이지만, 물리
@@ -1080,9 +1074,8 @@ def _inflight_section(
     try:
         delegate = _load_pm_delegate()
         unharvested_rows = delegate.ticket_copy_records(pm_home, unharvested=True)
-        relay = _load_pm_relay()
-        _raw_dir, raw_ledger = relay.raw_storage_paths(pm_home, "delegate")
-        unfinished_raw_rows = relay.unfinished_raw_records(raw_ledger, lock=False)
+        _raw_dir, raw_ledger = raw_output.raw_storage_paths(pm_home, "delegate")
+        unfinished_raw_rows = raw_output.unfinished_raw_records(raw_ledger, lock=False)
         tickets_dir, _counts = _ticket_counts(pm_home)
         claimed_ids = [
             path.stem for path in (tickets_dir / "claimed").glob("T-*.md")

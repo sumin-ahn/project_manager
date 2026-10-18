@@ -443,8 +443,9 @@ def test_retired_phrase_scan_detects_an_injected_residue(tmp_path):
 # 경계를 값으로 고정한다) 전면 스캔은 과거 기록 개서를 요구한다. 여기서 보는 건 **활동 명사
 # 하나**뿐이고, 역할 이름·codex 인용은 대상이 아니다.
 _ACTIVITY_SWEEP_ENGINE_FILES = (
-    "pm_delegate.py", "additional_reviewer.py", "pm_relay.py", "pm_handoff.py",
-    "pm_import.py",
+    "pm_delegate.py", "additional_reviewer.py", "pm_engine/app/session/relay.py",
+    "pm_engine/infra/harness/contract.py", "pm_engine/infra/harness/watchdog.py",
+    "pm_engine/infra/raw_output.py", "pm_handoff.py", "pm_import.py",
 )
 
 

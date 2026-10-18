@@ -58,7 +58,7 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.domain import identity_args  # noqa: E402
-from pm_engine.infra import console, fs, lease_store, repo_files  # noqa: E402
+from pm_engine.infra import console, fs, lease_store, raw_output, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 
@@ -220,27 +220,6 @@ def _load_board():
     except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 예약패턴 검증만 완화(traversal 유지).
         if _is_engine_rev_skew(exc):
             raise  # board 사본 skew 는 fail-loud(삼키지 않는다).
-        return None
-    return mod
-
-
-def _load_pm_relay():
-    """pm_relay 모듈을 동적 로드한다. 부재/로드 실패 시 None (fail-soft).
-
-    _load_worktree_pool 과 동형 — REPO/tools 스크립트-위치 앵커. 미마감 raw sweep([6b/7])이
-    raw 장부 조회 primitive(`unfinished_raw_records`)를 재사용하려고만 쓴다 — 비차단 surface 라
-    부재/실패는 sweep 만 건너뛴다(핸드오프 불변).
-    """
-    relay_path = TOOLS_DIR / "pm_relay.py"
-    if not relay_path.exists():
-        return None
-    try:
-        mod = _load_module_from_path(
-            relay_path, "pm_relay.py", verifier=_verify_engine_rev,
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 비차단 sweep 만 끈다.
-        if _is_engine_rev_skew(exc):
-            raise  # pm_relay 사본 skew 는 fail-loud(삼키지 않는다).
         return None
     return mod
 
@@ -2314,7 +2293,7 @@ class PmHandoff:
         self._log_file = log_file
         self._pm_playbook_file = pm_playbook_file
         # 미마감 raw sweep([6b/7]) 장부 seam — 명시(hermetic 테스트)면 그 경로, None(프로덕션)이면
-        # sweep 시점에 pm_relay 의 기본 위치(`.project_manager/.local/raw_outputs.json`)로 해소한다.
+        # sweep 시점에 raw_output 의 기본 위치(`.project_manager/.local/raw_outputs.json`)로 해소한다.
         self._raw_ledger_file = raw_ledger_file
         # 사본 장부 병기 seam — 명시(hermetic 테스트)면 그 목록(`()` = 사본 없음), None(프로덕션)
         # 이면 sweep 시점에 위임 조회면 판정(`pm_delegate._peer_engine_ledgers`)으로 해소한다.
@@ -2987,22 +2966,15 @@ class PmHandoff:
 
     # ── 미마감 raw sweep step ────────────────
 
-    def _resolve_raw_ledger(self, relay=None) -> Path | None:
-        """조회할 raw 장부 경로 — 명시 주입 우선, 없으면 pm_relay 기본 위치. 해소 실패는 None.
-
-        `relay` = 이미 로드한 pm_relay 모듈(미전달이면 여기서 로드). sweep step 은 조회에도
-        같은 모듈이 필요하므로 한 번만 로드해 넘긴다.
-        """
+    def _resolve_raw_ledger(self) -> Path | None:
+        """조회할 raw 장부 경로 — 명시 주입 우선, 없으면 `raw_output` 기본 위치. 해소 실패는 None."""
         if self._raw_ledger_file is not None:
             return self._raw_ledger_file
-        relay = relay if relay is not None else _load_pm_relay()
-        if relay is None:
-            return None
         try:
-            _raw_dir, ledger = relay.raw_storage_paths(REPO, "delegate")
+            _raw_dir, ledger = raw_output.raw_storage_paths(REPO, "delegate")
         except Exception as exc:  # noqa: BLE001 — fail-soft: 위치 해소 실패는 sweep 만 건너뛴다.
             if _is_engine_rev_skew(exc):
-                raise  # 사본 skew 는 삼키지 않는다(`_load_pm_relay` 와 같은 규칙).
+                raise  # 사본 skew 는 삼키지 않는다.
             return None
         return ledger
 
@@ -3011,7 +2983,7 @@ class PmHandoff:
 
         미마감 = 실행 전 예약된 레코드가 마감되지 않은 것 = 그 위임/리뷰가 비정상 종료했다는 뜻.
         누적되면 장부 조회가 무력해지므로 세션 끝에서 건수를 보여주고 정리 판단을 PM 에게 남긴다.
-        **차단하지 않는다**(rc 무영향) — 장부 부재·로드 실패·조회 실패는 전부 사유 1줄 후 skip.
+        **차단하지 않는다**(rc 무영향) — 장부 부재·조회 실패는 전부 사유 1줄 후 skip.
 
         판정 범위(어느 장부를 봤는지)를 항상 1줄로 밝힌다 — 위임은 소유 PM 홈
         (`pm_delegate._CONFIG_REPO_OVERRIDE`)이나 명시 `--output-dir` 기준으로 장부를 고르므로
@@ -3019,29 +2991,24 @@ class PmHandoff:
         "전 장부 0건"으로 읽힌다. 그 사본이 **실재하면** 경로와 건수도 병기한다(가시성만 —
         전 장부 통합 조회는 이 표면의 범위 밖).
         """
-        relay = _load_pm_relay()
-        if relay is None:
-            print("  pm_relay 부재/로드 실패 — sweep skip.")
-            return
-        ledger = self._resolve_raw_ledger(relay)
+        ledger = self._resolve_raw_ledger()
         if ledger is None:
             print("  raw 장부 위치 미해소 — sweep skip.")
             return
         print(f"  이 장부 기준: {ledger}")
-        self._report_unfinished_raw(relay, ledger)
-        self._report_peer_raw_ledgers(relay, ledger)
+        self._report_unfinished_raw(ledger)
+        self._report_peer_raw_ledgers(ledger)
 
-    def _report_unfinished_raw(self, relay, ledger: Path) -> None:
+    def _report_unfinished_raw(self, ledger: Path) -> None:
         """결정 공급 장부 1개의 미마감 판정 — 건수 + 최근 N건 (비차단·사유 1줄 후 skip)."""
         if not ledger.exists():
             print("  raw 장부 없음 — 미마감 raw 0건.")
             return
         try:
-            rows = relay.unfinished_raw_records(ledger)
+            rows = raw_output.unfinished_raw_records(ledger)
         except Exception as exc:  # noqa: BLE001 — fail-soft: 손상 장부가 핸드오프를 막지 않는다.
             if _is_engine_rev_skew(exc):
-                raise  # 조회는 deep 형제(`pm_relay`)까지 들어간다 — 사본 skew 를 "조회 실패"로
-                       # 접으면 부분 복사 사실이 비차단 1줄에 묻힌다(`_load_pm_relay` 와 같은 규칙).
+                raise  # 사본 skew 를 "조회 실패"로 접으면 부분 복사 사실이 비차단 1줄에 묻힌다.
             print(f"  ⚠ 미마감 raw 조회 실패 ({exc}) — sweep skip.")
             return
         if not rows:
@@ -3076,7 +3043,7 @@ class PmHandoff:
             return ()
         return tuple(peer for peer in peers if peer != resolved_primary)
 
-    def _report_peer_raw_ledgers(self, relay, primary: Path) -> None:
+    def _report_peer_raw_ledgers(self, primary: Path) -> None:
         """사본 장부가 실재하면 **경로와 미마감 건수**를 1줄씩 병기한다 (가시성만·비차단).
 
         통합 조회는 범위 밖이다 — 이 sweep 은 결정 공급 장부 하나만 판정하고, 다른 사본이
@@ -3084,7 +3051,7 @@ class PmHandoff:
         """
         for peer in self._peer_raw_ledgers(primary):
             try:
-                count = len(relay.unfinished_raw_records(peer))
+                count = len(raw_output.unfinished_raw_records(peer))
             except Exception as exc:  # noqa: BLE001 — fail-soft: 손상 사본이 핸드오프를 막지 않는다.
                 if _is_engine_rev_skew(exc):
                     raise

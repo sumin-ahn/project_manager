@@ -43,7 +43,7 @@ from _git import commit_env
 from _textio import write_crlf, write_lf
 from _win_skip import posix_mode_supported
 from pm_engine.domain import identity_args
-from pm_engine.infra import lease_store
+from pm_engine.infra import lease_store, raw_output
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1094,7 +1094,6 @@ def test_release_unknown_slot_raises(wp):
 
 def test_shared_pid_alive_windows_uses_query_handle_and_absorbs_oserror(wp):
     """공용 seam의 Windows 분기는 OpenProcess 조회만 하고 WinError 계열을 부재로 본다."""
-    relay = wp._load_relay()
     calls = []
 
     class WindowsApi:
@@ -1105,7 +1104,7 @@ def test_shared_pid_alive_windows_uses_query_handle_and_absorbs_oserror(wp):
         def CloseHandle(self, handle):
             calls.append(("close", handle))
 
-    assert relay.pid_is_alive(
+    assert raw_output.pid_is_alive(
         4321, _platform_name="nt", _windows_api=WindowsApi(),
     ) is True
     assert calls == [("open", 0x1000, False, 4321), ("close", 73)]
@@ -1114,7 +1113,7 @@ def test_shared_pid_alive_windows_uses_query_handle_and_absorbs_oserror(wp):
         def OpenProcess(self, access, inherit, pid):
             raise OSError(87, "invalid parameter")
 
-    assert relay.pid_is_alive(
+    assert raw_output.pid_is_alive(
         999999, _platform_name="nt", _windows_api=DeadWindowsApi(),
     ) is False
 
@@ -1130,10 +1129,10 @@ def test_shared_pid_alive_windows_uses_query_handle_and_absorbs_oserror(wp):
         def GetLastError(self):
             return self._last_error
 
-    assert relay.pid_is_alive(
+    assert raw_output.pid_is_alive(
         4321, _platform_name="nt", _windows_api=NullHandleApi(5),
     ) is True, "접근 거부(NULL+5)는 생존 보수 판정"
-    assert relay.pid_is_alive(
+    assert raw_output.pid_is_alive(
         999999, _platform_name="nt", _windows_api=NullHandleApi(87),
     ) is False, "명백한 PID 부재(NULL+87)만 사망"
 
@@ -1141,11 +1140,11 @@ def test_shared_pid_alive_windows_uses_query_handle_and_absorbs_oserror(wp):
         def OpenProcess(self, access, inherit, pid):
             raise OSError(5, "access denied")
 
-    assert relay.pid_is_alive(
+    assert raw_output.pid_is_alive(
         4321, _platform_name="nt", _windows_api=DeniedWindowsApi(),
     ) is True, "접근 거부 OSError 는 생존 보수 판정"
     assert all(
-        relay.pid_is_alive(value, _platform_name="nt", _windows_api=WindowsApi())
+        raw_output.pid_is_alive(value, _platform_name="nt", _windows_api=WindowsApi())
         is False
         for value in (True, False, 0, -1, "4321", None)
     )

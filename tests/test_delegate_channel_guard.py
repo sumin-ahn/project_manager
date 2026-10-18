@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pm_engine.infra.harness import contract
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -517,7 +518,7 @@ def test_deny_remediation_interpreter_follows_the_execution_platform(
     """T-0728 — 처방의 인터프리터 표기가 실행 플랫폼을 따른다 (두 표기를 여기서 다 태운다).
 
     Windows 의 `python3`/`python` 은 WindowsApps 가짜 shim 일 수 있어(가드 자신이 rc 9009 로
-    기록해 둔 표기다) 사람이 붙여넣어도 실행되지 않는다. 표기 판정은 `pm_relay` 하나가 소유하므로
+    기록해 둔 표기다) 사람이 붙여넣어도 실행되지 않는다. 표기 판정은 `contract` 하나가 소유하므로
     여기서는 그 해소가 처방까지 도달하는지만 고정한다.
     """
     conf = {
@@ -525,8 +526,6 @@ def test_deny_remediation_interpreter_follows_the_execution_platform(
         "delegate.developer.harness": "codex",
         "delegate.developer.model": "gpt",
     }
-    relay = guard._load_pm_relay()
-
     def _reason(windows: bool, cwd: str) -> str:
         monkeypatch.setattr(guard, "_running_on_windows", lambda: windows)
         payload = _payload("developer")
@@ -535,10 +534,10 @@ def test_deny_remediation_interpreter_follows_the_execution_platform(
             "hookSpecificOutput"
         ]["permissionDecisionReason"]
 
-    windows_token, _entry = relay.entrypoint_command(
-        relay.DELEGATE_ENTRYPOINT, windows=True)
-    posix_token, _entry = relay.entrypoint_command(
-        relay.DELEGATE_ENTRYPOINT, windows=False)
+    windows_token, _entry = contract.entrypoint_command(
+        contract.DELEGATE_ENTRYPOINT, windows=True)
+    posix_token, _entry = contract.entrypoint_command(
+        contract.DELEGATE_ENTRYPOINT, windows=False)
     # 주입 선-단언 — 두 표기가 실제로 갈리지 않으면 이 회귀는 아무것도 검사하지 못한다.
     assert windows_token != posix_token, (
         "플랫폼별 인터프리터 표기가 같다 — 이 회귀가 공허해진다")
@@ -559,10 +558,10 @@ def test_deny_remediation_survives_interpreter_resolution_failure(
     훅 경로라 fail-open 이 계약이다. 다만 조용히 강등되지는 않는다 — 사유가 stderr 로 남고
     채택자가 그 줄의 인터프리터를 손으로 바꿀 수 있어야 한다.
     """
-    def _boom():
+    def _boom(*_args, **_kwargs):
         raise RuntimeError("사본 불일치 주입")
 
-    monkeypatch.setattr(guard, "_load_pm_relay", _boom)
+    monkeypatch.setattr(contract, "entrypoint_command", _boom)
     conf = {
         "delegate.enabled": "true",
         "delegate.developer.harness": "codex",
@@ -570,7 +569,7 @@ def test_deny_remediation_survives_interpreter_resolution_failure(
     }
     # 주입 선-단언 — 해소 경로가 실제로 끊겼는지.
     with pytest.raises(RuntimeError):
-        guard._load_pm_relay()
+        contract.entrypoint_command(contract.DELEGATE_ENTRYPOINT)
 
     interpreter = guard._prescribed_interpreter()
     captured = capsys.readouterr()

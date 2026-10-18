@@ -184,6 +184,18 @@
         "kind": "session_stamp"
       }
     ],
+    ".project_manager/tools/pm_engine/infra/harness/contract.py": [
+      {
+        "count": 1,
+        "hash": "15a391aea86092f5b93bef78169f0093959b7ec00dd7d1d81df3ed13a5b9bc3c",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "4605dff53280640ad69cf0f6110d5cbb540025b8f7fe51a34456381ccc9fb177",
+        "kind": "session_stamp"
+      }
+    ],
     ".project_manager/tools/pm_handoff.py": [
       {
         "count": 1,
@@ -243,18 +255,6 @@
       {
         "count": 1,
         "hash": "d6a386713c29f58d5a28097c2604b97e3dfeaded12d67a281bc9622203520baa",
-        "kind": "session_stamp"
-      }
-    ],
-    ".project_manager/tools/pm_relay.py": [
-      {
-        "count": 1,
-        "hash": "15a391aea86092f5b93bef78169f0093959b7ec00dd7d1d81df3ed13a5b9bc3c",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "4605dff53280640ad69cf0f6110d5cbb540025b8f7fe51a34456381ccc9fb177",
         "kind": "session_stamp"
       }
     ],
@@ -580,6 +580,18 @@
         "kind": "session_stamp"
       }
     ],
+    "templates/claude_code/.project_manager/tools/pm_engine/infra/harness/contract.py": [
+      {
+        "count": 1,
+        "hash": "15a391aea86092f5b93bef78169f0093959b7ec00dd7d1d81df3ed13a5b9bc3c",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "4605dff53280640ad69cf0f6110d5cbb540025b8f7fe51a34456381ccc9fb177",
+        "kind": "session_stamp"
+      }
+    ],
     "templates/claude_code/.project_manager/tools/pm_handoff.py": [
       {
         "count": 1,
@@ -639,18 +651,6 @@
       {
         "count": 1,
         "hash": "d6a386713c29f58d5a28097c2604b97e3dfeaded12d67a281bc9622203520baa",
-        "kind": "session_stamp"
-      }
-    ],
-    "templates/claude_code/.project_manager/tools/pm_relay.py": [
-      {
-        "count": 1,
-        "hash": "15a391aea86092f5b93bef78169f0093959b7ec00dd7d1d81df3ed13a5b9bc3c",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "4605dff53280640ad69cf0f6110d5cbb540025b8f7fe51a34456381ccc9fb177",
         "kind": "session_stamp"
       }
     ],
@@ -979,6 +979,18 @@
         "kind": "session_stamp"
       }
     ],
+    "templates/codex/.project_manager/tools/pm_engine/infra/harness/contract.py": [
+      {
+        "count": 1,
+        "hash": "15a391aea86092f5b93bef78169f0093959b7ec00dd7d1d81df3ed13a5b9bc3c",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "4605dff53280640ad69cf0f6110d5cbb540025b8f7fe51a34456381ccc9fb177",
+        "kind": "session_stamp"
+      }
+    ],
     "templates/codex/.project_manager/tools/pm_handoff.py": [
       {
         "count": 1,
@@ -1038,18 +1050,6 @@
       {
         "count": 1,
         "hash": "d6a386713c29f58d5a28097c2604b97e3dfeaded12d67a281bc9622203520baa",
-        "kind": "session_stamp"
-      }
-    ],
-    "templates/codex/.project_manager/tools/pm_relay.py": [
-      {
-        "count": 1,
-        "hash": "15a391aea86092f5b93bef78169f0093959b7ec00dd7d1d81df3ed13a5b9bc3c",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "4605dff53280640ad69cf0f6110d5cbb540025b8f7fe51a34456381ccc9fb177",
         "kind": "session_stamp"
       }
     ],
@@ -1569,6 +1569,18 @@
         "kind": "session_stamp"
       }
     ],
+    "templates/opencode/.project_manager/tools/pm_engine/infra/harness/contract.py": [
+      {
+        "count": 1,
+        "hash": "15a391aea86092f5b93bef78169f0093959b7ec00dd7d1d81df3ed13a5b9bc3c",
+        "kind": "session_stamp"
+      },
+      {
+        "count": 1,
+        "hash": "4605dff53280640ad69cf0f6110d5cbb540025b8f7fe51a34456381ccc9fb177",
+        "kind": "session_stamp"
+      }
+    ],
     "templates/opencode/.project_manager/tools/pm_handoff.py": [
       {
         "count": 1,
@@ -1628,18 +1640,6 @@
       {
         "count": 1,
         "hash": "d6a386713c29f58d5a28097c2604b97e3dfeaded12d67a281bc9622203520baa",
-        "kind": "session_stamp"
-      }
-    ],
-    "templates/opencode/.project_manager/tools/pm_relay.py": [
-      {
-        "count": 1,
-        "hash": "15a391aea86092f5b93bef78169f0093959b7ec00dd7d1d81df3ed13a5b9bc3c",
-        "kind": "session_stamp"
-      },
-      {
-        "count": 1,
-        "hash": "4605dff53280640ad69cf0f6110d5cbb540025b8f7fe51a34456381ccc9fb177",
         "kind": "session_stamp"
       }
     ],

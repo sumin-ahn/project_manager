@@ -26,7 +26,7 @@ from pathlib import Path
 
 
 # ── 설정 어휘 (conf 키의 허용값·패턴을 만드는 상수 · 단일 정의) ─────────────
-# 하네스 드라이버(`pm_relay`)·위임(`pm_delegate`)·안내 문서 렌더(`pm_render`)와 이 레지스트리가 같은
+# 하네스 드라이버(`pm_engine.infra.harness`)·위임(`pm_delegate`)·안내 문서 렌더(`pm_render`)와 이 레지스트리가 같은
 # 이름 집합을 쓴다. 정의는 여기 하나이고 그 모듈들은 이 모듈을 import 해 읽는다.
 
 HARNESS_CHOICES: tuple[str, ...] = ("claude", "codex", "opencode")
@@ -41,8 +41,8 @@ HARNESS_CHOICES: tuple[str, ...] = ("claude", "codex", "opencode")
 #   opencode 는 이 표에 없다. 추론 강도(카드 `variant`·cross `--variant`)는 그 모델의 `variants` 키
 #   중 하나여야 적용되고, 없는 이름은 오류 없이 버려진다(1.18.5·1.18.34 실행 파일 판독). 모델마다
 #   variants 가 다르므로(없음·low/medium/high 등) 허용값은 정적 표가 아니라 모델 목록 조회
-#   (`opencode models --verbose`)의 `variants` 에서 얻는다 — `pm_relay.PER_MODEL_REASONING_HARNESSES`·
-#   `pm_relay.reasoning_allowed`. 순서는 ladder 순이다(설정 화면의 선택지 순서).
+#   (`opencode models --verbose`)의 `variants` 에서 얻는다 — `contract.PER_MODEL_REASONING_HARNESSES`·
+#   `contract.reasoning_allowed`. 순서는 ladder 순이다(설정 화면의 선택지 순서).
 REASONING_ALLOWED: dict[str, tuple[str, ...]] = {
     "codex": ("low", "medium", "high", "xhigh", "max"),
     "claude": ("low", "medium", "high", "xhigh", "max"),
@@ -214,7 +214,7 @@ class KeySpec:
     dataclass 처리가 깨진다.)
 
     `default` 는 **conf 파일에 적히는 문자열**이다(표기가 곧 값). 고정 기본값이 없는 키는 `None`
-    이고 편차 판정(`nonstandard`)의 대상이 아니다 — 하네스별 표(`pm_relay.HARNESS_PROFILES`)나
+    이고 편차 판정(`nonstandard`)의 대상이 아니다 — 하네스별 표(`watchdog.HARNESS_PROFILES`)나
     실행 탐지값처럼 한 칸으로 표현되지 않는 기본을 지어내지 않는다.
 
     `required` 는 **반드시 명시**한다(기본값 없음) — 새 키를 적으면서 필수 여부를 빠뜨리면
@@ -222,7 +222,7 @@ class KeySpec:
 
     `choices` 는 이 키가 고르는 **값의 축 이름**(`harness`·`model`·`reasoning` = `_ROLE_SUFFIXES`)
     이고 목록 자체는 담지 않는다 — 목록의 정본은 설정 어휘(`HARNESS_CHOICES`·`REASONING_ALLOWED`)와
-    `pm_relay.MODEL_SOURCE` 라 여기 복제하면 두 자리가 갈린다. reasoning 은 정적 허용값
+    `contract.MODEL_SOURCE` 라 여기 복제하면 두 자리가 갈린다. reasoning 은 정적 허용값
     버킷(claude·codex)이거나 모델 목록 조회 응답의 그 모델 variant(opencode)다. 고를 목록이 없는 키는
     `None` 이고, 선택지는 **검증이 아니다**(harness·reasoning 은 닫힌 집합, model 은 자유 문자열).
     """
