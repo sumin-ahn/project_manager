@@ -97,8 +97,10 @@ _TASK_BINDING_EXTRA_SURFACES = (
 _BOARD_ATTRIBUTION_CALL = re.compile(
     r"\.project_manager/tools/board\.py\s+(?:claim|new|cluster\s+new)\s+[^`\s)]")
 
-# 슬롯 세션 정체성 서술 — 엔진에 더 이상 없는 정체성 형태(T-0962).
-_SLOT_IDENTITY_PHRASES = ("슬롯 세션", "세션명 canonical")
+# 슬롯 세션 정체성 서술 — 엔진에 더 이상 없는 정체성 형태(T-0962). 슬롯 태그 log 검색·슬롯별 prefix
+# 해소·슬롯별 pm_state·환경변수 귀속(claim 플래그 없음)도 지운 동작이다(T-0962 리뷰 F-001).
+_SLOT_IDENTITY_PHRASES = ("슬롯 세션", "세션명 canonical", "슬롯 태그", "슬롯별 prefix",
+                          "per-slot `pm_state", "claim 플래그 없음")
 
 
 def _task_binding_surfaces() -> list[Path]:

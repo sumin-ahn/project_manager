@@ -615,6 +615,8 @@ def test_completion_surface_flags_ambiguity_instead_of_a_bare_id_it_cannot_issue
     # 완료 안내는 발행 불가 포맷을 성공 메시지로 내지 않고, 명시 --prefix 커맨드를 지목한다.
     assert "T-NNNN (none 카테고리)" not in out
     assert "--prefix <PFX>" in out
+    # 원인은 등록 카테고리 수다 — 세션을 바인딩해도 prefix 는 바뀌지 않는다(세션 유도 층 없음).
+    assert "세션이 바인딩" not in out and "세션 미바인딩" not in out
     # 직후 무prefix cmd_new 는 안내가 예고한 대로 실제로 거부된다 — 안내와 실 거동의 정합.
     assert board.cmd_new(_new_args(task=_TASK)) == 1
 

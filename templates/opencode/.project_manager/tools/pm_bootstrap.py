@@ -3406,7 +3406,7 @@ class PmBootstrap:
             print(
                 f"[중단] task 명 {task!r} 이(가) 부적합합니다 — {exc.reason}.\n"
                 f"  → task 명은 경로 문자(`/`·`\\`·`..`·선행 `.`) 없는 단일 이름이어야 하고, "
-                f"슬롯 세션 예약 패턴(<등록 repo>_<N>)은 쓸 수 없습니다.",
+                f"슬롯 폴더 이름 패턴(<등록 repo>_<N>)은 쓸 수 없습니다.",
                 file=sys.stderr,
             )
             return None

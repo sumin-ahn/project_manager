@@ -68,7 +68,7 @@
 ## 5. 완료 기록 (PM 손)
 
 ```bash
-{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> [--task <task>]
+{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> --task <task>
 ```
 
 `status.md` 모듈 행·`log/current.md` entry를 갱신하고 회귀 `{{TEST_CMD}}` green을 확인한 뒤 경로를 명시해 커밋한다:

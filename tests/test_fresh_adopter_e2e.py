@@ -612,7 +612,8 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
         '```pm-review-v1\n{"version":2,"findings":[],"confirmations":[]}\n```\n',
         encoding="utf-8", newline="\n")
 
-    complete = _ticket_finish(dest, "--cluster", "C-four-step", "--no-pytest")
+    complete = _ticket_finish(dest, "--cluster", "C-four-step", "--no-pytest",
+                              "--task", _FOUR_STEP_TASK)
     assert complete.returncode == 0, (
         f"묶음 종결 실패:\n--- stdout ---\n{complete.stdout}\n--- stderr ---\n{complete.stderr}")
     done_matches = list(board_tickets.glob(f"done/{tid}-*.md"))

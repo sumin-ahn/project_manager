@@ -66,7 +66,7 @@ python3 .project_manager/tools/domain.py affected --ticket T-NNNN
 - `(영향 domain 페이지 없음)`이면 생략.
 - 매칭 경로를 developer 프롬프트에 인용한다. ⚠ stale 은 담당 코드 변경 후 미갱신이므로 **맹신 말 것** 경고를 붙인다(enforcement 아닌 visibility).
 
-## task-mode 작업 위치 주입
+## 작업 위치 주입
 
 dev 작업 worktree를 PM이 해소한 **절대경로**로 프롬프트에 넣는다. cwd는 해소에 참여하지 않는다:
 

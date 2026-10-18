@@ -9,14 +9,14 @@
 
 ### Changed
 
-- **BREAKING — 슬롯 정체성 삭제, 귀속 쓰기의 정체성은 task 하나** — `--repo R --slot N` 만으로 `R_N` 을 세션 이름 삼아 귀속하던 경로를 지웠다. 귀속 쓰기(`new`·`claim`·`init` 의 owner 칸·`migrate-identity`·`unclaim --takeover`·종결 log 머리말)는 `--task <task>` 가 필요하고, 없으면 어떤 쓰기보다 먼저 멈춘다. 다시 칠 명령 예:
+- **BREAKING — 슬롯 정체성 삭제, 귀속 쓰기의 정체성은 task 하나** — `--repo R --slot N` 만으로 `R_N` 을 세션 이름 삼아 귀속하던 경로를 지웠다. 귀속 쓰기(`new`·`claim`·`migrate-identity`·`unclaim --takeover`·정상 종결 `ticket_finish.py`)는 `--task <task>` 가 필요하고, 없으면 첫 쓰기 전에 멈춘다. `init` 의 owner 칸은 `--owner`, 다음 `--task`, 둘 다 없으면 빈 칸이다(환경변수·단일 대여에서 유도하지 않는다). 종결 log 머리말은 `(task:이름)` 만 쓴다. 다시 칠 명령 예:
   - `board.py claim T-0001 --repo app --slot 1` → `board.py claim T-0001 --task <task>`
   - `board.py new "제목"` → `board.py new "제목" --task <task>`
   - `board.py cluster new grp --tickets T-0001 --repo app --slot 1` → `board.py cluster new grp --tickets T-0001 --task <task>`
   - `board.py regression run --repo app --slot 1` → `board.py regression run --task <task>`
   - task 의 폴더가 2개 이상이면 위 명령에 `--repo <repo> --slot <N>` 을 덧붙여 폴더를 고른다(`claim`·`new`·`cluster new`·`regression run/check`·`livegate record`·`pm_delegate rounds resolve` 만). `--task` 없이 `--repo`/`--slot` 을 주면 입력값을 채운 다시 칠 명령과 함께 멈춘다.
 - `list`·`complete`·`discard`·`block`·`unclaim`·`unblock`·`migrate-identity`·`reid` 는 `--repo`/`--slot` 을 받지 않는다(`list --task <task>` 로 본다). `init` 은 `--slot` 을 받지 않는다(`--repo` 는 등록 이름이라 남는다).
-- `ticket_finish.py` 의 `--repo`/`--slot` 은 복구 문(`--reconcile-integrated`) 전용이다. 정상 종결은 `ticket_finish.py --cluster C-<묶음> --task <task>` 다.
+- `ticket_finish.py` 의 `--repo`/`--slot` 은 복구 문(`--reconcile-integrated`) 전용이다. 정상 종결은 `ticket_finish.py --cluster C-<묶음> --task <task>` 이고, `--task` 가 없으면 usage error(rc 2)로 멈춘다 — cwd 작업 폴더·단일 활성 task 로 정체성을 정하던 자동 해소는 지웠다.
 - 홈 git board 의 발행(`new`)도 task 폴더의 코드 트리와 기준 브랜치를 읽는다. 첫 발행 전에 `pm-config alloc <repo> --task <task>` 로 폴더를 빌린다.
 - 엔진은 세션 토큰에서 repo·prefix 를 분해하지 않는다. prefix 는 `--prefix` > task prefix > 등록 prefix 가 정확히 1개면 그것 순서로 정한다.
 - 옛 슬롯 토큰(`<user>/<repo>_<N>`)으로 귀속된 진행 중 티켓은 `board.py migrate-identity --task <task>` 가 `<user>/<task>` 로 옮긴다. 다른 user 의 토큰은 그대로 두고 표준 오류로 목록만 낸다.

@@ -6,10 +6,9 @@
 
   - **순수 인자 층**: `add_identity_args`·`parse_identity` — 파일 IO 0. 실 argparse 로 파싱한
     `Namespace` 를 넣어 discriminated `Identity` 해소 규칙 전수(slot/repo/none/fail-loud)를 본다.
-  - **리스 IO 층**: `leased_sessions`·`repo_slot_numbers`·`resolve_actor_slot` — `tmp_path` 에
+  - **리스 IO 층**: `leased_sessions`·`repo_slot_numbers` — `tmp_path` 에
     `worktree-leases.json` 을 직접 써서(실 장부 미접촉) 흡수된 두 원 구현(board/pm_config
-    `_leased_sessions` · pm_bootstrap `_repo_slot_numbers`)의 동작이 정확히 보존됐는지 + 그 위의
-    `resolve_actor_slot`(1개/0개/≥2개) 를 검증한다.
+    `_leased_sessions` · pm_bootstrap `_repo_slot_numbers`)의 동작이 정확히 보존됐는지 검증한다.
 """
 from __future__ import annotations
 
@@ -279,9 +278,6 @@ def test_repo_slot_numbers_schema_mismatch_returns_none(ia, tmp_path):
     assert ia.repo_slot_numbers("A", leases) is None
 
 
-# ── resolve_actor_slot — actor `--repo`-단독 해소 (1개/0개/≥2개 · SlotResolutionError) ──
-
-
 # ── F6 작업공간 2단 해소 — resolve_task_workspace (T-0355·spike §3b F6·결정 ⑦) ──────
 # 표 4행: (a) --repo X --slot N=그 슬롯(미보유=에러) (b) --repo X=유일해소/모호=에러
 # (c) 아무것도 없음=통틀어 유일/모호=에러 (d) --slot 단독=parse 단계 ValueError.
@@ -481,9 +477,10 @@ def test_validate_task_name_accepts_safe(ia, ok):
 
 
 def test_validate_task_name_rejects_reserved_slot_pattern(ia):
-    """registered_repos 주면 `<repo>_<N>` 슬롯 세션 예약 패턴 거부(⑥·is_reserved_task_name 재사용)."""
-    with pytest.raises(ia.InvalidTaskName, match=r"예약"):
+    """registered_repos 주면 `<repo>_<N>` 슬롯 폴더 이름 패턴 거부(⑥·is_reserved_task_name 재사용)."""
+    with pytest.raises(ia.InvalidTaskName, match=r"폴더 이름 패턴") as raised:
         ia.validate_task_name("project_manager_1", ["project_manager"])
+    assert "슬롯 세션" not in str(raised.value)
     # 미등록 repo 로 시작하는 _N 은 무관(자유 포맷 허용).
     ia.validate_task_name("project_manager_1", ["finance"])
 

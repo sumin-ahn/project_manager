@@ -423,7 +423,7 @@ def _regression_cwd(worktree_slot: str | None = None) -> str:
 
 # ── 복구 문의 `--repo/--slot` 제품 트리 (pm_handoff 미러) ──
 # `--repo`/`--slot` 은 복구 문(`--reconcile-integrated`)에서만 받고, 그 슬롯이 복구할 제품
-# 트리다(정체성 아님). 정상 종결의 정체성은 `--task`(무인자면 `pm_log.resolve_snapshot_identity`)이고
+# 트리다(정체성 아님). 정상 종결의 정체성은 `--task`(필수)이고
 # 작업 트리는 묶음 기록의 브랜치로 찾는다(`ClusterCloser._resolve_code_tree`). 판정은 pm_handoff
 # `_resolve_explicit_identity_slot`(대여 기록 조인 검증)을 동적 로드해 재사용한다(복제 0).
 
@@ -432,8 +432,9 @@ def _resolve_finish_slot(repo: str, slot: int) -> tuple[str | None, str | None]:
 
       - `(work/<repo>_<N>, None)` — pm_handoff `_resolve_explicit_identity_slot` 의 대여 기록
         조인 검증을 통과한 슬롯 키.
-      - `(None, error_msg)` — 대여 기록과 조인 불일치, 또는 pm_handoff 사본이 없어 검증할 수
-        없음 → 호출부 fail-loud. 검증 없이 경로를 조립하지 않는다.
+      - `(None, error_msg)` — 대여 기록과 조인 불일치(또는 장부 모순), 또는 pm_handoff 사본이
+        없음 → 호출부 fail-loud. 대여 기록을 읽지 못하면 pm_handoff 규칙대로 canonical 경로
+        `work/<repo>_<N>` 을 돌려준다.
     """
     hp = _load_pm_handoff()
     if hp is None:
@@ -3242,11 +3243,9 @@ class TicketFinisher:
         `section` 은 후방호환용으로 받기만 하고 무시한다 — status.md 합계표 섹션 행은
         제거됐다(judgment-only·테스트 수는 박제 안 함).
 
-        `board_identity_args` = 이 실행이 이미 해소한 정체성을 board 하위 호출에 그대로
-        넘기는 인자다(`--repo/--slot` 또는 `--task`). board 의 complete 가 `claimed_by` 와
-        실행 세션을 대조하므로, 이 forward 가 없으면 다중 슬롯 채택자에서 ticket_finish
-        경유 완료가 전부 "남의 티켓" 으로 거부된다 — ticket_finish 는 정체성을 이미 해소해 두고
-        board 에 넘기지 않고 있었다.
+        `board_identity_args` = 이 실행의 정체성(`--task <task>`)을 board 하위 호출에 그대로
+        넘기는 인자다. board 의 complete 가 `claimed_by` 와 실행 task 를 대조하므로, 이 forward 가
+        없으면 ticket_finish 경유 완료가 "남의 티켓" 으로 거부된다.
 
         `skip_pytest`(--no-pytest) 는 [1/5] 회귀 단계를 건너뛴다 — 측정은 PM 이 /pm-qa
         등으로 별도. board complete 는 `--tests-pass` 를 유지한다(pm_handoff `--no-pytest` 동형·
@@ -5134,7 +5133,14 @@ def _main(argv: list[str] | None = None) -> int:
     if not args.reconcile_integrated and (args.repo is not None or args.slot is not None):
         parser.error(
             "--repo/--slot 은 --reconcile-integrated 의 제품 트리 지정에만 쓴다 — 정상 종결의 "
-            "정체성은 --task <task> 다(생략하면 이 cwd 의 작업 폴더·단일 활성 task 로 해소)."
+            "정체성은 --task <task> 다."
+        )
+    # 정상 종결은 귀속 쓰기다(종결 log 머리말 `(task:이름)`·board complete 소유 대조) — `--task` 가
+    # 없으면 어떤 쓰기보다 먼저 멈춘다. cwd·단일 활성 task 에서 정체성을 유도하지 않는다.
+    if not args.reconcile_integrated and args.task is None:
+        parser.error(
+            "정상 종결은 --task <task> 가 필요하다 — 종결의 정체성(log 머리말·소유 대조)은 task "
+            "하나다. `ticket_finish.py --cluster C-<ticket-group> --task <task>` 로 다시 실행하라."
         )
 
     # 정체성 인자 *검증*(`slot < 1` = uniform fail-loud)은 `--no-pytest` 와
@@ -5166,24 +5172,6 @@ def _main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
-
-    # 무인자 정상 종결도 정체성 축은 task 하나다 — 생산자와 같은
-    # 체인(`cwd 작업 폴더 → 단일 활성 task`)으로 해소해 아래 task 갈래로 합류시킨다. 안 되면
-    # 정체성을 지어내지 않고 멈춘다.
-    if identity.task is None and not args.reconcile_integrated:
-        pm_log = _load_pm_log()
-        resolved_task, identity_source = pm_log.resolve_snapshot_identity(REPO, Path.cwd())
-        if resolved_task is None:
-            print(
-                f"\n[중단] 정체성 미해소 ({identity_source}) — 이 cwd 를 가진 작업 폴더가 없고 "
-                "활성 task 도 하나가 아니다. `--task <task>` 으로 명시하라 "
-                "(정체성은 멤버 티켓의 소유 확인에 쓰므로 --no-pytest 로는 "
-                "풀리지 않는다).",
-                file=sys.stderr,
-            )
-            return 1
-        print(f"정체성 자동 해소: task={resolved_task} ({identity_source}; pm_log 공유 체인)")
-        identity.task = resolved_task
 
     # 복구 문이 복구할 제품 트리(`work/<repo>_<N>`). 정상 종결의 작업 트리는 이 값이 아니라
     # 묶음 기록의 브랜치로 찾는다(`ClusterCloser._resolve_code_tree`).

@@ -64,7 +64,7 @@ ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크**만
 ## 작업이 끝나면
 
 ```bash
-{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> [--task <task>]     # 또는
+{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> --task <task>     # 또는
 {{PY}} .project_manager/tools/board.py block T-NNNN --reason "..."
 ```
 
@@ -119,7 +119,7 @@ ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크**만
 {{PY}} .project_manager/tools/board.py list
 {{PY}} .project_manager/tools/board.py show T-NNNN
 {{PY}} .project_manager/tools/board.py claim T-NNNN --task <task>
-{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> [--task <task>]
+{{PY}} .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> --task <task>
 {{PY}} .project_manager/tools/board.py new "title" --task <task> --touches a.py,b.py --tag phase-1
 {{PY}} .project_manager/tools/board.py lint     # 의존성·thin-ticket 일관성 검사
 

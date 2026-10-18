@@ -68,7 +68,7 @@ python3 .project_manager/tools/domain.py affected --ticket T-NNNN
 - `(영향 domain 페이지 없음)` → 소환할 것 없음·생략.
 - 매칭된 페이지 경로를 아래 developer 위임 프롬프트에 인용/전달한다. **⚠ stale 페이지는 "맹신 말 것"** 경고를 동반 — 담당 코드 변경 후 미갱신이라 정보가 상했을 수 있다(enforcement 아닌 visibility·Q3).
 
-## task-mode 작업 위치 주입 (F6 해소 절대경로 · T-0355)
+## 작업 위치 주입 (F6 해소 절대경로 · T-0355)
 
 위임에서 dev 가 **어느 worktree 에서** 구현할지를 PM 이 **F6 로 해소한 절대경로**로 위임 프롬프트에 명시 주입한다 (dev/git 이 짐작하지 않게 — cwd 는 해소에 비참여·T-0345). 해소값은 실행-위치 필요 도구가 그대로 surface 한다:
 
@@ -183,7 +183,7 @@ python3 .project_manager/tools/pm_delegate.py --role <역할> \
 - `--prompt-file` — PM 이 만든 **self-contained task 프롬프트**를 담은 파일. 아래 §실행 패턴의 위임
   프롬프트 본문(developer)을 그대로 파일로 저장해 넘긴다(리뷰 프롬프트는 엔진이 조립한다). 경로는 해소된 `--cwd` 하위
   또는 이 repo `.project_manager/` 하위만 허용(repo 경계 밖 = fail-loud·유출 차단).
-- `--cwd` — dev 가 구현할 **작업 worktree 절대경로**. F6 해소값(task-mode 는 위 §task-mode 주입 절
+- `--cwd` — dev 가 구현할 **작업 worktree 절대경로**. F6 해소값(위 §작업 위치 주입 절
   참조)을 실값으로 박는다. 모든 역할 필수(기본값 없음).
 - `--tier` — developer 난제/평시(위 §1). 다른 역할엔 주지 않는다.
 - **role preamble 은 엔진이 합성**한다 — 역할 정체성·금지사항(commit/push 등 git 비가역·board 조작·

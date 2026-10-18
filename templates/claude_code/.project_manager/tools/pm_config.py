@@ -384,8 +384,7 @@ def _default_session(*, identity=None) -> str | None:
     PM 승·조용히 동작). **per-clone `local.conf session=` 층은 없다**(board 와 동형) — slot 종속
     값이 프로젝트 공용 conf 에 있던 범위 오류라 읽지 않는다. 미해소면 None — `cmd_status`/
     `whoami` surface(required=False)가 "(비바인딩)" 으로 표시한다(비바인딩 세션이 남의 리스로
-    self-identify 하던 직접 증상 수정). `<host>-<pid>` 최종 폴백은 세션-귀속 아닌 국소 용처
-    (worktree_pool lease 취득)에만 잔존 — 여기(surface 해소)선 제거.
+    self-identify 하던 직접 증상 수정). `<host>-<pid>` 꼬리는 두지 않는다.
 
     lease 장부(`state=="leased"` 행의 session 목록) 읽기는 공용 `identity_args.leased_sessions`
     로 위임한다
@@ -3574,7 +3573,7 @@ def cmd_task_branch(
 
     슬롯 안에서 새 브랜치를 만드는 유일한 명령이다(`switch` 는 기존 브랜치 전환만 한다). 브랜치는
     부모 브랜치의 최신 커밋에서 만들고, 부모 이름과 갈라진 커밋을 git 저장소 설정에 적는다
-    (`worktree_pool.create_task_branch`). `<task>` 은 그 슬롯을 쥔 명의다(task 또는 슬롯 세션).
+    (`worktree_pool.create_task_branch`). `<task>` 은 그 슬롯을 쥔 task 다.
     슬롯은 늘 적는다(`release <slot>` 과 같은 위치 인자·암묵 선택 없음). 엔진 거부는 사유 문구 그대로 rc 1 이다.
     """
     wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
@@ -5545,7 +5544,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="슬롯에 새 브랜치를 부모 브랜치 최신 커밋에서 만들고 부모를 기록한다 "
              "(슬롯 안 새 브랜치의 유일한 경로 · 기존 브랜치 전환은 `pm-worktree switch`)",
     )
-    p_task_branch.add_argument("name", help="슬롯을 쥔 명의(task 이름 또는 슬롯 세션)")
+    p_task_branch.add_argument("name", help="슬롯을 쥔 task 이름")
     p_task_branch.add_argument("slot", help="브랜치를 만들 슬롯(`work/<repo>_<N>` 또는 `<repo>_<N>`)")
     p_task_branch.add_argument("branch", help="만들 브랜치 이름")
     p_task_branch.add_argument("--from", dest="parent", required=True, metavar="<부모>",

@@ -391,7 +391,7 @@ class InvalidTaskName(Exception):
     작업트리 밖/임의 경로에 디렉토리를 만들고 장부를 오염시킨다(reviewer 실측). 검증은 **엔진층
     (bind_task 진입점)**에 둔다 — CLI 검증만으론 bind_task 직접 소비가 우회된다.
     거부: 빈/공백·path separator(`/`·`\\`)·선행 `.`(숨김/상대 traversal)·단일 컴포넌트 아님·(등록
-    repo 넘기면) `<repo>_<N>` 슬롯 세션 예약. `reason` = 위반 사유(진단용).
+    repo 넘기면) `<repo>_<N>` 슬롯 폴더 이름 패턴 예약. `reason` = 위반 사유(진단용).
     """
 
     def __init__(self, name: str, reason: str):
@@ -2090,7 +2090,7 @@ def _validate_task_name(name: str, registered_repos: "list[str] | set[str] | Non
     if registered_repos:
         for repo in registered_repos:
             if re.match(rf"^{re.escape(repo)}_\d+$", name):
-                raise InvalidTaskName(name, f"슬롯 세션 예약 패턴(<{repo}>_<N>)")
+                raise InvalidTaskName(name, f"슬롯 폴더 이름 패턴(<{repo}>_<N>)")
 
 
 def task_dir(name: str) -> Path:
@@ -3824,10 +3824,7 @@ def create_slot(
             # git=진실·조회는 live current_branch). provisional 을 그대로 반환(같은 필드).
             # 단, leased 는 **명의가 있을 때**다: owner_task 는 그 task 명의로, readonly 는
             # 무소유 공유로 확정한다. 명의가 없는 생성(그 밖)은 leased 가 아니라 **idle** 이다 —
-            # 세션 명의 leased 로 남기면 그 기록이 열린 채라, 같은 세션의 다음 `alloc` 이
-            # "idle 슬롯 없음"(풀 소진)으로 막히고
-            # 관리자에서는 그 행의 반납·제거·대여가 전부 닫힌다(회복 경로 없음). 생성은 풀
-            # 확장이고 점유는 alloc 이 한다 — CLI 안내("이 슬롯은 idle 이다. task 가 빌려
+            # 생성은 풀 확장이고 점유는 alloc 이 한다 — CLI 안내("이 슬롯은 idle 이다. task 가 빌려
             # 쓴다")와도 같은 뜻이다.
             provisional.state = "leased"
             if readonly:
@@ -5508,8 +5505,8 @@ def rebase(slots: "list[str]", *, onto: "str | None" = None,
         정의다. `release(owner_task=)` 의 소유검사와 **동형**(같은 장부·같은 의미: 그 슬롯의
         leased `lease.session` 이 그 명의인가) — 같은 소유를 두 도구가 다르게 판정하던 게 결함의
         본질이었다(이 task 를 1급 축으로 올렸는데 rebase 의 소유 축만 슬롯 세션에 머묾).
-      - 미지정 → 종전대로 세션 명의(`_default_session()` — env/단일-lease 유입·`_resolve_current_
-        slot` 동형)로 판정(슬롯-세션 모드 거동 불변).
+      - 미지정 → 세션 명의(`_default_session()` — env/단일-lease 유입·`_resolve_current_
+        slot` 동형)로 판정.
     어느 축이든 **검사 자체는 그대로**다 — 그 명의가 leased 로 보유하지 않은 슬롯(다른 task·다른
     슬롯 세션·미점유)은 여전히 `not-owner` 스킵(loud). 축 확장이지 검사 제거가 아니다."""
     owner = owner_task or _default_session()
@@ -6379,7 +6376,7 @@ def _checkout_required(slot: str, branch: str, *,
 def _leased_sessions() -> list[str]:
     """lease 장부 state=="leased" 행들의 session 목록 (count-based 유도).
 
-    `_default_session` 이 lease 취득 *전*(lock 밖)에 호출하므로 lock 없는 point-read 로 장부
+    `_default_session` 이 lock 밖에서 호출하므로 lock 없는 point-read 로 장부
     파일(`LEASES_FILE`)을 직접 읽는다 — `_read_ledger`(lock 보유 전제)와 별도. 리스는
     원자 교체(`file_lock.atomic_replace`)로 쓰므로 lock 없는 read 도 일관 스냅샷을 본다(board.py
     `_leased_sessions` 와 *동형*). 장부 부재/파싱실패/손상은 빈 리스트(fail-soft). session 이
@@ -6415,11 +6412,9 @@ def _default_session() -> str:
     (둘 다면 PM 승·조용히 동작). **per-clone `local.conf session=` 층은 없다**
     (board.session_name 과 동형 — 저장 쪽지로 남의 세션 행세 차단).
 
-    board.session_name 과 **tail 만 다르다**: 여기는 lease *취득*의 국소 임시 명명이라 미해소를
-    None/fail 로 두지 않고 `<host>-<pid>` 로 폴백한다(host-pid 최종 폴백은 세션-귀속
-    아닌 국소 용처에만 잔존). board.py 를 top-level import 하지 않으므로(touches 격리·병렬충돌
-    회피) 리스 카운팅은 자체 구현한다. 장부 0행에서 세션 이름을 유도하는 층은 없다 — 등록은
-    장부 행이 하고, 행이 없으면 여기서도 국소 임시 명명으로 떨어진다.
+    board.session_name 과 **tail 만 다르다**: 미해소를 None 으로 두지 않고 `<host>-<pid>` 로
+    떨어진다. board.py 를 top-level import 하지 않으므로(touches 격리·병렬충돌 회피) 리스
+    카운팅은 자체 구현한다. 장부 0행에서 세션 이름을 유도하는 층은 없다.
     """
     env = os.environ.get("PM_SESSION_NAME") or os.environ.get("CLAUDE_SESSION_NAME")
     if env:
@@ -6427,7 +6422,7 @@ def _default_session() -> str:
     leased = _leased_sessions()
     if len(leased) == 1:
         return leased[0]
-    # leased 0(미등록) 또는 ≥2(모호) → 국소 임시 명명 host-pid (lease 취득 전용 잔존).
+    # leased 0(미등록) 또는 ≥2(모호) → host-pid.
     import socket
     return f"{socket.gethostname()}-{os.getpid()}"
 

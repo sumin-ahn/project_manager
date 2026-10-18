@@ -273,8 +273,8 @@ def _load_identity_args():
     """공용 정체성 인자 모듈(identity_args.py)을 같은 tools/ 에서 경로 로드한다 (board.py
     `_load_identity_args`·아래 worktree_pool/pm_bootstrap 로더 동형·sys.path 무오염).
 
-    identity_args 는 `--repo/--slot` 정체성 파싱에 load-bearing 이라(main ingress 가 그 결과로
-    액터/리스를 해소) 로드 실패는 엔진 손상이다 — lint 계열의 fail-soft 로 흡수하지 않고 예외를
+    identity_args 는 정체성·대여 장부 해소에 load-bearing 이라(main ingress 가 그 결과로
+    task/리스를 해소) 로드 실패는 엔진 손상이다 — lint 계열의 fail-soft 로 흡수하지 않고 예외를
     그대로 낸다(fail-loud·board.py 동일)."""
     ia_path = Path(__file__).resolve().parent / "identity_args.py"
     return _load_module_from_path(
@@ -540,7 +540,7 @@ def _regression_cwd(
     돌아야 한다. 이 함수가 그 경로를 해소한다.
 
     해소 순서:
-      - `worktree_slot`(명시 `--repo`/`--slot`) 가 있으면 `repo_root / worktree_slot`
+      - `worktree_slot`(호출부가 고른 슬롯) 이 있으면 `repo_root / worktree_slot`
         (단 그 디렉토리가 실제로 없으면 stale 슬롯 → `repo_root` 로 폴백·경고 1줄),
       - 없으면 bootstrap `_auto_slot` 으로 단일 self-host 슬롯을 자동해소(**행의 `slot` 경로 값** ·
         **같은 존재 검사**를 탄다 — 디렉토리가 없으면 명시 분기와 동형으로 `repo_root` 폴백·경고),

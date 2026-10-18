@@ -12215,8 +12215,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
             return _cmd_claim_locked(args, assignee, claimed_rev)
 
 
-def _cmd_claim_locked(args: argparse.Namespace, assignee: str,
-                      claimed_rev: str | None = None) -> int:
+def _cmd_claim_locked(args: argparse.Namespace, assignee: str, claimed_rev: str) -> int:
     """`cmd_claim` 본체 — board_git_lock + board_lock 보유 전제(둘 다 재진입 금지)."""
     # claim STRICT 1단계: 선점 감지는 **읽기 전용**(fetch + 원격 트리
     # 직접 조회)이고, `pull --rebase` 는 원격이 앞섰을 때만 시도한다. 차단은 "원격이 앞섰고
@@ -12287,15 +12286,7 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str,
         fm["status"] = "claimed"
         fm["claimed_by"] = assignee
         fm["claimed_at"] = now_utc()
-        if claimed_rev:
-            # 해소 실패는 필드 생략이다(경고는 이미 냈다) — 없는 baseline 을 지어내면 자기 축
-            # 회귀가 엉뚱한 트리와 대조하고, 그 오차 방향은 신규 실패 누락(가드 약화)이다.
-            fm = _frontmatter_with_claimed_rev(fm, claimed_rev)
-        else:
-            # stale baseline 제거 — 이 claim 이 rev 를 못 박았는데 이전 소유 주기의 claimed_rev
-            # 가 남아 있으면(unclaim 이 지우지 않았거나 구 티켓 재사용) "필드 생략" 계약이
-            # 깨지고 자기 축 회귀가 그 stale rev 를 baseline 으로 되살린다.
-            fm.pop("claimed_rev", None)
+        fm = _frontmatter_with_claimed_rev(fm, claimed_rev)
         dump_ticket(new_path, fm, body)
     except FileNotFoundError:
         print(f"claim race lost on {args.id}", file=sys.stderr)
@@ -12644,8 +12635,7 @@ def cmd_unclaim(args: argparse.Namespace) -> int:
         previous_owner = fm.get("claimed_by")
         fm["claimed_by"] = None
         fm["claimed_at"] = None
-        # claimed_rev 도 함께 비운다 — 소유가 풀린 티켓에 옛 claim 의 앵커가 남으면 재claim 이
-        # 해소에 실패해도(비-git 등) stale rev 가 앵커로 살아남아 "필드 생략" 계약이 깨진다.
+        # claimed_rev 도 함께 비운다 — 소유가 풀린 티켓에 옛 claim 앵커를 남기지 않는다.
         fm.pop("claimed_rev", None)
         if takeover:
             body = body + (f"\n## Takeover\n{reason} — {now_utc()} "
@@ -13196,9 +13186,7 @@ def cmd_init(args: argparse.Namespace) -> int:
                 print(f"새 prefix {prefix!r} 등록엔 --area <설명> 필요.", file=sys.stderr)
                 return 1
             # owner = areas.md 등록 식별자(registrant) — 협업 소유자가 아니라 등록 출처 표식.
-            # init 은 lease 장부·세션 바인딩이 아직 없는 부트스트랩 지점이라 미해소를 fail-loud
-            # 하지 않는다(빈 칼럼 = 미상). 그 뒤의 등록(`pm-config repo add`)은 세션 귀속 쓰기라
-            # 미해소를 거부한다 — 게이트 위치가 다르다.
+            # `--owner` > `--task` > 빈 칼럼(미상) 순이고 환경변수·단일 대여에서 유도하지 않는다.
             owner = args.owner or owner_task or ""
             area_owner = user_name(getattr(args, "user", None))
             # 자기 행(폴더 이름 등록)이면 git·base 를 함께 싣는다 — 안내 명령(`pm-config worktree
@@ -13214,7 +13202,7 @@ def cmd_init(args: argparse.Namespace) -> int:
                           "(미상 — local.conf identity.user= / git user.email 미설정)")
             area_message = (f"✓ areas.md 등록: repo={repo_name} | "
                             f"prefix={prefix or '(빈 칼럼 · none 카테고리)'} | "
-                            f"owner={owner or '(미상 — 세션 미바인딩)'} | "
+                            f"owner={owner or '(미상 — --owner·--task 미지정)'} | "
                             f"area_owner={ao_surface} | git={git or '(없음)'} | base={base or '(없음)'}")
             if self_row and coordinates is None:
                 print(_SELF_COORDINATES_UNKNOWN, file=sys.stderr)
@@ -13277,18 +13265,18 @@ def cmd_init(args: argparse.Namespace) -> int:
     # 파일을 사용자 편집으로 오인·clone→init→claim 온보딩 직격) — 미배포 근거는 그대로 유효하다.
     # 배포는 `_board_git_stage_and_commit`(write→stage→commit 이 한 호출에 닫힘) **단일 채널**로 한다.
     # 완료 안내의 ID 포맷은 **이 clone 에서 `board.py new` 가 실제로 발행할 값**이다 —
-    # 등록 결과가 아니라 해소 체인(`cmd_new` 와 같은 함수·같은 세션 override)에서 뽑는다.
+    # 등록 결과가 아니라 해소 체인(`cmd_new` 와 같은 `id_prefix`)에서 뽑는다.
     # 등록이 생략/거부된 형상에서 발행되지 않을 포맷을 성공 메시지로 내던 거짓 안내 차단.
     issued = id_prefix(None)
     # `id_prefix(None)` 의 미해소(None)는 두 형상을 가린다 — (a) 등록 ≤1(count-based 로 곧
-    # 무prefix `T-NNNN` 이 발행) (b) 등록 ≥2 인데 세션 유도가 실패(모호). `cmd_new` 는 후자에서
+    # 무prefix `T-NNNN` 이 발행) (b) 등록 ≥2(모호). `cmd_new` 는 후자에서
     # 자신의 ≥2 가드로 fail-loud 하므로 무명시 `T-NNNN` 은 실제로 발행되지 않는다 — 완료 안내가
     # 그 포맷을 성공 메시지로 내면 거짓이다(같은 `registered_prefixes()` 로 `cmd_new` 와 lockstep).
     ambiguous = issued is None and len(registered_prefixes()) >= 2
     if ambiguous:
-        mode = f"repo {repo_name} · 카테고리 모호(등록 카테고리 ≥2·세션 미바인딩)"
-        id_line = ("무명시 `board.py new` 발행 불가 — 등록 카테고리가 여럿이고 세션이 "
-                   "바인딩되지 않았다. `board.py new --prefix <PFX> --user-ack <PFX>` 로 "
+        mode = f"repo {repo_name} · 카테고리 모호(등록 카테고리 ≥2)"
+        id_line = ("무명시 `board.py new` 발행 불가 — 등록 카테고리가 여럿이다. "
+                   "`board.py new --prefix <PFX> --user-ack <PFX>` 로 "
                    "명시하거나 task prefix 를 지정하라(`pm-config task prefix <task> <PFX>`).")
     else:
         mode = f"repo {repo_name} · 카테고리 {issued or 'none(무prefix)'}"
@@ -20755,7 +20743,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tag")
     p.add_argument("--mine", action="store_true",
                    help="내 것만 (렌즈·단일 보드 위 필터·user-first): 내 open"
-                        "(area_owner==나 ∨ created_by==나) + 내 claim(claimed_by.user==나)·**전 슬롯**. "
+                        "(area_owner==나 ∨ created_by==나) + 내 claim(claimed_by.user==나)·**전 task**. "
                         "querying identity=현재 사용자(local.conf identity.user= > git email). 타 사용자는 "
                         "안 나온다. user 미상이면 전체 open + 내 세션 claim 으로 graceful degrade. "
                         "`--task` 와 상호 배타(뷰 스코프는 하나만·cmd_list 런타임 검사).")

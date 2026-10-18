@@ -58,9 +58,9 @@ PM 역할의 정적 운영 매뉴얼이다. PM 역할은 보드 운영·분할·
 |---|---|
 | 내 티켓 목록 | `board.py list --mine` (open+claim) |
 | 내 티켓 상세 | `board.py show T-NNNN` |
-| 내 진행·남은작업 | per-slot `pm_state.md` |
-| 내 직전 세션 | `wiki/log/current.md`에서 자기 슬롯 태그 검색 |
-| 타 PM 현황 | 부트스트랩 대시보드 slot 1줄; 필요 시 그 슬롯 태그 log entry |
+| 내 진행·남은작업 | task 별 `pm_state.md`(`.project_manager/.local/tasks/` 아래) |
+| 내 직전 세션 | `wiki/log/current.md`에서 자기 task 태그(`task:이름`) 검색 |
+| 타 PM 현황 | 부트스트랩 대시보드 task 1줄; 필요 시 그 task 태그 log entry |
 | 현재 아키텍처 | `wiki/architecture.md` |
 | 결정 히스토리 | `wiki/decisions/README.md` 색인 |
 | 우선순위·방향 | `wiki/roadmap.md` |
@@ -258,18 +258,18 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 
 - PM 세션 정체성은 task 이름 하나이며 board 조작에도 `--task <task>`으로 실린다. 값은 부트스트랩 커맨드 카드가 채운다. `--repo/--slot`은 작업 폴더 좌표라 정체성 자리에 오지 않는다.
 - 구현 세션은 짧은 식별자를 `$PM_SESSION_NAME=<name>`으로 바인딩한다.
-- orchestrator 서브에이전트 라벨은 `orch-dev-T<NNNN>` / `orch-review-T<NNNN>` 류 free-form이다. board 조작은 PM이 하므로 서브는 claim하지 않는다. board 귀속이 필요하면 `$PM_SESSION_NAME`만 바인딩한다(claim 플래그 없음).
+- orchestrator 서브에이전트 라벨은 `orch-dev-T<NNNN>` / `orch-review-T<NNNN>` 류 free-form이다. board 조작(claim·new)은 PM이 `--task`로 하므로 서브는 claim하지 않는다.
 
 조회·소유 대조용 세션명은 저장하지 않고 다음 순서로 유도한다:
 `--task > $PM_SESSION_NAME(env·CLAUDE_SESSION_NAME alias) > lease 장부에 leased 슬롯이 정확히 1개면 그 세션(단일-lease 유도)`. ticket prefix 는 `--prefix > task prefix > 등록 prefix 가 정확히 1개면 그것` 순서로 해소한다(세션 이름을 분해하지 않는다).
 
 lease 장부에 행이 하나도 없는 홈은 **아직 작업 폴더가 없는 것**이라 귀속 조작이 fail-loud 한다. `pm-config worktree add <repo> --user-ack <repo>` 로 작업 폴더를 먼저 만든다(순서: 작업 폴더 생성 → 부트스트랩).
 
-`local.conf session=`/`prefix=` 폴백은 폐지되었다 — 진실은 lease 장부와 areas 레지스트리다. 기존 채택자는 conf 에서 두 키를 제거하고 `board init` 재실행으로 이 clone 의 repo 행 등록을 갱신한다. 귀속 쓰기(new·claim·init owner·migrate-identity·unclaim --takeover)는 `--task <task>`를 요구하고 없으면 **fail-loud**한다. 소유 대조(complete·block·unblock·unclaim·discard·reid)는 `--task` 또는 단일-lease 유도 세션으로 한다. 조회 whoami/status는 `(비바인딩)`을 표시한다. 동적 세션 목록은 [`pm_state.md`](pm_state.md) §"세션 식별 (현재까지 사용된 이름)"에 있고 `/pm-handoff`가 갱신한다.
+`local.conf session=`/`prefix=` 폴백은 폐지되었다 — 진실은 lease 장부와 areas 레지스트리다. 기존 채택자는 conf 에서 두 키를 제거하고 `board init` 재실행으로 이 clone 의 repo 행 등록을 갱신한다. 귀속 쓰기(new·claim·migrate-identity·unclaim --takeover·정상 종결 `ticket_finish.py`)는 `--task <task>`를 요구하고 없으면 첫 쓰기 전에 **fail-loud**한다. init 의 owner 칸은 `--owner`, 다음 `--task`, 둘 다 없으면 빈 칸이다(환경변수·단일 대여에서 유도하지 않는다). 소유 대조(complete·block·unblock·unclaim·discard·reid)는 `--task` 또는 단일-lease 유도 세션으로 한다. 조회 whoami/status는 `(비바인딩)`을 표시한다. 동적 세션 목록은 [`pm_state.md`](pm_state.md) §"세션 식별 (현재까지 사용된 이름)"에 있고 `/pm-handoff`가 갱신한다.
 
 **`list` 스코핑:** `board.py list`의 `--task`/`--mine`/`--all`은 조회 필터다(`--repo`/`--slot`은 받지 않는다). 실행 명령(claim·new·cluster new·regression·livegate)의 `--repo`/`--slot`은 task가 보유한 폴더를 고르는 위치 인자이고 `--task`와 함께일 때만 받는다. 미해소 귀속 조작은 fail-loud하고 조회는 `(비바인딩)`으로 계속된다.
 
-areas.md에 repo를 정확히 1개 등록한 홈은 `--prefix` 없이도 그 repo의 `T-<prefix>-NNN`로 새 ticket을 발행한다. 기존 `T-NNNN`과 혼합되어도 disjoint라 충돌하지 않는다. repo ≥2 multi 홈은 슬롯별 prefix를 해소하며 모호하면 `new`가 fail-loud한다.
+areas.md에 repo를 정확히 1개 등록한 홈은 `--prefix` 없이도 그 repo의 `T-<prefix>-NNN`로 새 ticket을 발행한다. 기존 `T-NNNN`과 혼합되어도 disjoint라 충돌하지 않는다. repo 2개 이상 홈은 `--prefix` 또는 task prefix(`pm-config task prefix`)가 없으면 `new`가 fail-loud한다.
 
 ## 티켓 prefix 사용 가이드
 

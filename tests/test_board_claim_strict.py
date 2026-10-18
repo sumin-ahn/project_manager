@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import ast
 import importlib.util
+import inspect
 import json
 import os
 import shutil
@@ -1520,3 +1521,6 @@ def test_t0962_attribution_writes_require_task(board, tmp_path, monkeypatch):
     fm, _body = board.load_ticket(tickets / "claimed" / "T-0001-t.md")
     assert fm["claimed_by"] == "alice/mytask"
     assert fm["claimed_rev"] == head
+    # claim 앵커는 늘 task 폴더 HEAD 다 — 앵커 생략 계약(기본값 None)은 없다(T-0962 리뷰 F-004).
+    rev_param = inspect.signature(board._cmd_claim_locked).parameters["claimed_rev"]
+    assert rev_param.default is inspect.Parameter.empty

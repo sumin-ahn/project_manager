@@ -458,7 +458,8 @@ def test_t0962_slot_selector_without_task_is_refused(board, monkeypatch, command
 
     def snapshot() -> dict:
         tickets = board.TICKETS_DIR
-        folders = (tickets, *(tickets / name for name in (*board.STATUS_DIRS, ".drafts")))
+        folders = (tickets, *(tickets / name for name in (*board.STATUS_DIRS, ".drafts")),
+                   board.clusters_dir())
         files = {path.relative_to(tickets).as_posix(): path.read_bytes()
                  for folder in folders for path in folder.glob("*") if path.is_file()}
         for flag in (board.REGRESSION_FLAG, board.LIVEGATE_FLAG):

@@ -76,12 +76,11 @@ class _StubBoard:
     """board 모듈 대역 — 해소 체인이 실제로 읽는 표면만 흉내낸다."""
 
     def __init__(self, *, areas_exists=True, rows=(), prefix=None, repos=(),
-                 session=None, conf=None):
+                 conf=None):
         self._areas_exists = areas_exists
         self._rows = list(rows)
         self._prefix = prefix
         self._repos = set(repos)
-        self._session = session
         self._conf = dict(conf or {})
 
     def areas_file(self):
@@ -104,16 +103,6 @@ class _StubBoard:
 
     def _parse_areas(self):
         return ([], list(self._rows))
-
-    def session_name(self):
-        return self._session
-
-    def _repo_from_session(self, session):
-        """board `_repo_from_session` 과 동형 — `<repo>_<N>` 에서 repo 를 뗀다."""
-        head, sep, tail = session.rpartition("_")
-        if not sep or not head or not tail.isdigit():
-            return None
-        return head
 
     def registered_repos(self):
         return set(self._repos)
@@ -171,7 +160,6 @@ def test_layer2_ambiguous_repo_falls_through(tool, monkeypatch):
         ],
         prefix=None,
         repos={"a", "b"},
-        session=None,
         conf={"test.cmd": LOCAL_CONF_CMD},
     )
     assert _resolve(mod, seam, stub, monkeypatch) == LOCAL_CONF_CMD
@@ -229,7 +217,8 @@ def test_resolution_exception_is_solo_fallback(tool, monkeypatch):
 
 
 def test_session_resolution_failure_falls_back_to_count(tool, monkeypatch):
-    """세션 해소가 터져도 등록 repo 1개면 count-based 로 2층이 성립한다(fail-soft)."""
+    """등록 repo 1개면 count-based 로 2층이 성립한다. `_active_repo_name` 은 session_name 을
+    부르지 않는다 — 부르면 대역의 RuntimeError 가 그대로 터진다."""
     mod, seam = tool
 
     class _SessionBoom(_StubBoard):

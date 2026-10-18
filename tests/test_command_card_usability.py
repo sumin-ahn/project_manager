@@ -1493,7 +1493,7 @@ def test_t0958_delegate_docs_state_switch_after_claim():
         assert all(phrase in items[claimed + 1] for phrase in _DELEGATE_SWITCH_PHRASES), (path, items)
 
 
-_DELEGATE_LOCATION_HEADING = "## task-mode 작업 위치 주입"
+_DELEGATE_LOCATION_HEADING = "## 작업 위치 주입"
 
 
 def test_t0958_delegate_work_location_names_work_folder():

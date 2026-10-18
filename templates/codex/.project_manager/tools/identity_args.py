@@ -164,12 +164,12 @@ def parse_identity(args: argparse.Namespace) -> Identity:
 
 
 def is_reserved_task_name(name: str, registered_repos: "list[str] | set[str]") -> bool:
-    """task 명이 `<등록 repo>_<N>` 슬롯 세션 패턴과 충돌하면 True — 예약(task 명 검증).
+    """task 명이 `<등록 repo>_<N>` 슬롯 폴더 이름 패턴과 충돌하면 True — 예약(task 명 검증).
 
     순수 함수(파일 IO 0) — 등록 repo 집합을 caller 가 넘긴다(`parse_identity` 의 순수 층 규율
     보존·등록 repo 는 areas/leases 유래라 IO 층 밖). 등록된 각 repo `R` 에 대해 `^R_<정수>$` 를
-    검사한다: task 이름이 그 형태면(예 `myproj_2`) 슬롯 세션 정체성(`<repo>_<N>`)과 시각적·기계적
-    으로 충돌하므로 거부한다(task 는 자유 포맷이되 슬롯 세션 이름공간은 예약). **등록 repo
+    검사한다: task 이름이 그 형태면(예 `myproj_2`) 슬롯 폴더 이름(`work/<repo>_<N>`)과 섞여 폴더
+    이름과 task 이름의 분리가 깨지므로 거부한다(task 는 자유 포맷이되 폴더 이름 형태는 예약). **등록 repo
     집합에 없는** repo 로 시작하는 `_N` 형태는 무관(자유 포맷 허용) — 실재 슬롯과만 충돌 방지한다.
     """
     for repo in registered_repos:
@@ -203,7 +203,7 @@ def validate_task_name(name: str, registered_repos: "list[str] | set[str] | None
     경계·relay slash·log 태그 delimiter·path)에 맞춘 협소화로 worktree_pool 엔진 validator 와 규칙이
     동형이다(모듈 격리라 독립 구현·`is_reserved_task_name` 재사용). 거부: 빈/공백-only·whitespace·괄호
     `(`/`)`·path separator(`/`·`\\`)·선행 `.`(traversal)·단일 컴포넌트 아님·(registered_repos 주면)
-    `<repo>_<N>` 슬롯 세션 예약. 한글·하이픈·언더스코어·숫자는 통과(어느 표면과도 무충돌).
+    `<repo>_<N>` 슬롯 폴더 이름 패턴 예약. 한글·하이픈·언더스코어·숫자는 통과(어느 표면과도 무충돌).
     """
     if not name or not name.strip():
         raise InvalidTaskName(name, "빈 이름(공백 포함)")
@@ -220,7 +220,7 @@ def validate_task_name(name: str, registered_repos: "list[str] | set[str] | None
     if Path(name).name != name:
         raise InvalidTaskName(name, "단일 path 컴포넌트가 아님")
     if registered_repos and is_reserved_task_name(name, registered_repos):
-        raise InvalidTaskName(name, "슬롯 세션 예약 패턴(<repo>_<N>)")
+        raise InvalidTaskName(name, "슬롯 폴더 이름 패턴(<repo>_<N>)")
 
 
 # ── 엔진 중앙 로더 부트스트랩 (형제 로드는 이 한 경로만·`repo_owned_files.load_module`) ──

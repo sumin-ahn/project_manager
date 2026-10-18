@@ -342,9 +342,6 @@ def test_id_prefix_session_repo_unregistered_falls_through(board):
     assert board.id_prefix(None) == "PAY"
 
 
-# ── 단위: _repo_from_session (세션명 `<repo>_<N>` 역파싱) ───────────────────
-
-
 # ════════════════════════════════════════════════════════════════════════
 # 단위: registered_prefixes (areas.md 파싱)
 # ════════════════════════════════════════════════════════════════════════
@@ -661,7 +658,7 @@ def test_cmd_init_area_owner_falls_back_to_git_email(init_board, monkeypatch):
     assert _area_owner(init_board, init_board.REPO.name) == "dev@example.com"
 
 
-def test_cmd_init_owner_empty_when_session_unbound(init_board, monkeypatch):
+def test_cmd_init_owner_empty_when_session_unbound(init_board, monkeypatch, capsys):
     """세션 미바인딩(env·lease 없음)이면 owner 칼럼이 빈 채 등록된다 — init 은 fail-loud 안 한다.
 
     init 은 lease 장부·세션 바인딩이 아직 없는 부트스트랩 지점이라, 미해소를 거부하면
@@ -671,6 +668,7 @@ def test_cmd_init_owner_empty_when_session_unbound(init_board, monkeypatch):
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     assert init_board.cmd_init(_init_args()) == 0
     assert _areas_row(init_board, init_board.REPO.name)["owner"] == ""
+    assert "세션 미바인딩" not in capsys.readouterr().out   # owner 는 --owner·--task 로만 채운다
 
 
 def test_cmd_init_area_owner_graceful_when_user_unknown(init_board, monkeypatch):
@@ -1971,23 +1969,6 @@ def test_regression_multi_check_message_carries_rc5_hint(
     assert rc == 1
     err = capsys.readouterr().err
     assert "B_1=red(rc=5·수집0)" in err
-
-
-# ════════════════════════════════════════════════════════════════════════
-# T-0378 — 명시 `--cwd`(run) 대칭: eager actor 해소가 `--repo` 단독 + 활성 ≥2 에서
-# SlotResolutionError 를 오발화하던 것을 soft 해소로 닫는다(livegate cf14d9b 동형·
-# pm-release §2 readonly-핀 처방 `regression run --repo <r> --cwd <readonly>` 소진).
-# --cwd 핀은 단일 위치라 M>1 순회도 건너뛰고, session 은 슬롯 test_cmd 유도에만 남는다
-# (cwd override 최우선) — 명시 슬롯은 그 test_cmd 유지, 모호는 repo/local 폴백.
-# ════════════════════════════════════════════════════════════════════════
-
-def _seed_repo_two_slots(board, repo="proj"):
-    """repo 하나에 활성 leased 슬롯 2개(<repo>_1·<repo>_2) — resolve_actor_slot 모호 전제.
-
-    작업 슬롯 + readonly(leased) 슬롯이 같은 repo 활성 ≥2 가 되는 릴리즈 형상 재현.
-    """
-    _seed_lease(board, f"{repo}_1", repo, slot=f"work/{repo}_1")
-    _seed_lease(board, f"{repo}_2", repo, slot=f"work/{repo}_2")
 
 
 def test_regression_run_explicit_cwd_skips_multi_dispatch(
