@@ -101,7 +101,7 @@ from typing import Callable
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.domain import conf_schema  # noqa: E402
+from pm_engine.domain import conf_schema, upstream_rules  # noqa: E402
 from pm_engine.infra import conf_store, console, fs, lease_store, repo_files  # noqa: E402
 from pm_engine.infra.harness import contract  # noqa: E402
 _load_module_from_path = repo_files.load_module
@@ -481,24 +481,6 @@ def _repo_registry_git(repo: str, *, board=None) -> str | None:
     return None
 
 
-def _classify_upstream(value: str) -> str | None:
-    """`pm_import.classify_upstream`의 공용 URL/path 판별을 소비한다.
-
-    판별 규칙을 여기서 다시 쓰지 않는다. 엔진 부재/구버전이면 None으로 돌려 호출자가
-    안전한 adopter self-test로 강등한다.
-    """
-    pm_import_mod = _load_module("pm_import", "pm_import.py")
-    classify = getattr(pm_import_mod, "classify_upstream", None) if pm_import_mod else None
-    if classify is None:
-        return None
-    try:
-        return classify(value)
-    except Exception as exc:  # noqa: BLE001 — provenance 판별 실패는 self-test 강등(단 skew 재전파).
-        if _is_engine_rev_skew(exc):
-            raise
-        return None
-
-
 def _expanduser_path(path: Path) -> Path:
     """`~`/`~user` 확장의 플랫폼 seam — 회귀가 Windows 확장 동작을 주입해 태울 수 있게 연 자리."""
     return path.expanduser()
@@ -549,9 +531,9 @@ def _protected_push_gate_config(
             )
         return _PROTECTED_GATE_SELF_TEST, test_cmd
 
-    # URL/scp-like upstream 판별은 pm_import.classify_upstream 단일 진실을 쓴다. 여기서 정규식을
+    # URL/scp-like upstream 판별은 upstream_rules.classify_upstream 단일 진실을 쓴다. 여기서 정규식을
     # 따로 들면 `host:path` 같은 지원 형식이 경로로 갈라져 release gate가 빠진다.
-    kind = _classify_upstream(upstream)
+    kind = upstream_rules.classify_upstream(upstream)
     if kind == "url":
         repo_git = _repo_registry_git(repo, board=board)
         if not repo_git:
@@ -566,17 +548,6 @@ def _protected_push_gate_config(
                 if _git_remote_identity(upstream) == _git_remote_identity(repo_git)
                 else _PROTECTED_GATE_SELF_TEST)
         return mode, test_cmd
-
-    # classifier 자체가 미해소된 경우 경로라고 추측하지 않는다. release false-positive보다
-    # 채택자 자기 검증이 안전하고, B1의 판별불가 강등 계약과도 같다.
-    if kind is None:
-        if report_downgrade:
-            print(
-                f"⚠ 보호 push gate 강등({repo}): upstream URL/path 분류 축 미해소 — "
-                "release 대신 self-test를 사용한다; pm_import 엔진과 upstream 값을 확인하라.",
-                file=sys.stderr,
-            )
-        return _PROTECTED_GATE_SELF_TEST, test_cmd
 
     # 경로 해소 실패는 **어떤 값이** 안 풀렸는지와 함께 올린다 — 호출부(`_install_protected_hook`)
     # 는 원인만 기록하고 fail-soft 하는데, 플랫폼마다 문구가 달라(POSIX "embedded null byte" /
@@ -3975,7 +3946,7 @@ def _validate_upstream_reachable(
     if not ok:
         return False, reason
     runner = git_runner if git_runner is not None else pm_import_mod._real_upstream_git_runner()
-    kind = pm_import_mod.classify_upstream(value)
+    kind = upstream_rules.classify_upstream(value)
     if kind == "url":
         # `--` 로 위치인자 종결(value 가 옵션으로 오인되지 않게·leading-dash 는 이미 거부됨이나 방어).
         rc, out = runner(["ls-remote", "--", value])
@@ -4038,7 +4009,7 @@ def cmd_upstream(
         if not value:
             print("upstream: (미등록) — `pm-config upstream set <url|path>` 로 설정하라.")
             return 0
-        kind = pm_import_mod.classify_upstream(value)
+        kind = upstream_rules.classify_upstream(value)
         print(f"upstream: {value}  ({kind})")
         return 0
 
@@ -4073,7 +4044,7 @@ def cmd_upstream(
     # upstream은 보호 push gate의 provenance 입력이다. 값이 같아도 끊긴/stale sidecar를
     # 자가치유하도록 등록 repo 전수를 중앙 설치 깔때기로 보낸다.
     _refresh_protected_gate_contracts(board=board, worktree_pool=worktree_pool)
-    kind = pm_import_mod.classify_upstream(value)
+    kind = upstream_rules.classify_upstream(value)
     print(f"✓ upstream 설정: {value}  ({kind}) — pm_update 가 --from 생략 시 이 값을 쓴다.")
     return 0
 

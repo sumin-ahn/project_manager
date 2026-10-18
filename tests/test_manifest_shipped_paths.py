@@ -19,9 +19,8 @@ T-0544 ④ — flavor manifest 등록 경로의 템플릿 트리 실재 가드 (
 쪽이라 대상이 아니다(등록 경로 ↔ 소스 remap 정합은 test_manifest_template_parity 의 `@source`
 가드 계열이 본다).
 
-hermetic — 실 파일 존재만 본다(LLM·subprocess 미진입). manifest 파싱은 pm_update.read_manifest
-재사용(주석·`@마커` 제거를 한 곳에서 — 자체 파서 drift 회피). pm_update 로드는 모듈 캐시라
-호출마다 re-exec 하지 않는다(같은 파일을 flavor·테스트 수만큼 다시 실행할 이유가 없다).
+hermetic — 실 파일 존재만 본다(LLM·subprocess 미진입). manifest 파싱은 manifest_store.read_manifest
+재사용(주석·`@마커` 제거를 한 곳에서 — 자체 파서 drift 회피).
 """
 from __future__ import annotations
 
@@ -33,6 +32,7 @@ import pytest
 
 from _harness_matrix import HARNESSES, HARNESS_ADAPTER_DIRS, HARNESS_ROOT_DOC
 from _repo_owned_inventory import TRACKED_ONLY, repo_owned_paths
+from pm_engine.infra import manifest_store
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -57,17 +57,6 @@ def _load_pm_import():
     return module
 
 
-@functools.lru_cache(maxsize=1)
-def _load_pm_update():
-    """pm_update 모듈 (프로세스당 1회 exec·캐시).
-
-    sys.modules 에 등록하지 않는 로드라 캐시 없이는 호출마다 파일 전체가 다시 실행된다."""
-    spec = importlib.util.spec_from_file_location("pm_update", TOOLS / "pm_update.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _in_tree_source_rel(entry, template_root: Path) -> str | None:
     """`@source` 소스가 이 템플릿 트리 안이면 트리 상대 경로, 아니면 None (스코프 경계)."""
     source_rel = getattr(entry, "source_rel", None)
@@ -85,7 +74,7 @@ def _unshipped_manifest_paths(manifest: Path, template_root: Path) -> list[str]:
     소스가 이 트리 안인 것은 그 소스 경로가 출하 경로다(둘 다 부재 = 채택자 미도달). 디렉토리
     항목도 그대로 본다(디렉토리 자체의 실재 = 재귀 동기화 대상 존재)."""
     missing = []
-    for entry in _load_pm_update().read_manifest(manifest):
+    for entry in manifest_store.read_manifest(manifest):
         if getattr(entry, "source_rel", None) is None:
             rel, label = str(entry), str(entry)
         else:
@@ -102,7 +91,7 @@ def _in_tree_source_entries(manifest: Path, template_root: Path) -> list[str]:
     """이 트리 안을 소스로 삼는 `@source` 항목의 소스 경로 목록 (스코프 실측용)."""
     return sorted(
         rel
-        for entry in _load_pm_update().read_manifest(manifest)
+        for entry in manifest_store.read_manifest(manifest)
         if (rel := _in_tree_source_rel(entry, template_root)) is not None
     )
 
@@ -213,7 +202,7 @@ def _manifest_covered_relpaths(manifest: Path, template_root: Path) -> set[str]:
     있든(remap 여부에 따라 다르다) 커버로 잡히게 하려는 것이고, 둘 다 넣어도 과탐이 아니다(어느
     쪽이든 그 경로는 실제로 이 flavor 의 동기 채널을 탄다)."""
     covered: set[str] = set()
-    for entry in _load_pm_update().read_manifest(manifest):
+    for entry in manifest_store.read_manifest(manifest):
         covered.add(str(entry).replace("\\", "/"))
         in_tree = _in_tree_source_rel(entry, template_root)
         if in_tree is not None:

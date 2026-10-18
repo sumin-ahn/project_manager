@@ -28,7 +28,7 @@ import pytest
 from _git_fixture import init_git_repo
 from _win_skip import _can_symlink
 from pm_engine.domain import conf_schema
-from pm_engine.infra import conf_store
+from pm_engine.infra import conf_store, manifest_store
 from conftest import ensure_product_slot
 
 REPO = Path(__file__).resolve().parents[1]
@@ -2249,10 +2249,9 @@ def test_template_mirror_missing_copy_in_scope_is_drift(board, monkeypatch, tmp_
 def test_template_mirror_no_exemption_without_pm_update_seam(board, monkeypatch, tmp_path):
     """pm_update 로드 실패 → 면제 없음(보수 방향·면제는 특권이지 기본값이 아니다).
 
-    판정원(`discover_target_names`·`resolve_target_root`·`read_manifest`)이 없으면 후보 0 →
+    판정원(`discover_target_names`·`resolve_target_root`)이 없으면 후보 0 →
     byte-identical 사본이 있어도 mirror 로 인정하지 않는다. lint 경유가 아니라 술어를 직접
-    단언한다 — 로드 실패는 `lint_render_leak` 을 조기 반환(검사 대상 0)시켜 lint 단언이 자명
-    통과가 되기 때문(non-vacuous 유지).
+    단언한다.
     """
     fake_repo = tmp_path / "seam_root"
     _write_root_manifest(fake_repo, ".claude/agents @render\n")
@@ -2489,9 +2488,7 @@ def test_render_leak_binary_survives_when_text_judgment_lies(board, monkeypatch,
                         data=b"\xff\xfe\x00\x01{{PROJECT_NAME}}\x80\x81")
     monkeypatch.setattr(board, "REPO", fake_repo)
 
-    real = board._load_pm_update_module()
-    lying = SimpleNamespace(read_manifest=real.read_manifest,
-                            _is_text_source=lambda p: True)  # 바이너리도 '텍스트'라 우김
+    lying = SimpleNamespace(_is_text_source=lambda p: True)  # 바이너리도 '텍스트'라 우김
     monkeypatch.setattr(board, "_load_pm_update_module", lambda: lying)
 
     board.lint_render_leak()  # 예외 없이 반환해야 함(넓힌 except 가 UnicodeDecodeError 흡수)
@@ -2515,9 +2512,7 @@ def test_render_leak_delegates_text_judgment_to_pm_update(board, monkeypatch, tm
         calls.append(str(p))
         return False  # 전부 '텍스트 아님' 강제 → 스캔에서 빠져야
 
-    real = board._load_pm_update_module()
-    stub = SimpleNamespace(read_manifest=real.read_manifest,
-                           _is_text_source=_stub_is_text_source)
+    stub = SimpleNamespace(_is_text_source=_stub_is_text_source)
     monkeypatch.setattr(board, "_load_pm_update_module", lambda: stub)
 
     issues = board.lint_render_leak()
@@ -2579,12 +2574,10 @@ def test_claude_adapter_manifest_is_render_not_target_owned(board):
     안전판이 꺼져 엔진 누락을 은폐한다(pm_update.py:985). `.opencode/*`(루트 부재=진짜 target-owned)
     와 비대칭. 선례 [[T-0154]]·hermetic·git-network 0.
     """
-    pm_update = board._load_pm_update_module()
-    assert pm_update is not None, "pm_update 모듈 로드 실패"
     root_manifest = board.REPO / ".project_manager" / "engine.manifest"
     assert root_manifest.is_file(), "루트 .project_manager/engine.manifest 없음"
 
-    by_path = {str(e): e for e in pm_update.read_manifest(root_manifest)}
+    by_path = {str(e): e for e in manifest_store.read_manifest(root_manifest)}
     for adapter in (".claude/agents", ".claude/skills"):
         assert adapter in by_path, f"루트 manifest 에 {adapter} 항목 없음"
         entry = by_path[adapter]

@@ -41,6 +41,7 @@ from _harness_matrix import (
     entry_docs,
 )
 from _repo_owned_inventory import OWNED, repo_owned_paths
+from pm_engine.infra import manifest_store
 
 
 def _load_pm_render():
@@ -155,7 +156,7 @@ def _render_channel(harness: str, path: Path) -> str | None:
     rel = path.relative_to(root).as_posix()
     entries = {
         str(entry).replace("\\", "/")
-        for entry in _PM_UPDATE.read_manifest(
+        for entry in manifest_store.read_manifest(
             root / ".project_manager" / "engine.manifest"
         )
     }

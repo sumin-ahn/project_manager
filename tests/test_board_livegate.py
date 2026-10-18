@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 from _git_fixture import init_git_repo
 from _slot_seed import SLOT, seed_slot
+from pm_engine.domain import manifest_rules
 from pm_engine.infra import conf_store
 
 REPO = Path(__file__).resolve().parents[1]
@@ -372,7 +373,7 @@ def test_drift_changes_detects_legacy_add_harness_guest_backfill_manifest_update
         "target-owned missing(.opencode/agents) 만으로도 판정 불능이 됐다 — missing 필터가 "
         "@target-owned 를 걸러내지 못했다"
     )
-    assert pm_update_module._MANIFEST_SELF_REL in result, (
+    assert manifest_rules._MANIFEST_SELF_REL in result, (
         "guest backfill 로 인한 engine.manifest update 를 drift_changes 가 놓쳤다"
     )
 
@@ -381,7 +382,7 @@ def test_drift_changes_detects_legacy_add_harness_guest_backfill_manifest_update
     rc = pm_update_module.main(["--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert f"[update] {pm_update_module._MANIFEST_SELF_REL}" in out
+    assert f"[update] {manifest_rules._MANIFEST_SELF_REL}" in out
 
 
 def test_engine_sync_plan_call_args_and_result_shared_between_main_and_drift_changes(
@@ -428,7 +429,7 @@ def test_engine_sync_plan_call_args_and_result_shared_between_main_and_drift_cha
     main_changes = {str(rel) for rel, *_ in main_plan["changes"]}
     drift_changes_set = {str(rel) for rel, *_ in drift_plan["changes"]}
     assert main_changes == drift_changes_set == set(result)
-    assert pm_update_module._MANIFEST_SELF_REL in main_changes
+    assert manifest_rules._MANIFEST_SELF_REL in main_changes
     assert main_plan["missing"] == drift_plan["missing"] == [".opencode/agents"]
 
 

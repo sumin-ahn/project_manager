@@ -14,6 +14,7 @@ import pytest
 
 from _skill_command import expected_command_bytes, normalized_bytes
 from _textio import dominant_newline_bytes, renotated, write_crlf, write_lf
+from pm_engine.infra import manifest_store
 
 REPO = Path(__file__).resolve().parents[1]
 MANIFEST = REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest"
@@ -70,7 +71,7 @@ def _load_pm_update():
 
 def _command_entries(pm_update):
     return [
-        entry for entry in pm_update.read_manifest(MANIFEST)
+        entry for entry in manifest_store.read_manifest(MANIFEST)
         if str(entry).startswith(".opencode/command/")
     ]
 
@@ -145,7 +146,7 @@ def _plan_one_command(pm_update, monkeypatch, source_root: Path, manifest: Path,
     fallback_warning = repo_files.RepoFilesFallbackWarning
     with pytest.warns(fallback_warning, match="filesystem 전수 순회"):
         changes, missing = pm_update.plan(
-            source_root, pm_update.read_manifest(manifest),
+            source_root, manifest_store.read_manifest(manifest),
             dest_root=dest_root, render_enabled=False, conf=_local_conf_of(pm_update, dest_root))
     assert missing == []
     return changes

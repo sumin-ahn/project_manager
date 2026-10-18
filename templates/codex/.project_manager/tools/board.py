@@ -44,7 +44,7 @@ if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from pm_engine.app import hooks  # noqa: E402
 from pm_engine.domain import conf_schema, git_policy, identity_args, shell_policy  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, git, lease_store, process, repo_coordinates, repo_files  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, git, lease_store, manifest_store, process, repo_coordinates, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
@@ -14761,8 +14761,8 @@ _RENDER_TOKEN_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 def _render_managed_relpaths() -> set[str]:
     """engine.manifest 에서 `@render` 태그가 붙은 path 들(repo 기준 relpath·POSIX) — 검사 대상.
 
-    pm_update.read_manifest 를 재사용해 `.render` 플래그가 True 인 항목만 모은다. manifest
-    부재·로드 실패는 빈 set(검사 대상 0·무발화). manifest 의 @render path 가 디렉토리면 그
+    manifest_store.read_manifest 를 재사용해 `.render` 플래그가 True 인 항목만 모은다. manifest
+    부재·파싱 실패는 빈 set(검사 대상 0·무발화). manifest 의 @render path 가 디렉토리면 그
     하위 출하 어댑터가 전부 산출물이므로 prefix 매칭에 쓴다.
 
     **트리 성격 게이트 (local.conf 의미론)**: render-leak 은 *렌더
@@ -14788,15 +14788,12 @@ def _manifest_render_relpaths() -> set[str]:
     본문 트리)에서 스코프를 파생하므로, 새 하네스·새 어댑터 항목이 manifest 에 등재되면 자동
     편입된다(손-열거 0). config·hooks·엔진 코드·`node_modules` 등 런타임/설정
     파일은 `@render` 가 아니라 `@source`(byte-copy)/미등재라 이 집합에 애초에 안 든다 — 스코프가
-    구조적으로 어댑터 본문으로 좁혀진다. pm_update.read_manifest 재사용(`_load_pm_update_module`
-    seam). manifest 부재·로드 실패는 빈 set(검사 대상 0·무발화)."""
-    pm_update = _load_pm_update_module()
-    if pm_update is None:
-        return set()
+    구조적으로 어댑터 본문으로 좁혀진다. manifest_store.read_manifest 재사용. manifest 부재는 빈
+    set(검사 대상 0·무발화)."""
     managed: set[str] = set()
     for manifest_path in _engine_manifest_paths():
         try:
-            for entry in pm_update.read_manifest(manifest_path):
+            for entry in manifest_store.read_manifest(manifest_path):
                 if getattr(entry, "render", False):
                     managed.add(str(entry).replace("\\", "/"))
         except Exception:  # noqa: BLE001 — 깨진/부재 manifest 는 검사 대상 0(무발화).
@@ -14831,7 +14828,7 @@ def _engine_manifest_paths() -> list[Path]:
 
 
 def _load_pm_update_module():
-    """pm_update 모듈을 같은 tools/ 디렉토리에서 로드 (read_manifest @render 파싱 재사용).
+    """pm_update 모듈을 같은 tools/ 디렉토리에서 로드 (drift 판정·출하 타깃 탐색·스킬 표기 렌더·텍스트 판정 재사용).
 
     board.py 가 _detected_py 류 seam 으로 형제 모듈을 로드하는 패턴과 동형. 실패 시 None →
     호출부가 검사 대상 0(무발화)으로 흡수한다.
@@ -14904,7 +14901,7 @@ def _shipping_template_render_scopes() -> list[tuple[Path, set[str]]]:
         try:
             render_managed = {
                 str(entry).replace("\\", "/")
-                for entry in pm_update.read_manifest(manifest)
+                for entry in manifest_store.read_manifest(manifest)
                 # `@source=<path>` remap 항목은 제외한다 — 아래 후보 조립(`template_root / rel_posix`)
                 # 이 "사본은 dest 와 같은 상대경로"를 전제하는데, source-remap 은 그 전제를 깬다
                 # (`ManifestEntry.source_rel`). 전제가 안 서는 항목은 면제 판정 범위 밖으로
@@ -15016,7 +15013,7 @@ def lint_render_leak() -> list[tuple[str, str, str]]:
     면제한다(`_template_mirror_state`). pm_render 의 post-render assertion 과 2중
     backstop — pm_update 가 마지막 도구였는지 무관한 상시 가드.
 
-    fail-soft: manifest 부재·로드 실패·파일 read 오류 → 그 부분 skip(검사 대상 0·신규 무영향).
+    fail-soft: manifest 부재·파싱 실패·파일 read 오류 → 그 부분 skip(검사 대상 0·신규 무영향).
     """
     managed = _render_managed_relpaths()
     if not managed:
@@ -15026,8 +15023,7 @@ def lint_render_leak() -> list[tuple[str, str, str]]:
     # 등)의 미해소 토큰을 잡아야 한다 — `.md` 만 스캔하면 새 하니스 형식을 조용히 놓치는 클래스
     # (codex `.codex/agents/*.toml`)가 이 blocking 백스톱을 통과한다. 확장자 열거·판정 사본을 새로
     # 만들지 않고 render 채널(pm_update.plan)이 쓰는 그 함수에 위임한다(네 번째 판정 지점 방지).
-    # managed 가 비어있지 않으면 _render_managed_relpaths 안에서 pm_update 로드가 이미 성립했다 —
-    # 방어적 None 이면 아래 read 의 넓힌 except 가 바이너리를 흡수한다(graceful degrade).
+    # pm_update 적재가 None 이면 아래 read 의 넓힌 except 가 바이너리를 흡수한다(graceful degrade).
     pm_update = _load_pm_update_module()
     # 출하 템플릿 후보는 파일마다 다시 구하지 않는다(pm_update 재로드·manifest 재파싱 방지).
     template_scopes = _shipping_template_render_scopes()
@@ -15711,8 +15707,7 @@ def _freshness_owner_repo(owner) -> tuple[Path | None, str | None]:
     if not upstream:
         return (None, "local.conf upstream.path 미설정으로 소유 repo 미해소")
     try:
-        # pm_import.classify_upstream 과 같은 self-describing 경계의 필요한 부분만 유지한다.
-        # board→pm_import 의존은 역방향이라 만들지 않는다.
+        # upstream_rules.classify_upstream 과 같은 self-describing 경계의 필요한 부분만 유지한다.
         is_windows_path = bool(_WINDOWS_DRIVE_PATH_RE.match(upstream))
         is_url = (not is_windows_path and
                   ("://" in upstream or bool(_SCP_STYLE_UPSTREAM_RE.match(upstream))))

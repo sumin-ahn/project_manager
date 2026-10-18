@@ -29,6 +29,7 @@ import pytest
 
 from _textio import write_crlf, write_lf
 from _win_skip import _can_symlink
+from pm_engine.infra import manifest_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -662,7 +663,7 @@ def test_self_update_on_adopter_owned_codex_tree_injects_no_codex_notation(
     selected = pm_update._installed_entry_notation_manifests(dest, REPO, [])
     assert [p.parent.parent.name for p in selected] == ["claude_code"], selected
 
-    contexts = pm_update._entry_notation_templates_from_manifests(selected, REPO)
+    contexts = manifest_store._entry_notation_templates_from_manifests(selected, REPO)
     role = ".project_manager/wiki/pm_role.md"
     assert contexts[role] == ("claude_code",), contexts[role]
     # 그 context 로 렌더한 산출에 codex 표기가 없다(자기 갱신이 `$` 를 주입하지 않는다).

@@ -31,7 +31,8 @@ from _harness_matrix import HARNESSES, HARNESS_ADAPTER_DIRS, HARNESS_ROOT_DOC
 from _textio import (
     dominant_newline_bytes, write_crlf, write_lf, write_matching_newlines,
 )
-from pm_engine.infra import conf_store
+from pm_engine.domain import manifest_rules, upstream_rules
+from pm_engine.infra import conf_store, manifest_store
 from pm_engine.infra.harness import contract
 
 REPO = Path(__file__).resolve().parents[1]
@@ -764,14 +765,14 @@ def test_record_upstream_rev_preserves_other_keys(pm_import, tmp_path):
 
 def test_classify_upstream_url_vs_path(pm_import):
     """self-describing 분류 — scheme/scp→url · 경로/Windows 드라이브→path (분류 ≠ 허가)."""
-    assert pm_import.classify_upstream("https://github.com/x/y.git") == "url"
-    assert pm_import.classify_upstream("ssh://git@h/x") == "url"
-    assert pm_import.classify_upstream("file:///srv/r.git") == "url"
-    assert pm_import.classify_upstream("git@github.com:x/y.git") == "url"  # scp-style
-    assert pm_import.classify_upstream("/home/u/checkout") == "path"
-    assert pm_import.classify_upstream("../rel/path") == "path"
-    assert pm_import.classify_upstream("C:\\repo") == "path"   # Windows 드라이브
-    assert pm_import.classify_upstream("C:/repo") == "path"
+    assert upstream_rules.classify_upstream("https://github.com/x/y.git") == "url"
+    assert upstream_rules.classify_upstream("ssh://git@h/x") == "url"
+    assert upstream_rules.classify_upstream("file:///srv/r.git") == "url"
+    assert upstream_rules.classify_upstream("git@github.com:x/y.git") == "url"  # scp-style
+    assert upstream_rules.classify_upstream("/home/u/checkout") == "path"
+    assert upstream_rules.classify_upstream("../rel/path") == "path"
+    assert upstream_rules.classify_upstream("C:\\repo") == "path"   # Windows 드라이브
+    assert upstream_rules.classify_upstream("C:/repo") == "path"
 
 
 def test_validate_upstream_value_safety_contract(pm_import):
@@ -2159,11 +2160,11 @@ def test_combination_install_manifest_is_selected_tree_union(pm_import, pm_updat
     ]) == 0
 
     dest_manifest = dest / ".project_manager" / "engine.manifest"
-    installed = pm_update.read_manifest(dest_manifest)
+    installed = manifest_store.read_manifest(dest_manifest)
     installed_paths = {str(e) for e in installed}
     expected_paths: set[str] = set()
     for flavor in ("claude_code", "opencode"):
-        source_entries = pm_update.read_manifest(
+        source_entries = manifest_store.read_manifest(
             REPO / "templates" / flavor / ".project_manager" / "engine.manifest")
         expected_paths.update(str(e) for e in source_entries)
         assert {str(e) for e in source_entries} <= installed_paths, \
@@ -2200,7 +2201,7 @@ def test_selected_manifest_union_disjoint_paths_are_warning_silent(
     first.write_text(".first/a    @render\n", encoding="utf-8")
     second.write_text(".second/b    @source=templates/second/.second/b\n", encoding="utf-8")
 
-    merged = pm_update.merge_manifest_sources([first, second])
+    merged = manifest_store.merge_manifest_sources([first, second])
     assert merged["conflicts"] == []
     pm_import._warn_selected_manifest_union_conflicts(merged)
     assert capsys.readouterr().err == ""
@@ -2217,7 +2218,7 @@ def test_selected_manifest_union_real_marker_conflict_warns(
     second.write_text(
         ".shared/x    @source=templates/second/.shared/x\n", encoding="utf-8")
 
-    merged = pm_update.merge_manifest_sources([first, second])
+    merged = manifest_store.merge_manifest_sources([first, second])
     assert merged["conflicts"] == [".shared/x"]
     pm_import._warn_selected_manifest_union_conflicts(merged)
     err = capsys.readouterr().err
@@ -2310,7 +2311,7 @@ def test_arbitrary_selection_manifest_union_survives_pm_update(
 
     installed_paths = {
         str(entry)
-        for entry in pm_update.read_manifest(
+        for entry in manifest_store.read_manifest(
             dest / ".project_manager" / "engine.manifest")
     }
     selected = pm_import.parse_harness_selection(selection)
@@ -2318,7 +2319,7 @@ def test_arbitrary_selection_manifest_union_survives_pm_update(
         (flavor,) = pm_import.HARNESS_TEMPLATE_DIRS[harness]
         source_paths = {
             str(entry)
-            for entry in pm_update.read_manifest(
+            for entry in manifest_store.read_manifest(
                 REPO / "templates" / flavor / ".project_manager" / "engine.manifest")
         }
         assert source_paths <= installed_paths, \
@@ -2450,7 +2451,7 @@ def test_legacy_single_harness_partial_stray_never_promotes_adapter(
     candidate_paths = {
         path: {
             str(entry).replace("\\", "/")
-            for entry in pm_update.read_manifest(path)
+            for entry in manifest_store.read_manifest(path)
         }
         for path in candidate_manifests
     }
@@ -2460,14 +2461,14 @@ def test_legacy_single_harness_partial_stray_never_promotes_adapter(
     )
     local_core_paths = {
         str(entry).replace("\\", "/")
-        for entry in pm_update.read_manifest(dest_manifest)
+        for entry in manifest_store.read_manifest(dest_manifest)
     }
     other_paths = set().union(*(
         paths for path, paths in candidate_paths.items()
         if path != stray_manifest
     ))
     evidence_paths = set(pm_update._flavor_exclusive_paths(
-        pm_update.read_manifest(stray_manifest), other_paths
+        manifest_store.read_manifest(stray_manifest), other_paths
     )) - local_core_paths
     if stray_flavor == "opencode":
         assert ".claude/skills/pm-dev-delegate/SKILL.md" not in evidence_paths, (
@@ -2506,7 +2507,7 @@ def test_legacy_opencode_manifest_provenance_upgrade_avoids_bare_source_rc2(
 
     out = capsys.readouterr().out
     assert "@source provenance 선언을 upstream 형식으로 승격" in out
-    entries = pm_update.read_manifest(manifest)
+    entries = manifest_store.read_manifest(manifest)
     opencode_entries = [e for e in entries if str(e).startswith(".opencode/")]
     assert opencode_entries and all(entry.source_rel for entry in opencode_entries)
 
@@ -2542,7 +2543,7 @@ def test_legacy_opencode_primary_with_missing_file_heals_in_one_run(
     assert pm_update.main(["--from", str(REPO)]) == 0
 
     assert victim.read_bytes() == expected, "누락된 primary 관리 파일이 같은 sync에서 복구되지 않음"
-    entries = pm_update.read_manifest(manifest)
+    entries = manifest_store.read_manifest(manifest)
     opencode_entries = [e for e in entries if str(e).startswith(".opencode/")]
     assert opencode_entries and all(entry.source_rel for entry in opencode_entries)
 
@@ -2726,7 +2727,7 @@ def test_legacy_frozen_both_full_reimport_makes_next_update_refresh_both_flavors
     }
     for rel in victim_rels:
         (dest / rel).write_text(f"# frozen before migration: {rel}\n", encoding="utf-8")
-    expected_manifest = pm_update.merge_manifest_sources([
+    expected_manifest = manifest_store.merge_manifest_sources([
         REPO / "templates" / flavor / ".project_manager" / "engine.manifest"
         for dirs in pm_import.HARNESS_TEMPLATE_DIRS.values()
         for flavor in dirs
@@ -4764,14 +4765,14 @@ def test_add_harness_engine_row_sync_is_idempotent_and_prunes_stale(
     assert mani.read_text(encoding="utf-8") == before, \
         f"{added}: 엔진 행 포함 refresh 가 manifest 를 바꿈(등재 churn)"
     paths = [ln.split()[0] for ln in
-             pm_update._extract_guest_manifest_block(before).splitlines()
+             manifest_rules._extract_guest_manifest_block(before).splitlines()
              if ln.strip() and not ln.strip().startswith("#")]
     assert len(paths) == len(set(paths)), f"{added}: guest 절 경로 중복(멱등 위반): {paths}"
 
     # 상류 폐기분 제거 — 현행 flavor 에 없는 엔진 행을 심고 refresh.
     adapter_dir = pm_import.ADD_HARNESS_ADAPTER[added][0][0]
     stale = f"{adapter_dir}/obsolete_engine.py    @target-owned"
-    end = pm_update._GUEST_MANIFEST_END
+    end = manifest_rules._GUEST_MANIFEST_END
     mani.write_text(before.replace(end, stale + "\n" + end), encoding="utf-8")
     pm_import.add_harness(dest, added, dry_run=False, source_root=REPO)
     assert f"{adapter_dir}/obsolete_engine.py" not in _guest_block_paths(pm_update, mani), \
@@ -4889,16 +4890,16 @@ def test_add_harness_registers_guest_render_in_dest_manifest(pm_import, tmp_path
     #   마커 **집합**으로 본다 — 직렬화는 `_manifest_entry_line` 소관이라 공백/순서를 문자로 박으면
     #   생성기 교체마다 무의미하게 깨진다(T-0574 에서 실제로 구분자가 바뀌었다).
     agents_entry = next(
-        e for e in pm_import._load_pm_update().read_manifest(manifest)
+        e for e in manifest_store.read_manifest(manifest)
         if str(e).replace("\\", "/") == ".opencode/agents")
     assert agents_entry.render and agents_entry.target_owned, \
         f"guest 렌더물 마커 누락: render={agents_entry.render} owned={agents_entry.target_owned}"
     # 멱등: 재실행(refresh)이 중복 등재 안 함(guest 라인·마커 절 각 1).
-    begin = pm_import._load_pm_update()._GUEST_MANIFEST_BEGIN
+    begin = manifest_rules._GUEST_MANIFEST_BEGIN
     text1 = manifest.read_text(encoding="utf-8")
     pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
     text2 = manifest.read_text(encoding="utf-8")
-    assert [str(e) for e in pm_import._load_pm_update().read_manifest(manifest)].count(
+    assert [str(e) for e in manifest_store.read_manifest(manifest)].count(
         ".opencode/agents") == 1, "guest @render 라인 중복(멱등 위반)"
     assert text1.count(begin) == text2.count(begin) == 1, "guest 절(마커) 중복"
 
@@ -4950,7 +4951,7 @@ def test_add_harness_opencode_guest_cross_ns_skills_by_host(
     assert leaked == [], f"codex host: cross-ns 스킬 미렌더 토큰 잔존(복사만·렌더 누락): {leaked}"
     # guest = host 소유(add-harness 레이다운)라 @target-owned(pm_update 재렌더/재전파 skip).
     skills_entry = next(
-        e for e in pm_update.read_manifest(mani)
+        e for e in manifest_store.read_manifest(mani)
         if str(e).replace("\\", "/") == ".claude/skills")
     assert skills_entry.render and skills_entry.target_owned, \
         f"cross-ns guest 마커 누락: render={skills_entry.render} owned={skills_entry.target_owned}"
@@ -4968,10 +4969,9 @@ def test_add_harness_two_guests_share_single_header(pm_import, tmp_path):
     pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
     pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
     manifest = dest / ".project_manager" / "engine.manifest"
-    pu = pm_import._load_pm_update()
     text = manifest.read_text(encoding="utf-8")
-    assert text.count(pu._GUEST_MANIFEST_BEGIN) == 1, "guest 절이 하나가 아님(단일 헤더 위반)"
-    block = pu._extract_guest_manifest_block(text)
+    assert text.count(manifest_rules._GUEST_MANIFEST_BEGIN) == 1, "guest 절이 하나가 아님(단일 헤더 위반)"
+    block = manifest_rules._extract_guest_manifest_block(text)
     block_paths = {ln.split()[0] for ln in block.splitlines()
                    if ln.strip() and not ln.strip().startswith("#")}
     assert {".opencode/agents", ".codex/agents", ".agents/skills"} <= block_paths, block_paths
@@ -5009,17 +5009,17 @@ def test_add_harness_subtracts_core_owned_ancestor_paths(pm_import, pm_update, t
     assert sync["added"] == [] and sync["removed"] == [], f"core 상위 소유 경로 차감 안 됨(R16): {sync}"
     # 롤아웃: add_harness → `.opencode` guest 미등재 + 이중 등재 0(core owner 보존).
     pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
-    block = pm_update._extract_guest_manifest_block(manifest.read_text(encoding="utf-8"))
+    block = manifest_rules._extract_guest_manifest_block(manifest.read_text(encoding="utf-8"))
     block_paths = {ln.split()[0] for ln in (block.splitlines() if block else [])
                    if ln.strip() and not ln.strip().startswith("#")}
     assert not any(p.startswith(".opencode") for p in block_paths), \
         f"core 가 `.opencode` 소유인데 guest `.opencode/*` 등재됨(shadow·이중 등재): {block_paths}"
-    ents = [str(e) for e in pm_update.read_manifest(manifest)]
+    ents = [str(e) for e in manifest_store.read_manifest(manifest)]
     assert ents.count(".opencode/agents") <= 1, "add-harness 가 `.opencode/agents` 이중 등재"
 
 
 def _guest_block_paths(pm_update, manifest_path) -> set:
-    block = pm_update._extract_guest_manifest_block(manifest_path.read_text(encoding="utf-8"))
+    block = manifest_rules._extract_guest_manifest_block(manifest_path.read_text(encoding="utf-8"))
     return {ln.split()[0] for ln in (block.splitlines() if block else [])
             if ln.strip() and not ln.strip().startswith("#")}
 
@@ -5035,13 +5035,13 @@ def test_add_harness_claude_as_guest_registered_on_nonclaude_hosts(pm_import, pm
     oc = _build_live_instance(pm_import, tmp_path / "oc", "opencode")
     pm_import.add_harness(oc, "claude", dry_run=False, source_root=REPO)
     oc_mani = oc / ".project_manager" / "engine.manifest"
-    oc_render = {str(e) for e in pm_update.read_manifest(oc_mani) if getattr(e, "render", False)}
+    oc_render = {str(e) for e in manifest_store.read_manifest(oc_mani) if getattr(e, "render", False)}
     assert ".claude/agents" in oc_render, "opencode host 에 claude-as-guest `.claude/agents` 미등재(R17 MF)"
     oc_block = _guest_block_paths(pm_update, oc_mani)
     assert ".claude/agents" in oc_block, oc_block
     assert ".claude/skills" not in oc_block, f"host 소유 `.claude/skills` 를 guest 로 오등재: {oc_block}"
     # .claude/agents 이중 등재 0 (guest 만·core 미소유).
-    assert [str(e) for e in pm_update.read_manifest(oc_mani)].count(".claude/agents") == 1
+    assert [str(e) for e in manifest_store.read_manifest(oc_mani)].count(".claude/agents") == 1
 
     # codex host — .claude/skills 미소유(.agents/skills 소유) → .claude/skills 도 guest 등재.
     cx = _build_live_instance(pm_import, tmp_path / "cx", "codex")
@@ -5065,9 +5065,9 @@ def test_add_harness_claude_guest_survives_pm_update_roundtrip(pm_import, pm_upd
     assert pm_update.main(["--from", str(REPO)]) == 0, "opencode host self-update rc≠0"
     # 절 잔존 + @render 유지(render/scan 커버).
     assert ".claude/agents" in _guest_block_paths(pm_update, mani), "pm_update 가 claude guest 절 제거(R17 미해소)"
-    assert ".claude/agents" in {str(e) for e in pm_update.read_manifest(mani) if getattr(e, "render", False)}
+    assert ".claude/agents" in {str(e) for e in manifest_store.read_manifest(mani) if getattr(e, "render", False)}
     # 2차 sync 무churn — engine.manifest 가 plan changes 에 없음.
-    manifest = pm_update.read_manifest(pm_update.resolve_manifest_for_dest(oc, REPO))
+    manifest = manifest_store.read_manifest(manifest_store.resolve_manifest_for_dest(oc, REPO))
     sh = pm_update.resolve_manifest_selfheal(oc, REPO)
     if sh["manifest"] is not None:
         manifest = sh["manifest"]
@@ -5132,7 +5132,7 @@ def test_add_harness_refresh_syncs_removes_stale_guest(
     pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)  # 타 하네스 guest.
     mani = dest / ".project_manager" / "engine.manifest"
     # 폐기 라인 주입 (opencode namespace·현행 flavor 에 없음).
-    end = pm_update._GUEST_MANIFEST_END
+    end = manifest_rules._GUEST_MANIFEST_END
     stale = ".opencode/obsolete    @render @target-owned"
     mani.write_text(mani.read_text(encoding="utf-8").replace(end, stale + "\n" + end),
                     encoding="utf-8")
@@ -5155,7 +5155,7 @@ def test_add_harness_refresh_syncs_removes_stale_guest(
     monkeypatch.setattr(pm_update, "REPO", dest)
     assert pm_update.main(["--from", str(REPO)]) == 0
     assert ".opencode/obsolete" not in _guest_block_paths(pm_update, mani)
-    assert pm_update._extract_guest_manifest_block(mani.read_text(encoding="utf-8")) is not None
+    assert manifest_rules._extract_guest_manifest_block(mani.read_text(encoding="utf-8")) is not None
 
 
 def test_add_harness_refresh_corrects_stale_marker(pm_import, pm_update, tmp_path, monkeypatch):
@@ -5185,7 +5185,7 @@ def test_add_harness_refresh_corrects_stale_marker(pm_import, pm_update, tmp_pat
         f"마커 교정 미감지(경로 집합만 비교·R21): {plan}"
 
     pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)  # refresh → 교정.
-    block = pm_update._extract_guest_manifest_block(mani.read_text(encoding="utf-8"))
+    block = manifest_rules._extract_guest_manifest_block(mani.read_text(encoding="utf-8"))
     ags = [ln.strip() for ln in block.splitlines()
            if ln.strip() and not ln.strip().startswith("#") and ln.split()[0] == ".opencode/agents"]
     assert ags and all("@target-owned" in ln for ln in ags), f"마커 미교정: {ags}"
@@ -5373,7 +5373,7 @@ def test_pm_update_diverged_selfheal_keeps_local_only_core_declaration(
     ]) == 0
     capsys.readouterr()
     manifest = dest / ".project_manager" / "engine.manifest"
-    begin, end = pm_update._GUEST_MANIFEST_BEGIN, pm_update._GUEST_MANIFEST_END
+    begin, end = manifest_rules._GUEST_MANIFEST_BEGIN, manifest_rules._GUEST_MANIFEST_END
     manifest.write_text(
         manifest.read_text(encoding="utf-8").rstrip()
         + "\n.local/custom-core\n\n"
@@ -5414,12 +5414,11 @@ def test_add_harness_guest_render_survives_pm_update(pm_import, pm_update, tmp_p
     dest = _build_live_instance(pm_import, tmp_path / "roundtrip", "claude")
     pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
     manifest = dest / ".project_manager" / "engine.manifest"
-    pu = pm_import._load_pm_update()
     # 사용자 model override 심기 — 카드 model 의 단일 진실은 local.conf 라 흡수가 되돌린다.
     agent = dest / ".codex" / "agents" / "developer.toml"
     agent.write_text(agent.read_text(encoding="utf-8").rstrip() + '\nmodel = "USER/OVERRIDE"\n',
                      encoding="utf-8")
-    assert pu._extract_guest_manifest_block(manifest.read_text(encoding="utf-8")) is not None
+    assert manifest_rules._extract_guest_manifest_block(manifest.read_text(encoding="utf-8")) is not None
     role = dest / ".project_manager" / "wiki" / "pm_role.md"
     before_update = role.read_text(encoding="utf-8")
     assert "(claude)" in before_update and "(codex)" in before_update
@@ -5429,8 +5428,8 @@ def test_add_harness_guest_render_survives_pm_update(pm_import, pm_update, tmp_p
 
     # MF-1: guest 절 잔존 + @render 여전히 파싱(render/scan 커버 유지).
     after = manifest.read_text(encoding="utf-8")
-    assert pu._extract_guest_manifest_block(after) is not None, "pm_update 가 guest 절을 지웠다(MF-1 미해소)"
-    render_paths = {str(e) for e in pu.read_manifest(manifest) if getattr(e, "render", False)}
+    assert manifest_rules._extract_guest_manifest_block(after) is not None, "pm_update 가 guest 절을 지웠다(MF-1 미해소)"
+    render_paths = {str(e) for e in manifest_store.read_manifest(manifest) if getattr(e, "render", False)}
     assert {".codex/agents", ".agents/skills"} <= render_paths, sorted(render_paths)
     # 카드 model 의 단일 진실은 local.conf 다 — 손으로 박은 override 는 다음 흡수가 되돌린다
     #   (codex host 의 core `.codex/agents @render` 와 같은 거동·guest 라고 예외를 두지 않는다).

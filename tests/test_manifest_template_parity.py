@@ -7,7 +7,7 @@ T-0170 이 manifest/facade 전파 채널 갭을 노출했다. 실측 결론:
     (pm-config·pm-update)가 각 템플릿 트리에 전부 실재해야 채택자에 도달한다.
 
 선례: SHIPPING_GLOBS↔manifest 동형(T-0154)·template_scaffold_parity. 모두 hermetic —
-실 파일 존재/내용만 본다(LLM·subprocess 미진입). manifest 파싱은 pm_update.read_manifest
+실 파일 존재/내용만 본다(LLM·subprocess 미진입). manifest 파싱은 manifest_store.read_manifest
 재사용(주석·`@마커` 제거를 한 곳에서 — 자체 파서 drift 회피).
 
 historical 주의: 경로-집합 가드(가드 2)는 manifest *경로* 만 비교한다(주석 drift 는 무시 — 갭2
@@ -28,6 +28,7 @@ from pathlib import Path
 from _git_fixture import init_git_repo
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
+from pm_engine.infra import manifest_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -216,8 +217,7 @@ def _shared_import_diffs(template_roots: dict[str, Path]) -> list[str]:
 
 def _manifest_path_set(manifest: Path) -> set[str]:
     """manifest 의 *경로* 집합 (주석·빈 줄·`@마커` 제거 — read_manifest 재사용)."""
-    pm_update = _load_pm_update()
-    return {str(entry) for entry in pm_update.read_manifest(manifest)}
+    return {str(entry) for entry in manifest_store.read_manifest(manifest)}
 
 
 def test_reviewer_retired_path_directive_is_identical_and_comment_compatible():
@@ -230,7 +230,7 @@ def test_reviewer_retired_path_directive_is_identical_and_comment_compatible():
     assert len({tuple(found) for found in directives.values()}) == 1, directives
     for manifest in directives:
         assert RETIRED_REVIEWER_PATH in directives[manifest]
-        entries = {str(entry) for entry in pm_update.read_manifest(manifest)}
+        entries = {str(entry) for entry in manifest_store.read_manifest(manifest)}
         assert RETIRED_REVIEWER_PATH[1] in entries
         assert RETIRED_REVIEWER_PATH[0] not in entries
 
@@ -398,9 +398,9 @@ def test_codex_and_opencode_agents_md_differ_only_by_native_entry_notation():
 # ── 가드 2c: engine-mirror hook/driver 등록 + manifest 자기전파 (T-0305·ADR-0032 Q3) ──────────
 
 
-def _entry_source_rel(pm_update, manifest: Path, relpath: str) -> str | None:
+def _entry_source_rel(manifest: Path, relpath: str) -> str | None:
     """manifest 에서 relpath 엔트리의 `@source=<rel>` 값(없으면 None). 등록 여부·소스 remap 검증용."""
-    for entry in pm_update.read_manifest(manifest):
+    for entry in manifest_store.read_manifest(manifest):
         if str(entry) == relpath:
             return getattr(entry, "source_rel", None)
     return None
@@ -412,7 +412,6 @@ def test_claude_manifests_register_engine_mirror_hooks_and_driver():
     frozen 근절 — 이 파일들이 manifest 안이라야 pm-update self-update 로 전파된다(엔진 safety-훅 fix
     가 채택자에 닿음). ctx 훅/드라이버는 ship 템플릿(templates/claude_code/.claude/*)이 canonical 이라
     전원 `@source=` remap 을 단다(T-0771 로 bare 회귀 훅 행이 사라져 예외가 0)."""
-    pm_update = _load_pm_update()
     for name, manifest in (("root", ROOT_MANIFEST), ("claude_code", CC_MANIFEST)):
         paths = _manifest_path_set(manifest)
         missing = CLAUDE_HOOK_PATHS - paths
@@ -420,7 +419,7 @@ def test_claude_manifests_register_engine_mirror_hooks_and_driver():
         # ctx 훅/드라이버(루트 .claude/ 부재)는 @source=templates/claude_code/... remap 필수 —
         # 안 달면 self-update 가 루트에서 소스를 못 찾아 rc2(전파 실패).
         for rel in CLAUDE_HOOK_PATHS:
-            src = _entry_source_rel(pm_update, manifest, rel)
+            src = _entry_source_rel(manifest, rel)
             assert src == f"templates/claude_code/{rel}", (
                 f"{name} manifest {rel} 의 @source remap 이 templates/claude_code/ 를 가리키지 않음: {src!r}")
 
@@ -452,12 +451,11 @@ def test_opencode_manifest_registers_engine_mirror_hooks_and_driver():
 
     T-0283 미등재(전파 0)를 T-0303 @source 채널로 해소 — canonical=templates/opencode 라 remap 으로
     루트-부재 비대칭을 잇고 이제 engine update 로 전파된다(frozen 근절)."""
-    pm_update = _load_pm_update()
     paths = _manifest_path_set(OC_MANIFEST)
     missing = OPENCODE_HOOK_PATHS - paths
     assert not missing, f"opencode manifest 에 engine-mirror hook/driver 미등록: {sorted(missing)}"
     for rel in OPENCODE_HOOK_PATHS:
-        src = _entry_source_rel(pm_update, OC_MANIFEST, rel)
+        src = _entry_source_rel(OC_MANIFEST, rel)
         assert src == f"templates/opencode/{rel}", (
             f"opencode manifest {rel} 의 @source remap 이 templates/opencode/ 를 가리키지 않음: {src!r}")
 
@@ -468,12 +466,11 @@ def test_codex_manifest_registers_relay_driver():
     canonical=templates/codex(루트 `.codex/` 부재)라 @source remap 필수 — 안 달면 self-update 가
     루트에서 소스를 못 찾아 rc2(전파 실패). opencode pm_orch_opencode.py 등록 가드 대칭.
     (ctx 가드는 driver-side usage 판정이라 별도 hook 파일 없음·config.toml/hooks.json 은 instance-owned.)"""
-    pm_update = _load_pm_update()
     paths = _manifest_path_set(CODEX_MANIFEST)
     missing = CODEX_HOOK_PATHS - paths
     assert not missing, f"codex manifest 에 engine-mirror relay 드라이버 미등록: {sorted(missing)}"
     for rel in CODEX_HOOK_PATHS:
-        src = _entry_source_rel(pm_update, CODEX_MANIFEST, rel)
+        src = _entry_source_rel(CODEX_MANIFEST, rel)
         assert src == f"templates/codex/{rel}", (
             f"codex manifest {rel} 의 @source remap 이 templates/codex/ 를 가리키지 않음: {src!r}")
 
@@ -484,17 +481,16 @@ def test_all_manifests_self_propagate():
     없으면 이 파일에 새로 추가한 hook/driver 엔트리(=manifest 진화)가 기존 채택자에 영영 도달하지
     못한다(import 시점 frozen manifest 영속) → "frozen 근절" 이 성립 불가. 루트는 self-flavor(bare),
     claude_code/opencode/codex 는 각자 flavor 매니페스트를 @source 로 읽는다(harness-flavor remap)."""
-    pm_update = _load_pm_update()
     for name, manifest in (("root", ROOT_MANIFEST), ("claude_code", CC_MANIFEST),
                            ("opencode", OC_MANIFEST), ("codex", CODEX_MANIFEST)):
         assert SELF_PROP_PATH in _manifest_path_set(manifest), (
             f"{name} manifest 가 자기전파 엔트리({SELF_PROP_PATH}) 미등록 — 신 엔트리가 채택자에 미도달")
     # claude_code/opencode/codex 는 flavor 매니페스트를 @source 로 읽어야 자기 flavor 를 받는다(교차 오염 방지).
-    assert _entry_source_rel(pm_update, CC_MANIFEST, SELF_PROP_PATH) == \
+    assert _entry_source_rel(CC_MANIFEST, SELF_PROP_PATH) == \
         "templates/claude_code/.project_manager/engine.manifest"
-    assert _entry_source_rel(pm_update, OC_MANIFEST, SELF_PROP_PATH) == \
+    assert _entry_source_rel(OC_MANIFEST, SELF_PROP_PATH) == \
         "templates/opencode/.project_manager/engine.manifest"
-    assert _entry_source_rel(pm_update, CODEX_MANIFEST, SELF_PROP_PATH) == \
+    assert _entry_source_rel(CODEX_MANIFEST, SELF_PROP_PATH) == \
         "templates/codex/.project_manager/engine.manifest"
 
 
@@ -590,13 +586,12 @@ def _engine_content_diffs(template_root: Path, manifest_entries=None) -> list[st
 
     스코프 = manifest 항목 중 ``@render``/``@target-owned`` 가 아니고(=byte-copy 계약·렌더/타깃소유는
     내용이 갈릴 수 있어 제외) **양 트리에 실재**하는(경로 비대칭은 path-set 가드 소관) 파일. 디렉토리
-    항목은 재귀 파일 단위로 본다. read_manifest(pm_update) 재사용 — 자체 파서 금지(주석·`@마커` 제거 동형).
+    항목은 재귀 파일 단위로 본다. read_manifest(manifest_store) 재사용 — 자체 파서 금지(주석·`@마커` 제거 동형).
 
     sensitivity 용으로 ``manifest_entries`` 를 주입할 수 있다(미지정 시 ROOT_MANIFEST 파싱). 반환은
     drift 파일의 rel 경로 + 비대칭은 ``MISSING:`` 접두(양 트리 모두 present 인 디렉토리 내부 누락)."""
-    pm_update = _load_pm_update()
     if manifest_entries is None:
-        manifest_entries = pm_update.read_manifest(ROOT_MANIFEST)
+        manifest_entries = manifest_store.read_manifest(ROOT_MANIFEST)
     diffs: list[str] = []
     for entry in manifest_entries:
         if getattr(entry, "render", False) or getattr(entry, "target_owned", False):
@@ -644,7 +639,7 @@ def test_reopen_lifecycle_engines_are_manifested_and_shipped_byte_identical():
     """T-0873 reopen 핵심 네 엔진의 출하 membership과 세 target bytes를 직접 고정한다."""
     entries = {
         str(entry): entry
-        for entry in _load_pm_update().read_manifest(ROOT_MANIFEST)
+        for entry in manifest_store.read_manifest(ROOT_MANIFEST)
     }
     assert len(REOPEN_LIFECYCLE_ENGINE_PATHS) == 4
 
@@ -672,10 +667,9 @@ def test_content_guard_is_sensitive_to_drift(tmp_path):
     (가상 template_root)에 만들어 helper 에 주입한다. canonical 은 실 파일이라 불변. helper 가 그 1바이트
     차이를 잡아내면(diff == [board.py]) 가드가 vacuous 하지 않음이 입증된다. 끝에 동일-트리 음성 통제로
     false-positive 가 아님도 확인한다."""
-    pm_update = _load_pm_update()
     # board.py 엔트리 하나만 골라 격리 (단일 파일·non-render).
     entry = next(
-        e for e in pm_update.read_manifest(ROOT_MANIFEST)
+        e for e in manifest_store.read_manifest(ROOT_MANIFEST)
         if str(e) == ".project_manager/tools/board.py"
     )
     rel = str(entry)

@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 
 from _win_skip import _can_symlink
+from pm_engine.infra import manifest_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -258,7 +259,7 @@ def test_receipt_is_outside_the_engine_manifest(pm_import, pm_update):
     """기록은 manifest 미등재 — `pm_update` 동기 대상이 아니라 자기 갱신이 덮지 않는다."""
     declared = {
         str(entry).replace("\\", "/")
-        for entry in pm_update.read_manifest(REPO / ".project_manager" / "engine.manifest")
+        for entry in manifest_store.read_manifest(REPO / ".project_manager" / "engine.manifest")
     }
     relpath = pm_import.INSTALL_RECEIPT_RELPATH.as_posix()
 

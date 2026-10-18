@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from _git_fixture import init_git_repo
+from pm_engine.infra import manifest_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -38,7 +39,7 @@ def pm_update():
 
 def test_pm_update_exposes_new_symbols(pm_update):
     assert callable(pm_update.resolve_target_root)
-    assert callable(pm_update.resolve_manifest_for_dest)
+    assert callable(manifest_store.resolve_manifest_for_dest)
     # KNOWN_TARGETS 는 제거됨 — 타깃 발견은 templates/*/ 디렉토리 존재로 (ADR-0006)
     assert not hasattr(pm_update, "KNOWN_TARGETS"), (
         "KNOWN_TARGETS 가 남아 있음 — 디렉토리 기반 발견으로 교체됐어야 한다."
@@ -99,7 +100,7 @@ def test_resolve_manifest_prefers_dest(pm_update, tmp_path):
     source_manifest.parent.mkdir(parents=True)
     source_manifest.write_text("source_entry\n", encoding="utf-8")
 
-    result = pm_update.resolve_manifest_for_dest(dest, source)
+    result = manifest_store.resolve_manifest_for_dest(dest, source)
     assert result == dest_manifest
 
 
@@ -113,7 +114,7 @@ def test_resolve_manifest_falls_back_to_source(pm_update, tmp_path):
     source_manifest.parent.mkdir(parents=True)
     source_manifest.write_text("source_entry\n", encoding="utf-8")
 
-    result = pm_update.resolve_manifest_for_dest(dest, source)
+    result = manifest_store.resolve_manifest_for_dest(dest, source)
     assert result == source_manifest
 
 
@@ -124,7 +125,7 @@ def test_resolve_manifest_raises_when_both_missing(pm_update, tmp_path):
     dest.mkdir()
     source.mkdir()
     with pytest.raises(FileNotFoundError, match="engine.manifest 없음"):
-        pm_update.resolve_manifest_for_dest(dest, source)
+        manifest_store.resolve_manifest_for_dest(dest, source)
 
 
 # ── plan() with dest_root ──────────────────────────────────────────────────
@@ -324,7 +325,7 @@ def test_opencode_manifest_excludes_claude_adapter(pm_update):
     )
     assert opencode_manifest.exists(), "templates/opencode/.project_manager/engine.manifest 없음"
 
-    entries = pm_update.read_manifest(opencode_manifest)
+    entries = manifest_store.read_manifest(opencode_manifest)
     claude_entries = [e for e in entries if e.startswith(".claude/")]
     assert [str(e) for e in claude_entries] == [".claude/skills"], (
         f"opencode manifest 의 .claude/ 항목은 공용 skill 채널 하나여야 함 — "
@@ -342,7 +343,7 @@ def test_templates_do_not_ship_github_workflows(pm_update):
         if not template_root.is_dir():
             continue
         manifest = template_root / ".project_manager" / "engine.manifest"
-        entries = pm_update.read_manifest(manifest)
+        entries = manifest_store.read_manifest(manifest)
         gh_entries = [str(e) for e in entries if str(e).startswith(".github/")]
         assert gh_entries == [], (
             f"{template_root.name} manifest가 .github/ 항목을 출하함: {gh_entries}"
@@ -362,7 +363,7 @@ def test_opencode_manifest_includes_engine_tools(pm_update):
     opencode_manifest = (
         REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest"
     )
-    entries = pm_update.read_manifest(opencode_manifest)
+    entries = manifest_store.read_manifest(opencode_manifest)
     required = [
         ".project_manager/tools/board.py",
         ".project_manager/tools/pm_update.py",

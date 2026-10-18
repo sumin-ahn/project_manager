@@ -1236,7 +1236,9 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   로 바뀌었다: 로더 정의(`pm_handoff._load_pm_relay`), 적재만 감싼 try(`pm_import._real_harness_runner`
     #   한 곳), try 본문이 적재한 모듈 변수 호출에서 모듈 속성 호출로 바뀐 두 자리(`pm_delegate._execute_attempt`·
     #   `_prepare_attempt_transport`), 호출 그래프상 적재 호출이 사라진 `pm_update.drift_changes`.
-    assert len(report.boundaries) == 203, "propagation sweep boundary ratchet changed"
+    # 202 = 203 − T-0968 이 지운 1 경계. 상류 분류 형제 로더 `pm_config._classify_upstream` 이 패키지
+    #   import(`pm_engine.domain.upstream_rules`)로 바뀌어 코드째 없어졌다.
+    assert len(report.boundaries) == 202, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

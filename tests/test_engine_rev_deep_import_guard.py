@@ -30,6 +30,7 @@ from _git_fixture import init_git_repo
 
 from _textio import utf8_child_env
 from _win_skip import _can_symlink
+from pm_engine.infra import manifest_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1114,7 +1115,6 @@ def test_legacy_deep_import_oracle_is_clean_on_canonical_tree():
 
 
 def test_manifest_ships_central_loader_before_every_consumer():
-    pm_update = _load_module(TOOLS, "pm_update")
     seam = f".project_manager/tools/{_ENGINE_PACKAGE}"
     consumers = []
     for source in TOOLS.glob("*.py"):
@@ -1131,7 +1131,7 @@ def test_manifest_ships_central_loader_before_every_consumer():
           for flavor in ("claude_code", "codex", "opencode")),
     ]
     for path in manifests:
-        manifest = [str(entry) for entry in pm_update.read_manifest(path)]
+        manifest = [str(entry) for entry in manifest_store.read_manifest(path)]
         seam_index = manifest.index(seam)
         assert all(seam_index < manifest.index(consumer) for consumer in consumers), path
 

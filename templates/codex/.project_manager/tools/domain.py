@@ -44,7 +44,7 @@ from typing import Callable
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import console, fs, repo_coordinates, repo_files  # noqa: E402
+from pm_engine.infra import console, fs, manifest_store, repo_coordinates, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 # REPO = 스크립트 위치 기반(cwd 무관) — board.py·worktree_pool.py·pm_config.py 와 동일
@@ -1546,28 +1546,6 @@ NUMERIC_COVERAGE_CLAIM_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
-def _load_manifest_reader():
-    """형제 ``pm_update.read_manifest``를 canonical manifest parser로 로드한다."""
-    pm_update = _load_module("_domain_pm_update_manifest", "pm_update.py")
-    reader = getattr(pm_update, "read_manifest", None)
-    if not callable(reader):
-        raise RuntimeError(
-            "pm_update.read_manifest를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
-        )
-    return reader
-
-
-def _load_manifest_shipping_inventory():
-    """형제 ``pm_update``의 실제 출하 inventory seam을 로드한다."""
-    pm_update = _load_module("_domain_pm_update_inventory", "pm_update.py")
-    inventory = getattr(pm_update, "manifest_entry_shipping_inventory", None)
-    if not callable(inventory):
-        raise RuntimeError(
-            "pm_update 출하 inventory를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
-        )
-    return inventory
-
-
 def _engine_tool_paths_from_manifest(manifest_path: Path) -> list[str]:
     """실제 출하 inventory를 tools/ 직계 Python 도구 분모로 협착한다."""
     tools_parent = Path(".project_manager") / "tools"
@@ -1587,8 +1565,7 @@ def _engine_tool_paths_from_manifest(manifest_path: Path) -> list[str]:
     # coverage 제품 정의인 tools/ 직계 Python CLI 협착만 소유한다. flavor manifest의
     # @source는 upstream에만 있는 어댑터 source를 정상적으로 가리키므로, destination이 이
     # 분모에 기여할 수 없는 항목은 source 존재 여부까지 검사하지 않는다.
-    manifest = _load_manifest_reader()(manifest_path)
-    inventory_for = _load_manifest_shipping_inventory()
+    manifest = manifest_store.read_manifest(manifest_path)
     for entry_index, entry in enumerate(manifest):
         rel = Path(str(entry))
         if rel.is_absolute() or ".." in rel.parts:
@@ -1597,7 +1574,7 @@ def _engine_tool_paths_from_manifest(manifest_path: Path) -> list[str]:
         can_ship_direct_python = rel.parent == tools_parent and rel.suffix == ".py"
         if not (can_ship_tools_tree or can_ship_direct_python):
             continue
-        files, source_missing, target_owned = inventory_for(
+        files, source_missing, target_owned = manifest_store.manifest_entry_shipping_inventory(
             repo_root,
             manifest,
             entry_index,

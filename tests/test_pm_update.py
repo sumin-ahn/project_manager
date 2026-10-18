@@ -25,7 +25,8 @@ import pytest
 
 from _manager_home import _known_ctx_installation
 from _win_skip import posix_mode_supported
-from pm_engine.domain import conf_schema
+from pm_engine.domain import conf_schema, manifest_rules
+from pm_engine.infra import manifest_store
 from pm_engine.infra.harness import contract
 
 REPO = Path(__file__).resolve().parents[1]
@@ -311,9 +312,9 @@ def test_shipping_inventory_guard_covers_both_silent_seam_shapes(
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         with pytest.raises(
-                pm_update.EmptyShippingInventoryError,
+                manifest_rules.EmptyShippingInventoryError,
                 match=r"pm-update 출하 인벤토리가 0건임.*subtree='ship'"):
-            pm_update._shipping_inventory(repo_files, source, rel)
+            manifest_store._shipping_inventory(repo_files, source, rel)
 
     assert caught == []
 
@@ -845,7 +846,7 @@ def test_detect_manifest_skew_flags_new_upstream_entries(pm_update, tmp_path):
     """upstream manifest 에만 있는(로컬 manifest 부재) 등재 경로 → ('skew', [신규…]) 정렬."""
     source = tmp_path / "src"
     _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])
-    local_manifest = pm_update.read_manifest(_write_dest_manifest(tmp_path / "dest", [SENTINEL_REL]))
+    local_manifest = manifest_store.read_manifest(_write_dest_manifest(tmp_path / "dest", [SENTINEL_REL]))
 
     status, new_entries = pm_update.detect_manifest_skew(local_manifest, source)
     assert status == "skew"
@@ -856,7 +857,7 @@ def test_detect_manifest_skew_in_sync_when_manifests_match(pm_update, tmp_path):
     """로컬 manifest 가 upstream 등재분을 모두 포함 → ('in_sync', []) (신규 등재분 0)."""
     source = tmp_path / "src"
     _make_upstream_manifest(source, [SENTINEL_REL])
-    local_manifest = pm_update.read_manifest(_write_dest_manifest(tmp_path / "dest", [SENTINEL_REL]))
+    local_manifest = manifest_store.read_manifest(_write_dest_manifest(tmp_path / "dest", [SENTINEL_REL]))
 
     status, new_entries = pm_update.detect_manifest_skew(local_manifest, source)
     assert status == "in_sync" and new_entries == []
@@ -868,7 +869,7 @@ def test_detect_manifest_skew_markers_stripped_before_compare(pm_update, tmp_pat
     (source / ".project_manager").mkdir(parents=True, exist_ok=True)
     (source / ".project_manager" / "engine.manifest").write_text(
         SENTINEL_REL + "  @render\n", encoding="utf-8")
-    local_manifest = pm_update.read_manifest(_write_dest_manifest(tmp_path / "dest", [SENTINEL_REL]))
+    local_manifest = manifest_store.read_manifest(_write_dest_manifest(tmp_path / "dest", [SENTINEL_REL]))
 
     status, new_entries = pm_update.detect_manifest_skew(local_manifest, source)
     assert status == "in_sync" and new_entries == [], \
@@ -879,7 +880,7 @@ def test_detect_manifest_skew_upstream_missing_fail_soft(pm_update, tmp_path):
     """upstream engine.manifest 부재/읽기 실패 → ('upstream_missing', []) (fail-soft·현행 유지)."""
     source = tmp_path / "src"  # engine.manifest 미생성
     source.mkdir(parents=True, exist_ok=True)
-    local_manifest = pm_update.read_manifest(_write_dest_manifest(tmp_path / "dest", [SENTINEL_REL]))
+    local_manifest = manifest_store.read_manifest(_write_dest_manifest(tmp_path / "dest", [SENTINEL_REL]))
 
     status, new_entries = pm_update.detect_manifest_skew(local_manifest, source)
     assert status == "upstream_missing" and new_entries == []
@@ -905,7 +906,7 @@ def test_detect_manifest_skew_uses_all_selected_upstream_manifests(
         "@source=templates/second/.project_manager/engine.manifest\n",
         encoding="utf-8",
     )
-    local_text = pm_update.merge_manifest_sources([first, second])["text"]
+    local_text = manifest_store.merge_manifest_sources([first, second])["text"]
     dest = tmp_path / "dest"
     dest_manifest = _write_dest_manifest(dest, [])
     dest_manifest.write_text(
@@ -923,7 +924,7 @@ def test_detect_manifest_skew_uses_all_selected_upstream_manifests(
         "first", "second",
     ]
 
-    local_entries = pm_update.read_manifest(dest_manifest)
+    local_entries = manifest_store.read_manifest(dest_manifest)
     status, new_entries = pm_update.detect_manifest_skew(
         local_entries,
         source,
@@ -1102,7 +1103,7 @@ def test_resolve_manifest_selfheal_ignores_guest_block_and_heals(pm_update, tmp_
     → add-harness 인스턴스가 엔진 신규 등재를 영영 못 받았다(red-첫). guest 는 apply 가 재부착(대칭)."""
     source = tmp_path / "src"
     _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])   # upstream 신규 등재.
-    begin, end = pm_update._GUEST_MANIFEST_BEGIN, pm_update._GUEST_MANIFEST_END
+    begin, end = manifest_rules._GUEST_MANIFEST_BEGIN, manifest_rules._GUEST_MANIFEST_END
     # dest = 구형 core(SENTINEL) + guest 절(.codex/agents·로컬-전용).
     _write_dest_manifest(tmp_path / "dest", [
         SENTINEL_REL, begin, ".codex/agents    @render @target-owned", end])
@@ -1117,7 +1118,7 @@ def test_plan_engine_manifest_self_prop_no_churn_with_guest_block(pm_update, tmp
     changes 에 안 뜬다** (guest 절 차감 semantic 비교·T-0456 R14 MF-2). raw filecmp 였으면 apply 가
     절을 재부착하는 한 **매 sync 영구 update(churn)** 로 떴다(red-첫)."""
     source, dest = tmp_path / "src", tmp_path / "dest"
-    begin, end = pm_update._GUEST_MANIFEST_BEGIN, pm_update._GUEST_MANIFEST_END
+    begin, end = manifest_rules._GUEST_MANIFEST_BEGIN, manifest_rules._GUEST_MANIFEST_END
     core = "# manifest\n" + MANIFEST_SELF_REL + "\n"
     (source / ".project_manager").mkdir(parents=True)
     (source / ".project_manager" / "engine.manifest").write_text(core, encoding="utf-8")
@@ -1127,7 +1128,7 @@ def test_plan_engine_manifest_self_prop_no_churn_with_guest_block(pm_update, tmp
     (dest / ".project_manager" / "engine.manifest").write_text(
         core.rstrip("\n") + "\n\n" + begin
         + "\n.codex/agents    @render @target-owned\n" + end + "\n", encoding="utf-8")
-    manifest = [pm_update.ManifestEntry(MANIFEST_SELF_REL)]  # bare self-prop.
+    manifest = [manifest_rules.ManifestEntry(MANIFEST_SELF_REL)]  # bare self-prop.
     changes, _missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
     assert not any(str(r).replace("\\", "/") == MANIFEST_SELF_REL for r, _s, _d, _k in changes), \
         f"guest 절 때문에 engine.manifest 가 영구 churn(update): {changes}"
@@ -1138,7 +1139,7 @@ def test_plan_manifest_self_prop_no_churn_with_trailing_blank_upstream(pm_update
     안 만든다 (T-0456 R22 suggestion). `_strip_guest_manifest_block` 이 절 앞 빈 줄을 회수하며 upstream
     트레일링 블랭크까지 지워 core 비교가 어긋나 churn 나던 것을 `rstrip("\\n")` 정규화로 닫는다."""
     source, dest = tmp_path / "src", tmp_path / "dest"
-    begin, end = pm_update._GUEST_MANIFEST_BEGIN, pm_update._GUEST_MANIFEST_END
+    begin, end = manifest_rules._GUEST_MANIFEST_BEGIN, manifest_rules._GUEST_MANIFEST_END
     core = "# m\n" + MANIFEST_SELF_REL + "\n\n"  # ← 트레일링 빈 줄.
     (source / ".project_manager").mkdir(parents=True)
     (source / ".project_manager" / "engine.manifest").write_text(core, encoding="utf-8")
@@ -1147,7 +1148,7 @@ def test_plan_manifest_self_prop_no_churn_with_trailing_blank_upstream(pm_update
     (dest / ".project_manager" / "engine.manifest").write_text(
         core + begin + "\n.codex/agents    @render @target-owned\n" + end + "\n",
         encoding="utf-8")
-    manifest = [pm_update.ManifestEntry(MANIFEST_SELF_REL)]
+    manifest = [manifest_rules.ManifestEntry(MANIFEST_SELF_REL)]
     changes, _missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
     assert not any(str(r).replace("\\", "/") == MANIFEST_SELF_REL for r, _s, _d, _k in changes), \
         f"트레일링 블랭크 upstream 에서 engine.manifest churn(반복 update): {changes}"
@@ -1157,7 +1158,7 @@ def test_copy_manifest_preserving_guest_prunes_promoted_paths(pm_update, tmp_pat
     """소유권 전환: guest 경로가 upstream core 로 승격되면 재부착이 그 경로를 guest 절에서 **차감**해
     **단일 등재**(upstream 소유)로 만든다 — 이중 등재 → 뒤쪽 @target-owned guest 가 owner 로 이겨
     upstream 소스가 영구 skip 되던 것을 닫는다 (T-0456 R15 red-첫). 승격 안 된 guest 는 잔존."""
-    begin, end = pm_update._GUEST_MANIFEST_BEGIN, pm_update._GUEST_MANIFEST_END
+    begin, end = manifest_rules._GUEST_MANIFEST_BEGIN, manifest_rules._GUEST_MANIFEST_END
     guest = (begin + "\n.codex/agents    @render @target-owned\n"
              ".agents/skills    @render @target-owned\n" + end)
     sp, dst = tmp_path / "up.manifest", tmp_path / "dest.manifest"
@@ -1166,12 +1167,12 @@ def test_copy_manifest_preserving_guest_prunes_promoted_paths(pm_update, tmp_pat
                   encoding="utf-8")
     dst.write_text("# m\n\n" + guest + "\n", encoding="utf-8")  # old dest: core(no codex) + guest 절.
     pm_update._copy_manifest_preserving_guest(sp, dst)
-    ents = pm_update.read_manifest(dst)
+    ents = manifest_store.read_manifest(dst)
     codex = [e for e in ents if str(e) == ".codex/agents"]
     assert len(codex) == 1, f".codex/agents 이중 등재(전환 후 {len(codex)}개)"
     assert codex[0].source_rel is not None and not codex[0].target_owned, \
         ".codex/agents owner 가 upstream core(@source) 아님 — guest @target-owned 가 이겨 영구 skip"
-    block = pm_update._extract_guest_manifest_block(dst.read_text(encoding="utf-8"))
+    block = manifest_rules._extract_guest_manifest_block(dst.read_text(encoding="utf-8"))
     block_paths = {ln.split()[0] for ln in block.splitlines()
                    if ln.strip() and not ln.strip().startswith("#")}
     assert block_paths == {".agents/skills"}, f"guest 절 잔여가 예상과 다름: {block_paths}"
@@ -1180,7 +1181,7 @@ def test_copy_manifest_preserving_guest_prunes_promoted_paths(pm_update, tmp_pat
 def test_prune_guest_block_ancestor_and_full_promotion(pm_update):
     """차감 판정 유닛: **상위 경로** 소유도 차감(core `.opencode` → guest `.opencode/agents`) + 전량
     승격 시 절 제거(None) + 무관 core 는 절 그대로 (T-0456 R15 경로-포함 판정)."""
-    begin, end = pm_update._GUEST_MANIFEST_BEGIN, pm_update._GUEST_MANIFEST_END
+    begin, end = manifest_rules._GUEST_MANIFEST_BEGIN, manifest_rules._GUEST_MANIFEST_END
     guest = begin + "\n.opencode/agents    @render @target-owned\n" + end
     # core 가 상위 `.opencode` 소유 → guest `.opencode/agents` 차감 → 남는 guest 0 → 절 제거(None).
     assert pm_update._prune_guest_block_owned_by_core(
@@ -1207,11 +1208,11 @@ def test_guest_marker_literals_match_current_constants(pm_update):
 
     리터럴이 또 바뀌면 이 테스트가 red 로 알린다 — 그때 옛 값을 `_GUEST_MANIFEST_BEGIN_LEGACY`
     에 추가하고(읽기 관용) 여기 CURRENT 를 갱신하는 것이 정상 절차다."""
-    assert pm_update._GUEST_MANIFEST_BEGIN == GUEST_BEGIN_LITERAL_CURRENT
-    assert pm_update._GUEST_MANIFEST_END == GUEST_END_LITERAL
-    assert GUEST_BEGIN_LITERAL_LEGACY_V1_4_3 in pm_update._GUEST_MANIFEST_BEGIN_LEGACY, \
+    assert manifest_rules._GUEST_MANIFEST_BEGIN == GUEST_BEGIN_LITERAL_CURRENT
+    assert manifest_rules._GUEST_MANIFEST_END == GUEST_END_LITERAL
+    assert GUEST_BEGIN_LITERAL_LEGACY_V1_4_3 in manifest_rules._GUEST_MANIFEST_BEGIN_LEGACY, \
         "옛 세대 시작 마커가 legacy 튜플에서 빠졌다(옛 채택자 guest 절이 소실된다)"
-    assert GUEST_BEGIN_LITERAL_CURRENT not in pm_update._GUEST_MANIFEST_BEGIN_LEGACY, \
+    assert GUEST_BEGIN_LITERAL_CURRENT not in manifest_rules._GUEST_MANIFEST_BEGIN_LEGACY, \
         "현행 리터럴이 legacy 튜플에 있다(쓰기 단일 세대 위반)"
 
 
@@ -1221,11 +1222,11 @@ def test_extract_guest_block_recognizes_legacy_marker(pm_update):
             + GUEST_BEGIN_LITERAL_LEGACY_V1_4_3 + "\n"
             + ".codex/agents    @render @target-owned\n"
             + GUEST_END_LITERAL + "\n")
-    block = pm_update._extract_guest_manifest_block(text)
+    block = manifest_rules._extract_guest_manifest_block(text)
     assert block is not None, "옛 세대 마커를 인식 못 함(guest 절 소실 경로)"
     assert ".codex/agents" in block
     # strip 도 같은 세대 집합 — core 경로 집합에 guest 라인이 섞이지 않는다(소유권 판정 정합).
-    assert pm_update._core_manifest_paths(text) == {".project_manager/tools/board.py"}
+    assert manifest_rules._core_manifest_paths(text) == {".project_manager/tools/board.py"}
 
 
 def test_migrate_legacy_guest_markers_replaces_and_is_idempotent(pm_update):
@@ -1281,7 +1282,7 @@ def test_plan_manifest_self_prop_updates_on_legacy_guest_marker(pm_update, tmp_p
         core.rstrip("\n") + "\n\n" + GUEST_BEGIN_LITERAL_LEGACY_V1_4_3
         + "\n.codex/agents    @render @target-owned\n" + GUEST_END_LITERAL + "\n",
         encoding="utf-8")
-    manifest = [pm_update.ManifestEntry(MANIFEST_SELF_REL)]
+    manifest = [manifest_rules.ManifestEntry(MANIFEST_SELF_REL)]
 
     changes, _missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
@@ -1312,7 +1313,7 @@ def test_plan_multi_harness_manifest_updates_on_legacy_guest_marker(pm_update, t
     _track_source_tree(source)
     manifest_file = _write_selfprop_dest_manifest(
         dest, core, GUEST_BEGIN_LITERAL_LEGACY_V1_4_3)
-    manifest = [pm_update.ManifestEntry(MANIFEST_SELF_REL)]
+    manifest = [manifest_rules.ManifestEntry(MANIFEST_SELF_REL)]
 
     changes, _missing = pm_update.plan(
         source, manifest, dest_root=dest, manifest_source_text=core, conf=_local_conf_of(pm_update, dest))
@@ -1335,7 +1336,7 @@ def test_plan_multi_harness_manifest_no_churn_with_current_marker(pm_update, tmp
     (source / ".project_manager").mkdir(parents=True)
     _track_source_tree(source)
     _write_selfprop_dest_manifest(dest, core, GUEST_BEGIN_LITERAL_CURRENT)
-    manifest = [pm_update.ManifestEntry(MANIFEST_SELF_REL)]
+    manifest = [manifest_rules.ManifestEntry(MANIFEST_SELF_REL)]
 
     changes, _missing = pm_update.plan(
         source, manifest, dest_root=dest, manifest_source_text=core, conf=_local_conf_of(pm_update, dest))
@@ -1436,9 +1437,9 @@ def _make_legacy_guest_adopter(pm_update, dest: Path, *, core: str | None = None
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
         (core if core is not None else _CLAUDE_FLAVOR_MANIFEST)
-        + "\n" + pm_update._GUEST_MANIFEST_BEGIN
+        + "\n" + manifest_rules._GUEST_MANIFEST_BEGIN
         + "\n.opencode/agents    @render @target-owned\n"
-        + pm_update._GUEST_MANIFEST_END + "\n",
+        + manifest_rules._GUEST_MANIFEST_END + "\n",
         encoding="utf-8")
     for rel, text in (
         (".opencode/lib/relay.js", "// relay v1 (frozen)\n"),
@@ -1471,10 +1472,10 @@ def test_dest_guest_manifest_entries_keep_channel_markers(pm_update, tmp_path):
     manifest = dest / ".project_manager" / "engine.manifest"
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            pm_update._GUEST_MANIFEST_END,
+            manifest_rules._GUEST_MANIFEST_END,
             ".opencode/lib    @target-owned    "
             "@source=templates/opencode/.opencode/lib\n"
-            + pm_update._GUEST_MANIFEST_END),
+            + manifest_rules._GUEST_MANIFEST_END),
         encoding="utf-8")
 
     entries = _guest_block_entries(pm_update, manifest)
@@ -1635,7 +1636,7 @@ def test_guest_engine_backfill_resolves_mixed_generation_cohort(pm_update, tmp_p
     manifest = dest / ".project_manager" / "engine.manifest"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
-        claude_core + "\n" + pm_update._GUEST_MANIFEST_BEGIN
+        claude_core + "\n" + manifest_rules._GUEST_MANIFEST_BEGIN
         # codex — 새 세대(엔진 행 + provenance).
         + "\n.codex/agents    @render    @target-owned    "
         "@source=templates/codex/.codex/agents"
@@ -1644,7 +1645,7 @@ def test_guest_engine_backfill_resolves_mixed_generation_cohort(pm_update, tmp_p
         # opencode — 구 세대(렌더물 행만·provenance 0).
         + "\n.opencode/agents    @render @target-owned"
         + "\n.claude/skills    @render @target-owned\n"
-        + pm_update._GUEST_MANIFEST_END + "\n",
+        + manifest_rules._GUEST_MANIFEST_END + "\n",
         encoding="utf-8")
 
     guest_entries = pm_update._dest_guest_manifest_entries(dest)
@@ -1675,10 +1676,10 @@ def test_guest_engine_backfill_cross_namespace_creates_no_foreign_files(
     manifest = dest / ".project_manager" / "engine.manifest"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
-        codex_core + "\n" + pm_update._GUEST_MANIFEST_BEGIN
+        codex_core + "\n" + manifest_rules._GUEST_MANIFEST_BEGIN
         + "\n.opencode/agents    @render @target-owned"
         + "\n.claude/skills    @render @target-owned\n"
-        + pm_update._GUEST_MANIFEST_END + "\n",
+        + manifest_rules._GUEST_MANIFEST_END + "\n",
         encoding="utf-8")
 
     guest_entries = pm_update._dest_guest_manifest_entries(dest)
@@ -1736,10 +1737,10 @@ def test_guest_source_declarations_do_not_promote_flavor_union(pm_update, tmp_pa
     # 절에 opencode provenance 를 심는다(백필 지속화 후 형상).
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            pm_update._GUEST_MANIFEST_END,
+            manifest_rules._GUEST_MANIFEST_END,
             ".opencode/lib    @target-owned    "
             "@source=templates/opencode/.opencode/lib\n"
-            + pm_update._GUEST_MANIFEST_END),
+            + manifest_rules._GUEST_MANIFEST_END),
         encoding="utf-8")
 
     selfheal = pm_update.resolve_manifest_selfheal(dest, framework)
@@ -1772,7 +1773,7 @@ def test_copy_manifest_preserving_guest_backfills_and_prunes_promoted(pm_update,
         [".opencode/lib    @target-owned    @source=templates/opencode/.opencode/lib"])
 
     text = dest_manifest.read_text(encoding="utf-8")
-    block = pm_update._extract_guest_manifest_block(text)
+    block = manifest_rules._extract_guest_manifest_block(text)
     assert block is not None and block.startswith(GUEST_BEGIN_LITERAL_CURRENT), \
         "마커 세대 마이그레이션이 백필 조합에서 유실됐다"
     paths = {line.split()[0] for line in block.splitlines()
@@ -1787,8 +1788,8 @@ def test_copy_manifest_preserving_guest_backfills_and_prunes_promoted(pm_update,
 def test_merge_guest_backfill_lines_is_noop_without_block(pm_update):
     """절이 없으면 백필이 절을 새로 만들지 않는다 — 파생은 절의 존재를 전제한다 (⑦ 경계)."""
     assert pm_update._merge_guest_backfill_lines(None, [".x    @target-owned"]) is None
-    block = (pm_update._GUEST_MANIFEST_BEGIN + "\n.a    @render @target-owned\n"
-             + pm_update._GUEST_MANIFEST_END)
+    block = (manifest_rules._GUEST_MANIFEST_BEGIN + "\n.a    @render @target-owned\n"
+             + manifest_rules._GUEST_MANIFEST_END)
     assert pm_update._merge_guest_backfill_lines(block, []) == block
 
 
@@ -1803,10 +1804,10 @@ def test_guest_engine_row_missing_source_skips_with_rc0(
     manifest = _make_legacy_guest_adopter(pm_update, dest)
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            pm_update._GUEST_MANIFEST_END,
+            manifest_rules._GUEST_MANIFEST_END,
             ".opencode/retired.py    @target-owned    "
             "@source=templates/opencode/.opencode/retired.py\n"
-            + pm_update._GUEST_MANIFEST_END),
+            + manifest_rules._GUEST_MANIFEST_END),
         encoding="utf-8")
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
@@ -1875,7 +1876,7 @@ def test_selected_manifest_order_is_primary_then_declared_flavors_without_selfpr
     """opencode-primary 합집합 순서는 고정하되 구조상 정상인 self-prop 충돌은 경고하지 않는다."""
     opencode = REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest"
     claude = REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest"
-    merged = pm_update.merge_manifest_sources([opencode, claude])
+    merged = manifest_store.merge_manifest_sources([opencode, claude])
     dest = tmp_path / "dest"
     manifest = _write_dest_manifest(dest, [])
     manifest.write_text(merged["text"], encoding="utf-8")
@@ -1901,7 +1902,7 @@ def test_manifest_merge_conflict_warning_surfaces_real_marker_conflict(
     first.write_text(".shared/x    @render\n", encoding="utf-8")
     second.write_text(".shared/x\n", encoding="utf-8")
 
-    merged = pm_update.merge_manifest_sources([first, second])
+    merged = manifest_store.merge_manifest_sources([first, second])
     assert merged["conflicts"] == [".shared/x"]
 
     pm_update._print_manifest_merge_conflicts({"merge_conflicts": merged["conflicts"]})
@@ -1927,7 +1928,7 @@ def test_manifest_merge_selfprop_ignores_only_source_difference(pm_update, tmp_p
         encoding="utf-8",
     )
 
-    merged = pm_update.merge_manifest_sources([first, second])
+    merged = manifest_store.merge_manifest_sources([first, second])
     assert merged["conflicts"] == [MANIFEST_SELF_REL]
 
 
@@ -1954,7 +1955,7 @@ def test_declared_second_flavor_missing_manifest_is_preserved_and_warned(
     dest = tmp_path / "dest"
     manifest = _write_dest_manifest(dest, [])
     manifest.write_text(
-        pm_update.merge_manifest_sources([first, second])["text"], encoding="utf-8"
+        manifest_store.merge_manifest_sources([first, second])["text"], encoding="utf-8"
     )
     second.unlink()
 
@@ -2042,9 +2043,9 @@ def test_declared_manifest_excludes_guest_paths_but_warns_on_non_guest_file(
     manifest.write_text(
         first.read_text(encoding="utf-8")
         + "\n"
-        + pm_update._GUEST_MANIFEST_BEGIN
+        + manifest_rules._GUEST_MANIFEST_BEGIN
         + "\n.second/render    @render @target-owned\n"
-        + pm_update._GUEST_MANIFEST_END
+        + manifest_rules._GUEST_MANIFEST_END
         + "\n",
         encoding="utf-8",
     )
@@ -2082,10 +2083,10 @@ def test_add_harness_adopter_shape_backfill_silences_frozen_warning(
     manifest.write_text(
         claude.read_text(encoding="utf-8")
         + "\n"
-        + pm_update._GUEST_MANIFEST_BEGIN
+        + manifest_rules._GUEST_MANIFEST_BEGIN
         + "\n.codex/agents    @render @target-owned"
         + "\n.agents/skills    @render @target-owned\n"
-        + pm_update._GUEST_MANIFEST_END
+        + manifest_rules._GUEST_MANIFEST_END
         + "\n",
         encoding="utf-8",
     )
@@ -2130,9 +2131,9 @@ def test_frozen_warning_silent_when_all_flavor_paths_are_guest_owned(
     manifest.write_text(
         first.read_text(encoding="utf-8")
         + "\n"
-        + pm_update._GUEST_MANIFEST_BEGIN
+        + manifest_rules._GUEST_MANIFEST_BEGIN
         + "\n.second/render    @render @target-owned\n"
-        + pm_update._GUEST_MANIFEST_END
+        + manifest_rules._GUEST_MANIFEST_END
         + "\n",
         encoding="utf-8",
     )
@@ -2149,8 +2150,8 @@ def test_frozen_warning_silent_when_all_flavor_paths_are_guest_owned(
 def test_frozen_evidence_drops_only_guest_owned_paths(pm_update):
     """evidence 계산 유닛: guest 소유는 개별 제외, 전부 guest면 None(그때만 skip)."""
     entries = [
-        pm_update.ManifestEntry(".second/render"),
-        pm_update.ManifestEntry(".second/hook"),
+        manifest_rules.ManifestEntry(".second/render"),
+        manifest_rules.ManifestEntry(".second/hook"),
     ]
 
     assert pm_update._frozen_flavor_evidence(
@@ -2167,8 +2168,8 @@ def test_frozen_evidence_drops_paths_covered_by_host_core_directory(pm_update):
     이미 덮고 실제로 render 되는 `.claude/skills/pm-dev-delegate/SKILL.md`를 '어느 동기 채널도
     선언하지 않은 출하 파일'로 분류했다(claude 단독 채택자 오탐)."""
     entries = [
-        pm_update.ManifestEntry(".claude/skills/pm-dev-delegate/SKILL.md"),
-        pm_update.ManifestEntry(".second/stray"),
+        manifest_rules.ManifestEntry(".claude/skills/pm-dev-delegate/SKILL.md"),
+        manifest_rules.ManifestEntry(".second/stray"),
     ]
 
     assert pm_update._frozen_flavor_evidence(
@@ -2661,8 +2662,8 @@ def test_legacy_opencode_proper_subset_does_not_promote_or_rewrite_manifest(
 def test_frozen_evidence_requires_candidate_exclusive_path(pm_update):
     """둘 이상 후보가 공유하는 `.claude/skills`류 경로는 어느 flavor의 evidence도 아니다."""
     entries = [
-        pm_update.ManifestEntry(".claude/skills"),
-        pm_update.ManifestEntry(".first/unique"),
+        manifest_rules.ManifestEntry(".claude/skills"),
+        manifest_rules.ManifestEntry(".first/unique"),
     ]
 
     evidence = pm_update._frozen_flavor_evidence(
@@ -2764,7 +2765,7 @@ def test_template_manifests_only_declare_their_own_flavor(pm_update):
         flavor = manifest.parents[1].name
         declared = {
             Path(entry.source_rel.replace("\\", "/")).parts[1]
-            for entry in pm_update.read_manifest(manifest)
+            for entry in manifest_store.read_manifest(manifest)
             if entry.source_rel
             and len(Path(entry.source_rel.replace("\\", "/")).parts) >= 3
             and Path(entry.source_rel.replace("\\", "/")).parts[0] == "templates"
@@ -3400,7 +3401,7 @@ def test_target_export_conditionally_renders_only_skill_entry_notation(
     )
     _track_source_tree(source)
     dest = tmp_path / f"dest-{template_dir}"
-    manifest = [pm_update.ManifestEntry(".claude/skills", render=True)]
+    manifest = [manifest_rules.ManifestEntry(".claude/skills", render=True)]
 
     changes, missing = pm_update.plan(
         source,
@@ -3438,7 +3439,7 @@ def test_target_export_wiring_sensitivity_identity_renderer_leaves_wrong_prefix(
 
     changes, missing = pm_update.plan(
         source,
-        [pm_update.ManifestEntry(".claude/skills", render=True)],
+        [manifest_rules.ManifestEntry(".claude/skills", render=True)],
         dest_root=dest,
         render_enabled=False,
         entry_notation_template="codex", conf=_local_conf_of(pm_update, dest),
@@ -3470,7 +3471,7 @@ def test_render_comparison_ignores_newline_notation_and_write_preserves_it(
 
     changes, missing = pm_update.plan(
         source,
-        [pm_update.ManifestEntry("card.md", render=True)],
+        [manifest_rules.ManifestEntry("card.md", render=True)],
         dest_root=dest,
         entry_notation_template="claude_code", conf=_local_conf_of(pm_update, dest),
     )
@@ -3481,7 +3482,7 @@ def test_render_comparison_ignores_newline_notation_and_write_preserves_it(
     src.write_bytes(b"/pm-bootstrap\nsecond line\n")
     changes, missing = pm_update.plan(
         source,
-        [pm_update.ManifestEntry("card.md", render=True)],
+        [manifest_rules.ManifestEntry("card.md", render=True)],
         dest_root=dest,
         entry_notation_template="claude_code", conf=_local_conf_of(pm_update, dest),
     )
@@ -3503,7 +3504,7 @@ def test_render_write_uses_source_notation_for_new_destination(pm_update, tmp_pa
 
     changes, missing = pm_update.plan(
         source,
-        [pm_update.ManifestEntry("card.md", render=True)],
+        [manifest_rules.ManifestEntry("card.md", render=True)],
         dest_root=dest,
         entry_notation_template="claude_code", conf=_local_conf_of(pm_update, dest),
     )
@@ -3527,7 +3528,7 @@ def test_render_comparison_treats_non_utf8_destination_as_update(pm_update, tmp_
 
     changes, missing = pm_update.plan(
         source,
-        [pm_update.ManifestEntry("card.md", render=True)],
+        [manifest_rules.ManifestEntry("card.md", render=True)],
         dest_root=dest,
         entry_notation_template="codex", conf=_local_conf_of(pm_update, dest),
     )
@@ -3551,7 +3552,7 @@ def test_multi_harness_render_preserves_per_entry_flavor(pm_update, tmp_path):
     card.parent.mkdir(parents=True)
     card.write_text("# /pm-bootstrap — entry\n", encoding="utf-8")
     _track_source_tree(source)
-    contexts = pm_update._entry_notation_templates_from_manifests(
+    contexts = manifest_store._entry_notation_templates_from_manifests(
         [first, second], source
     )
     assert contexts == {
@@ -3559,7 +3560,7 @@ def test_multi_harness_render_preserves_per_entry_flavor(pm_update, tmp_path):
         ".agents/skills": ("codex",),
     }
 
-    entries = pm_update.merge_manifest_sources([first, second])["entries"]
+    entries = manifest_store.merge_manifest_sources([first, second])["entries"]
     broken_dest = tmp_path / "broken-dest"
     broken_changes, _ = pm_update.plan(
         source,
@@ -3602,7 +3603,7 @@ def test_multi_harness_shared_path_combines_selected_flavors(pm_update, tmp_path
     role.write_text("start `/pm-bootstrap --task main`\n", encoding="utf-8")
     _track_source_tree(source)
 
-    contexts = pm_update._entry_notation_templates_from_manifests(
+    contexts = manifest_store._entry_notation_templates_from_manifests(
         [first, second], source
     )
     assert contexts == {
@@ -3610,7 +3611,7 @@ def test_multi_harness_shared_path_combines_selected_flavors(pm_update, tmp_path
     }
     changes, missing = pm_update.plan(
         source,
-        pm_update.merge_manifest_sources([first, second])["entries"],
+        manifest_store.merge_manifest_sources([first, second])["entries"],
         dest_root=tmp_path / "dest",
         entry_notation_templates=contexts, conf=_local_conf_of(pm_update, tmp_path / "dest"),
     )
@@ -3632,7 +3633,7 @@ def test_selected_flavor_manifest_read_failure_is_loud(pm_update, tmp_path):
     unreadable_shape.mkdir(parents=True)
 
     with pytest.raises(RuntimeError, match="context.*중단"):
-        pm_update._entry_notation_templates_from_manifests(
+        manifest_store._entry_notation_templates_from_manifests(
             [unreadable_shape], source
         )
 
@@ -3654,7 +3655,7 @@ _MANIFESTS = [
 @pytest.mark.parametrize("manifest_path", _MANIFESTS, ids=lambda p: p.parent.parent.name or "root")
 def test_v2_engine_in_manifest(pm_update, manifest_path):
     """domain.py 가 등재되고, 개명 전 pm_orchestrator.py 잔재는 없다."""
-    entries = pm_update.read_manifest(manifest_path)
+    entries = manifest_store.read_manifest(manifest_path)
     assert ".project_manager/tools/domain.py" in entries, "domain.py manifest 미등재 (전파 누락)"
     assert ".project_manager/tools/pm_orchestrator.py" not in entries, "옛 pm_orchestrator.py 잔재 (relay 개명 누락)"
 
@@ -3671,7 +3672,7 @@ _PM_IMPORT_REL = ".project_manager/tools/pm_import.py"
 @pytest.mark.parametrize("manifest_path", _MANIFESTS, ids=lambda p: p.parent.parent.name or "root")
 def test_pm_import_in_manifest(pm_update, manifest_path):
     """pm_import.py 가 3 manifest(root + claude_code + opencode) 모두 등재 — 전파 채널 확보(de-list 가드)."""
-    entries = pm_update.read_manifest(manifest_path)
+    entries = manifest_store.read_manifest(manifest_path)
     assert _PM_IMPORT_REL in entries, (
         f"{_PM_IMPORT_REL} manifest 미등재 ({manifest_path}) — pm_update 전파 누락(PM 31 ⓒ stale 재발)"
     )
@@ -3706,7 +3707,7 @@ DOMAIN_TEMPLATE_REL = ".project_manager/wiki/domain/_template.md"
 @pytest.mark.parametrize("manifest_path", _MANIFESTS, ids=lambda p: p.parent.parent.name or "root")
 def test_domain_template_in_manifest(pm_update, manifest_path):
     """3 manifest(root + claude_code + opencode) 모두 domain/_template.md 를 엔진으로 등재."""
-    entries = pm_update.read_manifest(manifest_path)
+    entries = manifest_store.read_manifest(manifest_path)
     assert DOMAIN_TEMPLATE_REL in entries, (
         f"{DOMAIN_TEMPLATE_REL} manifest 미등재 ({manifest_path}) — domain 스캐폴드 동기 누락"
     )
@@ -3757,7 +3758,7 @@ def _write_manifest(tmp_path: Path, lines: list[str]) -> Path:
 def test_read_manifest_no_markers_both_false(pm_update, tmp_path):
     """미주석 path → render=False, target_owned=False (후방호환·전파 대상)."""
     manifest = _write_manifest(tmp_path, [".project_manager/tools/board.py"])
-    entries = pm_update.read_manifest(manifest)
+    entries = manifest_store.read_manifest(manifest)
     assert len(entries) == 1
     e = entries[0]
     assert str(e) == ".project_manager/tools/board.py"
@@ -3768,7 +3769,7 @@ def test_read_manifest_no_markers_both_false(pm_update, tmp_path):
 def test_read_manifest_render_only(pm_update, tmp_path):
     """`path @render` → render=True, target_owned=False (엔진 리소스 렌더·skip 비대상)."""
     manifest = _write_manifest(tmp_path, [".claude/agents  @render"])
-    e = pm_update.read_manifest(manifest)[0]
+    e = manifest_store.read_manifest(manifest)[0]
     assert str(e) == ".claude/agents"
     assert e.render is True
     assert e.target_owned is False
@@ -3777,7 +3778,7 @@ def test_read_manifest_render_only(pm_update, tmp_path):
 def test_read_manifest_target_owned_only(pm_update, tmp_path):
     """`path @target-owned` → render=False, target_owned=True (source-부재 skip 판별)."""
     manifest = _write_manifest(tmp_path, [".opencode/command/pm-only.md  @target-owned"])
-    e = pm_update.read_manifest(manifest)[0]
+    e = manifest_store.read_manifest(manifest)[0]
     assert str(e) == ".opencode/command/pm-only.md"
     assert e.render is False
     assert e.target_owned is True
@@ -3786,7 +3787,7 @@ def test_read_manifest_target_owned_only(pm_update, tmp_path):
 def test_read_manifest_both_markers(pm_update, tmp_path):
     """`path @render @target-owned` → 둘 다 True, 순수 경로만 값으로 남는다."""
     manifest = _write_manifest(tmp_path, [".opencode/agents  @render @target-owned"])
-    e = pm_update.read_manifest(manifest)[0]
+    e = manifest_store.read_manifest(manifest)[0]
     assert str(e) == ".opencode/agents"
     assert e.render is True
     assert e.target_owned is True
@@ -3795,7 +3796,7 @@ def test_read_manifest_both_markers(pm_update, tmp_path):
 def test_read_manifest_both_markers_order_independent(pm_update, tmp_path):
     """마커 순서 무관 — `@target-owned @render` 도 둘 다 True 로 파싱."""
     manifest = _write_manifest(tmp_path, [".opencode/agents  @target-owned @render"])
-    e = pm_update.read_manifest(manifest)[0]
+    e = manifest_store.read_manifest(manifest)[0]
     assert str(e) == ".opencode/agents"
     assert e.render is True
     assert e.target_owned is True
@@ -3812,7 +3813,7 @@ def test_read_manifest_render_preserved_with_target_owned(pm_update, tmp_path):
         ".opencode/agents  @render @target-owned",         # 둘 다
         ".project_manager/tools/board.py",                 # 무마커
     ])
-    entries = pm_update.read_manifest(manifest)
+    entries = manifest_store.read_manifest(manifest)
     render_paths = {str(e) for e in entries if e.render}
     assert render_paths == {".claude/agents", ".opencode/agents"}, \
         "@target-owned 공존이 render 파싱을 깼다(board.py render-leak lint 회귀)."
@@ -3826,7 +3827,7 @@ def test_read_manifest_source_marker_parsed(pm_update, tmp_path):
     """`path @source=<relpath>` → source_rel=<relpath>, 순수 경로만 값으로 남는다(T-0303·ADR-0054)."""
     manifest = _write_manifest(
         tmp_path, [".opencode/agents  @source=templates/opencode/.opencode/agents"])
-    e = pm_update.read_manifest(manifest)[0]
+    e = manifest_store.read_manifest(manifest)[0]
     assert str(e) == ".opencode/agents"
     assert e.source_rel == "templates/opencode/.opencode/agents"
     assert e.render is False
@@ -3839,7 +3840,7 @@ def test_read_manifest_render_and_source_coexist_order_independent(pm_update, tm
         ".opencode/agents   @render @source=templates/opencode/.opencode/agents",
         ".opencode/command  @source=templates/opencode/.opencode/command @render",
     ])
-    agents, command = pm_update.read_manifest(manifest)
+    agents, command = manifest_store.read_manifest(manifest)
     assert str(agents) == ".opencode/agents"
     assert agents.render is True and agents.target_owned is False
     assert agents.source_rel == "templates/opencode/.opencode/agents"
@@ -3855,13 +3856,13 @@ def test_read_manifest_no_source_marker_is_none(pm_update, tmp_path):
         ".claude/agents  @render",
         ".opencode/x  @target-owned",
     ])
-    entries = pm_update.read_manifest(manifest)
+    entries = manifest_store.read_manifest(manifest)
     assert all(e.source_rel is None for e in entries)
 
 
 def test_read_manifest_empty_source_value_is_none(pm_update, tmp_path):
     """`@source=`(빈 값)은 무의미 → source_rel None (읽기 경로 = manifest 경로·후방호환)."""
-    e = pm_update.read_manifest(_write_manifest(tmp_path, [".opencode/agents  @source="]))[0]
+    e = manifest_store.read_manifest(_write_manifest(tmp_path, [".opencode/agents  @source="]))[0]
     assert str(e) == ".opencode/agents"
     assert e.source_rel is None
 
@@ -3870,23 +3871,23 @@ def test_read_manifest_empty_source_value_is_none(pm_update, tmp_path):
 
 def test_source_root_rel_uses_marker_else_str(pm_update, tmp_path):
     """@source= 있으면 _source_root_rel = source_rel(canonical 소스), 없으면 str(entry)."""
-    sourced, plain = pm_update.read_manifest(_write_manifest(tmp_path, [
+    sourced, plain = manifest_store.read_manifest(_write_manifest(tmp_path, [
         ".opencode/agents  @source=templates/opencode/.opencode/agents",
         ".project_manager/tools/board.py",
     ]))
-    assert pm_update._source_root_rel(sourced) == "templates/opencode/.opencode/agents"
-    assert pm_update._source_root_rel(plain) == ".project_manager/tools/board.py"
+    assert manifest_rules._source_root_rel(sourced) == "templates/opencode/.opencode/agents"
+    assert manifest_rules._source_root_rel(plain) == ".project_manager/tools/board.py"
 
 
 def test_source_root_rel_plain_str_fallback(pm_update):
     """평문 str 항목(레거시 호출·source_rel 속성 부재) → str 그대로(getattr 폴백·후방호환)."""
-    assert pm_update._source_root_rel(".project_manager/tools/board.py") == \
+    assert manifest_rules._source_root_rel(".project_manager/tools/board.py") == \
         ".project_manager/tools/board.py"
 
 
 def test_remap_to_dest_directory_prefix(pm_update):
     """디렉토리 @source: yield relpath 의 source_rel prefix → manifest 경로로 치환(하위 파일)."""
-    assert pm_update._remap_to_dest(
+    assert manifest_rules._remap_to_dest(
         "templates/opencode/.opencode/agents/architect.md",
         "templates/opencode/.opencode/agents",
         ".opencode/agents",
@@ -3895,7 +3896,7 @@ def test_remap_to_dest_directory_prefix(pm_update):
 
 def test_remap_to_dest_file_whole(pm_update):
     """파일 @source: yield 가 source_rel 자체 → manifest 경로로 통째 치환."""
-    assert pm_update._remap_to_dest(
+    assert manifest_rules._remap_to_dest(
         "templates/opencode/.opencode/agents/pm.md",
         "templates/opencode/.opencode/agents/pm.md",
         ".opencode/agents/pm.md",
@@ -3904,7 +3905,7 @@ def test_remap_to_dest_file_whole(pm_update):
 
 def test_remap_to_dest_no_marker_passthrough(pm_update):
     """source_rel == manifest_path(마커 부재·기본) → 무변경(후방호환)."""
-    assert pm_update._remap_to_dest(
+    assert manifest_rules._remap_to_dest(
         ".project_manager/tools/board.py",
         ".project_manager/tools/board.py",
         ".project_manager/tools/board.py",
@@ -3913,7 +3914,7 @@ def test_remap_to_dest_no_marker_passthrough(pm_update):
 
 def test_remap_to_dest_normalizes_windows_separators(pm_update):
     """Windows 역슬래시 relpath 도 posix-normalize 후 치환(_dest_relpath_for 동형)."""
-    assert pm_update._remap_to_dest(
+    assert manifest_rules._remap_to_dest(
         "templates\\opencode\\.opencode\\agents\\architect.md",
         "templates/opencode/.opencode/agents",
         ".opencode/agents",
@@ -3940,7 +3941,7 @@ def test_plan_specific_file_source_overrides_shared_directory_source(pm_update, 
     override.write_text("codex spawn_agent\n", encoding="utf-8")
     landed.write_text("stale\n", encoding="utf-8")
     landed_sibling.write_text("stale sibling\n", encoding="utf-8")
-    entries = pm_update.read_manifest(_write_manifest(tmp_path, [
+    entries = manifest_store.read_manifest(_write_manifest(tmp_path, [
         ".agents/skills @source=.claude/skills",
         ".agents/skills/pm-dev-delegate/SKILL.md "
         "@source=templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
@@ -3967,7 +3968,7 @@ def test_plan_missing_specific_override_never_falls_back_to_shared_skill(pm_upda
     shared.write_text("claude-only fallback must not land\n", encoding="utf-8")
     landed.write_text("stale codex native delegate\n", encoding="utf-8")
     override_dest = ".agents/skills/pm-dev-delegate/SKILL.md"
-    entries = pm_update.read_manifest(_write_manifest(tmp_path, [
+    entries = manifest_store.read_manifest(_write_manifest(tmp_path, [
         ".agents/skills @source=.claude/skills",
         f"{override_dest} @source=templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
     ]))
@@ -3993,7 +3994,7 @@ def test_plan_specific_override_is_idempotent_not_replaced_by_parent(pm_update, 
     shared.write_text("claude fields\n", encoding="utf-8")
     override.write_text("codex spawn_agent\n", encoding="utf-8")
     landed.write_text("codex spawn_agent\n", encoding="utf-8")
-    entries = pm_update.read_manifest(_write_manifest(tmp_path, [
+    entries = manifest_store.read_manifest(_write_manifest(tmp_path, [
         ".agents/skills @source=.claude/skills",
         ".agents/skills/pm-dev-delegate/SKILL.md "
         "@source=templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
@@ -4240,7 +4241,7 @@ def _manifest_entries(pm_update, lines, tmp_path):
     """
     path = tmp_path / "injected.manifest"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return pm_update.read_manifest(path)
+    return manifest_store.read_manifest(path)
 
 
 # ── 헬퍼 단위: summarize_upstream_changes (git_runner 주입·hermetic) ──────────
@@ -4315,7 +4316,7 @@ def test_path_under_manifest_covers_shipped_source_entries(pm_update):
     실형상 픽스처 — 합성 픽스처가 전부 bare 엔트리라 이 축이 테스트에 아예 없었고(갭), 출하
     manifest 의 @source 엔트리 전량이 오분류되는 것을 아무도 못 봤다."""
     shipped = REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest"
-    manifest = pm_update.read_manifest(shipped)
+    manifest = manifest_store.read_manifest(shipped)
     mapped = [e for e in manifest if getattr(e, "source_rel", None)]
     assert mapped, f"출하 manifest 에 @source 엔트리가 없다(픽스처 전제 붕괴): {shipped}"
     misclassified = [
@@ -4372,7 +4373,7 @@ def test_path_under_manifest_shipped_codex_override_not_overclassified(pm_update
     `.agents/skills` 상위 항목과 그 아래 파일 override 가 동시에 존재하는 유일한 출하 형상이라,
     합성 픽스처만으로는 실 manifest 순서/마커 조합이 바뀌었을 때를 못 잡는다."""
     shipped = REPO / "templates" / "codex" / ".project_manager" / "engine.manifest"
-    manifest = pm_update.read_manifest(shipped)
+    manifest = manifest_store.read_manifest(shipped)
     overrides = [
         e for e in manifest
         if getattr(e, "source_rel", None) and str(e).count("/") >= 2
@@ -5416,7 +5417,7 @@ def _retired_path_fixture(pm_update, tmp_path, *, dest_new=True):
     if dest_new:
         new = dest / _RETIRED_REVIEWER_NEW
         new.write_bytes(source_new.read_bytes())
-    manifest = [pm_update.ManifestEntry(_RETIRED_REVIEWER_NEW)]
+    manifest = [manifest_rules.ManifestEntry(_RETIRED_REVIEWER_NEW)]
     return source, dest, source_manifest, manifest, old
 
 
@@ -5781,19 +5782,19 @@ def _make_template_upstream(root: Path) -> None:
 
 def test_is_board_separated_false_when_no_board_dir(pm_update, tmp_path):
     """board/tickets 부재(legacy·솔로) → _is_board_separated == False."""
-    assert pm_update._is_board_separated(tmp_path) is False
+    assert manifest_store._is_board_separated(tmp_path) is False
 
 
 def test_is_board_separated_true_when_board_tickets_dir(pm_update, tmp_path):
     """`.project_manager/board/tickets` 가 dir → _is_board_separated == True (분리 형상)."""
     _make_board_separated(tmp_path)
-    assert pm_update._is_board_separated(tmp_path) is True
+    assert manifest_store._is_board_separated(tmp_path) is True
 
 
 def test_is_board_separated_ignores_bare_board_without_tickets(pm_update, tmp_path):
     """board/ 만 있고 tickets/ 가 없으면 legacy 로 본다 (board_root 의 graceful 실측 동형)."""
     (tmp_path / ".project_manager" / "board").mkdir(parents=True)
-    assert pm_update._is_board_separated(tmp_path) is False
+    assert manifest_store._is_board_separated(tmp_path) is False
 
 
 # ── 단위: _dest_relpath_for 리매핑 (template 한정·분리 시만) ──────────────────
@@ -5801,26 +5802,26 @@ def test_is_board_separated_ignores_bare_board_without_tickets(pm_update, tmp_pa
 def test_dest_relpath_remaps_template_when_separated(pm_update, tmp_path):
     """board-분리 dest → wiki/tickets/_template.md 가 board/tickets/_template.md 로 리매핑."""
     _make_board_separated(tmp_path)
-    assert pm_update._dest_relpath_for(_TEMPLATE_REL, tmp_path) == _BOARD_TEMPLATE_REL
+    assert manifest_store._dest_relpath_for(_TEMPLATE_REL, tmp_path) == _BOARD_TEMPLATE_REL
 
 
 def test_dest_relpath_keeps_template_in_wiki_when_legacy(pm_update, tmp_path):
     """legacy dest(board/ 미분리) → 종전 wiki/tickets/_template.md 유지(무변경·회귀)."""
-    assert pm_update._dest_relpath_for(_TEMPLATE_REL, tmp_path) == _TEMPLATE_REL
+    assert manifest_store._dest_relpath_for(_TEMPLATE_REL, tmp_path) == _TEMPLATE_REL
 
 
 def test_dest_relpath_passthrough_other_paths_even_when_separated(pm_update, tmp_path):
     """리매핑은 _template.md 한정 — 다른 엔진 경로는 board-분리 dest 여도 입력 그대로(무변경)."""
     _make_board_separated(tmp_path)
     other = ".project_manager/tools/board.py"
-    assert pm_update._dest_relpath_for(other, tmp_path) == other
+    assert manifest_store._dest_relpath_for(other, tmp_path) == other
 
 
 def test_dest_relpath_normalizes_windows_separators(pm_update, tmp_path):
     """relpath 에 `\\`(Windows _iter_files str(Path))가 섞여도 posix-normalize 후 리매핑한다."""
     _make_board_separated(tmp_path)
     win_rel = _TEMPLATE_REL.replace("/", "\\")
-    assert pm_update._dest_relpath_for(win_rel, tmp_path) == _BOARD_TEMPLATE_REL
+    assert manifest_store._dest_relpath_for(win_rel, tmp_path) == _BOARD_TEMPLATE_REL
 
 
 # ── plan 레벨: 양 형상 dst 목적지 (실 복사 없이) ──────────────────────────────
@@ -5832,7 +5833,7 @@ def test_plan_writes_template_to_board_when_separated(pm_update, tmp_path):
     _make_template_upstream(source)
     _make_board_separated(dest)
 
-    manifest = pm_update.read_manifest(source / ".project_manager" / "engine.manifest")
+    manifest = manifest_store.read_manifest(source / ".project_manager" / "engine.manifest")
     changes, missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert missing == []
@@ -5853,7 +5854,7 @@ def test_plan_writes_template_to_wiki_when_legacy(pm_update, tmp_path):
     _make_template_upstream(source)
     (dest / ".project_manager").mkdir(parents=True)  # board/ 없음 = legacy
 
-    manifest = pm_update.read_manifest(source / ".project_manager" / "engine.manifest")
+    manifest = manifest_store.read_manifest(source / ".project_manager" / "engine.manifest")
     changes, missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert missing == []
@@ -5876,7 +5877,7 @@ def test_plan_template_already_at_board_no_change(pm_update, tmp_path):
     board_tmpl = dest / _BOARD_TEMPLATE_REL
     board_tmpl.write_text((source / _TEMPLATE_REL).read_text(encoding="utf-8"), encoding="utf-8")
 
-    manifest = pm_update.read_manifest(source / ".project_manager" / "engine.manifest")
+    manifest = manifest_store.read_manifest(source / ".project_manager" / "engine.manifest")
     changes, missing = pm_update.plan(source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
 
     assert missing == []
@@ -6038,7 +6039,7 @@ def test_source_remapped_hook_missing_source_reports_rc2_class(pm_update, tmp_pa
     assert changes == []
     assert missing == [dst_rel], f"@source 소스 부재가 missing(rc2 입력)으로 안 잡힘: {missing}"
     # @source 엔트리는 target_owned=False → main 이 skip 아닌 rc2(엔진 누락).
-    assert not any(pm_update._entry_target_owned_flag(e) for e in entries)
+    assert not any(manifest_rules._entry_target_owned_flag(e) for e in entries)
 
 
 # ── T-0305: manifest 자기전파 flavor 보존 e2e (self-prop 이 flavor 매니페스트 clobber 안 함) ──────
@@ -6932,9 +6933,9 @@ def test_paths_scope_accepts_guest_clause_path(pm_update, tmp_path, monkeypatch,
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
         "\n".join(_SCOPE_MANIFEST) + "\n"
-        + pm_update._GUEST_MANIFEST_BEGIN + "\n"
+        + manifest_rules._GUEST_MANIFEST_BEGIN + "\n"
         + ".opencode/agents @render @target-owned\n"
-        + pm_update._GUEST_MANIFEST_END + "\n",
+        + manifest_rules._GUEST_MANIFEST_END + "\n",
         encoding="utf-8")
     monkeypatch.setattr(pm_update, "REPO", dest)
 
@@ -7036,7 +7037,7 @@ def test_paths_scope_accepts_board_separated_remap(pm_update, tmp_path, monkeypa
     (dest / ".project_manager" / "board" / "tickets").mkdir(parents=True)  # board 분리 형상.
     _write_local_conf(dest, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
-    assert pm_update._is_board_separated(dest), "픽스처 전제(board 분리 판정)"
+    assert manifest_store._is_board_separated(dest), "픽스처 전제(board 분리 판정)"
 
     rc = pm_update.main(["--paths", board_rel])
 
@@ -7263,7 +7264,7 @@ def test_adapter_baseline_ledger_is_not_registered_and_not_shipped(pm_update):
     ledger_rel = pm_import.ADAPTER_BASELINE_RELPATH.as_posix()
     for manifest_path in _MANIFESTS:
         registered = {str(entry).replace("\\", "/")
-                      for entry in pm_update.read_manifest(manifest_path)}
+                      for entry in manifest_store.read_manifest(manifest_path)}
         assert ledger_rel not in registered, (
             f"{manifest_path} 가 원장을 등재 — byte-copy 가 채택자 판정 기준을 덮는다")
     shipped = [flavor for flavor in ("claude_code", "codex", "opencode")
@@ -7971,7 +7972,7 @@ def test_apply_writes_claude_card_effort_and_stops_outside_ladder(pm_update, tmp
     manifest_file.parent.mkdir(parents=True)
     manifest_file.write_text(".claude/agents    @render\n", encoding="utf-8")
     _track_source_tree(source)
-    manifest = pm_update.read_manifest(manifest_file)
+    manifest = manifest_store.read_manifest(manifest_file)
     dest = tmp_path / "dest"
     conf = _write_local_conf(dest, "project.name=Acme\n" + _ADOPTER0_DELEGATE_CONF)
 
@@ -8388,7 +8389,7 @@ def test_apply_renders_every_render_change_before_writing(pm_update, tmp_path):
     manifest_file.parent.mkdir(parents=True)
     manifest_file.write_text(".claude/agents    @render\n", encoding="utf-8")
     _track_source_tree(source)
-    manifest = pm_update.read_manifest(manifest_file)
+    manifest = manifest_store.read_manifest(manifest_file)
     dest = tmp_path / "dest"
     conf = _write_local_conf(dest, "project.name=Acme\n" + _ADOPTER0_DELEGATE_CONF)
     changes, missing = pm_update.plan(source, manifest, dest_root=dest,
@@ -8634,7 +8635,7 @@ def test_gate_snapshot_retirement_is_declared_in_every_manifest(pm_update, tmp_p
           for flavor in ("claude_code", "codex", "opencode")),
     ]
     for manifest in manifests:
-        entries = {str(entry).replace("\\", "/") for entry in pm_update.read_manifest(manifest)}
+        entries = {str(entry).replace("\\", "/") for entry in manifest_store.read_manifest(manifest)}
         assert _GATE_SNAPSHOT_OLD not in entries, manifest
         assert (_GATE_SNAPSHOT_OLD, _GATE_SNAPSHOT_NEW) in (
             pm_update.validated_retired_path_directives(REPO, [manifest])

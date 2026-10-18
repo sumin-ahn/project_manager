@@ -108,7 +108,6 @@ _result_payload = private_refs._result_payload
 _unsafe_result = private_refs._unsafe_result
 _line_rewrite_plan = private_refs._line_rewrite_plan
 # 비-python 출하 표면 언어 축(언어별 산문 경계 스캐너)도 같은 객체를 가리킨다.
-_load_pm_update = private_refs._load_pm_update
 LANGUAGE_NOEXT = private_refs.LANGUAGE_NOEXT
 LANGUAGE_SH = private_refs.LANGUAGE_SH
 LANGUAGE_CMD = private_refs.LANGUAGE_CMD

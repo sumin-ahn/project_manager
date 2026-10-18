@@ -73,8 +73,8 @@ from typing import NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.domain import conf_schema  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, repo_files  # noqa: E402
+from pm_engine.domain import conf_schema, manifest_rules, upstream_rules  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, manifest_store, repo_files  # noqa: E402
 from pm_engine.infra.harness import contract  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
@@ -87,66 +87,11 @@ def _is_engine_rev_skew(exc) -> bool:
     return getattr(exc, "_engine_rev_skew", False)
 
 
-# manifest 의 render 태그 — path 행 끝 `  @render` 면 byte-copy 대신 render_adapter.
-RENDER_TAG = "@render"
-# manifest 의 target-owned 태그 — path 행 끝 `  @target-owned` 면 그 경로는 타깃 자신만
-# 보유하는 어댑터다(엔진 upstream/루트에 source 부재가 정상). source-부재 skip 의 *명시* 판별자.
-# `@render` 와 독립 — `.claude/agents @render`(루트 upstream 에 존재해야 하는 엔진 리소스)는
-# render=True 이지만 target_owned=False 라, 잘못된 --from 에서 빠지면 skip 이 아니라 rc2 가 된다.
-TARGET_OWNED_TAG = "@target-owned"
-# manifest 의 source-remap 태그 — path 행 끝 `  @source=<relpath>` 면 그 경로는
-# source_root 아래 canonical 소스(`<source_root>/<relpath>`)에서 읽되 dest 에는 manifest 경로로
-# 기록한다(_remap_to_dest). opencode 어댑터(`.opencode/*`)가 프레임워크 루트의
-# `templates/opencode/.opencode/*` 에 살지만 채택자 dest 엔 `.opencode/*` 로 전파돼야 하는 비대칭을
-# 잇는다(framework-owned·claude `.claude/*` 대칭). `@target-owned`(source-부재 정상·skip)와 대비:
-# @source 는 source 가 *실재*(templates/ 아래)하므로 부재면 rc2(엔진/템플릿 누락 은폐 금지).
-SOURCE_TAG_PREFIX = "@source="
 # 구 updater도 무시하는 manifest 주석 지시문. 일반 상류 부재 파일을
 # 지우지 않고, 이 prefix로 명시된 engine-owned 경로만 한 번 backup+퇴역한다.
 RETIRED_PATH_DIRECTIVE_PREFIX = "# pm-retired-path:"
 RETIRED_PATH_LOCK_REL = ".project_manager/.local/retired-paths.lock"
 RETIRED_PATH_BACKUP_ROOT_REL = ".pm_import_backups"
-# read_manifest 가 path 행 끝에서 떼어낼 수 있는 boolean 마커들(복수·순서 무관). `@source=<path>` 는
-# 값 운반 마커라 prefix 검사로 별도 처리(이 튜플 밖).
-_MANIFEST_MARKERS = (RENDER_TAG, TARGET_OWNED_TAG)
-# 엔진 구현 패키지 디렉터리 행 — 평면 엔진 파일보다 먼저 전달한다(read_manifest 정렬).
-_ENGINE_PACKAGE_REL = ".project_manager/tools/pm_engine"
-
-
-class ManifestEntry(str):
-    """manifest 한 경로 — `str` 서브클래스라 기존 `in`/`.startswith`/`==` 가 그대로 동작한다.
-
-    추가 속성:
-    - `render`(bool): path 행 끝에 `@render` 태그가 있으면 True(byte-copy 대신 render_adapter
-      로 채운다). 미주석=False → 오늘과 정확히 동일(순수 copy2·후방호환).
-    - `target_owned`(bool): path 행 끝에 `@target-owned` 태그가 있으면 True — 타깃 자신만 보유
-      하는 어댑터라 엔진 upstream 에 source-부재가 정상(전파 대상 아님). source-부재 skip 의
-      명시 판별자. `@render` 와 독립이며, 두 마커는 한 행에 같이 올 수 있다(순서 무관).
-    - `source_rel`(str|None): path 행 끝에 `@source=<relpath>` 태그가 있으면 그 canonical 소스
-      상대경로— source_root 아래 그 경로에서 읽되 dest 엔 manifest 경로(=`str(self)`)
-      로 기록한다(_source_root_rel·_remap_to_dest). 미주석=None → source 읽기 경로 = manifest 경로
-      (오늘 동작·후방호환). @render 와 공존 가능(토큰-form 소스 읽어 렌더).
-
-    str 을 상속함으로써 read_manifest 의 반환이 path+플래그 의미를 가지면서도 `entry in entries`·
-    `e.startswith(...)` 같은 기존 호출부/테스트를 한 줄도 깨지 않는다.
-    """
-
-    render: bool
-    target_owned: bool
-    source_rel: str | None
-
-    def __new__(
-        cls,
-        path: str,
-        render: bool = False,
-        target_owned: bool = False,
-        source_rel: str | None = None,
-    ) -> "ManifestEntry":
-        obj = super().__new__(cls, path)
-        obj.render = render
-        obj.target_owned = target_owned
-        obj.source_rel = source_rel
-        return obj
 
 
 class _RenderDst:
@@ -259,31 +204,6 @@ def print_conf_migration_notice(dest_root: Path) -> None:
         print(f"[pm_update] {line}")
 
 
-def read_manifest(path: Path) -> list[ManifestEntry]:
-    """manifest 파일 → ManifestEntry 리스트 ('#' 주석·빈 줄 제외·마커 파싱).
-
-    각 항목은 `str` 서브클래스 ManifestEntry — 값은 path 문자열이고 `.render`·`.target_owned`·
-    `.source_rel` 속성이 그 path 의 마커 여부/값을 운반한다. path 행 끝의 마커(`@render`·
-    `@target-owned`·`@source=<path>`)는 복수·순서 무관으로 인식해 전부 떼어내고 순수 경로만
-    ManifestEntry 값으로 남긴다.
-      - `@render`→ render=True (byte-copy 대신 render_adapter)
-      - `@target-owned`→ target_owned=True (엔진 upstream source-부재가 정상·skip 판별)
-      - `@source=<path>`→ source_rel=<path> (source_root 아래 canonical 소스에서 읽고
-                                     dest 엔 manifest 경로로 기록·source-remap)
-    예: `.opencode/agents  @render @source=templates/opencode/.opencode/agents`
-        → path=`.opencode/agents`, render=True, source_rel=`templates/opencode/.opencode/agents`.
-    미주석=render/target_owned False·source_rel None → 오늘과 동일(순수 copy2·전파 대상·후방호환).
-    """
-    out: list[ManifestEntry] = []
-    for line in fs.read_text_shared(path, encoding="utf-8").splitlines():
-        entry = _parse_manifest_line(line)
-        if entry is not None:
-            out.append(entry)
-    # 구형·flavor manifest의 물리 행 순서가 남아 있어도 새 updater는 엔진 패키지를 먼저
-    # 배포한다. 평면 파일 복사 중 끊겨도 패키지는 이미 완전하다.
-    return sorted(out, key=lambda entry: str(entry) != _ENGINE_PACKAGE_REL)
-
-
 class RetiredPathError(RuntimeError):
     """retired-path 선언·사전조건이 이주를 안전하게 정의하지 못한다."""
 
@@ -360,9 +280,9 @@ def validated_retired_path_directives(
     source_root = Path(source_root)
     declarations: list[tuple[str, str]] = []
     seen: dict[str, str] = {}
-    entries_by_path: dict[str, list[ManifestEntry]] = {}
+    entries_by_path: dict[str, list[manifest_rules.ManifestEntry]] = {}
     for manifest_path in (Path(path) for path in manifest_paths):
-        for entry in read_manifest(manifest_path):
+        for entry in manifest_store.read_manifest(manifest_path):
             entries_by_path.setdefault(
                 str(entry).replace("\\", "/"), []
             ).append(entry)
@@ -401,15 +321,15 @@ def validated_retired_path_directives(
             )
         replacement_entries = [
             entry for path, entries in entries_by_path.items()
-            if _path_owned_by(new, (path,)) for entry in entries
+            if manifest_rules._path_owned_by(new, (path,)) for entry in entries
         ]
         if not replacement_entries:
             raise RetiredPathError(
                 f"replacement가 선택 upstream manifest-owned 경로가 아님: {new}"
             )
         if any(
-            _entry_render_flag(entry)
-            or _entry_target_owned_flag(entry)
+            manifest_rules._entry_render_flag(entry)
+            or manifest_rules._entry_target_owned_flag(entry)
             or getattr(entry, "source_rel", None)
             for entry in replacement_entries
         ):
@@ -482,7 +402,7 @@ def _validate_retired_path_plan(
     prospective_replacements = prospective_replacements or {}
     old_paths = {old for old, _new in declarations}
     for old, new in declarations:
-        if not _path_owned_by(new, owned):
+        if not manifest_rules._path_owned_by(new, owned):
             raise RetiredPathError(f"replacement가 manifest-owned 경로가 아님: {new}")
         if new in old_paths:
             raise RetiredPathError(f"retired-path chain/conflict는 허용하지 않음: {old} -> {new}")
@@ -600,7 +520,7 @@ def _run_retired_path_migration(
         except (OSError, UnicodeError, RetiredPathError) as exc:
             print(f"[중단] retired-path 이주 실패 — {exc}", file=sys.stderr)
             return False
-        if declared and not any(_path_owned_by(new, owned) for _old, new in declared):
+        if declared and not any(manifest_rules._path_owned_by(new, owned) for _old, new in declared):
             return True
     try:
         prospective = {
@@ -618,133 +538,6 @@ def _run_retired_path_migration(
     for old, backup in planned:
         print(f"  [{verb}] {old} -> {backup}")
     return True
-
-
-def _parse_manifest_line(line: str) -> ManifestEntry | None:
-    """manifest 한 줄 → ManifestEntry — 주석·빈 줄은 None.
-
-    `read_manifest`(파일 전체)와 guest 절 파싱(`_dest_guest_manifest_entries`·텍스트 조각)이
-    **같은 한 함수**를 쓴다. 마커 인식이 갈리면 guest 절의 `@render`/엔진 행 구분이 파일 파싱과
-    어긋나 소유 채널 판정이 뒤집힌다(판정 사본 금지)."""
-    line = line.strip()
-    if not line or line.startswith("#"):
-        return None
-    # 행 끝의 마커들(복수·순서 무관)을 떼어낸다 — path 와 마커, 마커끼리는 공백 구분.
-    parts = line.split()
-    render = False
-    target_owned = False
-    source_rel: str | None = None
-    while parts and (
-        parts[-1] in _MANIFEST_MARKERS or parts[-1].startswith(SOURCE_TAG_PREFIX)
-    ):
-        marker = parts.pop()
-        if marker == RENDER_TAG:
-            render = True
-        elif marker == TARGET_OWNED_TAG:
-            target_owned = True
-        elif marker.startswith(SOURCE_TAG_PREFIX):
-            # `@source=<path>` — 값 운반 마커. 빈 값(`@source=`)은 무의미하므로 None 취급
-            #   (source 읽기 경로 = manifest 경로·후방호환).
-            source_rel = marker[len(SOURCE_TAG_PREFIX):] or None
-    if not parts:
-        return None
-    return ManifestEntry(" ".join(parts), render, target_owned, source_rel)
-
-
-def _manifest_entry_line(entry) -> str:
-    """ManifestEntry를 손실 없이 한 manifest 행으로 직렬화한다(마커 순서 결정적)."""
-    markers: list[str] = []
-    if _entry_render_flag(entry):
-        markers.append(RENDER_TAG)
-    if _entry_target_owned_flag(entry):
-        markers.append(TARGET_OWNED_TAG)
-    source_rel = getattr(entry, "source_rel", None)
-    if source_rel:
-        markers.append(f"{SOURCE_TAG_PREFIX}{source_rel}")
-    return "    ".join((str(entry), *markers))
-
-
-def merge_manifest_sources(manifest_paths: list[Path]) -> dict:
-    """선택된 template flavor manifest들을 선언 순서대로 합집합한다.
-
-    경로가 처음 등장한 선언을 채택한다. 같은 경로가 뒤 flavor에도 있고 마커가 다르면 첫 선언의
-    마커를 유지한다. 이는 ``plan_copy``의 MF3(선택 트리 순서가 결정적 우선순위)와 같은 정책이며,
-    첫 flavor가 다른 flavor의 상위집합이라는 전제는 두지 않는다. 후순위 flavor의 주석/레이아웃은
-    의도적으로 합치지 않고 새 관리 경로만 결정적 생성 절에 직렬화한다.
-
-    첫 manifest의 주석/레이아웃은 그대로 보존하고, 뒤 manifest에서 새로 추가되는 경로만 생성 절로
-    붙인다. 단일 manifest면 원문을 byte-identical 반환한다.
-    """
-    if not manifest_paths:
-        raise ValueError("합칠 engine.manifest가 없습니다.")
-    paths = [Path(p) for p in manifest_paths]
-    first_text = fs.read_text_shared(paths[0], encoding="utf-8")
-    merged: list[ManifestEntry] = []
-    seen: dict[str, ManifestEntry] = {}
-    additions: list[tuple[str, list[ManifestEntry]]] = []
-    conflicts: list[str] = []
-    for index, path in enumerate(paths):
-        current = read_manifest(path)
-        added_here: list[ManifestEntry] = []
-        for entry in current:
-            key = str(entry).replace("\\", "/")
-            if key in seen:
-                first_markers = _manifest_marker_key(seen[key])
-                next_markers = _manifest_marker_key(entry)
-                if (
-                    first_markers != next_markers
-                    and not (
-                        key == _MANIFEST_SELF_REL
-                        and first_markers[:2] == next_markers[:2]
-                    )
-                ):
-                    conflicts.append(key)
-                continue
-            seen[key] = entry
-            merged.append(entry)
-            if index:
-                added_here.append(entry)
-        if index and added_here:
-            try:
-                flavor = path.parents[1].name
-            except IndexError:
-                flavor = path.parent.name
-            additions.append((flavor, added_here))
-    if len(paths) == 1:
-        text = first_text
-    else:
-        chunks = [first_text.rstrip("\n")]
-        for flavor, entries in additions:
-            chunks.extend([
-                "",
-                f"# ── 선택 flavor 합집합: {flavor} (pm_import/pm_update 생성) ──",
-                *(_manifest_entry_line(entry) for entry in entries),
-            ])
-        text = "\n".join(chunks) + "\n"
-    return {
-        "entries": merged,
-        "text": text,
-        "conflicts": sorted(set(conflicts)),
-        "paths": paths,
-    }
-
-
-def _entry_render_flag(entry) -> bool:
-    """manifest 항목의 render 플래그 — ManifestEntry 면 `.render`, 평문 str(레거시 호출)면 False.
-
-    plan() 이 `list[str]`(기존 테스트·모듈 밖 호출부)과 `list[ManifestEntry]`(read_manifest) 둘 다
-    받게 정규화한다 — 후방호환(평문 str 항목은 render 비대상).
-    """
-    return bool(getattr(entry, "render", False))
-
-
-def _entry_target_owned_flag(entry) -> bool:
-    """manifest 항목의 target_owned 플래그 — ManifestEntry 면 `.target_owned`, 평문 str 면 False.
-
-    source-부재 skip 판별자. 평문 str 항목(레거시 호출)은 target-owned 가 아니므로
-    source-부재 시 엔진 누락으로 보고 rc2(후방호환·is_owned skip 은 명시 마커 한정).
-    """
-    return bool(getattr(entry, "target_owned", False))
 
 
 def _read_local_conf(path: Path) -> dict[str, str]:
@@ -812,321 +605,6 @@ def resolve_hook_set_predicate(source_root=None):
         pm_import.is_live_hook_set_path(str(rel).replace("\\", "/"), _t))
 
 
-class SkippedRepoShippingEntryWarning(RuntimeWarning):
-    """pm-update가 byte-copy할 수 없는 tracked 엔트리를 명시적으로 제외했다는 신호."""
-
-
-class EmptyShippingInventoryError(RuntimeError):
-    """존재하는 manifest 엔트리의 tracked 출하 인벤토리가 0건인 결함."""
-
-    def __init__(
-            self, checkout: Path, subtree: str,
-            *, filesystem_fallback: bool = False) -> None:
-        self.checkout = Path(checkout)
-        self.subtree = subtree
-        self.filesystem_fallback = filesystem_fallback
-        diagnosis = (
-            "filesystem 강등 상태이므로 소스 디렉토리가 비었는지와 checkout 루트가 "
-            "올바른지 확인하라"
-            if filesystem_fallback
-            else "checkout 루트가 올바른지와 git index에 이 경로가 등재됐는지 확인하라"
-        )
-        super().__init__(
-            "pm-update 출하 인벤토리가 0건임 "
-            f"(checkout={self.checkout}, subtree={subtree!r}); "
-            + diagnosis
-        )
-
-
-def _shipping_inventory(repo_files, root: Path, rel: str) -> list:
-    """tracked 출하 목록과 미추적 제외 신호를 만든다.
-
-    ``pm-update`` 출하는 manifest 디렉토리의 byte-copy 채널이다. 따라서 공용 seam의 넓은
-    domain(gap 검출에 필요한 symlink/gitlink 포함)은 유지하되, 이 소비처에서만 실제 일반
-    파일로 좁힌다. git checkout일 때 OWNED와의 차집합 중 같은 일반 파일 판정을 통과한
-    미추적 파일 수만 한 줄로 알려 ``git add`` 뒤에만 출하된다는 계약을 숨기지 않는다.
-    """
-    runner = repo_files._real_git_runner(root)
-    tracked = repo_files.list_repo_owned_entries(
-        root,
-        rel,
-        mode=repo_files.TRACKED_ONLY,
-        git_runner=runner,
-    )
-    rc, inside = runner(["rev-parse", "--is-inside-work-tree"])
-    filesystem_fallback = not (rc == 0 and inside.strip() == "true")
-    if rc == 0 and inside.strip() == "true":
-        owned = repo_files.list_repo_owned_files(
-            root, rel, mode=repo_files.OWNED, git_runner=runner)
-        tracked_paths = {entry.path for entry in tracked}
-        untracked_count = sum(
-            _is_shippable_regular_file(root, relative, index_mode=None)
-            for relative in set(owned) - tracked_paths
-        )
-        if untracked_count:
-            print(
-                f"pm-update: untracked {untracked_count}건 제외 — git add 후 전파됨 "
-                f"(subtree={rel})",
-                file=sys.stderr,
-            )
-        if not tracked and (root / rel).is_file():
-            ignored_rc, _ignored_detail = runner([
-                "check-ignore",
-                "--quiet",
-                "--",
-                rel,
-            ])
-            if ignored_rc == 0:
-                print(
-                    "pm-update: manifest 선언 단일 파일이 source에서 gitignore되어 "
-                    f"출하되지 않음: {rel} — ignore 규칙을 제거하고 git add 하라",
-                    file=sys.stderr,
-                )
-    if not tracked:
-        # seam은 coverage·부분 subtree 질의도 쓰므로 빈 결과 자체를 예외로 만들지 않는다.
-        # manifest 경로가 존재해 이 소비점에 도달한 경우만 출하 결함으로 직접 승격한다.
-        # 위의 OWNED/check-ignore 진단을 먼저 내 원인 판별 정보도 잃지 않는다.
-        raise EmptyShippingInventoryError(
-            root, rel, filesystem_fallback=filesystem_fallback)
-    return tracked
-
-
-def _shippable_tracked_entries(
-    root: Path,
-    entries: list[repo_files.RepoOwnedEntry],
-) -> list[tuple[Path, Path]]:
-    """tracked 엔트리를 안전한 byte-copy source로 좁히고 제외 이유를 loud하게 합친다."""
-    accepted: list[tuple[Path, Path]] = []
-    skipped: dict[str, list[str]] = {
-        "working tree에서 삭제됨": [],
-        "symlink(링크 의미를 byte-copy 출하하지 않음)": [],
-        "디렉토리/gitlink(파일 byte-copy 대상 아님)": [],
-        "일반 파일이 아닌 엔트리": [],
-    }
-    for entry in entries:
-        relative = entry.path
-        index_mode = entry.index_mode
-        source = root / relative
-        if index_mode == "120000":
-            skipped["symlink(링크 의미를 byte-copy 출하하지 않음)"].append(
-                relative.as_posix())
-            continue
-        if index_mode == "160000":
-            skipped["디렉토리/gitlink(파일 byte-copy 대상 아님)"].append(
-                relative.as_posix())
-            continue
-        if index_mode is not None and index_mode not in {"100644", "100755"}:
-            skipped["일반 파일이 아닌 엔트리"].append(
-                f"{relative.as_posix()} (git index mode {index_mode})")
-            continue
-        try:
-            mode = source.lstat().st_mode
-        except FileNotFoundError:
-            skipped["working tree에서 삭제됨"].append(relative.as_posix())
-            continue
-        except OSError as exc:
-            skipped["일반 파일이 아닌 엔트리"].append(
-                f"{relative.as_posix()} ({exc})")
-            continue
-        if stat.S_ISREG(mode):
-            accepted.append((relative, source))
-        elif stat.S_ISLNK(mode):
-            skipped["symlink(링크 의미를 byte-copy 출하하지 않음)"].append(
-                relative.as_posix())
-        elif stat.S_ISDIR(mode):
-            skipped["디렉토리/gitlink(파일 byte-copy 대상 아님)"].append(
-                relative.as_posix())
-        else:
-            skipped["일반 파일이 아닌 엔트리"].append(relative.as_posix())
-
-    for reason, paths in skipped.items():
-        if paths:
-            warnings.warn(
-                f"pm-update 출하 tracked 엔트리 {len(paths)}건 제외 — {reason}: "
-                + ", ".join(paths),
-                SkippedRepoShippingEntryWarning,
-                stacklevel=2,
-            )
-    return accepted
-
-
-def _is_shippable_regular_file(
-    root: Path,
-    relative: Path,
-    *,
-    index_mode: str | None,
-) -> bool:
-    """출하 가능한 일반 파일인가 — index mode와 working-tree lstat의 공통 판정."""
-    if index_mode is not None and index_mode not in {"100644", "100755"}:
-        return False
-    try:
-        return stat.S_ISREG((root / relative).lstat().st_mode)
-    except OSError:
-        return False
-
-
-def _iter_files(root: Path, rel: str):
-    """manifest 엔트리(파일/디렉토리) → (repo 기준 relpath, src 절대경로) 들.
-
-    디렉토리는 repo-owned seam으로 협착하고 symlink/gitlink 등 제외를 loud하게 표면화한다.
-    relpath 는 **항상 posix(슬래시) 정규화**한다(`as_posix()`) — 모듈 전체의 슬래시 관례
-    (`_path_under_manifest`·`_dest_relpath_for` 는 `.replace("\\","/")` 로 슬래시 전제)과 통일.
-    `str(Path.relative_to)` 는 OS-네이티브 구분자라 Windows 에선 역슬래시(`.claude\\agents\\x.md`)
-    를 산출해 plan change 튜플 key 가 소비자/테스트(슬래시)와 어긋났다(pm_render 4건 red).
-    POSIX 에선 `str(p.relative_to(root)) == p.relative_to(root).as_posix()` 라 동작 무변경.
-    """
-    src = root / rel
-    if src.is_symlink():
-        warnings.warn(
-            f"pm-update 출하 manifest 엔트리 제외 — symlink 의미를 byte-copy 출하하지 않음: {rel}",
-            SkippedRepoShippingEntryWarning,
-            stacklevel=2,
-        )
-    elif src.is_dir():
-        tracked = _shipping_inventory(repo_files, root, rel)
-        for relative, source in _shippable_tracked_entries(root, tracked):
-            yield relative.as_posix(), source
-    elif src.is_file():
-        tracked = _shipping_inventory(repo_files, root, rel)
-        for accepted_relative, source in _shippable_tracked_entries(root, tracked):
-            yield accepted_relative.as_posix(), source
-    # missing → 아무것도 yield 안 함 (호출부가 missing 으로 보고)
-
-
-# ── board-분리 인지 dest 리매핑 ───────────────────────────
-# manifest 는 ticket 본문 템플릿을 `wiki/tickets/_template.md` 로 들고 있다(canonical·
-# legacy adopter 의 실 위치). 그러나 board(tickets+areas)가 `.project_manager/board/`
-# (submodule)로 분리된 adopter(board.py board_root)에선 `_template.md` 가
-# `board/tickets/_template.md` 에 산다(board_root() 추종·B 마이그레이션이 거기로 옮김).
-# manifest 항목은 legacy-correct 로 두고(자체 drift 회피), *동기 시 dest 경로만*
-# board_root 로 해소한다 — board-분리 dest 면 board/tickets/_template.md 로, legacy dest 면
-# 종전 wiki/tickets/_template.md 로(무변경). 이로써 board-분리 adopter 의 매 sync 가
-# wiki/tickets/_template.md 를 부활시키지 않는다(drift-0·실 발생 버그 reconcile).
-#
-# board.py board_root() 의 *실측* 판별(`<dest>/.project_manager/board/tickets` 가 dir 인가)을
-# 동형 복제한다 — pm_update 는 stdlib-only(board 미import 결합 회피·_resolve_dest_source 와
-# 동형)이고, 판별은 단일 is_dir() probe 라 board.py line 71/95 와 정확히 같다. 어떤 manifest
-# 항목이 board-분리 시 board/ 로 옮겨가는지는 아래 `_TEMPLATE_REL`→`_BOARD_TEMPLATE_REL`
-# 매핑(`_dest_relpath_for`)이 단일 진실.
-_TEMPLATE_REL = ".project_manager/wiki/tickets/_template.md"
-_BOARD_TEMPLATE_REL = ".project_manager/board/tickets/_template.md"
-
-
-def _is_board_separated(dest_root: Path) -> bool:
-    """dest 가 board-분리 형상인가 — `<dest>/.project_manager/board/tickets` 가 실 dir.
-
-    board.py board_root() 의 판별과 동형(line 71/95) — pm_update 가 board 를 import 하지 않고
-    같은 *실측* probe 로 dest 레이아웃을 가른다. board/tickets 가 없으면 legacy(False·무변경).
-    """
-    return (Path(dest_root) / ".project_manager" / "board" / "tickets").is_dir()
-
-
-def _dest_relpath_for(rel: str, dest_root: Path) -> str:
-    """manifest source relpath → dest 기록 relpath (board-분리 인지 리매핑).
-
-    `wiki/tickets/_template.md` 항목은 board-분리 dest 에서 `board/tickets/_template.md` 로
-    리매핑한다(board_root() 추종) — source 는 upstream 의 wiki/ 에서 그대로 읽되 dest 만 옮긴다.
-    legacy dest(board/ 미분리)거나 다른 모든 항목은 입력 그대로(무변경·후방호환). 경로 비교는
-    OS-무관하게 posix-normalize 한다(_iter_files 가 str(Path) 로 yield 해 Windows 에선 `\\` 가
-    섞일 수 있다)."""
-    rel_norm = rel.replace("\\", "/")
-    if rel_norm == _TEMPLATE_REL and _is_board_separated(dest_root):
-        return _BOARD_TEMPLATE_REL
-    return rel
-
-
-# ── @source source-remap (_dest_relpath_for dest-remap 의 대칭 source 쌍) ──
-# manifest 항목이 `@source=<relpath>` 를 달면 source_root 아래 그 canonical 경로에서 읽되(source_rel),
-# dest 엔 manifest 경로(str(entry))로 기록한다. opencode 어댑터(`.opencode/agents`·`command`)는
-# 채택자 dest 엔 `.opencode/*` 로 살지만 프레임워크 루트의 canonical 소스는 `templates/opencode/
-# .opencode/*` 에 있다(루트=claude·`.opencode/` 부재). 이 비대칭을 잇는 read-side remap.
-def _source_root_rel(entry) -> str:
-    """manifest 항목의 source-root 상대 *읽기* 경로 — @source= 있으면 source_rel, 없으면 str(entry).
-
-    기본(마커 부재·source_rel None)은 dest relpath 를 그대로 source-root 상대 읽기 경로로 쓴다
-    (오늘 동작·후방호환). `@source=<path>`가 있으면 source_root 아래 그 canonical 경로에서
-    읽는다 — dest 기록 경로는 manifest 경로 유지(_remap_to_dest 가 치환). 평문 str 항목(레거시 호출)은
-    source_rel 속성 부재 → str(entry)(getattr 폴백).
-    """
-    return getattr(entry, "source_rel", None) or str(entry)
-
-
-def _remap_to_dest(rel: str, source_rel: str, manifest_path: str) -> str:
-    """source-root relpath → manifest(dest) 기록 relpath (@source source-remap).
-
-    _iter_files 가 source_rel(canonical 소스) 아래에서 yield 한 relpath 의 source_rel prefix 를
-    manifest_path(dest)로 치환한다 — `_dest_relpath_for`(dest-remap)의 대칭 source 쌍. source_rel ==
-    manifest_path(마커 부재·기본)면 무변경(후방호환). 파일 항목(단일)은 yield 가 source_rel 자체라
-    manifest_path 로 통째 치환, 디렉토리 항목은 `source_rel/…` 하위를 `manifest_path/…` 로 옮긴다.
-    경로 비교는 OS-무관 posix-normalize(_iter_files 가 Windows 에서 `\\` 섞을 수 있음·_dest_relpath_for
-    동형)."""
-    if source_rel == manifest_path:
-        return rel
-    rel_norm = rel.replace("\\", "/")
-    src_norm = source_rel.replace("\\", "/")
-    if rel_norm == src_norm:
-        return manifest_path
-    prefix = src_norm + "/"
-    if rel_norm.startswith(prefix):
-        return manifest_path + "/" + rel_norm[len(prefix):]
-    return rel
-
-
-def _manifest_owner_index(manifest: list, rel: str, dest_root: Path) -> int | None:
-    """``rel``을 공급할 가장 구체적인 manifest 항목의 index.
-
-    디렉터리 remap 위에 단일 파일 remap을 선언하면 더 긴 destination 경로가 override다. 이
-    우선순위가 없으면 상위 디렉터리와 파일 항목이 같은 destination을 각각 plan하고, plan 시점의
-    기존 파일만 비교한 뒤 apply 순서에 따라 override가 사라질 수 있다. 동일 경로 중복은 뒤 항목을
-    택해 manifest의 인접 override가 결정적이게 한다.
-    """
-    rel_norm = rel.replace("\\", "/").strip("/")
-    owners: list[tuple[int, int, int]] = []
-    for index, candidate in enumerate(manifest):
-        dest_rel = _dest_relpath_for(str(candidate), dest_root)
-        dest_norm = dest_rel.replace("\\", "/").strip("/")
-        if rel_norm == dest_norm or rel_norm.startswith(dest_norm + "/"):
-            owners.append((len(Path(dest_norm).parts), index, index))
-    return max(owners)[2] if owners else None
-
-
-def manifest_entry_shipping_inventory(
-    source_root: Path,
-    manifest: list,
-    entry_index: int,
-    dest_root: Path | None = None,
-) -> tuple[list[tuple[str, Path]], bool, bool]:
-    """manifest 한 항목의 실제 byte-copy 출하 inventory와 누락 성격을 반환한다.
-
-    반환은 ``(files, missing, target_owned)``다. ``files``의 각 항목은
-    ``(dest repo 상대경로, source 절대경로)``이며, 디렉토리의 tracked-only 열거·일반 파일
-    협착·``@source`` 리매핑·가장 구체적인 manifest 소유권·dest 레이아웃 리매핑을 모두
-    ``plan``과 같은 경로로 적용한다. source가 없으면 files는 비고 ``missing=True``이며,
-    호출자가 ``target_owned``로 정상적인 전파 제외와 엔진 누락 오류를 구분한다.
-
-    출하 목록을 관찰하는 다른 엔진 기능은 이 seam을 소비해야 한다. manifest 경로를 직접
-    ``iterdir``/``rglob``로 전개하면 git ignore, index mode, source remap과 override 의미가
-    실제 update 계획에서 다시 갈라진다.
-    """
-    source_root = Path(source_root)
-    effective_dest = Path(dest_root) if dest_root is not None else REPO
-    entry = manifest[entry_index]
-    rel = str(entry)
-    source_rel = _source_root_rel(entry)
-    target_owned = _entry_target_owned_flag(entry)
-    if not (source_root / source_rel).exists():
-        return [], True, target_owned
-
-    files: list[tuple[str, Path]] = []
-    for shipped_rel, source in _iter_files(source_root, source_rel):
-        shipped_rel = _remap_to_dest(shipped_rel, source_rel, rel)
-        shipped_rel = _dest_relpath_for(shipped_rel, effective_dest)
-        if _manifest_owner_index(manifest, shipped_rel, effective_dest) != entry_index:
-            continue
-        files.append((shipped_rel, source))
-    return files, False, target_owned
-
-
 def _load_pm_render():
     """pm_render 모듈을 같은 tools/ 디렉토리에서 직접 로드 (sys.path 오염 없이·stdlib seam).
 
@@ -1192,14 +670,14 @@ def _path_under_manifest(
     for index, entry in enumerate(manifest):
         dest_declared = str(entry).replace("\\", "/").strip("/")
         # 이 엔트리의 **읽기 좌표** 하나만 본다 — bare 는 dest 와 같고, 매핑 엔트리는 상류 경로다.
-        coordinate = _source_root_rel(entry).replace("\\", "/").strip("/")
+        coordinate = manifest_rules._source_root_rel(entry).replace("\\", "/").strip("/")
         if not coordinate:
             continue
         if not (rel_norm == coordinate or rel_norm.startswith(coordinate + "/")):
             continue
-        shipped_rel = _dest_relpath_for(
-            _remap_to_dest(rel_norm, coordinate, dest_declared), effective_dest)
-        if _manifest_owner_index(manifest, shipped_rel, effective_dest) == index:
+        shipped_rel = manifest_store._dest_relpath_for(
+            manifest_rules._remap_to_dest(rel_norm, coordinate, dest_declared), effective_dest)
+        if manifest_store._manifest_owner_index(manifest, shipped_rel, effective_dest) == index:
             return True
     return False
 
@@ -1267,10 +745,10 @@ def _unregistered_scope_paths(manifest: list, scope: list[str],
     declared: set[str] = set()
     for entry in manifest:
         declared.add(str(entry).replace("\\", "/").strip("/"))
-        declared.add(_source_root_rel(entry).replace("\\", "/").strip("/"))
+        declared.add(manifest_rules._source_root_rel(entry).replace("\\", "/").strip("/"))
         if effective_dest is not None:
             declared.add(
-                _dest_relpath_for(str(entry), effective_dest).replace("\\", "/").strip("/"))
+                manifest_store._dest_relpath_for(str(entry), effective_dest).replace("\\", "/").strip("/"))
     declared.discard("")
     return [
         path for path in scope
@@ -1288,7 +766,7 @@ def _in_scope_paths(rel: str, scope: list[str]) -> bool:
     return any(rel_norm == path or rel_norm.startswith(path + "/") for path in scope)
 
 
-def _dest_guest_manifest_entries(effective_dest: Path) -> list[ManifestEntry]:
+def _dest_guest_manifest_entries(effective_dest: Path) -> list[manifest_rules.ManifestEntry]:
     """dest engine.manifest 의 add-harness guest 절 행 — 읽기 실패·절 부재는 빈 목록.
 
     절 안의 한 줄이 **전파 방식**을 스스로 말한다: `@render` 행은 어댑터 렌더물(재렌더),
@@ -1296,12 +774,12 @@ def _dest_guest_manifest_entries(effective_dest: Path) -> list[ManifestEntry]:
     경로만이 아니라 마커까지 필요하다 — 파싱해서 돌려준다(파서는 `_parse_manifest_line` 공유)."""
     manifest_file = Path(effective_dest) / ".project_manager" / "engine.manifest"
     try:
-        block = _extract_guest_manifest_block(fs.read_text_shared(manifest_file, encoding="utf-8"))
+        block = manifest_rules._extract_guest_manifest_block(fs.read_text_shared(manifest_file, encoding="utf-8"))
     except (OSError, UnicodeDecodeError):
         return []
     if not block:
         return []
-    entries = [_parse_manifest_line(line) for line in block.splitlines()]
+    entries = [manifest_rules._parse_manifest_line(line) for line in block.splitlines()]
     return [entry for entry in entries if entry is not None]
 
 
@@ -1342,7 +820,7 @@ def _flavor_manifest_entries_by_name(source_root: Path) -> dict[str, list]:
         key=lambda path: path.as_posix(),
     ):
         try:
-            out[candidate.parents[1].name] = read_manifest(candidate)
+            out[candidate.parents[1].name] = manifest_store.read_manifest(candidate)
         except (OSError, UnicodeError, ValueError):
             continue
     return out
@@ -1401,7 +879,7 @@ def _guest_engine_backfill_entries(
         return [], []
     dest_manifest = Path(effective_dest) / ".project_manager" / "engine.manifest"
     try:
-        dest_owned = _core_manifest_paths(fs.read_text_shared(dest_manifest, encoding="utf-8"))
+        dest_owned = manifest_rules._core_manifest_paths(fs.read_text_shared(dest_manifest, encoding="utf-8"))
         pm_import = _load_pm_import()
         harness_by_flavor = {
             template_dir: harness
@@ -1434,8 +912,8 @@ def _guest_engine_backfill_entries(
             continue
         resolved.append(flavor)
         for line in lines:
-            entry = _parse_manifest_line(line)
-            if entry is None or _entry_render_flag(entry):
+            entry = manifest_rules._parse_manifest_line(line)
+            if entry is None or manifest_rules._entry_render_flag(entry):
                 continue
             path = str(entry).replace("\\", "/")
             if path in seen:
@@ -1484,7 +962,7 @@ def _scope_validation_manifest(effective_dest: Path, source_root: Path) -> list 
         if not manifest_path.is_file():
             continue
         try:
-            parsed = read_manifest(manifest_path)
+            parsed = manifest_store.read_manifest(manifest_path)
         except (OSError, UnicodeDecodeError, ValueError):
             continue
         found = True
@@ -1684,7 +1162,7 @@ def _resolve_source(args, effective_dest: Path) -> tuple:
         #   하나뿐이다(pm_import.resolve_upstream_url_cache — 스킬·관리자·명령줄 공용). clone/fetch
         #   실패는 옛 캐시로 미끄러지지 않고 여기서 rc 1 로 끝난다.
         pm_import = _load_pm_import()
-        if pm_import.classify_upstream(stored) == "url":
+        if upstream_rules.classify_upstream(stored) == "url":
             try:
                 source_root = pm_import.resolve_upstream_url_cache(effective_dest, stored)
             except pm_import.UpstreamCacheError as exc:
@@ -1969,13 +1447,13 @@ def detect_manifest_skew(
     """
     try:
         if upstream_manifests:
-            upstream_entries = merge_manifest_sources(
+            upstream_entries = manifest_store.merge_manifest_sources(
                 [Path(path) for path in upstream_manifests]
             )["entries"]
         else:
             if upstream_manifest is None:
                 upstream_manifest = Path(source_root) / ".project_manager" / "engine.manifest"
-            upstream_entries = read_manifest(upstream_manifest)
+            upstream_entries = manifest_store.read_manifest(upstream_manifest)
     except (FileNotFoundError, OSError, ValueError):
         return "upstream_missing", []
     local_paths = {str(e) for e in local_manifest}
@@ -2015,24 +1493,6 @@ def _print_manifest_skew_finding(
         print("manifest 정합 — upstream 신규 등재분 0(baseline 갱신 진행 예정).")
 
 
-# manifest self-prop 엔트리(채택자 engine.manifest 가 자기 자신을 전파 대상으로 등재한 행)의
-# path — flavor-correct upstream 해소(resolve_manifest_selfheal)와 root 폴백의 단일 기준.
-_MANIFEST_SELF_REL = ".project_manager/engine.manifest"
-
-
-def _manifest_marker_key(entry) -> tuple:
-    """ManifestEntry 의 마커 3종(@render/@target-owned/@source)을 비교키 튜플로 — 경로 집합만으론
-    못 잡는 flavor 차이(예: `@source=templates/claude_code/...` vs bare)를 selfheal 이 감지하게 한다.
-
-    평문 str 항목(레거시)은 getattr 폴백으로 (False, False, None)(마커 없음·후방호환).
-    """
-    return (
-        bool(getattr(entry, "render", False)),
-        bool(getattr(entry, "target_owned", False)),
-        getattr(entry, "source_rel", None),
-    )
-
-
 def _selfprop_upstream_rel(local_entries: list) -> str:
     """채택자 로컬 manifest 의 self-prop 엔트리(`.project_manager/engine.manifest`)를 따라 flavor-correct
     upstream manifest 의 source-root 상대 *읽기* 경로를 낸다(codex MF).
@@ -2043,9 +1503,9 @@ def _selfprop_upstream_rel(local_entries: list) -> str:
     이로써 flavor↔flavor 비교가 성립해 root(bare) 승격이 flavor manifest 를 클로버하지 않는다.
     """
     for entry in local_entries:
-        if str(entry) == _MANIFEST_SELF_REL:
-            return _source_root_rel(entry)  # @source 있으면 그 경로·없으면 str(entry)=_MANIFEST_SELF_REL
-    return _MANIFEST_SELF_REL
+        if str(entry) == manifest_rules._MANIFEST_SELF_REL:
+            return manifest_rules._source_root_rel(entry)  # @source 있으면 그 경로·없으면 str(entry)=_MANIFEST_SELF_REL
+    return manifest_rules._MANIFEST_SELF_REL
 
 
 def _print_frozen_flavor_warning(
@@ -2132,10 +1592,10 @@ def _frozen_flavor_evidence(
     분류한다(claude 단독 채택자 오탐). 어느 core 등재로도 안 덮이는 진짜 stray 는 그대로 남는다.
     """
     unique_paths = _flavor_exclusive_paths(entries, other_candidate_paths)
-    unique_paths = [rel for rel in unique_paths if not _path_owned_by(rel, guest_paths)]
+    unique_paths = [rel for rel in unique_paths if not manifest_rules._path_owned_by(rel, guest_paths)]
     if not unique_paths:
         return None
-    return [rel for rel in unique_paths if not _path_owned_by(rel, local_core_paths)]
+    return [rel for rel in unique_paths if not manifest_rules._path_owned_by(rel, local_core_paths)]
 
 
 def _print_legacy_nonmatch_warning(
@@ -2212,7 +1672,7 @@ def _selected_upstream_manifests(
     candidate_by_flavor = {
         candidate.parents[1].name: candidate for candidate in candidates
     }
-    guest_block = _extract_guest_manifest_block(local_text)
+    guest_block = manifest_rules._extract_guest_manifest_block(local_text)
     guest_paths = {
         ln.split()[0].replace("\\", "/")
         for ln in guest_block.splitlines()
@@ -2224,7 +1684,7 @@ def _selected_upstream_manifests(
     local_core_paths = {
         str(entry).replace("\\", "/")
         for entry in local_entries
-        if not _path_owned_by(str(entry).replace("\\", "/"), guest_paths)
+        if not manifest_rules._path_owned_by(str(entry).replace("\\", "/"), guest_paths)
     }
 
     primary_flavor = next(
@@ -2234,7 +1694,7 @@ def _selected_upstream_manifests(
     source_declarations = [
         getattr(entry, "source_rel", None)
         for entry in local_entries
-        if not _path_owned_by(str(entry).replace("\\", "/"), guest_paths)
+        if not manifest_rules._path_owned_by(str(entry).replace("\\", "/"), guest_paths)
         and getattr(entry, "source_rel", None)
     ]
     declared_flavors: list[str] = []
@@ -2269,7 +1729,7 @@ def _selected_upstream_manifests(
     candidate_entries: dict[Path, list] = {}
     for candidate in candidates:
         try:
-            candidate_entries[candidate] = read_manifest(candidate)
+            candidate_entries[candidate] = manifest_store.read_manifest(candidate)
         except (OSError, UnicodeError, ValueError) as exc:
             print(
                 f"note: legacy flavor 후보 manifest를 읽을 수 없어 제외한다(fail-soft): "
@@ -2468,7 +1928,7 @@ def resolve_manifest_selfheal(
                 "manifest": None, "upstream_manifest": root_manifest,
                 "upstream_manifests": [root_manifest], "manifest_text": None,
                 "merge_conflicts": []}
-    local_entries = read_manifest(dest_manifest)
+    local_entries = manifest_store.read_manifest(dest_manifest)
     local_text = fs.read_text_shared(dest_manifest, encoding="utf-8")
     if guest_backfill_paths is None:
         # 호출부가 이미 해소했으면 넘긴다(중복 IO·pm_import 재로드 회피). 안 넘기면 여기서 해소해
@@ -2498,7 +1958,7 @@ def resolve_manifest_selfheal(
                 "manifest_text": None,
                 "merge_conflicts": [],
             }
-        merged_upstream = merge_manifest_sources(upstream_manifests)
+        merged_upstream = manifest_store.merge_manifest_sources(upstream_manifests)
         upstream_text = merged_upstream["text"]
         upstream_entries = merged_upstream["entries"]
         validated_retirements = validated_retired_path_directives(
@@ -2515,11 +1975,11 @@ def resolve_manifest_selfheal(
     #   섞으면 항상 removed 비어있지 않아 영구 diverged → upstream 신규 항목 자기치유(승격) 불능. 절은
     #   apply 가 재부착하므로(대칭·`_copy_manifest_preserving_guest`) 승격돼도 잔존한다. 판정 사본 없이
     #   추출 헬퍼를 재사용해 in_sync 판정도 core 로(strip==upstream), 경로 집합도 core 로 좁힌다.
-    guest_block = _extract_guest_manifest_block(local_text)
+    guest_block = manifest_rules._extract_guest_manifest_block(local_text)
     guest_paths = {
         ln.split()[0] for ln in guest_block.splitlines()
         if ln.strip() and not ln.strip().startswith("#")} if guest_block else set()
-    if _strip_guest_manifest_block(local_text) == upstream_text:
+    if manifest_rules._strip_guest_manifest_block(local_text) == upstream_text:
         return {"status": "in_sync", "added": [], "removed": [],
                 "retired_removed": [],
                 "manifest": None, "upstream_manifest": upstream_manifest,
@@ -2535,8 +1995,8 @@ def resolve_manifest_selfheal(
     #   전혀 없던 legacy manifest는 source provenance 추가가 바로 치유 목적이므로 source_rel 차이만
     #   허용한다(render/target-owned 편집은 계속 divergence). 신규 선언 manifest의 공통 경로 마커가
     #   하나라도 갈리면(로컬 커스텀 편집·잘못된 flavor 대조) 승격하지 않는다.
-    local_markers = {str(e): _manifest_marker_key(e) for e in core_local_entries}
-    upstream_markers = {str(e): _manifest_marker_key(e) for e in upstream_entries}
+    local_markers = {str(e): manifest_rules._manifest_marker_key(e) for e in core_local_entries}
+    upstream_markers = {str(e): manifest_rules._manifest_marker_key(e) for e in upstream_entries}
     added = sorted(set(upstream_markers) - set(local_markers))
     removed = sorted(set(local_markers) - set(upstream_markers))
     validated_old = {old for old, _new in validated_retirements}
@@ -2657,53 +2117,6 @@ def _print_manifest_merge_conflicts(selfheal: dict) -> None:
         f"우선함 ({len(conflicts)}건): {', '.join(conflicts)}",
         file=sys.stderr,
     )
-
-
-def _template_dir_from_manifest(
-    manifest_path: Path | None,
-    source_root: Path,
-) -> str | None:
-    """flavor manifest 경로에서 `templates/<dir>` context를 파생한다. root manifest면 None."""
-    if manifest_path is None:
-        return None
-    try:
-        rel = Path(manifest_path).resolve().relative_to(
-            (Path(source_root) / "templates").resolve()
-        )
-    except (OSError, ValueError):
-        return None
-    return rel.parts[0] if len(rel.parts) >= 3 else None
-
-
-def _entry_notation_templates_from_manifests(
-    manifest_paths: list[Path],
-    source_root: Path,
-) -> dict[str, tuple[str, ...]]:
-    """선택 manifest의 항목별 flavor 집합을 선언 순서대로 보존한다.
-
-    서로 다른 경로는 각 flavor 하나를 받고, 같은 물리 경로는 그 파일을 실제로 읽는 flavor를
-    전부 받는다. 선택된 flavor manifest를 읽지 못하면 context만 조용히 버리지 않고 fail-loud한다.
-    로컬 manifest 동기화는 계속하면서 notation context만 유실하면 canonical slash가 codex의 기존
-    dollar 산출물을 덮기 때문이다.
-    """
-    contexts: dict[str, list[str]] = {}
-    for manifest_path in manifest_paths:
-        template_dir = _template_dir_from_manifest(manifest_path, source_root)
-        if template_dir is None:
-            continue
-        try:
-            entries = read_manifest(manifest_path)
-        except (OSError, UnicodeError, ValueError) as exc:
-            raise RuntimeError(
-                "선택된 flavor manifest에서 스킬 표기 context를 해소할 수 없다 — "
-                f"기존 렌더 산출물을 보존하기 위해 동기화를 중단한다: {manifest_path} ({exc})"
-            ) from exc
-        for entry in entries:
-            rel = str(entry).replace("\\", "/")
-            flavors = contexts.setdefault(rel, [])
-            if template_dir not in flavors:
-                flavors.append(template_dir)
-    return {rel: tuple(flavors) for rel, flavors in contexts.items()}
 
 
 def _installed_entry_notation_manifests(
@@ -3173,7 +2586,7 @@ def plan(
     missing: list[str] = []
     for entry_index, entry in enumerate(manifest):
         rel = str(entry)
-        if rel.replace("\\", "/") == _MANIFEST_SELF_REL and manifest_source_text is not None:
+        if rel.replace("\\", "/") == manifest_rules._MANIFEST_SELF_REL and manifest_source_text is not None:
             # 선택 flavor 합집합은 upstream에 단일 실파일로 존재하지 않는다. 인메모리 source를
             # change tuple에 실어 self-prop가 합집합 전체를 설치/갱신하게 한다.
             if inventory_out is not None:
@@ -3199,14 +2612,14 @@ def plan(
                 except (OSError, UnicodeDecodeError):
                     changes.append((rel, source, dst, "update"))
             continue
-        declared_render = _entry_render_flag(entry)
+        declared_render = manifest_rules._entry_render_flag(entry)
         item_notation_template = (
             (entry_notation_templates or {}).get(rel.replace("\\", "/"))
             or entry_notation_template
         )
         # 전체 render는 adopter self-update에서만. --target은 아래 호출 표기 최소 렌더만 허용한다.
         render = declared_render if render_enabled else False
-        inventory, source_missing, _target_owned = manifest_entry_shipping_inventory(
+        inventory, source_missing, _target_owned = manifest_store.manifest_entry_shipping_inventory(
             source_root,
             manifest,
             entry_index,
@@ -3291,7 +2704,7 @@ def plan(
                 # guest 절 기록은 self-prop 분기에서만 일어난다 — 전 change 에 실으면 낭비다.
                 guest_backfill_lines=(
                     guest_backfill_lines
-                    if str(r).replace("\\", "/") == _MANIFEST_SELF_REL
+                    if str(r).replace("\\", "/") == manifest_rules._MANIFEST_SELF_REL
                     else None
                 ),
             )
@@ -3321,7 +2734,7 @@ def plan(
                 #   수렴 불가).
                 if not _rendered_text_matches_dest(rendered_entry, dst):
                     changes.append((r, sp, dst, "update"))
-            elif str(r).replace("\\", "/") == _MANIFEST_SELF_REL:
+            elif str(r).replace("\\", "/") == manifest_rules._MANIFEST_SELF_REL:
                 # engine.manifest self-prop — 판정(guest 절 차감 core 비교 + 옛 세대 마커)은
                 #   다중-harness 합집합 분기와 **같은 헬퍼**를 쓴다(사유·근거는 그 docstring).
                 try:
@@ -3440,7 +2853,7 @@ def _resolve_engine_sync_plan(
                       "상태를 벗어난 뒤 다음 sync 에서 이뤄진다.", file=sys.stderr)
         else:
             persisted_guest_backfill = [
-                _manifest_entry_line(entry) for entry in guest_backfill]
+                manifest_rules._manifest_entry_line(entry) for entry in guest_backfill]
         if fresh and report:
             print(f"  guest 엔진 행 {len(fresh)}건 파생 "
                   f"(flavor: {', '.join(guest_backfill_flavors)}): {', '.join(fresh)}")
@@ -3460,7 +2873,7 @@ def _resolve_engine_sync_plan(
         entry_notation_templates = (
             {}
             if target
-            else _entry_notation_templates_from_manifests(notation_manifests, source_root)
+            else manifest_store._entry_notation_templates_from_manifests(notation_manifests, source_root)
         )
     except RuntimeError as exc:
         # 엔진 사본 skew 는 감싸지 않고 원본 그대로 재-raise 한다(마커 보존) — `plan()` 자신이
@@ -3525,7 +2938,7 @@ def drift_changes(engine_root: Path) -> list[str] | None:
     stored = conf.get("upstream.path", "").strip()
     if not stored:
         return None
-    if _load_pm_import().classify_upstream(stored) == "url":
+    if upstream_rules.classify_upstream(stored) == "url":
         return None
     source_root = Path(stored).resolve()
     if not source_root.is_dir():
@@ -3558,7 +2971,7 @@ def drift_changes(engine_root: Path) -> list[str] | None:
         #   의 skip 판별과 같은 술어(`_entry_target_owned_flag`)를 쓴다(별도 판정 사본 없음). 그 밖의
         #   (non-`@target-owned`) 부재만 판정 불능이다 — 여기까지 `@target-owned` 를 섞으면 정상
         #   self-update 형상(cross-flavor 어댑터 보유)도 과도하게 "판정 불능" 으로 접힌다.
-        owned = {str(entry): _entry_target_owned_flag(entry) for entry in sync_plan["manifest"]}
+        owned = {str(entry): manifest_rules._entry_target_owned_flag(entry) for entry in sync_plan["manifest"]}
         if any(not owned.get(rel, False) for rel in missing):
             return None
     return [str(rel) for rel, _src, _dst, _kind in sync_plan["changes"]]
@@ -3612,10 +3025,10 @@ def _retired_manifest_files(
 
     retired: set[str] = set()
     for index, entry in enumerate(manifest):
-        if _entry_target_owned_flag(entry):
+        if manifest_rules._entry_target_owned_flag(entry):
             continue
-        source_rel = _source_root_rel(entry).replace("\\", "/").strip("/")
-        dest_rel = _dest_relpath_for(
+        source_rel = manifest_rules._source_root_rel(entry).replace("\\", "/").strip("/")
+        dest_rel = manifest_store._dest_relpath_for(
             str(entry), effective_dest).replace("\\", "/").strip("/")
         source_exists = (source_root / source_rel).exists()
         if not (effective_dest / dest_rel).is_dir():
@@ -3653,7 +3066,7 @@ def _retired_manifest_files(
         for rel in dest_files:
             if not rel.startswith(prefix) or rel in planned:
                 continue
-            if _manifest_owner_index(manifest, rel, effective_dest) != index:
+            if manifest_store._manifest_owner_index(manifest, rel, effective_dest) != index:
                 continue
             if not (effective_dest / rel).is_file():
                 continue  # index 에만 남은 삭제분 — dest 에 잔존물이 없으니 보고 대상이 아니다.
@@ -3683,54 +3096,6 @@ def _print_retired_manifest_files(retired: list[str]) -> None:
         print(f"    … 외 {remaining}건 (전량은 engine.manifest 등재 경로를 직접 확인하라)")
 
 
-# ── add-harness guest @render 절 (engine.manifest self-prop 보존) ──────────────
-# engine.manifest 는 self-prop `@source` 라 apply 가 upstream 사본으로 통째 덮어쓴다(guest 는 로컬-전용
-# → selfheal 'diverged' 도 *파일* overwrite 는 못 막는다·plan 에 self-prop change 가 실린다·실측). 그래서
-# add_harness 가 등재한 guest `@render` 가 1회 update 만에 사라져 렌더/overlay 스캔 커버리지가 끊기던 것을
-# 이 마커 구획으로 닫는다: apply 가 engine.manifest 를 덮기 **전** dest 의 guest 절을
-# 추출 → 덮은 **뒤** 재부착한다. 마커는 read_manifest 가 '#' 주석으로 무시하고, 절 안의 라인은
-# `@render @target-owned` 유효 항목이라 파서/스캔/렌더가 그대로 소비한다(판정원 단일 = engine.manifest
-# 최종 뷰 하나). 절의 *값* 은 pm_import.add_harness 가 쓴다(같은 리터럴 공유·아래 상수 블록).
-# pm:data-literal:begin
-# 아래 네 상수는 **채택자 디스크에 기록된 데이터**다 — engine.manifest 안에 실제로 적힌 바이트이지
-# 이 소스의 산문이 아니다. 따라서 스트립·문구 정리·리팩터 대상이 아니며 한 글자만 달라져도 이미
-# 기록된 채택자 manifest 의 guest 절을 못 읽어 절이 조용히 사라진다. 리터럴을 바꿔야 하면 옛 값을
-# 지우지 말고 `_LEGACY` 튜플에 남겨라 — **읽기는 세대 집합 전체를 받고, 쓰기는 항상 현행 하나만**
-# 낸다(옛 세대는 `_migrate_legacy_guest_markers` 가 다음 sync 에서 1 회 치환한다).
-_GUEST_MANIFEST_BEGIN = "# >>> pm add-harness guest @render (local·pm_update-preserved) >>>"
-_GUEST_MANIFEST_END = "# <<< pm add-harness guest @render (local) <<<"
-_GUEST_MANIFEST_BEGIN_LEGACY: tuple[str, ...] = (
-    "# >>> pm add-harness guest @render (local·pm_update-preserved·T-0456) >>>",
-)
-# 종료 마커는 아직 세대가 하나뿐이라 비어 있다 — 다음 세대를 대비해 시작 마커와 대칭 구조로 둔다.
-_GUEST_MANIFEST_END_LEGACY: tuple[str, ...] = ()
-# pm:data-literal:end
-
-# 읽기가 인식하는 세대 집합(현행 + 옛). 쓰기 경로는 이 튜플을 쓰지 않는다(현행 상수 단일).
-_GUEST_MANIFEST_BEGINS = (_GUEST_MANIFEST_BEGIN,) + _GUEST_MANIFEST_BEGIN_LEGACY
-_GUEST_MANIFEST_ENDS = (_GUEST_MANIFEST_END,) + _GUEST_MANIFEST_END_LEGACY
-
-
-def _extract_guest_manifest_block(text: str) -> str | None:
-    """engine.manifest 텍스트의 add-harness guest 절(마커 경계 포함)을 반환 — 없으면 None.
-
-    마커 비교는 **세대 집합 멤버십**이다(현행 + 옛 리터럴) — 옛 세대로 기록된 채택자 manifest 도
-    절을 인식해야 apply 재부착이 그것을 보존한다(단일 리터럴 비교였을 때 guest 절이 경고 없이
-    사라졌다)."""
-    lines = text.splitlines()
-    begin = end = None
-    for i, line in enumerate(lines):
-        s = line.strip()
-        if s in _GUEST_MANIFEST_BEGINS:
-            begin = i
-        elif s in _GUEST_MANIFEST_ENDS and begin is not None:
-            end = i
-            break
-    if begin is None or end is None or end < begin:
-        return None
-    return "\n".join(lines[begin:end + 1])
-
-
 def _migrate_legacy_guest_markers(text: str) -> tuple[str, bool]:
     """옛 세대 guest 마커 라인을 현행 리터럴로 치환 — (치환된 텍스트, 변경 여부).
 
@@ -3741,11 +3106,11 @@ def _migrate_legacy_guest_markers(text: str) -> tuple[str, bool]:
     changed = False
     for line in lines:
         s = line.strip()
-        if s in _GUEST_MANIFEST_BEGIN_LEGACY:
-            migrated.append(_GUEST_MANIFEST_BEGIN)
+        if s in manifest_rules._GUEST_MANIFEST_BEGIN_LEGACY:
+            migrated.append(manifest_rules._GUEST_MANIFEST_BEGIN)
             changed = True
-        elif s in _GUEST_MANIFEST_END_LEGACY:
-            migrated.append(_GUEST_MANIFEST_END)
+        elif s in manifest_rules._GUEST_MANIFEST_END_LEGACY:
+            migrated.append(manifest_rules._GUEST_MANIFEST_END)
             changed = True
         else:
             migrated.append(line)
@@ -3753,29 +3118,6 @@ def _migrate_legacy_guest_markers(text: str) -> tuple[str, bool]:
         return text, False
     out = "\n".join(migrated)
     return (out + "\n" if text.endswith("\n") else out), True
-
-
-def _strip_guest_manifest_block(text: str) -> str:
-    """engine.manifest 텍스트에서 guest 절(마커 포함 + 선행 빈 줄)을 제거 — 마커 부재면 원문 그대로.
-
-    마커 비교는 추출과 같은 세대 집합이다 — 읽기 판정이 한쪽만 관용이면 옛 세대 manifest 에서
-    core 경로 집합(`_core_manifest_paths`)이 guest 라인을 core 로 세어 소유권 판정이 어긋난다."""
-    lines = text.splitlines()
-    begin = end = None
-    for i, line in enumerate(lines):
-        s = line.strip()
-        if s in _GUEST_MANIFEST_BEGINS:
-            begin = i
-        elif s in _GUEST_MANIFEST_ENDS and begin is not None:
-            end = i
-            break
-    if begin is None or end is None or end < begin:
-        return text
-    lo = begin
-    while lo > 0 and lines[lo - 1].strip() == "":  # 절 앞 빈 줄 구분자까지 회수(누적 방지)
-        lo -= 1
-    kept = "\n".join(lines[:lo] + lines[end + 1:])
-    return kept + "\n" if kept and not kept.endswith("\n") else kept
 
 
 def _manifest_self_prop_needs_update(
@@ -3800,10 +3142,10 @@ def _manifest_self_prop_needs_update(
     _, legacy_markers = _migrate_legacy_guest_markers(dst_text)
     if legacy_markers:
         return True
-    guest_block = _extract_guest_manifest_block(dst_text)
+    guest_block = manifest_rules._extract_guest_manifest_block(dst_text)
     if _merge_guest_backfill_lines(guest_block, backfill_lines or []) != guest_block:
         return True
-    return _strip_guest_manifest_block(dst_text).rstrip("\n") != upstream_text.rstrip("\n")
+    return manifest_rules._strip_guest_manifest_block(dst_text).rstrip("\n") != upstream_text.rstrip("\n")
 
 
 def _reattach_guest_block(new_text: str, guest_block: str | None) -> str:
@@ -3812,28 +3154,6 @@ def _reattach_guest_block(new_text: str, guest_block: str | None) -> str:
         return new_text
     sep = "" if new_text.endswith("\n") or not new_text else "\n"
     return new_text + sep + "\n" + guest_block + "\n"
-
-
-def _core_manifest_paths(text: str) -> set[str]:
-    """manifest 텍스트의 core 경로 집합 (guest 절·마커·주석·빈 줄 제외·마커 떼고 path 만)."""
-    out: set[str] = set()
-    for ln in _strip_guest_manifest_block(text).splitlines():
-        s = ln.strip()
-        if s and not s.startswith("#"):
-            out.add(s.split()[0].replace("\\", "/"))
-    return out
-
-
-def _path_owned_by(path: str, owner_paths) -> bool:
-    """path 가 owner_paths 중 하나에 소유되는가 — **동일**(`path==c`) OR **상위**(`path` 가 `c/` 하위).
-
-    add-harness 등재 차감(pm_import `_guest_render_to_add`)과 update 재부착 차감
-    (`_prune_guest_block_owned_by_core`)이 **공유**하는 소유권 판정(경로-포함·판정
-    사본 금지) — core 가 `.opencode`(상위)를 가지면 `.opencode/agents` 도 소유로 본다."""
-    p = path.replace("\\", "/")
-    return any(
-        p == c or p.startswith(c.rstrip("/") + "/")
-        for c in (str(o).replace("\\", "/") for o in owner_paths))
 
 
 def _prune_guest_block_owned_by_core(guest_block: str | None, core_text: str) -> str | None:
@@ -3845,7 +3165,7 @@ def _prune_guest_block_owned_by_core(guest_block: str | None, core_text: str) ->
     남는 guest 라인 0 이면 None(절 제거)."""
     if not guest_block:
         return None
-    core_paths = _core_manifest_paths(core_text)
+    core_paths = manifest_rules._core_manifest_paths(core_text)
     kept: list[str] = []
     guest_count = 0
     for ln in guest_block.splitlines():
@@ -3853,7 +3173,7 @@ def _prune_guest_block_owned_by_core(guest_block: str | None, core_text: str) ->
         if not s or s.startswith("#"):
             kept.append(ln)  # 마커/빈 줄 보존.
             continue
-        if _path_owned_by(s.split()[0], core_paths):
+        if manifest_rules._path_owned_by(s.split()[0], core_paths):
             continue  # core 가 소유(동일/상위) — 차감.
         kept.append(ln)
         guest_count += 1
@@ -3916,7 +3236,7 @@ def _copy_manifest_preserving_guest(
                 _normalize_newlines(fs.read_text_shared(dst, encoding="utf-8")))
             if migrated:
                 print("✓ guest 절 마커 세대 마이그레이션 (구 리터럴 → 현행)")
-            guest_block = _extract_guest_manifest_block(dst_text)
+            guest_block = manifest_rules._extract_guest_manifest_block(dst_text)
     except OSError:
         guest_block = None
     # 세대 마이그레이션 → 파생 백필 순서(치환된 현행 절 위에 기록·조합 시 절 소실 0).
@@ -4020,7 +3340,7 @@ def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
                     rendered, dst.codex_operational_skill
                 )
             _write_rendered_text(Path(dst), Path(sp), rendered)
-        elif str(_r).replace("\\", "/") == _MANIFEST_SELF_REL:
+        elif str(_r).replace("\\", "/") == manifest_rules._MANIFEST_SELF_REL:
             # engine.manifest self-prop — upstream 사본으로 덮되 guest 절 보존(+파생 행 기록).
             _copy_manifest_preserving_guest(
                 sp, Path(dst), getattr(dst, "guest_backfill_lines", None))
@@ -4104,7 +3424,7 @@ def _installed_generation_source(dest_root: Path, conf: Mapping[str, str], pm_im
         raise ConfApplyError([
             "upstream 미등록 — 렌더 원본을 알 수 없습니다. `pm-config upstream set <url|path>` 로 "
             "등록한 뒤 다시 실행하십시오."])
-    if pm_import.classify_upstream(stored) == "url":
+    if upstream_rules.classify_upstream(stored) == "url":
         source_root = pm_import.upstream_cache_dir(dest_root, stored)
     else:
         source_root = Path(stored).resolve()
@@ -4358,17 +3678,6 @@ def discover_target_names() -> list[str]:
                   if path.is_dir() and not path.name.startswith("."))
 
 
-def resolve_manifest_for_dest(dest_root: Path, source_root: Path) -> Path:
-    """dest_root 의 engine.manifest 우선, 없으면 source_root 의 것."""
-    dest_manifest = dest_root / ".project_manager" / "engine.manifest"
-    if dest_manifest.exists():
-        return dest_manifest
-    source_manifest = source_root / ".project_manager" / "engine.manifest"
-    if source_manifest.exists():
-        return source_manifest
-    raise FileNotFoundError("engine.manifest 없음 (dest·source 둘 다).")
-
-
 def _join_guest_channels(
         entries: list, guest_entries: list, guest_backfill: list) -> list:
     """계획 manifest 에 add-harness guest 절의 행을 **합류**시킨다 (core 와 같은 채널).
@@ -4396,7 +3705,7 @@ def _join_guest_channels(
     #   행이 통째로 빠지므로, 경로 중복만 접고 계획에 얹는다.
     for entry in [*guest_backfill, *guest_entries]:
         path = str(entry).replace("\\", "/")
-        if _path_owned_by(path, planned_paths):
+        if manifest_rules._path_owned_by(path, planned_paths):
             continue
         planned_paths.add(path)
         planned.append(entry)
@@ -4443,7 +3752,7 @@ def _resolve_planning_manifest(
         if selfheal is not None and selfheal["status"] == "legacy_preserved":
             entries = [
                 entry for entry in entries
-                if str(entry).replace("\\", "/") != _MANIFEST_SELF_REL
+                if str(entry).replace("\\", "/") != manifest_rules._MANIFEST_SELF_REL
             ]
     return _join_guest_channels(entries, guest_entries, guest_backfill)
 
@@ -4454,7 +3763,7 @@ def _resolve_local_manifest(effective_dest: Path, source_root: Path) -> list:
     계획용(`_resolve_planning_manifest`)과 skew 대조용이 갈린다: 전자는 `legacy_preserved` 에서
     self-prop 을 빼고, 후자는 원문 전체를 봐야 upstream 신규 등재분을 정상 검출한다. 두 소비자가
     같은 해소를 쓰도록 이름 붙인 seam."""
-    return read_manifest(resolve_manifest_for_dest(effective_dest, source_root))
+    return manifest_store.read_manifest(manifest_store.resolve_manifest_for_dest(effective_dest, source_root))
 
 
 # ── 진입 doc 세대 마이그레이션 ────────────────────────────────
@@ -6176,7 +5485,7 @@ def _refuse_missing_sources(missing: list[str], manifest: list) -> int:
         return 0
     # missing 은 path 문자열만 운반하므로 manifest 에서 각 path 의 @target-owned 플래그를
     # 복원한다(plan 의 render_enabled=False 는 copy/render 동작만 끄고 entry 플래그는 보존).
-    target_owned_flag = {str(e): _entry_target_owned_flag(e) for e in manifest}
+    target_owned_flag = {str(e): manifest_rules._entry_target_owned_flag(e) for e in manifest}
     owned = [r for r in missing if target_owned_flag.get(r, False)]
     engine_missing = [r for r in missing if not target_owned_flag.get(r, False)]
     for r in owned:
@@ -6664,7 +5973,7 @@ def _main(argv: list[str] | None = None) -> int:
         #   upstream 경로로 지정한 "source 부재" 요청이 오타로 오분류된다(rc2 여야 할 것이 rc1).
         source_rel_by_dest = {
             str(entry).replace("\\", "/").strip("/"):
-                _source_root_rel(entry).replace("\\", "/").strip("/")
+                manifest_rules._source_root_rel(entry).replace("\\", "/").strip("/")
             for entry in manifest
         }
         missing_coordinates: set[str] = set()
@@ -7010,7 +6319,7 @@ def main(argv: list[str] | None = None) -> int:
     console.configure_console_utf8()
     try:
         return _main(argv)
-    except EmptyShippingInventoryError as exc:
+    except manifest_rules.EmptyShippingInventoryError as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
     except Exception as exc:

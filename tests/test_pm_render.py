@@ -4,7 +4,7 @@
   1. pm_render.render_adapter — operational plain replace·leak raise·미해소 토큰 표면화.
      (free-form value-fill 기계 = overlay/slot-fill/conditional-omit 은 ADR-0031 로 제거됨 —
       free-form 은 pm_import FILL 채널이 canonical home 에서 전담.)
-  2. pm_update.read_manifest(@render 파싱·후방호환) + plan/apply render 분기(합성 manifest).
+  2. manifest_store.read_manifest(@render 파싱·후방호환) + plan/apply render 분기(합성 manifest).
   3. board.lint_render_leak — @render 산출물 한정·활성화 전 무발화·blocking(advisory 밖).
 
 실 트리/네트워크 무의존 — tmp_path 합성 + 모듈 직접 로드(다른 엔진 테스트 패턴 동형).
@@ -22,6 +22,7 @@ import pytest
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
 from _textio import write_lf
+from pm_engine.infra import manifest_store
 from pm_engine.infra.harness import contract
 
 REPO = Path(__file__).resolve().parents[1]
@@ -383,7 +384,7 @@ def test_read_manifest_render_flag_parsed(pm_update, tmp_path):
         ".project_manager/tools/board.py",
         ".claude/agents    @render",
     ])
-    entries = pm_update.read_manifest(m)
+    entries = manifest_store.read_manifest(m)
     assert ".project_manager/tools/board.py" in entries  # str 동작 유지(후방호환)
     assert ".claude/agents" in entries  # @render 태그 떼고 순수 경로
     by_path = {str(e): e.render for e in entries}
@@ -394,7 +395,7 @@ def test_read_manifest_render_flag_parsed(pm_update, tmp_path):
 def test_read_manifest_backcompat_str_ops(pm_update, tmp_path):
     """ManifestEntry 가 str 처럼 동작 — startswith/in/== (기존 테스트 계약 미파괴)."""
     m = _write_manifest(tmp_path, [".claude/agents @render", ".github/workflows/x.yml"])
-    entries = pm_update.read_manifest(m)
+    entries = manifest_store.read_manifest(m)
     claude = [e for e in entries if e.startswith(".claude/")]
     assert claude == [".claude/agents"]
     assert all(isinstance(e, str) for e in entries)
@@ -427,7 +428,7 @@ def test_iter_files_yields_posix_rel_keys(pm_update, tmp_path):
     subprocess.run(
         ["git", "-C", str(root), "add", "-A"],
         capture_output=True, text=True, check=True)
-    rels = [r for r, _sp in pm_update._iter_files(root, ".claude/agents")]
+    rels = [r for r, _sp in manifest_store._iter_files(root, ".claude/agents")]
     assert rels == [".claude/agents/developer.md", ".claude/agents/reviewer.md"]
     assert all("\\" not in r for r in rels)
 
@@ -462,7 +463,7 @@ def test_plan_render_path_compares_rendered_output(pm_update, tmp_path):
     (dst / ".claude/agents").mkdir(parents=True)
     write_lf(dst / rel, "- acme\nbody\n")
 
-    manifest = pm_update.read_manifest(
+    manifest = manifest_store.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
     changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
@@ -483,7 +484,7 @@ def test_plan_render_path_update_when_output_differs(pm_update, tmp_path):
     (dst / ".claude/agents").mkdir(parents=True)
     write_lf(dst / rel, "- STALE\nbody\n")
 
-    manifest = pm_update.read_manifest(
+    manifest = manifest_store.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
     changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
@@ -502,7 +503,7 @@ def test_apply_render_writes_rendered_output(pm_update, tmp_path):
     (src / rel).write_text("- {{PROJECT_NAME}}\n- {{PROJECT_ROOT}}\nbody\n",
                            encoding="utf-8")
     _seed_render_dest(dst, local_conf="project.name=acme\nproject.root=/r\n")
-    manifest = pm_update.read_manifest(
+    manifest = manifest_store.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
     changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
@@ -533,7 +534,7 @@ def test_render_dir_text_files_rendered_binary_copied(pm_update, tmp_path):
     # 바이너리(UTF-8 디코드 불가) — render 대상 아님(byte-copy·자족 산출물 아님).
     (src / bin_rel).write_bytes(b"\xff\xfe\x00binary\x00")
     _seed_render_dest(dst, local_conf="project.name=acme\n")
-    manifest = pm_update.read_manifest(
+    manifest = manifest_store.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
     changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
@@ -656,7 +657,7 @@ def test_plan_render_disabled_forces_copy_for_render_manifest(pm_update, tmp_pat
     src_text = "- {{PROJECT_NAME}}\nbody\n"
     (src / rel).write_text(src_text, encoding="utf-8")
     # dst(=템플릿 타깃)엔 local.conf 없음 — 렌더 시 leak 날 환경.
-    manifest = pm_update.read_manifest(
+    manifest = manifest_store.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
 
@@ -682,7 +683,7 @@ def test_plan_render_enabled_still_renders_for_adopter(pm_update, tmp_path):
     (src / rel).write_text("- {{PROJECT_NAME}}\nbody\n", encoding="utf-8")
     # 채택자 dest — local.conf(operational) 보유.
     _seed_render_dest(dst, local_conf="project.name=acme\n")
-    manifest = pm_update.read_manifest(
+    manifest = manifest_store.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
 
@@ -717,7 +718,7 @@ def test_opencode_pro_model_render_resolved_from_local_conf(pm_update, tmp_path)
     (src / ".opencode/agents").mkdir(parents=True)
     (src / rel).write_text("model: {{OPENCODE_PRO_MODEL}}\nbody\n", encoding="utf-8")
     _seed_render_dest(dst, local_conf="harness.opencode.pro_model=anthropic/claude-opus-4\n")
-    manifest = pm_update.read_manifest(
+    manifest = manifest_store.read_manifest(
         _write_manifest(src, [".opencode/agents @render"]))
     _track_source_tree(src)
     changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
@@ -743,7 +744,7 @@ def test_opencode_pro_model_unresolved_self_update_graceful(pm_update, tmp_path)
     (src / rel).write_text('model: "{{OPENCODE_PRO_MODEL}}"\nbody\n', encoding="utf-8")
     # 채택자 dest — local.conf 에 harness.opencode.pro_model *부재*(해소 못 한 채택자).
     _seed_render_dest(dst, local_conf="project.name=acme\n")
-    manifest = pm_update.read_manifest(
+    manifest = manifest_store.read_manifest(
         _write_manifest(src, [".opencode/agents @render"]))
     _track_source_tree(src)
     changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
@@ -771,7 +772,7 @@ def test_self_update_partial_graceful_engine_still_updates(pm_update, tmp_path):
     _seed_render_dest(dst, local_conf="project.name=acme\n")
     (dst / ".project_manager/tools").mkdir(parents=True, exist_ok=True)
     (dst / ".project_manager/tools/board.py").write_text("v1\n", encoding="utf-8")
-    manifest = pm_update.read_manifest(_write_manifest(src, [
+    manifest = manifest_store.read_manifest(_write_manifest(src, [
         ".opencode/agents @render",
         ".project_manager/tools/board.py",
     ]))
@@ -844,7 +845,7 @@ def test_apply_render_empty_local_conf_raises(pm_update, tmp_path):
     (src / ".claude/agents").mkdir(parents=True)
     (src / rel).write_text("description: {{PROJECT_NAME}} 프로젝트\n", encoding="utf-8")
     _seed_render_dest(dst, local_conf="project.name=\n")
-    manifest = pm_update.read_manifest(
+    manifest = manifest_store.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
     changes, missing = pm_update.plan(src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))

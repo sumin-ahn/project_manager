@@ -225,7 +225,7 @@ assert _REPORTED_GUEST in _GUEST_HARNESSES, (
 
 # pm:data-literal:begin
 # 아래 세 리터럴은 **채택자 디스크에 기록된 데이터**다 — engine.manifest 안에 실제로 적힌 바이트이지
-# 이 소스의 산문이 아니다. 엔진 상수(`pm_update._GUEST_MANIFEST_BEGIN` 등)를 참조하면 리터럴이 통째로
+# 이 소스의 산문이 아니다. 엔진 상수(`manifest_rules._GUEST_MANIFEST_BEGIN` 등)를 참조하면 리터럴이 통째로
 # 바뀌어도 이 게이트가 green 이라(참조-only 테스트가 guest 절 소실을 30 여 릴리즈 살린 직접 원인)
 # 여기엔 문자열을 직접 박는다. 마커 세대가 또 바뀌면 이 파일이 red 로 알린다.
 _LEGACY_GUEST_BEGIN = "# >>> pm add-harness guest @render (local·pm_update-preserved·T-0456) >>>"
@@ -899,7 +899,12 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   `_load_relay` 경로 적재가 사라지고 호출이 모듈 속성 호출로 바뀌었다. 역적용 delta 의 네 anchor 는
 #   전부 그 구간 밖이라 그대로 유일 해소되고, 배달 경계와 배달 파일 집합도 불변이다 — 현재화한 것은
 #   기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "571c7b6c53240bb0cba3f2493c26f50194ab8ddafffb7648ee100bbfc18e02fc"
+#   T-0968 에서 또 이동했다 — manifest 문법·판독이 패키지(`pm_engine.domain.manifest_rules`·
+#   `pm_engine.infra.manifest_store`)로, 상류 분류가 `pm_engine.domain.upstream_rules` 로 옮겨 가며
+#   pm_update 에서 그 정의가 빠지고 호출이 모듈 속성 호출로 바뀌었다. 역적용 delta 의 네 anchor 는
+#   전부 그 구간 밖이라 그대로 유일 해소되고, 배달 경계와 배달 파일 집합도 불변이다 — 현재화한 것은
+#   기대 SHA 하나뿐이다.
+_T0585_PM_UPDATE_SHA256 = "e0e79a4e8fa05013a4a90d1d6dd62f8cec6251d7e2acefa8c87b51423450f5fa"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -1393,7 +1398,11 @@ def _install_t0585_updater(dest: Path) -> None:
 # 전부 그 구간 밖이라 그대로 유일 해소된다.
 # T-0967: 하네스 계약의 패키지 이동으로 `_load_relay` 경로 적재가 모듈 속성 호출(`contract`)로 바뀌어
 # 전문 SHA 가 이동했다. 퇴역 경로 delta 의 marker 는 전부 그 구간 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "b64e2de5f6fcf9020c13dad7c2ee5047de21f4bb6855308c784412c0143f62f0"
+# T-0968: manifest 문법·판독의 패키지 이동으로 pm_update 에서 퇴역 경로 상수 뒤의 manifest 상수와
+# `_parse_manifest_line` 이하 판독 함수가 빠졌다. 두 `_slice_replace` 의 끝 marker 가 가리키던 정의가
+# 없어져 끝 marker 를 그 자리 다음 정의(`class _RenderDst:`·`def _read_local_conf(`)로 옮겼고, 지우는
+# 구간(퇴역 경로 상수·`RetiredPathError` 부터 퇴역 이주 함수까지)은 같다. 전문 SHA 가 이동했다.
+_PRE_T0876_PM_UPDATE_SHA256 = "dc755933631b83a50210c9c6618847ce76a047e70d10e47149a8b815220fd153"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -1609,11 +1618,11 @@ def _pre_t0876_pm_update_source() -> str:
     source = _slice_replace(
         source,
         "# 구 updater도 무시하는 manifest 주석 지시문. 일반 상류 부재 파일을\n",
-        "# read_manifest 가 path 행 끝에서 떼어낼 수 있는 boolean 마커들",
+        "\n\nclass _RenderDst:",
         "",
     )
     source = _slice_replace(
-        source, "class RetiredPathError(RuntimeError):\n", "def _parse_manifest_line(", "",
+        source, "class RetiredPathError(RuntimeError):\n", "def _read_local_conf(", "",
     )
     source = _slice_replace(
         source,

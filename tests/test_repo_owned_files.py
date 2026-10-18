@@ -11,6 +11,8 @@ import pytest
 
 import _repo_owned_inventory as test_inventory
 from _win_skip import _can_symlink
+from pm_engine.domain import manifest_rules
+from pm_engine.infra import manifest_store
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -404,7 +406,6 @@ def test_unknown_mode_is_rejected_before_enumeration(repo_files, tmp_path):
 
 
 def test_pm_update_directory_shipping_uses_tracked_only(repo_files, tmp_path):
-    pm_update = _load("pm_update_repo_files_test", "pm_update.py")
     repo = _repo(tmp_path)
     engine = repo / "engine"
     engine.mkdir()
@@ -412,13 +413,12 @@ def test_pm_update_directory_shipping_uses_tracked_only(repo_files, tmp_path):
     (engine / "machine.local").write_text("local\n", encoding="utf-8")
     _git(repo, "add", "engine/tracked.py")
 
-    got = [rel for rel, _path in pm_update._iter_files(repo, "engine")]
+    got = [rel for rel, _path in manifest_store._iter_files(repo, "engine")]
 
     assert got == ["engine/tracked.py"]
 
 
 def test_pm_update_nested_checkout_keeps_git_ignore_guarantee(tmp_path):
-    pm_update = _load("pm_update_nested_checkout_test", "pm_update.py")
     outer = _repo(tmp_path)
     framework = outer / "vendor" / "framework"
     engine = framework / "engine"
@@ -431,7 +431,7 @@ def test_pm_update_nested_checkout_keeps_git_ignore_guarantee(tmp_path):
     (engine / "machine.local").write_text("machine\n", encoding="utf-8")
     _git(outer, "add", ".gitignore", "vendor/framework/engine/tracked.py")
 
-    got = [rel for rel, _path in pm_update._iter_files(framework, "engine")]
+    got = [rel for rel, _path in manifest_store._iter_files(framework, "engine")]
 
     assert got == ["engine/tracked.py"]
 
@@ -451,13 +451,12 @@ def test_pm_update_non_git_directory_rc128_warns_and_falls_back(tmp_path, monkey
         repo_files.RepoFilesFallbackWarning,
         match=r"tracked_only.*rc=128",
     ):
-        got = list(pm_update._iter_files(source, "ship"))
+        got = list(manifest_store._iter_files(source, "ship"))
 
     assert [rel for rel, _path in got] == ["ship/fallback.txt"]
 
 
 def test_pm_update_skips_deleted_tracked_entry_loudly(tmp_path):
-    pm_update = _load("pm_update_deleted_tracked_test", "pm_update.py")
     repo = _repo(tmp_path)
     ship = repo / "ship"
     ship.mkdir()
@@ -467,10 +466,10 @@ def test_pm_update_skips_deleted_tracked_entry_loudly(tmp_path):
     deleted.unlink()
 
     with pytest.warns(
-        pm_update.SkippedRepoShippingEntryWarning,
+        manifest_rules.SkippedRepoShippingEntryWarning,
         match="working tree에서 삭제됨.*ship/deleted.txt",
     ):
-        got = list(pm_update._iter_files(repo, "ship"))
+        got = list(manifest_store._iter_files(repo, "ship"))
 
     assert got == []
 
@@ -484,7 +483,6 @@ def test_pm_update_skips_deleted_tracked_entry_loudly(tmp_path):
 )
 def test_pm_update_skips_nonregular_index_mode_without_symlink_permission(
         tmp_path, index_mode, warning_fragment):
-    pm_update = _load(f"pm_update_index_mode_{index_mode}_test", "pm_update.py")
     repo = _repo(tmp_path)
     ship = repo / "ship"
     ship.mkdir()
@@ -502,10 +500,10 @@ def test_pm_update_skips_nonregular_index_mode_without_symlink_permission(
     assert not materialized.is_symlink()
 
     with pytest.warns(
-        pm_update.SkippedRepoShippingEntryWarning,
+        manifest_rules.SkippedRepoShippingEntryWarning,
         match=warning_fragment,
     ):
-        got = list(pm_update._iter_files(repo, "ship"))
+        got = list(manifest_store._iter_files(repo, "ship"))
 
     assert got == []
 
@@ -585,7 +583,6 @@ def test_unmerged_index_path_stops_shipping_loudly(repo_files, tmp_path):
 
 @requires_symlink
 def test_pm_update_skips_tracked_directory_symlink_loudly(tmp_path):
-    pm_update = _load("pm_update_directory_symlink_test", "pm_update.py")
     repo = _repo(tmp_path)
     ship = repo / "ship"
     outside = tmp_path / "outside"
@@ -596,17 +593,16 @@ def test_pm_update_skips_tracked_directory_symlink_loudly(tmp_path):
     _git(repo, "add", "ship/directory-link")
 
     with pytest.warns(
-        pm_update.SkippedRepoShippingEntryWarning,
+        manifest_rules.SkippedRepoShippingEntryWarning,
         match=r"symlink.*ship/directory-link",
     ):
-        got = list(pm_update._iter_files(repo, "ship"))
+        got = list(manifest_store._iter_files(repo, "ship"))
 
     assert got == []
 
 
 @requires_symlink
 def test_pm_update_skips_manifest_entry_that_is_itself_symlink(tmp_path):
-    pm_update = _load("pm_update_manifest_symlink_test", "pm_update.py")
     repo = _repo(tmp_path)
     target = repo / "target.txt"
     target.write_text("payload\n", encoding="utf-8")
@@ -614,16 +610,15 @@ def test_pm_update_skips_manifest_entry_that_is_itself_symlink(tmp_path):
     manifest_entry.symlink_to(target)
 
     with pytest.warns(
-        pm_update.SkippedRepoShippingEntryWarning,
+        manifest_rules.SkippedRepoShippingEntryWarning,
         match=r"manifest 엔트리 제외.*manifest-link.txt",
     ):
-        got = list(pm_update._iter_files(repo, "manifest-link.txt"))
+        got = list(manifest_store._iter_files(repo, "manifest-link.txt"))
 
     assert got == []
 
 
 def test_pm_update_reports_untracked_exclusion_count(tmp_path, capsys):
-    pm_update = _load("pm_update_untracked_signal_test", "pm_update.py")
     repo = _repo(tmp_path)
     ship = repo / "ship"
     ship.mkdir()
@@ -631,7 +626,7 @@ def test_pm_update_reports_untracked_exclusion_count(tmp_path, capsys):
     (ship / "untracked.txt").write_text("local\n", encoding="utf-8")
     _git(repo, "add", "ship/tracked.txt")
 
-    got = list(pm_update._iter_files(repo, "ship"))
+    got = list(manifest_store._iter_files(repo, "ship"))
 
     assert [rel for rel, _path in got] == ["ship/tracked.txt"]
     assert (
@@ -642,17 +637,16 @@ def test_pm_update_reports_untracked_exclusion_count(tmp_path, capsys):
 
 def test_pm_update_untracked_single_file_manifest_entry_is_not_shipped(
         tmp_path, capsys):
-    pm_update = _load("pm_update_untracked_single_file_test", "pm_update.py")
     repo = _repo(tmp_path)
     ship = repo / "ship"
     ship.mkdir()
     (ship / "single.txt").write_text("machine\n", encoding="utf-8")
 
     with pytest.raises(
-        pm_update.EmptyShippingInventoryError,
+        manifest_rules.EmptyShippingInventoryError,
         match=r"pm-update 출하 인벤토리가 0건임.*subtree='ship/single\.txt'",
     ):
-        list(pm_update._iter_files(repo, "ship/single.txt"))
+        list(manifest_store._iter_files(repo, "ship/single.txt"))
 
     assert (
         "pm-update: untracked 1건 제외 — git add 후 전파됨"
@@ -662,7 +656,6 @@ def test_pm_update_untracked_single_file_manifest_entry_is_not_shipped(
 
 def test_pm_update_ignored_single_file_manifest_entry_is_not_shipped_loudly(
         tmp_path, capsys):
-    pm_update = _load("pm_update_ignored_single_file_test", "pm_update.py")
     repo = _repo(tmp_path)
     ship = repo / "ship"
     ship.mkdir()
@@ -671,10 +664,10 @@ def test_pm_update_ignored_single_file_manifest_entry_is_not_shipped_loudly(
     _git(repo, "add", ".gitignore")
 
     with pytest.raises(
-        pm_update.EmptyShippingInventoryError,
+        manifest_rules.EmptyShippingInventoryError,
         match=r"pm-update 출하 인벤토리가 0건임.*subtree='ship/machine\.local'",
     ):
-        list(pm_update._iter_files(repo, "ship/machine.local"))
+        list(manifest_store._iter_files(repo, "ship/machine.local"))
     assert (
         "manifest 선언 단일 파일이 source에서 gitignore되어 출하되지 않음: "
         "ship/machine.local"
@@ -683,19 +676,17 @@ def test_pm_update_ignored_single_file_manifest_entry_is_not_shipped_loudly(
 
 
 def test_shippable_entries_reject_bare_path_instead_of_lstat_only_fallback(tmp_path):
-    pm_update = _load("pm_update_typed_entries_test", "pm_update.py")
     relative = Path("ship/file.txt")
     source = tmp_path / relative
     source.parent.mkdir()
     source.write_text("payload\n", encoding="utf-8")
 
     with pytest.raises(AttributeError, match=r"has no attribute 'path'"):
-        pm_update._shippable_tracked_entries(tmp_path, [relative])
+        manifest_store._shippable_tracked_entries(tmp_path, [relative])
 
 
 @requires_symlink
 def test_pm_update_untracked_count_excludes_unshippable_symlink(tmp_path, capsys):
-    pm_update = _load("pm_update_untracked_symlink_count_test", "pm_update.py")
     repo = _repo(tmp_path)
     ship = repo / "ship"
     outside = tmp_path / "outside.txt"
@@ -706,7 +697,7 @@ def test_pm_update_untracked_count_excludes_unshippable_symlink(tmp_path, capsys
     (ship / "untracked-link").symlink_to(outside)
     _git(repo, "add", "ship/tracked.txt")
 
-    got = list(pm_update._iter_files(repo, "ship"))
+    got = list(manifest_store._iter_files(repo, "ship"))
 
     assert [rel for rel, _path in got] == ["ship/tracked.txt"]
     assert (
