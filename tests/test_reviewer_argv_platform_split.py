@@ -8,11 +8,11 @@ r"""reviewer_cmd argv 분해의 **실행 플랫폼 규칙**과 분해 규칙 사
 
 이 파일이 못 박는 것:
 
-  1. 분해 규칙의 구현은 `board.py` 하나다(사본 0). 규칙 표식(`_SHELL_WINDOWS_PATH_SEPARATOR`)의
+  1. 분해 규칙의 구현은 `pm_engine/domain/shell_policy.py` 하나다(사본 0). 규칙 표식(`_SHELL_WINDOWS_PATH_SEPARATOR`)의
      소유 모듈을 값으로 확인하고, 다른 엔진 모듈에 사본이 생기면 red 다([[T-0712]] 의 `~user` 축과
      같은 대조).
   2. Windows 규칙은 실행 경로 구분자를 보존하고, POSIX 규칙은 종전 `shlex.split` 그대로다.
-  3. `additional_reviewer` 는 그 공용 seam 을 **호출**한다(자기 사본 아님) — 로더를 갈아끼워 확인한다.
+  3. `additional_reviewer` 는 그 공용 seam 을 **호출**한다(자기 사본 아님) — `process.split_command_argv` 자리를 갈아끼워 확인한다.
   4. Windows 경로를 담은 `reviewer_cmd` 가 러너까지 실행 가능한 argv 로 도착한다(POSIX 개발기에서
      플랫폼 seam 주입으로 태운다 · 주입이 실제로 걸렸는지 선-단언).
   5. 실행 파일 해소 실패는 loud 이고 "설정상 리뷰어 없음"과 **다른 진단**이다(무음 환불 0).
@@ -51,11 +51,6 @@ def _load(name: str):
     return module
 
 
-@pytest.fixture(scope="module")
-def board():
-    return _load("board")
-
-
 @pytest.fixture
 def external():
     return _load("additional_reviewer")
@@ -68,8 +63,8 @@ def _completed(rc: int, out: str = "판정: 통과") -> subprocess.CompletedProc
 # ── 1. 사본 대조 ────────────────────────────────────────────────────────────
 
 
-def test_the_windows_argv_split_rule_has_exactly_one_implementation(board):
-    """분해 규칙의 구현은 board 하나다 — 사본이 생기면 여기서 걸린다.
+def test_the_windows_argv_split_rule_has_exactly_one_implementation():
+    """분해 규칙의 구현은 `pm_engine/domain/shell_policy.py` 하나다 — 사본이 생기면 여기서 걸린다.
 
     소유 모듈에 그 규칙이 **있다는** 값 단언을 함께 둔다. 없으면 "어디에도 없다" 가 통과해 스캔이
     무의미해진다([[guard-must-cover-its-own-surface]]).
@@ -106,24 +101,22 @@ def test_additional_reviewer_keeps_no_second_split_of_the_reviewer_command():
 
 
 def test_additional_reviewer_calls_the_shared_seam_instead_of_its_own_copy(external, monkeypatch):
-    """분해는 board 공용 seam 을 **거쳐서만** 일어난다 — 로더를 갈아끼우면 결과가 따라 바뀐다."""
-    class _StubBoard:
-        seen: list[tuple[str, bool]] = []
+    """분해는 `process.split_command_argv` 를 **거쳐서만** 일어난다 — 그 자리를 갈아끼우면 결과가 따라 바뀐다."""
+    seen: list[tuple[str, bool]] = []
 
-        @staticmethod
-        def split_command_argv(command, *, windows=None):
-            _StubBoard.seen.append((command, windows))
-            return ["stub-argv"]
+    def _stub_split_command_argv(command, *, windows=None):
+        seen.append((command, windows))
+        return ["stub-argv"]
 
-    monkeypatch.setattr(process, "split_command_argv", _StubBoard.split_command_argv)
+    monkeypatch.setattr(process, "split_command_argv", _stub_split_command_argv)
     monkeypatch.setattr(external, "_running_on_windows", lambda: True)
 
     assert external._split_reviewer_argv("codex --model x") == ["stub-argv"]
-    assert _StubBoard.seen == [("codex --model x", True)], (
-        "분해가 board seam 을 타지 않았거나 플랫폼 판정을 넘기지 않았다")
+    assert seen == [("codex --model x", True)], (
+        "분해가 process.split_command_argv 를 타지 않았거나 플랫폼 판정을 넘기지 않았다")
 
 
-def test_the_shared_seam_and_additional_reviewer_agree_token_for_token(board, external, monkeypatch):
+def test_the_shared_seam_and_additional_reviewer_agree_token_for_token(external, monkeypatch):
     """같은 커맨드를 두 표면이 같은 argv 로 읽는다 (분해 결과 대조)."""
     commands = (
         WINDOWS_REVIEWER_CMD,
@@ -141,7 +134,7 @@ def test_the_shared_seam_and_additional_reviewer_agree_token_for_token(board, ex
 # ── 2. 플랫폼 규칙 ──────────────────────────────────────────────────────────
 
 
-def test_windows_rule_preserves_executable_path_separators(board):
+def test_windows_rule_preserves_executable_path_separators():
     """Windows 규칙은 드라이브/UNC 절대경로의 구분자를 보존한다 (인용 유무 무관)."""
     assert process.split_command_argv(WINDOWS_REVIEWER_CMD, windows=True) == [
         WINDOWS_EXECUTABLE, "-c", "pass"]
@@ -155,14 +148,14 @@ def test_windows_rule_preserves_executable_path_separators(board):
         "보호 표식이 argv 에 남으면 그 자체가 실행 불가 경로다")
 
 
-def test_posix_rule_is_unchanged_shlex_split(board):
+def test_posix_rule_is_unchanged_shlex_split():
     """POSIX 실행 플랫폼에서는 종전 `shlex.split` 그대로다 — escape 의미를 바꾸지 않는다."""
     for command in ("/usr/bin/codex --model x", r"codex --sandbox 'a b' --flag x\ y",
                     WINDOWS_REVIEWER_CMD):
         assert process.split_command_argv(command, windows=False) == shlex.split(command)
 
 
-def test_the_posix_rule_really_mangles_the_windows_path(board):
+def test_the_posix_rule_really_mangles_the_windows_path():
     """두 규칙이 **다른 결과**를 낸다는 값 단언 — 이 축이 실재함을 픽스처로 고정한다.
 
     이게 참이 아니게 되면(예: 픽스처에서 백슬래시가 사라지면) 위 Windows 단언은 아무것도 검증하지
@@ -173,7 +166,7 @@ def test_the_posix_rule_really_mangles_the_windows_path(board):
     assert "\\" not in mangled[0] and "/" not in mangled[0]
 
 
-def test_platform_default_follows_the_running_platform(board, monkeypatch):
+def test_platform_default_follows_the_running_platform(monkeypatch):
     """`windows=None` 은 실행 플랫폼(`os.name`)을 본다 — 주입 인자는 그 판정을 대체할 뿐이다."""
     monkeypatch.setattr(process, "_probe_os_name", lambda: "nt")
     assert process.split_command_argv(WINDOWS_REVIEWER_CMD)[0] == WINDOWS_EXECUTABLE
@@ -181,7 +174,7 @@ def test_platform_default_follows_the_running_platform(board, monkeypatch):
     assert process.split_command_argv(WINDOWS_REVIEWER_CMD)[0] != WINDOWS_EXECUTABLE
 
 
-def test_probe_os_name_seam_defaults_to_the_real_interpreter_value(board):
+def test_probe_os_name_seam_defaults_to_the_real_interpreter_value():
     """기본 프로브는 전역 `os.name` 그대로다 — seam 추가가 동작을 바꾸지 않는다(T-0741)."""
     assert process._probe_os_name() == os.name
 

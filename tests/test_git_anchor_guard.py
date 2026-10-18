@@ -3623,5 +3623,4 @@ const [home, slot, session, command, denied] = process.argv.slice(1);
 
 def test_t0931_foreach_payload_help_option_value():
     """공유 분류기의 옵션 값 소비 계약이다. 이 argv의 실제 Git 유효성을 주장하거나 실행하지 않는다."""
-    board = _load('t0931_foreach_option_value', BOARD_PY)
     assert git_policy._git_writes_slot('submodule', ['--path', 'vendor/status', 'foreach', 'printf', '%s', '--help'])

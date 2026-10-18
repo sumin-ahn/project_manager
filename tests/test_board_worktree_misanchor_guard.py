@@ -236,20 +236,16 @@ def test_has_real_board_absent_false(tmp_path):
 # ── _is_linked_worktree (runner 주입·hermetic) ────────────────────────────
 
 def test_is_linked_worktree_differing_dirs_true():
-    b = _load_board()
     r = _fake_runner("/x/.git/worktrees/w1", "/x/.git")
     assert git._is_linked_worktree(Path("/anywhere"), runner=r) is True
 
 
 def test_is_linked_worktree_same_dirs_false():
-    b = _load_board()
     r = _fake_runner("/x/.git", "/x/.git")
     assert git._is_linked_worktree(Path("/anywhere"), runner=r) is False
 
 
 def test_is_linked_worktree_git_error_false():
-    b = _load_board()
-
     def r(cmd, **kwargs):
         return types.SimpleNamespace(returncode=128, stdout="", stderr="not a git repo")
 
@@ -257,8 +253,6 @@ def test_is_linked_worktree_git_error_false():
 
 
 def test_is_linked_worktree_runner_raises_false():
-    b = _load_board()
-
     def r(cmd, **kwargs):
         raise FileNotFoundError("git")
 
@@ -267,14 +261,12 @@ def test_is_linked_worktree_runner_raises_false():
 
 def test_is_linked_worktree_real_worktree_true(pm_home_worktree):
     # 실 git worktree 는 default(실) runner 로도 linked True.
-    b = _load_board()
     _pm_home, worktree = pm_home_worktree
     assert git._is_linked_worktree(worktree) is True
 
 
 def test_is_linked_worktree_real_pm_home_false(pm_home_worktree):
     # PM 홈(main checkout 아님·비-git tmp) → False.
-    b = _load_board()
     pm_home, _worktree = pm_home_worktree
     assert git._is_linked_worktree(pm_home) is False
 
