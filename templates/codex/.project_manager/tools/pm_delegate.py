@@ -626,7 +626,7 @@ _TEMP_ENV_REFERENCE_WINDOWS = "$env:TMPDIR"
 # config)로 완주했다 — OPENAI/ANTHROPIC_API_KEY env 는 부재해도 무방(파일 auth 경로). load-bearing 키 =
 # base 의 HOME + opencode 의 OPENCODE_CONFIG_DIR(ollama provider config 위치). API-key 항목은 env-auth
 # adopter 용 보험이라 유지(존재 시만 통과·과잉 아님). 이 allowlist 로 충분(키 추가/축소 불요).
-# 인증/설정 전달 allowlist이며 세션 감지 마커가 아니다 — 감지 선언은 relay가 소유한다.
+# 인증/설정 전달 allowlist이며 세션 감지 마커가 아니다 — 감지 선언은 watchdog.HARNESS_SESSION_MARKERS 가 소유한다.
 _HARNESS_AUTH_ENV: dict[str, tuple[str, ...]] = {
     "codex": ("CODEX_HOME", "OPENAI_API_KEY"),
     "claude": ("ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"),
@@ -9861,8 +9861,8 @@ def _assert_opencode_transport_path(cwd: Path, prompt_file: Path) -> None:
         contract.assert_opencode_prompt_in_cwd(cwd, prompt_file)
     except contract.HarnessContractError as exc:
         raise DelegateError(str(exc)) from exc
-    # 공용 relay 계약을 먼저 호출해 기존 하네스 진단을 보존한 뒤 attempt 공통 strict-child
-    # 불변식도 같은 경로에 적용한다.
+    # 공용 하네스 계약(contract.assert_opencode_prompt_in_cwd)을 먼저 호출해 기존 하네스 진단을
+    # 보존한 뒤 attempt 공통 strict-child 불변식도 같은 경로에 적용한다.
     _assert_attempt_child_path(cwd, prompt_file, label="opencode prompt 전달 사본")
 
 
@@ -13399,7 +13399,7 @@ def _harness_timeout_budget(harness: str, timeout: int) -> int:
     다만 stall 로 죽는 시도는 overall 이 아니라 첫-이벤트 창에서 kill 되므로(`now >= first_deadline`
     분기), 실행 본체는 `timeout + retries×min(첫-이벤트 창, timeout)` 이다. 여기에 부모 wait 5초와
     pipe drain 5초의 연속 정리를 **모든 시도(retries+1)** 에 더한다. 나머지 축도 timeout 뒤 정리
-    1회를 같은 공용 식으로 센다. relay 노브(env PM_OC_STALL_RETRIES·PM_OC_FIRST_EVENT_TIMEOUT)를
+    1회를 같은 공용 식으로 센다. watchdog 노브(env PM_OC_STALL_RETRIES·PM_OC_FIRST_EVENT_TIMEOUT)를
     못 읽으면 재시도 0인 공용 식으로 계산한다.
     (무진행 판정은 벽시계 *안쪽* 에서만 앞당겨 끝내므로 이 상한을 늘리지 않는다.)"""
     try:

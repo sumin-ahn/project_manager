@@ -264,7 +264,7 @@ _WORKTREE_TOUCH_PREFIX = re.compile(r"^work/[^/]+_\d+(?:/|$)")
 
 
 def _has_worktree_touch_prefix(path: str) -> bool:
-    """normalizer를 로드하지 않고도 접두 사용 여부만 표기 변형에 견고하게 판정한다."""
+    """touch 가 `work/<repo>_<N>/` 슬롯 접두를 가졌는지 표기 변형에 견고하게 보는 경량 판정."""
     norm = path.replace(os.sep, "/").replace("\\", "/")
     while norm.startswith("./"):
         norm = norm[2:]
@@ -274,8 +274,8 @@ def _has_worktree_touch_prefix(path: str) -> bool:
 def _normalize_ticket_touches(touches: list[str]) -> list[str]:
     """ticket PM-home 좌표를 경로별 advisory 경고와 함께 정규화한다.
 
-    접두가 하나도 없으면 모듈을 아예 로드하지 않아 부분 동기 adopter의 기존 repo-relative
-    동작을 보존한다. 조회 표면은 한 경로 오류가 배치를 죽이지 않는다. 오류 경로는 loud
+    접두가 하나도 없으면 좌표 정규화를 건너뛰고 입력을 그대로 돌려준다.
+    조회 표면은 한 경로 오류가 배치를 죽이지 않는다. 오류 경로는 loud
     경고 후 제외하고 나머지를 계속 처리한다(검증 없이 strip하거나 원문을 하류에 넘기지 않음).
     """
     if not any(_has_worktree_touch_prefix(path) for path in touches):

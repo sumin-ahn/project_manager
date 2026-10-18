@@ -17,23 +17,11 @@ cap 근방이면 loud advisory 를 낸다. **advisory·never-block** — 경고+
 """
 from __future__ import annotations
 
-import importlib.util
 import io
-from pathlib import Path
 
 import pytest
 from pm_engine.app.session import relay
 from pm_engine.infra.harness import watchdog
-
-REPO = Path(__file__).resolve().parents[1]
-TOOLS = REPO / ".project_manager" / "tools"
-
-
-def _load(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 @pytest.fixture(scope="module")

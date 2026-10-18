@@ -1914,9 +1914,9 @@ def test_rounds_report_numbers_rounds_by_reservation_sequence(external):
 
 # ── 스폰 경계 seam: 소유권 이전은 **자식 생성 직전** 한 자리 (T-0590 R3) ─────
 #
-# 소유권 이전이 러너 **호출** 직전에 있으면, 러너 안의 준비 구간(relay 로드·프로필 해소·워치독
+# 소유권 이전이 러너 **호출** 직전에 있으면, 러너 안의 준비 구간(프로필 해소·워치독
 # 셋업)과 exec 실패가 전부 "이미 넘긴 뒤"가 된다 — 스폰 0·호출 0 인 실행이 라운드/wave 예산을
-# 먹고, 상한 1 형상에서 다음 **정상** 호출이 곧바로 rc=4 로 막힌다. 경계는 relay 워치독이
+# 먹고, 상한 1 형상에서 다음 **정상** 호출이 곧바로 rc=4 로 막힌다. 경계는 watchdog 워치독이
 # `Popen` 을 부르기 한 줄 앞이고, 그 앞의 실패와 확정 기동 실패는 started=False 다.
 
 # 확정 기동 실패 표 — exec 자체가 실패해 자식이 뜬 적 없는 예외들(호출 0·과금 0).
@@ -1998,7 +1998,7 @@ def test_relay_marked_post_spawn_failure_stays_conservative(external):
     """`Popen` **성공 뒤**의 실패는 같은 예외 종류여도 started=True 로 남는다.
 
     종류만 보면 자식이 떴다 죽은 실행까지 환불 대상이 된다 — 그건 프롬프트가 이미 나간 실행이라
-    상한 무한 우회로 이어진다. relay 표식이 종류 판정을 이긴다.
+    상한 무한 우회로 이어진다. watchdog 표식이 종류 판정을 이긴다.
     """
     marked = PermissionError("정리 중 권한 오류")
     marked.spawn_failed = False
@@ -2010,7 +2010,7 @@ def test_relay_marked_post_spawn_failure_stays_conservative(external):
 def test_preparation_failure_before_the_boundary_is_started_false(external):
     """러너 안의 **준비 구간**(콜백 전) 실패는 자식이 없었다는 사실이 확정 — started=False."""
     handoffs = []
-    runner = _spawn_boundary_runner(raise_before=RuntimeError("relay 로드 실패"))
+    runner = _spawn_boundary_runner(raise_before=RuntimeError("프로필 해소 실패"))
     ok, out, started = external._run_reviewer_ex(
         "p", "codex", 5, runner, on_spawn_attempt=lambda: handoffs.append(1))
     assert (ok, started) == (False, False)
@@ -2071,7 +2071,7 @@ def test_legacy_runner_gets_the_callback_before_the_call_without_the_keyword(ext
 
 
 def test_default_runner_forwards_the_boundary_to_the_shared_watchdog(external, monkeypatch):
-    """기본 러너는 콜백을 relay 공용 워치독까지 그대로 내려보낸다(경계 소유자 = relay)."""
+    """기본 러너는 콜백을 watchdog 공용 워치독까지 그대로 내려보낸다(경계 소유자 = watchdog)."""
     seen = {}
 
     def run_with_first_event_watchdog(argv, **kw):
@@ -2088,7 +2088,7 @@ def test_default_runner_forwards_the_boundary_to_the_shared_watchdog(external, m
 
 # ── seam 오류(TypeError) 분기의 표식 우선순위 (T-0590 R4 추가 리뷰어 4차) ──────
 #
-# `_run_reviewer_ex` 의 TypeError 전용 분기는 relay 표식을 보지 않고 스폰 경계 위치만 봤다. 같은
+# `_run_reviewer_ex` 의 TypeError 전용 분기는 watchdog 표식을 보지 않고 스폰 경계 위치만 봤다. 같은
 # 예외 종류가 경계 앞뒤 어디서든 올라올 수 있으므로 그 위치 추정은 두 방향으로 다 틀린다 —
 # 표식 True 인데 경계를 지났으면 호출 0 인 실행이 예산을 먹고, 표식 False 인데 콜백이 아직 안
 # 돌았으면 이미 나간 호출이 환불된다. 우선순위는 한 줄이다: 표식 True→started False,
@@ -2096,7 +2096,7 @@ def test_default_runner_forwards_the_boundary_to_the_shared_watchdog(external, m
 
 
 def _marked(exc: BaseException, spawn_failed: bool) -> BaseException:
-    """relay 가 스폰 경계에서 붙이는 그 표식을 그대로 얹는다(테스트 픽스처)."""
+    """watchdog 이 스폰 경계에서 붙이는 그 표식을 그대로 얹는다(테스트 픽스처)."""
     exc.spawn_failed = spawn_failed
     return exc
 
@@ -2105,7 +2105,7 @@ def test_seam_typeerror_marked_no_child_is_started_false(external):
     """경계 콜백이 돈 뒤 올라온 TypeError 라도 표식이 '자식 없음'이면 started=False (환불)."""
     handoffs = []
     runner = _spawn_boundary_runner(
-        raise_after=_marked(TypeError("relay 가 fork 전에 거절"), True))
+        raise_after=_marked(TypeError("watchdog 이 fork 전에 거절"), True))
     ok, out, started = external._run_reviewer_ex(
         "p", "codex", 5, runner, on_spawn_attempt=lambda: handoffs.append(1))
     assert (ok, started) == (False, False), "표식(자식 없음)을 무시하고 경계 위치로 판정했다"
@@ -2233,12 +2233,12 @@ def test_preparation_failure_before_popen_spends_no_budget(
 
 
 def test_marked_no_child_seam_error_spends_no_budget(external, monkeypatch, tmp_path):
-    """relay 가 '자식 없음'으로 표식한 seam 오류는 라운드·wave 예산을 먹지 않는다(환불 도달).
+    """watchdog 이 '자식 없음'으로 표식한 seam 오류는 라운드·wave 예산을 먹지 않는다(환불 도달).
 
     분기 반환값이 아니라 장부까지 본다 — 표식을 무시하던 TypeError 분기는 여기서 예산을 태워
     상한 1 형상의 다음 정상 호출을 rc=4 로 막았다."""
     failing = _spawn_boundary_runner(
-        raise_after=_marked(TypeError("relay 가 fork 전에 거절"), True))
+        raise_after=_marked(TypeError("watchdog 이 fork 전에 거절"), True))
     run = _wire_real_run_review(
         external, monkeypatch, tmp_path, conf=_ALL_LIMITS_ONE, runner=failing)
     gate = ["--gate", "T-9004", "--paths", "x.py"]

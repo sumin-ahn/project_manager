@@ -19,7 +19,6 @@ stdlib + pyyaml(엔진이 이미 의존 — board.py) 만 사용. opencode CLI �
 """
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
 from pathlib import Path
@@ -30,7 +29,6 @@ from pm_engine.infra.harness import contract
 REPO = Path(__file__).resolve().parents[1]
 OPENCODE = REPO / "templates" / "opencode" / ".opencode"
 CLAUDE = REPO / "templates" / "claude_code" / ".claude"
-TOOLS = REPO / ".project_manager" / "tools"
 
 
 PROJECT_CONFIG = OPENCODE / "opencode.jsonc"

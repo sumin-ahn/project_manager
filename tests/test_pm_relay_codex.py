@@ -40,7 +40,6 @@ from pm_engine.app.session import relay
 from pm_engine.infra.harness import contract
 
 REPO = Path(__file__).resolve().parents[1]
-TOOLS = REPO / ".project_manager" / "tools"
 CODEX_DRIVER = REPO / "templates" / "codex" / ".codex" / "pm_orch_codex.py"
 
 

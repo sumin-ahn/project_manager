@@ -25,7 +25,13 @@
 #   원자 추가/교체·공유 읽기·강제 삭제·소유자 전용 권한)·infra/repo_files(git 우선 repo 소유 파일
 #   열거·경로 적재기 load_module)·infra/conf_store(local.conf·압축 한도 기록 읽기)·cli/local_conf
 #   (키 표·JSON·어댑터 생성 블록 출력)·domain/git_policy·domain/shell_policy(git·셸 명령 판정 규칙)·
-#   infra/git(git 저장소 조회)·infra/process(실행 플랫폼 argv 분해)·app/hooks(도구 호출 판정 보조).
+#   infra/git(git 저장소 조회)·infra/process(실행 플랫폼 argv 분해)·app/hooks(도구 호출 판정 보조)·
+#   domain/identity_args(정체성 인자·슬롯·task 값 판정)·infra/lease_store(리스 장부 읽기)·
+#   infra/repo_coordinates(티켓 경로 repo 좌표 정규화)·app/session/relay(세션 자동 회전)·
+#   infra/harness/contract·infra/harness/watchdog(하네스 CLI 계약·자식 프로세스 감시)·
+#   infra/raw_output(원출력 장부·임시 루트)·infra/review_rounds(리뷰 라운드 장부)·
+#   domain/manifest_rules(manifest 문법·경로 소유 판정)·infra/manifest_store(manifest 판독·배포 파일 목록)·
+#   domain/upstream_rules(상류 값 URL·경로 분류).
 .project_manager/tools/pm_engine
 # pm-retired-path: .project_manager/tools/file_lock.py -> .project_manager/tools/pm_engine/infra/fs.py
 # pm-retired-path: .project_manager/tools/console_encoding.py -> .project_manager/tools/pm_engine/infra/console.py

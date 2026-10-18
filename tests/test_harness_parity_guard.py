@@ -67,7 +67,7 @@ class Site:
 # ── ① 하네스 이름이 조건식에 나오는 자리 (전부 CLI 형식) ──────────────────
 CONDITION_BRANCHES: dict[LedgerKey, Site] = {
     ("additional_reviewer.py", "_structured_reviewer_argv", "codex"): Site(
-        "argv 조립 — codex 는 `exec --json` 형식이라 relay 의 codex 빌더로 간다"),
+        "argv 조립 — codex 는 `exec --json` 형식이라 contract 의 codex 빌더로 간다"),
     ("additional_reviewer.py", "_structured_reviewer_argv", "claude"): Site(
         "argv 조립 — claude 는 `-p --output-format stream-json` 형식이라 별도 빌더로 간다"),
     ("additional_reviewer.py", "_structured_transport", "opencode"): Site(

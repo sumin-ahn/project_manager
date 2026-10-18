@@ -2351,7 +2351,7 @@ class _PreSpawnReservation:
     소유권은 **실 스폰 경계**의 `hand_off()` 로 넘어간다 — 스폰할 *수도* 있는 함수의 입구가
     아니라, 인자·seam 검증과 러너 준비(프로필 해소·워치독 셋업)가 모두 끝나 다음
     문장이 `Popen` 을 부르는 그 한 줄 앞이다(`run_review` → `_run_reviewer_ex` →
-    `_watchdog_reviewer_run` → relay 워치독의 `on_spawn_attempt`). 그 뒤의 실패는 호출이 이미
+    `_watchdog_reviewer_run` → watchdog 워치독의 `on_spawn_attempt`). 그 뒤의 실패는 호출이 이미
     일어났을 수 있어 조건이 다르고, 마감 경로(`started` 판정)가 본다. `_settled` 는 한 번만
     서므로 여러 층이 같은 예외를 잡아도 이중 환불(상한이 조용히 늘어남)이 되지 않는다.
 
@@ -3604,12 +3604,12 @@ def _watchdog_reviewer_run(argv, *, input=None, timeout=None, idle_timeout=None,
     이름 특례가 아니라 **해소된 공유 프로필 선언**을 따른다. 따라서 기본 codex(False)는 종전처럼
     꺼져 있고, 알려진 startup stall 축인 opencode(True)만 유한 재시도를 얻는다.
 
-    `cwd`/`env` 는 리뷰어 실행 조건이다 — 시그니처에 명시해 relay 워치독까지 내려보낸다
+    `cwd`/`env` 는 리뷰어 실행 조건이다 — 시그니처에 명시해 watchdog 워치독까지 내려보낸다
     (`**_ignored` 가 삼키면 실행 조건이 조용히 사라진다).
 
     `on_spawn_attempt` 도 같은 이유로 명시한다 — 이 러너의 **앞부분**(프로필 해소·
     워치독 준비)은 자식이 아직 없는 구간이라, 소유권 이전 콜백을 이 함수 입구에서 태우면 스폰 0·
-    호출 0 으로 끝난 준비 실패가 예산을 먹는다. 콜백은 relay 워치독의 실 스폰 경계까지 그대로
+    호출 0 으로 끝난 준비 실패가 예산을 먹는다. 콜백은 watchdog 워치독의 실 스폰 경계까지 그대로
     내려간다."""
     reviewer_cmd = shlex.join(argv)
     first_event_timeout, retries = _reviewer_watchdog_settings(reviewer_cmd)
@@ -3778,7 +3778,7 @@ def _reviewer_run_kwargs(run_fn: Callable, argv: list[str], *,
 #   NotADirectoryError   경로 중간 요소가 디렉토리가 아님(cwd·실행 파일 경로)
 #   IsADirectoryError    실행 대상이 디렉토리
 # 종류로 잡는 이유는 주입 러너(`subprocess.run` 호환)가 표식 없이 이 예외들을 그대로 올리기
-# 때문이고, relay 표식이 있으면 그쪽이 이긴다(`_launch_failed_definitely`).
+# 때문이고, watchdog 표식이 있으면 그쪽이 이긴다(`_launch_failed_definitely`).
 _DEFINITE_LAUNCH_FAILURES = (
     FileNotFoundError, PermissionError, NotADirectoryError, IsADirectoryError,
 )
@@ -3787,7 +3787,7 @@ _DEFINITE_LAUNCH_FAILURES = (
 def _launch_failed_definitely(exc: BaseException) -> bool:
     """이 예외가 "자식이 뜬 적 없음"을 **확정**하는가.
 
-    1순위는 relay 가 스폰 경계에서 붙인 표식(`spawn_failed`)이다 — 그 층만 `Popen` 반환 전후를
+    1순위는 watchdog 이 스폰 경계에서 붙인 표식(`spawn_failed`)이다 — 그 층만 `Popen` 반환 전후를
     실제로 본다. 그래서 종류표에 없는 pre-child 거절(argv NUL 의 `ValueError`)도 표식이 True 면
     여기서 True 이고, 반대로 `Popen` 성공 뒤의 실패에 종류표의 예외가 실려 와도 표식이 False 라
     여기서도 False 다(재시도 도중 자식이 한 번이라도 떴던 실행 포함).
@@ -3804,9 +3804,9 @@ def _started_after(exc: BaseException, seam_reached: bool) -> bool:
 
     우선순위는 한 줄이다 — `spawn_failed=True` → started=False(자식 없음·환불 대상),
     `spawn_failed=False` → started=True(자식 있었음·환불 금지), **표식 없음** → 종전대로 스폰 경계
-    콜백이 돌았는지(`seam_reached`). 표식은 `Popen` 앞뒤를 실제로 본 층(relay)이 붙이므로 경계
-    콜백의 위치 추정보다 강하다: 콜백이 아직 안 돌았어도 relay 가 '자식 있었음'을 봤으면 그
-    실행은 이미 호출됐을 수 있고, 반대로 콜백이 돈 뒤라도 relay 가 '자식 없음'을 확정했으면 호출
+    콜백이 돌았는지(`seam_reached`). 표식은 `Popen` 앞뒤를 실제로 본 층(watchdog)이 붙이므로 경계
+    콜백의 위치 추정보다 강하다: 콜백이 아직 안 돌았어도 watchdog 이 '자식 있었음'을 봤으면 그
+    실행은 이미 호출됐을 수 있고, 반대로 콜백이 돈 뒤라도 watchdog 이 '자식 없음'을 확정했으면 호출
     0 이다. 이 판정을 분기마다 다시 쓰면 한 분기만 표식을 빠뜨려도 예산이 조용히 새므로 여기 한
     곳이 소유한다.
     """
@@ -3907,7 +3907,7 @@ def _run_reviewer_ex(
     경계를 선언했는지에 따라 두 자리다:
 
     · 선언한 러너(기본 워치독 러너 — `on_spawn_attempt` 키워드를 이름으로 가짐)면 콜백을 **러너
-      안까지** 내려보내, relay 워치독이 `Popen` 하기 바로 앞에서 돈다. 러너 입구~`Popen` 사이의
+      안까지** 내려보내, watchdog 워치독이 `Popen` 하기 바로 앞에서 돈다. 러너 입구~`Popen` 사이의
       준비 구간(프로필 해소·워치독 셋업)에서 실패하면 콜백이 아직 돌지 않았으므로
       이 함수는 `started=False` 로 돌아간다 — 스폰 0·호출 0 인 실행이 예산을 먹지 않는다.
     · 선언하지 않은 기존 주입 러너면 종전 그대로 **호출 직전**에 한 번 돈다(호환 보존). 그 러너의
@@ -3919,9 +3919,9 @@ def _run_reviewer_ex(
 
     콜백이 **돈 뒤에** 돌아온 `started=False`(확정 기동 실패)는 자식이 없었다고 판명된 결과라,
     호출부(`run_review` 의 `on_no_spawn`)가 그 자리에서 소유권을 되찾는다 — 판정 자체는 이 함수의
-    반환값 하나가 소유하고, 되돌림 시점만 호출부 계약이다. 확정 기동 실패의 판정 입력은 relay 가
+    반환값 하나가 소유하고, 되돌림 시점만 호출부 계약이다. 확정 기동 실패의 판정 입력은 watchdog 이
     붙이는 스폰 표식(`spawn_failed`)이 1순위, 없으면 예외 종류다 — `Popen` 성공 **뒤**의 실패에
-    같은 예외 종류가 실려 오면 relay 표식이 그것을 post-spawn 으로 못박아 보수적 started=True 가
+    같은 예외 종류가 실려 오면 watchdog 표식이 그것을 post-spawn 으로 못박아 보수적 started=True 가
     유지된다. 그 우선순위(표식 True→False·표식 False→True·표식 없음→스폰 경계 위치)는 확정 기동
     실패 분기만이 아니라 seam 호출 오류(`TypeError`)·일반 실행 오류 분기에도 **같이** 적용된다
     (`_started_after` 한 곳이 소유). 한 분기만 표식을 무시해도 그 자리로 예산이 샌다."""
@@ -3958,7 +3958,7 @@ def _run_reviewer_ex(
             on_spawn_attempt=_spawn_seam,
         )
         # ── 스폰 경계 seam ──────────────────────────────────────────────
-        # 스폰 경계를 **이름으로 선언한** 러너면 콜백이 그 안(relay 의 `Popen` 직전)에서 돈다 —
+        # 스폰 경계를 **이름으로 선언한** 러너면 콜백이 그 안(watchdog 의 `Popen` 직전)에서 돈다 —
         # 러너 입구~Popen 사이의 준비 실패는 스폰 0·호출 0 이라 예약이 환불 대상으로 남는다.
         # 선언하지 않은 기존 주입 러너는 종전 자리(호출 직전)에서 한 번 돈다(호환 보존).
         if "on_spawn_attempt" not in kwargs:
@@ -3988,7 +3988,7 @@ def _run_reviewer_ex(
         return False, ReviewerOutput(_timeout_output(timeout, exc)), True
     except _DEFINITE_LAUNCH_FAILURES as exc:
         # exec 자체가 실패해 자식이 뜬 적 없다(파일 부재·실행 권한·경로 형상) → started=False
-        # (환불 대상). 단 relay 표식이 "Popen 성공 뒤"라고 못박은 예외는 예외다 — 그건 자식이
+        # (환불 대상). 단 watchdog 표식이 "Popen 성공 뒤"라고 못박은 예외는 예외다 — 그건 자식이
         # 있었던 실행이라 보수 규칙으로 내려보낸다.
         if not _launch_failed_definitely(exc):
             return False, ReviewerOutput(f"[리뷰어 실행 오류: {exc}]"), True
@@ -4003,7 +4003,7 @@ def _run_reviewer_ex(
             f"[리뷰어 runner seam 계약 오류 — 호출 전 차단: {exc}]"), False
     except TypeError as exc:
         # runner 내부에서 발생한 키워드/시그니처 skew. 판정은 다른 분기와 **같은 우선순위**다 —
-        # relay 표식이 있으면 그것이 이기고(True→환불·False→환불 금지), 없을 때만 스폰 경계 위치를
+        # watchdog 표식이 있으면 그것이 이기고(True→환불·False→환불 금지), 없을 때만 스폰 경계 위치를
         # 본다. 표식을 무시하고 경계 위치만 보면, `Popen` 뒤에 실려 온 TypeError 가 콜백이 아직 안
         # 돈 러너에서 올라올 때 이미 나간 호출이 환불된다.
         return (False, ReviewerOutput(f"[리뷰어 runner seam 호출 오류: {exc}]"),
@@ -4021,7 +4021,7 @@ def _run_reviewer_ex(
                 output += f"\n{exc.output}"
             return False, ReviewerOutput(output, getattr(exc, "stderr", "") or ""), True
         if _launch_failed_definitely(exc):
-            # relay 가 스폰 경계에서 "자식 없음"으로 표식한 실패 — 종류는 exec `OSError` 만이
+            # watchdog 이 스폰 경계에서 "자식 없음"으로 표식한 실패 — 종류는 exec `OSError` 만이
             # 아니다(argv NUL 의 `ValueError` 처럼 `Popen` 이 fork 전에 거절한 형상도 여기 온다).
             # 자식이 없었으므로 호출 0·과금 0 이고 환불 대상이다.
             return (False,
@@ -4029,7 +4029,7 @@ def _run_reviewer_ex(
                     False)
         # 스폰 경계 뒤의 실패는 시작 여부가 불확실하다 — 보수적으로 started=True (상한 우회 방지 >
         # 과잉 카운트). 경계 **전**의 실패는 자식이 아직 없었다는 사실이 확정이라 False 다. 단
-        # relay 가 '자식 있었음'(False)으로 못박은 예외는 경계 콜백이 아직 안 돌았어도 True 다 —
+        # watchdog 이 '자식 있었음'(False)으로 못박은 예외는 경계 콜백이 아직 안 돌았어도 True 다 —
         # 위 `_DEFINITE_LAUNCH_FAILURES` 분기와 같은 우선순위(표식 > 위치)를 여기서도 쓴다.
         return (False, ReviewerOutput(f"[리뷰어 실행 오류: {exc}]"),
                 _started_after(exc, spawn_reached))
@@ -4222,7 +4222,7 @@ def _raw_storage(output_dir: Path | None = None) -> tuple[Path, Path]:
     자기 앵커로 폴백하므로 이 앵커도 그것을 따른다 — 복구 채널 자기잠김 금지.
 
     delegate의 raw 장부는 표현 축이 아닌 저장 경로 축이므로 포맷터 통합에서 제외하고,
-    두 소비처 모두 relay.raw_storage_paths를 쓰는 현재 경계를 유지한다.
+    두 소비처 모두 raw_output.raw_storage_paths를 쓰는 현재 경계를 유지한다.
     """
     return raw_output.raw_storage_paths(
         _PM_HOME_OVERRIDE or REPO,
@@ -4426,7 +4426,7 @@ def run_review(
     # raw 선점(mkdir/open)·장부 시작 레코드·구조화 transport·argv/kwargs 준비가 전부 이 안이고,
     # 자식은 아직 없다. 이 구간에서 예외로 나가면 (1) 예약 소유권을 넘기지 않아 호출부의 스폰 전
     # seam 이 한 번 환불하고, (2) 이 함수가 남긴 raw 선점/미마감 레코드를 정직하게 닫는다.
-    # 소유권 이전 시점 자체는 relay 워치독이 `Popen` 을 부르기 한 줄 앞이다(그보다 앞이면
+    # 소유권 이전 시점 자체는 watchdog 워치독이 `Popen` 을 부르기 한 줄 앞이다(그보다 앞이면
     # "스폰할 수도 있는 함수에 들어갔다"는 이유만으로 환불 권리가 사라진다).
     record_id: str | None = None
     ledger_path: Path | None = None
@@ -5574,7 +5574,7 @@ def _run_review_round(
 
     예산 확인·예약은 이 구간 **밖**에서 이미 끝났다. 넘겨받은 예약(`reservation`)의 앞부분(환경 준비, 그리고
     `run_review` 안의 raw 선점·장부 시작 레코드·transport·argv 준비, 그리고 러너 안의 준비
-    구간)은 아직 스폰 전이라 호출부의 환불 seam 이 소유하고, 소유권은 **실 스폰 경계**(relay
+    구간)은 아직 스폰 전이라 호출부의 환불 seam 이 소유하고, 소유권은 **실 스폰 경계**(watchdog
     워치독의 `Popen` 직전)의 `on_spawn_attempt` 콜백으로 넘어온다 — 그 뒤부터 이 구간이 예약을
     호출 결과로 마감한다.
 
@@ -5603,7 +5603,7 @@ def _run_review_round(
     )
 
     print(f"추가 리뷰어 실행 중 (유료 호출): {reviewer_cmd}", file=sys.stderr)
-    # 예약 소유는 `run_review` **진입**이 아니라 relay 워치독이 자식을 띄우기 **직전**에 넘어간다
+    # 예약 소유는 `run_review` **진입**이 아니라 watchdog 워치독이 자식을 띄우기 **직전**에 넘어간다
     # (`on_spawn_attempt`). run_review 의 앞부분(raw 선점·장부 시작 레코드·구조화 transport·
     # argv/kwargs 준비)과 러너 안의 준비 구간(프로필 해소·워치독 셋업)은 자식이 아직
     # 없는 구간이라, 진입에서 넘기면 스폰 0·과금 0 으로 끝난 준비 실패(예: `--output-dir` 이

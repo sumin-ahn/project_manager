@@ -31,7 +31,6 @@ import pytest
 from pm_engine.infra import manifest_store
 
 REPO = Path(__file__).resolve().parents[1]
-TOOLS = REPO / ".project_manager" / "tools"
 OC_MANIFEST = REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest"
 
 # 가드 ① 스캔 대상 = 출하 누락 시 각 도구의 패키징/빌드 동작이 바뀌는 ignore 규칙 파일 전부.

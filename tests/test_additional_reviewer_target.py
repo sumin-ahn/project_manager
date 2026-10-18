@@ -1293,14 +1293,14 @@ def test_missing_reviewer_binary_refunds_exactly_once_through_finalization(
 
 # ── 스폰 경계 표식의 예산 귀결 (T-0590 R4) ─────────────────────────────────
 #
-# 환불 판정의 입력은 예외 **종류**가 아니라 relay 가 스폰 경계에서 붙인 표식이다. 아래 세 축이
+# 환불 판정의 입력은 예외 **종류**가 아니라 watchdog 이 스폰 경계에서 붙인 표식이다. 아래 세 축이
 # 그 귀결을 예산 장부로 못박는다: (1) 재시도 중 자식이 한 번이라도 떴으면 뒤 시도의 기동 실패는
 # 환불하지 않는다, (2) `Popen` 이 fork 전에 거절한 실행(argv NUL)은 호출 0 이라 환불한다,
 # (3) `Popen` 성공 뒤의 같은 종류 예외는 환불하지 않는다.
 
 
 class _FakeClock:
-    """단조 fake clock — sleep 이 advance 해 relay 폴 루프를 결정적으로 전진시킨다."""
+    """단조 fake clock — sleep 이 advance 해 watchdog 폴 루프를 결정적으로 전진시킨다."""
 
     def __init__(self) -> None:
         self.t = 0.0
@@ -1313,7 +1313,7 @@ class _FakeClock:
 
 
 class _StallingProc:
-    """첫 이벤트가 영원히 오지 않는 fake 자식 — relay 의 startup stall 축을 태운다."""
+    """첫 이벤트가 영원히 오지 않는 fake 자식 — watchdog 의 startup stall 축을 태운다."""
 
     def __init__(self) -> None:
         self.kill_count = 0
@@ -1346,9 +1346,9 @@ class _StallingProc:
 def _relay_runner(popen, clock, *, retries: int):
     """기본 러너(`_watchdog_reviewer_run`)와 같은 형상의 러너 — 자식 생성만 대역화한다.
 
-    `popen` seam 하나만 갈아 끼우고 재시도·kill·표식은 **실 relay 코드**가 그대로 한다. 러너를
+    `popen` seam 하나만 갈아 끼우고 재시도·kill·표식은 **실 watchdog 코드**가 그대로 한다. 러너를
     통째로 대역화하면 이 절이 소유한 스폰 경계 표식 계약이 통과 없이 green 이 된다.
-    `on_spawn_attempt` 를 이름으로 선언해 소유권 이전 seam 이 relay 안까지 내려가는 실 배선을
+    `on_spawn_attempt` 를 이름으로 선언해 소유권 이전 seam 이 watchdog 안까지 내려가는 실 배선을
     유지한다."""
     def _run(argv, *, input=None, timeout=None, idle_timeout=None,
              cwd=None, env=None, on_spawn_attempt=None, **_ignored):
@@ -1368,7 +1368,7 @@ def test_a_second_attempt_launch_failure_still_charges_the_first_spawn(
     읽으면, **1회차에 이미 나갔을 수 있는 호출**이 라운드·wave 예산에서 사라진다(같은 형상을
     반복하면 상한이 무한히 우회된다). 종류(FileNotFoundError)가 아니라 실행 단위 표식이 이긴다."""
     repo = _repo(tmp_path / "repo", _conf())
-    _wire_main(external, monkeypatch, repo)          # 러너 자리는 아래에서 실 relay 로 건다
+    _wire_main(external, monkeypatch, repo)          # 러너 자리는 아래에서 실 watchdog 으로 건다
     clock = _FakeClock()
     first = _StallingProc()
     attempts: list[str] = []
@@ -1399,7 +1399,7 @@ def test_a_nul_argv_rejected_before_the_child_refunds_and_the_next_call_still_ru
         external, monkeypatch, tmp_path, capsys):
     """argv NUL 은 `Popen` 이 fork 전에 거절한다(호출 0) — 상한 1 에서도 슬롯이 살아남는다.
 
-    실 러너·실 relay·실 `_WatchedPopen` 을 그대로 태운다(프로세스는 하나도 뜨지 않는다 — 거절이
+    실 러너·실 watchdog·실 `_WatchedPopen` 을 그대로 태운다(프로세스는 하나도 뜨지 않는다 — 거절이
     fork 앞이라 hermetic 하다). 종류가 `ValueError` 라 확정 기동 실패 종류표에는 없다: 표식이
     없으면 보수적으로 '호출됐을 수 있음'이 되어, 상한 1·미완 1 인 채택자는 **한 번도 호출하지
     못한 채** 다음 호출이 막힌다."""
@@ -1427,7 +1427,7 @@ def test_a_nul_argv_rejected_before_the_child_refunds_and_the_next_call_still_ru
 
 
 def _runner_that_spawns_then_raises_marked(reviewer: _FakeReviewer, failure: type):
-    """스폰(=호출)한 뒤 `Popen` 성공 뒤 실패로 죽는 러너 — relay 가 붙이는 표식까지 재현한다."""
+    """스폰(=호출)한 뒤 `Popen` 성공 뒤 실패로 죽는 러너 — watchdog 이 붙이는 표식까지 재현한다."""
     def _run(argv, *, input=None, timeout=None, idle_timeout=None,
              cwd=None, env=None, **_ignored):
         reviewer(argv, input=input, timeout=timeout, idle_timeout=idle_timeout,

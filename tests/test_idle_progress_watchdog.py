@@ -2547,7 +2547,7 @@ def test_watched_popen_marks_post_spawn_init_failure_as_spawned(monkeypatch):
     예외의 표식을 본다. 종류만 보고 환불하면 이 형상이 '호출 0' 으로 오분류된다.
     """
     class _NoThreads:
-        """relay 가 쓰는 threading 표면 대역 — Thread 생성만 실패시킨다."""
+        """watchdog 이 쓰는 threading 표면 대역 — Thread 생성만 실패시킨다."""
 
         Event = threading.Event
         Lock = threading.Lock
@@ -2825,7 +2825,7 @@ def test_nul_inputs_are_rejected_before_the_spawn_boundary(kwargs, where):
 
 
 class _PopenPatchedSubprocess:
-    """relay 가 보는 `subprocess` 표면 — `Popen` 만 대역이고 나머지는 실 모듈 그대로.
+    """watchdog 이 보는 `subprocess` 표면 — `Popen` 만 대역이고 나머지는 실 모듈 그대로.
 
     실 모듈 속성을 직접 갈아끼우면 이 테스트 파일 자신이 쓰는 `subprocess.Popen` 까지 바뀐다
     (대역 안에서 실 자식을 띄우는 반례가 자기 자신을 재귀 호출한다)."""

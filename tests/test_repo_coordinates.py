@@ -9,9 +9,6 @@ import pytest
 from pm_engine.infra import repo_coordinates
 
 
-REPO = Path(__file__).resolve().parents[1]
-
-
 @pytest.fixture(scope="module")
 def coords():
     return repo_coordinates

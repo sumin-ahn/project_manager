@@ -19,7 +19,6 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
