@@ -19,9 +19,7 @@ import argparse
 import ast
 import contextlib
 import datetime
-import fnmatch
 import functools
-import hashlib
 import importlib.util
 import json
 import os
@@ -44,8 +42,9 @@ import yaml
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.domain import conf_schema  # noqa: E402
-from pm_engine.infra import conf_store, console, fs, repo_files  # noqa: E402
+from pm_engine.app import hooks  # noqa: E402
+from pm_engine.domain import conf_schema, git_policy, shell_policy  # noqa: E402
+from pm_engine.infra import conf_store, console, fs, git, process, repo_files  # noqa: E402
 _load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
@@ -270,250 +269,6 @@ _SUBCOMMAND_GROUP_DESTS: dict[str, str] = {
     "cluster": "cluster_cmd",
 }
 
-# raw git mutation 가드도 board dispatch의 mutation 분류와 같은 원칙(한 표 → 모든 소비처)을 쓴다.
-# 하네스별 훅은 이 표를 복제하지 않고 ``judge_git_anchor``/``judge_git_anchor_command``만 호출한다.
-_GIT_MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
-    "add", "stage", "commit", "push", "checkout", "restore", "reset",
-    "rm", "mv", "clean", "apply", "stash", "branch", "worktree", "switch",
-})
-# 브랜치·작업 변경·슬롯·원격을 되돌리기 어렵게 바꿀 수 있는 서브커맨드. 브랜치와 슬롯은 엔진만
-# 만들고 지우므로, 이 안의 파괴 형태(`_git_destructive_form`)는 슬롯·공용 저장소 대상에서 거부한다.
-# 저수준 명령(update-ref·symbolic-ref·checkout-index·read-tree)도 같은 결과를 내므로 함께 본다.
-_GIT_DESTRUCTIVE_SUBCOMMANDS: frozenset[str] = frozenset({
-    "branch", "worktree", "reset", "checkout", "switch", "restore", "clean", "stash", "push",
-    "update-ref", "symbolic-ref", "checkout-index", "read-tree",
-})
-# 파괴 형태를 거부하는 대상 정체 — 등록 슬롯 · 그 밖의 PM 홈 소유 linked worktree · 공용 저장소(bare).
-_GIT_PROTECTED_IDENTITIES: frozenset[str] = frozenset({"slot", "worktree", "shared-repo"})
-# 슬롯 작업 트리·인덱스·HEAD 를 바꾸는 git 쓰기 — 슬롯 주인 판정 대상(`_git_writes_slot`).
-_GIT_SLOT_WRITE_SUBCOMMANDS: frozenset[str] = frozenset({
-    "add", "stage", "commit", "checkout", "switch", "restore", "reset", "rm", "mv", "merge",
-    "rebase", "cherry-pick", "revert", "stash", "pull", "am", "apply", "clean",
-    "sparse-checkout", "submodule",
-})
-# 멈춤 거부 deny 표식 — 손 git 파괴 형태·슬롯/공용 저장소 파일 삭제·허용 위조·남의 슬롯 쓰기. 셸 파서의 조건/cwd
-# 불확실 강등(deny→warn)은 이 표식이 붙은 판정을 낮추지 않는다 — 대상을 못 정한 호출은 이미
-# 슬롯·공용 저장소일 수 있다고 보고 거부한 결과다.
-GIT_DESTRUCTIVE_DENY_CODE = "git-destructive-form"
-# 멈춤 거부 문구의 첫 줄. 다음 줄은 경우(`_GIT_GUARD_CASE_*`)마다 행동 하나다.
-GIT_GUARD_STOP_LINE = "다른 명령으로 같은 일을 하지 마라. 여기서 멈추고 사용자에게 물어라."
-# 거부 경우 — 다음 행동을 고르는 키. 사용자 1회 허용으로 풀 수 있는 경우는 ASK_USER 하나다.
-_GIT_GUARD_CASE_FOLDER_UNKNOWN = "folder-unknown"
-_GIT_GUARD_CASE_LITERAL_ARGUMENTS = "literal-arguments"
-_GIT_GUARD_CASE_BRANCH_CREATE = "branch-create"
-_GIT_GUARD_CASE_SLOT_REMOVE = "slot-remove"
-_GIT_GUARD_CASE_ASK_USER = "ask-user"
-_GIT_GUARD_CASE_GRANT_FORGERY = "grant-forgery"
-_GIT_GUARD_CASE_SLOT_NO_TASK = "slot-no-task"
-_GIT_GUARD_CASE_SLOT_NOT_OWNED = "slot-not-owned"
-# 열린 todo 없이 파일을 고치려는 경우 — 무엇을 하는 중인지 장부에 없으면 다음 세션도 사용자도
-# 그 일을 못 본다. 등록 경로(`pm-config task todo add`)는 셸 명령이라 이 판정을 타지 않는다.
-_GIT_GUARD_CASE_NO_OPEN_TODO = "no-open-todo"
-# 사용자 1회 허용 입력 한 줄 — `git 허용: <명령 원문>`. 사용자 프롬프트 훅만 이 줄로 허용 기록을
-# 만든다. 도구 호출 입력에 이 표식이나 허용 기록 폴더 이름이 있으면 위조 시도로 거부한다.
-GIT_GRANT_LINE = re.compile(r"^[ \t]*git[ \t]+허용[ \t]*:[ \t]*(.*?)[ \t]*$", re.MULTILINE)
-_GIT_GRANT_MARKER = re.compile(r"git[ \t]+허용[ \t]*:")
-GIT_GRANT_DIR_NAME = "git-grants"
-# 허용 명령 원문에 둘 수 없는 문자 — 셸 연산자·리다이렉션·확장(변수·명령 치환·glob·틸드·중괄호
-# 전개)·주석. 이런 글자가 없어야 argv 정규화(shlex)와 실제 셸 실행의 의미가 같다.
-_GIT_GRANT_UNSAFE_TEXT = re.compile(
-    r"[;&|<>()$`*?\[\r\n]|(?:^|[\s=:])~|\{[^}]*(?:,|\.\.)[^}]*\}|(?:^|\s)#"
-)
-_GIT_ANCHOR_DENY_ROOTS: frozenset[str] = frozenset({"tests", "templates"})
-# `,` 뒤따름은 인터프리터 코드의 argv 목록(``['git', 'branch', …]``)에서 따옴표를 걷은 형태다.
-_GIT_COMMAND_PREFILTER = re.compile(r"(?<![A-Za-z0-9_.-])['\"]?git['\"]?(?=\s|$|[<>,])")
-
-
-class _GitInvocation(NamedTuple):
-    """정규화한 git 호출. ``cwd``는 global ``-C``를 적용한 실제 명령 앵커다."""
-
-    cwd: Path
-    subcommand: str
-    args: tuple[str, ...]
-    anchor_certain: bool
-    # global ``-c <키>=<값>`` 들 — alias 풀이가 대상 저장소 설정과 함께 읽는다(git 과 같은 우선순위).
-    config: tuple[str, ...]
-
-
-def _git_invocation(cwd: str | os.PathLike[str], argv: Sequence[str]) -> _GitInvocation | None:
-    """git argv에서 global option/``-C``를 걷고 실제 subcommand를 해소한다.
-
-    모르는 global option은 보수적으로 한 토큰 option으로 취급하고 뒤의 첫 non-option을
-    subcommand로 삼는다. ``GIT_DIR``/``GIT_WORK_TREE``·``--git-dir``/``--work-tree``·셸 변수가 든
-    ``-C`` 는 실제 대상을 정적으로 정하지 못하므로 ``anchor_certain=False`` 다. 그런 호출은 파괴
-    형태일 때만 거부하고(`judge_git_anchor`) 그 밖에는 warn 으로 흐른다. ``git -C``는 cwd 오인
-    판정의 일부라 반복 지정도 순서대로 적용한다.
-    """
-    tokens = [str(value) for value in argv]
-    if not tokens:
-        return None
-    try:
-        start = next(i for i, token in enumerate(tokens) if Path(token).name == "git")
-    except StopIteration:
-        return None
-    anchor = Path(cwd).expanduser()
-    anchor_certain = not any(
-        token.startswith(("GIT_WORK_TREE=", "GIT_DIR=")) for token in tokens[:start]
-    )
-    config: list[str] = []
-    i = start + 1
-    value_options = {"-c", "--config-env", "--git-dir", "--work-tree", "--namespace"}
-    while i < len(tokens):
-        token = tokens[i]
-        if token == "-C":
-            if i + 1 >= len(tokens):
-                return _GitInvocation(anchor, "", tuple(), anchor_certain, tuple(config))
-            if any(ch in tokens[i + 1] for ch in "$`"):
-                anchor_certain = False
-            target = Path(tokens[i + 1]).expanduser()
-            anchor = target if target.is_absolute() else anchor / target
-            i += 2
-            continue
-        if token in value_options:
-            if token in {"--git-dir", "--work-tree"}:
-                anchor_certain = False
-            if token == "-c" and i + 1 < len(tokens):
-                config.append(tokens[i + 1])
-            i += 2
-            continue
-        if token.startswith("--git-dir=") or token.startswith("--work-tree=") or token.startswith("--namespace="):
-            if token.startswith(("--git-dir=", "--work-tree=")):
-                anchor_certain = False
-            i += 1
-            continue
-        if token == "--":
-            i += 1
-            break
-        if token.startswith("-"):
-            i += 1
-            continue
-        break
-    if i >= len(tokens):
-        return _GitInvocation(anchor.resolve(), "", tuple(), anchor_certain, tuple(config))
-    return _GitInvocation(
-        anchor.resolve(), tokens[i], tuple(tokens[i + 1:]), anchor_certain, tuple(config),
-    )
-
-
-def _git_operand_pathspecs(
-    args: Sequence[str], *, value_options: frozenset[str],
-    short_value_options: frozenset[str] = frozenset(),
-) -> tuple[str, ...]:
-    """option 값을 건너뛰고 명시 operand만 반환한다.
-
-    ``--pathspec-from-file``은 파일 *내용*이 pathspec이고 옵션 값은 그 파일 경로일 뿐이다. 훅이
-    파일 내용을 읽어 shell 실행 시점 의미를 재현하는 것은 TOCTOU라, 이 축은 통째로 fail-open한다.
-    """
-    values = list(args)
-    if any(
-        value in {"--pathspec-from-file", "--pathspec-file-nul"}
-        or value.startswith("--pathspec-from-file=")
-        for value in values
-    ):
-        return ()
-    operands: list[str] = []
-    i = 0
-    while i < len(values):
-        value = values[i]
-        if value == "--":
-            operands.extend(values[i + 1:])
-            break
-        if value in value_options or value in short_value_options:
-            i += 2
-            continue
-        if any(value.startswith(option + "=") for option in value_options if option.startswith("--")):
-            i += 1
-            continue
-        if value.startswith("-") and not value.startswith("--"):
-            # Git은 short option을 묶을 수 있다(``git commit -am msg``). 묶음 안에 값 소비
-            # option이 있고 그 option 뒤 suffix가 없으면 다음 토큰이 option 값이다.
-            consuming = {option[1:] for option in short_value_options if len(option) == 2}
-            cluster = value[1:]
-            consume_next = any(
-                char in consuming and position == len(cluster) - 1
-                for position, char in enumerate(cluster)
-            )
-            i += 2 if consume_next else 1
-            continue
-        if any(value.startswith(option) and value != option for option in short_value_options):
-            i += 1
-            continue
-        if value.startswith("-"):
-            i += 1
-            continue
-        operands.append(value)
-        i += 1
-    return tuple(operands)
-
-
-def _git_pathspecs(subcommand: str, args: Sequence[str]) -> tuple[str, ...]:
-    """deny 판정에 쓸 명시 pathspec만 추출한다.
-
-    checkout/reset은 ref와 path 문법이 겹쳐 ``--`` 뒤만 신뢰한다. add/stage·restore·commit은
-    Git 문법상 non-option operand가 pathspec이므로 option arity를 걷어 ``--`` 없는 명시 경로도 받는다.
-    """
-    values = list(args)
-    if subcommand == "apply":
-        # operand는 target pathspec이 아니라 읽을 patch 파일이다.
-        return ()
-    if "--" in values:
-        return tuple(values[values.index("--") + 1:])
-    if subcommand in {"checkout", "reset", "push"}:
-        return ()
-    if subcommand in {"add", "stage"}:
-        return _git_operand_pathspecs(
-            values,
-            value_options=frozenset({"--chmod", "--pathspec-from-file"}),
-        )
-    if subcommand in {"rm", "mv", "clean"}:
-        return _git_operand_pathspecs(
-            values,
-            value_options=frozenset(
-                {"--pathspec-from-file", "--exclude"} if subcommand == "clean"
-                else {"--pathspec-from-file"}
-            ),
-            short_value_options=frozenset({"-e"}) if subcommand == "clean" else frozenset(),
-        )
-    if subcommand == "restore":
-        return _git_operand_pathspecs(
-            values,
-            value_options=frozenset({"--source", "--pathspec-from-file"}),
-            short_value_options=frozenset({"-s"}),
-        )
-    if subcommand == "commit":
-        return _git_operand_pathspecs(
-            values,
-            value_options=frozenset({
-                "--author", "--date", "--file", "--fixup", "--gpg-sign", "--message",
-                "--pathspec-from-file", "--reedit-message", "--reuse-message", "--template",
-                "--trailer",
-            }),
-            short_value_options=frozenset({"-C", "-F", "-S", "-c", "-m", "-t"}),
-        )
-    return ()
-
-
-def _git_repo_root(anchor: Path, *, runner: Any = subprocess.run) -> Path | None:
-    root = _git_rev_parse(anchor, "--show-toplevel", runner=runner)
-    return Path(root).resolve() if root else None
-
-
-def _shared_repository_root(anchor: Path, *, runner: Any = subprocess.run) -> Path | None:
-    """`anchor` 가 PM 홈 공용 저장소(bare `<PM 홈>/.repos/<repo>.git`) 안이면 그 저장소 경로.
-
-    bare 저장소는 작업 폴더가 없어 ``--show-toplevel`` 이 실패하므로 git-dir 로 따로 해소한다.
-    형상 규칙은 슬롯 소유 유도(`pm_log.owning_pm_home`)와 같다 — `.repos` 아래 `.git` 접미
-    디렉터리이고 그 위가 `.project_manager` 를 가진 PM 홈이어야 한다.
-    """
-    answer = _git_rev_parse(anchor, "--is-bare-repository", "--absolute-git-dir", runner=runner)
-    lines = answer.splitlines() if answer else []
-    if len(lines) != 2 or lines[0] != "true":
-        return None
-    git_dir = Path(lines[1]).resolve()
-    if git_dir.suffix != ".git" or git_dir.parent.name != ".repos":
-        return None
-    return git_dir if (git_dir.parent.parent / ".project_manager").is_dir() else None
-
 
 def _registered_slot_paths(
     pm_home: Path, *, runner: Any = subprocess.run
@@ -551,7 +306,7 @@ def _registered_slot_paths(
             # symlink가 work/ 밖을 가리키거나 중첩 경로가 되면 slot이 아니다.
             if len(relative.parts) != 1 or not path.is_dir():
                 continue
-            if not _is_linked_worktree(path, runner=runner):
+            if not git._is_linked_worktree(path, runner=runner):
                 continue
             registered, _error = _ledger_registration(pm_home, path)
             if not registered:
@@ -565,16 +320,16 @@ def _git_anchor_identity(
     anchor: Path, *, runner: Any = subprocess.run, slot_home: Path | None = None,
 ) -> tuple[str, Path | None, Path | None]:
     """(public identity, git root, owning PM home)를 기존 misanchor seam으로 해소한다."""
-    root = _git_repo_root(anchor, runner=runner)
+    root = git._git_repo_root(anchor, runner=runner)
     if root is None:
-        shared = _shared_repository_root(anchor, runner=runner)
+        shared = git._shared_repository_root(anchor, runner=runner)
         if shared is not None:
             return "shared-repo", shared, shared.parent.parent
         return "non-repo", None, None
     if _has_real_board(root / ".project_manager"):
         return "pm-home", root, root
     if slot_home is not None:
-        containing = slot_containing(slot_home, root)
+        containing = hooks.slot_containing(slot_home, root)
         if containing is not None:
             parent = slot_home / containing[0]["slot"]
             # 초기화된 submodule의 포인터는 슬롯 root의 PM 홈 선언 형상이 아니다.
@@ -629,732 +384,13 @@ def _dangerous_cross_repo_pathspecs(
         except ValueError:
             continue
         parts = normalized.parts
-        if not parts or parts[0] not in _GIT_ANCHOR_DENY_ROOTS:
+        if not parts or parts[0] not in git_policy._GIT_ANCHOR_DENY_ROOTS:
             continue
         if not local.exists():
             continue
         if any((slot / normalized).exists() for slot in slots):
             dangerous.append(normalized.as_posix())
     return tuple(dict.fromkeys(dangerous))
-
-
-class _GitArguments(NamedTuple):
-    """서브커맨드 인자를 git parse-options 규칙으로 푼 결과."""
-
-    # (옵션 이름, 값) — 묶음(``-fd``)은 낱개로, ``--옵션=값``·값 소비 옵션은 값과 함께 푼다.
-    options: tuple[tuple[str, str | None], ...]
-    operands: tuple[str, ...]
-    # ``--`` 뒤 경로. ``--`` 가 없으면 None.
-    paths: tuple[str, ...] | None
-
-
-def _git_arguments(
-    args: Sequence[str], *, short_values: str = "",
-    long_values: frozenset[str] = frozenset(),
-    stop_after_operands: int | None = None,
-) -> _GitArguments:
-    options: list[tuple[str, str | None]] = []
-    operands: list[str] = []
-    paths: tuple[str, ...] | None = None
-    values = list(args)
-    i = 0
-    while i < len(values):
-        token = values[i]
-        if token == "--":
-            paths = tuple(values[i + 1:])
-            break
-        if token.startswith("--"):
-            name, separator, value = token.partition("=")
-            if not separator and name in long_values and i + 1 < len(values):
-                i += 1
-                options.append((name, values[i]))
-            else:
-                options.append((name, value if separator else None))
-        elif token.startswith("-") and len(token) > 1:
-            cluster = token[1:]
-            for position, char in enumerate(cluster):
-                if char not in short_values:
-                    options.append((f"-{char}", None))
-                    continue
-                # 값 소비 옵션은 묶음의 나머지를, 나머지가 없으면 다음 토큰을 값으로 삼는다.
-                rest = cluster[position + 1:]
-                if not rest and i + 1 < len(values):
-                    i += 1
-                    rest = values[i]
-                options.append((f"-{char}", rest or None))
-                break
-        else:
-            operands.append(token)
-            if stop_after_operands is not None and len(operands) == stop_after_operands:
-                # 실행 명령 시작 뒤 인자는 Git 옵션이 아니라 payload다.
-                operands.extend(values[i + 1:])
-                break
-        i += 1
-    return _GitArguments(tuple(options), tuple(operands), paths)
-
-
-def _git_option_given(arguments: _GitArguments, *names: str) -> bool:
-    """옵션이 주어졌는지. git 처럼 긴 옵션의 모호하지 않은 앞부분(``--har``)도 같은 옵션으로 본다.
-
-    앞부분이 여러 옵션에 걸리면 git 자체가 모호함으로 실패하므로 파괴 쪽으로 읽어도 실행되는 일이 없다.
-    """
-    for given, _value in arguments.options:
-        for name in names:
-            if given == name or (
-                name.startswith("--") and len(given) > 2 and name.startswith(given)
-            ):
-                return True
-    return False
-
-
-class _GitDestructiveForm(NamedTuple):
-    label: str
-    # 거부 경우(`_GIT_GUARD_CASE_*`) — 거부 문구의 다음 행동과 1회 허용 가능 여부를 정한다.
-    case: str
-
-
-_GIT_BRANCH_CREATE = _GitDestructiveForm("브랜치 만들기", _GIT_GUARD_CASE_BRANCH_CREATE)
-_GIT_BRANCH_DELETE = _GitDestructiveForm("브랜치 지우기", _GIT_GUARD_CASE_ASK_USER)
-_GIT_BRANCH_RENAME = _GitDestructiveForm("브랜치 이름 바꾸기", _GIT_GUARD_CASE_ASK_USER)
-_GIT_DISCARD_CHANGES = _GitDestructiveForm("변경 버리기", _GIT_GUARD_CASE_ASK_USER)
-_GIT_SLOT_REMOVE = _GitDestructiveForm("슬롯 지우기", _GIT_GUARD_CASE_SLOT_REMOVE)
-_GIT_SLOT_MOVE = _GitDestructiveForm("슬롯 옮기기", _GIT_GUARD_CASE_ASK_USER)
-_GIT_REMOTE_OVERWRITE = _GitDestructiveForm("원격 덮어쓰기", _GIT_GUARD_CASE_ASK_USER)
-_GIT_REF_REWRITE = _GitDestructiveForm(
-    "브랜치 ref 직접 지우기·옮기기(저수준 명령)", _GIT_GUARD_CASE_ASK_USER,
-)
-_GIT_UNRESOLVED_ARGUMENTS = _GitDestructiveForm(
-    "셸 변수·명령 치환이 든 인자(형태를 정적으로 풀 수 없음)", _GIT_GUARD_CASE_LITERAL_ARGUMENTS,
-)
-_GIT_UNRESOLVED_REF = _GitDestructiveForm(
-    "대상 저장소를 정할 수 없어 기존 브랜치·커밋 전환인지 확인할 수 없음",
-    _GIT_GUARD_CASE_FOLDER_UNKNOWN,
-)
-_GIT_UNKNOWN_CHECKOUT_NAME = _GitDestructiveForm(
-    "기존 커밋이 아닌 이름 — 경로 복원(변경 버리기) 또는 원격 추적 브랜치로 브랜치 만들기",
-    _GIT_GUARD_CASE_ASK_USER,
-)
-_GIT_UNKNOWN_LOCAL_BRANCH = _GitDestructiveForm(
-    "로컬 브랜치가 아닌 이름 — 원격 추적 브랜치로 브랜치 만들기", _GIT_GUARD_CASE_BRANCH_CREATE,
-)
-
-
-def _git_commit_exists(anchor: Path, name: str, *, runner: Any) -> bool:
-    return _git_rev_parse(
-        anchor, "--verify", "--quiet", f"{name}^{{commit}}", runner=runner,
-    ) is not None
-
-
-def _git_local_branch_exists(anchor: Path, name: str, *, runner: Any) -> bool:
-    return _git_rev_parse(
-        anchor, "--verify", "--quiet", f"refs/heads/{name}", runner=runner,
-    ) is not None
-
-
-def _git_branch_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
-) -> _GitDestructiveForm | None:
-    parsed = _git_arguments(
-        args, short_values="u",
-        long_values=frozenset({"--set-upstream-to", "--sort", "--format", "--points-at"}),
-    )
-    if _git_option_given(parsed, "-d", "-D", "--delete"):
-        return _GIT_BRANCH_DELETE
-    if _git_option_given(parsed, "-m", "-M", "--move"):
-        return _GIT_BRANCH_RENAME
-    if _git_option_given(parsed, "-c", "-C", "--copy"):
-        return _GIT_BRANCH_CREATE
-    # git 은 --list·필터 옵션이 있거나 operand 가 없을 때만 목록 모드다(``-v``·``-a`` 는 아님).
-    listing = _git_option_given(
-        parsed, "-l", "--list", "--contains", "--no-contains", "--merged", "--no-merged",
-        "--points-at",
-    )
-    other_mode = _git_option_given(
-        parsed, "-u", "--set-upstream-to", "--unset-upstream", "--edit-description",
-        "--show-current",
-    )
-    return _GIT_BRANCH_CREATE if parsed.operands and not listing and not other_mode else None
-
-
-def _git_checkout_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
-) -> _GitDestructiveForm | None:
-    parsed = _git_arguments(
-        args, short_values="bB", long_values=frozenset({"--orphan", "--pathspec-from-file"}),
-    )
-    if _git_option_given(parsed, "-b", "-B", "--orphan", "-t", "--track"):
-        return _GIT_BRANCH_CREATE
-    if _git_option_given(parsed, "-f", "--force", "-p", "--patch", "--pathspec-from-file"):
-        return _GIT_DISCARD_CHANGES
-    if parsed.paths or len(parsed.operands) > 1:
-        return _GIT_DISCARD_CHANGES
-    if not parsed.operands or parsed.operands[0] == "-":
-        return None
-    if ref_anchor is None:
-        return _GIT_UNRESOLVED_REF
-    # 커밋으로 풀리는 이름만 전환이다. 그 밖은 git 이 경로 복원이나 원격 추적 브랜치 추측 생성으로 읽는다.
-    if _git_commit_exists(ref_anchor, parsed.operands[0], runner=runner):
-        return None
-    return _GIT_UNKNOWN_CHECKOUT_NAME
-
-
-def _git_switch_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
-) -> _GitDestructiveForm | None:
-    parsed = _git_arguments(
-        args, short_values="cC",
-        long_values=frozenset({"--create", "--force-create", "--orphan"}),
-    )
-    if _git_option_given(
-        parsed, "-c", "-C", "--create", "--force-create", "--orphan", "-t", "--track",
-    ):
-        return _GIT_BRANCH_CREATE
-    if _git_option_given(parsed, "-f", "--force", "--discard-changes"):
-        return _GIT_DISCARD_CHANGES
-    if _git_option_given(parsed, "-d", "--detach") or not parsed.operands:
-        return None
-    if parsed.operands[0] == "-":
-        return None
-    if ref_anchor is None:
-        return _GIT_UNRESOLVED_REF
-    if _git_local_branch_exists(ref_anchor, parsed.operands[0], runner=runner):
-        return None
-    return _GIT_UNKNOWN_LOCAL_BRANCH
-
-
-def _git_reset_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
-) -> _GitDestructiveForm | None:
-    parsed = _git_arguments(args, long_values=frozenset({"--pathspec-from-file"}))
-    return _GIT_DISCARD_CHANGES if _git_option_given(parsed, "--hard") else None
-
-
-def _git_restore_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
-) -> _GitDestructiveForm | None:
-    parsed = _git_arguments(
-        args, short_values="s", long_values=frozenset({"--source", "--pathspec-from-file"}),
-    )
-    staged_only = (
-        _git_option_given(parsed, "-S", "--staged")
-        and not _git_option_given(parsed, "-W", "--worktree")
-    )
-    return None if staged_only else _GIT_DISCARD_CHANGES
-
-
-def _git_clean_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
-) -> _GitDestructiveForm | None:
-    # ``-f`` 없는 clean 도 ``clean.requireForce=false`` 설정이면 지운다 — 미리보기(-n)만 통과.
-    parsed = _git_arguments(args, short_values="e", long_values=frozenset({"--exclude"}))
-    return None if _git_option_given(parsed, "-n", "--dry-run") else _GIT_DISCARD_CHANGES
-
-
-def _git_stash_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
-) -> _GitDestructiveForm | None:
-    parsed = _git_arguments(
-        args, short_values="m", long_values=frozenset({"--message", "--pathspec-from-file"}),
-    )
-    action = parsed.operands[0] if parsed.operands else ""
-    return _GIT_DISCARD_CHANGES if action in {"drop", "clear"} else None
-
-
-def _git_worktree_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
-) -> _GitDestructiveForm | None:
-    parsed = _git_arguments(
-        args, short_values="bB", long_values=frozenset({"--orphan", "--reason", "--expire"}),
-    )
-    action = parsed.operands[0] if parsed.operands else ""
-    if action == "remove":
-        return _GIT_SLOT_REMOVE
-    if action == "move":
-        return _GIT_SLOT_MOVE
-    if action != "add":
-        return None
-    if _git_option_given(parsed, "-b", "-B", "--orphan"):
-        return _GIT_BRANCH_CREATE
-    rest = parsed.operands[1:]
-    if _git_option_given(parsed, "-d", "--detach") or not rest:
-        return None
-    if ref_anchor is None:
-        return _GIT_UNRESOLVED_REF
-    # commit-ish 가 커밋으로 풀리지 않으면 원격 추적 브랜치 추측 생성이고, 생략하면 경로 끝 이름의
-    # 브랜치를 쓰되 없으면 새로 만든다.
-    if len(rest) > 1:
-        if _git_commit_exists(ref_anchor, rest[1], runner=runner):
-            return None
-        return _GIT_UNKNOWN_LOCAL_BRANCH
-    if _git_local_branch_exists(ref_anchor, Path(rest[0]).name, runner=runner):
-        return None
-    return _GIT_BRANCH_CREATE
-
-
-def _git_push_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
-) -> _GitDestructiveForm | None:
-    parsed = _git_arguments(
-        args, short_values="o",
-        long_values=frozenset({"--repo", "--receive-pack", "--exec", "--push-option"}),
-    )
-    if _git_option_given(parsed, "-f", "--force", "--force-with-lease", "--mirror"):
-        return _GIT_REMOTE_OVERWRITE
-    if any(operand.startswith("+") for operand in parsed.operands):
-        return _GIT_REMOTE_OVERWRITE
-    return None
-
-
-def _git_update_ref_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
-) -> _GitDestructiveForm | None:
-    # ``update-ref [-d] <ref> …`` 이 로컬 브랜치(refs/heads/·HEAD)를 지우거나 옮기면 `branch -D`·
-    # `reset` 과 같은 결과다. ``--stdin`` 은 명령 목록을 입력으로 받아 대상을 정적으로 볼 수 없다.
-    parsed = _git_arguments(args, short_values="m", long_values=frozenset({"--message"}))
-    if _git_option_given(parsed, "--stdin"):
-        return _GIT_REF_REWRITE
-    ref = parsed.operands[0] if parsed.operands else ""
-    return _GIT_REF_REWRITE if ref == "HEAD" or ref.startswith("refs/heads/") else None
-
-
-def _git_symbolic_ref_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
-) -> _GitDestructiveForm | None:
-    # 이름 하나만 주면 읽기다. 대상까지 주거나 ``-d`` 면 HEAD 가 가리키는 브랜치를 바꾸거나 지운다.
-    parsed = _git_arguments(args, short_values="m", long_values=frozenset({"--message"}))
-    if _git_option_given(parsed, "-d", "--delete") or len(parsed.operands) > 1:
-        return _GIT_REF_REWRITE
-    return None
-
-
-def _git_checkout_index_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
-) -> _GitDestructiveForm | None:
-    parsed = _git_arguments(args, long_values=frozenset({"--prefix", "--stage"}))
-    return _GIT_DISCARD_CHANGES if _git_option_given(parsed, "-f", "--force") else None
-
-
-def _git_read_tree_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
-) -> _GitDestructiveForm | None:
-    parsed = _git_arguments(
-        args, long_values=frozenset({"--prefix", "--index-output", "--exclude-per-directory"}),
-    )
-    return _GIT_DISCARD_CHANGES if _git_option_given(parsed, "--reset") else None
-
-
-_GIT_DESTRUCTIVE_FORM_JUDGES = {
-    "branch": _git_branch_form, "checkout": _git_checkout_form, "switch": _git_switch_form,
-    "reset": _git_reset_form, "restore": _git_restore_form, "clean": _git_clean_form,
-    "stash": _git_stash_form, "worktree": _git_worktree_form, "push": _git_push_form,
-    "update-ref": _git_update_ref_form, "symbolic-ref": _git_symbolic_ref_form,
-    "checkout-index": _git_checkout_index_form, "read-tree": _git_read_tree_form,
-}
-
-
-def _git_destructive_form(
-    subcommand: str, args: Sequence[str], *, ref_anchor: Path | None, runner: Any,
-) -> _GitDestructiveForm | None:
-    """파괴 가능 서브커맨드 호출이 파괴 형태인지 git 의미로 판정한다.
-
-    ``ref_anchor`` 는 기존 브랜치·커밋 여부를 물을 저장소다. 대상을 정적으로 못 정한 호출은 None 을
-    넘기고, 그 조회가 필요한 형태는 확인할 수 없으므로 파괴 형태로 본다.
-    """
-    judge = _GIT_DESTRUCTIVE_FORM_JUDGES.get(subcommand)
-    if judge is None:
-        return None
-    if any(ch in value for value in args for ch in "$`"):
-        return _GIT_UNRESOLVED_ARGUMENTS
-    return judge(tuple(args), ref_anchor, runner)
-
-
-# `git config --get` 의 "키 없음" 종료 코드. 그 밖의 실패(설정 파일 손상 등)는 판정 실패로 올린다.
-_GIT_CONFIG_KEY_MISSING_RC = 1
-
-
-def _git_alias_value(invocation: _GitInvocation, *, runner: Any) -> str | None:
-    config = [part for value in invocation.config for part in ("-c", value)]
-    result = runner(
-        ["git", "-C", str(invocation.cwd), *config, "config", "--get",
-         f"alias.{invocation.subcommand}"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
-    )
-    if result.returncode == _GIT_CONFIG_KEY_MISSING_RC:
-        return None
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"git alias 조회 실패(rc={result.returncode}): {(result.stderr or '').strip()}"
-        )
-    return (result.stdout or "").strip() or None
-
-
-def _git_command_names(anchor: Path, *, runner: Any) -> frozenset[str]:
-    """git 명령 이름(내장 + PATH 의 ``git-*``). alias 가 이 이름을 가리면 git 은 alias 를 무시한다."""
-    result = runner(
-        ["git", "-C", str(anchor), "--list-cmds=main,others"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
-    )
-    return frozenset((result.stdout or "").split())
-
-
-def _git_alias_resolved(invocation: _GitInvocation, *, runner: Any) -> _GitInvocation:
-    """git alias 를 대상 저장소 설정(+ global ``-c``)으로 풀어 실제 서브커맨드 호출을 돌려준다.
-
-    가드 표의 서브커맨드는 git 명령이라 alias 로 가릴 수 없고, git 명령 이름과 겹치는 alias 는 git 이
-    무시하므로 풀지 않는다. ``!`` 로 시작하는 셸 alias 는 본문 속 git 파괴 호출을 대상 미확정 호출로
-    돌려준다(셸 본문의 대상은 정적으로 풀 수 없다).
-    """
-    seen: set[str] = set()
-    current = invocation
-    while (
-        current.subcommand and current.subcommand not in _GIT_MUTATION_SUBCOMMANDS
-        and current.subcommand not in seen
-    ):
-        seen.add(current.subcommand)
-        value = _git_alias_value(current, runner=runner)
-        if value is None or current.subcommand in _git_command_names(current.cwd, runner=runner):
-            return current
-        if value.startswith("!"):
-            hidden = _indirect_git_destructive_argvs(value[1:])
-            if not hidden:
-                return current
-            inner = _git_invocation(current.cwd, hidden[0])
-            return inner._replace(anchor_certain=False, config=current.config)
-        try:
-            words = shlex.split(value)
-        except ValueError:
-            # 따옴표가 닫히지 않은 alias 는 git 도 "bad alias" 로 실행하지 않는다 — 풀 형태가 없다.
-            return current
-        if not words:
-            return current
-        current = current._replace(subcommand=words[0], args=(*words[1:], *current.args))
-    return current
-
-
-# 인자 문자열을 셸·git 명령으로 다시 실행하는 명령. 그 인자 속 git 은 파서가 호출 좌표를 풀 수 없다.
-_SHELL_INDIRECT_EXECUTORS: frozenset[str] = frozenset({
-    "sh", "bash", "zsh", "dash", "ksh", "fish", "eval", "xargs", "find", "alias", "watch",
-    "parallel",
-})
-# 인라인 코드 옵션(``-c``/``-e`` 등)이 있을 때만 인자를 코드로 실행하는 인터프리터.
-_SHELL_INLINE_CODE_INTERPRETERS = re.compile(r"(?:python(?:\d+(?:\.\d+)*)?|py|node|perl|ruby)")
-_SHELL_INLINE_CODE_OPTION = re.compile(r"-[A-Za-z]*[ceE]")
-_SHELL_COMMAND_WRAPPERS: frozenset[str] = frozenset({
-    "env", "command", "exec", "nohup", "nice", "timeout", "sudo",
-})
-_INDIRECT_GIT_CALL = re.compile(r"(?<![A-Za-z0-9_.-])git((?:[ \t]+[^\s;&|()<>'\",\[\]]+)*)")
-# 인터프리터 코드의 argv 목록 형태(``['git', 'branch', '-D', 'x']``·``('git', ['reset', '--hard'])``)
-# — 따옴표 문자열이 쉼표(뒤따르는 여는 대괄호 허용)로 이어진다.
-_INDIRECT_GIT_LIST_CALL = re.compile(r"""(['"])git\1((?:\s*,\s*\[?\s*(['"])[^'"]*\3)*)""")
-_QUOTED_LITERAL = re.compile(r"""(['"])([^'"]*)\1""")
-
-
-def _indirect_git_destructive_argvs(text: str) -> list[tuple[str, ...]]:
-    """셸·코드 문자열 속 git 호출 중 대상 미확정으로 읽어 파괴 형태인 것의 argv 목록."""
-    candidates = [("git", *match.group(1).split()) for match in _INDIRECT_GIT_CALL.finditer(text)]
-    candidates.extend(
-        ("git", *(literal for _quote, literal in _QUOTED_LITERAL.findall(match.group(2))))
-        for match in _INDIRECT_GIT_LIST_CALL.finditer(text)
-    )
-    argvs: list[tuple[str, ...]] = []
-    for argv in candidates:
-        invocation = _git_invocation(".", argv)
-        if invocation is not None and _git_destructive_form(
-            invocation.subcommand, invocation.args, ref_anchor=None, runner=None,
-        ) is not None:
-            argvs.append(argv)
-    return argvs
-
-
-_SHELL_ASSIGNMENT_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
-
-
-def _shell_command_word_index(values: Sequence[str]) -> int:
-    """앞 할당·실행 wrapper·그 옵션을 걷어 command word 위치를 찾는다(값 소비 옵션 뒤 값은 거기서 멈춘다)."""
-    index = 0
-    while index < len(values) and (
-        _SHELL_ASSIGNMENT_WORD.fullmatch(values[index])
-        or Path(values[index]).name in _SHELL_COMMAND_WRAPPERS
-        or values[index].startswith("-") or values[index].isdigit()
-    ):
-        index += 1
-    return index
-
-
-def _shell_indirect_executor(values: Sequence[str], index: int) -> tuple[str, list[str]] | None:
-    """command word 가 인자를 셸·코드로 다시 실행하는 명령이면 (이름, 인자), 아니면 None."""
-    name = Path(values[index]).name
-    arguments = list(values[index + 1:])
-    inline_code = bool(_SHELL_INLINE_CODE_INTERPRETERS.fullmatch(name)) and any(
-        _SHELL_INLINE_CODE_OPTION.fullmatch(value) for value in arguments
-    )
-    if name not in _SHELL_INDIRECT_EXECUTORS and not inline_code:
-        return None
-    return name, arguments
-
-
-def _shell_indirect_git_argvs(command: Sequence[str]) -> list[tuple[str, ...]]:
-    """간접 실행 명령(``bash -c``·``eval``·``xargs``·``alias`` 등)의 인자 속 git 파괴 호출 argv."""
-    values = list(command)
-    index = _shell_command_word_index(values)
-    if index >= len(values):
-        return []
-    # 괄호 subshell·명령 치환이 command word 에 붙은 git(``(git …)``·``$(git …``)은 파서가 git 으로 읽지 못한다.
-    if values[index].startswith(("$", "(", "`")) and Path(values[index].lstrip("$(`")).name == "git":
-        return _indirect_git_destructive_argvs(" ".join(values[index:]))
-    executor = _shell_indirect_executor(values, index)
-    if executor is None:
-        return []
-    return _indirect_git_destructive_argvs(" ".join(executor[1]))
-
-
-# ── git 이 아닌 파일 명령의 슬롯·공용 저장소 삭제·이동 ─────────────────────────────────────
-# 손 git 거부를 파일 명령(rm·mv·find -delete·rsync --delete)이나 인터프리터 코드의 삭제 API 로
-# 돌아가지 못하게 같은 판정 자리에서 본다. 보호 대상은 PM 홈의 슬롯 폴더(`work/<slot>`)·그 git
-# 연결(`<slot>/.git`)·공용 저장소(`.repos/`)다. 슬롯 안의 일반 파일은 보호 대상이 아니다.
-# 경로 자체를 지우는 명령 — 대상 경로를 정적으로 못 풀면 파괴 형태로 보고 거부한다.
-_PATH_REMOVAL_COMMANDS: frozenset[str] = frozenset({"rm", "rmdir", "unlink", "shred"})
-_FILE_REMOVAL_COMMANDS: frozenset[str] = _PATH_REMOVAL_COMMANDS | {"mv", "find", "rsync"}
-# 인터프리터 코드 속 파일 삭제·이동 API(마지막 점 뒤 이름).
-_FILE_REMOVAL_API = re.compile(
-    r"(?:^|\.)(rmtree|remove|removedirs|unlink|rmdir|rmSync|rmdirSync|unlinkSync|rm_rf|rm_r"
-    r"|rename|replace|move|renameSync)$"
-)
-_FILE_MOVE_API_NAMES: frozenset[str] = frozenset({"rename", "replace", "move", "renameSync"})
-# 간접 실행 문자열의 낱말 — 따옴표·여는 괄호·쉼표는 구분자이고, 명령 경계 문자는 따로 낸다.
-_INDIRECT_WORD = re.compile(r"[;&|)\]}\n]|[^\s;&|()\[\]{},'\"`]+")
-_INDIRECT_BOUNDARY: frozenset[str] = frozenset({";", "&", "|", ")", "]", "}", "\n"})
-_INDIRECT_CWD_CHANGE = re.compile(r"(?<![A-Za-z0-9_])(?:cd|pushd|popd|chdir)(?![A-Za-z0-9_])")
-# xargs 가 입력으로 붙이는 대상 자리표시 — `$` 가 들어 있어 정적으로 풀 수 없는 경로가 된다.
-_XARGS_OPERAND_PLACEHOLDER = "$XARGS"
-_MV_VALUE_OPTIONS: frozenset[str] = frozenset({"-t", "--target-directory", "-S", "--suffix"})
-_FIND_EXEC_ACTIONS: frozenset[str] = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
-_FIND_VALUE_OPTIONS: frozenset[str] = frozenset({"-maxdepth", "-mindepth", "-newer", "-type",
-                                                 "-mtime", "-mmin", "-size", "-user", "-group",
-                                                 "-perm"})
-# 이름·경로로 대상을 좁히는 find 식. 이 식이 있으면 그 패턴이 .git·.repos 에 걸릴 때만 본다.
-_FIND_NAME_PREDICATES: frozenset[str] = frozenset({
-    "-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex",
-})
-_RSYNC_VALUE_OPTIONS: frozenset[str] = frozenset({
-    "-e", "--rsh", "--exclude", "--include", "--filter", "-f", "--exclude-from",
-    "--include-from", "--files-from", "--backup-dir", "--suffix", "--chmod", "--rsync-path",
-    "--log-file", "--partial-dir", "--temp-dir", "-T", "--compare-dest", "--copy-dest",
-    "--link-dest", "--password-file", "--port", "--timeout", "--bwlimit", "--max-size",
-    "--min-size", "--out-format", "--info", "--debug", "-M", "--remote-option",
-})
-_RSYNC_REMOTE_PATH = re.compile(r"^(?:rsync://|[^/]+:)")
-# 보호 대상 종류와 그 거부 문구·경우.
-_PROTECTED_SLOT = "slot"
-_PROTECTED_SLOT_GIT = "slot-git"
-_PROTECTED_SHARED = "shared"
-# 그 안의 항목을 건드려도 보호 대상이 망가지는 종류(슬롯 폴더 안 일반 파일은 정상 작업이다).
-_PROTECTED_INTERNAL_KINDS: frozenset[str] = frozenset({_PROTECTED_SLOT_GIT, _PROTECTED_SHARED})
-_PROTECTED_KIND_ORDER: tuple[str, ...] = (_PROTECTED_SLOT, _PROTECTED_SLOT_GIT, _PROTECTED_SHARED)
-_PROTECTED_KIND_FORMS: dict[str, tuple[str, str]] = {
-    _PROTECTED_SLOT: ("슬롯 폴더", _GIT_GUARD_CASE_SLOT_REMOVE),
-    _PROTECTED_SLOT_GIT: ("슬롯의 git 연결(.git)", _GIT_GUARD_CASE_ASK_USER),
-    _PROTECTED_SHARED: ("공용 저장소(.repos)", _GIT_GUARD_CASE_ASK_USER),
-}
-
-
-class _RemovalTarget(NamedTuple):
-    token: str
-    # self=경로 자체를 지우거나 옮김 · contents=그 아래 항목을 지움 · into=그 안에 써 넣음(mv 목적지)
-    scope: str
-
-
-class _RemovalShape(NamedTuple):
-    verb: str
-    targets: tuple[_RemovalTarget, ...]
-    # 대상 경로를 정적으로 못 풀 때 파괴 형태로 거부할지(삭제) · 판정하지 않을지(mv).
-    unresolved_is_destructive: bool
-
-
-def _removal_arguments(
-    args: Sequence[str], value_options: frozenset[str],
-) -> tuple[list[str], dict[str, str | None]]:
-    """(operand 목록, {옵션 이름: 값}) — ``--`` 뒤는 전부 operand 다."""
-    operands: list[str] = []
-    options: dict[str, str | None] = {}
-    options_open = True
-    index = 0
-    while index < len(args):
-        token = args[index]
-        if options_open and token == "--":
-            options_open = False
-        elif options_open and token.startswith("-") and token != "-":
-            name, separator, value = token.partition("=")
-            if not separator and name in value_options and index + 1 < len(args):
-                index += 1
-                options[name] = args[index]
-            else:
-                options[name] = value if separator else None
-        else:
-            operands.append(token)
-        index += 1
-    return operands, options
-
-
-def _find_pattern_may_select_protected(pattern: str) -> bool:
-    return any(
-        name in pattern or fnmatch.fnmatchcase(name, pattern)
-        or fnmatch.fnmatchcase(f"x/{name}", pattern)
-        for name in (".git", ".repos")
-    )
-
-
-def _find_removal_shape(args: Sequence[str]) -> _RemovalShape | None:
-    index = 0
-    while index < len(args) and (args[index] in {"-H", "-L", "-P"} or args[index].startswith("-O")):
-        index += 1
-    if index < len(args) and args[index] == "-D":
-        index += 2
-    starts: list[str] = []
-    while index < len(args) and not args[index].startswith("-") and args[index] not in {
-        "(", "!", ")", ",",
-    }:
-        starts.append(args[index])
-        index += 1
-    expression = list(args[index:])
-    destructive = False
-    patterns: list[str] = []
-    position = 0
-    while position < len(expression):
-        token = expression[position]
-        if token in _FIND_EXEC_ACTIONS:
-            command = expression[position + 1] if position + 1 < len(expression) else ""
-            destructive = destructive or Path(command).name in _PATH_REMOVAL_COMMANDS | {"mv"}
-            while position < len(expression) and expression[position] not in {";", "+"}:
-                position += 1
-        elif token == "-delete":
-            destructive = True
-        elif token in _FIND_NAME_PREDICATES and position + 1 < len(expression):
-            position += 1
-            patterns.append(expression[position])
-        elif token in _FIND_VALUE_OPTIONS:
-            position += 1
-        position += 1
-    if not destructive:
-        return None
-    # 이름·경로로 좁힌 삭제는 그 패턴이 .git·.repos 를 고를 수 있을 때만 보호 대상을 건드린다.
-    if patterns and not any(_find_pattern_may_select_protected(value) for value in patterns):
-        return None
-    return _RemovalShape(
-        "일괄 삭제", tuple(_RemovalTarget(token, "contents") for token in (starts or ["."])), True,
-    )
-
-
-def _rsync_removal_shape(args: Sequence[str]) -> _RemovalShape | None:
-    operands, options = _removal_arguments(args, _RSYNC_VALUE_OPTIONS)
-    delete = any(name.startswith("--delete") or name == "--del" for name in options)
-    remove_sources = "--remove-source-files" in options
-    if len(operands) < 2 or not (delete or remove_sources):
-        return None
-    local = [not _RSYNC_REMOTE_PATH.match(token) for token in operands]
-    targets: list[_RemovalTarget] = []
-    if delete and local[-1]:
-        targets.append(_RemovalTarget(operands[-1], "contents"))
-    if remove_sources:
-        targets.extend(
-            _RemovalTarget(token, "contents")
-            for token, is_local in zip(operands[:-1], local[:-1]) if is_local
-        )
-    return _RemovalShape("동기화 삭제", tuple(targets), True) if targets else None
-
-
-def _file_removal_shape(argv: Sequence[str]) -> _RemovalShape | None:
-    """파일 명령 argv 가 경로를 지우거나 옮기는 형태면 그 대상, 아니면 None."""
-    if not argv:
-        return None
-    name = Path(argv[0]).name
-    args = list(argv[1:])
-    if name in _PATH_REMOVAL_COMMANDS:
-        operands, _options = _removal_arguments(args, frozenset())
-        if not operands:
-            return None
-        return _RemovalShape("지우기", tuple(_RemovalTarget(token, "self") for token in operands), True)
-    if name == "mv":
-        operands, options = _removal_arguments(args, _MV_VALUE_OPTIONS)
-        destination = options.get("-t") or options.get("--target-directory")
-        if destination is None and len(operands) > 1:
-            destination = operands.pop()
-        targets = [_RemovalTarget(token, "self") for token in operands]
-        if destination is not None:
-            targets.append(_RemovalTarget(destination, "into"))
-        return _RemovalShape("옮기기", tuple(targets), False) if targets else None
-    if name == "find":
-        return _find_removal_shape(args)
-    if name == "rsync":
-        return _rsync_removal_shape(args)
-    return None
-
-
-def _removal_path(anchor: Path, token: str, *, cwd_certain: bool) -> tuple[Path | None, bool]:
-    """(대상 경로, 그 아래 항목만 지우는지). 정적으로 못 풀면 (None, False).
-
-    glob 은 앞의 고정 폴더 아래 항목으로, 셸 변수·명령 치환은 그 앞에 ``/`` 로 끝난 고정 폴더가
-    있을 때만 그 폴더 아래 항목으로 본다. 마지막 이름은 링크를 따라가지 않는다(링크 삭제는 대상을
-    지우지 않는다).
-    """
-    value = os.path.expanduser(token) if token.startswith("~") else token
-    contents = False
-    special = re.search(r"[$`*?\[]", value)
-    if special is not None:
-        prefix = value[:special.start()]
-        if special.group(0) in "$`" and "/" not in prefix:
-            return None, False
-        head = prefix.rpartition("/")[0] if "/" in prefix else ""
-        value = head or ("/" if prefix.startswith("/") else ".")
-        contents = True
-    path = Path(value)
-    if not path.is_absolute():
-        if not cwd_certain:
-            return None, False
-        path = anchor / path
-    normalized = Path(os.path.normpath(path))
-    if not normalized.name:
-        return normalized, contents
-    return normalized.parent.resolve() / normalized.name, contents
-
-
-def _protected_removal_entries(pm_home: Path) -> tuple[tuple[Path, str], ...]:
-    """PM 홈의 보호 경로 — `work/` 아래 linked worktree(슬롯)와 그 `.git`, 그리고 `.repos/`."""
-    entries: list[tuple[Path, str]] = []
-    work = pm_home / "work"
-    if work.is_dir():
-        for child in sorted(work.iterdir()):
-            if (child / ".git").is_file():
-                root = child.resolve()
-                entries.extend(((root, _PROTECTED_SLOT), (root / ".git", _PROTECTED_SLOT_GIT)))
-    repos = pm_home / ".repos"
-    if repos.is_dir():
-        entries.append((repos.resolve(), _PROTECTED_SHARED))
-    return tuple(entries)
-
-
-def _protected_removal_kind(
-    target: Path, scope: str, entries: Sequence[tuple[Path, str]],
-) -> str | None:
-    kinds: set[str] = set()
-    for path, kind in entries:
-        inside_internal = kind in _PROTECTED_INTERNAL_KINDS and target.is_relative_to(path)
-        if scope == "self":
-            hit = target == path or path.is_relative_to(target) or inside_internal
-        elif scope == "contents":
-            hit = (path != target and path.is_relative_to(target)) or inside_internal
-        else:
-            hit = inside_internal
-        if hit:
-            kinds.add(kind)
-    return next((kind for kind in _PROTECTED_KIND_ORDER if kind in kinds), None)
-
-
-def _nearest_existing_directory(path: Path) -> Path:
-    probe = path
-    while not probe.exists() and probe != probe.parent:
-        probe = probe.parent
-    return probe if probe.is_dir() else probe.parent
 
 
 def judge_file_removal(
@@ -1365,7 +401,7 @@ def judge_file_removal(
     보호 경로는 호출 폴더와 대상 경로 각각의 소유 PM 홈에서 모은다(대상이 PM 홈 조상이면 호출
     폴더 쪽 PM 홈이 잡는다). ``cwd_certain=False`` 는 셸 파서가 실행 위치를 증명 못 한 호출이다.
     """
-    shape = _file_removal_shape(argv)
+    shape = shell_policy._file_removal_shape(argv)
     if shape is None:
         return None
     anchor = Path(cwd).expanduser().resolve()
@@ -1374,13 +410,13 @@ def judge_file_removal(
     homes: set[Path] = {cwd_home} if cwd_home is not None else set()
     resolved: list[tuple[Path, str]] = []
     for target in shape.targets:
-        path, contents = _removal_path(anchor, target.token, cwd_certain=cwd_certain)
+        path, contents = hooks._removal_path(anchor, target.token, cwd_certain=cwd_certain)
         if path is None:
             if not shape.unresolved_is_destructive:
                 continue
             return {
-                "verdict": "deny", "cwd_identity": identity, "code": GIT_DESTRUCTIVE_DENY_CODE,
-                "case": _GIT_GUARD_CASE_FOLDER_UNKNOWN,
+                "verdict": "deny", "cwd_identity": identity, "code": git_policy.GIT_DESTRUCTIVE_DENY_CODE,
+                "case": git_policy._GIT_GUARD_CASE_FOLDER_UNKNOWN,
                 "reason": (
                     f"대상 경로를 정적으로 풀 수 없는 파일 {shape.verb} — `{shown}` "
                     f"(대상 `{target.token}` 이 슬롯·공용 저장소일 수 있음)"
@@ -1389,320 +425,21 @@ def judge_file_removal(
         scope = "contents" if contents and target.scope == "self" else target.scope
         resolved.append((path, scope))
         _identity, _target_root, target_home = _git_anchor_identity(
-            _nearest_existing_directory(path), runner=runner,
+            hooks._nearest_existing_directory(path), runner=runner,
         )
         if target_home is not None:
             homes.add(target_home)
-    entries = [entry for home in sorted(homes) for entry in _protected_removal_entries(home)]
+    entries = [entry for home in sorted(homes) for entry in hooks._protected_removal_entries(home)]
     for path, scope in resolved:
-        kind = _protected_removal_kind(path, scope, entries)
+        kind = shell_policy._protected_removal_kind(path, scope, entries)
         if kind is None:
             continue
-        label, case = _PROTECTED_KIND_FORMS[kind]
+        label, case = shell_policy._PROTECTED_KIND_FORMS[kind]
         return {
-            "verdict": "deny", "cwd_identity": identity, "code": GIT_DESTRUCTIVE_DENY_CODE,
+            "verdict": "deny", "cwd_identity": identity, "code": git_policy.GIT_DESTRUCTIVE_DENY_CODE,
             "case": case, "reason": f"{label} {shape.verb} — `{shown}` 대상={path}",
         }
     return None
-
-
-def _shell_file_removal_argv(command: Sequence[str]) -> tuple[str, ...] | None:
-    """simple command 가 (실행 wrapper 뒤의) 파일 삭제·이동 명령이면 그 argv."""
-    values = list(command)
-    start = 0
-    while start < len(values) and _SHELL_ASSIGNMENT_WORD.fullmatch(values[start]):
-        start += 1
-    if start >= len(values):
-        return None
-    if Path(values[start]).name in _SHELL_COMMAND_WRAPPERS:
-        # wrapper 옵션 문법은 넓다 — 뒤에서 처음 나오는 파일 명령을 실행 대상으로 본다.
-        for candidate in range(start + 1, len(values)):
-            if Path(values[candidate]).name in _FILE_REMOVAL_COMMANDS:
-                return tuple(values[candidate:])
-        return None
-    return tuple(values[start:]) if Path(values[start]).name in _FILE_REMOVAL_COMMANDS else None
-
-
-def _indirect_file_removal_argvs(text: str, *, stdin_operands: bool) -> list[tuple[str, ...]]:
-    """셸·인터프리터 코드 문자열 속 파일 삭제·이동 호출 argv(삭제 API 는 rm/mv 형태로 옮긴다)."""
-    words = [_normalize_shell_path_notation(word) for word in _INDIRECT_WORD.findall(text)]
-    argvs: list[tuple[str, ...]] = []
-    for index, word in enumerate(words):
-        if word in _INDIRECT_BOUNDARY:
-            continue
-        end = index + 1
-        while end < len(words) and words[end] not in _INDIRECT_BOUNDARY:
-            end += 1
-        rest = tuple(words[index + 1:end])
-        name = Path(word).name
-        if name in _FILE_REMOVAL_COMMANDS:
-            extra = (_XARGS_OPERAND_PLACEHOLDER,) if (
-                stdin_operands and name in _PATH_REMOVAL_COMMANDS
-            ) else ()
-            argvs.append((word, *rest, *extra))
-            continue
-        api = _FILE_REMOVAL_API.search(word)
-        if api is not None:
-            argvs.append(("mv" if api.group(1) in _FILE_MOVE_API_NAMES else "rm", "--", *rest))
-    return argvs
-
-
-def _shell_indirect_file_removal_argvs(command: Sequence[str]) -> tuple[list[tuple[str, ...]], bool]:
-    """간접 실행 명령 인자 속 파일 삭제·이동 argv 와, 그 코드가 실행 폴더를 바꾸는지."""
-    values = list(command)
-    index = _shell_command_word_index(values)
-    if index >= len(values):
-        return [], False
-    executor = _shell_indirect_executor(values, index)
-    if executor is None:
-        return [], False
-    name, arguments = executor
-    text = " ".join(arguments)
-    return (
-        _indirect_file_removal_argvs(text, stdin_operands=name == "xargs"),
-        _INDIRECT_CWD_CHANGE.search(text) is not None,
-    )
-
-
-# ── 사용자 1회 허용 ────────────────────────────────────────────────────────────────────
-# 멈춤 거부 중 사용자에게 물어 실행할 수 있는 경우(ASK_USER)는 사용자가 `git 허용: <명령 원문>`
-# 한 줄을 보내면 그 명령 한 번만 통과한다. 허용 기록은 사용자 프롬프트 훅만 만든다
-# (`record_git_grants`). 기록은 (세션·실행 폴더·정규화 argv) 에 묶이고, 가드가 정확히 같은 호출을
-# 만나면 파일을 이름 바꾸기로 선점해 지운 뒤 통과시킨다 — 두 번째 호출은 기록이 없어 거부된다.
-_GIT_GUARD_ACTION_LINES: dict[str, str] = {
-    _GIT_GUARD_CASE_FOLDER_UNKNOWN: (
-        "대상 폴더를 절대경로로 적어 다시 실행한다(git 은 `git -C <절대경로> …`)."
-    ),
-    _GIT_GUARD_CASE_LITERAL_ARGUMENTS: "셸 변수·명령 치환을 값 그대로 바꿔 적어 다시 실행한다.",
-    _GIT_GUARD_CASE_BRANCH_CREATE: (
-        "브랜치는 `pm-config task branch <명의> <슬롯> <브랜치> --from <부모>` 로 만든다."
-    ),
-    _GIT_GUARD_CASE_SLOT_REMOVE: (
-        "사용자에게 슬롯 제거 승인을 묻고, 승인하면 "
-        "`pm-config worktree remove <slot> --user-ack <slot>` 로 지운다."
-    ),
-    _GIT_GUARD_CASE_GRANT_FORGERY: (
-        "허용 줄·허용 기록은 사용자 입력으로만 만든다. 필요하면 사용자에게 "
-        "`git 허용: <명령 원문>` 입력을 요청한다."
-    ),
-    _GIT_GUARD_CASE_SLOT_NO_TASK: (
-        "이 세션에 열린 task 가 없다. `pm_bootstrap.py --task <task>` 으로 task 를 연 뒤 그 task 가 잡은 "
-        "슬롯에서 한다."
-    ),
-    _GIT_GUARD_CASE_SLOT_NOT_OWNED: (
-        "이 세션 task 가 잡은 슬롯에서만 쓴다. 잡은 슬롯이 없으면 `pm-config alloc <repo> --task <task>` "
-        "으로 잡는다."
-    ),
-    _GIT_GUARD_CASE_NO_OPEN_TODO: (
-        "지금 하는 일을 먼저 등록한다 — `pm-config task todo add <task> <할 일 한 줄>`. 목록은 "
-        "`pm-config task todo list <task>`, 끝낸 것은 `pm-config task todo done <task> <ID>`."
-    ),
-}
-_GIT_GUARD_ASK_WITH_GRANT = (
-    "사용자에게 이 명령을 실행할지 묻는다. 허용하면 사용자가 `git 허용: <명령 원문>` 한 줄을 "
-    "보낸 뒤 같은 명령을 그대로 한 번 다시 실행한다."
-)
-_GIT_GUARD_ASK_WITHOUT_GRANT = (
-    "사용자에게 이 명령을 실행할지 묻는다. 이 하네스에는 1회 허용 수단이 없으므로, 허용하면 "
-    "사용자가 터미널에서 직접 실행한다."
-)
-_GIT_GRANT_USED = "used"
-_GIT_GRANT_ABSENT = "absent"
-_GIT_GRANT_FORGED = "forged"
-
-
-class GitGrantShapeError(ValueError):
-    """허용 명령 원문이 셸 확장 없는 한 명령 단독 호출이 아니다."""
-
-
-def _git_guard_stop_reason(
-    cases: Sequence[str], detail: str, *, grants_available: bool, notes: Sequence[str] = (),
-) -> str:
-    """멈춤 지시 첫 줄 + 경우별 다음 행동 한 줄씩 + 추가 사유 + 거부한 호출."""
-    lines = [GIT_GUARD_STOP_LINE]
-    for case in dict.fromkeys(cases):
-        if case == _GIT_GUARD_CASE_ASK_USER:
-            lines.append(
-                _GIT_GUARD_ASK_WITH_GRANT if grants_available else _GIT_GUARD_ASK_WITHOUT_GRANT
-            )
-        else:
-            lines.append(_GIT_GUARD_ACTION_LINES[case])
-    lines.extend(notes)
-    lines.append(f"거부한 호출: {detail}")
-    return "\n".join(lines)
-
-
-def _git_grant_forgery_judgment(detail: str) -> dict[str, str]:
-    return {
-        "verdict": "deny", "cwd_identity": "non-repo", "code": GIT_DESTRUCTIVE_DENY_CODE,
-        "case": _GIT_GUARD_CASE_GRANT_FORGERY, "reason": detail,
-    }
-
-
-def _git_grant_forgery_in_command(command: str) -> dict[str, str] | None:
-    """셸 명령에 허용 표식·허용 기록 폴더가 있으면 위조 시도 판정(파일 쓰기·중첩 하네스 프롬프트)."""
-    text = command.replace("\\", "/").replace("'", "").replace('"', "")
-    if GIT_GRANT_DIR_NAME in text or _GIT_GRANT_MARKER.search(text):
-        return _git_grant_forgery_judgment(
-            f"셸 명령에 허용 표식(`git 허용:`) 또는 허용 기록 폴더(`{GIT_GRANT_DIR_NAME}`)가 있음"
-        )
-    return None
-
-
-def _tool_input_strings(value: object) -> Iterator[str]:
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            yield str(key)
-            yield from _tool_input_strings(item)
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            yield from _tool_input_strings(item)
-
-
-# 슬롯 쓰기 주인 판정 — 슬롯(`work/<repo>_<N>`) 안에는 그 슬롯을 잡은 task 의 세션만 쓴다. 이 세션의
-# task = task 기록 중 `session` 이 훅 세션 ID 와 같은 것. 위임 하네스(pm_delegate 가 띄움)는 세션 ID 가
-# 따로라 이 환경변수로 받은 task 로 판정한다(그 task 가 열려 있을 때만). 슬롯 밖은 판정하지 않는다.
-SLOT_WRITE_DELEGATE_TASK_ENV = "PM_DELEGATE_TASK"
-# 파일 쓰기·편집 도구의 대상 경로 입력 키(실측 claude 2.1.272 · opencode 1.18.31).
-_WRITE_TOOL_PATH_KEYS: dict[str, str] = {
-    "Write": "file_path", "Edit": "file_path", "NotebookEdit": "notebook_path",
-    "write": "filePath", "edit": "filePath",
-}
-# 패치 본문 도구 — 이름은 codex·opencode 공통, 본문 키는 codex `command` · opencode `patchText`(실측
-# codex 0.154.0 · opencode 1.18.31). 대상 경로는 본문의 파일 머리 줄에 있다.
-_PATCH_TOOL_NAME = "apply_patch"
-_PATCH_TOOL_TEXT_KEYS: tuple[str, ...] = ("command", "patchText")
-_PATCH_TARGET_LINE = re.compile(
-    r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+?)[ \t]*$", re.MULTILINE
-)
-# 셸 명령 속 절대경로 — 셸 쓰기 대상은 정적으로 못 정하므로 슬롯을 가리키는지만 본다(경고).
-_SHELL_ABSOLUTE_PATH = re.compile(
-    "(?<![\\w.~-])(/[^\\s'\"`;&|<>()]+|[A-Za-z]:[\\\\/][^\\s'\"`;&|<>()]+)"
-)
-
-
-def _slot_ledger_rows(pm_home: Path) -> tuple[list[dict], list[dict]]:
-    """PM 홈 장부의 (leases, tasks) — 형식이 틀리면 올린다(빈 장부로 흘려 쓰기를 통과시키지 않는다)."""
-    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-    data = json.loads(fs.read_text_shared(ledger, encoding="utf-8"))
-    leases = data.get("leases") if isinstance(data, dict) else None
-    tasks = data.get("tasks", []) if isinstance(data, dict) else None
-    if not isinstance(leases, list) or not isinstance(tasks, list):
-        raise ValueError(f"{ledger}: leases·tasks 가 list 가 아니다")
-    return (
-        [row for row in leases if isinstance(row, dict)],
-        [row for row in tasks if isinstance(row, dict)],
-    )
-
-
-def slot_containing(
-    pm_home: str | os.PathLike[str], path: str | os.PathLike[str],
-) -> tuple[dict, list[dict]] | None:
-    """`pm_home` 슬롯 중 `path` 를 담은 것 — (그 슬롯 장부 행, task 행들). 슬롯 밖이면 None.
-
-    슬롯은 PM 홈 장부에 등록된 `work/<repo>_<N>` 폴더다. 판정 범위는 이 PM 홈(훅이 설치된 홈)의 슬롯이다.
-    장부가 없는 홈에는 슬롯이 없다."""
-    home = Path(pm_home)
-    try:
-        relative = Path(path).expanduser().resolve().relative_to((home / "work").resolve())
-    except ValueError:
-        return None
-    if not relative.parts or not (home / ".project_manager" / ".local" / "worktree-leases.json").is_file():
-        return None
-    leases, tasks = _slot_ledger_rows(home)
-    key = f"work/{relative.parts[0]}"
-    row = next((item for item in leases if item.get("slot") == key), None)
-    return None if row is None else (row, tasks)
-
-
-def _session_task(session: str, tasks: Sequence[dict]) -> str | None:
-    """이 세션이 연 task 이름 — 세션 ID 로 찾고, 없으면 위임 환경변수의 열린 task."""
-    if session:
-        for row in tasks:
-            if row.get("session") == session and isinstance(row.get("name"), str):
-                return row["name"]
-    delegated = os.environ.get(SLOT_WRITE_DELEGATE_TASK_ENV, "")
-    if delegated and any(row.get("name") == delegated and row.get("session") for row in tasks):
-        return delegated
-    return None
-
-
-def _slot_write_judgment(
-    root: str | os.PathLike[str], session: str, target: str | os.PathLike[str],
-) -> dict[str, str] | None:
-    """`target` 쓰기의 슬롯 주인 판정 — `root` 슬롯 밖이면 None, 이 세션 task 가 잡은 슬롯이면 ok, 아니면 deny."""
-    found = slot_containing(root, target)
-    return None if found is None else _slot_owner_judgment(session, found, target)
-
-
-def _slot_owner_judgment(
-    session: str, found: tuple[dict, list[dict]], target: str | os.PathLike[str],
-) -> dict[str, str]:
-    row, tasks = found
-    slot = row["slot"]
-    task = _session_task(session, tasks)
-    if task is None:
-        return {
-            "verdict": "deny", "cwd_identity": "slot", "code": GIT_DESTRUCTIVE_DENY_CODE,
-            "case": _GIT_GUARD_CASE_SLOT_NO_TASK,
-            "reason": f"슬롯 {slot} 쓰기 — 이 세션({session or '세션 ID 없음'})이 연 task 없음 · 대상 {target}",
-        }
-    role = row.get("role", "work")
-    if row.get("state") == "leased" and role == "work" and row.get("session") == task:
-        return {"verdict": "ok", "cwd_identity": "slot", "reason": f"task {task} 가 잡은 슬롯 {slot}"}
-    return {
-        "verdict": "deny", "cwd_identity": "slot", "code": GIT_DESTRUCTIVE_DENY_CODE,
-        "case": _GIT_GUARD_CASE_SLOT_NOT_OWNED,
-        "reason": (
-            f"슬롯 {slot} 쓰기 — 이 세션 task={task} · 슬롯 주인={row.get('session') or '없음'} · "
-            f"상태={row.get('state')} · 역할={role} · 대상 {target}"
-        ),
-    }
-
-
-def _write_tool_targets(cwd: str, tool_name: str, tool_input: dict) -> list[Path]:
-    """파일 쓰기·편집 도구 입력의 대상 경로(상대 경로는 `cwd` 기준)."""
-    raw: list[str] = []
-    key = _WRITE_TOOL_PATH_KEYS.get(tool_name)
-    if key is not None and isinstance(tool_input.get(key), str):
-        raw.append(tool_input[key])
-    if tool_name == _PATCH_TOOL_NAME:
-        for text_key in _PATCH_TOOL_TEXT_KEYS:
-            text = tool_input.get(text_key)
-            if isinstance(text, str):
-                raw.extend(match.group(1) for match in _PATCH_TARGET_LINE.finditer(text))
-    base = Path(cwd).expanduser()
-    return [base / Path(value).expanduser() for value in raw]
-
-
-def _shell_slot_warnings(
-    root: str | os.PathLike[str], session: str, cwd: str, command: str,
-) -> list[dict[str, str]]:
-    """셸 명령이 이 세션 task 의 것이 아닌 슬롯을 실행 위치나 절대경로로 가리키면 경고한다.
-
-    셸 쓰기(리다이렉트·`sed -i`·스크립트)는 대상을 정적으로 못 정하므로 막지 않는다 — 슬롯 하나당
-    경고 한 줄로 알린다."""
-    warnings: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for raw in (cwd, *_SHELL_ABSOLUTE_PATH.findall(command)):
-        found = slot_containing(root, raw)
-        if found is None or found[0]["slot"] in seen:
-            continue
-        slot = found[0]["slot"]
-        seen.add(slot)
-        judgment = _slot_owner_judgment(session, found, raw)
-        if judgment["verdict"] == "ok":
-            continue
-        warnings.append({
-            "verdict": "warn", "cwd_identity": "slot",
-            "reason": (
-                f"이 세션 task 가 잡지 않은 슬롯 {slot} 을 가리키는 셸 명령 — 셸 쓰기 대상은 판정하지 "
-                f"않는다. 쓰기라면 멈춘다: {_GIT_GUARD_ACTION_LINES[judgment['case']]}"
-            ),
-        })
-    return warnings
 
 
 def _open_todo_count(root: str | os.PathLike[str], task: str) -> "int | None":
@@ -1741,8 +478,8 @@ def _no_open_todo_judgment(
     home = Path(root)
     if not (home / ".project_manager" / ".local" / "worktree-leases.json").is_file():
         return None
-    _leases, tasks = _slot_ledger_rows(home)
-    task = _session_task(session, tasks)
+    _leases, tasks = hooks._slot_ledger_rows(home)
+    task = hooks._session_task(session, tasks)
     if task is None:
         return None
     open_todos = _open_todo_count(home, task)
@@ -1752,7 +489,7 @@ def _no_open_todo_judgment(
         "verdict": "warn", "cwd_identity": "non-repo",
         "reason": (
             f"task {task} 에 열린 todo 가 없다 — 지금 하는 일이 장부에 없어서 다음 세션도 "
-            f"사용자도 그 일을 못 본다. {_GIT_GUARD_ACTION_LINES[_GIT_GUARD_CASE_NO_OPEN_TODO]}"
+            f"사용자도 그 일을 못 본다. {git_policy._GIT_GUARD_ACTION_LINES[git_policy._GIT_GUARD_CASE_NO_OPEN_TODO]}"
         ),
     }
 
@@ -1769,27 +506,27 @@ def judge_tool_input(
     (`_no_open_todo_judgment`·막지는 않는다) — 무엇을 하는 중인지 장부에 없다는 사실을 화면에 올린다.
     거부가 이기고 경고는 거부가 없을 때만 나간다(같은 호출에 두 말을 겹치지 않는다).
     """
-    for text in _tool_input_strings(tool_input):
-        if GIT_GRANT_DIR_NAME in text.replace("\\", "/") or GIT_GRANT_LINE.search(text):
-            judgment = _git_grant_forgery_judgment(
-                f"도구 입력에 허용 기록 폴더(`{GIT_GRANT_DIR_NAME}`) 또는 줄 머리 허용 표식"
+    for text in git_policy._tool_input_strings(tool_input):
+        if git_policy.GIT_GRANT_DIR_NAME in text.replace("\\", "/") or git_policy.GIT_GRANT_LINE.search(text):
+            judgment = git_policy._git_grant_forgery_judgment(
+                f"도구 입력에 허용 기록 폴더(`{git_policy.GIT_GRANT_DIR_NAME}`) 또는 줄 머리 허용 표식"
                 "(`git 허용:`)이 있음"
             )
-            judgment["reason"] = _git_guard_stop_reason(
+            judgment["reason"] = git_policy._git_guard_stop_reason(
                 [judgment.pop("case")], judgment["reason"], grants_available=False,
             )
             return judgment
-    targets = _write_tool_targets(cwd, tool_name, tool_input) if isinstance(tool_input, dict) else []
+    targets = hooks._write_tool_targets(cwd, tool_name, tool_input) if isinstance(tool_input, dict) else []
     # 파일을 바꾸는 호출에만 본다 — 읽기 도구는 대상이 없어 여기 들어오지 않는다.
     todo_warning = _no_open_todo_judgment(root, session) if targets else None
     denies = [
-        judgment for judgment in (_slot_write_judgment(root, session, target) for target in targets)
+        judgment for judgment in (hooks._slot_write_judgment(root, session, target) for target in targets)
         if judgment is not None and judgment["verdict"] == "deny"
     ]
     if denies:
         return {
-            "verdict": "deny", "cwd_identity": "slot", "code": GIT_DESTRUCTIVE_DENY_CODE,
-            "reason": _git_guard_stop_reason(
+            "verdict": "deny", "cwd_identity": "slot", "code": git_policy.GIT_DESTRUCTIVE_DENY_CODE,
+            "reason": git_policy._git_guard_stop_reason(
                 [item["case"] for item in denies], " | ".join(item["reason"] for item in denies),
                 grants_available=False,
             ),
@@ -1797,34 +534,6 @@ def judge_tool_input(
     if todo_warning is not None:
         return todo_warning
     return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "허용 위조 표식·남의 슬롯 쓰기 없음"}
-
-
-def _git_grant_argv(text: str) -> tuple[str, ...]:
-    command = text.strip()
-    if not command:
-        raise GitGrantShapeError("허용할 명령 원문이 비어 있다")
-    unsafe = _GIT_GRANT_UNSAFE_TEXT.search(command)
-    if unsafe is not None:
-        raise GitGrantShapeError(
-            f"`{command}`: 셸 연산자·확장 문자(`{unsafe.group(0).strip()}`)가 든 명령은 허용할 수 "
-            "없다 — 한 명령을 값 그대로 적는다"
-        )
-    try:
-        return tuple(split_command_argv(command))
-    except ValueError as exc:
-        raise GitGrantShapeError(f"`{command}`: 명령을 argv 로 나눌 수 없다({exc})") from exc
-
-
-def _git_grant_record(session: str, cwd: str, argv: Sequence[str]) -> dict[str, object]:
-    return {"session": session, "cwd": str(Path(cwd).expanduser().resolve()), "argv": list(argv)}
-
-
-def _git_grant_path(root: str | os.PathLike[str], record: dict[str, object]) -> Path:
-    key = hashlib.sha256(
-        json.dumps([record["session"], record["cwd"], record["argv"]], ensure_ascii=False)
-        .encode("utf-8")
-    ).hexdigest()
-    return Path(root) / ".project_manager" / ".local" / GIT_GRANT_DIR_NAME / f"{key}.json"
 
 
 def record_git_grants(
@@ -1838,71 +547,16 @@ def record_git_grants(
     if not session:
         raise ValueError("세션 id 가 없어 허용을 세션에 묶을 수 없다")
     records = [
-        _git_grant_record(session, cwd, _git_grant_argv(match.group(1)))
-        for match in GIT_GRANT_LINE.finditer(prompt)
+        hooks._git_grant_record(session, cwd, hooks._git_grant_argv(match.group(1)))
+        for match in git_policy.GIT_GRANT_LINE.finditer(prompt)
     ]
     for record in records:
-        path = _git_grant_path(root, record)
+        path = hooks._git_grant_path(root, record)
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f"{path.name}.tmp-{os.getpid()}-{time.monotonic_ns()}")
         temporary.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
         fs.atomic_replace(temporary, path)
     return [shlex.join(record["argv"]) for record in records]
-
-
-def _use_git_grant(root: str | os.PathLike[str], session: str, cwd: str, command: str) -> str:
-    """정확히 같은 (세션·폴더·argv) 허용 기록을 이름 바꾸기로 선점해 지운다 — used/absent/forged.
-
-    선점(rename)은 원자적이라 같은 기록을 두 호출이 함께 쓰지 못한다. 선점한 내용이 키와 다르면
-    (위조·손상) 지우고 forged 를 돌려준다. 선점 밖의 파일 시스템 실패는 올린다.
-    """
-    try:
-        argv = _git_grant_argv(command)
-    except GitGrantShapeError:
-        return _GIT_GRANT_ABSENT  # 한 명령 단독 형태가 아닌 호출에는 허용 기록이 있을 수 없다.
-    record = _git_grant_record(session, cwd, argv)
-    path = _git_grant_path(root, record)
-    claimed = path.with_name(f"{path.name}.claimed-{os.getpid()}-{time.monotonic_ns()}")
-    try:
-        os.rename(path, claimed)
-    except FileNotFoundError:
-        return _GIT_GRANT_ABSENT
-    try:
-        stored = json.loads(fs.read_text_shared(claimed, encoding="utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        stored = None  # 형식이 깨진 기록은 사용자 프롬프트 훅이 쓴 것이 아니다.
-    claimed.unlink()
-    return _GIT_GRANT_USED if stored == record else _GIT_GRANT_FORGED
-
-
-def _git_writes_slot(subcommand: str, args: Sequence[str]) -> bool:
-    """git 호출이 작업 트리·인덱스·HEAD 를 바꾸는지 — 보기만 하는 형태(stash list·show · clean -n ·
-    apply --check·--stat)는 쓰기가 아니다."""
-    if subcommand not in _GIT_SLOT_WRITE_SUBCOMMANDS:
-        return False
-    if subcommand in {"sparse-checkout", "submodule"}:
-        leading = _git_arguments(args, long_values=frozenset({"--path"}), stop_after_operands=1)
-        foreach = subcommand == "submodule" and leading.operands[:1] == ("foreach",)
-        arguments = _git_arguments(
-            args, long_values=frozenset({"--path"}),
-            stop_after_operands=2 if foreach else None,
-        )
-        if _git_option_given(arguments, "-h", "--help"):
-            return False
-        operation = arguments.operands[0] if arguments.operands else None
-        if subcommand == "sparse-checkout":
-            return operation not in {None, "list", "check-rules", "help"}
-        return operation not in {None, "status", "summary", "help"}
-    if subcommand == "stash":
-        return not args or args[0] not in {"list", "show"}
-    arguments = _git_arguments(args)
-    if subcommand == "clean":
-        return not _git_option_given(arguments, "-n", "--dry-run")
-    if subcommand == "apply":
-        return _git_option_given(arguments, "--apply") or not _git_option_given(
-            arguments, "--check", "--stat", "--numstat", "--summary",
-        )
-    return True
 
 
 def judge_git_anchor(
@@ -1924,19 +578,19 @@ def judge_git_anchor(
     foreign 대상과 판정불가 비파괴 호출은 정상 작업을 막지 않는다. ``cwd_certain`` 은 argv 호출자가
     ``cwd`` 를 실제 실행 위치로 아는 기본 형태이고, 셸 파서만 증명 못 한 호출에 False 를 넘긴다.
     """
-    invocation = _git_invocation(cwd, argv)
+    invocation = hooks._git_invocation(cwd, argv)
     if invocation is None:
         return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "git 호출이 아님"}
     identity, repo_root, pm_home = _git_anchor_identity(
         invocation.cwd, runner=runner, slot_home=Path(root),
     )
     target_certain = cwd_certain and invocation.anchor_certain
-    containing = slot_containing(root, repo_root) if repo_root is not None else None
-    if identity in _GIT_PROTECTED_IDENTITIES or containing is not None or not target_certain:
+    containing = hooks.slot_containing(root, repo_root) if repo_root is not None else None
+    if identity in git_policy._GIT_PROTECTED_IDENTITIES or containing is not None or not target_certain:
         # alias 는 대상 저장소 설정으로만 풀린다 — 대상을 못 정한 호출은 서브커맨드 이름 그대로 본다.
-        resolved = _git_alias_resolved(invocation, runner=runner) if target_certain else invocation
+        resolved = hooks._git_alias_resolved(invocation, runner=runner) if target_certain else invocation
         target_certain = target_certain and resolved.anchor_certain
-        form = _git_destructive_form(
+        form = hooks._git_destructive_form(
             resolved.subcommand, resolved.args,
             ref_anchor=invocation.cwd if target_certain else None, runner=runner,
         )
@@ -1947,18 +601,18 @@ def judge_git_anchor(
             )
             shown = " ".join(("git", resolved.subcommand, *resolved.args))
             return {
-                "verdict": "deny", "cwd_identity": identity, "code": GIT_DESTRUCTIVE_DENY_CODE,
+                "verdict": "deny", "cwd_identity": identity, "code": git_policy.GIT_DESTRUCTIVE_DENY_CODE,
                 # 대상을 못 정한 호출은 형태와 무관하게 대상부터 적어 다시 실행하게 한다.
-                "case": form.case if target_certain else _GIT_GUARD_CASE_FOLDER_UNKNOWN,
+                "case": form.case if target_certain else git_policy._GIT_GUARD_CASE_FOLDER_UNKNOWN,
                 "reason": f"손 git {form.label} — `{shown}` {where}",
             }
-        if repo_root is not None and target_certain and _git_writes_slot(resolved.subcommand, resolved.args):
-            owner = _slot_write_judgment(root, session, repo_root)
+        if repo_root is not None and target_certain and git_policy._git_writes_slot(resolved.subcommand, resolved.args):
+            owner = hooks._slot_write_judgment(root, session, repo_root)
             if owner is not None and owner["verdict"] == "deny":
                 return {**owner, "cwd_identity": identity,
                         "reason": f"git {resolved.subcommand} — {owner['reason']}"}
     subcommand = invocation.subcommand
-    if subcommand not in _GIT_MUTATION_SUBCOMMANDS:
+    if subcommand not in git_policy._GIT_MUTATION_SUBCOMMANDS:
         return {
             "verdict": "ok", "cwd_identity": identity,
             "reason": f"git {subcommand or '<missing>'}는 mutation 가드 대상이 아님",
@@ -1976,7 +630,7 @@ def judge_git_anchor(
     if identity == "pm-home" and repo_root is not None and pm_home is not None:
         dangerous = _dangerous_cross_repo_pathspecs(
             pm_home, repo_root, invocation.cwd,
-            _git_pathspecs(subcommand, invocation.args), runner=runner,
+            git_policy._git_pathspecs(subcommand, invocation.args), runner=runner,
         )
         if dangerous:
             joined = ", ".join(dangerous)
@@ -1992,69 +646,6 @@ def judge_git_anchor(
         "verdict": "warn", "cwd_identity": identity,
         "reason": f"git {subcommand} 실행 앵커={shown} (정체={identity}) — 의도한 repo인지 확인",
     }
-
-
-class _EngineInvocation(NamedTuple):
-    kind: str
-    script: str | None
-    args: tuple[str, ...]
-
-
-def _engine_invocation_details(
-    _cwd: str | os.PathLike[str], argv: Sequence[str],
-) -> _EngineInvocation | None:
-    """pytest 또는 ``.project_manager/tools/*.py`` 호출 모양을 정규화한다."""
-    values = [str(value) for value in argv]
-    if not values:
-        return None
-    executable = Path(values[0]).name.lower()
-    if executable.endswith(".exe"):
-        executable = executable[:-4]
-    if executable == "pytest":
-        return _EngineInvocation("pytest", None, tuple(values[1:]))
-    is_python = re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", executable) is not None
-    if is_python and len(values) >= 3 and values[1:3] == ["-m", "pytest"]:
-        return _EngineInvocation("pytest", None, tuple(values[3:]))
-    script_index = 1 if is_python and len(values) >= 2 else 0
-    script = values[script_index]
-    path = Path(script)
-    parts = path.parts
-    if (
-        path.suffix == ".py"
-        and len(parts) >= 3
-        and parts[-3:-1] == (".project_manager", "tools")
-    ):
-        return _EngineInvocation("engine", script, tuple(values[script_index + 1:]))
-    return None
-
-
-def _pytest_targets_tests(args: Sequence[str]) -> bool:
-    """pytest argv가 상대 ``tests/`` tree를 명시하는지 판정한다."""
-    for raw in args:
-        if not raw or raw.startswith("-"):
-            continue
-        normalized = raw.replace("\\", "/")
-        while normalized.startswith("./"):
-            normalized = normalized[2:]
-        if normalized.rstrip("/") == "tests" or normalized.startswith("tests/"):
-            return True
-    return False
-
-
-def _unexpanded_shell_parameters(value: str) -> tuple[str, ...]:
-    """경로 token에 셸이 아직 확장하지 않은 parameter 표기를 찾는다."""
-    pattern = re.compile(
-        r"\$(?:\{[^}\r\n]+\}|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!_-])"
-    )
-    return tuple(dict.fromkeys(match.group(0) for match in pattern.finditer(value)))
-
-
-def _file_sha256(path: Path) -> str | None:
-    """사본 파일 내용을 sha256으로 비교하되 읽기 실패는 advisory로 남긴다."""
-    try:
-        return hashlib.sha256(fs.read_bytes_shared(path)).hexdigest()
-    except OSError:
-        return None
 
 
 def _board_mutation_subcommand(args: Sequence[str]) -> str:
@@ -2094,92 +685,6 @@ def _engine_other_copy(
     return None
 
 
-_WORKTREE_IDENTITIES = frozenset({"slot", "worktree"})
-# 소유 PM 홈을 측정하지 못한 사본을 판정 불가 문구에 표기할 때 쓰는 라벨.
-_UNKNOWN_OWNER = "미상"
-
-
-def _git_path_uncommitted(
-    anchor: Path, relative: Path, *, runner: Any = subprocess.run
-) -> bool | None:
-    """`anchor` 저장소에서 `relative` 파일이 **미커밋** 상태인지 (git 조회 1회).
-
-    `git status --porcelain --ignored -- <path>` 의 출력이 있으면 그 사본은 커밋으로 확정되지
-    않았다(작업트리 변경·스테이지·미추적·무시됨). git 아님/오류면 None — **판정 불가**이며
-    호출부는 이를 단정으로 메우지 않는다.
-    """
-    try:
-        result = runner(
-            ["git", "-C", str(anchor), "status", "--porcelain", "--ignored",
-             "--", relative.as_posix()],
-            capture_output=True, text=True, encoding="utf-8",
-            errors="replace", check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if getattr(result, "returncode", 1) != 0:
-        return None
-    return bool((result.stdout or "").strip())
-
-
-def _engine_copy_freshness(
-    current: tuple[str, Path, Path, Path | None],
-    other: tuple[str, Path, Path, Path | None],
-    relative_script: Path, *, runner: Any = subprocess.run,
-) -> str:
-    """sha 가 다른 두 엔진 사본 중 **어느 쪽이 뒤졌는지**를 worktree 의 git 상태로 판정한다.
-
-    입력은 (정체, repo 앵커, 사본 경로, 소유 PM 홈) 두 짝이다. 네 값 모두 호출부가 이미
-    측정한 것이라 추가 앵커 조회가 없고, git 조회는 sha 가 다를 때 이 함수에서 딱 1회
-    일어난다. 방향 판정은 두 사본이 **같은 PM 홈에 속한 한 짝**일 때만 성립한다 — 정체
-    클래스(pm-home/worktree)가 짝을 이루더라도 worktree 의 소유 PM 홈이 상대 사본의 PM 홈과
-    다르면 서로 남남인 저장소라 어느 쪽도 상대의 import 사본이 아니다. 그래서 소유 일치를
-    ``git status`` **전에** 값으로 확인하고, 다르면 조회 없이 판정 불가로 남긴다.
-
-    짝이 성립하면 판정 축은 worktree 사본의 미커밋 여부다 — 미커밋이면 그 사본이 편집
-    중(미확정)이라 PM 홈이 뒤졌다고 말할 수 없고, 커밋 상태면 PM 홈 import 사본이 뒤진
-    것이다. 짝으로 해소되지 않거나 git 상태를 읽지 못하면 **단정하지 않는다** — 내용이
-    다르다는 사실만 남기고 두 사본 경로(호출부 reason 이 이미 싣는다)를 직접 대조하게 한다.
-    """
-    sides = (current, other)
-    worktree_sides = [side for side in sides if side[0] in _WORKTREE_IDENTITIES]
-    home_sides = [side for side in sides if side[0] == "pm-home"]
-    if len(worktree_sides) != 1 or len(home_sides) != 1:
-        return (
-            "사본 내용이 다름 — 어느 쪽이 최신인지 판정 불가"
-            f"(PM 홈–worktree 짝 아님: {current[0]} vs {other[0]}) — "
-            "두 사본 경로를 직접 대조하라"
-        )
-    _worktree_identity, worktree_root, worktree_copy, worktree_pm_home = worktree_sides[0]
-    _home_identity, _home_root, _home_copy, home_pm_home = home_sides[0]
-    if (
-        worktree_pm_home is None or home_pm_home is None
-        or worktree_pm_home != home_pm_home
-    ):
-        return (
-            "사본 내용이 다름 — 어느 쪽이 최신인지 판정 불가"
-            f"(PM 홈–worktree 짝 아님: worktree {worktree_root} 의 소유 PM 홈="
-            f"{worktree_pm_home if worktree_pm_home is not None else _UNKNOWN_OWNER}, "
-            f"상대 사본의 PM 홈={home_pm_home if home_pm_home is not None else _UNKNOWN_OWNER}) — "
-            "두 사본 경로를 직접 대조하라"
-        )
-    uncommitted = _git_path_uncommitted(worktree_root, relative_script, runner=runner)
-    if uncommitted is None:
-        return (
-            "사본 내용이 다름 — 어느 쪽이 최신인지 판정 불가"
-            f"(worktree {worktree_root} git 상태 조회 실패) — 두 사본 경로를 직접 대조하라"
-        )
-    if uncommitted:
-        return (
-            f"worktree 사본 {worktree_copy} 이 미커밋 변경(편집 중·미확정) — "
-            "어느 쪽이 최신인지 단정 불가; worktree 를 커밋으로 확정한 뒤 다시 대조하라"
-        )
-    return (
-        f"worktree 사본 {worktree_copy} 은 커밋 상태(clean) — "
-        "stale import 사본 — 게이트 판정은 canonical 로"
-    )
-
-
 def judge_engine_invocation(
     cwd: str, argv: list[str], *, runner: Any = subprocess.run
 ) -> dict[str, str]:
@@ -2193,7 +698,7 @@ def judge_engine_invocation(
     """
     cwd_path = Path(cwd).expanduser().resolve()
     identity, cwd_root, cwd_pm_home = _git_anchor_identity(cwd_path, runner=runner)
-    details = _engine_invocation_details(cwd, argv)
+    details = shell_policy._engine_invocation_details(cwd, argv)
     if details is None:
         return {
             "verdict": "ok", "cwd_identity": identity,
@@ -2202,7 +707,7 @@ def judge_engine_invocation(
     if details.kind == "pytest":
         if (
             identity == "pm-home"
-            and _pytest_targets_tests(details.args)
+            and shell_policy._pytest_targets_tests(details.args)
             and not (cwd_path / "tests").is_dir()
         ):
             return {
@@ -2219,7 +724,7 @@ def judge_engine_invocation(
         }
 
     assert details.script is not None
-    unexpanded = _unexpanded_shell_parameters(details.script)
+    unexpanded = shell_policy._unexpanded_shell_parameters(details.script)
     unresolved_reason = (
         f"엔진 호출 경로의 미확장 토큰={', '.join(unexpanded)} — "
         "확장 불가 — 실제 사본 미상; 이 사본의 repo 앵커도 미상"
@@ -2287,8 +792,8 @@ def judge_engine_invocation(
     )
     if other is not None:
         other_root, other_path, other_identity_key = other
-        current_hash = _file_sha256(script_path)
-        other_hash = _file_sha256(other_path)
+        current_hash = hooks._file_sha256(script_path)
+        other_hash = hooks._file_sha256(other_path)
         if current_hash is None or other_hash is None:
             hash_state = "도구 파일 sha256 비교 불가(파일 읽기 실패) — 사본 경로를 직접 확인"
         elif current_hash == other_hash:
@@ -2305,7 +810,7 @@ def judge_engine_invocation(
                 other_pm_home = script_pm_home or cwd_pm_home
             hash_state = (
                 f"도구 파일 sha256 다름({current_hash} != {other_hash}) — "
-                + _engine_copy_freshness(
+                + hooks._engine_copy_freshness(
                     (script_identity, script_root, script_path, script_pm_home),
                     (other_identity, other_root, other_path, other_pm_home),
                     relative_script, runner=runner,
@@ -2313,920 +818,6 @@ def judge_engine_invocation(
             )
         reason += f"; 함께 존재하는 다른 사본={other_path}; {hash_state}"
     return {"verdict": "warn", "cwd_identity": identity, "reason": reason}
-
-
-class _ShellGitInvocation(NamedTuple):
-    cwd: str
-    argv: tuple[str, ...]
-    certain: bool
-    # 실행 위치(cwd)만의 확실성. ``certain`` 은 여기에 셸 확장(``$``·backtick)까지 없어야 참이다.
-    # 파괴 형태 판정은 대상 위치만 필요하므로 이 값을 쓴다(인자 속 변수는 형태 판정이 따로 본다).
-    anchor_certain: bool
-
-
-class _ShellParseResult(NamedTuple):
-    invocations: tuple[_ShellGitInvocation, ...]
-    engine_invocations: tuple[_ShellGitInvocation, ...]
-    # 파일 삭제·이동 명령(직접·간접 실행) 호출. ``anchor_certain`` 은 상대 경로를 풀 실행 위치의 확실성이다.
-    removal_invocations: tuple[_ShellGitInvocation, ...]
-    persistent_cd: bool
-    uncertain: bool
-    reason: str
-
-
-class _ShellGitCommand(NamedTuple):
-    """wrapper를 걷어낸 git command word와 그 해석 확실성."""
-
-    index: int
-    certain: bool
-    anchor_env_override: bool
-
-
-def _shell_git_command(segment: Sequence[str]) -> _ShellGitCommand | None:
-    """simple-command의 command position을 해소한다.
-
-    quote fragment는 앞선 POSIX shlex가 이미 한 word로 결합한다. ``env``/``command``의
-    지원 grammar는 정확히 소비하고, 미지원 option 뒤의 git 후보는 실행 여부가 불명확하므로
-    ``certain=False``로 surface한다. 임의 일반 argv 안의 git은 여전히 데이터다.
-    """
-    values = list(segment)
-
-    def _assignment(value: str) -> bool:
-        return re.fullmatch(
-            r"[A-Za-z_][A-Za-z0-9_]*=.*", value, flags=re.DOTALL,
-        ) is not None
-
-    def _is_git(value: str) -> bool:
-        return Path(value).name == "git"
-
-    def _uncertain_git(start: int, override: bool) -> _ShellGitCommand | None:
-        for candidate in range(start, len(values)):
-            if _is_git(values[candidate]):
-                return _ShellGitCommand(candidate, False, override)
-        return None
-
-    index = 0
-    anchor_env_override = False
-    # POSIX assignment word는 command name 앞에 올 수 있다. 이후 임의 argv의 ``git``은
-    # echo/printf 데이터일 뿐이므로 절대 실행으로 승격하지 않는다.
-    while index < len(values) and _assignment(values[index]):
-        anchor_env_override = anchor_env_override or values[index].startswith(
-            ("GIT_WORK_TREE=", "GIT_DIR=")
-        )
-        index += 1
-
-    # 실행 wrapper는 중첩 가능하다(``exec env -i command git …``). 각 grammar가 다음
-    # command word까지 index를 전진시키고 같은 loop에서 다시 해소한다.
-    while index < len(values):
-        if _is_git(values[index]):
-            return _ShellGitCommand(index, True, anchor_env_override)
-        wrapper = Path(values[index]).name
-
-        if wrapper == "env":
-            index += 1
-            option_phase = True
-            while index < len(values):
-                token = values[index]
-                if option_phase and token == "--":
-                    option_phase = False
-                    index += 1
-                    continue
-                if _assignment(token):
-                    anchor_env_override = anchor_env_override or token.startswith(
-                        ("GIT_WORK_TREE=", "GIT_DIR=")
-                    )
-                    index += 1
-                    continue
-                if option_phase and token in {
-                    "-i", "--ignore-environment", "-0", "--null", "--debug",
-                }:
-                    index += 1
-                    continue
-                if option_phase and token in {
-                    "-u", "--unset", "-C", "--chdir", "-a", "--argv0",
-                }:
-                    if index + 1 >= len(values):
-                        return None
-                    # child cwd 변경은 현재 anchor와 같다고 증명할 수 없다.
-                    if token in {"-C", "--chdir"}:
-                        return _uncertain_git(index + 2, anchor_env_override)
-                    index += 2
-                    continue
-                if option_phase and token.startswith(("--unset=", "--chdir=", "--argv0=")):
-                    if token.startswith("--chdir="):
-                        return _uncertain_git(index + 1, anchor_env_override)
-                    index += 1
-                    continue
-                if option_phase and token.startswith("-"):
-                    return _uncertain_git(index + 1, anchor_env_override)
-                break
-            continue
-
-        if wrapper == "command":
-            index += 1
-            while index < len(values):
-                token = values[index]
-                if token in {"--", "-p"}:
-                    index += 1
-                    continue
-                if token in {"-v", "-V"}:
-                    return None
-                if token.startswith("-"):
-                    return _uncertain_git(index + 1, anchor_env_override)
-                break
-            continue
-
-        if wrapper == "exec":
-            index += 1
-            while index < len(values):
-                token = values[index]
-                if token in {"--", "-c", "-l"}:
-                    index += 1
-                    continue
-                if token == "-a":
-                    if index + 1 >= len(values):
-                        return None
-                    index += 2
-                    continue
-                if token.startswith("-"):
-                    return _uncertain_git(index + 1, anchor_env_override)
-                break
-            continue
-
-        if wrapper == "nohup":
-            index += 1
-            if index < len(values) and values[index] == "--":
-                index += 1
-            elif index < len(values) and values[index].startswith("-"):
-                return _uncertain_git(index + 1, anchor_env_override)
-            continue
-
-        if wrapper == "nice":
-            index += 1
-            while index < len(values):
-                token = values[index]
-                if token == "--":
-                    index += 1
-                    break
-                if token in {"-n", "--adjustment"}:
-                    if index + 1 >= len(values):
-                        return None
-                    index += 2
-                    continue
-                if token.startswith("--adjustment=") or re.fullmatch(r"-\d+", token):
-                    index += 1
-                    continue
-                if token.startswith("-"):
-                    return _uncertain_git(index + 1, anchor_env_override)
-                break
-            continue
-
-        if wrapper == "timeout":
-            index += 1
-            while index < len(values):
-                token = values[index]
-                if token == "--":
-                    index += 1
-                    break
-                if token in {"-k", "--kill-after", "-s", "--signal"}:
-                    if index + 1 >= len(values):
-                        return None
-                    index += 2
-                    continue
-                if token in {"--foreground", "--preserve-status", "--verbose"}:
-                    index += 1
-                    continue
-                if token.startswith(("--kill-after=", "--signal=")):
-                    index += 1
-                    continue
-                if token.startswith("-"):
-                    return _uncertain_git(index + 1, anchor_env_override)
-                break
-            if index >= len(values):
-                return None
-            index += 1  # DURATION
-            continue
-
-        if wrapper == "sudo":
-            index += 1
-            if index < len(values) and values[index] == "--":
-                index += 1
-            elif index < len(values) and values[index].startswith("-"):
-                # sudo option grammar는 플랫폼별로 넓고 option value가 command처럼 보일 수 있다.
-                return _uncertain_git(index + 1, anchor_env_override)
-            while index < len(values) and _assignment(values[index]):
-                anchor_env_override = anchor_env_override or values[index].startswith(
-                    ("GIT_WORK_TREE=", "GIT_DIR=")
-                )
-                index += 1
-            continue
-
-        if any(marker in values[index] for marker in ("$", "`")):
-            # command word 자체가 parameter/command expansion이면 런타임에 exec류 wrapper가
-            # 될 수 있다. 뒤의 git은 argv 데이터일 수도 있어 deny할 수 없지만, mutation 후보를
-            # ok로 숨기지도 않고 uncertainty로 surface한다. echo/printf 등 명백한 command의
-            # 일반 argv는 이 분기에 오지 않는다.
-            return _uncertain_git(index + 1, anchor_env_override)
-
-        return None
-    return None
-
-
-def _shell_engine_command(segment: Sequence[str]) -> tuple[str, ...] | None:
-    """지원 wrapper 뒤의 엔진/pytest command argv를 반환한다.
-
-    git 파서와 같은 simple-command 토큰을 소비하되, 여기서는 deny를 만들 수 있는 모양만
-    확정한다. 미지원 wrapper option은 fail-open(None)해 일반 argv의 ``python3``를 실행으로
-    오인하지 않는다.
-    """
-    values = list(segment)
-    index = 0
-
-    def _assignment(value: str) -> bool:
-        return re.fullmatch(
-            r"[A-Za-z_][A-Za-z0-9_]*=.*", value, flags=re.DOTALL,
-        ) is not None
-
-    while index < len(values) and _assignment(values[index]):
-        index += 1
-    while index < len(values):
-        wrapper = Path(values[index]).name
-        if wrapper == "env":
-            index += 1
-            option_phase = True
-            while index < len(values):
-                token = values[index]
-                if option_phase and token == "--":
-                    option_phase = False
-                    index += 1
-                    continue
-                if _assignment(token):
-                    index += 1
-                    continue
-                if option_phase and token in {
-                    "-i", "--ignore-environment", "-0", "--null", "--debug",
-                }:
-                    index += 1
-                    continue
-                if option_phase and token in {"-u", "--unset", "-a", "--argv0"}:
-                    if index + 1 >= len(values):
-                        return None
-                    index += 2
-                    continue
-                if option_phase and token in {"-C", "--chdir"}:
-                    return None
-                if option_phase and token.startswith(
-                    ("--unset=", "--argv0=")
-                ):
-                    index += 1
-                    continue
-                if option_phase and (token.startswith("--chdir=") or token.startswith("-")):
-                    return None
-                break
-            continue
-        if wrapper == "command":
-            index += 1
-            while index < len(values) and values[index] in {"--", "-p"}:
-                index += 1
-            if index < len(values) and values[index].startswith("-"):
-                return None
-            continue
-        if wrapper == "exec":
-            index += 1
-            while index < len(values):
-                token = values[index]
-                if token in {"--", "-c", "-l"}:
-                    index += 1
-                    continue
-                if token == "-a":
-                    if index + 1 >= len(values):
-                        return None
-                    index += 2
-                    continue
-                if token.startswith("-"):
-                    return None
-                break
-            continue
-        break
-    candidate = tuple(values[index:])
-    return candidate if _engine_invocation_details(".", candidate) is not None else None
-
-
-def _normalize_shell_line_continuations(command: str) -> str:
-    """quote/heredoc data 밖의 backslash-newline만 POSIX continuation으로 접는다.
-
-    heredoc body는 caller가 먼저 제거한다. quote 내부 bytes는 delimiter/data 의미를 보존하기
-    위해 그대로 두며, command-word quote fragment 결합은 후속 shlex에 맡긴다.
-    """
-    output: list[str] = []
-    quote: str | None = None
-    index = 0
-    while index < len(command):
-        char = command[index]
-        if quote is None and char == "\\":
-            if index + 1 < len(command) and command[index + 1] == "\n":
-                index += 2
-                continue
-            if command[index + 1:index + 3] == "\r\n":
-                index += 3
-                continue
-            # quote 밖 escaped quote는 literal word byte다. 다음 loop에서 quote state를
-            # 열면 뒤의 실제 continuation/git command를 quote data로 오인한다.
-            output.append(char)
-            if index + 1 < len(command):
-                index += 1
-                output.append(command[index])
-            index += 1
-            continue
-        output.append(char)
-        if quote is None and char in {"'", '"'}:
-            quote = char
-        elif quote == char:
-            quote = None
-        elif quote == '"' and char == "\\" and index + 1 < len(command):
-            index += 1
-            output.append(command[index])
-        index += 1
-    return "".join(output)
-
-
-_SHELL_COMMAND_SEPARATORS = frozenset({"&&", "||", ";", "\n", "|"})
-_SHELL_WINDOWS_PATH_SEPARATOR = "\ue000"
-_SHELL_WINDOWS_ABSOLUTE_PATH = re.compile(
-    r"(?<![A-Za-z0-9_])(?:[A-Za-z]:\\|\\\\)[^ \t\r\n;&|<>\"']+"
-)
-
-
-def _protect_shell_windows_path_separators(command: str) -> str:
-    """POSIX shlex가 Windows 절대경로의 ``\\``를 escape로 소비하지 않게 표식한다.
-
-    이 단계는 정규화하지 않는다. 경로형 토큰임이 드러난 drive/UNC 표기의 구분자만 보존하고,
-    실제 ``/`` 변환은 shlex 토큰화 뒤 simple-command가 토큰을 소비할 때 수행한다.
-    """
-    return _SHELL_WINDOWS_ABSOLUTE_PATH.sub(
-        lambda match: match.group(0).replace("\\", _SHELL_WINDOWS_PATH_SEPARATOR),
-        command,
-    )
-
-
-def _normalize_shell_path_notation(token: str) -> str:
-    """토큰화가 끝난 Windows 절대경로 토큰만 POSIX 표기로 정규화한다."""
-    windows_path = (
-        _SHELL_WINDOWS_PATH_SEPARATOR in token
-        or re.match(r"^(?:[A-Za-z]:\\|\\\\)", token) is not None
-    )
-    if not windows_path:
-        return token
-    return re.sub(
-        r"/+", "/",
-        token.replace(_SHELL_WINDOWS_PATH_SEPARATOR, "/").replace("\\", "/"),
-    )
-
-
-def restore_shell_windows_path_separators(token: str) -> str:
-    """보호 표식을 원래 ``\\``로 되돌린다 — **실행용** argv 복원 경로.
-
-    판정용 경로는 `_normalize_shell_path_notation` 이 ``/`` 표기로 접지만, 실행 argv 는 채택자가
-    선언한 바이트 그대로여야 한다(표식이 남으면 그 자체가 실행 불가 경로다).
-    """
-    return token.replace(_SHELL_WINDOWS_PATH_SEPARATOR, "\\")
-
-
-def _probe_os_name() -> str:
-    """Read the interpreter OS family through one injectable seam.
-
-    Tests that need to exercise the Windows branch of `split_command_argv` or
-    `_detect_py` on any host cannot rebind the global `os.name` — `pathlib`
-    consults that same global to pick its flavour, and rebinding it mid-test
-    breaks every path operation in the process (`NotImplementedError` on a
-    `PosixPath` built under a monkeypatched `os.name == "nt"`). Routing the
-    read through this function keeps the injection point inside this module
-    instead of on the `os` global.
-    """
-    return os.name
-
-
-def split_command_argv(command: str, *, windows: bool | None = None) -> list[str]:
-    """command 문자열을 **실행 플랫폼 규칙**으로 argv 로 분해한다 (엔진 공용 seam).
-
-    POSIX 규칙에서 ``\\`` 는 escape 라 `shlex.split` 만 쓰면 Windows 실행 경로의 구분자가 통째로
-    사라진다 — ``C:\\Users\\pm\\codex.exe`` 가 ``C:Userspmcodex.exe`` 가 되어 실행이 `FileNotFoundError`
-    로 끝난다. Windows 에서는 board 의 shell 판정 경로와 **같은 보호 규칙**
-    (`_SHELL_WINDOWS_ABSOLUTE_PATH`)으로 절대경로 토큰의 구분자를 표식으로 바꾼 뒤 shlex 인용
-    규칙을 적용하고, 토큰화가 끝난 다음 표식을 원래 ``\\`` 로 되돌린다. 인용 의미(따옴표·공백)는
-    그대로 두고 경로 구분자만 살린다.
-
-    POSIX 실행 플랫폼에서는 종전 `shlex.split` 그대로다 — 그쪽에서 ``\\`` 는 실제로 escape 이므로
-    보호를 걸면 채택자가 의도한 escape 를 바꾼다.
-
-    `windows=None` 이면 실행 플랫폼(`os.name == "nt"`)을 본다. 명시 인자는 POSIX 개발기에서
-    Windows 분해를 그대로 태우는 주입 seam 이다(회귀가 실행 플랫폼에 의존하지 않게).
-    """
-    if windows is None:
-        windows = _probe_os_name() == "nt"
-    if not windows:
-        return shlex.split(command)
-    return [
-        restore_shell_windows_path_separators(token)
-        for token in shlex.split(_protect_shell_windows_path_separators(command))
-    ]
-
-
-def _git_prefilter_text(command: str) -> str:
-    """성능 선필터용 완화 text. quote fragment false-negative만 제거한다.
-
-    실제 실행 여부는 반드시 shell parser가 판정한다. 따라서 quote 제거로 데이터가 후보가
-    되어도 차단으로 승격되지 않는다.
-    """
-    return command.replace("'", "").replace('"', "")
-
-
-def _persistent_cd_prefilter(text: str) -> bool:
-    """top-level simple-command 경계의 ``cd`` 후보만 값싼 선필터로 찾는다."""
-    separators = "|".join(
-        re.escape(value)
-        for value in sorted(_SHELL_COMMAND_SEPARATORS, key=len, reverse=True)
-    )
-    return re.search(rf"(?:^|(?:{separators}))\s*cd(?=\s)", text) is not None
-
-
-def _strip_shell_comments(command: str) -> str:
-    """quote/escape 밖 command-word 경계의 ``#`` comment를 newline은 보존해 제거한다."""
-    output: list[str] = []
-    quote: str | None = None
-    escaped = False
-    word_start = True
-    index = 0
-    while index < len(command):
-        char = command[index]
-        if escaped:
-            output.append(char)
-            escaped = False
-            word_start = False
-            index += 1
-            continue
-        if quote is not None:
-            output.append(char)
-            if char == quote:
-                quote = None
-            elif char == "\\" and quote == '"':
-                escaped = True
-            index += 1
-            continue
-        if char == "\\":
-            output.append(char)
-            escaped = True
-            index += 1
-            continue
-        if char in {"'", '"'}:
-            output.append(char)
-            quote = char
-            word_start = False
-            index += 1
-            continue
-        if char == "#" and word_start:
-            while index < len(command) and command[index] != "\n":
-                index += 1
-            if index < len(command):
-                output.append("\n")
-                index += 1
-            word_start = True
-            continue
-        output.append(char)
-        word_start = char.isspace() or char in ";&|()"
-        index += 1
-    return "".join(output)
-
-
-def _heredoc_declarations(line: str) -> tuple[list[tuple[str, bool]], bool]:
-    """한 command line의 quote/comment 밖 실제 heredoc operator를 token 단위로 읽는다."""
-    try:
-        lexer = shlex.shlex(_strip_shell_comments(line), posix=True, punctuation_chars="<>")
-        lexer.whitespace_split = True
-        lexer.commenters = ""
-        tokens = list(lexer)
-    except (TypeError, ValueError):
-        return [], True
-    found: list[tuple[str, bool]] = []
-    unknown = False
-    for index, token in enumerate(tokens):
-        if token != "<<":
-            continue
-        if index + 1 >= len(tokens):
-            unknown = True
-            continue
-        word = tokens[index + 1]
-        strip_tabs = word.startswith("-")
-        word = word[1:] if strip_tabs else word
-        found.append((word, strip_tabs))
-    return found, unknown
-
-
-def _strip_shell_heredoc_bodies(command: str) -> tuple[str, bool]:
-    """인식 가능한 heredoc body를 newline 자리만 남기고 제거한다.
-
-    body의 ``git``은 데이터이지 실행 command가 아니다. delimiter를 끝까지 소비하지 못하거나
-    ``<<``가 있는데 선언을 인식하지 못하면 uncertainty를 반환해 caller가 warn으로 surface한다.
-    """
-    lines = command.splitlines(keepends=True)
-    output: list[str] = []
-    pending: list[tuple[str, bool]] = []
-    uncertain = False
-    for line in lines:
-        if pending:
-            word, strip_tabs = pending[0]
-            candidate = line.rstrip("\r\n")
-            if strip_tabs:
-                candidate = candidate.lstrip("\t")
-            output.append("\n" if line.endswith(("\n", "\r")) else "")
-            if candidate == word:
-                pending.pop(0)
-            continue
-        declarations, unknown = _heredoc_declarations(line)
-        uncertain = uncertain or unknown
-        output.append(line)
-        pending.extend(declarations)
-    if pending:
-        uncertain = True
-    return "".join(output), uncertain
-
-
-def _shell_segments(command: str) -> tuple[list[list[str]], list[str]] | None:
-    """shell 문자열을 simple-command segment와 그 사이 operator로 나눈다."""
-    separator_chars = "".join(sorted({
-        char for separator in _SHELL_COMMAND_SEPARATORS for char in separator
-    }))
-    try:
-        lexer = shlex.shlex(
-            _protect_shell_windows_path_separators(
-                _strip_shell_comments(command),
-            ), posix=True,
-            punctuation_chars=separator_chars + "<>",
-        )
-        lexer.whitespace_split = True
-        # unquoted newline은 ``;``와 같은 순차 command 경계다. 기본 shlex whitespace로
-        # 버리면 두 git 호출이 한 argv로 합쳐져 뒤 호출을 놓친다. quote 안 newline은 token에 남는다.
-        lexer.whitespace = " \t\r"
-        lexer.commenters = ""
-        tokens = list(lexer)
-    except (TypeError, ValueError):
-        return None
-    segments: list[list[str]] = []
-    operators: list[str] = []
-    current: list[str] = []
-    for token in tokens:
-        if token and set(token) == {"\n"}:
-            token = "\n"
-        if token in _SHELL_COMMAND_SEPARATORS:
-            segments.append(current)
-            operators.append(token)
-            current = []
-        elif token and all(ch in separator_chars for ch in token):
-            # case/and-or 확장 연산자 등 미지원 shell 문법은 해석하지 않는다(never-block).
-            return None
-        else:
-            current.append(token)
-    segments.append(current)
-    return segments, operators
-
-
-_SHELL_REDIRECTION_OPERATORS = frozenset({
-    "<", ">", "<<", ">>", "<<<", "<>", ">|", "<&", ">&",
-})
-
-
-def _shell_without_redirections(segment: Sequence[str]) -> tuple[list[str], bool]:
-    """simple-command argv에서 redirection operator와 target을 제거한다.
-
-    redirection target은 command argv/pathspec이 아니다. fd prefix(``2>``)는 shlex에서 별도
-    숫자 token으로 갈라지므로 operator 바로 앞 숫자도 제거한다. 복잡/불완전 redirection도
-    target을 git pathspec으로 승격하지 않는 쪽으로 fail-open한다.
-    """
-    cleaned: list[str] = []
-    redirected = False
-    index = 0
-    values = list(segment)
-    while index < len(values):
-        token = values[index]
-        if token in _SHELL_REDIRECTION_OPERATORS:
-            redirected = True
-            if cleaned and cleaned[-1].isdigit():
-                cleaned.pop()
-            index += 2  # operator + redirection target
-            continue
-        cleaned.append(token)
-        index += 1
-    return cleaned, redirected
-
-
-def _shell_gate(operator: str | None, status: bool | None) -> bool | None:
-    if operator is None or operator in _SHELL_COMMAND_SEPARATORS - {"&&", "||", "|"}:
-        return True
-    if operator == "&&":
-        return status
-    if operator == "||":
-        return None if status is None else not status
-    return True
-
-
-def _shell_simple_command(
-    anchors: set[Path], cwd_certain: bool, segment: Sequence[str], execute: bool | None,
-    *, globally_certain: bool, structure_certain: bool,
-) -> tuple[
-    set[Path], bool, bool | None,
-    list[_ShellGitInvocation], list[_ShellGitInvocation],
-]:
-    """simple command 하나의 cwd/status를 추상 실행한다. ``execute=None``은 조건부 실행이다."""
-    if execute is False or not segment:
-        return set(anchors), cwd_certain, None, [], []
-    command, redirected = _shell_without_redirections(segment)
-    if not command:
-        return set(anchors), cwd_certain, None, [], []
-    # shlex가 quote/POSIX escape 의미를 먼저 확정한 뒤, 보존된 Windows 절대경로 토큰만
-    # 판정용 표기로 접는다. 일반 ``t\\ests``는 shlex 결과 ``tests`` 그대로 남는다.
-    command = [_normalize_shell_path_notation(value) for value in command]
-    git_command = _shell_git_command(command)
-    if git_command is not None:
-        # 조건부 실행 여부와 cwd 확정성은 별개다. ``git status && git add …``에서
-        # 후자는 실행될 수도 있지만 실행되는 경우의 cwd는 하나로 확정되므로 위험 pathspec을
-        # 놓치지 않는다. false gate는 위에서 호출 자체를 제거한다.
-        anchor_certain = (
-            structure_certain and cwd_certain and len(anchors) == 1
-            and git_command.certain and not git_command.anchor_env_override
-        )
-        certain = globally_certain and anchor_certain
-        calls = [
-            _ShellGitInvocation(
-                str(anchor), tuple(command[git_command.index:]), certain, anchor_certain,
-            )
-            for anchor in sorted(anchors, key=str)
-        ]
-        return set(anchors), cwd_certain, None, calls, []
-
-    engine_command = _shell_engine_command(command)
-    engine_calls = []
-    if engine_command is not None:
-        details = _engine_invocation_details(".", engine_command)
-        unresolved_script = bool(
-            details is not None and details.script is not None
-            and _unexpanded_shell_parameters(details.script)
-        )
-        certain = (
-            (globally_certain or unresolved_script)
-            and cwd_certain and len(anchors) == 1
-        )
-        engine_calls = [
-            _ShellGitInvocation(str(anchor), engine_command, certain, certain)
-            for anchor in sorted(anchors, key=str)
-        ]
-
-    name = command[0]
-    if name == "false":
-        return set(anchors), cwd_certain, (False if execute is True else None), [], engine_calls
-    if name == "true":
-        return set(anchors), cwd_certain, (True if execute is True else None), [], engine_calls
-    if name in {"echo", "printf", ":"}:
-        # 셸 builtin의 정상 simple-command 형태는 status 0이다. 이 증명이 있어야
-        # ``echo … && git …``의 실제 실행 경로를 불필요하게 uncertain으로 낮추지 않는다.
-        return set(anchors), cwd_certain, (True if execute is True else None), [], engine_calls
-    if name in {"pushd", "popd"}:
-        # directory stack을 모델링하지 않는다. 실행 가능성이 있으면 이후 cwd는 unknown이며,
-        # false gate로 실행되지 않은 경우만 함수 상단에서 certainty를 보존한다.
-        return set(anchors), False, None, [], engine_calls
-    if name != "cd":
-        return set(anchors), cwd_certain, None, [], engine_calls
-
-    operands = [value for value in command[1:] if value != "--"]
-    if (redirected or len(operands) != 1 or operands[0].startswith("-")
-            or any(ch in operands[0] for ch in "$`")):
-        # cd가 실행될 수 있으나 지원 문법으로 target을 단일 증명하지 못했다.
-        return set(anchors), False, None, [], engine_calls
-    target_arg = Path(operands[0]).expanduser()
-    successes: set[Path] = set()
-    failures: set[Path] = set()
-    for anchor in anchors:
-        target = (target_arg if target_arg.is_absolute() else anchor / target_arg).resolve()
-        (successes if target.is_dir() else failures).add(target if target.is_dir() else anchor)
-    if execute is None:
-        return set(anchors) | successes | failures, False, None, [], engine_calls
-    if successes and not failures:
-        return successes, cwd_certain, True, [], engine_calls
-    if failures and not successes:
-        return failures, cwd_certain, False, [], engine_calls
-    return successes | failures, False, None, [], engine_calls
-
-
-_SHELL_CWD_CHANGERS: frozenset[str] = frozenset({"cd", "pushd", "popd"})
-
-
-def _shell_hidden_target_change(words: Sequence[str]) -> bool:
-    """셸 파서가 호출 좌표에 반영하지 못하는 git 대상 변경이 있는지.
-
-    괄호 subshell·명령 치환(``(cd x && …)``·``$(cd x …)``·backtick) 속 cd 는 뒤 git 의 실제 위치를
-    바꾸는데 파서는 그 cd 를 command 로 읽지 않는다. ``export GIT_DIR=…`` 같은 셸 변수 설정도 뒤의
-    모든 git 대상을 바꾼다. 둘 다 대상을 정적으로 정할 수 없는 호출로 본다.
-    """
-    group_opened = False
-    for word in words:
-        if "GIT_DIR=" in word or "GIT_WORK_TREE=" in word:
-            return True
-        name = word.lstrip("$(`")
-        if (group_opened or name != word) and name in _SHELL_CWD_CHANGERS:
-            return True
-        group_opened = not name
-    return False
-
-
-def _git_invocations_from_shell(
-    cwd: str, command: str
-) -> _ShellParseResult:
-    """shell 제어연산과 ``cd``를 보수적으로 추상 실행해 git/엔진 호출 좌표를 반환한다.
-
-    ``&&``/``||``는 직전 status, ``;``/개행은 무조건 순차, ``|``는 각 pipeline command가 원래
-    cwd의 subshell에서 실행되는 의미를 구분한다. ``true``/``false``/실재 여부가 확정된 ``cd``만
-    status를 증명한다. 조건·cwd가 여러 가능성이면 call을 ``certain=False``로 표시해 후단 deny를
-    warn으로 강등한다(대상을 못 정해 이미 거부한 파괴 형태는 강등하지 않는다 — ``anchor_certain``).
-    ``if …; then …; fi``의 단순형은 condition cwd를 body로 전달한다.
-    """
-    if not isinstance(command, str):
-        return _ShellParseResult((), (), (), False, False, "")
-    executable, heredoc_uncertain = _strip_shell_heredoc_bodies(command)
-    command = _normalize_shell_line_continuations(executable)
-    prefilter = _git_prefilter_text(command)
-    engine_candidate = (
-        re.search(r"\.project_manager[\\/]+tools[\\/]+", prefilter) is not None
-        or re.search(r"(?<![A-Za-z0-9_.-])pytest(?=\s|$)", prefilter) is not None
-        or _persistent_cd_prefilter(prefilter)
-    )
-    removal_candidate = any(
-        Path(word).name in _FILE_REMOVAL_COMMANDS or _FILE_REMOVAL_API.search(word)
-        for word in _INDIRECT_WORD.findall(prefilter)
-    )
-    # 구문 불확실 경고는 git·엔진 호출 후보가 있을 때만 의미가 있다(파일 명령은 거부 판정이 따로 본다).
-    git_or_engine_candidate = bool(_GIT_COMMAND_PREFILTER.search(prefilter)) or engine_candidate
-    if not git_or_engine_candidate and not removal_candidate:
-        reason = (
-            "shell heredoc을 정적으로 완전히 소비할 수 없음"
-            if heredoc_uncertain else ""
-        )
-        return _ShellParseResult((), (), (), False, heredoc_uncertain, reason)
-    parsed = _shell_segments(command)
-    if parsed is None:
-        # 구문을 못 푼 명령 속 git 파괴 호출·파일 삭제도 대상 미확정 호출로 올린다(판정불가를 통과로
-        # 두지 않는다).
-        anchor = str(Path(cwd).expanduser().resolve())
-        hidden = tuple(
-            _ShellGitInvocation(anchor, argv, False, False)
-            for argv in _indirect_git_destructive_argvs(command)
-        )
-        hidden_removals = tuple(
-            _ShellGitInvocation(anchor, argv, False, False)
-            for argv in _indirect_file_removal_argvs(command, stdin_operands=False)
-        )
-        return _ShellParseResult(
-            hidden, (), hidden_removals, False, git_or_engine_candidate,
-            "shell 구문을 정적으로 해석할 수 없음" if git_or_engine_candidate else "",
-        )
-    segments, operators = parsed
-    persistent_cd = False
-    anchors = {Path(cwd).expanduser().resolve()}
-    cwd_certain = True
-    found: list[_ShellGitInvocation] = []
-    engine_found: list[_ShellGitInvocation] = []
-    removal_found: list[_ShellGitInvocation] = []
-    last_status: bool | None = None
-    in_if_condition = False
-    if_status: bool | None = None
-    if_body_gate: bool | None = True
-    shell_words = [word for segment in segments for word in segment]
-    unsupported_control = any(
-        segment and segment[0] in {
-            "while", "until", "for", "select", "case", "do", "done", "{", "}",
-        }
-        for segment in segments
-    )
-    has_grouping = any(
-        (word.startswith("(") or word.endswith(")")) and not word.startswith(":(")
-        for word in shell_words
-    )
-    globally_certain = (
-        "$" not in command and "`" not in command
-        and not has_grouping and not unsupported_control
-    )
-    # 실행 위치만의 확실성은 괄호 속 데이터(``echo "(done)"``)로는 흐려지지 않는다. 파서가 좌표를
-    # 모델링하지 않는 대상 변경(괄호·명령 치환 속 cd, 셸 변수 GIT_DIR/GIT_WORK_TREE)과 루프만 본다.
-    structure_certain = not unsupported_control and not _shell_hidden_target_change(shell_words)
-
-    i = 0
-    while i < len(segments):
-        # Pipeline 전체는 같은 outer cwd에서 병렬 subshell 실행되고 cd가 밖으로 전파되지 않는다.
-        end = i
-        while end < len(operators) and operators[end] == "|":
-            end += 1
-        previous_operator = operators[i - 1] if i > 0 else None
-        gate = _shell_gate(previous_operator, last_status)
-        pipeline = end > i
-        base_anchors = set(anchors)
-        base_cwd_certain = cwd_certain
-        group_status: bool | None = None
-
-        for position in range(i, end + 1):
-            segment = list(segments[position])
-            # loop/case 전체 실행 의미는 지원하지 않는다. 다만 condition/body command 위치의
-            # git은 놓치지 않고 uncertain call로 surface해 deny 대신 ambiguity warn을 만든다.
-            if unsupported_control and segment and segment[0] in {"while", "until", "do", "{"}:
-                segment = segment[1:]
-            starts_if = bool(segment and segment[0] == "if")
-            starts_then = bool(segment and segment[0] == "then")
-            starts_else = bool(segment and segment[0] == "else")
-            starts_fi = bool(segment and segment[0] == "fi")
-            if starts_if:
-                in_if_condition = True
-                segment = segment[1:]
-            if starts_then:
-                in_if_condition = False
-                if_body_gate = if_status
-                segment = segment[1:]
-                gate = if_body_gate
-            if starts_else:
-                in_if_condition = False
-                if_body_gate = None if if_status is None else not if_status
-                segment = segment[1:]
-                gate = if_body_gate
-            if starts_fi:
-                in_if_condition = False
-                if_body_gate = True
-                segment = segment[1:]
-            if (not in_if_condition and not starts_then and not starts_else
-                    and if_body_gate is not True):
-                if gate is True:
-                    gate = if_body_gate
-
-            command_anchors = base_anchors if pipeline else anchors
-            command_cwd_certain = base_cwd_certain if pipeline else cwd_certain
-            new_anchors, new_cwd_certain, status, calls, engine_calls = _shell_simple_command(
-                command_anchors, command_cwd_certain, segment, gate,
-                globally_certain=globally_certain, structure_certain=structure_certain,
-            )
-            command_without_redirections, _redirected = _shell_without_redirections(segment)
-            if not calls and gate is not False:
-                # 간접 실행 명령 인자 속 git 파괴 호출은 호출 좌표를 풀 수 없다 — 대상 미확정 호출로 올린다.
-                calls = [
-                    _ShellGitInvocation(str(anchor), argv, False, False)
-                    for argv in _shell_indirect_git_argvs(command_without_redirections)
-                    for anchor in sorted(command_anchors, key=str)
-                ]
-            if gate is not False:
-                removal_found.extend(_shell_removal_calls(
-                    command_anchors,
-                    structure_certain and command_cwd_certain and len(command_anchors) == 1,
-                    command_without_redirections,
-                ))
-            if (
-                not pipeline and not starts_if
-                and gate is not False and status is not False
-                and command_without_redirections
-                and command_without_redirections[0] == "cd"
-            ):
-                persistent_cd = True
-            found.extend(calls)
-            engine_found.extend(engine_calls)
-            group_status = status
-            if not pipeline and gate is not False:
-                anchors = new_anchors
-                cwd_certain = new_cwd_certain
-            if in_if_condition:
-                if_status = status
-
-        if pipeline:
-            anchors = base_anchors
-            cwd_certain = base_cwd_certain
-        if gate is not False:
-            last_status = group_status
-        i = end + 1
-    uncertain = heredoc_uncertain or (unsupported_control and git_or_engine_candidate)
-    reason = "shell 구문/cwd를 정적으로 단일 증명할 수 없음" if uncertain else ""
-    return _ShellParseResult(
-        tuple(found), tuple(engine_found), tuple(removal_found), persistent_cd, uncertain, reason,
-    )
-
-
-def _shell_removal_calls(
-    anchors: set[Path], cwd_certain: bool, command: Sequence[str],
-) -> list[_ShellGitInvocation]:
-    """simple command 하나의 파일 삭제·이동 호출(직접 명령 + 간접 실행 인자 속 호출)."""
-    values = [_normalize_shell_path_notation(value) for value in command]
-    argvs: list[tuple[tuple[str, ...], bool]] = []
-    direct = _shell_file_removal_argv(values)
-    if direct is not None:
-        argvs.append((direct, cwd_certain))
-    indirect, changes_cwd = _shell_indirect_file_removal_argvs(values)
-    argvs.extend((argv, cwd_certain and not changes_cwd) for argv in indirect)
-    return [
-        _ShellGitInvocation(str(anchor), argv, certain, certain)
-        for argv, certain in argvs
-        for anchor in sorted(anchors, key=str)
-    ]
 
 
 def judge_git_anchor_command(
@@ -3242,7 +833,7 @@ def judge_git_anchor_command(
     쓸 수 있을 때 준다 — 그러면 1회 허용으로 풀 수 있는 거부에서 ``root`` 에 남은 이 세션·정확히 같은
     명령의 허용 기록을 소비하고 통과시킨다. 없으면 그 거부는 사용자가 터미널에서 직접 실행하도록 안내한다.
     """
-    parsed = _git_invocations_from_shell(cwd, command)
+    parsed = hooks._git_invocations_from_shell(cwd, command)
     invocations = parsed.invocations
     judgments: list[dict[str, str]] = []
     for call in invocations:
@@ -3251,7 +842,7 @@ def judge_git_anchor_command(
         )
         if (
             not call.certain and judgment["verdict"] != "warn"
-            and judgment.get("code") != GIT_DESTRUCTIVE_DENY_CODE
+            and judgment.get("code") != git_policy.GIT_DESTRUCTIVE_DENY_CODE
         ):
             judgment = {
                 **judgment,
@@ -3274,7 +865,7 @@ def judge_git_anchor_command(
         )
         if removal is not None:
             judgments.append(removal)
-    forgery = _git_grant_forgery_in_command(command) if isinstance(command, str) else None
+    forgery = git_policy._git_grant_forgery_in_command(command) if isinstance(command, str) else None
     if forgery is not None:
         judgments.append(forgery)
     if parsed.persistent_cd:
@@ -3291,28 +882,19 @@ def judge_git_anchor_command(
             "reason": f"{parsed.reason} — 차단하지 않음; cwd를 직접 확인",
         })
     if isinstance(command, str):
-        judgments.extend(_shell_slot_warnings(root, session, cwd, command))
+        judgments.extend(hooks._shell_slot_warnings(root, session, cwd, command))
     if not judgments:
         return {
             "verdict": "ok", "cwd_identity": "non-repo",
             "reason": "git mutation/엔진 호출 없음",
         }
-    result = _finish_git_guard_judgment(
-        _strongest_git_guard_judgment(judgments), judgments, cwd=cwd, command=command,
+    result = hooks._finish_git_guard_judgment(
+        git_policy._strongest_git_guard_judgment(judgments), judgments, cwd=cwd, command=command,
         grant_root=root if grants else None, grant_session=session if grants else None,
     )
     if result["verdict"] != "deny":
         _record_bootstrap_session_claims(session, parsed)
     return result
-
-
-def _bootstrap_task_argument(args: Sequence[str]) -> str | None:
-    for index, token in enumerate(args):
-        if token == "--task" and index + 1 < len(args):
-            return args[index + 1]
-        if token.startswith("--task="):
-            return token.split("=", 1)[1]
-    return None
 
 
 # 부트스트랩 사본 홈의 `worktree_pool` 로 세션 기록 한 건을 남기는 하위 프로세스 프로그램.
@@ -3325,7 +907,7 @@ _RECORD_TASK_SESSION_CLAIM_PROGRAM = (
 )
 
 
-def _record_bootstrap_session_claims(session: str, parsed: _ShellParseResult) -> None:
+def _record_bootstrap_session_claims(session: str, parsed: shell_policy._ShellParseResult) -> None:
     """`pm_bootstrap.py --task <task>` 호출마다 이 세션 ID 기록을 그 부트스트랩 사본의 홈에 남긴다.
 
     부트스트랩 프로세스는 자기 하네스 세션 ID 를 알 수 없어(codex·opencode 는 도구 프로세스 환경에
@@ -3339,13 +921,13 @@ def _record_bootstrap_session_claims(session: str, parsed: _ShellParseResult) ->
     if not session:
         return
     for call in parsed.engine_invocations:
-        details = _engine_invocation_details(call.cwd, call.argv)
+        details = shell_policy._engine_invocation_details(call.cwd, call.argv)
         if (
             not call.certain or details is None or details.kind != "engine"
             or Path(details.script).name != "pm_bootstrap.py"
         ):
             continue
-        task = _bootstrap_task_argument(details.args)
+        task = shell_policy._bootstrap_task_argument(details.args)
         if task is None:
             continue
         script = (Path(call.cwd).expanduser() / details.script).resolve()
@@ -3358,93 +940,6 @@ def _record_bootstrap_session_claims(session: str, parsed: _ShellParseResult) ->
             raise RuntimeError(
                 f"세션 기록을 남기지 못했다 ({script.with_name('worktree_pool.py')} · "
                 f"rc={result.returncode}): {result.stderr.strip()}")
-
-
-def _finish_git_guard_judgment(
-    result: dict[str, str], judgments: Sequence[dict[str, str]], *, cwd: str, command: str,
-    grant_root: str | os.PathLike[str] | None, grant_session: str | None,
-) -> dict[str, str]:
-    """멈춤 거부면 1회 허용을 소비하거나 멈춤 지시·다음 행동을 붙인다. 내부 표식(case)은 뺀다."""
-    final = {key: value for key, value in result.items() if key != "case"}
-    denies = [item for item in judgments if item["verdict"] == "deny"]
-    cases = [item["case"] for item in denies if "case" in item]
-    if final["verdict"] != "deny" or not cases:
-        return final
-    grants_available = grant_session is not None
-    notes: list[str] = []
-    grantable = len(cases) == len(denies) and all(
-        case == _GIT_GUARD_CASE_ASK_USER for case in cases
-    )
-    if grants_available and grantable:
-        try:
-            use = _use_git_grant(grant_root, grant_session, cwd, command)
-        except OSError as exc:
-            # 허용을 확인하지 못했으면 거부를 유지한다(통과로 흘리지 않는다).
-            use = None
-            notes.append(f"허용 기록을 확인하지 못해 거부를 유지한다({exc}).")
-        if use == _GIT_GRANT_USED:
-            return {
-                "verdict": "warn", "cwd_identity": final["cwd_identity"],
-                "reason": (
-                    f"사용자 1회 허용으로 실행한다 — 허용 기록을 썼으므로 이 명령을 다시 실행하려면 "
-                    f"새 허용이 필요하다: `{command.strip()}`"
-                ),
-            }
-        if use == _GIT_GRANT_FORGED:
-            notes.append("같은 명령의 허용 기록이 사용자 프롬프트 훅이 쓴 형식과 달라 폐기했다.")
-    final["reason"] = _git_guard_stop_reason(
-        cases, final["reason"], grants_available=grants_available, notes=notes,
-    )
-    return final
-
-
-def _strongest_git_guard_judgment(judgments: Sequence[dict[str, str]]) -> dict[str, str]:
-    """가장 강한 판정 하나로 접는다 — 여럿이면 같은 판정 호출들의 사유를 번호와 함께 잇는다."""
-    rank = {"ok": 0, "warn": 1, "deny": 2}
-    strongest = max(judgments, key=lambda item: rank[item["verdict"]])
-    if len(judgments) == 1:
-        return strongest
-    strongest_judgments = [
-        (call, item)
-        for call, item in enumerate(judgments, 1)
-        if item["verdict"] == strongest["verdict"]
-    ]
-    rendered: list[str] = []
-    index = 0
-    while index < len(strongest_judgments):
-        start_call, item = strongest_judgments[index]
-        key = (item["cwd_identity"], item["verdict"], item["reason"])
-        end = index + 1
-        while end < len(strongest_judgments):
-            candidate_call, candidate = strongest_judgments[end]
-            if (
-                candidate_call != strongest_judgments[end - 1][0] + 1
-                or (candidate["cwd_identity"], candidate["verdict"], candidate["reason"])
-                != key
-            ):
-                break
-            end += 1
-        end_call = strongest_judgments[end - 1][0]
-        if end - index == 1:
-            rendered.append(
-                f"호출 {start_call} [{item['cwd_identity']}/{item['verdict']}]: "
-                f"{item['reason']}"
-            )
-        else:
-            rendered.append(
-                f"호출 {start_call}–{end_call} "
-                f"[{item['cwd_identity']}/{item['verdict']}] ×{end - index}: "
-                f"{item['reason']}"
-            )
-        index = end
-    reasons = " | ".join(rendered)
-    result = {**strongest, "reason": reasons}
-    denies = [item for item in judgments if item["verdict"] == "deny"]
-    if denies and not all(
-        item.get("code") == "pm-home-relative-pytest-tests-missing" for item in denies
-    ):
-        result.pop("code", None)
-    return result
 
 
 def _resolved_subcommand(args: argparse.Namespace) -> str:
@@ -3490,40 +985,6 @@ def _print_read_anchor(*, subcommand: str, pm_home: Path | None = None) -> None:
         inputs = _READ_PM_INPUTS_BY_SUBCOMMAND[subcommand]
         line += f" → PM 입력 앵커: {pm_home} (PM 홈 폴백: {inputs})"
     print(line, flush=True)
-
-
-def _git_rev_parse(anchor: Path, *args: str, runner: Any = subprocess.run) -> str | None:
-    """`git -C <anchor> rev-parse <args>` 결과(strip)를 반환. git 아님/오류/빈 값이면 None
-    (fail-soft — standalone·비-git 트리 무영향). `runner` 는 hermetic 테스트 주입 seam."""
-    try:
-        r = runner(["git", "-C", str(anchor), "rev-parse", *args],
-                   capture_output=True, text=True, encoding="utf-8",
-                   errors="replace", check=False)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if getattr(r, "returncode", 1) != 0:
-        return None
-    out = (r.stdout or "").strip()
-    return out or None
-
-
-def _is_linked_worktree(anchor: Path, *, runner: Any = subprocess.run) -> bool:
-    """`anchor` 가 linked git worktree(main checkout 아님)인가.
-
-    linked worktree 는 `git rev-parse --git-dir` 가 `<common>/worktrees/<name>` 을 가리켜
-    `--git-common-dir`(=`<common>`)와 **다르다**. 일반 checkout·PM 홈은 둘 다 `.git` 로 동일
-    (→ False). git 아님/오류면 False(fail-soft — standalone 무영향).
-    """
-    git_dir = _git_rev_parse(anchor, "--git-dir", runner=runner)
-    common_dir = _git_rev_parse(anchor, "--git-common-dir", runner=runner)
-    if git_dir is None or common_dir is None:
-        return False
-
-    def _abs(p: str) -> Path:
-        pp = Path(p)
-        return pp if pp.is_absolute() else (anchor / pp).resolve()
-
-    return _abs(git_dir) != _abs(common_dir)
 
 
 def _has_real_board(pm_dir: Path) -> bool:
@@ -4455,7 +1916,6 @@ def _repo_protected(repo: str) -> list[str]:
             branches = [b.strip() for b in raw.split(",") if b.strip()]
             return branches if branches else list(DEFAULT_PROTECTED)
     return list(DEFAULT_PROTECTED)
-
 
 
 # ── `--mine` 뷰 필터 ─────────
@@ -5802,7 +3262,6 @@ def _authoritative_hooks_resolution() -> tuple[Path | None, str | None]:
         return _hooks_dir_resolution()
     except Exception:  # noqa: BLE001 — 대역 subprocess/스텁 예외는 순수 해소로 폴백.
         return None, None
-
 
 
 def _installed_hook_interpreter(body: str) -> str | None:
@@ -8230,7 +5689,7 @@ def _detect_py() -> str:
     subprocess 가 PATH 해석하고, CLAUDE.md `{{PY}}` 표시에도 가독하다.
     탐지는 후보마다 subprocess를 최대 세 번 실행하므로 프로세스 수명 동안 결과를 캐시한다.
     """
-    candidates = ("python", "py", "python3") if _probe_os_name() == "nt" else ("python3", "python")
+    candidates = ("python", "py", "python3") if process._probe_os_name() == "nt" else ("python3", "python")
     probe_missing = not os.path.isfile(_python_floor_probe_path())
     found: list[str] = []
     for cand in candidates:
@@ -9217,7 +6676,6 @@ def _platform_record_problem(data: dict, cwd: str, expected_head: str,
     return None
 
 
-
 def _core_command_at(anchor: str, session: str | None = None, *,
                      local_dir: Path | None = None) -> str:
     """기록 좌표의 장부에서 실제 앵커 행을 선택하고 기존 명령 우선순위를 적용한다."""
@@ -9375,10 +6833,10 @@ def _suiteless_tree_refusal(cmd: str, cwd: str, override: str | None) -> str | N
         argv = shlex.split(cmd)
     except ValueError:
         return None
-    details = _engine_invocation_details(cwd, argv)
+    details = shell_policy._engine_invocation_details(cwd, argv)
     if details is None or details.kind != "pytest":
         return None
-    if _pytest_targets_tests(details.args):
+    if shell_policy._pytest_targets_tests(details.args):
         why = _SUITELESS_WHY_TARGETS_TESTS
     elif not _pytest_collect_paths(details.args, cwd):
         why = _SUITELESS_WHY_NO_PATH
@@ -10173,8 +7631,6 @@ def _livegate_cwd(override: str | None = None, session: str | None = None) -> st
         "`--task <task>`(폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)로 실행하거나 "
         f"`--cwd <worktree 절대경로>` 로 직접 지정하라. {identity_args.NO_WORK_FOLDER_REMEDY}"
     )
-
-
 
 
 def _release_platform_commands(cwd: str) -> tuple[tuple[str, str], ...]:
@@ -18184,7 +15640,6 @@ def _template_mirror_report(path: Path, rel_posix: str,
     if drifted_targets:
         return _TEMPLATE_MIRROR_DIFFERS, sorted(drifted_targets)
     return (_TEMPLATE_MIRROR_IDENTICAL if matched else _TEMPLATE_MIRROR_ABSENT), []
-
 
 
 def lint_render_leak() -> list[tuple[str, str, str]]:

@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from conftest import ensure_product_slot
+from pm_engine.infra import git
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -237,13 +238,13 @@ def test_has_real_board_absent_false(tmp_path):
 def test_is_linked_worktree_differing_dirs_true():
     b = _load_board()
     r = _fake_runner("/x/.git/worktrees/w1", "/x/.git")
-    assert b._is_linked_worktree(Path("/anywhere"), runner=r) is True
+    assert git._is_linked_worktree(Path("/anywhere"), runner=r) is True
 
 
 def test_is_linked_worktree_same_dirs_false():
     b = _load_board()
     r = _fake_runner("/x/.git", "/x/.git")
-    assert b._is_linked_worktree(Path("/anywhere"), runner=r) is False
+    assert git._is_linked_worktree(Path("/anywhere"), runner=r) is False
 
 
 def test_is_linked_worktree_git_error_false():
@@ -252,7 +253,7 @@ def test_is_linked_worktree_git_error_false():
     def r(cmd, **kwargs):
         return types.SimpleNamespace(returncode=128, stdout="", stderr="not a git repo")
 
-    assert b._is_linked_worktree(Path("/anywhere"), runner=r) is False
+    assert git._is_linked_worktree(Path("/anywhere"), runner=r) is False
 
 
 def test_is_linked_worktree_runner_raises_false():
@@ -261,21 +262,21 @@ def test_is_linked_worktree_runner_raises_false():
     def r(cmd, **kwargs):
         raise FileNotFoundError("git")
 
-    assert b._is_linked_worktree(Path("/x"), runner=r) is False
+    assert git._is_linked_worktree(Path("/x"), runner=r) is False
 
 
 def test_is_linked_worktree_real_worktree_true(pm_home_worktree):
     # 실 git worktree 는 default(실) runner 로도 linked True.
     b = _load_board()
     _pm_home, worktree = pm_home_worktree
-    assert b._is_linked_worktree(worktree) is True
+    assert git._is_linked_worktree(worktree) is True
 
 
 def test_is_linked_worktree_real_pm_home_false(pm_home_worktree):
     # PM 홈(main checkout 아님·비-git tmp) → False.
     b = _load_board()
     pm_home, _worktree = pm_home_worktree
-    assert b._is_linked_worktree(pm_home) is False
+    assert git._is_linked_worktree(pm_home) is False
 
 
 # ── T-0465 read anchor display ───────────────────────────────────────────
@@ -944,7 +945,7 @@ def test_solo_standalone_first_ticket_no_false_positive(tmp_path, monkeypatch, c
     (solo / ".project_manager").mkdir(parents=True)
     _make_scaffold_board(solo / ".project_manager")
     _git(["init", "-q", "-b", "main"], solo)
-    assert b._is_linked_worktree(solo) is False
+    assert git._is_linked_worktree(solo) is False
     assert b._pm_home_worktree_misanchor(solo) is None
     monkeypatch.setattr(b, "REPO", solo)
     assert b._guard_worktree_misanchor("board.py new") is False
@@ -979,7 +980,7 @@ def test_non_git_tree_no_false_positive(tmp_path):
     plain = tmp_path / "plain"
     (plain / ".project_manager").mkdir(parents=True)
     _make_scaffold_board(plain / ".project_manager")
-    assert b._is_linked_worktree(plain, runner=_non_git_runner) is False
+    assert git._is_linked_worktree(plain, runner=_non_git_runner) is False
     assert b._pm_home_worktree_misanchor(plain) is None
 
 

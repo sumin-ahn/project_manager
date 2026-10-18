@@ -13,6 +13,9 @@ from pathlib import Path
 
 import pytest
 
+from pm_engine.app import hooks
+from pm_engine.domain import git_policy, shell_policy
+
 REPO = Path(__file__).resolve().parents[1]
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 CLAUDE_DRIVER = REPO / "templates" / "claude_code" / ".claude" / "pm_orch_claude.py"
@@ -598,7 +601,7 @@ def test_freshness_without_home_worktree_pair_is_undecided_without_git_query(top
     relative = Path(".project_manager") / "tools" / "pm_delegate.py"
 
     runner = _GitStatusCountingRunner()
-    note = board._engine_copy_freshness(
+    note = hooks._engine_copy_freshness(
         ("foreign", slot, slot / relative, None),
         ("pm-home", home, home / relative, home),
         relative, runner=runner,
@@ -1180,7 +1183,7 @@ def test_work_tree_and_git_dir_overrides_are_never_approved_and_deny_only_destru
     for cwd, argv in destructive:
         got = board.judge_git_anchor(home, "S", cwd, argv)
         assert got["verdict"] == "deny", (argv, got)
-        assert got["code"] == board.GIT_DESTRUCTIVE_DENY_CODE
+        assert got["code"] == git_policy.GIT_DESTRUCTIVE_DENY_CODE
 
 
 def test_git_clean_exclude_values_are_not_pathspecs(topology):
@@ -1209,9 +1212,9 @@ def test_r9_heredoc_data_preserves_backslash_newline(topology):
     home, _slot = topology
     command = "cat <<'EOF'\nEO\\\nF\ngit add tests/shared.txt\nEOF"
     assert board.judge_git_anchor_command(home, "S", str(home), command)["verdict"] == "ok"
-    assert board._normalize_shell_line_continuations("git\\\n add") == "git add"
+    assert shell_policy._normalize_shell_line_continuations("git\\\n add") == "git add"
     quoted = "'git\\\n add'"
-    assert board._normalize_shell_line_continuations(quoted) == quoted
+    assert shell_policy._normalize_shell_line_continuations(quoted) == quoted
 
 
 def test_r9_wrapper_and_fragmented_command_words(topology):
@@ -2447,7 +2450,7 @@ def test_slot_destructive_git_forms_are_denied(topology, destructive_board, args
     got = destructive_board.judge_git_anchor(home, "S", str(slot), ["git", *args])
     assert got["verdict"] == "deny", got
     assert got["cwd_identity"] == "slot"
-    assert got["code"] == destructive_board.GIT_DESTRUCTIVE_DENY_CODE
+    assert got["code"] == git_policy.GIT_DESTRUCTIVE_DENY_CODE
     assert label in got["reason"]
     assert f"`git {' '.join(args)}`" in got["reason"]
 
@@ -2652,7 +2655,7 @@ def test_shell_expansion_in_destructive_capable_arguments(topology, destructive_
     assert judge(home, "S", str(home), "git push origin HEAD && echo $?")["verdict"] == "warn"
     kept = judge(home, "S", str(slot), "git branch -D main; echo $HOME")
     assert kept["verdict"] == "deny"
-    assert kept["code"] == destructive_board.GIT_DESTRUCTIVE_DENY_CODE
+    assert kept["code"] == git_policy.GIT_DESTRUCTIVE_DENY_CODE
     assert judge(home, "S", str(slot), 'git commit -m "$MESSAGE"')["verdict"] == "warn"
 
 
@@ -2903,7 +2906,7 @@ def test_user_grant_covers_protected_file_removal_too(topology, grant_board):
 )
 def test_malformed_grant_line_records_nothing(topology, grant_board, line):
     home, slot = topology
-    with pytest.raises(grant_board.GitGrantShapeError):
+    with pytest.raises(git_policy.GitGrantShapeError):
         grant_board.record_git_grants(home, "S", str(slot), f"git 허용: git branch -D ok\n{line}")
     assert _grant_files(home) == []
 
@@ -3118,7 +3121,7 @@ def test_file_commands_removing_slots_or_shared_repositories_are_denied(
     got = grant_board.judge_git_anchor_command(home, "S", str(cwd), rendered, grants=True)
     assert got["verdict"] == "deny", got
     assert got["reason"].splitlines()[:2] == [_STOP_LINE, action]
-    assert got.get("code") == grant_board.GIT_DESTRUCTIVE_DENY_CODE
+    assert got.get("code") == git_policy.GIT_DESTRUCTIVE_DENY_CODE
 
 
 _REMOVAL_ALLOWED = [
@@ -3355,8 +3358,8 @@ const [engineRoot, slot] = process.argv.slice(1);
 def test_slot_git_writes_pass_only_for_the_session_whose_task_holds_the_slot(topology):
     board = _load("git_slot_owner_board", BOARD_PY)
     home, slot = topology
-    no_task = board._GIT_GUARD_ACTION_LINES[board._GIT_GUARD_CASE_SLOT_NO_TASK]
-    not_owned = board._GIT_GUARD_ACTION_LINES[board._GIT_GUARD_CASE_SLOT_NOT_OWNED]
+    no_task = git_policy._GIT_GUARD_ACTION_LINES[git_policy._GIT_GUARD_CASE_SLOT_NO_TASK]
+    not_owned = git_policy._GIT_GUARD_ACTION_LINES[git_policy._GIT_GUARD_CASE_SLOT_NOT_OWNED]
     for command in ("git add -- tests/shared.txt", "git commit -m x", "git stash", "git merge main",
                     "git restore --staged tests/shared.txt"):
         assert board.judge_git_anchor_command(home, "S", str(slot), command)["verdict"] == "ok", command
@@ -3621,4 +3624,4 @@ const [home, slot, session, command, denied] = process.argv.slice(1);
 def test_t0931_foreach_payload_help_option_value():
     """공유 분류기의 옵션 값 소비 계약이다. 이 argv의 실제 Git 유효성을 주장하거나 실행하지 않는다."""
     board = _load('t0931_foreach_option_value', BOARD_PY)
-    assert board._git_writes_slot('submodule', ['--path', 'vendor/status', 'foreach', 'printf', '%s', '--help'])
+    assert git_policy._git_writes_slot('submodule', ['--path', 'vendor/status', 'foreach', 'printf', '%s', '--help'])

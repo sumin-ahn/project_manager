@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from _engine_tree import engine_python_files
+from pm_engine.infra import git
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -66,7 +67,7 @@ def test_git_rev_parse_decodes_utf8_path_under_cp949_locale_harness(tmp_path):
         stdout = raw_stdout.decode(str(encoding), str(errors))
         return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
 
-    result = board._git_rev_parse(
+    result = git._git_rev_parse(
         tmp_path, "--git-common-dir", runner=cp949_locale_runner
     )
 
@@ -88,4 +89,4 @@ def test_git_rev_parse_does_not_swallow_unicode_decode_error(tmp_path):
         raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
 
     with pytest.raises(UnicodeDecodeError):
-        board._git_rev_parse(tmp_path, "--git-dir", runner=broken_decoder)
+        git._git_rev_parse(tmp_path, "--git-dir", runner=broken_decoder)
