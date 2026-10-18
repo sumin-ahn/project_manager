@@ -143,7 +143,7 @@ _UNRELATED_LINT_FNS = (
     "lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
     "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
     "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
-    "lint_render_leak", "lint_unmigrated_overlay", "_run_lint_hooks",
+    "lint_render_leak", "_run_lint_hooks",
 )
 
 

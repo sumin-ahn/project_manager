@@ -1223,7 +1223,10 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   (`pm_delegate` 의 `_create_read_role_temp_owner_acl`·`_portable_exclusive_write`·
     #   `_save_opencode_transport_prompt`, `pm_log.cmd_checkpoint`, `worktree_pool.create_slot`)은
     #   try 본문의 형제 로더 호출이 모듈 속성 호출(`fs.`·`repo_files.`)로 바뀌어 경계가 아니게 됐다.
-    assert len(report.boundaries) == 219, "propagation sweep boundary ratchet changed"
+    # 218 = 219 − T-0969 가 지운 한 경계. `board._verified_at_backfill_targets` 의 `except Exception`
+    #   (backfill 의 조용한 건너뜀 갈래)은 backfill 명령 삭제로 repin 의 strict 열거만 남아
+    #   try 째 없어졌다. 열거 오류는 repin 의 validate-all-first 가 그대로 받는다.
+    assert len(report.boundaries) == 218, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

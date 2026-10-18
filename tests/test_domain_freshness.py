@@ -1110,9 +1110,6 @@ def test_page_selector_rejects_domain_symlink_to_repo_internal_non_domain_docume
     monkeypatch.setattr(board, "_load_domain_module", lambda: domain)
     selected = ".project_manager/wiki/domain/link.md"
 
-    with pytest.raises(board._VerifiedAtPageSelectionError, match="domain 문서가 아님"):
-        board.backfill_verified_at("cafe0001", pages=[selected])
-
     results = board.repin_verified_at(
         "cafe0001" + "0" * 32, "self", pages=[selected])
     assert len(results) == 1
@@ -1146,8 +1143,6 @@ def test_page_selector_rejects_symlink_loop_as_controlled_selection_error(
 
     with pytest.raises(board._VerifiedAtPageSelectionError, match="symlink loop"):
         board._verified_at_targets([selected])
-    with pytest.raises(board._VerifiedAtPageSelectionError, match="symlink loop"):
-        board.backfill_verified_at("cafe0001", pages=[selected])
 
     results = board.repin_verified_at(
         "cafe0001" + "0" * 32, "self", pages=[selected])
@@ -1193,7 +1188,7 @@ def test_page_selector_resolves_normal_domain_path_and_deduplicates_symlink_alia
     ids=["top-level-list", "top-level-scalar"],
 )
 def test_page_selector_converts_non_mapping_frontmatter_to_controlled_selection_error(
-        board, domain, monkeypatch, tmp_path, capsys, frontmatter, parsed_type):
+        board, domain, monkeypatch, tmp_path, frontmatter, parsed_type):
     """공용 파서 반환 계약은 유지하되 선택 경계가 non-mapping을 파일 지목 오류로 바꾼다."""
     wiki = tmp_path / ".project_manager" / "wiki"
     domain_dir = wiki / "domain"
@@ -1212,13 +1207,6 @@ def test_page_selector_converts_non_mapping_frontmatter_to_controlled_selection_
 
     parsed, _body = board.load_ticket(page)
     assert isinstance(parsed, parsed_type)
-    rc = board.cmd_verified_at_backfill(
-        SimpleNamespace(sha="cafe0001", dry_run=False, pages=[selected]))
-
-    assert rc != 0
-    err = capsys.readouterr().err
-    assert selected in err
-    assert "domain 문서 실소비 파싱 실패" in err
     results = board.repin_verified_at(full, "self", pages=[selected])
     assert len(results) == 1
     assert "error:enumeration:" in results[0][1]

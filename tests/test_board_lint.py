@@ -1820,131 +1820,6 @@ def test_lint_tickets_includes_freshness_lints(board, monkeypatch):
     assert arch in result and status in result and dom in result
 
 
-# ── verified-at-backfill (1회 데이터 마이그레이션·ADR-0063 Decision 5) ─────────
-
-def test_insert_verified_at_inserts_before_closing_fence(board):
-    text = "---\ntitle: Doc\ntype: architecture\n---\n\n# Doc\n"
-    out = board._insert_verified_at(text, "abc123")
-    assert 'verified_at: "abc123"\n' in out   # 따옴표 친 문자열(codex R19)
-    # 닫는 --- 앞·본문 보존.
-    assert out.index('verified_at: "abc123"') < out.index("---\n\n# Doc")
-    assert out.endswith("# Doc\n")
-
-
-def test_insert_verified_at_idempotent_when_present(board):
-    text = "---\ntitle: Doc\nverified_at: old\n---\n\n# Doc\n"
-    assert board._insert_verified_at(text, "new") is None  # 이미 있음 → no-op
-
-
-def test_insert_verified_at_none_when_no_frontmatter(board):
-    assert board._insert_verified_at("# Doc\n\nno fm\n", "abc") is None
-
-
-def test_backfill_verified_at_fills_targets(board, monkeypatch, tmp_path):
-    arch = tmp_path / "architecture.md"
-    status = tmp_path / "status.md"
-    _write_verified_doc(arch, verified_at=None)
-    _write_verified_doc(status, verified_at=None, extra="type: status")
-    monkeypatch.setattr(board, "ARCHITECTURE_FILE", arch)
-    monkeypatch.setattr(board, "STATUS_FILE", status)
-    monkeypatch.setattr(board, "_load_domain_module", lambda: None)  # domain 무관 격리
-    results = board.backfill_verified_at("sha9999")
-    states = {p.name: state for p, state in results}
-    assert states == {"architecture.md": "added", "status.md": "added"}
-    assert 'verified_at: "sha9999"' in arch.read_text(encoding="utf-8")     # quoted·R19
-    assert 'verified_at: "sha9999"' in status.read_text(encoding="utf-8")
-
-
-def test_backfill_verified_at_dry_run_writes_nothing(board, monkeypatch, tmp_path):
-    arch = tmp_path / "architecture.md"
-    _write_verified_doc(arch, verified_at=None)
-    monkeypatch.setattr(board, "ARCHITECTURE_FILE", arch)
-    monkeypatch.setattr(board, "STATUS_FILE", tmp_path / "nope-status.md")
-    monkeypatch.setattr(board, "_load_domain_module", lambda: None)
-    results = board.backfill_verified_at("sha9999", dry_run=True)
-    assert ("added" in [s for _p, s in results])
-    assert "verified_at" not in arch.read_text(encoding="utf-8")  # dry-run 미쓰기
-
-
-def test_backfill_verified_at_skips_already_present(board, monkeypatch, tmp_path):
-    arch = tmp_path / "architecture.md"
-    _write_verified_doc(arch, verified_at="existing")
-    monkeypatch.setattr(board, "ARCHITECTURE_FILE", arch)
-    monkeypatch.setattr(board, "STATUS_FILE", tmp_path / "nope-status.md")
-    monkeypatch.setattr(board, "_load_domain_module", lambda: None)
-    results = board.backfill_verified_at("sha9999")
-    assert results == [(arch, "skip:already")]
-    assert "verified_at: existing" in arch.read_text(encoding="utf-8")  # 원본 sha 보존
-
-
-def test_backfill_page_selector_changes_only_selected_document_bytes(
-        board, monkeypatch, tmp_path, capsys):
-    """형제 backfill도 같은 선택자를 받고 선택 밖 문서는 byte-for-byte 보존한다."""
-    wiki = tmp_path / ".project_manager" / "wiki"
-    wiki.mkdir(parents=True)
-    arch = wiki / "architecture.md"
-    status = wiki / "status.md"
-    _write_verified_doc(arch, verified_at=None)
-    _write_verified_doc(status, verified_at=None, extra="type: status")
-    before_arch = arch.read_bytes()
-    before_status = status.read_bytes()
-    full_oid = "cafe0001" + "0" * 32
-    monkeypatch.setattr(board, "REPO", tmp_path)
-    monkeypatch.setattr(board, "ARCHITECTURE_FILE", arch)
-    monkeypatch.setattr(board, "STATUS_FILE", status)
-    monkeypatch.setattr(board, "_canonical_commit_oid", lambda _sha: full_oid)
-    monkeypatch.setattr(board, "_guard_worktree_misanchor", lambda _action: False)
-
-    rc = board.main([
-        "verified-at-backfill", "--sha", "cafe0001",
-        "--page", ".project_manager/wiki/architecture.md",
-    ])
-
-    assert rc == 0
-    assert arch.read_bytes() != before_arch
-    assert f'verified_at: "{full_oid}"' in arch.read_text(encoding="utf-8")
-    assert status.read_bytes() == before_status
-    assert "1개 문서에 verified_at 삽입" in capsys.readouterr().out
-
-
-def test_cmd_backfill_rejects_unverifiable_explicit_sha(board, monkeypatch, tmp_path, capsys):
-    """명시 --sha 는 commit 실존 검증 후에만 기록 (codex must-fix) — 오타/비존재 sha 가 영속되면
-    `_git_commits_between` fail-soft(None)에 흡수돼 그 문서 freshness 가 영구 조용 skip(false-green)."""
-    arch = tmp_path / "architecture.md"
-    _write_verified_doc(arch, verified_at=None)
-    monkeypatch.setattr(board, "ARCHITECTURE_FILE", arch)
-    monkeypatch.setattr(board, "STATUS_FILE", tmp_path / "nope-status.md")
-    monkeypatch.setattr(board, "_load_domain_module", lambda: None)
-    monkeypatch.setattr(board, "_canonical_commit_oid", lambda sha: None)   # 검증 실패
-    rc = board.cmd_verified_at_backfill(SimpleNamespace(sha="deadbeef", dry_run=False))
-    err = capsys.readouterr().err
-    assert rc == 1
-    assert "검증되지 않는다" in err
-    assert "verified_at" not in arch.read_text(encoding="utf-8")  # abort — 미기록
-
-
-def test_cmd_backfill_records_canonical_full_oid_quoted(board, monkeypatch, tmp_path, capsys):
-    """검증 통과 시 **입력 축약이 아니라 canonical full OID 를 따옴표 쳐 기록**한다 (codex R16/R19).
-
-    red-첫: 전부-숫자(octal) full OID 를 unquoted 로 쓰면 YAML 정수 파싱돼 재-lint 서 깨진다."""
-    arch = tmp_path / "architecture.md"
-    _write_verified_doc(arch, verified_at=None)
-    monkeypatch.setattr(board, "ARCHITECTURE_FILE", arch)
-    monkeypatch.setattr(board, "STATUS_FILE", tmp_path / "nope-status.md")
-    monkeypatch.setattr(board, "_load_domain_module", lambda: None)
-    full_oid = "01234567" * 5   # 40자 전부-숫자(leading 0=octal) canonical OID
-    monkeypatch.setattr(board, "_canonical_commit_oid", lambda sha: full_oid)
-    rc = board.cmd_verified_at_backfill(SimpleNamespace(sha="0123456", dry_run=False))
-    capsys.readouterr()
-    assert rc == 0
-    text = arch.read_text(encoding="utf-8")
-    assert f'verified_at: "{full_oid}"' in text          # 입력 "0123456" 아닌 full OID·quoted
-    assert "0123456\n" not in text                        # 입력 축약 그대로 기록 안 함
-    # 재-파싱(load_ticket=YAML)에서 정수화 없이 문자열 보존 → 재-lint 정상.
-    fm, _ = board.load_ticket(arch)
-    assert fm["verified_at"] == full_oid                  # int 아님·leading zero 보존
-
-
 # ── render-leak 트리 성격 게이트 (local.conf 부재=소스 트리 무발화 · T-0170·ADR-0028) ──
 # render-leak 은 *렌더 산출물*(operational 토큰 치환 어댑터)의 미해소 토큰을 잡는다. 토큰-form
 # 소스 트리(① canonical worktree·local.conf 부재)는 산출물이 아니라 토큰이 정상이므로 검사 밖이다
@@ -2722,360 +2597,6 @@ def test_claude_adapter_manifest_is_render_not_target_owned(board):
         )
 
 
-# ── un-migrated overlay 검출 (advisory · T-0132·§3.6·ADR-0031) ─────────────
-# 어댑터 .md 에 리터럴 free-form 토큰(`_UNMIGRATED_FREEFORM_KEYS` 로컬 튜플·ADR-0031 디커플)
-# 잔존 = canonical home(root doc·pm_role.local.md) 마이그레이션 미완 신호. advisory
-# (`_ADVISORY_LINT_KINDS`·`--gate` 미차단). operational 토큰·code-fence 예시는 검사 제외
-# (오탐 0). 어댑터 부재 tree finding 0(graceful). overlay 파일 부재 조건은 ADR-0031 로 제거됐다
-# — free-form value-fill 기계(overlay.local.yaml)가 없어졌으므로 리터럴 토큰 잔존만으로 advisory.
-
-def _register_render_dir(root: Path, render_dir: str) -> None:
-    """tmp 어댑터 트리의 engine.manifest 에 `<render_dir>    @render` 를 멱등 등록 (T-0431).
-
-    un-migrated 스캔은 engine.manifest `@render` dest 경로에서 스코프를 파생하므로(런타임/설정 파일
-    제외), 테스트도 실 채택자 형상처럼 manifest 를 갖춰야 한다."""
-    manifest = root / ".project_manager" / "engine.manifest"
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    lines = manifest.read_text(encoding="utf-8").splitlines() if manifest.is_file() else []
-    already = any(
-        ln.split()[:1] == [render_dir]
-        for ln in lines if ln.strip() and not ln.lstrip().startswith("#"))
-    if not already:
-        lines.append(f"{render_dir}    @render")
-        manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def _adapter_doc(root: Path, relpath: str, text: str) -> Path:
-    """root 아래 어댑터 스캐폴드 본문을 만들고 그 `@render` 어댑터-본문 dir 를 manifest 에 등록한다.
-
-    예: `.claude/agents/developer.md` → 파일 생성 + `.claude/agents @render` 등재. 어댑터-본문 dir =
-    relpath 앞 2세그먼트(`.claude/agents`·`.codex/agents`·`.agents/skills` 등). root 문서(1세그먼트·
-    CLAUDE.md/AGENTS.md)는 `@render` 아님(instance-owned·T-0133)이라 미등재 → 스캔 스코프 밖."""
-    p = root / relpath
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(text, encoding="utf-8")
-    parts = relpath.replace("\\", "/").split("/")
-    if len(parts) >= 2:  # 어댑터-본문 dir 만 등록 (root 문서=1세그먼트는 @render 아님).
-        _register_render_dir(root, "/".join(parts[:2]))
-    return p
-
-
-def test_unmigrated_literal_token_is_advisory_hit(board, monkeypatch, tmp_path):
-    """(a) 리터럴 free-form 토큰 잔존 어댑터 → `un-migrated-overlay` advisory finding."""
-    monkeypatch.setattr(board, "REPO", tmp_path)
-    _adapter_doc(tmp_path, ".claude/agents/developer.md",
-                 "## 프로젝트 제약\n\n{{PROJECT_CONSTRAINTS}}\n")
-    issues = board.lint_unmigrated_overlay()
-    assert any(name == ".claude/agents/developer.md"
-               and kind == "un-migrated-overlay"
-               and "{{PROJECT_CONSTRAINTS}}" in detail
-               for name, kind, detail in issues), issues
-
-
-def test_unmigrated_kind_is_advisory_gate_excluded(board, monkeypatch, tmp_path):
-    """(a) `un-migrated-overlay` 는 `_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드 0(미차단)."""
-    assert "un-migrated-overlay" in board._ADVISORY_LINT_KINDS
-    monkeypatch.setattr(board, "REPO", tmp_path)
-    _adapter_doc(tmp_path, ".opencode/agents/architect.md",
-                 "## 보호 영역\n\n{{PROTECTED_PATHS}}\n")
-    # 다른 lint 표면은 비워 un-migrated finding 만 게이트에 반영.
-    for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
-               "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
-               "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
-               "lint_status_freshness", "lint_domain_freshness",
-               "lint_adapter_drift", "lint_render_leak", "_run_lint_hooks"):
-        monkeypatch.setattr(board, fn, lambda: [])
-    issues = board.lint_unmigrated_overlay()
-    assert issues, "un-migrated finding 이 있어야 한다."
-    assert all(kind == "un-migrated-overlay" for _n, kind, _d in issues), issues
-    # advisory 라 gate 는 통과(0), full 은 finding 있으면 1(현행 계약).
-    assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
-    assert board.cmd_lint(SimpleNamespace(gate=False)) == 1
-
-
-def test_unmigrated_no_tokens_is_clean(board, monkeypatch, tmp_path):
-    """(b) 리터럴 free-form 토큰 0(마이그레이션 완료 = canonical home) → finding 0(clean)."""
-    monkeypatch.setattr(board, "REPO", tmp_path)
-    # 마이그레이션 후 — free-form 토큰이 canonical home 으로 옮겨져 어댑터엔 토큰 0.
-    _adapter_doc(tmp_path, ".claude/agents/developer.md",
-                 "## 프로젝트 제약\n\n- 핵심 결정 로직 = 순수 코드.\n")
-    _adapter_doc(tmp_path, ".claude/skills/pm-wave-claim/SKILL.md",
-                 "## 보호 영역\n\nconfig/limits.py\n")
-    assert board.lint_unmigrated_overlay() == []
-
-
-def test_unmigrated_token_finding_per_file(board, monkeypatch, tmp_path):
-    """(c) 리터럴 토큰 잔존 → 파일별 finding 1건(잔존 토큰 합산·ADR-0031 디커플 후 토큰 finding 만)."""
-    monkeypatch.setattr(board, "REPO", tmp_path)
-    _adapter_doc(tmp_path, ".claude/agents/developer.md",
-                 "## 제약\n\n{{PROJECT_CONSTRAINTS}}\n\n## 보호\n\n{{PROTECTED_PATHS}}\n")
-    issues = board.lint_unmigrated_overlay()
-    # 토큰 finding (파일별 1건·잔존 토큰 합산).
-    match = [i for i in issues if i[0] == ".claude/agents/developer.md"]
-    assert len(match) == 1, issues
-    _name, kind, detail = match[0]
-    assert kind == "un-migrated-overlay"
-    assert "{{PROJECT_CONSTRAINTS}}" in detail and "{{PROTECTED_PATHS}}" in detail
-    # overlay 파일 부재 조건은 ADR-0031 로 제거 — overlay-부재 finding 은 없다(토큰 finding 만).
-    assert len(issues) == 1, issues
-
-
-def test_unmigrated_operational_token_not_flagged(board, monkeypatch, tmp_path):
-    """(d) operational 토큰(`{{PROJECT_NAME}}` 등)은 검사 대상 아님 — 오탐 0."""
-    monkeypatch.setattr(board, "REPO", tmp_path)
-    _adapter_doc(tmp_path, ".claude/agents/developer.md",
-                 "너는 {{PROJECT_NAME}} 의 developer 다. {{PY}} {{TEST_CMD}} 로 검증.\n")
-    assert board.lint_unmigrated_overlay() == []
-
-
-def test_unmigrated_code_fence_example_not_flagged(board, monkeypatch, tmp_path):
-    """(d) code span/fence 안 *예시* free-form 토큰은 `_strip_code` 로 제거 → 오탐 0."""
-    monkeypatch.setattr(board, "REPO", tmp_path)
-    _adapter_doc(tmp_path, ".claude/agents/developer.md",
-                 "토큰 예시: `{{PROTECTED_PATHS}}` 는 canonical home 이 채운다.\n\n"
-                 "```yaml\nPROTECTED_PATHS: |\n  {{PROJECT_CONSTRAINTS}}\n```\n")
-    assert board.lint_unmigrated_overlay() == []
-
-
-def test_unmigrated_absent_adapter_tree_is_clean(board, monkeypatch, tmp_path):
-    """graceful: 어댑터 파일/디렉토리 부재(솔로·non-adopter tree) → finding 0."""
-    monkeypatch.setattr(board, "REPO", tmp_path)
-    # 어떤 어댑터 스캐폴드도 만들지 않는다 — 빈 tree.
-    assert board.lint_unmigrated_overlay() == []
-
-
-def test_unmigrated_root_doc_token_not_flagged(board, monkeypatch, tmp_path):
-    """root 어댑터 doc(CLAUDE.md/AGENTS.md)의 리터럴 free-form 토큰은 *미-flag* (T-0133).
-
-    root 문서는 채택자가 통째로 손편집하는 instance-owned scaffold 라 render-overlay 관리
-    대상이 아니다(manifest 제외·omit-marker 0). 거기의 raw 토큰은 "미마이그레이션"이 아니라
-    "채택자가 아직 안 채움"이라 lint 가 오분류하면 안 된다 — root doc 만 두면 clean.
-    """
-    monkeypatch.setattr(board, "REPO", tmp_path)
-    _adapter_doc(tmp_path, "AGENTS.md", "## 사용자 게이트\n\n{{USER_GATE_ITEMS}}\n")
-    _adapter_doc(tmp_path, "CLAUDE.md", "## 보호 영역\n\n{{PROTECTED_PATHS}}\n")
-    assert board.lint_unmigrated_overlay() == []
-
-
-def test_unmigrated_adapter_dir_still_flagged_when_root_doc_present(
-        board, monkeypatch, tmp_path):
-    """root doc 은 미-flag 하되 어댑터 디렉토리 토큰은 여전히 flag (root-doc 제외가 디렉토리 스캔 무영향)."""
-    monkeypatch.setattr(board, "REPO", tmp_path)
-    # root doc 토큰은 무시돼야 한다.
-    _adapter_doc(tmp_path, "CLAUDE.md", "## 보호\n\n{{PROTECTED_PATHS}}\n")
-    # 어댑터 디렉토리 토큰은 여전히 flag.
-    _adapter_doc(tmp_path, ".claude/agents/developer.md",
-                 "## 제약\n\n{{PROJECT_CONSTRAINTS}}\n")
-    issues = board.lint_unmigrated_overlay()
-    # 어댑터 finding 은 있다.
-    assert any(name == ".claude/agents/developer.md" for name, _k, _d in issues), issues
-    # root doc 은 어떤 finding 도 만들지 않는다(스캔 대상 아님).
-    assert not any(name in ("CLAUDE.md", "AGENTS.md") for name, _k, _d in issues), issues
-
-
-def test_unmigrated_skill_nested_scanned(board, monkeypatch, tmp_path):
-    """`.claude/skills/**/SKILL.md` 는 중첩(rglob)으로 스캔된다(직속 *.md 아님)."""
-    monkeypatch.setattr(board, "REPO", tmp_path)
-    _adapter_doc(tmp_path, ".claude/skills/pm-dev-delegate/SKILL.md",
-                 "## 제약\n\n{{PROJECT_CONSTRAINTS}}\n")
-    issues = board.lint_unmigrated_overlay()
-    assert any(name == ".claude/skills/pm-dev-delegate/SKILL.md"
-               for name, _k, _d in issues), issues
-
-
-# ── 두 축 파생 — codex(세 번째 하네스) 편입 (T-0431·[[T-0429]] 엔진 대칭) ─────────
-# 옛 `_OVERLAY_ADAPTER_GLOBS`(`.claude`/`.opencode` × `*.md`/SKILL.md)는 harness 축·확장자 축이
-# 둘 다 손-열거라 codex `.codex/agents/*.toml` 을 구조적으로 못 봤다. 디렉토리 축은
-# pm_import.ADD_HARNESS_ADAPTER 에서, 파일 필터 축은 pm_update._is_text_source 로 파생해 역전한다.
-
-def test_unmigrated_codex_toml_agent_scanned(board, monkeypatch, tmp_path):
-    """codex 형상: `.codex/agents/*.toml` 의 리터럴 free-form 토큰이 잡힌다 (T-0431 핵심 DoD).
-
-    수정 전(손-열거)엔 `.codex` 하네스 축도, `.toml` 확장자 축도 스캔 밖이라 미검출이었다 — 두 축
-    파생 후 편입. `.toml` 은 markdown 코드 마커가 없어 `_strip_code` 통과 후 토큰이 매칭된다."""
-    monkeypatch.setattr(board, "REPO", tmp_path)
-    _adapter_doc(tmp_path, ".codex/agents/developer.toml",
-                 'developer_instructions = "## 제약: {{PROJECT_CONSTRAINTS}}"\n')
-    issues = board.lint_unmigrated_overlay()
-    assert any(name == ".codex/agents/developer.toml"
-               and kind == "un-migrated-overlay"
-               and "{{PROJECT_CONSTRAINTS}}" in detail
-               for name, kind, detail in issues), issues
-
-
-def test_unmigrated_codex_dual_namespace_agents_skill_scanned(board, monkeypatch, tmp_path):
-    """codex dual-namespace: `.agents/skills/**/SKILL.md`(ADR-0070 D5 ①)도 스캔된다 —
-    ADD_HARNESS_ADAPTER["codex"] 의 두 번째 adapter dir(`.agents`)이 파생 축에 편입되기 때문."""
-    monkeypatch.setattr(board, "REPO", tmp_path)
-    _adapter_doc(tmp_path, ".agents/skills/pm-x/SKILL.md",
-                 "## 보호 영역\n\n{{PROTECTED_PATHS}}\n")
-    issues = board.lint_unmigrated_overlay()
-    assert any(name == ".agents/skills/pm-x/SKILL.md"
-               for name, _k, _d in issues), issues
-
-
-def test_overlay_scope_is_manifest_render_derived(board, monkeypatch, tmp_path):
-    """스코프가 engine.manifest `@render` 파생임을 직접 단언 — render-leak 과 공유하는
-    `_manifest_render_relpaths` 단일 소스(신규 독립 사본 0·T-0431 DoD). 같은 파일 형식이라도
-    manifest 미등재 형제 dir 는 스캔되지 않는다(스코프가 manifest 로만 열림)."""
-    monkeypatch.setattr(board, "REPO", tmp_path)
-    _adapter_doc(tmp_path, ".claude/agents/developer.md", "{{PROJECT_CONSTRAINTS}}\n")  # @render 등재
-    unlisted = tmp_path / ".claude" / "unlisted" / "x.md"  # 미등재 형제 dir
-    unlisted.parent.mkdir(parents=True, exist_ok=True)
-    unlisted.write_text("{{PROTECTED_PATHS}}\n", encoding="utf-8")
-    managed = board._manifest_render_relpaths()
-    assert ".claude/agents" in managed and ".claude/unlisted" not in managed, managed
-    scanned = {board._rel_to_repo(p).replace("\\", "/")
-               for p in board._collect_overlay_adapter_files()}
-    assert ".claude/agents/developer.md" in scanned, scanned
-    assert ".claude/unlisted/x.md" not in scanned, scanned
-
-
-def test_overlay_scope_excludes_runtime_and_config_files(board, monkeypatch, tmp_path):
-    """스캔 스코프가 `@render`(어댑터 본문)로 조여져 런타임/설정 파일은 제외된다 (T-0431 codex MF·
-    codex suggestion 회귀 박제).
-
-    옛 네임스페이스-전체 rglob 은 `.opencode/node_modules`(플러그인 deps)·adopter-owned
-    `.codex/config.toml`·`.claude/settings.json` 까지 읽어 대량 이중 read + 무관 파일 토큰 오탐
-    리스크였다. 이들 비-`@render` 경로에 리터럴 토큰을 심어도 스캔·finding 0 이어야 한다."""
-    monkeypatch.setattr(board, "REPO", tmp_path)
-    # @render 어댑터 본문 (스캔 O) — _adapter_doc 가 manifest 에 .opencode/agents 등록.
-    _adapter_doc(tmp_path, ".opencode/agents/architect.md",
-                 "## 제약\n\n{{PROJECT_CONSTRAINTS}}\n")
-    # 비-@render 런타임/설정 (스캔 X·manifest 미등재) — 토큰을 심어도 미검사.
-    for rel, body in (
-        (".opencode/node_modules/pkg/readme.md", "{{PROTECTED_PATHS}}\n"),
-        (".codex/config.toml", "model = '{{USER_GATE_ITEMS}}'\n"),
-        (".codex/hooks.json", '{"x": "{{PROTECTED_PATHS}}"}\n'),
-        (".claude/settings.json", '{"y": "{{PROJECT_CONSTRAINTS}}"}\n'),
-    ):
-        f = tmp_path / rel
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(body, encoding="utf-8")
-
-    scanned = {board._rel_to_repo(p).replace("\\", "/")
-               for p in board._collect_overlay_adapter_files()}
-    assert ".opencode/agents/architect.md" in scanned, scanned
-    assert not any("node_modules" in s for s in scanned), scanned
-    assert ".codex/config.toml" not in scanned and ".codex/hooks.json" not in scanned, scanned
-    assert ".claude/settings.json" not in scanned, scanned
-
-    finds = board.lint_unmigrated_overlay()
-    assert any(n == ".opencode/agents/architect.md" for n, _k, _d in finds), finds
-    assert not any(("node_modules" in n or n in (
-        ".codex/config.toml", ".codex/hooks.json", ".claude/settings.json"))
-        for n, _k, _d in finds), finds
-
-
-def test_unmigrated_retired_opencode_command_still_scanned(board, monkeypatch, tmp_path):
-    """은퇴 채널(ADR-0065·`.opencode/command`) 잔존 파일의 un-migrated 토큰이 여전히 잡힌다
-    (T-0431 codex R3 MF). 이 채널은 현행 manifest 에 미등재(은퇴)지만 pm_update 가 채택자 파일을
-    삭제하지 않아 구 채택자 트리에 잔존할 수 있다 — @render 파생 스코프의 보완(`_RETIRED_OVERLAY_GLOBS`).
-
-    manifest 를 만들지 않고 파일만 심어, 은퇴 글롭이 **manifest 와 독립**으로 커버함을 단언한다
-    (@render-only 스코프였다면 미검출·red-첫-재현의 durable 박제)."""
-    monkeypatch.setattr(board, "REPO", tmp_path)
-    p = tmp_path / ".opencode" / "command" / "foo.md"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text("## 보호 영역\n\n{{PROTECTED_PATHS}}\n", encoding="utf-8")
-    # manifest 미생성 = @render 스코프 0 — 그래도 은퇴 채널이 잡아야 한다.
-    assert board._manifest_render_relpaths() == set(), "@render 미등재 상태여야(은퇴 채널 독립 검증)."
-    assert (".opencode/command", "*.md") in board._RETIRED_OVERLAY_GLOBS
-    issues = board.lint_unmigrated_overlay()
-    assert any(name == ".opencode/command/foo.md"
-               and kind == "un-migrated-overlay"
-               and "{{PROTECTED_PATHS}}" in detail
-               for name, kind, detail in issues), issues
-
-
-def test_adopter_shape_guest_scanned_via_dest_manifest(tmp_path):
-    """adopter 형상(templates/ 없음)에서 guest 어댑터가 dest engine.manifest `@render` 등재로 스캔된다
-    (T-0456·codex R12).
-
-    codex R12 비판: 기존 guest 테스트가 worktree board.py + REPO monkeypatch 라 `__file__` 기준
-    templates/ 가 worktree 것이라 인스턴스 형상(templates/ 부재)을 **가렸다**(옛 flavor-manifest 보강이
-    거기선 항상 ∅인데 테스트는 green). 여기선 **templates/ 없는 tools/ 사본으로 board.py 를 로드**해
-    실 인스턴스를 재현한다 — guest 커버는 오직 dest manifest 등재(add_harness·T-0456)로만 성립한다.
-
-    red-첫: dest manifest 에 guest `@render` 미등재면 미검출 → 등재(add_harness 가 하는 것) 후 검출."""
-    inst = tmp_path / "adopter"
-    (inst / ".project_manager").mkdir(parents=True)
-    shutil.copytree(TOOLS, inst / ".project_manager" / "tools")
-    assert not (inst / "templates").exists()  # adopter 형상 = templates/ 부재
-    # host=claude 만 등재 + guest opencode 어댑터(add-harness 레이다운) + free-form 토큰 잔존
-    manifest = inst / ".project_manager" / "engine.manifest"
-    manifest.write_text(".claude/agents    @render\n", encoding="utf-8")
-    guest = inst / ".opencode" / "agents" / "architect.md"
-    guest.parent.mkdir(parents=True)
-    guest.write_text("## 보호\n\n{{PROTECTED_PATHS}}\n", encoding="utf-8")
-
-    board_inst = _load_module("board_adopter_shape", inst / ".project_manager" / "tools" / "board.py")
-    assert board_inst.REPO == inst.resolve()  # __file__ 기준 자동 해소 (REPO monkeypatch 아님)
-    assert not hasattr(board_inst, "_all_harness_body_relpaths")  # templates/ 보강 제거됨(판정원 단일)
-    # red: dest manifest 에 guest @render 미등재 → 미검출 (인스턴스엔 templates/ 도 없음)
-    assert not any(n == ".opencode/agents/architect.md"
-                   for n, _k, _d in board_inst.lint_unmigrated_overlay())
-    # green: add_harness 가 등재하는 것과 동형으로 dest manifest 에 guest @render 추가 → 검출
-    manifest.write_text(
-        ".claude/agents    @render\n"
-        ".opencode/agents    @render @source=templates/opencode/.opencode/agents\n",
-        encoding="utf-8")
-    issues = board_inst.lint_unmigrated_overlay()
-    assert any(n == ".opencode/agents/architect.md"
-               and "{{PROTECTED_PATHS}}" in d
-               for n, _k, d in issues), issues
-
-
-def test_unmigrated_codex_missed_under_old_hardcoded_collection(board, monkeypatch, tmp_path):
-    """sensitivity — 옛 손-열거 collection(harness `.claude`/`.opencode` + 확장자 `*.md`/SKILL.md)을
-    복원하면 codex `.toml`·`.agents` 가 다시 구조적으로 미검출(red). 두 축 파생이 load-bearing 임을
-    증명하고 red-첫-재현을 durable 로 박제한다 (T-0431 DoD)."""
-    monkeypatch.setattr(board, "REPO", tmp_path)
-    _adapter_doc(tmp_path, ".codex/agents/developer.toml",
-                 'x = "{{PROJECT_CONSTRAINTS}}"\n')
-    _adapter_doc(tmp_path, ".agents/skills/pm-x/SKILL.md", "{{PROTECTED_PATHS}}\n")
-    _adapter_doc(tmp_path, ".claude/agents/developer.md", "{{USER_GATE_ITEMS}}\n")
-
-    # (a) 현행 파생 → codex 두 네임스페이스 모두 잡힌다(대조군: claude .md 도).
-    finds = board.lint_unmigrated_overlay()
-    assert any(n == ".codex/agents/developer.toml" for n, _k, _d in finds), finds
-    assert any(n == ".agents/skills/pm-x/SKILL.md" for n, _k, _d in finds), finds
-
-    # (b) 옛 손-열거 collection 복원 → codex 미검출, claude .md 만 남는다(red).
-    _old_globs = (
-        (".claude/agents", "*.md"), (".claude/skills", "SKILL.md"),
-        (".opencode/agents", "*.md"), (".opencode/command", "*.md"),
-    )
-
-    def _old_collect():
-        out: list[Path] = []
-        for rel, pat in _old_globs:
-            d = board.REPO / rel
-            if not d.is_dir():
-                continue
-            out.extend(d.rglob(pat) if pat == "SKILL.md" else d.glob(pat))
-        return out
-
-    monkeypatch.setattr(board, "_collect_overlay_adapter_files", _old_collect)
-    reverted = board.lint_unmigrated_overlay()
-    assert not any(n == ".codex/agents/developer.toml" for n, _k, _d in reverted), reverted
-    assert not any(n == ".agents/skills/pm-x/SKILL.md" for n, _k, _d in reverted), reverted
-    assert any(n == ".claude/agents/developer.md" for n, _k, _d in reverted), reverted
-
-
-def test_lint_tickets_includes_unmigrated_overlay(board, monkeypatch):
-    """lint_tickets 통합 — un-migrated finding 이 전체 보고에 포함된다."""
-    sentinel = [(".claude/agents/x.md", "un-migrated-overlay", "sentinel")]
-    for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
-               "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
-               "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
-               "lint_status_freshness", "lint_domain_freshness",
-               "lint_adapter_drift", "lint_render_leak"):
-        monkeypatch.setattr(board, fn, lambda: [])
-    monkeypatch.setattr(board, "lint_unmigrated_overlay", lambda: sentinel)
-    assert sentinel[0] in board.lint_tickets()
-
-
 # ── adapter-layer drift lint (T-0141·ADR-0032 Decision 2·advisory·baseline B) ─────
 # `lint_adapter_drift` 는 git network 0 — `local.conf` 의 2키
 # (`upstream_rev` baseline ↔ `upstream_seen_rev` 현재 관찰값)만 비교한다. 둘 다 존재하고
@@ -3280,7 +2801,7 @@ def test_adapter_drift_is_advisory_never_blocks(board, monkeypatch, tmp_path):
     for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
                "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
                "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
-               "lint_render_leak", "lint_unmigrated_overlay", "_run_lint_hooks"):
+               "lint_render_leak", "_run_lint_hooks"):
         monkeypatch.setattr(board, fn, lambda: [])
     _wire_conf(board, monkeypatch, tmp_path, {
         "upstream.path": "https://github.com/example/project_manager",
@@ -3299,7 +2820,7 @@ def test_lint_tickets_includes_adapter_drift(board, monkeypatch):
     for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
                "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
                "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
-               "lint_render_leak", "lint_unmigrated_overlay"):
+               "lint_render_leak"):
         monkeypatch.setattr(board, fn, lambda: [])
     monkeypatch.setattr(board, "lint_adapter_drift", lambda: sentinel)
     assert sentinel[0] in board.lint_tickets()
@@ -3340,7 +2861,7 @@ def test_lint_tickets_includes_areas_duplicate_repo(board, monkeypatch):
     for fn in ("lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
                "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
                "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
-               "lint_render_leak", "lint_unmigrated_overlay", "lint_adapter_drift"):
+               "lint_render_leak", "lint_adapter_drift"):
         monkeypatch.setattr(board, fn, lambda: [])
     monkeypatch.setattr(board, "lint_areas_duplicate_repo", lambda: sentinel)
     assert sentinel[0] in board.lint_tickets()
@@ -3931,16 +3452,22 @@ _LEGACY_SECTION = (
 
 
 def test_legacy_growth_section_blocks_and_names_the_migration(board, monkeypatch, tmp_path):
-    """구 역할 절이 남은 티켓은 red — 처방(마이그레이션 명령 1회)을 문구에 담는다."""
+    """구 역할 절이 남은 티켓은 red — 변환 명령이 있던 마지막 릴리즈와 손 정리 방법을 문구에 담는다.
+
+    변환 명령은 이 엔진에 없다. 옛 형식 입력이 조용히 지나가지 않도록 차단으로 보이고,
+    무엇을 하면 통과하는지(라운드 파일로 옮기거나 marker 를 지움)를 안내한다.
+    """
     _wire_repo(board, monkeypatch, tmp_path)
     _lint_ticket(board, "done", "T-3005", body=_LEGACY_SECTION)
 
     issues = board.lint_legacy_growth_sections()
 
-    assert [(name, kind) for name, kind, _detail in issues] == [
-        ("T-3005", "legacy-growth-section")]
+    assert issues == [(
+        "T-3005", "legacy-growth-section",
+        "본문에 구 역할 절 주석이 남아 있다 — " + board._LEGACY_GROWTH_MIGRATION_HINT)]
     assert "legacy-growth-section" not in board._ADVISORY_LINT_KINDS, "차단 축이어야 한다"
-    assert "rounds migrate" in issues[0][2]
+    assert "v1.8.1" in issues[0][2]
+    assert "라운드 파일로 옮기거나" in issues[0][2]
 
 
 def test_legacy_growth_section_covers_every_status_and_drafts(board, monkeypatch, tmp_path):
@@ -4174,7 +3701,7 @@ _UNRELATED_LINT_FNS = (
     "lint_dependencies", "lint_bodies", "lint_ideas", "lint_status",
     "lint_wikilinks", "lint_unstable_refs", "lint_scopes",
     "lint_domain", "lint_adr_lifecycle", "lint_architecture_freshness",
-    "lint_render_leak", "lint_unmigrated_overlay", "_run_lint_hooks",
+    "lint_render_leak", "_run_lint_hooks",
 )
 
 
