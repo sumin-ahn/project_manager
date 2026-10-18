@@ -24,7 +24,8 @@
 #   레지스트리·설정 어휘·구표기 판정)·infra/console(전 CLI 공용 콘솔 인코딩)·infra/fs(배타 파일락·
 #   원자 추가/교체·공유 읽기·강제 삭제·소유자 전용 권한)·infra/repo_files(git 우선 repo 소유 파일
 #   열거·경로 적재기 load_module)·infra/conf_store(local.conf·압축 한도 기록 읽기)·cli/local_conf
-#   (키 표·JSON·어댑터 생성 블록 출력).
+#   (키 표·JSON·어댑터 생성 블록 출력)·domain/git_policy·domain/shell_policy(git·셸 명령 판정 규칙)·
+#   infra/git(git 저장소 조회)·infra/process(실행 플랫폼 argv 분해)·app/hooks(도구 호출 판정 보조).
 .project_manager/tools/pm_engine
 # pm-retired-path: .project_manager/tools/file_lock.py -> .project_manager/tools/pm_engine/infra/fs.py
 # pm-retired-path: .project_manager/tools/console_encoding.py -> .project_manager/tools/pm_engine/infra/console.py
