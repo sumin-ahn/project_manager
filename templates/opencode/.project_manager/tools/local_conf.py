@@ -18,7 +18,7 @@
 않고, 값을 **실제로 소비하는** 지점이 부른다.
 
 `ENGINE_REV` 는 baked 리터럴이다(형제 사본 skew fail-loud · `engine_rev.py --bump` 대상).
-stdlib-only 이며 형제는 `file_lock`(공유 읽기 seam) 하나만 경로-앵커로 지연 로드한다.
+stdlib 과 엔진 패키지 `pm_engine.infra.fs`(공유 읽기 seam)만 쓴다.
 """
 from __future__ import annotations
 
@@ -31,192 +31,21 @@ from pathlib import Path
 
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
-# baked 리터럴 — `identity_args.py`·`file_lock.py` 와 같은 규약이다. 릴리즈 bump 는
+# baked 리터럴 — `identity_args.py` 와 같은 규약이다. 릴리즈 bump 는
 # `engine_rev.py --bump vX.Y.Z` 가 전 stamped 모듈을 기계 일괄 재작성한다.
 ENGINE_REV = "v1.8.1"
-# ── 엔진 중앙 로더 부트스트랩 (형제 로드는 이 한 경로만·`repo_owned_files.load_module`) ──
-# 공유 읽기 seam 을 지연 로드하기 위해 필요하다 — 엔진 전체가 `spec_from_file_location`
-# 을 중앙 로더 한 곳에서만 부르는 불변식(deep-import 가드)이라 여기서도 그 경로를 쓴다.
-_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
-_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
-    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
-)
-_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
-_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
-_TOOLS_BOOTSTRAP_SENTINEL = object()
-try:
-    if (
-        _TOOLS_BOOTSTRAP_MODULE is not None
-        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-        != _TOOLS_BOOTSTRAP_FILE
-    ):
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-        _TOOLS_BOOTSTRAP_MODULE = None
-    if _TOOLS_BOOTSTRAP_MODULE is None:
-        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
-            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
-        )
-        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
-        if _TOOLS_BOOTSTRAP_ADDED:
-            sys.path.insert(0, _TOOLS_BOOTSTRAP)
-        try:
-            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
-            if (
-                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-                != _TOOLS_BOOTSTRAP_FILE
-            ):
-                raise ImportError(
-                    "repo_owned_files 형제 경로 불일치: "
-                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
-                )
-            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
-        finally:
-            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
-            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
-            if _TOOLS_BOOTSTRAP_ADDED:
-                try:
-                    sys.path.remove(_TOOLS_BOOTSTRAP)
-                except ValueError:
-                    pass
-            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
-                sys.modules.pop("repo_owned_files", None)
-            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
-                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
-    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
-except Exception as _TOOLS_BOOTSTRAP_ERROR:
-    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-
-    def _load_module_from_path(
-        path,
-        expected_filename,
-        *,
-        verifier=None,
-        allow_unverified=False,
-        cache=False,
-        cache_key=None,
-    ):
-        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
-        target = os.path.realpath(os.fspath(path))
-        if os.path.basename(target) != expected_filename:
-            raise ValueError(
-                f"module filename mismatch: expected {expected_filename!r}, "
-                f"got {os.path.basename(target)!r}"
-            )
-        if verifier is not None and allow_unverified:
-            raise ValueError("choose verifier or allow_unverified=True, not both")
-        if verifier is None and not allow_unverified:
-            raise ValueError(
-                "module load requires verifier or explicit allow_unverified=True"
-            )
-        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
-        module = sys.modules.get(module_key) if cache else None
-        inserted = False
-        try:
-            if module is None:
-                if (
-                    target == _TOOLS_BOOTSTRAP_FILE
-                    and _TOOLS_BOOTSTRAP_MODULE is not None
-                ):
-                    module = _TOOLS_BOOTSTRAP_MODULE
-                else:
-                    import_name = os.path.splitext(expected_filename)[0]
-                    previous = sys.modules.pop(
-                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
-                    )
-                    parent = os.path.dirname(target)
-                    # 런타임에 만든 형제 모듈(중앙 로더 선복구가 방금 복사한 seam 등)을
-                    # 이름으로 import 한다 — FileFinder 는 디렉터리 목록을 mtime 으로 캐시하고
-                    # 인터프리터 시작 뒤 생긴 파일은 invalidate 없이는 인식이 보장되지 않는다
-                    # (Python 문서 `importlib.invalidate_caches` · Windows 실측 간헐
-                    # ModuleNotFoundError). 블록은 stdlib-only 라 지역 import 로 두되 sys.path 에
-                    # parent 를 넣기 전에 가져와 그 트리의 동명 파일이 stdlib 를 가리지 않게 한다.
-                    import importlib as _bootstrap_importlib
-                    added = not sys.path or sys.path[0] != parent
-                    if added:
-                        sys.path.insert(0, parent)
-                    try:
-                        _bootstrap_importlib.invalidate_caches()
-                        module = __import__(import_name)
-                        if os.path.realpath(getattr(module, "__file__", "")) != target:
-                            raise ImportError(
-                                f"{expected_filename} 형제 경로 불일치"
-                            )
-                    finally:
-                        if added:
-                            try:
-                                sys.path.remove(parent)
-                            except ValueError:
-                                pass
-                        if sys.modules.get(import_name) is module:
-                            sys.modules.pop(import_name, None)
-                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
-                            sys.modules[import_name] = previous
-                if cache:
-                    sys.modules[module_key] = module
-                    inserted = True
-            if verifier is not None:
-                verifier(module, expected_filename)
-            return module
-        except Exception as exc:
-            if cache and (inserted or sys.modules.get(module_key) is module):
-                sys.modules.pop(module_key, None)
-            if target == _TOOLS_BOOTSTRAP_FILE:
-                raise RuntimeError(
-                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
-                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
-                ) from exc
-            raise
+# ── 엔진 패키지 import (공유 읽기는 `fs.read_text_shared`) ──
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.infra import console, fs  # noqa: E402
 
 
 
 # ── 공유 읽기 (원자 교체 대상 conf 의 판독) ──────────────────────────────
 # `local.conf` 는 키 갱신이 **원자 교체**로 이뤄지는 파일이다(`pm_import._write_conf_keys`).
 # 일반 `open` 리더가 하나라도 잡고 있으면 Windows 는 그 교체를 WinError 32 로 막으므로 판독도
-# 공용 seam 의 공유 읽기를 지난다.
-#
-# seam 로드는 **호출 시점 지연**이고 실패는 종전 읽기로 강등한다(프로세스당 한 번 사유 출력) —
-# `identity_args._read_text_shared` 와 같은 규약이다. 이 모듈은 복구 채널(`pm_import`)도 쓰는
-# 판독 leaf 라, 형제 사본이 구세대인 트리에서 conf 판독 자체가 죽으면 자기 자신을 못 고친다.
-
-_shared_read_degraded = False
-
-
-def _warn_shared_read_degraded(cause: str) -> None:
-    """강등 사유를 **프로세스당 한 번** 알린다 (판독마다 찍으면 진단이 자기 소음에 묻힌다)."""
-    global _shared_read_degraded
-    if _shared_read_degraded:
-        return
-    _shared_read_degraded = True
-    print(
-        f"경고: 공유 읽기 seam 을 쓸 수 없어 일반 읽기로 진행합니다 ({cause}) — Windows "
-        "에서는 이 판독이 열려 있는 동안 local.conf 의 원자 교체가 실패할 수 있습니다. "
-        "`pm_update.py` 로 .project_manager/tools/ 전체를 재동기하십시오.",
-        file=sys.stderr,
-    )
-
-
-def _read_text_shared(path: Path, *, encoding: str) -> str:
-    """conf 를 공유 읽기로 읽는다 — seam 을 못 쓰면 종전 읽기로 강등한다.
-
-    `identity_args` 와 같이 rev 검증자를 두지 않는다(leaf point-reader). 구세대 사본은 함수
-    부재로 드러나므로 `getattr` 로 함께 받는다.
-    """
-    api = None
-    try:
-        module = _load_module_from_path(
-            Path(__file__).resolve().with_name("file_lock.py"), "file_lock.py",
-            allow_unverified=True, cache=True,
-        )
-        api = getattr(module, "read_text_shared", None)
-        if api is None:
-            _warn_shared_read_degraded("구세대 file_lock 사본에 read_text_shared 가 없음")
-    except Exception as exc:  # noqa: BLE001 — 부재/손상 사본은 이 판독의 정상 입력이다.
-        _warn_shared_read_degraded(f"{type(exc).__name__}: {exc}")
-    if api is not None:
-        return api(path, encoding=encoding)
-    return path.read_text(encoding=encoding)
-
+# 공용 seam 의 공유 읽기(`fs.read_text_shared`)를 지난다.
 
 # 이름만이 아니라 **값의 뜻**도 바뀐 이동 두 가지 — `rename_updates` 가 이 두 표로 값을 만든다.
 #   · 남은 % → 쓴 % : 대상 새 키에 `100 − 옛 값` 을 쓴다.
@@ -751,7 +580,7 @@ def _ctx_record_entry(root, values, harness):
     path = Path(root) / CTX_BUDGET_RELPATH
     damaged = f"압축 한도 기록 손상 ({path}) — {_CTX_RERUN}."
     try:
-        record = json.loads(_read_text_shared(path, encoding="utf-8"))
+        record = json.loads(fs.read_text_shared(path, encoding="utf-8"))
     except FileNotFoundError:
         raise CtxBudgetError(f"압축 한도 기록이 없습니다 ({path}) — {_CTX_RERUN}.") from None
     except ValueError:
@@ -1235,7 +1064,7 @@ def load(path: Path | str) -> ConfResult:
     """
     conf_path = Path(path)
     try:
-        text = _read_text_shared(conf_path, encoding="utf-8")
+        text = fs.read_text_shared(conf_path, encoding="utf-8")
     except (OSError, UnicodeError):
         return ConfResult({}, {}, conf_path)
     values = parse(text)
@@ -1249,7 +1078,7 @@ def load_strict(path: Path | str) -> ConfResult:
     conf 에서 해소하는 자리 — 못 읽었는데 빈 conf 로 진행하면 기본값으로 조용히 갈린다).
     부재도 예외(`FileNotFoundError`)이므로 존재 판정은 호출부가 자기 축으로 한다."""
     conf_path = Path(path)
-    values = parse(_read_text_shared(conf_path, encoding="utf-8"))
+    values = parse(fs.read_text_shared(conf_path, encoding="utf-8"))
     return ConfResult(values, legacy_keys(values), conf_path)
 
 
@@ -1660,37 +1489,15 @@ def _sibling_mapping(filename: str, attribute: str) -> dict[str, tuple[str, ...]
             if isinstance(values, (list, tuple, set, frozenset))}
 
 
-def _verify_engine_rev(sibling_module, sibling_filename):
-    """로드한 형제 모듈의 baked ENGINE_REV 를 이 사본의 것과 대조한다 (fail-loud·skew→명시 에러).
-
-    일반 conf 판독은 복구를 위한 코드 소유 면제를 유지한다. ctx 적용 기록의 근거 판독과
-    CLI 진입(`main`)은 같은 verifier로 사본 skew를 fail-loud로 검출한다.
-    """
-    got = getattr(sibling_module, "ENGINE_REV", None)
-    if got != ENGINE_REV:
-        err = RuntimeError(
-            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
-            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
-            f"구형 사본). `pm_update.py`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
-        )
-        err._engine_rev_skew = True  # fail-soft 로더가 재-raise 식별
-        raise err
-
-
 def main(argv: list[str] | None = None) -> int:
     """키 표(`--keys`)와 어댑터 생성 블록 출력 — 사람이 손으로 옮겨 적는 표면을 없앤다."""
-    _console_encoding = _load_module_from_path(
-        Path(__file__).resolve().with_name("console_encoding.py"),
-        "console_encoding.py",
-        verifier=_verify_engine_rev,
-    )
-    _console_encoding.configure_console_utf8()
+    console.configure_console_utf8()
     args = list(sys.argv[1:] if argv is None else argv)
     if args[:1] == ["--keys"] and args[1:] in ([], ["--json"]):
         if args[1:]:
             # 기계 판독 페이로드는 콘솔 텍스트 레이어를 건너뛴다 — 그 레이어는 PowerShell 캡처에서
             # 콘솔 codepage 로 강등되고 그 치환은 되돌릴 수 없다(사람 표는 종전 `print` 그대로).
-            _console_encoding.write_machine_line(
+            console.write_machine_line(
                 json.dumps(key_registry_json(), ensure_ascii=False))
         else:
             print(render_key_table())

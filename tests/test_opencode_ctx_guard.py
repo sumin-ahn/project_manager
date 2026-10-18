@@ -2701,8 +2701,11 @@ def test_t0943_plugin_missing_record_toasts_error(tmp_path):
     """기록이 없으면 toast 로 오류를 알리고(무음 반환 아님) 넛지는 만들지 않는다. 대기 결속 상태는 없다."""
     root = _t0943_project(tmp_path)
     (root / ".project_manager" / "local.conf").write_text("", encoding="utf-8")
-    for name in ("local_conf.py", "repo_owned_files.py", "file_lock.py", "console_encoding.py"):
-        shutil.copyfile(REPO / ".project_manager" / "tools" / name, root / ".project_manager" / "tools" / name)
+    shutil.copyfile(REPO / ".project_manager" / "tools" / "local_conf.py",
+                    root / ".project_manager" / "tools" / "local_conf.py")
+    shutil.copytree(REPO / ".project_manager" / "tools" / "pm_engine",
+                    root / ".project_manager" / "tools" / "pm_engine",
+                    ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
     result = _t0943_plugin_run(root, "ollama", "glm-5.2:cloud", 190000)
     assert result["system"] == []
     errors = [text for text in result["toasts"] if "[ctx-budget]" in text]

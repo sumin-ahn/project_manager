@@ -86,7 +86,7 @@ def test_bump_is_idempotent_and_covers_all_files():
 
 
 def test_bump_recovers_after_engine_rev_was_rewritten_first(tmp_path):
-    """중단된 bump(engine_rev=신 rev·console_encoding=구 rev)도 재실행하면 전 파일 정합을 복구한다."""
+    """중단된 bump(engine_rev=신 rev·identity_args=구 rev)도 재실행하면 전 파일 정합을 복구한다."""
     current = _load_engine_rev()
     major, minor, patch = map(int, current.ENGINE_REV.removeprefix("v").split("."))
     new_rev = f"v{major}.{minor}.{patch + 1}"
@@ -106,9 +106,9 @@ def test_bump_recovers_after_engine_rev_was_rewritten_first(tmp_path):
 
     interrupted = _load_engine_rev(tools)
     assert interrupted.ENGINE_REV == new_rev
-    assert interrupted.read_literal(tools / "console_encoding.py") == current.ENGINE_REV
+    assert interrupted.read_literal(tools / "identity_args.py") == current.ENGINE_REV
 
-    # engine_rev.main()은 복구 경로이므로 stale console helper를 verify하지 않고 bump까지 도달한다.
+    # engine_rev.main()은 복구 경로이므로 stale 형제를 verify하지 않고 bump까지 도달한다.
     assert interrupted.main(["--bump", new_rev]) == 0
     assert {
         filename: interrupted.read_literal(tools / filename)

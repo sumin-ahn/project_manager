@@ -44,136 +44,11 @@ import sys
 from pathlib import Path, PurePath
 from typing import Callable, NamedTuple
 
-_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
-_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
-    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
-)
-_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
-_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
-_TOOLS_BOOTSTRAP_SENTINEL = object()
-try:
-    if (
-        _TOOLS_BOOTSTRAP_MODULE is not None
-        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-        != _TOOLS_BOOTSTRAP_FILE
-    ):
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-        _TOOLS_BOOTSTRAP_MODULE = None
-    if _TOOLS_BOOTSTRAP_MODULE is None:
-        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
-            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
-        )
-        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
-        if _TOOLS_BOOTSTRAP_ADDED:
-            sys.path.insert(0, _TOOLS_BOOTSTRAP)
-        try:
-            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
-            if (
-                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-                != _TOOLS_BOOTSTRAP_FILE
-            ):
-                raise ImportError(
-                    "repo_owned_files 형제 경로 불일치: "
-                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
-                )
-            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
-        finally:
-            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
-            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
-            if _TOOLS_BOOTSTRAP_ADDED:
-                try:
-                    sys.path.remove(_TOOLS_BOOTSTRAP)
-                except ValueError:
-                    pass
-            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
-                sys.modules.pop("repo_owned_files", None)
-            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
-                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
-    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
-except Exception as _TOOLS_BOOTSTRAP_ERROR:
-    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-
-    def _load_module_from_path(
-        path,
-        expected_filename,
-        *,
-        verifier=None,
-        allow_unverified=False,
-        cache=False,
-        cache_key=None,
-    ):
-        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
-        target = os.path.realpath(os.fspath(path))
-        if os.path.basename(target) != expected_filename:
-            raise ValueError(
-                f"module filename mismatch: expected {expected_filename!r}, "
-                f"got {os.path.basename(target)!r}"
-            )
-        if verifier is not None and allow_unverified:
-            raise ValueError("choose verifier or allow_unverified=True, not both")
-        if verifier is None and not allow_unverified:
-            raise ValueError(
-                "module load requires verifier or explicit allow_unverified=True"
-            )
-        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
-        module = sys.modules.get(module_key) if cache else None
-        inserted = False
-        try:
-            if module is None:
-                if (
-                    target == _TOOLS_BOOTSTRAP_FILE
-                    and _TOOLS_BOOTSTRAP_MODULE is not None
-                ):
-                    module = _TOOLS_BOOTSTRAP_MODULE
-                else:
-                    import_name = os.path.splitext(expected_filename)[0]
-                    previous = sys.modules.pop(
-                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
-                    )
-                    parent = os.path.dirname(target)
-                    # 런타임에 만든 형제 모듈(중앙 로더 선복구가 방금 복사한 seam 등)을
-                    # 이름으로 import 한다 — FileFinder 는 디렉터리 목록을 mtime 으로 캐시하고
-                    # 인터프리터 시작 뒤 생긴 파일은 invalidate 없이는 인식이 보장되지 않는다
-                    # (Python 문서 `importlib.invalidate_caches` · Windows 실측 간헐
-                    # ModuleNotFoundError). 블록은 stdlib-only 라 지역 import 로 두되 sys.path 에
-                    # parent 를 넣기 전에 가져와 그 트리의 동명 파일이 stdlib 를 가리지 않게 한다.
-                    import importlib as _bootstrap_importlib
-                    added = not sys.path or sys.path[0] != parent
-                    if added:
-                        sys.path.insert(0, parent)
-                    try:
-                        _bootstrap_importlib.invalidate_caches()
-                        module = __import__(import_name)
-                        if os.path.realpath(getattr(module, "__file__", "")) != target:
-                            raise ImportError(
-                                f"{expected_filename} 형제 경로 불일치"
-                            )
-                    finally:
-                        if added:
-                            try:
-                                sys.path.remove(parent)
-                            except ValueError:
-                                pass
-                        if sys.modules.get(import_name) is module:
-                            sys.modules.pop(import_name, None)
-                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
-                            sys.modules[import_name] = previous
-                if cache:
-                    sys.modules[module_key] = module
-                    inserted = True
-            if verifier is not None:
-                verifier(module, expected_filename)
-            return module
-        except Exception as exc:
-            if cache and (inserted or sys.modules.get(module_key) is module):
-                sys.modules.pop(module_key, None)
-            if target == _TOOLS_BOOTSTRAP_FILE:
-                raise RuntimeError(
-                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
-                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
-                ) from exc
-            raise
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.infra import console, fs, repo_files  # noqa: E402
+_load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -493,7 +368,7 @@ ENGINE_REV = "v1.8.1"
 # _load_tool(generic)이 이름으로 로드하는 stamped 형제. deep-import AST 가드는 클래스 메서드와
 # 중첩 함수까지 포함해 실제 호출 target을 측정하고, 그 집합이 이 리터럴에 포함되는지 단언한다.
 _STAMPED_SIBLINGS = frozenset({
-    "file_lock.py", "pm_handoff.py", "pm_bootstrap.py", "pm_config.py", "pm_log.py",
+    "pm_handoff.py", "pm_bootstrap.py", "pm_config.py", "pm_log.py",
     "pm_delegate.py",
 })
 
@@ -541,13 +416,7 @@ def _write_machine_line(text: str) -> None:
     치환은 되돌릴 수 없다 — 다른 프로세스가 파싱하는 출력은 공용 seam 으로 UTF-8 bytes 를
     직접 쓴다(콘솔 코덱 전환과 독립).
     """
-    console_encoding = _load_module_from_path(
-        Path(__file__).resolve().with_name("console_encoding.py"),
-        "console_encoding.py",
-        verifier=_verify_engine_rev,
-        cache=True,
-    )
-    console_encoding.write_machine_line(text)
+    console.write_machine_line(text)
 
 
 # ── worktree_pool import seam ───────────────────────────
@@ -624,19 +493,6 @@ def _load_tool(name: str):
     return mod
 
 
-def _load_file_lock():
-    """공용 파일 프리미티브 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
-
-    원자 교체 대상 파일을 읽는 지점은 이 seam 의 공유 읽기를 지난다([[T-0729]]) — 일반 `open`
-    리더가 하나라도 잡고 있으면 Windows 는 그 파일의 원자 교체를 WinError 32 로 막는다. 부재/
-    손상/rev 불일치는 엔진 사본 손상이므로 흡수하지 않는다(fail-loud·재동기 안내).
-    """
-    return _load_module_from_path(
-        Path(__file__).resolve().parent / "file_lock.py", "file_lock.py",
-        verifier=_verify_engine_rev, cache=True,
-    )
-
-
 def _load_identity_args():
     """공용 `identity_args` 모듈을 동적 로드한다.
 
@@ -674,7 +530,7 @@ def _registered_repos(areas_file: Path | None = None) -> list[str]:
     rows: list[str] = []
     header: list[str] | None = None
     sep_pattern = re.compile(r"^\|[\s:|-]+\|?$")
-    for line in _load_file_lock().read_text_shared(areas_file, encoding="utf-8").splitlines():
+    for line in fs.read_text_shared(areas_file, encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped.startswith("|") or sep_pattern.match(stripped):
             continue
@@ -2247,7 +2103,7 @@ class PmBootstrap:
         """
         if not self._log_file.exists():
             return None
-        log_text = _load_file_lock().read_text_shared(self._log_file, encoding="utf-8")
+        log_text = fs.read_text_shared(self._log_file, encoding="utf-8")
         bound_session = self._bound_session_name()
         # bound 미해소는 자기 슬롯을 모른다 — **마지막 entry(모든 타입)**를
         # 그대로 dump 한다(handoff·complete·decide 무관). handoff-우선 필터를 태우면 최신 complete
@@ -2310,7 +2166,7 @@ class PmBootstrap:
         state_text: str | None = None
         if state_path is not None and state_path.exists():
             try:
-                state_text = _load_file_lock().read_text_shared(state_path, encoding="utf-8")
+                state_text = fs.read_text_shared(state_path, encoding="utf-8")
             except Exception as exc:  # noqa: BLE001 — fail-soft: read 실패는 pm_state 미해소.
                 if _is_engine_rev_skew(exc):
                     raise  # 판독 seam 형제 skew 는 fail-loud(`_load_tool` 과 같은 규칙).
@@ -2365,7 +2221,7 @@ class PmBootstrap:
         if not self._log_file.exists():
             return None
         try:
-            return _load_file_lock().read_text_shared(self._log_file, encoding="utf-8")
+            return fs.read_text_shared(self._log_file, encoding="utf-8")
         except Exception as exc:  # noqa: BLE001 — fail-soft: read 실패는 None(surface 생략).
             if _is_engine_rev_skew(exc):
                 raise  # 판독 seam 형제 skew 는 fail-loud(`_load_tool` 과 같은 규칙).
@@ -2447,7 +2303,7 @@ class PmBootstrap:
         if not leases_file.exists():
             return None
         try:
-            data = json.loads(_load_file_lock().read_text_shared(leases_file, encoding="utf-8"))
+            data = json.loads(fs.read_text_shared(leases_file, encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return None
         if not isinstance(data, dict) or not isinstance(data.get("leases"), list):
@@ -2503,7 +2359,7 @@ class PmBootstrap:
         dash_file = _dashboard_file()
         if dash_file.exists():
             try:
-                text = _load_file_lock().read_text_shared(dash_file, encoding="utf-8")
+                text = fs.read_text_shared(dash_file, encoding="utf-8")
             except OSError:
                 text = None
             pm_handoff = _load_tool("pm_handoff") if text is not None else None
@@ -3301,7 +3157,7 @@ class PmBootstrap:
             return None
         try:
             entry = parse_log_last_entry(
-                _load_file_lock().read_text_shared(self._log_file, encoding="utf-8")
+                fs.read_text_shared(self._log_file, encoding="utf-8")
             )
         except (OSError, UnicodeDecodeError):
             # 기록 파일을 못 읽은 경우다 — 표시만 비운다(파싱은 정규식이라 예외를 내지 않는다).
@@ -3777,7 +3633,7 @@ class PmBootstrap:
             if not sidecar.is_file():
                 return False  # 훅 미설치 — 설치는 repo add/worktree add 축(여기선 drift 만).
             current = [line.strip()
-                       for line in _load_file_lock().read_text_shared(sidecar, encoding="utf-8").splitlines()
+                       for line in fs.read_text_shared(sidecar, encoding="utf-8").splitlines()
                        if line.strip()]
             protected_ok = current == protected
             gate_mode, test_cmd = gate_config(
@@ -3785,7 +3641,7 @@ class PmBootstrap:
             expected_contract = f"{gate_mode}\n{test_cmd}\n"
             contract_sidecar = Path(hooks_dir) / repo / str(contract_name)
             current_contract = (
-                _load_file_lock().read_text_shared(contract_sidecar, encoding="utf-8")
+                fs.read_text_shared(contract_sidecar, encoding="utf-8")
                 if contract_sidecar.is_file() else None)
             contract_ok = current_contract == expected_contract
             # 배선 축 — sidecar 내용이 최신이어도 hooksPath 가 끊겼으면 훅은 발화하지 않는다.
@@ -4227,12 +4083,7 @@ def _main(argv: list[str] | None = None) -> int:
 def main(argv: list[str] | None = None) -> int:
     """CLI 최외곽에서 엔진 사본 불일치를 traceback 대신 복구 안내로 번역한다."""
     try:
-        _console_encoding = _load_module_from_path(
-            Path(__file__).resolve().with_name("console_encoding.py"),
-            "console_encoding.py",
-            verifier=_verify_engine_rev,
-        )
-        _console_encoding.configure_console_utf8()
+        console.configure_console_utf8()
         return _main(argv)
     except Exception as exc:  # noqa: BLE001 — marked skew만 사용자 진단+rc로 종료.
         if _is_engine_rev_skew(exc):

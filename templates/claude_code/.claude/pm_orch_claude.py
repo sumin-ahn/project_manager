@@ -193,7 +193,7 @@ def _write_hook_json(output: dict) -> None:
     죽고 훅 출력이 통째로 사라진다 — bytes 를 직접 써서 그 표면을 없앤다.
 
     **형태는 종전 그대로다**: 단일 JSON · 종결 개행 없음(Claude 훅 소비자 계약 §인터페이스).
-    엔진 seam(`console_encoding.write_machine_line`)은 한 줄 종결(LF)을 붙이므로
+    엔진 seam(`pm_engine.infra.console.write_machine_line`)은 한 줄 종결(LF)을 붙이므로
     이 자리에서 그대로 부르면 바이트 형태가 바뀐다. 그래서 seam 은 **인코딩 정책의 출처로만**
     참조하고(같은 규율: 텍스트 레이어 선-flush → UTF-8 bytes → flush), 쓰기는 표준 라이브러리로
     한다 — 어댑터가 엔진 사본에 묶이지 않는 기존 관례와도 같은 방향이다.

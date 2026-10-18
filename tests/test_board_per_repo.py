@@ -83,11 +83,11 @@ def _patch_atomic_replace(monkeypatch, module, fake):
 
     `os.replace` 는 그 seam 의 POSIX 분기 구현 세부다 — Windows 분기는 Win32 rename 이라
     `os.replace` 에 건 주입을 지나지 않는다. 관측 지점이 엔진의 호출 지점과 같아야 두 OS 에서
-    같은 성질이 고정된다. board 는 seam 을 import 시점에 전역(`board.file_lock`)으로 받으므로
+    같은 성질이 고정된다. board 는 seam 을 import 시점에 전역(`board.fs`)으로 받으므로
     그 객체에 건다. 반환값은 seam 모듈 — 실패 주입이 Windows 분기와 같은 예외 클래스
     (`AtomicReplaceError`·`OSError` 서브클래스)를 쓸 수 있다.
     """
-    seam = module.file_lock
+    seam = module.fs
     monkeypatch.setattr(seam, "atomic_replace", fake)
     return seam
 
@@ -1194,7 +1194,7 @@ def test_areas_set_cell_idempotent_same_value_does_not_write(board, monkeypatch)
     """같은 값 재설정은 no-op — 원자 교체(atomic write)를 아예 부르지 않는다(멱등)."""
     board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
     calls: list = []
-    real_replace = board.file_lock.atomic_replace
+    real_replace = board.fs.atomic_replace
     _patch_atomic_replace(
         monkeypatch, board,
         lambda src, dst: (calls.append((src, dst)), real_replace(src, dst))[1])
@@ -1225,7 +1225,7 @@ def test_areas_set_cell_strips_value(board):
 def test_areas_set_cell_removes_temp_on_write_failure(board, monkeypatch):
     """쓰기 실패로 원자 교체에 못 가도 `.tmp` 잔재를 남기지 않는다(try/finally)."""
     board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
-    seam = board.file_lock
+    seam = board.fs
 
     def boom(src, dst):
         # Windows 분기가 실패에서 내는 클래스 그대로(OSError 서브클래스).
@@ -1270,7 +1270,7 @@ def test_areas_set_cell_holds_board_lock(board, monkeypatch):
         events.append("unlock")
 
     monkeypatch.setattr(board, "board_lock", spy_lock)
-    real_replace = board.file_lock.atomic_replace
+    real_replace = board.fs.atomic_replace
     _patch_atomic_replace(
         monkeypatch, board,
         lambda src, dst: (events.append("write"), real_replace(src, dst))[1])

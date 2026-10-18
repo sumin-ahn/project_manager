@@ -10,7 +10,6 @@
 """
 from __future__ import annotations
 
-import importlib.util
 import sys
 import threading
 from pathlib import Path
@@ -20,14 +19,16 @@ REPO_ROOT = PACKAGE_ROOT.parent
 # 관리자와 함께 배포되는 엔진 사본(제품 repo 의 canonical 트리). 프로젝트 사본의 엔진이 아니다 —
 # 옛 세대 사본의 `local_conf.py` 로 값을 읽으면 그 세대의 파싱 규칙에 끌려간다.
 BUNDLED_TOOLS = REPO_ROOT / ".project_manager" / "tools"
+# 번들 엔진 패키지(`pm_engine`)는 일반 import 로 읽는다 — 경로 적재는 평면 모듈만 `repo_files.load_module`.
+if str(BUNDLED_TOOLS) not in sys.path:
+    sys.path.insert(0, str(BUNDLED_TOOLS))
+from pm_engine.infra import console, repo_files  # noqa: E402,F401  (console 은 진입점이 쓴다)
 
-_CENTRAL_LOADER_NAME = f"_manager_repo_owned_files:{BUNDLED_TOOLS / 'repo_owned_files.py'}"
 # 창은 화면의 호출을 스레드마다 따로 처리한다. 모듈 로드는 `sys.modules` 에 **먼저 넣고 실행**
 # 하므로, 직렬화하지 않으면 다른 스레드가 반쯤 채워진 모듈을 집어 간다 — 실측(프로젝트 7개
 # 동시 조회): `local_conf` 에 `load` 가 없다는 AttributeError 3건, 그리고 엔진이 지연 로드하는
-# 형제(`file_lock`)가 반쯤 보여 공유 읽기가 조용히 강등됐다. 그래서 **모듈 로드뿐 아니라 엔진
-# 호출 자체**를 이 잠금으로 묶는다(호출은 conf 파싱 한 번이라 값싸고, 느린 서브프로세스는
-# 잠금 밖에서 돈다).
+# 형제도 반쯤 보였다. 그래서 **모듈 로드뿐 아니라 엔진 호출 자체**를 이 잠금으로 묶는다(호출은
+# conf 파싱 한 번이라 값싸고, 느린 서브프로세스는 잠금 밖에서 돈다).
 ENGINE_LOCK = threading.RLock()
 
 
@@ -55,25 +56,6 @@ class CallError(RuntimeError):
                           "stderr": self.stderr, "rc": self.rc}}
 
 
-def _central_loader():
-    """엔진의 중앙 파일 로더(`repo_owned_files.load_module`) — 이 패키지의 유일한 경로 import."""
-    cached = sys.modules.get(_CENTRAL_LOADER_NAME)
-    if cached is not None:
-        return cached
-    spec = importlib.util.spec_from_file_location(
-        _CENTRAL_LOADER_NAME, BUNDLED_TOOLS / "repo_owned_files.py")
-    if spec is None or spec.loader is None:
-        raise ImportError(f"번들 엔진 로더를 찾을 수 없다: {BUNDLED_TOOLS / 'repo_owned_files.py'}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[_CENTRAL_LOADER_NAME] = module
-    try:
-        spec.loader.exec_module(module)
-    except Exception:
-        sys.modules.pop(_CENTRAL_LOADER_NAME, None)
-        raise
-    return module
-
-
 def load_engine_module(filename: str):
     """번들 엔진 모듈 하나를 로드한다 (`local_conf.py`·`pm_import.py`·`engine_rev.py`).
 
@@ -82,7 +64,7 @@ def load_engine_module(filename: str):
     형제 skew 축 자체가 없다.
     """
     with ENGINE_LOCK:
-        return _central_loader().load_module(
+        return repo_files.load_module(
             BUNDLED_TOOLS / filename, filename, allow_unverified=True, cache=True,
             cache_key=f"_manager_engine:{BUNDLED_TOOLS / filename}")
 

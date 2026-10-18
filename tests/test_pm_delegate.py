@@ -1954,7 +1954,7 @@ def test_acl_platform_read_tmp_uses_shared_owner_and_delete_seams(
     temp_root.mkdir()
     cwd.mkdir()
     monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
-    file_lock = pd._load_file_lock()
+    file_lock = pd.fs
     restricted: list[Path] = []
     removed: list[Path] = []
     real_rmtree = file_lock.force_rmtree
@@ -2172,7 +2172,7 @@ def test_env_resolution_failure_leaves_no_attempt_residue(
 def test_transport_prompt_write_restricts_owner_access_via_shared_seam(
         pd, monkeypatch, tmp_path):
     """`os.open` 의 0600 mode 인자는 ACL 플랫폼에서 무효 — 공용 소유자-제한 seam 이 배선돼 있다."""
-    file_lock = pd._load_file_lock()
+    file_lock = pd.fs
     restricted: list[Path] = []
     monkeypatch.setattr(
         file_lock, "restrict_to_owner",
@@ -2497,7 +2497,7 @@ def test_read_tmp_that_cannot_be_removed_fails_the_attempt(
     temp_root.mkdir()
     cwd.mkdir()
     monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
-    file_lock = pd._load_file_lock()
+    file_lock = pd.fs
     monkeypatch.setattr(
         file_lock, "force_rmtree",
         lambda path, **kwargs: (_ for _ in ()).throw(
@@ -3861,12 +3861,11 @@ def test_role_preambles_include_prohibition_phrases(pd):
 def _isolated_delegate(tmp_path: Path, registry_source: str):
     tools = tmp_path / ".project_manager" / "tools"
     tools.mkdir(parents=True)
-    # `file_lock.py` 도 함께 둔다 — 엔진 소스 판독이 공유 읽기 seam 을 지나므로(T-0729)
-    # 그 형제가 없으면 registry 해소가 skew 이전에 부재로 죽어 회귀가 다른 것을 잰다.
-    for filename in (
-        "pm_delegate.py", "repo_owned_files.py", "console_encoding.py", "file_lock.py",
-    ):
-        shutil.copy2(TOOLS / filename, tools / filename)
+    # 엔진 패키지(`pm_engine/`)도 함께 둔다 — 엔진 소스 판독이 공유 읽기 seam 을 지나므로(T-0729)
+    # 그것이 없으면 registry 해소가 skew 이전에 부재로 죽어 회귀가 다른 것을 잰다.
+    shutil.copy2(TOOLS / "pm_delegate.py", tools / "pm_delegate.py")
+    shutil.copytree(TOOLS / "pm_engine", tools / "pm_engine",
+                    ignore=shutil.ignore_patterns("__pycache__"))
     (tools / "pm_import.py").write_text(
         f'ENGINE_REV = "{_load("pm_delegate_rev", TOOLS / "pm_delegate.py").ENGINE_REV}"\n'
         f"{registry_source}\n",

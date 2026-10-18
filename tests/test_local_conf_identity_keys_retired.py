@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from conftest import ensure_product_slot
+from _engine_tree import engine_python_files
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -220,11 +221,11 @@ def _engine_sources() -> list[Path]:
     템플릿 사본까지 보는 이유: 채택자가 실제로 실행하는 것은 그 사본이다. canonical 만 고치고
     전파를 잊으면 채택자 트리에서는 폐지된 폴백이 계속 산다.
     """
-    sources = sorted(TOOLS.glob("*.py"))
+    sources = engine_python_files(TOOLS)
     for flavor in TEMPLATE_DIRS:
         tools = REPO / "templates" / flavor / ".project_manager" / "tools"
         if tools.is_dir():
-            sources.extend(sorted(tools.glob("*.py")))
+            sources.extend(engine_python_files(tools))
     return sources
 
 

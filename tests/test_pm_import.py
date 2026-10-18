@@ -111,7 +111,7 @@ def _patch_atomic_replace(monkeypatch, module, fake):
     아니라 쓰기 경로에서 캐시 로더(`_load_file_lock()`·프로세스 1회)로 받으므로, 그 로더가
     돌려주는 모듈 객체에 건다.
     """
-    seam = module._load_file_lock()
+    seam = module.fs
     monkeypatch.setattr(seam, "atomic_replace", fake)
     return seam
 
@@ -640,7 +640,7 @@ def test_general_conf_writer_normalizes_every_key_atomically_for_all_readers(
         f"# header\n{key}=first\nsession=keep\n{key}=stale\n{key}=\n",
         encoding="utf-8",
     )
-    real_replace = pm_import._load_file_lock().atomic_replace
+    real_replace = pm_import.fs.atomic_replace
     replacements = []
 
     def recording_replace(src, dst):
@@ -1140,7 +1140,7 @@ def test_iter_source_files_rejects_special_index_modes_even_if_materialized_regu
     template.mkdir()
     relative = Path(f"mode-{index_mode}")
     (template / relative).write_text("must not ship\n", encoding="utf-8")
-    real_repo_files = pm_import._load_repo_owned_files()
+    real_repo_files = pm_import.repo_files
 
     class StubRepoFiles:
         TRACKED_ONLY = real_repo_files.TRACKED_ONLY
@@ -1150,7 +1150,7 @@ def test_iter_source_files_rejects_special_index_modes_even_if_materialized_regu
             assert mode == real_repo_files.TRACKED_ONLY
             return [real_repo_files.RepoOwnedEntry(relative, index_mode)]
 
-    monkeypatch.setattr(pm_import, "_load_repo_owned_files", lambda: StubRepoFiles)
+    monkeypatch.setattr(pm_import, "repo_files", StubRepoFiles)
 
     with pytest.warns(
         pm_import.SkippedTemplateShippingEntryWarning,
@@ -1166,7 +1166,7 @@ def test_iter_source_files_non_git_fallback_is_loud(pm_import, tmp_path, monkeyp
     template = tmp_path / "unpacked-template"
     template.mkdir()
     (template / "kept.txt").write_text("kept\n", encoding="utf-8")
-    repo_files = pm_import._load_repo_owned_files()
+    repo_files = pm_import.repo_files
     # "이 트리는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
     # 정하지 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
     monkeypatch.setattr(repo_files, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
@@ -1188,7 +1188,7 @@ def test_iter_source_files_non_git_fallback_lstat_skips_symlink_loudly(
     external_payload = tmp_path / "outside.txt"
     external_payload.write_text("outside\n", encoding="utf-8")
     (template / "outside-link.txt").symlink_to(external_payload)
-    repo_files = pm_import._load_repo_owned_files()
+    repo_files = pm_import.repo_files
     # "이 트리는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
     # 정하지 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
     monkeypatch.setattr(repo_files, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
@@ -1217,7 +1217,7 @@ def test_iter_source_files_empty_tracked_inventory_fails_and_keeps_seam_warning(
     template.mkdir()
     (template / "untracked-local.txt").write_text("local\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(template), "init", "-q"], check=True)
-    repo_files = pm_import._load_repo_owned_files()
+    repo_files = pm_import.repo_files
     assert subprocess.run(
         ["git", "-C", str(template), "ls-files"],
         check=True,
@@ -1264,7 +1264,7 @@ def test_main_empty_non_git_template_uses_filesystem_diagnostic(
     (source / "templates" / "claude_code").mkdir(parents=True)
     dest = tmp_path / "dest"
     dest.mkdir()
-    repo_files = pm_import._load_repo_owned_files()
+    repo_files = pm_import.repo_files
     # "이 트리는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
     # 정하지 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
     monkeypatch.setattr(repo_files, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
@@ -1309,7 +1309,7 @@ def test_main_empty_tracked_inventory_is_nonzero_before_copy(
         argv.append("--dry-run")
 
     with pytest.warns(
-        pm_import._load_repo_owned_files().RepoFilesEmptyWarning,
+        pm_import.repo_files.RepoFilesEmptyWarning,
         match="tracked_only 열거가 빈 결과",
     ):
         rc = pm_import.main(argv)

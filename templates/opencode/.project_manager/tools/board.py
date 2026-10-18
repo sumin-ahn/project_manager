@@ -41,136 +41,11 @@ from typing import Any, NamedTuple
 
 import yaml
 
-_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
-_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
-    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
-)
-_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
-_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
-_TOOLS_BOOTSTRAP_SENTINEL = object()
-try:
-    if (
-        _TOOLS_BOOTSTRAP_MODULE is not None
-        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-        != _TOOLS_BOOTSTRAP_FILE
-    ):
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-        _TOOLS_BOOTSTRAP_MODULE = None
-    if _TOOLS_BOOTSTRAP_MODULE is None:
-        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
-            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
-        )
-        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
-        if _TOOLS_BOOTSTRAP_ADDED:
-            sys.path.insert(0, _TOOLS_BOOTSTRAP)
-        try:
-            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
-            if (
-                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-                != _TOOLS_BOOTSTRAP_FILE
-            ):
-                raise ImportError(
-                    "repo_owned_files 형제 경로 불일치: "
-                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
-                )
-            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
-        finally:
-            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
-            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
-            if _TOOLS_BOOTSTRAP_ADDED:
-                try:
-                    sys.path.remove(_TOOLS_BOOTSTRAP)
-                except ValueError:
-                    pass
-            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
-                sys.modules.pop("repo_owned_files", None)
-            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
-                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
-    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
-except Exception as _TOOLS_BOOTSTRAP_ERROR:
-    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-
-    def _load_module_from_path(
-        path,
-        expected_filename,
-        *,
-        verifier=None,
-        allow_unverified=False,
-        cache=False,
-        cache_key=None,
-    ):
-        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
-        target = os.path.realpath(os.fspath(path))
-        if os.path.basename(target) != expected_filename:
-            raise ValueError(
-                f"module filename mismatch: expected {expected_filename!r}, "
-                f"got {os.path.basename(target)!r}"
-            )
-        if verifier is not None and allow_unverified:
-            raise ValueError("choose verifier or allow_unverified=True, not both")
-        if verifier is None and not allow_unverified:
-            raise ValueError(
-                "module load requires verifier or explicit allow_unverified=True"
-            )
-        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
-        module = sys.modules.get(module_key) if cache else None
-        inserted = False
-        try:
-            if module is None:
-                if (
-                    target == _TOOLS_BOOTSTRAP_FILE
-                    and _TOOLS_BOOTSTRAP_MODULE is not None
-                ):
-                    module = _TOOLS_BOOTSTRAP_MODULE
-                else:
-                    import_name = os.path.splitext(expected_filename)[0]
-                    previous = sys.modules.pop(
-                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
-                    )
-                    parent = os.path.dirname(target)
-                    # 런타임에 만든 형제 모듈(중앙 로더 선복구가 방금 복사한 seam 등)을
-                    # 이름으로 import 한다 — FileFinder 는 디렉터리 목록을 mtime 으로 캐시하고
-                    # 인터프리터 시작 뒤 생긴 파일은 invalidate 없이는 인식이 보장되지 않는다
-                    # (Python 문서 `importlib.invalidate_caches` · Windows 실측 간헐
-                    # ModuleNotFoundError). 블록은 stdlib-only 라 지역 import 로 두되 sys.path 에
-                    # parent 를 넣기 전에 가져와 그 트리의 동명 파일이 stdlib 를 가리지 않게 한다.
-                    import importlib as _bootstrap_importlib
-                    added = not sys.path or sys.path[0] != parent
-                    if added:
-                        sys.path.insert(0, parent)
-                    try:
-                        _bootstrap_importlib.invalidate_caches()
-                        module = __import__(import_name)
-                        if os.path.realpath(getattr(module, "__file__", "")) != target:
-                            raise ImportError(
-                                f"{expected_filename} 형제 경로 불일치"
-                            )
-                    finally:
-                        if added:
-                            try:
-                                sys.path.remove(parent)
-                            except ValueError:
-                                pass
-                        if sys.modules.get(import_name) is module:
-                            sys.modules.pop(import_name, None)
-                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
-                            sys.modules[import_name] = previous
-                if cache:
-                    sys.modules[module_key] = module
-                    inserted = True
-            if verifier is not None:
-                verifier(module, expected_filename)
-            return module
-        except Exception as exc:
-            if cache and (inserted or sys.modules.get(module_key) is module):
-                sys.modules.pop(module_key, None)
-            if target == _TOOLS_BOOTSTRAP_FILE:
-                raise RuntimeError(
-                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
-                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
-                ) from exc
-            raise
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.infra import console, fs, repo_files  # noqa: E402
+_load_module_from_path = repo_files.load_module
 
 REPO = Path(__file__).resolve().parents[2]
 IDEAS_DIR = REPO / ".project_manager" / "wiki" / "ideas"
@@ -645,7 +520,7 @@ def _registered_slot_paths(
     """공용 slot naming + 기존 linked-worktree/misanchor seam을 모두 통과한 lease 경로만 반환."""
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     try:
-        data = json.loads(file_lock.read_text_shared(ledger, encoding="utf-8"))
+        data = json.loads(fs.read_text_shared(ledger, encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return ()
     rows = data.get("leases") if isinstance(data, dict) else None
@@ -1710,7 +1585,7 @@ _SHELL_ABSOLUTE_PATH = re.compile(
 def _slot_ledger_rows(pm_home: Path) -> tuple[list[dict], list[dict]]:
     """PM 홈 장부의 (leases, tasks) — 형식이 틀리면 올린다(빈 장부로 흘려 쓰기를 통과시키지 않는다)."""
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-    data = json.loads(file_lock.read_text_shared(ledger, encoding="utf-8"))
+    data = json.loads(fs.read_text_shared(ledger, encoding="utf-8"))
     leases = data.get("leases") if isinstance(data, dict) else None
     tasks = data.get("tasks", []) if isinstance(data, dict) else None
     if not isinstance(leases, list) or not isinstance(tasks, list):
@@ -1970,7 +1845,7 @@ def record_git_grants(
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f"{path.name}.tmp-{os.getpid()}-{time.monotonic_ns()}")
         temporary.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
-        file_lock.atomic_replace(temporary, path)
+        fs.atomic_replace(temporary, path)
     return [shlex.join(record["argv"]) for record in records]
 
 
@@ -1992,7 +1867,7 @@ def _use_git_grant(root: str | os.PathLike[str], session: str, cwd: str, command
     except FileNotFoundError:
         return _GIT_GRANT_ABSENT
     try:
-        stored = json.loads(file_lock.read_text_shared(claimed, encoding="utf-8"))
+        stored = json.loads(fs.read_text_shared(claimed, encoding="utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         stored = None  # 형식이 깨진 기록은 사용자 프롬프트 훅이 쓴 것이 아니다.
     claimed.unlink()
@@ -2176,7 +2051,7 @@ def _unexpanded_shell_parameters(value: str) -> tuple[str, ...]:
 def _file_sha256(path: Path) -> str | None:
     """사본 파일 내용을 sha256으로 비교하되 읽기 실패는 advisory로 남긴다."""
     try:
-        return hashlib.sha256(file_lock.read_bytes_shared(path)).hexdigest()
+        return hashlib.sha256(fs.read_bytes_shared(path)).hexdigest()
     except OSError:
         return None
 
@@ -3755,7 +3630,7 @@ def _ledger_registration(
     if not ledger.is_file():
         return False, f"{pm_home}: worktree lease 장부 없음"
     try:
-        data = json.loads(file_lock.read_text_shared(ledger, encoding="utf-8"))
+        data = json.loads(fs.read_text_shared(ledger, encoding="utf-8"))
     except (json.JSONDecodeError, OSError, UnicodeError) as exc:
         return False, f"{pm_home}: worktree lease 장부를 읽을 수 없음 ({exc})"
     if not isinstance(data, dict):
@@ -3979,21 +3854,6 @@ def _load_identity_args():
     )
 
 
-def _load_file_lock():
-    """공용 배타 파일락 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
-
-    `_load_identity_args` 동형 — 경로-앵커 로더다. board 의 *모든* 변경 경로가 이 락을 지나므로
-    identity_args 와 같은 **import 시점** 바인딩으로 둔다(아래 `file_lock = ...`): 락을 잡을 때마다
-    형제를 로드하면 board 를 fail-soft 로 소비하는 호출층(pm_config 등)이 사본 skew 를 조용히
-    삼키는 새 경로가 생긴다 — import 경계에서 한 번 fail-loud 로 세워 그 확산을 막는다.
-    """
-    lock_path = Path(__file__).resolve().parent / "file_lock.py"
-    _require_engine_sibling(lock_path, "file_lock.py")
-    return _load_module_from_path(
-        lock_path, "file_lock.py", verifier=_verify_engine_rev,
-    )
-
-
 def _load_local_conf():
     """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다.
 
@@ -4073,18 +3933,11 @@ def _write_machine_line(text: str) -> None:
     치환은 되돌릴 수 없다 — 다른 프로세스가 파싱하는 출력은 공용 seam 으로 UTF-8 bytes 를
     직접 쓴다(콘솔 코덱 전환과 독립).
     """
-    console_encoding = _load_module_from_path(
-        Path(__file__).resolve().with_name("console_encoding.py"),
-        "console_encoding.py",
-        verifier=_verify_engine_rev,
-        cache=True,
-    )
-    console_encoding.write_machine_line(text)
+    console.write_machine_line(text)
 
 
 try:
     identity_args = _load_identity_args()
-    file_lock = _load_file_lock()
 except Exception as exc:  # noqa: BLE001 — 직접 CLI는 import 단계 skew도 복구 안내로 번역.
     if _is_engine_rev_skew(exc):
         if __name__ == "__main__":
@@ -4503,7 +4356,7 @@ def _parse_areas(path: Path | None = None) -> tuple[list[str], list[dict[str, st
         return [], []
     header: list[str] = []
     rows: list[dict[str, str]] = []
-    for line in file_lock.read_text_shared(af, encoding="utf-8").splitlines():
+    for line in fs.read_text_shared(af, encoding="utf-8").splitlines():
         cells = _split_areas_row(line)
         if cells is None:
             continue
@@ -4822,7 +4675,7 @@ def rewrite_refs(root: str | Path, id_map: dict[str, str], *, dry_run: bool,
         # 인코딩)도 포함해 넓게 잡되, **silent 누락 금지** — skip 한 파일을 stderr 로 1줄 경고해
         # 참조가 조용히 남는 것을 표면화한다.
         try:
-            with file_lock.open_shared(path, binary=False, encoding="utf-8", newline="") as fh:
+            with fs.open_shared(path, binary=False, encoding="utf-8", newline="") as fh:
                 text = fh.read()
         except (OSError, UnicodeDecodeError) as exc:
             print(f"  ⚠ rewrite skip {path.name} — 읽기 실패({exc.__class__.__name__}): 참조가 "
@@ -5365,7 +5218,7 @@ def _areas_append_locked(
             encoding="utf-8", newline="\n")
     # O_APPEND atomic append — areas 는 append-only 레지스트리이므로
     # read-modify-write 가 아니라 OS 가 보장하는 원자 추가로 동시 등록 충돌을 없앤다.
-    file_lock.append_atomic(
+    fs.append_atomic(
         af,
         f"| {_repo} | {prefix} | {_git} | {_test} | {owner} | {_base} "
         f"| {_protected} | {_area_owner} |\n")
@@ -5476,7 +5329,7 @@ def _areas_set_cell_text(text: str, repo: str, column: str,
 def areas_set_cell(repo: str, column: str, value: str) -> tuple[str, str]:
     """areas.md 의 `repo` 행 `column` 셀을 `value` 로 in-place 교체한다 — (옛 값, 새 값) 반환.
 
-    `board_lock()` 하 read→transform→atomic write(temp + `file_lock.atomic_replace`) 이다 — `areas_append`
+    `board_lock()` 하 read→transform→atomic write(temp + `fs.atomic_replace`) 이다 — `areas_append`
     (O_APPEND 등록)와 같은 락으로 직렬화해 동시 등록의 lost-update 를 막는다(
     `_migrate_areas_apply` 동형). 변환이 no-op(값 동일·`_areas_set_cell_text` 결과가 원문과
     같음)이면 **쓰지 않는다**(멱등).
@@ -5518,7 +5371,7 @@ def _areas_set_cell_locked(repo: str, column: str, value: str) -> tuple[str, str
     # 셀 하나 바꾸려다 LF 로 무단 정규화하지 않게(`rewrite_refs` 와 같은 관용구).
     text = ""
     if af.exists():
-        with file_lock.open_shared(af, binary=False, encoding="utf-8", newline="") as fh:
+        with fs.open_shared(af, binary=False, encoding="utf-8", newline="") as fh:
             text = fh.read()
     new_text, old_value = _areas_set_cell_text(text, repo, column, value)
     if new_text != text:
@@ -5529,7 +5382,7 @@ def _areas_set_cell_locked(repo: str, column: str, value: str) -> tuple[str, str
         try:
             with tmp.open("w", encoding="utf-8", newline="") as fh:
                 fh.write(new_text)
-            file_lock.atomic_replace(tmp, af)
+            fs.atomic_replace(tmp, af)
         finally:
             # 성공 시 원자 교체로 tmp 는 이미 사라졌다(missing_ok 로 no-op).
             tmp.unlink(missing_ok=True)
@@ -5540,7 +5393,7 @@ def _areas_set_cell_locked(repo: str, column: str, value: str) -> tuple[str, str
 # 단일 루트 동시 세션이 공유 `.project_manager` 파일을 안전하게 쓰게 한다.
 #   - board_lock: OS 파일락 — ID 발행(new)·공유 단일파일 write(board.md) 직렬화.
 #     프로세스가 죽으면 OS 가 락을 자동 해제(stale-lock 없음).
-#   - file_lock.append_atomic: O_APPEND — log/areas 같은 append-only 파일의 원자 추가.
+#   - fs.append_atomic: O_APPEND — log/areas 같은 append-only 파일의 원자 추가.
 #   - ticket writer(`new/claim/complete/block/unclaim/unblock/promote/section-add/tier` 및
 #     `migrate-identity` ticket backfill)는 lookup→상태검증→load→move/write 전부를
 #     board_lock 으로 직렬화한다. POSIX rename 자체는 원자적이어도
@@ -5549,8 +5402,8 @@ def _areas_set_cell_locked(repo: str, column: str, value: str) -> tuple[str, str
 #
 # 크로스플랫폼(stdlib-only — 런타임 의존은 PyYAML 뿐): POSIX=fcntl.flock,
 # Windows=msvcrt.locking. 둘 다 없으면 단일-머신 전제의 무락 폴백(락 파일만 생성).
-# 그 플랫폼 분기도, O_APPEND 원자 추가도 공용 `file_lock` seam 이 소유한다 —
-# 엔진 도구가 같은 구현을 쓰고(board 는 모듈 상단 `file_lock` 바인딩), board 는 *어느 파일에
+# 그 플랫폼 분기도, O_APPEND 원자 추가도 공용 `fs` seam 이 소유한다 —
+# 엔진 도구가 같은 구현을 쓰고(board 는 모듈 상단 `fs` import), board 는 *어느 파일에
 # 언제 거는지·무엇을 붙이는지*(경로 규약·락 순서·행 포맷)만 정한다.
 
 
@@ -5568,7 +5421,7 @@ def board_lock() -> Iterator[None]:
     나머지 ticket writer는 board_lock 해제 뒤 refresh/best-effort board-git sync를 수행하므로
     역순 중첩이 없다.
     """
-    with file_lock.exclusive_file_lock(BOARD_LOCK):
+    with fs.exclusive_file_lock(BOARD_LOCK):
         yield
 
 
@@ -5749,7 +5602,7 @@ def install_pre_push_hook() -> bool:
 
 
 def _write_hook_atomic(hook: Path, body: str) -> None:
-    """훅 파일을 temp + `file_lock.atomic_replace` 로 **원자 교체**한다 (`_write_json_atomic` 동형).
+    """훅 파일을 temp + `fs.atomic_replace` 로 **원자 교체**한다 (`_write_json_atomic` 동형).
 
     같은 inode 에 truncate-rewrite 하면 **실행 중인 훅을 자기 자신이 덮을 수 있다** — shell 은
     스크립트를 실행하며 읽으므로 파일 오프셋이 바뀐 바이트를 이어 읽어 구문이 깨진다(정렬에 따라
@@ -5764,7 +5617,7 @@ def _write_hook_atomic(hook: Path, body: str) -> None:
     try:
         tmp.write_text(body, encoding="utf-8", newline="\n")
         tmp.chmod(0o755)
-        file_lock.atomic_replace(tmp, hook)
+        fs.atomic_replace(tmp, hook)
     except OSError:
         with contextlib.suppress(OSError):
             tmp.unlink()
@@ -5861,7 +5714,7 @@ def _repo_git_dir() -> Path | None:
         if git_path.is_dir():
             git_dir = git_path
         elif git_path.is_file():
-            pointer = file_lock.read_text_shared(git_path, encoding="utf-8").strip()
+            pointer = fs.read_text_shared(git_path, encoding="utf-8").strip()
             if not pointer.startswith("gitdir:"):
                 return None
             target = Path(pointer[len("gitdir:"):].strip())
@@ -5870,7 +5723,7 @@ def _repo_git_dir() -> Path | None:
             return None
         common = git_dir / "commondir"
         if common.is_file():
-            relative = file_lock.read_text_shared(common, encoding="utf-8").strip()
+            relative = fs.read_text_shared(common, encoding="utf-8").strip()
             if relative:
                 shared = Path(relative)
                 git_dir = shared if shared.is_absolute() else (git_dir / shared)
@@ -5901,7 +5754,7 @@ def _pure_hooks_dir() -> Path | None:
     try:
         config = git_dir / "config"
         if config.is_file():
-            declared = _config_hooks_path(file_lock.read_text_shared(config, encoding="utf-8"))
+            declared = _config_hooks_path(fs.read_text_shared(config, encoding="utf-8"))
             if declared is _HOOKS_PATH_UNRESOLVED:
                 return None
             if isinstance(declared, str):
@@ -6041,7 +5894,7 @@ def _stale_pre_push_hook_refusal() -> str | None:
     try:
         if not hook.is_file():
             return None                               # 미설치 — 무영향.
-        current = file_lock.read_text_shared(hook, encoding="utf-8")
+        current = fs.read_text_shared(hook, encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         return _UNREADABLE_HOOK_REFUSAL.format(hook=hook, error=exc)
     if _PM_HOOK_SIGNATURE not in current:
@@ -6181,7 +6034,7 @@ def _board_git_root_file_backfill_target(
             print(f"  ⚠ board {name} backfill 거부 — {kind} 이므로 안전하게 append 할 수 없다: "
                   f"{path}", file=sys.stderr)
             return None
-        text = file_lock.read_text_shared(path, encoding="utf-8") if info is not None else ""
+        text = fs.read_text_shared(path, encoding="utf-8") if info is not None else ""
         if declared(text):
             return None
     except (OSError, UnicodeError):
@@ -6418,7 +6271,7 @@ def _ensure_board_gitattributes() -> bool:
     블록을 append 한다(채택자 규칙 보존). 둘 다 선언돼 있으면 no-write(멱등). 기존 파일에 append
     하려면 regular file 이고 git 추적 상태가 clean 이어야 한다 — symlink/비정규 파일이나
     untracked·staged·unstaged·삭제 WIP 면 loud 하게 알리고 쓰지 않는다. append 는
-    `file_lock.append_atomic`(O_APPEND) — 동시 writer 가 서로를 덮지 않는다.
+    `fs.append_atomic`(O_APPEND) — 동시 writer 가 서로를 덮지 않는다.
 
     fail-soft: board 미분리(legacy)·areas 가 이 git 밖·IO 실패면 아무 것도 하지 않고 False.
     반환 True = 이번 호출이 보강했다.
@@ -6436,7 +6289,7 @@ def _ensure_board_gitattributes() -> bool:
         # 기존 내용 뒤에 빈 줄 하나를 띄우고 append (줄바꿈 없이 끝난 파일도 안전하게 이어붙임).
         separator = "" if not target.text else (
             "\n" if target.text.endswith("\n") else "\n\n")
-        file_lock.append_atomic(target.path, separator + _BOARD_GITATTRIBUTES_BLOCK)
+        fs.append_atomic(target.path, separator + _BOARD_GITATTRIBUTES_BLOCK)
     except (OSError, UnicodeError):
         # IO 실패·비-UTF8 `.gitattributes` — 보강을 포기한다. 이 함수는 ticket mutation 의
         # commit funnel 에서 불리므로 어떤 예외도 mutation 을 깨선 안 된다(advisory 가 표면화).
@@ -6534,7 +6387,7 @@ def _board_git_root_files_need_backfill() -> bool:
             info = path.lstat()
             if not stat.S_ISREG(info.st_mode):
                 return True
-            text = file_lock.read_text_shared(path, encoding="utf-8")
+            text = fs.read_text_shared(path, encoding="utf-8")
         except (FileNotFoundError, OSError, UnicodeError):
             return True
         if not _board_git_root_file_rule_declared(name, text):
@@ -6555,7 +6408,7 @@ def _ensure_board_gitignore() -> bool:
     한다(채택자 규칙·부정 선언 보존). 이미 다뤄지고 있으면 no-write(멱등). 기존 파일에
     append 하려면 regular file 이고 git 추적 상태가 clean 이어야 한다 — symlink/비정규 파일이나
     untracked·staged·unstaged WIP 면 사유를 loud 하게 알리고 쓰지 않는다. append 는
-    `file_lock.append_atomic`(O_APPEND) — 동시 writer 가 서로를 덮지 않는다.
+    `fs.append_atomic`(O_APPEND) — 동시 writer 가 서로를 덮지 않는다.
 
     fail-soft: board 미분리(legacy)·IO 실패면 아무 것도 하지 않고 False.
     반환 True = 이번 호출이 보강했다.
@@ -6571,7 +6424,7 @@ def _ensure_board_gitignore() -> bool:
         # 기존 내용 뒤에 빈 줄 하나를 띄우고 append (줄바꿈 없이 끝난 파일도 안전하게 이어붙임).
         separator = "" if not target.text else (
             "\n" if target.text.endswith("\n") else "\n\n")
-        file_lock.append_atomic(target.path, separator + _BOARD_GITIGNORE_BLOCK)
+        fs.append_atomic(target.path, separator + _BOARD_GITIGNORE_BLOCK)
     except (OSError, UnicodeError):
         # IO 실패·비-UTF8 `.gitignore` — `_ensure_board_gitattributes` 와 같은 fail-soft 규약
         # (이 축의 실패가 ticket mutation 을 깨선 안 된다).
@@ -6616,7 +6469,7 @@ def _board_git_root_files_snapshot() -> _BoardGitRootFilesSnapshot:
             snapshot[name] = _BoardGitRootFileState(True, None)
             continue
         try:
-            snapshot[name] = _BoardGitRootFileState(True, file_lock.read_bytes_shared(path))
+            snapshot[name] = _BoardGitRootFileState(True, fs.read_bytes_shared(path))
         except OSError:
             return _BoardGitRootFilesSnapshot(None)
     return _BoardGitRootFilesSnapshot(snapshot)
@@ -6663,7 +6516,7 @@ def _board_git_restore_root_files(
                 if not stat.S_ISREG(info.st_mode):
                     current = _BoardGitRootFileState(True, None)
                 else:
-                    current = _BoardGitRootFileState(True, file_lock.read_bytes_shared(path))
+                    current = _BoardGitRootFileState(True, fs.read_bytes_shared(path))
 
             # 이미 원본으로 돌아갔으면 워킹트리는 no-op. 엔진 산출과 원본 어느 쪽도 아니면
             # hook/동시 편집이 만든 제3의 상태이므로 소유권 밖이다 — bytes를 최우선 보존한다.
@@ -6682,7 +6535,7 @@ def _board_git_restore_root_files(
             else:
                 # 맨 `unlink` 는 read-only 속성 파일을 Windows 에서 거부한다 — 공용 seam 이
                 #   속성을 풀고 재시도해 backfill 잔재가 워킹트리에 눌러앉지 않게 한다.
-                file_lock.force_unlink(path, missing_ok=True)
+                fs.force_unlink(path, missing_ok=True)
             restored.append(name)
         except OSError as exc:
             print(f"  ⚠ board rollback 루트 파일 복원 실패: {path} ({exc})", file=sys.stderr)
@@ -6831,7 +6684,7 @@ def board_git_lock() -> Iterator[None]:
     if not _board_git_enabled():
         yield
         return
-    with file_lock.exclusive_file_lock(_board_git_lock_file()):
+    with fs.exclusive_file_lock(_board_git_lock_file()):
         yield
 
 
@@ -7925,7 +7778,7 @@ def _board_git_restore_claim_files(files: _ClaimFiles) -> None:
     """
     files.old.parent.mkdir(parents=True, exist_ok=True)
     if files.new.exists():
-        file_lock.atomic_replace(files.new, files.old)
+        fs.atomic_replace(files.new, files.old)
     files.old.write_bytes(files.original)
 
 
@@ -8146,7 +7999,7 @@ def _active_slot_test_cmd(session: str | None = None) -> str | None:
     **board 는 worktree_pool 을 import 하지 않는다**.
     대신 리스 장부 *파일*(`LEASES_FILE` = `.local/worktree-leases.json`·worktree_pool 과
     같은 위치)을 stdlib json 으로 직접 read 한다 — areas.md 를 읽듯 데이터-결합만(모듈 결합
-    아님). 리스는 worktree_pool 이 원자 교체(`file_lock.atomic_replace`)로 쓰므로 **락 없는
+    아님). 리스는 worktree_pool 이 원자 교체(`fs.atomic_replace`)로 쓰므로 **락 없는
     point-read 가 일관 스냅샷**을 본다(쓰기 경합과 분리 — 부분쓰기 장부를 못 본다).
 
     활성 슬롯 = (`session` 인자 또는 `session_name()`) == lease.session && state=="leased" 인
@@ -8159,7 +8012,7 @@ def _active_slot_test_cmd(session: str | None = None) -> str | None:
     if not LEASES_FILE.exists():
         return None
     try:
-        data = json.loads(file_lock.read_text_shared(LEASES_FILE, encoding="utf-8"))
+        data = json.loads(fs.read_text_shared(LEASES_FILE, encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
     # 장부 손상 = fail-soft (위 docstring): 유효 JSON 이라도 dict/list 가 아니면
@@ -8202,7 +8055,7 @@ def _active_slot_path(session: str | None = None) -> str | None:
     if not LEASES_FILE.exists():
         return None
     try:
-        data = json.loads(file_lock.read_text_shared(LEASES_FILE, encoding="utf-8"))
+        data = json.loads(fs.read_text_shared(LEASES_FILE, encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
     # 장부 손상 = fail-soft (_active_slot_test_cmd 와 동일 가드): 유효 JSON 이라도
@@ -8747,7 +8600,7 @@ def _active_review_gates() -> list[str]:
     못 찾으면 강등하지 않는다 — 이 축의 실패가 회귀 게이트를 좁히면 안 된다(fail-open 이 안전한
     방향이다)."""
     try:
-        data = json.loads(file_lock.read_text_shared(_review_rounds_ledger(), encoding="utf-8"))
+        data = json.loads(fs.read_text_shared(_review_rounds_ledger(), encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeError):
         return []
     if not isinstance(data, dict):
@@ -8809,7 +8662,7 @@ def _quarantine_args() -> str:
     q = REPO / ".project_manager" / "quarantine.txt"
     if not q.exists():
         return ""
-    ids = [ln.strip() for ln in file_lock.read_text_shared(q, encoding="utf-8").splitlines()
+    ids = [ln.strip() for ln in fs.read_text_shared(q, encoding="utf-8").splitlines()
            if ln.strip() and not ln.startswith("#")]
     return " ".join(f"--deselect {i}" for i in ids)
 
@@ -8983,7 +8836,7 @@ def _write_regression_flag(flag: Path, record: dict) -> None:
 def _previous_collected(flag: Path) -> int | None:
     """덮어쓰기 전 기록에서 이어받을 수집수 (없거나 손상이면 None)."""
     try:
-        data = json.loads(file_lock.read_text_shared(flag, encoding="utf-8"))
+        data = json.loads(fs.read_text_shared(flag, encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
     if not isinstance(data, dict):
@@ -9043,7 +8896,7 @@ def _inherit_flag_anchor(default_cwd: str, flag: Path | None = None) -> str:
     if not flag.exists():
         return default_cwd
     try:
-        data = json.loads(file_lock.read_text_shared(flag, encoding="utf-8"))
+        data = json.loads(fs.read_text_shared(flag, encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return default_cwd
     if not isinstance(data, dict):
@@ -9368,7 +9221,7 @@ def _core_command_at(anchor: str, session: str | None = None, *,
     matches = []
     if leases.exists():
         try:
-            data = json.loads(file_lock.read_text_shared(leases, encoding="utf-8"))
+            data = json.loads(fs.read_text_shared(leases, encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return ""
         rows = data.get("leases", []) if isinstance(data, dict) else []
@@ -9579,7 +9432,7 @@ def _regression_slot_state(session: str, cwd: str) -> _SlotRegressionState:
     if not flag.exists():
         return _SlotRegressionState("missing", None, None)
     try:
-        data = json.loads(file_lock.read_text_shared(flag, encoding="utf-8"))
+        data = json.loads(fs.read_text_shared(flag, encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return _SlotRegressionState("missing", None, None)
     if not isinstance(data, dict):
@@ -9849,7 +9702,7 @@ def cmd_regression(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
     try:
-        data = json.loads(file_lock.read_text_shared(regression_flag, encoding="utf-8"))
+        data = json.loads(fs.read_text_shared(regression_flag, encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         print("regression: stale (회귀 기록 판독 실패) — core 재실행 필요.", file=sys.stderr)
         return 1
@@ -9942,13 +9795,13 @@ def _livegate_ran_count(output: str) -> int:
 
 
 def _write_json_atomic(path: Path, data: dict) -> None:
-    """dict → JSON 을 temp + `file_lock.atomic_replace` 로 원자 교체한다 (crash 시 잔재/부분기록 방지).
+    """dict → JSON 을 temp + `fs.atomic_replace` 로 원자 교체한다 (crash 시 잔재/부분기록 방지).
 
     `dump_ticket_atomic` 과 동형 — 같은 디렉토리 안 tmp 에 전체를 쓰고 atomic rename.
     """
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data), encoding="utf-8", newline="\n")
-    file_lock.atomic_replace(tmp, path)
+    fs.atomic_replace(tmp, path)
 
 
 # ── livegate 기록 위치 = 훅 read 위치 정렬 (two-git 단일 소스) ─────────────
@@ -10003,7 +9856,7 @@ def _resolve_livegate_flag(cwd: str) -> tuple[Path, str]:
         # `core.hooksPath` 는 있으나 engine-root sidecar 부재 = livegate 보호훅 아님(예: PM 홈
         # 자신의 회귀 훅·채택자 custom 훅) → 훅 부재 폴백(오탐 fail-loud 방지).
         return LIVEGATE_FLAG, _LG_NO_HOOK
-    lines = file_lock.read_text_shared(sidecar, encoding="utf-8").splitlines()
+    lines = fs.read_text_shared(sidecar, encoding="utf-8").splitlines()
     engine_root = lines[0].strip() if lines else ""
     if not engine_root:
         return LIVEGATE_FLAG, _LG_BROKEN
@@ -10105,7 +9958,7 @@ def _write_release_must_fix_marker(flag: Path, problems: Sequence[str]) -> Path:
     )
     try:
         tmp.write_text(state + "\n", encoding="ascii", newline="\n")
-        file_lock.atomic_replace(tmp, marker)
+        fs.atomic_replace(tmp, marker)
     finally:
         with contextlib.suppress(OSError):
             if tmp.exists():
@@ -10184,7 +10037,7 @@ def _unresolved_must_fix_gates(ledger: Path) -> list[str]:
     if not ledger.exists():
         return []
     try:
-        data = json.loads(file_lock.read_text_shared(ledger, encoding="utf-8"))
+        data = json.loads(fs.read_text_shared(ledger, encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeError) as exc:
         return [f"  · 라운드 장부를 읽지 못했습니다 ({type(exc).__name__}: {exc}) — 잔여 "
                 "must-fix 를 확인할 수 없어 차단합니다 (장부 수리 후 재실행)"]
@@ -10197,7 +10050,7 @@ def _sync_release_must_fix_marker(flag: Path) -> list[str]:
     livegate record/check 경로다. additional_reviewer 는 이미 같은 락을 보유한 `_save_round_ledger` 안에서
     `_unresolved_must_fix_data` + `_write_release_must_fix_marker` 를 직접 호출해 재진입을 피한다."""
     ledger = _release_rounds_ledger(flag)
-    with file_lock.exclusive_file_lock(_release_rounds_lock(ledger)):
+    with fs.exclusive_file_lock(_release_rounds_lock(ledger)):
         problems = _unresolved_must_fix_gates(ledger)
         _write_release_must_fix_marker(flag, problems)
     return problems
@@ -10333,7 +10186,7 @@ def _release_core_context(flag: Path, cwd: str, session: str | None = None):
     core = None
     if core_flag.exists():
         try:
-            core = json.loads(file_lock.read_text_shared(core_flag, encoding="utf-8"))
+            core = json.loads(fs.read_text_shared(core_flag, encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return None, cwd, (), "core record unreadable"
         if not isinstance(core, dict):
@@ -10341,7 +10194,7 @@ def _release_core_context(flag: Path, cwd: str, session: str | None = None):
     copied_flag = _regression_flag_for(session, local_dir=LOCAL_DIR)
     if core is None and copied_flag != core_flag and copied_flag.exists():
         try:
-            copied = json.loads(file_lock.read_text_shared(copied_flag, encoding="utf-8"))
+            copied = json.loads(fs.read_text_shared(copied_flag, encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             copied = None
         if isinstance(copied, dict) and ("command" in copied or "platforms" in copied):
@@ -10605,7 +10458,7 @@ def _livegate_check(args: argparse.Namespace) -> int:
         print("livegate: 기록 없음 — `board.py livegate record` 필요 (릴리즈 차단).",
               file=sys.stderr)
         return 1
-    data = json.loads(file_lock.read_text_shared(flag, encoding="utf-8"))
+    data = json.loads(fs.read_text_shared(flag, encoding="utf-8"))
     if data.get("status") != "pass":
         n, rc = data.get("n"), data.get("rc")
         print(f"livegate: RED (status={data.get('status')}, 수집 {n}, rc={rc}) "
@@ -10805,7 +10658,7 @@ def _dominant_newline(text: str, default: str = DEFAULT_TEXT_NEWLINE) -> str:
 def ticket_newline(path: Path) -> str:
     """그 티켓 파일의 현재 지배 개행 — 부재·읽기 실패·비-UTF8 은 `DEFAULT_TEXT_NEWLINE`(신규 발행 = LF)."""
     try:
-        with file_lock.open_shared(Path(path), binary=False, encoding="utf-8", newline="") as handle:
+        with fs.open_shared(Path(path), binary=False, encoding="utf-8", newline="") as handle:
             return _dominant_newline(handle.read(), DEFAULT_TEXT_NEWLINE)
     except (OSError, UnicodeError):
         return DEFAULT_TEXT_NEWLINE
@@ -10843,7 +10696,7 @@ def _parse_ticket_text(text: str, source: Path | str) -> tuple[dict[str, Any], s
 
 def load_ticket(path: Path) -> tuple[dict[str, Any], str]:
     """Return (frontmatter dict, body string)."""
-    return _parse_ticket_text(file_lock.read_text_shared(path, encoding="utf-8"), path)
+    return _parse_ticket_text(fs.read_text_shared(path, encoding="utf-8"), path)
 
 
 # 손상 frontmatter fail-soft — **디렉토리 순회** 전용 로더.
@@ -10921,7 +10774,7 @@ def dump_ticket(path: Path, fm: dict[str, Any], body: str) -> None:
 
 
 def dump_ticket_atomic(path: Path, fm: dict[str, Any], body: str) -> None:
-    """`dump_ticket` 과 같은 바이트를 쓰되 temp 파일 + `file_lock.atomic_replace` 로 원자 교체한다.
+    """`dump_ticket` 과 같은 바이트를 쓰되 temp 파일 + `fs.atomic_replace` 로 원자 교체한다.
 
     부분쓰기로 티켓 frontmatter 가 깨지는 것을 막는다(worktree_pool `_write_ledger`
     동형 — tmp 에 전체를 쓰고 같은 디렉토리 안에서 atomic rename). backfill 처럼
@@ -10931,7 +10784,7 @@ def dump_ticket_atomic(path: Path, fm: dict[str, Any], body: str) -> None:
     document = _ticket_document(fm, body, ticket_newline(path))
     tmp = path.with_suffix(path.suffix + ".tmp")
     _write_text_keeping_newlines(tmp, document)
-    file_lock.atomic_replace(tmp, path)
+    fs.atomic_replace(tmp, path)
 
 
 # ── 티켓 라운드 + 위임 티어 ────────────────────────────────────────
@@ -10985,10 +10838,7 @@ def _list_owned_touch_files(repo: Path, subtree: Path, list_owned=None):
     """repo-owned OWNED 열거 호출 단일 지점(제품/테스트 DI 공유)."""
     if list_owned is not None:
         return list_owned(repo, subtree)
-    seam = _TOOLS_BOOTSTRAP_MODULE
-    if seam is None or not hasattr(seam, "list_repo_owned_files"):
-        raise RuntimeError("repo_owned_files 열거 seam 부재")
-    return seam.list_repo_owned_files(repo, subtree, mode=seam.OWNED)
+    return repo_files.list_repo_owned_files(repo, subtree, mode=repo_files.OWNED)
 
 
 def _canonical_tier_touch(value: str) -> str:
@@ -11060,6 +10910,10 @@ def _tier_tool_module_touches(touches: Sequence[str]) -> tuple[str, ...]:
     return tuple(sorted(modules))
 
 
+# 엔진 구현 패키지 이름 — `from pm_engine.<층> import <모듈>` 을 모듈 파일 의존으로 센다.
+_ENGINE_PACKAGE = "pm_engine"
+
+
 def _shared_tool_code(tools_dir: Path, *, list_owned=None) -> tuple[str, ...]:
     """tools/ import 구문을 AST로 스캔해 2개+ 도구가 import하는 파일을 산출.
 
@@ -11082,15 +10936,22 @@ def _shared_tool_code(tools_dir: Path, *, list_owned=None) -> tuple[str, ...]:
     importers: dict[Path, set[Path]] = {path: set() for path in python_files}
     for importer in python_files:
         try:
-            tree = ast.parse(file_lock.read_text_shared(importer, encoding="utf-8"), filename=str(importer))
+            tree = ast.parse(fs.read_text_shared(importer, encoding="utf-8"), filename=str(importer))
         except (OSError, UnicodeError, SyntaxError):
             continue
         names: set[str] = set()
+        package_targets: set[Path] = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 names.update(alias.name.rsplit(".", 1)[-1] for alias in node.names)
             elif isinstance(node, ast.ImportFrom):
-                if node.module:
+                if node.module and node.module.split(".")[0] == _ENGINE_PACKAGE:
+                    # `from pm_engine.<층> import <모듈>` 은 그 모듈 파일 의존이다(경로로 해소).
+                    package_targets.update(
+                        tools_dir.joinpath(*node.module.split("."), f"{alias.name}.py")
+                        for alias in node.names
+                    )
+                elif node.module:
                     names.add(node.module.rsplit(".", 1)[-1])
                 elif node.level:
                     names.update(alias.name.rsplit(".", 1)[-1] for alias in node.names)
@@ -11116,6 +10977,9 @@ def _shared_tool_code(tools_dir: Path, *, list_owned=None) -> tuple[str, ...]:
             candidates = by_stem.get(name, ())
             if len(candidates) == 1 and candidates[0] != importer:
                 importers[candidates[0]].add(importer)
+        for target in package_targets:
+            if target in importers and target != importer:
+                importers[target].add(importer)
 
     prefix = ".project_manager/tools"
     return tuple(
@@ -11308,7 +11172,7 @@ def cmd_section_add(args: argparse.Namespace) -> int:
             return rc
         load_ticket(path)  # 지정 mutation은 손상 YAML을 fail-loud하는 기존 계약 유지.
         is_draft = path.resolve().parent == drafts_dir().resolve()
-        with file_lock.open_shared(path, binary=False, encoding="utf-8", newline="") as handle:
+        with fs.open_shared(path, binary=False, encoding="utf-8", newline="") as handle:
             spec_text = handle.read()
 
     try:
@@ -11625,7 +11489,7 @@ def _legacy_ticket_copy_ledger() -> _LegacyCopyLedger | None:
     if not path.is_file():
         return None
     try:
-        text = file_lock.read_text_shared(path, encoding="utf-8")
+        text = fs.read_text_shared(path, encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         raise _RoundsMigrationError(
             f"구 사본 장부를 읽지 못했다: {path} ({exc}) — 삭제 대상을 확인할 수 없어 멈춘다"
@@ -11661,7 +11525,7 @@ def _leased_slot_paths() -> tuple[Path, ...]:
     if not LEASES_FILE.exists():
         return ()
     try:
-        data = json.loads(file_lock.read_text_shared(LEASES_FILE, encoding="utf-8"))
+        data = json.loads(fs.read_text_shared(LEASES_FILE, encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return ()
     if not isinstance(data, dict):
@@ -11728,7 +11592,7 @@ def _legacy_slot_copy_dirs() -> list[Path]:
 
 def _remove_legacy_copy_dir(directory: Path) -> None:
     """구 사본 디렉터리 하나를 지우고 빈 껍데기 부모까지 걷는다."""
-    file_lock.force_rmtree(directory)
+    fs.force_rmtree(directory)
     parent = directory.parent
     try:
         if parent.is_dir() and not any(parent.iterdir()):
@@ -11802,7 +11666,7 @@ def _board_gitattributes_text(path: Path) -> str:
     try:
         if not path.is_file():
             return ""
-        return file_lock.read_text_shared(path, encoding="utf-8", newline="")
+        return fs.read_text_shared(path, encoding="utf-8", newline="")
     except (OSError, UnicodeError):
         return ""
 
@@ -11921,7 +11785,7 @@ def cmd_rounds_migrate(args: argparse.Namespace) -> int:
             commit_paths.append(item.path)
 
     if growth_dir.is_dir():
-        file_lock.force_rmtree(growth_dir)
+        fs.force_rmtree(growth_dir)
         commit_paths.append(growth_dir)
         print(f"  삭제: {_rel_to_repo(growth_dir)}")
     if attr_cleaned is not None:
@@ -11942,7 +11806,7 @@ def cmd_rounds_migrate(args: argparse.Namespace) -> int:
             ledger.path.unlink(missing_ok=True)
             print(f"  삭제: {_rel_to_repo(ledger.path)}")
         if trust_dir.is_dir():
-            file_lock.force_rmtree(trust_dir)
+            fs.force_rmtree(trust_dir)
             print(f"  삭제: {_rel_to_repo(trust_dir)}")
         for directory in slot_dirs:
             _remove_legacy_copy_dir(directory)
@@ -12281,7 +12145,7 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str, claimed_rev: str)
 
         # 롤백 복원 기준 = 이동 *전* 원본 바이트
         # frontmatter 갱신(claimed_by/claimed_at)을 되돌릴 원본을 우리가 들고 있어야 한다.
-        original_bytes = file_lock.read_bytes_shared(path)
+        original_bytes = fs.read_bytes_shared(path)
         new_path = move_ticket(path, "claimed")
         fm["status"] = "claimed"
         fm["claimed_by"] = assignee
@@ -12335,7 +12199,7 @@ def _pm_verified_delegate_problem(
         return f"티켓을 찾지 못했습니다: {tid}"
     _status, path = found
     try:
-        spec_text = file_lock.read_text_shared(path, encoding="utf-8", newline="")
+        spec_text = fs.read_text_shared(path, encoding="utf-8", newline="")
     except (OSError, UnicodeError) as exc:
         return f"티켓 명세를 읽을 수 없습니다: {exc}"
     delegate = _load_pm_delegate_module()
@@ -12386,7 +12250,7 @@ def _review_problem(tid: str, checker_name: str, spec_text: str | None) -> str |
         if found is None:
             return f"티켓을 찾지 못해 리뷰 잔여를 판정할 수 없습니다: {tid}"
         try:
-            spec_text = file_lock.read_text_shared(found[1], encoding="utf-8", newline="")
+            spec_text = fs.read_text_shared(found[1], encoding="utf-8", newline="")
         except (OSError, UnicodeError) as exc:
             return f"티켓 명세를 읽을 수 없어 리뷰 잔여를 판정할 수 없습니다: {exc}"
     delegate = _load_pm_delegate_module()
@@ -12458,7 +12322,7 @@ def _complete_gate(tid: str, args: argparse.Namespace,
 
     # 1. log/current.md must contain an entry for this ticket.
     if not args.allow_missing_log:
-        log_text = file_lock.read_text_shared(LOG_FILE, encoding="utf-8") if LOG_FILE.exists() else ""
+        log_text = fs.read_text_shared(LOG_FILE, encoding="utf-8") if LOG_FILE.exists() else ""
         if not id_re.search(log_text):
             problems.append(
                 f"no log/current.md entry mentions {tid} — append one to "
@@ -12504,7 +12368,7 @@ def cmd_complete(args: argparse.Namespace) -> int:
         # 본문은 게이트 **전**에 읽는다 — §3 DoD 체크의 입력이다(이동 전 읽기라 차단 시
         # 티켓은 claimed/ 에 그대로 남는다). lookup부터 최종 dump까지 같은 lock이라 tier 가
         # 이 body snapshot 뒤에 끼어들어 유실되지 않는다.
-        with file_lock.open_shared(path, binary=False, encoding="utf-8", newline="") as handle:
+        with fs.open_shared(path, binary=False, encoding="utf-8", newline="") as handle:
             spec_text = handle.read()
         fm, body = load_ticket(path)
 
@@ -12906,9 +12770,9 @@ def _local_conf_lock_path(conf_path: Path) -> Path:
     """local.conf writer 직렬화 락 경로 — 공용 seam 이 대상 conf 에서 유도한다(사본 0).
 
     유도 규칙이 도구마다 복제되면 한 사본만 어긋나도 배타가 조용히 사라지므로
-    `file_lock.conf_lock_path` 한 곳이 소유한다. 이름은 호출부/테스트 호환으로 남긴 얇은 별칭이다.
+    `fs.conf_lock_path` 한 곳이 소유한다. 이름은 호출부/테스트 호환으로 남긴 얇은 별칭이다.
     """
-    return file_lock.conf_lock_path(conf_path)
+    return fs.conf_lock_path(conf_path)
 
 
 def _local_conf_write_lock(conf_path: Path):
@@ -12918,7 +12782,7 @@ def _local_conf_write_lock(conf_path: Path):
     "커밋 전에 읽고 나중에 통째 교체하는" writer 가 그사이의 쓰기를 지우지 않는다.
     재진입 금지 — 이 구간 안에서 다른 conf writer 를 부르지 않는다.
     """
-    return file_lock.local_conf_write_lock(conf_path)
+    return fs.local_conf_write_lock(conf_path)
 
 
 def _write_init_local_conf() -> None:
@@ -12960,7 +12824,7 @@ def _write_init_local_conf() -> None:
         # 존재 시 — 비파괴 병합. init 이 안 쓰는 사용자/operational 키
         # (additional_reviewer.*·delegate.*·upstream.*·harness.*·identity.user 등)를 절대
         # 삭제/변경하지 않는다. 통째 write 금지.
-        text = file_lock.read_text_shared(LOCAL_CONF, encoding="utf-8")
+        text = fs.read_text_shared(LOCAL_CONF, encoding="utf-8")
         existing = local_config()
         updates: dict[str, str] = {}
         # init 기본키는 *없을 때만* 추가 — 기존 값(커스텀 `ctx.compact_at_pct` 등)은 보존.
@@ -13246,7 +13110,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         #   으로 남아야 pm_update 의 manifest byte-copy 와 진동하지 않는다. 그러니 그 템플릿으로
         #   산출물을 만드는 이 지점이 오늘 날짜를 채운다(worktree_pool.ensure_task_pm_state 의
         #   task pm_state 렌더와 같은 규칙·소유 선언은 pm_import.CONSUMPTION_TIME_TOKENS).
-        seed = file_lock.read_text_shared(PM_STATE_TEMPLATE, encoding="utf-8").replace(
+        seed = fs.read_text_shared(PM_STATE_TEMPLATE, encoding="utf-8").replace(
             "{{DATE}}", datetime.date.today().isoformat())
         PM_STATE_FILE.write_text(seed, encoding="utf-8", newline="\n")
         print(f"✓ pm_state.md 생성 ({_rel_to_repo(PM_STATE_TEMPLATE)} 에서)")
@@ -13458,7 +13322,7 @@ def _migrate_identity_preview(
     # areas.md 미리보기(읽기 전용).
     af = areas_file()
     if af.exists():
-        text = file_lock.read_text_shared(af, encoding="utf-8")
+        text = fs.read_text_shared(af, encoding="utf-8")
         _, area_changes = _migrate_areas_text(text, user)
         for c in area_changes:
             print(f"  areas.md: {c}")
@@ -13496,7 +13360,7 @@ def _migrate_areas_apply(user: str) -> tuple[int, bool]:
     total = 0
     wrote = False
     with board_lock():
-        text = file_lock.read_text_shared(af, encoding="utf-8")
+        text = fs.read_text_shared(af, encoding="utf-8")
         new_text, area_changes = _migrate_areas_text(text, user)
         for c in area_changes:
             print(f"  areas.md: {c}")
@@ -13518,7 +13382,7 @@ def _migrate_tickets_apply(
 
     lock 안 재조회는 방어적으로 유지한다. 엔진 writer는 모두 같은 lock을 따르므로 정상 경합에서는
     경로가 바뀌지 않지만, 수동/구버전 writer가 경로를 옮긴 경우 stale write 대신 skip+loud한다.
-    dump는 temp+``file_lock.atomic_replace`` 원자 교체다. refresh는 호출자 ``cmd_migrate_identity``가 이 lock을
+    dump는 temp+``fs.atomic_replace`` 원자 교체다. refresh는 호출자 ``cmd_migrate_identity``가 이 lock을
     놓은 뒤 1회 수행한다(재진입 없음). board-git sync/다른 lock 호출은 이 함수에 없다.
     반환 ``(total, wrote)``.
     """
@@ -15328,7 +15192,7 @@ def _cheap_prefix_inventory() -> tuple[tuple[str, tuple[str, ...]], ...]:
         task_prefixes: set[str] = set()
         if LEASES_FILE.exists():
             try:
-                ledger = json.loads(file_lock.read_text_shared(LEASES_FILE, encoding="utf-8"))
+                ledger = json.loads(fs.read_text_shared(LEASES_FILE, encoding="utf-8"))
             except (OSError, UnicodeError, json.JSONDecodeError) as exc:
                 raise PrefixSourcesUnreadable(
                     f"task 장부 {LEASES_FILE}를 읽을 수 없음: {exc}"
@@ -15728,7 +15592,7 @@ def _is_rewritable(path: Path) -> bool:
     결정이 어긋나면 파일명↔content 불일치가 생긴다).
     """
     try:
-        with file_lock.open_shared(path, binary=False, encoding="utf-8", newline="") as fh:
+        with fs.open_shared(path, binary=False, encoding="utf-8", newline="") as fh:
             fh.read()
     except (OSError, UnicodeDecodeError):
         return False
@@ -16170,7 +16034,7 @@ def _areas_clear_prefix_cell(prefix: str) -> int:
     with board_lock():
         if not af.exists():
             return 0
-        text = file_lock.read_text_shared(af, encoding="utf-8")
+        text = fs.read_text_shared(af, encoding="utf-8")
         ends_nl = text.endswith("\n")
         header_seen = False
         pidx: int | None = None
@@ -16424,7 +16288,7 @@ def cmd_show(args: argparse.Namespace) -> int:
         _print_ticket_remote_mismatch(args.id, status,
                                       snapshot_verified=snapshot_verified)
     print(f"-- {args.id} ({status}/) --\n")
-    body = file_lock.read_text_shared(path, encoding="utf-8")
+    body = fs.read_text_shared(path, encoding="utf-8")
     print(body)
     rounds_module = _load_ticket_rounds()
     try:
@@ -16648,7 +16512,7 @@ def _run_lint_hooks() -> list[tuple[str, str]]:
 def _sidecar_document(path: Path) -> dict | None:
     """기계 기록 sidecar 한 개를 읽는다 — 부재·손상·비-dict 는 None(판정 없음)."""
     try:
-        data = json.loads(file_lock.read_text_shared(path, encoding="utf-8"))
+        data = json.loads(fs.read_text_shared(path, encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
@@ -17385,7 +17249,7 @@ def _content_search_roots() -> tuple[Path, ...]:
     roots: list[Path] = [REPO]
     ledger = REPO / ".project_manager" / ".local" / "worktree-leases.json"
     try:
-        data = json.loads(file_lock.read_text_shared(ledger, encoding="utf-8"))
+        data = json.loads(fs.read_text_shared(ledger, encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return tuple(roots)
     rows = data.get("leases") if isinstance(data, dict) else None
@@ -17464,7 +17328,7 @@ def _citation_suffix_index(
     소유 트리는 서로 포함 관계일 수 있어(PM 홈 ⊃ 슬롯 worktree) 절대경로로 중복을 지운다 —
     안 지우면 같은 파일이 두 건으로 세어져 유일 해소가 사라진다.
 
-    순회는 `repo_owned_files` 공용 seam(추적분 + 미추적·비무시 파일)에 위임한다 — 직접
+    순회는 `repo_files` 공용 seam(추적분 + 미추적·비무시 파일)에 위임한다 — 직접
     `os.walk` 를 부르면 새 재귀 tree-walk 호출을 전수 감시하는 가드의 사각이
     생긴다. git 부재/비-repo 사본은 그 seam 이 filesystem 전수 순회로 강등해 값은 그대로다.
 
@@ -17477,8 +17341,8 @@ def _citation_suffix_index(
     index: dict[str, list[Path]] = {name: [] for name in names}
     seen: set[str] = set()
     for root in roots:
-        for rel in _TOOLS_BOOTSTRAP_MODULE.list_repo_owned_files(
-                root, Path("."), mode=_TOOLS_BOOTSTRAP_MODULE.OWNED):
+        for rel in repo_files.list_repo_owned_files(
+                root, Path("."), mode=repo_files.OWNED):
             rel_path = Path(rel)
             if any(part in _CITATION_INDEX_PRUNE_DIRS for part in rel_path.parts):
                 continue
@@ -17553,7 +17417,7 @@ def _citation_issues(
                 continue
             found = matches[0]
         try:
-            total = len(file_lock.read_text_shared(
+            total = len(fs.read_text_shared(
                 found, encoding="utf-8", errors="replace").splitlines())
         except OSError:
             unverifiable += 1
@@ -17738,7 +17602,7 @@ def lint_status() -> list[tuple[str, str, str]]:
     issues: list[tuple[str, str, str]] = []
     if not STATUS_FILE.exists():
         return issues
-    text = file_lock.read_text_shared(STATUS_FILE, encoding="utf-8")
+    text = fs.read_text_shared(STATUS_FILE, encoding="utf-8")
 
     done_rows = len(_STATUS_DONE_ROW_RE.findall(text))
     if done_rows > STATUS_DONE_ROW_WARN:
@@ -18014,7 +17878,7 @@ def lint_wikilinks() -> list[tuple[str, str, str]]:
 
     for path in _collect_wikilink_files():
         try:
-            text = file_lock.read_text_shared(path, encoding="utf-8")
+            text = fs.read_text_shared(path, encoding="utf-8")
         except OSError:
             continue
         src = _rel_to_repo(path)
@@ -18266,7 +18130,7 @@ def _template_mirror_report(path: Path, rel_posix: str,
     타깃이 어긋났는지 지목하게 한다. `template_scopes` 는 호출부가 루프 밖에서 한 번 구한 결과를
     재사용하기 위한 주입 지점(파일마다 pm_update 재로드 방지)."""
     try:
-        source_bytes = file_lock.read_bytes_shared(path)
+        source_bytes = fs.read_bytes_shared(path)
     except OSError:
         return _TEMPLATE_MIRROR_ABSENT, []
     try:
@@ -18305,7 +18169,7 @@ def _template_mirror_report(path: Path, rel_posix: str,
                         template_root.name,
                         source=str(path),
                     ).encode("utf-8")
-                    drifted = (not exists) or file_lock.read_bytes_shared(candidate) != expected
+                    drifted = (not exists) or fs.read_bytes_shared(candidate) != expected
         except (OSError, UnicodeError, RuntimeError, AttributeError):
             drifted = True  # 사본 상태를 확인 못 했다 — 확인 못 한 것을 면제하지 않는다(보수).
         matched += 1
@@ -18367,7 +18231,7 @@ def lint_render_leak() -> list[tuple[str, str, str]]:
             try:
                 # rglob("*") 로 넓히면 바이너리가 섞여 UnicodeDecodeError 로 죽을 수 있어
                 # OSError 와 함께 잡는다 (_is_text_source 통과 후 TOCTOU·pm_update None 폴백 안전판).
-                text = file_lock.read_text_shared(p, encoding="utf-8")
+                text = fs.read_text_shared(p, encoding="utf-8")
             except (UnicodeDecodeError, OSError):
                 continue
             leaked = sorted(set(_RENDER_TOKEN_RE.findall(text)))
@@ -18538,7 +18402,7 @@ def lint_unmigrated_overlay() -> list[tuple[str, str, str]]:
         try:
             # 텍스트 판정(_is_text_source) 통과 후에도 pm_update None 폴백 시 바이너리가 새거나
             # TOCTOU 로 디코드가 깨질 수 있어 UnicodeDecodeError 를 함께 흡수(render-leak 동형).
-            text = file_lock.read_text_shared(p, encoding="utf-8")
+            text = fs.read_text_shared(p, encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
         # 코드 span/fence 예시 토큰은 실 placeholder 가 아니므로 제거 후 스캔(오탐 0).
@@ -18636,7 +18500,7 @@ def lint_unstable_refs() -> list[tuple[str, str, str]]:
 
     for path in _collect_wikilink_files():
         try:
-            text = file_lock.read_text_shared(path, encoding="utf-8")
+            text = fs.read_text_shared(path, encoding="utf-8")
         except OSError:
             continue
         src = _rel_to_repo(path)
@@ -19565,7 +19429,7 @@ def backfill_verified_at(
     results: list[tuple[Path, str]] = []
     for path in _verified_at_targets(pages):
         try:
-            text = file_lock.read_text_shared(path, encoding="utf-8")
+            text = fs.read_text_shared(path, encoding="utf-8")
         except OSError:
             results.append((path, "skip:read-error"))
             continue
@@ -19721,7 +19585,7 @@ def _freshness_replacement_error(
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    """같은 디렉토리의 임시 파일을 완전히 flush한 뒤 `file_lock.atomic_replace`로 원자 교체한다.
+    """같은 디렉토리의 임시 파일을 완전히 flush한 뒤 `fs.atomic_replace`로 원자 교체한다.
 
     임시 파일 쓰기/flush/fsync 또는 replace가 실패하면 임시 파일만 정리하고 원본은 건드리지
     않는다. 기존 파일 mode도 임시 파일에 복제해 교체가 권한을 바꾸지 않게 한다.
@@ -19736,7 +19600,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        file_lock.atomic_replace(tmp_path, path)
+        fs.atomic_replace(tmp_path, path)
     except BaseException:
         if fd >= 0:
             with contextlib.suppress(OSError):
@@ -19769,7 +19633,7 @@ def repin_verified_at(
         return [(error_path, f"error:enumeration:{exc}")]
     for path in targets:
         try:
-            text = file_lock.read_text_shared(path, encoding="utf-8")
+            text = fs.read_text_shared(path, encoding="utf-8")
         except (OSError, UnicodeError) as exc:
             prepared.append((path, f"error:read:{exc}", None))
             continue
@@ -20075,7 +19939,7 @@ def lint_local_conf() -> list[tuple[str, str, str]]:
     try:
         module = _load_local_conf()
         result = module.load(LOCAL_CONF)
-        text = file_lock.read_text_shared(LOCAL_CONF, encoding="utf-8")
+        text = fs.read_text_shared(LOCAL_CONF, encoding="utf-8")
     except Exception as exc:  # noqa: BLE001 — 조회면은 판독 실패로 멈추지 않는다.
         if _is_engine_rev_skew(exc):
             raise
@@ -20532,7 +20396,7 @@ def lint_areas_merge_union() -> list[tuple[str, str, str]]:
         fix = (f"`{_rel_to_repo(attrs)}` 에 `.project_manager/areas.md merge=union` 을 "
                "추가하라(inline 형상의 선언 위치).")
     try:
-        text = file_lock.read_text_shared(attrs, encoding="utf-8") if attrs.is_file() else ""
+        text = fs.read_text_shared(attrs, encoding="utf-8") if attrs.is_file() else ""
     except (OSError, UnicodeError):  # 읽기 실패·비-UTF8 은 무발화(advisory 가 lint 를 깨지 않는다).
         return []
     if _areas_union_declared(text, targets):
@@ -21155,12 +21019,7 @@ def main(argv: list[str] | None = None) -> int:
     하나다 — 실패는 여전히 실패다(rc1·부작용 0). 자기 앵커로 접지 않는다.
     """
     try:
-        _console_encoding = _load_module_from_path(
-            Path(__file__).resolve().with_name("console_encoding.py"),
-            "console_encoding.py",
-            verifier=_verify_engine_rev,
-        )
-        _console_encoding.configure_console_utf8()
+        console.configure_console_utf8()
         return _main(argv)
     except Exception as exc:  # noqa: BLE001 — marked skew·PM 홈 미확정만 진단+rc로 종료.
         if _is_engine_rev_skew(exc):

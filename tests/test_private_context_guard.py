@@ -25,6 +25,7 @@ from typing import TypeVar
 import pytest
 
 from conftest import current_branch, write_cluster_ledger
+from _engine_tree import engine_python_files
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -275,30 +276,6 @@ def test_language_axis_matches_independent_surface_derivation():
         f"missing(시야 미포함) {len(missing)}: {missing}; "
         f"extra(시야 초과) {len(extra)}: {extra}"
     )
-
-
-def test_repo_owned_files_exec_failure_removes_partial_cache_and_allows_retry(
-    tmp_path, monkeypatch
-):
-    target = tmp_path / ".project_manager/tools/repo_owned_files.py"
-    target.parent.mkdir(parents=True)
-    # 형제 로드는 baked rev 를 대조하므로 합성 사본도 같은 스탬프를 지녀야 한다 — 값을
-    # 리터럴로 적으면 릴리즈 bump 마다 red 라 로더 사본의 값을 그대로 읽는다.
-    stamp = f"ENGINE_REV = {PROSE_SCANNER.ENGINE_REV!r}\n"
-    target.write_text(stamp + "raise RuntimeError('exec boom')\n", encoding="utf-8")
-    monkeypatch.setattr(PROSE_SCANNER, "REPO", tmp_path)
-    module_name = f"_private_context_repo_owned_files:{target.resolve()}"
-    sys.modules.pop(module_name, None)
-
-    with pytest.raises(RuntimeError, match="exec boom"):
-        PROSE_SCANNER._load_repo_owned_files()
-
-    assert module_name not in sys.modules
-
-    target.write_text(stamp + "RETRY_MARKER = 'loaded'\n", encoding="utf-8")
-    loaded = PROSE_SCANNER._load_repo_owned_files()
-
-    assert loaded.RETRY_MARKER == "loaded"
 
 
 @dataclass(frozen=True)
@@ -804,7 +781,7 @@ def test_shipping_inventory_git_missing_archive_falls_back_loudly(
     ignored_derived.parent.mkdir(parents=True)
     ignored_derived.write_text("derived\n", encoding="utf-8")
     _git(tmp_path, "add", ".gitignore", str(doc.relative_to(tmp_path)))
-    repo_files = PROSE_SCANNER._load_repo_owned_files()
+    repo_files = PROSE_SCANNER.repo_files
 
     _, owned_markdown = _shipping_paths(tmp_path)
     monkeypatch.setattr(repo_files.shutil, "which", lambda _name: None)
@@ -1508,7 +1485,7 @@ def marker_label_residuals(root: Path = REPO) -> list[tuple[str, int, str, str]]
     ``test_public_reference_lint.py`` 가 여러 출하 타깃(루트·templates 3벌)에 재사용한다.
     """
     residuals: list[tuple[str, int, str, str]] = []
-    for path in sorted((root / ".project_manager" / "tools").glob("*.py")):
+    for path in engine_python_files(root / ".project_manager" / "tools"):
         source = path.read_text(encoding="utf-8")
         relative = path.relative_to(root).as_posix()
         for line, kind, match in _marker_label_hits(source, include_fstring=True):
@@ -1520,9 +1497,9 @@ def test_marker_label_scan_surface_matches_independent_glob_of_shipping_tools():
     """가드가 스캔하는 canonical python 파일 집합이 독립 glob 결과와 같다(시야==표면)."""
     python_paths, _ = _shipping_paths(REPO)
     canonical_python = {
-        path for path in python_paths if path.parent == _MARKER_LABEL_TOOLS_DIR
+        path for path in python_paths if path.is_relative_to(_MARKER_LABEL_TOOLS_DIR)
     }
-    assert canonical_python == set(sorted(_MARKER_LABEL_TOOLS_DIR.glob("*.py")))
+    assert canonical_python == set(engine_python_files(_MARKER_LABEL_TOOLS_DIR))
 
 
 def test_marker_label_scan_fstring_axis_toggle_before_after():

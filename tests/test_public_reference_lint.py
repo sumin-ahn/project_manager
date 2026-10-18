@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from test_private_context_guard import _marker_label_hits
+from _engine_tree import engine_python_files
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -94,7 +95,7 @@ def test_shipped_engine_prose_has_no_empty_delimiter_remnants(scanner):
     # (T-0814 의 _engine_surfaces() 개편과 결합을 만들지 않기 위해 이 표면을 직접 소비한다).
     python_paths, _ = scanner.shipping_paths(REPO)
     python_paths_set = set(python_paths)
-    independent_canonical = set((REPO / ".project_manager/tools").glob("*.py"))
+    independent_canonical = set(engine_python_files(REPO / ".project_manager/tools"))
     missing = independent_canonical - python_paths_set
     assert not missing, (
         "shipping_paths() 파생 목록이 독립 glob 을 누락한다 — 가드 시야가 출하 표면보다 좁다: "

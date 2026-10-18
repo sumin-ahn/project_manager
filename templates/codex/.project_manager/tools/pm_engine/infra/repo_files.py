@@ -23,9 +23,6 @@ import warnings
 from pathlib import Path
 from typing import Any, Callable, Literal, NamedTuple
 
-# baked 엔진 rev — 여러 sibling deep-import 경계가 이 공용 seam을 검증한다.
-ENGINE_REV = "v1.8.1"
-
 
 TRACKED_ONLY = "tracked_only"
 OWNED = "owned"
@@ -129,7 +126,7 @@ class RepoOwnedEntry(NamedTuple):
 # 통합 전 captured runner 의미 차이(조용한 동작 변경 방지):
 #
 # | 소비처             | git 부재 rc | 출력                         | timeout               | locale |
-# | repo_owned_files   | 127         | 성공 stdout / 실패 진단      | 120                   | C      |
+# | repo_files         | 127         | 성공 stdout / 실패 진단      | 120                   | C      |
 # | domain             | 1           | rc와 무관하게 stdout         | 120                   | 상속   |
 # | worktree_pool      | 1           | stdout + stderr              | 동적·captured 유한 cap | 상속   |
 #

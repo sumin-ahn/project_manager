@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from _engine_tree import engine_python_files
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -364,7 +365,7 @@ def _permission_effect_offenders(sources: list[Path]) -> list[str]:
 
 
 def _engine_sources() -> list[Path]:
-    return sorted(TOOLS.glob("*.py"))
+    return engine_python_files(TOOLS)
 
 
 def test_engine_sources_are_actually_scanned():

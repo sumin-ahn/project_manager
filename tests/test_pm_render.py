@@ -16,7 +16,6 @@ import importlib.util
 import re
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -1340,15 +1339,14 @@ def test_reasoning_allowed_is_read_only_when_a_value_is_filled(monkeypatch):
 
 @pytest.fixture
 def isolated_tools(tmp_path):
-    """pm_render·pm_relay·repo_owned_files 만 담은 별도 tools/ (형제 사본 상태를 바꿔 보는 자리)."""
+    """pm_render·pm_relay 만 담은 별도 tools/ (형제 사본 상태를 바꿔 보는 자리).
+
+    엔진 패키지(`pm_engine`)는 이 프로세스가 이미 적재한 것을 쓴다(한 프로세스 한 패키지)."""
     tools = tmp_path / ".project_manager" / "tools"
     tools.mkdir(parents=True)
-    for name in ("pm_render.py", "pm_relay.py", "repo_owned_files.py"):
+    for name in ("pm_render.py", "pm_relay.py"):
         shutil.copy2(TOOLS / name, tools / name)
-    yield tools
-    sys.modules.pop(
-        "_project_manager_repo_owned_files_bootstrap:"
-        f"{(tools / 'repo_owned_files.py').resolve()}", None)
+    return tools
 
 
 def _isolated_pm_render(tools: Path, relay_edit):

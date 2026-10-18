@@ -20,10 +20,6 @@ seam 의 관심사가 아니다. 이 모듈은 "주어진 경로에 배타락을
 한 사본만 어긋나도 배타가 조용히 사라진다(같은 conf, 다른 락 파일 = 직렬화 없음). 그래서 경로
 유도까지 이 한 곳이 소유한다.
 
-(모듈 *파일명* `file_lock.py` 는 배타락 seam 으로 출발한 유래다 — 개명은 manifest 4벌·
-`STAMPED_MODULES`·소비자 로더·테스트·채택자 사본 orphan 비용이 커서 하지 않고, 소유 범위를
-이 docstring 으로 명시한다.)
-
 계약 (기존 사본들의 동작을 그대로 보존):
   - 배타(exclusive)·블로킹 획득. 프로세스가 죽으면 OS 가 락을 회수한다(stale lock 없음).
   - **재진입 금지** — 같은 프로세스가 같은 락을 중첩해 잡으면 flock 재진입 동작이 OS 별로
@@ -56,8 +52,7 @@ seam 의 관심사가 아니다. 이 모듈은 "주어진 경로에 배타락을
     조용히 넘어가지 않는다(`AccessRestrictionError`).
   - stdlib 만 사용한다 (외부 `filelock` 의존 금지 — 엔진 런타임 의존은 PyYAML 뿐).
 
-self-contained — 형제 모듈을 로드하지 않는다(leaf). 소비자가 중앙 loader 로 이 모듈을 읽고
-baked `ENGINE_REV` 로 사본 skew 를 대조한다.
+self-contained — 다른 모듈을 import 하지 않는다(leaf). 소비자는 `from pm_engine.infra import fs` 로 쓴다.
 """
 
 from __future__ import annotations
@@ -75,8 +70,6 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import NamedTuple
 
-# baked 엔진 rev — engine_rev.py --bump 이 STAMPED_MODULES 전체와 함께 기계 재작성한다.
-ENGINE_REV = "v1.8.1"
 
 # 락 파일 기본 권한. 더 좁은 권한이 필요한 호출자는 `mode=` 로 명시한다(pm_relay raw 장부=0o600).
 DEFAULT_LOCK_MODE = 0o644
@@ -219,7 +212,7 @@ def _windows_lock_api() -> WindowsLockApi:
 
 
 class LocklessFallbackWarning(RuntimeWarning):
-    """OS 배타락 없이 임계 구역을 진행했다는 loud 신호 (`repo_owned_files` 강등 경고 동형)."""
+    """OS 배타락 없이 임계 구역을 진행했다는 loud 신호 (`repo_files` 강등 경고 동형)."""
 
 
 LOCKLESS_FALLBACK_MESSAGE = (

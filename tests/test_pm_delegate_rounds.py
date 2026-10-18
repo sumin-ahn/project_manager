@@ -3784,7 +3784,7 @@ def test_prepare_rollback_control_exceptions_preserve_the_original_budget_error(
         _attempt_rejected_prepare()
     assert (_round_files(), _run_dirs(), _unterminated_ledger_rows()) == baseline
 
-    file_lock = pd._load_file_lock()
+    file_lock = pd.fs
     expected_run_dirs = baseline[1]
     for exc_factory, label in [
         (lambda: RuntimeError("정리 폭발(probe)"), "RuntimeError"),

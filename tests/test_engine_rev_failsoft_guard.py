@@ -1216,7 +1216,14 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 236 = 238 − T-0962 가 지운 두 경계. claim 앵커 해소(`board._claim_code_tree`)는 task 폴더 해소
     #   실패를 PM 홈 접기로 흡수하던 갈래를 지우고 멈춘다. 대여 기록 repo 해소
     #   (`pm_handoff._active_repo_name`)는 세션 토큰 분해 층과 그 흡수를 함께 지웠다.
-    assert len(report.boundaries) == 236, "propagation sweep boundary ratchet changed"
+    # 219 = 236 − T-0963 이 지운 17 경계. 형제 로더와 강등 함수가 패키지 import(`pm_engine.infra`)로
+    #   바뀌어 코드째 없어졌다: 공용 읽기 강등(`_shared_read_api` 5곳), 원자 교체·conf 락 강등
+    #   (`pm_update._atomic_replace_or_degrade`·`pm_import._atomic_replace_conf`·`_local_conf_lock_path`·
+    #   `_local_conf_write_lock`), repo 파일 로더(`_load_repo_owned_files` 3곳). 나머지 5곳
+    #   (`pm_delegate` 의 `_create_read_role_temp_owner_acl`·`_portable_exclusive_write`·
+    #   `_save_opencode_transport_prompt`, `pm_log.cmd_checkpoint`, `worktree_pool.create_slot`)은
+    #   try 본문의 형제 로더 호출이 모듈 속성 호출(`fs.`·`repo_files.`)로 바뀌어 경계가 아니게 됐다.
+    assert len(report.boundaries) == 219, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1315,7 +1322,6 @@ def _blank_recovery_reason(source: str) -> str:
 @pytest.mark.parametrize(
     ("label", "source_name", "function", "occurrence"),
     [
-        ("S1", "pm_import.py", "_load_repo_owned_files", 0),
         ("S3", "pm_handoff.py", "_regression_cwd", 0),
         ("S4", "pm_config.py", "cmd_repo_protected", 0),
         ("S5", "pm_bootstrap.py", "main", 0),
@@ -1357,9 +1363,6 @@ def test_guard_sensitivity_s7_blank_recovery_reason_turns_red():
         ("delegate_scope.py", "_load_repo_coordinates", 0),
         ("delegate_scope.py", "ticket_touches", 0),
         ("delegate_scope.py", "ticket_touches", 1),
-        ("domain.py", "_load_repo_owned_files", 0),
-        ("pm_import.py", "_load_repo_owned_files", 0),
-        ("worktree_pool.py", "_load_repo_owned_files", 0),
         ("worktree_pool.py", "_rerecord_branch_snapshot", 0),
     ],
 )
@@ -1867,6 +1870,8 @@ def test_entrypoint_translates_marked_skew_to_korean_guidance_and_rc(
     tools.mkdir(parents=True)
     for source in TOOLS.glob("*.py"):
         shutil.copy2(source, tools / source.name)
+    shutil.copytree(TOOLS / "pm_engine", tools / "pm_engine",
+                    ignore=shutil.ignore_patterns("__pycache__"))
     identity = tools / "identity_args.py"
     mutated, replacements = re.subn(
         r'^ENGINE_REV = "[^"]+"$',

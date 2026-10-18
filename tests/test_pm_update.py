@@ -197,7 +197,7 @@ def test_cli_classified_git_failure_is_one_line_without_raw_traceback(
     (fake_repo / "templates" / "tgt").mkdir(parents=True)
     source = tmp_path / "source"
     _make_upstream(source)
-    repo_files = pm_update._load_repo_owned_files()
+    repo_files = pm_update.repo_files
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     monkeypatch.setattr(
         repo_files,
@@ -215,31 +215,6 @@ def test_cli_classified_git_failure_is_one_line_without_raw_traceback(
     assert "rc=129" in err
     assert "git index 상태를 확인·복구" in err
     assert "Traceback" not in err
-
-
-def test_cli_classification_does_not_reload_repo_files_during_exception(
-        pm_update, monkeypatch, capsys):
-    repo_files = pm_update._load_repo_owned_files()
-    calls = 0
-
-    def load_once():
-        nonlocal calls
-        calls += 1
-        if calls > 1:
-            raise RuntimeError("예외 처리 중 repo-owned 로더 재호출")
-        return repo_files
-
-    def fail_main(_argv):
-        raise repo_files.RepoFilesGitError("원 git 열거 오류")
-
-    monkeypatch.setattr(pm_update, "_load_repo_owned_files", load_once)
-    monkeypatch.setattr(pm_update, "_main", fail_main)
-
-    assert pm_update.main([]) == 1
-    assert calls == 1
-    err = capsys.readouterr().err
-    assert "원 git 열거 오류" in err
-    assert "예외 처리 중" not in err
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
@@ -295,12 +270,12 @@ def test_empty_non_git_manifest_inventory_uses_filesystem_diagnostic(
     # "이 source 는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처가 어디에 놓이든
     # 같은 답이 나오도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
     monkeypatch.setattr(
-        pm_update._load_repo_owned_files(),
+        pm_update.repo_files,
         "_real_git_runner", lambda _cwd: lambda _argv: (128, ""),
     )
 
     with pytest.warns(
-            pm_update._load_repo_owned_files().RepoFilesFallbackWarning,
+            pm_update.repo_files.RepoFilesFallbackWarning,
             match="filesystem 전수 순회"):
         rc = pm_update.main(["--from", str(source), "--target", "tgt"])
 
@@ -323,7 +298,7 @@ def test_shipping_inventory_guard_covers_both_silent_seam_shapes(
     rel = "ship"
     if subtree_state == "empty":
         (source / rel).mkdir()
-    repo_files = pm_update._load_repo_owned_files()
+    repo_files = pm_update.repo_files
     assert subprocess.run(
         ["git", "-C", str(source), "ls-files"],
         check=True,
@@ -5223,7 +5198,7 @@ def test_retired_manifest_files_reports_whole_directory_removed_upstream(
 def test_retired_manifest_files_skips_deleted_but_indexed_paths(pm_update, tmp_path):
     """working tree 에서 지웠지만 index 에 남은 경로는 은퇴 후보가 아니다 (T-0577 축·codex 지적).
 
-    dest 열거는 `repo_owned_files` OWNED(=git index)라, 삭제-미commit 파일이 계속 후보로 뜬다.
+    dest 열거는 `repo_files` OWNED(=git index)라, 삭제-미commit 파일이 계속 후보로 뜬다.
     이 보고의 명제는 "dest 에 잔존한다" 이므로 잔존물이 없으면 보고할 것도 없다 — 없는 파일을
     "수동 정리 판단" 대상으로 매 sync 마다 들이미는 노이즈를 닫는다."""
     source = tmp_path / "source"
@@ -5375,7 +5350,7 @@ def test_retired_scan_does_not_leak_repo_files_fallback_warning(
     # "dest 는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을 정하지
     # 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
     monkeypatch.setattr(
-        pm_update._load_repo_owned_files(),
+        pm_update.repo_files,
         "_real_git_runner", lambda _cwd: lambda _argv: (128, ""),
     )
 
@@ -6932,19 +6907,14 @@ def test_scope_normalization_folds_equivalent_spellings(pm_update):
 
 def test_paths_scope_refusal_writes_nothing_to_dest(
         pm_update, tmp_path, monkeypatch, capsys):
-    """미등재 거부는 **어떤 dest 쓰기보다 먼저**다 — 중앙 로더 선복구도 돌지 않는다.
+    """미등재 거부는 **어떤 dest 쓰기보다 먼저**다.
 
-    거부인데 seam 복구 write 가 선행하면 "rc1 인데 파일이 바뀐다" 가 된다(무변경 계약 위반)."""
+    거부인데 write 가 선행하면 "rc1 인데 파일이 바뀐다" 가 된다(무변경 계약 위반)."""
     dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "nowrite")
-    predeployed: list = []
-    monkeypatch.setattr(
-        pm_update, "_predeploy_central_loader",
-        lambda *a, **k: predeployed.append("called"))
 
     rc = pm_update.main(["--paths", ".project_manager/wiki/status.md"])
 
     assert rc == 1
-    assert predeployed == [], "거부 전에 중앙 로더 선복구(dest 쓰기)가 돌았다"
     assert _landed(dest) == set()
     assert "[미등재]" in capsys.readouterr().err
 
@@ -7050,56 +7020,6 @@ def test_paths_scope_accepts_the_manifest_union_self_prop(pm_update, tmp_path, m
     assert rc == 0, "합집합 self-prop 좌표가 인벤토리에서 빠져 유효 요청이 거부됨"
     assert (dest / ".project_manager" / "engine.manifest").is_file()
     assert _landed(dest) == {".project_manager/engine.manifest"}
-
-
-def _loader_rel() -> str:
-    return ".project_manager/tools/repo_owned_files.py"
-
-
-def test_paths_scope_does_not_touch_the_central_loader(
-        pm_update, tmp_path, monkeypatch, capsys):
-    """스코프 밖 중앙 로더는 갱신하지 않는다 — "명시 경로만 전파" 계약(내용·mtime 불변).
-
-    복구가 필요한 상태면 **알린다**(조용한 방치 금지) — 전량 sync 로 안내."""
-    dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "loader")
-    stale = dest / _loader_rel()
-    stale.parent.mkdir(parents=True, exist_ok=True)
-    stale.write_text("# 구형 seam(복구 대상)\n", encoding="utf-8")
-    before_bytes = stale.read_bytes()
-    before_mtime = stale.stat().st_mtime_ns
-    assert pm_update.central_loader_needs_recovery(dest), "픽스처 전제(복구 대상 상태)"
-
-    rc = pm_update.main(["--paths", "adapterdir/one.md"])
-
-    err = capsys.readouterr().err
-    assert rc == 0
-    assert stale.read_bytes() == before_bytes, "스코프 밖 파일이 갱신됨(계약 위반)"
-    assert stale.stat().st_mtime_ns == before_mtime
-    assert "경로 스코프 밖이라 건드리지 않는다" in err, err
-
-
-def test_stale_loader_refuses_the_scope_and_full_sync_recovers_it(
-        pm_update, tmp_path, monkeypatch, capsys):
-    """중앙 로더가 뒤처진 상태는 엔진 코드 변경이다 — `--paths` 는 쓰기 전에 거부하고, 전량 갱신이 복구한다."""
-    dest = tmp_path / "loader_in_scope"
-    source = tmp_path / "loader_source"
-    _make_upstream_tree(
-        source,
-        {**_SCOPE_FILES, _loader_rel(): (REPO / _loader_rel()).read_text(encoding="utf-8")},
-        _SCOPE_MANIFEST + [_loader_rel()],
-    )
-    _write_local_conf(dest, f"upstream.path={source}\n")
-    stale = dest / _loader_rel()
-    stale.parent.mkdir(parents=True, exist_ok=True)
-    stale.write_text("# 구형 seam\n", encoding="utf-8")
-    monkeypatch.setattr(pm_update, "REPO", dest)
-
-    assert pm_update.main(["--paths", _loader_rel()]) == 1
-    assert "부분 전파" in capsys.readouterr().err
-    assert stale.read_text(encoding="utf-8") == "# 구형 seam\n", "거부인데 로더가 바뀌었다"
-
-    assert pm_update.main([]) == 0
-    assert not pm_update.central_loader_needs_recovery(dest), "전량 갱신이 로더를 복구하지 않음"
 
 
 def test_paths_scope_accepts_board_separated_remap(pm_update, tmp_path, monkeypatch):

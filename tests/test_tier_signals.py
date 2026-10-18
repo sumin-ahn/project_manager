@@ -111,7 +111,7 @@ def test_shared_scan_inventory_is_owned_seam_not_disk_walk(tmp_path):
 def test_real_file_lock_is_shared_via_literal_dynamic_loads():
     board = _load_board()
     tools = REPO / ".project_manager" / "tools"
-    assert ".project_manager/tools/file_lock.py" in board._shared_tool_code(tools)
+    assert ".project_manager/tools/pm_engine/infra/fs.py" in board._shared_tool_code(tools)
 
 
 def test_tier_signals_marks_only_touched_shared_code(tmp_path):

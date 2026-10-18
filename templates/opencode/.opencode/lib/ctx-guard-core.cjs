@@ -152,10 +152,8 @@ function readBudget(conf, root, sessionModel) {
 from pathlib import Path
 root=Path(sys.argv[1]).resolve()
 sys.path.insert(0,str(root/".project_manager/tools"))
-import repo_owned_files
-def verify(module,name):
- if getattr(module,"ENGINE_REV",None)!=repo_owned_files.ENGINE_REV: raise RuntimeError("engine revision skew")
-leaf=repo_owned_files.load_module(root/".project_manager/tools/local_conf.py","local_conf.py",verifier=verify,cache=True)
+from pm_engine.infra import repo_files
+leaf=repo_files.load_module(root/".project_manager/tools/local_conf.py","local_conf.py",allow_unverified=True,cache=True)
 conf,model=json.loads(sys.argv[2])
 try: print(json.dumps({"budget":leaf.read_ctx_budget(root,conf,"opencode",model)}))
 except leaf.CtxBudgetError as exc: print(json.dumps({"error":str(exc)}))

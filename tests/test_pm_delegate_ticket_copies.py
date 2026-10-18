@@ -530,7 +530,7 @@ def test_superseded_abandon_retry_omits_the_flag_and_still_converges(pd, env, mo
     pd.harvest_ticket_copy(copy_path=round2.path, cwd=slot, pm_home=pm_home)
 
     # run-dir 삭제만 실패하도록 주입해 "ledger 는 닫혔지만 run-dir 은 남은" 중간 상태를 만든다.
-    real_rmtree = pd._load_file_lock().force_rmtree
+    real_rmtree = pd.fs.force_rmtree
     state = {"calls": 0}
 
     def _flaky_rmtree(path):
@@ -539,7 +539,7 @@ def test_superseded_abandon_retry_omits_the_flag_and_still_converges(pd, env, mo
             raise OSError("주입 실패")
         return real_rmtree(path)
 
-    monkeypatch.setattr(pd._load_file_lock(), "force_rmtree", _flaky_rmtree)
+    monkeypatch.setattr(pd.fs, "force_rmtree", _flaky_rmtree)
 
     with pytest.raises(pd.DelegateError, match="run-dir 삭제 실패"):
         pd.abandon_ticket_copy(
@@ -642,7 +642,7 @@ def test_marker_is_not_a_second_write_and_does_not_block_the_retry(
     _write_round_output(round2.path, _review_body(pd, "code-reviewer", ["F-922"]))
     pd.harvest_ticket_copy(copy_path=round2.path, cwd=slot, pm_home=pm_home)
 
-    real_rmtree = pd._load_file_lock().force_rmtree
+    real_rmtree = pd.fs.force_rmtree
     state = {"calls": 0}
 
     def _flaky_rmtree(path):
@@ -651,7 +651,7 @@ def test_marker_is_not_a_second_write_and_does_not_block_the_retry(
             raise OSError("주입 실패")
         return real_rmtree(path)
 
-    monkeypatch.setattr(pd._load_file_lock(), "force_rmtree", _flaky_rmtree)
+    monkeypatch.setattr(pd.fs, "force_rmtree", _flaky_rmtree)
 
     with pytest.raises(pd.DelegateError, match="run-dir 삭제 실패"):
         pd.abandon_ticket_copy(
@@ -734,7 +734,7 @@ def test_a_retry_only_flag_cannot_delete_output_the_closing_call_never_confirmed
 
     # run-dir 삭제만 실패하도록 주입 — round1 은 이 시점에 산출이 없어(시드 그대로) 마감 행이
     # `superseded_by_ordinal` 없이 정상 닫힌다.
-    real_rmtree = pd._load_file_lock().force_rmtree
+    real_rmtree = pd.fs.force_rmtree
     state = {"calls": 0}
 
     def _flaky_rmtree(path):
@@ -743,7 +743,7 @@ def test_a_retry_only_flag_cannot_delete_output_the_closing_call_never_confirmed
             raise OSError("주입 실패")
         return real_rmtree(path)
 
-    monkeypatch.setattr(pd._load_file_lock(), "force_rmtree", _flaky_rmtree)
+    monkeypatch.setattr(pd.fs, "force_rmtree", _flaky_rmtree)
 
     with pytest.raises(pd.DelegateError, match="run-dir 삭제 실패"):
         pd.abandon_ticket_copy(

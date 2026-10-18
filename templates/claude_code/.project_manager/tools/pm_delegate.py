@@ -61,136 +61,11 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, NamedTuple
 
-_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
-_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
-    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
-)
-_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
-_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
-_TOOLS_BOOTSTRAP_SENTINEL = object()
-try:
-    if (
-        _TOOLS_BOOTSTRAP_MODULE is not None
-        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-        != _TOOLS_BOOTSTRAP_FILE
-    ):
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-        _TOOLS_BOOTSTRAP_MODULE = None
-    if _TOOLS_BOOTSTRAP_MODULE is None:
-        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
-            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
-        )
-        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
-        if _TOOLS_BOOTSTRAP_ADDED:
-            sys.path.insert(0, _TOOLS_BOOTSTRAP)
-        try:
-            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
-            if (
-                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-                != _TOOLS_BOOTSTRAP_FILE
-            ):
-                raise ImportError(
-                    "repo_owned_files 형제 경로 불일치: "
-                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
-                )
-            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
-        finally:
-            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
-            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
-            if _TOOLS_BOOTSTRAP_ADDED:
-                try:
-                    sys.path.remove(_TOOLS_BOOTSTRAP)
-                except ValueError:
-                    pass
-            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
-                sys.modules.pop("repo_owned_files", None)
-            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
-                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
-    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
-except Exception as _TOOLS_BOOTSTRAP_ERROR:
-    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-
-    def _load_module_from_path(
-        path,
-        expected_filename,
-        *,
-        verifier=None,
-        allow_unverified=False,
-        cache=False,
-        cache_key=None,
-    ):
-        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
-        target = os.path.realpath(os.fspath(path))
-        if os.path.basename(target) != expected_filename:
-            raise ValueError(
-                f"module filename mismatch: expected {expected_filename!r}, "
-                f"got {os.path.basename(target)!r}"
-            )
-        if verifier is not None and allow_unverified:
-            raise ValueError("choose verifier or allow_unverified=True, not both")
-        if verifier is None and not allow_unverified:
-            raise ValueError(
-                "module load requires verifier or explicit allow_unverified=True"
-            )
-        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
-        module = sys.modules.get(module_key) if cache else None
-        inserted = False
-        try:
-            if module is None:
-                if (
-                    target == _TOOLS_BOOTSTRAP_FILE
-                    and _TOOLS_BOOTSTRAP_MODULE is not None
-                ):
-                    module = _TOOLS_BOOTSTRAP_MODULE
-                else:
-                    import_name = os.path.splitext(expected_filename)[0]
-                    previous = sys.modules.pop(
-                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
-                    )
-                    parent = os.path.dirname(target)
-                    # 런타임에 만든 형제 모듈(중앙 로더 선복구가 방금 복사한 seam 등)을
-                    # 이름으로 import 한다 — FileFinder 는 디렉터리 목록을 mtime 으로 캐시하고
-                    # 인터프리터 시작 뒤 생긴 파일은 invalidate 없이는 인식이 보장되지 않는다
-                    # (Python 문서 `importlib.invalidate_caches` · Windows 실측 간헐
-                    # ModuleNotFoundError). 블록은 stdlib-only 라 지역 import 로 두되 sys.path 에
-                    # parent 를 넣기 전에 가져와 그 트리의 동명 파일이 stdlib 를 가리지 않게 한다.
-                    import importlib as _bootstrap_importlib
-                    added = not sys.path or sys.path[0] != parent
-                    if added:
-                        sys.path.insert(0, parent)
-                    try:
-                        _bootstrap_importlib.invalidate_caches()
-                        module = __import__(import_name)
-                        if os.path.realpath(getattr(module, "__file__", "")) != target:
-                            raise ImportError(
-                                f"{expected_filename} 형제 경로 불일치"
-                            )
-                    finally:
-                        if added:
-                            try:
-                                sys.path.remove(parent)
-                            except ValueError:
-                                pass
-                        if sys.modules.get(import_name) is module:
-                            sys.modules.pop(import_name, None)
-                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
-                            sys.modules[import_name] = previous
-                if cache:
-                    sys.modules[module_key] = module
-                    inserted = True
-            if verifier is not None:
-                verifier(module, expected_filename)
-            return module
-        except Exception as exc:
-            if cache and (inserted or sys.modules.get(module_key) is module):
-                sys.modules.pop(module_key, None)
-            if target == _TOOLS_BOOTSTRAP_FILE:
-                raise RuntimeError(
-                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
-                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
-                ) from exc
-            raise
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.infra import console, fs, repo_files  # noqa: E402
+_load_module_from_path = repo_files.load_module
 
 
 
@@ -226,7 +101,7 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
     "read_role_temp_cleanup": (
         "read 역할 temp 회수는 **주 결과를 덮지 않는 것**이 계약이다 — 위임이 이미 끝난 뒤의 "
         "정리이므로 여기서 예외를 올리면 성공한 실행이 정리 실패로 뒤집힌다. 삭제 수단이 형제 "
-        "모듈(`file_lock.force_rmtree`)이라 사본 불일치가 이 경계에 도달할 수 있는데, 그것도 "
+        "모듈(`fs.force_rmtree`)이라 사본 불일치가 이 경계에 도달할 수 있는데, 그것도 "
         "정리 실패의 한 형태로 흡수하되 원인을 문구로 구분해 '잔존 경로'와 '엔진 사본 불일치'가 "
         "같은 경고로 뭉개지지 않게 한다"
     ),
@@ -238,13 +113,13 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
     "ticket_copy_gate_refund": (
         "F-001 — 단일 정리 경계의 환불(abandon)은 **원 거부/전파 예외를 덮지 않는 것**이 "
         "계약이다 — 여기서 예외를 올리면 이미 확정된 거부 rc·사유나 전파 중인 예외가 정리 실패로 "
-        "뒤바뀐다. 환불 수단이 형제 모듈(`abandon_ticket_copy` → board/file_lock)이라 사본 "
+        "뒤바뀐다. 환불 수단이 형제 모듈(`abandon_ticket_copy` → board/fs)이라 사본 "
         "불일치가 이 경계에 도달할 수 있는데, 그것도 정리 실패의 한 형태로 흡수하되 원인을 문구로 "
         "구분해 '정리 실패'와 '엔진 사본 불일치'가 같은 경고로 뭉개지지 않게 한다"
     ),
     "ticket_copy_prepare_rollback": (
         "F-001 — 예약 전 rollback 정리는 **원 예외를 덮지 않는 것**이 계약이다 — 여기서 "
-        "갈아타면 예약이 왜 실패했는지가 사라진다. 삭제 수단이 형제 모듈(`file_lock.force_rmtree`)"
+        "갈아타면 예약이 왜 실패했는지가 사라진다. 삭제 수단이 형제 모듈(`fs.force_rmtree`)"
         "이라 사본 불일치가 이 경계에 닿을 수 있는데, 같은 이유로 흡수하되 경고 한 줄로 남겨 "
         "재동기 처방이 함께 사라지지 않게 한다"
     ),
@@ -271,13 +146,7 @@ def _write_machine_line(text: str) -> None:
     치환은 되돌릴 수 없다 — 다른 프로세스가 파싱하는 출력은 공용 seam 으로 UTF-8 bytes 를
     직접 쓴다(콘솔 코덱 전환과 독립).
     """
-    console_encoding = _load_module_from_path(
-        Path(__file__).resolve().with_name("console_encoding.py"),
-        "console_encoding.py",
-        verifier=_verify_engine_rev,
-        cache=True,
-    )
-    console_encoding.write_machine_line(text)
+    console.write_machine_line(text)
 
 
 # ── REPO 앵커 (설치 깊이 고정 · hermetic 테스트 monkeypatch seam) ──────────
@@ -623,8 +492,8 @@ _READ_TMP_FD_SUPPORTED = (
 
 # read tmp 생성/회수 수단 — 위 primitive 가 없다고 **권한을 강등하지 않는다**. ACL 플랫폼
 # (Windows)은 같은 보장을 다른 수단으로 낸다: 예측 불가 이름의 배타 생성(존재하면 실패) +
-# 소유자 전용 ACL(`file_lock.restrict_to_owner`) + 생성 identity 재검증 + 잔재를 남기지 않는
-# 회수(`file_lock.force_rmtree`). 두 수단이 **모두** 없는 플랫폼만 회귀-불가 경로로 간다.
+# 소유자 전용 ACL(`fs.restrict_to_owner`) + 생성 identity 재검증 + 잔재를 남기지 않는
+# 회수(`fs.force_rmtree`). 두 수단이 **모두** 없는 플랫폼만 회귀-불가 경로로 간다.
 _READ_TMP_STRATEGY_FD = "fd"
 _READ_TMP_STRATEGY_OWNER_ACL = "owner-acl"
 
@@ -817,7 +686,7 @@ def _adapter_directories_from_engine_source() -> tuple[str, ...]:
     source = Path(__file__).resolve().parent / "pm_import.py"
     if not source.is_file():
         return ()
-    tree = ast.parse(_load_file_lock().read_text_shared(source, encoding="utf-8"), filename=str(source))
+    tree = ast.parse(fs.read_text_shared(source, encoding="utf-8"), filename=str(source))
 
     try:
         rev_node = _module_assignment_value(tree, "ENGINE_REV", source)
@@ -1208,7 +1077,7 @@ def _delegate_rounds_ledger_records(pm_home: Path) -> list[dict]:
     """
     path = _delegate_rounds_ledger_path(pm_home)
     try:
-        raw = _load_file_lock().read_bytes_shared(path)
+        raw = fs.read_bytes_shared(path)
     except FileNotFoundError:
         return []
     except OSError as exc:
@@ -1252,8 +1121,7 @@ def _append_delegate_rounds_ledger(pm_home: Path, row: dict) -> None:
             json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             + "\n"
         )
-        file_lock = _load_file_lock()
-        file_lock.append_atomic(path, payload, mode=0o600)
+        fs.append_atomic(path, payload, mode=0o600)
     except OSError as exc:
         raise DelegateError(f"delegate-rounds 장부 append 실패: {path}: {exc}") from exc
     finally:
@@ -1546,7 +1414,7 @@ def _assert_pool_bare_ignore_rule(bare: Path, *, ignored: bool, observation: str
             "정본보다 우선해 뒤집은 것이니 그 줄을 지워라"
         )
     lines = (
-        _load_file_lock()
+        fs
         .read_text_shared(exclude, encoding="utf-8", errors="replace")
         .splitlines()
         if exclude.is_file() else []
@@ -1937,7 +1805,7 @@ def prepare_ticket_copy(
         raise DelegateError(f"ticket not found: {ticket}")
     _status, source = found
     try:
-        spec_text = _load_file_lock().read_bytes_shared(source).decode("utf-8")
+        spec_text = fs.read_bytes_shared(source).decode("utf-8")
     except (OSError, UnicodeError) as exc:
         raise DelegateError(f"PM 홈 티켓 읽기 실패: {source}: {exc}") from exc
     cluster = board.ticket_cluster_from_text(ticket, spec_text)
@@ -2030,7 +1898,7 @@ def prepare_cluster_copy(
                     f"{ticket} role={role} currently in {status}/"
                 )
             try:
-                specs[ticket] = _load_file_lock().read_bytes_shared(source).decode("utf-8")
+                specs[ticket] = fs.read_bytes_shared(source).decode("utf-8")
             except (OSError, UnicodeError) as exc:
                 raise DelegateError(f"PM 홈 티켓 읽기 실패: {source}: {exc}") from exc
 
@@ -2289,7 +2157,7 @@ def prepare_cluster_copy(
         # 경고만 남기고 마지막 `raise`(bare)는 항상 `exc` 를 그대로 재전파한다.
         if not reserved and os.path.lexists(run_dir):
             try:
-                _load_file_lock().force_rmtree(run_dir)
+                fs.force_rmtree(run_dir)
             except BaseException as cleanup_exc:
                 skew = _absorb_engine_rev_skew_for_recovery(
                     cleanup_exc, "ticket_copy_prepare_rollback")
@@ -2523,7 +2391,7 @@ def harvest_ticket_copy(
         _assert_review_tree_unchanged(cwd, row, copy=expected)
 
     try:
-        reserved = _load_file_lock().read_text_shared(
+        reserved = fs.read_text_shared(
             board_path, encoding="utf-8", newline="",
         )
     except FileNotFoundError as exc:
@@ -2615,7 +2483,7 @@ def harvest_ticket_copy(
     _append_delegate_rounds_ledger(pm_home, harvested)
 
     # run-dir 은 엔진 소유 임시 산출물이다(사용자 파일 아님) — 삭제가 곧 run 닫힘이다.
-    _load_file_lock().force_rmtree(run_dir)
+    fs.force_rmtree(run_dir)
     _prune_empty_run_dir(run_dir)
     if row["role"] == "developer":
         # 회수가 끝난 **뒤** 커밋한다 — run-dir 이 이미 걷혀 임시 라운드 사본이 커밋에 실리지
@@ -2724,7 +2592,7 @@ def _review_round_harvest_problem(
         if found is None:
             return f"티켓 명세를 찾지 못해 회수 판정을 낼 수 없습니다: {ticket}"
         _status, spec_path = found
-        spec_text = _load_file_lock().read_text_shared(
+        spec_text = fs.read_text_shared(
             spec_path, encoding="utf-8", newline="",
         )
         rounds = rounds_module.load_rounds(
@@ -2887,7 +2755,7 @@ def _terminal_developer_round(
         if found is None:
             return False
         _status, spec_path = found
-        spec_text = _load_file_lock().read_text_shared(
+        spec_text = fs.read_text_shared(
             spec_path, encoding="utf-8", newline="",
         )
         rounds = rounds_module.load_rounds(
@@ -2936,7 +2804,7 @@ def _developer_round_harvest_problem(
         if found is None:
             return f"티켓 명세를 찾지 못해 회수 판정을 낼 수 없습니다: {ticket}"
         _status, spec_path = found
-        spec_text = _load_file_lock().read_text_shared(
+        spec_text = fs.read_text_shared(
             spec_path, encoding="utf-8", newline="",
         )
         rounds = rounds_module.load_rounds(
@@ -3137,7 +3005,7 @@ def _read_board_round_text(board_path: Path) -> str:
     받아 종결 / 예약 소실 거부)을 낸다.
     """
     try:
-        return _load_file_lock().read_text_shared(
+        return fs.read_text_shared(
             board_path, encoding="utf-8", newline="",
         )
     except (OSError, UnicodeError) as exc:
@@ -3474,7 +3342,7 @@ def abandon_ticket_copy(
                     f"산출을 직접 꺼낸 뒤 정리하세요: copy={expected} · run-dir={run_dir}"
                 )
         try:
-            _load_file_lock().force_rmtree(run_dir)
+            fs.force_rmtree(run_dir)
         except OSError as exc:
             raise DelegateError(
                 f"run-dir 삭제 실패: {run_dir}: {exc} — 같은 명령을 다시 실행하면 남은 정리를 "
@@ -4035,14 +3903,6 @@ def _load_pm_log():
     path = Path(__file__).resolve().parent / "pm_log.py"
     return _load_module_from_path(
         path, "pm_log.py", verifier=_verify_engine_rev, cache=True,
-    )
-
-
-def _load_file_lock():
-    """라운드 장부 read-modify-write 직렬화에 쓰는 공용 OS 파일락."""
-    path = Path(__file__).resolve().parent / "file_lock.py"
-    return _load_module_from_path(
-        path, "file_lock.py", verifier=_verify_engine_rev, cache=True,
     )
 
 
@@ -8924,7 +8784,7 @@ def _additional_reviewer_raw_answer(content: str) -> str:
 def _attached_record_reply(record: Mapping[str, object], raw_path: Path) -> str:
     """장부가 가리키는 실제 raw에서 최종 reply를 추출한다(요약·발췌 없음)."""
     try:
-        content = _load_file_lock().read_text_shared(raw_path, encoding="utf-8")
+        content = fs.read_text_shared(raw_path, encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         raise DelegateError(
             f"첨부 raw 읽기 실패: {raw_path} ({type(exc).__name__}: {exc})"
@@ -9432,7 +9292,7 @@ def resolve_resume_plan(
     진행한다.
 
     장부 부재는 **락을 잡기 전에** 끝낸다 — 조회는 읽기인데 락 획득이 장부 상위 디렉터리와
-    `.lock` 파일을 만든다(`file_lock.exclusive_file_lock`). 한 번도 위임하지 않은 트리에서
+    `.lock` 파일을 만든다(`fs.exclusive_file_lock`). 한 번도 위임하지 않은 트리에서
     `--dry-run` 이 `.project_manager/.local/` 을 새로 만드는 건 미리보기의 부작용 0 원칙 위반이다.
     """
     if not selector:
@@ -10202,7 +10062,7 @@ def _assert_read_tmp_outside_review_surface(attempt_path: Path, cwd: Path) -> No
 
 def _read_tmp_owner_acl_platform() -> bool:
     """소유자 전용 ACL 로 fd 결속과 등가인 격리를 낼 수 있는 플랫폼인가(주입 가능 seam)."""
-    return bool(_load_file_lock().windows_acl_platform())
+    return bool(fs.windows_acl_platform())
 
 
 def _read_tmp_strategy() -> str | None:
@@ -10218,19 +10078,18 @@ def _remove_read_tmp_tree(path: Path, *, parent_fd: int | None) -> None:
     """attempt 트리를 회수한다 — 강제 삭제 seam 하나에 fd 결속을 실어 보낸다.
 
     맨 `shutil.rmtree` 는 read-only 하위가 하나만 있어도 남긴다(실측: 리뷰어 회귀가 만드는
-    0o500 디렉터리에서 `PermissionError [Errno 13] ... 'inner.txt'`). `file_lock.force_rmtree` 는
+    0o500 디렉터리에서 `PermissionError [Errno 13] ... 'inner.txt'`). `fs.force_rmtree` 는
     속성을 풀고 그 항목만 재시도하되 끝내 남으면 예외를 올리고, `dir_fd` 를 받으면 삭제를 고정
     부모 fd 에 결속해 symlink 공격 회피도 그대로 유지한다.
     """
-    _load_file_lock().force_rmtree(path, dir_fd=parent_fd)
+    fs.force_rmtree(path, dir_fd=parent_fd)
 
 
 def _restrict_read_tmp_to_owner(path: Path) -> None:
     """생성한 temp 디렉터리를 소유자 전용 접근으로 만든다(ACL 플랫폼은 mode 비트가 무효)."""
-    file_lock = _load_file_lock()
     try:
-        file_lock.restrict_to_owner(path)
-    except file_lock.AccessRestrictionError as exc:
+        fs.restrict_to_owner(path)
+    except fs.AccessRestrictionError as exc:
         raise DelegateError(
             f"read 역할 temp 소유자 전용 제한 실패: {path}: {exc} — 격리되지 않은 "
             "디렉터리를 쓰기 대상으로 넘기지 않습니다."
@@ -10632,7 +10491,7 @@ def _portable_exclusive_write(path: Path, content: str) -> None:
 
     `os.open` 의 mode 인자는 **ACL 플랫폼에서 무효**라 0600 만으로는 소유자 전용이 되지 않는다
     (Windows 는 부모 디렉터리의 상속 ACL 을 그대로 받는다). 쓰기 직후 공용 소유자-제한
-    seam(`file_lock.restrict_to_owner`)이 두 플랫폼에서 같은 보장을 낸다."""
+    seam(`fs.restrict_to_owner`)이 두 플랫폼에서 같은 보장을 낸다."""
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_NOFOLLOW", 0)
     fd: int | None = None
@@ -10644,7 +10503,7 @@ def _portable_exclusive_write(path: Path, content: str) -> None:
         fd = None
         with handle:
             handle.write(content)
-        _load_file_lock().restrict_to_owner(path)
+        fs.restrict_to_owner(path)
     except BaseException as write_exc:
         _close_transport_fd(fd)
         fd = None
@@ -12654,7 +12513,7 @@ def _cmd_review_ticket(args: argparse.Namespace, ticket: str) -> int:
                     f"review delta는 open/claimed 티켓만 허용: {ticket} in {status}/"
                 )
             try:
-                with _load_file_lock().open_shared(path, binary=False, encoding="utf-8", newline="") as handle:
+                with fs.open_shared(path, binary=False, encoding="utf-8", newline="") as handle:
                     ticket_text = handle.read()
             except (OSError, UnicodeError) as exc:
                 raise DelegateError(f"티켓 읽기 실패: {path}: {exc}") from exc
@@ -12994,7 +12853,7 @@ def _ticket_spec_and_rounds(board, ticket: str) -> tuple[str, list]:
         raise DelegateError(f"ticket not found: {ticket}")
     _status, path = found
     try:
-        spec_text = _load_file_lock().read_text_shared(
+        spec_text = fs.read_text_shared(
             path, encoding="utf-8", newline="",
         )
     except (OSError, UnicodeError) as exc:
@@ -13304,7 +13163,7 @@ def _cluster_review_focus(path: Path, *, cwd: Path, pm_home: Path) -> str:
     if not focus_path.is_file():
         raise DelegateError(f"--focus 파일이 없습니다: {focus_path}")
     try:
-        return _load_file_lock().read_text_shared(
+        return fs.read_text_shared(
             focus_path.resolve(), encoding="utf-8",
         )
     except (OSError, UnicodeError) as exc:
@@ -13390,7 +13249,7 @@ def _cluster_member_specs(board, members: Sequence[str]) -> dict[str, str]:
             raise DelegateError(f"ticket not found: {ticket}")
         _status, path = found
         try:
-            specs[ticket] = _load_file_lock().read_text_shared(
+            specs[ticket] = fs.read_text_shared(
                 path, encoding="utf-8", newline="",
             )
         except (OSError, UnicodeError) as exc:
@@ -13682,12 +13541,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
          git_run_fn: Callable | None = None) -> int:
     """CLI 진입 — 콘솔 인코딩 설정이 첫 동작이다(인자 오류처럼 CLI 본체 앞뒤에서 나가는 출력도
     같은 콘솔 설정 아래 있어야 한다 · 형제 진입점 관용구와 동형)."""
-    _console_encoding = _load_module_from_path(
-        Path(__file__).resolve().with_name("console_encoding.py"),
-        "console_encoding.py",
-        verifier=_verify_engine_rev,
-    )
-    _console_encoding.configure_console_utf8()
+    console.configure_console_utf8()
     return _run_delegate_cli(argv, run_fn=run_fn, git_run_fn=git_run_fn)
 
 
@@ -13840,7 +13694,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
         except OSError:
             read_target = prompt_file
         try:
-            task_text = _load_file_lock().read_text_shared(read_target, encoding="utf-8")
+            task_text = fs.read_text_shared(read_target, encoding="utf-8")
         except (OSError, UnicodeError) as exc:
             print(f"오류: --prompt-file 읽기 실패: {exc}", file=sys.stderr)
             return 1

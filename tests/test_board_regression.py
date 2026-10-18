@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 from _pytest_summary import pytest_summary
 from _textio import utf8_child_env
+from _engine_tree import engine_python_files
 
 requires_git = pytest.mark.skipif(
     shutil.which("git") is None,
@@ -127,11 +128,11 @@ def _patch_atomic_replace(monkeypatch, module, fake):
 
     `os.replace` 는 그 seam 의 POSIX 분기 구현 세부다 — Windows 분기는 Win32 rename 이라
     `os.replace` 에 건 주입을 지나지 않는다. 관측 지점이 엔진의 호출 지점과 같아야 두 OS 에서
-    같은 성질이 고정된다. board 는 seam 을 import 시점에 전역(`board.file_lock`)으로 받으므로
+    같은 성질이 고정된다. board 는 seam 을 import 시점에 전역(`board.fs`)으로 받으므로
     그 객체에 건다. 반환값은 seam 모듈 — 실패 주입이 Windows 분기와 같은 예외 클래스
     (`AtomicReplaceError`·`OSError` 서브클래스)를 쓸 수 있다.
     """
-    seam = module.file_lock
+    seam = module.fs
     monkeypatch.setattr(seam, "atomic_replace", fake)
     return seam
 
@@ -2036,14 +2037,14 @@ def test_an_unreadable_hook_is_refused(board, monkeypatch, tmp_path, capsys):
     hook = _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
     # 훅 판독은 공유 읽기 seam 을 지난다(T-0729) — 주입도 그 자리에 건다. `Path.read_text` 에
     # 걸면 엔진이 그 호출을 더는 하지 않아 이 회귀가 공허해진다.
-    real_read_text = board.file_lock.read_text_shared
+    real_read_text = board.fs.read_text_shared
 
     def _boom(target, *args, **kwargs):
         if Path(target) == hook:
             raise OSError("읽기 실패")
         return real_read_text(target, *args, **kwargs)
 
-    monkeypatch.setattr(board.file_lock, "read_text_shared", _boom)
+    monkeypatch.setattr(board.fs, "read_text_shared", _boom)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
     assert board.cmd_regression(_run_args()) == 1
@@ -2078,7 +2079,7 @@ def test_failed_replace_leaves_no_tmp_residue(board, monkeypatch, tmp_path):
     잔재는 git 이 실행하지 않는 이름이라 무해했지만, 실패마다 훅 디렉토리에 쌓인다.
     """
     hook = _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
-    seam = board.file_lock
+    seam = board.fs
     _patch_atomic_replace(
         monkeypatch, board,
         # Windows 분기가 실패에서 내는 클래스 그대로(OSError 서브클래스).
@@ -2931,7 +2932,7 @@ def test_the_lint_gate_refusal_carries_the_neutral_prefix(
 # ⑦ 하한 폐지의 자취 — 소스에 옛 경로가 남지 않았고 쓰는 자리는 하나다
 # ════════════════════════════════════════════════════════════════════════
 
-_TOOL_SOURCES = tuple(sorted(TOOLS.glob("*.py")))
+_TOOL_SOURCES = tuple(engine_python_files(TOOLS))
 # 폐지한 하한 축의 식별자 — 어느 도구에도 남으면 옛 경로가 살아 있는 것이다.
 _ABOLISHED_FLOOR_NAMES = (
     "regression.min_collected", "REGRESSION_MIN_COLLECTED_KEY",

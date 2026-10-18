@@ -78,10 +78,10 @@ def _patch_atomic_replace(monkeypatch, module, fake):
 
     `os.replace` 는 그 seam 의 POSIX 분기 구현 세부다 — Windows 분기는 Win32 rename 이라
     `os.replace` 에 건 주입을 지나지 않는다. 엔진 모듈이 seam 을 받는 형상은 둘이다: import
-    시점 전역(`board.file_lock`)과 쓰기 경로 지연 로더(`review_rounds._load_file_lock()`·
+    시점 전역(`board.fs`)과 쓰기 경로 지연 로더(`review_rounds.fs`·
     프로세스 캐시). 그 실제 지점에 걸어야 두 OS 에서 같은 관측이 선다.
     """
-    seam = getattr(module, "file_lock", None) or module._load_file_lock()
+    seam = module.fs
     monkeypatch.setattr(seam, "atomic_replace", fake)
     return seam
 

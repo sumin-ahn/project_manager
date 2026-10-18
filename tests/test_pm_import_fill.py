@@ -909,7 +909,8 @@ def test_real_fourth_registry_tree_drives_help_and_binary_resolution(
         1,
     )
     (tools_dir / "pm_import.py").write_text(source, encoding="utf-8")
-    shutil.copy2(TOOLS / "console_encoding.py", tools_dir / "console_encoding.py")
+    shutil.copytree(TOOLS / "pm_engine", tools_dir / "pm_engine",
+                    ignore=shutil.ignore_patterns("__pycache__"))
     for dirname in ("claude_code", "opencode", "codex", "fourth_tmpl"):
         (checkout / "templates" / dirname).mkdir(parents=True)
 

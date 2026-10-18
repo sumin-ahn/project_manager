@@ -138,7 +138,7 @@ def _patch_atomic_replace(monkeypatch, module, fake):
     그 객체에 건다. 반환값은 seam 모듈 — 실패 주입이 Windows 분기와 같은 예외 클래스
     (`AtomicReplaceError`·`OSError` 서브클래스)를 쓸 수 있다.
     """
-    seam = module.file_lock
+    seam = module.fs
     monkeypatch.setattr(seam, "atomic_replace", fake)
     return seam
 
@@ -2014,7 +2014,7 @@ def test_lease_lock_burns_the_windows_branch_through_the_real_consumer(
     옳아도 멀티-PM 형상에서 lost update 가 난다. 주입이 no-op 이면 아무것도 시험되지 않으므로
     대역 호출 여부를 먼저 단언한다.
     """
-    lock_module = wp.file_lock
+    lock_module = wp.fs
     acquired: list[tuple[int, int, int]] = []
     released: list[tuple[int, int]] = []
     api = lock_module.WindowsLockApi(
@@ -2545,7 +2545,7 @@ def test_real_git_create_slot_base_fetch_offline_falls_back_to_local(proj, tmp_p
     # origin 삭제 → `git fetch origin` 이 실패한다(오프라인/소실 시뮬).
     # git object·packfile 은 read-only 라 맨 rmtree 는 Windows 에서 `[WinError 5]` 로 실패한다 —
     # 엔진 공용 삭제 seam 을 그대로 쓴다(속성 해제 후 재시도·못 지우면 loud).
-    wp._load_file_lock().force_rmtree(origin)
+    wp.fs.force_rmtree(origin)
 
     lease = wp.create_slot("A", base="develop", init_submodules=False)
     assert lease.slot == "work/A_1"           # fetch 실패해도 슬롯 생성 계속(fail-soft)
@@ -3388,7 +3388,7 @@ def test_real_git_runner_wires_combined_output_shared_policy(wp, monkeypatch):
             captured["kwargs"] = kwargs
             return sentinel
 
-    monkeypatch.setattr(wp, "_load_repo_owned_files", lambda: _RepoFiles)
+    monkeypatch.setattr(wp, "repo_files", _RepoFiles)
     monkeypatch.setattr(wp, "GIT_TIMEOUT_SECONDS", None)
 
     assert wp._real_git_runner(wp.REPO) is sentinel
@@ -4084,7 +4084,7 @@ def test_install_protected_hook_atomically_replaces_every_hook_and_sidecar(wp, m
     expected = wp.protected_hook_artifacts(
         "A", ["main", "release"], gate_mode="self-test", test_cmd="go test ./...")
     replaced = []
-    real_replace = wp.file_lock.atomic_replace
+    real_replace = wp.fs.atomic_replace
 
     def inspect_then_replace(src, dst):
         src, dst = Path(src), Path(dst)
@@ -4124,7 +4124,7 @@ def test_install_protected_hook_contract_remains_whole_on_intermediate_failure(
         "A", ["main"], gate_mode="self-test", test_cmd="old-test",
         git_runner=FakeGit()) is True
     contract = wp.REPO_HOOKS_DIR / "A" / "gate-contract"
-    seam = wp.file_lock
+    seam = wp.fs
     real_replace = seam.atomic_replace
 
     def fail_once(src, dst):
@@ -5264,7 +5264,7 @@ def test_install_protected_hook_writes_only_through_artifact_spec():
     writer = src.split("def _atomic_write_protected_artifact(", 1)[1].split("\ndef ", 1)[0]
     assert "tempfile.mkstemp(" in writer and "dir=artifact.path.parent" in writer
     assert "tmp.chmod(" in writer
-    assert "file_lock.atomic_replace(tmp, artifact.path)" in writer
+    assert "fs.atomic_replace(tmp, artifact.path)" in writer
 
 
 @_git_required
@@ -5931,26 +5931,25 @@ def _install_engine(engine_root: Path) -> None:
     """PM 홈(engine_root=wp.REPO)에 실 board.py 를 심는다 — 훅이 sidecar 로 해소하는 엔진 (T-0223 codex r2).
 
     슬롯 worktree(family/회사 checkout)엔 엔진 파일이 없다(회사 repo 무영향) — board.py 는 PM 홈에만
-    존재하고 훅은 sidecar `engine-root`(=이 engine_root)로 그걸 찾는다. board.py 와 CLI 공용
-    `console_encoding.py`와 실제 script 디스패치 하한 probe인 `python_floor.py`를 복사하면
+    존재하고 훅은 sidecar `engine-root`(=이 engine_root)로 그걸 찾는다. board.py 와 엔진 패키지
+    `pm_engine/`(콘솔·공용 잠금·repo 파일 열거)와 실제 script 디스패치 하한 probe인 `python_floor.py`를 복사하면
     `livegate check` 가 standalone 동작(yaml=런타임 의존·테스트 env 보유). board.py
     REPO=Path(__file__).parents[2]=engine_root → livegate.json 을 engine_root/.project_manager/.local 에서 읽는다.
 
-    `identity_args.py`(ADR-0057·T-0322)와 `file_lock.py`(T-0561)도 함께 심는다 — board.py 가 같은
-    tools/ 디렉토리에서 경로-앵커 로드(`_load_identity_args`·`_load_file_lock`)하는 **load-bearing
+    `identity_args.py`(ADR-0057·T-0322)도 함께 심는다 — board.py 가 같은
+    tools/ 디렉토리에서 경로-앵커 로드(`_load_identity_args`)하는 **load-bearing
     sibling**이라, 빠지면 이 최소-격리 엔진(board.py 단일 파일)이 import 시점에 fail-loud 로
     죽는다(전 서브에 정체성 파싱·보드 write 직렬화가 필수).
 
-    (T-0397 rev 스탬프는 board·identity_args·console_encoding 소스에 baked 리터럴이라 실 복사본이면
+    (T-0397 rev 스탬프는 board·identity_args 소스에 baked 리터럴이라 실 복사본이면
     서로 일치한다 — engine_rev.py 는 런타임 verify 가 읽지 않으므로 이 최소 격리 엔진엔 불요.)
     """
     tools = engine_root / ".project_manager" / "tools"
     tools.mkdir(parents=True, exist_ok=True)
     shutil.copy(str(TOOLS / "board.py"), str(tools / "board.py"))
-    shutil.copy(str(TOOLS / "repo_owned_files.py"), str(tools / "repo_owned_files.py"))
     shutil.copy(str(TOOLS / "identity_args.py"), str(tools / "identity_args.py"))
-    shutil.copy(str(TOOLS / "file_lock.py"), str(tools / "file_lock.py"))
-    shutil.copy(str(TOOLS / "console_encoding.py"), str(tools / "console_encoding.py"))
+    shutil.copytree(TOOLS / "pm_engine", tools / "pm_engine",
+                    ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
     shutil.copy(str(TOOLS / "python_floor.py"), str(tools / "python_floor.py"))
 
 

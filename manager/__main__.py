@@ -10,11 +10,11 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import deps, engine_rev, load_engine_module
+from . import console, deps, engine_rev
 
 
 def main(argv: list[str] | None = None) -> int:
-    load_engine_module("console_encoding.py").configure_console_utf8()
+    console.configure_console_utf8()
     parser = argparse.ArgumentParser(
         prog="python3 -m manager", description="PM 프로젝트 관리자 (창 하나)")
     parser.add_argument("--registry", metavar="<경로>", default=None,

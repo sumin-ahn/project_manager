@@ -40,6 +40,7 @@ import pytest
 
 from _fake_opencode import OLLAMA_LISTING, install_fake_opencode, path_with
 from _win_skip import posix_bash_supported
+from pm_engine.infra import fs
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -64,7 +65,7 @@ def _owner_only(path: Path) -> bool:
     `chmod` 는 read-only 속성만 만져 `S_IMODE` 가 0o666 으로 남는다(실측). 보장("다른 사용자에게
     읽히지 않는다")은 같고 수단만 다르므로(POSIX 퍼미션 / Windows ACL) 수단을 아는 seam 에 묻는다.
     """
-    return _load("file_lock").owner_only_access(path)
+    return fs.owner_only_access(path)
 
 
 @pytest.fixture
@@ -544,7 +545,7 @@ def test_opencode_prompt_file_is_0600_and_removed_after_success_and_failure(
     """`--file` 프롬프트에는 diff 원문이 들어간다 — 소유자 전용으로 만들고 rc 무관 지운다.
 
     "소유자 전용" 의 수단은 플랫폼마다 다르다(POSIX 퍼미션 0600 / Windows ACL) — 판정은
-    퍼미션 비트가 아니라 `file_lock.owner_only_access` 로 OS 에 되묻는다(`_owner_only`).
+    퍼미션 비트가 아니라 `fs.owner_only_access` 로 OS 에 되묻는다(`_owner_only`).
     """
     # 추론 값을 두지 않는다 — opencode 추론 값은 실행 직전 모델 목록 조회로 확인되고(그 시험은
     # `test_opencode_reviewer_reasoning_checked_before_call`) 이 시험의 대상은 프롬프트 파일이다.
@@ -1937,9 +1938,8 @@ def _assert_relay_dag():
         complete.add(name)
     visit('pm_relay.py')
     assert graph == {
-        'pm_relay.py': {'file_lock.py', 'repo_owned_files.py', 'local_conf.py'},
-        'local_conf.py': {'file_lock.py', 'repo_owned_files.py', 'console_encoding.py'},
-        'file_lock.py': set(), 'repo_owned_files.py': set(), 'console_encoding.py': set(),
+        'pm_relay.py': {'local_conf.py'},
+        'local_conf.py': set(),
     }
 
 
@@ -1988,7 +1988,6 @@ def test_pm_relay_is_cycle_free(relay, monkeypatch):
         raise AssertionError('import-time conf 조회')
     monkeypatch.setattr(leaf, 'load', forbidden)
     _load('pm_relay')
-    assert Path(relay._load_file_lock().__file__).name == 'file_lock.py'
 
 
 def test_t0932_relay_dag_cycle_sensitivity(monkeypatch):

@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from _engine_tree import engine_python_files
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -27,7 +28,7 @@ def _load_board():
 def test_engine_text_subprocess_calls_declare_encoding():
     """`text=True` 호출은 로캘 기본값 대신 디코딩 인코딩을 반드시 명시한다."""
     missing: list[str] = []
-    for path in sorted(p for d in ENGINE_TOOL_DIRS for p in d.glob("*.py")):
+    for path in sorted(p for d in ENGINE_TOOL_DIRS for p in engine_python_files(d)):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):

@@ -585,7 +585,7 @@ def test_run_dir_removal_failure_converges_on_the_next_call(pd, env, monkeypatch
     """5단계(run-dir 삭제) 실패 뒤 재호출이 '이미 포기된 준비'로 막히지 않는다."""
     _write_spec(env, "T-8052")
     plan = _prepare(pd, env, "T-8052")
-    real_file_lock = pd._load_file_lock()
+    real_file_lock = pd.fs
 
     class _FileLock:
         def __getattr__(self, name):
@@ -594,13 +594,13 @@ def test_run_dir_removal_failure_converges_on_the_next_call(pd, env, monkeypatch
         def force_rmtree(self, _path):
             raise OSError("run-dir 삭제 실패 주입")
 
-    monkeypatch.setattr(pd, "_load_file_lock", lambda: _FileLock())
+    monkeypatch.setattr(pd, "fs", _FileLock())
     with pytest.raises(pd.DelegateError, match="run-dir 삭제 실패"):
         _abandon(pd, env, plan)
     assert not plan.board_path.exists() and plan.run_dir.exists()
     assert _ledger_rows(env)[-1]["abandoned_at"] is not None
 
-    monkeypatch.setattr(pd, "_load_file_lock", lambda: real_file_lock)
+    monkeypatch.setattr(pd, "fs", real_file_lock)
     result = _abandon(pd, env, plan)
 
     assert result.converged is True
@@ -1141,13 +1141,13 @@ def test_cli_abandon_actually_waits_on_the_board_lock(tmp_path):
     holder = subprocess.Popen(
         [sys.executable, "-c",
          "import importlib.util, pathlib, sys, time\n"
-         "spec = importlib.util.spec_from_file_location('file_lock', sys.argv[1])\n"
+         "spec = importlib.util.spec_from_file_location('fs', sys.argv[1])\n"
          "module = importlib.util.module_from_spec(spec)\n"
          "spec.loader.exec_module(module)\n"
          "with module.exclusive_file_lock(pathlib.Path(sys.argv[2])):\n"
          "    print('locked', flush=True)\n"
          "    time.sleep(float(sys.argv[3]))\n",
-         str(home / ".project_manager" / "tools" / "file_lock.py"), str(lock_path),
+         str(home / ".project_manager" / "tools" / "pm_engine" / "infra" / "fs.py"), str(lock_path),
          str(BOARD_LOCK_HOLD_SEC)],
         stdout=subprocess.PIPE, text=True, encoding="utf-8",
     )

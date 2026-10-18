@@ -26,6 +26,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from _engine_tree import engine_python_files
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -72,11 +73,11 @@ def test_the_windows_argv_split_rule_has_exactly_one_implementation(board):
     무의미해진다([[guard-must-cover-its-own-surface]]).
     """
     owners = set()
-    for path in sorted(TOOLS.glob("*.py")):
+    for path in engine_python_files(TOOLS):
         source = path.read_text(encoding="utf-8")
         if (WINDOWS_PATH_SEPARATOR_MARK in source
                 or WINDOWS_PATH_SEPARATOR_SOURCE in source):
-            owners.add(path.name)
+            owners.add(path.relative_to(TOOLS).as_posix())
 
     assert RULE_OWNER in owners, "규칙 소유 모듈에서 보호 표식이 사라졌다(스캔 무효)"
     assert owners == {RULE_OWNER}, (

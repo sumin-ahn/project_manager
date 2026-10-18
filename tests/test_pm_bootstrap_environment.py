@@ -43,7 +43,7 @@ def _configure(tmp_path: Path, monkeypatch, state: str, mod=None) -> None:
         conf.write_text("runtime.py=ignored\n", encoding="utf-8")
         # conf 판독은 공유 읽기 seam 을 지난다([[T-0729]]) — 주입도 그 자리에 건다.
         # `Path.read_text` 에 걸면 엔진이 그 호출을 더는 하지 않아 이 케이스가 공허해진다.
-        seam = mod._load_file_lock()
+        seam = mod.fs
         original = seam.read_text_shared
 
         def _read_text(path, *args, **kwargs):

@@ -96,14 +96,14 @@ def test_load_ticket_passes_utf8_encoding(board, tmp_path, monkeypatch):
     path.write_text("---\nid: T-9999\n---\nbody\n", encoding="utf-8")
 
     captured: dict = {}
-    orig = board.file_lock.read_text_shared
+    orig = board.fs.read_text_shared
 
     def spy(target, *args, **kwargs):
         if Path(target).name == "T-9999-y.md":
             captured["encoding"] = kwargs.get("encoding")
         return orig(target, *args, **kwargs)
 
-    monkeypatch.setattr(board.file_lock, "read_text_shared", spy)
+    monkeypatch.setattr(board.fs, "read_text_shared", spy)
     board.load_ticket(path)
     assert captured.get("encoding") == "utf-8"
 

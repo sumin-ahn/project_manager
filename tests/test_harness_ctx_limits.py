@@ -113,7 +113,7 @@ def _only_insertions(old: str, new: str) -> bool:
 
 def _snapshot_fixture_bytes(root, *, excluded_names=()):
     """격리 fixture 바이트를 기존 열거 seam으로 전수 확인한다."""
-    repo_files = _load('repo_owned_files')
+    repo_files = _load('pm_engine/infra/repo_files')
     entries = repo_files.list_repo_owned_entries(
         root, '.', mode=repo_files.OWNED,
         git_runner=lambda _args: (127, 'isolated fixture, filesystem oracle'),
@@ -695,10 +695,12 @@ def install_ctx_record(root, values=None, harness="claude", capacity=2000000, mo
         shutil.copyfile(TEMPLATE_FILES[harness][0], target)
     tools = root / ".project_manager" / "tools"
     tools.mkdir(parents=True, exist_ok=True)
-    for name in ("local_conf.py", "repo_owned_files.py", "file_lock.py", "console_encoding.py",
-                 "pm_relay.py", "python_floor.py"):
+    for name in ("local_conf.py", "pm_relay.py", "python_floor.py"):
         if not (tools / name).exists():
             shutil.copyfile(TOOLS / name, tools / name)
+    if not (tools / "pm_engine").exists():
+        shutil.copytree(TOOLS / "pm_engine", tools / "pm_engine",
+                        ignore=shutil.ignore_patterns("__pycache__"))
     for name, seam in known_ctx_seams(capacity=capacity, context=3000000, model=model).items():
         setattr(module, name, seam)
     if values:

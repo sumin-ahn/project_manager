@@ -2090,9 +2090,6 @@ def test_concurrent_first_log_commits_cross_barrier_leave_one_entry(hf, tmp_path
     """barrier로 동시에 출발한 첫 handoff 둘도 shared lock 재판정으로 entry 하나다."""
     current = tmp_path / "current.md"
     pm_log = _load_tool("pm_log")
-    # worker 둘이 동시에 lazy import를 타면 importlib/sys.modules 경합을
-    # log lock 경합으로 오인한다. 실제 임계구역 테스트 전 dependency를 선로드한다.
-    assert pm_log._load_file_lock() is not None
     barrier = threading.Barrier(2)
 
     def worker():

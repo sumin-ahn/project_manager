@@ -20,9 +20,8 @@ SCRIPT = REPO / "scripts/strip_private_refs.py"
 PRIVATE_REFS_MODULE = REPO / ".project_manager/tools/private_refs.py"
 
 # 엔진 사본 규약이 소유하는 이름 — 판정식이 아니라 형제 로드/스탬프 표면이라 스크립트가
-# 재수출하지 않는다. 부트스트랩 블록 이름은 접두사로 함께 뺀다.
-_ENGINE_COPY_SURFACE = frozenset({"ENGINE_REV", "_verify_engine_rev"})
-_BOOTSTRAP_PREFIX = "_TOOLS_BOOTSTRAP"
+# 재수출하지 않는다(엔진 패키지 import 머리 두 이름 포함).
+_ENGINE_COPY_SURFACE = frozenset({"ENGINE_REV", "_TOOLS_DIR", "_load_module_from_path"})
 
 
 def _load():
@@ -748,7 +747,7 @@ def _engine_judgment_names() -> list[str]:
     return [
         name
         for name in names
-        if name not in _ENGINE_COPY_SURFACE and not name.startswith(_BOOTSTRAP_PREFIX)
+        if name not in _ENGINE_COPY_SURFACE
     ]
 
 

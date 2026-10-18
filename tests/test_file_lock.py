@@ -1,6 +1,6 @@
 """공용 동시-쓰기 파일 프리미티브 seam 회귀 (T-0561·T-0565).
 
-`file_lock.py` 가 두 프리미티브를 소유한다 — **배타 파일락**(board `board.lock`·
+`pm_engine/infra/fs.py` 가 두 프리미티브를 소유한다 — **배타 파일락**(board `board.lock`·
 `board-git.lock` / pm_log `log.lock` / pm_relay raw 장부 `<ledger>.lock` / pm_handoff
 `dashboard.lock` / worktree_pool `worktree-leases.lock` / additional_reviewer 라운드 장부
 `review_rounds.lock`)과 **O_APPEND 원자 추가**(board areas 등록 · pm_log log append). 각 도구가
@@ -13,7 +13,6 @@
      `.local/dashboard.lock` 등)은 그대로 보존한다.
   3. 재-복제 차단 — 어느 도구에든 플랫폼 락 분기나 O_APPEND write 가 되살아나면 red. 미수렴
      사본 등재부는 현재 0건(수렴 완결)이라 등재를 되살리려면 완결 단언을 함께 손대야 한다.
-  4. 사본 skew — 소비자가 stale `file_lock.py` 를 만나면 marked skew 로 fail-loud.
 
 도구는 패키지가 아니므로 importlib 경로 로드 관용구를 쓴다(test_pm_log 동형).
 """
@@ -35,10 +34,11 @@ from pathlib import Path
 import pytest
 
 from _win_skip import posix_mode_supported
+from _engine_tree import engine_python_files
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
-FILE_LOCK_PY = TOOLS / "file_lock.py"
+FILE_LOCK_PY = TOOLS / "pm_engine" / "infra" / "fs.py"
 
 SYNC_TIMEOUT = 120
 
@@ -111,8 +111,8 @@ def _lock_call_count(source: str) -> int:
 def _modules_with_platform_lock_calls() -> dict[str, int]:
     """tools/ 에서 플랫폼 락 프리미티브를 *호출*하는 모듈 → 호출 수."""
     found = {
-        path.name: _lock_call_count(path.read_text(encoding="utf-8"))
-        for path in sorted(TOOLS.glob("*.py"))
+        path.relative_to(TOOLS).as_posix(): _lock_call_count(path.read_text(encoding="utf-8"))
+        for path in engine_python_files(TOOLS)
     }
     return {name: calls for name, calls in found.items() if calls}
 
@@ -142,8 +142,8 @@ def _append_flag_reference_count(source: str) -> int:
 def _modules_with_append_writes() -> dict[str, int]:
     """tools/ 에서 O_APPEND write 를 직접 구현하는 모듈 → 플래그 참조 수."""
     found = {
-        path.name: _append_flag_reference_count(path.read_text(encoding="utf-8"))
-        for path in sorted(TOOLS.glob("*.py"))
+        path.relative_to(TOOLS).as_posix(): _append_flag_reference_count(path.read_text(encoding="utf-8"))
+        for path in engine_python_files(TOOLS)
     }
     return {name: refs for name, refs in found.items() if refs}
 
@@ -167,23 +167,14 @@ _ATOMIC_REPLACE_CONSUMERS = (
 # `atomic_replace` 가 있으면 그것을 쓰고, 없거나 로드가 실패할 때만 loud 강등한다. 등재 밖 직접
 # 호출도, 사유가 빈 등재도 red 다 — 예외가 조용히 늘어나지 못하게 한다([[T-0729]] §결정).
 ATOMIC_REPLACE_BOOTSTRAP_EXCEPTIONS: dict[tuple[str, str], str] = {
-    ("pm_update.py", "_atomic_replace_or_degrade"): (
-        "`_predeploy_central_loader` 가 중앙 로더를 내려놓는 부트스트랩 쓰기가 이 함수를 지난다 — "
-        "그 시점 목적지 트리에는 file_lock.py 가 아직 없거나 손상일 수 있고, 여기서 올리면 중단된 "
-        "업데이트를 채택자가 스스로 못 고친다"
-    ),
     ("pm_update.py", "retire_manifest_paths"): (
         "manifest 퇴역 파일의 원본 bytes/mode를 백업 경로로 그대로 옮겨야 하며, 전용 락 안의 "
         "동일 파일시스템 rename 자체가 계약이라 복사 후 교체 seam으로 바꿀 수 없다"
     ),
-    ("pm_import.py", "_atomic_replace_conf"): (
-        "복구 채널의 conf writer — 구세대·손상 사본에서도 키 기록이 성립한다는 기존 보장"
-        "(lockless recovery 계약)을 형제 의존으로 깨지 않는다"
-    ),
 }
 
 # 공용 seam 안에서 프리미티브를 직접 부르는 **유일한** 자리 (POSIX 분기).
-_SEAM_REPLACE_SITE = ("file_lock.py", "atomic_replace")
+_SEAM_REPLACE_SITE = ("pm_engine/infra/fs.py", "atomic_replace")
 
 # seam 함수 이름 — 위임 확인이 보는 유일한 토큰.
 _SEAM_REPLACE_NAME = "atomic_replace"
@@ -260,8 +251,8 @@ def _os_replace_call_count(source: str) -> int:
 def _modules_with_os_replace_calls() -> dict[str, int]:
     """tools/ 에서 원자 교체 프리미티브를 *직접* 호출하는 모듈 → 호출 수."""
     found = {
-        path.name: _os_replace_call_count(path.read_text(encoding="utf-8"))
-        for path in sorted(TOOLS.glob("*.py"))
+        path.relative_to(TOOLS).as_posix(): _os_replace_call_count(path.read_text(encoding="utf-8"))
+        for path in engine_python_files(TOOLS)
     }
     return {name: calls for name, calls in found.items() if calls}
 
@@ -269,8 +260,8 @@ def _modules_with_os_replace_calls() -> dict[str, int]:
 def _os_replace_sites_by_module() -> dict[str, list[tuple[str, int]]]:
     """tools/ 전수 → 모듈별 `os.replace` 호출 위치 `(감싼 함수, 줄번호)`."""
     found = {
-        path.name: _os_replace_call_sites(path.read_text(encoding="utf-8"))
-        for path in sorted(TOOLS.glob("*.py"))
+        path.relative_to(TOOLS).as_posix(): _os_replace_call_sites(path.read_text(encoding="utf-8"))
+        for path in engine_python_files(TOOLS)
     }
     return {name: sites for name, sites in found.items() if sites}
 
@@ -670,37 +661,6 @@ def test_append_atomic_closes_the_descriptor_when_the_write_fails(
 
 # ── 2. 소비 (수렴 도구가 같은 seam 파일을 쓴다) ─────────────────────────────
 
-@pytest.mark.parametrize(
-    "tool", ("board.py", "pm_handoff.py", "worktree_pool.py")
-)
-def test_import_time_consumers_bind_the_canonical_seam(tool):
-    """락이 *모든* 변경 경로에 깔린 도구는 import 시점에 seam 을 바인딩한다 (지연 로드 아님).
-
-    락을 잡을 때마다 형제를 로드하면 그 도구를 fail-soft 로 소비하는 호출층이 사본 skew 를
-    조용히 삼키는 경로가 락 호출 그래프만큼 늘어난다(test_engine_rev_failsoft_guard 의 경계
-    ratchet 이 그 확산을 계량한다) — import 경계 단일 fail-loud 로 그 확산을 막는다.
-    """
-    module = _load(TOOLS / tool, f"{tool[:-3]}_file_lock_seam")
-    assert Path(module.file_lock.__file__).resolve() == FILE_LOCK_PY.resolve()
-    assert "with file_lock.exclusive_file_lock(" in (
-        TOOLS / tool
-    ).read_text(encoding="utf-8")
-
-
-@pytest.mark.parametrize(
-    "tool",
-    ("pm_log.py", "pm_relay.py", "additional_reviewer.py", "pm_update.py", "pm_import.py"),
-)
-def test_lazy_consumers_load_the_canonical_seam(tool):
-    """지연 소비자는 쓰는 경로에서만 seam 을 로드한다(읽기·재사용 경로 fail-soft 보존).
-
-    pm_update·pm_import 는 **복구 채널**이라 지연 로드다 — 엔진 사본이 부분적으로 깨진 트리에서도
-    이 두 도구는 떠야 하고(자기 자신을 고치는 경로), conf 락은 그 안의 쓰기 구간에서만 필요하다.
-    """
-    module = _load(TOOLS / tool, f"{tool[:-3]}_file_lock_seam")
-    assert Path(module._load_file_lock().__file__).resolve() == FILE_LOCK_PY.resolve()
-
-
 def test_board_append_uses_the_seam_instead_of_its_own_o_append_write():
     """board 의 areas 등록은 seam append 로 위임한다 (자체 O_APPEND write 0).
 
@@ -709,7 +669,7 @@ def test_board_append_uses_the_seam_instead_of_its_own_o_append_write():
     """
     board = _load(TOOLS / "board.py", "board_append_seam")
     source = (TOOLS / "board.py").read_text(encoding="utf-8")
-    assert "file_lock.append_atomic(" in source
+    assert "fs.append_atomic(" in source
     assert not hasattr(board, "_append_atomic")
 
 
@@ -720,7 +680,7 @@ def test_relay_raw_ledger_lock_keeps_its_path_and_permission_convention(
     relay = _load(TOOLS / "pm_relay.py", "pm_relay_file_lock_seam")
     ledger = tmp_path / "raw_outputs.json"
     seen: list[tuple] = []
-    lock_module = relay._load_file_lock()
+    lock_module = relay.fs
     real_open = os.open
     monkeypatch.setattr(
         lock_module.os,
@@ -763,7 +723,7 @@ def test_handoff_dashboard_lock_keeps_its_path_and_permission_convention(
     """대시보드 락 = `.project_manager/.local/dashboard.lock` · 0o644 (수렴 전 규약 보존)."""
     handoff = _load(TOOLS / "pm_handoff.py", "pm_handoff_file_lock_seam")
     monkeypatch.setattr(handoff, "REPO", tmp_path)
-    seen = _record_seam_opens(handoff.file_lock, monkeypatch)
+    seen = _record_seam_opens(handoff.fs, monkeypatch)
 
     with handoff._dashboard_lock():
         pass
@@ -780,7 +740,7 @@ def test_worktree_pool_lease_lock_keeps_its_path_and_permission_convention(
     pool = _load(TOOLS / "worktree_pool.py", "worktree_pool_file_lock_seam")
     lock_path = tmp_path / ".project_manager" / ".local" / "worktree-leases.lock"
     monkeypatch.setattr(pool, "LEASES_LOCK", lock_path)
-    seen = _record_seam_opens(pool.file_lock, monkeypatch)
+    seen = _record_seam_opens(pool.fs, monkeypatch)
 
     with pool._lease_lock():
         pass
@@ -797,7 +757,7 @@ def test_platform_lock_branch_lives_only_in_the_shared_seam():
     미수렴 사본이 후속 티켓에서 수렴하면 이 목록을 함께 지운다.
     """
     measured = set(_modules_with_platform_lock_calls())
-    expected = {"file_lock.py"} | set(PENDING_DUPLICATE_LOCK_MODULES)
+    expected = {"pm_engine/infra/fs.py"} | set(PENDING_DUPLICATE_LOCK_MODULES)
     assert measured == expected, (
         f"플랫폼 락 분기 보유 모듈이 예상과 불일치 — 추가: {sorted(measured - expected)} / "
         f"사라짐(목록 정리 필요): {sorted(expected - measured)}"
@@ -811,7 +771,7 @@ def test_lock_convergence_has_no_pending_duplicates():
     등재부를 다시 채우려면 이 단언을 의도적으로 손봐야 한다(조용한 되돌림 차단).
     """
     assert PENDING_DUPLICATE_LOCK_MODULES == {}
-    assert set(_modules_with_platform_lock_calls()) == {"file_lock.py"}
+    assert set(_modules_with_platform_lock_calls()) == {"pm_engine/infra/fs.py"}
 
 
 def test_converged_tools_delegate_instead_of_reimplementing():
@@ -834,7 +794,7 @@ def test_o_append_write_lives_only_in_the_shared_seam():
     (`getattr(os, "O_APPEND")`)은 두 가드 모두의 사각이다 — 재복제는 그렇게 우회하지 않고
     쓰이므로 이 폭을 의도적으로 유지한다.
     """
-    assert set(_modules_with_append_writes()) == {"file_lock.py"}
+    assert set(_modules_with_append_writes()) == {"pm_engine/infra/fs.py"}
 
 
 def test_converged_tools_delegate_the_append_write():
@@ -868,10 +828,10 @@ def test_mutation_reintroduced_append_write_in_converged_tool_is_red():
     """수렴 도구에 자체 O_APPEND write 를 되살리면 가드가 red 로 잡는다 (감도 실증)."""
     source = (TOOLS / "board.py").read_text(encoding="utf-8")
     mutated = source.replace(
-        "    file_lock.append_atomic(\n        af,",
+        "    fs.append_atomic(\n        af,",
         "    _fd = os.open(str(af), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)\n"
         "    os.close(_fd)\n"
-        "    file_lock.append_atomic(\n        af,",
+        "    fs.append_atomic(\n        af,",
         1,
     )
     assert mutated != source, "변이 앵커 소실"
@@ -909,7 +869,7 @@ def test_guard_counts_aliased_and_from_imported_lock_calls(label, snippet):
         (
             "module-alias",
             lambda source: source.replace(
-                "    with file_lock.exclusive_file_lock(BOARD_LOCK):\n        yield",
+                "    with fs.exclusive_file_lock(BOARD_LOCK):\n        yield",
                 "    import fcntl as _lock_mod\n"
                 "    _lock_mod.flock(0, _lock_mod.LOCK_EX)\n"
                 "    yield",
@@ -919,7 +879,7 @@ def test_guard_counts_aliased_and_from_imported_lock_calls(label, snippet):
         (
             "from-import",
             lambda source: source.replace(
-                "    with file_lock.exclusive_file_lock(BOARD_LOCK):\n        yield",
+                "    with fs.exclusive_file_lock(BOARD_LOCK):\n        yield",
                 "    from fcntl import flock\n"
                 "    flock(0, 2)\n"
                 "    yield",
@@ -945,96 +905,6 @@ def test_guard_ignores_lock_names_in_comments_and_strings():
         'DOC = "msvcrt.locking(fd, msvcrt.LK_LOCK, 1)"\n'
     )
     assert _lock_call_count(prose) == 0
-
-
-# ── 4. 사본 skew ──────────────────────────────────────────────────────────
-
-def _copy_tools(tmp_path: Path, *names: str) -> Path:
-    tools = tmp_path / ".project_manager" / "tools"
-    tools.mkdir(parents=True)
-    for name in names:
-        shutil.copy2(TOOLS / f"{name}.py", tools / f"{name}.py")
-    return tools
-
-
-def _make_stale(path: Path) -> None:
-    source = path.read_text(encoding="utf-8")
-    stale = source.replace('ENGINE_REV = "', 'ENGINE_REV = "v0.0.0-stale-', 1)
-    assert stale != source, path
-    path.write_text(stale, encoding="utf-8")
-
-
-@pytest.mark.parametrize(
-    ("consumer", "extra"),
-    (
-        ("board", ("identity_args", "repo_owned_files", "engine_rev", "console_encoding")),
-        ("pm_log", ("identity_args", "repo_owned_files")),
-        ("pm_relay", ("repo_owned_files",)),
-        ("pm_handoff", ("identity_args", "repo_owned_files", "console_encoding")),
-        ("worktree_pool", ("identity_args", "repo_owned_files", "console_encoding")),
-        ("additional_reviewer", ("repo_owned_files", "console_encoding")),
-    ),
-)
-def test_stale_seam_copy_is_reported_as_marked_skew(tmp_path, consumer, extra):
-    """stale `file_lock.py` 사본은 조용한 오작동이 아니라 marked skew 로 표출된다."""
-    tools = _copy_tools(tmp_path, consumer, "file_lock", *extra)
-    _make_stale(tools / "file_lock.py")
-
-    with pytest.raises(RuntimeError) as exc:
-        module = _load(tools / f"{consumer}.py", f"{consumer}_stale_seam")
-        module._load_file_lock()
-
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-    assert "file_lock.py" in str(exc.value)
-
-
-@pytest.mark.parametrize(
-    ("consumer", "extra"),
-    (
-        ("board", ("identity_args", "repo_owned_files", "engine_rev", "console_encoding")),
-        ("pm_log", ("identity_args", "repo_owned_files")),
-        ("pm_relay", ("repo_owned_files",)),
-        ("pm_handoff", ("identity_args", "repo_owned_files", "console_encoding")),
-        ("worktree_pool", ("identity_args", "repo_owned_files", "console_encoding")),
-        ("additional_reviewer", ("repo_owned_files", "console_encoding")),
-    ),
-)
-def test_missing_seam_copy_is_translated_like_a_stale_copy(tmp_path, consumer, extra):
-    """seam **부재**도 raw FileNotFoundError 가 아니라 복구 안내가 붙은 marked skew 다.
-
-    부재의 원인(부분/수동 복사)과 해소(pm-update 재동기)가 stale 사본과 같으므로 진단도 같은
-    등급으로 준다 — raw traceback 은 "무엇을 해야 하나"를 안 알려주고, unmarked 예외는
-    fail-soft 로더가 조용히 None 으로 삼킨다.
-    """
-    tools = _copy_tools(tmp_path, consumer, *extra)      # file_lock.py 를 일부러 빼고 복사
-    assert not (tools / "file_lock.py").exists()
-
-    with pytest.raises(RuntimeError) as exc:
-        module = _load(tools / f"{consumer}.py", f"{consumer}_missing_seam")
-        module._load_file_lock()
-
-    message = str(exc.value)
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-    assert "file_lock.py" in message and "pm-update" in message
-    assert not isinstance(exc.value, FileNotFoundError)
-
-
-def test_missing_seam_diagnosis_is_absent_when_the_check_is_removed(tmp_path):
-    """가드 감도 — 부재 선-검사를 지우면 raw FileNotFoundError 로 되돌아간다.
-
-    번역이 실제로 그 검사에서 나오는지(우연한 다른 경로가 아니라) 변이로 실증한다.
-    """
-    tools = _copy_tools(tmp_path, "pm_log", "identity_args", "repo_owned_files")
-    source = (tools / "pm_log.py").read_text(encoding="utf-8")
-    mutated = source.replace(
-        '    _require_engine_sibling(lock_path, "file_lock.py")\n', "", 1
-    )
-    assert mutated != source, "변이 앵커 소실"
-    (tools / "pm_log.py").write_text(mutated, encoding="utf-8")
-
-    module = _load(tools / "pm_log.py", "pm_log_missing_seam_unguarded")
-    with pytest.raises(FileNotFoundError):
-        module._load_file_lock()
 
 
 # ── append 바이트 보존 (플랫폼 줄끝 번역 차단·T-0711) ────────────────────────
@@ -1662,7 +1532,7 @@ def test_a_new_unregistered_exception_is_red():
     """등재 없는 새 예외는 가드가 red 로 잡는다 (등재부가 곧 상한·감도 실증)."""
     source = (TOOLS / "pm_log.py").read_text(encoding="utf-8")
     mutated = source.replace(
-        "        _load_file_lock().atomic_replace(tmp, path)",
+        "        fs.atomic_replace(tmp, path)",
         "        os.replace(str(tmp), str(path))",
         1,
     )
@@ -1675,155 +1545,11 @@ def test_a_new_unregistered_exception_is_red():
     ), "이 변이 지점이 이미 등재돼 있다 — 감도 실증이 성립하지 않는다"
 
 
-# ── 등재된 예외 두 곳: 양쪽 분기를 다 태운다 ─────────────────────────────────
-# 이 두 지점은 "seam 이 있으면 seam, 없으면 loud 강등" 이다. **정상 분기를 안 태우면** 강등이
-# 상시 경로가 돼도 초록이고, **강등 분기를 안 태우면** 복구 계약이 깨져도 초록이다. 둘 다 태우고
-# 각 케이스에 주입 선-단언을 붙인다.
-
-_LEGACY_SEAM_WITHOUT_ATOMIC_REPLACE = "구세대 file_lock 사본에 atomic_replace 가 없음"
-
-
-def _recording_seam(recorded: list[tuple]) -> types.SimpleNamespace:
-    """`atomic_replace` 만 기록하는 seam 대역 (실제 교체까지 수행)."""
-    def _replace(src, dst):
-        recorded.append((Path(src), Path(dst)))
-        os.replace(src, dst)
-
-    return types.SimpleNamespace(atomic_replace=_replace)
-
-
-def _legacy_seam() -> types.SimpleNamespace:
-    """`atomic_replace` 가 없는 구세대 사본 대역 (부분 업그레이드 형상)."""
-    legacy = types.SimpleNamespace(ENGINE_REV="v0.0.0-legacy")
-    assert not hasattr(legacy, "atomic_replace"), "대역이 구세대 형상이 아니다"
-    return legacy
-
-
-@pytest.mark.parametrize(
-    ("tool", "entry"),
-    (
-        ("pm_update.py", "_atomic_replace_or_degrade"),
-        ("pm_import.py", "_atomic_replace_conf"),
-    ),
-)
-def test_registered_exception_uses_the_seam_when_it_is_available(
-    tool, entry, tmp_path, monkeypatch,
-):
-    """정상 트리에서는 **항상 seam 을 탄다** — 강등은 예비 경로일 뿐이다."""
-    module = _load(TOOLS / tool, f"{tool[:-3]}_atomic_replace_normal")
-    recorded: list[tuple] = []
-    monkeypatch.setattr(module, "_load_file_lock", lambda: _recording_seam(recorded))
-    tmp, target = _pair(tmp_path, "normal")
-
-    getattr(module, entry)(tmp, target)
-
-    assert recorded == [(tmp, target)], "seam 을 타지 않았다(주입이 no-op 이거나 강등했다)"
-    assert target.read_bytes() == b"NEW"
-
-
-@pytest.mark.parametrize(
-    ("tool", "entry"),
-    (
-        ("pm_update.py", "_atomic_replace_or_degrade"),
-        ("pm_import.py", "_atomic_replace_conf"),
-    ),
-)
-@pytest.mark.parametrize("failure", ("missing", "broken"))
-def test_registered_exception_degrades_loudly_without_the_seam(
-    tool, entry, failure, tmp_path, monkeypatch, capsys,
-):
-    """seam 부재/손상에서는 교체를 **완주하되 사유를 stderr 로 남긴다** (조용한 강등 0).
-
-    복구 채널이 자기 잠금하면 채택자가 깨진 트리를 못 고친다. 그렇다고 침묵하면 옛 방식이
-    상시 경로가 돼도 아무도 모른다 — 그래서 완주 + loud 다.
-    """
-    module = _load(TOOLS / tool, f"{tool[:-3]}_atomic_replace_{failure}")
-    seen: list[str] = []
-
-    def _unusable():
-        seen.append(failure)
-        raise ModuleNotFoundError("No module named 'file_lock'")
-
-    if failure == "missing":
-        monkeypatch.setattr(module, "_load_file_lock", _unusable)
-    else:
-        monkeypatch.setattr(
-            module, "_load_file_lock", lambda: seen.append(failure) or _legacy_seam())
-    tmp, target = _pair(tmp_path, failure)
-
-    getattr(module, entry)(tmp, target)
-
-    assert seen == [failure], "주입이 no-op — 강등 분기를 태우지 못했다"
-    assert target.read_bytes() == b"NEW", "강등 경로가 교체를 완주하지 못했다"
-    message = capsys.readouterr().err
-    assert "os.replace" in message, f"강등이 조용하다: {message!r}"
-    expected_reason = (
-        "ModuleNotFoundError" if failure == "missing"
-        else _LEGACY_SEAM_WITHOUT_ATOMIC_REPLACE
-    )
-    assert expected_reason in message, f"강등 사유가 없다: {message!r}"
-
-
-def test_conf_writer_exception_still_refuses_to_absorb_a_marked_skew(
-    tmp_path, monkeypatch,
-):
-    """구세대 호환 강등이 **marked skew** 까지 삼키지는 않는다 (기존 경계 보존).
-
-    같은 rev 안의 API 형상 차이는 물러날 근거지만, rev 자체가 다른 사본은 조용한 오작동이 아니라
-    재동기 안내로 표출해야 한다 — pm_import 락 경로 유도와 같은 규칙이다.
-    """
-    pm_import = _load(TOOLS / "pm_import.py", "pm_import_atomic_replace_skew")
-    raised: list[str] = []
-
-    def _skew():
-        raised.append("skew")
-        error = RuntimeError("엔진 사본 버전 불일치 — file_lock.py")
-        error._engine_rev_skew = True
-        raise error
-
-    monkeypatch.setattr(pm_import, "_load_file_lock", _skew)
-    tmp, target = _pair(tmp_path, "skew")
-
-    with pytest.raises(RuntimeError) as error:
-        pm_import._atomic_replace_conf(tmp, target)
-
-    assert raised == ["skew"], "주입이 no-op — skew 경계를 태우지 못했다"
-    assert getattr(error.value, "_engine_rev_skew", False) is True
-    assert target.read_bytes() == b"OLD", "skew 인데 교체가 진행됐다"
-
-
-def test_bootstrap_re_raises_a_marked_skew(tmp_path, monkeypatch):
-    """pm_update 부트스트랩도 marked skew 를 올린다 — 교체를 진행하지 않는다 (T-0951 AT-017).
-
-    갱신의 완료 단계는 엔진 코드를 받은 뒤 새 프로세스로 돌아 실행 중 rev 혼합이 정상 과도 상태가
-    아니다. skew 는 실결함 신호이므로 흡수하지 않고, 대상 파일은 손대지 않는다.
-    """
-    pm_update = _load(TOOLS / "pm_update.py", "pm_update_atomic_replace_skew")
-    raised: list[str] = []
-
-    def _skew():
-        raised.append("skew")
-        error = RuntimeError("엔진 사본 버전 불일치 — file_lock.py")
-        error._engine_rev_skew = True
-        raise error
-
-    monkeypatch.setattr(pm_update, "_load_file_lock", _skew)
-    tmp, target = _pair(tmp_path, "bootstrap_skew")
-    before = target.read_bytes()
-
-    with pytest.raises(RuntimeError, match="엔진 사본 버전 불일치") as exc:
-        pm_update._atomic_replace_or_degrade(tmp, target)
-
-    assert getattr(exc.value, "_engine_rev_skew", False)
-    assert raised == ["skew"], "주입이 no-op — 경계를 태우지 못했다"
-    assert target.read_bytes() == before, "skew 인데 교체가 진행됐다"
-
-
 def test_mutation_reintroduced_os_replace_in_a_converged_tool_is_red():
     """수렴 도구에 직접 호출을 되살리면 가드가 red 로 잡는다 (감도 실증)."""
     source = (TOOLS / "worktree_pool.py").read_text(encoding="utf-8")
     mutated = source.replace(
-        "    file_lock.atomic_replace(tmp, LEASES_FILE)",
+        "    fs.atomic_replace(tmp, LEASES_FILE)",
         "    os.replace(str(tmp), str(LEASES_FILE))",
         1,
     )
@@ -2273,16 +1999,7 @@ _FD_PRIMITIVE_RECEIVERS = frozenset({"os"})
 _WRITE_MODE_FLAGS = "wax+"
 
 # 공용 seam 안에서 종전 열기를 부르는 **유일한** 자리 (POSIX 분기).
-_SEAM_READ_SITE = ("file_lock.py", "open_shared")
-
-
-def _degrade_helper_reason(module: str, why: str, *helpers: str) -> dict:
-    """한 모듈의 강등 헬퍼들에 같은 사유를 단다 (헬퍼는 등재 예외의 *구현*이다).
-
-    헬퍼 이름을 인자로 받는다 — 모듈마다 쓰는 판독 종류가 달라(예: `review_rounds` 는 bytes
-    판독이 없다) 세 개를 가정하면 없는 함수가 등재부에 남아 red 가 된다.
-    """
-    return {(module, name): why for name in helpers}
+_SEAM_READ_SITE = ("pm_engine/infra/fs.py", "open_shared")
 
 
 # **등재된 예외** — 공유 읽기 seam 을 쓸 수 없거나 대상이 아닌 판독. `(모듈, 함수)` → 사유.
@@ -2306,50 +2023,10 @@ SHARED_READ_EXCEPTIONS: dict[tuple[str, str], str] = {
         "합집합)일 수 있는 자리다 — 같은 문에서 `isinstance(sp, Path)` 로 갈라 경로일 때만 seam 을 "
         "지난다"
     ),
-    **_degrade_helper_reason(
-        "pm_update.py",
-        "복구 채널의 판독 강등 분기 — pm_update 는 엔진 사본이 깨진 채택자에게도 떠야 한다"
-        "(`_atomic_replace_or_degrade` 의 판독 쪽 짝·등록 사유 `shared_read_seam`)",
-        "_read_text_shared", "_read_bytes_shared", "_open_shared",
-    ),
-    **_degrade_helper_reason(
-        "pm_import.py",
-        "복구/도입 채널의 판독 강등 분기 — 구세대·손상 사본 트리에서도 conf 판독과 키 기록이 "
-        "성립해야 한다(`_atomic_replace_conf` 와 같은 등재 항목의 판독 쪽)",
-        "_read_text_shared", "_read_bytes_shared", "_open_shared",
-    ),
-    **_degrade_helper_reason(
-        "pm_log.py",
-        "판독은 형제 없이도 떠야 한다 — pm_bootstrap 이 이 모듈의 로그 판독을 fail-soft 로 "
-        "재사용한다(로더 주석의 명시 계약)",
-        "_read_text_shared", "_read_bytes_shared", "_open_shared",
-    ),
-    **_degrade_helper_reason(
-        "review_rounds.py",
-        "판독은 형제 없이도 떠야 한다 — 부분 동기 트리에서도 라운드 판정이 살아 있어야 그 판정을 "
-        "쓰는 도구들이 복구를 안내한다(로더 주석의 명시 계약)",
-        "_read_text_shared", "_open_shared",
-    ),
-    ("additional_reviewer.py", "_read_text_shared"): (
-        "판독은 형제 없이도 떠야 한다 — 진단·denylist·재앵커는 seam 이 필요한 `--gate` 구간 밖이고 "
-        "pm_delegate 가 그 경로를 deep-import 로 재사용한다(로더 주석의 기능 축)"
-    ),
-    ("local_conf.py", "_read_text_shared"): (
-        "conf 판독은 형제 없이도 떠야 한다 — 모든 도구가 conf 를 읽는 지점에서 이 leaf 파서를 "
-        "로드하므로, seam 부재를 예외로 올리면 부분 동기 트리에서 전 명령이 동시에 죽는다"
-    ),
     ("local_conf.py", "_sibling_literal"): (
         "레지스트리 패턴 전개·선택지 파생이 형제 **소스 선언**을 AST 로 읽는 자리다 — 상태 파일이 "
         "아니라 코드 텍스트라 원자 교체 경합의 대상이 아니고, 판정의 소비자는 never-block advisory "
         "와 표시용 선택지다"
-    ),
-    ("identity_args.py", "_read_text_shared"): (
-        "board 가 import 시점에 로드하는 leaf point-reader 의 강등 분기 — 판독 계약이 "
-        "'부재/손상 → None' 이라 seam 부재로 올리면 실재하는 장부를 '없음' 으로 위장한다"
-    ),
-    ("repo_coordinates.py", "_read_text_shared"): (
-        "같은 leaf 좌표 모듈의 강등 분기 — seam 부재로 올리면 실재하는 리스 장부를 '읽을 수 없다' "
-        "로 위장해 좌표 해소 전체가 막힌다"
     ),
 }
 
@@ -2420,8 +2097,8 @@ def _read_call_sites(source: str) -> list[tuple[str, int]]:
 def _read_sites_by_module() -> dict[str, list[tuple[str, int]]]:
     """tools/ 전수 → 모듈별 판독 호출 위치 `(감싼 함수, 줄번호)`."""
     found = {
-        path.name: _read_call_sites(path.read_text(encoding="utf-8"))
-        for path in sorted(TOOLS.glob("*.py"))
+        path.relative_to(TOOLS).as_posix(): _read_call_sites(path.read_text(encoding="utf-8"))
+        for path in engine_python_files(TOOLS)
     }
     return {name: sites for name, sites in found.items() if sites}
 
@@ -2463,7 +2140,7 @@ def test_read_seam_consumers_delegate_instead_of_reading_directly():
             continue
         assert module in exempt, f"{module}: 등재 없는 종전 읽기 {sites}"
     converted = {
-        path.name for path in sorted(TOOLS.glob("*.py"))
+        path.relative_to(TOOLS).as_posix() for path in engine_python_files(TOOLS)
         if _delegates_to_shared_read(path.read_text(encoding="utf-8"))
     }
     assert len(converted) >= 20, f"전환 모듈이 너무 적다(측정 오류 의심): {sorted(converted)}"
@@ -2515,7 +2192,7 @@ def test_a_new_unregistered_plain_read_is_red():
     """등재 없는 새 종전 읽기는 가드가 red 로 잡는다 (등재부가 곧 상한·감도 실증)."""
     source = (TOOLS / "worktree_pool.py").read_text(encoding="utf-8")
     mutated = source.replace(
-        'file_lock.read_text_shared(LEASES_FILE, encoding="utf-8")',
+        'fs.read_text_shared(LEASES_FILE, encoding="utf-8")',
         'LEASES_FILE.read_text(encoding="utf-8")',
         1,
     )
@@ -2840,8 +2517,8 @@ def test_engine_cleanup_never_swallows_delete_failures():
     산문(주석·docstring)에 그 관용구를 *설명* 하는 것은 판정 대상이 아니다(AST 로만 센다).
     """
     offenders = {
-        path.name: len(_delete_call_keywords(path.read_text(encoding="utf-8"), "ignore_errors"))
-        for path in sorted(TOOLS.glob("*.py"))
+        path.relative_to(TOOLS).as_posix(): len(_delete_call_keywords(path.read_text(encoding="utf-8"), "ignore_errors"))
+        for path in engine_python_files(TOOLS)
         if _delete_call_keywords(path.read_text(encoding="utf-8"), "ignore_errors")
     }
     assert offenders == {}, f"삭제 실패를 삼키는 호출이 남음: {offenders}"

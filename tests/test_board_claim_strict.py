@@ -620,7 +620,7 @@ def test_rollback_warns_when_root_file_snapshot_capture_raises_oserror(
     }
     head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
     # 루트 파일 스냅샷 판독은 공유 읽기 seam 을 지난다([[T-0729]]) — 주입도 그 자리에 건다.
-    real_read_bytes = board.file_lock.read_bytes_shared
+    real_read_bytes = board.fs.read_bytes_shared
     failed = {"once": False}
 
     def _fail_snapshot_once(path) -> bytes:
@@ -629,7 +629,7 @@ def test_rollback_warns_when_root_file_snapshot_capture_raises_oserror(
             raise OSError("forced root snapshot failure")
         return real_read_bytes(path)
 
-    monkeypatch.setattr(board.file_lock, "read_bytes_shared", _fail_snapshot_once)
+    monkeypatch.setattr(board.fs, "read_bytes_shared", _fail_snapshot_once)
     hook = board_dir / ".git" / "hooks" / "pre-commit"
     hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     hook.chmod(0o755)

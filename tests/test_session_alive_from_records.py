@@ -102,7 +102,7 @@ def test_the_round_trip_of_a_real_release_flips_the_record(wp, tmp_path, monkeyp
     monkeypatch.setattr(wp, "REPO_HOOKS_DIR", local_dir / "repo-hooks")
     assert wp.slot_path("work/proj_1") == tmp_path / "work" / "proj_1"
     expected_lock = tmp_path / ".project_manager" / ".local" / "worktree-leases.lock"
-    real_lock = wp.file_lock.exclusive_file_lock
+    real_lock = wp.fs.exclusive_file_lock
     lock_paths = []
 
     @contextlib.contextmanager
@@ -112,7 +112,7 @@ def test_the_round_trip_of_a_real_release_flips_the_record(wp, tmp_path, monkeyp
         with real_lock(path, *args, **kwargs):
             yield
 
-    monkeypatch.setattr(wp.file_lock, "exclusive_file_lock", observed_lock)
+    monkeypatch.setattr(wp.fs, "exclusive_file_lock", observed_lock)
     wp.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     wp.LEASES_FILE.write_text(json.dumps({"leases": [{
         "slot": "work/proj_1", "repo": "proj", "session": "", "started": "t",

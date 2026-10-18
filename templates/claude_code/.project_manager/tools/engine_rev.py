@@ -30,136 +30,10 @@ import re
 import sys
 from pathlib import Path
 
-_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
-_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
-    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
-)
-_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
-_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
-_TOOLS_BOOTSTRAP_SENTINEL = object()
-try:
-    if (
-        _TOOLS_BOOTSTRAP_MODULE is not None
-        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-        != _TOOLS_BOOTSTRAP_FILE
-    ):
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-        _TOOLS_BOOTSTRAP_MODULE = None
-    if _TOOLS_BOOTSTRAP_MODULE is None:
-        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
-            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
-        )
-        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
-        if _TOOLS_BOOTSTRAP_ADDED:
-            sys.path.insert(0, _TOOLS_BOOTSTRAP)
-        try:
-            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
-            if (
-                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-                != _TOOLS_BOOTSTRAP_FILE
-            ):
-                raise ImportError(
-                    "repo_owned_files 형제 경로 불일치: "
-                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
-                )
-            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
-        finally:
-            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
-            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
-            if _TOOLS_BOOTSTRAP_ADDED:
-                try:
-                    sys.path.remove(_TOOLS_BOOTSTRAP)
-                except ValueError:
-                    pass
-            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
-                sys.modules.pop("repo_owned_files", None)
-            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
-                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
-    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
-except Exception as _TOOLS_BOOTSTRAP_ERROR:
-    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-
-    def _load_module_from_path(
-        path,
-        expected_filename,
-        *,
-        verifier=None,
-        allow_unverified=False,
-        cache=False,
-        cache_key=None,
-    ):
-        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
-        target = os.path.realpath(os.fspath(path))
-        if os.path.basename(target) != expected_filename:
-            raise ValueError(
-                f"module filename mismatch: expected {expected_filename!r}, "
-                f"got {os.path.basename(target)!r}"
-            )
-        if verifier is not None and allow_unverified:
-            raise ValueError("choose verifier or allow_unverified=True, not both")
-        if verifier is None and not allow_unverified:
-            raise ValueError(
-                "module load requires verifier or explicit allow_unverified=True"
-            )
-        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
-        module = sys.modules.get(module_key) if cache else None
-        inserted = False
-        try:
-            if module is None:
-                if (
-                    target == _TOOLS_BOOTSTRAP_FILE
-                    and _TOOLS_BOOTSTRAP_MODULE is not None
-                ):
-                    module = _TOOLS_BOOTSTRAP_MODULE
-                else:
-                    import_name = os.path.splitext(expected_filename)[0]
-                    previous = sys.modules.pop(
-                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
-                    )
-                    parent = os.path.dirname(target)
-                    # 런타임에 만든 형제 모듈(중앙 로더 선복구가 방금 복사한 seam 등)을
-                    # 이름으로 import 한다 — FileFinder 는 디렉터리 목록을 mtime 으로 캐시하고
-                    # 인터프리터 시작 뒤 생긴 파일은 invalidate 없이는 인식이 보장되지 않는다
-                    # (Python 문서 `importlib.invalidate_caches` · Windows 실측 간헐
-                    # ModuleNotFoundError). 블록은 stdlib-only 라 지역 import 로 두되 sys.path 에
-                    # parent 를 넣기 전에 가져와 그 트리의 동명 파일이 stdlib 를 가리지 않게 한다.
-                    import importlib as _bootstrap_importlib
-                    added = not sys.path or sys.path[0] != parent
-                    if added:
-                        sys.path.insert(0, parent)
-                    try:
-                        _bootstrap_importlib.invalidate_caches()
-                        module = __import__(import_name)
-                        if os.path.realpath(getattr(module, "__file__", "")) != target:
-                            raise ImportError(
-                                f"{expected_filename} 형제 경로 불일치"
-                            )
-                    finally:
-                        if added:
-                            try:
-                                sys.path.remove(parent)
-                            except ValueError:
-                                pass
-                        if sys.modules.get(import_name) is module:
-                            sys.modules.pop(import_name, None)
-                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
-                            sys.modules[import_name] = previous
-                if cache:
-                    sys.modules[module_key] = module
-                    inserted = True
-            if verifier is not None:
-                verifier(module, expected_filename)
-            return module
-        except Exception as exc:
-            if cache and (inserted or sys.modules.get(module_key) is module):
-                sys.modules.pop(module_key, None)
-            if target == _TOOLS_BOOTSTRAP_FILE:
-                raise RuntimeError(
-                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
-                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
-                ) from exc
-            raise
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.infra import console  # noqa: E402
 
 
 # 엔진 사본 rev — 릴리즈 버전과 함께 bump 하는 단일 진실 값 (`--bump` 이 이 값 + STAMPED_MODULES
@@ -187,7 +61,6 @@ STAMPED_MODULES = (
     "contradiction_lint.py",
     "pm_adr.py",
     "repo_coordinates.py",
-    "console_encoding.py",
     "pm_delegate.py",
     "delegate_scope.py",
     "delegate_channel_guard.py",
@@ -198,8 +71,6 @@ STAMPED_MODULES = (
     "pm_render.py",
     "pm_import.py",
     "pm_log.py",
-    "repo_owned_files.py",
-    "file_lock.py",
     "local_conf.py",
     "private_refs.py",
     "pm_principles.py",
@@ -225,19 +96,6 @@ EXEMPT_FROM_STAMP = {
 # 코드 소유·빈 사유 금지라 새 미검증 loader가 자동으로 섞이지 않는다.
 EXEMPT_UNVERIFIED_DEEP_IMPORTS = {
     ("board.py", "_run_lint_hooks"): "채택자 소유 .project_manager/hooks/lint_*.py 확장점",
-    ("identity_args.py", "_read_text_shared"):
-        "리스 장부 판독을 공유 읽기 seam 으로 올리는 지연 로드다([[T-0729]]). 이 모듈은 board 가 "
-        "**import 시점**에 로드하는 leaf point-reader 라 형제 판정 계층을 갖지 않는 것이 설계이고, "
-        "여기서 빌려 오는 것은 판정이 아니라 '열기 방식' 하나뿐이다 — 구세대 사본은 함수 부재로 "
-        "드러나 loud 강등되고, 강등해도 읽는 바이트는 같다",
-    ("local_conf.py", "_read_text_shared"):
-        "conf 판독을 공유 읽기 seam 으로 올리는 지연 로드다. 이 모듈은 다른 도구가 conf 를 읽는 "
-        "모든 지점에서 로드하는 leaf 파서라 형제 판정 계층을 갖지 않는 것이 설계이고, 빌려 오는 "
-        "것은 판정이 아니라 '열기 방식' 하나뿐이다 — 구세대 사본은 함수 부재로 드러나 loud "
-        "강등되고, 강등해도 읽는 바이트는 같다",
-    ("repo_coordinates.py", "_read_text_shared"):
-        "같은 리스 장부 판독의 지연 로드 — 이 모듈도 다른 도구가 import 시점에 로드하는 leaf "
-        "좌표 모듈이라 같은 근거다(빌리는 것은 열기 방식뿐·구세대는 loud 강등·바이트 동일)",
     ("pm_import.py", "_temp_root"):
         "작업용 임시 루트의 **자리 하나**를 형제(`pm_relay`)에게 묻는 지연 로드다. 받아 오는 "
         "것은 경로이고 어떤 판정의 입력도 아니다 — rev 결속이 지키는 것은 '신 해시 + 구 선언 "
@@ -271,10 +129,8 @@ def read_literal(module_path: Path) -> str | None:
     """모듈 소스에서 baked `ENGINE_REV` 리터럴을 읽는다 (없으면 None). 가드/도구 공용 스캐너.
 
     **공유 읽기 seam 의 등재 예외다**([[T-0729]] 가드 등재부). 읽는 대상(엔진 모듈 소스)은
-    `pm_update` 가 원자 교체하는 파일이 맞지만, 이 모듈은 **rev 검증자 자신**이다 — 형제
-    `file_lock` 을 로드하려면 그 사본의 rev 를 대조해야 하고 그 대조를 하는 곳이 여기라
-    부트스트랩 순환이 된다. `--bump` 는 그 위에서 자기 rev 를 다시 쓰는 경로라 순환이 한 번 더
-    겹친다. 잃는 것은 "Windows 에서 이 스캔이 열려 있는 동안의 교체 한 번" 이고, 얻는 것은
+    `pm_update` 가 원자 교체하는 파일이 맞지만, 이 모듈은 **rev 검증자 자신**이고 `--bump` 는
+    그 위에서 자기 rev 를 다시 쓰는 부트스트랩 경로다. 잃는 것은 "Windows 에서 이 스캔이 열려 있는 동안의 교체 한 번" 이고, 얻는 것은
     "rev 판정이 형제 로드에 의존하지 않는다" 다.
     """
     m = _LITERAL_RE.search(module_path.read_text(encoding="utf-8"))
@@ -293,28 +149,6 @@ def check(sibling_rev, expected_rev, *, sibling_filename: str, loader_filename: 
             f"또는 구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ "
             f"전체를 재동기하라."
         )
-
-
-def load_repo_owned_files(path: Path, *, verifier=None, allow_unverified: bool = False):
-    """세 소비자가 공유하는 ``repo_owned_files.py`` 캐시/로드 단일 seam.
-
-    동일한 path-key 캐시는 검증 면제 복구 채널(pm_update)도 채울 수 있다. 따라서 캐시를 만든
-    주체를 신뢰하지 않고 *매 소비 시점* 전달된 ``verifier``를 실행한다. 면제 채널만
-    ``allow_unverified=True``를 명시할 수 있으며, 그 캐시는 이후 stamped 소비자가 다시 검증한다.
-    exec/검증 실패 시 오염된 공용 캐시를 제거하고 원 예외를 그대로 보존한다.
-    """
-    path = Path(path).resolve()
-    if verifier is None and not allow_unverified:
-        raise ValueError("repo_owned_files loader는 verifier 또는 명시적 복구채널 면제가 필요하다")
-    module_name = f"_project_manager_repo_owned_files:{path}"
-    return _load_module_from_path(
-        path,
-        "repo_owned_files.py",
-        verifier=verifier,
-        allow_unverified=allow_unverified,
-        cache=True,
-        cache_key=module_name,
-    )
 
 
 def bump(new_rev: str, *, dry_run: bool = False) -> list[str]:
@@ -344,13 +178,8 @@ def bump(new_rev: str, *, dry_run: bool = False) -> list[str]:
 
 
 def main(argv=None) -> int:
-    _console_encoding = _load_module_from_path(
-        Path(__file__).resolve().with_name("console_encoding.py"),
-        "console_encoding.py",
-        allow_unverified=True,
-    )
     # 복구 도구는 skew 검증 금지: 중단된 bump(engine_rev만 신 rev)를 재실행해 나머지를 복구해야 한다.
-    _console_encoding.configure_console_utf8()
+    console.configure_console_utf8()
     ap = argparse.ArgumentParser(
         description="엔진 rev 스탬프 bump — 전 stamped 모듈의 baked 리터럴을 기계 일괄 재작성.",
     )

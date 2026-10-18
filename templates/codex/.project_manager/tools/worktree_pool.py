@@ -19,7 +19,7 @@ repo별 git worktree 풀로 *코드*를 격리한다(병렬 브랜치·나중 gi
     submodule init 을 seam 통해 호출 → hermetic 테스트(mock 또는 실 임시 repo).
   - 커밋 안 한 변경이 있으면 반납·강제 반납·제거가 멈춘다. 엔진은 stash 하지 않는다.
 
-장부 동시쓰기 보호 = **배타 파일락**(공용 `file_lock` seam·경로 규약
+장부 동시쓰기 보호 = **배타 파일락**(공용 `fs` seam·경로 규약
 `.local/worktree-leases.lock` 만 이 도구 소유). board.py 의 `board_lock` 과 *같은
 프리미티브*를 쓰지만 board 모듈에는 여전히 의존하지 않는다(top-level import 금지 — seam 은
 형제를 로드하지 않는 leaf).
@@ -50,136 +50,11 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Callable, NamedTuple
 
-_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
-_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
-    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
-)
-_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
-_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
-_TOOLS_BOOTSTRAP_SENTINEL = object()
-try:
-    if (
-        _TOOLS_BOOTSTRAP_MODULE is not None
-        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-        != _TOOLS_BOOTSTRAP_FILE
-    ):
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-        _TOOLS_BOOTSTRAP_MODULE = None
-    if _TOOLS_BOOTSTRAP_MODULE is None:
-        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
-            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
-        )
-        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
-        if _TOOLS_BOOTSTRAP_ADDED:
-            sys.path.insert(0, _TOOLS_BOOTSTRAP)
-        try:
-            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
-            if (
-                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
-                != _TOOLS_BOOTSTRAP_FILE
-            ):
-                raise ImportError(
-                    "repo_owned_files 형제 경로 불일치: "
-                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
-                )
-            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
-        finally:
-            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
-            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
-            if _TOOLS_BOOTSTRAP_ADDED:
-                try:
-                    sys.path.remove(_TOOLS_BOOTSTRAP)
-                except ValueError:
-                    pass
-            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
-                sys.modules.pop("repo_owned_files", None)
-            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
-                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
-    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
-except Exception as _TOOLS_BOOTSTRAP_ERROR:
-    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
-        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
-
-    def _load_module_from_path(
-        path,
-        expected_filename,
-        *,
-        verifier=None,
-        allow_unverified=False,
-        cache=False,
-        cache_key=None,
-    ):
-        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
-        target = os.path.realpath(os.fspath(path))
-        if os.path.basename(target) != expected_filename:
-            raise ValueError(
-                f"module filename mismatch: expected {expected_filename!r}, "
-                f"got {os.path.basename(target)!r}"
-            )
-        if verifier is not None and allow_unverified:
-            raise ValueError("choose verifier or allow_unverified=True, not both")
-        if verifier is None and not allow_unverified:
-            raise ValueError(
-                "module load requires verifier or explicit allow_unverified=True"
-            )
-        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
-        module = sys.modules.get(module_key) if cache else None
-        inserted = False
-        try:
-            if module is None:
-                if (
-                    target == _TOOLS_BOOTSTRAP_FILE
-                    and _TOOLS_BOOTSTRAP_MODULE is not None
-                ):
-                    module = _TOOLS_BOOTSTRAP_MODULE
-                else:
-                    import_name = os.path.splitext(expected_filename)[0]
-                    previous = sys.modules.pop(
-                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
-                    )
-                    parent = os.path.dirname(target)
-                    # 런타임에 만든 형제 모듈(중앙 로더 선복구가 방금 복사한 seam 등)을
-                    # 이름으로 import 한다 — FileFinder 는 디렉터리 목록을 mtime 으로 캐시하고
-                    # 인터프리터 시작 뒤 생긴 파일은 invalidate 없이는 인식이 보장되지 않는다
-                    # (Python 문서 `importlib.invalidate_caches` · Windows 실측 간헐
-                    # ModuleNotFoundError). 블록은 stdlib-only 라 지역 import 로 두되 sys.path 에
-                    # parent 를 넣기 전에 가져와 그 트리의 동명 파일이 stdlib 를 가리지 않게 한다.
-                    import importlib as _bootstrap_importlib
-                    added = not sys.path or sys.path[0] != parent
-                    if added:
-                        sys.path.insert(0, parent)
-                    try:
-                        _bootstrap_importlib.invalidate_caches()
-                        module = __import__(import_name)
-                        if os.path.realpath(getattr(module, "__file__", "")) != target:
-                            raise ImportError(
-                                f"{expected_filename} 형제 경로 불일치"
-                            )
-                    finally:
-                        if added:
-                            try:
-                                sys.path.remove(parent)
-                            except ValueError:
-                                pass
-                        if sys.modules.get(import_name) is module:
-                            sys.modules.pop(import_name, None)
-                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
-                            sys.modules[import_name] = previous
-                if cache:
-                    sys.modules[module_key] = module
-                    inserted = True
-            if verifier is not None:
-                verifier(module, expected_filename)
-            return module
-        except Exception as exc:
-            if cache and (inserted or sys.modules.get(module_key) is module):
-                sys.modules.pop(module_key, None)
-            if target == _TOOLS_BOOTSTRAP_FILE:
-                raise RuntimeError(
-                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
-                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
-                ) from exc
-            raise
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.infra import console, fs, repo_files  # noqa: E402
+_load_module_from_path = repo_files.load_module
 
 
 
@@ -953,28 +828,12 @@ def _now_local() -> str:
     return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-# ── 리스 장부 파일락 (경로 규약만 소유·플랫폼 분기는 공용 `file_lock` seam) ──────────
+# ── 리스 장부 파일락 (경로 규약만 소유·플랫폼 분기는 공용 `fs` seam) ──────────
 # 장부 read-modify-write 를 직렬화한다. 프로세스가 죽으면 OS 가 락을 자동 해제(stale-lock
 # 없음). 플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)는 공용 seam 이 소유하고
 # 이 도구는 *어느 파일에 거는지*(`.local/worktree-leases.lock`)만 정한다.
 # board 를 top-level import 하지 않는다는 원칙은 그대로다 — seam 은 형제를 로드하지 않는
 # leaf 라 그 원칙과 무관하게 공유할 수 있다.
-
-
-def _load_file_lock():
-    """공용 배타 파일락 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
-
-    `_load_identity_args` 동형 — 경로-앵커 로더다. **import 시점** 바인딩으로 둔다(`file_lock`
-    전역·identity_args 와 같은 블록·board.py 동형): 장부의 *모든* op 가 이 락을 지나므로, 락을
-    잡을 때마다 형제를 로드하면 worktree_pool 을 fail-soft 로 소비하는 호출층(pm_bootstrap·
-    pm_handoff·pm_config)이 사본 skew 를 조용히 삼키는 경로가 장부 op 수만큼 늘어난다 —
-    import 경계 단일 fail-loud 로 그 확산을 막는다.
-    """
-    lock_path = Path(__file__).resolve().with_name("file_lock.py")
-    _require_engine_sibling(lock_path, "file_lock.py")
-    return _load_module_from_path(
-        lock_path, "file_lock.py", verifier=_verify_engine_rev,
-    )
 
 
 def _load_relay():
@@ -995,7 +854,7 @@ def _lease_lock() -> Iterator[None]:
     안 된다(flock 재진입 동작은 OS 별로 다름). 장부의 모든 read-modify-write 가 이 한
     구간 안에서 일어난다.
     """
-    with file_lock.exclusive_file_lock(LEASES_LOCK):
+    with fs.exclusive_file_lock(LEASES_LOCK):
         yield
 
 
@@ -1014,7 +873,7 @@ def _read_ledger_raw() -> dict:
     if not LEASES_FILE.exists():
         return {}
     try:
-        data = json.loads(file_lock.read_text_shared(LEASES_FILE, encoding="utf-8"))
+        data = json.loads(fs.read_text_shared(LEASES_FILE, encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -1029,7 +888,7 @@ def _read_ledger_raw_strict() -> dict:
     """
     if not LEASES_FILE.exists():
         return {}
-    data = json.loads(file_lock.read_text_shared(LEASES_FILE, encoding="utf-8"))
+    data = json.loads(fs.read_text_shared(LEASES_FILE, encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("worktree lease 장부 최상위 값이 object가 아님")
     return data
@@ -1041,7 +900,7 @@ def _write_ledger_raw(data: dict) -> None:
     payload = json.dumps(data, ensure_ascii=False, indent=2)
     tmp = LEASES_FILE.with_suffix(".json.tmp")
     tmp.write_text(payload + "\n", encoding="utf-8", newline="\n")
-    file_lock.atomic_replace(tmp, LEASES_FILE)
+    fs.atomic_replace(tmp, LEASES_FILE)
 
 
 def _read_ledger() -> list[Lease]:
@@ -1083,27 +942,6 @@ def _write_ledger(leases: list[Lease]) -> None:
 # ── git DI seam ────────────────────────────────────────────────────────────
 
 
-def _load_repo_owned_files():
-    """공용 captured git runner seam을 rev 검증 후 로드한다."""
-    path = Path(__file__).resolve().with_name("repo_owned_files.py")
-    if not path.exists():
-        raise RuntimeError(
-            "repo_owned_files.py를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
-    )
-    try:
-        helper_path = Path(__file__).resolve().with_name("engine_rev.py")
-        helper = _load_module_from_path(
-            helper_path, "engine_rev.py", allow_unverified=True,
-        )
-        return helper.load_repo_owned_files(path, verifier=_verify_engine_rev)
-    except Exception as exc:
-        if _is_engine_rev_skew(exc):
-            raise
-        raise RuntimeError(
-            "repo_owned_files.py를 로드할 수 없음 — 엔진 사본을 pm-update로 재동기화하라"
-        ) from exc
-
-
 def _real_git_runner(cwd: Path) -> GitRunner:
     """실 git 을 `cwd` 컨텍스트로 호출하는 GitRunner 를 만든다 (pm_import._real_git_runner 선례).
 
@@ -1125,7 +963,6 @@ def _real_git_runner(cwd: Path) -> GitRunner:
     안 보여(silent) 무제한이면 network stall(base 파생 `fetch origin`) 시 silent hang 하기 때문.
     무제한(None)은 진행이 콘솔에 보이는 worktree-add 인터랙티브 러너에만 허용한다.
     """
-    repo_files = _load_repo_owned_files()
     return repo_files.real_git_runner(
         cwd,
         missing_binary_rc=1,
@@ -1885,7 +1722,7 @@ def _atomic_write_protected_artifact(artifact: ProtectedHookArtifact) -> None:
         tmp.chmod(
             _PROTECTED_HOOK_EXECUTABLE_MODE
             if artifact.executable else _PROTECTED_SIDECAR_MODE)
-        file_lock.atomic_replace(tmp, artifact.path)
+        fs.atomic_replace(tmp, artifact.path)
     except BaseException:
         # fdopen 전/중 실패도 descriptor와 임시파일을 남기지 않는다. 원래 산출물은 replace
         # 전까지 건드리지 않았으므로 그대로 유효하다.
@@ -2128,7 +1965,7 @@ def _task_todo_lock(name: str) -> Iterator[None]:
     """
     path = _task_todo_lock_file(name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with file_lock.exclusive_file_lock(path):
+    with fs.exclusive_file_lock(path):
         yield
 
 
@@ -2169,7 +2006,7 @@ def _write_todo_doc(name: str, doc: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n",
                    encoding="utf-8", newline="\n")
-    file_lock.atomic_replace(tmp, path)
+    fs.atomic_replace(tmp, path)
 
 
 def _read_todo_doc(name: str) -> dict:
@@ -2182,7 +2019,7 @@ def _read_todo_doc(name: str) -> dict:
     path = task_todo_file(name)
     if not path.is_file():
         return {"next_id": 1, "todos": []}
-    doc = json.loads(file_lock.read_text_shared(path, encoding="utf-8"))
+    doc = json.loads(fs.read_text_shared(path, encoding="utf-8"))
     _validate_todo_doc(path, doc)
     return doc
 
@@ -2280,13 +2117,13 @@ def ensure_task_pm_state(name: str) -> Path:
             f"task pm_state template 부재: {template} — task state를 만들 수 없다"
         )
     rendered = _render_initial_task_pm_state(
-        file_lock.read_text_shared(template, encoding="utf-8"),
+        fs.read_text_shared(template, encoding="utf-8"),
         datetime.date.today().isoformat(),
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(target.suffix + ".tmp")
     tmp.write_text(rendered, encoding="utf-8", newline="\n")
-    file_lock.atomic_replace(tmp, target)
+    fs.atomic_replace(tmp, target)
     return target
 
 
@@ -2369,7 +2206,7 @@ def record_task_session_claim(name: str, session: str) -> Path:
         tmp = path.with_name(f"{path.name}.tmp")
         tmp.write_text(json.dumps({"task": name, "session": session}, ensure_ascii=False) + "\n",
                        encoding="utf-8", newline="\n")
-        file_lock.atomic_replace(tmp, path)
+        fs.atomic_replace(tmp, path)
     return path
 
 
@@ -2380,7 +2217,7 @@ def take_task_session_claim(name: str) -> str:
     with _lease_lock():
         if not path.exists():
             raise NoTaskSessionClaim(name)
-        data = json.loads(file_lock.read_text_shared(path, encoding="utf-8"))
+        data = json.loads(fs.read_text_shared(path, encoding="utf-8"))
         path.unlink()
     session = data.get("session") if isinstance(data, dict) and data.get("task") == name else None
     if not isinstance(session, str) or not session:
@@ -3251,7 +3088,7 @@ def remove_slot(
                     "git 등록·장부·브랜치가 그대로다."
                 )
             tree_cleaned = path.exists()
-            file_lock.force_rmtree(path)
+            fs.force_rmtree(path)
         bare_runner(["worktree", "prune"])  # best-effort 등록 정리(remove 후 dangling admin).
 
         # 브랜치 — 브랜치 수명은 슬롯 수명이다. 삭제 여부는 공용 판정 규칙이 정한다.
@@ -6378,14 +6215,14 @@ def _leased_sessions() -> list[str]:
 
     `_default_session` 이 lock 밖에서 호출하므로 lock 없는 point-read 로 장부
     파일(`LEASES_FILE`)을 직접 읽는다 — `_read_ledger`(lock 보유 전제)와 별도. 리스는
-    원자 교체(`file_lock.atomic_replace`)로 쓰므로 lock 없는 read 도 일관 스냅샷을 본다(board.py
+    원자 교체(`fs.atomic_replace`)로 쓰므로 lock 없는 read 도 일관 스냅샷을 본다(board.py
     `_leased_sessions` 와 *동형*). 장부 부재/파싱실패/손상은 빈 리스트(fail-soft). session 이
     빈/None 인 행은 제외.
     """
     if not LEASES_FILE.exists():
         return []
     try:
-        data = json.loads(file_lock.read_text_shared(LEASES_FILE, encoding="utf-8"))
+        data = json.loads(fs.read_text_shared(LEASES_FILE, encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return []
     if not isinstance(data, dict):
@@ -6692,12 +6529,9 @@ def _load_identity_args():
 
 
 # state 생성과 handoff 갱신이 같은 marker를 쓰도록 literal은 identity_args 한 곳만 소유한다.
-# 앞서 정의된 함수들은 이 전역을 호출 시점에 조회하므로 module import 계약은 그대로다
-# (`file_lock` 도 같은 이유로 여기서 묶어 바인딩한다 — `_lease_lock` 은 위에 정의돼 있지만
-#  호출 시점에 이 전역을 본다·board.py 의 identity_args+file_lock 동시 바인딩 동형).
+# 앞서 정의된 함수들은 이 전역을 호출 시점에 조회하므로 module import 계약은 그대로다.
 try:
     _identity_args = _load_identity_args()
-    file_lock = _load_file_lock()
 except Exception as exc:  # noqa: BLE001 — 직접 CLI는 import 단계 skew도 복구 안내로 번역.
     if _is_engine_rev_skew(exc):
         if __name__ == "__main__":
@@ -7042,12 +6876,7 @@ def _main(argv: "list[str] | None" = None) -> int:
       - `kind="none"`(인자 전무) → 기존 no-flag 체인(`_resolve_current_slot(None)`·cwd→세션
         leased).
     """
-    _console_encoding = _load_module_from_path(
-        Path(__file__).resolve().with_name("console_encoding.py"),
-        "console_encoding.py",
-        verifier=_verify_engine_rev,
-    )
-    _console_encoding.configure_console_utf8()
+    console.configure_console_utf8()
     ia = _load_identity_args()
     parser = argparse.ArgumentParser(
         prog="worktree_pool.py",
@@ -7189,12 +7018,7 @@ def _main(argv: "list[str] | None" = None) -> int:
 def main(argv: "list[str] | None" = None) -> int:
     """CLI 최외곽에서 엔진 사본 불일치를 traceback 대신 복구 안내로 번역한다."""
     try:
-        _console_encoding = _load_module_from_path(
-            Path(__file__).resolve().with_name("console_encoding.py"),
-            "console_encoding.py",
-            verifier=_verify_engine_rev,
-        )
-        _console_encoding.configure_console_utf8()
+        console.configure_console_utf8()
         return _main(argv)
     except Exception as exc:  # noqa: BLE001 — marked skew만 사용자 진단+rc로 종료.
         if _is_engine_rev_skew(exc):

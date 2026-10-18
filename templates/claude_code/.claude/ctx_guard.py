@@ -145,15 +145,11 @@ def load_local_config(root: Path) -> dict[str, str]:
 
 
 def _ctx_leaf(root):
-    import importlib.util
-    path = Path(root) / ".project_manager/tools/repo_owned_files.py"
-    spec = importlib.util.spec_from_file_location("ctx_owned_loader", path)
-    loader = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(loader)
-    def verify(module, filename):
-        if getattr(module, "ENGINE_REV", None) != getattr(loader, "ENGINE_REV", None):
-            raise RuntimeError(f"ctx 엔진 사본 불일치: {filename}")
-    return loader.load_module(path.with_name("local_conf.py"), "local_conf.py", verifier=verify, cache=True)
+    tools = Path(root) / ".project_manager/tools"
+    if str(tools) not in sys.path:
+        sys.path.insert(0, str(tools))
+    from pm_engine.infra import repo_files
+    return repo_files.load_module(tools / "local_conf.py", "local_conf.py", allow_unverified=True, cache=True)
 
 
 def read_budget(root, conf: dict[str, str], session_model: str | None) -> dict:

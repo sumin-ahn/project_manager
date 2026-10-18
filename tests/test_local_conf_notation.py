@@ -32,6 +32,7 @@ from pathlib import Path
 import pytest
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
+from _engine_tree import engine_python_files
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -298,7 +299,7 @@ def test_the_collection_floor_axis_is_named_as_removed_not_renamed(conf_module, 
 
 def _engine_sources() -> dict[Path, str]:
     return {path: path.read_text(encoding="utf-8")
-            for path in sorted(TOOLS.glob("*.py"))}
+            for path in engine_python_files(TOOLS)}
 
 
 def test_no_legacy_key_literal_survives_in_the_engine(conf_module):
@@ -695,7 +696,7 @@ def test_no_surface_calls_the_delegate_switch_a_consent_axis():
         REPO / ".project_manager/wiki/pm_playbook.md",
         REPO / "templates/codex/.codex/config.toml",
         *_DELEGATE_CARDS,
-        *sorted(TOOLS.glob("*.py")),
+        *engine_python_files(TOOLS),
     ]
     offenders: list[str] = []
     for path in surfaces:

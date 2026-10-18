@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 
 from _textio import write_lf
+from _engine_tree import engine_python_files
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -83,7 +84,7 @@ def console_encoding():
     state_key = "_project_manager_console_encoding_state_v1"
     if hasattr(builtins, state_key):
         delattr(builtins, state_key)
-    module = _load("console_encoding", TOOLS)
+    module = _load("console", TOOLS / "pm_engine" / "infra")
     try:
         yield module
     finally:
@@ -478,15 +479,15 @@ def _has_main_guard(tree: ast.AST) -> bool:
 def test_console_codepage_helper_has_single_definition():
     """codepage 제어 구현은 공용 모듈 한 곳뿐이다(복붙 재도입 차단)."""
     definitions = []
-    for path in TOOLS.glob("*.py"):
+    for path in engine_python_files(TOOLS):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         if any(
             isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             and node.name == "_set_console_codepage_utf8"
             for node in ast.walk(tree)
         ):
-            definitions.append(path.name)
-    assert definitions == ["console_encoding.py"]
+            definitions.append(path.relative_to(TOOLS).as_posix())
+    assert definitions == ["pm_engine/infra/console.py"]
 
 
 def test_every_main_entrypoint_calls_common_console_helper():
@@ -496,7 +497,7 @@ def test_every_main_entrypoint_calls_common_console_helper():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         if path.name == "python_floor.py":
             # 실제 엔진보다 먼저 구 Python(2.7 포함)에서 실행되는 ASCII-only bootstrap probe.
-            # console_encoding.py 자체는 3.11 엔진이므로 이 probe가 먼저 하한을 판정해야 한다.
+            # 엔진 콘솔 모듈(pm_engine/infra/console.py)은 3.11 엔진이므로 이 probe가 먼저 하한을 판정해야 한다.
             continue
         if _has_main_guard(tree):
             entrypoints[path.name] = tree
@@ -573,22 +574,22 @@ def test_every_main_entrypoint_calls_common_console_helper():
             name = call_name(call) if call is not None else type(stmt).__name__
             if name not in allowed_loader_calls:
                 unexpected.append(name)
-        loads_common_file = any(
-            isinstance(node, ast.Constant) and node.value == "console_encoding.py"
-            for stmt in scan_body[:helper_index + 1]
-            for node in ast.walk(stmt)
+        helper_func = scan_body[helper_index].value.func
+        loads_common_file = (
+            isinstance(helper_func, ast.Attribute)
+            and isinstance(helper_func.value, ast.Name)
+            and helper_func.value.id == "console"
         )
         if unexpected or not loads_common_file:
             missing.append(
                 f"{filename}: helper 전 비-로더 statement={unexpected}, "
-                f"console_encoding 로드={loads_common_file}"
+                f"패키지 console 호출={loads_common_file}"
             )
 
     assert not missing, (
         "__main__ 보유 도구의 main() 최상위 선행 console helper 관용구 위반: "
         f"{missing}; 스캔 전수={sorted(entrypoints)}. 각 main() 첫 동작에 "
-        "`_load_module_from_path(... console_encoding.py, verifier/allow_unverified=...) "
-        "→ _console_encoding.configure_console_utf8()`를 "
+        "`console.configure_console_utf8()`(`from pm_engine.infra import console`)를 "
         "parser/print/dispatch보다 먼저 넣어라."
     )
 

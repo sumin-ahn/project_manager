@@ -16,13 +16,11 @@ and string literals are never searched.
 from __future__ import annotations
 
 import ast
-import hashlib
 import importlib.util
 import re
 import shutil
 import subprocess
 import sys
-import traceback
 import types
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
@@ -36,7 +34,25 @@ from _win_skip import _can_symlink
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
-_CENTRAL_LOADER = ("repo_owned_files.py", "load_module")
+_CENTRAL_LOADER = ("pm_engine/infra/repo_files.py", "load_module")
+# 이동한 인프라 모듈 — 평면 형제가 아니라 패키지 안에 있다(`_copy_tools` 가 패키지째 복사).
+_ENGINE_PACKAGE = "pm_engine"
+_MOVED_MODULES = frozenset({"file_lock", "console_encoding", "repo_owned_files"})
+
+
+def _central_guard_sources(tools: Path) -> list[tuple[str, Path]]:
+    """중앙 가드 스캔 대상 — 평면 엔진 파일 전수 + 패키지 안의 중앙 적재기 파일."""
+    sources = [(path.name, path) for path in sorted(tools.glob("*.py"), key=lambda path: path.name)]
+    central = tools / _CENTRAL_LOADER[0]
+    if central.is_file():
+        sources.append((_CENTRAL_LOADER[0], central))
+    return sources
+
+
+@dataclass(frozen=True)
+class _GuardSource:
+    name: str
+    path: Path
 
 
 @dataclass(frozen=True)
@@ -78,13 +94,14 @@ def collect_central_guard_report(tools: Path) -> CentralGuardReport:
         if not isinstance(reason, str) or not reason.strip()
     )
 
-    for source in sorted(tools.glob("*.py"), key=lambda path: path.name):
-        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    for label, source_path in _central_guard_sources(tools):
+        source = _GuardSource(label, source_path)
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
         spec_aliases = _spec_aliases(tree)
         loader_aliases = {
             alias.asname or alias.name
             for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module == "repo_owned_files"
+            if isinstance(node, ast.ImportFrom) and node.module == "pm_engine.infra.repo_files"
             for alias in node.names
             if alias.name == "load_module"
         }
@@ -768,8 +785,9 @@ def collect_guard_report(tools: Path) -> GuardReport:
     boundaries: list[Boundary] = []
     existing_modules = {path.name for path in tools.glob("*.py")}
 
-    for source in sorted(tools.glob("*.py"), key=lambda path: path.name):
-        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    for label, source_path in _central_guard_sources(tools):
+        source = _GuardSource(label, source_path)
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
         aliases = _spec_aliases(tree)
         parents = {
             child: parent
@@ -987,9 +1005,10 @@ def _load_module(tools: Path, name: str):
 def _copy_tools(tmp_path: Path, *names: str) -> Path:
     tools = tmp_path / ".project_manager" / "tools"
     tools.mkdir(parents=True)
-    shutil.copy2(TOOLS / "repo_owned_files.py", tools / "repo_owned_files.py")
+    shutil.copytree(TOOLS / _ENGINE_PACKAGE, tools / _ENGINE_PACKAGE,
+                    ignore=shutil.ignore_patterns("__pycache__"))
     for name in names:
-        if name == "repo_owned_files":
+        if name in _MOVED_MODULES:
             continue
         shutil.copy2(TOOLS / f"{name}.py", tools / f"{name}.py")
     return tools
@@ -1026,76 +1045,6 @@ def _module_assignment(tree: ast.Module, name: str) -> ast.Assign | ast.AnnAssig
             matches.append(node)
     assert len(matches) == 1, f"module assignment lookup failed: {name}"
     return matches[0]
-
-
-def _bootstrap_block_hashes(tools: Path) -> dict[str, str]:
-    """실측 bootstrap 소비자의 공통 블록을 source byte 범위로 해시한다."""
-    hashes: dict[str, str] = {}
-    for source in sorted(tools.glob("*.py"), key=lambda path: path.name):
-        text = source.read_text(encoding="utf-8")
-        tree = ast.parse(text, filename=str(source))
-        starts = []
-        for node in tree.body:
-            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-                continue
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            if any(
-                isinstance(target, ast.Name) and target.id == "_TOOLS_BOOTSTRAP"
-                for target in targets
-            ):
-                starts.append(node)
-        if not starts:
-            continue
-        assert len(starts) == 1, source
-        bootstrap_try = next(
-            node for node in tree.body
-            if isinstance(node, ast.Try) and node.lineno > starts[0].lineno
-        )
-        lines = text.splitlines(keepends=True)
-        block = "".join(lines[starts[0].lineno - 1:bootstrap_try.end_lineno])
-        hashes[source.name] = hashlib.sha256(block.encode("utf-8")).hexdigest()
-    return hashes
-
-
-# 부트스트랩 블록(위 `_bootstrap_block_hashes`가 해시하는 `_TOOLS_BOOTSTRAP...` 구간) 편집
-# 절차 — 22 모듈에 byte 단위로 복제돼 있어 한 줄만 고쳐도 이 순서를 전부 밟는다(T-0746 에서
-# 이 순서를 안 밟아 가드 3종이 릴리즈 중 두 번 더 red 났다 · T-0748 로 기계화):
-#   1. 대표 모듈 하나(예: board.py)에서 블록을 고치고 그 모듈 단위로 동작을 검증한다.
-#   2. 나머지 소비 모듈 전부에 **byte 단위로 동일하게** 옮긴다 — 소비 모듈 목록은
-#      `test_ast_target_set_is_measured_not_frozen_to_ticket_snapshot` 이 실측하므로 하드코딩한
-#      목록을 따로 유지하지 않는다(아래 `test_all_measured_bootstrap_blocks_are_byte_identical`
-#      이 바로 그 실측 집합 == 동일 해시 집합을 확인한다).
-#   3. `python3 .project_manager/tools/pm_update.py --all-targets --from .` 로 templates 3타깃에
-#      재전파한다(drift 0 확인 · CLAUDE.md).
-#   4. 이 블록을 담는 모듈(`pm_import.py`·`pm_update.py` 포함)이 바뀌면 아래 3개 가드가 같이
-#      red 가 될 수 있다 — 각자 절차대로 재핀한다:
-#      a. `test_engine_text_write_newline.py::_ALLOWED` — (파일, 함수명, 호출 형태) 심볼 키라
-#         블록 편집으로 아래쪽 라인이 밀려도 무감하다. 편집이 `_fdopen_text`/`_fdopen_binary`
-#         자체의 이름이나 그 안 `os.fdopen` 호출 형태를 바꿀 때만 그 항목을 함께 고친다.
-#      b. `test_upgrade_adopter_e2e.py::_T0585_PM_UPDATE_SHA256` — `pm_update.py` 블록을 고치면
-#         whole-file sha 가 반드시 바뀐다. 실패 메시지가 안내하는 재핀 절차(anachronism 부재
-#         단언 통과 확인 → digest 갱신)를 그대로 따른다.
-#      c. private-context 원장 2종 — 스키마·재핀 절차가 서로 다르다(둘 다 안 건드리고 넘어가면
-#         한쪽만 고치고 끝냈다고 착각한다):
-#         - `tests/data/private_context_hard_allowlist.json` — 기계 재생성 대상이다:
-#           `python3 tests/test_private_context_guard.py --regenerate` (기본 `--output` 이 이
-#           파일을 가리킨다).
-#         - `tests/data/private_context_baseline.json` — 생성기가 없는 **검토형** ratchet
-#           대장이다. `pytest tests/test_private_context_guard.py -k ratchet_matches_reviewed`
-#           실패 출력(unexpected/stale 항목)을 사람이 읽어 새/사라진 항목이 private-context
-#           유입이 아님을 확인한 뒤, `paths`의 `kind`/`hash`/`count`와 최상위 `count`를 손으로
-#           맞춘다 — 델타를 확인하지 않고 기계로 덮어쓰지 않는다.
-#   5. `python3 -m pytest tests/ -q -n 4`(또는 test_cmd)로 전수 회귀를 확인한다.
-def _assert_bootstrap_blocks_identical(tools: Path) -> None:
-    hashes = _bootstrap_block_hashes(tools)
-    report = collect_central_guard_report(tools)
-    consumers = {source for source, _function, _line in report.loader_calls}
-    assert set(hashes) == consumers
-    assert len(set(hashes.values())) == 1, (
-        "부트스트랩 블록이 소비 모듈 사이에서 갈렸다 — 이 함수(_assert_bootstrap_blocks_identical) "
-        "바로 위 편집 절차(22 모듈 sweep → templates 재전파 → 가드 3종 재핀)를 따라 나머지 모듈을 "
-        f"같은 byte 로 맞춘다:\n{hashes}"
-    )
 
 
 def _set_literal_mapping_value(path: Path, name: str, key, value) -> None:
@@ -1176,168 +1125,15 @@ def test_legacy_deep_import_oracle_is_clean_on_canonical_tree():
     assert not report.violations, "\n".join(report.violations)
 
 
-def test_ast_target_set_is_measured_not_frozen_to_ticket_snapshot():
-    report = collect_central_guard_report(TOOLS)
-    consumers = {source for source, _function, _line in report.loader_calls}
-    bootstrap_consumers = set()
-    for source in TOOLS.glob("*.py"):
-        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-        if any(
-            isinstance(node, (ast.Assign, ast.AnnAssign))
-            and any(
-                isinstance(target, ast.Name)
-                and target.id == "_TOOLS_BOOTSTRAP_KEY"
-                for target in (
-                    node.targets if isinstance(node, ast.Assign) else [node.target]
-                )
-            )
-            for node in tree.body
-        ):
-            bootstrap_consumers.add(source.name)
-    assert consumers == bootstrap_consumers
-    assert "repo_owned_files.py" not in consumers
-    assert {"pm_delegate.py", "pm_update.py", "worktree_pool.py"} <= consumers
-
-
-def test_all_measured_bootstrap_blocks_are_byte_identical():
-    _assert_bootstrap_blocks_identical(TOOLS)
-
-
-def test_bootstrap_identity_guard_detects_one_consumer_drift(tmp_path):
-    tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
-    board = tools / "board.py"
-    text = board.read_text(encoding="utf-8")
-    needle = "_TOOLS_BOOTSTRAP_SENTINEL = object()"
-    assert needle in text
-    board.write_text(
-        text.replace(needle, needle + "  # local drift", 1), encoding="utf-8"
-    )
-
-    with pytest.raises(AssertionError):
-        _assert_bootstrap_blocks_identical(tools)
-
-
-def test_bootstrap_ignores_preloaded_same_name_module(monkeypatch):
-    fake = types.ModuleType("repo_owned_files")
-    fake.__file__ = "/unrelated/worktree/repo_owned_files.py"
-
-    def fail_if_reused(*_args, **_kwargs):
-        raise AssertionError("preloaded same-name module was reused")
-
-    fake.load_module = fail_if_reused
-    monkeypatch.setitem(sys.modules, "repo_owned_files", fake)
-    board = _load_module(TOOLS, "board")
-    assert callable(board._load_module_from_path)
-    assert sys.modules["repo_owned_files"] is fake
-    bootstrap_key = (
-        "_project_manager_repo_owned_files_bootstrap:"
-        f"{(TOOLS / 'repo_owned_files.py').resolve()}"
-    )
-    assert Path(sys.modules[bootstrap_key].__file__).resolve() == (
-        TOOLS / "repo_owned_files.py"
-    ).resolve()
-
-
-def test_bootstrap_cache_is_isolated_by_resolved_tools_path(tmp_path):
-    modules = []
-    keys = []
-    try:
-        for label in ("left", "right"):
-            tools = tmp_path / label / ".project_manager" / "tools"
-            tools.mkdir(parents=True)
-            # board는 import 시점에 identity_args·file_lock을 바인딩한다(load-bearing 형제).
-            for name in (
-                "board.py", "identity_args.py", "file_lock.py", "repo_owned_files.py",
-            ):
-                shutil.copy2(TOOLS / name, tools / name)
-            module = _load_module(tools, "board")
-            modules.append(module)
-            key = (
-                "_project_manager_repo_owned_files_bootstrap:"
-                f"{(tools / 'repo_owned_files.py').resolve()}"
-            )
-            keys.append(key)
-            assert Path(module._load_module_from_path.__code__.co_filename).resolve() == (
-                tools / "repo_owned_files.py"
-            ).resolve()
-        assert keys[0] != keys[1]
-        assert sys.modules[keys[0]] is not sys.modules[keys[1]]
-    finally:
-        for key in keys:
-            sys.modules.pop(key, None)
-
-
-def test_bootstrap_fallback_restores_path_and_same_name_module_on_error(
-    tmp_path, monkeypatch,
-):
-    tools = _copy_tools(tmp_path, "board", "identity_args", "file_lock")
-    seam = tools / "repo_owned_files.py"
-    seam.write_text("def broken(:\n", encoding="utf-8")
-    fake = types.ModuleType("repo_owned_files")
-    fake.__file__ = "/unrelated/repo_owned_files.py"
-    monkeypatch.setitem(sys.modules, "repo_owned_files", fake)
-    before_path = list(sys.path)
-    board = _load_module(tools, "board")
-
-    with pytest.raises(RuntimeError, match="pm-update로.*재동기화"):
-        board._load_module_from_path(
-            seam, "repo_owned_files.py", allow_unverified=True,
-        )
-
-    assert sys.path == before_path
-    assert sys.modules["repo_owned_files"] is fake
-    assert board._TOOLS_BOOTSTRAP_KEY not in sys.modules
-
-
-def test_bootstrap_fallback_invalidates_import_caches_before_import_by_name(
-    tmp_path, monkeypatch,
-):
-    """import-by-name 폴백은 `__import__` 전에 `importlib.invalidate_caches()` 를 부른다 (T-0746).
-
-    FileFinder 는 디렉터리 목록을 mtime 으로 캐시하므로 인터프리터 시작 뒤 만든 형제 모듈(중앙 로더
-    선복구가 방금 복사한 seam)은 invalidate 없이는 인식이 보장되지 않는다 — Windows 에서
-    `pm-update`([missing] seam 복구) 가 간헐 ModuleNotFoundError 로 rc1 이던 원인. Linux 는 mtime
-    변화가 매번 관측돼 재현이 안 되므로 호출 사실 자체를 관측한다(플랫폼 분기 없음).
-    """
-    import importlib
-
-    tools = _copy_tools(tmp_path, "board", "identity_args", "file_lock")
-    (tools / "repo_owned_files.py").write_text("def broken(:\n", encoding="utf-8")
-    board = _load_module(tools, "board")
-    calls: list[int] = []
-    real = importlib.invalidate_caches
-
-    def counting():
-        calls.append(1)
-        real()
-
-    monkeypatch.setattr(importlib, "invalidate_caches", counting)
-    # 로더가 처음 보는(런타임 생성) 형제 모듈 — 파일은 loader 호출 직전에 만든다.
-    fresh = tools / "runtime_created_sibling.py"
-    fresh.write_text("VALUE = 42\n", encoding="utf-8")
-    module = board._load_module_from_path(
-        fresh, "runtime_created_sibling.py", allow_unverified=True,
-    )
-    assert module.VALUE == 42
-    assert calls, "폴백 로더가 __import__ 전에 importlib.invalidate_caches() 를 부르지 않았다"
-    assert "runtime_created_sibling" not in sys.modules
-
-
 def test_manifest_ships_central_loader_before_every_consumer():
     pm_update = _load_module(TOOLS, "pm_update")
-    seam = ".project_manager/tools/repo_owned_files.py"
+    seam = f".project_manager/tools/{_ENGINE_PACKAGE}"
     consumers = []
     for source in TOOLS.glob("*.py"):
         tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
         if any(
-            isinstance(node, (ast.Assign, ast.AnnAssign))
-            and any(
-                isinstance(target, ast.Name)
-                and target.id == "_TOOLS_BOOTSTRAP_KEY"
-                for target in (
-                    node.targets if isinstance(node, ast.Assign) else [node.target]
-                )
-            )
+            isinstance(node, ast.ImportFrom)
+            and (node.module or "").split(".")[0] == _ENGINE_PACKAGE
             for node in tree.body
         ):
             consumers.append(f".project_manager/tools/{source.name}")
@@ -1350,199 +1146,6 @@ def test_manifest_ships_central_loader_before_every_consumer():
         manifest = [str(entry) for entry in pm_update.read_manifest(path)]
         seam_index = manifest.index(seam)
         assert all(seam_index < manifest.index(consumer) for consumer in consumers), path
-
-
-@pytest.mark.parametrize(
-    "seam_state", ("old", "missing", "syntax_error", "empty", "partial_api")
-)
-def test_interrupted_update_new_pm_update_with_unusable_seam_recovers(
-    tmp_path, seam_state,
-):
-    source = tmp_path / "source"
-    dest = tmp_path / "dest"
-    source_tools = source / ".project_manager" / "tools"
-    dest_tools = dest / ".project_manager" / "tools"
-    source_tools.mkdir(parents=True)
-    dest_tools.mkdir(parents=True)
-    # 완료 단계의 설치 하네스 판별(`pm_update._installed_entry_notation_manifests`)이 흡수 없이 형제
-    #   pm_import 를 적재하므로(T-0951) 두 트리 모두 pm_import 를 갖는다. 복구 대상은 그대로
-    #   repo_owned_files 다.
-    manifest_text = (
-        ".project_manager/tools/repo_owned_files.py\n"
-        ".project_manager/tools/pm_update.py\n"
-        ".project_manager/tools/pm_import.py\n"
-        ".project_manager/tools/console_encoding.py\n"
-    )
-    for root in (source, dest):
-        (root / ".project_manager" / "engine.manifest").write_text(
-            manifest_text, encoding="utf-8"
-        )
-    for name in ("repo_owned_files.py", "pm_update.py", "pm_import.py", "console_encoding.py"):
-        shutil.copy2(TOOLS / name, source_tools / name)
-    for name in ("pm_update.py", "pm_import.py", "console_encoding.py"):
-        shutil.copy2(TOOLS / name, dest_tools / name)
-    dest_seam = dest_tools / "repo_owned_files.py"
-    if seam_state == "old":
-        old_tree = ast.parse(
-            (TOOLS / "repo_owned_files.py").read_text(encoding="utf-8")
-        )
-        old_tree.body = [
-            node
-            for node in old_tree.body
-            if not isinstance(node, ast.FunctionDef) or node.name != "load_module"
-        ]
-        ast.fix_missing_locations(old_tree)
-        dest_seam.write_text(ast.unparse(old_tree) + "\n", encoding="utf-8")
-    elif seam_state == "syntax_error":
-        dest_seam.write_text("def broken(:\n", encoding="utf-8")
-    elif seam_state == "empty":
-        dest_seam.write_text("", encoding="utf-8")
-    elif seam_state == "partial_api":
-        source_text = (TOOLS / "repo_owned_files.py").read_text(encoding="utf-8")
-        source_tree = ast.parse(source_text)
-        load_module = next(
-            node for node in source_tree.body
-            if isinstance(node, ast.FunctionDef) and node.name == "load_module"
-        )
-        partial = "".join(source_text.splitlines(keepends=True)[:load_module.end_lineno])
-        ast.parse(partial)
-        assert "def load_module(" in partial
-        assert "def _real_git_runner(" not in partial
-        dest_seam.write_text(partial, encoding="utf-8")
-
-    # 출하 인벤토리는 `git ls-files` 가 낸다 — source 트리가 자기 checkout 이라고 선언한다.
-    init_git_repo(source, commit="seed")
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(dest_tools / "pm_update.py"),
-            "--from",
-            str(source),
-        ],
-        cwd=dest,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        env=utf8_child_env(),
-        timeout=60,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "[recovery-first]" in result.stdout
-    assert "def load_module(" in (
-        dest_tools / "repo_owned_files.py"
-    ).read_text(encoding="utf-8")
-
-
-@pytest.mark.skipif(
-    not _can_symlink(),
-    reason="symlink 생성 권한/기능이 없는 플랫폼",
-)
-def test_recovery_first_rejects_symlink_source(tmp_path):
-    source = tmp_path / "source"
-    dest = tmp_path / "dest"
-    source_tools = source / ".project_manager" / "tools"
-    dest_tools = dest / ".project_manager" / "tools"
-    source_tools.mkdir(parents=True)
-    dest_tools.mkdir(parents=True)
-    manifest_text = (
-        ".project_manager/tools/repo_owned_files.py\n"
-        ".project_manager/tools/pm_update.py\n"
-        ".project_manager/tools/console_encoding.py\n"
-    )
-    for root in (source, dest):
-        (root / ".project_manager" / "engine.manifest").write_text(
-            manifest_text, encoding="utf-8"
-        )
-    payload = tmp_path / "external_payload.py"
-    payload.write_text(
-        (TOOLS / "repo_owned_files.py").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    (source_tools / "repo_owned_files.py").symlink_to(payload)
-    for name in ("pm_update.py", "console_encoding.py"):
-        shutil.copy2(TOOLS / name, source_tools / name)
-        shutil.copy2(TOOLS / name, dest_tools / name)
-    dest_seam = dest_tools / "repo_owned_files.py"
-    dest_seam.write_text("def broken(:\n", encoding="utf-8")
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(dest_tools / "pm_update.py"),
-            "--from",
-            str(source),
-        ],
-        cwd=dest,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        env=utf8_child_env(),
-        timeout=60,
-    )
-
-    assert result.returncode == 1
-    assert "중앙 로더 선복구 실패" in result.stderr
-    assert dest_seam.read_text(encoding="utf-8") == "def broken(:\n"
-
-
-def test_pm_update_main_preserves_original_error_when_seam_reload_fails(monkeypatch):
-    pm_update = _load_module(TOOLS, "pm_update")
-    original = RuntimeError("original update failure")
-
-    def fail_update(_argv):
-        raise original
-
-    def fail_seam_reload():
-        raise SyntaxError("broken central loader")
-
-    monkeypatch.setattr(pm_update, "_main", fail_update)
-    monkeypatch.setattr(pm_update, "_load_repo_owned_files", fail_seam_reload)
-
-    with pytest.raises(RuntimeError, match="original update failure") as caught:
-        pm_update.main([])
-
-    assert caught.value is original
-    assert caught.value.__context__ is None
-
-
-def test_pm_update_main_preserves_original_error_when_seam_lacks_error_type(
-    monkeypatch,
-):
-    pm_update = _load_module(TOOLS, "pm_update")
-    original = RuntimeError("original update failure")
-    stub = types.SimpleNamespace(
-        ENGINE_REV="stub-rev",
-        load_module=lambda *args, **kwargs: None,
-        _real_git_runner=lambda _cwd: None,
-        list_repo_owned_entries=lambda *args, **kwargs: [],
-        list_repo_owned_files=lambda *args, **kwargs: [],
-        TRACKED_ONLY="tracked_only",
-        OWNED="owned",
-    )
-    assert pm_update._missing_repo_owned_files_api(stub) == ["RepoFilesGitError"]
-    original_load = pm_update._load_module_from_path
-
-    def load_stub(path, expected_filename, **kwargs):
-        if expected_filename == _CENTRAL_LOADER[0]:
-            return stub
-        return original_load(path, expected_filename, **kwargs)
-
-    def fail_update(_argv):
-        raise original
-
-    monkeypatch.setattr(pm_update, "_load_module_from_path", load_stub)
-    monkeypatch.setattr(pm_update, "_main", fail_update)
-
-    with pytest.raises(RuntimeError, match="original update failure") as caught:
-        pm_update.main([])
-
-    rendered = "".join(traceback.format_exception(caught.value))
-    assert caught.value is original
-    assert caught.value.__context__ is None
-    assert rendered.count("Traceback (most recent call last):") == 1
-    assert "During handling of the above exception" not in rendered
 
 
 def test_mutation_unregistered_unverified_call_is_red(tmp_path):
@@ -1669,7 +1272,7 @@ def test_bump_round_trip_rewrites_every_newly_measured_target(tmp_path):
     next_rev = "v99.0.1"
     newly_measured = {
         "pm_relay.py", "additional_reviewer.py", "pm_render.py", "pm_import.py",
-        "pm_log.py", "repo_owned_files.py",
+        "pm_log.py",
     }
 
     assert isolated.main(["--bump", next_rev]) == 0
@@ -2137,7 +1740,7 @@ def test_spec_alias_import_and_other_loader_api_bypasses_are_red(tmp_path):
 
 
 def test_central_loader_requires_exactly_one_policy_and_expected_basename(tmp_path):
-    loader = _load_module(TOOLS, "repo_owned_files")
+    loader = _load_module(TOOLS, "pm_engine/infra/repo_files")
     target = tmp_path / "sample.py"
     target.write_text("VALUE = 510\n", encoding="utf-8")
 
@@ -2155,7 +1758,7 @@ def test_central_loader_requires_exactly_one_policy_and_expected_basename(tmp_pa
 
 
 def test_central_loader_verification_is_load_bearing(tmp_path):
-    loader = _load_module(TOOLS, "repo_owned_files")
+    loader = _load_module(TOOLS, "pm_engine/infra/repo_files")
     target = tmp_path / "verified.py"
     target.write_text("VALUE = 510\n", encoding="utf-8")
     observed = []
@@ -2177,8 +1780,9 @@ def test_central_loader_verification_is_load_bearing(tmp_path):
 def test_arbitrary_name_isolated_copy_bootstraps_without_pythonpath(tmp_path):
     tools = tmp_path / "isolated" / ".project_manager" / "tools"
     tools.mkdir(parents=True)
-    for name in ("pm_log.py", "repo_owned_files.py", "console_encoding.py"):
-        shutil.copy2(TOOLS / name, tools / name)
+    shutil.copy2(TOOLS / "pm_log.py", tools / "pm_log.py")
+    shutil.copytree(TOOLS / _ENGINE_PACKAGE, tools / _ENGINE_PACKAGE,
+                    ignore=shutil.ignore_patterns("__pycache__"))
     probe = (
         "import importlib.util\n"
         "from pathlib import Path\n"
@@ -2186,12 +1790,7 @@ def test_arbitrary_name_isolated_copy_bootstraps_without_pythonpath(tmp_path):
         "spec = importlib.util.spec_from_file_location('arbitrary_isolated_name', path)\n"
         "module = importlib.util.module_from_spec(spec)\n"
         "spec.loader.exec_module(module)\n"
-        "console = module._load_module_from_path(\n"
-        "    path.with_name('console_encoding.py'),\n"
-        "    'console_encoding.py',\n"
-        "    verifier=module._verify_engine_rev,\n"
-        ")\n"
-        "assert callable(console.configure_console_utf8)\n"
+        "console = module.console\n"        "assert callable(console.configure_console_utf8)\n"
     )
     result = subprocess.run(
         [sys.executable, "-I", "-c", probe],
@@ -2282,10 +1881,6 @@ _LOADER_CASES = (
         "_load_watchdog",
     ),
     (
-        "pm_import", "repo_owned_files", lambda mod, _tools: mod._load_repo_owned_files(),
-        "_load_repo_owned_files",
-    ),
-    (
         "pm_bootstrap", "pm_log", lambda mod, _tools: mod._load_tool("pm_log"),
         "_load_tool",
     ),
@@ -2296,14 +1891,6 @@ _LOADER_CASES = (
     (
         "pm_config", "pm_import", lambda mod, _tools: mod._load_module("pm_import", "pm_import.py"),
         "_load_module",
-    ),
-    (
-        "domain", "repo_owned_files", lambda mod, _tools: mod._load_repo_owned_files(),
-        "_load_repo_owned_files",
-    ),
-    (
-        "worktree_pool", "repo_owned_files", lambda mod, _tools: mod._load_repo_owned_files(),
-        "_load_repo_owned_files",
     ),
 )
 
@@ -2414,165 +2001,6 @@ def test_sensitivity_removing_each_loader_guard_defeats_the_red_oracle(
         assert getattr(exc, "_engine_rev_skew", False) is not True
 
 
-def test_pm_import_cached_repo_owned_files_is_verified(monkeypatch):
-    pm_import = _load_module(TOOLS, "pm_import")
-    path = Path(pm_import.__file__).resolve().with_name("repo_owned_files.py").resolve()
-    module_name = f"_project_manager_repo_owned_files:{path}"
-    stale = types.ModuleType(module_name)
-    stale.ENGINE_REV = "v0.0.0-stale"
-    monkeypatch.setitem(sys.modules, module_name, stale)
-
-    with pytest.raises(RuntimeError) as exc:
-        pm_import._load_repo_owned_files()
-
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-    assert "repo_owned_files.py" in str(exc.value)
-
-
-@pytest.mark.parametrize(
-    "helper_state",
-    ("old", "missing", "syntax_error", "incompatible_signature"),
-)
-def test_pm_update_cli_recovery_survives_unusable_engine_rev(
-    tmp_path, helper_state,
-):
-    root = tmp_path / helper_state
-    tools = root / ".project_manager" / "tools"
-    tools.mkdir(parents=True)
-    # 완료 단계의 설치 하네스 판별(`pm_update._installed_entry_notation_manifests`)이 흡수 없이 형제
-    #   pm_import 를 적재하므로 pm_import 를 함께 둔다(T-0951).
-    for name in ("pm_update", "pm_import", "repo_owned_files", "console_encoding"):
-        shutil.copy2(TOOLS / f"{name}.py", tools / f"{name}.py")
-    if helper_state == "old":
-        (tools / "engine_rev.py").write_text(
-            "MIN_PYTHON = (3, 11)\n",
-            encoding="utf-8",
-        )
-    elif helper_state == "syntax_error":
-        (tools / "engine_rev.py").write_text(
-            "def broken(:\n",
-            encoding="utf-8",
-        )
-    elif helper_state == "incompatible_signature":
-        (tools / "engine_rev.py").write_text(
-            "def load_repo_owned_files(path):\n    return None\n",
-            encoding="utf-8",
-        )
-    (root / "README.md").write_text("recovery fixture\n", encoding="utf-8")
-    (root / ".project_manager" / "engine.manifest").write_text(
-        "README.md\n",
-        encoding="utf-8",
-    )
-    # 출하 인벤토리는 `git ls-files` 가 낸다 — source 트리가 자기 checkout 이라고 선언한다.
-    init_git_repo(root, commit="seed")
-
-    help_result = subprocess.run(
-        [sys.executable, str(tools / "pm_update.py"), "--help"],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=30,
-    )
-    dry_run_result = subprocess.run(
-        [
-            sys.executable,
-            str(tools / "pm_update.py"),
-            "--from",
-            str(root),
-            "--dry-run",
-        ],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=30,
-    )
-
-    assert help_result.returncode == 0, help_result.stderr
-    assert dry_run_result.returncode == 0, dry_run_result.stderr
-
-
-def test_pm_import_old_engine_rev_seam_failure_has_resync_message(tmp_path):
-    tools = _copy_tools(tmp_path, "pm_import", "repo_owned_files")
-    (tools / "engine_rev.py").write_text(
-        "MIN_PYTHON = (3, 11)\n",
-        encoding="utf-8",
-    )
-    pm_import = _load_module(tools, "pm_import")
-
-    with pytest.raises(
-        RuntimeError,
-        match="repo_owned_files.py를 로드할 수 없음.*pm-update로 재동기화",
-    ) as exc:
-        pm_import._load_repo_owned_files()
-
-    assert isinstance(exc.value.__cause__, AttributeError)
-
-
-def test_pm_update_exempt_cache_is_reverified_by_domain(tmp_path):
-    tools = _copy_tools(
-        tmp_path,
-        "engine_rev",
-        "pm_update",
-        "pm_import",
-        "domain",
-        "repo_owned_files",
-    )
-    target = tools / "repo_owned_files.py"
-    _make_target_stale(target)
-    path = target.resolve()
-    module_name = f"_project_manager_repo_owned_files:{path}"
-    sys.modules.pop(module_name, None)
-    try:
-        pm_update = _load_module(tools, "pm_update")
-        cached = pm_update._load_repo_owned_files()
-        assert cached.ENGINE_REV == "v0.0.0-stale"
-        assert sys.modules[module_name] is cached
-
-        pm_import = _load_module(tools, "pm_import")
-        with pytest.raises(RuntimeError) as import_exc:
-            pm_import._load_repo_owned_files()
-
-        assert getattr(import_exc.value, "_engine_rev_skew", False) is True
-        assert "repo_owned_files.py" in str(import_exc.value)
-        assert module_name not in sys.modules
-
-        cached = pm_update._load_repo_owned_files()
-        assert cached.ENGINE_REV == "v0.0.0-stale"
-        assert sys.modules[module_name] is cached
-
-        domain = _load_module(tools, "domain")
-        with pytest.raises(RuntimeError) as exc:
-            domain._load_repo_owned_files()
-
-        assert getattr(exc.value, "_engine_rev_skew", False) is True
-        assert "repo_owned_files.py" in str(exc.value)
-        assert module_name not in sys.modules
-    finally:
-        sys.modules.pop(module_name, None)
-
-
-def test_pm_import_exec_failure_removes_partial_cache(tmp_path):
-    tools = _copy_tools(tmp_path, "engine_rev", "pm_import", "repo_owned_files")
-    target = tools / "repo_owned_files.py"
-    pm_import = _load_module(tools, "pm_import")
-    target.write_text("raise RuntimeError('exec boom')\n", encoding="utf-8")
-    path = target.resolve()
-    module_name = f"_project_manager_repo_owned_files:{path}"
-    sys.modules.pop(module_name, None)
-
-    with pytest.raises(
-        RuntimeError,
-        match="repo_owned_files.py를 로드할 수 없음.*pm-update로 재동기화",
-    ) as exc:
-        pm_import._load_repo_owned_files()
-
-    assert isinstance(exc.value.__cause__, RuntimeError)
-    assert str(exc.value.__cause__) == "exec boom"
-    assert module_name not in sys.modules
-
-
 def _handler_reraises_marked_skew(handler: ast.ExceptHandler) -> bool:
     return _handler_reraises_verifier_skew(handler)
 
@@ -2624,10 +2052,6 @@ def test_pm_bootstrap_failsoft_consumers_reraise_marked_skew(
         (
             "pm_import", "pm_render", lambda mod: mod._load_pm_render_module(),
             "_load_pm_render_module",
-        ),
-        (
-            "domain", "repo_owned_files", lambda mod: mod._load_repo_owned_files(),
-            "_load_repo_owned_files",
         ),
     ),
 )

@@ -631,7 +631,7 @@ def test_hard_cards_are_git_tracked(pm_update):
     untracked 파일은 조용히 전파에서 빠진다 — 카드를 만들고 add 하지 않으면 채택자 트리엔
     영원히 안 나가고, 그 사실은 어느 렌더 가드에도 걸리지 않는다.
     """
-    repo_files = pm_update._load_repo_owned_files()
+    repo_files = pm_update.repo_files
     for tree in CARD_TREES:
         relative = Path(tree.relative_dir)
         tracked = {

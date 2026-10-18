@@ -106,7 +106,7 @@ def test_git_c_unquote_reassembles_octal_bytes_before_utf8_decode(external):
 
 def _owner_only(external, path: Path) -> bool:
     """`path` 가 소유자 전용 접근인가 — 엔진 공용 seam(플랫폼 수단 소유)으로 실측한다."""
-    return external._load_file_lock().owner_only_access(path)
+    return external.fs.owner_only_access(path)
 
 
 def _opencode_target(external):

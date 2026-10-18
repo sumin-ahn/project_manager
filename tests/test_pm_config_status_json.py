@@ -313,7 +313,7 @@ def test_status_json_with_remote_stops_without_a_partial_document(home, wp):
     _git(home / ".repos" / "app.git", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
     _git(home / slot, "config", "branch.feat/x.remote", "origin")
     _git(home / slot, "config", "branch.feat/x.merge", "refs/heads/feat/x")  # 원격에 물을 대상이 있다
-    wp.file_lock.force_rmtree(home / ".origin")
+    wp.fs.force_rmtree(home / ".origin")
 
     done = _run_cli(home, "status", "--json", "--with-remote")
 

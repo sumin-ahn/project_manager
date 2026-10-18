@@ -128,7 +128,7 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "git 추적분만 세어 테스트가 새로 만든 미추적 산출을 놓친다."
     ),
     (
-        ".project_manager/tools/repo_owned_files.py",
+        ".project_manager/tools/pm_engine/infra/repo_files.py",
         "list_repo_owned_entries",
         "rglob",
         "'*'",
@@ -163,6 +163,15 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*'",
     ): WalkException("engine.manifest @render가 선언한 adapter overlay 경로만 검사"),
+    (
+        "tests/_engine_tree.py",
+        "engine_python_files",
+        "rglob",
+        "'*.py'",
+    ): WalkException(
+        "엔진 전수 규율 스캔의 단일 열거 — 평면 진입 파일과 `pm_engine/` 패키지 모듈을 함께 본다. "
+        "repo-owned seam 은 git 추적분만 세어 아직 추적되지 않은 엔진 코드를 놓친다."
+    ),
     (
         "tests/test_repo_tree_walk_guard.py",
         "_walk_calls",

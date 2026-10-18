@@ -155,7 +155,6 @@ def test_normal_sync_no_effect(tmp_path):
         "engine_rev.py": None,
         "pm_handoff.py": None,
         "identity_args.py": None,
-        "file_lock.py": None,                  # import 시점 바인딩 형제(T-0565)
     })
     mod = _load(tools, "pm_handoff")           # no raise
     assert mod.ENGINE_REV == _cur_rev()
@@ -182,27 +181,6 @@ def test_partial_copy_current_engine_rev_but_old_baked_sibling_detected(tmp_path
     assert _cur_rev() in msg                        # 신 로더 baked rev
 
 
-def test_stale_console_encoding_fails_loud_via_loader_verify(tmp_path, capsys):
-    """신 CLI + stale console_encoding은 기존 로더 verify로 marked RuntimeError와 복구 안내를 낸다."""
-    tools = _build_tools(tmp_path, {
-        "pm_handoff.py": None,
-        "identity_args.py": None,
-        "file_lock.py": None,                  # import 시점 바인딩 형제(T-0565)
-        "console_encoding.py": _stale_source("console_encoding"),
-    })
-    mod = _load(tools, "pm_handoff")
-
-    assert mod.main([]) == 1
-    msg = capsys.readouterr().err
-    assert "[중단] 엔진 사본 불일치" in msg
-    assert "pm_handoff.py" in msg                 # 로더명
-    assert "console_encoding.py" in msg           # stale 형제명
-    assert "v0.0.0-stale" in msg
-    assert _cur_rev() in msg
-    assert "pm-update" in msg
-    assert "전체를 동기화" in msg
-
-
 def test_missing_engine_rev_is_benign_at_runtime(tmp_path):
     """engine_rev.py 부재는 런타임 로드에 무해 — 검증은 baked 리터럴로만(런타임 의존 0).
 
@@ -210,7 +188,6 @@ def test_missing_engine_rev_is_benign_at_runtime(tmp_path):
     tools = _build_tools(tmp_path, {
         "pm_handoff.py": None,
         "identity_args.py": None,
-        "file_lock.py": None,                     # import 시점 바인딩 형제(T-0565)
     })                                            # engine_rev.py 는 일부러 뺌 — 그래도 정상 로드
     mod = _load(tools, "pm_handoff")              # no raise (baked 리터럴 일치)
     assert mod.ENGINE_REV == _cur_rev()
@@ -238,7 +215,6 @@ def test_board_normal_sync_ok(tmp_path):
         "engine_rev.py": None,
         "board.py": None,
         "identity_args.py": None,
-        "file_lock.py": None,
         "local_conf.py": None,
     })
     mod = _load(tools, "board")
@@ -284,24 +260,7 @@ def test_pm_config_load_module_reraises_nested_skew(tmp_path):
 # pm_update 는 동기 실행 중 중첩 로드 skew 를 등록된 경계로 흡수한다(rev 혼합은 그 실행의 정상
 # 과도 상태이고, 동기는 그걸 고치는 유일한 채널이다). 그 완화가 **일반 CLI 로드로 새면** 사본
 # 불일치가 조용히 넘어가므로, 같은 중첩 로드 계층을 동기 밖에서 직접 부르면 여전히 fail-loud
-# 여야 한다. 아래 둘이 그 경계를 못박는다.
-
-
-def test_pm_import_nested_loader_fails_loud_outside_sync(tmp_path):
-    """구 pm_import + 현행 repo_owned_files → 중첩 로드는 동기 밖에서 fail-loud.
-
-    pm_update 가 동기 실행 중 흡수하는 **바로 그 호출 계층**이다(설치 하네스 판별 →
-    `_load_repo_owned_files` verifier). 동기 밖에서는 실결함 신호라 그대로 올라와야 한다."""
-    tools = _build_tools(tmp_path, {
-        "engine_rev.py": None,
-        "repo_owned_files.py": None,
-        "pm_import.py": _stale_source("pm_import"),
-    })
-    pm_import = _load(tools, "pm_import")
-    with pytest.raises(RuntimeError) as exc:
-        pm_import._load_repo_owned_files()
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-    assert "repo_owned_files.py" in str(exc.value)
+# 여야 한다. 아래 시험이 그 경계를 못박는다.
 
 
 def test_engine_rev_skew_absorption_ledger_owners_are_a_closed_set():
@@ -313,7 +272,7 @@ def test_engine_rev_skew_absorption_ledger_owners_are_a_closed_set():
     `delegate_channel_guard` 는 PreToolUse 훅 fail-open 경계 하나만 흡수한다(T-0633 — 가드
     자신의 고장[사본 skew 포함]이 정상 Agent 위임을 막지 않는 것이 계약·skew 진단은 stderr 로
     남긴다). `pm_delegate` 는 read 역할 temp 의 **정리·롤백** 두 경계만 흡수한다 — Windows 에는
-    `shutil.rmtree(dir_fd=)` 가 없어 삭제 수단이 형제 모듈(`file_lock.force_rmtree`)로 옮겨졌고,
+    `shutil.rmtree(dir_fd=)` 가 없어 삭제 수단이 공용 모듈(`fs.force_rmtree`)로 옮겨졌고,
     그래서 사본 불일치가 이 정리 경로에 닿을 수 있게 됐다. 정리는 위임이 끝난 뒤이거나 생성 실패
     롤백 중이라 여기서 예외를 올리면 성공한 실행이 뒤집히거나 진짜 실패 사유가 가려진다
     (`additional_reviewer` 의 `abort_pre_spawn_raw` 와 같은 형상). 흡수하되 경고 문구로 원인을
@@ -323,20 +282,15 @@ def test_engine_rev_skew_absorption_ledger_owners_are_a_closed_set():
     도구에서 skew 는 실결함 신호이므로 fail-loud 다 — 새 도구가 조용히 완화 지점을 들이면 여기서
     red 가 된다.
 
-    T-0729 가 셋을 더한다 — `pm_import`·`pm_log`·`review_rounds` 의 **공유 읽기 강등** 경계
-    (`shared_read_seam`) 하나씩이다. 판독이 공용 seam 을 지나게 되면서 그 형제 로드가 판독 경로에
-    닿는데, 이 세 모듈은 "판독은 형제 없이도 떠야 한다" 를 각자 로더 주석에 명시한 채널이다
-    (`pm_import`=복구/도입 · `pm_log`=pm_bootstrap 이 fail-soft 로 재사용하는 판독 ·
-    `review_rounds`=부분 동기 트리에서도 살아야 하는 라운드 판정). 판독은 아무것도 커밋하지 않고
-    종전 읽기와 바이트가 같아서 흡수해도 잃는 것이 "Windows 에서 그 판독 중의 원자 교체 한 번"
-    뿐이고, 올리면 복구 채널 자신이 막힌다. 흡수는 사유 등록 + stderr 강등 알림과 짝이다."""
+    T-0729 가 더했던 **공유 읽기 강등** 경계(`shared_read_seam`)는 T-0963 이 지웠다 — 공용 읽기가
+    패키지(`pm_engine.infra.fs`) import 로 바뀌어 판독 경로에 형제 로드가 없다. `pm_log` 는
+    다른 흡수 경계로 남는다."""
     owners = sorted(
         path.name for path in TOOLS.glob("*.py")
         if "_ENGINE_REV_SKEW_RECOVERY_REASONS" in path.read_text(encoding="utf-8")
         )
     assert owners == [
-        "additional_reviewer.py", "delegate_channel_guard.py", "pm_delegate.py",
-        "pm_import.py", "pm_log.py", "review_rounds.py",
+        "additional_reviewer.py", "delegate_channel_guard.py", "pm_delegate.py", "pm_log.py",
     ]
 
 
@@ -362,7 +316,6 @@ def test_pm_bootstrap_load_board_normal_returns_module(tmp_path):
         "pm_bootstrap.py": None,
         "board.py": None,
         "identity_args.py": None,
-        "file_lock.py": None,
         "local_conf.py": None,
     })
     pmb = _load(tools, "pm_bootstrap")
@@ -402,22 +355,6 @@ def test_pm_delegate_delegate_scope_normal_sync_ok(tmp_path):
 
     scope = delegate._load_delegate_scope()
     assert scope.ENGINE_REV == delegate.ENGINE_REV == _cur_rev()
-
-
-def test_pm_delegate_stale_console_encoding_fails_loud(tmp_path):
-    """pm_delegate CLI 진입부도 stamped console_encoding 부분 동기를 실행 전에 차단한다."""
-    tools = _build_tools(tmp_path, {
-        "pm_delegate.py": None,
-        "console_encoding.py": _stale_source("console_encoding"),
-    })
-    delegate = _load(tools, "pm_delegate")
-
-    with pytest.raises(RuntimeError) as exc:
-        delegate.main([])
-
-    assert getattr(exc.value, "_engine_rev_skew", False) is True
-    assert "pm_delegate.py" in str(exc.value)
-    assert "console_encoding.py" in str(exc.value)
 
 
 def test_delegate_scope_stale_repo_coordinates_fails_loud(tmp_path):
@@ -479,7 +416,6 @@ def test_board_pm_delegate_loader_stale_sibling_fails_loud(tmp_path):
     tools = _build_tools(tmp_path, {
         "board.py": None,
         "identity_args.py": None,
-        "file_lock.py": None,
         "local_conf.py": None,
         "pm_delegate.py": _stale_source("pm_delegate"),
     })
@@ -505,7 +441,6 @@ def test_board_pm_delegate_loader_reraises_nested_skew(tmp_path):
     tools = _build_tools(tmp_path, {
         "board.py": None,
         "identity_args.py": None,
-        "file_lock.py": None,
         "local_conf.py": None,
         "pm_delegate.py": nested,
     })
@@ -521,7 +456,6 @@ def test_board_lint_delegate_reraises_marked_skew(tmp_path, monkeypatch):
     tools = _build_tools(tmp_path, {
         "board.py": None,
         "identity_args.py": None,
-        "file_lock.py": None,
         "local_conf.py": None,
     })
     board = _load(tools, "board")
@@ -542,9 +476,7 @@ def test_board_non_consumers_do_not_load_stale_pm_delegate(tmp_path, monkeypatch
     tools = _build_tools(tmp_path, {
         "board.py": None,
         "identity_args.py": None,
-        "file_lock.py": None,
         "local_conf.py": None,
-        "console_encoding.py": None,
         # 소유 PM 홈 유도는 board 가 형제 로드하는 단일 구현이다(read dispatch 진입 경로).
         "pm_log.py": None,
         "pm_delegate.py": _stale_source("pm_delegate"),
