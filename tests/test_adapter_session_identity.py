@@ -34,6 +34,7 @@ _SCANNED_DIRS = (
     "templates/opencode/.opencode/agents",
     "templates/opencode/.claude/skills",
     "templates/opencode/.opencode/command",  # T-0674 사람 슬래시 표면
+    "templates/codex/.agents/skills",
     ".claude/skills",   # ① canonical — pm_update --target 로 양 하네스 미러로 전파된다
     ".claude/agents",
 )
@@ -97,6 +98,9 @@ _TASK_BINDING_EXTRA_SURFACES = (
 _BOARD_ATTRIBUTION_CALL = re.compile(
     r"\.project_manager/tools/board\.py\s+(?:claim|new|cluster\s+new)\s+[^`\s)]")
 
+# 정상 종결 호출 줄 — 묶음·티켓 종결은 `--task` 로 귀속한다(T-0962 F-008). 복구 문은 제외.
+_FINISH_CALL = re.compile(r"\.project_manager/tools/ticket_finish\.py\s+(?:--cluster\s|T-)")
+
 # 슬롯 세션 정체성 서술 — 엔진에 더 이상 없는 정체성 형태(T-0962). 슬롯 태그 log 검색·슬롯별 prefix
 # 해소·슬롯별 pm_state·환경변수 귀속(claim 플래그 없음)도 지운 동작이다(T-0962 리뷰 F-001).
 _SLOT_IDENTITY_PHRASES = ("슬롯 세션", "세션명 canonical", "슬롯 태그", "슬롯별 prefix",
@@ -137,7 +141,8 @@ def test_t0962_entry_docs_bind_claims_to_task():
         rel = path.relative_to(REPO).as_posix()
         text = path.read_text(encoding="utf-8")
         for line in _joined_lines(text):
-            if _BOARD_ATTRIBUTION_CALL.search(line):
+            if _BOARD_ATTRIBUTION_CALL.search(line) or (
+                    _FINISH_CALL.search(line) and "--reconcile-integrated" not in line):
                 calls += 1
                 if "--task" not in line:
                     offenders.append(f"{rel}: --task 없는 귀속 호출: {line.strip()!r}")

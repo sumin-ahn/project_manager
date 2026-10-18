@@ -34,7 +34,7 @@ python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster C-<ticket
 python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster C-<ticket-group> --role developer --cwd <worktree 절대경로>
 python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster C-<ticket-group> --role code-reviewer --cwd <worktree 절대경로> --focus <검토 중점 파일>
 python3 .project_manager/tools/pm_delegate.py --role code-reviewer --cluster C-<ticket-group> --cwd <worktree 절대경로> --focus <검토 중점 파일>
-python3 .project_manager/tools/ticket_finish.py --cluster C-<ticket-group>
+python3 .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> --task <task>
 ```
 
 - 수열·테스트·종결의 규범은 [`pm_principles.md`](../../../.project_manager/wiki/pm_principles.md)
