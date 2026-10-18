@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import contextlib
 import datetime
 import filecmp
 import hashlib
@@ -235,17 +234,14 @@ def _templates_dir() -> Path:
     return REPO / "templates"
 
 
-@contextlib.contextmanager
 def _local_conf_write_lock(conf_path: Path):
     """conf 커밋 구간의 배타락 — 공용 seam(`fs.local_conf_write_lock`)이 유일한 락 규칙이다.
 
     구간의 단위는 write 가 아니라 **"이 conf 를 읽고 판단하고 쓰는" 전체**다 — 현재 상태를 락
     밖에서 읽어 계획을 세우면 커밋 시점엔 이미 낡은 계획(stale plan)이라 그사이 들어온 결정을
-    잘못된 분기로 덮거나 누락한다. 형제 적재 실패는 그대로 올라간다(완료 단계는 같은 세대 형제만
-    적재한다 · 락 프리미티브 부재의 무락 진행은 `fs` 자신의 규약이다).
+    잘못된 분기로 덮거나 누락한다.
     """
-    with fs.local_conf_write_lock(conf_path):
-        yield fs
+    return fs.local_conf_write_lock(conf_path)
 
 
 def print_conf_migration_notice(dest_root: Path) -> None:

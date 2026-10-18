@@ -742,7 +742,7 @@ def rename_updates(result: ConfResult) -> dict[str, str | None]:
             value = _used_pct_from_remaining(old, value)
         updates[new] = value
     if shared_window is not None:
-        for harness in _harness_names():
+        for harness in HARNESS_CHOICES:
             key = f"harness.{harness}.ctx_window_tokens"
             if key not in result.values and key not in updates:
                 updates[key] = shared_window
@@ -878,7 +878,7 @@ def pattern_for(key: str) -> str | None:
     head = segments[0]
     if head == "harness":
         return HARNESS_PATTERN if (
-            len(segments) == 3 and segments[1] in _harness_names()
+            len(segments) == 3 and segments[1] in HARNESS_CHOICES
             and segments[2] in _harness_suffixes(segments[1])) else None
     if head == "delegate":
         return _delegate_pattern_for(segments[1:])
@@ -939,11 +939,11 @@ def _delegate_pattern_for(rest: list[str]) -> str | None:
         return None
     if rest[0] == "model_alias":
         return DELEGATE_ALIAS_PATTERN if (len(rest) == 2 and rest[1]) else None
-    if rest[0] not in _role_names():
+    if rest[0] not in ROLE_CHOICES:
         return None
     tail = rest[1:]
     if tail and tail[0] == "hard":
-        if rest[0] not in _tiered_roles():
+        if rest[0] not in TIERED_ROLES:
             return None                         # 티어가 없는 역할의 hard 칸은 어디서도 안 읽힌다
         tail = tail[1:]
     if tail and tail[0] == "fallback":
@@ -952,19 +952,9 @@ def _delegate_pattern_for(rest: list[str]) -> str | None:
         len(tail) == 1 and tail[0] in _ROLE_SUFFIXES) else None
 
 
-def _role_names() -> tuple[str, ...]:
-    """역할 목록 — `ROLE_CHOICES`."""
-    return ROLE_CHOICES
-
-
-def _tiered_roles() -> tuple[str, ...]:
-    """hard 티어를 갖는 역할 — `TIERED_ROLES`."""
-    return TIERED_ROLES
-
-
 def _role_tiers(role: str) -> tuple[str, ...]:
     """그 역할에 실제로 있는 티어 조합 (`_DELEGATE_TIERS` 표기) — 티어 없는 역할은 hard 를 뺀다."""
-    if role in _tiered_roles():
+    if role in TIERED_ROLES:
         return _DELEGATE_TIERS
     return tuple(tier for tier in _DELEGATE_TIERS if ".hard" not in tier)
 
@@ -978,8 +968,3 @@ def _harness_suffixes(name: str) -> tuple[str, ...]:
     rendered_keys = set(OPERATIONAL_CONF_KEYS.values())
     return tuple(suffix for suffix in _HARNESS_SUFFIXES
                  if suffix != "pro_model" or f"harness.{name}.pro_model" in rendered_keys)
-
-
-def _harness_names() -> tuple[str, ...]:
-    """하네스 목록 — `HARNESS_CHOICES`."""
-    return HARNESS_CHOICES

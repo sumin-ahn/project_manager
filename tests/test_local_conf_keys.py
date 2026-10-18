@@ -570,17 +570,16 @@ def test_every_pattern_family_declares_a_spec_and_resolves_its_members(conf_modu
 def test_no_row_exists_that_nothing_reads(conf_module):
     """어디서도 안 읽히는 칸은 레지스트리에 없다 — 화면에 서면 채워도 아무 일이 없다.
 
-    hard 티어는 `pm_delegate.TIERED_ROLES` 역할만 읽고(나머지 역할의 `--tier` 는 usage error),
-    안내 문서 모델 칸은 렌더 표(`pm_render._OPERATIONAL_CONF_KEYS`)에 토큰이 있는 도구만 읽는다.
+    hard 티어는 `TIERED_ROLES` 역할만 읽고(나머지 역할의 `--tier` 는 usage error),
+    안내 문서 모델 칸은 렌더 표(`OPERATIONAL_CONF_KEYS`)에 토큰이 있는 도구만 읽는다.
     """
-    tiered = conf_module._tiered_roles()
-    assert tiered == ("developer",), "티어 역할을 pm_delegate 에서 못 읽었다"
-    for role in conf_module._role_names():
+    tiered = conf_module.TIERED_ROLES
+    for role in conf_module.ROLE_CHOICES:
         for key in (f"delegate.{role}.hard.model", f"delegate.{role}.hard.fallback.harness"):
             expected = conf_module.DELEGATE_ROLE_PATTERN if role in tiered else None
             assert conf_module.pattern_for(key) == expected, key
     rendered = conf_schema.OPERATIONAL_CONF_KEYS.values()
-    for name in conf_module._harness_names():
+    for name in conf_module.HARNESS_CHOICES:
         key = f"harness.{name}.pro_model"
         assert (conf_module.pattern_for(key) is not None) == (key in rendered), key
 
@@ -1045,10 +1044,9 @@ def test_recommended_values_are_inside_their_own_choices(conf_module, keys_docum
 
 def test_recommended_keys_are_real_role_and_tier_combinations(conf_module):
     """권장 표의 키는 `<role><tier>` 실조합이다 — 없는 역할·티어에 권장을 달지 않는다."""
-    combinations = {f"{role}{tier}" for role in conf_module._role_names()
+    combinations = {f"{role}{tier}" for role in conf_module.ROLE_CHOICES
                     for tier in conf_module._role_tiers(role)}
 
-    assert conf_module._role_names(), "역할 축을 못 읽었다 — 파생이 강등됐다"
     assert set(conf_module.DELEGATE_RECOMMENDED) <= combinations
     for values in conf_module.DELEGATE_RECOMMENDED.values():
         assert set(values) == set(conf_module._ROLE_SUFFIXES)   # 세트를 통째로 쓴다

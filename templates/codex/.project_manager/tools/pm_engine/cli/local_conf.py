@@ -157,7 +157,7 @@ def _axis_values(axis: str) -> dict[str, list[str]]:
     `model` 은 닫힌 목록이 없다(자유 문자열 + 조회 명령) — 빈 표다.
     """
     if axis == "harness":
-        return {"": list(conf_schema._harness_names())}
+        return {"": list(conf_schema.HARNESS_CHOICES)}
     if axis == "reasoning":
         return {harness: list(values)
                 for harness, values in conf_schema.REASONING_ALLOWED.items()}
@@ -256,7 +256,7 @@ def _pattern_unit_labels(pattern: str) -> dict[str, str]:
     """
     if pattern == conf_schema.HARNESS_PATTERN:
         return {f"harness.{name}.{suffix}": f"{name} {_HARNESS_SUFFIX_LABELS[suffix]}"
-                for name in conf_schema._harness_names() for suffix in conf_schema._harness_suffixes(name)}
+                for name in conf_schema.HARNESS_CHOICES for suffix in conf_schema._harness_suffixes(name)}
     return {}
 
 
@@ -269,10 +269,10 @@ def _pattern_members(pattern: str) -> list[dict]:
     """
     if pattern == conf_schema.HARNESS_PATTERN:
         keys = [f"harness.{name}.{suffix}"
-                for name in conf_schema._harness_names() for suffix in conf_schema._harness_suffixes(name)]
+                for name in conf_schema.HARNESS_CHOICES for suffix in conf_schema._harness_suffixes(name)]
     elif pattern == conf_schema.DELEGATE_ROLE_PATTERN:
         keys = [f"delegate.{role}{tier}.{suffix}"
-                for role in conf_schema._role_names() for tier in conf_schema._role_tiers(role)
+                for role in conf_schema.ROLE_CHOICES for tier in conf_schema._role_tiers(role)
                 for suffix in conf_schema._ROLE_SUFFIXES]
     else:
         keys = []
@@ -308,7 +308,7 @@ def unit_of(key: str) -> str | None:
 def _units_json() -> dict[str, str]:
     """묶음 이름 → 줄 이름 (화면이 `delegate.developer.hard` 같은 키를 이름으로 세우지 않게)."""
     units = {f"delegate.{role}{tier}": f"{_ROLE_LABELS[role]}({_TIER_LABELS[tier]})"
-             for role in conf_schema._role_names() for tier in conf_schema._role_tiers(role)}
+             for role in conf_schema.ROLE_CHOICES for tier in conf_schema._role_tiers(role)}
     units[conf_schema._REVIEWER_UNIT] = GROUP_LABELS[conf_schema._REVIEWER_UNIT]
     return units
 

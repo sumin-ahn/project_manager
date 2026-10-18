@@ -65,7 +65,6 @@ opt-in 실 e2e (CI 비포함 — 토큰·모델 비용 발생):
 from __future__ import annotations
 
 import argparse
-import contextlib
 import datetime
 import difflib
 import errno
@@ -3168,7 +3167,6 @@ def _local_conf_lock_path(conf_path: Path) -> Path:
     return fs.conf_lock_path(conf_path)
 
 
-@contextlib.contextmanager
 def _local_conf_write_lock(conf_path: Path):
     """conf 를 쓰는 구간의 배타락 — 공용 seam(`fs.local_conf_write_lock`)이 유일한 락 규칙이다.
 
@@ -3176,8 +3174,7 @@ def _local_conf_write_lock(conf_path: Path):
     밖에서 읽어 계획을 세우면 그 계획이 커밋 시점엔 이미 낡아(stale plan) 그사이 들어온 결정을
     덮는다. 호출부는 존재 판정·현재 텍스트 읽기·계획·쓰기·postcondition 을 이 안에 둔다.
     """
-    with fs.local_conf_write_lock(conf_path):
-        yield fs
+    return fs.local_conf_write_lock(conf_path)
 
 
 def _write_conf_keys(path: Path, updates: dict[str, str | None]) -> bool:

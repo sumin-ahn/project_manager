@@ -282,6 +282,32 @@ def test_bootstrap_shell_call_records_the_session_for_its_engine_copy(board, hom
     assert sorted(path.name for path in claims.iterdir()) == ["delta.json", "gamma.json"]
 
 
+def test_bootstrap_claim_for_another_home_is_written_by_that_home_engine(board, home, tmp_path):
+    """다른 홈 B 의 부트스트랩 호출이면 그 기록은 B 의 엔진이 쓴다(이 프로세스의 `pm_engine` 이 아니다).
+
+    B 의 `pm_engine/infra/fs.py` 의 `atomic_replace` 가 표식 파일을 남기게 덧붙인다 — 이 프로세스에
+    이미 적재된 checkout 패키지가 쓰면 표식이 생기지 않는다."""
+    other = tmp_path / "other-home"
+    shutil.copytree(TOOLS, other / ".project_manager" / "tools",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    (other / ".project_manager" / ".local").mkdir(parents=True)
+    fs_py = other / ".project_manager" / "tools" / "pm_engine" / "infra" / "fs.py"
+    fs_py.write_text(fs_py.read_text(encoding="utf-8") + (
+        "\n_original_atomic_replace = atomic_replace\n\n\n"
+        "def atomic_replace(src, dst, *args, **kwargs):\n"
+        "    Path(str(dst) + '.written_by_B').write_text('B', encoding='utf-8')\n"
+        "    return _original_atomic_replace(src, dst, *args, **kwargs)\n"), encoding="utf-8")
+    claims = other / ".project_manager" / ".local" / "task-session-claims"
+
+    got = board.judge_git_anchor_command(
+        home, "S-new", str(other), "python3 .project_manager/tools/pm_bootstrap.py --task gamma",
+    )
+
+    assert got["verdict"] != "deny"
+    assert json.loads((claims / "gamma.json").read_text(encoding="utf-8")) == {"task": "gamma", "session": "S-new"}
+    assert (claims / "gamma.json.written_by_B").is_file(), "B 의 기록을 B 엔진이 아닌 코드가 썼다"
+
+
 def test_denied_bootstrap_command_records_nothing(board, home):
     marker = "git " + "허용" + ":"
     got = board.judge_git_anchor_command(

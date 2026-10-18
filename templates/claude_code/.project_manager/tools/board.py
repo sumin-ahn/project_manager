@@ -3315,12 +3315,26 @@ def _bootstrap_task_argument(args: Sequence[str]) -> str | None:
     return None
 
 
+# 부트스트랩 사본 홈의 `worktree_pool` 로 세션 기록 한 건을 남기는 하위 프로세스 프로그램.
+# argv: tools 경로 · task · 세션 ID.
+_RECORD_TASK_SESSION_CLAIM_PROGRAM = (
+    "import sys\n"
+    "sys.path.insert(0, sys.argv[1])\n"
+    "import worktree_pool\n"
+    "worktree_pool.record_task_session_claim(sys.argv[2], sys.argv[3])\n"
+)
+
+
 def _record_bootstrap_session_claims(session: str, parsed: _ShellParseResult) -> None:
     """`pm_bootstrap.py --task <task>` 호출마다 이 세션 ID 기록을 그 부트스트랩 사본의 홈에 남긴다.
 
     부트스트랩 프로세스는 자기 하네스 세션 ID 를 알 수 없어(codex·opencode 는 도구 프로세스 환경에
     없다) 이 기록을 가져가 task 에 쓴다(`worktree_pool.take_task_session_claim`). 실행 위치·인자를
     정적으로 못 정한 호출과 세션 ID 없는 훅은 남기지 않는다 — 그러면 부트스트랩이 기록 없음으로 멈춘다.
+
+    기록은 그 사본 홈의 엔진이 하위 프로세스로 쓴다. 이 프로세스에는 이 홈의 `pm_engine` 이 이미
+    적재돼 있어, 다른 홈의 `worktree_pool.py` 를 여기서 적재하면 그 파일이 이 홈의 패키지 코드로
+    기록한다. 하위 프로세스가 실패하면 stderr 를 담아 그대로 올린다.
     """
     if not session:
         return
@@ -3335,10 +3349,15 @@ def _record_bootstrap_session_claims(session: str, parsed: _ShellParseResult) ->
         if task is None:
             continue
         script = (Path(call.cwd).expanduser() / details.script).resolve()
-        pool = _load_module_from_path(
-            script.with_name("worktree_pool.py"), "worktree_pool.py", verifier=_verify_engine_rev,
+        result = subprocess.run(
+            [sys.executable, "-c", _RECORD_TASK_SESSION_CLAIM_PROGRAM,
+             str(script.parent), task, session],
+            capture_output=True, text=True, encoding="utf-8",
         )
-        pool.record_task_session_claim(task, session)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"세션 기록을 남기지 못했다 ({script.with_name('worktree_pool.py')} · "
+                f"rc={result.returncode}): {result.stderr.strip()}")
 
 
 def _finish_git_guard_judgment(

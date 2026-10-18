@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import ast
 import importlib.util
-import re
 import shutil
 import subprocess
 import sys
@@ -1019,20 +1018,8 @@ def _stale_source() -> str:
 
 
 def _make_target_stale(path: Path) -> None:
-    """Keep the central seam executable while changing only its baked rev."""
-    if path.name == "repo_owned_files.py":
-        source = path.read_text(encoding="utf-8")
-        source, count = re.subn(
-            r'^ENGINE_REV = "[^"]+"',
-            'ENGINE_REV = "v0.0.0-stale"',
-            source,
-            count=1,
-            flags=re.MULTILINE,
-        )
-        assert count == 1
-        path.write_text(source, encoding="utf-8")
-    else:
-        path.write_text(_stale_source(), encoding="utf-8")
+    """Replace the target with a stale-rev copy."""
+    path.write_text(_stale_source(), encoding="utf-8")
 
 
 def _module_assignment(tree: ast.Module, name: str) -> ast.Assign | ast.AnnAssign:
